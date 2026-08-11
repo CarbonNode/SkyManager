@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Followers HUD</title>
+  <link rel="stylesheet" href="hud.css" />
+</head>
+<body class="hud-hidden">
+  <!-- The whole movable assembly. C++ pushes placement via window.hudConfig and
+       the follower list via window.hudData; reposition edit-mode via window.hudEdit. -->
+  <div id="hud">
+    <div class="hud-tools">
+      <span class="hud-tool hud-grip" data-role="grip" title="Drag to move">⠿ Move</span>
+      <button class="hud-tool" data-role="flip" type="button" title="Switch between a row and a column">⇄ Flip</button>
+      <button class="hud-tool" data-role="grow" type="button" title="Flip which corner it grows from (so it can grow left / up from a screen edge)">⤢ Grow</button>
+      <button class="hud-tool" data-role="names" type="button" title="Show or hide the name captions">Aa Names</button>
+      <button class="hud-tool hud-done" data-role="done" type="button" title="Lock it here">✓ Done</button>
+    </div>
+    <div class="hud-panel" id="hud-panel">
+      <div class="hud-strip horiz" id="hud-strip"></div>
+      <div class="hud-empty" id="hud-empty">No one is following you right now.<br />Drag to place the HUD — it appears here when a follower joins.</div>
+      <div class="hud-resize" data-role="resize" title="Drag to resize">⤡</div>
+    </div>
+    <div class="hud-hint">Drag the bar to move · corner to resize · Flip for row/column · Done to lock</div>
+  </div>
+  <script src="hud.js"></script>
+</body>
+</html>

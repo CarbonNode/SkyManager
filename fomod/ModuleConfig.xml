@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SkyManager — FOMOD installer.
+
+  Archive layout this file assumes (produced by tools/make-release.py):
+
+      fomod/ModuleConfig.xml          this file
+      fomod/info.xml
+      Core/SKSE/Plugins/HotkeyDeck.dll
+      Core/PrismaUI/views/HotkeyDeck/…       (icons/sh/ present but EMPTY)
+      Core/PrismaUI/views/MagicDeck/…
+      Optional/WardrobeExecutor/HotkeyDeckWardrobe.esp
+      Optional/WardrobeExecutor/Scripts/*.pex
+      Optional/WardrobeExecutor/Scripts/Source/*.psc
+      Docs/LICENSE
+      Docs/THIRD-PARTY-NOTICES.md
+
+  `destination=""` means "the mod's Data root", so Core/SKSE/… lands as
+  Data/SKSE/… . @VERSION@ / @AUTHOR@ / @NAME@ are substituted at package time.
+-->
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+
+  <moduleName>@NAME@ @VERSION@</moduleName>
+
+  <moduleImage path="Core\PrismaUI\views\HotkeyDeck\icons\skymanager.png"
+               showImage="true" showFade="true" height="-1" />
+
+  <!-- Always installed: the plugin, both views, and the licence + notices. -->
+  <requiredInstallFiles>
+    <folder source="Core" destination="" priority="0" />
+    <folder source="Docs" destination="Docs" priority="0" />
+  </requiredInstallFiles>
+
+  <installSteps order="Explicit">
+
+    <installStep name="Optional components">
+      <optionalFileGroups order="Explicit">
+
+        <group name="Companion plugin" type="SelectExactlyOne">
+          <plugins order="Explicit">
+
+            <plugin name="Wardrobe Executor (recommended)">
+              <description>
+Installs HotkeyDeckWardrobe.esp plus two compiled Papyrus scripts.
+
+This tiny ESP exists for one reason: some things can only be done from Papyrus.
+It hosts the script that talks to SOES-NG's outfit API, and a priority-90 quest
+whose reference aliases run vanilla-template packages so "freeze / sit / bed"
+survive a follower framework instead of being silently overridden.
+
+Costs one plugin slot. Without it:
+  - the Wardrobe tab's SOES handover is unavailable,
+  - freeze / sit / bed fall back to actor-level holds and say so on screen.
+
+Everything else in the mod works either way.
+              </description>
+              <image path="Core\PrismaUI\views\HotkeyDeck\icons\custom\hm-wardrobe.png" />
+              <files>
+                <folder source="Optional\WardrobeExecutor" destination="" priority="1" />
+              </files>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+
+            <plugin name="Skip it — keep the plugin slot free">
+              <description>
+No ESP is installed. The core palette, Followers, Domains, Rooms, Finances,
+Quests, Loot, Containers, the Spell Deck and every other tab work normally.
+
+You can install the ESP later by re-running this installer; the deck detects it
+at runtime and lights the affected controls back up.
+              </description>
+              <files />
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+
+          </plugins>
+        </group>
+
+        <group name="Papyrus sources" type="SelectAny">
+          <plugins order="Explicit">
+            <plugin name="Install the .psc sources too">
+              <description>
+Ships the readable Papyrus source for the two scripts above, under
+Scripts\Source\. Useful if you want to recompile or patch them; pure clutter
+otherwise. The sources are already inside the Wardrobe Executor option, so this
+only matters if you skipped it.
+
+(SkyManager is GPL-3.0 — the full C++ source lives in the repository linked on
+the mod page.)
+              </description>
+              <files>
+                <folder source="Optional\WardrobeExecutor\Scripts\Source"
+                        destination="Scripts\Source" priority="2" />
+              </files>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+
+        <group name="Follower Organizer" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Install Follower Organizer (recommended)">
+              <description>
+Installs Follower Organizer, by MaskedRPGFan — the mod the Followers tab is
+built on — bundled here with their express permission, and with the two extra
+exported functions the tab needs.
+
+It is not available anywhere else, so if you skip this the Followers tab has
+nothing to talk to and stays empty. Everything else works normally.
+
+The plugin is ESL-flagged, so it costs no plugin slot. If you somehow already
+have Follower Organizer installed, let this overwrite it — the stock build has
+no Deck API.
+
+Please credit and thank MaskedRPGFan, not me, for the mod itself. Report
+problems with it to SkyManager.
+              </description>
+              <files>
+                <folder source="Optional\FollowerOrganizer" destination="" priority="3" />
+              </files>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+
+            <plugin name="Skip it — no Followers tab">
+              <description>
+Leaves Follower Organizer out entirely. The Followers tab will report that it
+cannot find the Deck API and stay empty; every other tab is unaffected, and you
+can install it later by re-running this installer.
+              </description>
+              <files />
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+
+        <group name="Deck Portal (phone UI)" type="SelectAtMostOne">
+          <plugins order="Explicit">
+            <plugin name="Install the Deck Portal">
+              <description>
+Serves your follower roster, wardrobe, hotkeys and notes as a web page, so you
+can read and edit them from a phone or a second monitor while the game runs.
+Edits made while Skyrim is closed are queued and applied the next time the
+relevant tab opens in game.
+
+REQUIRES NODE.JS (https://nodejs.org/en/download) — that is why it is optional
+and off by default. SkyManager itself needs nothing but SKSE and PrismaUI.
+
+It listens on 127.0.0.1 only unless you deliberately widen it, and it refuses
+to start on a wider bind without a password. Do not port-forward it.
+
+Installs to Data\SKSE\Plugins\HotkeyDeck\portal\ — see RUNBOOK.md in there.
+              </description>
+              <files>
+                <folder source="Optional\DeckPortal" destination="" priority="4" />
+              </files>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+
+      </optionalFileGroups>
+    </installStep>
+
+  </installSteps>
+
+</config>

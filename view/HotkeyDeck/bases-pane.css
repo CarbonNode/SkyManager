@@ -1,0 +1,831 @@
+/* ===================================================================== *
+ *  Bases — NFF home bases, the second mode of the Domains tab.
+ *  Owned by bases-pane.js; linked from index.html as its OWN sheet, never
+ *  merged into app.css (the sync_view_frags truncation trap — see
+ *  hd-formation.css for the same note).
+ *
+ *  VALUES ARE LITERALS, not var(--token): this view's stylesheets define no
+ *  custom properties, and a var() with no definition is dropped silently.
+ *  The deck palette, for reference:
+ *    panel-a #1a1a21 · panel-b #101015 · gold #c9a24b · gold-line #c9a24b77
+ *    sunk #0c0c10 · raised #16161d · raised-2 #1c1c24
+ *    line #2e2e36 · line-2 #3a3a44 · line-3 #26262d
+ *    dim #8b8678 · dim-2 #6f6a5e · text-2 #b9b4a8 · text #e8e4da
+ *
+ *  Rober's standing UI rules apply: nothing under 13px, spacious padding,
+ *  every control gets hover/active/disabled, a filter box wherever a list
+ *  can grow (64 bases and 200 resident slots is exactly that case).
+ * ===================================================================== */
+
+/* ---------------------------------------------------------- mode bar -- */
+
+#nb-modebar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 18px 0 18px;
+}
+
+.nb-seg-wrap {
+  display: inline-flex; gap: 4px;
+  padding: 4px;
+  background: #0c0c10;
+  border: 1px solid #2e2e36;
+  border-radius: 10px;
+}
+
+.nb-seg {
+  appearance: none; -webkit-appearance: none;
+  font: inherit; font-size: 15px; font-weight: 600;
+  letter-spacing: .2px;
+  color: #8b8678;
+  background: transparent;
+  border: 1px solid transparent; border-radius: 7px;
+  padding: 9px 20px;
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.nb-seg:hover { color: #e8e4da; background: #16161d; }
+.nb-seg:active { transform: translateY(1px); }
+.nb-seg.on {
+  color: #c9a24b;
+  background: #1c1c24;
+  border-color: #c9a24b77;
+  box-shadow: inset 0 0 12px rgba(201, 162, 75, .10);
+}
+.nb-seg:focus-visible { outline: none; box-shadow: inset 0 0 0 2px #c9a24b; }
+
+#nb-status {
+  font-size: 13px; color: #8b8678;
+  padding: 6px 12px;
+  background: #101015; border: 1px solid #26262d; border-radius: 999px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 46%;
+}
+#nb-status.hidden { display: none; }
+
+/* The Domains footer (★ Mark this spot) belongs to Places only. */
+#dm-foot.nb-suppressed { display: none; }
+
+/* ------------------------------------------------------------- body --- */
+
+#nb-body {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; align-items: stretch; gap: 0;
+  overflow: hidden;
+}
+#nb-body.hidden { display: none; }
+
+/* ------------------------------------------------------------- rail --- */
+
+#nb-rail {
+  flex: 0 0 clamp(240px, 28%, 340px);
+  display: flex; flex-direction: column; min-height: 0;
+  border-right: 1px solid #26262d;
+  background: #101015;
+}
+
+#nb-rail-head { padding: 14px 14px 8px 14px; }
+#nb-rail-head.hidden { display: none; }
+
+.nb-search-wrap { position: relative; display: block; }
+.nb-search-ic {
+  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+  font-size: 15px; color: #6f6a5e; pointer-events: none;
+}
+.nb-search-wrap input {
+  width: 100%; box-sizing: border-box;
+  font: inherit; font-size: 14px; color: #e8e4da;
+  background: #0c0c10;
+  border: 1px solid #2e2e36; border-radius: 9px;
+  padding: 10px 12px 10px 34px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.nb-search-wrap input::placeholder { color: #6f6a5e; }
+.nb-search-wrap input:hover { border-color: #3a3a44; }
+.nb-search-wrap input:focus {
+  outline: none; border-color: #c9a24b77;
+  box-shadow: 0 0 0 2px rgba(201, 162, 75, .12);
+}
+
+#nb-rail-list {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  padding: 6px 10px 10px 10px;
+}
+#nb-rail-list::-webkit-scrollbar { width: 10px; }
+#nb-rail-list::-webkit-scrollbar-track { background: transparent; }
+#nb-rail-list::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+#nb-rail-list::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+
+.nb-grouphead {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 13px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase;
+  color: #6f6a5e;
+  padding: 14px 6px 7px 6px;
+}
+.nb-grouphead span {
+  font-size: 12.5px; font-weight: 600; letter-spacing: 0;
+  color: #8b8678; background: #16161d;
+  border-radius: 999px; padding: 2px 9px;
+}
+.nb-grouphead-dim { opacity: .62; }
+
+.nb-row {
+  display: flex; align-items: center; gap: 11px;
+  padding: 11px 12px;
+  margin-bottom: 5px;
+  background: #16161d;
+  border: 1px solid #2e2e36; border-radius: 10px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 110ms ease;
+}
+.nb-row:hover { background: #1c1c24; border-color: #3a3a44; }
+.nb-row:active { transform: translateY(1px); }
+.nb-row.on {
+  background: #1c1c24;
+  border-color: #c9a24b77;
+  box-shadow: inset 0 0 14px rgba(201, 162, 75, .10);
+}
+.nb-row.free { opacity: .66; }
+.nb-row.free:hover { opacity: 1; }
+
+.nb-row-num {
+  flex: 0 0 auto;
+  min-width: 26px; text-align: center;
+  font-size: 13px; font-weight: 700; color: #6f6a5e;
+  background: #0c0c10; border-radius: 6px; padding: 4px 5px;
+}
+.nb-row.on .nb-row-num { color: #c9a24b; }
+
+.nb-row-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.nb-row-name {
+  font-size: 15px; font-weight: 600; color: #e8e4da;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nb-row.free .nb-row-name { font-style: italic; color: #8b8678; font-weight: 500; }
+.nb-row-sub {
+  font-size: 13px; color: #8b8678;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.nb-row-marks { flex: 0 0 auto; font-size: 14px; color: #8b8678; letter-spacing: 1px; }
+.nb-row-pop {
+  flex: 0 0 auto;
+  min-width: 24px; text-align: center;
+  font-size: 13px; font-weight: 700; color: #1a1a21;
+  background: #c9a24b; border-radius: 999px; padding: 3px 8px;
+}
+.nb-row-pop.zero { color: #6f6a5e; background: #26262d; }
+
+.nb-railempty { padding: 24px 12px; text-align: center; }
+.nb-railempty-t { font-size: 15px; font-weight: 600; color: #b9b4a8; margin-bottom: 6px; }
+.nb-railempty-s { font-size: 13px; color: #6f6a5e; line-height: 1.5; }
+
+/* Skeletons are sized like the rows they stand in for, so nothing jumps
+   when the real data lands. */
+.nb-skel {
+  height: 58px; cursor: default;
+  background: linear-gradient(90deg, #16161d 0%, #1c1c24 50%, #16161d 100%);
+  background-size: 200% 100%;
+  animation: nbShimmer 1.3s ease-in-out infinite;
+}
+.nb-skel:hover { background: linear-gradient(90deg, #16161d 0%, #1c1c24 50%, #16161d 100%); border-color: #2e2e36; }
+@keyframes nbShimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+.nb-skelline {
+  height: 15px; border-radius: 6px; margin: 10px 0;
+  background: linear-gradient(90deg, #16161d 0%, #1c1c24 50%, #16161d 100%);
+  background-size: 200% 100%;
+  animation: nbShimmer 1.3s ease-in-out infinite;
+}
+.nb-skelline.w60 { width: 60%; }
+.nb-skelline.w90 { width: 90%; }
+.nb-skelline.w40 { width: 40%; }
+
+#nb-rail-foot {
+  flex: 0 0 auto;
+  padding: 12px 14px 14px 14px;
+  border-top: 1px solid #26262d;
+  background: #0c0c10;
+}
+
+.nb-new {
+  appearance: none; -webkit-appearance: none;
+  display: block; width: 100%;
+  font: inherit; font-size: 15px; font-weight: 600;
+  color: #1a1a21; background: #c9a24b;
+  border: 1px solid #c9a24b; border-radius: 9px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: filter 140ms ease, transform 110ms ease;
+}
+.nb-new:hover { filter: brightness(1.12); }
+.nb-new:active { transform: translateY(1px); }
+.nb-new:disabled {
+  color: #6f6a5e; background: #16161d; border-color: #2e2e36;
+  cursor: not-allowed; filter: none; transform: none;
+}
+.nb-new:focus-visible { outline: none; box-shadow: 0 0 0 2px #c9a24b; }
+
+.nb-claims { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.nb-claim {
+  appearance: none; -webkit-appearance: none;
+  display: inline-flex; align-items: center; gap: 7px;
+  font: inherit; font-size: 13px; color: #8b8678;
+  background: transparent; border: 1px solid #2e2e36; border-radius: 8px;
+  padding: 7px 10px; cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.nb-claim:hover { color: #e8e4da; border-color: #3a3a44; background: #16161d; }
+.nb-claim.on { color: #c9a24b; border-color: #c9a24b77; }
+.nb-claim-box {
+  width: 16px; height: 16px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; line-height: 1;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 4px;
+}
+.nb-claim.on .nb-claim-box { color: #c9a24b; border-color: #c9a24b77; }
+
+/* ------------------------------------------------------------- main --- */
+
+#nb-main {
+  flex: 1 1 auto; min-width: 0; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  padding: 14px 18px 18px 18px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+#nb-main::-webkit-scrollbar { width: 10px; }
+#nb-main::-webkit-scrollbar-track { background: transparent; }
+#nb-main::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+#nb-main::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+
+.nb-card {
+  flex: 0 0 auto;
+  background: #16161d;
+  border: 1px solid #2e2e36; border-radius: 12px;
+  padding: 16px 18px;
+}
+
+.nb-card-head {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  font-size: 14px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase;
+  color: #c9a24b;
+  margin-bottom: 14px;
+}
+.nb-card-hint {
+  font-size: 13px; font-weight: 400; letter-spacing: 0; text-transform: none;
+  color: #6f6a5e;
+}
+
+.nb-collapse { cursor: pointer; margin-bottom: 0; transition: color 140ms ease; }
+.nb-collapse:hover { color: #e8e4da; }
+.nb-collapse.open { margin-bottom: 14px; }
+.nb-caret { font-size: 12px; color: #8b8678; }
+
+/* ---- crests & faces --------------------------------------------------- *
+ *  One object, three sizes. `--nb-hue` is set per element by the JS from an
+ *  EARTHEN wheel (see CREST_HUES) rather than a full-spectrum rainbow — these
+ *  sit inside a gold panel and a cyan crest fights the chrome.
+ *  hsl() is written COMMA-SEPARATED on purpose. The space-separated CSS Color 4
+ *  form is Chrome-era syntax; Ultralight's WebKit is older and drops the whole
+ *  declaration as invalid, which would render every crest transparent in game
+ *  while looking perfect in a desktop browser. The `, 38` fallback inside var()
+ *  keeps it valid even if the custom property never lands. */
+
+.nb-crest, .nb-face {
+  position: relative; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 32% 28%,
+      hsl(var(--nb-hue, 38), 42%, 34%) 0%,
+      hsl(var(--nb-hue, 38), 38%, 22%) 62%,
+      hsl(var(--nb-hue, 38), 34%, 15%) 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .07);
+  transition: box-shadow 160ms ease, transform 160ms ease;
+}
+.nb-crest-ini, .nb-face-ini {
+  font-weight: 700; letter-spacing: .5px;
+  color: hsl(var(--nb-hue, 38), 62%, 78%);
+  user-select: none;
+}
+.nb-face-img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Sizes. Every one keeps its initials legible — a 12px glyph in a 26px circle
+   is the floor, which is why the small face is 30px and not the 22px a denser
+   design would reach for. */
+.nb-crest-sm { width: 38px; height: 38px; }
+.nb-crest-sm .nb-crest-ini { font-size: 13px; }
+.nb-crest-lg { width: 76px; height: 76px; }
+.nb-crest-lg .nb-crest-ini { font-size: 26px; }
+.nb-face-sm { width: 30px; height: 30px; }
+.nb-face-sm .nb-face-ini { font-size: 12px; }
+
+.nb-crest.empty {
+  background: #101015;
+  box-shadow: inset 0 0 0 1px #2e2e36;
+}
+.nb-crest.empty .nb-crest-ini { color: #4f4b44; font-weight: 400; }
+
+.nb-row:hover .nb-crest-sm { transform: scale(1.05); }
+.nb-row.on .nb-crest-sm { box-shadow: inset 0 0 0 1px rgba(255,255,255,.09), 0 0 0 2px #c9a24b77; }
+
+/* ---- hero banner ------------------------------------------------------ */
+
+.nb-hero {
+  position: relative;
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  overflow: hidden;
+}
+/* A soft gold wash behind the crest, so the head reads as a banner rather
+   than one more grey card. Pointer-events off: it is pure decoration. */
+.nb-hero-wash {
+  position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(680px 150px at 0% 0%, rgba(201, 162, 75, .10), transparent 70%);
+}
+.nb-hero > *:not(.nb-hero-wash) { position: relative; }
+
+.nb-crest-lg { box-shadow: inset 0 0 0 1px rgba(255,255,255,.08), 0 0 0 2px #c9a24b55; }
+
+.nb-hero-text { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.nb-hero-line { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.nb-hero-sub { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; min-width: 0; }
+.nb-hero-place {
+  font-size: 14px; color: #b9b4a8;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.nb-hero-place.unset { color: #6f6a5e; font-style: italic; }
+
+/* Overlapping face stack — the one glance that answers "who lives here". */
+.nb-stack { display: inline-flex; align-items: center; }
+.nb-stack .nb-face {
+  margin-left: -10px;
+  box-shadow: 0 0 0 2px #16161d;
+  transition: transform 160ms ease, margin 160ms ease;
+}
+.nb-stack .nb-face:first-child { margin-left: 0; }
+.nb-stack:hover .nb-face { margin-left: -3px; }
+.nb-stack:hover .nb-face:first-child { margin-left: 0; }
+.nb-stack-more {
+  margin-left: 8px;
+  font-size: 12.5px; font-weight: 700; color: #8b8678;
+}
+
+/* ---- head card ------------------------------------------------------- */
+
+.nb-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.nb-head-main { flex: 1 1 260px; min-width: 0; display: flex; align-items: center; gap: 12px; }
+.nb-head-num {
+  flex: 0 0 auto;
+  font-size: 14px; font-weight: 700; color: #6f6a5e;
+  background: #0c0c10; border: 1px solid #26262d; border-radius: 7px;
+  padding: 6px 10px;
+}
+.nb-title {
+  margin: 0; min-width: 0;
+  font-size: 24px; font-weight: 600; color: #e8e4da;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: text;
+  display: flex; align-items: center; gap: 10px;
+  transition: color 140ms ease;
+}
+.nb-title:hover { color: #c9a24b; }
+.nb-title-pen { font-size: 15px; color: #6f6a5e; opacity: 0; transition: opacity 140ms ease; }
+.nb-title:hover .nb-title-pen { opacity: 1; }
+
+.nb-nameinput, .nb-labelinput {
+  font: inherit; color: #e8e4da;
+  background: #0c0c10;
+  border: 1px solid #c9a24b77; border-radius: 8px;
+  padding: 6px 10px;
+  min-width: 0;
+}
+.nb-nameinput { font-size: 22px; flex: 1 1 auto; }
+.nb-labelinput { font-size: 15px; width: 100%; max-width: 320px; }
+.nb-nameinput:focus, .nb-labelinput:focus {
+  outline: none; box-shadow: 0 0 0 2px rgba(201, 162, 75, .16);
+}
+
+.nb-head-actions { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 9px; }
+
+/* ---- buttons --------------------------------------------------------- */
+
+.nb-btn {
+  appearance: none; -webkit-appearance: none;
+  font: inherit; font-size: 14px; font-weight: 600;
+  color: #b9b4a8; background: #1c1c24;
+  border: 1px solid #3a3a44; border-radius: 8px;
+  padding: 10px 15px;
+  cursor: pointer; white-space: nowrap;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease, transform 110ms ease;
+}
+.nb-btn:hover { color: #e8e4da; background: #26262d; border-color: #4a4a56; }
+.nb-btn:active { transform: translateY(1px); }
+.nb-btn:disabled {
+  color: #4f4b44; background: #131318; border-color: #26262d;
+  cursor: not-allowed; transform: none;
+}
+.nb-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px #c9a24b; }
+.nb-btn-sm { font-size: 13px; padding: 8px 12px; }
+.nb-btn-hero {
+  font-size: 16px; padding: 13px 22px;
+  color: #1a1a21; background: #c9a24b; border-color: #c9a24b;
+}
+.nb-btn-hero:hover { color: #1a1a21; background: #d8b25c; border-color: #d8b25c; }
+
+.nb-danger:hover { color: #ffb4a8; border-color: #7a4038; background: #2a1a18; }
+.nb-btn.armed, .nb-chip-act.armed {
+  color: #1a1a21; background: #d4756a; border-color: #d4756a;
+  animation: nbPulse 1.1s ease-in-out infinite;
+}
+@keyframes nbPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(212, 117, 106, .5); }
+  50%      { box-shadow: 0 0 0 5px rgba(212, 117, 106, 0); }
+}
+
+/* ---- locations ------------------------------------------------------- */
+
+.nb-locs { display: flex; flex-direction: column; gap: 9px; }
+
+.nb-loc {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 13px 15px;
+  background: #101015;
+  border: 1px solid #26262d; border-radius: 10px;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.nb-loc:hover { border-color: #3a3a44; }
+/* A REGISTERED spot is solid and carries a gold hairline down its edge; an
+   empty one is a dashed ghost, so "this base has no work spot" is legible from
+   the couch without reading the word "Not set". */
+.nb-loc.is-set {
+  background: #131319; border-color: #2e2e36;
+  box-shadow: inset 2px 0 0 #c9a24b66;
+}
+.nb-loc:not(.is-set) {
+  border-style: dashed; border-color: #2a2a32;
+  background: transparent;
+}
+.nb-loc:not(.is-set):hover { border-color: #3a3a44; background: #101015; }
+
+/* ---- occupancy meter -------------------------------------------------- */
+
+.nb-meter {
+  display: flex; align-items: center; gap: 10px;
+  min-width: 148px;
+}
+.nb-meter-track {
+  flex: 1 1 auto; height: 6px; min-width: 70px;
+  background: #0c0c10;
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px #26262d;
+}
+.nb-meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #8a6f33, #c9a24b);
+  border-radius: 999px;
+  transition: width 320ms ease;
+}
+.nb-meter-txt { flex: 0 0 auto; font-size: 12.5px; color: #8b8678; white-space: nowrap; }
+
+.nb-loc-ic {
+  flex: 0 0 auto;
+  width: 34px; height: 34px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 17px; color: #8b8678;
+  background: #0c0c10; border: 1px solid #2e2e36; border-radius: 9px;
+}
+.nb-loc.is-set .nb-loc-ic { color: #c9a24b; border-color: #c9a24b77; }
+
+.nb-loc-text { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.nb-loc-kind {
+  font-size: 12.5px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase;
+  color: #6f6a5e;
+}
+.nb-loc-val { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.nb-loc-name {
+  font-size: 16px; color: #e8e4da; cursor: text;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+  transition: color 140ms ease;
+}
+.nb-loc-name:hover { color: #c9a24b; }
+.nb-loc-name.unset { color: #6f6a5e; font-style: italic; cursor: default; }
+.nb-loc-name.unset:hover { color: #6f6a5e; }
+.nb-loc-where {
+  font-size: 13px; color: #6f6a5e;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+
+.nb-loc-acts { flex: 0 0 auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.nb-loc-warn {
+  flex: 1 1 100%;
+  font-size: 12.5px; color: #8b8678; line-height: 1.5;
+  padding-top: 4px;
+}
+
+/* ---- residents ------------------------------------------------------- */
+
+.nb-search-inline { margin-bottom: 12px; max-width: 380px; }
+
+.nb-people { display: flex; flex-wrap: wrap; gap: 9px; }
+
+.nb-chip {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 5px 8px 5px 5px;
+  background: #101015;
+  border: 1px solid #2e2e36; border-radius: 999px;
+  max-width: 100%;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.nb-chip:hover { border-color: #3a3a44; background: #16161d; }
+.nb-chip.dead { opacity: .5; }
+.nb-chip.disabled { opacity: .45; }
+.nb-chip.armed { border-color: #d4756a; }
+
+.nb-chip-name {
+  font-size: 15px; color: #e8e4da;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
+}
+.nb-chip-dot { font-size: 11px; color: #6fbf73; }
+.nb-chip-at {
+  font-size: 12px; font-weight: 700; color: #8b8678;
+  background: #1c1c24; border-radius: 999px; padding: 2px 8px;
+}
+
+/* "Match her to a base" — the crest IS the control, so the chip says where she
+   lives and changes it in the same place. */
+.nb-crest-xs { width: 22px; height: 22px; }
+.nb-crest-xs .nb-crest-ini { font-size: 12px; }
+
+.nb-chip-base {
+  appearance: none; -webkit-appearance: none;
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 3px;
+  background: transparent;
+  border: 1px solid transparent; border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.nb-chip-base:hover { background: #1c1c24; border-color: #3a3a44; }
+.nb-chip-base.on { border-color: #c9a24b; background: #1c1c24; }
+.nb-chip-base:focus-visible { outline: none; box-shadow: 0 0 0 2px #c9a24b; }
+.nb-chip-basehome {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; color: #6f6a5e;
+  border: 1px dashed #3a3a44; border-radius: 999px;
+}
+.nb-chip-base:hover .nb-chip-basehome { color: #c9a24b; border-color: #c9a24b77; }
+
+/* ---- the base picker -------------------------------------------------- */
+
+.nb-picker {
+  margin-top: 16px; padding: 14px;
+  background: #101015;
+  border: 1px solid #c9a24b55; border-radius: 10px;
+  animation: nbRise 180ms ease both;
+}
+.nb-picker-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 12px;
+}
+.nb-picker-t { font-size: 15px; font-weight: 600; color: #e8e4da; }
+
+.nb-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 9px;
+  max-height: 260px; overflow-y: auto;
+}
+.nb-picker-grid::-webkit-scrollbar { width: 10px; }
+.nb-picker-grid::-webkit-scrollbar-track { background: transparent; }
+.nb-picker-grid::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+
+.nb-picktile {
+  appearance: none; -webkit-appearance: none;
+  display: flex; align-items: center; gap: 11px; text-align: left;
+  font: inherit;
+  padding: 9px 11px;
+  background: #16161d;
+  border: 1px solid #2e2e36; border-radius: 9px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 110ms ease;
+}
+.nb-picktile:hover { background: #1c1c24; border-color: #c9a24b77; }
+.nb-picktile:active { transform: translateY(1px); }
+.nb-picktile:disabled, .nb-picktile.current { cursor: not-allowed; opacity: .5; }
+.nb-picktile.current { border-color: #c9a24b77; opacity: .7; }
+.nb-picktile:focus-visible { outline: none; box-shadow: 0 0 0 2px #c9a24b; }
+
+.nb-picktile-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.nb-picktile-name {
+  font-size: 14px; font-weight: 600; color: #e8e4da;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nb-picktile-sub {
+  font-size: 12.5px; color: #8b8678;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nb-picktile-none .nb-picktile-name { color: #b9b4a8; }
+
+.nb-chip-act {
+  appearance: none; -webkit-appearance: none;
+  flex: 0 0 auto;
+  min-width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: inherit; font-size: 14px; font-weight: 700;
+  color: #b9b4a8; background: #1c1c24;
+  border: 1px solid #3a3a44; border-radius: 999px;
+  padding: 0 9px;
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.nb-chip-act:hover { color: #e8e4da; background: #2e2e36; }
+.nb-chip-act.danger:hover { color: #ffb4a8; background: #2a1a18; border-color: #7a4038; }
+.nb-chip-act:disabled { color: #4f4b44; cursor: not-allowed; background: #131318; }
+.nb-chip-act:focus-visible { outline: none; box-shadow: 0 0 0 2px #c9a24b; }
+
+.nb-add { margin-top: 16px; padding-top: 14px; border-top: 1px solid #26262d; }
+.nb-addlead {
+  font-size: 12.5px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase;
+  color: #6f6a5e;
+  margin: 12px 0 8px 0;
+}
+.nb-addlead:first-child { margin-top: 0; }
+
+.nb-empty {
+  font-size: 14px; color: #8b8678; line-height: 1.6;
+  padding: 10px 2px;
+}
+.nb-empty-sm { font-size: 13px; padding: 6px 2px; }
+.nb-nomatch { font-size: 13px; color: #6f6a5e; padding: 8px 2px; }
+.nb-warn {
+  font-size: 13px; color: #e0b48a; line-height: 1.55;
+  margin-top: 12px; padding: 10px 13px;
+  background: #221a13; border: 1px solid #5c4326; border-radius: 8px;
+}
+
+/* ---- empty / missing states ------------------------------------------ */
+
+.nb-missing, .nb-intro { text-align: center; padding: 34px 26px; }
+.nb-missing-ic { font-size: 44px; line-height: 1; margin-bottom: 14px; opacity: .5; }
+.nb-missing-t { font-size: 20px; font-weight: 600; color: #e8e4da; margin-bottom: 10px; }
+.nb-missing-s {
+  font-size: 14px; color: #8b8678; line-height: 1.65;
+  max-width: 520px; margin: 0 auto 20px auto;
+}
+
+/* ---- shared settings ------------------------------------------------- */
+
+.nb-settings { display: flex; flex-direction: column; gap: 16px; }
+
+.nb-toggle {
+  appearance: none; -webkit-appearance: none;
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 10px;
+  font: inherit; font-size: 14px; color: #b9b4a8;
+  background: #101015; border: 1px solid #2e2e36; border-radius: 9px;
+  padding: 10px 14px; cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.nb-toggle:hover { color: #e8e4da; border-color: #3a3a44; background: #16161d; }
+.nb-toggle.on { color: #c9a24b; border-color: #c9a24b77; }
+.nb-toggle-box {
+  width: 18px; height: 18px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 5px;
+}
+.nb-toggle.on .nb-toggle-box { color: #c9a24b; border-color: #c9a24b77; }
+
+.nb-times {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: 10px;
+}
+.nb-time {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 13px;
+  background: #101015; border: 1px solid #26262d; border-radius: 9px;
+}
+.nb-time-lbl { flex: 1 1 auto; min-width: 0; font-size: 14px; color: #b9b4a8;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nb-time-val {
+  flex: 0 0 auto; min-width: 62px; text-align: center;
+  font-size: 15px; font-weight: 600; color: #e8e4da;
+}
+.nb-step {
+  appearance: none; -webkit-appearance: none;
+  flex: 0 0 auto;
+  width: 30px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: inherit; font-size: 13px;
+  color: #8b8678; background: #1c1c24;
+  border: 1px solid #3a3a44; border-radius: 7px;
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease;
+}
+.nb-step:hover { color: #c9a24b; background: #26262d; }
+.nb-step:active { transform: translateY(1px); }
+.nb-step:focus-visible { outline: none; box-shadow: 0 0 0 2px #c9a24b; }
+
+/* ------------------------------------------------------------ motion -- */
+/* Restrained on purpose: transform + opacity only (both composited, so they
+   cost nothing in Ultralight), nothing that moves layout, and every duration
+   under 260ms so the deck still feels instant from a couch. */
+
+#nb-main > .nb-card {
+  animation: nbRise 220ms ease both;
+}
+#nb-main > .nb-card:nth-child(1) { animation-delay: 0ms; }
+#nb-main > .nb-card:nth-child(2) { animation-delay: 34ms; }
+#nb-main > .nb-card:nth-child(3) { animation-delay: 68ms; }
+#nb-main > .nb-card:nth-child(4) { animation-delay: 102ms; }
+@keyframes nbRise {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* A location that was JUST registered gets one gold sweep — the deck's answer
+   to "did that take?", without a toast you have to read. Applied by the JS for
+   one render, then dropped. */
+.nb-loc.nb-justset {
+  animation: nbFlash 900ms ease both;
+}
+@keyframes nbFlash {
+  0%   { box-shadow: inset 0 0 0 1px #c9a24b, 0 0 0 0 rgba(201, 162, 75, .40); }
+  100% { box-shadow: inset 0 0 0 1px transparent, 0 0 0 14px rgba(201, 162, 75, 0); }
+}
+
+/* The primary action gets a slow gold sheen on hover. One gradient, one
+   transform — no filter, no blur. */
+.nb-new { position: relative; overflow: hidden; }
+.nb-new::after {
+  content: ''; position: absolute; top: 0; bottom: 0; width: 42%;
+  left: -60%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .34), transparent);
+  transform: skewX(-18deg);
+  pointer-events: none;
+}
+.nb-new:hover:not(:disabled)::after { animation: nbSheen 620ms ease; }
+@keyframes nbSheen {
+  from { left: -60%; }
+  to   { left: 120%; }
+}
+
+/* ---------------------------------------------------- narrow layout --- */
+/* Below ~720px the rail and the detail cannot both breathe, so the rail
+   becomes a short horizontal strip and the detail takes the full width.
+ *
+ *  Driven by a CLASS the pane sets from its own measured width, NOT by a
+ *  media query. The deck window is resizable and scalable independently of
+ *  the render target — at 2560×1440 with the panel dragged to its 640px
+ *  floor, a viewport media query is still reading 2560 and never fires. */
+
+#nb-body.nb-narrow { flex-direction: column; }
+#nb-body.nb-narrow #nb-rail {
+  flex: 0 0 auto; max-height: none;
+  border-right: none; border-bottom: 1px solid #26262d;
+}
+/* The list scrolls INTERNALLY here. Left as flex:1 inside a capped rail it
+   was squeezed to a sliver by the footer — the group header was the only
+   thing on screen and not one base row was visible. */
+#nb-body.nb-narrow #nb-rail-list {
+  flex: 0 0 auto;
+  max-height: 176px;
+  padding-bottom: 6px;
+}
+/* Footer goes to one line so it costs ~56px instead of ~120px of the little
+   vertical budget this layout has. */
+#nb-body.nb-narrow #nb-rail-foot {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+}
+#nb-body.nb-narrow .nb-new { width: auto; flex: 1 1 auto; padding: 10px 14px; }
+#nb-body.nb-narrow .nb-claims { margin-top: 0; flex: 0 0 auto; }
+#nb-body.nb-narrow #nb-rail-head { padding: 10px 14px 6px 14px; }
+#nb-body.nb-narrow #nb-main { padding: 12px 14px 16px 14px; }
+#nb-body.nb-narrow .nb-title { font-size: 20px; }
+#nb-body.nb-narrow .nb-nameinput { font-size: 18px; }
+/* At this width the action rows wrap onto their own line rather than
+   squeezing every label to a few clipped pixels (the mistake the F7 quick
+   card's eleven-button row made). */
+#nb-body.nb-narrow .nb-head-main { flex: 1 1 100%; }
+#nb-body.nb-narrow .nb-head-actions { flex: 1 1 100%; }
+#nb-body.nb-narrow .nb-loc-acts { flex: 1 1 100%; }
+#nb-body.nb-narrow .nb-times { grid-template-columns: 1fr; }
+#nb-body.nb-narrow .nb-chip-name { max-width: 150px; }
+
+body.nb-narrow-bar #nb-modebar { padding: 10px 14px 0 14px; flex-wrap: wrap; gap: 10px; }
+body.nb-narrow-bar #nb-status { max-width: 100%; }

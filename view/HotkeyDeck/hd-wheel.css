@@ -1,0 +1,1087 @@
+/* ====================================================================== *
+ *  Wheel Menu (v0.16.0) — the radial palette. Ctrl+F7.
+ *
+ *  Layout law: EVERYTHING is box-model. The ring, the wedge separators and
+ *  the tiles are plain absolutely-positioned divs placed by JS trigonometry
+ *  and moved with `transform: translate(...)`. No SVG paths, no clip-path,
+ *  no conic-gradient — Ultralight renders those inconsistently and a wheel
+ *  that half-draws is worse than no wheel. The only curved thing here is
+ *  border-radius:50%, which Ultralight has always drawn correctly (the
+ *  follower portraits are round and have shipped for weeks).
+ *
+ *  Sizing is driven by two custom properties set on #hd-wheel by JS:
+ *    --whl-scale   user size (0.6–1.6, the ⚙ slider)
+ *    --whl-r       ring radius in px, POST-scale
+ *  Every other measurement is derived from them with calc(), so the whole
+ *  assembly grows as one piece and the CSS never has to know the slot count.
+ * ====================================================================== */
+
+#hd-wheel {
+  position: fixed;
+  inset: 0;
+  z-index: 900;              /* over the deck panel; under app.js's #hd-tip (999) */
+  display: none;
+  /* the vignette: dark at the rim, readable in the middle, and it lets the
+     paused frame behind it still say WHERE you are */
+  background:
+    radial-gradient(circle at 50% 50%,
+      rgba(6, 8, 11, 0.42) 0%,
+      rgba(6, 8, 11, 0.72) 38%,
+      rgba(3, 4, 6, 0.9) 100%);
+  animation: whl-fade-in 140ms ease-out;
+  cursor: default;
+  user-select: none;
+}
+body.whl-open #hd-wheel { display: block; }
+
+/* The deck panel is meaningless behind the wheel and its gold edge fights the
+   ring for attention. Hide it rather than dim it — half a menu under another
+   menu reads as a bug. */
+body.whl-open #panel { visibility: hidden; }
+
+@keyframes whl-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ------------------------------------------------------------- the stage */
+
+#hd-wheel .whl-stage {
+  position: absolute;
+  /* left/top are set in px by JS from the chosen ANCHOR — see stageAt(). They
+     start centred so a stage rendered before the first layout pass is not in
+     the corner of the screen. */
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  /* children are placed relative to this single point; nothing else needs to
+     know the viewport size */
+}
+
+/* ---- dim levels (the preset's other half) ------------------------------ *
+   A corner wheel is only "out of the way" if you can still SEE past it, so
+   the backdrop is part of the preset, not a separate setting. With less dim
+   the assembly needs its own contrast against bright scenery, which is what
+   the pool behind the ring is for. */
+#hd-wheel.dim-light {
+  background:
+    radial-gradient(circle at 50% 50%,
+      rgba(6, 8, 11, 0.18) 0%,
+      rgba(6, 8, 11, 0.32) 55%,
+      rgba(3, 4, 6, 0.44) 100%);
+}
+#hd-wheel.dim-none { background: none; }
+
+/* the pool: a soft dark disc UNDER the ring only, so the wheel stays readable
+   over snow or a fire while the rest of the screen is untouched */
+#hd-wheel .whl-pool {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(var(--whl-r) * 2.5);
+  height: calc(var(--whl-r) * 2.5);
+  margin-left: calc(var(--whl-r) * -1.25);
+  margin-top: calc(var(--whl-r) * -1.25);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%,
+    rgba(4, 6, 9, 0.82) 0%,
+    rgba(4, 6, 9, 0.66) 42%,
+    rgba(4, 6, 9, 0.28) 68%,
+    rgba(4, 6, 9, 0) 82%);
+  pointer-events: none;
+  display: none;
+}
+#hd-wheel.dim-light .whl-pool,
+#hd-wheel.dim-none .whl-pool { display: block; }
+
+/* ---- the ring track ---------------------------------------------------- */
+
+#hd-wheel .whl-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(var(--whl-r) * 2);
+  height: calc(var(--whl-r) * 2);
+  margin-left: calc(var(--whl-r) * -1);
+  margin-top: calc(var(--whl-r) * -1);
+  border-radius: 50%;
+  border: 2px solid rgba(198, 160, 84, 0.34);
+  box-shadow:
+    inset 0 0 60px rgba(198, 160, 84, 0.07),
+    0 0 40px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+/* a second, tighter hairline — two rings read as forged metal, one reads as a
+   div with a border */
+#hd-wheel .whl-ring.inner {
+  width: calc(var(--whl-r) * 2 - 30px);
+  height: calc(var(--whl-r) * 2 - 30px);
+  margin-left: calc(var(--whl-r) * -1 + 15px);
+  margin-top: calc(var(--whl-r) * -1 + 15px);
+  border-color: rgba(198, 160, 84, 0.14);
+  box-shadow: none;
+}
+
+/* ---- wedge separators: thin spokes, rotated ---------------------------- */
+
+#hd-wheel .whl-spoke {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: calc(var(--whl-r) - 4px);
+  margin-left: -0.5px;
+  transform-origin: 0 0;     /* rotate about the hub centre */
+  background: linear-gradient(
+    to bottom,
+    rgba(198, 160, 84, 0) 0%,
+    rgba(198, 160, 84, 0) 30%,
+    rgba(198, 160, 84, 0.22) 62%,
+    rgba(198, 160, 84, 0.05) 100%);
+  pointer-events: none;
+}
+
+/* ---- the selected wedge's glow ---------------------------------------- */
+/* A rotating "beam": a soft radial blob parked at the selected slot's angle.
+   Box-model only, so it cannot fail to draw; it moves with a transition, which
+   is what makes selection feel like a physical dial rather than a redraw. */
+#hd-wheel .whl-beam {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(var(--whl-r) * 1.15);
+  height: calc(var(--whl-r) * 1.15);
+  margin-left: calc(var(--whl-r) * -0.575);
+  margin-top: calc(var(--whl-r) * -0.575);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%,
+    rgba(226, 190, 110, 0.16) 0%,
+    rgba(226, 190, 110, 0.06) 45%,
+    rgba(226, 190, 110, 0) 72%);
+  opacity: 0;
+  transition: transform 130ms cubic-bezier(.2, .7, .3, 1), opacity 130ms ease;
+  pointer-events: none;
+}
+#hd-wheel.has-sel .whl-beam { opacity: 1; }
+
+/* ---- a slot ------------------------------------------------------------ */
+
+#hd-wheel .whl-slot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(112px * var(--whl-scale));
+  margin-left: calc(-56px * var(--whl-scale));
+  margin-top: calc(-56px * var(--whl-scale));
+  text-align: center;
+  cursor: pointer;
+  transition: transform 120ms cubic-bezier(.2, .7, .3, 1);
+}
+
+#hd-wheel .whl-tile {
+  position: relative;
+  width: calc(96px * var(--whl-scale));
+  height: calc(96px * var(--whl-scale));
+  margin: 0 auto;
+  border-radius: 50%;
+  background:
+    linear-gradient(160deg, #232830 0%, #171b21 55%, #101318 100%);
+  border: 2px solid rgba(198, 160, 84, 0.42);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 6px 18px rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transition: border-color 120ms ease, box-shadow 140ms ease,
+              background-color 120ms ease;
+}
+
+#hd-wheel .whl-glyph {
+  font-size: calc(38px * var(--whl-scale));
+  line-height: 1;
+  color: #d8c48d;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+/* Real art REPLACES the glyph rather than covering it — an item render is a
+   small object on transparency, so a glyph left underneath shows through it.
+   Driven by `has-art`, which the <img>'s error handler removes together with
+   the picture, so a stale path falls back to the glyph and never to a blank. */
+#hd-wheel .whl-slot.has-art .whl-glyph,
+#hd-wheel .whl-hub-art.has-art .whl-hub-glyph { display: none; }
+/* real art sits OVER the glyph and removes itself on error (same contract as
+   the shelf's plate) — a stale path costs a blink, never a broken-image box */
+#hd-wheel .whl-img {
+  position: absolute;
+  inset: calc(6px * var(--whl-scale));
+  width: calc(100% - 12px * var(--whl-scale));
+  height: calc(100% - 12px * var(--whl-scale));
+  object-fit: contain;
+  border-radius: 50%;
+}
+/* a face fills its circle; an item's render is a small object on transparency
+   and must NOT be cropped to a disc */
+#hd-wheel .whl-img.face { object-fit: cover; }
+
+#hd-wheel .whl-name {
+  margin-top: calc(9px * var(--whl-scale));
+  font-size: calc(15px * var(--whl-scale));
+  line-height: 1.25;
+  font-weight: 600;
+  color: #cfd6e0;
+  letter-spacing: .2px;
+  text-shadow: 0 2px 5px rgba(0, 0, 0, 0.85);
+  /* two lines, then ellipsis — a 90-character item name must not push the
+     neighbouring slot's label out of the ring */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  transition: color 120ms ease;
+}
+
+/* Label degradation on a crowded ring — see metrics() in hd-wheel.js. The
+   type NEVER shrinks below the readable floor; the label loses lines and then
+   itself, because the hub names whatever you are pointing at anyway. */
+#hd-wheel.lbl-1 .whl-name { -webkit-line-clamp: 1; }
+#hd-wheel.lbl-0 .whl-name { display: none; }
+/* with no labels the tiles are the whole slot — take the label's margin back
+   so the ring reads as a ring of pictures rather than a ring with gaps */
+#hd-wheel.lbl-0 .whl-slot { margin-top: calc(-48px * var(--whl-scale)); }
+
+/* hover / cursor-angle selection — one class, two ways in */
+#hd-wheel .whl-slot.sel { transform: scale(1.085); }
+#hd-wheel .whl-slot.sel .whl-tile {
+  border-color: rgba(240, 208, 130, 0.95);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 0 0 4px rgba(226, 190, 110, 0.12),
+    0 0 26px rgba(226, 190, 110, 0.34),
+    0 8px 22px rgba(0, 0, 0, 0.6);
+}
+#hd-wheel .whl-slot.sel .whl-name { color: #f2e6c4; }
+
+#hd-wheel .whl-slot.fire .whl-tile {
+  animation: whl-fire 320ms ease-out;
+}
+@keyframes whl-fire {
+  0%   { box-shadow: 0 0 0 0 rgba(240, 214, 140, 0.55), 0 0 30px rgba(226, 190, 110, .5); }
+  100% { box-shadow: 0 0 0 26px rgba(240, 214, 140, 0), 0 0 0 rgba(226, 190, 110, 0); }
+}
+
+/* a pin whose thing is gone: readable, obviously dead, still clickable (the
+   click explains itself rather than doing nothing) */
+#hd-wheel .whl-slot.gone .whl-tile {
+  border-color: rgba(150, 90, 90, 0.5);
+  filter: grayscale(0.75);
+  opacity: 0.62;
+}
+#hd-wheel .whl-slot.gone .whl-name { color: #8d949e; }
+
+/* ---- empty slot (edit mode) ------------------------------------------- */
+
+#hd-wheel .whl-slot.empty .whl-tile {
+  background: rgba(20, 24, 30, 0.5);
+  border: 2px dashed rgba(198, 160, 84, 0.35);
+  box-shadow: none;
+}
+#hd-wheel .whl-slot.empty .whl-glyph { color: rgba(198, 160, 84, 0.6); font-size: calc(34px * var(--whl-scale)); }
+#hd-wheel .whl-slot.empty .whl-name { color: #7d838d; font-weight: 500; }
+#hd-wheel .whl-slot.empty:hover .whl-tile {
+  border-color: rgba(226, 190, 110, 0.8);
+  background: rgba(30, 35, 44, 0.7);
+}
+
+/* ---- the hub ---------------------------------------------------------- */
+
+/* 1.16, not 1.06: the readout is a FIXED stack (art, name, detail, kind, hint)
+   whose height scales with --whl-scale, while the hub's diameter scales with
+   the RADIUS — and on a corner preset the radius shrinks faster. At 0.7 the
+   old ratio clipped the second line of a long name against the rounded edge
+   ("Daedric Bow of the Blaze" lost "Blaze"). The harness now asserts the stack
+   fits inside the disc at every preset. */
+#hd-wheel .whl-hub {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(var(--whl-r) * 1.16);
+  height: calc(var(--whl-r) * 1.16);
+  margin-left: calc(var(--whl-r) * -0.58);
+  margin-top: calc(var(--whl-r) * -0.58);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 34%, rgba(38, 44, 54, 0.95) 0%, rgba(14, 17, 22, 0.97) 72%);
+  border: 2px solid rgba(198, 160, 84, 0.5);
+  box-shadow:
+    inset 0 0 40px rgba(0, 0, 0, 0.7),
+    0 0 34px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: calc(16px * var(--whl-scale));
+  box-sizing: border-box;
+  text-align: center;
+  overflow: hidden;
+  pointer-events: none;      /* the hub is a readout, never a target */
+}
+
+#hd-wheel .whl-hub-art {
+  width: calc(76px * var(--whl-scale));
+  height: calc(76px * var(--whl-scale));
+  border-radius: 50%;
+  margin-bottom: calc(10px * var(--whl-scale));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(40px * var(--whl-scale));
+  color: #e0cd9a;
+  background: linear-gradient(160deg, rgba(40, 46, 57, .85), rgba(18, 22, 28, .9));
+  border: 1px solid rgba(198, 160, 84, 0.3);
+  overflow: hidden;
+  position: relative;
+  flex: 0 0 auto;
+}
+#hd-wheel .whl-hub-glyph { line-height: 1; }
+#hd-wheel .whl-hub-art img {
+  position: absolute;
+  inset: calc(6px * var(--whl-scale));
+  width: calc(100% - 12px * var(--whl-scale));
+  height: calc(100% - 12px * var(--whl-scale));
+  object-fit: contain;
+}
+/* a face fills its disc: inset to 0 as well as cover, or the crop leaves a ring */
+#hd-wheel .whl-hub-art img.face { object-fit: cover; inset: 0; width: 100%; height: 100%; }
+
+#hd-wheel .whl-hub-name {
+  font-size: calc(21px * var(--whl-scale));
+  font-weight: 700;
+  color: #f4ead1;
+  line-height: 1.2;
+  letter-spacing: .3px;
+  max-width: 100%;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+#hd-wheel .whl-hub-detail {
+  margin-top: calc(6px * var(--whl-scale));
+  font-size: calc(14px * var(--whl-scale));
+  color: #9aa3b0;
+  line-height: 1.35;
+  max-width: 100%;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+#hd-wheel .whl-hub-hint {
+  margin-top: calc(10px * var(--whl-scale));
+  font-size: calc(13px * var(--whl-scale));
+  color: #c6a054;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+}
+#hd-wheel .whl-hub-kind {
+  margin-top: calc(8px * var(--whl-scale));
+  /* 13, not 12: this is the smallest type on the wheel, and at anything under
+     a full-size window the effective scale drops below 1 — a 12px base lands
+     at 11 and breaks the no-small-text rule exactly where it matters least
+     but is most visible. */
+  font-size: calc(13px * var(--whl-scale));
+  color: #cbd3de;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  padding: calc(3px * var(--whl-scale)) calc(11px * var(--whl-scale));
+}
+/* idle hub (cursor in the dead zone): the wheel's own name + the count */
+#hd-wheel .whl-hub-title {
+  font-size: calc(24px * var(--whl-scale));
+  font-weight: 700;
+  color: #e8dcc0;
+  letter-spacing: .4px;
+}
+#hd-wheel .whl-hub-sub {
+  margin-top: calc(8px * var(--whl-scale));
+  font-size: calc(14px * var(--whl-scale));
+  color: #8e97a4;
+}
+
+/* ---- chrome: the corners --------------------------------------------- */
+
+#hd-wheel .whl-bar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 3;
+}
+#hd-wheel .whl-bar.tl { left: 28px; top: 26px; }
+#hd-wheel .whl-bar.tr { right: 28px; top: 26px; }
+#hd-wheel .whl-bar.br { right: 28px; bottom: 26px; }
+#hd-wheel .whl-bar.bl { left: 28px; bottom: 26px; }
+
+/* ---- chrome gets out of the wheel's way -------------------------------- *
+   The ticks live bottom-right, which is exactly where a bottom-right preset
+   puts the RING. So for a corner anchor the ticks move to the far corner and
+   the help line goes with the title, keeping every bar clear of the wheel —
+   an overlap the harness now asserts against for each preset. */
+#hd-wheel.anc-br .whl-bar.br,
+#hd-wheel.anc-bc .whl-bar.br { right: auto; left: 28px; bottom: 26px; }
+#hd-wheel.anc-br .whl-bar.bl,
+#hd-wheel.anc-bc .whl-bar.bl { left: 28px; bottom: 82px; }
+#hd-wheel.anc-bl .whl-bar.bl { left: auto; right: 28px; bottom: 82px; }
+#hd-wheel.anc-bl .whl-bar.br { right: 28px; bottom: 26px; }
+/* a bottom-centre wheel is wide: pull the help text up off its labels */
+#hd-wheel.anc-bc .whl-bar.bl { bottom: 82px; }
+
+#hd-wheel .whl-wname {
+  font-size: 22px;
+  font-weight: 700;
+  color: #f0e4c8;
+  letter-spacing: .4px;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, .9);
+  max-width: 460px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#hd-wheel .whl-wsub {
+  font-size: 14px;
+  color: #99a2af;
+  margin-left: 4px;
+}
+
+#hd-wheel .whl-btn {
+  min-width: 46px;
+  height: 46px;
+  padding: 0 15px;
+  border-radius: 10px;
+  background: rgba(24, 28, 35, 0.85);
+  border: 1px solid rgba(198, 160, 84, 0.36);
+  color: #dfd3b4;
+  font-size: 17px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background-color 120ms ease, border-color 120ms ease,
+              color 120ms ease, transform 90ms ease;
+}
+#hd-wheel .whl-btn:hover {
+  background: rgba(40, 47, 58, 0.95);
+  border-color: rgba(240, 208, 130, 0.85);
+  color: #f6ecd2;
+}
+#hd-wheel .whl-btn:active { transform: translateY(1px); }
+#hd-wheel .whl-btn.on {
+  background: rgba(198, 160, 84, 0.22);
+  border-color: rgba(240, 208, 130, 0.9);
+  color: #f8efd6;
+}
+#hd-wheel .whl-btn:disabled,
+#hd-wheel .whl-btn.disabled {
+  opacity: .4;
+  cursor: default;
+  border-color: rgba(198, 160, 84, .18);
+}
+#hd-wheel .whl-btn:disabled:hover,
+#hd-wheel .whl-btn.disabled:hover {
+  background: rgba(24, 28, 35, .85);
+  border-color: rgba(198, 160, 84, .18);
+  color: #dfd3b4;
+}
+
+/* ---- wheel ticks (bottom-right): ● ○ ○ with ‹ › ----------------------- */
+
+#hd-wheel .whl-dots {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 6px;
+}
+#hd-wheel .whl-dot {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.13);
+  border: 2px solid rgba(198, 160, 84, 0.45);
+  cursor: pointer;
+  transition: background-color 130ms ease, transform 130ms ease,
+              border-color 130ms ease, box-shadow 130ms ease;
+}
+#hd-wheel .whl-dot:hover {
+  border-color: rgba(240, 208, 130, 0.95);
+  transform: scale(1.2);
+}
+#hd-wheel .whl-dot.on {
+  background: #e2be6e;
+  border-color: #f2dda8;
+  box-shadow: 0 0 12px rgba(226, 190, 110, 0.7);
+  transform: scale(1.16);
+}
+#hd-wheel .whl-dot.add {
+  border-style: dashed;
+  border-color: rgba(198, 160, 84, 0.5);
+  background: none;
+  position: relative;
+}
+#hd-wheel .whl-dot.add::after {
+  content: '+';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -52%);
+  font-size: 13px;
+  line-height: 1;
+  color: rgba(226, 190, 110, .85);
+}
+
+/* ---- overlays: picker, wheel settings, context menu ------------------- */
+
+#hd-wheel .whl-sheet {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(860px, 92vw);
+  max-height: 82vh;
+  background: linear-gradient(180deg, #1a1e25 0%, #12151b 100%);
+  border: 1px solid rgba(198, 160, 84, 0.45);
+  border-radius: 14px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.75);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 6;
+}
+#hd-wheel .whl-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+#hd-wheel .whl-sheet-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #f0e4c8;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#hd-wheel .whl-sheet-body {
+  padding: 16px 20px 20px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+#hd-wheel .whl-search {
+  width: 100%;
+  box-sizing: border-box;
+  height: 50px;
+  padding: 0 16px;
+  font-size: 17px;
+  color: #eef2f7;
+  background: rgba(9, 11, 15, 0.85);
+  border: 1px solid rgba(198, 160, 84, 0.4);
+  border-radius: 10px;
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+#hd-wheel .whl-search:focus {
+  border-color: rgba(240, 208, 130, 0.9);
+  box-shadow: 0 0 0 3px rgba(226, 190, 110, 0.14);
+}
+#hd-wheel .whl-search::placeholder { color: #6f7783; }
+
+#hd-wheel .whl-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin: 14px 0 6px;
+}
+#hd-wheel .whl-chip {
+  padding: 8px 15px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #b9c2ce;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  cursor: pointer;
+  transition: background-color 110ms ease, color 110ms ease, border-color 110ms ease;
+}
+#hd-wheel .whl-chip:hover { background: rgba(255, 255, 255, 0.1); color: #e6ecf4; }
+#hd-wheel .whl-chip.on {
+  background: rgba(198, 160, 84, 0.24);
+  border-color: rgba(240, 208, 130, 0.85);
+  color: #f6ecd2;
+}
+#hd-wheel .whl-chip .n { opacity: .65; margin-left: 6px; font-weight: 500; }
+
+#hd-wheel .whl-results { margin-top: 12px; }
+#hd-wheel .whl-group-h {
+  font-size: 13px;
+  letter-spacing: .9px;
+  text-transform: uppercase;
+  color: #8d96a3;
+  margin: 14px 2px 8px;
+}
+#hd-wheel .whl-res {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 110ms ease, border-color 110ms ease;
+}
+#hd-wheel .whl-res:hover { background: rgba(255, 255, 255, 0.055); }
+#hd-wheel .whl-res.sel {
+  background: rgba(198, 160, 84, 0.16);
+  border-color: rgba(226, 190, 110, 0.55);
+}
+#hd-wheel .whl-res-art {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 auto;
+  border-radius: 9px;
+  background: linear-gradient(160deg, rgba(40, 46, 57, .9), rgba(18, 22, 28, .95));
+  border: 1px solid rgba(198, 160, 84, 0.26);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  color: #d8c48d;
+  position: relative;
+  overflow: hidden;
+}
+#hd-wheel .whl-res-art img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+#hd-wheel .whl-res-art img.face { object-fit: cover; }
+#hd-wheel .whl-res-txt { flex: 1 1 auto; min-width: 0; }
+#hd-wheel .whl-res-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: #e9eef5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#hd-wheel .whl-res-name b { color: #f4d98d; font-weight: 700; }
+#hd-wheel .whl-res-detail {
+  font-size: 13.5px;
+  color: #8e97a4;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#hd-wheel .whl-res-kind {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: #c3cbd7;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 4px 11px;
+}
+#hd-wheel .whl-res.on-wheel .whl-res-kind {
+  color: #f4d98d;
+  border-color: rgba(226, 190, 110, .5);
+  background: rgba(198, 160, 84, .16);
+}
+
+#hd-wheel .whl-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: #8d96a3;
+  font-size: 16px;
+  line-height: 1.6;
+}
+#hd-wheel .whl-empty b { color: #d9e0ea; display: block; font-size: 18px; margin-bottom: 8px; }
+
+/* rows in the settings sheet */
+#hd-wheel .whl-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+#hd-wheel .whl-row:last-child { border-bottom: none; }
+#hd-wheel .whl-row-lab {
+  flex: 1 1 auto;
+  font-size: 16px;
+  color: #dbe2ea;
+}
+#hd-wheel .whl-row-sub {
+  font-size: 13.5px;
+  color: #858e9b;
+  margin-top: 3px;
+  line-height: 1.45;
+}
+#hd-wheel .whl-val {
+  min-width: 74px;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f0e4c8;
+}
+#hd-wheel .whl-input {
+  height: 44px;
+  padding: 0 13px;
+  font-size: 16px;
+  color: #eef2f7;
+  background: rgba(9, 11, 15, 0.85);
+  border: 1px solid rgba(198, 160, 84, 0.4);
+  border-radius: 8px;
+  outline: none;
+  min-width: 240px;
+}
+#hd-wheel .whl-input:focus { border-color: rgba(240, 208, 130, .9); }
+#hd-wheel .whl-danger {
+  border-color: rgba(190, 90, 90, .6);
+  color: #f0b9b9;
+}
+#hd-wheel .whl-danger:hover {
+  background: rgba(120, 40, 40, .35);
+  border-color: rgba(230, 120, 120, .9);
+  color: #ffdada;
+}
+
+/* ---- the Look dropdown, on the wheel's own bar ------------------------ */
+
+#hd-wheel .whl-look { gap: 10px; padding: 0 14px; }
+#hd-wheel .whl-look-ico { font-size: 18px; color: #c6a054; }
+#hd-wheel .whl-look-lab { font-weight: 600; }
+#hd-wheel .whl-look-caret { font-size: 12px; color: #c6a054; }
+
+#hd-wheel .whl-look-pop {
+  position: absolute;
+  right: 28px;
+  top: 84px;                 /* clears the 46px bar at top:26 */
+  width: min(420px, calc(100vw - 56px));
+  /* Kept in the UPPER right on purpose. This panel is how you move the wheel,
+     so you have to be able to SEE the wheel move while you pick — a full-height
+     dropdown covered the ring (and, on a bottom-anchored preset, the hub
+     readout with it). Capped to the top half, and the harness asserts it never
+     covers the hub at any preset or screen size. */
+  max-height: min(520px, 52vh);
+  overflow-y: auto;
+  background: linear-gradient(180deg, #1b1f27 0%, #12151b 100%);
+  border: 1px solid rgba(198, 160, 84, 0.5);
+  border-radius: 13px;
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.75);
+  z-index: 7;
+  animation: whl-pop-in 120ms ease-out;
+}
+@keyframes whl-pop-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+#hd-wheel .whl-look-head {
+  padding: 15px 17px 11px;
+  font-size: 17px;
+  font-weight: 700;
+  color: #f0e4c8;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+#hd-wheel .whl-look-sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 13px;
+  font-weight: 400;
+  color: #8e97a4;
+}
+#hd-wheel .whl-look-pop .whl-presets {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+#hd-wheel .whl-look-foot {
+  padding: 11px 17px 13px;
+  font-size: 13px;
+  color: #7f8895;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+/* The panel DODGES to the far side when the wheel is anchored right, the same
+   way the ticks do: right-aligned, it landed square on a bottom-right wheel's
+   hub — the one part you need to keep reading while you move it. */
+#hd-wheel.anc-br .whl-look-pop,
+#hd-wheel.anc-tr .whl-look-pop { right: auto; left: 28px; }
+
+/* narrow: the button keeps its icon and drops the preset NAME rather than
+   squeezing four buttons into a scrollbar's width */
+@media (max-width: 1100px) {
+  #hd-wheel .whl-look-lab { display: none; }
+  /* On a narrow screen the panel is a near-full-width sheet — six rows with
+     screen maps do not fit any other way — so it necessarily covers what is
+     behind it, including the hub. Deliberate, and the reason the harness only
+     asserts hub-clearance at desktop width. */
+  #hd-wheel .whl-look-pop,
+  #hd-wheel.anc-br .whl-look-pop,
+  #hd-wheel.anc-tr .whl-look-pop {
+    left: 16px; right: 16px; top: 74px; width: auto;
+  }
+}
+
+/* ---- the visual-preset picker ---------------------------------------- */
+
+#hd-wheel .whl-dd {
+  min-width: 250px;
+  height: 50px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-radius: 10px;
+  background: rgba(9, 11, 15, 0.85);
+  border: 1px solid rgba(198, 160, 84, 0.45);
+  color: #f0e4c8;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+#hd-wheel .whl-dd:hover { border-color: rgba(240, 208, 130, 0.9); background: rgba(26, 31, 39, 0.9); }
+#hd-wheel .whl-dd-caret { color: #c6a054; font-size: 14px; }
+
+#hd-wheel .whl-presets {
+  margin: 4px 0 10px;
+  border: 1px solid rgba(198, 160, 84, 0.28);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(9, 11, 15, 0.5);
+}
+#hd-wheel .whl-preset {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 13px 15px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background-color 110ms ease;
+}
+#hd-wheel .whl-preset:last-child { border-bottom: none; }
+#hd-wheel .whl-preset:hover { background: rgba(255, 255, 255, 0.055); }
+#hd-wheel .whl-preset.on { background: rgba(198, 160, 84, 0.16); }
+#hd-wheel .whl-preset-txt { flex: 1 1 auto; min-width: 0; }
+#hd-wheel .whl-preset-name { font-size: 16.5px; font-weight: 700; color: #f0e4c8; }
+#hd-wheel .whl-preset-note {
+  font-size: 13.5px;
+  color: #8e97a4;
+  margin-top: 3px;
+  line-height: 1.4;
+  /* two lines: a third one pushed the six rows past the panel's height cap at
+     1440, so the list scrolled when it did not need to */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+#hd-wheel .whl-preset-meta {
+  flex: 0 0 auto;
+  text-align: right;
+  font-size: 12.5px;
+  color: #b6bec9;
+  line-height: 1.5;
+}
+
+/* the mini-map: a 3x3 screen with a dot where the wheel lands, dot size = the
+   preset's scale. This IS the "visual" in visual preset — you should be able
+   to pick without reading a word. */
+#hd-wheel .whl-pm {
+  flex: 0 0 auto;
+  width: 74px;
+  height: 46px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr 1fr;
+  border: 1px solid rgba(198, 160, 84, 0.4);
+  border-radius: 5px;
+  background: #0b0d11;
+  overflow: hidden;
+}
+/* the map's own fill says how much the screen is dimmed */
+#hd-wheel .whl-pm.dim-full { background: #05070a; }
+#hd-wheel .whl-pm.dim-light { background: #101620; }
+#hd-wheel .whl-pm.dim-none { background: #1b2735; }
+#hd-wheel .whl-pm-cell { display: flex; align-items: center; justify-content: center; }
+#hd-wheel .whl-pm-dot {
+  width: calc(13px * var(--pm, 1));
+  height: calc(13px * var(--pm, 1));
+  border-radius: 50%;
+  background: #e2be6e;
+  box-shadow: 0 0 7px rgba(226, 190, 110, 0.75);
+}
+
+/* Segmented position / dim controls.
+   A GRID, not a wrapping flex row: flex-wrap put the sixth position button
+   (bottom-right — often the selected one) alone on a second line, and "None"
+   alone under the two dim buttons. Three columns also makes the position pad
+   spatially honest — its two rows ARE top and bottom, its columns left,
+   centre and right, so the control looks like the thing it sets. */
+#hd-wheel .whl-seg {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  flex: 0 0 auto;
+}
+#hd-wheel .whl-seg.pos { width: 172px; }
+/* 372, not 324: "See-through" wrapped to two lines inside its own button at
+   the narrower width, which reads as a broken control rather than a long word */
+#hd-wheel .whl-seg.dim { width: 372px; }
+#hd-wheel .whl-segb {
+  min-width: 46px;
+  height: 44px;
+  padding: 0 10px;
+  border-radius: 9px;
+  background: rgba(24, 28, 35, 0.85);
+  border: 1px solid rgba(198, 160, 84, 0.3);
+  color: #cfd6e0;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background-color 110ms ease, border-color 110ms ease, color 110ms ease;
+}
+#hd-wheel .whl-segb.wide {
+  min-width: 96px;
+  font-size: 14.5px;
+  font-weight: 600;
+  white-space: nowrap;   /* a label that wraps inside its button reads as broken */
+}
+#hd-wheel .whl-segb:hover { border-color: rgba(240, 208, 130, 0.8); color: #f6ecd2; }
+#hd-wheel .whl-segb.on {
+  background: rgba(198, 160, 84, 0.24);
+  border-color: rgba(240, 208, 130, 0.9);
+  color: #f8efd6;
+}
+#hd-wheel .whl-row-preset { border-bottom: none; padding-bottom: 6px; }
+
+/* ---- rebindable keys -------------------------------------------------- */
+
+#hd-wheel .whl-row-keys { border-bottom: none; padding-bottom: 4px; }
+#hd-wheel .whl-row-sub b { color: #cdd5df; font-weight: 700; }
+
+#hd-wheel .whl-keys {
+  border: 1px solid rgba(198, 160, 84, 0.28);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(9, 11, 15, 0.5);
+  margin-bottom: 14px;
+}
+#hd-wheel .whl-key {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 15px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+#hd-wheel .whl-key:last-child { border-bottom: none; }
+#hd-wheel .whl-key-txt { flex: 1 1 auto; min-width: 0; }
+#hd-wheel .whl-key-lab { font-size: 16px; font-weight: 600; color: #dbe2ea; }
+#hd-wheel .whl-key-note { font-size: 13.5px; color: #858e9b; margin-top: 3px; line-height: 1.4; }
+
+/* the key chip — the deck's press-to-rebind idiom */
+#hd-wheel .whl-keychip {
+  flex: 0 0 auto;
+  min-width: 116px;
+  height: 44px;
+  padding: 0 14px;
+  border-radius: 9px;
+  background: rgba(24, 28, 35, 0.9);
+  border: 1px solid rgba(198, 160, 84, 0.45);
+  color: #f0e4c8;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+#hd-wheel .whl-keychip:hover { border-color: rgba(240, 208, 130, 0.95); background: rgba(38, 44, 55, 0.95); }
+#hd-wheel .whl-keychip.off { color: #7d838d; font-weight: 500; font-style: italic; }
+#hd-wheel .whl-key.capturing .whl-keychip {
+  border-color: #e2be6e;
+  background: rgba(198, 160, 84, 0.22);
+  color: #fff6de;
+  font-weight: 600;
+  font-style: italic;
+  animation: whl-cap 1.1s ease-in-out infinite;
+}
+@keyframes whl-cap {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(226, 190, 110, 0.5); }
+  50%      { box-shadow: 0 0 0 6px rgba(226, 190, 110, 0); }
+}
+#hd-wheel .whl-keyoff { min-width: 44px; height: 44px; padding: 0; font-size: 15px; }
+
+#hd-wheel .whl-key-msg {
+  padding: 11px 15px;
+  font-size: 14px;
+  color: #e8dcc0;
+  background: rgba(198, 160, 84, 0.13);
+  border-top: 1px solid rgba(198, 160, 84, 0.25);
+}
+
+/* context menu on a slot */
+#hd-wheel .whl-menu {
+  position: absolute;
+  min-width: 236px;
+  background: linear-gradient(180deg, #1c2029 0%, #14171d 100%);
+  border: 1px solid rgba(198, 160, 84, 0.5);
+  border-radius: 11px;
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.7);
+  padding: 7px;
+  z-index: 8;
+}
+#hd-wheel .whl-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 11px 13px;
+  font-size: 15px;
+  color: #dbe2ea;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+#hd-wheel .whl-menu button:hover { background: rgba(255, 255, 255, 0.075); color: #fff; }
+#hd-wheel .whl-menu button.danger { color: #ef9c9c; }
+#hd-wheel .whl-menu button.danger:hover { background: rgba(140, 45, 45, 0.4); color: #ffd6d6; }
+#hd-wheel .whl-menu .sep { height: 1px; margin: 6px 4px; background: rgba(255, 255, 255, 0.07); }
+#hd-wheel .whl-menu-h {
+  padding: 4px 13px 6px;
+  font-size: 12px;
+  letter-spacing: .8px;
+  text-transform: uppercase;
+  color: #8d96a3;
+}
+#hd-wheel .whl-menu button.mode { padding-left: 13px; }
+#hd-wheel .whl-menu button.mode.on { color: #f4d98d; font-weight: 600; }
+
+/* ---- narrow / small screens ------------------------------------------ */
+/* The wheel is measured against the viewport by JS (fitRadius), so it never
+   overflows; these only pull the corner chrome in so it cannot sit under the
+   ring on a small window. */
+@media (max-width: 1100px) {
+  #hd-wheel .whl-bar.tl { left: 16px; top: 16px; }
+  #hd-wheel .whl-bar.tr { right: 16px; top: 16px; }
+  #hd-wheel .whl-bar.br { right: 16px; bottom: 16px; }
+  #hd-wheel .whl-bar.bl { left: 16px; bottom: 16px; }
+  #hd-wheel .whl-wname { max-width: 240px; font-size: 19px; }
+  #hd-wheel .whl-btn { min-width: 42px; height: 42px; padding: 0 12px; font-size: 16px; }
+}

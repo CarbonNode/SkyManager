@@ -1,0 +1,380 @@
+/* ====================================================================== *
+ *  Favorites Shelf (hd-shelf.js) — its OWN sheet on purpose:
+ *  tools/sync_view_frags.py rebuilds app.css by truncating at the
+ *  "Wardrobe tab" marker, so anything appended there is liable to be
+ *  dropped on the next sync (same reason hd-omni.css / recents-strip.css
+ *  stand alone).
+ *
+ *  Layout contract (see the hd-shelf.js header): the shelf is fixed to a
+ *  screen edge OUTSIDE #panel and outside the --ui-scale transform. Body
+ *  classes shf-open / shf-left drive #overlay padding so the flex-centered
+ *  panel re-centers in the remaining space — the deck is PUSHED aside, its
+ *  content never compressed. The 64 / 348 widths here must match RAIL_W /
+ *  PANEL_W in hd-shelf.js.
+ *
+ *  z ladder: pane context menus 60 · omni 73 · tip 79 · toast 80.
+ *  The shelf lives UNDER all of those (50); its own menu joins the menu
+ *  layer at 61.
+ * ====================================================================== */
+
+body:not(.open) #hd-shelf { display: none; }
+
+/* The shelf is a WING of the deck window: an absolute column INSIDE #panel,
+   flush to its edge — it scales with the panel, clips to the window's
+   rounded corners, and moves with the window ("attached to the main UI",
+   Rober 2026-08-04). #panel is position:relative and overflow:hidden, both
+   long-standing, so this anchors and clips for free. */
+#hd-shelf {
+  position: absolute; top: 0; bottom: 0; right: 0;
+  width: 64px;
+  z-index: 14;               /* over pane sticky headers (≤3), under the grip's old slot */
+  display: flex;
+  animation: shfIn 160ms ease;
+  transition: width 160ms ease;
+}
+#hd-shelf.expanded { width: 348px; }
+#hd-shelf.side-left { right: auto; left: 0; flex-direction: row-reverse; }
+
+@keyframes shfIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---- the push: GROW the panel by the wing, pad the same side --------- */
+/* border-box: width includes padding, so width grows by exactly the wing
+   and the deck's content keeps its size. The panel's own max-width
+   (96vw / --ui-scale) still caps the total, so on a narrow viewport the
+   assembly shrinks as one window instead of spilling. Mirrored for the
+   left dock. --panel-w fallback must mirror #panel's own default. */
+body.open:not(.shf-left) #panel {
+  width: calc(var(--panel-w, min(1500px, calc(94vw / var(--ui-scale, 1)))) + 64px);
+  padding-right: 64px;
+}
+body.open.shf-open:not(.shf-left) #panel {
+  width: calc(var(--panel-w, min(1500px, calc(94vw / var(--ui-scale, 1)))) + 348px);
+  padding-right: 348px;
+}
+body.open.shf-left #panel {
+  width: calc(var(--panel-w, min(1500px, calc(94vw / var(--ui-scale, 1)))) + 64px);
+  padding-left: 64px;
+}
+body.open.shf-open.shf-left #panel {
+  width: calc(var(--panel-w, min(1500px, calc(94vw / var(--ui-scale, 1)))) + 348px);
+  padding-left: 348px;
+}
+
+/* Expand/collapse is a smooth morph, not a pop: width and padding animate
+   TOGETHER with the same timing, so the deck's content box (width − padding)
+   is constant through the whole transition — nothing inside reflows. Killed
+   while the grip drags (a transition fighting a drag reads as lag). */
+body.open #panel {
+  transition: transform 130ms ease, width 160ms ease,
+              padding-right 160ms ease, padding-left 160ms ease;
+}
+body.resizing #panel { transition: none; }
+
+/* the resize grip stays at the DECK's own corner, not under the wing */
+body.open:not(.shf-left) #resize-grip {
+  right: 64px; border-bottom-right-radius: 0;
+  transition: right 160ms ease, opacity .12s ease, background-color .12s ease;
+}
+body.open.shf-open:not(.shf-left) #resize-grip { right: 348px; }
+
+/* ---------------------------------------------------------- the rail -- */
+
+.shf-rail {
+  width: 64px;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 10px; padding: 14px 0;
+  background: linear-gradient(180deg, #17171d 0%, #0e0e13 100%);
+  border-left: 1px solid #2c2a25;
+  box-shadow: -10px 0 30px rgba(0,0,0,.45);
+}
+#hd-shelf.side-left .shf-rail {
+  border-left: none; border-right: 1px solid #2c2a25;
+  box-shadow: 10px 0 30px rgba(0,0,0,.45);
+}
+#hd-shelf.expanded .shf-rail { display: none; }
+
+.shf-rail-open {
+  width: 46px; height: 46px; flex: none;
+  display: grid; place-items: center;
+  background: rgba(201,162,75,.08);
+  border: 1px solid #c9a24b55; border-radius: 10px;
+  color: #c9a24b; font-size: 22px; line-height: 1; cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+.shf-rail-open:hover { background: rgba(201,162,75,.16); border-color: #c9a24b99; transform: scale(1.05); }
+.shf-rail-open:active { transform: scale(.97); }
+
+.shf-rail-list {
+  flex: 1; min-height: 0; width: 100%;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  overflow-y: auto; overflow-x: hidden;
+  padding: 2px 0;
+}
+.shf-rail-list::-webkit-scrollbar { width: 0; }
+
+.shf-rail-btn {
+  width: 52px; min-height: 52px; flex: none;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px; padding: 4px 2px;
+  background: rgba(255,255,255,.03);
+  border: 1px solid #2e2e36; border-radius: 10px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+.shf-rail-btn:hover {
+  background: hsla(var(--shf-hue, 45), 45%, 45%, .14);
+  border-color: hsla(var(--shf-hue, 45), 50%, 60%, .55);
+  transform: translateX(-2px);
+}
+#hd-shelf.side-left .shf-rail-btn:hover { transform: translateX(2px); }
+.shf-rail-btn:active { transform: scale(.96); }
+.shf-rail-btn.flash { background: rgba(201,162,75,.28); border-color: #c9a24b; }
+
+.shf-rail-glyph {
+  position: relative;
+  width: 32px; height: 32px; flex: none;
+  display: grid; place-items: center;
+  font-size: 18px; line-height: 1.2;
+  color: hsla(var(--shf-hue, 45), 55%, 70%, .95);
+  border-radius: 8px; overflow: hidden;
+}
+.shf-rail-lbl {
+  font-size: 11px; font-weight: 600; line-height: 1.15; letter-spacing: .04em;
+  color: #99937f; max-width: 48px; overflow: hidden; white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.shf-rail-add {
+  width: 40px; height: 40px; flex: none;
+  display: grid; place-items: center;
+  background: transparent;
+  border: 1px dashed #3a3a44; border-radius: 10px;
+  color: #8f8a7f; font-size: 20px; line-height: 1; cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+.shf-rail-add:hover { border-color: #c9a24b88; color: #ece7db; background: rgba(201,162,75,.06); }
+/* nothing pinned yet → the ＋ carries a gold hint so the empty rail
+   explains itself at a glance */
+.shf-rail-add.hint { border-color: #c9a24b77; color: #c9a24b; background: rgba(201,162,75,.07); }
+
+/* --------------------------------------------------------- the panel -- */
+
+.shf-panel {
+  width: 348px; display: none;
+  flex-direction: column;
+  background: linear-gradient(180deg, #1a1a21 0%, #101015 100%);
+  border-left: 1px solid #3d3a33;
+  box-shadow: -18px 0 60px rgba(0,0,0,.6);
+}
+#hd-shelf.side-left .shf-panel {
+  border-left: none; border-right: 1px solid #3d3a33;
+  box-shadow: 18px 0 60px rgba(0,0,0,.6);
+}
+#hd-shelf.expanded .shf-panel { display: flex; animation: shfSlide 160ms ease; }
+
+@keyframes shfSlide {
+  from { transform: translateX(24px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+#hd-shelf.side-left.expanded .shf-panel { animation-name: shfSlideL; }
+@keyframes shfSlideL {
+  from { transform: translateX(-24px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+
+.shf-head {
+  flex: none;
+  display: flex; align-items: center; gap: 10px;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid #26262e;
+}
+.shf-title {
+  font-size: 16px; font-weight: 600; letter-spacing: .06em;
+  color: #c9a24b;
+}
+.shf-count {
+  min-width: 26px; height: 22px; padding: 0 7px;
+  display: grid; place-items: center;
+  background: rgba(201,162,75,.10); border-radius: 11px;
+  color: #c9a24b; font-size: 12px; font-weight: 600;
+}
+.shf-count:empty { display: none; }
+.shf-head-sp { flex: 1; }
+
+.shf-side-btn, .shf-collapse {
+  width: 32px; height: 32px; flex: none;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid #3a3a44; border-radius: 8px;
+  color: #b9b4a8; font-size: 15px; line-height: 1; cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+.shf-side-btn:hover, .shf-collapse:hover {
+  border-color: #c9a24b88; color: #ece7db; background: rgba(201,162,75,.06);
+}
+
+.shf-search-wrap { flex: none; padding: 12px 16px 4px; }
+.shf-search-wrap.hidden { display: none; }
+.shf-search {
+  width: 100%; box-sizing: border-box;
+  padding: 10px 12px;
+  background: #0c0c10; border: 1px solid #2e2e36; border-radius: 9px;
+  color: #ece7db; font-size: 14px;
+  transition: border-color 140ms ease;
+}
+.shf-search:focus { outline: none; border-color: #c9a24b77; }
+.shf-search::placeholder { color: #6d6960; }
+
+.shf-list {
+  flex: 1; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.shf-list::-webkit-scrollbar { width: 8px; }
+.shf-list::-webkit-scrollbar-track { background: transparent; }
+.shf-list::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 4px; }
+.shf-list::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+
+.shf-row {
+  flex: none;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,.025);
+  border: 1px solid #26262e; border-radius: 10px;
+  cursor: pointer; user-select: none;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+.shf-row:hover {
+  background: hsla(var(--shf-hue, 45), 40%, 45%, .08);
+  border-color: #3d3a33;
+}
+.shf-row:active { transform: translateY(1px); }
+.shf-row.flash { background: rgba(201,162,75,.22); border-color: #c9a24b; }
+.shf-row.dragging { opacity: .45; }
+.shf-row.drop-target { border-color: #c9a24b; box-shadow: 0 0 0 1px #c9a24b66; }
+.shf-row.gone { opacity: .55; }
+.shf-row.gone .shf-name { text-decoration: line-through; text-decoration-color: #d66a6a88; }
+/* while a filter is typed, the row Enter will fire wears the mark */
+.shf-row.top-hit { border-color: #c9a24b66; }
+.shf-row.top-hit::after {
+  content: '↵';
+  flex: none; padding: 1px 7px;
+  border: 1px solid #c9a24b55; border-radius: 6px;
+  color: #c9a24b; font-size: 13px; line-height: 1.4;
+}
+
+.shf-glyph {
+  position: relative;
+  width: 36px; height: 36px; flex: none;
+  display: grid; place-items: center;
+  background: hsla(var(--shf-hue, 45), 40%, 40%, .14);
+  border: 1px solid hsla(var(--shf-hue, 45), 45%, 55%, .35);
+  border-radius: 9px;
+  font-size: 17px; line-height: 1;
+  color: hsla(var(--shf-hue, 45), 55%, 72%, .95);
+  overflow: hidden;   /* the icon image clips to the rounded plate */
+}
+
+/* ---- real art on the plate (entry icons, portraits, domain photos) ---- */
+/* The glyph stays UNDER the image: on load error hd-shelf.js removes the
+   <img> and the glyph is already there — no blank plate, no reflow. */
+.shf-plate-glyph { display: grid; place-items: center; position: absolute; inset: 0; }
+.shf-ico {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+}
+/* portraits/photos read better without the tinted wash behind them */
+.shf-glyph.has-ico { background: #0c0c10; }
+
+.shf-body { flex: 1; min-width: 0; }
+.shf-name {
+  font-size: 15px; color: #ece7db; line-height: 1.3;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.shf-sub {
+  font-size: 12px; color: #8f8a7f; line-height: 1.35; margin-top: 1px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.shf-warn { flex: none; font-size: 15px; color: #d6a24b; }
+
+.shf-rename {
+  flex: 1; min-width: 0;
+  padding: 8px 10px;
+  background: #0c0c10; border: 1px solid #c9a24b77; border-radius: 8px;
+  color: #ece7db; font-size: 15px;
+}
+.shf-rename:focus { outline: none; }
+
+/* shorthand editor (right-click ▸ Shorthand…) — a short, letter-spaced box
+   plus a hint naming what it edits, so it can't be mistaken for the rename */
+.shf-abbr-wrap { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
+.shf-rename.abbr {
+  flex: none; width: 110px; text-align: center;
+  letter-spacing: 2px; text-transform: uppercase; font-weight: 600;
+}
+.shf-abbr-hint { flex: 1; min-width: 0; font-size: 12px; color: #8f8a7f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#shf-menu .shf-menu-sub { font-size: 11.5px; color: #8f8a7f; margin-left: 6px; }
+
+.shf-foot { flex: none; padding: 12px 16px 16px; border-top: 1px solid #26262e; }
+.shf-add {
+  width: 100%; box-sizing: border-box;
+  padding: 12px;
+  background: rgba(201,162,75,.07);
+  border: 1px dashed #c9a24b55; border-radius: 10px;
+  color: #cbc4b4; font-size: 14px; cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.shf-add:hover { background: rgba(201,162,75,.14); border-color: #c9a24b99; color: #ece7db; }
+
+/* ---------------------------------------------------------- empty ----- */
+
+.shf-empty {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+  gap: 10px; padding: 24px 18px; color: #8f8a7f;
+}
+.shf-empty-star { font-size: 40px; color: #c9a24b44; }
+.shf-empty-t { font-size: 16px; font-weight: 600; color: #cbc4b4; }
+.shf-empty-s { font-size: 13px; line-height: 1.6; }
+.shf-empty-s b { color: #c9a24b; }
+.shf-empty-add {
+  margin-top: 8px; padding: 11px 18px;
+  background: rgba(201,162,75,.09);
+  border: 1px solid #c9a24b55; border-radius: 10px;
+  color: #ece7db; font-size: 14px; cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.shf-empty-add:hover { background: rgba(201,162,75,.16); border-color: #c9a24b99; }
+
+/* ------------------------------------------------------ context menu -- */
+
+#shf-menu {
+  position: fixed; z-index: 61; min-width: 210px;
+  display: flex; flex-direction: column; padding: 6px;
+  background: #16161c; border: 1px solid #3d3a33; border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.6);
+  animation: shfIn 120ms ease;
+}
+#shf-menu button {
+  text-align: left; padding: 10px 12px;
+  background: transparent; border: none; border-radius: 7px;
+  color: #cbc4b4; font-size: 14px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+#shf-menu button:hover { background: rgba(201,162,75,.10); color: #ece7db; }
+#shf-menu .shf-menu-danger:hover { background: rgba(214,106,106,.12); color: #e5a2a2; }
+#shf-menu .shf-menu-danger.armed { background: rgba(214,106,106,.16); color: #e5a2a2; font-weight: 600; }
+
+/* ------------------------------------------------- omni result ☆ pin -- */
+/* Rendered by hd-omni.js beside the jump arrow on every pinnable row. */
+
+.omni-pin {
+  flex: none; width: 30px; height: 30px;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid transparent; border-radius: 7px;
+  color: #6d6960; font-size: 16px; line-height: 1; cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.omni-pin:hover { color: #c9a24b; border-color: #c9a24b66; background: rgba(201,162,75,.08); }
+.omni-pin.on { color: #c9a24b; }

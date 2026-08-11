@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FOMOD metadata for the SkyManager release archive.
+
+  @NAME@ / @AUTHOR@ / @VERSION@ are substituted by tools/make-release.py when it
+  stages this file, so the installer always reports the version that was
+  actually built. Do not hardcode a version here.
+
+  Add <Website> once the Nexus page exists.
+-->
+<fomod>
+  <Name>@NAME@</Name>
+  <Author>@AUTHOR@</Author>
+  <Version MachineVersion="@VERSION@">@VERSION@</Version>
+  <Id>0</Id>
+  <Description>
+    An in-game hotkey palette that fires REAL keypresses, plus a full manager
+    for followers, places, rooms, wardrobes, money, quests, spells and time.
+    Two PrismaUI web views (F7 and F18), no ESP required for the core.
+
+    Requires SKSE64, Address Library for SKSE Plugins, and PrismaUI.
+    Every other mod it works with is optional and detected at runtime — if it
+    is not installed, the feature hides itself or says so on screen.
+  </Description>
+  <Groups>
+    <element>Gameplay Effects and Changes</element>
+    <element>User Interface</element>
+    <element>Utilities</element>
+  </Groups>
+</fomod>

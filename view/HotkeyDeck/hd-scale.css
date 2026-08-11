@@ -1,0 +1,321 @@
+/* ===================================================================== *
+ *  Per-tab UI size + image size (hd-scale.js).
+ *
+ *  ITS OWN SHEET, deliberately — same reason as wardrobe-nff.css,
+ *  sharmat-pane.css, recents-strip.css and hd-omni.css: app.css is
+ *  REBUILT from wardrobe-pane.css.frag by tools/sync_view_frags.py (it
+ *  truncates at the "Wardrobe tab" marker), and several sessions edit this
+ *  checkout at once, so a block appended to app.css is liable to be
+ *  truncated or clobbered. A standalone sheet cannot be. It is linked
+ *  AFTER app.css, so equal-specificity overrides here win.
+ *
+ *  ---- the two variables --------------------------------------------------
+ *    --hdts-<tab>   whole-tab scale, unitless. Consumed by ONE wrapper per
+ *                   tab as transform: scale().
+ *    --hdti-<tab>   image size, px.
+ *  Both are ABSENT until the user changes something — every rule below
+ *  therefore carries the real default in its var() fallback, which is what
+ *  makes "reset" mean "whatever the stylesheet says" instead of "whatever
+ *  a JS constant last agreed with the stylesheet about".
+ *
+ *  ---- the scale wrapper, and why it is absolutely positioned -------------
+ *  transform: scale() paints at the new size but does NOT reflow, so a
+ *  scaled pane still occupies its old box and either clips or leaves a
+ *  gap. The fix the deck already proved on #fol-pane / #wd-scale / #dm
+ *  is to divide the wrapper's LAYOUT box by the scale so the painted
+ *  result lands back inside the pane's real box. It has to be
+ *  position:absolute to do that: an earlier attempt used
+ *  `flex: none; height: calc(100% / scale)` on a flex child and the
+ *  percentage resolved against the whole panel, so a long list could not
+ *  be scrolled to (see the note at #fd-scale in app.css). Do not "simplify"
+ *  these back into the flow.
+ * ===================================================================== */
+
+/* ---------------------------------------------------- the control row -- */
+
+.hds-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 5px 0;
+}
+.hds-label { font-size: 13px; color: #b9b4a8; white-space: nowrap; }
+.hds-ctl { display: flex; align-items: center; gap: 8px; flex: none; }
+
+.hds-btn {
+  width: 26px; height: 26px; flex: none;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid #3a3a44; border-radius: 6px;
+  color: #b9b4a8; font-size: 15px; line-height: 1; cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease,
+              opacity 140ms ease, transform 90ms ease;
+}
+.hds-btn:hover { border-color: #c9a24b88; color: #ece7db; background: rgba(201,162,75,.06); }
+.hds-btn:focus-visible { outline: 2px solid #c9a24b66; outline-offset: 1px; }
+.hds-btn:active { transform: translateY(1px); }
+/* Spent, not broken: an end-of-range button dims and stops responding to
+   hover so it never looks live while doing nothing. */
+.hds-btn:disabled, .hds-btn.is-off { opacity: .3; cursor: default; transform: none; }
+.hds-btn:disabled:hover, .hds-btn.is-off:hover {
+  border-color: #3a3a44; color: #b9b4a8; background: transparent;
+}
+
+.hds-rst {
+  width: auto; padding: 0 8px;
+  font-size: 11px; color: #6f6a5e; letter-spacing: .2px;
+}
+.hds-val {
+  min-width: 74px; text-align: center;
+  font-family: Consolas, "Courier New", monospace; font-size: 12.5px; color: #d9c48a;
+  white-space: nowrap;
+}
+
+/* --------------------------------------- the shared edit card (app.js) -- */
+
+/* Shown under the tab bar in edit mode on the tabs app.js owns outright —
+   Quests / Notes / Numpad / Recent / Time — none of which had any edit
+   chrome of their own to hang this off. */
+#tab-scale-card {
+  margin: 8px 12px 2px; padding: 8px 14px 9px;
+  background: #14141a; border: 1px solid #2a2a31; border-radius: 8px;
+  flex: none;
+}
+#tab-scale-card.hidden { display: none; }
+#tab-scale-card .tsc-head {
+  display: flex; align-items: baseline; gap: 8px;
+  margin-bottom: 2px;
+}
+#tab-scale-card .tsc-title {
+  font-size: 11px; letter-spacing: .8px; text-transform: uppercase; color: #6f6a5e;
+}
+#tab-scale-card .tsc-hint { font-size: 11px; color: #565261; }
+/* Rows sit side by side and are CONTENT-sized. The deck's own .set-row uses
+   space-between, which is right in a narrow settings card and wrong here: this
+   card is as wide as the panel, so a stretched row strands its −/＋ a thousand
+   pixels from the label it belongs to. */
+#tsc-body { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
+#tsc-body .hds-row { justify-content: flex-start; gap: 10px; }
+
+/* ============================== whole-tab scale wrappers ============== */
+
+/* Quests */
+#quests-pane { position: relative; }
+#q-scale {
+  position: absolute; left: 0; top: 0;
+  display: flex; flex-direction: column; min-height: 0;
+  width:  calc(100% / var(--hdts-quests, 1));
+  height: calc(100% / var(--hdts-quests, 1));
+  transform: scale(var(--hdts-quests, 1));
+  transform-origin: top left;
+  transition: transform 130ms ease;
+}
+
+/* Notes — the pane's own padding moves onto the wrapper, or an absolutely
+   positioned child would resolve its 100% against the padding BOX and hang
+   its right/bottom edge out over the padding. */
+#notes-pane { position: relative; overflow: hidden; padding: 0; }
+#notes-scale {
+  position: absolute; left: 0; top: 0;
+  display: flex; flex-direction: column; min-height: 0;
+  padding: 12px 14px 8px;
+  width:  calc(100% / var(--hdts-notes, 1));
+  height: calc(100% / var(--hdts-notes, 1));
+  transform: scale(var(--hdts-notes, 1));
+  transform-origin: top left;
+  transition: transform 130ms ease;
+}
+
+/* Numpad */
+#numpad-pane { position: relative; overflow: hidden; padding: 0; }
+#np-scale {
+  position: absolute; left: 0; top: 0;
+  display: flex; flex-direction: column; min-height: 0;
+  padding: 16px 20px 10px;
+  overflow-y: auto;
+  width:  calc(100% / var(--hdts-numpad, 1));
+  height: calc(100% / var(--hdts-numpad, 1));
+  transform: scale(var(--hdts-numpad, 1));
+  transform-origin: top left;
+  transition: transform 130ms ease;
+}
+
+/* Recent */
+#recent-pane { position: relative; overflow: hidden; }
+#rc-scale {
+  position: absolute; left: 0; top: 0;
+  display: flex; flex-direction: column; min-height: 0;
+  width:  calc(100% / var(--hdts-recent, 1));
+  height: calc(100% / var(--hdts-recent, 1));
+  transform: scale(var(--hdts-recent, 1));
+  transform-origin: top left;
+  transition: transform 130ms ease;
+}
+
+/* Time — #tm-body is already the pane's only child, so it IS the wrapper.
+   It keeps its own max-width/margin auto centring; only the box maths and
+   the transform are added. */
+#tm-pane { position: relative; overflow: hidden; }
+#tm-body {
+  position: absolute; left: 0; top: 0;
+  width:  calc(100% / var(--hdts-time, 1));
+  height: calc(100% / var(--hdts-time, 1));
+  transform: scale(var(--hdts-time, 1));
+  transform-origin: top left;
+  transition: transform 130ms ease;
+  /* was `flex: 1; max-width: 720px; margin: 0 auto`. Out of flow the auto
+     margins can no longer centre it, and it must stay flush at left:0 anyway
+     or transform-origin: top left would paint it off the pane. So the 720px
+     column moves ONTO THE CHILDREN and the wrapper stays full-bleed.
+     ⚠ Not `padding: max(26px, calc((100% - 720px)/2))`: percentage padding
+     resolves against the CONTAINING BLOCK's width, which for an absolutely
+     positioned box is the pane (1201px), not its own 1/scale width — that
+     computed a 240px inset at 160% and squeezed the clock to a third of the
+     pane. Measured, not guessed. */
+  max-width: none;
+  margin: 0;
+  align-items: center;
+  padding-left: 26px; padding-right: 26px;
+}
+/* flex: none is load-bearing, not tidiness. #tm-body is a column flex with a
+   DEFINITE height (1/scale of the pane) and overflow-y: auto — and a flex item
+   defaults to flex-shrink: 1, so once the content is taller than the box the
+   children get SQUASHED instead of the box scrolling. At 160% that crushed the
+   clock card from 66px of content into 38px and swallowed the date line.
+   Measured, not guessed; it is latent at 100% on a short panel too. */
+#tm-body > * { width: 100%; max-width: 720px; flex: none; }
+
+/* Finances */
+#fin-pane { position: relative; overflow: hidden; }
+#fin-scale {
+  position: absolute; left: 0; top: 0;
+  display: flex; flex-direction: column; min-height: 0;
+  width:  calc(100% / var(--hdts-finances, 1));
+  height: calc(100% / var(--hdts-finances, 1));
+  transform: scale(var(--hdts-finances, 1));
+  transform-origin: top left;
+  transition: transform 130ms ease;
+}
+
+/* Rooms — #rm-body is likewise the pane's only child. */
+#rm-pane { position: relative; }
+#rm-body {
+  position: absolute; left: 0; top: 0;
+  width:  calc(100% / var(--hdts-rooms, 1));
+  height: calc(100% / var(--hdts-rooms, 1));
+  transform: scale(var(--hdts-rooms, 1));
+  transform-origin: top left;
+  transition: transform 130ms ease;
+  /* Rooms is the one two-column tab, with a FIXED 232px rail. Scaling divides
+     the wrapper's layout width by the scale, so at 160% on the 640px panel
+     floor the list column was left ~167px and its toolbar collided with
+     itself — search text printed straight over the Edit button. Measured at
+     640px, not assumed. Wrapping the rail above the list is the honest
+     answer at that width; it costs nothing at any size that fits. */
+  flex-wrap: wrap;
+  overflow-y: auto;
+}
+#rm-side { max-width: 100%; }
+#rm-main { flex: 1 1 300px; min-width: 0; }
+#rm-toolbar { flex-wrap: wrap; }
+#rm-search-wrap { min-width: 0; }
+
+/* Sharmat popout. Not a tab — a floating panel that lives OUTSIDE #fd-scale,
+   which is exactly why the Followers tab's scale never reached it. Scaling
+   from the top-left corner keeps the drag maths honest: the panel is placed
+   by left/top and a top-left origin leaves that anchor where it was. */
+.sm-pop {
+  width:      calc(660px / var(--hdts-sharmat, 1));   /* Rober 2026-08-06: was 420 — too skinny */
+  max-width:  calc((100% - 12px) / var(--hdts-sharmat, 1));
+  max-height: calc((100% - 12px) / var(--hdts-sharmat, 1));
+  transform: scale(var(--hdts-sharmat, 1));
+  transform-origin: top left;
+}
+/* The open animation used to ride `transform`, which would now stomp the
+   scale for its 130ms and snap. Opacity alone reads the same. */
+@keyframes smIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* ================================ image sizes ======================== */
+
+/* ⚠ Every rule below is deliberately ID-QUALIFIED, which looks like overkill
+   for a sheet that already loads last. It is not. The pane fragments
+   (finances-pane.css.frag et al) are merged into app.css in the shipped view
+   but injected as a runtime <style> by their standalone harnesses — i.e. AFTER
+   this sheet. A bare `.fin-medal` therefore wins in the game and loses in the
+   harness, which is the worst of both: the control works and the test that
+   guards it fails. An id beats a class whatever the order. */
+
+/* Hotkey rows. 30px is app.css's own value for .hk-ico — repeated here as the
+   var fallback so "reset" lands exactly back on it. */
+#deck-pane .hk-ico {
+  width:  var(--hdti-deck, 30px);
+  height: var(--hdti-deck, 30px);
+  transition: width 120ms ease, height 120ms ease,
+              border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+/* The ＋ affordance on an empty box is sized off the box, so a 72px icon slot
+   does not keep a 11px plus sign rattling around inside it. */
+#deck-pane .row.edit .hk-ico.empty::after { font-size: calc(var(--hdti-deck, 30px) * 0.37); }
+
+/* Finances row medals. */
+#fin-pane .fin-medal {
+  width:  var(--hdti-finances, 35px);
+  height: var(--hdti-finances, 35px);
+  font-size: calc(var(--hdti-finances, 35px) * 0.37);
+  transition: width 120ms ease, height 120ms ease;
+}
+
+/* Wardrobe art tiles: the "image size" here is the grid COLUMN, because the
+   art is `width:100%; aspect-ratio:3/4` inside the card — grow the column and
+   the picture grows with it. min() with 100% is the overflow guard: a 320px
+   tile requested inside a 240px list must shrink, not push a horizontal
+   scrollbar across the pane. */
+#wd-pane #wd-list.grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--hdti-wardrobe, 178px), 100%), 1fr));
+}
+
+/* Recents strip faces. No control of their own on purpose: the strip lives
+   on the Followers tab, above the roster, and having two different "how big
+   is a face" settings a few pixels apart is worse than one. So it tracks the
+   Followers tab's avatar size — which IS an image-size control — instead.
+   Clamped so a 96px avatar cannot turn the strip into a second roster. */
+#fol-pane .rc-face,
+#fol-pane[data-av="small"] .rc-face {
+  /* the [data-av="small"] copy is not redundant — recents-strip.css has a rule
+     on that exact selector pinning 22px, and matching its specificity is what
+     lets the continuous track win in both states */
+  width:  clamp(18px, calc(var(--fd-medal-px, 44px) * 0.58), 40px);
+  height: clamp(18px, calc(var(--fd-medal-px, 44px) * 0.58), 40px);
+  transition: width 120ms ease, height 120ms ease;
+}
+
+/* ---------------------------------------------- pane-local edit strips -- */
+
+/* Rooms puts its row inside the existing master-switches block. */
+#rm-settings .hds-row { border-top: 1px solid #2a2a31; margin-top: 4px; padding-top: 8px; }
+
+/* Finances gets a strip of its own, shown only in edit mode. */
+#fin-editrow {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  margin: 0 14px 4px; padding: 4px 12px 6px;
+  background: #14141a; border: 1px solid #2a2a31; border-radius: 8px;
+}
+#fin-editrow.hidden { display: none; }
+#fin-editrow .hds-row { padding: 4px 0; }
+
+/* Wardrobe's tile-size row sits beside the tab-size control it already had. */
+#wd-editrow .hds-row { padding: 0; gap: 8px; }
+#wd-editrow .hds-label { font-size: 12px; color: #8d8779; }
+
+/* Sharmat's row lives in the popout header, so it is compact: the label goes
+   (the buttons are self-evident beside a percentage) but RESET stays — hiding
+   it is how a panel ends up with no way back to its default size. */
+/* The header now carries four things in 420px of LAYOUT width — and that width
+   is divided by the scale, so at 160% there are only 263px to share. Left as a
+   single nowrap row the name collapsed to one letter. So: the titles keep a
+   floor and the size control WRAPS to its own line rather than eating them. */
+.sm-head { flex-wrap: wrap; row-gap: 6px; }
+.sm-head .sm-titles { min-width: 120px; }
+.sm-scale { display: flex; align-items: center; flex: none; margin-left: auto; }
+.sm-head .hds-row { padding: 0; gap: 6px; flex: none; }
+.sm-head .hds-label { display: none; }
+.sm-head .hds-val { min-width: 40px; font-size: 10.5px; }
+.sm-head .hds-btn { width: 20px; height: 20px; font-size: 13px; }
+.sm-head .hds-rst { width: auto; padding: 0 5px; font-size: 9.5px; }

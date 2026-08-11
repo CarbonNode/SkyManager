@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Manager Deck</title>
+<link rel="stylesheet" href="app.css">
+<!-- NFF-outfits sub-tab styles. A separate sheet on purpose: tools/sync_view_frags.py
+     rebuilds app.css by truncating it at the "Wardrobe tab" marker, so anything
+     appended after that marker would be dropped on the next sync. -->
+<link rel="stylesheet" href="wardrobe-nff.css">
+<!-- Sharmat popout styles. Its own sheet for the same reason as the line
+     above: app.css is rebuilt from the wardrobe fragment by
+     tools/sync_view_frags.py, and several sessions edit this checkout at
+     once, so an appended block there is liable to be truncated. -->
+<link rel="stylesheet" href="sharmat-pane.css">
+<!-- Recents strip. Own sheet for the same reason as the two above. -->
+<link rel="stylesheet" href="recents-strip.css">
+<!-- Omni (universal Search + Ask). Own sheet, same truncation-trap reason. -->
+<link rel="stylesheet" href="hd-omni.css">
+<!-- Favorites Shelf. Own sheet, same truncation-trap reason. -->
+<link rel="stylesheet" href="hd-shelf.css">
+<!-- Wheel Menu (Ctrl+F7, the radial palette). Own sheet, same reason. -->
+<link rel="stylesheet" href="hd-wheel.css">
+<!-- Formation modal (Formation with Followers). Own sheet, same reason. -->
+<link rel="stylesheet" href="hd-formation.css">
+<!-- Door lock modal (F7 on a door). Own sheet, same reason. -->
+<link rel="stylesheet" href="hd-door.css">
+<!-- SPID Gear manager + F7 card block (hd-spidgear.js). Own sheet, same reason. -->
+<link rel="stylesheet" href="hd-spidgear.css">
+<link rel="stylesheet" href="wardrobe-spid.css">
+<!-- Outfit dock: the F7 card's ⛨ button, three popouts (hd-outfit.js). Same reason. -->
+<link rel="stylesheet" href="hd-outfit.css">
+<!-- NPC Quests modal: the F7 card's 📜 button (hd-quests.js). Same reason. -->
+<link rel="stylesheet" href="hd-quests.css">
+<!-- CHIM flyout (quick card's CHIM button). Own sheet, same reason. -->
+<link rel="stylesheet" href="chim-flyout.css">
+<!-- Bases mode of the Domains tab (bases-pane.js). Own sheet, same reason. -->
+<link rel="stylesheet" href="bases-pane.css">
+<!-- Per-tab UI size / image size. Own sheet, same truncation-trap reason —
+     and it must load LAST, because several of its rules deliberately override
+     app.css's own padding/positioning to make room for the scale wrappers. -->
+<link rel="stylesheet" href="hd-scale.css">
+</head>
+<body>
+  <div id="overlay">
+    <div id="panel">
+      <!-- Header now carries the top-level nav inline: [SkyManager] [tabs…]
+           [Search | Edit | ✕] — the tabs are folded into the top bar (Rober,
+           2026-08-05) instead of a row of their own. ROW 2 (#hk-tabs) still
+           carries the hotkey CATEGORIES under the Hotkeys tab. -->
+      <header id="hd-header">
+        <div class="title-wrap">
+          <img id="hd-brand-icon" src="icons/skymanager.png" alt="" draggable="false">
+          <h1>SkyManager</h1>
+        </div>
+        <nav id="tabs"></nav>
+        <span id="count-chip"></span>
+        <div class="header-actions">
+          <button id="omni-btn" class="ghost-btn" title="Search everything, or ask about an NPC (Ctrl+F)">⌕<span class="omni-btn-k">Ctrl F</span></button>
+          <button id="uiscale-btn" class="ghost-btn" title="Menu size — scale the whole deck window (60–160%)">⤢</button>
+          <!-- Deck Portal: opens the web UI in this PC's browser. Hidden until
+               ptState says it can work, so it is never a button that does
+               nothing (hd-portal.js). -->
+          <button id="portal-btn" class="ghost-btn hidden" title="Open the Deck Portal in your browser">🖥</button>
+          <button id="edit-btn" class="ghost-btn" title="Edit hotkeys (F2)">Edit</button>
+          <button id="close-btn" class="ghost-btn" title="Close (Esc)">✕</button>
+        </div>
+      </header>
+      <nav id="hk-tabs" class="hidden" aria-label="Hotkey categories"></nav>
+
+      <!-- Edit-mode size controls for the tabs app.js owns outright — Quests,
+           Notes, Numpad, Recent, Time. Those five have no edit chrome of their
+           own to hang a control off, so one shared card serves all of them and
+           app.js repoints it at whichever tab is up. The panes that DO own an
+           edit strip (Rooms, Finances, Wardrobe) carry their row inside it
+           instead, so the control is always where that tab's other settings
+           already are. Filled by hd-scale.js; app.js only shows/hides it. -->
+      <div id="tab-scale-card" class="hidden">
+        <div class="tsc-head">
+          <span class="tsc-title" id="tsc-title">Size</span>
+          <span class="tsc-hint">Saved with the deck, per tab</span>
+        </div>
+        <div id="tsc-body"></div>
+      </div>
+
+      <div id="deck-pane">
+        <div id="search-wrap">
+          <input id="search" type="text" placeholder="Type to filter…" autocomplete="off" spellcheck="false">
+        </div>
+        <div id="settings-card" class="hidden">
+          <!-- COLLAPSED BY DEFAULT. In edit mode this card is ~400px of keys,
+               checkboxes and sliders sitting on top of the very rows you
+               pressed F2 to edit — it pushed the list off the bottom of the
+               screen (Rober, 2026-08-03). Same chevron idiom as the Extended
+               F-keys block inside it, and the summary keeps the two settings
+               you actually check (open key, menu scale) visible while shut. -->
+          <button id="settings-toggle" title="Deck settings — open key, quick-fire, scale">
+            <!-- its OWN class: renderExt() reaches for `.ext-chevron` with a
+                 bare document query, and this button sits EARLIER in the DOM —
+                 sharing the class would make the F-key block's render flip this
+                 chevron instead of its own. -->
+            <span class="set-chevron">▸</span>
+            <span class="set-label">Deck settings</span>
+            <span id="settings-summary"></span>
+          </button>
+          <div id="settings-body" class="hidden">
+          <div class="set-row">
+            <span class="set-label">Open key</span>
+            <button id="openkey-btn" class="keychip rebind-btn" title="Click, then press the new open key/button"></button>
+          </div>
+          <div class="set-row modslot-head"><span class="set-label">Quick-fire — hold a modifier + the open key (skips the menu)</span></div>
+          <div class="set-row modslot">
+            <span class="set-label">Shift +</span>
+            <span class="modslot-ctl">
+              <button id="modshift-btn" class="keychip rebind-btn" title="Click, then press the key to fire (e.g. Del = weapon wheel)"></button>
+              <button id="modshift-clear" class="mini-x" title="Turn off">✕</button>
+            </span>
+          </div>
+          <div class="set-row modslot">
+            <span class="set-label">Ctrl +</span>
+            <span class="modslot-ctl">
+              <button id="modctrl-btn" class="keychip rebind-btn" title="Click, then press the key to fire"></button>
+              <button id="modctrl-clear" class="mini-x" title="Turn off">✕</button>
+            </span>
+          </div>
+          <div class="set-row modslot">
+            <span class="set-label">Alt +</span>
+            <span class="modslot-ctl">
+              <button id="modalt-btn" class="keychip rebind-btn" title="Click, then press the key to fire"></button>
+              <button id="modalt-clear" class="mini-x" title="Turn off">✕</button>
+            </span>
+          </div>
+          <div class="set-row">
+            <label class="set-label cb-label"><input type="checkbox" id="pause-cb"> Pause game while open</label>
+          </div>
+          <div class="set-row set-sub">
+            <label class="set-label cb-label" title="Freeze time with sgtm instead of a menu pause, so the cursor stays buttery-smooth at full framerate while the world is frozen. Uncheck for the classic menu pause."><input type="checkbox" id="smoothpause-cb"> &nbsp;↳ Smooth pause (freeze time, snappy cursor)</label>
+          </div>
+          <div class="set-row">
+            <label class="set-label cb-label"><input type="checkbox" id="close-cb"> Close after firing</label>
+          </div>
+          <div class="set-row">
+            <label class="set-label cb-label"><input type="checkbox" id="sticky-cb"> Sticky numpad modifiers (Shift/Ctrl/Alt stay on until toggled off)</label>
+          </div>
+          <div class="set-row">
+            <label class="set-label cb-label"><input type="checkbox" id="tgtfol-cb"> Looking at someone? Open on the Followers tab (their dismiss / inventory / outfit / wait buttons)</label>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Menu scale</span>
+            <span class="scale-ctl">
+              <button id="scale-down" class="scale-btn" title="Smaller">−</button>
+              <span id="scale-val">100%</span>
+              <button id="scale-up" class="scale-btn" title="Bigger">＋</button>
+              <button id="scale-reset" title="Reset to 100%">reset</button>
+            </span>
+          </div>
+          <!-- Row-icon size. Separate from Menu scale on purpose: the menu can
+               stay at 100% while the pictures get big, which is what "bigger
+               images" actually means on a list of named keys. Filled by
+               hd-scale.js (tab "deck"); the −/＋/reset are live the moment the
+               markup exists, via its one delegated listener. -->
+          <div id="deck-img-row"></div>
+          <div id="ext-block">
+            <button id="ext-toggle" title="Map physical F13–F24 keys to in-game keys">
+              <span class="ext-chevron">▸</span>
+              <span class="set-label">Extended F-keys (F13–F24)</span>
+              <span id="ext-summary"></span>
+            </button>
+            <div id="ext-body" class="hidden">
+              <div class="set-row">
+                <label class="set-label cb-label"><input type="checkbox" id="ext-cb"> Bridge physical F13–F24 presses into the game</label>
+              </div>
+              <div class="ext-hint">Each physical key fires its mapped key — bindable in any mod's MCM.
+                <b>raw</b> sends the true extended code instead (SKSE listeners; MCM shows blank key art).</div>
+              <div id="ext-grid"></div>
+            </div>
+          </div>
+          </div><!-- /#settings-body -->
+        </div>
+        <!-- Quick follower acts on the crosshair NPC. Lives ABOVE the hotkey
+             list and is only up while the Followers CATEGORY is selected —
+             the same place Follower Control (NFF), Teleport and
+             Abduction-Add-Follower already live. Built by followers-pane.js
+             (it owns the fdNpc/fdEquipped bridge); app.js only mounts it. -->
+        <div id="fq-card" class="hidden"></div>
+        <!-- Quick Light live On/Off control — shown above the list only while the
+             Hotkeys "Utilities" category is selected. Built by light-pane.js. -->
+        <div id="ql-card" class="hidden"></div>
+        <div id="list"></div>
+        <div id="empty-state" class="hidden">
+          <div class="empty-icon">⌨</div>
+          <div class="empty-title">No hotkeys yet</div>
+          <div class="empty-sub">Press <b>Edit</b>, then <b>Add hotkey</b> to create your first one.</div>
+        </div>
+        <div id="add-row" class="hidden">
+          <button id="add-btn">＋ Add hotkey</button>
+          <!-- Action entries fire C++ directly instead of synthesizing a key.
+               They used to exist only if someone hand-edited hotkeys.json;
+               this is how you make one. -->
+          <button id="add-action-btn" title="Add an entry that runs one of the deck's own actions">⚡ Add action…</button>
+          <!-- VirtualKey (Nexus 187350): fire an MCM hotkey you've offloaded onto
+               VirtualKey's virtual-key range — no physical key needed. -->
+          <button id="add-vkey-btn" title="Add a button that fires a VirtualKey MCM hotkey (Nexus 187350)">✦ VirtualKey…</button>
+        </div>
+      </div>
+
+      <!-- Recent: a plain list of what has actually been fired this session.
+           Filled by C++ (hdRecent); the deck asks with hdHistory. -->
+      <!-- #*-scale wrappers: the pane keeps its real box, the wrapper is sized
+           1/scale of it and transform-scaled back. Same contract as #fd-scale /
+           #wd-scale; see hd-scale.css for why it must be out of flow. -->
+<!-- ===================================================================== *
+     Home tab — the deck's landing page: a card per system + a universal
+     search that opens Omni, with a collapsed Recent drawer below the cards.
+     Paste inside <div id="panel">, beside the other pane <section>s.
+     Cards + recent rows are built by home-pane.js; only the shell is static.
+     * ===================================================================== -->
+<section id="hm-pane" class="hidden">
+  <div id="hm-scroll">
+    <!-- universal search: a launcher that opens the real Omni overlay -->
+    <div id="hm-search" role="button" tabindex="0"
+         title="Search every system — hotkeys, spells, followers, quests, loot, places…">
+      <span class="hm-search-ic" aria-hidden="true">⌕</span>
+      <span id="hm-search-label">Search everything</span>
+      <span class="hm-search-kbd"><kbd>Ctrl</kbd><kbd>F</kbd></span>
+    </div>
+
+    <div class="hm-sec-head">
+      <h2>Systems</h2>
+      <span class="hm-sec-hint">Pick a card — or search above</span>
+    </div>
+    <div id="hm-grid" role="list" aria-label="Deck systems"></div>
+
+    <!-- Notes / Time / Recent: folded away by default, each opens on click.
+         Time and Notes moved here off the tab strip (Rober, 2026-08-05) — the
+         same treatment as Recent. -->
+    <div id="hm-notes" class="hm-drawer">
+      <button id="hm-notes-toggle" class="hm-drawer-head" aria-expanded="false">
+        <span class="hm-chev" aria-hidden="true">▸</span>
+        <span class="hm-drawer-title">Notes</span>
+        <span class="hm-drawer-sub">your scratchpad</span>
+      </button>
+      <div id="hm-notes-body" class="hm-drawer-body hidden">
+        <textarea id="hm-notes-ta" class="hm-notes-ta" spellcheck="false"
+                  placeholder="Jot anything — saved with the deck."></textarea>
+      </div>
+    </div>
+
+    <div id="hm-time" class="hm-drawer">
+      <button id="hm-time-toggle" class="hm-drawer-head" aria-expanded="false">
+        <span class="hm-chev" aria-hidden="true">▸</span>
+        <span class="hm-drawer-title">Time</span>
+        <span id="hm-time-now" class="hm-drawer-sub">skip the slow wait menu</span>
+      </button>
+      <div id="hm-time-body" class="hm-drawer-body hidden">
+        <div class="hm-time-clock" id="hm-time-clock">—:—</div>
+        <div class="hm-time-date" id="hm-time-date">reading the sky…</div>
+        <div class="hm-time-group-label">Wait until</div>
+        <div class="hm-time-chips" id="hm-time-until">
+          <button class="hm-time-chip" data-until="7">🌅 Morning</button>
+          <button class="hm-time-chip" data-until="12">☀️ Noon</button>
+          <button class="hm-time-chip" data-until="18">🌆 Evening</button>
+          <button class="hm-time-chip" data-until="22">🌙 Night</button>
+        </div>
+        <div class="hm-time-group-label">Wait for</div>
+        <div class="hm-time-chips" id="hm-time-for">
+          <button class="hm-time-chip" data-hours="1">+1 h</button>
+          <button class="hm-time-chip" data-hours="3">+3 h</button>
+          <button class="hm-time-chip" data-hours="6">+6 h</button>
+          <button class="hm-time-chip" data-hours="12">+12 h</button>
+          <button class="hm-time-chip" data-hours="24">+24 h</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="hm-recent" class="hm-drawer">
+      <button id="hm-recent-toggle" class="hm-drawer-head" aria-expanded="false">
+        <span class="hm-chev" aria-hidden="true">▸</span>
+        <span class="hm-drawer-title">Recent</span>
+        <span id="hm-recent-count" class="hm-drawer-count"></span>
+        <span class="hm-drawer-sub">what you've fired this session</span>
+      </button>
+      <div id="hm-recent-body" class="hm-drawer-body hidden"></div>
+    </div>
+  </div>
+</section>
+
+      <div id="recent-pane" class="hidden">
+       <div id="rc-scale">
+        <div id="rc-bar">
+          <span id="rc-count"></span>
+          <span id="rc-note">Since the game started — not saved across restarts.</span>
+          <button id="rc-clear" type="button" title="Forget the list">Clear</button>
+        </div>
+        <div id="rc-list"></div>
+        <div id="rc-empty" class="hidden">
+          <div class="empty-icon">⌁</div>
+          <div class="empty-title">Nothing fired yet</div>
+          <div class="empty-sub">Press a hotkey and it shows up here — the deck's own rows, numpad chords and quick-fires alike.</div>
+        </div>
+       </div><!-- /#rc-scale -->
+      </div>
+
+      <div id="notes-pane" class="hidden">
+       <div id="notes-scale">
+        <textarea id="notes-ta" spellcheck="false" placeholder="Your hotkey notes — free text, auto-saved as you type."></textarea>
+        <div class="notes-hint">Auto-saves as you type · plain text · seeded from keybindings.md</div>
+       </div><!-- /#notes-scale -->
+      </div>
+
+      <div id="quests-pane" class="hidden">
+       <div id="q-scale">
+        <div id="q-bar">
+          <div id="q-modes">
+            <button class="q-mode on" data-qmode="npc">Targeted NPC</button>
+            <button class="q-mode" data-qmode="search">Search all quests</button>
+          </div>
+          <span id="q-target"></span>
+        </div>
+        <input id="q-search" class="hidden" type="text" autocomplete="off" spellcheck="false"
+               placeholder="Quest name, EditorID, FormID or plugin…">
+        <div id="q-list"></div>
+        <div id="q-detail" class="hidden"></div>
+        <div id="q-empty" class="hidden"></div>
+       </div><!-- /#q-scale -->
+      </div>
+
+      <div id="fol-pane" class="hidden">
+        <!-- #fd-scale is the whole-tab zoom box, and ALSO what stops the pane
+             overflowing the panel. #fol-pane used to carry both jobs with
+             `flex: none; height: calc(100% / scale)` — 100% of the WHOLE panel,
+             which ignores the ~160px of header, tab bar, hints and grip around
+             it, so the pane hung past the panel's clip and the last rows of a
+             long roster could not be scrolled to. Same shape as #wd-scale. -->
+        <div id="fd-scale">
+        <nav id="fd-rail" aria-label="Follower categories">
+          <div id="fd-rail-target" class="hidden"></div>
+          <div id="fd-rail-head">
+            <span id="fd-rail-title">Categories</span>
+            <button id="fd-rail-toggle" type="button" title="Collapse categories">&laquo;</button>
+          </div>
+          <div id="fd-rail-list"></div>
+          <div id="fd-rail-note" class="hidden">Empty slots are hidden — Edit shows all 25.</div>
+        </nav>
+        <section id="fd-main">
+          <div id="fd-search-wrap">
+            <span class="fd-search-ic" aria-hidden="true">⌕</span>
+            <input id="fd-search" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="Search followers, notes, categories…">
+          </div>
+          <!-- Each labelled group is ONE wrap unit (.fd-ok-grp). The row used to
+               be a flat list of items, so when it wrapped it tore a group in
+               half — "Tab −" on one line and "160% + Reset" on the next, which
+               reads as broken even though nothing is clipped. -->
+          <div id="fd-openkey-row" class="hidden">
+            <span class="fd-ok-grp">
+              <span class="fd-ok-label">Open key</span>
+              <button id="fd-openkey-btn" class="keychip rebind-btn"
+                      title="Click, then press the new key — it opens the deck straight onto this tab">F14</button>
+            </span>
+            <span class="fd-ok-hint">Deep-opens this tab · default F14</span>
+            <span class="fd-ok-sep"></span>
+            <span class="fd-ok-grp">
+              <span class="fd-ok-label">Faces</span>
+              <button id="fd-av-dec" class="keychip" title="Smaller portraits">&minus;</button>
+              <span id="fd-av-val" class="fd-av-val">40</span>
+              <button id="fd-av-inc" class="keychip" title="Bigger portraits">+</button>
+              <button id="fd-av-reset" class="keychip" title="Back to the default size">Reset</button>
+            </span>
+            <span class="fd-ok-sep"></span>
+            <span class="fd-ok-grp">
+              <span class="fd-ok-label">Tab</span>
+              <button id="fd-ui-dec" class="keychip" title="Shrink the whole tab — fits more on screen">&minus;</button>
+              <span id="fd-ui-val" class="fd-av-val">100%</span>
+              <button id="fd-ui-inc" class="keychip" title="Enlarge the whole tab">+</button>
+              <button id="fd-ui-reset" class="keychip" title="Back to 100%">Reset</button>
+            </span>
+            <span class="fd-ok-sep"></span>
+            <!-- Category-icon size, independent of the face slider. Bigger also
+                 reads crisper (Ultralight aliases the 256px glyphs less on a
+                 gentler downscale). -->
+            <span class="fd-ok-grp">
+              <span class="fd-ok-label">Icons</span>
+              <button id="fd-ic-dec" class="keychip" title="Smaller category icons">&minus;</button>
+              <span id="fd-ic-val" class="fd-av-val">100%</span>
+              <button id="fd-ic-inc" class="keychip" title="Bigger — and crisper — category icons">+</button>
+              <button id="fd-ic-reset" class="keychip" title="Back to 100%">Reset</button>
+            </span>
+          </div>
+          <div id="fd-status" class="hidden"></div>
+          <!-- Party-wide (Everyone) controls, ABOVE the NPC card — filled by
+               FolPane.renderEveryoneBar when a crosshair target is present. -->
+          <div id="fd-everyone" class="hidden"></div>
+          <!-- The crosshair NPC's quick actions (dismiss / inventory / outfit /
+               wait here), the SAME card the Follower category shows on the deck
+               tab. One card, mounted into whichever host is on screen — see
+               FolPane.mountQuickCard. Above the roster because when you opened
+               the deck looking at someone, they are what you came for. -->
+          <div id="fd-quick" class="hidden"></div>
+          <div id="fd-list"></div>
+          <div id="fd-empty" class="hidden"></div>
+          <button id="fd-add-btn" class="hidden">＋ Add</button>
+          <button id="fd-shot-btn" class="hidden">◉ Portrait</button>
+          <div id="fd-add-hint" class="hidden">Look at an NPC before opening the deck to add them to a category.</div>
+          <!-- F7 NPC-focus mode chrome: the collapsed roster / hotkeys chevrons.
+               Empty and display:none outside focus; FolPane fills it in focus. -->
+          <div id="fd-focusbar"></div>
+        </section>
+        </div><!-- /#fd-scale -->
+      </div>
+
+      <section id="dm-pane" class="hidden" aria-label="Domains">
+        <div id="dm-body">
+
+          <!-- LEFT: category rail (freeform, user-editable in F2 edit mode) -->
+          <nav id="dm-rail" aria-label="Domain categories">
+            <div id="dm-rail-list"></div>
+            <button id="dm-add-cat" class="dm-railadd hidden" title="Add a category">＋ Category</button>
+          </nav>
+
+          <!-- RIGHT: search + the domain list + the mark button -->
+          <section id="dm-main">
+            <div id="dm-toolbar">
+              <div id="dm-search-wrap">
+                <span class="dm-search-ic" aria-hidden="true">⌕</span>
+                <input id="dm-search" type="text" autocomplete="off" spellcheck="false"
+                       placeholder="Search domains, notes, places…">
+              </div>
+              <span id="dm-count" title="Domains in view">0</span>
+            </div>
+
+            <!-- open-key rebind card (edit mode only) -->
+            <div id="dm-openkey" class="hidden">
+              <span class="dm-ok-label">Domains key</span>
+              <button id="dm-openkey-btn" class="keychip" title="Press to rebind">F15</button>
+              <span class="dm-ok-hint">Opens the deck straight onto this tab · default <b>F15</b>
+                (through the F13–F24 bridge) · menu size lives in the deck's Edit settings</span>
+            </div>
+
+            <div id="dm-list" role="listbox" aria-label="Domains"></div>
+            <div id="dm-empty" class="hidden"></div>
+
+            <div id="dm-foot">
+              <button id="dm-mark-btn" title="Save where you are standing right now">★ Mark this spot</button>
+              <div id="dm-here" class="hidden"></div>
+            </div>
+          </section>
+
+        </div>
+
+        <!-- press-to-rebind capture — the pane's own, so app.js's #capture-modal
+             flow (deck entries / ext keys) is left completely alone -->
+        <div id="dm-capture" class="hidden">
+          <div class="dm-capture-box">
+            <div class="dm-capture-title">Press the new Domains key…</div>
+            <div class="dm-capture-sub">Keyboard key, F13–F24, or mouse (middle / Mouse&nbsp;4 / Mouse&nbsp;5) · Esc cancels</div>
+            <button id="dm-capture-cancel" class="ghost-btn">Cancel</button>
+          </div>
+        </div>
+      </section>
+
+<!-- Containers tab — mark a container, remote-open it from anywhere. ct- prefixed. -->
+<section id="ct-pane" class="hidden" aria-label="Containers">
+  <div id="ct-body">
+
+    <!-- LEFT: category rail (freeform, user-editable in F2 edit mode) -->
+    <nav id="ct-rail" aria-label="Container categories">
+      <div id="ct-rail-list"></div>
+      <button id="ct-add-cat" class="ct-railadd hidden" title="Add a category">＋ Category</button>
+    </nav>
+
+    <!-- RIGHT: search + the container list + the mark button -->
+    <section id="ct-main">
+      <div id="ct-toolbar">
+        <div id="ct-search-wrap">
+          <span class="ct-search-ic" aria-hidden="true">⌕</span>
+          <input id="ct-search" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Search containers, notes, categories…">
+        </div>
+        <span id="ct-count" title="Containers in view">0</span>
+      </div>
+
+      <!-- open-key rebind card (edit mode only) -->
+      <div id="ct-openkey" class="hidden">
+        <span class="ct-ok-label">Containers key</span>
+        <button id="ct-openkey-btn" class="keychip" title="Press to rebind">F16</button>
+        <span class="ct-ok-hint">Opens the deck straight onto this tab · default <b>F16</b>
+          (through the F13–F24 bridge) · menu size lives in the deck's Edit settings</span>
+      </div>
+
+      <div id="ct-list" role="listbox" aria-label="Containers"></div>
+      <div id="ct-empty" class="hidden"></div>
+
+      <div id="ct-foot">
+        <button id="ct-mark-btn" title="Mark the container under your crosshair">★ Mark this container</button>
+        <div id="ct-here" class="hidden"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <div id="ct-capture" class="hidden">
+    <div class="ct-capture-box">
+      <div class="ct-capture-title">Press the new Containers key…</div>
+      <div class="ct-capture-sub">Keyboard key, F13–F24, or mouse (middle / Mouse&nbsp;4 / Mouse&nbsp;5) · Esc cancels</div>
+      <button id="ct-capture-cancel" class="ghost-btn">Cancel</button>
+    </div>
+  </div>
+</section>
+
+<section id="rm-pane" class="hidden" aria-label="Rooms">
+  <div id="rm-body">
+
+    <!-- LEFT: what you're standing in right now + the claim controls -->
+    <aside id="rm-side" aria-label="Where you are">
+      <div id="rm-here-card">
+        <div class="rm-here-label">You are in</div>
+        <div id="rm-here-name" class="rm-here-name">—</div>
+        <div id="rm-here-status" class="rm-here-status"></div>
+        <!-- Privacy lockdown: one press = nobody in this room at all, right now.
+             Press again and the room is back to its normal who's-allowed rules
+             (nothing about them was edited). Label/title/disabled are set live
+             in rooms-pane.js renderHere(). -->
+        <button id="rm-lock-btn" class="rm-lock-btn"
+                title="Seal the room you are standing in — nobody comes in at all">
+          🔒 Nobody in right now</button>
+      </div>
+
+      <div id="rm-claim-box">
+        <label class="rm-field">
+          <span class="rm-field-label">Name</span>
+          <input id="rm-claim-name" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Rented room">
+        </label>
+
+        <div class="rm-field">
+          <span class="rm-field-label">This place is</span>
+          <div id="rm-kind-toggle" class="rm-seg" role="radiogroup" aria-label="Room kind">
+            <button class="rm-seg-btn active" data-kind="inn" role="radio" aria-checked="true"
+                    title="Guarded — strangers get moved out">🔒 Rented</button>
+            <button class="rm-seg-btn" data-kind="private" role="radio" aria-checked="false"
+                    title="Guarded bedroom inside a shared cell — use ✋ on the occupant list to allow your own people in">🛏 Private</button>
+            <button class="rm-seg-btn" data-kind="home" role="radio" aria-checked="false"
+                    title="Never guarded — your household is left alone">🏠 Home</button>
+          </div>
+        </div>
+
+        <div class="rm-field">
+          <span class="rm-field-label">Footprint</span>
+          <div id="rm-shape-toggle" class="rm-seg" role="radiogroup" aria-label="Claim footprint">
+            <button class="rm-seg-btn active" data-shape="circle" role="radio" aria-checked="true"
+                    title="Round area — one size slider">&#9711; Round</button>
+            <button class="rm-seg-btn" data-shape="box" role="radio" aria-checked="false"
+                    title="Rectangle aligned to where you face when claiming — fine-tune width and depth afterwards in the room's size panel">&#9645; Box</button>
+          </div>
+        </div>
+
+        <div class="rm-field">
+          <span class="rm-field-label">Size <span id="rm-size-val" class="rm-size-val">200</span></span>
+          <input id="rm-radius" type="range" min="80" max="1200" step="20" value="200"
+                 aria-label="Claim radius">
+          <span class="rm-hint">About one room. Too big reaches through the wall into
+            the corridor — you can retune it after claiming.</span>
+        </div>
+
+        <button id="rm-claim-btn" title="Claim the room you are standing in">★ Claim this room</button>
+        <div class="rm-hint">Stand in the middle of the room, then claim.</div>
+      </div>
+
+      <div id="rm-occupants" aria-label="Who is in here"></div>
+    </aside>
+
+    <!-- RIGHT: the claimed-room list -->
+    <section id="rm-main">
+      <div id="rm-toolbar">
+        <div id="rm-search-wrap">
+          <span class="rm-search-ic" aria-hidden="true">⌕</span>
+          <input id="rm-search" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Search rooms, notes, places…">
+        </div>
+        <span id="rm-count" title="Rooms in view">0</span>
+        <button id="rm-edit" class="ghost-btn" title="Edit mode — reveal delete controls (F2)">Edit</button>
+      </div>
+
+      <!-- master switches, edit mode only -->
+      <div id="rm-settings" class="hidden">
+        <label class="rm-check"><input id="rm-enabled" type="checkbox"> <span>Room Guard on</span></label>
+        <label class="rm-check"><input id="rm-followers" type="checkbox">
+          <span>Followers may always come in</span></label>
+        <label class="rm-check"><input id="rm-notify" type="checkbox">
+          <span>Corner message on each eviction</span></label>
+        <label class="rm-check"><input id="rm-autoclaim" type="checkbox">
+          <span>Auto-claim rented inn rooms</span></label>
+        <label class="rm-field rm-field-inline">
+          <span class="rm-field-label">Grace when you're watching</span>
+          <input id="rm-grace" type="range" min="0" max="15000" step="500" value="4000">
+          <span id="rm-grace-val" class="rm-size-val">4.0s</span>
+        </label>
+        <!-- Whole-tab size. Static markup on purpose: rooms-pane.js rebuilds
+             the room LIST constantly but never this block, and hd-scale.js
+             needs no per-element wiring, so there is nothing to re-attach. -->
+        <div id="rm-size-row"></div>
+      </div>
+
+      <!-- Sealed-room banner: a lockdown survives a save/load, so every sealed
+           room is named here whatever the search box says, with a one-click
+           lift. Filled by rooms-pane.js renderLockBanner(). -->
+      <div id="rm-lock-banner" class="hidden" aria-label="Sealed rooms"></div>
+
+      <div id="rm-list" role="listbox" aria-label="Claimed rooms"></div>
+      <div id="rm-empty" class="hidden"></div>
+
+      <div id="rm-foot">
+        <button id="rm-evict-btn" title="Move everyone evictable out of this room right now">
+          ⇥ Clear this room</button>
+        <button id="rm-ignore-btn" class="ghost-btn"
+                title="Look at someone and press this — they are never moved, anywhere">
+          🚫 Never move who I'm looking at</button>
+        <button id="rm-ignore-pick" class="ghost-btn"
+                title="Pick someone by name — your roster and everyone nearby, searchable — they are never moved, anywhere">
+          🛡 Never move…</button>
+      </div>
+
+      <div id="rm-ignore-list" aria-label="Never moved"></div>
+    </section>
+
+
+  </div>
+</section>
+
+<!-- ===================================================================== *
+     Loot tab — the Loot Highlighter's controls (glow scanner, v0.15.0).
+     Paste inside <div id="panel">, beside the other pane <section>s.
+     Static shell only: category rows and palette swatches are built by
+     loot-pane.js from what C++ sends in ltOpen, so a new category or colour
+     added in C++ lands here with no markup edit.
+     * ===================================================================== -->
+<section id="lt-pane" class="hidden">
+  <!-- LEFT: master switch + live status -->
+  <aside id="lt-side">
+    <div class="lt-card" id="lt-master-card">
+      <button id="lt-master" class="off" title="Toggle every loot glow (also the Loot Vision entry in Misc, bindable to a key)">
+        ✨ Loot Vision</button>
+      <div id="lt-master-state">OFF</div>
+      <div id="lt-active" class="lt-hint">Nothing is glowing.</div>
+
+      <button id="lt-safe" class="off" title="Glow only safe (non-respawning) storage — barrels, chests and cupboards you can stash loot in. Works even with Loot Vision off."
+        style="width:100%;margin-top:12px;padding:12px 14px;font:inherit;font-size:16px;font-weight:600;border-radius:12px;cursor:pointer;border:1px solid rgba(120,210,140,.45);background:rgba(120,210,140,.12);color:#cfe6d5;transition:background .15s ease,border-color .15s ease,box-shadow .15s ease,transform .05s ease">🗄 Safe containers</button>
+      <div id="lt-safe-state" class="lt-hint" style="margin-top:6px">Off — safe storage not glowing on its own.</div>
+    </div>
+
+    <div class="lt-card" id="lt-lotd-card">
+      <div class="lt-card-title">Museum tracking</div>
+      <div id="lt-lotd-status" class="lt-hint">Checking for The Curator's Companion…</div>
+    </div>
+
+    <div class="lt-card" id="lt-safe-card">
+      <div class="lt-card-title">Safe containers</div>
+      <div class="lt-hint">The <b>Safe containers</b> category glows storage that
+        never resets — barrels, chests and cupboards you can stash loot in
+        without a cell reset eating it. Recolour or turn it off in the list.
+        If you still run the <i>Highlight Safe Containers</i> mod, untick it so
+        safe chests don’t glow twice.</div>
+    </div>
+
+    <div class="lt-card">
+      <div class="lt-card-title">How it works</div>
+      <div class="lt-hint">Glows update every second or two as you move.
+        Opening a corpse or chest counts as looting it — its glow dies.
+        After a reload, things glow again until re-opened.</div>
+    </div>
+  </aside>
+
+  <!-- RIGHT: categories + tuning -->
+  <section id="lt-main">
+    <div id="lt-cats" role="list" aria-label="Highlight categories"></div>
+
+    <div id="lt-settings">
+      <div class="lt-set-title">Tuning</div>
+
+      <label class="lt-field">
+        <span class="lt-field-label">Reach <span id="lt-radius-val" class="lt-val">31 m</span></span>
+        <input id="lt-radius" type="range" min="500" max="8000" step="100" value="2200"
+               aria-label="Scan radius">
+        <span class="lt-hint">How far from you things light up.</span>
+      </label>
+
+      <label class="lt-field">
+        <span class="lt-field-label">Max glows <span id="lt-max-val" class="lt-val">40</span></span>
+        <input id="lt-max" type="range" min="5" max="150" step="5" value="40"
+               aria-label="Maximum simultaneous glows">
+        <span class="lt-hint">Nearest first. Keeps a packed cellar from hurting the frame rate.</span>
+      </label>
+
+      <label class="lt-field">
+        <span class="lt-field-label">Valuables worth at least <span id="lt-valmin-val" class="lt-val">100</span></span>
+        <input id="lt-valmin" type="range" min="0" max="2000" step="25" value="100"
+               aria-label="Minimum value for the Valuables category">
+        <span class="lt-hint">The Valuables &amp; gems bar: a garnet (100) glows, a dwemer cog stays dark.</span>
+      </label>
+
+      <div class="lt-set-title">Valuable gear bar</div>
+      <label class="lt-field">
+        <span class="lt-field-label">Worth per unit of weight <span id="lt-ratio-val" class="lt-val">10</span></span>
+        <input id="lt-ratio" type="range" min="0" max="100" step="1" value="10"
+               aria-label="Value to weight ratio">
+        <span class="lt-hint">A 50-weight battleaxe needs 500 gold of value at 10.</span>
+      </label>
+      <label class="lt-field">
+        <span class="lt-field-label">Minimum value <span id="lt-minval-val" class="lt-val">250</span></span>
+        <input id="lt-minval" type="range" min="0" max="3000" step="50" value="250"
+               aria-label="Minimum gold value">
+        <span class="lt-hint">Nothing under this glows, whatever it weighs.</span>
+      </label>
+
+      <label class="lt-check"><input id="lt-hideopened" type="checkbox" checked>
+        <span>Chests go dark once opened</span></label>
+      <label class="lt-check"><input id="lt-labelsafe" type="checkbox">
+        <span>Tag safe containers “(Safe)” in their name <span class="lt-hint" style="display:inline">— works even with the glow off; lets you drop the Highlight Safe Containers mod</span></span></label>
+      <label class="lt-check"><input id="lt-notify" type="checkbox" checked>
+        <span>Corner message when Loot Vision toggles</span></label>
+    </div>
+  </section>
+</section>
+<!-- Animations tab: a ZaZ Animation Pack player. anim-pane.js builds the
+     category rail and rows from the catalogue C++ sends in anOpen. -->
+<section id="an-pane" class="hidden">
+  <!-- Poses | OStim segmented toggle (ostim-pane.js wires it) -->
+  <div id="an-seg" role="tablist" aria-label="Animation source">
+    <button id="an-seg-poses" class="an-seg-btn active" role="tab">Poses</button>
+    <button id="an-seg-ostim" class="an-seg-btn" role="tab" title="Search & change OStim scenes">OStim</button>
+  </div>
+  <!-- Poses body (unchanged ZAP player), wrapped so the OStim body can sit beside it -->
+  <div id="an-row">
+    <aside id="an-side">
+      <div class="an-card" id="an-target-card">
+        <div class="an-card-title">Target</div>
+        <div id="an-target" class="an-tgt">Applying to <span class="an-tgt-name">you</span></div>
+        <div class="an-tgt-hint">Whoever you were looking at when the deck opened — or you, if nothing.</div>
+        <div class="an-tgt-actions">
+          <button id="an-reset" class="an-btn" title="Return the target to their normal idle">↺ Reset pose</button>
+          <button id="an-crawl" class="an-btn an-crawl" title="Make the target crawl on all fours">🐾 Crawl</button>
+        </div>
+      </div>
+      <div id="an-cats" class="an-cats" role="list" aria-label="Animation categories"></div>
+      <div id="an-source" class="an-source">Loading ZaZ Animation Pack…</div>
+    </aside>
+    <section id="an-main">
+      <div id="an-searchbar">
+        <input id="an-search" type="text" placeholder="Search animations… (Enter applies the top hit)"
+               autocomplete="off" spellcheck="false" aria-label="Search animations">
+        <span id="an-count" class="an-count">—</span>
+      </div>
+      <div id="an-list" role="list" aria-label="Animations"></div>
+    </section>
+  </div>
+  <!-- OStim body — scene search / change / furniture / role swap (ostim-pane.js).
+       Source: ostim-pane.html.frag -->
+  <section id="os-body" class="os-outscene">
+    <div id="os-status">
+      <div id="os-status-top">
+        <span id="os-scene">Not in a scene</span>
+        <span id="os-scene-hint">Start an OStim scene, then pick from the list to change it.</span>
+      </div>
+      <div id="os-actors"></div>
+      <div id="os-controls">
+        <span class="os-speed">
+          <button id="os-speed-down" class="os-ctl" title="Slower" disabled>◂ Speed</button>
+          <span id="os-speed-val">—</span>
+          <button id="os-speed-up" class="os-ctl" title="Faster" disabled>Speed ▸</button>
+        </span>
+        <button id="os-auto" class="os-ctl" title="OStim auto-mode (read-only here)" disabled>⟳ Auto: OFF</button>
+        <span class="os-ctl-sep" aria-hidden="true"></span>
+        <span class="os-ctl-label">Furniture</span>
+        <button id="os-furn-near" class="os-ctl" title="Move the scene onto the nearest furniture" disabled>🛏 Nearby</button>
+        <button id="os-furn-floor" class="os-ctl" title="Move the scene off furniture, onto the floor" disabled>⌞ Floor</button>
+        <span class="os-ctl-sep" aria-hidden="true"></span>
+        <button id="os-swap" class="os-ctl" title="Swap DOM / SUB roles" disabled>⇄ Swap roles</button>
+      </div>
+    </div>
+    <div id="os-searchbar">
+      <input id="os-search" type="text" placeholder="Search OStim scenes… (Enter changes to the top hit)"
+             autocomplete="off" spellcheck="false" aria-label="Search OStim scenes">
+      <span id="os-count" class="os-count">—</span>
+    </div>
+    <div id="os-list" role="list" aria-label="OStim scenes"></div>
+  </section>
+  <div id="an-toast" class="an-toast" role="status" aria-live="polite"></div>
+  <div id="os-toast" class="os-toast" role="status" aria-live="polite"></div>
+</section>
+<!-- Faces tab: RaceMenu preset browser. faces-pane.js owns everything inside
+     #faces-host; this section is just the mount point (like #lt-pane / #rm-pane). -->
+<section id="faces-pane" class="hidden" aria-label="Faces">
+  <div id="faces-host" class="fc-host"></div>
+</section>
+
+<!-- Time tab. A SIBLING of the other panes, not a child of them: this block
+     was pasted inside #rm-body (the Rooms pane) when the tab landed, and
+     app.js hides #rm-pane on every tab but Rooms — so the Time tab inherited
+     a 0x0 box and painted nothing at all. -->
+<section id="tm-pane" class="hidden" aria-label="Time">
+  <div id="tm-body">
+
+    <!-- The clock: big current game time + date, with a day-arc ribbon.  -->
+    <div id="tm-clock-card">
+      <div id="tm-dial" aria-hidden="true"><div id="tm-dial-dot"></div></div>
+      <div id="tm-clock-main">
+        <div id="tm-clock-time">—:—</div>
+        <div id="tm-clock-date">reading the sky…</div>
+      </div>
+      <div id="tm-jump-flash" class="tm-hiddenish" aria-live="polite"></div>
+    </div>
+
+    <!-- Until: land on a time of day, whatever the clock says now. -->
+    <div class="tm-group" aria-label="Wait until">
+      <div class="tm-group-label">Until</div>
+      <div class="tm-chips" id="tm-until-chips">
+        <button class="tm-chip" data-until="7"  title="Sleep the night away — jump to 7:00 AM">🌅 Morning<span class="tm-chip-sub" data-sub="7">…</span></button>
+        <button class="tm-chip" data-until="12" title="Jump to 12:00 noon">☀️ Noon<span class="tm-chip-sub" data-sub="12">…</span></button>
+        <button class="tm-chip" data-until="18" title="Jump to 6:00 PM">🌆 Evening<span class="tm-chip-sub" data-sub="18">…</span></button>
+        <button class="tm-chip" data-until="22" title="Jump to 10:00 PM">🌙 Night<span class="tm-chip-sub" data-sub="22">…</span></button>
+      </div>
+    </div>
+
+    <!-- For: plain hour jumps. -->
+    <div class="tm-group" aria-label="Wait for">
+      <div class="tm-group-label">For</div>
+      <div class="tm-chips" id="tm-for-chips">
+        <button class="tm-chip" data-hours="1">+1 h</button>
+        <button class="tm-chip" data-hours="3">+3 h</button>
+        <button class="tm-chip" data-hours="6">+6 h</button>
+        <button class="tm-chip" data-hours="12">+12 h</button>
+        <button class="tm-chip" data-hours="24">+24 h</button>
+      </div>
+    </div>
+
+    <!-- The long haul: slider up to a week, with a landing forecast. -->
+    <div class="tm-group" id="tm-custom" aria-label="Custom wait">
+      <div class="tm-group-label">Longer</div>
+      <div id="tm-slider-row">
+        <input id="tm-slider" type="range" min="1" max="168" step="1" value="24"
+               aria-label="Hours to wait">
+        <div id="tm-slider-read">24 h</div>
+      </div>
+      <div id="tm-forecast">lands —</div>
+      <button id="tm-go" class="tm-primary">⏩ Wait</button>
+    </div>
+
+    <div id="tm-note" class="tm-hiddenish" role="status"></div>
+
+    <div id="tm-foot">
+      Time jumps in one step — no ticking, no wait menu. The world catches up
+      in a single beat. Blocked in combat, same as resting anywhere.
+    </div>
+  </div>
+</section>
+
+      <div id="numpad-pane" class="hidden">
+       <div id="np-scale">
+        <div id="mod-row">
+          <button class="modkey" data-mod="42">Shift</button>
+          <button class="modkey" data-mod="29">Ctrl</button>
+          <button class="modkey" data-mod="56">Alt</button>
+          <span class="np-hint">Stays open · game runs live on this tab · toggle modifiers, then click keys</span>
+        </div>
+        <div id="numpad-grid"></div>
+       </div><!-- /#np-scale -->
+      </div>
+
+      <!-- Finances tab (v0.13.0): Financial Manager. Every id is fin- prefixed. -->
+      <section id="fin-pane" class="hidden" aria-label="Finances">
+
+        <!-- summary bar: live gold, monthly net, rolling debt, the Settle button -->
+              <!-- Whole-tab scale wrapper (hd-scale.css): the pane keeps its real box,
+             this is sized 1/scale of it and transform-scaled back. Same contract
+             as #fd-scale / #wd-scale. -->
+        <div id="fin-scale">
+        <div id="fin-summary">
+          <div class="fin-stat">
+            <span class="fin-stat-k">Gold</span>
+            <span id="fin-gold" class="fin-stat-v gold">0 g</span>
+          </div>
+          <div class="fin-stat">
+            <span class="fin-stat-k">Monthly net</span>
+            <span id="fin-net" class="fin-stat-v">0 g</span>
+          </div>
+          <div class="fin-stat">
+            <span class="fin-stat-k">Debt</span>
+            <span id="fin-debt" class="fin-stat-v">0 g</span>
+          </div>
+          <button id="fin-settle" title="Collect income, pay expenses + debt; unpaid remainder rolls into debt">
+            <span class="fin-settle-main">&#9878; Settle month</span>
+            <span class="fin-settle-sub">+0 / &#8722;0</span>
+          </button>
+        </div>
+
+        <!-- sub-tabs: Recurring · Market · Ledger -->
+        <nav id="fin-nav" aria-label="Finance sections"></nav>
+
+        <!-- toolbar: search + count + edit + add -->
+        <div id="fin-toolbar">
+          <div id="fin-search-wrap">
+            <span class="fin-search-ic" aria-hidden="true">&#9109;</span>
+            <input id="fin-search" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="Search names, categories, notes…">
+          </div>
+          <span id="fin-count" title="Rows in view">0</span>
+          <button id="fin-edit" class="ghost-btn" title="Edit mode — reveal delete controls (F2)">Edit</button>
+          <button id="fin-add" class="ghost-btn" title="Add a row to this section">&#65291; Line</button>
+        </div>
+
+        <!-- edit-mode size strip (F2). Filled by hd-scale.js; finances-pane.js
+             only toggles .hidden with the rest of its edit chrome. -->
+        <div id="fin-editrow" class="hidden"></div>
+
+        <div id="fin-list" role="list" aria-label="Finance rows"></div>
+        <div id="fin-empty" class="hidden"></div>
+        </div><!-- /#fin-scale -->
+
+
+      </section>
+
+<!-- ===================================================================== *
+     Wardrobe tab — outfit / wardrobe / NPC manager pane for the Hotkey Deck.
+
+     PASTE VERBATIM into view/HotkeyDeck/index.html as a sibling of
+     #deck-pane / #notes-pane / #quests-pane / #fin-pane / #numpad-pane — i.e.
+     inside <div id="panel">, after <nav id="tabs"></nav> and before
+     <footer id="hints">. Every id/class is wd- prefixed, so nothing here
+     collides with the deck, notes, quests, domains, finances or numpad panes.
+
+     Also add, after app.js:
+       <script src="wardrobe-pane.js"></script>
+     (after, so the pane can chain window.hdClosed.)
+
+     Backbone is SOES-NG — see modding/guides/wardrobe_system_design.md.
+ * ===================================================================== -->
+<section id="wd-pane" class="hidden" aria-label="Wardrobe">
+ <!-- #wd-scale is the whole-tab zoom box: it is sized 1/scale of the pane and
+      scaled back with transform, so every px in this tab's stylesheet rides
+      the scaler without knowing it exists. It wraps EVERYTHING, dialogs and
+      menu included, because "scale the tab" means the sheet too. -->
+ <div id="wd-scale">
+
+  <!-- sub-tabs: Outfits · Wardrobes · NPCs -->
+  <nav id="wd-nav" aria-label="Wardrobe sections"></nav>
+
+  <!-- toolbar: search + count + edit + add -->
+  <div id="wd-toolbar">
+    <div id="wd-search-wrap">
+      <span class="wd-search-ic" aria-hidden="true">&#9109;</span>
+      <input id="wd-search" type="text" autocomplete="off" spellcheck="false"
+             placeholder="Search outfits, wardrobes, people…">
+      <button id="wd-search-clear" class="hidden" title="Clear search" aria-label="Clear search">&#10005;</button>
+    </div>
+    <span id="wd-count" title="Rows in view">0</span>
+    <button id="wd-edit" class="ghost-btn" title="Edit mode — reveal delete controls (F2)">Edit</button>
+    <button id="wd-add" class="ghost-btn" title="Add to this section">&#65291; New</button>
+  </div>
+
+  <!-- edit-mode chrome (F2). Same control shape, range and step as the
+       Followers tab's "Tab" group, so the two tabs never disagree. -->
+  <div id="wd-editrow" class="hidden">
+    <span class="wd-ok-grp">
+      <span class="wd-ok-label">Tab size</span>
+      <button id="wd-ui-dec" class="keychip" title="Shrink the whole tab — fits more on screen">&minus;</button>
+      <span id="wd-ui-val" class="wd-ui-v">100%</span>
+      <button id="wd-ui-inc" class="keychip" title="Enlarge the whole tab — bigger text and controls">+</button>
+      <button id="wd-ui-reset" class="keychip" title="Back to 100%">Reset</button>
+    </span>
+    <!-- Tile size — the ART, as opposed to Tab size above which is the text and
+         controls. Separate because they are genuinely different wants: browsing
+         outfits by their picture means big tiles at normal text, and neither
+         control can express that alone. Filled by hd-scale.js (tab
+         "wardrobe"). -->
+    <span id="wd-img-row" class="wd-ok-grp"></span>
+    <span class="wd-ok-hint">Scales this tab's text and controls, 60%&ndash;160%. Saved with the deck.</span>
+  </div>
+
+  <!-- SOES availability / conflict banner (hidden unless there is something to say) -->
+  <div id="wd-banner" class="hidden" role="status"></div>
+
+  <!-- category filter pills (Outfits sub-tab only); renamed/deleted in edit mode -->
+  <div id="wd-cats" class="hidden" aria-label="Filter by category"></div>
+
+  <!-- bulk-action bar; appears only when something is selected -->
+  <div id="wd-selbar"></div>
+
+  <!-- the scrolling body; one of these is visible at a time -->
+  <div id="wd-body">
+    <div id="wd-list" role="list" aria-label="Wardrobe rows"></div>
+    <div id="wd-empty" class="hidden"></div>
+  </div>
+
+  <!-- wardrobe builder overlay: members (left) + catalogue (right) -->
+  <div id="wd-builder" class="hidden" role="dialog" aria-modal="true" aria-label="Edit wardrobe">
+    <div id="wd-builder-card">
+      <header id="wd-builder-head">
+        <button id="wd-builder-swatch" type="button" title="Change this wardrobe's colour"
+                aria-label="Change colour"></button>
+        <div id="wd-builder-id">
+          <!-- the title is an inline <input>: PrismaUI has no window.prompt,
+               so renaming happens in place, like the Domains rail -->
+          <h2 id="wd-builder-title"></h2>
+          <span id="wd-builder-sub"></span>
+        </div>
+        <div id="wd-builder-note"></div>
+        <span id="wd-builder-mode"></span>
+        <span id="wd-builder-del"></span>
+        <button id="wd-builder-close" class="ghost-btn" title="Done (Esc)">Done</button>
+      </header>
+      <div id="wd-builder-cols">
+        <section class="wd-col" aria-label="Members">
+          <h3 class="wd-col-h">In this wardrobe <span id="wd-mem-count">0</span></h3>
+          <div id="wd-members" role="list"></div>
+          <div id="wd-members-empty" class="wd-col-empty">
+            Nothing here yet — click outfits on the right to add them.
+          </div>
+        </section>
+        <section class="wd-col" aria-label="Outfit catalogue">
+          <h3 class="wd-col-h">All outfits</h3>
+          <input id="wd-cat-search" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Filter outfits…">
+          <div id="wd-catalogue" role="list"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- NPC detail sheet: assignment, cadence, location overrides -->
+  <div id="wd-sheet" class="hidden" role="dialog" aria-modal="true" aria-label="Assignment">
+    <div id="wd-sheet-card">
+      <header id="wd-sheet-head">
+        <img id="wd-sheet-face" alt="" class="hidden">
+        <div class="wd-sheet-id">
+          <h2 id="wd-sheet-name">NPC</h2>
+          <span id="wd-sheet-sub"></span>
+        </div>
+        <button id="wd-sheet-close" class="ghost-btn" title="Done (Esc)">Done</button>
+      </header>
+      <div id="wd-sheet-body"></div>
+    </div>
+  </div>
+
+  <!-- an outfit's actual pieces: view, and remove one -->
+  <div id="wd-pieces" class="hidden" role="dialog" aria-modal="true" aria-label="Outfit pieces">
+    <div id="wd-pieces-card">
+      <header id="wd-pieces-head">
+        <h2 id="wd-pieces-title">Outfit</h2>
+        <span id="wd-pieces-sub"></span>
+        <button id="wd-pieces-close" class="ghost-btn" title="Done (Esc)">Done</button>
+      </header>
+      <div id="wd-pieces-body"></div>
+    </div>
+  </div>
+
+  <!-- searchable picker: assign to a wardrobe / category, or create one inline -->
+  <div id="wd-picker" class="hidden" role="dialog" aria-modal="true" aria-label="Choose">
+    <div id="wd-picker-card">
+      <header id="wd-picker-head">
+        <h2 id="wd-picker-title">Choose</h2>
+        <span id="wd-picker-sub"></span>
+        <button id="wd-picker-close" class="ghost-btn" title="Done (Esc)">Done</button>
+      </header>
+      <input id="wd-picker-input" type="text" autocomplete="off" spellcheck="false">
+      <div id="wd-picker-list" role="listbox"></div>
+    </div>
+  </div>
+
+  <!-- shared right-click menu -->
+  <div id="wd-menu" class="hidden" role="menu"></div>
+
+ </div><!-- /#wd-scale -->
+</section>
+
+      <footer id="hints">
+        <span>↑↓ select</span><span>Enter fire</span><span>1–9,0 quick-fire</span>
+        <span>Tab numpad</span><span>F2 edit — drag ⋮⋮ to reorder</span><span>F7 / Esc close</span>
+        <span class="hint-native">gold = ships with the deck / mod integration</span>
+      </footer>
+
+      <!-- drag-to-resize grip: sets --panel-w / --panel-h, double-click resets -->
+      <div id="resize-grip" role="separator" aria-label="Resize panel" tabindex="-1"
+           title="Drag to resize the panel · double-click to reset"></div>
+
+      <!-- per-hotkey icon picker (edit mode). Lives INSIDE #panel — the panel
+           carries transform: scale(var(--ui-scale)), so an absolutely-positioned
+           child inherits the menu scale (same placement as the Spell Deck's
+           #icon-modal). #capture-modal is deliberately outside #panel instead. -->
+      <div id="hk-icon-modal" class="hidden">
+        <div class="hk-icon-box">
+          <div class="hk-icon-head">
+            <span class="hk-icon-title">Icon for <b id="hk-icon-name">…</b></span>
+            <button id="hk-icon-close" class="ghost-btn" title="Done (Esc)">✕</button>
+          </div>
+          <div class="hk-icon-searchwrap">
+            <span class="hk-icon-searchic" aria-hidden="true">⌕</span>
+            <input id="hk-icon-search" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="Search icons — names, packs…">
+          </div>
+          <div id="hk-icon-grid"></div>
+          <div class="hk-icon-foot">
+            <button id="hk-icon-refresh" class="ghost-btn"
+                    title="Re-scan the custom icon folder — picks up images dropped in while the game runs">⟳ Refresh custom icons</button>
+            <span id="hk-icon-count" class="hk-icon-hint"></span>
+          </div>
+          <!-- one line by design: it must not wrap away the tile grid at the
+               640x480 panel floor, so the full path lives in the tooltip -->
+          <div class="hk-icon-drophint"
+               title="Drop images onto Desktop\Spell Deck Icons (swept in automatically) or into …\Hotkey Deck (PrismaUI)\PrismaUI\views\HotkeyDeck\icons\custom\, then hit Refresh — no restart needed.">Your
+            own: drop images onto <b>Desktop\Spell Deck Icons</b> or the view's
+            <b>icons\custom\</b>, then Refresh — no restart.</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="capture-modal" class="hidden">
+      <div class="capture-box">
+        <div class="capture-title" id="capture-title">Press a key or mouse button…</div>
+        <div class="capture-sub">Held Shift / Ctrl / Alt are captured as modifiers · mouse: middle, Mouse 4, Mouse 5 · Esc cancels</div>
+        <div class="capture-btns">
+          <!-- Some keys the game never hands the menu (Home/End/PgUp/PgDn/Ins/Del,
+               the arrows) so they cannot be press-captured; and a key your keyboard
+               lacks cannot be pressed. Pick it from a list instead — it binds
+               exactly as a real press would. -->
+          <button id="capture-pick" class="ghost-btn" title="Choose a key from a list — for keys the game won't let the menu capture (Home / End / PgUp …) or one your keyboard doesn't have">⌨ Pick from a list</button>
+          <button id="capture-cancel" class="ghost-btn">Cancel</button>
+        </div>
+        <div id="capture-picker" class="hidden">
+          <input id="capture-pick-filter" type="text" placeholder="Filter keys… (Enter picks the top hit)" autocomplete="off" spellcheck="false">
+          <div id="capture-pick-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="hidden"></div>
+    <!-- Item-source banner: opened while looking at a ground item, this names
+         the mod the item comes from. Filled by window.hdItemSource (app.js);
+         persistent until dismissed or the deck closes, unlike #toast. -->
+    <div id="item-source" class="hidden"></div>
+  </div>
+  <!-- Omni loads FIRST: it is dependency-free, and every pane (including
+       followers-pane.js) registers its search provider at parse time, so the
+       registry must already exist. app.js then calls HDOmni.hookInto(). -->
+  <!-- Before app.js: app.js binds HDScale to its own settings/save at boot,
+       and every pane below mounts controls through it. -->
+  <script src="hd-scale.js"></script>
+  <script src="hd-omni.js"></script>
+  <!-- before app.js: its boot calls HDShelf.hookInto -->
+  <script src="hd-shelf.js"></script>
+  <!-- Wheel Menu. Before app.js (its boot calls HDWheel.hookInto) and AFTER
+       hd-omni.js, because it registers the `inventory` search provider at
+       parse time — the registry has to exist by then. -->
+  <script src="hd-wheel.js"></script>
+  <script src="hd-formation.js"></script>
+  <script src="hd-door.js"></script>
+  <script src="hd-spidgear.js"></script>
+  <script src="hd-outfit.js"></script>
+  <!-- NPC Quests modal (the F7 card's 📜). Before followers-pane.js, whose
+       card only draws the button when window.HDQuests exists — a partial
+       deploy then shows no button rather than a dead one. -->
+  <script src="hd-quests.js"></script>
+  <script src="followers-pane.js"></script>
+  <script src="home-pane.js"></script>
+  <script src="app.js"></script>
+  <script src="domains-pane.js"></script>
+  <!-- after domains-pane.js: the Bases mode chains DomainsPane.onShow/onHide
+       and mounts itself into #dm-pane, so it must see that pane already
+       registered. -->
+  <script src="bases-pane.js"></script>
+  <!-- Deck Portal button (header). After app.js: it chains window.hdOpen. -->
+  <script src="hd-portal.js"></script>
+  <script src="containers-pane.js"></script>
+  <script src="rooms-pane.js"></script>
+  <script src="loot-pane.js"></script>
+  <script src="anim-pane.js"></script>
+  <script src="ostim-pane.js"></script>
+  <script src="light-pane.js"></script>
+  <script src="faces-pane.js"></script>
+  <script src="time-pane.js"></script>
+  <script src="finances-pane.js"></script>
+  <script src="wardrobe-pane.js"></script>
+  <!-- after wardrobe-pane.js (it registers itself as a sub-tab) and after
+       app.js (it chains hdIcons / hdIconIndex to share the one icon pool) -->
+  <script src="wardrobe-nff.js"></script>
+  <script src="wardrobe-spid.js"></script>
+  <script src="sharmat-pane.js"></script>
+  <script src="recents-strip.js"></script>
+  <!-- CHIM flyout for the quick card's CHIM button (background / sharmat /
+       activate). Depends on HDOmni + SmPane at runtime; load order-agnostic. -->
+  <script src="chim-flyout.js"></script>
+</body>
+</html>

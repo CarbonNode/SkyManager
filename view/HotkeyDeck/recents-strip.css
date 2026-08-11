@@ -1,0 +1,129 @@
+/* ===================================================================== *
+ *  Recents strip (rc-*) — the people you just did something to.
+ *
+ *  Own stylesheet, same reasoning as sharmat-pane.css and wardrobe-nff.css:
+ *  app.css is rebuilt from a fragment by tools/sync_view_frags.py and several
+ *  sessions edit this checkout at once, so a block appended there is liable
+ *  to be truncated or clobbered.
+ *
+ *  Visually SUBORDINATE to the roster on purpose. It sits above the list and
+ *  must read as a shortcut bar, not a second list competing with the real
+ *  one — hence the muted frame, the small faces, and no category colour
+ *  beyond the medallion hue each face already carries.
+ * ===================================================================== */
+
+#fd-recents {
+  position: relative;              /* anchors the scroll-fade below */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  margin-bottom: 8px;
+  padding: 6px 6px 6px 9px;
+  border: 1px solid #26262d;
+  border-radius: 9px;
+  background: rgba(255,255,255,.015);
+  /* min-width:0 lets the scroller actually shrink inside the flex column;
+     without it the strip forces #fd-main wider than the pane and the whole
+     roster gets a horizontal scrollbar. */
+  min-width: 0;
+}
+/* A chip clipped mid-name at the right edge reads as broken rather than as
+   "there is more" — the scrollbar is 5px and easy to miss. Fade the last few
+   pixels so the cut looks deliberate. Sits just left of the ✕ and never eats
+   a click. Purely decorative: if Ultralight declines the gradient, the strip
+   still works exactly as before. */
+#fd-recents::after {
+  content: '';
+  position: absolute; top: 1px; bottom: 1px; right: 28px; width: 26px;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(16,16,21,0), #101015);
+  border-radius: 0 8px 8px 0;
+}
+#fd-recents.hidden::after { content: none; }
+#fd-recents.hidden { display: none; }
+
+.rc-label {
+  flex: none;
+  font: 600 9.5px/1 "Segoe UI", sans-serif;
+  letter-spacing: .8px; text-transform: uppercase;
+  color: #6f6a5e;
+  user-select: none;
+}
+
+/* The scroller is the only thing that may overflow, and it scrolls
+   HORIZONTALLY inside its own box rather than stretching the pane. */
+.rc-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: 5px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+.rc-scroll::-webkit-scrollbar { height: 5px; }
+.rc-scroll::-webkit-scrollbar-track { background: transparent; }
+.rc-scroll::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 3px; }
+.rc-scroll::-webkit-scrollbar-thumb:hover { background: #3a3a44; }
+
+.rc-chip {
+  flex: none;
+  display: inline-flex; align-items: center; gap: 7px;
+  max-width: 168px;
+  padding: 4px 10px 4px 4px;
+  border: 1px solid #2e2e36;
+  border-radius: 999px;
+  background: #0f0f14;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .12s ease, background .12s ease, transform .12s ease;
+}
+.rc-chip:hover {
+  border-color: #c9a24b77;
+  background: rgba(201,162,75,.06);
+  transform: translateY(-1px);
+}
+.rc-chip:active { transform: none; }
+.rc-chip:focus-visible { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.12); }
+
+.rc-face {
+  flex: none; width: 26px; height: 26px; border-radius: 50%;
+  object-fit: cover; object-position: center top;
+  border: 1px solid hsl(var(--rc-hue, 40) 30% 38% / .85);
+  background: hsl(var(--rc-hue, 40) 22% 15%);
+}
+.rc-face.initials {
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 600 9.5px/1 "Segoe UI", sans-serif;
+  color: hsl(var(--rc-hue, 40) 42% 72%);
+  letter-spacing: .3px;
+}
+
+/* Name over verb. Both ellipsize — a 90-character follower name must shorten
+   the chip, never widen the strip. */
+.rc-body { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.rc-name {
+  font: 500 11.5px/1.2 "Segoe UI", sans-serif; color: #e8e4da;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rc-verb {
+  font: 400 9.5px/1.2 "Segoe UI", sans-serif; color: #6f6a5e;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rc-chip:hover .rc-name { color: #ecd9a0; }
+
+.rc-clear {
+  flex: none; width: 22px; height: 22px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; background: transparent;
+  color: #6f6a5e; font-size: 10px; line-height: 1; cursor: pointer;
+  transition: color .12s ease, background .12s ease, border-color .12s ease;
+}
+.rc-clear:hover { color: #e8e4da; background: rgba(255,255,255,.05); border-color: #3a3a44; }
+
+/* At small avatar sizes the roster gets dense; keep the strip proportionate
+   so it never dominates the thing it is a shortcut to. */
+#fol-pane[data-av="small"] .rc-face { width: 22px; height: 22px; }
+#fol-pane[data-av="small"] .rc-name { font-size: 11px; }
