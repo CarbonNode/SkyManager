@@ -1,0 +1,256 @@
+/* ===================================================================== *
+ *  Sharmat popout (sm-*) — CHIM's per-NPC intimacy profile.
+ *
+ *  A SEPARATE stylesheet, deliberately, for the same reason wardrobe-nff.css
+ *  is one: tools/sync_view_frags.py rebuilds app.css from the wardrobe
+ *  fragment, and several sessions edit this checkout at once — a block
+ *  appended to app.css is liable to be truncated or clobbered by someone
+ *  else's sync. Its own file cannot be.
+ *
+ *  Palette: the deck's own dark/gold system, with ONE deviation — a violet
+ *  accent instead of gold. That is not decoration. Every other deck surface
+ *  either changes local config or queues something the game applies later;
+ *  this one writes straight into CHIM's database, live. The colour is the
+ *  tell.
+ * ===================================================================== */
+
+.sm-pop {
+  position: absolute;
+  z-index: 60;                     /* above the member menu, below capture modal */
+  width: 660px;                    /* Rober 2026-08-06: was 420 — too skinny. */
+  max-width: calc(100% - 12px);
+  max-height: calc(100% - 12px);
+  display: flex;
+  flex-direction: column;
+  background: #14141a;
+  border: 1px solid #3a3a44;
+  border-radius: 10px;
+  box-shadow: 0 18px 44px rgba(0,0,0,.62);
+  animation: smIn 130ms ease;
+  overflow: hidden;
+}
+@keyframes smIn { from { opacity: 0; transform: scale(.98); } to { opacity: 1; transform: none; } }
+
+.sm-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #2e2e36;
+  background: linear-gradient(90deg, rgba(157,123,214,.13), transparent);
+  cursor: move;
+  user-select: none;
+}
+/* Her face. Same 2px ring + category hue the roster medallion uses, so the
+   popout reads as belonging to the row it was opened from. */
+.sm-face {
+  flex: none; width: 34px; height: 34px; border-radius: 50%;
+  object-fit: cover; object-position: center top;
+  border: 1px solid hsl(var(--sm-hue, 265) 30% 40% / .8);
+  box-shadow: 0 0 0 2px rgba(0,0,0,.35);
+  background: hsl(var(--sm-hue, 265) 22% 16%);
+}
+.sm-face.initials {
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 600 12px/1 "Segoe UI", sans-serif;
+  color: hsl(var(--sm-hue, 265) 45% 74%);
+  letter-spacing: .5px;
+}
+/* Stack name over CHIM-name: side by side they competed for the same row and
+   the monospace id kept winning the space the actual name needed. */
+.sm-titles { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sm-head .sm-title {
+  min-width: 0;
+  font: 600 14px/1.2 "Segoe UI", sans-serif; color: #c3aae8;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sm-head .sm-sub {
+  min-width: 0;
+  font: 400 12px/1.2 Consolas, monospace; color: #6f6a5e;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sm-x {
+  flex: none; width: 24px; height: 24px; border-radius: 6px;
+  border: 1px solid transparent; background: transparent; color: #8b8678;
+  font-size: 12px; line-height: 1; cursor: pointer;
+  transition: color .12s ease, background .12s ease, border-color .12s ease;
+}
+.sm-x:hover { color: #e8e4da; background: rgba(255,255,255,.05); border-color: #3a3a44; }
+/* Armed: the click that would DISCARD unsaved edits. Widened to fit the word,
+   and coloured as a warning rather than a neutral chrome button. */
+.sm-x.armed {
+  width: auto; padding: 0 9px;
+  font: 500 12px/1 "Segoe UI", sans-serif; letter-spacing: .3px;
+  color: #e5a2a2; border-color: rgba(214,106,106,.55); background: rgba(214,106,106,.12);
+}
+.sm-x.armed:hover { color: #f0bcbc; border-color: rgba(214,106,106,.85); background: rgba(214,106,106,.2); }
+
+/* Two-column body (Rober 2026-08-06: "make use of space"). Short fields sit
+   side by side; section headers, textareas, kink blocks, status switches and
+   the footer span the full width. Falls back to a single readable column on a
+   narrow (phone-portal) viewport. */
+.sm-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 16px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px 20px; align-content: start;
+}
+.sm-body > .sm-sect,
+.sm-body > .sm-note,
+.sm-body > .sm-badges,
+.sm-body > .sm-flag,
+.sm-body > .sm-foot,
+.sm-body > .sm-btn,
+.sm-body > .sm-wide,
+.sm-body > .sm-field.sm-wide { grid-column: 1 / -1; }
+@media (max-width: 560px) { .sm-body { grid-template-columns: 1fr; } }
+
+.sm-sect {
+  display: flex; align-items: baseline; gap: 8px;
+  margin: 16px 0 9px; padding-top: 12px; border-top: 1px solid #26262d;
+  font: 600 12px/1 "Segoe UI", sans-serif; letter-spacing: .7px;
+  text-transform: uppercase; color: #c3aae8;
+}
+.sm-body > .sm-sect:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.sm-sect .n {
+  letter-spacing: .2px; text-transform: none; font-weight: 400;
+  font-size: 12px; color: #6f6a5e;
+}
+
+/* label-above-control: at 420px a side label leaves the input too narrow to
+   read a sentence-long prompt in. */
+.sm-field { margin-bottom: 10px; }
+.sm-field > label {
+  display: block; margin-bottom: 5px;
+  font: 500 12px/1 "Segoe UI", sans-serif; letter-spacing: .5px;
+  text-transform: uppercase; color: #8b8678;
+}
+
+.sm-in {
+  width: 100%;
+  font: 400 12.5px/1.5 "Segoe UI", sans-serif;
+  color: #e8e4da;
+  background: #0c0c10;
+  border: 1px solid #3a3a44;
+  border-radius: 7px;
+  padding: 8px 10px;
+  outline: none;
+  -webkit-appearance: none; appearance: none;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.sm-in:focus { border-color: #9d7bd6; box-shadow: 0 0 0 3px rgba(157,123,214,.14); }
+.sm-in::placeholder { color: #6f6a5e; }
+textarea.sm-in.area { resize: vertical; min-height: 74px; }
+select.sm-in {
+  padding-right: 28px;
+  background-image: linear-gradient(45deg, transparent 50%, #8b8678 50%),
+                    linear-gradient(135deg, #8b8678 50%, transparent 50%);
+  background-position: right 13px top 50%, right 8px top 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+/* The option list is drawn by the OS and inherits nothing from the panel. */
+select.sm-in option { background: #14141a; color: #e8e4da; }
+input.sm-in[type=number] { -moz-appearance: textfield; }
+input.sm-in[type=number]::-webkit-outer-spin-button,
+input.sm-in[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+.sm-btn {
+  padding: 8px 13px; min-height: 34px;
+  font: 500 12px/1 "Segoe UI", sans-serif;
+  color: #b9b4a8; background: #0f0f14;
+  border: 1px solid #3a3a44; border-radius: 7px;
+  cursor: pointer;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+.sm-btn:hover:not(:disabled) { color: #e8e4da; border-color: #9d7bd6; }
+.sm-btn:disabled { opacity: .45; cursor: default; }
+.sm-btn.save {
+  color: #c3aae8; border-color: rgba(157,123,214,.55); background: rgba(157,123,214,.16);
+}
+.sm-btn.save:hover:not(:disabled) { background: rgba(157,123,214,.26); border-color: #9d7bd6; }
+
+.sm-seg { display: flex; flex-wrap: wrap; gap: 5px; }
+.sm-seg-b {
+  flex: 1 1 0; min-width: 58px; min-height: 34px;
+  padding: 7px 6px; border-radius: 7px;
+  border: 1px solid #3a3a44; background: #0f0f14; color: #8b8678;
+  font: 400 12px/1.2 "Segoe UI", sans-serif;
+  cursor: pointer;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+.sm-seg-b:hover { color: #b9b4a8; border-color: #9d7bd6; }
+.sm-seg-b.on { border-color: #9d7bd6; color: #c3aae8; background: rgba(157,123,214,.16); }
+
+.sm-flag {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 0; border-bottom: 1px solid rgba(38,38,45,.8);
+}
+.sm-flag:last-of-type { border-bottom: 0; }
+.sm-flag .b { flex: 1 1 auto; min-width: 0; }
+.sm-flag .b .t { font: 400 12.5px/1.3 "Segoe UI", sans-serif; color: #e8e4da; }
+.sm-flag .b .s { font: 400 12px/1.45 "Segoe UI", sans-serif; color: #6f6a5e; margin-top: 2px; }
+.sm-sw {
+  flex: none; width: 42px; height: 24px; border-radius: 999px; position: relative;
+  border: 1px solid #3a3a44; background: #0f0f14; cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.sm-sw::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #6f6a5e; transition: transform .15s ease, background .15s ease;
+}
+.sm-sw.on { background: rgba(157,123,214,.18); border-color: #9d7bd6; }
+.sm-sw.on::after { transform: translateX(18px); background: #c3aae8; }
+
+.sm-kinks { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.sm-kink {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 4px 5px 4px 9px; border-radius: 999px;
+  border: 1px solid rgba(157,123,214,.42); background: rgba(157,123,214,.14);
+  color: #c3aae8; font: 400 12px/1 "Segoe UI", sans-serif;
+}
+.sm-kink.secret { border-color: rgba(214,106,106,.45); background: rgba(214,106,106,.10); color: #e5a2a2; }
+.sm-kink .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-kink .x {
+  flex: none; width: 17px; height: 17px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: rgba(255,255,255,.07); color: inherit;
+  font-size: 12px; line-height: 1; cursor: pointer;
+}
+.sm-kink .x:hover { background: rgba(255,255,255,.16); }
+.sm-empty { font: italic 400 12px/1 "Segoe UI", sans-serif; color: #6f6a5e; margin-bottom: 8px; }
+.sm-add { display: flex; gap: 6px; margin-bottom: 10px; }
+.sm-add .sm-in { flex: 1 1 auto; min-width: 0; }
+.sm-add .sm-btn { flex: none; }
+
+.sm-note {
+  padding: 10px 12px; margin-bottom: 11px; border-radius: 8px;
+  font: 400 12.5px/1.55 "Segoe UI", sans-serif;
+  border: 1px solid #3a3a44; background: rgba(255,255,255,.02); color: #b9b4a8;
+}
+.sm-note.warn { border-color: rgba(201,162,75,.45); background: rgba(201,162,75,.07); color: #d9c48a; }
+.sm-note.bad { border-color: rgba(214,106,106,.5); background: rgba(214,106,106,.08); color: #e5a2a2; }
+
+.sm-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 11px; }
+.sm-badge {
+  font: 500 12px/1 "Segoe UI", sans-serif; letter-spacing: .5px; text-transform: uppercase;
+  padding: 5px 9px; border-radius: 999px; border: 1px solid #3a3a44; color: #8b8678;
+}
+.sm-badge.ai { border-color: rgba(157,123,214,.5); color: #c3aae8; }
+.sm-badge.man { border-color: rgba(201,162,75,.5); color: #d9c48a; }
+
+/* Commit bar. Pinned outside .sm-body's scroll rather than sticky INSIDE it,
+   so Save is reachable without scrolling to the end of a long profile. */
+.sm-commit {
+  flex: none;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid #2e2e36;
+  background: #101015;
+}
+.sm-commit .msg {
+  flex: 1 1 auto; min-width: 0;
+  font: 400 12px/1.4 "Segoe UI", sans-serif; color: #6f6a5e;
+}
+.sm-commit .msg.dirty { color: #d9c48a; }
+
+/* The member-menu row that opens all this. */
+.fd-ctx-item.sharmat .fd-ctx-check { color: #9d7bd6; }
+.fd-ctx-item.sharmat:hover { color: #c3aae8; }

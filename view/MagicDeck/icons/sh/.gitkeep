@@ -1,0 +1,16 @@
+This folder is where the deck writes the spell-icon library it slices out of
+YOUR OWN Spell Hotbar 2 install, on first launch (src/icon_bridge.cpp).
+
+It ships EMPTY on purpose, and it ships AT ALL on purpose:
+
+  * empty, because Spell Hotbar 2's icon art is not ours to redistribute. The
+    deck generates icons/sh/<atlas>/<icon>.png here from the atlases already on
+    this machine, and nothing about that library ever leaves it. No Spell
+    Hotbar 2 installed = this folder stays empty and the deck uses its built-in
+    SVG glyphs, which is a supported, tested state.
+
+  * present, because Mod Organizer 2 fixes the visible file list when the game
+    LAUNCHES. A folder that only appears mid-session can be invisible to the
+    running view, so it exists up front.
+
+Safe to delete: the next launch sees the missing stamp and rebuilds.

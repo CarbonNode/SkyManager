@@ -1,0 +1,371 @@
+/* ====================================================================== *
+ *  Door lock modal (hd-door.js) — own sheet, linked from index.html.
+ *  NEVER merge into app.css: sync_view_frags' banner replacement truncates
+ *  foreign blocks (the reason hd-omni.css / hd-formation.css are separate).
+ *
+ *  Lives INSIDE #panel like #fm-modal, so it inherits --ui-scale and clips
+ *  to the deck window. z-index 74 (it can never coexist with the Formation
+ *  modal — that one needs an NPC crosshair, this one a door). Own keyframes
+ *  — NEVER riseIn (that bakes the panel scale into the animation).
+ * ====================================================================== */
+
+#dr-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 74;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 5, 8, .68);
+  animation: fadeIn 120ms ease;
+}
+#dr-modal.hidden { display: none; }
+
+.dr-box {
+  width: min(680px, 94%);
+  max-height: 92%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 80% at 50% -10%, #26222b 0%, transparent 60%),
+    linear-gradient(180deg, #1a1a21, #101015);
+  border: 1px solid #c9a24b77;
+  border-radius: 14px;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, .6), 0 0 0 1px #00000055;
+  animation: drIn 180ms cubic-bezier(.2, .9, .3, 1.2);
+}
+@keyframes drIn {
+  from { opacity: 0; transform: translateY(14px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---- head ---- */
+.dr-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #ffffff14;
+  background: linear-gradient(180deg, #ffffff06, transparent);
+}
+.dr-door-plate {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  background: linear-gradient(180deg, #2a2418, #1c180f);
+  border: 1px solid #c9a24b55;
+  border-radius: 10px;
+}
+.dr-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #e8d9ac;
+  letter-spacing: .02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.dr-close {
+  flex: none;
+  font-size: 16px;
+  line-height: 1;
+  padding: 9px 13px;
+  color: #b9b2a4;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.dr-close:hover { background: #ffffff12; color: #fff; border-color: #ffffff1a; }
+.dr-close:active { transform: translateY(1px); }
+
+/* ---- body ---- */
+.dr-body {
+  padding: 18px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+/* ---- the lock-state hero ---- */
+.dr-hero {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 16px 18px;
+  background: linear-gradient(180deg, #ffffff07, #ffffff03);
+  border: 1px solid #ffffff12;
+  border-radius: 12px;
+}
+.dr-hero-glyph {
+  flex: none;
+  width: 84px;
+  height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 260ms ease, border-color 260ms ease, box-shadow 260ms ease;
+}
+.dr-hero-glyph.is-locked {
+  background: radial-gradient(circle at 50% 35%, #3a2c14, #241b0c);
+  border: 2px solid #c9a24b88;
+  box-shadow: 0 0 24px #c9a24b2e, inset 0 0 18px #00000066;
+}
+.dr-hero-glyph.is-open {
+  background: radial-gradient(circle at 50% 35%, #24341e, #16200f);
+  border: 2px solid #6cae5b77;
+  box-shadow: 0 0 24px #6cae5b26, inset 0 0 18px #00000066;
+}
+.dr-hero-ico { font-size: 40px; line-height: 1; filter: drop-shadow(0 3px 6px rgba(0,0,0,.5)); }
+/* State flip: one quick snap of the plate. Retriggered by re-adding the
+   class on a fresh node each render, so it fires exactly once per flip. */
+.dr-snap { animation: drSnap 360ms cubic-bezier(.2, 1.2, .3, 1); }
+@keyframes drSnap {
+  0%   { transform: scale(.82) rotate(-6deg); }
+  55%  { transform: scale(1.12) rotate(3deg); }
+  100% { transform: none; }
+}
+
+.dr-hero-info {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.dr-hero-state {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: .03em;
+}
+.dr-hero-state.is-locked { color: #f0d9a2; }
+.dr-hero-state.is-open   { color: #bfe4b4; }
+.dr-hero-tier {
+  font-size: 15px;
+  font-weight: 600;
+}
+.dr-hero-tier.dim { color: #9a917d; font-weight: 500; line-height: 1.45; }
+.dr-hero-key {
+  font-size: 14px;
+  color: #cdb8e8;
+  background: #7a5aa622;
+  border: 1px solid #b07ad955;
+  border-radius: 999px;
+  padding: 4px 12px;
+  align-self: flex-start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* Pick-difficulty meter: five segments. */
+.dr-meter {
+  display: flex;
+  gap: 5px;
+  margin-top: 1px;
+}
+.dr-meter-seg {
+  width: 34px;
+  height: 8px;
+  border-radius: 4px;
+  background: #ffffff10;
+  border: 1px solid #ffffff14;
+  transition: background 220ms ease, box-shadow 220ms ease;
+}
+
+/* ---- section label ---- */
+.dr-sect {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: #9a917d;
+  margin-top: 2px;
+}
+
+/* Tier chips: 3×2 grid of big targets, each with its difficulty dot. */
+.dr-tiers {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.dr-tier {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 13px 8px 11px;
+  background: #ffffff08;
+  border: 1px solid #ffffff1a;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+.dr-tier:hover { background: #ffffff12; transform: translateY(-1px); }
+.dr-tier:active { transform: none; }
+.dr-tier.active { background: #ffffff0e; }
+.dr-tier-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.dr-tier-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e6dfcd;
+  white-space: nowrap;
+}
+.dr-tier.active .dr-tier-name { color: #fff; }
+.dr-tier-lvl {
+  font-size: 13px;
+  color: #9a917d;
+}
+
+/* Slider + exact-level row. The slider's fill gradient is painted inline
+   by syncPickUi (tier colour up to the thumb). */
+.dr-fine {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.dr-slide {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1 1 auto;
+  height: 10px;
+  border-radius: 5px;
+  background: #ffffff14;
+  border: 1px solid #ffffff10;
+  outline: none;
+  cursor: pointer;
+  transition: opacity 160ms ease;
+}
+.dr-slide::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #efe3c0, #cdb47a);
+  border: 2px solid #8f7a44;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .5);
+  cursor: grab;
+}
+.dr-slide::-webkit-slider-thumb:active { cursor: grabbing; }
+.dr-slide.dr-keyed { opacity: .45; }   /* pick > 100: the slider range no longer applies */
+.dr-fine-lbl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #b9b2a4;
+  flex: none;
+}
+.dr-lvl {
+  width: 92px;
+  font-size: 17px;
+  font-weight: 700;
+  text-align: center;
+  padding: 9px 10px;
+  color: #efe9d8;
+  background: #0c0c10;
+  border: 1px solid #ffffff22;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.dr-lvl:focus { border-color: #c9a24b88; box-shadow: 0 0 0 3px #c9a24b22; }
+
+/* The two verbs — pinned footer below the scrollable body, so a short deck
+   window scrolls the picker, never the answer buttons. */
+.dr-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 22px 16px;
+  border-top: 1px solid #ffffff10;
+  background: linear-gradient(180deg, transparent, #00000033);
+}
+.dr-actions {
+  display: flex;
+  gap: 12px;
+}
+.dr-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 700;
+  padding: 16px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 120ms ease, box-shadow 140ms ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dr-btn:active { transform: translateY(1px); }
+.dr-btn-lock {
+  color: #1c1305;
+  background: linear-gradient(180deg, #e3bd66, #c9a24b);
+  border: 1px solid #e8ca80;
+  box-shadow: 0 4px 16px #c9a24b2a;
+}
+.dr-btn-lock:hover {
+  background: linear-gradient(180deg, #eec973, #d5ad53);
+  box-shadow: 0 6px 22px #c9a24b40;
+}
+.dr-btn-unlock {
+  color: #dfe8da;
+  background: #2c581f33;
+  border: 1px solid #6cae5b66;
+}
+.dr-btn-unlock:hover { background: #2c581f55; border-color: #6cae5b99; box-shadow: 0 4px 16px #2c581f44; }
+.dr-btn.dr-busy {
+  opacity: .55;
+  pointer-events: none;
+}
+
+.dr-hint {
+  font-size: 12.5px;
+  color: #7d7666;
+  text-align: center;
+  letter-spacing: .02em;
+}
+
+/* Honest empty state (door gone between snapshot and click). */
+.dr-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 32px 16px;
+  text-align: center;
+}
+.dr-empty-ic { font-size: 36px; opacity: .7; }
+.dr-empty-t {
+  font-size: 15px;
+  color: #b9b2a4;
+  max-width: 420px;
+  line-height: 1.5;
+}
+
+/* Narrow deck window: tiers go 2-up, hero tightens, verbs stack. */
+@media (max-width: 700px) {
+  .dr-tiers { grid-template-columns: repeat(2, 1fr); }
+  .dr-actions { flex-direction: column; }
+  .dr-hero { gap: 14px; }
+  .dr-hero-glyph { width: 68px; height: 68px; }
+  .dr-hero-ico { font-size: 32px; }
+  .dr-meter-seg { width: 26px; }
+}

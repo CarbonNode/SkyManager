@@ -1,0 +1,1115 @@
+/* ===================================================================== *
+ *  Spell Deck — the magic-organizer view for the Hotkey Deck plugin.
+ *  Dark-only by design: it renders over a paused game, always on a dark
+ *  backdrop. Palette + type scale are lifted verbatim from the deck view
+ *  (view/HotkeyDeck/app.css) so the two menus read as one mod.
+ * ===================================================================== */
+
+:root {
+  /* accent (arcane gold, shared with the deck) */
+  --gold:        #c9a24b;
+  --gold-soft:   #d9c48a;
+  --gold-bright: #ecd9a0;
+  --gold-line:   #c9a24b77;
+  --gold-glow:   rgba(201, 162, 75, .10);
+  --gold-wash:   rgba(201, 162, 75, .06);
+
+  /* text */
+  --text:   #e8e4da;
+  --text-2: #b9b4a8;
+  --dim:    #8b8678;
+  --dim-2:  #6f6a5e;
+
+  /* surfaces */
+  --panel-a: #1a1a21;
+  --panel-b: #101015;
+  --sunk:    #0c0c10;
+  --raised:  #16161d;
+  --raised-2:#1c1c24;
+
+  /* lines */
+  --line:   #2e2e36;
+  --line-2: #3a3a44;
+  --line-3: #26262d;
+
+  /* cast (arcane blue) vs equip (verdant) semantics */
+  --cast:      #8fb7e0;
+  --cast-bg:   #0d1420;
+  --cast-line: #34506e;
+  --equip:     #8fd19e;
+  --equip-bg:  #0e150f;
+  --equip-line:#3d6b4a;
+
+  /* voice / power (violet) */
+  --voice:     #c69ae0;
+  --voice-bg:  #150e1a;
+  --voice-line:#573a6b;
+
+  /* danger */
+  --danger:      #d98a8a;
+  --danger-soft: #e0b0b0;
+  --danger-line: #5a3a3a;
+  --danger-bg:   #180f10;
+
+  --radius:   12px;
+  --radius-s: 8px;
+  --radius-xs:6px;
+  --ease: cubic-bezier(.4, 0, .2, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: "Segoe UI", Roboto, Arial, sans-serif;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+.hidden { display: none !important; }
+
+/* ---------------------------------------------------------- overlay --- */
+
+#overlay {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(120% 120% at 50% 40%, rgba(0,0,0,.35), rgba(0,0,0,.68));
+  opacity: 0;
+  transition: opacity .14s var(--ease);
+}
+body.open #overlay { opacity: 1; }
+body:not(.open) #overlay { display: none; }
+
+/* ------------------------------------------------------------ panel --- */
+
+/* Every dimension here is PRE-scale layout size: transform: scale() paints on
+ * top without reflowing, so a raw `94vw` would be 94vw * uiScale on screen.
+ * Dividing by --ui-scale is what keeps a scaled panel inside the viewport —
+ * hold that invariant for any dimension added below.
+ *
+ * --panel-w / --panel-h are the user's drag size (set by #resize-grip, JS
+ * writes them already clamped). Unset = auto, and the fallback default wins.
+ * min/max are the CSS-side safety net so a stale saved size, a resolution
+ * change or a scale change can never push the panel off screen; the floor
+ * itself collapses at tiny viewports (min(720px, 96vw/scale)) so it can never
+ * out-rank the ceiling. */
+#panel {
+  width:  var(--panel-w, min(1500px, calc(94vw / var(--ui-scale, 1))));
+  height: var(--panel-h, min(1000px, calc(92vh / var(--ui-scale, 1))));
+  min-width:  min(720px, calc(96vw / var(--ui-scale, 1)));
+  min-height: min(560px, calc(94vh / var(--ui-scale, 1)));
+  max-width:  calc(96vw / var(--ui-scale, 1));
+  max-height: calc(94vh / var(--ui-scale, 1));
+  /* #overlay is a flex row, so the panel is a flex ITEM: without this, flex
+   * shrinking clamps its LAYOUT width to the viewport and every "/ uiScale"
+   * above is defeated the moment scale < 1 (a 1500px panel at scale 0.6 got
+   * squashed to 1280 layout px = 768 on screen instead of 900). The transform
+   * is what keeps the scaled result on screen — the layout box is allowed to
+   * be bigger than the viewport. */
+  flex-shrink: 0;
+  position: relative;
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 70px rgba(0,0,0,.6), 0 0 0 1px rgba(201,162,75,.05) inset;
+  transform: scale(var(--ui-scale, 1));
+  transform-origin: center center;
+  overflow: hidden;
+  animation: riseIn .16s var(--ease);
+}
+@keyframes riseIn { from { opacity: 0; transform: scale(var(--ui-scale, 1)) translateY(10px); } }
+
+/* ------------------------------------------------------- resize grip --- *
+ * Bottom-right corner drag handle. Lives inside the panel (which is the
+ * containing block — it is transform-scaled), so it rides the scale like
+ * everything else and the pointer math converts back with / uiScale.
+ * #hints reserves padding-right for it so a hint can never sit under it.   */
+#resize-grip {
+  position: absolute; right: 0; bottom: 0;
+  width: 26px; height: 26px;
+  z-index: 15;
+  cursor: nwse-resize;
+  border-bottom-right-radius: var(--radius);
+  background:
+    linear-gradient(135deg, transparent 0 48%, var(--gold-line) 48% 56%, transparent 56% 68%,
+                    var(--gold-line) 68% 76%, transparent 76%);
+  opacity: .55;
+  transition: opacity .12s var(--ease), background-color .12s var(--ease);
+}
+#resize-grip:hover, body.resizing #resize-grip { opacity: 1; background-color: var(--gold-wash); }
+#resize-grip:focus-visible { outline: none; opacity: 1; box-shadow: inset 0 0 0 2px var(--gold); }
+/* while dragging: one cursor everywhere, and no hover paint chasing the pointer */
+body.resizing { cursor: nwse-resize; }
+body.resizing #panel { animation: none; }
+body.resizing .spell, body.resizing .rail-item, body.resizing .combo-card { pointer-events: none; }
+
+/* ----------------------------------------------------------- header --- */
+
+#md-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 17px 20px 15px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(201,162,75,.05), transparent);
+}
+.title-wrap { display: flex; align-items: baseline; gap: 12px; }
+#md-header h1 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 26px; font-weight: 600; letter-spacing: 5px;
+  color: var(--gold);
+  text-shadow: 0 1px 0 rgba(0,0,0,.5);
+}
+#count-chip {
+  font: 600 13px/1 Consolas, monospace;
+  color: var(--gold-soft);
+  background: var(--gold-wash);
+  border: 1px solid var(--gold-line);
+  border-radius: 20px;
+  padding: 5px 11px;
+  min-width: 26px; text-align: center;
+}
+.header-actions { display: flex; gap: 9px; }
+
+/* ------------------------------------------------------ ghost button --- */
+
+.ghost-btn {
+  font: 600 15px/1 "Segoe UI", sans-serif;
+  color: var(--text-2);
+  background: var(--raised);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-xs);
+  padding: 9px 16px;
+  cursor: pointer;
+  transition: background .12s var(--ease), color .12s var(--ease), border-color .12s var(--ease);
+}
+.ghost-btn:hover { background: var(--raised-2); color: var(--text); border-color: var(--gold-line); }
+.ghost-btn:active { transform: translateY(1px); }
+.ghost-btn:focus-visible { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px var(--gold-glow); }
+.ghost-btn.close { padding: 9px 13px; }
+.ghost-btn.on { color: var(--panel-b); background: var(--gold); border-color: var(--gold); }
+.ghost-btn.on:hover { background: var(--gold-bright); }
+
+/* -------------------------------------------------------------- body --- */
+
+#body { flex: 1; display: flex; min-height: 0; }
+
+/* ------------------------------------------------------- category rail --- */
+
+/* Rail keeps the /uiScale invariant too: a big --ui-scale shrinks the panel's
+ * LAYOUT width (see #panel), so a fixed 280px rail would eat a third of it.
+ * 26vw/scale tracks the panel that the viewport media queries below can't see;
+ * max-width is a % of #body — i.e. of the PANEL — so a panel dragged down to
+ * the 720px floor gets a proportional rail too, without container queries. */
+#rail {
+  width: min(280px, calc(26vw / var(--ui-scale, 1))); flex-shrink: 0;
+  max-width: 34%;
+  display: flex; flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: rgba(0,0,0,.16);
+  padding: 12px 10px;
+  overflow-y: auto;
+}
+#rail-list { display: flex; flex-direction: column; gap: 4px; }
+
+.rail-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 13px;
+  border-radius: var(--radius-xs);
+  border: 1px solid transparent;
+  color: var(--text-2);
+  font-size: 16px; font-weight: 500;
+  cursor: pointer;
+  transition: background .12s var(--ease), color .12s var(--ease), border-color .12s var(--ease);
+}
+.rail-item:hover { background: var(--gold-wash); color: var(--text); }
+.rail-item.sel {
+  background: linear-gradient(90deg, var(--gold-glow), transparent);
+  border-color: var(--gold-line);
+  color: var(--gold-bright);
+}
+.rail-item .rail-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-item .rail-count {
+  font: 600 12px/1 Consolas, monospace;
+  color: var(--dim);
+  background: rgba(255,255,255,.04);
+  border-radius: 10px; padding: 4px 9px;
+}
+.rail-item.sel .rail-count { color: var(--gold-soft); background: var(--gold-wash); }
+.rail-item.all { border-bottom: 1px solid var(--line-3); border-radius: var(--radius-xs); margin-bottom: 4px; }
+.rail-item.all .rail-name { font-weight: 600; letter-spacing: .3px; }
+
+/* rail — per-category glyphs. Fixed square so every name starts on the same
+ * vertical line whether or not its category carries one; railIconEl() only
+ * emits the slot when the rail is decorated (or in edit mode), so an
+ * undecorated rail is byte-for-byte the old layout. */
+.rail-item .rail-ic {
+  flex-shrink: 0; width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 5px; padding: 0;
+  background: none; border: 0;
+  transition: background .12s var(--ease), border-color .12s var(--ease);
+}
+.rail-item .rail-ic img {
+  width: 100%; height: 100%; object-fit: contain; display: block;
+  pointer-events: none; -webkit-user-drag: none;
+  opacity: .82; transition: opacity .12s var(--ease);
+}
+.rail-item:hover .rail-ic img, .rail-item.sel .rail-ic img { opacity: 1; }
+/* edit mode: the slot IS the affordance — dashed well + ＋, the deck's idiom */
+.rail-item button.rail-ic.pick { cursor: pointer; }
+.rail-item button.rail-ic.pick.empty {
+  border: 1px dashed var(--line-3);
+  background: rgba(255,255,255,.02);
+}
+.rail-item button.rail-ic.pick.empty::after {
+  content: '＋'; font-size: 12px; line-height: 1; color: var(--dim);
+}
+.rail-item button.rail-ic.pick:hover { border-color: var(--gold-line); background: var(--gold-wash); }
+.rail-item button.rail-ic.pick:hover::after { color: var(--gold); }
+
+/* rail — edit mode */
+.rail-item.edit { cursor: default; padding: 8px 9px; gap: 7px; }
+.rail-item .drag-h {
+  cursor: grab; color: var(--dim-2); font-size: 16px; padding: 0 2px;
+  flex-shrink: 0; line-height: 1;
+}
+.rail-item .drag-h:hover { color: var(--gold); }
+.rail-item.dragging { opacity: .5; }
+.rail-item.drop-before { box-shadow: 0 -2px 0 var(--gold); }
+.rail-item.drop-after  { box-shadow: 0 2px 0 var(--gold); }
+.rail-item .rail-rename {
+  flex: 1; min-width: 0;
+  font: 500 15px/1 "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--sunk);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-xs);
+  padding: 8px 10px;
+}
+.rail-item .rail-rename:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px var(--gold-glow); }
+.icon-btn {
+  flex-shrink: 0;
+  width: 30px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 16px; line-height: 1;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: background .12s var(--ease), color .12s var(--ease), border-color .12s var(--ease);
+}
+.icon-btn:hover { background: rgba(255,255,255,.05); color: var(--text); }
+.icon-btn.danger:hover { color: var(--danger-soft); border-color: var(--danger-line); background: var(--danger-bg); }
+.icon-btn.confirm { color: var(--danger-soft); background: var(--danger-bg); border-color: var(--danger-line); }
+
+.rail-add {
+  margin-top: 10px;
+  font: 600 14px/1 "Segoe UI", sans-serif;
+  color: var(--gold-soft);
+  background: transparent;
+  border: 1px dashed var(--line-2);
+  border-radius: var(--radius-xs);
+  padding: 11px;
+  cursor: pointer;
+  transition: background .12s var(--ease), border-color .12s var(--ease), color .12s var(--ease);
+}
+.rail-add:hover { background: var(--gold-wash); border-color: var(--gold-line); color: var(--gold-bright); }
+
+/* --------------------------------------------------------------- main --- */
+
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 14px 18px 18px; }
+
+/* wraps rather than crushes: at a small panel (dragged to the 720px floor, or
+ * a high --ui-scale) the edit-mode controls drop to their own row instead of
+ * squeezing the search box into a sliver and overflowing #main. */
+#toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
+#edit-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex-shrink: 0; }
+#search-wrap { flex: 1 1 240px; min-width: 0; position: relative; display: flex; align-items: center; }
+.search-ic {
+  position: absolute; left: 14px;
+  color: var(--dim); font-size: 19px; pointer-events: none;
+}
+#search, #add-search, #icon-search {
+  width: 100%;
+  font: 400 17px/1 "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--sunk);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-s);
+  padding: 13px 16px 13px 42px;
+  transition: border-color .12s var(--ease), box-shadow .12s var(--ease);
+}
+#search::placeholder, #add-search::placeholder, #icon-search::placeholder { color: var(--dim-2); }
+#search:focus, #add-search:focus, #icon-search:focus { outline: none; border-color: var(--gold-line); box-shadow: 0 0 0 3px var(--gold-glow); }
+
+.scale-ctl {
+  display: flex; align-items: center; gap: 7px;
+  background: var(--sunk);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-s);
+  padding: 6px 8px;
+}
+#scale-val { font: 600 12.5px/1 Consolas, monospace; color: var(--dim); min-width: 42px; text-align: center; }
+/* live panel-size readout — "Auto" until the grip is dragged, then "1500×1000" */
+#panel-size-val { font: 600 12.5px/1 Consolas, monospace; color: var(--dim); min-width: 76px; text-align: center; }
+#panel-size-val.custom { color: var(--gold-soft); }
+.mini-btn {
+  font: 600 15px/1 "Segoe UI", sans-serif;
+  color: var(--text-2);
+  background: var(--raised);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-xs);
+  width: 30px; height: 30px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background .12s var(--ease), color .12s var(--ease);
+}
+.mini-btn.wide { width: auto; padding: 0 10px; font-size: 12.5px; }
+.mini-btn:hover:not(:disabled) { background: var(--raised-2); color: var(--text); }
+.mini-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+/* open-key card */
+/* When the panel is dragged near its 560px floor IN EDIT MODE this card and
+ * the spell list compete for the same few hundred px. The card gives way
+ * first (min-height:0 lets flex shrink it, overflow-y keeps its rows
+ * reachable) so #list can hold its own min-height and never collapses to a
+ * sliver of a row. At any normal size neither ever scrolls. */
+#openkey-card {
+  background: var(--raised);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-s);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  min-height: 0; overflow-y: auto;
+  animation: fadeIn .14s var(--ease);
+}
+.ok-row { display: flex; align-items: center; gap: 14px; }
+.ok-row + .ok-row { margin-top: 10px; }
+.ok-toggle {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin-top: 12px; padding: 2px 2px 0;
+  font-size: 13.5px; color: var(--text-2); line-height: 1.45;
+  cursor: pointer; user-select: none;
+}
+.ok-toggle input[type="checkbox"] {
+  flex-shrink: 0; margin-top: 1px;
+  width: 18px; height: 18px;
+  accent-color: var(--gold);
+  cursor: pointer;
+}
+.ok-toggle:hover { color: var(--text); }
+.ok-label { font-size: 14.5px; color: var(--text-2); font-weight: 600; }
+.ok-hint { font-size: 13px; color: var(--dim-2); flex: 1; }
+.keycap {
+  font: 600 14px/1 Consolas, monospace;
+  color: var(--gold-soft);
+  background: var(--sunk);
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius-xs);
+  padding: 9px 15px; cursor: pointer;
+  transition: background .12s var(--ease), box-shadow .12s var(--ease);
+}
+.keycap:hover { background: var(--gold-wash); }
+.keycap:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--gold-glow); }
+.keycap.capturing { animation: capturePulse 1s ease-in-out infinite; }
+
+/* ------------------------------------------------------------- list --- */
+
+#list {
+  flex: 1; min-height: 84px;   /* never collapses below ~a row (see #openkey-card) */
+  overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 3px;
+}
+
+.spell {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 17px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  transition: background .12s var(--ease), border-color .12s var(--ease), transform .06s var(--ease);
+}
+.spell:hover { background: var(--raised-2); border-color: var(--line-2); }
+.spell:active { transform: translateY(1px); }
+.spell.sel { border-color: var(--gold-line); box-shadow: 0 0 0 2px var(--gold-glow); }
+.spell.equipped { border-color: var(--equip-line); background: linear-gradient(90deg, rgba(143,209,158,.06), var(--raised)); }
+.spell.flash { animation: flashFire .4s var(--ease); }
+
+/* --icon-px is the spell-row icon box, set by the Icon size control (JS clamps
+ * it 28-96 and persists it as magic.iconPx). Everything inside scales off it so
+ * one number moves the art, the glyph and the row height together. */
+.spell .glyph {
+  flex-shrink: 0;
+  width: var(--icon-px, 44px); height: var(--icon-px, 44px);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: calc(var(--icon-px, 44px) * 0.43); border-radius: var(--radius-xs);
+  background: var(--sunk); border: 1px solid var(--line-2);
+  color: var(--gold-soft);
+}
+.spell .glyph svg { width: calc(var(--icon-px, 44px) * 0.59); height: calc(var(--icon-px, 44px) * 0.59); display: block; }
+.glyph svg { width: 26px; height: 26px; display: block; }
+
+/* real image icons (Spell Hotbar library / icons/custom) inside the glyph box */
+.glyph.img { padding: 3px; }
+.spell .glyph.img { padding: calc(var(--icon-px, 44px) * 0.07); }
+.glyph.img img {
+  width: 100%; height: 100%;
+  object-fit: contain; display: block;
+  pointer-events: none;
+  border-radius: 4px;
+}
+.cc-glyphs .glyph.img, .ctx-member .glyph.img { padding: 1px; }
+.cc-glyphs .glyph.img img, .ctx-member .glyph.img img { border-radius: 50%; }
+/* edit mode: the glyph doubles as the icon-picker button */
+body.editing .spell .glyph.pickable { cursor: pointer; }
+body.editing .spell .glyph.pickable:hover {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px var(--gold-glow);
+}
+/* equipped: keep the element/school colour; signal state with a verdant ring */
+.spell.equipped .glyph { border-color: var(--equip-line); box-shadow: inset 0 0 0 1px var(--equip-line); }
+
+.spell .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.spell .name {
+  font-size: 17px; font-weight: 500; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.spell .name mark { background: transparent; color: var(--gold-bright); font-weight: 700; }
+.spell .sub { font-size: 13px; color: var(--dim-2); display: flex; gap: 10px; align-items: center; }
+.spell .sub .plugin { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; }
+
+/* badges */
+.tag {
+  font: 600 11.5px/1 "Segoe UI", sans-serif;
+  letter-spacing: .4px; text-transform: uppercase;
+  padding: 4px 9px; border-radius: 20px;
+  border: 1px solid transparent; flex-shrink: 0;
+}
+.tag.cast  { color: var(--cast);  background: var(--cast-bg);  border-color: var(--cast-line); }
+.tag.equip { color: var(--equip); background: var(--equip-bg); border-color: var(--equip-line); }
+.tag.voice { color: var(--voice); background: var(--voice-bg); border-color: var(--voice-line); }
+.tag.type  { color: var(--dim);   background: rgba(255,255,255,.03); border-color: var(--line-2); text-transform: none; letter-spacing: 0; }
+
+/* equipped hand indicator (view mode) */
+.hand-state { display: flex; gap: 5px; flex-shrink: 0; }
+.hand-pip {
+  font: 600 11.5px/1 Consolas, monospace;
+  width: 25px; height: 25px; border-radius: var(--radius-xs);
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--dim-2); background: var(--sunk); border: 1px solid var(--line-2);
+}
+.hand-pip.on { color: var(--equip); border-color: var(--equip-line); background: var(--equip-bg); }
+
+/* --------------------------------------------------- list: edit mode --- */
+
+.spell.edit { cursor: default; gap: 11px; padding: 10px 12px; flex-wrap: wrap; }
+.spell.edit .drag-h { cursor: grab; color: var(--dim-2); font-size: 17px; padding: 0 2px; }
+.spell.edit .drag-h:hover { color: var(--gold); }
+.spell.edit .body { flex: 1 1 220px; }
+
+/* segmented toggle (mode + hand) */
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--radius-xs); overflow: hidden; flex-shrink: 0; }
+.seg button {
+  font: 600 13px/1 "Segoe UI", sans-serif;
+  color: var(--dim); background: var(--sunk);
+  border: none; border-right: 1px solid var(--line-2);
+  padding: 8px 11px; cursor: pointer; min-width: 36px;
+  transition: background .12s var(--ease), color .12s var(--ease);
+}
+.seg button:last-child { border-right: none; }
+.seg button:hover { color: var(--text); background: var(--raised-2); }
+.seg button.on { color: var(--panel-b); background: var(--gold); }
+.seg.mode button.on.cast  { background: var(--cast);  color: #071019; }
+.seg.mode button.on.equip { background: var(--equip); color: #06140a; }
+.seg[aria-disabled="true"] { opacity: .4; pointer-events: none; }
+
+.cat-select {
+  font: 500 13.5px/1 "Segoe UI", sans-serif;
+  color: var(--text-2); background: var(--sunk);
+  border: 1px solid var(--line-2); border-radius: var(--radius-xs);
+  padding: 8px 10px; cursor: pointer; max-width: 165px;
+}
+.cat-select:focus { outline: none; border-color: var(--gold); }
+
+.voice-chip {
+  font: 600 12px/1 "Segoe UI", sans-serif; letter-spacing: .3px;
+  color: var(--voice); background: var(--voice-bg);
+  border: 1px solid var(--voice-line); border-radius: var(--radius-xs);
+  padding: 8px 10px; flex-shrink: 0;
+}
+
+/* --------------------------------------------------- add spell button --- */
+
+#add-spell-btn {
+  margin-top: 12px;
+  font: 600 15.5px/1 "Segoe UI", sans-serif;
+  color: var(--gold-soft);
+  background: var(--gold-wash);
+  border: 1px dashed var(--gold-line);
+  border-radius: var(--radius-s);
+  padding: 15px; cursor: pointer;
+  transition: background .12s var(--ease), color .12s var(--ease);
+}
+#add-spell-btn:hover { background: rgba(201,162,75,.12); color: var(--gold-bright); }
+
+/* --------------------------------------------- removed from spellbook --- *
+ * Collapsible drawer under the add-spell button: spells the player pulled
+ * OUT of their spellbook (engine RemoveSpell). Non-destructive — every row's
+ * ↩ Restore calls AddSpell to bring it straight back. The list is persisted
+ * in hotkeys.json (magic.removed), so it survives reloads. Sits last in
+ * #main (flex column); #list keeps flex:1 and the body scrolls internally,
+ * so a long removed list never grows the panel or overlaps the list.        */
+#removed-section { margin-top: 12px; flex-shrink: 0; display: flex; flex-direction: column; }
+
+.removed-head {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  font: 600 14px/1 "Segoe UI", sans-serif;
+  color: var(--dim); background: var(--sunk);
+  border: 1px solid var(--line); border-radius: var(--radius-s);
+  padding: 11px 13px; cursor: pointer;
+  transition: background .12s var(--ease), color .12s var(--ease), border-color .12s var(--ease);
+}
+.removed-head:hover { background: var(--raised); color: var(--text-2); border-color: var(--line-2); }
+.removed-head.open { color: var(--text-2); border-radius: var(--radius-s) var(--radius-s) 0 0; }
+.rh-caret { flex-shrink: 0; width: 14px; font-size: 12px; color: var(--dim-2); text-align: center; }
+.rh-title { flex: 1; text-align: left; letter-spacing: .2px; }
+.rh-count {
+  flex-shrink: 0; min-width: 24px; text-align: center;
+  font: 700 12px/1 Consolas, monospace;
+  color: var(--danger); background: var(--danger-bg);
+  border: 1px solid var(--danger-line); border-radius: 20px;
+  padding: 4px 10px;
+}
+
+.removed-body {
+  display: flex; flex-direction: column; gap: 5px;
+  max-height: 240px; overflow-y: auto;
+  padding: 10px;
+  background: var(--panel-b);
+  border: 1px solid var(--line); border-top: none;
+  border-radius: 0 0 var(--radius-s) var(--radius-s);
+  animation: fadeIn .12s var(--ease);
+}
+.removed-note { font-size: 12.5px; line-height: 1.45; color: var(--dim-2); padding: 2px 4px 7px; }
+
+.removed-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 11px;
+  background: var(--raised); border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  transition: background .12s var(--ease), border-color .12s var(--ease);
+}
+.removed-row:hover { background: var(--raised-2); border-color: var(--line-2); }
+.removed-row .glyph {
+  flex-shrink: 0; width: 33px; height: 33px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-xs);
+  background: var(--sunk); border: 1px solid var(--line-2);
+  color: var(--gold-soft); opacity: .82;
+}
+.removed-row .glyph svg { width: 19px; height: 19px; display: block; }
+.removed-row .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.removed-row .name {
+  font-size: 15px; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.removed-row .sub { font-size: 12.5px; color: var(--dim-2); display: flex; gap: 8px; }
+.removed-row .sub .plugin { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+
+.restore-btn {
+  flex-shrink: 0;
+  font: 600 13px/1 "Segoe UI", sans-serif;
+  color: var(--equip); background: var(--equip-bg);
+  border: 1px solid var(--equip-line); border-radius: var(--radius-xs);
+  padding: 8px 13px; cursor: pointer;
+  transition: background .12s var(--ease), filter .12s var(--ease), transform .06s var(--ease);
+}
+.restore-btn:hover { background: rgba(143,209,158,.16); filter: brightness(1.08); }
+.restore-btn:active { transform: translateY(1px); }
+
+/* ------------------------------------------------------ empty states --- */
+
+#empty-state, #add-empty {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  text-align: center; gap: 10px; padding: 36px 24px;
+  color: var(--dim);
+}
+#empty-state .em-ic, #add-empty .em-ic { font-size: 42px; opacity: .5; }
+#empty-state .em-title { font-size: 18px; color: var(--text-2); font-weight: 600; }
+#empty-state .em-sub, #add-empty .em-sub { font-size: 14.5px; color: var(--dim-2); max-width: 400px; line-height: 1.5; }
+
+/* ------------------------------------------------------------ hints --- *
+ * padding-right clears #resize-grip's 26px corner so the last hint can
+ * never end up underneath the drag handle.                              */
+
+#hints {
+  display: flex; gap: 20px; flex-wrap: wrap;
+  padding: 11px 20px;
+  padding-right: 40px;
+  border-top: 1px solid var(--line);
+  background: rgba(0,0,0,.2);
+  font-size: 13px; color: var(--dim-2);
+}
+#hints span { display: inline-flex; align-items: center; }
+
+/* --------------------------------------------------- add-spell modal --- */
+
+#add-modal, #capture-modal, #icon-modal {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.55);
+  animation: fadeIn .12s var(--ease);
+  z-index: 20;
+}
+.add-box {
+  width: min(720px, 90%); max-height: 84%;
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  animation: riseIn .16s var(--ease);
+  overflow: hidden;
+}
+.add-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 15px 18px; border-bottom: 1px solid var(--line);
+}
+.add-title { font-size: 16.5px; color: var(--text-2); }
+.add-title b { color: var(--gold-soft); }
+.add-search-wrap { position: relative; display: flex; align-items: center; padding: 14px 16px 10px; }
+.add-search-wrap .search-ic { left: 30px; }
+#add-list { flex: 1; overflow-y: auto; padding: 5px 12px 12px; display: flex; flex-direction: column; gap: 4px; }
+
+.known {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+}
+.known:hover { border-color: var(--line-2); background: var(--raised-2); }
+.known.added { opacity: .55; }
+.known .glyph {
+  flex-shrink: 0; width: 38px; height: 38px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 16px; border-radius: var(--radius-xs);
+  background: var(--sunk); border: 1px solid var(--line-2); color: var(--gold-soft);
+}
+.known .body { flex: 1; min-width: 0; }
+.known .name { font-size: 15.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.known .name mark { background: transparent; color: var(--gold-bright); font-weight: 700; }
+.known .sub { font-size: 12.5px; color: var(--dim-2); display: flex; gap: 8px; }
+.known .adds { display: flex; gap: 6px; flex-shrink: 0; }
+.add-btn2 {
+  font: 600 14.5px/1 "Segoe UI", sans-serif;
+  border-radius: var(--radius-xs); padding: 9px 13px; cursor: pointer;
+  border: 1px solid transparent;
+  transition: filter .12s var(--ease), transform .06s var(--ease);
+}
+.add-btn2:active { transform: translateY(1px); }
+.add-btn2.cast  { color: #071019; background: var(--cast); }
+.add-btn2.equip { color: #06140a; background: var(--equip); }
+.add-btn2:hover { filter: brightness(1.12); }
+.known .done-mark { font-size: 14.5px; color: var(--equip); flex-shrink: 0; padding: 0 5px; }
+
+/* ---- glyph icons: engine-classified school / element / archetype -------- *
+ * Each glyph's <svg> paints in currentColor; these rules set that colour by
+ * icon key. They sit AFTER `.spell .glyph` / `.known .glyph` (equal 0-0-2-0
+ * specificity) so source order wins and the tint beats the gold default.    */
+.known .glyph svg { width: 22px; height: 22px; }
+
+.glyph.ic-fire        { color: #e8935a; }  /* Destruction · flame   */
+.glyph.ic-frost       { color: #7fb6e0; }  /* Destruction · frost   */
+.glyph.ic-shock       { color: #e6cf6a; }  /* Destruction · shock   */
+.glyph.ic-destruction { color: #d98a6a; }  /* Destruction · other   */
+.glyph.ic-restoration { color: #dcc98a; }  /* Restoration           */
+.glyph.ic-alteration  { color: #7fd0c0; }  /* Alteration            */
+.glyph.ic-conjuration { color: #b79ae0; }  /* Conjuration           */
+.glyph.ic-illusion    { color: #d98ac0; }  /* Illusion              */
+.glyph.ic-bound       { color: #b79ae0; }  /* Conjuration · bound   */
+.glyph.ic-summon      { color: #b79ae0; }  /* Conjuration · summon  */
+.glyph.ic-reanimate   { color: #a6b58a; }  /* Conjuration · undead  */
+.glyph.ic-light       { color: #e6d79a; }  /* Alteration · light    */
+.glyph.ic-power       { color: var(--gold); }       /* power / lesser power */
+.glyph.ic-shout       { color: #d9b06a; }  /* voice power (shout)   */
+.glyph.ic-spell       { color: var(--gold-soft); }  /* unclassified fallback */
+
+/* ---- right-click context menu (Cast / Equip · hand / Remove) ------------ *
+ * Appended to #overlay (fixed inset:0, untransformed) so left/top == the
+ * cursor's clientX/Y even though #panel is transform-scaled by --ui-scale.  */
+#ctx-menu {
+  position: absolute; z-index: 60; min-width: 300px; max-width: 380px;
+  padding: 6px;
+  background: linear-gradient(180deg, var(--raised-2), var(--raised));
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius-s);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, .62), 0 0 0 1px rgba(0, 0, 0, .35);
+  animation: ctxIn .11s var(--ease);
+}
+@keyframes ctxIn { from { opacity: 0; transform: translateY(-5px) scale(.98); } }
+.ctx-head {
+  font: 600 16px/1.2 "Segoe UI", sans-serif; letter-spacing: .2px;
+  color: var(--gold-soft);
+  padding: 8px 10px 7px; margin-bottom: 5px;
+  border-bottom: 1px solid var(--line);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ctx-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  font: 500 15.5px/1 "Segoe UI", sans-serif; text-align: left;
+  color: var(--text-2); background: transparent;
+  border: 1px solid transparent; border-radius: var(--radius-xs);
+  padding: 10px 12px; cursor: pointer;
+  transition: background .12s var(--ease), color .12s var(--ease);
+}
+.ctx-item:hover { background: var(--gold-wash); color: var(--text); }
+.ctx-item:focus-visible { outline: none; border-color: var(--gold-line); background: var(--gold-wash); }
+.ctx-item.active { color: var(--gold-bright); }
+.ctx-item.active .ctx-check { color: var(--gold); }
+.ctx-item.danger { color: var(--danger); }
+.ctx-item.danger:hover { background: var(--danger-bg); color: var(--danger-soft); }
+/* armed (2nd-click confirms): filled + ringed so the "click again" is unmistakable */
+.ctx-item.danger.confirm {
+  color: var(--danger-soft); background: var(--danger-bg);
+  border-color: var(--danger-line); box-shadow: inset 0 0 0 1px var(--danger-line);
+}
+.ctx-item.danger.confirm:hover { background: rgba(217,138,138,.14); }
+.ctx-check { flex-shrink: 0; width: 16px; text-align: center; font-size: 14px; color: var(--gold); }
+.ctx-lbl   { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-sep   { height: 1px; background: var(--line); margin: 5px 7px; }
+
+/* ---- spell combos (drag spells together → one click casts them all) ---- *
+ * A wrapping strip of pill cards above the list. Violet = the arcane-group
+ * accent (shared with voice/power). Scrolls internally past ~3 rows so a
+ * combo collector's strip can't squeeze the spell list off the panel.       */
+#combo-strip {
+  flex-shrink: 0;
+  display: flex; flex-wrap: wrap; align-content: flex-start; gap: 8px;
+  padding: 9px; margin-bottom: 10px;
+  background: var(--sunk);
+  border: 1px solid var(--line-3);
+  border-radius: var(--radius-s);
+  max-height: 142px; overflow-y: auto;
+}
+#combo-strip::-webkit-scrollbar { width: 10px; }
+#combo-strip::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; }
+.combo-card {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 7px 12px 7px 8px;
+  max-width: 300px;
+  background: linear-gradient(180deg, var(--raised-2), var(--raised));
+  border: 1px solid var(--voice-line);
+  border-radius: 18px;
+  cursor: pointer;
+  transition: border-color .12s var(--ease), background .12s var(--ease),
+              box-shadow .12s var(--ease), transform .12s var(--ease);
+}
+.combo-card:hover  { border-color: var(--voice); background: var(--raised-2); }
+.combo-card:active { transform: translateY(1px); }
+.combo-card.flash  { animation: flashFire .4s var(--ease); }
+.combo-card.drop-into {
+  border-color: var(--gold); background: var(--gold-wash);
+  box-shadow: 0 0 0 2px var(--gold-glow);
+}
+.combo-card.drop-before { box-shadow: -2px 0 0 var(--gold); }
+.combo-card.drop-after  { box-shadow: 2px 0 0 var(--gold); }
+.cc-glyphs { display: inline-flex; flex-shrink: 0; }
+.cc-glyphs .glyph {
+  width: 27px; height: 27px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--sunk); border: 1px solid var(--line-2);
+  margin-left: -9px;
+}
+.cc-glyphs .glyph:first-child { margin-left: 0; }
+.cc-glyphs .glyph svg { width: 15px; height: 15px; display: block; }
+.cc-more { font-size: 12px; color: var(--dim); flex-shrink: 0; }
+.cc-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 14.5px; font-weight: 600; color: var(--text-2);
+}
+.combo-card:hover .cc-name { color: var(--text); }
+.cc-count {
+  flex-shrink: 0; font-size: 11.5px; font-weight: 600;
+  color: var(--voice); background: var(--voice-bg);
+  border: 1px solid var(--voice-line); border-radius: 9px; padding: 2px 8px;
+}
+/* ghost target shown while a spell is being dragged in view mode */
+.combo-new {
+  display: inline-flex; align-items: center;
+  padding: 7px 15px;
+  border: 1px dashed var(--gold-line); border-radius: 18px;
+  background: var(--gold-wash);
+  color: var(--gold-soft); font-size: 14.5px; font-weight: 600;
+  transition: border-color .12s var(--ease), box-shadow .12s var(--ease);
+}
+.combo-new.drop-into { border-style: solid; border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold-glow); }
+/* whole-view cursor while a pointer drag is in flight */
+body.pdragging, body.pdragging .spell, body.pdragging .combo-card,
+body.pdragging .rail-item { cursor: grabbing; }
+
+/* a spell row lit up as a "merge with me" target during the drag */
+.spell.combo-target {
+  border-color: var(--gold); background: var(--gold-wash);
+  box-shadow: 0 0 0 2px var(--gold-glow);
+}
+
+/* combo right-click menu internals (rename head, ordered member rows) */
+.ctx-head.combo { padding: 5px 6px 7px; }
+.ctx-rename {
+  width: 100%;
+  font: 600 15px/1.2 "Segoe UI", sans-serif;
+  color: var(--gold-bright);
+  background: var(--sunk);
+  border: 1px solid var(--line-2); border-radius: var(--radius-xs);
+  padding: 9px 12px; outline: none;
+}
+.ctx-rename:focus { border-color: var(--gold-line); box-shadow: 0 0 0 2px var(--gold-glow); }
+.ctx-rename::placeholder { color: var(--dim); font-weight: 500; }
+.ctx-member { display: flex; align-items: center; gap: 10px; padding: 8px 11px; }
+.ctx-member .glyph {
+  width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--sunk); border: 1px solid var(--line-2);
+}
+.ctx-member .glyph svg { width: 13px; height: 13px; display: block; }
+.cm-ord { flex-shrink: 0; width: 16px; text-align: right; font-size: 12px; color: var(--dim-2); }
+.cm-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; color: var(--text-2); }
+.cm-btn {
+  flex-shrink: 0; width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 14px; color: var(--dim);
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: color .12s var(--ease), background .12s var(--ease);
+}
+.cm-btn:hover { color: var(--gold-bright); background: var(--gold-wash); }
+.cm-btn:disabled { opacity: .3; cursor: default; }
+.cm-btn:disabled:hover { color: var(--dim); background: transparent; }
+.cm-btn.danger:hover { color: var(--danger-soft); background: var(--danger-bg); }
+.ctx-hint { padding: 6px 11px 4px; font-size: 13px; color: var(--dim-2); }
+
+.add-foot { padding: 11px 17px; border-top: 1px solid var(--line); }
+.add-legend { font-size: 13px; color: var(--dim-2); }
+.add-legend .tag { padding: 3px 8px; }
+.add-loading { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 36px; color: var(--dim); font-size: 15px; }
+.spinner {
+  width: 19px; height: 19px; border-radius: 50%;
+  border: 2px solid var(--line-2); border-top-color: var(--gold);
+  animation: spin .7s linear infinite;
+}
+
+/* skeleton rows while known spells load */
+.skel {
+  height: 56px; border-radius: var(--radius-s);
+  background: linear-gradient(90deg, var(--raised) 25%, var(--raised-2) 50%, var(--raised) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+}
+
+/* ------------------------------------------------------- capture box --- */
+
+.capture-box {
+  width: min(540px, 86%);
+  text-align: center;
+  background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius);
+  padding: 32px 30px 25px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  animation: capturePulse 1.4s ease-in-out infinite;
+}
+.capture-title { font-size: 19.5px; color: var(--gold-bright); font-weight: 600; margin-bottom: 10px; }
+.capture-sub { font-size: 14.5px; color: var(--dim); line-height: 1.5; margin-bottom: 20px; }
+
+/* ------------------------------------------------------------ toast --- */
+
+#toast {
+  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
+  background: var(--raised-2);
+  border: 1px solid var(--gold-line);
+  color: var(--text);
+  font-size: 15px; font-weight: 500;
+  padding: 11px 20px; border-radius: 20px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  animation: toastIn .18s var(--ease);
+  z-index: 40; max-width: 80%; text-align: center;
+}
+
+/* --------------------------------------------------------- animation --- */
+
+@keyframes fadeIn { from { opacity: 0; } }
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, 8px); } }
+@keyframes flashFire {
+  0% { background: rgba(201,162,75,.28); border-color: var(--gold); }
+  100% { background: var(--raised); }
+}
+@keyframes capturePulse {
+  0%, 100% { box-shadow: 0 20px 60px rgba(0,0,0,.6), 0 0 0 0 rgba(201,162,75,.0); }
+  50% { box-shadow: 0 20px 60px rgba(0,0,0,.6), 0 0 0 4px rgba(201,162,75,.18); }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* ---- per-spell icon picker ---------------------------------------------- *
+ * Searchable grid over the whole extracted library (~1900 icons) + the live
+ * icons/custom folder. Renders in chunks (scroll appends more) so opening it
+ * never decodes two thousand images at once.                                 */
+.icon-box {
+  width: min(880px, 94%); max-height: 88%;
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  animation: riseIn .16s var(--ease);
+  overflow: hidden;
+}
+#icon-grid {
+  flex: 1; overflow-y: auto;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(82px, 1fr));
+  gap: 8px; padding: 8px 14px 14px;
+  align-content: start;
+}
+.icon-sect {
+  grid-column: 1 / -1;
+  font: 600 13px/1 "Segoe UI", sans-serif; letter-spacing: .6px; text-transform: uppercase;
+  color: var(--dim); padding: 10px 2px 5px;
+  border-bottom: 1px solid var(--line-3);
+}
+.icon-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 9px 5px 7px;
+  background: var(--raised); border: 1px solid var(--line);
+  border-radius: var(--radius-s); cursor: pointer;
+  transition: background .12s var(--ease), border-color .12s var(--ease), transform .06s var(--ease);
+}
+.icon-tile:hover { background: var(--raised-2); border-color: var(--gold-line); }
+.icon-tile:active { transform: translateY(1px); }
+.icon-tile.sel { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold-glow); }
+.icon-tile .tile-img {
+  width: 56px; height: 56px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--sunk); border: 1px solid var(--line-2); border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+.icon-tile .tile-img img { width: 52px; height: 52px; object-fit: contain; display: block; pointer-events: none; }
+.icon-tile .tile-img .glyph { width: 52px; height: 52px; background: transparent; border: none; }
+.icon-tile .tile-lbl {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px; color: var(--dim); line-height: 1.2;
+}
+.icon-tile:hover .tile-lbl { color: var(--text-2); }
+.icon-tile.auto .tile-img { border-style: dashed; }
+.icon-more {
+  grid-column: 1 / -1; text-align: center;
+  font-size: 13px; color: var(--dim); padding: 10px 0 3px;
+}
+.icon-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 11px 17px; border-top: 1px solid var(--line);
+}
+.icon-hint { font-size: 13px; color: var(--dim-2); }
+.icon-drop-hint {
+  padding: 0 17px 13px; font-size: 12.5px; color: var(--dim-2); line-height: 1.5;
+}
+.icon-drop-hint b { color: var(--dim); font-weight: 600; word-break: break-all; }
+#icon-grid::-webkit-scrollbar { width: 10px; }
+#icon-grid::-webkit-scrollbar-thumb {
+  background: var(--line); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box;
+}
+
+/* ---- hover description tooltip ------------------------------------------ *
+ * Sits in #overlay (fixed inset:0, untransformed, like #ctx-menu) so left/top
+ * ARE screen px and the viewport clamping math holds — inside #panel the
+ * transform would re-interpret them in the panel's pre-scale local space.
+ * It still carries the scale itself so it matches the panel's type size, with
+ * transform-origin: top left so the placed corner stays the visual corner.
+ * Width is therefore PRE-scale layout px (the file-wide / var(--ui-scale))
+ * invariant) — JS multiplies by the scale to clamp against the viewport.
+ * Pure display — pointer-events: none.                                      */
+#desc-tip {
+  position: absolute; z-index: 55;
+  width: 360px; max-width: calc(46vw / var(--ui-scale, 1));
+  padding: 12px 15px;
+  background: linear-gradient(180deg, var(--raised-2), var(--raised));
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius-s);
+  box-shadow: 0 14px 40px rgba(0,0,0,.6);
+  pointer-events: none;
+  transform: scale(var(--ui-scale, 1));
+  transform-origin: top left;
+  animation: tipIn .12s var(--ease);
+}
+/* own keyframe, not ctxIn: that one animates from scale(.98) and would drop
+ * the tip to 98% of ONE, throwing away --ui-scale for the whole animation. */
+@keyframes tipIn { from { opacity: 0; transform: scale(var(--ui-scale, 1)) translateY(-5px); } }
+#desc-tip .dt-name {
+  font: 600 15.5px/1.3 "Segoe UI", sans-serif; color: var(--gold-bright);
+  margin-bottom: 3px;
+}
+#desc-tip .dt-meta {
+  font-size: 12px; color: var(--dim); letter-spacing: .3px;
+  margin-bottom: 7px; text-transform: capitalize;
+}
+#desc-tip .dt-text { font-size: 14px; line-height: 1.5; color: var(--text-2); }
+#desc-tip .dt-text.empty { color: var(--dim-2); font-style: italic; }
+#desc-tip .dt-loading { display: flex; align-items: center; gap: 9px; font-size: 13.5px; color: var(--dim); }
+
+/* --------------------------------------------------------- scrollbar --- */
+
+#rail::-webkit-scrollbar, #list::-webkit-scrollbar, #add-list::-webkit-scrollbar,
+#openkey-card::-webkit-scrollbar { width: 12px; }
+#rail::-webkit-scrollbar-thumb, #list::-webkit-scrollbar-thumb, #add-list::-webkit-scrollbar-thumb,
+#openkey-card::-webkit-scrollbar-thumb {
+  background: var(--line); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box;
+}
+#rail::-webkit-scrollbar-thumb:hover, #list::-webkit-scrollbar-thumb:hover, #add-list::-webkit-scrollbar-thumb:hover,
+#openkey-card::-webkit-scrollbar-thumb:hover {
+  background: var(--line-2); background-clip: padding-box;
+}
+
+/* narrow viewport (in-game menu can render small at low scale) */
+@media (max-width: 900px) {
+  #rail { width: min(200px, calc(26vw / var(--ui-scale, 1))); }
+  .spell .sub .plugin { max-width: 170px; }
+  #hints { gap: 14px; font-size: 12px; }
+}
+@media (max-width: 620px) {
+  #rail { width: min(150px, calc(26vw / var(--ui-scale, 1))); }
+  .spell .sub .plugin { max-width: 120px; }
+}
+
+/* category-wide "remove all from spellbook" — sits at the top of the list in
+   edit mode; ctx-item styling reused, but as a full-width block */
+.list-bulk {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; margin: 0 0 8px; padding: 9px 12px;
+  border: 1px solid #4a2e2e; border-radius: 8px;
+  /* sticky so it never scrolls out of sight — needs a SOLID bg (rows pass
+     beneath it) where the non-sticky version used a translucent wash */
+  background: #1a1216;
+  position: sticky; top: 0; z-index: 6; flex-shrink: 0;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, .35);
+}
+.list-bulk.confirm { border-color: #a05252; background: #241518; }
+
+/* quick-fire keycap on view-mode rows — mini sibling of .keycap (the Open-key
+   chip), sized to sit among the row badges without dominating them */
+.qkey {
+  font: 600 12.5px/1 Consolas, monospace;
+  color: var(--dim);
+  background: var(--sunk);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-xs);
+  min-width: 26px; padding: 5px 7px; text-align: center;
+  cursor: pointer; flex-shrink: 0;
+  transition: color .12s var(--ease), background .12s var(--ease), border-color .12s var(--ease);
+}
+.qkey:hover { color: var(--gold-soft); border-color: var(--gold-line); background: var(--gold-wash); }
+.qkey:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--gold-glow); }

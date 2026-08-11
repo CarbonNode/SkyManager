@@ -1,0 +1,806 @@
+/* ====================================================================== *
+ *  Outfit dock (hd-outfit.js) — own sheet, linked from index.html.
+ *  NEVER merge into app.css: sync_view_frags' banner replacement truncates
+ *  foreign blocks (the reason hd-omni.css / hd-door.css are separate).
+ *
+ *  Lives INSIDE #panel, so it inherits --ui-scale and clips to the deck
+ *  window. z-index 76 — above the Door / SPID modals (74), which cannot
+ *  coexist with it anyway (they need a door / their own button), and above
+ *  the card's own ctx menus so a dock opened over one is never buried.
+ *
+ *  Two shapes share one layer:
+ *    .hdo-pop  — FLOATER (dock, copy). Absolutely placed at the anchor, no
+ *                backdrop; the layer itself takes no pointer events so the
+ *                card underneath stays live and readable.
+ *    .hdo-box  — MODAL (quick apply, settings). The layer becomes a scrim
+ *                and centres the box.
+ *
+ *  Type floor is 13px and most of it is 15–18px: Rober reads this at 2560×
+ *  1440 from a couch, and "compact" is a defect here (standing UI rule #1).
+ * ====================================================================== */
+
+#hdo-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 76;
+  pointer-events: none;          /* floater default — see .is-modal */
+}
+#hdo-layer.hidden { display: none; }
+#hdo-layer.is-modal {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 5, 8, .68);
+}
+@keyframes hdoFade { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---------------------------------------------------------- the shells -- */
+
+.hdo-pop,
+.hdo-box {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 80% at 50% -10%, #26222b 0%, transparent 60%),
+    linear-gradient(180deg, #1a1a21, #101015);
+  border: 1px solid #c9a24b77;
+  border-radius: 14px;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, .6), 0 0 0 1px #00000055;
+  color: #e6e0d2;
+}
+
+.hdo-pop {
+  position: absolute;
+  left: 0; top: 0;
+  width: 468px;
+  max-width: calc(100% - 20px);
+  max-height: calc(100% - 20px);
+}
+.hdo-pop.is-fresh { animation: hdoPop 160ms cubic-bezier(.2, .9, .3, 1.2); }
+.hdo-pop.hdo-copy { width: 576px; }
+@keyframes hdoPop {
+  from { opacity: 0; transform: translateY(-8px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+.hdo-box {
+  width: min(920px, 95%);
+  max-height: 93%;
+}
+.hdo-box.is-fresh { animation: hdoIn 180ms cubic-bezier(.2, .9, .3, 1.2); }
+/* Quick apply gets a DEFINITE height rather than sizing to its results: the
+   list changes length on every keystroke, and a box that resizes as you type
+   walks the rows out from under the cursor. A definite height is also what
+   lets the list itself be the flex-grown scroller below. */
+.hdo-box.hdo-apply { height: 90%; max-height: 780px; }
+@keyframes hdoIn {
+  from { opacity: 0; transform: translateY(14px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ------------------------------------------------------------- header --- */
+
+.hdo-headwrap {
+  flex: none;
+  border-bottom: 1px solid #ffffff14;
+  background: linear-gradient(180deg, #ffffff06, transparent);
+}
+.hdo-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+}
+/* The mode chip on its own line — it is a sentence, not a badge, and sharing
+   the title's row cost the name its last six characters at floater width. */
+.hdo-subhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 0 18px 15px;
+}
+.hdo-subhead-lbl {
+  flex: none;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: #948d7d;
+}
+.hdo-head.hdo-drag { cursor: move; }
+.hdo-plate {
+  position: relative;
+  flex: none;
+  width: 50px; height: 50px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px;
+  background: linear-gradient(180deg, #2a2418, #1c180f);
+  border: 1px solid #c9a24b55;
+  border-radius: 10px;
+  overflow: hidden;
+}
+/* HER FACE, when the deck has a portrait: a round medallion with the surface's
+   glyph as a corner badge, so the popout reads as being about a person. */
+.hdo-plate.is-face {
+  border-radius: 50%;
+  border-color: #c9a24b88;
+  background: #0d0d12;
+  box-shadow: 0 0 0 1px #00000066, 0 2px 10px #00000055;
+  overflow: visible;
+}
+.hdo-face-img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  display: block;
+}
+.hdo-face-badge {
+  position: absolute;
+  right: -5px; bottom: -5px;
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 50%;
+  color: #f2e7ca;
+  background: linear-gradient(180deg, #3a3120, #221c11);
+  border: 1px solid #c9a24b99;
+  box-shadow: 0 1px 4px #00000088;
+}
+.hdo-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 21px;
+  font-weight: 700;
+  color: #e8d9ac;
+  letter-spacing: .02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hdo-mode {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid #ffffff1f;
+  background: #ffffff0d;
+  color: #cfc7b4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hdo-mode.wd  { border-color: #c9a24b66; background: #c9a24b1c; color: #e8d9ac; }
+.hdo-mode.nff { border-color: #6fa8d966; background: #6fa8d91c; color: #cfe3f5; }
+
+.hdo-back,
+.hdo-close {
+  flex: none;
+  font-size: 16px;
+  line-height: 1;
+  padding: 10px 14px;
+  color: #b9b2a4;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.hdo-back:hover, .hdo-close:hover { background: #ffffff12; color: #fff; border-color: #ffffff1a; }
+.hdo-back:active, .hdo-close:active { transform: translateY(1px); }
+.hdo-back:focus-visible, .hdo-close:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+
+/* --------------------------------------------------------------- body --- */
+
+.hdo-pop-body,
+.hdo-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.hdo-body { padding: 20px 24px 26px; gap: 20px; }
+
+.hdo-sub {
+  font-size: 15px;
+  color: #9c968a;
+  margin-top: -4px;
+}
+.hdo-note {
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: #a8a294;
+  padding: 14px 16px;
+  background: #ffffff07;
+  border: 1px solid #ffffff12;
+  border-radius: 10px;
+}
+.hdo-warn {
+  font-size: 15px;
+  line-height: 1.5;
+  color: #f0d29a;
+  padding: 13px 15px;
+  background: #d9a04a14;
+  border: 1px solid #d9a04a44;
+  border-radius: 10px;
+}
+.hdo-msg {
+  font-size: 15.5px;
+  line-height: 1.5;
+  padding: 13px 15px;
+  border-radius: 10px;
+  border: 1px solid #ffffff18;
+  background: #ffffff09;
+  color: #ddd6c6;
+}
+.hdo-msg.ok  { border-color: #86c97e55; background: #86c97e14; color: #cfe8c8; }
+.hdo-msg.bad { border-color: #d96a5a55; background: #d96a5a14; color: #f0c4bc; }
+
+/* ---------------------------------------------------------- dock tiles -- */
+
+.hdo-tile {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  text-align: left;
+  padding: 17px 16px;
+  border-radius: 12px;
+  border: 1px solid #ffffff14;
+  background: linear-gradient(180deg, #ffffff09, #ffffff04);
+  color: inherit;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 100ms ease;
+}
+.hdo-tile:hover {
+  background:
+    linear-gradient(90deg, var(--hdo-accent, #c9a24b) 0 3px, transparent 3px),
+    linear-gradient(180deg, color-mix(in srgb, var(--hdo-accent, #c9a24b) 14%, transparent), #ffffff05);
+  border-color: var(--hdo-accent, #c9a24b);
+}
+.hdo-tile:active { transform: translateY(1px); }
+.hdo-tile:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdo-tile.is-off { opacity: .45; cursor: default; }
+.hdo-tile.is-off:hover {
+  background: linear-gradient(180deg, #ffffff09, #ffffff04);
+  border-color: #ffffff14;
+}
+/* One accent per action, so the three are told apart at a glance and the whole
+   dock is not a wall of gold. Fallbacks below keep it working where
+   color-mix() is unavailable — Ultralight is old, so nothing load-bearing
+   depends on it. */
+.hdo-tile.t-gold   { --hdo-accent: #c9a24b; }
+.hdo-tile.t-violet { --hdo-accent: #a98ad4; }
+.hdo-tile.t-steel  { --hdo-accent: #6fa8d9; }
+.hdo-tile.t-gold:hover   { background: linear-gradient(90deg, #c9a24b 0 3px, #c9a24b1f 3px); }
+.hdo-tile.t-violet:hover { background: linear-gradient(90deg, #a98ad4 0 3px, #a98ad41f 3px); }
+.hdo-tile.t-steel:hover  { background: linear-gradient(90deg, #6fa8d9 0 3px, #6fa8d91f 3px); }
+.hdo-tile.t-gold:hover   .hdo-tile-ic { border-color: #c9a24b99; color: #f2e7ca; }
+.hdo-tile.t-violet:hover .hdo-tile-ic { border-color: #a98ad499; color: #ece3f8; }
+.hdo-tile.t-steel:hover  .hdo-tile-ic { border-color: #6fa8d999; color: #dcecf8; }
+/* Rows ASSEMBLE rather than appear — but ONLY on arrival (`.is-fresh`, set by
+   render() when the view or the subject actually changed). Unconditionally
+   animating meant every data-driven repaint faded the whole surface in from
+   zero again, which is what "the dropdown flashes a few times" was. */
+.hdo-pop.is-fresh .hdo-tile,
+.hdo-box.is-fresh .hdo-row {
+  opacity: 0;
+  animation: hdoRise 220ms cubic-bezier(.2, .9, .3, 1) forwards;
+}
+@keyframes hdoRise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.hdo-tile-ic {
+  flex: none;
+  width: 48px; height: 48px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 23px;
+  border-radius: 11px;
+  background: #00000038;
+  border: 1px solid #ffffff14;
+}
+.hdo-tile-txt { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.hdo-tile-t { font-size: 18px; font-weight: 650; color: #ece5d5; }
+.hdo-tile-s {
+  font-size: 15px;
+  line-height: 1.45;
+  color: #a49d90;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hdo-tile-go {
+  flex: none;
+  font-size: 23px;
+  color: #7d776c;
+  transition: color 140ms ease, transform 160ms cubic-bezier(.2, .9, .3, 1.4);
+}
+.hdo-tile:hover .hdo-tile-go { color: var(--hdo-accent, #e8d9ac); transform: translateX(4px); }
+.hdo-tile-ic { transition: border-color 140ms ease, color 140ms ease; }
+
+/* ------------------------------------------------------ chips & options -- */
+
+.hdo-dest {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.hdo-dest-lbl,
+.hdo-presets-lbl {
+  flex: none;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: #948d7d;
+  min-width: 84px;
+}
+.hdo-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.hdo-chip {
+  font-size: 15.5px;
+  font-weight: 600;
+  padding: 11px 17px;
+  border-radius: 10px;
+  border: 1px solid #ffffff1c;
+  background: #ffffff0a;
+  color: #d8d2c4;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 100ms ease;
+}
+.hdo-chip:hover:not(:disabled) { background: #c9a24b22; border-color: #c9a24b77; color: #f2e7ca; }
+.hdo-chip:active:not(:disabled) { transform: translateY(1px); }
+.hdo-chip:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdo-chip.on {
+  background: linear-gradient(180deg, #c9a24b33, #c9a24b1a);
+  border-color: #c9a24baa;
+  color: #f6ecd2;
+  box-shadow: 0 0 12px #c9a24b22 inset;
+}
+.hdo-chip:disabled { opacity: .38; cursor: default; }
+.hdo-chip.is-link { border-style: dashed; color: #bdb6a6; }
+.hdo-chip.is-danger { border-color: #d96a5a3a; color: #e0b6ae; }
+.hdo-chip.is-danger:hover:not(:disabled) { background: #d96a5a22; border-color: #d96a5a88; color: #ffd9d1; }
+.hdo-chip.armed {
+  background: linear-gradient(180deg, #d96a5a44, #d96a5a22);
+  border-color: #d96a5abb;
+  color: #ffe2db;
+}
+
+.hdo-sec { display: flex; flex-direction: column; gap: 10px; }
+.hdo-sec-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.hdo-sec-t {
+  position: relative;
+  padding-left: 13px;
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: #c9a24b;
+}
+/* A short gradient rail per section — the settings modal is five stacked
+   groups, and this is what stops it reading as one long list. */
+.hdo-sec-t::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 2px; bottom: 2px;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #c9a24b, #c9a24b33);
+}
+.hdo-sec.is-danger .hdo-sec-t::before { background: linear-gradient(180deg, #d98a7a, #d98a7a33); }
+.hdo-sec-hint { font-size: 15px; color: #97907f; flex: 1 1 220px; }
+.hdo-sec.is-danger .hdo-sec-t { color: #d98a7a; }
+
+.hdo-opts {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.hdo-opt {
+  flex: 1 1 200px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  text-align: left;
+  padding: 15px 16px;
+  border-radius: 11px;
+  border: 1px solid #ffffff18;
+  background: #ffffff07;
+  color: inherit;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 100ms ease;
+}
+.hdo-opt:hover { background: #c9a24b18; border-color: #c9a24b66; }
+.hdo-opt:active { transform: translateY(1px); }
+.hdo-opt:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdo-opt.on {
+  background: linear-gradient(180deg, #c9a24b2e, #c9a24b14);
+  border-color: #c9a24baa;
+  box-shadow: 0 0 14px #c9a24b1f inset;
+}
+.hdo-opt-ic { font-size: 21px; color: #e8d9ac; }
+.hdo-opt-t { font-size: 17px; font-weight: 650; color: #ece5d5; }
+.hdo-opt-s { font-size: 14.5px; line-height: 1.45; color: #a49d90; }
+
+/* ------------------------------------------------------- quick apply ---- */
+
+.hdo-search-row { display: flex; }
+.hdo-search {
+  flex: 1 1 auto;
+  width: 100%;
+  font-size: 18.5px;
+  font-family: inherit;
+  padding: 15px 18px;
+  color: #f2ecdd;
+  background: #0c0c11;
+  border: 1px solid #c9a24b55;
+  border-radius: 11px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.hdo-search::placeholder { color: #6f6a60; }
+.hdo-search:focus { border-color: #c9a24baa; box-shadow: 0 0 0 3px #c9a24b1f; }
+
+/* The results are the point of this modal, so they get every pixel the fixed
+   furniture above them does not want — and they are the ONLY scroller, so the
+   search box never scrolls away from under your fingers.
+   Deliberately NOT a vh cap: the deck window is a fraction of the screen (and
+   is resizable), so a viewport-relative height gave a 480 px-tall panel a list
+   one and a half rows deep while the page around it had room to spare. */
+.hdo-apply .hdo-body { overflow: hidden; gap: 14px; }
+.hdo-apply .hdo-warn { flex: none; }
+/* One line, hover for the rest — see warnings(a, slim) in hd-outfit.js. */
+.hdo-warn.is-slim {
+  padding: 8px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: help;
+}
+.hdo-list {
+  flex: 1 1 0;
+  min-height: 104px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+.hdo-row {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  width: 100%;
+  text-align: left;
+  padding: 13px 14px;
+  border-radius: 11px;
+  border: 1px solid #ffffff12;
+  background: #ffffff06;
+  color: inherit;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease, transform 90ms ease;
+}
+.hdo-row:hover { background: #c9a24b1c; border-color: #c9a24b66; }
+.hdo-row:active { transform: translateY(1px); }
+.hdo-row.sel {
+  background: linear-gradient(180deg, #c9a24b2b, #c9a24b12);
+  border-color: #c9a24baa;
+}
+.hdo-row.is-now { border-color: #86c97e55; }
+.hdo-row-art {
+  flex: none;
+  width: 58px; height: 58px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 23px;
+  color: #9a8f74;
+  border-radius: 9px;
+  border: 1px solid #ffffff14;
+  /* A woven plate for an outfit with no photo — flat black read as a hole in
+     the row. A real photo paints over it via background-image. */
+  background:
+    repeating-linear-gradient(45deg, #ffffff07 0 2px, transparent 2px 6px),
+    linear-gradient(180deg, #241f16, #14120e);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  transition: border-color 140ms ease, transform 160ms cubic-bezier(.2, .9, .3, 1.4);
+}
+.hdo-row:hover .hdo-row-art, .hdo-row.sel .hdo-row-art {
+  border-color: #c9a24b77;
+  transform: scale(1.04);
+}
+.hdo-row-txt { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.hdo-row-t {
+  font-size: 17.5px;
+  font-weight: 650;
+  color: #ece5d5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hdo-row-s {
+  font-size: 15px;
+  color: #a49d90;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* ------------------------------------------------------------- pills ---- *
+ * Tags, categories, owners and the piece count all draw as the SAME shape —
+ * they are all "a word attached to this outfit", and giving each its own
+ * silhouette would make a row look like four unrelated widgets. Hue is the
+ * only thing that separates them, and ❤ owner pills lead because they are the
+ * ones the ❤ Hers filter acts on. 14px floor like everything else. */
+.hdo-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 2px;
+  overflow: hidden;
+  max-height: 3.4em;
+}
+.hdo-pill {
+  flex: none;
+  max-width: 22ch;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #ffffff1c;
+  background: #ffffff0a;
+  color: #a49d90;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hdo-pill.k-n    { border-color: #ffffff14; background: transparent; color: #8d8779; padding-left: 0; padding-right: 8px; border: 0; }
+.hdo-pill.k-who  { border-color: #d97a9a66; background: #d97a9a1c; color: #f0c4d3; }
+.hdo-pill.k-cat  { border-color: #c9a24b55; background: #c9a24b16; color: #e2d3ab; }
+.hdo-pill.k-tag  { border-color: #6fa8d955; background: #6fa8d916; color: #cfe3f5; }
+.hdo-pill.k-note { border-color: transparent; background: transparent; color: #8d8779; font-weight: 500; font-style: italic; padding-left: 2px; }
+.hdo-pill.k-new  { border-color: #86c97e55; background: #86c97e14; color: #cfe8c8; }
+
+/* An outfit tagged for the person the dock is about gets a rose edge — the
+   list is sorted hers-first, and this is what makes that visible rather than
+   just true. */
+.hdo-row.is-hers { border-color: #d97a9a4a; }
+.hdo-row.is-hers .hdo-row-art { border-color: #d97a9a55; }
+
+/* ♡ / ❤ — tag this one for her, without leaving the list. A span with
+   role=button rather than a nested <button>, because the row IS a button and
+   nesting one inside it is invalid and swallows the click in some engines. */
+.hdo-row-tag {
+  flex: none;
+  width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 19px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  color: #7d776c;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease, transform 120ms ease;
+}
+.hdo-row-tag:hover { background: #d97a9a22; border-color: #d97a9a77; color: #f5c9d8; transform: scale(1.08); }
+.hdo-row-tag.on { color: #e58aa8; }
+.hdo-row-tag.is-inherited { color: #9a8f96; cursor: help; }
+.hdo-row-tag.is-inherited:hover { transform: none; background: #ffffff10; border-color: #ffffff1f; }
+
+.hdo-hers { flex: none; }
+.hdo-hers.on { border-color: #d97a9aaa; background: linear-gradient(180deg, #d97a9a33, #d97a9a1a); color: #f7dde6; }
+.hdo-search-row { gap: 10px; align-items: stretch; }
+
+.hdo-fav { color: #e8c15a; margin-right: 6px; }
+.hdo-now {
+  margin-left: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: #9ed194;
+  border: 1px solid #86c97e55;
+  border-radius: 999px;
+  padding: 3px 10px;
+  vertical-align: middle;
+}
+.hdo-row-go { flex: none; font-size: 21px; opacity: .35; }
+.hdo-row:hover .hdo-row-go, .hdo-row.sel .hdo-row-go { opacity: 1; }
+
+/* -------------------------------------------------------- copy floater -- */
+
+.hdo-name { display: flex; align-items: center; gap: 10px; }
+.hdo-name-lbl {
+  flex: none;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: #948d7d;
+  min-width: 72px;
+}
+.hdo-name-in {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 16.5px;
+  font-family: inherit;
+  padding: 12px 15px;
+  color: #f2ecdd;
+  background: #0c0c11;
+  border: 1px solid #ffffff22;
+  border-radius: 9px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.hdo-name-in:focus { border-color: #c9a24baa; box-shadow: 0 0 0 3px #c9a24b1f; }
+
+.hdo-presets { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hdo-preset {
+  font-size: 15px;
+  font-weight: 600;
+  padding: 9px 15px;
+  border-radius: 8px;
+  border: 1px solid #ffffff1c;
+  background: #ffffff08;
+  color: #cfc9bb;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.hdo-preset:hover { background: #c9a24b1f; border-color: #c9a24b77; color: #f2e7ca; }
+.hdo-preset:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+
+/* Same idea as the apply list, one difference: the floater has no fixed height
+   (it sizes to its content), so this SHRINKS rather than grows — basis auto,
+   shrink 1. Only once the floater hits its max-height does the piece list start
+   scrolling, and the name field and Create button never move.
+
+   The `> *` rule is load-bearing, not tidiness: every flex child shrinks by
+   default, so once the floater hit its cap the NAME field, the presets and the
+   Create button were all being squeezed too — and the piece list, still asking
+   for its content height, ran straight over the button. Pin everything, let the
+   list alone shrink. (Caught by the overlap pass after the type scale grew:
+   bigger rows made an existing bug visible rather than creating one.) */
+.hdo-copy .hdo-pop-body { overflow: hidden; }
+.hdo-copy .hdo-pop-body > * { flex: none; }
+.hdo-copy .hdo-copy-list {
+  flex: 0 1 auto;
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.hdo-copy-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 13px;
+  border-radius: 10px;
+  border: 1px solid #ffffff10;
+  background: #ffffff05;
+  color: #b9b3a5;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.hdo-copy-row:hover { background: #ffffff0f; border-color: #ffffff22; }
+.hdo-copy-row:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdo-copy-row.on {
+  background: linear-gradient(180deg, #c9a24b24, #c9a24b0f);
+  border-color: #c9a24b88;
+  color: #ede6d6;
+}
+.hdo-copy-row.nonarmor .hdo-copy-nm { font-style: italic; opacity: .8; }
+.hdo-copy-check { flex: none; font-size: 19px; width: 24px; text-align: center; }
+.hdo-copy-ic { flex: none; font-size: 18px; width: 26px; text-align: center; }
+.hdo-copy-nm {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hdo-copy-ct { flex: none; font-size: 14.5px; color: #9a9384; }
+.hdo-copy-tag {
+  flex: none;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: #9aa8c4;
+  border: 1px solid #6fa8d94a;
+  border-radius: 999px;
+  padding: 4px 11px;
+}
+.hdo-copy-foot {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+/* "There is more below." A list that scrolls cuts its last row flat against the
+   footer, which reads as a clipping BUG rather than as content continuing. A
+   short fade above the footer says which it is. Same treatment on the apply
+   modal's foot, for the same reason. */
+.hdo-copy-foot::before,
+.hdo-foot::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: 100%;
+  height: 22px;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, #121218dd);
+}
+.hdo-foot { position: relative; }
+
+/* ----------------------------------------------------- buttons & foot --- */
+
+.hdo-btn {
+  font-size: 16.5px;
+  font-weight: 650;
+  padding: 13px 22px;
+  border-radius: 10px;
+  border: 1px solid #c9a24b77;
+  background: linear-gradient(180deg, #c9a24b2e, #c9a24b14);
+  color: #f4e9cd;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 100ms ease;
+}
+.hdo-btn:hover:not(:disabled) { background: linear-gradient(180deg, #c9a24b4a, #c9a24b24); border-color: #c9a24bcc; }
+.hdo-btn:active:not(:disabled) { transform: translateY(1px); }
+.hdo-btn:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdo-btn:disabled { opacity: .4; cursor: default; }
+
+.hdo-foot {
+  flex: none;
+  padding: 15px 22px;
+  border-top: 1px solid #ffffff14;
+  background: linear-gradient(0deg, #ffffff05, transparent);
+}
+.hdo-hint { font-size: 15px; color: #97907f; }
+
+/* --------------------------------------------------------- empty state -- */
+
+.hdo-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 11px;
+  text-align: center;
+  padding: 34px 22px;
+  color: #9c968a;
+}
+.hdo-empty-ic { font-size: 40px; opacity: .5; }
+.hdo-empty-t { font-size: 19px; font-weight: 650; color: #d7d0c1; }
+.hdo-empty-d { font-size: 15.5px; line-height: 1.6; max-width: 46ch; }
+
+/* ------------------------------------------------------------- narrow --- */
+
+@media (max-width: 900px) {
+  .hdo-box { width: 97%; max-height: 95%; }
+  .hdo-body { padding: 16px 16px 20px; gap: 17px; }
+  .hdo-pop, .hdo-pop.hdo-copy { width: calc(100% - 20px); }
+  .hdo-opt { flex: 1 1 100%; min-width: 0; }
+  .hdo-dest-lbl, .hdo-presets-lbl, .hdo-name-lbl { min-width: 0; width: 100%; }
+  .hdo-title { font-size: 19px; }
+  .hdo-search { font-size: 17px; }
+}

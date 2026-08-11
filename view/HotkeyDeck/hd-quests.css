@@ -1,0 +1,715 @@
+/* ====================================================================== *
+ *  NPC Quests modal (hd-quests.js) — own sheet, linked from index.html.
+ *  NEVER merge into app.css: sync_view_frags' banner replacement truncates
+ *  foreign blocks (the reason hd-omni.css / hd-door.css / hd-outfit.css are
+ *  separate files).
+ *
+ *  Lives INSIDE #panel, so it inherits --ui-scale and clips to the deck
+ *  window. z-index 77 — one above the Outfit dock (76), which it closes on
+ *  open anyway, so a modal can never open UNDER the thing that spawned it.
+ *
+ *  Always a MODAL (Rober asked for a popup modal): the layer is the scrim
+ *  and centres one box.
+ *
+ *  Type floor is 14px and most of it is 15–18px — standing UI rule #1, "no
+ *  small text": this is read at 2560×1440 from a couch. The harness
+ *  (hd-quests.test.html §12) fails the build if anything drops below it.
+ * ====================================================================== */
+
+#hdq-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 77;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  background: rgba(5, 5, 8, .68);
+}
+#hdq-layer.hidden { display: none; }
+
+/* ------------------------------------------------------------- the box -- */
+
+.hdq-box {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  width: min(1000px, 96%);
+  /* A DEFINITE height, not one that sizes to the results: the list changes
+     length on every keystroke, and a box that resizes as you type walks the
+     rows out from under the cursor. It also makes the list the one scroller,
+     so the search box never scrolls away from under your fingers. */
+  height: 92%;
+  max-height: 860px;
+  background:
+    radial-gradient(120% 80% at 50% -10%, #26222b 0%, transparent 60%),
+    linear-gradient(180deg, #1a1a21, #101015);
+  border: 1px solid #c9a24b77;
+  border-radius: 14px;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, .6), 0 0 0 1px #00000055;
+  color: #e6e0d2;
+}
+.hdq-box.is-fresh { animation: hdqIn 180ms cubic-bezier(.2, .9, .3, 1.2); }
+@keyframes hdqIn {
+  from { opacity: 0; transform: translateY(14px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ------------------------------------------------------------- header --- */
+
+.hdq-headwrap {
+  flex: none;
+  border-bottom: 1px solid #ffffff14;
+  background: linear-gradient(180deg, #ffffff06, transparent);
+}
+.hdq-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+}
+.hdq-plate {
+  position: relative;
+  flex: none;
+  width: 50px; height: 50px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px;
+  background: linear-gradient(180deg, #2a2418, #1c180f);
+  border: 1px solid #c9a24b55;
+  border-radius: 10px;
+  overflow: hidden;
+}
+/* HER FACE when the deck has a portrait — the modal is about a PERSON, not
+   about a form id. Round medallion + the surface's glyph as a corner badge,
+   the same idiom as the Outfit dock. */
+.hdq-plate.is-face {
+  border-radius: 50%;
+  border-color: #c9a24b88;
+  background: #0d0d12;
+  box-shadow: 0 0 0 1px #00000066, 0 2px 10px #00000055;
+  overflow: visible;
+}
+.hdq-face-img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  display: block;
+}
+.hdq-face-badge {
+  position: absolute;
+  right: -5px; bottom: -5px;
+  width: 25px; height: 25px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px;
+  border-radius: 50%;
+  background: #16141b;
+  border: 1px solid #c9a24b88;
+}
+
+.hdq-title { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.hdq-title-t {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: .01em;
+  color: #f1e9d6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hdq-sub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hdq-sub-who {
+  font-size: 15px;
+  color: #a49d90;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hdq-icon-btn {
+  flex: none;
+  width: 42px; height: 42px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px;
+  border-radius: 10px;
+  border: 1px solid #ffffff1a;
+  background: #ffffff08;
+  color: #cfc8b8;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 100ms ease;
+}
+.hdq-icon-btn:hover { background: #c9a24b22; border-color: #c9a24b88; color: #f6ecd2; }
+.hdq-icon-btn:active { transform: translateY(1px); }
+.hdq-icon-btn:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdq-close:hover { background: #d96a5a22; border-color: #d96a5a88; color: #ffd9d1; }
+
+/* --------------------------------------------------------------- body --- */
+
+.hdq-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* The LIST surface never scrolls as a whole — its list does. */
+.hdq-list-box .hdq-body { overflow: hidden; }
+
+.hdq-tools { flex: none; display: flex; flex-direction: column; gap: 12px; }
+
+.hdq-search-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.hdq-search-ic {
+  position: absolute;
+  left: 16px;
+  font-size: 17px;
+  color: #7d776c;
+  pointer-events: none;
+}
+.hdq-search {
+  flex: 1 1 auto;
+  width: 100%;
+  font-size: 18.5px;
+  font-family: inherit;
+  padding: 15px 18px 15px 46px;
+  color: #f2ecdd;
+  background: #0c0c11;
+  border: 1px solid #c9a24b55;
+  border-radius: 11px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.hdq-search::placeholder { color: #6f6a60; }
+.hdq-search:focus { border-color: #c9a24baa; box-shadow: 0 0 0 3px #c9a24b1f; }
+
+.hdq-lbl {
+  flex: none;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: #948d7d;
+  min-width: 62px;
+}
+
+/* ------------------------------------------------------- scope + filters - */
+
+.hdq-scope, .hdq-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hdq-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15.5px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid #ffffff1c;
+  background: #ffffff0a;
+  color: #d8d2c4;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 100ms ease;
+}
+.hdq-tab:hover { background: #c9a24b22; border-color: #c9a24b77; color: #f2e7ca; }
+.hdq-tab:active { transform: translateY(1px); }
+.hdq-tab:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdq-tab.on {
+  background: linear-gradient(180deg, #c9a24b33, #c9a24b1a);
+  border-color: #c9a24baa;
+  color: #f6ecd2;
+  box-shadow: 0 0 12px #c9a24b22 inset;
+}
+.hdq-tab-ic { font-size: 15px; opacity: .9; }
+
+.hdq-fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid #ffffff1c;
+  background: #ffffff08;
+  color: #cdc7ba;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 100ms ease;
+}
+.hdq-fchip:hover:not(:disabled) { background: #ffffff14; border-color: #ffffff33; color: #f2ecdd; }
+.hdq-fchip:active:not(:disabled) { transform: translateY(1px); }
+.hdq-fchip:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdq-fchip.is-off { opacity: .34; cursor: default; }
+.hdq-fchip-ic { font-size: 14px; opacity: .85; }
+.hdq-fchip-n {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #00000045;
+  color: #a8a294;
+}
+/* One hue per meaning, so the filter row reads at a glance rather than being
+   five identical pills. Only the SELECTED one is coloured — a rainbow of
+   equally-loud chips tells you nothing. */
+.hdq-fchip.on { color: #f6ecd2; }
+.hdq-fchip.f-all.on     { background: linear-gradient(180deg, #c9a24b33, #c9a24b18); border-color: #c9a24baa; }
+.hdq-fchip.f-running.on { background: linear-gradient(180deg, #86c97e33, #86c97e18); border-color: #86c97eaa; }
+.hdq-fchip.f-idle.on    { background: linear-gradient(180deg, #8a96b433, #8a96b418); border-color: #8a96b4aa; }
+.hdq-fchip.f-done.on    { background: linear-gradient(180deg, #6fa8d933, #6fa8d918); border-color: #6fa8d9aa; }
+.hdq-fchip.f-broken.on  { background: linear-gradient(180deg, #d9a05a33, #d9a05a18); border-color: #d9a05aaa; }
+.hdq-fchip.on .hdq-fchip-n { background: #00000055; color: #efe6d2; }
+
+/* --------------------------------------------------------------- chips --- */
+
+.hdq-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.15;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid #ffffff1c;
+  background: #ffffff0a;
+  color: #b6b0a2;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hdq-chip.is-run   { background: #86c97e1f; border-color: #86c97e55; color: #cde8c7; }
+.hdq-chip.is-done  { background: #6fa8d91f; border-color: #6fa8d955; color: #cfe4f4; }
+.hdq-chip.is-idle  { background: #8a96b41f; border-color: #8a96b455; color: #d3d8e6; }
+.hdq-chip.is-warn  { background: #d9a05a22; border-color: #d9a05a66; color: #f2d9b4; }
+.hdq-chip.is-alias { background: #a98ad41f; border-color: #a98ad455; color: #e2d6f5; }
+
+/* ---------------------------------------------------------- the results -- */
+
+.hdq-list {
+  flex: 1 1 0;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 3px;
+}
+
+.hdq-row {
+  display: flex;
+  align-items: center;
+  /* WRAP, and never shrink. Two separate bugs live here:
+     (1) `.hdq-list` is a column flex, so a row is a flex ITEM and shrinks by
+         default — once the rows are taller than the list they were squashed to
+         fit and, with overflow hidden for the status rail, their own titles were
+         clipped INTO the row above. That happened at any narrow width and at any
+         long list, not just in the harness.
+     (2) The wrap is intrinsic rather than media-query driven on purpose: the
+         deck's PANEL resizes, the viewport does not, so a width media query
+         never fires in-game. The stage/status block simply drops under the text
+         when there is no room for it beside. */
+  flex: none;
+  flex-wrap: wrap;
+  gap: 15px;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  padding: 14px 15px;
+  border-radius: 11px;
+  border: 1px solid #ffffff12;
+  background: #ffffff06;
+  color: inherit;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease, transform 90ms ease;
+}
+.hdq-row:hover { background: #c9a24b1c; border-color: #c9a24b66; }
+.hdq-row:active { transform: translateY(1px); }
+.hdq-row:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdq-row.sel {
+  background: linear-gradient(180deg, #c9a24b2b, #c9a24b12);
+  border-color: #c9a24baa;
+}
+/* A status rail down the left edge — the one thing you scan for. */
+.hdq-row { position: relative; overflow: hidden; }
+.hdq-row::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: #8a96b455;
+}
+.hdq-row.st-running::before { background: #86c97e; }
+.hdq-row.st-done::before    { background: #6fa8d9; }
+.hdq-row.is-broken::before  { background: #d9a05a; }
+
+.hdq-row-ic {
+  flex: none;
+  width: 46px; height: 46px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 19px;
+  color: #9a9382;
+  border-radius: 10px;
+  border: 1px solid #ffffff14;
+  background: linear-gradient(180deg, #221f18, #14120e);
+  transition: border-color 140ms ease, color 140ms ease, transform 160ms cubic-bezier(.2, .9, .3, 1.4);
+}
+.hdq-row.st-running .hdq-row-ic { color: #a9d5a2; }
+.hdq-row.st-done .hdq-row-ic { color: #9fc4e0; }
+.hdq-row:hover .hdq-row-ic, .hdq-row.sel .hdq-row-ic {
+  border-color: #c9a24b77;
+  transform: scale(1.04);
+}
+
+/* 220px basis, so the name keeps a readable width and the status/stage block
+   wraps under it instead of squeezing the title to a few characters. */
+.hdq-row-txt { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.hdq-row-t {
+  font-size: 17.5px;
+  font-weight: 650;
+  color: #ece5d5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hdq-row-s {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 14.5px;
+  color: #a49d90;
+  overflow: hidden;
+}
+.hdq-dim { color: #7f7a6f; }
+.hdq-dot { color: #55514a; }
+.hdq-pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; max-height: 3.4em; overflow: hidden; }
+
+.hdq-row-r {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;      /* hugs the right edge on one line, leads its own when wrapped */
+}
+.hdq-stage {
+  font-size: 15px;
+  color: #b8b2a4;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.hdq-stage b { color: #ece5d5; font-weight: 700; }
+.hdq-stage small { color: #7f7a6f; font-size: 14px; }
+
+.hdq-hit {
+  background: #c9a24b3d;
+  color: #ffeec4;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+/* Rows ASSEMBLE on arrival only (`.is-fresh`, set by render() when the view or
+   the subject actually changed) — animating every data-driven repaint is what
+   made the Outfit dock appear to flash. */
+.hdq-box.is-fresh .hdq-row,
+.hdq-box.is-fresh .hdq-sec {
+  opacity: 0;
+  animation: hdqRise 220ms cubic-bezier(.2, .9, .3, 1) forwards;
+}
+@keyframes hdqRise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ------------------------------------------------- loading + empty + error */
+
+.hdq-skels { display: flex; flex-direction: column; gap: 8px; }
+.hdq-skel {
+  flex: none;                          /* see .hdq-row: a column-flex child must not shrink */
+  height: 78px;                        /* sized like a real row, so nothing jumps */
+  border-radius: 11px;
+  border: 1px solid #ffffff0d;
+  background: linear-gradient(90deg, #ffffff07 0%, #ffffff12 50%, #ffffff07 100%);
+  background-size: 200% 100%;
+  animation: hdqShimmer 1.25s ease-in-out infinite;
+}
+.hdq-skel.is-tall { height: 132px; }
+@keyframes hdqShimmer {
+  from { background-position: 140% 0; }
+  to   { background-position: -40% 0; }
+}
+
+.hdq-empty {
+  margin: auto;
+  max-width: 620px;
+  padding: 28px 20px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.hdq-empty-ic { font-size: 40px; opacity: .55; }
+.hdq-empty-t { font-size: 19px; font-weight: 650; color: #e6dfcd; }
+.hdq-empty-s { font-size: 15.5px; line-height: 1.55; color: #98917f; }
+.hdq-empty-acts { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 6px; }
+
+.hdq-err {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 16px;
+  padding: 16px 18px;
+  border-radius: 11px;
+  border: 1px solid #d96a5a55;
+  background: #d96a5a14;
+  color: #f0c9c1;
+}
+.hdq-err-ic { font-size: 20px; }
+
+.hdq-note {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15.5px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  border: 1px solid #86c97e44;
+  background: #86c97e14;
+  color: #cfe6c9;
+}
+.hdq-note.is-bad { border-color: #d96a5a55; background: #d96a5a14; color: #f0c9c1; }
+.hdq-note-ic { font-size: 15px; }
+
+/* ------------------------------------------------------------- detail ---- */
+
+.hdq-strip { flex: none; display: flex; gap: 8px; flex-wrap: wrap; }
+
+.hdq-sec { flex: none; display: flex; flex-direction: column; gap: 11px; }
+.hdq-sec-h { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.hdq-sec-t {
+  position: relative;
+  padding-left: 13px;
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: #c9a24b;
+}
+.hdq-sec-t::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 2px; bottom: 2px;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #c9a24b, #c9a24b33);
+}
+.hdq-sec.is-danger .hdq-sec-t { color: #d98a7a; }
+.hdq-sec.is-danger .hdq-sec-t::before { background: linear-gradient(180deg, #d98a7a, #d98a7a33); }
+.hdq-sec.has-bad .hdq-sec-t { color: #d9a05a; }
+.hdq-sec.has-bad .hdq-sec-t::before { background: linear-gradient(180deg, #d9a05a, #d9a05a33); }
+.hdq-sec-hint { font-size: 15px; color: #97907f; flex: 1 1 220px; }
+.hdq-pad { padding: 4px 2px; }
+.hdq-hint { font-size: 14.5px; line-height: 1.5; color: #8d8778; }
+
+.hdq-aliases { display: flex; flex-direction: column; gap: 6px; }
+.hdq-alias {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(120px, 1.1fr) minmax(110px, 1fr) minmax(120px, 1.2fr);
+  gap: 12px;
+  align-items: center;
+  font-size: 15px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid #ffffff10;
+  background: #ffffff05;
+}
+.hdq-alias.is-bad { border-color: #d9a05a66; background: #d9a05a14; }
+.hdq-alias.is-opt { border-color: #ffffff1c; opacity: .8; }
+.hdq-alias-n { font-weight: 650; color: #e2dbca; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hdq-alias-f { color: #7f7a6f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hdq-alias-v { color: #bdb6a6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hdq-alias-v.is-empty { color: #f0c58a; font-weight: 650; }
+/* An OPTIONAL alias being empty is normal — the quest runs without it. Drawn
+   in the same alarm colour as a required one, it sent you hunting for a
+   non-problem, so it reads as plain text. */
+.hdq-alias.is-opt .hdq-alias-v.is-empty { color: #918b7e; font-weight: 600; }
+
+/* Stages: a dense numbered grid, plus its own jump box past 24 of them. */
+.hdq-stage-find { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hdq-stage-in {
+  width: 160px;
+  font-size: 16px;
+  font-family: inherit;
+  padding: 10px 13px;
+  color: #f2ecdd;
+  background: #0c0c11;
+  border: 1px solid #c9a24b44;
+  border-radius: 9px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.hdq-stage-in::placeholder { color: #6f6a60; }
+.hdq-stage-in:focus { border-color: #c9a24baa; box-shadow: 0 0 0 3px #c9a24b1f; }
+
+.hdq-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.hdq-st {
+  min-width: 56px;
+  font-size: 15.5px;
+  font-weight: 650;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  padding: 10px 10px;
+  border-radius: 9px;
+  border: 1px solid #ffffff1c;
+  background: #ffffff08;
+  color: #d3ccbd;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease, transform 90ms ease;
+}
+.hdq-st:hover { background: #c9a24b22; border-color: #c9a24b88; color: #f6ecd2; }
+.hdq-st:active { transform: translateY(1px); }
+.hdq-st:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdq-st.is-cur {
+  background: linear-gradient(180deg, #86c97e33, #86c97e18);
+  border-color: #86c97eaa;
+  color: #dcf0d7;
+}
+.hdq-st.is-back { opacity: .62; border-style: dashed; }
+.hdq-st.is-back:hover { opacity: 1; border-color: #d9a05a99; background: #d9a05a22; color: #f6dfbc; }
+.hdq-st.is-armed {
+  background: linear-gradient(180deg, #d96a5a44, #d96a5a22);
+  border-color: #d96a5abb;
+  color: #ffe2db;
+  opacity: 1;
+  border-style: solid;
+}
+
+.hdq-objs { display: flex; flex-direction: column; gap: 6px; }
+.hdq-obj {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 15px;
+  padding: 10px 13px;
+  border-radius: 10px;
+  border: 1px solid #ffffff10;
+  background: #ffffff05;
+}
+.hdq-obj-i {
+  flex: none;
+  min-width: 30px;
+  font-variant-numeric: tabular-nums;
+  color: #7f7a6f;
+}
+.hdq-obj-t { flex: 1 1 auto; min-width: 0; color: #ded7c6; overflow: hidden; text-overflow: ellipsis; }
+.hdq-obj.s1 { border-color: #86c97e44; }        /* displayed */
+.hdq-obj.s2 { opacity: .72; }                   /* completed */
+.hdq-obj.s3 { border-color: #d96a5a44; }        /* failed */
+
+.hdq-acts { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.hdq-btn {
+  font-size: 15.5px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 12px 18px;
+  border-radius: 10px;
+  border: 1px solid #ffffff1c;
+  background: #ffffff0a;
+  color: #d8d2c4;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 100ms ease;
+}
+.hdq-btn:hover:not(:disabled) { background: #c9a24b22; border-color: #c9a24b77; color: #f2e7ca; }
+.hdq-btn:active:not(:disabled) { transform: translateY(1px); }
+.hdq-btn:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdq-btn:disabled { opacity: .38; cursor: default; }
+.hdq-btn.is-key {
+  background: linear-gradient(180deg, #c9a24b33, #c9a24b1a);
+  border-color: #c9a24baa;
+  color: #f6ecd2;
+}
+.hdq-btn.is-danger { border-color: #d96a5a3a; color: #e0b6ae; }
+.hdq-btn.is-danger:hover:not(:disabled) { background: #d96a5a22; border-color: #d96a5a88; color: #ffd9d1; }
+.hdq-btn.is-armed {
+  background: linear-gradient(180deg, #d96a5a44, #d96a5a22);
+  border-color: #d96a5abb;
+  color: #ffe2db;
+}
+
+/* --------------------------------------------------------------- foot ---- */
+
+.hdq-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  /* Wraps by default rather than by media query — the deck's PANEL narrows,
+     the viewport does not, so the second hint has to drop to its own line on
+     its own. Without this the key legend broke mid-phrase ("…Esc / closes"). */
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 13px 18px;
+  border-top: 1px solid #ffffff12;
+  background: linear-gradient(180deg, transparent, #ffffff05);
+}
+.hdq-foot .hdq-hint { white-space: nowrap; }
+.hdq-hint-r { margin-left: auto; text-align: right; }
+.hdq-link {
+  margin-left: auto;
+  font-size: 15px;
+  font-family: inherit;
+  padding: 9px 14px;
+  border-radius: 9px;
+  border: 1px dashed #ffffff26;
+  background: transparent;
+  color: #bdb6a6;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.hdq-link:hover { background: #c9a24b18; border-color: #c9a24b88; color: #f2e7ca; }
+.hdq-link:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+
+/* ------------------------------------------------------ narrow windows --- *
+ * The deck window is resizable down to 640 px and Rober plays with it small.
+ * Everything below is the overlap pass: nothing may sit on top of anything
+ * else, and no row may push the box into a horizontal scroll. */
+@media (max-width: 760px) {
+  .hdq-box { width: 97%; height: 95%; }
+  .hdq-head { padding: 13px 13px; gap: 11px; }
+  .hdq-plate { width: 44px; height: 44px; font-size: 21px; }
+  .hdq-title-t { font-size: 19px; }
+  .hdq-body { padding: 13px; gap: 13px; }
+  .hdq-lbl { min-width: 0; }
+  .hdq-row { gap: 11px; padding: 12px; flex-wrap: wrap; }
+  .hdq-row-ic { width: 40px; height: 40px; font-size: 17px; }
+  .hdq-row-ic { display: none; }        /* the status RAIL already says it */
+  .hdq-alias { grid-template-columns: 1fr; gap: 4px; }
+  .hdq-foot { flex-wrap: wrap; }
+  .hdq-hint-r { display: none; }        /* the left hint is the load-bearing one */
+}

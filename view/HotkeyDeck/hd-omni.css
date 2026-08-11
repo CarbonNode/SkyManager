@@ -1,0 +1,245 @@
+/* ====================================================================== *
+ *  Omni (universal Search + Ask) — own sheet on purpose:
+ *  tools/sync_view_frags.py rebuilds app.css by truncating at the wardrobe
+ *  marker, so anything appended there is liable to be dropped. Same reason
+ *  sharmat-pane.css and recents-strip.css are separate files.
+ * ====================================================================== */
+
+/* Inside #panel (which is transform: scale(--ui-scale)) so the overlay
+   inherits the menu scale. z-index 73: above the pane context menus (60)
+   and the domains capture (70); #toast (80) still paints over it. */
+#omni-modal {
+  position: absolute; inset: 0; z-index: 73;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(5,5,8,.66);
+  animation: fadeIn 120ms ease;
+}
+
+.omni-box {
+  width: min(1080px, 96%); height: min(900px, 92%);
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, #1a1a21, #101015);
+  border: 1px solid #c9a24b77; border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  animation: omniIn 160ms ease;   /* NOT riseIn — that bakes the panel scale */
+  overflow: hidden;
+}
+@keyframes omniIn { from { opacity: 0; transform: translateY(8px); } }
+
+/* ---------- head: mode chips + hint + close ---------- */
+
+.omni-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 13px 0;
+}
+.omni-modes { display: flex; gap: 6px; }
+.omni-mode {
+  padding: 9px 18px;
+  background: transparent; border: 1px solid #2e2e36; border-radius: 9px;
+  color: #b9b4a8; font-size: 15.5px; font-family: inherit; cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+.omni-mode:hover { border-color: #c9a24b66; color: #ece7db; }
+.omni-mode.on {
+  border-color: #c9a24b99; color: #e8d9ad;
+  background: rgba(201,162,75,.10);
+}
+.omni-hint {
+  flex: 1; text-align: right;
+  color: #6b675e; font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.omni-x {
+  flex: none; width: 32px; height: 32px;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid #2e2e36; border-radius: 6px;
+  color: #b9b4a8; font-size: 15px; cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+.omni-x:hover { border-color: #c9a24b88; color: #ece7db; }
+
+/* ---------- input row ---------- */
+
+.omni-inrow { display: flex; gap: 8px; padding: 11px 13px 9px; }
+#omni-input {
+  flex: 1; padding: 14px 18px;
+  background: #0c0c10; border: 1px solid #2e2e36; border-radius: 9px;
+  color: #e8e4da; font-size: 17.5px; font-family: inherit;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+#omni-input::placeholder { color: #6b675e; }
+#omni-input:focus { outline: none; border-color: #c9a24b77; box-shadow: 0 0 0 3px rgba(201,162,75,.08); }
+.omni-go {
+  flex: none; padding: 0 26px;
+  background: rgba(201,162,75,.12); border: 1px solid #c9a24b77; border-radius: 8px;
+  color: #e8d9ad; font-size: 16px; font-family: inherit; cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.omni-go:hover { background: rgba(201,162,75,.20); border-color: #c9a24baa; }
+.omni-go:active { transform: translateY(1px); }
+
+/* ---------- results ---------- */
+
+.omni-results {
+  flex: 1; min-height: 120px; overflow-y: auto;
+  padding: 2px 8px 12px;
+}
+.omni-results::-webkit-scrollbar { width: 10px; }
+.omni-results::-webkit-scrollbar-track { background: transparent; }
+.omni-results::-webkit-scrollbar-thumb {
+  background: #2e2e36; border-radius: 6px; border: 2px solid transparent; background-clip: padding-box;
+}
+.omni-results::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+
+.omni-sect {
+  padding: 13px 10px 5px;
+  color: #8a8478; font-size: 12.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .6px;
+}
+.omni-spin { color: #6b675e; font-weight: 400; text-transform: none; }
+
+.omni-row {
+  display: flex; align-items: center; gap: 11px;
+  padding: 11px 13px; margin: 2px 0;
+  border: 1px solid transparent; border-radius: 8px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.omni-row:hover { background: rgba(255,255,255,.035); }
+.omni-row.selected {
+  background: rgba(201,162,75,.10);
+  border-color: #c9a24b55;
+}
+.omni-row-main { flex: 1; min-width: 0; }
+.omni-row-l {
+  color: #e8e4da; font-size: 16.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.omni-row-l mark, .omni-row-d mark {
+  background: transparent; color: #e8c96a; font-weight: 600;
+}
+.omni-row-d {
+  color: #8a8478; font-size: 13.5px; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.omni-kind {
+  flex: none; padding: 3px 11px;
+  border: 1px solid #2e2e36; border-radius: 20px;
+  color: #9a948a; font-size: 12.5px; white-space: nowrap;
+}
+.omni-jump {
+  flex: none; width: 32px; height: 32px;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid #2e2e36; border-radius: 6px;
+  color: #9a948a; font-size: 15px; cursor: pointer;
+  opacity: 0; transition: opacity 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.omni-row:hover .omni-jump, .omni-row.selected .omni-jump { opacity: 1; }
+.omni-jump:hover { border-color: #c9a24b88; color: #e8d9ad; }
+
+.omni-more {
+  display: block; margin: 3px 10px; padding: 5px 12px;
+  background: transparent; border: 1px dashed #2e2e36; border-radius: 8px;
+  color: #8a8478; font-size: 13.5px; font-family: inherit; cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+.omni-more:hover { border-color: #c9a24b66; color: #cfc9bd; }
+
+.omni-blank {
+  padding: 34px 20px; text-align: center;
+}
+.omni-blank-ic { font-size: 40px; color: #4d4a42; margin-bottom: 12px; }
+.omni-blank-t { color: #b9b4a8; font-size: 17.5px; }
+.omni-blank-s { color: #6b675e; font-size: 14px; margin-top: 9px; line-height: 1.6; }
+.omni-blank-s b { color: #b9a06a; }
+
+/* ---------- ask: answer card + facets ---------- */
+
+.omni-npc {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px 4px;
+}
+.omni-npc-n { color: #e8d9ad; font-size: 22px; font-weight: 600; }
+.omni-npc-m { color: #8a8478; font-size: 14px; }
+.omni-npc-how { margin-left: auto; color: #5d594f; font-size: 12px; }
+
+.omni-answer {
+  margin: 8px 12px; padding: 12px 14px;
+  background: rgba(201,162,75,.07);
+  border: 1px solid #c9a24b44; border-radius: 10px;
+  color: #e8e4da; font-size: 15.5px; line-height: 1.65;
+  user-select: text;
+}
+.omni-model { margin-top: 8px; color: #5d594f; font-size: 10px; text-align: right; }
+
+.omni-facet {
+  margin: 6px 12px;
+  border: 1px solid #26262e; border-radius: 10px;
+  overflow: hidden;
+}
+.omni-facet.focus { border-color: #c9a24b55; }
+.omni-fold-h {
+  padding: 12px 16px;
+  color: #cfc9bd; font-size: 15px; font-weight: 600;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between;
+  transition: background 120ms ease;
+}
+.omni-fold-h:hover { background: rgba(255,255,255,.03); }
+.omni-facet.focus .omni-fold-h { color: #e8d9ad; }
+.omni-chev { color: #6b675e; font-size: 11px; }
+.omni-fold-b { padding: 3px 16px 13px; }
+
+.omni-fact { display: flex; gap: 12px; padding: 4px 0; font-size: 15px; }
+.omni-fact-k { flex: none; width: 140px; color: #8a8478; }
+.omni-fact-v { color: #e8e4da; user-select: text; }
+
+.omni-prose {
+  color: #cfc9bd; font-size: 14.5px; line-height: 1.65;
+  padding: 4px 0; user-select: text;
+}
+
+.omni-line { display: flex; gap: 11px; padding: 5px 0; font-size: 14px; align-items: baseline; }
+.omni-when { flex: none; color: #6b675e; font-size: 12px; }
+.omni-who { flex: none; color: #9a948a; }
+.omni-text { color: #cfc9bd; line-height: 1.5; user-select: text; }
+
+.omni-think {
+  display: block; margin: 10px 12px; padding: 9px 16px;
+  background: rgba(201,162,75,.12); border: 1px solid #c9a24b77; border-radius: 9px;
+  color: #e8d9ad; font-size: 15.5px; font-family: inherit; cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.omni-think:hover { background: rgba(201,162,75,.20); border-color: #c9a24baa; }
+.omni-think:active { transform: translateY(1px); }
+
+/* aggregate people list ("Your followers (11)") */
+.omni-people { padding: 4px 12px 10px; }
+.omni-person {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 4px 0;
+}
+.omni-person .omni-cand { flex: none; }
+.omni-person-d {
+  color: #8a8478; font-size: 13.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.omni-cands { padding: 8px 14px 14px; color: #8a8478; font-size: 13.5px; }
+.omni-cand {
+  margin: 2px 3px; padding: 3px 10px;
+  background: transparent; border: 1px solid #2e2e36; border-radius: 14px;
+  color: #b9b4a8; font-size: 14px; font-family: inherit; cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+.omni-cand:hover { border-color: #c9a24b77; color: #e8d9ad; }
+
+/* ---------- the header button that opens it ---------- */
+
+#omni-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+#omni-btn .omni-btn-k {
+  color: #6b675e; font-size: 10px; border: 1px solid #2e2e36;
+  border-radius: 4px; padding: 0 4px;
+}

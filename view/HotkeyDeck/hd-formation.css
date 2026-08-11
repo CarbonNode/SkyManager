@@ -1,0 +1,351 @@
+/* ====================================================================== *
+ *  Formation modal (hd-formation.js) — own sheet, linked from index.html.
+ *  NEVER merge into app.css: sync_view_frags' banner replacement truncates
+ *  foreign blocks (the reason hd-omni.css / hd-shelf.css are separate).
+ *
+ *  Lives INSIDE #panel like #hk-icon-modal, so it inherits --ui-scale and
+ *  clips to the deck window. z-index 74: above the icon picker (72) and
+ *  omni (73), below #toast (80). Own keyframe — NEVER riseIn (that bakes
+ *  the panel scale into the animation).
+ * ====================================================================== */
+
+#fm-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 74;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 5, 8, .68);
+  animation: fadeIn 120ms ease;
+}
+#fm-modal.hidden { display: none; }
+
+.fm-box {
+  width: min(720px, 94%);
+  max-height: 90%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: linear-gradient(180deg, #1a1a21, #101015);
+  border: 1px solid #c9a24b77;
+  border-radius: 12px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+  animation: fmIn 160ms ease;
+}
+@keyframes fmIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---- head ---- */
+.fm-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #ffffff14;
+}
+.fm-title {
+  font-size: 19px;
+  font-weight: 700;
+  color: #e8d9ac;
+  letter-spacing: .02em;
+}
+.fm-who {
+  font-size: 15px;
+  color: #cfc9bb;
+  background: #ffffff0d;
+  border: 1px solid #ffffff1a;
+  border-radius: 999px;
+  padding: 4px 14px;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fm-close {
+  margin-left: auto;
+  font-size: 16px;
+  line-height: 1;
+  padding: 8px 12px;
+  color: #b9b2a4;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+.fm-close:hover { background: #ffffff12; color: #fff; }
+
+/* ---- body ---- */
+.fm-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.fm-body::-webkit-scrollbar { width: 10px; }
+.fm-body::-webkit-scrollbar-thumb { background: #ffffff1f; border-radius: 5px; }
+
+/* honest absence */
+.fm-empty {
+  text-align: center;
+  padding: 44px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+.fm-empty-ic { font-size: 40px; opacity: .5; }
+.fm-empty-t  { font-size: 18px; font-weight: 600; color: #ddd6c6; }
+.fm-empty-d  { font-size: 14.5px; line-height: 1.55; color: #a9a294; max-width: 480px; }
+
+/* the save-safety banner */
+.fm-warn {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #ffd9a0;
+  background: #6b420f2e;
+  border: 1px solid #c9853f66;
+  border-radius: 10px;
+  padding: 12px 16px;
+}
+
+/* the formation-OFF banner: text on the left, a big turn-on button on the
+   right. Stacks on a narrow deck so the button never gets squeezed. */
+.fm-warn.fm-off {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.fm-off-text { flex: 1; min-width: 0; }
+.fm-off-btn { flex: none; white-space: nowrap; }
+@media (max-width: 760px) {
+  .fm-warn.fm-off { flex-direction: column; align-items: stretch; }
+}
+
+/* ---- sections ---- */
+.fm-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: #ffffff06;
+  border: 1px solid #ffffff10;
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.fm-sec-t {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #e2dcc9;
+}
+.fm-chip {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #b6ae9d;
+  background: #ffffff0d;
+  border: 1px solid #ffffff1a;
+  border-radius: 999px;
+  padding: 3px 12px;
+}
+.fm-chip.on { color: #b9e8b4; border-color: #6fae6a66; background: #2c53281f; }
+
+/* ---- rows: label · slider · value ---- */
+.fm-row {
+  display: grid;
+  grid-template-columns: 150px 1fr 76px;
+  align-items: center;
+  gap: 14px;
+  min-height: 40px;
+}
+.fm-lbl { font-size: 14.5px; color: #c8c2b2; }
+.fm-val {
+  font-size: 16px;
+  font-weight: 700;
+  color: #e8d9ac;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.fm-range {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: #ffffff1c;
+  outline: none;
+}
+.fm-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #c9a24b;
+  border: 2px solid #17130a;
+  cursor: pointer;
+}
+
+/* ---- toggles ---- */
+.fm-toggles { display: flex; flex-wrap: wrap; gap: 12px; }
+.fm-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #b9b2a4;
+  background: #ffffff08;
+  border: 1px solid #ffffff1a;
+  border-radius: 999px;
+  padding: 8px 16px 8px 8px;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+.fm-toggle:hover { border-color: #c9a24b66; }
+.fm-toggle .fm-knob {
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: #ffffff1f;
+  position: relative;
+  flex: none;
+  transition: background 140ms ease;
+}
+.fm-toggle .fm-knob::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #8f8878;
+  transition: transform 140ms ease, background 140ms ease;
+}
+.fm-toggle.on { color: #e8d9ac; background: #c9a24b14; border-color: #c9a24b55; }
+.fm-toggle.on .fm-knob { background: #c9a24b44; }
+.fm-toggle.on .fm-knob::after { transform: translateX(14px); background: #e3ce8e; }
+.fm-toggle-lbl { white-space: nowrap; }
+
+/* ---- mode chips ---- */
+.fm-modes { display: flex; gap: 8px; }
+.fm-mode {
+  flex: 1;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #b3ac9c;
+  background: #ffffff08;
+  border: 1px solid #ffffff1a;
+  border-radius: 8px;
+  padding: 10px 0;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.fm-mode:hover { border-color: #c9a24b55; }
+.fm-mode.active {
+  color: #17130a;
+  background: #c9a24b;
+  border-color: #c9a24b;
+}
+
+/* ---- the direction pad ---- */
+.fm-pad-wrap {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 20px;
+  align-items: center;
+}
+.fm-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 64px);
+  grid-auto-rows: 64px;
+  gap: 8px;
+}
+.fm-pad-cell {
+  font-size: 24px;
+  color: #cfc9bb;
+  background: #ffffff08;
+  border: 1px solid #ffffff1a;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+.fm-pad-cell:hover { border-color: #c9a24b77; color: #fff; }
+.fm-pad-cell.active {
+  color: #17130a;
+  background: #c9a24b;
+  border-color: #e3ce8e;
+  font-weight: 700;
+}
+.fm-fine { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.fm-fine .fm-row { grid-template-columns: 74px 1fr 70px; }
+
+/* ---- buttons ---- */
+.fm-btn {
+  font-size: 15px;
+  font-weight: 600;
+  padding: 12px 18px;
+  border-radius: 10px;
+  border: 1px solid #ffffff1f;
+  background: #ffffff0a;
+  color: #d6d0c0;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.fm-btn:hover { border-color: #c9a24b77; color: #fff; }
+.fm-btn.primary {
+  background: #c9a24b;
+  border-color: #c9a24b;
+  color: #17130a;
+}
+.fm-btn.primary:hover { background: #e3ce8e; color: #17130a; }
+.fm-btn.primary[disabled] {
+  background: #ffffff10;
+  border-color: #ffffff1a;
+  color: #7d786c;
+  cursor: default;
+}
+.fm-btn.danger { color: #e8b8b0; border-color: #a4524a55; }
+.fm-btn.danger:hover { background: #57201b33; border-color: #c96a5f88; }
+.fm-btn.danger.armed {
+  background: #7c2a22;
+  border-color: #e08a7e;
+  color: #fff;
+}
+
+/* cast-key rebind row: label on the left, the key button on the right */
+.fm-key-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.fm-key-spacer { flex: 1; }
+.fm-key-btn {
+  min-width: 120px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.fm-key-btn.armed {
+  background: #c9a24b;
+  border-color: #e3ce8e;
+  color: #17130a;
+  animation: fmKeyPulse 1s ease-in-out infinite;
+}
+@keyframes fmKeyPulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
+
+.fm-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 2px;
+}
+
+/* Narrow deck (640px floor): the pad stacks above the fine sliders. */
+@media (max-width: 760px) {
+  .fm-pad-wrap { grid-template-columns: 1fr; justify-items: center; }
+  .fm-fine { width: 100%; }
+  .fm-row { grid-template-columns: 120px 1fr 64px; }
+}

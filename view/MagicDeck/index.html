@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spell Deck</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div id="overlay">
+    <div id="panel" role="dialog" aria-label="Spell Deck">
+
+      <header id="md-header">
+        <div class="title-wrap">
+          <h1>Spell&nbsp;Deck</h1>
+          <span id="count-chip" title="Spells in view">0</span>
+        </div>
+        <div class="header-actions">
+          <button id="edit-btn" class="ghost-btn" title="Edit categories &amp; spells (F2)">Edit</button>
+          <button id="close-btn" class="ghost-btn close" title="Close (F18 / Esc)">✕</button>
+        </div>
+      </header>
+
+      <div id="body">
+        <!-- LEFT: vertical category rail -->
+        <nav id="rail" aria-label="Spell categories">
+          <div id="rail-list"></div>
+          <button id="add-cat-btn" class="rail-add hidden">＋ Category</button>
+        </nav>
+
+        <!-- RIGHT: searchable, scrollable spell list -->
+        <section id="main">
+          <div id="toolbar">
+            <div id="search-wrap">
+              <span class="search-ic" aria-hidden="true">⌕</span>
+              <input id="search" type="text" autocomplete="off" spellcheck="false"
+                     placeholder="Search spells…">
+            </div>
+            <div id="edit-tools" class="hidden">
+              <div class="scale-ctl" title="Menu size — scales everything in the panel">
+                <button id="scale-down" class="mini-btn" aria-label="Smaller">−</button>
+                <span id="scale-val">100%</span>
+                <button id="scale-up" class="mini-btn" aria-label="Larger">＋</button>
+                <button id="scale-reset" class="mini-btn wide" title="Reset scale to 100%">Reset</button>
+              </div>
+              <div class="scale-ctl" title="Icon size — how big the spell art is in the list">
+                <span class="ctl-tag">Icons</span>
+                <button id="icon-size-down" class="mini-btn" aria-label="Smaller icons">−</button>
+                <span id="icon-size-val">44</span>
+                <button id="icon-size-up" class="mini-btn" aria-label="Bigger icons">＋</button>
+                <button id="icon-size-reset" class="mini-btn wide" title="Back to the default icon size">Reset</button>
+              </div>
+              <div class="scale-ctl" title="Panel size — drag the ◢ grip in the bottom-right corner to resize">
+                <span id="panel-size-val">Auto</span>
+                <button id="panel-size-reset" class="mini-btn wide"
+                        title="Back to the default size (fits the screen automatically)">Reset size</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- settings card (edit mode only): open key, capture key, delete-on-add -->
+          <div id="openkey-card" class="hidden">
+            <div class="ok-row">
+              <span class="ok-label">Open key</span>
+              <button id="openkey-btn" class="keycap" title="Press to rebind">F18</button>
+              <span class="ok-hint">Press to rebind · defaults to F18 (via the F13–F24 bridge)</span>
+            </div>
+            <div class="ok-row">
+              <span class="ok-label">Capture key</span>
+              <button id="addkey-btn" class="keycap" title="Press to rebind">Num +</button>
+              <span class="ok-hint">Press it inside the vanilla Magic Menu — the highlighted spell is added to the deck</span>
+            </div>
+            <label class="ok-toggle" title="The captured spell stays castable from the deck and can be restored from the Removed list any time">
+              <input type="checkbox" id="remove-on-add">
+              <span>Capture also removes the spell from the spellbook (keeps the vanilla menu tidy — restorable)</span>
+            </label>
+          </div>
+
+          <!-- combos: drag one spell onto another to merge them; click = cast all -->
+          <div id="combo-strip" class="hidden" aria-label="Spell combos"></div>
+
+          <div id="list" role="listbox" aria-label="Spells"></div>
+          <div id="empty-state" class="hidden"></div>
+
+          <button id="add-spell-btn" class="hidden">＋ Add spell from your spellbook</button>
+
+          <div id="removed-section" class="hidden"></div>
+        </section>
+      </div>
+
+      <footer id="hints">
+        <span>↑↓ select</span><span>Enter cast/equip</span><span>1–9,0 quick-fire</span>
+        <span>drag spell → spell combos them</span>
+        <span>hover = description</span>
+        <span>F2 edit</span><span>F18 / Esc close</span>
+      </footer>
+
+      <!-- add-spell picker: the player's currently-known spells -->
+      <div id="add-modal" class="hidden">
+        <div class="add-box">
+          <div class="add-head">
+            <span class="add-title">Add to <b id="add-cat-name">…</b></span>
+            <button id="add-close" class="ghost-btn close" title="Done">✕</button>
+          </div>
+          <div class="add-search-wrap">
+            <span class="search-ic" aria-hidden="true">⌕</span>
+            <input id="add-search" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="Filter your known spells…">
+          </div>
+          <div id="add-list"></div>
+          <div id="add-empty" class="hidden"></div>
+          <div class="add-foot">
+            <span class="add-legend"><b class="tag cast">Cast</b> fires on click &nbsp;·&nbsp;
+              <b class="tag equip">Equip</b> toggles into hand / voice</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- press-to-rebind capture (shared pattern with the deck) -->
+      <div id="capture-modal" class="hidden">
+        <div class="capture-box">
+          <div class="capture-title" id="capture-title">Press the new open key…</div>
+          <div class="capture-sub">Keyboard key, F13–F24, or mouse (middle / Mouse&nbsp;4 / Mouse&nbsp;5) · Esc cancels</div>
+          <button id="capture-cancel" class="ghost-btn">Cancel</button>
+        </div>
+      </div>
+
+      <!-- per-spell icon picker: Auto + custom folder + Spell Hotbar library -->
+      <div id="icon-modal" class="hidden">
+        <div class="icon-box">
+          <div class="add-head">
+            <span class="add-title">Icon for <b id="icon-spell-name">…</b></span>
+            <button id="icon-close" class="ghost-btn close" title="Done">✕</button>
+          </div>
+          <div class="add-search-wrap">
+            <span class="search-ic" aria-hidden="true">⌕</span>
+            <input id="icon-search" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="Search icons — spell names, schools, mod packs…">
+          </div>
+          <div id="icon-grid"></div>
+          <div class="icon-foot">
+            <button id="icon-refresh" class="ghost-btn" title="Re-scan the custom icon folder — picks up images dropped in while the game runs">⟳ Refresh custom icons</button>
+            <span id="icon-count" class="icon-hint"></span>
+          </div>
+          <div class="icon-drop-hint">Add your own: drop images onto
+            <b>Desktop\Spell Deck Icons</b> (swept in automatically) or into
+            <b>…\Hotkey Deck (PrismaUI)\PrismaUI\views\MagicDeck\icons\custom\</b>,
+            then hit Refresh — no restart needed.</div>
+        </div>
+      </div>
+
+      <!-- drag-to-resize grip: sets --panel-w / --panel-h, double-click resets -->
+      <div id="resize-grip" role="separator" aria-label="Resize panel" tabindex="-1"
+           title="Drag to resize the panel · double-click to reset"></div>
+
+      <div id="toast" class="hidden"></div>
+    </div>
+
+    <!-- Hover description tooltip. Lives OUT here in #overlay, NOT in #panel:
+         #panel is transform: scale(--ui-scale), which makes it the containing
+         block for absolutely-positioned children, so a left/top computed from
+         a getBoundingClientRect() (screen px) would be re-interpreted in the
+         panel's pre-scale local space and land somewhere else entirely. Same
+         reason #ctx-menu is appended here. -->
+    <div id="desc-tip" class="hidden"></div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

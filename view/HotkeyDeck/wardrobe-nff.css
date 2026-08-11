@@ -1,0 +1,395 @@
+/* ===================================================================== *
+ *  NFF outfits — styles for the Wardrobe pane's NFF sub-tab.
+ *
+ *  A SEPARATE STYLESHEET ON PURPOSE. tools/sync_view_frags.py rebuilds
+ *  app.css by truncating it at the "Wardrobe tab" marker and re-appending
+ *  wardrobe-pane.css.frag, so anything appended after that marker is
+ *  silently dropped on the next sync. Linking this file from index.html's
+ *  <head> (after app.css) keeps both tools honest.
+ *
+ *  Additions only: every selector is nf- prefixed. Colours, radii and
+ *  easing are the deck's own literals, matched to wardrobe-pane.css.frag —
+ *  #c9a24b gold · #e8e4da text · #2e2e36 lines · 140ms ease · good #86c98a
+ *  · bad #d98a8a. The shared .ghost-btn and .wd-more / .wd-skel classes are
+ *  reused as-is rather than re-cut.
+ * ===================================================================== */
+
+/* ---------- host fix caused BY this tab ---------- *
+ * #wd-nav is a plain flex row with no wrap and no scroll. Four sub-tabs fitted
+ * a narrow panel; a fifth clips "Inventory" and "NFF" off the right edge with
+ * no way to reach them. Making the strip scroll costs nothing at desktop width
+ * (there is no overflow, so no scrollbar) and keeps every tab reachable at 380px.
+ * It lives here rather than in wardrobe-pane.css.frag because that fragment is
+ * the other session's source of truth and gets re-synced over app.css. */
+#wd-nav { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+#wd-nav .wd-subtab { flex: none; white-space: nowrap; }
+#wd-nav::-webkit-scrollbar { height: 3px; }
+#wd-nav::-webkit-scrollbar-thumb { background: #3a3a44; border-radius: 3px; }
+#wd-nav::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- the top bar: availability, clash warning, counters ---------- */
+
+.nf-bar { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+
+.nf-note {
+  padding: 8px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5;
+  color: #e0b0b0; background: #1a1216; border: 1px solid #a55565;
+}
+.nf-note.warn { color: #e6cf9a; background: #1a1710; border-color: #6d5a2c; }
+.nf-note.bad  { color: #e0b0b0; background: #1a1216; border-color: #a55565; }
+.nf-note strong { color: inherit; font-weight: 600; }
+.nf-note .ghost-btn { margin-left: 8px; font-size: 12.5px; padding: 3px 9px; vertical-align: baseline; }
+
+.nf-stats {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 12.5px; color: #7c776a;
+}
+.nf-stats b { color: #d3c191; font-weight: 600; }
+.nf-stats .ghost-btn { font-size: 12.5px; padding: 4px 10px; }
+.nf-stats .ghost-btn.on { color: #ecd9a0; border-color: #c9a24b; background: #191921; }
+
+/* ---------- a follower row ---------- */
+
+.nf-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 10px; border-radius: 8px;
+  background: #16161d; border: 1px solid #2e2e36; cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.nf-row:hover { border-color: #3f3f4b; background: #191921; }
+.nf-row:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.nf-row.clash { border-color: #a55565; background: #1a1216; }
+.nf-row.clash:hover { border-color: #c07080; }
+
+.nf-face {
+  flex: none; width: 38px; height: 38px; border-radius: 7px; object-fit: cover;
+  background: #101017; border: 1px solid #2e2e36;
+}
+.nf-face.ph {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; color: #6f6a5e; letter-spacing: .5px;
+}
+
+.nf-id { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+
+.nf-name {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  font-size: 14.5px; color: #e8e4da; min-width: 0;
+}
+.nf-name mark { background: rgba(201,162,75,.28); color: #ffe9b0; border-radius: 2px; padding: 0 1px; }
+
+.nf-badges { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.nf-badge {
+  font-family: Consolas, "Courier New", monospace; font-size: 11px; line-height: 1.6;
+  color: #8b8678; background: #101017; border: 1px solid #2e2e36;
+  border-radius: 999px; padding: 0 7px; white-space: nowrap;
+}
+.nf-badge.bad  { color: #e6a2a2; border-color: #a55565; background: #1a1216; }
+.nf-badge.good { color: #9fe0ac; border-color: #3a5a3f; background: #101a12; }
+.nf-badge.dim  { color: #6b675e; }
+
+.nf-note-line {
+  font-size: 12.5px; color: #8b8678; line-height: 1.45;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nf-note-line mark { background: rgba(201,162,75,.28); color: #ffe9b0; border-radius: 2px; }
+
+/* ---------- the three set chips ---------- */
+
+.nf-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.nf-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  font-family: inherit; font-size: 12.5px; color: #d6d1c4;
+  background: #101017; border: 1px solid #2e2e36; border-radius: 999px;
+  padding: 3px 10px 3px 5px; cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+.nf-chip:hover { border-color: #c9a24b; color: #ecd9a0; background: #191921; }
+.nf-chip:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.nf-chip.off { color: #6b675e; border-style: dashed; }
+.nf-chip.off:hover { color: #a09a8b; border-color: #4a4a56; }
+.nf-chip.worn { border-color: #c9a24b; color: #ffe9b0; background: #1c1a14; }
+.nf-chip.base { padding-left: 10px; }
+
+.nf-chip-ic {
+  width: 18px; height: 18px; border-radius: 4px; object-fit: cover; flex: none;
+  background: #16161d;
+}
+.nf-chip-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; margin-left: 4px; }
+.nf-chip-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 15ch; }
+.nf-chip-c {
+  font-family: Consolas, "Courier New", monospace; font-size: 11px; color: #7c776a; flex: none;
+}
+.nf-chip-w { font-size: 8px; color: #c9a24b; flex: none; }
+
+/* ---------- the crosshair quick-action bar ---------- */
+
+.nf-quick {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 7px 10px; border-radius: 8px;
+  background: #16161d; border: 1px solid #3a3a44;
+}
+.nf-quick-who { font-size: 13px; color: #ecd9a0; }
+.nf-quick .ghost-btn { font-size: 12.5px; padding: 4px 10px; }
+
+/* ---------- the per-row chest button + its chooser ---------- */
+
+.nf-chest {
+  flex: none; align-self: flex-start;
+  width: 30px; height: 30px; padding: 0; font-size: 14px; line-height: 1;
+  background: #101017; border: 1px solid #2e2e36; border-radius: 7px;
+  cursor: pointer; color: #d6d1c4;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.nf-chest:hover { border-color: #c9a24b; background: #191921; }
+.nf-chest:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.nf-chest.on { border-color: #c9a24b; background: #1c1a14; }
+
+.nf-chest-row {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 2px; padding: 6px 8px; border-radius: 7px;
+  background: #101017; border: 1px dashed #3a3a44;
+}
+.nf-chest-row .ghost-btn { font-size: 12.5px; padding: 4px 10px; }
+
+/* ---------- the Wardrobe -> NFF outfit combobox ---------- */
+
+.nf-combo {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: 2px; padding: 8px; border-radius: 7px;
+  background: #101017; border: 1px solid #3a3a44;
+}
+.nf-combo-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 190px; overflow-y: auto; overscroll-behavior: contain;
+}
+.nf-combo-opt {
+  display: flex; align-items: baseline; gap: 8px; text-align: left;
+  font-family: inherit; font-size: 13px; color: #d6d1c4;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  padding: 5px 8px; cursor: pointer; min-width: 0;
+}
+.nf-combo-opt:hover { background: #16161d; }
+.nf-combo-opt.sel { background: #1c1a14; border-color: #c9a24b; color: #ffe9b0; }
+.nf-combo-opt:focus-visible { outline: 2px solid #c9a24b; outline-offset: -2px; }
+.nf-combo-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nf-combo-n mark { background: rgba(201,162,75,.28); color: #ffe9b0; border-radius: 2px; padding: 0 1px; }
+.nf-combo-c { flex: none; font-size: 11.5px; color: #7c776a; }
+.nf-combo > .ghost-btn { align-self: flex-start; font-size: 12.5px; padding: 4px 10px; }
+
+/* ---------- empty state ---------- */
+
+.nf-empty { padding: 26px 14px; text-align: center; color: #8b8678; font-size: 13.5px; line-height: 1.6; }
+.nf-empty p { margin: 0 0 6px; }
+.nf-empty .dim { color: #6b675e; font-size: 12.5px; }
+
+/* ---------- overlays (detail sheet + icon picker) ---------- */
+
+.nf-ov {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(8,8,11,.72);
+  animation: fadeIn 140ms ease;
+}
+.nf-ov.hidden { display: none; }
+
+.nf-ov-card {
+  display: flex; flex-direction: column; min-height: 0;
+  width: min(620px, 100%); max-height: 100%;
+  background: #14141a; border: 1px solid #3a3a44; border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0,0,0,.55);
+}
+.nf-ov-card.narrow { width: min(520px, 100%); }
+
+.nf-ov-head {
+  flex: none; display: flex; align-items: center; gap: 9px;
+  padding: 11px 13px; border-bottom: 1px solid #2e2e36;
+}
+.nf-ov-head h2 {
+  margin: 0; font-size: 16px; font-weight: 600; color: #ecd9a0;
+  letter-spacing: .3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nf-ov-head .ghost-btn { margin-left: auto; flex: none; }
+
+.nf-ov-body {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 12px 13px; display: flex; flex-direction: column; gap: 10px;
+}
+
+/* ---------- a block inside the sheet ---------- */
+
+.nf-block {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 10px 11px; border-radius: 8px;
+  background: #16161d; border: 1px solid #2e2e36;
+}
+.nf-block.set.worn { border-color: #c9a24b; }
+.nf-block.danger { border-color: #6b3a44; background: #170f12; }
+
+.nf-k {
+  font-size: 13px; letter-spacing: .6px; text-transform: uppercase; color: #7c776a;
+}
+.nf-hint { font-size: 13px; color: #8b8678; line-height: 1.5; }
+.nf-hint.bad { color: #e6a2a2; }
+
+.nf-in {
+  width: 100%; font-family: inherit; font-size: 15px; color: #e8e4da;
+  background: #101017; border: 1px solid #2e2e36; border-radius: 7px;
+  padding: 9px 9px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.nf-in::placeholder { color: #6b675e; }
+.nf-in:focus { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.13); }
+.nf-in.name { font-size: 15.5px; color: #ecd9a0; }
+
+/* segmented two-button choice (who dresses her) */
+.nf-seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.nf-seg button {
+  font-family: inherit; font-size: 15px; color: #8b8678;
+  background: #101017; border: 1px solid #2e2e36; border-radius: 7px;
+  padding: 10px 11px; cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.nf-seg button:hover { color: #ecd9a0; border-color: #4a4a56; }
+.nf-seg button:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.nf-seg button.on { color: #ffe9b0; border-color: #c9a24b; background: #1c1a14; }
+
+/* one set's header: icon, name, type tag */
+.nf-set-head { display: flex; align-items: flex-start; gap: 10px; }
+.nf-set-id { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.nf-set-tag {
+  flex: none; font-size: 12.5px; letter-spacing: .7px; text-transform: uppercase;
+  padding-top: 6px;
+}
+
+.nf-thumb {
+  flex: none; width: 46px; height: 46px; border-radius: 8px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; color: #6f6a5e;
+  background: #101017; border: 1px solid #2e2e36; cursor: pointer; padding: 0;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+.nf-thumb:hover { border-color: #c9a24b; color: #ecd9a0; }
+.nf-thumb:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.nf-thumb.empty { border-style: dashed; }
+.nf-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.nf-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.nf-acts .ghost-btn { font-size: 14.5px; padding: 8px 12px; }
+.nf-acts .ghost-btn[disabled] {
+  opacity: .45; cursor: default; border-color: #2e2e36; color: #6b675e;
+}
+.nf-acts .ghost-btn[disabled]:hover { border-color: #2e2e36; color: #6b675e; background: transparent; }
+.ghost-btn.danger { color: #d98a8a; border-color: #5a3038; }
+.ghost-btn.danger:hover { color: #f0b0b0; border-color: #a55565; background: #1a1216; }
+.ghost-btn.danger.armed { color: #ffd9d9; border-color: #d98a8a; background: #24151a; }
+
+/* the pieces inside one chest */
+.nf-pieces { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.nf-pieces li {
+  display: flex; align-items: baseline; gap: 7px;
+  font-size: 13.5px; color: #d6d1c4; padding: 5px 8px;
+  background: #101017; border-radius: 5px; min-width: 0;
+}
+.nf-piece-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nf-piece-c { flex: none; font-family: Consolas, "Courier New", monospace; font-size: 12px; color: #c9a24b; }
+.nf-piece-p {
+  flex: none; max-width: 14ch; font-size: 12px; color: #6b675e;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---------- icon picker ---------- */
+
+.nf-picker-top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.nf-picker-top .nf-in { flex: 1; min-width: 140px; }
+.nf-picker-top .ghost-btn { flex: none; font-size: 14px; padding: 8px 12px; }
+.nf-picker-top .nf-hint { flex-basis: 100%; }
+
+.nf-icons {
+  display: grid; gap: 6px;
+  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+}
+.nf-icon {
+  aspect-ratio: 1 / 1; padding: 3px; border-radius: 7px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: #101017; border: 1px solid #2e2e36;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.nf-icon:hover { border-color: #c9a24b; background: #191921; }
+.nf-icon:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.nf-icon.on { border-color: #c9a24b; background: #1c1a14; }
+.nf-icon img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.nf-icon.none { font-size: 13px; color: #8b8678; border-style: dashed; }
+
+/* ---------- narrow panel ---------- */
+
+@media (max-width: 560px) {
+  .nf-row { gap: 8px; padding: 8px; }
+  .nf-quick { gap: 5px; }
+  .nf-quick .ghost-btn, .nf-chest-row .ghost-btn,
+  .nf-sysrow .ghost-btn { flex: 1 1 auto; text-align: center; }
+  /* The label owns its own line on a phone; five buttons across 370 px is two
+     or three tidy rows, not a squeeze against a leading caption. */
+  .nf-sysrow .nf-hint { flex: 1 0 100%; }
+  .nf-face { width: 32px; height: 32px; }
+  .nf-chip-n { max-width: 10ch; }
+  .nf-ov { padding: 8px; }
+  .nf-ov-card, .nf-ov-card.narrow { width: 100%; }
+  .nf-set-head { flex-wrap: wrap; }
+  .nf-set-tag { padding-top: 0; }
+  .nf-acts .ghost-btn { flex: 1 1 auto; text-align: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nf-ov { animation: none; }
+  .nf-row, .nf-chip, .nf-icon, .nf-thumb, .nf-in, .nf-seg button { transition: none; }
+}
+
+/* ---- NFF's system-wide controls ------------------------------------------ *
+   One row under the per-person controls, for the four things that act on NFF's
+   whole outfit engine rather than on one follower. Wraps rather than scrolls:
+   it is five buttons, not a list, and at 390 px it becomes two or three rows
+   instead of a horizontal scrollbar nobody finds. */
+.nf-sysrow {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid #26262e;
+}
+.nf-sysrow .nf-hint { flex: 0 0 auto; margin-right: 2px; }
+/* The one toggle in the row reads as pressed, like every other on-state in the
+   deck. `.on` is otherwise unused on .ghost-btn inside this pane. */
+.nf-sysrow .ghost-btn.on {
+  color: #101015; background: linear-gradient(180deg, #d9c48a, #c9a24b);
+  border-color: #c9a24b;
+}
+.nf-sysrow .ghost-btn.on:hover { filter: brightness(1.06); }
+
+/* ---- combat gear: NFF's helmet / shield / weapon / ammo switches ---------
+   A label and its pills on one row, wrapping rather than squashing — eleven
+   buttons in a non-wrapping flex row is what clipped nine labels to 0-4px on
+   the F7 card at the deck's 640px floor (2026-08-03). Nothing here is under
+   13px, per the standing rule. */
+.nf-gear-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-top: 9px;
+}
+.nf-gear-k {
+  font-size: 13.5px; color: #9a927f; flex: 1 1 auto; min-width: 120px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nf-gear-pill {
+  font: inherit; font-size: 13.5px; padding: 7px 13px; border-radius: 999px;
+  cursor: pointer; flex: 0 0 auto;
+  background: rgba(255,255,255,.03); color: #b9b2a2;
+  border: 1px solid rgba(201,162,75,.20);
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+.nf-gear-pill:hover:not(:disabled) {
+  background: rgba(201,162,75,.13); color: #ecd9a0; border-color: rgba(201,162,75,.45);
+}
+.nf-gear-pill:active:not(:disabled) { background: rgba(201,162,75,.22); }
+.nf-gear-pill:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.nf-gear-pill.on {
+  background: rgba(201,162,75,.20); color: #f0e6cc; border-color: #c9a24b;
+}
+.nf-gear-pill:disabled { opacity: .38; cursor: not-allowed; }
