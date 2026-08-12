@@ -64,29 +64,84 @@ namespace CharSheet
 			return t;
 		}
 
-		// Gold001 summed off the inventory-changes entry list, guarded with SEH
-		// exactly as Finance::ReadGold does — a full GetInventory<>() rebuild
-		// faulted inside this DLL on a 4000-plugin order, and the sheet must not
-		// be the tab that crashes. No C++ objects live in the __try body (C2712),
-		// so the SEH is legal. Returns -1 on fault; the caller shows 0.
-		__declspec(noinline) std::int64_t ReadGoldRaw(RE::PlayerCharacter* p)
+		// One deliberately narrow inventory snapshot. A full GetInventory<>()
+		// rebuild faulted inside this DLL on the 4k-plugin live profile; the
+		// inventory-changes list is the proven safe path Finance already uses.
+		// Keep this POD so the wrapper can SEH-guard the call without C2712.
+		struct InventoryCounts
 		{
-			std::int64_t total   = 0;
+			std::int64_t gold = 0;
+			std::int64_t health = 0;
+			std::int64_t magicka = 0;
+			std::int64_t stamina = 0;
+			std::int64_t other = 0;
+			std::int64_t lockpicks = 0;
+			bool ok = true;
+		};
+
+		// A potion belongs to exactly one card. Multi-pool concoctions go to
+		// Other instead of being double-counted, so the four card counts always
+		// add up to the actual number of non-food, non-poison potions carried.
+		int PotionPoolMask(const RE::AlchemyItem* alch)
+		{
+			if (!alch)
+				return 0;
+			int mask = 0;
+			for (auto* effect : alch->effects) {
+				auto* base = effect ? effect->baseEffect : nullptr;
+				if (!base)
+					continue;
+				for (const auto av : { base->data.primaryAV, base->data.secondaryAV }) {
+					if (av == RE::ActorValue::kHealth)       mask |= 1;
+					else if (av == RE::ActorValue::kMagicka) mask |= 2;
+					else if (av == RE::ActorValue::kStamina) mask |= 4;
+				}
+			}
+			return mask;
+		}
+
+		__declspec(noinline) InventoryCounts ReadInventoryRaw(RE::PlayerCharacter* p)
+		{
+			InventoryCounts out;
 			auto*        changes = p ? p->GetInventoryChanges() : nullptr;
 			if (changes && changes->entryList) {
 				for (auto* entry : *changes->entryList) {
-					if (entry && entry->object && entry->object->GetFormID() == 0x0000000F)
-						total += entry->countDelta;
+					if (!entry || !entry->object || entry->countDelta <= 0)
+						continue;
+					auto* obj = entry->object;
+					const std::int64_t count = entry->countDelta;
+					if (obj->GetFormID() == 0x0000000F) {
+						out.gold += count;
+						continue;
+					}
+					if (obj->GetFormID() == 0x0000000A) {
+						out.lockpicks += count;
+						continue;
+					}
+					if (obj->GetFormType() != RE::FormType::AlchemyItem)
+						continue;
+					auto* alch = obj->As<RE::AlchemyItem>();
+					if (!alch || alch->IsFood() || alch->IsPoison())
+						continue;
+					switch (PotionPoolMask(alch)) {
+					case 1: out.health += count; break;
+					case 2: out.magicka += count; break;
+					case 4: out.stamina += count; break;
+					default: out.other += count; break;
+					}
 				}
 			}
-			return total;
+			return out;
 		}
-		std::int64_t ReadGold(RE::PlayerCharacter* p)
+
+		InventoryCounts ReadInventory(RE::PlayerCharacter* p)
 		{
 			__try {
-				return ReadGoldRaw(p);
+				return ReadInventoryRaw(p);
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
-				return -1;
+				InventoryCounts out;
+				out.ok = false;
+				return out;
 			}
 		}
 
@@ -147,35 +202,62 @@ namespace CharSheet
 			return 0;
 		}
 
-		// Is dispelling this source safe? Abilities, race powers, diseases and
-		// addictions are PASSIVE / permanent — a racial resistance, a standing-
-		// stone blessing, a vampire/werewolf timer. Dispelling one strips the
-		// character of something they can't get back by re-casting, so the sheet
-		// offers no remove button for it. Spells, powers actively cast, poisons,
-		// enchant procs and the like are fair game.
-		bool DispelSafe(RE::MagicItem* src)
+		enum class RemoveMode { kSafe, kConfirm, kLocked };
+
+		bool IsRaceEffect(RE::PlayerCharacter* player, RE::MagicItem* src)
 		{
-			if (!src)
-				return true;  // no known source: let the player dispel it
+			auto* race = player ? player->GetRace() : nullptr;
+			auto* data = race ? race->actorEffects : nullptr;
+			if (!src || !data || !data->spells)
+				return false;
+			for (std::uint32_t i = 0; i < data->numSpells; ++i) {
+				if (static_cast<RE::MagicItem*>(data->spells[i]) == src)
+					return true;
+			}
+			return false;
+		}
+
+		// GetSpellType is a RECORD CLASSIFICATION, not an engine CanDispel query.
+		// The first version treated six whole classes as "not dispellable", which
+		// is why diseases, powers and almost every controller effect on the live
+		// profile showed a false lock. Skyrim exposes ActiveEffect::Dispel for all
+		// of them. We hard-lock only the race's own inherited spell list; permanent
+		// abilities/powers get a stronger confirmation because they may be a mod
+		// controller; timed effects, debuffs, diseases and potions are normal.
+		RemoveMode DispelMode(RE::PlayerCharacter* player, RE::ActiveEffect* ae)
+		{
+			if (!ae)
+				return RemoveMode::kLocked;
+			auto* src = ae->spell;
+			if (IsRaceEffect(player, src))
+				return RemoveMode::kLocked;
+			auto* base = ae->effect ? ae->effect->baseEffect : nullptr;
+			if (ae->duration > 0.0f || (base && base->IsDetrimental()) || !src)
+				return RemoveMode::kSafe;
 			using T = RE::MagicSystem::SpellType;
-			// GetSpellType lives on MagicItem in NG (SpellItem overrides it), so a
-			// scroll/potion/ingredient source answers its own type without a cast.
 			switch (src->GetSpellType()) {
-			case T::kAbility:
 			case T::kDisease:
 			case T::kAddiction:
+			case T::kAlchemy:
+				return RemoveMode::kSafe;
+			case T::kAbility:
 			case T::kLesserPower:
 			case T::kPower:
 			case T::kVoicePower:
-				return false;
+				return RemoveMode::kConfirm;
 			default:
-				return true;
+				return RemoveMode::kSafe;
 			}
+		}
+
+		std::string EffectKey(const RE::ActiveEffect* ae)
+		{
+			return ae ? fmt::format("{:016X}", reinterpret_cast<std::uintptr_t>(ae)) : std::string();
 		}
 
 		// One active effect -> a row, or nullopt when it is inactive / dispelled /
 		// has no base setting (a half-built effect we should not list).
-		std::optional<json> EffectRow(RE::ActiveEffect* ae)
+		std::optional<json> EffectRow(RE::PlayerCharacter* player, RE::ActiveEffect* ae)
 		{
 			if (!ae)
 				return std::nullopt;
@@ -214,9 +296,13 @@ namespace CharSheet
 				? Floor0(ae->duration - ae->elapsedSeconds)
 				: 0.0;
 
-			const bool harmful = base->data.flags.any(RE::EffectSetting::EffectSettingData::Flag::kDetrimental);
+			const bool       harmful = base->data.flags.any(RE::EffectSetting::EffectSettingData::Flag::kDetrimental);
+			const RemoveMode remove  = DispelMode(player, ae);
+			const char* removeName = remove == RemoveMode::kSafe ? "safe" :
+				(remove == RemoveMode::kConfirm ? "confirm" : "locked");
 
 			return json{
+				{ "key", EffectKey(ae) },
 				{ "id", static_cast<int>(ae->usUniqueID) },
 				{ "name", std::move(name) },
 				{ "source", std::move(source) },
@@ -225,7 +311,8 @@ namespace CharSheet
 				{ "durSec", durSec },
 				{ "remainSec", remainSec },
 				{ "harmful", harmful },
-				{ "wantsRemove", DispelSafe(src) },
+				{ "removeMode", removeName },
+				{ "wantsRemove", remove != RemoveMode::kLocked },
 			};
 		}
 	}
@@ -253,18 +340,26 @@ namespace CharSheet
 			if (!j.contains(key) || !j[key].is_string())
 				return;
 			std::string v = j[key].get<std::string>();
-			if (v.size() > kTextCap)
-				v.resize(kTextCap);  // hard cap; hotkeys.json must not bloat
+			const auto cap = MetaTextCap(key);
+			if (v.size() > cap)
+				v.resize(cap);  // hard cap; hotkeys.json must not bloat
 			dst = std::move(v);
 		};
 		setText("charClass", meta.charClass);
+		setText("alignment", meta.alignment);
+		setText("title", meta.title);
+		setText("eyeColor", meta.eyeColor);
+		setText("height", meta.height);
+		setText("age", meta.age);
+		setText("homeland", meta.homeland);
+		setText("deity", meta.deity);
 		setText("background", meta.background);
 		setText("history", meta.history);
 
 		if (j.contains("portrait") && j["portrait"].is_string()) {
 			std::string v = j["portrait"].get<std::string>();
-			if (v.size() > kTextCap)
-				v.resize(kTextCap);
+			if (v.size() > MetaTextCap("portrait"))
+				v.resize(MetaTextCap("portrait"));
 			if (!ValidPortraitPath(v))
 				return json{ { "ok", false }, { "msg", "portrait must be a path under portraits/" } }.dump();
 			meta.portrait = std::move(v);
@@ -288,6 +383,10 @@ namespace CharSheet
 			for (const char* k : { "hp", "mag", "sta", "carry" })
 				out[k] = json{ { "cur", 0 }, { "max", 0 } };
 			out["gold"]    = 0;
+			out["inventory"] = json{
+				{ "potions", json{ { "health", 0 }, { "magicka", 0 }, { "stamina", 0 }, { "other", 0 }, { "total", 0 } } },
+				{ "lockpicks", 0 },
+			};
 			out["souls"]   = json{ { "dragon", 0 } };
 			out["bounty"]  = 0;
 			out["beast"]   = "";
@@ -295,6 +394,13 @@ namespace CharSheet
 			out["effects"] = json::array();
 			out["meta"]    = json{
 				{ "charClass", meta.charClass },
+				{ "alignment", meta.alignment },
+				{ "title", meta.title },
+				{ "eyeColor", meta.eyeColor },
+				{ "height", meta.height },
+				{ "age", meta.age },
+				{ "homeland", meta.homeland },
+				{ "deity", meta.deity },
 				{ "background", meta.background },
 				{ "history", meta.history },
 				{ "portrait", meta.portrait },
@@ -324,8 +430,25 @@ namespace CharSheet
 		out["sta"]   = Pool(avo, RE::ActorValue::kStamina);
 		out["carry"] = Pool(avo, RE::ActorValue::kCarryWeight);
 
-		const auto gold = ReadGold(p);
-		out["gold"] = gold < 0 ? 0 : static_cast<int>(gold);
+		const auto inv = ReadInventory(p);
+		// Reached once per plugin lifetime: protects the dynamic inventory seam in
+		// the deploy marker registry without spamming the 5 s portal ticker.
+		static bool inventorySaid = false;
+		if (!inventorySaid) {
+			inventorySaid = true;
+			logger::info("charsheet inventory: potion groups + lockpicks ready");
+		}
+		out["gold"] = inv.ok ? static_cast<int>(inv.gold) : 0;
+		out["inventory"] = json{
+			{ "potions", json{
+				{ "health", inv.ok ? inv.health : 0 },
+				{ "magicka", inv.ok ? inv.magicka : 0 },
+				{ "stamina", inv.ok ? inv.stamina : 0 },
+				{ "other", inv.ok ? inv.other : 0 },
+				{ "total", inv.ok ? inv.health + inv.magicka + inv.stamina + inv.other : 0 },
+			} },
+			{ "lockpicks", inv.ok ? inv.lockpicks : 0 },
+		};
 
 		int dragon = 0;
 		if (avo)
@@ -343,10 +466,15 @@ namespace CharSheet
 		out["skills"] = std::move(skills);
 
 		json effects = json::array();
+		static bool effectPolicySaid = false;
+		if (!effectPolicySaid) {
+			effectPolicySaid = true;
+			logger::info("charsheet effect policy: race lock + controller confirmation");
+		}
 		if (auto* mt = p->AsMagicTarget()) {
 			if (auto* list = mt->GetActiveEffectList()) {
 				for (auto* ae : *list) {
-					if (auto row = EffectRow(ae))
+					if (auto row = EffectRow(p, ae))
 						effects.push_back(std::move(*row));
 				}
 			}
@@ -355,6 +483,13 @@ namespace CharSheet
 
 		out["meta"] = json{
 			{ "charClass", meta.charClass },
+			{ "alignment", meta.alignment },
+			{ "title", meta.title },
+			{ "eyeColor", meta.eyeColor },
+			{ "height", meta.height },
+			{ "age", meta.age },
+			{ "homeland", meta.homeland },
+			{ "deity", meta.deity },
 			{ "background", meta.background },
 			{ "history", meta.history },
 			{ "portrait", meta.portrait },
@@ -363,7 +498,7 @@ namespace CharSheet
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
-	std::string RemoveEffect(std::uint32_t id)
+	std::string RemoveEffect(const std::string& key, bool force)
 	{
 		auto* p = RE::PlayerCharacter::GetSingleton();
 		if (!p)
@@ -375,14 +510,19 @@ namespace CharSheet
 		if (!list)
 			return json{ { "ok", false }, { "msg", "no active effects" } }.dump();
 
+		if (key.empty())
+			return json{ { "ok", false }, { "msg", "missing effect identity — refresh the sheet" } }.dump();
+
 		for (auto* ae : *list) {
-			if (!ae || static_cast<std::uint32_t>(ae->usUniqueID) != id)
+			if (!ae || EffectKey(ae) != key)
 				continue;
-			// Re-check the safety gate on the LIVE effect — the view greys the
-			// button, but a stale phone payload or a hand call must not strip a
-			// racial passive. This is the load-bearing guard, not the UI.
-			if (!DispelSafe(ae->spell))
-				return json{ { "ok", false }, { "msg", "that effect is an ability or power — dispelling it would break your character" } }.dump();
+			// Re-check the LIVE effect. The view's shield/lock is explanation; this
+			// is the security boundary against a stale or hand-written request.
+			const auto mode = DispelMode(p, ae);
+			if (mode == RemoveMode::kLocked)
+				return json{ { "ok", false }, { "msg", "that effect is inherited from your race and stays protected" } }.dump();
+			if (mode == RemoveMode::kConfirm && !force)
+				return json{ { "ok", false }, { "msg", "that permanent ability may be a mod controller — confirm Remove anyway" } }.dump();
 
 			std::string name = "effect";
 			if (ae->effect && ae->effect->baseEffect)
@@ -391,7 +531,8 @@ namespace CharSheet
 
 			ae->Dispel(false);
 			// "charsheet: dispelled" — hd-markers.json fingerprint for this feature.
-			logger::info("charsheet: dispelled effect '{}' (uniqueID {})", name, id);
+			logger::info("charsheet: dispelled effect '{}' (instance {}, uniqueID {})",
+				name, key, static_cast<std::uint32_t>(ae->usUniqueID));
 			return json{ { "ok", true }, { "msg", "removed " + name } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
 		return json{ { "ok", false }, { "msg", "that effect is no longer active" } }.dump();

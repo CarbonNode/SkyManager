@@ -409,7 +409,7 @@ namespace NffControl
 		 * only notice once something has moved and you cannot find it.
 		 *
 		 * Two entry points on nwsFollowerStorageScript, both zero-argument and
-		 * both taken verbatim from that script (decompiled, C:\Dev\nff-psc):
+		 * both taken verbatim from that decompiled script:
 		 *
 		 *     RemoteOpen()   activate the chest wherever it is standing
 		 *     PlaceChest()   move it to a spot beside the player

@@ -14,7 +14,7 @@
   flex: 1;
   min-height: 0;
   padding: 20px 24px 16px;
-  gap: 18px;
+  gap: 14px;
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -107,6 +107,7 @@
   gap: 12px;
   flex-wrap: wrap;
 }
+.ps-align-wrap { max-width: 270px; }
 .ps-race {
   font-size: 16px;
   color: #c3bba6;
@@ -158,6 +159,61 @@
   outline: none;
 }
 #ps-class-input::placeholder { color: #6d675a; font-weight: 400; }
+.ps-class-wrap input:not(#ps-class-input) {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: #ecd9a8;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 9px 12px 9px 8px;
+}
+.ps-class-wrap input::placeholder { color: #6d675a; font-weight: 400; }
+
+/* The original header had only a name and one short row beside a 200px
+   portrait, leaving a conspicuous empty block. These compact RP details use
+   that real estate and make the playful D&D-style identity first-class. */
+.ps-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(110px, 1fr));
+  gap: 8px;
+  margin-top: 2px;
+}
+.ps-profile-grid label {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid #302e29;
+  border-radius: 7px;
+  background: rgba(12,12,16,.6);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.ps-profile-grid label:focus-within {
+  border-color: rgba(201,162,75,.5);
+  background: #121218;
+}
+.ps-profile-grid label > span {
+  flex: 0 0 auto;
+  padding-left: 9px;
+  color: #706958;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: .55px;
+  text-transform: uppercase;
+}
+.ps-profile-grid input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #cfc8b8;
+  font-size: 13px;
+  padding: 7px 8px;
+}
+.ps-profile-grid input::placeholder { color: #514d43; }
 
 /* -- level medallion -------------------------------------------------- */
 
@@ -304,7 +360,7 @@
   display: grid;
   grid-template-columns: 1.1fr 1fr;
   gap: 18px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .ps-card {
@@ -455,6 +511,17 @@
   font-size: 13.5px;
   font-weight: 650;
 }
+.ps-eff-rm.ps-eff-risk {
+  border-color: rgba(201,162,75,.45);
+  color: #d8bd85;
+  background: rgba(201,162,75,.08);
+}
+.ps-eff-rm.ps-eff-risk:hover,
+.ps-eff-rm.ps-eff-risk.ps-armed {
+  border-color: rgba(224,178,77,.75);
+  color: #f0d79d;
+  background: rgba(201,162,75,.18);
+}
 /* locked (part of race/abilities) — shown disabled with reason in tooltip */
 .ps-eff-lock {
   flex-shrink: 0;
@@ -512,6 +579,59 @@
   white-space: nowrap;
 }
 
+/* =========================================================== pack check == */
+
+.ps-pack-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid #2b2925;
+  color: #d8d1c0;
+  font-size: 14px;
+  font-weight: 700;
+}
+#ps-potion-total { color: #7d7563; font-size: 12px; font-weight: 500; }
+.ps-inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+}
+.ps-inv {
+  position: relative;
+  min-width: 0;
+  min-height: 82px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  overflow: hidden;
+  border: 1px solid #34312c;
+  border-radius: 9px;
+  background: linear-gradient(180deg, rgba(255,255,255,.025), rgba(0,0,0,.13));
+}
+.ps-inv::after {
+  content: "";
+  position: absolute;
+  inset: auto 8px 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--ps-inv-accent, #c9a24b);
+  opacity: .85;
+}
+.ps-inv img { width: 42px; height: 42px; object-fit: contain; display: block; }
+.ps-inv-body { display: flex; align-items: baseline; justify-content: center; gap: 5px; min-width: 0; }
+.ps-inv-name { color: #8d8471; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ps-inv-count { color: #eee7d7; font-size: 16px; line-height: 1; font-weight: 800; font-variant-numeric: tabular-nums; }
+.ps-inv-health { --ps-inv-accent: #c9564c; background-color: rgba(154,45,40,.08); }
+.ps-inv-magicka { --ps-inv-accent: #568ed8; background-color: rgba(47,107,191,.08); }
+.ps-inv-stamina { --ps-inv-accent: #d58a2f; background-color: rgba(199,121,25,.08); }
+.ps-inv-utility { --ps-inv-accent: #9d70d1; background-color: rgba(111,67,153,.09); }
+.ps-inv-lockpicks { --ps-inv-accent: #b7a77e; background-color: rgba(150,139,110,.07); }
+
 /* =============================================================== story == */
 
 .ps-story {
@@ -540,7 +660,7 @@
 .ps-story textarea {
   width: 100%;
   box-sizing: border-box;
-  min-height: 118px;
+  min-height: 96px;
   resize: vertical;
   background: #121216;
   border: 1px solid #3d3a33;
@@ -558,7 +678,7 @@
   box-shadow: 0 0 0 2px rgba(201, 162, 75, .1);
 }
 .ps-story textarea::placeholder { color: #6d675a; font-style: italic; }
-#ps-history { min-height: 168px; }
+#ps-history { min-height: 138px; }
 
 /* =============================================================== skeleton == */
 
@@ -586,8 +706,80 @@
   .ps-level { width: 100%; flex-direction: row; gap: 12px; padding: 10px; order: 3; }
   .ps-level-num { font-size: 34px; }
   .ps-identity { flex-basis: 55%; }
+  .ps-profile-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
   .ps-bars { grid-template-columns: 1fr; }
   .ps-columns { grid-template-columns: 1fr; }
   .ps-skills-grid { grid-template-columns: repeat(2, 1fr); }
+  .ps-inventory-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   #ps-eff-body { max-height: 300px; }
+}
+
+/* At phone-width the portrait and identity used to share one flex row while
+   the six-detail grid still demanded two 120px columns.  That made the header
+   27px wider than the pane and silently clipped the right-hand values because
+   #ps-pane intentionally hides horizontal overflow.  Keep the portrait/name
+   pairing, then let the RP details use the full card width below it. */
+@media (max-width: 600px) {
+  .ps-header {
+    display: grid;
+    grid-template-columns: 110px minmax(0, 1fr);
+    gap: 12px 16px;
+    align-items: start;
+  }
+  .ps-portrait {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    width: 110px;
+    height: 143px;
+  }
+  .ps-identity { display: contents; }
+  .ps-name {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: end;
+  }
+  .ps-raceclass {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: start;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+  }
+  .ps-race,
+  .ps-class-wrap {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+  .ps-class-wrap {
+    flex: none;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ps-class-label { padding: 5px 10px 0; }
+  #ps-class-input,
+  .ps-class-wrap input:not(#ps-class-input) { padding: 3px 10px 7px; }
+  .ps-profile-grid {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
+    margin: 0;
+  }
+  .ps-profile-grid label {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ps-profile-grid label > span { padding: 5px 8px 0; }
+  .ps-profile-grid input { padding: 3px 8px 7px; }
+  .ps-level {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    width: auto;
+    order: initial;
+    box-sizing: border-box;
+  }
 }

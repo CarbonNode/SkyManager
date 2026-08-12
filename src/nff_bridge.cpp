@@ -85,7 +85,7 @@ namespace NffBridge
 		};
 
 		// Nether's Follower Framework 2.8.6.0b. Class names as declared in the
-		// decompiled .pex shipped on this rig (C:\Dev\nff-decomp); each of these
+		// decompiled shipped .pex; each of these
 		// scripts `Extends Quest`, so the bound object hangs off a quest form.
 		constexpr const char* kNffHomeScript = "nwsFollowerHomeScript";
 		constexpr const char* kNffSetsScript = "nwsFollowerSetsScript";

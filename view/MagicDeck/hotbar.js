@@ -20,7 +20,7 @@
      window.hbLive(jsonStr)     — {page, slots:[{i, ok, name, count, …}]}
      window.hbPage(jsonStr)     — {page} the modifier page that is live right now
      window.hbEdit("1"|"0")     — enter / leave edit mode
-     window.hbFlash(jsonStr)    — {i} a key fired button i: flash it
+     window.hbFlash(jsonStr)    — {page,i} exact fired button: flash it
      window.hbCatalogData(json) — {spells:[], items:[], entries:[], combos:[]}
      window.hbIconIndex(json)   — the Spell Hotbar 2 atlas index (same shape the
                                   Spell Deck gets — this view is in its folder
@@ -86,7 +86,7 @@
    'hb-showCounts', 'hb-showEmpty', 'hb-idle', 'hb-idle-val', 'hb-pagetoggles',
    'hb-modHold', 'hb-slotlist', 'hb-page-name', 'hb-slot-note',
    'hb-showMode', 'hb-linger', 'hb-linger-val', 'hb-linger-row', 'hb-hideInMenus',
-   'hb-togglekey', 'hb-togglekey-clear', 'hb-show-note',
+   'hb-togglekey', 'hb-togglekey-clear', 'hb-show-note', 'hb-preview-note',
    'hb-uiscale', 'hb-uiscale-val',
    'hb-pick', 'hb-pick-title', 'hb-pick-q', 'hb-pick-tabs', 'hb-pick-list', 'hb-pick-wrap',
    'hb-pick-close', 'hb-pick-clear',
@@ -257,36 +257,78 @@
   }
   window.addEventListener('resize', () => { applyUiScale(); applyPlacement(); });
 
-  function editShiftPx() {
-    if (!editing) return 0;
+  const EDIT_GAP = 12;
+  const EDIT_DRAG_ROOM = 48;
+
+  /* Resolve the preview as geometry, not a guessed half-panel shove. At
+     1024px the measured free strip is 552.97px while the default eight-button
+     bar is 554px: no translation can keep both fully on screen. A temporary
+     preview fit closes that exact 1.03px impossibility and leaves 48px of drag
+     room on each side, while the saved cfg.scale remains untouched. If fitting
+     would shrink the preview by more than 30%, hide it honestly instead of
+     manufacturing tiny unreadable art. */
+  function editPreviewLayout() {
+    const baseScale = Number(cfg.scale) || 1;
+    const out = { hidden: false, fit: false, shift: 0, scale: baseScale, reason: '' };
+    if (!editing) return out;
     const p = el['hb-edit'];
-    if (!p || p.hidden) return 0;
-    /* getBoundingClientRect, not offsetWidth: the panel is transform-scaled,
-       and what has to be cleared is the space it actually COVERS. offsetWidth
-       is the pre-transform layout width and would under-shift at any scale
-       above 1, putting the bar back under the panel. */
-    const w = Math.round(p.getBoundingClientRect().width) || 0;
-    if (!w) return 0;
-    /* Below ~900px the panel goes full-width and there is no free area to
-       shift INTO — moving the bar then just walks it off the left edge, which
-       is worse than letting the panel cover it. At that size the panel is
-       effectively modal anyway. */
-    if (w > window.innerWidth * 0.7) return 0;
+    const r = el['hb-root'];
+    if (!p || p.hidden || !r) return out;
 
-    /* A centred bar only needs to move by HALF the panel (the panel eats one
-       side of the screen, so the free area's centre moves by w/2). A
-       right-anchored bar has to clear the whole width. */
-    let want = cfg.anchorH === 'center' ? Math.round(w / 2) : w;
+    const pr = p.getBoundingClientRect();
+    if (!pr.width) return out;
+    if (pr.width > window.innerWidth * 0.7) {
+      out.hidden = true;
+      out.reason = 'The bar preview is hidden while setup fills this screen. Tap Done to see it in play.';
+      return out;
+    }
 
-    /* ...but never so far that the bar leaves the screen. Dodging the panel is
-       worth nothing if the bar ends up off the left edge instead — and a wide
-       bar at a big editor scale gets there easily. Whatever room is left after
-       keeping it fully visible is the shift we actually take. */
-    const barW = (el['hb-root'] ? el['hb-root'].getBoundingClientRect().width : 0);
-    const room = cfg.anchorH === 'center'
-      ? Math.floor(window.innerWidth / 2 - barW / 2)
-      : Math.floor(window.innerWidth - barW - cfg.x);
-    return Math.max(0, Math.min(want, room));
+    const freeRight = Math.max(0, Math.min(window.innerWidth, pr.left) - EDIT_GAP);
+    const layoutW = r.offsetWidth || 1; // deliberately unscaled; avoids measurement feedback loops
+    /* A just-barely fitting bar is technically collision-free but cannot move:
+       x changes and the clamp cancels them out. Preserve a real horizontal
+       drag lane whenever the viewport has it. */
+    const dragRoom = Math.min(EDIT_DRAG_ROOM, freeRight * 0.1);
+    const fitScale = Math.max(0, freeRight - dragRoom * 2) / layoutW;
+    if (fitScale < baseScale) {
+      if (fitScale / baseScale < 0.7) {
+        out.hidden = true;
+        out.reason = 'The bar preview is hidden because this layout is too wide to show beside setup. Tap Done to see it at full size.';
+        return out;
+      }
+      out.scale = Math.max(0.01, fitScale);
+      out.fit = true;
+      out.reason = 'Preview scaled to fit beside setup. Your saved bar Size is unchanged.';
+    }
+
+    const barW = layoutW * out.scale;
+    const x = Number(cfg.x) || 0;
+    let desiredLeft = x;
+    if (cfg.anchorH === 'center') desiredLeft = freeRight / 2 + x - barW / 2;
+    else if (cfg.anchorH === 'right') desiredLeft = freeRight - x - barW;
+    const placedLeft = clamp(desiredLeft, 0, Math.max(0, freeRight - barW));
+    /* Convert the measured preview position back into each anchor's stored
+       coordinate system. The conversion is constant through the middle of
+       the drag lane, so cfg.x changes remain visibly one-for-one. */
+    if (cfg.anchorH === 'left') out.shift = x - placedLeft;
+    else if (cfg.anchorH === 'right') out.shift = window.innerWidth - x - (placedLeft + barW);
+    else out.shift = window.innerWidth / 2 + x - (placedLeft + barW / 2);
+    return out;
+  }
+
+  function paintPreviewState(preview) {
+    const r = el['hb-root'];
+    const grip = el['hb-grip'];
+    const note = el['hb-preview-note'];
+    r.classList.toggle('is-edit-preview-hidden', preview.hidden);
+    r.classList.toggle('is-edit-preview-fit', preview.fit);
+    if (preview.hidden) r.setAttribute('aria-hidden', 'true');
+    else r.removeAttribute('aria-hidden');
+    if (grip) grip.hidden = !editing || preview.hidden;
+    if (note) {
+      note.hidden = !editing || (!preview.hidden && !preview.fit);
+      note.textContent = note.hidden ? '' : preview.reason;
+    }
   }
 
   function applyPlacement() {
@@ -295,14 +337,19 @@
     const s = r.style;
     s.left = s.right = s.top = s.bottom = s.transform = '';
 
-    const shift = editShiftPx();
+    const preview = editPreviewLayout();
+    paintPreviewState(preview);
+    const shift = preview.shift;
     let ox = 'center', oy = 'center';
-    if (cfg.anchorH === 'left')       { s.left = cfg.x + 'px';  ox = 'left'; }
+    if (cfg.anchorH === 'left')       { s.left = ((Number(cfg.x) || 0) - shift) + 'px';  ox = 'left'; }
     else if (cfg.anchorH === 'right') { s.right = (cfg.x + shift) + 'px'; ox = 'right'; }
     else {
-      /* centre: translate by -50% FIRST, then scale about the centre — the
-         order matters, and doing it in one transform keeps it atomic. */
-      s.left = '50%';
+      /* x is still meaningful for a centre anchor: it is an offset from the
+         screen centre. The first version persisted cfg.x during a drag but
+         hard-coded left:50%, so horizontal movement was mathematically
+         discarded. Put the offset in the layout position; transform remains
+         responsible only for centring/scaling. */
+      s.left = 'calc(50% + ' + Math.round((Number(cfg.x) || 0) - shift) + 'px)';
       ox = 'center';
     }
     if (cfg.anchorV === 'top') { s.top = cfg.y + 'px'; oy = 'top'; }
@@ -311,8 +358,7 @@
     r.style.transformOrigin = ox + ' ' + oy;
     r.style.transform =
       (cfg.anchorH === 'center' ? 'translateX(-50%) ' : '') +
-      (cfg.anchorH === 'center' && shift ? 'translateX(-' + shift + 'px) ' : '') +
-      'scale(' + (cfg.scale || 1) + ')';
+      'scale(' + preview.scale + ')';
     r.style.setProperty('--hb-scale', '1');   // scale lives in the transform above
   }
 
@@ -371,6 +417,7 @@
     const btn = h('div', {
       class: cls.join(' '),
       'data-i': String(i),
+      'data-page': String(livePage),
       title: empty ? ('Button ' + (i + 1) + ' — empty')
                    : (name + (dead && L.msg ? ' — ' + L.msg : '')),
     });
@@ -430,13 +477,25 @@
     }
   }
 
-  function flash(i) {
+  const flashTimers = {};
+  function flash(page, i) {
     lastFireAt = Date.now();
     applyIdle();
-    const n = el['hb-grid'] && el['hb-grid'].querySelector('.hb-slot[data-i="' + i + '"]');
+    /* A modifier release can repaint Base between the native key match and
+       this JS call. Never pulse the same index on the wrong page. */
+    if (page !== livePage) return;
+    const n = el['hb-grid'] && el['hb-grid'].querySelector(
+      '.hb-slot[data-page="' + page + '"][data-i="' + i + '"]');
     if (!n) return;
+    const k = page + ':' + i;
+    if (flashTimers[k]) clearTimeout(flashTimers[k]);
+    n.classList.remove('is-fired');
+    void n.offsetWidth;  // repeat presses restart the physical down/up beat
     n.classList.add('is-fired');
-    setTimeout(() => n.classList.remove('is-fired'), 180);
+    flashTimers[k] = setTimeout(() => {
+      n.classList.remove('is-fired');
+      delete flashTimers[k];
+    }, 260);
   }
 
   /* ── drag to move ────────────────────────────────────────────────────── */
@@ -1137,7 +1196,8 @@
   window.hbFlash = function (j) {
     const d = coerce(j);
     const i = d && typeof d === 'object' ? (d.i | 0) : (parseInt(j, 10) || 0);
-    flash(i);
+    const page = d && typeof d === 'object' && d.page !== undefined ? (d.page | 0) : livePage;
+    flash(page, i);
   };
 
   window.hbCatalogData = function (j) {
