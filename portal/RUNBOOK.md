@@ -81,4 +81,5 @@ single upload) or appear at the next launch.
 | `DECK_PORTAL_BIND` | `127.0.0.1` | Interface to listen on. Anything wider requires a password. |
 | `DECK_PORTAL_PASSWORD` | *(none)* | Required for a non-loopback bind. |
 | `DECK_PORTAL_PORT` | `8090` | Port. |
+| `DECK_PORTAL_PORTRAIT_DIR` | `<mod>\PrismaUI\views\HotkeyDeck\portraits` | Where portraits live, if you keep them in a separate mod from the deck's source (MO2 merges them in-game; the portal needs the real folder). |
 | `DECK_PORTAL_CHIM_DISTRO` | `DwemerAI4Skyrim3` | WSL distro name, only used if you have CHIM installed. |
