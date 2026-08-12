@@ -4460,6 +4460,205 @@ function writeImage(dir, stem, ext, buf, altStem) {
 }
 
 /* ===================================================================== *
+ *  NPC ICON PACKS — share follower portraits as one shippable .zip
+ *
+ *  A pack is a plain ZIP: images named `<slug>.<ext>` plus a manifest.json
+ *  (`{ format: "skymanager-npc-icon-pack", ... }`). Plain-zip on purpose —
+ *  anyone can build one by dropping renamed PNGs into an archive, and
+ *  anyone can open ours without SkyManager. The manifest is decoration:
+ *  import derives every slug from the FILENAME (through slugOf, the same
+ *  rule the deck itself matches portraits by), so a hand-made pack with no
+ *  manifest imports exactly as well as an exported one.
+ *
+ *  The ZIP code below is deliberately dependency-free like the rest of
+ *  this file: zlib gives us deflate-raw, the container format is ours to
+ *  write. Reader trusts the CENTRAL directory (the authoritative one when
+ *  both exist), handles methods 0 (store) and 8 (deflate) only — which is
+ *  every zip a phone, Explorer, 7-Zip or another portal will ever hand us —
+ *  and checks each entry's CRC so corruption is a per-file skip with a
+ *  reason, never a garbage portrait.
+ * ===================================================================== */
+
+/* crc32() itself lives further down (the Dragon Roost PNG thumbnailer needed
+ * it first) — same polynomial, shared here for zip members. */
+
+function dosDateTime(d) {
+  // Pre-1980 is unrepresentable in DOS time; clamp rather than underflow.
+  const y = Math.max(1980, d.getFullYear());
+  return {
+    date: ((y - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),
+    time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+  };
+}
+
+/** entries: [{ name, data:Buffer }] → one ZIP Buffer. Deflates each entry,
+ *  keeps it stored when deflate doesn't help (PNG/JPEG are already packed,
+ *  so most portrait bytes go straight through). Names are flagged UTF-8. */
+function zipBuild(entries) {
+  const now = dosDateTime(new Date());
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const e of entries) {
+    const name = Buffer.from(String(e.name), 'utf8');
+    const data = e.data;
+    const crc = crc32(data);
+    let packed = zlib.deflateRawSync(data, { level: 9 });
+    let method = 8;
+    if (packed.length >= data.length) { packed = data; method = 0; }
+    const head = Buffer.alloc(30);
+    head.writeUInt32LE(0x04034b50, 0);
+    head.writeUInt16LE(20, 4);               // version needed
+    head.writeUInt16LE(0x0800, 6);           // flags: UTF-8 names
+    head.writeUInt16LE(method, 8);
+    head.writeUInt16LE(now.time, 10);
+    head.writeUInt16LE(now.date, 12);
+    head.writeUInt32LE(crc, 14);
+    head.writeUInt32LE(packed.length, 18);
+    head.writeUInt32LE(data.length, 22);
+    head.writeUInt16LE(name.length, 26);
+    head.writeUInt16LE(0, 28);               // extra len
+    locals.push(head, name, packed);
+
+    const cen = Buffer.alloc(46);
+    cen.writeUInt32LE(0x02014b50, 0);
+    cen.writeUInt16LE(20, 4);                // made by
+    cen.writeUInt16LE(20, 6);                // version needed
+    cen.writeUInt16LE(0x0800, 8);
+    cen.writeUInt16LE(method, 10);
+    cen.writeUInt16LE(now.time, 12);
+    cen.writeUInt16LE(now.date, 14);
+    cen.writeUInt32LE(crc, 16);
+    cen.writeUInt32LE(packed.length, 20);
+    cen.writeUInt32LE(data.length, 24);
+    cen.writeUInt16LE(name.length, 28);
+    // 30 extra / 32 comment / 34 disk / 36 int attrs — all zero
+    cen.writeUInt32LE(0, 38);                // ext attrs
+    cen.writeUInt32LE(offset, 42);
+    centrals.push(Buffer.concat([cen, name]));
+    offset += head.length + name.length + packed.length;
+  }
+  const cd = Buffer.concat(centrals);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(cd.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, cd, eocd]);
+}
+
+const PACK_MAX_ZIP_ENTRIES = 800;                 // absurdly generous; a bomb stop, not a feature cap
+const PACK_MAX_TOTAL_BYTES = 96 * 1024 * 1024;    // total UNCOMPRESSED across the pack
+
+/** ZIP Buffer → { entries: [{name, data}], bad: [{name, reason}] }.
+ *  Throws (with .code) only when the container itself is not a zip; a broken
+ *  MEMBER is a per-entry `bad` row so one corrupt file never sinks a pack. */
+function zipParse(buf) {
+  const boom = (msg) => Object.assign(new Error(msg), { code: 400 });
+  if (!buf || buf.length < 22) throw boom('That file is not a ZIP archive (too short)');
+  // EOCD: scan back over a possible archive comment (≤64KB by format).
+  let eocd = -1;
+  const stop = Math.max(0, buf.length - 22 - 65535);
+  for (let i = buf.length - 22; i >= stop; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw boom('That file is not a ZIP archive (no end-of-central-directory record)');
+  const count = buf.readUInt16LE(eocd + 10);
+  const cdOff = buf.readUInt32LE(eocd + 16);
+  if (count > PACK_MAX_ZIP_ENTRIES) throw boom('That archive holds ' + count + ' files — the limit is ' + PACK_MAX_ZIP_ENTRIES);
+  if (cdOff >= buf.length) throw boom('Corrupt ZIP: central directory offset points past the end');
+
+  const entries = [];
+  const bad = [];
+  let p = cdOff, total = 0;
+  for (let n = 0; n < count; n++) {
+    if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) break;   // truncated CD: keep what parsed
+    const method = buf.readUInt16LE(p + 10);
+    const crc = buf.readUInt32LE(p + 16);
+    const csize = buf.readUInt32LE(p + 20);
+    const usize = buf.readUInt32LE(p + 24);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const lhOff = buf.readUInt32LE(p + 42);
+    const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    p += 46 + nameLen + extraLen + commentLen;
+
+    if (name.endsWith('/')) continue;                       // directory rows carry no bytes
+    if (method !== 0 && method !== 8) { bad.push({ name, reason: 'unsupported compression (method ' + method + ')' }); continue; }
+    if (usize > MAX_UPLOAD_BYTES) { bad.push({ name, reason: Math.round(usize / 1048576) + ' MB decompressed — the per-image limit is ' + (MAX_UPLOAD_BYTES / 1048576) + ' MB' }); continue; }
+    total += usize;
+    if (total > PACK_MAX_TOTAL_BYTES) throw boom('That archive unpacks past ' + (PACK_MAX_TOTAL_BYTES / 1048576) + ' MB — refusing');
+    if (lhOff + 30 > buf.length || buf.readUInt32LE(lhOff) !== 0x04034b50) { bad.push({ name, reason: 'corrupt local header' }); continue; }
+    const lhName = buf.readUInt16LE(lhOff + 26);
+    const lhExtra = buf.readUInt16LE(lhOff + 28);
+    const dataOff = lhOff + 30 + lhName + lhExtra;
+    if (dataOff + csize > buf.length) { bad.push({ name, reason: 'truncated data' }); continue; }
+    const raw = buf.subarray(dataOff, dataOff + csize);
+    let data;
+    try {
+      data = method === 8 ? zlib.inflateRawSync(raw, { maxOutputLength: MAX_UPLOAD_BYTES }) : Buffer.from(raw);
+    } catch (_) { bad.push({ name, reason: 'could not decompress' }); continue; }
+    if (crc32(data) !== crc) { bad.push({ name, reason: 'CRC mismatch — the archive is damaged' }); continue; }
+    entries.push({ name, data });
+  }
+  return { entries, bad };
+}
+
+/* -------------------- the pack stash (inspect → import) -------------------- *
+ *  Inspect parses the upload ONCE and parks the decoded images in memory under
+ *  a random id; import then names the id plus the slugs the user toggled ON.
+ *  In memory on purpose: a pack is a decision the user makes NOW, on the same
+ *  phone, and holding it means the (possibly large) zip is uploaded exactly
+ *  once. TTL + a small cap keep an abandoned inspect from squatting RAM. */
+const PACK_TTL_MS = 30 * 60 * 1000;
+const PACK_STASH_MAX = 4;
+const packStash = new Map();   // id -> { at, manifest, rows: Map<slug, {ext, data}> }
+
+function packGc() {
+  const now = Date.now();
+  for (const [id, s] of packStash) {
+    if (now - s.at > PACK_TTL_MS) packStash.delete(id);
+  }
+  // Oldest out first when over the cap — the abandoned one, in practice.
+  while (packStash.size > PACK_STASH_MAX) {
+    let oldest = null;
+    for (const [id, s] of packStash) if (!oldest || s.at < packStash.get(oldest).at) oldest = id;
+    packStash.delete(oldest);
+  }
+}
+
+/** One display name per slug out of the roster, so an import list can say
+ *  "Olfina Gray-Mane" instead of olfina-gray-mane. Best-effort: a roster that
+ *  won't read just means slugs stay slugs. */
+function rosterNamesBySlug() {
+  const out = Object.create(null);
+  try {
+    const r = readRoster();
+    if (!r || !r.ok) return out;
+    for (const c of r.categories || []) {
+      for (const m of c.members || []) {
+        if (m && m.slug && !out[m.slug]) out[m.slug] = m.name || m.original || '';
+      }
+    }
+  } catch (_) { /* names are decoration */ }
+  return out;
+}
+
+const PACK_FORMAT = 'skymanager-npc-icon-pack';
+
+/** Zip filename → the slug it would import as. `portraits/Olfina Gray-Mane.png`
+ *  → `olfina-gray-mane`; a `~<stamp>` version suffix (our own export of a
+ *  live-game fallback file) folds back into the base slug. */
+function packSlugOfName(zipName) {
+  const base = String(zipName).replace(/\\/g, '/').split('/').pop() || '';
+  const dot = base.lastIndexOf('.');
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  return slugOf(slugOfStem(stem.toLowerCase()));
+}
+
+/* ===================================================================== *
  *  SHARMAT (CHIM aiagent_nsfw) — per-NPC intimacy profile, proxied
  *
  *  The ONLY slice of the portal that talks to something off-box: CHIM's
@@ -6391,6 +6590,194 @@ async function route(req, res, url) {
     const abs = confine(r.dir, r.file);
     if (!abs) { sendErr(res, 400, 'Refusing to serve outside the portraits folder'); return; }
     sendFile(res, abs, r.ext);
+    return;
+  }
+
+  /* ---- NPC icon packs: share portraits as a zip, import someone else's ---- */
+
+  /* Download a pack. ?slugs=a,b,c picks; absent/empty = everything.
+     A plain GET on purpose: the session cookie rides along, so a phone's
+     "Download" and a desktop right-click-save both just work. */
+  if (m === 'GET' && p === '/api/npc-pack/export') {
+    const want = String(url.searchParams.get('slugs') || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const packName = String(url.searchParams.get('name') || '').trim().slice(0, 80) || 'npc-icons';
+    const all = listPortraits();
+    const chosen = want.length ? all.filter((r) => want.includes(r.slug)) : all;
+    if (!chosen.length) { sendErr(res, 404, want.length ? 'None of those slugs has a portrait' : 'No portraits to export'); return; }
+    const names = rosterNamesBySlug();
+    const entries = [];
+    const icons = [];
+    for (const r of chosen) {
+      const abs = confine(r.dir, r.file);
+      if (!abs) continue;
+      let data;
+      try { data = fs.readFileSync(abs); } catch (_) { continue; }   // vanished mid-walk: skip, not 500
+      entries.push({ name: r.slug + '.' + r.ext, data });
+      icons.push({ slug: r.slug, file: r.slug + '.' + r.ext, name: names[r.slug] || '' });
+    }
+    if (!entries.length) { sendErr(res, 500, 'Could not read any of the portrait files'); return; }
+    const manifest = {
+      format: PACK_FORMAT, version: 1,
+      name: packName, created: new Date().toISOString(),
+      generator: 'SkyManager Deck Portal',
+      count: icons.length, icons,
+    };
+    entries.unshift({ name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') });
+    const zip = zipBuild(entries);
+    const fname = (slugOf(packName) || 'npc-icons') + '.skymanager-npc-icons.zip';
+    log('npc-pack: exported ' + icons.length + ' portrait(s) as "' + fname + '" (' + Math.round(zip.length / 1024) + ' KB)');
+    res.writeHead(200, {
+      'Content-Type': 'application/zip',
+      'Content-Length': zip.length,
+      'Content-Disposition': 'attachment; filename="' + fname + '"',
+      'Cache-Control': 'no-store',
+    });
+    res.end(zip);
+    return;
+  }
+
+  /* Inspect an uploaded pack: raw zip bytes in, a decision list out. Nothing
+     is written here — the reply names what WOULD land (new vs replace, per
+     slug) and a packId; /api/npc-pack/import then applies the toggled-on
+     subset without re-uploading the archive. */
+  if (m === 'POST' && p === '/api/npc-pack/inspect') {
+    packGc();
+    let body;
+    try { body = await readBody(req, PACK_MAX_TOTAL_BYTES); } catch (e) { sendErr(res, httpCode(e.code, 400), e.message); return; }
+    if (!body.length) { sendErr(res, 400, 'Empty upload — POST the .zip file itself as the request body'); return; }
+    let parsed;
+    try { parsed = zipParse(body); } catch (e) { sendErr(res, httpCode(e.code, 400), e.message); return; }
+
+    /* The manifest is advisory: read it for the pack's name/author and for
+       nicer display names, but derive every slug from the member FILENAME —
+       that is the contract that makes hand-rolled packs equal citizens. */
+    let manifest = null;
+    const manifestNames = Object.create(null);
+    for (const e of parsed.entries) {
+      if ((e.name.split('/').pop() || '').toLowerCase() !== 'manifest.json') continue;
+      try {
+        const mj = JSON.parse(e.data.toString('utf8'));
+        if (mj && typeof mj === 'object') {
+          manifest = {
+            format: typeof mj.format === 'string' ? mj.format : '',
+            name: typeof mj.name === 'string' ? mj.name.slice(0, 120) : '',
+            created: typeof mj.created === 'string' ? mj.created : '',
+            generator: typeof mj.generator === 'string' ? mj.generator.slice(0, 120) : '',
+          };
+          for (const ic of Array.isArray(mj.icons) ? mj.icons : []) {
+            if (ic && typeof ic.slug === 'string' && typeof ic.name === 'string' && ic.name) manifestNames[ic.slug.toLowerCase()] = ic.name.slice(0, 120);
+          }
+        }
+      } catch (_) { /* a broken manifest costs only the pretty names */ }
+      break;
+    }
+
+    const skipped = parsed.bad.map((b) => ({ file: b.name, reason: b.reason }));
+    const rows = new Map();   // slug -> { ext, data, file }
+    for (const e of parsed.entries) {
+      const base = e.name.split('/').pop() || e.name;
+      if (base.toLowerCase() === 'manifest.json') continue;
+      const sniff = sniffExt(e.data);
+      if (!sniff || !PORTRAIT_EXTS.includes(sniff)) {
+        // Silently pass over the txt/readme clutter real archives carry, but
+        // NAME anything that looks like it was meant to be a picture.
+        if (/\.(png|jpe?g|webp|gif|bmp|dds|svg)$/i.test(base)) skipped.push({ file: e.name, reason: 'not a PNG/JPEG/WebP image (magic bytes say "' + (sniff || 'unknown') + '")' });
+        continue;
+      }
+      const slug = packSlugOfName(e.name);
+      if (!validSlug(slug)) { skipped.push({ file: e.name, reason: 'filename does not reduce to a usable slug' }); continue; }
+      if (rows.has(slug)) { skipped.push({ file: e.name, reason: 'duplicate — another file in the pack already covers "' + slug + '"' }); continue; }
+      rows.set(slug, { ext: sniff, data: e.data, file: e.name });
+    }
+    if (!rows.size) {
+      sendErr(res, 400, 'No usable images in that archive' + (skipped.length ? ' — ' + skipped.length + ' file(s) were rejected (' + skipped[0].reason + (skipped.length > 1 ? ', …' : '') + ')' : ''));
+      return;
+    }
+
+    const existing = Object.create(null);
+    for (const r of listPortraits()) existing[r.slug] = r;
+    const names = rosterNamesBySlug();
+    const id = crypto.randomBytes(12).toString('hex');
+    packStash.set(id, { at: Date.now(), manifest, rows });
+
+    const entriesOut = [];
+    for (const [slug, r] of rows) {
+      const have = existing[slug];
+      entriesOut.push({
+        slug,
+        name: names[slug] || manifestNames[slug] || '',
+        ext: r.ext, size: r.data.length,
+        status: have ? 'replace' : 'add',
+        existingMtime: have ? have.mtime : 0,
+        inRoster: !!names[slug],
+      });
+    }
+    entriesOut.sort((a, b) => a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0);
+    const nAdd = entriesOut.filter((e) => e.status === 'add').length;
+    log('npc-pack: inspected "' + ((manifest && manifest.name) || 'unnamed pack') + '" — ' +
+      entriesOut.length + ' image(s): ' + nAdd + ' new, ' + (entriesOut.length - nAdd) + ' replacement(s), ' + skipped.length + ' skipped');
+    sendJson(res, 200, {
+      ok: true, packId: id, manifest,
+      entries: entriesOut, skipped,
+      counts: { total: entriesOut.length, add: nAdd, replace: entriesOut.length - nAdd },
+      expiresInSec: Math.floor(PACK_TTL_MS / 1000),
+    });
+    return;
+  }
+
+  /* Preview one image out of a stashed pack — the import sheet's thumbnails.
+     no-store: the id is transient and the same slug differs per pack. */
+  if (m === 'GET' && p.startsWith('/api/npc-pack/file/')) {
+    const parts = p.slice('/api/npc-pack/file/'.length).split('/');
+    const stash = packStash.get(String(parts[0] || ''));
+    const slug = decodeURIComponent(String(parts[1] || '')).toLowerCase();
+    const row = stash && stash.rows.get(slug);
+    if (!row) { sendErr(res, 404, 'No such pack image (packs expire after ' + Math.floor(PACK_TTL_MS / 60000) + ' minutes — re-open the zip)'); return; }
+    res.writeHead(200, { 'Content-Type': MIME[row.ext] || 'application/octet-stream', 'Content-Length': row.data.length, 'Cache-Control': 'no-store' });
+    res.end(row.data);
+    return;
+  }
+
+  /* Apply the toggled-on subset. Each slug goes through the EXACT single-
+     upload path: clear both authors, dodge files the running game holds open
+     with a `~stamp` version, and hand the bytes to the plugin bridge so a
+     running game repaints within a second. Per-slug results — one locked
+     file must not abort the other thirty. */
+  if (m === 'POST' && p === '/api/npc-pack/import') {
+    const body = await readJsonBody(req);
+    const stash = packStash.get(String(body.packId || ''));
+    if (!stash) { sendErr(res, 410, 'That pack has expired (or the server restarted) — re-open the zip to inspect it again'); return; }
+    stash.at = Date.now();   // an active import keeps its pack alive
+    const want = Array.isArray(body.slugs) ? body.slugs.map((s) => String(s).toLowerCase()) : [];
+    if (!want.length) { sendErr(res, 400, 'slugs[] is required — nothing was toggled on'); return; }
+
+    const results = [];
+    let applied = 0, queued = 0;
+    for (const slug of want) {
+      const row = stash.rows.get(slug);
+      if (!row) { results.push({ slug, ok: false, error: 'not in this pack' }); continue; }
+      try {
+        const cleared = removeSlug(slug);
+        if (cleared) log('npc-pack: cleared ' + cleared + ' existing file(s) for "' + slug + '"');
+        const survivors = listPortraitFiles().filter((r) => r.slug === slug);
+        const stamp = Math.floor(Date.now() / 1000);
+        const versionName = (n) => slug + '~' + (stamp + n);
+        const info = survivors.length
+          ? writeImage(PORTRAIT_DIR, versionName(0), row.ext, row.data, (n) => versionName(n + 1))
+          : writeImage(PORTRAIT_DIR, slug, row.ext, row.data, versionName);
+        if (queuePortraitForPlugin(slug, info.ext || row.ext, row.data.toString('base64'))) queued++;
+        applied++;
+        results.push({ slug, ok: true, file: info.file, mtime: info.mtime });
+      } catch (e) {
+        results.push({ slug, ok: false, error: e.message });
+      }
+    }
+    log('npc-pack: imported ' + applied + '/' + want.length + ' portrait(s) from "' +
+      ((stash.manifest && stash.manifest.name) || 'unnamed pack') + '"' + (queued ? ' (' + queued + ' queued live for the plugin)' : ''));
+    sendJson(res, 200, {
+      ok: results.every((r) => r.ok), applied, requested: want.length,
+      queuedLive: queued, results,
+    });
     return;
   }
 

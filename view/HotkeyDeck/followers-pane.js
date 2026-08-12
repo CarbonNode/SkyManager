@@ -4379,19 +4379,81 @@
     return p;
   }
 
-  /* The icon set for one category slot, '' when it has none. Reads through
-     iconSrc so a poisoned config draws nothing rather than a broken box. */
-  function catIconOf(index) {
-    return iconSrc(state.catIcons[String(index)] || '');
+  /* Shipped DEFAULT category icons, keyed by LOWERCASE category NAME (not the
+     FO slot index — a name survives a slot being renumbered, and the same name
+     in two profiles should get the same glyph). This is Rober's own live
+     rail map (read off the rig 2026-08-12: hotkeys.json followers.catIcons
+     index-aligned against the FO json the RUNNING game wrote minutes earlier
+     — every pair is that verified alignment, plus common-spelling aliases so
+     a stranger's "Wives"/"Mercenaries" still hits), promoted to ship as the
+     out-of-the-box look. A
+     user's own assignment (state.catIcons[index]) ALWAYS wins; clearing it
+     falls back here; renaming a category to a name in this table adopts its
+     glyph. Every value below is a file that exists in icons/custom, so a
+     default never draws a broken box. Keep names lowercased. */
+  const CAT_ICON_DEFAULTS = {
+    'follower organizer':    'icons/custom/cat-organizer.png',
+    'my followers':          'icons/custom/cat-organizer.png',
+    'mistress':              'icons/custom/cat-mistress.png',
+    'mistresses':            'icons/custom/cat-mistress.png',
+    'slave':                 'icons/custom/cat-slave.png',
+    'slaves':                'icons/custom/cat-slave.png',
+    'thralls':               'icons/custom/cat-thralls.png',
+    'utilities':             'icons/custom/cat-utilities.png',
+    'companions':            'icons/custom/cat-companions.png',
+    'friends':               'icons/custom/cat-friends.png',
+    'merchant':              'icons/custom/cat-merchant.png',
+    'merchants':             'icons/custom/cat-merchant.png',
+    'wenches (buxom)':       'icons/custom/cat-wenches.png',
+    'wenches':               'icons/custom/cat-wenches.png',
+    'demons':                'icons/custom/cat-demons.png',
+    'cult':                  'icons/custom/cat-cult.png',
+    'lovers':                'icons/custom/cat-lovers.png',
+    'wifes':                 'icons/custom/cat-wives.png',
+    'wives':                 'icons/custom/cat-wives.png',
+    'servants':              'icons/custom/cat-servants.png',
+    'mercanaries':           'icons/custom/cat-mercenaries.png',
+    'mercenaries':           'icons/custom/cat-mercenaries.png',
+    'my brothel girls':      'icons/custom/cat-brothel.png',
+    'brothel':               'icons/custom/cat-brothel.png',
+    'noble wives':           'icons/custom/cat-noble-wives.png',
+    'necromancy':            'icons/custom/cat-necromancy.png',
+    'conscripts/bannermen':  'icons/custom/cat-bannermen.png',
+    'bannermen':             'icons/custom/cat-bannermen.png',
+  };
+
+  /* The default glyph for a category slot, by its display name, '' when none.
+     Kept separate from catIconOf so anyCatIcon can ask "does this rig have a
+     user icon" without the defaults masking that (defaults are ALWAYS present,
+     so folding them into anyCatIcon would make every rail claim the icon
+     column even on a rig that never touched the feature — but that is exactly
+     the behaviour we DO want here, see anyCatIcon). */
+  function catIconDefaultFor(index) {
+    const c = catByIndex(index);
+    if (!c) return '';
+    const name = String(catLabel(c) || '').trim().toLowerCase();
+    return iconSrc(CAT_ICON_DEFAULTS[name] || '');
   }
 
-  /* Does ANY category carry an icon? Drives whether the un-iconed rows reserve
-     an empty slot. Reserving unconditionally would indent every rail on every
-     rig — including one that never touches this feature — and the brief is
-     explicit that a category with no icon keeps today's look. Reserving only
-     when the rail is MIXED is what keeps the names on one vertical line. */
+  /* The icon set for one category slot, '' when it has none. Reads through
+     iconSrc so a poisoned config draws nothing rather than a broken box.
+     A user's own assignment (by slot index) wins; with none set, the shipped
+     name-keyed default applies — so a fresh install shows Rober's rail out of
+     the box, and clearing an assignment returns to the default rather than to
+     bare initials. An assignment of '' is stored as a DELETE (setCatIcon), so
+     there is no "assigned to nothing" state to distinguish from unset. */
+  function catIconOf(index) {
+    const own = iconSrc(state.catIcons[String(index)] || '');
+    if (own) return own;
+    return catIconDefaultFor(index);
+  }
+
+  /* Does ANY category carry an icon (own OR default)? Drives whether the
+     un-iconed rows reserve an empty slot so the names stay on one vertical
+     line. Now that defaults ship, a stock rail DOES carry icons, so it should
+     reserve the column — checking through catIconOf makes that automatic. */
   function anyCatIcon() {
-    for (const k in state.catIcons) if (catIconOf(k)) return true;
+    for (const c of state.cats) if (c && c.index !== ALL && catIconOf(c.index)) return true;
     return false;
   }
 
@@ -4422,7 +4484,11 @@
     const img = h('img', { class: 'fd-rail-ic-img', src: src, alt: '', draggable: 'false' });
     const wrap = h('span', {
       class: 'fd-rail-ic' + (forEdit ? ' pick' : ''),
-      title: forEdit ? 'Change the icon for “' + label + '”' : label,
+      /* View mode: name the category AND surface the otherwise-hidden way to
+         change its icon without entering Edit — right-click. This was the
+         "no way to apply an icon" report: the picker existed, but nothing on a
+         resting rail hinted the right-click opened it. */
+      title: forEdit ? 'Change the icon for “' + label + '”' : (label + ' — right-click to change icon'),
     }, img);
     if (forEdit) {
       wrap.dataset.caticon = String(c.index);
@@ -4505,15 +4571,27 @@
     function paint() {
       const q = String(ui.catIconFilter || '').trim().toLowerCase();
       const cur = catIconOf(c.index);
+      /* What Auto lands on — the shipped default for this NAME, if any. Shown on
+         the Auto tile so the user sees WHAT clearing gives back, not a blank. */
+      const def = catIconDefaultFor(c.index);
+      /* Auto is "active" when there is no user override (whether or not a default
+         then fills in), so it reflects the real stored state, not the picture. */
+      const hasOwn = !!iconSrc(state.catIcons[String(c.index)] || '');
       grid.textContent = '';
 
-      /* "Auto / None" first and always visible — clearing must never be behind
-         a scroll, and it is the only way back to the plain rail row. */
+      /* "Auto" first and always visible — clearing an override must never be
+         behind a scroll. Auto = drop your pick and use the shipped default for
+         this category (or the plain rail row when there is no default). */
       const none = h('button', {
-        class: 'fd-catic-tile none' + (cur ? '' : ' on'), type: 'button',
-        title: 'No icon — “' + label + '” goes back to the plain rail row',
+        class: 'fd-catic-tile none' + (hasOwn ? '' : ' on'), type: 'button',
+        title: def
+          ? 'Auto — use the built-in icon for “' + label + '”'
+          : 'No icon — “' + label + '” goes back to the plain rail row',
         onClick: (e) => { e.stopPropagation(); closeCtx(); setCatIcon(c.index, ''); },
-      }, h('span', { class: 'fd-catic-x' }, '⦸'), h('span', { class: 'fd-catic-lbl' }, 'Auto'));
+      }, def
+          ? h('img', { class: 'fd-catic-auto-img', src: def, alt: '', draggable: 'false' })
+          : h('span', { class: 'fd-catic-x' }, '⦸'),
+         h('span', { class: 'fd-catic-lbl' }, 'Auto'));
       grid.append(none);
 
       /* Yours first, then the library — the same order (and the same chunking)
@@ -8362,6 +8440,7 @@
     _lbEditing: function () { return !!lbEdit; },
     _canonFormId: canonFormId,
     _iconSrc: iconSrc, _catIconOf: catIconOf, _anyCatIcon: anyCatIcon,
+    _catIconDefaultFor: catIconDefaultFor, _CAT_ICON_DEFAULTS: CAT_ICON_DEFAULTS,
     _railIconEl: railIconEl, _setCatIcon: setCatIcon,
     _openCatIconPicker: openCatIconPicker, _catForIcon: catForIcon,
     _chainIcons: chainIcons, _CATIC_PAGE: CATIC_PAGE, _CAT_MAX: CAT_MAX,

@@ -666,7 +666,11 @@ function render() {
   renderTabs();
 
   $('count-chip').textContent = state.entries.length + ' hotkeys';
-  $('edit-btn').classList.toggle('on', ui.edit);
+  /* Home owns its OWN edit mode (reorder the system cards) — it never flips
+     ui.edit, so reflect ITS flag onto the Edit button so it lights up on Home
+     too (home-card-reorder). */
+  const homeEditing = pane === 'home' && window.HomePane && HomePane.isEditing && HomePane.isEditing();
+  $('edit-btn').classList.toggle('on', ui.edit || !!homeEditing);
   document.body.classList.toggle('hd-editing', !!ui.edit);   // the #hints legend shows only in edit mode now
   $('edit-btn').textContent = 'Edit';
   $('settings-card').classList.toggle('hidden', !(deck && ui.edit));
@@ -1156,6 +1160,19 @@ function tabbarPrefs() {
   if (tb.style !== 'icons') tb.style = 'text';
   if (!tb.use || typeof tb.use !== 'object' || Array.isArray(tb.use)) tb.use = {};
   return tb;
+}
+
+/* Home page prefs, in the SAME shelf blob and for the SAME reason as
+   tabbarPrefs() (state.shelf.home). Shape: { order: string[] } — the system
+   cards in the order the user dragged them. Sanitised on READ by home-pane.js
+   (unknown ids dropped, missing systems appended), so this only guarantees the
+   slot exists and `order` is an array. home-card-reorder */
+function homePrefs() {
+  if (!state.shelf || typeof state.shelf !== 'object' || Array.isArray(state.shelf)) state.shelf = {};
+  let hm = state.shelf.home;
+  if (!hm || typeof hm !== 'object' || Array.isArray(hm)) hm = state.shelf.home = {};
+  if (!Array.isArray(hm.order)) hm.order = [];
+  return hm;
 }
 
 function bumpTabUse(t) {
@@ -2440,6 +2457,11 @@ window.hdShowTab = function (t) {
 };
 
 function toggleEdit() {
+  if (ui.tab === 'home' && window.HomePane) {   // Home reorders its system cards
+    HomePane.toggleEdit();
+    render();   // repaint the Edit button's active state (Home never flips ui.edit)
+    return;
+  }
   if (ui.tab === 'followers' && window.FolPane) {   // the panes have their own edit modes
     FolPane.onKey({ key: 'F2', preventDefault() {}, target: null });
     return;
@@ -3512,6 +3534,20 @@ function init() {
       getNotes: function () { return state.notes || ''; },
       setNotes: function (v) { state.notes = typeof v === 'string' ? v : ''; saveSoon();
         var ta = $('notes-ta'); if (ta && document.activeElement !== ta) ta.value = state.notes; },
+      /* Home-card order PERSISTS INSIDE THE SHELF BLOB (state.shelf.home.order)
+         for exactly the reason tabbarPrefs() does — C++ parses `settings`
+         field-by-field so a new settings key would be dropped on save, but the
+         shelf slice round-trips as a raw json object. home-pane.js sanitizes on
+         read (unknown ids dropped, new systems appended), so we just hand back
+         the raw stored array. home-card-reorder */
+      getHomeOrder: function () { return homePrefs().order; },
+      setHomeOrder: function (ids) {
+        homePrefs().order = Array.isArray(ids) ? ids.slice() : [];
+        saveSoon();
+      },
+      /* the app's SYS_TABS ids, so Home's dev audit can flag a system tab it
+         forgot to carry (Task 2 — single source of truth check) */
+      sysTabs: function () { return SYS_TABS.map(function (s) { return s.tab; }); },
     });
   }
 

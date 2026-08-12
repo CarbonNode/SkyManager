@@ -1702,6 +1702,77 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
 .bz-tlbl { flex:1 1 auto; font-size:13px; opacity:.75; }
 .bz-step { width:30px; height:30px; padding:0; font-size:13px; }
 .bz-tval { min-width:62px; text-align:center; font-size:14px; }
+
+/* ---------------------- NPC icon packs ---------------------- *
+   The bar on the Followers tab plus the two sheets (share / import).
+   Toggle switches, not checkboxes: the import IS a per-face yes/no
+   decision, so the control should read like one at arm's length. */
+.packbar { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+  padding:14px 18px; margin:0 0 16px; border:1px solid var(--line); border-radius:12px;
+  background:linear-gradient(180deg, rgba(201,162,75,.06), rgba(201,162,75,.02)); }
+.packbar .pb-txt { flex:1 1 320px; min-width:240px; }
+.packbar .pb-txt b { display:block; font-size:14.5px; color:var(--text); }
+.packbar .pb-txt span { display:block; font-size:12.5px; color:var(--muted-2); margin-top:3px; line-height:1.45; }
+.packbar .pb-btns { display:flex; gap:10px; flex-wrap:wrap; }
+.packbar .btn { font-size:13.5px; padding:10px 16px; }
+
+.pk-list { display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+.pk-row { display:flex; align-items:center; gap:12px; width:100%; text-align:left;
+  padding:10px 12px; border:1px solid var(--line); border-radius:10px;
+  background:rgba(255,255,255,.02); cursor:pointer; transition:border-color 140ms ease, background 140ms ease; }
+.pk-row:hover { border-color:rgba(201,162,75,.55); background:rgba(201,162,75,.05); }
+.pk-row:focus-visible { outline:2px solid var(--gold-hi); outline-offset:2px; }
+.pk-row.off { opacity:.55; }
+.pk-row.off:hover { opacity:.8; }
+.pk-th { width:54px; height:54px; border-radius:9px; object-fit:cover; flex:0 0 auto;
+  background:rgba(255,255,255,.05); border:1px solid var(--line); }
+.pk-th.ph { display:flex; align-items:center; justify-content:center; font-size:17px; color:var(--muted-2); }
+.pk-arrow { font-size:15px; color:var(--muted-2); flex:0 0 auto; }
+.pk-body { flex:1 1 auto; min-width:0; }
+.pk-nm { font-size:14.5px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pk-meta { font-size:12px; color:var(--muted-2); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pk-pill { flex:0 0 auto; font-size:11.5px; font-weight:600; letter-spacing:.4px; text-transform:uppercase;
+  padding:4px 9px; border-radius:999px; border:1px solid; }
+.pk-pill.add { color:#8fd694; border-color:rgba(143,214,148,.45); background:rgba(143,214,148,.08); }
+.pk-pill.rep { color:#e2b657; border-color:rgba(226,182,87,.45); background:rgba(226,182,87,.08); }
+/* The switch. Pure CSS, driven by .on on the host. */
+.pk-sw { flex:0 0 auto; width:46px; height:26px; border-radius:13px; position:relative;
+  background:rgba(255,255,255,.09); border:1px solid var(--line); transition:background 140ms ease, border-color 140ms ease; }
+.pk-sw::after { content:''; position:absolute; top:2px; left:2px; width:20px; height:20px; border-radius:50%;
+  background:#8a8a93; transition:left 140ms ease, background 140ms ease; }
+.pk-row.on .pk-sw, .pk-sw.on { background:rgba(201,162,75,.35); border-color:rgba(201,162,75,.6); }
+.pk-row.on .pk-sw::after, .pk-sw.on::after { left:22px; background:var(--gold-hi); }
+
+.pk-tools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:12px; }
+.pk-tools .chip { font-size:12.5px; padding:8px 13px; border-radius:999px; border:1px solid var(--line);
+  background:transparent; color:var(--text); cursor:pointer; transition:border-color 140ms ease; }
+.pk-tools .chip:hover { border-color:rgba(201,162,75,.6); }
+.pk-tools .n { font-size:12.5px; color:var(--muted-2); margin-left:auto; }
+.pk-search { width:100%; margin-top:12px; font-size:14px; padding:10px 12px; border-radius:10px;
+  border:1px solid var(--line); background:rgba(255,255,255,.03); color:var(--text); }
+.pk-search:focus { outline:none; border-color:rgba(201,162,75,.6); }
+.pk-name { width:100%; font-size:14.5px; padding:11px 12px; border-radius:10px;
+  border:1px solid var(--line); background:rgba(255,255,255,.03); color:var(--text); }
+.pk-name:focus { outline:none; border-color:rgba(201,162,75,.6); }
+.pk-lbl { display:block; font-size:11.5px; letter-spacing:.6px; text-transform:uppercase; color:var(--muted-2); margin:14px 0 6px; }
+.pk-foot { display:flex; gap:10px; align-items:center; margin-top:16px; flex-wrap:wrap; }
+.pk-foot .btn { font-size:14px; padding:12px 18px; }
+.pk-note { font-size:12.5px; color:var(--muted-2); line-height:1.5; margin-top:10px; }
+.pk-err { font-size:13px; color:#e08a8a; margin-top:10px; line-height:1.5; }
+.pk-drop { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px;
+  width:100%; padding:38px 18px; border:2px dashed var(--line); border-radius:14px; background:rgba(255,255,255,.02);
+  color:var(--text); cursor:pointer; transition:border-color 140ms ease, background 140ms ease; }
+.pk-drop:hover { border-color:rgba(201,162,75,.6); background:rgba(201,162,75,.05); }
+.pk-drop .big { font-size:30px; }
+.pk-drop .t { font-size:15px; }
+.pk-drop .s { font-size:12.5px; color:var(--muted-2); text-align:center; line-height:1.5; max-width:420px; }
+.pk-spin { display:flex; align-items:center; gap:12px; padding:26px 6px; font-size:14px; color:var(--muted-2); }
+.pk-skips { margin-top:14px; }
+.pk-skips summary { font-size:12.5px; color:var(--muted-2); cursor:pointer; }
+.pk-skips li { font-size:12.5px; color:var(--muted-2); margin-top:4px; line-height:1.45; }
+.pk-res { display:flex; align-items:center; gap:10px; padding:9px 12px; border:1px solid var(--line);
+  border-radius:10px; margin-top:8px; font-size:13.5px; }
+.pk-res.bad { border-color:rgba(224,138,138,.5); color:#e08a8a; }
 </style>
 </head>
 <body>
@@ -2061,6 +2132,13 @@ var state = {
   smBusy: false,       // a load or a commit is in flight
   smErr: '',           // last failure, shown inline in the sheet
   smKink: { normal: '', secret: '' },  // the two "add a kink" inputs
+  /* ---- NPC icon packs (share portraits as a zip / import someone else's) ----
+     Both are SHEET-scoped: openPackExport()/openPackImport() build them, and a
+     closed sheet just leaves the husk behind (renderSheet only looks at
+     state.sheet). `pim.sel` is the decision the whole feature exists for:
+     slug -> include?, defaulting ON for new faces and OFF for replacements. */
+  pex: null,           // { loading, err, name, q, rows:[{slug,name,mtime,size}], sel:{} }
+  pim: null,           // { phase:'pick'|'inspecting'|'review'|'applying'|'done', fname, err, q, data, sel:{}, results }
   poll: null,          // pending-watch timer
   pollWait: 0,         // current backoff, ms
 };
@@ -4127,15 +4205,31 @@ function renderPortraits() {
 
   $('n-portraits').textContent = shown ? shown : '';
 
+  /* Icon packs live on this tab because portraits ARE this tab's pictures.
+     Hidden while searching — a filter means the user is hunting a person,
+     not shopping for tooling. Import stays offered on an EMPTY roster on
+     purpose: portraits are matched by slug, so a pack imported before the
+     roster fills is simply waiting for its people. */
+  var packBar = q ? '' :
+    '<div class="packbar">' +
+      '<div class="pb-txt"><b>NPC icon packs</b>' +
+      '<span>Bundle your follower portraits into one .zip anyone can import — or bring in a pack someone shared. ' +
+      'You choose face-by-face what gets added or replaced.</span></div>' +
+      '<div class="pb-btns">' +
+        '<button class="btn" type="button" data-act="pack-export-open" title="Download your portraits as a shareable .zip">⇪ Share pack</button>' +
+        '<button class="btn" type="button" data-act="pack-import-open" title="Open a downloaded pack and pick what to import">⇩ Import pack</button>' +
+      '</div>' +
+    '</div>';
+
   if (!out.length) {
-    host.innerHTML = q
+    host.innerHTML = packBar + (q
       ? '<div class="empty"><div class="ic">⌕</div><div class="t">No follower matches</div>' +
         '<div class="s">Nothing matches “' + esc(state.q.trim()) + '”. Names, original names, notes, slugs and category names are all searched.</div></div>'
       : '<div class="empty"><div class="ic">⚔</div><div class="t">No followers in the roster</div>' +
-        '<div class="s">The portal reads Follower Organizer\'s own JSON. Add someone to a category in-game, then hit ⟳.</div></div>';
+        '<div class="s">The portal reads Follower Organizer\'s own JSON. Add someone to a category in-game, then hit ⟳.</div></div>');
     return;
   }
-  host.innerHTML = out.join('');
+  host.innerHTML = packBar + out.join('');
   // The move filter and the rename box are rebuilt on every repaint, so they
   // cannot own their focus — put the caret back after the paint, exactly like
   // the dragon/library pickers do.
@@ -6048,6 +6142,440 @@ function adjustPortrait(slug, name, mtime) {
 }
 
 
+/* ==================== NPC icon packs: share & import ==================== *
+ *  Share = GET /api/npc-pack/export as a plain download (the session cookie
+ *  rides along). Import = inspect-then-apply: the zip is uploaded ONCE, the
+ *  server parks the decoded images under a packId, and this sheet is the
+ *  decision surface — per-face toggles, defaulting ON for new faces and OFF
+ *  for replacements, because overwriting a portrait you framed yourself is
+ *  the one thing a pack must never do silently.
+ *
+ *  Both sheets repaint their LIST in place (pexPaint/pimPaint) instead of
+ *  re-rendering the body, so the search box and the pack-name field keep
+ *  their caret — the same reason the move-menu filter restores focus. */
+
+function rosterNamesBySlugUi() {
+  var out = {};
+  var r = state.roster;
+  ((r && r.ok && r.categories) || []).forEach(function (c) {
+    (c.members || []).forEach(function (m) {
+      if (m && m.slug && !out[m.slug]) out[m.slug] = m.name || m.original || '';
+    });
+  });
+  return out;
+}
+
+function packSheetHead(glyph, title, sub) {
+  var ic = $('sheet-icon');
+  ic.className = 'sicon';
+  ic.removeAttribute('style');
+  ic.textContent = glyph;
+  $('sheet-title').textContent = title;
+  $('sheet-sub').textContent = sub;
+  $('sheet-back').hidden = true;
+}
+
+/* ------------------------------- share ------------------------------- */
+
+function openPackExport() {
+  state.pex = { loading: true, err: '', name: 'My NPC icons', q: '', rows: null, sel: {} };
+  state.sheet = { kind: 'pex' };
+  render();
+  api('GET', '/api/portraits').then(function (r) {
+    var px = state.pex;
+    if (!px || !sheetIs('pex')) return;
+    if (!r || !r.ok || !Array.isArray(r.portraits)) {
+      px.loading = false;
+      px.err = (r && r.error) || 'Could not list the portraits folder';
+    } else {
+      var names = rosterNamesBySlugUi();
+      px.rows = r.portraits.map(function (x) {
+        return { slug: x.slug, mtime: x.mtime || 0, size: x.size || 0, name: names[x.slug] || '' };
+      }).sort(function (a, b) {
+        var an = (a.name || a.slug).toLowerCase(), bn = (b.name || b.slug).toLowerCase();
+        return an < bn ? -1 : an > bn ? 1 : 0;
+      });
+      px.rows.forEach(function (x) { px.sel[x.slug] = true; });   // sharing your set is the point; opt OUT
+      px.loading = false;
+    }
+    render();
+  });
+}
+
+function pexVisible() {
+  var px = state.pex;
+  var q = (px.q || '').trim().toLowerCase();
+  return (px.rows || []).filter(function (x) {
+    return !q || x.slug.indexOf(q) >= 0 || (x.name || '').toLowerCase().indexOf(q) >= 0;
+  });
+}
+function pexCount() {
+  var px = state.pex, n = 0;
+  (px.rows || []).forEach(function (x) { if (px.sel[x.slug]) n++; });
+  return n;
+}
+
+function pexRowHtml(x) {
+  var on = !!state.pex.sel[x.slug];
+  var q = (state.pex.q || '').trim();
+  return '<button class="pk-row' + (on ? ' on' : ' off') + '" type="button" data-pk="' + esc(x.slug) + '"' +
+      ' title="' + (on ? 'In the pack — tap to leave out' : 'Left out — tap to include') + '">' +
+    '<img class="pk-th" src="/api/portrait-file/' + encodeURIComponent(x.slug) + '?v=' + x.mtime + '" alt="" loading="lazy" decoding="async">' +
+    '<span class="pk-body">' +
+      '<span class="pk-nm">' + hi(x.name || x.slug, q) + '</span>' +
+      '<span class="pk-meta">' + hi(x.slug, q) + ' · ' + Math.max(1, Math.round(x.size / 1024)) + ' KB</span>' +
+    '</span>' +
+    '<span class="pk-sw" aria-hidden="true"></span>' +
+  '</button>';
+}
+
+function pexPaint() {
+  var px = state.pex;
+  if (!px || !sheetIs('pex')) return;
+  var list = $('pex-list');
+  if (list) {
+    var rows = pexVisible();
+    list.innerHTML = rows.length
+      ? rows.map(pexRowHtml).join('')
+      : '<div class="pk-note">Nothing matches “' + esc((px.q || '').trim()) + '”.</div>';
+  }
+  var n = pexCount();
+  var cnt = $('pex-count');
+  if (cnt) cnt.textContent = n + ' of ' + (px.rows || []).length + ' in the pack';
+  var dl = $('pex-dl');
+  if (dl) {
+    dl.disabled = !n;
+    dl.textContent = n ? '⇪ Download pack (' + n + ')' : 'Nothing selected';
+  }
+}
+
+function pexDownload() {
+  var px = state.pex;
+  var slugs = [];
+  (px.rows || []).forEach(function (x) { if (px.sel[x.slug]) slugs.push(x.slug); });
+  if (!slugs.length) return;
+  var url = '/api/npc-pack/export?name=' + encodeURIComponent((px.name || '').trim() || 'npc-icons');
+  if (slugs.length !== (px.rows || []).length) url += '&slugs=' + encodeURIComponent(slugs.join(','));
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  toast('Pack downloading — ' + slugs.length + ' portrait' + (slugs.length === 1 ? '' : 's'), 'good');
+}
+
+function renderPackExportSheet() {
+  var px = state.pex;
+  packSheetHead('⇪', 'Share an NPC icon pack',
+    px.loading ? 'Reading your portraits…'
+      : (px.rows || []).length + ' portrait' + ((px.rows || []).length === 1 ? '' : 's') + ' · downloads as one .zip');
+  var body = $('sheet-body');
+
+  if (px.loading) {
+    body.innerHTML = '<div class="pk-spin"><span class="spin"></span>Reading your portraits…</div>';
+    return;
+  }
+  if (px.err) {
+    body.innerHTML = '<div class="pk-err">' + esc(px.err) + '</div>';
+    return;
+  }
+  if (!(px.rows || []).length) {
+    body.innerHTML = '<div class="empty"><div class="ic">🖼</div><div class="t">No portraits yet</div>' +
+      '<div class="s">Photograph a follower in-game (her card → 📷) or upload a picture here first — then there is something to share.</div></div>';
+    return;
+  }
+
+  body.innerHTML =
+    '<label class="pk-lbl" for="pex-name">Pack name</label>' +
+    '<input id="pex-name" class="pk-name" type="text" maxlength="80" autocomplete="off" spellcheck="false" value="' + esc(px.name) + '"' +
+      ' placeholder="My NPC icons">' +
+    ((px.rows || []).length > 10
+      ? '<input id="pex-q" class="pk-search" type="search" autocomplete="off" spellcheck="false" placeholder="Filter by name or slug… (Enter toggles the top hit)" value="' + esc(px.q) + '">'
+      : '') +
+    '<div class="pk-tools">' +
+      '<button class="chip" type="button" id="pex-all">Everyone</button>' +
+      '<button class="chip" type="button" id="pex-none">No one</button>' +
+      '<span class="n" id="pex-count"></span>' +
+    '</div>' +
+    '<div class="pk-list" id="pex-list"></div>' +
+    '<div class="pk-foot">' +
+      '<button class="btn primary" type="button" id="pex-dl"></button>' +
+    '</div>' +
+    '<div class="pk-note">The .zip carries each picture named by its follower slug plus a small manifest — ' +
+      'anyone can import it from this same tab, and importing always asks face-by-face.</div>';
+
+  pexPaint();
+
+  $('pex-name').addEventListener('input', function (e) { px.name = e.target.value; });
+  var q = $('pex-q');
+  if (q) {
+    q.addEventListener('input', function (e) { px.q = e.target.value; pexPaint(); });
+    q.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      var top = pexVisible()[0];
+      if (top) { px.sel[top.slug] = !px.sel[top.slug]; pexPaint(); }
+    });
+  }
+  $('pex-all').addEventListener('click', function () { (px.rows || []).forEach(function (x) { px.sel[x.slug] = true; }); pexPaint(); });
+  $('pex-none').addEventListener('click', function () { px.sel = {}; pexPaint(); });
+  $('pex-list').addEventListener('click', function (e) {
+    var row = e.target.closest && e.target.closest('.pk-row');
+    if (!row) return;
+    var slug = row.dataset.pk;
+    px.sel[slug] = !px.sel[slug];
+    row.classList.toggle('on', !!px.sel[slug]);
+    row.classList.toggle('off', !px.sel[slug]);
+    pexPaint();
+  });
+  $('pex-dl').addEventListener('click', pexDownload);
+}
+
+/* ------------------------------- import ------------------------------- */
+
+function openPackImport() {
+  state.pim = { phase: 'pick', fname: '', err: '', q: '', data: null, sel: {}, results: null };
+  state.sheet = { kind: 'pim' };
+  render();
+}
+
+function pimPickFile() {
+  var inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.zip,application/zip';
+  inp.addEventListener('change', function () {
+    var file = inp.files && inp.files[0];
+    if (file) pimInspect(file);
+  });
+  inp.click();
+}
+
+function pimInspect(file) {
+  var pi = state.pim;
+  if (!pi) return;
+  pi.phase = 'inspecting';
+  pi.fname = file.name || 'pack.zip';
+  pi.err = '';
+  render();
+  fetch('/api/npc-pack/inspect', { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: file })
+    .then(function (r) {
+      return r.json().catch(function () { return { ok: false, error: 'HTTP ' + r.status + ' (non-JSON reply)' }; });
+    })
+    .then(function (j) {
+      if (!state.pim || !sheetIs('pim')) return;
+      var p2 = state.pim;
+      if (!j || !j.ok) {
+        p2.phase = 'pick';
+        p2.err = (j && j.error) || 'Could not read that file';
+        render();
+        return;
+      }
+      p2.data = j;
+      p2.sel = {};
+      /* THE default that makes import safe to say yes to: every new face ON,
+         every replacement OFF. Overwrites are opt-in, one toggle at a time
+         (or the "Everything" chip when that is genuinely what you want). */
+      (j.entries || []).forEach(function (e) { p2.sel[e.slug] = e.status === 'add'; });
+      p2.phase = 'review';
+      render();
+    })
+    .catch(function (e) {
+      if (!state.pim || !sheetIs('pim')) return;
+      state.pim.phase = 'pick';
+      state.pim.err = 'Upload failed: ' + e.message;
+      render();
+    });
+}
+
+function pimVisible() {
+  var pi = state.pim;
+  var q = (pi.q || '').trim().toLowerCase();
+  return ((pi.data && pi.data.entries) || []).filter(function (e) {
+    return !q || e.slug.indexOf(q) >= 0 || (e.name || '').toLowerCase().indexOf(q) >= 0;
+  });
+}
+function pimCount() {
+  var pi = state.pim, n = 0;
+  ((pi.data && pi.data.entries) || []).forEach(function (e) { if (pi.sel[e.slug]) n++; });
+  return n;
+}
+
+function pimRowHtml(e) {
+  var pi = state.pim;
+  var on = !!pi.sel[e.slug];
+  var q = (pi.q || '').trim();
+  var rep = e.status === 'replace';
+  var incoming = '<img class="pk-th" src="/api/npc-pack/file/' + encodeURIComponent(pi.data.packId) + '/' +
+    encodeURIComponent(e.slug) + '" alt="" loading="lazy" decoding="async">';
+  /* A replacement shows BOTH faces — what you have, what the pack brings —
+     because "replace Lydia?" is unanswerable without seeing current Lydia. */
+  var art = rep
+    ? '<img class="pk-th" src="/api/portrait-file/' + encodeURIComponent(e.slug) + '?v=' + (e.existingMtime || 0) + '" alt="" loading="lazy" decoding="async">' +
+      '<span class="pk-arrow" aria-hidden="true">→</span>' + incoming
+    : incoming;
+  return '<button class="pk-row' + (on ? ' on' : ' off') + '" type="button" data-pk="' + esc(e.slug) + '"' +
+      ' title="' + (on ? 'Will import — tap to skip' : 'Skipped — tap to import') + '">' +
+    art +
+    '<span class="pk-body">' +
+      '<span class="pk-nm">' + hi(e.name || e.slug, q) + '</span>' +
+      '<span class="pk-meta">' + hi(e.slug, q) + ' · ' + esc(e.ext) + ' · ' + Math.max(1, Math.round((e.size || 0) / 1024)) + ' KB' +
+        (e.inRoster ? '' : ' · not in your roster — imports fine, waits for her') + '</span>' +
+    '</span>' +
+    '<span class="pk-pill ' + (rep ? 'rep' : 'add') + '">' + (rep ? 'replaces' : 'new') + '</span>' +
+    '<span class="pk-sw" aria-hidden="true"></span>' +
+  '</button>';
+}
+
+function pimPaint() {
+  var pi = state.pim;
+  if (!pi || !sheetIs('pim') || pi.phase !== 'review') return;
+  var list = $('pim-list');
+  if (list) {
+    var rows = pimVisible();
+    list.innerHTML = rows.length
+      ? rows.map(pimRowHtml).join('')
+      : '<div class="pk-note">Nothing matches “' + esc((pi.q || '').trim()) + '”.</div>';
+  }
+  var n = pimCount();
+  var cnt = $('pim-count');
+  if (cnt) cnt.textContent = n + ' of ' + ((pi.data && pi.data.entries) || []).length + ' selected';
+  var go = $('pim-go');
+  if (go) {
+    go.disabled = !n;
+    go.textContent = n ? '⇩ Import ' + n + ' selected' : 'Nothing selected';
+  }
+}
+
+function pimApply() {
+  var pi = state.pim;
+  var slugs = [];
+  ((pi.data && pi.data.entries) || []).forEach(function (e) { if (pi.sel[e.slug]) slugs.push(e.slug); });
+  if (!slugs.length) return;
+  pi.phase = 'applying';
+  render();
+  api('POST', '/api/npc-pack/import', { packId: pi.data.packId, slugs: slugs }).then(function (j) {
+    if (!state.pim || !sheetIs('pim')) return;
+    state.pim.phase = 'done';
+    state.pim.results = j || { ok: false, error: 'No reply' };
+    render();
+    /* Re-read everything so hasPortrait/mtime flip on the roster cards the
+       moment the sheet closes — not on the next poll. */
+    fetchAll().then(render);
+  });
+}
+
+function renderPackImportSheet() {
+  var pi = state.pim;
+  var d = pi.data;
+  var sub =
+    pi.phase === 'pick' ? 'Pick a downloaded pack (.zip)' :
+    pi.phase === 'inspecting' ? 'Reading ' + pi.fname + '…' :
+    pi.phase === 'review' ? ((d.manifest && d.manifest.name) ? d.manifest.name + ' · ' : '') +
+      d.counts.total + ' image' + (d.counts.total === 1 ? '' : 's') + ' · ' + d.counts.add + ' new · ' + d.counts.replace + ' replacement' + (d.counts.replace === 1 ? '' : 's') :
+    pi.phase === 'applying' ? 'Importing…' :
+    'Done';
+  packSheetHead('⇩', 'Import an NPC icon pack', sub);
+  var body = $('sheet-body');
+
+  if (pi.phase === 'pick') {
+    body.innerHTML =
+      '<button class="pk-drop" type="button" id="pim-pick">' +
+        '<span class="big">🗂</span>' +
+        '<span class="t">Choose a pack (.zip)</span>' +
+        '<span class="s">A pack is a zip of pictures named after each NPC — one shared from this tab, ' +
+        'or hand-made by dropping renamed images into an archive. Nothing is imported until you say so, face by face.</span>' +
+      '</button>' +
+      (pi.err ? '<div class="pk-err">' + esc(pi.err) + '</div>' : '');
+    $('pim-pick').addEventListener('click', pimPickFile);
+    return;
+  }
+
+  if (pi.phase === 'inspecting') {
+    body.innerHTML = '<div class="pk-spin"><span class="spin"></span>Reading ' + esc(pi.fname) + '…</div>';
+    return;
+  }
+
+  if (pi.phase === 'review') {
+    var entries = (d && d.entries) || [];
+    var skipped = (d && d.skipped) || [];
+    body.innerHTML =
+      '<div class="pk-tools">' +
+        '<button class="chip" type="button" id="pim-new">New only (' + d.counts.add + ')</button>' +
+        '<button class="chip" type="button" id="pim-every">Everything (' + d.counts.total + ')</button>' +
+        '<button class="chip" type="button" id="pim-none">None</button>' +
+        '<span class="n" id="pim-count"></span>' +
+      '</div>' +
+      (entries.length > 10
+        ? '<input id="pim-q" class="pk-search" type="search" autocomplete="off" spellcheck="false" placeholder="Filter by name or slug… (Enter toggles the top hit)" value="' + esc(pi.q) + '">'
+        : '') +
+      '<div class="pk-list" id="pim-list"></div>' +
+      (skipped.length
+        ? '<details class="pk-skips"><summary>' + skipped.length + ' file' + (skipped.length === 1 ? '' : 's') + ' in the zip can\'t be used</summary><ul>' +
+          skipped.map(function (s) { return '<li><b>' + esc(s.file) + '</b> — ' + esc(s.reason) + '</li>'; }).join('') +
+          '</ul></details>'
+        : '') +
+      '<div class="pk-foot">' +
+        '<button class="btn primary" type="button" id="pim-go"></button>' +
+        '<button class="btn" type="button" id="pim-cancel">Cancel</button>' +
+      '</div>' +
+      '<div class="pk-note"><b>New</b> faces are on by default; <b>replaces</b> means you already have a portrait for that slug ' +
+        'and it starts OFF — nothing you framed yourself is overwritten unless you flip it on.</div>';
+
+    pimPaint();
+
+    $('pim-new').addEventListener('click', function () {
+      entries.forEach(function (e) { pi.sel[e.slug] = e.status === 'add'; });
+      pimPaint();
+    });
+    $('pim-every').addEventListener('click', function () {
+      entries.forEach(function (e) { pi.sel[e.slug] = true; });
+      pimPaint();
+    });
+    $('pim-none').addEventListener('click', function () { pi.sel = {}; pimPaint(); });
+    var q = $('pim-q');
+    if (q) {
+      q.addEventListener('input', function (e) { pi.q = e.target.value; pimPaint(); });
+      q.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter') return;
+        var top = pimVisible()[0];
+        if (top) { pi.sel[top.slug] = !pi.sel[top.slug]; pimPaint(); }
+      });
+    }
+    $('pim-list').addEventListener('click', function (e) {
+      var row = e.target.closest && e.target.closest('.pk-row');
+      if (!row) return;
+      var slug = row.dataset.pk;
+      pi.sel[slug] = !pi.sel[slug];
+      row.classList.toggle('on', !!pi.sel[slug]);
+      row.classList.toggle('off', !pi.sel[slug]);
+      pimPaint();
+    });
+    $('pim-go').addEventListener('click', pimApply);
+    $('pim-cancel').addEventListener('click', closeSheet);
+    return;
+  }
+
+  if (pi.phase === 'applying') {
+    body.innerHTML = '<div class="pk-spin"><span class="spin"></span>Importing ' + pimCount() + ' portrait' + (pimCount() === 1 ? '' : 's') + '…</div>';
+    return;
+  }
+
+  /* done */
+  var res = pi.results || {};
+  var rows = res.results || [];
+  var fails = rows.filter(function (r) { return !r.ok; });
+  body.innerHTML =
+    '<div class="pk-res">✓ ' + (res.applied || 0) + ' portrait' + ((res.applied || 0) === 1 ? '' : 's') + ' imported' +
+      (res.queuedLive ? ' · handed to the running game live' : '') + '</div>' +
+    fails.map(function (r) {
+      return '<div class="pk-res bad">✕ ' + esc(r.slug) + ' — ' + esc(r.error || 'failed') + '</div>';
+    }).join('') +
+    '<div class="pk-note">With Skyrim running, imported faces repaint in the deck within a second; ' +
+      'with it closed they show up at the next launch. The Followers grid here refreshes on its own.</div>' +
+    '<div class="pk-foot"><button class="btn primary" type="button" id="pim-close">Done</button></div>';
+  $('pim-close').addEventListener('click', closeSheet);
+}
+
 function renderSheet() {
   var wrap = $('sheet-wrap');
   if (!state.sheet) { wrap.hidden = true; return; }
@@ -6064,6 +6592,8 @@ function renderSheet() {
     case 'fin': row = finRowById(state.sheet.target, state.sheet.id); draw = renderFinSheet; break;
     case 'wd': row = wdSheetRow(); draw = renderWdSheet; break;
     case 'dr': row = drSheetRow(); draw = renderDrSheet; break;
+    case 'pex': row = state.pex; draw = renderPackExportSheet; break;
+    case 'pim': row = state.pim; draw = renderPackImportSheet; break;
     default: closeSheetOnly(); return;
   }
   if (!row) { closeSheetOnly(); return; }
@@ -9898,7 +10428,7 @@ function renderAskTab() {
       '<input id="ask-q" type="text" autocomplete="off" placeholder="' +
         (askUi.mode === 'direct'
           ? 'Direct the scene… e.g. Camilla storms in, furious'
-          : 'what is Lydia's personality? · who is following me? · what happened lately?') + '"' +
+          : 'what is Lydia\'s personality? · who is following me? · what happened lately?') + '"' +
         ' style="flex:1;padding:11px 13px;border-radius:9px;border:1px solid #2a2a33;' +
         'background:rgba(0,0,0,.25);color:inherit;font:inherit">' +
       '<button type="button" id="ask-go" style="padding:0 18px;border-radius:9px;border:1px solid #c9a24b77;' +
@@ -10390,6 +10920,8 @@ document.addEventListener('click', function (e) {
     var act = b.dataset.act;
     if (act === 'up') { pickFile('portrait', b.dataset.slug, b.dataset.name); return; }
     if (act === 'rm') { removeItem('portrait', b.dataset.slug, b.dataset.name); return; }
+    if (act === 'pack-export-open') { openPackExport(); return; }
+    if (act === 'pack-import-open') { openPackImport(); return; }
     if (act === 'crop') {
       var cm = memberBySlug(b.dataset.slug);
       if (cm) adjustPortrait(cm.slug, cm.name, cm.mtime);
