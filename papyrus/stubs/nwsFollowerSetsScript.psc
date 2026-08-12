@@ -4,7 +4,7 @@ ScriptName nwsFollowerSetsScript Extends Quest
  Declares ONLY the members HD_WardrobeExec touches.
 
  Signatures copied verbatim from NFF's OWN decompiled nwsFollowerSetsScript.psc
- (Champollion -> C:\Dev\nff-psc). A stub that disagrees with the real script
+ (decompiled with Champollion). A stub that disagrees with the real script
  compiles happily and then fails at runtime with "cannot find function", so the
  rule is: decompile, copy, do not paraphrase.}
 

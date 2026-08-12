@@ -1,9 +1,9 @@
 # Follower Organizer fork — our additions
 
-The full fork of MaskedRPGFan's **Follower Organizer** SKSE plugin lives on laybackrig at
-`C:\Dev\FollowerOrganizer` (upstream source + our patches, built with xmake against
-`C:\Dev\HotkeyDeck\lib\commonlibsse-ng` — the same CommonLib checkout Hotkey Deck uses).
-This folder tracks **only the files we author**, so they survive the rig:
+This folder contains the files SkyManager adds to MaskedRPGFan's **Follower
+Organizer** SKSE plugin. Apply them to a compatible upstream checkout and build
+with xmake against CommonLibSSE-NG. Only the files authored for this integration
+are tracked here:
 
 | File | What it is |
 |---|---|
@@ -34,27 +34,26 @@ This folder tracks **only the files we author**, so they survive the rig:
   boxes at 300 (`clampText` in `followers-pane.js`), but the portal does not go through
   the view, which is why the bound has to exist here.
 
-## Build (on laybackrig)
+## Build
 
 ```powershell
-# copy our files over the fork, then build
-Copy-Item '<repo>\modding\follower-organizer-fork\src\DeckAPI.cpp' C:\Dev\FollowerOrganizer\src\DeckAPI.cpp -Force
-Copy-Item '<repo>\modding\follower-organizer-fork\xmake.lua'      C:\Dev\FollowerOrganizer\xmake.lua -Force
-cd C:\Dev\FollowerOrganizer
+# From a compatible Follower Organizer source checkout, copy these integration
+# files into the matching source paths, then build:
 xmake -y      # output: build\windows\x64\release\FollowerOrganizer.dll
 ```
 
-Deploy target: `E:\Modding\SkyrimSE\Archived Mods\mods\Follower Organizer (Latest)\SKSE\Plugins\FollowerOrganizer.dll`
-— **never while SkyrimSE.exe is running** (stage + deploy-on-exit, same rule as Hotkey Deck).
+Install the resulting DLL under your mod manager's
+`SKSE\Plugins\FollowerOrganizer.dll`. **Never replace it while SkyrimSE.exe is
+running.**
 
 The organizer's data file (`Data/SKSE/Plugins/FollowerOrganizer.json`) stays exclusively
 FO-owned: the deck mutates through the singleton, FO saves with its own rotating backups.
 
-## 2026-08-03 — CategoryCount raised 25 → 40 (rig-local patch)
+## CategoryCount raised 25 → 40
 
-Rober asked for more categories. The cap lives in the FO fork's OWN sources at
-`C:\Dev\FollowerOrganizer` (NOT fully vendored here — this folder carries only
-Member.* and DeckAPI.cpp). Three edits, applied directly on the rig:
+The cap lives in the upstream fork's own sources (not fully vendored here; this
+folder carries only the integration files). The compatible fork applies three
+edits:
 
 - `src/Constants.hpp`: `CategoryCount = 40` (was 25). `MaxTrackedMembers`
   deliberately unchanged.
@@ -73,6 +72,5 @@ fields, the deck/portal UI) works because storage is a dynamic vector and the
 Deck API iterates `categories.size()`. Full parity later = adding SPEL+QUST
 records to the ESP and extending `CategorySpellRawID`.
 
-FO's own native Papyrus picker past 25 entries is UNTESTED — the deck is the
-primary UI. Deployed 2026-08-03 (build 20:15:18); previous DLL backed up at
-`C:\Dev\FollowerOrganizer-prev.dll`.
+FO's own native Papyrus picker past 25 entries is untested; the deck is the
+primary UI for the expanded category range.
