@@ -17,8 +17,8 @@
  *  from scratch more than once because it died with its container. It is in
  *  the repo now. Keep it here, and extend it when you add an endpoint.
  *
- *  PORT: ephemeral by default — this workspace routinely has 20+ concurrent
- *  Claude sessions and a hardcoded port makes the suite fail for reasons
+ *  PORT: ephemeral by default — the dev box routinely has plenty of
+ *  services listening and a hardcoded port makes the suite fail for reasons
  *  that have nothing to do with the code. Override with PORT=nnnn only when
  *  you need to poke the fixture server by hand.
  * ====================================================================== */
