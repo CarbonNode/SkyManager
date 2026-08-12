@@ -244,7 +244,10 @@
     "portal-host": "portal-host: started the Deck Portal on",
     "wheel-spell-equip": "hdOmniEquip: equip-toggle",
     "keys-scan": "keys-scan complete:",
-    "seed-icons": "seeded new action entry '{}' into tab '{}' (icon '{}')"
+    "seed-icons": "seeded new action entry '{}' into tab '{}' (icon '{}')",
+    "seed-suppress": "seed-suppress: '{}' stays deleted by user choice",
+    "atomic-config-write": "atomic config swap failed",
+    "omo-cancel-config": "OMO cancel binding unrecognized"
   },
   "view": {
     "wardrobe-spid.js": {
@@ -529,7 +532,7 @@
       "wheel-module": "var HDWheel = (function",
       "wheel-inv-provider": "id: 'inventory'",
       "wheel-party-card": "function tryPartyCard",
-      "wheel-spell-modes": "left: { label: 'Equip — left hand'"
+      "wheel-spell-modes": "left: { label: 'Equip \u2014 left hand'"
     },
     "hd-wheel.css": {
       "wheel-css": "#hd-wheel .whl-slot {"

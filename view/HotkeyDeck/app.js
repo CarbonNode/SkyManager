@@ -1616,6 +1616,16 @@ const HK_REQUIRES = {
   'followers-teleport':     { flag: 'nff',               label: "Nether's Follower Framework" },
   'open-smf':               { flag: 'smf',               label: 'SKSE Menu Framework' },
   'open-community-shaders': { flag: 'cs',                label: 'Community Shaders' },
+  /* The kSeeds copies of the menu openers carry hd- prefixed ids while
+     DefaultConfig used the bare names — BOTH must be gated or an upgraded
+     config shows the row and fires a stray default keypress with the mod
+     absent (2026-08-12 audit: the exact "dead button" the mod page says
+     cannot happen). Prisma MCM had no flag at all — worst of the three,
+     it synthesized "\" on every setup. */
+  'hd-open-smf':               { flag: 'smf',    label: 'SKSE Menu Framework' },
+  'hd-open-community-shaders': { flag: 'cs',     label: 'Community Shaders' },
+  'open-prisma-mcm':           { flag: 'prisma', label: 'Prisma MCM Redux' },
+  'hd-open-prisma-mcm':        { flag: 'prisma', label: 'Prisma MCM Redux' },
 };
 /* The missing-mod label if this entry's required mod is NOT detected, else ''.
    device:"vkey" requires VirtualKey. A DLL that predates cfg.detected sends no
@@ -2574,9 +2584,18 @@ function onListClick(e) {
   if (e.target.classList.contains('rebind-btn')) { startCapture('entry', id); return; }
   if (e.target.classList.contains('vkey-edit-btn')) { openVKeyPicker(e.target, entry); return; }
   if (e.target.classList.contains('up') || e.target.classList.contains('down')) {
+    /* Swap against the VISIBLE list, not the global array: inside a category
+       tab the neighbour in state.entries can be a hidden entry from another
+       tab, and swapping with it moves nothing on screen (2026-08-12 audit).
+       Mirror the drag handler: find the visible neighbour, then splice at
+       GLOBAL indices. */
+    const vis = filteredEntries();
+    const vi = vis.indexOf(entry);
+    const vj = e.target.classList.contains('up') ? vi - 1 : vi + 1;
+    if (vi < 0 || vj < 0 || vj >= vis.length) return;
     const i = state.entries.indexOf(entry);
-    const j = e.target.classList.contains('up') ? i - 1 : i + 1;
-    if (j < 0 || j >= state.entries.length) return;
+    const j = state.entries.indexOf(vis[vj]);
+    if (i < 0 || j < 0) return;
     state.entries.splice(i, 1);
     state.entries.splice(j, 0, entry);
     render();
@@ -2585,11 +2604,18 @@ function onListClick(e) {
   }
   if (e.target.classList.contains('del')) {
     if (ui.confirmDelete === id) {
+      /* A built-in action row is re-seeded on launch unless its verb is
+         recorded as deliberately removed — without this, "delete" silently
+         un-deleted itself next session and read as a bug (2026-08-12 audit). */
+      if (entry.device === 'action' && entry.action) {
+        if (!Array.isArray(state.suppressedSeeds)) state.suppressedSeeds = [];
+        if (state.suppressedSeeds.indexOf(entry.action) === -1) state.suppressedSeeds.push(entry.action);
+      }
       state.entries = state.entries.filter((x) => x.id !== id);
       ui.confirmDelete = null;
       render();
       save();
-      toast('Removed');
+      toast(entry.device === 'action' ? 'Built-in removed — it stays gone' : 'Removed');
     } else {
       ui.confirmDelete = id;
       render();

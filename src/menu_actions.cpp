@@ -249,8 +249,14 @@ namespace MenuActions
 					auto dik = KeyNameToDik(v);
 					if (dik)
 						key = dik;
-					else
-						logger::warn("menu-open: smf ToggleKey '{}' unmapped — using F1", v);
+					else {
+						// Refuse rather than press F1: the user REBOUND the key, and
+						// F1 is whatever their setup makes of F1 — a wrong keypress
+						// is worse than an honest sentence (2026-08-12 audit).
+						logger::warn("menu-open: smf ToggleKey '{}' unmapped — refusing", v);
+						Notify("SKSE Menu Framework uses a key this deck can't name — open it with its own key, or rebind it to a standard one.");
+						return;
+					}
 				}
 				if (IniGet(ini, "ToggleMode", v)) {
 					std::string m = v;
