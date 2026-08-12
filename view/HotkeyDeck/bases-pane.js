@@ -837,14 +837,18 @@
     const canAdd = !!(b.home && b.home.set);
     const full = d.maxHomeSlots > 0 && d.residents >= d.maxHomeSlots;
 
-    const kids = [
-      h('div', { class: 'nb-card-head' }, 'Residents',
-        h('span', { class: 'nb-card-hint' },
-          res.length ? res.length + ' living here' : 'Nobody lives here yet')),
-    ];
+    /* The head stays PINNED at the top of the (growing) card; everything below
+       it scrolls, so the residents surface can take all the vertical room the
+       hero + locations + settings leave — the fix for the pane floating in the
+       top 40% with a black void beneath it. */
+    const head = h('div', { class: 'nb-card-head' }, 'Residents',
+      h('span', { class: 'nb-card-hint' },
+        res.length ? res.length + ' living here' : 'Nobody lives here yet'));
+
+    const scrollKids = [];
 
     if ((res.length + cands.length) >= SEARCH_AT) {
-      kids.push(h('div', { class: 'nb-search-wrap nb-search-inline' },
+      scrollKids.push(h('div', { class: 'nb-search-wrap nb-search-inline' },
         h('span', { class: 'nb-search-ic', 'aria-hidden': 'true' }, '⌕'),
         h('input', {
           class: 'nb-whosearch', type: 'text', value: S.who, spellcheck: 'false',
@@ -855,7 +859,7 @@
 
     if (res.length) {
       const shown = res.filter((r) => matches(r.name, S.who));
-      kids.push(h('div', { class: 'nb-people' },
+      scrollKids.push(h('div', { class: 'nb-people' },
         ...shown.map((r, ri) => personChip(r, {
           action: '✕', danger: true,
           title: 'Send ' + r.name + ' back to having no base',
@@ -865,9 +869,16 @@
         })),
         shown.length ? null : h('div', { class: 'nb-nomatch' }, 'No resident matches “' + S.who + '”')));
     } else {
-      kids.push(h('div', { class: 'nb-empty' },
-        canAdd ? 'Assign a follower below and she’ll live here when you dismiss her.'
-          : 'Set this base’s home location first — then you can move people in.'));
+      /* A real empty state that fills the room instead of a one-liner floating
+         in a tall card: an icon, the plain-language "what to do", and a hint at
+         where residents come from. */
+      scrollKids.push(h('div', { class: 'nb-resempty' },
+        h('div', { class: 'nb-resempty-ic', 'aria-hidden': 'true' }, '👥'),
+        h('div', { class: 'nb-resempty-t' }, 'No residents assigned yet'),
+        h('div', { class: 'nb-resempty-s' },
+          canAdd
+            ? 'Assign a follower below — she’ll live here when you dismiss her, and go about the base’s work and relax hours on her own.'
+            : 'Set this base’s home location first, then move people in from below.')));
     }
 
     /* Add block: the crosshair NPC first (looking at someone IS the intent),
@@ -904,14 +915,18 @@
       addKids.push(h('div', { class: 'nb-warn' },
         'Every one of NFF’s ' + d.maxHomeSlots + ' resident slots is taken — free one before adding anybody.'));
     }
-    kids.push(h('div', { class: 'nb-add' }, ...addKids));
+    scrollKids.push(h('div', { class: 'nb-add' }, ...addKids));
 
     /* The base picker lives at the BOTTOM of this card, so opening it never
        reflows the roster you were just looking at. */
     const pick = pickerPanel();
-    if (pick) kids.push(pick);
+    if (pick) scrollKids.push(pick);
 
-    return h('div', { class: 'nb-card' }, ...kids);
+    /* nb-card-grow: this card is the flex child that eats the remaining height
+       of #nb-main; nb-res-scroll is the region that scrolls inside it once the
+       roster is taller than that room. */
+    return h('div', { class: 'nb-card nb-card-grow' }, head,
+      h('div', { class: 'nb-res-scroll' }, ...scrollKids));
   }
 
   /* The "move her to…" panel: every base as a tile you pick BY ITS CREST.

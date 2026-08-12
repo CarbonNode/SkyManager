@@ -268,6 +268,52 @@
   padding: 16px 18px;
 }
 
+/* The Residents card is the one that GROWS to eat the vertical slack the hero,
+   locations and settings leave — so the detail column fills the panel instead
+   of floating in its top 40% with a black void beneath (Rober, 2026-08-12).
+   It is a flex column itself: a pinned head + an internally-scrolling body, so
+   a base with 200 residents scrolls inside the card rather than stretching the
+   page, and a base with none still holds the height with a real empty state.
+   min-height:0 is the load-bearing part — without it a flex child refuses to
+   shrink below its content and the internal scroller never engages. */
+.nb-card-grow {
+  flex: 1 1 auto;
+  /* min-height:0 (NOT a fixed floor) is load-bearing: it lets the card SHRINK
+     when hero + locations + an expanded settings card leave little room, so its
+     internal scroller engages and #nb-main itself never overflows. A fixed
+     floor here instead forces the whole detail column to scroll — the very
+     thing this layout avoids. When there IS room, flex-grow fills it. */
+  min-height: 0;
+  display: flex; flex-direction: column;
+}
+.nb-card-grow > .nb-card-head { flex: 0 0 auto; }
+.nb-res-scroll {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  /* Room for the scrollbar so chips never sit under it. */
+  padding-right: 4px; margin-right: -4px;
+}
+.nb-res-scroll::-webkit-scrollbar { width: 10px; }
+.nb-res-scroll::-webkit-scrollbar-track { background: transparent; }
+.nb-res-scroll::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+.nb-res-scroll::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+
+/* A residents empty state that fills the room rather than a one-liner adrift in
+   a tall card — an icon, the headline, and what to do next. Centred in the
+   growing body so the space teaches instead of gaping. */
+.nb-resempty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; gap: 8px;
+  min-height: 150px;
+  padding: 24px 20px;
+}
+.nb-resempty-ic { font-size: 38px; line-height: 1; opacity: .45; margin-bottom: 4px; }
+.nb-resempty-t { font-size: 16px; font-weight: 600; color: #b9b4a8; }
+.nb-resempty-s {
+  font-size: 14px; color: #6f6a5e; line-height: 1.6;
+  max-width: 420px;
+}
+
 .nb-card-head {
   display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
   font-size: 14px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase;

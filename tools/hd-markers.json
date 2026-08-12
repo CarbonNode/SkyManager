@@ -205,6 +205,8 @@
     "followers-hud-grow": "anchorH",
     "deck-mod-detection": "deck: mod-detection omo=",
     "quick-light-state": "quick-light state: installed=",
+    "charsheet-export": "charsheet export: wrote charsheet-status.json for the portal",
+    "charsheet-dispel": "charsheet: dispelled effect",
     "item-icons-worn": "item icons: worn set requested",
     "item-icons-turntable": "turntable frame(s) queued for",
     "facelight-bfl": "facelight: state",
@@ -540,6 +542,8 @@
     "hd-portal.js": {
       "portal-button": "window.ptState = function"
     },
-    "keys-pane": "kcResultData"
+    "keys-pane": "kcResultData",
+    "charsheet-pane": "ps-eff-harm-row",
+    "chim-detection-gate": "function detectedGate"
   }
 }

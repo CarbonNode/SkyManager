@@ -58,6 +58,7 @@
 #include "spid_gear.h"
 #include "actor_identity.h"   // sg* handlers parse durable npc/item ids
 #include "quick_light.h"
+#include "char_sheet.h"   // Character Sheet tab: live player stats + RP meta (ps* bridge)
 #include "facelight.h"
 #include "followers_hud.h"
 #include "hotbar.h"
@@ -357,6 +358,14 @@ namespace
 		// that shares nothing with the first, so nothing here may reference it.
 		// Schema lives in hd-wheel.js.
 		json wheel = json::object();
+		// Character Sheet (ps* bridge) — the RP half of the sheet: freeform
+		// class / background / history and a portrait path. The live stats are
+		// read off the player every frame, never persisted; only this typed
+		// meta round-trips under the "charsheet" root key. Four capped fields,
+		// not raw json, because the shape is fixed and the portrait path is
+		// validated (see CharSheet::ValidPortraitPath) — the same reason the
+		// deck's other typed slices aren't carried opaque.
+		CharSheet::Meta charSheet;
 	};
 
 	Config     g_config;
@@ -804,7 +813,12 @@ namespace
 			{ "entries", entries },
 			{ "suppressedSeeds", c.suppressedSeeds },
 			{ "shelf", c.shelf },
-			{ "wheel", c.wheel } };
+			{ "wheel", c.wheel },
+			{ "charsheet", json{
+				{ "charClass", c.charSheet.charClass },
+				{ "background", c.charSheet.background },
+				{ "history", c.charSheet.history },
+				{ "portrait", c.charSheet.portrait } } } };
 	}
 
 	// Runtime mod-detection for the deck's shipped INTEGRATIONS. Rides the OPEN
@@ -835,6 +849,11 @@ namespace
 			{ "cs", has("Data/SKSE/Plugins/CommunityShaders.json") || dll("CommunityShaders") },
 			{ "virtualkey", has("Data/SKSE/Plugins/VirtualKey") || dll("VirtualKey") },
 			{ "bfl", plugin("Better Face Lighting - ENB Light.esp") },
+			// CHIM/Herika: AIAgent.esp is the game-side half of the AI companion
+			// stack. Gates the Home "Ask (CHIM)" card + omni Ask/Direct modes —
+			// a non-CHIM user was seeing a dead card on the front page
+			// (Rober's screenshot, 2026-08-12).
+			{ "chim", plugin("AIAgent.esp") },
 			// Prisma MCM Redux had NO flag until 2026-08-12 — its opener row was
 			// visible everywhere and synthesized "\\" on setups without the mod:
 			// the exact dead button the mod page promises cannot exist.
@@ -843,11 +862,11 @@ namespace
 		done = true;
 		// Build marker (hd-markers.json: "deck-mod-detection"): unconditional so it
 		// is reached the first time the deck opens.
-		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={} prisma={}",
+		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={} prisma={} chim={}",
 			cached["omo"].get<bool>(), cached["additemmenu"].get<bool>(),
 			cached["followerorganizer"].get<bool>(), cached["nff"].get<bool>(),
 			cached["smf"].get<bool>(), cached["cs"].get<bool>(), cached["virtualkey"].get<bool>(),
-			cached["bfl"].get<bool>(), cached["prisma"].get<bool>());
+			cached["bfl"].get<bool>(), cached["prisma"].get<bool>(), cached["chim"].get<bool>());
 		return cached;
 	}
 
@@ -1039,6 +1058,29 @@ namespace
 					c.wheel = j["wheel"];
 				else
 					logger::warn("wheel slice over 256KB - refused, wheels reset (view caps at 12 wheels x 16 slots)");
+			}
+			// Character Sheet meta — four capped free-text fields, portrait path
+			// validated on the way in (a hand-edited hotkeys.json is untrusted).
+			// Each field just falls back to "" when absent or the wrong type, so
+			// a partial slice never wipes a sibling field.
+			if (j.contains("charsheet") && j["charsheet"].is_object()) {
+				const auto& cs = j["charsheet"];
+				auto pull = [&](const char* key, std::string& dst) {
+					if (cs.contains(key) && cs[key].is_string()) {
+						std::string v = cs[key].get<std::string>();
+						if (v.size() > CharSheet::kTextCap)
+							v.resize(CharSheet::kTextCap);
+						dst = std::move(v);
+					}
+				};
+				pull("charClass", c.charSheet.charClass);
+				pull("background", c.charSheet.background);
+				pull("history", c.charSheet.history);
+				std::string portrait;
+				if (cs.contains("portrait") && cs["portrait"].is_string())
+					portrait = cs["portrait"].get<std::string>();
+				if (CharSheet::ValidPortraitPath(portrait))  // rewrites '\' to '/', "" ok
+					c.charSheet.portrait = std::move(portrait);
 			}
 			out = std::move(c);
 			return true;
@@ -2919,6 +2961,12 @@ namespace
 	// Better FaceLight Redux quick-card probe (bfl* bridge) forward decls.
 	void OnJsBflGet(const char* data);
 	void OnJsBflSet(const char* data);
+	// Character Sheet tab (ps* bridge on the deck view) forward decls.
+	// request psGet -> reply psData; psRemoveEffect -> psResult + psData;
+	// psSetMeta -> psResult + psData (one name per direction, deck law).
+	void OnJsSheetGet(const char* data);
+	void OnJsSheetRemoveEffect(const char* data);
+	void OnJsSheetSetMeta(const char* data);
 	// Animations tab (an* bridge on the deck view) forward decls.
 	void OnJsAnimGet(const char* data);
 	void OnJsAnimPlay(const char* data);
@@ -3380,6 +3428,12 @@ namespace
 		// bflGet/bflSet; replies bflState/bflResult (one name per direction).
 		g_prisma->RegisterJSListener(g_view, "bflGet", OnJsBflGet);
 		g_prisma->RegisterJSListener(g_view, "bflSet", OnJsBflSet);
+		// Character Sheet tab. Requests psGet/psRemoveEffect/psSetMeta; replies
+		// psData/psResult (names disjoint per the deck law - one name per
+		// direction; PrismaUI installs each listener as a JS global of that name).
+		g_prisma->RegisterJSListener(g_view, "psGet", OnJsSheetGet);
+		g_prisma->RegisterJSListener(g_view, "psRemoveEffect", OnJsSheetRemoveEffect);
+		g_prisma->RegisterJSListener(g_view, "psSetMeta", OnJsSheetSetMeta);
 
 		g_prisma->RegisterJSListener(g_view, "ltGet", OnJsLootGet);
 		g_prisma->RegisterJSListener(g_view, "ltSave", OnJsLootSave);
@@ -10363,6 +10417,198 @@ namespace
 		});
 	}
 
+	// ------------------------------------------------------ Character Sheet tab
+	// The player's own live stats (level, the three pools, active magic effects)
+	// plus a freeform RP identity (class / background / history / portrait). Ships
+	// on the deck AND the phone portal — the export/import pair below is the phone
+	// half, file-based exactly like mhiyh-status.json + portal-npc-fields.json.
+	//
+	// Bridge (one name per direction, deck law):
+	//   psGet          -> psData(payload)
+	//   psRemoveEffect -> psResult({ok,msg}) then a fresh psData
+	//   psSetMeta      -> psResult({ok,msg}) then a fresh psData
+	//
+	// EVERYTHING here that reads the player runs on the main thread (CharSheet::*
+	// touches RE::PlayerCharacter and the active-effect list), so the listeners
+	// hop through the task interface even when the request carried no game work.
+
+	// Build the payload under the config lock (snapshot the meta), then off it.
+	// MAIN THREAD ONLY — the caller has already hopped. Also writes the portal
+	// status sidecar, so a phone polling charsheet-status.json sees the same
+	// numbers the deck does, refreshed whenever the deck asks or the ticker fires.
+	std::string BuildSheetPayload()
+	{
+		CharSheet::Meta meta;
+		{
+			std::lock_guard l(g_configMutex);
+			meta = g_config.charSheet;
+		}
+		return CharSheet::BuildSheetJson(meta);
+	}
+
+	// Write charsheet-status.json into the HotkeyDeck view dir: the psData payload
+	// with an "at" ms timestamp merged in, atomically (temp + rename), so the
+	// portal never reads a torn file. Same law and same dir as mhiyh-status.json.
+	// MAIN THREAD ONLY (it builds the payload). Best-effort: a write failure is a
+	// logged warning, never a crash.
+	void WriteSheetStatus(const std::string& payload)
+	{
+		std::error_code ec;
+		const auto      dir = DeckViewDir();
+		std::filesystem::create_directories(dir, ec);
+
+		// Merge the timestamp into the payload object without reparsing twice.
+		auto j = json::parse(payload, nullptr, false);
+		if (j.is_discarded() || !j.is_object())
+			return;
+		j["at"] = static_cast<long long>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::system_clock::now().time_since_epoch())
+				.count());
+		const std::string text = j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+
+		const auto file = dir / "charsheet-status.json";
+		auto       tmp  = file;
+		tmp += ".tmp";
+		{
+			std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
+			if (!out.is_open()) {
+				logger::warn("charsheet export: could not open {} for writing", tmp.string());
+				return;
+			}
+			out << text;
+		}
+		std::filesystem::rename(tmp, file, ec);
+		if (ec)
+			logger::warn("charsheet export: atomic swap failed: {}", ec.message());
+		else {
+			// Once at INFO so the marker string is present in a fresh log (and so
+			// hd-markers.json's fingerprint is a line this build demonstrably
+			// reaches), then DEBUG — the ticker writes this every few seconds.
+			static bool said = false;
+			if (!said) {
+				said = true;
+				logger::info("charsheet export: wrote charsheet-status.json for the portal");
+			} else
+				logger::debug("charsheet export: refreshed charsheet-status.json");
+		}
+	}
+
+	// Push psData to an open deck AND refresh the portal sidecar in one place, so
+	// the two surfaces never disagree. MAIN THREAD ONLY.
+	void PushSheet()
+	{
+		const std::string payload = BuildSheetPayload();
+		PushToView("psData", payload);
+		WriteSheetStatus(payload);
+	}
+
+	void OnJsSheetGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { PushSheet(); });
+	}
+
+	void OnJsSheetRemoveEffect(const char* data)
+	{
+		// Payload: { "id": <number> } — the ActiveEffect uniqueID, not a FormID.
+		std::uint32_t id = 0;
+		if (data) {
+			const auto j = json::parse(data, nullptr, false);
+			if (!j.is_discarded() && j.is_object() && j.contains("id") && j["id"].is_number())
+				id = static_cast<std::uint32_t>(j["id"].get<long long>());
+		}
+		SKSE::GetTaskInterface()->AddTask([id]() {
+			PushToView("psResult", CharSheet::RemoveEffect(id));
+			// A fresh sheet rides along so the removed effect leaves the list
+			// without a second round-trip.
+			PushSheet();
+		});
+	}
+
+	// Shared by psSetMeta and the portal import: apply a partial meta edit,
+	// persist, and (on the main thread) push a fresh sheet. Returns the {ok,msg}
+	// result string. Safe on any thread — the meta mutation and PersistAll are
+	// pure config/disk work; only the psData push is hopped to the main thread.
+	std::string ApplySheetMeta(const std::string& editJson)
+	{
+		std::string res;
+		{
+			std::lock_guard l(g_configMutex);
+			res = CharSheet::ApplyMeta(g_config.charSheet, editJson);
+		}
+		const auto j = json::parse(res, nullptr, false);
+		if (!j.is_discarded() && j.is_object() && j.value("ok", false))
+			PersistAll();  // takes the write mutex itself, outside the config lock above
+		return res;
+	}
+
+	void OnJsSheetSetMeta(const char* data)
+	{
+		const std::string edit = data ? data : "{}";
+		const std::string res  = ApplySheetMeta(edit);
+		SKSE::GetTaskInterface()->AddTask([res]() {
+			PushToView("psResult", res);
+			PushSheet();
+		});
+	}
+
+	// -------------------------------- Deck Portal Character-Sheet edit handoff
+	// portal-sheet-edits.json: a { charClass?, background?, history?, portrait? }
+	// object queued by the phone (the portal must never write hotkeys.json while
+	// the game owns it — same law as portal-npc-fields.json). Read it, apply as
+	// psSetMeta would, then TRUNCATE it (never delete — the portal keeps the file
+	// present and empty as its "no pending edit" state). Config-only, so it is
+	// safe on the poller's worker thread and at the main menu. Returns true when a
+	// real edit landed, so the poller re-pushes psData only on news.
+	bool ApplyPortalSheetEdits()
+	{
+		const auto      file = DeckViewDir() / "portal-sheet-edits.json";
+		std::error_code ec;
+		if (!std::filesystem::exists(file, ec))
+			return false;
+
+		std::string text;
+		{
+			std::ifstream in(file, std::ios::binary);
+			if (!in.is_open()) {
+				logger::warn("portal sheet edit present but unreadable — retrying");
+				return false;  // held open mid-write: leave it, next tick gets it
+			}
+			text.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		}
+
+		bool       applied = false;
+		const auto j       = json::parse(text, nullptr, false);
+		if (j.is_discarded() || !j.is_object()) {
+			logger::error("portal sheet edit file is malformed — discarding it");
+		} else if (j.contains("charClass") || j.contains("background") ||
+			j.contains("history") || j.contains("portrait")) {
+			// Straight through the same path psSetMeta uses (validate, cap,
+			// persist). The push is queued separately by the poller.
+			const auto res = json::parse(ApplySheetMeta(text), nullptr, false);
+			if (!res.is_discarded() && res.value("ok", false)) {
+				applied = true;
+				logger::info("charsheet: portal meta edit applied");
+			} else {
+				logger::info("charsheet: portal meta edit skipped: {}",
+					res.is_discarded() ? std::string("bad reply") : res.value("msg", std::string("?")));
+			}
+		}
+
+		// Truncate, never delete — the portal treats an empty file as "no pending
+		// edit" and would re-create it on the next edit either way. Same law as
+		// portal-npc-fields' fallback branch, applied unconditionally here because
+		// the spec fixes truncate as this file's consume step.
+		{
+			std::ofstream out(file, std::ios::binary | std::ios::trunc);
+			if (out.is_open())
+				out << R"({})";
+			else
+				logger::warn("could not truncate portal sheet edit file");
+		}
+		return applied;
+	}
+
 	// -------------------------------------------------------- Animations tab
 	// ZAP player: apply an animation to the crosshair target (or the player).
 	// C++ owns the catalogue (read from zap-catalog.json at Init) and the apply
@@ -11756,6 +12002,7 @@ namespace
 		const auto mhiyhFile = deckDir / "portal-mhiyh.json";
 		const auto basesFile = deckDir / "portal-bases-ops.json";
 		const auto portraitFile = deckDir / "portal-portraits.json";
+		const auto sheetFile = deckDir / "portal-sheet-edits.json";
 		// portal-cat-icons.json is deliberately absent from this list: it is a
 		// permanent seeded file, so it is probed by SIZE through
 		// CatIconQueuePending() rather than by existence.
@@ -11770,6 +12017,22 @@ namespace
 			// when it is needed. The check itself must happen on the main thread
 			// (it touches PrismaUI), so hop.
 			SKSE::GetTaskInterface()->AddTask([]() { DesyncWatchdogTick(); });
+
+			// Character Sheet export for the phone: refresh charsheet-status.json
+			// every ~5th tick (~5 s) while a save is loaded, on the main thread
+			// (WriteSheetStatus reads the player). Rides this existing loop so no
+			// new thread is spawned, and runs BEFORE the early-outs below so a
+			// quiet portal (no pending sidecars) still keeps the phone's numbers
+			// live. The deck push inside PushSheet no-ops when the deck is closed —
+			// this path is deliberately the sidecar-only refresh.
+			{
+				static int s_sheetTick = 0;
+				if (++s_sheetTick >= 5) {
+					s_sheetTick = 0;
+					if (g_gameReady.load())
+						SKSE::GetTaskInterface()->AddTask([]() { WriteSheetStatus(BuildSheetPayload()); });
+				}
+			}
 
 			// The previous batch is still queued on the main thread: skip, so a slow
 			// frame can never stack tasks or double-apply.
@@ -11808,6 +12071,7 @@ namespace
 			const bool haveFo = std::filesystem::exists(foFile, ec);
 			const bool haveMhiyh = std::filesystem::exists(mhiyhFile, ec);
 			const bool haveBases = std::filesystem::exists(basesFile, ec);
+			const bool haveSheet = std::filesystem::exists(sheetFile, ec);
 			// The bridge file is permanent now (see EnsurePortraitBridge), so its
 			// mere existence says nothing. Gate on the write TIME changing, which
 			// is one stat() — reparsing a multi-megabyte base64 queue every second
@@ -11827,7 +12091,7 @@ namespace
 			const bool haveCatIcon = CatIconQueuePending();
 			const bool haveSpellCatIcon = SpellCatIconQueuePending();
 			if (!haveSpell && !haveIcon && !haveEdit && !haveNpc && !haveFo && !haveMhiyh &&
-				!havePortrait && !haveCatIcon && !haveSpellCatIcon)
+				!havePortrait && !haveCatIcon && !haveSpellCatIcon && !haveSheet)
 				continue;
 
 			// Config-only, so safe on this thread and safe at the main menu. Each
@@ -11852,6 +12116,13 @@ namespace
 			// the next palette open.
 			const bool portraitChanged = havePortrait && ApplyPortalPortraits();
 
+			// Character-sheet meta from the phone: pure config work (validate, cap,
+			// persist), no engine call and no roster — so it belongs up here with
+			// the other config-only sidecars and lands even at the main menu. On a
+			// real change the main-thread task below re-pushes psData + the status
+			// file so the open deck and the phone both refresh.
+			const bool sheetChanged = haveSheet && ApplyPortalSheetEdits();
+
 			// The NPC replay needs a loaded save: FO's roster does not exist on the
 			// main menu and FollowerDeck::Apply touches actors. Leave that sidecar
 			// untouched until then — it costs one stat() a second.
@@ -11871,11 +12142,11 @@ namespace
 			const bool doBases = haveBases && g_gameReady.load();
 
 			if (!spellChanged && !iconChanged && !editChanged && !portraitChanged &&
-				!catIconChanged && !doNpc && !doFo && !doMhiyh && !doBases)
+				!catIconChanged && !doNpc && !doFo && !doMhiyh && !doBases && !sheetChanged)
 				continue;  // nothing worth waking the main thread for
 
 			g_portalPollBusy = true;
-			SKSE::GetTaskInterface()->AddTask([spellChanged, iconChanged, editChanged, portraitChanged, catIconChanged, doNpc, doFo, doMhiyh, doBases]() {
+			SKSE::GetTaskInterface()->AddTask([spellChanged, iconChanged, editChanged, portraitChanged, catIconChanged, doNpc, doFo, doMhiyh, doBases, sheetChanged]() {
 				// Main thread from here. The FO replay runs BEFORE the pushes —
 				// RefreshFollowersState() must read the state FO just wrote.
 				const bool npcChanged = doNpc && ApplyPortalNpcFields();
@@ -11929,6 +12200,12 @@ namespace
 					// reads as a glitch rather than as a setting.
 					PushToView("fdCrops", FolCropsJson());
 				}
+				// A phone meta edit landed: re-push the sheet (and refresh the
+				// portal status file) so the open deck shows the new class/history
+				// without a manual re-open. PushSheet no-ops the deck push when the
+				// deck is closed and just rewrites the sidecar, which is correct.
+				if (sheetChanged)
+					PushSheet();
 				g_portalPollBusy = false;
 			});
 		}

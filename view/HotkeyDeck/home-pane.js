@@ -65,7 +65,7 @@ window.HomePane = (function () {
     { id: 'wardrobe',  name: 'Wardrobe',   icon: '👗', img: 'icons/custom/hm-wardrobe.png',  hue: '#e58fb0', sub: 'Outfits & who dresses whom',  act: 'tab', prov: 'wardrobe' },
     { id: 'faces',     name: 'Faces',      icon: '🙂', img: 'icons/custom/hm-faces.png',     hue: '#8fd8ff', sub: 'Browse & apply RaceMenu presets', act: 'tab' },
     { id: 'numpad',    name: 'Numpad',     icon: '⌗',  img: 'icons/custom/hm-numpad.png',    hue: '#a49d8c', sub: 'Live on-screen keypad',        act: 'tab' },
-    { id: 'ask',       name: 'Ask (CHIM)', icon: '🧠', img: 'icons/custom/hm-ask.png',       hue: '#b79bff', sub: 'Ask anything about anyone',    act: 'ask' },
+    { id: 'ask',       name: 'Ask (CHIM)', icon: '🧠', img: 'icons/custom/hm-ask.png',       hue: '#b79bff', sub: 'Ask anything about anyone',    act: 'ask', requires: 'chim' },
   ];
 
   /* recent source glyphs (mirrors app.js RC_SOURCE, kept local so the drawer
@@ -79,7 +79,7 @@ window.HomePane = (function () {
 
   var host = { setTab: null, toGame: null, openOmni: null, hotkeyCount: null,
                getNotes: null, setNotes: null, getHomeOrder: null, setHomeOrder: null,
-               sysTabs: null };
+               sysTabs: null, detected: null };
   var recent = { items: [], count: 0, max: 0 };
   var timeCur = null;   // last tmInfo {hour,day,month,year}
   /* live on/off for the on-screen UI elements, filled by chained receivers.
@@ -131,12 +131,27 @@ window.HomePane = (function () {
   }
 
   /* the systems in the order they should render right now */
+  /* A card with `requires` hides only when the host's detection flags say
+     that integration is EXPLICITLY absent — unknown/missing flags mean show
+     (an older DLL sends none, and blanking the grid on that would be worse
+     than a dead card). Today this gates exactly one card: Ask (CHIM). */
+  function detectedGate(sys) {
+    if (!sys || !sys.requires) return true;
+    var det = null;
+    if (typeof host.detected === 'function') {
+      try { det = host.detected(); } catch (e) {}
+    }
+    if (!det || !(sys.requires in det)) return true;
+    return det[sys.requires] !== false;
+  }
+
   function orderedSystems() {
     var stored = null;
     if (typeof host.getHomeOrder === 'function') {
       try { stored = host.getHomeOrder(); } catch (e) {}
     }
-    return sanitizeOrder(stored).map(function (id) { return byId[id]; });
+    return sanitizeOrder(stored).map(function (id) { return byId[id]; })
+      .filter(detectedGate);
   }
 
   function persistOrder(ids) {
@@ -422,7 +437,9 @@ window.HomePane = (function () {
    *      editor). No chip — never fake a state.
    *    Wheel Menu    — opened by a chord (Ctrl + your deck key), not a toggle;
    *      show the chord and a "Open" that fires the `wheel` deck action.
-   *  Toggles/jumps that are deck actions ride host.toGame('hdFire', id) — the
+   *  Toggles/jumps that are deck actions ride host.toGame('hdFire', ENTRY id
+   *  — the hd- prefixed seed id, NOT the action verb: OnJsFire looks entries up
+   *  by id and silently warns on a verb (live bug 2026-08-12) — the
    *  exact call fireEntry() makes, so the seeded action ids fire as if pressed. */
 
   /* chain a reply receiver so BOTH the owning pane and our drawer see it. Same
@@ -454,14 +471,14 @@ window.HomePane = (function () {
       jumpLabel: 'Followers tab →' },
     { id: 'hotbar', ic: '▦', name: 'Action Bar', sub: 'WoW-style spell/action bar (hotbar)',
       state: function () { return null; },   // hb* bridges are in the MagicDeck view — no live state here
-      toggle: function () { host.toGame && host.toGame('hdFire', 'hotbar-toggle'); },
+      toggle: function () { host.toGame && host.toGame('hdFire', 'hd-hotbar-toggle'); },
       toggleLabel: 'Show / Hide',
-      jump: function () { host.toGame && host.toGame('hdFire', 'hotbar-edit'); },
+      jump: function () { host.toGame && host.toGame('hdFire', 'hd-hotbar-edit'); },
       jumpLabel: 'Set up →' },
     { id: 'wheel', ic: '◎', name: 'Wheel Menu', sub: 'Radial ring of anything you pinned',
       state: function () { return null; },
       chord: 'Ctrl + your deck key',
-      open: function () { host.toGame && host.toGame('hdFire', 'wheel'); },
+      open: function () { host.toGame && host.toGame('hdFire', 'hd-wheel-open'); },
       openLabel: 'Open' },
     { id: 'loot', ic: '✨', name: 'Loot Vision', sub: 'Glow the loot worth walking to',
       state: function () { return uie.loot; },
@@ -599,6 +616,7 @@ window.HomePane = (function () {
     host.getHomeOrder = h && h.getHomeOrder;   // home-card-reorder: shelf-blob backed
     host.setHomeOrder = h && h.setHomeOrder;
     host.sysTabs = h && h.sysTabs;
+    host.detected = h && h.detected;
   }
 
   function bindSearch() {

@@ -295,6 +295,103 @@ const j = async (m, p, b) => {
   T('health carries the mhiyh block', r.s === 200 && r.b.mhiyh && r.b.mhiyh.installed === true &&
     r.b.mhiyh.npcs === 3 && r.b.mhiyh.withHome === 1 && Array.isArray(r.b.mhiyh.statusCandidates));
 
+  /* ===================== NEW: Character Sheet ========================= */
+  const SHEET_STATUS = path.join(deckView, 'charsheet-status.json');
+  const SHEET_EDITS = path.join(deckView, 'portal-sheet-edits.json');
+
+  // Before any export: graceful, not an error.
+  r = await j('GET', '/api/sheet');
+  T('GET /api/sheet with no export is a graceful ok:false', r.s === 200 && r.b.ok === false && /no export/i.test(r.b.reason || ''));
+
+  // The deck exports a snapshot.
+  const SHEET_BODY = {
+    name: 'Robere', race: 'Nord', raceEditorId: 'NordRace', level: 51,
+    hp: { cur: 540, max: 600 }, mag: 210, sta: 300, carry: 480, gold: 128340,
+    souls: { dragon: 12 }, bounty: 0, beast: false,
+    skills: [{ name: 'One-Handed', level: 92 }, { name: 'Destruction', level: 100 }, { name: 'Sneak', level: 74 }],
+    effects: [
+      { id: '0xABCD', name: 'Blessing of Talos', source: 'Talos', plugin: 'Skyrim.esm',
+        magnitude: 15, durSec: 28800, remainSec: 25000, harmful: false, wantsRemove: false },
+      { id: '0x1234', name: 'Poison', source: 'Frostbite Spider', plugin: 'Skyrim.esm',
+        magnitude: 3, durSec: 30, remainSec: 12, harmful: true, wantsRemove: true },
+    ],
+    meta: { charClass: 'Battlemage', background: 'Duke of the Southern Pass', history: 'Slew the lich of Coldhaven.', portrait: '' },
+    at: Date.now(),
+  };
+  fs.writeFileSync(SHEET_STATUS, JSON.stringify(SHEET_BODY, null, 2));
+
+  r = await j('GET', '/api/sheet');
+  T('GET /api/sheet present returns the snapshot', r.s === 200 && r.b.ok === true && r.b.sheet &&
+    r.b.sheet.name === 'Robere' && r.b.sheet.level === 51);
+  T('vitals + stat chips come through', r.b.sheet.hp && r.b.sheet.hp.cur === 540 && r.b.sheet.hp.max === 600 &&
+    r.b.sheet.gold === 128340 && r.b.sheet.souls.dragon === 12 && r.b.sheet.beast === false);
+  T('skills + effects come through whole', r.b.sheet.skills.length === 3 && r.b.sheet.effects.length === 2 &&
+    r.b.sheet.effects[1].harmful === true && r.b.sheet.effects[1].remainSec === 12);
+  T('carries a fresh ageMs', typeof r.b.ageMs === 'number' && r.b.ageMs >= 0 && r.b.ageMs < 60000);
+  T('meta echoes the deck fields', r.b.meta && r.b.meta.charClass === 'Battlemage' &&
+    r.b.meta.background === 'Duke of the Southern Pass');
+
+  // Meta queue: merge-write.
+  r = await j('POST', '/api/sheet-meta', { charClass: 'Dragon Priest' });
+  T('sheet-meta queues class', r.s === 200 && r.b.ok && r.b.queued.join() === 'charClass' &&
+    r.b.pendingMeta.charClass === 'Dragon Priest');
+  r = await j('POST', '/api/sheet-meta', { background: 'King-Consort of Coldhaven' });
+  T('a later background edit does NOT drop the unapplied class', r.s === 200 &&
+    r.b.pendingMeta.charClass === 'Dragon Priest' && r.b.pendingMeta.background === 'King-Consort of Coldhaven');
+  let sedits = JSON.parse(fs.readFileSync(SHEET_EDITS, 'utf8'));
+  T('the edits sidecar is a single object of present keys', !Array.isArray(sedits) &&
+    sedits.charClass === 'Dragon Priest' && sedits.background === 'King-Consort of Coldhaven' && !('history' in sedits));
+  r = await j('POST', '/api/sheet-meta', { history: '' });
+  T('an empty history is a real value (clears the field), kept in the queue', r.s === 200 &&
+    'history' in r.b.pendingMeta && r.b.pendingMeta.history === '');
+  r = await j('GET', '/api/sheet');
+  T('pending meta folds onto the live snapshot + is flagged', r.b.meta.charClass === 'Dragon Priest' &&
+    r.b.pendingMeta.charClass === true && r.b.pendingMeta.background === true);
+  r = await j('POST', '/api/sheet-meta', {});
+  T('sheet-meta with no fields is refused', r.s === 400);
+  r = await j('POST', '/api/sheet-meta', { charClass: 123 });
+  T('a non-string field is refused', r.s === 400);
+  r = await j('POST', '/api/sheet-meta', { history: 'x'.repeat(9000) });
+  T('an over-cap history is refused', r.s === 400 && /limit/i.test(r.b.error || ''));
+
+  // Portrait: reject non-image + oversize, then accept + queue.
+  r = await j('POST', '/api/sheet-portrait', { ext: 'png', dataBase64: Buffer.from('not an image at all').toString('base64') });
+  T('sheet-portrait rejects a non-image', r.s === 400);
+  const OVERSIZE = Buffer.concat([PNG, Buffer.alloc(9 * 1024 * 1024)]);   // > 8 MB decoded cap
+  r = await j('POST', '/api/sheet-portrait', { ext: 'png', dataBase64: OVERSIZE.toString('base64') });
+  T('sheet-portrait rejects an oversize image', r.s === 413);
+  r = await j('POST', '/api/sheet-portrait', { ext: 'png', dataBase64: PNG.toString('base64') });
+  T('sheet-portrait accepts a real PNG', r.s === 200 && r.b.ok && r.b.portrait === 'portraits/player-sheet.png');
+  sedits = JSON.parse(fs.readFileSync(SHEET_EDITS, 'utf8'));
+  T('portrait path queues into the edits sidecar, class survives', sedits.portrait === 'portraits/player-sheet.png' &&
+    sedits.charClass === 'Dragon Priest');
+  {
+    const rr = await fetch('http://127.0.0.1:' + PORT + '/api/sheet-portrait-file');
+    const buf = Buffer.from(await rr.arrayBuffer());
+    T('the uploaded sheet portrait serves back', rr.status === 200 && buf.equals(PNG));
+  }
+  T('and it really landed on disk as player-sheet.png',
+    fs.existsSync(path.join(deckView, 'portraits', 'player-sheet.png')));
+  // /api/sheet now reports a portrait exists even before the deck's meta names it.
+  fs.writeFileSync(SHEET_STATUS, JSON.stringify(SHEET_BODY, null, 2));
+  r = await j('GET', '/api/sheet');
+  T('sheet response flags portraitUploaded once a file exists', r.b.portraitUploaded === true);
+
+  // Malformed export = graceful.
+  fs.writeFileSync(SHEET_STATUS, '{ not json');
+  r = await j('GET', '/api/sheet');
+  T('a torn export reads as a graceful ok:false', r.s === 200 && r.b.ok === false);
+  fs.unlinkSync(SHEET_STATUS);
+
+  // health block.
+  r = await j('GET', '/api/health');
+  T('health carries the sheet block', r.s === 200 && r.b.sheet && Array.isArray(r.b.sheet.statusCandidates) &&
+    r.b.sheet.pendingMeta.includes('charClass') && r.b.sheet.portraitUploaded === true);
+
+  // Clean up so a re-run starts fresh and the portraits dir is left as later sections expect.
+  try { fs.unlinkSync(SHEET_EDITS); } catch (_) {}
+  try { fs.unlinkSync(path.join(deckView, 'portraits', 'player-sheet.png')); } catch (_) {}
+
   /* --- no export at all: honest, and nothing queueable --- */
   fs.renameSync(STATUS, STATUS + '.bak');
   r = await j('GET', '/api/mhiyh');

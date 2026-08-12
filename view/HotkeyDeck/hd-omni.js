@@ -1,5 +1,15 @@
 'use strict';
 
+  /* CHIM presence, read off app.js's script-level state (shared classic-script
+     scope). Only an EXPLICIT false hides Ask/Direct — unknown means show. */
+  function chimAbsent() {
+    try {
+      return (typeof state === 'object' && state && state.detected &&
+              state.detected.chim === false);
+    } catch (e) { return false; }
+  }
+
+
 /* ====================================================================== *
  *  Omni — the deck's universal Search + Ask surface (v0.14.0).
  *
@@ -282,8 +292,11 @@ var HDOmni = (function () {
         '<div class="omni-head">' +
           '<div class="omni-modes">' +
             '<button class="omni-mode on" data-omode="search">⌕ Search</button>' +
-            '<button class="omni-mode" data-omode="ask">✦ Ask</button>' +
-            '<button class="omni-mode" data-omode="direct">⚡ Direct</button>' +
+            /* Ask + Direct ride the CHIM server; a setup without AIAgent.esp
+               gets search only (detection flag off hdOpen; unknown = show) */
+            (chimAbsent() ? '' :
+              '<button class="omni-mode" data-omode="ask">✦ Ask</button>' +
+              '<button class="omni-mode" data-omode="direct">⚡ Direct</button>') +
           '</div>' +
           '<span id="omni-hint" class="omni-hint"></span>' +
           '<button id="omni-close" class="omni-x" title="Close (Esc)">✕</button>' +
@@ -319,6 +332,7 @@ var HDOmni = (function () {
 
   function setMode(m) {
     if (m !== 'search' && m !== 'ask' && m !== 'direct') return;
+    if (m !== 'search' && chimAbsent()) return;   // no CHIM, no Ask/Direct
     st.mode = m;
     st.sel = 0;
     var box = $('omni-modal');
