@@ -772,6 +772,123 @@ const MHIYH_STATUS_CANDIDATES = process.env.DECK_PORTAL_MHIYH_STATUS
     path.join(MO_OVERWRITE, 'PrismaUI', 'views', 'HotkeyDeck', 'mhiyh-status.json'),
   ];
 
+/* ==================== CHARACTER SHEET (the Sheet tab) ================== *
+ *  Deck -> phone: the deck DLL exports charsheet-status.json into the same
+ *  HotkeyDeck view dir as mhiyh-status.json, every ~5 s while the game runs
+ *  and on demand. It is a SNAPSHOT of the player — vitals, stat totals,
+ *  skills, active magic effects, and the free-text meta (class/background/
+ *  history/portrait). We read the freshest of the mod-folder / overwrite
+ *  copies exactly like readMhiyhStatus does, and hand the phone an `ageMs`
+ *  so it can gray out a stale snapshot when the game is closed.
+ *
+ *  Phone -> deck: class/background/history/portrait edits are QUEUED into
+ *  portal-sheet-edits.json — the SAME LAW as portal-npc-fields.json: the
+ *  portal performs no game action and writes no file the game owns. The
+ *  DLL's poller merges it over the live meta and truncates the file.
+ *
+ *  ⚠ UNLIKE every other sidecar here, this queue is a SINGLE OBJECT, not an
+ *  ops list — { charClass?, background?, history?, portrait? }. So a merge
+ *  is a field-level overlay of the new keys onto whatever is still queued
+ *  (an unapplied class edit must survive a later background edit). Only keys
+ *  actually present in the write are touched; a key set to "" is a real
+ *  value (clears the field) and is kept, whereas a key simply absent leaves
+ *  the queued one alone.
+ *
+ *  Effect REMOVAL is deliberately NOT wired from the phone: the transport
+ *  contract exposes no live remove channel for effects, and faking one (a
+ *  liveSend of a kind the DLL never handles) would be a silent dead button.
+ *  The phone renders effects read-only and points at the in-game deck. */
+const SHEET_STATUS_CANDIDATES = process.env.DECK_PORTAL_SHEET_STATUS
+  ? [process.env.DECK_PORTAL_SHEET_STATUS]
+  : [
+    path.join(DECK_VIEW_DIR, 'charsheet-status.json'),
+    path.join(MO_OVERWRITE, 'PrismaUI', 'views', 'HotkeyDeck', 'charsheet-status.json'),
+  ];
+const SHEET_EDITS_BASENAME = 'portal-sheet-edits.json';
+const SHEET_EDITS_FILE = path.join(DECK_VIEW_DIR, SHEET_EDITS_BASENAME);
+// The four editable meta fields, and their caps. class/background sit on one
+// line each in-game; history is the long prose field. A portrait value is a
+// path RELATIVE to the view dir (portraits/player-sheet.png), never arbitrary.
+const SHEET_META_KEYS = ['charClass', 'background', 'history', 'portrait'];
+const SHEET_META_CAPS = { charClass: 120, background: 2000, history: 8000, portrait: 260 };
+// Where the portal drops the player's own sheet portrait, and the relative
+// path it queues so the deck (and this server) can find it again. It lives
+// in PORTRAIT_DIR beside every follower face — that dir is DECK_PORTAL_
+// PORTRAIT_DIR-aware, so it follows the split "SkyManager - Personal Data"
+// mod when one is configured, and falls back to the classic in-mod layout.
+const SHEET_PORTRAIT_STEM = 'player-sheet';
+const SHEET_PORTRAIT_REL = 'portraits/' + SHEET_PORTRAIT_STEM + '.png';
+
+/** The newest on-disk player-sheet portrait, matching both the canonical
+ *  player-sheet.<ext> and a locked-rename player-sheet~<stamp>.<ext>, or null.
+ *  Used by the serve route, the /api/sheet response and health, so they agree. */
+function findSheetPortrait() {
+  const cands = listImages(PORTRAIT_DIR, PORTRAIT_EXTS)
+    .filter((r) => r.stem.toLowerCase() === SHEET_PORTRAIT_STEM ||
+      r.stem.toLowerCase().startsWith(SHEET_PORTRAIT_STEM + '~'))
+    .sort((a, b) => b.mtime - a.mtime);
+  return cands[0] || null;
+}
+
+/** The freshest charsheet export across both authors, with its age. Mirrors
+ *  readMhiyhStatus: a torn write mid-export just yields the previous read. */
+function readSheetStatus() {
+  let best = null;
+  for (const f of SHEET_STATUS_CANDIDATES) {
+    let st;
+    try { st = fs.statSync(f); } catch (_) { continue; }
+    if (!best || st.mtimeMs > best.mtimeMs) best = { file: f, mtimeMs: st.mtimeMs };
+  }
+  if (!best) return { ok: false, reason: 'no export yet' };
+  let j;
+  try { j = JSON.parse(fs.readFileSync(best.file, 'utf8').replace(/^﻿/, '')); }
+  catch (_) { return { ok: false, reason: 'export is being written — retry' }; }
+  if (!j || typeof j !== 'object') return { ok: false, reason: 'export is malformed' };
+  return { ok: true, file: best.file, mtimeMs: best.mtimeMs, sheet: j };
+}
+
+/** The queued meta edits, as a plain object of present keys only. A missing
+ *  file is an empty object, not an error — nothing is queued yet. */
+function readSheetEdits() {
+  let raw;
+  try { raw = fs.readFileSync(SHEET_EDITS_FILE, 'utf8'); }
+  catch (_) { return { obj: {}, exists: false, malformed: false }; }
+  let j;
+  try { j = JSON.parse(raw.replace(/^﻿/, '')); }
+  catch (_) { return { obj: {}, exists: true, malformed: true }; }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return { obj: {}, exists: true, malformed: true };
+  const obj = {};
+  for (const k of SHEET_META_KEYS) {
+    if (typeof j[k] === 'string') obj[k] = j[k].slice(0, SHEET_META_CAPS[k]);
+  }
+  return { obj, exists: true, malformed: false };
+}
+
+function writeSheetEdits(obj) {
+  if (!ensureDir(DECK_VIEW_DIR)) throw Object.assign(new Error('Cannot create ' + DECK_VIEW_DIR), { code: 500 });
+  const body = JSON.stringify(obj, null, 2);
+  const tmp = SHEET_EDITS_FILE + '.tmp';
+  fs.writeFileSync(tmp, body);
+  renameWithRetry(tmp, SHEET_EDITS_FILE, 10);   // atomic; the plugin never sees half a file
+  liveFlush('sheet-edits', SHEET_EDITS_FILE);   // fast path; the ~1 s poller is the fallback
+}
+
+/** Overlay the given fields onto whatever is already queued. Only keys PRESENT
+ *  in `fields` are touched — an empty-string value is kept (it clears the field
+ *  in-game), an absent key leaves the standing queued value alone. This is what
+ *  keeps an unapplied class edit alive across a later background-only save. */
+function mergeSheetEdits(fields) {
+  const cur = readSheetEdits().obj;
+  const next = Object.assign({}, cur);
+  for (const k of SHEET_META_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(fields, k) && typeof fields[k] === 'string') {
+      next[k] = fields[k].slice(0, SHEET_META_CAPS[k]);
+    }
+  }
+  writeSheetEdits(next);
+  return next;
+}
+
 /* ===================== NFF HOME BASES (the Bases tab) ================== *
  *  Deck -> phone: the deck writes portal-bases.json (the exact nbOpen model)
  *  whenever its Bases surface builds state — nff_bases.cpp StateJson().
@@ -4987,6 +5104,24 @@ async function route(req, res, url) {
           ttlMs: v.ttlMs, settable: v.settable, positional: v.positional,
         };
       })(),
+      /* Character Sheet — the live snapshot + the meta-edit queue. `ok:false
+         reason:"no export yet"` with every candidate exists:false is the
+         expected answer before the deck has ever exported, and the FIRST thing
+         to check when the Sheet tab shows the empty state. */
+      sheet: (() => {
+        const st = readSheetStatus();
+        const edits = readSheetEdits();
+        return {
+          ok: st.ok, reason: st.ok ? undefined : st.reason,
+          statusFile: st.ok ? st.file : undefined,
+          ageMs: st.ok ? Math.max(0, Date.now() - st.mtimeMs) : undefined,
+          statusCandidates: SHEET_STATUS_CANDIDATES.map((c) => ({ path: c, exists: fs.existsSync(c) })),
+          pendingMeta: Object.keys(edits.obj), editsMalformed: edits.malformed,
+          editsFile: SHEET_EDITS_FILE,
+          portraitStem: SHEET_PORTRAIT_STEM, portraitRel: SHEET_PORTRAIT_REL,
+          portraitUploaded: !!findSheetPortrait(),
+        };
+      })(),
       /* Dragon Roost — a different mod, so it is reported as its own block.
          `waiting:true` with every candidate `exists:false` is the expected
          answer before the DLL has ever run, and is the FIRST thing to check
@@ -6510,6 +6645,122 @@ async function route(req, res, url) {
         ', offset ' + before.offsetX.toFixed(3) + ',' + before.offsetY.toFixed(3) +
         ' -> ' + saved.offsetX.toFixed(3) + ',' + saved.offsetY.toFixed(3) + '  (' + saved.file + ')');
     sendJson(res, 200, { ok: true, ...saved, existedBefore: before.exists });
+    return;
+  }
+
+  /* ==================== CHARACTER SHEET (the Sheet tab) =============== */
+  /* The live snapshot the deck exported, plus its age. A missing export is a
+     graceful 404-shaped body the phone renders as "no export yet", never a
+     server error. When present we fold the still-queued meta edits on top so
+     the phone shows what it just saved even before the game ticks. */
+  if (m === 'GET' && p === '/api/sheet') {
+    const st = readSheetStatus();
+    if (!st.ok) { sendJson(res, 200, { ok: false, reason: st.reason || 'no export yet' }); return; }
+    const edits = readSheetEdits();
+    const sheet = st.sheet || {};
+    // Overlay pending meta so a just-saved class/background/history/portrait is
+    // visible immediately, flagged pending so the UI can mark it "applies next tick".
+    const meta = Object.assign({}, sheet.meta || {});
+    const pending = {};
+    for (const k of SHEET_META_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(edits.obj, k)) { meta[k] = edits.obj[k]; pending[k] = true; }
+    }
+    sendJson(res, 200, {
+      ok: true,
+      sheet: Object.assign({}, sheet, { meta }),
+      meta, pendingMeta: pending,
+      ageMs: Math.max(0, Date.now() - st.mtimeMs),
+      mtimeMs: st.mtimeMs,
+      pendingEdits: Object.keys(edits.obj).length,
+      editsMalformed: edits.malformed,
+      // The phone shows the portrait as soon as a file exists, even before the
+      // deck's exported meta names it — so it can preview a fresh upload.
+      portraitUploaded: !!findSheetPortrait(),
+    });
+    return;
+  }
+
+  /* Queue class / background / history edits. Merge-write: only the keys sent
+     are touched, and an already-queued unapplied edit for another key survives.
+     The DLL's poller applies + truncates portal-sheet-edits.json — the portal
+     NEVER writes the file the game owns. */
+  if (m === 'POST' && p === '/api/sheet-meta') {
+    const body = await readJsonBody(req);
+    const fields = {};
+    let any = false;
+    for (const k of ['charClass', 'background', 'history']) {  // portrait is set only by the upload route
+      if (body[k] === undefined) continue;
+      if (body[k] !== null && typeof body[k] !== 'string') {
+        sendErr(res, 400, k + ' must be a string ("" clears it)'); return;
+      }
+      const v = typeof body[k] === 'string' ? body[k] : '';
+      if (v.length > SHEET_META_CAPS[k]) {
+        sendErr(res, 400, 'That ' + k + ' is ' + v.length + ' characters — the limit is ' + SHEET_META_CAPS[k] + '.');
+        return;
+      }
+      fields[k] = v; any = true;
+    }
+    if (!any) { sendErr(res, 400, 'Send at least one of charClass, background, history'); return; }
+    let obj;
+    try { obj = mergeSheetEdits(fields); } catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
+    log('sheet meta queued: ' + Object.keys(fields).join(', '));
+    sendJson(res, 200, { ok: true, queued: Object.keys(fields), pendingMeta: obj, file: SHEET_EDITS_FILE });
+    return;
+  }
+
+  /* Upload the player's own sheet portrait. Cropped to ~512x512 PNG on the
+     phone; we land it at portraits/player-sheet.<ext> in the PORTRAIT_DIR (the
+     DECK_PORTAL_PORTRAIT_DIR-aware dir that may be its own "Personal Data" mod)
+     and queue { portrait: "portraits/player-sheet.png" } so the deck adopts it
+     on its next tick. The queued path is ALWAYS the .png rel path per contract;
+     the sniffed ext only decides the on-disk file so a stray JPEG still lands. */
+  if (m === 'POST' && p === '/api/sheet-portrait') {
+    const body = await readJsonBody(req);
+    let ext = normExt(body.ext);
+    if (!PORTRAIT_EXTS.includes(ext)) ext = 'png';   // crop emits PNG; be lenient on the label
+    let buf;
+    try { buf = decodeImage(body.dataBase64); } catch (e) { sendErr(res, httpCode(e.code, 400), e.message); return; }
+    const sniff = sniffExt(buf);
+    if (!sniff || !PORTRAIT_EXTS.includes(sniff)) {
+      sendErr(res, 400, 'That file is not a PNG/JPEG/WebP image (magic bytes say "' + (sniff || 'unknown') + '")'); return;
+    }
+    ext = sniff; // trust the bytes over the label
+    // Replace, don't stack: clear every existing player-sheet.* first so the
+    // newest-wins portrait rule can't leave a stale face shadowing this one.
+    const cleared = removeStem(PORTRAIT_DIR, SHEET_PORTRAIT_STEM, PORTRAIT_EXTS);
+    if (cleared) log('sheet portrait: cleared ' + cleared + ' existing file(s)');
+    let info;
+    try {
+      // A locked survivor (game holding the file open) lands under a version
+      // name and, being newer, still wins — same trick as follower portraits.
+      const stamp = Math.floor(Date.now() / 1000);
+      info = writeImage(PORTRAIT_DIR, SHEET_PORTRAIT_STEM, ext, buf,
+        (n) => SHEET_PORTRAIT_STEM + '~' + (stamp + n));
+    } catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
+    // The queued path is the portrait's ACTUAL landed rel path (usually the
+    // canonical player-sheet.png; a version if the canonical name was locked).
+    const rel = 'portraits/' + info.file;
+    let obj;
+    try { obj = mergeSheetEdits({ portrait: rel }); } catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
+    log('sheet portrait saved: ' + info.file + ' (' + Math.round(info.size / 1024) + ' KB), queued ' + rel);
+    sendJson(res, 200, {
+      ok: true, portrait: rel, ext: info.ext, mtime: info.mtime, size: info.size,
+      renamed: info.renamed, pendingMeta: obj,
+      url: '/api/sheet-portrait-file?v=' + info.mtime,
+    });
+    return;
+  }
+
+  /* Serve the player-sheet portrait back to the phone (its own preview). The
+     canonical file is player-sheet.<ext>; if a locked-rename put the newest
+     copy under player-sheet~<stamp>.<ext>, serve THAT (it is the one that wins
+     in-game), so the preview matches what the deck will draw. */
+  if (m === 'GET' && p === '/api/sheet-portrait-file') {
+    const r = findSheetPortrait();
+    if (!r) { sendErr(res, 404, 'No sheet portrait uploaded yet'); return; }
+    const abs = confine(PORTRAIT_DIR, r.file);
+    if (!abs) { sendErr(res, 404, 'No sheet portrait uploaded yet'); return; }
+    sendFile(res, abs, r.ext);
     return;
   }
 
