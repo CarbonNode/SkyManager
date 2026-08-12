@@ -62,7 +62,7 @@ namespace PortalHost
 			return (n > 0 && n < MAX_PATH) ? std::wstring(buf, n) : std::wstring();
 		}
 
-		/* node.exe. Rober's call: it is NOT bundled, it is a documented
+		/* node.exe is NOT bundled; it is a documented
 		 * requirement — so "absent" is a normal state for a fair number of
 		 * users and must produce a sentence, never a dead button.
 		 *
@@ -91,11 +91,9 @@ namespace PortalHost
 
 		/* The portal's server.js.
 		 *
-		 * SHIPPED location first: inside our own mod, beside the rest of the
-		 * plugin's data, so a user who installed the mod has it and nobody has
-		 * to copy a folder anywhere. The C:\Dev path is Rober's existing working
-		 * copy and stays LAST so his rig keeps working without special-casing —
-		 * but it can never win over the shipped one. */
+		 * The shipped location is inside our own mod, beside the rest of the
+		 * plugin's data. Developers can opt into another checkout explicitly with
+		 * DECK_PORTAL_SERVER; no machine-specific path belongs in the build. */
 		std::wstring FindServer()
 		{
 			const std::wstring fromEnv = EnvW(L"DECK_PORTAL_SERVER");
@@ -118,8 +116,8 @@ namespace PortalHost
 
 		/* Is something already serving on the port?
 		 *
-		 * Matters because Rober runs a DeckPortalKeeper scheduled task today,
-		 * and a second game instance is possible. Spawning into a bound port
+		 * Matters because the portal may already run as a scheduled task, and a
+		 * second game instance is possible. Spawning into a bound port
 		 * gets an immediate EADDRINUSE exit and a confusing "it started but it
 		 * isn't ours" state; adopting is both correct and quieter.
 		 *

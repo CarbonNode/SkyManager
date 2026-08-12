@@ -12,11 +12,13 @@
  * ====================================================================== */
 const { execFile } = require('child_process');
 const http = require('http'); const path = require('path');
-const os = require('os'); const fs = require('fs');
-const SERVER = '/workspace/SkyrimModdingPersonal/modding/hotkey-deck/portal/server.js';
+const os = require('os'); const fs = require('fs'); const net = require('net');
+// Resolve THIS checkout. A fixed absolute checkout path made an isolated
+// worktree silently test an older server (and is not valid on a rig).
+const SERVER = path.resolve(__dirname, '..', 'server.js');
 const LAN = Object.values(os.networkInterfaces()).flat().find((a) => a.family === 'IPv4' && !a.internal).address;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'portal-'));
-const PORT = 8975;
+let PORT = 0;
 let pass = 0, fail = 0;
 const T = (n, ok, x) => { ok ? (pass++, console.log('  ok  ' + n)) : (fail++, console.log('  FAIL ' + n + (x ? ' — ' + x : ''))); };
 
@@ -27,9 +29,21 @@ const req = (opts, body) => new Promise((resolve) => {
   if (body) r.write(body); r.end();
 });
 
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.on('error', reject);
+    s.listen(0, '0.0.0.0', () => {
+      const p = s.address().port;
+      s.close(() => resolve(p));
+    });
+  });
+}
+
 (async () => {
+  PORT = await freePort();
   const p = execFile(process.execPath, [SERVER], { env: Object.assign({}, process.env, {
-    DECK_PORTAL_MOD_HD: tmp, DECK_PORTAL_FO_JSON: path.join(tmp, 'fo.json'), DECK_PORTAL_OVERWRITE: tmp,
+    DECK_PORTAL_MOD_HD: tmp, DECK_PORTAL_FO_JSON: path.join(tmp, 'fo.json'), DECK_PORTAL_MO_OVERWRITE: tmp,
     DECK_PORTAL_PORT: String(PORT), DECK_PORTAL_BIND: '0.0.0.0', DECK_PORTAL_PASSWORD: 'hunter2' }) });
   let out = ''; p.stdout.on('data', d => out += d); p.stderr.on('data', d => out += d);
   await new Promise(r => setTimeout(r, 1200));

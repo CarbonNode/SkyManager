@@ -1,11 +1,8 @@
 'use strict';
 
 /* ====================================================================== *
- *  Character — your personal character sheet (Rober's ask: "A personal
- *  character sheet… level, magicka, stamina, hp, really nice polished UI.
- *  See magic effects on our character and remove them easily (searchable).
- *  Write your own background/history. Shows your name. Type in a class,
- *  shows your race (custom supported). A profile picture area.").
+ *  Character — a personal character sheet: live pools and skills, searchable
+ *  active effects, a freeform role-play identity and a portrait.
  *
  *  C++ (charsheet.cpp) owns the live read of player stats + the active
  *  magic-effect list, and persists the free-text meta. This pane owns
@@ -14,8 +11,8 @@
  *
  *  Bridge — requests (JS -> C++):
  *    psGet()                     pull a fresh snapshot
- *    psRemoveEffect(json)        {"id":n} — dispel one active effect
- *    psSetMeta(json)             {charClass?|background?|history?} subset save
+ *    psRemoveEffect(json)        {key,force} — dispel one active effect
+ *    psSetMeta(json)             partial RP profile/story save
  *  Replies (global fns C++ calls; names disjoint per the deck law):
  *    psData(payload)             full snapshot (see the contract below)
  *    psResult({ok,msg})          outcome of a remove/setMeta; a fresh psData
@@ -25,10 +22,11 @@
  *   { name, race, raceEditorId, level,
  *     hp:{cur,max}, mag:{cur,max}, sta:{cur,max},
  *     carry:{cur,max}, gold, souls:{dragon}, bounty, beast,
- *     skills:[{name,level} ×18],
- *     effects:[{id,name,source,plugin,magnitude,durSec,remainSec,
- *               harmful,wantsRemove}],
- *     meta:{charClass,background,history,portrait} }
+ *     skills:[{name,level} ×18], inventory:{potions:{health,magicka,
+ *     stamina,other,total},lockpicks}, effects:[{key,id,name,source,plugin,
+ *     magnitude,durSec,remainSec,harmful,removeMode,wantsRemove}],
+ *     meta:{charClass,alignment,title,eyeColor,height,age,homeland,deity,
+ *           background,history,portrait} }
  *   meta.portrait is a view-relative path ("portraits/…"), plain <img> src,
  *   NO query string (Ultralight eats them).
  *
@@ -56,7 +54,7 @@ window.CharSheetPane = (function () {
   const ui = {
     visible: false,
     filter: '',
-    armed: {},             // effect id -> true when its remove is armed
+    armed: {},             // effect instance key -> true when its remove is armed
     pollT: null,
     tickT: null,
     savePend: {},          // pending meta subset waiting on the debounce
@@ -84,7 +82,7 @@ window.CharSheetPane = (function () {
     state.recvAt = Date.now();
     /* an armed remove that no longer matches a present effect is stale */
     const live = {};
-    state.data.effects.forEach(function (e) { live[e.id] = true; });
+    state.data.effects.forEach(function (e) { live[e.key] = true; });
     Object.keys(ui.armed).forEach(function (k) { if (!live[k]) delete ui.armed[k]; });
     if (ui.visible) render();
   };
@@ -93,7 +91,10 @@ window.CharSheetPane = (function () {
     /* C++ pushes a fresh psData right after; nothing to render here beyond a
        transient toast, which the effect list's re-render already conveys. A
        failed remove keeps the row — psData will still list it. */
-    if (r && r.ok === false && r.msg) console.log('[charsheet] result', r.msg);
+    if (r && r.msg) {
+      if (r.ok === false) console.log('[charsheet] result', r.msg);
+      if (typeof window.toast === 'function') window.toast(r.msg);
+    }
   };
 
   /* Defensive normalize — a missing sub-object must never throw a render. */
@@ -101,7 +102,8 @@ window.CharSheetPane = (function () {
     const v = function (o) { return (o && typeof o === 'object') ? o : {}; };
     const num = function (n) { return Number(n) || 0; };
     const hp = v(d.hp), mag = v(d.mag), sta = v(d.sta), carry = v(d.carry),
-          souls = v(d.souls), meta = v(d.meta);
+          souls = v(d.souls), meta = v(d.meta), inventory = v(d.inventory),
+          potions = v(inventory.potions);
     return {
       name: String(d.name || ''),
       race: String(d.race || ''),
@@ -115,6 +117,14 @@ window.CharSheetPane = (function () {
       souls: { dragon: num(souls.dragon) },
       bounty: num(d.bounty),
       beast: String(d.beast || ''),
+      inventory: {
+        potions: {
+          health: num(potions.health), magicka: num(potions.magicka),
+          stamina: num(potions.stamina), other: num(potions.other),
+          total: num(potions.total),
+        },
+        lockpicks: num(inventory.lockpicks),
+      },
       skills: Array.isArray(d.skills) ? d.skills.map(function (s) {
         s = v(s); return { name: String(s.name || ''), level: num(s.level) };
       }) : [],
@@ -122,6 +132,7 @@ window.CharSheetPane = (function () {
         e = v(e);
         return {
           id: (e.id === undefined || e.id === null) ? '' : String(e.id),
+          key: String(e.key || ('id:' + String(e.id == null ? '' : e.id))),
           name: String(e.name || 'Effect'),
           source: String(e.source || ''),
           plugin: String(e.plugin || ''),
@@ -130,10 +141,19 @@ window.CharSheetPane = (function () {
           remainSec: num(e.remainSec),
           harmful: !!e.harmful,
           wantsRemove: e.wantsRemove !== false,   // default removable
+          removeMode: e.removeMode === 'locked' ? 'locked' :
+            (e.removeMode === 'confirm' ? 'confirm' : (e.wantsRemove === false ? 'locked' : 'safe')),
         };
       }) : [],
       meta: {
         charClass: String(meta.charClass || ''),
+        alignment: String(meta.alignment || ''),
+        title: String(meta.title || ''),
+        eyeColor: String(meta.eyeColor || ''),
+        height: String(meta.height || ''),
+        age: String(meta.age || ''),
+        homeland: String(meta.homeland || ''),
+        deity: String(meta.deity || ''),
         background: String(meta.background || ''),
         history: String(meta.history || ''),
         portrait: String(meta.portrait || ''),
@@ -205,6 +225,7 @@ window.CharSheetPane = (function () {
     renderHeader(d);
     renderVitals(d);
     renderSkills(d);
+    renderInventory(d);
     renderEffects();
     renderStory(d);
   }
@@ -247,9 +268,21 @@ window.CharSheetPane = (function () {
     }
     const cls = $('ps-class-input');
     if (cls && document.activeElement !== cls) cls.value = d.meta.charClass || '';
+    setProfileInput('ps-alignment-input', d.meta.alignment);
+    setProfileInput('ps-title-input', d.meta.title);
+    setProfileInput('ps-eyes-input', d.meta.eyeColor);
+    setProfileInput('ps-height-input', d.meta.height);
+    setProfileInput('ps-age-input', d.meta.age);
+    setProfileInput('ps-homeland-input', d.meta.homeland);
+    setProfileInput('ps-deity-input', d.meta.deity);
 
     const lvl = $('ps-level-num');
     if (lvl) lvl.textContent = d.level || '—';
+  }
+
+  function setProfileInput(id, value) {
+    const n = $(id);
+    if (n && document.activeElement !== n) n.value = value || '';
   }
 
   function emptyPortrait() {
@@ -309,6 +342,26 @@ window.CharSheetPane = (function () {
     }).join('');
   }
 
+  function renderInventory(d) {
+    const grid = $('ps-inventory-grid');
+    if (!grid) return;
+    const inv = d.inventory || {}, p = inv.potions || {};
+    const rows = [
+      ['health', 'Health', p.health, 'icons/custom/ps-health.png'],
+      ['magicka', 'Magicka', p.magicka, 'icons/custom/ps-magicka.png'],
+      ['stamina', 'Stamina', p.stamina, 'icons/custom/ps-stamina.png'],
+      ['utility', 'Other', p.other, 'icons/custom/ps-utility.png'],
+      ['lockpicks', 'Lockpicks', inv.lockpicks, 'icons/custom/ps-lockpicks.png'],
+    ];
+    grid.innerHTML = rows.map(function (r) {
+      return '<div class="ps-inv ps-inv-' + r[0] + '" title="' + esc(r[1]) + ' carried">' +
+        '<img src="' + r[3] + '" alt=""><span class="ps-inv-body"><span class="ps-inv-name">' +
+        esc(r[1]) + '</span><span class="ps-inv-count">' + fmtInt(r[2]) + '</span></span></div>';
+    }).join('');
+    const total = $('ps-potion-total');
+    if (total) total.textContent = fmtInt(p.total) + ' potion' + (Number(p.total) === 1 ? '' : 's');
+  }
+
   function renderEffects() {
     const d = state.data;
     const body = $('ps-eff-body');
@@ -338,8 +391,8 @@ window.CharSheetPane = (function () {
       const remain = liveRemain(e);
       const perm = e.durSec <= 0 && e.remainSec <= 0;
       const timeHtml = perm
-        ? '<span class="ps-eff-time ps-eff-perm" data-eid="' + esc(e.id) + '">permanent</span>'
-        : '<span class="ps-eff-time" data-eid="' + esc(e.id) + '">' +
+        ? '<span class="ps-eff-time ps-eff-perm" data-key="' + esc(e.key) + '">permanent</span>'
+        : '<span class="ps-eff-time" data-key="' + esc(e.key) + '">' +
           (remain > 0 ? fmtDur(remain) + ' left' : 'expiring') + '</span>';
       const magHtml = e.magnitude
         ? '<span class="ps-eff-mag">' + fmtInt(e.magnitude) + '</span>' : '';
@@ -348,11 +401,15 @@ window.CharSheetPane = (function () {
         ? '<div class="ps-eff-sub">' + esc(e.source || '') +
           (e.plugin ? ' <span class="ps-eff-plugin">· ' + esc(e.plugin) + '</span>' : '') + '</div>'
         : '';
-      const armed = !!ui.armed[e.id];
+      const armed = !!ui.armed[e.key];
+      const risky = e.removeMode === 'confirm';
       const btn = e.wantsRemove
-        ? '<button class="ps-eff-rm' + (armed ? ' ps-armed' : '') + '" data-eid="' + esc(e.id) +
-          '" title="Remove this effect">' + (armed ? 'Remove?' : '✕') + '</button>'
-        : '<span class="ps-eff-lock" title="Part of your race or innate abilities — can\'t be dispelled">🔒</span>';
+        ? '<button class="ps-eff-rm' + (risky ? ' ps-eff-risk' : '') + (armed ? ' ps-armed' : '') +
+          '" data-key="' + esc(e.key) + '" title="' + (risky
+            ? 'Permanent ability — removable, but it may be a mod controller'
+            : 'Remove this effect') + '">' +
+          (armed ? (risky ? 'Remove anyway?' : 'Remove?') : (risky ? '◆' : '✕')) + '</button>'
+        : '<span class="ps-eff-lock" title="Inherited from your race — protected from removal">🔒</span>';
       return '<div class="ps-eff' + (e.harmful ? ' ps-eff-harm-row' : '') + '">' +
         '<div class="ps-eff-main"><div class="ps-eff-name">' + esc(e.name) + '</div>' +
         subHtml + '</div>' +
@@ -363,10 +420,11 @@ window.CharSheetPane = (function () {
     body.querySelectorAll('.ps-eff-rm').forEach(function (b) {
       b.addEventListener('click', function (ev) {
         ev.stopPropagation();
-        const id = b.getAttribute('data-eid');
-        if (!ui.armed[id]) { ui.armed[id] = true; renderEffects(); return; }
-        delete ui.armed[id];
-        toGame('psRemoveEffect', JSON.stringify({ id: isNaN(Number(id)) ? id : Number(id) }));
+        const key = b.getAttribute('data-key');
+        if (!ui.armed[key]) { ui.armed[key] = true; renderEffects(); return; }
+        delete ui.armed[key];
+        const effect = state.data.effects.find(function (e) { return e.key === key; });
+        toGame('psRemoveEffect', JSON.stringify({ key: key, force: !!(effect && effect.removeMode === 'confirm') }));
       });
     });
   }
@@ -377,10 +435,10 @@ window.CharSheetPane = (function () {
     if (!ui.visible || !state.data) return;
     const nodes = document.querySelectorAll('#ps-eff-body .ps-eff-time:not(.ps-eff-perm)');
     if (!nodes.length) return;
-    const byId = {};
-    state.data.effects.forEach(function (e) { byId[e.id] = e; });
+    const byKey = {};
+    state.data.effects.forEach(function (e) { byKey[e.key] = e; });
     nodes.forEach(function (n) {
-      const e = byId[n.getAttribute('data-eid')];
+      const e = byKey[n.getAttribute('data-key')];
       if (!e) return;
       const r = liveRemain(e);
       n.textContent = r > 0 ? fmtDur(r) + ' left' : 'expiring';
@@ -410,9 +468,9 @@ window.CharSheetPane = (function () {
     ui.savePend = {};
     /* keep local state in step so a poll-driven psData mid-typing doesn't clobber */
     if (state.data) {
-      if ('charClass' in payload) state.data.meta.charClass = payload.charClass;
-      if ('background' in payload) state.data.meta.background = payload.background;
-      if ('history' in payload) state.data.meta.history = payload.history;
+      Object.keys(payload).forEach(function (k) {
+        if (Object.prototype.hasOwnProperty.call(state.data.meta, k)) state.data.meta[k] = payload[k];
+      });
     }
     toGame('psSetMeta', JSON.stringify(payload));
     flashSaved();
@@ -477,6 +535,21 @@ window.CharSheetPane = (function () {
         e.stopPropagation();
       });
     }
+    [
+      ['ps-alignment-input', 'alignment'], ['ps-title-input', 'title'],
+      ['ps-eyes-input', 'eyeColor'], ['ps-height-input', 'height'],
+      ['ps-age-input', 'age'], ['ps-homeland-input', 'homeland'],
+      ['ps-deity-input', 'deity'],
+    ].forEach(function (pair) {
+      const n = $(pair[0]), key = pair[1];
+      if (!n) return;
+      n.addEventListener('input', function () { const patch = {}; patch[key] = n.value; queueMeta(patch); });
+      n.addEventListener('blur', flushMeta);
+      n.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { n.blur(); e.preventDefault(); }
+        e.stopPropagation();
+      });
+    });
     const f = $('ps-eff-filter');
     if (f) {
       f.addEventListener('input', function () { ui.filter = f.value.trim(); renderEffects(); });
@@ -485,7 +558,7 @@ window.CharSheetPane = (function () {
           /* Enter = arm the top hit's remove (the deck's top-hit idiom, here
              the actionable thing is "get rid of this one") */
           const top = visibleEffects()[0];
-          if (top && top.wantsRemove) { ui.armed[top.id] = true; renderEffects(); }
+          if (top && top.wantsRemove) { ui.armed[top.key] = true; renderEffects(); }
           e.stopPropagation();
         }
         if (e.key === 'Escape' && f.value) { f.value = ''; ui.filter = ''; renderEffects(); e.stopPropagation(); }
@@ -508,10 +581,11 @@ window.CharSheetPane = (function () {
 
   function devData() {
     window.psData({
-      name: 'Robere', race: 'Nord', raceEditorId: 'NordRace', level: 62,
+      name: 'Aldren', race: 'Nord', raceEditorId: 'NordRace', level: 62,
       hp: { cur: 540, max: 720 }, mag: { cur: 210, max: 300 }, sta: { cur: 300, max: 300 },
       carry: { cur: 412, max: 380 }, gold: 128450, souls: { dragon: 7 }, bounty: 1000,
       beast: 'Vampire Lord',
+      inventory: { potions: { health: 14, magicka: 8, stamina: 11, other: 6, total: 39 }, lockpicks: 27 },
       skills: [
         { name: 'One-Handed', level: 100 }, { name: 'Two-Handed', level: 42 },
         { name: 'Archery', level: 70 }, { name: 'Block', level: 55 },
@@ -524,26 +598,28 @@ window.CharSheetPane = (function () {
         { name: 'Restoration', level: 72 }, { name: 'Enchanting', level: 100 },
       ],
       effects: [
-        { id: 1, name: 'Ataxia', source: 'Disease', plugin: 'Skyrim.esm', magnitude: 0, durSec: 0, remainSec: 0, harmful: true, wantsRemove: true },
-        { id: 2, name: 'Blessing of Talos', source: 'Shrine Blessing', plugin: 'Skyrim.esm', magnitude: 20, durSec: 28800, remainSec: 14230, harmful: false, wantsRemove: true },
-        { id: 3, name: 'Well Rested', source: 'Sleep', plugin: 'Skyrim.esm', magnitude: 10, durSec: 28800, remainSec: 620, harmful: false, wantsRemove: true },
-        { id: 4, name: 'Vampiric Drain Weakness', source: 'Vampire Lord', plugin: 'Dawnguard.esm', magnitude: 15, durSec: 0, remainSec: 0, harmful: true, wantsRemove: false },
-        { id: 5, name: 'Fortify Smithing', source: 'Blacksmith Potion', plugin: 'Skyrim.esm', magnitude: 32, durSec: 30, remainSec: 12, harmful: false, wantsRemove: true },
-        { id: 6, name: 'Highborn', source: 'Racial', plugin: 'Skyrim.esm', magnitude: 0, durSec: 0, remainSec: 0, harmful: false, wantsRemove: false },
+        { key: 'A1', id: 0, name: 'Ataxia', source: 'Disease', plugin: 'Skyrim.esm', magnitude: 0, durSec: 0, remainSec: 0, harmful: true, wantsRemove: true, removeMode: 'safe' },
+        { key: 'A2', id: 0, name: 'Blessing of Talos', source: 'Shrine Blessing', plugin: 'Skyrim.esm', magnitude: 20, durSec: 28800, remainSec: 14230, harmful: false, wantsRemove: true, removeMode: 'safe' },
+        { key: 'A3', id: 3, name: 'Well Rested', source: 'Sleep', plugin: 'Skyrim.esm', magnitude: 10, durSec: 28800, remainSec: 620, harmful: false, wantsRemove: true, removeMode: 'safe' },
+        { key: 'A4', id: 4, name: 'Vampire Controller', source: 'Vampire Lord', plugin: 'Dawnguard.esm', magnitude: 15, durSec: 0, remainSec: 0, harmful: false, wantsRemove: true, removeMode: 'confirm' },
+        { key: 'A5', id: 5, name: 'Fortify Smithing', source: 'Blacksmith Potion', plugin: 'Skyrim.esm', magnitude: 32, durSec: 30, remainSec: 12, harmful: false, wantsRemove: true, removeMode: 'safe' },
+        { key: 'A6', id: 6, name: 'Highborn', source: 'Racial', plugin: 'Skyrim.esm', magnitude: 0, durSec: 0, remainSec: 0, harmful: false, wantsRemove: false, removeMode: 'locked' },
       ],
       meta: {
         charClass: 'Blood Knight',
+        alignment: 'Lawful Evil', title: 'The Ashen King', eyeColor: 'Ember gold',
+        height: '6′ 2″', age: '38', homeland: 'The Reach', deity: 'Molag Bal',
         background: 'Born under a red moon in the reach…',
-        history: 'Slew the lich of Coldhaven and took its throne.',
+        history: 'Broke the siege of Morthal and claimed the old watchtower.',
         portrait: '',
       },
     });
   }
 
   function devRemove(arg) {
-    let id = '';
-    try { id = String(JSON.parse(arg).id); } catch (e) {}
-    if (state.data) state.data.effects = state.data.effects.filter(function (e) { return e.id !== id; });
+    let key = '';
+    try { key = String(JSON.parse(arg).key); } catch (e) {}
+    if (state.data) state.data.effects = state.data.effects.filter(function (e) { return e.key !== key; });
     window.psResult({ ok: true, msg: '' });
     if (ui.visible) renderEffects();
   }
@@ -555,16 +631,19 @@ window.CharSheetPane = (function () {
     function ok(name, cond) { out.push((cond ? 'ok   ' : 'FAIL ') + name); }
     devData();
     ui.visible = true; render();
-    ok('name shown', $('ps-name').textContent === 'Robere');
+    ok('name shown', $('ps-name').textContent === 'Aldren');
     ok('level shown', $('ps-level-num').textContent === '62');
     ok('hp bar over 50%', parseFloat($('ps-bar-hp-fill').style.width) > 50);
     ok('carry over-flag', document.querySelector('.ps-chip-carry.ps-over'));
     ok('bounty chip present', !!document.querySelector('.ps-chip-bounty'));
     ok('beast chip present', !!document.querySelector('.ps-chip-beast'));
     ok('skills rendered', document.querySelectorAll('.ps-skill').length === 18);
+    ok('pack check rendered', document.querySelectorAll('.ps-inv').length === 5);
+    ok('profile filled', $('ps-alignment-input').value === 'Lawful Evil');
     ok('effects rendered', document.querySelectorAll('#ps-eff-body .ps-eff').length === 6);
     ok('harmful sorted first', document.querySelector('#ps-eff-body .ps-eff').classList.contains('ps-eff-harm-row'));
-    ok('locked effect shows lock', document.querySelectorAll('.ps-eff-lock').length === 2);
+    ok('only racial effect shows lock', document.querySelectorAll('.ps-eff-lock').length === 1);
+    ok('controller effect shows caution', document.querySelectorAll('.ps-eff-risk').length === 1);
     ui.filter = 'ataxia'; renderEffects();
     ok('filter narrows', document.querySelectorAll('#ps-eff-body .ps-eff').length === 1);
     ui.filter = ''; renderEffects();

@@ -14,7 +14,7 @@ namespace Wardrobe { struct Config; }
 // up to THREE wardrobes of real items in hidden chests and swaps her whole
 // default Outfit as the PLAYER's location type changes.
 //
-// Decoded from the shipped scripts (Champollion -> C:\Dev\nff-decomp;
+// Decoded from the shipped scripts with Champollion;
 // nwsFollowerSetsScript.psc + nwsFollowerAutoSetsScript.psc):
 //
 //   nwsFF_storedFac   in faction  = NFF holds outfit state for this actor

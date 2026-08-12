@@ -305,42 +305,63 @@ const j = async (m, p, b) => {
 
   // The deck exports a snapshot.
   const SHEET_BODY = {
-    name: 'Robere', race: 'Nord', raceEditorId: 'NordRace', level: 51,
-    hp: { cur: 540, max: 600 }, mag: 210, sta: 300, carry: 480, gold: 128340,
+    name: 'Aldren', race: 'Nord', raceEditorId: 'NordRace', level: 51,
+    hp: { cur: 540, max: 600 }, mag: { cur: 210, max: 260 },
+    sta: { cur: 300, max: 340 }, carry: { cur: 480, max: 525 }, gold: 128340,
     souls: { dragon: 12 }, bounty: 0, beast: false,
     skills: [{ name: 'One-Handed', level: 92 }, { name: 'Destruction', level: 100 }, { name: 'Sneak', level: 74 }],
+    inventory: { potions: { health: 18, magicka: 9, stamina: 7, other: 5, total: 39 }, lockpicks: 46 },
     effects: [
       { id: '0xABCD', name: 'Blessing of Talos', source: 'Talos', plugin: 'Skyrim.esm',
         magnitude: 15, durSec: 28800, remainSec: 25000, harmful: false, wantsRemove: false },
       { id: '0x1234', name: 'Poison', source: 'Frostbite Spider', plugin: 'Skyrim.esm',
         magnitude: 3, durSec: 30, remainSec: 12, harmful: true, wantsRemove: true },
     ],
-    meta: { charClass: 'Battlemage', background: 'Duke of the Southern Pass', history: 'Slew the lich of Coldhaven.', portrait: '' },
+    meta: { charClass: 'Battlemage', title: 'Warden of the Ashen March', alignment: 'Lawful evil',
+      eyeColor: 'Ice blue', height: '6 ft 2 in', age: '34', homeland: 'The Reach', deity: 'Nocturnal',
+      background: 'Born beneath a red moon.', history: 'Broke the siege of Morthal.', portrait: '' },
     at: Date.now(),
   };
   fs.writeFileSync(SHEET_STATUS, JSON.stringify(SHEET_BODY, null, 2));
 
   r = await j('GET', '/api/sheet');
   T('GET /api/sheet present returns the snapshot', r.s === 200 && r.b.ok === true && r.b.sheet &&
-    r.b.sheet.name === 'Robere' && r.b.sheet.level === 51);
-  T('vitals + stat chips come through', r.b.sheet.hp && r.b.sheet.hp.cur === 540 && r.b.sheet.hp.max === 600 &&
+    r.b.sheet.name === 'Aldren' && r.b.sheet.level === 51);
+  T('object-shaped vitals + stat chips come through', r.b.sheet.hp && r.b.sheet.hp.cur === 540 &&
+    r.b.sheet.mag.max === 260 && r.b.sheet.sta.cur === 300 && r.b.sheet.carry.max === 525 &&
     r.b.sheet.gold === 128340 && r.b.sheet.souls.dragon === 12 && r.b.sheet.beast === false);
+  T('potion groups + lockpicks come through whole', r.b.sheet.inventory.potions.health === 18 &&
+    r.b.sheet.inventory.potions.magicka === 9 && r.b.sheet.inventory.potions.stamina === 7 &&
+    r.b.sheet.inventory.potions.other === 5 && r.b.sheet.inventory.potions.total === 39 &&
+    r.b.sheet.inventory.lockpicks === 46);
   T('skills + effects come through whole', r.b.sheet.skills.length === 3 && r.b.sheet.effects.length === 2 &&
     r.b.sheet.effects[1].harmful === true && r.b.sheet.effects[1].remainSec === 12);
   T('carries a fresh ageMs', typeof r.b.ageMs === 'number' && r.b.ageMs >= 0 && r.b.ageMs < 60000);
-  T('meta echoes the deck fields', r.b.meta && r.b.meta.charClass === 'Battlemage' &&
-    r.b.meta.background === 'Duke of the Southern Pass');
+  T('meta echoes the expanded deck fields', r.b.meta && r.b.meta.charClass === 'Battlemage' &&
+    r.b.meta.title === 'Warden of the Ashen March' && r.b.meta.alignment === 'Lawful evil' &&
+    r.b.meta.eyeColor === 'Ice blue' && r.b.meta.height === '6 ft 2 in' && r.b.meta.age === '34' &&
+    r.b.meta.homeland === 'The Reach' && r.b.meta.deity === 'Nocturnal');
 
   // Meta queue: merge-write.
   r = await j('POST', '/api/sheet-meta', { charClass: 'Dragon Priest' });
   T('sheet-meta queues class', r.s === 200 && r.b.ok && r.b.queued.join() === 'charClass' &&
     r.b.pendingMeta.charClass === 'Dragon Priest');
-  r = await j('POST', '/api/sheet-meta', { background: 'King-Consort of Coldhaven' });
+  r = await j('POST', '/api/sheet-meta', { title: 'The Ashen Crown', alignment: 'Chaotic neutral',
+    eyeColor: 'Gold', height: '188 cm', age: 'Ageless', homeland: 'Atmora', deity: 'Hermaeus Mora' });
+  T('all seven new profile fields queue atomically', r.s === 200 && r.b.ok && r.b.queued.length === 7 &&
+    r.b.pendingMeta.title === 'The Ashen Crown' && r.b.pendingMeta.alignment === 'Chaotic neutral' &&
+    r.b.pendingMeta.eyeColor === 'Gold' && r.b.pendingMeta.height === '188 cm' &&
+    r.b.pendingMeta.age === 'Ageless' && r.b.pendingMeta.homeland === 'Atmora' &&
+    r.b.pendingMeta.deity === 'Hermaeus Mora' && r.b.pendingMeta.charClass === 'Dragon Priest');
+  r = await j('POST', '/api/sheet-meta', { background: 'Guardian of the Pale' });
   T('a later background edit does NOT drop the unapplied class', r.s === 200 &&
-    r.b.pendingMeta.charClass === 'Dragon Priest' && r.b.pendingMeta.background === 'King-Consort of Coldhaven');
+    r.b.pendingMeta.charClass === 'Dragon Priest' && r.b.pendingMeta.background === 'Guardian of the Pale');
   let sedits = JSON.parse(fs.readFileSync(SHEET_EDITS, 'utf8'));
   T('the edits sidecar is a single object of present keys', !Array.isArray(sedits) &&
-    sedits.charClass === 'Dragon Priest' && sedits.background === 'King-Consort of Coldhaven' && !('history' in sedits));
+    sedits.charClass === 'Dragon Priest' && sedits.title === 'The Ashen Crown' &&
+    sedits.alignment === 'Chaotic neutral' && sedits.eyeColor === 'Gold' && sedits.height === '188 cm' &&
+    sedits.age === 'Ageless' && sedits.homeland === 'Atmora' && sedits.deity === 'Hermaeus Mora' &&
+    sedits.background === 'Guardian of the Pale' && !('history' in sedits));
   r = await j('POST', '/api/sheet-meta', { history: '' });
   T('an empty history is a real value (clears the field), kept in the queue', r.s === 200 &&
     'history' in r.b.pendingMeta && r.b.pendingMeta.history === '');
@@ -353,6 +374,12 @@ const j = async (m, p, b) => {
   T('a non-string field is refused', r.s === 400);
   r = await j('POST', '/api/sheet-meta', { history: 'x'.repeat(9000) });
   T('an over-cap history is refused', r.s === 400 && /limit/i.test(r.b.error || ''));
+  const beforeBadProfile = fs.readFileSync(SHEET_EDITS, 'utf8');
+  r = await j('POST', '/api/sheet-meta', { title: 'x'.repeat(121), alignment: 'Neutral good' });
+  T('a mixed invalid profile edit is rejected atomically', r.s === 400 && /limit/i.test(r.b.error || '') &&
+    fs.readFileSync(SHEET_EDITS, 'utf8') === beforeBadProfile);
+  r = await j('POST', '/api/sheet-meta', { portrait: 'portraits/not-through-this-route.png' });
+  T('sheet-meta cannot bypass the portrait upload route', r.s === 400);
 
   // Portrait: reject non-image + oversize, then accept + queue.
   r = await j('POST', '/api/sheet-portrait', { ext: 'png', dataBase64: Buffer.from('not an image at all').toString('base64') });

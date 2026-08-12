@@ -21,7 +21,7 @@ namespace RE
 // shove into the follower faction — is WRONG, and produces a follower NFF does
 // not know it has: no alias slot, no framework tweaks, no sandbox package, no
 // history entry, and a permanently wrong follower count. NFF's own decompiled
-// RecruitAction (nwsFollowerControllerScript.psc:354, C:\Dev\nff-decomp) does
+// RecruitAction (nwsFollowerControllerScript.psc:354, decompiled) does
 // fourteen distinct things in order — ForceRefTo an alias, optional protect
 // alias, relationship rank, DismissedFac/CommentFaction, SetPlayerTeammate,
 // IgnoreFriendlyHits, CurrFollowerFac + PlayerFollowerFac ranks, CheckSteward,
@@ -216,7 +216,7 @@ namespace NffControl
 	// torch, everything IsWorn() reports — read off the engine so the answer
 	// cannot be filtered by whatever the ContainerMenu chooses to show.
 	//
-	//   { "ok":true, "who":"Seraphine", "formId":"0x…",
+	//   { "ok":true, "who":"Example Follower", "formId":"0x…",
 	//     "following":true, "dead":false,
 	//     "about":{ "level":12, "race":"Nord", "female":true, "unique":true,
 	//               "essential":false, "protected":true, "ghost":false,

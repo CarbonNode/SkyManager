@@ -742,7 +742,7 @@ namespace NpcActions
 		}
 
 		// The carry is driven by Papyrus TranslateTo, not by per-tick
-		// SetPosition. First play-test (2026-08-02, Nicki): SetPosition is
+		// SetPosition. The first live follower play-test proved SetPosition is
 		// CommonLib's MoveTo_Impl — the engine's full teleport machinery — and
 		// invoking it 30x/second held her in a permanent mid-teleport detached
 		// state: INVISIBLE for the whole 26 s drag, reappearing only at the

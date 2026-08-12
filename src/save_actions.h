@@ -46,7 +46,7 @@ namespace SaveActions
 	void Fire();
 
 	// The name the next save would get, for tests and for logging:
-	//   "Save 2026-07-31 22.41.05 - Robere - Whiterun"
+	//   "Save 2026-07-31 22.41.05 - Dragonborn - Whiterun"
 	// Sortable by name as well as by date, says who and where, and cannot
 	// collide with an existing file (the seconds field is the tiebreak).
 	// Illegal filename characters are stripped, never substituted, so the

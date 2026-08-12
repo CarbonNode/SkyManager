@@ -359,9 +359,9 @@ namespace
 		// Schema lives in hd-wheel.js.
 		json wheel = json::object();
 		// Character Sheet (ps* bridge) — the RP half of the sheet: freeform
-		// class / background / history and a portrait path. The live stats are
+		// identity/story fields and a portrait path. The live stats are
 		// read off the player every frame, never persisted; only this typed
-		// meta round-trips under the "charsheet" root key. Four capped fields,
+		// meta round-trips under the "charsheet" root key. Capped fields,
 		// not raw json, because the shape is fixed and the portrait path is
 		// validated (see CharSheet::ValidPortraitPath) — the same reason the
 		// deck's other typed slices aren't carried opaque.
@@ -816,6 +816,13 @@ namespace
 			{ "wheel", c.wheel },
 			{ "charsheet", json{
 				{ "charClass", c.charSheet.charClass },
+				{ "alignment", c.charSheet.alignment },
+				{ "title", c.charSheet.title },
+				{ "eyeColor", c.charSheet.eyeColor },
+				{ "height", c.charSheet.height },
+				{ "age", c.charSheet.age },
+				{ "homeland", c.charSheet.homeland },
+				{ "deity", c.charSheet.deity },
 				{ "background", c.charSheet.background },
 				{ "history", c.charSheet.history },
 				{ "portrait", c.charSheet.portrait } } } };
@@ -1085,7 +1092,7 @@ namespace
 				else
 					logger::warn("wheel slice over 256KB - refused, wheels reset (view caps at 12 wheels x 16 slots)");
 			}
-			// Character Sheet meta — four capped free-text fields, portrait path
+			// Character Sheet meta — capped free-text fields, portrait path
 			// validated on the way in (a hand-edited hotkeys.json is untrusted).
 			// Each field just falls back to "" when absent or the wrong type, so
 			// a partial slice never wipes a sibling field.
@@ -1094,17 +1101,28 @@ namespace
 				auto pull = [&](const char* key, std::string& dst) {
 					if (cs.contains(key) && cs[key].is_string()) {
 						std::string v = cs[key].get<std::string>();
-						if (v.size() > CharSheet::kTextCap)
-							v.resize(CharSheet::kTextCap);
+						const auto cap = CharSheet::MetaTextCap(key);
+						if (v.size() > cap)
+							v.resize(cap);
 						dst = std::move(v);
 					}
 				};
 				pull("charClass", c.charSheet.charClass);
+				pull("alignment", c.charSheet.alignment);
+				pull("title", c.charSheet.title);
+				pull("eyeColor", c.charSheet.eyeColor);
+				pull("height", c.charSheet.height);
+				pull("age", c.charSheet.age);
+				pull("homeland", c.charSheet.homeland);
+				pull("deity", c.charSheet.deity);
 				pull("background", c.charSheet.background);
 				pull("history", c.charSheet.history);
 				std::string portrait;
-				if (cs.contains("portrait") && cs["portrait"].is_string())
+				if (cs.contains("portrait") && cs["portrait"].is_string()) {
 					portrait = cs["portrait"].get<std::string>();
+					if (portrait.size() > CharSheet::MetaTextCap("portrait"))
+						portrait.resize(CharSheet::MetaTextCap("portrait"));
+				}
 				if (CharSheet::ValidPortraitPath(portrait))  // rewrites '\' to '/', "" ok
 					c.charSheet.portrait = std::move(portrait);
 			}
@@ -8710,9 +8728,10 @@ namespace
 	void HbFireSlot(int page, int i)
 	{
 		Hotbar::Slot s;
+		int          p = 0;
 		{
 			std::lock_guard l(g_configMutex);
-			const int p = std::clamp(page, 0, Hotbar::kPageCount - 1);
+			p = std::clamp(page, 0, Hotbar::kPageCount - 1);
 			if (p >= static_cast<int>(g_hbConfig.pages.size()))
 				return;
 			const auto& slots = g_hbConfig.pages[p].slots;
@@ -8725,17 +8744,20 @@ namespace
 
 		// Flash first: the bar never has focus, so this is the ONLY feedback
 		// that the key landed, and it must not wait on the action.
-		if (g_prisma && g_hbView && g_hbViewReady.load())
+		if (g_prisma && g_hbView && g_hbViewReady.load()) {
+			logger::debug("hotbar-flash: page {} button {}", p, i + 1);
 			g_prisma->Invoke(g_hbView,
-				("hbFlash(" + json{ { "i", i } }.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
+				("hbFlash(" + json{ { "page", p }, { "i", i } }
+					.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
+		}
 
 		if (s.kind == "spell") {
-			logger::info("hotbar-fire: page {} button {} -> spell {}|{:X}", page, i + 1, s.plugin, s.localId);
+			logger::info("hotbar-fire: page {} button {} -> spell {}|{:X}", p, i + 1, s.plugin, s.localId);
 			SpellActions::Cast(s.plugin, s.localId, s.formId);
 			return;
 		}
 		if (s.kind == "item") {
-			logger::info("hotbar-fire: page {} button {} -> item {}|{:X}", page, i + 1, s.plugin, s.localId);
+			logger::info("hotbar-fire: page {} button {} -> item {}|{:X}", p, i + 1, s.plugin, s.localId);
 			const std::string req = json{
 				{ "formId", ActorIdentity::HexOf(s.localId) },
 				{ "plugin", s.plugin },
@@ -8750,7 +8772,7 @@ namespace
 			return;
 		}
 		if (s.kind == "entry") {
-			logger::info("hotbar-fire: page {} button {} -> entry '{}'", page, i + 1, s.refId);
+			logger::info("hotbar-fire: page {} button {} -> entry '{}'", p, i + 1, s.refId);
 			FireEntryById(s.refId, "hotbar");
 			return;
 		}
@@ -8771,7 +8793,7 @@ namespace
 			for (const auto& m : cb.spells)
 				refs.push_back(SpellActions::SpellRef{ m.plugin, m.localId, m.formId });
 			logger::info("hotbar-fire: page {} button {} -> combo '{}' ({} spells)",
-				page, i + 1, cb.name, refs.size());
+				p, i + 1, cb.name, refs.size());
 			SpellActions::CastSequence(cb.name, std::move(refs), 150, nullptr);
 			return;
 		}
@@ -10455,7 +10477,7 @@ namespace
 
 	// ------------------------------------------------------ Character Sheet tab
 	// The player's own live stats (level, the three pools, active magic effects)
-	// plus a freeform RP identity (class / background / history / portrait). Ships
+	// plus a freeform RP identity (class / profile / story / portrait). Ships
 	// on the deck AND the phone portal — the export/import pair below is the phone
 	// half, file-based exactly like mhiyh-status.json + portal-npc-fields.json.
 	//
@@ -10546,15 +10568,22 @@ namespace
 
 	void OnJsSheetRemoveEffect(const char* data)
 	{
-		// Payload: { "id": <number> } — the ActiveEffect uniqueID, not a FormID.
-		std::uint32_t id = 0;
+		// Payload: { "key": <instance-hex>, "force": bool }. ActiveEffect's
+		// usUniqueID is commonly 0 for many simultaneous effects on the live
+		// profile, so it cannot safely address a row.
+		std::string key;
+		bool        force = false;
 		if (data) {
 			const auto j = json::parse(data, nullptr, false);
-			if (!j.is_discarded() && j.is_object() && j.contains("id") && j["id"].is_number())
-				id = static_cast<std::uint32_t>(j["id"].get<long long>());
+			if (!j.is_discarded() && j.is_object()) {
+				if (j.contains("key") && j["key"].is_string())
+					key = j["key"].get<std::string>();
+				if (j.contains("force") && j["force"].is_boolean())
+					force = j["force"].get<bool>();
+			}
 		}
-		SKSE::GetTaskInterface()->AddTask([id]() {
-			PushToView("psResult", CharSheet::RemoveEffect(id));
+		SKSE::GetTaskInterface()->AddTask([key = std::move(key), force]() {
+			PushToView("psResult", CharSheet::RemoveEffect(key, force));
 			// A fresh sheet rides along so the removed effect leaves the list
 			// without a second round-trip.
 			PushSheet();
@@ -10589,7 +10618,7 @@ namespace
 	}
 
 	// -------------------------------- Deck Portal Character-Sheet edit handoff
-	// portal-sheet-edits.json: a { charClass?, background?, history?, portrait? }
+	// portal-sheet-edits.json: a partial CharSheet::Meta object.
 	// object queued by the phone (the portal must never write hotkeys.json while
 	// the game owns it — same law as portal-npc-fields.json). Read it, apply as
 	// psSetMeta would, then TRUNCATE it (never delete — the portal keeps the file
@@ -10617,8 +10646,10 @@ namespace
 		const auto j       = json::parse(text, nullptr, false);
 		if (j.is_discarded() || !j.is_object()) {
 			logger::error("portal sheet edit file is malformed — discarding it");
-		} else if (j.contains("charClass") || j.contains("background") ||
-			j.contains("history") || j.contains("portrait")) {
+		} else if (j.contains("charClass") || j.contains("alignment") ||
+			j.contains("title") || j.contains("eyeColor") || j.contains("height") ||
+			j.contains("age") || j.contains("homeland") || j.contains("deity") ||
+			j.contains("background") || j.contains("history") || j.contains("portrait")) {
 			// Straight through the same path psSetMeta uses (validate, cap,
 			// persist). The push is queued separately by the poller.
 			const auto res = json::parse(ApplySheetMeta(text), nullptr, false);

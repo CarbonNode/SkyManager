@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 // Character Sheet tab for the Hotkey Deck — the player's own live stats and a
 // freeform RP identity, on the deck AND the phone portal.
@@ -17,8 +19,9 @@
 //                        GetPermanentActorValue (base + permanent modifiers —
 //                        the number the bar is drawn against), exactly the
 //                        cur/max split follower_tune.cpp reads on a follower.
-//   * carry / gold       carry = kCarryWeight pool; gold = Gold001 summed off
-//                        the inventory-changes list, the crash-safe way
+//   * carry / inventory  carry = kCarryWeight pool; gold, four potion groups
+//                        and lockpicks are summed off the inventory-changes
+//                        list, the crash-safe way
 //                        Finance::ReadGold does it (a full GetInventory<>()
 //                        walk faulted inside our DLL on a 4k-plugin order).
 //   * souls / bounty     dragon souls = kDragonSouls AV; bounty = the crime
@@ -32,12 +35,13 @@
 //   * effects            player->AsMagicTarget()->GetActiveEffectList(): each
 //                        active effect's name, source spell + plugin, magnitude,
 //                        total + remaining seconds, harmful flag, and a
-//                        wantsRemove gate (see WantsRemove below).
+//                        safe/confirm/locked removal mode.
 //
-// FREEFORM META (charClass / background / history / portrait) is user-typed and
-// lives in the config slice, NOT read from the game — round-tripped through
-// hotkeys.json under the root key "charsheet". It is the RP half of the sheet:
-// what the numbers can't say.
+// FREEFORM META (class, alignment, title, appearance details, homeland, patron,
+// background, history and portrait) is user-typed and lives in the config
+// slice, NOT read from the game — round-tripped through hotkeys.json under the
+// root key "charsheet". It is the RP half of the sheet: what the numbers can't
+// say.
 //
 // THREADING: BuildSheetJson touches the player and the magic-target list, so it
 // is MAIN THREAD ONLY, like every RE:: path in this plugin (schedule via
@@ -45,19 +49,45 @@
 // ActiveEffect::Dispel runs the effect-end script.
 namespace CharSheet
 {
-	// The freeform RP identity — the "charsheet" config slice. Four capped
-	// free-text fields; portrait is a view-relative path under portraits/.
+	// The freeform RP identity — the "charsheet" config slice. These are story
+	// fields, deliberately independent of the live actor record: a custom race
+	// or appearance overhaul does not need an integration for the player to
+	// describe the character they are actually role-playing. Portrait is a
+	// view-relative path under portraits/.
 	struct Meta
 	{
-		std::string charClass;   // e.g. "Nightblade", "Warlord of the Southern Pass"
-		std::string background;  // where he came from
+		std::string charClass;   // e.g. "Nightblade", "Warden of the Ashen March"
+		std::string alignment;   // e.g. "Lawful Evil" (freeform; D&D names are suggestions)
+		std::string title;       // epithet, rank, style of address
+		std::string eyeColor;
+		std::string height;      // freeform so "6'2\"" and "1.88 m" both work
+		std::string age;
+		std::string homeland;
+		std::string deity;
+		std::string background;  // where they came from
 		std::string history;     // the long story
 		std::string portrait;    // "portraits/<file>" (view-relative) or ""
 	};
 
-	// The per-field free-text cap (bytes). A pasted novel must not bloat
-	// hotkeys.json; the view keeps well under this.
-	constexpr std::size_t kTextCap = 8192;
+	// Per-field byte caps. Keep these in lock-step with portal/server.js so a
+	// value accepted on the phone is never silently reshaped by the plugin.
+	// Unknown keys return 0 and are not accepted by either caller.
+	constexpr std::size_t MetaTextCap(std::string_view key) noexcept
+	{
+		if (key == "charClass" || key == "title")
+			return 120;
+		if (key == "alignment" || key == "eyeColor" || key == "height" || key == "age")
+			return 80;
+		if (key == "homeland" || key == "deity")
+			return 160;
+		if (key == "background")
+			return 2000;
+		if (key == "history")
+			return 8000;
+		if (key == "portrait")
+			return 260;
+		return 0;
+	}
 
 	// Portrait path guard — the same spirit as main.cpp's ValidViewIconPath, but
 	// keyed to portraits/ (where follower faces already live) instead of icons/.
@@ -66,7 +96,7 @@ namespace CharSheet
 	// drive letter). Mutates p in place and returns whether it is acceptable.
 	bool ValidPortraitPath(std::string& p);
 
-	// Apply a partial meta edit (any subset of the four fields present in the
+	// Apply a partial meta edit (any subset of the RP fields present in the
 	// object). Returns { ok, msg } as a JSON string; on ok the caller persists
 	// and re-pushes. Fields absent from the patch are left untouched; a present
 	// field set to "" clears it. `editJson` is the psSetMeta payload (or the
@@ -84,11 +114,13 @@ namespace CharSheet
 	// lists so the tab renders "no save loaded" instead of crashing.
 	std::string BuildSheetJson(const Meta& meta);
 
-	// Dispel one active effect by its ActiveEffect uniqueID (the "id" every
-	// effects[] row carries). Returns { ok, msg } as a JSON string. Refuses —
-	// with a reason — an effect whose source is an ability / race power / disease
-	// (the ones WantsRemove marks false), because dispelling those is how you
-	// break a character (loses a racial passive, a standing-stone blessing, a
-	// werewolf's timer). MAIN THREAD ONLY. `id` is the uniqueID, not a FormID.
-	std::string RemoveEffect(std::uint32_t id);
+	// Dispel one active effect by the per-instance key emitted in effects[].
+	// `usUniqueID` is NOT unique in practice (the live profile has scores of
+	// effects with id 0), so the key is the live ActiveEffect address rendered
+	// as hex and is matched only against the current active list before use.
+	// `force` is required for a permanent non-racial ability: those are engine-
+	// dispellable but may be a mod controller, so the view gives them a stronger
+	// "Remove anyway?" confirmation. Race-inherited effects stay hard-locked.
+	// MAIN THREAD ONLY.
+	std::string RemoveEffect(const std::string& key, bool force);
 }

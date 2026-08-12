@@ -4381,12 +4381,9 @@
 
   /* Shipped DEFAULT category icons, keyed by LOWERCASE category NAME (not the
      FO slot index — a name survives a slot being renumbered, and the same name
-     in two profiles should get the same glyph). This is Rober's own live
-     rail map (read off the rig 2026-08-12: hotkeys.json followers.catIcons
-     index-aligned against the FO json the RUNNING game wrote minutes earlier
-     — every pair is that verified alignment, plus common-spelling aliases so
-     a stranger's "Wives"/"Mercenaries" still hits), promoted to ship as the
-     out-of-the-box look. A
+     in two profiles should get the same glyph). This curated default map uses
+     common-spelling aliases so a renamed category still adopts the expected
+     glyph. A
      user's own assignment (state.catIcons[index]) ALWAYS wins; clearing it
      falls back here; renaming a category to a name in this table adopts its
      glyph. Every value below is a file that exists in icons/custom, so a
@@ -4394,29 +4391,16 @@
   const CAT_ICON_DEFAULTS = {
     'follower organizer':    'icons/custom/cat-organizer.png',
     'my followers':          'icons/custom/cat-organizer.png',
-    'mistress':              'icons/custom/cat-mistress.png',
-    'mistresses':            'icons/custom/cat-mistress.png',
-    'slave':                 'icons/custom/cat-slave.png',
-    'slaves':                'icons/custom/cat-slave.png',
-    'thralls':               'icons/custom/cat-thralls.png',
     'utilities':             'icons/custom/cat-utilities.png',
     'companions':            'icons/custom/cat-companions.png',
     'friends':               'icons/custom/cat-friends.png',
     'merchant':              'icons/custom/cat-merchant.png',
     'merchants':             'icons/custom/cat-merchant.png',
-    'wenches (buxom)':       'icons/custom/cat-wenches.png',
-    'wenches':               'icons/custom/cat-wenches.png',
     'demons':                'icons/custom/cat-demons.png',
     'cult':                  'icons/custom/cat-cult.png',
-    'lovers':                'icons/custom/cat-lovers.png',
-    'wifes':                 'icons/custom/cat-wives.png',
-    'wives':                 'icons/custom/cat-wives.png',
     'servants':              'icons/custom/cat-servants.png',
     'mercanaries':           'icons/custom/cat-mercenaries.png',
     'mercenaries':           'icons/custom/cat-mercenaries.png',
-    'my brothel girls':      'icons/custom/cat-brothel.png',
-    'brothel':               'icons/custom/cat-brothel.png',
-    'noble wives':           'icons/custom/cat-noble-wives.png',
     'necromancy':            'icons/custom/cat-necromancy.png',
     'conscripts/bannermen':  'icons/custom/cat-bannermen.png',
     'bannermen':             'icons/custom/cat-bannermen.png',
@@ -4438,8 +4422,8 @@
   /* The icon set for one category slot, '' when it has none. Reads through
      iconSrc so a poisoned config draws nothing rather than a broken box.
      A user's own assignment (by slot index) wins; with none set, the shipped
-     name-keyed default applies — so a fresh install shows Rober's rail out of
-     the box, and clearing an assignment returns to the default rather than to
+     name-keyed default applies — so a fresh install gets a polished rail out
+     of the box, and clearing an assignment returns to the default rather than to
      bare initials. An assignment of '' is stored as a DELETE (setCatIcon), so
      there is no "assigned to nothing" state to distinguish from unset. */
   function catIconOf(index) {

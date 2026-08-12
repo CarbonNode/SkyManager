@@ -186,6 +186,7 @@
     "spell-cat-icons": "portal spell-category icon",
     "hotbar-config": "hotbar: {}x{} buttons, skin={}",
     "hotbar-fire": "hotbar-fire: page {} button {}",
+    "hotbar-page-flash": "hotbar-flash: page {} button {}",
     "hotbar-view": "hotbar: view created + listeners registered",
     "finances-live-apply": "live api: finances applied",
     "faces-catalogue": "faces-catalogue.json",
@@ -209,6 +210,8 @@
     "quick-light-state": "quick-light state: installed=",
     "charsheet-export": "charsheet export: wrote charsheet-status.json for the portal",
     "charsheet-dispel": "charsheet: dispelled effect",
+    "charsheet-inventory": "charsheet inventory: potion groups + lockpicks ready",
+    "charsheet-effect-policy": "charsheet effect policy: race lock + controller confirmation",
     "item-icons-worn": "item icons: worn set requested",
     "item-icons-turntable": "turntable frame(s) queued for",
     "facelight-bfl": "facelight: state",
@@ -544,6 +547,15 @@
     },
     "hd-wheel.css": {
       "wheel-css": "#hd-wheel .whl-slot {"
+    },
+    "hotbar.js": {
+      "hotbar-center-offset": "s.left = 'calc(50% + '",
+      "hotbar-page-aware-flash": "const k = page + ':' + i",
+      "hotbar-editor-overlap": "function editPreviewLayout()"
+    },
+    "hotbar.css": {
+      "hotbar-press-feedback": ".hb-slot.is-fired {",
+      "hotbar-modal-preview": ".hb-root.is-edit-preview-hidden {"
     },
     "hd-portal.js": {
       "portal-button": "window.ptState = function"

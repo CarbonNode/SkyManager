@@ -7,7 +7,7 @@
 // No Auto-Gear backend for the Hotkey Deck.
 //
 // The peeve: SPID/SkyPatcher distributor mods hand out cloaks, hoods and
-// underwear to NPCs on every save load. On Robere's people this is noise —
+// underwear to NPCs on every save load. On a curated follower roster this is noise —
 // a wife suddenly in a hood, a courtesan in a distributed cloak, sometimes on
 // top of an outfit he set. There are two delivery paths and neither has a
 // per-NPC "leave this one alone":
