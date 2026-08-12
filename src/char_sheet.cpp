@@ -6,7 +6,9 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <iomanip>
 #include <optional>
+#include <sstream>
 #include <utility>
 
 // pch (force-included) provides RE::/SKSE::/json and `using namespace std::literals`.
@@ -252,7 +254,12 @@ namespace CharSheet
 
 		std::string EffectKey(const RE::ActiveEffect* ae)
 		{
-			return ae ? fmt::format("{:016X}", reinterpret_cast<std::uintptr_t>(ae)) : std::string();
+			if (!ae)
+				return {};
+			std::ostringstream out;
+			out << std::uppercase << std::hex << std::setw(16) << std::setfill('0')
+				<< reinterpret_cast<std::uintptr_t>(ae);
+			return out.str();
 		}
 
 		// One active effect -> a row, or nullopt when it is inactive / dispelled /
