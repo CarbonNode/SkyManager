@@ -31,5 +31,3 @@ target("FollowerOrganizer")
 -- exception messages). Undocumented MSVC flag, but the supported way to stop a
 -- redistributed DLL from carrying the folder it happened to be built in — the
 -- release scanner found three such strings in the shipped build.
-add_cxflags([[/d1trimfile:C:\Dev\FollowerOrganizer\]], {force = true})
-
