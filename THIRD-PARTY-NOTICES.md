@@ -154,6 +154,11 @@ this section, and confirm it is a permissive licence compatible with GPL-3.0.
 
 ## 2 · Assets in the archive — all first-party
 
+> The Spell Hotbar icons are **not in this archive at all** — they ship as a
+> **separate optional-file mod** (`SkyManager-SpellHotbarIcons-v*.zip`), bundled
+> with the author's express permission. See §4.
+
+
 | Asset | Provenance | Licence |
 |---|---|---|
 | `PrismaUI/views/HotkeyDeck/icons/custom/*.png` (~85 gold glyphs: `cat-*`, `hk-*`, `hm-*`, `sc-*`, `hd-*`) | Generated for this mod by the author (image model + `tools/icon_knockout.js` knockout pass; style recipe in `modding/guides/deck_icon_style.md`). Verified original — none is extracted from another mod. | GPL-3.0-or-later, with the mod |
@@ -202,20 +207,34 @@ says so on screen. Sources for each are named so any claim here can be checked.
 | **OStim / OStim NG** | its own thread C-ABI (`ostim_deck.cpp`, `ostim_thread_api.h`) | none |
 | **SPID (Spell Perk Item Distributor)** | writes *new* `.ini` files the user asked for (`spid_gear.cpp`) | none |
 | **Follower Wander Framework**, **Better FaceLight**, **Quick Light**, **Tailor**, **LOTD / TCC** (loot glow gate) | records/keys read at runtime, or the mod's own menu key synthesized | none |
-| **Spell Hotbar 2** | **see below — the one that needs care** | none |
+| **Spell Hotbar 2** | **see below — icon art, redistributed WITH PERMISSION** | **none in THIS archive — separate optional-file mod** |
 
-### Spell Hotbar 2 — the icon library, explicitly
+### Spell Hotbar 2 — the icon library, redistributed WITH PERMISSION
 
-Spell Hotbar 2's DDS atlases are the source of ~1,900 spell icons. **We ship
-none of them.** The release archive contains an **empty** `icons/sh/` folder
-(plus a `.gitkeep` explaining itself); the library is generated **on the user's
-own machine, from the user's own installed copy** of Spell Hotbar 2, and never
-leaves it. If Spell Hotbar 2 is not installed, the folder stays empty and the
-deck falls back to its built-in SVG/emoji glyphs — a supported, tested state.
+Spell Hotbar 2's atlases are the source of the ~1,913 spell / potion / power
+icons. **The author, pWn3d1337, granted express permission to bundle the icons**
+(Nexus mod [188059](https://www.nexusmods.com/skyrimspecialedition/mods/188059),
+mod-page comment thread, 2026-08-12 — asked "bundling some of your icons in my
+own mod? Just the icons, nothing else", answered *"Yeah, that's ok."*). The
+grant is **icon ART ONLY** — no Spell Hotbar code, ESP, atlas or config.
 
-The empty folder must exist **at install time** because Mod Organizer 2
-snapshots its virtual file system when the game launches: a directory created
-mid-session is invisible to the running game.
+How it ships, and the obligations that follow — not optional:
+
+- The pre-made icons are a **separate, standalone optional-file mod**
+  (`SkyManager-SpellHotbarIcons-v*.zip`), uploaded on its own and installed after
+  SkyManager. They are **never** part of the main SkyManager archive. The main
+  mod always ships `icons/sh/` **empty** (plus a `.gitkeep` explaining itself);
+  the icon bridge fills it at runtime from the user's own installed spell mods.
+  So a user who never installs the pack, or has no spell mods, gets the built-in
+  SVG/emoji fallback — a supported, tested state.
+- The empty folder must exist **at install time** because Mod Organizer 2
+  snapshots its virtual file system when the game launches: a directory created
+  mid-session is invisible to the running game.
+- **Credit and thank pWn3d1337** wherever the pack is offered: the Nexus page's
+  credits AND permissions sections, this file, and the FOMOD option's own text.
+- **Keep the receipt.** The screenshot of the permission grant is saved with the
+  release; a permission claim on a public page must be documentable.
+- Icon art only — do **not** extend this to any other Spell Hotbar asset.
 
 ### Follower Organizer — redistribution PERMITTED, credit required
 
@@ -225,7 +244,9 @@ derivative of somebody else's mod.
 
 **The author, MaskedRPGFan, granted permission to redistribute it, on condition
 that they are credited** (reported by the mod author 2026-08-11). This is the
-only third-party code in the whole project that we redistribute at all.
+only third-party **code** the project redistributes; the only third-party
+**art** it redistributes is the Spell Hotbar icon pack above — both with
+permission, both credited.
 
 Obligations that follow, and they are not optional:
 
@@ -264,5 +285,9 @@ one component is redistributed, with permission, with credit.
 - [ ] CommonLibSSE-NG licence text pasted in, plus each transitive dependency.
 - [ ] Decoder/encoder header slots (§1) filled or confirmed unused.
 - [ ] PrismaUI author credited by name on the Nexus page.
+- [ ] **pWn3d1337 (Spell Hotbar 2) credited** on the Nexus page (credits AND
+      permissions), for the optional icon pack.
 - [ ] `python3 tools/make-release.py --scan-only` exits **0**.
-- [ ] Manifest reviewed — no path under `icons/sh/` other than `.gitkeep`.
+- [ ] Main archive reviewed — **no** path under `…/icons/sh/` other than
+      `.gitkeep`. The Spell Hotbar icons ship ONLY in the separate
+      `SkyManager-SpellHotbarIcons-v*.zip`, uploaded as its own optional file.

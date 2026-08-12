@@ -166,6 +166,39 @@ namespace Hotbar
 		std::uint32_t idleMs    = 0;
 		float         idleAlpha = 0.35f;
 
+		// ---- when the bar is on screen at all ------------------------------
+		// Rober, 2026-08-11: "hotkey to toggle hide - show only in combat
+		// option?". `showMode` is the AUTOMATIC rule, on top of the manual
+		// enabled/visible flags:
+		//   "always" — whenever enabled && visible (the default)
+		//   "combat" — only while you are in combat (+ `lingerMs` after it ends)
+		//   "drawn"  — only while a weapon or spell is drawn
+		//   "either" — in combat OR drawn, whichever comes first
+		// A bar you cannot see does not fire either (see kEffective note in
+		// main.cpp): "only in combat" that still cast Fireball out of combat
+		// would be a trap, and hiding it hands 1-8 back to vanilla favourites.
+		std::string showMode = "always";
+
+		// How long the bar stays up after combat ends, so it does not blink out
+		// between two draugr in the same room. Ignored unless showMode watches
+		// combat.
+		std::uint32_t lingerMs = 4000;
+
+		// Drop the bar while a menu owns the screen (inventory, map, magic, the
+		// console, the deck itself). On by default — an action bar drawn over
+		// your inventory is just clutter, and the keys are inert there anyway.
+		bool hideInMenus = true;
+
+		// Size of the EDITOR (the panel, the pickers, the key modal) — separate
+		// from `scale`, which is the bar itself. Rober, 2026-08-11: "no tiny
+		// text impossible to read (without ability to scale)". The bar could be
+		// resized from the day it shipped; its settings panel could not, so its
+		// type size was whatever it was and that is exactly the trap he means.
+		// Clamped 1.0–2.0 here (it only ever makes things BIGGER), and clamped
+		// AGAIN in the view against the real
+		// viewport so a big number can never push the panel off screen.
+		float uiScale = 1.0f;
+
 		// The art. "plain" is the honest default Rober asked for first ("just a
 		// plain action bar"); the others are the framed skins. A skin is pure
 		// CSS + an optional frame PNG in the view folder, so adding one later
@@ -187,7 +220,11 @@ namespace Hotbar
 		std::vector<SlotKey> slotKeys;
 
 		// Show / hide toggle key, same shape as every other open key in the
-		// plugin. code 0 = unbound; the bar is then toggled from the deck.
+		// plugin. code 0 = unbound, in which case the bar is toggled by the
+		// seeded "Action Bar: Show/Hide" deck action instead (which can carry
+		// its own trigger key from F2 — the two routes coexist deliberately,
+		// because this one is bindable from the bar's OWN editor where you are
+		// already standing when you want it).
 		std::string   keyDevice = "keyboard";
 		std::uint32_t keyCode   = 0;
 		std::string   keyLabel;

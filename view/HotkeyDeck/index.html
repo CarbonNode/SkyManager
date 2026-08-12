@@ -23,6 +23,8 @@
 <link rel="stylesheet" href="hd-wheel.css">
 <!-- Formation modal (Formation with Followers). Own sheet, same reason. -->
 <link rel="stylesheet" href="hd-formation.css">
+<!-- Keys tab: the load-order hotkey census. Own sheet, same reason. -->
+<link rel="stylesheet" href="keys-pane.css">
 <!-- Door lock modal (F7 on a door). Own sheet, same reason. -->
 <link rel="stylesheet" href="hd-door.css">
 <!-- SPID Gear manager + F7 card block (hd-spidgear.js). Own sheet, same reason. -->
@@ -794,6 +796,27 @@
   <div id="faces-host" class="fc-host"></div>
 </section>
 
+<!-- Keys tab: the load-order hotkey census (keys-pane.js owns everything
+     below the static skeleton; C++ keys_scan.cpp owns the scan). A SIBLING
+     of the other panes, per the tm-pane lesson below. -->
+<section id="kc-pane" class="hidden" aria-label="Keys">
+  <div class="kc-head">
+    <div class="kc-title">Key Census <span id="kc-count-chip"></span></div>
+    <input id="kc-filter" type="text" placeholder="Filter by key, mod or function… (Enter = top hit)"
+           autocomplete="off" spellcheck="false">
+    <button id="kc-spotlight" class="kc-btn" title="Then press any key to jump to its row">⌨ Find a key</button>
+    <button id="kc-conflicts-btn" class="kc-btn" title="Show only keys claimed by two or more mods">⚠ Conflicts</button>
+    <button id="kc-rescan" class="kc-btn" title="Re-census every hotkey in the load order">⟳ Rescan</button>
+  </div>
+  <div id="kc-legend" class="hidden"></div>
+  <div id="kc-progress" class="hidden">
+    <div id="kc-progress-text">Scanning…</div>
+    <div class="kc-progress-track"><div id="kc-progress-fill"></div></div>
+  </div>
+  <div id="kc-body"></div>
+  <div id="kc-empty" class="hidden"></div>
+</section>
+
 <!-- Time tab. A SIBLING of the other panes, not a child of them: this block
      was pasted inside #rm-body (the Rooms pane) when the tab landed, and
      app.js hides #rm-pane on every tab but Rooms — so the Time tab inherited
@@ -1173,6 +1196,7 @@
   <script src="containers-pane.js"></script>
   <script src="rooms-pane.js"></script>
   <script src="loot-pane.js"></script>
+  <script src="keys-pane.js"></script>
   <script src="anim-pane.js"></script>
   <script src="ostim-pane.js"></script>
   <script src="light-pane.js"></script>

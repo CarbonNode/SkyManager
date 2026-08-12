@@ -29,6 +29,17 @@ namespace Hotbar
 					return s;
 			return "plain";
 		}
+		std::string ClampShowMode(const std::string& s)
+		{
+			// A contract with both the view's <select> and the C++ evaluator.
+			// Anything unrecognised means "always", which is the safe direction:
+			// a typo hides nothing rather than hiding everything.
+			static const char* kModes[] = { "always", "combat", "drawn", "either" };
+			for (const char* k : kModes)
+				if (s == k)
+					return s;
+			return "always";
+		}
 		std::string ClampKind(const std::string& s)
 		{
 			static const char* kKinds[] = { "spell", "item", "entry", "combo" };
@@ -54,6 +65,28 @@ namespace Hotbar
 			return nullptr;
 		}
 
+		// Does the player know this spell? Deliberately the SAME definition
+		// SpellActions::KnownSpellsJson uses to build the list the picker offers
+		// — actor-base SPLO spells plus everything learned at runtime — because
+		// two different answers to "do you know this" would mean the bar greys
+		// out a spell the picker had just handed you.
+		bool KnowsSpell(RE::PlayerCharacter* player, RE::SpellItem* sp)
+		{
+			if (!player || !sp)
+				return false;
+			if (auto* base = player->GetActorBase()) {
+				if (auto* data = base->GetSpellList(); data && data->spells) {
+					for (std::uint32_t i = 0; i < data->numSpells; ++i)
+						if (data->spells[i] == sp)
+							return true;
+				}
+			}
+			for (auto* s : player->GetActorRuntimeData().addedSpells)
+				if (s == sp)
+					return true;
+			return false;
+		}
+
 		// How many of this object the player is carrying, and whether it is worn.
 		// Walking the inventory is the only way to learn IsWorn(), which is what
 		// draws the "equipped" ring on a weapon's button.
@@ -77,7 +110,13 @@ namespace Hotbar
 
 	int Config::VisibleSlots() const
 	{
-		const int n = std::max(1, cols) * std::max(1, rows);
+		// ⚠ std::max<int>, never a bare std::max: windows.h defines a function-like
+		// `max(a,b)` macro, so `std::max(` expands to `std::(...)` and the file
+		// stops compiling with a baffling "illegal token on right side of '::'".
+		// The explicit template argument puts a `<` after the name, which a
+		// function-like macro will not expand — the form every other file here
+		// already uses.
+		const int n = std::max<int>(1, cols) * std::max<int>(1, rows);
 		return std::clamp(n, 1, kMaxSlots);
 	}
 
@@ -146,6 +185,10 @@ namespace Hotbar
 			{ "showEmpty", c.showEmpty },
 			{ "idleMs", c.idleMs },
 			{ "idleAlpha", c.idleAlpha },
+			{ "uiScale", c.uiScale },
+			{ "showMode", ClampShowMode(c.showMode) },
+			{ "lingerMs", c.lingerMs },
+			{ "hideInMenus", c.hideInMenus },
 			{ "skin", ClampSkin(c.skin) },
 			{ "modHold", c.modHold },
 			{ "tickMs", c.tickMs },
@@ -183,6 +226,16 @@ namespace Hotbar
 		out.showEmpty = j.value("showEmpty", out.showEmpty);
 		out.idleMs = j.value("idleMs", out.idleMs);
 		out.idleAlpha = std::clamp(j.value("idleAlpha", out.idleAlpha), 0.05f, 1.0f);
+		// Floor 1.0, not 0.8: this slider exists to make the editor BIGGER.
+		// Letting it shrink would put the panel's type back under the readable
+		// floor the rest of this pass just established.
+		out.uiScale = std::clamp(j.value("uiScale", out.uiScale), 1.0f, 2.0f);
+		out.showMode = ClampShowMode(j.value("showMode", out.showMode));
+		// Capped at a minute: a "linger" long enough to outlast the fight is
+		// indistinguishable from "always", and would read as the setting being
+		// broken rather than as a very patient timer.
+		out.lingerMs = std::min<std::uint32_t>(60000, j.value("lingerMs", out.lingerMs));
+		out.hideInMenus = j.value("hideInMenus", out.hideInMenus);
 		out.skin = ClampSkin(j.value("skin", out.skin));
 		out.modHold = j.value("modHold", out.modHold);
 		out.tickMs = std::max<std::uint32_t>(200, j.value("tickMs", out.tickMs));
@@ -345,7 +398,7 @@ namespace Hotbar
 				bool known = false;
 				if (player) {
 					if (auto* sp = form->As<RE::SpellItem>())
-						known = player->HasSpell(sp);
+						known = KnowsSpell(player, sp);
 					else if (auto* sh = form->As<RE::TESShout>())
 						known = player->HasShout(sh);
 				}
@@ -356,10 +409,12 @@ namespace Hotbar
 				// with the Spell Deck's own resolve chain when no override is
 				// set — which is why they ride along on every tick.
 				if (auto* sp = form->As<RE::SpellItem>()) {
-					const auto st = sp->GetSpellType();
-					row["voice"] = st == RE::MagicSystem::SpellType::kPower ||
-					               st == RE::MagicSystem::SpellType::kLesserPower ||
-					               st == RE::MagicSystem::SpellType::kVoicePower;
+					// "Voice slot" is SpellActions' own definition, inverted from
+					// its IsHandSpell: anything that is not a plain kSpell goes
+					// through the game's Shout key rather than the instant caster.
+					// Same rule both sides, so the ring the bar draws matches the
+					// road the cast actually takes.
+					row["voice"] = sp->GetSpellType() != RE::MagicSystem::SpellType::kSpell;
 				} else if (form->As<RE::TESShout>()) {
 					row["voice"] = true;
 				}
