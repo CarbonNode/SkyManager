@@ -136,7 +136,14 @@ const MO_OVERWRITE_CANDIDATES = process.env.DECK_PORTAL_MO_OVERWRITE
   : [];
 const MO_OVERWRITE = MO_OVERWRITE_CANDIDATES.find((d) => {
   try { return fs.existsSync(d); } catch (_) { return false; }
-}) || MO_OVERWRITE_CANDIDATES[0];
+}) || MO_OVERWRITE_CANDIDATES[0] ||
+  /* No overwrite configured at all. The header comment promises "the portal
+   * simply does without", and every consumer builds paths off this constant
+   * with path.join — which THROWS on undefined, so an unset var used to kill
+   * the server at require time (proven on the rig, 2026-08-12). A temp-dir
+   * path that exists for nobody keeps every join valid and every exists()
+   * check honestly false. */
+  path.join(os.tmpdir(), 'deck-portal-no-overwrite');
 
 /* ======================================================================= */
 
@@ -147,7 +154,14 @@ const ICON_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'];
 
 const MAGIC_VIEW_DIR = path.join(MOD_HD, 'PrismaUI', 'views', 'MagicDeck');
 const DECK_VIEW_DIR = path.join(MOD_HD, 'PrismaUI', 'views', 'HotkeyDeck');
-const PORTRAIT_DIR = path.join(DECK_VIEW_DIR, 'portraits');
+/* Portraits can live in their OWN mod, apart from the deck's source mod —
+ * they are playthrough-personal content, and keeping them out of MOD_HD is
+ * what lets that mod be shared/redistributed without anyone's faces in it
+ * (on the rig: the "SkyManager - Personal Data" mod, 2026-08-12 split). MO2
+ * merges the two in-game; this env var is how the portal, which reads REAL
+ * folders, follows the same split. Unset = the classic layout inside MOD_HD. */
+const PORTRAIT_DIR = process.env.DECK_PORTAL_PORTRAIT_DIR ||
+  path.join(DECK_VIEW_DIR, 'portraits');
 
 /* Portraits are written by TWO different authors into two different places:
  *   - the portal (us) writes into the mod folder,          PORTRAIT_DIR
