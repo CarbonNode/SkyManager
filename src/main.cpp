@@ -341,6 +341,10 @@ namespace
 		std::vector<std::string> categories;  // user-defined tabs, in display order
 		std::string              notes;       // free-text Notes tab (in-game hotkey tracker)
 		std::vector<HotkeyEntry> entries;
+		// Action verbs the user DELETED from the seeded set. SeedMissingActions
+		// re-adds any missing built-in; without this record a delete silently
+		// un-deleted itself on the next launch (2026-08-12 audit).
+		std::vector<std::string> suppressedSeeds;
 		// Favorites Shelf (v0.15) — a VIEW-OWNED slice carried raw on purpose.
 		// Pins reference other slices' identities (entry ids, spell plugin+localId,
 		// domain ids), so the schema lives in hd-shelf.js and a key this DLL has
@@ -798,6 +802,7 @@ namespace
 			{ "categories", c.categories },
 			{ "notes", c.notes },
 			{ "entries", entries },
+			{ "suppressedSeeds", c.suppressedSeeds },
 			{ "shelf", c.shelf },
 			{ "wheel", c.wheel } };
 	}
@@ -830,15 +835,19 @@ namespace
 			{ "cs", has("Data/SKSE/Plugins/CommunityShaders.json") || dll("CommunityShaders") },
 			{ "virtualkey", has("Data/SKSE/Plugins/VirtualKey") || dll("VirtualKey") },
 			{ "bfl", plugin("Better Face Lighting - ENB Light.esp") },
+			// Prisma MCM Redux had NO flag until 2026-08-12 — its opener row was
+			// visible everywhere and synthesized "\\" on setups without the mod:
+			// the exact dead button the mod page promises cannot exist.
+			{ "prisma", has("Data/PrismaMCMRedux/PrismaCore.ini") || dll("PrismaMCMRedux") },
 		};
 		done = true;
 		// Build marker (hd-markers.json: "deck-mod-detection"): unconditional so it
 		// is reached the first time the deck opens.
-		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={}",
+		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={} prisma={}",
 			cached["omo"].get<bool>(), cached["additemmenu"].get<bool>(),
 			cached["followerorganizer"].get<bool>(), cached["nff"].get<bool>(),
 			cached["smf"].get<bool>(), cached["cs"].get<bool>(), cached["virtualkey"].get<bool>(),
-			cached["bfl"].get<bool>());
+			cached["bfl"].get<bool>(), cached["prisma"].get<bool>());
 		return cached;
 	}
 
@@ -1006,6 +1015,12 @@ namespace
 						continue;
 					c.entries.push_back(std::move(e));
 				}
+			}
+			// Deliberately-deleted built-ins (see the Config struct comment).
+			if (j.contains("suppressedSeeds") && j["suppressedSeeds"].is_array()) {
+				for (const auto& v : j["suppressedSeeds"])
+					if (v.is_string() && out.suppressedSeeds.size() < 64)
+						out.suppressedSeeds.push_back(v.get<std::string>());
 			}
 			// Favorites Shelf — raw passthrough (see the Config struct comment).
 			// The cap is the only rule: a runaway payload must not bloat
@@ -1766,12 +1781,31 @@ namespace
 				std::filesystem::copy_file(path, bak, std::filesystem::copy_options::overwrite_existing, ec);
 			}
 
-			std::ofstream out(path, std::ios::trunc);
-			if (!out.is_open()) {
-				logger::error("could not open {} for writing", path.string());
+			// Atomic replace: write the full text to a sibling temp file, flush,
+			// close, then rename over the real one. NTFS rename is atomic, so a
+			// crash mid-save leaves either the OLD file or the NEW file — never a
+			// torn fragment (the rig BSOD'd mid-session on 2026-08-12; a truncate-
+			// in-place write here would have gambled the whole config on timing).
+			auto tmp = path;
+			tmp += ".tmp";
+			{
+				std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
+				if (!out.is_open()) {
+					logger::error("could not open {} for writing", tmp.string());
+					return false;
+				}
+				out << text;
+				out.flush();
+				if (!out.good()) {
+					logger::error("config write to {} failed mid-stream", tmp.string());
+					return false;
+				}
+			}
+			std::filesystem::rename(tmp, path, ec);
+			if (ec) {
+				logger::error("atomic config swap failed: {}", ec.message());
 				return false;
 			}
-			out << text;
 			return true;
 		} catch (const std::exception& ex) {
 			logger::error("config save error: {}", ex.what());
@@ -2019,6 +2053,12 @@ namespace
 				[&](const HotkeyEntry& e) { return e.device == "action" && e.action == s.action; });
 			if (have)
 				continue;
+			// The user deleted this built-in on purpose — honor it. Without this
+			// check every launch resurrected the row (2026-08-12 audit).
+			if (std::find(c.suppressedSeeds.begin(), c.suppressedSeeds.end(), s.action) != c.suppressedSeeds.end()) {
+				logger::info("seed-suppress: '{}' stays deleted by user choice", s.action);
+				continue;
+			}
 			// Put the tab back too if it was deleted, or the entry would land in
 			// a category the tab bar does not draw.
 			if (std::find(c.categories.begin(), c.categories.end(), s.category) == c.categories.end())
@@ -2343,18 +2383,40 @@ namespace
 		}
 	}
 
-	// OMO's Cancel is an INPUT (right-click, its KeyConfiguration.txt default),
-	// not an export — so cancelling a delegated grab means synthesizing exactly
-	// the click OMO is listening for. Small lead-in so the deck-key press that
-	// asked for the cancel has fully cleared the input queue first.
+	// OMO's Cancel is an INPUT, not an export — so cancelling a delegated grab
+	// means synthesizing exactly the input OMO is listening for. That binding
+	// lives in its own KeyConfiguration.txt ("Cancel, Mouse, RightButton" by
+	// default, CSV, verified against the shipped file 2026-08-12), so read it at
+	// fire time and honor a rebind. Mouse buttons only: OMO's realistic cancel
+	// space is a click, and an unrecognized value falls back to the shipped
+	// right-click default with a log line naming what it saw.
+	int OmoCancelButton()
+	{
+		std::ifstream in("Data/Object Manipulation Overhaul/KeyConfiguration.txt");
+		std::string   line;
+		while (in && std::getline(in, line)) {
+			if (line.rfind("Cancel", 0) != 0)
+				continue;
+			if (line.find("LeftButton") != std::string::npos) return 0;
+			if (line.find("RightButton") != std::string::npos) return 1;
+			if (line.find("MiddleButton") != std::string::npos) return 2;
+			logger::warn("OMO cancel binding unrecognized ('{}') - using right-click", line);
+			return 1;
+		}
+		return 1;  // no file / no Cancel row: OMO's shipped default
+	}
+
+	// Small lead-in so the deck-key press that asked for the cancel has fully
+	// cleared the input queue first.
 	void SynthOmoCancelClick()
 	{
 		std::thread([]() {
 			using namespace std::chrono;
+			const int btn = OmoCancelButton();
 			std::this_thread::sleep_for(milliseconds(30));
-			SendMouseButton(1, true);
+			SendMouseButton(btn, true);
 			std::this_thread::sleep_for(milliseconds(45));
-			SendMouseButton(1, false);
+			SendMouseButton(btn, false);
 		}).detach();
 	}
 
