@@ -68,7 +68,7 @@ namespace MhiyhControl
 
 	// One op. `cmdJson`:
 	//
-	//   { "op":"setHome",    "formId":"0x0001A6A1", "name":"Lydia" }
+	//   { "op":"setHome",    "formId":"0x0001A6A1", "name":"Seraphine" }
 	//   { "op":"forgetHome", "formId":"…",          "name":"…" }
 	//   { "op":"repair",     "formId":"…",          "name":"…" }
 	//   { "op":"setSpot",    "formId":"…", "kind":2, "name":"…" }

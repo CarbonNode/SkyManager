@@ -216,7 +216,7 @@ namespace NffControl
 	// torch, everything IsWorn() reports — read off the engine so the answer
 	// cannot be filtered by whatever the ContainerMenu chooses to show.
 	//
-	//   { "ok":true, "who":"Lydia", "formId":"0x…",
+	//   { "ok":true, "who":"Seraphine", "formId":"0x…",
 	//     "following":true, "dead":false,
 	//     "about":{ "level":12, "race":"Nord", "female":true, "unique":true,
 	//               "essential":false, "protected":true, "ghost":false,

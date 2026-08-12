@@ -136,7 +136,7 @@
     "outfit-display-crop": "outfit crop saved: ",
     "outfit-crop-prune": "outfit crops pruned: ",
     "nff-spare-inventory": "nff: spare-inventory script resolved",
-    "domains-thumb-persist": "\"thumbSize\", d.thumbSize",
+    "domains-thumb-persist": "thumbSize",
     "item-source-banner": "open: item-source banner ->",
     "tab-scales": "tab sizes: {} tab(s) with a size override",
     "domain-photo-mode": "domains: photo mode for",
@@ -159,7 +159,7 @@
     "nff-system-ops": "nff: player chest {}",
     "wardrobe-auto-track": "auto-tracked",
     "nff-combat-gear": "nff-gear: sent ",
-    "nff-waiting-flag": "kWaitingForPlayer",
+    "nff-party-where-waiting": "whereId",
     "scene-stage-photo": "scene: weather override released",
     "photo-exposure": "portrait: exposure {:+.2f} stop(s) applied to '{}'",
     "room-guard-ring": "rooms: ring uses",
@@ -184,6 +184,9 @@
     "loot-safe-label": "loot: safe-container name labelling available",
     "loot-safe-vision": "loot: dedicated safe-vision toggle available",
     "spell-cat-icons": "portal spell-category icon",
+    "hotbar-config": "hotbar: {}x{} buttons, skin={}",
+    "hotbar-fire": "hotbar-fire: page {} button {}",
+    "hotbar-view": "hotbar: view created + listeners registered",
     "finances-live-apply": "live api: finances applied",
     "faces-catalogue": "faces-catalogue.json",
     "gear-toggle-bridge": "gear-toggle: {} {}",
@@ -238,7 +241,9 @@
     "item-icons-list": "item icons: {} listed render(s) queued",
     "icon-bridge": "icon-bridge: generated",
     "icon-bridge-inert": "the deck uses its built-in SVG glyphs",
-    "portal-host": "portal-host: started the Deck Portal on"
+    "portal-host": "portal-host: started the Deck Portal on",
+    "wheel-spell-equip": "hdOmniEquip: equip-toggle",
+    "keys-scan": "keys-scan complete:"
   },
   "view": {
     "wardrobe-spid.js": {
@@ -454,7 +459,8 @@
       "home-default-landing": "ui.tab = 'home';",
       "home-hookinto": "window.HomePane",
       "spidgear-modal-keys": "HDSpidGear.isOpen",
-      "door-modal-keys": "HDDoor.isOpen"
+      "door-modal-keys": "HDDoor.isOpen",
+      "spell-icon-resolve": "window.hdSpellIconPath"
     },
     "index.html": {
       "followers-scale-wrapper": "id=\"fd-scale\"",
@@ -519,13 +525,15 @@
     "hd-wheel.js": {
       "wheel-module": "var HDWheel = (function",
       "wheel-inv-provider": "id: 'inventory'",
-      "wheel-party-card": "function tryPartyCard"
+      "wheel-party-card": "function tryPartyCard",
+      "wheel-spell-modes": "left: { label: 'Equip \u2014 left hand'"
     },
     "hd-wheel.css": {
       "wheel-css": "#hd-wheel .whl-slot {"
     },
     "hd-portal.js": {
       "portal-button": "window.ptState = function"
-    }
+    },
+    "keys-pane": "kcResultData"
   }
 }

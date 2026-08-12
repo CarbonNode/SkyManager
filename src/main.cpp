@@ -53,12 +53,14 @@
 #include "ask.h"
 #include "room_guard.h"
 #include "loot_highlight.h"
+#include "keys_scan.h"   // Keys tab: the load-order hotkey census (kc* bridge)
 #include "no_auto_gear.h"
 #include "spid_gear.h"
 #include "actor_identity.h"   // sg* handlers parse durable npc/item ids
 #include "quick_light.h"
 #include "facelight.h"
 #include "followers_hud.h"
+#include "hotbar.h"
 #include "anim_actions.h"
 #include "ostim_deck.h"
 #include "follower_tune.h"
@@ -125,6 +127,31 @@ namespace
 	// The next real key press is captured as the HUD toggle key while this is set
 	// (armed from the deck's "Set show/hide key" control).
 	std::atomic<bool>           g_hudKeyArming{ false };
+
+	// Hotbar — the FOURTH PrismaUI view (MagicDeck/hotbar.html), and the HUD's
+	// twin in every structural way: created eagerly, Shown but never Focused
+	// during play, Focused only for the edit panel. It lives in the MagicDeck
+	// view folder so `icons/…` resolves to the Spell Deck's pool (see hotbar.h).
+	PrismaView                  g_hbView = 0;
+	std::atomic<bool>           g_hbViewReady{ false };
+	std::atomic<bool>           g_hbEditing{ false };
+	// The modifier page the bar is currently showing. Written by the poller (or
+	// by the latch), read by the input sink to decide WHICH page a slot key
+	// fires — so the picture on screen and the action that runs can never
+	// disagree, which is the one bug a mod-key bar must not have.
+	std::atomic<int>            g_hbLivePage{ 0 };
+	// Tap-to-latch mode's sticky page (config.modHold == false).
+	std::atomic<int>            g_hbLatchPage{ 0 };
+	// Whether the view is currently Shown, so the 150 ms auto-visibility beat
+	// only calls Show/Hide when the answer actually CHANGED.
+	std::atomic<bool>           g_hbShown{ false };
+	// The EFFECTIVE visibility (master switch AND manual toggle AND the
+	// automatic showMode rule). The input sink reads this, not the raw config
+	// flags: a bar that is hidden must not fire.
+	std::atomic<bool>           g_hbEffVisible{ false };
+	// When the player was last seen in combat, for showMode's linger.
+	std::atomic<long long>      g_hbLastCombatMs{ 0 };
+
 	std::atomic<bool>           g_magicViewRequested{ false };
 	std::atomic<bool>           g_magicOpen{ false };
 	std::atomic<bool>           g_magicFocusPaused{ false };
@@ -628,6 +655,7 @@ namespace
 	FollowerTune::Config g_tuneConfig;  // guarded by g_configMutex, persisted under "tuning"
 	LootHighlight::Config g_lootConfig;  // guarded by g_configMutex, persisted under "loot"
 	FollowersHud::Config g_hudConfig;  // guarded by g_configMutex, persisted under "hud"
+	Hotbar::Config g_hbConfig;  // guarded by g_configMutex, persisted under "hotbar"
 	NoAutoGear::Config g_ngConfig;  // guarded by g_configMutex, persisted under "noAutoGear"
 	SpidGear::Config g_spidConfig;  // guarded by g_configMutex, persisted under "spidGear"
 
@@ -1698,7 +1726,8 @@ namespace
 		const ContainerConfig& ct,
 		const Finance::Config& fin, const Wardrobe::Config& wd, const NffOutfits::Config& nf,
 		const RoomGuard::Config& rg, const FollowerTune::Config& tn, const LootHighlight::Config& lt,
-		const FollowersHud::Config& hd, const NoAutoGear::Config& ng, const SpidGear::Config& sg)
+		const FollowersHud::Config& hd, const NoAutoGear::Config& ng, const SpidGear::Config& sg,
+		const Hotbar::Config& hb)
 	{
 		std::lock_guard w(g_writeMutex);  // one writer at a time; never nested in g_configMutex
 		try {
@@ -1726,6 +1755,7 @@ namespace
 			j["hud"] = FollowersHud::ToJson(hd);
 			j["noAutoGear"] = NoAutoGear::ToJson(ng);
 			j["spidGear"] = SpidGear::ToJson(sg);
+			j["hotbar"] = Hotbar::ToJson(hb);
 			const std::string text = j.dump(2);
 
 			// One rotating backup, so even a torn write (power loss mid-flush) is
@@ -1766,6 +1796,7 @@ namespace
 		FollowersHud::Config hd;
 		NoAutoGear::Config ng;
 		SpidGear::Config sg;
+		Hotbar::Config hb;
 		{
 			std::lock_guard l(g_configMutex);
 			c = g_config;
@@ -1782,8 +1813,9 @@ namespace
 			hd  = g_hudConfig;
 			ng  = g_ngConfig;
 			sg  = g_spidConfig;
+			hb  = g_hbConfig;
 		}
-		return WriteConfigFile(c, m, f, d, ct, fin, wd, nf, rg, tn, lt, hd, ng, sg);
+		return WriteConfigFile(c, m, f, d, ct, fin, wd, nf, rg, tn, lt, hd, ng, sg, hb);
 	}
 
 	// A native action added in a new build only reaches a player who already has
@@ -1904,6 +1936,16 @@ namespace
 			// favorites" in the desc are omni keywords on purpose.
 			{ "wheel", "hd-wheel-open", "Wheel Menu",
 			  "Open the radial wheel - a ring of anything you pinned to it: weapons, armour, potions, followers, outfits, spells, places. Also on Ctrl + your deck key (radial ring circle quick wheel favorites)", "Utilities" },
+			// Hotbar (2026-08-11). TWO seeds, because they are two different
+			// jobs: one shows/hides the bar mid-play, the other opens the panel
+			// where you build it. Both unbound — the SETUP one is the entry
+			// point, so its description is written to be findable in omni by
+			// someone who does not yet know the bar exists ("action bar hotbar
+			// spell bar wow buttons").
+			{ "hotbar-toggle", "hd-hotbar-toggle", "Action Bar: Show/Hide",
+			  "Show or hide the on-screen action bar without changing anything on it (hotbar spell bar quick bar buttons wow)", "Utilities" },
+			{ "hotbar-edit", "hd-hotbar-edit", "Action Bar: Set Up",
+			  "Open the action bar's editor - choose how many buttons, one or two rows, horizontal or vertical, where it sits, which key fires each button, and what goes on the shift/ctrl/alt pages (hotbar spell bar action bar wow configure resize icons)", "Utilities" },
 		};
 
 		// Plain key entries added in a new build. Keyed by ID rather than by a
@@ -2138,6 +2180,16 @@ namespace
 				SpidGear::Config sg;
 				SpidGear::FromJson(
 					j.is_object() ? j.value("spidGear", json::object()) : json::object(), sg);
+				// Hotbar: SEED only when the slice is absent. FromJson on a
+				// present slice must never be preceded by SeedDefaults, or a bar
+				// the player deliberately emptied would refill itself on every
+				// load. FromJson normalises the page/slot array lengths, so a
+				// config written by an older build still comes back whole.
+				Hotbar::Config hb;
+				if (j.is_object() && j.contains("hotbar"))
+					Hotbar::FromJson(j["hotbar"], hb);
+				else
+					Hotbar::SeedDefaults(hb);
 				std::lock_guard l(g_configMutex);
 				g_config = std::move(c);
 				g_magicConfig = std::move(m);
@@ -2153,6 +2205,15 @@ namespace
 				g_hudConfig = std::move(hd);
 				g_ngConfig = std::move(ng);
 				g_spidConfig = std::move(sg);
+				g_hbConfig = std::move(hb);
+				// Build marker (hd-markers.json: "hotbar-config"). Unconditional so
+				// it is REACHED on every successful load — a marker inside an `if`
+				// that never fires is one the deploy check can never see.
+				logger::info("hotbar: {}x{} buttons, skin={}, {} modifier page(s) on — config loaded",
+					g_hbConfig.cols, g_hbConfig.rows, g_hbConfig.skin,
+					(g_hbConfig.pages.size() > 3
+						? (g_hbConfig.pages[1].enabled + g_hbConfig.pages[2].enabled + g_hbConfig.pages[3].enabled)
+						: 0));
 				logger::info("followers HUD: enabled={} orient={} key={} — config loaded",
 					g_hudConfig.enabled, g_hudConfig.orient, g_hudConfig.keyCode);
 				logger::info("loaded {} hotkeys + {} spells from {}",
@@ -2177,6 +2238,7 @@ namespace
 			g_roomConfig = RoomGuard::Config{};
 			LootHighlight::FromJson(json::object(), g_lootConfig);  // seeds the category list
 			NoAutoGear::FromJson(json::object(), g_ngConfig);      // seeds the distributor list
+			Hotbar::SeedDefaults(g_hbConfig);                      // 8 empty buttons on 1..8
 			return;
 		}
 		logger::info("no config at {} — writing seeded defaults", path.string());
@@ -2193,6 +2255,7 @@ namespace
 			g_roomConfig = RoomGuard::Config{};
 			LootHighlight::FromJson(json::object(), g_lootConfig);  // seeds the category list
 			NoAutoGear::FromJson(json::object(), g_ngConfig);      // seeds the distributor list
+			Hotbar::SeedDefaults(g_hbConfig);                      // 8 empty buttons on 1..8
 		}
 		PersistAll();
 	}
@@ -2546,6 +2609,36 @@ namespace
 		std::thread(RoomGuardTickLoop).detach();
 		std::thread(LootTickLoop).detach();
 		std::thread(NoAutoGearTickLoop).detach();
+
+		// Keys tab: how the scan learns the deck's OWN claims (open key +
+		// every entry trigger). Called at scan time under the config lock, so
+		// the census always reflects live state, never a stale snapshot.
+		KeysScan::SetOwnKeysProvider([]() {
+			std::vector<KeysScan::OwnBinding> out;
+			std::lock_guard                   l(g_configMutex);
+			const auto&                       s = g_config.settings;
+			if (s.openDevice == "keyboard" && s.openCode) {
+				out.push_back(KeysScan::OwnBinding{
+					"Open deck" + (s.openLabel.empty() ? "" : " (" + s.openLabel + ")"),
+					s.openCode, "" });
+			}
+			for (const auto& e : g_config.entries) {
+				if (e.trigDevice != "keyboard" || !e.trigCode) {
+					continue;
+				}
+				std::string mods;
+				for (const auto m : e.trigMods) {
+					if (m == 0x2A || m == 0x36) mods += "Shift+";
+					else if (m == 0x1D || m == 0x9D) mods += "Ctrl+";
+					else if (m == 0x38 || m == 0xB8) mods += "Alt+";
+				}
+				if (!mods.empty()) {
+					mods.pop_back();
+				}
+				out.push_back(KeysScan::OwnBinding{ e.name, e.trigCode, std::move(mods) });
+			}
+			return out;
+		});
 	}
 
 	// ------------------------------------------------------- palette open/close
@@ -2648,6 +2741,12 @@ namespace
 	void        CreateHudView();
 	void        StartHudTicker();
 	void        HudToggleVisible();
+	// Hotbar — defined with the rest of its block far below, but FireAction (a
+	// long way above it) dispatches the two seeded actions, so it needs these.
+	void        CreateHotbarView();
+	void        StartHotbarTicker();
+	void        HbToggleVisible();
+	void        HbOpenEdit();
 	void        OnJsFolCropSave(const char* data);
 	bool        PrunePortraitCrops();
 	// Same reason: the crosshair snapshot goes out with the open payload, so the
@@ -2705,6 +2804,9 @@ namespace
 	void OnJsRoomState(const char* data);
 	void OnJsRoomNpcs(const char* data);
 	void OnJsTimeGet(const char* data);
+	void OnJsKeysScan(const char* data);
+	void OnJsKeysState(const char* data);
+	void OnJsKeysResult(const char* data);
 	void OnJsTimeWait(const char* data);
 	void OnJsRoomSave(const char* data);
 	void OnJsRoomLog(const char* data);
@@ -3180,6 +3282,11 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "rgNpcs", OnJsRoomNpcs);
 		g_prisma->RegisterJSListener(g_view, "tmGet", OnJsTimeGet);
 		g_prisma->RegisterJSListener(g_view, "tmWait", OnJsTimeWait);
+		// Keys tab. Requests kcScan/kcState/kcResult; replies kcStateResult/
+		// kcResultData — names disjoint per the deck law.
+		g_prisma->RegisterJSListener(g_view, "kcScan", OnJsKeysScan);
+		g_prisma->RegisterJSListener(g_view, "kcState", OnJsKeysState);
+		g_prisma->RegisterJSListener(g_view, "kcResult", OnJsKeysResult);
 		g_prisma->RegisterJSListener(g_view, "rgSave", OnJsRoomSave);
 		g_prisma->RegisterJSListener(g_view, "rgLog", OnJsRoomLog);
 		g_prisma->RegisterJSListener(g_view, "rgRing", OnJsRoomRing);
@@ -3974,6 +4081,25 @@ namespace
 					return;
 				g_pendingTab = "wheel";
 				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// Hotbar. Both act on a view of our own, not on a crosshair target, so a
+		// trigger key needs no snapshot. Show/hide is safe with the palette open
+		// (it only flips a flag), but SET UP must close the deck first: two
+		// PrismaUI views cannot hold focus at once, and the edit panel needs it.
+		if (action == "hotbar-toggle") {
+			SKSE::GetTaskInterface()->AddTask([]() { HbToggleVisible(); });
+			return;
+		}
+		if (action == "hotbar-edit") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				ClosePalette();
+				// One frame later, so the deck has actually let go of focus
+				// before we ask for it — grabbing it in the same task is how you
+				// get a view that is Shown, Focused and deaf.
+				SKSE::GetTaskInterface()->AddTask([]() { HbOpenEdit(); });
 			});
 			return;
 		}
@@ -8123,6 +8249,654 @@ namespace
 		}).detach();
 	}
 
+	// ================================================================== Hotbar
+	// The always-on action bar (view/MagicDeck/hotbar.html). Structurally the
+	// Followers HUD's twin — created eagerly, Shown but never Focused during
+	// play — but where the HUD only DISPLAYS, this one RUNS things, so the
+	// interesting parts are the page selection and the fire dispatch.
+	//
+	// Nothing here implements an action. Every verb is one the deck already
+	// ships and has already play-proven: SpellActions::Cast for spells and
+	// voice powers, WheelMenu::Use for anything in the bag, FireEntryById for
+	// deck actions and key chords, SpellActions::CastSequence for a combo. The
+	// bar is a new SURFACE, not a second implementation — which is also why a
+	// slot can hold "literally any" of them.
+	//
+	// Marker for the deploy check: "hotbar-fire".
+
+	std::string HbConfigJson()
+	{
+		std::lock_guard l(g_configMutex);
+		return Hotbar::ToJson(g_hbConfig).dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
+	// Live slot state for the page currently on screen. MAIN THREAD ONLY.
+	//
+	// Hotbar::LiveJson resolves FORMS (spells, items) but knows nothing about the
+	// deck's own entries or the Spell Deck's combos — those are ids into config
+	// slices it cannot see. So their names are filled in here. Without this a
+	// deck-action button has no name AND no live name, and the view draws its
+	// initials-of-nothing fallback: a bare "·" (seen 2026-08-11).
+	//
+	// Deliberately resolved on every tick rather than copied into the slot's
+	// `label` at assign time: this way renaming the deck entry renames the
+	// button, and a deleted one can be reported honestly instead of showing a
+	// name for something that is gone.
+	std::string HbLiveJson()
+	{
+		Hotbar::Config c;
+		{
+			std::lock_guard l(g_configMutex);
+			c = g_hbConfig;
+		}
+		auto j = json::parse(Hotbar::LiveJson(c, g_hbLivePage.load()), nullptr, false);
+		if (!j.is_object() || !j.contains("slots") || !j["slots"].is_array())
+			return j.is_discarded() ? std::string(R"({"page":0,"slots":[]})") : j.dump(-1, ' ', false, json::error_handler_t::replace);
+
+		std::lock_guard l(g_configMutex);
+		for (auto& row : j["slots"]) {
+			if (!row.is_object())
+				continue;
+			const std::string kind = row.value("kind", std::string());
+			const std::string ref  = row.value("refId", std::string());
+			if (ref.empty())
+				continue;
+			bool found = false;
+			if (kind == "entry") {
+				for (const auto& e : g_config.entries)
+					if (e.id == ref) { row["name"] = e.name; found = true; break; }
+			} else if (kind == "combo") {
+				for (const auto& cb : g_magicConfig.combos)
+					if (cb.id == ref) { row["name"] = cb.name; found = true; break; }
+			} else {
+				continue;
+			}
+			if (!found) {
+				// It really is gone — say so rather than drawing a nameless
+				// button that silently does nothing when pressed.
+				row["ok"] = false;
+				row["name"] = kind == "combo" ? "Missing combo" : "Missing action";
+				row["msg"] = kind == "combo" ? "That combo was deleted"
+											 : "That deck action was deleted";
+			}
+		}
+		return j.dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
+	// Should the bar be on screen RIGHT NOW? Three layers, in order: the master
+	// switch, the manual show/hide, then the automatic rule (showMode). MAIN
+	// THREAD ONLY — it reads the player actor and the menu stack.
+	//
+	// Editing always wins: you cannot place a bar you cannot see, and an editor
+	// that vanished because you sheathed your sword would be maddening.
+	bool HbWantVisible()
+	{
+		if (g_hbEditing.load())
+			return true;
+
+		std::string   mode;
+		std::uint32_t linger;
+		bool          enabled, visible, hideInMenus;
+		{
+			std::lock_guard l(g_configMutex);
+			enabled     = g_hbConfig.enabled;
+			visible     = g_hbConfig.visible;
+			mode        = g_hbConfig.showMode;
+			linger      = g_hbConfig.lingerMs;
+			hideInMenus = g_hbConfig.hideInMenus;
+		}
+		if (!enabled || !visible)
+			return false;
+
+		if (hideInMenus) {
+			// GameIsPaused covers the lot — inventory, map, magic, the console,
+			// and our own palette — with one call and no menu-name list to keep
+			// in step with whatever UI mod is installed this week.
+			auto* ui = RE::UI::GetSingleton();
+			if (ui && ui->GameIsPaused())
+				return false;
+		}
+		if (mode == "always")
+			return true;
+
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player)
+			return true;   // no player to ask -> do not hide the bar on a guess
+
+		const bool inCombat = player->IsInCombat();
+		if (inCombat)
+			g_hbLastCombatMs = NowMs();
+
+		// The linger: keep the bar up for a beat after the fight so it does not
+		// blink out between two draugr in the same room.
+		const bool combatish = inCombat ||
+			(linger && g_hbLastCombatMs.load() &&
+				(NowMs() - g_hbLastCombatMs.load()) < static_cast<long long>(linger));
+
+		bool drawn = false;
+		if (auto* st = player->AsActorState())
+			drawn = st->IsWeaponDrawn();
+
+		if (mode == "combat")
+			return combatish;
+		if (mode == "drawn")
+			return drawn;
+		if (mode == "either")
+			return combatish || drawn;
+		return true;
+	}
+
+	void HbApplyVisibility()
+	{
+		if (!g_prisma || !g_hbView || !g_hbViewReady.load())
+			return;
+		const bool want = HbWantVisible();
+		// The keys follow the PICTURE, deliberately. "Show only in combat" that
+		// still cast Fireball while the bar was hidden would be a trap, and a
+		// hidden bar handing 1-8 back to vanilla favourites is the behaviour you
+		// actually want out of combat.
+		g_hbEffVisible = want;
+		if (want == g_hbShown.load())
+			return;   // Show/Hide every 150 ms is Ultralight work for nothing
+		g_hbShown = want;
+		if (want)
+			g_prisma->Show(g_hbView);
+		else
+			g_prisma->Hide(g_hbView);
+	}
+
+	void HbPushConfig()
+	{
+		if (g_prisma && g_hbView && g_hbViewReady.load())
+			g_prisma->Invoke(g_hbView, ("hbConfig(" + HbConfigJson() + ")").c_str());
+	}
+
+	// Push live state, but only when it actually changed — re-rendering a
+	// static bar at 1.4 Hz is Ultralight work for nothing. `force` after a
+	// config change or a page swap, where the old string is meaningless.
+	void HbPushLive(bool force)
+	{
+		static std::string s_last;
+		if (!g_prisma || !g_hbView || !g_hbViewReady.load())
+			return;
+		std::string js = HbLiveJson();
+		if (!force && js == s_last)
+			return;
+		s_last = js;
+		g_prisma->Invoke(g_hbView, ("hbLive(" + js + ")").c_str());
+	}
+
+	// The instant half of a page swap: the stored slots (icons, labels, keys)
+	// are already in the view, so this repaints the whole bar on the very next
+	// frame; the live rebuild that follows only corrects counts and greying.
+	void HbPushPage()
+	{
+		if (g_prisma && g_hbView && g_hbViewReady.load())
+			g_prisma->Invoke(g_hbView,
+				("hbPage(" + json{ { "page", g_hbLivePage.load() } }
+					.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
+	}
+
+	// Everything the player can put on a button, in the shape the picker wants:
+	// {name, plugin, localId, formId, refId, detail, school/element/tier}.
+	// MAIN THREAD ONLY (it reads the spellbook and the inventory).
+	std::string HbCatalogJson()
+	{
+		json out{ { "spells", json::array() }, { "items", json::array() },
+			{ "entries", json::array() }, { "combos", json::array() } };
+
+		// ---- spells, powers, shouts (the Spell Deck's own enumeration) ----
+		{
+			auto j = json::parse(SpellActions::KnownSpellsJson(), nullptr, false);
+			if (j.is_array()) {
+				for (auto& s : j) {
+					if (!s.is_object())
+						continue;
+					json r{
+						{ "name", s.value("name", std::string()) },
+						{ "plugin", s.value("plugin", std::string()) },
+						{ "localId", s.value("localId", 0u) },
+						{ "formId", s.value("formId", 0u) },
+						{ "school", s.value("school", std::string()) },
+						{ "element", s.value("element", std::string()) },
+						{ "archetype", s.value("archetype", std::string()) },
+						{ "tier", s.value("tier", std::string()) },
+						{ "type", s.value("type", std::string()) },
+						{ "voice", s.value("slot", std::string()) == "voice" },
+					};
+					// `detail` is the searchable second line — the picker matches
+					// on it too, so "destruction" or "shout" finds things whose
+					// NAME says neither.
+					std::string detail = s.value("school", std::string());
+					if (detail.empty())
+						detail = s.value("type", std::string());
+					const std::string tier = s.value("tier", std::string());
+					if (!tier.empty())
+						detail += (detail.empty() ? "" : " · ") + tier;
+					r["detail"] = detail;
+					out["spells"].push_back(std::move(r));
+				}
+			}
+		}
+
+		// ---- everything in the bag (the wheel's own enumeration) ----------
+		{
+			auto j = json::parse(WheelMenu::InventoryJson(), nullptr, false);
+			if (j.is_object() && j.contains("items") && j["items"].is_array()) {
+				for (auto& it : j["items"]) {
+					if (!it.is_object())
+						continue;
+					// ⚠ WheelMenu emits formId as a HEX STRING; the hotbar stores
+					// localId as a NUMBER (it is what TESDataHandler wants). Parse
+					// here rather than teaching the view two identity shapes.
+					const std::uint32_t local =
+						ActorIdentity::ParseHex(it.value("formId", std::string()));
+					if (!local)
+						continue;
+					const std::string kind = it.value("kind", std::string());
+					const int         cnt  = it.value("count", 0);
+					std::string detail = kind;
+					if (cnt > 1)
+						detail += " · x" + std::to_string(cnt);
+					out["items"].push_back(json{
+						{ "name", it.value("name", std::string()) },
+						{ "plugin", it.value("plugin", std::string()) },
+						{ "localId", local },
+						{ "formId", local },
+						{ "detail", detail },
+					});
+				}
+			}
+		}
+
+		// ---- deck entries: actions, key chords, vkeys --------------------
+		{
+			std::lock_guard l(g_configMutex);
+			for (const auto& e : g_config.entries) {
+				out["entries"].push_back(json{
+					{ "name", e.name },
+					{ "refId", e.id },
+					{ "detail", e.category.empty() ? std::string("Deck") : e.category },
+				});
+			}
+			for (const auto& cb : g_magicConfig.combos) {
+				out["combos"].push_back(json{
+					{ "name", cb.name },
+					{ "refId", cb.id },
+					{ "detail", std::to_string(cb.spells.size()) + " spells" },
+				});
+			}
+		}
+		return out.dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
+	// Run the button. MAIN THREAD ONLY. Every branch ends in a verb that
+	// already exists; an unresolvable slot gets an honest notification rather
+	// than a button that silently does nothing.
+	void HbFireSlot(int page, int i)
+	{
+		Hotbar::Slot s;
+		{
+			std::lock_guard l(g_configMutex);
+			const int p = std::clamp(page, 0, Hotbar::kPageCount - 1);
+			if (p >= static_cast<int>(g_hbConfig.pages.size()))
+				return;
+			const auto& slots = g_hbConfig.pages[p].slots;
+			if (i < 0 || i >= static_cast<int>(slots.size()))
+				return;
+			s = slots[i];
+		}
+		if (s.Empty())
+			return;
+
+		// Flash first: the bar never has focus, so this is the ONLY feedback
+		// that the key landed, and it must not wait on the action.
+		if (g_prisma && g_hbView && g_hbViewReady.load())
+			g_prisma->Invoke(g_hbView,
+				("hbFlash(" + json{ { "i", i } }.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
+
+		if (s.kind == "spell") {
+			logger::info("hotbar-fire: page {} button {} -> spell {}|{:X}", page, i + 1, s.plugin, s.localId);
+			SpellActions::Cast(s.plugin, s.localId, s.formId);
+			return;
+		}
+		if (s.kind == "item") {
+			logger::info("hotbar-fire: page {} button {} -> item {}|{:X}", page, i + 1, s.plugin, s.localId);
+			const std::string req = json{
+				{ "formId", ActorIdentity::HexOf(s.localId) },
+				{ "plugin", s.plugin },
+			}.dump(-1, ' ', false, json::error_handler_t::replace);
+			const auto res = json::parse(WheelMenu::Use(req), nullptr, false);
+			// The wheel answers {ok,msg} instead of toasting, so a refusal is a
+			// useful sentence — say it, or the button looks broken.
+			if (res.is_object() && !res.value("ok", false)) {
+				const std::string msg = res.value("msg", std::string("That didn't work"));
+				RE::DebugNotification(msg.c_str());
+			}
+			return;
+		}
+		if (s.kind == "entry") {
+			logger::info("hotbar-fire: page {} button {} -> entry '{}'", page, i + 1, s.refId);
+			FireEntryById(s.refId, "hotbar");
+			return;
+		}
+		if (s.kind == "combo") {
+			ComboEntry cb;
+			bool       found = false;
+			{
+				std::lock_guard l(g_configMutex);
+				for (const auto& c : g_magicConfig.combos)
+					if (c.id == s.refId) { cb = c; found = true; break; }
+			}
+			if (!found) {
+				RE::DebugNotification("That combo is gone");
+				return;
+			}
+			std::vector<SpellActions::SpellRef> refs;
+			refs.reserve(cb.spells.size());
+			for (const auto& m : cb.spells)
+				refs.push_back(SpellActions::SpellRef{ m.plugin, m.localId, m.formId });
+			logger::info("hotbar-fire: page {} button {} -> combo '{}' ({} spells)",
+				page, i + 1, cb.name, refs.size());
+			SpellActions::CastSequence(cb.name, std::move(refs), 150, nullptr);
+			return;
+		}
+	}
+
+	// ---- view -> C++ listeners (registered on g_hbView) ------------------
+
+	void OnJsHbReady(const char*)
+	{
+		g_hbViewReady = true;
+		SKSE::GetTaskInterface()->AddTask([]() {
+			HbPushConfig();
+			HbPushLive(true);
+			HbApplyVisibility();
+			if (g_prisma && g_hbView) {
+				// The icon pool, pushed once per session exactly as the Spell
+				// Deck gets it — this view is in that folder so the paths match.
+				g_prisma->Invoke(g_hbView, ("hbIconIndex(" + IconIndexJson() + ")").c_str());
+				g_prisma->Invoke(g_hbView, ("hbIcons(" + CustomIconsJson() + ")").c_str());
+			}
+		});
+	}
+
+	void OnJsHbLog(const char* data)
+	{
+		if (data && data[0])
+			logger::info("[hotbar] {}", data);
+	}
+
+	// The whole editable Config, written after any edit. Round-tripped through
+	// Hotbar::FromJson so every clamp and every array-length normalisation
+	// happens in ONE place — the view is not trusted to have got them right.
+	void OnJsHbSave(const char* data)
+	{
+		const auto j = json::parse(data ? data : "", nullptr, false);
+		if (j.is_discarded() || !j.is_object()) {
+			logger::error("hbSave: rejected invalid payload");
+			return;
+		}
+		{
+			std::lock_guard l(g_configMutex);
+			// enabled/visible are NOT in the view's payload (it has no business
+			// switching the feature off), so carry them across explicitly.
+			const bool wasEnabled = g_hbConfig.enabled;
+			const bool wasVisible = g_hbConfig.visible;
+			Hotbar::FromJson(j, g_hbConfig);
+			g_hbConfig.enabled = wasEnabled;
+			g_hbConfig.visible = wasVisible;
+		}
+		PersistAll();
+		SKSE::GetTaskInterface()->AddTask([]() { HbPushLive(true); });
+	}
+
+	void OnJsHbEditDone(const char*)
+	{
+		g_hbEditing = false;
+		SKSE::GetTaskInterface()->AddTask([]() {
+			if (g_prisma && g_hbView)
+				g_prisma->Unfocus(g_hbView);
+			HbApplyVisibility();
+			HbPushConfig();   // re-place the bar without the edit-panel offset
+		});
+	}
+
+	// A click on a button in edit mode never fires it (that would cast a spell
+	// at yourself while you were rearranging); this is here for a future
+	// click-to-fire and for the portal.
+	void OnJsHbFire(const char* data)
+	{
+		const auto j = json::parse(data ? data : "", nullptr, false);
+		if (j.is_discarded() || !j.is_object())
+			return;
+		const int page = j.value("page", 0);
+		const int i    = j.value("i", -1);
+		if (i < 0)
+			return;
+		SKSE::GetTaskInterface()->AddTask([page, i]() { HbFireSlot(page, i); });
+	}
+
+	// The view already wrote the slot into its own copy and sent the whole
+	// config via hbSave; this is the hook for anything that must happen on the
+	// game side when a button changes. Kept so the bridge is symmetrical and a
+	// future "verify this is still castable" has somewhere to live.
+	void OnJsHbAssign(const char* data)
+	{
+		if (data && data[0])
+			logger::info("hotbar: button assigned {}", data);
+		SKSE::GetTaskInterface()->AddTask([]() { HbPushLive(true); });
+	}
+
+	void OnJsHbCatalog(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			if (!g_prisma || !g_hbView || !g_hbViewReady.load())
+				return;
+			g_prisma->Invoke(g_hbView, ("hbCatalogData(" + HbCatalogJson() + ")").c_str());
+			// A fresh listing of icons/custom every time the picker opens, so a
+			// PNG dropped in (or sent from the phone) mid-session shows up.
+			g_prisma->Invoke(g_hbView, ("hbIcons(" + CustomIconsJson() + ")").c_str());
+		});
+	}
+
+	void CreateHotbarView()
+	{
+		if (!g_prisma || g_hbView)
+			return;
+		g_hbView = g_prisma->CreateView("MagicDeck/hotbar.html", [](PrismaView v) {
+			g_hbViewReady = true;
+			logger::info("hotbar view DOM ready (handle {})", v);
+			SKSE::GetTaskInterface()->AddTask([]() {
+				HbPushConfig();
+				HbPushLive(true);
+				HbApplyVisibility();
+			});
+		});
+		g_prisma->RegisterJSListener(g_hbView, "hbReady", OnJsHbReady);
+		g_prisma->RegisterJSListener(g_hbView, "hbSave", OnJsHbSave);
+		g_prisma->RegisterJSListener(g_hbView, "hbEditDone", OnJsHbEditDone);
+		g_prisma->RegisterJSListener(g_hbView, "hbFire", OnJsHbFire);
+		g_prisma->RegisterJSListener(g_hbView, "hbAssign", OnJsHbAssign);
+		g_prisma->RegisterJSListener(g_hbView, "hbCatalog", OnJsHbCatalog);
+		g_prisma->RegisterJSListener(g_hbView, "hbLog", OnJsHbLog);
+		logger::info("hotbar: view created + listeners registered");
+	}
+
+	void HbToggleVisible()
+	{
+		bool        nowVisible;
+		std::string mode;
+		{
+			std::lock_guard l(g_configMutex);
+			if (!g_hbConfig.enabled)
+				g_hbConfig.enabled = true;   // first press also arms it
+			g_hbConfig.visible = !g_hbConfig.visible;
+			nowVisible = g_hbConfig.visible;
+			mode       = g_hbConfig.showMode;
+		}
+		PersistAll();
+		HbApplyVisibility();
+		// If you switch it ON and it stays off because the automatic rule says
+		// so, SAY so. Otherwise the toggle key looks broken, and the setting
+		// that is actually responsible is three menus away.
+		if (nowVisible && mode != "always" && !g_hbEffVisible.load()) {
+			const std::string why = mode == "combat" ? "in combat" :
+				mode == "drawn"                      ? "with a weapon or spell drawn" :
+													   "in combat or with a weapon drawn";
+			RE::DebugNotification(("Action bar is on - it shows " + why).c_str());
+		}
+	}
+
+	// Open the edit panel: Focus the view (the one state where the bar owns the
+	// mouse) and tell it to draw the panel.
+	void HbOpenEdit()
+	{
+		{
+			std::lock_guard l(g_configMutex);
+			g_hbConfig.enabled = true;
+		}
+		PersistAll();
+		g_hbEditing = true;
+		if (g_prisma && g_hbView && g_hbViewReady.load()) {
+			g_prisma->Show(g_hbView);
+			HbPushConfig();
+			HbPushLive(true);
+			g_prisma->Focus(g_hbView, true, true);
+			g_prisma->Invoke(g_hbView, "hbEdit(\"1\")");
+		}
+	}
+
+	// The poller. Two jobs on one thread, at two cadences: modifier state at
+	// 50 ms (a page swap has to feel instant — that is the whole point of
+	// "hold shift and the bar changes"), and the live rebuild at the config's
+	// own tickMs. Idle while the feature is off, so a disabled bar costs
+	// nothing at all.
+	std::atomic<bool> g_hbTickerRun{ false };
+	void StartHotbarTicker()
+	{
+		if (g_hbTickerRun.exchange(true))
+			return;
+		std::thread([]() {
+			bool          prevShift = false, prevCtrl = false, prevAlt = false;
+			std::uint32_t sinceLive = 0;
+			std::uint32_t sinceVis  = 0;
+			for (;;) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+				// A LIGHT read, deliberately: this runs 20x a second, and copying
+				// the whole Config would allocate ~100 slot structs (five strings
+				// each) every tick for the sake of four booleans. Only the page
+				// flags and the three scalars come across; `c` is a stand-in
+				// carrying just enough for PageForMods.
+				Hotbar::Config c;
+				c.pages.assign(Hotbar::kPageCount, Hotbar::Page{});
+				{
+					std::lock_guard l(g_configMutex);
+					c.enabled = g_hbConfig.enabled;
+					c.modHold = g_hbConfig.modHold;
+					c.tickMs  = g_hbConfig.tickMs;
+					for (int p = 0; p < Hotbar::kPageCount &&
+						 p < static_cast<int>(g_hbConfig.pages.size()); ++p)
+						c.pages[p].enabled = g_hbConfig.pages[p].enabled;
+				}
+				if (!c.enabled || !g_hbViewReady.load()) {
+					sinceLive = 0;
+					sinceVis  = 0;
+					// An enabled bar that has just been switched off still has
+					// to come DOWN once, or it stays painted over the game.
+					if (g_hbShown.load() && g_hbViewReady.load())
+						SKSE::GetTaskInterface()->AddTask([]() { HbApplyVisibility(); });
+					continue;
+				}
+
+				// The auto-visibility beat: combat / weapon-drawn / menu state
+				// all have to be read on the MAIN thread, so this posts a task
+				// rather than reading here. 150 ms is fast enough that the bar is
+				// up before the first swing lands, and a seventh of the cost of
+				// doing it on every 50 ms poll.
+				sinceVis += 50;
+				if (sinceVis >= 150) {
+					sinceVis = 0;
+					SKSE::GetTaskInterface()->AddTask([]() { HbApplyVisibility(); });
+				}
+
+				const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+				const bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+				const bool alt   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+
+				int want;
+				if (c.modHold) {
+					want = Hotbar::PageForMods(c, shift, ctrl, alt);
+				} else {
+					// Tap to latch: the RISING edge of a modifier toggles its
+					// page. Tapping the page you are already on returns to base,
+					// so one key both enters and leaves — otherwise a latched
+					// page would need a second, different key to escape.
+					const auto edge = [](bool now, bool& prev) {
+						const bool rose = now && !prev;
+						prev = now;
+						return rose;
+					};
+					const bool rs = edge(shift, prevShift);
+					const bool rc = edge(ctrl, prevCtrl);
+					const bool ra = edge(alt, prevAlt);
+					int latched = g_hbLatchPage.load();
+					if (rs && c.pages.size() > Hotbar::kPageShift && c.pages[Hotbar::kPageShift].enabled)
+						latched = (latched == Hotbar::kPageShift) ? Hotbar::kPageBase : Hotbar::kPageShift;
+					else if (rc && c.pages.size() > Hotbar::kPageCtrl && c.pages[Hotbar::kPageCtrl].enabled)
+						latched = (latched == Hotbar::kPageCtrl) ? Hotbar::kPageBase : Hotbar::kPageCtrl;
+					else if (ra && c.pages.size() > Hotbar::kPageAlt && c.pages[Hotbar::kPageAlt].enabled)
+						latched = (latched == Hotbar::kPageAlt) ? Hotbar::kPageBase : Hotbar::kPageAlt;
+					g_hbLatchPage = latched;
+					want = latched;
+				}
+				if (c.modHold) { prevShift = shift; prevCtrl = ctrl; prevAlt = alt; }
+
+				if (want != g_hbLivePage.load()) {
+					g_hbLivePage = want;
+					SKSE::GetTaskInterface()->AddTask([]() {
+						HbPushPage();       // instant repaint from the stored slots
+						HbPushLive(true);   // then the live truth for the new page
+					});
+					sinceLive = 0;
+					continue;
+				}
+
+				sinceLive += 50;
+				if (sinceLive >= std::max<std::uint32_t>(200, c.tickMs)) {
+					sinceLive = 0;
+					SKSE::GetTaskInterface()->AddTask([]() { HbPushLive(false); });
+				}
+			}
+		}).detach();
+	}
+
+	// Does this key press match a hotbar button? Returns the slot index, or -1.
+	// Palette-CLOSED only and never while the game is paused: with a menu up the
+	// number keys belong to that menu (and to the console), and a bar that cast
+	// Fireball because you typed "1" into the console would be a disaster.
+	int HbSlotForKey(bool isKb, bool isMs, std::uint32_t idc)
+	{
+		// EFFECTIVE visibility, not the raw config flags — see HbApplyVisibility.
+		// A bar hidden by "only in combat" must not fire, or the setting is a
+		// trap and 1-8 never go back to vanilla favourites.
+		if (!g_hbEffVisible.load())
+			return -1;
+		std::lock_guard l(g_configMutex);
+		if (!g_hbConfig.enabled || !g_hbConfig.visible)
+			return -1;
+		const int n = g_hbConfig.VisibleSlots();
+		for (int i = 0; i < n && i < static_cast<int>(g_hbConfig.slotKeys.size()); ++i) {
+			const auto& k = g_hbConfig.slotKeys[i];
+			if (!k.code || k.code != idc)
+				continue;
+			if ((isKb && k.device == "keyboard") || (isMs && k.device == "mouse"))
+				return i;
+		}
+		return -1;
+	}
+
 	// fdCropSave: one crop written from the editor. Reply is `fdCrops` — a
 	// different name in the other direction, because a name used for both
 	// silently unplugs the control (five times and counting).
@@ -8894,6 +9668,29 @@ namespace
 			}
 			PushToView("rgNpcsResult", res);
 		});
+	}
+
+	// Keys tab. kcScan starts the hotkey census (idempotent while one runs);
+	// kcState polls progress (small packet, no bindings); kcResult pulls the
+	// full registry. Replies kcStateResult / kcResultData — one name per
+	// direction, per the deck law. No AddTask: KeysScan touches only its own
+	// state here (the scan itself runs on its own thread).
+	void OnJsKeysScan(const char*)
+	{
+		if (!KeysScan::Start()) {
+			logger::info("kcScan: a scan is already running");
+		}
+		PushToView("kcStateResult", KeysScan::StateJson(false));
+	}
+
+	void OnJsKeysState(const char*)
+	{
+		PushToView("kcStateResult", KeysScan::StateJson(false));
+	}
+
+	void OnJsKeysResult(const char*)
+	{
+		PushToView("kcResultData", KeysScan::StateJson(true));
 	}
 
 	// Time pane. tmGet -> tmInfo (the live game clock); tmWait(hours) -> tmResult
@@ -11433,8 +12230,8 @@ namespace
 			if (!a_events || !g_prisma)
 				return RE::BSEventNotifyControl::kContinue;
 
-			std::string   dev, devMagic, devAdd, devFol, devDom, devCont, devHud;
-			std::uint32_t code, codeMagic, codeAdd, codeFol, codeDom, codeCont, codeHud;
+			std::string   dev, devMagic, devAdd, devFol, devDom, devCont, devHud, devHb;
+			std::uint32_t code, codeMagic, codeAdd, codeFol, codeDom, codeCont, codeHud, codeHb;
 			ModAction     msShift, msCtrl, msAlt;
 			{
 				std::lock_guard l(g_configMutex);
@@ -11452,6 +12249,8 @@ namespace
 				codeCont  = g_contConfig.openCode;
 				devHud    = g_hudConfig.keyDevice;
 				codeHud   = g_hudConfig.keyCode;
+				devHb     = g_hbConfig.keyDevice;
+				codeHb    = g_hbConfig.keyCode;
 				msShift   = g_config.settings.openShift;
 				msCtrl    = g_config.settings.openCtrl;
 				msAlt     = g_config.settings.openAlt;
@@ -11647,6 +12446,18 @@ namespace
 					break;
 				}
 
+				// --- Hotbar: its own show/hide toggle key ---------------------
+				// Same shape and same guards as the HUD's above. This is the key
+				// bound from the bar's OWN editor; the seeded "Action Bar:
+				// Show/Hide" deck action is the other route and they coexist.
+				// Tested BEFORE the slot keys so binding the toggle to a key that
+				// is also a slot key still toggles rather than firing button N.
+				if (codeHb != 0 && !OurViewHasKeyboard() &&
+					((isKb && devHb == "keyboard") || (isMs && devHb == "mouse")) && idc == codeHb) {
+					SKSE::GetTaskInterface()->AddTask([]() { HbToggleVisible(); });
+					break;
+				}
+
 				// Capture key: inside the vanilla Magic Menu (palettes closed), send
 				// the highlighted spell straight into the Spell Deck.
 				if (!AnyOpen() && codeAdd != 0 &&
@@ -11654,6 +12465,27 @@ namespace
 					if (auto* mui = RE::UI::GetSingleton(); mui && mui->IsMenuOpen(RE::MagicMenu::MENU_NAME)) {
 						SKSE::GetTaskInterface()->AddTask([]() { DoAddHighlighted(); });
 						break;
+					}
+				}
+
+				// Hotbar slot keys: palette CLOSED and the game UNPAUSED only. A
+				// paused game means a menu owns the keyboard — inventory, map, and
+				// above all the CONSOLE, where typing "1" must not cast Fireball.
+				// Tested before the per-entry trigger so a bar button wins a shared
+				// key (the bar is the thing you are looking at).
+				//
+				// ⚠ This sink cannot CONSUME events, so a slot key also does its
+				// vanilla job — which for 1-8 is the favourites hotkey. The edit
+				// panel warns about exactly that and offers the numpad instead.
+				if (!AnyOpen()) {
+					auto* pui = RE::UI::GetSingleton();
+					if (!pui || !pui->GameIsPaused()) {
+						const int slot = HbSlotForKey(isKb, isMs, idc);
+						if (slot >= 0) {
+							const int pg = g_hbLivePage.load();
+							SKSE::GetTaskInterface()->AddTask([pg, slot]() { HbFireSlot(pg, slot); });
+							break;
+						}
 					}
 				}
 
@@ -11978,6 +12810,11 @@ namespace
 		// ticker idles while the HUD is disabled, so an off HUD costs nothing.
 		CreateHudView();
 		StartHudTicker();
+
+		// Same deal for the Hotbar — always-on, so created here rather than on a
+		// key press. Its poller also idles while the bar is disabled.
+		CreateHotbarView();
+		StartHotbarTicker();
 
 		if (auto idm = RE::BSInputDeviceManager::GetSingleton()) {
 			idm->AddEventSink(OpenKeySink::GetSingleton());
