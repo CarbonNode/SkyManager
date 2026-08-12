@@ -4,7 +4,7 @@
 
 // Bridge to the Follower Organizer fork's in-process Deck API.
 //
-// Our FO build (C:\Dev\FollowerOrganizer, ≥ v0.2.0) exports two C functions —
+// The supported Follower Organizer build (≥ v0.2.0) exports two C functions —
 // FollowerDeck_GetState() and FollowerDeck_Apply(cmdJson) — resolved lazily
 // here via GetModuleHandle("FollowerOrganizer.dll") + GetProcAddress. Both
 // return an envelope string:

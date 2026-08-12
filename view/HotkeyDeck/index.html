@@ -840,14 +840,32 @@
     <div id="ps-portrait" class="ps-portrait ps-portrait-empty"></div>
     <div class="ps-identity">
       <div id="ps-name" class="ps-name">…</div>
-      <div class="ps-raceclass">
-        <span id="ps-race" class="ps-race"><b>Race</b>—</span>
-        <span class="ps-class-wrap">
-          <span class="ps-class-label">Class</span>
-          <input id="ps-class-input" type="text" placeholder="Name your calling…"
-                 autocomplete="off" spellcheck="false" maxlength="48">
-        </span>
-      </div>
+        <div class="ps-raceclass">
+          <span id="ps-race" class="ps-race"><b>Race</b>—</span>
+          <span class="ps-class-wrap">
+            <span class="ps-class-label">Class</span>
+            <input id="ps-class-input" type="text" placeholder="Name your calling…"
+                   autocomplete="off" spellcheck="false" maxlength="120">
+          </span>
+          <span class="ps-class-wrap ps-align-wrap">
+            <span class="ps-class-label">Alignment</span>
+            <input id="ps-alignment-input" type="text" list="ps-alignments"
+                   placeholder="Lawful Evil…" autocomplete="off" spellcheck="false" maxlength="80">
+          </span>
+        </div>
+        <datalist id="ps-alignments">
+          <option value="Lawful Good"><option value="Neutral Good"><option value="Chaotic Good">
+          <option value="Lawful Neutral"><option value="True Neutral"><option value="Chaotic Neutral">
+          <option value="Lawful Evil"><option value="Neutral Evil"><option value="Chaotic Evil">
+        </datalist>
+        <div class="ps-profile-grid" aria-label="Roleplay profile details">
+          <label><span>Title</span><input id="ps-title-input" type="text" placeholder="The Ashen King" maxlength="120"></label>
+          <label><span>Eyes</span><input id="ps-eyes-input" type="text" placeholder="Ember gold" maxlength="80"></label>
+          <label><span>Height</span><input id="ps-height-input" type="text" placeholder="6′ 2″" maxlength="80"></label>
+          <label><span>Age</span><input id="ps-age-input" type="text" placeholder="38" maxlength="80"></label>
+          <label><span>Homeland</span><input id="ps-homeland-input" type="text" placeholder="The Reach" maxlength="160"></label>
+          <label><span>Patron</span><input id="ps-deity-input" type="text" placeholder="Mara, Molag Bal…" maxlength="160"></label>
+        </div>
     </div>
     <div class="ps-level">
       <div class="ps-level-cap">Level</div>
@@ -891,8 +909,10 @@
       <div class="ps-card-head">
         <div class="ps-card-title">Skills <span class="ps-card-sub">18</span></div>
       </div>
-      <div id="ps-skills-grid" class="ps-skills-grid"></div>
-    </div>
+        <div id="ps-skills-grid" class="ps-skills-grid"></div>
+        <div class="ps-pack-head"><span>Pack Check</span><span id="ps-potion-total">0 potions</span></div>
+        <div id="ps-inventory-grid" class="ps-inventory-grid" aria-label="Potion and lockpick counts"></div>
+      </div>
   </div>
 
   <!-- Story: background + history, serif, autosaved -->

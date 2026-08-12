@@ -94,6 +94,17 @@ body.hb-edit { pointer-events: auto; }
 }
 .hb-root.hb-hidden { display: none; }
 
+/* The editor owns the full viewport below 900px. Leaving the bar visibly
+   underneath it looks like a collision and leaves a drag grip that cannot
+   actually be used, so the preview becomes an explicit hidden state. Wider
+   split layouts keep the preview visible and JS scales it only when needed to
+   clear the panel without changing the saved Size setting. */
+.hb-root.is-edit-preview-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .hb-grid {
   display: grid;
   gap: var(--hb-gap);
@@ -174,8 +185,11 @@ body.hb-edit { pointer-events: auto; }
    since the bar never has focus. Driven by a class the JS strips on a timer. */
 .hb-slot.is-fired {
   border-color: var(--gold-bright);
-  box-shadow: 0 0 0 2px var(--gold-bright), 0 0 18px var(--gold-glow);
-  transform: scale(.94);
+  background: linear-gradient(180deg, rgba(244,210,126,.28), rgba(122,88,27,.22));
+  box-shadow: 0 0 0 3px var(--gold-bright), 0 0 24px 6px var(--gold-glow),
+              inset 0 0 16px rgba(255,231,170,.22);
+  filter: brightness(1.22) saturate(1.08);
+  transform: scale(.92);
 }
 
 /* Corner furniture. Sized off --hb-cell so it grows with the bar, with a hard
@@ -361,6 +375,18 @@ body.hb-edit .hb-slot.is-selected {
   overflow-x: hidden;
   padding: 8px 24px 32px;
 }
+
+.hb-preview-note {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius-s);
+  background: linear-gradient(135deg, #211c12, #15141a);
+  color: var(--gold-soft);
+  font-size: 15px;
+  line-height: 1.45;
+}
+.hb-preview-note[hidden] { display: none; }
 
 .hb-sect { padding: 20px 0; border-bottom: 1px solid var(--line); }
 .hb-sect:last-child { border-bottom: 0; }

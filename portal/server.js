@@ -776,18 +776,20 @@ const MHIYH_STATUS_CANDIDATES = process.env.DECK_PORTAL_MHIYH_STATUS
  *  Deck -> phone: the deck DLL exports charsheet-status.json into the same
  *  HotkeyDeck view dir as mhiyh-status.json, every ~5 s while the game runs
  *  and on demand. It is a SNAPSHOT of the player — vitals, stat totals,
- *  skills, active magic effects, and the free-text meta (class/background/
- *  history/portrait). We read the freshest of the mod-folder / overwrite
+ *  skills, inventory counters, active magic effects, and the free-text meta
+ *  (class/title/alignment/appearance/origin/deity/background/history/portrait).
+ *  We read the freshest of the mod-folder / overwrite
  *  copies exactly like readMhiyhStatus does, and hand the phone an `ageMs`
  *  so it can gray out a stale snapshot when the game is closed.
  *
- *  Phone -> deck: class/background/history/portrait edits are QUEUED into
+ *  Phone -> deck: profile-text/portrait edits are QUEUED into
  *  portal-sheet-edits.json — the SAME LAW as portal-npc-fields.json: the
  *  portal performs no game action and writes no file the game owns. The
  *  DLL's poller merges it over the live meta and truncates the file.
  *
  *  ⚠ UNLIKE every other sidecar here, this queue is a SINGLE OBJECT, not an
- *  ops list — { charClass?, background?, history?, portrait? }. So a merge
+ *  ops list — { charClass?, title?, alignment?, eyeColor?, height?, age?,
+ *  homeland?, deity?, background?, history?, portrait? }. So a merge
  *  is a field-level overlay of the new keys onto whatever is still queued
  *  (an unapplied class edit must survive a later background edit). Only keys
  *  actually present in the write are touched; a key set to "" is a real
@@ -806,11 +808,19 @@ const SHEET_STATUS_CANDIDATES = process.env.DECK_PORTAL_SHEET_STATUS
   ];
 const SHEET_EDITS_BASENAME = 'portal-sheet-edits.json';
 const SHEET_EDITS_FILE = path.join(DECK_VIEW_DIR, SHEET_EDITS_BASENAME);
-// The four editable meta fields, and their caps. class/background sit on one
-// line each in-game; history is the long prose field. A portrait value is a
-// path RELATIVE to the view dir (portraits/player-sheet.png), never arbitrary.
-const SHEET_META_KEYS = ['charClass', 'background', 'history', 'portrait'];
-const SHEET_META_CAPS = { charClass: 120, background: 2000, history: 8000, portrait: 260 };
+// Every editable profile field, and its cap. Compact identity fields are one
+// line in both clients; background/history are the prose fields. A portrait
+// value is a path RELATIVE to the view dir (portraits/player-sheet.png), never
+// arbitrary. Keep this list in sync with CharSheet::Meta/MetaTextCap.
+const SHEET_META_KEYS = [
+  'charClass', 'title', 'alignment', 'eyeColor', 'height', 'age',
+  'homeland', 'deity', 'background', 'history', 'portrait',
+];
+const SHEET_META_CAPS = {
+  charClass: 120, title: 120, alignment: 80, eyeColor: 80, height: 80,
+  age: 80, homeland: 160, deity: 160,
+  background: 2000, history: 8000, portrait: 260,
+};
 // Where the portal drops the player's own sheet portrait, and the relative
 // path it queues so the deck (and this server) can find it again. It lives
 // in PORTRAIT_DIR beside every follower face — that dir is DECK_PORTAL_
@@ -1036,7 +1046,7 @@ const MIME = {
  *    lowercase → strip diacritics → every run of non [a-z0-9] becomes one
  *    '-' → trim leading/trailing '-'.
  *  "Olfina Gray-Mane" → "olfina-gray-mane"   ·  "Su-yeon" → "su-yeon"
- *  "Thane Hroa Hearth-Healer" → "thane-hroa-hearth-healer"
+ *  "Captain Mira Stone-Hand" → "captain-mira-stone-hand"
  *  Computed from the member's ORIGINAL name, never the display name:
  *  overrides get renamed all the time, originals don't.
  * ======================================================================= */
@@ -6658,7 +6668,7 @@ async function route(req, res, url) {
     if (!st.ok) { sendJson(res, 200, { ok: false, reason: st.reason || 'no export yet' }); return; }
     const edits = readSheetEdits();
     const sheet = st.sheet || {};
-    // Overlay pending meta so a just-saved class/background/history/portrait is
+    // Overlay pending meta so any just-saved profile field / portrait is
     // visible immediately, flagged pending so the UI can mark it "applies next tick".
     const meta = Object.assign({}, sheet.meta || {});
     const pending = {};
@@ -6680,7 +6690,7 @@ async function route(req, res, url) {
     return;
   }
 
-  /* Queue class / background / history edits. Merge-write: only the keys sent
+  /* Queue profile-text edits. Merge-write: only the keys sent
      are touched, and an already-queued unapplied edit for another key survives.
      The DLL's poller applies + truncates portal-sheet-edits.json — the portal
      NEVER writes the file the game owns. */
@@ -6688,7 +6698,8 @@ async function route(req, res, url) {
     const body = await readJsonBody(req);
     const fields = {};
     let any = false;
-    for (const k of ['charClass', 'background', 'history']) {  // portrait is set only by the upload route
+    for (const k of SHEET_META_KEYS) {
+      if (k === 'portrait') continue;  // portrait is set only by the upload route
       if (body[k] === undefined) continue;
       if (body[k] !== null && typeof body[k] !== 'string') {
         sendErr(res, 400, k + ' must be a string ("" clears it)'); return;
@@ -6700,7 +6711,10 @@ async function route(req, res, url) {
       }
       fields[k] = v; any = true;
     }
-    if (!any) { sendErr(res, 400, 'Send at least one of charClass, background, history'); return; }
+    if (!any) {
+      sendErr(res, 400, 'Send at least one editable character profile field');
+      return;
+    }
     let obj;
     try { obj = mergeSheetEdits(fields); } catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
     log('sheet meta queued: ' + Object.keys(fields).join(', '));

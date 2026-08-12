@@ -29,7 +29,7 @@ namespace NffBases
 		// marker: nff-bases (Domains tab: NFF home-base management)
 
 		// Nether's Follower Framework 2.8.6.0b. Class names as declared in the
-		// decompiled .pex on this rig (C:\Dev\nff-decomp). Both `Extend Quest`,
+		// decompiled shipped .pex. Both `Extend Quest`,
 		// so the bound object hangs off a quest form.
 		constexpr const char* kHomeScript = "nwsFollowerHomeScript";
 		constexpr const char* kVarScript = "nwsFollowerVariableScript";

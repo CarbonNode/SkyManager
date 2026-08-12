@@ -329,7 +329,7 @@ img.wd-item-render { filter: brightness(1.5) saturate(1.08) contrast(1.04); }
 /* Glyph + title + count travel together as ONE flex item, and only on the
    Followers tab (nothing else has a glyph). Without this the header WRAPS
    instead of shrinking — .cat-head is flex-wrap:wrap, so a 40px button in
-   front of "Apothic Guild of Riverwood (alchemists)" at 390px pushed the
+   front of "Long Category Name (alchemists)" at 390px pushed the
    title onto its own line and left the icon stranded above it. Inside .cat-lead
    there is no wrapping, so the title shrinks and re-flows in place. */
 /* A header carrying a glyph aligns on CENTRE, not on the shared baseline: a
@@ -1791,13 +1791,14 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
   justify-content:center; font-size:15px; color:var(--gold-soft); }
 .sh-idn { flex:1 1 220px; min-width:180px; }
 .sh-name { font-size:24px; font-weight:700; color:var(--gold-hi); line-height:1.15; }
+.sh-title { margin-top:4px; color:var(--gold-soft); font-size:13px; letter-spacing:.25px; }
 .sh-sub { font-size:15px; color:var(--text-dim); margin-top:3px; }
 .sh-sub .sh-cls { color:var(--gold-soft); }
 .sh-vitals { display:flex; flex-direction:column; gap:9px; margin:14px 0 6px; }
 .sh-vrow { }
 .sh-vlab { display:flex; justify-content:space-between; font-size:13px; color:var(--text-dim);
   margin-bottom:4px; }
-.sh-vlab .sh-vname { letter-spacing:.3px; text-transform:uppercase; font-size:11.5px; color:var(--muted); }
+.sh-vlab .sh-vname { letter-spacing:.3px; text-transform:uppercase; font-size:12px; color:var(--muted); }
 .sh-bar { height:14px; border-radius:8px; background:#0f0f14; border:1px solid var(--line); overflow:hidden; }
 .sh-bar > span { display:block; height:100%; border-radius:7px; transition:width 200ms ease; }
 .sh-bar.hp > span { background:linear-gradient(90deg,#7a2f2f,#d98a8a); }
@@ -1806,12 +1807,42 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
 .sh-chips { display:flex; flex-wrap:wrap; gap:9px; margin:12px 0 4px; }
 .sh-chip { display:flex; flex-direction:column; gap:2px; padding:9px 14px; border:1px solid var(--line);
   border-radius:12px; background:var(--card); min-width:74px; }
-.sh-chip .sh-ck { font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); }
+.sh-chip .sh-ck { font-size:12px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); }
 .sh-chip .sh-cv { font-size:16px; font-weight:600; color:var(--text); }
 .sh-chip.beast { border-color:var(--bad-line); background:var(--bad-bg); }
 .sh-chip.beast .sh-cv { color:var(--bad); }
 .sh-chip.bounty.on { border-color:var(--bad-line); }
 .sh-chip.bounty.on .sh-cv { color:var(--bad); }
+.sh-profile { display:flex; flex-wrap:wrap; gap:7px; margin:8px 0 2px; }
+.sh-profile .sh-detail { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:5px 9px;
+  border-radius:999px; border:1px solid var(--line); background:rgba(255,255,255,.025);
+  color:var(--text-dim); font-size:12.5px; }
+.sh-profile .sh-detail b { color:var(--muted); font-size:12px; font-weight:600; letter-spacing:.35px;
+  text-transform:uppercase; }
+.sh-profile .sh-detail span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sh-inventory { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:9px; margin-top:7px; }
+.sh-inv { position:relative; display:grid; grid-template-columns:30px minmax(0,1fr); align-items:center; gap:9px;
+  min-width:0; padding:10px 11px; border:1px solid var(--line); border-radius:12px;
+  background:linear-gradient(145deg,rgba(255,255,255,.035),rgba(255,255,255,.012)); overflow:hidden; }
+.sh-inv::after { content:""; position:absolute; inset:auto 0 0; height:2px; background:currentColor; opacity:.55; }
+.sh-inv.health { color:#dc7777; border-color:rgba(220,119,119,.24); }
+.sh-inv.magicka { color:#79aef0; border-color:rgba(121,174,240,.24); }
+.sh-inv.stamina { color:#7ecb8d; border-color:rgba(126,203,141,.24); }
+.sh-inv.other { color:#c9a24b; border-color:rgba(201,162,75,.25); }
+.sh-inv.lockpicks { color:#c8b98e; border-color:rgba(200,185,142,.24); }
+.sh-inv-mark { position:relative; width:26px; height:30px; color:inherit; opacity:.95; }
+.sh-inv-mark.potion::before { content:""; position:absolute; left:5px; bottom:1px; width:16px; height:20px;
+  border:1.5px solid currentColor; border-radius:5px 5px 7px 7px; background:currentColor; opacity:.24; }
+.sh-inv-mark.potion::after { content:""; position:absolute; left:9px; top:1px; width:8px; height:9px;
+  border:1.5px solid currentColor; border-bottom:0; border-radius:2px 2px 0 0; box-shadow:0 3px 0 -1px currentColor; }
+.sh-inv-mark.pick::before, .sh-inv-mark.pick::after { content:""; position:absolute; background:currentColor;
+  height:2px; border-radius:2px; transform-origin:right center; transform:rotate(-42deg); }
+.sh-inv-mark.pick::before { width:24px; right:0; top:14px; }
+.sh-inv-mark.pick::after { width:12px; right:15px; top:8px; box-shadow:0 5px 0 currentColor; }
+.sh-inv-copy { display:flex; flex-direction:column; min-width:0; }
+.sh-inv-n { color:var(--text); font-size:19px; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; }
+.sh-inv-l { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:12px;
+  line-height:1.2; letter-spacing:.35px; text-transform:uppercase; margin-top:4px; }
 .sh-fbar { position:relative; margin:6px 0 2px; }
 .sh-fbar input { width:100%; padding:11px 13px 11px 34px; border-radius:10px; border:1px solid var(--line);
   background:#0f0f14; color:var(--text); font:inherit; font-size:14px; }
@@ -1836,13 +1867,15 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
   border-radius:20px; background:var(--card); font-size:13.5px; }
 .sh-sk b { color:var(--gold-soft); font-variant-numeric:tabular-nums; }
 .sh-ed { margin-top:8px; }
+.sh-rp-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:0 12px; }
+.sh-rp-field { min-width:0; }
 .sh-ed label { display:block; font-size:12px; text-transform:uppercase; letter-spacing:.4px;
   color:var(--muted); margin:12px 0 5px; }
-.sh-ed input.sh-cls-in, .sh-ed textarea { width:100%; padding:11px 13px; border-radius:10px;
+.sh-ed input.sh-meta-in, .sh-ed textarea { width:100%; padding:11px 13px; border-radius:10px;
   border:1px solid var(--line); background:#0f0f14; color:var(--text); font:inherit; font-size:14px;
   line-height:1.55; resize:vertical; }
 .sh-ed textarea { min-height:80px; }
-.sh-ed textarea.hist { min-height:150px; }
+.sh-ed textarea.hist { min-height:112px; }
 .sh-ed input:focus, .sh-ed textarea:focus, .sh-fbar input:focus { outline:none;
   border-color:rgba(201,162,75,.55); }
 .sh-save-row { display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap:wrap; }
@@ -1873,6 +1906,12 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
   .sh-port { width:92px; height:92px; }
   .sh-name { font-size:21px; }
   .sh-chip { flex:1 1 calc(50% - 5px); min-width:0; }
+  .sh-inventory { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .sh-inv:last-child:nth-child(odd) { grid-column:1 / -1; }
+  .sh-rp-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width:389px) {
+  .sh-rp-grid { grid-template-columns:1fr; }
 }
 </style>
 </head>
@@ -1957,8 +1996,8 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
   </main>
 
   <!-- Character Sheet — the player's live stats snapshot (charsheet-status.json,
-       exported by the deck every ~5s), searchable effects, and the editable
-       class/background/history + profile-picture upload. Meta edits queue into
+       exported by the deck every ~5s), inventory counters, searchable effects,
+       and the editable role-play profile + profile-picture upload. Meta edits queue into
        portal-sheet-edits.json; the portrait lands in portraits/player-sheet.png.
        Nothing here writes hotkeys.json. -->
   <main id="pane-sheet" hidden>
@@ -7497,7 +7536,7 @@ function wdArt(url, fallback) {
  *  Matched on the portrait SLUG rather than on the name string: the roster keys
  *  portraits by slugOf(original name), and a wardrobe row carries the display
  *  name — which is the renamed one for anybody you have renamed in the deck.
- *  Slugging both ends means "Lyn Me" and "lyn-me" meet in the middle, and a
+ *  Slugging both ends means "Display Name" and "display-name" meet in the middle, and a
  *  rename cannot silently drop the face. */
 /* The follower's portrait URL, if one exists — shared by the roster rows and
    the sheet header, so the popout can never lose a face the row has. */
@@ -10627,8 +10666,9 @@ function renderAskTab() {
 
 /* =========================== Character Sheet tab ======================= *
  *  The player's live stats snapshot (charsheet-status.json, exported by the
- *  deck every ~5s), a searchable read-only magic-effects list, editable
- *  class/background/history (queued via /api/sheet-meta), and the portal-only
+ *  deck every ~5s), potion/lockpick counters, a searchable read-only
+ *  magic-effects list, editable role-play profile fields (queued via
+ *  /api/sheet-meta), and the portal-only
  *  job: a profile picture upload + client-side square crop (/api/sheet-portrait).
  *
  *  Effects are READ-ONLY here on purpose: the transport contract exposes no
@@ -10636,7 +10676,50 @@ function renderAskTab() {
  *  faking a button that would silently do nothing.                            */
 var shUi = { fx: '', savedAt: 0, crop: null };
 
+/* The compact identity fields shared with the in-game Character tab. Keeping
+   this as data (rather than eight hand-written inputs) makes focus/pending/save
+   behavior identical for every field and keeps the phone's dense grid easy to
+   extend. Background/history remain below as prose fields. */
+var SH_META_FIELDS = [
+  { key: 'charClass', id: 'sh-cls-in', label: 'Class', max: 120,
+    hint: 'Battlemage, Nightblade, Warlord…' },
+  { key: 'title', id: 'sh-title-in', label: 'Title', max: 120,
+    hint: 'Thane, Arch-Mage, Dragon Priest…' },
+  { key: 'alignment', id: 'sh-align-in', label: 'Alignment', max: 80,
+    hint: 'Lawful evil, chaotic good…', list: 'sh-alignments' },
+  { key: 'deity', id: 'sh-deity-in', label: 'Deity / Patron', max: 160,
+    hint: 'Talos, Nocturnal, Hermaeus Mora…' },
+  { key: 'eyeColor', id: 'sh-eye-in', label: 'Eye Color', max: 80,
+    hint: 'Ice blue, amber, violet…' },
+  { key: 'height', id: 'sh-height-in', label: 'Height', max: 80,
+    hint: '6′ 2″ / 188 cm' },
+  { key: 'age', id: 'sh-age-in', label: 'Age', max: 80,
+    hint: '34 / ageless / unknown' },
+  { key: 'homeland', id: 'sh-home-in', label: 'Homeland', max: 160,
+    hint: 'The Reach, Cyrodiil, Solstheim…' },
+];
+
 function shNum(n) { return (Math.round(Number(n) || 0)).toLocaleString('en-US'); }
+
+/* Older exports used scalar mag/sta/carry values; current ones use {cur,max}.
+   Normalize both shapes here so an old cached snapshot never prints
+   "[object Object]" and a fresh one gets the same current/max treatment as HP. */
+function shPair(v) {
+  if (v && typeof v === 'object') {
+    var cur = Number(v.cur);
+    var max = v.max == null ? null : Number(v.max);
+    return { cur: isFinite(cur) ? cur : 0, max: isFinite(max) ? max : null };
+  }
+  var n = Number(v);
+  n = isFinite(n) ? n : 0;
+  return { cur: n, max: n };
+}
+
+function shPairText(v) {
+  var p = shPair(v);
+  var showMax = p.max != null && ((v && typeof v === 'object') || p.max !== p.cur);
+  return shNum(p.cur) + (showMax ? ' / ' + shNum(p.max) : '');
+}
 
 /** A remaining-seconds value, aged by the snapshot's ageMs, rendered as a
  *  compact countdown. -1 (or a huge duration) reads as permanent. */
@@ -10661,6 +10744,26 @@ function shChip(k, v, extraCls) {
     '</span><span class="sh-cv">' + v + '</span></div>';
 }
 
+function shInvCard(kind, label, count, mark) {
+  return '<div class="sh-inv ' + kind + '">' +
+    '<span class="sh-inv-mark ' + mark + '" aria-hidden="true"></span>' +
+    '<span class="sh-inv-copy"><span class="sh-inv-n">' + shNum(count) + '</span>' +
+      '<span class="sh-inv-l">' + esc(label) + '</span></span></div>';
+}
+
+function shMetaInputHtml(f, meta, pending) {
+  return '<div class="sh-rp-field"><label for="' + f.id + '">' + esc(f.label) +
+    (pending[f.key] ? ' <span class="sh-pend">· pending</span>' : '') + '</label>' +
+    '<input class="sh-meta-in" id="' + f.id + '" type="text" maxlength="' + f.max +
+      '" autocomplete="off" placeholder="' + esc(f.hint) + '" value="' +
+      esc(meta[f.key] || '') + '"' + (f.list ? ' list="' + f.list + '"' : '') + '></div>';
+}
+
+function shProfileDetail(label, value) {
+  if (!value) return '';
+  return '<span class="sh-detail"><b>' + esc(label) + '</b><span>' + esc(String(value)) + '</span></span>';
+}
+
 function renderSheetTab() {
   var host = document.getElementById('sheet-tab-body');
   if (!host) return;
@@ -10668,7 +10771,8 @@ function renderSheetTab() {
   /* Preserve half-typed edits across a repaint (poll / data event), same law
      as the Ask box and every other input in this portal. */
   var keep = {};
-  ['sh-cls-in', 'sh-bg-in', 'sh-hist-in', 'sh-fx-in'].forEach(function (id) {
+  SH_META_FIELDS.map(function (f) { return f.id; })
+    .concat(['sh-bg-in', 'sh-hist-in', 'sh-fx-in']).forEach(function (id) {
     var el = document.getElementById(id);
     if (el) keep[id] = { v: el.value, f: document.activeElement === el,
       c: (typeof el.selectionStart === 'number') ? el.selectionStart : null };
@@ -10691,8 +10795,8 @@ function renderSheetTab() {
   var stale = ageMs > 30000;
 
   var html = '<section class="sect"><div class="sect-head"><h2>Character Sheet</h2>' +
-    '<span class="hint">Your live stats, exported by the deck. Class, background &amp; history and your ' +
-    'profile picture are <b>editable here</b> — edits are queued and apply on the game’s next tick.</span></div>';
+    '<span class="hint">Live stats, potion belt and active effects from the deck. Your role-play profile and ' +
+    'picture are <b>editable here</b> — edits queue safely and apply on the game’s next tick.</span></div>';
 
   if (stale) {
     var mins = Math.floor(ageMs / 60000);
@@ -10720,6 +10824,8 @@ function renderSheetTab() {
     '</button>' +
     '<div class="sh-idn">' +
       '<div class="sh-name">' + esc(s.name || 'Dragonborn') + '</div>' +
+      (meta.title ? '<div class="sh-title">' + esc(meta.title) +
+        (pm.title ? ' <span class="pill pend">pending</span>' : '') + '</div>' : '') +
       '<div class="sh-sub">' + esc(s.race || '') +
         (meta.charClass ? ' · <span class="sh-cls">' + esc(meta.charClass) + '</span>' +
           (pm.charClass ? ' <span class="pill pend">pending</span>' : '') : '') +
@@ -10728,18 +10834,26 @@ function renderSheetTab() {
     '</div>' +
   '</div>';
 
+  var profile = shProfileDetail('Alignment', meta.alignment) +
+    shProfileDetail('Eyes', meta.eyeColor) +
+    shProfileDetail('Height', meta.height) +
+    shProfileDetail('Age', meta.age) +
+    shProfileDetail('Homeland', meta.homeland) +
+    shProfileDetail('Patron', meta.deity);
+  if (profile) html += '<div class="sh-profile">' + profile + '</div>';
+
   /* vitals */
-  var hp = s.hp || {};
+  var hp = shPair(s.hp), mag = shPair(s.mag), sta = shPair(s.sta);
   html += '<div class="sh-vitals">' +
-    shVitalBar('Health', 'hp', hp.cur || 0, hp.max != null ? hp.max : (hp.cur || 0)) +
-    shVitalBar('Magicka', 'mag', s.mag || 0, s.mag || 0) +
-    shVitalBar('Stamina', 'sta', s.sta || 0, s.sta || 0) +
+    shVitalBar('Health', 'hp', hp.cur, hp.max) +
+    shVitalBar('Magicka', 'mag', mag.cur, mag.max) +
+    shVitalBar('Stamina', 'sta', sta.cur, sta.max) +
   '</div>';
 
   /* stat chips */
   html += '<div class="sh-chips">' +
     shChip('Gold', shNum(s.gold), '') +
-    shChip('Carry', shNum(s.carry), '') +
+    shChip('Carry', shPairText(s.carry), '') +
     shChip('Dragon Souls', shNum(s.souls && s.souls.dragon), '') +
     shChip('Bounty', shNum(s.bounty), 'bounty' + ((s.bounty || 0) > 0 ? ' on' : '')) +
     (s.beast ? shChip('Beast', s.beast === true ? 'Active' : esc(String(s.beast)), 'beast') : '') +
@@ -10753,6 +10867,23 @@ function renderSheetTab() {
         return '<span class="sh-sk">' + esc(sk.name || '') + ' <b>' + esc(String(sk.level != null ? sk.level : '')) + '</b></span>';
       }).join('') + '</div>';
   }
+
+  /* Potion belt + tools. Counts are stack totals from the live player
+     inventory, not configured shortcuts, so drinking or looting one shows up
+     on the next snapshot without any setup. */
+  var inv = s.inventory || {}, pots = inv.potions || {};
+  var potionTotal = pots.total;
+  if (potionTotal == null) potionTotal = (Number(pots.health) || 0) + (Number(pots.magicka) || 0) +
+    (Number(pots.stamina) || 0) + (Number(pots.other) || 0);
+  html += '<div class="sect-head" style="margin-top:16px"><h2 style="font-size:14px">Potions &amp; Tools ' +
+    '<span class="n">' + shNum(potionTotal) + ' potion' + (Number(potionTotal) === 1 ? '' : 's') + '</span></h2></div>' +
+    '<div class="sh-inventory">' +
+      shInvCard('health', 'Health', pots.health, 'potion') +
+      shInvCard('magicka', 'Magicka', pots.magicka, 'potion') +
+      shInvCard('stamina', 'Stamina', pots.stamina, 'potion') +
+      shInvCard('other', 'Other', pots.other, 'potion') +
+      shInvCard('lockpicks', 'Lockpicks', inv.lockpicks, 'pick') +
+    '</div>';
 
   /* effects — searchable, read-only */
   var fx = (s.effects || []);
@@ -10788,14 +10919,16 @@ function renderSheetTab() {
   }
 
   /* editable meta */
-  html += '<div class="sect-head" style="margin-top:20px"><h2 style="font-size:14px">Class, Background &amp; History</h2></div>' +
+  html += '<div class="sect-head" style="margin-top:20px"><h2 style="font-size:14px">Role-play Profile</h2></div>' +
     '<div class="sh-ed">' +
-      '<label>Class' + (pm.charClass ? ' <span class="sh-pend">· pending</span>' : '') + '</label>' +
-      '<input class="sh-cls-in" id="sh-cls-in" type="text" maxlength="120" autocomplete="off" ' +
-        'placeholder="e.g. Battlemage, Nightblade, Warlord" value="' + esc(meta.charClass || '') + '">' +
-      '<label>Background' + (pm.background ? ' <span class="sh-pend">· pending</span>' : '') + '</label>' +
+      '<div class="sh-rp-grid">' + SH_META_FIELDS.map(function (f) { return shMetaInputHtml(f, meta, pm); }).join('') + '</div>' +
+      '<datalist id="sh-alignments"><option value="Lawful good"><option value="Neutral good">' +
+        '<option value="Chaotic good"><option value="Lawful neutral"><option value="True neutral">' +
+        '<option value="Chaotic neutral"><option value="Lawful evil"><option value="Neutral evil">' +
+        '<option value="Chaotic evil"><option value="Unaligned"></datalist>' +
+      '<label for="sh-bg-in">Background' + (pm.background ? ' <span class="sh-pend">· pending</span>' : '') + '</label>' +
       '<textarea id="sh-bg-in" maxlength="2000" placeholder="Where does your Dragonborn come from?">' + esc(meta.background || '') + '</textarea>' +
-      '<label>History' + (pm.history ? ' <span class="sh-pend">· pending</span>' : '') + '</label>' +
+      '<label for="sh-hist-in">History' + (pm.history ? ' <span class="sh-pend">· pending</span>' : '') + '</label>' +
       '<textarea id="sh-hist-in" class="hist" maxlength="8000" placeholder="Deeds, titles, the tale so far…">' + esc(meta.history || '') + '</textarea>' +
       '<div class="sh-save-row">' +
         '<button type="button" class="btn primary" id="sh-save">Save</button>' +
@@ -10830,19 +10963,36 @@ function renderSheetTab() {
 function shSaveMeta() {
   var d = state.charsheet || {}; var meta = d.meta || (d.sheet && d.sheet.meta) || {};
   var body = {};
-  var cls = document.getElementById('sh-cls-in'), bg = document.getElementById('sh-bg-in'), hi = document.getElementById('sh-hist-in');
-  if (cls && cls.value !== (meta.charClass || '')) body.charClass = cls.value;
+  SH_META_FIELDS.forEach(function (f) {
+    var el = document.getElementById(f.id);
+    if (el && el.value !== (meta[f.key] || '')) body[f.key] = el.value;
+  });
+  var bg = document.getElementById('sh-bg-in'), hi = document.getElementById('sh-hist-in');
   if (bg && bg.value !== (meta.background || '')) body.background = bg.value;
   if (hi && hi.value !== (meta.history || '')) body.history = hi.value;
   if (!Object.keys(body).length) { toast('Nothing changed', ''); return; }
-  var btn = document.getElementById('sh-save'); if (btn) btn.disabled = true;
+  var btn = document.getElementById('sh-save');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   api('POST', '/api/sheet-meta', body).then(function (r) {
-    if (btn) btn.disabled = false;
-    if (!r || !r.ok) { toast((r && r.error) || 'Save failed', 'bad'); return; }
+    if (!r || !r.ok) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+      toast((r && r.error) || 'Save failed', 'bad'); return;
+    }
     toast('Saved — applies next time the deck ticks', 'good');
     // Reflect the pending edits immediately.
-    api('GET', '/api/sheet').then(function (v) { if (v) state.charsheet = v; render(); });
-  }).catch(function (e) { if (btn) btn.disabled = false; toast('Save failed (' + (e.message || e) + ')', 'bad'); });
+    api('GET', '/api/sheet').then(function (v) {
+      if (v) { state.charsheet = v; render(); return; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+    }).catch(function (e) {
+      // The edit is already queued; a failed refresh must not strand the
+      // control disabled or misreport the successful POST as a failed save.
+      if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+      toast('Saved, but the live sheet could not refresh (' + (e.message || e) + ')', '');
+    });
+  }).catch(function (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+    toast('Save failed (' + (e.message || e) + ')', 'bad');
+  });
 }
 
 /* ---- profile picture: pick a file, open the square-crop modal ---- */
