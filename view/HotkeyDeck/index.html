@@ -25,6 +25,8 @@
 <link rel="stylesheet" href="hd-formation.css">
 <!-- Keys tab: the load-order hotkey census. Own sheet, same reason. -->
 <link rel="stylesheet" href="keys-pane.css">
+<!-- Character tab: your personal character sheet. Own sheet, same reason. -->
+<link rel="stylesheet" href="charsheet-pane.css">
 <!-- Door lock modal (F7 on a door). Own sheet, same reason. -->
 <link rel="stylesheet" href="hd-door.css">
 <!-- SPID Gear manager + F7 card block (hd-spidgear.js). Own sheet, same reason. -->
@@ -829,6 +831,88 @@
   <div id="kc-empty" class="hidden"></div>
 </section>
 
+<!-- Character tab: your personal character sheet (charsheet-pane.js owns
+     everything; C++ charsheet.cpp owns the live stat + effect read). A
+     SIBLING of the other panes, per the tm-pane lesson below. -->
+<section id="ps-pane" class="hidden ps-loading" aria-label="Character">
+  <!-- Header band: portrait · name/race/class · level medallion -->
+  <div class="ps-header">
+    <div id="ps-portrait" class="ps-portrait ps-portrait-empty"></div>
+    <div class="ps-identity">
+      <div id="ps-name" class="ps-name">…</div>
+      <div class="ps-raceclass">
+        <span id="ps-race" class="ps-race"><b>Race</b>—</span>
+        <span class="ps-class-wrap">
+          <span class="ps-class-label">Class</span>
+          <input id="ps-class-input" type="text" placeholder="Name your calling…"
+                 autocomplete="off" spellcheck="false" maxlength="48">
+        </span>
+      </div>
+    </div>
+    <div class="ps-level">
+      <div class="ps-level-cap">Level</div>
+      <div id="ps-level-num" class="ps-level-num">—</div>
+    </div>
+  </div>
+
+  <!-- Vitals: three big bars + stat chips -->
+  <div class="ps-vitals">
+    <div class="ps-bars">
+      <div class="ps-bar ps-bar-hp">
+        <div class="ps-bar-head"><span class="ps-bar-name">Health</span>
+          <span id="ps-bar-hp-nums" class="ps-bar-nums">—</span></div>
+        <div class="ps-bar-track"><div id="ps-bar-hp-fill" class="ps-bar-fill"></div></div>
+      </div>
+      <div class="ps-bar ps-bar-mag">
+        <div class="ps-bar-head"><span class="ps-bar-name">Magicka</span>
+          <span id="ps-bar-mag-nums" class="ps-bar-nums">—</span></div>
+        <div class="ps-bar-track"><div id="ps-bar-mag-fill" class="ps-bar-fill"></div></div>
+      </div>
+      <div class="ps-bar ps-bar-sta">
+        <div class="ps-bar-head"><span class="ps-bar-name">Stamina</span>
+          <span id="ps-bar-sta-nums" class="ps-bar-nums">—</span></div>
+        <div class="ps-bar-track"><div id="ps-bar-sta-fill" class="ps-bar-fill"></div></div>
+      </div>
+    </div>
+    <div id="ps-chips" class="ps-chips"></div>
+  </div>
+
+  <!-- Two columns: effects (searchable, removable) + skills grid -->
+  <div class="ps-columns">
+    <div class="ps-card">
+      <div class="ps-card-head">
+        <div class="ps-card-title">Active Effects <span id="ps-eff-count" class="ps-eff-count"></span></div>
+      </div>
+      <input id="ps-eff-filter" type="text" placeholder="Search effects — name, source, mod… (Enter arms the top hit)"
+             autocomplete="off" spellcheck="false">
+      <div id="ps-eff-body"></div>
+    </div>
+    <div class="ps-card">
+      <div class="ps-card-head">
+        <div class="ps-card-title">Skills <span class="ps-card-sub">18</span></div>
+      </div>
+      <div id="ps-skills-grid" class="ps-skills-grid"></div>
+    </div>
+  </div>
+
+  <!-- Story: background + history, serif, autosaved -->
+  <div class="ps-card ps-story">
+    <div class="ps-card-head">
+      <div class="ps-card-title">Your Story <span id="ps-story-saved" class="ps-story-saved">saved ✓</span></div>
+    </div>
+    <div class="ps-story-block">
+      <label class="ps-story-label" for="ps-background">Background
+        <span class="ps-story-hint">who you were before the road</span></label>
+      <textarea id="ps-background" placeholder="Birthplace, bloodline, the life that shaped you…"></textarea>
+    </div>
+    <div class="ps-story-block">
+      <label class="ps-story-label" for="ps-history">History
+        <span class="ps-story-hint">what you've done, and to whom</span></label>
+      <textarea id="ps-history" placeholder="Deeds, oaths, kingdoms won and enemies made…"></textarea>
+    </div>
+  </div>
+</section>
+
 <!-- Time tab. A SIBLING of the other panes, not a child of them: this block
      was pasted inside #rm-body (the Rooms pane) when the tab landed, and
      app.js hides #rm-pane on every tab but Rooms — so the Time tab inherited
@@ -1209,6 +1293,7 @@
   <script src="rooms-pane.js"></script>
   <script src="loot-pane.js"></script>
   <script src="keys-pane.js"></script>
+  <script src="charsheet-pane.js"></script>
   <script src="anim-pane.js"></script>
   <script src="ostim-pane.js"></script>
   <script src="light-pane.js"></script>

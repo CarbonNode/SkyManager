@@ -1773,6 +1773,107 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
 .pk-res { display:flex; align-items:center; gap:10px; padding:9px 12px; border:1px solid var(--line);
   border-radius:10px; margin-top:8px; font-size:13.5px; }
 .pk-res.bad { border-color:rgba(224,138,138,.5); color:#e08a8a; }
+
+/* ===================== Character Sheet tab ===================== */
+.sh-stale { border:1px solid #5a4f2f; background:#171308; color:var(--gold-soft);
+  border-radius:12px; padding:12px 15px; font-size:14px; line-height:1.5; margin:12px 0; }
+.sh-stale b { color:var(--gold-hi); }
+.sh-head { display:flex; gap:18px; align-items:center; padding:18px 4px 8px; flex-wrap:wrap; }
+.sh-port { position:relative; width:112px; height:112px; flex:none; border-radius:50%;
+  overflow:hidden; border:2px solid var(--line-hi); background:#0f0f14; cursor:pointer;
+  transition:border-color 140ms ease; }
+.sh-port:hover, .sh-port:focus-visible { border-color:rgba(201,162,75,.65); outline:none; }
+.sh-port img { width:100%; height:100%; object-fit:cover; display:block; }
+.sh-port .sh-port-ph { width:100%; height:100%; display:flex; align-items:center; justify-content:center;
+  font-size:40px; color:var(--muted-2); }
+.sh-port .sh-cam { position:absolute; right:5px; bottom:5px; width:30px; height:30px; border-radius:50%;
+  background:rgba(8,8,11,.82); border:1px solid var(--line-hi); display:flex; align-items:center;
+  justify-content:center; font-size:15px; color:var(--gold-soft); }
+.sh-idn { flex:1 1 220px; min-width:180px; }
+.sh-name { font-size:24px; font-weight:700; color:var(--gold-hi); line-height:1.15; }
+.sh-sub { font-size:15px; color:var(--text-dim); margin-top:3px; }
+.sh-sub .sh-cls { color:var(--gold-soft); }
+.sh-vitals { display:flex; flex-direction:column; gap:9px; margin:14px 0 6px; }
+.sh-vrow { }
+.sh-vlab { display:flex; justify-content:space-between; font-size:13px; color:var(--text-dim);
+  margin-bottom:4px; }
+.sh-vlab .sh-vname { letter-spacing:.3px; text-transform:uppercase; font-size:11.5px; color:var(--muted); }
+.sh-bar { height:14px; border-radius:8px; background:#0f0f14; border:1px solid var(--line); overflow:hidden; }
+.sh-bar > span { display:block; height:100%; border-radius:7px; transition:width 200ms ease; }
+.sh-bar.hp > span { background:linear-gradient(90deg,#7a2f2f,#d98a8a); }
+.sh-bar.mag > span { background:linear-gradient(90deg,#2f4a7a,#8ab4d9); }
+.sh-bar.sta > span { background:linear-gradient(90deg,#3a6b4a,#8fd19e); }
+.sh-chips { display:flex; flex-wrap:wrap; gap:9px; margin:12px 0 4px; }
+.sh-chip { display:flex; flex-direction:column; gap:2px; padding:9px 14px; border:1px solid var(--line);
+  border-radius:12px; background:var(--card); min-width:74px; }
+.sh-chip .sh-ck { font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); }
+.sh-chip .sh-cv { font-size:16px; font-weight:600; color:var(--text); }
+.sh-chip.beast { border-color:var(--bad-line); background:var(--bad-bg); }
+.sh-chip.beast .sh-cv { color:var(--bad); }
+.sh-chip.bounty.on { border-color:var(--bad-line); }
+.sh-chip.bounty.on .sh-cv { color:var(--bad); }
+.sh-fbar { position:relative; margin:6px 0 2px; }
+.sh-fbar input { width:100%; padding:11px 13px 11px 34px; border-radius:10px; border:1px solid var(--line);
+  background:#0f0f14; color:var(--text); font:inherit; font-size:14px; }
+.sh-fbar .ic { position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--muted-2);
+  font-size:15px; pointer-events:none; }
+.sh-fx { display:flex; align-items:center; gap:11px; padding:11px 13px; border:1px solid var(--line);
+  border-radius:11px; background:var(--card); margin-top:8px; }
+.sh-fx.harm { border-color:var(--bad-line); background:var(--bad-bg); }
+.sh-fx .sh-fxi { flex:none; width:34px; height:34px; border-radius:9px; display:flex; align-items:center;
+  justify-content:center; font-size:17px; background:rgba(255,255,255,.04); border:1px solid var(--line); }
+.sh-fx.harm .sh-fxi { color:var(--bad); border-color:var(--bad-line); }
+.sh-fx .sh-fxm { flex:1 1 auto; min-width:0; }
+.sh-fx .sh-fxn { font-size:14.5px; color:var(--text); font-weight:600; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }
+.sh-fx .sh-fxs { font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sh-fx .sh-fxt { flex:none; font-size:13px; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+.sh-fx.harm .sh-fxt { color:var(--bad); }
+.sh-fx .sh-fxt.perm { color:var(--muted-2); }
+.sh-fxhint { font-size:12.5px; color:var(--muted-2); line-height:1.5; margin:8px 2px 0; }
+.sh-skills { display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; }
+.sh-sk { display:flex; gap:8px; align-items:baseline; padding:6px 12px; border:1px solid var(--line);
+  border-radius:20px; background:var(--card); font-size:13.5px; }
+.sh-sk b { color:var(--gold-soft); font-variant-numeric:tabular-nums; }
+.sh-ed { margin-top:8px; }
+.sh-ed label { display:block; font-size:12px; text-transform:uppercase; letter-spacing:.4px;
+  color:var(--muted); margin:12px 0 5px; }
+.sh-ed input.sh-cls-in, .sh-ed textarea { width:100%; padding:11px 13px; border-radius:10px;
+  border:1px solid var(--line); background:#0f0f14; color:var(--text); font:inherit; font-size:14px;
+  line-height:1.55; resize:vertical; }
+.sh-ed textarea { min-height:80px; }
+.sh-ed textarea.hist { min-height:150px; }
+.sh-ed input:focus, .sh-ed textarea:focus, .sh-fbar input:focus { outline:none;
+  border-color:rgba(201,162,75,.55); }
+.sh-save-row { display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap:wrap; }
+.sh-pend { font-size:12.5px; color:var(--gold-soft); }
+.sh-empty { padding:26px 6px; color:var(--muted-2); font-size:14px; line-height:1.6; text-align:center; }
+
+/* profile-picture crop modal */
+.sh-crop-back { position:fixed; inset:0; z-index:60; background:rgba(4,4,6,.86);
+  display:flex; flex-direction:column; align-items:center; justify-content:center; padding:18px; }
+.sh-crop-box { width:100%; max-width:420px; display:flex; flex-direction:column; gap:14px; }
+.sh-crop-title { font-size:17px; font-weight:700; color:var(--gold-hi); text-align:center; }
+.sh-crop-stage { position:relative; width:100%; aspect-ratio:1/1; border-radius:16px; overflow:hidden;
+  background:#0a0a0d; border:1px solid var(--line-hi); touch-action:none; cursor:grab; }
+.sh-crop-stage.drag { cursor:grabbing; }
+.sh-crop-stage canvas { position:absolute; inset:0; width:100%; height:100%; }
+.sh-crop-ring { position:absolute; inset:0; pointer-events:none;
+  box-shadow:0 0 0 9999px rgba(4,4,6,.55) inset; border-radius:50%;
+  outline:1px dashed rgba(201,162,75,.5); outline-offset:-1px; }
+.sh-crop-zoom { display:flex; align-items:center; gap:12px; }
+.sh-crop-zoom input[type=range] { flex:1; accent-color:var(--gold); }
+.sh-crop-zoom .zl { font-size:16px; color:var(--muted-2); }
+.sh-crop-actions { display:flex; gap:10px; }
+.sh-crop-actions .btn { flex:1; justify-content:center; padding:12px; font-size:14px; }
+.sh-crop-hint { font-size:12.5px; color:var(--muted-2); text-align:center; line-height:1.5; }
+
+@media (max-width:699px) {
+  .sh-head { gap:14px; }
+  .sh-port { width:92px; height:92px; }
+  .sh-name { font-size:21px; }
+  .sh-chip { flex:1 1 calc(50% - 5px); min-width:0; }
+}
 </style>
 </head>
 <body>
@@ -1787,6 +1888,7 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
       <!-- data-tab stays "portraits" (hash, state.tab, TABS key, #n-portraits and
            the sheet wiring all key off it); only the visible label changed. -->
       <button class="tab on" data-tab="portraits" type="button">Followers <span class="n" id="n-portraits"></span></button>
+      <button class="tab" data-tab="sheet" type="button">Sheet</button>
       <button class="tab" data-tab="icons" type="button">Spells <span class="n" id="n-icons"></span></button>
       <button class="tab" data-tab="hotkeys" type="button">Hotkeys <span class="n" id="n-hotkeys"></span></button>
       <button class="tab" data-tab="finances" type="button">Finances <span class="n" id="n-finances"></span></button>
@@ -1852,6 +1954,15 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
        with the game closed (CHIM only needs the WSL side up). -->
   <main id="pane-ask" hidden>
     <div id="ask-body"></div>
+  </main>
+
+  <!-- Character Sheet — the player's live stats snapshot (charsheet-status.json,
+       exported by the deck every ~5s), searchable effects, and the editable
+       class/background/history + profile-picture upload. Meta edits queue into
+       portal-sheet-edits.json; the portrait lands in portraits/player-sheet.png.
+       Nothing here writes hotkeys.json. -->
+  <main id="pane-sheet" hidden>
+    <div id="sheet-tab-body"></div>
   </main>
 
   <!-- Faces — RaceMenu presets (via Preset Director). Browse, set a preset's
@@ -2227,7 +2338,7 @@ function fetchAll() {
     api('GET', '/api/finance'), api('GET', '/api/wardrobe'), api('GET', '/api/inventory'), api('GET', '/api/worn'),
     api('GET', '/api/nff'), api('GET', '/api/domains'), api('GET', '/api/roost'),
     api('GET', '/api/mhiyh'), api('GET', '/api/spell-cat-icons'), api('GET', '/api/faces'),
-    api('GET', '/api/bases'),
+    api('GET', '/api/bases'), api('GET', '/api/sheet'),
   ]).then(function (r) {
     state.roster = r[0];
     state.icons = r[1];
@@ -2244,6 +2355,9 @@ function fetchAll() {
     foldSpellCats(r[12]);
     state.faces = r[13];
     state.bases = r[14];
+    // The Character Sheet snapshot (+ its queued meta edits). Named
+    // `charsheet` on purpose — `state.sheet` is the modal detail overlay.
+    state.charsheet = r[15];
   }).then(function () {
     /* Sharmat is fetched SEPARATELY and deliberately not awaited with the
        rest: it is the only call that leaves the box, and CHIM is down
@@ -2273,6 +2387,9 @@ function totalPending() {
        player ("something is waiting for the game"), even though it is a
        different mod and a different file. */
     ((state.roost && state.roost.pending) || 0) +
+    /* A queued class/background/history/portrait edit keeps the poll alive
+       until the game's next tick eats portal-sheet-edits.json. */
+    ((state.charsheet && state.charsheet.pendingEdits) || 0) +
     (state.spellCatsPending || 0);
 }
 
@@ -10508,6 +10625,409 @@ function renderAskTab() {
   });
 }
 
+/* =========================== Character Sheet tab ======================= *
+ *  The player's live stats snapshot (charsheet-status.json, exported by the
+ *  deck every ~5s), a searchable read-only magic-effects list, editable
+ *  class/background/history (queued via /api/sheet-meta), and the portal-only
+ *  job: a profile picture upload + client-side square crop (/api/sheet-portrait).
+ *
+ *  Effects are READ-ONLY here on purpose: the transport contract exposes no
+ *  live remove channel for effects, so we point at the in-game deck instead of
+ *  faking a button that would silently do nothing.                            */
+var shUi = { fx: '', savedAt: 0, crop: null };
+
+function shNum(n) { return (Math.round(Number(n) || 0)).toLocaleString('en-US'); }
+
+/** A remaining-seconds value, aged by the snapshot's ageMs, rendered as a
+ *  compact countdown. -1 (or a huge duration) reads as permanent. */
+function shCountdown(remainSec, ageMs) {
+  if (remainSec == null || remainSec < 0) return { text: '∞', perm: true };
+  var left = Math.max(0, Math.round(remainSec - (ageMs || 0) / 1000));
+  if (left <= 0) return { text: 'expiring', perm: false };
+  if (left >= 3600) return { text: Math.floor(left / 3600) + 'h ' + Math.floor((left % 3600) / 60) + 'm', perm: false };
+  if (left >= 60) return { text: Math.floor(left / 60) + 'm ' + (left % 60) + 's', perm: false };
+  return { text: left + 's', perm: false };
+}
+
+function shVitalBar(name, cls, cur, max) {
+  var pct = max > 0 ? Math.max(0, Math.min(100, (cur / max) * 100)) : 0;
+  return '<div class="sh-vrow"><div class="sh-vlab"><span class="sh-vname">' + esc(name) + '</span>' +
+    '<span>' + shNum(cur) + (max != null ? ' / ' + shNum(max) : '') + '</span></div>' +
+    '<div class="sh-bar ' + cls + '"><span style="width:' + pct.toFixed(1) + '%"></span></div></div>';
+}
+
+function shChip(k, v, extraCls) {
+  return '<div class="sh-chip ' + (extraCls || '') + '"><span class="sh-ck">' + esc(k) +
+    '</span><span class="sh-cv">' + v + '</span></div>';
+}
+
+function renderSheetTab() {
+  var host = document.getElementById('sheet-tab-body');
+  if (!host) return;
+
+  /* Preserve half-typed edits across a repaint (poll / data event), same law
+     as the Ask box and every other input in this portal. */
+  var keep = {};
+  ['sh-cls-in', 'sh-bg-in', 'sh-hist-in', 'sh-fx-in'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) keep[id] = { v: el.value, f: document.activeElement === el,
+      c: (typeof el.selectionStart === 'number') ? el.selectionStart : null };
+  });
+
+  var d = state.charsheet;
+  if (!d || d.ok === false) {
+    host.innerHTML = '<section class="sect"><div class="sect-head"><h2>Character Sheet</h2></div>' +
+      '<div class="sh-empty"><div style="font-size:34px;opacity:.5">📜</div>' +
+      '<div style="margin-top:8px">No snapshot yet.</div>' +
+      '<div style="margin-top:4px;opacity:.75">Launch Skyrim with SkyManager ticked and open the deck once — ' +
+      'the Character tab exports your stats, and this fills in on the next ⟳.</div></div></section>';
+    return;
+  }
+
+  var s = d.sheet || {};
+  var meta = d.meta || s.meta || {};
+  var pm = d.pendingMeta || {};
+  var ageMs = d.ageMs || 0;
+  var stale = ageMs > 30000;
+
+  var html = '<section class="sect"><div class="sect-head"><h2>Character Sheet</h2>' +
+    '<span class="hint">Your live stats, exported by the deck. Class, background &amp; history and your ' +
+    'profile picture are <b>editable here</b> — edits are queued and apply on the game’s next tick.</span></div>';
+
+  if (stale) {
+    var mins = Math.floor(ageMs / 60000);
+    html += '<div class="sh-stale"><b>Showing the last snapshot</b>' +
+      'The game is closed or the deck is asleep (last update ' +
+      (mins >= 1 ? mins + ' min ago' : Math.round(ageMs / 1000) + 's ago') +
+      '). Vitals and effects may be out of date; your edits still queue fine.</div>';
+  }
+
+  /* header: portrait + name / race / class / level. The cache-buster is the
+     snapshot's own timestamp (stable between 1s ticks so the <img> doesn't
+     flicker); a just-uploaded portrait overrides via d.portraitUrl with its
+     own fresh mtime. We show the picture whenever the deck's meta names one OR
+     we have a pending portrait edit OR a file is already on the server. */
+  var portUrl = d.portraitUrl ||
+    ((meta.portrait || pm.portrait || d.portraitUploaded)
+      ? '/api/sheet-portrait-file?v=' + (s.at || d.mtimeMs || 0) : '');
+  html += '<div class="sh-head">' +
+    '<button type="button" class="sh-port" id="sh-port" title="Tap to set your profile picture">' +
+      (portUrl
+        ? '<img id="sh-port-img" src="' + esc(portUrl) + '" alt="" onerror="this.style.display=\'none\';var p=document.getElementById(\'sh-port-ph\');if(p)p.style.display=\'flex\'">' +
+          '<span class="sh-port-ph" id="sh-port-ph" style="display:none">☾</span>'
+        : '<span class="sh-port-ph" id="sh-port-ph">☾</span>') +
+      '<span class="sh-cam">📷</span>' +
+    '</button>' +
+    '<div class="sh-idn">' +
+      '<div class="sh-name">' + esc(s.name || 'Dragonborn') + '</div>' +
+      '<div class="sh-sub">' + esc(s.race || '') +
+        (meta.charClass ? ' · <span class="sh-cls">' + esc(meta.charClass) + '</span>' +
+          (pm.charClass ? ' <span class="pill pend">pending</span>' : '') : '') +
+        (s.level != null ? ' · Level ' + esc(String(s.level)) : '') +
+      '</div>' +
+    '</div>' +
+  '</div>';
+
+  /* vitals */
+  var hp = s.hp || {};
+  html += '<div class="sh-vitals">' +
+    shVitalBar('Health', 'hp', hp.cur || 0, hp.max != null ? hp.max : (hp.cur || 0)) +
+    shVitalBar('Magicka', 'mag', s.mag || 0, s.mag || 0) +
+    shVitalBar('Stamina', 'sta', s.sta || 0, s.sta || 0) +
+  '</div>';
+
+  /* stat chips */
+  html += '<div class="sh-chips">' +
+    shChip('Gold', shNum(s.gold), '') +
+    shChip('Carry', shNum(s.carry), '') +
+    shChip('Dragon Souls', shNum(s.souls && s.souls.dragon), '') +
+    shChip('Bounty', shNum(s.bounty), 'bounty' + ((s.bounty || 0) > 0 ? ' on' : '')) +
+    (s.beast ? shChip('Beast', s.beast === true ? 'Active' : esc(String(s.beast)), 'beast') : '') +
+  '</div>';
+
+  /* skills */
+  var skills = (s.skills || []).slice().sort(function (a, b) { return (b.level || 0) - (a.level || 0); });
+  if (skills.length) {
+    html += '<div class="sect-head" style="margin-top:16px"><h2 style="font-size:14px">Skills</h2></div>' +
+      '<div class="sh-skills">' + skills.map(function (sk) {
+        return '<span class="sh-sk">' + esc(sk.name || '') + ' <b>' + esc(String(sk.level != null ? sk.level : '')) + '</b></span>';
+      }).join('') + '</div>';
+  }
+
+  /* effects — searchable, read-only */
+  var fx = (s.effects || []);
+  var q = (shUi.fx || '').trim().toLowerCase();
+  var shown = q ? fx.filter(function (e) {
+    return (e.name || '').toLowerCase().indexOf(q) >= 0 || (e.source || '').toLowerCase().indexOf(q) >= 0;
+  }) : fx;
+  html += '<div class="sect-head" style="margin-top:18px"><h2 style="font-size:14px">Active Effects ' +
+    '<span class="n">' + (q ? shown.length + '/' + fx.length : fx.length) + '</span></h2></div>';
+  if (fx.length) {
+    html += '<div class="sh-fbar"><span class="ic" aria-hidden="true">⌕</span>' +
+      '<input id="sh-fx-in" type="search" autocomplete="off" spellcheck="false" placeholder="Filter effects by name or source…"></div>';
+  }
+  if (!fx.length) {
+    html += '<div class="sh-empty" style="padding:16px">No active magic effects right now.</div>';
+  } else if (!shown.length) {
+    html += '<div class="sh-empty" style="padding:16px">No effect matches “' + esc(shUi.fx) + '”.</div>';
+  } else {
+    shown.forEach(function (e) {
+      var cd = shCountdown(e.remainSec, ageMs);
+      html += '<div class="sh-fx' + (e.harmful ? ' harm' : '') + '">' +
+        '<div class="sh-fxi">' + (e.harmful ? '☠' : '✦') + '</div>' +
+        '<div class="sh-fxm">' +
+          '<div class="sh-fxn">' + esc(e.name || '(unnamed effect)') + '</div>' +
+          '<div class="sh-fxs">' + esc(e.source || e.plugin || '') +
+            (e.magnitude ? ' · mag ' + esc(String(e.magnitude)) : '') + '</div>' +
+        '</div>' +
+        '<div class="sh-fxt' + (cd.perm ? ' perm' : '') + '">' + esc(cd.text) + '</div>' +
+      '</div>';
+    });
+    html += '<div class="sh-fxhint">Effects are read-only here — <b>remove one from the deck’s ' +
+      'Character tab in-game</b> (there is no live-remove channel to the phone).</div>';
+  }
+
+  /* editable meta */
+  html += '<div class="sect-head" style="margin-top:20px"><h2 style="font-size:14px">Class, Background &amp; History</h2></div>' +
+    '<div class="sh-ed">' +
+      '<label>Class' + (pm.charClass ? ' <span class="sh-pend">· pending</span>' : '') + '</label>' +
+      '<input class="sh-cls-in" id="sh-cls-in" type="text" maxlength="120" autocomplete="off" ' +
+        'placeholder="e.g. Battlemage, Nightblade, Warlord" value="' + esc(meta.charClass || '') + '">' +
+      '<label>Background' + (pm.background ? ' <span class="sh-pend">· pending</span>' : '') + '</label>' +
+      '<textarea id="sh-bg-in" maxlength="2000" placeholder="Where does your Dragonborn come from?">' + esc(meta.background || '') + '</textarea>' +
+      '<label>History' + (pm.history ? ' <span class="sh-pend">· pending</span>' : '') + '</label>' +
+      '<textarea id="sh-hist-in" class="hist" maxlength="8000" placeholder="Deeds, titles, the tale so far…">' + esc(meta.history || '') + '</textarea>' +
+      '<div class="sh-save-row">' +
+        '<button type="button" class="btn primary" id="sh-save">Save</button>' +
+        '<span class="sh-pend" id="sh-save-note">' +
+          (d.pendingEdits ? d.pendingEdits + ' edit' + (d.pendingEdits === 1 ? '' : 's') + ' queued — applies next time the deck ticks' :
+            'Edits queue and apply on the game’s next tick') + '</span>' +
+      '</div>' +
+    '</div>' +
+  '</section>';
+
+  host.innerHTML = html;
+
+  /* restore preserved input values + focus */
+  Object.keys(keep).forEach(function (id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.value = keep[id].v;
+    if (keep[id].f) { el.focus(); if (keep[id].c != null) { try { el.setSelectionRange(keep[id].c, keep[id].c); } catch (e) {} } }
+  });
+
+  var fxIn = document.getElementById('sh-fx-in');
+  if (fxIn) fxIn.oninput = function () { shUi.fx = fxIn.value; renderSheetTab(); };
+
+  var save = document.getElementById('sh-save');
+  if (save) save.onclick = shSaveMeta;
+
+  var port = document.getElementById('sh-port');
+  if (port) port.onclick = shPickPortrait;
+}
+
+/* ---- meta save: only send fields that actually changed from the snapshot ---- */
+function shSaveMeta() {
+  var d = state.charsheet || {}; var meta = d.meta || (d.sheet && d.sheet.meta) || {};
+  var body = {};
+  var cls = document.getElementById('sh-cls-in'), bg = document.getElementById('sh-bg-in'), hi = document.getElementById('sh-hist-in');
+  if (cls && cls.value !== (meta.charClass || '')) body.charClass = cls.value;
+  if (bg && bg.value !== (meta.background || '')) body.background = bg.value;
+  if (hi && hi.value !== (meta.history || '')) body.history = hi.value;
+  if (!Object.keys(body).length) { toast('Nothing changed', ''); return; }
+  var btn = document.getElementById('sh-save'); if (btn) btn.disabled = true;
+  api('POST', '/api/sheet-meta', body).then(function (r) {
+    if (btn) btn.disabled = false;
+    if (!r || !r.ok) { toast((r && r.error) || 'Save failed', 'bad'); return; }
+    toast('Saved — applies next time the deck ticks', 'good');
+    // Reflect the pending edits immediately.
+    api('GET', '/api/sheet').then(function (v) { if (v) state.charsheet = v; render(); });
+  }).catch(function (e) { if (btn) btn.disabled = false; toast('Save failed (' + (e.message || e) + ')', 'bad'); });
+}
+
+/* ---- profile picture: pick a file, open the square-crop modal ---- */
+function shPickPortrait() {
+  var inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'image/*';
+  inp.onchange = function () {
+    var f = inp.files && inp.files[0];
+    if (!f) return;
+    var fr = new FileReader();
+    fr.onload = function () {
+      var img = new Image();
+      img.onload = function () { shOpenCrop(img); };
+      img.onerror = function () { toast('Could not read that image', 'bad'); };
+      img.src = fr.result;
+    };
+    fr.onerror = function () { toast('Could not read that file', 'bad'); };
+    fr.readAsDataURL(f);
+  };
+  inp.click();
+}
+
+/* ---- the crop modal: drag to pan, wheel/pinch/slider to zoom, 512x512 PNG out ---- */
+var SH_CROP_OUT = 512;
+function shOpenCrop(img) {
+  var back = document.createElement('div');
+  back.className = 'sh-crop-back';
+  back.innerHTML =
+    '<div class="sh-crop-box">' +
+      '<div class="sh-crop-title">Set profile picture</div>' +
+      '<div class="sh-crop-stage" id="sh-crop-stage"><canvas id="sh-crop-cv"></canvas><div class="sh-crop-ring"></div></div>' +
+      '<div class="sh-crop-zoom"><span class="zl">−</span>' +
+        '<input id="sh-crop-zin" type="range" min="1" max="4" step="0.01" value="1"><span class="zl">+</span></div>' +
+      '<div class="sh-crop-hint">Drag to reposition · pinch or scroll to zoom</div>' +
+      '<div class="sh-crop-actions">' +
+        '<button type="button" class="btn" id="sh-crop-cancel">Cancel</button>' +
+        '<button type="button" class="btn primary" id="sh-crop-save">Use photo</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(back);
+  document.body.style.overflow = 'hidden';
+
+  var stage = back.querySelector('#sh-crop-stage');
+  var cv = back.querySelector('#sh-crop-cv');
+  var ctx = cv.getContext('2d');
+  // The stage is square on screen; size the canvas to its pixel box for crisp draw.
+  function sizeCanvas() {
+    var r = stage.getBoundingClientRect();
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = Math.max(1, Math.round(r.width * dpr));
+    cv.height = Math.max(1, Math.round(r.height * dpr));
+  }
+  // View model: the image is drawn scaled by `scale` (relative to a base "cover"
+  // fit) and offset by (ox,oy) in canvas px, centred. minScale keeps it covering.
+  var base = 1, scale = 1, ox = 0, oy = 0, baseCoverW = 0, baseCoverH = 0;
+  function recomputeBase() {
+    sizeCanvas();
+    // cover: the image fills the square, smaller dimension bound.
+    base = Math.max(cv.width / img.width, cv.height / img.height);
+    baseCoverW = img.width * base; baseCoverH = img.height * base;
+    clampOffsets();
+  }
+  function drawW() { return baseCoverW * scale; }
+  function drawH() { return baseCoverH * scale; }
+  function clampOffsets() {
+    var maxX = Math.max(0, (drawW() - cv.width) / 2);
+    var maxY = Math.max(0, (drawH() - cv.height) / 2);
+    ox = Math.max(-maxX, Math.min(maxX, ox));
+    oy = Math.max(-maxY, Math.min(maxY, oy));
+  }
+  function draw() {
+    clampOffsets();
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    var w = drawW(), h = drawH();
+    ctx.drawImage(img, (cv.width - w) / 2 + ox, (cv.height - h) / 2 + oy, w, h);
+  }
+  recomputeBase(); draw();
+
+  var zin = back.querySelector('#sh-crop-zin');
+  zin.oninput = function () { scale = Number(zin.value) || 1; draw(); };
+
+  // pointer drag (mouse + single touch) + two-finger pinch
+  var drag = null, pinch = null;
+  var pts = {};
+  function toCanvas(e) {
+    var r = cv.getBoundingClientRect();
+    var dpr = cv.width / r.width;
+    return { x: (e.clientX - r.left) * dpr, y: (e.clientY - r.top) * dpr };
+  }
+  stage.addEventListener('pointerdown', function (e) {
+    stage.setPointerCapture(e.pointerId);
+    pts[e.pointerId] = toCanvas(e);
+    var ids = Object.keys(pts);
+    if (ids.length === 2) {
+      var a = pts[ids[0]], b = pts[ids[1]];
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), s: scale };
+      drag = null;
+    } else {
+      drag = { x: pts[e.pointerId].x - ox, y: pts[e.pointerId].y - oy };
+      stage.classList.add('drag');
+    }
+  });
+  stage.addEventListener('pointermove', function (e) {
+    if (!(e.pointerId in pts)) return;
+    pts[e.pointerId] = toCanvas(e);
+    var ids = Object.keys(pts);
+    if (pinch && ids.length >= 2) {
+      var a = pts[ids[0]], b = pts[ids[1]];
+      var nd = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pinch.d > 0) { scale = Math.max(1, Math.min(4, pinch.s * (nd / pinch.d))); zin.value = scale; }
+      draw();
+    } else if (drag) {
+      ox = pts[e.pointerId].x - drag.x; oy = pts[e.pointerId].y - drag.y; draw();
+    }
+  });
+  function up(e) {
+    delete pts[e.pointerId];
+    if (Object.keys(pts).length < 2) pinch = null;
+    if (!Object.keys(pts).length) { drag = null; stage.classList.remove('drag'); }
+  }
+  stage.addEventListener('pointerup', up);
+  stage.addEventListener('pointercancel', up);
+  stage.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    scale = Math.max(1, Math.min(4, scale * (e.deltaY < 0 ? 1.08 : 0.92)));
+    zin.value = scale; draw();
+  }, { passive: false });
+
+  window.addEventListener('resize', recomputeBase);
+
+  function close() {
+    window.removeEventListener('resize', recomputeBase);
+    back.remove();
+    document.body.style.overflow = (state.sheet || state.lb) ? 'hidden' : '';
+  }
+  back.querySelector('#sh-crop-cancel').onclick = close;
+  back.addEventListener('click', function (e) { if (e.target === back) close(); });
+
+  back.querySelector('#sh-crop-save').onclick = function () {
+    // Render the SAME framing into a 512x512 output canvas. The stage shows the
+    // whole square; the round ring is only a guide (the deck medallions it) — we
+    // save the full square so nothing the user positioned is thrown away.
+    var out = document.createElement('canvas');
+    out.width = SH_CROP_OUT; out.height = SH_CROP_OUT;
+    var octx = out.getContext('2d');
+    var k = SH_CROP_OUT / cv.width;   // canvas px -> output px (square, same aspect)
+    var w = drawW() * k, h = drawH() * k;
+    octx.drawImage(img, (SH_CROP_OUT - w) / 2 + ox * k, (SH_CROP_OUT - h) / 2 + oy * k, w, h);
+    var dataUrl;
+    try { dataUrl = out.toDataURL('image/png'); }
+    catch (e) { toast('Could not process that image', 'bad'); return; }
+    var btn = back.querySelector('#sh-crop-save'); btn.disabled = true; btn.textContent = 'Uploading…';
+    api('POST', '/api/sheet-portrait', { ext: 'png', dataBase64: dataUrl }).then(function (r) {
+      if (!r || !r.ok) { btn.disabled = false; btn.textContent = 'Use photo'; toast((r && r.error) || 'Upload failed', 'bad'); return; }
+      toast('Profile picture set — applies next time the deck ticks', 'good');
+      close();
+      api('GET', '/api/sheet').then(function (v) {
+        if (v) { v.portraitUrl = (r.url || '/api/sheet-portrait-file') + (r.url && r.url.indexOf('?') >= 0 ? '' : '?v=' + (r.mtime || Date.now())); state.charsheet = v; }
+        render();
+      });
+    }).catch(function (e) { btn.disabled = false; btn.textContent = 'Use photo'; toast('Upload failed (' + (e.message || e) + ')', 'bad'); });
+  };
+}
+
+/* Keep the Sheet tab's clock/countdowns honest while it is the active tab: a
+   light 1s repaint ages the effect timers and re-fetches the snapshot every
+   ~5s so a running game shows live vitals. Never repaints while an input is
+   focused (busyEditing) or the tab is hidden. */
+var shTick = null, shSince = 0;
+function shStartTicker() {
+  shStopTicker();
+  shSince = 0;
+  shTick = setInterval(function () {
+    if (state.tab !== 'sheet') { shStopTicker(); return; }
+    if (document.hidden || busyEditing()) return;
+    shSince += 1;
+    if (shSince % 5 === 0) {
+      api('GET', '/api/sheet').then(function (v) { if (v) { state.charsheet = v; if (state.tab === 'sheet') renderSheetTab(); } });
+    } else if (state.charsheet && state.charsheet.ok) {
+      renderSheetTab();   // just age the countdowns
+    }
+  }, 1000);
+}
+function shStopTicker() { if (shTick) { clearInterval(shTick); shTick = null; } }
+
 /* ============================ Bases tab ============================ *
    NFF home bases from the phone. Reads the deck's portal-bases.json snapshot
    (state.bases — the same nbOpen model the in-game Bases surface uses) and
@@ -10803,6 +11323,13 @@ var TABS = {
     placeholder: 'Ask lives below — type your question in the Ask box',
     render: function () { renderAskTab(); },
   },
+  sheet: {
+    // The effects list has its OWN filter box in-pane; the global search box
+    // up top is not it (like Ask). No modal sheet on this tab.
+    pane: 'pane-sheet', sheet: null, sheets: [],
+    placeholder: 'Filter magic effects below',
+    render: function () { renderSheetTab(); },
+  },
   faces: {
     pane: 'pane-faces', sheet: null, sheets: [],
     placeholder: 'Search RaceMenu presets…',
@@ -10849,6 +11376,9 @@ function setTab(t, push) {
   state.armed = {};
   state.moveOpen = null; state.moveQ = ''; state.moveFocus = false; state.catRename = null;
   if (push && tabFromHash() !== t) location.hash = t;
+  // The Sheet tab runs a light 1s ticker (age countdowns, refetch vitals) only
+  // while it is active — start it on entry, stop it on any exit.
+  if (t === 'sheet') shStartTicker(); else shStopTicker();
   render();
   scrollTabIntoView(t);
 }
@@ -11734,6 +12264,7 @@ document.addEventListener('keydown', function (e) {
 });
 
 state.tab = tabFromHash() || 'portraits';
+if (state.tab === 'sheet') shStartTicker();   // a deep link straight to #sheet
 /* A deep link (#dragons) can name a tab that sits off the right-hand end of the
    scrolling tab row on a phone. Bring it into view once the first paint has
    given the row a width to scroll. */

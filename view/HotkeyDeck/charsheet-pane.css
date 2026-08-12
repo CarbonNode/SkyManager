@@ -1,0 +1,593 @@
+/* ===================================================================== *
+ *  Character tab — your personal character sheet. Own sheet (linked from
+ *  index.html) so no other pane's app.css section can truncate it — the
+ *  sync_view_frags lesson, same as keys-pane.css / hd-shelf.css.
+ *
+ *  Design language: the deck's tokens (dark #1a1a21→#101015, gold
+ *  rgba(201,162,75), border #3d3a33, radius 10-12). No text below 12px —
+ *  Rober plays at 2560×1440 from a couch. Spacious by requirement.
+ * ===================================================================== */
+
+#ps-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 20px 24px 16px;
+  gap: 18px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+#ps-pane.hidden { display: none; }
+
+/* =============================================================== header == */
+
+.ps-header {
+  display: flex;
+  align-items: stretch;
+  gap: 22px;
+  background: linear-gradient(135deg, #1c1c24 0%, #131318 100%);
+  border: 1px solid #3d3a33;
+  border-radius: 14px;
+  padding: 20px 24px;
+  position: relative;
+}
+
+/* -- portrait --------------------------------------------------------- */
+
+.ps-portrait {
+  width: 156px;
+  height: 200px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background: #101015;
+  border: 1px solid #4a4638;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ps-portrait img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.ps-portrait-empty {
+  border-style: dashed;
+  border-color: #55503f;
+  background: repeating-linear-gradient(135deg, #14141a 0 12px, #17171e 12px 24px);
+}
+.ps-portrait-empty .ps-portrait-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  text-align: center;
+}
+.ps-portrait-hint .ps-portrait-glyph {
+  font-size: 34px;
+  opacity: .5;
+  line-height: 1;
+}
+.ps-portrait-hint .ps-portrait-cap {
+  font-size: 12.5px;
+  color: #8d8471;
+  line-height: 1.45;
+  max-width: 15ch;
+}
+
+/* -- identity --------------------------------------------------------- */
+
+.ps-identity {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  justify-content: center;
+}
+
+.ps-name {
+  font-size: 32px;
+  font-weight: 700;
+  color: #f0ead9;
+  letter-spacing: .3px;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ps-raceclass {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ps-race {
+  font-size: 16px;
+  color: #c3bba6;
+  padding: 6px 13px;
+  background: #21212a;
+  border: 1px solid #3d3a33;
+  border-radius: 8px;
+  white-space: nowrap;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-race b { color: #6d675a; font-weight: 500; margin-right: 5px; text-transform: uppercase; font-size: 12px; letter-spacing: .6px; }
+
+.ps-class-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 1 1 180px;
+  min-width: 160px;
+  max-width: 320px;
+  background: #121218;
+  border: 1px solid #3d3a33;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.ps-class-wrap:focus-within {
+  border-color: rgba(201, 162, 75, .55);
+  box-shadow: 0 0 0 2px rgba(201, 162, 75, .12);
+}
+.ps-class-label {
+  font-size: 12px;
+  color: #6d675a;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  padding: 0 4px 0 12px;
+  white-space: nowrap;
+}
+#ps-class-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: #ecd9a8;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 9px 12px 9px 8px;
+  outline: none;
+}
+#ps-class-input::placeholder { color: #6d675a; font-weight: 400; }
+
+/* -- level medallion -------------------------------------------------- */
+
+.ps-level {
+  flex-shrink: 0;
+  width: 92px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 12px;
+  border: 1px solid rgba(201, 162, 75, .4);
+  background: radial-gradient(circle at 50% 35%, rgba(201, 162, 75, .16), rgba(201, 162, 75, .03) 70%);
+}
+.ps-level-cap {
+  font-size: 12px;
+  color: #b8a066;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.ps-level-num {
+  font-size: 44px;
+  font-weight: 800;
+  color: #ecd9a8;
+  line-height: 1;
+}
+
+/* =============================================================== vitals == */
+
+.ps-vitals {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ps-bars {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+.ps-bar {
+  background: #15151b;
+  border: 1px solid #33302a;
+  border-radius: 11px;
+  padding: 13px 16px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.ps-bar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ps-bar-name {
+  font-size: 13px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+}
+.ps-bar-nums {
+  font-size: 16px;
+  font-weight: 700;
+  color: #e8e2d4;
+  white-space: nowrap;
+}
+.ps-bar-nums .ps-bar-max { color: #7d7563; font-weight: 500; font-size: 14px; }
+.ps-bar-track {
+  height: 14px;
+  border-radius: 8px;
+  background: #22222b;
+  overflow: hidden;
+  border: 1px solid #2b2b34;
+}
+.ps-bar-fill {
+  height: 100%;
+  border-radius: 7px;
+  transition: width 320ms ease;
+  min-width: 3px;
+}
+/* HP red→gold, Magicka blue, Stamina green */
+.ps-bar-hp  .ps-bar-name { color: #e59a86; }
+.ps-bar-hp  .ps-bar-fill { background: linear-gradient(90deg, #b8443a, #e0a24a); }
+.ps-bar-mag .ps-bar-name { color: #7fb2e8; }
+.ps-bar-mag .ps-bar-fill { background: linear-gradient(90deg, #2f6bbf, #5fa8e6); }
+.ps-bar-sta .ps-bar-name { color: #83cf8f; }
+.ps-bar-sta .ps-bar-fill { background: linear-gradient(90deg, #3a8f4c, #6fc97f); }
+
+/* -- stat chips ------------------------------------------------------- */
+
+.ps-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.ps-chip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: #17171d;
+  border: 1px solid #33302a;
+  border-radius: 10px;
+  padding: 9px 14px;
+  min-width: 0;
+}
+.ps-chip-ico { font-size: 18px; line-height: 1; opacity: .9; }
+.ps-chip-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ps-chip-label {
+  font-size: 12px;
+  color: #7d7563;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  white-space: nowrap;
+}
+.ps-chip-val {
+  font-size: 16px;
+  font-weight: 700;
+  color: #e8e2d4;
+  white-space: nowrap;
+}
+.ps-chip-gold  .ps-chip-val { color: #ecd9a8; }
+.ps-chip-souls .ps-chip-val { color: #cbaBef; }
+.ps-chip-carry.ps-over .ps-chip-val { color: #e59a86; }
+
+.ps-chip-bounty {
+  border-color: rgba(200, 80, 70, .45);
+  background: rgba(200, 80, 70, .08);
+}
+.ps-chip-bounty .ps-chip-val { color: #f0b1a8; }
+
+.ps-chip-beast {
+  border-color: rgba(160, 90, 200, .5);
+  background: rgba(140, 80, 190, .12);
+}
+.ps-chip-beast .ps-chip-label { color: #b79ad6; }
+.ps-chip-beast .ps-chip-val { color: #d9c2f0; }
+
+/* =============================================================== columns == */
+
+.ps-columns {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+.ps-card {
+  background: #15151b;
+  border: 1px solid #33302a;
+  border-radius: 12px;
+  padding: 16px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.ps-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ps-card-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #e8e2d4;
+  letter-spacing: .3px;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+.ps-card-title .ps-card-sub { font-size: 13px; font-weight: 500; color: #8d8471; }
+
+/* =============================================================== effects == */
+
+#ps-eff-filter {
+  width: 100%;
+  background: #121218;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  color: #e8e2d4;
+  font-size: 15px;
+  padding: 10px 14px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+#ps-eff-filter:focus {
+  border-color: rgba(201, 162, 75, .55);
+  box-shadow: 0 0 0 2px rgba(201, 162, 75, .12);
+}
+#ps-eff-filter::placeholder { color: #6d675a; }
+
+.ps-eff-count {
+  font-size: 13px;
+  font-weight: 500;
+  color: #8d8471;
+  white-space: nowrap;
+}
+.ps-eff-count.ps-eff-harm { color: #d8a25a; }
+
+#ps-eff-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.ps-eff {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #17171d;
+  border: 1px solid #33302a;
+  border-radius: 10px;
+  padding: 11px 13px;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.ps-eff:hover { background: #1c1c24; border-color: #4a4638; }
+.ps-eff-harm-row {
+  border-color: rgba(200, 80, 70, .42);
+  background: rgba(200, 80, 70, .07);
+}
+.ps-eff-harm-row:hover { background: rgba(200, 80, 70, .11); border-color: rgba(200, 80, 70, .62); }
+
+.ps-eff-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ps-eff-name {
+  font-size: 15px;
+  font-weight: 650;
+  color: #e8e2d4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-eff-harm-row .ps-eff-name { color: #f0b1a8; }
+.ps-eff-sub {
+  font-size: 12.5px;
+  color: #8d8471;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-eff-sub .ps-eff-plugin { color: #6d675a; }
+
+.ps-eff-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+  text-align: right;
+}
+.ps-eff-mag {
+  font-size: 14px;
+  font-weight: 700;
+  color: #cfc8b8;
+  white-space: nowrap;
+}
+.ps-eff-time {
+  font-size: 12.5px;
+  color: #8d8471;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ps-eff-time.ps-eff-perm { color: #6d675a; font-style: italic; }
+
+.ps-eff-rm {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  border: 1px solid #3d3a33;
+  background: #1d1d25;
+  color: #b0a894;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, width 160ms ease;
+  white-space: nowrap;
+}
+.ps-eff-rm:hover { background: rgba(200, 80, 70, .18); border-color: rgba(200, 80, 70, .55); color: #f0b1a8; }
+.ps-eff-rm:active { background: rgba(200, 80, 70, .28); }
+.ps-eff-rm.ps-armed {
+  width: auto;
+  padding: 0 14px;
+  background: rgba(200, 80, 70, .22);
+  border-color: rgba(200, 80, 70, .7);
+  color: #f6c8bf;
+  font-size: 13.5px;
+  font-weight: 650;
+}
+/* locked (part of race/abilities) — shown disabled with reason in tooltip */
+.ps-eff-lock {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  border: 1px solid #2b2b34;
+  background: #14141a;
+  color: #55503f;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+
+.ps-eff-empty {
+  font-size: 14px;
+  color: #8d8471;
+  text-align: center;
+  padding: 26px 16px;
+  line-height: 1.5;
+}
+.ps-eff-empty b { color: #cfc8b8; }
+
+/* =============================================================== skills == */
+
+.ps-skills-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 9px;
+}
+.ps-skill {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  background: #17171d;
+  border: 1px solid #2b2b34;
+  border-radius: 8px;
+  padding: 8px 12px;
+  min-width: 0;
+}
+.ps-skill-name {
+  font-size: 13px;
+  color: #b0a894;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-skill-lvl {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ecd9a8;
+  white-space: nowrap;
+}
+
+/* =============================================================== story == */
+
+.ps-story {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.ps-story-block { display: flex; flex-direction: column; gap: 8px; }
+.ps-story-label {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #e8e2d4;
+}
+.ps-story-hint { font-size: 12.5px; font-weight: 400; color: #7d7563; }
+.ps-story-saved {
+  font-size: 12px;
+  color: #83cf8f;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+.ps-story-saved.ps-show { opacity: 1; }
+
+.ps-story textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 118px;
+  resize: vertical;
+  background: #121216;
+  border: 1px solid #3d3a33;
+  border-radius: 10px;
+  color: #ddd5c4;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 15px;
+  line-height: 1.6;
+  padding: 14px 16px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.ps-story textarea:focus {
+  border-color: rgba(201, 162, 75, .55);
+  box-shadow: 0 0 0 2px rgba(201, 162, 75, .1);
+}
+.ps-story textarea::placeholder { color: #6d675a; font-style: italic; }
+#ps-history { min-height: 168px; }
+
+/* =============================================================== skeleton == */
+
+.ps-skel-box {
+  border-radius: 8px;
+  background: linear-gradient(90deg, #1b1b22 25%, #23232c 50%, #1b1b22 75%);
+  background-size: 200% 100%;
+  animation: ps-shimmer 1.3s infinite linear;
+}
+.ps-loading .ps-name,
+.ps-loading .ps-bar-nums,
+.ps-loading .ps-chip-val { color: transparent; }
+@keyframes ps-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* =============================================================== narrow == */
+
+@media (max-width: 900px) {
+  #ps-pane { padding: 14px 14px 12px; gap: 14px; }
+  .ps-header { flex-wrap: wrap; gap: 16px; padding: 16px; }
+  .ps-portrait { width: 120px; height: 156px; }
+  .ps-name { font-size: 26px; white-space: normal; }
+  .ps-level { width: 100%; flex-direction: row; gap: 12px; padding: 10px; order: 3; }
+  .ps-level-num { font-size: 34px; }
+  .ps-identity { flex-basis: 55%; }
+  .ps-bars { grid-template-columns: 1fr; }
+  .ps-columns { grid-template-columns: 1fr; }
+  .ps-skills-grid { grid-template-columns: repeat(2, 1fr); }
+  #ps-eff-body { max-height: 300px; }
+}
