@@ -858,15 +858,41 @@ namespace
 			// visible everywhere and synthesized "\\" on setups without the mod:
 			// the exact dead button the mod page promises cannot exist.
 			{ "prisma", has("Data/PrismaMCMRedux/PrismaCore.ini") || dll("PrismaMCMRedux") },
+			// --- whole-TAB gates (2026-08-12 policy sweep, Rober): a tab whose
+			// backing mod is absent showed with in-pane refusals; now the view
+			// hides the tab entirely on an EXPLICIT false. Same explicit-false
+			// law as the entry flags above — an older DLL sends none and nothing
+			// vanishes.
+			// SOES-NG is a pure SKSE DLL (no plugin), so detect the module (its
+			// data JSON only exists AFTER a first export, which would false-negate
+			// a fresh install). Backs the Wardrobe tab.
+			{ "soes", dll("SkyrimOutfitEquipmentSystemNG.dll") },
+			// Preset Director DLL — backs the Faces tab (preset_bridge.cpp
+			// already probes this exact module for its C API).
+			{ "presetdirector", dll("PresetDirector.dll") },
+			// OStim SA DLL — backs the OStim scene deck (ostim_deck.cpp / its
+			// vendored Thread API consume it via GetModuleHandle("OStim.dll")).
+			{ "ostim", dll("OStim.dll") },
+			// ZaZ Animation Pack — the Animations tab is a ZAP idle-event player;
+			// its whole baked catalogue fires NotifyAnimationGraph events that
+			// only resolve when ZAP's behaviour files are loaded, so with the ESM
+			// absent every animation is a silent no-op.
+			{ "zap", plugin("ZaZAnimationPack.esm") },
+			// Tailor plugin — the seeded "tailor-open" row opens Tailor's own
+			// PrismaUI view; unbound + mod-absent it is a dead key.
+			{ "tailor", plugin("Tailor.esp") },
 		};
 		done = true;
 		// Build marker (hd-markers.json: "deck-mod-detection"): unconditional so it
-		// is reached the first time the deck opens.
-		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={} prisma={} chim={}",
+		// is reached the first time the deck opens. KEEP the leading literal
+		// "deck: mod-detection omo=" intact (build marker) — new flags append.
+		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={} prisma={} chim={} soes={} presetdirector={} ostim={} zap={} tailor={}",
 			cached["omo"].get<bool>(), cached["additemmenu"].get<bool>(),
 			cached["followerorganizer"].get<bool>(), cached["nff"].get<bool>(),
 			cached["smf"].get<bool>(), cached["cs"].get<bool>(), cached["virtualkey"].get<bool>(),
-			cached["bfl"].get<bool>(), cached["prisma"].get<bool>(), cached["chim"].get<bool>());
+			cached["bfl"].get<bool>(), cached["prisma"].get<bool>(), cached["chim"].get<bool>(),
+			cached["soes"].get<bool>(), cached["presetdirector"].get<bool>(),
+			cached["ostim"].get<bool>(), cached["zap"].get<bool>(), cached["tailor"].get<bool>());
 		return cached;
 	}
 
@@ -3886,9 +3912,19 @@ namespace
 				std::lock_guard l(g_configMutex);
 				wants = g_config.settings.targetOpensFollowers;
 			}
-			if (wants) {
+			// The Followers tab rides Follower Organizer; with FO absent the tab is
+			// HIDDEN in the view (SYS_TABS requires:'followerorganizer'). Routing a
+			// plain F7-with-target onto it would bounce the view to Home with a
+			// toast on every look-and-open — so degrade here: don't route to a tab
+			// that isn't there (2026-08-12 gate sweep). The explicit-false gate
+			// mirrors the view's tabAvailable.
+			const auto& det = DetectedModsJson();
+			const bool  foGone = det.contains("followerorganizer") && det["followerorganizer"].is_boolean() && det["followerorganizer"].get<bool>() == false;
+			if (wants && !foGone) {
 				g_pendingTab = "followers";
 				logger::info("open: crosshair target -> landing on the Followers tab");
+			} else if (wants && foGone) {
+				logger::info("open: crosshair target, but Follower Organizer absent -> Followers tab hidden, staying put");  // marker: gate-f7-followers
 			}
 		}
 		if (!g_pendingTab.empty()) {

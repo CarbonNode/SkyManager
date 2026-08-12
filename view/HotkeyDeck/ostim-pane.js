@@ -375,6 +375,7 @@ window.OStimPane = (function () {
     init();
     if (window.__omniSetTab) window.__omniSetTab('anim');
     else if (window.setTab) window.setTab('anim');
+    if (ostimGatedOut()) { setMode('poses'); return; }   // OStim off → don't land on a hidden segment
     ui.pendingSmart = true;
     toGame('osGet');   // its osOpen reply resolves the segment (receive 'open')
   }
@@ -433,11 +434,38 @@ window.OStimPane = (function () {
     return true;
   }
 
+  /* OStim detected-absent (explicit false only) off app.js's shared-scope
+     `state.detected.ostim` — the 2026-08-12 sweep flag. When OStim is off the
+     whole "OStim" segment of the Animations tab is hidden ("if someone doesn't
+     have a supported mod it shouldn't show up"), not shown as a dead
+     "OStim not detected" panel. Unknown/older host → segment stays. This is a
+     stronger, install-time gate than state.ostim (the LIVE Thread-API probe),
+     which still drives the in-scene messaging when the segment IS shown. */
+  function ostimGatedOut() {
+    /* ⚠ This IIFE has its OWN local `state` (the live scene), so read app.js's
+       detection through the window accessor, never a bare `state`. */
+    try {
+      return (typeof window.__hdFlagAbsent === 'function') && window.__hdFlagAbsent('ostim');
+    } catch (e) { return false; }
+  }
+  function applyOstimGate() {
+    const gone = ostimGatedOut();
+    /* Hide the whole Poses|OStim toggle when OStim is off — a lone "Poses"
+       segment button reads as a broken control. The Poses body is #an-row and
+       stays; only the toggle bar + OStim body go. */
+    const seg = $('an-seg');
+    if (seg) seg.classList.toggle('hidden', gone);
+    if (els.segOstim) els.segOstim.classList.toggle('hidden', gone);
+    if (els.body && gone) els.body.classList.add('hidden');
+    if (gone && ui.mode === 'ostim') setMode('poses');   // never land on a hidden segment
+  }
+
   // Called by AnimPane when the Animations tab opens / closes.
   function onAnimShow() {
     if (!init()) return;
+    applyOstimGate();
     if (els.search) els.search.value = ui.query;
-    if (ui.mode === 'ostim') { toGame('osGet'); startPoll(); }
+    if (!ostimGatedOut() && ui.mode === 'ostim') { toGame('osGet'); startPoll(); }
   }
   function onAnimHide() { stopPoll(); }
 
@@ -511,6 +539,8 @@ window.OStimPane = (function () {
       ui.query = q || ''; if (els.search) els.search.value = ui.query; doSearch();
     },
     index: function () {
+      // OStim absent (install-time gate) → no rows at all (2026-08-12 sweep).
+      if (ostimGatedOut()) return [];
       // Only meaningful while a scene is running (Omni changes the live scene).
       if (!state.inScene) return [];
       const items = [];

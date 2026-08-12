@@ -1132,20 +1132,59 @@ function renderNotes() {
    of the row by USAGE (Rober, 2026-08-07: "order them so the ones we use the
    most show as full text / others auto compact into a dropdown"). The `img`
    is the same gold glyph the Home card wears, for the icons-only tab style. */
+/* `requires` gates the WHOLE tab on a C++ detection flag (cfg.detected off
+   hdOpen, same flags as HK_REQUIRES / home-pane's SYSTEMS). A tab whose backing
+   mod is EXPLICITLY absent is hidden from the bar, the More menu, deep-open keys
+   and omni — Rober 2026-08-12: "if someone doesn't have a supported mod it
+   shouldn't show up". Explicit-false law only (see tabGate): an older DLL sends
+   no flags and nothing vanishes. Ungated tabs (quests/domains/containers/rooms/
+   loot/keys/sheet/finances) work vanilla or off the deck's own data and always
+   show. */
 const SYS_TABS = [
   { tab: 'quests',     label: 'Quests',     img: 'icons/custom/hm-quests.png',     title: 'Inspect & repair any quest' },
-  { tab: 'followers',  label: 'Followers',  img: 'icons/custom/hm-followers.png',  title: 'Summon, order, dress' },
+  { tab: 'followers',  label: 'Followers',  img: 'icons/custom/hm-followers.png',  title: 'Summon, order, dress', requires: 'followerorganizer' },
   { tab: 'domains',    label: 'Domains',    img: 'icons/custom/hm-domains.png',    title: 'Mark a place and travel back to it' },
   { tab: 'containers', label: 'Containers', img: 'icons/custom/hm-containers.png', title: 'Mark a container and open it from anywhere' },
   { tab: 'rooms',      label: 'Rooms',      img: 'icons/custom/hm-rooms.png',      title: 'Claim a room and keep strangers out of it' },
   { tab: 'loot',       label: 'Loot',       img: 'icons/custom/hm-loot.png',       title: 'Glow the loot worth walking to' },
   { tab: 'keys',       label: 'Keys',       img: 'icons/custom/hm-keys.png',       title: 'Every hotkey in the load order, and what conflicts' },
   { tab: 'sheet',      label: 'Character',  img: 'icons/custom/hm-sheet.png',      title: 'Your character sheet - stats, effects, story' },
-  { tab: 'anim',       label: 'Animations', img: 'icons/custom/hm-anim.png',       title: 'Apply a pose / animation to an NPC or yourself' },
+  { tab: 'anim',       label: 'Animations', img: 'icons/custom/hm-anim.png',       title: 'Apply a pose / animation to an NPC or yourself', requires: 'zap' },
   { tab: 'finances',   label: 'Finances',   img: 'icons/custom/hm-finances.png',   title: 'Your ledger, properties and market' },
-  { tab: 'wardrobe',   label: 'Wardrobe',   img: 'icons/custom/hm-wardrobe.png',   title: 'Outfits, wardrobes and NPC dressing' },
-  { tab: 'faces',      label: 'Faces',      img: 'icons/custom/hm-faces.png',      title: 'Browse RaceMenu presets and apply a face' },
+  { tab: 'wardrobe',   label: 'Wardrobe',   img: 'icons/custom/hm-wardrobe.png',   title: 'Outfits, wardrobes and NPC dressing', requires: 'soes' },
+  { tab: 'faces',      label: 'Faces',      img: 'icons/custom/hm-faces.png',      title: 'Browse RaceMenu presets and apply a face', requires: 'presetdirector' },
 ];
+
+/* True unless the tab's required mod is EXPLICITLY detected-absent. Mirrors
+   home-pane.js detectedGate and the hkNeeds law: no `requires` → always shown;
+   no detection payload or the flag unknown (older DLL) → shown; only an explicit
+   `false` hides. `state.detected` is the cfg.detected object off hdOpen.
+   Exposed on window for the harness + omni. */
+function tabAvailable(sys) {
+  if (!sys || !sys.requires) return true;
+  const det = (state.detected && typeof state.detected === 'object') ? state.detected : null;
+  if (!det || !(sys.requires in det)) return true;   // unknown flag → assume present
+  return det[sys.requires] !== false;
+}
+/* The gate keyed by tab id, for callers that hold a tab string not a SYS_TABS
+   row (setTab / hdShowTab / omni). A tab with no SYS_TABS entry (hotkey cats,
+   numpad, notes, wheel, recent) is never gated. */
+function tabIdAvailable(t) {
+  const sys = SYS_TABS.filter((s) => s.tab === t)[0];
+  return sys ? tabAvailable(sys) : true;
+}
+/* Cross-file accessors for panes that shadow app.js's `state` in their own IIFE
+   scope (ostim-pane's local `const state`, so a bare `state.detected` there does
+   NOT reach here). __hdDetected returns the raw cfg.detected object or null;
+   __hdFlagAbsent(name) is the explicit-false test (unknown/missing → false, i.e.
+   "not absent", so nothing vanishes on an older DLL). */
+window.__hdDetected = function () {
+  return (state.detected && typeof state.detected === 'object') ? state.detected : null;
+};
+window.__hdFlagAbsent = function (name) {
+  const d = window.__hdDetected();
+  return !!(d && name in d && d[name] === false);
+};
 
 /* ⚠ Tab-bar prefs PERSIST INSIDE THE SHELF BLOB (state.shelf.tabbar).
    C++ parses `settings` field-by-field (main.cpp SettingsToJson / the value()
@@ -1196,7 +1235,10 @@ function bumpTabUse(t) {
 function sysOrder() {
   const use = tabbarPrefs().use;
   const eff = (t) => Math.floor((Number(use[t]) || 0) / 3);
-  return SYS_TABS.slice().sort((a, b) =>
+  /* Drop tabs whose backing mod is detected-absent BEFORE ordering, so they
+     leave the bar AND the More menu (tabOverflow rides this same list) — the
+     one place the tab gate needs to live for the visible surface. */
+  return SYS_TABS.filter(tabAvailable).sort((a, b) =>
     eff(b.tab) - eff(a.tab) ||
     SYS_TABS.indexOf(a) - SYS_TABS.indexOf(b));
 }
@@ -1628,6 +1670,10 @@ const HK_REQUIRES = {
   'hd-open-community-shaders': { flag: 'cs',     label: 'Community Shaders' },
   'open-prisma-mcm':           { flag: 'prisma', label: 'Prisma MCM Redux' },
   'hd-open-prisma-mcm':        { flag: 'prisma', label: 'Prisma MCM Redux' },
+  /* Tailor opener (2026-08-12 sweep): Tailor.esp is cleanly detectable, so a
+     setup without it no longer shows a dead unbound "Tailor (Outfits & Wigs)"
+     row. Both the seed id and the bare id are the same string here. */
+  'tailor-open':               { flag: 'tailor', label: 'Tailor' },
 };
 /* The missing-mod label if this entry's required mod is NOT detected, else ''.
    device:"vkey" requires VirtualKey. A DLL that predates cfg.detected sends no
@@ -2345,6 +2391,16 @@ function requestClose() {
 
 function setTab(t) {
   closeMoreMenu();   // any tab switch dismisses the overflow menu
+  /* A gated-off tab is not reachable — deep-open keys (F14 Followers etc.) and
+     the F7-with-target route land here, so a hidden pane must no-op to Home
+     with a small toast rather than open a broken surface. Hotkey cats / numpad
+     / notes / wheel / recent are never gated (tabIdAvailable returns true). */
+  if (!tabIdAvailable(t)) {
+    const sys = SYS_TABS.filter((s) => s.tab === t)[0];
+    toast((sys ? sys.label : 'That') + ' is off — its mod isn’t installed');
+    if (ui.tab !== 'home') setTab('home');
+    return;
+  }
   if (ui.tab === t) return;
   const prev = ui.tab;
   ui.tab = t;
@@ -3491,6 +3547,10 @@ function init() {
     HDOmni.hookInto({
       state: state,
       setTab: setTab,
+      /* the same explicit-false tab gate the bar uses — omni asks it per
+         provider so a hidden tab's rows never surface (2026-08-12 sweep). A
+         provider whose tab has no SYS_TABS entry is never gated. */
+      tabAvailable: function (t) { return tabIdAvailable(t); },
       setSearch: function (q) {
         ui.search = String(q || '');
         const s = $('search');
@@ -3990,6 +4050,37 @@ function runSelfTest() {
     state.entries = state.entries.filter((x) => x.id !== 'hd-additem-menu');
     state.detected = savedDet; ui.edit = savedEdit; render();
     return shown || 'hidden on an older DLL — regression';
+  });
+
+  T('tab gate: a tab is HIDDEN from the bar when its mod is detected-absent', () => {
+    const savedDet = state.detected;
+    state.detected = { soes: false, presetdirector: true, followerorganizer: true, zap: true };
+    render();
+    const wardrobeGone = !$('tabs').querySelector('.tab[data-tab="wardrobe"]') &&
+      !sysOrder().some((s) => s.tab === 'wardrobe');
+    const facesShown = sysOrder().some((s) => s.tab === 'faces');   // its flag is true
+    state.detected = savedDet; render();
+    return (wardrobeGone && facesShown) || ('wardrobeGone=' + wardrobeGone + ' facesShown=' + facesShown);
+  });
+  T('tab gate: unknown/missing flag SHOWS the tab (older DLL never blanks a tab)', () => {
+    const savedDet = state.detected;
+    state.detected = { soes: true };   // faces/followers/anim flags absent
+    render();
+    const good = sysOrder().some((s) => s.tab === 'faces') &&
+      sysOrder().some((s) => s.tab === 'followers') &&
+      sysOrder().some((s) => s.tab === 'wardrobe') &&
+      tabIdAvailable('faces') === true && tabIdAvailable('wardrobe') === true;
+    state.detected = savedDet; render();
+    return good || 'a tab vanished on a partial detection map — regression';
+  });
+  T('tab gate: setTab to a hidden tab no-ops to Home (deep-open safety)', () => {
+    const savedDet = state.detected, savedTab = ui.tab;
+    state.detected = { followerorganizer: false };
+    ui.tab = 'home'; render();
+    setTab('followers');   // F14 deep-open with FO absent must not open a hidden pane
+    const good = ui.tab === 'home';
+    state.detected = savedDet; ui.tab = savedTab; render();
+    return good || ('landed on ' + ui.tab + ' instead of home');
   });
 
   T('ext defaults match C++ (F24→73, rest raw, enabled)', () => {
