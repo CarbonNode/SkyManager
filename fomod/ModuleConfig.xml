@@ -13,6 +13,11 @@
       Optional/WardrobeExecutor/Scripts/*.pex
       Optional/WardrobeExecutor/Scripts/Source/*.psc
       Docs/LICENSE
+
+  The Spell Hotbar icon pool is NOT here — it ships as its own standalone
+  optional-file mod (SkyManager-SpellHotbarIcons-v*.zip), never in this installer.
+  This mod's icons/sh/ folder is installed EMPTY and filled at runtime.
+
       Docs/THIRD-PARTY-NOTICES.md
 
   `destination=""` means "the mod's Data root", so Core/SKSE/… lands as

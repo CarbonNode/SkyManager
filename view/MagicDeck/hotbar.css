@@ -1,0 +1,859 @@
+/* ===========================================================================
+   Hotbar — the always-on action bar.
+
+   Tokens are the Spell Deck's own (app.css in this folder); nothing here
+   introduces a near-duplicate gold or radius. They are restated rather than
+   imported because this is a SEPARATE PrismaUI view with its own document —
+   it never loads app.css, so an @import would be a second network-ish fetch
+   inside Ultralight for no gain.
+
+   ⛔ THE ONE RULE THIS FILE MUST NOT BREAK
+   In play mode the view is Shown but not Focused, and the game is underneath
+   it. So <html>/<body> stay TRANSPARENT and pointer-events:none. An opaque
+   background here paints a black sheet over Skyrim; a stray pointer-events
+   eats mouse-look. Interactivity is switched on only under body.hb-edit.
+   =========================================================================== */
+
+:root {
+  --gold:        #c9a24b;
+  --gold-soft:   #d9c48a;
+  --gold-bright: #ecd9a0;
+  --gold-line:   #c9a24b77;
+  --gold-glow:   rgba(201, 162, 75, .10);
+
+  --text:   #e8e4da;
+  --dim:    #8b8678;
+
+  --panel-a: #1a1a21;
+  --panel-b: #101015;
+  --sunk:    #0c0c10;
+  --raised:  #16161d;
+  --line:    #2e2e36;
+
+  --equip:      #8fd19e;
+  --equip-line: #3d6b4a;
+  --voice:      #c69ae0;
+  --voice-line: #573a6b;
+  --danger:      #d98a8a;
+  --danger-line: #5a3a3a;
+  --danger-bg:   #180f10;
+
+  --radius:   12px;
+  --radius-s: 8px;
+  --radius-xs: 6px;
+  --ease: cubic-bezier(.4, 0, .2, 1);
+
+  /* Pushed from C++ via hbConfig. --hb-cell is the button edge in px at
+     scale 1; everything else in the bar is derived from it, so one number
+     resizes the whole thing coherently. */
+  --hb-scale: 1;
+  --hb-cell:  64px;
+  /* Editor size. The BAR has always had its own scale; its settings panel had
+     none, so its type was whatever it was — Rober's "tiny text impossible to
+     read (without ability to scale)". Applied as a transform, with the layout
+     height divided back out so the scaled panel still fills exactly one
+     screen, and clamped in JS against the real viewport so it can never be
+     pushed off the edge. */
+  --hb-ui:    1;
+  --hb-gap:   6px;
+  --hb-alpha: 1;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;      /* ⛔ never give this a colour */
+  overflow: hidden;
+  pointer-events: none;         /* ⛔ play mode: the mouse is the game's */
+  font-family: "Segoe UI", "Trebuchet MS", system-ui, sans-serif;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+body.hb-edit { pointer-events: auto; }
+
+/* ─────────────────────────────────────────────── the bar ─────────────── */
+
+.hb-root {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  opacity: var(--hb-alpha);
+  transition: opacity 180ms var(--ease);
+  /* transform-origin is set inline per anchor: a bar anchored bottom-centre
+     must grow UP and OUT from that point, or raising the scale walks it off
+     the screen. */
+  transform: scale(var(--hb-scale));
+  will-change: transform, opacity;
+}
+.hb-root.hb-hidden { display: none; }
+
+.hb-grid {
+  display: grid;
+  gap: var(--hb-gap);
+}
+
+/* ─────────────────────────────────────────────── one button ──────────── */
+
+.hb-slot {
+  position: relative;
+  width: var(--hb-cell);
+  height: var(--hb-cell);
+  border-radius: var(--radius-s);
+  background: linear-gradient(180deg, var(--raised), var(--panel-b));
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease),
+              transform 90ms var(--ease), opacity 140ms var(--ease);
+}
+
+.hb-slot .hb-art {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* The fallback when no icon resolves: the first letters of the name, big.
+   Never an empty box — an unlabelled black square is indistinguishable from
+   a broken one. */
+.hb-slot .hb-glyph {
+  font-size: calc(var(--hb-cell) * .40);
+  font-weight: 700;
+  letter-spacing: .02em;
+  color: var(--gold-soft);
+  text-shadow: 0 1px 2px #000a;
+  user-select: none;
+}
+
+/* Empty socket — visibly a place to put something, not a broken button. */
+.hb-slot.is-empty {
+  background: var(--sunk);
+  border-style: dashed;
+  border-color: #33333d;
+}
+.hb-slot.is-empty .hb-glyph { color: #3d3d47; font-size: calc(var(--hb-cell) * .30); }
+.hb-root.hide-empty .hb-slot.is-empty { visibility: hidden; }
+
+/* Unavailable — the spell is unlearned, the potion is gone, the mod is off.
+   Greyed AND desaturated AND cornered with a mark, because colour alone is
+   not a state you can read at a glance mid-fight. */
+.hb-slot.is-dead {
+  opacity: .40;
+  filter: grayscale(1);
+  border-color: var(--danger-line);
+}
+.hb-slot.is-dead::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--danger-bg);
+  opacity: .35;
+}
+
+/* Worn / equipped ring. */
+.hb-slot.is-equipped {
+  border-color: var(--equip-line);
+  box-shadow: inset 0 0 0 2px var(--equip), 0 0 10px #8fd19e33;
+}
+
+/* A voice-slot power/shout reads differently because it BEHAVES differently
+   (cooldown, animation, the real Shout key). */
+.hb-slot.is-voice { border-color: var(--voice-line); }
+
+/* The press flash — the only feedback the player gets that the key landed,
+   since the bar never has focus. Driven by a class the JS strips on a timer. */
+.hb-slot.is-fired {
+  border-color: var(--gold-bright);
+  box-shadow: 0 0 0 2px var(--gold-bright), 0 0 18px var(--gold-glow);
+  transform: scale(.94);
+}
+
+/* Corner furniture. Sized off --hb-cell so it grows with the bar, with a hard
+   floor in real pixels so a small bar is still READABLE — Rober plays at
+   2560×1440 from a couch, and anything that reads as "compact" is too small. */
+.hb-key {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-size: max(14px, calc(var(--hb-cell) * .21));
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--gold-bright);
+  text-shadow: 0 1px 3px #000, 0 0 4px #000;
+  pointer-events: none;
+}
+.hb-count {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font-size: max(14px, calc(var(--hb-cell) * .21));
+  font-weight: 700;
+  color: var(--text);
+  text-shadow: 0 1px 3px #000, 0 0 4px #000;
+  pointer-events: none;
+}
+.hb-label {
+  max-width: var(--hb-cell);
+  margin-top: 2px;
+  font-size: max(12px, calc(var(--hb-cell) * .17));
+  line-height: 1.15;
+  text-align: center;
+  color: var(--text);
+  text-shadow: 0 1px 3px #000;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hb-cell-wrap { display: flex; flex-direction: column; align-items: center; }
+
+/* ─────────────────────────────────────────────── page pips ───────────── */
+
+.hb-pages {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #0c0c10cc;
+  border: 1px solid var(--line);
+}
+.hb-pip {
+  font-size: 14px;          /* 12px read as "compact" — the floor here is 14 */
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--dim);
+  transition: color 140ms var(--ease);
+}
+.hb-pip.is-live { color: var(--gold-bright); }
+.hb-pip.is-off  { opacity: .35; }
+
+/* ─────────────────────────────────────────────── skins ───────────────── */
+/* Each skin is CSS only (plus an optional frame PNG in this folder), so a new
+   one is a view edit — never a DLL rebuild. Keep the class names in step with
+   ClampSkin() in hotbar.cpp: an unknown skin there falls back to "plain". */
+
+.skin-plain .hb-slot { /* the honest default Rober asked for first */ }
+
+.skin-runed .hb-slot {
+  border-color: var(--gold-line);
+  box-shadow: inset 0 0 12px #00000099, 0 2px 6px #0008;
+  background: linear-gradient(180deg, #1b1712, #0e0c09);
+}
+.skin-runed .hb-slot::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 1px solid #c9a24b33;
+  border-radius: var(--radius-xs);
+  pointer-events: none;
+}
+
+.skin-carved .hb-slot {
+  border-radius: 4px;
+  border-color: #4a4034;
+  background: linear-gradient(180deg, #21201c, #131210);
+  box-shadow: inset 0 1px 0 #6a5c47aa, inset 0 -2px 4px #000a, 0 2px 4px #0009;
+}
+
+.skin-gilded .hb-slot {
+  border: 2px solid var(--gold);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #00000088, 0 0 14px var(--gold-glow), inset 0 0 10px #000a;
+}
+.skin-gilded .hb-slot .hb-art { border-radius: 50%; }
+.skin-gilded .hb-key { top: -2px; left: -2px; }
+
+/* ─────────────────────────────────────────────── edit mode ───────────── */
+
+.hb-grip {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  color: var(--gold-bright);
+  background: #0c0c10ee;
+  border: 1px solid var(--gold-line);
+  cursor: grab;
+  user-select: none;
+  transition: background 140ms var(--ease), transform 90ms var(--ease);
+}
+.hb-grip:hover  { background: #16161d; }
+.hb-grip:active { cursor: grabbing; transform: scale(.94); }
+
+/* While editing, the bar itself gets a halo so it is findable on a busy
+   screen, and the slots become real buttons. */
+body.hb-edit .hb-root {
+  outline: 1px dashed var(--gold-line);
+  outline-offset: 10px;
+}
+body.hb-edit .hb-slot { cursor: pointer; }
+body.hb-edit .hb-slot:hover {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px var(--gold-glow);
+  transform: translateY(-2px);
+}
+body.hb-edit .hb-slot.is-selected {
+  border-color: var(--gold-bright);
+  box-shadow: 0 0 0 2px var(--gold-bright);
+}
+
+/* ⛔ NOT `.hb-edit` — that class is ALSO the <body> state flag for edit mode,
+   and a shared name meant `<body class="hb-edit">` inherited this whole block:
+   position:absolute, width:560px, display:flex. The document itself became a
+   560px column pinned to the right edge, which dragged the bar under the panel
+   and broke every measurement taken off the viewport. Caught by the overlap
+   pass, 2026-08-11. The body flag stays `hb-edit`; the PANEL is `hb-panel`. */
+.hb-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: min(560px, 46vw);
+  /* ÷ --hb-ui so that AFTER the transform the panel is exactly 100% tall.
+     Without this it overflows the bottom of the screen the moment you scale
+     it up, and the scroll container ends below the visible area. */
+  height: calc(100% / var(--hb-ui));
+  transform: scale(var(--hb-ui));
+  transform-origin: top right;
+  background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
+  border-left: 1px solid var(--gold-line);
+  box-shadow: -18px 0 48px #000b;
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+}
+.hb-panel[hidden] { display: none; }
+
+.hb-edit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.hb-edit-head h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--gold-bright);
+}
+
+.hb-edit-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 24px 32px;
+}
+
+.hb-sect { padding: 20px 0; border-bottom: 1px solid var(--line); }
+.hb-sect:last-child { border-bottom: 0; }
+.hb-sect h2 {
+  margin: 0 0 14px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .10em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.hb-page-name {
+  margin-left: 8px;
+  font-style: normal;
+  font-size: 15px;
+  letter-spacing: .04em;
+  text-transform: none;
+  color: var(--dim);
+}
+
+.hb-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+.hb-row + .hb-row { margin-top: 14px; }
+.hb-grow { flex: 1 1 220px; }
+
+.hb-field { display: flex; flex-direction: column; gap: 7px; font-size: 16px; color: var(--dim); }
+.hb-field > span { font-size: 15px; }
+.hb-field em { font-style: normal; color: var(--gold-soft); }
+
+.hb-num, .hb-sel, .hb-search {
+  font: inherit;
+  font-size: 17px;
+  color: var(--text);
+  background: var(--sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  padding: 10px 12px;
+  min-width: 120px;
+  transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease);
+}
+.hb-num:hover, .hb-sel:hover { border-color: #43434f; }
+.hb-num:focus, .hb-sel:focus, .hb-search:focus {
+  outline: none;
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px var(--gold-glow);
+}
+
+/* 32px, not the browser default 26 — this is a couch-and-mouse target. */
+.hb-range { width: 100%; accent-color: var(--gold); height: 32px; cursor: pointer; }
+
+.hb-checks { gap: 10px 22px; }
+.hb-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 6px 2px;
+  border-radius: var(--radius-xs);
+  transition: color 140ms var(--ease);
+}
+.hb-check:hover { color: var(--gold-soft); }
+.hb-check input { width: 22px; height: 22px; accent-color: var(--gold); cursor: pointer; flex: none; }
+
+/* The key row pairs a labelled bind button with its Unbind, bottom-aligned so
+   the button sits on the same baseline as the neighbouring fields. */
+.hb-keyrow { align-items: flex-end; gap: 10px; }
+.hb-keyrow .hb-keybtn { min-width: 150px; }
+
+.hb-note {
+  margin: 12px 0 0;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--dim);
+}
+.hb-note.is-warn { color: var(--danger-soft, #e0b0b0); }
+
+.hb-btn {
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  padding: 11px 18px;
+  cursor: pointer;
+  transition: background 140ms var(--ease), border-color 140ms var(--ease),
+              color 140ms var(--ease), transform 90ms var(--ease);
+}
+.hb-btn:hover  { background: #1e1e27; border-color: var(--gold-line); color: var(--gold-soft); }
+.hb-btn:active { transform: translateY(1px); }
+.hb-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--gold-glow); }
+.hb-btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+.hb-btn-primary { background: var(--gold); color: #14120c; border-color: var(--gold-bright); }
+.hb-btn-primary:hover { background: var(--gold-bright); color: #14120c; }
+.hb-btn-danger { color: var(--danger); border-color: var(--danger-line); }
+.hb-btn-danger:hover { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
+
+/* Skin swatches. */
+.hb-skin {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  padding: 12px 16px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line);
+  background: var(--sunk);
+  cursor: pointer;
+  font-size: 15px;
+  color: var(--dim);
+  transition: border-color 140ms var(--ease), color 140ms var(--ease),
+              background 140ms var(--ease);
+}
+.hb-skin:hover { border-color: var(--gold-line); color: var(--text); }
+.hb-skin.is-on { border-color: var(--gold); color: var(--gold-bright); background: #17150f; }
+.hb-skin .sw { width: 44px; height: 44px; }
+
+/* ── the per-button list ─────────────────────────────────────────────── */
+
+.hb-slotlist { display: flex; flex-direction: column; gap: 10px; }
+
+.hb-slotrow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-s);
+  background: var(--sunk);
+  border: 1px solid var(--line);
+  transition: border-color 140ms var(--ease), background 140ms var(--ease);
+}
+.hb-slotrow:hover { border-color: var(--gold-line); background: #121218; }
+
+.hb-slotrow .idx {
+  flex: none;
+  width: 32px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gold);
+  text-align: center;
+}
+.hb-slotrow .thumb {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border-radius: var(--radius-xs);
+  background: var(--panel-b);
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 140ms var(--ease);
+}
+.hb-slotrow .thumb:hover { border-color: var(--gold); }
+.hb-slotrow .thumb img { width: 100%; height: 100%; object-fit: cover; }
+.hb-slotrow .thumb .g { font-size: 17px; color: var(--gold-soft); }
+
+.hb-slotrow .what {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.hb-slotrow .what .nm {
+  font-size: 17px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hb-slotrow .what .nm.is-blank { color: var(--dim); font-style: italic; }
+.hb-slotrow .what .sub { font-size: 15px; color: var(--dim); }
+
+.hb-keybtn {
+  flex: none;
+  min-width: 96px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--gold-bright);
+  background: var(--panel-b);
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius-xs);
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background 140ms var(--ease), transform 90ms var(--ease);
+}
+.hb-keybtn:hover  { background: #1e1a12; }
+.hb-keybtn:active { transform: translateY(1px); }
+.hb-keybtn.is-unbound { color: var(--dim); border-color: var(--line); }
+
+/* ── modals ──────────────────────────────────────────────────────────── */
+
+.hb-modal {
+  position: absolute;
+  inset: 0;
+  background: #05050899;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+.hb-modal[hidden] { display: none; }
+
+.hb-modal-card {
+  width: min(760px, calc(88vw / var(--hb-ui)));
+  max-height: calc(84vh / var(--hb-ui));
+  transform: scale(var(--hb-ui));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 22px;
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
+  border: 1px solid var(--gold-line);
+  box-shadow: 0 24px 70px #000d;
+}
+.hb-modal-narrow { width: min(440px, 84vw); text-align: center; }
+
+.hb-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.hb-modal-card h2 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  color: var(--gold-bright);
+}
+.hb-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.hb-hint { font-size: 14px; color: var(--dim); }
+.hb-hint code { color: var(--gold-soft); }
+
+.hb-search { width: 100%; font-size: 18px; padding: 14px 16px; }
+
+.hb-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.hb-chip {
+  font: inherit;
+  font-size: 15px;
+  color: var(--dim);
+  background: var(--sunk);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 15px;
+  cursor: pointer;
+  transition: color 140ms var(--ease), border-color 140ms var(--ease),
+              background 140ms var(--ease);
+}
+.hb-chip:hover { color: var(--text); border-color: var(--gold-line); }
+.hb-chip.is-on { color: var(--gold-bright); border-color: var(--gold); background: #17150f; }
+
+.hb-pick-list {
+  flex: 1 1 auto;
+  min-height: 180px;
+  overflow-y: auto;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line);
+  background: var(--sunk);
+}
+.hb-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 11px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid #1e1e26;
+  transition: background 120ms var(--ease);
+}
+.hb-pick-row:last-child { border-bottom: 0; }
+.hb-pick-row:hover, .hb-pick-row.is-cursor { background: #1b1b23; }
+.hb-pick-row.is-cursor { box-shadow: inset 3px 0 0 var(--gold); }
+.hb-pick-row .ico {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-xs);
+  background: var(--panel-b);
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.hb-pick-row .ico img { width: 100%; height: 100%; object-fit: cover; }
+.hb-pick-row .txt { flex: 1 1 auto; min-width: 0; }
+.hb-pick-row .txt .n {
+  font-size: 17px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hb-pick-row .txt .d { font-size: 15px; color: var(--dim); }
+.hb-pick-row mark { background: none; color: var(--gold-bright); font-weight: 700; }
+.hb-pick-empty { padding: 30px 18px; text-align: center; font-size: 16px; line-height: 1.5; color: var(--dim); }
+
+.hb-icon-grid {
+  flex: 1 1 auto;
+  min-height: 200px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(62px, 1fr));
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line);
+  background: var(--sunk);
+}
+.hb-icon-tile {
+  aspect-ratio: 1;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--line);
+  background: var(--panel-b);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 120ms var(--ease), transform 90ms var(--ease);
+}
+.hb-icon-tile:hover { border-color: var(--gold); transform: scale(1.06); }
+.hb-icon-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.hb-cap-key {
+  margin: 6px 0 4px;
+  font-size: 30px;
+  font-weight: 700;
+  color: var(--gold-bright);
+  letter-spacing: .04em;
+}
+
+/* A narrow window (the deck's 640px floor, and a phone previewing the
+   harness) must not let the panel eat the whole screen. */
+@media (max-width: 900px) {
+  .hb-panel { width: 100%; border-left: 0; }
+  .hb-modal-card { width: 94vw; padding: 16px; }
+}
+
+/* ===========================================================================
+   Polish pass (2026-08-11, Rober: "polish?")
+   Focus rings, scrollbars, a real loading state, and the small motions that
+   keep the panel from popping. Nothing here changes behaviour.
+   =========================================================================== */
+
+/* ── keyboard focus, everywhere ──────────────────────────────────────────
+   Every control was reachable by Tab already and none of them SHOWED it.
+   One consistent ring, on the same token as the hover glow. */
+.hb-chip:focus-visible,
+.hb-keybtn:focus-visible,
+.hb-skin:focus-visible,
+.hb-icon-tile:focus-visible,
+.hb-grip:focus-visible,
+.hb-check input:focus-visible,
+.hb-range:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--gold-glow), 0 0 0 1px var(--gold);
+}
+.hb-pick-row:focus-visible {
+  outline: none;
+  background: #1b1b23;
+  box-shadow: inset 3px 0 0 var(--gold), 0 0 0 2px var(--gold-glow);
+}
+
+/* ── scrollbars ──────────────────────────────────────────────────────────
+   The default Ultralight bar is a bright chunk of chrome that fights the
+   panel. These are the panel's own colours and stay out of the way until
+   you hover them. */
+.hb-edit-body::-webkit-scrollbar,
+.hb-pick-list::-webkit-scrollbar,
+.hb-icon-grid::-webkit-scrollbar { width: 10px; }
+.hb-edit-body::-webkit-scrollbar-track,
+.hb-pick-list::-webkit-scrollbar-track,
+.hb-icon-grid::-webkit-scrollbar-track { background: transparent; }
+.hb-edit-body::-webkit-scrollbar-thumb,
+.hb-pick-list::-webkit-scrollbar-thumb,
+.hb-icon-grid::-webkit-scrollbar-thumb {
+  background: #2b2b34;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.hb-edit-body::-webkit-scrollbar-thumb:hover,
+.hb-pick-list::-webkit-scrollbar-thumb:hover,
+.hb-icon-grid::-webkit-scrollbar-thumb:hover { background: var(--gold-line); background-clip: content-box; }
+
+/* ── the picker's loading state ──────────────────────────────────────────
+   The catalog is fetched from C++ when the picker opens, so the first frame
+   has nothing in it. It used to render the EMPTY message — an error where a
+   wait belongs, and it accused the player of not having opened the deck.
+   Skeleton rows instead, sized like the real thing so nothing jumps when the
+   data lands. */
+.hb-skel-row {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 11px 14px;
+  border-bottom: 1px solid #1e1e26;
+}
+.hb-skel-row:last-child { border-bottom: 0; }
+.hb-skel {
+  background: linear-gradient(90deg, #16161d 25%, #1e1e28 50%, #16161d 75%);
+  background-size: 400% 100%;
+  animation: hb-shimmer 1.4s var(--ease) infinite;
+  border-radius: var(--radius-xs);
+}
+.hb-skel-ico { flex: none; width: 38px; height: 38px; }
+.hb-skel-txt { flex: 1 1 auto; display: flex; flex-direction: column; gap: 7px; }
+.hb-skel-l1 { height: 15px; width: 46%; }
+.hb-skel-l2 { height: 12px; width: 26%; }
+@keyframes hb-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: 0 0; }
+}
+
+/* ── "press a key" is LISTENING ──────────────────────────────────────────
+   A modal that says "…" and then sits there looks hung. The ring pulses for
+   as long as it is waiting, and stops dead the moment a key lands. */
+.hb-cap-key {
+  display: inline-block;
+  min-width: 200px;
+  padding: 14px 20px;
+  border-radius: var(--radius-s);
+  border: 2px solid var(--gold-line);
+  background: var(--sunk);
+}
+.hb-cap-key.is-listening { animation: hb-listen 1.25s var(--ease) infinite; }
+.hb-cap-key.is-got {
+  animation: none;
+  border-color: var(--equip);
+  color: var(--equip);
+}
+.hb-cap-key.is-bad { animation: none; border-color: var(--danger-line); color: var(--danger); font-size: 18px; }
+@keyframes hb-listen {
+  0%, 100% { border-color: var(--gold-line); box-shadow: 0 0 0 0 var(--gold-glow); }
+  50%      { border-color: var(--gold); box-shadow: 0 0 0 8px rgba(201, 162, 75, 0); }
+}
+
+/* ── "there is more below" ───────────────────────────────────────────────
+   A half-visible row is the honest affordance, but only if it reads as
+   deliberate. The fade makes it so. */
+.hb-pick-wrap { position: relative; flex: 1 1 auto; min-height: 180px; display: flex; }
+.hb-pick-wrap::after {
+  content: "";
+  position: absolute;
+  left: 1px; right: 1px; bottom: 1px;
+  height: 34px;
+  pointer-events: none;
+  border-radius: 0 0 var(--radius-s) var(--radius-s);
+  background: linear-gradient(180deg, rgba(12, 12, 16, 0), var(--sunk));
+  opacity: 0;
+  transition: opacity 160ms var(--ease);
+}
+.hb-pick-wrap.has-more::after { opacity: 1; }
+.hb-pick-wrap .hb-pick-list { flex: 1 1 auto; min-height: 0; }
+
+/* ── modals arrive, they don't blink into existence ──────────────────── */
+.hb-modal { animation: hb-fade 140ms var(--ease); }
+.hb-modal-card { animation: hb-rise 180ms var(--ease); }
+@keyframes hb-fade { from { opacity: 0; } to { opacity: 1; } }
+/* ⚠ The end frame must carry the SCALE, not `none`. An animation overrides the
+   base transform while it runs, so a `to { transform: none }` un-scales the
+   card for the length of the animation and it visibly snaps on completion. */
+@keyframes hb-rise {
+  from { opacity: 0; transform: translateY(10px) scale(calc(var(--hb-ui) * .985)); }
+  to   { opacity: 1; transform: scale(var(--hb-ui)); }
+}
+
+/* ── page swap reads as a swap, not a flicker ───────────────────────────
+   Held modifier changes every icon at once; without this it pops. Short
+   enough (110ms) that it never feels laggy under the fingers. */
+.hb-grid.is-swapping { animation: hb-swap 110ms var(--ease); }
+@keyframes hb-swap {
+  from { opacity: .35; transform: translateY(-3px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── the slot list's own empty state ───────────────────────────────────── */
+.hb-emptyhint {
+  margin: 0 0 12px;
+  padding: 14px 16px;
+  border-radius: var(--radius-s);
+  border: 1px dashed var(--gold-line);
+  background: #17150f;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--gold-soft);
+}
+
+/* ── disabled controls look disabled ───────────────────────────────────── */
+.hb-keybtn:disabled { opacity: .4; cursor: not-allowed; }
+.hb-btn:disabled:hover { background: var(--raised); border-color: var(--line); color: var(--text); }

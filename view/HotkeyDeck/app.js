@@ -642,7 +642,7 @@ function render() {
   const pane = (ui.tab === 'home' || ui.tab === 'numpad' || ui.tab === 'notes' || ui.tab === 'quests' ||
                 ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
                 ui.tab === 'rooms' || ui.tab === 'time' || ui.tab === 'loot' ||
-                ui.tab === 'anim' ||
+                ui.tab === 'anim' || ui.tab === 'keys' ||
                 ui.tab === 'wardrobe' || ui.tab === 'faces' || ui.tab === 'recent') ? ui.tab : 'deck';
   const deck = pane === 'deck';
   window.__hdActiveTab = pane;   // panes (followers/domains) key their re-renders off this
@@ -658,6 +658,7 @@ function render() {
   $('rm-pane').classList.toggle('hidden', pane !== 'rooms');
   $('lt-pane').classList.toggle('hidden', pane !== 'loot');
   $('an-pane').classList.toggle('hidden', pane !== 'anim');
+  $('kc-pane').classList.toggle('hidden', pane !== 'keys');
   $('fin-pane').classList.toggle('hidden', pane !== 'finances');
   $('wd-pane').classList.toggle('hidden', pane !== 'wardrobe');
   $('faces-pane').classList.toggle('hidden', pane !== 'faces');
@@ -1133,6 +1134,7 @@ const SYS_TABS = [
   { tab: 'containers', label: 'Containers', img: 'icons/custom/hm-containers.png', title: 'Mark a container and open it from anywhere' },
   { tab: 'rooms',      label: 'Rooms',      img: 'icons/custom/hm-rooms.png',      title: 'Claim a room and keep strangers out of it' },
   { tab: 'loot',       label: 'Loot',       img: 'icons/custom/hm-loot.png',       title: 'Glow the loot worth walking to' },
+  { tab: 'keys',       label: 'Keys',       img: 'icons/custom/hm-keys.png',       title: 'Every hotkey in the load order, and what conflicts' },
   { tab: 'anim',       label: 'Animations', img: 'icons/custom/hm-anim.png',       title: 'Apply a pose / animation to an NPC or yourself' },
   { tab: 'finances',   label: 'Finances',   img: 'icons/custom/hm-finances.png',   title: 'Your ledger, properties and market' },
   { tab: 'wardrobe',   label: 'Wardrobe',   img: 'icons/custom/hm-wardrobe.png',   title: 'Outfits, wardrobes and NPC dressing' },
@@ -2326,6 +2328,7 @@ function setTab(t) {
   if (prev === 'home' && window.HomePane) HomePane.onHide();
   if (prev === 'rooms' && window.RoomsPane) RoomsPane.onHide();
   if (prev === 'loot' && window.LootPane) LootPane.onHide();
+  if (prev === 'keys' && window.KeysPane) KeysPane.onHide();
   if (prev === 'anim' && window.AnimPane) AnimPane.onHide();
   if (prev === 'finances' && window.FinancesPane) FinancesPane.onHide();
   if (prev === 'wardrobe' && window.WardrobePane) WardrobePane.onHide();
@@ -2372,6 +2375,10 @@ function setTab(t) {
   }
   if (t === 'loot') {
     if (window.LootPane) LootPane.onShow();   // re-pulls the slice + starts the glow-count poll
+    return;
+  }
+  if (t === 'keys') {
+    if (window.KeysPane) KeysPane.onShow();   // re-asks scan state; first look auto-starts the census
     return;
   }
   if (t === 'anim') {

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hotbar</title>
+<link rel="stylesheet" href="hotbar.css">
+</head>
+<!--
+  Hotbar — the always-on action bar (see src/hotbar.h for the why).
+
+  This view is SHOWN but never FOCUSED while you play, so every pointer and key
+  event goes straight to the game and the bar costs no input. It is Focused only
+  while `body.hb-edit` is set, which is the one state where the mouse belongs to
+  the bar.
+
+  Consequences that are load-bearing, not style:
+   * <body> must stay fully transparent and pointer-events:none in play mode. A
+     stray opaque background here is a black rectangle over the game, and a
+     stray pointer-events:auto eats the player's mouse-look.
+   * It lives in view/MagicDeck/ on purpose — `icons/sh/…` and `icons/custom/…`
+     resolve here exactly as they do for the Spell Deck, which is the proven
+     path for the whole 1,913-icon pool and the portal's uploads.
+-->
+<body>
+
+  <!-- ══ the bar itself ══════════════════════════════════════════════════ -->
+  <div id="hb-root" class="hb-root skin-plain" aria-label="Action bar">
+
+    <!-- Page pips: which modifier page is live, and which ones exist at all.
+         Hidden entirely when no modifier page is enabled, so a plain one-page
+         bar carries no chrome it hasn't earned. -->
+    <div id="hb-pages" class="hb-pages" hidden></div>
+
+    <div id="hb-grid" class="hb-grid"></div>
+
+    <!-- Edit-mode furniture. Outside #hb-grid so a grid re-render never has to
+         rebuild it (and never steals focus from the field you are typing in). -->
+    <div id="hb-grip" class="hb-grip" hidden title="Drag to move the bar">✥</div>
+  </div>
+
+  <!-- ══ edit panel ═════════════════════════════════════════════════════ -->
+  <!-- Only reachable while Focused. Big controls and big type on purpose: this
+       is read from a couch at 2560×1440. -->
+  <div id="hb-edit" class="hb-panel" hidden>
+    <header class="hb-edit-head">
+      <h1>Action Bar</h1>
+      <button id="hb-done" class="hb-btn hb-btn-primary" type="button"
+              title="Close the editor and hand the mouse back to the game">Done</button>
+    </header>
+
+    <div class="hb-edit-body">
+
+      <section class="hb-sect">
+        <h2>Shape</h2>
+        <div class="hb-row">
+          <label class="hb-field">
+            <span>Buttons per row</span>
+            <input id="hb-cols" class="hb-num" type="number" min="1" max="24" step="1"
+                   title="How many buttons along the bar (1-24). Buttons past the end keep what is on them.">
+          </label>
+          <label class="hb-field">
+            <span>Rows</span>
+            <select id="hb-rows" class="hb-sel" title="One line of buttons, or two stacked">
+              <option value="1">1 row</option>
+              <option value="2">2 rows</option>
+            </select>
+          </label>
+          <label class="hb-field">
+            <span>Direction</span>
+            <select id="hb-orient" class="hb-sel" title="Runs across the screen, or down it">
+              <option value="horiz">Horizontal</option>
+              <option value="vert">Vertical</option>
+            </select>
+          </label>
+        </div>
+        <div class="hb-row">
+          <label class="hb-field hb-grow">
+            <span>Size <em id="hb-scale-val">100%</em></span>
+            <input id="hb-scale" class="hb-range" type="range" min="40" max="300" step="5"
+                   title="Overall size of the bar, 40% to 300%">
+          </label>
+        </div>
+        <p class="hb-note" id="hb-shape-note"></p>
+      </section>
+
+      <section class="hb-sect">
+        <h2>Where</h2>
+        <div class="hb-row">
+          <label class="hb-field">
+            <span>Anchor across</span>
+            <select id="hb-anchorH" class="hb-sel" title="Which side the bar is measured from - centre keeps it centred at any resolution">
+              <option value="left">Left edge</option>
+              <option value="center">Centre</option>
+              <option value="right">Right edge</option>
+            </select>
+          </label>
+          <label class="hb-field">
+            <span>Anchor down</span>
+            <select id="hb-anchorV" class="hb-sel" title="Whether the bar hangs from the top edge or sits on the bottom">
+              <option value="top">Top edge</option>
+              <option value="bottom">Bottom edge</option>
+            </select>
+          </label>
+        </div>
+        <p class="hb-note">Drag the ✥ grip on the bar to place it, or nudge with the arrow keys.</p>
+      </section>
+
+      <section class="hb-sect">
+        <h2>Look</h2>
+        <div class="hb-row">
+          <label class="hb-field hb-grow">
+            <span>Editor text size <em id="hb-uiscale-val">100%</em></span>
+            <input id="hb-uiscale" class="hb-range" type="range" min="100" max="200" step="5"
+                   title="Make this whole settings panel and its pop-ups bigger. The bar itself has its own Size slider under Shape.">
+          </label>
+        </div>
+        <div class="hb-row" id="hb-skins"></div>
+        <div class="hb-row hb-checks">
+          <label class="hb-check" title="Print each button's key in its corner"><input id="hb-showKeys"   type="checkbox"><span>Key legends</span></label>
+          <label class="hb-check" title="Show each action's name beneath its button - useful while you learn the bar, noisy after"><input id="hb-showLabels" type="checkbox"><span>Names under buttons</span></label>
+          <label class="hb-check" title="Show how many you have left of a potion or scroll"><input id="hb-showCounts" type="checkbox"><span>Stack counts</span></label>
+          <label class="hb-check" title="Draw unused buttons as dashed sockets, or hide them so only what is on the bar shows"><input id="hb-showEmpty"  type="checkbox"><span>Show empty sockets</span></label>
+        </div>
+        <div class="hb-row">
+          <label class="hb-field hb-grow">
+            <span>Fade when idle <em id="hb-idle-val">Never</em></span>
+            <input id="hb-idle" class="hb-range" type="range" min="0" max="20" step="1"
+                   title="Dim the bar after this long without a press. Leftmost = never fade.">
+          </label>
+        </div>
+      </section>
+
+      <section class="hb-sect">
+        <h2>When to show</h2>
+        <div class="hb-row">
+          <label class="hb-field hb-grow">
+            <span>Show the bar</span>
+            <select id="hb-showMode" class="hb-sel" title="When the bar is on screen at all. While it is hidden by this rule its keys do nothing either.">
+              <option value="always">Always</option>
+              <option value="combat">Only in combat</option>
+              <option value="drawn">Only with a weapon or spell drawn</option>
+              <option value="either">In combat, or when drawn</option>
+            </select>
+          </label>
+        </div>
+        <div class="hb-row" id="hb-linger-row">
+          <label class="hb-field hb-grow">
+            <span>Stay up after combat <em id="hb-linger-val">4s</em></span>
+            <input id="hb-linger" class="hb-range" type="range" min="0" max="30" step="1"
+                   title="Keep the bar up for this long after a fight ends, so it does not blink out between enemies">
+          </label>
+        </div>
+        <div class="hb-row hb-checks">
+          <label class="hb-check" title="Drop the bar whenever a menu owns the screen - inventory, map, magic, the console, the deck"><input id="hb-hideInMenus" type="checkbox"><span>Hide while a menu is open</span></label>
+        </div>
+        <div class="hb-row hb-keyrow">
+          <div class="hb-field">
+            <span>Show/hide key</span>
+            <button id="hb-togglekey" class="hb-keybtn" type="button"
+                  title="Press to bind a key that shows and hides the bar">No key</button>
+          </div>
+          <button id="hb-togglekey-clear" class="hb-btn hb-btn-danger" type="button"
+            title="Remove the show/hide key">Unbind</button>
+        </div>
+        <p class="hb-note" id="hb-show-note"></p>
+      </section>
+
+      <section class="hb-sect">
+        <h2>Modifier pages</h2>
+        <p class="hb-note">
+          Hold a modifier to swap the whole bar — same keys, different actions and icons.
+        </p>
+        <div class="hb-row hb-checks" id="hb-pagetoggles"></div>
+        <div class="hb-row hb-checks">
+          <label class="hb-check" title="Hold shift/ctrl/alt to see that page (like WoW), or turn this off to TAP once and stay there"><input id="hb-modHold" type="checkbox"><span>Hold the modifier (off = tap to latch)</span></label>
+        </div>
+      </section>
+
+      <section class="hb-sect">
+        <h2>Buttons <em id="hb-page-name" class="hb-page-name"></em></h2>
+        <p class="hb-note" id="hb-slot-note">Pick a button, then choose what it does and which key fires it.</p>
+        <div id="hb-slotlist" class="hb-slotlist"></div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- ══ assign picker ══════════════════════════════════════════════════ -->
+  <!-- Filter-as-you-type over everything you can put on a button. Past ~10
+       options an unsearchable list is a defect here, and this list is in the
+       thousands. Enter takes the top hit; ↑/↓ walk it. -->
+  <div id="hb-pick" class="hb-modal" hidden>
+    <div class="hb-modal-card">
+      <header class="hb-modal-head">
+        <h2 id="hb-pick-title">Put something on button 1</h2>
+        <button id="hb-pick-close" class="hb-btn" type="button" title="Close without changing this button">Close</button>
+      </header>
+      <input id="hb-pick-q" class="hb-search" type="text" autocomplete="off"
+             placeholder="Type to filter — spells, shouts, items, deck actions…">
+      <div id="hb-pick-tabs" class="hb-chips"></div>
+      <div id="hb-pick-wrap" class="hb-pick-wrap">
+        <div id="hb-pick-list" class="hb-pick-list" role="listbox"></div>
+      </div>
+      <footer class="hb-modal-foot">
+        <button id="hb-pick-clear" class="hb-btn hb-btn-danger" type="button"
+                title="Empty this button - it keeps its key, so you can put something else on it later">Clear this button</button>
+        <span class="hb-hint">Enter = top hit · Esc = close</span>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ══ icon picker ════════════════════════════════════════════════════ -->
+  <div id="hb-icons" class="hb-modal" hidden>
+    <div class="hb-modal-card">
+      <header class="hb-modal-head">
+        <h2>Choose an icon</h2>
+        <button id="hb-icons-close" class="hb-btn" type="button" title="Close without changing the icon">Close</button>
+      </header>
+      <input id="hb-icons-q" class="hb-search" type="text" autocomplete="off"
+             placeholder="Filter icons…">
+      <div id="hb-icons-grid" class="hb-icon-grid"></div>
+      <footer class="hb-modal-foot">
+        <button id="hb-icons-auto" class="hb-btn" type="button"
+                title="Go back to the icon picked from the spell's school, element and tier">Use the automatic icon</button>
+        <span class="hb-hint">Drop PNGs into <code>icons/custom</code> — or send them from your phone.</span>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ══ key capture ════════════════════════════════════════════════════ -->
+  <div id="hb-cap" class="hb-modal" hidden>
+    <div class="hb-modal-card hb-modal-narrow">
+      <h2 id="hb-cap-title">Press a key for button 1</h2>
+      <p class="hb-cap-key" id="hb-cap-key">…</p>
+      <footer class="hb-modal-foot">
+        <button id="hb-cap-clear" class="hb-btn hb-btn-danger" type="button" title="Leave this with no key at all">Unbind</button>
+        <button id="hb-cap-cancel" class="hb-btn" type="button" title="Keep the key it already had">Cancel</button>
+      </footer>
+    </div>
+  </div>
+
+  <script src="hotbar.js"></script>
+</body>
+</html>
