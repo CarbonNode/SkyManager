@@ -204,6 +204,8 @@
     "followers-hud-portrait-index": "portraits-indexed=",
     "followers-hud-grow": "anchorH",
     "deck-mod-detection": "deck: mod-detection omo=",
+    "deck-tab-gate-flags": "presetdirector={} ostim={} zap={}",
+    "gate-f7-followers": "Followers tab hidden, staying put",
     "quick-light-state": "quick-light state: installed=",
     "charsheet-export": "charsheet export: wrote charsheet-status.json for the portal",
     "charsheet-dispel": "charsheet: dispelled effect",
@@ -425,7 +427,8 @@
       "ostim-search": "toGame('osSearch'",
       "ostim-change-scene": "toGame('osNav'",
       "ostim-furniture": "toGame('osFurn'",
-      "ostim-role-swap": "toGame('osSwap'"
+      "ostim-role-swap": "toGame('osSwap'",
+      "ostim-detection-gate": "function ostimGatedOut"
     },
     "light-pane.js": {
       "light-card-core": "function statusText",
@@ -444,7 +447,8 @@
       "omni-registry": "takeQuestReply",
       "omni-ask-mode": "Think about it",
       "omni-pin-contract": "function resolvePin",
-      "omni-pin-star": "omni-pin"
+      "omni-pin-star": "omni-pin",
+      "omni-tab-gate": "function providerGated"
     },
     "app.js": {
       "ext-fkeys-in-dik": "EXT_NAMES.forEach((n) => { if (!DIK[n]) DIK[n] = [EXT_RAW[n], n]; });",
@@ -466,7 +470,9 @@
       "home-hookinto": "window.HomePane",
       "spidgear-modal-keys": "HDSpidGear.isOpen",
       "door-modal-keys": "HDDoor.isOpen",
-      "spell-icon-resolve": "window.hdSpellIconPath"
+      "spell-icon-resolve": "window.hdSpellIconPath",
+      "tab-detection-gate": "function tabAvailable",
+      "tab-gate-f7-degrade": "window.__hdFlagAbsent"
     },
     "index.html": {
       "followers-scale-wrapper": "id=\"fd-scale\"",

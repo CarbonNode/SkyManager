@@ -84,6 +84,14 @@ var HDOmni = (function () {
   var DEV = location.search.indexOf('dev=1') !== -1;
 
   var providers = [];
+  /* app.js-supplied explicit-false tab gate (set in hookInto). Default lets
+     everything through, so omni works standalone / on an older host. */
+  var tabGateFn = function () { return true; };
+  /* A provider is gated OFF when it is bound to a tab whose mod is
+     detected-absent. Providers with no tab (or an ungated tab) always pass. */
+  function providerGated(p) {
+    return !!(p && p.tab && !tabGateFn(p.tab));
+  }
   var st = {
     open: false,
     mode: 'search',      // 'search' | 'ask'
@@ -218,6 +226,7 @@ var HDOmni = (function () {
 
     for (var i = 0; i < providers.length; i++) {
       var p = providers[i];
+      if (providerGated(p)) continue;   // tab's mod absent → its rows don't surface
       var items = [];
       try { items = p.index() || []; } catch (e) { items = []; }
       if (st.lazy[p.id]) items = items.concat(st.lazy[p.id]);
@@ -241,6 +250,7 @@ var HDOmni = (function () {
     for (var i = 0; i < providers.length; i++) {
       var p = providers[i];
       if (typeof p.lazy !== 'function') continue;
+      if (providerGated(p)) { delete st.lazy[p.id]; delete st.lazyPending[p.id]; continue; }
       delete st.lazy[p.id];
       if (q.length < 2) { delete st.lazyPending[p.id]; continue; }
       st.lazyPending[p.id] = true;
@@ -817,6 +827,11 @@ var HDOmni = (function () {
     /* env: { state, ui, tabOrder, setTab, fireEntry, requestClose } supplied
        by app.js — omni never reaches into app.js internals uninvited. */
     window.__omniSetTab = env.setTab;
+    /* app.js's explicit-false tab gate. A provider bound to a tab whose mod is
+       detected-absent is skipped entirely (2026-08-12 sweep) — followers /
+       wardrobe / faces / anim(+ostim) rows never surface when their mod is off.
+       Missing hook (older host) → everything available, nothing vanishes. */
+    if (typeof env.tabAvailable === 'function') tabGateFn = env.tabAvailable;
 
     /* 1) hotkey entries — every category, every device kind, live state */
     register({
