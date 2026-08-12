@@ -15,8 +15,24 @@
  *  provider registry, so a card's number is whatever that system holds right
  *  now, with zero new bridges.
  *
+ *  Edit mode (F2 / the ⚙ Edit button — Rober, 2026-08-12: "edit on homepage
+ *  does nothing… maybe should allow you to rearrange the systems"). toggleEdit()
+ *  flips a local editing flag: the grid grows a grip per card and cards become
+ *  pointer-draggable to REORDER (Ultralight has no HTML5 DnD, so this rides the
+ *  shared PDrag/pdScan engine in app.js, exactly like Domains/Followers). The
+ *  order PERSISTS through the host as state.shelf.home.order — a RAW json blob
+ *  C++ round-trips untouched, the same trick tabbarPrefs() uses, because a
+ *  brand-new `settings` key would be dropped field-by-field on the save round-
+ *  trip. A missing/unknown system in the stored order is tolerated: sanitizeOrder
+ *  keeps the known ids in their saved order and APPENDS any card the store never
+ *  heard of, so a newly-added system always shows (at the end) rather than
+ *  vanishing.
+ *
  *  Host contract (mirrors the other panes): HomePane.init() · onShow() ·
- *  onHide() · hookInto(host) · receiveRecent(payload) · toggleEdit()
+ *  onHide() · hookInto(host) · receiveRecent(payload) · toggleEdit().
+ *  Two OPTIONAL host hooks power the reorder & the completeness audit:
+ *    getHomeOrder() -> string[]  · setHomeOrder(string[])  (shelf-blob backed)
+ *    sysTabs()      -> string[]  (the app's SYS_TABS ids, for the dev audit)
  * ====================================================================== */
 
 window.HomePane = (function () {
@@ -43,6 +59,7 @@ window.HomePane = (function () {
     { id: 'containers',name: 'Containers', icon: '📦', img: 'icons/custom/hm-containers.png',hue: '#c9a24b', sub: 'Mark a chest, open it anywhere',act: 'tab', prov: 'containers' },
     { id: 'rooms',     name: 'Rooms',      icon: '🚪', img: 'icons/custom/hm-rooms.png',     hue: '#b79bff', sub: 'Claim a room, keep it yours', act: 'tab', prov: 'rooms' },
     { id: 'loot',      name: 'Loot',       icon: '✨', img: 'icons/custom/hm-loot.png',      hue: '#ffd36a', sub: 'Glow the loot worth grabbing',act: 'tab' },
+    { id: 'keys',      name: 'Keys',       icon: '🗝', img: 'icons/custom/hm-keys.png',      hue: '#c9a24b', sub: 'Every hotkey in the load order',act: 'tab' },
     { id: 'anim',      name: 'Animations', icon: '🩰', img: 'icons/custom/hm-anim.png',      hue: '#e58fb0', sub: 'Apply a ZaZ animation',        act: 'tab' },
     { id: 'finances',  name: 'Finances',   icon: '⚖',  img: 'icons/custom/hm-finances.png',  hue: '#d0c07a', sub: 'Ledger, market & settle',     act: 'tab', prov: 'finances' },
     { id: 'wardrobe',  name: 'Wardrobe',   icon: '👗', img: 'icons/custom/hm-wardrobe.png',  hue: '#e58fb0', sub: 'Outfits & who dresses whom',  act: 'tab', prov: 'wardrobe' },
@@ -61,11 +78,16 @@ window.HomePane = (function () {
     'Midyear', "Sun's Height", 'Last Seed', 'Hearthfire', 'Frostfall', "Sun's Dusk", 'Evening Star'];
 
   var host = { setTab: null, toGame: null, openOmni: null, hotkeyCount: null,
-               getNotes: null, setNotes: null };
+               getNotes: null, setNotes: null, getHomeOrder: null, setHomeOrder: null,
+               sysTabs: null };
   var recent = { items: [], count: 0, max: 0 };
   var timeCur = null;   // last tmInfo {hour,day,month,year}
+  /* live on/off for the on-screen UI elements, filled by chained receivers.
+     null = "not asked / not queryable yet" (render the row without a chip). */
+  var uie = { hud: null, loot: null };
   var ui = { inited: false, recentOpen: false, notesOpen: false, timeOpen: false,
-             tmChained: false, notesT: null };
+             uieOpen: false, tmChained: false, uieChained: false,
+             notesT: null, editing: false, dragId: null };
 
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
@@ -88,6 +110,55 @@ window.HomePane = (function () {
     return '';
   }
 
+  /* ------------------------------------------------------- card order -- */
+  var byId = {};
+  SYSTEMS.forEach(function (s) { byId[s.id] = s; });
+
+  /* Return a stored order array of card ids, keeping the KNOWN ids in their
+     saved sequence and APPENDING every card the store never heard of (a newly
+     added system, or one the user hasn't reordered yet). Unknown/stale ids in
+     the store are dropped. This is the "new systems must appear even if not in
+     the stored order" tolerance. */
+  function sanitizeOrder(stored) {
+    var out = [], seen = {};
+    if (Array.isArray(stored)) {
+      stored.forEach(function (id) {
+        if (byId[id] && !seen[id]) { out.push(id); seen[id] = true; }
+      });
+    }
+    SYSTEMS.forEach(function (s) { if (!seen[s.id]) { out.push(s.id); seen[s.id] = true; } });
+    return out;
+  }
+
+  /* the systems in the order they should render right now */
+  function orderedSystems() {
+    var stored = null;
+    if (typeof host.getHomeOrder === 'function') {
+      try { stored = host.getHomeOrder(); } catch (e) {}
+    }
+    return sanitizeOrder(stored).map(function (id) { return byId[id]; });
+  }
+
+  function persistOrder(ids) {
+    if (typeof host.setHomeOrder === 'function') {
+      try { host.setHomeOrder(sanitizeOrder(ids)); } catch (e) {}
+    }
+  }
+
+  /* DEV audit — flag any SYS_TAB the Home grid forgot to carry, so a system
+     added to app.js's SYS_TABS is caught the day it lands (Task 2). Home also
+     carries fixed extras (Hotkeys/Spells/Numpad/Ask) that are NOT SYS_TABS —
+     those are expected, so the audit is one-directional. */
+  function auditSystems() {
+    if (typeof host.sysTabs !== 'function') return [];
+    var tabs = [];
+    try { tabs = host.sysTabs() || []; } catch (e) { return []; }
+    var missing = tabs.filter(function (t) { return !byId[t]; });
+    if (missing.length && (DEV || SELFTEST))
+      console.log('[home] SYS_TABS missing from Home grid: ' + missing.join(', '));
+    return missing;
+  }
+
   /* ------------------------------------------------------------- cards -- */
   function navigate(sys) {
     if (sys.act === 'spells') { host.toGame && host.toGame('hdOpenSpells', ''); return; }
@@ -98,13 +169,17 @@ window.HomePane = (function () {
   function renderCards() {
     var grid = $('hm-grid');
     if (!grid) return;
+    var editing = !!ui.editing;
+    grid.classList.toggle('hm-editing', editing);
     grid.innerHTML = '';
-    SYSTEMS.forEach(function (sys) {
+    auditSystems();
+    orderedSystems().forEach(function (sys) {
       var card = document.createElement('div');
       card.className = 'hm-card';
       card.setAttribute('role', 'listitem');
-      card.tabIndex = 0;
-      card.title = sys.name + ' — ' + sys.sub;
+      card.setAttribute('data-id', sys.id);
+      card.tabIndex = editing ? -1 : 0;
+      card.title = editing ? 'Drag to reorder — ' + sys.name : sys.name + ' — ' + sys.sub;
       card.style.setProperty('--hmc', sys.hue + '22');
       card.style.setProperty('--hmb', sys.hue + '55');
 
@@ -122,6 +197,7 @@ window.HomePane = (function () {
         var im = document.createElement('img');
         im.src = sys.img;      // plain path — Ultralight eats a ?v= query
         im.alt = '';
+        im.setAttribute('draggable', 'false');
         /* a stale/missing PNG must never leave a broken-image box — drop to the
            emoji glyph, the same remove-on-error the Favorites Shelf uses */
         im.onerror = function () { im.remove(); plate.textContent = sys.icon; };
@@ -133,10 +209,54 @@ window.HomePane = (function () {
       var p = document.createElement('p'); p.textContent = sys.sub;
       card.appendChild(plate); card.appendChild(h); card.appendChild(p);
 
-      card.addEventListener('click', function () { navigate(sys); });
-      card.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(sys); }
-      });
+      if (editing) {
+        /* a visible grip handle (the deck's ⋮⋮ drag idiom) so the affordance
+           reads even before the cursor lifts a card */
+        var grip = document.createElement('span');
+        grip.className = 'hm-grip';
+        grip.title = 'Drag to reorder';
+        grip.textContent = '⋮⋮';
+        card.appendChild(grip);
+        /* pointer-drag reorder — shared PDrag engine, before/after hit-scan.
+           Card mousedown arms; a real drag reorders, a bare click is swallowed
+           so an editing card never navigates. */
+        card.addEventListener('mousedown', function (e) {
+          if (!window.PDrag) return;
+          PDrag.arm(e, {
+            onStart: function () { ui.dragId = sys.id; },
+            onMove: function (ev) {
+              if (window.pdScan) pdScan(ev, [{ sel: '#hm-grid.hm-editing .hm-card', mode: 'ba',
+                eligible: function (el) { return el.getAttribute('data-id') !== ui.dragId; } }]);
+            },
+            onDrop: function () {
+              var t = window.pdTake ? pdTake() : null;
+              var from = ui.dragId; ui.dragId = null;
+              if (t && from) {
+                var order = orderedSystems().map(function (s) { return s.id; });
+                var fi = order.indexOf(from);
+                if (fi !== -1) {
+                  order.splice(fi, 1);
+                  var toId = t.el.getAttribute('data-id');
+                  var ti = order.indexOf(toId);
+                  if (ti !== -1) order.splice(t.after ? ti + 1 : ti, 0, from);
+                  else order.push(from);
+                  persistOrder(order);
+                }
+              }
+              renderCards();
+            },
+            onCancel: function () { ui.dragId = null; renderCards(); },
+          });
+        });
+      } else {
+        card.addEventListener('click', function () {
+          if (window.PDrag && PDrag.suppressClick) return;
+          navigate(sys);
+        });
+        card.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(sys); }
+        });
+      }
       grid.appendChild(card);
     });
   }
@@ -282,6 +402,178 @@ window.HomePane = (function () {
     wire('hm-time-for', 'data-hours', function (h) { waitHours(h); });
   }
 
+  /* ------------------------------------------------ UI Elements drawer -- *
+   *  One row per on-screen element (home-ui-elements). Rober (2026-08-12):
+   *  "access their settings from home page as UI elements or something".
+   *
+   *  Each row: name + sub, a LIVE on/off chip WHERE the state is queryable, a
+   *  toggle, and a "settings →" jump to where the element is configured.
+   *
+   *  Bridges are the elements' OWN, discovered by reading the code, one name
+   *  per direction — never a reply name reused as a request:
+   *    Followers HUD — request hudCfg {op}, reply hudCfgState (followers-pane).
+   *      Toggle = hudCfg{op:'enable',on}; state via hudCfg{op:'state'}. Jump =
+   *      the Followers tab (its HUD pill + settings modal live in the search row).
+   *    Loot Vision   — request ltGet/ltToggle, reply ltOpen/ltResult carry
+   *      `enabled` (loot-pane). Toggle = ltToggle; jump = the Loot tab.
+   *    Action Bar    — its hb* bridges live in the OTHER (MagicDeck) view, so it
+   *      has NO queryable state here. Show/Hide fires the deck's own
+   *      `hotbar-toggle` action; "Set up →" fires `hotbar-edit` (opens the
+   *      editor). No chip — never fake a state.
+   *    Wheel Menu    — opened by a chord (Ctrl + your deck key), not a toggle;
+   *      show the chord and a "Open" that fires the `wheel` deck action.
+   *  Toggles/jumps that are deck actions ride host.toGame('hdFire', id) — the
+   *  exact call fireEntry() makes, so the seeded action ids fire as if pressed. */
+
+  /* chain a reply receiver so BOTH the owning pane and our drawer see it. Same
+     lazy-wrap trick the Time drawer uses (installed on drawer open, by which
+     time the owning pane has registered its own handler). */
+  function chainReceiver(name, fn) {
+    var prev = window[name];
+    window[name] = function () {
+      try { fn.apply(null, arguments); } catch (e) {}
+      if (typeof prev === 'function') return prev.apply(this, arguments);
+    };
+  }
+  function coerce(x) {
+    if (typeof x === 'string') { try { return JSON.parse(x); } catch (e) { return null; } }
+    return x;
+  }
+
+  /* the elements, in row order. `toggle`/`jump` are functions; `state` reads
+     the live flag (or returns null when not queryable). `chord` is a static
+     key hint shown instead of a toggle where the element has no on/off. */
+  var UIE = [
+    { id: 'hud', ic: '👥', name: 'Followers HUD', sub: 'On-screen portrait strip of your followers',
+      state: function () { return uie.hud; },
+      toggle: function () {
+        var on = uie.hud === true;
+        if (host.toGame) host.toGame('hudCfg', JSON.stringify({ op: 'enable', on: !on }));
+      },
+      jump: function () { host.setTab && host.setTab('followers'); },
+      jumpLabel: 'Followers tab →' },
+    { id: 'hotbar', ic: '▦', name: 'Action Bar', sub: 'WoW-style spell/action bar (hotbar)',
+      state: function () { return null; },   // hb* bridges are in the MagicDeck view — no live state here
+      toggle: function () { host.toGame && host.toGame('hdFire', 'hotbar-toggle'); },
+      toggleLabel: 'Show / Hide',
+      jump: function () { host.toGame && host.toGame('hdFire', 'hotbar-edit'); },
+      jumpLabel: 'Set up →' },
+    { id: 'wheel', ic: '◎', name: 'Wheel Menu', sub: 'Radial ring of anything you pinned',
+      state: function () { return null; },
+      chord: 'Ctrl + your deck key',
+      open: function () { host.toGame && host.toGame('hdFire', 'wheel'); },
+      openLabel: 'Open' },
+    { id: 'loot', ic: '✨', name: 'Loot Vision', sub: 'Glow the loot worth walking to',
+      state: function () { return uie.loot; },
+      toggle: function () { host.toGame && host.toGame('ltToggle'); },
+      jump: function () { host.setTab && host.setTab('loot'); },
+      jumpLabel: 'Loot tab →' },
+  ];
+
+  function stateChip(v) {
+    if (v === null || v === undefined) return null;
+    var chip = document.createElement('span');
+    chip.className = 'hm-uie-state ' + (v ? 'on' : 'off');
+    chip.textContent = v ? 'ON' : 'OFF';
+    return chip;
+  }
+
+  function renderUie() {
+    var body = $('hm-uie-body');
+    if (!body) return;
+    if (!ui.uieOpen) return;
+    body.innerHTML = '';
+    UIE.forEach(function (el) {
+      var row = document.createElement('div');
+      row.className = 'hm-uie-row';
+      row.setAttribute('data-id', el.id);
+
+      var ic = document.createElement('span');
+      ic.className = 'hm-uie-ic'; ic.textContent = el.ic; row.appendChild(ic);
+
+      var t = document.createElement('div'); t.className = 'hm-uie-t';
+      var b = document.createElement('b'); b.textContent = el.name;
+      var s = document.createElement('span'); s.textContent = el.sub;
+      t.appendChild(b); t.appendChild(s); row.appendChild(t);
+
+      var chip = stateChip(el.state ? el.state() : null);
+      if (chip) row.appendChild(chip);
+
+      /* a chord-only element (Wheel) shows the chord + an Open button, no toggle */
+      if (el.chord) {
+        var kc = document.createElement('span');
+        kc.className = 'hm-uie-chord'; kc.textContent = el.chord;
+        kc.title = 'How it opens'; row.appendChild(kc);
+        if (el.open) {
+          var ob = document.createElement('button');
+          ob.className = 'hm-uie-btn'; ob.type = 'button';
+          ob.textContent = el.openLabel || 'Open';
+          ob.title = 'Open ' + el.name;
+          ob.addEventListener('click', el.open);
+          row.appendChild(ob);
+        }
+      } else if (el.toggle) {
+        var tb = document.createElement('button');
+        tb.className = 'hm-uie-btn'; tb.type = 'button';
+        var on = el.state ? el.state() : null;
+        tb.textContent = el.toggleLabel || (on === true ? 'Turn off' : on === false ? 'Turn on' : 'Toggle');
+        tb.title = 'Toggle ' + el.name;
+        tb.addEventListener('click', function () {
+          el.toggle();
+          /* optimistic flip where we track the state, so the chip feels instant;
+             the chained receiver corrects it when the real reply lands */
+          if (el.id === 'hud' && uie.hud !== null) uie.hud = !uie.hud;
+          if (el.id === 'loot' && uie.loot !== null) uie.loot = !uie.loot;
+          renderUie();
+        });
+        row.appendChild(tb);
+      }
+
+      if (el.jump) {
+        var jb = document.createElement('button');
+        jb.className = 'hm-uie-btn hm-uie-jump'; jb.type = 'button';
+        jb.textContent = el.jumpLabel || 'Settings →';
+        jb.title = 'Go to where ' + el.name + ' is configured';
+        jb.addEventListener('click', el.jump);
+        row.appendChild(jb);
+      }
+      body.appendChild(row);
+    });
+  }
+
+  function receiveHud(env) {
+    env = coerce(env);
+    if (!env || typeof env !== 'object') return;
+    uie.hud = !!env.enabled;
+    if (ui.uieOpen) renderUie();
+  }
+  function receiveLoot(env) {
+    env = coerce(env);
+    if (!env || typeof env !== 'object') return;
+    if (typeof env.enabled === 'boolean') { uie.loot = env.enabled; if (ui.uieOpen) renderUie(); }
+  }
+
+  function toggleUie() {
+    ui.uieOpen = !ui.uieOpen;
+    setDrawer('uie', ui.uieOpen, function () {
+      /* lazy-chain the elements' reply receivers on first open, then ask each
+         queryable element for fresh state. Chaining now (not at parse) means
+         followers-pane / loot-pane have already installed their own handlers,
+         so ours forwards to them. */
+      if (!ui.uieChained) {
+        ui.uieChained = true;
+        chainReceiver('hudCfgState', receiveHud);
+        chainReceiver('ltOpen', receiveLoot);    // carries `enabled`
+        chainReceiver('ltResult', receiveLoot);  // toggle reply, also `enabled`
+      }
+      if (host.toGame) {
+        host.toGame('hudCfg', JSON.stringify({ op: 'state' }));  // HUD -> hudCfgState
+        host.toGame('ltGet', '');                                // Loot -> ltOpen
+      }
+      renderUie();
+    });
+  }
+
   /* C++ pushes hdRecent; app.js owns the primary handler and forwards here so
      the drawer stays live without a second bridge name. */
   function receiveRecent(payload) {
@@ -304,6 +596,9 @@ window.HomePane = (function () {
     host.hotkeyCount = h && h.hotkeyCount;
     host.getNotes = h && h.getNotes;
     host.setNotes = h && h.setNotes;
+    host.getHomeOrder = h && h.getHomeOrder;   // home-card-reorder: shelf-blob backed
+    host.setHomeOrder = h && h.setHomeOrder;
+    host.sysTabs = h && h.sysTabs;
   }
 
   function bindSearch() {
@@ -327,6 +622,7 @@ window.HomePane = (function () {
     var rt = $('hm-recent-toggle'); if (rt) rt.addEventListener('click', toggleRecent);
     var nt = $('hm-notes-toggle');  if (nt) nt.addEventListener('click', toggleNotes);
     var tt = $('hm-time-toggle');   if (tt) tt.addEventListener('click', toggleTime);
+    var ut = $('hm-uie-toggle');    if (ut) ut.addEventListener('click', toggleUie);
     if (SELFTEST) setTimeout(selftest, 60);
     return true;
   }
@@ -337,8 +633,22 @@ window.HomePane = (function () {
     renderRecent();
     if (host.toGame) host.toGame('hdHistory', '');  // warm the drawer count
   }
-  function onHide() {}
-  function toggleEdit() { /* no edit chrome */ }
+  function onHide() {
+    /* leaving the tab while editing must not strand the grid in edit chrome */
+    if (ui.editing) { ui.editing = false; ui.dragId = null; }
+  }
+
+  /* F2 / Edit button (routed here from app.js toggleEdit for the Home tab).
+     Flips the reorder mode and repaints so the grips + drag arming appear.
+     home-card-reorder */
+  function toggleEdit() {
+    ui.editing = !ui.editing;
+    ui.dragId = null;
+    var pane = $('hm-pane');
+    if (pane) pane.classList.toggle('hm-edit', ui.editing);
+    renderCards();
+  }
+  function isEditing() { return !!ui.editing; }
   function wantsPause() { return true; }
 
   /* ------------------------------------------------------------ selftest -- */
@@ -349,18 +659,24 @@ window.HomePane = (function () {
 
     var nav = [];
     var notesStore = 'hello';
+    var orderStore = null;   // stands in for the shelf blob (state.shelf.home.order)
     hookInto({
       setTab: function (t) { nav.push('tab:' + t); },
-      toGame: function (fn) { nav.push('game:' + fn); },
+      toGame: function (fn, a) { nav.push('game:' + fn + (a ? ':' + a : '')); },
       openOmni: function (m) { nav.push('omni:' + m); },
       hotkeyCount: function () { return 34; },
       getNotes: function () { return notesStore; },
       setNotes: function (v) { notesStore = v; },
+      getHomeOrder: function () { return orderStore; },
+      setHomeOrder: function (ids) { orderStore = ids.slice(); },
+      sysTabs: function () { return ['quests', 'followers', 'keys', 'loot']; },
     });
     onShow();
 
     ok('pane mounted', !!$('hm-pane'));
-    ok('14 cards render (time+notes moved to drawers)', $('hm-grid').children.length === 14);
+    ok('every system renders a card', $('hm-grid').children.length === SYSTEMS.length);
+    ok('Keys card present (Task 2 — new keys tab carried)',
+      $('hm-grid').textContent.indexOf('Every hotkey in the load order') !== -1);
     ok('no Time/Notes card', $('hm-grid').textContent.indexOf('Skip the slow wait') === -1 &&
       $('hm-grid').textContent.indexOf('scratchpad') === -1);
     ok('Hotkeys count from host', /34/.test($('hm-grid').children[0].textContent));
@@ -369,10 +685,73 @@ window.HomePane = (function () {
     ok('hotkeys card -> setTab(all)', nav.indexOf('tab:all') !== -1);
     cards[1].click();
     ok('spells card -> launcher', nav.indexOf('game:hdOpenSpells') !== -1);
-    cards[13].click();
+    cards[cards.length - 1].click();
     ok('ask card -> omni ask', nav.indexOf('omni:ask') !== -1);
     $('hm-search').click();
     ok('search launcher -> omni search', nav.indexOf('omni:search') !== -1);
+
+    /* reorder persistence (home-card-reorder): move 'ask' to the front and
+       confirm the persisted order round-trips + renders */
+    persistOrder(['ask'].concat(orderedSystems().map(function (s) { return s.id; })
+      .filter(function (id) { return id !== 'ask'; })));
+    ok('reorder persists to host', Array.isArray(orderStore) && orderStore[0] === 'ask');
+    renderCards();
+    ok('reorder repaints (ask now first)',
+      $('hm-grid').children[0].getAttribute('data-id') === 'ask');
+
+    /* sanitizer: unknown ids dropped, a NEW system appended even if unknown to
+       the stored order (so a system added to app.js always shows) */
+    var san = sanitizeOrder(['bogus', 'ask', 'quests']);
+    ok('sanitize drops unknown ids', san.indexOf('bogus') === -1);
+    ok('sanitize keeps stored order first', san[0] === 'ask' && san[1] === 'quests');
+    ok('sanitize appends every known system', san.length === SYSTEMS.length &&
+      san.indexOf('keys') !== -1 && san.indexOf('numpad') !== -1);
+
+    /* edit mode toggles the reorder chrome */
+    ok('not editing by default', !isEditing());
+    toggleEdit();
+    ok('toggleEdit enters edit mode', isEditing() &&
+      $('hm-grid').classList.contains('hm-editing') &&
+      !!$('hm-grid').querySelector('.hm-grip'));
+    toggleEdit();
+    ok('toggleEdit leaves edit mode', !isEditing() && !$('hm-grid').classList.contains('hm-editing'));
+
+    /* UI Elements drawer (home-ui-elements) */
+    ok('uie drawer starts closed', !$('hm-uie').classList.contains('open'));
+    toggleUie();
+    ok('uie opens', $('hm-uie').classList.contains('open'));
+    ok('uie asked HUD state (hudCfg)', nav.some(function (n) { return n.indexOf('game:hudCfg') === 0; }));
+    ok('uie asked Loot state (ltGet)', nav.indexOf('game:ltGet') !== -1);
+    ok('uie four rows', $('hm-uie-body').querySelectorAll('.hm-uie-row').length === 4);
+    ok('uie names all four', /Followers HUD/.test($('hm-uie-body').textContent) &&
+      /Action Bar/.test($('hm-uie-body').textContent) &&
+      /Wheel Menu/.test($('hm-uie-body').textContent) &&
+      /Loot Vision/.test($('hm-uie-body').textContent));
+    ok('wheel shows its chord, no fake state',
+      /Ctrl \+ your deck key/.test($('hm-uie-body').textContent));
+    receiveHud({ enabled: true });
+    ok('HUD chip reads ON after hudCfgState', /ON/.test(
+      $('hm-uie-body').querySelector('.hm-uie-row[data-id="hud"]').textContent));
+    receiveLoot({ enabled: false });
+    ok('Loot chip reads OFF after ltOpen', /OFF/.test(
+      $('hm-uie-body').querySelector('.hm-uie-row[data-id="loot"]').textContent));
+    /* HUD toggle fires the element's OWN request (hudCfg), never a reply name */
+    var hudRow = $('hm-uie-body').querySelector('.hm-uie-row[data-id="hud"]');
+    hudRow.querySelector('.hm-uie-btn').click();
+    ok('HUD toggle fires hudCfg', nav.some(function (n) { return n.indexOf('game:hudCfg') === 0; }));
+    /* Loot toggle fires ltToggle (request), jump goes to the Loot tab */
+    var lootRow = $('hm-uie-body').querySelector('.hm-uie-row[data-id="loot"]');
+    lootRow.querySelector('.hm-uie-btn').click();
+    ok('Loot toggle fires ltToggle', nav.indexOf('game:ltToggle') !== -1);
+    lootRow.querySelector('.hm-uie-jump').click();
+    ok('Loot jump -> setTab(loot)', nav.indexOf('tab:loot') !== -1);
+    /* Action Bar has no state chip (never faked) but fires deck actions */
+    var hbRow = $('hm-uie-body').querySelector('.hm-uie-row[data-id="hotbar"]');
+    ok('Action Bar shows NO state chip', !hbRow.querySelector('.hm-uie-state'));
+    hbRow.querySelector('.hm-uie-jump').click();
+    ok('Action Bar Set up -> hdFire hotbar-edit',
+      nav.indexOf('game:hdFire:hotbar-edit') !== -1);
+    toggleUie();
 
     ok('recent drawer starts closed', !$('hm-recent').classList.contains('open'));
     toggleRecent();
@@ -398,7 +777,7 @@ window.HomePane = (function () {
     ok('time clock renders', $('hm-time-clock').textContent === '9:46 PM');
     ok('time date names Last Seed', /Last Seed/.test($('hm-time-date').textContent));
     $('hm-time-for').querySelector('[data-hours="6"]').click();
-    ok('wait chip fires tmWait', nav.indexOf('game:tmWait') !== -1);
+    ok('wait chip fires tmWait', nav.some(function (n) { return n.indexOf('game:tmWait') === 0; }));
 
     var fails = out.filter(function (l) { return l.indexOf('FAIL') === 0; });
     var box = document.createElement('pre');
@@ -412,8 +791,12 @@ window.HomePane = (function () {
 
   return {
     init: init, onShow: onShow, onHide: onHide, hookInto: hookInto,
-    receiveRecent: receiveRecent, toggleEdit: toggleEdit, wantsPause: wantsPause,
-    _systems: SYSTEMS, _ui: ui
+    receiveRecent: receiveRecent, toggleEdit: toggleEdit, isEditing: isEditing,
+    wantsPause: wantsPause,
+    _systems: SYSTEMS, _sanitizeOrder: sanitizeOrder, _orderedSystems: orderedSystems,
+    _ui: ui, _uie: uie, _UIE: UIE,
+    _toggleUie: toggleUie, _renderUie: renderUie,
+    _receiveHud: receiveHud, _receiveLoot: receiveLoot
   };
 })();
 

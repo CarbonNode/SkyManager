@@ -1832,96 +1832,102 @@ namespace
 			const char* name;
 			const char* desc;
 			const char* category;
+			// View-relative icon path (icons/custom/<name>.png), or "" for none.
+			// Seeds only touch MISSING entries, so this decorates fresh installs
+			// and any row a user deleted-then-reseeded; existing configs keep
+			// whatever icon (or none) they already saved. Scrubbed by
+			// ValidViewIconPath before it reaches the webview, same as any icon.
+			const char* icon = "";
 		};
 		static constexpr Seed kSeeds[] = {
 			{ "portrait", "chim-portrait", "Capture Portrait",
-			  "Photograph the targeted NPC's face and save it as their portrait", "CHIM" },
+			  "Photograph the targeted NPC's face and save it as their portrait", "CHIM", "icons/custom/hk-portrait.png" },
 			// Unbound like the rest: guessing a key on someone else's keyboard
 			// collides with whatever they already have bound, and the row is
 			// usable as-is — click it, or give it a key in F2. (Rober's G12
 			// already sends F22 and is labelled SAVE, if he wants one.)
 			{ "full-save", "hd-full-save", "Full Save",
-			  "Writes a real save file - not the quicksave slot", "Misc" },
+			  "Writes a real save file - not the quicksave slot", "Misc", "icons/custom/hk-full-save.png" },
 			// Rober's call (2026-08-02): the resolver gets no raw hotkey of its
 			// own — it lives HERE, placed/renamed/bound like any other entry.
 			{ "anim-refresh", "anim-refresh", "Fix Stuck Animation",
-			  "Can't jump, or weapon stuck half-drawn? Runs Animation Resolver's un-wedge + logs the state", "Fixes" },
+			  "Can't jump, or weapon stuck half-drawn? Runs Animation Resolver's un-wedge + logs the state", "Fixes", "icons/custom/hk-anim-fix.png" },
 			// Controls un-wedge (2026-08-03): a script disables player controls
 			// or the journal and dies before re-enabling — Tab dead, red
 			// Quests/General in Esc, saving refused — and the lock persists in
 			// the save. One press clears every layer and logs what was wedged.
 			// "red menu unstick" in the desc are omni keywords on purpose.
 			{ "fix-controls", "hd-fix-controls", "Fix Stuck Controls",
-			  "Tab dead, Quests/General red in the Esc menu, saving blocked? Clears wedged control locks - menu, journal, chargen, text-entry - and logs what was stuck (unstick red menus)", "Fixes" },
+			  "Tab dead, Quests/General red in the Esc menu, saving blocked? Clears wedged control locks - menu, journal, chargen, text-entry - and logs what was stuck (unstick red menus)", "Fixes", "icons/custom/hk-fix-controls.png" },
 			// Groovatron in the desc on purpose — it doubles as an omni keyword.
 			{ "grab", "npc-grab", "Grab NPC",
-			  "Pick up the targeted NPC with Object Manipulation Overhaul (Groovatron-style): follows your crosshair, left-click places, right-click puts them back; stands up sitters", "NPC" },
+			  "Pick up the targeted NPC with Object Manipulation Overhaul (Groovatron-style): follows your crosshair, left-click places, right-click puts them back; stands up sitters", "NPC", "icons/custom/hk-grab.png" },
 			// Instant waits (2026-08-02): the vanilla Sleep/Wait menu ticks one
 			// hour per REAL frame and this rig's frame generation throttles real
 			// frames, so the menu crawls at any displayed FPS. These jump the
 			// clock in ONE step — "sleep wait fast" keywords for omni on purpose.
 			{ "wait-1", "hd-wait-1", "Wait 1 Hour",
-			  "Instantly pass 1 game hour - skips the slow sleep wait menu entirely (fast wait)", "Misc" },
+			  "Instantly pass 1 game hour - skips the slow sleep wait menu entirely (fast wait)", "Misc", "icons/custom/hk-wait-1.png" },
 			{ "wait-6", "hd-wait-6", "Wait 6 Hours",
-			  "Instantly pass 6 game hours - skips the slow sleep wait menu entirely (fast wait)", "Misc" },
+			  "Instantly pass 6 game hours - skips the slow sleep wait menu entirely (fast wait)", "Misc", "icons/custom/hk-wait-6.png" },
 			{ "wait-12", "hd-wait-12", "Wait 12 Hours",
-			  "Instantly pass 12 game hours - skips the slow sleep wait menu entirely (fast wait)", "Misc" },
+			  "Instantly pass 12 game hours - skips the slow sleep wait menu entirely (fast wait)", "Misc", "icons/custom/hk-wait-12.png" },
 			{ "wait-24", "hd-wait-24", "Wait 24 Hours",
-			  "Instantly pass 24 game hours - a full day in one step (fast sleep wait)", "Misc" },
+			  "Instantly pass 24 game hours - a full day in one step (fast sleep wait)", "Misc", "icons/custom/hk-wait-24.png" },
 			// AddItemMenu (2026-08-03): the deck casts the mod's own lesser
 			// powers, so its Papyrus flow runs exactly as shipped — no
 			// inventory digging for the [AddItemMenuSE] items. Unbound like
 			// the rest: click, or give either a trigger key in F2.
 			{ "additem-menu", "hd-additem-menu", "AddItemMenu",
-			  "Open AddItemMenu's mod-list popup - browse any installed mod's items and take them (add item menu)", "Misc" },
+			  "Open AddItemMenu's mod-list popup - browse any installed mod's items and take them (add item menu)", "Misc", "icons/custom/hk-additem.png" },
 			{ "additem-search", "hd-additem-search", "AddItemMenu: Search",
-			  "Open AddItemMenu straight into name search - type an item name and take it (add item search)", "Misc" },
+			  "Open AddItemMenu straight into name search - type an item name and take it (add item search)", "Misc", "icons/custom/hk-additem-search.png" },
 			// Loot Highlighter (2026-08-04): master toggle for the glow scanner.
 			// "loot vision glow highlight" keywords for omni on purpose; colours
 			// and categories live in the deck's Loot tab.
 			{ "loot-vision", "hd-loot-vision", "Loot Vision",
-			  "Toggle loot glow highlights - chests, unlooted corpses, museum pieces the LOTD still wants, coins, potions, valuable gear (loot vision glow; configure in the Loot tab)", "Misc" },
+			  "Toggle loot glow highlights - chests, unlooted corpses, museum pieces the LOTD still wants, coins, potions, valuable gear (loot vision glow; configure in the Loot tab)", "Misc", "icons/custom/hk-loot-vision.png" },
 			// No Auto-Gear (2026-08-09): tag the crosshair NPC so SPID/SkyPatcher
 			// stop dumping cloaks/hoods/underwear on her, and strip what's worn.
 			// "no auto gear cloak hood underwear spid distributor" omni keywords.
 			{ "no-auto-gear", "npc-no-auto-gear", "No Auto-Gear",
-			  "Toggle: stop distributor mods (SPID/SkyPatcher) putting cloaks, hoods or underwear on the NPC you're looking at, and strip what's there (no auto gear cloak hood underwear distributor)", "NPC" },
+			  "Toggle: stop distributor mods (SPID/SkyPatcher) putting cloaks, hoods or underwear on the NPC you're looking at, and strip what's there (no auto gear cloak hood underwear distributor)", "NPC", "icons/custom/hk-no-auto-gear.png" },
 			{ "no-auto-gear-party", "npc-no-auto-gear-party", "No Auto-Gear: Party",
-			  "Protect every follower with you right now from distributor cloaks/hoods/underwear (no auto gear party)", "NPC" },
+			  "Protect every follower with you right now from distributor cloaks/hoods/underwear (no auto gear party)", "NPC", "icons/custom/hk-no-auto-gear.png" },
 			// Fixes / Unstuck (2026-08-09): one-click rescues for modded-game jank.
 			// Console-backed, run on the crosshair NPC (or the player for noclip).
 			// "unstuck fix stuck broken jank" omni keywords on purpose.
 			{ "fix-recycle", "fix-recycle", "Unstick NPC",
-			  "Rebuild the crosshair NPC's 3D and AI (recycleactor) - the fix for a T-posing, invisible, frozen or wedged follower (unstuck stuck broken)", "Fixes" },
+			  "Rebuild the crosshair NPC's 3D and AI (recycleactor) - the fix for a T-posing, invisible, frozen or wedged follower (unstuck stuck broken)", "Fixes", "icons/custom/hk-fix-unstick.png" },
 			{ "fix-resetai", "fix-resetai", "Reset AI",
-			  "Re-evaluate the crosshair NPC's AI packages (resetai) - for someone stuck standing, not following, or ignoring their schedule (unstuck stuck)", "Fixes" },
+			  "Re-evaluate the crosshair NPC's AI packages (resetai) - for someone stuck standing, not following, or ignoring their schedule (unstuck stuck)", "Fixes", "icons/custom/hk-fix-resetai.png" },
 			{ "fix-calm", "fix-calm", "Calm NPC",
-			  "Stop the crosshair NPC's combat and drop aggression to 0 - end a fight that should not be happening (pacify stop combat)", "Fixes" },
+			  "Stop the crosshair NPC's combat and drop aggression to 0 - end a fight that should not be happening (pacify stop combat)", "Fixes", "icons/custom/hk-fix-calm.png" },
 			{ "fix-resurrect", "fix-resurrect", "Resurrect NPC",
-			  "Bring the crosshair corpse back keeping its inventory (resurrect 1) - undo a death you did not want", "Fixes" },
+			  "Bring the crosshair corpse back keeping its inventory (resurrect 1) - undo a death you did not want", "Fixes", "icons/custom/hk-fix-resurrect.png" },
 			{ "fix-noclip", "fix-noclip", "Toggle Noclip (me)",
-			  "Toggle player collision (tcl) - walk out when you are stuck in geometry, fire again to turn it back on (unstuck noclip)", "Fixes" },
+			  "Toggle player collision (tcl) - walk out when you are stuck in geometry, fire again to turn it back on (unstuck noclip)", "Fixes", "icons/custom/hk-fix-noclip.png" },
 			// Quick Light (2026-08-05): toggle the carried portable light. The
 			// deck reads Quick Light SE's own state and calls its own CastLight
 			// / RemoveLight. Lives in the Utilities category, where a live On/Off
 			// card appears above the row. "quick light lantern torch glow"
 			// keywords for omni on purpose.
 			{ "quick-light", "hd-quick-light", "Quick Light",
-			  "Toggle Quick Light on or off - your carried portable light; live On/Off card in the Utilities category (quick light lantern torch glow)", "Utilities" },
+			  "Toggle Quick Light on or off - your carried portable light; live On/Off card in the Utilities category (quick light lantern torch glow)", "Utilities", "icons/custom/hk-quick-light.png" },
 			// Crawl toggle (2026-08-05): make the crosshair NPC (or you) crawl on
 			// all fours — the moving-crawl half of the Animations tab, also bindable.
 			{ "crawl", "hd-crawl", "Crawl",
-			  "Make the NPC you are looking at (or yourself) crawl on all fours - toggle; separate from normal sneak (crawl all fours animation)", "NPC" },
+			  "Make the NPC you are looking at (or yourself) crawl on all fours - toggle; separate from normal sneak (crawl all fours animation)", "NPC", "icons/custom/hk-crawl.png" },
 			// Menus (2026-08-05): open another mod's settings menu from the deck
 			// without a dedicated keyboard hotkey. Each synthesizes the exact key
 			// that mod listens for, read live from its own config so a rebind
 			// there stays honored. "mcm settings config" keywords for omni.
 			{ "open-prisma-mcm", "hd-open-prisma-mcm", "Prisma MCM",
-			  "Open the Prisma MCM Redux settings menu (the general PrismaUI MCM) - no hotkey needed (mcm settings config)", "Menus" },
+			  "Open the Prisma MCM Redux settings menu (the general PrismaUI MCM) - no hotkey needed (mcm settings config)", "Menus", "icons/custom/hk-prisma-mcm.png" },
 			{ "open-smf", "hd-open-smf", "SKSE Menu",
-			  "Open the SKSE Menu Framework menu - no hotkey needed; double-taps its toggle key for you (mcm settings config)", "Menus" },
+			  "Open the SKSE Menu Framework menu - no hotkey needed; double-taps its toggle key for you (mcm settings config)", "Menus", "icons/custom/hk-skse-menu.png" },
 			{ "open-community-shaders", "hd-open-community-shaders", "Community Shaders",
-			  "Open the Community Shaders menu - needs Community Shaders installed (default key End) (settings config shaders enb)", "Menus" },
+			  "Open the Community Shaders menu - needs Community Shaders installed (default key End) (settings config shaders enb)", "Menus", "icons/custom/hk-community-shaders.png" },
 			// Rooms privacy (2026-08-11): seal the room you are standing in —
 			// nobody in at all, followers and allowed people included — and fire
 			// it again to go back to that room's normal welcome list. Bindable
@@ -1929,13 +1935,13 @@ namespace
 			// want to hit without opening anything. "privacy lock seal keep out
 			// nobody alone" keywords for omni on purpose.
 			{ "room-privacy", "hd-room-privacy", "Privacy: Seal Room",
-			  "Toggle: let NOBODY into the claimed room you are standing in right now - followers and allowed people too - then press again to go back to your normal who's-allowed settings (privacy lock seal keep everyone out alone do not disturb)", "Utilities" },
+			  "Toggle: let NOBODY into the claimed room you are standing in right now - followers and allowed people too - then press again to go back to your normal who's-allowed settings (privacy lock seal keep everyone out alone do not disturb)", "Utilities", "icons/custom/hk-privacy.png" },
 			// The wheel already has a chord (Ctrl + the open key). This seed is
 			// so it can have a KEY as well - a spare mouse button, a Scimitar
 			// side key - without touching the chord. "radial ring circle
 			// favorites" in the desc are omni keywords on purpose.
 			{ "wheel", "hd-wheel-open", "Wheel Menu",
-			  "Open the radial wheel - a ring of anything you pinned to it: weapons, armour, potions, followers, outfits, spells, places. Also on Ctrl + your deck key (radial ring circle quick wheel favorites)", "Utilities" },
+			  "Open the radial wheel - a ring of anything you pinned to it: weapons, armour, potions, followers, outfits, spells, places. Also on Ctrl + your deck key (radial ring circle quick wheel favorites)", "Utilities", "icons/custom/hk-wheel.png" },
 			// Hotbar (2026-08-11). TWO seeds, because they are two different
 			// jobs: one shows/hides the bar mid-play, the other opens the panel
 			// where you build it. Both unbound — the SETUP one is the entry
@@ -1943,9 +1949,9 @@ namespace
 			// someone who does not yet know the bar exists ("action bar hotbar
 			// spell bar wow buttons").
 			{ "hotbar-toggle", "hd-hotbar-toggle", "Action Bar: Show/Hide",
-			  "Show or hide the on-screen action bar without changing anything on it (hotbar spell bar quick bar buttons wow)", "Utilities" },
+			  "Show or hide the on-screen action bar without changing anything on it (hotbar spell bar quick bar buttons wow)", "Utilities", "icons/custom/hk-hotbar.png" },
 			{ "hotbar-edit", "hd-hotbar-edit", "Action Bar: Set Up",
-			  "Open the action bar's editor - choose how many buttons, one or two rows, horizontal or vertical, where it sits, which key fires each button, and what goes on the shift/ctrl/alt pages (hotbar spell bar action bar wow configure resize icons)", "Utilities" },
+			  "Open the action bar's editor - choose how many buttons, one or two rows, horizontal or vertical, where it sits, which key fires each button, and what goes on the shift/ctrl/alt pages (hotbar spell bar action bar wow configure resize icons)", "Utilities", "icons/custom/hk-hotbar.png" },
 		};
 
 		// Plain key entries added in a new build. Keyed by ID rather than by a
@@ -2026,8 +2032,17 @@ namespace
 			e.label = s.name;  // the key chip reads the verb, not a generic "Action"
 			e.category = s.category;
 			e.action = s.action;
+			// Ship a matching gold-glyph icon on fresh seeds. Scrubbed like any
+			// stored icon so a bad path can never reach the webview. Only lands
+			// on entries that didn't already exist, so a user who cleared an
+			// icon and kept the row keeps it cleared.
+			if (s.icon && *s.icon) {
+				std::string ic = s.icon;
+				if (ValidViewIconPath(ic))
+					e.icon = ic;
+			}
 			c.entries.push_back(std::move(e));
-			logger::info("seeded new action entry '{}' into tab '{}'", s.name, s.category);
+			logger::info("seeded new action entry '{}' into tab '{}' (icon '{}')", s.name, s.category, e.icon);
 			changed = true;
 		}
 
@@ -8125,11 +8140,17 @@ namespace
 		if (j.is_discarded() || !j.is_object())
 			return;
 		const std::string op = j.value("op", std::string());
-		bool persist = true, pushHud = true, pushCfg = false, reposition = false;
+		bool persist = true, pushHud = true, pushCfg = false, reposition = false, pushData = false;
 
 		if (op == "enable") {
 			std::lock_guard l(g_configMutex);
 			g_hudConfig.enabled = j.value("on", !g_hudConfig.enabled);
+			// The data ticker idles while the HUD is off, so the view is still holding
+			// the empty roster it rendered at load — and an empty panel is display:none
+			// (CSS), so Show() alone leaves nothing on screen until the next scan lands.
+			// Push config + a forced scan NOW, the same feed reposition does, so
+			// enabling shows the strip immediately.
+			if (g_hudConfig.enabled) { pushCfg = true; pushData = true; }
 		} else if (op == "visible") {
 			std::lock_guard l(g_configMutex);
 			g_hudConfig.visible = j.value("on", !g_hudConfig.visible);
@@ -8172,10 +8193,11 @@ namespace
 
 		if (persist)
 			PersistAll();
-		const bool doCfg = pushCfg, doHud = pushHud, doRepos = reposition;
-		SKSE::GetTaskInterface()->AddTask([doCfg, doHud, doRepos]() {
+		const bool doCfg = pushCfg, doHud = pushHud, doRepos = reposition, doData = pushData;
+		SKSE::GetTaskInterface()->AddTask([doCfg, doHud, doRepos, doData]() {
 			if (doHud) HudApplyVisibility();
 			if (doCfg) HudPushConfig();
+			if (doData) HudPushData(true);
 			if (doRepos) {
 				g_hudEditing = true;
 				if (g_prisma && g_hudView && g_hudViewReady.load()) {

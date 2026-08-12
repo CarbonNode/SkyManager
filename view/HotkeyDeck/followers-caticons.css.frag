@@ -119,6 +119,12 @@
 .fd-catic-tile.none { border-style: dashed; }
 .fd-catic-x { font-size: 30px; line-height: 46px; height: 46px; color: #55523f; }
 .fd-catic-tile.none:hover .fd-catic-x { color: #d9c48a; }
+/* The Auto tile can now preview the shipped default glyph. Dim it so it reads
+   as "what you'd fall back to", not as a competing active pick; the dashed
+   .none border already marks it as the clear-override tile. */
+.fd-catic-auto-img { width: 46px; height: 46px; object-fit: contain; display: block; pointer-events: none; opacity: .62; }
+.fd-catic-tile.none:hover .fd-catic-auto-img { opacity: 1; }
+.fd-catic-tile.none.on .fd-catic-auto-img { opacity: 1; }
 .fd-catic-more {
   grid-column: 1 / -1;
   padding: 9px 10px;

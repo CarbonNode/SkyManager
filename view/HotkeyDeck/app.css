@@ -7654,6 +7654,77 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .hm-card .hm-count.on  { color: #a9d3a9; background: rgba(120,200,120,.12); border-color: rgba(120,200,120,.32); }
 .hm-card .hm-count.off { color: #6f6a5e; background: transparent; border-color: #2e2e36; }
 
+/* ---- edit mode: pointer-drag reorder (home-card-reorder) ----
+   Grid gains a dashed frame + a hint so it reads as "you're rearranging".
+   Cards no longer lift on hover (that motion belongs to click-to-open); they
+   grab-cursor, carry a ⋮⋮ grip, and the one being dragged floats with a
+   heavier shadow. Drop position rides PDrag's shared drop-before/after classes
+   (a gold rule down the entering edge), so no per-pane drag CSS is invented. */
+#hm-grid.hm-editing {
+  outline: 1.5px dashed rgba(201,162,75,.5); outline-offset: 8px; border-radius: 10px;
+}
+#hm-grid.hm-editing .hm-card { cursor: grab; }
+#hm-grid.hm-editing .hm-card:hover { transform: none; border-color: #c9a24b;
+  box-shadow: 0 0 0 1px rgba(201,162,75,.25); }
+#hm-grid.hm-editing .hm-card:active { cursor: grabbing; transform: none; }
+#hm-grid.hm-editing .hm-card.dragging {
+  opacity: .92; cursor: grabbing; border-color: #c9a24b;
+  box-shadow: 0 16px 34px rgba(0,0,0,.55), 0 0 0 1px rgba(201,162,75,.5);
+  transform: scale(1.02);
+}
+.hm-card .hm-grip {
+  position: absolute; bottom: 12px; right: 13px;
+  font: 700 15px/1 Consolas, monospace; color: #8a8478; letter-spacing: -2px;
+  pointer-events: none; user-select: none;
+}
+#hm-grid.hm-editing .hm-card:hover .hm-grip { color: #c9a24b; }
+/* drop indicators (PDrag's classes) — a gold bar on the edge the card enters */
+#hm-grid.hm-editing .hm-card.drop-before::before,
+#hm-grid.hm-editing .hm-card.drop-after::after {
+  content: ''; position: absolute; top: 8px; bottom: 8px; width: 3px;
+  border-radius: 3px; background: #c9a24b; box-shadow: 0 0 8px rgba(201,162,75,.6);
+}
+#hm-grid.hm-editing .hm-card.drop-before::before { left: -9px; }
+#hm-grid.hm-editing .hm-card.drop-after::after  { right: -9px; }
+
+/* ---- UI Elements drawer: one row per on-screen element (home-ui-elements) ---- */
+.hm-uie-row {
+  display: flex; align-items: center; gap: 12px; padding: 11px 10px; border-radius: 9px;
+  transition: background 140ms ease;
+}
+.hm-uie-row:hover { background: rgba(201,162,75,.06); }
+.hm-uie-row .hm-uie-ic {
+  width: 30px; height: 30px; border-radius: 8px; flex: none;
+  display: grid; place-items: center; font-size: 16px;
+  background: rgba(255,255,255,.05); color: #cfcabe;
+}
+.hm-uie-row .hm-uie-t { flex: 1; min-width: 0; }
+.hm-uie-row .hm-uie-t b { font-weight: 600; font-size: 15px; color: #e8e4da; display: block;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hm-uie-row .hm-uie-t span { color: #8a8478; font-size: 12.5px; }
+.hm-uie-state {
+  font: 700 12px/1 Consolas, monospace; flex: none;
+  border-radius: 999px; padding: 5px 10px; min-width: 34px; text-align: center;
+  color: #6f6a5e; background: transparent; border: 1px solid #2e2e36;
+}
+.hm-uie-state.on  { color: #a9d3a9; background: rgba(120,200,120,.12); border-color: rgba(120,200,120,.32); }
+.hm-uie-state.off { color: #c9a2a2; background: rgba(200,120,120,.10); border-color: rgba(200,120,120,.28); }
+.hm-uie-btn {
+  font: 600 13px/1 inherit; color: #e8e4da; cursor: pointer; flex: none;
+  background: rgba(255,255,255,.03); border: 1px solid #3a3a44; border-radius: 9px;
+  padding: 8px 12px;
+  transition: border-color 140ms ease, background 140ms ease, transform 120ms ease;
+}
+.hm-uie-btn:hover { border-color: #c9a24b; background: rgba(201,162,75,.12); }
+.hm-uie-btn:active { transform: translateY(1px); }
+.hm-uie-btn.hm-uie-jump { color: #cfcabe; }
+.hm-uie-chord {
+  font: 600 12px/1 Consolas, monospace; color: #a49d8c; flex: none;
+  border: 1px solid #3a3a44; border-radius: 7px; padding: 6px 9px;
+  background: rgba(255,255,255,.03);
+}
+.hm-uie-empty { color: #6f6a5e; font-size: 13.5px; padding: 10px; }
+
 /* ---- Recent drawer ---- */
 .hm-drawer { margin-top: 20px; border-top: 1px solid #2e2e36; padding-top: 14px; }
 .hm-drawer-head {

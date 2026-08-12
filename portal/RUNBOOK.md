@@ -51,6 +51,17 @@ and log in.
 
 Find your PC's LAN address with `ipconfig` (look for IPv4 Address, usually a 192.168 address).
 
+## NPC icon packs — share your follower portraits
+
+The **Followers** tab has a pack bar: **⇪ Share pack** downloads your portraits
+as one `.zip` (each image named by its follower slug, plus a `manifest.json`);
+**⇩ Import pack** opens someone else's zip and asks **face by face** what to
+bring in — new faces default ON, replacements default OFF, so nothing you made
+yourself is overwritten silently. A pack is a plain zip: you can also hand-make
+one by renaming images to `<npc name>.png` and zipping them — no manifest needed.
+Imported faces reach a running game within a second (the same live bridge as a
+single upload) or appear at the next launch.
+
 ## Things worth knowing
 
 * **The game does not need to be running.** With Skyrim closed you can still
