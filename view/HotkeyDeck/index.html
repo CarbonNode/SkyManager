@@ -25,6 +25,8 @@
 <link rel="stylesheet" href="hd-formation.css">
 <!-- Keys tab: the load-order hotkey census. Own sheet, same reason. -->
 <link rel="stylesheet" href="keys-pane.css">
+<!-- Items tab: the inline item explorer. Own sheet, same reason. -->
+<link rel="stylesheet" href="items-pane.css">
 <!-- Character tab: your personal character sheet. Own sheet, same reason. -->
 <link rel="stylesheet" href="charsheet-pane.css">
 <!-- Door lock modal (F7 on a door). Own sheet, same reason. -->
@@ -846,6 +848,42 @@
   <div id="kc-empty" class="hidden"></div>
 </section>
 
+<!-- Items tab: the inline item explorer (items-pane.js owns everything below
+     the static skeleton; C++ item_explorer.cpp owns the index, the matching
+     and the add). A SIBLING of the other panes, per the tm-pane lesson below.
+     Keep this markup in step with items-pane.test.html. -->
+<section id="ix-pane" class="hidden" aria-label="Items">
+  <div class="ix-head">
+    <div class="ix-title">Item Explorer <span id="ix-count-chip"></span></div>
+    <div class="ix-head-right">
+      <span id="ix-gold" class="ix-gold" title="Your gold — live, straight from your inventory">🜚 …</span>
+      <button id="ix-pay-toggle" class="ix-btn" title="Merchant mode — taking an item costs gold">💰 Merchant mode</button>
+      <select id="ix-mult" class="hidden" title="Suggested price = item value × this">
+        <option value="0.5">×0.5 value</option>
+        <option value="1" selected>×1 value</option>
+        <option value="1.5">×1.5 value</option>
+        <option value="2">×2 value</option>
+        <option value="3">×3 value</option>
+        <option value="5">×5 value</option>
+      </select>
+    </div>
+  </div>
+  <div class="ix-barwrap">
+    <div class="ix-bar">
+      <span class="ix-bar-glyph">⌕</span>
+      <span id="ix-plug-chip" class="hidden"></span>
+      <input id="ix-search" type="text"
+             placeholder="Search any item, or any mod — try 'ebony sword' or 'Ordinator' (Enter = top hit)"
+             autocomplete="off" spellcheck="false">
+    </div>
+    <div id="ix-pills"></div>
+  </div>
+  <div id="ix-body"></div>
+  <div id="ix-empty" class="hidden"></div>
+  <div id="ix-toast" class="ix-toast" role="status" aria-live="polite"></div>
+  <div id="ix-sheet" class="hidden"></div>
+</section>
+
 <!-- Character tab: your personal character sheet (charsheet-pane.js owns
      everything; C++ charsheet.cpp owns the live stat + effect read). A
      SIBLING of the other panes, per the tm-pane lesson below. -->
@@ -1328,6 +1366,7 @@
   <script src="rooms-pane.js"></script>
   <script src="loot-pane.js"></script>
   <script src="keys-pane.js"></script>
+  <script src="items-pane.js"></script>
   <script src="charsheet-pane.js"></script>
   <script src="anim-pane.js"></script>
   <script src="ostim-pane.js"></script>
