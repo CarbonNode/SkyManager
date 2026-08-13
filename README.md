@@ -119,6 +119,19 @@ Things in the DLL a scan will (correctly) notice, and why they are there:
   code — integration is SKSE event sinks, the Papyrus VM, and public plugin
   APIs throughout.
 
+### Freeze diagnostics
+
+Every palette open/close logs its phase timings to `HotkeyDeck.log`
+(`Documents\My Games\Skyrim Special Edition\SKSE\`), and a watchdog logs
+`STILL BLOCKED after N ms` if an open or close hangs — so if the deck ever
+freezes for you, that log already contains the diagnosis; paste it into a bug
+report. On by default; disable with `Data\SKSE\Plugins\SkyManager.ini`:
+
+```ini
+[Diagnostics]
+bOpenTiming=0
+```
+
 ### Cross-mod C API (for other plugin authors)
 
 `SkyManager.dll` exports a small `extern "C"` surface you can resolve with
