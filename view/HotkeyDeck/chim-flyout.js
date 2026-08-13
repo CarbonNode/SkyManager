@@ -178,7 +178,13 @@ var ChimBtn = (function () {
     fly.style.visibility = 'hidden';
     fly.style.left = '0px'; fly.style.top = '0px';
     var vp = viewport(), vw = vp.w, vh = vp.h;
-    var fw = fly.offsetWidth || 260, fh = fly.offsetHeight || 180;
+    /* .chim-fly wears transform: scale(--ui-scale) (top-left origin) because it
+       lives outside #panel's transform; offsetWidth/Height are PRE-transform
+       layout px, so the PAINTED box is × the scale — clamp that or a Fill'd
+       deck's flyout runs off the edge. */
+    var sc = 1;
+    try { var v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-scale')); if (isFinite(v) && v > 0) sc = v; } catch (e) {}
+    var fw = (fly.offsetWidth || 260) * sc, fh = (fly.offsetHeight || 180) * sc;
     var ax = r ? r.left : 40, ay = r ? r.bottom : 120, atop = r ? r.top : 100;
     var left = Math.max(8, Math.min(ax, vw - fw - 8));
     var top = ay + 6;

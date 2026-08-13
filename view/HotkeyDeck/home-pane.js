@@ -33,6 +33,9 @@
  *  Two OPTIONAL host hooks power the reorder & the completeness audit:
  *    getHomeOrder() -> string[]  · setHomeOrder(string[])  (shelf-blob backed)
  *    sysTabs()      -> string[]  (the app's SYS_TABS ids, for the dev audit)
+ *  Two more surface the open-key rebind on Home (home-open-key):
+ *    getOpenKey()   -> label string  · startOpenKeyPicker() (reuses app.js's
+ *    own startCapture('open') — press-to-rebind + the pick-from-list button)
  * ====================================================================== */
 
 window.HomePane = (function () {
@@ -79,7 +82,10 @@ window.HomePane = (function () {
 
   var host = { setTab: null, toGame: null, openOmni: null, hotkeyCount: null,
                getNotes: null, setNotes: null, getHomeOrder: null, setHomeOrder: null,
-               sysTabs: null, detected: null };
+               sysTabs: null, detected: null,
+               /* Open-key discoverability (home-open-key): getOpenKey() -> label
+                  string, startOpenKeyPicker() reuses app.js's own rebind flow. */
+               getOpenKey: null, startOpenKeyPicker: null };
   var recent = { items: [], count: 0, max: 0 };
   var timeCur = null;   // last tmInfo {hour,day,month,year}
   /* live on/off for the on-screen UI elements, filled by chained receivers.
@@ -619,6 +625,32 @@ window.HomePane = (function () {
     host.setHomeOrder = h && h.setHomeOrder;
     host.sysTabs = h && h.sysTabs;
     host.detected = h && h.detected;
+    host.getOpenKey = h && h.getOpenKey;             // home-open-key
+    host.startOpenKeyPicker = h && h.startOpenKeyPicker;
+  }
+
+  /* ---------------------------------------------------- open-key card -- *
+   *  home-open-key — the ONE control a new user hunts for and can't find
+   *  (Nexus IAMTOKKO wanted to rebind F7, searched everywhere, gave up).
+   *  Shows the live bind big, and "Change…" runs app.js's OWN open-key
+   *  rebind flow (startCapture('open') → press-to-rebind + the pick-from-
+   *  list button), so there is exactly one implementation. */
+  function openKeyLabel() {
+    if (typeof host.getOpenKey === 'function') {
+      try { var l = host.getOpenKey(); if (l) return String(l); } catch (e) {}
+    }
+    return '—';
+  }
+  function renderOpenKey() {
+    var k = $('hm-ok-key');
+    if (k) { var lbl = openKeyLabel(); k.textContent = lbl; k.title = lbl + ' opens SkyManager'; }
+  }
+  function bindOpenKey() {
+    var btn = $('hm-ok-change');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      if (typeof host.startOpenKeyPicker === 'function') host.startOpenKeyPicker();
+    });
   }
 
   function bindSearch() {
@@ -637,6 +669,7 @@ window.HomePane = (function () {
     if (!$('hm-pane')) { console.log('[home] #hm-pane missing — fragment not pasted?'); return false; }
     ui.inited = true;
     bindSearch();
+    bindOpenKey();
     bindNotes();
     bindTime();
     var rt = $('hm-recent-toggle'); if (rt) rt.addEventListener('click', toggleRecent);
@@ -649,6 +682,7 @@ window.HomePane = (function () {
 
   function onShow() {
     if (!init()) return;
+    renderOpenKey();     // the live bind may have changed via Edit or a rebind
     renderCards();       // counts are live — re-read every show
     renderRecent();
     if (host.toGame) host.toGame('hdHistory', '');  // warm the drawer count
@@ -680,6 +714,7 @@ window.HomePane = (function () {
     var nav = [];
     var notesStore = 'hello';
     var orderStore = null;   // stands in for the shelf blob (state.shelf.home.order)
+    var openKeyStore = 'F7';
     hookInto({
       setTab: function (t) { nav.push('tab:' + t); },
       toGame: function (fn, a) { nav.push('game:' + fn + (a ? ':' + a : '')); },
@@ -690,6 +725,8 @@ window.HomePane = (function () {
       getHomeOrder: function () { return orderStore; },
       setHomeOrder: function (ids) { orderStore = ids.slice(); },
       sysTabs: function () { return ['quests', 'followers', 'keys', 'loot']; },
+      getOpenKey: function () { return openKeyStore; },
+      startOpenKeyPicker: function () { nav.push('openkeypicker'); },
     });
     onShow();
 
@@ -709,6 +746,38 @@ window.HomePane = (function () {
     ok('ask card -> omni ask', nav.indexOf('omni:ask') !== -1);
     $('hm-search').click();
     ok('search launcher -> omni search', nav.indexOf('omni:search') !== -1);
+
+    /* Open-key card (home-open-key) — exists, shows the live bind, Change…
+       runs the host's rebind flow, and it is findable via omni. */
+    ok('open-key card present', !!$('hm-openkey'));
+    ok('open-key card shows current label (F7)', $('hm-ok-key').textContent === 'F7');
+    $('hm-ok-change').click();
+    ok('Change… runs the host rebind flow', nav.indexOf('openkeypicker') !== -1);
+    openKeyStore = 'Numpad 5';
+    renderOpenKey();
+    ok('label refreshes after a rebind', $('hm-ok-key').textContent === 'Numpad 5');
+    /* omni provider: an "open key" query finds the rebind result, whose run()
+       jumps to Home and starts the picker. Test the provider's index directly
+       (the omni core is a separate module; here we assert the contract we ship). */
+    var okProv = _registerOmni && (function () {
+      var captured = null;
+      var fakeOmni = { register: function (p) { captured = p; } };
+      var real = window.HDOmni; window.HDOmni = fakeOmni;
+      _registerOmni(); window.HDOmni = real;
+      return captured;
+    })();
+    ok('omni provider registered', !!okProv && okProv.tab === 'home');
+    var okItems = okProv ? okProv.index() : [];
+    var hay = okItems.map(function (i) { return (i.label + ' ' + i.keywords).toLowerCase(); }).join(' ');
+    ok('omni indexes "open key" keywords',
+      hay.indexOf('open key') !== -1 && hay.indexOf('hotkey') !== -1 &&
+      hay.indexOf('change key') !== -1 && hay.indexOf('numpad 5') !== -1);
+    if (okItems[0] && typeof okItems[0].run === 'function') {
+      var before = nav.length; okItems[0].run();
+      ok('omni result run -> Home tab + picker',
+        nav.slice(before).indexOf('tab:home') !== -1 &&
+        nav.slice(before).indexOf('openkeypicker') !== -1);
+    } else { ok('omni result run -> Home tab + picker', false); }
 
     /* reorder persistence (home-card-reorder): move 'ask' to the front and
        confirm the persisted order round-trips + renders */
@@ -809,6 +878,34 @@ window.HomePane = (function () {
     console.log(out.join('\n'));
   }
 
+  /* ------------------------------------------------- omni provider -- *
+   *  Make the open-key rebind FINDABLE by search (home-open-key). A user
+   *  typing "open key" / "hotkey" / "change key" / "F7" in ⌕ gets a result
+   *  whose Enter runs the rebind flow; Shift+Enter jumps to the Home tab.
+   *  index() reads the live bind so the current key shows in `detail`. */
+  function registerOmni() {
+    if (!window.HDOmni || !HDOmni.register) return;
+    HDOmni.register({
+      id: 'openkey', label: 'Deck', tab: 'home',
+      setFilter: function () { /* Home has no filter box — landing on it is the jump */ },
+      index: function () {
+        var lbl = openKeyLabel();
+        return [{
+          label: 'Change the open key',
+          detail: 'Currently ' + lbl + ' — the key that opens SkyManager',
+          kind: 'setting',
+          keywords: 'open key hotkey change key rebind keybind bind shortcut ' +
+                    'launch menu deck skymanager f7 numpad ' + lbl,
+          run: function () {
+            if (host.setTab) host.setTab('home');
+            if (typeof host.startOpenKeyPicker === 'function') host.startOpenKeyPicker();
+          },
+        }];
+      },
+    });
+  }
+  registerOmni();
+
   return {
     init: init, onShow: onShow, onHide: onHide, hookInto: hookInto,
     receiveRecent: receiveRecent, toggleEdit: toggleEdit, isEditing: isEditing,
@@ -816,7 +913,8 @@ window.HomePane = (function () {
     _systems: SYSTEMS, _sanitizeOrder: sanitizeOrder, _orderedSystems: orderedSystems,
     _ui: ui, _uie: uie, _UIE: UIE,
     _toggleUie: toggleUie, _renderUie: renderUie,
-    _receiveHud: receiveHud, _receiveLoot: receiveLoot
+    _receiveHud: receiveHud, _receiveLoot: receiveLoot,
+    _openKeyLabel: openKeyLabel, _registerOmni: registerOmni
   };
 })();
 

@@ -771,6 +771,11 @@ body.editing #hints, body.hd-editing #hints {
 
 /* ---------- toast ---------- */
 
+/* #toast (and #item-source below) live INSIDE #panel — and a position:fixed
+   element is contained by a transformed ancestor, so they already ride #panel's
+   transform: scale(--ui-scale). Nothing to add here. Only the fallback toasts
+   further down (#dm-toast / #fin-toast / #ct-toast), which panes append to
+   <body> OUTSIDE #panel, have to wear the scale themselves. */
 #toast {
   position: fixed; left: 50%; bottom: 6%;
   transform: translateX(-50%);
@@ -821,6 +826,12 @@ body.editing #hints, body.hd-editing #hints {
   to   { opacity: 1; transform: scale(var(--ui-scale, 1)); }
 }
 @keyframes toastIn { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+/* Fallback pane toasts (#dm-toast / #fin-toast / #ct-toast) append to <body>,
+   OUTSIDE #panel, so they wear --ui-scale via this variant of toastIn. */
+@keyframes toastInScaled {
+  from { opacity: 0; transform: translate(-50%, 6px) scale(var(--ui-scale, 1)); }
+  to   { opacity: 1; transform: translate(-50%, 0)   scale(var(--ui-scale, 1)); }
+}
 @keyframes flashFire {
   0% { background: rgba(201,162,75,.45); border-color: #c9a24b; }
   100% { background: transparent; }
@@ -1683,8 +1694,20 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   border-radius: 10px;
   box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
   animation: fdCtxIn .11s ease;
+  /* #overlay child, OUTSIDE #panel's transform: scale(--ui-scale) — so at ⛶ Fill
+     the deck grew and this form did not (SpudmanWP, 2026-08-13). Wear the same
+     scale, origin top-left. The JS clamps (clampCtx/centerCtx/drag) multiply
+     offsetWidth/Height by deckScale() to place the PAINTED box, and ctxWidthPx /
+     ctxMaxHpx divide the viewport caps by it so a Filled form still fits. */
+  transform: scale(var(--ui-scale, 1)); transform-origin: top left;
 }
-@keyframes fdCtxIn { from { opacity: 0; transform: translateY(-5px) scale(.98); } }
+/* Bake --ui-scale into the open animation so it settles to the scaled rest
+   state instead of snapping 1× → scale on the last frame (riseIn does the same
+   for #panel). translateY is layout px, applied before the scale. */
+@keyframes fdCtxIn {
+  from { opacity: 0; transform: translateY(-5px) scale(calc(var(--ui-scale, 1) * .98)); }
+  to   { opacity: 1; transform: scale(var(--ui-scale, 1)); }
+}
 /* The member menu's header doubles as its drag handle — the clamp keeps the
    menu on screen, but only you know where you actually want it. */
 .fd-ctx-head.fd-ctx-drag { cursor: grab; user-select: none; }
@@ -2383,6 +2406,14 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
 /* ---------- context menu (appended to #overlay, so it sits outside the
      panel's transform: scale and lands on the real cursor position) ---- */
 
+/* Appended to #overlay (fixed inset:0, untransformed), so it escapes #panel's
+ * clipping — but that also means it does NOT inherit #panel's
+ * transform: scale(--ui-scale). At ⛶ Fill (~240% on a 4K couch) the deck grew
+ * and this menu stayed 1×: tiny and unreadable beside the scaled cards
+ * (SpudmanWP, 2026-08-13). So wear the same scale here, origin top-left, and
+ * let the JS clamp measure the POST-transform box (clampEl reads
+ * getBoundingClientRect, which already reports the scaled size — append THEN
+ * clamp, which mountCtx does). */
 #dm-ctx {
   position: absolute; z-index: 60; min-width: 244px; max-width: 320px;
   padding: 5px;
@@ -2390,6 +2421,7 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   border: 1px solid #c9a24b77; border-radius: 8px;
   box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
   animation: fadeIn 110ms ease;
+  transform: scale(var(--ui-scale, 1)); transform-origin: top left;
 }
 .dm-ctx-head {
   font-size: 12px; line-height: 1.3; letter-spacing: .2px; color: #d9c48a;
@@ -2441,11 +2473,13 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
    horizontally, category and nest under should be typable". The width and
    the type sizes here override the compact popup defaults above; the small
    anchored menus (the ★ Mark chooser) keep theirs by not carrying `.wide`. */
-#dm-ctx { max-height: calc(100vh - 20px); overflow-y: auto; }
+/* The vw/vh caps are LAYOUT px (pre-transform); the box is then scaled by
+   --ui-scale, so divide by it or a filled deck's form overflows the screen. */
+#dm-ctx { max-height: calc((100vh - 20px) / var(--ui-scale, 1)); overflow-y: auto; }
 /* Fixed width, but never wider than the screen. `min-width: 0` matters:
    the base rule's min-width would otherwise beat max-width on a narrow
    viewport and push the menu off the edge. */
-#dm-ctx.wide { width: 520px; min-width: 0; max-width: calc(100vw - 24px); padding: 8px; }
+#dm-ctx.wide { width: 520px; min-width: 0; max-width: calc((100vw - 24px) / var(--ui-scale, 1)); padding: 8px; }
 #dm-ctx .dm-ctx-head { font-size: 13.5px; }
 #dm-ctx .dm-ctx-where { font-size: 11.5px; }
 #dm-ctx .dm-ctx-item { font-size: 13.5px; padding: 9px 10px; }
@@ -2635,12 +2669,14 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
 /* ---------- fallback toast (only used when the host page has no #toast) */
 
 #dm-toast {
-  position: fixed; left: 50%; bottom: 6%; transform: translateX(-50%); z-index: 80;
+  position: fixed; left: 50%; bottom: 6%;
+  transform: translateX(-50%) scale(var(--ui-scale, 1)); transform-origin: bottom center;
+  z-index: 80;
   background: #16161c; border: 1px solid #c9a24b55; border-radius: 8px;
   color: #e8e4da; font-size: 13px; padding: 9px 18px;
   box-shadow: 0 8px 24px rgba(0,0,0,.5);
-  max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  animation: toastIn 160ms ease;
+  max-width: calc(80% / var(--ui-scale, 1)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  animation: toastInScaled 160ms ease;
 }
 
 /* ---------- v0.14.x: larger, more readable right-click menu + summon picker.
@@ -3547,6 +3583,10 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 
 /* ---------- context menu (edit a line / market item) ---------- */
 
+/* #overlay child (untransformed), so it must wear #panel's --ui-scale itself
+   or it paints 1× beside a Filled deck (see #dm-ctx). fadeIn is opacity-only,
+   so this static transform is stable from frame 0 and clampCtx's
+   getBoundingClientRect reads the true scaled box (append THEN clamp). */
 #fin-ctx {
   position: absolute; z-index: 60; min-width: 320px; max-width: 440px;
   padding: 7px;
@@ -3554,6 +3594,7 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
   border: 1px solid #c9a24b77; border-radius: 8px;
   box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
   animation: fadeIn 110ms ease;
+  transform: scale(var(--ui-scale, 1)); transform-origin: top left;
 }
 .fin-ctx-head {
   font-size: 16px; line-height: 1.3; letter-spacing: .2px; color: #d9c48a;
@@ -3639,12 +3680,14 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 /* ---------- fallback toast (only when the host has no #toast) ---------- */
 
 #fin-toast {
-  position: fixed; left: 50%; bottom: 6%; transform: translateX(-50%); z-index: 80;
+  position: fixed; left: 50%; bottom: 6%;
+  transform: translateX(-50%) scale(var(--ui-scale, 1)); transform-origin: bottom center;
+  z-index: 80;
   background: #16161c; border: 1px solid #c9a24b55; border-radius: 8px;
   color: #e8e4da; font-size: 13px; padding: 9px 18px;
   box-shadow: 0 8px 24px rgba(0,0,0,.5);
-  max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  animation: toastIn 160ms ease;
+  max-width: calc(80% / var(--ui-scale, 1)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  animation: toastInScaled 160ms ease;
 }
 
 /* ---------- narrow viewport (low menu scale / small render target) ---- */
@@ -4413,6 +4456,345 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
   .wd-card:hover { transform: none; }
   .wd-skel::after { animation: none; }
 }
+
+/* ===================================================================== *
+ *  Outfit photo CROP (v0.14.4) — the WYSIWYG display crop for wardrobe art.
+ *
+ *  APPEND VERBATIM to view/HotkeyDeck/app.css, at the END of the Wardrobe
+ *  block above. The game loads the ASSEMBLED app.css, never this fragment —
+ *  a frag deployed on its own does nothing in-game.
+ *
+ *  WHY A LAYER, not the tile. The crop is a CSS transform, and a transform on
+ *  the tile scales the tile's OWN border and rounded clip with it — a zoomed
+ *  picture would grow its box and shoulder the grid apart (the follower
+ *  portraits hit exactly this and had to grow a wrapper). So every tile keeps
+ *  its box and gains a `.wd-art` child that owns the picture and the
+ *  transform, clipped by the tile's overflow. The ★ / piece-count / ⋯ chrome
+ *  is a sibling, so it never scales either.
+ *
+ *  The three tile rules below are RE-DECLARATIONS of rules earlier in this
+ *  file, not edits: same selector, same specificity, later wins. They add
+ *  only what a clipping host needs — a positioning context and an overflow —
+ *  and drop the now-unused background shorthand's image slot.
+ * ===================================================================== */
+
+.wd-thumb { overflow: hidden; }
+.wd-strip-i { position: relative; overflow: hidden; }
+.wd-pick-t { position: relative; overflow: hidden; }
+
+/* The picture itself. `center/cover` matches what the tiles used to do to
+   their own background, so an uncropped photo is pixel-identical to before. */
+.wd-art {
+  position: absolute;
+  top: 0; right: 0; bottom: 0; left: 0;
+  background: center/cover no-repeat;
+  /* Scenery: no drag payload, no hit test — the card is a select toggle and
+     the picture must not compete for the gesture. */
+  -webkit-user-drag: none;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* The way in to the big view. Bottom-RIGHT because that is the one corner the
+   card does not already use (⋯ top-left, ★ top-right, piece count
+   bottom-left). Hidden until hover/focus, exactly like .wd-dots, so a wall of
+   cards stays a wall of pictures. */
+.wd-crop {
+  position: absolute; bottom: 5px; right: 6px;
+  font-size: 13px; line-height: 1;
+  color: #8b8678; background: rgba(12, 12, 16, .8);
+  border: 1px solid #2e2e36; border-radius: 6px; padding: 3px 5px;
+  cursor: pointer; opacity: 0;
+  transition: opacity 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.wd-card:hover .wd-crop, .wd-card:focus-within .wd-crop, .wd-card.sel .wd-crop { opacity: 1; }
+.wd-crop:hover { color: #ecd9a0; border-color: #3a3a44; }
+.wd-crop:focus-visible { opacity: 1; outline: none; border-color: #c9a24b; box-shadow: 0 0 0 2px rgba(201, 162, 75, .25); }
+
+/* ---- the large view / editor overlay ----
+   Hung off document.body, OUTSIDE #wd-scale: the tab zoom is a transform, and
+   a fixed element inside a transformed ancestor is positioned and clipped by
+   that ancestor rather than by the viewport. */
+.wd-art-lb {
+  position: fixed;
+  top: 0; right: 0; bottom: 0; left: 0;
+  z-index: 9000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .74);
+  cursor: zoom-out;
+  animation: wdArtIn 120ms ease-out;
+}
+@keyframes wdArtIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* The cap matters: `.wd-art-hint` is `flex: 0 0 100%` inside the footer, and a
+   shrink-to-fit column would resolve that against the hint's max-content width
+   — the controls well then stretched the full width of the deck. Cap the
+   column and the hint wraps instead. */
+.wd-art-inner {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  max-width: min(560px, 92vw); max-height: 92vh;
+  cursor: default;
+}
+
+/* 3:4, the same letterbox `.wd-thumb` gives the picture — the editor's whole
+   promise is that what you frame here is what the card draws. Sized in px by
+   JS (artFrameSize), because the drag divides pointer travel by this number
+   and a size that came from a CSS function Ultralight computes its own way
+   would make the pan gain wrong in game and right in the harness. */
+.wd-art-frame {
+  position: relative;
+  overflow: hidden;
+  flex: none;
+  border-radius: 10px;
+  border: 1px solid #3a3a44;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .6);
+  background: #0c0c10;
+}
+.wd-art-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 18px 48px rgba(0, 0, 0, .6); }
+.wd-art-frame.dragging { cursor: grabbing; }
+
+/* Backed, unlike the Followers lightbox's caption: what sits behind THIS
+   overlay is a dense grid of outfit cards with their own names, and a bare
+   line of text lands on one and reads as part of it. */
+.wd-art-cap {
+  font-size: 15px; letter-spacing: .3px; color: #e8e8ef;
+  padding: 3px 10px; border-radius: 999px;
+  background: rgba(12, 12, 16, .82);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* The controls get their OWN well rather than sitting bare on the backdrop:
+   the overlay is only 74% opaque, so an unbacked hint line lands legibly on
+   top of whatever card grid is behind it and the two read as one sentence. */
+.wd-art-foot {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 6px; max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #2e2e38; border-radius: 10px;
+  background: rgba(12, 12, 16, .94);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
+}
+
+.wd-art-btn {
+  appearance: none;
+  min-width: 30px; padding: 5px 10px;
+  font: 600 12.5px/1 "Segoe UI", sans-serif;
+  color: #d8d4c8; background: #1a1a22;
+  border: 1px solid #3a3a44; border-radius: 6px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.wd-art-btn:hover:not(:disabled) { background: #23232e; border-color: #55555f; color: #f0ece0; }
+.wd-art-btn:focus-visible { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 2px rgba(201, 162, 75, .25); }
+.wd-art-btn:active:not(:disabled) { background: #2a2a36; }
+.wd-art-btn:disabled { opacity: .38; cursor: default; }
+.wd-art-btn.ok { color: #8fd19e; border-color: #3d6b4a; }
+.wd-art-btn.ok:hover:not(:disabled) { background: #1c2a20; border-color: #4f8560; }
+
+/* The six nudge keys as one block, so they read as a d-pad rather than as six
+   more buttons in the row. */
+.wd-art-pad {
+  display: flex; gap: 4px; padding: 3px;
+  border: 1px solid #2e2e38; border-radius: 8px;
+  background: rgba(0, 0, 0, .35);
+}
+.wd-art-pad .wd-art-btn { min-width: 26px; padding: 5px 7px; }
+
+.wd-art-val {
+  font: 12px/1 Consolas, monospace; letter-spacing: .3px;
+  color: #9d968a; padding: 0 4px; white-space: nowrap;
+}
+
+/* Full-width line under the controls; flex-basis rather than a block, so it
+   wraps to its own row however many buttons precede it. */
+.wd-art-hint {
+  flex: 0 0 100%; text-align: center;
+  font: 11.5px/1.5 "Segoe UI", sans-serif; color: #6f6a5e;
+}
+
+/* Narrow (phone-width portal / small deck scale): the d-pad and the verdict
+   still fit, the hint wraps. Nothing here may shrink the FRAME — JS owns its
+   px size and the drag gain reads it back. */
+@media (max-width: 620px) {
+  .wd-art-foot { gap: 5px; padding: 7px 8px; }
+  .wd-art-btn { padding: 5px 8px; font-size: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wd-art-lb { animation: none; }
+}
+
+/* ---- People redesign (2026-08-03) ------------------------------------- */
+/* The NFF mode chip: its own colour, because "who dresses her" is the row's
+   lead fact and gold already means a wardrobe pool. */
+.wd-chip.nff { color: #a8c6e8; border-color: #3d5470; background: rgba(40,58,82,.35); }
+
+/* Inventory + chevron pair: one visual unit, quieter than ✦ Dress. */
+.wd-invpair { display: inline-flex; gap: 1px; }
+.wd-dress.ghost {
+  background: #16161c; color: #b9b4a8; border-color: #33333d;
+  padding-left: 9px; padding-right: 9px;
+}
+.wd-dress.ghost:hover:not([disabled]) { color: #ecd9a0; border-color: #c9a24b; }
+.wd-invpair .wd-dress.ghost { border-radius: 8px 0 0 8px; }
+.wd-invpair .wd-dress.ghost.chev { border-radius: 0 8px 8px 0; border-left: none; padding-left: 7px; padding-right: 7px; }
+
+/* The inject picker rides the deck's context-menu look; positioned inside the
+   pane so it scrolls away with it rather than floating over another tab. */
+#wd-inject-menu, #wd-catpick {
+  position: fixed; z-index: 120; width: 290px; max-height: 340px;
+  overflow-y: auto; overflow-x: hidden;
+  background: #131318; border: 1px solid #3a3a44; border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0,0,0,.55); padding: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+
+/* NFF controls embedded in the People sheet: breathing room without the row
+   chrome they were designed against. */
+.nf-embed { display: flex; flex-direction: column; gap: 9px; padding: 2px 0 4px; }
+
+/* ---- People polish pass (2026-08-03, Rober's standing UI rules) --------- */
+/* No small text, spacious rows, real touch targets. Scoped to the People
+   surface + the sheet so the denser grids (outfits, inventory) keep their own
+   rhythm until their own pass. */
+.wd-npc { padding: 13px 14px; gap: 13px; border-radius: 11px; }
+.wd-npc-name { font-size: 17px; line-height: 1.3; }
+.wd-npc-sub { gap: 7px; margin-top: 4px; }
+.wd-chip { font-size: 13px; padding: 3px 11px; }
+.wd-dress { font-size: 14.5px; padding: 9px 15px; border-radius: 9px; }
+.wd-dress.ghost { font-size: 15px; padding: 9px 13px; }
+.wd-npc-right { display: flex; align-items: center; gap: 8px; }
+
+/* Her card: generous keys, readable values, air between fields. */
+#wd-sheet .wd-field { gap: 8px; margin-bottom: 6px; }
+#wd-sheet .wd-field-k { font-size: 14px; letter-spacing: .6px; }
+#wd-sheet .wd-seg button { font-size: 14.5px; padding: 9px 16px; }
+.nf-embed { gap: 12px; padding: 6px 0 8px; }
+.nf-embed .nf-chip { font-size: 13.5px; }
+.nf-embed .nf-hint { font-size: 13px; }
+
+/* The inject picker: bigger rows, a bigger filter — it is used mid-play. */
+#wd-inject-menu, #wd-catpick { width: 340px; padding: 10px; max-height: none; }
+#wd-inject-menu .fd-ctx-filter, #wd-catpick .fd-ctx-filter { font-size: 15px; padding: 9px 11px; }
+#wd-inject-menu .fd-ctx-item, #wd-catpick .fd-ctx-item { font-size: 15px; padding: 9px 10px; }
+#wd-inject-menu .fd-ctx-head, #wd-catpick .fd-ctx-head { font-size: 15.5px; }
+
+/* The polish pass grew the card body (17px names, 13px chips), so the skeleton
+   body grows with it — the whole point of the skeleton is that nothing jumps
+   when the real cards land. */
+.wd-skel-body { height: 84px; }
+
+/* ---- inventory item lightbox --------------------------------------------- */
+#wd-item-lightbox {
+  position: absolute; inset: 0; z-index: 80;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; background: rgba(8,8,11,.88); cursor: zoom-out;
+}
+#wd-item-lightbox img {
+  max-width: min(86%, 640px); max-height: 74%;
+  border-radius: 12px; border: 1px solid #3a3a44;
+  background: #101017; box-shadow: 0 18px 48px rgba(0,0,0,.6);
+}
+#wd-item-lightbox .wd-lb-name { font-size: 17px; color: #e8e4da; }
+#wd-item-lightbox .wd-lb-x { position: absolute; top: 14px; right: 16px; font-size: 16px; padding: 8px 13px; }
+.wd-npc-face.haslb { cursor: zoom-in; }
+
+/* ---- the outfit importer (Outfit system settings) ------------------------ *
+   Two stacked searchable lists inside the settings panel. Both scroll
+   INTERNALLY rather than stretching the panel: a 4,780-mod load order has
+   hundreds of outfit-bearing plugins, and one of them can carry dozens. */
+.wd-imp-search {
+  width: 100%; box-sizing: border-box;
+  padding: 9px 11px; font: inherit; font-size: 14px;
+  color: #e8e4da; background: #14141b;
+  border: 1px solid #2e2e36; border-radius: 8px;
+  transition: border-color .14s ease, background .14s ease;
+}
+.wd-imp-search::placeholder { color: #6f6a5e; }
+.wd-imp-search:hover { border-color: #3a3a44; }
+.wd-imp-search:focus { outline: none; border-color: #c9a24b; background: #17171f; }
+.wd-imp-list {
+  display: flex; flex-direction: column; gap: 3px;
+  max-height: 208px; overflow-y: auto; overscroll-behavior: contain;
+  padding: 3px; border: 1px solid #26262e; border-radius: 8px; background: #101015;
+}
+.wd-imp-row {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; box-sizing: border-box; text-align: left;
+  padding: 8px 10px; font: inherit; font-size: 13.5px;
+  color: #cfcabd; background: transparent;
+  border: 1px solid transparent; border-radius: 6px; cursor: pointer;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.wd-imp-row.static { cursor: default; }
+.wd-imp-row:hover { background: #191921; color: #ece7db; }
+.wd-imp-row.static:hover { background: #16161d; }
+.wd-imp-row:focus-visible { outline: 2px solid #c9a24b; outline-offset: -2px; }
+.wd-imp-row.on { background: #1d1c17; color: #e8dcb8; border-color: #c9a24b; }
+/* Long plugin names ellipsize instead of pushing the count off the row. */
+.wd-imp-n {
+  flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.wd-imp-c { flex: none; font-size: 12px; color: #6f6a5e; font-variant-numeric: tabular-nums; }
+.wd-imp-go {
+  flex: none; min-width: 34px; padding: 5px 9px;
+  font: inherit; font-size: 13px; color: #cfcabd;
+  background: #17171f; border: 1px solid #2e2e36; border-radius: 6px; cursor: pointer;
+  transition: color .12s ease, border-color .12s ease, background .12s ease;
+}
+.wd-imp-go:hover { color: #101015; background: linear-gradient(180deg, #d9c48a, #c9a24b); border-color: #c9a24b; }
+.wd-imp-go:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.wd-imp-go:disabled { filter: grayscale(.6) brightness(.7); cursor: not-allowed; }
+.wd-imp-go:disabled:hover { color: #cfcabd; background: #17171f; border-color: #2e2e36; }
+
+/* Inject picker set-step: the NAME must never lose to the hint. Two-line rows —
+   name full-size on top, hint beneath in the UI face (the mono pill crushed
+   "Adventure" to "A…" in game, 2026-08-03). */
+#wd-inject-menu .fd-ctx-item, #wd-catpick .fd-ctx-item { flex-wrap: wrap; row-gap: 2px; }
+#wd-inject-menu .fd-ctx-item .fd-ctx-lbl, #wd-catpick .fd-ctx-item .fd-ctx-lbl {
+  flex: 1 1 auto; overflow: visible; text-overflow: clip; white-space: normal;
+  font-size: 15.5px;
+}
+#wd-inject-menu .fd-ctx-item .fd-ctx-count, #wd-catpick .fd-ctx-item .fd-ctx-count {
+  flex: 1 1 100%; margin-left: 26px;
+  font-family: "Segoe UI", sans-serif; font-size: 12.5px; font-style: italic;
+  background: none; border: none; padding: 0; color: #8f8a7c;
+  text-align: left; white-space: normal;
+}
+
+/* ---- the searchable picker's own parts (categories, variant pieces) -------
+   Everything else it wears is #wd-inject-menu's, whose selectors were widened
+   to cover #wd-picker rather than cloned — one set of rules, no drift. */
+#wd-catpick .fd-ctx-item.on { background: rgba(201,162,75,.10); color: #f0e6cc; }
+#wd-catpick .fd-ctx-item.on .fd-ctx-check { color: #c9a24b; }
+#wd-catpick .fd-ctx-item.wd-pick-new { color: #cfe0b8; }
+#wd-catpick .fd-ctx-item.wd-pick-new .fd-ctx-check { color: #8fbf6a; }
+#wd-catpick .fd-ctx-item .fd-ctx-count {
+  font-size: 12px; color: #8a8271; flex: 0 0 auto; margin-left: auto; padding-left: 10px;
+}
+.wd-pick-foot:empty { display: none; }
+.wd-pick-foot {
+  margin-top: 8px; padding-top: 9px; border-top: 1px solid rgba(201,162,75,.16);
+}
+.wd-pick-note { font-size: 13px; color: #9a927f; }
+.wd-pick-foot-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.wd-pick-go {
+  font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 7px; cursor: pointer;
+  background: rgba(201,162,75,.16); color: #f0e6cc;
+  border: 1px solid rgba(201,162,75,.42);
+  transition: background .14s ease, border-color .14s ease, color .14s ease;
+}
+.wd-pick-go:hover:not(:disabled) { background: rgba(201,162,75,.28); border-color: #c9a24b; }
+.wd-pick-go:active:not(:disabled) { background: rgba(201,162,75,.36); }
+.wd-pick-go:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.wd-pick-go:disabled { opacity: .40; cursor: not-allowed; }
+
+/* Folded warning banner: the headline is a real button, the danger colour
+   stays, and the detail indents under it when opened. */
+.wd-warn-fold { color: #e0b0b0; border-color: #6b3a3a; font-size: 14px; text-align: left; }
+.wd-warn-fold:hover { color: #f0c5c5; border-color: #a55565; }
+.wd-warn-detail { margin: 6px 0 0 14px; font-size: 13.5px; color: #d8b8b8; line-height: 1.5; }
 
 /* ===================================================================== *
  *  Outfit photo CROP (v0.14.4) — the WYSIWYG display crop for wardrobe art.
@@ -8392,12 +8774,14 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 /* ---------- fallback toast (only used when the host page has no #toast) */
 
 #ct-toast {
-  position: fixed; left: 50%; bottom: 6%; transform: translateX(-50%); z-index: 80;
+  position: fixed; left: 50%; bottom: 6%;
+  transform: translateX(-50%) scale(var(--ui-scale, 1)); transform-origin: bottom center;
+  z-index: 80;
   background: #16161c; border: 1px solid #c9a24b55; border-radius: 8px;
   color: #e8e4da; font-size: 13px; padding: 9px 18px;
   box-shadow: 0 8px 24px rgba(0,0,0,.5);
-  max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  animation: toastIn 160ms ease;
+  max-width: calc(80% / var(--ui-scale, 1)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  animation: toastInScaled 160ms ease;
 }
 
 /* ---------- v0.14.x: larger, more readable right-click menu + summon picker.
@@ -8713,6 +9097,48 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   font-size: 12px; color: #8f8a7f;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* ===================================================================== *
+ *  First-run Fill hint (fill-hint) — a one-time bubble pointing at the ⤢
+ *  button on a big screen. Body-level + fixed like #uiscale-pop, anchored
+ *  to the button's screen rect in JS, so it never overlaps the shelf wing
+ *  (inside the scaled panel) or the header buttons. Type floor 12px.
+ * ===================================================================== */
+#fill-hint {
+  position: fixed; z-index: 10050;
+  width: 300px; max-width: calc(100vw - 16px); box-sizing: border-box;
+  background: #14141b; border: 1px solid #c9a24b66; border-radius: 12px;
+  box-shadow: 0 16px 38px rgba(0,0,0,.6);
+  animation: fadeIn 140ms ease;
+}
+#fill-hint.hidden { display: none; }
+/* the little pointer up toward the ⤢ button, near the right edge */
+#fill-hint .fh-arrow {
+  position: absolute; top: -8px; right: 16px;
+  width: 14px; height: 14px; background: #14141b;
+  border-left: 1px solid #c9a24b66; border-top: 1px solid #c9a24b66;
+  transform: rotate(45deg); border-top-left-radius: 3px;
+}
+#fill-hint .fh-body { position: relative; padding: 14px 16px 13px; }
+#fill-hint .fh-text {
+  font-size: 14px; line-height: 1.45; color: #e8e4da;
+}
+#fill-hint .fh-text b { color: #ece7db; font-weight: 700; }
+#fill-hint .fh-ic { color: #c9a24b; font-weight: 700; }
+#fill-hint .fh-acts { display: flex; gap: 9px; margin-top: 12px; }
+#fill-hint .fh-btn {
+  font: 600 13px/1 inherit; cursor: pointer; flex: 1;
+  color: #cfcabe; background: rgba(255,255,255,.03);
+  border: 1px solid #3a3a44; border-radius: 9px; padding: 9px 12px;
+  transition: border-color 140ms ease, background 140ms ease, transform 120ms ease;
+}
+#fill-hint .fh-btn:hover { border-color: #c9a24b; background: rgba(201,162,75,.12); }
+#fill-hint .fh-btn:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+#fill-hint .fh-btn:active { transform: translateY(1px); }
+#fill-hint .fh-btn.fh-primary {
+  color: #14141b; background: #c9a24b; border-color: #c9a24b; font-weight: 700;
+}
+#fill-hint .fh-btn.fh-primary:hover { background: #ecd9a0; border-color: #ecd9a0; }
 
 /* ===================================================================== *
  *  F7 card top row — header column + SIDE PANEL (Rober, 2026-08-07).

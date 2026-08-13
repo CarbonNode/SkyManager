@@ -612,8 +612,10 @@
     /* Never wider than the surface it has to be positioned on — the whole
        reason this width lives in JS rather than CSS. 24 = the 6px clampCtx
        keeps at each edge, doubled for a little air. Capped at 1180 so it stops
-       being a menu and starts being a page on an ultrawide. */
-    return Math.max(260, Math.min(Math.max(ramped, share), vp.w - 24, 1180));
+       being a menu and starts being a page on an ultrawide. The vp cap is
+       divided by --ui-scale: this is a LAYOUT width and the menu is painted at
+       ×scale, so at ⛶ Fill an uncapped share would overflow the screen. */
+    return Math.max(260, Math.min(Math.max(ramped, share), (vp.w - 24) / deckScale(), 1180));
   }
 
   /* Put it in the MIDDLE, not under the cursor.
@@ -624,7 +626,10 @@
      draggable — this is only where it starts. */
   function centerCtx() {
     const vp = ctxViewport();
-    const w = ctxEl.offsetWidth, h = ctxEl.offsetHeight;
+    /* PAINTED size (× --ui-scale) is what has to be centred in the real-px
+       viewport — the box grows down-right from its top-left origin. */
+    const s = deckScale();
+    const w = ctxEl.offsetWidth * s, h = ctxEl.offsetHeight * s;
     clampCtx(Math.round((vp.w - w) / 2), Math.round(Math.max(6, (vp.h - h) * 0.32)));
   }
 
@@ -2493,7 +2498,7 @@
     const w = ctxWidthPx(curAv(), false);
     ctxEl.style.width = w + 'px';
     ctxEl.style.maxWidth = w + 'px';
-    ctxEl.style.maxHeight = Math.max(220, ctxViewport().h - 24) + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
     ctxEl.style.overflowY = 'auto';
     ctxEl.style.overflowX = 'hidden';
     const r = (anchorEl && anchorEl.getBoundingClientRect) ? anchorEl.getBoundingClientRect()
@@ -2632,7 +2637,7 @@
     const w = ctxWidthPx(curAv(), false);
     ctxEl.style.width = w + 'px';
     ctxEl.style.maxWidth = w + 'px';
-    ctxEl.style.maxHeight = Math.max(220, ctxViewport().h - 24) + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
     ctxEl.style.overflowY = 'auto';
     ctxEl.style.overflowX = 'hidden';
     const r = (anchorEl && anchorEl.getBoundingClientRect) ? anchorEl.getBoundingClientRect()
@@ -2882,7 +2887,7 @@
     const w = ctxWidthPx(curAv(), false);
     ctxEl.style.width = w + 'px';
     ctxEl.style.maxWidth = w + 'px';
-    ctxEl.style.maxHeight = Math.max(220, ctxViewport().h - 24) + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
     ctxEl.style.overflowY = 'auto';
     ctxEl.style.overflowX = 'hidden';
     const r = (anchorEl && anchorEl.getBoundingClientRect) ? anchorEl.getBoundingClientRect()
@@ -3084,14 +3089,15 @@
     const w = ctxWidthPx(curAv(), true);   // ask for the wider share — easier to read
     ctxEl.style.width = w + 'px';
     ctxEl.style.maxWidth = w + 'px';
-    ctxEl.style.maxHeight = Math.max(240, ctxViewport().h - 24) + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(240) + 'px';
     ctxEl.style.overflowY = 'auto';
     /* CENTERED on screen, not anchored to the ⚙ Stats button (Rober,
        2026-08-05: "stats needs to open centered on screen"). Measure the built
        panel, then clamp it to the middle of the viewport. */
     const vp = ctxViewport();
-    const h0 = ctxEl.offsetHeight || 320;
-    clampCtx(Math.max(8, (vp.w - w) / 2), Math.max(8, (vp.h - h0) / 2));
+    const sc = deckScale();
+    const wP = w * sc, h0 = (ctxEl.offsetHeight || 320) * sc;   // PAINTED extent
+    clampCtx(Math.max(8, (vp.w - wP) / 2), Math.max(8, (vp.h - h0) / 2));
     reclampCtx();
     makeCtxDraggable(ctxEl.querySelector('.fd-ctx-head'));
     setTimeout(() => { document.addEventListener('mousedown', ctxOutside, true); }, 0);
@@ -3335,7 +3341,7 @@
     const w = ctxWidthPx(curAv(), false);
     ctxEl.style.width = w + 'px';
     ctxEl.style.maxWidth = w + 'px';
-    ctxEl.style.maxHeight = Math.max(220, ctxViewport().h - 24) + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
     ctxEl.style.overflowY = 'auto';
     const r = (anchorEl && anchorEl.getBoundingClientRect) ? anchorEl.getBoundingClientRect()
                                                            : { left: 40, top: 120 };
@@ -3412,7 +3418,7 @@
     const w = ctxWidthPx(curAv(), false);
     ctxEl.style.width = w + 'px';
     ctxEl.style.maxWidth = w + 'px';
-    ctxEl.style.maxHeight = Math.max(220, ctxViewport().h - 24) + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
     ctxEl.style.overflowY = 'auto';
     const r = (anchorEl && anchorEl.getBoundingClientRect) ? anchorEl.getBoundingClientRect()
                                                            : { left: 40, top: 120 };
@@ -4706,7 +4712,7 @@
     const w = ctxWidthPx(curAv(), false);
     ctxEl.style.width = w + 'px';
     ctxEl.style.maxWidth = w + 'px';
-    ctxEl.style.maxHeight = Math.max(220, ctxViewport().h - 24) + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
     ctxEl.style.overflowY = 'auto';
     ctxEl.style.overflowX = 'hidden';
     const r = (anchorEl && anchorEl.getBoundingClientRect) ? anchorEl.getBoundingClientRect()
@@ -7317,7 +7323,10 @@
        placed it 12px too low, hanging 6px off the bottom of the screen at the
        sizes where the menu is tallest. The layout box is transform-independent
        and already final on the frame the element is inserted. */
-    const w = ctxEl.offsetWidth, hgt = ctxEl.offsetHeight;
+    /* PAINTED size = layout offset × --ui-scale (transform-origin: top left),
+       and left/top are real viewport px — so clamp the SCALED extent. */
+    const s = deckScale();
+    const w = ctxEl.offsetWidth * s, hgt = ctxEl.offsetHeight * s;
     const vp = ctxViewport();
     let nx = x, ny = y;
     if (nx + w > vp.w - 6) nx = vp.w - w - 6;
@@ -7342,6 +7351,25 @@
       if (r.width > 0 && r.height > 0) return { w: r.width, h: r.height };
     }
     return { w: window.innerWidth, h: window.innerHeight };
+  }
+
+  /* The deck-wide Menu scale (#panel's transform: scale(--ui-scale), driven by
+   * ⛶ Fill). #fd-ctx-menu is an #overlay child OUTSIDE that transform, so it now
+   * wears --ui-scale itself (see #fd-ctx-menu in app.css). Everything the menu
+   * measures with offsetWidth/Height is PRE-transform layout px; multiply by
+   * this before comparing to the real-px viewport, or a Filled deck's menu is
+   * clamped as if it were 1× and hangs off-screen. Falls back to 1. */
+  function deckScale() {
+    try {
+      const v = parseFloat(getComputedStyle(document.documentElement)
+        .getPropertyValue('--ui-scale'));
+      if (isFinite(v) && v > 0) return v;
+    } catch (e) {}
+    return 1;
+  }
+  /* Layout-px height cap so the PAINTED height (cap × scale) fits the viewport. */
+  function ctxMaxHpx(floor) {
+    return Math.max(floor || 220, (ctxViewport().h - 24) / deckScale());
   }
 
   /* Drag the menu by its header.
@@ -7376,7 +7404,8 @@
         moved = true;
         head.classList.add('dragging');
         const vp = ctxViewport();
-        const w = ctxEl.offsetWidth, hgt = ctxEl.offsetHeight;
+        const sc = deckScale();
+        const w = ctxEl.offsetWidth * sc, hgt = ctxEl.offsetHeight * sc;   // PAINTED extent
         // clamp while dragging, so it cannot be thrown off the edge
         const nx = Math.min(Math.max(6, baseX + dx), Math.max(6, vp.w - w - 6));
         const ny = Math.min(Math.max(6, baseY + dy), Math.max(6, vp.h - hgt - 6));
@@ -7747,7 +7776,7 @@
        and scroll inside, so it can never run off the bottom of a small window
        or a high menu-scale panel — and do it BEFORE clampCtx, which positions
        from the measured height. */
-    ctxEl.style.maxHeight = Math.max(220, ctxViewport().h - 24) + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
     ctxEl.style.overflowY = 'auto';
     ctxEl.style.overflowX = 'hidden';
 
@@ -7812,7 +7841,7 @@
     const addW = ctxWidthPx(curAv(), false);
     ctxEl.style.width = addW + 'px';
     ctxEl.style.maxWidth = addW + 'px';
-    ctxEl.style.maxHeight = Math.max(220, ctxViewport().h - 24) + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
     ctxEl.style.overflowY = 'auto';
     ctxEl.style.overflowX = 'hidden';
     /* Sit the list ABOVE the button it came from. Measured rather than
@@ -7828,7 +7857,8 @@
                    setTimeout(() => document.addEventListener('mousedown', ctxOutside, true), 0);
                    return; }
     const r = anchor.getBoundingClientRect();
-    clampCtx(r.left, r.top - 10 - ctxEl.offsetHeight);
+    // flip above the button by the PAINTED height (offset × --ui-scale)
+    clampCtx(r.left, r.top - 10 - ctxEl.offsetHeight * deckScale());
     reclampCtx();
     makeCtxDraggable(ctxEl.querySelector('.fd-ctx-head'));
     setTimeout(() => document.addEventListener('mousedown', ctxOutside, true), 0);
@@ -7954,7 +7984,7 @@
     const w = ctxWidthPx(curAv(), false);
     ctxEl.style.width = w + 'px';
     ctxEl.style.maxWidth = w + 'px';
-    ctxEl.style.maxHeight = Math.max(220, ctxViewport().h - 24) + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
     ctxEl.style.overflowY = 'auto';
     ctxEl.style.overflowX = 'hidden';
     const r = (anchorEl && anchorEl.getBoundingClientRect) ? anchorEl.getBoundingClientRect()
@@ -8053,7 +8083,7 @@
     const w = ctxWidthPx(curAv(), false);
     ctxEl.style.width = w + 'px';
     ctxEl.style.maxWidth = w + 'px';
-    ctxEl.style.maxHeight = Math.max(220, ctxViewport().h - 24) + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
     ctxEl.style.overflowY = 'auto';
     ctxEl.style.overflowX = 'hidden';
     const r = (anchorEl && anchorEl.getBoundingClientRect) ? anchorEl.getBoundingClientRect()
@@ -8498,6 +8528,7 @@
     _spouseChip: spouseChip, _rankView: rankView,
     _refreshOpenMenu: refreshOpenMenu, _disarm: disarm,
     _ramp: ramp, _oddPx: oddPx, _applyAvatarSize: applyAvatarSize, _AV_DEF: AV_DEF,
+    _deckScale: deckScale, _ctxWidthPx: ctxWidthPx, _ctxMaxHpx: ctxMaxHpx,
     _applyUiScale: applyUiScale, _syncEditRowWrap: syncEditRowWrap,
     _clampText: clampText, _FIELD_VALUE_MAX: FIELD_VALUE_MAX,
     _slugOf: slugOf, _portraitFor: portraitFor, _medalEl: medalEl, _openLightbox: openLightbox,

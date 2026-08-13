@@ -349,12 +349,17 @@ body.open.shf-open:not(.shf-left) #resize-grip { right: 348px; }
 
 /* ------------------------------------------------------ context menu -- */
 
+/* Lives on <body>, OUTSIDE #panel's transform: scale(--ui-scale) — so it wears
+   the deck scale itself, or at ⛶ Fill it paints 1x beside the scaled shelf.
+   shfIn is opacity-only, so this static transform is stable from frame 0 and
+   openMenu()'s clamp (offsetWidth/Height × --ui-scale) places the painted box. */
 #shf-menu {
   position: fixed; z-index: 61; min-width: 210px;
   display: flex; flex-direction: column; padding: 6px;
   background: #16161c; border: 1px solid #3d3a33; border-radius: 10px;
   box-shadow: 0 12px 40px rgba(0,0,0,.6);
   animation: shfIn 120ms ease;
+  transform: scale(var(--ui-scale, 1)); transform-origin: top left;
 }
 #shf-menu button {
   text-align: left; padding: 10px 12px;
