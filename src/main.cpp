@@ -3333,6 +3333,23 @@ namespace
 
 	// Lazily create the view on first use — keeps our Ultralight view (and its deferred
 	// DOM-ready callback) entirely out of the save-load window. Main thread only.
+	// A PrismaUI view whose html file is MISSING must never be created: the
+	// load fails ("File URL loading failed") and PrismaUI 1.5-RC's shared
+	// SpriteBatch renderer wedges on the document-less view, killing EVERY
+	// Prisma mod on the install (2026-08-13 Nexus report — our release
+	// archives had silently shipped without hotbar.html/crt-alert.html).
+	// The path goes through Data\ so MO2's VFS answers, same as DeckViewDir().
+	bool ViewFileOnDisk(const char* rel)
+	{
+		std::error_code ec;
+		const bool ok = std::filesystem::exists(
+			std::filesystem::path("Data") / "PrismaUI" / "views" / rel, ec);
+		if (!ok)
+			logger::error("view file missing: {} — NOT creating this view "
+				"(feature off; reinstall SkyManager to restore it)", rel);
+		return ok;
+	}
+
 	void EnsureViewAndOpen()
 	{
 		if (!g_prisma)
@@ -3344,6 +3361,7 @@ namespace
 		if (g_viewRequested.exchange(true))
 			return;  // creation already in flight; DOM-ready will open
 		logger::info("creating view (first open)");
+		if (!ViewFileOnDisk("HotkeyDeck/index.html")) { g_viewRequested = false; return; }
 		g_view = g_prisma->CreateView("HotkeyDeck/index.html", [](PrismaView v) {
 			g_viewReady = true;
 			logger::info("view DOM ready (handle {})", v);
@@ -5222,6 +5240,7 @@ namespace
 		if (g_magicViewRequested.exchange(true))
 			return;  // creation already in flight; DOM-ready will open
 		logger::info("creating magic view (first open)");
+		if (!ViewFileOnDisk("MagicDeck/index.html")) { g_magicViewRequested = false; return; }
 		g_magicView = g_prisma->CreateView("MagicDeck/index.html", [](PrismaView v) {
 			g_magicViewReady = true;
 			logger::info("magic view DOM ready (handle {})", v);
@@ -8551,6 +8570,7 @@ namespace
 	{
 		if (!g_prisma || g_hudView)
 			return;
+		if (!ViewFileOnDisk("HotkeyDeck/hud.html")) return;
 		g_hudView = g_prisma->CreateView("HotkeyDeck/hud.html", [](PrismaView v) {
 			g_hudViewReady = true;
 			logger::info("followers HUD view DOM ready (handle {})", v);
@@ -9066,6 +9086,7 @@ namespace
 	{
 		if (!g_prisma || g_hbView)
 			return;
+		if (!ViewFileOnDisk("MagicDeck/hotbar.html")) return;
 		g_hbView = g_prisma->CreateView("MagicDeck/hotbar.html", [](PrismaView v) {
 			g_hbViewReady = true;
 			logger::info("hotbar view DOM ready (handle {})", v);
@@ -9100,6 +9121,7 @@ namespace
 	{
 		if (!g_prisma || g_alertView)
 			return;
+		if (!ViewFileOnDisk("MagicDeck/crt-alert.html")) return;
 		g_alertView = g_prisma->CreateView("MagicDeck/crt-alert.html", [](PrismaView v) {
 			g_alertViewReady = true;
 			// Hidden until an alert fires — same as the main deck view does on ready,
