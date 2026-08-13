@@ -28,6 +28,16 @@
 
     <div id="an-cats" class="an-cats" role="list" aria-label="Animation categories"></div>
 
+    <!-- Load-order packs: in-game FNIS scan (anScan). anim-pane.js builds the
+         body — scan pitch before the first scan, pack toggles + filter after. -->
+    <div class="an-card" id="an-packs-card">
+      <div class="an-card-title">Load-order packs
+        <button id="an-rescan" class="an-pk-rescan hidden"
+                title="Re-scan the load order for FNIS animation packs">⟳ Rescan</button>
+      </div>
+      <div id="an-pk-body"></div>
+    </div>
+
     <div id="an-source" class="an-source">Loading ZaZ Animation Pack…</div>
   </aside>
 
