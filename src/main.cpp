@@ -3064,6 +3064,8 @@ namespace
 	void OnJsAnimReset(const char* data);
 	void OnJsAnimState(const char* data);
 	void OnJsAnimCrawl(const char* data);
+	void OnJsAnimScan(const char* data);
+	void OnJsAnimPack(const char* data);
 	void OnJsAnimLog(const char* data);
 	// OStim segment of the Animations tab (os* bridge on the deck view).
 	void OnJsOstimGet(const char* data);
@@ -3588,6 +3590,8 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "anReset", OnJsAnimReset);
 		g_prisma->RegisterJSListener(g_view, "anState", OnJsAnimState);
 		g_prisma->RegisterJSListener(g_view, "anCrawl", OnJsAnimCrawl);
+		g_prisma->RegisterJSListener(g_view, "anScan", OnJsAnimScan);
+		g_prisma->RegisterJSListener(g_view, "anPack", OnJsAnimPack);
 		g_prisma->RegisterJSListener(g_view, "anLog", OnJsAnimLog);
 		// OStim segment: requests os*, replies osOpen/osState/osList/osResult.
 		g_prisma->RegisterJSListener(g_view, "osGet", OnJsOstimGet);
@@ -5874,6 +5878,41 @@ namespace
 		// Create it so the drop target exists even on a fresh install.
 		std::filesystem::create_directories(dir, ec);
 
+		// ---- rescan throttle (BUG C, Rober 2026-08-13) -----------------------
+		// The Followers HUD ticker calls this every ~1.2 s (g_hudConfig.tickMs), so
+		// a full directory walk + a last_write_time() per file — AND the "portraits:
+		// N usable…" log line — fired continuously the whole time the HUD was on.
+		// The folder only changes when a portrait is captured, uploaded or deleted;
+		// every one of those ADDS or REMOVES a file (the self/follower/portal writes
+		// version-then-prune, they never silently rewrite in place), so the
+		// directory's own mtime is a faithful change signal. Cache the built JSON and
+		// only rebuild when that mtime moves — with a 30 s hard floor so an in-place
+		// overwrite (a tool that truncates a file without touching the dir listing)
+		// is still picked up. All callers are on the MAIN THREAD (HUD ticker →
+		// AddTask, palette open, portal poll → AddTask), so a plain static cache is
+		// safe with no lock. The log now fires only when a rebuild actually happens.
+		static std::string   s_cache;
+		static bool          s_haveCache = false;
+		static std::uint64_t s_dirMtime  = 0;      // portraits/ dir mtime, in ticks
+		static std::uint64_t s_builtAtSec = 0;     // wall-clock seconds of last build
+		{
+			std::error_code dec;
+			const auto       dft = std::filesystem::last_write_time(dir, dec);
+			const std::uint64_t dirMtime = dec ? 0
+				: static_cast<std::uint64_t>(dft.time_since_epoch().count());
+			const auto nowSec = static_cast<std::uint64_t>(
+				std::chrono::duration_cast<std::chrono::seconds>(
+					std::chrono::system_clock::now().time_since_epoch()).count());
+			// Serve the cache when the dir has not changed AND the 30 s floor has not
+			// elapsed. A read error on the dir mtime (dirMtime == 0) forces a rebuild
+			// rather than pinning a possibly-stale cache.
+			if (s_haveCache && dirMtime != 0 && dirMtime == s_dirMtime &&
+				(nowSec - s_builtAtSec) < 30)
+				return s_cache;
+			s_dirMtime  = dirMtime;
+			s_builtAtSec = nowSec;
+		}
+
 		// MSVC's file_time_type ticks are 100 ns since 1601-01-01. Shift to the
 		// Unix epoch so the value is a readable timestamp in the log and stays
 		// well inside the range JS handles exactly.
@@ -5966,10 +6005,14 @@ namespace
 				{ "mtime", shot.mtime } });
 		}
 
+		// Only logged when a rebuild actually happens (the throttle above returns
+		// the cache otherwise), so this no longer spams once per HUD tick.
 		if (!arr.empty() || skipped || superseded)
 			logger::info("portraits: {} usable, {} superseded (older file for the same follower), {} skipped (unsupported type)",
 				arr.size(), superseded, skipped);
-		return arr.dump(-1, ' ', false, json::error_handler_t::replace);
+		s_cache     = arr.dump(-1, ' ', false, json::error_handler_t::replace);
+		s_haveCache = true;
+		return s_cache;
 	}
 
 	// ------------------------------------------------------- deck icon library
@@ -11128,6 +11171,37 @@ namespace
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
 			PushToView("anResult", AnimActions::ToggleCrawl());
+		});
+	}
+
+	void OnJsAnimScan(const char*)
+	{
+		// The scan is pure file IO over the VFS (no engine state), so it runs on
+		// a worker thread — a 4,780-mod walk must never hitch the render thread.
+		// The results land back on the main thread: anResult toasts the tally,
+		// anOpen re-ships the merged catalogue.
+		std::thread([]() {
+			std::string res;
+			try {
+				res = AnimActions::Scan();
+			} catch (...) {
+				// Scan() catches internally; this is the last-ditch guard — an
+				// exception escaping a detached thread is std::terminate (CTD).
+				res = R"({"ok":false,"msg":"scan crashed — see HotkeyDeck.log"})";
+			}
+			SKSE::GetTaskInterface()->AddTask([res]() {
+				PushToView("anResult", res);
+				PushToView("anOpen", AnimActions::OpenJson());
+			});
+		}).detach();
+	}
+
+	void OnJsAnimPack(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			PushToView("anResult", AnimActions::SetPack(payload));
+			PushToView("anOpen", AnimActions::OpenJson());
 		});
 	}
 

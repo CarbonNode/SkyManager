@@ -119,8 +119,13 @@ namespace PortraitCapture
 	// Photograph the PLAYER for the Character Sheet portrait. Same back-buffer
 	// capture as Fire(), but with three things Fire() cannot give the sheet:
 	//   * a FIXED slug ("player-sheet"), not the character's name — the char
-	//     sheet's meta.portrait and the Deck Portal's Sheet tab both agree on
-	//     portraits/player-sheet.png, so both routes write the same file.
+	//     sheet's meta.portrait and the Deck Portal's Sheet tab both resolve the
+	//     newest portraits/player-sheet* file. The slug is fixed, but the FILE is
+	//     always VERSIONED (player-sheet~<n>.png): a re-capture that reused the
+	//     canonical player-sheet.png would hand the view a url Ultralight already
+	//     has memory-mapped, so it would keep painting the cached OLD face. A fresh
+	//     versioned name is a url the view has never seen — the swap is guaranteed,
+	//     and the newest-wins scan + prune keep exactly one file on disk.
 	//   * FIRST-PERSON handling. Fire() photographs a follower standing in front
 	//     of you, so it never cares about the camera. A self-portrait in first
 	//     person would frame the world, not you: if the player is in first

@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <functional>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -353,6 +354,15 @@ namespace PortraitCapture
 			using namespace std::chrono;
 			return static_cast<std::uint64_t>(
 				duration_cast<seconds>(system_clock::now().time_since_epoch()).count());
+		}
+
+		// Milliseconds off a monotonic clock — for the backbuffer-resync deadline,
+		// which is a duration, not a wall-clock stamp (system_clock could jump).
+		std::uint64_t NowMs()
+		{
+			using namespace std::chrono;
+			return static_cast<std::uint64_t>(
+				duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
 		}
 
 		// Best-effort tidy-up after a versioned write: drop every OTHER file that
@@ -1469,8 +1479,20 @@ namespace PortraitCapture
 
 		// Defined below; photo mode shares the follower capture's core so both get
 		// the same lock-safe versioned write.
+		//
+		// `alwaysVersion`: skip the tidy `<slug>.png` name and write `<slug>~<n>.png`
+		// on EVERY capture. The self-portrait needs this (Rober, 2026-08-13): its slug
+		// is FIXED to "player-sheet", so a re-capture that reuses `player-sheet.png`
+		// hands the view the SAME url it already has memory-mapped — Ultralight keeps
+		// painting the cached OLD bytes and the new face never appears. A fresh
+		// versioned name is a url Ultralight has never seen, so the swap is guaranteed;
+		// the newest-wins scan + PruneOtherVersions keep exactly one file on disk. The
+		// follower/wardrobe paths leave this false — their slug is the subject's name,
+		// so a first capture legitimately lands the tidy `<slug>.png` and only a
+		// re-capture (already-mapped) falls back to a version.
 		std::uint32_t CaptureToFile(const std::filesystem::path& dir, const std::string& slug,
-			const std::string& label, std::filesystem::path& written, const TuneKeys& keys = kFaceKeys);
+			const std::string& label, std::filesystem::path& written, const TuneKeys& keys = kFaceKeys,
+			bool alwaysVersion = false);
 
 		// ============================== photo mode =============================
 		//  Dress-and-frame-it-yourself, for wardrobe outfits.
@@ -1505,6 +1527,91 @@ namespace PortraitCapture
 		std::function<void()> g_selfOnCancel;   // clears the view's pending state
 		std::uint64_t         g_selfArmedAt = 0;
 		constexpr std::uint64_t kSelfArmTimeoutSec = 60;
+
+		// ---- backbuffer-size resync gate (BUG B, Rober 2026-08-13) ------------
+		// The reopen-glitch fix that shipped 2026-08-13 blocked the deck from
+		// reopening only until the CAMERA/HUD restore finished. That was not enough:
+		// on this rig dynamic resolution shrinks the render target to 1706x960 (2/3
+		// of 2560x1440) during the capture's camera/fov transition, and the target
+		// does NOT snap back the instant the console restore runs — it takes a few
+		// frames. PrismaUI has NO resize API (see PrismaUI_API.h); a view laid out
+		// against the shrunken target paints at 2/3 size and never re-syncs, which is
+		// exactly the truncated panel Rober saw when he reopened right after a shot.
+		//
+		// So the busy flag is now released only once the backbuffer has returned to
+		// (at least) the size it had BEFORE the capture, i.e. the render target is
+		// full again and a reopened view will lay out correctly. A hard timeout
+		// guarantees the flag can never wedge the deck shut, and a zero/unknown
+		// pre-size disables the wait (fall back to the old immediate release).
+		std::atomic<int>  g_selfPreW{ 0 };   // main thread writes at sequence start
+		std::atomic<int>  g_selfPreH{ 0 };
+		std::atomic<bool> g_selfResyncActive{ false };  // one waiter at a time
+		constexpr std::uint64_t kBackBufferResyncTimeoutMs = 2500;
+
+		// BackBufferSize() is defined earlier in this translation unit (the frame
+		// grabber uses it), so it is already visible here.
+
+		// Clear g_selfCaptureBusy, but only once the render target is full-size
+		// again (or a timeout elapses). Polls BackBufferSize on the MAIN THREAD from
+		// a detached driver thread; each check re-posts the next until the size is
+		// back or the deadline passes. Idempotent-safe: only ever STORES false.
+		void ReleaseBusyWhenBackBufferRestored()
+		{
+			// The belt-and-braces task calls this too; a capture that ran already
+			// started a waiter, so a second call must not spawn a rival thread that
+			// could clear the gate a beat early. First caller wins; later ones no-op.
+			if (g_selfResyncActive.exchange(true))
+				return;
+			const int preW = g_selfPreW.load();
+			const int preH = g_selfPreH.load();
+			if (preW <= 0 || preH <= 0) {
+				// No baseline to compare against — behave exactly as before.
+				g_selfCaptureBusy.store(false);
+				g_selfResyncActive.store(false);
+				return;
+			}
+			const auto startedAt = NowMs();
+			std::thread([preW, preH, startedAt]() {
+				using namespace std::chrono;
+				for (;;) {
+					// shared_ptr, NOT stack refs: the posted task may run AFTER this
+					// iteration's spin gives up, so the flags must outlive the loop
+					// body or the task writes freed stack memory. The task holds a
+					// copy of the shared_ptr, so the atomics live until it runs.
+					auto decided  = std::make_shared<std::atomic<bool>>(false);
+					auto restored = std::make_shared<std::atomic<bool>>(false);
+					// The swap-chain read is D3D and must run on the main thread.
+					SKSE::GetTaskInterface()->AddTask([preW, preH, decided, restored]() {
+						int w = 0, h = 0;
+						// Full again when BOTH dimensions have returned to at least
+						// the pre-capture size. A small tolerance absorbs an off-by-one
+						// from an upscaler rounding the target dimension.
+						if (BackBufferSize(w, h) && w + 2 >= preW && h + 2 >= preH)
+							restored->store(true);
+						decided->store(true);
+					});
+					// Wait for that task to run without touching the engine here.
+					for (int spin = 0; spin < 200 && !decided->load(); ++spin)
+						std::this_thread::sleep_for(milliseconds(2));
+
+					const bool timedOut = (NowMs() - startedAt) > kBackBufferResyncTimeoutMs;
+					if (restored->load() || timedOut) {
+						const bool wasRestored = restored->load();
+						SKSE::GetTaskInterface()->AddTask([wasRestored, timedOut]() {
+							g_selfCaptureBusy.store(false);
+							if (timedOut && !wasRestored)
+								logger::info("portrait: backbuffer did not report full size within {}ms - releasing the reopen gate anyway",
+									kBackBufferResyncTimeoutMs);
+							else
+								logger::info("portrait: backbuffer back to full size - reopen gate released");  // marker: portrait-resync-size
+							g_selfResyncActive.store(false);
+						});
+						return;
+					}
+					std::this_thread::sleep_for(milliseconds(60));
+				}
+			}).detach();
+		}
 
 		// Run the cancel notifier (main thread) once and drop it. Used by both the
 		// explicit cancel and the lazy timeout so the view never sticks in "taking…".
@@ -1576,7 +1683,8 @@ namespace PortraitCapture
 		}
 
 		std::uint32_t CaptureToFile(const std::filesystem::path& dir, const std::string& slug,
-			const std::string& label, std::filesystem::path& written, const TuneKeys& keys)
+			const std::string& label, std::filesystem::path& written, const TuneKeys& keys,
+			bool alwaysVersion)
 		{
 			// THE BACK BUFFER's size, not the screen's. These are NOT the same
 			// number and assuming they were is what broke the framing:
@@ -1658,18 +1766,31 @@ namespace PortraitCapture
 			// The tidy name first. It succeeds whenever the deck has not already
 			// DRAWN this person's portrait — a first capture, or any session where
 			// their face has not been on screen yet.
+			//
+			// `alwaysVersion` skips it: the self-portrait must NEVER reuse
+			// `player-sheet.png`, because the char-sheet view has that exact url
+			// mapped and Ultralight would keep the cached old bytes. Forcing a
+			// LOCK-shaped error here routes straight into the versioned-write loop
+			// below, so every self-capture lands on a url the view has never seen.
+			// marker: portrait-self-versioned
 			const auto canonical = dir / (slug + ".png");
 			auto       path = canonical;
-			auto       err = WriteBytes(path, png);
+			auto       err = alwaysVersion
+				? static_cast<std::uint32_t>(ERROR_USER_MAPPED_FILE)
+				: WriteBytes(path, png);
+			if (alwaysVersion)
+				logger::info("portrait: '{}' forced to a versioned name so the view repaints (self-portrait)", slug);
 
 			// Locked: Ultralight has it mapped for the session (see the header).
 			// Nothing can free it short of closing the game, so stop trying to and
 			// write a new file instead. The scanner resolves it back to this slug
 			// and prefers it for being newer, so the deck shows the NEW face — the
-			// player never learns any of this happened.
+			// player never learns any of this happened. (Also the `alwaysVersion`
+			// path above, which lands here deliberately on the very first write.)
 			if (IsLockedError(err)) {
-				logger::info("portrait: '{}' is held open by the running view (win32 {}) - writing a versioned file instead",
-					canonical.filename().string(), err);
+				if (!alwaysVersion)
+					logger::info("portrait: '{}' is held open by the running view (win32 {}) - writing a versioned file instead",
+						canonical.filename().string(), err);
 				const auto stamp = NowSeconds();
 				// Bump past a same-second collision; 8 is far more headroom than
 				// a human pressing a hotkey can ever need.
@@ -1766,8 +1887,10 @@ namespace PortraitCapture
 
 		// The Character-Sheet self-portrait. Mirrors DoCapture, but:
 		//   * the subject is the PLAYER (no crosshair, no override);
-		//   * the slug is FIXED to "player-sheet" so the file always lands where
-		//     the char sheet and the portal both look;
+		//   * the slug is FIXED to "player-sheet" so the char sheet and the portal
+		//     both resolve it, but the FILE is always VERSIONED (player-sheet~<n>.png)
+		//     so a re-capture repaints instead of hiding behind Ultralight's cache of
+		//     the canonical name (alwaysVersion below);
 		//   * first person is flipped to third for the shot and restored after;
 		//   * on success `done` gets the written FILE NAME (main thread), so the
 		//     caller can point meta.portrait at it and open the crop editor.
@@ -1790,11 +1913,14 @@ namespace PortraitCapture
 					RestoreFov();
 					RestoreFirstPerson();
 					RestoreMenus();
-					// Camera + menus are restored: the world is no longer mid-
-					// transition, so the deck may reopen again without glitching.
-					// Cleared LAST, after every restore call, so CanOpenNow() only
-					// unblocks once the surface is stable (the reopen-glitch fix).
-					g_selfCaptureBusy.store(false);
+					// Camera + menus are restored, but the RENDER TARGET may still be
+					// shrunk by dynamic resolution for a few more frames (BUG B). Do
+					// NOT clear the reopen gate yet — hand off to the resync waiter,
+					// which releases it only once the backbuffer is full-size again
+					// (or a timeout fires). CanOpenNow() therefore unblocks only when a
+					// reopened view will lay out at full size, not merely when the
+					// camera transition finished (the fix the 2026-08-13 gate missed).
+					ReleaseBusyWhenBackBufferRestored();
 					if (cb && *cb) {
 						auto  fn = *cb;
 						auto  s  = *out;
@@ -1814,8 +1940,11 @@ namespace PortraitCapture
 			if (label.empty())
 				label = "You";
 
+			// alwaysVersion=true: the self-portrait's slug is fixed, so every capture
+			// must land on a NEW filename or the char-sheet view keeps its cached copy
+			// of player-sheet.png and the retaken face never shows (Rober, 2026-08-13).
 			std::filesystem::path written;
-			const auto            err = CaptureToFile(dir, slug, label, written);
+			const auto            err = CaptureToFile(dir, slug, label, written, kFaceKeys, /*alwaysVersion=*/true);
 			if (err) {
 				Notify(IsLockedError(err)
 						   ? "Portrait failed: that file is locked - restart Skyrim to replace it"
@@ -2050,10 +2179,21 @@ namespace PortraitCapture
 			std::function<void(const std::string&)> done)
 		{
 			g_selfCaptureBusy.store(true);
+			// Baseline the render-target size BEFORE anything touches the camera or
+			// fov, so the reopen gate can wait for it to come back (BUG B). Read on
+			// the main thread (swap-chain / D3D). 0 disables the wait, so a failed
+			// read simply falls back to the old immediate release.
+			g_selfPreW.store(0);
+			g_selfPreH.store(0);
 			std::thread([dir = portraitDir, done = std::move(done)]() mutable {
 				using namespace std::chrono;
 				std::this_thread::sleep_for(milliseconds(220));
 				SKSE::GetTaskInterface()->AddTask([]() {
+					int w = 0, h = 0;
+					if (BackBufferSize(w, h) && w > 0 && h > 0) {
+						g_selfPreW.store(w);
+						g_selfPreH.store(h);
+					}
 					HideMenus();
 					EnsureThirdPersonForSelf();   // flip to third BEFORE the shot; restored on exit
 					ZoomForCapture();
@@ -2072,7 +2212,11 @@ namespace PortraitCapture
 					RestoreFov();
 					RestoreFirstPerson();
 					RestoreMenus();
-					g_selfCaptureBusy.store(false);
+					// Same resync-aware release as DoPlayerCapture. If the capture ran,
+					// its waiter is already active and this no-ops (guarded); if the
+					// capture task was dropped, THIS starts the waiter so the deck is
+					// still ungated once the target is full again (or on timeout).
+					ReleaseBusyWhenBackBufferRestored();
 				});
 			}).detach();
 		}
