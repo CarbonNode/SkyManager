@@ -172,7 +172,7 @@ body.resizing .spell, body.resizing .rail-item, body.resizing .combo-card { poin
   padding: 5px 11px;
   min-width: 26px; text-align: center;
 }
-.header-actions { display: flex; gap: 9px; }
+.header-actions { display: flex; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
 
 /* ------------------------------------------------------ ghost button --- */
 
@@ -190,6 +190,11 @@ body.resizing .spell, body.resizing .rail-item, body.resizing .combo-card { poin
 .ghost-btn:active { transform: translateY(1px); }
 .ghost-btn:focus-visible { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px var(--gold-glow); }
 .ghost-btn.close { padding: 9px 13px; }
+/* The "← Deck" back button is the promised way home from the Spell Deck — give
+   it a faint gold wash so it reads as the primary escape, not just another
+   ghost. It stays a ghost button (same height/type) so the header row aligns. */
+.ghost-btn.back { color: var(--gold-soft); border-color: var(--gold-line); background: var(--gold-wash); }
+.ghost-btn.back:hover { color: var(--panel-b); background: var(--gold); border-color: var(--gold); }
 .ghost-btn.on { color: var(--panel-b); background: var(--gold); border-color: var(--gold); }
 .ghost-btn.on:hover { background: var(--gold-bright); }
 

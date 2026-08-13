@@ -1403,6 +1403,46 @@ namespace PortraitCapture
 			g_savedFirstFov = -1.0f;
 		}
 
+		// -------------------------------------------------- first-person camera
+		// A self-portrait in first person frames the world in front of you, not
+		// you. So when the player is in first person we flip to third for the
+		// shot and put them back after. Same detection idiom the deck's
+		// first-person-quicklight uses (currentState->id), and ForceThirdPerson /
+		// ForceFirstPerson are the engine's own toggles (the Papyrus Game.psc
+		// natives of the same name). Tracked so the restore only fires when WE
+		// changed it — a player who was already in third person stays in third.
+		bool g_forcedThird = false;   // main thread only
+
+		bool InFirstPerson()
+		{
+			auto* cam = RE::PlayerCamera::GetSingleton();
+			return cam && cam->currentState &&
+			       cam->currentState->id == RE::CameraStates::kFirstPerson;
+		}
+
+		void EnsureThirdPersonForSelf()
+		{
+			if (g_forcedThird)
+				return;
+			if (!InFirstPerson())
+				return;   // already third person — nothing to change or restore
+			if (auto* cam = RE::PlayerCamera::GetSingleton()) {
+				cam->ForceThirdPerson();
+				g_forcedThird = true;
+				logger::info("portrait: player was in first person - forced third for the self-portrait");
+			}
+		}
+
+		void RestoreFirstPerson()
+		{
+			if (!g_forcedThird)
+				return;
+			if (auto* cam = RE::PlayerCamera::GetSingleton())
+				cam->ForceFirstPerson();
+			g_forcedThird = false;
+			logger::info("portrait: restored first-person camera after the self-portrait");
+		}
+
 		// ------------------------------------------------------------ console
 		void RunConsole(const char* cmd)
 		{
@@ -1697,7 +1737,67 @@ namespace PortraitCapture
 			}
 			Notify(("Portrait saved: " + name).c_str());
 		}
+
+		// The Character-Sheet self-portrait. Mirrors DoCapture, but:
+		//   * the subject is the PLAYER (no crosshair, no override);
+		//   * the slug is FIXED to "player-sheet" so the file always lands where
+		//     the char sheet and the portal both look;
+		//   * first person is flipped to third for the shot and restored after;
+		//   * on success `done` gets the written FILE NAME (main thread), so the
+		//     caller can point meta.portrait at it and open the crop editor.
+		// The camera/menu restore runs on EVERY exit via the guard, exactly like
+		// DoCapture — a self-portrait that stranded the player in third person
+		// with the HUD off would read as a hung game.
+		void DoPlayerCapture(const std::filesystem::path& dir,
+			std::function<void(const std::string&)> done)
+		{
+			std::string result;   // filled on success; "" tells the caller it failed
+			struct Restore
+			{
+				std::function<void(const std::string&)>* cb;
+				std::string*                             out;
+				~Restore()
+				{
+					// Camera / menus back FIRST, then the callback — the sheet's
+					// psData push and crop editor should open over a restored game.
+					ExitFreeCam();
+					RestoreFov();
+					RestoreFirstPerson();
+					RestoreMenus();
+					if (cb && *cb) {
+						auto  fn = *cb;
+						auto  s  = *out;
+						SKSE::GetTaskInterface()->AddTask([fn, s]() { fn(s); });
+					}
+				}
+			} restoreOnExit{ &done, &result };
+
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!player || !player->Is3DLoaded()) {
+				Notify("Load a save first - there is no character to photograph");
+				return;
+			}
+
+			const auto  slug = PlayerSheetSlug();
+			std::string label = player->GetDisplayFullName() ? player->GetDisplayFullName() : "";
+			if (label.empty())
+				label = "You";
+
+			std::filesystem::path written;
+			const auto            err = CaptureToFile(dir, slug, label, written);
+			if (err) {
+				Notify(IsLockedError(err)
+						   ? "Portrait failed: that file is locked - restart Skyrim to replace it"
+						   : (err == ERROR_READ_FAULT ? "Portrait failed: could not read the frame"
+													  : "Portrait failed: could not write the file"));
+				return;
+			}
+			result = written.filename().string();
+			Notify("Portrait taken - frame it on the Character tab");
+		}
 	}
+
+	std::string PlayerSheetSlug() { return "player-sheet"; }
 
 	// `<slug>~<version>` -> `<slug>`; a plain stem comes back unchanged. The '~'
 	// is safe as the separator precisely because it cannot occur in a slug: the
@@ -1903,6 +2003,38 @@ namespace PortraitCapture
 				RestoreFov();
 				RestoreMenus();
 				g_targetOverride.store(0);
+			});
+		}).detach();
+	}
+
+	void FirePlayerSheet(const std::filesystem::path& portraitDir,
+		std::function<void(const std::string&)> done)
+	{
+		// Same deferred, HUD-gone, frames-to-settle idiom as Fire(), with two
+		// additions: the first-person flip lands in the SAME early task as the
+		// menu hide so the third-person camera has the full second to settle
+		// before the grab, and the capture runs DoPlayerCapture (fixed slug +
+		// completion callback) rather than DoCapture.
+		std::thread([dir = portraitDir, done = std::move(done)]() mutable {
+			using namespace std::chrono;
+			std::this_thread::sleep_for(milliseconds(220));
+			SKSE::GetTaskInterface()->AddTask([]() {
+				HideMenus();
+				EnsureThirdPersonForSelf();   // flip to third BEFORE the shot; restored on exit
+				ZoomForCapture();
+			});
+			std::this_thread::sleep_for(milliseconds(1000));
+			SKSE::GetTaskInterface()->AddTask([dir, done]() { DoPlayerCapture(dir, done); });
+			std::this_thread::sleep_for(milliseconds(90));
+			// Belt and braces, exactly like Fire(): DoPlayerCapture restored on
+			// its way out; these no-op if it ran, and rescue the world if its
+			// task was dropped. The first-person restore is included so a dropped
+			// capture cannot strand the player looking at their own back.
+			SKSE::GetTaskInterface()->AddTask([]() {
+				ExitFreeCam();
+				RestoreFov();
+				RestoreFirstPerson();
+				RestoreMenus();
 			});
 		}).detach();
 	}

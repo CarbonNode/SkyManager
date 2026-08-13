@@ -57,6 +57,10 @@
   --hb-ui:    1;
   --hb-gap:   6px;
   --hb-alpha: 1;
+  /* Play-time see-through-ness the player dials in (30–100%). Multiplied with
+     --hb-alpha (the idle fade) so the two compose instead of one clobbering the
+     other. Forced to 1 in edit mode by JS. */
+  --hb-opacity: 1;
 }
 
 * { box-sizing: border-box; }
@@ -84,7 +88,7 @@ body.hb-edit { pointer-events: auto; }
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  opacity: var(--hb-alpha);
+  opacity: calc(var(--hb-alpha) * var(--hb-opacity));
   transition: opacity 180ms var(--ease);
   /* transform-origin is set inline per anchor: a bar anchored bottom-centre
      must grow UP and OUT from that point, or raising the scale walks it off
@@ -308,6 +312,15 @@ body.hb-edit { pointer-events: auto; }
 }
 .hb-grip:hover  { background: #16161d; }
 .hb-grip:active { cursor: grabbing; transform: scale(.94); }
+
+/* Grip side flip (Rober, 2026-08-13: the grip hung below the bar so it could
+   never touch the bottom edge, and near the edge the grip clipped off-screen).
+   The bar is a flex column [pages, grid, grip]; `order` moves the grip above
+   the grid so a bottom-anchored bar's box ends at the grid and can sit flush
+   against the bottom. JS adds .grip-above when the bar lives in the lower half,
+   .grip-below (the natural order) when it lives in the upper half. */
+.hb-root.grip-above .hb-grip { order: -1; }
+.hb-root.grip-below .hb-grip { order: 1; }
 
 /* While editing, the bar itself gets a halo so it is findable on a busy
    screen, and the slots become real buttons. */

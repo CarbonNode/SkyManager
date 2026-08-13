@@ -60,7 +60,7 @@
     orient: 'horiz', anchorH: 'center', anchorV: 'bottom',
     cols: 8, rows: 1,
     showKeys: true, showLabels: false, showCounts: true, showEmpty: true,
-    idleMs: 0, idleAlpha: 0.35, uiScale: 1,
+    idleMs: 0, idleAlpha: 0.35, uiScale: 1, opacity: 1,
     showMode: 'always', lingerMs: 4000, hideInMenus: true,
     skin: 'plain', modHold: true,
     pages: [], slotKeys: [],
@@ -72,6 +72,24 @@
   let editing = false;
   let selected = 0;               // the button the edit panel is talking about
   let lastFireAt = 0;
+  /* True while the user is ACTIVELY moving the bar — a grip drag or an arrow
+     nudge. The panel-avoidance shift below is for a STATIC preview only; while
+     you are hand-placing the bar it must follow the cursor 1:1 across the whole
+     screen, so the avoidance is suppressed for the duration and the bar sits at
+     its true cfg position. Without this, applyPlacement re-clamps the position
+     into the narrow strip beside the panel on every mousemove, which pins the
+     bar the moment it reaches the strip edge — the "won't drag horizontally
+     anywhere" bug (Rober, 2026-08-13). */
+  let interacting = false;
+  /* True once the user has hand-placed the bar in THIS edit session (a grip
+     drag or an arrow nudge). The panel-avoidance shift exists only so a bar
+     you have NOT touched doesn't hide under the setup panel; the instant you
+     grab it and put it somewhere, that convenience must stop moving it. Without
+     this the bar jumps by the avoidance-shift the moment you release the drag —
+     "it jumps from where I let go" (Rober, 2026-08-13). The invariant: the
+     pixel under the cursor at mouseup is where the bar stays. Reset on each
+     edit-mode entry. */
+  let placed = false;
 
   const ICONS = { byForm: null, generic: null, catalog: [], custom: [] };
   /* `loaded` separates "the catalog is still in flight" from "you really own
@@ -87,12 +105,18 @@
    'hb-modHold', 'hb-slotlist', 'hb-page-name', 'hb-slot-note',
    'hb-showMode', 'hb-linger', 'hb-linger-val', 'hb-linger-row', 'hb-hideInMenus',
    'hb-togglekey', 'hb-togglekey-clear', 'hb-show-note', 'hb-preview-note',
-   'hb-uiscale', 'hb-uiscale-val',
+   'hb-uiscale', 'hb-uiscale-val', 'hb-opacity', 'hb-opacity-val', 'hb-reset-pos',
    'hb-pick', 'hb-pick-title', 'hb-pick-q', 'hb-pick-tabs', 'hb-pick-list', 'hb-pick-wrap',
    'hb-pick-close', 'hb-pick-clear',
    'hb-icons', 'hb-icons-q', 'hb-icons-grid', 'hb-icons-close', 'hb-icons-auto',
    'hb-cap', 'hb-cap-title', 'hb-cap-key', 'hb-cap-clear', 'hb-cap-cancel',
   ].forEach((id) => { el[id] = document.getElementById(id); });
+
+  /* Add the injected controls, then bind the ids they created into `el`. Done
+     up front so every later `el['hb-opacity']` / `el['hb-reset-pos']` resolves,
+     exactly as if they had been in the static markup. */
+  injectControls();
+  ['hb-opacity', 'hb-opacity-val', 'hb-reset-pos'].forEach((id) => { el[id] = document.getElementById(id); });
 
   /* ── tiny DOM helper (same shape as the deck's `h`) ───────────────────── */
   function h(tag, attrs, ...kids) {
@@ -109,6 +133,45 @@
     return n;
   }
   function clear(n) { while (n && n.firstChild) n.removeChild(n.firstChild); }
+
+  /* ── inject the opacity slider + reset-position button ────────────────────
+     These two controls are added from JS rather than the static hotbar.html so
+     the whole feature ships in the view's JS/CSS pair. Idempotent (guards on the
+     ids), and it re-uses the panel's own field/row classes so it matches every
+     other control exactly. The opacity slider lands in the Look section beside
+     the editor-scale slider; the reset button lands under the Where anchors —
+     an escape hatch that is always on screen because the panel is. */
+  function injectControls() {
+    // Opacity — after the editor-scale slider's row (its .hb-range's row).
+    if (!document.getElementById('hb-opacity')) {
+      const uiRange = document.getElementById('hb-uiscale');
+      const uiRow = uiRange && uiRange.closest('.hb-row');
+      if (uiRow && uiRow.parentNode) {
+        const row = h('div', { class: 'hb-row' },
+          h('label', { class: 'hb-field hb-grow',
+              title: 'How solid the bar is during play. Lower it so the bar does not cover the scene.' },
+            h('span', {}, 'Bar opacity ', h('em', { id: 'hb-opacity-val' }, '100%')),
+            h('input', { id: 'hb-opacity', class: 'hb-range', type: 'range',
+              min: '30', max: '100', step: '5',
+              title: 'How solid the bar is during play (edit mode always shows it fully)' })));
+        uiRow.parentNode.insertBefore(row, uiRow.nextSibling);
+      }
+    }
+    // Reset position — after the Where section's anchor row.
+    if (!document.getElementById('hb-reset-pos')) {
+      const av = document.getElementById('hb-anchorV');
+      const whereSect = av && av.closest('.hb-sect');
+      if (whereSect) {
+        const row = h('div', { class: 'hb-row' },
+          h('button', { id: 'hb-reset-pos', class: 'hb-btn', type: 'button',
+            title: 'Move the bar back to a safe spot (bottom centre) if it drifted off screen' },
+            'Reset position'),
+          h('p', { class: 'hb-note',
+            text: 'Recentres the bar at the bottom of the screen — use it if the bar or its ✥ grip ends up off screen.' }));
+        whereSect.appendChild(row);
+      }
+    }
+  }
 
   /* ── icons: the Spell Deck's own resolve chain ────────────────────────── */
   /* Ported deliberately rather than shared: this is a separate document and
@@ -209,6 +272,7 @@
       showKeys: cfg.showKeys, showLabels: cfg.showLabels,
       showCounts: cfg.showCounts, showEmpty: cfg.showEmpty,
       idleMs: cfg.idleMs, idleAlpha: cfg.idleAlpha, uiScale: cfg.uiScale,
+      opacity: cfg.opacity,
       showMode: cfg.showMode, lingerMs: cfg.lingerMs, hideInMenus: cfg.hideInMenus,
       key: cfg.key,
       skin: cfg.skin, modHold: cfg.modHold,
@@ -271,6 +335,15 @@
     const baseScale = Number(cfg.scale) || 1;
     const out = { hidden: false, fit: false, shift: 0, scale: baseScale, reason: '' };
     if (!editing) return out;
+    /* Hand-placing the bar (interacting), OR the user has already placed it this
+       session (placed): no avoidance. The bar tracks the cursor / arrows at its
+       true cfg position across the full screen — the clamp below is what
+       otherwise pins a drag inside the free strip. And once the user has put the
+       bar somewhere on purpose, re-introducing the shift on mouseup would move
+       it away from where they let go (the "jumps from where I let go" bug). The
+       shift is a convenience for a bar you have NOT touched, and stops the
+       moment you do. */
+    if (interacting || placed) return out;
     const p = el['hb-edit'];
     const r = el['hb-root'];
     if (!p || p.hidden || !r) return out;
@@ -325,10 +398,72 @@
     if (preview.hidden) r.setAttribute('aria-hidden', 'true');
     else r.removeAttribute('aria-hidden');
     if (grip) grip.hidden = !editing || preview.hidden;
+    /* Grip side. The grip is a sibling in the bar's flex column, so by default
+       it sits BELOW the grid and adds its own height to the bar's bounding box —
+       a bottom-anchored bar then cannot touch the bottom screen edge, and near
+       the edge the grip itself clips off-screen (Rober, 2026-08-13: grip hangs
+       below the bar; a grip clipped off-screen). Flip it ABOVE the grid whenever
+       the bar lives in the LOWER half of the screen, so the bar can sit flush
+       against the bottom and the grip stays reachable. In the upper half it
+       stays below for the same reason at the top edge. Purely a CSS `order`
+       flip — no geometry stored. */
+    const lower = cfg.anchorV === 'bottom';
+    r.classList.toggle('grip-above', editing && lower);
+    r.classList.toggle('grip-below', editing && !lower);
     if (note) {
       note.hidden = !editing || (!preview.hidden && !preview.fit);
       note.textContent = note.hidden ? '' : preview.reason;
     }
+  }
+
+  /* ── keep the bar reachable ───────────────────────────────────────────── */
+  /* On edit-mode entry (and on a config load while editing) pull the bar — and
+     its drag grip — fully back on screen if any part of it has drifted off.
+     Without this a bar dragged too far, or one loaded from an odd saved
+     position, becomes unmovable because the grip you would grab is past the
+     edge (Rober, 2026-08-13: "got it stuck and now can't move it"). Measured
+     against the real rendered box, converted back into the anchor's own
+     coordinate space so the stored x/y stays honest. A 6px inset keeps the
+     grip's rim clear of the very edge. */
+  const EDGE_INSET = 6;
+  function clampIntoView() {
+    const r = el['hb-root'];
+    if (!r || !editing) return false;
+    const rect = r.getBoundingClientRect();
+    /* jsdom / a pre-layout frame reports a zero box — nothing to clamp against,
+       and clamping to a phantom 0×0 rect would yank a perfectly-placed bar to
+       the corner. Bail unless we have a real measurement. */
+    if (!rect.width || !rect.height) return false;
+    const W = window.innerWidth, H = window.innerHeight;
+    let dx = 0, dy = 0;
+    if (rect.left < EDGE_INSET) dx = EDGE_INSET - rect.left;
+    else if (rect.right > W - EDGE_INSET) dx = (W - EDGE_INSET) - rect.right;
+    if (rect.top < EDGE_INSET) dy = EDGE_INSET - rect.top;
+    else if (rect.bottom > H - EDGE_INSET) dy = (H - EDGE_INSET) - rect.bottom;
+    if (!dx && !dy) return false;
+    /* Screen-space deltas → stored deltas. A right/bottom anchor counts inward,
+       so a rightward screen move (+dx) DECREASES the stored offset. */
+    cfg.x = Math.round(cfg.x + dx * (cfg.anchorH === 'right' ? -1 : 1));
+    cfg.y = Math.round(cfg.y + dy * (cfg.anchorV === 'bottom' ? -1 : 1));
+    placed = true;   // a clamp is a placement — don't let avoidance move it again
+    applyPlacement();
+    return true;
+  }
+
+  /* Recentre the bar to a safe, always-visible spot: bottom-centre, a little way
+     up from the edge. The escape hatch for a bar that got stuck — the button
+     that triggers it lives in the setup panel, which can never itself be
+     off-screen, so this can always be reached. */
+  function resetPosition() {
+    cfg.anchorH = 'center';
+    cfg.anchorV = 'bottom';
+    cfg.x = 0;
+    cfg.y = 90;
+    placed = true;
+    if (el['hb-anchorH']) el['hb-anchorH'].value = 'center';
+    if (el['hb-anchorV']) el['hb-anchorV'].value = 'bottom';
+    applyPlacement();
+    saveCfg();
   }
 
   function applyPlacement() {
@@ -360,6 +495,19 @@
       (cfg.anchorH === 'center' ? 'translateX(-50%) ' : '') +
       'scale(' + preview.scale + ')';
     r.style.setProperty('--hb-scale', '1');   // scale lives in the transform above
+    applyOpacity();
+  }
+
+  /* Play-time opacity. A separate multiplier from the idle fade: idleAlpha dims
+     the bar after inactivity, opacity is a steady see-through-ness the player
+     dials in so the bar doesn't cover the scene. Edit mode ALWAYS renders fully
+     opaque — you cannot place a bar you can barely see. Applied as its own CSS
+     var so it composes with --hb-alpha (idle) rather than fighting it. */
+  function applyOpacity() {
+    const r = el['hb-root'];
+    if (!r) return;
+    const o = editing ? 1 : clamp(Number(cfg.opacity) || 1, 0.3, 1);
+    r.style.setProperty('--hb-opacity', String(o));
   }
 
   /* ── the bar ─────────────────────────────────────────────────────────── */
@@ -508,13 +656,21 @@
     let dragging = false, sx = 0, sy = 0, bx = 0, by = 0;
 
     grip.addEventListener('mousedown', (e) => {
-      dragging = true; sx = e.clientX; sy = e.clientY; bx = cfg.x; by = cfg.y;
+      dragging = true; interacting = true;
+      sx = e.clientX; sy = e.clientY; bx = cfg.x; by = cfg.y;
+      /* Snap the preview to the true position for the drag: the avoidance shift
+         is off while `interacting`, so the bar jumps to where cfg.x actually
+         is before the first mousemove — otherwise the pointer would grab it at
+         the shifted spot and the whole drag would carry a constant offset. */
+      applyPlacement();
       e.preventDefault();
     });
     document.addEventListener('mousemove', (e) => {
       if (!dragging) return;
       /* An anchor on the right/bottom edge counts INWARD, so the delta has to
-         be inverted or the bar runs away from the cursor. */
+         be inverted or the bar runs away from the cursor. The bar follows the
+         cursor across the FULL screen width — no clamp, because the user is
+         directly placing it and 1:1 feedback is the whole point. */
       const dx = (e.clientX - sx) * (cfg.anchorH === 'right' ? -1 : 1);
       const dy = (e.clientY - sy) * (cfg.anchorV === 'bottom' ? -1 : 1);
       cfg.x = Math.round(bx + dx);
@@ -523,13 +679,22 @@
     });
     document.addEventListener('mouseup', () => {
       if (!dragging) return;
-      dragging = false;
+      dragging = false; interacting = false;
+      /* The user just hand-placed the bar. Mark it placed so avoidance stays
+         off — re-introducing the panel-avoidance shift here would jump the bar
+         away from exactly where the cursor let go. The pixel under the cursor
+         at mouseup is the resting pixel; cfg.x/y already hold it. */
+      placed = true;
       saveCfg();
+      applyPlacement();   // repaint at the placed position (no shift now)
     });
   })();
 
-  /* Arrow-key nudge while editing — pixel-accurate placement that a drag
-     cannot give you. */
+  /* Arrow-key nudge while editing — pixel-accurate placement that a drag cannot
+     give you. A nudge is a placement: it marks the bar `placed`, which keeps the
+     panel-avoidance shift off so the nudge lands 1:1 and the bar rests exactly
+     where you put it (no settle-back that would swallow a nudge near the strip
+     edge, and no jump on the following repaint). */
   document.addEventListener('keydown', (e) => {
     if (!editing) return;
     if (el['hb-pick'] && !el['hb-pick'].hidden) return;
@@ -543,7 +708,11 @@
     else if (e.key === 'ArrowUp')    cfg.y -= cfg.anchorV === 'bottom' ? -step : step;
     else if (e.key === 'ArrowDown')  cfg.y += cfg.anchorV === 'bottom' ? -step : step;
     else hit = false;
-    if (hit) { e.preventDefault(); applyPlacement(); saveCfg(); }
+    if (!hit) return;
+    e.preventDefault();
+    placed = true;
+    applyPlacement();
+    saveCfg();
   });
 
   /* ── edit panel ──────────────────────────────────────────────────────── */
@@ -555,34 +724,55 @@
     { id: 'gilded', label: 'Gilded' },
   ];
 
+  /* Assign a form control's value WITHOUT stomping a live interaction. Writing
+     `.value` on a <select> whose native dropdown is open closes the popup, and
+     the poller re-runs renderEdit() on every hbConfig/hbLive push (~700ms) — so
+     the very first click that opened a Rows/Direction dropdown got swallowed by
+     the next poll before the user could pick, and it "took two clicks" (Rober,
+     2026-08-13). Never rewrite the control the user is currently touching, and
+     skip the write when it already matches so an unchanged poll is inert. */
+  function setVal(id, v) {
+    const n = el[id];
+    if (!n) return;
+    if (n === document.activeElement) return;   // don't collapse an open dropdown
+    const s = String(v);
+    if (n.value !== s) n.value = s;
+  }
+
   function renderEdit() {
     if (!editing) return;
-    el['hb-cols'].value = cfg.cols;
-    el['hb-rows'].value = String(cfg.rows);
-    el['hb-orient'].value = cfg.orient;
-    el['hb-anchorH'].value = cfg.anchorH;
-    el['hb-anchorV'].value = cfg.anchorV;
-    el['hb-scale'].value = Math.round((cfg.scale || 1) * 100);
+    setVal('hb-cols', cfg.cols);
+    setVal('hb-rows', String(cfg.rows));
+    setVal('hb-orient', cfg.orient);
+    setVal('hb-anchorH', cfg.anchorH);
+    setVal('hb-anchorV', cfg.anchorV);
+    setVal('hb-scale', Math.round((cfg.scale || 1) * 100));
     el['hb-scale-val'].textContent = Math.round((cfg.scale || 1) * 100) + '%';
     el['hb-showKeys'].checked = !!cfg.showKeys;
     el['hb-showLabels'].checked = !!cfg.showLabels;
     el['hb-showCounts'].checked = !!cfg.showCounts;
     el['hb-showEmpty'].checked = !!cfg.showEmpty;
     el['hb-modHold'].checked = !!cfg.modHold;
-    el['hb-idle'].value = String(Math.round((cfg.idleMs || 0) / 1000));
+    setVal('hb-idle', String(Math.round((cfg.idleMs || 0) / 1000)));
     el['hb-idle-val'].textContent = cfg.idleMs ? (Math.round(cfg.idleMs / 1000) + 's') : 'Never';
+
+    /* opacity (play-time see-through-ness; 100% = solid) */
+    const opPct = Math.round(clamp(Number(cfg.opacity) || 1, 0.3, 1) * 100);
+    setVal('hb-opacity', String(opPct));
+    if (el['hb-opacity-val']) el['hb-opacity-val'].textContent = opPct + '%';
+    applyOpacity();
 
     /* ---- when to show ------------------------------------------------- */
     const uiPct = Math.round((clamp(Number(cfg.uiScale) || 1, 1, 2)) * 100);
-    el['hb-uiscale'].value = String(uiPct);
+    setVal('hb-uiscale', String(uiPct));
     const applied = Math.round(applyUiScale() * 100);
     el['hb-uiscale-val'].textContent = applied < uiPct
       ? (uiPct + '% (capped to ' + applied + '% by your window)')
       : (uiPct + '%');
 
-    el['hb-showMode'].value = cfg.showMode || 'always';
+    setVal('hb-showMode', cfg.showMode || 'always');
     el['hb-hideInMenus'].checked = !!cfg.hideInMenus;
-    el['hb-linger'].value = String(Math.round((cfg.lingerMs || 0) / 1000));
+    setVal('hb-linger', String(Math.round((cfg.lingerMs || 0) / 1000)));
     el['hb-linger-val'].textContent = cfg.lingerMs
       ? (Math.round(cfg.lingerMs / 1000) + 's') : 'No delay';
     /* The linger only means anything for the modes that watch combat — showing
@@ -798,6 +988,18 @@
     applyPlacement();   // the bar's edit-mode offset depends on the panel width
   });
   if (el['hb-uiscale']) el['hb-uiscale'].addEventListener('change', saveCfg);
+
+  if (el['hb-opacity']) el['hb-opacity'].addEventListener('input', () => {
+    cfg.opacity = clamp((parseInt(el['hb-opacity'].value, 10) || 100) / 100, 0.3, 1);
+    if (el['hb-opacity-val']) el['hb-opacity-val'].textContent = Math.round(cfg.opacity * 100) + '%';
+    /* Preview it live even though edit mode renders full-opacity: paint the
+       chosen value onto the bar directly so the slider shows what play will
+       look like. Leaving edit mode's applyOpacity() restores the rule. */
+    if (el['hb-root']) el['hb-root'].style.setProperty('--hb-opacity', String(cfg.opacity));
+  });
+  if (el['hb-opacity']) el['hb-opacity'].addEventListener('change', saveCfg);
+
+  if (el['hb-reset-pos']) el['hb-reset-pos'].addEventListener('click', resetPosition);
 
   if (el['hb-togglekey']) el['hb-togglekey'].addEventListener('click', () => openCapture(-1));
   if (el['hb-togglekey-clear']) el['hb-togglekey-clear'].addEventListener('click', () => {
@@ -1142,12 +1344,22 @@
 
   function setEditing(on) {
     editing = !!on;
+    interacting = false;   // no half-finished drag survives an edit-mode change
+    placed = false;        // a fresh edit session: avoidance is allowed again
     document.body.classList.toggle('hb-edit', editing);
     el['hb-edit'].hidden = !editing;
     el['hb-grip'].hidden = !editing;
-    if (!editing) { closePicker(); closeIconPicker(); closeCapture(); }
-    else { selectedPage = clamp(selectedPage, 0, 3); applyUiScale(); renderEdit(); }
+    if (!editing) {
+      closePicker(); closeIconPicker(); closeCapture();
+      el['hb-root'].classList.remove('grip-above', 'grip-below');
+    } else {
+      selectedPage = clamp(selectedPage, 0, 3); applyUiScale(); renderEdit();
+    }
     render();
+    /* Rescue a bar that drifted off screen so its grip is reachable. Runs after
+       render() so the box is laid out; a no-op in jsdom (zero rect) and when the
+       bar is already fully visible. */
+    if (editing) clampIntoView();
   }
 
   /* ── C++ -> view ─────────────────────────────────────────────────────── */
@@ -1162,6 +1374,9 @@
     applyUiScale();
     if (editing) renderEdit();
     render();
+    /* A config load that arrives while editing may carry a position that puts
+       the bar (or its grip) off screen — pull it back so it stays reachable. */
+    if (editing) clampIntoView();
   };
 
   window.hbLive = function (j) {
@@ -1248,6 +1463,10 @@
     get live() { return live; },
     get livePage() { return livePage; },
     get editing() { return editing; },
+    get interacting() { return interacting; },
+    set interacting(v) { interacting = v; },
+    get placed() { return placed; },
+    set placed(v) { placed = v; },
     get selectedPage() { return selectedPage; },
     set selectedPage(v) { selectedPage = v; },
     get pick() { return pick; },
@@ -1255,6 +1474,6 @@
     resolveIconPath, shKeyFor, genericKeyFor, filterRows, prettyKey, DIK,
     setEditing, render, renderEdit, renderSlotList, applyUiScale,
     openPicker, closePicker, assign, openIconPicker, openCapture,
-    flash, applyPlacement,
+    flash, applyPlacement, applyOpacity, clampIntoView, resetPosition,
   };
 })();

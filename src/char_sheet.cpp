@@ -204,6 +204,21 @@ namespace CharSheet
 			return 0;
 		}
 
+		// Clamp a portrait crop to the SAME invariant followers-pane.js enforces:
+		// z in [1,4]; a pan beyond (z-1)/2 would show the frame's empty backing,
+		// so |x|,|y| are held to that. Mirrored on both sides so a value that
+		// survives the round trip compares equal to the one the editor sent.
+		void ClampPortraitCrop(float& z, float& x, float& y)
+		{
+			if (!std::isfinite(z)) z = 1.0f;
+			if (!std::isfinite(x)) x = 0.0f;
+			if (!std::isfinite(y)) y = 0.0f;
+			z = std::clamp(z, 1.0f, 4.0f);
+			const float lim = (z - 1.0f) * 0.5f;
+			x = std::clamp(x, -lim, lim);
+			y = std::clamp(y, -lim, lim);
+		}
+
 		enum class RemoveMode { kSafe, kConfirm, kLocked };
 
 		bool IsRaceEffect(RE::PlayerCharacter* player, RE::MagicItem* src)
@@ -370,6 +385,29 @@ namespace CharSheet
 			if (!ValidPortraitPath(v))
 				return json{ { "ok", false }, { "msg", "portrait must be a path under portraits/" } }.dump();
 			meta.portrait = std::move(v);
+			// A NEW portrait supersedes any crop meant for the old one (the frame
+			// changed underneath it). Reset to identity unless this same patch
+			// also carries a crop, which the block below then applies.
+			meta.portraitZoom = 1.0f;
+			meta.portraitX    = 0.0f;
+			meta.portraitY    = 0.0f;
+		}
+
+		// Portrait display crop. Accept a flat {portraitZoom,portraitX,portraitY}
+		// (any subset), clamped to the shared invariant. A patch that sends only
+		// the crop re-frames the current photo; z=1 resets to "as shot".
+		{
+			bool  haveCrop = false;
+			float z = meta.portraitZoom, x = meta.portraitX, y = meta.portraitY;
+			if (j.contains("portraitZoom") && j["portraitZoom"].is_number()) { z = j["portraitZoom"].get<float>(); haveCrop = true; }
+			if (j.contains("portraitX") && j["portraitX"].is_number())       { x = j["portraitX"].get<float>();    haveCrop = true; }
+			if (j.contains("portraitY") && j["portraitY"].is_number())       { y = j["portraitY"].get<float>();    haveCrop = true; }
+			if (haveCrop) {
+				ClampPortraitCrop(z, x, y);
+				meta.portraitZoom = z;
+				meta.portraitX    = x;
+				meta.portraitY    = y;
+			}
 		}
 
 		return json{ { "ok", true }, { "msg", "saved" } }.dump();
@@ -411,6 +449,9 @@ namespace CharSheet
 				{ "background", meta.background },
 				{ "history", meta.history },
 				{ "portrait", meta.portrait },
+				{ "portraitCrop", json{ { "z", meta.portraitZoom },
+										{ "x", meta.portraitX },
+										{ "y", meta.portraitY } } },
 			};
 			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}

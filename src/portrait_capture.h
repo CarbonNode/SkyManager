@@ -116,6 +116,30 @@ namespace PortraitCapture
 	// have to be loaded and on screen, and you get a friendly message if not.
 	void Fire(const std::filesystem::path& portraitDir, std::uint32_t targetFormId = 0);
 
+	// Photograph the PLAYER for the Character Sheet portrait. Same back-buffer
+	// capture as Fire(), but with three things Fire() cannot give the sheet:
+	//   * a FIXED slug ("player-sheet"), not the character's name — the char
+	//     sheet's meta.portrait and the Deck Portal's Sheet tab both agree on
+	//     portraits/player-sheet.png, so both routes write the same file.
+	//   * FIRST-PERSON handling. Fire() photographs a follower standing in front
+	//     of you, so it never cares about the camera. A self-portrait in first
+	//     person would frame the world, not you: if the player is in first
+	//     person this switches to third for the shot and restores first after.
+	//   * a completion callback with the written FILE NAME (e.g.
+	//     "player-sheet.png", or a lock-versioned "player-sheet~<n>.png"), so
+	//     the caller can set meta.portrait and open the crop editor on the exact
+	//     frame that landed. Called with "" on any failure (a Notify already
+	//     told the player why).
+	//
+	// `done` is invoked on the MAIN THREAD. Returns immediately; the capture is
+	// deferred a second like Fire() so the palette and HUD are gone first.
+	void FirePlayerSheet(const std::filesystem::path& portraitDir,
+		std::function<void(const std::string&)> done);
+
+	// The fixed portrait slug the Character Sheet uses, exported so the writer
+	// (FirePlayerSheet) and any reader agree on one spelling.
+	std::string PlayerSheetSlug();
+
 	// True for the action verbs this module owns.
 	bool IsAction(const std::string& action);
 

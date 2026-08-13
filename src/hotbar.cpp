@@ -174,7 +174,7 @@ namespace Hotbar
 		return json{
 			{ "enabled", c.enabled },
 			{ "visible", c.visible },
-			{ "x", c.x }, { "y", c.y }, { "scale", c.scale },
+			{ "x", c.x }, { "y", c.y }, { "scale", c.scale }, { "opacity", c.opacity },
 			{ "orient", ClampOrient(c.orient) },
 			{ "anchorH", ClampAnchorH(c.anchorH) },
 			{ "anchorV", ClampAnchorV(c.anchorV) },
@@ -212,6 +212,7 @@ namespace Hotbar
 		out.x = j.value("x", out.x);
 		out.y = j.value("y", out.y);
 		out.scale = std::clamp(j.value("scale", out.scale), 0.4f, 3.0f);
+		out.opacity = std::clamp(j.value("opacity", out.opacity), 0.3f, 1.0f);
 		out.orient = ClampOrient(j.value("orient", out.orient));
 		out.anchorH = ClampAnchorH(j.value("anchorH", out.anchorH));
 		out.anchorV = ClampAnchorV(j.value("anchorV", out.anchorV));
