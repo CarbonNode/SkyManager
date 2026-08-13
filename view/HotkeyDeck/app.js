@@ -807,7 +807,7 @@ function render() {
   const pane = (ui.tab === 'home' || ui.tab === 'numpad' || ui.tab === 'notes' || ui.tab === 'quests' ||
                 ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
                 ui.tab === 'rooms' || ui.tab === 'time' || ui.tab === 'loot' ||
-                ui.tab === 'anim' || ui.tab === 'keys' || ui.tab === 'sheet' ||
+                ui.tab === 'anim' || ui.tab === 'keys' || ui.tab === 'items' || ui.tab === 'sheet' ||
                 ui.tab === 'wardrobe' || ui.tab === 'faces' || ui.tab === 'recent') ? ui.tab : 'deck';
   const deck = pane === 'deck';
   window.__hdActiveTab = pane;   // panes (followers/domains) key their re-renders off this
@@ -824,6 +824,7 @@ function render() {
   $('lt-pane').classList.toggle('hidden', pane !== 'loot');
   $('an-pane').classList.toggle('hidden', pane !== 'anim');
   $('kc-pane').classList.toggle('hidden', pane !== 'keys');
+  $('ix-pane').classList.toggle('hidden', pane !== 'items');
   $('ps-pane').classList.toggle('hidden', pane !== 'sheet');
   $('fin-pane').classList.toggle('hidden', pane !== 'finances');
   $('wd-pane').classList.toggle('hidden', pane !== 'wardrobe');
@@ -866,7 +867,7 @@ function render() {
  *  control belongs beside that tab's other settings, not in a second card
  *  floating above it, and those panes never flip ui.edit anyway.
  */
-const TAB_SCALE_CARD_TABS = ['quests', 'notes', 'numpad', 'recent', 'time', 'loot', 'anim'];
+const TAB_SCALE_CARD_TABS = ['quests', 'notes', 'numpad', 'recent', 'time', 'loot', 'anim', 'items'];
 
 function renderTabScaleCard(pane) {
   const card = $('tab-scale-card');
@@ -1263,6 +1264,11 @@ function renderHints(pane) {
       '<span>bind “Loot Vision” (Misc) to a key</span><span>F7 / Esc close</span>';
     return;
   }
+  if (pane === 'items') {
+    h.innerHTML = '<span>Type an item — or a mod to browse it</span><span>Enter = top hit</span>' +
+      '<span>💰 Merchant mode asks a price and pays real gold</span><span>F7 / Esc close</span>';
+    return;
+  }
   if (pane === 'anim') {
     h.innerHTML = '<span>Search, then Apply (Enter = top hit)</span><span>plays on who you looked at, or you</span>' +
       '<span>Reset returns the pose</span><span>F7 / Esc close</span>';
@@ -1313,6 +1319,7 @@ const SYS_TABS = [
   { tab: 'rooms',      label: 'Rooms',      img: 'icons/custom/hm-rooms.png',      title: 'Claim a room and keep strangers out of it' },
   { tab: 'loot',       label: 'Loot',       img: 'icons/custom/hm-loot.png',       title: 'Glow the loot worth walking to' },
   { tab: 'keys',       label: 'Keys',       img: 'icons/custom/hm-keys.png',       title: 'Every hotkey in the load order, and what conflicts' },
+  { tab: 'items',      label: 'Items',      img: 'icons/custom/hm-items.png',      title: 'Find any item any mod ships — take it, or pay for it' },
   { tab: 'sheet',      label: 'Character',  img: 'icons/custom/hm-sheet.png',      title: 'Your character sheet - stats, effects, story' },
   { tab: 'anim',       label: 'Animations', img: 'icons/custom/hm-anim.png',       title: 'Apply a pose / animation to an NPC or yourself', requires: 'zap' },
   { tab: 'finances',   label: 'Finances',   img: 'icons/custom/hm-finances.png',   title: 'Your ledger, properties and market' },
@@ -2595,6 +2602,7 @@ function setTab(t) {
   if (prev === 'rooms' && window.RoomsPane) RoomsPane.onHide();
   if (prev === 'loot' && window.LootPane) LootPane.onHide();
   if (prev === 'keys' && window.KeysPane) KeysPane.onHide();
+  if (prev === 'items' && window.ItemsPane) ItemsPane.onHide();
   if (prev === 'sheet' && window.CharSheetPane) CharSheetPane.onHide();
   if (prev === 'anim' && window.AnimPane) AnimPane.onHide();
   if (prev === 'finances' && window.FinancesPane) FinancesPane.onHide();
@@ -2646,6 +2654,10 @@ function setTab(t) {
   }
   if (t === 'keys') {
     if (window.KeysPane) KeysPane.onShow();   // re-asks scan state; first look auto-starts the census
+    return;
+  }
+  if (t === 'items') {
+    if (window.ItemsPane) ItemsPane.onShow();   // first look builds the C++ index; later looks refresh gold
     return;
   }
   if (t === 'sheet') {

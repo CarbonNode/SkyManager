@@ -261,9 +261,20 @@
     "atomic-config-write": "atomic config swap failed",
     "omo-cancel-config": "OMO cancel binding unrecognized",
     "crt-alert-view": "crt-alert: view created + listener registered",
-    "text-input-guard": "text-input guard:"
+    "text-input-guard": "text-input guard:",
+    "item-explorer-index": "item-explorer: index built",
+    "item-explorer-add": "item-explorer: add {} x{} from {} (paid {})"
   },
   "view": {
+    "items-pane.js": {
+      "items-pane": "window.ItemsPane",
+      "items-price-sheet": "function openSheet",
+      "items-merchant-toggle": "Merchant mode: ON"
+    },
+    "items-pane.css": {
+      "items-sheet": "#ix-pane {",
+      "items-bar": ".ix-bar {"
+    },
     "wardrobe-spid.js": {
       "spid-wardrobe-tab": "id: 'spid'",
       "spid-item-switch": "function sendEnableItem",

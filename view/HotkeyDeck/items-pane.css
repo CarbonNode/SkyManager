@@ -1,0 +1,582 @@
+/* ===================================================================== *
+ *  Items tab — the inline item explorer. Own sheet (linked from
+ *  index.html) so no other pane's app.css section can truncate it — the
+ *  sync_view_frags lesson, same as keys-pane.css.
+ *
+ *  Centerpiece: ONE Google-style bar. Big, calm, spacious — the deck's
+ *  tokens (dark #1a1a21→#101015, gold rgba(201,162,75), border #3d3a33,
+ *  radius 12). No text below 12px — couch rules.
+ * ===================================================================== */
+
+#ix-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 22px 14px;
+  gap: 14px;
+  position: relative;   /* the price sheet + toast anchor to the pane */
+}
+#ix-pane.hidden { display: none; }
+
+/* ------------------------------------------------------------- header -- */
+
+.ix-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ix-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #e8e2d4;
+  letter-spacing: .3px;
+  white-space: nowrap;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+#ix-count-chip {
+  font-size: 13px;
+  font-weight: 500;
+  color: #9a917d;
+  white-space: nowrap;
+}
+
+.ix-head-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ix-gold {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ecd9a8;
+  background: #201f18;
+  border: 1px solid #55503f;
+  border-radius: 9px;
+  padding: 8px 14px;
+  white-space: nowrap;
+}
+
+.ix-btn {
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  color: #cfc8b8;
+  font-size: 14px;
+  padding: 10px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.ix-btn:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.ix-btn:active { background: #17171d; }
+.ix-btn.ix-toggle-on {
+  background: rgba(201, 162, 75, .16);
+  border-color: rgba(201, 162, 75, .55);
+  color: #ecd9a8;
+}
+
+#ix-mult {
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  color: #cfc8b8;
+  font-size: 14px;
+  padding: 9px 10px;
+  cursor: pointer;
+  outline: none;
+}
+#ix-mult.hidden { display: none; }
+
+/* --------------------------------------------------------- the ONE bar -- */
+
+.ix-barwrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ix-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #121218;
+  border: 1px solid #3d3a33;
+  border-radius: 999px;          /* the Google silhouette */
+  padding: 6px 12px 6px 20px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.ix-bar:focus-within {
+  border-color: rgba(201, 162, 75, .55);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .10), 0 6px 22px rgba(0, 0, 0, .35);
+}
+
+.ix-bar-glyph {
+  font-size: 20px;
+  color: #9a917d;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+#ix-search {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #efe9da;
+  font-size: 18px;               /* the hero input — bigger than any filter */
+  padding: 11px 6px;
+}
+#ix-search::placeholder { color: #6d675a; }
+
+/* the selected-mod chip lives INSIDE the bar, like a Gmail search token */
+#ix-plug-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 40%;
+  background: rgba(201, 162, 75, .14);
+  border: 1px solid rgba(201, 162, 75, .45);
+  color: #ecd9a8;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 7px 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+#ix-plug-chip.hidden { display: none; }
+#ix-plug-chip b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  font-weight: 600;
+}
+.ix-chip-x {
+  cursor: pointer;
+  font-weight: 700;
+  color: #d8bd85;
+  padding: 0 2px;
+  border-radius: 50%;
+  transition: color 120ms ease, transform 120ms ease;
+  flex-shrink: 0;
+}
+.ix-chip-x:hover { color: #f2e2b0; transform: scale(1.2); }
+
+/* -------------------------------------------------------------- pills -- */
+
+#ix-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;       /* centred under the bar, search-engine style */
+}
+
+.ix-pill {
+  background: #17171e;
+  border: 1px solid #33302a;
+  border-radius: 999px;
+  color: #b6ad99;
+  font-size: 13.5px;
+  padding: 8px 15px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.ix-pill:hover { background: #20202a; border-color: #4a4638; color: #e2dbca; }
+.ix-pill.ix-pill-on {
+  background: rgba(201, 162, 75, .16);
+  border-color: rgba(201, 162, 75, .55);
+  color: #ecd9a8;
+  font-weight: 650;
+}
+
+/* --------------------------------------------------------------- body -- */
+
+#ix-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 6px;
+}
+
+.ix-sect {
+  font-size: 12.5px;
+  color: #6d675a;
+  text-transform: uppercase;
+  letter-spacing: .9px;
+  padding: 8px 4px 2px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.ix-sect b { color: #9a917d; font-weight: 650; letter-spacing: 0; text-transform: none; }
+
+/* a matching MOD (plugin) row — click to browse its whole catalogue */
+.ix-plug-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #15151d;
+  border: 1px solid #3a3630;
+  border-radius: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.ix-plug-row:hover { background: #1c1c25; border-color: rgba(201, 162, 75, .45); }
+.ix-plug-row.ix-sel { border-color: rgba(201, 162, 75, .6); background: #1c1c25; }
+
+.ix-plug-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 15.5px;
+  font-weight: 650;
+  color: #e2dbca;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ix-plug-count { font-size: 13px; color: #9a917d; white-space: nowrap; }
+.ix-plug-go { font-size: 14px; color: #d8bd85; white-space: nowrap; }
+
+.ix-kindbadge {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .6px;
+  border-radius: 6px;
+  padding: 4px 8px;
+  flex-shrink: 0;
+}
+.ix-kind-esm { background: #21232b; border: 1px solid #363a47; color: #aab3c6; }
+.ix-kind-esp { background: #1b2b28; border: 1px solid #2f5148; color: #94d6c3; }
+.ix-kind-esl { background: #261e2e; border: 1px solid #4a3960; color: #cbabef; }
+
+/* ----------------------------------------------------------- item rows -- */
+
+.ix-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #15151b;
+  border: 1px solid #33302a;
+  border-radius: 10px;
+  padding: 10px 14px;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.ix-row:hover { background: #1b1b23; border-color: #4a4638; }
+.ix-row.ix-sel { border-color: rgba(201, 162, 75, .6); background: #1b1b23; }
+
+/* per-type glyph plate, the keys-pane hue idea applied to item categories */
+.ix-glyph {
+  width: 46px;
+  height: 46px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+}
+.ix-t-weap { background: #2b1d1c; border-color: #5c3733; color: #e8a49c; }
+.ix-t-armo { background: #21232b; border-color: #414659; color: #aab3c6; }
+.ix-t-ammo { background: #241f17; border-color: #4d4128; color: #d3b988; }
+.ix-t-alch { background: #1c2530; border-color: #33465c; color: #9ec3e8; }
+.ix-t-food { background: #26201a; border-color: #52412e; color: #dfb894; }
+.ix-t-ingr { background: #1b2b1f; border-color: #2f513a; color: #94d6a7; }
+.ix-t-book { background: #2a2417; border-color: #55503f; color: #ecd9a8; }
+.ix-t-scrl { background: #292117; border-color: #564734; color: #e3c493; }
+.ix-t-slgm { background: #261e2e; border-color: #4a3960; color: #cbabef; }
+.ix-t-misc { background: #1b2b28; border-color: #2f5148; color: #94d6c3; }
+.ix-t-keym { background: #23211b; border-color: #4b4636; color: #cfc19a; }
+.ix-t-ligh { background: #2b2415; border-color: #5c4c2a; color: #f0d089; }
+
+.ix-mid {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ix-name {
+  font-size: 16px;
+  font-weight: 650;
+  color: #efe9da;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ix-name mark {
+  background: rgba(201, 162, 75, .25);
+  color: #f2e2b0;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.ix-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: #9a917d;
+  min-width: 0;
+}
+.ix-meta-type { color: #b6ad99; font-weight: 600; white-space: nowrap; }
+.ix-meta-plug {
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 34ch;
+  transition: color 120ms ease;
+}
+.ix-meta-plug:hover { color: #ecd9a8; text-decoration: underline; }
+.ix-meta-vw { white-space: nowrap; }
+
+/* right side: qty stepper + the action button */
+.ix-act {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ix-qty {
+  display: flex;
+  align-items: center;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  overflow: hidden;
+  background: #121218;
+}
+.ix-qty button {
+  background: transparent;
+  border: none;
+  color: #cfc8b8;
+  font-size: 16px;
+  width: 34px;
+  height: 38px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.ix-qty button:hover { background: #26262f; color: #efe9da; }
+.ix-qty b {
+  min-width: 34px;
+  text-align: center;
+  font-size: 14.5px;
+  color: #efe9da;
+  font-weight: 700;
+}
+
+.ix-take {
+  background: rgba(201, 162, 75, .14);
+  border: 1px solid rgba(201, 162, 75, .5);
+  border-radius: 9px;
+  color: #ecd9a8;
+  font-size: 14px;
+  font-weight: 650;
+  padding: 10px 18px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, transform 80ms ease;
+}
+.ix-take:hover { background: rgba(201, 162, 75, .24); border-color: rgba(201, 162, 75, .75); }
+.ix-take:active { transform: scale(.97); }
+
+/* the "show more" foot */
+.ix-more {
+  align-self: center;
+  margin: 6px 0 10px;
+}
+
+/* --------------------------------------------------------- hero / empty -- */
+
+#ix-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 30px;
+}
+#ix-empty.hidden { display: none; }
+
+.ix-hero-glyph { font-size: 44px; line-height: 1; opacity: .8; }
+.ix-empty-title { font-size: 20px; font-weight: 700; color: #cfc8b8; }
+.ix-empty-sub { font-size: 14.5px; color: #8d8471; max-width: 52ch; line-height: 1.55; }
+.ix-empty-sub b { color: #cfc8b8; }
+
+.ix-try {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 4px;
+}
+.ix-try .ix-pill { font-size: 14px; }
+
+/* ---------------------------------------------------------- price sheet -- */
+
+#ix-sheet {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 8, 11, .72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  border-radius: inherit;
+}
+#ix-sheet.hidden { display: none; }
+
+.ix-sheet-card {
+  width: min(480px, 92%);
+  background: linear-gradient(180deg, #1a1a21, #101015);
+  border: 1px solid #55503f;
+  border-radius: 14px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .6);
+  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ix-sheet-title { font-size: 18px; font-weight: 700; color: #e8e2d4; }
+.ix-sheet-item {
+  font-size: 15px;
+  color: #b6ad99;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ix-sheet-item b { color: #efe9da; font-size: 16px; }
+
+.ix-sheet-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ix-sheet-label { font-size: 13.5px; color: #9a917d; min-width: 64px; }
+
+#ix-price {
+  flex: 1;
+  min-width: 120px;
+  background: #121218;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  color: #ecd9a8;
+  font-size: 18px;
+  font-weight: 700;
+  padding: 11px 14px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+#ix-price:focus {
+  border-color: rgba(201, 162, 75, .55);
+  box-shadow: 0 0 0 2px rgba(201, 162, 75, .12);
+}
+
+.ix-sheet-note { font-size: 13.5px; color: #9a917d; }
+.ix-sheet-note.ix-short { color: #e8a49c; }
+
+.ix-sheet-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.ix-pay {
+  background: rgba(201, 162, 75, .2);
+  border: 1px solid rgba(201, 162, 75, .6);
+  border-radius: 9px;
+  color: #f2e2b0;
+  font-size: 15px;
+  font-weight: 700;
+  padding: 11px 20px;
+  cursor: pointer;
+  transition: background 130ms ease, opacity 130ms ease;
+}
+.ix-pay:hover { background: rgba(201, 162, 75, .3); }
+.ix-pay:disabled { opacity: .45; cursor: default; }
+
+/* --------------------------------------------------------------- toast -- */
+
+.ix-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%) translateY(8px);
+  background: #1d1d25;
+  border: 1px solid rgba(201, 162, 75, .5);
+  color: #ecd9a8;
+  border-radius: 10px;
+  padding: 11px 18px;
+  font-size: 14.5px;
+  font-weight: 600;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 50;
+  max-width: 86%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ix-toast.ix-toast-show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.ix-toast.ix-toast-err { border-color: rgba(200, 80, 70, .6); color: #f0b1a8; }
+
+/* ---------------------------------------------------------- skeletons -- */
+
+.ix-skel { pointer-events: none; }
+.ix-skel-box {
+  border-radius: 8px;
+  background: linear-gradient(90deg, #1b1b22 25%, #23232c 50%, #1b1b22 75%);
+  background-size: 200% 100%;
+  animation: ix-shimmer 1.3s infinite linear;
+  border: none;
+}
+.ix-skel .ix-glyph { border: none; }
+.ix-skel-w1 { width: 46%; height: 18px; }
+.ix-skel-w2 { width: 30%; height: 13px; }
+.ix-skel-btn { width: 84px; height: 38px; }
+
+@keyframes ix-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ------------------------------------------------- narrow palette (640) -- */
+
+@media (max-width: 900px) {
+  #ix-pane { padding: 14px 14px 10px; }
+  .ix-title { font-size: 17px; }
+  #ix-search { font-size: 16px; padding: 9px 4px; }
+  .ix-btn { padding: 9px 12px; font-size: 13px; }
+  .ix-glyph { width: 38px; height: 38px; font-size: 18px; }
+  .ix-name { font-size: 14.5px; }
+  .ix-meta { font-size: 12.5px; }
+  .ix-meta-plug { max-width: 18ch; }
+  .ix-qty button { width: 28px; height: 34px; }
+  .ix-take { padding: 9px 12px; font-size: 13px; }
+  #ix-plug-chip { max-width: 34%; font-size: 13px; }
+  .ix-pill { font-size: 12.5px; padding: 7px 11px; }
+}

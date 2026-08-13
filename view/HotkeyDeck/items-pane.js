@@ -1,0 +1,842 @@
+'use strict';
+
+/* ====================================================================== *
+ *  Items — the inline item explorer (Rober, 2026-08-13: "think additemmenu
+ *  but you can just straight up type in a esp or esl name, a mod item name
+ *  … one unified highly polished search bar think google, with maybe pills
+ *  … then like a toggle to ask if you want to set a price - asks the price
+ *  or just freely give it to yourself").
+ *
+ *  C++ owns the index, the matching and the add (item_explorer.cpp); this
+ *  pane owns the ONE bar, the pills, merchant mode and the price sheet.
+ *
+ *  Bridge — requests: ixState() · ixQuery(json) · ixAdd(json) · ixSave(json)
+ *  Replies (disjoint, per the deck law): ixStateResult({phase,count,gold,pay,
+ *  mult,plugins}) · ixResultData({seq,total,offset,items}) · ixAddResult(
+ *  {ok,msg,gold}) · ixSaved({ok,pay,mult})
+ *
+ *  Host contract (mirrors KeysPane): ItemsPane.init() · onShow() · onHide() ·
+ *  toggleEdit() (no edit chrome) · wantsPause() -> true
+ * ====================================================================== */
+
+window.ItemsPane = (function () {
+
+  const DEV = location.search.indexOf('dev=1') !== -1;
+  const SELFTEST = location.search.indexOf('selftest=1') !== -1;
+
+  const DEBOUNCE_MS = 160;   // per keystroke, before the C++ query fires
+  const PAGE = 60;           // rows per fetch; "Show more" appends another page
+
+  /* ============================================================== kinds == */
+
+  /* kind key -> [label, glyph]. Order = the pill row. 'all' and 'mods' are
+     pseudo-kinds the C++ never sees ('mods' searches plugin names only). */
+  const KINDS = [
+    ['all',  'Everything', '⌕'],
+    ['mods', 'Mods',       '📦'],
+    ['weap', 'Weapons',    '⚔'],
+    ['armo', 'Armor',      '🛡'],
+    ['alch', 'Potions',    '🧪'],
+    ['food', 'Food',       '🍖'],
+    ['ingr', 'Ingredients','🌿'],
+    ['book', 'Books',      '📕'],
+    ['scrl', 'Scrolls',    '📜'],
+    ['slgm', 'Soul Gems',  '🔮'],
+    ['misc', 'Misc',       '💎'],
+    ['ammo', 'Ammo',       '➶'],
+    ['keym', 'Keys',       '🗝'],
+    ['ligh', 'Torches',    '🕯'],
+  ];
+
+  function kindMeta(t) {
+    for (let i = 0; i < KINDS.length; i++) if (KINDS[i][0] === t) return KINDS[i];
+    return ['misc', 'Item', '❖'];
+  }
+
+  /* ============================================================== state == */
+
+  const state = {
+    ready: false,
+    count: 0,
+    gold: -1,        // -1 = unknown (SEH sentinel) — shown as "?"
+    pay: false,
+    mult: 1,
+    plugins: [],     // [{n,c,k,l}] — matched locally for the Mods section
+    seq: 0,          // last query seq we SENT; stale replies are dropped
+    total: 0,
+    items: [],       // accumulated rows for the current query (paging appends)
+    awaiting: false,
+    askedOnce: false,
+  };
+
+  const ui = {
+    q: '',
+    type: 'all',
+    plugin: '',
+    sel: 0,          // index into flatRows()
+    qty: {},         // item id -> chosen quantity (default 1)
+    visible: false,
+    debT: null,
+    sheet: null,     // {item, qty} while the price sheet is up
+    toastT: null,
+  };
+
+  /* ============================================================= bridge == */
+
+  function toGame(fn, arg) {
+    const f = window[fn];
+    if (typeof f === 'function') {
+      try { f(String(arg === undefined ? '' : arg)); } catch (e) { console.log('bridge error', fn, e); }
+    } else {
+      console.log('[dev->game]', fn, arg);
+      if (DEV && fn === 'ixState') setTimeout(devState, 30);
+      if (DEV && fn === 'ixQuery') setTimeout(function () { devQuery(arg); }, 30);
+      if (DEV && fn === 'ixAdd') setTimeout(function () { devAdd(arg); }, 30);
+      if (DEV && fn === 'ixSave') setTimeout(function () { devSave(arg); }, 30);
+    }
+  }
+
+  window.ixStateResult = function (d) {
+    if (!d || typeof d !== 'object') return;
+    state.ready = d.phase === 'ready';
+    state.count = d.count | 0;
+    state.gold = (typeof d.gold === 'number') ? d.gold : -1;
+    state.pay = !!d.pay;
+    state.mult = Number(d.mult) || 1;
+    state.plugins = Array.isArray(d.plugins) ? d.plugins : [];
+    if (ui.visible) {
+      /* A query typed before the index answered (or carried over from the last
+         open) now has something to run against. */
+      if (state.ready && (ui.q || ui.plugin || ui.type !== 'all') && !state.items.length && !state.awaiting)
+        runQuery(true);
+      render();
+    }
+  };
+
+  window.ixResultData = function (d) {
+    if (!d || typeof d !== 'object') return;
+    if ((d.seq | 0) !== state.seq) return;   // stale reply from an older keystroke
+    state.awaiting = false;
+    state.total = d.total | 0;
+    const rows = Array.isArray(d.items) ? d.items : [];
+    if ((d.offset | 0) > 0) state.items = state.items.concat(rows);
+    else state.items = rows;
+    if (ui.visible) render();
+  };
+
+  window.ixAddResult = function (d) {
+    if (!d || typeof d !== 'object') return;
+    if (typeof d.gold === 'number') state.gold = d.gold;
+    toast(d.msg || (d.ok ? 'Done' : 'Failed'), !d.ok);
+    if (ui.visible) renderHeader();
+  };
+
+  window.ixSaved = function (d) {
+    if (!d || typeof d !== 'object') return;
+    state.pay = !!d.pay;
+    state.mult = Number(d.mult) || 1;
+    if (ui.visible) { renderHeader(); renderBody(); }
+  };
+
+  /* ============================================================ queries == */
+
+  function runQuery(reset) {
+    if (ui.type === 'mods') { state.awaiting = false; render(); return; }
+    if (!ui.q && !ui.plugin && ui.type === 'all') {
+      /* nothing to ask — the hero state owns the screen */
+      state.items = []; state.total = 0; state.awaiting = false;
+      render();
+      return;
+    }
+    state.seq++;
+    state.awaiting = true;
+    if (reset) { state.items = []; ui.sel = 0; }
+    toGame('ixQuery', JSON.stringify({
+      q: ui.q, type: ui.type === 'mods' ? 'all' : ui.type, plugin: ui.plugin,
+      limit: PAGE, offset: reset ? 0 : state.items.length, seq: state.seq,
+    }));
+    render();
+  }
+
+  function queryDebounced() {
+    if (ui.debT) clearTimeout(ui.debT);
+    ui.debT = setTimeout(function () { ui.debT = null; runQuery(true); }, DEBOUNCE_MS);
+  }
+
+  /* Matching MODS, locally: every token must appear in the plugin name.
+     Count-heavy plugins first — the big content mods are the likely target. */
+  function modMatches(limit) {
+    const toks = ui.q.toLowerCase().split(/\s+/).filter(Boolean);
+    const out = [];
+    for (let i = 0; i < state.plugins.length; i++) {
+      const p = state.plugins[i];
+      const low = String(p.n || '').toLowerCase();
+      let ok = true;
+      for (let t = 0; t < toks.length; t++) if (low.indexOf(toks[t]) === -1) { ok = false; break; }
+      if (ok) out.push(p);
+    }
+    out.sort(function (a, b) { return (b.c | 0) - (a.c | 0); });
+    return out.slice(0, limit);
+  }
+
+  /* ====================================================== selection model == */
+
+  /* Everything the keyboard can land on, in visual order: mod rows first,
+     then item rows, then the Show-more foot. */
+  function flatRows() {
+    const rows = [];
+    if (showsModSection()) {
+      modMatches(ui.type === 'mods' ? 30 : 5).forEach(function (p) { rows.push({ kind: 'plug', p: p }); });
+    }
+    if (ui.type !== 'mods') {
+      state.items.forEach(function (it) { rows.push({ kind: 'item', it: it }); });
+      if (state.items.length < state.total) rows.push({ kind: 'more' });
+    }
+    return rows;
+  }
+
+  function showsModSection() {
+    if (ui.plugin) return false;             // already inside one mod
+    if (ui.type === 'mods') return true;     // the Mods pill: only mods
+    return ui.type === 'all' && !!ui.q;      // unified search: mods ride on top
+  }
+
+  function activate(row) {
+    if (!row) return;
+    if (row.kind === 'plug') { setPlugin(row.p.n); return; }
+    if (row.kind === 'more') { runQuery(false); return; }
+    if (row.kind === 'item') {
+      const qty = ui.qty[row.it.id] || 1;
+      if (state.pay) openSheet(row.it, qty);
+      else takeItem(row.it, qty, false, 0);
+    }
+  }
+
+  /* ============================================================= actions == */
+
+  function takeItem(it, qty, pay, price) {
+    toGame('ixAdd', JSON.stringify({ id: it.id, count: qty, pay: !!pay, price: price | 0 }));
+  }
+
+  function setPlugin(name) {
+    ui.plugin = String(name || '');
+    ui.q = '';
+    const s = $('ix-search');
+    if (s) { s.value = ''; s.focus(); }
+    if (ui.type === 'mods') ui.type = 'all';
+    runQuery(true);
+  }
+
+  function clearPlugin() {
+    ui.plugin = '';
+    runQuery(true);
+    const s = $('ix-search');
+    if (s) s.focus();
+  }
+
+  function suggestedPrice(it, qty) {
+    const v = Math.max(0, it.v | 0);
+    return Math.max(0, Math.round(v * (state.mult || 1))) * qty;
+  }
+
+  /* ========================================================= price sheet == */
+
+  function openSheet(it, qty) {
+    ui.sheet = { item: it, qty: qty };
+    renderSheet();
+  }
+
+  function closeSheet() {
+    ui.sheet = null;
+    const sh = $('ix-sheet');
+    if (sh) { sh.classList.add('hidden'); sh.innerHTML = ''; }
+    const s = $('ix-search');
+    if (s) s.focus();
+  }
+
+  function renderSheet() {
+    const sh = $('ix-sheet');
+    if (!sh || !ui.sheet) return;
+    const it = ui.sheet.item;
+    const qty = ui.sheet.qty;
+    const val = Math.max(0, it.v | 0) * qty;
+    const sug = suggestedPrice(it, qty);
+    sh.classList.remove('hidden');
+    sh.innerHTML =
+      '<div class="ix-sheet-card">' +
+      '<div class="ix-sheet-title">Name the price</div>' +
+      '<div class="ix-sheet-item"><b>' + esc(it.n) + (qty > 1 ? ' ×' + qty : '') + '</b>' +
+      '<span>' + esc(kindMeta(it.t)[1]) + ' · ' + esc(it.p) + ' · worth ' + fmtGold(val) + ' g</span></div>' +
+      '<div class="ix-sheet-row"><span class="ix-sheet-label">Price</span>' +
+      '<input id="ix-price" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" value="' + sug + '">' +
+      '<span class="ix-sheet-label">gold</span></div>' +
+      '<div class="ix-sheet-row">' +
+      '<button class="ix-pill" data-price="' + val + '">Value · ' + fmtGold(val) + '</button>' +
+      '<button class="ix-pill" data-price="' + (val * 2) + '">×2 · ' + fmtGold(val * 2) + '</button>' +
+      '<button class="ix-pill" data-price="' + (val * 5) + '">×5 · ' + fmtGold(val * 5) + '</button>' +
+      '<button class="ix-pill" data-price="0">Free</button>' +
+      '</div>' +
+      '<div id="ix-sheet-note" class="ix-sheet-note"></div>' +
+      '<div class="ix-sheet-actions">' +
+      '<button id="ix-sheet-cancel" class="ix-btn">Cancel</button>' +
+      '<button id="ix-sheet-pay" class="ix-pay">Pay</button>' +
+      '</div></div>';
+
+    const price = $('ix-price');
+    const note = $('ix-sheet-note');
+    const pay = $('ix-sheet-pay');
+
+    function current() {
+      const n = parseInt(String(price.value).replace(/[^0-9]/g, ''), 10);
+      return isNaN(n) ? 0 : Math.min(n, 100000000);
+    }
+    function refresh() {
+      const p = current();
+      const short = state.gold >= 0 && p > state.gold;
+      pay.disabled = short;
+      pay.textContent = p > 0 ? ('Pay ' + fmtGold(p) + ' g & take') : 'Take for free';
+      note.textContent = state.gold < 0 ? 'Your gold could not be read — the game will still refuse if you cannot pay.'
+        : short ? ('You carry ' + fmtGold(state.gold) + ' g — that is ' + fmtGold(p - state.gold) + ' short.')
+          : ('You carry ' + fmtGold(state.gold) + ' g.');
+      note.classList.toggle('ix-short', short);
+    }
+    price.addEventListener('input', refresh);
+    price.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !pay.disabled) { e.stopPropagation(); doPay(); }
+      if (e.key === 'Escape') { e.stopPropagation(); closeSheet(); }
+    });
+    sh.querySelectorAll('.ix-pill[data-price]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        price.value = b.getAttribute('data-price');
+        refresh();
+        price.focus();
+      });
+    });
+    function doPay() {
+      const p = current();
+      const it2 = ui.sheet && ui.sheet.item;
+      const q2 = ui.sheet ? ui.sheet.qty : 1;
+      closeSheet();
+      if (it2) takeItem(it2, q2, p > 0, p);
+    }
+    pay.addEventListener('click', doPay);
+    $('ix-sheet-cancel').addEventListener('click', closeSheet);
+    sh.addEventListener('click', function (e) { if (e.target === sh) closeSheet(); });
+    refresh();
+    setTimeout(function () { price.focus(); price.select(); }, 30);
+  }
+
+  /* ============================================================= render == */
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function fmtGold(n) {
+    n = Math.round(Number(n) || 0);
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+  function highlight(text, q) {
+    const t = String(text == null ? '' : text);
+    if (!q) return esc(t);
+    const i = t.toLowerCase().indexOf(q.toLowerCase());
+    if (i === -1) return esc(t);
+    return esc(t.slice(0, i)) + '<mark>' + esc(t.slice(i, i + q.length)) + '</mark>' + esc(t.slice(i + q.length));
+  }
+
+  function renderHeader() {
+    const chip = $('ix-count-chip');
+    if (chip) {
+      chip.textContent = state.ready
+        ? (fmtGold(state.count) + ' items · ' + fmtGold(state.plugins.length) + ' mods indexed')
+        : 'reading the load order…';
+    }
+    const gold = $('ix-gold');
+    if (gold) gold.textContent = '🜚 ' + (state.gold < 0 ? '?' : fmtGold(state.gold));
+    const payBtn = $('ix-pay-toggle');
+    if (payBtn) {
+      payBtn.classList.toggle('ix-toggle-on', state.pay);
+      payBtn.textContent = state.pay ? '💰 Merchant mode: ON' : '💰 Merchant mode';
+      payBtn.title = state.pay
+        ? 'Taking an item asks a price and pays REAL gold — click for free-take mode'
+        : 'Free take — click to make items cost gold (asks a price each time)';
+    }
+    const mult = $('ix-mult');
+    if (mult) {
+      mult.classList.toggle('hidden', !state.pay);
+      const want = String(state.mult);
+      if (mult.value !== want) mult.value = want;
+    }
+  }
+
+  function renderPills() {
+    const box = $('ix-pills');
+    if (!box) return;
+    box.innerHTML = KINDS.map(function (k) {
+      return '<button class="ix-pill' + (ui.type === k[0] ? ' ix-pill-on' : '') +
+        '" data-type="' + k[0] + '" title="' +
+        (k[0] === 'all' ? 'Search items and mods together'
+          : k[0] === 'mods' ? 'Search plugin names only — esp, esm, esl'
+            : 'Only ' + esc(k[1].toLowerCase())) + '">' +
+        (k[0] === 'all' || k[0] === 'mods' ? '' : k[2] + ' ') + esc(k[1]) + '</button>';
+    }).join('');
+    box.querySelectorAll('.ix-pill').forEach(function (b) {
+      b.addEventListener('click', function () {
+        ui.type = b.getAttribute('data-type');
+        ui.sel = 0;
+        runQuery(true);
+        const s = $('ix-search');
+        if (s) s.focus();
+      });
+    });
+  }
+
+  function renderPlugChip() {
+    const chip = $('ix-plug-chip');
+    if (!chip) return;
+    if (!ui.plugin) { chip.classList.add('hidden'); chip.innerHTML = ''; return; }
+    chip.classList.remove('hidden');
+    chip.innerHTML = '📦 <b title="' + esc(ui.plugin) + '">' + esc(ui.plugin) + '</b>' +
+      '<span class="ix-chip-x" title="Search everything again">✕</span>';
+    chip.querySelector('.ix-chip-x').addEventListener('click', clearPlugin);
+  }
+
+  function plugRowHtml(p, selIdx, idx) {
+    const kindCls = p.k === 'esm' ? 'ix-kind-esm' : (p.k === 'esl' || p.l) ? 'ix-kind-esl' : 'ix-kind-esp';
+    const kindLbl = String(p.k || 'esp').toUpperCase() + (p.l && p.k === 'esp' ? ' · light' : '');
+    return '<div class="ix-plug-row' + (selIdx === idx ? ' ix-sel' : '') + '" data-plug="' + esc(p.n) +
+      '" title="Browse everything ' + esc(p.n) + ' ships">' +
+      '<span class="ix-kindbadge ' + kindCls + '">' + esc(kindLbl) + '</span>' +
+      '<span class="ix-plug-name">' + highlight(p.n, ui.q) + '</span>' +
+      '<span class="ix-plug-count">' + fmtGold(p.c) + ' items</span>' +
+      '<span class="ix-plug-go">Browse →</span></div>';
+  }
+
+  function itemRowHtml(it, selIdx, idx) {
+    const meta = kindMeta(it.t);
+    const qty = ui.qty[it.id] || 1;
+    const price = suggestedPrice(it, qty);
+    const btn = state.pay
+      ? ('Buy · ~' + fmtGold(price) + ' g')
+      : (qty > 1 ? 'Take ×' + qty : 'Take');
+    const w = Math.round((Number(it.w) || 0) * 10) / 10;
+    return '<div class="ix-row' + (selIdx === idx ? ' ix-sel' : '') + '" data-id="' + esc(it.id) + '">' +
+      '<div class="ix-glyph ix-t-' + esc(it.t) + '" title="' + esc(meta[1]) + '">' + meta[2] + '</div>' +
+      '<div class="ix-mid">' +
+      '<div class="ix-name" title="' + esc(it.n) + '">' + highlight(it.n, ui.q) + '</div>' +
+      '<div class="ix-meta">' +
+      '<span class="ix-meta-type">' + esc(meta[1]) + '</span>' +
+      '<span class="ix-meta-plug" data-plug="' + esc(it.p) + '" title="Browse everything ' + esc(it.p) + ' ships">' + esc(it.p) + '</span>' +
+      '<span class="ix-meta-vw">' + fmtGold(Math.max(0, it.v | 0)) + ' g · ' + w + ' wt</span>' +
+      '</div></div>' +
+      '<div class="ix-act">' +
+      '<span class="ix-qty"><button data-d="-1" title="Fewer">−</button><b>' + qty + '</b>' +
+      '<button data-d="1" title="More">+</button></span>' +
+      '<button class="ix-take" title="' +
+      (state.pay ? 'Asks the price, then pays real gold' : 'Add to your inventory') + '">' + btn + '</button>' +
+      '</div></div>';
+  }
+
+  function renderBody() {
+    const body = $('ix-body');
+    const empty = $('ix-empty');
+    if (!body || !empty) return;
+
+    /* index not answered yet: skeleton rows sized like the real thing */
+    if (!state.ready) {
+      body.innerHTML = new Array(7).fill(
+        '<div class="ix-row ix-skel"><div class="ix-glyph ix-skel-box"></div>' +
+        '<div class="ix-mid"><span class="ix-skel-box ix-skel-w1"></span>' +
+        '<span class="ix-skel-box ix-skel-w2"></span></div>' +
+        '<span class="ix-skel-box ix-skel-btn"></span></div>').join('');
+      empty.classList.add('hidden');
+      return;
+    }
+
+    const rows = flatRows();
+
+    /* hero — nothing asked yet */
+    if (!rows.length && !ui.q && !ui.plugin && ui.type === 'all') {
+      body.innerHTML = '';
+      empty.classList.remove('hidden');
+      empty.innerHTML =
+        '<div class="ix-hero-glyph">⚒</div>' +
+        '<div class="ix-empty-title">Every item the load order ships</div>' +
+        '<div class="ix-empty-sub"><b>' + fmtGold(state.count) + ' items</b> across <b>' +
+        fmtGold(state.plugins.length) + ' mods</b>, one bar. Type an item, or a mod to browse its whole catalogue.' +
+        (state.pay ? ' Merchant mode is on — taking asks a price and pays real gold.' : '') + '</div>' +
+        '<div class="ix-try">' +
+        ['ebony sword', 'sweetroll', 'soul gem', 'Skyrim.esm'].map(function (t) {
+          return '<button class="ix-pill" data-try="' + esc(t) + '">' + esc(t) + '</button>';
+        }).join('') + '</div>';
+      empty.querySelectorAll('[data-try]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          const s = $('ix-search');
+          ui.q = b.getAttribute('data-try');
+          if (s) { s.value = ui.q; s.focus(); }
+          runQuery(true);
+        });
+      });
+      return;
+    }
+
+    /* honest empties */
+    if (!rows.length) {
+      body.innerHTML = '';
+      empty.classList.remove('hidden');
+      if (state.awaiting) {
+        empty.innerHTML = '<div class="ix-empty-title">Searching…</div>';
+      } else if (ui.type === 'mods') {
+        empty.innerHTML = '<div class="ix-empty-title">No mod matches</div>' +
+          '<div class="ix-empty-sub">No plugin name contains “' + esc(ui.q) + '”. Try fewer letters.</div>';
+      } else {
+        empty.innerHTML = '<div class="ix-empty-title">Nothing matches</div>' +
+          '<div class="ix-empty-sub">No item called “' + esc(ui.q) + '”' +
+          (ui.plugin ? ' in ' + esc(ui.plugin) : '') +
+          (ui.type !== 'all' ? ' under that pill' : '') +
+          '. Try fewer letters, another pill, or the whole-word mod name.</div>';
+      }
+      return;
+    }
+    empty.classList.add('hidden');
+
+    let html = '';
+    let idx = 0;
+    let inMods = false, inItems = false;
+    rows.forEach(function (r) {
+      if (r.kind === 'plug' && !inMods) {
+        inMods = true;
+        html += '<div class="ix-sect">Mods <b>' +
+          (ui.type === 'mods' ? modMatches(30).length : Math.min(5, modMatches(5).length)) + '</b></div>';
+      }
+      if (r.kind === 'item' && !inItems) {
+        inItems = true;
+        html += '<div class="ix-sect">Items <b>' + fmtGold(state.total) + '</b>' +
+          (ui.plugin ? '<b>· in ' + esc(ui.plugin) + '</b>' : '') + '</div>';
+      }
+      if (r.kind === 'plug') html += plugRowHtml(r.p, ui.sel, idx);
+      else if (r.kind === 'item') html += itemRowHtml(r.it, ui.sel, idx);
+      else if (r.kind === 'more') {
+        html += '<button class="ix-btn ix-more' + (ui.sel === idx ? ' ix-toggle-on' : '') + '" id="ix-more-btn">' +
+          (state.awaiting ? 'Loading…' : 'Show ' + Math.min(PAGE, state.total - state.items.length) + ' more of ' +
+            fmtGold(state.total)) + '</button>';
+      }
+      idx++;
+    });
+    body.innerHTML = html;
+
+    /* wire rows */
+    body.querySelectorAll('.ix-plug-row').forEach(function (row) {
+      row.addEventListener('click', function () { setPlugin(row.getAttribute('data-plug')); });
+    });
+    body.querySelectorAll('.ix-row:not(.ix-skel)').forEach(function (row) {
+      const id = row.getAttribute('data-id');
+      function item() {
+        for (let i = 0; i < state.items.length; i++) if (state.items[i].id === id) return state.items[i];
+        return null;
+      }
+      const takeBtn = row.querySelector('.ix-take');
+      if (takeBtn) takeBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        const it = item();
+        if (it) activate({ kind: 'item', it: it });
+      });
+      row.querySelectorAll('.ix-qty button').forEach(function (b) {
+        b.addEventListener('click', function (e) {
+          e.stopPropagation();
+          const d = parseInt(b.getAttribute('data-d'), 10) || 0;
+          ui.qty[id] = Math.max(1, Math.min(999, (ui.qty[id] || 1) + d));
+          renderBody();
+        });
+      });
+      const plug = row.querySelector('.ix-meta-plug');
+      if (plug) plug.addEventListener('click', function (e) {
+        e.stopPropagation();
+        setPlugin(plug.getAttribute('data-plug'));
+      });
+      row.addEventListener('dblclick', function () {
+        const it = item();
+        if (it) activate({ kind: 'item', it: it });
+      });
+    });
+    const more = $('ix-more-btn');
+    if (more) more.addEventListener('click', function () { runQuery(false); });
+  }
+
+  function render() {
+    renderHeader();
+    renderPills();
+    renderPlugChip();
+    renderBody();
+  }
+
+  /* =============================================================== toast == */
+
+  function toast(msg, err) {
+    const t = $('ix-toast');
+    if (!t) return;
+    t.textContent = msg;
+    t.classList.toggle('ix-toast-err', !!err);
+    t.classList.add('ix-toast-show');
+    if (ui.toastT) clearTimeout(ui.toastT);
+    ui.toastT = setTimeout(function () { t.classList.remove('ix-toast-show'); }, 2600);
+  }
+
+  /* ========================================================== lifecycle == */
+
+  function onShow() {
+    ui.visible = true;
+    toGame('ixState');   // first call builds the C++ index; later calls refresh gold
+    state.askedOnce = true;
+    const s = $('ix-search');
+    if (s) { s.value = ui.q; setTimeout(function () { s.focus(); }, 30); }
+    if (state.ready && (ui.q || ui.plugin || ui.type !== 'all')) runQuery(true);
+    render();
+  }
+
+  function onHide() {
+    ui.visible = false;
+    closeSheet();
+    if (ui.debT) { clearTimeout(ui.debT); ui.debT = null; }
+  }
+
+  function toggleEdit() { /* no edit chrome */ }
+  function wantsPause() { return true; }
+
+  /* omni jump: land on the tab with the bar pre-filled */
+  function setFilter(text) {
+    ui.q = String(text || '');
+    ui.plugin = '';
+    ui.type = 'all';
+    const s = $('ix-search');
+    if (s) s.value = ui.q;
+    if (state.ready) runQuery(true);
+  }
+
+  function init() {
+    const s = $('ix-search');
+    if (s) {
+      s.addEventListener('input', function () {
+        ui.q = s.value.trim();
+        ui.sel = 0;
+        queryDebounced();
+      });
+      s.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          const rows = flatRows();
+          activate(rows[Math.min(ui.sel, rows.length - 1)] || rows[0]);
+          e.stopPropagation();
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          const rows = flatRows();
+          if (rows.length) {
+            ui.sel = e.key === 'ArrowDown'
+              ? Math.min(rows.length - 1, ui.sel + 1)
+              : Math.max(0, ui.sel - 1);
+            renderBody();
+            const el = document.querySelector('#ix-body .ix-sel');
+            if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+          }
+          e.preventDefault();
+          e.stopPropagation();
+        } else if (e.key === 'Escape') {
+          if (ui.sheet) { closeSheet(); e.stopPropagation(); }
+          else if (s.value) { s.value = ''; ui.q = ''; runQuery(true); e.stopPropagation(); }
+          else if (ui.plugin) { clearPlugin(); e.stopPropagation(); }
+          /* bare Esc falls through to the palette's close, on purpose */
+        } else if (e.key === 'Backspace' && !s.value && ui.plugin) {
+          clearPlugin();
+          e.stopPropagation();
+        }
+      });
+    }
+    const payBtn = $('ix-pay-toggle');
+    if (payBtn) payBtn.addEventListener('click', function () {
+      state.pay = !state.pay;   // optimistic; ixSaved confirms
+      renderHeader(); renderBody();
+      toGame('ixSave', JSON.stringify({ pay: state.pay }));
+    });
+    const mult = $('ix-mult');
+    if (mult) mult.addEventListener('change', function () {
+      state.mult = Number(mult.value) || 1;
+      renderBody();
+      toGame('ixSave', JSON.stringify({ mult: state.mult }));
+    });
+    if (SELFTEST) setTimeout(selftest, 60);
+  }
+
+  /* =============================================================== dev == */
+
+  const DEV_ITEMS = [
+    { id: 'Skyrim.esm|00013989', n: 'Ebony Sword', t: 'weap', v: 720, w: 15, p: 'Skyrim.esm' },
+    { id: 'Skyrim.esm|0004DEE3', n: 'Ebony Greatsword', t: 'weap', v: 1440, w: 22, p: 'Skyrim.esm' },
+    { id: 'Skyrim.esm|00064B71', n: 'Sweetroll', t: 'food', v: 5, w: 0.2, p: 'Skyrim.esm' },
+    { id: 'CoolSwords.esl|000801', n: 'Sword of Cool', t: 'weap', v: 2500, w: 9, p: 'CoolSwords.esl' },
+    { id: 'Ordinator - Perks of Skyrim.esp|0141AB', n: 'Spell Tome: Cool Nova', t: 'book', v: 320, w: 1, p: 'Ordinator - Perks of Skyrim.esp' },
+    { id: 'Skyrim.esm|0002E4E2', n: 'Grand Soul Gem', t: 'slgm', v: 500, w: 0.5, p: 'Skyrim.esm' },
+  ];
+
+  function devState() {
+    window.ixStateResult({
+      phase: 'ready', count: 412391, gold: 12345, pay: state.pay, mult: state.mult || 1,
+      plugins: [
+        { n: 'Skyrim.esm', c: 12842, k: 'esm', l: false },
+        { n: 'Ordinator - Perks of Skyrim.esp', c: 214, k: 'esp', l: false },
+        { n: 'CoolSwords.esl', c: 12, k: 'esl', l: true },
+      ],
+    });
+  }
+
+  function devQuery(arg) {
+    let req = {};
+    try { req = JSON.parse(arg); } catch (e) {}
+    const q = String(req.q || '').toLowerCase();
+    const toks = q.split(/\s+/).filter(Boolean);
+    let rows = DEV_ITEMS.filter(function (it) {
+      if (req.plugin && it.p !== req.plugin) return false;
+      if (req.type && req.type !== 'all' && it.t !== req.type) return false;
+      for (let i = 0; i < toks.length; i++) {
+        if (it.n.toLowerCase().indexOf(toks[i]) === -1 &&
+            it.p.toLowerCase().indexOf(toks[i]) === -1) return false;
+      }
+      return true;
+    });
+    window.ixResultData({ seq: req.seq | 0, total: rows.length, offset: req.offset | 0,
+      items: rows.slice(req.offset | 0, (req.offset | 0) + (req.limit || 60)) });
+  }
+
+  function devAdd(arg) {
+    let req = {};
+    try { req = JSON.parse(arg); } catch (e) {}
+    const paid = req.pay ? (req.price | 0) : 0;
+    if (paid > 12345) {
+      window.ixAddResult({ ok: false, msg: 'You carry 12,345 gold - this costs ' + paid, gold: 12345 });
+      return;
+    }
+    window.ixAddResult({ ok: true, msg: (paid ? 'Bought item - ' + paid + ' gold' : '+ item'), gold: 12345 - paid });
+  }
+
+  function devSave(arg) {
+    let req = {};
+    try { req = JSON.parse(arg); } catch (e) {}
+    if ('pay' in req) state.pay = !!req.pay;
+    if ('mult' in req) state.mult = Number(req.mult) || 1;
+    window.ixSaved({ ok: true, pay: state.pay, mult: state.mult });
+  }
+
+  /* ========================================================== selftest == */
+
+  function selftest() {
+    const out = [];
+    function ok(name, cond) { out.push((cond ? 'ok   ' : 'FAIL ') + name); }
+
+    ui.visible = true;
+    devState();
+    ok('state: ready', state.ready === true);
+    ok('state: plugins landed', state.plugins.length === 3);
+
+    /* hero first */
+    ui.q = ''; ui.plugin = ''; ui.type = 'all';
+    render();
+    ok('hero: shown with stats', !$('ix-empty').classList.contains('hidden') &&
+      $('ix-empty').textContent.indexOf('412,391') !== -1);
+
+    /* unified search: mods section + items */
+    ui.q = 'ebony';
+    state.seq++; devQuery(JSON.stringify({ q: 'ebony', type: 'all', plugin: '', seq: state.seq, limit: 60, offset: 0 }));
+    ok('query: two ebony items', state.items.length === 2);
+    ui.q = 'cool';
+    state.seq++; devQuery(JSON.stringify({ q: 'cool', type: 'all', plugin: '', seq: state.seq, limit: 60, offset: 0 }));
+    render();
+    ok('mods section: CoolSwords listed', document.querySelectorAll('#ix-body .ix-plug-row').length >= 1);
+    ok('items section: rows in DOM', document.querySelectorAll('#ix-body .ix-row').length === state.items.length);
+    ok('highlight: match marked', !!document.querySelector('#ix-body .ix-name mark'));
+
+    /* stale replies dropped */
+    const before = state.items.length;
+    devQuery(JSON.stringify({ q: 'ebony', type: 'all', plugin: '', seq: state.seq - 1, limit: 60, offset: 0 }));
+    ok('stale seq: dropped', state.items.length === before);
+
+    /* plugin chip narrows */
+    setPlugin('CoolSwords.esl');
+    devQuery(JSON.stringify({ q: '', type: 'all', plugin: 'CoolSwords.esl', seq: state.seq, limit: 60, offset: 0 }));
+    render();
+    ok('plugin browse: only its items', state.items.length === 1 && state.items[0].p === 'CoolSwords.esl');
+    ok('plugin chip: visible', !$('ix-plug-chip').classList.contains('hidden'));
+    clearPlugin();
+
+    /* pills */
+    ui.type = 'weap'; ui.q = 'ebony';
+    state.seq++; devQuery(JSON.stringify({ q: 'ebony', type: 'weap', plugin: '', seq: state.seq, limit: 60, offset: 0 }));
+    ok('type pill: weapons only', state.items.every(function (it) { return it.t === 'weap'; }));
+    ui.type = 'mods'; ui.q = 'cool';
+    render();
+    ok('mods pill: mod rows only', document.querySelectorAll('#ix-body .ix-plug-row').length === 1 &&
+      document.querySelectorAll('#ix-body .ix-row:not(.ix-skel)').length === 0);
+    ui.type = 'all';
+
+    /* merchant math */
+    state.mult = 2;
+    ok('price: value x mult x qty', suggestedPrice({ v: 100 }, 3) === 600);
+    state.mult = 1;
+
+    /* price sheet */
+    state.pay = true;
+    openSheet(DEV_ITEMS[0], 2);
+    ok('sheet: open with suggested price', $('ix-price') && $('ix-price').value === String(720 * 2));
+    const shortBefore = $('ix-sheet-pay').disabled;
+    $('ix-price').value = '99999999';
+    $('ix-price').dispatchEvent(new Event('input'));
+    ok('sheet: refuses what you cannot pay', !shortBefore && $('ix-sheet-pay').disabled === true);
+    closeSheet();
+    ok('sheet: closed', $('ix-sheet').classList.contains('hidden'));
+    state.pay = false;
+
+    /* add round-trip updates gold */
+    state.gold = 12345;
+    devAdd(JSON.stringify({ id: 'x', count: 1, pay: true, price: 345 }));
+    ok('add: gold chip follows the purse', state.gold === 12000);
+
+    /* keyboard flat rows */
+    ui.q = 'cool'; ui.plugin = ''; ui.type = 'all';
+    state.seq++; devQuery(JSON.stringify({ q: 'cool', type: 'all', plugin: '', seq: state.seq, limit: 60, offset: 0 }));
+    const rows = flatRows();
+    ok('flat rows: mods before items', rows.length >= 2 && rows[0].kind === 'plug');
+
+    const fails = out.filter(function (l) { return l.indexOf('FAIL') === 0; });
+    const box = document.createElement('pre');
+    box.style.cssText = 'position:fixed;right:8px;top:8px;z-index:99999;max-height:90vh;overflow:auto;' +
+      'background:#111;color:#ddd;padding:10px;border:1px solid ' +
+      (fails.length ? '#c85046' : '#4c8') + ';font:11px Consolas,monospace';
+    box.textContent = out.join('\n') + '\n\n' + (out.length - fails.length) + '/' + out.length + ' passed';
+    document.body.append(box);
+    console.log(out.join('\n'));
+  }
+
+  /* ---- Omni search provider (universal search) ------------------------- */
+  if (window.HDOmni) HDOmni.register({
+    id: 'items', label: 'Items', tab: 'items',
+    setFilter: setFilter,
+    index: function () {
+      return [{
+        label: 'Item Explorer',
+        detail: 'Find any item any mod ships — take it, or pay gold for it',
+        kind: 'items',
+        keywords: 'item explorer additem add item spawn give cheat search buy merchant mod esp esl esm',
+      }];
+    },
+  });
+
+  return {
+    init, onShow, onHide, toggleEdit, wantsPause, setFilter,
+    _state: state, _ui: ui, _flatRows: flatRows, _modMatches: modMatches,
+    _suggestedPrice: suggestedPrice, _openSheet: openSheet, _closeSheet: closeSheet,
+  };
+})();
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', function () { window.ItemsPane.init(); });
+} else {
+  window.ItemsPane.init();
+}
