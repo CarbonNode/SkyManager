@@ -92,6 +92,7 @@ window.RoomsPane = (function () {
     expanded: null,                // room id whose size panel is open
     banFor: null,                  // room id whose blacklist panel is open
     armed: null,                   // room id with a primed delete
+    deleting: {},                  // id -> true: removed locally, C++ save not yet acked
     occupants: [],
     hereRoomId: '',
     lastStateSig: '',              // last occupancy reply, for the no-change skip
@@ -1217,9 +1218,19 @@ window.RoomsPane = (function () {
     ui.armed = null;
     // Release FIRST so C++ unblocks any furniture this room blocked while its
     // ref ids are still known — then drop the row and save.
+    //
+    // ⚠ rgRelease RE-PUSHES the full config (RunRoomOp repush=true), and that
+    // push still CONTAINS this room — only the rgSave below deletes it. With a
+    // debounced save the push always landed first and resurrected the row:
+    // trash → Sure? → the room came straight back ("can't remove room", user
+    // report 2026-08-13). So the delete is tombstoned until C++ acks the save
+    // (the open handler filters tombstoned ids out of any config push), and
+    // the save flushes IMMEDIATELY — a delete is not a slider drag, there is
+    // nothing to coalesce.
+    ui.deleting[r.id] = true;
     toGame('rgRelease', r.id);
     state.rooms = state.rooms.filter((x) => x.id !== r.id);
-    save();
+    flushSave();
     render();
   }
 
@@ -1257,7 +1268,8 @@ window.RoomsPane = (function () {
     if (fn === 'open') {
       const j = parse(payload);
       if (!j) return true;
-      state.rooms = Array.isArray(j.rooms) ? j.rooms : [];
+      state.rooms = (Array.isArray(j.rooms) ? j.rooms : [])
+        .filter((r) => !ui.deleting[r.id]);   // mid-delete push must not resurrect the row
       state.ignore = Array.isArray(j.ignore) ? j.ignore : [];
       state.enabled = j.enabled !== false;
       state.allowFollowers = j.allowFollowers !== false;
@@ -1329,7 +1341,7 @@ window.RoomsPane = (function () {
       if (j && j.msg && !j.ok) toast(j.msg);
       return true;
     }
-    if (fn === 'saved') return true;
+    if (fn === 'saved') { ui.deleting = {}; return true; }
     if (fn === 'show') { showTab(); return true; }
     return false;
   }
@@ -1928,6 +1940,18 @@ window.RoomsPane = (function () {
     ok('first delete click only arms', state.rooms.length === 2 && ui.armed === 'r1');
     armedDelete(r1);
     ok('second delete click removes', state.rooms.length === 1);
+    ok('delete tombstones the id until the save is acked', ui.deleting['r1'] === true);
+    // the resurrection bug (user report 2026-08-13): rgRelease re-pushes the
+    // full config BEFORE the deleting save lands — a push still carrying the
+    // deleted room must not bring the row back
+    receive('open', JSON.stringify({ rooms: [
+      { id: 'r1', name: 'Deleted room', kind: 'inn' },
+      state.rooms[0]
+    ], ignore: [], enabled: true }));
+    ok('mid-delete config push does not resurrect the room',
+      !roomById('r1') && state.rooms.length === 1);
+    receive('saved', 'true');
+    ok('save ack clears the tombstones', Object.keys(ui.deleting).length === 0);
     ui.editing = false;
 
     // the save slice must not invent C++-owned bookkeeping
