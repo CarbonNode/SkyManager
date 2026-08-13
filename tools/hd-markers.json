@@ -272,7 +272,8 @@
       "items-pane": "window.ItemsPane",
       "items-price-sheet": "function openSheet",
       "items-merchant-toggle": "Merchant mode: ON",
-      "items-real-renders": "hd-item-icons"
+      "items-real-renders": "hd-item-icons",
+      "items-icon-settle": "function scheduleIconWork"
     },
     "items-pane.css": {
       "items-sheet": "#ix-pane {",
