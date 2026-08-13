@@ -79,6 +79,11 @@ namespace
 	std::atomic<bool>           g_viewReady{ false };
 	std::atomic<bool>           g_viewRequested{ false };
 	std::atomic<bool>           g_open{ false };
+	// External C API (SkyManager_SetHotkeyEnabled): another plugin drives the
+	// deck's open/close with its OWN hotkeys and asks ours to stand down.
+	// RUNTIME-ONLY on purpose — never persisted, so a crash/uninstall of the
+	// caller can never leave the deck permanently keyless.
+	std::atomic<bool>           g_apiHotkeyDisabled{ false };
 	std::atomic<bool>           g_focusPaused{ false };
 	std::atomic<bool>           g_capturing{ false };  // JS capture modal open (Esc cancels there, not here)
 
@@ -13468,7 +13473,11 @@ namespace
 					}
 				}
 
-				const bool matchDeck =
+				// g_apiHotkeyDisabled: an external plugin (SkyManager_SetHotkeyEnabled)
+				// owns open/close right now — the deck's own open key (and its
+				// Shift/Ctrl/Alt chords, which live inside this branch) stand down.
+				// Deep-open keys (Followers/Domains/…) are separate binds and stay.
+				const bool matchDeck = !g_apiHotkeyDisabled.load() &&
 					((isKb && dev == "keyboard") || (isMs && dev == "mouse")) && idc == code;
 				const bool matchMagic =
 					((isKb && devMagic == "keyboard") || (isMs && devMagic == "mouse")) && idc == codeMagic;
@@ -13830,6 +13839,50 @@ namespace
 extern "C" DLLEXPORT void SkyManager_CrtAlert(const char* a_culprit, const char* a_message)
 {
 	ShowCrtAlert(a_culprit ? a_culprit : "(unknown mod)", a_message ? a_message : "");
+}
+
+// Public cross-mod menu API (2026-08-13, requested by a menu-mod author on
+// Nexus): drive the deck from another SKSE plugin. Resolve by name via
+// GetProcAddress ("SkyManager_Open" / "SkyManager_Close" /
+// "SkyManager_IsMenuOpen" / "SkyManager_SetHotkeyEnabled") — extern "C" keeps
+// the symbols unmangled, and these names are a public ABI now: never rename.
+// Thread contract: callable from any thread; mutations are queued to the main
+// thread, IsMenuOpen is a plain atomic read. SetHotkeyEnabled(false) disables
+// ONLY the deck's own open key + its Shift/Ctrl/Alt chords (runtime-only,
+// never saved) so the caller's hotkeys can own open/close without
+// double-firing; deep-open keys, entry triggers and in-deck input are
+// untouched. api-c-exports: the logger line in SkyManager_Open is the marker.
+extern "C" DLLEXPORT bool SkyManager_IsMenuOpen()
+{
+	return g_open.load();
+}
+
+extern "C" DLLEXPORT bool SkyManager_Open()
+{
+	if (g_open.load())
+		return true;
+	if (!CanOpenNow())
+		return false;   // another menu/console owns the screen — refused honestly
+	logger::info("SkyManager C API: open requested by an external plugin");
+	SKSE::GetTaskInterface()->AddTask([]() {
+		if (!g_open.load() && CanOpenNow())
+			EnsureViewAndOpen();
+	});
+	return true;
+}
+
+extern "C" DLLEXPORT void SkyManager_Close()
+{
+	SKSE::GetTaskInterface()->AddTask([]() {
+		ClosePalette();
+		CloseMagicPalette();
+	});
+}
+
+extern "C" DLLEXPORT void SkyManager_SetHotkeyEnabled(bool a_enabled)
+{
+	g_apiHotkeyDisabled.store(!a_enabled);
+	logger::info("SkyManager C API: native open key {}", a_enabled ? "re-enabled" : "disabled by an external plugin");
 }
 
 extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_skse)
