@@ -133,6 +133,10 @@ namespace Hotbar
 		int   y     = 90;
 		float scale = 1.0f;
 
+		// Play-mode opacity (0.3–1.0). Edit mode always renders opaque — the
+		// view enforces that; this is only the persisted play value.
+		float opacity = 1.0f;
+
 		// "horiz" (buttons run left-to-right) or "vert" (top-to-bottom). In
 		// "vert" the meaning of rows/cols swaps in the view: `cols` is still the
 		// number of buttons along the bar's long axis and `rows` the number of

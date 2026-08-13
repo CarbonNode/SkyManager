@@ -1026,6 +1026,63 @@
     if (startEditing) beginCrop(d, file, img, frame, foot);
   }
 
+  /* GENERIC crop editor — the SAME lightbox + pan/zoom UI the follower roster
+     uses, decoupled from follower state so another tab can reuse it verbatim.
+     The Character tab drives its portrait framing through this: one code path,
+     one crop invariant, one gesture set — no second copy to drift.
+
+     opts = {
+       src        image URL to edit (already view-relative, e.g.
+                  'portraits/player-sheet.png?v=…')
+       crop       { z, x, y } seed, or null for original framing
+       name       caption under the photo (optional)
+       onSave(c)  called with the clamped crop, or null for "reset to original".
+                  The caller OWNS storage and redraw; this closes on save/cancel.
+     }
+     Returns nothing; self-closing on Save, Cancel, backdrop click and Esc. */
+  function openCropEditor(opts) {
+    opts = opts || {};
+    const src = String(opts.src || '');
+    if (!src) return;
+    closeLightbox();
+
+    const img = h('img', { class: 'fd-lb-img', src: src, alt: opts.name || '', draggable: 'false' });
+    /* A load failure here means the photo the caller thinks exists does not —
+       close rather than leave a blank frame the user can drag emptily. */
+    img.addEventListener('error', function () { closeLightbox(); });
+
+    const side = lbFrameSize();
+    const frame = h('div', { class: 'fd-lb-frame' }, img);
+    frame.style.width = side + 'px';
+    frame.style.height = side + 'px';
+
+    const foot = h('div', { class: 'fd-lb-foot' });
+    lightbox = h('div', {
+      class: 'fd-lb',
+      onClick: function () { if (!lbEdit) closeLightbox(); },
+      title: 'Click anywhere to close',
+    },
+      h('div', { class: 'fd-lb-inner', onClick: function (e) { e.stopPropagation(); } },
+        frame,
+        opts.name ? h('div', { class: 'fd-lb-cap' }, opts.name) : null,
+        foot,
+      ),
+    );
+    document.body.appendChild(lightbox);
+    lbEdit = null;
+
+    /* A synthetic follower-shaped record. `file` is a stable synthetic key the
+       roster's crop map will never hold, so nothing collides; _startCrop seeds
+       the edit and _onCommit hands the result back to the owner. */
+    const d = {
+      _startCrop: opts.crop || null,
+      _onCommit: typeof opts.onSave === 'function' ? opts.onSave : function () {},
+      name: opts.name || '',
+    };
+    const file = '__crop-editor__';
+    beginCrop(d, file, img, frame, foot);
+  }
+
   /* Not editing: one button, and the current framing spelled out so you can see
      at a glance whether this face carries a crop at all. */
   function renderLbFoot(d, file, img, frame, foot) {
@@ -1047,15 +1104,26 @@
      wired as a convenience only — every gesture it offers has a button beside
      it, so a click-only (gamepad-ish) flow reaches every value. */
   function beginCrop(d, file, img, frame, foot) {
-    const start = cropFor(file);
+    /* The starting crop is normally this FILE's stored crop. A GENERIC caller
+       (openCropEditor — the Character tab's portrait editor) has no entry in
+       state.crops for its file, so it hands us the seed on d._startCrop and the
+       save destination on d._onCommit; both are absent for the follower path,
+       which keeps its exact behaviour. */
+    const start = (d && d._startCrop) ? clampCrop(d._startCrop) : cropFor(file);
     lbEdit = { file: file, z: start ? start.z : 1, x: start ? start.x : 0, y: start ? start.y : 0 };
     /* Everything the keyboard path needs to finish the edit. onKey sees only
        `lbEdit`, and re-deriving these five from the DOM would be a second,
-       drift-prone way of naming the same nodes. */
-    lbEdit.ctx = { d: d, file: file, img: img, frame: frame, foot: foot };
+       drift-prone way of naming the same nodes. onCommit rides along so
+       commitCrop can route a generic edit to its owner instead of state.crops. */
+    lbEdit.ctx = { d: d, file: file, img: img, frame: frame, foot: foot,
+                   onCommit: (d && typeof d._onCommit === 'function') ? d._onCommit : null };
     frame.classList.add('editing');
     renderCropFoot(d, file, img, frame, foot);
     wireCropGestures(d, file, img, frame, foot);
+    /* Paint the seed so the image opens already showing lbEdit's framing. A
+       no-op for the follower path (openLightbox applied the same crop first),
+       and the one thing that makes a generic seed visible on open. */
+    previewCrop(img, foot);
   }
 
   /* Apply lbEdit to the on-screen image WITHOUT re-rendering anything. Same
@@ -1174,6 +1242,10 @@
   }
 
   function cancelCrop(d, file, img, frame, foot) {
+    /* GENERIC caller opens straight into edit mode and owns no lightbox chrome
+       of its own — cancelling means "leave the framing as it was and close",
+       not "drop back to a view foot that reads state.crops (empty here)". */
+    if (d && typeof d._onCommit === 'function') { endCropMode(frame); closeLightbox(); return; }
     endCropMode(frame);
     applyCropTo(img, file);        // back to whatever is stored
     renderLbFoot(d, file, img, frame, foot);
@@ -1181,7 +1253,17 @@
 
   function commitCrop(d, file, img, frame, foot) {
     const c = clampCrop(lbEdit);
+    const onCommit = lbEdit && lbEdit.ctx && lbEdit.ctx.onCommit;
     endCropMode(frame);
+    /* GENERIC caller (Character tab portrait): it owns the storage and the
+       redraw. Hand it the clamped crop (or null for "reset to original"),
+       repaint the lightbox image, and stop — none of the follower-roster
+       machinery below applies. */
+    if (onCommit) {
+      onCommit(c);         // owner stores + redraws its own portrait
+      closeLightbox();     // save-and-close; the owning tab shows the result
+      return;
+    }
     /* Optimistic: the map is updated here and every drawn face repaints now.
        C++ owns the file, so it will push the authoritative map back as fdCrops
        — including a prune we cannot compute here — and that push wins. */
@@ -8125,6 +8207,10 @@
 
   window.FolPane = {
     clothesChanged: clothesChanged,
+    /* The roster's crop popout, reusable by any tab (the Character sheet's
+       portrait editor). Behaviour for the follower flow is untouched — this is
+       purely an additional entry point into the same lightbox machinery. */
+    openCropEditor: openCropEditor,
     init() {
       $('fd-search').addEventListener('input', (e) => {
         ui.filter = e.target.value; ui.sel = -1;

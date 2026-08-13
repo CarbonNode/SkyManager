@@ -184,22 +184,64 @@ let state = {
 };
 
 const SCALE_MIN = 0.6, SCALE_MAX = 1.6, SCALE_STEP = 0.1;
+/* The MANUAL controls stop at SCALE_MAX by design, but ⛶ Fill screen must be
+   allowed past it — a 4K monitor needs ~240% of the panel's natural size, and
+   clamping the fill to the slider range is exactly the "Fill screen doesn't
+   fill my 4K screen" bug SpudmanWP reported (2026-08-12). Hard sanity ceiling
+   only; nothing steps a scale up here except fitScale's measurement. */
+const SCALE_FILL_MAX = 4.0;
 const SCROLL_MIN = 0.5, SCROLL_MAX = 3.0, SCROLL_STEP = 0.1;
 function clampScroll(v) {
   v = Math.round((Number(v) || 1) / SCROLL_STEP) * SCROLL_STEP;
   return Math.max(SCROLL_MIN, Math.min(SCROLL_MAX, Number(v.toFixed(2))));
 }
 /* Deck scroll-wheel speed. Ultralight's own wheel step is fixed and felt slow to
-   Rober; this takes over vertical wheel scrolling in the deck's scroll containers
-   and scales it by the multiplier. Reads state.settings.scrollSpeed live, so the
-   slider is felt as you drag. Edge-aware: at the top/bottom of a container it lets
-   the event bubble so a parent scroller still works. Installed once. */
+   Rober; this takes over vertical wheel scrolling in the deck's scroll containers.
+   Two changes over the first version (Rober, "scrolling feels slow"):
+     1. A BASE multiplier (SCROLL_BASE) on top of the user's scrollSpeed, so
+        the default (100%) already travels ~2.3x a native notch. The user
+        setting still means what it says — it scales the base — so 100% now
+        feels right and the slider still works either side of it.
+     2. Motion is EASED: each notch nudges a per-element TARGET scrollTop and a
+        single rAF glides the real scrollTop toward it (~0.24/frame). Native
+        Ultralight scrolling is an unanimated jump; this makes it feel smooth
+        without any per-pane code.
+   Edge-aware (lets the event bubble at the top/bottom so a parent scroller
+   still works) and vertical-only, so drag-reorder / drag-onto-rail pointer
+   interactions are untouched. Installed once; the glide state is shared. */
+var SCROLL_BASE = 2.8;   // native notch -> comfortable default at scrollSpeed=1
+                         // (bumped 2.3->2.8 2026-08-13: Rober "still finds scrolling
+                         //  slow" even after the ease pass; the whole curve is a notch
+                         //  faster now, and the Edit slider tunes either side of it)
 function installScrollSpeed() {
   if (window.__hdScrollInstalled) return;
   window.__hdScrollInstalled = true;
+
+  var targets = new WeakMap();   // el -> desired scrollTop
+  var active = [];               // els currently gliding
+  var raf = 0;
+  var EASE = 0.24;
+
+  function tick() {
+    raf = 0;
+    var still = [];
+    for (var i = 0; i < active.length; i++) {
+      var el = active[i];
+      var tgt = targets.get(el);
+      if (tgt == null) continue;
+      var cur = el.scrollTop;
+      var diff = tgt - cur;
+      if (Math.abs(diff) <= 1) { el.scrollTop = tgt; targets.delete(el); continue; }
+      el.scrollTop = cur + diff * EASE;
+      still.push(el);
+    }
+    active = still;
+    if (active.length) raf = requestAnimationFrame(tick);
+  }
+
   document.addEventListener('wheel', function (e) {
-    var mult = clampScroll(state.settings.scrollSpeed);
     if (!e.deltaY) return;
+    var mult = clampScroll(state.settings.scrollSpeed) * SCROLL_BASE;
     var el = e.target;
     while (el && el !== document.body && el.nodeType === 1) {
       if (el.scrollHeight > el.clientHeight + 1) {
@@ -209,17 +251,24 @@ function installScrollSpeed() {
       el = el.parentElement;
     }
     if (!el || el === document.body || el.nodeType !== 1) return;
-    var atTop = el.scrollTop <= 0;
-    var atBot = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    if ((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBot)) return;   // let it bubble
-    el.scrollTop += e.deltaY * mult;
+    var max = el.scrollHeight - el.clientHeight;
+    /* build the target off the outstanding target, not the live scrollTop, so a
+       fast flick of several notches accumulates instead of fighting the glide */
+    var base = targets.has(el) ? targets.get(el) : el.scrollTop;
+    var atTop = base <= 0 && e.deltaY < 0;
+    var atBot = base >= max && e.deltaY > 0;
+    if (atTop || atBot) return;   // let it bubble at the edge
+    var next = Math.max(0, Math.min(max, base + e.deltaY * mult));
+    targets.set(el, next);
+    if (active.indexOf(el) === -1) active.push(el);
+    if (!raf) raf = requestAnimationFrame(tick);
     e.preventDefault();
   }, { passive: false });
 }
 
 function clampScale(v) {
   v = Math.round((Number(v) || 1) / SCALE_STEP) * SCALE_STEP;  // snap to step
-  return Math.max(SCALE_MIN, Math.min(SCALE_MAX, Number(v.toFixed(2))));
+  return Math.max(SCALE_MIN, Math.min(SCALE_FILL_MAX, Number(v.toFixed(2))));
 }
 
 function applyScale() {
@@ -240,6 +289,54 @@ function setScale(v, persist) {
   applyPanelSize();   // ceiling depends on scale — re-clamp the drag size
   if (persist) save();
 }
+
+/* Keep the Edit-card Scroll-speed slider + its readout in step with the live
+   setting (renderSettings on card open, and after any change). The wheel handler
+   itself reads state.settings.scrollSpeed directly, so this is display only. */
+function syncScrollSpeedEdit() {
+  const sp = clampScroll(state.settings.scrollSpeed);
+  const range = $('scrollspeed-edit-range');
+  const val = $('scrollspeed-edit-val');
+  if (range && Number(range.value) !== sp) range.value = String(sp);
+  if (val) val.textContent = Math.round(sp * 100) + '%';
+}
+
+/* ---- Fill screen: one click to auto-scale the deck to the resolution ---- *
+ * Squeetsquib's ask. Rides the EXISTING scale plumbing — it just PICKS a
+ * uiScale and hands it to setScale, so it persists in the same `settings`
+ * slice as the manual control. No parallel mechanism, no new persisted field.
+ *
+ * The panel's rendered size is (natural layout px) * uiScale, so to fill the
+ * viewport: fit = min(innerW/naturalW, innerH/naturalH), clamped to the scale
+ * range. We measure the panel's real layout box (offsetWidth/Height are
+ * pre-transform, so the current scale doesn't distort them) at a neutral scale,
+ * then restore — exact regardless of the current scale or a drag-resize. */
+function fitScale() {
+  const p = $('panel');
+  if (!p || !p.offsetWidth) return 0;   // deck closed / unmeasurable
+  const st = document.documentElement.style;
+  const prev = st.getPropertyValue('--ui-scale');
+  st.setProperty('--ui-scale', '1');
+  const natW = p.offsetWidth, natH = p.offsetHeight;
+  if (prev) st.setProperty('--ui-scale', prev); else st.removeProperty('--ui-scale');
+  if (!natW || !natH) return 0;
+  const s = Math.min(window.innerWidth / natW, window.innerHeight / natH);
+  return clampScale(s);
+}
+function isFilled() {
+  const fit = fitScale();
+  if (!fit) return false;
+  return clampScale(state.settings.uiScale) >= fit - 1e-6;
+}
+function toggleFill() {
+  const fit = fitScale();
+  if (!fit) return;
+  if (clampScale(state.settings.uiScale) >= fit - 1e-6) setScale(1, true);  // 2nd press → 100%
+  else setScale(fit, true);
+  if (typeof window.hdSyncScalePop === 'function') window.hdSyncScalePop();
+}
+window.hdToggleFill = toggleFill;
+window.hdIsFilled = isFilled;
 
 
 /* ================================================ pointer drag engine ==== *
@@ -1817,6 +1914,7 @@ function renderSettings() {
   $('tgtfol-cb').checked = state.settings.targetOpensFollowers !== false;
   renderModSlots();
   applyScale();
+  syncScrollSpeedEdit();   // scroll-speed slider readout, beside Menu scale
   if (window.HDScale) HDScale.sync('deck');   // row-icon readout, beside Menu scale
   renderExt();
 }
@@ -3724,6 +3822,27 @@ function init() {
   $('scale-down').addEventListener('click', () => setScale(state.settings.uiScale - SCALE_STEP, true));
   $('scale-up').addEventListener('click', () => setScale(state.settings.uiScale + SCALE_STEP, true));
   $('scale-reset').addEventListener('click', () => setScale(1, true));
+
+  /* Scroll-speed slider (Edit ▸ Deck settings). Live-applies as it drags — the
+     wheel handler reads state.settings.scrollSpeed on every notch, so setting
+     the value IS the apply, no re-install. Persists through the same save path
+     as everything else in this card; keeps the header popover's readout in step
+     via hdSyncScalePop. Mirrors the header ⤢ popover's Scroll-speed control. */
+  (function () {
+    const range = $('scrollspeed-edit-range');
+    if (!range) return;
+    if (typeof window.hdSmoothRange === 'function') window.hdSmoothRange(range);
+    installScrollSpeed();   // ensure the wheel handler is live even before F7 popover use
+    function applyScroll(v) {
+      state.settings.scrollSpeed = clampScroll(v);
+      syncScrollSpeedEdit();
+      if (typeof window.hdSyncScalePop === 'function') window.hdSyncScalePop();
+      saveSoon();
+    }
+    range.addEventListener('input', () => applyScroll(Number(range.value)));
+    const rst = $('scrollspeed-edit-reset');
+    if (rst) rst.addEventListener('click', () => applyScroll(1));
+  })();
   $('resize-grip').addEventListener('mousedown', gripDown);
   $('resize-grip').addEventListener('dblclick', resetPanelSize);
 
@@ -5081,6 +5200,67 @@ function runSelfTest() {
     return missing.length === 0 || ('tabs with no size control: ' + missing.join(', '));
   });
 
+  /* ---- Fill screen: rides setScale, no parallel state (Squeetsquib) ---- */
+  document.body.classList.add('open'); render();   // panel must be measurable
+  setScale(1, false); resetPanelSize();
+  T('fill: fitScale returns a clamped in-range scale', () => {
+    const f = fitScale();
+    return (f >= SCALE_MIN && f <= SCALE_FILL_MAX) || ('fit=' + f);
+  });
+  T('fill: fitScale matches min(innerW/natW, innerH/natH)', () => {
+    const p = $('panel');
+    const st = document.documentElement.style, prev = st.getPropertyValue('--ui-scale');
+    st.setProperty('--ui-scale', '1'); const nw = p.offsetWidth, nh = p.offsetHeight;
+    if (prev) st.setProperty('--ui-scale', prev); else st.removeProperty('--ui-scale');
+    const want = clampScale(Math.min(window.innerWidth / nw, window.innerHeight / nh));
+    return fitScale() === want || (fitScale() + ' != ' + want);
+  });
+  T('fill: toggle sets uiScale to the fit and persists it', () => {
+    const f = fitScale(); toggleFill();
+    return clampScale(state.settings.uiScale) === f || (state.settings.uiScale + ' != ' + f);
+  });
+  T('fill: isFilled true after fill', () => isFilled() === true);
+  T('fill: a second press returns to 100%', () => {
+    toggleFill();
+    return (clampScale(state.settings.uiScale) === 1 && !isFilled()) || ('scale=' + state.settings.uiScale);
+  });
+  setScale(1, false);
+  /* ---- Smooth scroll: the shared handler is installed with a fast base ---- */
+  T('scroll: installScrollSpeed installed once with a >1 base multiplier',
+    () => (window.__hdScrollInstalled === true && SCROLL_BASE > 1) || ('base=' + SCROLL_BASE));
+  T('scroll: the user scroll-speed setting still round-trips through clampScroll',
+    () => clampScroll(2) === 2 && clampScroll(99) === SCROLL_MAX && clampScroll(0.1) === SCROLL_MIN);
+  T('scroll: Edit-mode slider exists with the 0.5-3.0 range',
+    () => {
+      const r = $('scrollspeed-edit-range');
+      return (r && Number(r.min) === SCROLL_MIN && Number(r.max) === SCROLL_MAX) ||
+             ('range=' + (r ? r.min + '..' + r.max : 'missing'));
+    });
+  T('scroll: dragging the Edit slider sets + clamps scrollSpeed live',
+    () => {
+      const r = $('scrollspeed-edit-range');
+      if (!r) return 'no slider';
+      const keep = state.settings.scrollSpeed;
+      r.value = '2.5'; r.dispatchEvent(new Event('input', { bubbles: true }));
+      const got = state.settings.scrollSpeed;
+      const val = $('scrollspeed-edit-val');
+      const readout = val && val.textContent;
+      state.settings.scrollSpeed = keep; syncScrollSpeedEdit();
+      return (clampScroll(got) === 2.5 && readout === '250%') ||
+             ('got=' + got + ' readout=' + readout);
+    });
+  T('scroll: Edit slider reset returns scrollSpeed to 100%',
+    () => {
+      const rst = $('scrollspeed-edit-reset');
+      if (!rst) return 'no reset';
+      const keep = state.settings.scrollSpeed;
+      state.settings.scrollSpeed = 3.0;
+      rst.click();
+      const got = state.settings.scrollSpeed;
+      state.settings.scrollSpeed = keep; syncScrollSpeedEdit();
+      return got === 1 || ('got=' + got);
+    });
+
   ui.qDetail = null; ui.qList = null; ui.qNpc = null; ui.qNote = ''; ui.qConfirmStage = null;
   ui.tab = 'all'; ui.hkTab = 'all';
   ui.edit = false; ui.extOpen = false; ui.capture = null;
@@ -5224,6 +5404,9 @@ if (DEV && location.search.indexOf('selftest=1') !== -1) {
         '<span id="scrollspeed-val" class="usp-val">100%</span></div>' +
         '<input id="scrollspeed-range" type="range" min="' + SCROLL_MIN + '" max="' + SCROLL_MAX +
           '" step="' + SCROLL_STEP + '" aria-label="Scroll speed">' +
+        '<button id="uiscale-fill" class="ghost-btn usp-fill" aria-pressed="false" ' +
+          'title="Auto-scale the deck to fill your screen — no fiddling with the slider">' +
+          '&#9974;&nbsp;Fill screen</button>' +
         '<div class="usp-row usp-foot"><button id="uiscale-reset" class="ghost-btn">Reset</button>' +
         '<span class="usp-hint">Scales the whole deck and the scroll-wheel speed</span></div>';
       document.body.appendChild(pop);
@@ -5252,6 +5435,11 @@ if (DEV && location.search.indexOf('selftest=1') !== -1) {
         saveSoon();
         syncPop();
       });
+      var fillBtn = pop.querySelector('#uiscale-fill');
+      if (fillBtn) fillBtn.addEventListener('click', function () {
+        toggleFill();   // persists through setScale; hdSyncScalePop repaints the readout
+        syncPop();
+      });
       /* outside click closes — capture, so a click that re-renders a pane
          cannot strand an open popover */
       document.addEventListener('mousedown', function (e) {
@@ -5274,6 +5462,13 @@ if (DEV && location.search.indexOf('selftest=1') !== -1) {
       var sval = pop.querySelector('#scrollspeed-val');
       if (srange && Number(srange.value) !== sp) srange.value = String(sp);
       if (sval) sval.textContent = Math.round(sp * 100) + '%';
+      var fillBtn = pop.querySelector('#uiscale-fill');
+      if (fillBtn) {
+        var on = isFilled();
+        fillBtn.classList.toggle('on', on);
+        fillBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        fillBtn.textContent = on ? '⛶ Filling screen' : '⛶ Fill screen';
+      }
     }
     window.hdSyncScalePop = syncPop;   // applyScale calls this when loaded
 

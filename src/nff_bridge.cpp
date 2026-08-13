@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -91,9 +92,19 @@ namespace NffBridge
 		constexpr const char* kNffSetsScript = "nwsFollowerSetsScript";
 		constexpr const char* kNffVarScript = "nwsFollowerVariableScript";
 
-		// NFF's own cap (maxBases == 20, proven by nwsPlayLocSet_00..19). Used only
-		// as a sanity bound on a rank we did not write.
-		constexpr int kMaxBases = 64;
+		// The base cap is DETECTED, never assumed. Stock NFF ships nwsPlayLocSet_00
+		// ..19 (a cap of 20); Rober runs a personal edit that takes it to 64; a
+		// future edit could take it anywhere. Counting how many nwsPlayLocSet_NN
+		// scalar properties the bound home script actually declares is the same
+		// probe nff_bases.cpp's WorkFlagLimit() uses, and it reads whatever build
+		// is loaded rather than hoping a hardcoded number happens to match.
+		//
+		// kSaneMaxBases is a hard ceiling on the detection loop and on any rank we
+		// clamp against — purely so a corrupt property table can never turn into a
+		// runaway loop or an absurd bound. It is NOT the cap; the cap is
+		// g_baseCap, filled by DetectBaseCap() on first bind. 0 = not yet probed.
+		constexpr int kSaneMaxBases = 128;
+		int           g_baseCap = 0;
 
 		// ------------------------------------------------------------ one-shots --
 
@@ -186,6 +197,48 @@ namespace NffBridge
 			if (!v || !v->IsInt())
 				return fallback;
 			return static_cast<int>(v->GetSInt());
+		}
+
+		// Runtime base cap: count the nwsPlayLocSet_NN scalar properties the bound
+		// home script declares, exactly as nff_bases.cpp's WorkFlagLimit() does.
+		// Stock NFF stops at _19 (cap 20); a plugin that raises the cap grows this
+		// family. Cached in g_baseCap for the run of the game — a script's property
+		// table does not change while the game runs — and logged once. Falls back
+		// to the array bound the caller already knows (baseNames) if the property
+		// probe finds nothing, so a script that ever renamed the family still gives
+		// an honest, non-zero answer instead of refusing every base.
+		int DetectBaseCap(RE::BSScript::Object* home, int arrayBound)
+		{
+			if (g_baseCap > 0)
+				return g_baseCap;
+			if (!home)
+				return 0;  // unbound: must not pin the answer for the whole session
+			int count = 0;
+			for (int i = 0; i < kSaneMaxBases; ++i) {
+				char name[32];
+				std::snprintf(name, sizeof(name), "nwsPlayLocSet_%02d", i);
+				if (!Prop(home, name))
+					break;
+				count = i + 1;
+			}
+			if (count <= 0)
+				count = arrayBound;  // family absent/renamed — trust what exists
+			if (count <= 0)
+				return 0;            // nothing to go on yet — try again next call
+			count = (std::min)(count, kSaneMaxBases);
+			g_baseCap = count;
+			logger::info("nff: detected base cap = {} (nwsPlayLocSet_NN family; stock 20)",
+				g_baseCap);
+			return g_baseCap;
+		}
+
+		// The last detected cap, for readers that do not have the home object in
+		// hand (HomeIndexOf/SetBase). kSaneMaxBases while undetected so a rank NFF
+		// itself wrote is never rejected before we have counted — the array-bounds
+		// check at the real use site is the tight gate.
+		int BaseCap()
+		{
+			return g_baseCap > 0 ? g_baseCap : kSaneMaxBases;
 		}
 
 		// A form held in an object variable. The handle carries its own type, so
@@ -508,6 +561,9 @@ namespace NffBridge
 				ctx.homeFac = PropFaction(home.get(), "nwsFF_HomeFac");
 				ctx.baseNames = PropStringArray(home.get(), "nwsHBNames");
 				ctx.baseMarkers = PropRefArray(home.get(), "nwsHomeMarkers");
+				// Detect the real cap now that the script is bound, using the name
+				// array as the fallback bound. Cached + logged once inside.
+				DetectBaseCap(home.get(), static_cast<int>(ctx.baseNames.size()));
 			}
 			if (auto sets = BindScript(g_setsQuest, kNffSetsScript); sets) {
 				ctx.outfitFac = PropFaction(sets.get(), "nwsFF_OutfitFac");
@@ -537,7 +593,7 @@ namespace NffBridge
 			if (!actor || !fac || !actor->IsInFaction(fac))
 				return -1;
 			const auto rank = actor->GetFactionRank(fac, false);
-			if (rank < 0 || rank > kMaxBases)
+			if (rank < 0 || rank > BaseCap())
 				return -1;
 			return rank;
 		}
@@ -755,7 +811,7 @@ namespace NffBridge
 			return false;
 		}
 		if (index >= 0) {
-			if (index > kMaxBases || index >= static_cast<int>(nff.baseNames.size())
+			if (index > BaseCap() || index >= static_cast<int>(nff.baseNames.size())
 				|| nff.baseNames[static_cast<std::size_t>(index)].empty()) {
 				err = "That home base isn't set up";
 				return false;
@@ -789,6 +845,11 @@ namespace NffBridge
 			// want it. -1 means "no answer" (NFF absent / no save) and the
 			// view hides the control entirely rather than guessing "off".
 			{ "sandbox", SandboxLevel() },
+			// The DETECTED base cap of whatever NFF build is loaded (stock 20,
+			// Rober's edit 64, anything else) — same number nff_bases.cpp exports
+			// as maxBases, derived here by counting the script's nwsPlayLocSet_NN
+			// family rather than a hardcoded constant.
+			{ "maxBases", nff.ok ? BaseCap() : 0 },
 			{ "members", json::object() },
 			// The player's registered NFF home bases, so the deck can offer the
 			// same choice NFF's dialogue does instead of only REPORTING which one
@@ -796,7 +857,7 @@ namespace NffBridge
 			// writes, so it is what SetBase() takes back.
 			{ "bases", json::array() },
 		};
-		for (std::size_t i = 0; i < nff.baseNames.size() && i < static_cast<std::size_t>(kMaxBases) + 1; ++i) {
+		for (std::size_t i = 0; i < nff.baseNames.size() && i < static_cast<std::size_t>(BaseCap()) + 1; ++i) {
 			const bool placed = i < nff.baseMarkers.size() && nff.baseMarkers[i];
 			// An unnamed slot is one the player has never set up. Listing it would
 			// offer a home that does not exist; NFF's own menu hides them too.

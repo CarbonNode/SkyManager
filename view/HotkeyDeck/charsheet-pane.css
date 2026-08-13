@@ -79,6 +79,59 @@
   max-width: 15ch;
 }
 
+/* -- portrait capture + reframe --------------------------------------- *
+ * A "Take portrait" button on the empty card (first portrait is one click
+ * from here), and a hover-revealed retake/reframe bar over an existing one.
+ * The <img> can carry a CSS transform (the display crop) — overflow:hidden on
+ * .ps-portrait already clips it, and object-fit:cover keeps the fill. */
+.ps-portrait img {
+  transform-origin: 50% 50%;
+  transition: transform 120ms ease;
+}
+.ps-portrait-btn {
+  appearance: none;
+  border: 1px solid #4a4638;
+  border-radius: 8px;
+  background: #1d1d25;
+  color: #e0d8c4;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease, opacity 130ms ease;
+}
+.ps-portrait-btn:hover { background: rgba(201,162,75,.18); border-color: rgba(201,162,75,.6); color: #f0d79d; }
+.ps-portrait-btn:focus-visible { outline: none; border-color: rgba(201,162,75,.75); box-shadow: 0 0 0 2px rgba(201,162,75,.18); }
+.ps-portrait-btn:active { background: rgba(201,162,75,.28); }
+.ps-portrait-btn:disabled { opacity: .6; cursor: default; }
+
+/* empty-card Take button sits under the hint */
+.ps-portrait-take { margin-top: 4px; }
+
+/* the retake/reframe bar over a filled portrait: hidden until hover/focus so it
+   never covers the face at rest, but reachable by keyboard */
+.ps-portrait-actions {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  padding: 8px;
+  background: linear-gradient(180deg, rgba(16,16,21,0), rgba(16,16,21,.86) 55%);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 140ms ease, transform 140ms ease;
+  pointer-events: none;
+}
+.ps-portrait:hover .ps-portrait-actions,
+.ps-portrait:focus-within .ps-portrait-actions {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.ps-portrait-actions .ps-portrait-btn { font-size: 12px; padding: 6px 10px; }
+
 /* -- identity --------------------------------------------------------- */
 
 .ps-identity {
@@ -215,32 +268,82 @@
 }
 .ps-profile-grid input::placeholder { color: #514d43; }
 
-/* -- level medallion -------------------------------------------------- */
+/* -- level card ------------------------------------------------------- *
+ * A COMPACT badge, top-aligned with the name row — not a floor-to-ceiling
+ * column (Rober, "i dont love how tall the level card is"). align-self
+ * pins it to the header's top so the header's align-items:stretch no longer
+ * stretches it; its height is just the label + big number + foot line
+ * (roughly two identity-field rows), so the space below it is normal header
+ * background, never a hole. Matched border/gradient tokens keep it a
+ * deliberate part of the header. When the DLL sends levelProgress it grows a
+ * progress-to-next track + a percent footline (still compact). */
 
 .ps-level {
   flex-shrink: 0;
-  width: 92px;
+  align-self: flex-start;   /* top-align the badge, don't stretch it tall */
+  width: 116px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 2px;
+  padding: 10px 12px 11px;
   border-radius: 12px;
   border: 1px solid rgba(201, 162, 75, .4);
-  background: radial-gradient(circle at 50% 35%, rgba(201, 162, 75, .16), rgba(201, 162, 75, .03) 70%);
+  background:
+    linear-gradient(180deg, rgba(201,162,75,.05), rgba(201,162,75,0) 60%),
+    radial-gradient(circle at 50% 34%, rgba(201, 162, 75, .16), rgba(201, 162, 75, .03) 72%),
+    linear-gradient(135deg, #1c1c24 0%, #131318 100%);
+  box-shadow: inset 0 0 0 1px rgba(201,162,75,.06);
+  position: relative;
 }
 .ps-level-cap {
   font-size: 12px;
+  font-weight: 650;
   color: #b8a066;
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 1.2px;
+  line-height: 1;
 }
 .ps-level-num {
-  font-size: 44px;
+  font-size: 40px;
   font-weight: 800;
   color: #ecd9a8;
   line-height: 1;
+  margin-top: 1px;
+  text-shadow: 0 1px 0 rgba(0,0,0,.35);
 }
+/* progress-to-next: a slim gold track under the number. Hidden until the DLL
+   sends XP (.ps-level-has-xp), but the foot hint shows "next: N+1" regardless. */
+.ps-level-track {
+  width: 100%;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 5px;
+  background: #22222b;
+  border: 1px solid #2b2b34;
+  overflow: hidden;
+  display: none;
+}
+.ps-level-has-xp .ps-level-track { display: block; }
+.ps-level-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 5px;
+  background: linear-gradient(90deg, #b8944a, #ecd9a8);
+  transition: width 320ms ease;
+  min-width: 2px;
+}
+.ps-level-foot {
+  font-size: 12px;
+  color: #8d8471;
+  letter-spacing: .3px;
+  white-space: nowrap;
+  margin-top: 3px;
+  min-height: 15px;
+  line-height: 15px;
+}
+.ps-level-has-xp .ps-level-foot { color: #b8a066; }
 
 /* =============================================================== vitals == */
 
@@ -353,6 +456,100 @@
 }
 .ps-chip-beast .ps-chip-label { color: #b79ad6; }
 .ps-chip-beast .ps-chip-val { color: #d9c2f0; }
+
+/* -- stat row: chips + reserved slot strip ---------------------------- *
+ * The stat chips (carry/gold/souls…) keep their natural width; the reserved
+ * strip grows to fill the space that used to sit conspicuously empty to their
+ * right. The strip holds equipped-item / active-content tiles once the DLL
+ * sends them; until then, deliberately-reserved placeholder tiles. */
+
+.ps-statrow {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ps-statrow > .ps-chips { flex: 0 1 auto; align-content: flex-start; }
+
+.ps-slots {
+  flex: 1 1 340px;
+  min-width: 260px;
+  /* flexbox (not grid) so tiles grow to consume the strip width but cap their
+     stretch — card-sized, spacious, no dead trailing column when tile count is
+     small, and clean wrapping when it's large. */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-content: flex-start;
+}
+.ps-slot {
+  flex: 1 1 140px;
+  max-width: 260px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 10px;
+  padding: 9px 13px;
+  min-width: 0;
+  min-height: 52px;
+}
+.ps-slot-ico {
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.ps-slot-img {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+.ps-slot-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ps-slot-label {
+  font-size: 12px;
+  color: #7d7563;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-slot-val {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e8e2d4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* placeholder tiles — dashed, muted, "reserved" not "broken" */
+.ps-slot-empty {
+  border: 1px dashed #4a4638;
+  background: repeating-linear-gradient(135deg, #14141a 0 12px, #17171e 12px 24px);
+}
+.ps-slot-empty .ps-slot-ico { opacity: .45; }
+.ps-slot-empty .ps-slot-label { color: #6d675a; }
+.ps-slot-empty .ps-slot-val { color: #55503f; font-weight: 600; }
+
+/* filled tiles — solid, with an optional per-tile accent bar */
+.ps-slot-filled {
+  border: 1px solid #33302a;
+  background: #17171d;
+  position: relative;
+  overflow: hidden;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.ps-slot-filled:hover { background: #1c1c24; border-color: #4a4638; }
+.ps-slot-filled::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--ps-slot-accent, #c9a24b);
+  opacity: .85;
+}
+.ps-slot-filled .ps-slot-ico { opacity: .95; }
 
 /* =============================================================== columns == */
 
@@ -703,11 +900,25 @@
   .ps-header { flex-wrap: wrap; gap: 16px; padding: 16px; }
   .ps-portrait { width: 120px; height: 156px; }
   .ps-name { font-size: 26px; white-space: normal; }
-  .ps-level { width: 100%; flex-direction: row; gap: 12px; padding: 10px; order: 3; }
-  .ps-level-num { font-size: 34px; }
+  /* Level card becomes a full-width bar: number + cap left, progress right. */
+  .ps-level {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px 14px;
+    padding: 12px 16px;
+    order: 3;
+    flex-wrap: wrap;
+  }
+  .ps-level-num { font-size: 34px; order: 2; }
+  .ps-level-cap { order: 1; }
+  .ps-level-track { width: auto; flex: 1 1 120px; margin-top: 0; order: 3; min-width: 100px; }
+  .ps-level-foot { order: 4; margin-left: auto; }
   .ps-identity { flex-basis: 55%; }
   .ps-profile-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
   .ps-bars { grid-template-columns: 1fr; }
+  .ps-slots { flex-basis: 100%; min-width: 0; }
   .ps-columns { grid-template-columns: 1fr; }
   .ps-skills-grid { grid-template-columns: repeat(2, 1fr); }
   .ps-inventory-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -782,4 +993,7 @@
     order: initial;
     box-sizing: border-box;
   }
+  /* the reserved strip stays 2-up at phone width */
+  .ps-slots { min-width: 0; }
+  .ps-slot { flex-basis: calc(50% - 5px); max-width: none; }
 }
