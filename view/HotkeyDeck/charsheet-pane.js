@@ -93,6 +93,7 @@ window.CharSheetPane = (function () {
       if (DEV && fn === 'psGet') setTimeout(devData, 30);
       if (DEV && fn === 'psRemoveEffect') setTimeout(function () { devRemove(arg); }, 30);
       if (DEV && fn === 'psSetMeta') setTimeout(function () { window.psResult({ ok: true, msg: '' }); }, 20);
+      if (DEV && fn === 'psPackList') setTimeout(function () { devPackList(arg); }, 30);
     }
   }
 
@@ -338,21 +339,21 @@ window.CharSheetPane = (function () {
     const lvl = $('ps-level-num');
     if (lvl) lvl.textContent = d.level || '—';
 
-    /* progress-to-next-level: only when the DLL actually sent XP. Otherwise the
-       card shows a decorative divider + "next" hint, never a fake bar. The
-       progress elements are provisioned by JS (index.html only carries the cap
-       + number), so the card gains the treatment with no index.html edit. */
+    /* progress-to-next-level ring: only sweep the ring when the DLL actually
+       sent XP. Otherwise the ring is a quiet full gold band (via the
+       :not(.ps-level-has-xp) CSS rule) and the foot reads "next: N+1" — never a
+       fake partial fill. The foot line is static in index.html; the ring's
+       sweep is a CSS var on the .ps-level element. */
     const card = levelCard();
     if (!card) return;
     const foot = provisionLevelExtras(card);
     const lp = d.levelProgress || {};
-    const fill = $('ps-level-fill');
-    const track = $('ps-level-track');
     card.classList.toggle('ps-level-has-xp', !!lp.has);
-    if (fill) fill.style.width = (lp.has ? lp.pct : 0).toFixed(1) + '%';
-    if (track) track.title = lp.has
+    card.style.setProperty('--ps-ring', (lp.has ? lp.pct : 0).toFixed(1));
+    const ring = card.querySelector('.ps-level-ring');
+    if (ring) ring.title = lp.has
       ? (fmtInt(lp.cur) + ' / ' + fmtInt(lp.next) + ' XP to level ' + ((d.level || 0) + 1))
-      : 'Experience to the next level';
+      : (d.level ? 'Level ' + d.level + ' — advance to reach ' + (d.level + 1) : 'Level');
     if (foot) {
       foot.textContent = lp.has
         ? (Math.round(lp.pct) + '% to ' + ((d.level || 0) + 1))
@@ -373,19 +374,15 @@ window.CharSheetPane = (function () {
     return _levelCard;
   }
 
-  /* Add the progress track + foot line to the Level card once. Keeping this in
-     JS means the visual integration ships without touching index.html. */
+  /* The medallion's foot line lives in index.html now (under the ring). This
+     stays for resilience: if an older skeleton without the foot is loaded, it
+     appends one so the "next: N+1" hint still shows. Idempotent. */
   function provisionLevelExtras(card) {
     let foot = $('ps-level-foot');
     if (foot) return foot;
-    const track = document.createElement('div');
-    track.id = 'ps-level-track';
-    track.className = 'ps-level-track';
-    track.innerHTML = '<div id="ps-level-fill" class="ps-level-fill"></div>';
     foot = document.createElement('div');
     foot.id = 'ps-level-foot';
     foot.className = 'ps-level-foot';
-    card.appendChild(track);
     card.appendChild(foot);
     return foot;
   }
@@ -483,8 +480,8 @@ window.CharSheetPane = (function () {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'ps-portrait-btn ' + cls;
-    b.title = 'Photograph your character in-game (switches to third person if needed)';
-    b.textContent = capturePending ? '… hold still' : label;
+    b.title = 'Arm the shot, then press E in-game to capture (switches to third person if needed)';
+    b.textContent = capturePending ? '⌛ press E in-game' : label;
     b.disabled = capturePending;
     b.addEventListener('click', function (e) { e.stopPropagation(); takePortrait(); });
     return b;
@@ -495,7 +492,11 @@ window.CharSheetPane = (function () {
     capturePending = true;
     /* repaint the button into its pending state immediately */
     if (state.data && ui.visible) renderPortrait(state.data);
-    if (typeof window.toast === 'function') window.toast('Taking your portrait…');
+    /* ARM flow (2026-08-13): the palette closes and the shot fires on the next E,
+       so the player can pose and frame first. The in-game notification is the
+       real instruction; this toast is a fallback for the frame before the deck
+       hides. */
+    if (typeof window.toast === 'function') window.toast('Portrait armed — line up your shot, then press E');
     toGame('psTakePortrait', '');
   }
 
@@ -685,20 +686,231 @@ window.CharSheetPane = (function () {
     const grid = $('ps-inventory-grid');
     if (!grid) return;
     const inv = d.inventory || {}, p = inv.potions || {};
+    /* [cardClass, label, count, icon, packCategory | null].
+       The four potion cards carry a packCategory the modal fetches by (health /
+       magicka / stamina / other); Lockpicks are not potions, so they open no
+       modal. */
     const rows = [
-      ['health', 'Health', p.health, 'icons/custom/ps-health.png'],
-      ['magicka', 'Magicka', p.magicka, 'icons/custom/ps-magicka.png'],
-      ['stamina', 'Stamina', p.stamina, 'icons/custom/ps-stamina.png'],
-      ['utility', 'Other', p.other, 'icons/custom/ps-utility.png'],
-      ['lockpicks', 'Lockpicks', inv.lockpicks, 'icons/custom/ps-lockpicks.png'],
+      ['health', 'Health', p.health, 'icons/custom/ps-health.png', 'health'],
+      ['magicka', 'Magicka', p.magicka, 'icons/custom/ps-magicka.png', 'magicka'],
+      ['stamina', 'Stamina', p.stamina, 'icons/custom/ps-stamina.png', 'stamina'],
+      ['utility', 'Other', p.other, 'icons/custom/ps-utility.png', 'other'],
+      ['lockpicks', 'Lockpicks', inv.lockpicks, 'icons/custom/ps-lockpicks.png', null],
     ];
     grid.innerHTML = rows.map(function (r) {
-      return '<div class="ps-inv ps-inv-' + r[0] + '" title="' + esc(r[1]) + ' carried">' +
+      const cat = r[4];
+      const clickable = !!cat && Number(r[2]) > 0;
+      return '<div class="ps-inv ps-inv-' + r[0] +
+        (cat ? ' ps-inv-pot' : '') + (clickable ? ' ps-inv-open' : '') +
+        '"' + (cat ? ' data-cat="' + esc(cat) + '"' : '') +
+        ' title="' + esc(r[1]) +
+        (clickable ? ' — click to list every ' + esc(r[1].toLowerCase()) + ' potion you carry'
+                   : (cat ? ' — none carried' : ' carried')) + '"' +
+        (clickable ? ' tabindex="0" role="button"' : '') + '>' +
         '<img src="' + r[3] + '" alt=""><span class="ps-inv-body"><span class="ps-inv-name">' +
-        esc(r[1]) + '</span><span class="ps-inv-count">' + fmtInt(r[2]) + '</span></span></div>';
+        esc(r[1]) + '</span><span class="ps-inv-count">' + fmtInt(r[2]) + '</span></span>' +
+        (clickable ? '<span class="ps-inv-more" aria-hidden="true">⋯</span>' : '') +
+        '</div>';
     }).join('');
+    grid.querySelectorAll('.ps-inv-open').forEach(function (card) {
+      const cat = card.getAttribute('data-cat');
+      const open = function (ev) { ev.stopPropagation(); openPackModal(cat); };
+      card.addEventListener('click', open);
+      card.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(ev); }
+      });
+    });
     const total = $('ps-potion-total');
     if (total) total.textContent = fmtInt(p.total) + ' potion' + (Number(p.total) === 1 ? '' : 's');
+  }
+
+  /* ---- Pack Check modal: every potion of one category --------------------- *
+   * A chip click opens a centered overlay listing the player's potions of that
+   * category (name, count, effect + magnitude). Data comes from C++ via
+   * psPackList(cat) -> psPackListData(payload); the modal shows a skeleton until
+   * it lands. Filter-as-you-type appears past 10 rows (Enter highlights the top
+   * hit — the deck idiom). Esc / click-outside / ✕ close. Display-only: there is
+   * no safe "drink from the sheet" bridge, so a row is not a drink button. */
+
+  const pack = {
+    open: false,
+    cat: '',           // category being shown
+    label: '',
+    data: null,        // last psPackListData payload for this cat
+    filter: '',
+    loading: false,
+  };
+
+  const PACK_LABELS = { health: 'Health', magicka: 'Magicka', stamina: 'Stamina', other: 'Other' };
+
+  function openPackModal(cat) {
+    if (!cat) return;
+    pack.open = true;
+    pack.cat = cat;
+    pack.label = PACK_LABELS[cat] || cat;
+    pack.data = null;
+    pack.filter = '';
+    pack.loading = true;
+    renderPackModal();
+    toGame('psPackList', cat);
+  }
+
+  function closePackModal() {
+    if (!pack.open) return;
+    pack.open = false;
+    pack.data = null;
+    const ov = $('ps-pack-overlay');
+    if (ov && ov.parentNode) ov.parentNode.removeChild(ov);
+  }
+
+  /* C++ reply: the per-category potion detail. Ignored if it's for a category we
+     are no longer showing (a fast re-click), or the modal was closed. */
+  window.psPackListData = function (payload) {
+    let d = payload;
+    if (typeof payload === 'string') { try { d = JSON.parse(payload); } catch (e) { d = null; } }
+    if (!d || typeof d !== 'object') return;
+    if (!pack.open || String(d.category || '') !== pack.cat) return;
+    pack.data = {
+      category: String(d.category || pack.cat),
+      label: String(d.label || pack.label),
+      ok: d.ok !== false,
+      total: Number(d.total) || 0,
+      items: Array.isArray(d.items) ? d.items.map(function (it) {
+        it = (it && typeof it === 'object') ? it : {};
+        return {
+          name: String(it.name || 'Potion'),
+          count: Number(it.count) || 0,
+          magnitude: Number(it.magnitude) || 0,
+          effect: String(it.effect || ''),
+        };
+      }) : [],
+    };
+    pack.loading = false;
+    renderPackModal();
+  };
+
+  function packVisibleItems() {
+    if (!pack.data) return [];
+    const n = pack.filter.toLowerCase();
+    let list = pack.data.items;
+    if (n) list = list.filter(function (it) {
+      return it.name.toLowerCase().indexOf(n) !== -1 ||
+             it.effect.toLowerCase().indexOf(n) !== -1;
+    });
+    /* highest count first (your biggest stack is usually what you came for),
+       then alphabetical — the C++ sends alphabetical, this stabilises on count */
+    return list.slice().sort(function (a, b) {
+      if (b.count !== a.count) return b.count - a.count;
+      return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+    });
+  }
+
+  function renderPackModal() {
+    let ov = $('ps-pack-overlay');
+    if (!pack.open) { if (ov && ov.parentNode) ov.parentNode.removeChild(ov); return; }
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'ps-pack-overlay';
+      ov.className = 'ps-pack-overlay';
+      ov.addEventListener('mousedown', function (e) { if (e.target === ov) closePackModal(); });
+      ov.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { e.stopPropagation(); closePackModal(); }
+      });
+      (($('ps-pane')) || document.body).appendChild(ov);
+    }
+
+    const d = pack.data;
+    const items = packVisibleItems();
+    const showFilter = d && d.items.length > 10;
+    const countLabel = d
+      ? (d.total + ' potion' + (d.total === 1 ? '' : 's') +
+         (d.items.length ? ' · ' + d.items.length + ' kind' + (d.items.length === 1 ? '' : 's') : ''))
+      : '';
+
+    let body;
+    if (pack.loading && !d) {
+      body = new Array(4).fill(
+        '<div class="ps-pack-row ps-pack-skel">' +
+        '<span class="ps-skel-box" style="width:170px;height:15px;display:block"></span>' +
+        '<span class="ps-skel-box" style="width:44px;height:15px;display:block"></span></div>').join('');
+    } else if (!d || !d.ok) {
+      body = '<div class="ps-pack-empty">Could not read your inventory. Try again in a moment.</div>';
+    } else if (!d.items.length) {
+      body = '<div class="ps-pack-empty"><b>No ' + esc(pack.label.toLowerCase()) +
+        ' potions.</b><br>Nothing in this category is in your pack right now.</div>';
+    } else if (!items.length) {
+      body = '<div class="ps-pack-empty">Nothing matches “' + esc(pack.filter) + '”.</div>';
+    } else {
+      body = items.map(function (it, i) {
+        const meta = [];
+        if (it.effect) meta.push(esc(it.effect));
+        if (it.magnitude) meta.push(fmtInt(it.magnitude) + ' pts');
+        const metaHtml = meta.length ? '<div class="ps-pack-sub">' + meta.join(' <span class="ps-pack-dot">·</span> ') + '</div>' : '';
+        return '<div class="ps-pack-row' + (i === 0 && pack.filter ? ' ps-pack-top' : '') + '">' +
+          '<div class="ps-pack-main"><div class="ps-pack-name">' + esc(it.name) + '</div>' + metaHtml + '</div>' +
+          '<div class="ps-pack-count">×' + fmtInt(it.count) + '</div></div>';
+      }).join('');
+    }
+
+    ov.innerHTML =
+      '<div class="ps-pack-card ps-pack-' + esc(pack.cat) + '" role="dialog" aria-modal="true" aria-label="' +
+        esc(pack.label) + ' potions">' +
+        '<div class="ps-pack-head">' +
+          '<div class="ps-pack-title"><span class="ps-pack-dot-ico"></span>' + esc(pack.label) +
+            ' Potions <span class="ps-pack-sub-count">' + esc(countLabel) + '</span></div>' +
+          '<button class="ps-pack-x" type="button" title="Close (Esc)" aria-label="Close">✕</button>' +
+        '</div>' +
+        (showFilter
+          ? '<input id="ps-pack-filter" class="ps-pack-filter" type="text" autocomplete="off" spellcheck="false" ' +
+            'placeholder="Filter potions — name or effect (Enter = top hit)">'
+          : '') +
+        '<div class="ps-pack-body">' + body + '</div>' +
+      '</div>';
+
+    ov.querySelector('.ps-pack-x').addEventListener('click', function (e) { e.stopPropagation(); closePackModal(); });
+
+    const f = $('ps-pack-filter');
+    if (f) {
+      f.value = pack.filter;
+      f.addEventListener('input', function () { pack.filter = f.value.trim(); repaintPackBody(); });
+      f.addEventListener('keydown', function (e) {
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+          const top = packVisibleItems()[0];
+          if (top) {
+            const row = ov.querySelector('.ps-pack-body .ps-pack-row');
+            if (row) { row.classList.add('ps-pack-flash'); setTimeout(function () { row.classList.remove('ps-pack-flash'); }, 600); }
+          }
+        }
+        if (e.key === 'Escape') { if (f.value) { f.value = ''; pack.filter = ''; repaintPackBody(); } else closePackModal(); }
+      });
+      /* focus the filter so a keyboard user can type immediately */
+      try { f.focus(); } catch (e) {}
+    }
+  }
+
+  /* Repaint only the body + count on a filter keystroke, so the input keeps
+     focus and the caret doesn't jump (the effect-search idiom). */
+  function repaintPackBody() {
+    const ov = $('ps-pack-overlay');
+    if (!ov || !pack.data) return;
+    const d = pack.data;
+    const items = packVisibleItems();
+    const bodyEl = ov.querySelector('.ps-pack-body');
+    if (!bodyEl) return;
+    if (!items.length) {
+      bodyEl.innerHTML = '<div class="ps-pack-empty">Nothing matches “' + esc(pack.filter) + '”.</div>';
+      return;
+    }
+    bodyEl.innerHTML = items.map(function (it, i) {
+      const meta = [];
+      if (it.effect) meta.push(esc(it.effect));
+      if (it.magnitude) meta.push(fmtInt(it.magnitude) + ' pts');
+      const metaHtml = meta.length ? '<div class="ps-pack-sub">' + meta.join(' <span class="ps-pack-dot">·</span> ') + '</div>' : '';
+      return '<div class="ps-pack-row' + (i === 0 && pack.filter ? ' ps-pack-top' : '') + '">' +
+        '<div class="ps-pack-main"><div class="ps-pack-name">' + esc(it.name) + '</div>' + metaHtml + '</div>' +
+        '<div class="ps-pack-count">×' + fmtInt(it.count) + '</div></div>';
+    }).join('');
   }
 
   function renderEffects() {
@@ -849,6 +1061,7 @@ window.CharSheetPane = (function () {
 
   function onHide() {
     ui.visible = false;
+    closePackModal();   // a tab switch must not leave the potion modal hanging
     stopPoll();
     if (ui.scrollT) { clearTimeout(ui.scrollT); ui.scrollT = null; }
     ui.scrolling = false;
@@ -990,6 +1203,36 @@ window.CharSheetPane = (function () {
     if (ui.visible) renderEffects();
   }
 
+  /* DEV fixture for the pack modal: a plausible per-category potion list so the
+     harness (and ?dev=1 preview) exercise the modal without the game. */
+  function devPackList(cat) {
+    cat = String(cat || 'health').replace(/["\s]/g, '');
+    const seed = {
+      health: [
+        { name: 'Potion of Ultimate Healing', count: 3, magnitude: 200, effect: 'Restore Health' },
+        { name: 'Potion of Healing', count: 12, magnitude: 50, effect: 'Restore Health' },
+        { name: 'Potion of Minor Healing', count: 7, magnitude: 25, effect: 'Restore Health' },
+        { name: 'Blood Potion', count: 1, magnitude: 100, effect: 'Restore Health' },
+      ],
+      magicka: [
+        { name: 'Potion of Magicka', count: 8, magnitude: 50, effect: 'Restore Magicka' },
+        { name: 'Potion of Plentiful Magicka', count: 2, magnitude: 100, effect: 'Restore Magicka' },
+      ],
+      stamina: [
+        { name: 'Potion of Stamina', count: 11, magnitude: 50, effect: 'Restore Stamina' },
+      ],
+      other: [
+        { name: 'Elixir of the Knight', count: 2, magnitude: 60, effect: 'Fortify Block' },
+        { name: 'Philter of Waterbreathing', count: 4, magnitude: 0, effect: 'Waterbreathing' },
+      ],
+    };
+    const items = seed[cat] || [];
+    const total = items.reduce(function (n, it) { return n + it.count; }, 0);
+    window.psPackListData({
+      category: cat, label: (PACK_LABELS[cat] || cat), ok: true, total: total, items: items,
+    });
+  }
+
   /* ========================================================== selftest == */
 
   function selftest() {
@@ -1053,6 +1296,8 @@ window.CharSheetPane = (function () {
     _state: state, _ui: ui, _visibleEffects: visibleEffects, _normalize: normalize,
     _fmtDur: fmtDur, _clampPct: clampPct, _normCrop: normCrop,
     _renderPortrait: renderPortrait, _onScroll: onScrollActivity,
+    _pack: pack, _openPackModal: openPackModal, _closePackModal: closePackModal,
+    _packVisibleItems: packVisibleItems,
   };
 })();
 

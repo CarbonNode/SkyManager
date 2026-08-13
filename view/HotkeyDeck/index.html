@@ -920,9 +920,15 @@
           <label><span>Patron</span><input id="ps-deity-input" type="text" placeholder="Mara, Molag Bal…" maxlength="160"></label>
         </div>
     </div>
+    <!-- Level: a circular gold medallion with a conic progress ring toward the
+         next level, vertically centered against the identity block. The ring's
+         sweep (--ps-ring) and the foot line are set by JS from levelProgress. -->
     <div class="ps-level">
-      <div class="ps-level-cap">Level</div>
-      <div id="ps-level-num" class="ps-level-num">—</div>
+      <div class="ps-level-ring">
+        <div class="ps-level-cap">Level</div>
+        <div id="ps-level-num" class="ps-level-num">—</div>
+      </div>
+      <div id="ps-level-foot" class="ps-level-foot"></div>
     </div>
   </div>
 

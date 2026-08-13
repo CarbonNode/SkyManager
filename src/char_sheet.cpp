@@ -10,6 +10,7 @@
 #include <optional>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 // pch (force-included) provides RE::/SKSE::/json and `using namespace std::literals`.
 
@@ -543,6 +544,159 @@ namespace CharSheet
 			{ "portrait", meta.portrait },
 		};
 
+		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	namespace
+	{
+		// "health"|"magicka"|"stamina"|"other" -> the PotionPoolMask value a potion
+		// must EXACTLY match to belong to that card. "other" is the catch-all: any
+		// mask the three single-pool cards don't claim (0, or a multi-pool combo).
+		// Returns -1 for an unknown category name.
+		int CategoryMask(const std::string& category)
+		{
+			if (category == "health")  return 1;
+			if (category == "magicka") return 2;
+			if (category == "stamina") return 4;
+			if (category == "other")   return -2;  // sentinel: "not 1/2/4"
+			return -1;
+		}
+
+		bool PotionInCategory(const RE::AlchemyItem* alch, int wantMask)
+		{
+			const int mask = PotionPoolMask(alch);
+			if (wantMask == -2)                       // "other"
+				return mask != 1 && mask != 2 && mask != 4;
+			return mask == wantMask;
+		}
+
+		// One potion -> its best label + magnitude + primary effect name. Magnitude
+		// is the LARGEST magnitude across the potion's effects (a restore potion's
+		// headline number); effect is the first effect's display name. Both are
+		// best-effort and default to 0 / "".
+		void DescribePotion(const RE::AlchemyItem* alch, double& magOut, std::string& effOut)
+		{
+			magOut = 0.0;
+			effOut.clear();
+			if (!alch)
+				return;
+			for (auto* effect : alch->effects) {
+				if (!effect)
+					continue;
+				const double m = static_cast<double>(effect->effectItem.magnitude);
+				if (m > magOut)
+					magOut = m;
+				if (effOut.empty() && effect->baseEffect)
+					if (const char* n = effect->baseEffect->GetFullName(); n && *n)
+						effOut = n;
+			}
+		}
+
+		// Raw walk, SEH-guarded by the wrapper below (same seam as ReadInventory).
+		// Collects the matching potions as {name,count,magnitude,effect}. Kept POD-
+		// free of C++ objects that need unwinding across __try (json is built AFTER).
+		struct PotionRow
+		{
+			std::string name;
+			std::int64_t count = 0;
+			double magnitude = 0.0;
+			std::string effect;
+		};
+
+		__declspec(noinline) void ReadPackRaw(RE::PlayerCharacter* p, int wantMask,
+			std::vector<PotionRow>& out, bool& ok)
+		{
+			ok = true;
+			auto* changes = p ? p->GetInventoryChanges() : nullptr;
+			if (!changes || !changes->entryList)
+				return;
+			for (auto* entry : *changes->entryList) {
+				if (!entry || !entry->object || entry->countDelta <= 0)
+					continue;
+				auto* obj = entry->object;
+				if (obj->GetFormType() != RE::FormType::AlchemyItem)
+					continue;
+				auto* alch = obj->As<RE::AlchemyItem>();
+				if (!alch || alch->IsFood() || alch->IsPoison())
+					continue;
+				if (!PotionInCategory(alch, wantMask))
+					continue;
+				PotionRow row;
+				if (const char* n = alch->GetFullName(); n && *n)
+					row.name = n;
+				if (row.name.empty())
+					row.name = "Potion";
+				row.count = entry->countDelta;
+				DescribePotion(alch, row.magnitude, row.effect);
+				out.push_back(std::move(row));
+			}
+		}
+
+		// The SEH frame must hold NO objects that need unwinding (C2712) — the
+		// vector lives in the CALLER and comes in by reference; this frame is
+		// PODs only, exactly the finance.cpp ReadGold seam.
+		bool ReadPackSeh(RE::PlayerCharacter* p, int wantMask, std::vector<PotionRow>& out)
+		{
+			__try {
+				bool ok = true;
+				ReadPackRaw(p, wantMask, out, ok);
+				return ok;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
+		const char* CategoryLabel(const std::string& category)
+		{
+			if (category == "health")  return "Health";
+			if (category == "magicka") return "Magicka";
+			if (category == "stamina") return "Stamina";
+			return "Other";
+		}
+	}
+
+	std::string BuildPackListJson(const std::string& category)
+	{
+		json out;
+		out["category"] = category;
+		out["label"]    = CategoryLabel(category);
+		out["items"]    = json::array();
+
+		const int wantMask = CategoryMask(category);
+		auto*     p        = RE::PlayerCharacter::GetSingleton();
+		if (wantMask == -1 || !p) {
+			out["ok"] = (wantMask != -1);   // unknown category is the only "not ok"
+			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
+
+		std::vector<PotionRow> rows;
+		const bool ok = ReadPackSeh(p, wantMask, rows);
+		if (!ok)
+			rows.clear();
+		out["ok"] = ok;
+
+		// Marker: "charsheet pack list" — hd-markers.json fingerprint.
+		static bool packSaid = false;
+		if (!packSaid) {
+			packSaid = true;
+			logger::info("charsheet pack list: per-category potion detail ready");
+		}
+
+		// Alphabetical so the modal is stable across polls and easy to scan.
+		std::sort(rows.begin(), rows.end(), [](const PotionRow& a, const PotionRow& b) {
+			return a.name < b.name;
+		});
+		std::int64_t total = 0;
+		for (const auto& r : rows) {
+			total += r.count;
+			out["items"].push_back(json{
+				{ "name", r.name },
+				{ "count", r.count },
+				{ "magnitude", r.magnitude },
+				{ "effect", r.effect },
+			});
+		}
+		out["total"] = total;
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 

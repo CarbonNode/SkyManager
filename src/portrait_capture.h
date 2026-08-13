@@ -136,6 +136,43 @@ namespace PortraitCapture
 	void FirePlayerSheet(const std::filesystem::path& portraitDir,
 		std::function<void(const std::string&)> done);
 
+	// ---- self-portrait ARM (Rober, 2026-08-13) ------------------------------
+	// Instead of firing on a fixed delay, ARM the self-portrait: close the
+	// palette, tell the player to line up their shot, and capture on the NEXT E
+	// press the input sink sees. `done` is the SAME completion callback
+	// FirePlayerSheet used (written filename on success, "" on failure), invoked
+	// on the MAIN THREAD. A ~60 s timeout disarms with a notification so an armed
+	// capture can never ambush the player later; the deck's open key cancels the
+	// arm (handled in the sink). `onCancel` (optional) runs on the MAIN THREAD
+	// when the arm is cancelled OR times out WITHOUT a shot, so the view can clear
+	// its "taking…" pending state; it never runs once the shot fires (the shot's
+	// `done` covers that). Returns immediately.
+	void ArmPlayerSheet(const std::filesystem::path& portraitDir,
+		std::function<void(const std::string&)> done,
+		std::function<void()> onCancel = nullptr);
+
+	// True between ArmPlayerSheet and the moment the resulting capture's camera /
+	// HUD restore has completed. The input sink asks this to route an E press to
+	// the shot; CanOpenNow() asks it so the deck cannot REOPEN mid-capture and
+	// paint a half-laid-out panel over the transitioning world (the reopen-glitch
+	// fix). Also enforces the timeout lazily, so a forgotten arm cannot linger.
+	bool SelfPortraitArmed();
+
+	// A self-capture is IN FLIGHT (the E was pressed; the frame grab + camera/HUD
+	// restore is running). Distinct from SelfPortraitArmed(): during the arm WAIT
+	// the game is normal and the deck may reopen (which cancels the arm), but once
+	// the shot fires the camera/menus are mid-transition and a reopen would glitch.
+	bool SelfCaptureBusy();
+
+	// Fire the armed self-portrait NOW (called by the sink on the E press). No-op
+	// if nothing is armed. Runs the capture on the main thread via the deferred
+	// idiom, exactly like FirePlayerSheet.
+	void SelfPortraitShootNow();
+
+	// Cancel an armed self-portrait (the deck's open key was pressed). No-op if
+	// nothing is armed; notifies and clears. Does NOT fire `done`.
+	void SelfPortraitCancel();
+
 	// The fixed portrait slug the Character Sheet uses, exported so the writer
 	// (FirePlayerSheet) and any reader agree on one spelling.
 	std::string PlayerSheetSlug();

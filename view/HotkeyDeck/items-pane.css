@@ -269,28 +269,54 @@
 .ix-row {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 16px;
   background: #15151b;
   border: 1px solid #33302a;
   border-radius: 10px;
-  padding: 10px 14px;
-  transition: background 130ms ease, border-color 130ms ease;
+  padding: 13px 16px;
+  transition: background 130ms ease, border-color 130ms ease, transform 130ms ease, box-shadow 130ms ease;
 }
-.ix-row:hover { background: #1b1b23; border-color: #4a4638; }
-.ix-row.ix-sel { border-color: rgba(201, 162, 75, .6); background: #1b1b23; }
+.ix-row:hover {
+  background: #1b1b23;
+  border-color: #4a4638;
+  transform: translateY(-1px);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, .34);
+}
+.ix-row.ix-sel {
+  border-color: rgba(201, 162, 75, .6);
+  background: #1b1b23;
+  box-shadow: 0 0 0 1px rgba(201, 162, 75, .18);
+}
 
-/* per-type glyph plate, the keys-pane hue idea applied to item categories */
+/* per-type glyph plate, the keys-pane hue idea applied to item categories.
+   Also the frame for a real item render: the <img> fills it, the emoji hides
+   underneath so a broken/absent render leaves the hued glyph. */
 .ix-glyph {
-  width: 46px;
-  height: 46px;
+  position: relative;
+  width: 64px;
+  height: 64px;
   border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
+  font-size: 30px;
   flex-shrink: 0;
   border: 1px solid transparent;
+  overflow: hidden;
 }
+/* the rendered mesh, floated over the glyph plate */
+.ix-glyph .ix-art {
+  position: absolute;
+  inset: 5px;
+  width: calc(100% - 10px);
+  height: calc(100% - 10px);
+  object-fit: contain;   /* a small object on transparency — never cropped */
+  pointer-events: none;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .5));
+}
+/* once art has landed the emoji is redundant — mute it right down so it can't
+   bleed through a transparent render, but keep it as the load fallback */
+.ix-glyph.ix-has-art { color: transparent; background: #101015; border-color: #2c2a24; }
 .ix-t-weap { background: #2b1d1c; border-color: #5c3733; color: #e8a49c; }
 .ix-t-armo { background: #21232b; border-color: #414659; color: #aab3c6; }
 .ix-t-ammo { background: #241f17; border-color: #4d4128; color: #d3b988; }
@@ -346,7 +372,29 @@
   transition: color 120ms ease;
 }
 .ix-meta-plug:hover { color: #ecd9a8; text-decoration: underline; }
-.ix-meta-vw { white-space: nowrap; }
+
+/* the value·weight line Rober circled — value leads in the gold accent with
+   its coin glyph, weight sits quietly muted behind a hairline divider. Both
+   ≥13px per the couch rules. */
+.ix-meta-vw {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+.ix-meta-val {
+  color: #e6c982;
+  font-weight: 650;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.ix-meta-wt {
+  color: #8d8471;
+  font-size: 13px;
+  white-space: nowrap;
+  padding-left: 10px;
+  border-left: 1px solid #33302a;
+}
 
 /* right side: qty stepper + the action button */
 .ix-act {
@@ -384,19 +432,28 @@
 }
 
 .ix-take {
-  background: rgba(201, 162, 75, .14);
+  background: linear-gradient(180deg, rgba(201, 162, 75, .22), rgba(201, 162, 75, .11));
   border: 1px solid rgba(201, 162, 75, .5);
   border-radius: 9px;
-  color: #ecd9a8;
+  color: #f0dfaf;
   font-size: 14px;
   font-weight: 650;
   padding: 10px 18px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 130ms ease, border-color 130ms ease, transform 80ms ease;
+  box-shadow: inset 0 1px 0 rgba(255, 240, 200, .08);
+  transition: background 130ms ease, border-color 130ms ease, transform 80ms ease, box-shadow 130ms ease;
 }
-.ix-take:hover { background: rgba(201, 162, 75, .24); border-color: rgba(201, 162, 75, .75); }
-.ix-take:active { transform: scale(.97); }
+.ix-take:hover {
+  background: linear-gradient(180deg, rgba(201, 162, 75, .34), rgba(201, 162, 75, .18));
+  border-color: rgba(201, 162, 75, .8);
+  box-shadow: inset 0 1px 0 rgba(255, 240, 200, .12), 0 3px 10px rgba(0, 0, 0, .28);
+}
+.ix-take:active {
+  transform: scale(.97);
+  background: linear-gradient(180deg, rgba(201, 162, 75, .12), rgba(201, 162, 75, .2));
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, .3);
+}
 
 /* the "show more" foot */
 .ix-more {
@@ -463,11 +520,22 @@
   font-size: 15px;
   color: #b6ad99;
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+.ix-sheet-glyph {
+  width: 58px;
+  height: 58px;
+  font-size: 28px;
+}
+.ix-sheet-item-txt {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 .ix-sheet-item b { color: #efe9da; font-size: 16px; }
+.ix-sheet-item-txt span { font-size: 13.5px; }
 
 .ix-sheet-row {
   display: flex;
@@ -571,9 +639,14 @@
   .ix-title { font-size: 17px; }
   #ix-search { font-size: 16px; padding: 9px 4px; }
   .ix-btn { padding: 9px 12px; font-size: 13px; }
-  .ix-glyph { width: 38px; height: 38px; font-size: 18px; }
+  .ix-row { gap: 12px; padding: 11px 12px; }
+  .ix-glyph { width: 54px; height: 54px; font-size: 25px; }
+  .ix-sheet-glyph { width: 50px; height: 50px; font-size: 24px; }
   .ix-name { font-size: 14.5px; }
-  .ix-meta { font-size: 12.5px; }
+  .ix-meta { font-size: 12.5px; gap: 8px; }
+  .ix-meta-val, .ix-meta-wt { font-size: 12.5px; }
+  .ix-meta-vw { gap: 8px; }
+  .ix-meta-wt { padding-left: 8px; }
   .ix-meta-plug { max-width: 18ch; }
   .ix-qty button { width: 28px; height: 34px; }
   .ix-take { padding: 9px 12px; font-size: 13px; }
