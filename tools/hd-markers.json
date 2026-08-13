@@ -267,6 +267,7 @@
   "crt-alert-view": "crt-alert: view created + listener registered",
   "text-input-guard": "text-input guard:",
   "api-c-exports": "SkyManager C API: open requested",
+  "open-timing-diag": "open-diag: {} took {} ms",
   "item-explorer-index": "item-explorer: index built",
   "item-explorer-add": "item-explorer: add {} x{} from {} (paid {})",
   "anim-lo-scan": "anim: load-order scan",

@@ -55,6 +55,7 @@
 #include "loot_highlight.h"
 #include "keys_scan.h"   // Keys tab: the load-order hotkey census (kc* bridge)
 #include "item_explorer.h"  // Items tab: the inline item explorer (ix* bridge)
+#include "open_diag.h"      // open/close timing + hang watchdogs (Nexus freeze triage)
 #include "no_auto_gear.h"
 #include "spid_gear.h"
 #include "actor_identity.h"   // sg* handlers parse durable npc/item ids
@@ -84,6 +85,9 @@ namespace
 	// RUNTIME-ONLY on purpose — never persisted, so a crash/uninstall of the
 	// caller can never leave the deck permanently keyless.
 	std::atomic<bool>           g_apiHotkeyDisabled{ false };
+	// open-diag: when view creation was requested, so the captureless DOM-ready
+	// callback can log how long the load actually took on this machine.
+	std::atomic<std::int64_t>   g_diagViewT0{ 0 };
 	std::atomic<bool>           g_focusPaused{ false };
 	std::atomic<bool>           g_capturing{ false };  // JS capture modal open (Esc cancels there, not here)
 
@@ -3387,9 +3391,17 @@ namespace
 			return;  // creation already in flight; DOM-ready will open
 		logger::info("creating view (first open)");
 		if (!ViewFileOnDisk("HotkeyDeck/index.html")) { g_viewRequested = false; return; }
+		// open-diag (Ank164 freeze triage): time CreateView's SYNCHRONOUS cost
+		// (a stalled Prisma renderer blocks right here) and the async DOM-ready
+		// gap (fonts, shaders, first layout — the once-per-session warm-up).
+		g_diagViewT0 = OpenDiag::NowMs();
+		OpenDiag::Watchdog wdCreate("view creation (CreateView call)", 3000);
 		g_view = g_prisma->CreateView("HotkeyDeck/index.html", [](PrismaView v) {
 			g_viewReady = true;
 			logger::info("view DOM ready (handle {})", v);
+			if (const auto t0 = g_diagViewT0.load())
+				OpenDiag::LogMs("view load to DOM ready (fonts/shaders/layout warm-up)",
+					OpenDiag::NowMs() - t0, 3000);
 			SKSE::GetTaskInterface()->AddTask([v]() {
 				if (CanOpenNow()) {
 					OpenPalette();
@@ -3404,6 +3416,8 @@ namespace
 				}
 			});
 		});
+		wdCreate.Done();
+		OpenDiag::LogMs("CreateView (synchronous)", OpenDiag::NowMs() - g_diagViewT0.load(), 1000);
 		g_prisma->RegisterJSListener(g_view, "hdFire", OnJsFire);
 		g_prisma->RegisterJSListener(g_view, "hdFireKey", OnJsFireKey);
 		g_prisma->RegisterJSListener(g_view, "hdSave", OnJsSave);
@@ -3857,6 +3871,10 @@ namespace
 	{
 		if (!g_prisma || !g_viewReady.load() || g_open.load())
 			return;
+		// open-diag: every open logs where its time went, and a side-thread
+		// watchdog names a hang the main thread can no longer report itself.
+		const auto      diagT0 = OpenDiag::NowMs();
+		OpenDiag::Watchdog wdOpen("palette open", 4000);
 		// Belt and braces: the 1 s portal poller normally lands a phone edit long
 		// before this, but a sidecar written while the poller was mid-batch (or
 		// while a rebind modal held it off) must still show up on the next open.
@@ -3916,9 +3934,13 @@ namespace
 		// And the crosshair DOOR for the lock modal. Reads NpcActions' non-actor
 		// snapshot, so it must run after NpcActions::SnapshotTarget() above.
 		DoorActions::SnapshotTarget();
+		OpenDiag::LogMs("open prep (portal appliers + icon scan + config serialize)",
+			OpenDiag::NowMs() - diagT0, 800);
+		const auto diagT1 = OpenDiag::NowMs();
 		g_open = true;
 		g_prisma->Show(g_view);
 		FocusDeck(pause);   // smooth pause (sgtm 0 + unpaused focus) or classic menu pause
+		OpenDiag::LogMs("show + focus", OpenDiag::NowMs() - diagT1, 800);
 		// Cooperative half of the search-box fix: mods that check textEntryCount
 		// hold their hotkeys while we own the keyboard. Guarded so it cannot leak.
 		SetTextInputGuard(true);
@@ -4042,6 +4064,11 @@ namespace
 	{
 		if (!g_prisma || !g_open.exchange(false))
 			return;
+		// open-diag: the freeze-solid-on-close report (Ank164) — if Unfocus/Hide
+		// blocks on a sick renderer, the watchdog thread says so in the log even
+		// though this thread never comes back to say it itself.
+		const auto      diagT0 = OpenDiag::NowMs();
+		OpenDiag::Watchdog wdClose("palette close (Unfocus/Hide)", 2000);
 		g_capturing = false;  // hdClosed() clears the JS capture without notifying us
 		g_prisma->Invoke(g_view, "hdClosed()");
 		g_prisma->Unfocus(g_view);
@@ -4049,6 +4076,7 @@ namespace
 		g_focusPaused = false;
 		FreezeWorld(false);   // never leave the world frozen after a close
 		SetTextInputGuard(false);
+		OpenDiag::LogMs("palette close", OpenDiag::NowMs() - diagT0, 800);
 	}
 
 	// Unconditional close. ClosePalette()/CloseMagicPalette() both bail out when
