@@ -54,6 +54,7 @@
 #include "room_guard.h"
 #include "loot_highlight.h"
 #include "keys_scan.h"   // Keys tab: the load-order hotkey census (kc* bridge)
+#include "item_explorer.h"  // Items tab: the inline item explorer (ix* bridge)
 #include "no_auto_gear.h"
 #include "spid_gear.h"
 #include "actor_identity.h"   // sg* handlers parse durable npc/item ids
@@ -2092,6 +2093,11 @@ namespace
 			  "Show or hide the on-screen action bar without changing anything on it (hotbar spell bar quick bar buttons wow)", "Utilities", "icons/custom/hk-hotbar.png" },
 			{ "hotbar-edit", "hd-hotbar-edit", "Action Bar: Set Up",
 			  "Open the action bar's editor - choose how many buttons, one or two rows, horizontal or vertical, where it sits, which key fires each button, and what goes on the shift/ctrl/alt pages (hotbar spell bar action bar wow configure resize icons)", "Utilities", "icons/custom/hk-hotbar.png" },
+			// Item Explorer (2026-08-13): deep-open the deck on the Items tab.
+			// "additem spawn give cheat buy" in the desc are omni keywords on
+			// purpose — the people who want this know it as "additem".
+			{ "item-explorer", "hd-item-explorer", "Item Explorer",
+			  "Find any item any mod ships - type a mod or an item name and take it, or turn on merchant mode and pay real gold for it (additem add item spawn give cheat search buy)", "Utilities", "icons/custom/hk-item-explorer.png" },
 		};
 
 		// Plain key entries added in a new build. Keyed by ID rather than by a
@@ -2995,6 +3001,10 @@ namespace
 	void OnJsKeysScan(const char* data);
 	void OnJsKeysState(const char* data);
 	void OnJsKeysResult(const char* data);
+	void OnJsItemsState(const char* data);
+	void OnJsItemsQuery(const char* data);
+	void OnJsItemsAdd(const char* data);
+	void OnJsItemsSave(const char* data);
 	void OnJsTimeWait(const char* data);
 	void OnJsRoomSave(const char* data);
 	void OnJsRoomLog(const char* data);
@@ -3504,6 +3514,13 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "kcScan", OnJsKeysScan);
 		g_prisma->RegisterJSListener(g_view, "kcState", OnJsKeysState);
 		g_prisma->RegisterJSListener(g_view, "kcResult", OnJsKeysResult);
+		// Items tab (Item Explorer). Requests ixState/ixQuery/ixAdd/ixSave;
+		// replies ixStateResult/ixResultData/ixAddResult/ixSaved — disjoint
+		// per the deck law.
+		g_prisma->RegisterJSListener(g_view, "ixState", OnJsItemsState);
+		g_prisma->RegisterJSListener(g_view, "ixQuery", OnJsItemsQuery);
+		g_prisma->RegisterJSListener(g_view, "ixAdd", OnJsItemsAdd);
+		g_prisma->RegisterJSListener(g_view, "ixSave", OnJsItemsSave);
 		g_prisma->RegisterJSListener(g_view, "rgSave", OnJsRoomSave);
 		g_prisma->RegisterJSListener(g_view, "rgLog", OnJsRoomLog);
 		g_prisma->RegisterJSListener(g_view, "rgRing", OnJsRoomRing);
@@ -4372,6 +4389,23 @@ namespace
 				if (!CanOpenNow())
 					return;
 				g_pendingTab = "wheel";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// Item Explorer: a palette surface like the wheel — deep-open the deck
+		// on the Items tab (or just switch to it if the deck is already up).
+		if (action == "item-explorer") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"items\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "items";
 				EnsureViewAndOpen();
 			});
 			return;
@@ -10154,6 +10188,41 @@ namespace
 	void OnJsKeysResult(const char*)
 	{
 		PushToView("kcResultData", KeysScan::StateJson(true));
+	}
+
+	// Items tab (Item Explorer). Every handler AddTasks: the index walk, the
+	// query against it and the add all touch engine structures (form arrays,
+	// names, the player's inventory), and ItemExplorer's threading contract is
+	// "task thread only, no locks".
+	void OnJsItemsState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("ixStateResult", ItemExplorer::StateJson());
+		});
+	}
+
+	void OnJsItemsQuery(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ixResultData", ItemExplorer::QueryJson(req));
+		});
+	}
+
+	void OnJsItemsAdd(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ixAddResult", ItemExplorer::Add(req));
+		});
+	}
+
+	void OnJsItemsSave(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ixSaved", ItemExplorer::Save(req));
+		});
 	}
 
 	// Time pane. tmGet -> tmInfo (the live game clock); tmWait(hours) -> tmResult
