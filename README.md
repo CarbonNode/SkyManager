@@ -119,6 +119,28 @@ Things in the DLL a scan will (correctly) notice, and why they are there:
   code — integration is SKSE event sinks, the Papyrus VM, and public plugin
   APIs throughout.
 
+### Cross-mod C API (for other plugin authors)
+
+`SkyManager.dll` exports a small `extern "C"` surface you can resolve with
+`GetProcAddress` — no headers or link libs needed:
+
+```cpp
+bool SkyManager_Open();               // request open; false if another menu owns the screen
+void SkyManager_Close();              // request close (queued to the main thread)
+bool SkyManager_IsMenuOpen();         // atomic read, callable from any thread
+void SkyManager_SetHotkeyEnabled(bool enabled);
+    // false = the deck's own open key (and its Shift/Ctrl/Alt chords) stand
+    // down so YOUR hotkeys can drive open/close without double-firing.
+    // Runtime-only: never persisted, resets every game launch — a crashed
+    // caller can never leave the deck permanently keyless. Deep-open keys
+    // (Followers/Domains tabs etc.) and in-deck input are unaffected.
+```
+
+`SkyManager_Open`/`Close` queue their work to the game's main thread via the
+SKSE task interface, so they are safe to call from input handlers. There is
+also `SkyManager_CrtAlert(const char*, const char*)`, used by the CRT Guard
+companion plugin. These names are a stable public ABI.
+
 The interface is plain HTML/CSS/JS rendered by
 [PrismaUI](https://www.nexusmods.com/skyrimspecialedition/mods/148718)
 (Ultralight) — no remote content, everything ships in `view/`.
