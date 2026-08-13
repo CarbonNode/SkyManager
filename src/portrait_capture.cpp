@@ -1491,6 +1491,32 @@ namespace PortraitCapture
 		std::string           g_photoLabel;
 		std::uint64_t         g_photoStartedAt = 0;
 
+		// ---- self-portrait ARM state ---------------------------------------
+		// g_selfArmed: waiting for the player's E after "Portrait armed". The world
+		// is NORMAL during this wait (no camera/menu changes), so the deck may
+		// reopen — which cancels the arm from the sink.
+		// g_selfCaptureBusy: the E fired and the grab + camera/HUD restore is
+		// running; the world is mid-transition, so the deck must NOT reopen (the
+		// reopen-glitch fix — CanOpenNow() gates on this).
+		std::atomic<bool>     g_selfArmed{ false };
+		std::atomic<bool>     g_selfCaptureBusy{ false };
+		std::filesystem::path g_selfDir;
+		std::function<void(const std::string&)> g_selfDone;
+		std::function<void()> g_selfOnCancel;   // clears the view's pending state
+		std::uint64_t         g_selfArmedAt = 0;
+		constexpr std::uint64_t kSelfArmTimeoutSec = 60;
+
+		// Run the cancel notifier (main thread) once and drop it. Used by both the
+		// explicit cancel and the lazy timeout so the view never sticks in "taking…".
+		void FireSelfCancel()
+		{
+			if (g_selfOnCancel) {
+				auto cb = std::move(g_selfOnCancel);
+				g_selfOnCancel = nullptr;
+				SKSE::GetTaskInterface()->AddTask([cb]() { cb(); });
+			}
+		}
+
 		// Set by main.cpp so this module never has to know the view exists.
 		std::function<void(const std::string&, const std::string&, const std::string&)> g_onPhotoSaved;
 		std::function<void()>                                                          g_onPhotoEnded;
@@ -1764,6 +1790,11 @@ namespace PortraitCapture
 					RestoreFov();
 					RestoreFirstPerson();
 					RestoreMenus();
+					// Camera + menus are restored: the world is no longer mid-
+					// transition, so the deck may reopen again without glitching.
+					// Cleared LAST, after every restore call, so CanOpenNow() only
+					// unblocks once the surface is stable (the reopen-glitch fix).
+					g_selfCaptureBusy.store(false);
 					if (cb && *cb) {
 						auto  fn = *cb;
 						auto  s  = *out;
@@ -2007,36 +2038,112 @@ namespace PortraitCapture
 		}).detach();
 	}
 
+	namespace
+	{
+		// The shared deferred capture sequence for a SELF portrait: HUD off +
+		// third-person flip + zoom, wait for frames to settle, grab, restore. Used
+		// by both the direct FirePlayerSheet and the arm-then-E path. Sets
+		// g_selfCaptureBusy for the whole sequence so the deck cannot reopen and
+		// paint a half-laid-out panel over the transitioning world; DoPlayerCapture's
+		// Restore clears it once the camera/menus are back.
+		void RunPlayerCaptureSequence(const std::filesystem::path& portraitDir,
+			std::function<void(const std::string&)> done)
+		{
+			g_selfCaptureBusy.store(true);
+			std::thread([dir = portraitDir, done = std::move(done)]() mutable {
+				using namespace std::chrono;
+				std::this_thread::sleep_for(milliseconds(220));
+				SKSE::GetTaskInterface()->AddTask([]() {
+					HideMenus();
+					EnsureThirdPersonForSelf();   // flip to third BEFORE the shot; restored on exit
+					ZoomForCapture();
+				});
+				std::this_thread::sleep_for(milliseconds(1000));
+				SKSE::GetTaskInterface()->AddTask([dir, done]() { DoPlayerCapture(dir, done); });
+				std::this_thread::sleep_for(milliseconds(90));
+				// Belt and braces, exactly like Fire(): DoPlayerCapture restored on
+				// its way out; these no-op if it ran, and rescue the world if its
+				// task was dropped. The first-person restore is included so a dropped
+				// capture cannot strand the player looking at their own back. If the
+				// capture task was dropped, clear the busy flag here so the deck is
+				// not blocked from reopening forever.
+				SKSE::GetTaskInterface()->AddTask([]() {
+					ExitFreeCam();
+					RestoreFov();
+					RestoreFirstPerson();
+					RestoreMenus();
+					g_selfCaptureBusy.store(false);
+				});
+			}).detach();
+		}
+	}
+
 	void FirePlayerSheet(const std::filesystem::path& portraitDir,
 		std::function<void(const std::string&)> done)
 	{
-		// Same deferred, HUD-gone, frames-to-settle idiom as Fire(), with two
-		// additions: the first-person flip lands in the SAME early task as the
-		// menu hide so the third-person camera has the full second to settle
-		// before the grab, and the capture runs DoPlayerCapture (fixed slug +
-		// completion callback) rather than DoCapture.
-		std::thread([dir = portraitDir, done = std::move(done)]() mutable {
-			using namespace std::chrono;
-			std::this_thread::sleep_for(milliseconds(220));
-			SKSE::GetTaskInterface()->AddTask([]() {
-				HideMenus();
-				EnsureThirdPersonForSelf();   // flip to third BEFORE the shot; restored on exit
-				ZoomForCapture();
-			});
-			std::this_thread::sleep_for(milliseconds(1000));
-			SKSE::GetTaskInterface()->AddTask([dir, done]() { DoPlayerCapture(dir, done); });
-			std::this_thread::sleep_for(milliseconds(90));
-			// Belt and braces, exactly like Fire(): DoPlayerCapture restored on
-			// its way out; these no-op if it ran, and rescue the world if its
-			// task was dropped. The first-person restore is included so a dropped
-			// capture cannot strand the player looking at their own back.
-			SKSE::GetTaskInterface()->AddTask([]() {
-				ExitFreeCam();
-				RestoreFov();
-				RestoreFirstPerson();
-				RestoreMenus();
-			});
-		}).detach();
+		RunPlayerCaptureSequence(portraitDir, std::move(done));
+	}
+
+	// ---- self-portrait ARM ------------------------------------------------
+	void ArmPlayerSheet(const std::filesystem::path& portraitDir,
+		std::function<void(const std::string&)> done,
+		std::function<void()> onCancel)
+	{
+		// Re-arming just resets the timer + target; a second press should not
+		// stack two captures. If an old arm carried a cancel notifier, fire it so
+		// the view for the previous request is not left in "taking…".
+		FireSelfCancel();
+		g_selfDir = portraitDir;
+		g_selfDone = std::move(done);
+		g_selfOnCancel = std::move(onCancel);
+		g_selfArmedAt = NowSeconds();
+		g_selfArmed.store(true);
+		logger::info("portrait: self-portrait ARMED - waiting for E");  // marker: portrait-arm-on-e
+		Notify("Portrait armed - line up your shot, then press E");
+	}
+
+	bool SelfPortraitArmed()
+	{
+		if (!g_selfArmed.load())
+			return false;
+		// Lazy timeout, checked wherever anyone asks (the sink on every keypress,
+		// and CanOpenNow). A forgotten arm disarms itself with a notification so it
+		// can never ambush the player an hour later.
+		if (NowSeconds() - g_selfArmedAt > kSelfArmTimeoutSec) {
+			g_selfArmed.store(false);
+			g_selfDone = nullptr;
+			logger::info("portrait: self-portrait arm timed out after {}s", kSelfArmTimeoutSec);
+			Notify("Portrait disarmed - took too long");
+			FireSelfCancel();
+			return false;
+		}
+		return true;
+	}
+
+	bool SelfCaptureBusy() { return g_selfCaptureBusy.load(); }
+
+	void SelfPortraitShootNow()
+	{
+		// Consume the arm exactly once — a keyboard can deliver E down+up, and the
+		// sink may fire this from either edge; the exchange makes it a single shot.
+		if (!g_selfArmed.exchange(false))
+			return;
+		auto done = std::move(g_selfDone);
+		g_selfDone = nullptr;
+		g_selfOnCancel = nullptr;   // the shot's `done` covers the view now
+		const auto dir = g_selfDir;
+		logger::info("portrait: self-portrait E pressed - capturing");
+		RunPlayerCaptureSequence(dir, std::move(done));
+	}
+
+	void SelfPortraitCancel()
+	{
+		if (!g_selfArmed.exchange(false))
+			return;
+		g_selfDone = nullptr;
+		logger::info("portrait: self-portrait arm cancelled");
+		Notify("Portrait disarmed");
+		FireSelfCancel();
 	}
 
 	Framing DefaultFraming()
