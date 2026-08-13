@@ -214,6 +214,8 @@
     "charsheet-effect-policy": "charsheet effect policy: race lock + controller confirmation",
     "charsheet-self-portrait": "charsheet: self-portrait saved ->",
     "portrait-self-firstperson": "portrait: player was in first person",
+    "charsheet-pack-modal": "charsheet pack list: per-category potion detail ready",
+    "portrait-arm-on-e": "portrait: self-portrait ARMED - waiting for E",
     "item-icons-worn": "item icons: worn set requested",
     "item-icons-turntable": "turntable frame(s) queued for",
     "facelight-bfl": "facelight: state",
@@ -269,7 +271,8 @@
     "items-pane.js": {
       "items-pane": "window.ItemsPane",
       "items-price-sheet": "function openSheet",
-      "items-merchant-toggle": "Merchant mode: ON"
+      "items-merchant-toggle": "Merchant mode: ON",
+      "items-real-renders": "hd-item-icons"
     },
     "items-pane.css": {
       "items-sheet": "#ix-pane {",

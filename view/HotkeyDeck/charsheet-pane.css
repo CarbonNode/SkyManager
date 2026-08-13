@@ -268,82 +268,98 @@
 }
 .ps-profile-grid input::placeholder { color: #514d43; }
 
-/* -- level card ------------------------------------------------------- *
- * A COMPACT badge, top-aligned with the name row — not a floor-to-ceiling
- * column (Rober, "i dont love how tall the level card is"). align-self
- * pins it to the header's top so the header's align-items:stretch no longer
- * stretches it; its height is just the label + big number + foot line
- * (roughly two identity-field rows), so the space below it is normal header
- * background, never a hole. Matched border/gradient tokens keep it a
- * deliberate part of the header. When the DLL sends levelProgress it grows a
- * progress-to-next track + a percent footline (still compact). */
+/* -- level medallion -------------------------------------------------- *
+ * Rober, 2026-08-13: the old top-pinned badge "floated" at the header's top
+ * with dead space under it while the identity grid filled the left — it read
+ * as out of place. This is his option (a): a CIRCULAR gold medallion with a
+ * progress ring toward the next level, VERTICALLY CENTERED against the whole
+ * identity block (align-self:center, no stretch, no hole). The ring is a
+ * conic-gradient sweep set from JS (--ps-ring, 0..100); with no XP the ring
+ * shows a full quiet gold band and the foot reads "next: N+1" — never a fake
+ * partial fill. LEVEL cap + big number sit inside the ring; the foot line
+ * ("next: 20" / "25% to 20") sits just under it. Matched gold + dark-gradient
+ * tokens keep it a deliberate part of the header. */
 
 .ps-level {
   flex-shrink: 0;
-  align-self: flex-start;   /* top-align the badge, don't stretch it tall */
-  width: 116px;
+  align-self: center;        /* vertically centre against the identity block */
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  padding: 10px 12px 11px;
-  border-radius: 12px;
-  border: 1px solid rgba(201, 162, 75, .4);
-  background:
-    linear-gradient(180deg, rgba(201,162,75,.05), rgba(201,162,75,0) 60%),
-    radial-gradient(circle at 50% 34%, rgba(201, 162, 75, .16), rgba(201, 162, 75, .03) 72%),
-    linear-gradient(135deg, #1c1c24 0%, #131318 100%);
-  box-shadow: inset 0 0 0 1px rgba(201,162,75,.06);
+  gap: 8px;
+  padding: 0 6px;
   position: relative;
+  --ps-ring: 0;              /* 0..100, set by JS when the DLL sends XP */
+  --ps-ring-col: rgba(201, 162, 75, .85);
+}
+/* The ring itself: a conic sweep for the progressed arc over a quiet track,
+   with the medallion face masked into the centre so only the rim shows the
+   sweep. Two stacked radial/linear gradients give the coin its lit face. */
+.ps-level-ring {
+  width: 116px;
+  height: 116px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  position: relative;
+  /* rim = conic progress over a dark track; the :before face covers all but
+     the outer 7px, leaving a clean ring. */
+  background:
+    conic-gradient(var(--ps-ring-col) calc(var(--ps-ring) * 1%),
+                   rgba(201, 162, 75, .16) 0);
+  box-shadow: 0 2px 10px rgba(0,0,0,.35);
+}
+/* When XP is unknown the rim is a full quiet gold band, not a partial sweep —
+   an empty ring would read as "level 0 progress", which is a lie. */
+.ps-level:not(.ps-level-has-xp) .ps-level-ring {
+  background: conic-gradient(rgba(201, 162, 75, .5) 100%, rgba(201, 162, 75, .5) 0);
+}
+.ps-level-ring::before {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  background:
+    linear-gradient(180deg, rgba(201,162,75,.06), rgba(201,162,75,0) 62%),
+    radial-gradient(circle at 50% 34%, rgba(201, 162, 75, .18), rgba(201, 162, 75, .03) 72%),
+    linear-gradient(135deg, #1f1f28 0%, #141419 100%);
+  box-shadow: inset 0 0 0 1px rgba(201,162,75,.18);
 }
 .ps-level-cap {
+  position: relative;
   font-size: 12px;
   font-weight: 650;
   color: #b8a066;
   text-transform: uppercase;
-  letter-spacing: 1.2px;
+  letter-spacing: 1.4px;
   line-height: 1;
 }
 .ps-level-num {
-  font-size: 40px;
+  position: relative;
+  font-size: 42px;
   font-weight: 800;
   color: #ecd9a8;
   line-height: 1;
-  margin-top: 1px;
-  text-shadow: 0 1px 0 rgba(0,0,0,.35);
-}
-/* progress-to-next: a slim gold track under the number. Hidden until the DLL
-   sends XP (.ps-level-has-xp), but the foot hint shows "next: N+1" regardless. */
-.ps-level-track {
-  width: 100%;
-  height: 6px;
-  margin-top: 5px;
-  border-radius: 5px;
-  background: #22222b;
-  border: 1px solid #2b2b34;
-  overflow: hidden;
-  display: none;
-}
-.ps-level-has-xp .ps-level-track { display: block; }
-.ps-level-fill {
-  height: 100%;
-  width: 0;
-  border-radius: 5px;
-  background: linear-gradient(90deg, #b8944a, #ecd9a8);
-  transition: width 320ms ease;
-  min-width: 2px;
+  text-shadow: 0 1px 0 rgba(0,0,0,.4);
 }
 .ps-level-foot {
-  font-size: 12px;
+  font-size: 12.5px;
   color: #8d8471;
   letter-spacing: .3px;
   white-space: nowrap;
-  margin-top: 3px;
   min-height: 15px;
   line-height: 15px;
+  text-align: center;
 }
 .ps-level-has-xp .ps-level-foot { color: #b8a066; }
+/* The old flat track is gone; keep the fill selector inert (JS still writes
+   its width) so nothing errors if an older provision path runs. */
+.ps-level-track { display: none; }
+.ps-level-ring { transition: background 320ms ease; }
 
 /* =============================================================== vitals == */
 
@@ -829,6 +845,187 @@
 .ps-inv-utility { --ps-inv-accent: #9d70d1; background-color: rgba(111,67,153,.09); }
 .ps-inv-lockpicks { --ps-inv-accent: #b7a77e; background-color: rgba(150,139,110,.07); }
 
+/* Clickable potion cards (all but Lockpicks with a count): a hover lift + a
+   small ⋯ affordance so it reads as "there's more inside". */
+.ps-inv-open { cursor: pointer; transition: border-color 130ms ease, background 130ms ease, transform 130ms ease; }
+.ps-inv-open:hover { border-color: var(--ps-inv-accent, #c9a24b); transform: translateY(-1px); }
+.ps-inv-open:focus-visible { outline: none; border-color: var(--ps-inv-accent, #c9a24b); box-shadow: 0 0 0 2px rgba(201,162,75,.18); }
+.ps-inv-open:active { transform: translateY(0); }
+.ps-inv-more {
+  position: absolute;
+  top: 5px; right: 8px;
+  font-size: 14px;
+  line-height: 1;
+  color: #6d675a;
+  opacity: 0;
+  transition: opacity 130ms ease, color 130ms ease;
+}
+.ps-inv-open:hover .ps-inv-more,
+.ps-inv-open:focus-visible .ps-inv-more { opacity: 1; color: var(--ps-inv-accent, #c9a24b); }
+
+/* ==================================================== pack-check modal == *
+ * A centered overlay listing every potion of one category. Deck-modal tokens:
+ * fixed full-cover scrim + a dark-gradient, gold-bordered card. */
+.ps-pack-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(6, 6, 9, .62);
+  backdrop-filter: blur(2px);
+  animation: ps-pack-fade 120ms ease;
+}
+@keyframes ps-pack-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.ps-pack-card {
+  width: 480px;
+  max-width: 100%;
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, #1c1c24 0%, #131318 100%);
+  border: 1px solid rgba(201, 162, 75, .5);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .55), inset 0 0 0 1px rgba(201, 162, 75, .07);
+  overflow: hidden;
+  animation: ps-pack-rise 140ms ease;
+}
+@keyframes ps-pack-rise { from { transform: translateY(10px); opacity: .4; } to { transform: none; opacity: 1; } }
+
+.ps-pack-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #302e29;
+}
+.ps-pack-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 700;
+  color: #f0ead9;
+  letter-spacing: .3px;
+}
+.ps-pack-dot-ico {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--ps-pack-accent, #c9a24b);
+  box-shadow: 0 0 6px var(--ps-pack-accent, #c9a24b);
+}
+.ps-pack-sub-count {
+  font-size: 13px;
+  font-weight: 500;
+  color: #8d8471;
+  letter-spacing: 0;
+}
+.ps-pack-x {
+  flex-shrink: 0;
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  border: 1px solid #3d3a33;
+  background: #1d1d25;
+  color: #b0a894;
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.ps-pack-x:hover { background: rgba(201,162,75,.18); border-color: rgba(201,162,75,.6); color: #f0d79d; }
+.ps-pack-x:active { background: rgba(201,162,75,.28); }
+
+.ps-pack-filter {
+  margin: 14px 18px 4px;
+  background: #121218;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  color: #e8e2d4;
+  font-size: 15px;
+  padding: 10px 14px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.ps-pack-filter:focus { border-color: rgba(201,162,75,.55); box-shadow: 0 0 0 2px rgba(201,162,75,.12); }
+.ps-pack-filter::placeholder { color: #6d675a; }
+
+.ps-pack-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 18px 18px;
+  overflow-y: auto;
+}
+.ps-pack-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #17171d;
+  border: 1px solid #33302a;
+  border-radius: 10px;
+  padding: 12px 14px;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.ps-pack-row:hover { background: #1c1c24; border-color: #4a4638; }
+.ps-pack-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ps-pack-name {
+  font-size: 15px;
+  font-weight: 650;
+  color: #e8e2d4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-pack-sub {
+  font-size: 12.5px;
+  color: #8d8471;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-pack-dot { color: #55503f; }
+.ps-pack-count {
+  flex-shrink: 0;
+  font-size: 17px;
+  font-weight: 800;
+  color: #ecd9a8;
+  font-variant-numeric: tabular-nums;
+  min-width: 42px;
+  text-align: right;
+}
+.ps-pack-flash { animation: ps-pack-flash 600ms ease; }
+@keyframes ps-pack-flash {
+  0%, 100% { background: #17171d; }
+  30% { background: rgba(201,162,75,.22); border-color: rgba(201,162,75,.7); }
+}
+.ps-pack-empty {
+  font-size: 14px;
+  color: #8d8471;
+  text-align: center;
+  padding: 30px 16px;
+  line-height: 1.5;
+}
+.ps-pack-empty b { color: #cfc8b8; }
+.ps-pack-skel { justify-content: space-between; }
+
+/* Per-category accent on the header dot and the card's top edge. */
+.ps-pack-health  { --ps-pack-accent: #c9564c; }
+.ps-pack-magicka { --ps-pack-accent: #568ed8; }
+.ps-pack-stamina { --ps-pack-accent: #d58a2f; }
+.ps-pack-other   { --ps-pack-accent: #9d70d1; }
+
+@media (max-width: 600px) {
+  .ps-pack-overlay { padding: 12px; }
+  .ps-pack-card { width: 100%; max-height: 86vh; }
+}
+
 /* =============================================================== story == */
 
 .ps-story {
@@ -900,21 +1097,14 @@
   .ps-header { flex-wrap: wrap; gap: 16px; padding: 16px; }
   .ps-portrait { width: 120px; height: 156px; }
   .ps-name { font-size: 26px; white-space: normal; }
-  /* Level card becomes a full-width bar: number + cap left, progress right. */
+  /* The medallion stays a centered circle at narrow width — it wraps to a full
+     row of its own and sits centered, ring + number intact (no bar reflow). */
   .ps-level {
     width: 100%;
-    flex-direction: row;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 6px 14px;
-    padding: 12px 16px;
+    align-self: center;
     order: 3;
-    flex-wrap: wrap;
+    padding: 4px 0 0;
   }
-  .ps-level-num { font-size: 34px; order: 2; }
-  .ps-level-cap { order: 1; }
-  .ps-level-track { width: auto; flex: 1 1 120px; margin-top: 0; order: 3; min-width: 100px; }
-  .ps-level-foot { order: 4; margin-left: auto; }
   .ps-identity { flex-basis: 55%; }
   .ps-profile-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
   .ps-bars { grid-template-columns: 1fr; }
@@ -991,6 +1181,7 @@
     grid-row: 4;
     width: auto;
     order: initial;
+    align-self: center;
     box-sizing: border-box;
   }
   /* the reserved strip stays 2-up at phone width */

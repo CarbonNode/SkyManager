@@ -2844,6 +2844,13 @@ namespace
 		auto cm = RE::ControlMap::GetSingleton();
 		if (cm && cm->GetRuntimeData().textEntryCount > 0)
 			return false;
+		// A self-portrait capture is IN FLIGHT (E was pressed; the frame grab +
+		// camera/HUD restore is running). The world is mid-transition — free
+		// camera, changed FOV, hidden menus — and reopening the deck now paints a
+		// half-laid-out panel over the transitioning world (the reopen glitch,
+		// Rober 2026-08-13). Block reopen until the restore completes.
+		if (PortraitCapture::SelfCaptureBusy())
+			return false;
 		return true;
 	}
 
@@ -3045,6 +3052,7 @@ namespace
 	// psSetMeta -> psResult + psData (one name per direction, deck law).
 	void OnJsSheetGet(const char* data);
 	void OnJsSheetRemoveEffect(const char* data);
+	void OnJsSheetPackList(const char* data);
 	void OnJsSheetSetMeta(const char* data);
 	// "Take my portrait" — photograph the player for the sheet portrait. Reply is
 	// psPortraitTaken(file) so the view opens the crop editor on the exact frame
@@ -3544,6 +3552,9 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "psRemoveEffect", OnJsSheetRemoveEffect);
 		g_prisma->RegisterJSListener(g_view, "psSetMeta", OnJsSheetSetMeta);
 		g_prisma->RegisterJSListener(g_view, "psTakePortrait", OnJsSheetTakePortrait);
+		// Pack Check chip -> per-category potion modal. Request psPackList(cat),
+		// reply psPackListData(payload) — disjoint names, one per direction.
+		g_prisma->RegisterJSListener(g_view, "psPackList", OnJsSheetPackList);
 
 		g_prisma->RegisterJSListener(g_view, "ltGet", OnJsLootGet);
 		g_prisma->RegisterJSListener(g_view, "ltSave", OnJsLootSave);
@@ -10902,6 +10913,32 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([]() { PushSheet(); });
 	}
 
+	// psPackList: a Pack Check chip was clicked. Payload is the category string
+	// ("health"|"magicka"|"stamina"|"other"). Build the per-potion detail on the
+	// main thread (it reads the player's inventory) and push it back as
+	// psPackListData so the view can raise its potion modal. Marker:
+	// "charsheet pack list" (see hd-markers.json).
+	void OnJsSheetPackList(const char* data)
+	{
+		// Accept either a bare string ("health") or {"category":"health"}, so the
+		// view can send whichever is convenient without a contract change.
+		std::string category = data ? data : "";
+		if (!category.empty() && category.front() == '{') {
+			const auto j = json::parse(category, nullptr, false);
+			category.clear();
+			if (!j.is_discarded() && j.is_object() && j.contains("category") && j["category"].is_string())
+				category = j["category"].get<std::string>();
+		}
+		// Strip any stray quoting/whitespace the bridge may add around a bare arg.
+		while (!category.empty() && (category.front() == '"' || category.front() == ' '))
+			category.erase(category.begin());
+		while (!category.empty() && (category.back() == '"' || category.back() == ' '))
+			category.pop_back();
+		SKSE::GetTaskInterface()->AddTask([category]() {
+			PushToView("psPackListData", CharSheet::BuildPackListJson(category));
+		});
+	}
+
 	void OnJsSheetRemoveEffect(const char* data)
 	{
 		// Payload: { "key": <instance-hex>, "force": bool }. ActiveEffect's
@@ -10966,8 +11003,12 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([]() {
 			ClosePalette();
 			const auto dir = DeckViewDir() / "portraits";
-			PortraitCapture::FirePlayerSheet(dir, [](const std::string& file) {
-				// MAIN THREAD (FirePlayerSheet guarantees it).
+			// ARM instead of fire (Rober, 2026-08-13): close the palette, tell the
+			// player to line up their shot, and capture on the NEXT E press the
+			// input sink sees. The completion callback is unchanged — on the E the
+			// same DoPlayerCapture path runs and calls this back with the file.
+			PortraitCapture::ArmPlayerSheet(dir, [](const std::string& file) {
+				// MAIN THREAD (the capture path guarantees it).
 				if (file.empty()) {
 					PushToView("psPortraitTaken", json{ { "ok", false } }.dump());
 					return;
@@ -10979,6 +11020,13 @@ namespace
 				logger::info("charsheet: self-portrait saved -> {}", path);
 				PushSheet();
 				PushToView("psPortraitTaken", json{ { "ok", true }, { "file", file }, { "path", path } }.dump());
+			},
+			// onCancel: the arm was cancelled or timed out with no shot. Clear the
+			// view's "taking…" pending so a reopened deck shows a live Take button
+			// again, not a stuck disabled spinner. `cancelled:true` tells the view
+			// this is not an error (no failure toast, no crop editor).
+			[]() {
+				PushToView("psPortraitTaken", json{ { "ok", false }, { "cancelled", true } }.dump());
 			});
 		});
 	}
@@ -13085,6 +13133,36 @@ namespace
 					// Everything else (WASD, mouse look) is left alone on purpose —
 					// that IS the camera you are flying.
 					continue;
+				}
+
+				// --- self-portrait ARMED: waiting for the player's E -------------
+				// After "Portrait armed", the palette is closed and the world is
+				// normal so the player can pose. The NEXT E takes the shot; the deck
+				// open key cancels the arm (and swallows the open, so F7 to bail out
+				// does not also reopen the deck over the capture). Tested before the
+				// slot/trigger keys and the open-key match below so an E or the deck
+				// key here is consumed by the arm, not double-handled. This sink
+				// cannot CONSUME events, so E also does its vanilla activate — the
+				// residual; but the shot is deferred >1 s so the frame is settled
+				// regardless of the activate that fires on the same E.
+				if (PortraitCapture::SelfPortraitArmed()) {
+					const auto acode = btn->GetIDCode();
+					if (device == RE::INPUT_DEVICE::kKeyboard && acode == 0x12) {   // E
+						SKSE::GetTaskInterface()->AddTask([]() { PortraitCapture::SelfPortraitShootNow(); });
+						continue;
+					}
+					if (device == RE::INPUT_DEVICE::kKeyboard && acode == 0x01) {   // Esc cancels
+						SKSE::GetTaskInterface()->AddTask([]() { PortraitCapture::SelfPortraitCancel(); });
+						continue;
+					}
+					// The deck open key while armed: cancel and swallow the open.
+					const bool armKb = device == RE::INPUT_DEVICE::kKeyboard;
+					const bool armMs = device == RE::INPUT_DEVICE::kMouse;
+					if (((armKb && dev == "keyboard") || (armMs && dev == "mouse")) && acode == code) {
+						SKSE::GetTaskInterface()->AddTask([]() { PortraitCapture::SelfPortraitCancel(); });
+						continue;
+					}
+					// everything else is left alone — the player is moving/posing
 				}
 
 				// --- grab drag: an NPC is riding the camera -----------------------

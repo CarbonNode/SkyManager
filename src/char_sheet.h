@@ -124,6 +124,21 @@ namespace CharSheet
 	// lists so the tab renders "no save loaded" instead of crashing.
 	std::string BuildSheetJson(const Meta& meta);
 
+	// Per-potion detail for ONE Pack Check category, for the chip-click modal:
+	// every potion the player carries that falls in `category`, as
+	// { category, label, items:[{name, count, magnitude, effect}] } (JSON string).
+	//
+	// `category` is one of "health" | "magicka" | "stamina" | "other" — the same
+	// four cards the Pack Check strip shows, using the SAME PotionPoolMask
+	// bucketing BuildSheetJson counts with, so a modal opened from a chip lists
+	// exactly the potions that chip counted. `magnitude` is the largest restore/
+	// effect magnitude on the potion (0 when none), `effect` its primary effect's
+	// display name (best-effort, "" when unknown). Uses the same crash-safe
+	// inventory-changes walk as the count read (a full GetInventory<>() faulted on
+	// the 4k-plugin profile). MAIN THREAD ONLY. Never throws — a missing player or
+	// an unknown category returns an empty item list, not an error.
+	std::string BuildPackListJson(const std::string& category);
+
 	// Dispel one active effect by the per-instance key emitted in effects[].
 	// `usUniqueID` is NOT unique in practice (the live profile has scores of
 	// effects with id 0), so the key is the live ActiveEffect address rendered

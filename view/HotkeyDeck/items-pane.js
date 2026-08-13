@@ -79,6 +79,7 @@ window.ItemsPane = (function () {
     debT: null,
     sheet: null,     // {item, qty} while the price sheet is up
     toastT: null,
+    iconReq: {},     // formId|plugin -> 1 : renders already asked this session
   };
 
   /* ============================================================= bridge == */
@@ -254,6 +255,27 @@ window.ItemsPane = (function () {
     if (s) s.focus();
   }
 
+  /* A render for the sheet's item arrived — drop the picture into the plate in
+     place, so the open sheet upgrades without rebuilding (which would eat the
+     price the user is typing). No-op if it already has art or none exists. */
+  function refreshSheetArt() {
+    if (!ui.sheet) return;
+    const sh = $('ix-sheet');
+    if (!sh) return;
+    const plate = sh.querySelector('.ix-sheet-glyph');
+    if (!plate || plate.classList.contains('ix-has-art')) return;
+    const url = iconFor(ui.sheet.item.id);
+    if (!url) return;
+    const img = document.createElement('img');
+    img.className = 'ix-art';
+    img.src = url;
+    img.alt = '';
+    img.draggable = false;
+    img.onerror = function () { plate.classList.remove('ix-has-art'); if (img.parentNode) img.parentNode.removeChild(img); };
+    plate.classList.add('ix-has-art');
+    plate.appendChild(img);
+  }
+
   function renderSheet() {
     const sh = $('ix-sheet');
     if (!sh || !ui.sheet) return;
@@ -261,12 +283,17 @@ window.ItemsPane = (function () {
     const qty = ui.sheet.qty;
     const val = Math.max(0, it.v | 0) * qty;
     const sug = suggestedPrice(it, qty);
+    const meta = kindMeta(it.t);
+    const hasArt = !!iconFor(it.id);
     sh.classList.remove('hidden');
     sh.innerHTML =
       '<div class="ix-sheet-card">' +
       '<div class="ix-sheet-title">Name the price</div>' +
-      '<div class="ix-sheet-item"><b>' + esc(it.n) + (qty > 1 ? ' ×' + qty : '') + '</b>' +
-      '<span>' + esc(kindMeta(it.t)[1]) + ' · ' + esc(it.p) + ' · worth ' + fmtGold(val) + ' g</span></div>' +
+      '<div class="ix-sheet-item">' +
+      '<div class="ix-glyph ix-sheet-glyph ix-t-' + esc(it.t) + (hasArt ? ' ix-has-art' : '') +
+      '" title="' + esc(meta[1]) + '">' + glyphInner(it.id, meta[2]) + '</div>' +
+      '<div class="ix-sheet-item-txt"><b>' + esc(it.n) + (qty > 1 ? ' ×' + qty : '') + '</b>' +
+      '<span>' + esc(meta[1]) + ' · ' + esc(it.p) + ' · worth ' + fmtGold(val) + ' g</span></div></div>' +
       '<div class="ix-sheet-row"><span class="ix-sheet-label">Price</span>' +
       '<input id="ix-price" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" value="' + sug + '">' +
       '<span class="ix-sheet-label">gold</span></div>' +
@@ -346,6 +373,76 @@ window.ItemsPane = (function () {
     return esc(t.slice(0, i)) + '<mark>' + esc(t.slice(i, i + q.length)) + '</mark>' + esc(t.slice(i + q.length));
   }
 
+  /* ============================================================== icons == */
+
+  /* Real item pictures — Mesh Rendering Framework via C++ (ItemIcons), the
+     exact pipeline the Wardrobe and the wheel already use. A row id is
+     "Plugin.esp|HEX6": the payload wants the 0x-prefixed formId + the plugin,
+     the resolver wants the same pair. WardrobePane owns the ONE key
+     normalisation and the ONE index (window.wdItemIcons + the 'hd-item-icons'
+     event) — we never reimplement it, and a harness with no WardrobePane just
+     shows the glyph. */
+
+  /* Row id "Skyrim.esm|013989" -> { formId:'0x013989', plugin:'Skyrim.esm' }. */
+  function idParts(id) {
+    const s = String(id || '');
+    const bar = s.lastIndexOf('|');
+    if (bar === -1) return null;
+    const plugin = s.slice(0, bar);
+    const hex = s.slice(bar + 1);
+    if (!plugin || !hex) return null;
+    return { formId: '0x' + hex, plugin: plugin };
+  }
+
+  /* Resolved render path for a row, or '' — through the Wardrobe's resolver so
+     the "UPPERCASE hex | lowercase plugin" key is normalised in exactly one
+     place. A view-relative path only (its guard rejects '..', absolute, ':'). */
+  function iconFor(id) {
+    const p = idParts(id);
+    if (!p) return '';
+    if (!window.WardrobePane || typeof WardrobePane.itemIconFor !== 'function') return '';
+    try {
+      const path = WardrobePane.itemIconFor(p) || '';
+      if (!path) return '';
+      if (path.indexOf('..') !== -1 || path[0] === '/' || path.indexOf(':') !== -1) return '';
+      return path;
+    } catch (e) { return ''; }
+  }
+
+  /* After a render, ask C++ for the meshes of the VISIBLE item rows that have
+     no picture yet — bounded to what state.items holds (one page or the pages
+     paged in), never the whole index. Deduped across the whole session, so a
+     row that scrolls back never re-queues a render. */
+  function requestIcons() {
+    if (!state.items.length) return;
+    const items = [], seen = {};
+    for (let i = 0; i < state.items.length; i++) {
+      const it = state.items[i];
+      const p = idParts(it.id);
+      if (!p) continue;
+      const key = p.formId + '|' + p.plugin;
+      if (ui.iconReq[key] || seen[key]) continue;   // already asked, or dup this batch
+      if (iconFor(it.id)) continue;                 // already rendered
+      seen[key] = 1;
+      ui.iconReq[key] = 1;
+      items.push({ formId: p.formId, plugin: p.plugin, name: it.n || '' });
+    }
+    if (items.length) toGame('whIcons', JSON.stringify({ items: items }));
+  }
+
+  /* An <img> over the glyph plate: the emoji stays behind as the loading /
+     fallback state, and a broken path removes itself (never a broken-image box
+     — the app.js HK_ICO_ERR idiom, with the class dropped so the plate keeps
+     its per-type hue). NEVER a ?v= query: Ultralight drops it and fails load. */
+  const ICO_ERR = ' onerror="var b=this.parentNode;if(b){b.classList.remove(&quot;ix-has-art&quot;);' +
+    'b.removeChild(this);}"';
+
+  function glyphInner(id, glyph) {
+    const url = iconFor(id);
+    if (!url) return glyph;
+    return glyph + '<img class="ix-art" src="' + esc(url) + '" alt="" draggable="false"' + ICO_ERR + '>';
+  }
+
   function renderHeader() {
     const chip = $('ix-count-chip');
     if (chip) {
@@ -422,14 +519,20 @@ window.ItemsPane = (function () {
       ? ('Buy · ~' + fmtGold(price) + ' g')
       : (qty > 1 ? 'Take ×' + qty : 'Take');
     const w = Math.round((Number(it.w) || 0) * 10) / 10;
+    const hasArt = !!iconFor(it.id);
+    const val = fmtGold(Math.max(0, it.v | 0));
     return '<div class="ix-row' + (selIdx === idx ? ' ix-sel' : '') + '" data-id="' + esc(it.id) + '">' +
-      '<div class="ix-glyph ix-t-' + esc(it.t) + '" title="' + esc(meta[1]) + '">' + meta[2] + '</div>' +
+      '<div class="ix-glyph ix-t-' + esc(it.t) + (hasArt ? ' ix-has-art' : '') + '" title="' + esc(meta[1]) + '">' +
+      glyphInner(it.id, meta[2]) + '</div>' +
       '<div class="ix-mid">' +
       '<div class="ix-name" title="' + esc(it.n) + '">' + highlight(it.n, ui.q) + '</div>' +
       '<div class="ix-meta">' +
       '<span class="ix-meta-type">' + esc(meta[1]) + '</span>' +
       '<span class="ix-meta-plug" data-plug="' + esc(it.p) + '" title="Browse everything ' + esc(it.p) + ' ships">' + esc(it.p) + '</span>' +
-      '<span class="ix-meta-vw">' + fmtGold(Math.max(0, it.v | 0)) + ' g · ' + w + ' wt</span>' +
+      '<span class="ix-meta-vw">' +
+      '<span class="ix-meta-val" title="Base value in gold">🜚 ' + val + '</span>' +
+      '<span class="ix-meta-wt" title="Weight">' + w + ' wt</span>' +
+      '</span>' +
       '</div></div>' +
       '<div class="ix-act">' +
       '<span class="ix-qty"><button data-d="-1" title="Fewer">−</button><b>' + qty + '</b>' +
@@ -563,6 +666,19 @@ window.ItemsPane = (function () {
     });
     const more = $('ix-more-btn');
     if (more) more.addEventListener('click', function () { runQuery(false); });
+
+    /* ask C++ for the meshes of the rows we just drew that have no picture */
+    requestIcons();
+  }
+
+  /* Re-render the body but keep the scroll position — a render batch landing
+     mid-scroll must not jump the list back to the top (keys-pane idiom). */
+  function renderBodyPreservingScroll() {
+    const body = $('ix-body');
+    const top = body ? body.scrollTop : 0;
+    renderBody();
+    const b2 = $('ix-body');
+    if (b2) b2.scrollTop = top;
   }
 
   function render() {
@@ -663,6 +779,19 @@ window.ItemsPane = (function () {
       renderBody();
       toGame('ixSave', JSON.stringify({ mult: state.mult }));
     });
+
+    /* A render batch landed (WardrobePane pushed a new index and fired the
+       shared event) — repaint so glyphs upgrade to real pictures in place,
+       and refresh the price sheet's item art if it is open. Bounded: only
+       while this pane is actually on screen. */
+    try {
+      document.addEventListener('hd-item-icons', function () {
+        if (!ui.visible) return;
+        renderBodyPreservingScroll();
+        if (ui.sheet) refreshSheetArt();
+      });
+    } catch (e) { /* no DOM in some harnesses */ }
+
     if (SELFTEST) setTimeout(selftest, 60);
   }
 
