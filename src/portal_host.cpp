@@ -49,6 +49,30 @@ namespace PortalHost
 			return "http://127.0.0.1:" + std::to_string(Port()) + "/";
 		}
 
+		// Narrow (UTF-8/ASCII) -> wide, the safe way. The old idiom here was
+		// `std::wstring(s.begin(), s.end())`, an iterator-pair construct over a
+		// char range — and a per-char widen of a temporary's iterators is exactly
+		// the kind of string op that, if the narrow string is ever garbage or the
+		// length is miscomputed, throws std::length_error("string too long").
+		// That throw crashed the game on 2026-08-13 (the button ran on the SKSE
+		// main-thread task with nothing catching it — crash-2026-08-13-01-45-35.log
+		// shows the "string too long" length_error unwinding through SkyManager.dll
+		// with our URL strings on the stack). MultiByteToWideChar sizes the buffer
+		// exactly and never throws.
+		std::wstring Widen(const std::string& s)
+		{
+			if (s.empty())
+				return std::wstring();
+			const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(),
+				static_cast<int>(s.size()), nullptr, 0);
+			if (n <= 0)
+				return std::wstring();
+			std::wstring out(static_cast<size_t>(n), L'\0');
+			MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+				out.data(), n);
+			return out;
+		}
+
 		bool FileExists(const std::wstring& p)
 		{
 			const DWORD a = GetFileAttributesW(p.c_str());
@@ -125,27 +149,41 @@ namespace PortalHost
 		 * password set is still a portal that is up. Only "nothing accepted the
 		 * connection" means not running. Short timeouts: this runs on the main
 		 * thread from a button press. */
+		// POD-only body (no C++ objects with destructors) so it can be wrapped in
+		// SEH — C2712 otherwise. `port` is passed in; the caller reads Port()
+		// outside the __try. A structured exception inside WinHTTP (an AV in a
+		// broken proxy/LSP shim, say) becomes "not answering" instead of a CTD.
+		bool PortAnsweringSeh(int port)
+		{
+			bool up = false;
+			__try {
+				HINTERNET session = WinHttpOpen(L"SkyManager/1.0",
+					WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME,
+					WINHTTP_NO_PROXY_BYPASS, 0);
+				if (session) {
+					WinHttpSetTimeouts(session, 300, 300, 500, 500);
+					if (HINTERNET conn = WinHttpConnect(session, L"127.0.0.1",
+							static_cast<INTERNET_PORT>(port), 0)) {
+						if (HINTERNET req = WinHttpOpenRequest(conn, L"GET", L"/api/health",
+								nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0)) {
+							if (WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+									WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
+								up = WinHttpReceiveResponse(req, nullptr) != FALSE;
+							WinHttpCloseHandle(req);
+						}
+						WinHttpCloseHandle(conn);
+					}
+					WinHttpCloseHandle(session);
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				up = false;
+			}
+			return up;
+		}
+
 		bool PortAnswering()
 		{
-			bool  up = false;
-			HINTERNET session = WinHttpOpen(L"SkyManager/1.0",
-				WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-			if (!session)
-				return false;
-			WinHttpSetTimeouts(session, 300, 300, 500, 500);
-			if (HINTERNET conn = WinHttpConnect(session, L"127.0.0.1",
-					static_cast<INTERNET_PORT>(Port()), 0)) {
-				if (HINTERNET req = WinHttpOpenRequest(conn, L"GET", L"/api/health",
-						nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0)) {
-					if (WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-							WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
-						up = WinHttpReceiveResponse(req, nullptr) != FALSE;
-					WinHttpCloseHandle(req);
-				}
-				WinHttpCloseHandle(conn);
-			}
-			WinHttpCloseHandle(session);
-			return up;
+			return PortAnsweringSeh(Port());
 		}
 
 		bool ChildAlive()
@@ -160,137 +198,210 @@ namespace PortalHost
 			if (g_child) { CloseHandle(g_child); g_child = nullptr; }
 			if (g_job)   { CloseHandle(g_job);   g_job = nullptr; }
 		}
+
+		void StartImpl()
+		{
+			std::lock_guard lock(g_mutex);
+			if (ChildAlive())
+				return;
+
+			const std::wstring node = FindNode();
+			if (node.empty()) {
+				g_reason = "Node.js isn't installed - the portal needs it. Install it from nodejs.org, then restart Skyrim.";
+				if (!g_triedOnce)
+					logger::info("portal-host: node.exe not found; portal disabled (Node is a documented requirement, not bundled)");
+				g_triedOnce = true;
+				return;
+			}
+
+			const std::wstring server = FindServer();
+			if (server.empty()) {
+				g_reason = "The portal's files are missing from the mod folder.";
+				if (!g_triedOnce)
+					logger::warn("portal-host: server.js not found in the mod folder (set DECK_PORTAL_SERVER to override)");
+				g_triedOnce = true;
+				return;
+			}
+
+			// Somebody is already serving: adopt rather than race a bound socket.
+			if (PortAnswering()) {
+				g_ours = false;
+				g_reason.clear();
+				if (!g_triedOnce)
+					logger::info("portal-host: a portal is already running on port {} - adopting it", Port());
+				g_triedOnce = true;
+				return;
+			}
+
+			/* A Job Object with KILL_ON_JOB_CLOSE is the whole reason this is safe
+			 * to do automatically: if the GAME CRASHES, our shutdown path never
+			 * runs, and a stray node server would keep the port bound so the next
+			 * launch could not start one. Tying the child's lifetime to this
+			 * process's handle makes the OS clean up for us. */
+			g_job = CreateJobObjectW(nullptr, nullptr);
+			if (g_job) {
+				JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
+				li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+				SetInformationJobObject(g_job, JobObjectExtendedLimitInformation, &li, sizeof(li));
+			}
+
+			std::wstring cmd = L"\"" + node + L"\" \"" + server + L"\"";
+
+			STARTUPINFOW        si{};
+			PROCESS_INFORMATION pi{};
+			si.cb = sizeof(si);
+			si.dwFlags = STARTF_USESHOWWINDOW;
+			si.wShowWindow = SW_HIDE;
+
+			// CREATE_SUSPENDED so the child is in the job BEFORE it can spawn
+			// anything of its own; otherwise a grandchild could escape the job and
+			// outlive the game.
+			const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+				CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &si, &pi);
+			if (!ok) {
+				g_reason = "Couldn't start the portal (Node is installed but wouldn't run).";
+				logger::warn("portal-host: CreateProcess failed ({})", GetLastError());
+				CloseHandles();
+				g_triedOnce = true;
+				return;
+			}
+
+			if (g_job)
+				AssignProcessToJobObject(g_job, pi.hProcess);
+			ResumeThread(pi.hThread);
+			CloseHandle(pi.hThread);
+
+			g_child = pi.hProcess;
+			g_ours = true;
+			g_reason.clear();
+			g_triedOnce = true;
+			logger::info("portal-host: started the Deck Portal on {} (pid {})", Url(), pi.dwProcessId);
+		}
+
+		void StopImpl()
+		{
+			std::lock_guard lock(g_mutex);
+			if (!g_child) { CloseHandles(); return; }
+			// Closing the JOB is the kill: it takes the child and anything it
+			// spawned, which TerminateProcess on the child alone would not.
+			logger::info("portal-host: stopping the Deck Portal");
+			CloseHandles();
+			g_ours = false;
+		}
+
+		std::string StateJsonImpl()
+		{
+			std::lock_guard lock(g_mutex);
+			const bool alive = ChildAlive();
+			// A child that EXITED (port clash, a crash in node) must not keep
+			// reporting "running" — re-probe rather than trust our own handle.
+			const bool running = alive || PortAnswering();
+			if (!running && g_reason.empty() && g_triedOnce)
+				g_reason = "The portal isn't running.";
+
+			return json{
+				{ "ok", true },
+				{ "running", running },
+				{ "ours", alive && g_ours.load() },
+				{ "url", Url() },
+				{ "node", !FindNode().empty() },
+				{ "reason", running ? std::string() : g_reason },
+			}.dump(-1, ' ', false, json::error_handler_t::replace);
+		}
+
+		std::string OpenImpl()
+		{
+			StartImpl();  // first press starts it; takes its own lock
+
+			bool running;
+			{
+				std::lock_guard lock(g_mutex);
+				running = ChildAlive();
+			}
+			if (!running)
+				running = PortAnswering();
+
+			if (running) {
+				// The default browser, on the machine the game is on — which is the
+				// only place 127.0.0.1 means anything. Widen() sizes the buffer
+				// exactly; the old std::wstring(begin,end) here is what threw the
+				// std::length_error that CTD'd the game on 2026-08-13.
+				const std::wstring url = Widen(Url());
+				if (!url.empty()) {
+					ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+					logger::info("portal-host: opened {} in the default browser", Url());
+				}
+			}
+			return StateJsonImpl();
+		}
+
+		// A JSON payload the deck can always render, even after a failure — so a
+		// caught exception still lights the button's error state instead of
+		// leaving it spinning.
+		std::string FailJson(const char* why)
+		{
+			return json{
+				{ "ok", true },
+				{ "running", false },
+				{ "ours", false },
+				{ "url", Url() },
+				{ "node", false },
+				{ "reason", why ? why : "The portal hit an unexpected error." },
+			}.dump(-1, ' ', false, json::error_handler_t::replace);
+		}
 	}
 
+	/* Public entry points — every one runs on the SKSE MAIN THREAD (the deck's
+	 * bridge handlers AddTask into it), so an exception escaping here does not
+	 * unwind into friendly code: it terminates the process. That is precisely
+	 * how the Portal button CTD'd the game on 2026-08-13 — a std::length_error
+	 * ("string too long") from a string op climbed out of the task with nothing
+	 * to catch it. The header's "never throws" contract is enforced HERE:
+	 * catch(...) turns any C++ exception into a logged no-op / error payload, and
+	 * the SEH guard in the WinHTTP probe covers structured exceptions too. */
 	void Start()
 	{
-		std::lock_guard lock(g_mutex);
-		if (ChildAlive())
-			return;
-
-		const std::wstring node = FindNode();
-		if (node.empty()) {
-			g_reason = "Node.js isn't installed - the portal needs it. Install it from nodejs.org, then restart Skyrim.";
-			if (!g_triedOnce)
-				logger::info("portal-host: node.exe not found; portal disabled (Node is a documented requirement, not bundled)");
-			g_triedOnce = true;
-			return;
+		try {
+			StartImpl();
+		} catch (const std::exception& e) {
+			logger::error("portal-host: Start threw ({}) - swallowed so the game survives", e.what());
+		} catch (...) {
+			logger::error("portal-host: Start threw a non-standard exception - swallowed");
 		}
-
-		const std::wstring server = FindServer();
-		if (server.empty()) {
-			g_reason = "The portal's files are missing from the mod folder.";
-			if (!g_triedOnce)
-				logger::warn("portal-host: server.js not found in the mod folder (set DECK_PORTAL_SERVER to override)");
-			g_triedOnce = true;
-			return;
-		}
-
-		// Somebody is already serving: adopt rather than race a bound socket.
-		if (PortAnswering()) {
-			g_ours = false;
-			g_reason.clear();
-			if (!g_triedOnce)
-				logger::info("portal-host: a portal is already running on port {} - adopting it", Port());
-			g_triedOnce = true;
-			return;
-		}
-
-		/* A Job Object with KILL_ON_JOB_CLOSE is the whole reason this is safe
-		 * to do automatically: if the GAME CRASHES, our shutdown path never
-		 * runs, and a stray node server would keep the port bound so the next
-		 * launch could not start one. Tying the child's lifetime to this
-		 * process's handle makes the OS clean up for us. */
-		g_job = CreateJobObjectW(nullptr, nullptr);
-		if (g_job) {
-			JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
-			li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-			SetInformationJobObject(g_job, JobObjectExtendedLimitInformation, &li, sizeof(li));
-		}
-
-		std::wstring cmd = L"\"" + node + L"\" \"" + server + L"\"";
-
-		STARTUPINFOW        si{};
-		PROCESS_INFORMATION pi{};
-		si.cb = sizeof(si);
-		si.dwFlags = STARTF_USESHOWWINDOW;
-		si.wShowWindow = SW_HIDE;
-
-		// CREATE_SUSPENDED so the child is in the job BEFORE it can spawn
-		// anything of its own; otherwise a grandchild could escape the job and
-		// outlive the game.
-		const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
-			CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &si, &pi);
-		if (!ok) {
-			g_reason = "Couldn't start the portal (Node is installed but wouldn't run).";
-			logger::warn("portal-host: CreateProcess failed ({})", GetLastError());
-			CloseHandles();
-			g_triedOnce = true;
-			return;
-		}
-
-		if (g_job)
-			AssignProcessToJobObject(g_job, pi.hProcess);
-		ResumeThread(pi.hThread);
-		CloseHandle(pi.hThread);
-
-		g_child = pi.hProcess;
-		g_ours = true;
-		g_reason.clear();
-		g_triedOnce = true;
-		logger::info("portal-host: started the Deck Portal on {} (pid {})", Url(), pi.dwProcessId);
 	}
 
 	void Stop()
 	{
-		std::lock_guard lock(g_mutex);
-		if (!g_child) { CloseHandles(); return; }
-		// Closing the JOB is the kill: it takes the child and anything it
-		// spawned, which TerminateProcess on the child alone would not.
-		logger::info("portal-host: stopping the Deck Portal");
-		CloseHandles();
-		g_ours = false;
+		try {
+			StopImpl();
+		} catch (...) {
+			logger::error("portal-host: Stop threw - swallowed so the game survives");
+		}
 	}
 
 	std::string StateJson()
 	{
-		std::lock_guard lock(g_mutex);
-		const bool alive = ChildAlive();
-		// A child that EXITED (port clash, a crash in node) must not keep
-		// reporting "running" — re-probe rather than trust our own handle.
-		const bool running = alive || PortAnswering();
-		if (!running && g_reason.empty() && g_triedOnce)
-			g_reason = "The portal isn't running.";
-
-		return json{
-			{ "ok", true },
-			{ "running", running },
-			{ "ours", alive && g_ours.load() },
-			{ "url", Url() },
-			{ "node", !FindNode().empty() },
-			{ "reason", running ? std::string() : g_reason },
-		}.dump(-1, ' ', false, json::error_handler_t::replace);
+		try {
+			return StateJsonImpl();
+		} catch (const std::exception& e) {
+			logger::error("portal-host: StateJson threw ({}) - returning an error payload", e.what());
+			return FailJson("The portal hit an unexpected error.");
+		} catch (...) {
+			logger::error("portal-host: StateJson threw a non-standard exception - returning an error payload");
+			return FailJson("The portal hit an unexpected error.");
+		}
 	}
 
 	std::string Open()
 	{
-		Start();  // first press starts it; takes its own lock
-
-		bool running;
-		{
-			std::lock_guard lock(g_mutex);
-			running = ChildAlive();
+		try {
+			return OpenImpl();
+		} catch (const std::exception& e) {
+			logger::error("portal-host: Open threw ({}) - returning an error payload so the button doesn't hang", e.what());
+			return FailJson("Couldn't open the portal (an unexpected error).");
+		} catch (...) {
+			logger::error("portal-host: Open threw a non-standard exception - returning an error payload");
+			return FailJson("Couldn't open the portal (an unexpected error).");
 		}
-		if (!running)
-			running = PortAnswering();
-
-		if (running) {
-			// The default browser, on the machine the game is on — which is the
-			// only place 127.0.0.1 means anything.
-			const std::wstring url(Url().begin(), Url().end());
-			ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-			logger::info("portal-host: opened {} in the default browser", Url());
-		}
-		return StateJson();
 	}
 }

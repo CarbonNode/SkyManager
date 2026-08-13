@@ -212,6 +212,8 @@
     "charsheet-dispel": "charsheet: dispelled effect",
     "charsheet-inventory": "charsheet inventory: potion groups + lockpicks ready",
     "charsheet-effect-policy": "charsheet effect policy: race lock + controller confirmation",
+    "charsheet-self-portrait": "charsheet: self-portrait saved ->",
+    "portrait-self-firstperson": "portrait: player was in first person",
     "item-icons-worn": "item icons: worn set requested",
     "item-icons-turntable": "turntable frame(s) queued for",
     "facelight-bfl": "facelight: state",
@@ -236,6 +238,8 @@
     "npc-debug-dossier": "npc-debug: dossier for",
     "mhiyh-no-borrow": "is framework-owned",
     "nff-bases": "nff-bases: home quest {:08X} bound",
+    "nff-base-cap-detect": "nff: detected base cap = {} (nwsPlayLocSet_NN family; stock 20)",
+    "spelldeck-back-button": "mdOpenDeck-back",
     "grip-kick-seeds": "Grip Switch (1H / 2H)",
     "nff-framework-export": "via NFF ExportFollower",
     "nff-force-follower": "PotentialFollowerFaction added",
@@ -254,7 +258,8 @@
     "seed-icons": "seeded new action entry '{}' into tab '{}' (icon '{}')",
     "seed-suppress": "seed-suppress: '{}' stays deleted by user choice",
     "atomic-config-write": "atomic config swap failed",
-    "omo-cancel-config": "OMO cancel binding unrecognized"
+    "omo-cancel-config": "OMO cancel binding unrecognized",
+    "crt-alert-view": "crt-alert: view created + listener registered"
   },
   "view": {
     "wardrobe-spid.js": {
@@ -562,6 +567,7 @@
     },
     "keys-pane": "kcResultData",
     "charsheet-pane": "ps-eff-harm-row",
+    "charsheet-portrait-capture": "window.psPortraitTaken",
     "chim-detection-gate": "function detectedGate"
   }
 }

@@ -67,6 +67,16 @@ namespace CharSheet
 		std::string background;  // where they came from
 		std::string history;     // the long story
 		std::string portrait;    // "portraits/<file>" (view-relative) or ""
+
+		// Portrait DISPLAY crop — the same {z,x,y} model the follower roster uses
+		// (portrait_capture.cpp cannot re-cut pixels: no PNG decoder). z = display
+		// zoom (1 = whole cover-fitted frame), x/y = pan in fractions of the frame.
+		// The view applies these as a CSS transform on the portrait <img>, so the
+		// in-game "frame it" editor (the followers' crop popout) and the drawn
+		// portrait agree. Identity (1,0,0) = draw the photo as shot.
+		float portraitZoom = 1.0f;
+		float portraitX    = 0.0f;
+		float portraitY    = 0.0f;
 	};
 
 	// Per-field byte caps. Keep these in lock-step with portal/server.js so a

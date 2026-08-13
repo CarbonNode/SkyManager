@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<!--
+  CRT Guard alert overlay — a branded, modal SkyManager popup shown when the
+  CRT Guard plugin (a separate DLL) catches a C-runtime crash, swallows it to
+  keep the game running, and needs to tell the player which mod broke and that
+  they should save-to-a-new-slot and restart.
+
+  It is the deck's FIFTH PrismaUI view. Normally hidden; the plugin's exported
+  SkyManager_CrtAlert() Shows + Focuses it (modal, game paused) and Invokes
+  window.caShow({culprit,message}). The dismiss button calls toGame('caDismiss'),
+  which C++ turns into Unfocus + Hide.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="crt-alert.css" />
+</head>
+<body>
+  <div id="ca-backdrop" class="ca-hidden" aria-hidden="true">
+    <div id="ca-card" role="alertdialog" aria-labelledby="ca-title">
+      <div id="ca-badge">SkyManager · CRT Guard</div>
+      <div id="ca-glyph">⚠</div>
+      <h1 id="ca-title">A mod just crashed</h1>
+      <p id="ca-lead">CRT Guard caught it and kept your game running — but a crash was suppressed, so your save may now be unstable.</p>
+
+      <div id="ca-culprit-row">
+        <span class="ca-label">Culprit</span>
+        <code id="ca-culprit">—</code>
+      </div>
+
+      <p id="ca-advice"><strong>Save to a NEW slot and restart the game.</strong> Continuing to play is not recommended.</p>
+
+      <button id="ca-ok" type="button">Got it — I'll save &amp; restart</button>
+    </div>
+  </div>
+  <script src="crt-alert.js"></script>
+</body>
+</html>

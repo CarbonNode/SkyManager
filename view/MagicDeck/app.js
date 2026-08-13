@@ -122,6 +122,9 @@ const state = {
 
 const ALL = '__all__';
 const SMIN = 0.6, SMAX = 1.6, SSTEP = 0.1;
+/* Manual stepper stops at SMAX; ⛶ Fill may go past it (4K needs ~240%).
+   Same fix as the deck view — SpudmanWP's 4K report, 2026-08-12. */
+const SFILLMAX = 4.0;
 const COMBO_MAX = 12;             // sanity cap, mirrored in C++ (kComboMaxSpells)
 
 const ui = {
@@ -231,13 +234,14 @@ function save() { toGame('mdSave', JSON.stringify(payload())); }
 let saveT = null;
 function saveSoon() { if (saveT) clearTimeout(saveT); saveT = setTimeout(() => { saveT = null; save(); }, 350); }
 
-function curScale() { return Math.min(SMAX, Math.max(SMIN, state.uiScale || 1)); }
+function curScale() { return Math.min(SFILLMAX, Math.max(SMIN, state.uiScale || 1)); }
 
 function applyScale() {
   const v = curScale();
   document.documentElement.style.setProperty('--ui-scale', v);
   const el = $('scale-val'); if (el) el.textContent = Math.round(v * 100) + '%';
   applyPanelSize();   // the size ceiling is a function of the scale — re-clamp
+  if (typeof syncFillBtn === 'function') syncFillBtn();
 }
 
 /* ---- icon size: one variable drives the box, the art and the glyph ---- *
@@ -267,9 +271,144 @@ function resetIconPx() {
   toast('Icon size reset');
 }
 function setScale(v) {
-  state.uiScale = Math.min(SMAX, Math.max(SMIN, Math.round(v * 10) / 10));
+  state.uiScale = Math.min(SFILLMAX, Math.max(SMIN, Math.round(v * 10) / 10));
   applyScale(); saveSoon();
 }
+
+/* ---- Fill screen: one click, no fiddling with the scale stepper -------- *
+ * Squeetsquib's ask. It rides the EXISTING scale plumbing — it just PICKS a
+ * uiScale, then hands it to setScale so it persists in the same config slice
+ * as the manual control. No parallel mechanism, no new persisted field.
+ *
+ * The panel's rendered size is (natural layout px) * uiScale. To fill the
+ * viewport we want that product to reach the viewport, so
+ *   fit = min(innerW / naturalW, innerH / naturalH)
+ * clamped to the scale range. We measure the panel's ACTUAL layout box
+ * (offsetWidth/Height are pre-transform, so scale doesn't distort them) after
+ * momentarily neutralising the current scale, then restore it — measuring the
+ * true natural size is what makes the fit exact regardless of where the scale
+ * sits now or whether the user has drag-resized the panel. */
+function fitScale() {
+  const p = $('panel');
+  if (!p || !p.offsetWidth) return 0;          // unmeasurable (deck closed) — caller handles
+  const st = document.documentElement.style;
+  const prev = st.getPropertyValue('--ui-scale');
+  st.setProperty('--ui-scale', '1');           // measure at 1:1
+  const natW = p.offsetWidth, natH = p.offsetHeight;
+  if (prev) st.setProperty('--ui-scale', prev); else st.removeProperty('--ui-scale');
+  if (!natW || !natH) return 0;
+  const s = Math.min(window.innerWidth / natW, window.innerHeight / natH);
+  return Math.min(SFILLMAX, Math.max(SMIN, Math.round(s * 10) / 10));
+}
+function isFilled() {
+  /* "filled" = the scale is at (or above) what fitScale would pick right now,
+     within one step. Used only to paint the toggle's pressed state — the truth
+     lives in uiScale, never a separate flag. */
+  const fit = fitScale();
+  if (!fit) return false;                      // can't measure -> not "filled"
+  return curScale() >= fit - 1e-6;
+}
+function syncFillBtn() {
+  const b = $('fill-btn');
+  if (!b) return;
+  const on = isFilled();
+  b.classList.toggle('on', on);
+  b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  b.title = on
+    ? 'Filling the screen — click to return to 100%'
+    : 'Fill the screen — auto-scale the panel to fit your resolution';
+}
+function toggleFill() {
+  const fit = fitScale();
+  if (!fit) return;                // deck not measurable yet — nothing to do
+  if (curScale() >= fit - 1e-6) setScale(1.0);   // second press returns to 100%
+  else setScale(fit);
+  syncFillBtn();
+}
+
+/* ---- smooth, faster wheel scrolling (Rober: "scrolling feels slow") ----- *
+ * Ultralight's native wheel step is small and unanimated, so lists crawl. This
+ * is the Spell Deck's copy of the deck view's shared scroll handler: one
+ * delegated wheel listener finds the nearest real scroll container under the
+ * cursor, and eases the scroll toward a target with a short rAF glide instead
+ * of jumping. Edge-aware (lets the event bubble at the top/bottom so a parent
+ * scroller still works) and it never touches horizontal wheels, so the combo
+ * strip and drag paths are unaffected. Installed once. */
+window.HDSmoothScroll = (function () {
+  var STEP_BASE = 2.8;   // how far one wheel notch travels at 100% (native ~1.0).
+                         // Kept in step with the deck view's SCROLL_BASE (2026-08-13
+                         // bump: Rober "still finds scrolling slow"). The deck's
+                         // Edit-mode scroll-speed slider drives this too: C++ sends
+                         // settings.scrollSpeed inside the mdOpen payload and
+                         // mdOpen calls setSpeed() with it.
+  var speedMult = 1;     // the slider value (0.5-3), applied on top of STEP_BASE
+  var STEP_MULT = STEP_BASE;
+  var EASE = 0.22;       // per-frame approach to the target (higher = snappier)
+  var installed = false;
+  var targets = new WeakMap();   // el -> target scrollTop
+  var raf = 0, active = [];
+
+  function scrollableUnder(node) {
+    var el = node;
+    while (el && el.nodeType === 1 && el !== document.body) {
+      if (el.scrollHeight > el.clientHeight + 1) {
+        var oy = getComputedStyle(el).overflowY;
+        if (oy === 'auto' || oy === 'scroll') return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function tick() {
+    raf = 0;
+    var still = [];
+    for (var i = 0; i < active.length; i++) {
+      var el = active[i];
+      var tgt = targets.get(el);
+      if (tgt == null) continue;
+      var cur = el.scrollTop;
+      var diff = tgt - cur;
+      if (Math.abs(diff) <= 1) { el.scrollTop = tgt; targets.delete(el); continue; }
+      el.scrollTop = cur + diff * EASE;
+      still.push(el);
+    }
+    active = still;
+    if (active.length) raf = requestAnimationFrame(tick);
+  }
+
+  function onWheel(e) {
+    if (!e.deltaY) return;
+    var el = scrollableUnder(e.target);
+    if (!el) return;
+    var max = el.scrollHeight - el.clientHeight;
+    var base = targets.has(el) ? targets.get(el) : el.scrollTop;
+    var next = base + e.deltaY * STEP_MULT;
+    var atTop = base <= 0 && e.deltaY < 0;
+    var atBot = base >= max && e.deltaY > 0;
+    if (atTop || atBot) return;   // let it bubble at the edge
+    next = Math.max(0, Math.min(max, next));
+    targets.set(el, next);
+    if (active.indexOf(el) === -1) active.push(el);
+    if (!raf) raf = requestAnimationFrame(tick);
+    e.preventDefault();
+  }
+
+  function install() {
+    if (installed || typeof document === 'undefined') return;
+    installed = true;
+    document.addEventListener('wheel', onWheel, { passive: false });
+  }
+
+  function setSpeed(m) {
+    m = Number(m);
+    if (!isFinite(m) || m <= 0) m = 1;
+    speedMult = Math.max(0.5, Math.min(3, m));
+    STEP_MULT = STEP_BASE * speedMult;
+  }
+
+  return { install: install, setSpeed: setSpeed, stepMult: function () { return STEP_MULT; } };
+})();
 
 /* ======================================================= panel size ==== *
  *  The panel has an auto default (CSS: min(1500px, 94vw / uiScale)) plus an
@@ -1932,6 +2071,12 @@ function toggleEdit() {
 
 function wire() {
   $('close-btn').addEventListener('click', () => toGame('mdClose'));
+  // "← Deck" back button: close this view and open the main deck (C++ mdOpenDeck).
+  var deckBtn = $('deck-btn');
+  if (deckBtn) deckBtn.addEventListener('click', () => toGame('mdOpenDeck'));
+  var fillBtn = $('fill-btn');
+  if (fillBtn) fillBtn.addEventListener('click', toggleFill);
+  HDSmoothScroll.install();
   $('edit-btn').addEventListener('click', toggleEdit);
   $('add-spell-btn').addEventListener('click', openAdd);
   $('add-cat-btn').addEventListener('click', addCategory);
@@ -1951,7 +2096,9 @@ function wire() {
   $('icon-modal').addEventListener('mousedown', (e) => { if (e.button === 0 && e.target === $('icon-modal')) closeIconPicker(); });
 
   $('scale-down').addEventListener('click', () => setScale(state.uiScale - SSTEP));
-  $('scale-up').addEventListener('click', () => setScale(state.uiScale + SSTEP));
+  $('scale-up').addEventListener('click', () => {   // manual stepper never exceeds SMAX (fill may)
+    if (state.uiScale < SMAX - 1e-6) setScale(Math.min(SMAX, state.uiScale + SSTEP));
+  });
   $('scale-reset').addEventListener('click', () => setScale(1.0));
   $('icon-size-down').addEventListener('click', () => setIconPx(curIconPx() - ISTEP));
   $('icon-size-up').addEventListener('click', () => setIconPx(curIconPx() + ISTEP));
@@ -2075,6 +2222,8 @@ window.mdOpen = function (cfg) {
   if (!wasOpen) { closeCtx(); cancelDesc(); }
   cfg = coerce(cfg);
   normalizeConfig(cfg);
+  if (window.HDSmoothScroll && cfg.scrollSpeed != null)
+    window.HDSmoothScroll.setSpeed(cfg.scrollSpeed);
   if (ui.cat !== ALL && !state.categories.includes(ui.cat)) ui.cat = ALL;
   if (!wasOpen) {
     ui.editing = false;
@@ -2087,6 +2236,7 @@ window.mdOpen = function (cfg) {
   applyIconSize();
   applyPanelSize();     // restore the saved drag size (applyScale re-clamps it too)
   document.body.classList.add('open');
+  syncFillBtn();        // now measurable — paint the Fill toggle's true state
   render();
   // enrich slot/type so equip hand/voice controls are correct without opening the picker
   ui.knownLoading = false;
@@ -2723,6 +2873,49 @@ function runSelfTest() {
   ok('panel: half-set size falls back to auto',
     (normalizeConfig({ panelW: 1200 }), state.panelW === 0 && state.panelH === 0));
   window.mdOpen(SAMPLE_CFG);   // leave the view at its default size
+
+  // ---- Fill screen: rides setScale, no parallel state (Squeetsquib) --------
+  setScale(1.0); resetPanelSize();
+  const fit = fitScale();
+  ok('fill: fitScale returns a clamped in-range scale', fit >= SMIN && fit <= SFILLMAX);
+  ok('fill: fitScale matches min(innerW/natW, innerH/natH)', (() => {
+    const p = $('panel');
+    const st = document.documentElement.style, prev = st.getPropertyValue('--ui-scale');
+    st.setProperty('--ui-scale', '1'); const nw = p.offsetWidth, nh = p.offsetHeight;
+    if (prev) st.setProperty('--ui-scale', prev); else st.removeProperty('--ui-scale');
+    const want = Math.min(SFILLMAX, Math.max(SMIN, Math.round(Math.min(window.innerWidth / nw, window.innerHeight / nh) * 10) / 10));
+    return want === fit;
+  })());
+  toggleFill();
+  ok('fill: toggle sets uiScale to the fit and persists via setScale',
+    curScale() === fit && payload().uiScale === fit);
+  ok('fill: isFilled true after fill', isFilled());
+  ok('fill: the Fill button paints its pressed state',
+    $('fill-btn').classList.contains('on') && $('fill-btn').getAttribute('aria-pressed') === 'true');
+  toggleFill();
+  ok('fill: a second press returns to 100%', curScale() === 1.0 && !isFilled());
+  ok('fill: no separate persisted field — payload has no `fill` key', !('fill' in payload()));
+
+  // ---- Back button: the click reaches the C++ bridge verb -------------------
+  {
+    let sent = '';
+    const prev = window.mdOpenDeck;
+    window.mdOpenDeck = function () { sent = 'mdOpenDeck'; };
+    /* The pdrag suite above ends on a real drop, which arms
+       pdrag.suppressClick; its setTimeout(0) reset cannot run while this
+       synchronous selftest is still on the stack, so the capture-phase click
+       swallower would eat THIS dispatch and fail the check for a reason that
+       has nothing to do with the button. A real user's click always comes
+       after the timeout has cleared the flag — mirror that state here. */
+    pdrag.suppressClick = false;
+    $('deck-btn').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    ok('back: ← Deck fires the mdOpenDeck bridge verb', sent === 'mdOpenDeck');
+    window.mdOpenDeck = prev;
+  }
+
+  // ---- Smooth scroll: one shared handler eases toward a target -------------
+  ok('scroll: HDSmoothScroll installed with a >1 step multiplier',
+    typeof HDSmoothScroll === 'object' && HDSmoothScroll.stepMult() > 1);
 
   const pass = results.filter((r) => r.pass).length;
   window.__selftest = { pass, total: results.length, results };

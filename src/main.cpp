@@ -129,6 +129,13 @@ namespace
 	// (armed from the deck's "Set show/hide key" control).
 	std::atomic<bool>           g_hudKeyArming{ false };
 
+	// CRT Guard alert — the FIFTH PrismaUI view (MagicDeck/crt-alert.html). A
+	// branded modal shown when the separate CRT Guard plugin catches a swallowed
+	// C-runtime crash and calls our exported SkyManager_CrtAlert(). Normally
+	// hidden; Shown + Focused (game paused) only when an alert fires.
+	PrismaView                  g_alertView = 0;
+	std::atomic<bool>           g_alertViewReady{ false };
+
 	// Hotbar — the FOURTH PrismaUI view (MagicDeck/hotbar.html), and the HUD's
 	// twin in every structural way: created eagerly, Shown but never Focused
 	// during play, Focused only for the edit panel. It lives in the MagicDeck
@@ -825,7 +832,10 @@ namespace
 				{ "deity", c.charSheet.deity },
 				{ "background", c.charSheet.background },
 				{ "history", c.charSheet.history },
-				{ "portrait", c.charSheet.portrait } } } };
+				{ "portrait", c.charSheet.portrait },
+				{ "portraitZoom", c.charSheet.portraitZoom },
+				{ "portraitX", c.charSheet.portraitX },
+				{ "portraitY", c.charSheet.portraitY } } } };
 	}
 
 	// Runtime mod-detection for the deck's shipped INTEGRATIONS. Rides the OPEN
@@ -1125,6 +1135,16 @@ namespace
 				}
 				if (CharSheet::ValidPortraitPath(portrait))  // rewrites '\' to '/', "" ok
 					c.charSheet.portrait = std::move(portrait);
+				// Portrait display crop. Clamped through ApplyMeta's own path so a
+				// hand-edited hotkeys.json can't hold an off-frame crop: build a
+				// tiny patch and reuse the one validator. Absent -> defaults kept.
+				if (cs.contains("portraitZoom") || cs.contains("portraitX") || cs.contains("portraitY")) {
+					json patch = json::object();
+					if (cs.contains("portraitZoom") && cs["portraitZoom"].is_number()) patch["portraitZoom"] = cs["portraitZoom"];
+					if (cs.contains("portraitX") && cs["portraitX"].is_number())       patch["portraitX"]    = cs["portraitX"];
+					if (cs.contains("portraitY") && cs["portraitY"].is_number())       patch["portraitY"]    = cs["portraitY"];
+					CharSheet::ApplyMeta(c.charSheet, patch.dump());
+				}
 			}
 			out = std::move(c);
 			return true;
@@ -2846,6 +2866,7 @@ namespace
 	void OnJsMagicKnown(const char* data);
 	void OnJsMagicSave(const char* data);
 	void OnJsMagicClose(const char* data);
+	void OnJsOpenDeck(const char* data);
 	void OnJsMagicLog(const char* data);
 	void OnJsMagicCapture(const char* data);
 	void OnJsMagicRemoveSpell(const char* data);
@@ -2908,6 +2929,9 @@ namespace
 	// long way above it) dispatches the two seeded actions, so it needs these.
 	void        CreateHotbarView();
 	void        StartHotbarTicker();
+	// CRT Guard alert view — created at kDataLoaded; ShowCrtAlert() drives it.
+	void        CreateAlertView();
+	void        ShowCrtAlert(std::string culprit, std::string message);
 	void        HbToggleVisible();
 	void        HbOpenEdit();
 	void        OnJsFolCropSave(const char* data);
@@ -3011,6 +3035,10 @@ namespace
 	void OnJsSheetGet(const char* data);
 	void OnJsSheetRemoveEffect(const char* data);
 	void OnJsSheetSetMeta(const char* data);
+	// "Take my portrait" — photograph the player for the sheet portrait. Reply is
+	// psPortraitTaken(file) so the view opens the crop editor on the exact frame
+	// that landed (one name per direction, deck law).
+	void OnJsSheetTakePortrait(const char* data);
 	// Animations tab (an* bridge on the deck view) forward decls.
 	void OnJsAnimGet(const char* data);
 	void OnJsAnimPlay(const char* data);
@@ -3478,6 +3506,7 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "psGet", OnJsSheetGet);
 		g_prisma->RegisterJSListener(g_view, "psRemoveEffect", OnJsSheetRemoveEffect);
 		g_prisma->RegisterJSListener(g_view, "psSetMeta", OnJsSheetSetMeta);
+		g_prisma->RegisterJSListener(g_view, "psTakePortrait", OnJsSheetTakePortrait);
 
 		g_prisma->RegisterJSListener(g_view, "ltGet", OnJsLootGet);
 		g_prisma->RegisterJSListener(g_view, "ltSave", OnJsLootSave);
@@ -5132,6 +5161,7 @@ namespace
 		g_prisma->RegisterJSListener(g_magicView, "mdKnown", OnJsMagicKnown);
 		g_prisma->RegisterJSListener(g_magicView, "mdSave", OnJsMagicSave);
 		g_prisma->RegisterJSListener(g_magicView, "mdClose", OnJsMagicClose);
+		g_prisma->RegisterJSListener(g_magicView, "mdOpenDeck", OnJsOpenDeck);
 		g_prisma->RegisterJSListener(g_magicView, "mdLog", OnJsMagicLog);
 		g_prisma->RegisterJSListener(g_magicView, "mdCapture", OnJsMagicCapture);
 		g_prisma->RegisterJSListener(g_magicView, "mdRemoveSpell", OnJsMagicRemoveSpell);
@@ -5155,7 +5185,12 @@ namespace
 		bool        pause;
 		{
 			std::lock_guard l(g_configMutex);
-			payload = MagicConfigToJson(g_magicConfig).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			auto mj = MagicConfigToJson(g_magicConfig);
+			// The deck's Edit-mode scroll-speed slider drives BOTH views: the Spell
+			// Deck has its own config slice and cannot read settings.scrollSpeed, so
+			// it rides along in the open payload instead of being persisted twice.
+			mj["scrollSpeed"] = g_config.settings.scrollSpeed;
+			payload = mj.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 			pause = g_config.settings.pauseOnOpen;  // reuse the deck's pause preference
 		}
 		// Snapshot the crosshair NPC before the cursor/pause takes over, so a
@@ -5349,6 +5384,39 @@ namespace
 	void OnJsMagicClose(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() { CloseMagicPalette(); });
+	}
+
+	// mdOpenDeck: the "<- Deck" back button in the Spell Deck header. The exact
+	// mirror of OnJsOpenSpells (deck -> spells): close THIS view, then open the
+	// main deck. CloseMagicPalette() only STARTS the handoff -- PrismaUI holds
+	// focus (and the pause) for a frame or more after, so CanOpenNow() is
+	// reliably FALSE on the very next task. Give the handoff a real budget with
+	// the same detached-sleep-then-AddTask retry idiom OnJsOpenSpells uses, so a
+	// deliberate click never dead-ends the player on a closed Spell Deck.
+	// Marker: mdOpenDeck-back.
+	void OnJsOpenDeck(const char*)
+	{
+		logger::info("mdOpenDeck-back: Spell Deck -> main deck handoff requested");
+		SKSE::GetTaskInterface()->AddTask([]() { CloseMagicPalette(); });
+		std::thread([]() {
+			using namespace std::chrono;
+			for (int i = 0; i < 15; ++i) {  // ~1.2 s, then give up loudly
+				std::this_thread::sleep_for(milliseconds(80));
+				if (g_open.load())
+					return;  // main deck open -- the click landed
+				SKSE::GetTaskInterface()->AddTask([]() {
+					if (!g_open.load() && CanOpenNow())
+						EnsureViewAndOpen();
+				});
+			}
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load())
+					return;
+				logger::warn("mdOpenDeck: focus/pause never cleared after ~1.2 s");
+				// ASCII only -- the notification bar renders the game's own encoding.
+				RE::DebugNotification("Deck unavailable right now - use the F7 key");
+			});
+		}).detach();
 	}
 
 	void OnJsMagicLog(const char* data)
@@ -8523,6 +8591,21 @@ namespace
 	// that vanished because you sheathed your sword would be maddening.
 	bool HbWantVisible()
 	{
+		// No world, no bar — the bar was showing over the MAIN MENU before a
+		// save was even loaded (Rober, 2026-08-13). parentCell is the "is a
+		// save actually running" probe (null on the boot menu and during the
+		// initial load), and the explicit menu checks cover quit-to-main-menu,
+		// where the old world can linger behind the menu.
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!player || !player->GetParentCell())
+				return false;
+			auto* ui = RE::UI::GetSingleton();
+			if (ui && (ui->IsMenuOpen(RE::MainMenu::MENU_NAME) ||
+						  ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)))
+				return false;
+		}
+
 		if (g_hbEditing.load())
 			return true;
 
@@ -8917,6 +9000,80 @@ namespace
 		g_prisma->RegisterJSListener(g_hbView, "hbCatalog", OnJsHbCatalog);
 		g_prisma->RegisterJSListener(g_hbView, "hbLog", OnJsHbLog);
 		logger::info("hotbar: view created + listeners registered");
+	}
+
+	// ----------------------------------------------------------- CRT Guard alert
+	// A branded modal shown when the separate CRT Guard plugin swallows a crash
+	// and calls our exported SkyManager_CrtAlert(). See view/MagicDeck/crt-alert.*.
+	void OnJsCaDismiss(const char*)
+	{
+		if (g_prisma && g_alertView) {
+			g_prisma->Unfocus(g_alertView);
+			g_prisma->Hide(g_alertView);
+		}
+	}
+
+	void CreateAlertView()
+	{
+		if (!g_prisma || g_alertView)
+			return;
+		g_alertView = g_prisma->CreateView("MagicDeck/crt-alert.html", [](PrismaView v) {
+			g_alertViewReady = true;
+			// Hidden until an alert fires — same as the main deck view does on ready,
+			// so a freshly created fullscreen view never paints over the game.
+			g_prisma->Hide(v);
+			logger::info("crt-alert view DOM ready (handle {})", v);
+		});
+		g_prisma->RegisterJSListener(g_alertView, "caDismiss", OnJsCaDismiss);
+		logger::info("crt-alert: view created + listener registered");
+	}
+
+	// Minimal JSON string escape for the two fields handed to the view.
+	std::string CaJsonEsc(const std::string& s)
+	{
+		std::string o;
+		o.reserve(s.size() + 8);
+		for (char c : s) {
+			switch (c) {
+			case '\\': o += "\\\\"; break;
+			case '"':  o += "\\\""; break;
+			case '\n': o += "\\n"; break;
+			case '\r': o += "\\r"; break;
+			case '\t': o += "\\t"; break;
+			default:
+				if (static_cast<unsigned char>(c) < 0x20) {
+					char buf[8];
+					std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(static_cast<unsigned char>(c)));
+					o += buf;
+				} else {
+					o += c;
+				}
+			}
+		}
+		return o;
+	}
+
+	void ShowCrtAlert(std::string culprit, std::string message)
+	{
+		// The plugin already calls us on the main thread, but bounce through the
+		// task interface anyway so PrismaUI is only ever touched there.
+		auto* tasks = SKSE::GetTaskInterface();
+		if (!tasks)
+			return;
+		tasks->AddTask([culprit, message]() {
+			// Deck view not up (very early load, or the deck disabled mid-session)?
+			// Never lose the warning — a vanilla message box is the floor.
+			if (!g_prisma || !g_alertView || !g_alertViewReady.load()) {
+				RE::DebugMessageBox(("SkyManager - CRT Guard\n\n" + message).c_str());
+				return;
+			}
+			const std::string payload = "{\"culprit\":\"" + CaJsonEsc(culprit) +
+				"\",\"message\":\"" + CaJsonEsc(message) + "\"}";
+			g_prisma->Show(g_alertView);
+			g_prisma->Focus(g_alertView, /*pauseGame=*/true);  // modal: pause + own the mouse
+			g_prisma->Invoke(g_alertView, ("caShow(" + payload + ")").c_str());
+			logger::warn("crt-alert: shown for culprit '{}'", culprit);
+		});
 	}
 
 	void HbToggleVisible()
@@ -10614,6 +10771,36 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([res]() {
 			PushToView("psResult", res);
 			PushSheet();
+		});
+	}
+
+	// psTakePortrait: photograph the player and hang the result on the sheet.
+	// The capture module owns the frame grab, the first-person flip and the
+	// lock-safe write; here we close the palette, then in the completion callback
+	// (main thread) point meta.portrait at the file that landed, persist + push a
+	// fresh sheet, and tell the view which file so it opens the crop editor on it.
+	// A "" filename means the capture failed — the module already told the player
+	// why; we just tell the view to stop its spinner.
+	// Marker: "charsheet: self-portrait ..." (see hd-markers.json).
+	void OnJsSheetTakePortrait(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			ClosePalette();
+			const auto dir = DeckViewDir() / "portraits";
+			PortraitCapture::FirePlayerSheet(dir, [](const std::string& file) {
+				// MAIN THREAD (FirePlayerSheet guarantees it).
+				if (file.empty()) {
+					PushToView("psPortraitTaken", json{ { "ok", false } }.dump());
+					return;
+				}
+				// Set the portrait through the SAME validated meta path psSetMeta
+				// uses, so the crop is reset (new frame) and the path is guarded.
+				const std::string path = "portraits/" + file;
+				ApplySheetMeta(json{ { "portrait", path } }.dump());
+				logger::info("charsheet: self-portrait saved -> {}", path);
+				PushSheet();
+				PushToView("psPortraitTaken", json{ { "ok", true }, { "file", file }, { "path", path } }.dump());
+			});
 		});
 	}
 
@@ -13244,6 +13431,10 @@ namespace
 		CreateHotbarView();
 		StartHotbarTicker();
 
+		// CRT Guard alert view — created here too so it is ready the moment the
+		// (separate) CRT Guard plugin catches a crash and calls SkyManager_CrtAlert.
+		CreateAlertView();
+
 		if (auto idm = RE::BSInputDeviceManager::GetSingleton()) {
 			idm->AddEventSink(OpenKeySink::GetSingleton());
 			logger::info("input sink registered");
@@ -13291,6 +13482,17 @@ namespace
 			g_domConfig.categories.size(), g_domConfig.marks.size());
 		logger::info("Deck Portal poller active (1 s) -- spell icons / hotkey icons / hotkey edits / NPC fields apply live");
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Public cross-mod API: the CRT Guard plugin (a separate DLL) resolves this by
+// name (GetProcAddress "SkyManager_CrtAlert") and calls it on the main thread
+// when it swallows a C-runtime crash, so we can show the branded modal naming
+// the culprit mod. extern "C" keeps the symbol name unmangled for GetProcAddress.
+// crt-alert-export: marker.
+extern "C" DLLEXPORT void SkyManager_CrtAlert(const char* a_culprit, const char* a_message)
+{
+	ShowCrtAlert(a_culprit ? a_culprit : "(unknown mod)", a_message ? a_message : "");
 }
 
 extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_skse)

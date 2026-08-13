@@ -1,0 +1,128 @@
+/* CRT Guard alert overlay — branded SkyManager modal. Dark, spacious, large
+   type (Rober's UI rules: no small text, use the space, polished states). */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: transparent;   /* the view is fullscreen; only the card paints */
+  overflow: hidden;
+  font-family: "Segoe UI", "Noto Sans", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#ca-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 8, 12, 0.62);
+  backdrop-filter: blur(2px);
+  opacity: 1;
+  transition: opacity 160ms ease;
+}
+#ca-backdrop.ca-hidden { opacity: 0; pointer-events: none; }
+
+#ca-card {
+  width: min(680px, 82vw);
+  padding: 40px 44px 36px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #1b1f27 0%, #14171e 100%);
+  border: 1px solid rgba(214, 173, 96, 0.34);   /* SkyManager gold hairline */
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(0,0,0,0.4) inset;
+  color: #e8ebf2;
+  text-align: center;
+  transform: translateY(0) scale(1);
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+#ca-backdrop.ca-hidden #ca-card { transform: translateY(10px) scale(0.98); opacity: 0; }
+
+#ca-badge {
+  display: inline-block;
+  font-size: 14px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: #d6ad60;
+  font-weight: 600;
+  padding: 5px 14px;
+  border: 1px solid rgba(214, 173, 96, 0.34);
+  border-radius: 999px;
+  margin-bottom: 22px;
+}
+
+#ca-glyph {
+  font-size: 58px;
+  line-height: 1;
+  color: #ffca6b;
+  filter: drop-shadow(0 2px 10px rgba(255, 170, 60, 0.35));
+  margin-bottom: 14px;
+}
+
+#ca-title {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  margin-bottom: 14px;
+}
+
+#ca-lead {
+  font-size: 19px;
+  line-height: 1.5;
+  color: #c2c8d4;
+  margin: 0 auto 24px;
+  max-width: 54ch;
+}
+
+#ca-culprit-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-bottom: 24px;
+  padding: 16px 18px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+}
+.ca-label {
+  font-size: 14px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: #8b93a3;
+  font-weight: 600;
+}
+#ca-culprit {
+  font-family: "Cascadia Code", "Consolas", ui-monospace, monospace;
+  font-size: 20px;
+  color: #ffd98a;
+  word-break: break-all;
+}
+
+#ca-advice {
+  font-size: 19px;
+  line-height: 1.55;
+  color: #dfe3ec;
+  margin: 0 auto 30px;
+  max-width: 52ch;
+}
+#ca-advice strong { color: #ffe1a6; }
+
+#ca-ok {
+  appearance: none;
+  border: 1px solid rgba(214, 173, 96, 0.55);
+  background: linear-gradient(180deg, #d6ad60 0%, #b98f42 100%);
+  color: #1a1206;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  padding: 15px 34px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+}
+#ca-ok:hover { filter: brightness(1.07); transform: translateY(-1px); box-shadow: 0 12px 28px rgba(0,0,0,0.5); }
+#ca-ok:active { transform: translateY(0); filter: brightness(0.96); box-shadow: 0 5px 14px rgba(0,0,0,0.45); }
+#ca-ok:focus-visible { outline: 3px solid rgba(255, 217, 138, 0.6); outline-offset: 3px; }
