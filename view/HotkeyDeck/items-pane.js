@@ -80,6 +80,9 @@ window.ItemsPane = (function () {
     sheet: null,     // {item, qty} while the price sheet is up
     toastT: null,
     iconReq: {},     // formId|plugin -> 1 : renders already asked this session
+    iconT: null,     // the settle timer before icons are requested for a query
+    iconPollT: null, // on-disk index poll while drawn rows still lack art
+    iconPollN: 0,
   };
 
   /* ============================================================= bridge == */
@@ -430,6 +433,65 @@ window.ItemsPane = (function () {
     if (items.length) toGame('whIcons', JSON.stringify({ items: items }));
   }
 
+  /* The settle gate (2026-08-13 play-test): requesting renders on EVERY render
+     meant every intermediate keystroke of "ebony sword" queued its own page —
+     the e/eb/ebo… junk pages flooded the C++ render queue and the real rows'
+     renders sat minutes behind them. Icons are now asked for only once the
+     results have sat unchanged for a moment. */
+  const ICON_SETTLE_MS = 650;
+  const ICON_POLL_MS = 2500;
+  const ICON_POLL_MAX = 24;   // ~60s of watching per settled query
+
+  function scheduleIconWork() {
+    if (ui.iconT) { clearTimeout(ui.iconT); ui.iconT = null; }
+    if (!state.items.length) { stopIconPoll(); return; }
+    ui.iconT = setTimeout(function () {
+      ui.iconT = null;
+      if (!ui.visible) return;
+      requestIcons();
+      startIconPoll();
+    }, ICON_SETTLE_MS);
+  }
+
+  /* Renders land whenever the framework gets to them, and the C++ batch-done
+     push only fires when the WHOLE queue drains — behind a long queue that can
+     be minutes away. So while drawn rows still lack art, nudge C++ every couple
+     of seconds: an EMPTY whIcons queues nothing but replies with the current
+     on-disk index, and the wardrobe receiver raises 'hd-item-icons' only when
+     it actually changed — rows upgrade as their renders hit the disk. */
+  function missingArt() {
+    for (let i = 0; i < state.items.length; i++)
+      if (!iconFor(state.items[i].id)) return true;
+    return false;
+  }
+
+  function stopIconPoll() {
+    if (ui.iconPollT) { clearInterval(ui.iconPollT); ui.iconPollT = null; }
+  }
+
+  function startIconPoll() {
+    stopIconPoll();
+    ui.iconPollN = 0;
+    if (!missingArt()) return;
+    ui.iconPollT = setInterval(iconPollTick, ICON_POLL_MS);
+  }
+
+  function iconPollTick() {
+    if (!ui.visible || !missingArt() || ++ui.iconPollN > ICON_POLL_MAX) {
+      stopIconPoll();
+      return false;
+    }
+    toGame('whIcons', JSON.stringify({ items: [] }));
+    return true;
+  }
+
+  /* Harness hook: run the pending settle timer NOW (jsdom runs real timers,
+     the checks are synchronous). */
+  function flushIconsForTest() {
+    if (ui.iconT) { clearTimeout(ui.iconT); ui.iconT = null; }
+    requestIcons();
+  }
+
   /* An <img> over the glyph plate: the emoji stays behind as the loading /
      fallback state, and a broken path removes itself (never a broken-image box
      — the app.js HK_ICO_ERR idiom, with the class dropped so the plate keeps
@@ -667,8 +729,9 @@ window.ItemsPane = (function () {
     const more = $('ix-more-btn');
     if (more) more.addEventListener('click', function () { runQuery(false); });
 
-    /* ask C++ for the meshes of the rows we just drew that have no picture */
-    requestIcons();
+    /* ask C++ for the meshes of the rows we just drew — via the settle gate,
+       so a mid-typing render never floods the render queue */
+    scheduleIconWork();
   }
 
   /* Re-render the body but keep the scroll position — a render batch landing
@@ -716,6 +779,8 @@ window.ItemsPane = (function () {
     ui.visible = false;
     closeSheet();
     if (ui.debT) { clearTimeout(ui.debT); ui.debT = null; }
+    if (ui.iconT) { clearTimeout(ui.iconT); ui.iconT = null; }
+    stopIconPoll();
   }
 
   function toggleEdit() { /* no edit chrome */ }
@@ -959,6 +1024,7 @@ window.ItemsPane = (function () {
 
   return {
     init, onShow, onHide, toggleEdit, wantsPause, setFilter,
+    _flushIcons: flushIconsForTest, _iconPollTick: iconPollTick, _missingArt: missingArt,
     _state: state, _ui: ui, _flatRows: flatRows, _modMatches: modMatches,
     _suggestedPrice: suggestedPrice, _openSheet: openSheet, _closeSheet: closeSheet,
   };
