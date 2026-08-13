@@ -338,6 +338,74 @@ function toggleFill() {
 window.hdToggleFill = toggleFill;
 window.hdIsFilled = isFilled;
 
+/* ---- First-run Fill hint (fill-hint) ------------------------------------- *
+ * 4K / large-monitor users open the deck and it looks tiny — but ⛶ Fill screen
+ * lives inside the ⤢ popover, so they never find it (same discoverability gap
+ * as the open key). ONCE, on a fresh open, IF the deck would scale up a lot
+ * (fitScale ≥ 1.8) AND the user has never scaled manually (uiScale ≈ 1.0) AND
+ * they've never dismissed this hint, we float a small, polished, non-blocking
+ * bubble that POINTS at the ⤢ button. "Fill now" runs the existing toggleFill;
+ * either button dismisses forever (persisted in the shelf blob — no DLL field).
+ *
+ * Body-level + fixed, anchored to the ⤢ button's SCREEN rect at show time —
+ * the exact idiom the #uiscale-pop popover uses, so it never overlaps the shelf
+ * wing (which lives inside the scaled panel) or the header buttons.            */
+const FILL_HINT_MIN = 1.8;
+function fillHintDismissed() { return hintsPrefs().fillDismissed === true; }
+function dismissFillHint(persist) {
+  const el = $('fill-hint');
+  if (el) el.classList.add('hidden');
+  if (persist) { hintsPrefs().fillDismissed = true; saveSoon(); }
+}
+function positionFillHint(el) {
+  const btn = $('uiscale-btn');
+  if (!btn) return;
+  const r = btn.getBoundingClientRect();
+  /* right-align to the button (like the popover), just below the header row */
+  el.style.right = Math.max(8, Math.round(window.innerWidth - r.right)) + 'px';
+  el.style.top = Math.round(Math.min(r.bottom + 10, window.innerHeight - 60)) + 'px';
+}
+function buildFillHint() {
+  let el = $('fill-hint');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'fill-hint';
+  el.className = 'hidden';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', 'Fill screen suggestion');
+  el.innerHTML =
+    '<div class="fh-arrow" aria-hidden="true"></div>' +
+    '<div class="fh-body">' +
+      '<div class="fh-text"><b>Big screen?</b> <span class="fh-ic" aria-hidden="true">&#9974;</span> ' +
+        'Fill screen scales the deck to fit.</div>' +
+      '<div class="fh-acts">' +
+        '<button type="button" id="fh-fill" class="fh-btn fh-primary">Fill now</button>' +
+        '<button type="button" id="fh-no" class="fh-btn">No thanks</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(el);
+  el.querySelector('#fh-fill').addEventListener('click', function () {
+    toggleFill();
+    dismissFillHint(true);   // acting on it also dismisses forever
+  });
+  el.querySelector('#fh-no').addEventListener('click', function () { dismissFillHint(true); });
+  return el;
+}
+/* Called from hdOpen after layout settles. All three conditions must hold. */
+function maybeShowFillHint() {
+  if (fillHintDismissed()) return;
+  const fit = fitScale();
+  if (!fit || fit < FILL_HINT_MIN) return;              // not a big enough screen
+  if (Math.abs(clampScale(state.settings.uiScale) - 1) > 1e-6) return;  // they've scaled manually
+  const el = buildFillHint();
+  positionFillHint(el);
+  el.classList.remove('hidden');
+}
+/* test seam: force the three inputs so the harness can assert the gate without
+   a real 4K layout (GEO — fitScale needs a measurable panel in-game). */
+window.__hdMaybeShowFillHint = maybeShowFillHint;
+window.__hdFillHintDismissed = fillHintDismissed;
+
 
 /* ================================================ pointer drag engine ==== *
  * Ultralight (PrismaUI's renderer) has no HTML5 drag & drop — dragstart/
@@ -1313,6 +1381,18 @@ function homePrefs() {
   return hm;
 }
 
+/* One-time hint flags, in the SAME shelf blob and for the SAME reason as
+   tabbarPrefs()/homePrefs() (state.shelf.hints): a new `settings` key would be
+   dropped on the C++ save round-trip (settings is parsed field-by-field), but
+   the shelf slice travels as a RAW json object C++ keeps untouched. Shape:
+   { fillDismissed: bool }. fill-hint */
+function hintsPrefs() {
+  if (!state.shelf || typeof state.shelf !== 'object' || Array.isArray(state.shelf)) state.shelf = {};
+  let hn = state.shelf.hints;
+  if (!hn || typeof hn !== 'object' || Array.isArray(hn)) hn = state.shelf.hints = {};
+  return hn;
+}
+
 function bumpTabUse(t) {
   if (!SYS_TABS.some((s) => s.tab === t)) return;   // fixed trio / hk cats don't compete
   const tb = tabbarPrefs();
@@ -2154,6 +2234,9 @@ function applyCapture(binding) {
   if (cap.mode === 'open') {
     state.settings.openKey = { device: binding.device, code: binding.code, label: binding.keyLabel };
     toast('Open key: ' + binding.keyLabel);
+    /* the Home tab shows the open-key bind (home-open-key) — refresh it live
+       when the rebind came from that card (or Edit) so the label is never stale */
+    if (ui.tab === 'home' && window.HomePane) HomePane.onShow();
   } else {
     const e = state.entries.find((x) => x.id === cap.id);
     if (e) {
@@ -3466,7 +3549,13 @@ window.hdOpen = function (cfg) {
   /* after body.open lands — the shelf is display:none until then, and its
      onOpen warms the providers its pins need (the spells slice is on-demand) */
   if (window.HDShelf) HDShelf.onOpen(!wasVisible);
-  if (!wasVisible) setTimeout(focusSearch, 30);
+  if (!wasVisible) {
+    setTimeout(focusSearch, 30);
+    /* First-run Fill hint (fill-hint) — after layout settles, so fitScale can
+       measure the real panel box. One-time, gated on a big screen + never-
+       scaled + never-dismissed. A live data-refresh (wasVisible) never shows it. */
+    setTimeout(function () { try { maybeShowFillHint(); } catch (e) {} }, 60);
+  }
 };
 
 window.hdClosed = function () {
@@ -3479,6 +3568,10 @@ window.hdClosed = function () {
      outlive the panel and float over the game */
   var usp = $('uiscale-pop');
   if (usp) usp.classList.add('hidden');
+  /* the fill hint is body-level + fixed too — hide it with the deck so it never
+     floats over the game after close (fill-hint) */
+  var fh = $('fill-hint');
+  if (fh) fh.classList.add('hidden');
   /* F7 reopens where you LEFT — the tab you closed on is the one you were
      working in. Recorded here, restored in hdOpen; the deep-open keys
      (F14/F15…) still land on their own tab because they arrive as an
@@ -3743,6 +3836,15 @@ function init() {
          cards whose `requires` flag is EXPLICITLY false; unknown = show,
          so an older DLL never blanks the grid */
       detected: function () { return (state.detected && typeof state.detected === 'object') ? state.detected : null; },
+      /* Open-key discoverability (home-open-key): the Home tab surfaces the
+         open-key bind and its Change… button reuses THIS file's rebind flow —
+         startCapture('open') is exactly what Edit ▸ settings' key chip runs, so
+         there is one implementation (press-to-rebind + the pick-from-list). */
+      getOpenKey: function () {
+        var ok = (state.settings && state.settings.openKey) || {};
+        return ok.label || (ok.code ? (ok.device + ' ' + ok.code) : '');
+      },
+      startOpenKeyPicker: function () { startCapture('open', null); },
     });
   }
 
@@ -5225,6 +5327,72 @@ function runSelfTest() {
     return (clampScale(state.settings.uiScale) === 1 && !isFilled()) || ('scale=' + state.settings.uiScale);
   });
   setScale(1, false);
+
+  /* ---- First-run Fill hint: the three-condition gate + persistent dismiss ----
+     fitScale needs a real 4K layout to clear FILL_HINT_MIN in-game; the harness
+     runs at the test window's size, so we stub fitScale to isolate the GATE
+     logic (GEO — the visual position is proven by an in-game look, not here). */
+  (function () {
+    const realFit = fitScale;
+    const setFit = (v) => { fitScale = () => v; };
+    const restore = () => { fitScale = realFit; };
+    const clean = () => { const fh = $('fill-hint'); if (fh) fh.remove(); };
+    const shown = () => { const fh = $('fill-hint'); return !!fh && !fh.classList.contains('hidden'); };
+
+    T('fill-hint: shows on a big screen, never scaled, never dismissed', () => {
+      hintsPrefs().fillDismissed = false; setScale(1, false);
+      clean(); setFit(2.4); maybeShowFillHint(); const r = shown(); restore();
+      return r === true || 'hint did not appear under the three met conditions';
+    });
+    T('fill-hint: NOT shown when the screen is not big enough', () => {
+      hintsPrefs().fillDismissed = false; setScale(1, false);
+      clean(); setFit(1.4); maybeShowFillHint(); const r = shown(); restore();
+      return r === false || 'hint appeared below FILL_HINT_MIN';
+    });
+    T('fill-hint: NOT shown when the user has scaled manually', () => {
+      hintsPrefs().fillDismissed = false; setScale(1.3, false);
+      clean(); setFit(2.4); maybeShowFillHint(); const r = shown(); setScale(1, false); restore();
+      return r === false || 'hint appeared after a manual scale';
+    });
+    T('fill-hint: NOT shown once dismissed', () => {
+      hintsPrefs().fillDismissed = true; setScale(1, false);
+      clean(); setFit(2.4); maybeShowFillHint(); const r = shown(); restore();
+      hintsPrefs().fillDismissed = false;
+      return r === false || 'hint appeared after being dismissed';
+    });
+    T('fill-hint: "No thanks" dismisses forever (persists in shelf blob)', () => {
+      hintsPrefs().fillDismissed = false; setScale(1, false);
+      clean(); setFit(2.4); maybeShowFillHint(); restore();
+      const btn = $('fill-hint') && $('fill-hint').querySelector('#fh-no');
+      if (!btn) return 'No-thanks button missing';
+      btn.click();
+      const persisted = state.shelf && state.shelf.hints && state.shelf.hints.fillDismissed === true;
+      const gone = !shown();
+      hintsPrefs().fillDismissed = false; clean();
+      return (persisted && gone) || ('persisted=' + persisted + ' gone=' + gone);
+    });
+    T('fill-hint: "Fill now" fills AND dismisses forever', () => {
+      hintsPrefs().fillDismissed = false; setScale(1, false);
+      clean(); setFit(2.4); maybeShowFillHint(); restore();   // toggleFill uses the REAL fitScale
+      const btn = $('fill-hint') && $('fill-hint').querySelector('#fh-fill');
+      if (!btn) return 'Fill-now button missing';
+      btn.click();
+      const persisted = state.shelf && state.shelf.hints && state.shelf.hints.fillDismissed === true;
+      const filled = isFilled();
+      hintsPrefs().fillDismissed = false; setScale(1, false); clean();
+      return (persisted && filled) || ('persisted=' + persisted + ' filled=' + filled);
+    });
+    T('fill-hint: flag rides the shelf blob, not settings (survives C++ save)', () => {
+      /* the whole point — a settings key would be dropped; hints lives in shelf */
+      hintsPrefs().fillDismissed = true;
+      const inShelf = state.shelf.hints.fillDismissed === true;
+      const notInSettings = !('fillDismissed' in (state.settings || {}));
+      hintsPrefs().fillDismissed = false;
+      return (inShelf && notInSettings) || ('shelf=' + inShelf + ' settingsClean=' + notInSettings);
+    });
+    clean();
+  })();
+
   /* ---- Smooth scroll: the shared handler is installed with a fast base ---- */
   T('scroll: installScrollSpeed installed once with a >1 base multiplier',
     () => (window.__hdScrollInstalled === true && SCROLL_BASE > 1) || ('base=' + SCROLL_BASE));

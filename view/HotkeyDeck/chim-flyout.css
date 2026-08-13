@@ -17,10 +17,16 @@
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(0, 0, 0, 0.4);
   color: #e9e6df;
   animation: chimFlyIn 130ms ease;
+  transform: scale(var(--ui-scale, 1)); transform-origin: top left;
 }
+/* Bake --ui-scale into the settle state: .chim-fly is an #overlay child, OUTSIDE
+   #panel's transform: scale(--ui-scale), so it must wear the deck scale or it
+   paints 1x at ⛶ Fill. Both keyframes carry the scale so it doesn't snap on the
+   last frame; translateY is layout px, applied before the scale (origin
+   top-left). mountAt() clamps offsetWidth/Height × the scale. */
 @keyframes chimFlyIn {
-  from { opacity: 0; transform: translateY(-4px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translateY(-4px) scale(var(--ui-scale, 1)); }
+  to   { opacity: 1; transform: translateY(0) scale(var(--ui-scale, 1)); }
 }
 
 .chim-fly-head {

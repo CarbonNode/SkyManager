@@ -1475,7 +1475,11 @@ function closeCtx() {
 function clampCtx(x, y) {
   const place = () => {
     if (!ctxEl) return;
-    const w = ctxEl.offsetWidth, h = ctxEl.offsetHeight;
+    /* #ctx-menu wears transform: scale(--ui-scale) (top-left origin), so the
+       PAINTED extent is offsetWidth/Height × the scale — clamp that against the
+       real-px viewport or a Fill'd deck's menu hangs off the edge. */
+    const s = curScale();
+    const w = ctxEl.offsetWidth * s, h = ctxEl.offsetHeight * s;
     const vw = window.innerWidth, vh = window.innerHeight;
     let nx = x, ny = y;
     if (nx + w > vw - 6) nx = vw - w - 6;
@@ -2583,6 +2587,31 @@ function runSelfTest() {
       m.offsetTop + m.offsetHeight <= window.innerHeight;
   })());
   closeCtx();
+  /* ---- ⛶ Fill scaling: #ctx-menu is an #overlay child, OUTSIDE #panel's
+     transform, so it wears --ui-scale itself (SpudmanWP, 2026-08-13). The
+     painted extent is offset × scale; clampCtx multiplies by curScale(). ---- */
+  openCtxMenu(ctxSpell, 100, 100);
+  ok('ctx menu carries the deck scale transform', (() => {
+    const cs = getComputedStyle($('ctx-menu')).transform;
+    return !!cs && cs !== 'none' && cs !== 'matrix(1, 0, 0, 1, 0, 0)';
+  })());
+  closeCtx();
+  ok('ctx menu clamps the SCALED box off the corner at ⛶ Fill', (() => {
+    const m0 = $('ctx-menu'); // (closed) — reopen with layout probe
+    openCtxMenu(ctxSpell, window.innerWidth - 20, window.innerHeight - 20);
+    const m = $('ctx-menu');
+    if (!m.offsetWidth) { closeCtx(); return true; }   // GEO guard: no layout
+    const keep = state.uiScale; state.uiScale = 2.4; applyScale();
+    closeCtx();
+    openCtxMenu(ctxSpell, window.innerWidth - 20, window.innerHeight - 20);
+    const m2 = $('ctx-menu'), s = curScale();
+    const fits = m2.offsetLeft >= 0 && m2.offsetTop >= 0 &&
+      m2.offsetLeft + m2.offsetWidth * s <= window.innerWidth + 1 &&
+      m2.offsetTop + m2.offsetHeight * s <= window.innerHeight + 1;
+    state.uiScale = keep; applyScale();
+    closeCtx();
+    return fits;
+  })());
   ok('ctx menu closes', !$('ctx-menu'));
 
   // remove / restore from spellbook — drive the engine-confirmed receivers directly

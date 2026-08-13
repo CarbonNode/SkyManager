@@ -1387,6 +1387,29 @@ window.FinancesPane = (function () {
       deleteLine(state.lines[0]);
       return state.lines.length === n - 1 && !lineById(id);
     });
+    /* ---- ⛶ Fill scaling: #fin-ctx is an #overlay child, OUTSIDE #panel's
+       transform, so it wears --ui-scale itself (SpudmanWP, 2026-08-13). ---- */
+    T('ctx menu carries the deck scale transform', () => {
+      openLineMenu(state.lines[0], 120, 140);
+      const cs = getComputedStyle(ctxEl).transform;
+      const ok = !!cs && cs !== 'none' && cs !== 'matrix(1, 0, 0, 1, 0, 0)';
+      closeCtx();
+      return ok;
+    });
+    T('ctx menu clamps on screen at ⛶ Fill (--ui-scale 2.4)', () => {
+      openLineMenu(state.lines[0], 120, 140);
+      if (!ctxEl.offsetWidth) { closeCtx(); return true; }   // GEO guard
+      const root = document.documentElement.style, prev = root.getPropertyValue('--ui-scale');
+      root.setProperty('--ui-scale', '2.4');
+      closeCtx();
+      openLineMenu(state.lines[0], window.innerWidth - 4, window.innerHeight - 4);
+      const b = ctxEl.getBoundingClientRect();
+      const on = b.left >= -1 && b.top >= -1 &&
+        b.right <= window.innerWidth + 1 && b.bottom <= window.innerHeight + 1;
+      if (prev) root.setProperty('--ui-scale', prev); else root.removeProperty('--ui-scale');
+      closeCtx();
+      return on;
+    });
     closeCtx();
     T('add market item works', () => { const n = state.market.length; addMarket(); return state.market.length === n + 1; });
     closeCtx();

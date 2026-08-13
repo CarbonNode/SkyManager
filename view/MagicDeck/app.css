@@ -756,8 +756,16 @@ body.editing .spell .glyph.pickable:hover {
   border-radius: var(--radius-s);
   box-shadow: 0 16px 44px rgba(0, 0, 0, .62), 0 0 0 1px rgba(0, 0, 0, .35);
   animation: ctxIn .11s var(--ease);
+  /* Outside #panel's transform: scale(--ui-scale) (it is an #overlay child), so
+     wear the same scale or it paints 1x beside a Fill'd deck. clampCtx()
+     multiplies offsetWidth/Height by the scale to place the PAINTED box. */
+  transform: scale(var(--ui-scale, 1)); transform-origin: top left;
 }
-@keyframes ctxIn { from { opacity: 0; transform: translateY(-5px) scale(.98); } }
+/* Settle to the scaled rest state, not a 1x snap on the last frame. */
+@keyframes ctxIn {
+  from { opacity: 0; transform: translateY(-5px) scale(calc(var(--ui-scale, 1) * .98)); }
+  to   { opacity: 1; transform: scale(var(--ui-scale, 1)); }
+}
 .ctx-head {
   font: 600 16px/1.2 "Segoe UI", sans-serif; letter-spacing: .2px;
   color: var(--gold-soft);

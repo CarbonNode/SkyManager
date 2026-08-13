@@ -14,6 +14,21 @@
       <span class="hm-search-kbd"><kbd>Ctrl</kbd><kbd>F</kbd></span>
     </div>
 
+    <!-- Open key — the ONE control a new user hunts for and can't find
+         (Nexus feedback, IAMTOKKO: wanted to change F7, searched, gave up).
+         Big current-bind label + a Change… button that runs the SAME
+         press-to-rebind flow Edit ▸ settings has. Filled by home-pane.js. -->
+    <div id="hm-openkey" role="group" aria-label="Open key">
+      <div class="hm-ok-plate" aria-hidden="true">⌨</div>
+      <div class="hm-ok-body">
+        <div class="hm-ok-title">Open key</div>
+        <div class="hm-ok-help">This key opens SkyManager anywhere in the game.</div>
+      </div>
+      <div class="hm-ok-key" id="hm-ok-key" title="The key that opens SkyManager">F7</div>
+      <button id="hm-ok-change" type="button" class="hm-ok-btn"
+              title="Press or pick the new key that opens SkyManager">Change…</button>
+    </div>
+
     <div class="hm-sec-head">
       <h2>Systems</h2>
       <span class="hm-sec-hint">Pick a card — or search above</span>

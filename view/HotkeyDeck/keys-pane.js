@@ -106,7 +106,7 @@ window.KeysPane = (function () {
   /* ============================================================= state == */
 
   const state = {
-    phase: 'idle',      // idle | scanning | done | error
+    phase: 'idle',      // idle | scanning | refreshing | done | error
     note: '',
     modsDone: 0,
     modsTotal: 0,
@@ -116,6 +116,12 @@ window.KeysPane = (function () {
     bindings: [],
     scannedOnce: false,
   };
+
+  /* Phases where real rows are on screen and useful — 'refreshing' means the
+     cache is already shown and a background re-sweep is catching up (an in-game
+     rebind self-heals within a pass), so we must NOT blank the body or block. */
+  function isUsablePhase(p) { return p === 'done' || p === 'refreshing'; }
+  function isBusyPhase(p) { return p === 'scanning' || p === 'refreshing'; }
 
   const ui = {
     filter: '',
@@ -148,13 +154,17 @@ window.KeysPane = (function () {
     state.modsTotal = d.modsTotal | 0;
     state.count = d.count | 0;
     state.seq = d.seq | 0;
-    if (state.phase === 'done' && state.seq !== state.lastLoadedSeq) {
+    /* Any new seq while rows are usable means the C++ side republished (cache
+       seed, or a config whose answer changed during the background refresh) —
+       pull it. The seq bumps per change, so 'refreshing' streams rows in the
+       same way 'done' delivers the final set. */
+    if (isUsablePhase(state.phase) && state.seq !== state.lastLoadedSeq) {
       toGame('kcResult', '');
     }
-    /* Opening the tab while a scan (started on an earlier open) is still
+    /* Opening the tab while a scan/refresh (started on an earlier open) is still
        running: the reply is what tells us it's live, so the poll starts HERE,
-       not only in rescan() — otherwise the progress bar freezes. */
-    if (state.phase === 'scanning' && ui.visible && !ui.pollT) startPoll();
+       not only in rescan() — otherwise the progress freezes. */
+    if (isBusyPhase(state.phase) && ui.visible && !ui.pollT) startPoll();
     if (ui.visible) renderStatus();
   };
 
@@ -165,8 +175,19 @@ window.KeysPane = (function () {
     state.count = state.bindings.length;
     state.seq = d.seq | 0;
     state.lastLoadedSeq = state.seq;
-    if (ui.visible) render();
+    /* A background refresh republishes as it goes — rows that change under the
+       user must not jump the scroll position out from under them. Preserve and
+       restore #kc-body's scrollTop across the re-render. */
+    if (ui.visible) renderPreservingScroll();
   };
+
+  function renderPreservingScroll() {
+    const body = $('kc-body');
+    const top = body ? body.scrollTop : 0;
+    render();
+    const b2 = $('kc-body');
+    if (b2) b2.scrollTop = top;
+  }
 
   /* ========================================================== grouping == */
 
@@ -196,6 +217,15 @@ window.KeysPane = (function () {
     return out;
   }
 
+  /* C++ emits a code-0 sentinel row per MCM that timed out ("didn't answer") so
+     a dead config is never silently missing. It isn't a real key bind, so it's
+     kept out of the key grid and surfaced as an honest note instead. */
+  function isDeadRow(b) { return b && b.src === 'mcm' && !b.code; }
+  function realBindings() { return state.bindings.filter((b) => !isDeadRow(b)); }
+  function deadConfigs() {
+    return state.bindings.filter(isDeadRow).map((b) => b.mod || '?');
+  }
+
   function matches(g, needle) {
     if (!needle) return true;
     const n = needle.toLowerCase();
@@ -210,7 +240,7 @@ window.KeysPane = (function () {
      recompute honestly: hide "Game" and a soft over-vanilla row becomes a
      clean single-owner row, not a leftover badge. */
   function activeBindings() {
-    return state.bindings.filter((b) => !ui.srcOff[b.src]);
+    return state.bindings.filter((b) => !ui.srcOff[b.src] && !isDeadRow(b));
   }
 
   function visibleGroups() {
@@ -237,34 +267,50 @@ window.KeysPane = (function () {
   function renderStatus() {
     const bar = $('kc-progress');
     if (!bar) return;
-    if (state.phase === 'scanning') {
+    /* Two shapes: a blocking progress bar for a COLD/forced scan (no usable rows
+       yet), and a lightweight "refreshing N of M in the background" chip when the
+       cache is already on screen — never a blocking bar over live rows. */
+    const cold = state.phase === 'scanning';
+    const refreshing = state.phase === 'refreshing';
+    if (cold || refreshing) {
       bar.classList.remove('hidden');
+      bar.classList.toggle('kc-progress-bg', refreshing);
       const total = state.modsTotal;
       const pct = total ? Math.round((state.modsDone / total) * 100) : 5;
       $('kc-progress-fill').style.width = Math.max(5, pct) + '%';
-      $('kc-progress-text').textContent = total
-        ? ('Asking each MCM what it owns — ' + state.modsDone + '/' + total +
-           (state.note ? ' · ' + state.note : ''))
-        : ('Scanning…' + (state.note ? ' ' + state.note : ''));
+      $('kc-progress-text').textContent = refreshing
+        ? ('Refreshing from cache — ' + state.modsDone + ' of ' + total + ' in the background' +
+           (state.note && state.note !== 'catching up' ? ' · ' + state.note : ''))
+        : (total
+          ? ('Asking each MCM what it owns — ' + state.modsDone + '/' + total +
+             (state.note ? ' · ' + state.note : ''))
+          : ('Scanning…' + (state.note ? ' ' + state.note : '')));
     } else {
       bar.classList.add('hidden');
+      bar.classList.remove('kc-progress-bg');
     }
     const chip = $('kc-count-chip');
     if (chip) {
       const groups = groupKeys(state.bindings);
       const hard = groups.filter((g) => g.kind === 'hard').length;
-      chip.textContent = state.bindings.length
-        ? (groups.length + ' keys · ' + state.bindings.length + ' bindings' +
+      const real = realBindings().length;
+      chip.textContent = real
+        ? (groups.length + ' keys · ' + real + ' bindings' +
            (hard ? ' · ' + hard + ' conflicts' : ''))
         : '';
       chip.classList.toggle('kc-chip-warn', hard > 0);
     }
     const re = $('kc-rescan');
     if (re) {
-      const busy = state.phase === 'scanning';
+      /* Rescan = the FULL forced sweep (ignores the cache, re-tries dead
+         configs). Disabled while any scan/refresh is in flight since C++ refuses
+         a second concurrent scan. */
+      const busy = isBusyPhase(state.phase);
       re.disabled = busy;
-      re.textContent = busy ? '⟳ Scanning…' : '⟳ Rescan';
+      re.textContent = state.phase === 'refreshing' ? '⟳ Refreshing…'
+        : busy ? '⟳ Scanning…' : '⟳ Rescan all';
     }
+    renderDeadNote();
     renderLegend();
     if (state.phase === 'error') {
       const empty = $('kc-empty');
@@ -284,7 +330,7 @@ window.KeysPane = (function () {
     const box = $('kc-legend');
     if (!box) return;
     const counts = {};
-    state.bindings.forEach((b) => { counts[b.src] = (counts[b.src] || 0) + 1; });
+    realBindings().forEach((b) => { counts[b.src] = (counts[b.src] || 0) + 1; });
     const order = ['mcm', 'helper', 'vanilla', 'deck', 'chord'];
     const srcs = order.filter((s) => counts[s]).concat(
       Object.keys(counts).filter((s) => order.indexOf(s) === -1));
@@ -304,6 +350,35 @@ window.KeysPane = (function () {
         render();
       });
     });
+  }
+
+  /* Honest note for MCMs that timed out: they were asked but their script never
+     answered (usually broken), so their keys couldn't be read. They're skipped
+     until a forced Rescan all, and named here so the census never silently omits
+     them. */
+  function renderDeadNote() {
+    let box = $('kc-dead');
+    if (!box) {
+      /* Created lazily so no shared index.html edit is required: it slots right
+         after the legend, above the key body. */
+      const legend = $('kc-legend');
+      const pane = document.getElementById('kc-pane');
+      if (!pane) return;
+      box = document.createElement('div');
+      box.id = 'kc-dead';
+      box.className = 'hidden';
+      if (legend && legend.parentNode) legend.parentNode.insertBefore(box, legend.nextSibling);
+      else pane.appendChild(box);
+    }
+    const dead = deadConfigs();
+    if (!dead.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+    box.classList.remove('hidden');
+    const names = dead.slice(0, 6).map(esc).join(', ') +
+      (dead.length > 6 ? ' +' + (dead.length - 6) + ' more' : '');
+    box.innerHTML = '<span class="kc-dead-icon">⚠</span>' +
+      '<span>' + dead.length + ' MCM' + (dead.length > 1 ? 's' : '') +
+      ' didn’t answer (' + names + ') — their keys couldn’t be read. ' +
+      '<b>⟳ Rescan all</b> to retry.</span>';
   }
 
   function ownerChip(o) {
@@ -336,9 +411,9 @@ window.KeysPane = (function () {
     if (!groups.length) {
       body.innerHTML = '';
       empty.classList.remove('hidden');
-      if (!state.bindings.length && state.phase !== 'error') {
+      if (!realBindings().length && state.phase !== 'error') {
         empty.innerHTML = '<div class="kc-empty-title">No scan yet</div>' +
-          '<div class="kc-empty-sub">Hit <b>⟳ Rescan</b> to census every hotkey in the load order — ' +
+          '<div class="kc-empty-sub">Hit <b>⟳ Rescan all</b> to census every hotkey in the load order — ' +
           'MCM mods, MCM Helper mods, the game’s own controls, Chord Keys and the deck itself.</div>';
       } else if (state.phase !== 'error') {
         empty.innerHTML = '<div class="kc-empty-title">' +
@@ -393,7 +468,7 @@ window.KeysPane = (function () {
   function startPoll() {
     stopPoll();
     ui.pollT = setInterval(() => {
-      if (state.phase === 'scanning') toGame('kcState', '');
+      if (isBusyPhase(state.phase)) toGame('kcState', '');
       else stopPoll();
     }, POLL_MS);
   }
@@ -402,10 +477,13 @@ window.KeysPane = (function () {
     if (ui.pollT) { clearInterval(ui.pollT); ui.pollT = null; }
   }
 
-  function rescan() {
+  /* force=true is the "Rescan all" button: a full sweep that ignores the cache
+     and re-tries dead configs. The auto-scan on first open (force=false) is
+     cache-first — instant cached rows, then a background refresh. */
+  function rescan(force) {
     state.scannedOnce = true;
     ui.expanded = {};
-    toGame('kcScan', '');
+    toGame('kcScan', force ? 'force' : '');
     state.phase = 'scanning';
     startPoll();
     render();
@@ -420,9 +498,9 @@ window.KeysPane = (function () {
        that waits for a button press reads as broken, not as patient. */
     if (!state.scannedOnce && !state.bindings.length) {
       setTimeout(() => {
-        if (ui.visible && state.phase === 'idle' && !state.bindings.length) rescan();
+        if (ui.visible && state.phase === 'idle' && !state.bindings.length) rescan(false);
       }, 250);
-    } else if (state.phase === 'scanning') {
+    } else if (isBusyPhase(state.phase)) {
       startPoll();
     }
     render();
@@ -472,7 +550,7 @@ window.KeysPane = (function () {
       });
     }
     const re = $('kc-rescan');
-    if (re) re.addEventListener('click', rescan);
+    if (re) re.addEventListener('click', () => rescan(true));
 
     const spot = $('kc-spotlight');
     if (spot) {
