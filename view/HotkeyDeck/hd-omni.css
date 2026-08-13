@@ -5,9 +5,13 @@
  *  sharmat-pane.css and recents-strip.css are separate files.
  * ====================================================================== */
 
-/* Inside #panel (which is transform: scale(--ui-scale)) so the overlay
-   inherits the menu scale. z-index 73: above the pane context menus (60)
-   and the domains capture (70); #toast (80) still paints over it. */
+/* #omni-modal is a full-viewport backdrop appended to <body> (hd-omni.js), so
+   it sits OUTSIDE #panel's transform: scale(--ui-scale). The BACKDROP is meant
+   to cover the whole screen (inset:0), so it must stay 1× — it is the inner
+   .omni-box that has to wear the deck scale, or at ⛶ Fill the box paints 1×
+   inside a scaled deck (the old comment here claimed it lived inside #panel; it
+   does not). z-index 73: above the pane context menus (60) and the domains
+   capture (70); #toast (80) still paints over it. */
 #omni-modal {
   position: absolute; inset: 0; z-index: 73;
   display: flex; align-items: center; justify-content: center;
@@ -16,15 +20,24 @@
 }
 
 .omni-box {
+  /* Painted size = these × --ui-scale, and the flex parent centres it, so the
+     caps are divided by the scale to keep a Fill'd box inside the viewport. */
   width: min(1080px, 96%); height: min(900px, 92%);
+  max-width: calc(96vw / var(--ui-scale, 1)); max-height: calc(92vh / var(--ui-scale, 1));
   display: flex; flex-direction: column;
   background: linear-gradient(180deg, #1a1a21, #101015);
   border: 1px solid #c9a24b77; border-radius: 12px;
   box-shadow: 0 20px 60px rgba(0,0,0,.6);
   animation: omniIn 160ms ease;   /* NOT riseIn — that bakes the panel scale */
   overflow: hidden;
+  transform: scale(var(--ui-scale, 1)); transform-origin: center center;
 }
-@keyframes omniIn { from { opacity: 0; transform: translateY(8px); } }
+/* Bake --ui-scale so the box doesn't snap 1× → scale on the last frame;
+   translateY is layout px, applied before the centre-origin scale. */
+@keyframes omniIn {
+  from { opacity: 0; transform: translateY(8px) scale(var(--ui-scale, 1)); }
+  to   { opacity: 1; transform: translateY(0) scale(var(--ui-scale, 1)); }
+}
 
 /* ---------- head: mode chips + hint + close ---------- */
 

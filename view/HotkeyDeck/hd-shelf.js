@@ -599,12 +599,18 @@ var HDShelf = (function () {
       '<button data-act="top">⤒ Move to top</button>' +
       '<button data-act="unpin" class="shf-menu-danger">✕ Remove from shelf</button>';
     document.body.appendChild(m);
-    /* clamp inside the viewport — the shelf hugs an edge, the menu must not */
-    const w = m.offsetWidth, h = m.offsetHeight;
+    /* clamp inside the viewport — the shelf hugs an edge, the menu must not.
+       #shf-menu lives on <body>, OUTSIDE #panel's transform: scale(--ui-scale),
+       so it wears the scale itself (see #shf-menu in hd-shelf.css). offsetWidth/
+       Height are pre-transform layout px; the PAINTED box is × the scale, so
+       clamp that or a Fill'd deck throws the menu off-screen. */
+    let sc = 1;
+    try { const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-scale')); if (isFinite(v) && v > 0) sc = v; } catch (e) {}
+    const w = m.offsetWidth * sc, h = m.offsetHeight * sc;
     if (x + w > window.innerWidth - 8) x = window.innerWidth - 8 - w;
     if (y + h > window.innerHeight - 8) y = window.innerHeight - 8 - h;
-    m.style.left = Math.round(x) + 'px';
-    m.style.top = Math.round(y) + 'px';
+    m.style.left = Math.round(Math.max(8, x)) + 'px';
+    m.style.top = Math.round(Math.max(8, y)) + 'px';
     m.addEventListener('click', (e) => {
       const b = e.target.closest('button');
       if (!b) return;

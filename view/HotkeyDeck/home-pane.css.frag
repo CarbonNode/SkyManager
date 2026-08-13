@@ -36,6 +36,47 @@
   padding: 4px 7px; background: rgba(255,255,255,.03);
 }
 
+/* ---- Open key card (home-open-key) ----
+   The discoverable home for the open-key rebind. Same card surface as the
+   grid cards, laid out as a row: plate · title+help · big current bind · Change.
+   Gold-accented so it reads as the deck's own primary control. */
+#hm-openkey {
+  display: flex; align-items: center; gap: 15px;
+  padding: 15px 17px; margin: 0 0 20px;
+  background: linear-gradient(180deg, #1d1c22, #171620);
+  border: 1px solid #c9a24b40; border-radius: 14px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+}
+#hm-openkey .hm-ok-plate {
+  width: 46px; height: 46px; border-radius: 12px; flex: none;
+  display: grid; place-items: center; font-size: 24px; color: #c9a24b;
+  background: rgba(201,162,75,.14); border: 1px solid rgba(201,162,75,.34);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+}
+#hm-openkey .hm-ok-body { flex: 1; min-width: 0; }
+#hm-openkey .hm-ok-title {
+  font-size: 17px; font-weight: 650; color: #e8e4da; letter-spacing: .2px;
+}
+#hm-openkey .hm-ok-help {
+  font-size: 13px; color: #a49d8c; line-height: 1.4; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis;
+}
+#hm-openkey .hm-ok-key {
+  flex: none; font: 700 18px/1 Consolas, monospace; color: #e0bc6a;
+  background: rgba(201,162,75,.12); border: 1px solid rgba(201,162,75,.4);
+  border-radius: 12px; padding: 10px 16px; min-width: 56px; text-align: center;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px;
+}
+#hm-openkey .hm-ok-btn {
+  flex: none; font: 600 14px/1 inherit; color: #e8e4da; cursor: pointer;
+  background: rgba(255,255,255,.03); border: 1px solid #3a3a44; border-radius: 10px;
+  padding: 11px 16px;
+  transition: border-color 140ms ease, background 140ms ease, transform 120ms ease;
+}
+#hm-openkey .hm-ok-btn:hover { border-color: #c9a24b; background: rgba(201,162,75,.14); }
+#hm-openkey .hm-ok-btn:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+#hm-openkey .hm-ok-btn:active { transform: translateY(1px); }
+
 /* ---- section head ---- */
 .hm-sec-head { display: flex; align-items: baseline; gap: 10px; margin: 0 2px 14px; }
 .hm-sec-head h2 {
@@ -219,4 +260,11 @@
   #hm-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 11px; }
   .hm-card { min-height: 112px; padding: 14px; }
   .hm-card .hm-plate { width: 44px; height: 44px; font-size: 22px; }
+  /* Open-key card: let the label + Change wrap under the title so nothing
+     truncates or overflows at narrow width. */
+  #hm-openkey { flex-wrap: wrap; }
+  #hm-openkey .hm-ok-body { flex: 1 1 100%; order: 1; }
+  #hm-openkey .hm-ok-plate { order: 0; }
+  #hm-openkey .hm-ok-key { order: 2; margin-left: 61px; }
+  #hm-openkey .hm-ok-btn { order: 3; margin-left: auto; }
 }

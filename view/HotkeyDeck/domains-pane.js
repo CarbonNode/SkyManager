@@ -3745,7 +3745,33 @@ window.DomainsPane = (function () {
         return ctxEl.classList.contains('wide') &&
           b.width >= Math.min(470, window.innerWidth * 0.9);
       });
+      /* ---- ⛶ Fill scaling: the SpudmanWP bug (2026-08-13) ----
+         #dm-ctx is an #overlay child, OUTSIDE #panel's transform, so it must
+         wear --ui-scale itself. It does via app.css (transform:
+         scale(var(--ui-scale))). Prove the rule reaches the element AND that
+         the post-scale clamp keeps it on screen at a big Fill scale. */
+      T('menu carries the deck scale transform (⛶ Fill readable)', () => {
+        const cs = getComputedStyle(ctxEl).transform;
+        // real browser -> a matrix that is not identity; a CSSOM-less env ->
+        // the declared string. Either way it must not be a bare "none".
+        return !!cs && cs !== 'none' && cs !== 'matrix(1, 0, 0, 1, 0, 0)';
+      });
+      T('menu stays on screen at ⛶ Fill (--ui-scale 2.4)', () => {
+        // GEO guard: needs real layout (offset boxes). Skip cleanly headless.
+        if (!ctxEl.offsetWidth) return true;
+        const root = document.documentElement.style;
+        const prev = root.getPropertyValue('--ui-scale');
+        root.setProperty('--ui-scale', '2.4');
+        closeCtx();
+        openMarkMenu(m, window.innerWidth - 4, window.innerHeight - 4);
+        const b = ctxEl.getBoundingClientRect();
+        const onScreen = b.left >= -1 && b.top >= -1 &&
+          b.right <= window.innerWidth + 1 && b.bottom <= window.innerHeight + 1;
+        if (prev) root.setProperty('--ui-scale', prev); else root.removeProperty('--ui-scale');
+        return onScreen;
+      });
       T('armed forget needs two clicks', () => {
+        closeCtx(); openMarkMenu(m, 120, 140);
         const btn = ctxEl.querySelectorAll('.dm-ctx-item.danger')[0];
         const n = state.marks.length;
         btn.click();

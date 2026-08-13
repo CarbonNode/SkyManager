@@ -255,11 +255,13 @@
     "portal-host": "portal-host: started the Deck Portal on",
     "wheel-spell-equip": "hdOmniEquip: equip-toggle",
     "keys-scan": "keys-scan complete:",
+    "keys-cache": "keys-cache: persistent MCM sweep cache active",
     "seed-icons": "seeded new action entry '{}' into tab '{}' (icon '{}')",
     "seed-suppress": "seed-suppress: '{}' stays deleted by user choice",
     "atomic-config-write": "atomic config swap failed",
     "omo-cancel-config": "OMO cancel binding unrecognized",
-    "crt-alert-view": "crt-alert: view created + listener registered"
+    "crt-alert-view": "crt-alert: view created + listener registered",
+    "text-input-guard": "text-input guard:"
   },
   "view": {
     "wardrobe-spid.js": {

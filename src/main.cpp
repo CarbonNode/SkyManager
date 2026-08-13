@@ -2846,6 +2846,7 @@ namespace
 	void OnJsFireKey(const char* data);
 	void OnJsSave(const char* data);
 	void OnJsClose(const char* data);
+	void OnJsTextInput(const char* data);
 	void OnJsLog(const char* data);
 	void OnJsTab(const char* data);
 	void OnJsCapture(const char* data);
@@ -3364,6 +3365,7 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "hdFireKey", OnJsFireKey);
 		g_prisma->RegisterJSListener(g_view, "hdSave", OnJsSave);
 		g_prisma->RegisterJSListener(g_view, "hdClose", OnJsClose);
+		g_prisma->RegisterJSListener(g_view, "hdTextInput", OnJsTextInput);
 		g_prisma->RegisterJSListener(g_view, "hdLog", OnJsLog);
 		g_prisma->RegisterJSListener(g_view, "hdTab", OnJsTab);
 		g_prisma->RegisterJSListener(g_view, "hdCapture", OnJsCapture);
@@ -4127,30 +4129,88 @@ namespace
 		       (g_magicView && g_prisma->IsValid(g_magicView) && g_prisma->HasFocus(g_magicView));
 	}
 
+	// -------------------------------------------------------- text-input guard --
 	// Cooperative signal for well-behaved mods: bump the engine's text-entry
-	// refcount while our search box owns the keyboard, so anything that checks
-	// textEntryCount (as our own CanOpenNow does) holds its hotkeys.
+	// refcount (RE::ControlMap::AllowTextInput(true), which increments
+	// textEntryCount) while one of our search boxes owns the keyboard, so anything
+	// that checks IsTextEntryEnabled / textEntryCount -- SkyUI, MCM Helper, OBody,
+	// and everything using those idioms -- holds its letter hotkeys. PrismaUI
+	// webviews never raise this themselves, so without it typing "O" in the deck
+	// search box fires OBody's global hotkey straight through the view
+	// (Nexus report, IAMTOKKO). SkyUI's own inventory search bar does exactly
+	// this raise, which is why typing there never fires mod hotkeys.
 	//
-	// Guarded so it can NEVER leak: we only take the reference when the count is
-	// zero, and only ever release one we took. A leaked textEntryCount costs the
-	// player every hotkey in the game until they restart, which would be a far
-	// worse bug than the one this prevents. PrismaUI may well bump it itself --
-	// if it does, the count is already non-zero and we simply stay out of it.
-	std::atomic<bool> g_tookTextInput{ false };
+	// The single hazard is a LEAK: a textEntryCount left above zero silently eats
+	// EVERY hotkey in the game -- including vanilla text handling -- until restart,
+	// which is far worse than the bug it fixes. So we track, in our OWN balance
+	// counter, exactly how many raises WE currently hold, and can therefore always
+	// put back precisely what we took and no more. Two entry points share it:
+	//   * SetTextInputGuard(true/false) -- the palette-level blanket guard. true
+	//     adds one counted raise on open; false is the FAILSAFE: it drains ALL of
+	//     our raises (blanket + every per-field one), called from every close and
+	//     force-close path and on kPostLoadGame, so a stuck field can never
+	//     survive a palette close, a rescue, or a save load.
+	//   * TextRaiseOne(true/false) -- driven by the per-input-field bridge
+	//     (OnJsTextInput / hdTextInput, from the view's focusin/focusout). Each
+	//     true adds exactly one raise, each false removes exactly one, clamped at
+	//     zero so a stray release can never underflow the engine's count.
+	// Every actual AllowTextInput() call runs on the main thread via the SKSE task
+	// queue (the callers below already hop there); the counter is atomic so the
+	// view thread can read it, but only main-thread code mutates the engine.
+	std::atomic<int> g_textRaises{ 0 };
 
-	void SetTextInputGuard(bool on)
+	// Add or remove exactly one of OUR raises. MAIN THREAD ONLY. Returns quietly
+	// if there is no ControlMap yet (main menu) -- the counter is not touched, so
+	// nothing to balance later. A remove is clamped at zero: we never call
+	// AllowTextInput(false) more times than we called it true, so we can never
+	// drive someone else's textEntryCount (e.g. SkyUI's) negative.
+	void TextRaiseOne(bool on)
 	{
 		auto* cm = RE::ControlMap::GetSingleton();
 		if (!cm)
 			return;
 		if (on) {
-			if (!g_tookTextInput.load() && cm->GetRuntimeData().textEntryCount == 0) {
-				cm->AllowTextInput(true);
-				g_tookTextInput = true;
-			}
-		} else if (g_tookTextInput.exchange(false)) {
-			cm->AllowTextInput(false);
+			cm->AllowTextInput(true);
+			g_textRaises.fetch_add(1);
+		} else {
+			// exchange-decrement guarded so a stray "0" (double focusout, a view
+			// reload mid-field) can never underflow the count or the engine's.
+			int cur = g_textRaises.load();
+			while (cur > 0 && !g_textRaises.compare_exchange_weak(cur, cur - 1)) {}
+			if (cur > 0)
+				cm->AllowTextInput(false);
+			else
+				logger::warn("text-input guard: release with no raise held (ignored)");
 		}
+	}
+
+	// Drain EVERY raise we hold, in one shot. MAIN THREAD ONLY. This is the
+	// failsafe -- called on palette close, force-close, and kPostLoadGame, so a
+	// per-field raise that never saw its focusout (view crash, palette yanked
+	// shut, save loaded while a field was focused) cannot strand the engine.
+	void ReleaseAllTextInput()
+	{
+		auto* cm = RE::ControlMap::GetSingleton();
+		int   held = g_textRaises.exchange(0);
+		if (held <= 0)
+			return;
+		if (cm) {
+			for (int i = 0; i < held; ++i)
+				cm->AllowTextInput(false);
+			logger::info("text-input guard: released all {} raise(s)", held);
+		} else {
+			// No ControlMap to release into (no save loaded). The count is already
+			// zeroed; there is nothing live to leak, and a later raise starts clean.
+			logger::warn("text-input guard: dropped {} tracked raise(s), no ControlMap", held);
+		}
+	}
+
+	void SetTextInputGuard(bool on)
+	{
+		if (on)
+			TextRaiseOne(true);   // one counted blanket raise for the palette being open
+		else
+			ReleaseAllTextInput();  // failsafe: put back everything we hold
 	}
 
 	void FireAndClose(HotkeyEntry entry)
@@ -4751,6 +4811,20 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([]() { ClosePalette(); });
 	}
 
+	// hdTextInput: a text field in EITHER view gained ("1") or lost ("0") focus.
+	// Registered on both g_view and g_magicView; the payload does not say which,
+	// on purpose -- textEntryCount is ONE global engine refcount, so a raise from
+	// the deck and a raise from the Spell Deck are the same currency and the shared
+	// balance counter is correct regardless of origin. The view coalesces
+	// input->input hops so this only fires on a real enter/leave of text entry.
+	// The blanket SetTextInputGuard(true) taken at palette open still holds too;
+	// both are counted and both are drained by the same failsafe on close/load.
+	void OnJsTextInput(const char* data)
+	{
+		const bool on = data && data[0] == '1';
+		SKSE::GetTaskInterface()->AddTask([on]() { TextRaiseOne(on); });
+	}
+
 	void OnJsLog(const char* data)
 	{
 		if (data)
@@ -5161,6 +5235,10 @@ namespace
 		g_prisma->RegisterJSListener(g_magicView, "mdKnown", OnJsMagicKnown);
 		g_prisma->RegisterJSListener(g_magicView, "mdSave", OnJsMagicSave);
 		g_prisma->RegisterJSListener(g_magicView, "mdClose", OnJsMagicClose);
+		// Same global text-entry refcount as the deck view -- one handler, one
+		// balance counter. The Spell Deck's search box would otherwise leak
+		// keystrokes as mod hotkeys exactly like the deck's did.
+		g_prisma->RegisterJSListener(g_magicView, "hdTextInput", OnJsTextInput);
 		g_prisma->RegisterJSListener(g_magicView, "mdOpenDeck", OnJsOpenDeck);
 		g_prisma->RegisterJSListener(g_magicView, "mdLog", OnJsMagicLog);
 		g_prisma->RegisterJSListener(g_magicView, "mdCapture", OnJsMagicCapture);
@@ -5221,6 +5299,11 @@ namespace
 		g_prisma->Unfocus(g_magicView);
 		g_prisma->Hide(g_magicView);
 		g_magicFocusPaused = false;
+		// The Spell Deck's search box raises the SAME global text-entry refcount
+		// as the deck's, through the shared hdTextInput bridge. If it was focused
+		// when the palette closed, its focusout may never arrive -- so drain every
+		// raise we hold here, exactly as ClosePalette does. Failsafe > feature.
+		SetTextInputGuard(false);
 	}
 
 	// Push a C++ -> JS call into the magic view (main thread only).
@@ -10028,9 +10111,14 @@ namespace
 	// full registry. Replies kcStateResult / kcResultData — one name per
 	// direction, per the deck law. No AddTask: KeysScan touches only its own
 	// state here (the scan itself runs on its own thread).
-	void OnJsKeysScan(const char*)
+	void OnJsKeysScan(const char* data)
 	{
-		if (!KeysScan::Start()) {
+		// Payload "force" = the pane's "Rescan all": ignore the per-mod cache and
+		// re-sweep every config (and re-try dead ones). Anything else is the
+		// cache-first scan (instant cached rows, lazy background refresh).
+		const std::string req = data ? data : "";
+		const bool        force = req.find("force") != std::string::npos;
+		if (!KeysScan::Start(force)) {
 			logger::info("kcScan: a scan is already running");
 		}
 		PushToView("kcStateResult", KeysScan::StateJson(false));
@@ -13287,6 +13375,12 @@ namespace
 		if (message->type == SKSE::MessagingInterface::kPostLoadGame) {
 			if (message->data)  // data = "the load succeeded"
 				g_gameReady = true;
+			// Text-input failsafe: a raise held across a save load would strand
+			// the engine's text-entry refcount in the NEW session, silently eating
+			// EVERY hotkey (ours, other mods', and vanilla text handling) until
+			// restart. Drain everything we think we hold. Runs on the main thread
+			// already (SKSE message dispatch), so it may touch ControlMap.
+			ReleaseAllTextInput();
 			// A grab drag must never survive a load — the dynamic FormIDs it
 			// holds may have been remapped, and a tick would fling whatever
 			// they now resolve to.

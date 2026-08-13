@@ -1345,5 +1345,9 @@
   <!-- CHIM flyout for the quick card's CHIM button (background / sharmat /
        activate). Depends on HDOmni + SmPane at runtime; load order-agnostic. -->
   <script src="chim-flyout.js"></script>
+  <!-- Engine text-entry guard: raises Skyrim's global text-entry refcount while a
+       search/text field is focused so other mods' letter hotkeys stay dormant.
+       Standalone; must load after app.js. -->
+  <script src="hd-textinput.js"></script>
 </body>
 </html>
