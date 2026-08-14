@@ -115,10 +115,13 @@
   position: absolute;
   left: 0; right: 0; bottom: 0;
   display: flex;
+  /* two buttons don't fit the 156px square side by side — wrap to two rows
+     rather than clipping (Rober, 2026-08-13: "buttons were cut off") */
+  flex-wrap: wrap;
   gap: 6px;
   justify-content: center;
   padding: 8px;
-  background: linear-gradient(180deg, rgba(16,16,21,0), rgba(16,16,21,.86) 55%);
+  background: linear-gradient(180deg, rgba(16,16,21,0), rgba(16,16,21,.86) 40%);
   opacity: 0;
   transform: translateY(6px);
   transition: opacity 140ms ease, transform 140ms ease;
@@ -883,7 +886,11 @@
 .ps-pack-card {
   width: 480px;
   max-width: 100%;
-  max-height: 78vh;
+  /* the overlay lives INSIDE the scale-transformed #panel, so a bare vh gets
+     multiplied by --ui-scale and a Fill-scaled deck clipped the list at both
+     ends (Rober, 2026-08-13: "potion pop up is cut off"). Divide by the scale
+     (the #panel sizing idiom) and never exceed the overlay itself. */
+  max-height: min(calc(78vh / var(--ui-scale, 1)), 96%);
   display: flex;
   flex-direction: column;
   background: linear-gradient(180deg, #1c1c24 0%, #131318 100%);
@@ -1023,7 +1030,7 @@
 
 @media (max-width: 600px) {
   .ps-pack-overlay { padding: 12px; }
-  .ps-pack-card { width: 100%; max-height: 86vh; }
+  .ps-pack-card { width: 100%; max-height: min(calc(86vh / var(--ui-scale, 1)), 96%); }
 }
 
 /* =============================================================== story == */
@@ -1187,4 +1194,82 @@
   /* the reserved strip stays 2-up at phone width */
   .ps-slots { min-width: 0; }
   .ps-slot { flex-basis: calc(50% - 5px); max-width: none; }
+}
+
+/* ── pack modal: mesh-render plates on the potion rows (2026-08-14) ──────
+ * Matches the Items/Finder tabs' 64px art plate: a big square that ALWAYS holds
+ * the emoji 🧪, and the real render as an absolutely-positioned <img> over it.
+ *
+ * THREE states, and a plate is NEVER an empty box (Rober, 2026-08-14 play-test:
+ * the Pack Check rows drew as blank dark plates — the epoch purge had deleted
+ * the old item PNGs, so a cached index path pointed at a dead file, the plate
+ * was flagged .ps-has-art at BUILD time (glyph hidden) and the <img> 404'd
+ * without a reliable Ultralight onerror to undo it):
+ *   1. render not landed yet  -> visible 🧪 glyph + shimmer (.ps-pack-loading)
+ *   2. render VERIFIED landed  -> .ps-has-art hides the glyph, the picture shows
+ *   3. never-renderable        -> plain 🧪 glyph, no shimmer, forever
+ * The load-bearing rule: .ps-has-art is added ONLY on the <img>'s own `load`
+ * event (see packPlateInner / upgradePackPlates in the JS), never optimistically
+ * from an index path — so a glyph is only ever hidden once real bytes decoded.
+ * .ps-pack-art is display:none until its plate has .ps-has-art, so even the
+ * instant between "img inserted" and "load fired" (or a broken box that never
+ * loads) shows the glyph, not an empty frame. */
+
+.ps-pack-ico {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  border: 1px solid #33302a;
+  background: #14141a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  line-height: 1;
+  overflow: hidden;
+  transition: color .12s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease;
+}
+/* art VERIFIED landed: darken the plate, hide the glyph, let the picture carry
+   it. Only ever set by the <img> load handler, so the glyph is never hidden
+   ahead of real decoded bytes. */
+.ps-pack-ico.ps-has-art {
+  color: transparent;
+  background: #101015;
+  border-color: #2c2a24;
+}
+.ps-pack-ico .ps-pack-art {
+  position: absolute;
+  inset: 5px;
+  width: calc(100% - 10px);
+  height: calc(100% - 10px);
+  object-fit: contain;   /* a small object on transparency — never cropped */
+  pointer-events: none;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .5));
+  /* invisible until the plate is proven to hold landed art — a not-yet-loaded
+     or broken <img> must never leave an empty box over a hidden glyph */
+  display: none;
+}
+.ps-pack-ico.ps-has-art .ps-pack-art { display: block; }
+
+/* state 1: a render is expected but hasn't landed — shimmer UNDER the glyph so
+   the row reads as loading, never final. Reuses ps-shimmer (the pane's skeleton
+   keyframes), the Items/Finder tabs' one loading language. The 🧪 stays legible
+   on top. Dropped the moment art lands (.ps-has-art) or the window closes. */
+.ps-pack-ico.ps-pack-loading {
+  background: linear-gradient(90deg, #1b1b22 25%, #26262f 50%, #1b1b22 75%);
+  background-size: 200% 100%;
+  animation: ps-shimmer 1.3s infinite linear;
+  border-color: #34333d;
+}
+.ps-pack-ico.ps-has-art.ps-pack-loading { animation: none; }   /* landed wins */
+
+.ps-pack-ico.ps-zoomable { cursor: zoom-in; }
+.ps-pack-ico.ps-zoomable:hover { border-color: #6a6455; box-shadow: 0 0 0 2px rgba(201, 162, 75, .18); }
+
+/* At phone width the 64px plate would crowd the row; step it down with the
+   Items tab's own narrow sizing. */
+@media (max-width: 600px) {
+  .ps-pack-ico { width: 54px; height: 54px; font-size: 25px; }
 }

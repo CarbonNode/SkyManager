@@ -3,6 +3,7 @@
 #include "actor_identity.h"
 
 #include <algorithm>
+#include <unordered_map>
 
 // pch (force-included) provides RE::/SKSE:: and nlohmann json.hpp.
 
@@ -29,6 +30,12 @@ namespace Hotbar
 					return s;
 			return "plain";
 		}
+		std::string ClampGripPos(const std::string& s)
+		{
+			// "auto" keeps the half-screen flip; "top"/"bottom" pin the ✥ grip so
+			// the bar's OTHER edge stays clear while judging placement.
+			return (s == "top" || s == "bottom") ? s : "auto";
+		}
 		std::string ClampShowMode(const std::string& s)
 		{
 			// A contract with both the view's <select> and the C++ evaluator.
@@ -42,11 +49,19 @@ namespace Hotbar
 		}
 		std::string ClampKind(const std::string& s)
 		{
-			static const char* kKinds[] = { "spell", "item", "entry", "combo" };
+			static const char* kKinds[] = { "spell", "item", "entry", "combo", "flyout", "smart" };
 			for (const char* k : kKinds)
 				if (s == k)
 					return s;
 			return "";
+		}
+		// A flyout CHILD may be any fireable kind but never another flyout —
+		// the one-level rule is enforced here, at parse time, so no fire path
+		// ever has to consider recursion.
+		std::string ClampChildKind(const std::string& s)
+		{
+			const std::string k = ClampKind(s);
+			return k == "flyout" ? std::string() : k;
 		}
 
 		// Resolve a slot's durable identity back to a live form. All of the
@@ -90,6 +105,87 @@ namespace Hotbar
 		// How many of this object the player is carrying, and whether it is worn.
 		// Walking the inventory is the only way to learn IsWorn(), which is what
 		// draws the "equipped" ring on a weapon's button.
+		// ---- smart consumables ------------------------------------------------
+		// Which restore pool a potion effect feeds, and how hard. "Best" is the
+		// biggest matching magnitude — restore potions carry large magnitudes and
+		// regen potions small ones, so the strongest restore wins naturally
+		// without a second heuristic. Detrimental effects never count: a
+		// "Potion of Health Damage" from a poison-crafting mod must not become
+		// somebody's emergency heal.
+		struct SmartHit
+		{
+			RE::AlchemyItem* best      = nullptr;   // the strongest matching potion carried
+			std::int32_t     bestCount = 0;         // how many of THAT potion
+			std::int32_t     total     = 0;         // every matching potion, all tiers
+			float            score     = 0.0f;
+		};
+
+		bool SmartMatches(const std::string& ref, const RE::AlchemyItem* alch, float& outScore)
+		{
+			if (!alch || alch->IsFood() || alch->IsPoison())
+				return false;
+			outScore = 0.0f;
+			bool hit = false;
+			for (auto* effect : alch->effects) {
+				auto* base = effect ? effect->baseEffect : nullptr;
+				if (!base || base->IsDetrimental())
+					continue;
+				if (ref == "cure") {
+					if (base->GetArchetype() == RE::EffectSetting::Archetype::kCureDisease) {
+						hit = true;
+						outScore = std::max<float>(outScore, 1.0f);
+					}
+					continue;
+				}
+				const RE::ActorValue want = ref == "heal"      ? RE::ActorValue::kHealth :
+				                            ref == "magicka"   ? RE::ActorValue::kMagicka :
+				                            ref == "stamina"   ? RE::ActorValue::kStamina :
+				                                                 RE::ActorValue::kNone;
+				if (want == RE::ActorValue::kNone)
+					continue;
+				for (const auto av : { base->data.primaryAV, base->data.secondaryAV }) {
+					if (av != want)
+						continue;
+					hit = true;
+					outScore = std::max<float>(outScore, effect->effectItem.magnitude);
+				}
+			}
+			return hit;
+		}
+
+		SmartHit SmartFind(RE::PlayerCharacter* player, const std::string& ref)
+		{
+			SmartHit out;
+			if (!player)
+				return out;
+			auto inv = player->GetInventory([](RE::TESBoundObject& o) {
+				return o.Is(RE::FormType::AlchemyItem);
+			});
+			for (auto& [obj, data] : inv) {
+				if (data.first <= 0)
+					continue;
+				auto* alch = obj ? obj->As<RE::AlchemyItem>() : nullptr;
+				float score = 0.0f;
+				if (!SmartMatches(ref, alch, score))
+					continue;
+				out.total += data.first;
+				if (!out.best || score > out.score) {
+					out.best      = alch;
+					out.bestCount = data.first;
+					out.score     = score;
+				}
+			}
+			return out;
+		}
+
+		const char* SmartLabel(const std::string& ref)
+		{
+			return ref == "heal"    ? "healing potion" :
+			       ref == "magicka" ? "magicka potion" :
+			       ref == "stamina" ? "stamina potion" :
+			       ref == "cure"    ? "cure disease potion" : "potion";
+		}
+
 		void InventoryState(RE::TESBoundObject* obj, std::int32_t& outCount, bool& outWorn)
 		{
 			outCount = 0;
@@ -136,6 +232,29 @@ namespace Hotbar
 		return kPageBase;
 	}
 
+	namespace
+	{
+		json SlotToJson(const Slot& s)
+		{
+			json o{
+				{ "kind", s.kind },
+				{ "plugin", s.plugin },
+				{ "localId", s.localId },
+				{ "formId", s.formId },
+			};
+			if (!s.refId.empty()) o["refId"] = s.refId;
+			if (!s.label.empty()) o["label"] = s.label;
+			if (!s.icon.empty())  o["icon"]  = s.icon;
+			if (s.kind == "flyout") {
+				json kids = json::array();
+				for (const auto& c : s.items)
+					kids.push_back(SlotToJson(c));   // children are never flyouts (FromJson)
+				o["items"] = std::move(kids);
+			}
+			return o;
+		}
+	}
+
 	json ToJson(const Config& c)
 	{
 		json pages = json::array();
@@ -145,20 +264,14 @@ namespace Hotbar
 				// An empty slot is written as an empty object, not omitted: the
 				// array index IS the button number, so a compacted array would
 				// silently shift every action left of a hole.
-				if (s.Empty()) {
+				// A flyout is written even when EMPTY of children — an empty
+				// bundle you just made must survive the round-trip, or the
+				// editor's "new flyout" would vanish on the next save.
+				if (s.Empty() && s.kind != "flyout") {
 					slots.push_back(json::object());
 					continue;
 				}
-				json o{
-					{ "kind", s.kind },
-					{ "plugin", s.plugin },
-					{ "localId", s.localId },
-					{ "formId", s.formId },
-				};
-				if (!s.refId.empty()) o["refId"] = s.refId;
-				if (!s.label.empty()) o["label"] = s.label;
-				if (!s.icon.empty())  o["icon"]  = s.icon;
-				slots.push_back(std::move(o));
+				slots.push_back(SlotToJson(s));
 			}
 			pages.push_back(json{
 				{ "enabled", p.enabled },
@@ -183,6 +296,10 @@ namespace Hotbar
 			{ "showLabels", c.showLabels },
 			{ "showCounts", c.showCounts },
 			{ "showEmpty", c.showEmpty },
+			{ "showPages", c.showPages },
+			{ "showOutline", c.showOutline },
+			{ "showGrip", c.showGrip },
+			{ "gripPos", ClampGripPos(c.gripPos) },
 			{ "idleMs", c.idleMs },
 			{ "idleAlpha", c.idleAlpha },
 			{ "uiScale", c.uiScale },
@@ -225,6 +342,15 @@ namespace Hotbar
 		out.showLabels = j.value("showLabels", out.showLabels);
 		out.showCounts = j.value("showCounts", out.showCounts);
 		out.showEmpty = j.value("showEmpty", out.showEmpty);
+		out.showPages = j.value("showPages", out.showPages);
+		out.showOutline = j.value("showOutline", out.showOutline);
+		out.showGrip = j.value("showGrip", out.showGrip);
+		out.gripPos = ClampGripPos(j.value("gripPos", out.gripPos));
+		// Build marker (hd-markers.json: "hotbar-chrome") — the hide-the-chrome
+		// toggles + pinnable grip (Rober, 2026-08-14). Debug level: it fires on
+		// every config parse, but the literal is what the deploy check greps for.
+		logger::debug("hotbar-chrome: pages={} outline={} grip={} gripPos={}",
+			out.showPages, out.showOutline, out.showGrip, out.gripPos);
 		out.idleMs = j.value("idleMs", out.idleMs);
 		out.idleAlpha = std::clamp(j.value("idleAlpha", out.idleAlpha), 0.05f, 1.0f);
 		// Floor 1.0, not 0.8: this slider exists to make the editor BIGGER.
@@ -272,6 +398,27 @@ namespace Hotbar
 								s.refId = js.value("refId", std::string());
 								s.label = js.value("label", std::string());
 								s.icon = js.value("icon", std::string());
+								if (s.kind == "flyout" && js.contains("items") && js["items"].is_array()) {
+									for (const auto& jc : js["items"]) {
+										if (!jc.is_object())
+											continue;
+										Slot c;
+										c.kind = ClampChildKind(jc.value("kind", std::string()));
+										c.plugin = jc.value("plugin", std::string());
+										c.localId = jc.value("localId", 0u);
+										c.formId = jc.value("formId", 0u);
+										c.refId = jc.value("refId", std::string());
+										c.label = jc.value("label", std::string());
+										c.icon = jc.value("icon", std::string());
+										// a child that clamped to nothing (it was a
+										// nested flyout, or garbage) is dropped, not
+										// kept as a dead fan tile
+										if (c.Empty())
+											continue;
+										if (static_cast<int>(s.items.size()) < kMaxFlyItems)
+											s.items.push_back(std::move(c));
+									}
+								}
 							}
 							if (static_cast<int>(p.slots.size()) < kMaxSlots)
 								p.slots.push_back(std::move(s));
@@ -339,30 +486,79 @@ namespace Hotbar
 		out.rows = 1;
 	}
 
-	std::string LiveJson(const Config& c, int page)
+	namespace
 	{
-		json arr = json::array();
-		const int p = std::clamp(page, 0, kPageCount - 1);
-		if (p >= static_cast<int>(c.pages.size()))
-			return json{ { "page", p }, { "slots", arr } }.dump(-1, ' ', false, json::error_handler_t::replace);
+		// remaining/total seconds of the player's active effects, keyed by the
+		// MagicItem that produced them — the spell you cast, the potion you
+		// drank. Built ONCE per LiveJson tick and shared by every row.
+		using FxMap = std::unordered_map<const RE::MagicItem*, std::pair<float, float>>;
 
-		auto*     player = RE::PlayerCharacter::GetSingleton();
-		const int shown  = c.VisibleSlots();
-		const auto& slots = c.pages[p].slots;
-
-		for (int i = 0; i < shown; ++i) {
-			json row{ { "i", i } };
-			if (i >= static_cast<int>(slots.size()) || slots[i].Empty()) {
-				row["kind"] = "";
-				arr.push_back(std::move(row));
-				continue;
+		FxMap ReadActiveFx(RE::PlayerCharacter* player)
+		{
+			FxMap fx;
+			auto* mt = player ? player->AsMagicTarget() : nullptr;
+			auto* list = mt ? mt->GetActiveEffectList() : nullptr;
+			if (!list)
+				return fx;
+			for (auto* ae : *list) {
+				if (!ae || !ae->spell)
+					continue;
+				if (ae->flags.any(RE::ActiveEffect::Flag::kInactive) ||
+					ae->flags.any(RE::ActiveEffect::Flag::kDispelled))
+					continue;
+				// duration 0 = constant/ability — nothing to count down
+				if (ae->duration <= 0.0f)
+					continue;
+				const float rem = ae->duration - ae->elapsedSeconds;
+				if (rem <= 0.0f)
+					continue;
+				auto& e = fx[ae->spell];
+				if (rem > e.first)
+					e = { rem, ae->duration };
 			}
-			const Slot& s = slots[i];
+			return fx;
+		}
+
+		void AttachFx(json& row, const FxMap& fx, const RE::MagicItem* mi)
+		{
+			if (!mi)
+				return;
+			if (auto it = fx.find(mi); it != fx.end()) {
+				// one decimal is plenty — the view redraws each tick anyway
+				row["fxRem"] = static_cast<double>(static_cast<int>(it->second.first * 10)) / 10.0;
+				row["fxDur"] = static_cast<double>(static_cast<int>(it->second.second * 10)) / 10.0;
+			}
+		}
+
+		// One slot's live row. Shared between the bar's buttons and a flyout's
+		// CHILDREN — the fan draws the same icons, counts and grey-outs as the
+		// bar itself, from the same code, so the two can never disagree.
+		void FillLiveRow(json& row, const Slot& s, RE::PlayerCharacter* player,
+			const FxMap& fx, float voiceCd)
+		{
 			row["kind"] = s.kind;
 			if (!s.icon.empty())
 				row["icon"] = s.icon;
 			if (!s.label.empty())
 				row["label"] = s.label;
+
+			// A smart button re-picks its potion every tick, so the face always
+			// names what WOULD be drunk right now — and the count is the whole
+			// pool, not one tier, which is the honesty the button exists for.
+			if (s.kind == "smart") {
+				const auto hit = SmartFind(player, s.refId);
+				row["smart"] = s.refId;
+				row["ok"] = hit.best != nullptr;
+				row["count"] = hit.total;
+				if (hit.best) {
+					if (const char* nm = hit.best->GetName(); nm && *nm)
+						row["name"] = nm;
+					AttachFx(row, fx, hit.best);
+				} else {
+					row["msg"] = std::string("No ") + SmartLabel(s.refId) + " in your bag";
+				}
+				return;
+			}
 
 			// A deck entry or a combo is not a form — it is resolved deck-side,
 			// by the same id the Favorites Shelf pins use. Report it as present
@@ -372,16 +568,14 @@ namespace Hotbar
 			if (s.kind == "entry" || s.kind == "combo") {
 				row["ok"] = true;
 				row["refId"] = s.refId;
-				arr.push_back(std::move(row));
-				continue;
+				return;
 			}
 
 			auto* form = ResolveForm(s);
 			if (!form) {
 				row["ok"] = false;
 				row["msg"] = "Its mod is off, or the form is gone";
-				arr.push_back(std::move(row));
-				continue;
+				return;
 			}
 
 			// The live name always travels, even when a label override exists —
@@ -416,9 +610,17 @@ namespace Hotbar
 					// Same rule both sides, so the ring the bar draws matches the
 					// road the cast actually takes.
 					row["voice"] = sp->GetSpellType() != RE::MagicSystem::SpellType::kSpell;
+					AttachFx(row, fx, sp);
 				} else if (form->As<RE::TESShout>()) {
 					row["voice"] = true;
 				}
+				// One shared voice recovery — the engine has exactly one shout
+				// timer, so every voice button shows the same countdown. A shout
+				// buff's remaining time can't be matched by form (the active
+				// effect belongs to the WORD's spell, not the shout), so the
+				// cooldown is the honest thing voice buttons get.
+				if (row.value("voice", false) && voiceCd > 0.0f)
+					row["cd"] = static_cast<double>(static_cast<int>(voiceCd * 10)) / 10.0;
 			} else if (s.kind == "item") {
 				auto* obj = form->As<RE::TESBoundObject>();
 				std::int32_t count = 0;
@@ -429,13 +631,96 @@ namespace Hotbar
 				row["ok"] = count > 0;
 				if (count <= 0)
 					row["msg"] = "You aren't carrying it";
+				// a drunk potion's regen effect counts down on its own button
+				if (auto* alch = form->As<RE::AlchemyItem>())
+					AttachFx(row, fx, alch);
 			} else {
 				row["ok"] = true;
 			}
+		}
+	}
+
+	std::string LiveJson(const Config& c, int page)
+	{
+		json arr = json::array();
+		const int p = std::clamp(page, 0, kPageCount - 1);
+		if (p >= static_cast<int>(c.pages.size()))
+			return json{ { "page", p }, { "slots", arr } }.dump(-1, ' ', false, json::error_handler_t::replace);
+
+		auto*     player = RE::PlayerCharacter::GetSingleton();
+		const int shown  = c.VisibleSlots();
+		const auto& slots = c.pages[p].slots;
+
+		const FxMap fx = ReadActiveFx(player);
+		float voiceCd = 0.0f;
+		if (player) {
+			if (auto* proc = player->GetActorRuntimeData().currentProcess) {
+				if (proc->high)
+					voiceCd = proc->high->voiceRecoveryTime;
+			}
+		}
+
+		for (int i = 0; i < shown; ++i) {
+			json row{ { "i", i } };
+			const bool present = i < static_cast<int>(slots.size());
+			// An empty FLYOUT still draws (as a bundle with nothing in it) so
+			// the button you just made does not vanish from the bar between
+			// the editor and its first child.
+			if (!present || (slots[i].Empty() && slots[i].kind != "flyout")) {
+				row["kind"] = "";
+				arr.push_back(std::move(row));
+				continue;
+			}
+			const Slot& s = slots[i];
+			if (s.kind == "flyout") {
+				row["kind"] = "flyout";
+				row["ok"] = !s.items.empty();
+				if (!s.icon.empty())
+					row["icon"] = s.icon;
+				if (!s.label.empty())
+					row["label"] = s.label;
+				if (s.items.empty())
+					row["msg"] = "Nothing in this flyout yet";
+				json kids = json::array();
+				for (int k = 0; k < static_cast<int>(s.items.size()); ++k) {
+					json kid{ { "i", k } };
+					FillLiveRow(kid, s.items[k], player, fx, voiceCd);
+					kids.push_back(std::move(kid));
+				}
+				row["items"] = std::move(kids);
+				arr.push_back(std::move(row));
+				continue;
+			}
+			FillLiveRow(row, s, player, fx, voiceCd);
 			arr.push_back(std::move(row));
 		}
 
 		return json{ { "page", p }, { "slots", std::move(arr) } }
+			.dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
+	std::string FireSmart(const std::string& ref)
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player)
+			return json{ { "ok", false }, { "msg", "No save loaded" } }.dump();
+		const auto hit = SmartFind(player, ref);
+		if (!hit.best)
+			return json{ { "ok", false },
+				{ "msg", std::string("No ") + SmartLabel(ref) + " in your bag" } }
+				.dump(-1, ' ', false, json::error_handler_t::replace);
+		auto* eqm = RE::ActorEquipManager::GetSingleton();
+		if (!eqm)
+			return json{ { "ok", false }, { "msg", "The equip manager isn't up" } }.dump();
+		std::string nm = "potion";
+		if (const char* n = hit.best->GetName(); n && *n)
+			nm = n;
+		// EquipObject on an AlchemyItem IS the drink — the same verb the wheel
+		// uses, so whatever the cast path does for the wheel it does here.
+		eqm->EquipObject(player, hit.best);
+		// Build marker (hd-markers.json: "hotbar-smart").
+		logger::info("hotbar-smart: drank '{}' ({} matching potion(s) were carried)", nm, hit.total);
+		return json{ { "ok", true }, { "msg", "Drank " + nm } }
 			.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
 }

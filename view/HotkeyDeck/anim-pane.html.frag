@@ -9,7 +9,7 @@
   <!-- Poses | OStim segmented toggle (v0.17.0). Wired by ostim-pane.js; the
        OStim body (#os-body) is pasted from ostim-pane.html.frag after #an-row. -->
   <div id="an-seg" role="tablist" aria-label="Animation source">
-    <button id="an-seg-poses" class="an-seg-btn active" role="tab">Poses</button>
+    <button id="an-seg-poses" class="an-seg-btn active" role="tab">Animations</button>
     <button id="an-seg-ostim" class="an-seg-btn" role="tab" title="Search & change OStim scenes">OStim</button>
   </div>
   <!-- #an-row wraps the Poses layout so the OStim body can be a sibling of it -->

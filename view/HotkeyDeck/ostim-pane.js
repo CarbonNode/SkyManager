@@ -380,6 +380,47 @@ window.OStimPane = (function () {
     toGame('osGet');   // its osOpen reply resolves the segment (receive 'open')
   }
 
+  /* Give the OStim seg button a small brand icon left of its "OStim" label
+     (Rober, 2026-08-14). The button markup lives in index.html (static), so the
+     icon + its styling are injected from here at init. The seg-row base styles
+     live in the shared app.css; this only adds the OStim-icon-specific rules,
+     scoped to #an-seg-ostim, via a one-time injected <style> so no shared sheet
+     is touched. The logo is a full-colour gradient on transparent — a subtle
+     dark rounded plate helps it read on the dark seg row without recolouring. */
+  function decorateOstimSeg() {
+    const btn = els.segOstim;
+    if (!btn || btn.querySelector('.an-seg-ostim-ico')) return;
+
+    if (!document.getElementById('an-seg-ostim-style')) {
+      const st = document.createElement('style');
+      st.id = 'an-seg-ostim-style';
+      st.textContent =
+        '#an-seg-ostim{display:inline-flex;align-items:center;gap:7px;}' +
+        '#an-seg-ostim .an-seg-ostim-ico{' +
+          'width:18px;height:18px;flex:0 0 18px;border-radius:5px;' +
+          'object-fit:contain;display:block;padding:1px;' +
+          'background:rgba(20,18,14,.55);' +
+          'box-shadow:0 0 0 1px rgba(201,162,75,.22) inset;' +
+        '}' +
+        /* on the active (gold) segment the dark plate would fight the fill — */
+        /* drop it so the logo sits clean on gold. */
+        '#an-seg-ostim.active .an-seg-ostim-ico{' +
+          'background:rgba(255,255,255,.65);' +
+          'box-shadow:0 0 0 1px rgba(20,18,14,.18) inset;' +
+        '}';
+      document.head.appendChild(st);
+    }
+
+    const img = document.createElement('img');
+    img.className = 'an-seg-ostim-ico';
+    img.src = 'icons/custom/seg-ostim.png';   // plain path — Ultralight eats ?v=
+    img.alt = '';
+    img.setAttribute('aria-hidden', 'true');
+    // a broken/missing icon must not leave a dead box beside the label
+    img.addEventListener('error', () => { img.remove(); });
+    btn.insertBefore(img, btn.firstChild);
+  }
+
   function init() {
     if (ui.inited) return true;
     if (!$('os-body')) { console.log('[ostim] #os-body missing — fragment not pasted?'); return false; }
@@ -398,6 +439,7 @@ window.OStimPane = (function () {
     els.toast = $('os-toast');
     els.segPoses = $('an-seg-poses');
     els.segOstim = $('an-seg-ostim');
+    decorateOstimSeg();
 
     // live controls
     const b = (id) => $(id);
@@ -450,11 +492,14 @@ window.OStimPane = (function () {
   }
   function applyOstimGate() {
     const gone = ostimGatedOut();
-    /* Hide the whole Poses|OStim toggle when OStim is off — a lone "Poses"
-       segment button reads as a broken control. The Poses body is #an-row and
-       stays; only the toggle bar + OStim body go. */
+    /* Pre-v2 this hid the whole Poses|OStim toggle when OStim is off — a lone
+       "Poses" segment button read as a broken control. The row now also hosts
+       ★ Favorites + the user's custom tabs (anim-pane v2, segAlwaysOn), so it
+       stays; only the OStim button + body go. The old hide survives for a
+       mismatched older anim-pane.js. */
+    const rowStays = !!(window.AnimPane && typeof AnimPane.segAlwaysOn === 'function' && AnimPane.segAlwaysOn());
     const seg = $('an-seg');
-    if (seg) seg.classList.toggle('hidden', gone);
+    if (seg) seg.classList.toggle('hidden', gone && !rowStays);
     if (els.segOstim) els.segOstim.classList.toggle('hidden', gone);
     if (els.body && gone) els.body.classList.add('hidden');
     if (gone && ui.mode === 'ostim') setMode('poses');   // never land on a hidden segment

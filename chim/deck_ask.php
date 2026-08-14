@@ -56,6 +56,68 @@ function qa($sql, $params = []) {
 $question = trim((string)($_REQUEST['q'] ?? ''));
 $explicit = trim((string)($_REQUEST['npc'] ?? ''));
 $mode     = ($_REQUEST['mode'] ?? 'structured') === 'llm' ? 'llm' : 'structured';
+$rawMode  = (string)($_REQUEST['mode'] ?? '');
+
+// ----------------------------------------------------- profile list mode ----
+// The quick-changer asks for the pickable profile roster. No question needed.
+if ($rawMode === 'profiles') {
+  if (!db()) bad('CHIM database unreachable');
+  $def = q1("SELECT id FROM core_profiles WHERE default_npc='1' ORDER BY id ASC LIMIT 1");
+  reply(['ok' => true, 'kind' => 'profiles',
+         'default_id' => $def ? intval($def['id']) : 0,
+         'profiles' => profiles_list()]);
+}
+
+// ---------------------------------------------------- set-profile (WRITE) ----
+// Reassign an NPC's dialogue profile. Idempotent, single-column UPDATE — it
+// touches ONLY core_npc_master.profile_id (never any other field), exactly what
+// CHIM itself back-fills on first chat. The NPC is addressed by its numeric
+// core id (npc_id, the reliable identity the view already holds as r.npc.id),
+// falling back to an exact npc_name; the target profile must exist.
+if ($rawMode === 'set_profile') {
+  if (!db()) bad('CHIM database unreachable');
+  $npcIdParam  = trim((string)($_REQUEST['npc_id'] ?? ''));
+  $profParam   = trim((string)($_REQUEST['profile'] ?? ''));   // target profile id
+  if ($profParam === '' || !ctype_digit($profParam)) bad('missing/invalid target profile id');
+  $targetProfile = intval($profParam);
+
+  // Resolve the NPC row (id preferred, then exact name from ?npc=).
+  $npcRow = null;
+  if ($npcIdParam !== '' && ctype_digit($npcIdParam)) {
+    $npcRow = q1('SELECT id, npc_name, profile_id FROM core_npc_master WHERE id=$1', [intval($npcIdParam)]);
+  }
+  if (!$npcRow && $explicit !== '') {
+    $npcRow = q1('SELECT id, npc_name, profile_id FROM core_npc_master WHERE npc_name=$1', [$explicit]);
+  }
+  if (!$npcRow) bad('NPC not found — she must be a registered CHIM NPC (talked to once in-game)');
+
+  // The target profile must exist (never write a dangling FK).
+  $prof = q1('SELECT id, label, default_npc FROM core_profiles WHERE id=$1', [$targetProfile]);
+  if (!$prof) bad('that profile no longer exists');
+
+  $already = ($npcRow['profile_id'] !== null && $npcRow['profile_id'] !== '' &&
+              intval($npcRow['profile_id']) === $targetProfile);
+  if (!$already) {
+    $upd = @pg_query_params(db(),
+      'UPDATE core_npc_master SET profile_id=$1 WHERE id=$2',
+      [$targetProfile, intval($npcRow['id'])]);
+    if (!$upd) bad('the profile change could not be saved');
+  }
+
+  // Answer with the fresh READ facet so the modal updates in place, and echo
+  // the NPC so the view can key it to the open card.
+  $facet = profile_facet_for(intval($npcRow['id']));
+  reply([
+    'ok'      => true,
+    'kind'    => 'profile_set',
+    'npc'     => ['id' => intval($npcRow['id']), 'name' => $npcRow['npc_name']],
+    'changed' => !$already,
+    'message' => $already
+      ? ($npcRow['npc_name'] . ' is already on ' . ($prof['label'] ?: ('Profile ' . $prof['id'])))
+      : ($npcRow['npc_name'] . ' now uses ' . ($prof['label'] ?: ('Profile ' . $prof['id']))),
+    'profile' => $facet,
+  ]);
+}
 
 if ($question === '' && $explicit === '') bad('empty question');
 
@@ -539,6 +601,10 @@ $FACETS = [
   'pregnancy'     => ['pregnant','pregnancy','baby','child','father','due','expecting','carrying','heir'],
   'memories'      => ['remember','remembers','memory','memories','met','meet','first time','first met','first meet','history','how long'],
   'speech'        => ['say','said','says','talk','talked','mention','mentioned','opinion','think','thinks'],
+  // Which LLM is actually driving her dialogue (the profile → connector → model
+  // chain). Deliberately focusable so "which model is she on?" opens it.
+  'profile'       => ['profile','model','llm','connector','which ai','which llm','dialogue model',
+                      'brain','running on','powered by','deepseek','claude','gemini','mistral','grok'],
 ];
 $focus = [];
 foreach ($FACETS as $facet => $words) {
@@ -632,6 +698,20 @@ if ($chron) {
       empty($facets['pregnancy']['pregnant'])) $focus[] = 'chronicle';
 }
 
+// ---- profile: which LLM profile / model is driving her dialogue -----------
+// Always attached when she is a registered NPC (has a core row) — a "which
+// model is she on?" question focuses it; otherwise it folds like any facet.
+$profFacet = profile_facet_for($best['core_id'] ?? 0,
+                               $core['dynamic_profile'] ?? null,
+                               $core['lock_profile'] ?? null);
+if ($profFacet) {
+  $facets['profile'] = $profFacet;
+  if (!in_array('profile', $focus, true) &&
+      preg_match('/\b(profile|model|llm|connector|which ai|which llm|brain|running on|powered by)\b/', $qlower)) {
+    $focus[] = 'profile';
+  }
+}
+
 $out = [
   'ok'         => true,
   'npc'        => [
@@ -687,6 +767,82 @@ function chim_llm_config() {
   if ($b) return ['url' => 'https://openrouter.ai/api/v1/chat/completions',
                   'key' => $b['api_key'], 'model' => 'deepseek/deepseek-chat-v3.1'];
   return null;
+}
+
+// ------------------------------------------------------- profile helpers ----
+// "Which LLM profile is this NPC using?" The mapping is:
+//   core_npc_master.profile_id  → core_profiles.id  (per-NPC assignment; the FK
+//                                 is ON DELETE SET NULL, so it can be empty)
+//   when profile_id is empty CHIM falls back to the DEFAULT NPC profile —
+//   core_profiles WHERE default_npc='1' ORDER BY id ASC (chat_helper_functions
+//   .php::[RECHAT_SELECT], and it back-fills the NPC's row on first chat).
+//   The profile's *dialogue* model is its llm_primary_id connector:
+//   core_llm_connector(model, provider, api_badge_id) → core_api_badge(label).
+// dynamic_profile / lock_profile are the per-NPC flags CHIM stores alongside.
+//
+// $coreId   = core_npc_master.id (0/null when the NPC is nsfw-only / unregistered)
+// $dynFlag  = core_npc_master.dynamic_profile  (already read into $core)
+// $lockFlag = core_npc_master.lock_profile
+// Returns the READ facet, or null when there is no registered NPC to speak of.
+function profile_facet_for($coreId, $dynFlag = null, $lockFlag = null) {
+  if (!$coreId) return null;
+
+  // The default NPC profile — the fallback, and the "is this the default?" ruler.
+  $def = q1("SELECT id FROM core_profiles WHERE default_npc='1' ORDER BY id ASC LIMIT 1");
+  $defaultId = $def ? intval($def['id']) : 0;
+
+  $npc = q1('SELECT profile_id FROM core_npc_master WHERE id=$1', [$coreId]);
+  $assigned = ($npc && $npc['profile_id'] !== null && $npc['profile_id'] !== '')
+                ? intval($npc['profile_id']) : null;
+  $usesDefault = ($assigned === null);
+  $effectiveId = $usesDefault ? $defaultId : $assigned;
+  if (!$effectiveId) return null;   // no assignment and no default — nothing honest to say
+
+  $p = q1("SELECT p.id, p.label, p.slot, p.default_npc,
+                  c.model, c.provider, c.label AS connector_label, b.label AS badge
+           FROM core_profiles p
+           LEFT JOIN core_llm_connector c ON c.id = p.llm_primary_id
+           LEFT JOIN core_api_badge b ON b.id = c.api_badge_id
+           WHERE p.id=$1", [$effectiveId]);
+  if (!$p) return null;
+
+  return [
+    'profile_id'   => intval($p['id']),
+    'profile_name' => $p['label'] ?: ('Profile ' . $p['id']),
+    'slot'         => $p['slot'] !== null && $p['slot'] !== '' ? intval($p['slot']) : null,
+    'is_default'   => (($p['default_npc'] ?? '') === '1') || $effectiveId === $defaultId,
+    'unset'        => $usesDefault,   // no explicit assignment — running on the default
+    'model'        => $p['model'] ?: null,
+    'connector'    => $p['connector_label'] ?: null,
+    'provider'     => $p['provider'] ?: null,
+    'badge'        => $p['badge'] ?: null,
+    'dynamic'      => intval($dynFlag) === 1,
+    'locked'       => intval($lockFlag) === 1,
+  ];
+}
+
+// The pickable roster for the quick-changer: every profile, its primary model
+// and whether it is the default. Ordered slot-first (the numbered profiles),
+// then by id.
+function profiles_list() {
+  $rows = qa("SELECT p.id, p.label, p.slot, p.default_npc,
+                     c.model, c.provider, c.label AS connector_label
+              FROM core_profiles p
+              LEFT JOIN core_llm_connector c ON c.id = p.llm_primary_id
+              ORDER BY (p.slot IS NULL), p.slot ASC, p.id ASC");
+  $out = [];
+  foreach ($rows as $r) {
+    $out[] = [
+      'id'         => intval($r['id']),
+      'label'      => $r['label'] ?: ('Profile ' . $r['id']),
+      'slot'       => $r['slot'] !== null && $r['slot'] !== '' ? intval($r['slot']) : null,
+      'is_default' => ($r['default_npc'] ?? '') === '1',
+      'model'      => $r['model'] ?: null,
+      'provider'   => $r['provider'] ?: null,
+      'connector'  => $r['connector_label'] ?: null,
+    ];
+  }
+  return $out;
 }
 
 // ------------------------------------------------------ whereabouts helper --

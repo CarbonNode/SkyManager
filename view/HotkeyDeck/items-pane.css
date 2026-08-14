@@ -200,6 +200,82 @@
   font-weight: 650;
 }
 
+/* ---------------------------------------------- secondary plugin filter -- */
+
+/* A row under the pills: the "⛃ Filter by mod" toggle and, when open, a small
+   typeable box that fuzzy-narrows the current results by owning plugin. Lives in
+   .ix-barwrap, so it inherits the bar's calm spacing; centred like the pills. */
+.ix-plugfilter {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.ix-plugfilter.ix-pf-on { display: flex; }
+
+.ix-pf-toggle {
+  background: #17171e;
+  border: 1px solid #33302a;
+  border-radius: 999px;
+  color: #b6ad99;
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 8px 15px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.ix-pf-toggle:hover { background: #20202a; border-color: #4a4638; color: #e2dbca; }
+.ix-pf-toggle.ix-pf-toggle-on {
+  background: rgba(201, 162, 75, .16);
+  border-color: rgba(201, 162, 75, .55);
+  color: #ecd9a8;
+  font-weight: 650;
+}
+
+.ix-pf-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #121218;
+  border: 1px solid #3d3a33;
+  border-radius: 999px;
+  padding: 5px 12px 5px 14px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+  max-width: 100%;
+}
+.ix-pf-box:focus-within {
+  border-color: rgba(201, 162, 75, .55);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .10);
+}
+.ix-pf-glyph { font-size: 15px; color: #9a917d; flex-shrink: 0; line-height: 1; }
+#ix-pf-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #efe9da;
+  font-size: 15px;
+  padding: 6px 2px;
+  min-width: 200px;
+  max-width: 42ch;
+}
+#ix-pf-input::placeholder { color: #6d675a; }
+.ix-pf-x {
+  cursor: pointer;
+  font-weight: 700;
+  color: #d8bd85;
+  padding: 0 2px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: color 120ms ease, transform 120ms ease;
+}
+.ix-pf-x:hover { color: #f2e2b0; transform: scale(1.2); }
+.ix-pf-x.hidden { display: none; }
+
+/* the on-page filtered count clause in the Items section header */
+.ix-sect-filt { color: #cdbf94 !important; }
+
 /* --------------------------------------------------------------- body -- */
 
 #ix-body {
@@ -586,6 +662,81 @@
 .ix-pay:hover { background: rgba(201, 162, 75, .3); }
 .ix-pay:disabled { opacity: .45; cursor: default; }
 
+/* ------------------------------------------------------- pagination foot -- */
+
+/* Under the results, in the pane's flex flow (below #ix-body, above the
+   absolutely-positioned toast + price sheet) — it never overlaps the scroll
+   area, and the toast/sheet/lightbox sit on higher z so they win when shown.
+   Created dynamically by the pane (no index.html edit), so it starts hidden.
+   Buttons are big for couch use. */
+.ix-foot {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 4px 4px;
+  border-top: 1px solid #26251f;
+  margin-top: 2px;
+}
+.ix-foot.ix-foot-on { display: flex; }
+
+.ix-foot-nav {
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  color: #cfc8b8;
+  font-size: 15px;
+  font-weight: 650;
+  padding: 11px 20px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.ix-foot-nav:hover:not(:disabled) { background: #26262f; border-color: #55503f; color: #efe9da; }
+.ix-foot-nav:active:not(:disabled) { background: #17171d; }
+.ix-foot-nav:disabled { opacity: .38; cursor: default; }
+
+.ix-foot-count {
+  font-size: 14px;
+  color: #9a917d;
+  white-space: nowrap;
+}
+.ix-foot-count b { color: #d9d2bd; font-weight: 700; }
+
+/* the per-page segmented control — the deck's segmented idiom, never a bare
+   dropdown; sits at the right, pushed there by an auto margin */
+.ix-foot-per {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ix-foot-per-lbl { font-size: 13px; color: #6d675a; white-space: nowrap; }
+.ix-foot-size {
+  background: #17171e;
+  border: 1px solid #33302a;
+  color: #b6ad99;
+  font-size: 14px;
+  font-weight: 600;
+  min-width: 44px;
+  padding: 9px 12px;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+/* joined segments: round the outer ends, share the inner borders */
+.ix-foot-size:first-of-type { border-radius: 9px 0 0 9px; }
+.ix-foot-size:last-of-type { border-radius: 0 9px 9px 0; }
+.ix-foot-size + .ix-foot-size { border-left: none; }
+.ix-foot-size:hover { background: #20202a; border-color: #4a4638; color: #e2dbca; }
+.ix-foot-size.ix-foot-size-on {
+  background: rgba(201, 162, 75, .16);
+  border-color: rgba(201, 162, 75, .55);
+  color: #ecd9a8;
+  font-weight: 700;
+}
+
 /* --------------------------------------------------------------- toast -- */
 
 .ix-toast {
@@ -652,6 +803,67 @@
   .ix-take { padding: 9px 12px; font-size: 13px; }
   #ix-plug-chip { max-width: 34%; font-size: 13px; }
   .ix-pill { font-size: 12.5px; padding: 7px 11px; }
+  /* the mod filter box must never push the barwrap wider than the deck */
+  .ix-plugfilter { gap: 8px; }
+  .ix-pf-toggle { font-size: 12.5px; padding: 7px 11px; }
+  #ix-pf-input { min-width: 130px; max-width: 26ch; font-size: 14px; }
+  /* footer wraps to two lines on narrow: the per-page control drops below the
+     nav row (margin-left:auto still pushes it right on its own line) */
+  .ix-foot { gap: 10px; padding: 10px 2px 2px; }
+  .ix-foot-nav { padding: 10px 14px; font-size: 14px; }
+  .ix-foot-count { font-size: 13px; width: 100%; order: 3; text-align: center; }
+  .ix-foot-per { margin-left: 0; width: 100%; order: 4; justify-content: center; }
+  .ix-foot-size { min-width: 40px; padding: 8px 10px; font-size: 13px; }
+}
+
+/* ── loading visibility (2026-08-14) ──────────────────────────────────────
+   Rober's play-test: "the finder items DID render, but it wasn't obvious it
+   was loading anything." Two cues, both dropped the moment art lands:
+   (1) a shimmer on the plate while its render is in flight, so the emoji
+   placeholder reads as loading not final; (2) a visible top-of-results chip
+   naming the count. Reuses the ix-shimmer keyframes the skeletons already
+   ride, so the two loading states share one visual language. */
+
+/* the plate shimmers UNDER the emoji glyph while its render is expected. The
+   emoji stays legible on top (dimmed a touch) so the row is never blank. */
+.ix-glyph.ix-loading {
+  background: linear-gradient(90deg, #1b1b22 25%, #26262f 50%, #1b1b22 75%);
+  background-size: 200% 100%;
+  animation: ix-shimmer 1.3s infinite linear;
+  border-color: #34333d;
+  color: #c9c2ae;
+}
+
+/* the pane-level progress chip — top of the results, not a corner whisper, so
+   it reads at 2560×1440 from the couch. pointer-events:none so it can never
+   block the bar or a row. */
+.ix-render-chip {
+  position: absolute; top: 180px; right: 26px;   /* top is re-measured in JS */
+  display: none; align-items: center; gap: 9px;
+  padding: 8px 16px; border-radius: 999px;
+  background: rgba(20, 19, 24, .96); border: 1px solid rgba(201, 162, 75, .38);
+  color: #e0d4b2; font-size: 13.5px; font-weight: 600; letter-spacing: .2px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .4);
+  z-index: 30; pointer-events: none;
+}
+.ix-render-chip.ix-on { display: inline-flex; }
+.ix-render-spin {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid #4a4438; border-top-color: #e6c982;
+  animation: ix-render-spin .8s linear infinite;
+}
+@keyframes ix-render-spin { to { transform: rotate(360deg); } }
+
+/* the one-time first-open hint, inline above the first item rows */
+.ix-firsthint {
+  font-size: 13.5px;
+  color: #cdbf94;
+  background: rgba(201, 162, 75, .10);
+  border: 1px solid rgba(201, 162, 75, .3);
+  border-radius: 9px;
+  padding: 9px 14px;
+  margin: 2px 0 4px;
+  line-height: 1.4;
 }
 
 /* ── lightbox affordance + the Finder mode switch (2026-08-14) ─────────── */

@@ -271,6 +271,18 @@ function clampScale(v) {
   return Math.max(SCALE_MIN, Math.min(SCALE_FILL_MAX, Number(v.toFixed(2))));
 }
 
+/* The deck's paint factor, for body-mounted popups that wear
+   scale(var(--ui-scale)) themselves: offsetWidth/Height are PRE-transform
+   layout px, so viewport clamps must multiply by this (the #fd-ctx-menu /
+   hd-shelf idiom, shared). */
+function deckPaintScale() {
+  try {
+    const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-scale'));
+    if (isFinite(v) && v > 0) return v;
+  } catch (e) {}
+  return 1;
+}
+
 function applyScale() {
   const s = clampScale(state.settings.uiScale);
   state.settings.uiScale = s;
@@ -808,7 +820,7 @@ function render() {
                 ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
                 ui.tab === 'rooms' || ui.tab === 'time' || ui.tab === 'loot' ||
                 ui.tab === 'anim' || ui.tab === 'keys' || ui.tab === 'items' || ui.tab === 'npcs' ||
-                ui.tab === 'sheet' ||
+                ui.tab === 'mounts' || ui.tab === 'sheet' ||
                 ui.tab === 'wardrobe' || ui.tab === 'faces' || ui.tab === 'recent') ? ui.tab : 'deck';
   const deck = pane === 'deck';
   window.__hdActiveTab = pane;   // panes (followers/domains) key their re-renders off this
@@ -827,6 +839,7 @@ function render() {
   $('kc-pane').classList.toggle('hidden', pane !== 'keys');
   $('ix-pane').classList.toggle('hidden', pane !== 'items');
   $('nx-pane').classList.toggle('hidden', pane !== 'npcs');
+  $('mt-pane').classList.toggle('hidden', pane !== 'mounts');
   $('ps-pane').classList.toggle('hidden', pane !== 'sheet');
   $('fin-pane').classList.toggle('hidden', pane !== 'finances');
   $('wd-pane').classList.toggle('hidden', pane !== 'wardrobe');
@@ -869,7 +882,7 @@ function render() {
  *  control belongs beside that tab's other settings, not in a second card
  *  floating above it, and those panes never flip ui.edit anyway.
  */
-const TAB_SCALE_CARD_TABS = ['quests', 'notes', 'numpad', 'recent', 'time', 'loot', 'anim', 'items', 'npcs'];
+const TAB_SCALE_CARD_TABS = ['quests', 'notes', 'numpad', 'recent', 'time', 'loot', 'anim', 'items', 'npcs', 'mounts'];
 
 function renderTabScaleCard(pane) {
   const card = $('tab-scale-card');
@@ -1050,7 +1063,8 @@ function openActionPicker(anchor) {
   document.body.append(box);
 
   const r = anchor.getBoundingClientRect();
-  const w = box.offsetWidth, hgt = box.offsetHeight;
+  const sc = deckPaintScale();   // the box self-scales; clamp the PAINTED size
+  const w = box.offsetWidth * sc, hgt = box.offsetHeight * sc;
   box.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + 'px';
   // above the button when there is no room below — the add row sits at the
   // bottom of the pane, so below is usually exactly where there is none
@@ -1283,6 +1297,12 @@ function renderHints(pane) {
       '<span>Reset returns the pose</span><span>F7 / Esc close</span>';
     return;
   }
+  if (pane === 'mounts') {
+    h.innerHTML = '<span>Type to search the stable</span><span>Enter = ride the top hit</span>' +
+      '<span>drag the big picture to turn it</span><span>＋ add the beast you look at · ✨ add a summon</span>' +
+      '<span>F7 / Esc close</span>';
+    return;
+  }
   if (pane !== 'quests') { h.innerHTML = defaultHints; return; }
   h.innerHTML = ui.qDetail
     ? '<span>Click a stage to fire it</span><span>Esc back to list</span><span>Tab switch pane</span><span>F7 close</span>'
@@ -1337,6 +1357,7 @@ const SYS_TABS = [
      C++ hdShowTab deep-opens, HDScale and the harnesses all keep working
      untouched. */
   { tab: 'finder',     label: 'Finder',     img: 'icons/custom/hm-finder.png',     title: 'Find any item or anyone the load order ships — take, bring, go to, spawn' },
+  { tab: 'mounts',     label: 'Mounts',     img: 'icons/custom/hm-mounts.png',     title: 'Your stable — summon, call and ride anything you can sit on' },
   { tab: 'sheet',      label: 'Character',  img: 'icons/custom/hm-sheet.png',      title: 'Your character sheet - stats, effects, story' },
   { tab: 'anim',       label: 'Animations', img: 'icons/custom/hm-anim.png',       title: 'Apply a pose / animation to an NPC or yourself', requires: 'zap' },
   { tab: 'finances',   label: 'Finances',   img: 'icons/custom/hm-finances.png',   title: 'Your ledger, properties and market' },
@@ -1445,6 +1466,37 @@ function hintsPrefs() {
   if (!hn || typeof hn !== 'object' || Array.isArray(hn)) hn = state.shelf.hints = {};
   return hn;
 }
+
+/* Face-fit prefs, in the SAME shelf blob and for the SAME reason as its
+   siblings above (state.shelf.facefit): the portrait crop store is pruned
+   against portraits/, so a head-render framing saved there would silently
+   vanish — the shelf slice travels as a RAW json object C++ keeps untouched.
+   Shape: { k?: number, s?: number, files: { "<icons/npcs path>": {z,x,y} } }
+   — k/s are the in-game DEFAULT framing dials (hd-facefit.js tunables),
+   files are per-NPC hand framings saved from the followers lightbox.
+   facefit-prefs */
+function facefitPrefs() {
+  if (!state.shelf || typeof state.shelf !== 'object' || Array.isArray(state.shelf)) state.shelf = {};
+  let ff = state.shelf.facefit;
+  if (!ff || typeof ff !== 'object' || Array.isArray(ff)) ff = state.shelf.facefit = {};
+  if (!ff.files || typeof ff.files !== 'object' || Array.isArray(ff.files)) ff.files = {};
+  return ff;
+}
+
+/* Push the saved prefs into hd-facefit.js. Config-load time and after every
+   edit — cheap and idempotent; guarded because standalone harnesses load
+   panes without the module. */
+function applyFacefitPrefs() {
+  if (!window.HDFaceFit) return;
+  const ff = facefitPrefs();
+  if (isFinite(ff.k) || isFinite(ff.s))
+    window.HDFaceFit.tune(Number(ff.k), Number(ff.s));
+  Object.keys(ff.files).forEach(function (f) {
+    const c = ff.files[f];
+    if (c && isFinite(c.z)) window.HDFaceFit.setOverride(f, c);
+  });
+}
+window.hdApplyFacefitPrefs = applyFacefitPrefs;
 
 function bumpTabUse(t) {
   if (FINDER_TABS.indexOf(t) !== -1) t = 'finder';   // both rosters feed ONE bar slot
@@ -1613,9 +1665,13 @@ function renderMoreMenu(keepFocus) {
   const btn = $('tabs').querySelector('[data-act="more"]');
   if (btn) {
     const r = btn.getBoundingClientRect();
-    const w = 240;
+    const sc = deckPaintScale();   // the menu self-scales; clamp the PAINTED size
+    const w = 240 * sc;
     menu.style.top = Math.round(r.bottom + 5) + 'px';
     menu.style.left = Math.round(Math.max(6, Math.min(r.left, window.innerWidth - w - 6))) + 'px';
+    const hPainted = menu.offsetHeight * sc;
+    if (r.bottom + 5 + hPainted > window.innerHeight - 6)
+      menu.style.top = Math.round(Math.max(6, window.innerHeight - 6 - hPainted)) + 'px';
   }
   const s = menu.querySelector('.more-search');
   if (s && !keepFocus) setTimeout(() => { s.focus(); }, 10);
@@ -1686,6 +1742,18 @@ function paintTabsRow(n, compactMore) {
   $('tabs').innerHTML = html;
 }
 
+/* Memoized tab-fit. The shed-until-it-fits loop below writes #tabs.innerHTML and
+   reads scrollWidth on each iteration — a FORCED synchronous reflow per step. A
+   4090 hides it, but renderTabs() runs on every open AND every keystroke on the
+   Hotkeys tab AND every edit toggle, and on a weak CPU a ~20-step reflow loop is
+   a real slice of the "slow to load" the user reports. The fitted count is a PURE
+   function of (clientWidth, tab style, --ui-scale, the ordered set of visible tab
+   ids) — the active tab and the More-open state change only colour, never
+   measured width (.tab.active sets no font-weight/padding; verified in app.css),
+   and edit mode adds tools only to the SUB row. So we cache the result under that
+   signature and skip the measuring loop when it is unchanged, still painting the
+   row once (its CONTENT — active highlight, More face — can differ). */
+let tabFitCache = { sig: null, n: -1, compact: false };
 function renderTabs() {
   /* Dynamic fit (Rober, 2026-08-07: "more dynamic to fit more tabs"): start
      with every system on the bar and shed the least-used, one at a time,
@@ -1695,13 +1763,28 @@ function renderTabs() {
      previous split rather than guessing. */
   const order = sysOrder();
   const onHk = isHotkeyTab();
-  let n = order.length;
-  paintTabsRow(n);
   const el = $('tabs');
-  if (el && el.clientWidth) {
-    while (n > 0 && el.scrollWidth > el.clientWidth + 1) { n--; paintTabsRow(n); }
-    // even the minimum row can pinch at the 640px floor — compact More to ⋯
-    if (n === 0 && el.scrollWidth > el.clientWidth + 1) paintTabsRow(0, true);
+  const cw = el ? el.clientWidth : 0;
+  let n = order.length;
+  let compact = false;
+  /* Signature of everything that can change the fitted width. sysOrder()'s ids
+     in order capture both the count and WHICH tabs (label widths differ). */
+  const sig = cw + '|' + (tabbarPrefs().style === 'icons' ? 'i' : 'l') + '|'
+    + (state.settings.uiScale || 1) + '|' + order.map((t) => t.tab).join(',');
+
+  if (cw && tabFitCache.sig === sig && tabFitCache.n >= 0) {
+    /* Unchanged fit — reuse the count, paint once, no reflow loop. */
+    n = tabFitCache.n;
+    compact = tabFitCache.compact;
+    paintTabsRow(n, compact);
+  } else {
+    paintTabsRow(n);
+    if (cw) {
+      while (n > 0 && el.scrollWidth > el.clientWidth + 1) { n--; paintTabsRow(n); }
+      // even the minimum row can pinch at the 640px floor — compact More to ⋯
+      if (n === 0 && el.scrollWidth > el.clientWidth + 1) { compact = true; paintTabsRow(0, true); }
+      tabFitCache = { sig: sig, n: n, compact: compact };   // remember only a real measurement
+    }
   }
   renderMoreMenu();
 
@@ -1920,6 +2003,160 @@ function hkNeeds(e) {
   return det[req.flag] ? '' : req.label;
 }
 
+/* ---- keyed list reconciliation ------------------------------------------ *
+ * The Hotkeys list re-renders on every keystroke while searching and on every
+ * Hotkeys-tab open. Assigning `list.innerHTML` wholesale destroys and recreates
+ * every row — and, crucially, every icon <img> — so Ultralight re-decodes every
+ * visible icon each time (the "slow to load" the user reports). Instead we keep
+ * the rows keyed by their stable entry id and MORPH each surviving row toward
+ * its new markup in place: an <img> whose src is unchanged is never touched, so
+ * it is never re-decoded; only genuinely-changed text/attributes/children are
+ * written. Departed rows are removed, new rows inserted at the right position.
+ *
+ * The final DOM is byte-equivalent to what `list.innerHTML = html` would have
+ * produced for the SAME desired markup (proven by renderlist-diff.test.mjs),
+ * so nothing downstream can tell the difference: all list interaction handlers
+ * are delegated ONCE onto #list (onListClick/Input/Change + the drag handlers,
+ * see their wiring near init — they read `e.target.closest('.row').dataset.id`),
+ * every cross-render lookup re-queries `[data-id=…]` fresh, and drag hit-testing
+ * walks the live `.row.edit` nodes at drag time. Reusing nodes only makes those
+ * MORE stable (focus/scroll survive a reorder), never less.
+ */
+
+/* One reusable scratch container to parse a row's HTML string into nodes
+   without touching the live list or paying a fresh element per row. */
+let _rowScratch = null;
+function parseRowNode(html) {
+  if (!_rowScratch) _rowScratch = document.createElement('div');
+  _rowScratch.innerHTML = html;
+  const node = _rowScratch.firstElementChild;
+  if (node) _rowScratch.removeChild(node);
+  _rowScratch.textContent = '';   // drop any stray text nodes
+  return node;
+}
+
+/* Sync element attributes from `to` onto `from` (add/change/remove). A focused
+   text control keeps its live value: we never write the `value` attribute (nor
+   the .value property) of the element the user is currently typing into, so a
+   re-render triggered mid-edit (e.g. a drag-reorder) can't yank the caret or
+   reset half-typed text. The wholesale-innerHTML path reset it to the attribute;
+   the live entry.name/.desc are kept current by onListInput, so the attribute
+   we'd sync equals what's already there anyway — skipping it is strictly safer
+   and never diverges. */
+function syncAttrs(from, to) {
+  const active = document.activeElement;
+  const isFocusedField = from === active &&
+    (from.tagName === 'INPUT' || from.tagName === 'TEXTAREA' || from.tagName === 'SELECT');
+  const fa = from.attributes, ta = to.attributes;
+  // remove attributes gone from `to`
+  for (let i = fa.length - 1; i >= 0; i--) {
+    const name = fa[i].name;
+    if (!to.hasAttribute(name)) {
+      if (isFocusedField && name === 'value') continue;
+      from.removeAttribute(name);
+    }
+  }
+  // add / update attributes present in `to`
+  for (let i = 0; i < ta.length; i++) {
+    const name = ta[i].name, val = ta[i].value;
+    if (isFocusedField && name === 'value') continue;
+    if (from.getAttribute(name) !== val) from.setAttribute(name, val);
+  }
+}
+
+/* Morph the live node `from` toward the freshly-parsed node `to`, in place.
+   Returns the node that now occupies `from`'s slot (usually `from`, but the
+   replacement `to` when the two are structurally incompatible). Same-tag
+   elements are reused and recursed (so an unchanged <img> object survives
+   untouched — zero re-decode); a text node syncs only its text; a tag or
+   node-type mismatch replaces. */
+function morphNode(from, to) {
+  if (from === to) return from;
+  const fT = from.nodeType, tT = to.nodeType;
+  // text (or comment) node: reuse, sync value only
+  if (fT === 3 || fT === 8) {
+    if (tT === fT) {
+      if (from.nodeValue !== to.nodeValue) from.nodeValue = to.nodeValue;
+      return from;
+    }
+    from.parentNode.replaceChild(to, from);
+    return to;
+  }
+  // element mismatch (different tag, or to is not an element) → replace
+  if (tT !== 1 || fT !== 1 || from.tagName !== to.tagName) {
+    from.parentNode.replaceChild(to, from);
+    return to;
+  }
+  syncAttrs(from, to);
+  morphChildren(from, to);
+  return from;
+}
+
+/* Reconcile `from`'s child list to match `to`'s, by position. Children are not
+   keyed (a row's internal structure is positional and small); we morph the
+   overlapping prefix pairwise, append any extra new children, and drop any
+   surplus old ones. */
+function morphChildren(from, to) {
+  let f = from.firstChild;
+  let t = to.firstChild;
+  while (f && t) {
+    const nf = f.nextSibling;
+    const nt = t.nextSibling;
+    morphNode(f, t);
+    // If morphNode replaced f, `t` was consumed (moved into the DOM); else `t`
+    // is still detached and its content was copied onto the reused `f`. Either
+    // way we advance both via the siblings captured before the morph.
+    f = nf;
+    t = nt;
+  }
+  // surplus live children → remove
+  while (f) { const nf = f.nextSibling; from.removeChild(f); f = nf; }
+  // extra new children → append (they are still in `to`; move them over)
+  while (t) { const nt = t.nextSibling; from.appendChild(t); t = nt; }
+}
+
+/* The keyed list diff. `rows` is an ordered array of { id, html }. Reuses a
+   live row whose data-id matches (morphing it toward the new html), inserts new
+   rows at the right position, and removes rows no longer present. */
+function reconcileList(listEl, rows) {
+  // index the surviving rows by key, up front, so a reorder that moves a row
+  // earlier still finds it (walking + moving in one pass would lose forward refs).
+  const existing = new Map();
+  for (let c = listEl.firstElementChild; c; c = c.nextElementSibling) {
+    const id = c.getAttribute('data-id');
+    if (id != null && !existing.has(id)) existing.set(id, c);
+  }
+  // `cursor` is the live node currently sitting at the target slot. After each
+  // placed row, cursor is the node that should follow it. insertBefore(node,
+  // cursor) both inserts a new node and MOVES an existing one into place, so a
+  // single left-to-right pass reorders correctly.
+  let cursor = listEl.firstChild;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const found = existing.get(row.id);
+    let node;
+    if (found) {
+      existing.delete(row.id);
+      const fresh = parseRowNode(row.html);
+      // Morph the reused node toward the new markup — keeps its <img> untouched
+      // when the src is unchanged (no re-decode). A row root is always a <div>,
+      // so morphNode returns the SAME node; the `!== found` guard is only for
+      // completeness should the root tag ever change.
+      node = fresh ? morphNode(found, fresh) : found;
+    } else {
+      node = parseRowNode(row.html);
+      if (!node) continue;
+    }
+    if (node === cursor) {
+      cursor = cursor.nextSibling;   // already in place — step over it
+    } else {
+      listEl.insertBefore(node, cursor);   // insert new / move existing into place
+    }
+  }
+  // anything still in `existing` departed this render — remove it
+  existing.forEach((n) => { if (n.parentNode === listEl) listEl.removeChild(n); });
+}
+
 function renderList() {
   const list = $('list');
   const q = ui.search.trim();
@@ -1932,8 +2169,12 @@ function renderList() {
      an icon — names then line up, and an icon-less deck pays no dead space. */
   const anyIcon = items.some((e) => !!hkIconSrc(e.icon));
 
-  let html = '';
+  /* Build the desired rows as { id, html } and reconcile — keyed by entry id so
+     each surviving row is morphed in place (its <img> untouched when unchanged)
+     instead of the whole list being torn down and rebuilt. */
+  const rows = [];
   items.forEach((e, i) => {
+    let rowHtml = '';
     const slot = i < 9 ? String(i + 1) : (i === 9 ? '0' : '·');
     const isAction = e.device === 'action';
     /* Built-in vs yours, at a glance: device:"action" entries run hard-coded
@@ -1958,7 +2199,7 @@ function renderList() {
       : (e.code ? chordLabel(e.mods, e.label || '?') : 'Set key…');
     const chipCls = isAction ? 'keychip action' : isVKey ? 'keychip vkey' : (e.code ? 'keychip' : 'keychip unset');
     if (!ui.edit) {
-      html +=
+      rowHtml =
         '<div class="row' + (i === ui.sel ? ' selected' : '') + (isShipped ? ' hk-native' : '') + '" data-id="' + esc(e.id) + '">' +
         '<span class="slot">' + slot + '</span>' +
         hkIconHtml(e, anyIcon) +
@@ -1977,7 +2218,7 @@ function renderList() {
         catSel += '<option value="' + esc(c) + '"' + ((e.category || '') === c ? ' selected' : '') + '>' + esc(c) + '</option>';
       });
       catSel += '</select>';
-      html +=
+      rowHtml =
         '<div class="row edit' + (isShipped ? ' hk-native' : '') + (needs ? ' hk-unavail' : '') + '" data-id="' + esc(e.id) + '">' +
         '<span class="drag-h" title="Drag to reorder">⋮⋮</span>' +
         '<span class="slot">' + slot + '</span>' +
@@ -2001,8 +2242,9 @@ function renderList() {
         '</div>' +
         '</div>';
     }
+    rows.push({ id: String(e.id), html: rowHtml });
   });
-  list.innerHTML = html;
+  reconcileList(list, rows);
 
   const selRow = list.children[ui.sel];
   if (selRow && !ui.edit) selRow.scrollIntoView({ block: 'nearest' });
@@ -2147,6 +2389,91 @@ window.hdItemSource = function (p) {
   renderItemSource();
 };
 
+/* Where the user dragged the banner, as top-left FRACTIONS of the viewport —
+   resolution-independent, and stored in the shelf blob (the tabbarPrefs
+   pattern: a raw-JSON slice C++ round-trips untouched, so it persists without
+   a DLL change). Empty object = never dragged = the default bottom-center. */
+function itemSourcePrefs() {
+  if (!state.shelf || typeof state.shelf !== 'object' || Array.isArray(state.shelf)) state.shelf = {};
+  let p = state.shelf.itemSource;
+  if (!p || typeof p !== 'object' || Array.isArray(p)) p = state.shelf.itemSource = {};
+  return p;
+}
+
+/* Apply the remembered spot (or the CSS default). Custom position switches to
+   explicit left/top with the scale alone — the default's translateX centering
+   would fight the drag math. The painted box is clamped back on screen, so a
+   spot saved at 2560x1440 still lands sanely on a smaller viewport. */
+function applyItemSourcePos(el) {
+  const p = itemSourcePrefs();
+  if (typeof p.fx !== 'number' || typeof p.fy !== 'number') {
+    el.style.left = ''; el.style.top = ''; el.style.bottom = '';
+    el.style.transform = ''; el.style.transformOrigin = '';
+    return;
+  }
+  el.style.transform = 'scale(var(--ui-scale, 1))';
+  el.style.transformOrigin = 'top left';
+  el.style.bottom = 'auto';
+  el.style.left = Math.round(p.fx * window.innerWidth) + 'px';
+  el.style.top = Math.round(p.fy * window.innerHeight) + 'px';
+  const r = el.getBoundingClientRect();   // painted (post-transform) box
+  const x = Math.max(4, Math.min(r.left, window.innerWidth - r.width - 4));
+  const y = Math.max(4, Math.min(r.top, window.innerHeight - r.height - 4));
+  if (x !== r.left) el.style.left = Math.round(x) + 'px';
+  if (y !== r.top) el.style.top = Math.round(y) + 'px';
+}
+
+/* Drag-to-move, wired ONCE on the static #item-source node (innerHTML rewrites
+   only replace children). 4px threshold so the ✕ stays a click; double-click
+   returns it to the default spot. */
+function wireItemSourceDrag(el) {
+  if (el.__isDragWired) return;
+  el.__isDragWired = true;
+  let down = null;   // { px, py, left, top, moved }
+  el.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || e.target.closest('.is-close')) return;
+    const r = el.getBoundingClientRect();
+    down = { px: e.clientX, py: e.clientY, left: r.left, top: r.top, moved: false };
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', function (e) {
+    if (!down) return;
+    const dx = e.clientX - down.px, dy = e.clientY - down.py;
+    if (!down.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+    if (!down.moved) {
+      down.moved = true;
+      el.classList.add('is-dragging');
+      /* first real move: leave the centered default for explicit coords */
+      el.style.transform = 'scale(var(--ui-scale, 1))';
+      el.style.transformOrigin = 'top left';
+      el.style.bottom = 'auto';
+    }
+    el.style.left = Math.round(down.left + dx) + 'px';
+    el.style.top = Math.round(down.top + dy) + 'px';
+  });
+  document.addEventListener('mouseup', function () {
+    if (!down) return;
+    const moved = down.moved;
+    down = null;
+    el.classList.remove('is-dragging');
+    if (!moved) return;
+    const r = el.getBoundingClientRect();
+    const p = itemSourcePrefs();
+    p.fx = Math.max(0, Math.min(1, r.left / window.innerWidth));
+    p.fy = Math.max(0, Math.min(1, r.top / window.innerHeight));
+    applyItemSourcePos(el);   // clamp the drop back on screen
+    saveSoon();
+  });
+  el.addEventListener('dblclick', function (e) {
+    if (e.target.closest('.is-close')) return;
+    const p = itemSourcePrefs();
+    delete p.fx; delete p.fy;
+    applyItemSourcePos(el);
+    saveSoon();
+    toast('Item banner back to its usual spot');
+  });
+}
+
 function renderItemSource() {
   const el = $('item-source');
   if (!el) return;
@@ -2163,7 +2490,10 @@ function renderItemSource() {
   if (extra.length) html += '<div class="is-extra">' + extra.join(' · ') + '</div>';
   html += '</div><button class="is-close" title="Dismiss">✕</button>';
   el.innerHTML = html;
+  el.title = 'Drag to move — the deck remembers the spot · double-click to reset';
   el.classList.remove('hidden');
+  applyItemSourcePos(el);
+  wireItemSourceDrag(el);
   el.querySelector('.is-close').onclick = function () {
     ui.itemSource = null;
     renderItemSource();
@@ -2560,6 +2890,7 @@ function onKeyDown(e) {
 
   if (ui.tab === 'numpad' || ui.tab === 'notes' || ui.tab === 'quests' ||
       ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
+      ui.tab === 'items' || ui.tab === 'npcs' ||   // Finder rosters own their own search Enter (fire the top hit) — never the deck's quick-fire
       ui.tab === 'wardrobe' || ui.tab === 'faces') return;  // hotkey-list keys below apply to deck tabs only
 
   const inTextInput = document.activeElement &&
@@ -2656,6 +2987,7 @@ function setTab(t) {
   if (prev === 'keys' && window.KeysPane) KeysPane.onHide();
   if (prev === 'items' && window.ItemsPane) ItemsPane.onHide();
   if (prev === 'npcs' && window.NpcsPane) NpcsPane.onHide();
+  if (prev === 'mounts' && window.MountsPane) MountsPane.onHide();
   if (prev === 'sheet' && window.CharSheetPane) CharSheetPane.onHide();
   if (prev === 'anim' && window.AnimPane) AnimPane.onHide();
   if (prev === 'finances' && window.FinancesPane) FinancesPane.onHide();
@@ -2715,6 +3047,10 @@ function setTab(t) {
   }
   if (t === 'npcs') {
     if (window.NpcsPane) NpcsPane.onShow();   // first look builds the C++ NPC index
+    return;
+  }
+  if (t === 'mounts') {
+    if (window.MountsPane) MountsPane.onShow();   // re-reads the stable + tops up body renders
     return;
   }
   if (t === 'sheet') {
@@ -3535,6 +3871,12 @@ window.hdOpen = function (cfg) {
   // half-typed rename, selection and open icon picker — and would bypass setTab(),
   // leaving a pane's context menu painted over a different pane.
   const wasVisible = ui.visible;
+  /* HDPerf: this call IS the open signal (it sets body.open) — C++'s open-diag
+     stops one beat earlier at "show + focus", so everything from here on is the
+     unmeasured blind spot where "slow to load" actually lives on weak hardware.
+     Mark the phase boundaries; the full timeline is flushed once, after first
+     paint, and only for a real open (not a live data-refresh). */
+  if (window.HDPerf) HDPerf.mark('open:enter');
   try {
     if (typeof cfg === 'string') cfg = JSON.parse(cfg);
     if (cfg && typeof cfg === 'object') {
@@ -3553,19 +3895,26 @@ window.hdOpen = function (cfg) {
          deck was closed). HDShelf.onOpen() below normalises the shape. */
       if (cfg.shelf && typeof cfg.shelf === 'object' && !Array.isArray(cfg.shelf))
         state.shelf = cfg.shelf;
+      applyFacefitPrefs();   // head-render framing defaults + per-NPC overrides
       /* wheel slice — same wholesale replace, same reason (the file is the
          truth on open). HDWheel's slice() normalises whatever shape arrives. */
       if (cfg.wheel && typeof cfg.wheel === 'object' && !Array.isArray(cfg.wheel))
         state.wheel = cfg.wheel;
+      /* suppressedSeeds — the view OWNS this list (deleting a seeded entry
+         appends to it) but never loaded it on open, so the first save of a
+         session shipped an empty list and every suppressed seed resurrected
+         on the next launch. Load it like entries; the delete flow appends. */
+      if (Array.isArray(cfg.suppressedSeeds))
+        state.suppressedSeeds = cfg.suppressedSeeds.filter(function (s) { return typeof s === 'string'; });
     }
   } catch (err) { toGame('hdLog', 'hdOpen parse error: ' + err); }
+  if (window.HDPerf) HDPerf.mark('open:parsed');   // config JSON.parse + state ingest done
   applyScale();  // apply saved menu scale immediately on open
   /* Same beat, for the per-tab sizes: hdOpen is also re-pushed as a LIVE
      refresh, and Object.assign above replaces settings.tabScales wholesale, so
      the CSS variables have to be re-derived from whatever just arrived or a
      refresh would silently paint every tab back at 100%. */
   if (window.HDScale) HDScale.load(state.settings.tabScales);
-  applyPanelSize();
   ui.visible = true;
   if (!wasVisible) {
     ui.openedAt = Date.now();   // hdShowTab's toggle-close must not eat the opening keystroke
@@ -3613,12 +3962,46 @@ window.hdOpen = function (cfg) {
     if (ui.tab === 'home' && window.HomePane) HomePane.onShow();
   }
   document.body.classList.add('open');
-  syncNarrow();   // the panel measures 0 while closed — re-measure now it's visible
+  /* applyPanelSize runs HERE (once), not earlier: the panel is display:none until
+     body.open lands, so a syncNarrow() before it measures 0 and no-ops. Placed
+     after body.open the panel is visible, so applyPanelSize's own syncNarrow()
+     does the single real width measure — and it still runs before render() below,
+     so renderTabs() fits the bar to the correct --panel-w on the first paint.
+     This removed the second, redundant syncNarrow() that used to sit here (two
+     forced offsetWidth reflows per open, doubled on every live hdOpen re-push). */
+  applyPanelSize();
   render();
   /* after body.open lands — the shelf is display:none until then, and its
      onOpen warms the providers its pins need (the spells slice is on-demand) */
   if (window.HDShelf) HDShelf.onOpen(!wasVisible);
+  /* All synchronous open work (config ingest → scale → render active tab →
+     shelf) is done on THIS return; input handlers were armed once at init, so
+     the deck is interactive here. The browser paints one frame later — a double
+     rAF lands after that paint, which is the honest "you can see it" moment. */
+  if (window.HDPerf) HDPerf.mark('open:rendered');
   if (!wasVisible) {
+    if (window.HDPerf) {
+      var _tab = ui.tab;
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          try {
+            HDPerf.mark('open:painted');
+            /* Mirror C++'s open-diag format so a pasted log is one timeline.
+               parse   = config JSON.parse + state ingest
+               render  = active-tab render + tab-fit + shelf (the synchronous
+                         work whose cost a 4090 hides but a weak CPU shows)
+               →paint  = enter → first real frame on screen
+               tab=…    = which tab rendered (a heavy pane's onShow shows up
+                          here, so we learn if e.g. Followers is the slow open) */
+            HDPerf.log('open-diag(view): parse ' + HDPerf.fmt(HDPerf.between('open:enter', 'open:parsed'))
+              + ' ms | render ' + HDPerf.fmt(HDPerf.between('open:parsed', 'open:rendered'))
+              + ' ms | interactive ' + HDPerf.fmt(HDPerf.between('open:enter', 'open:rendered'))
+              + ' ms | →paint ' + HDPerf.fmt(HDPerf.between('open:enter', 'open:painted'))
+              + ' ms | tab=' + _tab + ' entries=' + (state.entries ? state.entries.length : 0));
+          } catch (e) {}
+        });
+      });
+    }
     setTimeout(focusSearch, 30);
     /* First-run Fill hint (fill-hint) — after layout settles, so fitScale can
        measure the real panel box. One-time, gated on a big screen + never-
@@ -4072,6 +4455,64 @@ function init() {
   document.addEventListener('contextmenu', (e) => e.preventDefault());
 
   toGame('hdLog', 'HotkeyDeck view booted');
+
+  /* ---- STARTUP timing (HDPerf), staged-boot aware ----
+     Under staged boot, `boot→core-ready` is what the deck being openable actually
+     costs — the SYNCHRONOUS core parse (hd-scale/omni/shelf/wheel/home + this file)
+     that Ultralight finishes before DOMContentLoaded, and the once-per-session
+     warm-up the first F7 press waits on. It is ALSO what C++'s "view load to DOM
+     ready" now measures (the deferred set is injected after DOM-ready and no longer
+     blocks it) — so that C++ line and this one describe the same, smaller, core
+     phase. The DEFERRED phase (the other ~2.4 MB) is logged on its own by HDBoot
+     when the tail finishes; the two lines together are the full boot picture.
+     `init` is this function's own cost. Wrapped: a timing bug must never wedge boot. */
+  if (window.HDPerf) {
+    try {
+      var _tk = HDPerf.ticks();
+      var _end = HDPerf.now() - HDPerf.t0();
+      HDPerf.__coreReadyMs = _end;   // HDBoot's completion line folds this in
+      var _initMs = (function () {
+        // init() started at DOMContentLoaded; the gap from the last core parse tick
+        // ('app.js+core-ready') to now IS the DCL→init span.
+        var last = _tk.length ? _tk[_tk.length - 1][1] : 0;
+        return _end - last;
+      })();
+      var _seg = function (name) {
+        for (var i = 0; i < _tk.length; i++) if (_tk[i][0] === name) {
+          var prev = i > 0 ? _tk[i - 1][1] : 0;
+          return HDPerf.fmt(_tk[i][1] - prev);
+        }
+        return '?';
+      };
+      HDPerf.log('open-diag(startup): boot→core-ready ' + HDPerf.fmt(_end) + ' ms'
+        + ' | parse: core-infra ' + _seg('core-infra')
+        + ' + app.js ' + _seg('app.js+core-ready')
+        + ' | init ' + HDPerf.fmt(_initMs) + ' ms'
+        + ' | deferred loading in background…');
+    } catch (e) { toGame('hdLog', 'open-diag(startup): timing error ' + e); }
+  }
+
+  /* ---- kick off staged boot ----
+     The core deck is fully interactive at this point (input handlers armed above,
+     hookInto targets all wired). Load the deferred pane set now, in the background,
+     via HDBoot — within a beat the running view is byte-identical to the old
+     single-stage boot. Feature-detected: if hd-boot.js failed to parse (a broken
+     install), window.HDBoot is absent and the panes are simply the ones that were
+     already loaded — the deck still runs on core. HDBoot.start() is idempotent. */
+  if (window.HDBoot && typeof HDBoot.start === 'function') {
+    // Optional: fold HDBoot's completion stats into one final startup line.
+    window.__hdBootDone = function (s) {
+      try {
+        HDPerf.log('open-diag(startup): full-boot ' + HDPerf.fmt((HDPerf.__coreReadyMs || 0) + (s.ms || 0))
+          + ' ms (core ' + HDPerf.fmt(HDPerf.__coreReadyMs || 0) + ' + deferred ' + HDPerf.fmt(s.ms || 0)
+          + ' ms, ' + s.deferred + ' scripts) | buffered-replays ' + s.replays
+          + (s.failed ? ' | FELL BACK to eager' : '') + (s.orphans && s.orphans.length ? ' | ORPHAN STUBS ' + s.orphans.join(',') : ''));
+      } catch (e) {}
+    };
+    HDBoot.start();
+  } else {
+    toGame('hdLog', 'open-diag(startup): HDBoot absent — running on core scripts only (no staged boot)');
+  }
 
   if (DEV) {
     /* mocked fd* bridge so the Followers tab is browsable in the dev preview */

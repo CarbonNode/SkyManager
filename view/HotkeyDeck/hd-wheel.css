@@ -1085,3 +1085,177 @@ body.whl-open #panel { visibility: hidden; }
   #hd-wheel .whl-wname { max-width: 240px; font-size: 19px; }
   #hd-wheel .whl-btn { min-width: 42px; height: 42px; padding: 0 12px; font-size: 16px; }
 }
+
+/* ---- flyout bundles ---------------------------------------------------- */
+/* A wedge that holds a fan of up to 9 pins. Closed: the wedge wears a count
+   chip and the ⧉ glyph. Open: the ring dims and the children fan out around
+   the wedge on their own little arc (positions from renderFly in JS). */
+
+#hd-wheel .whl-flyn {
+  position: absolute;
+  right: calc(2px * var(--whl-scale));
+  bottom: calc(2px * var(--whl-scale));
+  min-width: calc(26px * var(--whl-scale));
+  height: calc(26px * var(--whl-scale));
+  padding: 0 calc(4px * var(--whl-scale));
+  border-radius: calc(13px * var(--whl-scale));
+  background: linear-gradient(160deg, #3a3324, #241f14);
+  border: 1px solid rgba(226, 190, 110, 0.65);
+  color: #f2e0b0;
+  font-size: calc(15px * var(--whl-scale));
+  font-weight: 700;
+  line-height: calc(24px * var(--whl-scale));
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  z-index: 2;
+}
+/* the count chip must survive `has-art` (it is not the glyph) — no rule needed,
+   it is a sibling of .whl-img and stacks above it by z-index */
+
+/* the open wedge stays lit while everything else steps back */
+#hd-wheel.has-fly .whl-slot:not(.fly-open),
+#hd-wheel.has-fly .whl-spokes,
+#hd-wheel.has-fly .whl-ring { opacity: 0.22; transition: opacity 140ms ease; }
+#hd-wheel.has-fly .whl-hub { opacity: 0.35; transition: opacity 140ms ease; }
+#hd-wheel .whl-slot.fly-open .whl-tile {
+  border-color: rgba(240, 208, 130, 0.95);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 0 0 4px rgba(226, 190, 110, 0.14),
+    0 0 30px rgba(226, 190, 110, 0.4),
+    0 8px 22px rgba(0, 0, 0, 0.6);
+}
+
+#hd-wheel .whl-fly { position: absolute; left: 0; top: 0; z-index: 5; }
+#hd-wheel .whl-flych {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(96px * var(--whl-scale));
+  margin-left: calc(-48px * var(--whl-scale));
+  margin-top: calc(-44px * var(--whl-scale));
+  text-align: center;
+  cursor: pointer;
+  animation: whl-fly-in 150ms cubic-bezier(.2, .7, .3, 1);
+  transition: transform 120ms cubic-bezier(.2, .7, .3, 1);
+}
+@keyframes whl-fly-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+#hd-wheel .whl-flych-tile {
+  position: relative;
+  width: calc(80px * var(--whl-scale));
+  height: calc(80px * var(--whl-scale));
+  margin: 0 auto;
+  border-radius: 50%;
+  background: linear-gradient(160deg, #262c35 0%, #181d24 55%, #11141a 100%);
+  border: 2px solid rgba(198, 160, 84, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 8px 22px rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transition: border-color 120ms ease, box-shadow 140ms ease;
+}
+#hd-wheel .whl-flych .whl-glyph { font-size: calc(30px * var(--whl-scale)); }
+#hd-wheel .whl-flych.has-art .whl-glyph { display: none; }
+#hd-wheel .whl-flych:hover { transform: scale(1.1); }
+#hd-wheel .whl-flych:hover .whl-flych-tile {
+  border-color: rgba(240, 208, 130, 0.95);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 0 24px rgba(226, 190, 110, 0.38),
+    0 8px 22px rgba(0, 0, 0, 0.65);
+}
+#hd-wheel .whl-flych-n {
+  position: absolute;
+  left: calc(2px * var(--whl-scale));
+  top: calc(2px * var(--whl-scale));
+  width: calc(22px * var(--whl-scale));
+  height: calc(22px * var(--whl-scale));
+  border-radius: 50%;
+  background: rgba(14, 16, 20, 0.85);
+  border: 1px solid rgba(226, 190, 110, 0.55);
+  color: #e9d6a3;
+  font-size: calc(13px * var(--whl-scale));
+  font-weight: 700;
+  line-height: calc(20px * var(--whl-scale));
+  z-index: 2;
+}
+#hd-wheel .whl-flych-name {
+  margin-top: calc(7px * var(--whl-scale));
+  font-size: calc(14px * var(--whl-scale));
+  line-height: 1.2;
+  font-weight: 600;
+  color: #e4dac0;
+  text-shadow: 0 2px 5px rgba(0, 0, 0, 0.9);
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ---- the flyout editor sheet ------------------------------------------ */
+/* Children rows reuse the picker's art/name classes; these are the frame. */
+
+#hd-wheel .whl-fed-head {
+  margin: 18px 2px 8px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  color: #cdb075;
+}
+#hd-wheel .whl-fed-sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: .2px;
+  text-transform: none;
+  color: #99a0ab;
+}
+#hd-wheel .whl-fed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+#hd-wheel .whl-fed-n {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(14, 16, 20, 0.85);
+  border: 1px solid rgba(226, 190, 110, 0.5);
+  color: #e9d6a3;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 24px;
+  text-align: center;
+}
+#hd-wheel .whl-fed .whl-res-txt { flex: 1 1 auto; min-width: 0; }
+#hd-wheel .whl-fed-b { min-width: 40px; height: 40px; padding: 0 10px; flex: 0 0 auto; }
+#hd-wheel .whl-fed-none {
+  padding: 14px 12px;
+  border-radius: 10px;
+  border: 1px dashed rgba(198, 160, 84, 0.35);
+  color: #8d949e;
+  font-size: 14.5px;
+}
+#hd-wheel .whl-fed-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin: 10px 0 4px;
+}
+/* the flyedit sheet holds two lists — cap the results so the children stay
+   in reach while you search */
+#hd-wheel .whl-results-short { max-height: 320px; }

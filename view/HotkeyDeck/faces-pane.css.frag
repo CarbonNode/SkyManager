@@ -93,3 +93,10 @@
   min-width: 150px;
 }
 .fc-newcat:focus, .fc-rename-input:focus { border-color: rgba(240,214,140,.55); }
+
+/* auto-rendered preset thumbnails (2026-08-14): the mannequin render is a
+   whole transparent-bg figure; HDFaceFit lays the <img> out so the tile
+   frames the HEAD, and .pd-face clips the rest (Finder-tile discipline). */
+.pd-face { position: relative; overflow: hidden; }
+.pd-face-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.pd-autorender { border-color: rgba(240, 214, 140, .5); }

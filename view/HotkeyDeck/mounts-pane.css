@@ -1,0 +1,806 @@
+/* ===================================================================== *
+ *  Mounts tab — the stable (mounts-pane.js).  The WoW mount-journal shape
+ *  Rober asked for on 2026-08-14: a searchable list on the left, one BIG
+ *  drag-to-turn body render on the right.  Shares the Finder sheets'
+ *  visual language (same bar, same row rhythm, same chips).  Own file on
+ *  purpose — the sync_view_frags truncation trap.
+ * ===================================================================== */
+
+#mt-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 22px 14px;
+  gap: 14px;
+  position: relative;   /* toast + picker anchor to the pane */
+}
+#mt-pane.hidden { display: none; }
+
+/* ------------------------------------------------------------- header -- */
+
+.mt-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mt-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #e8e2d4;
+  letter-spacing: .3px;
+  white-space: nowrap;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+#mt-count-chip {
+  font-size: 13px;
+  font-weight: 500;
+  color: #9a917d;
+  white-space: nowrap;
+}
+
+.mt-head-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+#mt-riding-chip {
+  font-size: 14px;
+  font-weight: 700;
+  color: #cfe3b8;
+  background: #1c241a;
+  border: 1px solid #46543c;
+  border-radius: 9px;
+  padding: 8px 14px;
+  white-space: nowrap;
+}
+
+#mt-mrf-note {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ecd9a8;
+  background: #201f18;
+  border: 1px solid #55503f;
+  border-radius: 9px;
+  padding: 8px 14px;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------- the two columns -- */
+
+.mt-cols {
+  display: flex;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+  flex-wrap: wrap;          /* below ~700px panel width the preview wraps under */
+  align-content: stretch;
+}
+
+/* The bases are chosen so the two columns fit side by side above ~760px of
+   panel and STACK at the deck's 640px floor (left on top, preview under it)
+   — clipping the preview off the right edge is the failure mode this
+   prevents (seen in the 2026-08-14 overlap pass). */
+.mt-left {
+  flex: 1 1 330px;
+  min-width: 300px;
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mt-right {
+  flex: 1.35 1 390px;
+  min-width: 320px;
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ------------------------------------------------------------- search -- */
+
+.mt-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #14141a;
+  border: 1px solid #3d3a33;
+  border-radius: 11px;
+  padding: 10px 14px;
+}
+.mt-bar:focus-within { border-color: #6a624b; }
+.mt-bar-glyph { font-size: 16px; color: #8d8571; flex: 0 0 auto; }
+/* Both search inputs (the stable bar #mt-search AND the picker bar
+   #mt-picker-search) live inside a .mt-bar — style the INPUT by descendant, not
+   by a single id, so the picker's "Search your spellbook…" field is a clean,
+   full-width, ≥12px typeable bar rather than a raw default control cramped
+   against the ⌕ glyph (the 2026-08-14 picker CSS bug). */
+.mt-bar input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  background: none;
+  border: none;
+  outline: none;
+  color: #efe9da;
+  font-size: 16px;
+  line-height: 1.3;
+  font-family: inherit;
+  padding: 0;
+  margin: 0;
+}
+.mt-bar input::placeholder { color: #6d6656; }
+
+#mt-pills { display: flex; gap: 8px; flex-wrap: wrap; }
+.mt-pill {
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 999px;
+  color: #b9b19d;
+  font-size: 13.5px;
+  padding: 7px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.mt-pill:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.mt-pill-on { background: #2c2a20; border-color: #7a6f4d; color: #f0e6c8; }
+
+/* --------------------------------------------------------------- list -- */
+
+#mt-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.mt-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #16161c;
+  border: 1px solid #33312a;
+  border-radius: 11px;
+  padding: 9px 12px;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.mt-row:hover { background: #1e1e26; border-color: #4a463a; }
+.mt-row.mt-sel { background: #262218; border-color: #8a7c52; }
+
+.mt-plate {
+  width: 52px;
+  height: 52px;
+  border-radius: 10px;
+  background: #101015 radial-gradient(circle at 50% 38%, #23222b 0%, #101015 78%);
+  border: 1px solid #3a372e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  color: #7d7563;
+  flex: 0 0 auto;
+  overflow: hidden;
+  position: relative;
+}
+.mt-plate img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.mt-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.mt-name {
+  font-size: 15.5px;
+  font-weight: 650;
+  color: #ece5d4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.mt-name mark { background: none; color: #ffd982; }
+.mt-fav-star { color: #e8c86a; font-size: 13px; flex: 0 0 auto; }
+.mt-meta {
+  font-size: 12.5px;
+  color: #96907e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.mt-chip {
+  font-size: 12px;
+  border-radius: 7px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.mt-chip-spell  { color: #b9a8e0; background: #1d1926; border: 1px solid #453a5c; }
+.mt-chip-beast  { color: #c8b993; background: #221f16; border: 1px solid #4f4834; }
+.mt-chip-warn   { color: #e0b8a8; background: #261b19; border: 1px solid #5c4139; }
+.mt-chip-riding { color: #cfe3b8; background: #1c241a; border: 1px solid #46543c; }
+
+/* ------------------------------------------------------------ add row -- */
+
+.mt-addrow { display: flex; gap: 10px; flex-wrap: wrap; }
+.mt-btn {
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 10px;
+  color: #cfc8b8;
+  font-size: 14px;
+  padding: 10px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.mt-btn:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.mt-btn:active { background: #17171d; }
+.mt-btn:disabled { opacity: .45; cursor: default; }
+.mt-btn-primary {
+  background: #2c2a1c;
+  border-color: #7a6f4d;
+  color: #f0e6c8;
+  font-weight: 700;
+}
+.mt-btn-primary:hover { background: #37341f; border-color: #97885c; }
+.mt-btn-danger-armed { background: #3a1f1c; border-color: #8a4a40; color: #f0c9c0; }
+
+/* ------------------------------------------------------------ preview -- */
+
+.mt-detail {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: #14141a;
+  border: 1px solid #33312a;
+  border-radius: 14px;
+  padding: 16px 18px;
+}
+
+.mt-d-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.mt-d-name { font-size: 22px; font-weight: 750; color: #f0e9d8; }
+.mt-d-sub  { font-size: 13.5px; color: #96907e; }
+
+.mt-stage {
+  flex: 1;
+  min-height: 180px;
+  border-radius: 12px;
+  background: #0e0e13 radial-gradient(ellipse at 50% 62%, #1f1e27 0%, #0e0e13 75%);
+  border: 1px solid #2e2c25;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  user-select: none;
+}
+.mt-stage.mt-dragging { cursor: grabbing; }
+.mt-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  transform-origin: 50% 50%;   /* JS re-anchors this to the cursor on wheel-zoom */
+  will-change: transform;
+}
+.mt-stage-glyph { font-size: 84px; color: #4d4839; }
+.mt-stage-hint {
+  position: absolute;
+  bottom: 10px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: #8d8571;
+  pointer-events: none;
+  text-shadow: 0 1px 3px #000;
+}
+.mt-stage-note {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: #c9ba8d;
+  pointer-events: none;
+  text-shadow: 0 1px 3px #000;
+}
+
+.mt-status { font-size: 13.5px; color: #b3ab96; min-height: 18px; }
+.mt-status.mt-status-warn { color: #e0b8a8; }
+
+.mt-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.mt-edit-row { display: flex; gap: 8px; align-items: center; }
+.mt-edit-row input {
+  flex: 1;
+  min-width: 0;
+  background: #101015;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  color: #efe9da;
+  font-size: 14px;
+  font-family: inherit;
+  padding: 9px 12px;
+  outline: none;
+}
+.mt-edit-row input:focus { border-color: #6a624b; }
+
+/* --------------------------------------------------- empty + skeletons -- */
+
+#mt-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 24px;
+}
+#mt-empty.hidden { display: none; }
+.mt-hero-glyph { font-size: 56px; }
+.mt-empty-title { font-size: 19px; font-weight: 700; color: #e4ddc9; }
+.mt-empty-sub { font-size: 14.5px; color: #a29a86; max-width: 560px; line-height: 1.5; }
+
+.mt-skel { pointer-events: none; }
+.mt-skel-box {
+  background: linear-gradient(100deg, #1b1b22 40%, #24242c 50%, #1b1b22 60%);
+  background-size: 200% 100%;
+  animation: mt-shimmer 1.2s linear infinite;
+  border-radius: 8px;
+  display: inline-block;
+}
+.mt-skel .mt-plate { border: none; }
+.mt-skel-w1 { width: 55%; height: 15px; }
+.mt-skel-w2 { width: 35%; height: 12px; }
+@keyframes mt-shimmer { to { background-position: -200% 0; } }
+
+/* ------------------------------------------------------- spell picker -- */
+
+#mt-picker {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 10, 14, .82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  border-radius: inherit;
+}
+#mt-picker.hidden { display: none; }
+
+.mt-picker-card {
+  width: min(680px, 92%);
+  max-height: 86%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: #17171d;
+  border: 1px solid #55503f;
+  border-radius: 14px;
+  padding: 18px 20px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .6);
+}
+.mt-picker-title { font-size: 18px; font-weight: 750; color: #ece5d4; display: flex; align-items: baseline; gap: 10px; }
+.mt-picker-title small { font-size: 13px; font-weight: 500; color: #96907e; }
+.mt-picker-x { margin-left: auto; cursor: pointer; color: #96907e; font-size: 18px; padding: 2px 8px; border-radius: 8px; }
+.mt-picker-x:hover { color: #efe9da; background: #26262f; }
+
+#mt-picker-list {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mt-sp-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #14141a;
+  border: 1px solid #2e2c25;
+  border-radius: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+.mt-sp-row:hover { background: #1e1e26; border-color: #4a463a; }
+.mt-sp-row.mt-sel { background: #262218; border-color: #8a7c52; }
+.mt-sp-glyph { font-size: 20px; flex: 0 0 28px; text-align: center; }
+.mt-sp-mid { flex: 1; min-width: 0; }
+.mt-sp-name { font-size: 15px; font-weight: 650; color: #ece5d4; display: flex; align-items: baseline; min-width: 0; }
+.mt-sp-name > .mt-sp-nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.mt-sp-name mark { background: none; color: #ffd982; }
+.mt-sp-sub { font-size: 12.5px; color: #96907e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-sp-np { font-size: 12.5px; color: #b9a8e0; white-space: nowrap; flex: 0 0 auto; }
+.mt-picker-empty { text-align: center; color: #96907e; font-size: 14px; padding: 22px 8px; }
+
+/* --------------------------------------------------------------- toast -- */
+
+.mt-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%) translateY(16px);
+  background: #23231b;
+  border: 1px solid #6a624b;
+  color: #efe9da;
+  font-size: 14.5px;
+  border-radius: 10px;
+  padding: 10px 18px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 50;
+  max-width: 86%;
+  text-align: center;
+}
+.mt-toast-show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.mt-toast-err { border-color: #8a4a40; background: #2a1d1a; }
+
+/* ============================================================ categories == *
+ * Rober, 2026-08-14: "a way for me to add and move mounts across categories
+ * easily." A category is a freeform label (like the Domains tab): filter chips
+ * in the pills row + section headers in the list, both drop targets. The KIND
+ * chip stays visible regardless of category — two orthogonal axes. */
+
+.mt-pill-div {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: #3d3a33;
+}
+.mt-pill-cat { display: inline-flex; align-items: center; gap: 7px; }
+.mt-pill-n {
+  font-size: 12px;
+  font-weight: 700;
+  color: #efe9da;
+  background: #0f0f14;
+  border-radius: 999px;
+  padding: 1px 7px;
+  min-width: 18px;
+  text-align: center;
+}
+.mt-pill-cat.mt-pill-on .mt-pill-n { background: #1a180f; }
+.mt-pill-new { border-style: dashed; color: #cbb98a; }
+.mt-pill-new:hover { color: #f0e6c8; border-color: #97885c; }
+/* a chip lit as an active drop target while a mount is dragged over it */
+.mt-pill-drop {
+  background: #2c3320 !important;
+  border-color: #8fae5e !important;
+  color: #eaf3d6 !important;
+  box-shadow: 0 0 0 2px rgba(143, 174, 94, .35);
+}
+
+/* inline category name editor (replaces the pills row while active) */
+.mt-catedit { display: flex; gap: 8px; align-items: center; width: 100%; }
+.mt-catedit input {
+  flex: 1;
+  min-width: 0;
+  background: #101015;
+  border: 1px solid #6a624b;
+  border-radius: 9px;
+  color: #efe9da;
+  font-size: 14.5px;
+  font-family: inherit;
+  padding: 9px 12px;
+  outline: none;
+}
+.mt-catedit input:focus { border-color: #97885c; }
+
+/* the per-mount category chip on a row (kind chip is always shown alongside) */
+.mt-chip-cat {
+  color: #cbb98a;
+  background: #201d13;
+  border: 1px solid #4a4026;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* the ⋯ move-to-category button on a row. Always visible (couch play has no
+   hover), just dim until the row is hovered — right-click and drag also file a
+   mount, but a visible affordance is the discoverable one. */
+.mt-row-cat {
+  flex: 0 0 auto;
+  align-self: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #7d7563;
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px 11px;
+  cursor: pointer;
+  opacity: .4;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+.mt-row:hover .mt-row-cat { opacity: 1; }
+.mt-row-cat:hover { background: #26262f; color: #efe9da; border-color: #55503f; }
+.mt-dragging-row { opacity: .5; }
+
+/* section headers (grouped view) */
+.mt-sec { margin-top: 4px; }
+.mt-sec:first-child { margin-top: 0; }
+.mt-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  background: #191921;
+  border: 1px solid #33312a;
+  border-radius: 9px;
+  color: #c9c1ad;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.mt-sec-head:hover { background: #20202a; border-color: #4a463a; }
+.mt-sec-chev { font-size: 12px; color: #8d8571; flex: 0 0 auto; }
+.mt-sec-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-sec-n {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #efe9da;
+  background: #0f0f14;
+  border-radius: 999px;
+  padding: 1px 8px;
+  min-width: 20px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+.mt-sec-gear {
+  flex: 0 0 auto;
+  font-size: 14px;
+  color: #8d8571;
+  padding: 2px 6px;
+  border-radius: 7px;
+}
+.mt-sec-gear:hover { color: #f0e6c8; background: #2c2a20; }
+.mt-sec-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 4px 8px;
+  border-left: 2px solid #2a281f;
+  margin-left: 6px;
+}
+.mt-sec-empty {
+  font-size: 12.5px;
+  color: #7d7563;
+  font-style: italic;
+  padding: 6px 4px;
+}
+/* an active drop target (a section header or body a mount is dragged over) */
+.mt-drop-here {
+  background: #22271a !important;
+  border-color: #8fae5e !important;
+  box-shadow: inset 0 0 0 1px rgba(143, 174, 94, .3);
+}
+
+/* the category context menu (body-anchored, deck-scaled by JS) */
+.mt-catmenu {
+  position: fixed;
+  z-index: 60;
+  min-width: 190px;
+  max-width: 280px;
+  background: #17171d;
+  border: 1px solid #55503f;
+  border-radius: 11px;
+  padding: 6px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .6);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mt-cm-head {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #9a917d;
+  padding: 6px 10px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-cm-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  color: #d6cfbe;
+  font-size: 14px;
+  font-family: inherit;
+  padding: 9px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 110ms ease, color 110ms ease;
+}
+.mt-cm-item:hover { background: #26262f; color: #f4eede; }
+.mt-cm-on { color: #f0e6c8; }
+.mt-cm-plus { color: #cbb98a; border-top: 1px solid #2e2c25; margin-top: 3px; border-radius: 0 0 8px 8px; }
+.mt-cm-danger { color: #e0a89c; }
+.mt-cm-danger:hover { background: #3a1f1c; color: #f0c9c0; }
+
+/* ------------------------------------------------- picker: mode + icons -- */
+
+/* Two stacked control rows: scope (+ refresh) on top, sort below. */
+.mt-picker-mode { display: flex; flex-direction: column; gap: 8px; }
+.mt-pk-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.mt-seg {
+  flex: 1;
+  background: #14141a;
+  border: 1px solid #3d3a33;
+  border-radius: 10px;
+  color: #b9b19d;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.mt-seg:hover { background: #1e1e26; border-color: #55503f; color: #efe9da; }
+.mt-seg-on { background: #2c2a20; border-color: #7a6f4d; color: #f0e6c8; }
+
+/* the ⟳ refresh pill sits at the end of the scope row, sized to content so it
+   never squashes the two scope segments */
+.mt-pk-refresh {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: #191921;
+  border: 1px solid #3d3a33;
+  border-radius: 10px;
+  color: #cbb98a;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.mt-pk-refresh:hover { background: #26262f; border-color: #97885c; color: #f0e6c8; }
+.mt-pk-refresh:active { background: #17171d; }
+.mt-pk-refresh:disabled { cursor: default; opacity: .8; }
+.mt-pk-refresh-glyph { font-size: 16px; display: inline-block; }
+/* spin the glyph while a re-sweep is in flight */
+.mt-pk-refresh-busy .mt-pk-refresh-glyph { animation: mt-spin 0.9s linear infinite; }
+@keyframes mt-spin { to { transform: rotate(360deg); } }
+
+/* "Learned only" — a checkbox-style pill on the scope row (Rober, 2026-08-14:
+   "a toggle to show just stuff learned"). Content-sized like the ⟳ pill so it
+   never squashes the two scope segments; a filled check box + gold border make
+   the on-state unmistakable at couch distance. */
+.mt-pk-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #191921;
+  border: 1px solid #3d3a33;
+  border-radius: 10px;
+  color: #b9b19d;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.mt-pk-toggle:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.mt-pk-toggle:active { background: #17171d; }
+.mt-pk-toggle-box {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  border-radius: 5px;
+  border: 1px solid #55503f;
+  background: #0f0f14;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  color: transparent;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.mt-pk-toggle-on {
+  background: #2c2a20;
+  border-color: #7a6f4d;
+  color: #f0e6c8;
+}
+.mt-pk-toggle-on .mt-pk-toggle-box {
+  background: #b9954a;
+  border-color: #d8b467;
+  color: #16130a;
+  font-weight: 700;
+}
+
+/* the Sort row: a label, then the sort segments */
+.mt-pk-sort-label {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 700;
+  color: #8d8571;
+  letter-spacing: .3px;
+  text-transform: uppercase;
+  padding-left: 2px;
+}
+/* sort segments breathe a touch less than the two big scope buttons (four of
+   them share the row) but never drop below the deck's 12px floor */
+.mt-seg-sort { font-size: 13.5px; padding: 8px 10px; }
+
+/* real spell art on a picker row (the Spell-Hotbar library), glyph fallback */
+.mt-sp-icon {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: #101015;
+  border: 1px solid #2e2c25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+.mt-sp-icon img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  -webkit-user-drag: none;
+}
+.mt-sp-icon-glyph { font-size: 19px; color: #b9a8e0; }
+
+.mt-sp-tag {
+  font-size: 12px;
+  font-weight: 700;
+  color: #e0b8a8;
+  background: #261b19;
+  border: 1px solid #5c4139;
+  border-radius: 6px;
+  padding: 1px 7px;
+  margin-left: 8px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.mt-sp-np-dim { color: #7d7563; }

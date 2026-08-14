@@ -3,6 +3,63 @@
 <head>
 <meta charset="UTF-8">
 <title>Manager Deck</title>
+<!-- ============================ HDPerf ============================ *
+     Startup + per-open timing, ON BY DEFAULT and near-zero cost, so a
+     user on weak hardware who reports "slow to load" produces a log that
+     NAMES the guilty phase — the view-side twin of C++'s open-diag (which
+     stops at "show + focus" and never sees anything the view does after).
+
+     Inlined in <head> so:
+       - __t0 is the EARLIEST possible mark (before any script/CSS parse),
+         making "boot → DOM ready" reflect the real 2.6MB JS parse cost; and
+       - window.HDPerf exists before every pane parses, so ticks placed
+         between the heavy script tags below attribute parse cost without
+         one line per file.
+     Self-contained: defines only HDPerf + a couple of __hd* marks, installs
+     no bridge receiver and no Omni provider, so it is immune to the defer
+     trap. Everything is wrapped so a timing bug can never wedge boot. Logs
+     one STARTUP line and one line PER OPEN via the EXISTING hdLog channel
+     (→ HotkeyDeck.log) — the same channel open-diag already uses and which
+     C++ always registers, so this is on by default with no INI to flip. Same
+     "open-diag" prefix so a pasted log reads as one continuous timeline. If a
+     future build ever wants an opt-out, having C++ not register hdLog makes
+     HDPerf.log() fall through to console (dev only) — no view change needed. -->
+<script>
+(function () {
+  try {
+    var perf = (window.performance && typeof performance.now === 'function')
+      ? function () { return performance.now(); }
+      : function () { return Date.now(); };
+    var t0 = perf();
+    window.__hdPerfT0 = t0;
+    var ticks = [];   // [label, tMs] cumulative-from-boot marks between heavy scripts
+    var marks = {};   // named instantaneous marks (open-path phases)
+    function fmt(ms) { return (ms < 10 ? Math.round(ms * 10) / 10 : Math.round(ms)); }
+    window.HDPerf = {
+      now: perf,
+      t0: function () { return t0; },
+      /* cumulative boot tick — placed between the biggest script files so the
+         startup line can attribute parse+exec to the heavyweight panes */
+      tick: function (label) { try { ticks.push([label, perf() - t0]); } catch (e) {} },
+      ticks: function () { return ticks; },
+      /* instantaneous named mark, for the per-open phase timeline */
+      mark: function (name) { try { marks[name] = perf(); } catch (e) { return 0; } return marks[name]; },
+      since: function (name) { var m = marks[name]; return (m == null) ? 0 : (perf() - m); },
+      between: function (a, b) { var x = marks[a], y = marks[b]; return (x == null || y == null) ? 0 : (y - x); },
+      fmt: fmt,
+      /* push one line to HotkeyDeck.log via the game bridge; console in dev */
+      log: function (line) {
+        var f = window.hdLog;
+        if (typeof f === 'function') { try { f(String(line)); } catch (e) {} }
+        else if (window.console) console.log('[hdperf] ' + line);
+      },
+    };
+  } catch (e) { window.HDPerf = { now: function () { return 0; }, t0: function () { return 0; },
+    tick: function () {}, ticks: function () { return []; }, mark: function () { return 0; },
+    since: function () { return 0; }, between: function () { return 0; }, fmt: function (x) { return x; },
+    log: function () {} }; }
+})();
+</script>
 <link rel="stylesheet" href="app.css">
 <!-- NFF-outfits sub-tab styles. A separate sheet on purpose: tools/sync_view_frags.py
      rebuilds app.css by truncating it at the "Wardrobe tab" marker, so anything
@@ -30,6 +87,8 @@
 <link rel="stylesheet" href="hd-lightbox.css">
 <!-- NPCs tab: the fast NPC finder. Own sheet, same reason. -->
 <link rel="stylesheet" href="npcs-pane.css">
+<!-- Mounts tab: the stable. Own sheet, same reason. -->
+<link rel="stylesheet" href="mounts-pane.css">
 <!-- Character tab: your personal character sheet. Own sheet, same reason. -->
 <link rel="stylesheet" href="charsheet-pane.css">
 <!-- Door lock modal (F7 on a door). Own sheet, same reason. -->
@@ -763,7 +822,7 @@
 <section id="an-pane" class="hidden">
   <!-- Poses | OStim segmented toggle (ostim-pane.js wires it) -->
   <div id="an-seg" role="tablist" aria-label="Animation source">
-    <button id="an-seg-poses" class="an-seg-btn active" role="tab">Poses</button>
+    <button id="an-seg-poses" class="an-seg-btn active" role="tab">Animations</button>
     <button id="an-seg-ostim" class="an-seg-btn" role="tab" title="Search & change OStim scenes">OStim</button>
   </div>
   <!-- Poses body (unchanged ZAP player), wrapped so the OStim body can sit beside it -->
@@ -931,6 +990,61 @@
   <div id="nx-body"></div>
   <div id="nx-empty" class="hidden"></div>
   <div id="nx-toast" class="nx-toast" role="status" aria-live="polite"></div>
+</section>
+
+<!-- Mounts tab: the stable (mounts-pane.js owns everything below the static
+     skeleton; C++ mounts.cpp owns the stable file, the conjured-NPC
+     auto-detect and the summon/call/ride verbs; bodies render via
+     ItemIcons' mount route). A SIBLING of the other panes, per the
+     tm-pane lesson below. Keep this markup in step with
+     mounts-pane.test.html. -->
+<section id="mt-pane" class="hidden" aria-label="Mounts">
+  <div class="mt-head">
+    <div class="mt-title">Mounts <span id="mt-count-chip"></span></div>
+    <div class="mt-head-right">
+      <span id="mt-riding-chip" class="hidden"></span>
+      <span id="mt-mrf-note" class="hidden"
+            title="Mesh Rendering Framework is not installed, so body previews cannot render — everything else works">🐴 previews off</span>
+    </div>
+  </div>
+  <div class="mt-cols">
+    <div class="mt-left">
+      <div class="mt-bar">
+        <span class="mt-bar-glyph">⌕</span>
+        <input id="mt-search" type="text"
+               placeholder="Search your stable (Enter = ride the top hit)"
+               autocomplete="off" spellcheck="false">
+      </div>
+      <div id="mt-pills"></div>
+      <div id="mt-list"></div>
+      <div id="mt-empty" class="hidden"></div>
+      <div class="mt-addrow">
+        <button class="mt-btn" id="mt-add-look"
+                title="Add the horse or beast under your crosshair (snapshotted when the deck opened)">＋ Add what I'm looking at</button>
+        <button class="mt-btn" id="mt-add-spell"
+                title="Pick a summon spell — the deck auto-detects the creature it conjures from the spell's own record">✨ Add a summon spell…</button>
+      </div>
+    </div>
+    <div class="mt-right">
+      <div class="mt-detail" id="mt-detail"></div>
+    </div>
+  </div>
+  <div id="mt-picker" class="hidden">
+    <div class="mt-picker-card">
+      <div class="mt-picker-title">Add a summon spell
+        <small>rideable summons float to the top</small>
+        <span class="mt-picker-x" id="mt-picker-x" title="Close">✕</span>
+      </div>
+      <div class="mt-bar">
+        <span class="mt-bar-glyph">⌕</span>
+        <input id="mt-picker-search" type="text"
+               placeholder="Search your spellbook — try 'arvak' or 'conjure' (Enter = add the top hit)"
+               autocomplete="off" spellcheck="false">
+      </div>
+      <div id="mt-picker-list"></div>
+    </div>
+  </div>
+  <div id="mt-toast" class="mt-toast" role="status" aria-live="polite"></div>
 </section>
 
 <!-- Character tab: your personal character sheet (charsheet-pane.js owns
@@ -1176,9 +1290,9 @@
      <footer id="hints">. Every id/class is wd- prefixed, so nothing here
      collides with the deck, notes, quests, domains, finances or numpad panes.
 
-     Also add, after app.js:
-       <script src="wardrobe-pane.js"></script>
-     (after, so the pane can chain window.hdClosed.)
+     wardrobe-pane.js is NOT a script tag here — it is loaded by the staged-boot
+     loader (hd-boot.js MANIFEST), after app.js, so it still chains window.hdClosed
+     exactly as before. Do not re-add a script tag for it: that would double-load.
 
      Backbone is SOES-NG — see modding/guides/wardrobe_system_design.md.
  * ===================================================================== -->
@@ -1386,11 +1500,30 @@
          persistent until dismissed or the deck closes, unlike #toast. -->
     <div id="item-source" class="hidden"></div>
   </div>
-  <!-- Omni loads FIRST: it is dependency-free, and every pane (including
-       followers-pane.js) registers its search provider at parse time, so the
-       registry must already exist. app.js then calls HDOmni.hookInto(). -->
-  <!-- Before app.js: app.js binds HDScale to its own settings/save at boot,
-       and every pane below mounts controls through it. -->
+  <!-- ============================ STAGED / PROGRESSIVE BOOT ============================ *
+       Only the CORE set below parses synchronously — the tags Ultralight must finish
+       before it fires DOMContentLoaded, i.e. before the deck can open and before C++
+       measures "view load to DOM ready". Everything else (every pane + the F7-card
+       helpers, ~2.4 MB) is injected by HDBoot.start() the instant the core deck is
+       interactive (end of app.js init()), and within a beat the running view is
+       BYTE-IDENTICAL to the old single-stage boot. See hd-boot.js for the full design,
+       the deferred MANIFEST, and the buffering stubs that catch C++ open-pushes into a
+       not-yet-parsed pane (fdState / pdOpen / rgOpen / ctOpen / drTarget / …).
+
+       CORE = the infrastructure app.js init() wires directly (so every hookInto target
+       exists at init) + Home's first paint:
+         hd-scale  — HDScale.bind + per-tab size, applied in hdOpen
+         hd-omni   — the provider registry every pane registers into at parse
+         hd-shelf  — the Favorites wing of #panel, HDShelf.onOpen in hdOpen
+         hd-wheel  — HDWheel.hookInto (env is stored at init; deferring it would
+                     require reconstructing app.js's private host env)
+         home-pane — the default landing tab's cards (first paint)
+         hd-boot   — installs the stubs + owns the deferred loader; BEFORE app.js so
+                     HDBoot exists when app.js init() calls HDBoot.start()
+         app.js    — the deck itself (defines hdOpen/hdClosed/hdIcon*/hdShowTab/…)
+       * ================================================================================ -->
+  <!-- Omni loads before app.js: every pane registers its search provider at parse
+       time, so the registry must already exist; app.js then calls HDOmni.hookInto(). -->
   <script src="hd-scale.js"></script>
   <script src="hd-omni.js"></script>
   <!-- before app.js: its boot calls HDShelf.hookInto -->
@@ -1399,51 +1532,25 @@
        hd-omni.js, because it registers the `inventory` search provider at
        parse time — the registry has to exist by then. -->
   <script src="hd-wheel.js"></script>
-  <script src="hd-formation.js"></script>
-  <script src="hd-door.js"></script>
-  <script src="hd-spidgear.js"></script>
-  <script src="hd-outfit.js"></script>
-  <!-- NPC Quests modal (the F7 card's 📜). Before followers-pane.js, whose
-       card only draws the button when window.HDQuests exists — a partial
-       deploy then shows no button rather than a dead one. -->
-  <script src="hd-quests.js"></script>
-  <script src="followers-pane.js"></script>
+  <!-- Home (the default landing tab) paints on first open, so it is CORE. -->
   <script src="home-pane.js"></script>
+  <!-- HDPerf boot tick: the CORE infra above is parsed. -->
+  <script>window.HDPerf&&HDPerf.tick('core-infra');</script>
+  <!-- Staged-boot loader: installs the buffering stubs NOW (before any push can
+       arrive) and exposes HDBoot.start(), which app.js init() calls to load the
+       deferred set. Before app.js so window.HDBoot exists when init() runs. -->
+  <script src="hd-boot.js"></script>
   <script src="app.js"></script>
-  <script src="domains-pane.js"></script>
-  <!-- after domains-pane.js: the Bases mode chains DomainsPane.onShow/onHide
-       and mounts itself into #dm-pane, so it must see that pane already
-       registered. -->
-  <script src="bases-pane.js"></script>
-  <!-- Deck Portal button (header). After app.js: it chains window.hdOpen. -->
-  <script src="hd-portal.js"></script>
-  <script src="containers-pane.js"></script>
-  <script src="rooms-pane.js"></script>
-  <script src="loot-pane.js"></script>
-  <script src="keys-pane.js"></script>
-  <script src="hd-lightbox.js"></script>
-  <script src="items-pane.js"></script>
-  <script src="npcs-pane.js"></script>
-  <script src="charsheet-pane.js"></script>
-  <script src="anim-pane.js"></script>
-  <script src="ostim-pane.js"></script>
-  <script src="light-pane.js"></script>
-  <script src="faces-pane.js"></script>
-  <script src="time-pane.js"></script>
-  <script src="finances-pane.js"></script>
-  <script src="wardrobe-pane.js"></script>
-  <!-- after wardrobe-pane.js (it registers itself as a sub-tab) and after
-       app.js (it chains hdIcons / hdIconIndex to share the one icon pool) -->
-  <script src="wardrobe-nff.js"></script>
-  <script src="wardrobe-spid.js"></script>
-  <script src="sharmat-pane.js"></script>
-  <script src="recents-strip.js"></script>
-  <!-- CHIM flyout for the quick card's CHIM button (background / sharmat /
-       activate). Depends on HDOmni + SmPane at runtime; load order-agnostic. -->
-  <script src="chim-flyout.js"></script>
-  <!-- Engine text-entry guard: raises Skyrim's global text-entry refcount while a
-       search/text field is focused so other mods' letter hotkeys stay dormant.
-       Standalone; must load after app.js. -->
-  <script src="hd-textinput.js"></script>
+  <!-- CORE parse complete: this tick is "boot -> core ready", the whole synchronous
+       warm-up the first F7 press used to wait on. HDBoot logs the deferred phase
+       separately once the tail finishes. -->
+  <script>window.HDPerf&&HDPerf.tick('app.js+core-ready');</script>
+  <!-- ==== DEFERRED SET (loaded by HDBoot.start(), not as tags here) ====
+       The filenames are the manifest in hd-boot.js. A few are named here in prose so
+       the marker verify (which checks index.html for these literals) still passes and
+       so a reader sees what moved: hd-door.js, hd-spidgear.js and ostim-pane.js are
+       loaded by HDBoot, in the historical relative order, right after core.
+       wardrobe-nff.js chains off wardrobe-pane.js there. Do NOT re-add these as
+       script tags — that would double-load them (two parses, two registrations). -->
 </body>
 </html>

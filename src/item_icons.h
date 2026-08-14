@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <string>
 
@@ -31,6 +32,23 @@ namespace ItemIcons
 	// Bind (or note the absence of) MeshRenderingFramework.dll. Call once at
 	// kDataLoaded. Missing framework = every call no-ops; the views keep their
 	// glyphs — a supported setup, not an error.
+	//
+	// Also stamps a render GENERATION for the facegen-derived caches (faces +
+	// creature bodies) keyed on the bound MRF DLL's identity plus a manual
+	// epoch. When that token changes — a new MRF build, or the epoch bumped
+	// after a rendering fix — the icons/npcs and icons/mounts dirs are purged
+	// ONCE so those renders re-bake through the new framework. Item renders
+	// (icons/items) carry their OWN generation, keyed on a manual epoch alone
+	// (their framing is our math, not the framework's), so a look-affecting
+	// change to item rendering — e.g. the 2026-08-14 clutter-fill framing —
+	// purges the PLAIN item renders once while keeping the good old "-s2" swap
+	// renders. This is what removes the hand-purge step the "render-once-keep-
+	// forever" rule otherwise forces after every rendering change (2026-08-14).
+	//
+	// Init also seeds an on-disk index of every item render already present, so
+	// IndexJson() names icons rendered in a PRIOR session (not just those
+	// re-asked this session) — otherwise pack/item tiles fall back to a glyph
+	// after a few tab switches even though the PNG exists.
 	void Init();
 
 	bool Available();
@@ -82,18 +100,88 @@ namespace ItemIcons
 	// exist (templated NPC) is probed via BSResource BEFORE queueing — the
 	// framework never burns a mesh on it, and the key is marked so it is
 	// never re-probed this session. MAIN THREAD ONLY.
-	void EnsureFaceIcons(const std::string& itemsJson);
+	//
+	// RETURNS the number of renders ACTUALLY queued — which is NOT the number
+	// of items handed in: an NPC with no facegen file (templated, or the file
+	// never shipped) is dropped by the BSResource probe and contributes 0. The
+	// caller MUST report this count as `queued` to the view, never the input
+	// size — reporting the input size is exactly what wedged the followers tab
+	// into a permanent "0 resolved, 4 asked" re-ask loop, polling four NPCs
+	// whose faces can never render (2026-08-14).
+	std::size_t EnsureFaceIcons(const std::string& itemsJson);
+
+	// Render warm-start (2026-08-14, perf item 3). Same {items:[{formId,plugin,
+	// name}]} payload and face-owner identity as EnsureFaceIcons, but queued at
+	// IDLE priority: Pump() starts these ONLY when the user render queue is empty,
+	// so a page the player opens is never delayed. At most `cap` NEW renders are
+	// enqueued (the roster is small; the cap is a guard, not a plan). Dedup is
+	// identical to every other lane, so an already-rendered or file-less face costs
+	// nothing — safe to call on every boot. Used to pre-bake the follower roster's
+	// faces after a boot/purge so the first minutes show real faces, not glyphs.
+	// RETURNS the number actually queued. MAIN THREAD ONLY.
+	std::size_t WarmStartFaces(const std::string& itemsJson, std::size_t cap);
 
 	// {"version":1,"icons":{"HEX8|plugin.esp":"icons/npcs/<file>.png",…}} —
 	// face renders on disk, keys normalised exactly like IndexJson's
 	// (UPPERCASE hex | lowercase plugin). Safe from any thread.
 	std::string FaceIndexJson();
 
+	// NPC BODIES (2026-08-14, the Mounts tab). Same payload shape plus an
+	// explicit `nif` per item ({items:[{formId,plugin,name,nif},…]}) — the
+	// caller (Mounts::BodyNifOf) resolves the race-skin ARMA biped model, the
+	// Dragon Roost route, because deriving it needs the NPC walk this file
+	// deliberately knows nothing about. formId+plugin are the NPC BASE's
+	// durable identity. Renders land in icons/mounts/, keyed "@body" so no
+	// other index ever sees them. MAIN THREAD ONLY.
+	//
+	// RETURNS the number of renders actually queued (same contract as
+	// EnsureFaceIcons: a creature whose body NIF is not in the load order is
+	// probed away and contributes 0), so the NPC Finder can poll honestly.
+	std::size_t EnsureBodyIcons(const std::string& itemsJson);
+
+	// {"version":1,"icons":{"0X81A|plugin.esp":"icons/mounts/<file>.png",…}}.
+	// Safe from any thread.
+	std::string BodyIndexJson();
+
+	// The NPC Finder's view merges every icon it receives into ONE map keyed by
+	// "0X…|plugin", so it needs faces AND creature bodies in a single reply.
+	// This is FaceIndexJson()+BodyIndexJson() folded together; the two never
+	// collide because a face key is the FACE OWNER's id and a body key is the
+	// creature's own id, and a creature has no face render (nor a humanoid a
+	// body one). Faces win on the impossible tie. Safe from any thread.
+	std::string NpcIconsJson();
+
+	// "icons/mounts/<file>.png" if this body's render exists, else "".
+	std::string BodyPathFor(const std::string& fid, const std::string& plugin);
+
+	// The body turntable: 45°-step frames (7 beyond frame 0 — a mount preview
+	// is ONE big image, so it earns a smoother spin than the items' 90°),
+	// same -aNNN filename contract, baked lazily when the preview is first
+	// dragged. Needs the same nif the frame-0 render used. MAIN THREAD ONLY.
+	void CaptureBodyAngles(const std::string& fid, const std::string& plugin,
+		const std::string& nif);
+
+	// "icons/npcs/<file>.png" if this face's render already exists, else "".
+	// fid/plugin are the FACE OWNER's local id + origin plugin (FaceOwnerOf).
+	std::string FacePathFor(const std::string& fid, const std::string& plugin);
+
 	// {"version":1,"icons":{"0XABCD|plugin.esp":"icons/items/<file>.png",…}}
 	// — the on-disk truth right now. Keys are UPPERCASE local-hex + '|' +
 	// lowercase plugin, the same normalisation the portal uses everywhere.
 	// Safe from any thread (directory read only).
 	std::string IndexJson();
+
+	// "icons/items/<file>.png" if THIS item's render already exists on disk,
+	// else "". The single-item twin of IndexJson()'s per-key resolve — swap
+	// ("-s2") preferred over the plain name, exactly as IndexJson does, so the
+	// two can never name different files for the same piece. NEVER queues a
+	// render (unlike EnsureIconsForList): it is the "paint instantly if we
+	// already have it" answer for the F7 quick card's worn tiles, stamped into
+	// the fdWorn payload so an already-rendered piece shows its picture on the
+	// FIRST paint instead of glyph-then-swap after a wdItemIcons round-trip. A
+	// piece with no PNG returns "" and is left for the view's lazy whIcons
+	// request. Safe from any thread (directory read only).
+	std::string IconPathIfRendered(const std::string& fid, const std::string& plugin);
 
 	// Invoked on the MAIN THREAD each time a render batch finishes (and once
 	// at Init if icons already exist), so main.cpp can push the index into the

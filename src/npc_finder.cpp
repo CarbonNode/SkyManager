@@ -31,6 +31,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -88,6 +90,64 @@ namespace NpcFinder
 		std::vector<Npc>         g_npcs;
 		bool                     g_built = false;
 
+		/* ── settings sidecar (Rober, 2026-08-14: "the finder page should
+		 * probably be paginated … maybe default to 10?") ─────────────────────
+		 * Only the persisted Finder page size lives here so far. Its own sidecar,
+		 * NOT a hotkeys.json slice — the ItemExplorer / keys-cache precedent, so no
+		 * shared save path is touched. Faces are the expensive 1024px renders, so
+		 * this pane defaults to 10 (Rober's number); item-explorer defaults to 25. */
+		int  g_pageSize = 10;
+		bool g_settingsLoaded = false;
+
+		int ClampPageSize(int n)
+		{
+			return std::clamp(n, 1, 100);
+		}
+
+		std::filesystem::path SettingsPath()
+		{
+			return std::filesystem::path("Data") / "SKSE" / "Plugins" / "HotkeyDeck" / "npc-finder.json";
+		}
+
+		void LoadSettings()
+		{
+			if (g_settingsLoaded)
+				return;
+			g_settingsLoaded = true;
+			std::ifstream in(SettingsPath(), std::ios::binary);
+			if (!in)
+				return;
+			try {
+				json j = json::parse(in, nullptr, true, true);
+				if (j.is_object())
+					// unknown keys survive: j is READ-only here, the writer emits
+					// back only the fields we own.
+					g_pageSize = ClampPageSize(j.value("pageSize", g_pageSize));
+			} catch (...) {
+				logger::warn("npc-finder: settings sidecar unreadable - defaults kept");
+			}
+		}
+
+		void SaveSettingsFile()
+		{
+			const auto path = SettingsPath();
+			std::error_code ec;
+			std::filesystem::create_directories(path.parent_path(), ec);
+			auto tmp = path;
+			tmp += ".tmp";
+			{
+				std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
+				if (!out.is_open()) {
+					logger::warn("npc-finder: could not write {}", tmp.string());
+					return;
+				}
+				out << Dump(json{ { "pageSize", g_pageSize } });
+			}
+			std::filesystem::rename(tmp, path, ec);
+			if (ec)
+				logger::warn("npc-finder: settings rename failed: {}", ec.message());
+		}
+
 		std::uint16_t PlugIndexFor(RE::TESFile* file,
 			std::unordered_map<const RE::TESFile*, std::uint16_t>& map)
 		{
@@ -114,6 +174,88 @@ namespace NpcFinder
 			g_races.push_back(name);
 			map.emplace(name, idx);
 			return idx;
+		}
+
+		/* ── creature BODY renders (Rober, 2026-08-14: "can these meshs be
+		 * supported too?") ──────────────────────────────────────────────────
+		 * A creature TESNPC has no facegen NIF — the humanoid FaceGen route is
+		 * head-only. Its visible form IS its skin ARMO's armor-addon biped
+		 * model for its race, exactly the Dragon Roost / Mounts route
+		 * (Mounts::BodyNifOf). The render is keyed by the SKIN SOURCE (the race
+		 * that supplies the body), so every Storm Atronach shares one render
+		 * instead of baking a copy per instance — the deliberate v1 limitation
+		 * that a creature whose skin has separate body/head ARMA parts renders
+		 * only the body part (the largest / first with a model). */
+		struct BodyLook
+		{
+			std::string   nif;       // the biped model path the framework renders
+			std::string   idPlugin;  // skin-source identity: plugin + ...
+			std::uint32_t idLocal{ 0 };  // ...file-width-masked local id (dedup key)
+		};
+
+		// The identity that keys a body render: the RACE (species), so same-race
+		// creatures collapse to one file. Falls back to the NPC's own skin
+		// override's identity when the race has none, and finally to the NPC
+		// itself — always a durable, plugin-resolvable pair, never a dynamic id.
+		void SetBodyIdentity(BodyLook& look, RE::TESForm* src)
+		{
+			if (!src)
+				return;
+			auto* file = src->GetFile(0);
+			if (!file)
+				return;   // dynamic form — not a durable key; leave the fallback
+			look.idPlugin = std::string(file->GetFilename());
+			look.idLocal = src->GetFormID() & (file->IsLight() ? 0xFFFu : 0xFFFFFFu);
+		}
+
+		BodyLook BodyLookFor(RE::TESNPC* npc)
+		{
+			BodyLook look;
+			if (!npc)
+				return look;
+			auto* race = npc->race;
+			if (!race)
+				return look;
+			const int sex =
+				npc->actorData.actorBaseFlags.any(RE::ACTOR_BASE_DATA::Flag::kFemale) ? 1 : 0;
+			const auto fromArmor = [&](RE::TESObjectARMO* armo) -> std::string {
+				if (!armo)
+					return {};
+				if (auto* arma = armo->GetArmorAddon(race)) {
+					if (const char* mdl = arma->bipedModels[sex].GetModel(); mdl && *mdl)
+						return mdl;
+					if (const char* mdl = arma->bipedModels[sex ? 0 : 1].GetModel(); mdl && *mdl)
+						return mdl;   // many creatures fill only one sex slot
+				}
+				for (auto* ad : armo->armorAddons) {
+					if (!ad)
+						continue;
+					for (const auto& bm : ad->bipedModels)
+						if (const char* mdl = bm.GetModel(); mdl && *mdl)
+							return mdl;
+				}
+				return {};
+			};
+			// Model: per-NPC skin override -> race skin (the species) -> far skin.
+			// Identity: the RACE (so the render is shared per species); if the
+			// body actually came from a per-NPC skin, key it by that instead so
+			// a re-skinned unique does not collide with its vanilla race.
+			if (auto s = fromArmor(npc->skin); !s.empty()) {
+				look.nif = std::move(s);
+				SetBodyIdentity(look, npc->skin);
+				return look;
+			}
+			if (auto s = fromArmor(race->skin); !s.empty()) {
+				look.nif = std::move(s);
+				SetBodyIdentity(look, race);
+				return look;
+			}
+			if (auto s = fromArmor(npc->farSkin); !s.empty()) {
+				look.nif = std::move(s);
+				SetBodyIdentity(look, race);
+				return look;
+			}
+			return look;
 		}
 
 		/* The NPC whose facegen file names this face. Traits-template chain
@@ -144,6 +286,7 @@ namespace NpcFinder
 			if (g_built)
 				return;
 			g_built = true;
+			LoadSettings();
 			const auto t0 = std::chrono::steady_clock::now();
 			auto* dh = RE::TESDataHandler::GetSingleton();
 			if (!dh)
@@ -310,6 +453,52 @@ namespace NpcFinder
 			}
 			return found;
 		}
+
+		// The indexed record itself, re-looked-up by its durable identity — for
+		// the per-page body resolve (which needs the live TESNPC, not just the
+		// index row). ESL-safe LookupForm, exactly like ResolveId's.
+		RE::TESNPC* ResolveById(const Npc& n)
+		{
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			if (!dh || n.plug >= g_plugins.size())
+				return nullptr;
+			auto* form = dh->LookupForm(n.localId, g_plugins[n.plug].name);
+			return form ? form->As<RE::TESNPC>() : nullptr;
+		}
+
+		// Does the baked FaceGen head for this face identity actually exist on
+		// disk (loose or BSA, MO2 VFS applied)? The face render CAN'T be made
+		// without it — a creature has a face OWNER but no file, and so does a
+		// humanoid whose author never exported one. `fc` is "Plugin.esp|8HEX".
+		//
+		// Cached per session: a face file's existence does not change while the
+		// game runs, and QueryJson probes it for every drawn row on every
+		// (settled) keystroke — a 60-row page paged/re-typed repeatedly would
+		// otherwise hit the resource stack thousands of times on the main
+		// thread. The cache makes the second probe of any identity free.
+		bool FaceNifExists(const std::string& fc)
+		{
+			static std::unordered_map<std::string, bool> cache;
+			if (auto it = cache.find(fc); it != cache.end())
+				return it->second;
+			const auto bar = fc.find('|');
+			if (bar == std::string::npos || bar == 0)
+				return false;
+			const std::string plugin = fc.substr(0, bar);
+			std::string       hex = fc.substr(bar + 1);
+			for (auto& c : hex)
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			if (hex.empty() || hex.size() > 8)
+				return false;
+			while (hex.size() < 8)
+				hex.insert(hex.begin(), '0');
+			const std::string rel =
+				"meshes\\actors\\character\\facegendata\\facegeom\\" + plugin + "\\" + hex + ".nif";
+			RE::BSResourceNiBinaryStream probe(rel.c_str());
+			const bool ok = probe.good();
+			cache.emplace(fc, ok);
+			return ok;
+		}
 	}
 
 	// ================================================================ API ==
@@ -323,11 +512,26 @@ namespace NpcFinder
 				continue;  // face-only plugins (a template source with no named NPC of its own)
 			plugs.push_back(json{ { "n", p.name }, { "c", p.count }, { "k", p.ext }, { "l", p.light } });
 		}
+		// Hand the view the WHOLE on-disk face/body index up front. A face
+		// rendered in a PRIOR session (durable now — item_icons persists
+		// npc-icons.json) resolves the moment a query's rows are drawn, so an
+		// already-rendered face shows on the FIRST paint with no nxIcons round-
+		// trip, no shimmer, no <img> re-decode — the "faces always reload" fix
+		// (2026-08-14). NpcIconsJson is {"version":1,"icons":{...}}; the view
+		// merges its `icons` into state.icons. An old view ignores the field.
+		json icons = json::object();
+		{
+			auto j = json::parse(ItemIcons::NpcIconsJson(), nullptr, false);
+			if (!j.is_discarded() && j.is_object() && j.contains("icons") && j["icons"].is_object())
+				icons = std::move(j["icons"]);
+		}
 		return Dump(json{
 			{ "phase", "ready" },
 			{ "count", g_npcs.size() },
 			{ "mrf", ItemIcons::Available() },
+			{ "pageSize", g_pageSize },   // persisted Finder page size; an old view ignores it
 			{ "plugins", std::move(plugs) },
+			{ "icons", std::move(icons) },   // on-disk face/body renders, keyed "0X…|plugin"
 		});
 	}
 
@@ -343,7 +547,10 @@ namespace NpcFinder
 		const std::string plugin = in.value("plugin", std::string(""));
 		const int         seq = in.value("seq", 0);
 		const int         offset = (std::max)(0, in.value("offset", 0));
-		const int         limit = std::clamp(in.value("limit", 60), 1, 200);
+		// The view's chosen page size arrives as `limit` (1..100 selector). A
+		// request WITHOUT the field is an OLD view — default to 60, the
+		// pre-pagination behaviour, so DLL and view can deploy independently.
+		const int         limit = std::clamp(in.value("limit", 60), 1, 100);
 
 		const auto tokens = Tokens(q);
 		const auto plugLower = Lower(plugin);
@@ -395,6 +602,7 @@ namespace NpcFinder
 		});
 
 		json items = json::array();
+		json bodyQueue = json::array();   // creature body renders for the drawn page
 		const int total = static_cast<int>(hits.size());
 		for (int i = offset; i < total && i < offset + limit; ++i) {
 			const Npc&    n = g_npcs[hits[static_cast<std::size_t>(i)].idx];
@@ -407,6 +615,34 @@ namespace NpcFinder
 				std::snprintf(fbuf, sizeof(fbuf), "%08X", n.faceLocal);
 				fc = g_plugins[static_cast<std::size_t>(n.facePlug)].name + "|" + fbuf;
 			}
+			/* Creatures (Storm Atronach, Dwarven Spider, Draugr, Riekling…)
+			 * have a face OWNER but no facegen NIF on disk — the humanoid head
+			 * route can't picture them. Only for the DRAWN page (cheap, bounded
+			 * by `limit`) do we probe the face file; when it is absent we blank
+			 * `fc` so the view never asks for a head that can't render, resolve
+			 * the creature's BODY (race-skin ARMA biped model, the Mounts
+			 * route), and hand back a `bd` identity keyed by the SKIN SOURCE so
+			 * same-race creatures share one render. A humanoid whose facegen
+			 * simply never shipped falls into the same branch and at least gets
+			 * a body silhouette instead of a bare glyph. */
+			std::string bd;
+			const bool faceOnDisk = fc.empty() ? false : FaceNifExists(fc);
+			if (!faceOnDisk) {
+				fc.clear();   // the head render would never land — don't poll for it
+				if (auto* npc = ResolveById(n)) {
+					const auto look = BodyLookFor(npc);
+					if (!look.nif.empty() && !look.idPlugin.empty()) {
+						char bbuf[16];
+						std::snprintf(bbuf, sizeof(bbuf), "%06X", look.idLocal);
+						bd = look.idPlugin + "|" + bbuf;
+						char fidHex[16];
+						std::snprintf(fidHex, sizeof(fidHex), "0x%x", look.idLocal);
+						bodyQueue.push_back(json{
+							{ "formId", std::string(fidHex) }, { "plugin", look.idPlugin },
+							{ "name", n.name }, { "nif", look.nif } });
+					}
+				}
+			}
 			items.push_back(json{
 				{ "id", pl.name + "|" + idbuf },
 				{ "n", n.name },
@@ -417,7 +653,15 @@ namespace NpcFinder
 				{ "e", n.essential },
 				{ "t", n.templated },
 				{ "fc", fc },
+				{ "bd", bd },
 			});
+		}
+		// Queue any creature bodies the drawn page needs (deduped in ItemIcons
+		// by the skin-source key, so a page full of the same creature costs one
+		// render). The view receives them through the shared nxIconsData index.
+		if (!bodyQueue.empty()) {
+			logger::info("npc-finder: creature body queued - {} on this page", bodyQueue.size());
+			ItemIcons::EnsureBodyIcons(Dump(json{ { "items", std::move(bodyQueue) } }));
 		}
 		return Dump(json{
 			{ "seq", seq }, { "total", total }, { "offset", offset }, { "items", std::move(items) } });
@@ -493,4 +737,35 @@ namespace NpcFinder
 		logger::info("npc-finder: bring '{}'{}", name, found.dead ? " (dead)" : "");
 		return "\xE2\xA4\x9D " + name + " is here" + (found.dead ? " \xE2\x80\x94 the body, at least" : "");
 	}
+
+	std::string SaveJson(const std::string& req)
+	{
+		LoadSettings();
+		json in = json::object();
+		try {
+			in = json::parse(req);
+		} catch (...) {}
+		if (in.contains("pageSize"))
+			g_pageSize = ClampPageSize(in.value("pageSize", g_pageSize));
+		SaveSettingsFile();
+		return Dump(json{ { "ok", true }, { "pageSize", g_pageSize } });
+	}
+
+	RE::TESNPC* FaceOwnerOf(RE::TESNPC* npc)
+	{
+		return FaceOwner(npc);
+	}
+
+	std::string BodyRenderFor(RE::TESNPC* npc, std::string& outNif)
+	{
+		outNif.clear();
+		const auto look = BodyLookFor(npc);
+		if (look.nif.empty() || look.idPlugin.empty())
+			return {};
+		outNif = look.nif;
+		char bbuf[16];
+		std::snprintf(bbuf, sizeof(bbuf), "%06X", look.idLocal);
+		return look.idPlugin + "|" + bbuf;
+	}
+
 }
