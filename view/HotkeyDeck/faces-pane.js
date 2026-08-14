@@ -143,9 +143,20 @@ window.FacesPane = (function () {
 
   function render() {
     if (!host || !host.isConnected) return;
+    // Live batch pushes repaint the pane while the user may be scrolled deep
+    // in the gallery — keep every scroll position (host + the grid) across the
+    // rebuild so a landing face never yanks the view back to the top.
+    const scrolled = [];
+    if (host.scrollTop) scrolled.push([host, host.scrollTop]);
+    host.querySelectorAll('*').forEach((el) => { if (el.scrollTop) scrolled.push([el.className, el.scrollTop]); });
     host.textContent = '';
     host.append(buildHeader());
     host.append(buildBody());
+    scrolled.forEach(([key, top]) => {
+      if (typeof key !== 'string') { key.scrollTop = top; return; }
+      const el = host.querySelector('.' + String(key).trim().split(/\s+/).join('.'));
+      if (el) el.scrollTop = top;
+    });
   }
 
   function buildHeader() {
@@ -244,14 +255,24 @@ window.FacesPane = (function () {
                     : 'Face shape + morphs only (safe). Click to also apply the preset’s skin overrides.',
       onClick: () => { ui.full = !fullOn; render(); } }, fullOn ? '⚠ Full look' : '◇ Face only'));
     // ✨ Auto-render: every preset with no image gets a face thumbnail — PD
-    // spawns a mannequin, applies the preset, MRF renders it. The batch needs
+    // spawns a stand-in, applies the preset, MRF renders it. The batch needs
     // Papyrus running (LoadCharacterEx), so the palette closes; HUD messages
-    // narrate progress and the gallery is repainted when it finishes.
+    // narrate progress, and while it runs a reopened deck shows live k/N with
+    // a Stop chip (the index push per finished face repaints the gallery).
+    const ar = (pdState && pdState.autorender) || null;
     const missingN = names.filter((n) => n.slice(0, 3) !== 'PD_' && !pdIconFor(n)).length;
-    if (pdState && pdState.available && missingN > 0) {
+    if (ar && ar.running) {
+      modeRow.append(h('span', { class: 'pd-chip pd-autorender is-running',
+        title: 'Faces are rendering in the background — close the deck to let it work.' },
+        '⏳ Rendering ' + ((ar.done || 0) + (ar.failed || 0)) + '/' + (ar.total || '?') + '…'));
+      modeRow.append(h('button', { class: 'fc-set pd-chip pd-autorender-stop', type: 'button',
+        title: 'Stop after the current face — finished thumbnails are kept, and the button resumes where it left off.',
+        onClick: () => { toGame('fdPreset', JSON.stringify({ op: 'autorender-cancel' })); } },
+        '⏹ Stop'));
+    } else if (pdState && pdState.available && missingN > 0) {
       modeRow.append(h('button', { class: 'fc-set pd-chip pd-autorender', type: 'button',
-        title: 'Render a face image for every preset that has none. Closes the deck; a mannequin ' +
-               'stands beside you while it runs (~4s per preset). Watch the corner messages.',
+        title: 'Render a face image for every preset that has none. Closes the deck; a stand-in ' +
+               'appears beside you while it runs (~4s per preset). Watch the corner messages.',
         onClick: () => { toGame('fdPreset', JSON.stringify({ op: 'autorender' })); } },
         '✨ Render missing (' + missingN + ')'));
     }
@@ -434,7 +455,10 @@ window.FacesPane = (function () {
         grid.append(tile);
       });
       const selEl = grid.querySelector('.pd-tile.is-sel');
-      if (selEl && selEl.scrollIntoView) selEl.scrollIntoView({ block: 'nearest' });
+      // Follow the selection only when it MOVED — a live-batch repaint with a
+      // parked selection must not scroll the gallery out from under the user.
+      if (selEl && selEl.scrollIntoView && paintGrid._lastSel !== sel) selEl.scrollIntoView({ block: 'nearest' });
+      paintGrid._lastSel = sel;
     }
 
     function paintStrip() {
