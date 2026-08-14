@@ -350,6 +350,10 @@ window.ItemsPane = (function () {
       if (it2) takeItem(it2, q2, p > 0, p);
     }
     pay.addEventListener('click', doPay);
+    const sheetPlate = sh.querySelector('.ix-sheet-glyph');
+    if (sheetPlate) sheetPlate.addEventListener('click', function () {
+      if (sheetPlate.classList.contains('ix-has-art')) openLightbox(it);
+    });
     $('ix-sheet-cancel').addEventListener('click', closeSheet);
     sh.addEventListener('click', function (e) { if (e.target === sh) closeSheet(); });
     refresh();
@@ -505,6 +509,30 @@ window.ItemsPane = (function () {
     return glyph + '<img class="ix-art" src="' + esc(url) + '" alt="" draggable="false"' + ICO_ERR + '>';
   }
 
+  /* ============================================================ lightbox == */
+
+  /* Click the picture -> the 512px render, big (hd-lightbox.js). The angle
+     candidates are the Wardrobe turntable's on-disk names derived from THIS
+     row's frame-0 url — HDLightbox probes them and only a frame that actually
+     loads joins the spin, so a piece nobody ever orbited just shows big. */
+  function openLightbox(it) {
+    const url = iconFor(it.id);
+    if (!url || !window.HDLightbox) return;
+    const meta = kindMeta(it.t);
+    const w = Math.round((Number(it.w) || 0) * 10) / 10;
+    const frames = ['-a090', '-a180', '-a270'].map(function (s) {
+      return url.replace(/\.png$/, s + '.png');
+    });
+    HDLightbox.open({
+      host: $('ix-pane'),
+      src: url,
+      glyph: meta[2],
+      title: it.n,
+      sub: meta[1] + ' · ' + it.p + ' · 🜚 ' + fmtGold(Math.max(0, it.v | 0)) + ' g · ' + w + ' wt',
+      frames: frames,
+    });
+  }
+
   function renderHeader() {
     const chip = $('ix-count-chip');
     if (chip) {
@@ -584,7 +612,8 @@ window.ItemsPane = (function () {
     const hasArt = !!iconFor(it.id);
     const val = fmtGold(Math.max(0, it.v | 0));
     return '<div class="ix-row' + (selIdx === idx ? ' ix-sel' : '') + '" data-id="' + esc(it.id) + '">' +
-      '<div class="ix-glyph ix-t-' + esc(it.t) + (hasArt ? ' ix-has-art' : '') + '" title="' + esc(meta[1]) + '">' +
+      '<div class="ix-glyph ix-t-' + esc(it.t) + (hasArt ? ' ix-has-art ix-zoomable' : '') +
+      '" title="' + esc(hasArt ? it.n + ' — click for a bigger look' : meta[1]) + '">' +
       glyphInner(it.id, meta[2]) + '</div>' +
       '<div class="ix-mid">' +
       '<div class="ix-name" title="' + esc(it.n) + '">' + highlight(it.n, ui.q) + '</div>' +
@@ -708,6 +737,12 @@ window.ItemsPane = (function () {
         const it = item();
         if (it) activate({ kind: 'item', it: it });
       });
+      const zoom = row.querySelector('.ix-glyph.ix-zoomable');
+      if (zoom) zoom.addEventListener('click', function (e) {
+        e.stopPropagation();
+        const it = item();
+        if (it) openLightbox(it);
+      });
       row.querySelectorAll('.ix-qty button').forEach(function (b) {
         b.addEventListener('click', function (e) {
           e.stopPropagation();
@@ -778,6 +813,7 @@ window.ItemsPane = (function () {
   function onHide() {
     ui.visible = false;
     closeSheet();
+    if (window.HDLightbox) HDLightbox.close();
     if (ui.debT) { clearTimeout(ui.debT); ui.debT = null; }
     if (ui.iconT) { clearTimeout(ui.iconT); ui.iconT = null; }
     stopIconPoll();
@@ -832,6 +868,15 @@ window.ItemsPane = (function () {
         }
       });
     }
+    /* Finder mode switch — the other half of the merged tab. The typed query
+       rides along, so "ebony" over items becomes "ebony" over people. app.js
+       owns the actual tab flip (__hdFinderGo); a harness without it no-ops. */
+    document.querySelectorAll('#ix-pane .fx-sw').forEach(function (b) {
+      b.addEventListener('click', function () {
+        const go = b.getAttribute('data-go');
+        if (go !== 'items' && typeof window.__hdFinderGo === 'function') window.__hdFinderGo(go, ui.q);
+      });
+    });
     const payBtn = $('ix-pay-toggle');
     if (payBtn) payBtn.addEventListener('click', function () {
       state.pay = !state.pay;   // optimistic; ixSaved confirms
@@ -1027,6 +1072,7 @@ window.ItemsPane = (function () {
     _flushIcons: flushIconsForTest, _iconPollTick: iconPollTick, _missingArt: missingArt,
     _state: state, _ui: ui, _flatRows: flatRows, _modMatches: modMatches,
     _suggestedPrice: suggestedPrice, _openSheet: openSheet, _closeSheet: closeSheet,
+    _openLightbox: openLightbox,
   };
 })();
 

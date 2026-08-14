@@ -63,7 +63,9 @@ window.HomePane = (function () {
     { id: 'rooms',     name: 'Rooms',      icon: '🚪', img: 'icons/custom/hm-rooms.png',     hue: '#b79bff', sub: 'Claim a room, keep it yours', act: 'tab', prov: 'rooms' },
     { id: 'loot',      name: 'Loot',       icon: '✨', img: 'icons/custom/hm-loot.png',      hue: '#ffd36a', sub: 'Glow the loot worth grabbing',act: 'tab' },
     { id: 'keys',      name: 'Keys',       icon: '🗝', img: 'icons/custom/hm-keys.png',      hue: '#c9a24b', sub: 'Every hotkey in the load order',act: 'tab' },
-    { id: 'items',     name: 'Items',      icon: '⚒',  img: 'icons/custom/hm-items.png',     hue: '#ffd36a', sub: 'Any item any mod ships — take or buy', act: 'tab' },
+    /* Items + NPCs merged into ONE Finder tab (2026-08-14) — setTab('finder')
+       resolves to whichever roster was used last; the pane's own switch flips */
+    { id: 'finder',    name: 'Finder',     icon: '⌕',  img: 'icons/custom/hm-finder.png',    hue: '#ffd36a', sub: 'Any item, anyone — take, bring, spawn', act: 'tab' },
     { id: 'anim',      name: 'Animations', icon: '🩰', img: 'icons/custom/hm-anim.png',      hue: '#e58fb0', sub: 'Apply a ZaZ animation',        act: 'tab', requires: 'zap' },
     { id: 'finances',  name: 'Finances',   icon: '⚖',  img: 'icons/custom/hm-finances.png',  hue: '#d0c07a', sub: 'Ledger, market & settle',     act: 'tab', prov: 'finances' },
     { id: 'wardrobe',  name: 'Wardrobe',   icon: '👗', img: 'icons/custom/hm-wardrobe.png',  hue: '#e58fb0', sub: 'Outfits & who dresses whom',  act: 'tab', prov: 'wardrobe', requires: 'soes' },

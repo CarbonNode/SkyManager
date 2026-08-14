@@ -453,4 +453,14 @@ namespace IconBridge
 		std::lock_guard l(g_statusMutex);
 		return g_status;
 	}
+
+	// Public wrapper over the anonymous-namespace ModRoot() the bridge already
+	// uses for its own writes — exposed so other view-tree writers (e.g. the
+	// hotbar copying an outfit photo into MagicDeck) obey the same law #4 and
+	// land in the real mod folder rather than MO2's Overwrite. Named distinctly
+	// from the anonymous helper so the call below is unambiguous.
+	std::filesystem::path ModFolderRoot()
+	{
+		return ModRoot();  // the anonymous-namespace one, in this same scope
+	}
 }

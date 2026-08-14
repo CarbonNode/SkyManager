@@ -55,6 +55,7 @@
 #include "loot_highlight.h"
 #include "keys_scan.h"   // Keys tab: the load-order hotkey census (kc* bridge)
 #include "item_explorer.h"  // Items tab: the inline item explorer (ix* bridge)
+#include "npc_finder.h"     // NPCs tab: the fast NPC finder (nx* bridge)
 #include "open_diag.h"      // open/close timing + hang watchdogs (Nexus freeze triage)
 #include "no_auto_gear.h"
 #include "spid_gear.h"
@@ -2107,6 +2108,9 @@ namespace
 			// purpose — the people who want this know it as "additem".
 			{ "item-explorer", "hd-item-explorer", "Item Explorer",
 			  "Find any item any mod ships - type a mod or an item name and take it, or turn on merchant mode and pay real gold for it (additem add item spawn give cheat search buy)", "Utilities", "icons/custom/hk-item-explorer.png" },
+			// NPC Finder (2026-08-13): deep-open the deck on the NPCs tab.
+			{ "npc-finder", "hd-npc-finder", "NPC Finder",
+			  "Find anyone the load order ships - type a name or a mod, then go to them, bring them to you, or spawn a copy (npc actor character find teleport summon placeatme)", "Utilities", "icons/custom/hk-npc-finder.png" },
 		};
 
 		// Plain key entries added in a new build. Keyed by ID rather than by a
@@ -3021,6 +3025,10 @@ namespace
 	void OnJsItemsQuery(const char* data);
 	void OnJsItemsAdd(const char* data);
 	void OnJsItemsSave(const char* data);
+	void OnJsNpcFinderState(const char* data);
+	void OnJsNpcFinderQuery(const char* data);
+	void OnJsNpcFinderAct(const char* data);
+	void OnJsNpcFinderIcons(const char* data);
 	void OnJsTimeWait(const char* data);
 	void OnJsRoomSave(const char* data);
 	void OnJsRoomLog(const char* data);
@@ -3550,6 +3558,13 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "ixQuery", OnJsItemsQuery);
 		g_prisma->RegisterJSListener(g_view, "ixAdd", OnJsItemsAdd);
 		g_prisma->RegisterJSListener(g_view, "ixSave", OnJsItemsSave);
+		// NPCs tab (NPC Finder). Requests nxState/nxQuery/nxAct/nxIcons;
+		// replies nxStateResult/nxResultData/nxActResult/nxIconsData —
+		// disjoint per the deck law.
+		g_prisma->RegisterJSListener(g_view, "nxState", OnJsNpcFinderState);
+		g_prisma->RegisterJSListener(g_view, "nxQuery", OnJsNpcFinderQuery);
+		g_prisma->RegisterJSListener(g_view, "nxAct", OnJsNpcFinderAct);
+		g_prisma->RegisterJSListener(g_view, "nxIcons", OnJsNpcFinderIcons);
 		g_prisma->RegisterJSListener(g_view, "rgSave", OnJsRoomSave);
 		g_prisma->RegisterJSListener(g_view, "rgLog", OnJsRoomLog);
 		g_prisma->RegisterJSListener(g_view, "rgRing", OnJsRoomRing);
@@ -4454,6 +4469,22 @@ namespace
 				if (!CanOpenNow())
 					return;
 				g_pendingTab = "items";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// NPC Finder: same shape, the NPCs tab.
+		if (action == "npc-finder") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"npcs\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "npcs";
 				EnsureViewAndOpen();
 			});
 			return;
@@ -9029,6 +9060,118 @@ namespace
 		return out.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
 
+	// hotbar-outfit-photo: copy an outfit's photo out of the HotkeyDeck view
+	// tree (where the Wardrobe tab stores it) into THIS view's (MagicDeck) tree,
+	// so the hotbar can show it as button art. A MagicDeck-relative path cannot
+	// reach across into ../HotkeyDeck/… (explicitly unverified in Ultralight —
+	// see the hotbar.h header note), so the established precedent is to copy the
+	// file so it lives beside the view that draws it.
+	//
+	// `hkImage` is the HotkeyDeck-view-relative source, e.g.
+	// "icons/custom/wd-court-silks.png" (cache-buster query already stripped by
+	// the caller). Returns the MagicDeck-view-relative destination
+	// "icons/outfits/<file>" on success, or "" when there is nothing to copy or
+	// the copy failed (the button then falls back to its ⛃ glyph). Idempotent
+	// and overwrite-on-copy, so re-binding after a re-photo refreshes the art.
+	std::string HbCopyOutfitPhoto(const std::string& hkImage)
+	{
+		namespace fs = std::filesystem;
+		if (hkImage.empty())
+			return "";
+		// Refuse anything that is not a plain view-relative path — no traversal,
+		// no absolute, no drive letter, no query. The wardrobe only ever emits
+		// "icons/…", so this is a belt-and-braces guard, not a real code path.
+		if (hkImage.find("..") != std::string::npos || hkImage.find(':') != std::string::npos ||
+			hkImage.find('?') != std::string::npos || hkImage.front() == '/' || hkImage.front() == '\\')
+			return "";
+
+		// SOURCE — read through the VFS (`Data\…`, DeckViewDir()): the outfit
+		// photo may have been written by portrait capture into MO2's Overwrite,
+		// which only the relative path sees. DESTINATION — the REAL mod folder
+		// (law #4 in icon_bridge.h): a write through the VFS lands in Overwrite,
+		// where the DLL can read it back but the in-game <img> (loaded against
+		// the mod folder) and release packaging never see it.
+		std::error_code ec;
+		const fs::path src = DeckViewDir() / fs::path(hkImage);
+		if (!fs::exists(src, ec) || ec)
+			return "";
+		const std::string file = src.filename().string();
+		if (file.empty())
+			return "";
+
+		const fs::path root = IconBridge::ModFolderRoot();
+		if (root.empty())
+			return "";
+		const fs::path dstDir = root / "PrismaUI" / "views" / "MagicDeck" / "icons" / "outfits";
+		fs::create_directories(dstDir, ec);
+		const fs::path dst = dstDir / file;
+		fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+		if (ec) {
+			logger::warn("hotbar-outfit-photo: copy '{}' failed: {}", hkImage, ec.message());
+			return "";
+		}
+		logger::info("hotbar-outfit-photo: '{}' -> MagicDeck/icons/outfits/{}", hkImage, file);
+		return "icons/outfits/" + file;
+	}
+
+	// hbOutfits -> hbOutfitsData: the outfit list for the hotbar editor's
+	// "Outfit" pick source. Built from the wardrobe's OWN state (the same
+	// outfitMeta + SOES outfits the Wardrobe tab shows), so a new outfit is
+	// bindable the moment it exists. Each entry:
+	//   { name, note, icon }
+	// where `icon` is the MagicDeck-relative photo path (copied here, so the
+	// editor can preview it AND a bound button reuses the same file — one copy,
+	// one path). No photo -> empty icon and the editor/button show a glyph.
+	std::string HbOutfitsJson()
+	{
+		json arr = json::array();
+		std::unordered_set<std::string> seen;
+
+		// Snapshot the wardrobe config under the shared lock, then do the file
+		// copies OUTSIDE it — copy_file is slow and holding g_configMutex across
+		// disk IO would stall every other config reader.
+		struct Row { std::string name, note, image; };
+		std::vector<Row> rows;
+		// Read the roster envelope BEFORE taking the config lock — that is the
+		// order every other Wardrobe::StateJson caller uses, and it keeps the
+		// (possibly engine-touching) follower read off the locked section.
+		const auto fo = FollowerDeck::StateJson();
+		{
+			std::lock_guard l(g_configMutex);
+			auto add = [&](const std::string& name, const std::string& note, const std::string& image) {
+				if (name.empty() || seen.count(name))
+					return;
+				seen.insert(name);
+				rows.push_back(Row{ name, note, image });
+			};
+			for (const auto& m : g_wardrobeConfig.outfitMeta)
+				add(m.name, m.note, m.image);
+			// SOES-side outfits that have no meta row yet still belong on the
+			// list — they are dressable, they just carry no photo.
+			auto soes = json::parse(
+				Wardrobe::StateJson(g_wardrobeConfig, fo), nullptr, false);
+			if (soes.is_object() && soes.contains("soes") && soes["soes"].is_object()) {
+				const auto& so = soes["soes"];
+				if (so.contains("outfits") && so["outfits"].is_array())
+					for (const auto& o : so["outfits"])
+						if (o.is_object())
+							add(o.value("name", std::string()), std::string(), std::string());
+			}
+		}
+
+		for (auto& r : rows) {
+			// The stored image carries a cache-buster query; strip it to the
+			// bare view-relative path before the copy (Ultralight drops queries).
+			std::string hk = r.image;
+			if (const auto q = hk.find('?'); q != std::string::npos)
+				hk = hk.substr(0, q);
+			const std::string icon = HbCopyOutfitPhoto(hk);
+			arr.push_back(json{ { "name", r.name }, { "note", r.note }, { "icon", icon } });
+		}
+		return json{ { "outfits", std::move(arr) } }
+			.dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
 	// Run the button. MAIN THREAD ONLY. Every branch ends in a verb that
 	// already exists; an unresolvable slot gets an honest notification rather
 	// than a button that silently does nothing.
@@ -9081,6 +9224,30 @@ namespace
 		if (s.kind == "entry") {
 			logger::info("hotbar-fire: page {} button {} -> entry '{}'", p, i + 1, s.refId);
 			FireEntryById(s.refId, "hotbar");
+			return;
+		}
+		if (s.kind == "outfit") {
+			// hotbar-outfit-slot: dress the PLAYER in this outfit, through the
+			// SAME verb the Wardrobe tab's "wear it now" uses (wdWear ->
+			// Wardrobe::DressNow). Identity is the outfit NAME in refId — SOES's
+			// own id, which is what DressNow resolves. A gone/renamed outfit
+			// comes back ok=false with a reason, so the button says why rather
+			// than silently doing nothing.
+			logger::info("hotbar-fire: page {} button {} -> outfit '{}'", p, i + 1, s.refId);
+			if (s.refId.empty())
+				return;
+			const auto res = json::parse(
+				Wardrobe::DressNow(json{ { "outfit", s.refId } }
+					.dump(-1, ' ', false, json::error_handler_t::replace)),
+				nullptr, false);
+			std::string msg;
+			if (res.is_discarded() || !res.value("ok", false))
+				msg = (res.is_object() && res.contains("msg"))
+					? res.value("msg", std::string("Could not wear that outfit"))
+					: ("Could not wear \"" + s.refId + "\"");
+			else
+				msg = "Wearing \"" + s.refId + "\"";
+			RE::DebugNotification(msg.c_str());
 			return;
 		}
 		if (s.kind == "combo") {
@@ -9203,6 +9370,21 @@ namespace
 		});
 	}
 
+	// hbOutfits -> hbOutfitsData: the "Outfit" pick source. Separate from
+	// hbCatalog because it also COPIES each outfit's photo into this view's tree
+	// (HbOutfitsJson), which the read-only catalog builders never do. Runs on
+	// the task thread; HbOutfitsJson touches only the config + the filesystem
+	// (no engine objects), so it is safe there and the copy IO stays off the
+	// render thread.
+	void OnJsHbOutfits(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			if (!g_prisma || !g_hbView || !g_hbViewReady.load())
+				return;
+			g_prisma->Invoke(g_hbView, ("hbOutfitsData(" + HbOutfitsJson() + ")").c_str());
+		});
+	}
+
 	void CreateHotbarView()
 	{
 		if (!g_prisma || g_hbView)
@@ -9223,6 +9405,7 @@ namespace
 		g_prisma->RegisterJSListener(g_hbView, "hbFire", OnJsHbFire);
 		g_prisma->RegisterJSListener(g_hbView, "hbAssign", OnJsHbAssign);
 		g_prisma->RegisterJSListener(g_hbView, "hbCatalog", OnJsHbCatalog);
+		g_prisma->RegisterJSListener(g_hbView, "hbOutfits", OnJsHbOutfits);
 		g_prisma->RegisterJSListener(g_hbView, "hbLog", OnJsHbLog);
 		logger::info("hotbar: view created + listeners registered");
 	}
@@ -10309,6 +10492,71 @@ namespace
 		const std::string req = data ? data : "{}";
 		SKSE::GetTaskInterface()->AddTask([req]() {
 			PushToView("ixSaved", ItemExplorer::Save(req));
+		});
+	}
+
+	// NPCs tab (NPC Finder). Same threading contract as the Items tab: every
+	// handler AddTasks — the index walk, the query, ProcessLists scanning and
+	// MoveTo all touch engine structures.
+	void OnJsNpcFinderState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("nxStateResult", NpcFinder::StateJson());
+		});
+	}
+
+	void OnJsNpcFinderQuery(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("nxResultData", NpcFinder::QueryJson(req));
+		});
+	}
+
+	void OnJsNpcFinderAct(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const std::string res = NpcFinder::ActJson(req);
+			const auto        j = json::parse(res, nullptr, false);
+			const bool        ok = !j.is_discarded() && j.value("ok", false);
+			const std::string act = j.is_discarded() ? std::string("") : j.value("act", std::string(""));
+			if (ok && (act == "goto" || act == "bring")) {
+				// Physical, not administrative — the Domains recall discipline:
+				// close the palette first so the jump lands in the live world,
+				// move, notify, then optionally reopen onto the tab. No reply
+				// is pushed on this path; the view is gone.
+				bool reopen;
+				{
+					std::lock_guard l(g_configMutex);
+					reopen = !g_config.settings.closeAfterFire;
+				}
+				ClosePalette();
+				const std::string msg = NpcFinder::ExecuteMove(req);
+				if (!msg.empty())
+					RE::DebugNotification(msg.c_str());
+				if (reopen)
+					SKSE::GetTaskInterface()->AddTask([]() {
+						if (CanOpenNow()) {
+							g_pendingTab = "npcs";
+							OpenPalette();
+						}
+					});
+				return;
+			}
+			PushToView("nxActResult", res);
+		});
+	}
+
+	void OnJsNpcFinderIcons(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			// Renders only the visible rows (the view bounds the list and
+			// settle-gates the ask — the Items tab lesson). An EMPTY payload
+			// queues nothing and just answers with the on-disk face index.
+			ItemIcons::EnsureFaceIcons(payload);
+			PushToView("nxIconsData", ItemIcons::FaceIndexJson());
 		});
 	}
 
@@ -13727,6 +13975,7 @@ namespace
 			return;
 
 		LoadConfig();
+		PortraitCapture::InstallPresentGrab();  // frame grabs run on the present thread (upscaler-safe)
 		NpcActions::Init();   // crosshair sink for freeze/sit/bed/release-all action entries
 		QuestTools::Init();   // quest inspector; its alias index builds lazily on first use
 		SpellActions::Init();  // Spell Deck backend (known-spell enum, cast, equip-toggle)
@@ -13782,6 +14031,8 @@ namespace
 		ItemIcons::Init();     // armour renders via Mesh Rendering Framework (soft-bound)
 		ItemIcons::SetOnBatchDone([]() {
 			PushToView("wdItemIcons", ItemIcons::IndexJson());
+			// Face renders ride the same queue; the NPCs pane listens for this.
+			PushToView("nxIconsData", ItemIcons::FaceIndexJson());
 		});
 
 		g_prisma = static_cast<PRISMA_UI_API::IVPrismaUI1*>(
