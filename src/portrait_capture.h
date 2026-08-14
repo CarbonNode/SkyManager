@@ -228,4 +228,11 @@ namespace PortraitCapture
 	float ExposureMax();
 	float GetPhotoExposure(const std::filesystem::path& dir);
 	bool  SetPhotoExposure(const std::filesystem::path& dir, float stops);
+
+	// Install the present-thread frame-grab hook (kDataLoaded, once). Captures
+	// run as jobs executed inside the game's present call, on the render
+	// thread — never as immediate-context work injected from the SKSE thread,
+	// which is what corrupted Skyrim Upscaler's proxy-swapchain UI compositing
+	// and left every deck reopen clipped to 2/3 of the screen (2026-08-13).
+	void InstallPresentGrab();
 }

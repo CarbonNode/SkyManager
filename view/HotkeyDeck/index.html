@@ -27,6 +27,9 @@
 <link rel="stylesheet" href="keys-pane.css">
 <!-- Items tab: the inline item explorer. Own sheet, same reason. -->
 <link rel="stylesheet" href="items-pane.css">
+<link rel="stylesheet" href="hd-lightbox.css">
+<!-- NPCs tab: the fast NPC finder. Own sheet, same reason. -->
+<link rel="stylesheet" href="npcs-pane.css">
 <!-- Character tab: your personal character sheet. Own sheet, same reason. -->
 <link rel="stylesheet" href="charsheet-pane.css">
 <!-- Door lock modal (F7 on a door). Own sheet, same reason. -->
@@ -863,6 +866,11 @@
 <section id="ix-pane" class="hidden" aria-label="Items">
   <div class="ix-head">
     <div class="ix-title">Item Explorer <span id="ix-count-chip"></span></div>
+    <div class="fx-switch" role="tablist" aria-label="Finder mode"
+         title="One Finder, two rosters — switch what you're searching (your typed text carries over)">
+      <button class="fx-sw fx-sw-on" data-go="items">⚒ Items</button>
+      <button class="fx-sw" data-go="npcs">👤 NPCs</button>
+    </div>
     <div class="ix-head-right">
       <span id="ix-gold" class="ix-gold" title="Your gold — live, straight from your inventory">🜚 …</span>
       <button id="ix-pay-toggle" class="ix-btn" title="Merchant mode — taking an item costs gold">💰 Merchant mode</button>
@@ -890,6 +898,39 @@
   <div id="ix-empty" class="hidden"></div>
   <div id="ix-toast" class="ix-toast" role="status" aria-live="polite"></div>
   <div id="ix-sheet" class="hidden"></div>
+</section>
+
+<!-- NPCs tab: the fast NPC finder (npcs-pane.js owns everything below the
+     static skeleton; C++ npc_finder.cpp owns the index, the matching and the
+     spawn/goto/bring actions; faces render via ItemIcons' face route). A
+     SIBLING of the other panes, per the tm-pane lesson below.
+     Keep this markup in step with npcs-pane.test.html. -->
+<section id="nx-pane" class="hidden" aria-label="NPCs">
+  <div class="nx-head">
+    <div class="nx-title">NPC Finder <span id="nx-count-chip"></span></div>
+    <div class="fx-switch" role="tablist" aria-label="Finder mode"
+         title="One Finder, two rosters — switch what you're searching (your typed text carries over)">
+      <button class="fx-sw" data-go="items">⚒ Items</button>
+      <button class="fx-sw fx-sw-on" data-go="npcs">👤 NPCs</button>
+    </div>
+    <div class="nx-head-right">
+      <span id="nx-mrf-note" class="hidden"
+            title="Mesh Rendering Framework is not installed, so face portraits cannot render — everything else works">👤 portraits off</span>
+    </div>
+  </div>
+  <div class="nx-barwrap">
+    <div class="nx-bar">
+      <span class="nx-bar-glyph">⌕</span>
+      <span id="nx-plug-chip" class="hidden"></span>
+      <input id="nx-search" type="text"
+             placeholder="Search anyone, or any mod — try 'Lydia', 'bandit' or 'Interesting NPCs' (Enter = bring the top hit)"
+             autocomplete="off" spellcheck="false">
+    </div>
+    <div id="nx-pills"></div>
+  </div>
+  <div id="nx-body"></div>
+  <div id="nx-empty" class="hidden"></div>
+  <div id="nx-toast" class="nx-toast" role="status" aria-live="polite"></div>
 </section>
 
 <!-- Character tab: your personal character sheet (charsheet-pane.js owns
@@ -1380,7 +1421,9 @@
   <script src="rooms-pane.js"></script>
   <script src="loot-pane.js"></script>
   <script src="keys-pane.js"></script>
+  <script src="hd-lightbox.js"></script>
   <script src="items-pane.js"></script>
+  <script src="npcs-pane.js"></script>
   <script src="charsheet-pane.js"></script>
   <script src="anim-pane.js"></script>
   <script src="ostim-pane.js"></script>

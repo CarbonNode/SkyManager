@@ -807,7 +807,8 @@ function render() {
   const pane = (ui.tab === 'home' || ui.tab === 'numpad' || ui.tab === 'notes' || ui.tab === 'quests' ||
                 ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
                 ui.tab === 'rooms' || ui.tab === 'time' || ui.tab === 'loot' ||
-                ui.tab === 'anim' || ui.tab === 'keys' || ui.tab === 'items' || ui.tab === 'sheet' ||
+                ui.tab === 'anim' || ui.tab === 'keys' || ui.tab === 'items' || ui.tab === 'npcs' ||
+                ui.tab === 'sheet' ||
                 ui.tab === 'wardrobe' || ui.tab === 'faces' || ui.tab === 'recent') ? ui.tab : 'deck';
   const deck = pane === 'deck';
   window.__hdActiveTab = pane;   // panes (followers/domains) key their re-renders off this
@@ -825,6 +826,7 @@ function render() {
   $('an-pane').classList.toggle('hidden', pane !== 'anim');
   $('kc-pane').classList.toggle('hidden', pane !== 'keys');
   $('ix-pane').classList.toggle('hidden', pane !== 'items');
+  $('nx-pane').classList.toggle('hidden', pane !== 'npcs');
   $('ps-pane').classList.toggle('hidden', pane !== 'sheet');
   $('fin-pane').classList.toggle('hidden', pane !== 'finances');
   $('wd-pane').classList.toggle('hidden', pane !== 'wardrobe');
@@ -867,7 +869,7 @@ function render() {
  *  control belongs beside that tab's other settings, not in a second card
  *  floating above it, and those panes never flip ui.edit anyway.
  */
-const TAB_SCALE_CARD_TABS = ['quests', 'notes', 'numpad', 'recent', 'time', 'loot', 'anim', 'items'];
+const TAB_SCALE_CARD_TABS = ['quests', 'notes', 'numpad', 'recent', 'time', 'loot', 'anim', 'items', 'npcs'];
 
 function renderTabScaleCard(pane) {
   const card = $('tab-scale-card');
@@ -1266,7 +1268,14 @@ function renderHints(pane) {
   }
   if (pane === 'items') {
     h.innerHTML = '<span>Type an item — or a mod to browse it</span><span>Enter = top hit</span>' +
-      '<span>💰 Merchant mode asks a price and pays real gold</span><span>F7 / Esc close</span>';
+      '<span>⚒⇄👤 switch to people, search carries over</span><span>click a picture for a big look</span>' +
+      '<span>💰 Merchant mode pays real gold</span><span>F7 / Esc close</span>';
+    return;
+  }
+  if (pane === 'npcs') {
+    h.innerHTML = '<span>Type a name, race or mod</span><span>Enter = bring the top hit</span>' +
+      '<span>👤⇄⚒ switch to items, search carries over</span><span>click a face for a big look</span>' +
+      '<span>⤞ Go to · ＋ Spawn a copy</span><span>F7 / Esc close</span>';
     return;
   }
   if (pane === 'anim') {
@@ -1319,7 +1328,15 @@ const SYS_TABS = [
   { tab: 'rooms',      label: 'Rooms',      img: 'icons/custom/hm-rooms.png',      title: 'Claim a room and keep strangers out of it' },
   { tab: 'loot',       label: 'Loot',       img: 'icons/custom/hm-loot.png',       title: 'Glow the loot worth walking to' },
   { tab: 'keys',       label: 'Keys',       img: 'icons/custom/hm-keys.png',       title: 'Every hotkey in the load order, and what conflicts' },
-  { tab: 'items',      label: 'Items',      img: 'icons/custom/hm-items.png',      title: 'Find any item any mod ships — take it, or pay for it' },
+  /* ONE Finder tab for both rosters (Rober, 2026-08-14: "change items and
+     npcs into one tab called Finder. With options for both in a search").
+     The 'finder' id is presentation-only: setTab() resolves it to 'items' or
+     'npcs' (whichever was used last, shelf-persisted), and the panes carry an
+     in-head mode switch that flips between them with the query riding along.
+     The underlying tab ids stay 'items'/'npcs' on purpose — omni providers,
+     C++ hdShowTab deep-opens, HDScale and the harnesses all keep working
+     untouched. */
+  { tab: 'finder',     label: 'Finder',     img: 'icons/custom/hm-finder.png',     title: 'Find any item or anyone the load order ships — take, bring, go to, spawn' },
   { tab: 'sheet',      label: 'Character',  img: 'icons/custom/hm-sheet.png',      title: 'Your character sheet - stats, effects, story' },
   { tab: 'anim',       label: 'Animations', img: 'icons/custom/hm-anim.png',       title: 'Apply a pose / animation to an NPC or yourself', requires: 'zap' },
   { tab: 'finances',   label: 'Finances',   img: 'icons/custom/hm-finances.png',   title: 'Your ledger, properties and market' },
@@ -1338,6 +1355,35 @@ function tabAvailable(sys) {
   if (!det || !(sys.requires in det)) return true;   // unknown flag → assume present
   return det[sys.requires] !== false;
 }
+/* The Finder pair + its shelf-persisted mode (which roster the merged tab
+   opens on). Same store and reason as tabbarPrefs(): a new `settings` key
+   would be dropped by the C++ field-by-field save; the shelf blob survives. */
+const FINDER_TABS = ['items', 'npcs'];
+
+function finderPrefs() {
+  if (!state.shelf || typeof state.shelf !== 'object' || Array.isArray(state.shelf)) state.shelf = {};
+  let f = state.shelf.finder;
+  if (!f || typeof f !== 'object' || Array.isArray(f)) f = state.shelf.finder = {};
+  if (FINDER_TABS.indexOf(f.mode) === -1) f.mode = 'items';
+  return f;
+}
+
+/* Is this SYS_TABS row the active one? 'finder' owns two underlying tabs. */
+function sysActive(s) {
+  if (!s) return false;
+  if (s.tab === 'finder') return FINDER_TABS.indexOf(ui.tab) !== -1;
+  return ui.tab === s.tab;
+}
+
+/* The pane switch calls this (fx-switch in both heads): flip roster, carry
+   the typed query so "ebony" over items becomes "ebony" over people. */
+window.__hdFinderGo = function (target, q) {
+  if (FINDER_TABS.indexOf(target) === -1) return;
+  setTab(target);
+  const pane = target === 'items' ? window.ItemsPane : window.NpcsPane;
+  if (pane && typeof pane.setFilter === 'function') pane.setFilter(String(q == null ? '' : q));
+};
+
 /* The gate keyed by tab id, for callers that hold a tab string not a SYS_TABS
    row (setTab / hdShowTab / omni). A tab with no SYS_TABS entry (hotkey cats,
    numpad, notes, wheel, recent) is never gated. */
@@ -1401,6 +1447,7 @@ function hintsPrefs() {
 }
 
 function bumpTabUse(t) {
+  if (FINDER_TABS.indexOf(t) !== -1) t = 'finder';   // both rosters feed ONE bar slot
   if (!SYS_TABS.some((s) => s.tab === t)) return;   // fixed trio / hk cats don't compete
   const tb = tabbarPrefs();
   tb.use[t] = (Number(tb.use[t]) || 0) + 1;
@@ -1491,7 +1538,7 @@ function renderMoreList() {
   let h = '';
   if (!items.length) h += '<div class="more-empty">No match</div>';
   items.forEach((t, i) => {
-    h += '<button class="more-item' + (ui.tab === t.tab ? ' active' : '') +
+    h += '<button class="more-item' + (sysActive(t) ? ' active' : '') +
       (filtering && i === 0 ? ' top' : '') + '" data-tab="' + t.tab + '" title="' + esc(t.title) + '">' +
       '<span class="more-item-label">' + esc(t.label) + '</span></button>';
   });
@@ -1534,7 +1581,7 @@ function renderMoreMenu(keepFocus) {
     h += '<div class="more-list">';
     if (!items.length) h += '<div class="more-empty">No match</div>';
     items.forEach((t, i) => {
-      h += '<button class="more-item' + (ui.tab === t.tab ? ' active' : '') +
+      h += '<button class="more-item' + (sysActive(t) ? ' active' : '') +
         (filtering && i === 0 ? ' top' : '') + '" data-tab="' + t.tab + '" title="' + esc(t.title) + '">' +
         '<span class="more-item-label">' + esc(t.label) + '</span></button>';
     });
@@ -1577,7 +1624,7 @@ function renderMoreMenu(keepFocus) {
 /* One system button, in the current tab style. Icons mode shows the Home
    card's gold glyph and leans on the title (the #hd-tip bubble) for the name. */
 function sysBtnHtml(t, icons) {
-  const active = ui.tab === t.tab;
+  const active = sysActive(t);
   if (icons) {
     return '<button class="tab tab-ic' + (active ? ' active' : '') + '" data-tab="' + t.tab +
       '" title="' + esc(t.label) + ' — ' + esc(t.title) + '">' +
@@ -1619,7 +1666,7 @@ function paintTabsRow(n, compactMore) {
   /* The More button stays even when everything fits: it holds the tab-style
      toggle, and it is where an overflowed ACTIVE tab hoists its label so you
      always see where you are. */
-  const activeMore = tabOverflow.filter((t) => t.tab === ui.tab)[0];
+  const activeMore = tabOverflow.filter(sysActive)[0];
   const moreTitle = tabOverflow.length
     ? 'More systems — ' + esc(tabOverflow.map((t) => t.label).join(', '))
     : 'Tab style & options';
@@ -2579,6 +2626,10 @@ function requestClose() {
 
 function setTab(t) {
   closeMoreMenu();   // any tab switch dismisses the overflow menu
+  /* The bar's merged Finder entry: resolve to whichever roster was used last.
+     The reverse also holds — landing on either roster records it, so the tab
+     re-opens where you left it. */
+  if (t === 'finder') t = finderPrefs().mode;
   /* A gated-off tab is not reachable — deep-open keys (F14 Followers etc.) and
      the F7-with-target route land here, so a hidden pane must no-op to Home
      with a small toast rather than open a broken surface. Hotkey cats / numpad
@@ -2592,6 +2643,7 @@ function setTab(t) {
   if (ui.tab === t) return;
   const prev = ui.tab;
   ui.tab = t;
+  if (FINDER_TABS.indexOf(t) !== -1) finderPrefs().mode = t;   // saved with the next config write
   bumpTabUse(t);   // usage ranks the bar: most-used systems earn the visible slots
   if (isHotkeyTab(t)) ui.hkTab = t;   // Hotkeys returns to the last category
   ui.sel = 0;
@@ -2603,6 +2655,7 @@ function setTab(t) {
   if (prev === 'loot' && window.LootPane) LootPane.onHide();
   if (prev === 'keys' && window.KeysPane) KeysPane.onHide();
   if (prev === 'items' && window.ItemsPane) ItemsPane.onHide();
+  if (prev === 'npcs' && window.NpcsPane) NpcsPane.onHide();
   if (prev === 'sheet' && window.CharSheetPane) CharSheetPane.onHide();
   if (prev === 'anim' && window.AnimPane) AnimPane.onHide();
   if (prev === 'finances' && window.FinancesPane) FinancesPane.onHide();
@@ -2658,6 +2711,10 @@ function setTab(t) {
   }
   if (t === 'items') {
     if (window.ItemsPane) ItemsPane.onShow();   // first look builds the C++ index; later looks refresh gold
+    return;
+  }
+  if (t === 'npcs') {
+    if (window.NpcsPane) NpcsPane.onShow();   // first look builds the C++ NPC index
     return;
   }
   if (t === 'sheet') {

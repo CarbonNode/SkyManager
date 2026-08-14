@@ -108,7 +108,6 @@
   "omo-pick-seed": "Object Manipulation Overhaul picks up the item",
   "nff-home-ref": "has no My Home is Your Home home yet",
   "portal-portraits-live": "portal portraits: applied live",
-  "portrait-renderer-lock": "racing the renderer",
   "nff-set-base": "nff: home base for",
   "relationship-rank": "relationship: set {} to",
   "maras-spouse": "maras: tracking faction resolved",
@@ -272,7 +271,13 @@
   "item-explorer-add": "item-explorer: add {} x{} from {} (paid {})",
   "anim-lo-scan": "anim: load-order scan",
   "anim-pack-set": "anim: pack '",
-  "anim-scan-sidecar": "anim: scan sidecar loaded"
+  "anim-scan-sidecar": "anim: scan sidecar loaded",
+  "npc-finder-index": "npc-finder: index built",
+  "npc-finder-faces": "npc face render(s) queued",
+  "npc-finder-move": "npc-finder: goto '",
+  "portrait-present-hook": "present-grab hook installed",
+  "portrait-present-grab": "present-thread grab ok",
+  "mrf-new-arch-latch": "new-architecture Mesh Rendering Framework detected"
  },
  "view": {
   "items-pane.js": {
@@ -280,7 +285,9 @@
    "items-price-sheet": "function openSheet",
    "items-merchant-toggle": "Merchant mode: ON",
    "items-real-renders": "hd-item-icons",
-   "items-icon-settle": "function scheduleIconWork"
+   "items-icon-settle": "function scheduleIconWork",
+   "items-lightbox": "function openLightbox",
+   "items-finder-switch": "#ix-pane .fx-sw"
   },
   "items-pane.css": {
    "items-sheet": "#ix-pane {",
@@ -507,7 +514,8 @@
    "door-modal-keys": "HDDoor.isOpen",
    "spell-icon-resolve": "window.hdSpellIconPath",
    "tab-detection-gate": "function tabAvailable",
-   "tab-gate-f7-degrade": "window.__hdFlagAbsent"
+   "tab-gate-f7-degrade": "window.__hdFlagAbsent",
+   "finder-merged-tab": "window.__hdFinderGo = function"
   },
   "index.html": {
    "followers-scale-wrapper": "id=\"fd-scale\"",
@@ -596,6 +604,18 @@
   "keys-pane": "kcResultData",
   "charsheet-pane": "ps-eff-harm-row",
   "charsheet-portrait-capture": "window.psPortraitTaken",
-  "chim-detection-gate": "function detectedGate"
+  "chim-detection-gate": "function detectedGate",
+  "npcs-pane.js": {
+   "npcs-module": "window.NpcsPane = (function",
+   "npcs-face-key": "function faceKey",
+   "npcs-lightbox": "function openLightbox",
+   "npcs-finder-switch": "#nx-pane .fx-sw"
+  },
+  "npcs-pane.css": {
+   "npcs-css": "#nx-pane {"
+  },
+  "hd-lightbox.js": {
+   "lightbox-module": "window.HDLightbox = (function"
+  }
  }
 }

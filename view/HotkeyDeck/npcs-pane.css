@@ -1,0 +1,579 @@
+/* ===================================================================== *
+ *  NPCs tab — the fast NPC finder (npcs-pane.js).  Derived from the Items
+ *  tab's sheet so the two explorers share one visual language: same bar,
+ *  same pills, same row rhythm.  Differences: the glyph plate is a FACE
+ *  plate (FaceGen render over a sex/unique-hued glyph), rows carry
+ *  unique/essential/template chips, and there is no merchant machinery.
+ *  Own file on purpose — the sync_view_frags truncation trap.
+ * ===================================================================== */
+
+#nx-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 22px 14px;
+  gap: 14px;
+  position: relative;   /* the price sheet + toast anchor to the pane */
+}
+#nx-pane.hidden { display: none; }
+
+/* ------------------------------------------------------------- header -- */
+
+.nx-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.nx-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #e8e2d4;
+  letter-spacing: .3px;
+  white-space: nowrap;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+#nx-count-chip {
+  font-size: 13px;
+  font-weight: 500;
+  color: #9a917d;
+  white-space: nowrap;
+}
+
+.nx-head-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+#nx-mrf-note {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ecd9a8;
+  background: #201f18;
+  border: 1px solid #55503f;
+  border-radius: 9px;
+  padding: 8px 14px;
+  white-space: nowrap;
+}
+
+.nx-btn {
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  color: #cfc8b8;
+  font-size: 14px;
+  padding: 10px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.nx-btn:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.nx-btn:active { background: #17171d; }
+.nx-btn.nx-toggle-on {
+  background: rgba(201, 162, 75, .16);
+  border-color: rgba(201, 162, 75, .55);
+  color: #ecd9a8;
+}
+
+
+/* --------------------------------------------------------- the ONE bar -- */
+
+.nx-barwrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nx-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #121218;
+  border: 1px solid #3d3a33;
+  border-radius: 999px;          /* the Google silhouette */
+  padding: 6px 12px 6px 20px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.nx-bar:focus-within {
+  border-color: rgba(201, 162, 75, .55);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .10), 0 6px 22px rgba(0, 0, 0, .35);
+}
+
+.nx-bar-glyph {
+  font-size: 20px;
+  color: #9a917d;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+#nx-search {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #efe9da;
+  font-size: 18px;               /* the hero input — bigger than any filter */
+  padding: 11px 6px;
+}
+#nx-search::placeholder { color: #6d675a; }
+
+/* the selected-mod chip lives INSIDE the bar, like a Gmail search token */
+#nx-plug-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 40%;
+  background: rgba(201, 162, 75, .14);
+  border: 1px solid rgba(201, 162, 75, .45);
+  color: #ecd9a8;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 7px 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+#nx-plug-chip.hidden { display: none; }
+#nx-plug-chip b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  font-weight: 600;
+}
+.nx-chip-x {
+  cursor: pointer;
+  font-weight: 700;
+  color: #d8bd85;
+  padding: 0 2px;
+  border-radius: 50%;
+  transition: color 120ms ease, transform 120ms ease;
+  flex-shrink: 0;
+}
+.nx-chip-x:hover { color: #f2e2b0; transform: scale(1.2); }
+
+/* -------------------------------------------------------------- pills -- */
+
+#nx-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;       /* centred under the bar, search-engine style */
+}
+
+.nx-pill {
+  background: #17171e;
+  border: 1px solid #33302a;
+  border-radius: 999px;
+  color: #b6ad99;
+  font-size: 13.5px;
+  padding: 8px 15px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.nx-pill:hover { background: #20202a; border-color: #4a4638; color: #e2dbca; }
+.nx-pill.nx-pill-on {
+  background: rgba(201, 162, 75, .16);
+  border-color: rgba(201, 162, 75, .55);
+  color: #ecd9a8;
+  font-weight: 650;
+}
+
+/* --------------------------------------------------------------- body -- */
+
+#nx-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 6px;
+}
+
+.nx-sect {
+  font-size: 12.5px;
+  color: #6d675a;
+  text-transform: uppercase;
+  letter-spacing: .9px;
+  padding: 8px 4px 2px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.nx-sect b { color: #9a917d; font-weight: 650; letter-spacing: 0; text-transform: none; }
+
+/* a matching MOD (plugin) row — click to browse its whole catalogue */
+.nx-plug-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #15151d;
+  border: 1px solid #3a3630;
+  border-radius: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.nx-plug-row:hover { background: #1c1c25; border-color: rgba(201, 162, 75, .45); }
+.nx-plug-row.nx-sel { border-color: rgba(201, 162, 75, .6); background: #1c1c25; }
+
+.nx-plug-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 15.5px;
+  font-weight: 650;
+  color: #e2dbca;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nx-plug-count { font-size: 13px; color: #9a917d; white-space: nowrap; }
+.nx-plug-go { font-size: 14px; color: #d8bd85; white-space: nowrap; }
+
+.nx-kindbadge {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .6px;
+  border-radius: 6px;
+  padding: 4px 8px;
+  flex-shrink: 0;
+}
+.nx-kind-esm { background: #21232b; border: 1px solid #363a47; color: #aab3c6; }
+.nx-kind-esp { background: #1b2b28; border: 1px solid #2f5148; color: #94d6c3; }
+.nx-kind-esl { background: #261e2e; border: 1px solid #4a3960; color: #cbabef; }
+
+/* ----------------------------------------------------------- item rows -- */
+
+.nx-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: #15151b;
+  border: 1px solid #33302a;
+  border-radius: 10px;
+  padding: 13px 16px;
+  transition: background 130ms ease, border-color 130ms ease, transform 130ms ease, box-shadow 130ms ease;
+}
+.nx-row:hover {
+  background: #1b1b23;
+  border-color: #4a4638;
+  transform: translateY(-1px);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, .34);
+}
+.nx-row.nx-sel {
+  border-color: rgba(201, 162, 75, .6);
+  background: #1b1b23;
+  box-shadow: 0 0 0 1px rgba(201, 162, 75, .18);
+}
+
+/* per-type glyph plate, the keys-pane hue idea applied to item categories.
+   Also the frame for a real item render: the <img> fills it, the emoji hides
+   underneath so a broken/absent render leaves the hued glyph. */
+.nx-plate {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  overflow: hidden;
+}
+/* the rendered mesh, floated over the glyph plate */
+.nx-plate .nx-art {
+  position: absolute;
+  inset: 5px;
+  width: calc(100% - 10px);
+  height: calc(100% - 10px);
+  object-fit: contain;   /* a small object on transparency — never cropped */
+  pointer-events: none;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .5));
+}
+/* once art has landed the emoji is redundant — mute it right down so it can't
+   bleed through a transparent render, but keep it as the load fallback */
+.nx-plate.nx-has-art { color: transparent; background: #101015; border-color: #2c2a24; }
+.nx-t-uniq { background: #2a2417; border-color: #55503f; color: #ecd9a8; }
+.nx-t-fem  { background: #2b1d24; border-color: #5c3349; color: #e89cc0; }
+.nx-t-male { background: #1c2530; border-color: #33465c; color: #9ec3e8; }
+
+.nx-mid {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.nx-name {
+  font-size: 16px;
+  font-weight: 650;
+  color: #efe9da;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nx-name mark {
+  background: rgba(201, 162, 75, .25);
+  color: #f2e2b0;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.nx-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: #9a917d;
+  min-width: 0;
+}
+.nx-meta-race { color: #b6ad99; font-weight: 600; white-space: nowrap; }
+.nx-meta-plug {
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 34ch;
+  transition: color 120ms ease;
+}
+.nx-meta-plug:hover { color: #ecd9a8; text-decoration: underline; }
+
+
+
+.nx-act .nx-primary {
+  background: linear-gradient(180deg, rgba(201, 162, 75, .22), rgba(201, 162, 75, .11));
+  border: 1px solid rgba(201, 162, 75, .5);
+  border-radius: 9px;
+  color: #f0dfaf;
+  font-size: 14px;
+  font-weight: 650;
+  padding: 10px 18px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgba(255, 240, 200, .08);
+  transition: background 130ms ease, border-color 130ms ease, transform 80ms ease, box-shadow 130ms ease;
+}
+.nx-act .nx-primary:hover {
+  background: linear-gradient(180deg, rgba(201, 162, 75, .34), rgba(201, 162, 75, .18));
+  border-color: rgba(201, 162, 75, .8);
+  box-shadow: inset 0 1px 0 rgba(255, 240, 200, .12), 0 3px 10px rgba(0, 0, 0, .28);
+}
+.nx-act .nx-primary:active {
+  transform: scale(.97);
+  background: linear-gradient(180deg, rgba(201, 162, 75, .12), rgba(201, 162, 75, .2));
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, .3);
+}
+
+/* the "show more" foot */
+.nx-more {
+  align-self: center;
+  margin: 6px 0 10px;
+}
+
+/* --------------------------------------------------------- hero / empty -- */
+
+#nx-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 30px;
+}
+#nx-empty.hidden { display: none; }
+
+.nx-hero-glyph { font-size: 44px; line-height: 1; opacity: .8; }
+.nx-empty-title { font-size: 20px; font-weight: 700; color: #cfc8b8; }
+.nx-empty-sub { font-size: 14.5px; color: #8d8471; max-width: 52ch; line-height: 1.55; }
+.nx-empty-sub b { color: #cfc8b8; }
+
+.nx-try {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 4px;
+}
+.nx-try .nx-pill { font-size: 14px; }
+
+
+/* --------------------------------------------------------------- toast -- */
+
+.nx-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%) translateY(8px);
+  background: #1d1d25;
+  border: 1px solid rgba(201, 162, 75, .5);
+  color: #ecd9a8;
+  border-radius: 10px;
+  padding: 11px 18px;
+  font-size: 14.5px;
+  font-weight: 600;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 50;
+  max-width: 86%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nx-toast.nx-toast-show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.nx-toast.nx-toast-err { border-color: rgba(200, 80, 70, .6); color: #f0b1a8; }
+
+/* ---------------------------------------------------------- skeletons -- */
+
+.nx-skel { pointer-events: none; }
+.nx-skel-box {
+  border-radius: 8px;
+  background: linear-gradient(90deg, #1b1b22 25%, #23232c 50%, #1b1b22 75%);
+  background-size: 200% 100%;
+  animation: nx-shimmer 1.3s infinite linear;
+  border: none;
+}
+.nx-skel .nx-plate { border: none; }
+.nx-skel-w1 { width: 46%; height: 18px; }
+.nx-skel-w2 { width: 30%; height: 13px; }
+.nx-skel-btn { width: 84px; height: 38px; }
+
+@keyframes nx-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ------------------------------------------------- narrow palette (640) -- */
+
+@media (max-width: 900px) {
+  #nx-pane { padding: 14px 14px 10px; }
+  .nx-title { font-size: 17px; }
+  #nx-search { font-size: 16px; padding: 9px 4px; }
+  .nx-btn { padding: 9px 12px; font-size: 13px; }
+  .nx-row { gap: 12px; padding: 11px 12px; }
+  .nx-plate { width: 54px; height: 54px; font-size: 25px; }
+  .nx-sheet-glyph { width: 50px; height: 50px; font-size: 24px; }
+  .nx-name { font-size: 14.5px; }
+  .nx-meta { font-size: 12.5px; gap: 8px; }
+  .nx-meta-val, .nx-meta-wt { font-size: 12.5px; }
+  .nx-meta-vw { gap: 8px; }
+  .nx-meta-wt { padding-left: 8px; }
+  .nx-meta-plug { max-width: 18ch; }
+  .nx-qty button { width: 28px; height: 34px; }
+  .nx-act .nx-do { padding: 8px 11px; font-size: 12.5px; }
+  #nx-plug-chip { max-width: 34%; font-size: 13px; }
+  .nx-pill { font-size: 12.5px; padding: 7px 11px; }
+}
+
+/* ------------------------------------------------- npc-specific pieces -- */
+
+#nx-mrf-note.hidden { display: none; }
+
+/* the action column: three verbs, wrapping before they ever clip (the F7
+   quick-card eleven-buttons lesson) */
+.nx-act {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.nx-act .nx-do { font-size: 13.5px; padding: 9px 14px; }
+.nx-act .nx-primary { font-size: 13.5px; padding: 9px 16px; }
+
+/* name-line chips: unique / essential / template-no-face */
+.nx-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.nx-name mark { flex: 0 1 auto; }
+.nx-chip {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.nx-chip-uniq { background: rgba(201, 162, 75, .14); border: 1px solid rgba(201, 162, 75, .45); color: #ecd9a8; }
+.nx-chip-ess  { background: #21232b; border: 1px solid #414659; color: #aab3c6; }
+.nx-chip-tmpl { background: #1f1f26; border: 1px solid #3a3a46; color: #8d8878; }
+
+/* the face plate: portrait-shaped, art fills it */
+.nx-plate {
+  width: 72px;
+  height: 72px;
+  border-radius: 12px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  border: 1px solid;
+  position: relative;
+  overflow: hidden;
+}
+.nx-plate .nx-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.nx-skel .nx-plate { width: 72px; height: 72px; }
+
+@media (max-width: 760px) {
+  .nx-plate, .nx-skel .nx-plate { width: 56px; height: 56px; font-size: 20px; }
+  .nx-act .nx-do, .nx-act .nx-primary { padding: 8px 11px; font-size: 12.5px; }
+}
+
+/* the name text itself keeps its ellipsis inside the flex name line */
+.nx-name-txt {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── lightbox affordance + the Finder mode switch (2026-08-14) ─────────── */
+
+.nx-plate.nx-zoomable { cursor: zoom-in; transition: border-color .12s ease, box-shadow .12s ease; }
+.nx-plate.nx-zoomable:hover { border-color: #6a6455; box-shadow: 0 0 0 2px rgba(255, 211, 106, .18); }
+
+#nx-pane .fx-switch {
+  display: inline-flex;
+  border: 1px solid #3a3a46;
+  border-radius: 10px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+#nx-pane .fx-sw {
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  color: #97917f;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+  white-space: nowrap;
+}
+#nx-pane .fx-sw + .fx-sw { border-left: 1px solid #3a3a46; }
+#nx-pane .fx-sw:hover { background: #23232c; color: #d8d2c4; }
+#nx-pane .fx-sw.fx-sw-on { background: #33301f; color: #ffd36a; cursor: default; }

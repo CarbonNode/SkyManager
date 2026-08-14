@@ -925,8 +925,21 @@ namespace ItemIcons
 				g_asked.insert(key);   // nothing to render; don't re-derive every call
 				return false;
 			}
-			const auto out = (IconDir() / FileFor(fid, plugin, !look.swaps.empty())).string();
+			/* With swaps latched off (new-architecture MRF, or two strikes) a
+			 * retexture variant renders as the BARE mesh — that picture must land
+			 * under the PLAIN name, never under "-s2" (the name the index prefers,
+			 * reserved for renders that really carried the variant's textures). */
+			const bool hasSwaps = !look.swaps.empty();
+			const bool wantSwap = hasSwaps && !g_swapDisabled;
+			const auto out = (IconDir() / FileFor(fid, plugin, wantSwap)).string();
 			if (FileExists(out)) {   // render once, keep forever
+				g_asked.insert(key);
+				return false;
+			}
+			if (hasSwaps && !wantSwap &&
+				FileExists((IconDir() / FileFor(fid, plugin, true)).string())) {
+				// a good swap-rendered icon from an earlier session still wins the
+				// index — don't burn a render on a bare duplicate beside it
 				g_asked.insert(key);
 				return false;
 			}
@@ -934,7 +947,7 @@ namespace ItemIcons
 			r.outPath = out;
 			r.key     = key;
 			r.nifPath = std::move(look.nif);
-			r.swaps   = std::move(look.swaps);
+			r.swaps   = wantSwap ? std::move(look.swaps) : std::vector<AltTex>{};
 			r.label   = name.empty() ? key : name;
 			g_queue.push_back(std::move(r));
 			g_asked.insert(key);
@@ -1046,6 +1059,22 @@ namespace ItemIcons
 			g_delete      = nullptr;
 			return;
 		}
+		/* The 2026-08 MRF rewrite (nifly + its own D3D11 pipeline) parses the NIF
+		 * from the game's resources itself — it never touches BSModelDB, so the
+		 * wet-paint texture swap (ApplySwaps on the cached node) silently paints a
+		 * model the renderer never reads, and a "-s2" file would bake the WRONG
+		 * (base) textures under the preferred filename, permanently. The rewrite
+		 * is detectable by an export the old architecture never had; when it is
+		 * present, latch the existing swap-disable so retexture variants render
+		 * as the bare mesh under the plain filename (existing good -s2 icons on
+		 * disk keep winning the index). The trade is deliberate: the rewrite is
+		 * what renders FaceGen heads (skin posing + facetint) — the NPC Finder's
+		 * portraits — which the old architecture drew as a black square. */
+		if (GetProcAddress(mod, "IMesh_SetTextureSet")) {
+			g_swapDisabled = true;
+			logger::info("item icons: new-architecture Mesh Rendering Framework detected — "
+						 "texture swaps off (bare-mesh renders), FaceGen head renders on");
+		}
 		logger::info("item icons: Mesh Rendering Framework bound — armour renders at {}px", kSize);
 	}
 
@@ -1118,6 +1147,117 @@ namespace ItemIcons
 		StartWatcher();
 	}
 
+	/* ── NPC faces (the NPC Finder's icons) ─────────────────────────────────
+	 * Not a form-derived model at all: the NIF is the CK's baked FaceGen head,
+	 * named by the face owner's origin plugin + 8-hex formid. Everything else
+	 * — queue, in-flight budget, deferred save, render-once-keep-forever — is
+	 * the machinery above, untouched. */
+	namespace
+	{
+		std::filesystem::path FaceDir()
+		{
+			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "npcs";
+		}
+
+		// g_mutex held. Returns true if a render was queued.
+		bool EnqueueFaceLocked(const std::string& fid, const std::string& plugin, const std::string& name)
+		{
+			if (fid.empty() || plugin.empty() || g_queue.size() >= kMaxQueued)
+				return false;
+			// Distinct asked-key namespace: IndexJson skips any key with '@',
+			// and Pump's failure-erase works on this key unchanged.
+			const auto key = KeyOf(fid, plugin) + "@face";
+			if (g_asked.count(key))
+				return false;
+			// The CK's file name: 8 hex digits, lowercase, zero-padded.
+			std::string hex = fid;
+			if (hex.rfind("0x", 0) == 0 || hex.rfind("0X", 0) == 0)
+				hex = hex.substr(2);
+			for (auto& c : hex)
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			if (hex.empty() || hex.size() > 8)
+				return false;
+			while (hex.size() < 8)
+				hex.insert(hex.begin(), '0');
+			const std::string rel =
+				"actors\\character\\facegendata\\facegeom\\" + plugin + "\\" + hex + ".nif";
+			// Probe through the game's own resource stack (loose files AND
+			// BSAs, MO2 VFS applied) BEFORE queueing: a templated NPC has no
+			// face file, and the framework must never burn a mesh finding
+			// that out. The mark makes the miss permanent for the session.
+			RE::BSResourceNiBinaryStream probe(("meshes\\" + rel).c_str());
+			if (!probe.good()) {
+				g_asked.insert(key);
+				return false;
+			}
+			const auto out = (FaceDir() / FileFor(fid, plugin, false)).string();
+			if (FileExists(out)) {   // render once, keep forever
+				g_asked.insert(key);
+				return false;
+			}
+			std::error_code ec;
+			std::filesystem::create_directories(FaceDir(), ec);
+			Request r;
+			r.outPath = out;
+			r.key     = key;
+			r.nifPath = rel;      // swaps deliberately empty: the head is self-contained
+			r.label   = name.empty() ? key : name;
+			g_queue.push_back(std::move(r));
+			g_asked.insert(key);
+			return true;
+		}
+	}
+
+	void EnsureFaceIcons(const std::string& itemsJson)
+	{
+		if (!Ready())
+			return;
+		auto j = nlohmann::json::parse(itemsJson, nullptr, false);
+		if (j.is_discarded() || !j.is_object() || !j.contains("items") || !j["items"].is_array())
+			return;
+		std::size_t queued = 0;
+		{
+			std::lock_guard l(g_mutex);
+			for (const auto& it : j["items"]) {
+				if (!it.is_object())
+					continue;
+				if (EnqueueFaceLocked(it.value("formId", std::string()),
+						it.value("plugin", std::string()),
+						it.value("name", std::string())))
+					++queued;
+			}
+		}
+		if (!queued)
+			return;
+		logger::info("item icons: {} npc face render(s) queued", queued);
+		{
+			std::lock_guard l(g_mutex);
+			Pump();
+		}
+		StartWatcher();
+	}
+
+	std::string FaceIndexJson()
+	{
+		nlohmann::json icons = nlohmann::json::object();
+		std::lock_guard l(g_mutex);
+		static const std::string suffix = "@face";
+		for (const auto& key : g_asked) {
+			if (key.size() <= suffix.size() ||
+				key.compare(key.size() - suffix.size(), suffix.size(), suffix) != 0)
+				continue;
+			const auto base = key.substr(0, key.size() - suffix.size());
+			const auto bar = base.find('|');
+			if (bar == std::string::npos)
+				continue;
+			const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
+			if (FileExists((FaceDir() / file).string()))
+				icons[base] = "icons/npcs/" + file;
+		}
+		return nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) } }
+			.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
 	void CaptureAngles(const std::string& fid, const std::string& plugin)
 	{
 		if (!Ready() || fid.empty() || plugin.empty())
@@ -1130,7 +1270,17 @@ namespace ItemIcons
 		auto look = LookOf(fid, plugin);
 		if (look.nif.empty())
 			return;
-		const bool  swapped  = !look.swaps.empty();
+		bool swapped = !look.swaps.empty();
+		if (swapped && g_swapDisabled) {
+			/* Bare frames cannot match a swap-rendered frame 0. If the view's
+			 * frame 0 is the "-s2" file (index preference), baking bare angles
+			 * would either mix textures or land under names never probed — so
+			 * no turntable at all for this piece. With only a plain frame 0,
+			 * bare angles under plain names are consistent and fine. */
+			if (FileExists((IconDir() / FileFor(fid, plugin, true)).string()))
+				return;
+			swapped = false;
+		}
 		const auto  baseFile = FileFor(fid, plugin, swapped);
 		std::size_t queued   = 0;
 		{
