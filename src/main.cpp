@@ -7912,6 +7912,15 @@ namespace
 	// palette would deadlock itself into PD's 8s leash.
 	std::filesystem::path PresetIconsDir() { return DeckViewDir() / "preset-icons"; }
 
+	// Auto-render batch state — declared ahead of PresetIndexJson, which
+	// reports it to the view (live "Rendering k/N" + Stop chip).
+	std::atomic<bool> g_presetAutoBusy{ false };
+	std::atomic<bool> g_presetAutoCancel{ false };
+	std::atomic<int>  g_presetAutoTotal{ 0 };
+	std::atomic<int>  g_presetAutoDone{ 0 };
+	std::atomic<int>  g_presetAutoFailed{ 0 };
+	std::mutex        g_presetAssignLock;
+
 	json PresetAssignments()
 	{
 		json          m = json::object();
@@ -7982,6 +7991,12 @@ namespace
 		}
 		out["icons"] = icons;
 		out["assign"] = PresetAssignments();
+		// Live batch state, so a reopened deck shows "Rendering k/N" + Stop
+		// instead of a dead ✨ button while the worker runs.
+		out["autorender"] = { { "running", g_presetAutoBusy.load() },
+			{ "done", g_presetAutoDone.load() },
+			{ "failed", g_presetAutoFailed.load() },
+			{ "total", g_presetAutoTotal.load() } };
 		const json meta = PresetMeta();
 		out["fav"] = meta["fav"];
 		out["cats"] = meta["cats"];
@@ -7991,11 +8006,8 @@ namespace
 
 	// ---- Faces auto-render: batch preset thumbnails via PD /thumb ----
 	// One worker at a time; assign.json writes are shared with op "img", so
-	// both go through g_presetAssignLock.
-	std::atomic<bool> g_presetAutoBusy{ false };
-	std::atomic<bool> g_presetAutoCancel{ false };
-	std::mutex        g_presetAssignLock;
-
+	// both go through g_presetAssignLock (state atomics declared up beside
+	// PresetIconsDir — PresetIndexJson reports them).
 	std::string PresetAutoFileName(const std::string& preset)
 	{
 		std::string s = "auto-" + preset;
@@ -8056,8 +8068,23 @@ namespace
 			return;
 		}
 		logger::info("preset autorender: {} preset face(s) to render", missing.size());
+		g_presetAutoTotal.store(static_cast<int>(missing.size()));
+		g_presetAutoDone.store(0);
+		g_presetAutoFailed.store(0);
 		notify("Rendering " + std::to_string(missing.size()) +
-			   " preset faces — a mannequin will stand beside you while this runs.");
+			   " preset faces — a stand-in will appear beside you while this runs.");
+
+		// A reopened deck repaints as each face lands (harmless when closed).
+		const auto pushIndex = []() {
+			if (auto* t = SKSE::GetTaskInterface())
+				t->AddTask([]() { PushToView("fdPresetData", PresetIndexJson()); });
+		};
+
+		// Fail-fast: a broken PRECONDITION (MRF not installed, PD leash dead)
+		// fails every preset the same way — grinding all 117 through it would
+		// waste minutes and spam the log. Distinct per-preset errors keep going.
+		std::string sameErr;
+		int         sameErrRun = 0;
 
 		std::size_t done = 0, failed = 0;
 		for (const auto& preset : missing) {
@@ -8071,7 +8098,8 @@ namespace
 			if (std::filesystem::exists(abs, ec) && std::filesystem::file_size(abs, ec) > 0) {
 				// A previous (cancelled/crashed) run already rendered it.
 				PresetAssignIcon(preset, file);
-				++done;
+				g_presetAutoDone.store(static_cast<int>(++done));
+				pushIndex();
 				continue;
 			}
 			json body;
@@ -8084,11 +8112,20 @@ namespace
 			json r = json::parse(res, nullptr, false);
 			if (!r.is_discarded() && r.value("ok", false) && r.value("saved", false)) {
 				PresetAssignIcon(preset, file);
-				++done;
+				g_presetAutoDone.store(static_cast<int>(++done));
+				sameErrRun = 0;
+				pushIndex();
 			} else {
-				++failed;
-				logger::warn("preset autorender: '{}' failed: {}", preset,
-					r.is_discarded() ? res : r.value("error", res));
+				const std::string err = r.is_discarded() ? res : r.value("error", res);
+				g_presetAutoFailed.store(static_cast<int>(++failed));
+				logger::warn("preset autorender: '{}' failed: {}", preset, err);
+				sameErrRun = (err == sameErr) ? sameErrRun + 1 : 1;
+				sameErr = err;
+				if (sameErrRun >= 3 && done == 0) {
+					notify("Preset rendering stopped — every attempt fails the same way: " + err);
+					logger::error("preset autorender: aborted, repeated error: {}", err);
+					break;
+				}
 			}
 			if ((done + failed) % 5 == 0)
 				notify("Preset faces: " + std::to_string(done + failed) + "/" +
@@ -8104,9 +8141,8 @@ namespace
 				("Rendered " + std::to_string(done) + " preset faces" +
 					(failed ? " (" + std::to_string(failed) + " failed — see the log)" : "") +
 					" — open the Faces tab."));
-		if (auto* t = SKSE::GetTaskInterface())
-			t->AddTask([]() { PushToView("fdPresetData", PresetIndexJson()); });
 		g_presetAutoBusy.store(false);
+		pushIndex();  // after busy clears, so the view's Stop chip retires
 	}
 
 	void OnJsFolPreset(const char* data)
