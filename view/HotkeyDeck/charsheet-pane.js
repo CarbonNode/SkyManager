@@ -415,12 +415,33 @@ window.CharSheetPane = (function () {
      the same query-hostile-loader dance the followers medallions use. */
   function portraitSrc(path) { return path; }
 
+  /* The portrait's identity object-position: '' inherits .ps-portrait img,
+     whose object-fit:cover defaults to 50% 50% — the portrait is centred with
+     no crop. This is the baseline the crop editor is told to match
+     (openPortraitCrop passes baseline:'50% 50%' + aspect 156/200), so reframing
+     is WYSIWYG: the editor shows what the square-source cover-crops into the
+     156x200 frame, not the raw square. */
+  const PORTRAIT_BASELINE = '';   // inherit .ps-portrait img (cover default = 50% 50%)
+
   function applyPortraitCrop(img, crop) {
     if (!img) return;
-    if (!crop) { img.style.transform = ''; img.style.objectPosition = ''; return; }
+    /* Route through the ONE shared crop->CSS mapping (hd-facefit.js) so the
+       character portrait, the follower medallions AND the crop editor preview
+       all render a given {z,x,y} byte-identically. cropCss forces 50% 50% when
+       a crop is present and clears the transform when it is not — exactly the
+       old behaviour, so no saved crop changes on screen. The inline fallback is
+       the SAME formula for a bare harness that hasn't loaded the module. */
+    if (window.HDFaceFit && HDFaceFit.applyCrop) {
+      HDFaceFit.applyCrop(img, crop, PORTRAIT_BASELINE);
+      return;
+    }
+    if (!crop || (crop.z === 1 && !crop.x && !crop.y)) {
+      img.style.transform = ''; img.style.transformOrigin = '50% 50%';
+      img.style.objectPosition = PORTRAIT_BASELINE; return;
+    }
     img.style.transformOrigin = '50% 50%';
-    img.style.transform = 'translate(' + (crop.x * 100).toFixed(3) + '%,' +
-      (crop.y * 100).toFixed(3) + '%) scale(' + crop.z.toFixed(4) + ')';
+    img.style.transform = 'translate(' + ((crop.x || 0) * 100).toFixed(3) + '%,' +
+      ((crop.y || 0) * 100).toFixed(3) + '%) scale(' + crop.z.toFixed(4) + ')';
     img.style.objectPosition = '50% 50%';
   }
 
@@ -523,10 +544,21 @@ window.CharSheetPane = (function () {
       return;
     }
     const crop = d.meta.portraitCrop;
+    /* Tell the editor the portrait's REAL frame aspect + identity baseline so
+       reframing is WYSIWYG. The portrait square is not square (156x200 desktop,
+       ~0.78) and centres its cover-fit; a square editor showing the raw source
+       is why the popout never matched the thumbnail. Measure the live element so
+       the narrow breakpoints (120x156, 110x143 — same ~0.77 aspect) self-correct;
+       fall back to the desktop ratio when layout isn't measurable (jsdom). */
+    const pel = $('ps-portrait');
+    let aspect = 156 / 200;
+    if (pel && pel.clientWidth > 0 && pel.clientHeight > 0) aspect = pel.clientWidth / pel.clientHeight;
     FolPane.openCropEditor({
       src: d.meta.portrait,
       crop: crop ? { z: crop.z, x: crop.x, y: crop.y } : null,
       name: d.name || 'Portrait',
+      aspect: aspect,
+      baseline: '50% 50%',   // .ps-portrait img cover-fit centres with no crop
       onSave: function (c) {
         /* c is {z,x,y} or null (reset). Store locally so the redraw is instant,
            then persist via the same meta path the profile fields use. */
@@ -751,6 +783,11 @@ window.CharSheetPane = (function () {
     pack.data = null;
     pack.filter = '';
     pack.loading = true;
+    /* fresh render window + dead-path memory per open (packIconAsked persists so
+       we don't re-ask C++ for a render already requested this session) */
+    packLastLand = 0;
+    Object.keys(packDeadArt).forEach(function (k) { delete packDeadArt[k]; });
+    if (packWinT) { clearTimeout(packWinT); packWinT = null; }
     renderPackModal();
     toGame('psPackList', cat);
   }
@@ -759,6 +796,9 @@ window.CharSheetPane = (function () {
     if (!pack.open) return;
     pack.open = false;
     pack.data = null;
+    stopPackIconPoll();
+    if (packWinT) { clearTimeout(packWinT); packWinT = null; }
+    if (window.HDLightbox) HDLightbox.close();
     const ov = $('ps-pack-overlay');
     if (ov && ov.parentNode) ov.parentNode.removeChild(ov);
   }
@@ -782,12 +822,324 @@ window.CharSheetPane = (function () {
           count: Number(it.count) || 0,
           magnitude: Number(it.magnitude) || 0,
           effect: String(it.effect || ''),
+          formId: String(it.formId || ''),
+          plugin: String(it.plugin || ''),
         };
       }) : [],
     };
     pack.loading = false;
+    /* arm the render window the instant data lands (before the first paint) so a
+       not-yet-landed identified row shimmers on that first paint instead of
+       flashing as a blank plate. Only if a row can actually get a render. */
+    if (packLastLand === 0 && pack.data.items.some(function (it) { return it.formId && it.plugin; })) {
+      packLastLand = Date.now();
+    }
     renderPackModal();
   };
+
+  /* ---- mesh icons for the potion rows (Rober, 2026-08-14: "show mesh
+     icons") — the Items tab's pipeline, scoped to the modal: resolve through
+     WardrobePane's ONE icon index, ask C++ (whIcons) for rows with no art,
+     and let the shared 'hd-item-icons' event upgrade the open modal IN PLACE
+     as renders land. A row with no formId (dynamic potion, or a DLL from
+     before row identity shipped) just keeps its glyph.
+
+     Why in-place, not a full body rebuild (2026-08-13 play-test — rows never
+     upgraded): 'hd-item-icons' fires on EVERY render batch anywhere in the
+     deck (the wheel / wardrobe / items tab all share the one index + event),
+     and the WardrobePane receiver only re-fires it when the index actually
+     CHANGED. So the first push after the modal opens can arrive while the
+     wardrobe index already held all its other keys — the potion keys land one
+     by one on the per-render pushes, and a plate that was drawn as a glyph
+     must gain its <img> the instant its own key resolves. Rebuilding the whole
+     pack body on each event dropped the filter caret and read as flicker;
+     hydrating only the plates whose art just resolved keeps scroll, focus and
+     the un-resolved rows' glyphs intact — the items-pane idiom.
+
+     BLANK-PLATE FIX (Rober, 2026-08-14 play-test — the rows drew as empty dark
+     boxes): the previous build flagged a plate `.ps-has-art` (which hides the
+     🧪 glyph via color:transparent) at BUILD time, the instant the index
+     answered a path — before the <img> proved it could load. On this launch the
+     epoch purge had DELETED the old item PNGs while a cached index path still
+     named one, so the plate hid its glyph and then showed a broken/empty <img>
+     that Ultralight never fired onerror for. Now the glyph-hide is LOAD-GATED:
+     every plate renders as a visible glyph, an <img> is inserted programmatically
+     (never via innerHTML) with load/error listeners, and `.ps-has-art` is added
+     ONLY when `load` fires. A path that 404s falls back to the glyph; a render
+     still in flight shows the glyph + a shimmer. A plate is never an empty box. */
+  const packIconAsked = {};
+  let packIconPollT = null, packIconPollN = 0;
+
+  /* Render window (mirrors items-pane's chipLastLand / renderWindowActive): a
+     row whose art is EXPECTED but not landed shimmers while renders are still
+     plausibly in flight, then concedes to a plain glyph once they stop arriving
+     — a potion that never gets a mesh must not shimmer forever. Armed when the
+     modal opens (we ask C++ for renders) and kept fresh each time art lands. */
+  const PACK_RENDER_IDLE_MS = 30000;   // no new art for this long => window shut
+  let packLastLand = 0;                // ms of the last landed render seen
+  let packWinT = null;                 // watchdog: repaint at window-close
+
+  /* dead <img> paths already seen this modal-open — a plate whose src 404'd must
+     not be re-hydrated with the same dead path on the next 'hd-item-icons'
+     event (the index still names it), or it would flicker glyph->broken forever.
+     Keyed by data-ikey. Cleared when the modal closes. */
+  const packDeadArt = {};
+
+  /* The icon-index key for a potion row: UPPERCASE hex | lowercase plugin, the
+     exact normalisation WardrobePane.itemIconFor / KeyOf(C++) use. Doubles as
+     the plate's data-ikey so an in-place upgrade can find every plate for a
+     landed render regardless of the current filter/sort order. '' when the row
+     has no durable identity (a plate that can only ever be a glyph). */
+  function packIconKey(it) {
+    if (!it || !it.formId || !it.plugin) return '';
+    return String(it.formId).toUpperCase() + '|' + String(it.plugin).toLowerCase();
+  }
+
+  function packIconFor(it) {
+    if (!it || !it.formId || !it.plugin) return '';
+    if (!window.WardrobePane || typeof WardrobePane.itemIconFor !== 'function') return '';
+    try {
+      const path = WardrobePane.itemIconFor({ formId: it.formId, plugin: it.plugin }) || '';
+      if (!path || path.indexOf('..') !== -1 || path[0] === '/' || path.indexOf(':') !== -1) return '';
+      return path;
+    } catch (e) { return ''; }
+  }
+
+  /* A live path for a row, treating a path we already saw 404 as absent so a
+     dead cached index entry never re-hides the glyph. '' when the row has no
+     durable identity or no (still-good) render on disk. */
+  function packLiveArt(it) {
+    const key = packIconKey(it);
+    if (key && packDeadArt[key]) return '';
+    return packIconFor(it);
+  }
+
+  /* Is a render still plausibly in flight? Armed (packLastLand set when we asked
+     C++), a land seen within the idle window, and at least one identified row
+     still without its (good) art. Mirrors items-pane.renderWindowActive so the
+     two loading languages agree. */
+  function packRenderActive() {
+    return packLastLand > 0 && packMissingArt() &&
+      (Date.now() - packLastLand) < PACK_RENDER_IDLE_MS;
+  }
+
+  /* An identified row for which the index has NO path at all — a render C++ has
+     not produced yet, so the thing that keeps the render window / poll alive.
+     A row whose index path is DEAD (points at a purged file) is deliberately NOT
+     counted: the index already answered for it, so waiting longer is pointless —
+     it concedes to a plain glyph instead of shimmering / polling forever. Uses
+     the RAW index (packIconFor), not the dead-masked packLiveArt. */
+  function packMissingArt() {
+    const d = pack.data;
+    if (!d) return false;
+    for (let i = 0; i < d.items.length; i++) {
+      const it = d.items[i];
+      if (it.formId && it.plugin && !packIconFor(it)) return true;
+    }
+    return false;
+  }
+
+  function requestPackIcons() {
+    const d = pack.data;
+    if (!d) return;
+    /* arm the render window: from here a not-yet-landed identified row shimmers
+       rather than reading as a final blank plate */
+    if (packLastLand === 0) packLastLand = Date.now();
+    const items = [];
+    for (let i = 0; i < d.items.length; i++) {
+      const it = d.items[i];
+      if (!it.formId || !it.plugin) continue;
+      const key = it.formId.toUpperCase() + '|' + it.plugin.toLowerCase();
+      if (packIconAsked[key]) continue;
+      if (packIconFor(it)) { packIconAsked[key] = 1; continue; }
+      packIconAsked[key] = 1;
+      items.push({ formId: it.formId, plugin: it.plugin, name: it.name });
+    }
+    if (items.length) toGame('whIcons', JSON.stringify({ items: items }));
+    startPackIconPoll();
+    armPackWindowWatch();
+  }
+
+  /* renders land one by one; the batch-done push only fires when the whole
+     queue drains — nudge the on-disk index every few seconds while the modal
+     still shows glyphs (the Items tab's empty-whIcons idiom, bounded) */
+  function stopPackIconPoll() {
+    if (packIconPollT) { clearInterval(packIconPollT); packIconPollT = null; }
+  }
+  function startPackIconPoll() {
+    stopPackIconPoll();
+    packIconPollN = 0;
+    if (!packMissingArt()) return;
+    packIconPollT = setInterval(function () {
+      if (!pack.open || !packMissingArt() || ++packIconPollN > 12) { stopPackIconPoll(); return; }
+      toGame('whIcons', JSON.stringify({ items: [] }));
+    }, 2500);
+  }
+
+  /* watchdog: when the render window closes (renders stopped arriving), repaint
+     the plates once so any still-shimmering rows concede to a plain glyph — a
+     potion that never gets a mesh must not shimmer forever. */
+  function armPackWindowWatch() {
+    if (packWinT) { clearTimeout(packWinT); packWinT = null; }
+    if (!packRenderActive()) return;
+    const left = Math.max(250, PACK_RENDER_IDLE_MS - (Date.now() - packLastLand) + 60);
+    packWinT = setTimeout(function () {
+      packWinT = null;
+      if (pack.open) repaintPackShimmer();
+    }, left);
+  }
+
+  /* A render batch landed somewhere in the deck (WardrobePane pushed a fresh
+     index and fired the shared event). Hydrate the modal's plates IN PLACE —
+     never a full body rebuild: a rebuild on every batch drops the filter caret
+     and re-runs the whole list, which is why the rows never seemed to upgrade.
+     We only touch the plates whose art JUST resolved, leaving scroll, focus and
+     the un-resolved glyphs untouched, then re-arm the poll in case more of the
+     batch is still in flight. Bounded to when the modal is actually open. */
+  try {
+    document.addEventListener('hd-item-icons', function () {
+      if (!pack.open) return;
+      const grew = hydratePackPlates();
+      if (grew) packLastLand = Date.now();   // fresh land keeps the window open
+      repaintPackShimmer();
+      startPackIconPoll();
+      armPackWindowWatch();
+    });
+  } catch (e) { /* no DOM in some harnesses */ }
+
+  /* The plate's inner: ALWAYS just the 🧪 glyph. The <img> is NEVER put here as
+     an HTML string — it is inserted programmatically by attachPackArt() so its
+     load/error can be watched, and `.ps-has-art` (which hides the glyph) is set
+     only once `load` actually fires. So the glyph is the honest state until real
+     bytes decode, and the plate is never an empty box. */
+  function packPlateInner() { return '🧪'; }
+
+  /* Insert a load-gated render <img> into a plate. The plate keeps its glyph +
+     shimmer WHILE the <img> decodes (so there is no static-glyph gap between
+     attach and load); on `load` the glyph is hidden (.ps-has-art), the plate
+     becomes zoomable and the shimmer stops; on `error` the <img> removes itself,
+     the dead path is remembered so it is never retried, and the plate falls back
+     to a plain glyph. Idempotent — a plate already carrying an <img> (loaded or
+     still-pending) is left alone so we don't stack images or re-decode. */
+  function attachPackArt(plate, url, it) {
+    if (!plate || !url) return;
+    if (plate.querySelector('img.ps-pack-art')) return;   // already has one
+    const key = plate.getAttribute('data-ikey') || packIconKey(it);
+    const img = document.createElement('img');
+    img.className = 'ps-pack-art';
+    img.alt = '';
+    img.draggable = false;
+    img.addEventListener('load', function () {
+      plate.classList.add('ps-has-art', 'ps-zoomable');
+      plate.classList.remove('ps-pack-loading');
+      if (it) plate.title = it.name + ' — click for a bigger look';
+    });
+    img.addEventListener('error', function () {
+      if (key) packDeadArt[key] = 1;   // never retry this dead path this open
+      plate.classList.remove('ps-has-art', 'ps-zoomable');
+      if (img.parentNode) img.parentNode.removeChild(img);
+      /* concede to a plain glyph, or keep shimmering only if other renders are
+         still genuinely in flight (repaintPackShimmer decides) */
+      repaintPackShimmer();
+    });
+    /* keep the loading shimmer up through decode while the window is open */
+    if (packRenderActive()) plate.classList.add('ps-pack-loading');
+    plate.appendChild(img);
+    img.src = url;   // set src AFTER wiring listeners so a cached hit still fires
+  }
+
+  /* For each identified plate with no <img> yet, ask the (now-updated) index and,
+     if it answers a still-good path, attach a load-gated picture — no innerHTML
+     churn on the body, no lost caret. Returns true if it attached at least one
+     (a fresh land, worth keeping the window open for). Idempotent. */
+  function hydratePackPlates() {
+    const ov = $('ps-pack-overlay');
+    if (!ov || !pack.data) return false;
+    const byKey = {};
+    pack.data.items.forEach(function (it) { const k = packIconKey(it); if (k) byKey[k] = it; });
+    let attached = false;
+    ov.querySelectorAll('.ps-pack-ico[data-ikey]').forEach(function (plate) {
+      if (plate.querySelector('img.ps-pack-art')) return;   // already hydrated
+      const key = plate.getAttribute('data-ikey');
+      const it = key && byKey[key];
+      if (!it) return;
+      const art = packLiveArt(it);
+      if (!art) return;
+      attachPackArt(plate, art, it);
+      attached = true;
+    });
+    return attached;
+  }
+
+  /* Repaint only the loading shimmer on each plate — an identified plate shimmers
+     while a render is still plausibly in flight for it: either no path has landed
+     yet, OR an <img> is attached but hasn't fired `load` (decoding). Everything
+     else (landed=has-art, no identity, dead, or the window closed) does not.
+     Never touches the <img>s, so it can't disturb a landed picture or the caret. */
+  function repaintPackShimmer() {
+    const ov = $('ps-pack-overlay');
+    if (!ov || !pack.data) return;
+    const active = packRenderActive();
+    const byKey = {};
+    pack.data.items.forEach(function (it) { const k = packIconKey(it); if (k) byKey[k] = it; });
+    ov.querySelectorAll('.ps-pack-ico').forEach(function (plate) {
+      if (plate.classList.contains('ps-has-art')) { plate.classList.remove('ps-pack-loading'); return; }
+      const key = plate.getAttribute('data-ikey');
+      const it = key && byKey[key];
+      /* an attached-but-unloaded <img> is LOCALLY in flight (decoding) — shimmer
+         regardless of the window; otherwise shimmer only while a render is still
+         genuinely expected from C++ (identified, window active, no index path yet
+         — a dead path has an entry so it is NOT expected and concedes to glyph). */
+      const imgPending = !!plate.querySelector('img.ps-pack-art');
+      const loading = !!it && (imgPending || (active && !packIconFor(it)));
+      plate.classList.toggle('ps-pack-loading', loading);
+    });
+  }
+
+  /* the ONE pack-row template — renderPackModal and repaintPackBody must
+     paint identical rows or a filter keystroke would drop the icon plates.
+     data-idx resolves the clicked row against the CURRENT (filtered) order;
+     data-ikey is the stable icon-index key hydration targets. The plate is
+     built as a GLYPH ONLY (no build-time .ps-has-art, no inline <img>); the
+     hydratePackPlates() post-pass in renderPackModal / repaintPackBody attaches
+     the load-gated picture. A shimmer marks an identified row whose render is
+     still expected. */
+  function packRowHtml(it, i) {
+    const meta = [];
+    if (it.effect) meta.push(esc(it.effect));
+    if (it.magnitude) meta.push(fmtInt(it.magnitude) + ' pts');
+    const metaHtml = meta.length ? '<div class="ps-pack-sub">' + meta.join(' <span class="ps-pack-dot">·</span> ') + '</div>' : '';
+    const ikey = packIconKey(it);
+    /* shimmer at build only for an identified row still genuinely awaiting a
+       render (window active, no index path — raw, so a known-dead path doesn't
+       shimmer). hydratePackPlates + repaintPackShimmer reconcile right after. */
+    const loading = !!ikey && packRenderActive() && !packIconFor(it);
+    const plate = '<div class="ps-pack-ico' + (loading ? ' ps-pack-loading' : '') +
+      '" data-idx="' + i + '"' + (ikey ? ' data-ikey="' + esc(ikey) + '"' : '') + '>' +
+      packPlateInner() + '</div>';
+    return '<div class="ps-pack-row' + (i === 0 && pack.filter ? ' ps-pack-top' : '') + '">' + plate +
+      '<div class="ps-pack-main"><div class="ps-pack-name">' + esc(it.name) + '</div>' + metaHtml + '</div>' +
+      '<div class="ps-pack-count">×' + fmtInt(it.count) + '</div></div>';
+  }
+
+  /* click a rendered plate -> the shared big view (Items-tab lightbox), with
+     the turntable siblings offered as probe candidates */
+  function openPackLightbox(it) {
+    const url = packIconFor(it);
+    if (!url || !window.HDLightbox) return;
+    const bits = [];
+    if (it.effect) bits.push(it.effect);
+    if (it.magnitude) bits.push(fmtInt(it.magnitude) + ' pts');
+    bits.push('×' + fmtInt(it.count) + ' in your pack');
+    HDLightbox.open({
+      host: $('ps-pane'),
+      src: url,
+      glyph: '🧪',
+      title: it.name,
+      sub: bits.join(' · '),
+      frames: ['-a090', '-a180', '-a270'].map(function (sfx) { return url.replace(/\.png$/, sfx + '.png'); }),
+    });
+  }
 
   function packVisibleItems() {
     if (!pack.data) return [];
@@ -841,15 +1193,7 @@ window.CharSheetPane = (function () {
     } else if (!items.length) {
       body = '<div class="ps-pack-empty">Nothing matches “' + esc(pack.filter) + '”.</div>';
     } else {
-      body = items.map(function (it, i) {
-        const meta = [];
-        if (it.effect) meta.push(esc(it.effect));
-        if (it.magnitude) meta.push(fmtInt(it.magnitude) + ' pts');
-        const metaHtml = meta.length ? '<div class="ps-pack-sub">' + meta.join(' <span class="ps-pack-dot">·</span> ') + '</div>' : '';
-        return '<div class="ps-pack-row' + (i === 0 && pack.filter ? ' ps-pack-top' : '') + '">' +
-          '<div class="ps-pack-main"><div class="ps-pack-name">' + esc(it.name) + '</div>' + metaHtml + '</div>' +
-          '<div class="ps-pack-count">×' + fmtInt(it.count) + '</div></div>';
-      }).join('');
+      body = items.map(packRowHtml).join('');
     }
 
     ov.innerHTML =
@@ -868,6 +1212,21 @@ window.CharSheetPane = (function () {
       '</div>';
 
     ov.querySelector('.ps-pack-x').addEventListener('click', function (e) { e.stopPropagation(); closePackModal(); });
+    const bodyHost = ov.querySelector('.ps-pack-body');
+    if (bodyHost) bodyHost.addEventListener('click', function (e) {
+      const plate = e.target.closest('.ps-pack-ico.ps-has-art');
+      if (!plate) return;
+      e.stopPropagation();
+      const it = packVisibleItems()[Number(plate.getAttribute('data-idx'))];
+      if (it) openPackLightbox(it);
+    });
+    requestPackIcons();
+    /* attach load-gated <img>s for renders already on disk, then reconcile the
+       shimmer so the freshly-built glyph plates read as loading where a render
+       is still expected — a plate is never a bare blank box. */
+    hydratePackPlates();
+    repaintPackShimmer();
+    armPackWindowWatch();
 
     const f = $('ps-pack-filter');
     if (f) {
@@ -902,15 +1261,13 @@ window.CharSheetPane = (function () {
       bodyEl.innerHTML = '<div class="ps-pack-empty">Nothing matches “' + esc(pack.filter) + '”.</div>';
       return;
     }
-    bodyEl.innerHTML = items.map(function (it, i) {
-      const meta = [];
-      if (it.effect) meta.push(esc(it.effect));
-      if (it.magnitude) meta.push(fmtInt(it.magnitude) + ' pts');
-      const metaHtml = meta.length ? '<div class="ps-pack-sub">' + meta.join(' <span class="ps-pack-dot">·</span> ') + '</div>' : '';
-      return '<div class="ps-pack-row' + (i === 0 && pack.filter ? ' ps-pack-top' : '') + '">' +
-        '<div class="ps-pack-main"><div class="ps-pack-name">' + esc(it.name) + '</div>' + metaHtml + '</div>' +
-        '<div class="ps-pack-count">×' + fmtInt(it.count) + '</div></div>';
-    }).join('');
+    bodyEl.innerHTML = items.map(packRowHtml).join('');
+    requestPackIcons();
+    /* re-attach load-gated art to the rebuilt (filtered) plates + reconcile the
+       shimmer, same as the full render — a filtered view's plates are never
+       blank boxes either. */
+    hydratePackPlates();
+    repaintPackShimmer();
   }
 
   function renderEffects() {
@@ -1298,6 +1655,15 @@ window.CharSheetPane = (function () {
     _renderPortrait: renderPortrait, _onScroll: onScrollActivity,
     _pack: pack, _openPackModal: openPackModal, _closePackModal: closePackModal,
     _packVisibleItems: packVisibleItems,
+    /* pack-render test hooks: drive the load-gated art flow deterministically
+       under jsdom (which fires no real <img> load/error). */
+    _packRenderActive: packRenderActive,
+    _hydratePackPlates: hydratePackPlates,
+    _repaintPackShimmer: repaintPackShimmer,
+    _packWindow: function (ms) {
+      if (ms !== undefined) packLastLand = ms;
+      return packLastLand;
+    },
   };
 })();
 

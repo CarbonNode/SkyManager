@@ -414,9 +414,42 @@ namespace CharSheet
 		return json{ { "ok", true }, { "msg", "saved" } }.dump();
 	}
 
+	// One serializer for both the no-save/main-menu sheet and the normal
+	// loaded-player sheet. These paths used to spell the same object twice; the
+	// loaded-player copy then missed portraitCrop, so a successful psSetMeta
+	// persisted the crop but the authoritative psData immediately erased it from
+	// the view. Keeping the crop beside the rest of its metadata structurally
+	// prevents the two responses from drifting again.
+	static json MetaJson(const Meta& meta)
+	{
+		return json{
+			{ "charClass", meta.charClass },
+			{ "alignment", meta.alignment },
+			{ "title", meta.title },
+			{ "eyeColor", meta.eyeColor },
+			{ "height", meta.height },
+			{ "age", meta.age },
+			{ "homeland", meta.homeland },
+			{ "deity", meta.deity },
+			{ "background", meta.background },
+			{ "history", meta.history },
+			{ "portrait", meta.portrait },
+			{ "portraitCrop", json{
+				{ "z", meta.portraitZoom },
+				{ "x", meta.portraitX },
+				{ "y", meta.portraitY },
+			} },
+		};
+	}
+
 	std::string BuildSheetJson(const Meta& meta)
 	{
 		json out;
+		static bool cropRoundTripSaid = false;
+		if (!cropRoundTripSaid) {
+			cropRoundTripSaid = true;
+			logger::info("charsheet: portrait crop round-trip enabled");
+		}
 
 		auto* p = RE::PlayerCharacter::GetSingleton();
 		if (!p) {
@@ -438,22 +471,7 @@ namespace CharSheet
 			out["beast"]   = "";
 			out["skills"]  = json::array();
 			out["effects"] = json::array();
-			out["meta"]    = json{
-				{ "charClass", meta.charClass },
-				{ "alignment", meta.alignment },
-				{ "title", meta.title },
-				{ "eyeColor", meta.eyeColor },
-				{ "height", meta.height },
-				{ "age", meta.age },
-				{ "homeland", meta.homeland },
-				{ "deity", meta.deity },
-				{ "background", meta.background },
-				{ "history", meta.history },
-				{ "portrait", meta.portrait },
-				{ "portraitCrop", json{ { "z", meta.portraitZoom },
-										{ "x", meta.portraitX },
-										{ "y", meta.portraitY } } },
-			};
+			out["meta"]    = MetaJson(meta);
 			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
 
@@ -530,19 +548,7 @@ namespace CharSheet
 		}
 		out["effects"] = std::move(effects);
 
-		out["meta"] = json{
-			{ "charClass", meta.charClass },
-			{ "alignment", meta.alignment },
-			{ "title", meta.title },
-			{ "eyeColor", meta.eyeColor },
-			{ "height", meta.height },
-			{ "age", meta.age },
-			{ "homeland", meta.homeland },
-			{ "deity", meta.deity },
-			{ "background", meta.background },
-			{ "history", meta.history },
-			{ "portrait", meta.portrait },
-		};
+		out["meta"] = MetaJson(meta);
 
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
@@ -601,6 +607,11 @@ namespace CharSheet
 			std::int64_t count = 0;
 			double magnitude = 0.0;
 			std::string effect;
+			// Item identity for the mesh-render pipeline (the Items tab's pair:
+			// origin plugin + file-width-masked local id). Empty for a dynamic
+			// (0xFF…) potion — no render, the row keeps its glyph.
+			std::string formId;
+			std::string plugin;
 		};
 
 		__declspec(noinline) void ReadPackRaw(RE::PlayerCharacter* p, int wantMask,
@@ -628,6 +639,14 @@ namespace CharSheet
 					row.name = "Potion";
 				row.count = entry->countDelta;
 				DescribePotion(alch, row.magnitude, row.effect);
+				if (auto* file = alch->GetFile(0)) {
+					const std::uint32_t local =
+						alch->GetFormID() & (file->IsLight() ? 0xFFFu : 0xFFFFFFu);
+					char buf[16];
+					std::snprintf(buf, sizeof(buf), "0x%06X", local);
+					row.formId = buf;
+					row.plugin = std::string(file->GetFilename());
+				}
 				out.push_back(std::move(row));
 			}
 		}
@@ -680,6 +699,7 @@ namespace CharSheet
 		if (!packSaid) {
 			packSaid = true;
 			logger::info("charsheet pack list: per-category potion detail ready");
+			logger::info("charsheet pack icons: row identity attached");  // marker: charsheet-pack-icons
 		}
 
 		// Alphabetical so the modal is stable across polls and easy to scan.
@@ -694,6 +714,8 @@ namespace CharSheet
 				{ "count", r.count },
 				{ "magnitude", r.magnitude },
 				{ "effect", r.effect },
+				{ "formId", r.formId },
+				{ "plugin", r.plugin },
 			});
 		}
 		out["total"] = total;

@@ -11,13 +11,16 @@ namespace OpenDiag
 {
 	namespace
 	{
-		// Tiny by-hand INI probe (the SkyrimDiagHelper style): find the key,
-		// honor 0/false, treat everything else — including absence — as ON.
-		bool ReadIniEnabled()
+		// Tiny by-hand INI probe (the SkyrimDiagHelper style): find the named key
+		// anywhere in SkyManager.ini (section-blind, as the original bOpenTiming
+		// probe was), honor 0/false, treat everything else — including a missing
+		// file or a missing key — as `dflt`. Shared by every boolean SkyManager.ini
+		// flag so INI parsing lives in exactly one place.
+		bool ReadIniBool(const char* wantKey, bool dflt)
 		{
 			std::ifstream in("Data/SKSE/Plugins/SkyManager.ini");
 			if (!in)
-				return true;
+				return dflt;
 			std::string line;
 			while (std::getline(in, line)) {
 				const auto eq = line.find('=');
@@ -26,26 +29,31 @@ namespace OpenDiag
 				std::string key = line.substr(0, eq);
 				key.erase(0, key.find_first_not_of(" \t"));
 				key.erase(key.find_last_not_of(" \t") + 1);
-				if (_stricmp(key.c_str(), "bOpenTiming") != 0)
+				if (_stricmp(key.c_str(), wantKey) != 0)
 					continue;
 				std::string val = line.substr(eq + 1);
 				val.erase(0, val.find_first_not_of(" \t"));
 				val.erase(val.find_last_not_of(" \t\r") + 1);
 				return !(val == "0" || _stricmp(val.c_str(), "false") == 0);
 			}
-			return true;
+			return dflt;
 		}
 	}
 
 	bool Enabled()
 	{
 		static const bool s_on = []() {
-			const bool on = ReadIniEnabled();
+			const bool on = ReadIniBool("bOpenTiming", true);
 			if (!on)
 				logger::info("open-diag: disabled via SkyManager.ini [Diagnostics] bOpenTiming=0");
 			return on;
 		}();
 		return s_on;
+	}
+
+	bool IniBool(const char* key, bool dflt)
+	{
+		return ReadIniBool(key, dflt);
 	}
 
 	std::int64_t NowMs()

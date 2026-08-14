@@ -56,6 +56,7 @@
 #include "keys_scan.h"   // Keys tab: the load-order hotkey census (kc* bridge)
 #include "item_explorer.h"  // Items tab: the inline item explorer (ix* bridge)
 #include "npc_finder.h"     // NPCs tab: the fast NPC finder (nx* bridge)
+#include "mounts.h"         // Mounts tab: the stable (mt* bridge, mounts.json)
 #include "open_diag.h"      // open/close timing + hang watchdogs (Nexus freeze triage)
 #include "no_auto_gear.h"
 #include "spid_gear.h"
@@ -63,6 +64,7 @@
 #include "quick_light.h"
 #include "char_sheet.h"   // Character Sheet tab: live player stats + RP meta (ps* bridge)
 #include "facelight.h"
+#include "effects_actions.h"   // ✨ Effects modal on the quick card (fx* bridge)
 #include "followers_hud.h"
 #include "hotbar.h"
 #include "anim_actions.h"
@@ -89,6 +91,38 @@ namespace
 	// open-diag: when view creation was requested, so the captureless DOM-ready
 	// callback can log how long the load actually took on this machine.
 	std::atomic<std::int64_t>   g_diagViewT0{ 0 };
+	// open-diag: the monotonic ms at which the OPEN KEY was pressed, captured in
+	// the input sink before we hop to the main-thread task. Lets OpenPalette log
+	// the true end-to-end "press -> shown" the user actually feels, which the
+	// per-phase lines above never added up to (the first press also pays the
+	// one-time warm-up, invisible in "open prep"). 0 = no press pending.
+	std::atomic<std::int64_t>   g_pressT0{ 0 };
+	// First-press-during-warm-up (Ank164 "freezes ~10s on first press, then
+	// nothing"): the deck view is created LAZILY on the first open-key press, so
+	// that press eats the whole once-per-session Ultralight warm-up (1140 ms on a
+	// 4090; multi-second on weak CPUs). Rather than sit there looking frozen, we
+	// (1) tell the player ONCE it is warming up, (2) remember they asked, and
+	// (3) auto-open the instant DOM-ready lands — unless a second press during the
+	// wait cancelled it (toggle intent: a not-yet-open palette can't be "closed",
+	// so a double-press while warming means "never mind"). All main-thread; the
+	// warm-up itself is inside PrismaUI's async DOM-ready callback and never blocks
+	// us. g_warmMsgShown de-spams the notification; g_queuedOpen is the want-flag.
+	std::atomic<bool>           g_warmMsgShown{ false };
+	std::atomic<bool>           g_queuedOpen{ false };
+	// True once an OPEN-KEY PRESS has armed a queued open (i.e. a press arrived
+	// while the view was warming up). Before eager creation, g_viewRequested alone
+	// told "warming from a prior press" apart from "not started yet"; with the deck
+	// view now created EAGERLY at startup (g_viewRequested is true from boot, no
+	// press involved), that distinction is gone, so the sink's warm-up-cancel branch
+	// keys on THIS flag instead — otherwise the very first press during the startup
+	// warm-up would be misread as a second press.
+	std::atomic<bool>           g_openPressArmed{ false };
+	// open-timing(open/close race): a press that lands while an open OR close is
+	// mid-flight must not double-toggle the single PrismaUI focus slot (the
+	// "third press freezes solid" shape). Set around OpenPalette/ClosePalette;
+	// the sink checks it and logs an honest "ignored - open/close in flight"
+	// rather than racing a second Show/Hide into the same frame.
+	std::atomic<bool>           g_openInFlight{ false };
 	std::atomic<bool>           g_focusPaused{ false };
 	std::atomic<bool>           g_capturing{ false };  // JS capture modal open (Esc cancels there, not here)
 
@@ -159,6 +193,15 @@ namespace
 	// fires — so the picture on screen and the action that runs can never
 	// disagree, which is the one bug a mod-key bar must not have.
 	std::atomic<int>            g_hbLivePage{ 0 };
+
+	// Hold-to-release wheel (openStyle "hold", v0.17): the key that OPENED the
+	// wheel is remembered here, and its UP event hands the gesture back to the
+	// view (hdWheelKeyUp -> fire what you are pointing at). Armed only on the
+	// wheel-opening paths; the view ignores the call in toggle mode, so a stale
+	// arm costs nothing.
+	std::atomic<bool>          g_wheelHoldArmed{ false };
+	std::atomic<std::uint32_t> g_wheelHoldCode{ 0 };
+	std::atomic<bool>          g_wheelHoldMouse{ false };
 	// Tap-to-latch mode's sticky page (config.modHold == false).
 	std::atomic<int>            g_hbLatchPage{ 0 };
 	// Whether the view is currently Shown, so the 150 ms auto-visibility beat
@@ -2093,6 +2136,24 @@ namespace
 			// favorites" in the desc are omni keywords on purpose.
 			{ "wheel", "hd-wheel-open", "Wheel Menu",
 			  "Open the radial wheel - a ring of anything you pinned to it: weapons, armour, potions, followers, outfits, spells, places. Also on Ctrl + your deck key (radial ring circle quick wheel favorites)", "Utilities", "icons/custom/hk-wheel.png" },
+			// Party orders (2026-08-14): NFF's own group verbs with a bindable
+			// key on them - every one dispatches through NffControl::Apply, so
+			// the deck never re-implements a follower rule. "party followers
+			// group order everyone" keywords for omni on purpose.
+			{ "party-wait", "hd-party-wait", "Party: Wait Here",
+			  "Every loaded follower waits where they stand - NFF's own group order, from a key (party followers wait stay group everyone)", "NPC", "icons/custom/hk-halt-ai.png" },
+			{ "party-follow", "hd-party-follow", "Party: Follow Me",
+			  "Every loaded follower follows again - the other half of Wait Here (party followers follow resume group everyone)", "NPC", "icons/custom/hk-follower-command.png" },
+			{ "party-summon", "hd-party-summon", "Party: Summon Everyone",
+			  "Teleport every follower to you - NFF's group summon, reaches even unloaded followers (party summon teleport gather everyone lost follower)", "NPC", "icons/custom/hk-follower-teleport.png" },
+			{ "party-relax", "hd-party-relax", "Party: Relax",
+			  "The whole party starts sandboxing here - sit, eat, wander - until you tell them to stop (party relax sandbox camp rest everyone)", "NPC", "icons/custom/hk-sandbox.png" },
+			{ "party-regroup", "hd-party-regroup", "Party: Stop Relaxing",
+			  "End the party's sandboxing and bring everyone back to your side (party regroup stop relax sandbox back)", "NPC", "icons/custom/hk-sandbox.png" },
+			{ "nff-recruit", "npc-nff-recruit", "Recruit Follower",
+			  "Recruit the NPC you are looking at through NFF - no dialogue trip; refuses honestly if she can't follow (recruit hire follower crosshair nff)", "NPC", "icons/custom/hk-nff-control.png" },
+			{ "mhiyh-home", "npc-mhiyh-home", "Her Home Is Here",
+			  "Mark where you are standing as the crosshair follower's HOME via My Home is Your Home - she lives here now; schedules and all (home house live here mhiyh assign)", "NPC", "icons/custom/hk-bed.png" },
 			// Hotbar (2026-08-11). TWO seeds, because they are two different
 			// jobs: one shows/hides the bar mid-play, the other opens the panel
 			// where you build it. Both unbound — the SETUP one is the entry
@@ -2874,6 +2935,7 @@ namespace
 	void OnJsClose(const char* data);
 	void OnJsTextInput(const char* data);
 	void OnJsLog(const char* data);
+	void OnJsPerfReport(const char* data);
 	void OnJsTab(const char* data);
 	void OnJsCapture(const char* data);
 	void OnJsQuestList(const char* data);
@@ -2927,6 +2989,7 @@ namespace
 	void OnJsFolRank(const char* data);      // the player's RELA rank: read, and set
 	void OnJsFolRefresh(const char* data);
 	void OnJsFolPortrait(const char* data);
+	void OnJsFolFaceIcons(const char* data); // facegen head renders as default roster portraits
 	void OnJsFolPreset(const char* data);   // Preset Director tools (preset_bridge)
 	void OnJsFolGear(const char* data);     // Gear Toggle (gear_bridge)
 	void OnJsWdPortrait(const char* data);
@@ -3025,10 +3088,16 @@ namespace
 	void OnJsItemsQuery(const char* data);
 	void OnJsItemsAdd(const char* data);
 	void OnJsItemsSave(const char* data);
+	void OnJsNpcFinderSave(const char* data);
 	void OnJsNpcFinderState(const char* data);
 	void OnJsNpcFinderQuery(const char* data);
 	void OnJsNpcFinderAct(const char* data);
 	void OnJsNpcFinderIcons(const char* data);
+	// Mounts tab (mt* bridge on the deck view).
+	void OnJsMountsState(const char* data);
+	void OnJsMountsSpells(const char* data);
+	void OnJsMountsAct(const char* data);
+	void OnJsMountsIcons(const char* data);
 	void OnJsTimeWait(const char* data);
 	void OnJsRoomSave(const char* data);
 	void OnJsRoomLog(const char* data);
@@ -3064,6 +3133,8 @@ namespace
 	// Better FaceLight Redux quick-card probe (bfl* bridge) forward decls.
 	void OnJsBflGet(const char* data);
 	void OnJsBflSet(const char* data);
+	void OnJsFxGet(const char* data);
+	void OnJsFxSet(const char* data);
 	// Character Sheet tab (ps* bridge on the deck view) forward decls.
 	// request psGet -> reply psData; psRemoveEffect -> psResult + psData;
 	// psSetMeta -> psResult + psData (one name per direction, deck law).
@@ -3083,6 +3154,7 @@ namespace
 	void OnJsAnimCrawl(const char* data);
 	void OnJsAnimScan(const char* data);
 	void OnJsAnimPack(const char* data);
+	void OnJsAnimUser(const char* data);
 	void OnJsAnimLog(const char* data);
 	// OStim segment of the Animations tab (os* bridge on the deck view).
 	void OnJsOstimGet(const char* data);
@@ -3259,7 +3331,7 @@ namespace
 	void OnJsIconList(const char* data);
 	std::filesystem::path DeckViewDir();
 	std::string DeckIconIndexJson();
-	std::string DeckCustomIconsJson();
+	std::string DeckCustomIconsJson(bool forceRescan = false);
 	bool ApplyPortalHotkeyIcons(const std::filesystem::path& customDir);
 	// v0.12.0 phone hotkey edits (rename / desc / category / rebind / delete).
 	bool ApplyPortalHotkeyEdits(const std::filesystem::path& deckDir);
@@ -3387,18 +3459,49 @@ namespace
 		return ok;
 	}
 
-	void EnsureViewAndOpen()
+	// [Performance] bEagerDeckView (default ON): create the heavy deck view at
+	// startup (deferred, off the main thread's kDataLoaded turn) so the FIRST F7
+	// press does not pay the once-per-session Ultralight warm-up (~1140 ms on a
+	// 4090, multi-second on weak CPUs). Read once and cached, exactly like
+	// OpenDiag::Enabled()'s [Diagnostics] bOpenTiming probe. Low-memory users can
+	// set it to 0 to keep the old create-lazily-on-first-press behaviour.
+	bool EagerDeckViewEnabled()
+	{
+		static const bool s_on = []() {
+			const bool on = OpenDiag::IniBool("bEagerDeckView", true);
+			if (!on)
+				logger::info("perf: eager deck-view creation disabled via SkyManager.ini "
+					"[Performance] bEagerDeckView=0 (view created lazily on first press)");
+			return on;
+		}();
+		return s_on;
+	}
+
+	// Create the heavy deck view (HotkeyDeck/index.html) and register every JS
+	// listener on it. Idempotent — the FIRST caller wins the g_viewRequested race
+	// and does the work; a later caller (or a press) returns immediately. Called
+	// TWO ways:
+	//   * eagerly at startup (deferred off the kDataLoaded turn) when
+	//     [Performance] bEagerDeckView is on, so the warm-up is hidden inside the
+	//     load screen and the first F7 press finds the view already ready; and
+	//   * lazily by EnsureViewAndOpen() on the first press, when eager creation is
+	//     off, failed, or simply hasn't finished — the graceful queue below (notice
+	//     + auto-open at DOM-ready) is preserved unchanged, so the press path never
+	//     assumes readiness.
+	// The DOM-ready callback opens ONLY if a press armed g_queuedOpen; eager
+	// creation leaves it false, so this never pops the palette open at startup.
+	// Returns true if the view exists or creation was started; false only when the
+	// html file is missing (the same missing-file guard the eager path must honor,
+	// so a broken install degrades exactly as before: skip + log, never a wedged
+	// shared renderer — the 1.8.2 incident).
+	bool CreateDeckView()
 	{
 		if (!g_prisma)
-			return;
-		if (g_viewReady.load()) {
-			OpenPalette();
-			return;
-		}
-		if (g_viewRequested.exchange(true))
-			return;  // creation already in flight; DOM-ready will open
-		logger::info("creating view (first open)");
-		if (!ViewFileOnDisk("HotkeyDeck/index.html")) { g_viewRequested = false; return; }
+			return false;
+		if (g_view || g_viewRequested.exchange(true))
+			return true;  // already created (or creation already in flight)
+		if (!ViewFileOnDisk("HotkeyDeck/index.html")) { g_viewRequested = false; return false; }
+		logger::info("creating view");
 		// open-diag (Ank164 freeze triage): time CreateView's SYNCHRONOUS cost
 		// (a stalled Prisma renderer blocks right here) and the async DOM-ready
 		// gap (fonts, shaders, first layout — the once-per-session warm-up).
@@ -3407,18 +3510,34 @@ namespace
 		g_view = g_prisma->CreateView("HotkeyDeck/index.html", [](PrismaView v) {
 			g_viewReady = true;
 			logger::info("view DOM ready (handle {})", v);
-			if (const auto t0 = g_diagViewT0.load())
+			if (const auto t0 = g_diagViewT0.load()) {
 				OpenDiag::LogMs("view load to DOM ready (fonts/shaders/layout warm-up)",
 					OpenDiag::NowMs() - t0, 3000);
+				// How long the player waited between the first press and the view
+				// being ready — the number that IS the "slow to load" complaint on
+				// weak hardware, and that the per-phase lines never surfaced.
+				if (const auto pressT = g_pressT0.load())
+					OpenDiag::LogMs("press arrived before view ready - queued (perceived warm-up wait)",
+						OpenDiag::NowMs() - pressT, 2000);
+			}
 			SKSE::GetTaskInterface()->AddTask([v]() {
-				if (CanOpenNow()) {
+				// Consume the want-flag: open only if the press still wants it (a
+				// second press during the warm-up cancels — see the sink) AND the
+				// world will accept it right now.
+				const bool wanted = g_queuedOpen.exchange(false);
+				if (wanted && CanOpenNow()) {
 					OpenPalette();
 				} else if (g_prisma) {
-					// Refusing to open must not leave the view on screen holding
-					// focus -- that is the desync that stranded the player (see
-					// ForceClosePalettes). If we are not opening it, it is hidden.
-					logger::info("view ready but CanOpenNow() said no -- hiding it rather than "
-					             "leaving it shown with g_open false");
+					// Not opening: eager startup creation with no press yet (the
+					// common case now), a press that was cancelled mid-warm-up, or a
+					// menu/console grabbed the screen. Either way the view must not be
+					// left SHOWN holding focus with g_open false -- that is the desync
+					// that stranded the player (see ForceClosePalettes). It was never
+					// shown on the eager path, so this is a harmless no-op there.
+					logger::info("view ready but {} -- ensuring it is hidden (g_open is false)",
+						wanted ? "CanOpenNow() said no" :
+						g_openPressArmed.load() ? "the queued open was cancelled" :
+						"created eagerly at startup, no open pending");
 					g_prisma->Unfocus(v);
 					g_prisma->Hide(v);
 				}
@@ -3432,6 +3551,9 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "hdClose", OnJsClose);
 		g_prisma->RegisterJSListener(g_view, "hdTextInput", OnJsTextInput);
 		g_prisma->RegisterJSListener(g_view, "hdLog", OnJsLog);
+		// hdPerfReport: the view posts its post-Show timing here (feature-detected
+		// on the view side). Logged verbatim under "open-diag(view): ...".
+		g_prisma->RegisterJSListener(g_view, "hdPerfReport", OnJsPerfReport);
 		g_prisma->RegisterJSListener(g_view, "hdTab", OnJsTab);
 		g_prisma->RegisterJSListener(g_view, "hdCapture", OnJsCapture);
 		g_prisma->RegisterJSListener(g_view, "hdQuestList", OnJsQuestList);
@@ -3494,6 +3616,7 @@ namespace
 		// exists, as opposed to the framing above which aims the NEXT capture.
 		// Same two-names rule: fdCropSave in, fdCrops out.
 		g_prisma->RegisterJSListener(g_view, "fdCropSave", OnJsFolCropSave);
+		g_prisma->RegisterJSListener(g_view, "fdFaceIcons", OnJsFolFaceIcons);
 		g_prisma->RegisterJSListener(g_view, "fdSave", OnJsFolSave);
 		g_prisma->RegisterJSListener(g_view, "fdLog", OnJsFolLog);
 		g_prisma->RegisterJSListener(g_view, "fdPortrait", OnJsFolPortrait);
@@ -3565,6 +3688,14 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "nxQuery", OnJsNpcFinderQuery);
 		g_prisma->RegisterJSListener(g_view, "nxAct", OnJsNpcFinderAct);
 		g_prisma->RegisterJSListener(g_view, "nxIcons", OnJsNpcFinderIcons);
+		g_prisma->RegisterJSListener(g_view, "nxSave", OnJsNpcFinderSave);
+		// Mounts tab (the stable). Requests mtState/mtSpells/mtAct/mtIcons;
+		// replies mtStateResult/mtSpellsData/mtActResult/mtIconsData —
+		// disjoint, same law.
+		g_prisma->RegisterJSListener(g_view, "mtState", OnJsMountsState);
+		g_prisma->RegisterJSListener(g_view, "mtSpells", OnJsMountsSpells);
+		g_prisma->RegisterJSListener(g_view, "mtAct", OnJsMountsAct);
+		g_prisma->RegisterJSListener(g_view, "mtIcons", OnJsMountsIcons);
 		g_prisma->RegisterJSListener(g_view, "rgSave", OnJsRoomSave);
 		g_prisma->RegisterJSListener(g_view, "rgLog", OnJsRoomLog);
 		g_prisma->RegisterJSListener(g_view, "rgRing", OnJsRoomRing);
@@ -3581,6 +3712,10 @@ namespace
 		// bflGet/bflSet; replies bflState/bflResult (one name per direction).
 		g_prisma->RegisterJSListener(g_view, "bflGet", OnJsBflGet);
 		g_prisma->RegisterJSListener(g_view, "bflSet", OnJsBflSet);
+		// ✨ Effects modal on the F7 quick card (other mods' looks — first
+		// tenant: Oily Skin). Requests fxGet/fxSet; replies fxState/fxResult.
+		g_prisma->RegisterJSListener(g_view, "fxGet", OnJsFxGet);
+		g_prisma->RegisterJSListener(g_view, "fxSet", OnJsFxSet);
 		// Character Sheet tab. Requests psGet/psRemoveEffect/psSetMeta; replies
 		// psData/psResult (names disjoint per the deck law - one name per
 		// direction; PrismaUI installs each listener as a JS global of that name).
@@ -3626,6 +3761,7 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "anCrawl", OnJsAnimCrawl);
 		g_prisma->RegisterJSListener(g_view, "anScan", OnJsAnimScan);
 		g_prisma->RegisterJSListener(g_view, "anPack", OnJsAnimPack);
+		g_prisma->RegisterJSListener(g_view, "anUser", OnJsAnimUser);
 		g_prisma->RegisterJSListener(g_view, "anLog", OnJsAnimLog);
 		// OStim segment: requests os*, replies osOpen/osState/osList/osResult.
 		g_prisma->RegisterJSListener(g_view, "osGet", OnJsOstimGet);
@@ -3820,6 +3956,50 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "finLog", OnJsFinLog);
 	}
 
+	// A press wants the deck open. If the view is already warm, open now. Otherwise
+	// arm the want-flag and make sure creation is under way — CreateDeckView() is
+	// idempotent, so this cooperates with an in-flight EAGER creation (the common
+	// case now: on a healthy install the view is usually already ready here, and
+	// this collapses to a plain OpenPalette()). The graceful "warming up — opening
+	// when ready" queue is unchanged; only WHERE creation is kicked off moved.
+	void EnsureViewAndOpen()
+	{
+		if (!g_prisma)
+			return;
+		if (g_viewReady.load()) {
+			OpenPalette();
+			return;
+		}
+		// The view is not up yet — this press wants it open the moment it is. Arm
+		// the want-flag (the DOM-ready callback consumes it) and mark that a PRESS
+		// has now armed a queued open, so the sink's warm-up-cancel branch can tell
+		// this real press apart from the pre-armed eager-creation state.
+		g_queuedOpen = true;
+		g_openPressArmed = true;
+		// Fallback press stamp for deep-open paths (wheel / F14-F16) that reach here
+		// without the plain-key sink having set it. One frame late at worst; the
+		// precise stamp still comes from the sink for the plain key.
+		{
+			std::int64_t expected = 0;
+			g_pressT0.compare_exchange_strong(expected, OpenDiag::NowMs());
+		}
+		const bool already = g_viewRequested.load();  // eager creation, or a prior press
+		// The once-per-session Ultralight warm-up (fonts/shaders/first layout of 39
+		// scripts + ~3 MB assets) is in flight or about to be. Tell the player ONCE
+		// so a multi-second wait reads as "loading", not a frozen deck (Ank164).
+		if (!g_warmMsgShown.exchange(true))
+			RE::DebugNotification(already
+				? "SkyManager is still warming up - opening when ready"
+				: "SkyManager is warming up - opening when ready");
+		if (already)
+			return;  // creation already running (eager or prior press) — just wait
+		// Eager creation was off/failed and no press started it yet: start it now.
+		// If the html is missing CreateDeckView returns false and never will be
+		// ready, so drop the want-flag rather than leave it armed forever.
+		if (!CreateDeckView())
+			g_queuedOpen = false;
+	}
+
 	// ---- smooth pause: freeze the WORLD (sgtm 0) instead of a menu pause -------
 	// A menu pause stops the update loop, which makes Skyrim's cursor floaty
 	// (framerate-coupled). Freezing time with sgtm 0 leaves the render loop
@@ -3886,6 +4066,11 @@ namespace
 	{
 		if (!g_prisma || !g_viewReady.load() || g_open.load())
 			return;
+		// Mark the open in flight so a key press mid-open is dropped, not raced
+		// into a second Show/Hide on the single focus slot (Ank164 "freezes solid").
+		// RAII-cleared at every return path below.
+		g_openInFlight = true;
+		struct InFlightGuard { ~InFlightGuard() { g_openInFlight = false; } } _inflight;
 		// open-diag: every open logs where its time went, and a side-thread
 		// watchdog names a hang the main thread can no longer report itself.
 		const auto      diagT0 = OpenDiag::NowMs();
@@ -4072,6 +4257,14 @@ namespace
 			g_prisma->Invoke(g_view, ("hdShowTab(\"" + g_pendingTab + "\")").c_str());
 			g_pendingTab.clear();
 		}
+		// open-diag: the ONE line that answers "how slow was the open the player
+		// felt?" — from key press to on-screen, INCLUDING the first press's
+		// once-per-session warm-up (which "open prep" never counted). Consumes the
+		// press stamp so a later programmatic open (C API / auto-reopen) with no
+		// press behind it does not report a bogus multi-minute delta.
+		if (const auto pressT = g_pressT0.exchange(0))
+			OpenDiag::LogMs("press -> shown (end to end, incl. any warm-up)",
+				OpenDiag::NowMs() - pressT, 1500);
 	}
 
 	// Main thread only.
@@ -4079,6 +4272,10 @@ namespace
 	{
 		if (!g_prisma || !g_open.exchange(false))
 			return;
+		// Mark the close in flight (same reason as OpenPalette): a press landing
+		// mid-close must not race a re-open into the focus slot before Hide lands.
+		g_openInFlight = true;
+		struct InFlightGuard { ~InFlightGuard() { g_openInFlight = false; } } _inflight;
 		// open-diag: the freeze-solid-on-close report (Ank164) — if Unfocus/Hide
 		// blocks on a sick renderer, the watchdog thread says so in the log even
 		// though this thread never comes back to say it itself.
@@ -4436,6 +4633,64 @@ namespace
 			return;
 		}
 
+		// Party orders + MHiYH home (Rober, 2026-08-14: "bindable actions we
+		// hook from NFF and MHIYH"). Every verb here is NffControl::Apply /
+		// MhiyhControl::Apply — the deck adds a key, never a reimplementation.
+		// Papyrus only runs while the game is UNPAUSED, so these close the
+		// palette and deliberately do NOT reopen: a reopened (paused) palette
+		// would hold the dispatched VM stack hostage until the next close.
+		if (action == "party-wait" || action == "party-follow" || action == "party-summon" ||
+			action == "party-relax" || action == "party-regroup" || action == "nff-recruit") {
+			const std::string op = action == "party-wait"    ? "allWait" :
+			                       action == "party-follow"  ? "allFollow" :
+			                       action == "party-summon"  ? "allSummon" :
+			                       action == "party-relax"   ? "allRelax" :
+			                       action == "party-regroup" ? "allUnrelax" :
+			                                                   "recruit";
+			SKSE::GetTaskInterface()->AddTask([op]() {
+				ClosePalette();
+				const auto say = [](const std::string& env) {
+					const auto d = json::parse(env, nullptr, false);
+					if (!d.is_object())
+						return;
+					const std::string msg = d.value("msg", std::string());
+					if (!msg.empty())
+						RE::DebugNotification(msg.c_str());
+				};
+				// Build marker (hd-markers.json: "party-actions").
+				logger::info("party-action: '{}' dispatched via NFF", op);
+				say(NffControl::Apply(json{ { "op", op } }.dump(-1, ' ', false, json::error_handler_t::replace),
+					[say](const std::string& env) { say(env); }));
+			});
+			return;
+		}
+		if (action == "mhiyh-home") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				ClosePalette();
+				const auto id = NpcActions::TargetFormID();
+				if (!id) {
+					RE::DebugNotification("Look at her first, then press Home Is Here again");
+					return;
+				}
+				char buf[16];
+				std::snprintf(buf, sizeof(buf), "0x%08X", id);
+				const auto say = [](const std::string& env) {
+					const auto d = json::parse(env, nullptr, false);
+					if (!d.is_object())
+						return;
+					const std::string msg = d.value("msg", std::string());
+					if (!msg.empty())
+						RE::DebugNotification(msg.c_str());
+				};
+				logger::info("mhiyh-home action: setHome for {:08X}", id);
+				say(MhiyhControl::Apply(
+					json{ { "op", "setHome" }, { "formId", std::string(buf) } }
+						.dump(-1, ' ', false, json::error_handler_t::replace),
+					[say](const std::string& env) { say(env); }));
+			});
+			return;
+		}
+
 		// Wheel Menu: open the radial palette. Unlike every other action here it
 		// does NOT close the palette — it IS a palette surface, so it takes the
 		// same road the Ctrl+F7 chord does (g_pendingTab -> hdShowTab("wheel")).
@@ -4783,7 +5038,8 @@ namespace
 			// deck opened). Re-aim NPC actions at the live crosshair now.
 			if (NpcActions::IsAction(entry.action) || AnimActions::IsAction(entry.action) ||
 				FixActions::IsAction(entry.action) ||
-				entry.action == "no-auto-gear")
+				entry.action == "no-auto-gear" ||
+				entry.action == "nff-recruit" || entry.action == "mhiyh-home")
 				NpcActions::SnapshotTarget();
 			logger::info("trigger {} -> action '{}' ({}), live-target snapshot", via, entry.name, entry.action);
 			HotkeyHistory::Record(HotkeyHistory::Source::kAction, entry.name,
@@ -4920,6 +5176,18 @@ namespace
 		if (ok) {
 			{
 				std::lock_guard l(g_configMutex);
+				/* The charsheet slice is C++-OWNED (psSetMeta / the capture callback
+				 * mutate g_config.charSheet directly) and the view does not carry it
+				 * in its save state — so a whole-config hdSave used to replace it
+				 * with a default-constructed Meta, wiping the portrait and every RP
+				 * identity field on every tab switch or close. That is exactly what
+				 * ate Rober's self-portrait on 2026-08-13 ("can't retake the image or
+				 * anything"): the capture saved the file and set the path, and the
+				 * next deck save erased it. The live slice always wins here; the view
+				 * edits it only through psSetMeta, never through hdSave. */
+				if (c.charSheet.portrait != g_config.charSheet.portrait)
+					logger::debug("hdSave: charsheet slice preserved against a stale view payload");
+				c.charSheet = g_config.charSheet;
 				g_config = c;
 				count = g_config.entries.size();
 			}
@@ -4960,6 +5228,39 @@ namespace
 	{
 		if (data)
 			logger::info("[view] {}", data);
+	}
+
+	// hdPerfReport: the VIEW's half of open-diag. C++ open-diag goes quiet at
+	// "show + focus"; everything the JS does AFTER Show (hdOpen parse, tab render,
+	// icon paints) is where a weak machine's "slow to load" actually lives, and
+	// only the view can time it. So the view feature-detects this listener and
+	// posts one short timing string per open; we log it VERBATIM under a stable
+	// prefix so a pasted HotkeyDeck.log carries the end-to-end story in one grep.
+	//
+	// Deliberately dumb and safe: it only ever logs. Length-capped (a runaway
+	// string cannot bloat the log or the frame) and rate-limited to a few per
+	// second (a buggy view cannot spin the logger). It touches no game state and
+	// takes no lock, so it is fine on whatever thread PrismaUI calls it.
+	void OnJsPerfReport(const char* data)
+	{
+		if (!data || !OpenDiag::Enabled())
+			return;
+		// Rate limit: at most one line per 200 ms. A normal view posts one per
+		// open; this only bites a misbehaving build.
+		static std::atomic<long long> s_lastMs{ 0 };
+		const long long now = NowMs();
+		const long long prev = s_lastMs.load();
+		if (now - prev < 200 && prev != 0)
+			return;
+		s_lastMs.store(now);
+		// Cap the payload so a bug on the view side cannot write a megabyte line.
+		std::string msg(data);
+		constexpr std::size_t kMax = 400;
+		if (msg.size() > kMax) {
+			msg.resize(kMax);
+			msg += " ...(truncated)";
+		}
+		logger::info("open-diag(view): {}", msg);  // marker: open-diag-view-report
 	}
 
 	// ------------------------------------------------------------ quests tab
@@ -6102,24 +6403,75 @@ namespace
 			logger::info("mirrored {} custom icon(s) into the deck view", copied);
 	}
 
+	// Cheap "did this folder's file SET change" probe: the directory's own
+	// last_write_time, which NTFS bumps on entry create/delete/rename. One syscall,
+	// no per-file stat. Content-in-place edits do not bump it, and that is exactly
+	// right here — the icon listing below is filenames + stems, never file bytes,
+	// so a same-name overwrite cannot change the output anyway. 0 on a missing dir
+	// (which also differs from a populated dir, so first population is caught).
+	std::uint64_t DirGeneration(const std::filesystem::path& dir)
+	{
+		std::error_code ec;
+		const auto ft = std::filesystem::last_write_time(dir, ec);
+		if (ec)
+			return 0;
+		return static_cast<std::uint64_t>(ft.time_since_epoch().count());
+	}
+
 	// Live listing for the deck's icon picker: sweep the desktop drop folder,
 	// mirror magic -> deck, then enumerate the deck's own folder.
-	std::string DeckCustomIconsJson()
+	//
+	// This ran in FULL on every palette open — three create_directories, three
+	// directory enumerations (Desktop drop + MagicDeck custom + HotkeyDeck custom)
+	// and a per-file stat on each — and it grows with the player's icon collection.
+	// On an HDD that is real, repeated open-latency (the public "slow to load"
+	// complaint). So the steady state is now GATED: if none of the three source
+	// folders' generations changed since last time, return the cached listing and
+	// touch the disk zero times. `forceRescan` (the picker's Refresh) always does
+	// the real work. Main-thread only; the cache is a plain static.
+	std::string DeckCustomIconsJson(bool forceRescan)
 	{
-		const auto magicDir = MagicViewDir() / "icons" / "custom";
-		const auto deckDir = DeckViewDir() / "icons" / "custom";
-		SweepDesktopIcons(magicDir);
+		const auto magicDir  = MagicViewDir() / "icons" / "custom";
+		const auto deckDir   = DeckViewDir() / "icons" / "custom";
+		const char* prof     = std::getenv("USERPROFILE");
+		const auto dropDir   = (prof && *prof)
+			? std::filesystem::path(prof) / "Desktop" / "Spell Deck Icons"
+			: std::filesystem::path();
+
+		static std::string   s_cache;
+		static bool          s_have = false;
+		static std::uint64_t s_dropGen = 0, s_magicGen = 0, s_deckGen = 0;
+
+		const std::uint64_t dropGen  = dropDir.empty() ? 0 : DirGeneration(dropDir);
+		const std::uint64_t magicGen = DirGeneration(magicDir);
+		const std::uint64_t deckGen  = DirGeneration(deckDir);
+
+		if (!forceRescan && s_have &&
+		    dropGen == s_dropGen && magicGen == s_magicGen && deckGen == s_deckGen)
+			return s_cache;   // nothing added/removed in any source folder -> reuse
+
+		SweepDesktopIcons(magicDir);   // may create+populate magicDir (bumps magicGen)
 		MirrorCustomIcons(magicDir, deckDir);
-		return CustomIconsJsonIn(deckDir);
+		s_cache = CustomIconsJsonIn(deckDir);
+		s_have  = true;
+		// Re-probe AFTER the sweep/mirror: those two just changed the folders we are
+		// caching against, so record the post-write generations or the very next
+		// open would see a mismatch and rescan for nothing.
+		s_dropGen  = dropDir.empty() ? 0 : DirGeneration(dropDir);
+		s_magicGen = DirGeneration(magicDir);
+		s_deckGen  = DirGeneration(deckDir);
+		return s_cache;
 	}
 
 	// hdIconList: the deck picker's Refresh — re-scan and re-push right now.
 	// Deliberately does NOT re-push hdOpen (that would reset the tab / edit mode /
-	// search); the view merges the new listing into its icon library only.
+	// search); the view merges the new listing into its icon library only. FORCES
+	// a fresh scan (the whole point of a Refresh button is to pick up a drop the
+	// generation gate would otherwise have to notice on its own).
 	void OnJsIconList(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
-			PushToView("hdIcons", DeckCustomIconsJson());
+			PushToView("hdIcons", DeckCustomIconsJson(true));
 		});
 	}
 
@@ -7637,6 +7989,126 @@ namespace
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
+	// ---- Faces auto-render: batch preset thumbnails via PD /thumb ----
+	// One worker at a time; assign.json writes are shared with op "img", so
+	// both go through g_presetAssignLock.
+	std::atomic<bool> g_presetAutoBusy{ false };
+	std::atomic<bool> g_presetAutoCancel{ false };
+	std::mutex        g_presetAssignLock;
+
+	std::string PresetAutoFileName(const std::string& preset)
+	{
+		std::string s = "auto-" + preset;
+		for (auto& c : s)
+			if (c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' ||
+				c == '|' || c == '?' || c == '*')
+				c = '-';
+		while (!s.empty() && (s.back() == ' ' || s.back() == '.'))
+			s.pop_back();
+		return s + ".png";
+	}
+
+	void PresetAssignIcon(const std::string& preset, const std::string& icon)
+	{
+		std::lock_guard lock(g_presetAssignLock);
+		json            m = PresetAssignments();
+		if (icon.empty())
+			m.erase(preset);
+		else
+			m[preset] = icon;
+		std::error_code ec;
+		std::filesystem::create_directories(PresetIconsDir(), ec);
+		std::ofstream outF(PresetIconsDir() / "assign.json", std::ios::trunc);
+		if (outF)
+			outF << m.dump(2);
+	}
+
+	void PresetAutoRenderWorker()
+	{
+		const auto notify = [](std::string msg) {
+			if (auto* t = SKSE::GetTaskInterface())
+				t->AddTask([msg = std::move(msg)]() { RE::DebugNotification(msg.c_str()); });
+		};
+
+		// Every preset PD can see, minus our own face backups and anything
+		// already wearing an image.
+		std::vector<std::string> missing;
+		{
+			json presets = json::parse(PresetBridge::Call("GET", "/presets", ""), nullptr, false);
+			std::set<std::string> names;
+			if (!presets.is_discarded())
+				for (const char* key : { "exported", "presets" })
+					for (const auto& p : presets.value(key, json::array()))
+						if (p.is_string())
+							names.insert(p.get<std::string>());
+			json assign;
+			{
+				std::lock_guard lock(g_presetAssignLock);
+				assign = PresetAssignments();
+			}
+			for (const auto& n : names)
+				if (n.rfind("PD_", 0) != 0 && !assign.contains(n))
+					missing.push_back(n);
+		}
+		if (missing.empty()) {
+			notify("Every preset already has an image.");
+			g_presetAutoBusy.store(false);
+			return;
+		}
+		logger::info("preset autorender: {} preset face(s) to render", missing.size());
+		notify("Rendering " + std::to_string(missing.size()) +
+			   " preset faces — a mannequin will stand beside you while this runs.");
+
+		std::size_t done = 0, failed = 0;
+		for (const auto& preset : missing) {
+			if (g_presetAutoCancel.load()) {
+				logger::info("preset autorender: cancelled at {}/{}", done, missing.size());
+				break;
+			}
+			const std::string file = PresetAutoFileName(preset);
+			const auto        abs = PresetIconsDir() / file;
+			std::error_code   ec;
+			if (std::filesystem::exists(abs, ec) && std::filesystem::file_size(abs, ec) > 0) {
+				// A previous (cancelled/crashed) run already rendered it.
+				PresetAssignIcon(preset, file);
+				++done;
+				continue;
+			}
+			json body;
+			body["preset"] = preset;
+			body["out"] = abs.string();
+			body["px"] = 1024;
+			body["flags"] = 3;
+			const std::string res = PresetBridge::Call("POST", "/thumb",
+				body.dump(-1, ' ', false, json::error_handler_t::replace));
+			json r = json::parse(res, nullptr, false);
+			if (!r.is_discarded() && r.value("ok", false) && r.value("saved", false)) {
+				PresetAssignIcon(preset, file);
+				++done;
+			} else {
+				++failed;
+				logger::warn("preset autorender: '{}' failed: {}", preset,
+					r.is_discarded() ? res : r.value("error", res));
+			}
+			if ((done + failed) % 5 == 0)
+				notify("Preset faces: " + std::to_string(done + failed) + "/" +
+					   std::to_string(missing.size()) + "…");
+		}
+
+		PresetBridge::Call("POST", "/thumb-cleanup", "{}");
+		const bool cancelled = g_presetAutoCancel.load();
+		logger::info("preset autorender: {} rendered, {} failed{}", done, failed,
+			cancelled ? " (cancelled)" : "");
+		notify(cancelled ?
+				("Preset rendering stopped — " + std::to_string(done) + " done.") :
+				("Rendered " + std::to_string(done) + " preset faces" +
+					(failed ? " (" + std::to_string(failed) + " failed — see the log)" : "") +
+					" — open the Faces tab."));
+		if (auto* t = SKSE::GetTaskInterface())
+			t->AddTask([]() { PushToView("fdPresetData", PresetIndexJson()); });
+		g_presetAutoBusy.store(false);
+	}
+
 	void OnJsFolPreset(const char* data)
 	{
 		if (!data)
@@ -7664,22 +8136,37 @@ namespace
 
 		if (op == "img") {
 			// Assign (or clear) an icon file for a preset name — deck-side
-			// file IO only, PD never hears about images.
+			// file IO only, PD never hears about images. Shares the assign
+			// lock with the auto-render worker.
 			const std::string preset = j.value("preset", "");
 			const std::string icon = j.value("icon", "");
 			if (preset.empty())
 				return;
-			json m = PresetAssignments();
-			if (icon.empty())
-				m.erase(preset);
-			else
-				m[preset] = icon;
-			std::error_code ec;
-			std::filesystem::create_directories(PresetIconsDir(), ec);
-			std::ofstream outF(PresetIconsDir() / "assign.json", std::ios::trunc);
-			if (outF)
-				outF << m.dump(2);
+			PresetAssignIcon(preset, icon);
 			PushToView("fdPresetData", PresetIndexJson());
+			return;
+		}
+
+		if (op == "autorender") {
+			// Render a thumbnail for every preset with no image, via PD's
+			// /thumb (mannequin + MRF). Papyrus must run (LoadCharacterEx),
+			// so the palette closes — same law as the party orders.
+			if (!PresetBridge::Available()) {
+				PushToView("fdPresetResult",
+					R"({"ok":false,"error":"Preset Director isn't loaded — the auto-render needs it"})");
+				return;
+			}
+			if (g_presetAutoBusy.exchange(true)) {
+				PushToView("fdPresetResult", R"({"ok":false,"error":"a render batch is already running"})");
+				return;
+			}
+			g_presetAutoCancel.store(false);
+			ClosePalette();
+			std::thread(PresetAutoRenderWorker).detach();
+			return;
+		}
+		if (op == "autorender-cancel") {
+			g_presetAutoCancel.store(true);
 			return;
 		}
 
@@ -8015,14 +8502,45 @@ namespace
 	{
 		const std::string req = data ? data : "{}";
 		SKSE::GetTaskInterface()->AddTask([req]() {
-			const std::string worn = NffControl::EquippedJson(req);
+			std::string worn = NffControl::EquippedJson(req);
+			// Stamp each worn piece that is ALREADY rendered with its on-disk
+			// icon path, so the quick card's gear tile paints the picture on its
+			// FIRST paint instead of a glyph that swaps in after the wdItemIcons
+			// index round-trips (Rober, 2026-08-14: "f7 on npc items - dont have
+			// to load every single time (save?)"). IconPathIfRendered NEVER
+			// queues a render — a piece with no PNG yet gets no `icon` and is
+			// left for the view's lazy whIcons request (the equipped-grid path),
+			// so this adds nothing to the F7 frame's cost and does not reintroduce
+			// the render burst. Best-effort: on any parse hiccup the untouched
+			// worn JSON is pushed exactly as before.
+			{
+				auto j = json::parse(worn, nullptr, false);
+				if (!j.is_discarded() && j.is_object() &&
+					j.contains("items") && j["items"].is_array()) {
+					bool stamped = false;
+					for (auto& it : j["items"]) {
+						if (!it.is_object())
+							continue;
+						const std::string fid    = it.value("formId", std::string());
+						const std::string plugin = it.value("plugin", std::string());
+						const std::string path   = ItemIcons::IconPathIfRendered(fid, plugin);
+						if (!path.empty()) {
+							it["icon"] = path;
+							stamped = true;
+						}
+					}
+					if (stamped)
+						worn = j.dump(-1, ' ', false, json::error_handler_t::replace);
+				}
+			}
 			PushToView("fdWorn", worn);
 			// The quick card draws each worn piece as its rendered mesh. Two
-			// things make that true without a Wardrobe-tab visit: queue a
-			// render for any piece with no PNG yet (her own gear is almost
-			// never in the wardrobe exports EnsureIcons walks), and hand the
-			// view the index — on a fresh session it has never been pushed.
-			// The view's receiver is change-gated, so this repeats safely.
+			// things make that true without a Wardrobe-tab visit: register any
+			// piece that already has a PNG (register-only — NO render burst),
+			// and hand the view the index — on a fresh session it has never been
+			// pushed. The view's receiver is change-gated, so this repeats safely.
+			// The per-item `icon` above is the instant path; this index push and
+			// the view's lazy whIcons requests fill in the ones that render later.
 			ItemIcons::EnsureIconsForWorn(worn);
 			PushToView("wdItemIcons", ItemIcons::IndexJson());
 		});
@@ -8878,6 +9396,30 @@ namespace
 		if (!enabled || !visible)
 			return false;
 
+		// NPC dialogue does NOT pause the game, so GameIsPaused() below never
+		// catches it and the bar would sit on top of the conversation UI. Hide
+		// it UNCONDITIONALLY here (independent of hideInMenus / showMode): a
+		// visible action bar over dialogue is always wrong, and because
+		// HbSlotForKey gates on g_hbEffVisible, dropping the bar also hands
+		// 1-8 back to the dialogue-option selectors instead of casting. This
+		// returns promptly — it never falls through to the lingerMs branch,
+		// so the bar vanishes the moment dialogue opens, no 4 s tail.
+		if (auto* ui = RE::UI::GetSingleton()) {
+			if (ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
+				logger::debug("hotbar-hide-dialogue: DialogueMenu open, hiding bar");
+				return false;
+			}
+		}
+		if (auto* mtm = RE::MenuTopicManager::GetSingleton()) {
+			// The speaker handle is valid a beat before the menu finishes
+			// opening; catch that window too so the bar never flashes over it.
+			// .get() (the room_guard idiom) yields a valid ref only in dialogue.
+			if (mtm->speaker.get()) {
+				logger::debug("hotbar-hide-dialogue: active dialogue speaker, hiding bar");
+				return false;
+			}
+		}
+
 		if (hideInMenus) {
 			// GameIsPaused covers the lot — inventory, map, magic, the console,
 			// and our own palette — with one call and no menu-name list to keep
@@ -9175,7 +9717,11 @@ namespace
 	// Run the button. MAIN THREAD ONLY. Every branch ends in a verb that
 	// already exists; an unresolvable slot gets an honest notification rather
 	// than a button that silently does nothing.
-	void HbFireSlot(int page, int i)
+	// `child` is a flyout pick: -1 = the key/press itself, 0..n = a bundle
+	// member chosen by the view's cycle. For a flyout slot the press OPENS the
+	// fan (the view owns the cycle-then-pause state machine, because the timing
+	// is a UI feel, not game logic) and only the child fire touches the engine.
+	void HbFireSlot(int page, int i, int child = -1)
 	{
 		Hotbar::Slot s;
 		int          p = 0;
@@ -9189,8 +9735,31 @@ namespace
 				return;
 			s = slots[i];
 		}
-		if (s.Empty())
+		if (s.Empty() && !(s.kind == "flyout" && child < 0))
 			return;
+
+		if (s.kind == "flyout") {
+			if (child < 0) {
+				// Build marker (hd-markers.json: "hotbar-fly"). The press only
+				// hands the fan to the view; nothing has fired yet, so no flash.
+				logger::info("hotbar-fly: page {} button {} — flyout key, {} inside", p, i + 1, s.items.size());
+				if (g_prisma && g_hbView && g_hbViewReady.load()) {
+					g_prisma->Invoke(g_hbView,
+						("hbFlyKey(" + json{ { "page", p }, { "i", i } }
+							.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
+				} else if (!s.items.empty()) {
+					RE::DebugNotification("The action bar isn't drawn yet — its flyout can't open");
+				}
+				return;
+			}
+			if (child >= static_cast<int>(s.items.size()))
+				return;
+			logger::info("hotbar-fly: page {} button {} -> child {} '{}'", p, i + 1, child + 1,
+				s.items[child].label.empty() ? s.items[child].refId : s.items[child].label);
+			s = s.items[child];
+			if (s.Empty())
+				return;
+		}
 
 		// Flash first: the bar never has focus, so this is the ONLY feedback
 		// that the key landed, and it must not wait on the action.
@@ -9201,6 +9770,17 @@ namespace
 					.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
 		}
 
+		if (s.kind == "smart") {
+			logger::info("hotbar-fire: page {} button {} -> smart '{}'", p, i + 1, s.refId);
+			const auto res = json::parse(Hotbar::FireSmart(s.refId), nullptr, false);
+			// FireSmart answers {ok,msg} instead of toasting — a refusal is a
+			// useful sentence, so say it, or the button looks broken.
+			if (res.is_object() && !res.value("ok", false)) {
+				const std::string msg = res.value("msg", std::string("That didn't work"));
+				RE::DebugNotification(msg.c_str());
+			}
+			return;
+		}
 		if (s.kind == "spell") {
 			logger::info("hotbar-fire: page {} button {} -> spell {}|{:X}", p, i + 1, s.plugin, s.localId);
 			SpellActions::Cast(s.plugin, s.localId, s.formId);
@@ -9340,11 +9920,12 @@ namespace
 		const auto j = json::parse(data ? data : "", nullptr, false);
 		if (j.is_discarded() || !j.is_object())
 			return;
-		const int page = j.value("page", 0);
-		const int i    = j.value("i", -1);
+		const int page  = j.value("page", 0);
+		const int i     = j.value("i", -1);
+		const int child = j.value("child", -1);   // a flyout pick from the view's cycle
 		if (i < 0)
 			return;
-		SKSE::GetTaskInterface()->AddTask([page, i]() { HbFireSlot(page, i); });
+		SKSE::GetTaskInterface()->AddTask([page, i, child]() { HbFireSlot(page, i, child); });
 	}
 
 	// The view already wrote the slot into its own copy and sent the whole
@@ -9399,6 +9980,12 @@ namespace
 				HbApplyVisibility();
 			});
 		});
+		// Prisma views begin visible. Hide the bar before its first DOM-ready
+		// visibility evaluation so it cannot flash over the main menu or a load
+		// screen. g_hbShown deliberately stays true: HbApplyVisibility must still
+		// issue the authoritative first Show/Hide once the view is ready.
+		g_prisma->Hide(g_hbView);
+		logger::info("hotbar: created hidden-until-eval (views start visible)");
 		g_prisma->RegisterJSListener(g_hbView, "hbReady", OnJsHbReady);
 		g_prisma->RegisterJSListener(g_hbView, "hbSave", OnJsHbSave);
 		g_prisma->RegisterJSListener(g_hbView, "hbEditDone", OnJsHbEditDone);
@@ -9634,6 +10221,17 @@ namespace
 		}).detach();
 	}
 
+	// Does this trigger id belong to the "wheel" action? Read under the config
+	// lock — the sink uses it to remember the opening key for hold-to-release.
+	bool TriggerFiresWheel(const std::string& id)
+	{
+		std::lock_guard l(g_configMutex);
+		for (const auto& e : g_config.entries)
+			if (e.id == id)
+				return e.device == "action" && e.action == "wheel";
+		return false;
+	}
+
 	// Does this key press match a hotbar button? Returns the slot index, or -1.
 	// Palette-CLOSED only and never while the game is paused: with a menu up the
 	// number keys belong to that menu (and to the console), and a bar that cast
@@ -9667,6 +10265,210 @@ namespace
 	// rather than a z=1 payload so C++ never has to decide whether an identity
 	// crop means "remove me" — they are the same thing and saying it explicitly
 	// keeps the map free of rows that draw nothing.
+	// Followers tab: facegen head renders as the DEFAULT portrait for anyone
+	// on the roster without a captured photo (Rober, 2026-08-14). The view
+	// sends the runtime formIds it can see; each resolves to its face OWNER
+	// (NpcFinder's kTraits/faceNPC template walk — the same identity the NPC
+	// finder renders under, so both features share one PNG). Renders that
+	// exist answer immediately; missing ones queue through the ItemIcons face
+	// route (BSResource-probed, render-once-keep-forever, session-deduped) and
+	// the view re-asks on a slow bounded clock while `queued` stays non-zero.
+	// Resolve a set of runtime formIds (as the ORIGINAL id STRINGS the caller sent)
+	// to their FACE-OWNER identity, exactly the way the fdFaceIcons handler does,
+	// filling three buckets: `icons` = already-on-disk renders (keyed by the caller's
+	// own id string, so a view reply matches what it sent), `faceQueue` = facegen
+	// heads to bake, `bodyQueue` = creature bodies to bake. ONE implementation,
+	// shared by OnJsFolFaceIcons (the view-driven roster/party) and
+	// WarmStartRosterFaces (the boot warm-start), so the two can never resolve a face
+	// differently. MAIN THREAD ONLY (LookupByID + the NPC walk touch game state).
+	void ResolveFaceQueuesForIds(const std::vector<std::string>& idStrings,
+		json& icons, json& faceQueue, json& bodyQueue)
+	{
+		// A creature companion (a summonable atronach, a beast follower) has no
+		// facegen head; when the head file is absent we fall her back to a BODY
+		// silhouette, the same route the Finder uses. The probe here is what tells
+		// face from body — exactly what EnqueueFaceLocked does.
+		const auto faceNifExists = [](const std::string& plugin, std::uint32_t local) -> bool {
+			char hex[16];
+			std::snprintf(hex, sizeof(hex), "%08x", local);
+			const std::string rel = std::string("meshes\\actors\\character\\facegendata\\facegeom\\") +
+				plugin + "\\" + hex + ".nif";
+			RE::BSResourceNiBinaryStream probe(rel.c_str());
+			return probe.good();
+		};
+		for (const auto& ids : idStrings) {
+			const auto rid = static_cast<std::uint32_t>(std::strtoul(ids.c_str(), nullptr, 16));
+			if (!rid)
+				continue;
+			auto* form = RE::TESForm::LookupByID(rid);
+			auto* actor = form ? form->As<RE::Actor>() : nullptr;
+			auto* base = actor ? actor->GetActorBase() : (form ? form->As<RE::TESNPC>() : nullptr);
+			if (!base)
+				continue;
+			auto* face = NpcFinder::FaceOwnerOf(base);
+			auto* ffile = face ? face->GetFile(0) : nullptr;
+			if (ffile) {
+				const std::uint32_t local = face->GetFormID() & (ffile->IsLight() ? 0xFFFu : 0xFFFFFFu);
+				char fidHex[16];
+				std::snprintf(fidHex, sizeof(fidHex), "0x%x", local);
+				const std::string plugin{ ffile->GetFilename() };
+				const auto        path = ItemIcons::FacePathFor(fidHex, plugin);
+				if (!path.empty()) {
+					icons[ids] = path;
+					continue;
+				}
+				if (faceNifExists(plugin, local)) {
+					faceQueue.push_back({ { "formId", std::string(fidHex) }, { "plugin", plugin },
+						{ "name", base->GetName() ? base->GetName() : "" } });
+					continue;
+				}
+				// no head file — fall through to the body route below
+			}
+			// Creature (or a headless humanoid): try a body silhouette.
+			std::string bnif;
+			const std::string bid = NpcFinder::BodyRenderFor(base, bnif);
+			if (bid.empty() || bnif.empty())
+				continue;   // neither head nor body — honest glyph
+			const auto bar = bid.find('|');
+			if (bar == std::string::npos || bar == 0)
+				continue;   // malformed identity — never index a bad key
+			const std::string bplugin = bid.substr(0, bar);
+			const std::uint32_t blocal = static_cast<std::uint32_t>(
+				std::strtoul(bid.c_str() + bar + 1, nullptr, 16));
+			char bhex[16];
+			std::snprintf(bhex, sizeof(bhex), "0x%x", blocal);
+			const auto bpath = ItemIcons::BodyPathFor(bhex, bplugin);
+			if (!bpath.empty()) {
+				icons[ids] = bpath;
+			} else {
+				bodyQueue.push_back({ { "formId", std::string(bhex) }, { "plugin", bplugin },
+					{ "name", base->GetName() ? base->GetName() : "" }, { "nif", bnif } });
+			}
+		}
+	}
+
+	void OnJsFolFaceIcons(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			const auto j = json::parse(payload, nullptr, false);
+			if (j.is_discarded() || !j.is_object() || !j.contains("ids") || !j["ids"].is_array())
+				return;
+			json icons = json::object();
+			json queue = json::array();       // facegen head renders to bake
+			json bodyQueue = json::array();   // creature body renders to bake
+			// Collect the runtime formIds AS THE VIEW SENT THEM (the icons reply is
+			// keyed by these strings, so it must match verbatim), then resolve them
+			// through the shared face-owner path (also used by the boot warm-start).
+			std::vector<std::string> idStrings;
+			idStrings.reserve(j["ids"].size());
+			for (const auto& idv : j["ids"]) {
+				if (idv.is_string())
+					idStrings.push_back(idv.get<std::string>());
+			}
+			ResolveFaceQueuesForIds(idStrings, icons, queue, bodyQueue);
+			// queued MUST be what the Ensure* calls ACTUALLY took, not the input
+			// size: an NPC with no facegen file (templated, or the head never
+			// shipped) — or a creature whose body NIF isn't in the load order —
+			// is dropped by the BSResource probe and renders nothing. Reporting
+			// the intended count instead wedged this into a permanent "0
+			// resolved, N asked" re-ask loop — the view kept polling
+			// unrenderable faces every 5 s for two minutes (2026-08-14).
+			std::size_t queued = 0;
+			if (!queue.empty())
+				queued += ItemIcons::EnsureFaceIcons(json{ { "items", std::move(queue) } }
+						.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+			if (!bodyQueue.empty())
+				queued += ItemIcons::EnsureBodyIcons(json{ { "items", std::move(bodyQueue) } }
+						.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+			logger::info("followers: face icons - {} resolved, {} asked", icons.size(), queued);  // marker: fo-face-icons
+			PushToView("fdFaceIconsData",
+				json{ { "icons", std::move(icons) }, { "queued", queued } }
+					.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+		});
+	}
+
+	// Render warm-start (perf item 3): once per session, after a save has loaded,
+	// pre-bake the follower ROSTER's face renders at IDLE priority so the first
+	// minutes — especially the first boot after a facegen generation purge, when
+	// every kept face was wiped and must re-render — show real faces instead of
+	// glyphs. The set is small and high-certainty (FO roster members + the live
+	// party), resolved through the SAME FaceOwnerOf path the fdFaceIcons handler
+	// uses, so it can never render a face the pane later requests differently. It is
+	// purely additive: EnsureFaceIcons/WarmStartFaces dedup (BSResource probe +
+	// FileExists + g_asked) means a face already on disk or with no facegen file
+	// costs nothing, and idle-tier means a page the player opens is never delayed.
+	// MAIN THREAD (LookupByID + the NPC walk + the roster/party JSON builders).
+	void WarmStartRosterFaces()
+	{
+		if (!ItemIcons::Available())
+			return;   // no Mesh Rendering Framework -> nothing renders faces anyway
+		// Collect runtime formIds from the two canonical sources, deduped, as the
+		// "0x<hex>" strings ResolveFaceQueuesForIds parses. The icons-map key format
+		// is irrelevant here — warm-start uses only the faceQueue (keyed by the
+		// face owner), never the already-on-disk `icons` bucket.
+		std::vector<std::string> idStrings;
+		std::unordered_set<std::uint32_t> seen;
+		const auto addId = [&](std::uint32_t rid) {
+			if (rid && seen.insert(rid).second) {
+				char buf[16];
+				std::snprintf(buf, sizeof(buf), "0x%x", rid);
+				idStrings.emplace_back(buf);
+			}
+		};
+		// Numeric-or-string formId, exactly as HudFollowersJson parses the FO state.
+		const auto ridOf = [](const json& f) -> std::uint32_t {
+			if (f.is_number_unsigned())
+				return f.get<std::uint32_t>();
+			if (f.is_number_integer())
+				return static_cast<std::uint32_t>(f.get<std::int64_t>());
+			if (f.is_string()) {
+				try { return static_cast<std::uint32_t>(std::stoul(f.get<std::string>(), nullptr, 16)); }
+				catch (...) {}
+			}
+			return 0;
+		};
+		// FO roster: categories[].members[].formId (the same walk HudFollowersJson does).
+		{
+			auto st = json::parse(FollowerDeck::StateJson(), nullptr, false);
+			const json* cats = nullptr;
+			if (st.is_object()) {
+				if (st.contains("categories") && st["categories"].is_array())
+					cats = &st["categories"];
+				else if (st.contains("state") && st["state"].is_object() &&
+						 st["state"].contains("categories") && st["state"]["categories"].is_array())
+					cats = &st["state"]["categories"];
+			}
+			if (cats) {
+				for (const auto& c : *cats) {
+					if (!c.is_object() || !c.contains("members") || !c["members"].is_array())
+						continue;
+					for (const auto& m : c["members"])
+						if (m.is_object() && m.contains("formId"))
+							addId(ridOf(m["formId"]));
+				}
+			}
+		}
+		// Live party: the HUD's teammate/faction scan (an array of {…,formId}).
+		{
+			auto arr = json::parse(HudFollowersJson(), nullptr, false);
+			if (arr.is_array())
+				for (const auto& row : arr)
+					if (row.is_object() && row.contains("formId"))
+						addId(ridOf(row["formId"]));
+		}
+		if (idStrings.empty())
+			return;
+		json icons = json::object(), faceQueue = json::array(), bodyQueue = json::array();
+		ResolveFaceQueuesForIds(idStrings, icons, faceQueue, bodyQueue);
+		if (faceQueue.empty())
+			return;   // every roster face is already on disk (the common warm boot)
+		// Cap the warm-start set — the roster is small, but never let it flood.
+		ItemIcons::WarmStartFaces(json{ { "items", std::move(faceQueue) } }
+				.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace),
+			/*cap=*/32);
+	}
+
 	void OnJsFolCropSave(const char* data)
 	{
 		const std::string raw = data ? data : "";
@@ -10498,6 +11300,14 @@ namespace
 	// NPCs tab (NPC Finder). Same threading contract as the Items tab: every
 	// handler AddTasks — the index walk, the query, ProcessLists scanning and
 	// MoveTo all touch engine structures.
+	void OnJsNpcFinderSave(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("nxSaved", NpcFinder::SaveJson(req));
+		});
+	}
+
 	void OnJsNpcFinderState(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
@@ -10555,8 +11365,73 @@ namespace
 			// Renders only the visible rows (the view bounds the list and
 			// settle-gates the ask — the Items tab lesson). An EMPTY payload
 			// queues nothing and just answers with the on-disk face index.
+			// NpcIconsJson folds in creature BODY renders too, so a Finder page
+			// of atronachs/spiders/draugr upgrades from glyph to silhouette.
 			ItemIcons::EnsureFaceIcons(payload);
-			PushToView("nxIconsData", ItemIcons::FaceIndexJson());
+			PushToView("nxIconsData", ItemIcons::NpcIconsJson());
+		});
+	}
+
+	// Mounts tab. mtState builds/refreshes the stable AND tops up body
+	// renders (they trickle in via the ItemIcons batch push); mtAct follows
+	// the NpcFinder goto/bring shape — a physical verb (summon/call/ride/
+	// goto) closes the palette first so the cast/jump lands in the live,
+	// unpaused world, and no reply is pushed on that path.
+	void OnJsMountsState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("mtStateResult", Mounts::StateJson());
+			Mounts::EnsureRenders();
+		});
+	}
+
+	void OnJsMountsSpells(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("mtSpellsData", Mounts::SpellsJson());
+		});
+	}
+
+	void OnJsMountsAct(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const std::string res = Mounts::ActJson(req);
+			const auto        j = json::parse(res, nullptr, false);
+			const bool        ok = !j.is_discarded() && j.value("ok", false);
+			const std::string act = j.is_discarded() ? std::string("") : j.value("act", std::string(""));
+			if (ok && (act == "summon" || act == "call" || act == "ride" || act == "goto")) {
+				bool reopen;
+				{
+					std::lock_guard l(g_configMutex);
+					reopen = !g_config.settings.closeAfterFire;
+				}
+				ClosePalette();
+				const std::string msg = Mounts::ExecuteAction(req);
+				if (!msg.empty())
+					RE::DebugNotification(msg.c_str());
+				// Ride never reopens — you are (about to be) ON the mount, and
+				// a paused palette over a mounting animation is a trap. The
+				// administrative pair honours closeAfterFire like NpcFinder.
+				if (reopen && act != "ride" && act != "summon")
+					SKSE::GetTaskInterface()->AddTask([]() {
+						if (CanOpenNow()) {
+							g_pendingTab = "mounts";
+							OpenPalette();
+						}
+					});
+				return;
+			}
+			PushToView("mtActResult", res);
+		});
+	}
+
+	void OnJsMountsIcons(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			// The pane's on-disk nudge while renders land one by one; renders
+			// themselves are queued by mtState (EnsureRenders).
+			PushToView("mtIconsData", ItemIcons::BodyIndexJson());
 		});
 	}
 
@@ -11146,6 +12021,40 @@ namespace
 		});
 	}
 
+	// ---------------------------------------------- ✨ Effects modal (fx* bridge)
+	// Visual effects other mods implement as ability spells, driven from the
+	// quick card's Effects modal. Same shape as bfl: everything that touches the
+	// actor runs on the main thread via the task queue. The view sends the same
+	// { formId } envelope, so BflFormIdOf is reused as-is.
+
+	void OnJsFxGet(const char* data)
+	{
+		const auto formId = BflFormIdOf(data);
+		SKSE::GetTaskInterface()->AddTask([formId]() {
+			PushToView("fxState", EffectsActions::StateJson(formId));
+		});
+	}
+
+	void OnJsFxSet(const char* data)
+	{
+		const auto formId = BflFormIdOf(data);
+		std::string id;
+		bool on = false;
+		if (data) {
+			const auto j = json::parse(data, nullptr, false);
+			if (!j.is_discarded() && j.is_object()) {
+				id = j.value("id", std::string(""));
+				on = j.value("on", false);
+			}
+		}
+		SKSE::GetTaskInterface()->AddTask([formId, id, on]() {
+			PushToView("fxResult", EffectsActions::Apply(formId, id, on));
+			// Fresh state rides along so the modal's rows flip without a
+			// second round-trip.
+			PushToView("fxState", EffectsActions::StateJson(formId));
+		});
+	}
+
 	// ------------------------------------------------------ Character Sheet tab
 	// The player's own live stats (level, the three pools, active magic effects)
 	// plus a freeform RP identity (class / profile / story / portrait). Ships
@@ -11483,6 +12392,17 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([payload]() {
 			PushToView("anResult", AnimActions::SetPack(payload));
 			PushToView("anOpen", AnimActions::OpenJson());
+		});
+	}
+
+	void OnJsAnimUser(const char* data)
+	{
+		// Favorites + custom tabs blob. Saved as-is (schema lives in the view);
+		// no anOpen follow-up — the view already holds this state, and a re-ship
+		// mid-edit would clobber an input the user is typing into.
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			PushToView("anResult", AnimActions::SetUser(payload));
 		});
 	}
 
@@ -12730,9 +13650,11 @@ namespace
 	}
 
 	// finIcons: the image picker asked for the custom-icon pool (shared with hotkeys).
+	// An explicit picker-open forces a fresh scan (same as the hotkey picker's
+	// Refresh): the palette-open gate is the hot path we cache, not this.
 	void OnJsFinIcons(const char*)
 	{
-		SKSE::GetTaskInterface()->AddTask([]() { PushToView("finIconList", DeckCustomIconsJson()); });
+		SKSE::GetTaskInterface()->AddTask([]() { PushToView("finIconList", DeckCustomIconsJson(true)); });
 	}
 
 	void OnJsFinLog(const char* data)
@@ -13455,7 +14377,25 @@ namespace
 
 			for (auto e = *a_events; e; e = e->next) {
 				const auto btn = e->AsButtonEvent();
-				if (!btn || !btn->IsDown())
+				if (!btn)
+					continue;
+				// Hold-to-release wheel: the UP of the key that opened it ends the
+				// gesture. Checked before the IsDown gate (releases are otherwise
+				// invisible here); the view decides what "release" means — in
+				// toggle mode it ignores the call entirely.
+				if (btn->IsUp()) {
+					if (g_wheelHoldArmed.load() &&
+						(btn->GetDevice() == RE::INPUT_DEVICE::kMouse) == g_wheelHoldMouse.load() &&
+						btn->GetIDCode() == g_wheelHoldCode.load()) {
+						g_wheelHoldArmed = false;
+						SKSE::GetTaskInterface()->AddTask([]() {
+							if (g_prisma && g_view && g_viewReady.load() && g_open.load())
+								g_prisma->Invoke(g_view, "hdWheelKeyUp()");
+						});
+					}
+					continue;
+				}
+				if (!btn->IsDown())
 					continue;
 				const auto device = btn->GetDevice();
 
@@ -13723,6 +14663,12 @@ namespace
 				if (!AnyOpen()) {
 					const auto trigId = TriggerMatch(isKb, isMs, idc);
 					if (!trigId.empty()) {
+						if (TriggerFiresWheel(trigId)) {
+							// same hold-to-release memory as the Ctrl+chord path
+							g_wheelHoldCode  = idc;
+							g_wheelHoldMouse = isMs;
+							g_wheelHoldArmed = true;
+						}
 						SKSE::GetTaskInterface()->AddTask([trigId]() {
 							FireEntryById(trigId, "key");
 						});
@@ -13781,6 +14727,13 @@ namespace
 						// deep-open key (F14/F15/F16) already travels.
 						if (slot && !slot->surface.empty()) {
 							const std::string surf = slot->surface;
+							if (surf == "wheel") {
+								// remember the key so its RELEASE can end a
+								// hold-style gesture (see the IsUp branch above)
+								g_wheelHoldCode  = idc;
+								g_wheelHoldMouse = isMs;
+								g_wheelHoldArmed = true;
+							}
 							SKSE::GetTaskInterface()->AddTask([surf]() {
 								g_pendingTab = surf;
 								EnsureViewAndOpen();
@@ -13798,11 +14751,43 @@ namespace
 							break;
 						}
 					}
+					// A press that lands while an open/close is already mid-flight is
+					// dropped, not raced: two Show/Hide into the single PrismaUI focus
+					// slot in the same frame is the "third press freezes solid" shape
+					// (Ank164). Honest log instead of silent, so a pasted HotkeyDeck.log
+					// still shows what the toggle did.
+					if (g_openInFlight.load()) {
+						logger::info("open key ignored - an open/close is already in flight");  // marker: open-inflight-guard
+						break;
+					}
 					if (g_open.load()) {
 						// Open key is a toggle: pressing it again closes the palette
 						// (also doubles as the lost-focus failsafe reset).
 						SKSE::GetTaskInterface()->AddTask([]() { ClosePalette(); });
+					} else if (g_openPressArmed.load() && !g_viewReady.load()) {
+						// The view is still warming up and a PRIOR press already armed a
+						// queued open (Ank164): the palette is not open, so there is
+						// nothing to "close". Treat this press as toggle intent = cancel
+						// the queued open, so a double-tap during the wait does NOT pop
+						// the deck open seconds later when the player has moved on. A
+						// third press re-arms it. Keyed on g_openPressArmed, not
+						// g_viewRequested: with eager creation g_viewRequested is already
+						// true at boot (no press), so the FIRST real press must fall
+						// through to the CanOpenNow branch below, not this one.
+						if (g_queuedOpen.exchange(false))
+							logger::info("open key during warm-up - cancelled the queued open (toggle intent)");  // marker: warm-up-cancel
+						else {
+							g_queuedOpen = true;  // re-arm: they want it after all
+							logger::info("open key during warm-up - re-armed the queued open");
+						}
 					} else if (CanOpenNow()) {
+						// Record when the player pressed, for the end-to-end
+						// "press -> shown" the DOM-ready / OpenPalette paths log. Mark the
+						// press as armed HERE (not only in EnsureViewAndOpen, which runs a
+						// task-turn later) so a double-tap in a later frame can reach the
+						// warm-up-cancel branch above while the view is still warming.
+						g_pressT0 = OpenDiag::NowMs();
+						g_openPressArmed = true;
 						SKSE::GetTaskInterface()->AddTask([]() { EnsureViewAndOpen(); });
 					}
 					break;
@@ -13963,6 +14948,20 @@ namespace
 							FollowerTune::Reapply(snap);
 					});
 				}).detach();
+				// Render warm-start (perf item 3): ONCE per session, after the first
+				// load settles (5 s — past the load screen, actors attached), pre-bake
+				// the roster's faces at IDLE priority so the first minutes show real
+				// faces instead of glyphs — worth the most on the first boot after a
+				// facegen generation purge, when nothing is on disk yet. Idle-tier +
+				// dedup make it free when faces already exist and never delay a
+				// user-requested render. Deferred off the load path on its own thread.
+				static std::atomic<bool> s_warmStarted{ false };
+				if (!s_warmStarted.exchange(true)) {
+					std::thread([]() {
+						std::this_thread::sleep_for(std::chrono::seconds(5));
+						SKSE::GetTaskInterface()->AddTask([]() { WarmStartRosterFaces(); });
+					}).detach();
+				}
 			}
 			return;
 		}
@@ -14032,7 +15031,11 @@ namespace
 		ItemIcons::SetOnBatchDone([]() {
 			PushToView("wdItemIcons", ItemIcons::IndexJson());
 			// Face renders ride the same queue; the NPCs pane listens for this.
-			PushToView("nxIconsData", ItemIcons::FaceIndexJson());
+			// NpcIconsJson also carries creature bodies, so a Finder page of
+			// atronachs/spiders upgrades to a body silhouette on batch-done.
+			PushToView("nxIconsData", ItemIcons::NpcIconsJson());
+			// ...and mount bodies, for the Mounts pane's previews.
+			PushToView("mtIconsData", ItemIcons::BodyIndexJson());
 		});
 
 		g_prisma = static_cast<PRISMA_UI_API::IVPrismaUI1*>(
@@ -14042,8 +15045,29 @@ namespace
 			return;
 		}
 
-		// View is created lazily on the first open-key press (EnsureViewAndOpen) so this
-		// plugin adds nothing to game startup or the save-load window.
+		// The heavy deck view (HotkeyDeck/index.html) is normally created EAGERLY at
+		// startup so the FIRST F7 press doesn't pay the once-per-session Ultralight
+		// warm-up (~1140 ms on a 4090, multi-second on weak CPUs) — that cost is hidden
+		// inside the load screen instead. Deferred to the NEXT task-queue turn (not
+		// inline here) so it yields this kDataLoaded dispatch first and never competes
+		// with other plugins' load work; CreateView's synchronous cost is ~0 ms (the
+		// warm-up is async in Ultralight, inside the DOM-ready callback), so this
+		// never blocks the main thread. CreateDeckView() is idempotent and honors the
+		// same missing-file guard as every other view, so a broken install degrades
+		// exactly as before (skip + log). MEMORY HONESTY: the view stays resident after
+		// first open anyway, so this only MOVES the cost earlier — no new footprint,
+		// and CreateDeckView leaves g_queuedOpen false so it never auto-opens the
+		// palette at startup. Opt out: SkyManager.ini [Performance] bEagerDeckView=0
+		// (low-memory users) — then the view is created lazily on first press exactly
+		// as before, via EnsureViewAndOpen.
+		if (EagerDeckViewEnabled()) {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (CreateDeckView())
+					logger::info("deck view created eagerly at startup (warm-up hidden in load)");
+			});
+		} else {
+			logger::info("deck view left lazy (created on first open-key press)");
+		}
 
 		// The Followers HUD view is the exception — it is always-on, so it is
 		// created HERE (Shown per config, never Focused except to reposition). The

@@ -108,6 +108,20 @@ var HDOmni = (function () {
       lastNpc: '',       // carried into follow-ups ("what's her personality")
       reqId: 0,
     },
+    /* The profile quick-changer's OWN request namespace, so its list/write
+       replies never collide with the main ask answer in onAnswer. */
+    prof: {
+      open: false,
+      reqId: 0,          // matched independently of ask.reqId
+      phase: '',         // '', 'loading', 'saving'
+      err: '',
+      list: [],          // pickable profiles
+      defaultId: 0,
+      filter: '',
+      sel: 0,
+      npcId: 0,
+      npcName: '',
+    },
   };
   var inputTimer = null;
 
@@ -343,6 +357,7 @@ var HDOmni = (function () {
   function setMode(m) {
     if (m !== 'search' && m !== 'ask' && m !== 'direct') return;
     if (m !== 'search' && chimAbsent()) return;   // no CHIM, no Ask/Direct
+    if (st.prof.open) closeProfilePicker();   // the sheet belongs to one answer
     st.mode = m;
     st.sel = 0;
     var box = $('omni-modal');
@@ -457,6 +472,12 @@ var HDOmni = (function () {
     var row = e.target.closest('.omni-row');
     if (row) { activate(st.flat[Number(row.dataset.idx)], false); return; }
     /* ask-mode delegated buttons */
+    var pchange = e.target.closest('.omni-prof-change');
+    if (pchange && !pchange.disabled) {
+      e.stopPropagation();
+      openProfilePicker(Number(pchange.dataset.npcid), pchange.dataset.npcname || '');
+      return;
+    }
     var think = e.target.closest('#omni-think');
     if (think) { submitAsk(true); return; }
     var cand = e.target.closest('.omni-cand');
@@ -502,7 +523,14 @@ var HDOmni = (function () {
   function onAnswer(payload) {
     var env = payload;
     if (typeof env === 'string') { try { env = JSON.parse(env); } catch (e) { return; } }
-    if (!env || env.id !== 'ask-' + st.ask.reqId) return;   // stale reply
+    if (!env) return;
+    /* Profile quick-changer replies ride the same haAnswer channel but carry a
+       prof-<n> id, so they route to the picker without ever touching the answer. */
+    if (typeof env.id === 'string' && env.id.indexOf('prof-') === 0) {
+      onProfileAnswer(env);
+      return;
+    }
+    if (env.id !== 'ask-' + st.ask.reqId) return;   // stale reply
     st.ask.busy = false;
     st.ask.phase = '';
     if (!env.ok) {
@@ -531,7 +559,7 @@ var HDOmni = (function () {
     speechstyle: 'Speech style', intimacy: 'Intimacy', diary: 'Diary', speech: 'Recent lines',
     pregnancy: 'Pregnancy', memories: 'Memories', events: 'Recent scenes', deaths: 'Recent deaths',
     chronicle: 'Chronicle — your canon', mentions: 'Mentions', knowledge: 'What she knows',
-    whereabouts: 'Whereabouts',
+    whereabouts: 'Whereabouts', profile: 'LLM profile',
   };
 
   function factRow(k, v) {
@@ -566,6 +594,32 @@ var HDOmni = (function () {
         body += factRow('father', val.father);
         if (val.progress != null && val.progress !== '') body += factRow('progress', val.progress);
       }
+    } else if (key === 'profile' && val && typeof val === 'object') {
+      /* Which LLM profile / model is driving her dialogue, plus the quick-changer.
+         st.ask.reply.npc.id is the identity the picker writes against. */
+      var pid = (st.ask.reply && st.ask.reply.npc) ? st.ask.reply.npc.id : 0;
+      var pname = (st.ask.reply && st.ask.reply.npc) ? st.ask.reply.npc.name : '';
+      body += '<div class="omni-prof-head">' +
+        '<span class="omni-prof-name">' + esc(val.profile_name || 'Profile') + '</span>' +
+        (val.is_default
+          ? '<span class="omni-prof-chip omni-prof-def" title="' +
+              (val.unset ? 'No explicit assignment — running on CHIM’s default NPC profile'
+                         : 'This is CHIM’s default NPC profile') + '">' +
+              (val.unset ? 'default (unset)' : 'default') + '</span>'
+          : '<span class="omni-prof-chip omni-prof-cust" title="A custom profile is assigned to her">custom</span>') +
+        (val.slot != null ? '<span class="omni-prof-slot">slot ' + esc(val.slot) + '</span>' : '') +
+        '</div>';
+      if (val.model) body += factRow('model', val.model);
+      if (val.provider) body += factRow('provider', val.provider);
+      if (val.connector) body += factRow('connector', val.connector);
+      if (val.badge) body += factRow('API key', val.badge);
+      if (val.dynamic) body += factRow('dynamic profile', true);
+      if (val.locked) body += factRow('profile locked', true);
+      /* The quick-changer button — disabled honestly when the NPC has no core id
+         (nsfw-only / unregistered), because there is no row to write against. */
+      body += '<button class="omni-prof-change" data-npcid="' + esc(pid || '') +
+        '" data-npcname="' + esc(pname) + '"' + (pid ? '' : ' disabled title="She is not a registered CHIM NPC yet — talk to her once in-game"') +
+        '>⚙ Change profile…</button>';
     } else if (Array.isArray(val) && val.length && val[0] && typeof val[0] === 'object' &&
                'text' in val[0]) {
       /* any {d, text} line-list — diary/speech/memories/events/deaths/
@@ -737,6 +791,220 @@ var HDOmni = (function () {
       html += '</div>';
     }
     host.innerHTML = html;
+    renderProfilePicker();   // re-mount the picker if it was open across a repaint
+  }
+
+  /* --------------------------------------------- profile quick-changer */
+  /* A small searchable picker over CHIM's LLM profiles, mounted INSIDE the omni
+     box (over the answer, like a sheet). It rides the same haAsk/haAnswer pipe
+     as Ask — mode=profiles to list, mode=set_profile to write — with its own
+     prof-<n> request id so replies never collide with the answer. The write is
+     a single-column, idempotent UPDATE of core_npc_master.profile_id server-side. */
+
+  function openProfilePicker(npcId, npcName) {
+    if (!npcId) return;                    // no core row → nothing to write against
+    st.prof.open = true;
+    st.prof.err = '';
+    st.prof.filter = '';
+    st.prof.sel = 0;
+    st.prof.npcId = npcId;
+    st.prof.npcName = npcName || '';
+    /* keep any list we already fetched this session; otherwise load it */
+    if (!st.prof.list.length) fetchProfiles();
+    renderProfilePicker();
+  }
+
+  function fetchProfiles() {
+    st.prof.phase = 'loading';
+    st.prof.err = '';
+    st.prof.reqId++;
+    var payload = { id: 'prof-' + st.prof.reqId, query: 'mode=profiles', llm: false };
+    renderProfilePicker();
+    toGame('haAsk', JSON.stringify(payload));
+    if (DEV && typeof window.__omniDevAsk === 'function') window.__omniDevAsk(payload);
+  }
+
+  function pickProfile(profileId) {
+    if (!st.prof.npcId || !profileId) return;
+    st.prof.phase = 'saving';
+    st.prof.err = '';
+    st.prof.reqId++;
+    var payload = {
+      id: 'prof-' + st.prof.reqId,
+      query: 'mode=set_profile&npc_id=' + encodeURIComponent(st.prof.npcId) +
+             '&npc=' + encodeURIComponent(st.prof.npcName || '') +
+             '&profile=' + encodeURIComponent(profileId),
+      llm: false,
+    };
+    renderProfilePicker();
+    toGame('haAsk', JSON.stringify(payload));
+    if (DEV && typeof window.__omniDevAsk === 'function') window.__omniDevAsk(payload);
+  }
+
+  function closeProfilePicker() {
+    st.prof.open = false;
+    var el = $('omni-prof-pick');
+    if (el) el.parentNode.removeChild(el);
+  }
+
+  /* prof-<n> replies: a profiles list, or a profile_set confirmation. */
+  function onProfileAnswer(env) {
+    if (env.id !== 'prof-' + st.prof.reqId) return;   // stale
+    if (!env.ok) {
+      st.prof.phase = ''; st.prof.err = env.error || 'the server did not answer';
+      renderProfilePicker(); return;
+    }
+    var body = env.json;
+    if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }
+    if (!body || body.ok === false) {
+      st.prof.phase = '';
+      st.prof.err = (body && body.error) ? body.error : 'the server rejected it';
+      renderProfilePicker(); return;
+    }
+    if (body.kind === 'profiles') {
+      st.prof.phase = '';
+      st.prof.list = body.profiles || [];
+      st.prof.defaultId = body.default_id || 0;
+      st.prof.sel = 0;
+      renderProfilePicker();
+      return;
+    }
+    if (body.kind === 'profile_set') {
+      st.prof.phase = '';
+      /* update the open answer's profile facet in place, then close the sheet */
+      if (body.profile && st.ask.reply && st.ask.reply.facets) {
+        st.ask.reply.facets.profile = body.profile;
+      }
+      closeProfilePicker();
+      renderAsk();
+      /* a brief on-answer confirmation line */
+      var host = $('omni-results');
+      if (host && body.message) {
+        var note = document.createElement('div');
+        note.className = 'omni-prof-toast';
+        note.textContent = '✓ ' + body.message;
+        host.insertBefore(note, host.firstChild);
+        setTimeout(function () { if (note.parentNode) note.parentNode.removeChild(note); }, 4200);
+      }
+      return;
+    }
+  }
+
+  function filteredProfiles() {
+    var q = st.prof.filter.trim().toLowerCase();
+    var list = st.prof.list;
+    if (!q) return list.slice();
+    return list.filter(function (p) {
+      return String(p.label || '').toLowerCase().indexOf(q) !== -1 ||
+             String(p.model || '').toLowerCase().indexOf(q) !== -1 ||
+             String(p.provider || '').toLowerCase().indexOf(q) !== -1 ||
+             String(p.connector || '').toLowerCase().indexOf(q) !== -1;
+    });
+  }
+
+  function renderProfilePicker() {
+    var box = $('omni-modal') ? $('omni-modal').querySelector('.omni-box') : null;
+    var existing = $('omni-prof-pick');
+    if (!st.prof.open) { if (existing) existing.parentNode.removeChild(existing); return; }
+    if (!box) return;
+
+    var el = existing;
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'omni-prof-pick';
+      box.appendChild(el);
+      el.addEventListener('mousedown', function (e) {
+        if (e.target === el) closeProfilePicker();
+      });
+    }
+
+    var rows = filteredProfiles();
+    /* past ~10 profiles the filter bar earns its keep, but it is always shown so
+       the idiom is consistent — type, Enter takes the top hit (fd-ctx idiom). */
+    var showFilter = st.prof.list.length > 8 || st.prof.filter !== '';
+    if (st.prof.sel >= rows.length) st.prof.sel = Math.max(0, rows.length - 1);
+
+    var inner =
+      '<div class="omni-prof-sheet">' +
+      '<div class="omni-prof-bar">' +
+        '<span class="omni-prof-title">Profile for ' + esc(st.prof.npcName || 'her') + '</span>' +
+        '<button class="omni-prof-x" title="Cancel (Esc)">✕</button>' +
+      '</div>' +
+      (showFilter
+        ? '<input id="omni-prof-filter" class="omni-prof-filter" type="text" ' +
+          'placeholder="Filter profiles…" autocomplete="off" spellcheck="false" value="' +
+          esc(st.prof.filter) + '">'
+        : '');
+
+    if (st.prof.phase === 'loading') {
+      inner += '<div class="omni-prof-note">Loading profiles…</div>';
+    } else if (st.prof.phase === 'saving') {
+      inner += '<div class="omni-prof-note">Saving…</div>';
+    } else if (st.prof.err) {
+      inner += '<div class="omni-prof-err">' + esc(st.prof.err) +
+        '<button class="omni-prof-retry">Retry</button></div>';
+    } else if (!rows.length) {
+      inner += '<div class="omni-prof-note">' +
+        (st.prof.list.length ? 'No profile matches that.' : 'No profiles found.') + '</div>';
+    } else {
+      inner += '<div class="omni-prof-list">';
+      for (var i = 0; i < rows.length; i++) {
+        var p = rows[i];
+        var cur = st.ask.reply && st.ask.reply.facets && st.ask.reply.facets.profile &&
+                  st.ask.reply.facets.profile.profile_id === p.id;
+        inner += '<button class="omni-prof-opt' + (i === st.prof.sel ? ' sel' : '') +
+          (cur ? ' current' : '') + '" data-pid="' + esc(p.id) + '">' +
+          '<span class="omni-prof-opt-l">' + esc(p.label) +
+            (p.is_default ? ' <span class="omni-prof-tag def">default</span>' : '') +
+            (p.slot != null ? ' <span class="omni-prof-tag">slot ' + esc(p.slot) + '</span>' : '') +
+            (cur ? ' <span class="omni-prof-tag cur">current</span>' : '') +
+          '</span>' +
+          (p.model ? '<span class="omni-prof-opt-m">' + esc(p.model) +
+            (p.provider ? ' · ' + esc(p.provider) : '') + '</span>' : '') +
+          '</button>';
+      }
+      inner += '</div>';
+    }
+    inner += '</div>';
+    el.innerHTML = inner;
+
+    /* wiring */
+    var xb = el.querySelector('.omni-prof-x');
+    if (xb) xb.addEventListener('click', closeProfilePicker);
+    var retry = el.querySelector('.omni-prof-retry');
+    if (retry) retry.addEventListener('click', fetchProfiles);
+    var filt = el.querySelector('#omni-prof-filter');
+    if (filt) {
+      filt.addEventListener('input', function (e) {
+        st.prof.filter = e.target.value; st.prof.sel = 0; renderProfilePicker();
+      });
+      filt.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          var fr = filteredProfiles();
+          if (fr[st.prof.sel]) pickProfile(fr[st.prof.sel].id);
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          st.prof.sel = Math.min(st.prof.sel + 1, filteredProfiles().length - 1); renderProfilePicker();
+          var f2 = el.querySelector('#omni-prof-filter'); if (f2) f2.focus();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          st.prof.sel = Math.max(0, st.prof.sel - 1); renderProfilePicker();
+          var f3 = el.querySelector('#omni-prof-filter'); if (f3) f3.focus();
+        } else if (e.key === 'Escape') {
+          e.preventDefault(); e.stopPropagation(); closeProfilePicker();
+        }
+      });
+      /* keep focus while typing across repaints */
+      setTimeout(function () { if (filt.isConnected) { filt.focus();
+        try { filt.setSelectionRange(filt.value.length, filt.value.length); } catch (e2) {} } }, 0);
+    }
+    var opts = el.querySelectorAll('.omni-prof-opt');
+    for (var k = 0; k < opts.length; k++) {
+      (function (btn) {
+        btn.addEventListener('click', function () { pickProfile(Number(btn.dataset.pid)); });
+      })(opts[k]);
+    }
   }
 
   /* ------------------------------------------------------------ open/close */
@@ -774,6 +1042,7 @@ var HDOmni = (function () {
 
   function close() {
     if (!st.open) return;
+    if (st.prof.open) closeProfilePicker();   // never leave the sheet orphaned
     st.open = false;
     var m = $('omni-modal');
     if (m) m.classList.add('hidden');
@@ -803,6 +1072,13 @@ var HDOmni = (function () {
      the overlay is open. Returns true when the key was consumed. */
   function onKey(e, code) {
     if (!st.open) return false;
+    /* the profile picker is a sheet ON TOP of the answer — Esc peels it first */
+    if (st.prof.open) {
+      if (code === 'Escape') { closeProfilePicker(); return true; }
+      /* while it owns the screen its own filter input handles keys; swallow the
+         rest so they don't reach search/ask underneath */
+      return true;
+    }
     if (code === 'Escape') { close(); return true; }
     if (st.mode === 'search') {
       if (code === 'ArrowDown') { st.sel = Math.min(st.sel + 1, Math.max(0, st.flat.length - 1)); renderResults(); return true; }
@@ -1049,11 +1325,14 @@ var HDOmni = (function () {
      and a spell index to search, exercising both bridge directions. */
   if (DEV) {
     var DEV_NPCS = {
-      'uthgerd': { name: 'Uthgerd the Unbroken', race: 'Nord', gender: 'Female',
+      'uthgerd': { name: 'Uthgerd the Unbroken', id: 101, race: 'Nord', gender: 'Female',
         focusFacets: { intimacy: { orientation: 'bisexual', preference: 'monogamous',
           kinks: ['praise', 'wrestling'], is_slave: false },
         personality: 'Proud, sharp-tongued, quick to a brawl. Refuses to be anyone\'s trophy.',
-        bio: 'Whiterun brawler, drinks at the Bannered Mare and takes on all comers.' } },
+        bio: 'Whiterun brawler, drinks at the Bannered Mare and takes on all comers.',
+        profile: { profile_id: 1, profile_name: 'Default Profile', slot: 1, is_default: true,
+          unset: false, model: 'deepseek/deepseek-v3.1-terminus:exacto', connector: 'DeepSeek 3.1 Terminus Exacto',
+          provider: 'deepseek', badge: 'OpenRouter', dynamic: false, locked: false } } },
       'jenassa': { name: 'Jenassa', race: 'Dunmer', gender: 'Female',
         focusFacets: { intimacy: { orientation: 'heterosexual', preference: 'unattached',
           kinks: ['danger', 'coin'], is_slave: false },
@@ -1069,6 +1348,36 @@ var HDOmni = (function () {
           window.haAnswer({ id: payload.id, ok: true, status: 200, json: {
             ok: true, kind: 'direct', title: 'Direction sent', message: decodeURIComponent((payload.query.match(/q=([^&]*)/) || [])[1] || ''),
             note: 'Nearby NPCs act on this.', output: '[MANAGER] Forking task rolemaster' } });
+          return;
+        }
+        /* profile quick-changer mocks — mirror deck_ask.php's profiles / set_profile */
+        if (/mode=profiles/.test(payload.query)) {
+          window.haAnswer({ id: payload.id, ok: true, status: 200, json: {
+            ok: true, kind: 'profiles', default_id: 1, profiles: [
+              { id: 1, label: 'Default Profile', slot: 1, is_default: true,
+                model: 'deepseek/deepseek-v3.1-terminus:exacto', provider: 'deepseek', connector: 'DeepSeek 3.1 Terminus Exacto' },
+              { id: 9, label: 'Default Profile (Dynamic)', slot: null, is_default: false,
+                model: 'deepseek/deepseek-v3.1-terminus:exacto', provider: 'deepseek', connector: 'DeepSeek 3.1 Terminus Exacto' },
+              { id: 3, label: 'Claude SONNET', slot: null, is_default: false,
+                model: 'anthropic/claude-sonnet-4.5', provider: 'anthropic', connector: 'Claude SONNET' },
+            ] } });
+          return;
+        }
+        if (/mode=set_profile/.test(payload.query)) {
+          var setPid = Number(decodeURIComponent((payload.query.match(/[&?]profile=([^&]*)/) || [])[1] || '0'));
+          var setName = decodeURIComponent((payload.query.match(/[&?]npc=([^&]*)/) || [])[1] || 'her');
+          var setId = Number(decodeURIComponent((payload.query.match(/[&?]npc_id=([^&]*)/) || [])[1] || '0'));
+          var pmap = { 1: 'Default Profile', 9: 'Default Profile (Dynamic)', 3: 'Claude SONNET' };
+          var mmap = { 1: 'deepseek/deepseek-v3.1-terminus:exacto', 9: 'deepseek/deepseek-v3.1-terminus:exacto',
+                       3: 'anthropic/claude-sonnet-4.5' };
+          window.haAnswer({ id: payload.id, ok: true, status: 200, json: {
+            ok: true, kind: 'profile_set', changed: true,
+            npc: { id: setId, name: setName },
+            message: setName + ' now uses ' + (pmap[setPid] || ('Profile ' + setPid)),
+            profile: { profile_id: setPid, profile_name: pmap[setPid] || ('Profile ' + setPid),
+              slot: setPid === 1 ? 1 : null, is_default: setPid === 1, unset: false,
+              model: mmap[setPid] || null, provider: setPid === 3 ? 'anthropic' : 'deepseek',
+              connector: pmap[setPid] || null, badge: 'OpenRouter', dynamic: false, locked: false } } });
           return;
         }
         /* aggregate + world mocks mirror deck_ask.php's reply kinds */
@@ -1107,7 +1416,7 @@ var HDOmni = (function () {
         }
         var body = {
           ok: true,
-          npc: { name: hit.name, race: hit.race, gender: hit.gender },
+          npc: { name: hit.name, id: hit.id || 0, race: hit.race, gender: hit.gender },
           matchedBy: 'name word in question',
           candidates: [hit.name],
           focus: qlow.indexOf('personality') !== -1 ? ['personality'] : ['intimacy'],

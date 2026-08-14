@@ -41,6 +41,14 @@ namespace AnimActions
 		std::mutex       g_scanMutex;
 		std::atomic_bool g_scanBusy{ false };
 
+		// The pane's user-data blob (favorites + custom tabs). C++ never reads
+		// inside it — the schema lives in anim-pane.js (shelf-slice precedent);
+		// this side only loads/saves/ships it, so a newer view's keys survive an
+		// older DLL. Own sidecar, NOT a hotkeys.json slice, so the OnJsSave
+		// wholesale-replace trap (the vanishing-portrait lesson) cannot eat it.
+		json       g_user = json::object();
+		std::mutex g_userMutex;
+
 		std::filesystem::path CatalogFile()
 		{
 			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "zap-catalog.json";
@@ -54,6 +62,11 @@ namespace AnimActions
 		std::filesystem::path SidecarFile()
 		{
 			return std::filesystem::path("Data") / "SKSE" / "Plugins" / "HotkeyDeck" / "anim-scan.json";
+		}
+
+		std::filesystem::path UserFile()
+		{
+			return std::filesystem::path("Data") / "SKSE" / "Plugins" / "HotkeyDeck" / "anim-user.json";
 		}
 
 		std::string NameOf(RE::Actor* actor)
@@ -206,12 +219,23 @@ namespace AnimActions
 			return out.empty() ? event : out;
 		}
 
+		// Per-list tallies for the scan-v2 honesty pass: a pack whose every line
+		// is paired (`pa`) or behaviour plumbing used to VANISH from the result,
+		// which read as "the scan missed my pack". Now it lands in the packs
+		// card, greyed, with the reason.
+		struct ListStats
+		{
+			int added = 0;    // applyable rows this list contributed
+			int paired = 0;   // pa/km/+ — multi-actor scene animations (OStim's domain)
+			int behav = 0;    // aa/AV/md/ch/… — behaviour plumbing, not poses
+		};
+
 		// Parse one FNIS list into `out`. Same type rules as the baker:
 		// b/o applyable idle, s/so applyable sequence, fu/fuo furniture (shown
 		// disabled), ofa overlay, +/pa/km skipped (continuation / multi-actor).
 		// `seen` dedupes by AnimEvent across every layer (first wins).
 		void ParseFnisList(const std::filesystem::path& file, const std::string& pack,
-			std::unordered_set<std::string>& seen, std::vector<json>& out)
+			std::unordered_set<std::string>& seen, std::vector<json>& out, ListStats& st)
 		{
 			std::ifstream in(file);
 			if (!in)
@@ -237,8 +261,10 @@ namespace AnimActions
 				std::string typ, tok, event;
 				ss >> typ;
 				typ = Lower(typ);
-				if (typ == "+" || typ == "pa" || typ == "km")
+				if (typ == "+" || typ == "pa" || typ == "km") {
+					++st.paired;
 					continue;
+				}
 				ss >> tok;
 				if (!tok.empty() && tok[0] == '-')
 					ss >> event;
@@ -259,9 +285,11 @@ namespace AnimActions
 					kind = (typ == "s" || typ == "so") ? "sequence" : "idle";
 					needsObj = (typ == "o" || typ == "so");
 				} else {
+					++st.behav;
 					continue;  // aa/AV/md/ch/... — behaviour plumbing, not applyable poses
 				}
 
+				++st.added;
 				seen.insert(event);
 				const std::string catBase = needsFurn ? "Furniture" : AutoCatBase(event);
 				out.push_back(json{
@@ -304,6 +332,18 @@ namespace AnimActions
 			std::ofstream outF(file, std::ios::binary | std::ios::trunc);
 			if (outF)
 				outF << g_scan.dump(1, ' ', false, nlohmann::json::error_handler_t::replace);
+			else
+				logger::error("anim: could not write {}", PathUtf8(file));
+		}
+
+		void SaveUserLocked()  // caller holds g_userMutex
+		{
+			std::error_code ec;
+			const auto file = UserFile();
+			std::filesystem::create_directories(file.parent_path(), ec);
+			std::ofstream outF(file, std::ios::binary | std::ios::trunc);
+			if (outF)
+				outF << g_user.dump(1, ' ', false, nlohmann::json::error_handler_t::replace);
 			else
 				logger::error("anim: could not write {}", PathUtf8(file));
 		}
@@ -362,6 +402,32 @@ namespace AnimActions
 					g_scan["packs"].size(),
 					g_scan.contains("entries") && g_scan["entries"].is_array() ? g_scan["entries"].size() : 0);
 			}
+		}
+
+		// The pane's user blob (favorites + custom tabs). Bad JSON is treated as
+		// "no user data" — the pane starts clean rather than crashing the load.
+		{
+			std::lock_guard l(g_userMutex);
+			g_user = json::object();
+			std::error_code ec;
+			const auto file = UserFile();
+			if (std::filesystem::exists(file, ec)) {
+				std::ifstream in(file, std::ios::binary);
+				if (in) {
+					std::stringstream ss;
+					ss << in.rdbuf();
+					try {
+						g_user = json::parse(ss.str());
+						if (!g_user.is_object())
+							g_user = json::object();
+					} catch (const std::exception& e) {
+						logger::error("anim: anim-user.json failed to parse: {}", e.what());
+						g_user = json::object();
+					}
+				}
+			}
+			if (!g_user.empty())
+				logger::info("anim: user data loaded ({} key(s))", g_user.size());
 		}
 
 		g_crawlFac = nullptr;
@@ -439,6 +505,10 @@ namespace AnimActions
 			{ "crawl", CrawlOn(a) },
 		};
 		out["crawlReady"] = (g_crawlFac != nullptr);
+		{
+			std::lock_guard l(g_userMutex);
+			out["user"] = g_user;  // favorites + custom tabs — schema lives in the view
+		}
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
@@ -509,8 +579,16 @@ namespace AnimActions
 		std::unordered_set<std::string> bakedLists, seen;
 		BakedCoverage(bakedLists, seen);
 
-		// pack name -> entries, in directory order; parsed lists for the log.
-		std::vector<std::pair<std::string, std::string>> lists;  // (packName, basename)
+		// pack name -> entries, in directory order; every parsed list is
+		// RECORDED even when it contributed nothing applyable (scan v2) — a
+		// pack of pure paired/behaviour lines must show up greyed with the
+		// reason, not vanish and read as a scanner miss.
+		struct ListRec
+		{
+			std::string pack, base;
+			ListStats   st;
+		};
+		std::vector<ListRec> lists;
 		std::vector<json> entries;
 		std::error_code ec;
 		const auto root = ScanRoot();
@@ -539,10 +617,10 @@ namespace AnimActions
 				const std::string pack = PackNameFromList(base);
 				if (pack.empty())
 					continue;
-				const auto before = entries.size();
-				ParseFnisList(it->path(), pack, seen, entries);
-				if (entries.size() > before)
-					lists.emplace_back(pack, base);
+				ListStats st;
+				ParseFnisList(it->path(), pack, seen, entries, st);
+				if (st.added || st.paired || st.behav)
+					lists.push_back(ListRec{ pack, base, st });
 			}
 		};
 		scanDir(root);
@@ -575,11 +653,29 @@ namespace AnimActions
 			return ka < kb;
 		});
 
-		// Per-pack rollup; a pack keeps its enabled flag across rescans.
-		std::map<std::string, int> perPack;
-		for (const auto& en : entries)
-			++perPack[en["pack"].get<std::string>()];
+		// Per-pack rollup (a pack may ship several lists); enabled flags survive
+		// rescans. Zero-pose packs are kept with their skip tallies so the card
+		// can name WHY they contribute nothing.
+		struct PackAgg
+		{
+			std::string base;
+			int         added = 0, paired = 0, behav = 0;
+		};
+		std::map<std::string, PackAgg> agg;                 // for the tallies
+		std::vector<std::string>       packOrder;           // first-seen order
+		for (const auto& rec : lists) {
+			auto it = agg.find(rec.pack);
+			if (it == agg.end()) {
+				agg.emplace(rec.pack, PackAgg{ rec.base, rec.st.added, rec.st.paired, rec.st.behav });
+				packOrder.push_back(rec.pack);
+			} else {
+				it->second.added += rec.st.added;
+				it->second.paired += rec.st.paired;
+				it->second.behav += rec.st.behav;
+			}
+		}
 		std::size_t nPacks = 0, nEvents = entries.size();
+		long totPaired = 0, totBehav = 0;
 		{
 			std::lock_guard l(g_scanMutex);
 			std::unordered_set<std::string> wasOff;
@@ -588,29 +684,47 @@ namespace AnimActions
 					if (!p.value("enabled", true))
 						wasOff.insert(p.value("name", ""));
 			json packs = json::array();
-			for (const auto& [pack, base] : lists) {
-				if (!perPack.count(pack))
-					continue;  // already rolled up under an earlier list of the same pack
+			for (const auto& pack : packOrder) {
+				const auto& a = agg[pack];
+				totPaired += a.paired;
+				totBehav += a.behav;
+				if (a.added)
+					++nPacks;
 				packs.push_back(json{
 					{ "name", pack },
-					{ "file", base },
-					{ "count", perPack[pack] },
+					{ "file", a.base },
+					{ "count", a.added },
 					{ "enabled", !wasOff.count(pack) },
+					{ "paired", a.paired },
+					{ "behav", a.behav },
 				});
-				perPack.erase(pack);
 			}
-			nPacks = packs.size();
 			g_scan = json{
-				{ "version", 1 },
+				{ "version", 2 },
 				{ "packs", std::move(packs) },
 				{ "entries", json(entries) },
 			};
 			SaveSidecarLocked();
 		}
+		// The merged tab total (baked + these new poses) — the number the pane
+		// header shows. Without it the toast's "593 found" reads as the whole
+		// catalogue (Rober, 2026-08-14: "it said it only found 500").
+		std::size_t nBaked = 0;
+		{
+			std::lock_guard l(g_catMutex);
+			if (g_catalog.contains("entries") && g_catalog["entries"].is_array())
+				nBaked = g_catalog["entries"].size();
+		}
 		logger::info("anim: load-order scan: {} pack(s), {} event(s)", nPacks, nEvents);
-		return ResultJson(true, nPacks
-			? std::to_string(nPacks) + " pack(s), " + std::to_string(nEvents) + " animations found"
-			: "no other FNIS-format pose packs in this load order");
+		logger::info("anim: scan v2 tallies: {} paired scene line(s) (OStim's domain), {} behaviour line(s) skipped",
+			totPaired, totBehav);
+		if (!nPacks && !totPaired && !totBehav)
+			return ResultJson(true, "no other FNIS-format pose packs in this load order");
+		std::string msg = std::to_string(nPacks) + " pack(s) · " + std::to_string(nEvents) +
+			" new poses — the tab now holds " + std::to_string(nBaked + nEvents) + " animations";
+		if (totPaired)
+			msg += " · " + std::to_string(totPaired) + " paired scene animations belong to OStim (see its tab)";
+		return ResultJson(true, msg);
 	}
 
 	std::string Scan()
@@ -659,6 +773,31 @@ namespace AnimActions
 		}
 		logger::info("anim: pack '{}' -> {}", name, on ? "on" : "off");
 		return ResultJson(true, name + (on ? " shown" : " hidden"));
+	}
+
+	std::string SetUser(const std::string& payloadJson)
+	{
+		// 512 KB leash — favorites + tabs are a few KB; a runaway payload is a
+		// view bug, not something to write to disk forever.
+		if (payloadJson.size() > 512 * 1024)
+			return ResultJson(false, "animation user data too large — not saved");
+		json j;
+		try {
+			j = json::parse(payloadJson);
+		} catch (...) {
+			return ResultJson(false, "bad animation user data — not saved");
+		}
+		if (!j.is_object())
+			return ResultJson(false, "bad animation user data — not saved");
+		std::size_t nKeys = 0;
+		{
+			std::lock_guard l(g_userMutex);
+			g_user = std::move(j);
+			nKeys = g_user.size();
+			SaveUserLocked();
+		}
+		logger::info("anim: user data saved ({} key(s))", nKeys);
+		return ResultJson(true, "");  // empty msg on purpose — a ☆ toggle must not toast
 	}
 
 	bool IsAction(const std::string& a) { return a == "crawl"; }

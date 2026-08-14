@@ -25,7 +25,15 @@ window.ItemsPane = (function () {
   const SELFTEST = location.search.indexOf('selftest=1') !== -1;
 
   const DEBOUNCE_MS = 160;   // per keystroke, before the C++ query fires
-  const PAGE = 60;           // rows per fetch; "Show more" appends another page
+
+  /* Pagination (Rober, 2026-08-14: "the finder page should probably be
+     paginated with options to show how many per page … maybe default to 10?").
+     A page is ONE query slice — state.items holds exactly the current page and
+     never accumulates, so only the drawn rows request a render. Items are the
+     cheaper 512px renders, so this pane defaults to 25 (the NPC pane, whose
+     faces are 1024px, defaults to 10 — same control, different sensible default). */
+  const PAGE_SIZES = [10, 25, 50, 100];
+  const DEFAULT_PAGE_SIZE = 25;
 
   /* ============================================================== kinds == */
 
@@ -73,7 +81,11 @@ window.ItemsPane = (function () {
     q: '',
     type: 'all',
     plugin: '',
+    plugFilter: '',      // secondary fuzzy filter on the OWNING plugin name (client-side)
+    plugFilterOpen: false,
     sel: 0,          // index into flatRows()
+    pageSize: DEFAULT_PAGE_SIZE,  // rows per page — restored from state, persisted on change
+    page: 0,                      // current page, 0-based — SESSION-ONLY, never persisted
     qty: {},         // item id -> chosen quantity (default 1)
     visible: false,
     debT: null,
@@ -83,6 +95,7 @@ window.ItemsPane = (function () {
     iconT: null,     // the settle timer before icons are requested for a query
     iconPollT: null, // on-disk index poll while drawn rows still lack art
     iconPollN: 0,
+    hintSeen: false, // the first-open "art renders in the background" hint
   };
 
   /* ============================================================= bridge == */
@@ -107,6 +120,9 @@ window.ItemsPane = (function () {
     state.gold = (typeof d.gold === 'number') ? d.gold : -1;
     state.pay = !!d.pay;
     state.mult = Number(d.mult) || 1;
+    /* Persisted page size from the DLL. Absent (an old DLL) => keep our default,
+       so the pane still paginates — old-DLL tolerance in the read direction. */
+    if (typeof d.pageSize === 'number' && d.pageSize > 0) ui.pageSize = clampPageSize(d.pageSize);
     state.plugins = Array.isArray(d.plugins) ? d.plugins : [];
     if (ui.visible) {
       /* A query typed before the index answered (or carried over from the last
@@ -122,9 +138,19 @@ window.ItemsPane = (function () {
     if ((d.seq | 0) !== state.seq) return;   // stale reply from an older keystroke
     state.awaiting = false;
     state.total = d.total | 0;
-    const rows = Array.isArray(d.items) ? d.items : [];
-    if ((d.offset | 0) > 0) state.items = state.items.concat(rows);
-    else state.items = rows;
+    /* A page REPLACES — state.items is exactly the current page, never the
+       accumulation the old "Show more" foot built up. This is what shrinks the
+       render burst with page size: requestIcons() only ever sees one page. */
+    state.items = Array.isArray(d.items) ? d.items : [];
+    /* A page that no longer exists (total shrank under a stale offset) — step
+       back to the last real page and re-ask. */
+    if (!state.items.length && state.total > 0 && ui.page > 0 &&
+        ui.page * ui.pageSize >= state.total) {
+      ui.page = Math.max(0, Math.ceil(state.total / ui.pageSize) - 1);
+      runQuery(false);
+      return;
+    }
+    ui.sel = 0;
     if (ui.visible) render();
   };
 
@@ -139,27 +165,85 @@ window.ItemsPane = (function () {
     if (!d || typeof d !== 'object') return;
     state.pay = !!d.pay;
     state.mult = Number(d.mult) || 1;
-    if (ui.visible) { renderHeader(); renderBody(); }
+    /* pageSize round-trips through the same save reply (item-explorer.json). If
+       the DLL snapped it to a different legal value, follow — and re-query so
+       the page matches the confirmed size. */
+    if (typeof d.pageSize === 'number' && d.pageSize > 0) {
+      const p = clampPageSize(d.pageSize);
+      if (p !== ui.pageSize) { ui.pageSize = p; ui.page = 0; if (ui.visible) { runQuery(false); return; } }
+    }
+    if (ui.visible) { renderHeader(); renderBody(); renderFooter(); }
   };
 
   /* ============================================================ queries == */
 
+  function clampPageSize(n) {
+    n = Math.round(Number(n) || 0);
+    if (PAGE_SIZES.indexOf(n) !== -1) return n;
+    /* not one of the offered sizes (a hand-edited sidecar / an odd DLL value) —
+       snap to the nearest legal choice so the selector always highlights one. */
+    let best = DEFAULT_PAGE_SIZE, bestD = Infinity;
+    for (let i = 0; i < PAGE_SIZES.length; i++) {
+      const d = Math.abs(PAGE_SIZES[i] - n);
+      if (d < bestD) { bestD = d; best = PAGE_SIZES[i]; }
+    }
+    return best;
+  }
+
+  /* reset (a new query / filter / pill / plugin change) always returns to page
+     1; Prev/Next call with reset=false and set ui.page themselves first. Each
+     query REPLACES the page — state.items is never carried across. */
   function runQuery(reset) {
+    if (reset) { ui.page = 0; chipLastLand = Date.now(); }   // a new search re-arms the render window
     if (ui.type === 'mods') { state.awaiting = false; render(); return; }
     if (!ui.q && !ui.plugin && ui.type === 'all') {
       /* nothing to ask — the hero state owns the screen */
-      state.items = []; state.total = 0; state.awaiting = false;
+      state.items = []; state.total = 0; state.awaiting = false; ui.page = 0;
       render();
       return;
     }
     state.seq++;
     state.awaiting = true;
-    if (reset) { state.items = []; ui.sel = 0; }
+    ui.sel = 0;
     toGame('ixQuery', JSON.stringify({
       q: ui.q, type: ui.type === 'mods' ? 'all' : ui.type, plugin: ui.plugin,
-      limit: PAGE, offset: reset ? 0 : state.items.length, seq: state.seq,
+      limit: ui.pageSize, offset: ui.page * ui.pageSize, seq: state.seq,
     }));
     render();
+  }
+
+  /* ---- pagination controls ------------------------------------------------ */
+
+  function pageCount() {
+    if (ui.pageSize <= 0) return 1;
+    return Math.max(1, Math.ceil((state.total || 0) / ui.pageSize));
+  }
+
+  /* Jump to a page (clamped). Prev/Next and PgUp/PgDn route through here; it
+     re-queries the new slice, so the render window follows the page. */
+  function gotoPage(p) {
+    const pc = pageCount();
+    p = Math.max(0, Math.min(pc - 1, Math.round(p) || 0));
+    if (p === ui.page) return;
+    ui.page = p;
+    chipLastLand = Date.now();     // a new page re-arms the render window for its rows
+    runQuery(false);
+    const body = $('ix-body');
+    if (body) body.scrollTop = 0;  // a fresh page reads from the top
+    const s = $('ix-search');
+    if (s) s.focus();
+  }
+
+  /* The per-page selector. Persists through the module's sidecar (ixSave, which
+     already round-trips pay/mult) AND resets to page 1 — a smaller page from
+     deep in a big result set would otherwise land on an out-of-range page. */
+  function changePageSize(n) {
+    n = clampPageSize(n);
+    if (n === ui.pageSize) return;
+    ui.pageSize = n;
+    ui.page = 0;
+    toGame('ixSave', JSON.stringify({ pageSize: ui.pageSize }));
+    runQuery(false);
   }
 
   function queryDebounced() {
@@ -183,6 +267,36 @@ window.ItemsPane = (function () {
     return out.slice(0, limit);
   }
 
+  /* ================================================ secondary plugin filter ==
+     A fuzzy, client-side narrowing on the OWNING plugin name (Rober, 2026-08-14:
+     after typing an item name, narrow "122 rows across arnima.esm / miranda.esp"
+     down to one plugin, typing a partial esp/esl/esm name). It composes with the
+     name search, the pills and the mod-chip browse; it never touches C++ (the
+     `ux.plugin` browse is EXACT — this is the loose companion). Fuzzy = case-
+     insensitive substring on the whole query first, then a per-token substring,
+     then a subsequence fallback so "mrnd" still finds "miranda.esp".
+     Because results are server-paginated, this filters the CURRENT page's rows;
+     the section header shows the on-page filtered count so it stays honest. */
+  function pluginFuzzy(pluginName, query) {
+    const p = String(pluginName || '').toLowerCase();
+    const q = String(query || '').toLowerCase().trim();
+    if (!q) return true;
+    if (p.indexOf(q) !== -1) return true;                      // whole-query substring
+    const toks = q.split(/\s+/).filter(Boolean);
+    if (toks.length > 1 && toks.every(function (t) { return p.indexOf(t) !== -1; })) return true;
+    /* subsequence: every char of the (spaceless) query appears in order */
+    const chars = q.replace(/\s+/g, '');
+    let i = 0;
+    for (let c = 0; c < p.length && i < chars.length; c++) if (p[c] === chars[i]) i++;
+    return i === chars.length;
+  }
+
+  /* Does the secondary plugin filter keep this item row? Empty filter keeps all. */
+  function passesPlugFilter(it) {
+    if (!ui.plugFilter) return true;
+    return pluginFuzzy(it && it.p, ui.plugFilter);
+  }
+
   /* ====================================================== selection model == */
 
   /* Everything the keyboard can land on, in visual order: mod rows first,
@@ -193,8 +307,10 @@ window.ItemsPane = (function () {
       modMatches(ui.type === 'mods' ? 30 : 5).forEach(function (p) { rows.push({ kind: 'plug', p: p }); });
     }
     if (ui.type !== 'mods') {
-      state.items.forEach(function (it) { rows.push({ kind: 'item', it: it }); });
-      if (state.items.length < state.total) rows.push({ kind: 'more' });
+      state.items.forEach(function (it) {
+        if (passesPlugFilter(it)) rows.push({ kind: 'item', it: it });
+      });
+      /* no 'more' row — paging is the footer bar under the list now */
     }
     return rows;
   }
@@ -208,7 +324,6 @@ window.ItemsPane = (function () {
   function activate(row) {
     if (!row) return;
     if (row.kind === 'plug') { setPlugin(row.p.n); return; }
-    if (row.kind === 'more') { runQuery(false); return; }
     if (row.kind === 'item') {
       const qty = ui.qty[row.it.id] || 1;
       if (state.pay) openSheet(row.it, qty);
@@ -225,6 +340,8 @@ window.ItemsPane = (function () {
   function setPlugin(name) {
     ui.plugin = String(name || '');
     ui.q = '';
+    ui.plugFilter = '';           // browsing INSIDE a mod makes the fuzzy filter redundant
+    ui.plugFilterOpen = false;
     const s = $('ix-search');
     if (s) { s.value = ''; s.focus(); }
     if (ui.type === 'mods') ui.type = 'all';
@@ -416,6 +533,87 @@ window.ItemsPane = (function () {
     } catch (e) { return ''; }
   }
 
+  /* ---- loading visibility (Rober, 2026-08-14: "the finder items DID render,
+     but it wasn't obvious it was loading anything") -----------------------
+     A row whose art is expected-but-not-yet-landed must READ as loading — a
+     shimmer on the plate + glyph — instead of looking final; and a pane-level
+     "rendering N items…" chip names what is happening at couch distance. Both
+     ride ONE window: renders land one by one, so "active" = a render landed
+     within the timeout (chipLastLand). The window closes when renders stop
+     arriving — a potion/book that never gets a mesh must not shimmer forever,
+     so its glyph is its honest final state past the timeout. */
+  const RENDER_IDLE_MS = 30000;   // no new art for this long => window closed
+  let chipLastLand = 0;           // ms of the last render that actually landed
+  let renderChip = null;
+  let chipT = null;               // watchdog: fires at window-close to repaint
+
+  /* Is a render still plausibly in flight? Armed (we asked at least once, so
+     chipLastLand is set), the disk poll or a fresh land seen within the idle
+     window, and at least one drawn row still lacks its expected art. */
+  function renderWindowActive() {
+    return state.ready && chipLastLand > 0 && missingArt() &&
+      (Date.now() - chipLastLand) < RENDER_IDLE_MS;
+  }
+
+  /* This row is expected to get a picture and hasn't yet — draw it as loading.
+     (Every indexed item CAN have a mesh; only at/after the idle window do we
+     concede one never will and drop the shimmer.) */
+  function rowLoading(it) {
+    return renderWindowActive() && !!idParts(it.id) && !iconFor(it.id);
+  }
+
+  /* The pane-level progress chip, top-of-results so it reads at 2560×1440 from
+     the couch (not a corner whisper). Hidden the moment the window closes. */
+  function updateRenderChip() {
+    const pane = $('ix-pane');
+    if (!pane) return;
+    if (!renderChip) {
+      renderChip = document.createElement('div');
+      renderChip.className = 'ix-render-chip';
+      renderChip.innerHTML = '<span class="ix-render-spin"></span><span class="ix-render-txt"></span>';
+      pane.appendChild(renderChip);
+    }
+    let pending = 0;
+    (state.items || []).forEach(function (it) { if (idParts(it.id) && !iconFor(it.id)) pending++; });
+    const active = pending > 0 && renderWindowActive();
+    renderChip.classList.toggle('ix-on', !!active);
+    if (active) {
+      renderChip.querySelector('.ix-render-txt').textContent =
+        'rendering ' + pending + ' item' + (pending === 1 ? '' : 's') + '…';
+      /* Anchor at the very top of the results, right-aligned — it lands over
+         the "Items N" section-header band, whose right side is empty, and
+         floats above the rows (pointer-events:none, so a row it grazes stays
+         fully clickable). Measured, so it tracks wherever the header wraps to. */
+      const body = $('ix-body');
+      if (body && body.offsetTop) renderChip.style.top = body.offsetTop + 'px';
+    }
+    armChipWatchdog(active);
+  }
+
+  /* Nothing else fires at the idle mark, so a lone timer repaints once the
+     window is about to close — dropping the chip and every row's shimmer
+     together (a spinner that can't finish is worse than none). */
+  function armChipWatchdog(active) {
+    if (chipT) { clearTimeout(chipT); chipT = null; }
+    if (!active) return;
+    const left = Math.max(250, RENDER_IDLE_MS - (Date.now() - chipLastLand) + 60);
+    chipT = setTimeout(function () {
+      chipT = null;
+      if (ui.visible) { renderBodyPreservingScroll(); }
+    }, left);
+  }
+
+  /* The one-time first-open hint: a fresh query fired renders for most of the
+     visible page, so say art is coming (dismissed on the first completion, not
+     a modal). Shown inline above the rows via renderBody. */
+  function firstOpenHint() {
+    return !ui.hintSeen && renderWindowActive();
+  }
+  function dismissHintIfDone() {
+    if (ui.hintSeen) return;
+    if (chipLastLand > 0 && !missingArt()) ui.hintSeen = true;   // everything landed
+  }
+
   /* After a render, ask C++ for the meshes of the VISIBLE item rows that have
      no picture yet — bounded to what state.items holds (one page or the pages
      paged in), never the whole index. Deduped across the whole session, so a
@@ -448,12 +646,17 @@ window.ItemsPane = (function () {
 
   function scheduleIconWork() {
     if (ui.iconT) { clearTimeout(ui.iconT); ui.iconT = null; }
-    if (!state.items.length) { stopIconPoll(); return; }
+    if (!state.items.length) { stopIconPoll(); updateRenderChip(); return; }
     ui.iconT = setTimeout(function () {
       ui.iconT = null;
       if (!ui.visible) return;
+      /* Window opens: arm the loading window so the chip + row shimmer show
+         while renders are in flight (refreshed by each land in the
+         hd-item-icons handler). */
+      if (missingArt()) chipLastLand = Date.now();
       requestIcons();
       startIconPoll();
+      updateRenderChip();
     }, ICON_SETTLE_MS);
   }
 
@@ -590,6 +793,125 @@ window.ItemsPane = (function () {
     chip.querySelector('.ix-chip-x').addEventListener('click', clearPlugin);
   }
 
+  /* ------------------------------------------------- secondary plugin filter --
+     A "⛃ Filter by mod" toggle in the filter row (right of the pills' flow), and
+     a revealed typeable input that fuzzy-narrows the current results by owning
+     plugin. Built dynamically into .ix-barwrap after #ix-pills so no index.html
+     edit is needed (the dynamic-footer idiom). Browsing INSIDE a mod (a plug
+     chip) already scopes to one plugin, so the secondary filter is hidden then.
+     The input keeps focus across repaints (we only rebuild when the reveal state
+     or plugin browse changes), so typing is never interrupted. */
+  let plugFilterEl = null;
+
+  function plugFilterHost() {
+    const wrap = document.querySelector('#ix-pane .ix-barwrap');
+    if (!wrap) return null;
+    if (!plugFilterEl) {
+      plugFilterEl = document.createElement('div');
+      plugFilterEl.className = 'ix-plugfilter';
+      plugFilterEl.id = 'ix-plugfilter';
+      const pills = $('ix-pills');
+      if (pills && pills.nextSibling) wrap.insertBefore(plugFilterEl, pills.nextSibling);
+      else wrap.appendChild(plugFilterEl);
+    }
+    return plugFilterEl;
+  }
+
+  /* Show the control only where a plugin filter makes sense: an actual search /
+     pill view with rows, and NOT while browsing inside one mod (already scoped). */
+  function plugFilterVisible() {
+    if (!state.ready) return false;
+    if (ui.plugin) return false;                 // already inside one mod
+    if (ui.type === 'mods') return false;        // mods-only view has no item rows
+    return !!ui.q || ui.type !== 'all';          // a real search / pill is active
+  }
+
+  function renderPlugFilter() {
+    const host = plugFilterHost();
+    if (!host) return;
+    if (!plugFilterVisible()) {
+      host.classList.remove('ix-pf-on');
+      host.innerHTML = '';
+      return;
+    }
+    host.classList.add('ix-pf-on');
+
+    const open = ui.plugFilterOpen || !!ui.plugFilter;
+    const active = !!ui.plugFilter;
+    /* Rebuild only when the OPEN/CLOSED shape changes — never on every keystroke,
+       so the <input> keeps focus + caret while typing. The active tint and the
+       clear ✕ are toggled in place (syncPlugFilterActive), not rebuilt. */
+    const shape = open ? 'o' : 'c';
+    if (host.getAttribute('data-shape') !== shape) {
+      let html = '<button class="ix-pf-toggle' + (active ? ' ix-pf-toggle-on' : '') +
+        '" id="ix-pf-toggle" title="Narrow these results to a mod — type part of an esp / esl / esm name">' +
+        '⛃ Filter by mod</button>';
+      if (open) {
+        html += '<span class="ix-pf-box">' +
+          '<span class="ix-pf-glyph">📦</span>' +
+          '<input id="ix-pf-input" type="text" autocomplete="off" spellcheck="false" ' +
+          'placeholder="plugin (esp / esl / esm)…" value="' + esc(ui.plugFilter) + '">' +
+          '<span class="ix-pf-x' + (active ? '' : ' hidden') + '" id="ix-pf-clear" title="Clear the mod filter">✕</span>' +
+          '</span>';
+      }
+      host.innerHTML = html;
+      host.setAttribute('data-shape', shape);
+
+      const toggle = $('ix-pf-toggle');
+      if (toggle) toggle.addEventListener('click', function () {
+        ui.plugFilterOpen = !ui.plugFilterOpen;
+        if (!ui.plugFilterOpen) { ui.plugFilter = ''; }
+        ui.sel = 0;
+        render();
+        if (ui.plugFilterOpen) { const i = $('ix-pf-input'); if (i) i.focus(); }
+      });
+      const clear = $('ix-pf-clear');
+      if (clear) clear.addEventListener('click', function () {
+        ui.plugFilter = ''; ui.sel = 0;
+        render();
+        const i = $('ix-pf-input'); if (i) i.focus();
+      });
+      const input = $('ix-pf-input');
+      if (input) {
+        input.addEventListener('input', function () {
+          ui.plugFilter = input.value.trim();
+          ui.sel = 0;
+          /* body + count only — never a full render (which would rebuild THIS
+             input and drop focus mid-type) */
+          renderBody(); renderFooter();
+          syncPlugFilterActive();
+        });
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') {
+            e.preventDefault(); e.stopPropagation();
+            const rows = flatRows();
+            activate(rows[Math.min(ui.sel, rows.length - 1)] || rows[0]);
+          } else if (e.key === 'Escape') {
+            e.stopPropagation();
+            if (ui.plugFilter) { ui.plugFilter = ''; input.value = ''; renderBody(); renderFooter(); syncPlugFilterActive(); }
+            else { ui.plugFilterOpen = false; render(); const s = $('ix-search'); if (s) s.focus(); }
+          }
+        });
+      }
+    } else {
+      /* shape unchanged — just keep the input's value in sync if state changed
+         externally (omni jump, plugin browse) without stealing the caret */
+      const input = $('ix-pf-input');
+      if (input && input.value !== ui.plugFilter && document.activeElement !== input) input.value = ui.plugFilter;
+    }
+  }
+
+  /* Flip the toggle's active tint and the clear ✕ the moment the filter goes
+     from empty to set (or back) WITHOUT rebuilding the row — keeps the caret in
+     the input while typing (the row only rebuilds on an open/close change). */
+  function syncPlugFilterActive() {
+    const active = !!ui.plugFilter;
+    const toggle = $('ix-pf-toggle');
+    if (toggle) toggle.classList.toggle('ix-pf-toggle-on', active);
+    const x = $('ix-pf-clear');
+    if (x) x.classList.toggle('hidden', !active);
+  }
+
   function plugRowHtml(p, selIdx, idx) {
     const kindCls = p.k === 'esm' ? 'ix-kind-esm' : (p.k === 'esl' || p.l) ? 'ix-kind-esl' : 'ix-kind-esp';
     const kindLbl = String(p.k || 'esp').toUpperCase() + (p.l && p.k === 'esp' ? ' · light' : '');
@@ -610,10 +932,12 @@ window.ItemsPane = (function () {
       : (qty > 1 ? 'Take ×' + qty : 'Take');
     const w = Math.round((Number(it.w) || 0) * 10) / 10;
     const hasArt = !!iconFor(it.id);
+    const loading = !hasArt && rowLoading(it);
     const val = fmtGold(Math.max(0, it.v | 0));
     return '<div class="ix-row' + (selIdx === idx ? ' ix-sel' : '') + '" data-id="' + esc(it.id) + '">' +
       '<div class="ix-glyph ix-t-' + esc(it.t) + (hasArt ? ' ix-has-art ix-zoomable' : '') +
-      '" title="' + esc(hasArt ? it.n + ' — click for a bigger look' : meta[1]) + '">' +
+      (loading ? ' ix-loading' : '') +
+      '" title="' + esc(hasArt ? it.n + ' — click for a bigger look' : (loading ? 'rendering…' : meta[1])) + '">' +
       glyphInner(it.id, meta[2]) + '</div>' +
       '<div class="ix-mid">' +
       '<div class="ix-name" title="' + esc(it.n) + '">' + highlight(it.n, ui.q) + '</div>' +
@@ -682,6 +1006,19 @@ window.ItemsPane = (function () {
       empty.classList.remove('hidden');
       if (state.awaiting) {
         empty.innerHTML = '<div class="ix-empty-title">Searching…</div>';
+      } else if (ui.plugFilter && state.items.length > 0) {
+        /* the search DID return rows, the secondary mod filter hid them all on
+           this page — say so, and offer the escape hatch */
+        empty.innerHTML = '<div class="ix-empty-title">No item on this page is from “' + esc(ui.plugFilter) + '”</div>' +
+          '<div class="ix-empty-sub">The mod filter matched nothing on this page. Try a different mod name, ' +
+          'page through the results, or clear the filter.</div>' +
+          '<div class="ix-try"><button class="ix-pill" id="ix-pf-empty-clear">Clear mod filter</button></div>';
+        const c = $('ix-pf-empty-clear');
+        if (c) c.addEventListener('click', function () {
+          ui.plugFilter = ''; ui.sel = 0; render();
+          const i = $('ix-pf-input'); if (i) i.focus();
+        });
+        return;
       } else if (ui.type === 'mods') {
         empty.innerHTML = '<div class="ix-empty-title">No mod matches</div>' +
           '<div class="ix-empty-sub">No plugin name contains “' + esc(ui.q) + '”. Try fewer letters.</div>';
@@ -699,6 +1036,9 @@ window.ItemsPane = (function () {
     let html = '';
     let idx = 0;
     let inMods = false, inItems = false;
+    /* first-open hint: a fresh query fired renders for the visible page — say
+       art is coming, once, so the emoji placeholders don't read as final */
+    const showHint = firstOpenHint() && rows.some(function (r) { return r.kind === 'item'; });
     rows.forEach(function (r) {
       if (r.kind === 'plug' && !inMods) {
         inMods = true;
@@ -707,16 +1047,22 @@ window.ItemsPane = (function () {
       }
       if (r.kind === 'item' && !inItems) {
         inItems = true;
+        /* When the secondary plugin filter is on, the "Items N" total is the
+           whole (server) result count, but only some of THIS page's rows match —
+           say both so the count never reads as a lie. */
+        const shownItems = rows.filter(function (x) { return x.kind === 'item'; }).length;
+        const pageItems = state.items.length;
         html += '<div class="ix-sect">Items <b>' + fmtGold(state.total) + '</b>' +
-          (ui.plugin ? '<b>· in ' + esc(ui.plugin) + '</b>' : '') + '</div>';
+          (ui.plugin ? '<b>· in ' + esc(ui.plugin) + '</b>' : '') +
+          (ui.plugFilter ? '<b class="ix-sect-filt">· ⛃ ' + fmtGold(shownItems) + ' of ' +
+            fmtGold(pageItems) + ' on this page match “' + esc(ui.plugFilter) + '”</b>' : '') +
+          '</div>';
+        if (showHint)
+          html += '<div class="ix-firsthint">✨ First time seeing these — rendering their art in the ' +
+            'background. Rows fill in as it lands.</div>';
       }
       if (r.kind === 'plug') html += plugRowHtml(r.p, ui.sel, idx);
       else if (r.kind === 'item') html += itemRowHtml(r.it, ui.sel, idx);
-      else if (r.kind === 'more') {
-        html += '<button class="ix-btn ix-more' + (ui.sel === idx ? ' ix-toggle-on' : '') + '" id="ix-more-btn">' +
-          (state.awaiting ? 'Loading…' : 'Show ' + Math.min(PAGE, state.total - state.items.length) + ' more of ' +
-            fmtGold(state.total)) + '</button>';
-      }
       idx++;
     });
     body.innerHTML = html;
@@ -761,12 +1107,11 @@ window.ItemsPane = (function () {
         if (it) activate({ kind: 'item', it: it });
       });
     });
-    const more = $('ix-more-btn');
-    if (more) more.addEventListener('click', function () { runQuery(false); });
 
     /* ask C++ for the meshes of the rows we just drew — via the settle gate,
        so a mid-typing render never floods the render queue */
     scheduleIconWork();
+    updateRenderChip();   // reflect loading state right now, not only post-settle
   }
 
   /* Re-render the body but keep the scroll position — a render batch landing
@@ -783,7 +1128,84 @@ window.ItemsPane = (function () {
     renderHeader();
     renderPills();
     renderPlugChip();
+    renderPlugFilter();
     renderBody();
+    renderFooter();
+  }
+
+  /* ============================================================= footer == */
+
+  /* The pagination bar under the results: ‹ Prev / count / Next › + a per-page
+     segmented control. Created dynamically and appended to #ix-pane (like the
+     render chip) so no index.html edit is needed. Hidden whenever there is no
+     paged list to show: index not ready, hero, empty results, or the Mods-only
+     view (mods are matched locally, not paged). A SINGLE short page keeps the
+     count + selector but hides Prev/Next. It sits below the price SHEET's z, so
+     an open sheet covers it. */
+  let footEl = null;
+
+  function footHost() {
+    const pane = $('ix-pane');
+    if (!pane) return null;
+    if (!footEl) {
+      footEl = document.createElement('div');
+      footEl.className = 'ix-foot';
+      footEl.id = 'ix-foot';
+      /* after #ix-body, before the toast/sheet, so it sits at the pane's foot
+         and never overlaps the scroll area (toast, sheet + lightbox are higher z). */
+      const body = $('ix-body');
+      if (body && body.nextSibling) pane.insertBefore(footEl, body.nextSibling);
+      else pane.appendChild(footEl);
+    }
+    return footEl;
+  }
+
+  function footVisible() {
+    if (!state.ready) return false;
+    if (ui.type === 'mods') return false;         // mods are local, not paged
+    if (!ui.q && !ui.plugin && ui.type === 'all') return false;  // hero
+    return state.total > 0;
+  }
+
+  function renderFooter() {
+    const foot = footHost();
+    if (!foot) return;
+    if (!footVisible()) { foot.classList.remove('ix-foot-on'); foot.innerHTML = ''; return; }
+
+    const total = state.total | 0;
+    const pc = pageCount();
+    if (ui.page >= pc) ui.page = pc - 1;          // keep the index sane after a shrink
+    const first = total ? ui.page * ui.pageSize + 1 : 0;
+    const last = Math.min(total, (ui.page + 1) * ui.pageSize);
+    const multi = pc > 1;
+
+    let html = '';
+    if (multi) {
+      html += '<button class="ix-foot-nav ix-foot-prev" ' + (ui.page <= 0 ? 'disabled ' : '') +
+        'title="Previous page (PgUp)">‹ Prev</button>';
+    }
+    html += '<div class="ix-foot-count">Showing <b>' + fmtGold(first) + '–' + fmtGold(last) +
+      '</b> of <b>' + fmtGold(total) + '</b>' + (multi ? ' · page ' + (ui.page + 1) + ' of ' + pc : '') + '</div>';
+    if (multi) {
+      html += '<button class="ix-foot-nav ix-foot-next" ' + (ui.page >= pc - 1 ? 'disabled ' : '') +
+        'title="Next page (PgDn)">Next ›</button>';
+    }
+    html += '<div class="ix-foot-per" title="How many to show per page — fewer means fewer renders at once">' +
+      '<span class="ix-foot-per-lbl">Per page</span>' +
+      PAGE_SIZES.map(function (n) {
+        return '<button class="ix-foot-size' + (n === ui.pageSize ? ' ix-foot-size-on' : '') +
+          '" data-size="' + n + '"' + (n === ui.pageSize ? ' aria-pressed="true"' : '') + '>' + n + '</button>';
+      }).join('') + '</div>';
+    foot.innerHTML = html;
+    foot.classList.add('ix-foot-on');
+
+    const prev = foot.querySelector('.ix-foot-prev');
+    if (prev) prev.addEventListener('click', function () { if (!prev.disabled) gotoPage(ui.page - 1); });
+    const next = foot.querySelector('.ix-foot-next');
+    if (next) next.addEventListener('click', function () { if (!next.disabled) gotoPage(ui.page + 1); });
+    foot.querySelectorAll('.ix-foot-size').forEach(function (b) {
+      b.addEventListener('click', function () { changePageSize(parseInt(b.getAttribute('data-size'), 10)); });
+    });
   }
 
   /* =============================================================== toast == */
@@ -816,6 +1238,8 @@ window.ItemsPane = (function () {
     if (window.HDLightbox) HDLightbox.close();
     if (ui.debT) { clearTimeout(ui.debT); ui.debT = null; }
     if (ui.iconT) { clearTimeout(ui.iconT); ui.iconT = null; }
+    if (chipT) { clearTimeout(chipT); chipT = null; }
+    if (renderChip) renderChip.classList.remove('ix-on');
     stopIconPoll();
   }
 
@@ -842,9 +1266,16 @@ window.ItemsPane = (function () {
       });
       s.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') {
+          /* Authoritative: preventDefault + stopPropagation so Enter never
+             leaks to the deck's global handler (which would fire a random
+             hotkey and close the palette). Take the top visible result and
+             STAY OPEN — Items Enter is "keep grabbing", never a close. With no
+             results activate() no-ops, so Enter on an empty roster does nothing
+             (it does NOT close). */
+          e.preventDefault();
+          e.stopPropagation();
           const rows = flatRows();
           activate(rows[Math.min(ui.sel, rows.length - 1)] || rows[0]);
-          e.stopPropagation();
         } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           const rows = flatRows();
           if (rows.length) {
@@ -857,6 +1288,14 @@ window.ItemsPane = (function () {
           }
           e.preventDefault();
           e.stopPropagation();
+        } else if (e.key === 'PageDown' || e.key === 'PageUp') {
+          /* Page nav — Arrows are already row-nav (above), so paging rides
+             PgDn/PgUp. Only when a paged list is on screen. */
+          if (!ui.sheet && footVisible() && pageCount() > 1) {
+            gotoPage(ui.page + (e.key === 'PageDown' ? 1 : -1));
+            e.preventDefault();
+            e.stopPropagation();
+          }
         } else if (e.key === 'Escape') {
           if (ui.sheet) { closeSheet(); e.stopPropagation(); }
           else if (s.value) { s.value = ''; ui.q = ''; runQuery(true); e.stopPropagation(); }
@@ -897,6 +1336,8 @@ window.ItemsPane = (function () {
     try {
       document.addEventListener('hd-item-icons', function () {
         if (!ui.visible) return;
+        chipLastLand = Date.now();      // a render landed — keep the window open
+        dismissHintIfDone();
         renderBodyPreservingScroll();
         if (ui.sheet) refreshSheetArt();
       });
@@ -1043,6 +1484,25 @@ window.ItemsPane = (function () {
     const rows = flatRows();
     ok('flat rows: mods before items', rows.length >= 2 && rows[0].kind === 'plug');
 
+    /* secondary plugin filter — fuzzy match + composes with the name search */
+    ok('plugfilter: whole-substring matches', pluginFuzzy('miranda.esp', 'mira'));
+    ok('plugfilter: subsequence matches (mrnd)', pluginFuzzy('miranda.esp', 'mrnd'));
+    ok('plugfilter: rejects a non-match', !pluginFuzzy('miranda.esp', 'skyrim'));
+    ok('plugfilter: empty keeps everything', pluginFuzzy('anything.esp', ''));
+    ui.q = ''; ui.plugin = ''; ui.type = 'all'; ui.plugFilter = '';
+    state.seq++; devQuery(JSON.stringify({ q: '', type: 'weap', plugin: '', seq: state.seq, limit: 60, offset: 0 }));
+    ui.type = 'weap';
+    state.seq++; devQuery(JSON.stringify({ q: '', type: 'weap', plugin: '', seq: state.seq, limit: 60, offset: 0 }));
+    const allWeap = flatRows().filter(function (x) { return x.kind === 'item'; }).length;
+    ui.plugFilter = 'cool';
+    const coolWeap = flatRows().filter(function (x) { return x.kind === 'item'; }).length;
+    ok('plugfilter: narrows the page to the matching plugin', allWeap > coolWeap && coolWeap >= 1 &&
+      flatRows().filter(function (x) { return x.kind === 'item'; }).every(function (x) { return /cool/i.test(x.it.p); }));
+    ui.plugFilter = ''; ui.type = 'all';
+    ok('plugfilter: hidden while browsing inside one mod', (function () {
+      ui.plugin = 'CoolSwords.esl'; const v = plugFilterVisible(); ui.plugin = ''; return v === false;
+    })());
+
     const fails = out.filter(function (l) { return l.indexOf('FAIL') === 0; });
     const box = document.createElement('pre');
     box.style.cssText = 'position:fixed;right:8px;top:8px;z-index:99999;max-height:90vh;overflow:auto;' +
@@ -1073,6 +1533,12 @@ window.ItemsPane = (function () {
     _state: state, _ui: ui, _flatRows: flatRows, _modMatches: modMatches,
     _suggestedPrice: suggestedPrice, _openSheet: openSheet, _closeSheet: closeSheet,
     _openLightbox: openLightbox,
+    _rowLoading: rowLoading, _renderWindowActive: renderWindowActive,
+    _armWindow: function () { chipLastLand = Date.now(); },
+    _closeWindow: function () { chipLastLand = 1; },   // far past => window shut
+    _pageCount: pageCount, _gotoPage: gotoPage, _changePageSize: changePageSize,
+    _clampPageSize: clampPageSize, _footVisible: footVisible,
+    _pluginFuzzy: pluginFuzzy, _plugFilterVisible: plugFilterVisible,
   };
 })();
 

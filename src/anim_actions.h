@@ -93,6 +93,15 @@ namespace AnimActions
 	// persist. Returns {ok,msg}; the handler follows with a fresh anOpen.
 	std::string SetPack(const std::string& payloadJson);
 
+	// anUser: the pane's user-data blob — favorites + custom tabs (+ whatever a
+	// newer view adds; the schema lives in anim-pane.js, C++ only round-trips
+	// it). Persisted in Data/SKSE/Plugins/HotkeyDeck/anim-user.json (the
+	// item-explorer sidecar precedent — NOT a hotkeys.json slice, so the
+	// OnJsSave wholesale-replace trap can never eat it). OpenJson ships it back
+	// under "user". Returns {ok,msg} with an EMPTY msg on success — a favorite
+	// toggle must not toast.
+	std::string SetUser(const std::string& payloadJson);
+
 	// The seeded "crawl" action verb (bindable, also fired from the tab).
 	bool IsAction(const std::string& a);
 	bool Run(const std::string& a);  // main thread; false for an unknown verb

@@ -222,3 +222,109 @@
 }
 .an-toast.show { opacity: 1; transform: translate(-50%, 0); }
 .an-toast.bad { background: #c85046; color: #fff; }
+
+/* ===================================================================== *
+ *  Animations tab v2 — dynamic tabs, favorites, pack search (2026-08-14).
+ *  Additions only, an- prefixed; deck literals (#c9a24b gold / #2e2e36
+ *  lines / 140ms ease); type floor 12px.
+ * ===================================================================== */
+
+/* dynamic seg buttons: ★ Favorites, custom tabs, the ＋ */
+.an-seg-fav, .an-seg-user { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.an-seg-user.dragging { opacity: .55; outline: 1px dashed #c9a24b; }
+.an-seg-add {
+  min-width: 40px; font-size: 16px; line-height: 1;
+  color: #9d988c; border-style: dashed;
+}
+.an-seg-add:hover { color: #e8e4da; border-color: #c9a24b; }
+
+/* row star */
+.an-star {
+  flex: none; width: 34px; height: 34px; margin-right: 8px;
+  font-size: 17px; line-height: 1; color: #7f7a6e;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  cursor: pointer; opacity: 0; transition: opacity 140ms ease, color 140ms ease;
+}
+.an-row:hover .an-star { opacity: 1; }
+.an-star.on { opacity: 1; color: #c9a24b; }
+.an-star:hover { color: #e0bc6a; border-color: rgba(201,162,75,.35); }
+.an-row.missing { opacity: .62; }
+.an-row.missing .an-row-meta { color: #a08c5a; }
+
+/* pack chips above the rows while typing */
+.an-pk-chiprow { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 2px 10px; }
+.an-pk-chip {
+  padding: 7px 14px; font-size: 13px; color: #e8e4da;
+  background: rgba(201,162,75,.10); border: 1px solid rgba(201,162,75,.45);
+  border-radius: 999px; cursor: pointer; transition: background 140ms ease;
+  max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.an-pk-chip:hover { background: rgba(201,162,75,.22); }
+
+/* the searchbar scope chip (📦 pack ✕) */
+#an-scope { flex: none; display: flex; align-items: center; }
+.an-scope-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 8px 6px 12px; font-size: 13px; color: #14120e;
+  background: #c9a24b; border-radius: 999px; white-space: nowrap;
+  max-width: 260px; overflow: hidden;
+}
+.an-scope-x {
+  border: 0; background: rgba(0,0,0,.18); color: #14120e;
+  width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+  font-size: 12px; line-height: 1;
+}
+.an-scope-x:hover { background: rgba(0,0,0,.32); }
+
+/* category rail: collapsible pack groups */
+.an-pack-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 9px 10px; font-size: 13px; color: #cfc9ba; text-align: left;
+  background: rgba(255,255,255,.03); border: 1px solid transparent; border-radius: 8px;
+  cursor: pointer; transition: background 140ms ease;
+}
+.an-pack-head:hover { background: rgba(201,162,75,.10); color: #e8e4da; }
+.an-pack-head.active { border-color: rgba(201,162,75,.55); color: #e8e4da; }
+.an-pack-tw { flex: none; width: 14px; color: #9d988c; font-size: 12px; }
+.an-pack-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.an-cat.an-cat-sub { padding-left: 28px; }
+
+/* context menu + tab namer (pane-anchored; the pane inherits --ui-scale, so
+   no vh/vw and no self-scale needed — the popup-audit rule) */
+.an-ctx {
+  position: absolute; z-index: 60; min-width: 210px; max-width: 320px;
+  padding: 6px; background: #191720; border: 1px solid #3a3830; border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.55); display: flex; flex-direction: column; gap: 2px;
+}
+.an-ctx-item {
+  padding: 9px 12px; font-size: 13px; color: #d9d2bd; text-align: left;
+  background: transparent; border: 0; border-radius: 7px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.an-ctx-item:hover { background: rgba(201,162,75,.14); color: #f0ecdf; }
+.an-ctx-item.danger { color: #d98a83; }
+.an-ctx-item.danger:hover { background: rgba(200,80,70,.14); color: #eba49d; }
+.an-ctx-sep { height: 1px; margin: 4px 6px; background: #2e2e36; }
+.an-namer {
+  position: absolute; z-index: 60; display: flex; gap: 8px; padding: 10px;
+  background: #191720; border: 1px solid #3a3830; border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.55);
+}
+.an-namer input {
+  width: 200px; padding: 8px 10px; font-size: 13.5px; color: #e8e4da;
+  background: #100f14; border: 1px solid #2e2e36; border-radius: 8px; outline: none;
+}
+.an-namer input:focus { border-color: #c9a24b; }
+.an-namer button {
+  padding: 8px 14px; font-size: 13px; color: #14120e; font-weight: 600;
+  background: #c9a24b; border: 1px solid #e0bc6a; border-radius: 8px; cursor: pointer;
+}
+.an-namer button:hover { box-shadow: 0 0 0 3px rgba(201,162,75,.25); }
+
+/* packs card: zero-pose packs stay visible, greyed, with the reason */
+.an-pk-row.zero { opacity: .6; cursor: default; }
+.an-pk-zerodot { flex: none; width: 16px; text-align: center; color: #7f7a6e; }
+.an-pk-why {
+  flex: none; font-size: 12px; color: #a08c5a; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 46%;
+}

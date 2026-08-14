@@ -28,7 +28,15 @@ window.NpcsPane = (function () {
   const SELFTEST = location.search.indexOf('selftest=1') !== -1;
 
   const DEBOUNCE_MS = 160;
-  const PAGE = 60;
+
+  /* Pagination (Rober, 2026-08-14: "the finder page should probably be
+     paginated with options to show how many per page … maybe default to 10?").
+     A page is ONE query slice — state.items holds exactly the current page and
+     never accumulates, so only the drawn rows ever request a face render (55
+     faces at 1024px in one burst was the whole problem). Faces are the
+     expensive renders, so this pane defaults to 10; item-explorer picks 25. */
+  const PAGE_SIZES = [10, 25, 50, 100];
+  const DEFAULT_PAGE_SIZE = 10;
 
   /* ============================================================== pills == */
 
@@ -60,7 +68,11 @@ window.NpcsPane = (function () {
     q: '',
     type: 'all',
     plugin: '',
+    plugFilter: '',      // secondary fuzzy filter on the OWNING plugin name (client-side)
+    plugFilterOpen: false,
     sel: 0,
+    pageSize: DEFAULT_PAGE_SIZE,  // rows per page — restored from state, persisted on change
+    page: 0,                      // current page, 0-based — SESSION-ONLY, never persisted
     visible: false,
     debT: null,
     toastT: null,
@@ -68,6 +80,7 @@ window.NpcsPane = (function () {
     iconT: null,
     iconPollT: null,
     iconPollN: 0,
+    hintSeen: false,   // the first-open "faces render in the background" hint
   };
 
   /* ============================================================= bridge == */
@@ -90,10 +103,32 @@ window.NpcsPane = (function () {
     state.count = d.count | 0;
     state.mrf = d.mrf !== false;
     state.plugins = Array.isArray(d.plugins) ? d.plugins : [];
+    /* On-disk face/body index handed over at state time (a new DLL). Seeding
+       state.icons here is what lets a previously-rendered face draw on the
+       FIRST paint of a query — no nxIcons round-trip, no shimmer, no reload
+       flash (the 2026-08-14 "faces aren't saved" fix). An old DLL omits it and
+       faces still arrive via the nxIcons reply, just a beat later. */
+    if (d.icons && typeof d.icons === 'object') {
+      for (const k in d.icons) if (typeof d.icons[k] === 'string') state.icons[k] = d.icons[k];
+    }
+    /* Persisted page size from the DLL. Absent (an old DLL) => keep our default,
+       so the pane still paginates — old-DLL tolerance in the read direction. */
+    if (typeof d.pageSize === 'number' && d.pageSize > 0) ui.pageSize = clampPageSize(d.pageSize);
     if (ui.visible) {
       if (state.ready && (ui.q || ui.plugin || ui.type !== 'all') && !state.items.length && !state.awaiting)
         runQuery(true);
       render();
+    }
+  };
+
+  /* Reply to nxSave: the DLL confirms the persisted page size (needs main.cpp's
+     nxSave listener; until wired, this simply never arrives and the size stays
+     session-only — the pane keeps working either way). */
+  window.nxSaved = function (d) {
+    if (!d || typeof d !== 'object') return;
+    if (typeof d.pageSize === 'number' && d.pageSize > 0) {
+      const p = clampPageSize(d.pageSize);
+      if (p !== ui.pageSize) { ui.pageSize = p; if (ui.visible) runQuery(true); }
     }
   };
 
@@ -102,9 +137,19 @@ window.NpcsPane = (function () {
     if ((d.seq | 0) !== state.seq) return;   // stale reply from an older keystroke
     state.awaiting = false;
     state.total = d.total | 0;
-    const rows = Array.isArray(d.items) ? d.items : [];
-    if ((d.offset | 0) > 0) state.items = state.items.concat(rows);
-    else state.items = rows;
+    /* A page REPLACES — state.items is exactly the current page, never the
+       accumulation the old "Show more" foot built up. This is what shrinks the
+       face-render burst with page size: requestIcons() only ever sees one page. */
+    state.items = Array.isArray(d.items) ? d.items : [];
+    /* A page that no longer exists (total shrank under a stale offset, or the
+       last page emptied) — step back to the last real page and re-ask. */
+    if (!state.items.length && state.total > 0 && ui.page > 0 &&
+        ui.page * ui.pageSize >= state.total) {
+      ui.page = Math.max(0, Math.ceil(state.total / ui.pageSize) - 1);
+      runQuery(false);
+      return;
+    }
+    ui.sel = 0;
     if (ui.visible) render();
   };
 
@@ -114,34 +159,159 @@ window.NpcsPane = (function () {
   };
 
   /* Face renders landed (a reply to our nxIcons, or the C++ batch-done push).
-     Merge, and repaint in place only if something actually changed — the
-     Items tab's own change-gate, so the 2.5s poll never causes churn. */
+     Merge, and upgrade the affected rows IN PLACE only if something changed.
+
+     Root cause of the "faces always have to load again" flash (2026-08-14):
+     an already-rendered face IS reused by C++ (EnqueueFaceLocked returns false
+     on FileExists — no MRF render), and its path comes back on the very first
+     nxIcons reply. But the view then rebuilt the WHOLE #nx-body innerHTML,
+     which destroyed and recreated every <img>; in these compositor-off
+     Ultralight views that forces a re-decode of a PNG that was already on
+     screen — the visible "reload". So a landed icon now patches ONLY the
+     <img> of the rows that changed (add the plate image, never touch an <img>
+     already showing the right src), leaving the rest of the DOM — and every
+     already-decoded image — untouched. */
   window.nxIconsData = function (d) {
     if (!d || typeof d !== 'object' || typeof d.icons !== 'object' || !d.icons) return;
     let changed = false;
     for (const k in d.icons) {
       if (state.icons[k] !== d.icons[k]) { state.icons[k] = d.icons[k]; changed = true; }
     }
-    if (changed && ui.visible) renderBodyPreservingScroll();
+    if (changed) { chipLastLand = Date.now(); dismissHintIfDone(); }   // progress: keep the chip honest
+    if (changed && ui.visible) upgradeIconsInPlace();
+    updateRenderChip();
   };
+
+  /* Patch the drawn rows' plates to reflect state.icons WITHOUT rebuilding the
+     list — the anti-flash path. For each on-screen NPC row: if its art now
+     resolves and the plate has no <img> yet, mount one (and face-fit it); if
+     the plate already shows the correct src, leave it exactly as it is so
+     Ultralight never re-decodes it. Rows whose art is still pending keep their
+     glyph + shimmer. Never a full innerHTML rebuild, so nothing on screen
+     flickers when a single face lands. */
+  function upgradeIconsInPlace() {
+    const body = $('nx-body');
+    if (!body) return;
+    let mountedAny = false;
+    body.querySelectorAll('.nx-row:not(.nx-skel)').forEach(function (row) {
+      const id = row.getAttribute('data-id');
+      let it = null;
+      for (let i = 0; i < state.items.length; i++) if (state.items[i].id === id) { it = state.items[i]; break; }
+      if (!it) return;
+      const plate = row.querySelector('.nx-plate');
+      if (!plate) return;
+      const art = artFor(it);
+      const existing = plate.querySelector('img.nx-art');
+      if (!art) {
+        /* art went away (shouldn't for a landed render, but stay honest) */
+        if (existing) { existing.parentNode.removeChild(existing); plate.classList.remove('nx-has-art', 'nx-zoomable', 'nx-has-body'); }
+        return;
+      }
+      if (existing) {
+        /* Already showing SOMETHING — only swap the src if it actually differs,
+           and never rebuild the element (that is the re-decode we are avoiding). */
+        if (existing.getAttribute('src') !== art.url) existing.setAttribute('src', art.url);
+        return;
+      }
+      /* No image yet: mount one over the glyph, mirroring plateInner()/npcRowHtml. */
+      const img = document.createElement('img');
+      img.className = 'nx-art' + (art.body ? ' nx-art-body' : '');
+      img.setAttribute('alt', '');
+      img.setAttribute('draggable', 'false');
+      img.onerror = function () {
+        const b = img.parentNode;
+        if (b) { b.classList.remove('nx-has-art'); b.removeChild(img); }
+      };
+      img.setAttribute('src', art.url);
+      plate.appendChild(img);
+      plate.classList.remove('nx-loading');
+      plate.classList.add('nx-has-art', 'nx-zoomable');
+      if (art.body) plate.classList.add('nx-has-body');
+      /* the tmpl "no portrait" chip is now wrong — it got a picture */
+      const tchip = row.querySelector('.nx-chip-tmpl');
+      if (tchip) tchip.parentNode.removeChild(tchip);
+      /* face-fit the new face tile (bodies show whole — nx-art-body excluded) */
+      if (!art.body && window.HDFaceFit) window.HDFaceFit.ensure(img, art.url);
+      /* the plate wasn't zoomable before, so its lightbox click isn't wired —
+         wire it now for the newly-mounted art. */
+      plate.addEventListener('click', function (e) {
+        e.stopPropagation();
+        openLightbox(it);
+      });
+      mountedAny = true;
+    });
+    /* keep the "rendering N…" chip / shimmer honest after a batch of mounts */
+    if (mountedAny) armChipWatchdog(renderWindowActive());
+  }
 
   /* ============================================================ queries == */
 
+  function clampPageSize(n) {
+    n = Math.round(Number(n) || 0);
+    if (PAGE_SIZES.indexOf(n) !== -1) return n;
+    /* not one of the offered sizes (a hand-edited sidecar / an odd DLL value) —
+       snap to the nearest legal choice so the selector always highlights one. */
+    let best = DEFAULT_PAGE_SIZE, bestD = Infinity;
+    for (let i = 0; i < PAGE_SIZES.length; i++) {
+      const d = Math.abs(PAGE_SIZES[i] - n);
+      if (d < bestD) { bestD = d; best = PAGE_SIZES[i]; }
+    }
+    return best;
+  }
+
+  /* reset (a new query / filter / pill / plugin change) always returns to page
+     1; Prev/Next call with reset=false and set ui.page themselves first. Each
+     query REPLACES the page — state.items is never carried across. */
   function runQuery(reset) {
+    if (reset) { ui.page = 0; chipLastLand = Date.now(); }   // a new search re-arms the render chip
     if (ui.type === 'mods') { state.awaiting = false; render(); return; }
     if (!ui.q && !ui.plugin && ui.type === 'all') {
-      state.items = []; state.total = 0; state.awaiting = false;
+      state.items = []; state.total = 0; state.awaiting = false; ui.page = 0;
       render();
       return;
     }
     state.seq++;
     state.awaiting = true;
-    if (reset) { state.items = []; ui.sel = 0; }
+    ui.sel = 0;
     toGame('nxQuery', JSON.stringify({
       q: ui.q, type: ui.type === 'mods' ? 'all' : ui.type, plugin: ui.plugin,
-      limit: PAGE, offset: reset ? 0 : state.items.length, seq: state.seq,
+      limit: ui.pageSize, offset: ui.page * ui.pageSize, seq: state.seq,
     }));
     render();
+  }
+
+  /* ---- pagination controls ------------------------------------------------ */
+
+  function pageCount() {
+    if (ui.pageSize <= 0) return 1;
+    return Math.max(1, Math.ceil((state.total || 0) / ui.pageSize));
+  }
+
+  /* Jump to a page (clamped). Prev/Next and PgUp/PgDn route through here; it
+     re-queries the new slice, so the face-render window follows the page. */
+  function gotoPage(p) {
+    const pc = pageCount();
+    p = Math.max(0, Math.min(pc - 1, Math.round(p) || 0));
+    if (p === ui.page) return;
+    ui.page = p;
+    chipLastLand = Date.now();     // a new page re-arms the render chip for its rows
+    runQuery(false);
+    const body = $('nx-body');
+    if (body) body.scrollTop = 0;  // a fresh page reads from the top
+    const s = $('nx-search');
+    if (s) s.focus();
+  }
+
+  /* The per-page selector. Persists through the DLL sidecar (nxSave) AND resets
+     to page 1 — a smaller page from deep in a big result set would otherwise
+     land on an out-of-range page. */
+  function changePageSize(n) {
+    n = clampPageSize(n);
+    if (n === ui.pageSize) return;
+    ui.pageSize = n;
+    ui.page = 0;
+    toGame('nxSave', JSON.stringify({ pageSize: ui.pageSize }));
+    runQuery(false);
   }
 
   function queryDebounced() {
@@ -163,6 +333,34 @@ window.NpcsPane = (function () {
     return out.slice(0, limit);
   }
 
+  /* ================================================ secondary plugin filter ==
+     A fuzzy, client-side narrowing on the OWNING plugin name (Rober, 2026-08-14:
+     "122 Prisoner NPCs across arnima.esm / miranda.esp" — after a name search,
+     narrow to one source plugin by typing a partial esp/esl/esm name). Composes
+     with the name search, the pills and the mod-chip browse; never touches C++
+     (the `ui.plugin` browse is EXACT — this is the loose companion). Fuzzy =
+     case-insensitive substring first, then per-token substring, then a
+     subsequence fallback so "mrnd" still finds "miranda.esp". Results are
+     server-paginated, so this filters the CURRENT page's rows; the People
+     section header shows the on-page filtered count so it stays honest. */
+  function pluginFuzzy(pluginName, query) {
+    const p = String(pluginName || '').toLowerCase();
+    const q = String(query || '').toLowerCase().trim();
+    if (!q) return true;
+    if (p.indexOf(q) !== -1) return true;                      // whole-query substring
+    const toks = q.split(/\s+/).filter(Boolean);
+    if (toks.length > 1 && toks.every(function (t) { return p.indexOf(t) !== -1; })) return true;
+    const chars = q.replace(/\s+/g, '');
+    let i = 0;
+    for (let c = 0; c < p.length && i < chars.length; c++) if (p[c] === chars[i]) i++;
+    return i === chars.length;
+  }
+
+  function passesPlugFilter(it) {
+    if (!ui.plugFilter) return true;
+    return pluginFuzzy(it && it.p, ui.plugFilter);
+  }
+
   /* ====================================================== selection model == */
 
   function flatRows() {
@@ -171,8 +369,10 @@ window.NpcsPane = (function () {
       modMatches(ui.type === 'mods' ? 30 : 5).forEach(function (p) { rows.push({ kind: 'plug', p: p }); });
     }
     if (ui.type !== 'mods') {
-      state.items.forEach(function (it) { rows.push({ kind: 'npc', it: it }); });
-      if (state.items.length < state.total) rows.push({ kind: 'more' });
+      state.items.forEach(function (it) {
+        if (passesPlugFilter(it)) rows.push({ kind: 'npc', it: it });
+      });
+      /* no 'more' row — paging is the footer bar under the list now */
     }
     return rows;
   }
@@ -188,7 +388,6 @@ window.NpcsPane = (function () {
   function activate(row) {
     if (!row) return;
     if (row.kind === 'plug') { setPlugin(row.p.n); return; }
-    if (row.kind === 'more') { runQuery(false); return; }
     if (row.kind === 'npc') act('bring', row.it);
   }
 
@@ -202,6 +401,8 @@ window.NpcsPane = (function () {
   function setPlugin(name) {
     ui.plugin = String(name || '');
     ui.q = '';
+    ui.plugFilter = '';           // browsing INSIDE a mod makes the fuzzy filter redundant
+    ui.plugFilterOpen = false;
     const s = $('nx-search');
     if (s) { s.value = ''; s.focus(); }
     if (ui.type === 'mods') ui.type = 'all';
@@ -256,13 +457,116 @@ window.NpcsPane = (function () {
     return p.formId.toUpperCase() + '|' + p.plugin.toLowerCase();
   }
 
-  function iconFor(fc) {
-    const key = faceKey(fc);
-    if (!key) return '';
-    const path = state.icons[key] || '';
+  function safePath(path) {
     if (!path) return '';
     if (path.indexOf('..') !== -1 || path[0] === '/' || path.indexOf(':') !== -1) return '';
     return path;
+  }
+
+  function iconFor(fc) {
+    const key = faceKey(fc);
+    if (!key) return '';
+    return safePath(state.icons[key] || '');
+  }
+
+  /* Creature body render. `bd` is "SkinPlugin.esp|HEX6" (C++ blanks `fc` and
+     fills `bd` when the facegen head can't render — atronachs, spiders,
+     draugr, rieklings). Same icon map, same KeyOf normalisation; body keys
+     never collide with face keys because a creature has no face render and a
+     humanoid has no body one. */
+  function bodyIconFor(bd) {
+    const key = faceKey(bd);   // identical "0X{HEX}|{plugin}" normalisation
+    if (!key) return '';
+    return safePath(state.icons[key] || '');
+  }
+
+  /* The row's art, whichever kind exists: face first, then creature body. The
+     `body` flag matters downstream — a body render must NOT be face-fitted
+     (there is no skull to zoom onto; it shows whole, contain-fit). */
+  function artFor(it) {
+    const f = iconFor(it && it.fc);
+    if (f) return { url: f, body: false };
+    const b = bodyIconFor(it && it.bd);
+    if (b) return { url: b, body: true };
+    return null;
+  }
+
+  /* ---- loading visibility: "rendering faces…" chip + per-row shimmer -----
+     Renders land one by one over seconds and rows upgrade as they do, which
+     reads as CHOPPY with no explanation, and worse, the un-landed rows look
+     FINAL — a plain glyph, nothing saying art is coming (Rober, 2026-08-14:
+     "it wasn't obvious it was loading anything"). So a row whose face is
+     expected-but-not-yet-landed SHIMMERS, and the chip names the count. Both
+     hide after 30s without a single new face landing, because a row whose NPC
+     has no facegen file will never land — a spinner that can't finish, and a
+     shimmer that never resolves, are both worse than none. A templated row
+     (no faceParts) is never loading: its glyph is its honest final state. */
+  const RENDER_IDLE_MS = 30000;
+  let renderChip = null;
+  let chipLastLand = 0;
+  let chipT = null;   // watchdog: repaint at window-close so the cues drop
+
+  /* A face render still plausibly in flight? MRF bound, armed (a request went
+     out so chipLastLand is set), progress within the idle window, and at least
+     one non-templated row still lacks its face. */
+  function renderWindowActive() {
+    return state.mrf && chipLastLand > 0 && missingArt() &&
+      (Date.now() - chipLastLand) < RENDER_IDLE_MS;
+  }
+
+  /* This row is expected to get a face and hasn't yet — draw it as loading.
+     Templated rows (faceParts null) never qualify. */
+  function rowLoading(it) {
+    return renderWindowActive() && !!faceParts(it.fc) && !iconFor(it.fc);
+  }
+
+  function updateRenderChip() {
+    const pane = $('nx-pane');
+    if (!pane) return;
+    if (!renderChip) {
+      renderChip = document.createElement('div');
+      renderChip.className = 'nx-render-chip';
+      renderChip.innerHTML = '<span class="nx-render-spin"></span><span class="nx-render-txt"></span>';
+      pane.appendChild(renderChip);
+    }
+    let pending = 0;
+    (state.items || []).forEach(function (it) {
+      if (faceParts(it.fc) && !iconFor(it.fc)) pending++;
+    });
+    const active = pending > 0 && renderWindowActive();
+    renderChip.classList.toggle('nx-on', !!active);
+    if (active) {
+      renderChip.querySelector('.nx-render-txt').textContent =
+        'rendering ' + pending + ' face' + (pending === 1 ? '' : 's') + '…';
+      /* Anchor at the very top of the results, right-aligned — it lands over
+         the "People N" section-header band (empty on the right) and floats
+         above the rows (pointer-events:none, so a row it grazes stays fully
+         clickable). Measured, so it tracks wherever the header wraps to. */
+      const body = $('nx-body');
+      if (body && body.offsetTop) renderChip.style.top = body.offsetTop + 'px';
+    }
+    armChipWatchdog(active);
+  }
+
+  /* Nothing else fires at the idle mark, so a lone timer repaints once the
+     window is about to close — dropping the chip AND every row's shimmer. */
+  function armChipWatchdog(active) {
+    if (chipT) { clearTimeout(chipT); chipT = null; }
+    if (!active) return;
+    const left = Math.max(250, RENDER_IDLE_MS - (Date.now() - chipLastLand) + 60);
+    chipT = setTimeout(function () {
+      chipT = null;
+      if (ui.visible) renderBodyPreservingScroll();
+    }, left);
+  }
+
+  /* The one-time first-open hint (dismissed on the first full completion). */
+  function firstOpenHint() {
+    return !ui.hintSeen && renderWindowActive();
+  }
+  function dismissHintIfDone() {
+    if (ui.hintSeen) return;
+    if (chipLastLand > 0 && !missingArt()) ui.hintSeen = true;
   }
 
   /* Ask C++ for the faces of the drawn rows that lack one — bounded to
@@ -343,17 +647,21 @@ window.NpcsPane = (function () {
 
   function plateInner(it) {
     const glyph = it.s === 'f' ? '♀' : '♂';
-    const url = iconFor(it.fc);
-    if (!url) return glyph;
-    return glyph + '<img class="nx-art" src="' + esc(url) + '" alt="" draggable="false"' + ICO_ERR + '>';
+    const art = artFor(it);
+    if (!art) return glyph;
+    /* A body render carries nx-art-body so the face-fit pass skips it (a
+       creature has no skull to zoom onto) — it shows whole, contain-fit. */
+    const cls = 'nx-art' + (art.body ? ' nx-art-body' : '');
+    return glyph + '<img class="' + cls + '" src="' + esc(art.url) + '" alt="" draggable="false"' + ICO_ERR + '>';
   }
 
   /* ============================================================ lightbox == */
 
-  /* Click the face -> the 512px FaceGen render, big (hd-lightbox.js). Faces
-     have no turntable siblings, so this is the plain big view. */
+  /* Click the plate -> the big render (hd-lightbox.js). A face or a creature
+     body; neither has turntable siblings here, so this is the plain big view. */
   function openLightbox(it) {
-    const url = iconFor(it.fc);
+    const art = artFor(it);
+    const url = art ? art.url : '';
     if (!url || !window.HDLightbox) return;
     HDLightbox.open({
       host: $('nx-pane'),
@@ -409,6 +717,112 @@ window.NpcsPane = (function () {
     chip.querySelector('.nx-chip-x').addEventListener('click', clearPlugin);
   }
 
+  /* ------------------------------------------------- secondary plugin filter --
+     "⛃ Filter by mod" toggle + a revealed typeable input that fuzzy-narrows the
+     current people by owning plugin. Built dynamically into .nx-barwrap after
+     #nx-pills so no index.html edit is needed. Hidden while browsing INSIDE a
+     mod (already scoped). The input keeps focus across repaints (rebuilt only on
+     an open/close change), so typing is never interrupted. */
+  let plugFilterEl = null;
+
+  function plugFilterHost() {
+    const wrap = document.querySelector('#nx-pane .nx-barwrap');
+    if (!wrap) return null;
+    if (!plugFilterEl) {
+      plugFilterEl = document.createElement('div');
+      plugFilterEl.className = 'nx-plugfilter';
+      plugFilterEl.id = 'nx-plugfilter';
+      const pills = $('nx-pills');
+      if (pills && pills.nextSibling) wrap.insertBefore(plugFilterEl, pills.nextSibling);
+      else wrap.appendChild(plugFilterEl);
+    }
+    return plugFilterEl;
+  }
+
+  function plugFilterVisible() {
+    if (!state.ready) return false;
+    if (ui.plugin) return false;                 // already inside one mod
+    if (ui.type === 'mods') return false;        // mods-only view has no people rows
+    return !!ui.q || ui.type !== 'all';          // a real search / pill is active
+  }
+
+  function renderPlugFilter() {
+    const host = plugFilterHost();
+    if (!host) return;
+    if (!plugFilterVisible()) {
+      host.classList.remove('nx-pf-on');
+      host.innerHTML = '';
+      return;
+    }
+    host.classList.add('nx-pf-on');
+
+    const open = ui.plugFilterOpen || !!ui.plugFilter;
+    const active = !!ui.plugFilter;
+    const shape = open ? 'o' : 'c';   // rebuild only on open/close (keeps caret)
+    if (host.getAttribute('data-shape') !== shape) {
+      let html = '<button class="nx-pf-toggle' + (active ? ' nx-pf-toggle-on' : '') +
+        '" id="nx-pf-toggle" title="Narrow these people to a mod — type part of an esp / esl / esm name">' +
+        '⛃ Filter by mod</button>';
+      if (open) {
+        html += '<span class="nx-pf-box">' +
+          '<span class="nx-pf-glyph">📦</span>' +
+          '<input id="nx-pf-input" type="text" autocomplete="off" spellcheck="false" ' +
+          'placeholder="plugin (esp / esl / esm)…" value="' + esc(ui.plugFilter) + '">' +
+          '<span class="nx-pf-x' + (active ? '' : ' hidden') + '" id="nx-pf-clear" title="Clear the mod filter">✕</span>' +
+          '</span>';
+      }
+      host.innerHTML = html;
+      host.setAttribute('data-shape', shape);
+
+      const toggle = $('nx-pf-toggle');
+      if (toggle) toggle.addEventListener('click', function () {
+        ui.plugFilterOpen = !ui.plugFilterOpen;
+        if (!ui.plugFilterOpen) ui.plugFilter = '';
+        ui.sel = 0;
+        render();
+        if (ui.plugFilterOpen) { const i = $('nx-pf-input'); if (i) i.focus(); }
+      });
+      const clear = $('nx-pf-clear');
+      if (clear) clear.addEventListener('click', function () {
+        ui.plugFilter = ''; ui.sel = 0;
+        render();
+        const i = $('nx-pf-input'); if (i) i.focus();
+      });
+      const input = $('nx-pf-input');
+      if (input) {
+        input.addEventListener('input', function () {
+          ui.plugFilter = input.value.trim();
+          ui.sel = 0;
+          renderBody(); renderFooter();     // never a full render (would drop focus)
+          syncPlugFilterActive();
+        });
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') {
+            e.preventDefault(); e.stopPropagation();
+            const rows = flatRows();
+            activate(rows[Math.min(ui.sel, rows.length - 1)] || rows[0]);
+          } else if (e.key === 'Escape') {
+            e.stopPropagation();
+            if (ui.plugFilter) { ui.plugFilter = ''; input.value = ''; renderBody(); renderFooter(); syncPlugFilterActive(); }
+            else { ui.plugFilterOpen = false; render(); const s = $('nx-search'); if (s) s.focus(); }
+          }
+        });
+      }
+    } else {
+      const input = $('nx-pf-input');
+      if (input && input.value !== ui.plugFilter && document.activeElement !== input) input.value = ui.plugFilter;
+    }
+  }
+
+  /* Flip the toggle tint + clear ✕ in place (no rebuild) so the caret survives. */
+  function syncPlugFilterActive() {
+    const active = !!ui.plugFilter;
+    const toggle = $('nx-pf-toggle');
+    if (toggle) toggle.classList.toggle('nx-pf-toggle-on', active);
+    const x = $('nx-pf-clear');
+    if (x) x.classList.toggle('hidden', !active);
+  }
+
   function plugRowHtml(p, selIdx, idx) {
     const kindCls = p.k === 'esm' ? 'nx-kind-esm' : (p.k === 'esl' || p.l) ? 'nx-kind-esl' : 'nx-kind-esp';
     const kindLbl = String(p.k || 'esp').toUpperCase() + (p.l && p.k === 'esp' ? ' · light' : '');
@@ -421,13 +835,18 @@ window.NpcsPane = (function () {
   }
 
   function npcRowHtml(it, selIdx, idx) {
-    const hasArt = !!iconFor(it.fc);
+    const art = artFor(it);
+    const hasArt = !!art;
+    const loading = !hasArt && rowLoading(it);   // face expected, not landed yet
     const plateCls = 'nx-plate' + (it.u ? ' nx-t-uniq' : it.s === 'f' ? ' nx-t-fem' : ' nx-t-male') +
-      (hasArt ? ' nx-has-art nx-zoomable' : '');
+      (hasArt ? ' nx-has-art nx-zoomable' : '') + (art && art.body ? ' nx-has-body' : '') +
+      (loading ? ' nx-loading' : '');
     let chips = '';
     if (it.u) chips += '<span class="nx-chip nx-chip-uniq" title="Unique — there is exactly one of them">★ Unique</span>';
     if (it.e) chips += '<span class="nx-chip nx-chip-ess" title="Essential — cannot be killed">⛨</span>';
-    if (it.t && !faceParts(it.fc))
+    /* Only call it "no portrait" when there really is none — a creature that
+       got a body render is pictured, just not by a face. */
+    if (it.t && !faceParts(it.fc) && !hasArt)
       chips += '<span class="nx-chip nx-chip-tmpl" title="Built from a template — no baked face exists, so no portrait">🜲 template</span>';
     return '<div class="nx-row' + (selIdx === idx ? ' nx-sel' : '') + '" data-id="' + esc(it.id) + '">' +
       '<div class="' + plateCls + '" title="' + esc(hasArt ? it.n + ' — click for a bigger look' : it.n) + '">' +
@@ -495,6 +914,19 @@ window.NpcsPane = (function () {
       empty.classList.remove('hidden');
       if (state.awaiting) {
         empty.innerHTML = '<div class="nx-empty-title">Searching…</div>';
+      } else if (ui.plugFilter && state.items.length > 0) {
+        /* the search DID return people; the secondary mod filter hid them all on
+           this page — say so and offer the escape hatch */
+        empty.innerHTML = '<div class="nx-empty-title">Nobody on this page is from “' + esc(ui.plugFilter) + '”</div>' +
+          '<div class="nx-empty-sub">The mod filter matched nothing on this page. Try a different mod name, ' +
+          'page through the results, or clear the filter.</div>' +
+          '<div class="nx-try"><button class="nx-pill" id="nx-pf-empty-clear">Clear mod filter</button></div>';
+        const c = $('nx-pf-empty-clear');
+        if (c) c.addEventListener('click', function () {
+          ui.plugFilter = ''; ui.sel = 0; render();
+          const i = $('nx-pf-input'); if (i) i.focus();
+        });
+        return;
       } else if (ui.type === 'mods') {
         empty.innerHTML = '<div class="nx-empty-title">No mod matches</div>' +
           '<div class="nx-empty-sub">No plugin name contains “' + esc(ui.q) + '”. Try fewer letters.</div>';
@@ -512,6 +944,9 @@ window.NpcsPane = (function () {
     let html = '';
     let idx = 0;
     let inMods = false, inNpcs = false;
+    /* first-open hint: a fresh search fired face renders — say they're coming,
+       once, so the ♀/♂ placeholders don't read as final portraits */
+    const showHint = firstOpenHint() && rows.some(function (r) { return r.kind === 'npc'; });
     rows.forEach(function (r) {
       if (r.kind === 'plug' && !inMods) {
         inMods = true;
@@ -520,16 +955,21 @@ window.NpcsPane = (function () {
       }
       if (r.kind === 'npc' && !inNpcs) {
         inNpcs = true;
+        /* With the secondary plugin filter on, "People N" is the whole (server)
+           result count but only some of THIS page's rows match — say both. */
+        const shownNpcs = rows.filter(function (x) { return x.kind === 'npc'; }).length;
+        const pageNpcs = state.items.length;
         html += '<div class="nx-sect">People <b>' + fmtN(state.total) + '</b>' +
-          (ui.plugin ? '<b>· in ' + esc(ui.plugin) + '</b>' : '') + '</div>';
+          (ui.plugin ? '<b>· in ' + esc(ui.plugin) + '</b>' : '') +
+          (ui.plugFilter ? '<b class="nx-sect-filt">· ⛃ ' + fmtN(shownNpcs) + ' of ' +
+            fmtN(pageNpcs) + ' on this page match “' + esc(ui.plugFilter) + '”</b>' : '') +
+          '</div>';
+        if (showHint)
+          html += '<div class="nx-firsthint">✨ First time seeing these — rendering their faces in the ' +
+            'background. Rows fill in as it lands.</div>';
       }
       if (r.kind === 'plug') html += plugRowHtml(r.p, ui.sel, idx);
       else if (r.kind === 'npc') html += npcRowHtml(r.it, ui.sel, idx);
-      else if (r.kind === 'more') {
-        html += '<button class="nx-btn nx-more' + (ui.sel === idx ? ' nx-on' : '') + '" id="nx-more-btn">' +
-          (state.awaiting ? 'Loading…' : 'Show ' + Math.min(PAGE, state.total - state.items.length) + ' more of ' +
-            fmtN(state.total)) + '</button>';
-      }
       idx++;
     });
     body.innerHTML = html;
@@ -566,8 +1006,21 @@ window.NpcsPane = (function () {
         if (it) act('bring', it);
       });
     });
-    const more = $('nx-more-btn');
-    if (more) more.addEventListener('click', function () { runQuery(false); });
+
+    chipLastLand = chipLastLand || Date.now();   // first paint arms the window
+    updateRenderChip();
+
+    /* Face-fit every rendered FACE: zoom the tile onto the face and let the
+       hair bleed off the plate (hd-facefit.js measures each file once; the
+       plate's overflow:hidden does the clipping). Creature BODY renders
+       (nx-art-body) are excluded — there is no skull to hone in on, so they
+       show whole (contain-fit via CSS). The lightbox deliberately keeps the
+       whole render — this is a tile treatment, not a re-crop of the art.
+       Absent module (standalone harness) = untouched tiles. */
+    if (window.HDFaceFit)
+      body.querySelectorAll('.nx-plate .nx-art:not(.nx-art-body)').forEach(function (img) {
+        window.HDFaceFit.ensure(img, img.getAttribute('src'));
+      });
 
     scheduleIconWork();
   }
@@ -584,7 +1037,86 @@ window.NpcsPane = (function () {
     renderHeader();
     renderPills();
     renderPlugChip();
+    renderPlugFilter();
     renderBody();
+    renderFooter();
+  }
+
+  /* ============================================================= footer == */
+
+  /* The pagination bar under the results: ‹ Prev / count / Next › + a per-page
+     segmented control. Created dynamically and appended to #nx-pane (like the
+     render chip) so no index.html edit is needed. Hidden whenever there is no
+     paged list to show: index not ready, hero, empty results, or the Mods-only
+     view (mods are matched locally, not paged). A SINGLE short page keeps the
+     count + selector but hides Prev/Next. */
+  let footEl = null;
+
+  function footHost() {
+    const pane = $('nx-pane');
+    if (!pane) return null;
+    if (!footEl) {
+      footEl = document.createElement('div');
+      footEl.className = 'nx-foot';
+      footEl.id = 'nx-foot';
+      /* after #nx-body, before the toast, so it sits at the pane's foot and
+         never overlaps the scroll area or the toast/lightbox (both higher z). */
+      const body = $('nx-body');
+      if (body && body.nextSibling) pane.insertBefore(footEl, body.nextSibling);
+      else pane.appendChild(footEl);
+    }
+    return footEl;
+  }
+
+  /* Should the footer show at all? Only for an actual paged NPC list. */
+  function footVisible() {
+    if (!state.ready) return false;
+    if (ui.type === 'mods') return false;         // mods are local, not paged
+    if (!ui.q && !ui.plugin && ui.type === 'all') return false;  // hero
+    return state.total > 0;
+  }
+
+  function renderFooter() {
+    const foot = footHost();
+    if (!foot) return;
+    if (!footVisible()) { foot.classList.remove('nx-foot-on'); foot.innerHTML = ''; return; }
+
+    const total = state.total | 0;
+    const pc = pageCount();
+    if (ui.page >= pc) ui.page = pc - 1;          // keep the index sane after a shrink
+    const first = total ? ui.page * ui.pageSize + 1 : 0;
+    const last = Math.min(total, (ui.page + 1) * ui.pageSize);
+    const multi = pc > 1;
+
+    let html = '';
+    /* Prev/Next only when there is more than one page; the count + selector stay
+       for a single short page so the control is never a lonely orphan. */
+    if (multi) {
+      html += '<button class="nx-foot-nav nx-foot-prev" ' + (ui.page <= 0 ? 'disabled ' : '') +
+        'title="Previous page (PgUp)">‹ Prev</button>';
+    }
+    html += '<div class="nx-foot-count">Showing <b>' + fmtN(first) + '–' + fmtN(last) +
+      '</b> of <b>' + fmtN(total) + '</b>' + (multi ? ' · page ' + (ui.page + 1) + ' of ' + pc : '') + '</div>';
+    if (multi) {
+      html += '<button class="nx-foot-nav nx-foot-next" ' + (ui.page >= pc - 1 ? 'disabled ' : '') +
+        'title="Next page (PgDn)">Next ›</button>';
+    }
+    html += '<div class="nx-foot-per" title="How many to show per page — fewer means fewer face renders at once">' +
+      '<span class="nx-foot-per-lbl">Per page</span>' +
+      PAGE_SIZES.map(function (n) {
+        return '<button class="nx-foot-size' + (n === ui.pageSize ? ' nx-foot-size-on' : '') +
+          '" data-size="' + n + '"' + (n === ui.pageSize ? ' aria-pressed="true"' : '') + '>' + n + '</button>';
+      }).join('') + '</div>';
+    foot.innerHTML = html;
+    foot.classList.add('nx-foot-on');
+
+    const prev = foot.querySelector('.nx-foot-prev');
+    if (prev) prev.addEventListener('click', function () { if (!prev.disabled) gotoPage(ui.page - 1); });
+    const next = foot.querySelector('.nx-foot-next');
+    if (next) next.addEventListener('click', function () { if (!next.disabled) gotoPage(ui.page + 1); });
+    foot.querySelectorAll('.nx-foot-size').forEach(function (b) {
+      b.addEventListener('click', function () { changePageSize(parseInt(b.getAttribute('data-size'), 10)); });
+    });
   }
 
   /* =============================================================== toast == */
@@ -615,6 +1147,8 @@ window.NpcsPane = (function () {
     if (window.HDLightbox) HDLightbox.close();
     if (ui.debT) { clearTimeout(ui.debT); ui.debT = null; }
     if (ui.iconT) { clearTimeout(ui.iconT); ui.iconT = null; }
+    if (chipT) { clearTimeout(chipT); chipT = null; }
+    if (renderChip) renderChip.classList.remove('nx-on');
     stopIconPoll();
   }
 
@@ -641,9 +1175,14 @@ window.NpcsPane = (function () {
       });
       s.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') {
+          /* Authoritative: preventDefault + stopPropagation so Enter never
+             leaks to the deck's global handler (which would fire a random
+             hotkey and close the palette). With no results, activate() no-ops
+             — Enter on an empty roster does nothing, it does not close. */
+          e.preventDefault();
+          e.stopPropagation();
           const rows = flatRows();
           activate(rows[Math.min(ui.sel, rows.length - 1)] || rows[0]);
-          e.stopPropagation();
         } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           const rows = flatRows();
           if (rows.length) {
@@ -656,6 +1195,15 @@ window.NpcsPane = (function () {
           }
           e.preventDefault();
           e.stopPropagation();
+        } else if (e.key === 'PageDown' || e.key === 'PageUp') {
+          /* Page nav — Arrows are already row-nav (above), so paging rides
+             PgDn/PgUp. Only when a paged list is on screen; otherwise the key
+             does nothing here and falls through. */
+          if (footVisible() && pageCount() > 1) {
+            gotoPage(ui.page + (e.key === 'PageDown' ? 1 : -1));
+            e.preventDefault();
+            e.stopPropagation();
+          }
         } else if (e.key === 'Escape') {
           if (s.value) { s.value = ''; ui.q = ''; runQuery(true); e.stopPropagation(); }
           else if (ui.plugin) { clearPlugin(); e.stopPropagation(); }
@@ -813,6 +1361,27 @@ window.NpcsPane = (function () {
     const rows = flatRows();
     ok('flat rows: mods before people', rows.length >= 2 && rows[0].kind === 'plug');
 
+    /* secondary plugin filter — fuzzy match + composes with the name search */
+    ok('plugfilter: whole-substring matches', pluginFuzzy('miranda.esp', 'mira'));
+    ok('plugfilter: subsequence matches (mrnd)', pluginFuzzy('miranda.esp', 'mrnd'));
+    ok('plugfilter: rejects a non-match', !pluginFuzzy('miranda.esp', 'daedra'));
+    ok('plugfilter: empty keeps everyone', pluginFuzzy('anything.esp', ''));
+    ui.q = ''; ui.plugin = ''; ui.type = 'all'; ui.plugFilter = '';
+    state.seq++; devQuery(JSON.stringify({ q: '', type: 'all', plugin: '', seq: state.seq, limit: 60, offset: 0 }));
+    /* query everyone (empty q, all pill only returns on a real query in prod; in
+       dev devQuery returns all rows regardless) */
+    state.items = DEV_NPCS.slice();
+    const allPeople = flatRows().filter(function (x) { return x.kind === 'npc'; }).length;
+    ui.plugFilter = 'cool';
+    const coolPeople = flatRows().filter(function (x) { return x.kind === 'npc'; });
+    ok('plugfilter: narrows the page to the matching plugin',
+      allPeople > coolPeople.length && coolPeople.length >= 1 &&
+      coolPeople.every(function (x) { return /cool/i.test(x.it.p); }));
+    ui.plugFilter = '';
+    ok('plugfilter: hidden while browsing inside one mod', (function () {
+      ui.plugin = 'CoolFollowers.esl'; const v = plugFilterVisible(); ui.plugin = ''; return v === false;
+    })());
+
     const fails = out.filter(function (l) { return l.indexOf('FAIL') === 0; });
     const box = document.createElement('pre');
     box.style.cssText = 'position:fixed;right:8px;top:8px;z-index:99999;max-height:90vh;overflow:auto;' +
@@ -843,6 +1412,13 @@ window.NpcsPane = (function () {
     _flushIcons: flushIconsForTest, _iconPollTick: iconPollTick, _missingArt: missingArt,
     _state: state, _ui: ui, _flatRows: flatRows, _modMatches: modMatches,
     _faceKey: faceKey, _faceParts: faceParts, _openLightbox: openLightbox,
+    _artFor: artFor, _bodyIconFor: bodyIconFor,
+    _rowLoading: rowLoading, _renderWindowActive: renderWindowActive,
+    _armWindow: function () { chipLastLand = Date.now(); },
+    _closeWindow: function () { chipLastLand = 1; },
+    _pageCount: pageCount, _gotoPage: gotoPage, _changePageSize: changePageSize,
+    _clampPageSize: clampPageSize, _footVisible: footVisible,
+    _pluginFuzzy: pluginFuzzy, _plugFilterVisible: plugFilterVisible,
   };
 })();
 

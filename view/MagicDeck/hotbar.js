@@ -50,6 +50,11 @@
 
   const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
   const MAX_SLOTS = 24;            // must match kMaxSlots in hotbar.h
+  const MAX_FLY = 9;               // must match kMaxFlyItems in hotbar.h
+  /* The flyout's pause-to-fire beat. Long enough that stepping through five
+     children is comfortable, short enough that "press once, wait" reads as
+     instant-ish. Not configurable yet — feel first, knobs later. */
+  const FLY_DWELL = 900;
   const PAGE_NAMES = ['Main', 'Shift', 'Ctrl', 'Alt'];
 
   /* ── state ───────────────────────────────────────────────────────────── */
@@ -60,6 +65,10 @@
     orient: 'horiz', anchorH: 'center', anchorV: 'bottom',
     cols: 8, rows: 1,
     showKeys: true, showLabels: false, showCounts: true, showEmpty: true,
+    /* hb-showPages / grip-and-outline chrome (Rober, 2026-08-14: "hide the
+       MAIN, SHIFT, ETC text, the outline, and the dragging icon … move the
+       dragging icon to top or bottom for placement precision") */
+    showPages: true, showOutline: true, showGrip: true, gripPos: 'auto',
     idleMs: 0, idleAlpha: 0.35, uiScale: 1, opacity: 1,
     showMode: 'always', lingerMs: 4000, hideInMenus: true,
     skin: 'plain', modHold: true,
@@ -91,6 +100,10 @@
      edit-mode entry. */
   let placed = false;
 
+  /* The open flyout fan (play mode). `sel` walks children 0..n-1 and then the
+     Cancel tile at index n; the dwell timer fires whatever is selected. */
+  const flyState = { open: false, page: 0, i: 0, sel: 0, timer: 0 };
+
   const ICONS = { byForm: null, generic: null, catalog: [], custom: [] };
   /* `loaded` separates "the catalog is still in flight" from "you really own
      nothing" — without it the picker's first frame accuses you of not having
@@ -101,13 +114,17 @@
   ['hb-root', 'hb-grid', 'hb-pages', 'hb-grip', 'hb-edit', 'hb-done',
    'hb-cols', 'hb-rows', 'hb-orient', 'hb-scale', 'hb-scale-val', 'hb-shape-note',
    'hb-anchorH', 'hb-anchorV', 'hb-skins', 'hb-showKeys', 'hb-showLabels',
-   'hb-showCounts', 'hb-showEmpty', 'hb-idle', 'hb-idle-val', 'hb-pagetoggles',
+   'hb-showCounts', 'hb-showEmpty', 'hb-showPages', 'hb-showGrip', 'hb-showOutline',
+   'hb-gripPos', 'hb-panel-q', 'hb-panel-q-empty',
+   'hb-idle', 'hb-idle-val', 'hb-pagetoggles',
    'hb-modHold', 'hb-slotlist', 'hb-page-name', 'hb-slot-note',
    'hb-showMode', 'hb-linger', 'hb-linger-val', 'hb-linger-row', 'hb-hideInMenus',
    'hb-togglekey', 'hb-togglekey-clear', 'hb-show-note', 'hb-preview-note',
    'hb-uiscale', 'hb-uiscale-val', 'hb-opacity', 'hb-opacity-val', 'hb-reset-pos',
    'hb-pick', 'hb-pick-title', 'hb-pick-q', 'hb-pick-tabs', 'hb-pick-list', 'hb-pick-wrap',
-   'hb-pick-close', 'hb-pick-clear',
+   'hb-pick-close', 'hb-pick-clear', 'hb-pick-fly',
+   'hb-flyed', 'hb-flyed-title', 'hb-flyed-name', 'hb-flyed-list', 'hb-flyed-note',
+   'hb-flyed-add', 'hb-flyed-close', 'hb-flyed-dissolve', 'hb-flyed-clear',
    'hb-icons', 'hb-icons-q', 'hb-icons-grid', 'hb-icons-close', 'hb-icons-auto',
    'hb-cap', 'hb-cap-title', 'hb-cap-key', 'hb-cap-clear', 'hb-cap-cancel',
   ].forEach((id) => { el[id] = document.getElementById(id); });
@@ -258,9 +275,37 @@
   }
   function isEmptySlot(s) {
     if (!s || !s.kind) return true;
-    if (s.kind === 'entry' || s.kind === 'combo') return !s.refId;
+    /* A flyout with nothing in it still OCCUPIES the button (you just made it
+       and are about to fill it) — "empty" here means "shows the + socket". */
+    if (s.kind === 'flyout') return false;
+    if (s.kind === 'entry' || s.kind === 'combo' || s.kind === 'smart') return !s.refId;
     return !s.localId && !s.formId;
   }
+
+  /* The four smart consumable buttons — fixed entries, not catalog rows: the
+     THING they fire is re-picked from your bag at press time (see FireSmart in
+     C++), so there is nothing to look up here. */
+  const SMART_DEFS = [
+    { _kind: 'smart', refId: 'heal',    name: 'Best healing potion',
+      detail: 'Drinks the strongest health potion you are carrying — re-picked every press' },
+    { _kind: 'smart', refId: 'magicka', name: 'Best magicka potion',
+      detail: 'Drinks the strongest magicka potion you are carrying' },
+    { _kind: 'smart', refId: 'stamina', name: 'Best stamina potion',
+      detail: 'Drinks the strongest stamina potion you are carrying' },
+    { _kind: 'smart', refId: 'cure',    name: 'Cure disease',
+      detail: 'Drinks a cure disease potion from your bag' },
+  ];
+  function isFlySlot(s) { return !!(s && s.kind === 'flyout'); }
+  function flyItems(s) { return (isFlySlot(s) && Array.isArray(s.items)) ? s.items : []; }
+
+  /* Which way the fan pops: ALWAYS perpendicular to the bar, into the screen.
+     A horizontal bar on the bottom edge pops up; on the top edge, down. A
+     vertical bar on the right edge pops left; anywhere else, right. */
+  function popDirection() {
+    if (cfg.orient === 'vert') return cfg.anchorH === 'right' ? 'left' : 'right';
+    return cfg.anchorV === 'top' ? 'down' : 'up';
+  }
+  const FLY_ARROW = { up: '▲', down: '▼', left: '◀', right: '▶' };
 
   /* Everything the C++ side persists. Sent whole on every edit: the config is
      small, and a partial patch protocol is how the two sides drift apart. */
@@ -271,6 +316,8 @@
       cols: cfg.cols, rows: cfg.rows,
       showKeys: cfg.showKeys, showLabels: cfg.showLabels,
       showCounts: cfg.showCounts, showEmpty: cfg.showEmpty,
+      showPages: cfg.showPages, showOutline: cfg.showOutline,
+      showGrip: cfg.showGrip, gripPos: cfg.gripPos,
       idleMs: cfg.idleMs, idleAlpha: cfg.idleAlpha, uiScale: cfg.uiScale,
       opacity: cfg.opacity,
       showMode: cfg.showMode, lingerMs: cfg.lingerMs, hideInMenus: cfg.hideInMenus,
@@ -397,7 +444,9 @@
     r.classList.toggle('is-edit-preview-fit', preview.fit);
     if (preview.hidden) r.setAttribute('aria-hidden', 'true');
     else r.removeAttribute('aria-hidden');
-    if (grip) grip.hidden = !editing || preview.hidden;
+    /* showGrip === false hides the ✥ for pixel-precise placement — the arrow
+       keys and Reset position still move the bar, so it can never be stranded. */
+    if (grip) grip.hidden = !editing || preview.hidden || cfg.showGrip === false;
     /* Grip side. The grip is a sibling in the bar's flex column, so by default
        it sits BELOW the grid and adds its own height to the bar's bounding box —
        a bottom-anchored bar then cannot touch the bottom screen edge, and near
@@ -406,10 +455,18 @@
        the bar lives in the LOWER half of the screen, so the bar can sit flush
        against the bottom and the grip stays reachable. In the upper half it
        stays below for the same reason at the top edge. Purely a CSS `order`
-       flip — no geometry stored. */
-    const lower = cfg.anchorV === 'bottom';
-    r.classList.toggle('grip-above', editing && lower);
-    r.classList.toggle('grip-below', editing && !lower);
+       flip — no geometry stored.
+       gripPos "top"/"bottom" (Rober, 2026-08-14: "move the dragging icon to
+       top or bottom for placement precision") pins the side and beats the
+       automatic flip; "auto" keeps the 2026-08-13 behaviour. */
+    const above = cfg.gripPos === 'top' ? true
+                : cfg.gripPos === 'bottom' ? false
+                : cfg.anchorV === 'bottom';
+    r.classList.toggle('grip-above', editing && above);
+    r.classList.toggle('grip-below', editing && !above);
+    /* showOutline === false drops the dashed edit halo so the preview IS the
+       play look. Class on the root; the CSS rule only bites under body.hb-edit. */
+    r.classList.toggle('hb-no-outline', cfg.showOutline === false);
     if (note) {
       note.hidden = !editing || (!preview.hidden && !preview.fit);
       note.textContent = note.hidden ? '' : preview.reason;
@@ -542,12 +599,17 @@
     renderPips();
     applyPlacement();
     applyIdle();
+    renderFlyPop();   // keep an open fan glued to its (re-rendered) button
   }
 
   function slotEl(i, L) {
     const s = slotAt(livePage, i);
     const k = keyAt(i);
-    const empty = isEmptySlot(s) || !L.kind;
+    /* The stored slot is authoritative for BUNDLES: a freshly made flyout's
+       live row is a tick behind (kind '') and must not paint the + socket
+       over a button that exists. */
+    const fly0 = isFlySlot(s);
+    const empty = fly0 ? false : (isEmptySlot(s) || !L.kind);
     const dead = !empty && L.ok === false;
     const name = s.label || L.label || L.name || '';
 
@@ -555,30 +617,56 @@
        pushed on different beats — clearing a button updates cfg and re-renders
        at once, while the matching hbLive is a tick behind — so an ungated badge
        paints the PREVIOUS occupant's stack count on an empty socket. */
+    const fly = fly0;
+    const flyLive = fly ? ((L.items && L.items.length) ? L.items : flyItems(s)) : [];
     const cls = ['hb-slot'];
     if (empty) cls.push('is-empty');
-    if (dead) cls.push('is-dead');
+    if (dead && !fly) cls.push('is-dead');
+    if (fly) cls.push('is-fly');
+    if (fly && flyState.open && flyState.page === livePage && flyState.i === i) cls.push('is-fly-open');
     if (!empty && L.equipped) cls.push('is-equipped');
     if (!empty && L.voice) cls.push('is-voice');
     if (editing && i === selected) cls.push('is-selected');
 
+    const flyName = fly ? (s.label || 'Flyout') : '';
     const btn = h('div', {
       class: cls.join(' '),
       'data-i': String(i),
       'data-page': String(livePage),
       title: empty ? ('Button ' + (i + 1) + ' — empty')
-                   : (name + (dead && L.msg ? ' — ' + L.msg : '')),
+           : fly ? (flyName + ' — flyout, ' + flyLive.length + ' inside. Its key opens the fan; '
+                    + 'press again to step, pause to fire.')
+                 : (name + (dead && L.msg ? ' — ' + L.msg : '')),
     });
 
     if (empty) {
       btn.appendChild(h('span', { class: 'hb-glyph', text: '+' }));
+    } else if (fly) {
+      /* Face of the bundle: its own icon override, else the FIRST child's art
+         (the live child row carries school/element/tier for the generic
+         chain), else the fan glyph. Count chip + a direction arrow so the
+         button says which way it will pop before you ever press it. */
+      const first = flyLive[0];
+      const faceModel = s.icon ? { icon: s.icon }
+        : (first ? Object.assign({}, first, { icon: (s.items && s.items[0] && s.items[0].icon) || first.icon }) : null);
+      if (faceModel && (faceModel.icon || resolveIconPath(faceModel)))
+        btn.appendChild(artFor(faceModel, flyName));
+      else
+        btn.appendChild(h('span', { class: 'hb-glyph', text: '⧉' }));
+      btn.appendChild(h('span', { class: 'hb-flyn', text: String(flyLive.length) }));
+      btn.appendChild(h('span', { class: 'hb-flymark dir-' + popDirection(), text: FLY_ARROW[popDirection()] }));
+    } else if (s.kind === 'smart' && !s.icon && !L.icon) {
+      /* a smart button's potion changes under it — the flask glyph is the
+         honest face unless an icon override is chosen */
+      btn.appendChild(h('span', { class: 'hb-glyph hb-smart-g', text: '⚗' }));
     } else {
       /* The live row carries school/element/tier so the generic fallback can
          fire; the stored slot carries the override. Merge, override wins. */
       btn.appendChild(artFor(Object.assign({}, L, { icon: s.icon || L.icon }), name));
     }
+    if (!empty && !fly) ringEls(L, livePage + ':' + i).forEach((n) => btn.appendChild(n));
     if (cfg.showKeys && k.code) btn.appendChild(h('span', { class: 'hb-key', text: k.label || '' }));
-    if (!empty && cfg.showCounts && L.count > 1)
+    if (!empty && !fly && cfg.showCounts && L.count > 1)
       btn.appendChild(h('span', { class: 'hb-count', text: 'x' + L.count }));
 
     if (editing) {
@@ -593,7 +681,9 @@
   function renderPips() {
     const box = el['hb-pages'];
     if (!box) return;
-    const any = [1, 2, 3].some((i) => pageAt(i).enabled);
+    /* showPages === false kills the Main/Shift/… strip outright — the pages
+       still swap under the modifiers, the bar just carries no text about it. */
+    const any = cfg.showPages !== false && [1, 2, 3].some((i) => pageAt(i).enabled);
     box.hidden = !any;
     if (!any) return;
     clear(box);
@@ -625,6 +715,42 @@
     }
   }
 
+  /* ---- buff & cooldown rings ------------------------------------------- */
+  /* C++ sends fxRem/fxDur (an active effect counting down on the thing this
+     button fires) and cd (the shared shout recovery, voice buttons only). The
+     dark layer GROWS as time elapses — the bright remainder is what is left,
+     which is the WoW read. The shout timer has no total in the engine, so the
+     first cd seen for a button is remembered as its 100% (honest enough, and
+     it self-corrects the next time a shout starts a fresh timer). Stepped at
+     the live tick — no animation loops (the Ultralight re-raster rule). */
+  const coolMax = {};
+  function ringEls(L, key) {
+    const out = [];
+    const cd = Number(L.cd) || 0;
+    const fxRem = Number(L.fxRem) || 0;
+    const fxDur = Number(L.fxDur) || 0;
+    if (cd > 0) {
+      const mx = Math.max(cd, coolMax[key] || 0);
+      coolMax[key] = mx;
+      const ov = h('span', { class: 'hb-cool is-cd' });
+      ov.style.height = Math.round(clamp(cd / mx, 0, 1) * 100) + '%';
+      out.push(ov);
+      out.push(h('span', { class: 'hb-cool-s', text: String(Math.ceil(cd)) }));
+      return out;
+    }
+    delete coolMax[key];
+    if (fxRem > 0 && fxDur > 0) {
+      const ov = h('span', { class: 'hb-cool is-fx' });
+      ov.style.height = Math.round(clamp(1 - fxRem / fxDur, 0, 1) * 100) + '%';
+      out.push(ov);
+      /* the countdown number only for the last stretch — a whole bar of
+         numbers is noise, the drain is the readout until it matters */
+      if (fxRem <= 10)
+        out.push(h('span', { class: 'hb-cool-s is-fx', text: String(Math.ceil(fxRem)) }));
+    }
+    return out;
+  }
+
   const flashTimers = {};
   function flash(page, i) {
     lastFireAt = Date.now();
@@ -644,6 +770,146 @@
       n.classList.remove('is-fired');
       delete flashTimers[k];
     }, 260);
+  }
+
+  /* ── the flyout fan (play mode) ──────────────────────────────────────── */
+  /* The bar is never Focused in play, so the fan cannot be clicked or
+     Esc-ed — the SLOT'S OWN KEY drives everything: first press opens, each
+     press steps the highlight (…children, then a Cancel tile), and a short
+     pause fires whatever is highlighted. C++ pushes hbFlyKey for every press
+     on a flyout slot; only the final pick goes back as hbFire {child}. */
+
+  function flySlotCfg() { return slotAt(flyState.page, flyState.i); }
+  function flyLiveRows() {
+    const L = (live && live.page === flyState.page && Array.isArray(live.slots))
+      ? live.slots[flyState.i] : null;
+    return (L && Array.isArray(L.items)) ? L.items : [];
+  }
+
+  function openFlyPop(page, i) {
+    flyState.open = true;
+    flyState.page = page;
+    flyState.i = i;
+    flyState.sel = 0;
+    renderFlyPop();
+    armFlyDwell();
+  }
+  function closeFlyPop() {
+    if (flyState.timer) { clearTimeout(flyState.timer); flyState.timer = 0; }
+    if (!flyState.open) return;
+    flyState.open = false;
+    renderFlyPop();
+    render();          // the parent button drops its is-fly-open ring
+  }
+  function armFlyDwell() {
+    if (flyState.timer) clearTimeout(flyState.timer);
+    flyState.timer = setTimeout(fireFlySelected, FLY_DWELL);
+  }
+  function fireFlySelected() {
+    flyState.timer = 0;
+    if (!flyState.open) return;
+    const n = flyItems(flySlotCfg()).length;
+    const pick = flyState.sel;
+    closeFlyPop();
+    if (pick >= n) return;                       // the Cancel tile — fold up, fire nothing
+    toGame('hbFire', JSON.stringify({ page: flyState.page, i: flyState.i, child: pick }));
+  }
+
+  window.hbFlyKey = function (j) {
+    const d = coerce(j);
+    if (!d || typeof d !== 'object') return;
+    const page = d.page | 0;
+    const i = d.i | 0;
+    lastFireAt = Date.now();
+    applyIdle();
+    if (editing) return;                          // the editor owns flyouts there
+    const n = flyItems(slotAt(page, i)).length;
+    if (!n) return;                               // C++ already said so on screen
+    if (!flyState.open || flyState.page !== page || flyState.i !== i) {
+      openFlyPop(page, i);
+      return;
+    }
+    flyState.sel = (flyState.sel + 1) % (n + 1);  // …children, then Cancel
+    renderFlyPop();
+    armFlyDwell();
+  };
+
+  /* Draw (or remove) the fan. Positioned off the parent button, popping in
+     popDirection(); children are full-size hb-slot tiles so the fan reads as
+     part of the bar, with the selected one carrying the dwell ring. */
+  function renderFlyPop() {
+    const root = el['hb-root'];
+    if (!root) return;
+    const old = root.querySelector('.hb-fly');
+    if (old) old.parentNode.removeChild(old);
+    root.classList.toggle('has-fly', !!flyState.open);
+    if (!flyState.open || flyState.page !== livePage) return;
+    const btn = el['hb-grid'] && el['hb-grid'].querySelector(
+      '.hb-slot[data-i="' + flyState.i + '"]');
+    if (!btn) return;
+
+    const s = flySlotCfg();
+    const items = flyItems(s);
+    if (!items.length) { flyState.open = false; root.classList.remove('has-fly'); return; }
+    const rows = flyLiveRows();
+    const dir = popDirection();
+
+    /* column fans label to the right; a bar parked on the right edge flips
+       them to the free side (see .lbl-left in the CSS) */
+    const lblLeft = (dir === 'up' || dir === 'down') && cfg.anchorH === 'right';
+    const box = h('div', { class: 'hb-fly dir-' + dir + (lblLeft ? ' lbl-left' : '') });
+    for (let k = 0; k < items.length; k++) {
+      const c = items[k];
+      const R = rows[k] || {};
+      const nm = c.label || R.label || R.name || 'Action ' + (k + 1);
+      const tile = h('div', {
+        class: 'hb-slot hb-flych' + (k === flyState.sel ? ' is-sel' : '')
+             + (R.ok === false ? ' is-dead' : ''),
+        'data-fk': String(k),
+        title: nm + (R.ok === false && R.msg ? ' — ' + R.msg : ''),
+      });
+      tile.appendChild(artFor(Object.assign({}, R, { icon: c.icon || R.icon }), nm));
+      ringEls(R, 'fly:' + flyState.page + ':' + flyState.i + ':' + k)
+        .forEach((n) => tile.appendChild(n));
+      tile.appendChild(h('span', { class: 'hb-flych-nm', text: nm }));
+      if (k === flyState.sel) {
+        const dw = h('span', { class: 'hb-fly-dwell' });
+        tile.appendChild(dw);
+        /* one-shot width transition, restarted per step — never an infinite
+           animation (the Ultralight re-raster rule) */
+        requestAnimationFrame(() => { dw.classList.add('run'); });
+      }
+      /* click still works whenever a cursor exists (another menu holds it) */
+      tile.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (editing) return;
+        flyState.sel = k;
+        fireFlySelected();
+      });
+      box.appendChild(tile);
+    }
+    const cancel = h('div', {
+      class: 'hb-slot hb-flych hb-fly-cancel' + (flyState.sel >= items.length ? ' is-sel' : ''),
+      title: 'Close the flyout without firing anything',
+    }, h('span', { class: 'hb-glyph', text: '✕' }),
+       h('span', { class: 'hb-flych-nm', text: 'Cancel' }));
+    if (flyState.sel >= items.length) {
+      const dw = h('span', { class: 'hb-fly-dwell' });
+      cancel.appendChild(dw);
+      requestAnimationFrame(() => { dw.classList.add('run'); });
+    }
+    cancel.addEventListener('click', (e) => { e.stopPropagation(); closeFlyPop(); });
+    box.appendChild(cancel);
+
+    /* anchor the fan to the button: perpendicular to the bar, aligned on the
+       button's own axis so the first child sits nearest your muscle memory */
+    const bx = btn.offsetLeft + (btn.offsetParent === el['hb-grid'] ? el['hb-grid'].offsetLeft : 0);
+    const by = btn.offsetTop + (btn.offsetParent === el['hb-grid'] ? el['hb-grid'].offsetTop : 0);
+    if (dir === 'up')    { box.style.left = bx + 'px'; box.style.bottom = (root.offsetHeight - by + 10) + 'px'; }
+    if (dir === 'down')  { box.style.left = bx + 'px'; box.style.top = (by + btn.offsetHeight + 10) + 'px'; }
+    if (dir === 'left')  { box.style.top = by + 'px'; box.style.right = (root.offsetWidth - bx + 10) + 'px'; }
+    if (dir === 'right') { box.style.top = by + 'px'; box.style.left = (bx + btn.offsetWidth + 10) + 'px'; }
+    root.appendChild(box);
   }
 
   /* ── drag to move ────────────────────────────────────────────────────── */
@@ -699,6 +965,7 @@
     if (!editing) return;
     if (el['hb-pick'] && !el['hb-pick'].hidden) return;
     if (el['hb-cap'] && !el['hb-cap'].hidden) return;
+    if (el['hb-flyed'] && !el['hb-flyed'].hidden) return;
     const tag = (e.target && e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
     const step = e.shiftKey ? 10 : 1;
@@ -752,6 +1019,10 @@
     el['hb-showLabels'].checked = !!cfg.showLabels;
     el['hb-showCounts'].checked = !!cfg.showCounts;
     el['hb-showEmpty'].checked = !!cfg.showEmpty;
+    el['hb-showPages'].checked = cfg.showPages !== false;
+    el['hb-showGrip'].checked = cfg.showGrip !== false;
+    el['hb-showOutline'].checked = cfg.showOutline !== false;
+    setVal('hb-gripPos', cfg.gripPos || 'auto');
     el['hb-modHold'].checked = !!cfg.modHold;
     setVal('hb-idle', String(Math.round((cfg.idleMs || 0) / 1000)));
     el['hb-idle-val'].textContent = cfg.idleMs ? (Math.round(cfg.idleMs / 1000) + 's') : 'Never';
@@ -824,6 +1095,10 @@
     });
 
     renderSlotList();
+    /* Re-assert the settings search over the freshly rebuilt rows — the poller
+       re-runs renderEdit every ~700ms and must not resurrect filtered rows.
+       (Function declaration below in this closure; hoisting makes it callable.) */
+    applyPanelFilter();
   }
 
   /* Which page the EDIT panel is showing. Independent of livePage: you edit
@@ -872,11 +1147,14 @@
       const L = rows[i] || {};
       const k = keyAt(i);
       const empty = isEmptySlot(s);
-      const name = s.label || L.name || (empty ? 'Empty' : (s.refId || 'Unknown'));
+      const fly = isFlySlot(s);
+      const name = fly ? (s.label || 'Flyout')
+                       : (s.label || L.name || (empty ? 'Empty' : (s.refId || 'Unknown')));
 
-      const thumb = h('div', { class: 'thumb', title: 'Change this icon' },
+      const thumb = h('div', { class: 'thumb', title: fly ? 'Change the flyout’s icon' : 'Change this icon' },
         empty ? h('span', { class: 'g', text: '+' })
-              : artFor(Object.assign({}, L, { icon: s.icon }), name));
+              : fly ? (s.icon ? artFor({ icon: s.icon }, name) : h('span', { class: 'g', text: '⧉' }))
+                    : artFor(Object.assign({}, L, { icon: s.icon }), name));
       thumb.addEventListener('click', (e) => {
         e.stopPropagation();
         if (empty) { openPicker(i); return; }
@@ -886,8 +1164,9 @@
       const what = h('div', { class: 'what' },
         h('div', { class: 'nm' + (empty ? ' is-blank' : ''), title: name, text: name }),
         h('div', { class: 'sub', text: empty ? 'Click to choose an action'
-          : (kindLabel(s.kind) + (L.ok === false && L.msg ? ' · ' + L.msg : '')) }));
-      what.addEventListener('click', () => openPicker(i));
+          : fly ? ('Flyout · ' + flyItems(s).length + ' of ' + MAX_FLY + ' — click to edit what’s inside')
+                : (kindLabel(s.kind) + (L.ok === false && L.msg ? ' · ' + L.msg : '')) }));
+      what.addEventListener('click', () => { if (fly) openFlyEd(i); else openPicker(i); });
 
       const keyBtn = h('button', {
         class: 'hb-keybtn' + (k.code ? '' : ' is-unbound'), type: 'button',
@@ -920,7 +1199,8 @@
 
   function kindLabel(k) {
     return k === 'spell' ? 'Spell' : k === 'item' ? 'Item'
-         : k === 'entry' ? 'Deck action' : k === 'combo' ? 'Combo' : '';
+         : k === 'entry' ? 'Deck action' : k === 'combo' ? 'Combo'
+         : k === 'flyout' ? 'Flyout' : k === 'smart' ? 'Smart button' : '';
   }
 
   /* ── edit-panel control wiring ───────────────────────────────────────── */
@@ -962,10 +1242,75 @@
 
   [['hb-showKeys', 'showKeys'], ['hb-showLabels', 'showLabels'],
    ['hb-showCounts', 'showCounts'], ['hb-showEmpty', 'showEmpty'],
+   ['hb-showPages', 'showPages'], ['hb-showGrip', 'showGrip'],
+   ['hb-showOutline', 'showOutline'],
    ['hb-modHold', 'modHold'], ['hb-hideInMenus', 'hideInMenus']].forEach(([id, key]) => {
     if (!el[id]) return;
     el[id].addEventListener('change', () => { cfg[key] = el[id].checked; saveCfg(); render(); });
   });
+
+  if (el['hb-gripPos']) el['hb-gripPos'].addEventListener('change', () => {
+    cfg.gripPos = el['hb-gripPos'].value;
+    saveCfg(); applyPlacement();   // the grip flips side immediately
+  });
+
+  /* ── settings search (the panel's own filter-as-you-type) ─────────────── */
+  /* Every section, row and tooltip below the header is searchable. Rows that
+     do not match hide; a section whose TITLE matches keeps all its rows. The
+     match includes title attributes because that is where the meaning lives
+     ("does not blink out between enemies" finds the linger slider). Display
+     via a class, not inline styles, so clearing the search is one sweep. */
+  function rowMatchesQuery(row, q) {
+    if ((row.textContent || '').toLowerCase().indexOf(q) !== -1) return true;
+    if (row.getAttribute && (row.getAttribute('title') || '').toLowerCase().indexOf(q) !== -1) return true;
+    const titled = row.querySelectorAll ? row.querySelectorAll('[title]') : [];
+    for (let i = 0; i < titled.length; i++) {
+      if ((titled[i].getAttribute('title') || '').toLowerCase().indexOf(q) !== -1) return true;
+    }
+    return false;
+  }
+  function applyPanelFilter() {
+    const q = ((el['hb-panel-q'] && el['hb-panel-q'].value) || '').trim().toLowerCase();
+    const body = el['hb-edit'] && el['hb-edit'].querySelector('.hb-edit-body');
+    if (!body) return;
+    let anyShown = false;
+    const sects = body.querySelectorAll('.hb-sect');
+    for (let s = 0; s < sects.length; s++) {
+      const sect = sects[s];
+      const head = sect.querySelector('h2');
+      const sectMatch = !q || (head && (head.textContent || '').toLowerCase().indexOf(q) !== -1);
+      let shown = 0;
+      const kids = sect.children;
+      for (let i = 0; i < kids.length; i++) {
+        const row = kids[i];
+        if (row.tagName === 'H2') continue;
+        const hit = sectMatch || rowMatchesQuery(row, q);
+        row.classList.toggle('hb-filtered', !hit);
+        if (hit) shown++;
+      }
+      const showSect = sectMatch || shown > 0;
+      sect.classList.toggle('hb-filtered', !showSect);
+      if (showSect) anyShown = true;
+    }
+    if (el['hb-panel-q-empty']) el['hb-panel-q-empty'].hidden = !q || anyShown;
+  }
+  if (el['hb-panel-q']) {
+    el['hb-panel-q'].addEventListener('input', applyPanelFilter);
+    el['hb-panel-q'].addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        el['hb-panel-q'].value = '';
+        applyPanelFilter();
+        e.stopPropagation();   // Esc with text = clear, not close the editor
+      } else if (e.key === 'Enter') {
+        /* Enter = jump to the top hit's first control, the fd-ctx-menu idiom */
+        const hit = el['hb-edit'].querySelector(
+          '.hb-sect:not(.hb-filtered) > :not(.hb-filtered):not(h2) input, ' +
+          '.hb-sect:not(.hb-filtered) > :not(.hb-filtered):not(h2) select, ' +
+          '.hb-sect:not(.hb-filtered) > :not(.hb-filtered):not(h2) button');
+        if (hit) hit.focus();
+      }
+    });
+  }
 
   if (el['hb-showMode']) el['hb-showMode'].addEventListener('change', () => {
     cfg.showMode = el['hb-showMode'].value;
@@ -1015,20 +1360,33 @@
 
   /* ── the assign picker ───────────────────────────────────────────────── */
 
-  const pick = { open: false, slot: 0, tab: 'all', q: '', cursor: 0, rows: [] };
+  const pick = { open: false, slot: 0, tab: 'all', q: '', cursor: 0, rows: [], forFly: false };
 
-  function openPicker(i) {
+  function openPicker(i, forFly) {
     pick.open = true; pick.slot = i; pick.q = ''; pick.cursor = 0;
-    el['hb-pick-title'].textContent = 'Put something on button ' + (i + 1) +
+    pick.forFly = !!forFly;
+    el['hb-pick-title'].textContent = (pick.forFly
+        ? 'Add to the flyout on button ' + (i + 1)
+        : 'Put something on button ' + (i + 1)) +
       (selectedPage ? ' (' + PAGE_NAMES[selectedPage] + ' page)' : '');
     el['hb-pick'].hidden = false;
     el['hb-pick-q'].value = '';
+    /* the footer swaps meaning with the mode: assigning offers "make this a
+       flyout", adding-to-a-flyout has nothing to clear */
+    if (el['hb-pick-clear']) el['hb-pick-clear'].hidden = pick.forFly;
+    if (el['hb-pick-fly']) el['hb-pick-fly'].hidden = pick.forFly;
     if (!CATALOG.loaded) toGame('hbCatalog');
     renderPickTabs();
     renderPickList();
     setTimeout(() => el['hb-pick-q'] && el['hb-pick-q'].focus(), 30);
   }
-  function closePicker() { pick.open = false; el['hb-pick'].hidden = true; }
+  function closePicker() {
+    const wasFly = pick.forFly;
+    pick.open = false; pick.forFly = false;
+    el['hb-pick'].hidden = true;
+    /* adding to a bundle returns you to the bundle, not to the void */
+    if (wasFly && flyEd.open) renderFlyEd();
+  }
 
   const PICK_TABS = [
     { id: 'all',     label: 'Everything' },
@@ -1055,10 +1413,10 @@
   function candidates(tab) {
     const tag = (arr, kind) => (arr || []).map((r) => Object.assign({ _kind: kind }, r));
     if (tab === 'spells')  return tag(CATALOG.spells, 'spell');
-    if (tab === 'items')   return tag(CATALOG.items, 'item');
+    if (tab === 'items')   return SMART_DEFS.concat(tag(CATALOG.items, 'item'));
     if (tab === 'entries') return tag(CATALOG.entries, 'entry');
     if (tab === 'combos')  return tag(CATALOG.combos, 'combo');
-    return [].concat(tag(CATALOG.spells, 'spell'), tag(CATALOG.items, 'item'),
+    return [].concat(SMART_DEFS, tag(CATALOG.spells, 'spell'), tag(CATALOG.items, 'item'),
                      tag(CATALOG.combos, 'combo'), tag(CATALOG.entries, 'entry'));
   }
 
@@ -1168,6 +1526,32 @@
   }
 
   function assign(r) {
+    /* Adding INTO a flyout: the picked thing becomes a child, the picker
+       stays the same picker, and the bundle editor re-renders behind it.
+       Children keep the picked NAME as their label so the bundle editor can
+       list them without waiting for a live tick. */
+    if (pick.forFly) {
+      if (!r) return;
+      const fs = pageAt(selectedPage).slots[pick.slot];
+      if (!isFlySlot(fs)) { closePicker(); return; }
+      if (!Array.isArray(fs.items)) fs.items = [];
+      if (fs.items.length >= MAX_FLY) { closePicker(); return; }
+      fs.items.push({
+        kind: r._kind,
+        plugin: r.plugin || '',
+        localId: r.localId || 0,
+        formId: r.formId || 0,
+        refId: r.refId || r.id || '',
+        label: r.name || '',
+        icon: '',
+      });
+      saveCfg();
+      closePicker();
+      renderFlyEd();
+      renderSlotList();
+      render();
+      return;
+    }
     const s = r ? {
       kind: r._kind,
       plugin: r.plugin || '',
@@ -1185,6 +1569,25 @@
     render();
   }
 
+  /* "Make this button a flyout" — whatever is on it becomes child 1, and the
+     bundle editor opens so the next click is already "add the second thing". */
+  function makeFlySlot(i) {
+    const page = pageAt(selectedPage);
+    const old = page.slots[i];
+    const seed = (old && !isEmptySlot(old) && !isFlySlot(old)) ? old : null;
+    page.slots[i] = {
+      kind: 'flyout',
+      plugin: '', localId: 0, formId: 0, refId: '',
+      label: seed ? (seed.label || '') : '',
+      icon: '',
+      items: seed ? [seed] : [],
+    };
+    saveCfg();
+    renderSlotList();
+    render();
+    openFlyEd(i);
+  }
+
   if (el['hb-pick-q']) el['hb-pick-q'].addEventListener('input', () => {
     pick.q = el['hb-pick-q'].value; pick.cursor = 0; renderPickList();
   });
@@ -1197,6 +1600,118 @@
   if (el['hb-pick-list']) el['hb-pick-list'].addEventListener('scroll', syncPickOverflow);
   if (el['hb-pick-close']) el['hb-pick-close'].addEventListener('click', closePicker);
   if (el['hb-pick-clear']) el['hb-pick-clear'].addEventListener('click', () => assign(null));
+  if (el['hb-pick-fly']) el['hb-pick-fly'].addEventListener('click', () => {
+    const i = pick.slot;
+    closePicker();
+    makeFlySlot(i);
+  });
+
+  /* ── the flyout (bundle) editor ──────────────────────────────────────── */
+  /* One modal per bundle: name it, see what's inside with real icons,
+     reorder, remove, and add more through the SAME searchable picker every
+     other button uses. */
+
+  const flyEd = { open: false, slot: 0 };
+
+  function openFlyEd(i) {
+    flyEd.open = true;
+    flyEd.slot = i;
+    el['hb-flyed'].hidden = false;
+    renderFlyEd();
+    setTimeout(() => el['hb-flyed-name'] && el['hb-flyed-name'].focus(), 30);
+  }
+  function closeFlyEd() {
+    flyEd.open = false;
+    el['hb-flyed'].hidden = true;
+    renderSlotList();
+    render();
+  }
+
+  function renderFlyEd() {
+    if (!flyEd.open) return;
+    const s = slotAt(selectedPage, flyEd.slot);
+    if (!isFlySlot(s)) { closeFlyEd(); return; }
+    const items = flyItems(s);
+    const rows = (live && live.page === selectedPage && Array.isArray(live.slots))
+      ? ((live.slots[flyEd.slot] || {}).items || []) : [];
+
+    el['hb-flyed-title'].textContent = 'Flyout on button ' + (flyEd.slot + 1) +
+      (selectedPage ? ' (' + PAGE_NAMES[selectedPage] + ' page)' : '');
+    if (document.activeElement !== el['hb-flyed-name'])
+      el['hb-flyed-name'].value = s.label || '';
+
+    const list = el['hb-flyed-list'];
+    clear(list);
+    if (!items.length) {
+      list.appendChild(h('div', { class: 'hb-pick-empty',
+        text: 'Nothing inside yet — “Add an action” below. Its key will open the fan; '
+            + 'press again to step along it, pause a beat to fire.' }));
+    }
+    items.forEach((c, k) => {
+      const R = rows[k] || {};
+      const nm = c.label || R.label || R.name || kindLabel(c.kind) || 'Action';
+      const row = h('div', { class: 'hb-slotrow hb-flyed-row', title: nm },
+        h('div', { class: 'idx', text: String(k + 1) }),
+        h('div', { class: 'thumb' }, artFor(Object.assign({}, R, { icon: c.icon || R.icon }), nm)),
+        h('div', { class: 'what' },
+          h('div', { class: 'nm', title: nm, text: nm }),
+          h('div', { class: 'sub', text: kindLabel(c.kind) + (R.ok === false && R.msg ? ' · ' + R.msg : '') })));
+      const up = h('button', { class: 'hb-btn hb-fed-btn', type: 'button', title: 'Earlier in the fan', text: '↑' });
+      const dn = h('button', { class: 'hb-btn hb-fed-btn', type: 'button', title: 'Later in the fan', text: '↓' });
+      const rm = h('button', { class: 'hb-btn hb-btn-danger hb-fed-btn', type: 'button', title: 'Take it out of the flyout', text: '✕' });
+      if (k === 0) up.disabled = true;
+      if (k === items.length - 1) dn.disabled = true;
+      up.addEventListener('click', () => { items.splice(k - 1, 0, items.splice(k, 1)[0]); saveCfg(); renderFlyEd(); render(); });
+      dn.addEventListener('click', () => { items.splice(k + 1, 0, items.splice(k, 1)[0]); saveCfg(); renderFlyEd(); render(); });
+      rm.addEventListener('click', () => { items.splice(k, 1); saveCfg(); renderFlyEd(); renderSlotList(); render(); });
+      row.appendChild(up); row.appendChild(dn); row.appendChild(rm);
+      list.appendChild(row);
+    });
+
+    el['hb-flyed-add'].disabled = items.length >= MAX_FLY;
+    el['hb-flyed-add'].textContent = items.length >= MAX_FLY
+      ? 'Full — ' + MAX_FLY + ' of ' + MAX_FLY
+      : '＋ Add an action (' + items.length + ' of ' + MAX_FLY + ')';
+    el['hb-flyed-dissolve'].hidden = items.length !== 1;
+    el['hb-flyed-note'].textContent =
+      'Pops ' + ({ up: 'upward', down: 'downward', left: 'to the left', right: 'to the right' }[popDirection()]) +
+      ' — it follows the bar’s direction on its own. In play: press the button’s key to open, ' +
+      'press again to step, pause a beat to fire. The last tile is Cancel.';
+  }
+
+  if (el['hb-flyed-close']) el['hb-flyed-close'].addEventListener('click', closeFlyEd);
+  if (el['hb-flyed-add']) el['hb-flyed-add'].addEventListener('click', () => {
+    openPicker(flyEd.slot, true);
+  });
+  if (el['hb-flyed-name']) el['hb-flyed-name'].addEventListener('input', () => {
+    const s = slotAt(selectedPage, flyEd.slot);
+    if (!isFlySlot(s)) return;
+    s.label = String(el['hb-flyed-name'].value || '').slice(0, 40);
+    saveCfg();
+  });
+  if (el['hb-flyed-dissolve']) el['hb-flyed-dissolve'].addEventListener('click', () => {
+    const page = pageAt(selectedPage);
+    const s = page.slots[flyEd.slot];
+    if (!isFlySlot(s) || flyItems(s).length !== 1) return;
+    page.slots[flyEd.slot] = s.items[0];
+    saveCfg();
+    closeFlyEd();
+  });
+  if (el['hb-flyed-clear']) el['hb-flyed-clear'].addEventListener('click', () => {
+    /* armed two-click, like the wheel's — a bundle took time to build */
+    const b = el['hb-flyed-clear'];
+    if (b.getAttribute('data-armed') !== '1') {
+      b.setAttribute('data-armed', '1');
+      b.textContent = 'Really remove it all';
+      return;
+    }
+    b.setAttribute('data-armed', '0');
+    b.textContent = 'Remove the flyout';
+    pageAt(selectedPage).slots[flyEd.slot] = {};
+    toGame('hbAssign', JSON.stringify({ page: selectedPage, i: flyEd.slot, slot: null }));
+    saveCfg();
+    closeFlyEd();
+  });
 
   /* ── icon picker ─────────────────────────────────────────────────────── */
 
@@ -1348,9 +1863,11 @@
     placed = false;        // a fresh edit session: avoidance is allowed again
     document.body.classList.toggle('hb-edit', editing);
     el['hb-edit'].hidden = !editing;
-    el['hb-grip'].hidden = !editing;
+    el['hb-grip'].hidden = !editing || cfg.showGrip === false;
+    if (editing && flyState.open) closeFlyPop();   // the editor owns flyouts there
     if (!editing) {
       closePicker(); closeIconPicker(); closeCapture();
+      if (flyEd.open) closeFlyEd();
       el['hb-root'].classList.remove('grip-above', 'grip-below');
     } else {
       selectedPage = clamp(selectedPage, 0, 3); applyUiScale(); renderEdit();
@@ -1393,6 +1910,9 @@
     const p = d && typeof d === 'object' ? (d.page | 0) : (parseInt(j, 10) || 0);
     if (p === livePage) return;
     livePage = clamp(p, 0, 3);
+    /* a modifier swap under an open fan: the fan belongs to the old page's
+       button, so it folds up rather than firing across pages */
+    if (flyState.open) closeFlyPop();
     render();
     /* A held modifier changes every icon at once; without a beat of motion it
        reads as a flicker rather than a swap. 110ms — never laggy under the
@@ -1412,6 +1932,9 @@
     const d = coerce(j);
     const i = d && typeof d === 'object' ? (d.i | 0) : (parseInt(j, 10) || 0);
     const page = d && typeof d === 'object' && d.page !== undefined ? (d.page | 0) : livePage;
+    /* another button fired while a fan was open — the player moved on; the
+       fan folds up rather than dwell-firing behind their back */
+    if (flyState.open && (page !== flyState.page || i !== flyState.i)) closeFlyPop();
     flash(page, i);
   };
 
@@ -1475,5 +1998,11 @@
     setEditing, render, renderEdit, renderSlotList, applyUiScale,
     openPicker, closePicker, assign, openIconPicker, openCapture,
     flash, applyPlacement, applyOpacity, clampIntoView, resetPosition,
+    applyPanelFilter,
+    isFlySlot, flyItems, popDirection, makeFlySlot,
+    openFlyEd, closeFlyEd, renderFlyEd,
+    flyState, openFlyPop, closeFlyPop, fireFlySelected, renderFlyPop,
+    get flyEd() { return flyEd; },
+    MAX_FLY, FLY_DWELL,
   };
 })();

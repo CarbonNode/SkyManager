@@ -354,6 +354,13 @@
        the mark button under the Bases list would fire the wrong feature. */
     const foot = document.getElementById('dm-foot');
     if (foot) foot.classList.toggle('nb-suppressed', bases);
+    /* Our height compensation (applyFit) caps #dm-pane while Bases owns it.
+       Places manages its own layout and must not inherit that cap, so release
+       it the moment Places takes over; applyFit re-applies it on the way back. */
+    if (!bases) {
+      const pane = document.getElementById('dm-pane');
+      if (pane) pane.style.maxHeight = '';
+    }
   }
 
   function onSearchInput(e) {
@@ -411,32 +418,62 @@
    *  app.css gives #dm-pane `transform: scale(var(--dm-ui-scale))` together
    *  with `width: calc(100% / var(--dm-ui-scale))` — the width is divided back
    *  out, the HEIGHT never is. So at any Domains UI size above 100% the pane
-   *  renders taller than its layout box and the surplus falls outside #panel,
-   *  which clips it. Worse, a scroller inside it computes its range from the
-   *  UNSCALED layout height, so scrolling to the very end still leaves the
-   *  overflow off-screen: the bottom is simply unreachable.
+   *  renders taller than its flex allotment and the surplus falls outside
+   *  #panel (overflow:hidden clips it): the bottom is simply unreachable, and a
+   *  scroller inside cannot bring it back because its range is the unscaled
+   *  layout height.
    *
-   *  Measured on the rig's own numbers (scale 1.3): layout 681px, visual
-   *  885px, 203px of it below the panel — exactly the "can't scroll all the
-   *  way down to the residents" Rober hit.
+   *  ROOT-CAUSED 2026-08-14 by rendering the pane headless on the rig at
+   *  Rober's real config (menu scale 1.4, Domains UI size 1.15) and measuring:
    *
-   *  Fix, scoped to this pane rather than app.css (which every other session
-   *  is editing): cap our own height to `layoutHeight / scale`, so the SCALED
-   *  result is exactly the layout box the flex parent allotted. At scale 1
-   *  this is a no-op, which is why it can be applied unconditionally.
+   *   1. The old fix divided by the WRONG scale. It read
+   *      `scale = getBoundingClientRect().height / offsetHeight`, which is the
+   *      COMBINED transform (this pane's 1.15 × #panel's 1.4 ≈ 1.61), not this
+   *      pane's OWN 1.15. So `usable = layoutH / 1.61` over-shrank by ~30%.
+   *   2. It capped the WRONG element. It set `max-height` on #nb-body while
+   *      #dm-pane kept its full flex allotment — so the cap left a strip of
+   *      #dm-pane's background exposed BELOW #nb-body. That strip is the black
+   *      void Rober reported (measured 83px on his numbers), worst on the Bases
+   *      sub-tab because Places' #dm-body has no cap and flex-fills the pane.
+   *
+   *  Correct fix: compensate the pane's HEIGHT exactly as its width is
+   *  compensated — cap #dm-pane itself to `allotment / ownScale`, so the SCALED
+   *  pane lands back at the flex box #panel allotted (fits, nothing clipped),
+   *  and let #nb-body flex-grow fill it (no void). ownScale is read from the
+   *  --dm-ui-scale custom property (the pane's OWN scale, the one app.css feeds
+   *  its transform), NOT re-derived from a rect that also carries #panel's
+   *  scale. At scale 1 the cap equals the allotment — a no-op. The cap lives on
+   *  #dm-pane, so applyMode clears it when Places takes over (Places manages its
+   *  own footer and must not inherit our height cap).
    */
+  function ownDmScale() {
+    const pane = document.getElementById('dm-pane');
+    const raw = pane
+      ? getComputedStyle(pane).getPropertyValue('--dm-ui-scale')
+      : '';
+    const s = parseFloat(raw);
+    return (isFinite(s) && s > 0.05) ? s : 1;
+  }
+
   function applyFit() {
     if (!body || !bar) return;
     const pane = document.getElementById('dm-pane');
     if (!pane) return;
-    const layoutH = pane.offsetHeight;                 // unscaled, the allotment
-    if (!layoutH) return;                              // hidden — nothing to fit
-    const visualH = pane.getBoundingClientRect().height;
-    const scale = visualH > 0 ? (visualH / layoutH) : 1;
-    if (!(scale > 0.05) || !isFinite(scale)) return;   // nonsense: leave it alone
-    const usable = layoutH / scale;
-    const h = Math.max(140, Math.floor(usable - (bar.offsetHeight || 0)));
-    body.style.maxHeight = h + 'px';
+    /* Clear the old #nb-body cap (the bug) so a stale value from a prior build
+       or a wider render can never linger and re-open the void. */
+    body.style.maxHeight = '';
+    const scale = ownDmScale();
+    if (scale <= 1.0001) {                 // no up-scale: nothing to compensate
+      pane.style.maxHeight = '';
+      return;
+    }
+    /* Measure the flex allotment with no cap in force, then cap the pane so the
+       scaled result fits it. Clearing first avoids the circular measure (the
+       cap would otherwise feed back into offsetHeight). */
+    pane.style.maxHeight = '';
+    const allotment = pane.offsetHeight;
+    if (!allotment) return;                // hidden — nothing to fit
+    pane.style.maxHeight = Math.floor(allotment / scale) + 'px';
   }
 
   function render() {

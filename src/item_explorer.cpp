@@ -116,7 +116,18 @@ namespace ItemExplorer
 		// ---------------------------------------------------------- settings --
 		bool   g_pay = false;   // merchant mode: taking an item costs gold
 		double g_mult = 1.0;    // suggested price = item value x this
+		int    g_pageSize = 25; // Finder page size (Rober, 2026-08-14): rows drawn
+		                        // per page — persisted so the choice survives a
+		                        // session. Items are cheaper 512px renders than
+		                        // NPC faces, so this pane defaults to 25.
 		bool   g_settingsLoaded = false;
+
+		// Legal page sizes the selector offers; a persisted value outside this set
+		// is snapped to the nearest so a hand-edited sidecar can't wedge the pane.
+		int ClampPageSize(int n)
+		{
+			return std::clamp(n, 1, 100);
+		}
 
 		std::filesystem::path SettingsPath()
 		{
@@ -136,6 +147,9 @@ namespace ItemExplorer
 				if (j.is_object()) {
 					g_pay = j.value("pay", false);
 					g_mult = std::clamp(j.value("mult", 1.0), 0.0, 100.0);
+					// unknown keys in the sidecar survive untouched — j is only READ
+					// here, and SaveSettingsFile writes back only the fields we own.
+					g_pageSize = ClampPageSize(j.value("pageSize", g_pageSize));
 				}
 			} catch (...) {
 				logger::warn("item-explorer: settings sidecar unreadable — defaults kept");
@@ -155,7 +169,7 @@ namespace ItemExplorer
 					logger::warn("item-explorer: could not write {}", tmp.string());
 					return;
 				}
-				out << Dump(json{ { "pay", g_pay }, { "mult", g_mult } });
+				out << Dump(json{ { "pay", g_pay }, { "mult", g_mult }, { "pageSize", g_pageSize } });
 			}
 			std::filesystem::rename(tmp, path, ec);
 			if (ec)
@@ -340,6 +354,7 @@ namespace ItemExplorer
 			{ "gold", ReadGold() },
 			{ "pay", g_pay },
 			{ "mult", g_mult },
+			{ "pageSize", g_pageSize },   // persisted Finder page size; an old view ignores it
 			{ "plugins", std::move(plugs) },
 		});
 	}
@@ -357,7 +372,10 @@ namespace ItemExplorer
 		const int         seq = in.value("seq", 0);
 		// (std::max) — parenthesized so windows.h's max macro cannot eat it
 		const int         offset = (std::max)(0, in.value("offset", 0));
-		const int         limit = std::clamp(in.value("limit", 60), 1, 200);
+		// The view's chosen page size arrives as `limit` (1..100 selector). A
+		// request WITHOUT the field is an OLD view — default to 60, exactly the
+		// pre-pagination behaviour, so DLL and view can deploy at different moments.
+		const int         limit = std::clamp(in.value("limit", 60), 1, 100);
 
 		const auto kindFilter = KindFromKey(typeKey);   // nullopt = all kinds
 		const auto tokens = Tokens(q);
@@ -495,7 +513,9 @@ namespace ItemExplorer
 			g_pay = in.value("pay", g_pay);
 		if (in.contains("mult"))
 			g_mult = std::clamp(in.value("mult", g_mult), 0.0, 100.0);
+		if (in.contains("pageSize"))
+			g_pageSize = ClampPageSize(in.value("pageSize", g_pageSize));
 		SaveSettingsFile();
-		return Dump(json{ { "ok", true }, { "pay", g_pay }, { "mult", g_mult } });
+		return Dump(json{ { "ok", true }, { "pay", g_pay }, { "mult", g_mult }, { "pageSize", g_pageSize } });
 	}
 }
