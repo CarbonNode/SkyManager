@@ -43,6 +43,12 @@
        slug (a re-capture the game had locked lands as `<slug>~<n>.png`) and C++
        has already picked the newest. */
     portraits: {},
+    /* facegen head renders, keyed by the member's lowercased formId — the
+       DEFAULT face for anyone on the roster without a captured portrait
+       (Rober, 2026-08-14). Values are view-relative paths under icons/npcs/
+       (the NPC finder's render pool, so both features share one PNG). Filled
+       by fdFaceIconsData; empty on a rig that never renders faces. */
+    faceIcons: {},
     /* file name -> { z, x, y }: the DISPLAY crop for one portrait FILE, pushed
        by C++ as `fdCrops` on the same rail as fdPortraits. Keyed by the file and
        never by the follower, so a fresh capture (which always lands under a new
@@ -897,32 +903,124 @@
     return isIdentityCrop(c) ? null : c;
   }
 
-  function cropFor(file) {
-    const f = String(file || '');
-    return f && state.crops[f] ? state.crops[f] : null;
+  /* ONE URL builder for a resolved portrait. A real capture lives under
+     portraits/; a facegen head render (the roster's fallback face) carries
+     `abs: true` with its full view-relative path under icons/npcs/. Every
+     consumer builds its src through here, so the fallback lights up on the
+     roster, the quick card, the crew strip, the shelf and the domains export
+     at once instead of only where someone remembered to handle it. */
+  function portraitSrc(p) {
+    if (!p) return '';
+    if (p.abs) return p.file;
+    return 'portraits/' + (p.file || ((p.slug || '') + '.' + (p.ext || 'png')));
   }
 
-  /* Paint a crop onto the <img> that carries the face. transform-origin is the
-     centre because clampCrop's slack maths assumes a centred scale; translate
-     comes FIRST in the list so its percentages are of the untransformed box and
-     therefore mean exactly "x frame-widths", independent of z. */
+  /* ---- face-fit: auto-frame a facegen head render -----------------------
+     MRF frames the whole 512px canvas, so the head floats small inside big
+     transparent margins. Measure the opaque bounding box ONCE per file (a
+     canvas readback) and synthesize the same {z,x,y} crop shape the hand-made
+     framings use, so applyCropTo needs no second code path. Kept in a SESSION
+     map, not the config store: the portrait crop map is pruned against the
+     portraits/ folder, which would silently drop keys that live under
+     icons/npcs/ — and the fit is deterministic, so recomputing costs one scan
+     per file per session. A hand crop (state.crops) always wins. */
+  const faceFit = {};       // file key -> {z,x,y}
+  let faceFitRepaint = 0;
+
+  /* A creature BODY render (icons/mounts/…) rather than a facegen HEAD
+     (icons/npcs/…). C++ falls a creature companion — a summoned atronach, a
+     beast follower — back to a body silhouette when no head exists. A body
+     must never be face-fitted (no skull to hone in on) and must show WHOLE
+     rather than cover-cropped, so it gets contain-fit and a neutral position
+     wherever a portrait is painted. */
+  function isBodyRender(file) {
+    return String(file || '').indexOf('icons/mounts/') !== -1;
+  }
+
+  /* Show a body render whole: contain-fit, centred, no crop transform. Used
+     wherever a portrait <img> turns out to be a creature body. */
+  function applyBodyFit(img) {
+    if (!img || !img.style) return;
+    img.style.transform = '';
+    img.style.objectFit = 'contain';
+    img.style.objectPosition = '50% 50%';
+  }
+
+  function faceFitEnsure(img, key) {
+    /* Measurement lives in hd-facefit.js (shared with the Finder tiles) —
+       this wrapper only mirrors the result into the session map that cropFor
+       reads, and repaints the surfaces that drew the same file before the
+       measure landed. Standalone harnesses load this pane without the module;
+       the render then simply shows unfitted, which is honest. */
+    if (!img || !key || !window.HDFaceFit) return;
+    if (isBodyRender(key)) { applyBodyFit(img); return; }   // whole silhouette, not a face crop
+    const ready = window.HDFaceFit.cssFor(key);
+    if (ready) {
+      faceFit[key] = ready;
+      window.HDFaceFit.paint(img, key);   // layout crop — never a transform on a tiny raster
+      return;
+    }
+    window.HDFaceFit.ensure(img, key, function (url) {
+      const c = window.HDFaceFit.cssFor(url);
+      if (!c) return;
+      faceFit[url] = c;
+      /* Other rows drawing the same file repaint on one debounced pass —
+         a roster of twenty new faces must not trigger twenty renders. */
+      clearTimeout(faceFitRepaint);
+      faceFitRepaint = setTimeout(function () {
+        if (isActive()) renderList();
+        renderQuickCard();
+      }, 180);
+    });
+  }
+
+  function cropFor(file) {
+    const f = String(file || '');
+    if (!f) return null;
+    return state.crops[f] || faceFit[f] || null;
+  }
+
+  /* Paint a crop onto the <img> that carries the face, through the ONE shared
+     crop->CSS mapping (HDFaceFit.cropCss) so the editor preview and every
+     surface that draws this face agree on the pixels. The medallion's identity
+     baseline is '' — no crop means fall back to the stylesheet's 50% 22% bias,
+     because faces sit high in a screen grab. A deliberate crop forces 50% 50%
+     inside cropCss so the transform is the only thing steering; otherwise the
+     editor and the row would disagree by 28% of the frame. */
+  const MEDAL_IDENTITY_BASELINE = '';   // inherit .medal-face { object-position: 50% 22% }
   function applyCropTo(face, file) {
     if (!face) return face;
-    const c = cropFor(file);
-    if (!c) {
-      face.style.transform = '';
-      face.style.objectPosition = '';
-      return face;
-    }
-    face.style.transformOrigin = '50% 50%';
-    face.style.transform = 'translate(' + (c.x * 100).toFixed(3) + '%,' +
-      (c.y * 100).toFixed(3) + '%) scale(' + c.z.toFixed(4) + ')';
-    /* The uncropped medallion biases the cover-crop upward (object-position
-       50% 22%) because faces sit high in a screen grab. A deliberate crop is
-       the user saying where the face is, so the guess must get out of its way —
-       otherwise the editor and the row would disagree by 28% of the frame. */
-    face.style.objectPosition = '50% 50%';
+    if (isBodyRender(file)) { applyBodyFit(face); return face; }   // whole creature, never cropped
+    paintCrop(face, cropFor(file), MEDAL_IDENTITY_BASELINE);
     return face;
+  }
+
+  /* Local mirror of HDFaceFit.cropCss's application — used ONLY when the shared
+     module is absent (a bare harness). Kept beside applyCropTo so the two can
+     never silently diverge; production always takes the shared path above. */
+  function cropCssLocal(c, baseline) {
+    const base = String(baseline || '');
+    if (!c || !isFinite(c.z) || (c.z === 1 && !c.x && !c.y)) {
+      return { transform: '', transformOrigin: '50% 50%', objectPosition: base };
+    }
+    return {
+      transform: 'translate(' + ((c.x || 0) * 100).toFixed(3) + '%,' +
+        ((c.y || 0) * 100).toFixed(3) + '%) scale(' + c.z.toFixed(4) + ')',
+      transformOrigin: '50% 50%', objectPosition: '50% 50%',
+    };
+  }
+  function applyCropCssLocal(img, c, baseline) {
+    if (!img || !img.style) return;
+    const css = cropCssLocal(c, baseline);
+    img.style.transformOrigin = css.transformOrigin;
+    img.style.transform = css.transform;
+    img.style.objectPosition = css.objectPosition;
+  }
+  /* The single funnel both applyCropTo and the editor preview use, so "the
+     shared module if present, the mirror if not" is decided in one place. */
+  function paintCrop(img, c, baseline) {
+    if (window.HDFaceFit && HDFaceFit.applyCrop) HDFaceFit.applyCrop(img, c, baseline);
+    else applyCropCssLocal(img, c, baseline);
   }
 
   /* "180% · ↑12% ←4%" — the numbers as a human reads them, not as they are
@@ -975,6 +1073,20 @@
     return Math.max(200, Math.round(Math.min(512, w * 0.78, hgt * 0.62)));
   }
 
+  /* The editor frame's px size for a given aspect (frame WIDTH / HEIGHT). The
+     editor MUST match the consumer surface's aspect — a square medallion vs the
+     156x200 character portrait cover-fit a square source PNG differently, so a
+     square editor over a non-square consumer is the "reframe doesn't match the
+     thumbnail" bug. We keep the long edge inside the same budget lbFrameSize
+     picks, then derive the short edge from the aspect. */
+  function lbFrameDims(aspect) {
+    const budget = lbFrameSize();
+    let a = Number(aspect);
+    if (!isFinite(a) || a <= 0) a = 1;   // square: the follower medallion default
+    if (a >= 1) return { w: budget, h: Math.max(120, Math.round(budget / a)) };
+    return { w: Math.max(120, Math.round(budget * a)), h: budget };
+  }
+
   function openLightbox(d, startEditing) {
     closeLightbox();
     if (!d || !d.slug) return;
@@ -982,10 +1094,10 @@
        drawn lands as `<slug>~<n>.png`, so slug + ext no longer rebuilds it. The
        old form stays as the fallback for a dataset written before that change. */
     const file = d.file || (d.slug + '.' + (d.ext || 'png'));
-    const base = 'portraits/' + file;
+    const base = portraitSrc(d.abs ? d : { file: file });
     const img = h('img', {
       class: 'fd-lb-img',
-      src: base + '?v=' + (d.mtime || 0),
+      src: base + (d.abs ? '' : '?v=' + (d.mtime || 0)),
       alt: d.name || '',
       draggable: 'false',
     });
@@ -997,11 +1109,18 @@
       img.src = base;
     });
 
-    const side = lbFrameSize();
+    /* The roster medallion is a circle — square — so the lightbox frame is
+       square here. (lbFrameDims(1) is that square; using it keeps ONE frame
+       sizer for both the follower lightbox and the generic crop editor.) */
+    const dims = lbFrameDims(1);
     const frame = h('div', { class: 'fd-lb-frame' }, img);
-    frame.style.width = side + 'px';
-    frame.style.height = side + 'px';
-    applyCropTo(img, file);
+    frame.style.width = dims.w + 'px';
+    frame.style.height = dims.h + 'px';
+    /* A captured photo gets its saved framing; a head render deliberately
+       does NOT get the face fit here — the lightbox's job is the whole
+       render, and skipping applyCropTo is what keeps cropFor's session fit
+       off this img. */
+    if (!d.abs) applyCropTo(img, file);
 
     const foot = h('div', { class: 'fd-lb-foot' });
 
@@ -1041,6 +1160,15 @@
                   'portraits/player-sheet.png?v=…')
        crop       { z, x, y } seed, or null for original framing
        name       caption under the photo (optional)
+       aspect     the CONSUMER frame's width/height — the editor sizes its own
+                  frame to match, so cover-fit crops the source the SAME way the
+                  surface will (default 1 = square, the follower medallion). The
+                  character portrait is 156x200, so it passes 156/200; without
+                  this the square editor lies about a non-square thumbnail.
+       baseline   the object-position the consumer shows with NO crop (default
+                  '' = inherit the medallion's 50% 22% bias; the character
+                  portrait shows '50% 50%'). The editor uses this at zoom 1 so
+                  reframing an unmoved photo matches the thumbnail exactly.
        onSave(c)  called with the clamped crop, or null for "reset to original".
                   The caller OWNS storage and redraw; this closes on save/cancel.
      }
@@ -1056,10 +1184,10 @@
        close rather than leave a blank frame the user can drag emptily. */
     img.addEventListener('error', function () { closeLightbox(); });
 
-    const side = lbFrameSize();
+    const dims = lbFrameDims(opts.aspect);
     const frame = h('div', { class: 'fd-lb-frame' }, img);
-    frame.style.width = side + 'px';
-    frame.style.height = side + 'px';
+    frame.style.width = dims.w + 'px';
+    frame.style.height = dims.h + 'px';
 
     const foot = h('div', { class: 'fd-lb-foot' });
     lightbox = h('div', {
@@ -1082,6 +1210,11 @@
     const d = {
       _startCrop: opts.crop || null,
       _onCommit: typeof opts.onSave === 'function' ? opts.onSave : function () {},
+      /* baseline threads to lbEdit.baseline so previewCrop shows the consumer's
+         uncropped object-position; aspect is already baked into the frame px
+         above, kept on d for the harness to assert the plumbing. */
+      _baseline: (opts.baseline != null ? String(opts.baseline) : null),
+      _aspect: (isFinite(Number(opts.aspect)) && Number(opts.aspect) > 0) ? Number(opts.aspect) : 1,
       name: opts.name || '',
     };
     const file = '__crop-editor__';
@@ -1093,6 +1226,17 @@
   function renderLbFoot(d, file, img, frame, foot) {
     foot.textContent = '';
     const c = cropFor(file);
+    /* A facegen head render: its framing persists in the SHELF blob
+       (facefitPrefs — the portrait crop store is pruned against portraits/
+       and would drop icons/npcs keys), so the editor is real here. Two
+       controls: ✎ Adjust HER framing (a per-NPC override, beats everything),
+       and the DEFAULT framing dials (hd-facefit.js K/S, every un-overridden
+       render on every tab follows them). The mini tile previews the effective
+       framing live — the in-game twin of facefit.preview.html. */
+    if (d && d.abs) {
+      renderFaceFitFoot(d, file, img, frame, foot);
+      return;
+    }
     foot.append(h('button', {
       class: 'fd-lb-btn', type: 'button',
       title: 'Pan and zoom this photo. Nothing is re-saved to disk — the deck '
@@ -1100,6 +1244,118 @@
       onClick: function (e) { e.stopPropagation(); beginCrop(d, file, img, frame, foot); },
     }, '✎ Adjust this photo'));
     foot.append(h('span', { class: 'fd-lb-val' }, c ? cropPhrase(c) : 'original framing'));
+  }
+
+  /* ---- head-render framing foot (face-fit v3) -------------------------- */
+  function facefitSaveOverride(file, c) {
+    const ff = (typeof facefitPrefs === 'function') ? facefitPrefs() : null;
+    if (ff) {
+      if (c) ff.files[file] = c;
+      else delete ff.files[file];
+    }
+    if (window.HDFaceFit) window.HDFaceFit.setOverride(file, c || null);
+    /* mirror the EFFECTIVE framing into the session map so applyCropTo
+       (medallions, crew strip) agrees with the module immediately */
+    const eff = window.HDFaceFit ? window.HDFaceFit.cssFor(file) : c;
+    if (eff) faceFit[file] = eff; else delete faceFit[file];
+    if (typeof saveSoon === 'function') saveSoon();
+    if (isActive()) renderList();
+    renderQuickCard();
+  }
+
+  function renderFaceFitFoot(d, file, img, frame, foot) {
+    const FF = window.HDFaceFit;
+    /* mini live preview — a 56px roster-shaped tile framed like the rows */
+    const mini = h('span', { class: 'fd-lb-mini' });
+    mini.style.cssText = 'display:inline-block;width:56px;height:56px;border-radius:12px;' +
+      'overflow:hidden;background:#101015;border:1px solid #2c2a24;flex:0 0 auto;';
+    const mimg = h('img', { src: portraitSrc(d), alt: '', draggable: 'false' });
+    mimg.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block;';
+    mini.append(mimg);
+    const paintMini = function () {
+      if (FF) FF.ensure(mimg, file);   // measures once, then layout-paints
+    };
+
+    const adjust = h('button', {
+      class: 'fd-lb-btn', type: 'button',
+      title: 'Pan and zoom HER face. Saved for this render only and remembered ' +
+             'across sessions — it beats the automatic framing everywhere she appears.',
+      onClick: function (e) {
+        e.stopPropagation();
+        d._startCrop = (FF && (FF.overrideFor(file) || FF.cssFor(file))) || cropFor(file) || null;
+        d._onCommit = function (c) { facefitSaveOverride(file, c); };
+        beginCrop(d, file, img, frame, foot);
+      },
+    }, '✎ Adjust her framing');
+
+    /* default dials — ± buttons per the deck's no-range-input law */
+    const dials = h('span', { class: 'fd-lb-val' });
+    dials.style.cssText = 'display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;';
+    const dialBtn = function (label, title, fn) {
+      return h('button', { class: 'fd-lb-btn', type: 'button', title: title,
+        onClick: function (e) { e.stopPropagation(); fn(); } }, label);
+    };
+    const readout = h('b', {});
+    const syncReadout = function () {
+      const p = FF ? FF.params() : { k: 0, s: 0 };
+      readout.textContent = 'K ' + Number(p.k).toFixed(2) + ' · S ' + Number(p.s).toFixed(2);
+    };
+    const bump = function (dk, ds) {
+      if (!FF || typeof facefitPrefs !== 'function') return;
+      const cur = FF.params();
+      const ff = facefitPrefs();
+      ff.k = Math.round(Math.max(0.30, Math.min(0.90, cur.k + dk)) * 100) / 100;
+      ff.s = Math.round(Math.max(0.70, Math.min(1.60, cur.s + ds)) * 100) / 100;
+      FF.tune(ff.k, ff.s);            // clears measured fits; overrides survive
+      if (typeof saveSoon === 'function') saveSoon();
+      /* the pane's session map holds stale computed fits — drop those so
+         cropFor re-mirrors the re-measured framing (overrides stay) */
+      Object.keys(faceFit).forEach(function (k2) {
+        if (!(FF.overrideFor(k2))) delete faceFit[k2];
+      });
+      syncReadout();
+      paintMini();
+      clearTimeout(faceFitRepaint);
+      faceFitRepaint = setTimeout(function () {
+        if (isActive()) renderList();
+        renderQuickCard();
+      }, 220);
+    };
+    dials.append(
+      h('span', {}, 'Default:'),
+      dialBtn('▲', 'Face window higher on the head', function () { bump(-0.02, 0); }),
+      dialBtn('▼', 'Face window lower on the head', function () { bump(+0.02, 0); }),
+      dialBtn('−', 'Tighter on the face', function () { bump(0, -0.05); }),
+      dialBtn('＋', 'More hair around the face', function () { bump(0, +0.05); }),
+      readout,
+      dialBtn('Reset', 'Back to the shipped framing defaults', function () {
+        if (!FF || typeof facefitPrefs !== 'function') return;
+        const d0 = FF.defaults();
+        const ff = facefitPrefs();
+        delete ff.k; delete ff.s;
+        FF.tune(d0.k, d0.s);
+        if (typeof saveSoon === 'function') saveSoon();
+        Object.keys(faceFit).forEach(function (k2) {
+          if (!(FF.overrideFor(k2))) delete faceFit[k2];
+        });
+        syncReadout();
+        paintMini();
+        if (isActive()) renderList();
+        renderQuickCard();
+      }));
+
+    const row = h('div', {});
+    row.style.cssText = 'display:flex;gap:12px;align-items:center;flex-wrap:wrap;';
+    row.append(mini, adjust, dials);
+    foot.append(row);
+    const hint = h('div', { class: 'fd-lb-val' },
+      (FF && FF.overrideFor(file))
+        ? 'her own framing — the dials skip her'
+        : 'auto-framed head render — dials retune every render');
+    hint.style.marginTop = '6px';
+    foot.append(hint);
+    syncReadout();
+    paintMini();
   }
 
   /* ---- the crop editor -------------------------------------------------
@@ -1116,6 +1372,11 @@
        which keeps its exact behaviour. */
     const start = (d && d._startCrop) ? clampCrop(d._startCrop) : cropFor(file);
     lbEdit = { file: file, z: start ? start.z : 1, x: start ? start.x : 0, y: start ? start.y : 0 };
+    /* The target surface's identity object-position — the editor must show the
+       SAME uncropped baseline the consumer shows, or reframing lies at zoom 1.
+       Follower path: absent -> the medallion's '' (stylesheet 50% 22% bias).
+       Character portrait: openCropEditor sets d._baseline = '50% 50%'. */
+    lbEdit.baseline = (d && d._baseline != null) ? d._baseline : MEDAL_IDENTITY_BASELINE;
     /* Everything the keyboard path needs to finish the edit. onKey sees only
        `lbEdit`, and re-deriving these five from the DOM would be a second,
        drift-prone way of naming the same nodes. onCommit rides along so
@@ -1140,15 +1401,14 @@
     lbEdit.z = c ? c.z : 1;
     lbEdit.x = c ? c.x : 0;
     lbEdit.y = c ? c.y : 0;
-    if (c) {
-      img.style.transformOrigin = '50% 50%';
-      img.style.transform = 'translate(' + (c.x * 100).toFixed(3) + '%,' +
-        (c.y * 100).toFixed(3) + '%) scale(' + c.z.toFixed(4) + ')';
-      img.style.objectPosition = '50% 50%';
-    } else {
-      img.style.transform = '';
-      img.style.objectPosition = '';
-    }
+    /* WYSIWYG: preview through the exact same funnel the consumers use, with
+       the SAME identity baseline the target surface shows when uncropped
+       (lbEdit.baseline — '' for the round medallion's 50% 22% bias, '50% 50%'
+       for the character portrait). The editor frame's aspect is matched to the
+       surface in openLightbox/openCropEditor, so identical {z,x,y} => identical
+       picture. Kept off the roster's cropFor path — the editor drives the img
+       directly from lbEdit. */
+    paintCrop(img, c, (lbEdit.baseline != null ? lbEdit.baseline : MEDAL_IDENTITY_BASELINE));
     const val = foot.querySelector('.fd-lb-val');
     if (val) val.textContent = cropPhrase(c);
     const rst = foot.querySelector('.fd-lb-reset');
@@ -1197,9 +1457,15 @@
   function wireCropGestures(d, file, img, frame, foot) {
     let dragging = false, lastX = 0, lastY = 0;
     /* Gain: one pixel of pointer travel moves the photo one pixel, which is the
-       only mapping that feels like dragging a photo. The frame's px size is the
-       divisor because x/y are stored as fractions of it. */
-    const side = frame.offsetWidth || lbFrameSize();
+       only mapping that feels like dragging a photo. x is a fraction of the
+       frame's WIDTH and y a fraction of its HEIGHT, so the divisors are
+       PER-AXIS — for the square follower frame they are equal, but the 156x200
+       character portrait frame would drag vertically twice as fast as
+       horizontally if it used one number for both. offset* first, the lbFrameDims
+       fallback (from lbEdit's aspect) for the harness where layout is 0. */
+    const fbDims = lbFrameDims(lbEdit && lbEdit.ctx && lbEdit.ctx.d && lbEdit.ctx.d._aspect);
+    const fw = frame.offsetWidth || fbDims.w;
+    const fh = frame.offsetHeight || fbDims.h;
 
     frame.addEventListener('mousedown', function (e) {
       if (!lbEdit) return;
@@ -1212,9 +1478,20 @@
        the frame would stop tracking exactly when the gesture gets interesting. */
     const onMove = function (e) {
       if (!dragging || !lbEdit) return;
-      const dx = (e.clientX - lastX) / side;
-      const dy = (e.clientY - lastY) / side;
+      const dx = (e.clientX - lastX) / fw;
+      const dy = (e.clientY - lastY) / fh;
       lastX = e.clientX; lastY = e.clientY;
+      /* At 1x zoom there is no slack to pan into — the live clamp zeroes every
+         move, so the drag felt silently dead (Rober, 2026-08-14: "reframe
+         didn't [move] when I tried to edit my character's face"). Say so once
+         instead of eating the gesture. */
+      if (lbEdit.z <= 1.0001) {
+        lbEdit.panTravel = (lbEdit.panTravel || 0) + Math.abs(dx) + Math.abs(dy);
+        if (lbEdit.panTravel > 0.04 && !lbEdit.panHint) {
+          lbEdit.panHint = true;
+          toast('Zoom in first — mouse wheel or the ＋ button — then drag to reframe');
+        }
+      }
       lbEdit.x += dx; lbEdit.y += dy;
       previewCrop(img, foot);
     };
@@ -2100,6 +2377,153 @@
     return box;
   }
 
+  /* ---- ✨ Effects — the quick-card modal (fx* bridge, 2026-08-14) -------- *
+   *  Rober: "f7 on a npc have a new button (effects) with a modal popout —
+   *  this could be one of the features to remove the skin oil or add it."
+   *  Visual effects OTHER mods implement as ability spells (first tenant:
+   *  Oily Skin — NiOverride gloss), listed by C++'s registry and toggled per
+   *  person. Cache/ask discipline is the bfl idiom exactly: `fxPresent`
+   *  starts UNKNOWN (null) and the ✨ is not drawn until the DLL confirms at
+   *  least one effect's mod is in the load order — an older DLL, or a rig
+   *  with none of the mods, shows nothing rather than a dead control.
+   * ----------------------------------------------------------------------- */
+  let fxPresent = null;               // null = unknown · false = no effect's mod present
+  const fxCache = {};                 // key -> { at, env } (env = fxState payload)
+  let fxAsked = { key: null, at: 0 };
+  const FX_MIN_GAP = 1500;
+  let fxModalCtx = null;              // { formId, who } while the modal is up
+  let fxFilter = '';
+  function fxKey(fid) { return '0x' + ((Number(fid) || 0) >>> 0).toString(16); }
+  function askEffects(fid, force) {
+    if (fxPresent === false || !fid) return;
+    const k = fxKey(fid);
+    const now = Date.now();
+    if (!force && fxAsked.key === k && (now - fxAsked.at) < FX_MIN_GAP) return;
+    fxAsked = { key: k, at: now };
+    toGame('fxGet', JSON.stringify({ formId: (Number(fid) || 0) >>> 0 }));
+  }
+  function fxFor(fid) { const r = fxCache[fxKey(fid)]; return r ? r.env : null; }
+  function fxActiveList(env) {
+    return (env && env.effects || []).filter((e) => e.active);
+  }
+
+  function fxTitle(env, who) {
+    if (!env) return 'Effects — checking ' + who + '…';
+    const on = fxActiveList(env).map((e) => e.label);
+    let s = on.length
+      ? '✨ Effects on ' + who + ': ' + on.join(', ')
+      : '○ No effects on ' + who;
+    return s + '\nClick for the list — apply or remove each one.';
+  }
+
+  function fxQuickBtn(t, who, dead) {
+    if (fxPresent !== true || !t || !t.formId) return null;
+    const env = fxFor(t.formId);
+    if (env && env.anyPresent === false) return null;
+    const lit = fxActiveList(env).length > 0;
+    const open = !!document.getElementById('fd-fx-modal');
+    return quickBtn('✨', 'Effects', dead ? who + ' is dead' : fxTitle(env, who),
+      () => {
+        if (document.getElementById('fd-fx-modal')) { closeFxModal(); return; }  // toggle, like every other reveal
+        openFxModal(t, who);
+        renderQuickCard();   // light the button while the modal is up
+      },
+      { disabled: dead, active: lit, pressed: open });
+  }
+
+  function closeFxModal() {
+    const m = $('fd-fx-modal');
+    if (m) m.remove();
+    fxModalCtx = null;
+    fxFilter = '';
+    if (isActive()) renderQuickCard();   // un-press the ✨
+  }
+
+  /* The popout (fd-modal idiom, off document.body like the HUD modal so the
+     pane's overflow never clips it). Rows re-fill in place whenever a fresh
+     fxState lands, so Apply/Remove flips the row without reopening. */
+  function openFxModal(t, who) {
+    if ($('fd-fx-modal')) { closeFxModal(); return; }
+    fxModalCtx = { formId: (Number(t.formId) || 0) >>> 0, who: who };
+    askEffects(t.formId, true);          // fresh truth under the list
+    const modal = h('div', { id: 'fd-fx-modal', class: 'fd-modal-back',
+      onClick: (e) => { if (e.target && e.target.id === 'fd-fx-modal') closeFxModal(); } });
+    const card = h('div', { class: 'fd-modal' },
+      h('div', { class: 'fd-modal-head' },
+        h('span', { class: 'fd-modal-title' }, '✨ Effects — ' + who),
+        h('button', { class: 'fd-modal-x', type: 'button', title: 'Close',
+          onClick: () => closeFxModal() }, '✕')),
+      h('div', { class: 'fd-modal-sub' },
+        'Looks other mods can put on ' + who + ' — applied and removed through '
+        + 'each mod’s own machinery, so it persists (and cleans up) exactly '
+        + 'as that mod intends.'),
+      h('div', { id: 'fd-fx-modal-body' }));
+    modal.append(card);
+    document.body.appendChild(modal);
+    fillFxModal();
+  }
+
+  function fillFxModal() {
+    const body = $('fd-fx-modal-body');
+    if (!body || !fxModalCtx) return;
+    const env = fxFor(fxModalCtx.formId);
+    body.textContent = '';
+    if (!env) {
+      body.append(h('div', { class: 'fx-empty' }, 'Reading her effects…'));
+      return;
+    }
+    if (env.ok === false) {
+      body.append(h('div', { class: 'fx-empty' }, env.msg || 'Couldn’t read her effects.'));
+      return;
+    }
+    let list = env.effects || [];
+    /* Typeable filter once the registry has real length (the shelf's 8+ rule —
+       one row doesn't need a search bar, a grown list must have one). */
+    if (list.length >= 8) {
+      const inp = h('input', { class: 'fx-filter', type: 'text',
+        placeholder: 'Filter effects…', value: fxFilter,
+        onInput: (e) => { fxFilter = e.target.value; fillFxModal();
+          const again = document.querySelector('#fd-fx-modal .fx-filter');
+          if (again) { again.focus(); again.setSelectionRange(fxFilter.length, fxFilter.length); } } });
+      body.append(inp);
+      const q = fxFilter.trim().toLowerCase();
+      if (q) list = list.filter((e) =>
+        (e.label + ' ' + (e.detail || '')).toLowerCase().indexOf(q) >= 0);
+    }
+    if (!list.length) {
+      body.append(h('div', { class: 'fx-empty' }, fxFilter
+        ? 'Nothing matches “' + fxFilter + '”.'
+        : 'No effects are available on this load order.'));
+      return;
+    }
+    list.forEach((e) => {
+      const row = h('div', { class: 'fx-row' + (e.present ? '' : ' is-missing') },
+        h('span', { class: 'fx-glyph', 'aria-hidden': 'true' }, e.glyph || '✨'),
+        h('span', { class: 'fx-main' },
+          h('span', { class: 'fx-label' }, e.label,
+            h('span', { class: 'fx-chip' + (e.active ? ' on' : '') },
+              e.active ? 'ON' : 'off')),
+          h('span', { class: 'fx-detail' },
+            e.present ? (e.detail || '') : (e.reason || 'not available'))));
+      if (e.present) {
+        row.append(h('button', {
+          class: 'fx-act' + (e.active ? ' danger' : ''), type: 'button',
+          title: e.active
+            ? 'Take ' + e.label.toLowerCase() + ' off ' + (fxModalCtx ? fxModalCtx.who : 'her')
+            + ' — the mod’s own cleanup runs, nothing lingers'
+            : 'Put ' + e.label.toLowerCase() + ' on ' + (fxModalCtx ? fxModalCtx.who : 'her')
+            + ' — exactly as if the mod’s own applicator had done it',
+          onClick: (ev) => {
+            ev.stopPropagation();
+            toGame('fxSet', JSON.stringify({
+              formId: fxModalCtx.formId, id: e.id, on: !e.active }));
+          },
+        }, e.active ? 'Remove' : 'Apply'));
+      }
+      body.append(row);
+    });
+  }
+
   /* ---- SPID Gear — the 📦 on the quick card ----------------------------- *
    *  Container → SPID pipeline (Rober, 2026-08-09): the inbox chest records
    *  whatever you drop as PERMANENT gear for the person in front of you —
@@ -2797,7 +3221,7 @@
     const shot = face ? portraitFor(face) : null;
     return {
       who: whoName,
-      portrait: shot ? ('portraits/' + shot.file) : '',
+      portrait: shot ? portraitSrc(shot) : '',
       formId: fid,
       hex: fid ? hexOf(fid) : '',
       dead: !!dead,
@@ -3437,24 +3861,139 @@
      index (Mesh Rendering Framework 169708 → icons/items/<file>.png). Both
      panes live in the same HotkeyDeck view, so the path resolves and we can
      read WardrobePane's index directly rather than push a second copy. */
-  function wornIconFor(it) {
+  function wornKey(it) {
     if (!it || !it.formId || !it.plugin) return '';
+    return String(it.formId).toUpperCase() + '|' + String(it.plugin).toLowerCase();
+  }
+  function wornIconFor(it) {
+    if (!it) return '';
+    /* PREFER the path the DLL stamped onto this worn piece (C++
+       ItemIcons::IconPathIfRendered, carried on the fdWorn item as `icon`):
+       an ALREADY-rendered piece then paints its picture on the card's FIRST
+       paint, instead of glyph-then-swap after the wdItemIcons index round-trips
+       (Rober, 2026-08-14: "dont have to load every single time (save?)"). The
+       DLL only stamps pieces that already have a PNG on disk, so a not-yet-
+       rendered piece has no `it.icon` and falls through to the wardrobe index —
+       which is empty for it until its LAZY whIcons render lands, at which point
+       upgradeEquippedIconsInPlace mounts it with no flash. */
+    if (it.icon) return it.icon;
+    const key = wornKey(it);
+    if (!key) return '';
     const wp = (typeof window !== 'undefined') ? window.WardrobePane : null;
     const idx = wp && wp._state && wp._state.itemIcons;
     if (!idx) return '';
-    const key = String(it.formId).toUpperCase() + '|' + String(it.plugin).toLowerCase();
     return idx[key] || '';
   }
 
-  /* Rendered gear pictures land ASYNCHRONOUSLY: the fdEquipped reply queues
+  /* Worn-mesh renders are LAZY (Rober, 2026-08-14: F7-on-an-NPC stutter).
+     The `fdEquipped` data fetch used to burst a mesh render for every worn
+     piece the instant the card opened — MRF renders ~0.5-1s each on the render
+     thread, so a fresh NPC's whole kit hitched the frame you pressed F7 on. The
+     eager path (C++ EnsureIconsForWorn) now only registers the worn keys +
+     hands back the index (cheap — it names pieces that already have a PNG); the
+     actual render REQUEST is deferred to when the equipped GRID is on screen and
+     off the open critical path, via `requestWornRenders` below. It routes
+     through the wheel's `whIcons` → EnsureIconsForList, i.e. the SAME paced
+     (Pump 400ms/1s) render-once/persisted (item-icons.json) queue everything
+     else uses, so pieces trickle in instead of bursting and never re-render.
+
+     `wornAsked` dedupes per session so the many renderQuickCard() calls (every
+     fdEquipped/fdTarget reply re-renders the card) don't re-send the same list;
+     a render only fires for a piece with no PNG yet, and only once per key. */
+  const wornAsked = Object.create(null);   // "FORMID|plugin" -> true, requested this session
+  let wornReqTimer = 0;
+  let wornReqBuf = [];                      // items accumulated for the next flush
+  function requestWornRenders(items) {
+    if (!Array.isArray(items) || !items.length) return;
+    items.forEach(function (it) {
+      if (!it || !it.formId || !it.plugin) return;
+      const key = String(it.formId).toUpperCase() + '|' + String(it.plugin).toLowerCase();
+      if (wornAsked[key]) return;            // already asked this session
+      if (wornIconFor(it)) { wornAsked[key] = true; return; }   // already rendered
+      wornAsked[key] = true;
+      wornReqBuf.push({ formId: it.formId, plugin: it.plugin, name: it.name || '' });
+    });
+    if (!wornReqBuf.length) return;
+    /* OFF the F7 frame. buildQuickCard runs synchronously on the press that
+       opens the deck; queuing the render request behind a 0ms timer lets that
+       frame present before C++ starts any MRF work, and coalesces the several
+       renderQuickCard() calls a single open provokes (and any two subjects in
+       the same tick) into one send. The buffer accumulates across calls so a
+       second person's pieces are never stranded by the coalescing guard. */
+    if (wornReqTimer) return;
+    wornReqTimer = setTimeout(function () {
+      wornReqTimer = 0;
+      const want = wornReqBuf; wornReqBuf = [];
+      if (!want.length) return;
+      try { toGame('whIcons', JSON.stringify({ items: want })); } catch (e) {}
+    }, 0);
+  }
+
+  /* Rendered gear pictures land ASYNCHRONOUSLY: `requestWornRenders` queues
      Mesh Rendering Framework renders and each finished batch re-pushes the
      wdItemIcons index. The Wardrobe receiver fires this event only when the
      index actually changed, and renderQuickCard self-guards when no card is
      mounted — so tiles upgrade glyph → picture as renders arrive, and a
      no-change push repaints nothing. */
   document.addEventListener('hd-item-icons', function () {
-    try { renderQuickCard(); } catch (e) { /* card not mounted yet */ }
+    /* Upgrade the equipped tiles IN PLACE instead of rebuilding the whole card.
+       A full renderQuickCard() destroys and recreates every tile's DOM, and in
+       these compositor-off Ultralight views recreating an already-drawn
+       background-image tile forces a re-decode — so the entire equipped grid
+       flashed each time ONE mesh render landed (Rober, 2026-08-14). This is the
+       Finder's upgradeIconsInPlace pattern (npcs-pane.js): touch only the tiles
+       that gained art, and never rebuild a tile already showing its picture. If
+       no equipped grid is on screen (or the mount fails), fall back to the old
+       full repaint so a card that is not yet built still catches up. */
+    try {
+      if (!upgradeEquippedIconsInPlace()) renderQuickCard();
+    } catch (e) {
+      try { renderQuickCard(); } catch (e2) { /* card not mounted yet */ }
+    }
   });
+
+  /* Patch the on-screen equipped tiles to reflect freshly-landed worn-mesh
+     renders WITHOUT rebuilding the card — the anti-flash path (mirrors
+     npcs-pane's upgradeIconsInPlace). For each tile whose render now resolves
+     but which still shows the glyph, replace the glyph with the picture and mark
+     it clickable; a tile already showing its image (or still pending) is left
+     exactly as it is, so Ultralight never re-decodes a tile that is already on
+     screen. Returns true when it found an equipped grid to work on (so the
+     caller knows the in-place path handled it), false when there was none. */
+  function upgradeEquippedIconsInPlace() {
+    if (!quickHost) return false;
+    const grid = quickHost.querySelector('.fq-equip .fq-equip-grid');
+    if (!grid) return false;
+    const tiles = grid.querySelectorAll('.fq-equip-tile[data-wkey]');
+    if (!tiles.length) return false;
+    const wp = (typeof window !== 'undefined') ? window.WardrobePane : null;
+    const idx = (wp && wp._state && wp._state.itemIcons) || null;
+    if (!idx) return true;   // grid exists but no icon index yet — nothing to mount, but we handled it
+    tiles.forEach(function (tile) {
+      const wk = tile.getAttribute('data-wkey');
+      if (!wk) return;
+      const url = idx[wk] || '';
+      if (!url) return;                              // still pending: keep glyph, no flash
+      if (tile.querySelector('.fq-equip-img')) return;   // already has its picture — DO NOT touch it
+      /* Mount the picture over the glyph. Remove the glyph span (it is what the
+         upgrade replaces); keep the count/outfit tags and the hover flyout. */
+      const glyph = tile.querySelector('.fq-equip-glyph');
+      const img = h('span', { class: 'fq-equip-img' });
+      img.style.backgroundImage = 'url("' + url + '")';
+      img.addEventListener('error', function () {});
+      /* Insert the image where the glyph was (first child), then drop the glyph,
+         so tag/flyout ordering is preserved. */
+      if (glyph) tile.insertBefore(img, glyph); else tile.insertBefore(img, tile.firstChild);
+      if (glyph) glyph.parentNode.removeChild(glyph);
+      tile.classList.add('haslb');
+      /* keep the title honest — it now opens the lightbox */
+      const t = tile.getAttribute('title') || '';
+      if (t.indexOf('Click to see it large') === -1) {
+        tile.setAttribute('title', t + '\nClick to see it large — then drag to turn it');
+      }
+    });
+    return true;
+  }
 
   /* ── worn-item lightbox: a drag-to-orbit TURNTABLE ──────────────────────
      Ported from Dragon Roost's proven spin lightbox. Mesh Rendering Framework
@@ -3685,14 +4224,34 @@
         data.dead ? 'Nothing equipped — they are dead.' : 'Nothing equipped.'));
       return box;
     }
+    /* The grid is on screen now, so the meshes are worth rendering — request
+       them LAZILY (deferred off the open frame, paced by the shared queue).
+       This is the only worn-mesh consumer; equippedBlock's list uses glyphs. */
+    requestWornRenders(items);
     const grid = h('div', { class: 'fq-equip-grid' });
     items.forEach(function (it) {
       const url = wornIconFor(it);
+      const wk = wornKey(it);
+      /* data-wkey lets the in-place upgrade pass (upgradeEquippedIconsInPlace)
+         find THIS tile when its mesh render lands, and swap only its glyph for
+         the picture — instead of rebuilding the whole card, which in these
+         compositor-off Ultralight views re-decodes every already-drawn tile and
+         makes the equipped grid flash (2026-08-14). The item itself is captured
+         in the tile's click closure below, so the upgrade pass only needs to
+         patch the glyph→image and toggle .haslb. */
       const tile = h('div', {
         class: 'fq-equip-tile' + (url ? ' haslb' : '') + (it.outfit ? ' outfit' : ''),
         title: it.name + (it.plugin ? '\n' + it.plugin : '')
              + (url ? '\nClick to see it large — then drag to turn it' : ''),
-        onClick: () => { if (url) openWornLightbox(url, it.name, it); },
+        'data-wkey': wk,
+      });
+      /* Clicking a tile opens the worn-mesh lightbox — but ONLY once it has art.
+         Reading the CURRENT url through wornIconFor at click time (not the stale
+         `url` closed over at build) means a tile upgraded in place afterwards is
+         immediately clickable without a rebuild. */
+      tile.addEventListener('click', function () {
+        const u = wornIconFor(it);
+        if (u) openWornLightbox(u, it.name, it);
       });
       if (url) {
         const img = h('span', { class: 'fq-equip-img' });
@@ -4077,6 +4636,27 @@
     return t || '0';
   }
 
+  /* The crosshair target's formId is a NUMBER (fdTarget stores `t.formId >>> 0`),
+     but every face path — the roster's own formIds, the fdFaceIcons request, the
+     fdFaceIconsData cache key, and portraitFor's lookup — speaks a `0x…` HEX
+     string. C++ even parses the request ids base-16 (std::strtoul(...,16)) and
+     echoes them verbatim as the reply's icon keys, so a decimal string would
+     both mis-resolve the NPC and never match the medallion's lookup. This is the
+     one canonical hex form for a numeric/hex target id, used by BOTH the request
+     and the pseudo so they always agree. Returns '' for a missing/0 id. */
+  function fidHexOf(v) {
+    if (v == null || v === '') return '';
+    /* A NUMBER (the common case: state.target.formId) must be rendered in base
+       16 — canonFormId would read its DECIMAL digits as hex. A hex STRING
+       ('0x…' or bare hex) is normalised through canonFormId. */
+    if (typeof v === 'number') {
+      const n = v >>> 0;
+      return n ? '0x' + n.toString(16) : '';
+    }
+    const c = canonFormId(v);
+    return (c && c !== '0') ? '0x' + c : '';
+  }
+
   function portraitFor(m) {
     /* The portrait STORE wins over a live-party row's own file. fdLiveParty's
        file/mtime were resolved by C++ once, at push time — but a re-capture or
@@ -4092,6 +4672,14 @@
     const p = slug ? state.portraits[slug] : null;
     if (p) return { slug: slug, file: p.file, ext: p.ext, mtime: p.mtime };
     if (m && m.file) return { slug: slug || (m.name || ''), file: m.file, ext: m.ext, mtime: m.mtime };
+    /* No captured photo anywhere: fall back to the facegen head render, keyed
+       by formId (the one identity every roster row carries). `abs` routes the
+       URL through portraitSrc; mtime 0 keeps the cache-bust query off a path
+       Ultralight has never seen change. A later real capture outranks this on
+       the next repaint because the store checks run first. */
+    const fk = String((m && m.formId) || '').toLowerCase();
+    const fi = fk ? state.faceIcons[fk] : null;
+    if (fi) return { slug: slug || (m.name || ''), file: fi, ext: 'png', mtime: 0, abs: true };
     return null;
   }
 
@@ -4121,18 +4709,24 @@
        in-game 2026-07-28: the C++ scan found a follower's .jpg and pushed it,
        yet the img errored to initials. So: try the query form first, retry the
        plain path once on error, and only then fall back to the medallion. */
-    const plain = 'portraits/' + p.file;
+    const plain = portraitSrc(p);
     const face = h('img', {
       class: 'medal-face',
-      src: plain + '?v=' + p.mtime,
+      src: plain + (p.abs ? '' : '?v=' + p.mtime),
       alt: '',
       draggable: 'false',
     });
-    applyCropTo(face, p.file);
-
     const wrap = h('span', {
       class: 'medal img' + (m.following ? ' following' : '') + (m.dead ? ' dead' : ''),
     }, face);
+    /* Fit the head render AFTER the face is inside its frame — hd-facefit.js's
+       layout crop positions the image ABSOLUTELY and must be able to force the
+       frame (.medal.img, static + overflow:hidden in CSS) to contain it. Fit a
+       detached img and the absolute layout would escape to the pane and paint
+       huge over the roster (the 2026-08-14 "giant face" bug). A captured photo
+       keeps the transform crop path — it never goes absolute. */
+    if (p.abs) faceFitEnsure(face, p.file);
+    else applyCropTo(face, p.file);
     wrap.style.setProperty('--medal-hue', hue);
     /* Click the face to see it properly. A 40 px circle is unreadable — Rober's
        first words on the captured portrait were "too small to see, can't click
@@ -5565,14 +6159,13 @@
       onClick: (e) => pickCrew(m, e),
     }, p ? null : String(m.name || '?').trim().charAt(0).toUpperCase());
     if (p) {
-      const plain = 'portraits/' + p.file;
+      const plain = portraitSrc(p);
       const face = h('img', {
         class: 'fq-crew-img',
-        src: plain + (p.mtime ? '?v=' + p.mtime : ''),
+        src: plain + (!p.abs && p.mtime ? '?v=' + p.mtime : ''),
         alt: '',
         draggable: 'false',
       });
-      applyCropTo(face, p.file);
       /* Same two-step fallback as medalEl: Ultralight's loader can treat the
          cache-bust query as part of the filename, so retry the plain path
          once; a file that is really gone degrades to the initial letter. */
@@ -5584,6 +6177,11 @@
         btn.textContent = String(m.name || '?').trim().charAt(0).toUpperCase();
       });
       btn.append(face);
+      /* Fit AFTER the face is inside .fq-crew-face (static + overflow:hidden in
+         CSS) — hd-facefit's layout crop goes absolute and must be able to force
+         the button to contain it, or it escapes to the pane. See medalEl. */
+      if (p.abs) faceFitEnsure(face, p.file);
+      else applyCropTo(face, p.file);
     }
     return btn;
   }
@@ -5969,9 +6567,18 @@
     const dead = !!t.dead;
 
     /* Portrait if the deck has one, initials if not — the same medallion the
-       roster draws, so a face means the same thing on both surfaces. */
+       roster draws, so a face means the same thing on both surfaces.
+
+       The pseudo MUST carry the crosshair NPC's runtime formId (from t): that
+       is the identity portraitFor()'s facegen fallback keys on. Without it a
+       looking-at target that is NOT on the FO roster (`known` null) had no
+       formId, so portraitFor found no face render and the medallion stayed
+       blank — even though the Finder and roster render the very same face. The
+       card's own face request (requestFaceIcons) is what fetches/queues it. */
     const known = rosterEntryFor(who);
-    const pseudo = known ? known.m : { name: who, original: who, following: following, dead: dead };
+    const pseudo = known ? known.m
+                         : { name: who, original: who, formId: fidHexOf(t && t.formId),
+                             following: following, dead: dead };
     const medal = medalEl(pseudo, known ? known.cat.index : 0);
     medal.classList.add('fq-medal');
     /* The card's medal is the same element the roster row draws, but the card
@@ -6378,6 +6985,11 @@
          Null until the DLL confirms the mod — nothing renders on a rig
          without it. */
       bflQuickBtn(t, who, dead),
+      /* ✨ Effects (Rober, 2026-08-14): looks other mods can put on her —
+         first tenant: Oily Skin's NiOverride gloss. Gold when any effect is
+         ON; the modal lists each with Apply/Remove. Not drawn until the DLL
+         confirms at least one effect's mod is in the load order. */
+      fxQuickBtn(t, who, dead),
       /* (📦 SPID Gear moved into the GEAR group above — it is a container,
          and it sits with the other containers. 2026-08-11.) */
       /* CHIM (Rober, 2026-08-06): one emoji button opening a flyout — CHIM
@@ -6435,7 +7047,7 @@
             who: who,
             portrait: (function () {
               const shot = portraitFor(pseudo);
-              return shot ? ('portraits/' + shot.file) : '';
+              return shot ? portraitSrc(shot) : '';
             })(),
             formId: fid,
             hex: fid ? hexOf(fid) : '',
@@ -6447,6 +7059,33 @@
           renderQuickCard();
         },
         { active: HDQuests.isOpen(), pressed: HDQuests.isOpen() }) : null,
+      /* 🐴 ADD AS MOUNT (Rober, 2026-08-14: "if i hit f7 on an npc (add as
+         mount) should be a quick button as well in the f7 npc menu"). Fires the
+         Mounts module's OWN add-crosshair verb (MountsPane.addLookingAt →
+         mtAct addLook), which snapshots the crosshair ref at palette open —
+         exactly what the Mounts tab does. NOTHING about mounts is reimplemented
+         here: the module owns the plausibility check (it refuses a corpse, a
+         fully-dynamic ref, a duplicate) and hands the honest {ok,msg} straight
+         back onto THIS card via fqStatus. Only on the crosshair card (subj null)
+         because addLook is about who you are LOOKING at, not a party-strip pick;
+         absent when the Mounts pane didn't load, so a partial deploy shows no
+         dead button. Disabled on a corpse with the reason the verb would give. */
+      (window.MountsPane && typeof MountsPane.addLookingAt === 'function' && !subj)
+        ? quickBtn('🐴', 'Add as mount', dead
+            ? who + ' is dead — not much of a mount'
+            : 'Add ' + who + ' to your Mounts stable (whoever is under your '
+              + 'crosshair). If she is not something you can ride or register, '
+              + 'the stable says why right here.',
+          () => {
+            fqStatus = { msg: 'Adding ' + who + ' to your mounts…', ok: true, pending: true };
+            renderQuickCard();
+            MountsPane.addLookingAt((r) => {
+              fqStatus = { msg: (r && r.msg) || (r && r.ok ? 'Added to your mounts' : 'Could not add'),
+                ok: !r || r.ok !== false, pending: false };
+              if (isActive()) renderQuickCard();
+            });
+          },
+          { disabled: dead }) : null,
       /* 🔍 Debug (Rober, 2026-08-10: "a debug option when pressing f7 on an
          npc could be handy"). The raw engine dossier — teammate flag, every
          faction, follower frameworks, alias holds, the package in force —
@@ -6471,6 +7110,10 @@
     /* Keep her light state current while the card is about her (throttled to
        one ask per 1.5 s per person — same loop-breaking gate as askEquipped). */
     if (bflPresent !== false && t && t.formId && !dead) askFacelight(t.formId);
+
+    /* Same discipline for her effects — the ✨ draws itself the moment the
+       DLL answers, and stays current while the card is hers. */
+    if (fxPresent !== false && t && t.formId && !dead) askEffects(t.formId);
 
     /* Same discipline for her SPID grants — the 📦 draws itself the moment
        the DLL answers, and stays current while the card is hers. */
@@ -7110,7 +7753,7 @@
         const p = portraitFor(known.m);
         if (p) {
           const face = h('span', { class: 'fq-homeinfo-face' });
-          face.style.backgroundImage = 'url("portraits/' + p.file + (p.mtime ? '?v=' + p.mtime : '') + '")';
+          face.style.backgroundImage = 'url("' + portraitSrc(p) + (!p.abs && p.mtime ? '?v=' + p.mtime : '') + '")';
           info.append(face);
         } else {
           info.append(h('span', { class: 'fq-homeinfo-ic' }, '⌂'));
@@ -8215,7 +8858,7 @@
                glyph if it fails to load */
             icon: (function () {
               const p = portraitFor(m);
-              return p ? 'portraits/' + p.file : '';
+              return p ? portraitSrc(p) : '';
             })(),
           });
         });
@@ -8468,7 +9111,7 @@
           const home = (m.fields && typeof m.fields.home === 'string') ? m.fields.home : '';
           const p = portraitFor(m);
           const portraitUrl = p
-            ? 'portraits/' + (p.file || (p.slug + '.' + (p.ext || 'png'))) + '?v=' + (p.mtime || 0)
+            ? portraitSrc(p) + (p.abs ? '' : '?v=' + (p.mtime || 0))
             : null;
           out.push({
             name: String(m.name || ''),
@@ -8536,8 +9179,14 @@
     _closeHudModal: closeHudModal,
     _closeWornLightbox: closeWornLightbox,
     _clampCrop: clampCrop, _cropFor: cropFor, _applyCropTo: applyCropTo,
+    _portraitSrc: portraitSrc, _faceFit: faceFit,
     _cropPhrase: cropPhrase, _CROP_ZSTEP: CROP_ZSTEP, _CROP_PAN_STEP: CROP_PAN_STEP,
     _CROP_ZMAX: CROP_ZMAX, _CROP_MAX_ENTRIES: CROP_MAX_ENTRIES,
+    /* WYSIWYG crop plumbing, for the editor-vs-consumer equality harness. */
+    _lbFrameDims: lbFrameDims, _paintCrop: paintCrop, _cropCssLocal: cropCssLocal,
+    _MEDAL_IDENTITY_BASELINE: MEDAL_IDENTITY_BASELINE,
+    _previewCrop: previewCrop,
+    _lbEdit: function () { return lbEdit; },
     _lbEditing: function () { return !!lbEdit; },
     _canonFormId: canonFormId,
     _iconSrc: iconSrc, _catIconOf: catIconOf, _anyCatIcon: anyCatIcon,
@@ -8618,6 +9267,84 @@
     state.foMissing = (env.ok === false && !state.cats.length)
       ? (env.msg || 'Follower Organizer is not available') : '';
     if (isActive()) render();
+    requestFaceIcons(true);
+  };
+
+  /* ---- facegen head renders as default portraits ------------------------
+     Ask C++ to resolve every roster formId to its face render (existing PNGs
+     answer immediately; missing ones are queued through the NPC finder's
+     render route, render-once-keep-forever). Renders complete asynchronously
+     in-game, so while any were queued the view re-asks on a slow clock —
+     bounded, and only while the tab is up, because a templated NPC has no
+     facegen file and would otherwise be polled forever. */
+  let faceIconsTimer = 0, faceIconsPolls = 0, faceIconsLastAsk = 0;
+  function requestFaceIcons(reset) {
+    if (reset) faceIconsPolls = 0;
+    const now = Date.now();
+    if (reset && now - faceIconsLastAsk < 3000) return;   // fdState bursts (refresh + apply) fold to one ask
+    const ids = {};
+    (state.cats || []).forEach(function (c) {
+      (c.members || []).forEach(function (m) {
+        const k = String(m.formId || '').toLowerCase();
+        if (k && !state.faceIcons[k]) ids[k] = 1;
+      });
+    });
+    (state.liveParty || []).forEach(function (m) {
+      const k = String(m.formId || '').toLowerCase();
+      if (k && !state.faceIcons[k]) ids[k] = 1;
+    });
+    /* The F7 LOOKING-AT card's subject rides along too (folded into the same
+       ask when a roster refresh happens to coincide). Its dedicated trigger is
+       requestTargetFace() below — this covers the case where it is already the
+       target when the roster re-asks. */
+    const tk = fidHexOf(state.target && state.target.formId);
+    if (tk && !state.faceIcons[tk]) ids[tk] = 1;
+    const list = Object.keys(ids);
+    if (!list.length) return;
+    faceIconsLastAsk = now;
+    toGame('fdFaceIcons', JSON.stringify({ ids: list }));
+  }
+
+  /* Fetch (or queue) JUST the crosshair NPC's facegen head. Split out from
+     requestFaceIcons on purpose: that one's 3s reset-debounce exists to fold
+     fdState refresh bursts, but a fresh person under the crosshair is a
+     distinct, intentional event that must NOT be swallowed by a roster refresh
+     that fired moments earlier. It is rarely on the FO roster or in the live
+     party (you look at strangers far more than at followers), so without this
+     its head is never asked for and the quick-card medallion stays blank while
+     the Finder renders the same face fine (2026-08-14 bug). Deduped against the
+     cache so an already-rendered head costs nothing, and reset:true is left to
+     requestFaceIcons callers; here we re-arm the poll so a freshly-queued
+     render is picked up when it lands. The bridge answers with the head PNG (or
+     queued>0 for a not-yet-rendered NPC), routed through fdFaceIconsData. */
+  function requestTargetFace() {
+    const tk = fidHexOf(state.target && state.target.formId);
+    if (!tk || state.faceIcons[tk]) return;
+    faceIconsPolls = 0;                     // re-arm the completion poll for this head
+    faceIconsLastAsk = Date.now();
+    toGame('fdFaceIcons', JSON.stringify({ ids: [tk] }));
+  }
+
+  window.fdFaceIconsData = function (env) {
+    const v = coerce(env);
+    if (!v || typeof v !== 'object') return;
+    let changed = false;
+    const icons = (v.icons && typeof v.icons === 'object') ? v.icons : {};
+    Object.keys(icons).forEach(function (k) {
+      const path = String(icons[k] || '');
+      const key = String(k).toLowerCase();
+      if (path && state.faceIcons[key] !== path) { state.faceIcons[key] = path; changed = true; }
+    });
+    if (changed) {
+      if (isActive()) render();
+      renderQuickCard();
+    }
+    clearTimeout(faceIconsTimer);
+    const queued = Number(v.queued) || 0;
+    if (queued > 0 && faceIconsPolls < 24) {
+      faceIconsPolls++;
+      faceIconsTimer = setTimeout(function () { if (isActive()) requestFaceIcons(false); }, 5000);
+    }
   };
 
   /* Live party — the HUD's own teammate/faction scan (an ARRAY of
@@ -8629,6 +9356,7 @@
     const v = coerce(env);
     state.liveParty = Array.isArray(v) ? v : (v && Array.isArray(v.list) ? v.list : []);
     if (isActive()) render();
+    requestFaceIcons(true);
   };
 
   window.fdTarget = function (t) {
@@ -8710,6 +9438,14 @@
     delete state.equipped[''];
     equippedAsked = { key: null, at: 0 };
     renderQuickCard();
+    /* A new person under the crosshair needs their facegen head fetched (or
+       queued) so the LOOKING-AT medallion fills — the roster/live-party walk in
+       requestFaceIcons never covers a stranger. Only on a genuine target change
+       (nowId !== wasId) so a jittering crosshair on the same NPC doesn't spam
+       the bridge. requestTargetFace dedupes against the cache, so an FO
+       follower you look at costs nothing, and it bypasses the roster-refresh
+       debounce so a stranger's head is never swallowed by a coincident fdState. */
+    if (nowId !== wasId) requestTargetFace();
     if (quickHost && quickHost.isConnected) askEquipped(null);
     if (isActive()) renderAdd();
     /* F7 NPC-focus, the "last-closed tab was Followers" path: there, hdOpen's
@@ -9170,6 +9906,28 @@
     /* A harvest/removal changed the roster — the manager modal (if open)
        re-reads so its list lands on the DLL's truth. */
     if (window.HDSpidGear && HDSpidGear.isOpen()) HDSpidGear.refresh();
+  };
+
+  window.fxState = function (env) {
+    env = coerce(env);
+    if (!env || typeof env !== 'object') return;
+    /* anyPresent=false means NO registered effect's mod is on this load
+       order — the ✨ stays hidden (bfl's present:false discipline). An
+       ok:false (actor unloaded) leaves fxPresent untouched. */
+    if (env.ok !== false) fxPresent = env.anyPresent !== false;
+    if (env.formId || env.formId === 0)
+      fxCache[fxKey(env.formId)] = { at: Date.now(), env: env };
+    if (fxModalCtx && fxModalCtx.formId === ((Number(env.formId) || 0) >>> 0))
+      fillFxModal();
+    renderQuickCard();
+  };
+
+  window.fxResult = function (env) {
+    env = coerce(env);
+    if (!env) return;
+    if (env.msg) toast((env.ok === false ? '⚠ ' : '✨ ') + env.msg);
+    /* The fresh fxState C++ sends right behind this reply repaints the
+       modal's rows; nothing else to do here. */
   };
 
   window.bflState = function (env) {

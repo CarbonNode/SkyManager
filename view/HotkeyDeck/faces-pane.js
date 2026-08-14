@@ -243,6 +243,18 @@ window.FacesPane = (function () {
       title: fullOn ? 'Applying the FULL preset incl. skin overrides — can tint skin. Click for face-only.'
                     : 'Face shape + morphs only (safe). Click to also apply the preset’s skin overrides.',
       onClick: () => { ui.full = !fullOn; render(); } }, fullOn ? '⚠ Full look' : '◇ Face only'));
+    // ✨ Auto-render: every preset with no image gets a face thumbnail — PD
+    // spawns a mannequin, applies the preset, MRF renders it. The batch needs
+    // Papyrus running (LoadCharacterEx), so the palette closes; HUD messages
+    // narrate progress and the gallery is repainted when it finishes.
+    const missingN = names.filter((n) => n.slice(0, 3) !== 'PD_' && !pdIconFor(n)).length;
+    if (pdState && pdState.available && missingN > 0) {
+      modeRow.append(h('button', { class: 'fc-set pd-chip pd-autorender', type: 'button',
+        title: 'Render a face image for every preset that has none. Closes the deck; a mannequin ' +
+               'stands beside you while it runs (~4s per preset). Watch the corner messages.',
+        onClick: () => { toGame('fdPreset', JSON.stringify({ op: 'autorender' })); } },
+        '✨ Render missing (' + missingN + ')'));
+    }
     body.append(modeRow);
 
     // Category filter row: All · ★ Favorites · <each category> · Uncategorized.
@@ -405,8 +417,18 @@ window.FacesPane = (function () {
           title: fav ? 'Un-favourite' : 'Favourite this preset',
           onClick: (e) => { e.stopPropagation(); toggleFav(name); } }, fav ? '★' : '☆'));
         const face = h('div', { class: 'pd-face' });
-        if (icon) face.style.backgroundImage = 'url("preset-icons/' + cssEsc(encodeURIComponent(icon)) + '")';
-        else face.append(h('span', { class: 'pd-initial' }, name.slice(0, 1).toUpperCase()));
+        if (icon && icon.slice(0, 5) === 'auto-' && window.HDFaceFit) {
+          // Auto-rendered mannequin PNG (whole figure, transparent bg) —
+          // face-fit crops to the head, exactly like the Finder tiles.
+          const u = 'preset-icons/' + encodeURIComponent(icon);
+          const im = h('img', { class: 'pd-face-img', src: u, alt: '' });
+          face.append(im);
+          window.HDFaceFit.ensure(im, u);
+        } else if (icon) {
+          face.style.backgroundImage = 'url("preset-icons/' + cssEsc(encodeURIComponent(icon)) + '")';
+        } else {
+          face.append(h('span', { class: 'pd-initial' }, name.slice(0, 1).toUpperCase()));
+        }
         tile.append(face, h('span', { class: 'pd-tile-name', title: name }, name));
         if (ui.mode === 'cat' && mine) tile.append(h('span', { class: 'pd-tile-cat' }, mine));
         grid.append(tile);
@@ -435,7 +457,7 @@ window.FacesPane = (function () {
         strip.append(row);
         if (!(pdState.icons || []).length)
           strip.append(h('div', { class: 'pd-empty' },
-            'No image files yet — take a picture of your character wearing a preset (F12, or the Followers ◉ Portrait on yourself), then drop the PNG into PrismaUI/views/HotkeyDeck/preset-icons/.'));
+            'No image files yet — press “✨ Render missing” above to auto-render every preset’s face, or take a picture of your character wearing a preset (F12, or the Followers ◉ Portrait on yourself) and drop the PNG into PrismaUI/views/HotkeyDeck/preset-icons/.'));
         return;
       }
       // Category picker (Categorize mode) — file the picked preset.

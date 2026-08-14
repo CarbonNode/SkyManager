@@ -237,6 +237,14 @@ body.hb-edit { pointer-events: auto; }
 
 /* ─────────────────────────────────────────────── page pips ───────────── */
 
+/* ⚠ The class's display:flex OVERRIDES the UA's [hidden]{display:none} (author
+   rules beat UA rules regardless of specificity) — same trap the panel/modals
+   already guard against at .hb-panel[hidden] below. Without these two rules the
+   pip strip and the ✥ grip render even when JS sets .hidden, which is exactly
+   what the 2026-08-14 overlap pass caught. */
+.hb-pages[hidden] { display: none; }
+.hb-grip[hidden]  { display: none; }
+
 .hb-pages {
   display: flex;
   gap: 6px;
@@ -328,6 +336,9 @@ body.hb-edit .hb-root {
   outline: 1px dashed var(--gold-line);
   outline-offset: 10px;
 }
+/* "Dashed outline" unticked (Rober, 2026-08-14): the preview IS the play look,
+   so pixel placement can be judged against the scene behind it. */
+body.hb-edit .hb-root.hb-no-outline { outline: none; }
 body.hb-edit .hb-slot { cursor: pointer; }
 body.hb-edit .hb-slot:hover {
   border-color: var(--gold);
@@ -388,6 +399,13 @@ body.hb-edit .hb-slot.is-selected {
   overflow-x: hidden;
   padding: 8px 24px 32px;
 }
+
+/* ── the panel's settings search ──────────────────────────────────────────
+   Sits between the header and the scrolling body, so it never scrolls away.
+   Filter classes hide by class (one sweep to clear), never inline styles. */
+.hb-panel-qrow { padding: 16px 24px 4px; }
+.hb-filtered { display: none !important; }
+.hb-panel-q-empty { padding: 12px 2px; }
 
 .hb-preview-note {
   margin: 14px 0 0;
@@ -896,3 +914,196 @@ body.hb-edit .hb-slot.is-selected {
 /* ── disabled controls look disabled ───────────────────────────────────── */
 .hb-keybtn:disabled { opacity: .4; cursor: not-allowed; }
 .hb-btn:disabled:hover { background: var(--raised); border-color: var(--line); color: var(--text); }
+
+/* ── flyout bundles ────────────────────────────────────────────────────── */
+/* A button that opens a fan of up to 9 actions. Closed: count chip + a
+   direction arrow on the button. Open: full-size tiles stacked perpendicular
+   to the bar (renderFlyPop positions the container), the selected one carrying
+   the dwell bar that fills once and fires. */
+
+.hb-flyn {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  min-width: calc(var(--hb-cell) * .34);
+  height: calc(var(--hb-cell) * .34);
+  padding: 0 3px;
+  border-radius: calc(var(--hb-cell) * .17);
+  background: linear-gradient(160deg, #3a3324, #241f14);
+  border: 1px solid rgba(226, 190, 110, 0.65);
+  color: #f2e0b0;
+  font-size: max(13px, calc(var(--hb-cell) * .21));
+  font-weight: 700;
+  line-height: calc(var(--hb-cell) * .32);
+  text-align: center;
+  z-index: 2;
+}
+.hb-flymark {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: max(10px, calc(var(--hb-cell) * .15));
+  line-height: 1;
+  color: rgba(226, 190, 110, 0.8);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+  z-index: 2;
+}
+.hb-flymark.dir-up    { top: 1px; }
+.hb-flymark.dir-down  { bottom: 1px; }
+.hb-flymark.dir-left  { left: auto; right: 1px; top: 50%; transform: translateY(-50%); }
+.hb-flymark.dir-right { left: 1px; top: 50%; transform: translateY(-50%) }
+
+.hb-slot.is-fly-open {
+  border-color: rgba(240, 208, 130, 0.95);
+  box-shadow:
+    0 0 0 3px rgba(226, 190, 110, 0.16),
+    0 0 22px rgba(226, 190, 110, 0.35);
+}
+/* an empty flyout is a real button, not a dead one — dashed like a socket
+   but with the fan glyph readable */
+.hb-slot.is-fly .hb-glyph { color: #cdb075; }
+
+.hb-fly {
+  position: absolute;
+  display: flex;
+  z-index: 6;
+  animation: hb-fly-in 140ms ease-out;
+}
+@keyframes hb-fly-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+/* perpendicular stacking: vertical fans grow away from the bar, horizontal
+   fans run sideways. Sibling margins, NEVER flex gap (it collapses in-game). */
+.hb-fly.dir-up    { flex-direction: column-reverse; }
+.hb-fly.dir-down  { flex-direction: column; }
+.hb-fly.dir-left  { flex-direction: row-reverse; }
+.hb-fly.dir-right { flex-direction: row; }
+.hb-fly.dir-up    .hb-flych { margin-bottom: 6px; }
+.hb-fly.dir-down  .hb-flych { margin-top: 6px; }
+.hb-fly.dir-left  .hb-flych { margin-right: 6px; }
+.hb-fly.dir-right .hb-flych { margin-left: 6px; }
+
+.hb-flych {
+  position: relative;
+  background: linear-gradient(170deg, #1c1c22 0%, #131318 60%, #0e0e13 100%);
+  border: 1px solid rgba(226, 190, 110, 0.4);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.65);
+  cursor: pointer;
+  /* .hb-slot clips at its border — the fan tile must NOT, or its side label
+     and dwell ring vanish. The art re-rounds its own corners instead. */
+  overflow: visible;
+}
+.hb-flych .hb-art { border-radius: var(--radius-s); }
+.hb-flych.is-sel {
+  border-color: rgba(240, 208, 130, 0.95);
+  box-shadow:
+    0 0 0 3px rgba(226, 190, 110, 0.18),
+    0 0 22px rgba(226, 190, 110, 0.4),
+    0 8px 22px rgba(0, 0, 0, 0.65);
+}
+.hb-flych.is-dead { filter: grayscale(.8); opacity: .55; }
+/* Labels go where the fan has ROOM: a column fan (horizontal bar, pops
+   up/down) has space BESIDE each tile; a row fan (vertical bar, pops
+   sideways) has space BELOW each tile. A label under a column tile would sit
+   on the next tile — the exact overlap Rober's UI rule calls a bug. */
+.hb-flych-nm {
+  position: absolute;
+  max-width: calc(var(--hb-cell) * 2.6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: max(13px, calc(var(--hb-cell) * .2));
+  color: #e4dac0;
+  text-shadow: 0 2px 5px rgba(0, 0, 0, .95);
+  pointer-events: none;
+}
+.hb-fly.dir-up .hb-flych-nm,
+.hb-fly.dir-down .hb-flych-nm {
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+}
+/* bar hugging the right edge: the column fan's labels flip to the free side */
+.hb-fly.lbl-left.dir-up .hb-flych-nm,
+.hb-fly.lbl-left.dir-down .hb-flych-nm {
+  left: auto;
+  right: calc(100% + 10px);
+  text-align: right;
+}
+.hb-fly.dir-left .hb-flych-nm,
+.hb-fly.dir-right .hb-flych-nm {
+  left: 50%;
+  transform: translateX(-50%);
+  top: calc(100% + 4px);
+  /* a ROW of tiles has no room for every name — neighbouring labels ran into
+     each other (seen in the overlap pass) — so only the SELECTED child says
+     its name, which is the one being read mid-cycle anyway */
+  display: none;
+}
+.hb-fly.dir-left .hb-flych.is-sel .hb-flych-nm,
+.hb-fly.dir-right .hb-flych.is-sel .hb-flych-nm { display: block; }
+.hb-fly-cancel .hb-glyph { color: #c98a8a; font-size: calc(var(--hb-cell) * .34); }
+
+/* the dwell bar: fills once over the pause, then the pick fires. One-shot
+   width transition armed by .run — never a looping animation. */
+.hb-fly-dwell {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  bottom: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(226, 190, 110, 0.25);
+  overflow: hidden;
+  pointer-events: none;
+}
+.hb-fly-dwell::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: linear-gradient(90deg, #d8b25e, #f0d082);
+}
+.hb-fly-dwell.run::after { width: 100%; transition: width 880ms linear; }
+
+/* ── flyout editor modal ───────────────────────────────────────────────── */
+.hb-flyed-namerow { margin: 0 0 10px; }
+.hb-flyed-namerow > span { min-width: 70px; }
+.hb-flyed-list { max-height: 44vh; overflow-y: auto; }
+.hb-flyed-row .thumb .hb-glyph { font-size: 26px; }
+.hb-fed-btn { min-width: 44px; }
+
+/* ── buff & cooldown rings ─────────────────────────────────────────────── */
+/* The dark layer grows from the top as time elapses; the bright remainder is
+   what is left. Voice cooldowns (is-cd) sit blue-grey so a recovering shout
+   reads differently from a running buff. Height steps at the live tick. */
+.hb-cool {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 0;
+  background: rgba(8, 8, 12, 0.66);
+  pointer-events: none;
+  z-index: 1;
+}
+.hb-cool.is-cd { background: rgba(20, 28, 44, 0.72); }
+.hb-cool-s {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: max(16px, calc(var(--hb-cell) * .34));
+  font-weight: 800;
+  color: #e8ddc0;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, .95);
+  pointer-events: none;
+  z-index: 2;
+}
+.hb-cool-s.is-fx { color: #f0d082; }
+
+/* ── smart consumable buttons ──────────────────────────────────────────── */
+.hb-smart-g { color: #b7d0b2; }

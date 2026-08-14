@@ -3,6 +3,7 @@
 // pch (force-included) provides RE::/SKSE::, nlohmann json.hpp, logger and
 // Windows.h (via PrismaUI_API.h). SEH (__try) needs no extra include.
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -24,11 +25,17 @@ namespace ItemIcons
 		// An item icon is a 44px row face and at most a card thumbnail; 512 is
 		// already generous (portraits.cpp measured ~6s per 512 render).
 		constexpr std::uint32_t kSize = 512;
+		// NPC face renders only — see Request::px.
+		constexpr std::uint32_t kFaceSize = 1024;
 
 		// Each in-flight mesh costs a full offscreen scene render per frame.
 		// A 41-piece inventory is a background trickle, not a burst.
 		constexpr std::size_t kMaxInFlight = 2;
 		constexpr std::size_t kMaxQueued   = 512;
+		// Idle-tier ceiling (render warm-start). Small on purpose: the warm-start
+		// set is a curated handful (the follower roster + party), not a catalogue,
+		// and it must never eat the user queue's headroom.
+		constexpr std::size_t kMaxIdleQueued = 64;
 
 		// The framework renders nothing while one of ITS OWN four skip-menus is
 		// open (see FrameworkBlocked); past this we free the mesh (an un-drawn
@@ -37,6 +44,27 @@ namespace ItemIcons
 		// leash that ticks while the framework is deliberately idle measures
 		// the player, not the render.
 		constexpr auto kRenderTimeout = std::chrono::seconds(30);
+
+		/* ── render pacing WHILE THE GAME IS LIVE ───────────────────────────
+		 * An MRF render runs on the game's own D3D11 device, so a burst of them
+		 * back-to-back contends with the game drawing the world and reads as a
+		 * multi-second HITCH: Rober hit F7 on an NPC whose 7 worn pieces rendered
+		 * one after another (~0.5 s each) and the game froze for the duration
+		 * (2026-08-14). So while the game is UNPAUSED we put a minimum GAP between
+		 * render STARTS — the renders still happen, just spread out so no single
+		 * frame stalls. While the game is PAUSED (the deck palette pauses it — see
+		 * GameIsPaused) or a framework skip-menu is up there is no world being
+		 * drawn to contend with, so we pace nothing: browsing the Finder with the
+		 * palette open stays full-speed, and only the hitchy case (renders still
+		 * draining after the palette closes, or a HUD-triggered ask) is spread.
+		 *
+		 * User-tier (a page/card the player is looking at) gets the short gap so
+		 * its pictures still arrive promptly; idle-tier (the boot warm-start) gets
+		 * a longer one because nobody is waiting on it. The pump ticks every 700 ms
+		 * (> the user gap), so a live user batch settles to ~one render per pump —
+		 * gentle — while a paused batch starts kMaxInFlight at once as before. */
+		constexpr auto kPaceGapUser = std::chrono::milliseconds(400);
+		constexpr auto kPaceGapIdle = std::chrono::milliseconds(1000);
 
 		/* A safety net for the texture swap, not a diagnosis — the diagnosis lives
 		 * in ApplySwaps, which explains what the framework actually does.
@@ -144,6 +172,17 @@ namespace ItemIcons
 			// non-zero angle spins the mesh and writes the <file>-a045.png
 			// sibling the view's spin lightbox derives and probes.
 			std::uint32_t       angle{ 0 };
+			// Render canvas edge. Items keep kSize (a 44px row face never needs
+			// more); NPC FACES render at kFaceSize because the face-fit zoom
+			// magnifies a WINDOW of the canvas — a 512 render leaves ~40-160px
+			// of actual face and the tiles came out visibly pixelated
+			// (Rober, 2026-08-14). px*px scales render cost; faces are few.
+			std::uint32_t       px{ kSize };
+			// Re-fit the framework's sphere fit to a box fit so small clutter
+			// (potions) fills the frame — see FitClutter. Only the frame-0 ITEM
+			// renders set this; faces/bodies (own downstream framing) and
+			// turntable frames (must match frame 0) leave it false.
+			bool                refit{ false };
 		};
 
 		struct InFlight
@@ -157,6 +196,8 @@ namespace ItemIcons
 			std::string                           nifPath;
 			bool                                  swapped{ false };
 			std::uint32_t                         angle{ 0 };   // turntable frame; 0 = frame 0
+			std::uint32_t                         px{ kSize };  // the canvas this mesh was created at
+			bool                                  refit{ false }; // FitClutter this frame-0 item render
 			std::chrono::steady_clock::time_point armed{};
 			// No node is kept alive here any more: the framework clones the model
 			// synchronously inside the create call (see ApplySwaps), so nothing of
@@ -165,8 +206,51 @@ namespace ItemIcons
 
 		std::mutex                      g_mutex;
 		std::deque<Request>             g_queue;
+		// IDLE tier (render warm-start): proactively-queued renders that must NEVER
+		// delay a user-requested one. Pump() drains g_queue (user work + swap
+		// retries) completely-per-budget first and only pulls from here when g_queue
+		// is empty and the in-flight budget still has room — so a page the player
+		// actually opens always jumps ahead of the warm-start set. Same Request
+		// shape, same in-flight machinery, same render-once dedup; only the ORDER of
+		// starting differs. Capped separately (kMaxIdleQueued) so a warm-start can
+		// never crowd out the user queue's headroom.
+		std::deque<Request>             g_idleQueue;
 		std::vector<InFlight>           g_inFlight;
 		std::unordered_set<std::string> g_asked;   // key -> queued/failed this session
+
+		/* Item-icon keys known to have a render on disk, loaded from the
+		 * persisted item-icons.json at Init and kept current as batches land.
+		 *
+		 * g_asked only remembers what was asked THIS session, so IndexJson() —
+		 * and the item-icons.json it writes — used to FORGET every icon rendered
+		 * in a previous session (or an earlier query this session that has since
+		 * been evicted), even though the PNG is right there on disk. That is the
+		 * "pack/item icons vanish after a few tab switches" bug: the view re-asks,
+		 * C++ answers from g_asked, misses the older keys, and the tile falls back
+		 * to a glyph although the render exists. This set is the durable on-disk
+		 * truth; IndexJson() reports the UNION of it and g_asked (each verified to
+		 * still exist), so a rendered icon is named for good. Faces/bodies keep
+		 * their own '@'-suffixed keys and are never added here. */
+		std::unordered_set<std::string> g_diskIndex;
+
+		/* Face/body render keys ('@face' / '@body' suffixed) known to be on disk,
+		 * loaded from the persisted npc-icons.json at Init and kept current as
+		 * batches land. The exact twin of g_diskIndex, for the NPC Finder.
+		 *
+		 * Root cause of "faces aren't saved — always has to load again"
+		 * (2026-08-14): FaceIndexJson()/BodyIndexJson() iterated g_asked, which
+		 * only remembers what was asked THIS session — so on a fresh launch the
+		 * DLL could not name a single face until the view re-asked for it, even
+		 * though 68 PNGs were sitting in icons/npcs. The generation stamp proved
+		 * the renders were NOT being wiped (it fired once, then matched); the DLL
+		 * simply forgot them. This set is the durable on-disk truth: StateJson()
+		 * can now hand the whole index to the view at nxState so a previously
+		 * rendered face shows on the FIRST paint of a query — no round-trip, no
+		 * shimmer, no re-decode. The filename slug (Slug(plugin)) is lossy, so we
+		 * cannot rebuild a key from a directory walk; the persisted key→file map
+		 * is how the exact plugin identity survives a restart. */
+		std::unordered_set<std::string> g_faceDiskIndex;
+
 		std::atomic<bool>               g_watching{ false };
 		std::size_t                     g_done = 0, g_failed = 0;
 
@@ -187,6 +271,16 @@ namespace ItemIcons
 		// Last time Pump() looked. Used to advance every in-flight job's clock
 		// by exactly the interval the framework spent refusing to draw.
 		std::chrono::steady_clock::time_point g_lastPump{};
+
+		// Last time a render was actually STARTED (a Start() that returned true).
+		// The pacing gate (see kPaceGapUser/kPaceGapIdle) measures against this so
+		// live renders spread out instead of bursting. Main thread only (Pump).
+		std::chrono::steady_clock::time_point g_lastStart{};
+
+		// Once-per-burst pacing log: set true when the gate first HOLDS a start
+		// back this burst so the log line is emitted once, cleared whenever a burst
+		// ends (queues + in-flight all empty) so the next live burst logs afresh.
+		bool g_paceLogged = false;
 
 		// The framework keeps our savePath pointer and reads it a frame later;
 		// a deque never invalidates references to existing elements.
@@ -217,12 +311,12 @@ namespace ItemIcons
 			}
 		}
 
-		void* SafeCreateByNif(const std::string& nifPath)
+		void* SafeCreateByNif(const std::string& nifPath, std::uint32_t px = kSize)
 		{
 			if (!g_createByNif || nifPath.empty())
 				return nullptr;
 			try {
-				return CallCreateByNif(g_createByNif, nifPath.c_str(), kSize, kSize);
+				return CallCreateByNif(g_createByNif, nifPath.c_str(), px, px);
 			} catch (...) {
 				logger::warn("item icons: IMesh_CreateByNifPath threw — skipping '{}'", nifPath);
 				return nullptr;
@@ -269,6 +363,284 @@ namespace ItemIcons
 		std::filesystem::path IconDir()
 		{
 			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "items";
+		}
+
+		/* ── the facegen render GENERATION ──────────────────────────────────
+		 * Faces and creature bodies are baked by MRF's nifly skinning path,
+		 * which the framework's own version + our facegen patch decide; item
+		 * renders are plain model art the posing never touches. Because a
+		 * render is kept forever once it lands, a torn head from an old MRF
+		 * survives every fix until someone deletes the PNG by hand — which is
+		 * exactly what stranded Rober's torn Jenassa/Lydia faces through a v2
+		 * MRF that no longer tears (2026-08-14).
+		 *
+		 * So the facegen caches carry a GENERATION token = the bound MRF DLL's
+		 * identity (size+mtime, the same cheap fingerprint the deploy scripts
+		 * use) plus a manual epoch bumped whenever WE change what a good render
+		 * looks like. Init writes it to icons/npcs/.render-gen; on a mismatch
+		 * it purges icons/npcs and icons/mounts ONCE, so the next in-game ask
+		 * re-bakes every face/body through the current framework. Bump kFaceGenEpoch
+		 * to force a one-time re-bake without an MRF change. */
+		constexpr int kFaceGenEpoch = 2;   // 2026-08-14: MRF facegen convention-aware patch
+
+		/* ── the ITEM render GENERATION ─────────────────────────────────────
+		 * Item renders (icons/items) are model art the facegen posing never
+		 * touches, so they are deliberately LEFT ALONE by the facegen epoch
+		 * above. But they carry their OWN look decisions that a deck change can
+		 * invalidate exactly the same way: the 2026-08-14 clutter framing fix
+		 * (FitClutter) makes small meshes — potions especially — fill the frame
+		 * instead of sitting as a 3%-tall speck (a "Grand Potion of Health"
+		 * rendered into a 19x46px subject inside a 512x512 frame; measured).
+		 * Because a render is kept forever once it lands, those loosely-framed
+		 * PNGs would survive the fix. So icons/items carries the same kind of
+		 * generation stamp, keyed ONLY on a manual epoch (the framing math is
+		 * ours, not the framework's — an MRF change does not invalidate it, and
+		 * folding MRF identity in would needlessly re-bake thousands of item
+		 * icons on every framework bump). Bump this to force a one-time re-bake
+		 * of every item render after a look-affecting change to this file. */
+		constexpr int kItemRenderEpoch = 1;   // 2026-08-14: clutter framing fill fix (FitClutter)
+
+		std::string MrfIdentity()
+		{
+			// size|mtime of the loaded MeshRenderingFramework.dll — enough to
+			// tell one build from another without hashing a 2.4 MB file. A
+			// module we could not locate on disk still yields a stable string
+			// (the epoch alone), so the stamp is never empty.
+			HMODULE mod = GetModuleHandleA("MeshRenderingFramework.dll");
+			if (!mod)
+				mod = GetModuleHandleA("MeshRenderingFramework");
+			if (!mod)
+				return {};
+			char path[MAX_PATH]{};
+			if (!GetModuleFileNameA(mod, path, MAX_PATH))
+				return {};
+			std::error_code ec;
+			const std::filesystem::path p(path);
+			const auto sz = std::filesystem::file_size(p, ec);
+			const auto sizeStr = ec ? std::string("?") : std::to_string(static_cast<std::uint64_t>(sz));
+			std::error_code ec2;
+			const auto wt = std::filesystem::last_write_time(p, ec2);
+			const auto wtStr = ec2 ? std::string("?")
+			                       : std::to_string(static_cast<long long>(wt.time_since_epoch().count()));
+			return sizeStr + "|" + wtStr;
+		}
+
+		// The generation token the facegen caches must match to be kept.
+		std::string FaceGenToken()
+		{
+			return "epoch=" + std::to_string(kFaceGenEpoch) + ";mrf=" + MrfIdentity();
+		}
+
+		// The facegen render dirs, spelled out here so the generation check
+		// (which runs inside Init, before the FaceDir()/BodyDir() helpers in
+		// the later namespace blocks are in scope) needs no forward decls.
+		std::filesystem::path FaceGeomDir()
+		{
+			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "npcs";
+		}
+		std::filesystem::path MountGeomDir()
+		{
+			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "mounts";
+		}
+
+		// The persisted face/body index — WriteNpcIndexFile()'s output, the NPC
+		// Finder's durable on-disk truth. Keys carry their '@face'/'@body' suffix
+		// and are stored verbatim; paths are re-resolved against disk on read.
+		// Spelled out here (before ReconcileFaceGenGeneration, which deletes it on
+		// a generation change) so no forward decl is needed.
+		std::filesystem::path NpcIndexFile()
+		{
+			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "npc-icons.json";
+		}
+
+		void DeletePngsIn(const std::filesystem::path& dir)
+		{
+			std::error_code ec;
+			if (!std::filesystem::exists(dir, ec))
+				return;
+			std::size_t n = 0;
+			for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+				if (!it->is_regular_file(ec))
+					continue;
+				auto ext = it->path().extension().string();
+				for (auto& c : ext)
+					c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+				if (ext != ".png")
+					continue;
+				std::error_code del;
+				std::filesystem::remove(it->path(), del);
+				if (!del)
+					++n;
+			}
+			if (n)
+				logger::info("item icons: purged {} stale render(s) from {}", n, dir.string());
+		}
+
+		/* Compare the on-disk facegen render generation to the current token;
+		 * on a mismatch, purge icons/npcs + icons/mounts once and rewrite the
+		 * stamp. Called from Init AFTER binding (so MrfIdentity can read the
+		 * module) and only when the framework is actually present — with no MRF
+		 * nothing renders faces, so there is nothing to invalidate. The stamp
+		 * lives beside the face renders; a wrong or missing stamp with renders
+		 * present means they are from an unknown/older generation and go. */
+		void ReconcileFaceGenGeneration()
+		{
+			const auto want = FaceGenToken();
+			const auto stamp = FaceGeomDir() / ".render-gen";
+			std::string have;
+			{
+				std::ifstream in(stamp, std::ios::binary);
+				if (in.is_open())
+					std::getline(in, have);
+			}
+			if (have == want)
+				return;   // renders match the live framework — keep them
+
+			DeletePngsIn(FaceGeomDir());
+			DeletePngsIn(MountGeomDir());
+
+			// The PNGs are gone; the persisted face/body index must forget them too,
+			// or the first FaceIndexJson() would name renders that no longer exist.
+			g_faceDiskIndex.clear();
+			std::error_code npcec;
+			std::filesystem::remove(NpcIndexFile(), npcec);
+
+			std::error_code ec;
+			std::filesystem::create_directories(FaceGeomDir(), ec);
+			std::ofstream out(stamp, std::ios::binary | std::ios::trunc);
+			if (out.is_open())
+				out << want << "\n";
+			logger::info("item icons: facegen render generation changed ('{}' -> '{}') - faces and "
+			             "creature bodies will re-render through the current Mesh Rendering Framework",
+				have.empty() ? std::string("<none>") : have, want);
+		}
+
+		// The persisted item-icons.json — WriteIndexFile()'s output, the durable
+		// on-disk truth the portal also reads. Spelled out here (before the
+		// WriteIndexFile helper's own namespace block) so Init can seed g_diskIndex
+		// from it and the generation check can wipe it.
+		std::filesystem::path ItemIndexFile()
+		{
+			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "item-icons.json";
+		}
+
+		// Seed g_diskIndex from the persisted item-icons.json so the very first
+		// IndexJson() of a session names every icon a PRIOR session rendered — not
+		// just the ones re-asked yet. Keys are taken verbatim (already normalised
+		// "HEX|plugin"); the paths in the file are ignored because IndexJson()
+		// re-resolves each key against what is actually on disk (so a since-deleted
+		// or since-swapped file can never be reported stale). Best-effort: a
+		// missing or malformed file just leaves the set empty. g_mutex NOT held —
+		// called from Init before any watcher exists.
+		void LoadDiskIndex()
+		{
+			std::ifstream in(ItemIndexFile(), std::ios::binary);
+			if (!in.is_open())
+				return;
+			auto j = nlohmann::json::parse(in, nullptr, false);
+			if (j.is_discarded() || !j.is_object() || !j.contains("icons") || !j["icons"].is_object())
+				return;
+			std::size_t n = 0;
+			for (auto it = j["icons"].begin(); it != j["icons"].end(); ++it) {
+				const std::string& key = it.key();
+				if (key.find('|') == std::string::npos || key.find('@') != std::string::npos)
+					continue;   // only frame-0 item keys belong here
+				g_diskIndex.insert(key);
+				++n;
+			}
+			if (n)
+				logger::info("item icons: loaded {} known item render(s) from item-icons.json", n);
+		}
+
+		// Seed g_faceDiskIndex from npc-icons.json so the very first FaceIndexJson()
+		// / BodyIndexJson() of a session names every face/body a PRIOR session
+		// rendered — the "faces always reload" fix. Only '@'-suffixed keys belong
+		// here (a plain item key in this file would be a corruption); paths are
+		// ignored (FaceIndexJson re-resolves each key against disk). Best-effort.
+		// g_mutex NOT held — called from Init before any watcher exists.
+		void LoadFaceDiskIndex()
+		{
+			std::ifstream in(NpcIndexFile(), std::ios::binary);
+			if (!in.is_open())
+				return;
+			auto j = nlohmann::json::parse(in, nullptr, false);
+			if (j.is_discarded() || !j.is_object() || !j.contains("icons") || !j["icons"].is_object())
+				return;
+			std::size_t n = 0;
+			for (auto it = j["icons"].begin(); it != j["icons"].end(); ++it) {
+				const std::string& key = it.key();
+				if (key.find('@') == std::string::npos || key.find('|') == std::string::npos)
+					continue;   // only '@face'/'@body' keys belong here
+				g_faceDiskIndex.insert(key);
+				++n;
+			}
+			if (n)
+				logger::info("item icons: loaded {} known face/body render(s) from npc-icons.json", n);
+		}
+
+		/* Item-render generation: purge item icons ONCE after a look-affecting
+		 * change to this file (kItemRenderEpoch). The stamp lives beside the item
+		 * renders (icons/items/.render-gen). Unlike the facegen check this keys on
+		 * the epoch ALONE — item framing is our math, not the framework's, so an
+		 * MRF build change must not needlessly re-bake thousands of item icons.
+		 *
+		 * Only PLAIN-name renders are purged. The old "-s2" swap renders (baked by
+		 * the OLD game-renderer architecture, textures and lighting intact) are the
+		 * best pictures we have for those variants and the new nifly renderer
+		 * cannot reproduce them (its IMesh_SetTextureSet is skin/facetint-only —
+		 * proven from MRF source, so swaps stay latched off); keeping them means
+		 * the index still prefers them. Everything purged re-bakes lazily on the
+		 * next ask, now through FitClutter. g_diskIndex is cleared to match so a
+		 * purged key is not falsely reported until it re-renders. */
+		void ReconcileItemGeneration()
+		{
+			const auto want  = std::string("item-epoch=") + std::to_string(kItemRenderEpoch);
+			const auto stamp = IconDir() / ".render-gen";
+			std::string have;
+			{
+				std::ifstream in(stamp, std::ios::binary);
+				if (in.is_open())
+					std::getline(in, have);
+			}
+			if (have == want)
+				return;   // generation matches — the index Init loaded is trusted
+
+			// Purge only the plain-name item PNGs; keep every "-s2" swap render.
+			std::error_code ec;
+			std::size_t purged = 0;
+			if (std::filesystem::exists(IconDir(), ec)) {
+				for (std::filesystem::directory_iterator it(IconDir(), ec), end; !ec && it != end; it.increment(ec)) {
+					if (!it->is_regular_file(ec))
+						continue;
+					const auto stem = it->path().stem().string();   // no extension
+					auto ext = it->path().extension().string();
+					for (auto& c : ext)
+						c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+					if (ext != ".png")
+						continue;
+					// Keep swap renders ("-s2") and turntable frames ("-aNNN"):
+					// FitClutter reframes only the plain frame-0 renders, and a
+					// spun frame is re-derived off frame 0 anyway.
+					if (stem.size() >= 3 && stem.compare(stem.size() - 3, 3, "-s2") == 0)
+						continue;
+					if (stem.size() >= 5 && stem[stem.size() - 5] == '-' && stem[stem.size() - 4] == 'a')
+						continue;   // "-a045" etc.
+					std::error_code del;
+					std::filesystem::remove(it->path(), del);
+					if (!del)
+						++purged;
+				}
+			}
+			g_diskIndex.clear();
+			LoadDiskIndex();   // re-seed from whatever survived (the -s2 keys)
+
+			std::filesystem::create_directories(IconDir(), ec);
+			std::ofstream out(stamp, std::ios::binary | std::ios::trunc);
+			if (out.is_open())
+				out << want << "\n";
+			logger::info("item icons: item render generation changed ('{}' -> '{}') - purged {} plain "
+			             "render(s); items re-render through the clutter-fill framing on next ask",
+				have.empty() ? std::string("<none>") : have, want, purged);
 		}
 
 		// The portal's normalisation, exactly: UPPERCASE hex, lowercase plugin.
@@ -417,6 +789,103 @@ namespace ItemIcons
 										 r[row * 3 + 2] * m[2 * 3 + col];
 			for (int i = 0; i < 9; ++i)
 				m[i] = out[i];
+		}
+
+		/* ── clutter framing: fill the frame like the old gear renders did ──
+		 *
+		 * The new-architecture (nifly) MRF fits the mesh's bounding SPHERE to the
+		 * frame: Mesh::Fit sets mesh->scale = fittedRadius / boundingRadius, where
+		 * boundingRadius is the max distance of ANY vertex from the model centre.
+		 * That fills the frame for a compact object (an armour piece renders at
+		 * ~98% of the canvas — measured), but for a mesh with one far-flung shape
+		 * — a potion's transparent glass envelope, an off-origin sub-mesh — the
+		 * sphere balloons while the VISIBLE geometry stays small, and the icon
+		 * comes out a speck: a "Grand Potion of Health" measured at a 19x46 px
+		 * subject dead-centre in a 512x512 frame (3.7% x 9% fill), versus the old
+		 * game-renderer gear icons Rober remembers filling the tile.
+		 *
+		 * We cannot see which vertices are transparent from here, but the ABI hands
+		 * us the axis-aligned box (boundMin/boundMax) MRF already computed over the
+		 * real geometry, in the SAME centred model space the sphere fit used. The
+		 * fixed camera maps model-X to a +/-130 unit half-span and model-Z (Skyrim
+		 * is Z-up; the camera looks down -Y) to +/-130/aspect, at a subject plane
+		 * 820 units from the eye; model-Y is DEPTH and never touches the on-screen
+		 * footprint. So the largest scale that fits the box's on-screen extent is a
+		 * pure request-side number — write it into abi->scale exactly as ApplySpin
+		 * writes abi->rotation.
+		 *
+		 * This box-fit is SAFE in every case and STRICTLY BETTER in the common one:
+		 *   - it can NEVER clip. scale = min(fillX, fillZ), so whichever screen axis
+		 *     needs the smaller scale lands exactly at kFillTarget (< 1) and the
+		 *     other stays under it — the whole box is inside the canvas.
+		 *   - it does NOT harm compact armour, which fills the frame today (~98%):
+		 *     its box-fit lands at kFillTarget, a hair off the very edge, still a
+		 *     full tile, never clipped (measured armour: 98.6% x 98%).
+		 *   - it RECOVERS clutter whose fit was inflated ALONG DEPTH (model-Y): the
+		 *     bounding SPHERE the framework fit is sqrt(x^2+y^2+z^2), so a shape
+		 *     offset in Y (a common potion EditorMarker / attach node) balloons the
+		 *     sphere — shrinking everything — while the X/Z box stays the visible
+		 *     bottle. Fitting X/Z instead of the sphere gives the bottle the frame.
+		 *
+		 * It is NEVER worse than today: the box fits inside the sphere, so fitting
+		 * the box needs an equal-or-larger scale (boxScale >= sphereScale always) —
+		 * clutter can only grow or stay, never shrink. HONEST LIMIT: if the
+		 * inflation is along a SCREEN axis (model-X or -Z) it is in the box too, so
+		 * box-fit recovers less than the depth case (though still >= the sphere).
+		 * Fully fixing that is an MRF-side change — the bounds loop should ignore
+		 * fully-transparent / marker shapes — and belongs in Mesh::Fit, not here.
+		 * The diagnostic log prints the box and both scales so the first play-test
+		 * says which case each item is; where box-fit is not enough, the MRF bounds
+		 * fix is the follow-up.
+		 *
+		 * FACES and creature BODIES are deliberately EXEMPT: their framing is owned
+		 * downstream (hd-facefit's layout crop) and their bounds include hair/limbs
+		 * that a box-fit would mis-frame — only item renders (px == kSize, angle 0)
+		 * are re-fit. Turntable frames (angle != 0) are left to the same scale the
+		 * framework chose so a spun frame matches frame 0. */
+		void FitClutter(IMeshAbi* abi, const std::string& label)
+		{
+			if (!abi)
+				return;
+			// The fixed camera, mirrored from RenderManager::RenderLocked. If MRF
+			// ever changes these the worst case is a slightly loose fit, never a
+			// crash or a clip — the target below is unconditional and < 1.
+			constexpr float kHorizHalfSpan = 130.0f;    // model-X maps here
+			constexpr float kFillTarget    = 0.90f;     // fraction of the frame to fill
+			const float aspect = abi->height > 0 ? static_cast<float>(abi->width) /
+			                                       static_cast<float>(abi->height)
+			                                     : 1.0f;
+			const float vertHalfSpan = aspect > 0.0001f ? kHorizHalfSpan / aspect : kHorizHalfSpan;
+
+			// Centred model-space half-extents. Skyrim is Z-up and the camera looks
+			// down -Y, so screen-X <- model-X and screen-Y <- model-Z; model-Y is
+			// depth and does not affect the on-screen footprint.
+			const float halfX = std::fabs(abi->boundMax[0] - abi->boundMin[0]) * 0.5f;
+			const float halfZ = std::fabs(abi->boundMax[2] - abi->boundMin[2]) * 0.5f;
+			if (halfX < 0.0001f && halfZ < 0.0001f)
+				return;   // degenerate box — leave the framework's fit alone
+
+			const float sphereScale = abi->scale;
+
+			// Scale that lands the LIMITING axis at kFillTarget and keeps the other
+			// under it: min over the two per-axis fills. Never clips (target < 1).
+			const float scaleX = halfX > 0.0001f ? (kFillTarget * kHorizHalfSpan) / halfX : 1.0e9f;
+			const float scaleZ = halfZ > 0.0001f ? (kFillTarget * vertHalfSpan) / halfZ : 1.0e9f;
+			const float boxScale = (std::min)(scaleX, scaleZ);
+			if (boxScale <= 0.0f || boxScale >= 1.0e8f)
+				return;   // no usable extent — leave the framework's fit alone
+
+			abi->scale = boxScale;
+			// Log when it meaningfully enlarges the fit (boxScale >= sphereScale
+			// always; a potion jumps many-fold, compact armour barely moves), so a
+			// play-test reveals the real bounds and both scales — the evidence that
+			// says whether a still-small item was inflated along depth (recovered)
+			// or along a screen axis (needs the MRF-side bounds fix).
+			if (boxScale > sphereScale * 1.15f)
+				logger::info("item icons: '{}' box-fit — box[x={:.1f} z={:.1f}] "
+				             "sphereScale={:.4f} -> boxScale={:.4f} ({:.1f}x)",
+					label, halfX * 2.0f, halfZ * 2.0f, sphereScale, boxScale,
+					sphereScale > 0.0001f ? boxScale / sphereScale : 0.0f);
 		}
 
 		/* ── texture-swap machinery, ported from portraits.cpp ─────────────── */
@@ -730,11 +1199,16 @@ namespace ItemIcons
 
 		/* ── the render handshake (portraits.cpp, verbatim in spirit) ──────── */
 
-		bool ProbeLayout(const IMeshAbi* m)
+		bool ProbeLayout(const IMeshAbi* m, std::uint32_t px)
 		{
 			if (!m)
 				return false;
-			if (m->width != kSize || m->height != kSize)
+			// Validated against the size THIS mesh was created at — faces render
+			// at kFaceSize, items at kSize, and hardcoding kSize here killed the
+			// whole pipeline the moment the first 1024px face landed (the probe
+			// "failed", g_abiOk latched false, and neither faces nor items
+			// rendered for the session — Rober, 2026-08-14).
+			if (m->width != px || m->height != px)
 				return false;
 			if (m->saveNextFrame || m->deleteAfterSave || m->alwaysUpdate)
 				return false;
@@ -749,7 +1223,7 @@ namespace ItemIcons
 		bool ArmSave(void* mesh, const InFlight& job)
 		{
 			auto* abi = static_cast<IMeshAbi*>(mesh);
-			if (!ProbeLayout(abi)) {
+			if (!ProbeLayout(abi, job.px)) {
 				logger::error("item icons: IMesh layout probe FAILED — Mesh Rendering Framework "
 							  "changed its struct; item icons are disabled for this session.");
 				g_abiOk = false;
@@ -759,6 +1233,11 @@ namespace ItemIcons
 			// frame's angle before the save is armed. A no-op for angle 0 (the
 			// ordinary icon), so the common path is unchanged.
 			ApplySpin(abi->rotation, job.angle, 'z');
+			// Clutter framing: enlarge the sphere fit to a box fit so a potion
+			// fills the frame instead of sitting as a speck. Frame-0 item renders
+			// only (job.refit); never shrinks and never clips (see FitClutter).
+			if (job.refit && job.angle % 360u == 0)
+				FitClutter(abi, job.label);
 			std::error_code ec;
 			std::filesystem::create_directories(std::filesystem::path(job.outPath).parent_path(), ec);
 			if (ec)
@@ -792,14 +1271,14 @@ namespace ItemIcons
 				} else {
 					auto saved = ApplySwaps(src.get(), r.swaps, r.label);
 					if (!saved.empty()) {
-						mesh    = SafeCreateByNif(r.nifPath);   // clones the model NOW
+						mesh    = SafeCreateByNif(r.nifPath, r.px);   // clones the model NOW
 						swapped = mesh != nullptr;
-						RestoreSwaps(saved, r.label);           // ...and it is wet no longer
+						RestoreSwaps(saved, r.label);                 // ...and it is wet no longer
 					}
 				}
 			}
 			if (!mesh)
-				mesh = SafeCreateByNif(r.nifPath);
+				mesh = SafeCreateByNif(r.nifPath, r.px);
 			if (!mesh) {
 				++g_failed;
 				return false;
@@ -812,6 +1291,8 @@ namespace ItemIcons
 			job.nifPath = r.nifPath;
 			job.swapped = swapped;
 			job.angle   = r.angle;
+			job.px      = r.px;
+			job.refit   = r.refit;
 			job.armed   = std::chrono::steady_clock::now();
 			if (!ArmSave(mesh, job)) {
 				SafeDelete(mesh);
@@ -823,11 +1304,28 @@ namespace ItemIcons
 			return true;
 		}
 
+		// Is the game paused right now? MAIN THREAD ONLY (RE::UI) — Pump is always
+		// called inside an SKSE task, the same place FrameworkBlocked() reads the
+		// menu map. GameIsPaused() is true for the deck palette, inventory, map,
+		// magic and the console — every state where the world is NOT being drawn,
+		// so an MRF render there contends with nothing and needs no pacing.
+		bool GamePaused()
+		{
+			auto* ui = RE::UI::GetSingleton();
+			return ui && ui->GameIsPaused();
+		}
+
 		// Retire finished / stuck renders, then start queued ones. g_mutex held.
 		void Pump()
 		{
 			const auto now     = std::chrono::steady_clock::now();
 			const bool blocked = FrameworkBlocked();
+			// Pace render STARTS only while the game is LIVE (unpaused): a render on
+			// the game's D3D11 device contends with the world draw and hitches. When
+			// the world is not being drawn (paused / a framework skip-menu is up) we
+			// start at full speed — the deck palette pauses the game, so the Finder
+			// stays fast. See kPaceGapUser/kPaceGapIdle.
+			const bool paced = !blocked && !GamePaused();
 
 			// Pause every in-flight leash for exactly the interval the framework
 			// spent refusing to draw. Without this, opening the map for a minute
@@ -851,6 +1349,22 @@ namespace ItemIcons
 				if (done) {
 					++g_done;
 					++g_landed;   // the view is told after the lock is released
+					// Remember this render as on-disk truth so it is named in every
+					// later IndexJson() even after g_asked is a fresh session's set
+					// (the vanishing-icon fix). Frame-0 item keys go to g_diskIndex;
+					// '@face'/'@body' keys go to g_faceDiskIndex so the NPC Finder
+					// names them across sessions too (the "faces reload" fix).
+					// Turntable frames ('@a…'/'@b…') persist nowhere — the view
+					// derives them off frame 0 and probes disk directly.
+					{
+						const auto& lk = g_inFlight[i].key;
+						if (lk.find('@') == std::string::npos)
+							g_diskIndex.insert(lk);
+						else if (lk.size() >= 5 &&
+								 (lk.compare(lk.size() - 5, 5, "@face") == 0 ||
+								  lk.compare(lk.size() - 5, 5, "@body") == 0))
+							g_faceDiskIndex.insert(lk);
+					}
 					if (g_inFlight[i].swapped && !g_swapProven) {
 						g_swapProven  = true;
 						g_swapStrikes = 0;
@@ -893,20 +1407,99 @@ namespace ItemIcons
 				}
 				g_inFlight.erase(g_inFlight.begin() + static_cast<std::ptrdiff_t>(i));
 			}
+			// The pacing gate. `gap` is the minimum wall-clock between render
+			// STARTS for this tier while the game is live; returns whether a start
+			// is allowed RIGHT NOW. When it holds one back it logs the pacing line
+			// once per burst (g_paceLogged), then stays quiet until the burst ends.
+			// When not `paced` (paused / menu-blocked) it always allows — full
+			// speed. The first start of a live burst (g_lastStart in the distant
+			// past, or unset) always passes, so pacing spreads a burst without ever
+			// blocking its opening render.
+			auto paceOk = [&](std::chrono::milliseconds gap) -> bool {
+				if (!paced)
+					return true;
+				if (g_lastStart != std::chrono::steady_clock::time_point{} &&
+					(now - g_lastStart) < gap) {
+					if (!g_paceLogged) {
+						g_paceLogged = true;
+						logger::info("item icons: pacing renders (game unpaused)");
+					}
+					return false;
+				}
+				return true;
+			};
+
 			// Starting a render the framework has already said it will not draw
-			// just burns a mesh; hold the queue until it is willing again.
-			while (!blocked && !g_queue.empty() && g_inFlight.size() < kMaxInFlight) {
+			// just burns a mesh; hold the queue until it is willing again. While the
+			// game is live the USER tier gets the short gap (kPaceGapUser) — its
+			// pictures still arrive promptly, one render per pump, no burst. This
+			// loop is checked BEFORE the idle tier and with the shorter gap, so a
+			// page the player is looking at is never starved behind the warm-start.
+			while (!blocked && !g_queue.empty() && g_inFlight.size() < kMaxInFlight &&
+				paceOk(kPaceGapUser)) {
 				Request r = std::move(g_queue.front());
 				g_queue.pop_front();
-				if (!Start(r))
+				if (Start(r))
+					g_lastStart = now;
+				else
 					g_asked.erase(r.key);
 			}
+			// IDLE tier LAST: only when the user queue is empty and there is still
+			// in-flight room. A user request that arrives later push_back()s onto
+			// g_queue and is taken on the NEXT pump before any of these, so the
+			// warm-start never delays a page the player opened. Live, the idle tier
+			// gets the LONGER gap (kPaceGapIdle) — nobody is waiting on it, so it
+			// spreads even more gently.
+			while (!blocked && g_queue.empty() && !g_idleQueue.empty() && g_inFlight.size() < kMaxInFlight &&
+				paceOk(kPaceGapIdle)) {
+				Request r = std::move(g_idleQueue.front());
+				g_idleQueue.pop_front();
+				if (Start(r))
+					g_lastStart = now;
+				else
+					g_asked.erase(r.key);
+			}
+
+			// Burst boundary: once nothing is queued or in flight, re-arm the
+			// once-per-burst pacing log so the NEXT live burst says so afresh.
+			if (g_queue.empty() && g_idleQueue.empty() && g_inFlight.empty())
+				g_paceLogged = false;
 		}
 
 		// The portal cannot call IndexJson(), so the same map is dropped beside
 		// the other exports whenever a batch lands. Declared here, defined after
 		// IndexJson() (it reuses it).
 		void WriteIndexFile();
+
+		// The NPC Finder's twin: persist the face/body render index (suffixed
+		// keys) so a rendered face survives a restart. Defined near the bottom
+		// (it uses FaceDir()/BodyDir()); declared here so the watcher can call it.
+		void WriteNpcIndexFile();
+
+		// Register one item's key in the durable index IF (and only if) a PNG for
+		// it already exists on disk — WITHOUT queueing a render. g_mutex held.
+		//
+		// This is the cheap half of EnqueueLocked, split out for the eager worn
+		// path (EnsureIconsForWorn): the F7 quick card must name the pieces that
+		// are already rendered so their tiles paint instantly, but must NOT start
+		// an MRF render for the ones that aren't — that render burst on the F7
+		// frame was the stutter (Rober, 2026-08-14). A piece with no PNG is left
+		// completely untouched (not marked g_asked), so the LAZY request the view
+		// sends when the equipped grid is on screen (whIcons → EnsureIconsForList)
+		// can still render it through the shared paced queue.
+		void RegisterExistingLocked(const std::string& fid, const std::string& plugin)
+		{
+			if (fid.empty() || plugin.empty())
+				return;
+			const auto key = KeyOf(fid, plugin);
+			if (g_asked.count(key) || g_diskIndex.count(key))
+				return;   // already named in the index
+			// A retexture variant renders under "-s2"; the swap-less fallback
+			// renders under the plain name. Either on disk means "we have it".
+			if (FileExists((IconDir() / FileFor(fid, plugin, true)).string()) ||
+				FileExists((IconDir() / FileFor(fid, plugin, false)).string()))
+				g_diskIndex.insert(key);
+		}
 
 		// Queue one item if it needs rendering. g_mutex held. Returns true if queued.
 		bool EnqueueLocked(const std::string& fid, const std::string& plugin, const std::string& name)
@@ -949,6 +1542,7 @@ namespace ItemIcons
 			r.nifPath = std::move(look.nif);
 			r.swaps   = wantSwap ? std::move(look.swaps) : std::vector<AltTex>{};
 			r.label   = name.empty() ? key : name;
+			r.refit   = true;   // frame-0 item render: box-fit so clutter fills the frame
 			g_queue.push_back(std::move(r));
 			g_asked.insert(key);
 			return true;
@@ -1012,13 +1606,14 @@ namespace ItemIcons
 						// whole batch (or a reopen) to reveal any of it.
 						if (landed) {
 							WriteIndexFile();
+							WriteNpcIndexFile();   // persist any face/body that just landed
 							if (g_onBatchDone)
 								g_onBatchDone();
 						}
 					});
 					{
 						std::lock_guard l(g_mutex);
-						busy = !g_queue.empty() || !g_inFlight.empty();
+						busy = !g_queue.empty() || !g_idleQueue.empty() || !g_inFlight.empty();
 					}
 					if (!busy)
 						break;
@@ -1026,6 +1621,7 @@ namespace ItemIcons
 				g_watching = false;
 				SKSE::GetTaskInterface()->AddTask([]() {
 					WriteIndexFile();
+					WriteNpcIndexFile();
 					if (g_onBatchDone)
 						g_onBatchDone();
 				});
@@ -1038,6 +1634,13 @@ namespace ItemIcons
 		if (g_resolved)
 			return;
 		g_resolved = true;
+		// Seed the on-disk index unconditionally: icons a PRIOR session rendered
+		// stay valid to SHOW even on a session with no framework to render new
+		// ones, and IndexJson() must name them from the first ask (the vanishing-
+		// icon fix). The generation PURGE below is gated on MRF being present —
+		// purging when nothing can re-bake would just blank the tiles this session.
+		LoadDiskIndex();
+		LoadFaceDiskIndex();   // the NPC Finder's on-disk face/body truth (the "faces reload" fix)
 		auto mod = GetModuleHandleA("MeshRenderingFramework.dll");
 		if (!mod)
 			mod = GetModuleHandleA("MeshRenderingFramework");
@@ -1075,6 +1678,13 @@ namespace ItemIcons
 			logger::info("item icons: new-architecture Mesh Rendering Framework detected — "
 						 "texture swaps off (bare-mesh renders), FaceGen head renders on");
 		}
+		// A new MRF build (or a bumped epoch) invalidates every kept face/body
+		// render — do the one-time purge now, before anything asks for one.
+		ReconcileFaceGenGeneration();
+		// A bumped item epoch (a look-affecting change to this file, e.g. the
+		// 2026-08-14 clutter-fill framing) purges the plain item renders once so
+		// they re-bake framed correctly; the good old "-s2" swap renders survive.
+		ReconcileItemGeneration();
 		logger::info("item icons: Mesh Rendering Framework bound — armour renders at {}px", kSize);
 	}
 
@@ -1110,7 +1720,32 @@ namespace ItemIcons
 		// DLL by these literals, so folding two callers onto one string would
 		// have made the worn path invisible to it.
 		logger::info("item icons: worn set requested");
-		EnsureIconsForList(wornReplyJson);
+
+		// REGISTER-ONLY, deliberately (Rober, 2026-08-14: F7-on-an-NPC stutter).
+		// This runs on the fdEquipped reply — i.e. the instant the quick card
+		// opens — so it must NOT start any MRF renders: bursting a render for a
+		// fresh NPC's whole kit hitched the very frame you pressed F7 on. It only
+		// names the pieces that ALREADY have a PNG (so their tiles paint at once)
+		// and leaves the rest untouched. The actual renders are requested lazily
+		// by the view once the equipped grid is on screen (whIcons →
+		// EnsureIconsForList), through the same paced/deduped queue — so nothing
+		// bursts and nothing renders twice. The index push in OnJsFolEquipped
+		// still hands the view the (now index-complete) map.
+		if (!Ready())
+			return;
+		auto j = nlohmann::json::parse(wornReplyJson, nullptr, false);
+		if (j.is_discarded() || !j.is_object() || !j.contains("items") || !j["items"].is_array())
+			return;
+		{
+			std::lock_guard l(g_mutex);
+			for (const auto& it : j["items"]) {
+				if (!it.is_object())
+					continue;
+				RegisterExistingLocked(it.value("formId", std::string()),
+					it.value("plugin", std::string()));
+			}
+		}
+		WriteIndexFile();
 	}
 
 	void EnsureIconsForList(const std::string& wornReplyJson)
@@ -1159,16 +1794,45 @@ namespace ItemIcons
 			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "npcs";
 		}
 
-		// g_mutex held. Returns true if a render was queued.
-		bool EnqueueFaceLocked(const std::string& fid, const std::string& plugin, const std::string& name)
+		// If `key` is still parked (not yet started) in the IDLE queue, splice it to
+		// the BACK of the USER queue so it renders at user priority. g_mutex held.
+		// Called when a page requests a face the boot warm-start already idle-queued:
+		// without this the render would stay idle-tier and could be DELAYED behind the
+		// warm-start set — the exact priority inversion the two-tier design must not
+		// have. Returns true if it moved one.
+		bool PromoteIdleToUser(const std::string& key)
 		{
-			if (fid.empty() || plugin.empty() || g_queue.size() >= kMaxQueued)
+			for (auto it = g_idleQueue.begin(); it != g_idleQueue.end(); ++it) {
+				if (it->key == key) {
+					g_queue.push_back(std::move(*it));
+					g_idleQueue.erase(it);
+					return true;
+				}
+			}
+			return false;
+		}
+
+		// g_mutex held. Returns true if a NEW render was queued. idle=true parks it on
+		// the idle tier (render warm-start) instead of the user queue — same dedup,
+		// same probe, same file; only WHICH deque and WHICH ceiling differ.
+		bool EnqueueFaceLocked(const std::string& fid, const std::string& plugin, const std::string& name,
+			bool idle = false)
+		{
+			if (fid.empty() || plugin.empty())
+				return false;
+			if ((idle ? g_idleQueue.size() : g_queue.size()) >= (idle ? kMaxIdleQueued : kMaxQueued))
 				return false;
 			// Distinct asked-key namespace: IndexJson skips any key with '@',
 			// and Pump's failure-erase works on this key unchanged.
 			const auto key = KeyOf(fid, plugin) + "@face";
-			if (g_asked.count(key))
+			if (g_asked.count(key)) {
+				// Already asked this session. If a USER request finds it still waiting
+				// on the idle tier (boot warm-start queued it), promote it so the page
+				// the player opened is not stuck behind the warm-start set.
+				if (!idle)
+					PromoteIdleToUser(key);
 				return false;
+			}
 			// The CK's file name: 8 hex digits, lowercase, zero-padded.
 			std::string hex = fid;
 			if (hex.rfind("0x", 0) == 0 || hex.rfind("0X", 0) == 0)
@@ -1202,39 +1866,297 @@ namespace ItemIcons
 			r.key     = key;
 			r.nifPath = rel;      // swaps deliberately empty: the head is self-contained
 			r.label   = name.empty() ? key : name;
+			r.px      = kFaceSize;   // face-fit zooms a WINDOW of this canvas; density is the fix for pixelated tiles
+
+			(idle ? g_idleQueue : g_queue).push_back(std::move(r));
+			g_asked.insert(key);
+			return true;
+		}
+	}
+
+	std::size_t EnsureFaceIcons(const std::string& itemsJson)
+	{
+		if (!Ready())
+			return 0;
+		auto j = nlohmann::json::parse(itemsJson, nullptr, false);
+		if (j.is_discarded() || !j.is_object() || !j.contains("items") || !j["items"].is_array())
+			return 0;
+		std::size_t queued = 0;
+		bool        any    = false;
+		{
+			std::lock_guard l(g_mutex);
+			for (const auto& it : j["items"]) {
+				if (!it.is_object())
+					continue;
+				any = true;
+				if (EnqueueFaceLocked(it.value("formId", std::string()),
+						it.value("plugin", std::string()),
+						it.value("name", std::string())))
+					++queued;
+			}
+			// Pump under the same lock: a user request that only PROMOTED an
+			// already-idle-queued face (queued stays 0, but EnqueueFaceLocked moved
+			// it onto g_queue) must still start now, not wait for the next watcher
+			// tick — otherwise the promotion wouldn't actually beat the warm-start
+			// set to the render slot.
+			if (any)
+				Pump();
+		}
+		if (queued)
+			logger::info("item icons: {} npc face render(s) queued at {}px", queued, kFaceSize);  // marker: face-render-density
+		if (any)
+			StartWatcher();
+		return queued;
+	}
+
+	// Render warm-start (item 3): proactively queue the follower roster's face
+	// renders at IDLE priority so the first minutes after a boot (especially the
+	// first after a generation purge, when everything must re-bake) show real faces
+	// instead of glyphs — WITHOUT the lazy architecture changing. `itemsJson` is the
+	// exact {items:[{formId,plugin,name}]} shape EnsureFaceIcons takes, where
+	// formId/plugin are the FACE OWNER's identity (resolved caller-side by the same
+	// FaceOwnerOf path the fdFaceIcons handler uses). At most `cap` NEW renders are
+	// enqueued this call; the rest are dropped (the roster is small, but a bad caller
+	// can't flood the queue). Dedup is the SAME as every other lane — a face already
+	// on disk, already asked, or with no facegen file costs nothing extra — so this
+	// is safe to call on every boot. Idle-tier: Pump() starts these only when the
+	// user queue is empty, so a page the player opens is never delayed. Returns how
+	// many were actually queued.
+	std::size_t WarmStartFaces(const std::string& itemsJson, std::size_t cap)
+	{
+		if (!Ready() || cap == 0)
+			return 0;
+		auto j = nlohmann::json::parse(itemsJson, nullptr, false);
+		if (j.is_discarded() || !j.is_object() || !j.contains("items") || !j["items"].is_array())
+			return 0;
+		std::size_t queued = 0;
+		{
+			std::lock_guard l(g_mutex);
+			for (const auto& it : j["items"]) {
+				if (queued >= cap)
+					break;
+				if (!it.is_object())
+					continue;
+				if (EnqueueFaceLocked(it.value("formId", std::string()),
+						it.value("plugin", std::string()),
+						it.value("name", std::string()),
+						/*idle=*/true))
+					++queued;
+			}
+		}
+		if (!queued)
+			return 0;   // every roster face was already on disk or has no facegen file
+		logger::info("render warm-start: {} roster faces queued at idle", queued);  // marker: render-warm-start
+		{
+			std::lock_guard l(g_mutex);
+			Pump();   // kicks the idle tier only if the user queue is empty right now
+		}
+		StartWatcher();
+		return queued;
+	}
+
+	/* ── NPC bodies (the Mounts tab's previews) ─────────────────────────────
+	 * The third lane through the same queue: an explicit NIF per item (the
+	 * caller resolved the race-skin ARMA biped model — see mounts.cpp
+	 * BodyNifOf), rendered into icons/mounts/ under the NPC base's identity.
+	 * Everything else — in-flight budget, deferred save, render-once-keep-
+	 * forever, the '@' index skip — is the machinery above, untouched. */
+	namespace
+	{
+		constexpr std::uint32_t kBodySpinStep = 45;   // 8 frames — one BIG image earns it
+
+		std::filesystem::path BodyDir()
+		{
+			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "mounts";
+		}
+
+		// A record's model path is Data\meshes-relative WITHOUT the "meshes\"
+		// prefix; BSResource wants it WITH. Normalise for the probe only — the
+		// framework gets the record's own spelling, the route items proved.
+		std::string ProbePathOf(const std::string& nif)
+		{
+			std::string low = LowerS(nif);
+			for (auto& c : low)
+				if (c == '/')
+					c = '\\';
+			if (low.rfind("meshes\\", 0) == 0)
+				return nif;
+			return "meshes\\" + nif;
+		}
+
+		// g_mutex held. Returns true if a render was queued.
+		bool EnqueueBodyLocked(const std::string& fid, const std::string& plugin,
+			const std::string& name, const std::string& nif)
+		{
+			if (fid.empty() || plugin.empty() || nif.empty() || g_queue.size() >= kMaxQueued)
+				return false;
+			const auto key = KeyOf(fid, plugin) + "@body";
+			if (g_asked.count(key))
+				return false;
+			// Probe through the game's resource stack (loose + BSA, MO2 VFS)
+			// before burning a mesh — a mod can ship a record whose model file
+			// never made it into the archive.
+			RE::BSResourceNiBinaryStream probe(ProbePathOf(nif).c_str());
+			if (!probe.good()) {
+				g_asked.insert(key);
+				logger::warn("item icons: mount body '{}' — model '{}' is not in the load order", name, nif);
+				return false;
+			}
+			const auto out = (BodyDir() / FileFor(fid, plugin, false)).string();
+			if (FileExists(out)) {   // render once, keep forever
+				g_asked.insert(key);
+				return false;
+			}
+			std::error_code ec;
+			std::filesystem::create_directories(BodyDir(), ec);
+			Request r;
+			r.outPath = out;
+			r.key     = key;
+			r.nifPath = nif;      // swaps deliberately empty (new-arch MRF ignores them anyway)
+			r.label   = name.empty() ? key : name;
 			g_queue.push_back(std::move(r));
 			g_asked.insert(key);
 			return true;
 		}
 	}
 
-	void EnsureFaceIcons(const std::string& itemsJson)
+	std::size_t EnsureBodyIcons(const std::string& itemsJson)
 	{
 		if (!Ready())
-			return;
+			return 0;
 		auto j = nlohmann::json::parse(itemsJson, nullptr, false);
 		if (j.is_discarded() || !j.is_object() || !j.contains("items") || !j["items"].is_array())
-			return;
+			return 0;
 		std::size_t queued = 0;
 		{
 			std::lock_guard l(g_mutex);
 			for (const auto& it : j["items"]) {
 				if (!it.is_object())
 					continue;
-				if (EnqueueFaceLocked(it.value("formId", std::string()),
+				if (EnqueueBodyLocked(it.value("formId", std::string()),
 						it.value("plugin", std::string()),
-						it.value("name", std::string())))
+						it.value("name", std::string()),
+						it.value("nif", std::string())))
 					++queued;
 			}
 		}
 		if (!queued)
-			return;
-		logger::info("item icons: {} npc face render(s) queued", queued);
+			return 0;
+		logger::info("item icons: {} mount body render(s) queued", queued);
 		{
 			std::lock_guard l(g_mutex);
 			Pump();
 		}
 		StartWatcher();
+		return queued;
+	}
+
+	std::string BodyIndexJson()
+	{
+		nlohmann::json icons = nlohmann::json::object();
+		std::lock_guard l(g_mutex);
+		static const std::string suffix = "@body";
+		// Union of this-session asks and the persisted on-disk truth, each
+		// verified against disk — so a body rendered in a PRIOR session is named
+		// on the first ask (the "faces/bodies reload" fix). A key present in both
+		// sets is emitted once (icons is keyed by `base`).
+		const auto emit = [&](const std::string& key) {
+			if (key.size() <= suffix.size() ||
+				key.compare(key.size() - suffix.size(), suffix.size(), suffix) != 0)
+				return;
+			const auto base = key.substr(0, key.size() - suffix.size());
+			if (icons.contains(base))
+				return;
+			const auto bar = base.find('|');
+			if (bar == std::string::npos)
+				return;
+			const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
+			if (FileExists((BodyDir() / file).string()))
+				icons[base] = "icons/mounts/" + file;
+		};
+		for (const auto& key : g_asked)
+			emit(key);
+		for (const auto& key : g_faceDiskIndex)
+			emit(key);
+		return nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) } }
+			.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	std::string BodyPathFor(const std::string& fid, const std::string& plugin)
+	{
+		if (fid.empty() || plugin.empty())
+			return {};
+		const auto file = FileFor(fid, plugin, false);
+		if (!FileExists((BodyDir() / file).string()))
+			return {};
+		return "icons/mounts/" + file;
+	}
+
+	std::string NpcIconsJson()
+	{
+		// Fold the two on-disk indexes into one for the Finder's single icon
+		// map. Built by merging their JSON rather than re-walking g_asked so it
+		// never has to hold g_mutex across two lock-taking calls. Faces win the
+		// (impossible) tie: a face render is always the better picture of a
+		// person than a body one, and only a mislabelled record could produce
+		// both keys for the same identity.
+		nlohmann::json icons = nlohmann::json::object();
+		auto merge = [&icons](const std::string& src, bool overwrite) {
+			auto j = nlohmann::json::parse(src, nullptr, false);
+			if (j.is_discarded() || !j.is_object() || !j.contains("icons") || !j["icons"].is_object())
+				return;
+			for (auto it = j["icons"].begin(); it != j["icons"].end(); ++it) {
+				if (overwrite || !icons.contains(it.key()))
+					icons[it.key()] = it.value();
+			}
+		};
+		merge(BodyIndexJson(), true);    // bodies first
+		merge(FaceIndexJson(), true);    // faces overwrite on the impossible key clash
+		return nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) } }
+			.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	void CaptureBodyAngles(const std::string& fid, const std::string& plugin,
+		const std::string& nif)
+	{
+		if (!Ready() || fid.empty() || plugin.empty() || nif.empty())
+			return;
+		const auto  baseFile = FileFor(fid, plugin, false);
+		std::size_t queued   = 0;
+		{
+			std::lock_guard l(g_mutex);
+			for (std::uint32_t angle = kBodySpinStep; angle < 360u; angle += kBodySpinStep) {
+				// Distinct asked-key namespace ("<key>@b045"): never re-derived
+				// per open, and never seen by any frame-0 index ('@' skip).
+				char akeybuf[8]{};
+				std::snprintf(akeybuf, sizeof(akeybuf), "@b%03u", static_cast<unsigned>(angle));
+				const std::string akey = KeyOf(fid, plugin) + akeybuf;
+				if (g_asked.count(akey))
+					continue;
+				const auto out = (BodyDir() / AngleFile(baseFile, angle)).string();
+				if (FileExists(out)) {   // baked already — keep forever
+					g_asked.insert(akey);
+					continue;
+				}
+				if (g_queue.size() >= kMaxQueued)
+					break;
+				Request r;
+				r.outPath = out;
+				r.key     = akey;
+				r.nifPath = nif;
+				r.label   = fid + "|" + plugin + " body @" + std::to_string(angle) + "deg";
+				r.angle   = angle;
+				g_queue.push_back(std::move(r));
+				g_asked.insert(akey);
+				++queued;
+			}
+			if (queued)
+				Pump();
+		}
+		if (queued) {
+			logger::info("item icons: {} mount turntable frame(s) queued for {}|{}", queued, fid, plugin);
+			StartWatcher();
+		}
 	}
 
 	std::string FaceIndexJson()
@@ -1242,20 +2164,43 @@ namespace ItemIcons
 		nlohmann::json icons = nlohmann::json::object();
 		std::lock_guard l(g_mutex);
 		static const std::string suffix = "@face";
-		for (const auto& key : g_asked) {
+		// Union of this-session asks and the persisted on-disk truth, each
+		// verified against disk — so a face rendered in a PRIOR session is named
+		// on the first ask instead of forcing a re-ask/reload (the 2026-08-14
+		// "faces aren't saved" fix). Emitted once per identity.
+		const auto emit = [&](const std::string& key) {
 			if (key.size() <= suffix.size() ||
 				key.compare(key.size() - suffix.size(), suffix.size(), suffix) != 0)
-				continue;
+				return;
 			const auto base = key.substr(0, key.size() - suffix.size());
+			if (icons.contains(base))
+				return;
 			const auto bar = base.find('|');
 			if (bar == std::string::npos)
-				continue;
+				return;
 			const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
 			if (FileExists((FaceDir() / file).string()))
 				icons[base] = "icons/npcs/" + file;
-		}
+		};
+		for (const auto& key : g_asked)
+			emit(key);
+		for (const auto& key : g_faceDiskIndex)
+			emit(key);
 		return nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) } }
 			.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	std::string FacePathFor(const std::string& fid, const std::string& plugin)
+	{
+		// The Followers tab's default-portrait lookup: the render that already
+		// exists answers instantly (view-relative path), anything else is "".
+		// Same FileFor naming as the render queue, so the two can never drift.
+		if (fid.empty() || plugin.empty())
+			return {};
+		const auto file = FileFor(fid, plugin, false);
+		if (!FileExists((FaceDir() / file).string()))
+			return {};
+		return "icons/npcs/" + file;
 	}
 
 	void CaptureAngles(const std::string& fid, const std::string& plugin)
@@ -1323,34 +2268,68 @@ namespace ItemIcons
 	std::string IndexJson()
 	{
 		nlohmann::json icons = nlohmann::json::object();
-		std::error_code ec;
-		// The filename alone cannot be mapped back to a key (slug is lossy), so
-		// the index is rebuilt from what we KNOW plus what is on disk: every key
-		// in g_asked whose file exists, plus nothing else. Keys survive for the
-		// session; across sessions the view re-asks via EnsureIcons anyway.
 		std::lock_guard l(g_mutex);
-		for (const auto& key : g_asked) {
+		// Resolve one item key to its on-disk file (newest wins: the swap-rendered
+		// "-s2" name is preferred whenever it exists, the plain one is the
+		// fallback — which is also what quietly retires the untextured icons).
+		// Returns "" when neither file exists, so a purged/never-rendered key is
+		// simply omitted. Reused for both key sources below.
+		auto resolve = [&](const std::string& key) -> std::string {
 			const auto bar = key.find('|');
 			if (bar == std::string::npos)
-				continue;
-			// Turntable frame keys ("<key>@045") are NOT frame-0 icons: the view
-			// derives and probes their URLs itself off the frame-0 entry, so
-			// they must never appear here (they would map a bogus "plugin@045"
-			// slug to a file that does not exist).
-			if (key.find('@') != std::string::npos)
-				continue;
-			// Newest wins, without needing a form lookup from this thread: the
-			// swap-rendered name is preferred whenever it exists, and the plain
-			// one is the fallback. That is also what quietly retires the
-			// untextured icons — nothing points at them any more.
+				return {};
 			const auto swapped = FileFor(key.substr(0, bar), key.substr(bar + 1), true);
 			const auto plain   = FileFor(key.substr(0, bar), key.substr(bar + 1), false);
 			if (FileExists((IconDir() / swapped).string()))
-				icons[key] = "icons/items/" + swapped;
-			else if (FileExists((IconDir() / plain).string()))
-				icons[key] = "icons/items/" + plain;
+				return "icons/items/" + swapped;
+			if (FileExists((IconDir() / plain).string()))
+				return "icons/items/" + plain;
+			return {};
+		};
+		// The index is the UNION of what was asked this session and what a prior
+		// session left on disk (g_diskIndex), each re-verified to still exist.
+		// g_asked first so a freshly-rendered icon is named the instant it lands;
+		// g_diskIndex fills in every older icon the current session never re-asked
+		// (the vanishing-icon bug). Turntable frame keys ("<key>@045") are NOT
+		// frame-0 icons — the view derives their URLs itself off the frame-0
+		// entry — so any '@' key is skipped.
+		for (const auto& key : g_asked) {
+			if (key.find('@') != std::string::npos || icons.contains(key))
+				continue;
+			const auto rel = resolve(key);
+			if (!rel.empty())
+				icons[key] = rel;
+		}
+		for (const auto& key : g_diskIndex) {
+			if (icons.contains(key))
+				continue;
+			const auto rel = resolve(key);
+			if (!rel.empty())
+				icons[key] = rel;
 		}
 		return nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	std::string IconPathIfRendered(const std::string& fid, const std::string& plugin)
+	{
+		// The single-item twin of IndexJson()'s resolve lambda — same swap-first
+		// order (the "-s2" name wins whenever it exists, plain is the fallback),
+		// so the path stamped into fdWorn can never disagree with the wdItemIcons
+		// map for the same piece. NO queue, NO g_asked mutation: a piece with no
+		// PNG yet returns "" and is left for the view's lazy whIcons request. Two
+		// FileExists() probes; the g_mutex is not needed (FileFor is pure, disk
+		// reads are their own truth), but taking it keeps us consistent with the
+		// other read-only exports and cheap enough on the equipped read path.
+		if (fid.empty() || plugin.empty())
+			return {};
+		std::lock_guard l(g_mutex);
+		const auto swapped = FileFor(fid, plugin, true);
+		const auto plain   = FileFor(fid, plugin, false);
+		if (FileExists((IconDir() / swapped).string()))
+			return "icons/items/" + swapped;
+		if (FileExists((IconDir() / plain).string()))
+			return "icons/items/" + plain;
+		return {};
 	}
 
 	void SetOnBatchDone(std::function<void()> cb)
@@ -1368,6 +2347,49 @@ namespace ItemIcons
 			std::ofstream out(file, std::ios::binary | std::ios::trunc);
 			if (out.is_open())
 				out << IndexJson();
+		}
+
+		/* Persist the face/body render index so a rendered face survives a game
+		 * restart in the DLL's memory (the "faces always reload" fix). Unlike
+		 * item-icons.json this stores the SUFFIXED keys ('...@face'/'...@body')
+		 * verbatim, so LoadFaceDiskIndex round-trips them straight back into
+		 * g_faceDiskIndex. Paths are included for the portal / a human reader but
+		 * are re-resolved against disk on read. Union of the persisted set and
+		 * this session's asks; a since-deleted PNG is dropped. g_mutex NOT held
+		 * on entry — takes it briefly to snapshot the keys. */
+		void WriteNpcIndexFile()
+		{
+			nlohmann::json icons = nlohmann::json::object();
+			{
+				std::lock_guard l(g_mutex);
+				const auto add = [&](const std::string& key) {
+					const bool face = key.size() >= 5 && key.compare(key.size() - 5, 5, "@face") == 0;
+					const bool body = key.size() >= 5 && key.compare(key.size() - 5, 5, "@body") == 0;
+					if (!face && !body)
+						return;
+					if (icons.contains(key))
+						return;
+					const auto base = key.substr(0, key.size() - 5);
+					const auto bar = base.find('|');
+					if (bar == std::string::npos)
+						return;
+					const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
+					const auto dir = face ? FaceDir() : BodyDir();
+					if (FileExists((dir / file).string()))
+						icons[key] = (face ? "icons/npcs/" : "icons/mounts/") + file;
+				};
+				for (const auto& key : g_faceDiskIndex)
+					add(key);
+				for (const auto& key : g_asked)
+					add(key);
+			}
+			const auto path = NpcIndexFile();
+			std::error_code ec;
+			std::filesystem::create_directories(path.parent_path(), ec);
+			std::ofstream out(path, std::ios::binary | std::ios::trunc);
+			if (out.is_open())
+				out << nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) } }
+						.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
 	}
 }

@@ -59,6 +59,12 @@ var HDWheel = (function () {
   var MAX_SLOTS = 16;         // per wheel; more than this and nothing is findable
   var MIN_SLOTS = 2;
   var DEFAULT_SLOTS = 8;
+  /* Flyout bundles (Rober, 2026-08-13: "a wheel section could be set to be a
+     flyout — pops out with a quantifiable amount (3-9?) bundle"). One wedge
+     holds up to 9 ordinary pins; firing the wedge fans them out around it and
+     the click (or 1-9) picks one. Children are plain pins — a flyout can never
+     hold another flyout, because a two-deep radial fan is a maze, not a menu. */
+  var MAX_FLY = 9;
   /* 0.5, not 0.6: the "Corner, minimal" preset asks for 0.55, and a floor above
      it would have slice() clamp the value the preset just wrote — leaving the
      dropdown reading "Custom" immediately after you picked something. Matches
@@ -80,6 +86,8 @@ var HDWheel = (function () {
     pickCat: 'all',
     pickSel: 0,
     menu: null,               // { slot, x, y, armed }
+    fly: null,                // { slot } — an open flyout fan over the ring
+    flyArm: false,            // the flyedit sheet's armed "remove all" state
     rename: null,             // 'wheel' — inline rename target in the settings sheet
     radius: 260,              // computed, post-scale
     center: null,             // { x, y } — where the ring actually sits (anchor)
@@ -284,6 +292,10 @@ var HDWheel = (function () {
        config written before presets existed opens where it always did. */
     if (!ANCHORS[w.anchor]) w.anchor = 'c';
     if (!DIMS[w.dim]) w.dim = 'full';
+    /* How the open key behaves (v0.17). 'toggle' = the old press-open,
+       press-close. 'hold' = hold the key, point, RELEASE fires — the classic
+       console radial rhythm. Absent = toggle, so old configs are unchanged. */
+    if (w.openStyle !== 'hold') w.openStyle = 'toggle';
     /* Key bindings. Absent = the defaults; a key present but empty means the
        shortcut was deliberately turned OFF and must stay off, which is why
        this normalises rather than filling blanks in. */
@@ -312,6 +324,32 @@ var HDWheel = (function () {
 
   function normPin(p) {
     if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+    /* A flyout bundle: `fly` is an array of ordinary pins. Normalised FIRST,
+       because its prov is the sentinel '_fly' and no provider will ever index
+       it — the bundle's identity is its own, not a resolvable pin's. Children
+       go through normPin themselves; a child that is itself a flyout is
+       dropped rather than nested (one level, by design). */
+    if (Array.isArray(p.fly)) {
+      var kids = [];
+      for (var fi = 0; fi < p.fly.length && kids.length < MAX_FLY; fi++) {
+        var fc = p.fly[fi];
+        if (!fc || Array.isArray(fc.fly)) continue;
+        fc = normPin(fc);
+        if (fc) kids.push(fc);
+      }
+      return {
+        prov: '_fly',
+        key: (typeof p.key === 'string' && p.key) ? p.key : newId(),
+        label: String(p.label || ''),
+        detail: '',
+        kind: 'flyout',
+        alias: String(p.alias || ''),
+        icon: safeIcon(p.icon),
+        mode: '',
+        snap: null,
+        fly: kids,
+      };
+    }
     if (typeof p.prov !== 'string' || !p.prov || typeof p.key !== 'string' || !p.key) return null;
     return {
       prov: p.prov, key: p.key,
@@ -337,6 +375,7 @@ var HDWheel = (function () {
   };
   function modeOf(p) { return (p && SPELL_MODES[p.mode]) ? p.mode : ''; }
   function castable(p) { return p && (p.prov === 'spells'); }
+  function isFly(p) { return !!(p && Array.isArray(p.fly)); }
 
   function freshWheel(name) {
     var slots = [];
@@ -362,12 +401,21 @@ var HDWheel = (function () {
     return -1;
   }
 
-  /* Is this omni item on ANY wheel? (the picker's ✓ badge) */
+  /* Is this omni item on ANY wheel? (the picker's ✓ badge). Looks inside
+     flyout bundles too — an item tucked into a fan is still "on a wheel". */
   function onAnyWheel(prov, key) {
     var w = slice();
     if (!w) return false;
-    for (var i = 0; i < w.wheels.length; i++)
-      if (findPin(w.wheels[i], prov, key) >= 0) return true;
+    for (var i = 0; i < w.wheels.length; i++) {
+      var wh = w.wheels[i];
+      if (findPin(wh, prov, key) >= 0) return true;
+      for (var s = 0; s < wh.slots.length; s++) {
+        var p = wh.slots[s];
+        if (!isFly(p)) continue;
+        for (var c = 0; c < p.fly.length; c++)
+          if (p.fly[c] && p.fly[c].prov === prov && p.fly[c].key === key) return true;
+      }
+    }
     return false;
   }
 
@@ -458,6 +506,42 @@ var HDWheel = (function () {
     var wh = cur();
     var p = wh && wh.slots[i];
     if (!p) { openPicker(i); return; }
+    /* A flyout wedge never fires directly — it fans its bundle out around
+       itself and the NEXT pick (click or 1-9) is the real fire. Clicking the
+       open wedge again folds it back up, which is the toggle every flyout in
+       every game does. */
+    if (isFly(p)) {
+      if (ui.fly && ui.fly.slot === i) { closeFly(); return; }
+      if (!p.fly.length) { toast('Nothing in this flyout yet — right-click it to fill it'); openFlyEdit(i); return; }
+      openFly(i);
+      return;
+    }
+    firePinAt(p, i);
+  }
+
+  function openFly(i) {
+    ui.fly = { slot: i };
+    ui.menu = null;
+    ui.lookOpen = false;
+    render();
+  }
+  function closeFly() {
+    if (!ui.fly) return;
+    ui.fly = null;
+    render();
+  }
+  function fireFlyChild(k) {
+    var wh = cur();
+    var p = ui.fly && wh && wh.slots[ui.fly.slot];
+    if (!isFly(p)) { closeFly(); return; }
+    var child = p.fly[k];
+    var at = ui.fly.slot;
+    ui.fly = null;
+    if (!child) { render(); return; }
+    firePinAt(child, at);
+  }
+
+  function firePinAt(p, i) {
     /* A spell wedge set to EQUIP takes its own route: the omni provider's
        run() is hard-wired to cast, and equipping is a different verb with a
        hand argument. Fired from the stored identity (plugin + local id), the
@@ -566,15 +650,18 @@ var HDWheel = (function () {
     var w = slice();
     if (!w) return;
     var items = [], seen = {};
-    w.wheels.forEach(function (wh) {
-      wh.slots.forEach(function (p) {
-        if (!p || p.prov !== 'inventory' || !p.snap) return;
-        var k = String(p.snap.formId || '') + '|' + String(p.snap.plugin || '');
-        if (!p.snap.formId || !p.snap.plugin || seen[k]) return;
-        seen[k] = 1;
-        items.push({ formId: p.snap.formId, plugin: p.snap.plugin, name: p.snap.name || p.label || '' });
-      });
-    });
+    function want(p) {
+      if (!p) return;
+      /* Flyout children are pinned items too — their renders are what the fan
+         shows, so they are part of "only what you pinned" by definition. */
+      if (isFly(p)) { p.fly.forEach(want); return; }
+      if (p.prov !== 'inventory' || !p.snap) return;
+      var k = String(p.snap.formId || '') + '|' + String(p.snap.plugin || '');
+      if (!p.snap.formId || !p.snap.plugin || seen[k]) return;
+      seen[k] = 1;
+      items.push({ formId: p.snap.formId, plugin: p.snap.plugin, name: p.snap.name || p.label || '' });
+    }
+    w.wheels.forEach(function (wh) { wh.slots.forEach(want); });
     if (!items.length) return;
     toGame('whIcons', JSON.stringify({ items: items }));
   }
@@ -841,6 +928,7 @@ var HDWheel = (function () {
     var m = metrics(n, w.size);
     var r = m.r;
     ui.radius = r;
+    ui.eff = m.eff;
     /* the EFFECTIVE scale, not the stored one — see metrics(). The settings
        sheet still shows the user's own number; this is what draws. */
     root.style.setProperty('--whl-scale', String(m.eff));
@@ -884,6 +972,18 @@ var HDWheel = (function () {
         art = '<span class="whl-glyph">＋</span>';
         label = ui.edit ? 'Add…' : '';
         title = 'Empty slot — click to add something';
+      } else if (isFly(p)) {
+        cls += ' fly' + (ui.fly && ui.fly.slot === i ? ' fly-open' : '');
+        /* Face of the bundle: its own chosen icon first, else the first
+           child's art, else the fan glyph. The count chip is always there —
+           a wedge that hides how much it holds reads as one action. */
+        var furl = safeIcon(p.icon) || (p.fly[0] ? artFor(p.fly[0]) : '');
+        art = '<span class="whl-glyph">⧉</span>' +
+          (furl ? '<img class="whl-img" src="' + esc(furl) + '" alt="" draggable="false">' : '') +
+          '<span class="whl-flyn">' + p.fly.length + '</span>';
+        if (furl) cls += ' has-art';
+        label = esc(nameOf(p) || 'Flyout');
+        title = (nameOf(p) || 'Flyout') + ' — flyout, ' + p.fly.length + ' inside. Click to fan it out.';
       } else {
         var r2 = resolve(p);
         var stat = statusOf(p, r2);
@@ -910,6 +1010,8 @@ var HDWheel = (function () {
     }
     host.innerHTML = html;
     armImgFallbacks(host);
+    root.classList.toggle('has-fly', !!ui.fly);
+    renderFly(wh, n, r);
 
     /* the beam sits at the selected slot's angle, just inside the ring */
     var beam = root.querySelector('.whl-beam');
@@ -949,6 +1051,70 @@ var HDWheel = (function () {
     }
   }
 
+  /* The flyout fan: the bundle's pins on a small arc AROUND the open wedge,
+     centred on its outward direction, numbered 1-9. Lives inside .whl-stage so
+     it shares the ring's coordinate space; positions are then shifted as a
+     group if the fan would poke off-screen (a corner-anchored wheel's outward
+     is exactly where the screen ends). */
+  function renderFly(wh, n, r) {
+    var stage = root.querySelector('.whl-stage');
+    var old = stage && stage.querySelector('.whl-fly');
+    if (old) old.parentNode.removeChild(old);
+    if (!ui.fly || !stage) return;
+    var p = wh.slots[ui.fly.slot];
+    if (!isFly(p) || !p.fly.length) { ui.fly = null; root.classList.remove('has-fly'); return; }
+
+    var eff = ui.eff || 1;
+    var pos = slotPos(ui.fly.slot, n, r);
+    var k = p.fly.length;
+    var stepDeg = k <= 3 ? 52 : (k <= 5 ? 46 : (k <= 7 ? 40 : 34));
+    var FR = 128 * eff;
+
+    var offs = [];
+    for (var c = 0; c < k; c++) {
+      var ang = pos.a + ((c - (k - 1) / 2) * stepDeg) * Math.PI / 180;
+      offs.push({ x: pos.x + Math.cos(ang) * FR, y: pos.y + Math.sin(ang) * FR });
+    }
+    /* group clamp: keep every tile (half-box HALF) inside the viewport */
+    var vw = root.clientWidth || window.innerWidth || 1280;
+    var vh = root.clientHeight || window.innerHeight || 720;
+    var cx = ui.center ? ui.center.x : vw / 2;
+    var cy = ui.center ? ui.center.y : vh / 2;
+    var HALF = 46 * eff + 10;
+    var minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+    offs.forEach(function (o) {
+      minX = Math.min(minX, o.x); maxX = Math.max(maxX, o.x);
+      minY = Math.min(minY, o.y); maxY = Math.max(maxY, o.y);
+    });
+    var dx = 0, dy = 0;
+    if (cx + minX - HALF < 0) dx = -(cx + minX - HALF);
+    else if (cx + maxX + HALF > vw) dx = vw - (cx + maxX + HALF);
+    if (cy + minY - HALF < 0) dy = -(cy + minY - HALF);
+    else if (cy + maxY + HALF > vh) dy = vh - (cy + maxY + HALF);
+
+    var box = document.createElement('div');
+    box.className = 'whl-fly';
+    var html = '';
+    for (var j = 0; j < k; j++) {
+      var ch = p.fly[j];
+      var url = ch ? artFor(ch) : '';
+      var nm = ch ? nameOf(ch) : '';
+      html += '<div class="whl-flych' + (url ? ' has-art' : '') + '" data-fk="' + j + '" ' +
+        'title="' + esc(nm + (ch && ch.detail ? ' — ' + ch.detail : '')) + '" ' +
+        'style="transform:translate(' + Math.round(offs[j].x + dx) + 'px,' + Math.round(offs[j].y + dy) + 'px)">' +
+        '<div class="whl-flych-tile">' +
+          '<span class="whl-glyph">' + (ch ? glyphOf(ch) : '＋') + '</span>' +
+          (url ? '<img class="whl-img' + (ch && isFace(ch) ? ' face' : '') + '" src="' + esc(url) + '" alt="" draggable="false">' : '') +
+          '<span class="whl-flych-n">' + (j + 1) + '</span>' +
+        '</div>' +
+        '<div class="whl-flych-name">' + esc(nm) + '</div>' +
+        '</div>';
+    }
+    box.innerHTML = html;
+    stage.appendChild(box);
+    armImgFallbacks(box);
+  }
+
   function renderHub(wh, n) {
     var hub = root.querySelector('.whl-hub');
     var p = ui.sel >= 0 ? wh.slots[ui.sel] : null;
@@ -967,6 +1133,21 @@ var HDWheel = (function () {
         '<div class="whl-hub-title">' + esc(wh.name) + '</div>' +
         '<div class="whl-hub-sub">' + filled + ' of ' + n + ' slots filled</div>' +
         '<div class="whl-hub-sub">' + (filled ? 'Point at one to see it' : 'Nothing here yet — hit ＋ Add') + '</div>';
+      return;
+    }
+    if (isFly(p)) {
+      var fnames = p.fly.map(function (c) { return nameOf(c); }).slice(0, 4).join(' · ');
+      var furl2 = safeIcon(p.icon) || (p.fly[0] ? artFor(p.fly[0]) : '');
+      hub.innerHTML =
+        '<div class="whl-hub-art' + (furl2 ? ' has-art' : '') + '">' +
+          '<span class="whl-hub-glyph">⧉</span>' +
+          (furl2 ? '<img src="' + esc(furl2) + '" alt="">' : '') +
+        '</div>' +
+        '<div class="whl-hub-name">' + esc(nameOf(p) || 'Flyout') + '</div>' +
+        (fnames ? '<div class="whl-hub-detail">' + esc(fnames + (p.fly.length > 4 ? ' · +' + (p.fly.length - 4) + ' more' : '')) + '</div>' : '') +
+        '<div class="whl-hub-kind">flyout · ' + p.fly.length + ' inside</div>' +
+        '<div class="whl-hub-hint">' + (p.fly.length ? 'Click to fan it out — then click one, or press its number' : 'Empty — right-click to fill it') + '</div>';
+      armImgFallbacks(hub);
       return;
     }
     var r2 = resolve(p);
@@ -1085,6 +1266,10 @@ var HDWheel = (function () {
 
   function onMove(e) {
     if (ui.sheet || ui.menu) return;
+    /* An open fan freezes the pointer-angle selection: the cursor is on its
+       way to a child tile, and re-aiming the ring underneath would repaint
+       the world mid-reach. */
+    if (ui.fly) return;
     /* The STAGE's centre, not the viewport's — with a corner preset those are
        nowhere near each other, and reading the viewport would aim the whole
        wheel from the middle of the screen while it is drawn in the corner. */
@@ -1120,6 +1305,17 @@ var HDWheel = (function () {
     if (ui.menu) { ui.menu = null; renderMenu(); return; }
     var btn = closestSel(t, '.whl-btn');
     if (btn) { e.preventDefault(); e.stopPropagation(); doAct(btn.getAttribute('data-act')); return; }
+    /* An open fan owns the click: a child tile fires, anything else folds the
+       fan back up — and does NOTHING else, so reaching past the fan can never
+       fire the wedge underneath it. */
+    if (ui.fly) {
+      e.preventDefault();
+      e.stopPropagation();
+      var fch = closestSel(t, '.whl-flych');
+      if (fch) { fireFlyChild(parseInt(fch.getAttribute('data-fk'), 10)); return; }
+      closeFly();
+      return;
+    }
     /* A click anywhere else dismisses the Look panel FIRST and does nothing
        else — click-away must not also fire the wedge you happened to be
        pointing at while reaching for empty space. */
@@ -1146,7 +1342,15 @@ var HDWheel = (function () {
     e.preventDefault();
     e.stopPropagation();
     if (i < 0) { close(true); return; }
-    if (ui.edit) { openPicker(i); return; }
+    if (ui.edit) {
+      /* In edit mode a flyout wedge opens ITS editor — the plain picker would
+         overwrite the whole bundle with one pin, which is never what an edit
+         click means. */
+      var ep = cur() && cur().slots[i];
+      if (isFly(ep)) { openFlyEdit(i); return; }
+      openPicker(i);
+      return;
+    }
     fire(i);
   }
 
@@ -1154,6 +1358,7 @@ var HDWheel = (function () {
     e.preventDefault();
     e.stopPropagation();
     if (ui.sheet) return;
+    if (ui.fly) { closeFly(); return; }
     var slotEl = closestSel(e.target, '.whl-slot');
     var i = slotEl ? parseInt(slotEl.getAttribute('data-i'), 10) : ui.sel;
     if (i < 0) { ui.menu = null; renderMenu(); return; }
@@ -1217,6 +1422,7 @@ var HDWheel = (function () {
     w.active = i;
     ui.sel = -1;
     ui.menu = null;
+    ui.fly = null;
     save();
     render();
   }
@@ -1296,12 +1502,27 @@ var HDWheel = (function () {
     m.className = 'whl-menu';
     var html = '';
     if (!p) {
-      html = '<button data-m="add">＋ Put something here…</button>';
+      html = '<button data-m="add">＋ Put something here…</button>' +
+        '<button data-m="newfly">⧉ New flyout here…</button>';
+    } else if (isFly(p)) {
+      html =
+        '<button data-m="fire">▶ Fan it out</button>' +
+        '<button data-m="flyedit">⧉ Edit the flyout…</button>' +
+        '<button data-m="rename">✎ Rename on the wheel…</button>' +
+        '<div class="sep"></div>' +
+        '<button data-m="left">‹ Move counter-clockwise</button>' +
+        '<button data-m="right">› Move clockwise</button>' +
+        '<div class="sep"></div>' +
+        '<button class="danger" data-m="del">' +
+          (ui.menu.armed ? '✕ Really remove “' + esc(nameOf(p)) + '” and everything in it'
+                         : '✕ Remove from wheel') +
+        '</button>';
     } else {
       html =
         '<button data-m="fire">▶ ' + esc(hintFor(p).replace(/^Click to /, '')) + '</button>' +
         '<button data-m="rename">✎ Rename on the wheel…</button>' +
         '<button data-m="swap">⇄ Replace with something else…</button>' +
+        '<button data-m="mkfly">⧉ Turn into a flyout…</button>' +
         /* Spell wedges choose their verb here — cast it, or equip it into a
            named hand. Only spells get the block: nothing else has hands. */
         (castable(p)
@@ -1358,6 +1579,9 @@ var HDWheel = (function () {
     var i = ui.menu ? ui.menu.slot : -1;
     if (i < 0) return;
     if (a === 'add' || a === 'swap') { ui.menu = null; openPicker(i); return; }
+    if (a === 'newfly') { ui.menu = null; makeFly(i, null); return; }
+    if (a === 'mkfly') { ui.menu = null; makeFly(i, cur() && cur().slots[i]); return; }
+    if (a === 'flyedit') { ui.menu = null; openFlyEdit(i); return; }
     if (a === 'fire') { ui.menu = null; render(); fire(i); return; }
     if (a === 'left') { moveSlot(i, -1); return; }
     if (a === 'right') { moveSlot(i, 1); return; }
@@ -1386,9 +1610,107 @@ var HDWheel = (function () {
     }, 30);
   }
 
+  /* ---- flyout creation + editing --------------------------------------- */
+
+  /* Make slot i a flyout. `seed` (the pin already there, when converting)
+     becomes child 1, and the bundle inherits its name so the wedge keeps
+     reading the way it did — one action became a family of them. */
+  function makeFly(i, seed) {
+    var wh = cur();
+    if (!wh) return;
+    wh.slots[i] = normPin({
+      fly: seed && !isFly(seed) ? [seed] : [],
+      key: newId(),
+      label: seed ? (seed.alias || seed.label || '') : '',
+      icon: seed ? seed.icon : '',
+    });
+    save();
+    render();
+    openFlyEdit(i);
+    toast(seed ? '“' + nameOf(seed) + '” is now a flyout — add more to it'
+               : 'New flyout — search below to fill it');
+  }
+
+  function openFlyEdit(i) {
+    ui.sheet = 'flyedit';
+    ui.pickSlot = i;
+    ui.flyArm = false;
+    ui.pickQ = '';
+    ui.pickCat = 'all';
+    ui.pickSel = 0;
+    ui.menu = null;
+    ui.fly = null;
+    warmProviders();
+    render();
+    focusSearch();
+  }
+
+  function addToFly(r) {
+    var wh = cur();
+    var p = wh && wh.slots[ui.pickSlot];
+    if (!isFly(p)) return;
+    if (p.fly.length >= MAX_FLY) {
+      toast('That flyout is full (' + MAX_FLY + ') — remove one first');
+      return;
+    }
+    var pin = pinFromItem(r.pv, r.it);
+    for (var i = 0; i < p.fly.length; i++) {
+      if (p.fly[i] && p.fly[i].prov === pin.prov && p.fly[i].key === pin.key) {
+        toast('“' + (r.it.label || '') + '” is already in this flyout');
+        return;
+      }
+    }
+    p.fly.push(pin);
+    save();
+    wantIcons();
+    render();
+    focusSearch();
+    toast('Added “' + (r.it.label || '') + '” — ' + p.fly.length + ' of ' + MAX_FLY);
+  }
+
+  /* The flyedit sheet's per-child buttons: reorder, one-click remove (the
+     list is on screen and the search to re-add is directly below, so an armed
+     two-step here would be ceremony), and "make it a wedge again" when one
+     child is all that is left. */
+  function fedAct(a, idx) {
+    var wh = cur();
+    var p = wh && wh.slots[ui.pickSlot];
+    if (!isFly(p)) return;
+    if (a === 'up' || a === 'down') {
+      var j = idx + (a === 'up' ? -1 : 1);
+      if (j < 0 || j >= p.fly.length) return;
+      var t = p.fly[idx]; p.fly[idx] = p.fly[j]; p.fly[j] = t;
+      save(); render();
+      return;
+    }
+    if (a === 'del') {
+      var gone = p.fly.splice(idx, 1)[0];
+      save(); render();
+      toast('Took “' + (gone ? nameOf(gone) : '') + '” out of the flyout');
+      return;
+    }
+    if (a === 'one') {
+      if (p.fly.length !== 1) return;
+      wh.slots[ui.pickSlot] = p.fly[0];
+      save();
+      closeSheet();
+      toast('Back to a single wedge — “' + nameOf(wh.slots[ui.pickSlot]) + '”');
+      return;
+    }
+    if (a === 'delall') {
+      if (!ui.flyArm) { ui.flyArm = true; render(); return; }
+      wh.slots[ui.pickSlot] = null;
+      ui.flyArm = false;
+      save();
+      closeSheet();
+      toast('Flyout removed');
+    }
+  }
+
   function closeSheet() {
     ui.sheet = null;
     ui.rename = null;
+    ui.flyArm = false;
     /* A capture left armed would eat the next keypress from a wheel that no
        longer shows any sign of listening. */
     ui.capKey = null;
@@ -1505,6 +1827,7 @@ var HDWheel = (function () {
     var sh = document.createElement('div');
     sh.className = 'whl-sheet';
     if (ui.sheet === 'pick') sh.innerHTML = pickHtml();
+    else if (ui.sheet === 'flyedit') sh.innerHTML = flyEditHtml();
     else if (ui.sheet === 'settings') sh.innerHTML = settingsHtml();
     else if (ui.sheet === 'rename') sh.innerHTML = renameHtml();
     root.appendChild(sh);
@@ -1570,6 +1893,97 @@ var HDWheel = (function () {
           'autocomplete="off" spellcheck="false" value="' + esc(ui.pickQ) + '">' +
         '<div class="whl-chips">' + chips + '</div>' +
         '<div class="whl-results">' + body + '</div>' +
+      '</div>';
+  }
+
+  /* The flyout editor: what's inside (with pictures, reorderable, one-click
+     remove) on top, and the SAME searchable picker below it to add more —
+     "easy UI, typeable search bar to add, show icons" was the ask, verbatim.
+     Enter takes the top hit and the sheet stays open, because filling a
+     bundle is a run of adds, not one. */
+  function flyEditHtml() {
+    var wh = cur();
+    var p = wh && wh.slots[ui.pickSlot];
+    if (!isFly(p)) return '<div class="whl-sheet-head"><div class="whl-sheet-title">That flyout is gone</div>' +
+      '<button class="whl-btn" data-act="sheet-close" title="Close (Esc)">✕</button></div>';
+
+    var kids = p.fly.map(function (ch, i) {
+      var url = ch ? artFor(ch) : '';
+      var nm = ch ? nameOf(ch) : '';
+      return '<div class="whl-fed" title="' + esc(nm + (ch && ch.detail ? ' — ' + ch.detail : '')) + '">' +
+        '<div class="whl-fed-n">' + (i + 1) + '</div>' +
+        '<div class="whl-res-art">' +
+          (url ? '<img class="' + (ch && isFace(ch) ? 'face' : '') + '" src="' + esc(url) + '" alt="">'
+               : (ch ? glyphOf(ch) : '＋')) +
+        '</div>' +
+        '<div class="whl-res-txt">' +
+          '<div class="whl-res-name">' + esc(nm) + '</div>' +
+          (ch && ch.detail ? '<div class="whl-res-detail">' + esc(ch.detail) + '</div>' : '') +
+        '</div>' +
+        '<button class="whl-btn whl-fed-b" data-fed="up" data-idx="' + i + '" ' +
+          (i === 0 ? 'disabled ' : '') + 'title="Earlier in the fan">↑</button>' +
+        '<button class="whl-btn whl-fed-b" data-fed="down" data-idx="' + i + '" ' +
+          (i === p.fly.length - 1 ? 'disabled ' : '') + 'title="Later in the fan">↓</button>' +
+        '<button class="whl-btn whl-fed-b whl-danger" data-fed="del" data-idx="' + i + '" ' +
+          'title="Take it out of the flyout">✕</button>' +
+        '</div>';
+    }).join('');
+
+    var res = pickResults();
+    var q = ui.pickQ.trim();
+    var body;
+    if (!res.length) {
+      body = '<div class="whl-empty"><b>Nothing matches “' + esc(q) + '”</b>' +
+        'Anything a wedge can hold, a flyout can hold — items you carry, spells, followers, places, deck actions.</div>';
+    } else {
+      body = res.map(function (r, i) {
+        var url = safeIcon(r.it.icon) ||
+          (r.pv.id === 'inventory' && r.it.snap
+            ? meshIcon({ prov: 'inventory', snap: r.it.snap }) : '');
+        return '<div class="whl-res' + (i === ui.pickSel ? ' sel' : '') +
+            '" data-r="' + i + '" title="' + esc((r.it.label || '') + (r.it.detail ? ' — ' + r.it.detail : '')) + '">' +
+            '<div class="whl-res-art">' +
+              (url ? '<img class="' + (r.pv.id === 'followers' ? 'face' : '') + '" src="' + esc(url) + '" alt="">'
+                   : glyphOf({ prov: r.pv.id, kind: r.it.kind })) +
+            '</div>' +
+            '<div class="whl-res-txt">' +
+              '<div class="whl-res-name">' + hl(r.it.label, q) + '</div>' +
+              (r.it.detail ? '<div class="whl-res-detail">' + esc(r.it.detail) + '</div>' : '') +
+            '</div>' +
+            '<div class="whl-res-kind">' + esc(r.it.kind || r.pv.label || '') + '</div>' +
+          '</div>';
+      }).join('');
+    }
+
+    return '<div class="whl-sheet-head">' +
+        '<div class="whl-sheet-title">⧉ Flyout — ' + esc(nameOf(p) || 'unnamed') + '</div>' +
+        '<button class="whl-btn" data-act="sheet-close" title="Done (Esc)">✕</button>' +
+      '</div>' +
+      '<div class="whl-sheet-body">' +
+        '<div class="whl-row">' +
+          '<div class="whl-row-lab">Name' +
+            '<div class="whl-row-sub">What the wedge says on the ring.</div>' +
+          '</div>' +
+          '<input class="whl-input" data-act="flyname" type="text" value="' + esc(p.label) + '" maxlength="40" placeholder="Flyout">' +
+        '</div>' +
+        '<div class="whl-fed-head">Inside — ' + p.fly.length + ' of ' + MAX_FLY +
+          '<span class="whl-fed-sub">Click the wedge to fan these out; click one (or press its number) to fire it.</span>' +
+        '</div>' +
+        (kids || '<div class="whl-fed-none">Nothing yet — search below and hit Enter to add.</div>') +
+        '<div class="whl-fed-actions">' +
+          (p.fly.length === 1
+            ? '<button class="whl-btn" data-fed="one" data-idx="0" title="The one thing inside becomes the wedge again">Back to a single wedge</button>'
+            : '') +
+          '<button class="whl-btn whl-danger" data-fed="delall" data-idx="0" ' +
+            'title="Remove the flyout and everything in it">' +
+            (ui.flyArm ? 'Really remove it all' : '✕ Remove the flyout') + '</button>' +
+        '</div>' +
+        '<div class="whl-fed-head">Add something' +
+          '<span class="whl-fed-sub">Enter adds the top hit and keeps the search open.</span>' +
+        '</div>' +
+        '<input class="whl-search" type="text" placeholder="Search everything — an item you carry, a spell, a follower, a place…" ' +
+          'autocomplete="off" spellcheck="false" value="' + esc(ui.pickQ) + '">' +
+        '<div class="whl-results whl-results-short">' + body + '</div>' +
       '</div>';
   }
 
@@ -1670,6 +2084,20 @@ var HDWheel = (function () {
             [['full', 'Dimmed'], ['light', 'See-through'], ['none', 'None']].map(function (d) {
               return '<button class="whl-segb wide' + (w.dim === d[0] ? ' on' : '') + '" data-dim="' + d[0] +
                 '" title="' + esc(DIM_NAME[d[0]]) + '">' + d[1] + '</button>';
+            }).join('') +
+          '</div>' +
+        '</div>' +
+        '<div class="whl-row">' +
+          '<div class="whl-row-lab">How the key opens it' +
+            '<div class="whl-row-sub">Press = tap to open, tap again to close. Hold = keep the key down, point at a wedge, ' +
+              'and RELEASING fires it — one gesture, back to the game. A quick tap still opens it either way.</div>' +
+          '</div>' +
+          '<div class="whl-seg style">' +
+            [['toggle', 'Press'], ['hold', 'Hold & release']].map(function (o) {
+              return '<button class="whl-segb wide' + (w.openStyle === o[0] ? ' on' : '') + '" data-openstyle="' + o[0] +
+                '" title="' + (o[0] === 'hold'
+                  ? 'Hold the key down, aim, let go to fire what you are pointing at'
+                  : 'The key opens the wheel and pressing it again closes it') + '">' + o[1] + '</button>';
             }).join('') +
           '</div>' +
         '</div>' +
@@ -1796,6 +2224,15 @@ var HDWheel = (function () {
         render();
         return;
       }
+      var osb = closestSel(e.target, '[data-openstyle]');
+      if (osb) {
+        e.stopPropagation();
+        var w5 = slice();
+        w5.openStyle = osb.getAttribute('data-openstyle') === 'hold' ? 'hold' : 'toggle';
+        save();
+        render();
+        return;
+      }
       var anc = closestSel(e.target, '[data-anchor]');
       if (anc) {
         e.stopPropagation();
@@ -1814,6 +2251,13 @@ var HDWheel = (function () {
         render();
         return;
       }
+      var fed = closestSel(e.target, '[data-fed]');
+      if (fed) {
+        e.stopPropagation();
+        if (fed.hasAttribute('disabled')) return;
+        fedAct(fed.getAttribute('data-fed'), parseInt(fed.getAttribute('data-idx'), 10) || 0);
+        return;
+      }
       var res = closestSel(e.target, '.whl-res');
       if (res) {
         e.stopPropagation();
@@ -1829,6 +2273,18 @@ var HDWheel = (function () {
         render();
         var s2 = root.querySelector('.whl-search');
         if (s2) { s2.focus(); try { s2.setSelectionRange(caret, caret); } catch (er) {} }
+      });
+    }
+    var fn = sh.querySelector('[data-act="flyname"]');
+    if (fn) {
+      fn.addEventListener('input', function (e) {
+        var wh = cur();
+        var p = wh && wh.slots[ui.pickSlot];
+        if (!isFly(p)) return;
+        p.label = String(e.target.value || '').slice(0, 40);
+        save();
+        /* the ring repaints on close — a full render() here would rebuild the
+           sheet and steal the caret, the exact trap the wname input avoids */
       });
     }
     var nm = sh.querySelector('[data-act="wname"]');
@@ -1890,6 +2346,9 @@ var HDWheel = (function () {
     var res = pickResults();
     var r = res[i];
     if (!r) return;
+    /* The flyedit sheet reuses the picker's results wholesale — a take there
+       lands in the BUNDLE, and the sheet stays open for the next one. */
+    if (ui.sheet === 'flyedit') { addToFly(r); return; }
     if (place(r.pv, r.it, ui.pickSlot)) {
       /* Straight back to the wheel — one add is the common case, and landing
          back on the ring shows you WHERE it went. Hold the picker open with
@@ -1922,7 +2381,9 @@ var HDWheel = (function () {
     }
     if (ui.sheet) {
       if (k === 'Escape') { e.preventDefault(); closeSheet(); return true; }
-      if (ui.sheet !== 'pick') return false;
+      /* flyedit shares the picker's whole keyboard: same results list, same
+         arrows, same Enter-takes-the-top-hit. */
+      if (ui.sheet !== 'pick' && ui.sheet !== 'flyedit') return false;
       var res = pickResults();
       if (k === 'ArrowDown') { e.preventDefault(); ui.pickSel = Math.min(ui.pickSel + 1, res.length - 1); render(); focusSearch(); return true; }
       if (k === 'ArrowUp') { e.preventDefault(); ui.pickSel = Math.max(ui.pickSel - 1, 0); render(); focusSearch(); return true; }
@@ -1949,6 +2410,18 @@ var HDWheel = (function () {
     /* Esc closes the Look panel before it closes the wheel — dismissing an
        overlay should never also end the thing underneath it. */
     if (ui.lookOpen && k === 'Escape') { e.preventDefault(); ui.lookOpen = false; render(); return true; }
+    /* An open fan: its numbers fire ITS children, and Esc folds it up rather
+       than closing the wheel — same overlay-first rule as the Look panel. */
+    if (ui.fly) {
+      if (k === 'Escape') { e.preventDefault(); closeFly(); return true; }
+      if (k >= '1' && k <= '9') {
+        var fwh = cur();
+        var fp = fwh && fwh.slots[ui.fly.slot];
+        var fk = parseInt(k, 10) - 1;
+        if (isFly(fp) && fk < fp.fly.length) { e.preventDefault(); fireFlyChild(fk); return true; }
+      }
+      return false;
+    }
     if (k === 'Escape') { e.preventDefault(); close(true); return true; }
     if (k === 'ArrowLeft') { e.preventDefault(); cycleWheel(-1); return true; }
     if (k === 'ArrowRight') { e.preventDefault(); cycleWheel(1); return true; }
@@ -1969,7 +2442,18 @@ var HDWheel = (function () {
       applyPreset(PRESETS[(i + 1 + PRESETS.length) % PRESETS.length].id);
       return true;
     }
-    if ((k === 'Delete' || k === 'Backspace') && ui.sel >= 0) { e.preventDefault(); clearSlot(ui.sel); return true; }
+    if ((k === 'Delete' || k === 'Backspace') && ui.sel >= 0) {
+      e.preventDefault();
+      /* One keypress may clear one pin, but not a whole bundle — a filled
+         flyout goes through the armed remove in its menu or its editor. */
+      var dp = cur() && cur().slots[ui.sel];
+      if (isFly(dp) && dp.fly.length) {
+        toast('That is a flyout with ' + dp.fly.length + ' inside — right-click it to remove it');
+        return true;
+      }
+      clearSlot(ui.sel);
+      return true;
+    }
     if (k >= '1' && k <= '9') {
       var idx = parseInt(k, 10) - 1;
       var wh = cur();
@@ -1983,11 +2467,13 @@ var HDWheel = (function () {
   function open(standalone) {
     ensureDom();
     ui.open = true;
+    ui.openedAt = Date.now();
     ui.standalone = !!standalone;
     ui.sel = -1;
     ui.edit = false;
     ui.sheet = null;
     ui.menu = null;
+    ui.fly = null;
     ui.lookOpen = false;      // a fresh wheel must not come up with a panel showing
     document.body.classList.add('whl-open');
     slice();
@@ -2005,9 +2491,10 @@ var HDWheel = (function () {
     ui.open = false;
     ui.sheet = null;
     ui.menu = null;
+    ui.fly = null;
     ui.sel = -1;
     document.body.classList.remove('whl-open');
-    if (root) root.classList.remove('has-sel');
+    if (root) { root.classList.remove('has-sel'); root.classList.remove('has-fly'); }
     if (closeDeck && ui.standalone && env && typeof env.closeDeck === 'function') env.closeDeck();
     ui.standalone = false;
   }
@@ -2015,6 +2502,26 @@ var HDWheel = (function () {
   function toggle(standalone) {
     if (ui.open) close(true); else open(standalone);
   }
+
+  /* ---- hold-to-release (openStyle 'hold') ------------------------------ */
+  /* C++ pushes hdWheelKeyUp() when the key that OPENED the wheel comes back
+     up. In hold mode that release IS the pick: fire whatever the cursor
+     points at, or fold up pointing at nothing. Guards, in order:
+       - toggle mode / wheel closed: the release means nothing;
+       - a sheet, menu, edit mode or an open fan: the player has moved from
+         "gesture" to "browsing" — the wheel stays up and mouse rules apply;
+       - a quick TAP (released inside 300 ms, nothing selected): stay open.
+         Without this, hold mode would punish the muscle memory of tapping
+         the key, and the two styles would fight instead of blending. */
+  function onOpenKeyRelease() {
+    var w = slice();
+    if (!w || w.openStyle !== 'hold' || !ui.open) return;
+    if (ui.sheet || ui.menu || ui.edit || ui.fly || ui.lookOpen) return;
+    if (ui.sel >= 0) { fire(ui.sel); return; }
+    if (Date.now() - (ui.openedAt || 0) < 300) return;   // a tap — stay open
+    close(true);
+  }
+  window.hdWheelKeyUp = function () { try { onOpenKeyRelease(); } catch (e) {} };
 
   /* ------------------------------------------------------ game callbacks */
 
@@ -2125,6 +2632,16 @@ var HDWheel = (function () {
     _pickResults: pickResults,
     _place: place,
     _setSlotCount: setSlotCount,
+    _isFly: isFly,
+    _makeFly: makeFly,
+    _addToFly: addToFly,
+    _openFly: openFly,
+    _closeFly: closeFly,
+    _fireFlyChild: fireFlyChild,
+    _fedAct: fedAct,
+    _normPin: normPin,
+    _maxFly: MAX_FLY,
+    _onOpenKeyRelease: onOpenKeyRelease,
     _inv: function (list) { window.whInvList(JSON.stringify({ items: list })); },
   };
 })();

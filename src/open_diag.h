@@ -22,6 +22,13 @@ namespace OpenDiag
 	// The INI verdict, read once and cached. Missing file / missing key = ON.
 	bool Enabled();
 
+	// Generic boolean probe against Data\SKSE\Plugins\SkyManager.ini (section-blind,
+	// same 0/false=off, anything-else=on parse as bOpenTiming). Missing file or
+	// missing key returns `dflt`. Lets other subsystems (e.g. [Performance]
+	// bEagerDeckView) read the same INI without duplicating the parser. Not cached
+	// here — the caller caches (once, in a function-local static).
+	bool IniBool(const char* key, bool dflt);
+
 	// Monotonic milliseconds, for phase math.
 	[[nodiscard]] std::int64_t NowMs();
 

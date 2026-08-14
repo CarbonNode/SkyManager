@@ -60,7 +60,9 @@
 .hdlb-img {
   width: 100%;
   max-width: 460px;
-  max-height: min(52vh, 460px);
+  /* inside the scale-transformed #panel a bare vh is multiplied by the deck
+     scale — divide it out (the ps-pack-card lesson) */
+  max-height: min(calc(52vh / var(--ui-scale, 1)), 460px);
   object-fit: contain;
   border-radius: 10px;
   user-select: none;

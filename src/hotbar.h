@@ -48,6 +48,13 @@ namespace Hotbar
 	inline constexpr int kPageCtrl  = 2;
 	inline constexpr int kPageAlt   = 3;
 
+	// Flyout bundles (Rober, 2026-08-13: "an action bar set to be a fly out —
+	// pops out with a quantifiable amount (3-9?) bundle"). A slot whose kind is
+	// "flyout" holds up to this many CHILD slots; its key opens the fan instead
+	// of firing, and the view's cycle-then-pause picks the child. One level
+	// only — a flyout child is never itself a flyout (FromJson drops it).
+	inline constexpr int kMaxFlyItems = 9;
+
 	// One thing you can put on a button. `kind` picks which existing verb runs
 	// it — every one of these already exists and is already play-proven, which is
 	// the point: the hotbar is a new SURFACE over the deck's actions, not a new
@@ -57,6 +64,11 @@ namespace Hotbar
 	//   "item"   -> WheelMenu::Use              (potions, food, weapons, scrolls…)
 	//   "entry"  -> FireEntryById               (deck actions, key chords, vkeys)
 	//   "combo"  -> SpellActions::CastSequence  (a Spell Deck combo)
+	//   "flyout" -> opens the fan (the CHILD that is then picked fires through
+	//               one of the four verbs above — the flyout adds no verb)
+	//   "smart"  -> FireSmart (below): "the best potion of X I am carrying",
+	//               re-picked at press time. refId names the pool:
+	//               "heal" | "magicka" | "stamina" | "cure"
 	//   ""       -> empty slot
 	//
 	// Identity is the same durable pair used everywhere else in this plugin —
@@ -86,11 +98,19 @@ namespace Hotbar
 		// Deck does. Set by the icon picker or from the phone via the portal.
 		std::string icon;
 
+		// kind == "flyout" only: the bundle, in fan order, capped at
+		// kMaxFlyItems by FromJson. (std::vector of the incomplete Slot is
+		// legal since C++17 — the recursion is one level deep by construction,
+		// enforced at parse time, not by the type.)
+		std::vector<Slot> items;
+
 		bool Empty() const
 		{
+			if (kind == "flyout")
+				return items.empty();
 			return kind.empty() || (kind == "spell" && !localId && !formId) ||
 			       (kind == "item" && !localId && !formId) ||
-			       ((kind == "entry" || kind == "combo") && refId.empty());
+			       ((kind == "entry" || kind == "combo" || kind == "smart") && refId.empty());
 		}
 	};
 
@@ -163,6 +183,25 @@ namespace Hotbar
 		bool showCounts = true;    // stack count for consumables ("x14")
 		bool showEmpty  = true;    // draw empty slots as sockets while editing/idle
 		                           // — turn off for a bar that shows only what is on it
+		bool showPages  = true;    // the Main/Shift/Ctrl/Alt pip strip above the bar.
+		                           // Off = no page text at all (Rober, 2026-08-14:
+		                           // "hide the MAIN, SHIFT, ETC text") — the modifier
+		                           // pages still work, you just fly blind on which one
+		                           // is live, which is fine once the muscle memory is in
+
+		// ---- edit-mode placement aids (Rober, 2026-08-14) ------------------
+		// All three exist for the same reason: while PLACING the bar you want to
+		// see exactly what play mode will show, and the dashed halo / the ✥ grip
+		// sitting flush against the bar make a pixel-precise judgement impossible.
+		// They only ever affect EDIT mode — play mode never draws any of this.
+		bool showOutline = true;   // the dashed halo around the bar while editing
+		bool showGrip    = true;   // the ✥ drag handle (arrows + Reset still work
+		                           // with it off, so the bar can never be stranded)
+		// Where the grip sits relative to the bar: "auto" keeps the 2026-08-13
+		// behaviour (below the bar in the top half of the screen, above it in the
+		// bottom half, so it never clips off an edge); "top"/"bottom" pin it, for
+		// judging the bar's opposite edge against something on screen.
+		std::string gripPos = "auto";   // "auto" | "top" | "bottom"
 
 		// Fade the whole bar when you have not touched it. 0 = never fade (always
 		// fully opaque). Otherwise the bar drops to `idleAlpha` after this many
@@ -255,6 +294,13 @@ namespace Hotbar
 	// modifier pages present but disabled. Called only when the slice is absent,
 	// so it can never overwrite a bar you have already filled in.
 	void SeedDefaults(Config& out);
+
+	// Drink the strongest carried potion of the named pool ("heal" | "magicka" |
+	// "stamina" | "cure"). The pick happens AT PRESS TIME against the live
+	// inventory — that is the whole point of a smart button: it can never grey
+	// out because you drank the last of one specific tier. Food and poisons are
+	// never candidates. Returns {ok,msg}; a refusal names why. MAIN THREAD ONLY.
+	std::string FireSmart(const std::string& ref);
 
 	// Live state for one page, read fresh from the engine. MAIN THREAD ONLY —
 	// it touches the player actor, the inventory and the magic caster.

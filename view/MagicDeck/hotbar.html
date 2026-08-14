@@ -48,7 +48,18 @@
               title="Close the editor and hand the mouse back to the game">Done</button>
     </header>
 
+    <!-- Settings search — filter-as-you-type over every section, row and
+         tooltip below. Enter jumps to the top hit; Esc clears. -->
+    <div class="hb-panel-qrow">
+      <input id="hb-panel-q" class="hb-search hb-panel-q" type="text" autocomplete="off"
+             title="Filter every setting below as you type — matches names and their hover text. Enter jumps to the top hit, Esc clears."
+             placeholder="Search these settings — try “opacity”, “grip”, “combat”…">
+    </div>
+
     <div class="hb-edit-body">
+
+      <p id="hb-panel-q-empty" class="hb-note hb-panel-q-empty" hidden>
+        Nothing here matches that — clear the search to see every setting.</p>
 
       <p id="hb-preview-note" class="hb-preview-note" role="status" hidden></p>
 
@@ -104,7 +115,23 @@
             </select>
           </label>
         </div>
-        <p class="hb-note">Drag the ✥ grip on the bar to place it, or nudge with the arrow keys.</p>
+        <p class="hb-note">Drag the ✥ grip on the bar to place it, or nudge with the arrow keys
+          (Shift+arrows = 10&nbsp;px).</p>
+        <div class="hb-row">
+          <label class="hb-field">
+            <span>✥ grip sits</span>
+            <select id="hb-gripPos" class="hb-sel"
+                    title="Where the drag grip sits while editing. Automatic keeps it away from the screen edge; pin it to the top or bottom of the bar to keep the other edge clear while you judge placement.">
+              <option value="auto">Automatic</option>
+              <option value="top">Above the bar</option>
+              <option value="bottom">Below the bar</option>
+            </select>
+          </label>
+        </div>
+        <div class="hb-row hb-checks">
+          <label class="hb-check" title="Hide the ✥ drag grip for pixel-precise placement. Arrow keys and Reset position still move the bar."><input id="hb-showGrip" type="checkbox"><span>✥ drag grip</span></label>
+          <label class="hb-check" title="Hide the dashed outline drawn around the bar while editing, so you see exactly what play mode will show"><input id="hb-showOutline" type="checkbox"><span>Dashed outline</span></label>
+        </div>
       </section>
 
       <section class="hb-sect">
@@ -122,6 +149,7 @@
           <label class="hb-check" title="Show each action's name beneath its button - useful while you learn the bar, noisy after"><input id="hb-showLabels" type="checkbox"><span>Names under buttons</span></label>
           <label class="hb-check" title="Show how many you have left of a potion or scroll"><input id="hb-showCounts" type="checkbox"><span>Stack counts</span></label>
           <label class="hb-check" title="Draw unused buttons as dashed sockets, or hide them so only what is on the bar shows"><input id="hb-showEmpty"  type="checkbox"><span>Show empty sockets</span></label>
+          <label class="hb-check" title="The Main / Shift / Ctrl / Alt strip above the bar. Off = no page text at all; the modifier pages still work"><input id="hb-showPages" type="checkbox"><span>Page names (Main · Shift…)</span></label>
         </div>
         <div class="hb-row">
           <label class="hb-field hb-grow">
@@ -206,7 +234,37 @@
       <footer class="hb-modal-foot">
         <button id="hb-pick-clear" class="hb-btn hb-btn-danger" type="button"
                 title="Empty this button - it keeps its key, so you can put something else on it later">Clear this button</button>
+        <button id="hb-pick-fly" class="hb-btn" type="button"
+                title="Turn this button into a flyout - one key opens a fan of up to 9 actions. Whatever is on the button now becomes the first one.">⧉ Make this a flyout</button>
         <span class="hb-hint">Enter = top hit · Esc = close</span>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ══ flyout (bundle) editor ═════════════════════════════════════════ -->
+  <!-- One key, a fan of actions. Name it, reorder it, and add through the
+       same searchable picker as any button. -->
+  <div id="hb-flyed" class="hb-modal" hidden>
+    <div class="hb-modal-card">
+      <header class="hb-modal-head">
+        <h2 id="hb-flyed-title">Flyout on button 1</h2>
+        <button id="hb-flyed-close" class="hb-btn hb-btn-primary" type="button"
+                title="Done editing this flyout">Done</button>
+      </header>
+      <label class="hb-field hb-flyed-namerow">
+        <span>Name</span>
+        <input id="hb-flyed-name" class="hb-search" type="text" maxlength="40" autocomplete="off"
+               placeholder="Flyout" title="What the button is called - shown in its tooltip and in this list">
+      </label>
+      <p class="hb-note" id="hb-flyed-note"></p>
+      <div id="hb-flyed-list" class="hb-slotlist hb-flyed-list"></div>
+      <footer class="hb-modal-foot">
+        <button id="hb-flyed-add" class="hb-btn hb-btn-primary" type="button"
+                title="Search everything and add it to the fan">＋ Add an action</button>
+        <button id="hb-flyed-dissolve" class="hb-btn" type="button" hidden
+                title="The one thing inside becomes the button again">Back to a single button</button>
+        <button id="hb-flyed-clear" class="hb-btn hb-btn-danger" type="button"
+                title="Remove the flyout and everything in it">Remove the flyout</button>
       </footer>
     </div>
   </div>

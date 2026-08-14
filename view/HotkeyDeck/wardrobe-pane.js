@@ -208,6 +208,30 @@ window.WardrobePane = (function () {
   /* =========================================================== helpers == */
 
   const $ = (id) => document.getElementById(id);
+
+  /* The deck's paint factor at this menu's ANCHOR (rooms-pane anchorScale
+     idiom): painted/layout width ratio captures --ui-scale AND the wardrobe
+     tab's own --wd-ui-scale in one measure. Anchor-less callers (catpick's
+     spec.rect) fall back to --ui-scale alone. Both float menus self-scale by
+     this factor so they match the deck instead of painting 1x at Fill. */
+  function menuAnchorScale(anchorEl) {
+    let k = 0;
+    try {
+      if (anchorEl && anchorEl.getBoundingClientRect && anchorEl.offsetWidth) {
+        const r = anchorEl.getBoundingClientRect();
+        if (r.width > 0) k = r.width / anchorEl.offsetWidth;
+      }
+    } catch (e) {}
+    if (!isFinite(k) || k <= 0) {
+      try {
+        const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-scale'));
+        if (isFinite(v) && v > 0) k = v;
+      } catch (e) {}
+    }
+    if (!isFinite(k) || k <= 0) k = 1;
+    return Math.max(0.5, Math.min(3, k));
+  }
+
   const els = {};
 
   function h(tag, attrs) {
@@ -2236,17 +2260,23 @@ window.WardrobePane = (function () {
     const r = anchorEl.getBoundingClientRect();
     const vw = document.documentElement.clientWidth;
     const vh = document.documentElement.clientHeight;
-    const menuW = 340;
+    /* self-scale to match the deck (menuAnchorScale) — clamps use the PAINTED
+       width, maxHeight is layout px so divide it back by the factor */
+    const k = menuAnchorScale(anchorEl);
+    const menuW = 340 * k;
     menu.style.left = Math.max(8, Math.min(r.right - menuW, vw - menuW - 8)) + 'px';
     const below = vh - r.bottom - 14;
     const above = r.top - 14;
     if (below >= Math.min(320, vh * 0.45) || below >= above) {
       menu.style.top = (r.bottom + 6) + 'px';
-      menu.style.maxHeight = Math.max(180, below) + 'px';
+      menu.style.maxHeight = (Math.max(180, below) / k) + 'px';
+      menu.style.transformOrigin = 'top left';
     } else {
       menu.style.bottom = (vh - r.top + 6) + 'px';
-      menu.style.maxHeight = Math.max(180, above) + 'px';
+      menu.style.maxHeight = (Math.max(180, above) / k) + 'px';
+      menu.style.transformOrigin = 'bottom left';
     }
+    menu.style.transform = 'scale(' + k.toFixed(4) + ')';
     /* The anchor scrolls with the list; a menu pinned to the viewport must not
        drift away from it. Scroll anywhere closes, same as the ctx menus. */
     els.list.addEventListener('scroll', closeInject, { once: true, capture: true });
@@ -2385,17 +2415,21 @@ window.WardrobePane = (function () {
       ? anchorEl.getBoundingClientRect() : { left: 40, right: 40, top: 40, bottom: 40 });
     const vw = document.documentElement.clientWidth;
     const vh = document.documentElement.clientHeight;
-    const menuW = 340;
+    const k = menuAnchorScale(anchorEl);
+    const menuW = 340 * k;
     menu.style.left = Math.max(8, Math.min(r.right - menuW, vw - menuW - 8)) + 'px';
     const below = vh - r.bottom - 14;
     const above = r.top - 14;
     if (below >= Math.min(320, vh * 0.45) || below >= above) {
       menu.style.top = (r.bottom + 6) + 'px';
-      menu.style.maxHeight = Math.max(180, below) + 'px';
+      menu.style.maxHeight = (Math.max(180, below) / k) + 'px';
+      menu.style.transformOrigin = 'top left';
     } else {
       menu.style.bottom = (vh - r.top + 6) + 'px';
-      menu.style.maxHeight = Math.max(180, above) + 'px';
+      menu.style.maxHeight = (Math.max(180, above) / k) + 'px';
+      menu.style.transformOrigin = 'bottom left';
     }
+    menu.style.transform = 'scale(' + k.toFixed(4) + ')';
     /* The anchor scrolls with the list; a viewport-pinned menu must not drift
        away from it, so any scroll closes — same as the ctx menus. */
     if (els.list) els.list.addEventListener('scroll', closeCtxPicker, { once: true, capture: true });

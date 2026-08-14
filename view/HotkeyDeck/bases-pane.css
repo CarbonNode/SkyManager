@@ -290,9 +290,31 @@
 .nb-res-scroll {
   flex: 1 1 auto; min-height: 0;
   overflow-y: auto; overflow-x: hidden;
+  /* A flex COLUMN, not a plain block: its children (the empty state or the
+     roster, then the add block) are short in the common case, and without this
+     they stacked at natural height and left the rest of the (grown) card as a
+     black void — the lower ~40% of the panel with nothing in it (Rober,
+     2026-08-14). As a column, the empty state / roster is told to fill the
+     slack below, so the space is used instead of gaping. */
+  display: flex; flex-direction: column;
   /* Room for the scrollbar so chips never sit under it. */
   padding-right: 4px; margin-right: -4px;
 }
+/* The blocks inside the scroller must not be squashed by the column: they hold
+   their content height and, when their combined height exceeds the card, the
+   scroller engages instead of shrinking them (the tall-roster case). */
+.nb-res-scroll > .nb-people,
+.nb-res-scroll > .nb-add,
+.nb-res-scroll > .nb-picker,
+.nb-res-scroll > .nb-search-inline,
+.nb-res-scroll > .nb-nomatch { flex: 0 0 auto; }
+/* The empty state grows to fill whatever room the add block leaves, and its own
+   centring (below) then floats the icon + copy in the middle of that room — so
+   an unpeopled base reads as an intentional, breathing empty state rather than
+   a one-liner adrift above a void. When the add block is tall enough to fill
+   the card on its own this collapses to its min-height and the scroller takes
+   over, so it can never force an overflow. */
+.nb-res-scroll > .nb-resempty { flex: 1 1 auto; }
 .nb-res-scroll::-webkit-scrollbar { width: 10px; }
 .nb-res-scroll::-webkit-scrollbar-track { background: transparent; }
 .nb-res-scroll::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
@@ -703,6 +725,14 @@
 .nb-chip-act:focus-visible { outline: none; box-shadow: 0 0 0 2px #c9a24b; }
 
 .nb-add { margin-top: 16px; padding-top: 14px; border-top: 1px solid #26262d; }
+/* When the add block follows an actual roster in the growing scroller and the
+   roster is short, anchor "add people" to the BOTTOM of the room rather than
+   letting it clump under the last chip above a void: margin-top:auto eats the
+   slack. With a tall roster there is no slack, auto resolves to ~0, and the
+   padding-top + separator above keep it from touching the last chip. (The
+   empty-residents case is handled by the growing .nb-resempty instead, so this
+   deliberately targets only the peopled short case.) */
+.nb-res-scroll > .nb-people + .nb-add { margin-top: auto; }
 .nb-addlead {
   font-size: 12.5px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase;
   color: #6f6a5e;
