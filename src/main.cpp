@@ -7921,7 +7921,10 @@ namespace
 	std::atomic<int>  g_presetAutoFailed{ 0 };
 	std::mutex        g_presetAssignLock;
 
-	json PresetAssignments()
+	// assign.json is truncate+written by the auto-render worker while the
+	// index (game thread / JS-listener thread) reads it — every access goes
+	// through g_presetAssignLock or a torn read paints an icon-less gallery.
+	json PresetAssignmentsUnlocked()
 	{
 		json          m = json::object();
 		std::ifstream in(PresetIconsDir() / "assign.json");
@@ -7931,6 +7934,12 @@ namespace
 				m = std::move(j);
 		}
 		return m;
+	}
+
+	json PresetAssignments()
+	{
+		std::lock_guard lock(g_presetAssignLock);
+		return PresetAssignmentsUnlocked();
 	}
 
 	// Favorites + categories for the Faces tab. One file beside assign.json:
@@ -8023,7 +8032,7 @@ namespace
 	void PresetAssignIcon(const std::string& preset, const std::string& icon)
 	{
 		std::lock_guard lock(g_presetAssignLock);
-		json            m = PresetAssignments();
+		json            m = PresetAssignmentsUnlocked();
 		if (icon.empty())
 			m.erase(preset);
 		else
@@ -8053,11 +8062,7 @@ namespace
 					for (const auto& p : presets.value(key, json::array()))
 						if (p.is_string())
 							names.insert(p.get<std::string>());
-			json assign;
-			{
-				std::lock_guard lock(g_presetAssignLock);
-				assign = PresetAssignments();
-			}
+			const json assign = PresetAssignments();  // locks internally
 			for (const auto& n : names)
 				if (n.rfind("PD_", 0) != 0 && !assign.contains(n))
 					missing.push_back(n);
