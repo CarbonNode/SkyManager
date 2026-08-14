@@ -122,6 +122,80 @@ window.FacesPane = (function () {
     const stem = String(name).toLowerCase();
     return (pdState.icons || []).filter((f) => f.replace(/\.[^.]+$/, '').toLowerCase() === stem)[0] || '';
   }
+  /* ---- body-aware head crop for auto-rendered stand-in figures ----
+     A standing human is ~7.5 heads tall, so the head lives in the top ~13%
+     of the figure's opaque bbox regardless of arm pose (width is unstable —
+     arms). Window: side = 0.30*bboxH centered at (bbox cx, top + 0.167*bboxH)
+     — calibrated on the real 512px Geralt render, where exactly that box
+     framed head + shoulders well. Layout-crop, never transform: Ultralight
+     rasterises an <img> at LAYOUT size (the face-fit v4 lesson). */
+  const bodyFits = {};   // url -> {w, h, win:{x,y,side}} | 'fail' (session cache)
+  function bodyFitWindow(w, hgt, bbox) {
+    const bh = bbox.y1 - bbox.y0, bw = bbox.x1 - bbox.x0;
+    if (bh < 8 || bw < 4) return null;
+    let side = 0.30 * bh;
+    const cx = bbox.x0 + bw / 2, cy = bbox.y0 + 0.167 * bh;
+    let x = cx - side / 2, y = cy - side / 2;
+    // Clamp the window inside the image (short figures / tight renders).
+    if (side > w) side = w;
+    if (side > hgt) side = hgt;
+    x = Math.max(0, Math.min(x, w - side));
+    y = Math.max(0, Math.min(y, hgt - side));
+    return { x, y, side };
+  }
+  function bodyFitPaint(im, frame, fit) {
+    const fw = frame.clientWidth || 84, fh = frame.clientHeight || 84;
+    const k = Math.min(fw, fh) / fit.win.side;
+    im.style.position = 'absolute';
+    im.style.width = (fit.w * k) + 'px';
+    im.style.height = (fit.h * k) + 'px';
+    im.style.maxWidth = 'none';
+    // right/bottom auto FIRST: the stylesheet's inset:0 would otherwise fight
+    // the explicit box (and a late inset shorthand would clobber left/top).
+    im.style.right = 'auto';
+    im.style.bottom = 'auto';
+    im.style.left = (-fit.win.x * k) + 'px';
+    im.style.top = (-fit.win.y * k) + 'px';
+    im.style.objectFit = 'fill';
+  }
+  function bodyFitEnsure(im, url, frame) {
+    const hit = bodyFits[url];
+    if (hit === 'fail') return;                       // cover fallback stands
+    if (hit) { bodyFitPaint(im, frame, hit); return; }
+    const probe = new Image();
+    probe.onload = () => {
+      try {
+        const w = probe.naturalWidth, hgt = probe.naturalHeight;
+        const scale = Math.min(1, 128 / Math.max(w, hgt));
+        const cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(hgt * scale));
+        const cv = document.createElement('canvas');
+        cv.width = cw; cv.height = ch;
+        const ctx = cv.getContext('2d');
+        if (!ctx) throw new Error('no 2d context');
+        ctx.drawImage(probe, 0, 0, cw, ch);
+        const px = ctx.getImageData(0, 0, cw, ch).data;
+        let x0 = cw, y0 = ch, x1 = 0, y1 = 0, any = false;
+        for (let yy = 0; yy < ch; yy++)
+          for (let xx = 0; xx < cw; xx++)
+            if (px[(yy * cw + xx) * 4 + 3] > 16) {
+              any = true;
+              if (xx < x0) x0 = xx; if (xx > x1) x1 = xx;
+              if (yy < y0) y0 = yy; if (yy > y1) y1 = yy;
+            }
+        if (!any) throw new Error('empty image');
+        const inv = 1 / scale;
+        const win = bodyFitWindow(w, hgt, { x0: x0 * inv, y0: y0 * inv, x1: (x1 + 1) * inv, y1: (y1 + 1) * inv });
+        if (!win) throw new Error('degenerate bbox');
+        bodyFits[url] = { w, h: hgt, win };
+        if (im.isConnected) bodyFitPaint(im, frame, bodyFits[url]);
+      } catch (e) {
+        bodyFits[url] = 'fail';                       // cover fallback stands
+      }
+    };
+    probe.onerror = () => { bodyFits[url] = 'fail'; };
+    probe.src = url;
+  }
+
   function pdHex8(id) { let s = (Number(id) >>> 0).toString(16).toUpperCase(); while (s.length < 8) s = '0' + s; return s; }
   function pdWearing(formId) {
     if (!formId || !pdState || !pdState.registry || !pdState.registry.entries) return null;
@@ -438,13 +512,16 @@ window.FacesPane = (function () {
           title: fav ? 'Un-favourite' : 'Favourite this preset',
           onClick: (e) => { e.stopPropagation(); toggleFav(name); } }, fav ? '★' : '☆'));
         const face = h('div', { class: 'pd-face' });
-        if (icon && icon.slice(0, 5) === 'auto-' && window.HDFaceFit) {
-          // Auto-rendered mannequin PNG (whole figure, transparent bg) —
-          // face-fit crops to the head, exactly like the Finder tiles.
+        if (icon && icon.slice(0, 5) === 'auto-') {
+          // Auto-rendered stand-in PNG (whole transparent-bg figure). NOT
+          // hd-facefit: its formula is calibrated for HEAD renders (face =
+          // top + K*bboxWidth) and frames the torso on a full body. bodyFit
+          // below derives the head window from figure HEIGHT instead.
           const u = 'preset-icons/' + encodeURIComponent(icon);
-          const im = h('img', { class: 'pd-face-img', src: u, alt: '' });
+          const im = h('img', { class: 'pd-face-img', src: u, alt: '',
+            onError: () => { im.remove(); } });
           face.append(im);
-          window.HDFaceFit.ensure(im, u);
+          bodyFitEnsure(im, u, face);
         } else if (icon) {
           face.style.backgroundImage = 'url("preset-icons/' + cssEsc(encodeURIComponent(icon)) + '")';
         } else {
@@ -568,5 +645,6 @@ window.FacesPane = (function () {
     _render: render,
     _setHost: (el) => { host = el; },
     _aimAt: aimAt,
+    _bodyFitWindow: bodyFitWindow,
   };
 })();
