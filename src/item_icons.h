@@ -70,6 +70,25 @@ namespace ItemIcons
 	// would be hours. MAIN THREAD ONLY.
 	void CaptureAngles(const std::string& fid, const std::string& plugin);
 
+	// NPC FACES (2026-08-13, the NPC Finder). Same payload shape
+	// ({items:[{formId,plugin,name},…]}), but formId+plugin are the FACE
+	// OWNER's identity (8-hex local id) and the NIF is not derived from the
+	// form at all: it IS the baked FaceGen head every non-templated NPC ships,
+	//     meshes/actors/character/facegendata/facegeom/<plugin>/<hex8>.nif
+	// (hair, brows, eyes and the baked tint texture are all inside it — see
+	// the 2026-08-13 strings dump of Lydia's). Renders land in icons/npcs/,
+	// keyed apart from item icons by the "@face" asked-key suffix so
+	// IndexJson() never sees them (it skips '@'). A face NIF that does not
+	// exist (templated NPC) is probed via BSResource BEFORE queueing — the
+	// framework never burns a mesh on it, and the key is marked so it is
+	// never re-probed this session. MAIN THREAD ONLY.
+	void EnsureFaceIcons(const std::string& itemsJson);
+
+	// {"version":1,"icons":{"HEX8|plugin.esp":"icons/npcs/<file>.png",…}} —
+	// face renders on disk, keys normalised exactly like IndexJson's
+	// (UPPERCASE hex | lowercase plugin). Safe from any thread.
+	std::string FaceIndexJson();
+
 	// {"version":1,"icons":{"0XABCD|plugin.esp":"icons/items/<file>.png",…}}
 	// — the on-disk truth right now. Keys are UPPERCASE local-hex + '|' +
 	// lowercase plugin, the same normalisation the portal uses everywhere.

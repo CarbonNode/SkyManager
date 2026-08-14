@@ -1,14 +1,13 @@
 /* ===================================================================== *
- *  Items tab — the inline item explorer. Own sheet (linked from
- *  index.html) so no other pane's app.css section can truncate it — the
- *  sync_view_frags lesson, same as keys-pane.css.
- *
- *  Centerpiece: ONE Google-style bar. Big, calm, spacious — the deck's
- *  tokens (dark #1a1a21→#101015, gold rgba(201,162,75), border #3d3a33,
- *  radius 12). No text below 12px — couch rules.
+ *  NPCs tab — the fast NPC finder (npcs-pane.js).  Derived from the Items
+ *  tab's sheet so the two explorers share one visual language: same bar,
+ *  same pills, same row rhythm.  Differences: the glyph plate is a FACE
+ *  plate (FaceGen render over a sex/unique-hued glyph), rows carry
+ *  unique/essential/template chips, and there is no merchant machinery.
+ *  Own file on purpose — the sync_view_frags truncation trap.
  * ===================================================================== */
 
-#ix-pane {
+#nx-pane {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -17,18 +16,18 @@
   gap: 14px;
   position: relative;   /* the price sheet + toast anchor to the pane */
 }
-#ix-pane.hidden { display: none; }
+#nx-pane.hidden { display: none; }
 
 /* ------------------------------------------------------------- header -- */
 
-.ix-head {
+.nx-head {
   display: flex;
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
 }
 
-.ix-title {
+.nx-title {
   font-size: 20px;
   font-weight: 700;
   color: #e8e2d4;
@@ -39,14 +38,14 @@
   gap: 12px;
 }
 
-#ix-count-chip {
+#nx-count-chip {
   font-size: 13px;
   font-weight: 500;
   color: #9a917d;
   white-space: nowrap;
 }
 
-.ix-head-right {
+.nx-head-right {
   margin-left: auto;
   display: flex;
   align-items: center;
@@ -54,7 +53,7 @@
   flex-wrap: wrap;
 }
 
-.ix-gold {
+#nx-mrf-note {
   font-size: 15px;
   font-weight: 700;
   color: #ecd9a8;
@@ -65,7 +64,7 @@
   white-space: nowrap;
 }
 
-.ix-btn {
+.nx-btn {
   background: #1d1d25;
   border: 1px solid #3d3a33;
   border-radius: 9px;
@@ -76,35 +75,24 @@
   white-space: nowrap;
   transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
 }
-.ix-btn:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
-.ix-btn:active { background: #17171d; }
-.ix-btn.ix-toggle-on {
+.nx-btn:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.nx-btn:active { background: #17171d; }
+.nx-btn.nx-toggle-on {
   background: rgba(201, 162, 75, .16);
   border-color: rgba(201, 162, 75, .55);
   color: #ecd9a8;
 }
 
-#ix-mult {
-  background: #1d1d25;
-  border: 1px solid #3d3a33;
-  border-radius: 9px;
-  color: #cfc8b8;
-  font-size: 14px;
-  padding: 9px 10px;
-  cursor: pointer;
-  outline: none;
-}
-#ix-mult.hidden { display: none; }
 
 /* --------------------------------------------------------- the ONE bar -- */
 
-.ix-barwrap {
+.nx-barwrap {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.ix-bar {
+.nx-bar {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -114,19 +102,19 @@
   padding: 6px 12px 6px 20px;
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
-.ix-bar:focus-within {
+.nx-bar:focus-within {
   border-color: rgba(201, 162, 75, .55);
   box-shadow: 0 0 0 3px rgba(201, 162, 75, .10), 0 6px 22px rgba(0, 0, 0, .35);
 }
 
-.ix-bar-glyph {
+.nx-bar-glyph {
   font-size: 20px;
   color: #9a917d;
   flex-shrink: 0;
   line-height: 1;
 }
 
-#ix-search {
+#nx-search {
   flex: 1;
   min-width: 0;
   background: transparent;
@@ -136,10 +124,10 @@
   font-size: 18px;               /* the hero input — bigger than any filter */
   padding: 11px 6px;
 }
-#ix-search::placeholder { color: #6d675a; }
+#nx-search::placeholder { color: #6d675a; }
 
 /* the selected-mod chip lives INSIDE the bar, like a Gmail search token */
-#ix-plug-chip {
+#nx-plug-chip {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -154,14 +142,14 @@
   white-space: nowrap;
   flex-shrink: 0;
 }
-#ix-plug-chip.hidden { display: none; }
-#ix-plug-chip b {
+#nx-plug-chip.hidden { display: none; }
+#nx-plug-chip b {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
   font-weight: 600;
 }
-.ix-chip-x {
+.nx-chip-x {
   cursor: pointer;
   font-weight: 700;
   color: #d8bd85;
@@ -170,18 +158,18 @@
   transition: color 120ms ease, transform 120ms ease;
   flex-shrink: 0;
 }
-.ix-chip-x:hover { color: #f2e2b0; transform: scale(1.2); }
+.nx-chip-x:hover { color: #f2e2b0; transform: scale(1.2); }
 
 /* -------------------------------------------------------------- pills -- */
 
-#ix-pills {
+#nx-pills {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   justify-content: center;       /* centred under the bar, search-engine style */
 }
 
-.ix-pill {
+.nx-pill {
   background: #17171e;
   border: 1px solid #33302a;
   border-radius: 999px;
@@ -192,8 +180,8 @@
   white-space: nowrap;
   transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
 }
-.ix-pill:hover { background: #20202a; border-color: #4a4638; color: #e2dbca; }
-.ix-pill.ix-pill-on {
+.nx-pill:hover { background: #20202a; border-color: #4a4638; color: #e2dbca; }
+.nx-pill.nx-pill-on {
   background: rgba(201, 162, 75, .16);
   border-color: rgba(201, 162, 75, .55);
   color: #ecd9a8;
@@ -202,7 +190,7 @@
 
 /* --------------------------------------------------------------- body -- */
 
-#ix-body {
+#nx-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -212,7 +200,7 @@
   padding-right: 6px;
 }
 
-.ix-sect {
+.nx-sect {
   font-size: 12.5px;
   color: #6d675a;
   text-transform: uppercase;
@@ -222,10 +210,10 @@
   align-items: baseline;
   gap: 8px;
 }
-.ix-sect b { color: #9a917d; font-weight: 650; letter-spacing: 0; text-transform: none; }
+.nx-sect b { color: #9a917d; font-weight: 650; letter-spacing: 0; text-transform: none; }
 
 /* a matching MOD (plugin) row — click to browse its whole catalogue */
-.ix-plug-row {
+.nx-plug-row {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -236,10 +224,10 @@
   cursor: pointer;
   transition: background 130ms ease, border-color 130ms ease;
 }
-.ix-plug-row:hover { background: #1c1c25; border-color: rgba(201, 162, 75, .45); }
-.ix-plug-row.ix-sel { border-color: rgba(201, 162, 75, .6); background: #1c1c25; }
+.nx-plug-row:hover { background: #1c1c25; border-color: rgba(201, 162, 75, .45); }
+.nx-plug-row.nx-sel { border-color: rgba(201, 162, 75, .6); background: #1c1c25; }
 
-.ix-plug-name {
+.nx-plug-name {
   flex: 1;
   min-width: 0;
   font-size: 15.5px;
@@ -249,10 +237,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ix-plug-count { font-size: 13px; color: #9a917d; white-space: nowrap; }
-.ix-plug-go { font-size: 14px; color: #d8bd85; white-space: nowrap; }
+.nx-plug-count { font-size: 13px; color: #9a917d; white-space: nowrap; }
+.nx-plug-go { font-size: 14px; color: #d8bd85; white-space: nowrap; }
 
-.ix-kindbadge {
+.nx-kindbadge {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: .6px;
@@ -260,13 +248,13 @@
   padding: 4px 8px;
   flex-shrink: 0;
 }
-.ix-kind-esm { background: #21232b; border: 1px solid #363a47; color: #aab3c6; }
-.ix-kind-esp { background: #1b2b28; border: 1px solid #2f5148; color: #94d6c3; }
-.ix-kind-esl { background: #261e2e; border: 1px solid #4a3960; color: #cbabef; }
+.nx-kind-esm { background: #21232b; border: 1px solid #363a47; color: #aab3c6; }
+.nx-kind-esp { background: #1b2b28; border: 1px solid #2f5148; color: #94d6c3; }
+.nx-kind-esl { background: #261e2e; border: 1px solid #4a3960; color: #cbabef; }
 
 /* ----------------------------------------------------------- item rows -- */
 
-.ix-row {
+.nx-row {
   display: flex;
   align-items: center;
   gap: 16px;
@@ -276,13 +264,13 @@
   padding: 13px 16px;
   transition: background 130ms ease, border-color 130ms ease, transform 130ms ease, box-shadow 130ms ease;
 }
-.ix-row:hover {
+.nx-row:hover {
   background: #1b1b23;
   border-color: #4a4638;
   transform: translateY(-1px);
   box-shadow: 0 5px 16px rgba(0, 0, 0, .34);
 }
-.ix-row.ix-sel {
+.nx-row.nx-sel {
   border-color: rgba(201, 162, 75, .6);
   background: #1b1b23;
   box-shadow: 0 0 0 1px rgba(201, 162, 75, .18);
@@ -291,7 +279,7 @@
 /* per-type glyph plate, the keys-pane hue idea applied to item categories.
    Also the frame for a real item render: the <img> fills it, the emoji hides
    underneath so a broken/absent render leaves the hued glyph. */
-.ix-glyph {
+.nx-plate {
   position: relative;
   width: 64px;
   height: 64px;
@@ -305,7 +293,7 @@
   overflow: hidden;
 }
 /* the rendered mesh, floated over the glyph plate */
-.ix-glyph .ix-art {
+.nx-plate .nx-art {
   position: absolute;
   inset: 5px;
   width: calc(100% - 10px);
@@ -316,21 +304,12 @@
 }
 /* once art has landed the emoji is redundant — mute it right down so it can't
    bleed through a transparent render, but keep it as the load fallback */
-.ix-glyph.ix-has-art { color: transparent; background: #101015; border-color: #2c2a24; }
-.ix-t-weap { background: #2b1d1c; border-color: #5c3733; color: #e8a49c; }
-.ix-t-armo { background: #21232b; border-color: #414659; color: #aab3c6; }
-.ix-t-ammo { background: #241f17; border-color: #4d4128; color: #d3b988; }
-.ix-t-alch { background: #1c2530; border-color: #33465c; color: #9ec3e8; }
-.ix-t-food { background: #26201a; border-color: #52412e; color: #dfb894; }
-.ix-t-ingr { background: #1b2b1f; border-color: #2f513a; color: #94d6a7; }
-.ix-t-book { background: #2a2417; border-color: #55503f; color: #ecd9a8; }
-.ix-t-scrl { background: #292117; border-color: #564734; color: #e3c493; }
-.ix-t-slgm { background: #261e2e; border-color: #4a3960; color: #cbabef; }
-.ix-t-misc { background: #1b2b28; border-color: #2f5148; color: #94d6c3; }
-.ix-t-keym { background: #23211b; border-color: #4b4636; color: #cfc19a; }
-.ix-t-ligh { background: #2b2415; border-color: #5c4c2a; color: #f0d089; }
+.nx-plate.nx-has-art { color: transparent; background: #101015; border-color: #2c2a24; }
+.nx-t-uniq { background: #2a2417; border-color: #55503f; color: #ecd9a8; }
+.nx-t-fem  { background: #2b1d24; border-color: #5c3349; color: #e89cc0; }
+.nx-t-male { background: #1c2530; border-color: #33465c; color: #9ec3e8; }
 
-.ix-mid {
+.nx-mid {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -338,7 +317,7 @@
   gap: 5px;
 }
 
-.ix-name {
+.nx-name {
   font-size: 16px;
   font-weight: 650;
   color: #efe9da;
@@ -346,14 +325,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ix-name mark {
+.nx-name mark {
   background: rgba(201, 162, 75, .25);
   color: #f2e2b0;
   border-radius: 3px;
   padding: 0 1px;
 }
 
-.ix-meta {
+.nx-meta {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -362,8 +341,8 @@
   color: #9a917d;
   min-width: 0;
 }
-.ix-meta-type { color: #b6ad99; font-weight: 600; white-space: nowrap; }
-.ix-meta-plug {
+.nx-meta-race { color: #b6ad99; font-weight: 600; white-space: nowrap; }
+.nx-meta-plug {
   cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -371,67 +350,11 @@
   max-width: 34ch;
   transition: color 120ms ease;
 }
-.ix-meta-plug:hover { color: #ecd9a8; text-decoration: underline; }
+.nx-meta-plug:hover { color: #ecd9a8; text-decoration: underline; }
 
-/* the value·weight line Rober circled — value leads in the gold accent with
-   its coin glyph, weight sits quietly muted behind a hairline divider. Both
-   ≥13px per the couch rules. */
-.ix-meta-vw {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  white-space: nowrap;
-}
-.ix-meta-val {
-  color: #e6c982;
-  font-weight: 650;
-  font-size: 13px;
-  white-space: nowrap;
-}
-.ix-meta-wt {
-  color: #8d8471;
-  font-size: 13px;
-  white-space: nowrap;
-  padding-left: 10px;
-  border-left: 1px solid #33302a;
-}
 
-/* right side: qty stepper + the action button */
-.ix-act {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
 
-.ix-qty {
-  display: flex;
-  align-items: center;
-  border: 1px solid #3d3a33;
-  border-radius: 9px;
-  overflow: hidden;
-  background: #121218;
-}
-.ix-qty button {
-  background: transparent;
-  border: none;
-  color: #cfc8b8;
-  font-size: 16px;
-  width: 34px;
-  height: 38px;
-  cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
-}
-.ix-qty button:hover { background: #26262f; color: #efe9da; }
-.ix-qty b {
-  min-width: 34px;
-  text-align: center;
-  font-size: 14.5px;
-  color: #efe9da;
-  font-weight: 700;
-}
-
-.ix-take {
+.nx-act .nx-primary {
   background: linear-gradient(180deg, rgba(201, 162, 75, .22), rgba(201, 162, 75, .11));
   border: 1px solid rgba(201, 162, 75, .5);
   border-radius: 9px;
@@ -444,26 +367,26 @@
   box-shadow: inset 0 1px 0 rgba(255, 240, 200, .08);
   transition: background 130ms ease, border-color 130ms ease, transform 80ms ease, box-shadow 130ms ease;
 }
-.ix-take:hover {
+.nx-act .nx-primary:hover {
   background: linear-gradient(180deg, rgba(201, 162, 75, .34), rgba(201, 162, 75, .18));
   border-color: rgba(201, 162, 75, .8);
   box-shadow: inset 0 1px 0 rgba(255, 240, 200, .12), 0 3px 10px rgba(0, 0, 0, .28);
 }
-.ix-take:active {
+.nx-act .nx-primary:active {
   transform: scale(.97);
   background: linear-gradient(180deg, rgba(201, 162, 75, .12), rgba(201, 162, 75, .2));
   box-shadow: inset 0 2px 4px rgba(0, 0, 0, .3);
 }
 
 /* the "show more" foot */
-.ix-more {
+.nx-more {
   align-self: center;
   margin: 6px 0 10px;
 }
 
 /* --------------------------------------------------------- hero / empty -- */
 
-#ix-empty {
+#nx-empty {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -473,122 +396,26 @@
   text-align: center;
   padding: 30px;
 }
-#ix-empty.hidden { display: none; }
+#nx-empty.hidden { display: none; }
 
-.ix-hero-glyph { font-size: 44px; line-height: 1; opacity: .8; }
-.ix-empty-title { font-size: 20px; font-weight: 700; color: #cfc8b8; }
-.ix-empty-sub { font-size: 14.5px; color: #8d8471; max-width: 52ch; line-height: 1.55; }
-.ix-empty-sub b { color: #cfc8b8; }
+.nx-hero-glyph { font-size: 44px; line-height: 1; opacity: .8; }
+.nx-empty-title { font-size: 20px; font-weight: 700; color: #cfc8b8; }
+.nx-empty-sub { font-size: 14.5px; color: #8d8471; max-width: 52ch; line-height: 1.55; }
+.nx-empty-sub b { color: #cfc8b8; }
 
-.ix-try {
+.nx-try {
   display: flex;
   gap: 9px;
   flex-wrap: wrap;
   justify-content: center;
   margin-top: 4px;
 }
-.ix-try .ix-pill { font-size: 14px; }
+.nx-try .nx-pill { font-size: 14px; }
 
-/* ---------------------------------------------------------- price sheet -- */
-
-#ix-sheet {
-  position: absolute;
-  inset: 0;
-  background: rgba(8, 8, 11, .72);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 40;
-  border-radius: inherit;
-}
-#ix-sheet.hidden { display: none; }
-
-.ix-sheet-card {
-  width: min(480px, 92%);
-  background: linear-gradient(180deg, #1a1a21, #101015);
-  border: 1px solid #55503f;
-  border-radius: 14px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, .6);
-  padding: 22px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.ix-sheet-title { font-size: 18px; font-weight: 700; color: #e8e2d4; }
-.ix-sheet-item {
-  font-size: 15px;
-  color: #b6ad99;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.ix-sheet-glyph {
-  width: 58px;
-  height: 58px;
-  font-size: 28px;
-}
-.ix-sheet-item-txt {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.ix-sheet-item b { color: #efe9da; font-size: 16px; }
-.ix-sheet-item-txt span { font-size: 13.5px; }
-
-.ix-sheet-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.ix-sheet-label { font-size: 13.5px; color: #9a917d; min-width: 64px; }
-
-#ix-price {
-  flex: 1;
-  min-width: 120px;
-  background: #121218;
-  border: 1px solid #3d3a33;
-  border-radius: 9px;
-  color: #ecd9a8;
-  font-size: 18px;
-  font-weight: 700;
-  padding: 11px 14px;
-  outline: none;
-  transition: border-color 140ms ease, box-shadow 140ms ease;
-}
-#ix-price:focus {
-  border-color: rgba(201, 162, 75, .55);
-  box-shadow: 0 0 0 2px rgba(201, 162, 75, .12);
-}
-
-.ix-sheet-note { font-size: 13.5px; color: #9a917d; }
-.ix-sheet-note.ix-short { color: #e8a49c; }
-
-.ix-sheet-actions {
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
-  margin-top: 4px;
-}
-.ix-pay {
-  background: rgba(201, 162, 75, .2);
-  border: 1px solid rgba(201, 162, 75, .6);
-  border-radius: 9px;
-  color: #f2e2b0;
-  font-size: 15px;
-  font-weight: 700;
-  padding: 11px 20px;
-  cursor: pointer;
-  transition: background 130ms ease, opacity 130ms ease;
-}
-.ix-pay:hover { background: rgba(201, 162, 75, .3); }
-.ix-pay:disabled { opacity: .45; cursor: default; }
 
 /* --------------------------------------------------------------- toast -- */
 
-.ix-toast {
+.nx-toast {
   position: absolute;
   left: 50%;
   bottom: 18px;
@@ -609,25 +436,25 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.ix-toast.ix-toast-show { opacity: 1; transform: translateX(-50%) translateY(0); }
-.ix-toast.ix-toast-err { border-color: rgba(200, 80, 70, .6); color: #f0b1a8; }
+.nx-toast.nx-toast-show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.nx-toast.nx-toast-err { border-color: rgba(200, 80, 70, .6); color: #f0b1a8; }
 
 /* ---------------------------------------------------------- skeletons -- */
 
-.ix-skel { pointer-events: none; }
-.ix-skel-box {
+.nx-skel { pointer-events: none; }
+.nx-skel-box {
   border-radius: 8px;
   background: linear-gradient(90deg, #1b1b22 25%, #23232c 50%, #1b1b22 75%);
   background-size: 200% 100%;
-  animation: ix-shimmer 1.3s infinite linear;
+  animation: nx-shimmer 1.3s infinite linear;
   border: none;
 }
-.ix-skel .ix-glyph { border: none; }
-.ix-skel-w1 { width: 46%; height: 18px; }
-.ix-skel-w2 { width: 30%; height: 13px; }
-.ix-skel-btn { width: 84px; height: 38px; }
+.nx-skel .nx-plate { border: none; }
+.nx-skel-w1 { width: 46%; height: 18px; }
+.nx-skel-w2 { width: 30%; height: 13px; }
+.nx-skel-btn { width: 84px; height: 38px; }
 
-@keyframes ix-shimmer {
+@keyframes nx-shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
@@ -635,41 +462,108 @@
 /* ------------------------------------------------- narrow palette (640) -- */
 
 @media (max-width: 900px) {
-  #ix-pane { padding: 14px 14px 10px; }
-  .ix-title { font-size: 17px; }
-  #ix-search { font-size: 16px; padding: 9px 4px; }
-  .ix-btn { padding: 9px 12px; font-size: 13px; }
-  .ix-row { gap: 12px; padding: 11px 12px; }
-  .ix-glyph { width: 54px; height: 54px; font-size: 25px; }
-  .ix-sheet-glyph { width: 50px; height: 50px; font-size: 24px; }
-  .ix-name { font-size: 14.5px; }
-  .ix-meta { font-size: 12.5px; gap: 8px; }
-  .ix-meta-val, .ix-meta-wt { font-size: 12.5px; }
-  .ix-meta-vw { gap: 8px; }
-  .ix-meta-wt { padding-left: 8px; }
-  .ix-meta-plug { max-width: 18ch; }
-  .ix-qty button { width: 28px; height: 34px; }
-  .ix-take { padding: 9px 12px; font-size: 13px; }
-  #ix-plug-chip { max-width: 34%; font-size: 13px; }
-  .ix-pill { font-size: 12.5px; padding: 7px 11px; }
+  #nx-pane { padding: 14px 14px 10px; }
+  .nx-title { font-size: 17px; }
+  #nx-search { font-size: 16px; padding: 9px 4px; }
+  .nx-btn { padding: 9px 12px; font-size: 13px; }
+  .nx-row { gap: 12px; padding: 11px 12px; }
+  .nx-plate { width: 54px; height: 54px; font-size: 25px; }
+  .nx-sheet-glyph { width: 50px; height: 50px; font-size: 24px; }
+  .nx-name { font-size: 14.5px; }
+  .nx-meta { font-size: 12.5px; gap: 8px; }
+  .nx-meta-val, .nx-meta-wt { font-size: 12.5px; }
+  .nx-meta-vw { gap: 8px; }
+  .nx-meta-wt { padding-left: 8px; }
+  .nx-meta-plug { max-width: 18ch; }
+  .nx-qty button { width: 28px; height: 34px; }
+  .nx-act .nx-do { padding: 8px 11px; font-size: 12.5px; }
+  #nx-plug-chip { max-width: 34%; font-size: 13px; }
+  .nx-pill { font-size: 12.5px; padding: 7px 11px; }
+}
+
+/* ------------------------------------------------- npc-specific pieces -- */
+
+#nx-mrf-note.hidden { display: none; }
+
+/* the action column: three verbs, wrapping before they ever clip (the F7
+   quick-card eleven-buttons lesson) */
+.nx-act {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.nx-act .nx-do { font-size: 13.5px; padding: 9px 14px; }
+.nx-act .nx-primary { font-size: 13.5px; padding: 9px 16px; }
+
+/* name-line chips: unique / essential / template-no-face */
+.nx-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.nx-name mark { flex: 0 1 auto; }
+.nx-chip {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.nx-chip-uniq { background: rgba(201, 162, 75, .14); border: 1px solid rgba(201, 162, 75, .45); color: #ecd9a8; }
+.nx-chip-ess  { background: #21232b; border: 1px solid #414659; color: #aab3c6; }
+.nx-chip-tmpl { background: #1f1f26; border: 1px solid #3a3a46; color: #8d8878; }
+
+/* the face plate: portrait-shaped, art fills it */
+.nx-plate {
+  width: 72px;
+  height: 72px;
+  border-radius: 12px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  border: 1px solid;
+  position: relative;
+  overflow: hidden;
+}
+.nx-plate .nx-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.nx-skel .nx-plate { width: 72px; height: 72px; }
+
+@media (max-width: 760px) {
+  .nx-plate, .nx-skel .nx-plate { width: 56px; height: 56px; font-size: 20px; }
+  .nx-act .nx-do, .nx-act .nx-primary { padding: 8px 11px; font-size: 12.5px; }
+}
+
+/* the name text itself keeps its ellipsis inside the flex name line */
+.nx-name-txt {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── lightbox affordance + the Finder mode switch (2026-08-14) ─────────── */
 
-/* a plate with real art invites the click */
-.ix-glyph.ix-zoomable { cursor: zoom-in; transition: border-color .12s ease, box-shadow .12s ease; }
-.ix-glyph.ix-zoomable:hover { border-color: #6a6455; box-shadow: 0 0 0 2px rgba(255, 211, 106, .18); }
-.ix-sheet-glyph.ix-has-art { cursor: zoom-in; }
+.nx-plate.nx-zoomable { cursor: zoom-in; transition: border-color .12s ease, box-shadow .12s ease; }
+.nx-plate.nx-zoomable:hover { border-color: #6a6455; box-shadow: 0 0 0 2px rgba(255, 211, 106, .18); }
 
-/* the merged Finder tab's mode switch — segmented, in the head row */
-#ix-pane .fx-switch {
+#nx-pane .fx-switch {
   display: inline-flex;
   border: 1px solid #3a3a46;
   border-radius: 10px;
   overflow: hidden;
   flex-shrink: 0;
 }
-#ix-pane .fx-sw {
+#nx-pane .fx-sw {
   padding: 8px 16px;
   font-size: 14px;
   font-weight: 600;
@@ -680,6 +574,6 @@
   transition: background .12s ease, color .12s ease;
   white-space: nowrap;
 }
-#ix-pane .fx-sw + .fx-sw { border-left: 1px solid #3a3a46; }
-#ix-pane .fx-sw:hover { background: #23232c; color: #d8d2c4; }
-#ix-pane .fx-sw.fx-sw-on { background: #33301f; color: #ffd36a; cursor: default; }
+#nx-pane .fx-sw + .fx-sw { border-left: 1px solid #3a3a46; }
+#nx-pane .fx-sw:hover { background: #23232c; color: #d8d2c4; }
+#nx-pane .fx-sw.fx-sw-on { background: #33301f; color: #ffd36a; cursor: default; }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <functional>
 #include <string>
 
@@ -70,4 +71,11 @@ namespace IconBridge
 
 	// One line for the log/status: "1913 icons from 29 atlases" or why not.
 	std::string StatusLine();
+
+	// The REAL mod-folder root, resolved from our own module handle (law #4
+	// above) — NOT a `Data\...` relative path. Use it as the destination for any
+	// file we WRITE into a view tree that must ship (release packaging carries
+	// the mod folder, not MO2's Overwrite). Empty on failure. Reads should still
+	// go through the relative `Data\...` path so MO2's VFS answers.
+	std::filesystem::path ModFolderRoot();
 }

@@ -1079,6 +1079,217 @@ namespace PortraitCapture
 			return w > 0 && h > 0;
 		}
 
+		// ---- present-thread frame grab (2026-08-13, the REAL reopen fix) ------
+		// Where the old grab went wrong, in one sentence: it issued immediate-
+		// context work (CopySubresourceRegion + Map) from the SKSE task thread in
+		// the middle of a frame, and papered over the thread race with
+		// ID3D11Multithread::SetMultithreadProtected(TRUE) — a PERMANENT, global
+		// change to the shared context.
+		//
+		// On this rig that combination breaks more than it fixes. Skyrim Upscaler
+		// (PureDark AIO, installed 2026-08-08) wraps the game's swapchain in a
+		// 1706x960 PROXY ("hk_IDXGIFactory_CreateSwapChain created proxy
+		// SwapChain : 1706 x 960" in SkyrimUpscaler.log), renders 3D at 2/3 res,
+		// and composites UI separately at full size via DX12/Streamline frame
+		// generation. The 2026-08-13 play-test log shows the exact failure window:
+		// multithread protection was force-enabled at 18:32:05.732 (first capture
+		// of the session), and EVERY deck open after it — 18:32:07, 18:32:25 —
+		// painted clipped to the proxy's 2/3 region, while every open before it
+		// was fine. Same view, same config, same page: the thing that changed was
+		// our foreign-thread poke at the renderer's context under the upscaler's
+		// frame pipeline.
+		//
+		// (This also retires the BUG-B "wait for the backbuffer to grow back"
+		// gate's PREMISE: the game-visible backbuffer is 1706x960 the whole
+		// session — it is the proxy — so that gate always released instantly.
+		// The gate stays because it is harmless and still covers a rig without
+		// the upscaler.)
+		//
+		// The fix is to stop injecting context work from the wrong thread at all:
+		// queue the grab and execute it INSIDE the game's present call, on the
+		// render thread, at the frame boundary — the same call site PrismaUI
+		// hooks (chained through the SKSE trampoline, so both coexist). No
+		// multithread protection, no driver lock, no mid-frame interleave: the
+		// copy runs where every other renderer call runs.
+		namespace presentgrab
+		{
+			struct Job
+			{
+				ID3D11Texture2D*          staging = nullptr;  // owned; released in dtor
+				D3D11_BOX                 region{};
+				int                       size = 0;      // crop edge, px
+				int                       stride = 0;    // bytes per pixel
+				std::vector<std::uint8_t> bytes;         // tight rows: size * stride
+				std::atomic<int>          state{ 0 };    // 0 queued, 2 done, <0 failed
+
+				~Job()
+				{
+					if (staging)
+						staging->Release();
+				}
+			};
+
+			std::mutex           g_jobMutex;
+			std::shared_ptr<Job> g_job;   // one grab in flight at a time
+
+			using PresentFn = void __fastcall(std::uint32_t);
+			REL::Relocation<PresentFn> g_origPresent;
+			std::atomic<bool>          g_hookInstalled{ false };
+
+			void StepOnPresentThread()
+			{
+				std::shared_ptr<Job> job;
+				{
+					std::lock_guard l(g_jobMutex);
+					job = g_job;
+				}
+				if (!job || job->state.load() < 0 || job->state.load() >= 2)
+					return;
+
+				auto* device = RE::BSGraphics::Renderer::GetDevice();
+				auto* window = RE::BSGraphics::Renderer::GetCurrentRenderWindow();
+				if (!device || !window || !window->swapChain) {
+					job->state.store(-1);
+					return;
+				}
+				ID3D11DeviceContext* ctx = nullptr;
+				reinterpret_cast<ID3D11Device*>(device)->GetImmediateContext(&ctx);
+				if (!ctx) {
+					job->state.store(-1);
+					return;
+				}
+
+				// The whole grab happens inside ONE present: copy, then a
+				// BLOCKING map. The map costs the render thread the few
+				// milliseconds it takes the GPU to finish a <=4 MB region copy —
+				// a one-frame hitch on the frame the photo was taken, which is
+				// exactly when a hitch is invisible. One present is also the
+				// robustness win: the requester blocks a worker thread, and the
+				// game only needs to present a single already-queued frame for
+				// the grab to complete.
+				// GetBuffer(0) is taken HERE, not at request time: with a
+				// flip-model (or proxied) swapchain the "current" back buffer
+				// rotates every present, and a reference taken on another
+				// thread two frames ago can point at a buffer mid-scanout.
+				auto*            swap = reinterpret_cast<IDXGISwapChain*>(window->swapChain);
+				ID3D11Texture2D* back = nullptr;
+				if (FAILED(swap->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back))) || !back) {
+					job->state.store(-1);
+					ctx->Release();
+					return;
+				}
+				ctx->CopySubresourceRegion(job->staging, 0, 0, 0, 0, back, 0, &job->region);
+				back->Release();
+
+				D3D11_MAPPED_SUBRESOURCE mapped{};
+				const HRESULT            hr = ctx->Map(job->staging, 0, D3D11_MAP_READ, 0, &mapped);
+				if (FAILED(hr) || !mapped.pData || mapped.RowPitch == 0) {
+					if (mapped.pData)
+						ctx->Unmap(job->staging, 0);
+					job->state.store(-1);
+					ctx->Release();
+					return;
+				}
+				const std::size_t rowBytes = static_cast<std::size_t>(job->size) * job->stride;
+				job->bytes.resize(rowBytes * job->size);
+				const auto* src = static_cast<const std::uint8_t*>(mapped.pData);
+				for (int y = 0; y < job->size; ++y)
+					std::memcpy(job->bytes.data() + rowBytes * y, src + static_cast<std::size_t>(y) * mapped.RowPitch, rowBytes);
+				ctx->Unmap(job->staging, 0);
+				ctx->Release();
+				job->state.store(2);
+			}
+
+			void __fastcall HookedPresent(std::uint32_t a_p1)
+			{
+				// Grab BEFORE forwarding: the back buffer holds the game's
+				// finished frame, and PrismaUI (downstream in this chain) has not
+				// drawn this frame's overlay into it yet — so a photo can never
+				// contain the deck's own HUD views.
+				StepOnPresentThread();
+				g_origPresent(a_p1);
+			}
+
+			// Submit a copy job and block (SKSE/worker thread) until the present
+			// thread finishes it. Returns the pixel rows (tight pitch) or empty.
+			bool RunJob(const D3D11_BOX& region, int size, int stride, const D3D11_TEXTURE2D_DESC& backDesc,
+				std::vector<std::uint8_t>& out)
+			{
+				if (!g_hookInstalled.load()) {
+					logger::warn("portrait: present-grab hook not installed - cannot capture");
+					return false;
+				}
+				auto* device = RE::BSGraphics::Renderer::GetDevice();
+				if (!device)
+					return false;
+
+				D3D11_TEXTURE2D_DESC sd = backDesc;
+				sd.Width = static_cast<UINT>(size);
+				sd.Height = static_cast<UINT>(size);
+				sd.MipLevels = 1;
+				sd.ArraySize = 1;
+				sd.SampleDesc.Count = 1;
+				sd.SampleDesc.Quality = 0;
+				sd.Usage = D3D11_USAGE_STAGING;
+				sd.BindFlags = 0;
+				sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+				sd.MiscFlags = 0;
+
+				// Resource CREATION is free-threaded on ID3D11Device — only the
+				// immediate context is single-owner, and that part now runs on
+				// the present thread.
+				ID3D11Texture2D* staging = nullptr;
+				if (FAILED(reinterpret_cast<ID3D11Device*>(device)->CreateTexture2D(&sd, nullptr, &staging)) || !staging)
+					return false;
+
+				auto job = std::make_shared<Job>();
+				job->staging = staging;   // ownership moves to the job
+				job->region = region;
+				job->size = size;
+				job->stride = stride;
+				{
+					std::lock_guard l(g_jobMutex);
+					if (g_job && g_job->state.load() < 2) {
+						// A grab is already in flight; refusing is honest and the
+						// callers all retry on the next request.
+						logger::warn("portrait: a frame grab is already in flight - refusing a second");
+						return false;
+					}
+					g_job = job;
+				}
+
+				// Poll from this thread; the present thread does the work. The
+				// deadline covers a paused game (no presents => no progress).
+				const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+				for (;;) {
+					const int st = job->state.load();
+					if (st == 2)
+						break;
+					if (st < 0 || std::chrono::steady_clock::now() > deadline) {
+						{
+							std::lock_guard l(g_jobMutex);
+							if (g_job == job)
+								g_job.reset();   // present thread drops it too
+						}
+						if (st < 0)
+							logger::warn("portrait: present-thread grab failed (state {})", st);
+						else
+							logger::warn("portrait: present-thread grab timed out - is the game paused?");
+						return false;
+					}
+					std::this_thread::sleep_for(std::chrono::milliseconds(4));
+				}
+
+				out = std::move(job->bytes);
+				{
+					std::lock_guard l(g_jobMutex);
+					if (g_job == job)
+						g_job.reset();
+				}
+				return true;
+			}
+		}
+
 		bool GrabRegion(const Box& box, std::vector<std::uint8_t>& rgbOut, int outSize)
 		{
 			auto* window = RE::BSGraphics::Renderer::GetCurrentRenderWindow();
@@ -1089,14 +1300,18 @@ namespace PortraitCapture
 				return false;
 
 			auto* swap = reinterpret_cast<IDXGISwapChain*>(window->swapChain);
-			auto* dev  = reinterpret_cast<ID3D11Device*>(device);
 
+			// The back buffer is inspected here only for its DESC (size, format).
 			ID3D11Texture2D* back = nullptr;
 			if (FAILED(swap->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back))) || !back)
 				return false;
 
 			D3D11_TEXTURE2D_DESC desc{};
 			back->GetDesc(&desc);
+			// The reference is dropped IMMEDIATELY: the actual copy source is
+			// re-fetched on the present thread, where "buffer 0" is meaningful.
+			back->Release();
+			back = nullptr;
 
 			// The back buffer's FORMAT was assumed (BGRA8, 4 bytes per pixel) and
 			// never checked. That assumption is wrong on an ENB rig, where the
@@ -1113,7 +1328,15 @@ namespace PortraitCapture
 			// hand back rubbish, say so.
 			if (desc.SampleDesc.Count > 1) {
 				logger::warn("portrait: backbuffer is {}x MSAA - cannot copy directly", desc.SampleDesc.Count);
-				back->Release();
+				return false;
+			}
+
+			// Format check moved BEFORE the grab: there is no point spending
+			// present-thread frames copying a surface we cannot decode.
+			const PixFmt pf = FormatOf(desc.Format);
+			if (!pf.supported()) {
+				logger::warn("portrait: unsupported backbuffer format {} - refusing rather than saving garbage",
+					static_cast<int>(desc.Format));
 				return false;
 			}
 
@@ -1126,83 +1349,6 @@ namespace PortraitCapture
 			b.x = std::clamp(b.x, 0, static_cast<int>(desc.Width) - b.size);
 			b.y = std::clamp(b.y, 0, static_cast<int>(desc.Height) - b.size);
 
-			D3D11_TEXTURE2D_DESC sd = desc;
-			sd.Width = static_cast<UINT>(b.size);
-			sd.Height = static_cast<UINT>(b.size);
-			sd.MipLevels = 1;
-			sd.ArraySize = 1;
-			sd.SampleDesc.Count = 1;
-			sd.SampleDesc.Quality = 0;
-			sd.Usage = D3D11_USAGE_STAGING;
-			sd.BindFlags = 0;
-			sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-			sd.MiscFlags = 0;
-
-			ID3D11Texture2D* staging = nullptr;
-			if (FAILED(dev->CreateTexture2D(&sd, nullptr, &staging)) || !staging) {
-				back->Release();
-				return false;
-			}
-
-			ID3D11DeviceContext* ctx = nullptr;
-			dev->GetImmediateContext(&ctx);
-			if (!ctx) {
-				staging->Release();
-				back->Release();
-				return false;
-			}
-
-			// ---- THE THREADING RULE THIS CODE BROKE ------------------------
-			// A D3D11 IMMEDIATE context is explicitly NOT thread-safe, and this
-			// runs on the SKSE task thread while Skyrim's renderer is using that
-			// very context on its own thread. Two threads issuing commands into
-			// one context is undefined behaviour, and the way it actually fails
-			// is a null dereference deep inside the vendor's user-mode driver on
-			// a DRIVER worker thread -- which is exactly the crash on 2026-08-02
-			// 19:18:55: EXCEPTION_ACCESS_VIOLATION at nvwgf2umx.dll+018BBFB,
-			// `mov rcx,[rdx+0x10]` with RDX 0, an 18-frame stack that is entirely
-			// nvwgf2umx bottoming out in BaseThreadInitThunk. Our own log stops
-			// between "backbuffer ..." and "reading N bytes/px" -- i.e. inside
-			// exactly this block. It "worked" dozens of times first because a
-			// data race is a race: the successful capture two minutes earlier
-			// proves nothing about the next one.
-			//
-			// ID3D11Multithread is the documented fix, and it needs BOTH halves:
-			//  * SetMultithreadProtected(TRUE) makes the DRIVER take its own lock
-			//    inside every context call -- including the renderer's, which is
-			//    the half we do not control and cannot wrap.
-			//  * Enter()/Leave() holds that same lock across our whole
-			//    copy -> Map -> read -> Unmap sequence, so the renderer cannot
-			//    interleave BETWEEN our copy and our map and leave us reading a
-			//    surface it has since reused.
-			// Protection is left ON afterwards on purpose: switching it back off
-			// would re-open the race for any call already in flight, and the cost
-			// is a lock the driver takes anyway once any overlay enables it.
-			ID3D11Multithread* mt = nullptr;
-			if (SUCCEEDED(ctx->QueryInterface(__uuidof(ID3D11Multithread), reinterpret_cast<void**>(&mt))) && mt) {
-				if (!mt->GetMultithreadProtected()) {
-					mt->SetMultithreadProtected(TRUE);
-					logger::info("portrait: enabled D3D11 multithread protection on the immediate context");
-				}
-				mt->Enter();
-			} else {
-				// No lock available: a grab here is a coin flip against the
-				// renderer, and losing it is a hard CTD rather than a bad photo.
-				// Refusing is the only honest option -- and it is visible, unlike
-				// a crash five minutes later that reads as "the game is unstable".
-				logger::error("portrait: ID3D11Multithread unavailable - refusing the grab rather than racing the renderer");
-				ctx->Release();
-				staging->Release();
-				back->Release();
-				return false;
-			}
-			// Releases the driver lock however this scope is left, including the
-			// early `return false` paths below and any exception.
-			struct MtGuard {
-				ID3D11Multithread* m;
-				~MtGuard() { if (m) { m->Leave(); m->Release(); } }
-			} mtGuard{ mt };
-
 			D3D11_BOX region{};
 			region.left = static_cast<UINT>(b.x);
 			region.top = static_cast<UINT>(b.y);
@@ -1210,27 +1356,26 @@ namespace PortraitCapture
 			region.right = static_cast<UINT>(b.x + b.size);
 			region.bottom = static_cast<UINT>(b.y + b.size);
 			region.back = 1;
-			ctx->CopySubresourceRegion(staging, 0, 0, 0, 0, back, 0, &region);
 
-			D3D11_MAPPED_SUBRESOURCE mapped{};
-			bool ok = SUCCEEDED(ctx->Map(staging, 0, D3D11_MAP_READ, 0, &mapped)) && mapped.pData;
-			// A zero row pitch means every output row would read the SAME source
-			// bytes — which is precisely the all-rows-identical striping a real
-			// capture produced. Catch it here rather than write it to disk.
-			if (ok && mapped.RowPitch == 0) {
-				logger::warn("portrait: Map returned RowPitch 0 - refusing the frame");
-				ok = false;
-			}
-			const PixFmt pf = FormatOf(desc.Format);
-			if (ok && !pf.supported()) {
-				logger::warn("portrait: unsupported backbuffer format {} - refusing rather than saving garbage",
-					static_cast<int>(desc.Format));
-				ok = false;
-			}
+			// The copy + map now run on the PRESENT THREAD (see presentgrab above)
+			// — the thread that owns the immediate context — instead of being
+			// injected from this one mid-frame under ID3D11Multithread protection.
+			std::vector<std::uint8_t> raw;
+			if (!presentgrab::RunJob(region, b.size, pf.stride, desc, raw))
+				return false;
+			logger::info("portrait: present-thread grab ok");  // marker: portrait-present-grab
+
+			// The pixels arrived as tight rows from the present thread; the
+			// decode below is pure CPU work and stays on THIS thread.
+			bool ok = raw.size() == static_cast<std::size_t>(b.size) * b.size * pf.stride;
+			if (!ok)
+				logger::warn("portrait: grab returned {} bytes, expected {} - refusing the frame",
+					raw.size(), static_cast<std::size_t>(b.size) * b.size * pf.stride);
+			const std::size_t rowPitch = static_cast<std::size_t>(b.size) * pf.stride;
 			if (ok) {
-				logger::info("portrait: reading {} bytes/px, RowPitch {}", pf.stride, mapped.RowPitch);
+				logger::info("portrait: reading {} bytes/px, RowPitch {}", pf.stride, rowPitch);
 				rgbOut.assign(static_cast<std::size_t>(outSize) * outSize * 3, 0);
-				const auto* base = static_cast<const std::uint8_t*>(mapped.pData);
+				const auto* base = raw.data();
 				// BOX-AVERAGE downscale. This started as nearest-neighbour, which
 				// is the wrong filter for the job: a face crop is routinely 700-900
 				// px reduced to a few hundred, and point-sampling a >2x reduction
@@ -1251,7 +1396,7 @@ namespace PortraitCapture
 						const int sx1 = std::max(sx0 + 1, (ox + 1) * b.size / outSize);
 						std::uint32_t r = 0, g = 0, bl = 0, n = 0;
 						for (int sy = sy0; sy < sy1 && sy < b.size; ++sy) {
-							const auto* row = base + static_cast<std::size_t>(sy) * mapped.RowPitch;
+							const auto* row = base + static_cast<std::size_t>(sy) * rowPitch;
 							for (int sx = sx0; sx < sx1 && sx < b.size; ++sx) {
 								const auto*  px = row + static_cast<std::size_t>(sx) * pf.stride;
 								std::uint8_t pr, pg, pb;
@@ -1270,7 +1415,6 @@ namespace PortraitCapture
 						dst[2] = static_cast<std::uint8_t>(bl / n);
 					}
 				}
-				ctx->Unmap(staging, 0);
 
 				// SANITY CHECK — is this actually a photograph?
 				//
@@ -1328,9 +1472,6 @@ namespace PortraitCapture
 				}
 			}
 
-			ctx->Release();
-			staging->Release();
-			back->Release();
 			return ok;
 		}
 
@@ -1666,18 +1807,30 @@ namespace PortraitCapture
 						RestoreMenus();
 						return;
 					}
-					std::filesystem::path written;
-					const auto            err = CaptureToFile(g_photoDir, g_photoSlug, g_photoLabel, written, kPhotoKeys);
-					EndPhotoMode();
-					if (err) {
-						Notify(IsLockedError(err)
-								   ? "Photo failed: that image is locked - restart Skyrim to replace it"
-								   : "Photo failed: could not save the picture");
-						return;
-					}
-					Notify(("Photo saved: " + g_photoLabel).c_str());
-					if (g_onPhotoSaved)
-						g_onPhotoSaved(g_photoSlug, written.filename().string(), g_photoLabel);
+					// The grab now completes inside the game's present call, so
+					// this thread must NOT block waiting for it — a blocked main
+					// thread eventually starves the render thread of frames and
+					// the present that would finish the grab never comes. Worker
+					// waits; main thread finishes up.
+					const auto dir = g_photoDir;
+					const auto slug = g_photoSlug;
+					const auto label = g_photoLabel;
+					std::thread([dir, slug, label]() {
+						std::filesystem::path written;
+						const auto            err = CaptureToFile(dir, slug, label, written, kPhotoKeys);
+						SKSE::GetTaskInterface()->AddTask([err, written, label, slug]() {
+							EndPhotoMode();
+							if (err) {
+								Notify(IsLockedError(err)
+										   ? "Photo failed: that image is locked - restart Skyrim to replace it"
+										   : "Photo failed: could not save the picture");
+								return;
+							}
+							Notify(("Photo saved: " + label).c_str());
+							if (g_onPhotoSaved)
+								g_onPhotoSaved(slug, written.filename().string(), label);
+						});
+					}).detach();
 				});
 			}).detach();
 		}
@@ -1829,34 +1982,34 @@ namespace PortraitCapture
 			return 0;
 		}
 
+		// Restore for the crosshair capture, shared by the early-return paths
+		// and the async completion. Idempotent, so the belt-and-braces task that
+		// Fire() posts 90 ms later stays harmless.
+		void RestoreAfterCapture()
+		{
+			ExitFreeCam();
+			RestoreFov();
+			RestoreMenus();
+			g_targetOverride.store(0);
+		}
+
 		void DoCapture(const std::filesystem::path& dir)
 		{
-			// EVERY exit path from here restores the camera and the menus. This
-			// used to live only in a task posted 90 ms later, which meant any
-			// path that never ran it left the player with no HUD and no menus —
-			// indistinguishable from a frozen game. Restoring in the SAME task
-			// that hid them removes the window entirely; the later task stays as
-			// a belt-and-braces safety net and is harmless because both calls
-			// are idempotent.
-			struct Restore
-			{
-				~Restore()
-				{
-					ExitFreeCam();
-					RestoreFov();
-					RestoreMenus();
-					g_targetOverride.store(0);
-				}
-			} restoreOnExit;
-
+			// EVERY exit path from here restores the camera and the menus — the
+			// early returns inline, the successful path in the completion task.
+			// (This used to be a scope guard around a synchronous capture; the
+			// grab now finishes inside a later present, so the tail is async and
+			// the restore must ride the completion, not this scope.)
 			const auto id = ResolveTargetId();
 			if (!id) {
+				RestoreAfterCapture();
 				Notify("No NPC targeted - look at one, then open the deck");
 				return;
 			}
 			auto* form = RE::TESForm::LookupByID(id);
 			auto* actor = form ? form->As<RE::Actor>() : nullptr;
 			if (!actor) {
+				RestoreAfterCapture();
 				Notify("That NPC is no longer loaded");
 				return;
 			}
@@ -1866,23 +2019,31 @@ namespace PortraitCapture
 				name = actor->GetName() ? actor->GetName() : "";
 			const std::string slug = SlugOf(name);
 			if (slug.empty()) {
+				RestoreAfterCapture();
 				Notify("That NPC has no usable name");
 				return;
 			}
 
-			std::filesystem::path written;
-			const auto err = CaptureToFile(dir, slug, name, written);
-			if (err) {
-				// Two genuinely different failures, so say which one it is: a
-				// player can act on "restart the game", and cannot act on a
-				// generic "could not write the file".
-				Notify(IsLockedError(err)
-						   ? "Portrait failed: that file is locked - restart Skyrim to replace it"
-						   : (err == ERROR_READ_FAULT ? "Portrait failed: could not read the frame"
-													  : "Portrait failed: could not write the file"));
-				return;
-			}
-			Notify(("Portrait saved: " + name).c_str());
+			// Worker blocks on the present-thread grab; the main thread stays
+			// free to keep producing the frames the grab needs.
+			std::thread([dir, slug, name]() {
+				std::filesystem::path written;
+				const auto            err = CaptureToFile(dir, slug, name, written);
+				SKSE::GetTaskInterface()->AddTask([err, name]() {
+					RestoreAfterCapture();
+					if (err) {
+						// Two genuinely different failures, so say which one it is: a
+						// player can act on "restart the game", and cannot act on a
+						// generic "could not write the file".
+						Notify(IsLockedError(err)
+								   ? "Portrait failed: that file is locked - restart Skyrim to replace it"
+								   : (err == ERROR_READ_FAULT ? "Portrait failed: could not read the frame"
+															  : "Portrait failed: could not write the file"));
+						return;
+					}
+					Notify(("Portrait saved: " + name).c_str());
+				});
+			}).detach();
 		}
 
 		// The Character-Sheet self-portrait. Mirrors DoCapture, but:
@@ -1897,40 +2058,32 @@ namespace PortraitCapture
 		// The camera/menu restore runs on EVERY exit via the guard, exactly like
 		// DoCapture — a self-portrait that stranded the player in third person
 		// with the HUD off would read as a hung game.
+		// Restore for the SELF capture (adds the first-person flip), then the
+		// caller's callback — the sheet's psData push and crop editor should
+		// open over a restored game. Runs on the main thread on EVERY exit.
+		void FinishPlayerCapture(const std::function<void(const std::string&)>& done, const std::string& result)
+		{
+			ExitFreeCam();
+			RestoreFov();
+			RestoreFirstPerson();
+			RestoreMenus();
+			// The reopen gate hands off to the resync waiter rather than clearing
+			// here. (Historical note: this gate was built for a dynamic-resolution
+			// theory that turned out moot — under Skyrim Upscaler the backbuffer
+			// is its 2/3-size proxy ALL session, so the waiter releases on its
+			// first check. It stays because it is correct and cheap on rigs where
+			// the target genuinely does shrink and grow back.)
+			ReleaseBusyWhenBackBufferRestored();
+			if (done)
+				done(result);
+		}
+
 		void DoPlayerCapture(const std::filesystem::path& dir,
 			std::function<void(const std::string&)> done)
 		{
-			std::string result;   // filled on success; "" tells the caller it failed
-			struct Restore
-			{
-				std::function<void(const std::string&)>* cb;
-				std::string*                             out;
-				~Restore()
-				{
-					// Camera / menus back FIRST, then the callback — the sheet's
-					// psData push and crop editor should open over a restored game.
-					ExitFreeCam();
-					RestoreFov();
-					RestoreFirstPerson();
-					RestoreMenus();
-					// Camera + menus are restored, but the RENDER TARGET may still be
-					// shrunk by dynamic resolution for a few more frames (BUG B). Do
-					// NOT clear the reopen gate yet — hand off to the resync waiter,
-					// which releases it only once the backbuffer is full-size again
-					// (or a timeout fires). CanOpenNow() therefore unblocks only when a
-					// reopened view will lay out at full size, not merely when the
-					// camera transition finished (the fix the 2026-08-13 gate missed).
-					ReleaseBusyWhenBackBufferRestored();
-					if (cb && *cb) {
-						auto  fn = *cb;
-						auto  s  = *out;
-						SKSE::GetTaskInterface()->AddTask([fn, s]() { fn(s); });
-					}
-				}
-			} restoreOnExit{ &done, &result };
-
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			if (!player || !player->Is3DLoaded()) {
+				FinishPlayerCapture(done, "");
 				Notify("Load a save first - there is no character to photograph");
 				return;
 			}
@@ -1943,17 +2096,25 @@ namespace PortraitCapture
 			// alwaysVersion=true: the self-portrait's slug is fixed, so every capture
 			// must land on a NEW filename or the char-sheet view keeps its cached copy
 			// of player-sheet.png and the retaken face never shows (Rober, 2026-08-13).
-			std::filesystem::path written;
-			const auto            err = CaptureToFile(dir, slug, label, written, kFaceKeys, /*alwaysVersion=*/true);
-			if (err) {
-				Notify(IsLockedError(err)
-						   ? "Portrait failed: that file is locked - restart Skyrim to replace it"
-						   : (err == ERROR_READ_FAULT ? "Portrait failed: could not read the frame"
-													  : "Portrait failed: could not write the file"));
-				return;
-			}
-			result = written.filename().string();
-			Notify("Portrait taken - frame it on the Character tab");
+			//
+			// Worker blocks on the present-thread grab; the main thread stays free
+			// to keep producing the frames the grab needs. Restore + callback ride
+			// the completion task, so the world is back before the sheet repaints.
+			std::thread([dir, slug, label, done]() {
+				std::filesystem::path written;
+				const auto            err = CaptureToFile(dir, slug, label, written, kFaceKeys, /*alwaysVersion=*/true);
+				SKSE::GetTaskInterface()->AddTask([err, written, done]() {
+					FinishPlayerCapture(done, err ? "" : written.filename().string());
+					if (err) {
+						Notify(IsLockedError(err)
+								   ? "Portrait failed: that file is locked - restart Skyrim to replace it"
+								   : (err == ERROR_READ_FAULT ? "Portrait failed: could not read the frame"
+															  : "Portrait failed: could not write the file"));
+						return;
+					}
+					Notify("Portrait taken - frame it on the Character tab");
+				});
+			}).detach();
 		}
 	}
 
@@ -2338,5 +2499,33 @@ namespace PortraitCapture
 		t.exposure = std::clamp(stops, kExpMin, kExpMax);
 		logger::info("photo: exposure set to {:+.2f} stop(s) in {}", t.exposure, dir.string());
 		return WriteTuning(dir, kPhotoKeys, t);
+	}
+
+	// ---- present-thread grab hook (see presentgrab above for the WHY) -------
+	void InstallPresentGrab()
+	{
+		using namespace presentgrab;
+		if (g_hookInstalled.exchange(true))
+			return;
+		// The same call site PrismaUI trampolines (SE 75461 / AE 77246). Each
+		// installer re-points the call at itself and forwards to the previous
+		// target, so the hooks CHAIN. This runs at kDataLoaded — PrismaUI
+		// installed at plugin load — so the deck's step runs first each frame
+		// and its copy never contains this frame's Prisma overlay draw.
+		constexpr auto                  id = REL::RelocationID(75461, 77246);
+		constexpr auto                  offset = REL::VariantOffset(0x9, 0x9, 0x15);
+		REL::Relocation<std::uintptr_t> hook{ id, offset };
+		auto&                           tramp = SKSE::GetTrampoline();
+		g_origPresent = tramp.write_call<5>(hook.address(), &HookedPresent);
+
+		// One line that would have saved a day of guessing: what the game
+		// believes its screen is vs what its swapchain actually holds. Under
+		// Skyrim Upscaler's proxy these DIFFER (2560x1440 vs 1706x960), and
+		// that mismatch is the whole geometry of the clipped-deck bug.
+		int bw = 0, bh = 0;
+		BackBufferSize(bw, bh);
+		const auto ss = RE::BSGraphics::Renderer::GetScreenSize();
+		logger::info("portrait: present-grab hook installed (screen {}x{}, backbuffer {}x{})",
+			ss.width, ss.height, bw, bh);  // marker: portrait-present-hook
 	}
 }

@@ -1,0 +1,133 @@
+/* HDLightbox — the shared image popout (Items + NPCs). Own sheet on purpose:
+   the sync_view_frags truncation trap — never append to app.css. Mounted
+   INSIDE the pane section (absolute inset:0), so it inherits the deck scale
+   and clips to the panel's rounded corners like #ix-sheet does. */
+
+.hdlb {
+  position: absolute;
+  inset: 0;
+  z-index: 60;                 /* above the price sheet's 40 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 6, 9, .78);
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity .16s ease;
+}
+.hdlb.hdlb-in { opacity: 1; }
+
+.hdlb-card {
+  position: relative;
+  width: min(560px, 88%);
+  max-height: 92%;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, #1a1a21, #101015);
+  border: 1px solid #3a3a46;
+  border-radius: 14px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+  padding: 18px;
+  transform: scale(.96);
+  transition: transform .16s ease;
+}
+.hdlb-in .hdlb-card { transform: scale(1); }
+
+.hdlb-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid #3a3a46;
+  background: rgba(20, 20, 26, .85);
+  color: #b8b2a4;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.hdlb-close:hover { background: #2a2a34; color: #efe9da; }
+
+.hdlb-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+}
+.hdlb-img {
+  width: 100%;
+  max-width: 460px;
+  max-height: min(52vh, 460px);
+  object-fit: contain;
+  border-radius: 10px;
+  user-select: none;
+}
+.hdlb-spinnable .hdlb-img { cursor: grab; }
+.hdlb-spinnable .hdlb-img:active { cursor: grabbing; }
+.hdlb-fallback {
+  font-size: 96px;
+  opacity: .5;
+  padding: 40px 0;
+}
+.hdlb-fallback.hidden { display: none; }
+
+.hdlb-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 42px;
+  height: 64px;
+  border-radius: 10px;
+  border: 1px solid #3a3a46;
+  background: rgba(16, 16, 21, .72);
+  color: #cfc9ba;
+  font-size: 30px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.hdlb-nav:hover { background: #2a2a34; color: #ffe9b0; }
+.hdlb-prev { left: 2px; }
+.hdlb-next { right: 2px; }
+
+.hdlb-dots {
+  position: absolute;
+  bottom: 6px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+.hdlb-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #3a3a46;
+  transition: background .12s ease;
+}
+.hdlb-dot-on { background: #ffd36a; }
+
+.hdlb-caption {
+  padding-top: 14px;
+  text-align: center;
+}
+.hdlb-title {
+  font-size: 19px;
+  font-weight: 700;
+  color: #efe9da;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hdlb-sub {
+  margin-top: 4px;
+  font-size: 13.5px;
+  color: #97917f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
