@@ -317,7 +317,9 @@
     "render-warm-start": "roster faces queued at idle",
     "mounts-picker-rebuild": "summon candidates rebuilt",
     "mounts-sort-pref": "setPref",
-    "preset-autorender": "preset autorender:"
+    "preset-autorender": "preset autorender:",
+    "console-cmd-entries": "console-cmd entries: Script runner ready",
+    "console-cmd-fire": "console-cmd: fire '"
   },
   "view": {
     "items-pane.js": {
@@ -472,7 +474,8 @@
       "wedge-banner-css": ".fq-wedge {",
       "anim-packs-css": "#an-pk-rows {",
       "popup-self-scale-wave": "@keyframes fqSetsInScaled",
-      "effects-modal-styles": ".fx-row"
+      "effects-modal-styles": ".fx-row",
+      "console-editor-css": "#console-picker {"
     },
     "wardrobe-pane.js": {
       "wardrobe-photo-menu": "wdPortrait",
@@ -570,7 +573,9 @@
       "suppressed-seeds-load": "state.suppressedSeeds = cfg.suppressedSeeds",
       "deck-paint-scale": "function deckPaintScale",
       "item-source-drag": "function wireItemSourceDrag",
-      "tab-fit-memo": "tabFitCache"
+      "tab-fit-memo": "tabFitCache",
+      "console-editor": "function openConsoleEditor",
+      "console-chip": "console-edit-btn"
     },
     "index.html": {
       "followers-scale-wrapper": "id=\"fd-scale\"",
