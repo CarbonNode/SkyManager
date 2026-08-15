@@ -123,18 +123,19 @@ window.FacesPane = (function () {
     return (pdState.icons || []).filter((f) => f.replace(/\.[^.]+$/, '').toLowerCase() === stem)[0] || '';
   }
   /* ---- body-aware head crop for auto-rendered stand-in figures ----
-     A standing human is ~7.5 heads tall, so the head lives in the top ~13%
-     of the figure's opaque bbox regardless of arm pose (width is unstable —
-     arms). Window: side = 0.30*bboxH centered at (bbox cx, top + 0.167*bboxH)
-     — calibrated on the real 512px Geralt render, where exactly that box
-     framed head + shoulders well. Layout-crop, never transform: Ultralight
-     rasterises an <img> at LAYOUT size (the face-fit v4 lesson). */
+     The head hangs from the TOP of the figure's opaque bbox, and scales with
+     bbox HEIGHT (width is unstable — arms/coats). Window: side = 0.20*bboxH
+     centered at (bbox cx, top + 0.095*bboxH) — tuned on the real 512px
+     Geralt render against three candidate crops; this is the "hone in on the
+     face, hair cuts at the edges" framing Rober picked for face-fit v2.
+     Layout-crop, never transform: Ultralight rasterises an <img> at LAYOUT
+     size (the face-fit v4 lesson). */
   const bodyFits = {};   // url -> {w, h, win:{x,y,side}} | 'fail' (session cache)
   function bodyFitWindow(w, hgt, bbox) {
     const bh = bbox.y1 - bbox.y0, bw = bbox.x1 - bbox.x0;
     if (bh < 8 || bw < 4) return null;
-    let side = 0.30 * bh;
-    const cx = bbox.x0 + bw / 2, cy = bbox.y0 + 0.167 * bh;
+    let side = 0.20 * bh;
+    const cx = bbox.x0 + bw / 2, cy = bbox.y0 + 0.095 * bh;
     let x = cx - side / 2, y = cy - side / 2;
     // Clamp the window inside the image (short figures / tight renders).
     if (side > w) side = w;
