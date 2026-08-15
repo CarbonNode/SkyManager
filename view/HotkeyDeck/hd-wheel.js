@@ -2322,7 +2322,9 @@ var HDWheel = (function () {
     }
     var mode = ui.sheet;          // 'pick' | 'flyedit' — captured now, used at onDone
     var slot = ui.pickSlot;
-    window.openConsoleEditor(null, null, { onDone: function (en) {
+    /* fileUnder: wheel-made commands collect on the deck's Commands tab (the
+       console-command list page) rather than whatever tab the deck was on. */
+    window.openConsoleEditor(null, null, { fileUnder: 'Commands', onDone: function (en) {
       var pv = { id: 'hotkeys' };
       try {
         if (window.HDOmni && typeof HDOmni.providers === 'function')

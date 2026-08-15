@@ -334,7 +334,8 @@ var HDShelf = (function () {
        save and the toast, exactly as if the ☆ had been hit in Omni. */
     root.querySelector('.shf-newcc').addEventListener('click', () => {
       if (typeof window.openConsoleEditor !== 'function') { toast('Console editor unavailable'); return; }
-      window.openConsoleEditor(null, null, { onDone: (en) => {
+      /* fileUnder: shelf-made commands collect on the Commands tab too */
+      window.openConsoleEditor(null, null, { fileUnder: 'Commands', onDone: (en) => {
         togglePin({ id: 'hotkeys' }, { pin: 'hk:' + en.id, label: en.name,
           detail: en.desc || '', kind: 'hotkey', icon: '', snap: null });
       } });

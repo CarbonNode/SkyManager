@@ -2393,6 +2393,8 @@
   const FX_MIN_GAP = 1500;
   let fxModalCtx = null;              // { formId, who } while the modal is up
   let fxFilter = '';
+  let fxTab = 'fx';                   // '✨ Effects' | '🎨 Skins' — remembered for the session
+  let fxSkinFilter = '';
   function fxKey(fid) { return '0x' + ((Number(fid) || 0) >>> 0).toString(16); }
   function askEffects(fid, force) {
     if (fxPresent === false || !fid) return;
@@ -2436,6 +2438,7 @@
     if (m) m.remove();
     fxModalCtx = null;
     fxFilter = '';
+    fxSkinFilter = '';                   // the active TAB is kept for the session
     if (isActive()) renderQuickCard();   // un-press the ✨
   }
 
@@ -2476,6 +2479,26 @@
       body.append(h('div', { class: 'fx-empty' }, env.msg || 'Couldn’t read her effects.'));
       return;
     }
+    /* skinshift-skins-tab — the 🎨 Skins tab exists only when the DLL reports
+       a skins block AND SkinShift.dll is actually loaded; a one-tab seg row is
+       pointless chrome, so with no Skins tab the modal stays exactly as it
+       was (an older DLL sends no `skins` key at all and lands here too). */
+    fxEnsureSkinStyles();
+    const skins = env.skins;
+    const hasSkins = !!(skins && skins.available !== undefined && skins.present);
+    const tab = (hasSkins && fxTab === 'skins') ? 'skins' : 'fx';
+    if (hasSkins) {
+      const tabBtn = (id, label) => h('button', {
+        class: 'fx-tab' + (tab === id ? ' on' : ''), type: 'button',
+        title: id === 'skins'
+          ? 'Change ' + fxModalCtx.who + '’s skin — SkinShift’s preset skins, or back to her own'
+          : 'Looks other mods can put on ' + fxModalCtx.who,
+        onClick: () => { fxTab = id; fillFxModal(); },
+      }, label);
+      body.append(h('div', { class: 'fx-tabs' },
+        tabBtn('fx', '✨ Effects'), tabBtn('skins', '🎨 Skins')));
+    }
+    if (tab === 'skins') { fillFxSkins(body, skins); return; }
     let list = env.effects || [];
     /* Typeable filter once the registry has real length (the shelf's 8+ rule —
        one row doesn't need a search bar, a grown list must have one). */
@@ -2522,6 +2545,171 @@
       }
       body.append(row);
     });
+  }
+
+  /* ---- 🎨 Skins — the SkinShift tab of the Effects modal ---------------- *
+   *  skinshift-skins-tab (2026-08-15). Rober: change the NPC's skin (body /
+   *  hands / feet / head textures) from the quick card. C++ drives SkinShift's
+   *  OWN internal store by RVA behind a version gate — the view only paints
+   *  what the `skins` block of fxState says and fires fxSet with
+   *  id "skinshift:<presetKey>" / "skinshift:clear"; the fresh fxState riding
+   *  every fxResult repaints this tab exactly like the effects rows. */
+  function fillFxSkins(body, skins) {
+    const who = fxModalCtx ? fxModalCtx.who : 'her';
+    if (!skins.available) {
+      /* SkinShift IS loaded but its bytes aren't the build we verified —
+         calling into it anyway would be a crash, so the tab says why not. */
+      body.append(h('div', { class: 'fx-empty fx-skin-gate' },
+        skins.reason || 'SkinShift’s version isn’t the one SkyManager knows — '
+        + 'the Skins tab needs an update'));
+      return;
+    }
+    const unknown = !!skins.unknown;
+    const cur = (typeof skins.current === 'string' && skins.current) ? skins.current : null;
+    const curName = skins.currentName || cur;
+
+    /* Current state up top. The deck's own applied-record ("source":"deck")
+       is what usually answers; absence means "the deck hasn't applied one" —
+       SkinShift's F1 menu may still have (its internal store can't be read
+       reliably: first play-test 2026-08-15), so the copy claims only what
+       the deck actually knows. */
+    body.append(h('div', { class: 'fx-skin-cur' },
+      cur ? 'Current: ' + curName
+        : (unknown ? 'Current: unknown'
+                   : 'No skin applied from the deck')));
+
+    /* ✕ back to her own skin — ALWAYS clickable (play-test fix 2026-08-15):
+       the deck can't see skins applied outside it, so gating this on our own
+       record locked Rober out of resetting. Clearing with nothing applied is
+       a safe no-op with an honest toast from C++. */
+    body.append(h('button', {
+      class: 'fx-skin-clear', type: 'button',
+      title: 'Back to ' + who + '’s own skin — SkinShift forgets the '
+        + 'assignment and re-scans, so it reverts without a reload '
+        + '(harmless if nothing is applied)',
+      onClick: (ev) => {
+        ev.stopPropagation();
+        toGame('fxSet', JSON.stringify({
+          formId: fxModalCtx.formId, id: 'skinshift:clear', on: false }));
+      },
+    }, '✕ Her own skin'));
+
+    const all = skins.presets || [];
+    if (!all.length) {
+      body.append(h('div', { class: 'fx-empty' },
+        'No skin presets found — SkinShift reads them from '
+        + 'Data/textures/removenormals/presets/Preset01…Preset99, each with '
+        + 'Body / Hands / Feet / Head texture folders.'));
+      return;
+    }
+
+    /* Filter-as-you-type, always present (the house search-bar law); Enter
+       applies the top hit — the fd-ctx idiom. */
+    const inp = h('input', {
+      class: 'fx-filter fx-skin-filter', type: 'text',
+      placeholder: 'Search skins… (Enter applies the top hit)',
+      value: fxSkinFilter,
+      onInput: (e) => {
+        fxSkinFilter = e.target.value; fillFxModal();
+        const again = document.querySelector('#fd-fx-modal .fx-skin-filter');
+        if (again) { again.focus(); again.setSelectionRange(fxSkinFilter.length, fxSkinFilter.length); }
+      },
+      onKeydown: (e) => {
+        if (e.key !== 'Enter') return;
+        const top = document.querySelector(
+          '#fd-fx-modal .fx-skins-list .fx-act:not([disabled])');
+        if (top) top.click();
+      },
+    });
+    body.append(inp);
+
+    const q = fxSkinFilter.trim().toLowerCase();
+    const rows = q
+      ? all.filter((p) => (p.name + ' ' + p.key).toLowerCase().indexOf(q) >= 0)
+      : all;
+
+    const list = h('div', { class: 'fx-skins-list' });
+    if (!rows.length) {
+      list.append(h('div', { class: 'fx-empty' },
+        'Nothing matches “' + fxSkinFilter + '”.'));
+    }
+    rows.forEach((p) => {
+      const isCur = !unknown && !!cur &&
+        (cur.toLowerCase() === p.key.toLowerCase() ||
+         cur.toLowerCase() === String(p.name).toLowerCase());
+      const row = h('div', { class: 'fx-row fx-skin-row' + (isCur ? ' is-current' : '') },
+        h('span', { class: 'fx-glyph', 'aria-hidden': 'true' }, '🎨'),
+        h('span', { class: 'fx-main' },
+          h('span', { class: 'fx-label' }, p.name,
+            h('span', { class: 'fx-chip fx-key-chip' }, p.key)),
+          h('span', { class: 'fx-detail' },
+            (p.files || 0) + ' texture file' + (p.files === 1 ? '' : 's'))),
+        h('button', {
+          class: 'fx-act', type: 'button',
+          disabled: isCur ? true : null,
+          title: isCur
+            ? p.name + ' is already applied to ' + who
+            : 'Change ' + who + '’s skin to ' + p.name + ' — through SkinShift’s '
+              + 'own store, so it persists across saves exactly as the mod intends',
+          onClick: (ev) => {
+            ev.stopPropagation();
+            toGame('fxSet', JSON.stringify({
+              formId: fxModalCtx.formId, id: 'skinshift:' + p.key, on: true }));
+          },
+        }, isCur ? 'applied' : 'Apply'));
+      list.append(row);
+    });
+    body.append(list);
+
+    /* The dark-elf lesson (play-test 2026-08-15): a preset is a flat texture
+       set applied verbatim — human-tone skins show untinted (yellowish) on
+       elf and beast races. Said once, small, at the foot. */
+    body.append(h('div', { class: 'fx-skin-note' },
+      'Presets apply as-is: human-tone skins look untinted on elf/beast '
+      + 'races — those want their own race-toned preset slot.'));
+  }
+
+  /* Styles for the tab row + skins list, injected once (the ostim-pane
+     precedent) — app.css owns the base fx-* classes but is another session's
+     in-flight file, so the ADDITIONS live here beside the code that uses
+     them. The list's vh cap divides by --ui-scale because the .fd-modal card
+     is transform-scaled (the popup vh/vw audit rule). */
+  function fxEnsureSkinStyles() {
+    if (document.getElementById('fx-skins-style')) return;
+    const st = document.createElement('style');
+    st.id = 'fx-skins-style';   /* skinshift-skins-tab styles */
+    st.textContent =
+      '.fx-tabs{display:flex;gap:8px;margin-bottom:12px;}' +
+      '.fx-tab{flex:1;font:inherit;font-size:14px;font-weight:700;' +
+        'padding:10px 12px;border-radius:9px;cursor:pointer;' +
+        'color:#8a8577;background:#16161c;border:1px solid #3a382f;' +
+        'transition:background .12s ease,border-color .12s ease,color .12s ease;}' +
+      '.fx-tab:hover{border-color:#c9a24b;color:#ecd9a0;background:#1e1c16;}' +
+      '.fx-tab.on{color:#f6ecc8;background:rgba(240,214,140,.14);' +
+        'border-color:rgba(240,214,140,.55);}' +
+      '.fx-skin-cur{font-size:14.5px;font-weight:700;color:#e9e2cf;' +
+        'padding:2px 2px 10px;}' +
+      '.fx-skin-gate{color:#d6a860;}' +
+      '.fx-skin-note{font-size:12.5px;color:#9a927e;line-height:1.45;' +
+        'padding:10px 2px 2px;}' +
+      '.fx-skin-clear{display:block;width:100%;box-sizing:border-box;' +
+        'margin-bottom:10px;padding:11px 12px;border-radius:9px;cursor:pointer;' +
+        'font:inherit;font-size:13.5px;font-weight:700;text-align:left;' +
+        'color:#e7b7ad;background:rgba(214,118,96,.07);' +
+        'border:1px solid rgba(214,118,96,.3);' +
+        'transition:background .12s ease,border-color .12s ease;}' +
+      '.fx-skin-clear:hover:not([disabled]){background:rgba(214,118,96,.15);' +
+        'border-color:rgba(214,118,96,.6);}' +
+      '.fx-skin-clear[disabled]{opacity:.5;cursor:default;}' +
+      '.fx-skins-list{max-height:calc(44vh / var(--ui-scale,1));' +
+        'overflow-y:auto;padding-right:2px;}' +
+      '.fx-skin-row .fx-key-chip{flex:none;}' +
+      '.fx-row.is-current{background:rgba(240,214,140,.14);' +
+        'border-color:rgba(240,214,140,.6);}' +
+      '.fx-row.is-current .fx-act[disabled]{opacity:.7;cursor:default;' +
+        'color:#f6ecc8;background:rgba(240,214,140,.14);' +
+        'border-color:rgba(240,214,140,.5);}';
+    document.head.appendChild(st);
   }
 
   /* ---- SPID Gear — the 📦 on the quick card ----------------------------- *
