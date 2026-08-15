@@ -1286,12 +1286,16 @@ function ccCommandText() {
 }
 
 /* anchor unused (centered modal) — call-site symmetry with openVKeyPicker.
-   editEntry non-null => editing an existing console entry. */
-function openConsoleEditor(anchor, editEntry) {
+   editEntry non-null => editing an existing console entry.
+   opts.onDone(entry): the wheel and the shelf create console entries from
+   THEIR add-UIs and need the new entry handed back to pin where the user was
+   standing — called after save(), only for a NEW entry, never an edit. */
+function openConsoleEditor(anchor, editEntry, opts) {
   closeActionPicker();
   closeVKeyPicker();
   closeConsoleEditor();
-  ccEditorCtx = { entry: editEntry || null, target: (editEntry && editEntry.action === 'crosshair') ? 'crosshair' : '' };
+  ccEditorCtx = { entry: editEntry || null, opts: opts || null,
+    target: (editEntry && editEntry.action === 'crosshair') ? 'crosshair' : '' };
 
   const box = document.createElement('div');
   box.id = 'console-picker-backdrop';
@@ -1349,19 +1353,25 @@ function openConsoleEditor(anchor, editEntry) {
     if (!firstLine) { toast('Every line is a comment — nothing would run'); return; }
     const name = (box.querySelector('.cc-name').value || '').trim() || firstLine.slice(0, 40);
     const editing = !!ccEditorCtx.entry;
+    const opts = ccEditorCtx.opts;
+    let made = null;
     if (editing) {
       const en = ccEditorCtx.entry;
       en.device = 'console'; en.command = cmd; en.action = ccEditorCtx.target;
       en.name = name; en.code = 0; en.mods = []; en.label = 'Console';
     } else {
-      state.entries.push({ id: newId(), name: name, desc: firstLine, device: 'console', code: 0,
+      made = { id: newId(), name: name, desc: firstLine, device: 'console', code: 0,
         action: ccEditorCtx.target, label: 'Console', mods: [], icon: '', command: cmd,
-        category: activeCategory() || '' });
+        category: activeCategory() || '' };
+      state.entries.push(made);
     }
     closeConsoleEditor();
     save();
     render();
     toast((editing ? 'Saved ' : 'Added ') + name);
+    if (made && opts && typeof opts.onDone === 'function') {
+      try { opts.onDone(made); } catch (err) { console.log('console onDone error', err); }
+    }
   });
 
   box.querySelector('.cc-x').addEventListener('click', closeConsoleEditor);

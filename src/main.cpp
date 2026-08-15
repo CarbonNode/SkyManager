@@ -10210,6 +10210,80 @@ namespace
 		});
 	}
 
+	// hbNewConsole -> hbNewConsoleDone: create a console-command entry FROM the
+	// hotbar's assign picker. The hotbar is a separate view — it cannot push
+	// into the deck view's state.entries the way the wheel and shelf do — so
+	// the entry is minted here, persisted, and its id handed back for the
+	// picker to drop straight onto the button being filled. Payload:
+	// {"name":"God Mode","command":"tgm","crosshair":false}.
+	void OnJsHbNewConsole(const char* data)
+	{
+		const auto j = json::parse(data ? data : "", nullptr, false);
+		if (j.is_discarded() || !j.is_object())
+			return;
+		std::string cmd = j.value("command", std::string());
+		if (cmd.empty() || cmd.size() > ConsoleActions::kCommandMax) {
+			logger::warn("hbNewConsole: empty/oversized command refused");
+			return;
+		}
+		std::string name = j.value("name", std::string());
+		// First runnable line doubles as the fallback name and the searchable
+		// desc — the same defaults the deck's own editor applies.
+		std::string firstLine;
+		{
+			std::string line;
+			for (std::size_t k = 0; k <= cmd.size(); ++k) {
+				if (k == cmd.size() || cmd[k] == '\n') {
+					std::size_t b = 0, e2 = line.size();
+					while (b < e2 && (line[b] == ' ' || line[b] == '\t' || line[b] == '\r')) ++b;
+					while (e2 > b && (line[e2 - 1] == ' ' || line[e2 - 1] == '\t' || line[e2 - 1] == '\r')) --e2;
+					if (e2 > b && line[b] != ';' && line[b] != '#') { firstLine = line.substr(b, e2 - b); break; }
+					line.clear();
+				} else {
+					line += cmd[k];
+				}
+			}
+		}
+		if (firstLine.empty()) {
+			logger::warn("hbNewConsole: every line is a comment — refused");
+			return;
+		}
+		if (name.empty())
+			name = firstLine.substr(0, 40);
+		// Id shape matches the view's newId() family closely enough to never
+		// collide with it (distinct prefix, monotonic tail).
+		static std::atomic<std::uint32_t> s_seq{ 0 };
+		const auto id = "hbcc-" + std::to_string(
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::system_clock::now().time_since_epoch()).count()) +
+			"-" + std::to_string(s_seq.fetch_add(1));
+		{
+			std::lock_guard l(g_configMutex);
+			HotkeyEntry e;
+			e.id       = id;
+			e.name     = name;
+			e.desc     = firstLine;
+			e.device   = "console";
+			e.command  = cmd;
+			e.action   = j.value("crosshair", false) ? "crosshair" : "";
+			e.label    = "Console";
+			e.category = "";
+			g_config.entries.push_back(std::move(e));
+		}
+		PersistAll();
+		logger::info("hbNewConsole: created '{}' ({})", name, id);  // marker: hb-new-console
+		SKSE::GetTaskInterface()->AddTask([id, name]() {
+			if (!g_prisma || !g_hbView || !g_hbViewReady.load())
+				return;
+			// Catalog first, so the new entry resolves the moment the assign
+			// lands; then the done ping that carries the id to assign.
+			g_prisma->Invoke(g_hbView, ("hbCatalogData(" + HbCatalogJson() + ")").c_str());
+			const auto done = json{ { "refId", id }, { "name", name } }
+				.dump(-1, ' ', false, json::error_handler_t::replace);
+			g_prisma->Invoke(g_hbView, ("hbNewConsoleDone(" + done + ")").c_str());
+		});
+	}
+
 	// hbOutfits -> hbOutfitsData: the "Outfit" pick source. Separate from
 	// hbCatalog because it also COPIES each outfit's photo into this view's tree
 	// (HbOutfitsJson), which the read-only catalog builders never do. Runs on
@@ -10251,6 +10325,7 @@ namespace
 		g_prisma->RegisterJSListener(g_hbView, "hbFire", OnJsHbFire);
 		g_prisma->RegisterJSListener(g_hbView, "hbAssign", OnJsHbAssign);
 		g_prisma->RegisterJSListener(g_hbView, "hbCatalog", OnJsHbCatalog);
+		g_prisma->RegisterJSListener(g_hbView, "hbNewConsole", OnJsHbNewConsole);
 		g_prisma->RegisterJSListener(g_hbView, "hbOutfits", OnJsHbOutfits);
 		g_prisma->RegisterJSListener(g_hbView, "hbLog", OnJsHbLog);
 		logger::info("hotbar: view created + listeners registered");

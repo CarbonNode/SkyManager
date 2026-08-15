@@ -62,9 +62,42 @@ namespace ItemIcons
 		 * its pictures still arrive promptly; idle-tier (the boot warm-start) gets
 		 * a longer one because nobody is waiting on it. The pump ticks every 700 ms
 		 * (> the user gap), so a live user batch settles to ~one render per pump —
-		 * gentle — while a paused batch starts kMaxInFlight at once as before. */
+		 * gentle — while a paused batch starts kMaxInFlight at once as before.
+		 *
+		 * ── the boot re-bake burst (2026-08-15) ─────────────────────────────
+		 * A from-source MRF rebuild or a hand-purge of the render caches forces a
+		 * one-time re-bake: EVERY roster face (32) plus the wardrobe/worn items
+		 * re-render on the next load, and the warm-start fires them 5 s after
+		 * kPostLoadGame — i.e. right as the player finishes loading in and the
+		 * world starts streaming/drawing. Each render is a synchronous MRF
+		 * offscreen pass on the game's OWN D3D11 device (~0.5-0.7 s wall), so even
+		 * one-at-a-time they read as a string of micro-hitches for the ~40 s the
+		 * burst takes (confirmed in HotkeyDeck.log 2026-08-14 21:47:14..21:47:56:
+		 * 32 faces, one every ~0.7-1.3 s, all while the player was in-world with a
+		 * follower). The one-time nature is real — the .render-gen stamp now
+		 * persists and matches the live MRF fingerprint, so the NEXT load does NOT
+		 * re-purge — but "one bad boot per MRF update" is still a bad boot. So the
+		 * IDLE tier (which is exactly the warm-start burst) is paced FAR more
+		 * gently while the game is live: a long gap AND a settle delay after the
+		 * player first loads in, so the burst spreads over minutes in the
+		 * background instead of racing the world draw. User-tier (a page the
+		 * player is actively looking at) is untouched — it still arrives promptly.
+		 */
 		constexpr auto kPaceGapUser = std::chrono::milliseconds(400);
-		constexpr auto kPaceGapIdle = std::chrono::milliseconds(1000);
+		// Idle-tier live gap widened 1 s -> 3 s: the warm-start re-bake is pure
+		// background work, so a face landing every few seconds is invisible where a
+		// burst is a stutter. Paused (deck open / load screen up — no world drawn)
+		// still ignores this entirely, so opening the Finder stays full-speed.
+		constexpr auto kPaceGapIdle = std::chrono::milliseconds(3000);
+
+		// After the first load of a session settles, hold the IDLE tier off the
+		// D3D device entirely for this long while the game is LIVE — the window
+		// where the cell is streaming in and every stolen frame is felt hardest.
+		// The warm-start's whole point is "the first MINUTES show real faces", so
+		// starting a minute in costs nothing it promised and spares the load-in.
+		// Paused time (deck/menus/load screen) does not count against it — see
+		// GamePaused in Pump. User renders are never delayed by this.
+		constexpr auto kIdleSettleDelay = std::chrono::seconds(45);
 
 		/* A safety net for the texture swap, not a diagnosis — the diagnosis lives
 		 * in ApplySwaps, which explains what the framework actually does.
@@ -281,6 +314,17 @@ namespace ItemIcons
 		// back this burst so the log line is emitted once, cleared whenever a burst
 		// ends (queues + in-flight all empty) so the next live burst logs afresh.
 		bool g_paceLogged = false;
+
+		// Accumulated LIVE (game-unpaused, framework-unblocked) wall time since the
+		// first pump, used to hold the idle/warm-start tier off the shared D3D
+		// device for kIdleSettleDelay right after the player loads in. Counting
+		// only live time means the settle window is real play time — the deck being
+		// open or a load screen up does not "use it up", which would let the burst
+		// fire the instant the player closes the deck mid-load. Main thread only
+		// (Pump). See kIdleSettleDelay. */
+		std::chrono::steady_clock::duration g_liveElapsed{ 0 };
+		// Once-per-session log: the idle tier's first release after the settle hold.
+		bool g_idleSettleLogged = false;
 
 		// The framework keeps our savePath pointer and reads it a frame later;
 		// a deque never invalidates references to existing elements.
@@ -1336,6 +1380,12 @@ namespace ItemIcons
 				for (auto& job : g_inFlight)
 					job.armed += stalled;
 			}
+			// Accumulate LIVE wall time (the interval since the last pump, but only
+			// when the game was drawing the world) so the idle-tier settle hold below
+			// measures real play time, not time spent paused in the deck or a load
+			// screen. `paced` is exactly "game live" (unblocked + unpaused).
+			if (paced && g_lastPump != std::chrono::steady_clock::time_point{})
+				g_liveElapsed += (now - g_lastPump);
 			g_lastPump = now;
 
 			for (std::size_t i = 0; i < g_inFlight.size();) {
@@ -1450,8 +1500,30 @@ namespace ItemIcons
 			// warm-start never delays a page the player opened. Live, the idle tier
 			// gets the LONGER gap (kPaceGapIdle) — nobody is waiting on it, so it
 			// spreads even more gently.
-			while (!blocked && g_queue.empty() && !g_idleQueue.empty() && g_inFlight.size() < kMaxInFlight &&
-				paceOk(kPaceGapIdle)) {
+			//
+			// And while the game is LIVE, hold the idle tier off entirely for the
+			// first kIdleSettleDelay of live play: that is the boot re-bake burst's
+			// window and the load-in period where a stolen D3D frame hitches worst.
+			// The warm-start promises "the first minutes show real faces", so
+			// starting ~45 s of play in still keeps that promise while sparing the
+			// load-in. When PAUSED (deck open / load screen) there is no world to
+			// contend with, so `idleSettled` is forced true — a player who opens the
+			// Finder right after boot still gets warm-start faces immediately.
+			// Also capped to ONE idle render in flight at a time while live, so the
+			// background burst can never run two offscreen passes at once against the
+			// world draw (kMaxInFlight applies to the shared list; this narrows the
+			// idle tier's share of it).
+			const bool idleSettled = !paced || g_liveElapsed >= kIdleSettleDelay;
+			if (paced && idleSettled && !g_idleSettleLogged &&
+				g_liveElapsed >= kIdleSettleDelay && !g_idleQueue.empty()) {
+				g_idleSettleLogged = true;
+				logger::info("render warm-start: settle window passed ({} s live) — idle re-bake now trickling",
+					static_cast<long long>(
+						std::chrono::duration_cast<std::chrono::seconds>(g_liveElapsed).count()));
+			}
+			const std::size_t idleInFlightCap = paced ? std::size_t{ 1 } : kMaxInFlight;
+			while (!blocked && idleSettled && g_queue.empty() && !g_idleQueue.empty() &&
+				g_inFlight.size() < idleInFlightCap && paceOk(kPaceGapIdle)) {
 				Request r = std::move(g_idleQueue.front());
 				g_idleQueue.pop_front();
 				if (Start(r))

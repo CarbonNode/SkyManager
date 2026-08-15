@@ -236,7 +236,41 @@
                 title="Empty this button - it keeps its key, so you can put something else on it later">Clear this button</button>
         <button id="hb-pick-fly" class="hb-btn" type="button"
                 title="Turn this button into a flyout - one key opens a fan of up to 9 actions. Whatever is on the button now becomes the first one.">⧉ Make this a flyout</button>
+        <button id="hb-pick-newcc" class="hb-btn" type="button"
+                title="Type any console command and put it straight on this button - one command per line, like a batch file">＞ New console command…</button>
         <span class="hb-hint">Enter = top hit · Esc = close</span>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ══ new console command ════════════════════════════════════════════ -->
+  <!-- Created game-side (hbNewConsole -> the deck's entry list, so it also
+       appears in the palette, the wheel, the shelf and Omni), then assigned
+       to the button being filled the moment hbNewConsoleDone lands. -->
+  <div id="hb-newcc" class="hb-modal" hidden>
+    <div class="hb-modal-card">
+      <header class="hb-modal-head">
+        <h2 id="hb-newcc-title">＞ New console command</h2>
+        <button id="hb-newcc-close" class="hb-btn" type="button" title="Back to the picker">Back</button>
+      </header>
+      <label class="hb-field"><span>Button name</span>
+        <input id="hb-newcc-name" class="hb-search" type="text" autocomplete="off"
+               placeholder="e.g. God Mode, Give 1000 Gold">
+      </label>
+      <label class="hb-field"><span>Command — one per line, <em>;</em> / <em>#</em> lines are skipped</span>
+        <textarea id="hb-newcc-cmd" class="hb-cc-cmd" spellcheck="false" maxlength="4000"
+                  placeholder="player.additem f 1000&#10;tgm"></textarea>
+      </label>
+      <div class="hb-chips" id="hb-newcc-tgt">
+        <button class="hb-chip is-on" type="button" data-tgt=""
+                title="Runs like typing into the console with nothing selected">Runs on the world / player</button>
+        <button class="hb-chip" type="button" data-tgt="crosshair"
+                title="Acts on whatever is under your crosshair when it fires - like clicking it in the console first">On my crosshair target</button>
+      </div>
+      <footer class="hb-modal-foot">
+        <button id="hb-newcc-add" class="hb-btn hb-btn-primary" type="button"
+                title="Create it and put it on this button">＋ Create &amp; assign</button>
+        <span class="hb-hint" id="hb-newcc-hint">It also lands in the deck's hotkey list — trigger key, wheel and shelf can use it too</span>
       </footer>
     </div>
   </div>

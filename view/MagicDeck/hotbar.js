@@ -122,7 +122,9 @@
    'hb-togglekey', 'hb-togglekey-clear', 'hb-show-note', 'hb-preview-note',
    'hb-uiscale', 'hb-uiscale-val', 'hb-opacity', 'hb-opacity-val', 'hb-reset-pos',
    'hb-pick', 'hb-pick-title', 'hb-pick-q', 'hb-pick-tabs', 'hb-pick-list', 'hb-pick-wrap',
-   'hb-pick-close', 'hb-pick-clear', 'hb-pick-fly',
+   'hb-pick-close', 'hb-pick-clear', 'hb-pick-fly', 'hb-pick-newcc',
+   'hb-newcc', 'hb-newcc-name', 'hb-newcc-cmd', 'hb-newcc-tgt',
+   'hb-newcc-add', 'hb-newcc-close', 'hb-newcc-hint',
    'hb-flyed', 'hb-flyed-title', 'hb-flyed-name', 'hb-flyed-list', 'hb-flyed-note',
    'hb-flyed-add', 'hb-flyed-close', 'hb-flyed-dissolve', 'hb-flyed-clear',
    'hb-icons', 'hb-icons-q', 'hb-icons-grid', 'hb-icons-close', 'hb-icons-auto',
@@ -1606,6 +1608,97 @@
     makeFlySlot(i);
   });
 
+  /* ── "＞ New console command…" — create it right here, land it on the
+     button. The entry is minted GAME-SIDE (hbNewConsole -> a real deck
+     entry, so the palette / wheel / shelf / Omni all see it too); the
+     hbNewConsoleDone reply carries its id and we assign through the exact
+     path a picked row takes. The pick modal stays logically open (its
+     slot/forFly state is what the assign consumes), just hidden under
+     this form. */
+  const newcc = { open: false, tgt: '' };
+
+  function syncNewCcTgt() {
+    if (!el['hb-newcc-tgt']) return;
+    el['hb-newcc-tgt'].querySelectorAll('button[data-tgt]').forEach((b) =>
+      b.classList.toggle('is-on', b.dataset.tgt === newcc.tgt));
+  }
+
+  function openNewCc() {
+    if (!el['hb-newcc']) return;
+    newcc.open = true; newcc.tgt = '';
+    el['hb-newcc-name'].value = '';
+    el['hb-newcc-cmd'].value = '';
+    if (el['hb-newcc-add']) el['hb-newcc-add'].disabled = false;
+    if (el['hb-newcc-hint']) el['hb-newcc-hint'].textContent =
+      'It also lands in the deck’s hotkey list — trigger key, wheel and shelf can use it too';
+    syncNewCcTgt();
+    el['hb-pick'].hidden = true;
+    el['hb-newcc'].hidden = false;
+    setTimeout(() => el['hb-newcc-name'] && el['hb-newcc-name'].focus(), 30);
+  }
+
+  function closeNewCc(backToPicker) {
+    newcc.open = false;
+    if (el['hb-newcc']) el['hb-newcc'].hidden = true;
+    if (backToPicker && pick.open && el['hb-pick']) {
+      el['hb-pick'].hidden = false;
+      setTimeout(() => el['hb-pick-q'] && el['hb-pick-q'].focus(), 30);
+    }
+  }
+
+  function submitNewCc() {
+    const cmd = String(el['hb-newcc-cmd'].value || '').trim().slice(0, 4000);
+    const runnable = cmd.split('\n').some((l) => {
+      const s = l.trim();
+      return s && s[0] !== ';' && s[0] !== '#';
+    });
+    if (!runnable) {
+      if (el['hb-newcc-hint']) el['hb-newcc-hint'].textContent =
+        cmd ? 'Every line is a comment — nothing would run' : 'Type a command first';
+      return;
+    }
+    if (el['hb-newcc-add']) el['hb-newcc-add'].disabled = true;
+    if (el['hb-newcc-hint']) el['hb-newcc-hint'].textContent = 'Creating…';
+    toGame('hbNewConsole', JSON.stringify({
+      name: String(el['hb-newcc-name'].value || '').trim(),
+      command: cmd,
+      crosshair: newcc.tgt === 'crosshair',
+    }));
+    /* Out of game (dev harness) there is no C++ to answer — fake the reply
+       so the whole flow is testable, exactly like the other DEV fallbacks. */
+    if (DEV && typeof window.hbNewConsole !== 'function') {
+      const nm = String(el['hb-newcc-name'].value || '').trim() ||
+        cmd.split('\n').map((l) => l.trim()).filter((s) => s && s[0] !== ';' && s[0] !== '#')[0].slice(0, 40);
+      setTimeout(() => window.hbNewConsoleDone({ refId: 'hbcc-dev-' + Date.now(), name: nm }), 0);
+    }
+  }
+
+  window.hbNewConsoleDone = function (j) {
+    const d = coerce(j);
+    if (el['hb-newcc-add']) el['hb-newcc-add'].disabled = false;
+    if (!newcc.open || !d || !d.refId) return;
+    closeNewCc(false);
+    log('console entry created + assigned: ' + d.refId);   // marker: hb-newcc-assign
+    assign({ _kind: 'entry', refId: String(d.refId), name: String(d.name || 'Console') });
+  };
+
+  if (el['hb-pick-newcc']) el['hb-pick-newcc'].addEventListener('click', openNewCc);
+  if (el['hb-newcc-close']) el['hb-newcc-close'].addEventListener('click', () => closeNewCc(true));
+  if (el['hb-newcc-add']) el['hb-newcc-add'].addEventListener('click', submitNewCc);
+  if (el['hb-newcc-tgt']) el['hb-newcc-tgt'].addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-tgt]');
+    if (!b) return;
+    newcc.tgt = b.dataset.tgt;
+    syncNewCcTgt();
+  });
+  if (el['hb-newcc-name']) el['hb-newcc-name'].addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { el['hb-newcc-cmd'] && el['hb-newcc-cmd'].focus(); e.preventDefault(); }
+    else if (e.key === 'Escape') { closeNewCc(true); e.preventDefault(); }
+  });
+  if (el['hb-newcc-cmd']) el['hb-newcc-cmd'].addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closeNewCc(true); e.preventDefault(); }
+  });
+
   /* ── the flyout (bundle) editor ──────────────────────────────────────── */
   /* One modal per bundle: name it, see what's inside with real icons,
      reorder, remove, and add more through the SAME searchable picker every
@@ -2004,5 +2097,7 @@
     flyState, openFlyPop, closeFlyPop, fireFlySelected, renderFlyPop,
     get flyEd() { return flyEd; },
     MAX_FLY, FLY_DWELL,
+    openNewCc, closeNewCc, submitNewCc,
+    get newcc() { return newcc; },
   };
 })();
