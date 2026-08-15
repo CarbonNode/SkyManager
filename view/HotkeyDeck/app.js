@@ -858,6 +858,11 @@ function render() {
   $('settings-card').classList.toggle('hidden', !(deck && ui.edit));
   renderSettingsFold();
   $('add-row').classList.toggle('hidden', !(deck && ui.edit));
+  /* The Commands tab is the console-command list page: OUTSIDE edit mode it
+     still offers its own create button, so it reads as a page you write
+     into, not just a filter. In edit mode the full add-row takes over. */
+  if ($('cc-tab-add')) $('cc-tab-add').classList.toggle('hidden',
+    !(deck && !ui.edit && activeCategory() === CC_TAB));
   renderTabScaleCard(pane);
 
   if (deck) renderList();
@@ -1257,6 +1262,18 @@ function openVKeyPicker(anchor, editEntry) {
  * unlock, disable) to whatever you're looking at, riding the same snapshot
  * the NPC actions use. C++: src/console_actions.cpp; ▶ Test = hdConsoleTest. */
 const CC_CMD_MAX = 4000;   // stays under the C++ kCommandMax (4096) safety net
+/* The "Commands" tab — the console-command list page. Auto-created the first
+   time a command files into it: new commands land here by default (unless you
+   were standing on another category tab when you made one), so there is ONE
+   place to see them all, add more, and give them trigger keys in Edit. The
+   C++ hbNewConsole path files here too. Rename-safe by construction: a
+   renamed tab keeps its entries, and the next default-filed command simply
+   recreates 'Commands'. */
+const CC_TAB = 'Commands';
+function ensureCommandsTab() {
+  if (state.categories.indexOf(CC_TAB) === -1) state.categories.push(CC_TAB);
+  return CC_TAB;
+}
 let ccEditorEl = null;
 let ccEditorCtx = null;    // { entry|null, target: ''|'crosshair' }
 
@@ -1360,9 +1377,14 @@ function openConsoleEditor(anchor, editEntry, opts) {
       en.device = 'console'; en.command = cmd; en.action = ccEditorCtx.target;
       en.name = name; en.code = 0; en.mods = []; en.label = 'Console';
     } else {
+      /* Filing: an explicit fileUnder (wheel/shelf) wins, then the category
+         tab you are standing on, else the Commands tab — so every command
+         made "from nowhere" collects on the one list page. */
+      let cat = (opts && opts.fileUnder) || activeCategory() || CC_TAB;
+      if (cat === CC_TAB) ensureCommandsTab();
       made = { id: newId(), name: name, desc: firstLine, device: 'console', code: 0,
         action: ccEditorCtx.target, label: 'Console', mods: [], icon: '', command: cmd,
-        category: activeCategory() || '' };
+        category: cat };
       state.entries.push(made);
     }
     closeConsoleEditor();
@@ -4462,6 +4484,10 @@ function init() {
     e.stopPropagation();
     openConsoleEditor(e.currentTarget, null);
   });
+  if ($('cc-tab-add-btn')) $('cc-tab-add-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    openConsoleEditor(e.currentTarget, null);   // activeCategory() files it here
+  });
   $('openkey-btn').addEventListener('click', () => startCapture('open', null));
   ['shift', 'ctrl', 'alt'].forEach((m) => {
     $('mod' + m + '-btn').addEventListener('click', () => startCapture('mod' + m, null));
@@ -4920,6 +4946,9 @@ function runSelfTest() {
 
   T('console editor creates a device:"console" entry with the typed command', () => {
     const before = state.entries.length;
+    const hadTab = state.categories.indexOf('Commands') !== -1;
+    const savedTab = ui.tab;
+    ui.tab = 'all';   // no category context -> files under the Commands tab
     openConsoleEditor(null, null);
     const box = document.getElementById('console-picker');
     if (!box) return 'editor did not mount';
@@ -4931,10 +4960,47 @@ function runSelfTest() {
     const good = state.entries.length === before + 1 && !!en &&
                  en.device === 'console' && en.action === 'crosshair' &&
                  en.command.indexOf('tgm') === 0 && en.name === 'ST Test Cmd' &&
+                 en.category === 'Commands' &&
+                 state.categories.indexOf('Commands') !== -1 &&
                  !document.getElementById('console-picker');
     state.entries = state.entries.filter((x) => x !== en);
+    if (!hadTab) state.categories = state.categories.filter((c) => c !== 'Commands');
+    ui.tab = savedTab;
     render();
     return good || ('en=' + JSON.stringify(en || null));
+  });
+
+  T('an explicit fileUnder (wheel/shelf) beats the active tab; onDone gets the entry', () => {
+    const hadTab = state.categories.indexOf('Commands') !== -1;
+    let got = null;
+    openConsoleEditor(null, null, { fileUnder: 'Commands', onDone: (en) => { got = en; } });
+    const box = document.getElementById('console-picker');
+    if (!box) return 'editor did not mount';
+    box.querySelector('.cc-cmd').value = 'fov 90';
+    box.querySelector('.cc-add').click();
+    const good = !!got && got.category === 'Commands' && got.device === 'console' &&
+                 state.categories.indexOf('Commands') !== -1;
+    state.entries = state.entries.filter((x) => x !== got);
+    if (!hadTab) state.categories = state.categories.filter((c) => c !== 'Commands');
+    render();
+    return good || ('got=' + JSON.stringify(got || null));
+  });
+
+  T('the Commands tab shows its own create button outside edit mode only', () => {
+    const hadTab = state.categories.indexOf('Commands') !== -1;
+    const savedTab = ui.tab, savedEdit = ui.edit;
+    if (!hadTab) state.categories.push('Commands');
+    ui.tab = 'cat:Commands';
+    ui.edit = false; render();
+    const shownOnTab = !document.getElementById('cc-tab-add').classList.contains('hidden');
+    ui.edit = true; render();
+    const hiddenInEdit = document.getElementById('cc-tab-add').classList.contains('hidden');
+    ui.tab = 'all'; ui.edit = false; render();
+    const hiddenOnAll = document.getElementById('cc-tab-add').classList.contains('hidden');
+    if (!hadTab) state.categories = state.categories.filter((c) => c !== 'Commands');
+    ui.tab = savedTab; ui.edit = savedEdit; render();
+    return (shownOnTab && hiddenInEdit && hiddenOnAll) ||
+           ('tab=' + shownOnTab + ' edit=' + hiddenInEdit + ' all=' + hiddenOnAll);
   });
 
   T('console editor refuses an all-comment command (nothing would run)', () => {

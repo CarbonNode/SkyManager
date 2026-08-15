@@ -1,5 +1,7 @@
 #include "effects_actions.h"
 
+#include "skinshift_actions.h"
+
 // pch (force-included) provides RE::/SKSE::, logger and nlohmann json (<json.hpp>).
 
 namespace EffectsActions
@@ -154,7 +156,18 @@ namespace EffectsActions
 			effects.push_back(e);
 		}
 		j["effects"] = effects;
-		j["anyPresent"] = anyPresent;
+
+		// 🎨 Skins block — the SkinShift integration rides the same fxState
+		// payload the modal already repaints from (skinshift_actions.cpp owns
+		// availability, the preset list and the current-assignment read).
+		const auto skins = SkinShiftActions::SkinsJson(formId);
+		const bool skinsPresent = skins.value("present", false);
+		j["skins"] = skins;
+
+		// The ✨ draws when EITHER kind of look is on the load order — a rig
+		// with SkinShift but none of the ability-spell mods still gets the
+		// modal (its Effects tab shows the honest per-mod reasons).
+		j["anyPresent"] = anyPresent || skinsPresent;
 
 		// Build marker (hd-markers.json: "effects-modal") — reached on every
 		// fxGet, i.e. each time the quick card looks at someone.
@@ -164,6 +177,18 @@ namespace EffectsActions
 
 	std::string Apply(std::uint32_t formId, const std::string& id, bool on)
 	{
+		// "skinshift:" ids route to the SkinShift bridge HERE, not in
+		// main.cpp: the fx* bridge only forwards { formId, id, on }, and
+		// main.cpp carries another session's in-flight work (matched-set
+		// law) — so the whole Skins feature hangs off the existing fxSet
+		// entry point instead of a new bridge pair.
+		if (id.rfind("skinshift:", 0) == 0) {
+			const std::string key = id.substr(10);
+			if (key == "clear" || !on)
+				return SkinShiftActions::Clear(formId);
+			return SkinShiftActions::Apply(formId, key);
+		}
+
 		const auto* def = DefById(id);
 		if (!def)
 			return Reply(false, "unknown effect", id.c_str(), on);

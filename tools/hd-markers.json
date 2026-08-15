@@ -321,7 +321,9 @@
     "preset-autorender": "preset autorender:",
     "console-cmd-entries": "console-cmd entries: Script runner ready",
     "console-cmd-fire": "console-cmd: fire '",
-    "hb-new-console": "hbNewConsole: created '"
+    "hb-new-console": "hbNewConsole: created '",
+    "skinshift-bridge": "skinshift: bridge bound",
+    "skinshift-apply": "skinshift: apply '"
   },
   "view": {
     "items-pane.js": {
@@ -413,7 +415,8 @@
       "nff-force-follower": "function makeFollowableClick",
       "crop-pan-hint": "then drag to reframe",
       "quickcard-add-as-mount": "Add as mount",
-      "effects-quick-modal": "function fxQuickBtn"
+      "effects-quick-modal": "function fxQuickBtn",
+      "skinshift-skins-tab": "skinshift-skins-tab"
     },
     "hud.js": {
       "hud-core": "window.hudData =",
@@ -578,7 +581,8 @@
       "item-source-drag": "function wireItemSourceDrag",
       "tab-fit-memo": "tabFitCache",
       "console-editor": "function openConsoleEditor",
-      "console-chip": "console-edit-btn"
+      "console-chip": "console-edit-btn",
+      "commands-tab": "function ensureCommandsTab"
     },
     "index.html": {
       "followers-scale-wrapper": "id=\"fd-scale\"",
@@ -596,7 +600,8 @@
       "spidgear-include": "hd-spidgear.js",
       "door-modal-include": "hd-door.js",
       "anim-packs-markup": "id=\"an-packs-card\"",
-      "hdperf-instrumentation": "HDPerf"
+      "hdperf-instrumentation": "HDPerf",
+      "commands-tab-add": "cc-tab-add"
     },
     "hd-scale.js": {
       "tab-scale-registry": "--hdts-",

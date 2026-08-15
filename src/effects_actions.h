@@ -12,10 +12,13 @@ namespace EffectsActions
 {
 	// Every registered effect with present/active state for this actor:
 	// { ok, formId, name, dead, effects:[{ id, label, glyph, detail,
-	//   present, active, reason }] }
+	//   present, active, reason }], skins:{...} }
+	// (`skins` is SkinShiftActions::SkinsJson — the modal's 🎨 Skins tab.)
 	std::string StateJson(std::uint32_t formId);
 
 	// Apply (on=true) or remove one effect on the actor. Returns
-	// { ok, msg, id, on } for fxResult.
+	// { ok, msg, id, on } for fxResult. Ids starting "skinshift:" route to
+	// SkinShiftActions (":clear" / on=false clears; anything else is the
+	// preset key to apply).
 	std::string Apply(std::uint32_t formId, const std::string& id, bool on);
 }
