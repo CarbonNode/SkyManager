@@ -1893,6 +1893,8 @@ var HDWheel = (function () {
           'autocomplete="off" spellcheck="false" value="' + esc(ui.pickQ) + '">' +
         '<div class="whl-chips">' + chips + '</div>' +
         '<div class="whl-results">' + body + '</div>' +
+        '<div class="whl-newcc-row"><button class="whl-btn whl-newcc" data-act="newcc" ' +
+          'title="Type any console command and put it straight on this wedge — one command per line, like a batch file">＞ New console command…</button></div>' +
       '</div>';
   }
 
@@ -1984,6 +1986,8 @@ var HDWheel = (function () {
         '<input class="whl-search" type="text" placeholder="Search everything — an item you carry, a spell, a follower, a place…" ' +
           'autocomplete="off" spellcheck="false" value="' + esc(ui.pickQ) + '">' +
         '<div class="whl-results whl-results-short">' + body + '</div>' +
+        '<div class="whl-newcc-row"><button class="whl-btn whl-newcc" data-act="newcc" ' +
+          'title="Type any console command and add it to this flyout — one command per line, like a batch file">＞ New console command…</button></div>' +
       '</div>';
   }
 
@@ -2306,9 +2310,46 @@ var HDWheel = (function () {
     }, 10);
   }
 
+  /* "＞ New console command…" from the pick / flyedit sheets: the deck's own
+     console editor (app.js) opens ON TOP of the wheel, and the entry it makes
+     is pinned exactly where the user was standing — the slot being filled, or
+     the bundle being edited. The editor is a real deck entry factory, so the
+     new command also shows up in the palette, the Hotbar picker and Omni. */
+  function newConsoleFromSheet() {
+    if (typeof window.openConsoleEditor !== 'function') {
+      toast('The console editor isn’t available in this build');
+      return;
+    }
+    var mode = ui.sheet;          // 'pick' | 'flyedit' — captured now, used at onDone
+    var slot = ui.pickSlot;
+    window.openConsoleEditor(null, null, { onDone: function (en) {
+      var pv = { id: 'hotkeys' };
+      try {
+        if (window.HDOmni && typeof HDOmni.providers === 'function')
+          HDOmni.providers().forEach(function (p) { if (p && p.id === 'hotkeys') pv = p; });
+      } catch (err) {}
+      var item = { label: en.name, detail: en.desc || '', kind: 'hotkey',
+                   pin: 'hk:' + en.id, icon: '' };
+      if (mode === 'flyedit') {
+        var wh = cur();
+        var p = wh && wh.slots[slot];
+        if (!isFly(p)) return;
+        if (p.fly.length >= MAX_FLY) { toast('That flyout is full (' + MAX_FLY + ')'); return; }
+        p.fly.push(pinFromItem(pv, item));
+        save();
+        render();
+        toast('“' + en.name + '” added to the flyout');
+        return;
+      }
+      if (place(pv, item, slot))
+        closeSheet();
+    } });
+  }
+
   function sheetAct(a, sh) {
     var w = slice();
     if (a === 'sheet-close') { closeSheet(); return; }
+    if (a === 'newcc') { newConsoleFromSheet(); return; }
     if (a === 'preset-toggle') { ui.presetOpen = !ui.presetOpen; render(); return; }
     if (a === 'size-') { w.size = clamp(+(w.size - SIZE_STEP).toFixed(2), SIZE_MIN, SIZE_MAX); save(); render(); return; }
     if (a === 'size+') { w.size = clamp(+(w.size + SIZE_STEP).toFixed(2), SIZE_MIN, SIZE_MAX); save(); render(); return; }
@@ -2365,6 +2406,11 @@ var HDWheel = (function () {
      true when the key was ours, so the deck never also acts on it. */
   function onKey(e) {
     if (!ui.open) return false;
+    /* The deck's console editor is open ON TOP of the wheel (the "new console
+       command" flow): every key belongs to its inputs. Claim the key so
+       neither the wheel nor the deck acts on it — without preventDefault, so
+       it still types into the editor's fields. */
+    if (document.getElementById('console-picker-backdrop')) return true;
     var k = e.key;
     /* A rebind is listening: this press IS the binding, so it must be caught
        ahead of everything — including the sheet's own Esc — or pressing "S"

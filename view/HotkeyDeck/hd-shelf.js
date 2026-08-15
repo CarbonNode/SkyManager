@@ -317,7 +317,8 @@ var HDShelf = (function () {
         '<div class="shf-search-wrap"><input class="shf-search" type="text" ' +
           'placeholder="Filter favorites…" autocomplete="off" spellcheck="false"></div>' +
         '<div class="shf-list"></div>' +
-        '<div class="shf-foot"><button class="shf-add">＋ Pin anything…</button></div>' +
+        '<div class="shf-foot"><button class="shf-add">＋ Pin anything…</button>' +
+          '<button class="shf-newcc" title="Type any console command — it becomes a deck entry and lands here as a pin">＞ New command…</button></div>' +
       '</div>';
     /* inside the deck window — the wing contract (see header). Falls back to
        body only if #panel is somehow absent (a harness without one). */
@@ -328,6 +329,16 @@ var HDShelf = (function () {
     root.querySelector('.shf-side-btn').addEventListener('click', toggleSide);
     root.querySelector('.shf-rail-add').addEventListener('click', () => { if (env) env.openOmni(); });
     root.querySelector('.shf-add').addEventListener('click', () => { if (env) env.openOmni(); });
+    /* "＞ New command…" — the deck's console editor makes a real entry, and
+       the shelf pins it the moment it lands. togglePin owns the cap, the
+       save and the toast, exactly as if the ☆ had been hit in Omni. */
+    root.querySelector('.shf-newcc').addEventListener('click', () => {
+      if (typeof window.openConsoleEditor !== 'function') { toast('Console editor unavailable'); return; }
+      window.openConsoleEditor(null, null, { onDone: (en) => {
+        togglePin({ id: 'hotkeys' }, { pin: 'hk:' + en.id, label: en.name,
+          detail: en.desc || '', kind: 'hotkey', icon: '', snap: null });
+      } });
+    });
 
     const search = root.querySelector('.shf-search');
     search.addEventListener('input', (e) => { ui.filter = e.target.value; renderList(); });

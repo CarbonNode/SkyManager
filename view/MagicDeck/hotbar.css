@@ -1107,3 +1107,16 @@ body.hb-edit .hb-slot.is-selected {
 
 /* ── smart consumable buttons ──────────────────────────────────────────── */
 .hb-smart-g { color: #b7d0b2; }
+
+/* ── "＞ New console command" form (#hb-newcc) — the picker's create-inline
+   sibling. Reuses the modal/field/chip tokens; only the command textarea is
+   new, terminal-green like the deck's own console editor. */
+.hb-cc-cmd {
+  font: 500 16px/1.5 Consolas, "Courier New", monospace; color: #c8ecb8;
+  background: #0c1309; border: 1px solid #3f5a37; border-radius: 10px;
+  padding: 12px 14px; min-height: 120px; resize: vertical; outline: none;
+  transition: border-color 120ms ease; caret-color: #a9d89a;
+}
+.hb-cc-cmd:focus { border-color: #7fae6c; }
+.hb-cc-cmd::placeholder { color: #5a7050; }
+#hb-newcc-title { color: #b9e2a8; }

@@ -383,3 +383,16 @@ body.open.shf-open:not(.shf-left) #resize-grip { right: 348px; }
 }
 .omni-pin:hover { color: #c9a24b; border-color: #c9a24b66; background: rgba(201,162,75,.08); }
 .omni-pin.on { color: #c9a24b; }
+
+/* "＞ New command…" — the foot's create-inline sibling of "＋ Pin anything…".
+   Terminal green: it makes a NEW console-command entry (and pins it), unlike
+   the pin button which finds existing things. */
+#hd-shelf .shf-foot { display: flex; flex-direction: column; gap: 8px; }
+#hd-shelf .shf-newcc {
+  width: 100%; box-sizing: border-box;
+  font: 600 14px/1 Consolas, "Courier New", monospace; letter-spacing: .3px;
+  color: #a9d89a; background: #0c1309; border: 1px solid #4a6d3f;
+  border-radius: 10px; padding: 12px; cursor: pointer;
+  transition: all 120ms ease; white-space: nowrap;
+}
+#hd-shelf .shf-newcc:hover { border-color: #7fae6c; color: #c8ecb8; background: #101a0c; }

@@ -412,8 +412,8 @@ window.ItemsPane = (function () {
       '<div class="ix-sheet-item">' +
       '<div class="ix-glyph ix-sheet-glyph ix-t-' + esc(it.t) + (hasArt ? ' ix-has-art' : '') +
       '" title="' + esc(meta[1]) + '">' + glyphInner(it.id, meta[2]) + '</div>' +
-      '<div class="ix-sheet-item-txt"><b>' + esc(it.n) + (qty > 1 ? ' ×' + qty : '') + '</b>' +
-      '<span>' + esc(meta[1]) + ' · ' + esc(it.p) + ' · worth ' + fmtGold(val) + ' g</span></div></div>' +
+      '<div class="ix-sheet-item-txt"><b title="' + esc(it.n) + '">' + esc(it.n) + (qty > 1 ? ' ×' + qty : '') + '</b>' +
+      '<span title="' + esc(meta[1]) + ' · ' + esc(it.p) + '">' + esc(meta[1]) + ' · ' + esc(it.p) + ' · worth ' + fmtGold(val) + ' g</span></div></div>' +
       '<div class="ix-sheet-row"><span class="ix-sheet-label">Price</span>' +
       '<input id="ix-price" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" value="' + sug + '">' +
       '<span class="ix-sheet-label">gold</span></div>' +
