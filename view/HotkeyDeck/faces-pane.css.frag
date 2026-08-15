@@ -107,3 +107,15 @@
 .pd-autorender-stop { border-color: rgba(214, 120, 110, .5); }
 .pd-autorender-stop:hover { background: rgba(214, 120, 110, .14); }
 @keyframes pdArPulse { 0%, 100% { opacity: 1; } 50% { opacity: .62; } }
+.pd-zoom {
+  position: absolute; top: 4px; left: 4px; z-index: 2;
+  width: 24px; height: 24px; padding: 0; line-height: 22px; text-align: center;
+  font-size: 13px; border-radius: 7px; border: 1px solid rgba(255,255,255,.14);
+  background: rgba(10,12,16,.55); color: #d8d4c8; cursor: pointer; opacity: 0;
+  transition: opacity .12s ease;
+}
+.pd-tile:hover .pd-zoom, .pd-zoom:focus-visible { opacity: 1; }
+.pd-zoom:hover { background: rgba(240,214,140,.18); border-color: rgba(240,214,140,.5); }
+.pd-autorender.is-stopping { animation: none; opacity: .85; border-color: rgba(214,120,110,.55); }
+.pd-redo { border-color: rgba(255,255,255,.16); }
+.pd-redo.is-armed { border-color: rgba(214,120,110,.6); background: rgba(214,120,110,.14); }

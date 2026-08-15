@@ -336,20 +336,44 @@ window.FacesPane = (function () {
     // a Stop chip (the index push per finished face repaints the gallery).
     const ar = (pdState && pdState.autorender) || null;
     const missingN = names.filter((n) => n.slice(0, 3) !== 'PD_' && !pdIconFor(n)).length;
-    if (ar && ar.running) {
+    const autoN = names.filter((n) => (pdIconFor(n) || '').slice(0, 5) === 'auto-').length;
+    if (ar && ar.running && ar.cancelling) {
+      modeRow.append(h('span', { class: 'pd-chip pd-autorender is-running is-stopping',
+        title: 'Finishing the face in progress, then stopping. Finished thumbnails are kept.' },
+        '⏹ Stopping after this face…'));
+    } else if (ar && ar.running) {
       modeRow.append(h('span', { class: 'pd-chip pd-autorender is-running',
         title: 'Faces are rendering in the background — close the deck to let it work.' },
         '⏳ Rendering ' + ((ar.done || 0) + (ar.failed || 0)) + '/' + (ar.total || '?') + '…'));
       modeRow.append(h('button', { class: 'fc-set pd-chip pd-autorender-stop', type: 'button',
         title: 'Stop after the current face — finished thumbnails are kept, and the button resumes where it left off.',
-        onClick: () => { toGame('fdPreset', JSON.stringify({ op: 'autorender-cancel' })); } },
+        onClick: (e) => {
+          // Optimistic flip: the confirming index push takes a moment.
+          e.currentTarget.previousSibling.textContent = '⏹ Stopping after this face…';
+          e.currentTarget.remove();
+          toGame('fdPreset', JSON.stringify({ op: 'autorender-cancel' }));
+        } },
         '⏹ Stop'));
     } else if (pdState && pdState.available && missingN > 0) {
       modeRow.append(h('button', { class: 'fc-set pd-chip pd-autorender', type: 'button',
-        title: 'Render a face image for every preset that has none. Closes the deck; a stand-in ' +
+        title: 'Render a face image for every preset that has none. Closes the deck; a lone stand-in ' +
                'appears beside you while it runs (~4s per preset). Watch the corner messages.',
         onClick: () => { toGame('fdPreset', JSON.stringify({ op: 'autorender' })); } },
         '✨ Render missing (' + missingN + ')'));
+    }
+    // ↻ Re-render all: the escape hatch for a batch that rendered glitched
+    // (armed two-press, the deck's destructive-action idiom).
+    if (pdState && pdState.available && autoN > 0 && !(ar && ar.running)) {
+      const armed = ui.redoArmed;
+      modeRow.append(h('button', { class: 'fc-set pd-chip pd-redo' + (armed ? ' is-armed' : ''), type: 'button',
+        title: armed ? 'Click again to delete all ' + autoN + ' auto-rendered images and re-render them fresh.'
+                     : 'Throw away every auto-rendered thumbnail and render them again (e.g. after a glitched batch).',
+        onClick: () => {
+          if (!armed) { ui.redoArmed = true; render(); setTimeout(() => { if (ui.redoArmed) { ui.redoArmed = false; if (isActive()) render(); } }, 4000); return; }
+          ui.redoArmed = false;
+          toGame('fdPreset', JSON.stringify({ op: 'autorender-redo' }));
+        } },
+        armed ? '↻ Sure? Redo ' + autoN : '↻ Re-render all'));
     }
     body.append(modeRow);
 
@@ -512,6 +536,16 @@ window.FacesPane = (function () {
         tile.append(h('button', { class: 'pd-fav' + (fav ? ' on' : ''), type: 'button',
           title: fav ? 'Un-favourite' : 'Favourite this preset',
           onClick: (e) => { e.stopPropagation(); toggleFav(name); } }, fav ? '★' : '☆'));
+        // 🔍 lightbox corner — big popout of the preset image (tile CLICK
+        // applies the preset, so the zoom needs its own control).
+        if (icon)
+          tile.append(h('button', { class: 'pd-zoom', type: 'button', title: 'View large',
+            onClick: (e) => {
+              e.stopPropagation();
+              if (window.HDLightbox && host)
+                window.HDLightbox.open({ host: host, src: 'preset-icons/' + encodeURIComponent(icon),
+                  glyph: '🎭', title: name, sub: 'RaceMenu preset' });
+            } }, '🔍'));
         const face = h('div', { class: 'pd-face' });
         if (icon && icon.slice(0, 5) === 'auto-') {
           // Auto-rendered stand-in PNG (whole transparent-bg figure). NOT
