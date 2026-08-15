@@ -1248,6 +1248,127 @@ function openVKeyPicker(anchor, editEntry) {
   document.addEventListener('keydown', vkPickerKeydown, true);
 }
 
+/* ============================== Console-command editor ==================== *
+ * device:"console": a deck button that runs the console command text you type
+ * — one command per line, exactly like a Bethesda batch file. Because it is a
+ * normal deck entry it inherits every surface for free: click it in the
+ * palette, give it a trigger key, drop it on the Hotbar or the wheel or the
+ * shelf, find it in Omni. "Target: crosshair" scopes ref commands (resurrect,
+ * unlock, disable) to whatever you're looking at, riding the same snapshot
+ * the NPC actions use. C++: src/console_actions.cpp; ▶ Test = hdConsoleTest. */
+const CC_CMD_MAX = 4000;   // stays under the C++ kCommandMax (4096) safety net
+let ccEditorEl = null;
+let ccEditorCtx = null;    // { entry|null, target: ''|'crosshair' }
+
+function closeConsoleEditor() {
+  if (!ccEditorEl) return;
+  ccEditorEl.remove();
+  ccEditorEl = null;
+  ccEditorCtx = null;
+  document.removeEventListener('keydown', ccEditorKeydown, true);
+}
+
+function ccEditorKeydown(e) {
+  if (!ccEditorEl) return;
+  /* Esc only — Enter belongs to the textarea (it separates commands). */
+  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeConsoleEditor(); }
+}
+
+function ccSetTarget(t) {
+  if (!ccEditorCtx) return;
+  ccEditorCtx.target = t;
+  ccEditorEl.querySelectorAll('.cc-target button').forEach((b) => b.classList.toggle('on', b.dataset.tgt === t));
+}
+
+function ccCommandText() {
+  const t = ccEditorEl && ccEditorEl.querySelector('.cc-cmd');
+  return t ? String(t.value).slice(0, CC_CMD_MAX) : '';
+}
+
+/* anchor unused (centered modal) — call-site symmetry with openVKeyPicker.
+   editEntry non-null => editing an existing console entry. */
+function openConsoleEditor(anchor, editEntry) {
+  closeActionPicker();
+  closeVKeyPicker();
+  closeConsoleEditor();
+  ccEditorCtx = { entry: editEntry || null, target: (editEntry && editEntry.action === 'crosshair') ? 'crosshair' : '' };
+
+  const box = document.createElement('div');
+  box.id = 'console-picker-backdrop';
+  box.innerHTML =
+    '<div id="console-picker" role="dialog">' +
+      '<div class="cc-head">＞ Console command' +
+        '<span class="cc-sub">' + (editEntry ? 'edit this button’s command' : 'any console command, on a deck button') + '</span>' +
+        '<button class="cc-x" title="Close">✕</button></div>' +
+      '<input class="cc-name" placeholder="Button name (e.g. God Mode, Give 1000 Gold)" value="' + (editEntry ? esc(editEntry.name) : '') + '" spellcheck="false">' +
+      '<textarea class="cc-cmd" placeholder="One console command per line, e.g.\n\nplayer.additem f 1000\ntgm\nset timescale to 6" spellcheck="false" maxlength="' + CC_CMD_MAX + '">' + (editEntry ? esc(editEntry.command || '') : '') + '</textarea>' +
+      '<div class="cc-hint">One command per line — lines starting with <b>;</b> or <b>#</b> are skipped. Fires exactly as if you typed it into the console.</div>' +
+      '<div class="cc-target"><span class="cc-target-l">Runs on:</span>' +
+        '<button data-tgt="">The world / player</button>' +
+        '<button data-tgt="crosshair">What I’m looking at</button></div>' +
+      '<div class="cc-target-hint hidden">Ref commands (resurrect, unlock, disable, kill…) act on the crosshair target — like clicking it in the console first. No target = the button says so and does nothing.</div>' +
+      '<div class="cc-foot">' +
+        '<button class="cc-test" title="Run it right now, without saving">▶ Test</button>' +
+        '<button class="cc-add">' + (editEntry ? 'Save' : '＋ Add to deck') + '</button>' +
+      '</div>' +
+    '</div>';
+  document.body.append(box);
+  ccEditorEl = box;
+  ccSetTarget(ccEditorCtx.target);
+
+  const syncTgtHint = () => {
+    const h = box.querySelector('.cc-target-hint');
+    if (h) h.classList.toggle('hidden', ccEditorCtx.target !== 'crosshair');
+  };
+  syncTgtHint();
+
+  const cmdEl = box.querySelector('.cc-cmd');
+  setTimeout(() => (editEntry ? cmdEl : box.querySelector('.cc-name')).focus(), 0);
+
+  box.querySelector('.cc-target').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-tgt]');
+    if (!b) return;
+    ccSetTarget(b.dataset.tgt);
+    syncTgtHint();
+  });
+
+  box.querySelector('.cc-test').addEventListener('click', () => {
+    const cmd = ccCommandText().trim();
+    if (!cmd) { toast('Type a command first'); return; }
+    toGame('hdConsoleTest', JSON.stringify({ command: cmd, crosshair: ccEditorCtx.target === 'crosshair' }));
+    toast('Ran it — check the world (some commands need the deck closed)');
+  });
+
+  box.querySelector('.cc-add').addEventListener('click', () => {
+    const cmd = ccCommandText().trim();
+    if (!cmd) { toast('Type a command first'); return; }
+    const firstLine = (cmd.split('\n').find((l) => {
+      const s = l.trim();
+      return s && s[0] !== ';' && s[0] !== '#';
+    }) || '').trim();
+    if (!firstLine) { toast('Every line is a comment — nothing would run'); return; }
+    const name = (box.querySelector('.cc-name').value || '').trim() || firstLine.slice(0, 40);
+    const editing = !!ccEditorCtx.entry;
+    if (editing) {
+      const en = ccEditorCtx.entry;
+      en.device = 'console'; en.command = cmd; en.action = ccEditorCtx.target;
+      en.name = name; en.code = 0; en.mods = []; en.label = 'Console';
+    } else {
+      state.entries.push({ id: newId(), name: name, desc: firstLine, device: 'console', code: 0,
+        action: ccEditorCtx.target, label: 'Console', mods: [], icon: '', command: cmd,
+        category: activeCategory() || '' });
+    }
+    closeConsoleEditor();
+    save();
+    render();
+    toast((editing ? 'Saved ' : 'Added ') + name);
+  });
+
+  box.querySelector('.cc-x').addEventListener('click', closeConsoleEditor);
+  box.addEventListener('mousedown', (e) => { if (e.target === box) closeConsoleEditor(); });
+  document.addEventListener('keydown', ccEditorKeydown, true);
+}
+
 /* The footer legend is per-pane — "Enter fire / 1–9,0 quick-fire" is a lie on
    the Quests tab, where nothing is bound to those keys. */
 let defaultHints = null;
@@ -2187,6 +2308,10 @@ function renderList() {
        carries [VKnnn] + the verb; in edit mode it reopens the picker rather than
        press-to-rebind (there is no key to press). */
     const isVKey = e.device === 'vkey';
+    /* Console entry (device:"console"): runs the command text you typed — no
+       key, no scancode. The ＞ chip is terminal-green (yours, not built-in
+       gold); in edit mode it reopens the command editor, not press-to-rebind. */
+    const isConsole = e.device === 'console';
     /* Gold edge for anything shipped/integration (native action, VirtualKey, or a
        seeded mod-opener) — not a plain key you added. */
     const isShipped = hkIsShipped(e);
@@ -2196,8 +2321,10 @@ function renderList() {
     const vkVerb = e.action || 'tap';
     const keyLbl = isAction ? ('⚙ ' + (e.label || 'Action'))
       : isVKey ? ('✦ VK' + e.code + (vkVerb !== 'tap' ? ' ·' + vkVerb : ''))
+      : isConsole ? ('＞ Console' + (e.action === 'crosshair' ? ' · target' : ''))
       : (e.code ? chordLabel(e.mods, e.label || '?') : 'Set key…');
-    const chipCls = isAction ? 'keychip action' : isVKey ? 'keychip vkey' : (e.code ? 'keychip' : 'keychip unset');
+    const chipCls = isAction ? 'keychip action' : isVKey ? 'keychip vkey'
+      : isConsole ? 'keychip console' : (e.code ? 'keychip' : 'keychip unset');
     if (!ui.edit) {
       rowHtml =
         '<div class="row' + (i === ui.sel ? ' selected' : '') + (isShipped ? ' hk-native' : '') + '" data-id="' + esc(e.id) + '">' +
@@ -2234,6 +2361,8 @@ function renderList() {
           ? '<span class="' + chipCls + '" title="Built-in action — not rebindable">' + esc(keyLbl) + '</span>'
           : isVKey
           ? '<button class="' + chipCls + ' vkey-edit-btn" title="Change the MCM binding or verb">' + esc(keyLbl) + '</button>'
+          : isConsole
+          ? '<button class="' + chipCls + ' console-edit-btn" title="Edit the command this button runs">' + esc(keyLbl) + '</button>'
           : '<button class="' + chipCls + ' rebind-btn" title="Click, then press the new key">' + esc(keyLbl) + '</button>') +
         '<div class="row-tools">' +
         '<button class="tool-btn up" title="Move up"' + (state.entries.indexOf(e) === 0 ? ' disabled' : '') + '>↑</button>' +
@@ -3232,6 +3361,7 @@ function onListClick(e) {
   if (e.target.classList.contains('trig-btn')) { startCapture('trigger', id); return; }
   if (e.target.classList.contains('rebind-btn')) { startCapture('entry', id); return; }
   if (e.target.classList.contains('vkey-edit-btn')) { openVKeyPicker(e.target, entry); return; }
+  if (e.target.classList.contains('console-edit-btn')) { openConsoleEditor(e.target, entry); return; }
   if (e.target.classList.contains('up') || e.target.classList.contains('down')) {
     /* Swap against the VISIBLE list, not the global array: inside a category
        tab the neighbour in state.entries can be a hidden entry from another
@@ -4318,6 +4448,10 @@ function init() {
     e.stopPropagation();
     openVKeyPicker(e.currentTarget, null);
   });
+  $('add-console-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    openConsoleEditor(e.currentTarget, null);
+  });
   $('openkey-btn').addEventListener('click', () => startCapture('open', null));
   ['shift', 'ctrl', 'alt'].forEach((m) => {
     $('mod' + m + '-btn').addEventListener('click', () => startCapture('mod' + m, null));
@@ -4741,6 +4875,69 @@ function runSelfTest() {
     state.entries = state.entries.filter((x) => x.id !== 'st-vkey');
     render();
     return good || ('row=' + !!row + ' chip=' + (chip ? chip.textContent : 'none'));
+  });
+
+  T('console entry renders plain (not gold) with a ＞ chip; edit mode shows the command editor button', () => {
+    state.entries.push({ id: 'st-console', name: 'Gold 1000', desc: 'player.additem f 1000', device: 'console',
+                         code: 0, label: 'Console', mods: [], action: '', icon: '', category: '', command: 'player.additem f 1000' });
+    render();   // ui.edit is true here (set at harness top)
+    const row  = document.querySelector('.row[data-id="st-console"]');
+    const gold = row && row.classList.contains('hk-native');
+    const btn  = row && row.querySelector('button.keychip.console.console-edit-btn');
+    ui.edit = false; render();
+    const rowN  = document.querySelector('.row[data-id="st-console"]');
+    const chipN = rowN && rowN.querySelector('.keychip.console');
+    const good = !!row && !gold && !!btn && !!rowN && !!chipN &&
+                 chipN.textContent.indexOf('＞') !== -1;
+    ui.edit = true;
+    state.entries = state.entries.filter((x) => x.id !== 'st-console');
+    render();
+    return good || ('row=' + !!row + ' gold=' + !!gold + ' btn=' + !!btn + ' chipN=' + (chipN ? chipN.textContent : 'none'));
+  });
+
+  T('console chip says · target when crosshair-scoped; hkNeeds never gates it', () => {
+    state.entries.push({ id: 'st-console-t', name: 'Unlock', desc: '', device: 'console',
+                         code: 0, label: 'Console', mods: [], action: 'crosshair', icon: '', category: '', command: 'unlock' });
+    render();
+    const row  = document.querySelector('.row[data-id="st-console-t"]');
+    const chip = row && row.querySelector('.keychip.console');
+    const good = !!chip && chip.textContent.indexOf('target') !== -1 &&
+                 hkNeeds(state.entries.find((x) => x.id === 'st-console-t')) === '';
+    state.entries = state.entries.filter((x) => x.id !== 'st-console-t');
+    render();
+    return good || ('chip=' + (chip ? chip.textContent : 'none'));
+  });
+
+  T('console editor creates a device:"console" entry with the typed command', () => {
+    const before = state.entries.length;
+    openConsoleEditor(null, null);
+    const box = document.getElementById('console-picker');
+    if (!box) return 'editor did not mount';
+    box.querySelector('.cc-name').value = 'ST Test Cmd';
+    box.querySelector('.cc-cmd').value = 'tgm\n; a comment\nset timescale to 6';
+    box.querySelector('.cc-target [data-tgt="crosshair"]').click();
+    box.querySelector('.cc-add').click();
+    const en = state.entries[state.entries.length - 1];
+    const good = state.entries.length === before + 1 && !!en &&
+                 en.device === 'console' && en.action === 'crosshair' &&
+                 en.command.indexOf('tgm') === 0 && en.name === 'ST Test Cmd' &&
+                 !document.getElementById('console-picker');
+    state.entries = state.entries.filter((x) => x !== en);
+    render();
+    return good || ('en=' + JSON.stringify(en || null));
+  });
+
+  T('console editor refuses an all-comment command (nothing would run)', () => {
+    const before = state.entries.length;
+    openConsoleEditor(null, null);
+    const box = document.getElementById('console-picker');
+    if (!box) return 'editor did not mount';
+    box.querySelector('.cc-cmd').value = '; only a comment\n# and another';
+    box.querySelector('.cc-add').click();
+    const stayed = !!document.getElementById('console-picker');   // editor stays open on refusal
+    closeConsoleEditor();
+    const good = stayed && state.entries.length === before;
+    return good || ('stayed=' + stayed + ' len=' + state.entries.length + '/' + before);
   });
 
   T('integration is HIDDEN when its mod is undetected; shown greyed in Edit', () => {

@@ -1,6 +1,7 @@
 #include "PrismaUI_API.h"
 
 #include <algorithm>
+#include <tuple>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -43,6 +44,7 @@
 #include "npc_actions.h"
 #include "save_actions.h"
 #include "fix_actions.h"
+#include "console_actions.h"
 #include "place_actions.h"
 #include "container_actions.h"
 #include "door_actions.h"
@@ -290,6 +292,10 @@ namespace
 		std::string                category;  // user tab; "" = All only
 		std::string                action;    // when device=="action": verb (freeze/sit/bed/release-all)
 		std::string                icon;      // view-relative icon path ("icons/custom/x.png"); "" = none
+		// device=="console": the console command text this button runs — one
+		// command per line, `action` == "crosshair" scopes it to the crosshair
+		// target (see console_actions.h). Empty for every other device.
+		std::string                command;
 
 		// OPTIONAL global trigger: press this with the palette CLOSED and the entry
 		// fires where it stands. Orthogonal to `device`/`code`, which describe what
@@ -860,6 +866,9 @@ namespace
 				{ "category", e.category },
 				{ "action", e.action },
 				{ "icon", e.icon },
+				// Console entries only — every other device writes null, so an
+				// existing config's entries are byte-unchanged.
+				{ "command", e.command.empty() ? json(nullptr) : json(e.command) },
 				// Only written when set, so an untriggered entry's json is unchanged
 				// and an older DLL reading this file simply ignores the key.
 				{ "trigger", e.trigDevice.empty() ? json(nullptr) : json{
@@ -1102,6 +1111,17 @@ namespace
 					e.category = je.value("category", std::string(""));
 					e.action = je.value("action", std::string(""));
 					e.icon = je.value("icon", std::string(""));
+					if (je.contains("command") && je["command"].is_string())
+						e.command = je["command"].get<std::string>();
+					if (e.command.size() > ConsoleActions::kCommandMax) {
+						// Only a hand-edited file can get here (the view caps at
+						// creation). Refusing beats truncating: half a command is
+						// a DIFFERENT command, and running it would be worse than
+						// dropping the entry with a log.
+						logger::warn("entry '{}': console command over {} bytes — entry dropped",
+							e.name, ConsoleActions::kCommandMax);
+						e.command.clear();
+					}
 					if (je.contains("trigger") && je["trigger"].is_object()) {
 						const auto& t = je["trigger"];
 						e.trigDevice = t.value("device", std::string(""));
@@ -1127,7 +1147,9 @@ namespace
 					// VirtualKey trigger: code is a virtual-key value (100000..9999999),
 					// not a scancode, so ValidDevice/validKey can't vouch for it.
 					const bool validVKey = e.device == "vkey" && VKey::IsVirtualKey(static_cast<std::int32_t>(e.code));
-					if (e.id.empty() || (!validKey && !validAction && !validVKey))
+					// Console entry: no key, no code — the command text IS the payload.
+					const bool validConsole = e.device == "console" && !e.command.empty();
+					if (e.id.empty() || (!validKey && !validAction && !validVKey && !validConsole))
 						continue;
 					c.entries.push_back(std::move(e));
 				}
@@ -2945,6 +2967,7 @@ namespace
 	void OnJsQuestAction(const char* data);
 	void OnJsVkCatalog(const char* data);
 	void OnJsVkTest(const char* data);
+	void OnJsConsoleTest(const char* data);
 
 	// Spell Deck (second view) forward decls.
 	void OpenMagicPalette();
@@ -3564,6 +3587,9 @@ namespace
 		// VirtualKey (Nexus 187350): catalog for the picker + a raw test-fire.
 		g_prisma->RegisterJSListener(g_view, "vkCatalog", OnJsVkCatalog);
 		g_prisma->RegisterJSListener(g_view, "vkTest", OnJsVkTest);
+		// Console-command entries: the editor's ▶ Test (fires without saving).
+		g_prisma->RegisterJSListener(g_view, "hdConsoleTest", OnJsConsoleTest);
+		logger::info("console-cmd entries: Script runner ready");  // marker: console-cmd-entries
 		logger::info("virtualkey device: native InputEvent dispatch ready");
 		// Followers tab (v0.9.0): the fd* bridge lives on the deck view now.
 		g_prisma->RegisterJSListener(g_view, "fdApply", OnJsFolApply);
@@ -4558,6 +4584,35 @@ namespace
 		}).detach();
 	}
 
+	// Console entry (device == "console"): close the palette, then run the
+	// entry's command text on the main thread. Same close/reopen timing as
+	// FireAndClose — the 200ms lets the game unpause first, so a command that
+	// needs live ticks ("player.placeatme", a spawned explosion) lands on the
+	// running world, not the paused one. A crosshair-scoped entry acts on the
+	// palette-open snapshot, exactly like the NPC actions.
+	void FireConsoleAndClose(HotkeyEntry entry)
+	{
+		bool reopen;
+		{
+			std::lock_guard l(g_configMutex);
+			reopen = !g_config.settings.closeAfterFire;
+		}
+		SKSE::GetTaskInterface()->AddTask([]() { ClosePalette(); });
+		std::thread([entry = std::move(entry), reopen]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			SKSE::GetTaskInterface()->AddTask([entry]() {
+				ConsoleActions::Fire(entry.name, entry.command, entry.action == "crosshair");
+			});
+			if (reopen) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(250));
+				SKSE::GetTaskInterface()->AddTask([]() {
+					if (CanOpenNow())
+						OpenPalette();
+				});
+			}
+		}).detach();
+	}
+
 	// Native action entry (device == "action"): close the palette, then run the
 	// C++ action against the snapshotted target. No keystroke is synthesized.
 	void FireAction(HotkeyEntry entry)
@@ -5012,6 +5067,13 @@ namespace
 			FireVKeyAndClose(std::move(entry));
 			return;
 		}
+		if (entry.device == "console") {
+			logger::info("console fire '{}'", entry.name);
+			HotkeyHistory::Record(HotkeyHistory::Source::kEntry, entry.name,
+				entry.label.empty() ? std::string("Console") : entry.label, entry.category);
+			FireConsoleAndClose(std::move(entry));
+			return;
+		}
 		logger::info("fire '{}' ({} code {}, {} mods)", entry.name, entry.device, entry.code, entry.mods.size());
 		HotkeyHistory::Record(HotkeyHistory::Source::kEntry, entry.name,
 			ChordLabel(entry.mods, entry.label), entry.category);
@@ -5052,6 +5114,18 @@ namespace
 			HotkeyHistory::Record(HotkeyHistory::Source::kEntry, entry.name,
 				entry.label.empty() ? ("VK" + std::to_string(entry.code)) : entry.label, entry.category);
 			VKey::Fire(static_cast<std::int32_t>(entry.code), entry.action.empty() ? "tap" : entry.action);
+			return;
+		}
+		if (entry.device == "console") {
+			// Palette closed, so any palette-open snapshot is stale — re-aim a
+			// crosshair-scoped command at whatever is under the crosshair NOW,
+			// the same live re-snapshot the NPC actions take above.
+			if (entry.action == "crosshair")
+				NpcActions::SnapshotTarget();
+			logger::info("trigger {} -> console '{}'", via, entry.name);
+			HotkeyHistory::Record(HotkeyHistory::Source::kEntry, entry.name,
+				entry.label.empty() ? std::string("Console") : entry.label, entry.category);
+			ConsoleActions::Fire(entry.name, entry.command, entry.action == "crosshair");
 			return;
 		}
 		logger::info("trigger {} -> '{}'", via, entry.name);
@@ -5344,6 +5418,26 @@ namespace
 			VKey::Fire(code, verb);
 		} catch (const std::exception& e) {
 			logger::warn("vkTest: bad payload ({})", e.what());
+		}
+	}
+
+	// Console editor "Test" button: run command text without saving an entry.
+	// Payload: {"command":"tgm\nplayer.additem f 100","crosshair":false}.
+	// Runs immediately, palette open — the game is paused, but so is it when
+	// you type into the real console, so the semantics match what the player
+	// expects from testing. Crosshair mode uses the palette-open snapshot.
+	void OnJsConsoleTest(const char* data)
+	{
+		if (!data)
+			return;
+		try {
+			const auto j = json::parse(data);
+			const auto cmd = j.value("command", std::string());
+			if (cmd.empty() || cmd.size() > ConsoleActions::kCommandMax)
+				return;
+			ConsoleActions::Fire("Console test", cmd, j.value("crosshair", false));
+		} catch (const std::exception& e) {
+			logger::warn("hdConsoleTest: bad payload ({})", e.what());
 		}
 	}
 
@@ -7317,8 +7411,11 @@ namespace
 		// The action verb is C++-owned: an action entry can be renamed and re-filed
 		// from the phone, never re-bound, and a key entry can never be turned INTO
 		// one. Both directions would produce an entry OnJsFire cannot dispatch.
-		if (h.device == "action") {
-			logger::warn("portal hotkey edit '{}': native action entry — binding fields skipped", h.name);
+		// Same for vkey and console entries: their payload lives in code/command,
+		// not a scancode, so a portal "rebind" would strand them on a device
+		// whose fire path ignores what they actually do.
+		if (h.device == "action" || h.device == "vkey" || h.device == "console") {
+			logger::warn("portal hotkey edit '{}': {} entry — binding fields skipped", h.name, h.device);
 			return changed;
 		}
 
@@ -8001,8 +8098,10 @@ namespace
 		out["icons"] = icons;
 		out["assign"] = PresetAssignments();
 		// Live batch state, so a reopened deck shows "Rendering k/N" + Stop
-		// instead of a dead ✨ button while the worker runs.
+		// instead of a dead ✨ button while the worker runs — and "Stopping…"
+		// the moment cancel lands (the flag only takes effect between renders).
 		out["autorender"] = { { "running", g_presetAutoBusy.load() },
+			{ "cancelling", g_presetAutoBusy.load() && g_presetAutoCancel.load() },
 			{ "done", g_presetAutoDone.load() },
 			{ "failed", g_presetAutoFailed.load() },
 			{ "total", g_presetAutoTotal.load() } };
@@ -8017,7 +8116,7 @@ namespace
 	// One worker at a time; assign.json writes are shared with op "img", so
 	// both go through g_presetAssignLock (state atomics declared up beside
 	// PresetIconsDir — PresetIndexJson reports them).
-	std::string PresetAutoFileName(const std::string& preset)
+	std::string PresetAutoStem(const std::string& preset)
 	{
 		std::string s = "auto-" + preset;
 		for (auto& c : s)
@@ -8026,7 +8125,39 @@ namespace
 				c = '-';
 		while (!s.empty() && (s.back() == ' ' || s.back() == '.'))
 			s.pop_back();
-		return s + ".png";
+		return s;
+	}
+
+	// Filenames Ultralight has already cached THIS session (a re-render must
+	// never reuse one — the view would keep showing the old cached bytes).
+	std::set<std::string> g_presetBurnedNames;  // guarded by g_presetAssignLock
+
+	// Pick the auto file for a preset: an existing non-burned candidate means
+	// "already rendered, just associate"; otherwise the first free name.
+	struct AutoFilePick
+	{
+		std::string file;
+		bool        existing = false;
+	};
+	AutoFilePick PresetAutoFilePick(const std::string& preset)
+	{
+		const std::string stem = PresetAutoStem(preset);
+		std::string       firstFree;
+		for (int v = 1; v <= 99; ++v) {
+			const std::string cand = (v == 1) ? stem + ".png" : stem + ".r" + std::to_string(v) + ".png";
+			{
+				std::lock_guard lock(g_presetAssignLock);
+				if (g_presetBurnedNames.contains(cand))
+					continue;
+			}
+			std::error_code ec;
+			const auto      abs = PresetIconsDir() / cand;
+			if (std::filesystem::exists(abs, ec) && std::filesystem::file_size(abs, ec) > 0)
+				return { cand, true };
+			if (firstFree.empty())
+				firstFree = cand;
+		}
+		return { firstFree.empty() ? stem + ".png" : firstFree, false };
 	}
 
 	void PresetAssignIcon(const std::string& preset, const std::string& icon)
@@ -8076,54 +8207,96 @@ namespace
 		g_presetAutoTotal.store(static_cast<int>(missing.size()));
 		g_presetAutoDone.store(0);
 		g_presetAutoFailed.store(0);
-		notify("Rendering " + std::to_string(missing.size()) +
-			   " preset faces — a stand-in will appear beside you while this runs.");
 
 		// A reopened deck repaints as each face lands (harmless when closed).
+		// The index JSON is built HERE, off the game thread — building it in
+		// the task did two directory scans on the game thread per landed face,
+		// a real hitch source in the first play-test.
 		const auto pushIndex = []() {
+			const std::string idx = PresetIndexJson();
 			if (auto* t = SKSE::GetTaskInterface())
-				t->AddTask([]() { PushToView("fdPresetData", PresetIndexJson()); });
+				t->AddTask([idx]() { PushToView("fdPresetData", idx); });
 		};
 
-		// Fail-fast: a broken PRECONDITION (MRF not installed, PD leash dead)
-		// fails every preset the same way — grinding all 117 through it would
-		// waste minutes and spam the log. Distinct per-preset errors keep going.
-		std::string sameErr;
-		int         sameErrRun = 0;
-
-		std::size_t done = 0, failed = 0;
+		// Shape phase: ask PD each preset's (race, sex) WITHOUT touching the
+		// world, drop the ones whose race can't be told (cross-race applies
+		// render "mannequin faces" — first play-test), and SORT by shape so
+		// one stand-in serves whole runs instead of the alphabetical batch
+		// thrashing spawn/despawn on every race change.
+		struct Job
+		{
+			std::string preset, race, sex;
+		};
+		std::vector<Job> jobs;
+		std::size_t      done = 0, failed = 0;
 		for (const auto& preset : missing) {
-			if (g_presetAutoCancel.load()) {
-				logger::info("preset autorender: cancelled at {}/{}", done, missing.size());
+			if (g_presetAutoCancel.load())
 				break;
-			}
-			const std::string file = PresetAutoFileName(preset);
-			const auto        abs = PresetIconsDir() / file;
-			std::error_code   ec;
-			if (std::filesystem::exists(abs, ec) && std::filesystem::file_size(abs, ec) > 0) {
-				// A previous (cancelled/crashed) run already rendered it.
-				PresetAssignIcon(preset, file);
+			// Already rendered by a previous (cancelled/crashed) run?
+			if (const auto pick = PresetAutoFilePick(preset); pick.existing) {
+				PresetAssignIcon(preset, pick.file);
 				g_presetAutoDone.store(static_cast<int>(++done));
-				pushIndex();
 				continue;
 			}
 			json body;
 			body["preset"] = preset;
-			body["out"] = abs.string();
+			const std::string res = PresetBridge::Call("POST", "/shape",
+				body.dump(-1, ' ', false, json::error_handler_t::replace));
+			json r = json::parse(res, nullptr, false);
+			if (r.is_discarded() || !r.value("ok", false)) {
+				g_presetAutoFailed.store(static_cast<int>(++failed));
+				logger::warn("preset autorender: '{}' unreadable: {}", preset,
+					r.is_discarded() ? res : r.value("error", res));
+				continue;
+			}
+			if (!r.value("confident", false)) {
+				g_presetAutoFailed.store(static_cast<int>(++failed));
+				logger::warn("preset autorender: '{}' skipped — can't tell its race (face part: {})",
+					preset, r.value("faceEdid", "unresolved"));
+				continue;
+			}
+			jobs.push_back({ preset, r.value("race", ""), r.value("sex", "") });
+		}
+		std::stable_sort(jobs.begin(), jobs.end(), [](const Job& a, const Job& b) {
+			return std::tie(a.race, a.sex, a.preset) < std::tie(b.race, b.sex, b.preset);
+		});
+		if (failed)
+			logger::info("preset autorender: {} preset(s) skipped in the shape pass", failed);
+		pushIndex();
+
+		if (!jobs.empty())
+			notify("Rendering " + std::to_string(jobs.size()) +
+				   " preset faces — a lone stand-in will appear beside you while this runs.");
+
+		// Fail-fast: a broken PRECONDITION (MRF not installed, PD leash dead)
+		// fails every preset the same way — grinding the whole library through
+		// it would waste minutes. Distinct per-preset errors keep going.
+		std::string sameErr;
+		int         sameErrRun = 0;
+
+		for (const auto& job : jobs) {
+			if (g_presetAutoCancel.load()) {
+				logger::info("preset autorender: cancelled at {}/{}", done, missing.size());
+				break;
+			}
+			const auto pick = PresetAutoFilePick(job.preset);
+			json       body;
+			body["preset"] = job.preset;
+			body["out"] = (PresetIconsDir() / pick.file).string();
 			body["px"] = 1024;
 			body["flags"] = 3;
 			const std::string res = PresetBridge::Call("POST", "/thumb",
 				body.dump(-1, ' ', false, json::error_handler_t::replace));
 			json r = json::parse(res, nullptr, false);
 			if (!r.is_discarded() && r.value("ok", false) && r.value("saved", false)) {
-				PresetAssignIcon(preset, file);
+				PresetAssignIcon(job.preset, pick.file);
 				g_presetAutoDone.store(static_cast<int>(++done));
 				sameErrRun = 0;
 				pushIndex();
 			} else {
 				const std::string err = r.is_discarded() ? res : r.value("error", res);
 				g_presetAutoFailed.store(static_cast<int>(++failed));
-				logger::warn("preset autorender: '{}' failed: {}", preset, err);
+				logger::warn("preset autorender: '{}' failed: {}", job.preset, err);
 				sameErrRun = (err == sameErr) ? sameErrRun + 1 : 1;
 				sameErr = err;
 				if (sameErrRun >= 3 && done == 0) {
@@ -8208,6 +8381,51 @@ namespace
 		}
 		if (op == "autorender-cancel") {
 			g_presetAutoCancel.store(true);
+			// Immediate feedback: the flag only lands between renders (each
+			// takes seconds) — push the index NOW so the chip flips to
+			// "Stopping…" instead of looking dead (first play-test report).
+			PushToView("fdPresetData", PresetIndexJson());
+			return;
+		}
+
+		if (op == "autorender-redo") {
+			// Re-render EVERY auto thumbnail (the first batch left glitched
+			// ones). Drop the auto- assignments + files, burn the old names
+			// (Ultralight caches by URL for the session — reusing a name would
+			// show the stale bytes), then run the normal batch.
+			if (!PresetBridge::Available()) {
+				PushToView("fdPresetResult",
+					R"({"ok":false,"error":"Preset Director isn't loaded — the auto-render needs it"})");
+				return;
+			}
+			if (g_presetAutoBusy.exchange(true)) {
+				PushToView("fdPresetResult", R"({"ok":false,"error":"a render batch is already running"})");
+				return;
+			}
+			{
+				std::lock_guard lock(g_presetAssignLock);
+				json            m = PresetAssignmentsUnlocked();
+				json            keep = json::object();
+				for (const auto& [preset, icon] : m.items()) {
+					const std::string file = icon.is_string() ? icon.get<std::string>() : "";
+					if (file.rfind("auto-", 0) == 0) {
+						std::error_code ec;
+						std::filesystem::remove(PresetIconsDir() / file, ec);
+						g_presetBurnedNames.insert(file);
+					} else {
+						keep[preset] = icon;
+					}
+				}
+				std::error_code ec;
+				std::filesystem::create_directories(PresetIconsDir(), ec);
+				std::ofstream outF(PresetIconsDir() / "assign.json", std::ios::trunc);
+				if (outF)
+					outF << keep.dump(2);
+				logger::info("preset autorender: redo — {} auto name(s) burned", g_presetBurnedNames.size());
+			}
+			g_presetAutoCancel.store(false);
+			ClosePalette();
+			std::thread(PresetAutoRenderWorker).detach();
 			return;
 		}
 
