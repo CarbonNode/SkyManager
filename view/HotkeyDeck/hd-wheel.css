@@ -1259,3 +1259,14 @@ body.whl-open #panel { visibility: hidden; }
 /* the flyedit sheet holds two lists — cap the results so the children stay
    in reach while you search */
 #hd-wheel .whl-results-short { max-height: 320px; }
+
+/* "＞ New console command…" — the create-inline row under both sheets'
+   results. Terminal green like the deck's console chip: this makes a NEW
+   thing, unlike every row above it which picks an existing one. */
+#hd-wheel .whl-newcc-row { margin-top: 10px; display: flex; }
+#hd-wheel .whl-newcc {
+  flex: 1 1 auto; text-align: center;
+  color: #a9d89a; border-color: #4a6d3f; background: #0c1309;
+  font-family: Consolas, "Courier New", monospace; letter-spacing: .3px;
+}
+#hd-wheel .whl-newcc:hover { border-color: #7fae6c; color: #c8ecb8; background: #101a0c; }

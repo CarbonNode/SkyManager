@@ -717,6 +717,7 @@
   white-space: nowrap;
 }
 .ps-eff-rm:hover { background: rgba(200, 80, 70, .18); border-color: rgba(200, 80, 70, .55); color: #f0b1a8; }
+.ps-eff-rm:focus-visible { outline: none; border-color: rgba(200, 80, 70, .7); box-shadow: 0 0 0 2px rgba(200, 80, 70, .22); }
 .ps-eff-rm:active { background: rgba(200, 80, 70, .28); }
 .ps-eff-rm.ps-armed {
   width: auto;
@@ -947,6 +948,7 @@
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 .ps-pack-x:hover { background: rgba(201,162,75,.18); border-color: rgba(201,162,75,.6); color: #f0d79d; }
+.ps-pack-x:focus-visible { outline: none; border-color: rgba(201,162,75,.75); box-shadow: 0 0 0 2px rgba(201,162,75,.2); }
 .ps-pack-x:active { background: rgba(201,162,75,.28); }
 
 .ps-pack-filter {

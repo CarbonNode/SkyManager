@@ -315,11 +315,13 @@
     "effects-modal": "effects: state",
     "eager-deck-view": "deck view created eagerly at startup",
     "render-warm-start": "roster faces queued at idle",
+    "render-idle-settle": "render warm-start: settle window passed",
     "mounts-picker-rebuild": "summon candidates rebuilt",
     "mounts-sort-pref": "setPref",
     "preset-autorender": "preset autorender:",
     "console-cmd-entries": "console-cmd entries: Script runner ready",
-    "console-cmd-fire": "console-cmd: fire '"
+    "console-cmd-fire": "console-cmd: fire '",
+    "hb-new-console": "hbNewConsole: created '"
   },
   "view": {
     "items-pane.js": {
@@ -346,7 +348,8 @@
       "shelf-core": "function firePin",
       "shelf-drag-reorder": "function onListMouseDown",
       "shelf-context-menu": "shf-menu-danger",
-      "shelf-icon-plates": "function armIconFallbacks"
+      "shelf-icon-plates": "function armIconFallbacks",
+      "shelf-newcc": ".shf-newcc"
     },
     "hd-shelf.css": {
       "shelf-sheet": "#hd-shelf {",
@@ -649,7 +652,8 @@
       "wheel-spell-modes": "left: { label: 'Equip — left hand'",
       "wheel-flyout-fan": "prov: '_fly'",
       "wheel-flyout-editor": "function flyEditHtml",
-      "wheel-hold-release": "window.hdWheelKeyUp"
+      "wheel-hold-release": "window.hdWheelKeyUp",
+      "wheel-newcc": "function newConsoleFromSheet"
     },
     "hd-wheel.css": {
       "wheel-css": "#hd-wheel .whl-slot {"
@@ -664,7 +668,8 @@
       "hotbar-smart-defs": "const SMART_DEFS",
       "hotbar-chrome-toggles": "'hb-showPages', 'showPages'",
       "hotbar-panel-search": "function applyPanelFilter",
-      "hotbar-grip-pos": "cfg.gripPos === 'top'"
+      "hotbar-grip-pos": "cfg.gripPos === 'top'",
+      "hb-newcc": "function openNewCc"
     },
     "hotbar.css": {
       "hotbar-press-feedback": ".hb-slot.is-fired {",

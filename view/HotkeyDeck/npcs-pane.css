@@ -77,6 +77,11 @@
 }
 .nx-btn:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
 .nx-btn:active { background: #17171d; }
+.nx-btn:focus-visible {
+  outline: none;
+  border-color: rgba(201, 162, 75, .7);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .22);
+}
 .nx-btn.nx-toggle-on {
   background: rgba(201, 162, 75, .16);
   border-color: rgba(201, 162, 75, .55);
@@ -181,6 +186,12 @@
   transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
 }
 .nx-pill:hover { background: #20202a; border-color: #4a4638; color: #e2dbca; }
+.nx-pill:active { background: #17171e; }
+.nx-pill:focus-visible {
+  outline: none;
+  border-color: rgba(201, 162, 75, .7);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .22);
+}
 .nx-pill.nx-pill-on {
   background: rgba(201, 162, 75, .16);
   border-color: rgba(201, 162, 75, .55);
@@ -215,6 +226,12 @@
   transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
 }
 .nx-pf-toggle:hover { background: #20202a; border-color: #4a4638; color: #e2dbca; }
+.nx-pf-toggle:active { background: #17171e; }
+.nx-pf-toggle:focus-visible {
+  outline: none;
+  border-color: rgba(201, 162, 75, .7);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .22);
+}
 .nx-pf-toggle.nx-pf-toggle-on {
   background: rgba(201, 162, 75, .16);
   border-color: rgba(201, 162, 75, .55);
@@ -522,6 +539,11 @@
 }
 .nx-foot-nav:hover:not(:disabled) { background: #26262f; border-color: #55503f; color: #efe9da; }
 .nx-foot-nav:active:not(:disabled) { background: #17171d; }
+.nx-foot-nav:focus-visible:not(:disabled) {
+  outline: none;
+  border-color: rgba(201, 162, 75, .7);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .22);
+}
 .nx-foot-nav:disabled { opacity: .38; cursor: default; }
 
 .nx-foot-count {
@@ -557,6 +579,13 @@
 .nx-foot-size:last-of-type { border-radius: 0 9px 9px 0; }
 .nx-foot-size + .nx-foot-size { border-left: none; }
 .nx-foot-size:hover { background: #20202a; border-color: #4a4638; color: #e2dbca; }
+.nx-foot-size:focus-visible {
+  outline: none;
+  position: relative;
+  z-index: 1;                    /* keep the ring above the joined neighbour */
+  border-color: rgba(201, 162, 75, .7);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .22);
+}
 .nx-foot-size.nx-foot-size-on {
   background: rgba(201, 162, 75, .16);
   border-color: rgba(201, 162, 75, .55);
@@ -753,6 +782,14 @@
 }
 #nx-pane .fx-sw + .fx-sw { border-left: 1px solid #3a3a46; }
 #nx-pane .fx-sw:hover { background: #23232c; color: #d8d2c4; }
+#nx-pane .fx-sw:focus-visible {
+  outline: none;
+  position: relative;
+  z-index: 1;                    /* ring above the joined sibling + clip */
+  background: #23232c;
+  color: #ffd36a;
+  box-shadow: inset 0 0 0 2px rgba(201, 162, 75, .6);
+}
 #nx-pane .fx-sw.fx-sw-on { background: #33301f; color: #ffd36a; cursor: default; }
 
 /* "rendering faces…" — a chip at the top of the results while MRF renders land
