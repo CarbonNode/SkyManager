@@ -10259,6 +10259,12 @@ namespace
 			"-" + std::to_string(s_seq.fetch_add(1));
 		{
 			std::lock_guard l(g_configMutex);
+			// Hotbar-made commands collect on the deck's "Commands" tab — the
+			// console-command list page — created here if it doesn't exist yet
+			// (the view's ensureCommandsTab twin).
+			if (std::find(g_config.categories.begin(), g_config.categories.end(),
+					"Commands") == g_config.categories.end())
+				g_config.categories.push_back("Commands");
 			HotkeyEntry e;
 			e.id       = id;
 			e.name     = name;
@@ -10267,7 +10273,7 @@ namespace
 			e.command  = cmd;
 			e.action   = j.value("crosshair", false) ? "crosshair" : "";
 			e.label    = "Console";
-			e.category = "";
+			e.category = "Commands";
 			g_config.entries.push_back(std::move(e));
 		}
 		PersistAll();

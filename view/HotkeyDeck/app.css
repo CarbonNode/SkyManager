@@ -561,7 +561,7 @@ button.trigchip.unset:hover { color: #9fb4c4; border-color: #46606f; }
 /* the add row: hotkey + the deck's own actions */
 #add-row { display: flex; align-items: center; gap: 8px; margin: 8px 12px 2px; }
 #add-row.hidden { display: none; }
-#add-action-btn {
+#add-action-btn, #add-vkey-btn, #add-console-btn {
   flex: none;
   font: 600 12.5px/1 "Segoe UI", sans-serif; letter-spacing: .2px;
   color: #d9c48a; background: #16161c;
@@ -569,8 +569,30 @@ button.trigchip.unset:hover { color: #9fb4c4; border-color: #46606f; }
   padding: 9px 14px; cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
-#add-action-btn:hover { color: #ecd9a0; border-color: #c9a24b; background: #1e1c16; }
-#add-action-btn:focus-visible { outline: 2px solid #c9a24b; outline-offset: 1px; }
+#add-action-btn:hover, #add-vkey-btn:hover { color: #ecd9a0; border-color: #c9a24b; background: #1e1c16; }
+#add-action-btn:focus-visible, #add-vkey-btn:focus-visible,
+#add-console-btn:focus-visible { outline: 2px solid #c9a24b; outline-offset: 1px; }
+/* the console one is terminal-green, matching its row chip: yours, not gold */
+#add-console-btn { color: #a9d89a; border-color: #4a6d3f; background: #0c1309;
+  font-family: Consolas, "Courier New", monospace; }
+#add-console-btn:hover { color: #c8ecb8; border-color: #7fae6c; background: #101a0c; }
+
+/* The Commands tab's always-visible create button (outside edit mode) — the
+   console-command list page's "write your own in" affordance. Dashed like
+   #add-btn (it creates), green like everything console. */
+#cc-tab-add { margin: 6px 12px 12px; }
+#cc-tab-add.hidden { display: none; }
+#cc-tab-add button {
+  width: 100%; box-sizing: border-box;
+  padding: 12px;
+  background: rgba(143,190,124,.05);
+  border: 1px dashed #4a6d3f; border-radius: 8px;
+  color: #a9d89a; font: 600 14px/1 Consolas, "Courier New", monospace;
+  letter-spacing: .3px; cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+#cc-tab-add button:hover { border-color: #7fae6c; color: #c8ecb8; background: rgba(143,190,124,.10); }
+#cc-tab-add button:focus-visible { outline: 2px solid #7fae6c66; }
 
 /* the action catalogue popover */
 #action-picker {

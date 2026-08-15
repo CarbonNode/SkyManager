@@ -289,6 +289,13 @@
                Hotbar, the wheel, the shelf, like every other entry. -->
           <button id="add-console-btn" title="Add a button that runs a console command (one per line — like a batch file)">＞ Console command…</button>
         </div>
+        <!-- The Commands tab's own create button — visible OUTSIDE edit mode,
+             only on that tab, so the console-command list page can always be
+             written into (app.js toggles it; the edit-mode add-row above
+             covers editing). -->
+        <div id="cc-tab-add" class="hidden">
+          <button id="cc-tab-add-btn" title="Type any console command — it lands on this tab, ready to fire or bind to a key">＞ New console command…</button>
+        </div>
       </div>
 
       <!-- Recent: a plain list of what has actually been fired this session.
