@@ -242,7 +242,7 @@
   padding: 7px;
   background: linear-gradient(180deg, #1c1c24, #16161d);
   border: 1px solid #c9a24b77; border-radius: 8px;
-  box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
   animation: fadeIn 110ms ease;
 }
 .fin-ctx-head {

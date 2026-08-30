@@ -65,6 +65,37 @@
 
 * { box-sizing: border-box; }
 
+/* ---------- native widget net (widget-base-reset, 2026-08-19) ----------
+   Ultralight's UA defaults paint native button/input/textarea/select WHITE
+   and system-font. Element selectors (specificity 0-0-1) lose to every class
+   rule, so this only catches widgets whose own styling is missing or not yet
+   loaded — the "white weird buttons / typing areas" failure mode. */
+button {
+  font: inherit; color: #e8e4da; cursor: pointer;
+  background: #1b1b22; border: 1px solid #3a3a44; border-radius: 6px; padding: 4px 9px;
+}
+input:not([type=checkbox]):not([type=radio]):not([type=range]),
+textarea, select {
+  font: inherit; color: #e8e4da; background-color: #16161c;
+  border: 1px solid #3a3a44; border-radius: 6px; padding: 4px 8px;
+}
+/* A native <select> IGNORES background-color entirely and paints its own light
+   theme (measured: computed said #16161c, the pixels were light grey) —
+   appearance:none is the only thing that frees it, and it then needs a caret
+   of our own. Two linear-gradients, because this engine has no conic and no
+   guaranteed SVG-data-URI path; both this and the `right Npx` form were
+   verified to PAINT by tools/ultralight-probe (widgets3, 2026-08-19). */
+select {
+  -webkit-appearance: none; appearance: none;
+  padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, #8a857a 50%),
+                    linear-gradient(135deg, #8a857a 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+option { background: #16161c; color: #e8e4da; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -369,12 +400,32 @@ body.hb-edit .hb-slot.is-selected {
   transform-origin: top right;
   background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
   border-left: 1px solid var(--gold-line);
-  box-shadow: -18px 0 48px #000b;
+  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.45);
   display: flex;
   flex-direction: column;
   z-index: 20;
 }
 .hb-panel[hidden] { display: none; }
+
+/* ---- setup docks to EITHER edge (2026-08-19) -------------------------------
+   Rober: "same with action bar popout (need to be able to move to left".
+   FOUR things mirror, not one: the edge it is pinned to, the transform origin
+   (it scales by --hb-ui, and an origin left on `top right` would make a
+   left-docked panel grow off the screen), which border is dropped (the one
+   against the screen edge), and the direction the shadow throws. The bar's own
+   avoidance geometry follows in JS — editPreviewLayout()'s free strip. */
+.hb-panel.side-left {
+  right: auto;
+  left: 0;
+  transform-origin: top left;
+  border-left: 0;
+  border-right: 1px solid var(--gold-line);
+  box-shadow: 10px 0 28px rgba(0, 0, 0, 0.45);
+}
+/* the ⇄ side switch — a plain hb-btn, so it inherits every state the panel's
+   other buttons already have; only the glyph flip is new */
+.hb-side-btn { margin-left: auto; font-size: 18px; line-height: 1; padding: 8px 14px; }
+.hb-panel.side-left .hb-side-btn { transform: scaleX(-1); }
 
 .hb-edit-head {
   display: flex;
@@ -638,7 +689,7 @@ body.hb-edit .hb-slot.is-selected {
   border-radius: var(--radius);
   background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
   border: 1px solid var(--gold-line);
-  box-shadow: 0 24px 70px #000d;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
 }
 .hb-modal-narrow { width: min(440px, 84vw); text-align: center; }
 
@@ -758,6 +809,8 @@ body.hb-edit .hb-slot.is-selected {
    harness) must not let the panel eat the whole screen. */
 @media (max-width: 900px) {
   .hb-panel { width: 100%; border-left: 0; }
+  /* full-width at this size: neither edge border earns its pixel */
+  .hb-panel.side-left { border-right: 0; }
   .hb-modal-card { width: 94vw; padding: 16px; }
 }
 
@@ -824,18 +877,12 @@ body.hb-edit .hb-slot.is-selected {
 .hb-skel-row:last-child { border-bottom: 0; }
 .hb-skel {
   background: linear-gradient(90deg, #16161d 25%, #1e1e28 50%, #16161d 75%);
-  background-size: 400% 100%;
-  animation: hb-shimmer 1.4s var(--ease) infinite;
   border-radius: var(--radius-xs);
 }
 .hb-skel-ico { flex: none; width: 38px; height: 38px; }
 .hb-skel-txt { flex: 1 1 auto; display: flex; flex-direction: column; gap: 7px; }
 .hb-skel-l1 { height: 15px; width: 46%; }
 .hb-skel-l2 { height: 12px; width: 26%; }
-@keyframes hb-shimmer {
-  0%   { background-position: 100% 0; }
-  100% { background-position: 0 0; }
-}
 
 /* ── "press a key" is LISTENING ──────────────────────────────────────────
    A modal that says "…" and then sits there looks hung. The ring pulses for
@@ -1120,3 +1167,174 @@ body.hb-edit .hb-slot.is-selected {
 .hb-cc-cmd:focus { border-color: #7fae6c; }
 .hb-cc-cmd::placeholder { color: #5a7050; }
 #hb-newcc-title { color: #b9e2a8; }
+
+/* ═══════════════════════════════════════════════ HUD widgets ═══════════ *
+ * Potion counts / gold / lockpicks — the second tenant of this view (see
+ * src/widgets.h). Same laws as the bar: transparent, pointer-events off in
+ * play, interactive only under its own edit flag (body.wg-edit). The two
+ * edit modes are mutually exclusive (C++ enforces it), so the two panels
+ * can share every .hb-panel token without ever being on screen together.  */
+
+body.wg-edit { pointer-events: auto; }
+
+.wg-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;     /* the widgets opt back in individually, in edit */
+}
+
+/* Visibility split pushed from C++ (wgVis): one PrismaUI Show/Hide now
+   answers for BOTH tenants, so each hides its own root by class. Edit mode
+   always wins — you cannot place what you cannot see. */
+body.hb-rule-off:not(.hb-edit) #hb-root { display: none; }
+body.wg-off:not(.wg-edit) .wg-root { display: none; }
+body.wg-menus:not(.wg-edit) .wg.wg-him { display: none; }
+
+/* One widget. Dark gold-lined plate, big couch-readable numbers — the deck's
+   own tokens, nothing new. --wg-opacity / transform are set inline by JS. */
+/* "remove backgrounds just icon + value if i want" (2026-08-15): the plate,
+   border and shadow come off and the glyph + number sit straight on the scene.
+   They gain a hard text shadow instead — a bare number over snow or a bright
+   sky is unreadable without one. Edit mode always paints the plate back, or
+   there would be nothing to grab and drag. */
+.wg.wg-bare {
+  background: none;
+  border-color: transparent;
+  box-shadow: none;
+  padding: 4px 6px;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, .95), 0 0 2px rgba(0, 0, 0, .9);
+}
+.wg.wg-bare .wg-ico,
+.wg.wg-bare .wg-ico img { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, .9)); }
+
+.wg {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+  background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(236, 217, 160, .06);
+  opacity: var(--wg-opacity, 1);
+  white-space: nowrap;
+  transition: opacity 160ms var(--ease);
+}
+/* An OFF widget vanishes in play but stays placeable in edit — dimmed, with
+   an honest badge, so "where did it go" has a visible answer. */
+.wg.wg-disabled { display: none; }
+body.wg-edit .wg.wg-disabled { display: flex; opacity: .35; }
+
+.wg-ico {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wg-ico img { width: 100%; height: 100%; object-fit: contain; }
+.wg-ico .wg-glyph { font-size: 30px; line-height: 1; }
+
+.wg-label {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.wg-val {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--gold-bright);
+  text-shadow: 0 1px 3px #000c;
+  font-variant-numeric: tabular-nums;
+}
+/* carry weight over capacity — over-encumbered, same warn red the health pool
+   uses so the HUD reads at a glance. */
+.wg-val.wg-over { color: #e08a8a; }
+
+/* The potions widget: one chip per pool. Hues match the deck's own reading
+   of the three attributes; cure keeps the soft gold; All is the bright gold
+   total. */
+.wg-chips { display: flex; align-items: center; gap: 16px; }
+.wg-chip { display: flex; align-items: baseline; gap: 7px; }
+.wg-chip .g { font-size: 20px; line-height: 1; }
+.wg-chip .n {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text);
+  text-shadow: 0 1px 3px #000c;
+  font-variant-numeric: tabular-nums;
+}
+.wg-chip.c-heal .g    { color: #e08a8a; }
+.wg-chip.c-magicka .g { color: #8ab4e0; }
+.wg-chip.c-stamina .g { color: #8fd19e; }
+.wg-chip.c-cure .g    { color: var(--gold-soft); }
+.wg-chip.c-all .g     { color: var(--gold-bright); }
+/* consumable chips (2026-08-15): poison / food / drink / water */
+.wg-chip.c-poison .g  { color: #a7d977; }
+.wg-chip.c-food .g    { color: #d9a86b; }
+.wg-chip.c-drink .g   { color: #d9c06b; }
+.wg-chip.c-water .g   { color: #7fc4e8; }
+/* no water mod in the load order => the chip hides honestly (applyLive) */
+.wg-chip.is-nowater   { display: none; }
+.wg-chip.is-zero .n   { color: var(--dim); }
+
+/* Edit mode: the widget itself is the drag surface (no separate grip — a
+   40px-tall plate is its own handle), with the bar's dashed-halo language
+   for "this is placeable" and a gold ring on the selected one (arrow keys
+   nudge THAT widget). */
+body.wg-edit .wg {
+  pointer-events: auto;
+  cursor: grab;
+  outline: 2px dashed var(--gold-line);
+  outline-offset: 4px;
+}
+body.wg-edit .wg:active { cursor: grabbing; }
+body.wg-edit .wg.is-selected {
+  outline: 2px solid var(--gold);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, .45), 0 0 0 4px var(--gold-glow);
+}
+.wg-off-badge {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  color: var(--danger);
+  border: 1px solid var(--danger-line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  display: none;
+}
+body.wg-edit .wg.wg-disabled .wg-off-badge { display: inline-block; }
+
+/* The widget editor panel shares every .hb-panel token; only the per-widget
+   stepper row is new chrome. Steppers, not <input type=range>: the deck's
+   no-range-input law for NEW controls. */
+.wg-panel { z-index: 22; }   /* over a stale bar halo, under nothing else */
+.wg-step { display: flex; align-items: center; gap: 10px; }
+.wg-step .v {
+  min-width: 64px;
+  text-align: center;
+  font-size: 17px;
+  color: var(--gold-soft);
+  font-variant-numeric: tabular-nums;
+}
+.wg-step button {
+  width: 44px;
+  height: 40px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.wg-step button:hover { border-color: var(--gold-line); background: #1c1c24; }
+.wg-step button:active { background: #232330; }
+.wg-step button:disabled { opacity: .4; cursor: default; }
+.wg-sect-note { font-size: 14px; color: var(--dim); margin: 6px 0 0; line-height: 1.5; }

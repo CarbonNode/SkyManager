@@ -207,12 +207,32 @@
      the wrapper's layout width by the scale, so at 160% on the 640px panel
      floor the list column was left ~167px and its toolbar collided with
      itself — search text printed straight over the Edit button. Measured at
-     640px, not assumed. Wrapping the rail above the list is the honest
-     answer at that width; it costs nothing at any size that fits. */
-  flex-wrap: wrap;
+     640px, not assumed.
+     ⚠ The old answer was `flex-wrap: wrap`, and its claim that this "costs
+     nothing at any size that fits" was measurably false (2026-08-19 sweep):
+     in a WRAPPING flex container the line's cross size comes from the tallest
+     item's content, not from the container, so align-items:stretch never
+     clamped the columns and #rm-list's own scroller never engaged. The whole
+     pane became one page-scroller — at 40 rooms, scrolling the list dragged
+     the search box, the sealed-room banner, the You-are-in card, the Claim
+     button and the occupant readout off the top of the panel (body 2333/941;
+     nowrap alone restores 941/941 and hands the list back its 2035px scroll).
+     Loot's equivalent unwrapped columns are the control: they scroll
+     internally at the same volume.
+     So: nowrap, and the narrow case is answered where it actually goes wrong
+     instead — the rail may shrink below its 232px ideal and #rm-toolbar
+     already wraps inside the list column. */
+  flex-wrap: nowrap;
   overflow-y: auto;
 }
-#rm-side { max-width: 100%; }
+/* the two columns must be allowed to be SHORTER than their content, or the
+   flex line grows to fit and we are back to a page-scroller */
+#rm-main, #rm-side { min-height: 0; }
+/* the rail keeps its ideal width but may now shrink (nowrap above): that is
+   what replaces the old wrap at the 640px/160% floor. The basis must track
+   #rm-side's own width in app.css — 260px since 2026-08-19, when 232px was
+   measured too narrow for the "This place is" segments and the size label. */
+#rm-side { max-width: 100%; flex: 0 1 260px; min-width: 0; }
 #rm-main { flex: 1 1 300px; min-width: 0; }
 #rm-toolbar { flex-wrap: wrap; }
 #rm-search-wrap { min-width: 0; }

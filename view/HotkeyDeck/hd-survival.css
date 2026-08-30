@@ -1,0 +1,515 @@
+/* ====================================================================== *
+ *  Survival (hd-survival.js) — the paused camp-and-supplies popout.
+ *
+ *  The Potion Browser's twin: a full-screen overlay hanging off document.body
+ *  (OUTSIDE #panel's transform, so bare vh/vw here is CORRECT — the 2026-08-14
+ *  audit's rule), shown under body.sv-open with the deck panel hidden behind.
+ *
+ *  Deck tokens: #1a1a21/#101015 panels · #c9a24b gold · #c9a24b77 gold-line
+ *  #0c0c10 sunk · #16161d raised · #2e2e36 line · #8b8678 dim. Big type on
+ *  purpose — read from a couch at 2560×1440.
+ * ====================================================================== */
+
+#hd-survival {
+  position: fixed;
+  inset: 0;
+  z-index: 900;              /* the wheel's layer; they never co-open */
+  display: none;
+  align-items: center;
+  justify-content: center;
+  /* FLAT, deliberately (overlay-dim-flat): fullscreen radial-gradients BAND
+     under Ultralight and clamp toward opaque at the far edge — the same
+     collapse app.css documents on #overlay. Converted 2026-08-19. */
+  background: rgba(6, 8, 11, 0.72);
+  animation: sv-fade-in 140ms ease-out;
+  cursor: default;
+  user-select: none;
+}
+body.sv-open #hd-survival { display: flex; }
+body.sv-open #panel { visibility: hidden; }
+@keyframes sv-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.sv-box {
+  width: min(980px, 92vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px 26px 20px;
+  background: linear-gradient(180deg, #1a1a21 0%, #101015 100%);
+  border: 1px solid #3d3a33;
+  border-radius: 16px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  position: relative;
+}
+
+.sv-head { display: flex; align-items: baseline; gap: 14px; }
+.sv-title { font: 700 26px/1 Georgia, "Times New Roman", serif; color: #c9a24b; letter-spacing: 1px; }
+.sv-sub { font-size: 14px; color: #8d8571; flex: 1; }
+.sv-x {
+  font: 600 16px/1 "Segoe UI", sans-serif;
+  color: #b8b1a0; background: transparent;
+  border: 1px solid #2e2e36; border-radius: 9px;
+  padding: 9px 13px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.sv-x:hover { color: #e8e2d4; background: rgba(255, 255, 255, .06); border-color: #3d3a33; }
+
+/* ------------------------------------------------------------ the bar */
+
+.sv-bar {
+  display: flex; align-items: center; gap: 10px;
+  background: #0c0c10;
+  border: 1px solid #2e2e36;
+  border-radius: 12px;
+  padding: 4px 14px;
+}
+/* ⚠ The focus ring belongs to the WHOLE field, not the bare <input> inside it
+   (2026-08-19 QA pass). `.sv-bar` is a composite control — a ⌕ glyph and an
+   input sharing one box — and the input also carried `#sv-q:focus-visible {
+   outline: 2px }`, so tabbing in drew TWO rings: this border AND a hard gold
+   outline 35px further in, with the magnifier stranded in the gutter between
+   them. Measured at 1400px: bar 210→1190, inner outline 243→1177. One control
+   gets one ring, and it is this one, so the glyph lights with the field. */
+.sv-bar { transition: border-color 130ms ease, box-shadow 130ms ease; }
+.sv-bar:focus-within {
+  border-color: #c9a24b;
+  box-shadow: 0 0 0 2px rgba(201, 162, 75, .28);
+}
+.sv-bar-glyph { color: #8d8571; font-size: 17px; transition: color 130ms ease; }
+.sv-bar:focus-within .sv-bar-glyph { color: #c9a24b; }
+#sv-q {
+  flex: 1;
+  font: 400 17px/1.3 "Segoe UI", sans-serif;
+  color: #e8e2d4;
+  background: transparent;
+  border: 0;
+  outline: none;
+  padding: 13px 0;
+}
+#sv-q::placeholder { color: #6f6a5e; }
+
+/* ----------------------------------------------------------- the hero */
+/* Your survival career, in the mods' own counters. Hidden entirely when none
+   of the supported mods is installed — an empty stat board would be worse
+   than none. */
+.sv-hero { display: none; }
+.sv-hero.sv-hero-on {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.sv-hero-block {
+  flex: 1 1 220px;
+  min-width: 200px;
+  background: linear-gradient(180deg, #1c1c24 0%, #16161d 100%);
+  border: 1px solid #2e2e36;
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.sv-hero-h {
+  font: 700 12px/1 "Segoe UI", sans-serif;
+  letter-spacing: .9px;
+  text-transform: uppercase;
+  color: #8d8571;
+  margin-bottom: 10px;
+}
+.sv-stats { display: flex; flex-wrap: wrap; gap: 16px; }
+.sv-stat { display: flex; flex-direction: column; gap: 2px; min-width: 62px; }
+.sv-stat-v {
+  font: 700 24px/1 Georgia, "Times New Roman", serif;
+  color: #d9c48a;
+}
+.sv-stat-v i { font: 600 13px/1 "Segoe UI", sans-serif; color: #8d8571; font-style: normal; margin-left: 3px; }
+.sv-stat-l { font-size: 12.5px; color: #8d8571; }
+
+.sv-hbars { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.sv-hbar-top {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  font-size: 13px; color: #b8b1a0;
+}
+.sv-hbar-top b { font: 700 13px/1 Consolas, monospace; color: #d9c48a; }
+.sv-hbar-track {
+  margin-top: 5px;
+  height: 6px;
+  background: #0c0c10;
+  border: 1px solid #2e2e36;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.sv-hbar-track span {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, #8a6f2f, #c9a24b);
+  transition: width 260ms ease;
+}
+
+/* --------------------------------------------------------- the vitals */
+/* SunHelm's own globals, as GAUGE ROWS (Rober, 2026-08-18: "the hunger,
+   thirst, stuff could look a lot better graphically"). Hidden entirely when
+   the mod isn't there — an empty row of meters would imply the deck lost
+   track of your needs.
+
+   Severity is the only thing that colours anything here, and it comes from
+   hd-survival.js's NEED_DIR table: a meter whose direction is not known keeps
+   the plain gold treatment (no .sv-sev-* class) rather than being coloured on
+   a guess. Deck hues, no new ones: good #8fd18f · warn #dda962 · danger
+   #d98a8a · freezing #8fc9ff.  marker: sv-vit-grid */
+.sv-needs { display: none; }
+.sv-needs.sv-needs-on {
+  display: block;
+  padding: 14px 16px 13px;
+  background: linear-gradient(180deg, #1c1c24 0%, #16161d 100%);
+  border: 1px solid #2e2e36;
+  border-radius: 12px;
+}
+.sv-vit-head {
+  display: flex; align-items: baseline; gap: 10px;
+  margin-bottom: 11px;
+}
+.sv-vit-t {
+  font: 700 12.5px/1 "Segoe UI", sans-serif;
+  letter-spacing: 1.1px; text-transform: uppercase; color: #8d8571;
+}
+.sv-vit-src { font-size: 12.5px; color: #6f6a5e; }
+.sv-vit-src::before { content: "· "; }
+
+/* Four across in the 980px box, two at the 900px break, one at the floor —
+   auto-fit does it without a media query fighting a flex basis. */
+.sv-vit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(206px, 1fr));
+  gap: 11px;
+}
+
+.sv-need {
+  min-width: 0;
+  padding: 11px 13px 10px;
+  background: #14141a;
+  border: 1px solid #2e2e36;
+  border-left: 3px solid #55503f;         /* the severity rail */
+  border-radius: 10px;
+  transition: border-color 180ms ease, background 180ms ease;
+}
+.sv-need-top { display: flex; align-items: center; gap: 9px; }
+.sv-need-ico {
+  flex: none; width: 30px; height: 30px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; line-height: 1;
+  background: #0c0c10; border: 1px solid #2e2e36;
+  transition: border-color 180ms ease;
+}
+.sv-need-l {
+  flex: 1 1 auto; min-width: 0;
+  font: 600 14px/1.15 "Segoe UI", sans-serif; color: #b8b1a0;
+  letter-spacing: .2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sv-need-v {
+  flex: none;
+  font: 700 27px/1 Georgia, "Times New Roman", serif;
+  color: #d9c48a;
+  transition: color 180ms ease;
+}
+.sv-need-v i.sv-need-max {
+  font: 600 13px/1 "Segoe UI", sans-serif; font-style: normal;
+  color: #8d8571; margin-left: 1px;
+}
+.sv-need-v i.sv-need-offv {
+  font: 600 15px/1 "Segoe UI", sans-serif; font-style: normal; color: #6f6a5e;
+}
+.sv-need-bar {
+  margin-top: 10px;
+  height: 9px;
+  background: #0c0c10;
+  border: 1px solid #2e2e36;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.sv-need-bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #8a6f2f, #c9a24b);
+  transition: width 180ms ease, background 180ms ease;
+}
+.sv-need-foot {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  margin-top: 7px; min-height: 15px;
+}
+.sv-need-state {
+  font: 600 13px/1 "Segoe UI", sans-serif; color: #9a917d;
+  letter-spacing: .3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: color 180ms ease;
+}
+/* The soft-scale mark. The number above it is the truth; this says out loud
+   that the TRACK is drawn against a maximum the mod never published. */
+.sv-need-scale { flex: none; font: 400 12px/1 "Segoe UI", sans-serif; color: #6f6a5e; }
+/* Assumed maximum (hd-survival.js toggles .sv-need-soft): the ≈ readout says
+   it in text; italics carry the "this is a guess" cue into the numbers too.
+   The class was toggled with no CSS consuming it (2026-08-19 review). */
+.sv-need-soft .sv-need-scale, .sv-need-soft .sv-need-max { font-style: italic; }
+
+/* ---- severity: gold when fine, then amber, then red ---- */
+.sv-sev-ok   { border-left-color: #55503f; }
+.sv-sev-warn { border-left-color: #dda962; }
+.sv-sev-low  { border-left-color: #d98a8a; }
+.sv-sev-crit { border-left-color: #d98a8a; background: #191216; border-color: #5a3038; }
+
+.sv-sev-warn .sv-need-v    { color: #dda962; }
+.sv-sev-low  .sv-need-v,
+.sv-sev-crit .sv-need-v    { color: #e08a8a; }
+.sv-sev-warn .sv-need-state { color: #dda962; }
+.sv-sev-low  .sv-need-state,
+.sv-sev-crit .sv-need-state { color: #e08a8a; }
+.sv-sev-crit .sv-need-ico  { border-color: #a55565; }
+
+.sv-sev-warn .sv-need-bar span { background: linear-gradient(90deg, #8a6f2f, #dda962); }
+.sv-sev-low  .sv-need-bar span { background: linear-gradient(90deg, #8a4a44, #d98a8a); }
+.sv-sev-crit .sv-need-bar span { background: linear-gradient(90deg, #a24a46, #e08a8a); }
+/* Cold is the one that CLIMBS, so a full track there is the alarm — the
+   freezing-water blue is already the deck's word for that. */
+.sv-need[data-need="cold"].sv-sev-ok .sv-need-bar span {
+  background: linear-gradient(90deg, #35506d, #8fc9ff);
+}
+.sv-need[data-need="cold"].sv-sev-ok .sv-need-ico { border-color: #35506d; }
+/* A climbing meter at zero is an EMPTY track, which is the truth and reads as
+   "no data" unless the track itself says calm. So the empty one is tinted
+   rather than filled — nothing is drawn that was not measured. */
+.sv-need[data-need="cold"].sv-sev-ok .sv-need-bar {
+  background: linear-gradient(90deg, #101820, #0c0c10);
+  border-color: #25303d;
+}
+
+.sv-need-off { opacity: .62; border-left-color: #3a3a44; }
+.sv-need-off .sv-need-l, .sv-need-off .sv-need-state { color: #6f6a5e; }
+
+/* ---- the context chips ---- */
+.sv-need-flags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.sv-need-flag {
+  display: inline-flex; align-items: center; gap: 7px;
+  font: 600 13px/1 "Segoe UI", sans-serif;
+  color: #b8b1a0;
+  background: #0c0c10;
+  border: 1px solid #2e2e36;
+  border-radius: 999px;
+  padding: 8px 13px;
+}
+.sv-need-flag i { font-style: normal; font-size: 14px; line-height: 1; }
+.sv-need-flag.sv-good { color: #8fd18f; border-color: #3c5c3c; background: #101a12; }
+.sv-need-flag.sv-bad  { color: #8fc9ff; border-color: #35506d; background: #101620; }
+.sv-need-flag.sv-warn { color: #dda962; border-color: #5e4526; background: #1a1409; }
+
+/* ---------------------------------------------------------- the pills */
+
+.sv-pills { display: flex; flex-wrap: wrap; gap: 9px; }
+.sv-pill {
+  font: 600 15px/1 "Segoe UI", sans-serif;
+  color: #b8b1a0;
+  background: #16161d;
+  border: 1px solid #2e2e36;
+  border-radius: 999px;
+  padding: 10px 17px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.sv-pill:hover { background: #1f1f28; color: #e8e2d4; border-color: #3d3a33; }
+.sv-pill:active { transform: translateY(1px); }
+.sv-pill-on { color: #c9a24b; background: rgba(201, 162, 75, .10); border-color: #c9a24b77; }
+.sv-pill-n { font: 700 13px/1 Consolas, monospace; color: #d9c48a; margin-left: 4px; }
+
+/* ---------------------------------------------------------- the list */
+
+.sv-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+.sv-list::-webkit-scrollbar { width: 10px; }
+.sv-list::-webkit-scrollbar-track { background: transparent; }
+.sv-list::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+.sv-list::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+
+.sv-drawer {
+  font: 700 13px/1 "Segoe UI", sans-serif;
+  letter-spacing: .8px;
+  text-transform: uppercase;
+  color: #8d8571;
+  padding: 12px 4px 2px;
+}
+.sv-drawer b { color: #d9c48a; }
+
+.sv-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #1a1a21;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.sv-row:hover { background: #1f1f28; border-color: #3d3a33; }
+.sv-row.is-sel { border-color: #c9a24b77; background: #1f1f28; }
+
+.sv-art {
+  position: relative;
+  width: 58px; height: 58px;
+  flex: none;
+  border-radius: 10px;
+  background: #101015;
+  border: 1px solid #2e2e36;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+  font-size: 24px;
+  color: #6f6a5e;
+}
+.sv-art img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.sv-art.has-art .sv-glyph { color: transparent; }
+.sv-fail {
+  position: absolute; top: 3px; left: 4px;
+  font: 700 12px/1 "Segoe UI", sans-serif;
+  color: #e08a8a; background: rgba(0, 0, 0, .55);
+  border-radius: 5px; padding: 2px 5px;
+}
+
+.sv-mid { flex: 1; min-width: 0; }
+.sv-name {
+  font: 600 17px/1.25 "Segoe UI", sans-serif;
+  color: #e8e2d4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sv-name mark { background: rgba(201, 162, 75, .28); color: #f0e4c0; border-radius: 3px; }
+.sv-detail { font-size: 13px; color: #8d8571; }
+.sv-count {
+  font: 700 15px/1 Consolas, monospace;
+  color: #b8b1a0;
+  background: #101015;
+  border: 1px solid #2e2e36;
+  border-radius: 8px;
+  padding: 7px 10px;
+  flex: none;
+}
+.sv-do {
+  font: 600 15px/1 "Segoe UI", sans-serif;
+  color: #d9c48a;
+  background: rgba(201, 162, 75, .10);
+  border: 1px solid #c9a24b55;
+  border-radius: 10px;
+  padding: 11px 20px;
+  cursor: pointer;
+  flex: none;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.sv-do:hover { background: rgba(201, 162, 75, .22); border-color: #c9a24b; }
+.sv-do:active { transform: translateY(1px); }
+
+/* ------------------------------------------------------- stat rows */
+/* A stat is a label and a number — no art, no verb. Its own row shape keeps
+   the eye on the value instead of an empty picture frame. */
+.sv-statrow { cursor: default; padding: 12px 16px; }
+.sv-statrow:hover { background: #1a1a21; border-color: transparent; }
+.sv-statrow.is-sel { border-color: #c9a24b55; background: #1f1f28; }
+.sv-statv {
+  font: 700 21px/1 Georgia, "Times New Roman", serif;
+  color: #d9c48a;
+  flex: none;
+  min-width: 64px;
+  text-align: right;
+}
+
+/* ------------------------------------------------- empty + skeletons */
+
+.sv-empty { text-align: center; padding: 44px 20px; }
+.sv-empty-t { font: 700 19px/1.3 "Segoe UI", sans-serif; color: #e8e2d4; }
+.sv-empty-s { font-size: 15px; color: #8d8571; margin-top: 8px; }
+
+.sv-skel { pointer-events: none; }
+.sv-skel-box {
+  background: linear-gradient(90deg, #1d1d25 25%, #26262f 50%, #1d1d25 75%);
+  border-radius: 7px;
+  height: 14px;
+  display: block;
+}
+.sv-skel .sv-art { border: 0; }
+.sv-w1 { width: 45%; }
+.sv-w2 { width: 26%; margin-top: 8px; }
+
+/* -------------------------------------------------------------- toast */
+
+.sv-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%) translateY(10px);
+  font: 600 15px/1 "Segoe UI", sans-serif;
+  color: #e8e2d4;
+  background: #16161d;
+  border: 1px solid #3d3a33;
+  border-radius: 10px;
+  padding: 12px 18px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+.sv-toast-on { opacity: 1; transform: translateX(-50%) translateY(0); }
+.sv-toast-bad { border-color: #6d3b3b; color: #f0c9c9; }
+
+/* -------------------------------------------------------------- hints */
+
+.sv-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-top: 4px;
+  font-size: 13px;
+  color: #6f6a5e;
+}
+.sv-hints b { color: #8d8571; font-weight: 700; }
+
+/* ------------------------------------------------------------- focus */
+/* Keyboard focus must be visible on every control — the palette is driven
+   from the keyboard as often as the mouse. */
+/* ⚠ #sv-q is deliberately NOT in this list — see `.sv-bar:focus-within`. It is
+   the one control here that is not standalone: its ring is drawn by its
+   wrapper, so the ⌕ glyph is inside the ring instead of outside it. */
+.sv-pill:focus-visible,
+.sv-do:focus-visible,
+.sv-x:focus-visible {
+  outline: 2px solid #c9a24b;
+  outline-offset: 2px;
+}
+
+.sv-skel-btn { width: 76px; height: 38px; border-radius: 10px; flex: none; }
+
+@media (max-width: 900px) {
+  .sv-box { padding: 18px 16px 14px; gap: 10px; }
+  .sv-title { font-size: 22px; }
+  .sv-art { width: 48px; height: 48px; }
+  .sv-do { padding: 10px 14px; }
+  /* the head is title + count + ✕: let the count drop to its own line rather
+     than squeezing the close button off the edge */
+  .sv-head { flex-wrap: wrap; }
+  .sv-sub { order: 3; flex-basis: 100%; }
+  /* two meters per row instead of four squeezed ones */
+  .sv-vit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .sv-need { padding: 10px 11px 9px; }
+  .sv-need-v { font-size: 24px; }
+  .sv-hints { gap: 10px; font-size: 12px; }
+}
+
+/* The deck's 640px floor: the row must still hold art, a name and its verb. */
+@media (max-width: 680px) {
+  .sv-art { width: 40px; height: 40px; font-size: 18px; }
+  .sv-name { font-size: 15px; }
+  .sv-do { padding: 9px 12px; font-size: 14px; }
+  .sv-count { padding: 6px 8px; font-size: 13px; }
+  /* One gauge per row at the deck's floor — a two-up grid here clips the
+     label against the number long before it clips anything else. */
+  .sv-vit-grid { grid-template-columns: 1fr; }
+  .sv-need-v { font-size: 26px; }
+}

@@ -38,8 +38,25 @@ namespace ContainerActions
 	// found=false (with msg) when the crosshair wasn't on an openable container.
 	std::string TargetJson();
 
+	// The reference the crosshair is on RIGHT NOW, as the SKSE CrosshairRefEvent
+	// sink reports it — 0 for nothing. Deliberately NOT read from
+	// RE::CrosshairPickData: in a CommonLibSSE-NG build that is not
+	// EXCLUSIVE_SKYRIM_FLAT, its `target` is an ARRAY indexed by VR device, so
+	// "the crosshair ref" there is a guess about which index a flat runtime fills.
+	// The SKSE event is unambiguous. Main thread.
+	RE::FormID CrosshairRef();
+
 	// True when SnapshotTarget() captured an openable, persistent container.
 	bool HasTarget();
+
+	// Re-resolve a marked container (or ANY reference) from its durable
+	// (plugin, localId) identity — TESDataHandler::LookupForm remaps the local id
+	// through the CURRENT load order (ESL-aware), so the runtime ref it hands back
+	// is correct after the plugin moved. Returns nullptr for a plugin that left the
+	// order or a form that is no longer a reference. Exposed for Container Auto-Sort
+	// (container_sort.cpp), which resolves a destination chest ref for RemoveItem
+	// without summoning it — the same identity law the mark card writes. Main thread.
+	RE::TESObjectREFR* ResolveRef(const std::string& plugin, std::uint32_t localId);
 
 	// Remote-open a stored container's transfer menu. `markJson` is one mark
 	// object in the shape the view holds it (plugin / localId + home cellId /

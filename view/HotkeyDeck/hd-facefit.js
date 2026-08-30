@@ -356,10 +356,104 @@
     else img.addEventListener('load', done, { once: true });
   }
 
+  /* ==================================================== the PORTRAIT lane ===
+   *
+   * Rober, 2026-08-19: "full stats popout doesnt use cropped image correctly"
+   * — and the sweep that followed found the same defect on FOURTEEN more
+   * surfaces (Wardrobe rows and header, Domains, Containers, the Wheel, NFF,
+   * SPID gear, Bases, NPC Tune, the Outfit dock, the Quest plate, Finances,
+   * Sharmat, the Recents strip). Every one painted `portraits/<file>` raw and
+   * let CSS `object-fit: cover` centre-crop it, so a framing the user had set
+   * by hand applied on the Followers roster and essentially nowhere else.
+   *
+   * WHY IT KEPT HAPPENING: the crop store lived inside followers-pane
+   * (`state.crops`, keyed by bare filename) and was never exported, while the
+   * surfaces hold a URL (`portraits/x.png`, often with a `?v=` cache-bust).
+   * There was no way to ask "what is this face's framing?" from anywhere else,
+   * so fourteen authors each did the only thing available: nothing.
+   *
+   * So the registry moves HERE, beside the crop→CSS mapping it belongs to, and
+   * every surface asks one question. followers-pane stays the OWNER of the data
+   * (it loads, edits and persists it) and pushes it in; this module is only the
+   * lookup, which is what lets a pane that has never heard of followers-pane
+   * still frame a face correctly.
+   *
+   * ⚠ The photo lane is applyCrop (a TRANSFORM), not paint() (a LAYOUT crop).
+   * That is deliberate and matches what the roster already does for photos: a
+   * layout crop needs to own the element's box, which a caller's own stylesheet
+   * usually already does. See the paint()/applyCrop split documented above.
+   */
+
+  const portraitCrops = Object.create(null);   // bare filename -> {z,x,y}
+
+  /* "portraits/lydia~2.png?v=1712" -> "lydia~2.png". Strips the query FIRST:
+     the rewritable-art lane legitimately cache-busts portraits, so a key that
+     kept the ?v= would miss on exactly the surfaces that bust hardest. */
+  function portraitKey(url) {
+    let s = String(url || '');
+    const q = s.search(/[?#]/);
+    if (q >= 0) s = s.slice(0, q);
+    s = s.replace(/\\/g, '/');
+    const slash = s.lastIndexOf('/');
+    if (slash >= 0) s = s.slice(slash + 1);
+    return s;
+  }
+
+  /* The framing for a portrait URL, or null. A hand crop wins; an override
+     registered against the full url (the facefit store) is the fallback, so
+     both stores answer through one door. */
+  function portraitCropFor(url) {
+    const k = portraitKey(url);
+    if (!k) return null;
+    return portraitCrops[k] || overrides[String(url || '')] || null;
+  }
+
+  /* THE call every surface makes. baseline '' = "leave the stylesheet's own
+     object-position alone when there is no crop", which keeps an un-cropped
+     face looking exactly as it does today — this fixes the crop, and changes
+     nothing else. */
+  function paintPortrait(img, url, baseline) {
+    if (!img) return img;
+    return applyCrop(img, portraitCropFor(url), baseline || '');
+  }
+
   window.HDFaceFit = {
     ensure: ensure,
     cssFor: cssFor,
     paint: paint,
+    /* portrait lane — see the block above */
+    setPortraitCrops: function (map) {
+      Object.keys(portraitCrops).forEach(function (k) { delete portraitCrops[k]; });
+      if (!map || typeof map !== 'object') return;
+      Object.keys(map).forEach(function (k) {
+        const c = map[k];
+        if (c && isFinite(c.z)) portraitCrops[portraitKey(k)] = { z: c.z, x: c.x || 0, y: c.y || 0 };
+      });
+    },
+    setPortraitCrop: function (file, c) {
+      const k = portraitKey(file);
+      if (!k) return;
+      if (c && isFinite(c.z)) portraitCrops[k] = { z: c.z, x: c.x || 0, y: c.y || 0 };
+      else delete portraitCrops[k];
+    },
+    portraitCropFor: portraitCropFor,
+    portraitKey: portraitKey,
+    paintPortrait: paintPortrait,
+    /* For surfaces that build their faces as an HTML STRING (the wheel, the
+       tune dialog) and so have no <img> handle at build time: sweep a freshly
+       painted root and frame every face in it, reading each one's own src. */
+    paintPortraitsIn: function (root, selector) {
+      if (!root || !root.querySelectorAll) return 0;
+      let n = 0;
+      const imgs = root.querySelectorAll(selector || 'img.face');
+      for (let i = 0; i < imgs.length; i++) {
+        const src = imgs[i].getAttribute('src');
+        if (!src) continue;
+        paintPortrait(imgs[i], src);
+        n++;
+      }
+      return n;
+    },
     /* THE shared crop -> CSS mapping. The editor preview and every consumer
        call this, so the same {z,x,y} is byte-identical everywhere. */
     cropCss: cropCss,

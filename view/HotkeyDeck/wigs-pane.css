@@ -1,0 +1,833 @@
+/* ===================================================================== *
+ *  Wigs tab — the rendered wig catalogue. Own sheet (linked from
+ *  index.html) so no other pane's app.css section can truncate it — the
+ *  sync_view_frags lesson, same as items-pane.css / settlement-pane.css.
+ *
+ *  Faces-gallery visual weight (BIG art tiles) over the Items-pane frame.
+ *  Deck tokens: dark #1a1a21→#101015, gold rgba(201,162,75), border
+ *  #3d3a33, radius 12. No text below 12px — couch rules. The pane lives
+ *  INSIDE the transform-scaled #panel, so NO bare vh/vw anywhere here.
+ * ===================================================================== */
+
+#wv-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 22px 14px;
+  gap: 12px;
+  position: relative;   /* the picker + toast + ctx menus anchor to the pane */
+}
+#wv-pane.hidden { display: none; }
+
+/* ------------------------------------------------------------- header -- */
+
+.wv-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.wv-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #e8e2d4;
+  letter-spacing: .3px;
+  white-space: nowrap;
+}
+
+#wv-count {
+  font-size: 13px;
+  font-weight: 500;
+  color: #9a917d;
+  white-space: nowrap;
+}
+
+/* target segmented control — Me | Who I'm looking at */
+.wv-target {
+  margin-left: auto;
+  display: inline-flex;
+  border: 1px solid #3d3a33;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #16161d;
+}
+.wv-tgt {
+  font: inherit;
+  font-size: 14px;
+  padding: 9px 16px;
+  border: none;
+  background: transparent;
+  color: #b6ad9a;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, color 130ms ease;
+}
+.wv-tgt + .wv-tgt { border-left: 1px solid #3d3a33; }
+.wv-tgt:hover { background: #22222b; color: #e5ddc9; }
+.wv-tgt:active { background: #14141a; }
+.wv-tgt.wv-tgt-on {
+  background: rgba(201, 162, 75, .16);
+  color: #f0e2b6;
+  box-shadow: inset 0 0 0 1px rgba(201, 162, 75, .28);
+}
+
+/* ---------------------------------------------------------------- bar -- */
+
+.wv-barwrap { display: flex; flex-direction: column; gap: 10px; }
+
+.wv-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #16161d;
+  border: 1px solid #3d3a33;
+  border-radius: 14px;
+  padding: 4px 16px;
+  transition: border-color 130ms ease, box-shadow 130ms ease;
+}
+.wv-bar:focus-within {
+  border-color: rgba(201, 162, 75, .55);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .10);
+}
+.wv-bar-glyph { font-size: 18px; color: #8d8570; }
+#wv-search {
+  flex: 1;
+  font: inherit;
+  font-size: 17px;
+  padding: 12px 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #efe9da;
+  min-width: 0;
+}
+#wv-search::placeholder { color: #6d675a; }
+
+/* mod chip riding INSIDE the bar (gmail-token idiom) */
+#wv-mod-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  background: rgba(201, 162, 75, .14);
+  border: 1px solid rgba(201, 162, 75, .4);
+  color: #eadfb9;
+  border-radius: 9px;
+  padding: 6px 10px;
+  white-space: nowrap;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#wv-mod-chip.hidden { display: none; }
+
+/* -------------------------------------------------------------- pills -- */
+
+/* ⚠ CAPPED, and it scrolls inside itself. Both rails wrap, and every row they
+   gain is a row the GALLERY loses — they share one fixed-height pane. Measured
+   1280x720 with 12 custom tabs + 30 registered mods: the two rails grew to 122
+   and 298px and #wv-body collapsed 306px -> 10px, so the tile gallery (the
+   whole point of the tab) was gone while the footer still counted 3,487 wigs.
+   px, never vh: the pane lives inside the transform-scaled #panel. */
+.wv-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  align-content: flex-start;
+  max-height: 124px;      /* 3 rows */
+  overflow-y: auto;
+}
+
+.wv-pill {
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 15px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: #cfc8b8;
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease, transform 100ms ease;
+}
+.wv-pill:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.wv-pill:active { transform: translateY(1px); }
+.wv-pill.wv-pill-on {
+  background: rgba(201, 162, 75, .16);
+  border-color: rgba(201, 162, 75, .55);
+  color: #f0e2b6;
+}
+.wv-pill-n {
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(0, 0, 0, .35);
+  border-radius: 999px;
+  padding: 1px 7px;
+  margin-left: 4px;
+  color: #d9c791;
+}
+.wv-pill-add { color: #9a917d; border-style: dashed; }
+.wv-pill-add:hover { color: #e5ddc9; }
+
+/* ----------------------------------------------------- registered mods -- */
+
+/* capped + self-scrolling for the same reason as .wv-pills above */
+.wv-mods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  align-content: flex-start;
+  max-height: 124px;      /* 3 rows */
+  overflow-y: auto;
+}
+
+.wv-mod {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  font-size: 13.5px;
+  padding: 7px 11px;
+  border-radius: 10px;
+  cursor: pointer;
+  color: #bdb5a2;
+  background: #191921;
+  border: 1px solid #33302a;
+  max-width: 320px;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.wv-mod:hover { background: #22222b; border-color: #504b3c; color: #e5ddc9; }
+.wv-mod.wv-mod-on {
+  background: rgba(201, 162, 75, .14);
+  border-color: rgba(201, 162, 75, .5);
+  color: #eee1b8;
+}
+.wv-mod-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 210px;
+}
+.wv-mod-n {
+  font-size: 12px;
+  color: #9a917d;
+  background: rgba(0, 0, 0, .3);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.wv-mod-all {
+  font-size: 12px;
+  color: #a9c7e0;
+  border: 1px solid rgba(169, 199, 224, .4);
+  border-radius: 6px;
+  padding: 0 5px;
+}
+.wv-mod-x {
+  font-size: 13px;
+  color: #8d8570;
+  padding: 2px 5px;
+  border-radius: 6px;
+  transition: background 120ms ease, color 120ms ease;
+}
+.wv-mod-x:hover { background: rgba(214, 120, 110, .18); color: #e8a49c; }
+.wv-mod-x-armed {
+  background: rgba(214, 120, 110, .22);
+  color: #f0b0a8;
+  font-weight: 700;
+}
+.wv-mod-absent { opacity: .5; border-style: dashed; }
+.wv-mod-absent:hover { opacity: .7; }
+.wv-mod-add { color: #9a917d; border-style: dashed; background: transparent; }
+.wv-mod-add:hover { color: #e5ddc9; background: #1d1d25; }
+
+/* --------------------------------------------------------------- body -- */
+
+#wv-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 2px 8px;
+}
+/* Nothing to show: the body must give its space BACK, or it holds an empty
+   flex:1 column and pushes #wv-empty (the hero) down past the panel's bottom
+   edge — measured 1280x720, the "Add your first wig mod" card was clipped by
+   17px and its button sat under the toast. Set by renderBody, both ways. */
+#wv-body.wv-body-idle { flex: 0 0 auto; overflow: hidden; }
+
+/* the gallery: BIG tiles, faces-pane visual weight */
+.wv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 14px;
+}
+
+.wv-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 10px 11px;
+  border-radius: 13px;
+  background: #191921;
+  border: 1px solid #2c2a25;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease, transform 110ms ease, box-shadow 130ms ease;
+}
+.wv-tile:hover {
+  background: #20202a;
+  border-color: rgba(201, 162, 75, .45);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+.wv-tile:active { transform: translateY(0); }
+.wv-tile.wv-sel { border-color: rgba(201, 162, 75, .7); box-shadow: 0 0 0 2px rgba(201, 162, 75, .22); }
+.wv-tile.wv-worn { border-color: rgba(143, 216, 160, .55); }
+
+/* the art plate — square, big; glyph behind, render over */
+.wv-art {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  min-height: 138px;
+  border-radius: 10px;
+  background: radial-gradient(120% 120% at 50% 20%, #23232c 0%, #15151b 100%);
+  border: 1px solid #2c2a25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+/* ---- a render that failed says so, and offers the retry ---------------- *
+   A tile with no art and no explanation is indistinguishable from one still in
+   the queue — which is exactly how a failed wig read as "stuck" (2026-08-15). */
+.wv-art.wv-failed { border-color: #6d3b3b; }
+.wv-fail-x {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  font: 700 15px/1 "Segoe UI", sans-serif;
+  color: #e08a8a;
+  background: rgba(0, 0, 0, .55);
+  border-radius: 6px;
+  padding: 3px 7px;
+  pointer-events: auto;
+}
+.wv-retry {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  font: 600 12px/1 "Segoe UI", sans-serif;
+  color: #d9c48a;
+  background: rgba(0, 0, 0, .62);
+  border: 1px solid #3d3a33;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.wv-retry:hover { background: rgba(201, 162, 75, .22); border-color: #c9a24b77; }
+.wv-retry:active { transform: translateX(-50%) translateY(1px); }
+
+.wv-glyph { font-size: 44px; opacity: .5; }
+.wv-art.wv-has-art .wv-glyph { opacity: 0; }
+.wv-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* shimmer while a render is plausibly in flight (self-closing window) */
+.wv-art.wv-loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, .06) 50%, transparent 70%);
+}
+
+/* corner controls on the plate — appear on hover (always for a fav'd star) */
+.wv-fav, .wv-zoom {
+  position: absolute;
+  top: 6px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  line-height: 28px;
+  text-align: center;
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 8px;
+  background: rgba(10, 12, 16, .6);
+  color: #cdb768;
+  border: 1px solid rgba(255, 255, 255, .14);
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+/* ✕ / ⟲ — remove one wig from the catalogue, or bring it back (2026-08-15).
+   Under the ★ so the two corner controls never overlap, and quiet until the
+   tile is hovered: curation available, not shouted. */
+.wv-hide {
+  position: absolute;
+  top: 40px;
+  right: 6px;
+  z-index: 2;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  line-height: 24px;
+  text-align: center;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 7px;
+  background: rgba(10, 12, 16, .55);
+  color: #b8b1a0;
+  border: 1px solid rgba(255, 255, 255, .14);
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.wv-tile:hover .wv-hide, .wv-tile:focus-within .wv-hide, .wv-hide.wv-hide-on { opacity: 1; }
+.wv-hide:hover { background: rgba(10, 12, 16, .85); color: #e08a8a; border-color: rgba(224, 138, 138, .6); }
+.wv-hide.wv-hide-on { color: #8fd18f; border-color: rgba(143, 209, 143, .5); }
+
+.wv-fav { right: 6px; }
+.wv-zoom { left: 6px; color: #b9c6d5; }
+.wv-tile:hover .wv-fav, .wv-tile:hover .wv-zoom, .wv-fav.wv-fav-on { opacity: 1; }
+.wv-fav:hover, .wv-zoom:hover { background: rgba(10, 12, 16, .85); border-color: rgba(240, 214, 140, .6); }
+.wv-fav.wv-fav-on { color: #f0d68c; border-color: rgba(240, 214, 140, .5); }
+
+.wv-worn-band, .wv-missing-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 4px 0;
+}
+.wv-worn-band { background: rgba(58, 112, 72, .78); color: #dff3e2; }
+.wv-missing-band { background: rgba(90, 50, 46, .8); color: #eec4be; text-transform: none; letter-spacing: 0; }
+
+.wv-name {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #e5ddc9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wv-name mark { background: rgba(201, 162, 75, .35); color: inherit; border-radius: 3px; }
+.wv-plug {
+  font-size: 12px;
+  color: #8d8570;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ghost rows (ids-mode, the wig's mod left the load order) */
+.wv-tile.wv-missing { opacity: .55; cursor: default; }
+.wv-tile.wv-missing:hover { transform: none; border-color: rgba(214, 120, 110, .4); box-shadow: none; }
+
+/* --------------------------------------------------------- skeletons -- */
+
+.wv-skel { pointer-events: none; }
+.wv-skel-box {
+  background: linear-gradient(100deg, #1e1e26 30%, #262630 50%, #1e1e26 70%);
+  border-radius: 8px;
+  border: none;
+}
+.wv-skel .wv-art { border: none; }
+.wv-skel-w1 { width: 72%; height: 15px; }
+.wv-skel-w2 { width: 46%; height: 12px; }
+
+/* ------------------------------------------------------- empty / hero -- */
+
+#wv-empty {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;      /* a tall hero scrolls INSIDE, never past the panel */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 24px;
+}
+#wv-empty.hidden { display: none; }
+
+.wv-empty-title { font-size: 21px; font-weight: 700; color: #d9d2bd; }
+.wv-empty-sub { font-size: 15px; color: #9a917d; max-width: 560px; line-height: 1.5; }
+
+.wv-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: 620px;
+  padding: 34px 38px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #1c1c24 0%, #14141a 100%);
+  border: 1px solid #33302a;
+}
+.wv-hero-glyph { font-size: 54px; }
+.wv-hero-title { font-size: 24px; font-weight: 700; color: #ece5d2; }
+.wv-hero-sub { font-size: 15px; color: #a49d8c; line-height: 1.55; }
+.wv-hero-add {
+  font: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  padding: 14px 26px;
+  border-radius: 12px;
+  cursor: pointer;
+  color: #191410;
+  background: linear-gradient(180deg, #d8b264 0%, #b98f3e 100%);
+  border: 1px solid rgba(255, 226, 160, .5);
+  transition: filter 130ms ease, transform 110ms ease;
+}
+.wv-hero-add:hover { filter: brightness(1.08); }
+.wv-hero-add:active { transform: translateY(1px); }
+
+/* ----------------------------------------------------- first-open hint -- */
+
+.wv-firsthint {
+  font-size: 13.5px;
+  color: #cdbd8d;
+  background: rgba(201, 162, 75, .08);
+  border: 1px solid rgba(201, 162, 75, .25);
+  border-radius: 10px;
+  padding: 9px 14px;
+  margin-bottom: 12px;
+}
+
+/* -------------------------------------------------------- render chip -- */
+
+.wv-render-chip {
+  display: none;
+  position: absolute;
+  right: 30px;
+  z-index: 5;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #d9c791;
+  background: rgba(20, 20, 26, .92);
+  border: 1px solid rgba(201, 162, 75, .35);
+  border-radius: 999px;
+  padding: 6px 14px;
+  pointer-events: none;
+}
+.wv-render-chip.wv-on { display: inline-flex; }
+.wv-render-spin {
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(201, 162, 75, .3);
+  border-top-color: #d9c791;
+  border-radius: 50%;
+  animation: wv-render-spin .8s linear infinite;
+}
+@keyframes wv-render-spin { to { transform: rotate(360deg); } }
+
+/* --------------------------------------------------------------- foot -- */
+
+.wv-foot { display: none; }
+.wv-foot.wv-foot-on {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, .06);
+}
+.wv-foot-count { font-size: 13.5px; color: #9a917d; }
+.wv-foot-count b { color: #d9d2bd; }
+.wv-foot-nav {
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 16px;
+  border-radius: 9px;
+  cursor: pointer;
+  color: #cfc8b8;
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.wv-foot-nav:hover:not(:disabled) { background: #26262f; border-color: #55503f; color: #efe9da; }
+.wv-foot-nav:disabled { opacity: .4; cursor: default; }
+.wv-foot-per { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.wv-foot-per-lbl { font-size: 12.5px; color: #8d8570; margin-right: 2px; }
+.wv-foot-size {
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 11px;   /* 31px tall — under 30 is below the couch hit-target floor */
+  border-radius: 8px;
+  cursor: pointer;
+  color: #b6ad9a;
+  background: #1a1a22;
+  border: 1px solid #33302a;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.wv-foot-size:hover { border-color: #55503f; color: #e5ddc9; }
+.wv-foot-size.wv-foot-size-on {
+  background: rgba(201, 162, 75, .16);
+  border-color: rgba(201, 162, 75, .5);
+  color: #f0e2b6;
+}
+
+/* --------------------------------------------------- ctx menu + namer -- */
+
+.wv-ctx {
+  position: absolute;
+  z-index: 60;
+  min-width: 230px;
+  /* At MAX_TABS the tile menu is 17 rows / 629px — taller than the 603px pane
+     at 1280x720, so it drew straight through the deck card's rounded bottom
+     and off the screen. % of the pane (its offsetParent), so it can never
+     out-grow the pane whatever the tab count; showCtx's clamp then has a real
+     height to place. */
+  max-height: calc(100% - 12px);
+  overflow-y: auto;
+  background: #1b1b23;
+  border: 1px solid #4a4436;
+  border-radius: 11px;
+  padding: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
+  display: flex;
+  flex-direction: column;
+}
+.wv-ctx-item {
+  font: inherit;
+  font-size: 14px;
+  flex: 0 0 auto;        /* a capped column SCROLLS; it never squashes its rows */
+  text-align: left;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #d9d2bd;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wv-ctx-item:hover { background: rgba(201, 162, 75, .14); color: #f0e2b6; }
+.wv-ctx-item.danger { color: #e0968d; }
+.wv-ctx-item.danger:hover { background: rgba(214, 120, 110, .16); color: #f0b0a8; }
+.wv-ctx-sep { flex: 0 0 auto; height: 1px; margin: 5px 8px; background: rgba(255, 255, 255, .08); }
+
+.wv-namer {
+  position: absolute;
+  z-index: 60;
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  background: #1b1b23;
+  border: 1px solid #4a4436;
+  border-radius: 11px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
+}
+.wv-namer input {
+  font: inherit;
+  font-size: 14.5px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: #efe9da;
+  background: #12121a;
+  border: 1px solid #3d3a33;
+  outline: none;
+  min-width: 190px;
+}
+.wv-namer input:focus { border-color: rgba(201, 162, 75, .55); }
+.wv-namer button {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #191410;
+  background: linear-gradient(180deg, #d8b264 0%, #b98f3e 100%);
+  border: 1px solid rgba(255, 226, 160, .5);
+}
+.wv-namer button:hover { filter: brightness(1.08); }
+
+/* ----------------------------------------------------- add-mod picker -- */
+
+#wv-picker {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 8, 12, .6);
+  border-radius: inherit;
+}
+#wv-picker.hidden { display: none; }
+
+.wv-picker-card {
+  width: min(560px, 92%);
+  max-height: 86%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: linear-gradient(180deg, #1d1d26 0%, #14141a 100%);
+  border: 1px solid #4a4436;
+  border-radius: 16px;
+  padding: 20px 22px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+.wv-picker-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 19px;
+  font-weight: 700;
+  color: #ece5d2;
+}
+.wv-picker-x {
+  font: inherit;
+  font-size: 15px;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  cursor: pointer;
+  color: #b6ad9a;
+  background: #22222b;
+  border: 1px solid #3d3a33;
+}
+.wv-picker-x:hover { color: #efe9da; border-color: #55503f; }
+.wv-picker-sub { font-size: 13.5px; color: #9a917d; line-height: 1.45; }
+.wv-picker-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #12121a;
+  border: 1px solid #3d3a33;
+  border-radius: 11px;
+  padding: 3px 13px;
+}
+.wv-picker-bar:focus-within { border-color: rgba(201, 162, 75, .55); }
+#wv-picker-q {
+  flex: 1;
+  font: inherit;
+  font-size: 15px;
+  padding: 10px 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #efe9da;
+  min-width: 0;
+}
+.wv-picker-rows {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wv-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  cursor: pointer;
+  background: #191921;
+  border: 1px solid #2c2a25;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.wv-picker-row:hover { background: #20202a; border-color: rgba(201, 162, 75, .4); }
+.wv-picker-row.wv-sel { border-color: rgba(201, 162, 75, .65); }
+.wv-picker-row.wv-picker-added { opacity: .55; cursor: default; }
+.wv-picker-row.wv-picker-added:hover { background: #191921; border-color: #2c2a25; }
+.wv-picker-name {
+  flex: 1;
+  font-size: 14.5px;
+  color: #e5ddc9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wv-picker-name mark { background: rgba(201, 162, 75, .35); color: inherit; border-radius: 3px; }
+.wv-picker-n { font-size: 12.5px; color: #9a917d; white-space: nowrap; }
+.wv-picker-chip {
+  font-size: 12.5px;
+  color: #8fd8a0;
+  border: 1px solid rgba(143, 216, 160, .4);
+  border-radius: 7px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+.wv-picker-go {
+  font-size: 13px;
+  font-weight: 600;
+  color: #d9c791;
+  white-space: nowrap;
+}
+.wv-picker-note { font-size: 14px; color: #9a917d; padding: 16px 6px; text-align: center; }
+
+/* -------------------------------------------------------------- toast -- */
+
+.wv-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translate(-50%, 16px);
+  z-index: 70;
+  font-size: 14.5px;
+  color: #ece5d2;
+  background: rgba(24, 24, 30, .96);
+  border: 1px solid rgba(201, 162, 75, .4);
+  border-radius: 11px;
+  padding: 11px 18px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  max-width: 82%;
+  text-align: center;
+}
+.wv-toast.wv-toast-show { opacity: 1; transform: translate(-50%, 0); }
+.wv-toast.wv-toast-err { border-color: rgba(214, 120, 110, .55); color: #f0c6c0; }
+
+/* ------------------------------------------------- short viewports ----- */
+
+/* A 720p window leaves the pane ~600px tall — barely two tile rows once the
+   header, bar and both rails have had their share. Three rows of pills there
+   costs the gallery its last row, so the rails get one row plus a 12px peek
+   of the next (which is also what says "this scrolls"), and the hero loses
+   the padding it does not need at that height. */
+@media (max-height: 900px) {
+  /* one 36px row + the 8px gap + an 8px peek of the next — enough to say "this
+     scrolls", cheap enough that the first tile row and its names still fit
+     under the first-run hint (measured: #wv-body 274px vs 267px of content). */
+  .wv-pills, .wv-mods { max-height: 52px; }
+  .wv-hero { padding: 18px 30px; gap: 10px; }
+  .wv-hero-glyph { font-size: 40px; }
+  /* …and the toast steps down out of the hero's way: with only ~340px of pane
+     left for the empty state, a centred hero's ＋ button reaches into the
+     toast's band and the toast landed on its label (measured 1280x720). The
+     rest-state slide is shortened to match, or the hidden toast's 16px offset
+     pokes 4px out of the bottom of the pane. */
+  .wv-toast { bottom: 12px; transform: translate(-50%, 8px); }
+}
+
+/* ------------------------------------------------------ narrow widths -- */
+
+@media (max-width: 760px) {
+  #wv-pane { padding: 14px 14px 10px; }
+  .wv-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; }
+  .wv-art { min-height: 112px; }
+  .wv-target { margin-left: 0; }
+  .wv-mod-name { max-width: 140px; }
+}

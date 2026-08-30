@@ -1771,14 +1771,28 @@ namespace NffControl
 			if (nm.empty())
 				continue;                             // unnamed / FakeItem rows
 
-			items.push_back(json{
+			json row{
 				{ "formId", HexOf(LocalIdOf(obj)) },
 				{ "plugin", PluginOf(obj) },
 				{ "name", nm },
 				{ "kind", KindOf(obj) },
 				{ "slot", SlotOf(obj) },
 				{ "count", data.first },
-				{ "outfit", isOutfitItem(obj->GetFormID()) } });
+				{ "outfit", isOutfitItem(obj->GetFormID()) } };
+			// The stat pill (Rober, 2026-08-18: "improve with showing armor
+			// stats etc as little visually impressive pills"): base record
+			// numbers, present only when they are non-zero truths — an absent
+			// key draws no pill, never a fake 0.
+			if (auto* armo = obj->As<RE::TESObjectARMO>()) {
+				const int ar = static_cast<int>(armo->GetArmorRating());
+				if (ar > 0)
+					row["armor"] = ar;
+			} else if (auto* weap = obj->As<RE::TESObjectWEAP>()) {
+				const int dm = static_cast<int>(weap->GetAttackDamage());
+				if (dm > 0)
+					row["dmg"] = dm;
+			}
+			items.push_back(std::move(row));
 		}
 
 		// Stable, scannable order: armour, then weapons, then the rest; name

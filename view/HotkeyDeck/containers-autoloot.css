@@ -1,0 +1,77 @@
+/* ====================================================================== *
+ *  Auto-Loot card — the late-arriving controls (containers-pane.js).
+ *
+ *  WHY THIS FILE EXISTS.  The rest of the Containers tab is styled by
+ *  `containers-pane.css.frag`, which is NOT a stylesheet the game loads: it is
+ *  a fragment that has to be re-integrated INTO app.css by hand (only the
+ *  wardrobe fragment has a sync tool). That hand step was missed for the
+ *  2026-08-17 additions, so six selectors — the whole option filter plus the
+ *  "Bind a key" button — existed in the fragment and in the harness (which
+ *  links the fragment DIRECTLY, which is why the harness always looked right)
+ *  but never in the sheet the deck ships. In Ultralight an unstyled <input>
+ *  and <button> paint as bare white boxes: Rober, 2026-08-18, "auto loot tab
+ *  has some missing or broken CSS. white boxes". Worse, `.al-nomatch` is the
+ *  class the filter hides rows WITH, so typing in the search bar narrowed
+ *  nothing at all.
+ *
+ *  So these rules live in their OWN sheet, which the deck loads directly and
+ *  no re-integration step can drop. They are NOT duplicated in the fragment —
+ *  this file is their only home, exactly like wardrobe-nff.css and every other
+ *  own-sheet on the same lesson. Anything new on the Auto-Loot card is safer
+ *  here than in the fragment.
+ *
+ *  Deck tokens only, taken from the fragment's own palette: #c9a24b gold ·
+ *  #d9c48a / #ecd9a0 lit gold · #14130f sunk field · #3a362c line · #9a927f
+ *  and #7d7768 dim · #6f6a5e placeholder.
+ *
+ *  marker: al-find-x
+ * ====================================================================== */
+
+/* "Bind a key" sits beside the one-shot scan and reads quieter than it: the
+   scan is the thing you press, this is the thing you set up once. */
+.al-bind {
+  flex: none; font-family: inherit; font-size: 12.5px; letter-spacing: .3px;
+  color: #9a927f; background: transparent;
+  border: 1px solid #3a362c; border-radius: 7px; padding: 8px 14px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.al-bind:hover { background: rgba(201,162,75,.10); color: #d9c48a; border-color: #c9a24b77; }
+.al-bind:active { transform: translateY(1px); }
+.al-bind:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+
+/* ---------- the option filter (Rober, 2026-08-17: "auto loot tab has a lot of
+   options, should be fully searchable with a search bar") ---------- */
+.al-find { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; }
+.al-find input {
+  flex: 1 1 auto; min-width: 0; font-family: inherit; font-size: 14px;
+  color: #e6dcc0; background: #14130f; border: 1px solid #3a362c;
+  border-radius: 9px; padding: 10px 13px;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.al-find input::placeholder { color: #6f6a5e; }
+.al-find input:focus { outline: none; border-color: #c9a24b; background: #191811; }
+.al-find-n { flex: none; font-size: 12.5px; color: #7d7768; letter-spacing: .3px; }
+.al-find-x {
+  flex: none; font-family: inherit; font-size: 13px; color: #9a927f;
+  background: transparent; border: 1px solid #3a362c; border-radius: 7px;
+  padding: 7px 11px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.al-find-x:hover { color: #d9c48a; border-color: #c9a24b77; }
+.al-find-x:active { transform: translateY(1px); }
+.al-find-x:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+/* Hidden by the filter, not by state: a separate class so nothing here can
+   fight the card's own `hidden` toggles. */
+.al-nomatch { display: none !important; }
+.al-find-empty { padding: 18px 4px; font-size: 14px; color: #7d7768; }
+
+/* ---------- the places sub-card's heading ----------
+   The items side renders `.al-rule-title`, the PLACES side renders
+   `.al-rule-t` (containers-pane.js renderPlaceSide) — and only the first of
+   the two was ever styled, so "⛔ Never here" / "📍 Only here" painted as body
+   text and lost the deny/allow colouring its own row already carries. Same
+   family of bug as the six above: a class the JS renders and no sheet
+   defines. Kept in step with `.al-rule-title` in containers-pane.css.frag. */
+.al-rule-t { font-size: 14px; letter-spacing: .3px; color: #d8d2c4; }
+.al-rule-side.deny  .al-rule-t { color: #d99a9a; }
+.al-rule-side.allow .al-rule-t { color: #e0c682; }

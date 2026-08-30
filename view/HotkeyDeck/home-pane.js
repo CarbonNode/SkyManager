@@ -56,6 +56,8 @@ window.HomePane = (function () {
   var SYSTEMS = [
     { id: 'all',       name: 'Hotkeys',    icon: '⌨',  img: 'icons/custom/hm-hotkeys.png',   hue: '#c9a24b', sub: 'Your keybind palette',        act: 'tab', hk: true },
     { id: 'spells',    name: 'Spell Deck', icon: '✦',  img: 'icons/custom/hm-spells.png',    hue: '#8fb8ff', sub: 'Cast, equip & combos',        act: 'spells' },
+    { id: 'spellcraft',name: 'Spell Crafting', icon: '✨', img: 'icons/custom/hm-spellcraft.png', hue: '#b79bff', sub: 'Craft your own spells',   act: 'tab', prov: 'spellcraft' },
+    { id: 'highking',  name: 'High King',   icon: '👑', img: 'icons/custom/hm-highking.png',  hue: '#e5c877', sub: 'Rule Skyrim — taxes, approval, powers', act: 'tab', prov: 'highking', requires: 'highking' },
     { id: 'followers', name: 'Followers',  icon: '👥', img: 'icons/custom/hm-followers.png', hue: '#e0a86a', sub: 'Summon, order, dress',        act: 'tab', prov: 'followers', requires: 'followerorganizer' },
     { id: 'quests',    name: 'Quests',     icon: '❈',  img: 'icons/custom/hm-quests.png',    hue: '#c9a24b', sub: 'Inspect & repair any quest',  act: 'tab' },
     { id: 'domains',   name: 'Domains',    icon: '📍', img: 'icons/custom/hm-domains.png',   hue: '#8fd8a0', sub: 'Mark a spot, click to travel',act: 'tab', prov: 'domains' },
@@ -66,10 +68,18 @@ window.HomePane = (function () {
     /* Items + NPCs merged into ONE Finder tab (2026-08-14) — setTab('finder')
        resolves to whichever roster was used last; the pane's own switch flips */
     { id: 'finder',    name: 'Finder',     icon: '⌕',  img: 'icons/custom/hm-finder.png',    hue: '#ffd36a', sub: 'Any item, anyone — take, bring, spawn', act: 'tab' },
+    { id: 'transmog',  name: 'Transmog',   icon: '◇',  img: 'icons/custom/hm-transmog.png',  hue: '#b79bff', sub: 'Your gear, any look — stats stay', act: 'tab' },
+    /* Combat Arts lives in the Spell Deck window (2026-08-15), so its card is a
+       LAUNCHER like the Spell Deck's own — act 'arts' opens that view on it. */
+    { id: 'combatarts',name: 'Combat Arts',icon: '⚔',  img: 'icons/custom/hm-combat-arts.png',hue: '#e08a6a', sub: 'Ashes of War — equip an art',  act: 'arts' },
+    { id: 'settle',    name: 'Settlement', icon: '🏕', img: 'icons/custom/hm-settlement.png',hue: '#9dcb8f', sub: 'Place objects & build a camp', act: 'tab', prov: 'settle' },
+    { id: 'survival',  name: 'Survival',   icon: '⛺', img: 'icons/custom/hm-survival.png',  hue: '#9dcb8f', sub: 'Needs, camp, skills — your way', act: 'tab' },
+    { id: 'wigs',      name: 'Wigs',       icon: '💇', img: 'icons/custom/hm-wigs.png',      hue: '#d9a86c', sub: 'Rendered wig catalogue - add a mod, wear a wig', act: 'tab', prov: 'wigs' },
     { id: 'anim',      name: 'Animations', icon: '🩰', img: 'icons/custom/hm-anim.png',      hue: '#e58fb0', sub: 'Apply a ZaZ animation',        act: 'tab', requires: 'zap' },
     { id: 'finances',  name: 'Finances',   icon: '⚖',  img: 'icons/custom/hm-finances.png',  hue: '#d0c07a', sub: 'Ledger, market & settle',     act: 'tab', prov: 'finances' },
     { id: 'wardrobe',  name: 'Wardrobe',   icon: '👗', img: 'icons/custom/hm-wardrobe.png',  hue: '#e58fb0', sub: 'Outfits & who dresses whom',  act: 'tab', prov: 'wardrobe', requires: 'soes' },
     { id: 'faces',     name: 'Faces',      icon: '🙂', img: 'icons/custom/hm-faces.png',     hue: '#8fd8ff', sub: 'Browse & apply RaceMenu presets', act: 'tab', requires: 'presetdirector' },
+    { id: 'journal',   name: 'Journal',    icon: '📖', img: 'icons/custom/hm-journal.png',   hue: '#d9b45c', sub: 'Write your own pages, with pictures', act: 'tab', prov: 'journal' },
     { id: 'numpad',    name: 'Numpad',     icon: '⌗',  img: 'icons/custom/hm-numpad.png',    hue: '#a49d8c', sub: 'Live on-screen keypad',        act: 'tab' },
     { id: 'ask',       name: 'Ask (CHIM)', icon: '🧠', img: 'icons/custom/hm-ask.png',       hue: '#b79bff', sub: 'Ask anything about anyone',    act: 'ask', requires: 'chim' },
   ];
@@ -93,7 +103,32 @@ window.HomePane = (function () {
   var timeCur = null;   // last tmInfo {hour,day,month,year}
   /* live on/off for the on-screen UI elements, filled by chained receivers.
      null = "not asked / not queryable yet" (render the row without a chip). */
-  var uie = { hud: null, loot: null };
+  /* round 3 (2026-08-17): hotbar + widgets master + the four free slot
+     widgets got REAL state — hdUiState -> hdUiStateData reads it straight off
+     the configs, so the cards stop guessing. */
+  /* ---- ENABLED vs ON SCREEN (2026-08-19, round 3) -------------------------
+     Rober's live config: the Action Bar was `enabled=true, visible=false,
+     showMode=always` and this drawer showed a flat "ON" — a row claiming an
+     element is on while the screen shows nothing reads as "enabled but broken".
+
+     Two of these elements carry TWO flags, a master `enabled` and their own
+     show/hide `visible`, and the Action Bar carries a third gate on top: the
+     automatic `showMode` rule ("only in combat", "only with a weapon drawn"),
+     whose live verdict C++ publishes as `hotbarEffective`. So the pill shows
+     the EFFECTIVE truth — ON / HIDDEN / OFF — and the row says out loud which
+     flag is holding it down. Round 2's law is intact: a pill never fakes a
+     state it cannot read; these ARE readable (they sit in the config slice
+     UiStateJson already serialises), so they are read. */
+  var uie = { inlineOpen: null, hud: null, hudVisible: null,
+              loot: null, hotbar: null, hotbarVisible: null,
+              hotbarMode: 'always', hotbarEff: null, widgets: null,
+              fw: { handR: null, handL: null, voice: null, quick: null,
+                    quick2: null, lootStatus: null },
+              /* the merged Equipped widget's own facts, read straight off the
+                 HUD view's `hud.grp` blob inside hdUiStateData (2026-08-19).
+                 `known:false` = never heard from the game, so the expander
+                 shows the shipped defaults rather than inventing values. */
+              grp: { orient: 'vert', scale: 1, locked: true, mem: null, keys: null, known: false } };
   var ui = { inited: false, recentOpen: false, notesOpen: false, timeOpen: false,
              uieOpen: false, tmChained: false, uieChained: false,
              notesT: null, editing: false, dragId: null };
@@ -188,6 +223,7 @@ window.HomePane = (function () {
   /* ------------------------------------------------------------- cards -- */
   function navigate(sys) {
     if (sys.act === 'spells') { host.toGame && host.toGame('hdOpenSpells', ''); return; }
+    if (sys.act === 'arts') { host.toGame && host.toGame('hdOpenSpells', 'arts'); return; }
     if (sys.act === 'ask') { host.openOmni && host.openOmni('ask'); return; }
     host.setTab && host.setTab(sys.id);
   }
@@ -470,39 +506,405 @@ window.HomePane = (function () {
 
   /* the elements, in row order. `toggle`/`jump` are functions; `state` reads
      the live flag (or returns null when not queryable). `chord` is a static
-     key hint shown instead of a toggle where the element has no on/off. */
+     key hint shown instead of a toggle where the element has no on/off.
+     `kw` is what a PLAYER would type looking for this thing — the words the
+     code never uses ("party frames", "ammo", "spotlight") — and it exists so
+     the omni provider below can find an element nobody knows the name of. It
+     lives here, beside the row, because the day an element is added is the day
+     its synonyms are known. */
   var UIE = [
-    { id: 'hud', ic: '👥', name: 'Followers HUD', sub: 'On-screen portrait strip of your followers',
+    { id: 'hud', ic: '⁂', img: 'icons/custom/hm-followers.png', name: 'Followers HUD', sub: 'On-screen portrait strip of your followers',
+      kw: 'followers hud party frames portrait strip companion faces who is with me',
       state: function () { return uie.hud; },
+      /* on, but its own show/hide flag is down — the pill says HIDDEN rather
+         than claiming a strip is on screen when it is not (round 3) */
+      hidden: function () { return uie.hud === true && uie.hudVisible === false; },
       toggle: function () {
+        if (!host.toGame) return;
+        /* HIDDEN → show it (the flag that is actually holding it down); on/off
+           → the master. Both are the deck card's own existing hudCfg ops. */
+        if (uie.hud === true && uie.hudVisible === false) {
+          host.toGame('hudCfg', JSON.stringify({ op: 'visible', on: true }));
+          return;   /* the optimistic flip lives in ONE place — renderUie's click */
+        }
         var on = uie.hud === true;
-        if (host.toGame) host.toGame('hudCfg', JSON.stringify({ op: 'enable', on: !on }));
+        host.toGame('hudCfg', JSON.stringify({ op: 'enable', on: !on }));
       },
-      jump: function () { host.setTab && host.setTab('followers'); },
-      jumpLabel: 'Followers tab →' },
-    { id: 'hotbar', ic: '▦', name: 'Action Bar', sub: 'WoW-style spell/action bar (hotbar)',
-      state: function () { return null; },   // hb* bridges are in the MagicDeck view — no live state here
+      /* ---- THE INLINE CHIP STRIP IS RETIRED (2026-08-19, round 3) ---------
+         Rober, third play-test: "the Followers HUD needs the same shelf
+         treatment — its own config button opening a popout right panel… not
+         whatever the hell this is", pointing at what this row used to expand
+         into: FolPane._hudSettingsRow(), a wrapped strip of nineteen 9px chips
+         (Enabled · Reposition · Vertical · Grows · Aa Names on · Lv badge ·
+         Direction · Health · Magicka · Stamina · Widgets… · Circle · Rounded ·
+         Square · Diamond · Compact · Set browse key · Shown · Set key).
+
+         Every one of those is now a real row in the HUD shelf's own Followers
+         HUD section — big type, the deck's row idioms, and the shelf filter
+         reaches all of them. So this row has ONE configure door, and it is the
+         same `hudCfg {op:'shelf'}` idiom the Equipped widget and HUD Widgets
+         rows already use. Opening it is also what puts the strip into its edit
+         dress; entering widget config no longer does (see hud.js stripEdit).
+
+         (FolPane._hudSettingsRow still exists and still feeds the Followers
+         tab's own 👥 HUD modal — this drawer simply stopped mounting it.) */
+      jumpLabel: 'Config →',
+      jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'strip' })); },
+      /* …and the separation the shelf section states out loud: who is on the
+         roster, and their portraits, are the Followers TAB's business. */
+      extra: [
+        { label: 'Roster →', title: 'Who is following you, their portraits and their faces — the deck’s Followers tab',
+          run: function () { host.setTab && host.setTab('followers'); } },
+      ] },
+    { id: 'hotbar', ic: '▦', img: 'icons/custom/hk-hotbar.png', name: 'Action Bar', sub: 'WoW-style spell/action bar (hotbar)',
+      kw: 'action bar hotbar skill bar spell bar quick bar number keys wow bar',
+      state: function () { return uie.hotbar; },   // hdUiStateData reads the config directly
+      /* ROUND 3 — Rober's live config was enabled=true, visible=false and this
+         row said a flat "ON" while nothing was on screen. The bar has TWO
+         flags; the pill answers for the pair. */
+      hidden: function () { return uie.hotbar === true && uie.hotbarVisible === false; },
+      /* …and a THIRD gate: the automatic showMode rule. When that is what is
+         holding an otherwise-shown bar off screen, say so instead of pretending
+         (the row is honest; the pill still reads ON, because it IS on — the
+         rule is a condition, not a switch someone flipped). */
+      note: function () {
+        if (uie.hotbar !== true || uie.hotbarVisible === false) return '';
+        if (uie.hotbarEff !== false) return '';
+        var m = uie.hotbarMode;
+        if (m === 'combat') return 'hidden by rule: only in combat';
+        if (m === 'drawn') return 'hidden by rule: only with a weapon or spell drawn';
+        if (m === 'either') return 'hidden by rule: only in combat or with a weapon drawn';
+        return '';
+      },
+      /* hd-hotbar-toggle IS the show/hide verb (main.cpp HbToggleVisible flips
+         `visible`, and arms `enabled` on the first press) — so one action
+         answers for both faces of the pill. No new verb. */
       toggle: function () { host.toGame && host.toGame('hdFire', 'hd-hotbar-toggle'); },
-      toggleLabel: 'Show / Hide',
       jump: function () { host.toGame && host.toGame('hdFire', 'hd-hotbar-edit'); },
-      jumpLabel: 'Set up →' },
-    { id: 'wheel', ic: '◎', name: 'Wheel Menu', sub: 'Radial ring of anything you pinned',
+      jumpLabel: 'Config →' },
+    { id: 'wheel', ic: '◎', img: 'icons/custom/hk-wheel.png', name: 'Wheel Menu', sub: 'Radial ring of anything you pinned',
+      kw: 'wheel radial ring quick menu weapon wheel favourites wheel pie menu',
       state: function () { return null; },
       chord: 'Ctrl + your deck key',
       open: function () { host.toGame && host.toGame('hdFire', 'hd-wheel-open'); },
       openLabel: 'Open' },
-    { id: 'loot', ic: '✨', name: 'Loot Vision', sub: 'Glow the loot worth walking to',
+    { id: 'widgets', ic: '⌗', img: 'icons/custom/hk-widgets.png', name: 'HUD Widgets',
+      sub: 'Readouts, vitals, pins — the whole widget stack',
+      kw: 'widgets hud overlay readouts meters bars vitals health magicka stamina',
+      state: function () { return uie.widgets; },
+      toggle: function () { host.toGame && host.toGame('hdFire', 'hd-widgets-toggle'); },
+      /* 2026-08-19: "Set up" now opens the HUD's own SHELF — the one place
+         every element's switch, size and options live. Same arming path
+         "Place" uses, so the deck closes and the screen goes to the editor. */
+      jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf' })); },
+      jumpLabel: 'Config →' },
+    /* ---- ONE row for the merged Equipped widget (2026-08-19) --------------
+       The HUD view merged right hand / left hand / shout into a SINGLE widget
+       with a derived master and its own orientation, size and membership
+       (hud.js wgrp / grpSetMaster). This drawer was still showing the old
+       three-row shape with nothing but a Place button — "i see no
+       configuration options either" (Rober, play-test). One row now: the
+       master inline, the per-line switches and the real controls in the
+       expander, and a door to the HUD's own shelf for everything else.
+
+       ⚠ Nothing here re-implements the group's rules. The per-line switches
+       ride the existing hdWidgetToggle (C++ Widgets::ToggleOne), and master /
+       orientation / size ride hdWidgetGrp, which C++ relays into hud.js's own
+       hudGrpCmd — the same functions the shelf's buttons run. */
+    { id: 'fw-eq', ic: '†', img: 'icons/custom/hd-sword.png', name: 'Equipped Widget',
+      sub: 'Right hand · left hand · shout — one widget, three lines',
+      kw: 'equipped widget right hand left hand shout power what am i holding weapon readout',
+      state: function () { return grpMaster(); },
+      toggle: function () {
+        var on = grpMaster() === true;
+        grpSend({ op: 'master', on: !on });
+        grpOptimistic(!on);
+      },
+      inline: buildEqInline,
+      /* Rober, 2026-08-19: "i asked for a slide out right shelf for equipped
+         widget … equipped widgets place button should also open right slider."
+         So the PRIMARY configure action is the shelf, focused on the group's
+         own card — not an inline expander and not bare reposition mode. The
+         per-line switches keep their expander, demoted to a secondary button,
+         because they are the one thing worth doing without leaving the deck. */
+      jumpLabel: 'Config →',
+      jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'fwgrp' })); },
+      expandLabel: 'Lines ▾' },
+    { id: 'fw-quick', fw: 'quick', ic: '★', img: 'icons/custom/hk-quick-light.png',
+      name: 'Quick Items Widget', sub: 'Everything you favourited, with live counts and hotkey digits',
+      kw: 'quick items favourites favorites star items counts hotkey digits favourite bar',
+      state: function () { return uie.fw.quick; },
+      toggle: function () { host.toGame && host.toGame('hdWidgetToggle', JSON.stringify({ id: 'quick' })); },
+      jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'quick' })); },
+      jumpLabel: 'Config →' },
+    { id: 'potions', ic: '◍', img: 'icons/custom/hk-potion-browser.png', name: 'Potion Browser', sub: 'Paused popout — search, sort, quick-drink; bindable in Utilities',
+      kw: 'potion browser potions drink healing elixir alchemy flask',
+      state: function () { return null; },
+      chord: 'Bindable — Utilities tab',
+      open: function () { host.toGame && host.toGame('hdFire', 'hd-potion-browser'); },
+      openLabel: 'Open' },
+    /* The Quiver is a placed WINDOW, not a toggle — it has no on/off to chip,
+       so it reads like the Potion Browser: how it opens, and a button that
+       opens it. `hd-quiver-open` is the seeded ENTRY id (main.cpp's seed
+       table), never the `quiver` action verb — OnJsFire looks entries up by
+       id and silently warns on a verb. */
+    { id: 'quiver', ic: '➶', img: 'icons/custom/hk-quiver.png', name: 'Quiver', sub: 'Ring of every arrow and bolt you carry — damage, poisons, click to nock',
+      kw: 'quiver arrows bolts ammo ammunition archery bow crossbow nock',
+      state: function () { return null; },
+      chord: 'Bindable — Combat tab',
+      open: function () { host.toGame && host.toGame('hdFire', 'hd-quiver-open'); },
+      openLabel: 'Open' },
+    /* Time Dial (2026-08-18): the openable circular wait dial on the HUD
+       view. An openable window like the Quiver — no on/off to chip; it
+       remembers its own spot and size, so there is nothing to place here.
+       `hd-time-dial` is the seeded ENTRY id (main.cpp's seed table). */
+    { id: 'timedial', ic: '◷', img: 'icons/custom/hm-time.png', name: 'Time Dial', sub: 'Circular wait dial — drag the ring, time passes in one step',
+      kw: 'time dial wait clock pass time skip hours rest until morning',
+      state: function () { return null; },
+      chord: 'Bindable — Misc tab',
+      open: function () { host.toGame && host.toGame('hdFire', 'hd-time-dial'); },
+      openLabel: 'Open' },
+    /* Super Searcher (2026-08-19): the standalone quick-search widget —
+       hd-super.js dresses the omni search as an anchored, scaled, animated
+       popup with the panel hidden. The pill is its own enabled flag (view-
+       side, in the shelf blob), the note reads the fire-from-anywhere
+       binding off the seeded action's trigger, Open tries it right here, and
+       Config opens its popup (scale · placement · what shows up · the key). */
+    { id: 'supersearch', ic: '⌕', img: 'icons/custom/hm-finder.png', name: 'Super Searcher',
+      sub: 'One key, one box — search everything and fire it: hotkeys, spells, people, outfits, your bag',
+      kw: 'super searcher search everything find anything quick search spotlight one box search bar',
+      /* hd-super.js rides the DEFERRED boot set, so for the first moments of a
+         session HDSuper does not exist yet and every control on this row is a
+         no-op. The drawer still lists the row (you can see it is there and why
+         it is dead); the omni provider skips it, because a search result that
+         fires nothing is a dead end with no explanation attached. */
+      avail: function () { return !!window.HDSuper; },
+      state: function () { return window.HDSuper ? HDSuper.isEnabled() : null; },
+      toggle: function () { if (window.HDSuper) HDSuper.setEnabled(!HDSuper.isEnabled()); },
+      note: function () {
+        if (!window.HDSuper) return '';
+        var b = HDSuper.bindLabel();
+        return b ? ('Opens from anywhere on ' + b)
+                 : 'No key yet — Config → “Bind a key”, and it opens mid-game';
+      },
+      extra: [
+        { label: 'Open', title: 'Open the Super Searcher now',
+          run: function () { if (window.HDSuper) HDSuper.open(false); } },
+      ],
+      jump: function () { if (window.HDSuper) HDSuper.openConfig(); },
+      jumpLabel: 'Config →' },
+    { id: 'loot', ic: '✧', img: 'icons/custom/hm-loot.png', name: 'Loot Vision', sub: 'Glow the loot worth walking to',
+      kw: 'loot vision glow highlight shiny treasure chests corpses valuables',
       state: function () { return uie.loot; },
       toggle: function () { host.toGame && host.toGame('ltToggle'); },
       jump: function () { host.setTab && host.setTab('loot'); },
-      jumpLabel: 'Loot tab →' },
+      jumpLabel: 'Config →' },
   ];
 
-  function stateChip(v) {
-    if (v === null || v === undefined) return null;
-    var chip = document.createElement('span');
-    chip.className = 'hm-uie-state ' + (v ? 'on' : 'off');
-    chip.textContent = v ? 'ON' : 'OFF';
+  /* ---- the merged Equipped widget: state, commands, and its expander -----
+     (2026-08-19; the HUD side is hud.js wgrp / grpSetMaster / hudGrpCmd.) */
+  var GRP_LINES = [
+    { key: 'handR', name: 'Right hand', ic: '†', img: 'icons/custom/hd-sword.png' },
+    { key: 'handL', name: 'Left hand', ic: '◈', img: 'icons/custom/hd-shield.png' },
+    { key: 'voice', name: 'Shout / Power', ic: '≋', img: 'icons/custom/sc-shouts.png' },
+  ];
+  /* The lines the group actually holds. The HUD lets a player LINK other
+     widgets in (hud.grp.keys), so the drawer reads membership from the live
+     blob and falls back to the three shipped lines. */
+  function grpLineKeys() {
+    var ks = uie.grp && uie.grp.keys;
+    return (ks && ks.length) ? ks : ['handR', 'handL', 'voice'];
+  }
+  function grpLineName(k) {
+    for (var i = 0; i < GRP_LINES.length; i++) if (GRP_LINES[i].key === k) return GRP_LINES[i];
+    return { key: k, name: FW_NAMES[k] || k, ic: '·', img: '' };
+  }
+  var FW_NAMES = { quick: 'Quick items', quick2: 'My items', lootStatus: 'Loot lamp' };
+  /* The master is DERIVED exactly as hud.js's grpAnyOn is — any line on means
+     the widget is on — so the two surfaces can never disagree. null while no
+     state has arrived, so the row wears no chip rather than a guess. */
+  function grpMaster() {
+    var known = false, ks = grpLineKeys();
+    for (var i = 0; i < ks.length; i++) {
+      var v = uie.fw[ks[i]];
+      if (v === true) return true;
+      if (v === false) known = true;
+    }
+    return known ? false : null;
+  }
+  function grpSend(cmd) {
+    if (host.toGame) host.toGame('hdWidgetGrp', JSON.stringify(cmd));
+  }
+  /* OPTIMISTIC chips only — hdUiStateData is the truth and lands as soon as the
+     HUD view has applied and saved. Off = every line off; on = the remembered
+     set (hud.grp.mem), or all of them when nothing was remembered. That is
+     grpSetMaster's own rule, read off the same blob, so the chip that flashes
+     for one frame is the chip that stays. */
+  function grpOptimistic(on) {
+    var ks = grpLineKeys();
+    var mem = (uie.grp && uie.grp.mem && uie.grp.mem.length) ? uie.grp.mem : null;
+    var any = false;
+    ks.forEach(function (k) {
+      uie.fw[k] = on ? (mem ? mem.indexOf(k) !== -1 : true) : false;
+      if (uie.fw[k]) any = true;
+    });
+    if (on && !any) ks.forEach(function (k) { uie.fw[k] = true; });
+  }
+  function eqBtn(label, title, on, run, cls) {
+    var b = document.createElement('button');
+    b.className = 'hm-eq-btn' + (on ? ' on' : '') + (cls ? ' ' + cls : '');
+    b.type = 'button'; b.title = title;
+    b.textContent = label;
+    b.addEventListener('click', run);
+    return b;
+  }
+  function eqGroup(label) {
+    var g = document.createElement('div'); g.className = 'hm-eq-grp';
+    var l = document.createElement('div'); l.className = 'hm-eq-lab'; l.textContent = label;
+    var r = document.createElement('div'); r.className = 'hm-eq-row';
+    g.appendChild(l); g.appendChild(r);
+    g.row = r;
+    return g;
+  }
+  /* The expander under the Equipped row: per-line switches, orientation, size,
+     and the door to the HUD's own shelf. Rebuilt on every render (the drawer
+     wipes itself on every state reply), so it always paints from what just
+     arrived. */
+  function buildEqInline(mount) {
+    mount.innerHTML = '';
+    var wrap = document.createElement('div');
+    wrap.className = 'hm-eq';
+
+    /* --- the lines --- */
+    var lines = eqGroup('Lines — each one on its own');
+    grpLineKeys().forEach(function (k) {
+      var def = grpLineName(k);
+      var on = uie.fw[k];
+      var b = eqBtn(def.name, (on === true ? 'Hide ' : 'Show ') + def.name, on === true, function () {
+        host.toGame && host.toGame('hdWidgetToggle', JSON.stringify({ id: k }));
+        if (uie.fw[k] !== null && uie.fw[k] !== undefined) uie.fw[k] = !uie.fw[k];
+        renderUie();
+      }, 'hm-eq-line');
+      /* the glyph rides the button, with the mark behind it */
+      var ic = document.createElement('span');
+      ic.className = 'hm-eq-ic';
+      if (def.img) {
+        var im = document.createElement('img');
+        im.src = def.img; im.alt = ''; im.setAttribute('draggable', 'false');
+        im.onerror = function () { im.remove(); ic.textContent = def.ic; };
+        ic.appendChild(im);
+      } else ic.textContent = def.ic;
+      b.insertBefore(ic, b.firstChild);
+      var chip = document.createElement('span');
+      chip.className = 'hm-eq-state ' + (on === true ? 'on' : on === false ? 'off' : 'unk');
+      chip.textContent = on === true ? 'ON' : on === false ? 'OFF' : '—';
+      b.appendChild(chip);
+      lines.row.appendChild(b);
+    });
+    wrap.appendChild(lines);
+
+    /* --- orientation --- */
+    var orient = (uie.grp && uie.grp.orient === 'horiz') ? 'horiz' : 'vert';
+    var og = eqGroup('Orientation');
+    og.row.appendChild(eqBtn('↕ Column', 'Stack the lines in a column', orient !== 'horiz', function () {
+      grpSend({ op: 'orient', orient: 'vert' });
+      if (uie.grp) uie.grp.orient = 'vert';
+      renderUie();
+    }));
+    og.row.appendChild(eqBtn('↔ Row', 'Lay the lines out in a row', orient === 'horiz', function () {
+      grpSend({ op: 'orient', orient: 'horiz' });
+      if (uie.grp) uie.grp.orient = 'horiz';
+      renderUie();
+    }));
+    wrap.appendChild(og);
+
+    /* --- size: the deck's no-range-input law, same stepper idiom as the HUD's --- */
+    var sc = (uie.grp && typeof uie.grp.scale === 'number') ? uie.grp.scale : 1;
+    var sg = eqGroup('Size');
+    var step = function (which, d) {
+      return function () {
+        grpSend({ op: 'size', size: which });
+        if (uie.grp) {
+          var v = which === 'reset' ? 1 : Math.round((sc + d) * 100) / 100;
+          uie.grp.scale = Math.max(0.5, Math.min(2.5, v));
+        }
+        renderUie();
+      };
+    };
+    sg.row.appendChild(eqBtn('−', 'Smaller', false, step('smaller', -0.1), 'hm-eq-sz'));
+    var val = document.createElement('span');
+    val.className = 'hm-eq-val'; val.title = 'Size of the equipped widget';
+    val.textContent = Math.round(sc * 100) + '%';
+    sg.row.appendChild(val);
+    sg.row.appendChild(eqBtn('＋', 'Bigger', false, step('bigger', 0.1), 'hm-eq-sz'));
+    sg.row.appendChild(eqBtn('⟲', 'Back to 100%', false, step('reset', 0), 'hm-eq-sz'));
+    wrap.appendChild(sg);
+
+    /* --- welded or separate, and the door to the shelf --- */
+    var locked = !(uie.grp && uie.grp.locked === false);
+    var mg = eqGroup('On screen');
+    mg.row.appendChild(eqBtn(locked ? '⛓ One widget' : '⛓ Separated',
+      locked ? 'The lines move and scale as ONE — click to separate them'
+             : 'The lines are separate — click to weld them back into one widget',
+      locked, function () {
+        grpSend({ op: 'lock', on: !locked });
+        if (uie.grp) uie.grp.locked = !locked;
+        renderUie();
+      }));
+    mg.row.appendChild(eqBtn('⚙ Configure on screen',
+      'Opens the HUD shelf on this widget — linking, per-line size, everything else',
+      false, function () {
+        host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'fwgrp' }));
+      }, 'hm-eq-wide'));
+    wrap.appendChild(mg);
+
+    var note = document.createElement('p');
+    note.className = 'hm-eq-note';
+    note.textContent = 'Turning the widget off remembers which lines were on, and turning it back ' +
+      'on restores exactly those. “Configure on screen” hands the screen to the HUD shelf, where ' +
+      'every element can be sized, floated and linked together.';
+    wrap.appendChild(note);
+    mount.appendChild(wrap);
+    return true;
+  }
+
+  /* THE PILL IS THE SWITCH (Rober, 2026-08-19: "change anything that says turn
+     off or on (remove) and just make the on or off pill clickable").
+
+     It used to be a dead <span> beside a "Turn on" / "Turn off" button that
+     said the same thing twice — and the button's label inverted the pill's, so
+     the row read "ON … Turn off" and you had to stop and parse which was the
+     state. One control now: a real <button>, so it is keyboard-focusable and
+     carries hover / active / focus states, with a one-shot pop on the flip so
+     the click visibly registers before the reply lands.
+
+     `v === null` with a toggle present means "we cannot read this one's state"
+     (the Action Bar's bridges live in another view) — the pill still has to be
+     pressable, so it says so honestly instead of vanishing and stranding the
+     row with no switch at all. */
+  /* `hidden` (round 3, 2026-08-19) is the THIRD face: the element is enabled,
+     but its own show/hide flag is down, so nothing is on screen. A flat "ON"
+     there is the lie Rober caught — "enabled but not showing = broken". The
+     pill is still one clickable control; clicking a HIDDEN pill flips the flag
+     that is actually holding it down (each row's own toggle decides which). */
+  function stateChip(v, toggle, name, hidden) {
+    if ((v === null || v === undefined) && !toggle) return null;
+    var known = (v === true || v === false);
+    /* ⚠ `is-hidden`, NOT `hidden` (2026-08-19): app.css line 10 owns the global
+       utility `.hidden { display: none !important; }`, so the old class name
+       made this pill invisible — measured 0x0 in chromium. The row that most
+       needs a switch (on, but nothing is on screen) was the row that had none. */
+    var face = !known ? 'unk' : (hidden ? 'is-hidden' : (v ? 'on' : 'off'));
+    var chip = document.createElement(toggle ? 'button' : 'span');
+    chip.className = 'hm-uie-state ' + face + (toggle ? ' is-btn' : '');
+    chip.textContent = !known ? 'TOGGLE' : (hidden ? 'HIDDEN' : (v ? 'ON' : 'OFF'));
+    if (toggle) {
+      chip.type = 'button';
+      chip.title = !known ? ('Toggle ' + (name || 'this'))
+        : hidden ? ((name || 'This') + ' is on but hidden right now — click to show it')
+        : ((v ? 'Turn off ' : 'Turn on ') + (name || 'this'));
+      chip.setAttribute('aria-pressed', known ? String(!!v && !hidden) : 'mixed');
+    }
     return chip;
   }
 
@@ -517,55 +919,177 @@ window.HomePane = (function () {
       row.setAttribute('data-id', el.id);
 
       var ic = document.createElement('span');
-      ic.className = 'hm-uie-ic'; ic.textContent = el.ic; row.appendChild(ic);
+      ic.className = 'hm-uie-ic';
+      if (el.img) {
+        /* plain path — Ultralight eats a ?v= query. A stale or missing PNG
+           removes itself and the typographic mark takes over, so a broken
+           file can never leave a broken-image box (the no-emoji law's own
+           fallback rule). */
+        var uim = document.createElement('img');
+        uim.src = el.img; uim.alt = ''; uim.setAttribute('draggable', 'false');
+        uim.onerror = function () { uim.remove(); ic.textContent = el.ic; };
+        ic.appendChild(uim);
+      } else {
+        ic.textContent = el.ic;
+      }
+      row.appendChild(ic);
 
       var t = document.createElement('div'); t.className = 'hm-uie-t';
       var b = document.createElement('b'); b.textContent = el.name;
       var s = document.createElement('span'); s.textContent = el.sub;
-      t.appendChild(b); t.appendChild(s); row.appendChild(t);
+      t.appendChild(b); t.appendChild(s);
+      /* the honest "why is it not on screen" line (round 3): a rule holding an
+         enabled, shown element back is a CONDITION, not a switch — so it is
+         written under the name rather than faked into the pill */
+      var why = el.note ? el.note() : '';
+      if (why) {
+        var wn = document.createElement('span');
+        wn.className = 'hm-uie-why';
+        wn.textContent = why;
+        wn.title = 'The element is on — this rule decides when it is drawn. Change it in its own config.';
+        t.appendChild(wn);
+      }
+      row.appendChild(t);
 
-      var chip = stateChip(el.state ? el.state() : null);
-      if (chip) row.appendChild(chip);
+      /* ⚠ EVERY control of this card goes in ONE group (2026-08-19 design
+         pass). They used to be appended straight onto the wrapping row, so a
+         card with two actions put one top-RIGHT and the other — the one that
+         wrapped — bottom-LEFT under the icon: the two buttons for the same
+         element ended up in opposite corners, and the drawer's right edge went
+         ragged (measured at 2560: Followers HUD, Wheel Menu, Equipped Widget,
+         Potion Browser, Quiver and Time Dial all did it). The group carries
+         `margin-left:auto`, so it hugs the right whether it rides line 1 or
+         drops whole to line 2, and its own wrap keeps the buttons together.
+         Everything below still appends in the same ORDER, and every selector
+         in the harness and the sheet reaches these by descent, not by child. */
+      var acts = document.createElement('div');
+      acts.className = 'hm-uie-acts';
+
+      /* the pill IS the toggle now — never both a pill and a Turn on/off button */
+      var chip = stateChip(el.state ? el.state() : null, !el.chord && el.toggle, el.name,
+        el.hidden ? el.hidden() : false);
+      if (chip) {
+        if (!el.chord && el.toggle) chip.addEventListener('click', function () {
+          el.toggle();
+          /* the pop is one-shot: removed, reflow read, re-added, so a second
+             click retriggers it instead of doing nothing (the deck's own
+             fw-bump idiom) */
+          chip.classList.remove('is-flip');
+          void chip.offsetWidth;
+          chip.classList.add('is-flip');
+          /* optimistic flip where we track the state, so the pill feels instant;
+             the chained receiver corrects it when the real reply lands */
+          /* ⚠ ROUND 3: the two-flag elements flip the flag their toggle
+             actually SENT, or the pill contradicts the screen for a beat and
+             then snaps back when the reply lands. Each branch mirrors the C++
+             verb exactly. */
+          if (el.id === 'hud') {
+            if (uie.hud === true && uie.hudVisible === false) uie.hudVisible = true;
+            else if (uie.hud !== null) uie.hud = !uie.hud;
+          }
+          if (el.id === 'loot' && uie.loot !== null) uie.loot = !uie.loot;
+          if (el.id === 'hotbar') {
+            /* main.cpp HbToggleVisible: the first press ARMS the bar and shows
+               it; from then on it is the show/hide flip. */
+            if (uie.hotbar === false) { uie.hotbar = true; uie.hotbarVisible = true; }
+            else if (uie.hotbarVisible !== null) uie.hotbarVisible = !uie.hotbarVisible;
+            else if (uie.hotbar !== null) uie.hotbar = !uie.hotbar;
+          }
+          if (el.id === 'widgets' && uie.widgets !== null) uie.widgets = !uie.widgets;
+          if (el.fw && uie.fw[el.fw] !== null) uie.fw[el.fw] = !uie.fw[el.fw];
+          renderUie();
+        });
+        acts.appendChild(chip);
+      }
 
       /* a chord-only element (Wheel) shows the chord + an Open button, no toggle */
       if (el.chord) {
         var kc = document.createElement('span');
         kc.className = 'hm-uie-chord'; kc.textContent = el.chord;
-        kc.title = 'How it opens'; row.appendChild(kc);
+        kc.title = 'How it opens'; acts.appendChild(kc);
         if (el.open) {
           var ob = document.createElement('button');
           ob.className = 'hm-uie-btn'; ob.type = 'button';
           ob.textContent = el.openLabel || 'Open';
           ob.title = 'Open ' + el.name;
           ob.addEventListener('click', el.open);
-          row.appendChild(ob);
+          acts.appendChild(ob);
         }
-      } else if (el.toggle) {
-        var tb = document.createElement('button');
-        tb.className = 'hm-uie-btn'; tb.type = 'button';
-        var on = el.state ? el.state() : null;
-        tb.textContent = el.toggleLabel || (on === true ? 'Turn off' : on === false ? 'Turn on' : 'Toggle');
-        tb.title = 'Toggle ' + el.name;
-        tb.addEventListener('click', function () {
-          el.toggle();
-          /* optimistic flip where we track the state, so the chip feels instant;
-             the chained receiver corrects it when the real reply lands */
-          if (el.id === 'hud' && uie.hud !== null) uie.hud = !uie.hud;
-          if (el.id === 'loot' && uie.loot !== null) uie.loot = !uie.loot;
-          renderUie();
+      }
+      /* (no Turn on / Turn off button — the pill above IS the switch) */
+
+      /* extra per-row actions (the strip's "On screen →"), before the
+         configure button so the row reads left-to-right as do → configure */
+      if (el.extra && el.extra.length) {
+        el.extra.forEach(function (x) {
+          var xb = document.createElement('button');
+          xb.className = 'hm-uie-btn'; xb.type = 'button';
+          xb.textContent = x.label; xb.title = x.title || x.label;
+          xb.addEventListener('click', x.run);
+          acts.appendChild(xb);
         });
-        row.appendChild(tb);
       }
 
-      if (el.jump) {
-        var jb = document.createElement('button');
-        jb.className = 'hm-uie-btn hm-uie-jump'; jb.type = 'button';
-        jb.textContent = el.jumpLabel || 'Settings →';
-        jb.title = 'Go to where ' + el.name + ' is configured';
-        jb.addEventListener('click', el.jump);
-        row.appendChild(jb);
+      /* An element whose PRIMARY configure door is elsewhere (the HUD shelf)
+         but which still has something worth doing in place keeps its expander
+         as a SECOND button — the Equipped widget's per-line switches. Without
+         this the two would fight over one button and the shelf would win, so
+         the lines became unreachable from the drawer. */
+      if (el.inline && el.expandLabel && el.jump) {
+        var eb = document.createElement('button');
+        eb.className = 'hm-uie-btn' + (uie.inlineOpen === el.id ? ' on' : '');
+        eb.type = 'button';
+        eb.textContent = el.expandLabel;
+        eb.title = 'Show ' + el.name + '’s own switches right here';
+        eb.addEventListener('click', function () {
+          uie.inlineOpen = (uie.inlineOpen === el.id) ? null : el.id;
+          renderUie();
+          if (uie.inlineOpen && host.toGame)
+            host.toGame('hudCfg', JSON.stringify({ op: 'state' }));
+        });
+        acts.appendChild(eb);
       }
+
+      if (el.jump || el.inline) {
+        var jb = document.createElement('button');
+        var jbInline = el.inline && !el.expandLabel;
+        jb.className = 'hm-uie-btn hm-uie-jump' +
+          ((jbInline && uie.inlineOpen === el.id) ? ' on' : '');
+        jb.type = 'button';
+        jb.textContent = el.jumpLabel || 'Config →';
+        jb.title = jbInline ? ('Configure ' + el.name + ' right here')
+                            : ('Go to where ' + el.name + ' is configured');
+        jb.addEventListener('click', function () {
+          /* Configure-in-place when the element offers it. The expander is
+             STATE (uie.inlineOpen), not a one-off DOM insert: every state
+             reply (hudCfgState -> receiveHud) re-runs renderUie, which wipes
+             the drawer — a hand-inserted row lived ~50ms and read as "the
+             settings button does nothing" (Rober, 2026-08-18, twice). */
+          /* …unless the expander already has its own button above
+             (expandLabel), in which case THIS button is the real configure
+             door and must jump. */
+          if (el.inline && !el.expandLabel) {
+            uie.inlineOpen = (uie.inlineOpen === el.id) ? null : el.id;
+            renderUie();
+            /* ONE fresh-state ask per open; the reply repaints via renderUie */
+            if (uie.inlineOpen && host.toGame)
+              host.toGame('hudCfg', JSON.stringify({ op: 'state' }));
+            return;
+          }
+          if (el.jump) el.jump();
+        });
+        acts.appendChild(jb);
+      }
+      if (acts.childNodes.length) row.appendChild(acts);
       body.appendChild(row);
+      /* the open expander is rebuilt fresh on every render, so it always
+         paints from the state that just arrived */
+      if (el.inline && uie.inlineOpen === el.id) {
+        var mount = document.createElement('div');
+        mount.className = 'hm-uie-inline';
+        if (el.inline(mount)) body.appendChild(mount);
+        else uie.inlineOpen = null;
+      }
     });
   }
 
@@ -573,6 +1097,9 @@ window.HomePane = (function () {
     env = coerce(env);
     if (!env || typeof env !== 'object') return;
     uie.hud = !!env.enabled;
+    /* the strip's own show/hide flag, so this row can tell "off" from
+       "on but hidden" the same way the Action Bar's does (round 3) */
+    if (typeof env.visible === 'boolean') uie.hudVisible = env.visible;
     if (ui.uieOpen) renderUie();
   }
   function receiveLoot(env) {
@@ -580,26 +1107,82 @@ window.HomePane = (function () {
     if (!env || typeof env !== 'object') return;
     if (typeof env.enabled === 'boolean') { uie.loot = env.enabled; if (ui.uieOpen) renderUie(); }
   }
+  /* hdUiStateData: {hotbar, hud, widgets:{enabled, widgets:{<id>:{enabled}}}}
+     — the widgets member is the plugin's own config document, one serializer
+     with the wgConfig push (round 3). */
+  function receiveUiState(env) {
+    env = coerce(env);
+    if (!env || typeof env !== 'object') return;
+    if (typeof env.hotbar === 'boolean') uie.hotbar = env.hotbar;
+    if (typeof env.hotbarVisible === 'boolean') uie.hotbarVisible = env.hotbarVisible;
+    if (typeof env.hotbarShowMode === 'string') uie.hotbarMode = env.hotbarShowMode;
+    if (typeof env.hotbarEffective === 'boolean') uie.hotbarEff = env.hotbarEffective;
+    if (typeof env.hud === 'boolean') uie.hud = env.hud;
+    if (typeof env.hudVisible === 'boolean') uie.hudVisible = env.hudVisible;
+    var w = env.widgets;
+    if (w && typeof w === 'object') {
+      if (typeof w.enabled === 'boolean') uie.widgets = w.enabled;
+      var ws = w.widgets;
+      if (ws && typeof ws === 'object') {
+        for (var k in uie.fw) {
+          var o = ws[k];
+          if (o && typeof o.enabled === 'boolean') uie.fw[k] = o.enabled;
+        }
+      }
+      /* 2026-08-19: the HUD view's own prefs ride this same document as an
+         opaque `hud` blob (C++ stores it verbatim), and the merged Equipped
+         widget's orientation / size / lock / membership / master-memory live
+         in its `grp` key. Reading them here is what lets the drawer show the
+         real values instead of guessing — and it costs no new bridge. */
+      var hp = w.hud;
+      if (hp && typeof hp === 'object' && hp.grp && typeof hp.grp === 'object') {
+        var g = hp.grp;
+        if (g.orient === 'horiz' || g.orient === 'vert') uie.grp.orient = g.orient;
+        if (typeof g.scale === 'number' && isFinite(g.scale)) uie.grp.scale = g.scale;
+        if (typeof g.locked === 'boolean') uie.grp.locked = g.locked;
+        uie.grp.mem = Array.isArray(g.mem) ? g.mem.slice() : null;
+        uie.grp.keys = Array.isArray(g.keys) && g.keys.length ? g.keys.slice() : null;
+        uie.grp.known = true;
+      }
+    }
+    if (ui.uieOpen) renderUie();
+  }
+
+  /* Lazy-chain the elements' reply receivers, then ask each queryable element
+     for fresh state. Chaining on demand (not at parse) means followers-pane /
+     loot-pane have already installed their own handlers, so ours forwards to
+     them. Shared by the drawer's open and by the omni provider's warm() — the
+     search rows carry the same live ON/OFF the drawer does, and warm() is the
+     one place in the provider contract allowed to ask a bridge. */
+  function askUieState() {
+    if (!ui.uieChained) {
+      ui.uieChained = true;
+      chainReceiver('hudCfgState', receiveHud);
+      chainReceiver('ltOpen', receiveLoot);    // carries `enabled`
+      chainReceiver('ltResult', receiveLoot);  // toggle reply, also `enabled`
+      chainReceiver('hdUiStateData', receiveUiState);  // round 3: real chips
+    }
+    if (host.toGame) {
+      host.toGame('hudCfg', JSON.stringify({ op: 'state' }));  // HUD -> hudCfgState
+      host.toGame('ltGet', '');                                // Loot -> ltOpen
+      host.toGame('hdUiState', '');                            // -> hdUiStateData
+    }
+  }
 
   function toggleUie() {
     ui.uieOpen = !ui.uieOpen;
     setDrawer('uie', ui.uieOpen, function () {
-      /* lazy-chain the elements' reply receivers on first open, then ask each
-         queryable element for fresh state. Chaining now (not at parse) means
-         followers-pane / loot-pane have already installed their own handlers,
-         so ours forwards to them. */
-      if (!ui.uieChained) {
-        ui.uieChained = true;
-        chainReceiver('hudCfgState', receiveHud);
-        chainReceiver('ltOpen', receiveLoot);    // carries `enabled`
-        chainReceiver('ltResult', receiveLoot);  // toggle reply, also `enabled`
-      }
-      if (host.toGame) {
-        host.toGame('hudCfg', JSON.stringify({ op: 'state' }));  // HUD -> hudCfgState
-        host.toGame('ltGet', '');                                // Loot -> ltOpen
-      }
+      askUieState();
       renderUie();
     });
+  }
+
+  /* Where a search result for an on-screen element LANDS (Shift+Enter): the
+     Home tab with the drawer already unfolded, because the drawer is the row's
+     own home and arriving at a collapsed one reads as arriving nowhere. */
+  function openUieDrawer() {
+    if (host.setTab) host.setTab('home');
+    if (!ui.uieOpen) toggleUie();
   }
 
   /* C++ pushes hdRecent; app.js owns the primary handler and forwards here so
@@ -759,16 +1342,19 @@ window.HomePane = (function () {
     openKeyStore = 'Numpad 5';
     renderOpenKey();
     ok('label refreshes after a rebind', $('hm-ok-key').textContent === 'Numpad 5');
-    /* omni provider: an "open key" query finds the rebind result, whose run()
+    /* omni providers: an "open key" query finds the rebind result, whose run()
        jumps to Home and starts the picker. Test the provider's index directly
-       (the omni core is a separate module; here we assert the contract we ship). */
-    var okProv = _registerOmni && (function () {
-      var captured = null;
-      var fakeOmni = { register: function (p) { captured = p; } };
-      var real = window.HDOmni; window.HDOmni = fakeOmni;
-      _registerOmni(); window.HDOmni = real;
-      return captured;
+       (the omni core is a separate module; here we assert the contract we ship).
+       Home registers TWO providers now (home-uie-omni), so the capture keys them
+       by id — grabbing "the last one registered" silently tested the wrong one. */
+    var provs = (function () {
+      var caught = {};
+      var real = window.HDOmni;
+      window.HDOmni = { register: function (p) { caught[p.id] = p; } };
+      registerOmni(); window.HDOmni = real;
+      return caught;
     })();
+    var okProv = provs.openkey;
     ok('omni provider registered', !!okProv && okProv.tab === 'home');
     var okItems = okProv ? okProv.index() : [];
     var hay = okItems.map(function (i) { return (i.label + ' ' + i.keywords).toLowerCase(); }).join(' ');
@@ -781,6 +1367,20 @@ window.HomePane = (function () {
         nav.slice(before).indexOf('tab:home') !== -1 &&
         nav.slice(before).indexOf('openkeypicker') !== -1);
     } else { ok('omni result run -> Home tab + picker', false); }
+
+    /* home-uie-omni: every on-screen element is searchable, by the words a
+       player would type, and its Config row runs the element's own door. */
+    var uieProv = provs.uielements;
+    ok('on-screen elements provider registered',
+      !!uieProv && uieProv.tab === 'home' && typeof uieProv.warm === 'function');
+    var uieRows = uieProv ? uieProv.index() : [];
+    var uieHay = uieRows.map(function (i) {
+      return (i.label + ' ' + i.keywords).toLowerCase(); }).join(' ');
+    ok('omni indexes the elements nothing else carried',
+      uieHay.indexOf('equipped widget') !== -1 && uieHay.indexOf('party frames') !== -1 &&
+      uieHay.indexOf('ammo') !== -1);
+    ok('every element that can be acted on has a run()',
+      uieRows.length > 0 && uieRows.every(function (i) { return typeof i.run === 'function'; }));
 
     /* reorder persistence (home-card-reorder): move 'ask' to the front and
        confirm the persisted order round-trips + renders */
@@ -881,13 +1481,126 @@ window.HomePane = (function () {
     console.log(out.join('\n'));
   }
 
-  /* ------------------------------------------------- omni provider -- *
-   *  Make the open-key rebind FINDABLE by search (home-open-key). A user
-   *  typing "open key" / "hotkey" / "change key" / "F7" in ⌕ gets a result
-   *  whose Enter runs the rebind flow; Shift+Enter jumps to the Home tab.
-   *  index() reads the live bind so the current key shows in `detail`. */
+  /* ------------------------------------ the on-screen elements, searched -- *
+   *  home-uie-omni. Every element the deck DRAWS is switched on and configured
+   *  inside one collapsed drawer on one tab, and the drawer was in no index at
+   *  all: a player who had heard of the Super Searcher and typed its name got
+   *  nothing back, while the drawer three feet away held its switch, its key
+   *  and its settings.
+   *
+   *  Each element now answers search with up to three rows — the element
+   *  itself (Enter flips it, or opens it where it is a window rather than a
+   *  switch), its own extra doors, and its configure door, which lands ON that
+   *  element's settings rather than merely on the Home tab. Shift+Enter always
+   *  lands on the drawer, unfolded.
+   *
+   *  index() only READS the flags the drawer already holds, so it stays cheap
+   *  on every keystroke; asking the game for them is warm()'s job. */
+
+  /* One element misbehaving must not blank everybody's search results, so the
+     per-element hooks are called through this rather than inline — index() runs
+     inside the omni's query loop, where a throw costs every other provider. */
+  function tryCall(fn, dflt) {
+    if (typeof fn !== 'function') return dflt;
+    try { return fn(); } catch (e) { return dflt; }
+  }
+
+  function uieOmniItems() {
+    var items = [];
+    UIE.forEach(function (el) {
+      if (tryCall(el.avail, true) === false) return;
+
+      var v = tryCall(el.state, null);
+      var hidden = (v === true) && tryCall(el.hidden, false) === true;
+      /* the same three faces the drawer's pill wears, in words — a row that
+         said a flat "On" for an element nothing is drawing would be the exact
+         lie the drawer was fixed for on 2026-08-19 */
+      var word = (v === true || v === false)
+        ? (hidden ? 'On, but hidden' : (v ? 'On' : 'Off')) : '';
+      var why = tryCall(el.note, '') || '';
+      var kw = (el.kw || '') + ' ' + el.name + ' ' + el.sub +
+               ' on screen element widget ui hud overlay';
+
+      var run = null, verb = '';
+      if (!el.chord && typeof el.toggle === 'function') {
+        run = el.toggle;
+        verb = hidden ? 'Enter shows it'
+             : v === true ? 'Enter turns it off'
+             : v === false ? 'Enter turns it on'
+             : 'Enter toggles it';
+      } else if (typeof el.open === 'function') {
+        run = el.open;
+        verb = 'Enter opens it';
+      }
+
+      /* detail is assembled from the parts that EXIST, never from a template
+         with holes in it — an element with no readable state and no rule note
+         still reads as a sentence */
+      var parts = [];
+      if (word) parts.push(word);
+      /* the openable windows say "Bindable — <tab>" in BOTH their chord hint and
+         their subtitle, and a detail line that says it twice reads as a bug */
+      if (el.chord && String(el.sub).toLowerCase().indexOf('bindable') === -1)
+        parts.push(el.chord);
+      parts.push(why || el.sub);
+      if (verb) parts.push(verb);
+
+      var row = {
+        label: el.name,
+        detail: parts.join(' · '),
+        kind: 'on-screen',
+        keywords: kw + ' turn on turn off toggle switch show hide enable disable',
+        jump: openUieDrawer,
+      };
+      if (run) row.run = run;
+      items.push(row);
+
+      /* an element's own extra doors (the HUD's roster, the Super Searcher's
+         Open) — the drawer offers them as buttons, so search offers them too */
+      if (el.extra && el.extra.length) {
+        el.extra.forEach(function (x) {
+          if (typeof x.run !== 'function') return;
+          var lbl = String(x.label || '').replace(/\s*→\s*$/, '');
+          items.push({
+            label: el.name + ' · ' + lbl,
+            detail: x.title || lbl,
+            kind: 'on-screen',
+            keywords: kw + ' ' + lbl,
+            run: x.run,
+            jump: openUieDrawer,
+          });
+        });
+      }
+
+      if (typeof el.jump === 'function') {
+        items.push({
+          label: el.name + ' settings',
+          detail: 'Opens where ' + el.name + ' is configured',
+          kind: 'setting',
+          keywords: kw + ' settings setting configure config options set up setup ' +
+                    'customise customize move reposition resize bigger smaller place',
+          run: el.jump,
+          jump: openUieDrawer,
+        });
+      }
+    });
+    return items;
+  }
+
   function registerOmni() {
     if (!window.HDOmni || !HDOmni.register) return;
+    HDOmni.register({
+      id: 'uielements', label: 'On-screen elements', tab: 'home',
+      /* the one place the contract allows a bridge ask — so the rows carry the
+         same live ON/OFF the drawer does, instead of guessing from stale flags */
+      warm: askUieState,
+      setFilter: function () { /* Home has no filter box — the drawer IS the landing */ },
+      index: uieOmniItems,
+    });
+    /* Make the open-key rebind FINDABLE by search (home-open-key). A user
+       typing "open key" / "hotkey" / "change key" / "F7" in ⌕ gets a result
+       whose Enter runs the rebind flow; Shift+Enter jumps to the Home tab.
+       index() reads the live bind so the current key shows in `detail`. */
     HDOmni.register({
       id: 'openkey', label: 'Deck', tab: 'home',
       setFilter: function () { /* Home has no filter box — landing on it is the jump */ },
@@ -917,7 +1630,13 @@ window.HomePane = (function () {
     _ui: ui, _uie: uie, _UIE: UIE,
     _toggleUie: toggleUie, _renderUie: renderUie,
     _receiveHud: receiveHud, _receiveLoot: receiveLoot,
-    _openKeyLabel: openKeyLabel, _registerOmni: registerOmni
+    /* the merged Equipped widget (2026-08-19) — the harness drives the same
+       functions the row does */
+    _receiveUiState: receiveUiState, _grpMaster: grpMaster,
+    _openKeyLabel: openKeyLabel, _registerOmni: registerOmni,
+    /* home-uie-omni: the search rows for the on-screen elements, so a harness
+       can read them without standing up the whole omni core */
+    _uieOmniItems: uieOmniItems, _openUieDrawer: openUieDrawer
   };
 })();
 

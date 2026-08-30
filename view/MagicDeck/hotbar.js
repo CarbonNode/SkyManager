@@ -71,6 +71,13 @@
     showPages: true, showOutline: true, showGrip: true, gripPos: 'auto',
     idleMs: 0, idleAlpha: 0.35, uiScale: 1, opacity: 1,
     showMode: 'always', lingerMs: 4000, hideInMenus: true,
+    /* Which screen edge the SETUP PANEL docks to (Rober, 2026-08-19: "same
+       with action bar popout (need to be able to move to left"). It is the
+       editor's dock, NOT the bar's anchor — `anchorH` above is the bar's and
+       the two are deliberately independent. ⚠ It must exist in this literal:
+       hbConfig only copies keys already present here, so a `side` missing from
+       the defaults would be dropped from every push C++ makes. */
+    side: 'right',
     skin: 'plain', modHold: true,
     pages: [], slotKeys: [],
     key: { device: 'keyboard', code: 0, label: '' },
@@ -111,7 +118,7 @@
   const CATALOG = { spells: [], items: [], entries: [], combos: [], loaded: false };
 
   const el = {};
-  ['hb-root', 'hb-grid', 'hb-pages', 'hb-grip', 'hb-edit', 'hb-done',
+  ['hb-root', 'hb-grid', 'hb-pages', 'hb-grip', 'hb-edit', 'hb-done', 'hb-side',
    'hb-cols', 'hb-rows', 'hb-orient', 'hb-scale', 'hb-scale-val', 'hb-shape-note',
    'hb-anchorH', 'hb-anchorV', 'hb-skins', 'hb-showKeys', 'hb-showLabels',
    'hb-showCounts', 'hb-showEmpty', 'hb-showPages', 'hb-showGrip', 'hb-showOutline',
@@ -323,6 +330,7 @@
       idleMs: cfg.idleMs, idleAlpha: cfg.idleAlpha, uiScale: cfg.uiScale,
       opacity: cfg.opacity,
       showMode: cfg.showMode, lingerMs: cfg.lingerMs, hideInMenus: cfg.hideInMenus,
+      side: cfg.side,
       key: cfg.key,
       skin: cfg.skin, modHold: cfg.modHold,
       pages: cfg.pages.map((p) => ({ enabled: !!p.enabled, name: p.name || '', slots: p.slots })),
@@ -370,6 +378,33 @@
   }
   window.addEventListener('resize', () => { applyUiScale(); applyPlacement(); });
 
+  /* ---- which edge the SETUP PANEL docks to (2026-08-19) -------------------
+     Rober: "same with action bar popout (need to be able to move to left". Same
+     idiom as the HUD shelf and the deck's Favorites Shelf: one ⇄ button, a
+     class on the panel, the value normalised on read so a hand-edited or older
+     config can never dock it somewhere that does not exist.
+
+     ⚠ Flipping the side changes the avoidance GEOMETRY (editPreviewLayout's
+     free strip is on the other side of the panel now), so every flip must
+     re-run applyPlacement() — the same reason the anchor selects do. */
+  function panelSide() { return cfg.side === 'left' ? 'left' : 'right'; }
+  function applyPanelSide() {
+    const p = el['hb-edit'];
+    if (p) p.classList.toggle('side-left', panelSide() === 'left');
+    const b = el['hb-side'];
+    if (b) b.title = panelSide() === 'left'
+      ? 'Dock setup on the right edge'
+      : 'Dock setup on the left edge';
+    document.body.classList.toggle('hb-panel-left', panelSide() === 'left');
+  }
+  function togglePanelSide() {
+    cfg.side = panelSide() === 'left' ? 'right' : 'left';
+    applyPanelSide();
+    applyUiScale();
+    applyPlacement();   // the bar's edit-mode offset depends on which side is free
+    saveCfg();
+  }
+
   const EDIT_GAP = 12;
   const EDIT_DRAG_ROOM = 48;
 
@@ -405,13 +440,24 @@
       return out;
     }
 
-    const freeRight = Math.max(0, Math.min(window.innerWidth, pr.left) - EDIT_GAP);
+    /* ---- the free strip is an INTERVAL, not "everything left of the panel"
+       (2026-08-19). This used to be a single `freeRight = pr.left - GAP` with
+       an implicit left edge of 0, which silently encodes "the panel is on the
+       right". Docked LEFT that collapses to zero and every number below it
+       degenerates — the preview would be shoved off screen or hidden with a
+       bogus "too wide" message. So: strip = whatever side of the panel the bar
+       actually has, expressed as [stripLeft, stripRight] in viewport pixels. */
+    const dockedLeft = panelSide() === 'left';
+    const stripLeft  = dockedLeft ? Math.min(window.innerWidth, pr.right + EDIT_GAP) : 0;
+    const stripRight = dockedLeft ? window.innerWidth
+                                  : Math.max(0, Math.min(window.innerWidth, pr.left) - EDIT_GAP);
+    const stripW = Math.max(0, stripRight - stripLeft);
     const layoutW = r.offsetWidth || 1; // deliberately unscaled; avoids measurement feedback loops
     /* A just-barely fitting bar is technically collision-free but cannot move:
        x changes and the clamp cancels them out. Preserve a real horizontal
        drag lane whenever the viewport has it. */
-    const dragRoom = Math.min(EDIT_DRAG_ROOM, freeRight * 0.1);
-    const fitScale = Math.max(0, freeRight - dragRoom * 2) / layoutW;
+    const dragRoom = Math.min(EDIT_DRAG_ROOM, stripW * 0.1);
+    const fitScale = Math.max(0, stripW - dragRoom * 2) / layoutW;
     if (fitScale < baseScale) {
       if (fitScale / baseScale < 0.7) {
         out.hidden = true;
@@ -425,10 +471,13 @@
 
     const barW = layoutW * out.scale;
     const x = Number(cfg.x) || 0;
-    let desiredLeft = x;
-    if (cfg.anchorH === 'center') desiredLeft = freeRight / 2 + x - barW / 2;
-    else if (cfg.anchorH === 'right') desiredLeft = freeRight - x - barW;
-    const placedLeft = clamp(desiredLeft, 0, Math.max(0, freeRight - barW));
+    /* Laid out STRIP-LOCAL — "as if the screen were the free strip" — then
+       translated back to the viewport. With a right dock stripLeft is 0 and
+       this is arithmetically identical to what it always was. */
+    let localLeft = x - stripLeft;
+    if (cfg.anchorH === 'center') localLeft = stripW / 2 + x - barW / 2;
+    else if (cfg.anchorH === 'right') localLeft = stripW - x - barW;
+    const placedLeft = stripLeft + clamp(localLeft, 0, Math.max(0, stripW - barW));
     /* Convert the measured preview position back into each anchor's stored
        coordinate system. The conversion is constant through the middle of
        the drag lane, so cfg.x changes remain visibly one-for-one. */
@@ -595,13 +644,111 @@
 
     clear(grid);
     const rows = (live && Array.isArray(live.slots)) ? live.slots : [];
+    liveSigs.length = 0;
     for (let i = 0; i < n; i++) {
-      grid.appendChild(slotEl(i, rows[i] || { i: i, kind: '' }));
+      const L = rows[i] || { i: i, kind: '' };
+      liveSigs.push(slotSig(i, L));
+      grid.appendChild(slotEl(i, L));
     }
     renderPips();
     applyPlacement();
     applyIdle();
     renderFlyPop();   // keep an open fan glued to its (re-rendered) button
+  }
+
+  /* ── the live tick's fast path ────────────────────────────────────────────
+     PERF. hbLive lands at least every ~700 ms and, while ANY buff or shout
+     cooldown is running, its payload differs EVERY tick because fxRem/cd count
+     down — so the C++ diff-gate always passes and the old code ran a full
+     render(): clear(grid) and a from-scratch rebuild of every button, each with
+     a brand-new <img>. In an always-on view under a compositor-off renderer
+     that is a permanent teardown/re-raster/re-decode beat behind the game.
+
+     Only four fields in a live row actually move on a tick — cd, fxRem, fxDur
+     and count — and every one of them is a NUMBER inside an element that
+     already exists. So: hash everything slotEl uses to build STRUCTURE, and
+     when that hash is unchanged for every button, write the four numbers in
+     place and touch nothing else. Any structural change at all (a slot
+     emptied, an icon swapped, a button gone dead, the count crossing 1, a ring
+     appearing or expiring) falls back to the full render, so what is on screen
+     is identical either way — this only removes work, never a state. */
+  const liveSigs = [];
+
+  /* Everything slotEl branches on, EXCEPT the four volatile numbers. The ring
+     and count booleans are in here because they decide whether the element
+     EXISTS; their values are patched. */
+  function slotSig(i, L) {
+    const s = slotAt(livePage, i);
+    const k = keyAt(i);
+    const fly = isFlySlot(s);
+    const empty = fly ? false : (isEmptySlot(s) || !L.kind);
+    const flyLive = fly ? ((L.items && L.items.length) ? L.items : flyItems(s)) : [];
+    const cd = Number(L.cd) || 0, fxRem = Number(L.fxRem) || 0, fxDur = Number(L.fxDur) || 0;
+    return [
+      i, livePage, empty ? 1 : 0, fly ? 1 : 0,
+      s.kind || '', s.refId || '', s.localId || '', s.formId || '', s.icon || '', s.label || '',
+      fly ? flyLive.length : 0, fly ? ((s.items && s.items[0] && s.items[0].icon) || '') : '',
+      L.kind || '', L.label || '', L.name || '', L.icon || '', L.msg || '',
+      L.school || '', L.element || '', L.tier || '',
+      L.ok === false ? 1 : 0, L.equipped ? 1 : 0, L.voice ? 1 : 0,
+      (fly && flyState.open && flyState.page === livePage && flyState.i === i) ? 1 : 0,
+      editing ? 1 : 0, (editing && i === selected) ? 1 : 0,
+      cfg.showKeys ? 1 : 0, cfg.showCounts ? 1 : 0, cfg.showLabels ? 1 : 0,
+      k.code || 0, k.label || '',
+      popDirection(),
+      // ring/badge SHAPE (not value): does each optional child exist?
+      cd > 0 ? 1 : 0,
+      (cd <= 0 && fxRem > 0 && fxDur > 0) ? 1 : 0,
+      (cd <= 0 && fxRem > 0 && fxDur > 0 && fxRem <= 10) ? 1 : 0,
+      (!empty && !fly && cfg.showCounts && L.count > 1) ? 1 : 0,
+    ].join('');
+  }
+
+  /* Returns false when anything structural moved — caller then does a full
+     render(). Writes only the four moving numbers when it returns true. */
+  function patchLive() {
+    const grid = el['hb-grid'];
+    if (!grid || editing) return false;        // edit mode re-renders anyway
+    const n = visibleSlots();
+    if (liveSigs.length !== n) return false;
+    const rows = (live && Array.isArray(live.slots)) ? live.slots : [];
+    const sigs = new Array(n);
+    for (let i = 0; i < n; i++) {
+      sigs[i] = slotSig(i, rows[i] || { i: i, kind: '' });
+      if (sigs[i] !== liveSigs[i]) return false;
+    }
+    for (let i = 0; i < n; i++) {
+      const L = rows[i] || { i: i, kind: '' };
+      const btn = grid.querySelector('.hb-slot[data-page="' + livePage + '"][data-i="' + i + '"]');
+      if (!btn) return false;
+      const cd = Number(L.cd) || 0, fxRem = Number(L.fxRem) || 0, fxDur = Number(L.fxDur) || 0;
+      const ov = btn.querySelector('.hb-cool');
+      const num = btn.querySelector('.hb-cool-s');
+      if (cd > 0 && ov) {
+        // coolMax is the remembered 100% for a shout — same self-correcting
+        // rule ringEls applies, kept here so the fast path can't drift from it.
+        const mx = Math.max(cd, coolMax[livePage + ':' + i] || 0);
+        coolMax[livePage + ':' + i] = mx;
+        const pct = Math.round(clamp(cd / mx, 0, 1) * 100) + '%';
+        if (ov.style.height !== pct) ov.style.height = pct;
+        const txt = String(Math.ceil(cd));
+        if (num && num.textContent !== txt) num.textContent = txt;
+      } else if (fxRem > 0 && fxDur > 0 && ov) {
+        delete coolMax[livePage + ':' + i];
+        const pct = Math.round(clamp(1 - fxRem / fxDur, 0, 1) * 100) + '%';
+        if (ov.style.height !== pct) ov.style.height = pct;
+        if (num) {
+          const txt = String(Math.ceil(fxRem));
+          if (num.textContent !== txt) num.textContent = txt;
+        }
+      }
+      const cnt = btn.querySelector('.hb-count');
+      if (cnt) {
+        const txt = 'x' + L.count;
+        if (cnt.textContent !== txt) cnt.textContent = txt;
+      }
+    }
+    return true;
   }
 
   function slotEl(i, L) {
@@ -1354,6 +1501,8 @@
     saveCfg(); renderEdit();
   });
 
+  if (el['hb-side']) el['hb-side'].addEventListener('click', togglePanelSide);
+
   if (el['hb-done']) el['hb-done'].addEventListener('click', () => {
     setEditing(false);
     saveCfg();
@@ -1963,7 +2112,7 @@
       if (flyEd.open) closeFlyEd();
       el['hb-root'].classList.remove('grip-above', 'grip-below');
     } else {
-      selectedPage = clamp(selectedPage, 0, 3); applyUiScale(); renderEdit();
+      selectedPage = clamp(selectedPage, 0, 3); applyPanelSide(); applyUiScale(); renderEdit();
     }
     render();
     /* Rescue a bar that drifted off screen so its grip is reachable. Runs after
@@ -1980,6 +2129,11 @@
     Object.keys(cfg).forEach((k) => { if (c[k] !== undefined) cfg[k] = c[k]; });
     if (!Array.isArray(cfg.pages)) cfg.pages = [];
     if (!Array.isArray(cfg.slotKeys)) cfg.slotKeys = [];
+    /* the setup panel's dock: anything unrecognised means the shipped right
+       edge, and the class is re-applied because C++ may have just told us it
+       moved */
+    if (cfg.side !== 'left') cfg.side = 'right';
+    applyPanelSide();
     pageAt(3); keyAt(MAX_SLOTS - 1);          // normalise lengths once
     applyUiScale();
     if (editing) renderEdit();
@@ -1992,9 +2146,12 @@
   window.hbLive = function (j) {
     const d = coerce(j);
     if (!d || typeof d !== 'object') return;
+    const wasPage = livePage;
     live = { page: d.page || 0, slots: Array.isArray(d.slots) ? d.slots : [] };
     if (live.page !== livePage) livePage = live.page;
-    render();
+    /* PERF: a tick that only moved a countdown patches the numbers in place;
+       anything structural still goes through the full render. */
+    if (livePage !== wasPage || !patchLive()) render();
     if (editing && live.page === selectedPage) renderSlotList();
   };
 
@@ -2070,8 +2227,33 @@
 
   pageAt(3); keyAt(MAX_SLOTS - 1);
   render();
-  toGame('hbReady');
-  log('hotbar view ready');
+
+  /* Announce ourselves — but ONLY once the DLL has actually registered the
+     listener. toGame() is a plain window[fn] call: when the document finishes
+     before RegisterJSListener runs, window.hbReady is still undefined and the
+     announcement evaporates silently, taking the icon-index push with it. Proven
+     on the HUD view's identical boot call in the 2026-08-18 rig log (DOM ready at
+     17:38:00, the ready handler's effects only at 17:39:17, dragged in by an
+     unrelated toggle); this view is the same shape. C++ now also delivers from
+     its own DOM-ready callback, so this is the belt to that braces — retried
+     for ~2s, then given up on rather than looping forever. */
+  (function announceReady() {
+    let tries = 0;
+    const MAX = 40;          // 40 x 50ms = ~2s
+    const beat = () => {
+      if (typeof window.hbReady === 'function') {
+        toGame('hbReady');
+        log('hotbar view ready' + (tries ? ' (bridge appeared after ' + (tries * 50) + 'ms)' : ''));
+        return;
+      }
+      if (++tries >= MAX) {
+        log('hotbar view ready (hbReady listener never appeared — C++ dom-ready push covers it)');
+        return;
+      }
+      setTimeout(beat, 50);
+    };
+    beat();
+  })();
 
   /* Exposed for the harness only — never called by the plugin. */
   window.__hb = {
@@ -2092,6 +2274,7 @@
     openPicker, closePicker, assign, openIconPicker, openCapture,
     flash, applyPlacement, applyOpacity, clampIntoView, resetPosition,
     applyPanelFilter,
+    panelSide, togglePanelSide, applyPanelSide, editPreviewLayout,
     isFlySlot, flyItems, popDirection, makeFlySlot,
     openFlyEd, closeFlyEd, renderFlyEd,
     flyState, openFlyPop, closeFlyPop, fireFlySelected, renderFlyPop,
@@ -2099,5 +2282,527 @@
     MAX_FLY, FLY_DWELL,
     openNewCc, closeNewCc, submitNewCc,
     get newcc() { return newcc; },
+  };
+})();
+
+/* ============================================================================
+   HUD widgets — the second tenant of this view (see src/widgets.h).
+
+   Bridge (⚠ one name per direction, the deck law):
+     toGame('wgReady')          — on load: "push me config + live + visibility"
+     toGame('wgSave', json)     — the whole editable config, after any edit
+     toGame('wgEditDone')       — leave widget edit mode (C++ then Unfocuses)
+
+   C++ calls INTO us:
+     window.wgConfig(jsonStr)   — the whole config (src/widgets.cpp shape)
+     window.wgLive(jsonStr)     — {gold, lockpicks, potions:{heal:{n,best},…,all}}
+     window.wgEdit("1"|"0")     — enter / leave widget edit mode
+     window.wgVis(jsonStr)      — {bar, wg, menus}: the shared view's visibility
+                                  SPLIT — one PrismaUI Show/Hide answers for both
+                                  tenants now, so each root hides by class.
+
+   The widgets never send `browser` in wgSave — that key belongs to the potion
+   browser (the deck view's pb* bridge) and C++ only overwrites it when sent.
+   ============================================================================ */
+(function () {
+  'use strict';
+  const DEV = location.search.indexOf('dev=1') !== -1;
+
+  function toGame(fn, arg) {
+    const f = window[fn];
+    if (typeof f === 'function') {
+      try { f(String(arg === undefined ? '' : arg)); } catch (e) { console.log('bridge error', fn, e); }
+    } else if (DEV) {
+      console.log('[wg->game]', fn, arg);
+    }
+  }
+  function coerce(v) {
+    if (typeof v !== 'string') return v;
+    try { return JSON.parse(v); } catch (e) { return null; }
+  }
+  const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+  function h(tag, attrs, ...kids) {
+    const n = document.createElement(tag);
+    if (attrs) for (const k in attrs) {
+      if (k === 'class') n.className = attrs[k];
+      else if (k === 'text') n.textContent = attrs[k];
+      else if (attrs[k] !== null && attrs[k] !== undefined) n.setAttribute(k, attrs[k]);
+    }
+    for (const kid of kids) {
+      if (kid === null || kid === undefined || kid === false) continue;
+      n.appendChild(typeof kid === 'string' ? document.createTextNode(kid) : kid);
+    }
+    return n;
+  }
+  function clear(n) { while (n && n.firstChild) n.removeChild(n.firstChild); }
+  function fmt(n) {
+    n = Math.round(Number(n) || 0);
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  /* ── state ─────────────────────────────────────────────────────────── */
+
+  /* Mirrors src/widgets.cpp Config exactly; C++ owns it and clamps it. */
+  const wcfg = {
+    enabled: false,
+    widgets: {
+      potions:   { enabled: true, x: 24, y: 24,  anchorH: 'left', anchorV: 'top',
+                   scale: 1, opacity: 1, showLabel: true, hideInMenus: true,
+                   cats: { heal: true, magicka: true, stamina: true, cure: true, all: true,
+                           poison: true, food: true, drink: true, water: true } },
+      gold:      { enabled: true, x: 24, y: 112, anchorH: 'left', anchorV: 'top',
+                   scale: 1, opacity: 1, showLabel: true, hideInMenus: true },
+      lockpicks: { enabled: true, x: 24, y: 196, anchorH: 'left', anchorV: 'top',
+                   scale: 1, opacity: 1, showLabel: true, hideInMenus: true },
+      carry:     { enabled: true, x: 24, y: 280, anchorH: 'left', anchorV: 'top',
+                   scale: 1, opacity: 1, showLabel: true, hideInMenus: true },
+    },
+  };
+  let wlive = { gold: null, lockpicks: null, carry: null, potions: {}, waterOk: true };
+  /* Until the first wgVis lands, behave exactly like the pre-widget view:
+     the bar owns the screen (bar:1), widgets follow their config. */
+  const wvis = { bar: true, wg: true, menus: false };
+  let wEditing = false;
+  let wSelected = 'potions';        // arrow keys nudge THIS widget in edit mode
+
+  /* Per-widget chrome. Icon PNGs are generated separately into icons/custom/;
+     the glyph is the remove-on-error fallback so a missing file never shows a
+     broken box (plain paths — Ultralight eats ?v= queries). */
+  const WDEFS = [
+    { id: 'potions',   label: 'Potions',   icon: 'icons/custom/wg-potion.png',   glyph: '⚗' },
+    { id: 'gold',      label: 'Gold',      icon: 'icons/custom/wg-gold.png',     glyph: '🜚' },
+    { id: 'lockpicks', label: 'Lockpicks', icon: 'icons/custom/wg-lockpick.png', glyph: '🗝' },
+    { id: 'carry',     label: 'Carry',     icon: 'icons/custom/wg-carryweight.png', glyph: '🎒' },
+  ];
+  /* The four pools + All, then the consumable chips (2026-08-15: "Poison
+     support, food, drinks … water as well"). drink counts bottles and
+     INCLUDES water; water counts DRINKS (a waterskin is up to three) and its
+     chip hides itself when the live tick says no water mod is installed. */
+  const POOLS = [
+    { id: 'heal',    glyph: '❤', name: 'Health' },
+    { id: 'magicka', glyph: '✦', name: 'Magicka' },
+    { id: 'stamina', glyph: '⚡', name: 'Stamina' },
+    { id: 'cure',    glyph: '✚', name: 'Cure' },
+    { id: 'poison',  glyph: '☠', name: 'Poisons' },
+    { id: 'food',    glyph: '🍖', name: 'Food' },
+    { id: 'drink',   glyph: '🍺', name: 'Drinks (incl. water)' },
+    { id: 'water',   glyph: '💧', name: 'Water (drinks left)' },
+    { id: 'all',     glyph: 'Σ', name: 'All potions' },
+  ];
+
+  const root = document.getElementById('wg-root');
+  const panel = document.getElementById('wg-edit');
+  const panelBody = document.getElementById('wg-edit-body');
+  const panelQ = document.getElementById('wg-panel-q');
+  const doneBtn = document.getElementById('wg-done');
+  if (!root) return;   // markup missing = broken install; fail quiet, log loud
+  const els = {};      // widget id -> its root element (keyed live updates)
+
+  function wOf(id) { return wcfg.widgets[id] || null; }
+
+  /* ── send ──────────────────────────────────────────────────────────── */
+  function saveW() {
+    /* Whole config, never a patch — and never the `browser` key (the potion
+       browser's prefs live game-side; sending it here would clobber them). */
+    toGame('wgSave', JSON.stringify({ enabled: wcfg.enabled, widgets: wcfg.widgets }));
+  }
+
+  /* ── placement ─────────────────────────────────────────────────────── */
+  function placeWidget(el, w) {
+    const s = el.style;
+    s.left = s.right = s.top = s.bottom = s.transform = '';
+    let ox = 'left', oy = 'top';
+    if (w.anchorH === 'left')       { s.left = (w.x | 0) + 'px'; ox = 'left'; }
+    else if (w.anchorH === 'right') { s.right = (w.x | 0) + 'px'; ox = 'right'; }
+    else { s.left = 'calc(50% + ' + (w.x | 0) + 'px)'; ox = 'center'; }
+    if (w.anchorV === 'top') { s.top = (w.y | 0) + 'px'; oy = 'top'; }
+    else                     { s.bottom = (w.y | 0) + 'px'; oy = 'bottom'; }
+    s.transformOrigin = ox + ' ' + oy;
+    s.transform = (w.anchorH === 'center' ? 'translateX(-50%) ' : '') +
+      'scale(' + clamp(Number(w.scale) || 1, 0.5, 2.5) + ')';
+    /* edit mode always renders opaque — you cannot place what you can barely see */
+    s.setProperty('--wg-opacity', String(wEditing ? 1 : clamp(Number(w.opacity) || 1, 0.3, 1)));
+  }
+
+  function artFor(def) {
+    const box = h('span', { class: 'wg-ico' });
+    const g = h('span', { class: 'wg-glyph', text: def.glyph });
+    const img = h('img', { src: def.icon, alt: '', draggable: 'false' });
+    img.addEventListener('error', () => {
+      if (img.parentNode) img.parentNode.replaceChild(g, img);
+    });
+    box.appendChild(img);
+    return box;
+  }
+
+  /* ── build + keyed live update ─────────────────────────────────────── */
+  function buildWidgets() {
+    clear(root);
+    /* ⛔ RETIRED (2026-08-18). The widgets moved to the HUD view (hud.html owns
+       the readouts; marker widgets-hud-view) — but THIS legacy block kept
+       self-building from its own persisted config at init, while its wgLive
+       feed now goes to the HUD view only. Result on Rober's screen: a second,
+       ugly copy of gold/carry/lockpicks and a wide POTIONS bar whose every
+       count sat at "…" forever ("why would anyone ever use that? basically
+       garbage"). One system, one truth: this one stands down permanently —
+       clear() above still runs so any previously-built DOM is torn down. */
+    return;
+    WDEFS.forEach((def) => {
+      const w = wOf(def.id);
+      if (!w) return;
+      const el = h('div', {
+        class: 'wg' + (w.enabled ? '' : ' wg-disabled') +
+               (w.hideInMenus ? ' wg-him' : '') +
+               /* bare = no plate, just glyph + number. Edit mode keeps the
+                  plate no matter what, or there is nothing to grab. */
+               (w.bare && !wEditing ? ' wg-bare' : '') +
+               (wEditing && wSelected === def.id ? ' is-selected' : ''),
+        'data-w': def.id,
+        title: wEditing ? (def.label + ' — drag to move; arrows nudge the selected one') : def.label,
+      });
+      el.appendChild(artFor(def));
+      if (w.showLabel) el.appendChild(h('span', { class: 'wg-label', text: def.label }));
+
+      if (def.id === 'potions') {
+        const chips = h('div', { class: 'wg-chips' });
+        POOLS.forEach((p) => {
+          if (!w.cats || w.cats[p.id] === false) return;
+          chips.appendChild(h('span', { class: 'wg-chip c-' + p.id, title: p.name },
+            h('span', { class: 'g', text: p.glyph }),
+            h('span', { class: 'n', 'data-pool': p.id, text: '…' })));
+        });
+        el.appendChild(chips);
+      } else {
+        el.appendChild(h('span', { class: 'wg-val', 'data-val': def.id, text: '…' }));
+      }
+      el.appendChild(h('span', { class: 'wg-off-badge', text: 'OFF' }));
+
+      /* edit-mode interactions: click selects, drag moves */
+      el.addEventListener('mousedown', (e) => {
+        if (!wEditing) return;
+        wSelected = def.id;
+        root.querySelectorAll('.wg.is-selected').forEach((n) => n.classList.remove('is-selected'));
+        el.classList.add('is-selected');
+        startDrag(e, def.id, el);
+        e.preventDefault();
+      });
+
+      els[def.id] = el;
+      root.appendChild(el);
+      placeWidget(el, w);
+    });
+    applyLive();
+  }
+
+  /* Counts land IN PLACE — no rebuild per tick (keyed updates; a rebuild at
+     1.1 Hz would fight the drag and cost Ultralight re-rasters for nothing). */
+  function applyLive() {
+    const gold = els.gold && els.gold.querySelector('[data-val="gold"]');
+    if (gold) gold.textContent = (wlive.gold === null || wlive.gold === undefined) ? '…'
+      : (wlive.gold < 0 ? '?' : fmt(wlive.gold));
+    const lp = els.lockpicks && els.lockpicks.querySelector('[data-val="lockpicks"]');
+    if (lp) lp.textContent = (wlive.lockpicks === null || wlive.lockpicks === undefined) ? '…'
+      : (wlive.lockpicks < 0 ? '?' : fmt(wlive.lockpicks));
+    const cw = els.carry && els.carry.querySelector('[data-val="carry"]');
+    if (cw) {
+      const c = wlive.carry;
+      if (c === null || c === undefined) { cw.textContent = '…'; cw.classList.remove('wg-over'); }
+      else if (typeof c !== 'object' || c.cur < 0 || c.max < 0) { cw.textContent = '?'; cw.classList.remove('wg-over'); }
+      else {
+        cw.textContent = fmt(c.cur) + ' / ' + fmt(c.max);
+        cw.classList.toggle('wg-over', c.cur > c.max);   // over-encumbered → warn colour
+      }
+    }
+    if (els.potions) {
+      els.potions.querySelectorAll('.wg-chip .n').forEach((n) => {
+        const pool = n.getAttribute('data-pool');
+        const e = pool === 'all' ? { n: wlive.potions.all } : wlive.potions[pool];
+        const v = e && typeof e === 'object' ? e.n : e;
+        n.textContent = (v === null || v === undefined) ? '…' : fmt(v);
+        n.classList.toggle('is-zero', !v);
+        const chip = n.parentNode;
+        if (chip && e && typeof e === 'object' && e.best)
+          chip.title = (POOLS.find((p) => p.id === pool) || {}).name + ' — strongest: ' + e.best;
+        /* Water hides honestly when no water mod is in the load order — the
+           name-matched strays still count under Drinks, so nothing is lost. */
+        if (chip && pool === 'water')
+          chip.classList.toggle('is-nowater', wlive.waterOk === false);
+      });
+    }
+  }
+
+  /* ── drag (pointer maths — Ultralight has no HTML5 DnD) ────────────── */
+  function startDrag(e, id, el) {
+    const w = wOf(id);
+    if (!w) return;
+    let sx = e.clientX, sy = e.clientY;
+    const bx = w.x, by = w.y;
+    let moved = false;
+    function onMove(ev) {
+      const dx = (ev.clientX - sx) * (w.anchorH === 'right' ? -1 : 1);
+      const dy = (ev.clientY - sy) * (w.anchorV === 'bottom' ? -1 : 1);
+      if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) > 2) moved = true;
+      w.x = Math.round(bx + dx);
+      w.y = Math.round(by + dy);
+      placeWidget(el, w);
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (moved) saveW();
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  /* Arrow-key nudge for the SELECTED widget — the deck idiom: 1 px, 10 with
+     Shift. Only in widget edit mode, never from inside a form control. */
+  document.addEventListener('keydown', (e) => {
+    if (!wEditing) return;
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+    const w = wOf(wSelected);
+    if (!w) return;
+    const step = e.shiftKey ? 10 : 1;
+    let hit = true;
+    if (e.key === 'ArrowLeft')       w.x -= w.anchorH === 'right' ? -step : step;
+    else if (e.key === 'ArrowRight') w.x += w.anchorH === 'right' ? -step : step;
+    else if (e.key === 'ArrowUp')    w.y -= w.anchorV === 'bottom' ? -step : step;
+    else if (e.key === 'ArrowDown')  w.y += w.anchorV === 'bottom' ? -step : step;
+    else hit = false;
+    if (!hit) return;
+    e.preventDefault();
+    const el = els[wSelected];
+    if (el) placeWidget(el, w);
+    saveW();
+  });
+
+  /* ── the editor panel ──────────────────────────────────────────────── */
+
+  function check(labelText, titleText, value, onChange) {
+    const box = h('input', { type: 'checkbox' });
+    box.checked = !!value;
+    box.addEventListener('change', () => onChange(box.checked));
+    return h('label', { class: 'hb-check', title: titleText }, box, h('span', { text: labelText }));
+  }
+
+  /* Steppers, not <input type=range>: the deck's no-range-input law for new
+     controls. pct in [lo,hi], step 10. */
+  function stepper(titleText, get, set, lo, hi) {
+    const val = h('span', { class: 'v' });
+    const minus = h('button', { type: 'button', text: '−', title: 'Smaller' });
+    const plus = h('button', { type: 'button', text: '＋', title: 'Bigger' });
+    function paint() {
+      const p = Math.round(get() * 100);
+      val.textContent = p + '%';
+      minus.disabled = p <= lo;
+      plus.disabled = p >= hi;
+    }
+    function bump(d) {
+      const p = clamp(Math.round(get() * 100) + d, lo, hi);
+      set(p / 100);
+      paint();
+      saveW();
+      buildWidgets();
+    }
+    minus.addEventListener('click', () => bump(-10));
+    plus.addEventListener('click', () => bump(10));
+    paint();
+    return h('div', { class: 'wg-step', title: titleText }, minus, val, plus);
+  }
+
+  function anchorSel(w, key, options, onDone) {
+    const sel = h('select', { class: 'hb-sel' });
+    options.forEach(([v, label]) => sel.appendChild(h('option', { value: v, text: label })));
+    sel.value = w[key];
+    sel.addEventListener('change', () => { w[key] = sel.value; onDone(); });
+    return sel;
+  }
+
+  function renderPanel() {
+    if (!panelBody) return;
+    clear(panelBody);
+
+    /* master switch */
+    const master = h('section', { class: 'hb-sect' },
+      h('h2', { text: 'Widgets' }),
+      h('div', { class: 'hb-row hb-checks' },
+        check('Show widgets on screen',
+          'The master switch — the seeded "Widgets: Show/Hide" action and the Home tab toggle flip this too',
+          wcfg.enabled, (on) => { wcfg.enabled = on; saveW(); buildWidgets(); })),
+      h('p', { class: 'wg-sect-note',
+        text: 'Drag any widget to place it. Click one and nudge with the arrow keys '
+            + '(Shift+arrows = 10 px). Everything saves as you change it.' }));
+    panelBody.appendChild(master);
+
+    WDEFS.forEach((def) => {
+      const w = wOf(def.id);
+      if (!w) return;
+      const sect = h('section', { class: 'hb-sect' }, h('h2', { text: def.label }));
+
+      sect.appendChild(h('div', { class: 'hb-row hb-checks' },
+        check('Show this widget', 'Draw the ' + def.label.toLowerCase() + ' widget on screen',
+          w.enabled, (on) => { w.enabled = on; saveW(); buildWidgets(); }),
+        check('Name beside the number', 'Print "' + def.label + '" on the widget, not just the count',
+          w.showLabel, (on) => { w.showLabel = on; saveW(); buildWidgets(); }),
+        check('Hide while a menu is open',
+          'Drop this widget whenever a menu owns the screen - inventory, map, the deck itself',
+          w.hideInMenus, (on) => { w.hideInMenus = on; saveW(); buildWidgets(); }),
+        check('No background',
+          'Drop the plate, border and shadow - just the icon and the number on the scene '
+          + '(they keep a shadow so they stay readable over snow and sky)',
+          !!w.bare, (on) => { w.bare = on; saveW(); buildWidgets(); })));
+
+      if (def.id === 'potions') {
+        const catTitle = (p) => {
+          if (p.id === 'all')    return 'One total across every potion you carry';
+          if (p.id === 'poison') return 'Count your poisons (quick-applying one coats your equipped weapon)';
+          if (p.id === 'food')   return 'Count your food (solid meals — drinks have their own chip)';
+          if (p.id === 'drink')  return 'Count your drinks — ale, mead, wine, tea, milk… water included';
+          if (p.id === 'water')  return 'Count your fresh water as DRINKS (a full waterskin is three)'
+                                      + (wlive.waterOk === false ? ' — hidden right now: no water mod (SunHelm) in the load order' : '');
+          return 'Count your ' + p.name.toLowerCase() + ' potions (the smart-button rule decides what counts)';
+        };
+        const cats = h('div', { class: 'hb-row hb-checks' });
+        POOLS.forEach((p) => {
+          cats.appendChild(check(p.name, catTitle(p),
+            !w.cats || w.cats[p.id] !== false,
+            (on) => { if (!w.cats) w.cats = {}; w.cats[p.id] = on; saveW(); buildWidgets(); }));
+        });
+        sect.appendChild(h('p', { class: 'wg-sect-note', text: 'Which pools the counter shows:' }));
+        sect.appendChild(cats);
+        if (wlive.waterOk === false)
+          sect.appendChild(h('p', { class: 'wg-sect-note',
+            text: 'Water needs a water mod (SunHelm) — until one is installed the chip stays hidden; '
+                + 'stray “water” items still count under Drinks.' }));
+      }
+
+      sect.appendChild(h('div', { class: 'hb-row' },
+        h('div', { class: 'hb-field' }, h('span', { text: 'Size' }),
+          stepper('Overall size of this widget, 50% to 250%',
+            () => w.scale || 1, (v) => { w.scale = v; }, 50, 250)),
+        h('div', { class: 'hb-field' }, h('span', { text: 'Opacity' }),
+          stepper('How solid it is during play (edit mode always shows it fully)',
+            () => w.opacity || 1, (v) => { w.opacity = v; }, 30, 100))));
+
+      sect.appendChild(h('div', { class: 'hb-row' },
+        h('label', { class: 'hb-field' }, h('span', { text: 'Anchor across' }),
+          anchorSel(w, 'anchorH', [['left', 'Left edge'], ['center', 'Centre'], ['right', 'Right edge']],
+            () => { saveW(); buildWidgets(); })),
+        h('label', { class: 'hb-field' }, h('span', { text: 'Anchor down' }),
+          anchorSel(w, 'anchorV', [['top', 'Top edge'], ['bottom', 'Bottom edge']],
+            () => { saveW(); buildWidgets(); }))));
+
+      panelBody.appendChild(sect);
+    });
+
+    wgApplyPanelFilter();
+  }
+
+  /* Filter-as-you-type over the panel (the bar editor's idiom, scoped to
+     THIS panel — the two are never on screen together but share nothing). */
+  function wgRowMatches(row, q) {
+    if ((row.textContent || '').toLowerCase().indexOf(q) !== -1) return true;
+    const titled = row.querySelectorAll ? row.querySelectorAll('[title]') : [];
+    for (let i = 0; i < titled.length; i++)
+      if ((titled[i].getAttribute('title') || '').toLowerCase().indexOf(q) !== -1) return true;
+    return false;
+  }
+  function wgApplyPanelFilter() {
+    const q = ((panelQ && panelQ.value) || '').trim().toLowerCase();
+    if (!panelBody) return;
+    const sects = panelBody.querySelectorAll('.hb-sect');
+    for (let s = 0; s < sects.length; s++) {
+      const sect = sects[s];
+      const head = sect.querySelector('h2');
+      const sectMatch = !q || (head && (head.textContent || '').toLowerCase().indexOf(q) !== -1);
+      let shown = 0;
+      const kids = sect.children;
+      for (let i = 0; i < kids.length; i++) {
+        const row = kids[i];
+        if (row.tagName === 'H2') continue;
+        const hit = sectMatch || wgRowMatches(row, q);
+        row.classList.toggle('hb-filtered', !hit);
+        if (hit) shown++;
+      }
+      sect.classList.toggle('hb-filtered', !(sectMatch || shown > 0));
+    }
+  }
+  if (panelQ) {
+    panelQ.addEventListener('input', wgApplyPanelFilter);
+    panelQ.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { panelQ.value = ''; wgApplyPanelFilter(); e.stopPropagation(); }
+    });
+  }
+
+  function setWgEditing(on) {
+    wEditing = !!on;
+    document.body.classList.toggle('wg-edit', wEditing);
+    if (panel) panel.hidden = !wEditing;
+    if (wEditing) renderPanel();
+    buildWidgets();
+  }
+  if (doneBtn) doneBtn.addEventListener('click', () => {
+    setWgEditing(false);
+    saveW();
+    toGame('wgEditDone');
+  });
+
+  /* ── C++ -> view ───────────────────────────────────────────────────── */
+
+  window.wgConfig = function (j) {
+    const c = coerce(j);
+    if (!c || typeof c !== 'object') return;
+    if (c.enabled !== undefined) wcfg.enabled = !!c.enabled;
+    if (c.widgets && typeof c.widgets === 'object') {
+      ['potions', 'gold', 'lockpicks'].forEach((id) => {
+        if (c.widgets[id] && typeof c.widgets[id] === 'object')
+          Object.assign(wcfg.widgets[id], c.widgets[id]);
+      });
+    }
+    buildWidgets();
+    if (wEditing) renderPanel();
+  };
+
+  window.wgLive = function (j) {
+    const d = coerce(j);
+    if (!d || typeof d !== 'object') return;
+    wlive = {
+      gold: d.gold !== undefined ? d.gold : wlive.gold,
+      lockpicks: d.lockpicks !== undefined ? d.lockpicks : wlive.lockpicks,
+      carry: d.carry !== undefined ? d.carry : wlive.carry,
+      potions: (d.potions && typeof d.potions === 'object') ? d.potions : wlive.potions,
+      waterOk: d.waterOk !== undefined ? !!d.waterOk : wlive.waterOk,
+    };
+    applyLive();
+  };
+
+  window.wgEdit = function (v) { setWgEditing(String(v) === '1'); };
+
+  window.wgVis = function (j) {
+    const d = coerce(j);
+    if (!d || typeof d !== 'object') return;
+    if (d.bar !== undefined) wvis.bar = !!d.bar;
+    if (d.wg !== undefined) wvis.wg = !!d.wg;
+    if (d.menus !== undefined) wvis.menus = !!d.menus;
+    document.body.classList.toggle('hb-rule-off', !wvis.bar);
+    document.body.classList.toggle('wg-off', !wvis.wg);
+    document.body.classList.toggle('wg-menus', !!wvis.menus);
+  };
+
+  /* ── boot ──────────────────────────────────────────────────────────── */
+  buildWidgets();
+  toGame('wgReady');
+  toGame('hbLog', 'widgets view section ready');   /* marker: wg-root */
+
+  /* Exposed for the harness only — never called by the plugin. */
+  window.__wg = {
+    wcfg, wvis,
+    get live() { return wlive; },
+    get editing() { return wEditing; },
+    get selected() { return wSelected; },
+    set selected(v) { wSelected = v; },
+    els, buildWidgets, applyLive, placeWidget, renderPanel,
+    setWgEditing, saveW, wgApplyPanelFilter,
   };
 })();

@@ -1,18 +1,79 @@
 /* ============================================================================
-   Followers HUD — an always-on portrait strip of who is currently following you.
-   Lives in a SECOND PrismaUI view (hud.html) inside this same view folder, so
-   `portraits/<file>` resolves exactly as it does for the main deck (a proven
-   same-folder path; cross-view image paths are unverified in Ultralight).
+   SkyManager HUD — the always-on overlay. Two tenants in one movable assembly:
+   the follower portrait strip (2026-08-05) and, since 2026-08-17, the WIDGET
+   stack — quick readouts, a context-aware weather/place slot, pinned item tiles
+   and a mount card.
 
-   The view is Shown but never Focused during play, so it never steals the mouse
-   or keyboard — input passes straight through to the game. It is Focused ONLY
-   for the reposition "edit mode", where the panel becomes grabbable and grows
-   drag / resize / flip handles. Placement (x, y, scale, orientation) is owned by
-   C++ (config slice `hud`) and pushed in via window.hudConfig; every edit sends
-   it back via toGame('hudSave', …).
+   Rober, 2026-08-17, after seeing Skyrim Party Sheet: "the visuals of this is
+   super nice … add some new widgets for weather, and cell name and time … i like
+   the idea of being able to pin any item as well with a count as a widget … Mount
+   widget would be cool too", with the standing constraint "do not obviously copy
+   cody 1:1 … But can take all the inspiration and flare." So the IDEAS are
+   theirs, the look is ours: the deck's own antique gold (#c9a24b) linework on
+   dark plates, the same tokens app.css uses. No borrowed art, no borrowed layout.
+
+   This view is Shown but never Focused during play, so it never steals the mouse
+   or keyboard. It is Focused ONLY for reposition edit-mode. Placement is owned by
+   C++ (config slice "hud") and pushed in via window.hudConfig.
+
+   ⚠ ULTRALIGHT, COMPOSITOR OFF. Two laws this sheet obeys:
+     1. NO LOOPING ANIMATION of any kind. An animated background-position on an
+        oversized gradient SMEARS here (watched happen 2026-08-16, purged
+        tree-wide). Every transition below is a one-shot on a state change that
+        only ever happens in edit mode, where the view is Focused anyway.
+     2. Bar fills are STEPPED, not transitioned. A width transition on an
+        always-on element is a layout pass every frame behind the game, forever.
    ============================================================================ */
 
 * { box-sizing: border-box; }
+
+/* ---------- native widget net (widget-base-reset, 2026-08-19) ----------
+   Ultralight's UA defaults paint native button/input/textarea/select WHITE and
+   system-font, so a widget whose own styling is missing or not yet loaded reads
+   as a broken white box — the "white weird buttons / typing areas" failure mode.
+   This net is the backstop. Keep it.
+
+   ⚠ It used to claim specificity 0-0-1 and did not have it. `:not()` takes the
+   specificity of its ARGUMENT, so
+       input:not([type=checkbox]):not([type=radio]):not([type=range])
+   scored (0,3,1) and OUTRANKED ordinary class rules — measured 2026-08-19 in
+   real chromium repainting class-styled inputs' box, font and background
+   (.fd-ctx-input 45px -> 26px, .al-find input radius 9px -> 6px). Split since:
+
+   COLOUR ONLY (font/colour/background), unconditional, bare element selectors,
+   (0,0,1). This is the anti-white-box guarantee; never narrow it, and never
+   reintroduce a `:not([type=…])` chain into it. Border/radius/padding are
+   deliberately absent: class rules routinely set only some box properties and
+   rely on the UA for the rest, so a netted box silently deforms them. Gating a
+   box on `:not([class])` does NOT rescue that — a widget is often styled via an
+   ancestor's class or an id (`.al-find input`, `#ix-search`), so it is unsound.
+
+   No `:where()`: tidier, but unverified on Ultralight, and an unparsed selector
+   drops the whole selector list — bringing the white boxes back. The button rule
+   keeps its unconditional box on purpose (shipped buttons here and in app.css
+   set padding but no border and lean on it). Full rationale: app.css. */
+button {
+  font: inherit; color: #e8e4da; cursor: pointer;
+  background: #1b1b22; border: 1px solid #3a3a44; border-radius: 6px; padding: 4px 9px;
+}
+/* colour only — unconditional, (0,0,1), so any class rule beats it outright */
+input, textarea, select { font: inherit; color: #e8e4da; background-color: #16161c; }
+/* A native <select> IGNORES background-color entirely and paints its own light
+   theme (measured: computed said #16161c, the pixels were light grey) —
+   appearance:none is the only thing that frees it, and it then needs a caret
+   of our own. Two linear-gradients, because this engine has no conic and no
+   guaranteed SVG-data-URI path; both this and the `right Npx` form were
+   verified to PAINT by tools/ultralight-probe (widgets3, 2026-08-19). */
+select {
+  -webkit-appearance: none; appearance: none;
+  padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, #8a857a 50%),
+                    linear-gradient(135deg, #8a857a 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+option { background: #16161c; color: #e8e4da; }
 html, body {
   margin: 0; padding: 0; width: 100%; height: 100%;
   background: transparent;               /* the game shows through */
@@ -28,11 +89,38 @@ body { pointer-events: none; }
 body.hud-editing { pointer-events: auto; }
 body.hud-hidden #hud { display: none; }
 
-/* The movable assembly. Positioned by config; scaled from its top-left so the
-   stored x/y stays the anchor at any size. */
+/* The deck's palette, as tokens, so a future skin is one edit. Values are the
+   ones app.css already ships — never a near-duplicate gold. */
+:root {
+  --hud-gold: #c9a24b;
+  --hud-gold-lit: #e6c463;
+  --hud-gold-pale: #ecd9a0;
+  --hud-ink: #f2ecdc;
+  --hud-dim: #b9b09a;
+  --hud-plate: rgba(12, 14, 18, .34);
+  --hud-plate-solid: rgba(10, 12, 16, .88);
+  /* The SAME colour at full alpha — not a second grey. `--hud-plate-solid` is
+     a HUD readout's plate: 12% of the frame showing through a small floating
+     card is the look. A full-height configuration shelf is not that, and at
+     .88 it read as noise: over a bright frame (snowfield, daylight, fire) the
+     widgets it configures bleed straight through the settings text it draws
+     over them — measured 2026-08-19 at 1920x1080 over a light scene, where the
+     "off" ghost tags and a whole quick-items card were legible THROUGH the
+     shelf. Anything that is a full surface rather than a floating plate takes
+     this one. */
+  --hud-plate-opaque: #0a0c10;
+  --hud-line: rgba(201, 162, 75, .18);
+  --hud-line-lit: rgba(201, 162, 75, .42);
+  --hud-warn: #d98a86;
+  --hud-good: #8fc98a;
+  --hud-steel: #9fb4c8;
+  /* One shadow recipe for every piece of text that floats over the game. */
+  --hud-tshadow: 0 1px 2px rgba(0, 0, 0, .95), 0 0 3px rgba(0, 0, 0, .85);
+}
+
 /* Positioned by whichever corner it is anchored to (left/right + top/bottom set
    inline by applyPlacement); scaled from that same corner so the anchor stays
-   fixed. This is what lets the strip grow left/up from a screen edge. */
+   fixed. This is what lets the assembly grow left/up from a screen edge. */
 #hud {
   position: absolute; left: 40px; top: 40px;
   transform: scale(var(--hud-scale, 1));
@@ -40,34 +128,677 @@ body.hud-hidden #hud { display: none; }
   will-change: transform;
 }
 
-/* Faint rounded backing so faces read over any scene. Grows presence in edit
-   mode; otherwise it is barely there so the portraits are the thing. */
+/* THE SHELL IS RETIRED (Rober, 2026-08-18: "i dont understand the point of the
+   follower face? … The only point i can think of is just adding a settings
+   wheel widget or something that doesnt display, only when configuring").
+   Every widget floats on its own now, so the panel's only remaining tenant is
+   the follower strip — and a permanent plate drawn around the faces is exactly
+   the "enforced" box he was pointing at. During play this element is pure
+   layout: no background, no border, no padding, nothing panel-shaped. The plate
+   comes BACK while configuring, as the thing you grab.
+
+   ⚠ Chrome is expressed as outline + background, never padding/border WIDTH:
+   an outline is drawn outside the box and changes no geometry, so entering
+   edit mode cannot nudge the strip out from under the cursor. */
 .hud-panel {
   position: relative;
-  display: inline-flex; flex-direction: column; gap: 8px;
-  padding: 12px;
+  display: inline-flex; flex-direction: column; gap: 10px;
+  padding: 0;
   border-radius: 16px;
-  background: rgba(12, 14, 18, .30);
-  border: 1px solid rgba(240, 214, 140, .10);
-  box-shadow: 0 6px 22px rgba(0, 0, 0, .35);
-  backdrop-filter: blur(1.5px);
-  transition: background .14s ease, border-color .14s ease, box-shadow .14s ease;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  transition: background .14s ease, box-shadow .14s ease;
 }
-body.hud-editing .hud-panel {
+/* ⚠ ROUND 3 (2026-08-19): the plate is the STRIP's edit dress, so it appears
+   when the strip is being configured — or when the panel is genuinely holding
+   a stack block that has not been floated out (then it IS the thing you drag,
+   and hiding its affordance would strand the block). Every block floats itself
+   by default, so the second case is the exception; the common case is a strip
+   the player merely has switched on, which must look exactly as it does in
+   play while a WIDGET is being placed. */
+body.hud-editing.hud-strip-edit .hud-panel,
+body.hud-editing.hud-panel-blocks .hud-panel {
   background: rgba(12, 14, 18, .62);
-  border: 1px dashed rgba(240, 214, 140, .55);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, .5), 0 0 0 1px rgba(240, 214, 140, .12);
+  outline: 1px dashed rgba(240, 214, 140, .55);
+  outline-offset: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .5);
   cursor: move;
 }
+/* The ⚙ grip: the whole "settings wheel that only shows when configuring".
+   In flow at the top of the panel, so it can never land on the toolbar or on a
+   floated widget — and gone entirely during play. */
+/* ⚠ ROUND 3 (2026-08-19): gated on `.hud-strip-edit`, not on edit mode at
+   large. Rober: "why does config for hud widgets turn on follower hud?" — the
+   grip is the strip's own handle, and it has no business appearing because a
+   widget is being placed. `.hud-strip-edit` is set only by the three deliberate
+   doors into the strip's scope (see hud.js's stripEdit note). */
+.hud-strip-grip { display: none; }
+body.hud-editing.hud-strip-edit .hud-strip-grip {
+  display: inline-flex; align-items: center; justify-content: center;
+  align-self: flex-start;
+  width: 30px; height: 30px; border-radius: 9px;
+  font-size: 15px; line-height: 1; cursor: move;
+  color: var(--hud-gold-lit);
+  background: rgba(18, 20, 26, .92);
+  border: 1px solid rgba(240, 214, 140, .45);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .5);
+  pointer-events: auto;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+body.hud-editing.hud-strip-edit .hud-strip-grip:hover {
+  background: rgba(240, 214, 140, .18); border-color: rgba(240, 214, 140, .7); color: #f8efce;
+}
+body.hud-editing.hud-strip-edit .hud-strip-grip:active { background: rgba(240, 214, 140, .26); }
 
-/* The strip of faces. Direction is the orientation toggle; the anchor corner
-   (body.a-right / a-bottom) reverses it so the first face sits at the anchor and
-   the strip grows toward screen-centre. */
+/* ==========================================================================
+   WIDGET STACK
+   Blocks stack in a fixed, readable order: readouts, mount, pins, sets, then
+   the follower strip. A block with nothing to say gets display:none from JS —
+   an empty box on a HUD reads as a bug, and "no mount" must draw NOTHING, never
+   a zeroed bar (Rober's brief: honest when there is no mount).
+   ========================================================================== */
+.hud-widgets { display: flex; flex-direction: column; gap: 10px; }
+.hud-widgets:empty, .hud-widgets.is-off { display: none; }
+/* Switch on every widget and the stack is taller than a 1440-line screen —
+   measured 2026-08-17 at 1769px, running 401px off the bottom with 21 elements
+   stranded where nothing can scroll (the HUD is pointer-events:none during
+   play). It WRAPS into a second column instead. Auto-shrinking was the obvious
+   alternative and is ruled out by the standing UI rule: no small text. Growing
+   sideways spends the screen space we have — the panel is anchored to a corner,
+   so it grows away from that corner and the anchor point stays put. JS sets the
+   max-height (see fitWidgets); the class only turns wrapping on, so a stack that
+   fits is a plain single column with no inline style at all. */
+.hud-widgets.is-wrapped {
+  flex-wrap: wrap; align-content: flex-start;
+  /* Size to the COLUMNS, not to one column: without this the extra column is
+     painted outside the panel plate and off the screen edge — the probe caught
+     exactly that (fits:true vertically, 30 elements still off-screen). The
+     panel is inline-flex, so it grows to this width and the plate follows. */
+  width: max-content;
+}
+/* Each block hides itself rather than the stack, so the gaps collapse cleanly. */
+.hud-readouts.is-off, .hud-ro-one.is-off, .hud-mount.is-off, .hud-pins.is-off, .hud-sets.is-off,
+.hud-vitals.is-off, .hud-resist.is-off, .hud-effects.is-off, .hud-equip.is-off,
+.hud-survival.is-off, .hud-allies.is-off { display: none; }
+/* The retired shared row (2026-08-18). Kept in the DOM for compatibility, held
+   empty by JS, and never drawn — `:empty` is belt to the JS is-off braces. */
+.hud-readouts:empty { display: none; }
+
+/* The edit-mode stand-in every round-2 block uses when the game has nothing to
+   say yet, so a block can be placed before it ever has data. Never visible
+   during play — the renderers only build it while `editing`. Scoped to the
+   round-2 containers on purpose: the pins and sets ghosts predate this and
+   carry their own `.hud-pin-name` / `.hud-set-name` styling. */
+.hud-vitals > .hud-ghost, .hud-resist > .hud-ghost, .hud-effects > .hud-ghost,
+.hud-equip > .hud-ghost, .hud-survival > .hud-ghost, .hud-allies > .hud-ghost {
+  font-size: 13px; color: var(--hud-dim); opacity: .8;
+  padding: 6px 4px; text-shadow: var(--hud-tshadow); white-space: nowrap;
+}
+
+/* Anchored right ⇒ every block's content hugs the right edge, so the assembly
+   still reads as one column against the screen edge it hangs from. */
+body.a-right .hud-readouts,
+body.a-right .hud-pins { justify-content: flex-end; }
+body.a-right .hud-mount { flex-direction: row-reverse; }
+body.a-right .hud-set-row { flex-direction: row-reverse; }
+body.a-right .hud-mount-name, body.a-right .hud-set-name { text-align: right; }
+/* Round 2 blocks obey the same mirror, so an assembly hung off the right edge
+   still reads as one column against that edge. */
+body.a-right .hud-resist, body.a-right .hud-effects,
+body.a-right .hud-equip, body.a-right .hud-allies { justify-content: flex-end; }
+body.a-right .hud-vitals, body.a-right .hud-sv-row { flex-direction: row-reverse; }
+body.a-right .hud-sv-head { flex-direction: row-reverse; }
+body.a-right .hud-sv-name, body.a-right .hud-ally-name { text-align: right; }
+
+/* ---------------------------------------------------------- quick readouts */
+/* One row: gold · carry · time · weather-or-place. Each LINE is its own toggle
+   (the reference does this and it is the right call for a HUD — you keep the two
+   numbers you actually watch and drop the rest). Divider hairlines instead of
+   bare gaps, because a gold rule is our language and a gap is nobody's. */
+.hud-readouts {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 0 2px;
+  padding: 7px 12px;
+  border-radius: 13px 5px 13px 5px;      /* forged chamfer — ours, and static */
+  background: rgba(10, 12, 16, .46);
+  border: 1px solid var(--hud-line);
+  box-shadow: inset 0 1px 0 rgba(255, 245, 210, .05);
+  max-width: 640px;
+}
+/* ---- one line, one widget (2026-08-18) ---------------------------------
+   "every one of these widgets should be movable and seperate too by default".
+   Each readout line owns one of these and is its own draggable, wheel-scalable
+   block. It wears the same forged plate the shared row wore — EXCEPT once it
+   is floated, where the .hud-det wrap already supplies a plate and a second
+   one inside it would read as a box in a box. */
+.hud-ro-one {
+  display: inline-flex; align-items: center; flex-wrap: wrap;
+  padding: 7px 12px;
+  border-radius: 13px 5px 13px 5px;      /* forged chamfer — ours, and static */
+  background: rgba(10, 12, 16, .46);
+  border: 1px solid var(--hud-line);
+  box-shadow: inset 0 1px 0 rgba(255, 245, 210, .05);
+  max-width: 640px;
+}
+.hud-det > .hud-ro-one {
+  background: none; border-color: transparent; box-shadow: none; padding: 0;
+}
+/* A single-line widget has no neighbour to be divided from, and its own chip
+   already sits inside the plate's padding — so drop the row's inner inset. */
+.hud-ro-one > .hud-ro { padding: 0; }
+body.a-right .hud-ro-one { justify-content: flex-end; }
+.hud-ro {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 2px 13px;
+  min-width: 0;                           /* so a long place name can ellipsize */
+}
+/* Hairline between neighbours only — never a leading or trailing rule. */
+.hud-ro + .hud-ro::before {
+  content: ""; position: absolute; left: 0; top: 50%;
+  width: 1px; height: 20px; margin-top: -10px;
+  background: linear-gradient(180deg, transparent, var(--hud-line-lit), transparent);
+}
+.hud-ro-ico {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; flex: 0 0 auto;
+  color: var(--hud-gold);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .9));
+}
+.hud-ro-ico svg { display: block; }
+/* The painted glyph, laid over its vector fallback. Laid out at its final size
+   (an <img> rasterises at LAYOUT size in Ultralight — never transform-scaled),
+   and it simply removes itself if the file is not there, uncovering the SVG. */
+.hud-glyph-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.hud-ro-ico, .hud-mount-ico, .hud-set-ico { position: relative; }
+.hud-ro-v {
+  font-size: 17px; line-height: 1.1; font-weight: 700; letter-spacing: .01em;
+  color: var(--hud-ink); text-shadow: var(--hud-tshadow);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* The "/ max" half of a pair reads quieter than the live number. */
+.hud-ro-v i { font-style: normal; font-weight: 600; color: var(--hud-dim); font-size: 15px; }
+.hud-ro[data-ro="gold"] .hud-ro-v { color: var(--hud-gold-lit); }
+/* Over-encumbered is the one readout that must shout. */
+.hud-ro.is-over .hud-ro-v { color: var(--hud-warn); }
+.hud-ro.is-over .hud-ro-ico { color: var(--hud-warn); }
+/* Unknown value (C++ sentinel) — an honest "?" beats a fake 0. */
+.hud-ro.is-unknown .hud-ro-v { color: var(--hud-dim); }
+/* The context slot carries a name that can be 40 characters of Nordic barrow. */
+.hud-ro.hud-ctx .hud-ro-v { max-width: 260px; }
+
+/* ------------------------------------------------------------ mount widget */
+/* Drawn ONLY when the game says you have a mount. Name over two bars; the
+   numbers ride the bar's right end so the bar itself stays the picture. */
+.hud-mount {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px 11px;
+  border-radius: 13px 5px 13px 5px;
+  background: rgba(10, 12, 16, .46);
+  border: 1px solid var(--hud-line);
+  box-shadow: inset 0 1px 0 rgba(255, 245, 210, .05);
+  max-width: 640px;
+}
+.hud-mount-ico {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; flex: 0 0 auto;
+  border-radius: 11px 4px 11px 4px;
+  color: var(--hud-gold);
+  background: radial-gradient(circle at 50% 32%, rgba(201, 162, 75, .16), rgba(201, 162, 75, .04));
+  border: 1px solid var(--hud-line-lit);
+}
+.hud-mount-main { display: flex; flex-direction: column; gap: 6px; min-width: 190px; flex: 1 1 auto; }
+.hud-mount-name {
+  font-size: 14px; font-weight: 700; letter-spacing: .015em;
+  color: var(--hud-ink); text-shadow: var(--hud-tshadow);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A dead / downed mount greys out rather than vanishing — you want to know. */
+.hud-mount.is-down .hud-mount-ico { color: var(--hud-warn); border-color: rgba(217, 138, 134, .5); }
+.hud-mount.is-down .hud-mount-name { color: var(--hud-warn); }
+
+/* ---- bars (mount vitals, pin goals, set progress) ---- */
+/* ⚠ NO transition on the fill. This element is on screen for the whole session;
+   a transitioned width is a layout pass per frame, forever, behind the game.
+   The value steps at the tick and that is correct here. */
+.hud-bar {
+  position: relative;
+  height: 10px; border-radius: 5px;
+  background: rgba(0, 0, 0, .55);
+  border: 1px solid rgba(255, 245, 210, .10);
+  overflow: hidden;
+}
+.hud-bar > i {
+  display: block; height: 100%; width: 0;
+  border-radius: 4px 0 0 4px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .22), rgba(255, 255, 255, 0) 55%),
+              var(--hud-bar-fill, var(--hud-gold));
+}
+.hud-bar.hp { --hud-bar-fill: linear-gradient(90deg, #7a2b2b, #c0433f); }
+.hud-bar.sp { --hud-bar-fill: linear-gradient(90deg, #2c5a37, #5aa46a); }
+.hud-bar.mp { --hud-bar-fill: linear-gradient(90deg, #25406e, #4f79c8); }
+.hud-bar.wt { --hud-bar-fill: linear-gradient(90deg, #6b5a2c, #c9a24b); }
+/* Round 2. XP and the shout timer share the deck's gold rather than inventing a
+   sixth hue; resist / effect / need bars are quieter because they sit UNDER a
+   number that is already the answer. */
+.hud-bar.xp { --hud-bar-fill: linear-gradient(90deg, #7d6528, #e6c463); }
+.hud-bar.shout { --hud-bar-fill: linear-gradient(90deg, #3d5566, #8fb4cc); }
+.hud-bar.res { --hud-bar-fill: linear-gradient(90deg, #4a4433, #b9a76a); }
+.hud-bar.fx { --hud-bar-fill: linear-gradient(90deg, #5a4d2a, #c9a24b); }
+.hud-bar.sv { --hud-bar-fill: linear-gradient(90deg, #4c4227, #b3933f); }
+.hud-bar-line { display: flex; align-items: center; gap: 9px; }
+.hud-bar-line .hud-bar { flex: 1 1 auto; }
+.hud-bar-num {
+  flex: 0 0 auto; min-width: 74px; text-align: right;
+  font-size: 12.5px; font-weight: 600; color: var(--hud-dim);
+  text-shadow: var(--hud-tshadow);
+  font-variant-numeric: tabular-nums;
+}
+body.hud-nums-off .hud-bar-num { display: none; }
+
+/* --------------------------------------------------------- pinned item tiles */
+/* Art comes from the deck's EXISTING render route (the whIcons request +
+   ItemIcons on the C++ side). We never invent a second render path; a form with
+   no world model keeps its glyph, honestly, forever. */
+.hud-pins { display: flex; flex-wrap: wrap; gap: 10px 12px; max-width: 640px; }
+.hud-pin { display: flex; flex-direction: column; align-items: center; gap: 5px; width: 92px; }
+.hud-pin-art {
+  position: relative;
+  width: 76px; height: 76px;
+  border-radius: 14px 5px 14px 5px;
+  background: linear-gradient(180deg, rgba(28, 30, 38, .82), rgba(10, 12, 16, .86));
+  border: 1px solid var(--hud-line-lit);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 245, 210, .06);
+  overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.hud-pin-glyph { display: flex; align-items: center; justify-content: center; color: var(--hud-gold); opacity: .92; z-index: 0; }
+/* The render, once it lands. Laid out at its final size — an <img> rasterises at
+   LAYOUT size in Ultralight, so a CSS transform that scales it up resamples a
+   too-small bitmap (the hd-facefit lesson). Never scaled by transform.
+   ⚠ z-index 0: the <img> is APPENDED after the badges (it arrives later), so
+   without an explicit stacking order it paints over every badge and the count
+   pill vanishes — exactly what the first 2026-08-17 render pass showed. */
+.hud-pin-img {
+  position: absolute; inset: 5px;
+  width: calc(100% - 10px); height: calc(100% - 10px);
+  object-fit: contain; display: block;
+  z-index: 0;
+}
+/* You are OUT of it. The tile stays (that is the point of pinning) but says so. */
+.hud-pin.is-none .hud-pin-art { border-color: rgba(201, 162, 75, .14); background: rgba(10, 12, 16, .6); }
+.hud-pin.is-none .hud-pin-img { filter: grayscale(1) brightness(.55); }
+.hud-pin.is-none .hud-pin-glyph { opacity: .4; }
+.hud-pin.is-none .hud-pin-count { background: rgba(40, 30, 24, .92); color: var(--hud-warn); border-color: rgba(217, 138, 134, .55); }
+/* `missing` = the mod that adds this item is not loaded. The tile must NOT
+   claim you have none of it — it says so instead (contract, 2026-08-17). */
+.hud-pin.is-missing .hud-pin-art { border-style: dashed; border-color: rgba(201, 162, 75, .30); background: rgba(10, 12, 16, .55); }
+.hud-pin.is-missing .hud-pin-glyph, .hud-pin.is-missing .hud-pin-img { opacity: .28; filter: grayscale(1); }
+.hud-pin.is-missing .hud-pin-name { color: var(--hud-dim); }
+.hud-badge.hud-pin-gone {
+  background: rgba(22, 24, 28, .95); border-color: rgba(201, 162, 75, .35);
+  color: var(--hud-dim); font-weight: 700;
+}
+.hud-set-row.is-missing .hud-set-ico { opacity: .4; }
+.hud-set-row.is-missing .hud-set-name, .hud-set-row.is-missing .hud-set-count { color: var(--hud-dim); }
+.hud-set-row.is-missing .hud-bar { opacity: .4; }
+
+.hud-pin-name {
+  max-width: 100%;
+  font-size: 12.5px; line-height: 1.15; font-weight: 600; text-align: center;
+  color: var(--hud-ink); text-shadow: var(--hud-tshadow);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+body.hud-pinlabels-off .hud-pin-name { display: none; }
+/* Item names are long ("Nightingale Blade", "Daedric Arrow"). One line clipped
+   nearly all of them mid-word, which the UI rules call a bug — so the caption
+   gets TWO lines at a fixed height (the row stays even, the block never jumps)
+   and only then ellipsizes, with the full name on the title. */
+.hud-pin .hud-pin-name {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  white-space: normal; height: 30px;
+}
+
+/* ---- badge vocabulary ----
+   Rober, 2026-08-17: "look at the equipment has +20, damage and count for
+   arrows, a red number for swords, +x on trinkets". Same GRAMMAR, our paint:
+     count  — top-right pill, gold fill, dark ink (reads at a glance)
+     +N     — top-left, jade, an enchantment/bonus
+     damage — bottom-right, red (weapons + ammo)
+     armor  — bottom-right, steel (worn things)
+     value  — bottom-left, gold coin
+   A badge is drawn only when the payload carries its number. Never a zero. */
+.hud-badge {
+  position: absolute;
+  display: inline-flex; align-items: center; gap: 3px;
+  min-width: 20px; height: 20px; padding: 0 5px;
+  border-radius: 7px;
+  font-size: 12px; font-weight: 800; line-height: 1;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .6);
+  border: 1px solid transparent;
+  z-index: 3;                              /* always above the render, see above */
+}
+.hud-pin-count {
+  top: -1px; right: -1px;
+  background: linear-gradient(180deg, var(--hud-gold-lit), var(--hud-gold));
+  border-color: rgba(20, 16, 8, .7);
+  color: #17140c;
+  border-radius: 0 5px 0 9px;            /* tucks into the plate's chamfer */
+  padding: 0 6px; height: 21px;
+}
+.hud-pin-ench {
+  top: -1px; left: -1px;
+  background: rgba(16, 30, 20, .92); border-color: rgba(143, 201, 138, .6);
+  color: var(--hud-good);
+  border-radius: 9px 0 5px 0;
+}
+.hud-pin-dmg {
+  bottom: -1px; right: -1px;
+  background: rgba(34, 16, 16, .92); border-color: rgba(217, 138, 134, .55);
+  color: var(--hud-warn);
+  border-radius: 7px 0 5px 0;
+}
+.hud-pin-armor {
+  bottom: -1px; right: -1px;
+  background: rgba(16, 22, 30, .92); border-color: rgba(159, 180, 200, .5);
+  color: var(--hud-steel);
+  border-radius: 7px 0 5px 0;
+}
+.hud-pin-val {
+  bottom: -1px; left: -1px;
+  background: rgba(26, 21, 10, .92); border-color: rgba(201, 162, 75, .5);
+  color: var(--hud-gold-pale);
+  border-radius: 0 7px 0 5px;
+}
+body.hud-badges-off .hud-pin-ench,
+body.hud-badges-off .hud-pin-dmg,
+body.hud-badges-off .hud-pin-armor,
+body.hud-badges-off .hud-pin-val { display: none; }
+
+/* A pin can carry a goal ("50 lockpicks"): a hairline bar under the tile. */
+.hud-pin-goal { width: 76px; height: 5px; border-radius: 3px; }
+.hud-pin-goal > i { border-radius: 3px 0 0 3px; }
+
+/* ------------------------------------------------------ collectible sets */
+.hud-sets {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 14px;
+  border-radius: 13px 5px 13px 5px;
+  background: rgba(10, 12, 16, .46);
+  border: 1px solid var(--hud-line);
+  max-width: 640px;
+}
+.hud-set-row { display: flex; align-items: center; gap: 11px; }
+.hud-set-ico {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; flex: 0 0 auto;
+  border-radius: 9px 3px 9px 3px;
+  color: var(--hud-gold);
+  border: 1px solid var(--hud-line-lit);
+  background: rgba(201, 162, 75, .07);
+  overflow: hidden; position: relative;
+}
+.hud-set-ico img { position: absolute; inset: 3px; width: calc(100% - 6px); height: calc(100% - 6px); object-fit: contain; }
+.hud-set-main { display: flex; flex-direction: column; gap: 5px; min-width: 190px; flex: 1 1 auto; }
+.hud-set-name {
+  font-size: 13px; font-weight: 600; color: var(--hud-ink);
+  text-shadow: var(--hud-tshadow);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hud-set-count {
+  flex: 0 0 auto; min-width: 66px; text-align: right;
+  font-size: 12.5px; font-weight: 700; color: var(--hud-gold-pale);
+  text-shadow: var(--hud-tshadow); font-variant-numeric: tabular-nums;
+}
+.hud-set-row.is-done .hud-set-ico { color: var(--hud-good); border-color: rgba(143, 201, 138, .55); }
+.hud-set-row.is-done .hud-set-count { color: var(--hud-good); }
+.hud-set-row.is-done .hud-bar > i { --hud-bar-fill: linear-gradient(90deg, #3d6b40, #8fc98a); }
+
+/* ==========================================================================
+   ROUND 2 (2026-08-17) — the player's own state.
+   Six blocks closing the gap with Skyrim Party Sheet: vitals, resistances,
+   active effects, equipped gear, survival needs, quest allies. The ideas are
+   theirs; every rule below is the deck's own gold-on-dark language, reusing the
+   tokens and the .hud-bar / .hud-badge primitives already in this sheet rather
+   than minting a near-duplicate of either.
+
+   ⚠ NO conic-gradient ANYWHERE. It computes to `none` under PrismaUI's
+   Ultralight (measured 2026-08-17) and fails SILENTLY — 40 duration rings drew
+   as empty plates while chromium showed them perfectly. Every proportion here
+   is a plain-width bar. Same reason there is no backdrop-filter: unsupported.
+   ========================================================================== */
+
+/* ------------------------------------------------------------ vitals ----- */
+.hud-vitals {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 13px;
+  border-radius: 13px 5px 13px 5px;
+  background: rgba(10, 12, 16, .46);
+  border: 1px solid var(--hud-line);
+  box-shadow: inset 0 1px 0 rgba(255, 245, 210, .05);
+}
+/* In combat the plate warms up — a one-shot class flip, never an animation. */
+.hud-vitals.is-combat { border-color: rgba(217, 138, 134, .38); }
+
+/* The level medallion. A ROUND plate with the number in it — deliberately not a
+   progress ring, because a ring needs conic-gradient and this engine has none;
+   the XP bar under the pools carries the progress instead. */
+.hud-vit-lvl {
+  /* 62px, not 54: the "Level" caption under the number has to sit at 12px
+     (Rober's standing no-small-text rule, and the 2026-08-17 Ultralight probe
+     flagged the first draft's 9.5px), and 54px could not hold it. */
+  flex: 0 0 auto; width: 62px; height: 62px; border-radius: 50%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 34%, rgba(201, 162, 75, .22), rgba(10, 12, 16, .85));
+  border: 1px solid var(--hud-line-lit);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .5);
+}
+.hud-vit-lvl-n {
+  font-size: 21px; font-weight: 800; line-height: 1;
+  color: var(--hud-gold-lit); text-shadow: var(--hud-tshadow);
+}
+.hud-vit-lvl-c {
+  font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--hud-dim); margin-top: 2px; line-height: 1;
+}
+.hud-vit-main { display: flex; flex-direction: column; gap: 6px; min-width: 208px; flex: 1 1 auto; }
+/* Low health is the one readout on this HUD you must act on inside a second. */
+.hud-vit-main .hud-bar-line.is-low .hud-bar-num { color: var(--hud-warn); }
+.hud-vit-main .hud-bar-line.is-low .hud-bar { box-shadow: 0 0 0 1px rgba(217, 138, 134, .55); }
+
+.hud-vit-xp { display: flex; align-items: center; gap: 8px; }
+.hud-vit-xp-ico { flex: 0 0 auto; color: var(--hud-gold); opacity: .85; display: flex; }
+.hud-vit-xp .hud-bar { flex: 1 1 auto; height: 5px; }
+.hud-vit-xp-n { font-size: 12px; color: var(--hud-dim); min-width: 34px; text-align: right; }
+
+.hud-vit-shout {
+  flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 7px 10px; border-radius: 10px;
+  background: rgba(30, 42, 52, .55);
+  border: 1px solid rgba(159, 180, 200, .32);
+}
+.hud-vit-shout-ico { color: var(--hud-steel); display: flex; }
+.hud-vit-shout-n { font-size: 14px; font-weight: 700; color: #cfe0ee; text-shadow: var(--hud-tshadow); }
+.hud-vit-shout .hud-bar { width: 62px; height: 5px; }
+
+/* -------------------------------------------------------- resistances ---- */
+.hud-resist { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; max-width: 640px; }
+.hud-res {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  min-width: 66px; padding: 7px 9px;
+  border-radius: 11px 4px 11px 4px;
+  background: rgba(10, 12, 16, .5);
+  border: 1px solid var(--hud-line);
+}
+.hud-res-ico { color: var(--hud-gold); opacity: .9; display: flex; }
+.hud-res-v { font-size: 15px; font-weight: 700; color: var(--hud-ink); text-shadow: var(--hud-tshadow); }
+.hud-res .hud-bar { width: 100%; height: 4px; }
+/* Each school owns its colour, so the row is scannable without reading labels. */
+.hud-res[data-res="fire"]  .hud-res-ico { color: #e0894f; }
+.hud-res[data-res="frost"] .hud-res-ico { color: #86c0dd; }
+.hud-res[data-res="shock"] .hud-res-ico { color: #d8c76a; }
+.hud-res[data-res="magic"] .hud-res-ico { color: #b48fd8; }
+.hud-res[data-res="poison"] .hud-res-ico { color: #8fc98a; }
+.hud-res[data-res="disease"] .hud-res-ico { color: #d8c69a; }
+.hud-res-armor { min-width: 84px; }
+.hud-res-armor .hud-res-ico { color: var(--hud-steel); }
+/* AT the cap, more points do nothing — worth knowing before the next potion. */
+.hud-res.is-capped { border-color: rgba(143, 201, 138, .5); }
+.hud-res.is-capped .hud-res-v { color: var(--hud-good); }
+/* A NEGATIVE resistance (a curse, a vampire's sun weakness) must not read as 0. */
+.hud-res.is-weak { border-color: rgba(217, 138, 134, .55); }
+.hud-res.is-weak .hud-res-v { color: var(--hud-warn); }
+
+/* ----------------------------------------------------- active effects ---- */
+.hud-effects { display: flex; flex-wrap: wrap; gap: 7px; max-width: 660px; }
+.hud-fx {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px 6px 8px;
+  border-radius: 11px 4px 11px 4px;
+  background: rgba(10, 12, 16, .55);
+  border: 1px solid var(--hud-line);
+  max-width: 232px;
+}
+.hud-fx-ico { flex: 0 0 auto; display: flex; color: var(--hud-gold); }
+.hud-fx-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 auto; }
+.hud-fx-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+/* Effect names are long ("Fortify Restoration and Alchemy"). One line, clipped
+   with a tooltip — a wrapping pill would reflow the whole row. */
+.hud-fx-name {
+  font-size: 13px; color: var(--hud-ink); text-shadow: var(--hud-tshadow);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.hud-fx-mag { font-size: 12px; font-weight: 700; color: var(--hud-gold-pale); flex: 0 0 auto; }
+.hud-fx .hud-bar { height: 3px; }
+.hud-fx-t {
+  flex: 0 0 auto; font-size: 13px; font-weight: 700; min-width: 34px; text-align: right;
+  color: var(--hud-dim); text-shadow: var(--hud-tshadow); font-variant-numeric: tabular-nums;
+}
+/* The four groups, in the deck's palette. Colour is the whole classification —
+   the glyph repeats it so it survives a colour-blind reading. */
+.hud-fx.fx-buff  { border-color: rgba(143, 201, 138, .34); }
+.hud-fx.fx-buff .hud-fx-ico { color: var(--hud-good); }
+.hud-fx.fx-debuff { border-color: rgba(217, 138, 134, .4); }
+.hud-fx.fx-debuff .hud-fx-ico, .hud-fx.fx-debuff .hud-fx-t { color: var(--hud-warn); }
+.hud-fx.fx-debuff .hud-bar { --hud-bar-fill: linear-gradient(90deg, #6a2b2b, #c0433f); }
+.hud-fx.fx-disease { border-color: rgba(160, 190, 120, .38); }
+.hud-fx.fx-disease .hud-fx-ico { color: #a8be78; }
+.hud-fx.fx-disease .hud-bar { --hud-bar-fill: linear-gradient(90deg, #4a5a2c, #a8be78); }
+.hud-fx.fx-poison { border-color: rgba(150, 120, 190, .42); }
+.hud-fx.fx-poison .hud-fx-ico { color: #a98fd0; }
+.hud-fx.fx-poison .hud-bar { --hud-bar-fill: linear-gradient(90deg, #3f2f5a, #a98fd0); }
+.hud-fx.fx-constant .hud-fx-ico { color: var(--hud-steel); }
+/* About to run out. A static state, not a pulse — no looping animation here. */
+.hud-fx.is-soon { border-color: rgba(240, 214, 140, .7); background: rgba(30, 24, 12, .68); }
+.hud-fx.is-soon .hud-fx-t { color: var(--hud-gold-lit); }
+
+/* ---------------------------------------------------- equipped tiles ----- */
+.hud-equip { display: flex; flex-wrap: wrap; gap: 10px 12px; max-width: 560px; }
+.hud-eq { display: flex; flex-direction: column; align-items: center; gap: 5px; width: 92px; }
+.hud-eq-art {
+  position: relative; width: 68px; height: 68px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 14px 5px 14px 5px;
+  background: rgba(10, 12, 16, .66);
+  border: 1px solid var(--hud-line-lit);
+  box-shadow: inset 0 1px 0 rgba(255, 245, 210, .06);
+}
+.hud-eq-glyph { display: flex; align-items: center; justify-content: center; color: var(--hud-gold); opacity: .92; }
+/* Laid out at its final size — an <img> rasterises at LAYOUT size in Ultralight,
+   so a transform-scaled bitmap resamples (the hd-facefit lesson). */
+.hud-eq-art .hud-pin-img {
+  position: absolute; inset: 5px; width: calc(100% - 10px); height: calc(100% - 10px);
+  object-fit: contain; display: block;
+}
+.hud-eq-badges { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px; max-width: 92px; }
+.hud-eq-badges:empty { display: none; }
+.hud-eq-name {
+  font-size: 12px; color: var(--hud-gold-pale); text-align: center;
+  max-width: 92px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-shadow: var(--hud-tshadow);
+}
+/* An empty hand is still a tile so the row cannot reflow as you swap — it just
+   says so, quietly, with a dashed plate. */
+.hud-eq.is-empty .hud-eq-art { border-style: dashed; border-color: rgba(201, 162, 75, .24); background: rgba(10, 12, 16, .45); }
+.hud-eq.is-empty .hud-eq-glyph { opacity: .3; }
+.hud-eq.is-empty .hud-eq-name { color: var(--hud-dim); }
+/* Out of arrows: a bow with an empty quiver is a club. */
+.hud-eq.is-none .hud-eq-art { border-color: rgba(217, 138, 134, .55); }
+.hud-eq.is-none .hud-pin-count { background: rgba(40, 30, 24, .92); color: var(--hud-warn); border-color: rgba(217, 138, 134, .55); }
+body.hud-badges-off .hud-eq-badge { display: none; }
+body.hud-pinlabels-off .hud-eq-name { display: none; }
+
+/* ------------------------------------------------------ survival needs --- */
+.hud-survival {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 9px 13px;
+  border-radius: 13px 5px 13px 5px;
+  background: rgba(10, 12, 16, .46);
+  border: 1px solid var(--hud-line);
+  min-width: 250px; max-width: 380px;
+}
+/* Installed but switched off in its own MCM: greyed and LABELLED, never hidden —
+   vanishing would read as our bug rather than the player's setting. */
+.hud-survival.is-idle { opacity: .62; }
+.hud-sv-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.hud-sv-mod {
+  font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--hud-gold); margin-right: auto;
+}
+.hud-sv-flag, .hud-sv-chip {
+  font-size: 12px; line-height: 1; padding: 4px 9px; border-radius: 999px;
+  color: var(--hud-dim); background: rgba(255, 255, 255, .05);
+  border: 1px solid rgba(255, 255, 255, .09);
+}
+.hud-sv-chip.sv-heat { color: #e6b078; border-color: rgba(230, 176, 120, .45); }
+.hud-sv-chip.sv-cold { color: #86c0dd; border-color: rgba(134, 192, 221, .45); }
+.hud-sv-chip.sv-temp { color: var(--hud-dim); font-variant-numeric: tabular-nums; }
+.hud-sv-chip:empty { display: none; }
+.hud-sv-row { display: flex; align-items: center; gap: 10px; }
+.hud-sv-ico { flex: 0 0 auto; color: var(--hud-gold); opacity: .9; display: flex; }
+.hud-sv-main { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
+.hud-sv-name { font-size: 13px; color: var(--hud-ink); text-shadow: var(--hud-tshadow); }
+.hud-sv-v {
+  flex: 0 0 auto; min-width: 62px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* A need the player disabled in the MCM reads "off" rather than a fake 0. */
+.hud-sv-row.is-off-need { opacity: .5; }
+
+/* -------------------------------------------------------- quest allies --- */
+.hud-allies { display: flex; flex-wrap: wrap; gap: 8px; max-width: 620px; }
+.hud-ally {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 11px 6px 9px;
+  border-radius: 11px 4px 11px 4px;
+  background: rgba(10, 12, 16, .55);
+  /* A COOLER edge than a follower's gold — an ally is temporary, and the HUD
+     should not let you mistake one for someone on your roster. */
+  border: 1px solid rgba(159, 180, 200, .34);
+  max-width: 210px;
+}
+.hud-ally-ico { flex: 0 0 auto; color: var(--hud-steel); display: flex; }
+.hud-ally-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 auto; }
+.hud-ally-name {
+  font-size: 13px; color: var(--hud-ink); text-shadow: var(--hud-tshadow);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.hud-ally .hud-bar { height: 4px; }
+.hud-ally.is-low { border-color: rgba(217, 138, 134, .6); }
+.hud-ally.hud-dead { opacity: .45; border-color: rgba(200, 90, 90, .55); }
+
+/* ==========================================================================
+   FOLLOWER STRIP (unchanged behaviour — it is play-proven)
+   ========================================================================== */
 .hud-strip { display: flex; gap: 12px; align-items: flex-start; }
 .hud-strip.vert { flex-direction: column; align-items: center; }
 .hud-strip.horiz { flex-direction: row; }
 body.a-right .hud-strip.horiz { flex-direction: row-reverse; }
 body.a-bottom .hud-strip.vert { flex-direction: column-reverse; }
+.hud-strip:empty { display: none; }
 
 /* One follower. Face on top, name under — same shape in both orientations so
    there is a single layout to reason about. */
@@ -78,6 +809,15 @@ body.a-bottom .hud-strip.vert { flex-direction: column-reverse; }
    cover-fit and the crop transform (a transform on the image alone would scale
    its own clip). Identical mechanism to the deck roster so faces frame the same. */
 .hud-face {
+  /* display:block is LOAD-BEARING (hud-face-block-sliver): this is a <span>,
+     and an inline box ignores width/height/overflow entirely — the frame
+     collapsed to the scaled img's inline extent, the photo bled ~16px past
+     the chip's left edge over its neighbour, and that bleeding strip of
+     portrait content was the "weird red lines to the left of the faces"
+     (Rober's play-tests, root-caused by ul-probe rect dump 2026-08-18: face
+     76x70 inline instead of 56x56). Only portrait chips broke — the initials
+     fallback .hud-medal was always flex. */
+  display: block;
   position: relative;
   width: 56px; height: 56px; border-radius: 50%;
   overflow: hidden;
@@ -110,27 +850,185 @@ body.a-bottom .hud-strip.vert { flex-direction: column-reverse; }
   max-width: 100%;
   font-size: 13px; line-height: 1.15; font-weight: 600; text-align: center;
   color: #f4eeda;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .95), 0 0 2px rgba(0, 0, 0, .8);
+  text-shadow: var(--hud-tshadow);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 body.hud-names-off .hud-name { display: none; }
 
+/* ---- per-face extras (Party Sheet catch-up, 2026-08-17) ------------------ *
+ * Level badge riding the portrait's corner, stacked pool bars, a rotating
+ * direction chevron with meters. All sized off the 56px face, all ≥12px text
+ * (couch law), all optional — an element exists only when its row field does. */
+.hud-facebox { position: relative; display: inline-block; line-height: 0; flex: 0 0 auto; }
+.hud-lvl {
+  position: absolute; right: -6px; bottom: -4px; z-index: 2;
+  min-width: 21px; height: 21px; padding: 0 5px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  font: 700 12px/1 "Segoe UI", sans-serif; font-style: normal; color: #221a0d;
+  background: linear-gradient(180deg, #e8c979, #b98f3e);
+  border: 1px solid #6e5320; border-radius: 11px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .55);
+}
+.hud-dead .hud-lvl { filter: grayscale(1) brightness(.7); }
+
+/* .hud-cb — the CHIP pool bars, RENAMED off .hud-bar entirely (2026-08-18):
+   scoping was not enough — the widget stack's bare .hud-bar rules still
+   MATCHED these elements and their un-overridden properties leaked through,
+   which is the "weird red vertical sliver beside the face" of the play-test.
+   Disjoint class = zero shared selectors = the collision class is dead.
+   Plain divs, track + width-driven fill — the probe-verified meter shape. */
+.hud-cbars { width: 60px; display: flex; flex-direction: column; gap: 2px; }
+.hud-cb {
+  display: block; height: 5px; width: 60px;
+  background: rgba(12, 12, 16, .85);
+  border: 1px solid rgba(0, 0, 0, .6); border-radius: 3px; overflow: hidden;
+}
+.hud-cb-fill {
+  display: block; height: 100%; border-radius: 2px;
+  transition: width .3s ease;
+}
+.hud-cb.hp .hud-cb-fill { background: linear-gradient(180deg, #d05540, #93291c); }
+.hud-cb.mk .hud-cb-fill { background: linear-gradient(180deg, #4f74d8, #2c4491); }
+.hud-cb.st .hud-cb-fill { background: linear-gradient(180deg, #5eb35a, #2e6b2c); }
+.hud-chip.hud-dead .hud-cb-fill { filter: grayscale(1) brightness(.6); }
+
+.hud-dir { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.hud-dir-ar {
+  /* the drawn needle (hud-dir-needle) — a 16px svg rotated to the exact
+     bearing; the transition smooths it. Fixed square box so rotation never
+     reflows the meters text beside it. */
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; color: #e3c87b;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .7));
+  transition: transform .25s ease;
+}
+.hud-dir-ar svg { display: block; }
+.hud-dir-m {
+  font: 600 12px/1.15 "Segoe UI", sans-serif; color: #d9d2c2;
+  text-decoration: none; text-shadow: var(--hud-tshadow);
+}
+
 /* Empty state — only visible while repositioning, so an empty HUD can still be
    placed. During play an empty HUD simply shows nothing. */
 .hud-empty { display: none; font-size: 13px; color: #d8cfa0; padding: 14px 18px; text-align: center; }
-/* Only when the strip is genuinely empty, and only while repositioning. */
-body.hud-editing .hud-panel.is-empty .hud-empty { display: block; }
-/* During play, an empty HUD shows nothing at all. */
-body:not(.hud-editing) .hud-panel.is-empty { display: none; }
+/* Only when the strip is genuinely empty, and only while the STRIP is what is
+   being placed (round 3) — "drag to place the HUD" over a screen of widgets
+   was pointing at the wrong thing. */
+body.hud-strip-edit .hud-panel.is-empty .hud-empty { display: block; }
+/* A panel with NOTHING in it draws nothing — in play AND in edit.
+   ⚠ ROUND 3: the old rule exempted edit mode, and that exemption is half of
+   "it doesn't show them, just circles": every stack block floats itself out by
+   default, so the panel is routinely empty, and an empty `.hud-panel` in edit
+   mode is padding + a 16px radius + the dashed outline = a ~24px anonymous
+   rounded blob sitting on the screen. It is drawn now only when it HOLDS
+   something (panelHasContent) or when the strip is being placed, where an
+   empty target is exactly what you need to see. */
+.hud-panel.is-blank { display: none; }
+body.hud-strip-edit .hud-panel.is-blank { display: inline-flex; }
 
-/* ---- edit-mode chrome: a top toolbar + a corner resize grip ---- */
+/* ==========================================================================
+   EDIT-MODE GHOSTS (2026-08-19, shelf round 3)
+   Rober: "if widgets are off and i hit config, then it doesn't show them, just
+   circles."  An OFF widget is drawn in full while editing — its real card, its
+   real numbers — wearing this dress so its state is never in doubt: dimmed,
+   dashed, and tagged `off`.  Nothing here can leak into play; `is-editoff` is
+   only ever written while `editing` is true (hud.js blockGhosted / renderFree).
+
+   The dim lands on the OUTERMOST unit only — a `.hud-det` wrap, a `.hud-fw`, or
+   a block still sitting in the panel stack — so a floated block never dims
+   twice (the wrap and the block inside it both carry the class by design: the
+   wrap so it can be tagged, the block so applyDetach can read it back).
+   ========================================================================== */
+/* ⚠ The dim lands on the CONTENT of a placed widget, never on the widget root:
+   placeFree writes `opacity` as an INLINE style on every `.hud-fw` and every
+   `.hud-det` (it is part of the placement), and an inline declaration beats any
+   stylesheet rule — a dim written here would simply never appear. One level in,
+   nothing competes for the property. */
+body.hud-editing .hud-det.is-editoff > *,
+body.hud-editing .hud-fw.is-editoff .hud-fw-card,
+body.hud-editing .hud-widgets > .is-editoff { opacity: .55; }
+/* the widget's own mini toolbar is a CONTROL — it must stay fully legible even
+   on a ghost, or the thing you use to place it is the thing you cannot read */
+body.hud-editing .hud-det.is-editoff > .hud-fw-tools { opacity: 1; }
+/* a member inside an already-ghosted group would otherwise dim twice */
+body.hud-editing .hud-fw-grp.is-editoff .hud-fw.is-editoff .hud-fw-card { opacity: 1; }
+/* the blocks still in the stack are static — give the tag something to hang on */
+body.hud-editing .hud-widgets > .is-editoff { position: relative; }
+body.hud-editing .hud-det.is-editoff { outline-style: dashed; outline-color: rgba(200, 196, 186, .5); }
+body.hud-editing .hud-fw.is-editoff .hud-fw-card { border-style: dashed; }
+/* THE TAG. 12px, never smaller (the couch law) — it is the one word that says
+   this widget is off, and it has to be legible from the sofa. */
+body.hud-editing .hud-det.is-editoff::after,
+body.hud-editing .hud-widgets > .is-editoff::after,
+body.hud-editing .hud-fw.is-editoff .hud-fw-card::after {
+  content: 'off';
+  position: absolute; top: -10px; right: -6px;
+  font: 700 12px/1 "Segoe UI", sans-serif; letter-spacing: .08em;
+  padding: 3px 7px; border-radius: 7px;
+  color: #efe8d6; background: rgba(24, 26, 32, .96);
+  border: 1px solid rgba(200, 196, 186, .55);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .55);
+  pointer-events: none;
+}
+/* the group's tag says what it means for a whole welded unit */
+body.hud-editing .hud-fw-grp.is-editoff::after { content: 'group off'; }
+/* a member inside a welded group is nested — its own tag would collide with the
+   group's, and the group card is where its switch lives anyway */
+body.hud-editing .hud-fw-grp .hud-fw.is-editoff .hud-fw-card::after { content: 'off'; top: 2px; right: 2px; }
+body.hud-editing .hud-fw-grp.is-editoff .hud-fw.is-editoff .hud-fw-card::after { display: none; }
+
+/* ==========================================================================
+   EDIT-MODE CHROME
+   ========================================================================== */
 .hud-tools {
   display: none;
-  position: absolute; left: 0; right: 0; top: -40px;
+  /* ⚠ THE LOCK-IN LESSON (Rober, 2026-08-18: "i cant get out of the move
+     menu… theres no done button"). This bar lives INSIDE #hud, which paints
+     at transform: scale(--hud-scale) — so when it was full-panel-width and
+     allowed to wrap, a narrow one-follower strip at high scale wrapped it to
+     one button per row and the SCALED panel painted OVER the bottom rows:
+     ⚙ Widgets and ✓ Done were on screen but buried, and there was no other
+     exit. Three rules keep that class of bug dead:
+       1. NOWRAP + shrink-to-fit — six buttons, one row, always.
+       2. counter-scale (1 / --hud-scale) — the bar paints at 1× whatever the
+          panel's scale, so the exit is never giant or microscopic.
+       3. z-index — the bar wins the paint order over the scaled panel, so it
+          can be overlapped but never buried.
+     (Esc is the belt-and-braces exit in hud.js, and the LiveApi close-view
+     rescue now ends HUD edit too — see ForceClosePalettes.) */
+  position: absolute; left: 0; right: auto; bottom: 100%; margin-bottom: 2px;
   align-items: center; gap: 6px;
   padding: 4px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  z-index: 5;
+  /* counter-scale + origin are set by JS in applyPlacement as PLAIN literals —
+     calc(1 / var(…)) inside scale() is the one arithmetic never probed in this
+     engine, and a dropped declaration there is a giant toolbar (a lock-in). */
 }
+body.hud-editing .hud-tools.below { transform-origin: top left; }
 body.hud-editing .hud-tools { display: flex; }
+/* ⚠ ROUND 3 (2026-08-19) — the bar is SPLIT by scope.
+   ⚙ Widgets and ✓ Done are edit mode's own: Done is the only exit, so it can
+   never be gated on anything (the 2026-08-18 lock-in lesson). The other four —
+   ⠿ Move, ⇄ Flip, ⤢ Grow, Aa Names — are the FOLLOWER STRIP's controls, and
+   putting them on screen because a widget is being placed is exactly what
+   Rober photographed ("why does config for hud widgets turn on follower hud?").
+   They come back with `.hud-strip-edit`. */
+body.hud-editing:not(.hud-strip-edit) .hud-tools [data-role="grip"],
+body.hud-editing:not(.hud-strip-edit) .hud-tools [data-role="flip"],
+body.hud-editing:not(.hud-strip-edit) .hud-tools [data-role="grow"],
+body.hud-editing:not(.hud-strip-edit) .hud-tools [data-role="names"] { display: none; }
+/* While editing, the WHOLE assembly out-stacks the free-widget layer
+   (#hud-free, z-index 4, a root-context sibling): #hud's transform makes it a
+   stacking context, so .hud-tools' own z-index could never compete — a free
+   widget parked over the toolbar swallowed the Done click (the second face of
+   the 2026-08-18 lock-in, found by the Opus audit). Edit-only, so play-time
+   paint order is untouched. */
+body.hud-editing #hud { z-index: 6; }
+/* If the assembly hugs the top of the screen the toolbar would sit off-screen —
+   flip it under the panel instead. Set by JS from the measured offset. */
+body.hud-editing .hud-tools.below { top: 100%; bottom: auto; margin-bottom: 0; margin-top: 8px; }
 .hud-tool {
   font: inherit; font-size: 13px; line-height: 1;
   display: inline-flex; align-items: center; gap: 5px;
@@ -141,21 +1039,32 @@ body.hud-editing .hud-tools { display: flex; }
   pointer-events: auto;
 }
 .hud-tool:hover { background: rgba(240, 214, 140, .16); border-color: rgba(240, 214, 140, .6); color: #f8efce; }
+.hud-tool:active { background: rgba(240, 214, 140, .24); }
+.hud-tool.on { color: var(--hud-gold-lit); border-color: var(--hud-gold); background: rgba(201, 162, 75, .16); }
 .hud-tool.hud-grip { cursor: move; letter-spacing: .12em; }
 .hud-tool.hud-done { margin-left: auto; border-color: rgba(150, 220, 150, .5); color: #cbe8c2; }
 .hud-tool.hud-done:hover { background: rgba(150, 220, 150, .18); }
+.hud-resize { z-index: 1; }
 
 /* Corner resize handle — drag to scale the whole assembly. */
 .hud-resize {
   display: none;
-  position: absolute; right: -10px; bottom: -10px;
-  width: 22px; height: 22px; border-radius: 6px; cursor: nwse-resize;
+  /* OUTSIDE the panel horizontally, level with its bottom edge vertically. At
+     -12/-12 the handle's inner half sat on the last follower's medallion (a
+     control over content); pushing it diagonally out instead put it under the
+     toolbar whenever the bar flips below. Out to the side clears both. */
+  position: absolute; right: -32px; bottom: 0;
+  /* 26, not 22: the only control on this view that sat under the 24 px hit
+     floor, and it is the one you go for with a mouse at couch distance. */
+  width: 26px; height: 26px; border-radius: 7px; cursor: nwse-resize;
   background: rgba(18, 20, 26, .92);
   border: 1px solid rgba(240, 214, 140, .5);
   align-items: center; justify-content: center;
   color: #e8d9a0; font-size: 12px; pointer-events: auto;
 }
-body.hud-editing .hud-resize { display: flex; }
+/* The corner resize handle scales the STRIP assembly — same scope law as the
+   four strip tools above; the shelf's own size stepper covers it otherwise. */
+body.hud-editing.hud-strip-edit .hud-resize { display: flex; }
 
 /* The reposition hint line, shown under the panel while editing. */
 .hud-hint {
@@ -164,3 +1073,1206 @@ body.hud-editing .hud-resize { display: flex; }
   text-shadow: 0 1px 2px rgba(0, 0, 0, .9);
 }
 body.hud-editing .hud-hint { display: block; }
+/* The settings card USED to live in this exact spot, so one had to hide the
+   other. Since 2026-08-18 the card is a free popout outside #hud — they can no
+   longer overlap, so the hint stays up and keeps telling you how to place the
+   thing you are placing. */
+/* When the toolbar has flipped below the panel it OWNS top:100%, so everything
+   else that lives there steps down past it. Without this the toolbar lands on
+   the hint line (a 666×16 overlap, found in the 2026-08-17 pass). */
+body.hud-tools-below .hud-hint { margin-top: 50px; }
+
+/* ---- the widget settings POPOUT (2026-08-18) ----
+   Rober: "the widgets popout settings for the hud needs to be seperate and
+   draggable." It is a free window now, NOT a card glued under the panel — it
+   lives outside #hud in the DOM, so it escapes --hud-scale entirely, its
+   position:fixed means the viewport (a transformed ancestor would have become
+   its containing block), and JS owns left/top from the remembered cfgPos.
+   Everything the old anchoring rules did — flip above at the bottom, mirror at
+   the right edge, step down under a flipped toolbar, the reachability hack —
+   is deleted, because none of it can happen to a free popout. */
+.hud-settings {
+  /* THE SHELF (2026-08-19). Hinged on the RIGHT EDGE, full height, always in
+     the same place — Rober: "it should open a right popout shelf like action
+     bar does". `display` stays the on/off switch (the body class), and the
+     slide is a transform on top of it, so nothing measures a phantom box. */
+  display: none;
+  position: fixed; top: 0; right: 0; bottom: 0; left: auto;
+  /* Roomy where there is room (Rober plays at 2560x1440), narrower where a
+     fixed 520 would blanket half the screen — the widgets it configures are
+     on that screen. */
+  width: clamp(360px, 34vw, 560px);
+  max-width: 92vw;
+  flex-direction: column;
+  padding: 18px 18px 20px;
+  border-radius: 16px 0 0 16px;
+  /* OPAQUE, not `--hud-plate-solid` — see the token's own note. This surface
+     is 560px of small settings text standing over the game; the 12% that used
+     to show through bought nothing (the shelf is at the screen EDGE, the
+     widgets are on the rest of it) and cost legibility over every bright
+     frame in the game. */
+  background: var(--hud-plate-opaque);
+  border: 1px solid var(--hud-line-lit);
+  border-right: 0;
+  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  /* Above #hud (z-index 6 while editing) and #hud-free (4): the shelf is what
+     you are looking at, and a floated widget parked over it must not eat a
+     click — the same lesson the Done button taught. */
+  z-index: 8;
+}
+/* ---- EITHER EDGE (2026-08-19) ----
+   Rober: "right side hud widgets popout with configuration should be able to
+   move to other side of screen, so you can line stuff on right if you need
+   to". Four things mirror, not one: which edge it is pinned to, which corners
+   are rounded, which border is dropped (the one against the screen edge), and
+   which way the shadow and the slide-in throw. `body.hud-cfg-left` is set by
+   hud.js applyShelfSide(); the side itself lives in the hud prefs blob. */
+body.hud-cfg-left .hud-settings {
+  right: auto; left: 0;
+  border-radius: 0 16px 16px 0;
+  border-right: 1px solid var(--hud-line-lit);
+  border-left: 0;
+  box-shadow: 10px 0 28px rgba(0, 0, 0, 0.45);
+}
+body.hud-cfg-open .hud-settings {
+  display: flex;
+  animation: hudShelfIn 170ms ease-out;
+}
+body.hud-cfg-open.hud-cfg-left .hud-settings { animation: hudShelfInLeft 170ms ease-out; }
+@keyframes hudShelfIn {
+  from { transform: translateX(26px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+@keyframes hudShelfInLeft {
+  from { transform: translateX(-26px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+/* the ⇄ side switch — the close button's twin, so the header reads as one set */
+.hud-set-side {
+  font: inherit; font-size: 16px; line-height: 1; cursor: pointer;
+  width: 32px; height: 32px; flex: 0 0 auto; border-radius: 9px; order: 1;
+  color: var(--hud-dim); background: rgba(255, 255, 255, .04);
+  border: 1px solid var(--hud-line-lit);
+  transition: color .12s ease, background .12s ease, border-color .12s ease, transform .12s ease;
+}
+.hud-set-side:hover { color: var(--hud-ink); background: rgba(201, 162, 75, .14); border-color: var(--hud-gold); }
+.hud-set-side:focus-visible { outline: 2px solid rgba(201, 162, 75, .5); outline-offset: 2px; }
+.hud-set-side:active { transform: translateY(1px); }
+/* the glyph points the way it will GO, so the button says what it does */
+body.hud-cfg-left .hud-set-side { transform: scaleX(-1); }
+body.hud-cfg-left .hud-set-side:active { transform: scaleX(-1) translateY(1px); }
+
+/* The header: title, side, close, presets, and the search box on its own line.
+   ⚠ 2026-08-19: the ⇄ side button made this a THREE-control row and the close
+   button wrapped onto its own line at the shelf's narrow end (screenshot at
+   1400px, where the shelf is 476px). The presets group is the one thing here
+   that can afford to shrink, so it is told it may — everything else keeps its
+   size and the row stays one line. */
+.hud-set-head {
+  display: flex; align-items: center; gap: 9px; margin-bottom: 14px; flex-wrap: wrap;
+  flex: 0 0 auto; user-select: none;
+}
+.hud-presets { cursor: default; }
+.hud-set-title {
+  font-size: 14px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--hud-gold);
+  flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hud-set-close {
+  font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
+  width: 32px; height: 32px; flex: 0 0 auto; border-radius: 9px; order: 1;
+  color: var(--hud-dim); background: rgba(255, 255, 255, .04);
+  border: 1px solid var(--hud-line-lit);
+  transition: color .12s ease, background .12s ease, border-color .12s ease, transform .09s ease;
+}
+.hud-set-close:hover { color: var(--hud-ink); background: rgba(201, 162, 75, .14); border-color: var(--hud-gold); }
+.hud-set-close:focus-visible { outline: 2px solid rgba(201, 162, 75, .5); outline-offset: 2px; }
+.hud-set-close:active { transform: translateY(1px); }
+/* ⚠ The presets take their OWN LINE (2026-08-19). They used to ride the title
+   row on `margin-left:auto`, and the ⇄ side button turned that into a
+   three-control row that overflowed the shelf's narrow end — the ✕ wrapped
+   underneath and landed on the search box (screenshot at 1400px, where the
+   shelf is 476px). Four nowrap chips cannot shrink, so no amount of flex
+   tuning makes them fit; giving them a row is the fix that holds at every
+   width, and it suits a shelf that is meant to be spacious anyway. Row 1 =
+   title + ⇄ + ✕, row 2 = presets, row 3 = the search box. */
+.hud-presets { display: flex; flex: 1 1 100%; align-items: stretch; gap: 4px; padding: 3px; order: 2;
+  border-radius: 10px; background: rgba(255, 255, 255, .04); border: 1px solid rgba(255, 255, 255, .07); }
+.hud-preset {
+  font: inherit; font-size: 14px; line-height: 1; cursor: pointer;
+  flex: 1 1 0; min-width: 0; text-align: center;
+  padding: 10px 11px; border-radius: 8px; white-space: nowrap;
+  color: var(--hud-dim); background: transparent; border: 1px solid transparent;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.hud-preset:hover { color: var(--hud-ink); background: rgba(201, 162, 75, .10); }
+.hud-preset:focus-visible { outline: 2px solid rgba(201, 162, 75, .5); outline-offset: 1px; }
+.hud-preset.on { color: var(--hud-gold-lit); background: rgba(201, 162, 75, .16); border-color: var(--hud-line-lit); }
+
+/* Filter-as-you-type over the elements below (Rober: "easily searchable for
+   settings"). It sits on its OWN line inside the header, because the header is
+   the only part of this shelf buildSettings does not wipe on every live tick —
+   an input rebuilt 1/s cannot be typed into. */
+.hud-set-filter {
+  flex: 1 1 100%; cursor: text; order: 3;
+  font: inherit; font-size: 15px; padding: 11px 14px;
+  border-radius: 10px; color: var(--hud-ink);
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid var(--hud-line-lit); outline: none;
+}
+.hud-set-filter::placeholder { color: var(--hud-dim); opacity: .85; }
+.hud-set-filter:focus { border-color: var(--hud-gold); background: rgba(255, 255, 255, .07); }
+
+.hud-opts {
+  /* the shelf's scrolling body — the header stays put above it */
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: 7px;
+  padding-right: 4px;
+  /* ---- SCROLL COST (Rober, 2026-08-19: "scrolling is painfully slow on the
+     right hud widgets popout"). These views run with the compositor OFF, so a
+     scroll is a full repaint of everything that moves — and this column is
+     ~4,400px of bordered, translucent cards. `contain` tells the engine each
+     row's paint and layout stay inside its own box, so a scroll cannot force a
+     re-layout of the shelf around it. The other half of the fix is the wheel
+     step in hud.js (HUD_WHEEL_STEP); neither alone is enough. */
+  contain: layout paint style;
+}
+/* Per-row containment: cheap, and it is what keeps a 40-row rebuild from
+   reflowing the whole column. ⚠ NOT `content-visibility: auto` — the shelf
+   scrolls to a row by arithmetic on offsetTop (focusShelfEl), and a row the
+   engine has skipped laying out reports the wrong one. */
+.hud-el, .hud-el-sec { contain: layout paint; }
+/* the shelf's own scrollbar, in the deck's colours rather than the engine's
+   default grey slab (Ultralight draws classic, space-taking scrollbars) */
+.hud-opts::-webkit-scrollbar { width: 10px; }
+.hud-opts::-webkit-scrollbar-track { background: rgba(255, 255, 255, .03); border-radius: 6px; }
+.hud-opts::-webkit-scrollbar-thumb {
+  background: rgba(201, 162, 75, .34); border-radius: 6px;
+  border: 2px solid transparent; background-clip: padding-box;
+}
+.hud-opts::-webkit-scrollbar-thumb:hover { background: rgba(201, 162, 75, .55); background-clip: padding-box; }
+
+/* ---- one row per element (the shelf, 2026-08-19) ---------------------- */
+.hud-el-sec { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.hud-el-sec:first-child { margin-top: 2px; }
+.hud-el-sec.is-hid, .hud-el.is-hid, .hud-el-add.is-hid { display: none; }
+.hud-el-secname {
+  font-size: 12.5px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--hud-dim);
+  padding-bottom: 6px; border-bottom: 1px solid rgba(255, 255, 255, .07);
+}
+.hud-el-subhead { font-size: 13px; color: var(--hud-dim); line-height: 1.45; }
+.hud-el {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 13px; border-radius: 12px;
+  background: rgba(255, 255, 255, .025);
+  border: 1px solid rgba(255, 255, 255, .06);
+  transition: background .14s ease, border-color .14s ease, box-shadow .14s ease;
+}
+.hud-el:hover { background: rgba(201, 162, 75, .06); border-color: var(--hud-line-lit); }
+/* A nested (welded-in) member of the group card.
+   ⚠ 2026-08-19: this used to carry `border-left: 2px solid rgba(201,162,75,.28)`.
+   Three nested rows stacked with gaps between them drew three short gold
+   vertical bars down the shelf's inner-left edge — which reads as a scrollbar
+   track sitting in the wrong place ("weird slider on left side of slider",
+   Rober, screenshot-confirmed). The indent plus the tint plus the row's own
+   "⛓ Linked" chip already say "this belongs to the card above"; a false track
+   said something that was not true. Do not put the bar back. */
+.hud-el.is-nested {
+  margin-left: 18px;
+  background: rgba(201, 162, 75, .045);
+  border-color: rgba(201, 162, 75, .20);
+}
+.hud-el.is-card { background: rgba(201, 162, 75, .07); border-color: var(--hud-line-lit); }
+/* the row the shelf was ASKED to open on — lit, then it just stays highlighted
+   until the next open, so it can never strand a pulsing box on screen */
+.hud-el.is-focus { border-color: var(--hud-gold); box-shadow: 0 0 0 1px rgba(201, 162, 75, .35); }
+.hud-el-head { display: flex; align-items: center; gap: 11px; }
+.hud-el-ic {
+  width: 32px; height: 32px; flex: 0 0 auto; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; color: var(--hud-gold);
+  background: rgba(255, 255, 255, .05);
+}
+.hud-el-ic img { width: 22px; height: 22px; object-fit: contain; display: block; }
+.hud-el-name {
+  flex: 1 1 auto; min-width: 0; font-size: 15px; color: var(--hud-ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hud-el-badge {
+  font-size: 12.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--hud-dim); border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 999px; padding: 5px 9px;
+}
+.hud-opt.hud-el-sw { flex: 0 0 auto; min-width: 74px; justify-content: center; }
+.hud-el-body { display: flex; flex-direction: column; gap: 9px; }
+.hud-el-note { font-size: 12.5px; color: var(--hud-dim); line-height: 1.45; }
+.hud-el-chips { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
+/* ⚠ The "Connect a widget:" label takes its OWN LINE (2026-08-19 design pass).
+   It used to ride the chip row, so line 1 began at the label's right edge and
+   every wrapped chip snapped back to x=0 — a ragged two-level left edge inside
+   a shelf whose whole point is one rhythm (measured on the Equipped group at
+   2560, where "＋ Loot lamp — glow · auto-loot" wrapped). Same fix the header
+   presets took the same day: a row that cannot fit gets a row. */
+.hud-el-addlab { font-size: 12.5px; color: var(--hud-dim); flex: 1 1 100%; }
+
+/* A key capture and its ✕, welded so the pair reads as one control (see
+   hud.js stripKeyRow). Seams exactly like `.hud-el-seg`: the clear button
+   loses the edge it shares with the key it clears. */
+.hud-el-pair { display: inline-flex; align-items: stretch; gap: 0; }
+.hud-el-pair > .hud-el-chip:first-child:not(:last-child) {
+  border-top-right-radius: 0; border-bottom-right-radius: 0; border-right-width: 0;
+}
+.hud-el-pair > .hud-el-chip + .hud-el-chip {
+  border-top-left-radius: 0; border-bottom-left-radius: 0;
+}
+/* the lit (armed) key still owns both its seams, or the ✕ eats its gold edge */
+.hud-el-pair > .hud-el-chip.on:first-child:not(:last-child) { border-right-width: 1px; margin-right: -1px; position: relative; z-index: 1; }
+.hud-el-chip {
+  font: inherit; font-size: 13px; line-height: 1; cursor: pointer;
+  padding: 9px 12px; border-radius: 9px;
+  color: var(--hud-dim); background: rgba(255, 255, 255, .03);
+  border: 1px solid var(--hud-line);
+  transition: color .12s ease, background .12s ease, border-color .12s ease, transform .09s ease;
+}
+.hud-el-chip:hover { color: var(--hud-ink); border-color: var(--hud-line-lit); background: rgba(201, 162, 75, .08); }
+.hud-el-chip:focus-visible { outline: 2px solid rgba(201, 162, 75, .5); outline-offset: 1px; }
+.hud-el-chip:active { transform: translateY(1px); }
+.hud-el-chip.on { color: var(--hud-gold-lit); background: rgba(201, 162, 75, .14); border-color: var(--hud-gold); }
+.hud-el-chip:disabled { opacity: .45; cursor: default; }
+/* ---- the Followers HUD section (round 3, 2026-08-19) --------------------
+   A SEGMENTED row: one choice out of four, welded into a single control so it
+   reads as "pick one" and not as four independent switches. Same chips
+   underneath — only the seams change — so the filter, the focus ring and the
+   click path are untouched. */
+.hud-el-seg { gap: 0; flex-wrap: nowrap; overflow-x: auto; }
+.hud-el-seg > .hud-el-chip {
+  border-radius: 0; border-right-width: 0; flex: 1 1 0; min-width: 0;
+  /* tighter side padding than a free-standing chip: four segments share one
+     row, and at the shelf's narrow floor (1280px screen ⇒ ~380px of body) the
+     roomier 12px clipped "Rounded" and "Diamond" to "Round…" / "Diam…" —
+     measured 2026-08-19. The words fit whole at 8px, and the horizontal
+     scroll below is the last resort, not the normal case. */
+  padding: 9px 8px; text-align: center;
+  white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
+}
+.hud-el-seg > .hud-el-chip:first-child { border-radius: 9px 0 0 9px; }
+.hud-el-seg > .hud-el-chip:last-child { border-radius: 0 9px 9px 0; border-right-width: 1px; }
+/* the lit segment has to own BOTH its seams, or its gold edge is eaten by the
+   neighbour that still owns that pixel column */
+.hud-el-seg > .hud-el-chip.on { border-right-width: 1px; margin-right: -1px; position: relative; z-index: 1; }
+/* Below ~1100px the shelf is at its clamp FLOOR (360px), which leaves ~320px
+   for four segments — "◆ Diamond" needs ~88 and clipped to "Diam…" (measured at
+   800x600, 2026-08-19). Two-up there, as ordinary chips: a segmented control
+   whose words are cut is worse than four chips that read. */
+@media (max-width: 1100px) {
+  .hud-el-seg { flex-wrap: wrap; gap: 7px; overflow-x: visible; }
+  .hud-el-seg > .hud-el-chip,
+  .hud-el-seg > .hud-el-chip:first-child,
+  .hud-el-seg > .hud-el-chip:last-child,
+  .hud-el-seg > .hud-el-chip.on {
+    flex: 1 1 calc(50% - 4px);
+    border-radius: 9px; border-right-width: 1px; margin-right: 0;
+  }
+}
+/* a key capture waiting for a press — the deck's standing "arming" look */
+.hud-el-chip.is-arming {
+  color: #17110a; background: var(--hud-gold-lit); border-color: var(--hud-gold-lit);
+}
+/* a filtered-out switch, and any group whose switches all went with it */
+.hud-opt.is-hid, .hud-opt-group.is-hid, .hud-opt-row.is-hid { display: none; }
+/* the note is guidance about the whole card — it has nothing to match, so it
+   stands down while a query is narrowing things */
+.hud-opts.is-filtered .hud-opt-note { display: none; }
+.hud-opt-none { width: 100%; font-size: 13px; color: var(--hud-dim); margin-top: 8px; }
+.hud-opt-none.is-hid { display: none; }
+.hud-opt-group { display: flex; flex-direction: column; gap: 7px; width: 100%; }
+.hud-opt-label {
+  font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--hud-dim); margin-top: 4px;
+}
+.hud-opt-row { display: flex; flex-wrap: wrap; gap: 7px; }
+.hud-opt {
+  font: inherit; font-size: 13px; line-height: 1; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 9px 12px; border-radius: 9px;
+  color: var(--hud-dim); background: rgba(255, 255, 255, .04);
+  border: 1px solid rgba(255, 255, 255, .09);
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.hud-opt:hover { color: var(--hud-ink); border-color: var(--hud-line-lit); background: rgba(201, 162, 75, .08); }
+.hud-opt:focus-visible { outline: 2px solid rgba(201, 162, 75, .5); outline-offset: 1px; }
+.hud-opt.on { color: var(--hud-gold-lit); background: rgba(201, 162, 75, .14); border-color: var(--hud-gold); }
+/* The tick box — a static box that fills when on. No animation, one class flip. */
+.hud-opt::before {
+  content: ""; width: 14px; height: 14px; flex: 0 0 auto;
+  border-radius: 4px; border: 1px solid currentColor; opacity: .55;
+}
+.hud-opt.on::before { background: currentColor; opacity: 1; }
+/* An option whose data the game is not sending says so instead of lying. */
+.hud-opt.is-absent { opacity: .45; }
+.hud-opt-note { width: 100%; font-size: 12px; color: var(--hud-dim); margin-top: 10px; line-height: 1.45; }
+
+/* ---- ONE widget with parts (2026-08-18) --------------------------------
+   The merged equipped widget: a master switch with its three lines, its
+   orientation, its size and its lock nested UNDER it, so the card reads as one
+   thing rather than five peers. The nest is a real bracket — a hairline rail
+   down the left of the nested rows — because indentation alone stops reading
+   as hierarchy the moment the card is scrolled. */
+.hud-opt-nest {
+  width: 100%;
+  padding: 10px 12px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .028);
+  border: 1px solid rgba(255, 255, 255, .07);
+}
+.hud-opt-nest > .hud-opt-label { margin-top: 0; }
+.hud-opt-sub {
+  margin-left: 13px;
+  padding-left: 13px;
+  border-left: 2px solid rgba(201, 162, 75, .28);
+}
+.hud-opt-sub.hud-opt-note { margin-top: 6px; padding-top: 2px; padding-bottom: 2px; }
+/* the master reads as the headline switch it is */
+.hud-opt.hud-opt-master { font-size: 15px; font-weight: 600; padding: 11px 15px; }
+.hud-opt.hud-opt-master::before { width: 16px; height: 16px; }
+.hud-opt.hud-opt-master.on { box-shadow: inset 0 0 0 1px rgba(201, 162, 75, .35); }
+/* A button that ACTS rather than holding a state drops the tick box — a "−"
+   wearing an empty checkbox reads as a switch that is somehow off. */
+.hud-opt.is-act::before { display: none; }
+.hud-opt.is-act { min-width: 40px; justify-content: center; }
+.hud-opt.is-act:active { transform: translateY(1px); }
+.hud-opt-readout {
+  display: inline-flex; align-items: center;
+  padding: 9px 12px; font-size: 13px; line-height: 1;
+  color: var(--hud-gold-pale); letter-spacing: .02em;
+  min-width: 92px; justify-content: center;
+}
+
+/* ---- ONE size stepper, on every widget (2026-08-18) ---------------------
+   `Name   −  100%  ＋  ⟲`. No range input (deck law), nothing under 12px, and
+   the widget is NAMED on the left so the row still reads after the card is
+   filtered — the filter matches that name, never the glyphs. */
+.hud-sz-row {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 5px 0;
+}
+.hud-sz-row.is-hid { display: none; }
+.hud-sz-name {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 13px; color: var(--hud-ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hud-sz-btn {
+  flex: 0 0 auto;
+  font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
+  min-width: 36px; height: 32px; padding: 0 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--hud-gold-pale); background: rgba(255, 255, 255, .04);
+  border: 1px solid rgba(255, 255, 255, .09); border-radius: 9px;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.hud-sz-btn:hover { color: var(--hud-gold-lit); border-color: var(--hud-gold); background: rgba(201, 162, 75, .1); }
+.hud-sz-btn:focus-visible { outline: 2px solid rgba(201, 162, 75, .5); outline-offset: 1px; }
+.hud-sz-btn:active { transform: translateY(1px); }
+.hud-sz-val {
+  flex: 0 0 auto; min-width: 58px; text-align: center;
+  font-size: 13px; color: var(--hud-gold-pale); font-variant-numeric: tabular-nums;
+}
+.hud-sz-note { flex: 0 0 100%; font-size: 12px; color: var(--hud-dim); }
+
+/* ========================================================================
+   ROUND 3 (2026-08-17) — the four FREE slot widgets (hud-free layer).
+   Right hand · Left hand/ammo · Shout/Power · Quick items. Each .hud-fw is
+   absolutely positioned by hud.js from its own Widget config; the LAYER never
+   takes pointer events — only the widgets themselves, and only in edit mode.
+   Party Sheet's readable slot-card look, drawn in the deck's own gold: big
+   art plate, slot letter, name under. Nothing below 12px (couch law), no
+   animation loops, no conic-gradient (Ultralight draws it as none).
+   ======================================================================== */
+#hud-free {
+  position: fixed; inset: 0; z-index: 4;
+  pointer-events: none;
+}
+.hud-fw {
+  position: absolute;
+  pointer-events: none;
+  font-family: "Segoe UI", sans-serif;
+}
+body.hud-editing .hud-fw { pointer-events: auto; cursor: grab; }
+body.hud-editing .hud-fw:active { cursor: grabbing; }
+.hud-fw.is-off { display: none; }
+
+.hud-fw-card {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 8px 10px 7px;
+  /* Cap the card, ellipsize the name (title carries the full text): a long
+     weapon name used to WIDEN the card past the 125px default spacing and the
+     four slot cards overlapped each other on first enable (2026-08-18). The
+     cards' footprint is now name-independent, so the defaults never collide. */
+  max-width: 158px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(16, 17, 22, .82), rgba(10, 11, 15, .86));
+  border: 1px solid var(--hud-line-lit);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 245, 210, .05);
+}
+/* bare: icon + numbers floating on the scene; a text shadow keeps the name
+   readable over snow and sky (the widgets' own bare rule) */
+.hud-fw.is-bare .hud-fw-card { background: none; border-color: transparent; box-shadow: none; }
+.hud-fw.is-nolabel .hud-fw-name { display: none; }
+
+.hud-fw-art {
+  /* 108px, up from 76 — "STILL dont look like reference image i gave, too
+     small" (Rober, 2026-08-18). The reference's plates read at a glance. */
+  position: relative; width: 108px; height: 108px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 14px 5px 14px 5px;
+  background: rgba(10, 12, 16, .66);
+  border: 1px solid var(--hud-line-lit);
+  box-shadow: inset 0 1px 0 rgba(255, 245, 210, .06);
+  overflow: hidden;
+}
+.hud-fw.is-bare .hud-fw-art { background: rgba(10, 12, 16, .35); }
+.hud-fw-glyph { display: flex; align-items: center; justify-content: center; color: var(--hud-gold); opacity: .92; }
+.hud-fw-art .hud-pin-img {
+  position: absolute; inset: 5px; width: calc(100% - 10px); height: calc(100% - 10px);
+  object-fit: contain; display: block;
+}
+.hud-fw-art .hud-pin-img + .hud-fw-glyph { display: none; }
+
+/* The KEYCAP badge — the reference's R/L/Z corner plate, not a floating
+   letter (2026-08-18 polish pass). */
+.hud-fw-slot {
+  position: absolute; top: 4px; left: 4px; z-index: 3;
+  min-width: 22px; height: 22px; padding: 0 5px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 800; letter-spacing: .04em;
+  color: var(--hud-gold-pale);
+  background: rgba(10, 11, 15, .82);
+  border: 1px solid var(--hud-line-lit);
+  border-radius: 5px;
+  pointer-events: none;
+}
+.hud-fw-name {
+  max-width: 138px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 14px; font-weight: 600; color: var(--hud-ink);
+  text-shadow: var(--hud-tshadow); text-align: center;
+}
+/* ⚠ .hud-badge is position:ABSOLUTE — it was written for the corners of an art
+   plate. Dropped into this flex row unchanged, every enchant chip resolved
+   against .hud-fw-card (the nearest positioned ancestor) and parked itself at
+   top:-1 left:-1 — i.e. straight on top of the R/L/Z keycap, while the row it
+   was supposed to sit in collapsed to 0x0 (measured: ench 39,231 vs slot
+   44,236; Opus audit 2026-08-18). Inside THIS row a badge is an inline chip. */
+.hud-fw-badges { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; max-width: 138px; }
+.hud-fw-badges .hud-badge {
+  position: static; box-shadow: none;
+  border-radius: 6px; height: 19px; min-width: 0; padding: 0 7px;
+}
+.hud-fw-badges:empty { display: none; }
+
+/* ---- PER-SLOT ACCENT (Rober's reference, 2026-08-18) --------------------
+   Each slot card wears the colour of WHAT IT HOLDS, so the three cards read
+   apart at a glance instead of as one grey column: gear stays the neutral
+   gold-on-dark, a spell goes blue (the deck's magicka colour), a shout or a
+   power goes warm gold (the family the ready-glow already lights). Flat fills
+   and borders only — a gradient bigger than a card bands in this engine, and
+   these tints are the whole point of the change, so they must not smear. */
+.hud-fw-card.fw-k-spell {
+  background: rgba(20, 30, 46, .86);
+  border-color: rgba(125, 153, 232, .62);
+}
+.hud-fw-card.fw-k-spell .hud-fw-art {
+  border-color: rgba(125, 153, 232, .55);
+  background: rgba(14, 22, 36, .7);
+}
+.hud-fw-card.fw-k-spell .hud-fw-slot {
+  color: #b9cbf4; border-color: rgba(125, 153, 232, .55);
+}
+.hud-fw-card.fw-k-spell .hud-fw-glyph { color: #9db4f0; }
+.hud-fw-card.fw-k-voice {
+  background: rgba(34, 27, 12, .86);
+  border-color: rgba(230, 196, 99, .62);
+}
+.hud-fw-card.fw-k-voice .hud-fw-art {
+  border-color: rgba(230, 196, 99, .5);
+  background: rgba(26, 20, 8, .7);
+}
+.hud-fw-card.fw-k-voice .hud-fw-slot {
+  color: var(--hud-gold-lit); border-color: rgba(230, 196, 99, .55);
+}
+/* a ghost placeholder is not holding anything — it keeps the neutral plate */
+.hud-fw-card.is-ghost.fw-k-spell, .hud-fw-card.is-ghost.fw-k-voice {
+  background: rgba(10, 11, 15, .5); border-color: var(--hud-line-lit);
+}
+/* bare still means BARE — the accent must not put the plate back (re-stated
+   after the accents so document order keeps the bare art plate too) */
+.hud-fw.is-bare .hud-fw-card.fw-k-spell,
+.hud-fw.is-bare .hud-fw-card.fw-k-voice { background: none; border-color: transparent; }
+.hud-fw.is-bare .hud-fw-art { background: rgba(10, 12, 16, .35); }
+
+/* the shout recovery veil: DRAINS downward, height = time left, so a full
+   veil means the cooldown just started. Stepped at the tick, never animated. */
+.hud-fw-cd {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+  background: linear-gradient(180deg, rgba(8, 10, 16, .55), rgba(8, 10, 16, .8));
+  border-top: 1px solid rgba(143, 180, 204, .5);
+  display: flex; align-items: flex-end; justify-content: center;
+  pointer-events: none;
+}
+.hud-fw-cdt {
+  font-size: 14px; font-weight: 800; color: #cfe2f0;
+  text-shadow: var(--hud-tshadow); padding-bottom: 3px; font-style: normal;
+}
+/* Party Sheet's call, kept: the voice tile GLOWS gold while ready */
+.hud-fw-card.is-ready .hud-fw-art {
+  border-color: var(--hud-gold-lit);
+  box-shadow: 0 0 10px rgba(230, 196, 99, .45), inset 0 1px 0 rgba(255, 245, 210, .1);
+}
+
+/* quick items: a strip of small tiles with counts + the vanilla hotkey digit */
+.hud-fw-qrow { display: flex; gap: 6px; flex-wrap: wrap; max-width: 420px; justify-content: center; }
+.hud-fw-qart { width: 64px; height: 64px; border-radius: 10px 4px 10px 4px; }
+.hud-fw-qart .hud-pin-count { font-size: 12px; }
+.hud-fw-hk {
+  position: absolute; top: 2px; left: 4px; z-index: 3;
+  font-size: 12px; font-weight: 800; color: var(--hud-gold-lit);
+  text-shadow: var(--hud-tshadow); pointer-events: none;
+}
+
+/* edit-mode chrome: ghost placeholders, selection ring, the mini toolbar */
+.hud-fw-ghost {
+  min-width: 96px; padding: 14px 10px;
+  border: 1px dashed rgba(201, 162, 75, .55); border-radius: 10px;
+  font-size: 13px; color: var(--hud-dim); text-align: center; line-height: 1.45;
+  text-shadow: var(--hud-tshadow);
+  /* the empty states name the button that fills them, on their own line */
+  white-space: pre-line;
+}
+.hud-fw-card.is-ghost { background: rgba(10, 11, 15, .5); }
+.hud-fw.is-sel .hud-fw-card { outline: 2px solid var(--hud-gold-lit); outline-offset: 2px; }
+.hud-fw-tools {
+  position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+  display: flex; gap: 4px; z-index: 5; white-space: nowrap;
+}
+.hud-fw-tools.below { bottom: auto; top: calc(100% + 6px); }
+.hud-fw-tool {
+  min-width: 30px; height: 28px; padding: 0 7px;
+  font-size: 14px; line-height: 1; color: var(--hud-gold-pale);
+  background: rgba(14, 15, 20, .92); border: 1px solid var(--hud-line-lit);
+  border-radius: 7px; cursor: pointer;
+}
+.hud-fw-tool:hover { color: var(--hud-gold-lit); border-color: var(--hud-gold); background: rgba(22, 23, 30, .95); }
+.hud-fw-tool:active { transform: translateY(1px); }
+
+/* ---- round 3.1: MOTION (2026-08-17, Rober: "Animated when things change or
+   move?"). Every animation here is ONE-SHOT, fired by a state change — never
+   a loop (compositor-off Ultralight smears looping gradients, and an idle
+   HUD must cost zero). Entrances and swaps ride element creation (the sig
+   rebuild), so the per-tick path still writes numbers in place only. ------ */
+
+/* a card (or a fresh weapon after a swap) rises in — 160ms, once */
+@keyframes hudFwIn {
+  from { opacity: 0; transform: translateY(8px) scale(.95); }
+  to   { opacity: 1; transform: none; }
+}
+.hud-fw-card.fw-in { animation: hudFwIn 160ms ease-out; }
+/* quick tiles cascade with a per-tile delay set inline at build */
+.hud-fw-qtile { animation: hudFwIn 160ms ease-out backwards; }
+
+/* a count that CHANGED bumps — retriggered from JS by class re-add */
+@keyframes hudFwBump {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.3); }
+  100% { transform: scale(1); }
+}
+.hud-fw .fw-bump { animation: hudFwBump 220ms ease-out; }
+
+/* the voice coming off cooldown FLASHES gold once, then settles into the
+   steady ready-glow (the animation rides the is-ready class add, which
+   setClass only ever performs on a real change) */
+@keyframes hudFwReadyFlash {
+  0%   { box-shadow: 0 0 0 rgba(230, 196, 99, 0); }
+  45%  { box-shadow: 0 0 26px rgba(230, 196, 99, .9), inset 0 1px 0 rgba(255, 245, 210, .1); }
+  100% { box-shadow: 0 0 10px rgba(230, 196, 99, .45), inset 0 1px 0 rgba(255, 245, 210, .1); }
+}
+.hud-fw-card.is-ready .hud-fw-art { animation: hudFwReadyFlash 500ms ease-out; }
+
+/* the recovery veil DRAINS smoothly between the 1 s ticks: scaleY, not
+   height — a transform repaints without a layout pass, and it only runs
+   while a cooldown is actually live, so the always-on cost stays zero.
+   (The stack's .hud-bar no-transition law is about fills that tick for the
+   whole session; this element exists for seconds at a time.) */
+.hud-fw-cd {
+  top: 0; height: 100%;
+  transform-origin: bottom;
+  transition: transform .95s linear;
+  border-top: none;
+}
+.hud-fw-cdt {
+  position: absolute; left: 0; right: 0; bottom: 3px; z-index: 3;
+  text-align: center; pointer-events: none;
+}
+
+/* edit mode feels alive: hover lifts, drag lifts harder + throws a shadow */
+body.hud-editing .hud-fw-card { transition: box-shadow 140ms ease, transform 140ms ease; }
+body.hud-editing .hud-fw:hover .hud-fw-card { transform: translateY(-2px); }
+body.hud-editing .hud-fw.is-drag .hud-fw-card {
+  transform: translateY(-3px) scale(1.03);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .6);
+}
+.hud-fw-tools { opacity: 0; transition: opacity 120ms ease; }
+.hud-fw.is-sel .hud-fw-tools { opacity: 1; }
+
+/* the centre snap guide — shown only while a dragged widget sits snapped on
+   the screen's vertical centre line */
+#hud-fw-guide {
+  position: fixed; top: 0; bottom: 0; left: 50%; width: 0; z-index: 3;
+  border-left: 1px dashed rgba(230, 196, 99, .65);
+  display: none; pointer-events: none;
+}
+#hud-fw-guide.show { display: block; }
+/* ==================== portrait shapes + hurt ring (2026-08-17, wave 2.1) ==
+   Shapes are Party Sheet's portrait cuts: circle (the default the strip has
+   always had) · rounded · square · diamond. One class on #hud-strip decides;
+   every face/medal carries an inert .hud-face-in wrapper so the diamond can
+   counter-rotate its content — no chip rebuild on a shape change. All rules
+   scoped under #hud-strip so the widget stack never inherits them. */
+/* The wrapper CLIPS ITS OWN content too (overflow + inherited radius): the
+   outer face already clips, but under Ultralight a grandchild img behind an
+   extra layer is exactly the kind of clip that silently stops applying — and
+   an unclipped 2.6×-scaled photo is a full screenshot standing in the HUD
+   (Rober, 2026-08-18). Redundant in a browser, load-bearing in the game. */
+.hud-face-in {
+  display: block; width: 100%; height: 100%;
+  overflow: hidden; border-radius: inherit;
+}
+.hud-face-in > .hud-face-img { width: 100%; height: 100%; }
+
+#hud-strip.face-rounded .hud-face, #hud-strip.face-rounded .hud-medal { border-radius: 14px; }
+#hud-strip.face-square .hud-face, #hud-strip.face-square .hud-medal { border-radius: 5px; }
+
+/* Diamond: a 40px square rotated 45° fits the same 56px footprint exactly
+   (diagonal ≈ 56.6), so the level badge and bars below never move. The face
+   image counter-rotates and over-scans (×1.45 ≥ √2) so the upright picture
+   covers the rotated frame's corners; initials just counter-rotate. */
+#hud-strip.face-diamond .hud-face, #hud-strip.face-diamond .hud-medal {
+  width: 40px; height: 40px; margin: 8px; border-radius: 7px;
+  transform: rotate(45deg);
+}
+/* 1.6, not 1.45: the 40px frame has a 36px CONTENT box (2px borders,
+   border-box), and the diamond's tips span 40x sqrt(2) = 56.6px — 1.45 left a
+   ~2px bare notch at each point. 40*sqrt(2)/36 = 1.571; 1.6 adds margin. */
+#hud-strip.face-diamond .hud-face .hud-face-in { transform: rotate(-45deg) scale(1.6); }
+#hud-strip.face-diamond .hud-medal .hud-face-in {
+  transform: rotate(-45deg);
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* Hurt ring: STATIC (the no-looping-animation law) — a red ring + soft glow
+   on anyone under a quarter health, never on the dead (they grey out). */
+.hud-chip.hud-hurt .hud-face, .hud-chip.hud-hurt .hud-medal {
+  border-color: rgba(224, 72, 56, .95);
+  box-shadow: 0 0 0 2px rgba(202, 52, 40, .38), 0 0 14px rgba(224, 72, 56, .55);
+}
+.hud-chip.hud-hurt .hud-lvl { border-color: #8a3325; }
+
+/* ==================== potions readout (2026-08-18) ======================= *
+   The compact rebuild of the retired hotbar-view bar: one row of chips,
+   [mark-or-png][count], only the pools the payload carries. Half the old
+   width, no colour emoji, honest '—' while a count is unknown. */
+.hud-ro-pots { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hud-pot {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px; border-radius: 9px;
+  background: rgba(14, 15, 20, .55);
+  border: 1px solid rgba(240, 214, 140, .18);
+}
+.hud-pot-m {
+  font-style: normal; font-size: 13px; line-height: 1; min-width: 1.2em;
+  text-align: center; text-shadow: var(--hud-tshadow);
+}
+.hud-pot-img { display: block; }
+.hud-pot-n {
+  font: 700 13px/1 "Segoe UI", sans-serif; color: #efe7d2;
+  font-variant-numeric: tabular-nums; text-shadow: var(--hud-tshadow);
+}
+.hud-pot.is-zero { opacity: .45; }
+.hud-pot-ghost { font: 500 12px/1 "Segoe UI", sans-serif; font-style: normal; color: #8d8471; }
+
+/* ============ compact mode + activator browse (2026-08-18) =============== *
+   Compact: the strip is FACES ONLY — level badge, bars, chevron and names
+   wait until a chip is browsed. The activator key (bound in the HUD modal)
+   opens the browse state; WASD/arrows step, Enter expands, Esc closes. All
+   transitions are one-shot property transitions, never loops. */
+body.hud-compact #hud-strip .hud-name,
+body.hud-compact #hud-strip .hud-cbars,
+body.hud-compact #hud-strip .hud-dir,
+body.hud-compact #hud-strip .hud-lvl { display: none; }
+body.hud-compact #hud-strip .hud-chip.nav-sel .hud-name { display: block; }
+body.hud-compact #hud-strip .hud-chip.nav-sel .hud-cbars { display: flex; }
+body.hud-compact #hud-strip .hud-chip.nav-sel .hud-dir { display: flex; }
+body.hud-compact #hud-strip .hud-chip.nav-sel .hud-lvl { display: flex; }
+
+/* the browse highlight: a gold ring that arrives smoothly */
+#hud-strip .hud-face, #hud-strip .hud-medal {
+  transition: border-color 140ms ease, box-shadow 140ms ease,
+              width 140ms ease, height 140ms ease;
+}
+#hud-strip .hud-chip.nav-sel .hud-face,
+#hud-strip .hud-chip.nav-sel .hud-medal {
+  border-color: var(--hud-gold-lit);
+  box-shadow: 0 0 0 2px rgba(201, 162, 75, .45), 0 0 14px rgba(201, 162, 75, .5);
+}
+/* Enter: the selected face grows for a closer look (layout-based — an <img>
+   rasterises at layout size in this engine, so growing IS sharper) */
+#hud-strip .hud-chip.nav-open .hud-face,
+#hud-strip .hud-chip.nav-open .hud-medal { width: 78px; height: 78px; }
+#hud-strip.face-diamond .hud-chip.nav-open .hud-face,
+#hud-strip.face-diamond .hud-chip.nav-open .hud-medal { width: 56px; height: 56px; margin: 11px; }
+
+
+/* strip-only hide: the follower HUD's off-switch hides the STRIP, never the
+   widget stack that shares this view (2026-08-18). */
+body.hud-strip-off #hud-strip { display: none; }
+
+
+/* ---- detachable stack blocks (2026-08-18) — "grab them around anywhere".
+   The block's own element MOVES into this wrap, so its internal styles are
+   untouched; the wrap owns placement, the panel look, and edit affordances. */
+.hud-det {
+  position: absolute;
+  pointer-events: none;
+  /* A floated block is position:absolute with only `left` set, so its width was
+     whatever was LEFT of the viewport edge — drag one to the right and it
+     silently re-wrapped into a tall narrow sliver (measured: the Equipped block
+     went 404x92 → 94x383 at x=1173). That also made its size depend on where it
+     was, which no placement pass can reason about. It sizes to its content now,
+     capped so a very wide block still cannot push the page sideways. If an
+     engine ever drops max-content the declaration simply falls away and the old
+     behaviour returns — no worse than today. */
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(16, 17, 22, .78), rgba(10, 11, 15, .82));
+  border: 1px solid var(--hud-line-lit);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 245, 210, .05);
+}
+.hud-det.is-off { display: none; }
+body.hud-editing .hud-det {
+  pointer-events: auto; cursor: grab;
+  outline: 1px dashed rgba(201, 162, 75, .55); outline-offset: 3px;
+}
+body.hud-editing .hud-det:active { cursor: grabbing; }
+/* Held: the same grabbed look the ⚙ popout wears while dragged. One class,
+   added on down and removed on up by the ONE drag path. */
+.hud-det.is-drag {
+  cursor: grabbing;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 245, 210, .05);
+  outline-color: var(--hud-gold);
+}
+
+
+/* ---- the locked slot group (2026-08-18): hands + powers as ONE unit —
+   uniform rectangular cards, one drag, one scale; separable in ⚙.
+   Vertical is the shipped default; .is-horiz is the row form Rober asked for
+   after the play-test ("no option to make the group horizontal"). */
+.hud-fw-grp {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 10px;
+}
+/* A row of three 158px cards is 514px wide. It FOLDS rather than squashing on
+   a narrow screen — a shrunk card clips its own name and its 108px art plate,
+   which is the one thing these cards exist to show. */
+.hud-fw-grp.is-horiz { flex-direction: row; align-items: stretch; flex-wrap: wrap; }
+.hud-fw-grp.is-horiz > .hud-fw { flex: 0 0 auto; }
+.hud-fw-grp .hud-fw { position: static; pointer-events: none; }
+body.hud-editing .hud-fw-grp .hud-fw { pointer-events: none; }  /* the GROUP drags, not members */
+.hud-fw-grp .hud-fw-card { width: 158px; max-width: 158px; box-sizing: border-box; min-height: 176px; }
+/* In a row the three cards must share one baseline height, or a shout with no
+   badges sits shorter than a sword and the row reads as broken. */
+.hud-fw-grp.is-horiz .hud-fw { display: flex; }
+.hud-fw-grp.is-horiz .hud-fw-card { height: 100%; }
+/* the group's own mini toolbar is the free widgets' bar — it needs a
+   containing block, which .hud-det already is (position:absolute) */
+.hud-fw-grp > .hud-fw-tools { pointer-events: auto; }
+
+
+/* ========================================================================
+   ROUND 4 (2026-08-18) — the browse info card, the custom quick items, the
+   loot lamp, the item picker and the toast.
+
+   Same three laws as everything above: no looping animation (every transition
+   here is a one-shot on a state change), no conic-gradient and no
+   backdrop-filter (Ultralight draws neither), nothing under 12px. The two
+   full-screen backdrops are FLAT rgba on purpose — a fullscreen gradient bands
+   badly with the compositor off.
+   ======================================================================== */
+
+/* ---- the follower info card (browse: Enter or E) ---------------------- *
+   A centred popout, NOT a card anchored to the strip: browsing is a
+   look-at-this moment, and the strip can be parked anywhere on screen. It
+   lives outside #hud so the panel's scale cannot shrink it. */
+.hud-navcard { position: fixed; inset: 0; z-index: 9; pointer-events: none; display: none; }
+.hud-navcard.is-open { display: block; }
+
+/* ---- browse mode's key hint (2026-08-18) -------------------------------
+   Browsing takes the keyboard OFF the player — C++ hands this view real focus
+   — so the three keys that give it back have to be on screen. Nothing else in
+   the game says them, and a mode with no visible way out is the lock-in class
+   this view has already been bitten by twice. One flat line, 14px (couch law),
+   centred on whichever half of the screen the follower strip is NOT in (JS
+   measures and flips it), and it steps aside entirely once the info card is up
+   because the card carries its own foot line. */
+.hud-navhint {
+  position: fixed; left: 50%; top: 28px; transform: translateX(-50%);
+  z-index: 9; display: none; pointer-events: none;
+  max-width: 92vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: 9px 18px; border-radius: 999px;
+  font-family: "Segoe UI", sans-serif; font-size: 14px; font-weight: 600;
+  letter-spacing: .01em; color: var(--hud-gold-pale);
+  background: rgba(10, 12, 16, .88);
+  border: 1px solid var(--hud-line-lit);
+  text-shadow: var(--hud-tshadow);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .55);
+}
+.hud-navhint.is-up { display: block; }
+.hud-navhint.is-bottom { top: auto; bottom: 28px; }
+.hud-nc-back {
+  position: absolute; inset: 0;
+  background: rgba(6, 7, 10, .58);          /* flat — never a gradient */
+  pointer-events: auto;
+}
+.hud-nc-card {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 520px; max-width: 88vw; max-height: 86vh; overflow-y: auto;
+  padding: 22px 24px 18px;
+  border-radius: 16px;
+  background: var(--hud-plate-solid);
+  border: 1px solid var(--hud-gold);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 245, 210, .06);
+  pointer-events: auto;
+  font-family: "Segoe UI", sans-serif;
+}
+.hud-nc-card.is-dead { border-color: rgba(160, 60, 50, .7); }
+.hud-nc-top { display: flex; align-items: center; gap: 20px; }
+/* the portrait, deliberately BIG — an <img> rasterises at layout size here, so
+   a larger box is a sharper face, not a stretched one (the hd-facefit lesson) */
+.hud-nc-face { flex: 0 0 auto; }
+.hud-nc-face .hud-face, .hud-nc-face .hud-medal { width: 168px; height: 168px; }
+.hud-nc-face .hud-medal { font-size: 46px; }
+/* .hud-face-in is a plain block (it exists to CLIP a scaled photo), so initials
+   inside it sit top-left — invisible at 56px in the strip, unmissable at 168.
+   Centring is scoped to the card so the strip's geometry is untouched. */
+.hud-nc-face .hud-medal .hud-face-in { display: flex; align-items: center; justify-content: center; }
+.hud-nc-id { min-width: 0; flex: 1 1 auto; }
+.hud-nc-name {
+  font-size: 26px; font-weight: 700; line-height: 1.15; color: var(--hud-ink);
+  text-shadow: var(--hud-tshadow);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.hud-nc-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.hud-nc-chip {
+  font-size: 13px; line-height: 1; padding: 7px 11px; border-radius: 9px;
+  color: var(--hud-dim); background: rgba(255, 255, 255, .05);
+  border: 1px solid rgba(255, 255, 255, .09);
+}
+.hud-nc-chip.is-lvl { color: var(--hud-gold-lit); border-color: var(--hud-line-lit); background: rgba(201, 162, 75, .13); }
+.hud-nc-chip.is-dead { color: #e79a9a; border-color: rgba(202, 52, 40, .5); background: rgba(202, 52, 40, .14); }
+.hud-nc-chip.is-dir { color: var(--hud-steel); font-variant-numeric: tabular-nums; }
+.hud-nc-bars { display: flex; flex-direction: column; gap: 9px; margin-top: 18px; }
+.hud-nc-bar { display: flex; align-items: center; gap: 10px; }
+.hud-nc-barlab { flex: 0 0 74px; font-size: 12.5px; color: var(--hud-dim); }
+.hud-nc-track {
+  flex: 1 1 auto; height: 12px; border-radius: 6px; overflow: hidden;
+  background: rgba(255, 255, 255, .07); border: 1px solid rgba(255, 255, 255, .08);
+}
+/* stepped fills, never transitioned — a width transition on a live bar is a
+   layout pass every frame behind the game */
+.hud-nc-fill { height: 100%; background: var(--hud-gold); }
+.hud-nc-bar.hp .hud-nc-fill { background: #c4514a; }
+.hud-nc-bar.mk .hud-nc-fill { background: #6f8ad6; }
+.hud-nc-bar.st .hud-nc-fill { background: #74b06e; }
+.hud-nc-barn {
+  flex: 0 0 auto; min-width: 92px; text-align: right;
+  font-size: 12.5px; font-weight: 700; color: var(--hud-ink);
+  font-variant-numeric: tabular-nums;
+}
+.hud-nc-fields {
+  display: flex; flex-direction: column; gap: 4px; margin-top: 16px;
+  padding-top: 14px; border-top: 1px solid rgba(255, 255, 255, .08);
+}
+.hud-nc-field { display: flex; gap: 12px; font-size: 13px; }
+.hud-nc-fk { flex: 0 0 40%; color: var(--hud-dim); }
+.hud-nc-fv { flex: 1 1 auto; color: var(--hud-ink); overflow: hidden; text-overflow: ellipsis; }
+.hud-nc-foot { margin-top: 16px; font-size: 12px; color: var(--hud-dim); }
+/* while browsing, the faces themselves are clickable — the body is inert
+   during play, so this is the one surface that opts back in */
+body.hud-navving #hud-strip .hud-chip { pointer-events: auto; cursor: pointer; }
+
+/* ---- custom quick items (quick2) --------------------------------------- */
+/* .hud-fw-card caps at 158px so a long weapon NAME cannot widen a slot card —
+   right for the hand cards, wrong for a shelf of up to 16 tiles that also
+   carries its own editor. quick2 opts out; the favourites twin is untouched. */
+.hud-q2card { max-width: 560px; }
+.hud-q2card .hud-fw-qrow { max-width: 520px; }
+/* a fixed-width column per tile, so a bind label or an edit button can never
+   make one tile wider than its neighbour and ragged the whole shelf */
+.hud-q2tile {
+  position: relative; width: 76px;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+}
+.hud-q2tile.is-gone { opacity: .55; }
+.hud-q2-gone {
+  font-size: 12px; line-height: 1; text-align: center;
+  color: var(--hud-warn); text-shadow: var(--hud-tshadow);
+}
+/* The bound key rides UNDER the plate — in play too, since a key is the only
+   way to fire one of these. Cornering it (the favourites twin's single digit)
+   put "Num 4" straight through the count badge. */
+.hud-q2-hk {
+  position: static; max-width: 76px; padding: 1px 5px; border-radius: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: rgba(201, 162, 75, .14); border: 1px solid var(--hud-line-lit);
+}
+.hud-q2-hk.is-blank { visibility: hidden; }
+.hud-q2-tools { display: flex; gap: 3px; justify-content: center; }
+.hud-q2-btn {
+  font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+  padding: 6px 9px; border-radius: 8px;
+  color: var(--hud-gold-pale); background: rgba(16, 17, 22, .92);
+  border: 1px solid var(--hud-line-lit);
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.hud-q2-btn:hover { color: var(--hud-gold-lit); border-color: var(--hud-gold); background: rgba(22, 23, 30, .96); }
+.hud-q2-btn:active { transform: translateY(1px); }
+.hud-q2-btn:focus-visible { outline: 2px solid rgba(201, 162, 75, .55); outline-offset: 1px; }
+.hud-q2-btn.is-primary { color: #12140f; background: var(--hud-gold); border-color: var(--hud-gold-lit); font-weight: 700; }
+.hud-q2-btn.is-primary:hover { background: var(--hud-gold-lit); color: #12140f; }
+.hud-q2-btn.is-listening { color: var(--hud-gold-lit); border-color: var(--hud-gold-lit); background: rgba(201, 162, 75, .2); }
+.hud-q2-key { max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hud-q2-edit {
+  margin-top: 10px; padding-top: 10px; width: 100%;
+  border-top: 1px solid rgba(255, 255, 255, .09);
+}
+.hud-q2-edrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; }
+.hud-q2-step {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 6px; border-radius: 9px;
+  background: rgba(255, 255, 255, .04); border: 1px solid rgba(255, 255, 255, .08);
+}
+.hud-q2-steplab { font-size: 12px; color: var(--hud-dim); }
+.hud-q2-stepn { font-size: 13px; color: var(--hud-ink); min-width: 1.6em; text-align: center; font-variant-numeric: tabular-nums; }
+.hud-q2-note {
+  margin-top: 8px; max-width: 420px; font-size: 12px; line-height: 1.45;
+  color: var(--hud-dim); text-align: center;
+}
+
+/* ---- the Add Items picker --------------------------------------------- */
+.hud-q2pick { position: fixed; inset: 0; z-index: 10; pointer-events: none; display: none; }
+.hud-q2pick.is-open { display: block; }
+/* .82, not .6: the ⚙ settings card is a bright grid of forty buttons and it
+   sits right behind this one (z 8 under z 10) — at .6 it read straight through
+   the backdrop and competed with the list you are trying to read (Opus audit,
+   2026-08-18). Flat, never a gradient: a fullscreen gradient bands here. */
+.hud-q2pick-back { position: absolute; inset: 0; background: rgba(6, 7, 10, .82); pointer-events: auto; }
+.hud-q2pick-card {
+  /* HIGH, not centred: the widget it is filling lives in the bottom band, and a
+     centred 82vh card sat right on top of it — so you could not watch the tiles
+     you were adding arrive (Opus audit, 2026-08-18). Up here the picker and its
+     widget are both on screen at once, which is the whole point of the flow. */
+  position: absolute; left: 50%; top: 6%; transform: translateX(-50%);
+  width: 560px; max-width: 88vw; max-height: 56vh;
+  display: flex; flex-direction: column;
+  padding: 16px 18px 14px; border-radius: 15px;
+  background: var(--hud-plate-solid); border: 1px solid var(--hud-gold);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  pointer-events: auto; font-family: "Segoe UI", sans-serif;
+}
+.hud-q2pick-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.hud-q2pick-title {
+  flex: 1 1 auto; font-size: 13px; font-weight: 700; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--hud-gold);
+}
+.hud-q2pick-inp {
+  font: inherit; font-size: 15px; width: 100%; padding: 11px 13px;
+  border-radius: 10px; color: var(--hud-ink);
+  background: rgba(255, 255, 255, .05); border: 1px solid var(--hud-line-lit);
+  outline: none;
+}
+.hud-q2pick-inp:focus { border-color: var(--hud-gold); background: rgba(255, 255, 255, .07); }
+.hud-q2pick-list {
+  margin-top: 10px; flex: 1 1 auto; min-height: 120px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.hud-q2pick-row {
+  font: inherit; text-align: left; cursor: pointer;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 9px;
+  color: var(--hud-ink); background: rgba(255, 255, 255, .03);
+  border: 1px solid transparent;
+  transition: background .12s ease, border-color .12s ease;
+}
+.hud-q2pick-row:hover { background: rgba(201, 162, 75, .1); border-color: var(--hud-line-lit); }
+.hud-q2pick-row.is-sel { background: rgba(201, 162, 75, .16); border-color: var(--hud-gold); }
+.hud-q2pick-row.is-owned { opacity: .5; }
+.hud-q2pick-nm { flex: 1 1 auto; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hud-q2pick-kd { flex: 0 0 auto; font-size: 12px; color: var(--hud-dim); }
+.hud-q2pick-n {
+  flex: 0 0 auto; min-width: 56px; text-align: right;
+  font-size: 13px; font-weight: 700; color: var(--hud-gold-pale);
+  font-variant-numeric: tabular-nums;
+}
+.hud-q2pick-empty { padding: 22px 12px; text-align: center; font-size: 13px; color: var(--hud-dim); }
+.hud-q2pick-foot { margin-top: 10px; font-size: 12px; color: var(--hud-dim); }
+
+/* ---- the loot lamp ----------------------------------------------------- */
+/* two chips side by side — the 158px slot-card cap would wrap them into a
+   column and the lamp would read as two separate widgets */
+.hud-loot-card { flex-direction: column; max-width: 320px; }
+.hud-loot-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.hud-loot-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 11px; border-radius: 10px;
+  font-size: 13px; line-height: 1; color: var(--hud-dim);
+  background: rgba(14, 15, 20, .55); border: 1px solid rgba(255, 255, 255, .1);
+  text-shadow: var(--hud-tshadow);
+  transition: color .14s ease, border-color .14s ease, background .14s ease;
+}
+.hud-loot-chip.is-on {
+  color: var(--hud-gold-lit); background: rgba(201, 162, 75, .16);
+  border-color: var(--hud-gold);
+  box-shadow: 0 0 10px rgba(201, 162, 75, .28);
+}
+.hud-loot-m { font-style: normal; font-size: 14px; line-height: 1; }
+.hud-loot-t { white-space: nowrap; }
+body.hud-editing .hud-loot-chip { cursor: pointer; }
+body.hud-editing .hud-loot-chip:hover { border-color: var(--hud-gold-lit); color: var(--hud-gold-pale); }
+
+/* ---- one-line toast ---------------------------------------------------- */
+.hud-toast {
+  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
+  z-index: 11; pointer-events: none;
+  max-width: 62vw; padding: 11px 16px; border-radius: 11px;
+  font-family: "Segoe UI", sans-serif; font-size: 14px; line-height: 1.3;
+  color: var(--hud-ink); background: var(--hud-plate-solid);
+  border: 1px solid var(--hud-line-lit);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .6);
+  /* hidden by default; one-shot fade in on the class, no loop */
+  opacity: 0; visibility: hidden;
+  transition: opacity .16s ease;
+}
+.hud-toast.is-up { opacity: 1; visibility: visible; }
+.hud-toast.is-bad { border-color: rgba(202, 52, 40, .6); color: #f0cbc8; }
+
+/* ==================================================================== *
+ *  Widget backgrounds (2026-08-19) — the bg layer is the card's FIRST
+ *  child; every later sibling paints above it, so no z-index war. The
+ *  wrap clips (the card's own radius), the art scales INSIDE the clip.
+ * ==================================================================== */
+.hud-bgwrap {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+/* ⚠ Sized by LAYOUT (hud.js bgStyle sets width/height/margins in %), never by
+   transform: Ultralight rasterises an <img> at its layout size, so a
+   transform scale would only magnify an already-made bitmap — a blur knob.
+   Absolute + the negative-margin centring is what lets the art overflow the
+   clip evenly on all four sides when scaled past 100%. */
+.hud-bgwrap img {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.hud-fw-card { position: relative; }
+/* the strip's layer is a SIBLING sized by JS to the strip's box (its faces
+   are direct children render() indexes, so nothing may live inside it) */
+.hud-strip-bgwrap {
+  border-radius: 12px;
+}
+
+/* ---- the shelf's background chips row ------------------------------- */
+.hud-bg-chips .hud-el-chip.on { color: #ecd9a0; }
+.hud-bg-chips .hud-sz-val { align-self: center; }
+
+/* ---- the picker ------------------------------------------------------ */
+.hud-bgpick {
+  position: absolute;
+  inset: 10px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: linear-gradient(180deg, #1a1a21 0%, #101015 100%);
+  border: 1px solid #c9a24b77;
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .7);
+}
+.hud-bgpick-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.hud-bgpick-head .t {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ecd9a0;
+}
+.hud-bgpick-q {
+  font: 500 14px/1.4 "Segoe UI", system-ui, sans-serif;
+  color: #e8e4da;
+  background: #0c0c10;
+  border: 1px solid #2e2e36;
+  border-radius: 8px;
+  padding: 9px 12px;
+  outline: none;
+}
+.hud-bgpick-q:focus { border-color: #c9a24b77; }
+.hud-bgpick-grid {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  align-content: start;
+}
+.hud-bgpick-tile {
+  position: relative;
+  height: 84px;   /* fixed — aspect-ratio is unproven in Ultralight, don't gamble */
+  overflow: hidden;
+  background: #0c0c10;
+  border: 1px solid #2e2e36;
+  border-radius: 8px;
+  cursor: pointer;
+  padding: 0;
+}
+.hud-bgpick-tile:hover { border-color: #c9a24b77; }
+.hud-bgpick-tile img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.hud-bgpick-tile.is-none { display: flex; align-items: center; justify-content: center; }
+.hud-bgpick-lbl {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  font-size: 11px;
+  color: #d9d2bd;
+  background: rgba(10, 10, 14, .78);
+  padding: 3px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hud-bgpick-tile.is-none .hud-bgpick-lbl { position: static; background: none; font-size: 13px; }

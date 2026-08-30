@@ -162,12 +162,16 @@ window.OStimPane = (function () {
     if (!list.length) {
       const empty = document.createElement('div');
       empty.className = 'os-empty';
-      empty.textContent = !inS
-        ? 'Start an OStim scene first — then search here to change it.'
-        : (ui.query
-            ? 'No scene name matches “' + ui.query + '” for the current furniture & actors. '
-              + 'OStim searches scene NAMES — try a word like “behind”, “cowgirl” or “kiss”.'
-            : (state.ostim ? 'No scenes for this furniture & actor count.' : 'OStim isn’t reporting any scenes.'));
+      // ostim-absent is tested FIRST: absent implies not-in-scene, so testing
+      // !inS first told a user with no OStim installed to start a scene.
+      empty.textContent = (ui.gotOpen && !state.ostim)
+        ? 'OStim Standalone isn’t installed or isn’t reporting — nothing to search here.'
+        : (!inS
+            ? 'Start an OStim scene first — then search here to change it.'
+            : (ui.query
+                ? 'No scene name matches “' + ui.query + '” for the current furniture & actors. '
+                  + 'OStim searches scene NAMES — try a word like “behind”, “cowgirl” or “kiss”.'
+                : 'No scenes for this furniture & actor count.'));
       els.list.append(empty);
       return;
     }
@@ -241,6 +245,16 @@ window.OStimPane = (function () {
     ui.toastT = setTimeout(() => { els.toast.className = 'os-toast'; }, 2200);
   }
 
+  /* The three segment toasts sit at identical coordinates (an-/os-/zz-toast are
+     siblings of the bodies, all left:50% bottom:14px), so a toast that outlives
+     its segment floats over the next one's list. Every entry path clears the
+     segments it is leaving. */
+  function hideToast() {
+    if (!els.toast) return;
+    clearTimeout(ui.toastT);
+    els.toast.className = 'os-toast';
+  }
+
   /* =========================================================== actions == */
 
   function change(s) {
@@ -252,6 +266,15 @@ window.OStimPane = (function () {
     glog('change ' + s.sceneId);
     schedulePoll(700);
   }
+
+  /* The four live scene controls, named once so the buttons in init() and the
+     Omni rows at the foot of this file fire the same code. They are the reason
+     to reach for this segment mid-scene, which is exactly when hunting for a
+     button costs the most. */
+  function swapRoles() { toGame('osSwap'); toast('swapping…', true); schedulePoll(1000); }
+  function setFurniture(kind) { toGame('osFurn', kind === 'floor' ? 'floor' : 'nearby'); }
+  function nudgeSpeed(dir) { toGame('osSpeed', dir === '-' ? '-' : '+'); }
+  function toggleAuto() { toGame('osAuto'); }
 
   /* Colloquial → OStim scene-NAME synonyms. OStim's search matches the scene
      NAME only (doggy-style scenes are named "…From Behind…", not "doggy"), so a
@@ -359,11 +382,18 @@ window.OStimPane = (function () {
   /* ========================================================= mode / show == */
 
   function setMode(mode) {
+    // Three-way seg row: entering EITHER of our modes vacates the ZaZ body
+    // first (zaz-pane.js's setMode('zaz') calls us with 'poses' before taking
+    // the pane, so this can never recurse).
+    if (window.ZazPane && typeof ZazPane.leave === 'function') ZazPane.leave();
     ui.mode = (mode === 'ostim') ? 'ostim' : 'poses';
     const pane = $('an-pane');
     if (pane) pane.classList.toggle('mode-ostim', ui.mode === 'ostim');
     if (els.segPoses) els.segPoses.classList.toggle('active', ui.mode === 'poses');
     if (els.segOstim) els.segOstim.classList.toggle('active', ui.mode === 'ostim');
+    // take the outgoing segment's toast with us (see hideToast)
+    if (ui.mode === 'ostim') { if (window.AnimPane && AnimPane.hideToast) AnimPane.hideToast(); }
+    else hideToast();
     if (ui.mode === 'ostim') { toGame('osGet'); startPoll(); if (els.search) els.search.focus(); }
     else { stopPoll(); }
   }
@@ -444,12 +474,12 @@ window.OStimPane = (function () {
     // live controls
     const b = (id) => $(id);
     els.ctlButtons = [b('os-speed-down'), b('os-speed-up'), els.auto, b('os-furn-near'), b('os-furn-floor'), els.swap].filter(Boolean);
-    b('os-speed-down') && b('os-speed-down').addEventListener('click', () => toGame('osSpeed', '-'));
-    b('os-speed-up') && b('os-speed-up').addEventListener('click', () => toGame('osSpeed', '+'));
-    els.auto && els.auto.addEventListener('click', () => toGame('osAuto'));
-    els.swap && els.swap.addEventListener('click', () => { toGame('osSwap'); toast('swapping…', true); schedulePoll(1000); });
-    b('os-furn-near') && b('os-furn-near').addEventListener('click', () => toGame('osFurn', 'nearby'));
-    b('os-furn-floor') && b('os-furn-floor').addEventListener('click', () => toGame('osFurn', 'floor'));
+    b('os-speed-down') && b('os-speed-down').addEventListener('click', () => nudgeSpeed('-'));
+    b('os-speed-up') && b('os-speed-up').addEventListener('click', () => nudgeSpeed('+'));
+    els.auto && els.auto.addEventListener('click', toggleAuto);
+    els.swap && els.swap.addEventListener('click', swapRoles);
+    b('os-furn-near') && b('os-furn-near').addEventListener('click', () => setFurniture('nearby'));
+    b('os-furn-floor') && b('os-furn-floor').addEventListener('click', () => setFurniture('floor'));
 
     els.search.addEventListener('input', () => {
       ui.query = els.search.value || '';
@@ -576,6 +606,17 @@ window.OStimPane = (function () {
     }, 60);
   }
 
+  /* Land ON the OStim segment. smartLand() decides which segment fits the live
+     state; this is the explicit "show me OStim" a player just typed, so it goes
+     there whether or not a scene is running. */
+  function openSegment() {
+    if (!init()) return;
+    if (ostimGatedOut()) return;   // never land on a hidden segment
+    if (window.__omniSetTab) window.__omniSetTab('anim');
+    else if (window.setTab) window.setTab('anim');
+    setMode('ostim');
+  }
+
   /* ---- Omni search provider (universal search) ------------------------- */
   if (window.HDOmni) HDOmni.register({
     id: 'ostim', label: 'OStim scenes', tab: 'anim',
@@ -586,9 +627,66 @@ window.OStimPane = (function () {
     index: function () {
       // OStim absent (install-time gate) → no rows at all (2026-08-12 sweep).
       if (ostimGatedOut()) return [];
-      // Only meaningful while a scene is running (Omni changes the live scene).
-      if (!state.inScene) return [];
       const items = [];
+      /* Typing "ostim" has to find OStim. This pane's nav label is
+         "Animations", so before this row a player naming one of the deck's
+         advertised integrations matched nothing anywhere in the deck whenever a
+         scene wasn't running — which is most of the time. */
+      items.push({
+        label: 'OStim scenes',
+        detail: state.inScene
+          ? 'In a scene · ' + (state.sceneName || state.scene || 'running') + ' — search and change it'
+          : 'Animations tab · start a scene, then change it from here',
+        kind: 'ostim',
+        keywords: 'ostim osa scene sex animation search change segment tab',
+        run: openSegment,
+      });
+
+      /* Everything below drives a RUNNING scene — OStim's thread API has
+         nothing to act on otherwise, and the pane's own buttons are disabled
+         for the same reason. */
+      if (!state.inScene) return items;
+
+      if (state.canSwap) items.push({
+        label: '⇄ Swap roles',
+        detail: 'OStim · reverse DOM / SUB in the current scene',
+        kind: 'ostim',
+        keywords: 'ostim swap roles dom sub reverse switch positions actors',
+        run: swapRoles,
+      });
+      items.push({
+        label: '🛏 Furniture: nearby',
+        detail: 'OStim · move the scene onto the nearest bed or furniture',
+        kind: 'ostim',
+        keywords: 'ostim furniture bed nearby move scene onto switch',
+        run: function () { setFurniture('nearby'); },
+      });
+      items.push({
+        label: '⌞ Furniture: floor',
+        detail: 'OStim · put the scene back on the floor',
+        kind: 'ostim',
+        keywords: 'ostim furniture floor ground off bed move scene',
+        run: function () { setFurniture('floor'); },
+      });
+      items.push({
+        label: 'Speed up',
+        detail: 'OStim · speed ' + state.speed + ' / ' + state.maxSpeed,
+        kind: 'ostim',
+        keywords: 'ostim speed faster quicker harder pace increase',
+        run: function () { nudgeSpeed('+'); },
+      });
+      items.push({
+        label: 'Speed down',
+        detail: 'OStim · speed ' + state.speed + ' / ' + state.maxSpeed,
+        kind: 'ostim',
+        keywords: 'ostim speed slower gentler pace decrease',
+        run: function () { nudgeSpeed('-'); },
+      });
+      /* ⟳ Auto is deliberately NOT here: osAuto only READS OStim's auto-mode
+         (the Thread API has no write — see ostim_deck.cpp ToggleAuto), so a
+         search row named "turn auto on" would promise a toggle nothing
+         performs. It comes back when the Scene API lands. */
+
       for (const s of rows()) {
         if (s.compatible === false) continue;
         items.push({
@@ -604,7 +702,7 @@ window.OStimPane = (function () {
   });
 
   return {
-    init, onAnimShow, onAnimHide, setMode, smartLand,
+    init, onAnimShow, onAnimHide, setMode, smartLand, hideToast,
     _state: state, _ui: ui   // test hooks only
   };
 })();

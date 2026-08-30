@@ -51,6 +51,13 @@ namespace NpcActions
 	// Returns false for an unknown action id.
 	bool Run(const std::string& action);
 
+	// Seat an actor on an EXPLICIT furniture reference through the alias engine
+	// (SitTarget package at the paired chair alias) — the ZaZ segment's
+	// "use this cross/pillory" verb. Main thread only. On failure returns false
+	// with the honest reason in outMsg; on success outMsg is the HUD line
+	// already shown ("<name> -> <furniture> (walking over)").
+	bool SeatOn(std::uint32_t actorFormId, std::uint32_t furnRefId, std::string& outMsg);
+
 	// The F7 card's 🔍 Debug reveal (Rober's ask, 2026-08-10): the raw truth
 	// about one loaded actor — identity + plugins, engine flags (teammate,
 	// essential, …), EVERY faction with rank, the follower-framework probe,

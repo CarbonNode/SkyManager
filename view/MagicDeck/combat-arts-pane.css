@@ -1,0 +1,581 @@
+/* ===================================================================== *
+ *  Combat Arts tab — the Ashes of War collection/equip screen. Own sheet
+ *  (linked from index.html) so no other pane's app.css section can
+ *  truncate it — the sync_view_frags lesson, same as items-pane.css.
+ *
+ *  Deck tokens (dark #1a1a21→#101015, gold rgba(201,162,75), border
+ *  #3d3a33, radius 12). No text below 12px — couch rules. Spacious.
+ * ===================================================================== */
+
+#ca-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 22px 14px;
+  gap: 14px;
+  position: relative;   /* the picker sheet + toast anchor to the pane */
+}
+#ca-pane.hidden { display: none; }
+
+/* ------------------------------------------------------------- header -- */
+
+.ca-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ca-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #e8e2d4;
+  letter-spacing: .3px;
+  white-space: nowrap;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+/* the collected counter — "12 / 74 collected", gold-tinted chip */
+#ca-count-chip {
+  font-size: 14px;
+  font-weight: 700;
+  color: #ecd9a8;
+  background: rgba(201, 162, 75, .12);
+  border: 1px solid rgba(201, 162, 75, .35);
+  border-radius: 9px;
+  padding: 5px 12px;
+  white-space: nowrap;
+}
+#ca-count-chip:empty { display: none; }
+
+.ca-head-hint {
+  margin-left: auto;
+  font-size: 13px;
+  color: #9a917d;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------- equipped banner (gold, big) -- */
+
+.ca-equip {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 74px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(201, 162, 75, .45);
+  background: linear-gradient(180deg, rgba(201, 162, 75, .14) 0%, rgba(201, 162, 75, .05) 100%);
+}
+.ca-equip.ca-equip-none {
+  border-color: #3d3a33;
+  background: #17171d;
+}
+
+.ca-equip-glyph {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  position: relative;
+  overflow: hidden;
+  background: rgba(201, 162, 75, .14);
+  border: 1px solid rgba(201, 162, 75, .4);
+  color: #ecd9a8;
+}
+.ca-equip-glyph img.ca-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.ca-equip-txt {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.ca-equip-name {
+  font-size: 19px;
+  font-weight: 700;
+  color: #f0e6cd;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ca-equip-sub {
+  font-size: 13px;
+  color: #b3a884;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ca-equip-empty {
+  font-size: 16px;
+  font-weight: 600;
+  color: #9a917d;
+}
+
+.ca-unequip {
+  background: #1d1d25;
+  border: 1px solid #55503f;
+  border-radius: 9px;
+  color: #e6dcc2;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 18px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.ca-unequip:hover { background: #2a2a33; border-color: rgba(201, 162, 75, .6); color: #f4ecd8; }
+.ca-unequip:active { background: #17171d; }
+.ca-unequip:focus-visible {
+  outline: none;
+  border-color: rgba(201, 162, 75, .7);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .22);
+}
+
+/* ------------------------------------- inline action error (persistent) -- */
+
+.ca-err {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(200, 80, 70, .55);
+  background: rgba(200, 80, 70, .12);
+  color: #eab0a8;
+  font-size: 14px;
+}
+.ca-err.hidden { display: none; }
+.ca-err b { color: #f4c9c2; }
+.ca-err-x {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #eab0a8;
+  font-size: 15px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.ca-err-x:hover { background: rgba(200, 80, 70, .2); color: #ffd9d2; }
+
+/* ----------------------------------------------------------- search bar -- */
+
+.ca-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #14141a;
+  border: 1px solid #3d3a33;
+  border-radius: 12px;
+  padding: 4px 16px;
+  transition: border-color 130ms ease, box-shadow 130ms ease;
+}
+.ca-bar:focus-within {
+  border-color: rgba(201, 162, 75, .6);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .16);
+}
+.ca-bar-glyph { font-size: 18px; color: #8a8271; }
+#ca-search {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: #e8e2d4;
+  font-size: 17px;
+  padding: 11px 0;
+  min-width: 0;
+}
+#ca-search::placeholder { color: #6d675a; }
+
+/* ----------------------------------------------------------------- body -- */
+
+#ca-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 4px;
+}
+
+.ca-sect {
+  font-size: 13px;
+  font-weight: 700;
+  color: #9a917d;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  padding: 10px 4px 4px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.ca-sect b { color: #cfc8b8; }
+
+/* ------------------------------------------------------------ art rows -- */
+
+.ca-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 12px;
+  border-radius: 11px;
+  border: 1px solid transparent;
+  background: #17171d;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.ca-row:hover { background: #1e1e26; border-color: #3d3a33; }
+.ca-row:active { transform: scale(.995); }
+.ca-row.ca-sel {
+  border-color: rgba(201, 162, 75, .55);
+  background: rgba(201, 162, 75, .08);
+}
+/* the equipped row: gold border + chip */
+.ca-row.ca-eq {
+  border-color: rgba(201, 162, 75, .6);
+  background: linear-gradient(180deg, rgba(201, 162, 75, .12) 0%, rgba(201, 162, 75, .04) 100%);
+}
+
+.ca-glyph {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 21px;
+  position: relative;
+  overflow: hidden;
+  /* per-art hue lands as inline color/background/border-color from JS */
+  background: #22222a;
+  border: 1px solid #34313a;
+}
+.ca-glyph img.ca-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.ca-mid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.ca-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: #e4ddc9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ca-name mark { background: rgba(201, 162, 75, .35); color: #f4ecd8; border-radius: 3px; padding: 0 1px; }
+.ca-sub {
+  font-size: 12.5px;
+  color: #8a8271;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ×N count chip when the art was found more than once */
+.ca-count {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #cfc8b8;
+  background: #23232b;
+  border: 1px solid #3d3a33;
+  border-radius: 8px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+
+.ca-eq-chip {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #ecd9a8;
+  background: rgba(201, 162, 75, .16);
+  border: 1px solid rgba(201, 162, 75, .5);
+  border-radius: 8px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+.ca-act { display: flex; align-items: center; gap: 8px; }
+
+.ca-equip-btn {
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  color: #cfc8b8;
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 8px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.ca-equip-btn:hover {
+  background: rgba(201, 162, 75, .14);
+  border-color: rgba(201, 162, 75, .55);
+  color: #ecd9a8;
+}
+.ca-equip-btn:active { background: #17171d; }
+.ca-equip-btn:focus-visible {
+  outline: none;
+  border-color: rgba(201, 162, 75, .7);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .22);
+}
+
+/* the ✎ icon-assign button: hover-revealed, always on in edit mode */
+.ca-pen {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #8a8271;
+  font-size: 14px;
+  padding: 6px 8px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+.ca-row:hover .ca-pen { opacity: 1; }
+#ca-pane.ca-editing .ca-pen { opacity: 1; border-color: #3d3a33; }
+.ca-pen:hover { background: #26262f; color: #e6dcc2; }
+
+/* ------------------------------------------------- undiscovered section -- */
+
+.ca-und-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px;
+  margin-top: 8px;
+  border-radius: 11px;
+  border: 1px dashed #3d3a33;
+  background: #14141a;
+  color: #9a917d;
+  font-size: 14.5px;
+  font-weight: 700;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.ca-und-head:hover { background: #1a1a21; border-color: #55503f; color: #cfc8b8; }
+.ca-und-caret { font-size: 12px; }
+.ca-und-hint {
+  margin-left: auto;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #6d675a;
+  white-space: nowrap;
+}
+
+.ca-row.ca-und {
+  cursor: default;
+  opacity: .55;
+  background: #131318;
+}
+.ca-row.ca-und:hover { background: #16161d; border-color: #2c2a30; }
+.ca-row.ca-und:active { transform: none; }
+.ca-row.ca-und .ca-name { color: #a49d8c; }
+.ca-row.ca-und .ca-glyph { filter: grayscale(1); }
+
+/* ------------------------------------------------- states: skel / empty -- */
+
+.ca-row.ca-skel { cursor: default; }
+.ca-skel-box {
+  background: linear-gradient(90deg, #1e1e26 25%, #26262f 50%, #1e1e26 75%);
+  border-radius: 8px;
+}
+.ca-skel .ca-glyph { border: none; }
+.ca-skel-w1 { width: 46%; height: 15px; }
+.ca-skel-w2 { width: 28%; height: 11px; margin-top: 5px; }
+.ca-skel-btn { width: 84px; height: 34px; }
+
+#ca-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 26px;
+}
+#ca-empty.hidden { display: none; }
+.ca-empty-title { font-size: 19px; font-weight: 700; color: #cfc8b8; }
+.ca-empty-sub { font-size: 14px; color: #8a8271; max-width: 560px; line-height: 1.5; }
+
+/* present:false — the honest whole-pane reason */
+.ca-absent-glyph { font-size: 44px; opacity: .5; }
+
+/* ---------------------------------------------------------------- toast -- */
+
+.ca-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%) translateY(8px);
+  background: #23231c;
+  border: 1px solid rgba(201, 162, 75, .5);
+  color: #ecd9a8;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 10px;
+  padding: 10px 18px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 30;
+  max-width: 80%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ca-toast.ca-toast-show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ---------------------------------------------------------- icon picker -- */
+
+#ca-picker {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 8, 11, .66);
+  border-radius: inherit;
+}
+#ca-picker.hidden { display: none; }
+
+.ca-pick-card {
+  width: min(640px, 92%);
+  max-height: 86%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: linear-gradient(180deg, #1c1c23 0%, #14141a 100%);
+  border: 1px solid #55503f;
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .55);
+}
+.ca-pick-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 700;
+  color: #e8e2d4;
+}
+.ca-pick-head b { color: #ecd9a8; }
+.ca-pick-x {
+  margin-left: auto;
+  background: none;
+  border: 1px solid #3d3a33;
+  border-radius: 8px;
+  color: #cfc8b8;
+  font-size: 14px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.ca-pick-x:hover { background: #26262f; border-color: #55503f; }
+
+.ca-pick-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #101015;
+  border: 1px solid #3d3a33;
+  border-radius: 10px;
+  padding: 2px 12px;
+}
+.ca-pick-search:focus-within { border-color: rgba(201, 162, 75, .6); }
+#ca-pick-filter {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: #e8e2d4;
+  font-size: 15px;
+  padding: 9px 0;
+}
+
+#ca-pick-grid {
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+  padding: 2px;
+}
+.ca-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: #17171d;
+  border: 1px solid #2c2a30;
+  border-radius: 10px;
+  padding: 10px 6px 8px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.ca-tile:hover { background: #22222a; border-color: rgba(201, 162, 75, .5); }
+.ca-tile.ca-tile-sel { border-color: rgba(201, 162, 75, .7); background: rgba(201, 162, 75, .1); }
+.ca-tile img { width: 52px; height: 52px; object-fit: contain; }
+.ca-tile-none-glyph {
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  color: #6d675a;
+}
+.ca-tile-lbl {
+  font-size: 12px;
+  color: #a49d8c;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ca-pick-hint { font-size: 13px; color: #8a8271; text-align: center; padding: 12px; }
+
+/* ------------------------------------------------------ narrow (640 px) -- */
+
+@media (max-width: 760px) {
+  #ca-pane { padding: 12px 12px 10px; gap: 10px; }
+  .ca-head-hint { display: none; }
+  .ca-equip { min-height: 62px; padding: 10px 12px; gap: 10px; }
+  .ca-equip-name { font-size: 17px; }
+  .ca-sub { display: none; }
+  .ca-row { gap: 10px; padding: 8px 9px; }
+  .ca-glyph { width: 38px; height: 38px; flex-basis: 38px; font-size: 18px; }
+  .ca-equip-btn { padding: 7px 12px; }
+  /* no hover on a couch pad at this width — keep the pen reachable */
+  .ca-pen { opacity: 1; }
+}

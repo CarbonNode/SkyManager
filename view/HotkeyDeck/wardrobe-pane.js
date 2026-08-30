@@ -50,6 +50,17 @@ window.WardrobePane = (function () {
   const SAVE_DEBOUNCE = 350;                 // same cadence as the other panes
   const SUBS = ['outfits', 'wardrobes', 'npcs', 'inventory'];
   const SUB_LABEL = { outfits: 'Outfits', wardrobes: 'Wardrobes', npcs: 'People', inventory: 'Inventory' };
+  /* Search synonyms for the sections, used by the omni provider at the foot of
+   * this file. Omni's own tab fallback only reads the deck's TOP nav, so a
+   * sub-tab is findable by name only if this pane says so — and a player who
+   * wants the People section is as likely to type "who wears what" as "People".
+   * A plug-in sub-tab has no entry here and is found by its label alone. */
+  const SUB_TERMS = {
+    outfits: 'clothes looks sets what to wear',
+    wardrobes: 'pools collections groups rotation',
+    npcs: 'people npcs followers who wears dressed assign',
+    inventory: 'armour armor pieces items build a new outfit basket',
+  };
 
   /* Sub-tabs contributed by another file. `wardrobe-nff.js` registers the NFF
    * outfit backend this way: it owns its own rows, its own overlays and its own
@@ -428,6 +439,8 @@ window.WardrobePane = (function () {
       class: cls, src: plain + '?v=' + (p.mtime || 0), alt: '',
       title: npc.name || '', draggable: 'false',
     });
+    /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
+    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, plain);
     let retried = false;
     img.addEventListener('error', function () {
       if (!retried) { retried = true; img.src = plain; return; }
@@ -463,6 +476,7 @@ window.WardrobePane = (function () {
         plugin: (kp.length === 2 && kp[1]) ? kp[1] : npc.plugin,
         name: npc.name,
         mode: 'off', wardrobeId: '', outfit: '', cadenceHours: 0,
+        cadenceInherit: false, draw: '',
         locationOverrides: [], lastRollDay: 0, lastOutfit: '',
       };
       state.assignments.push(a);
@@ -990,6 +1004,24 @@ window.WardrobePane = (function () {
     ui.armed = null;
   }
 
+  /* Switch sections. Shared by the sub-tab buttons and by the omni results that
+   * open one of this pane's surfaces, so "click People" and "search for People"
+   * cannot drift apart. `prep` runs after the section is chosen and BEFORE the
+   * single render, so a caller that also wants a panel open inside that section
+   * (omni's settings rows) does not paint the section twice. */
+  function enterSub(s, prep) {
+    ui.sub = s;
+    ui.filter = '';
+    if (els.search) els.search.value = '';
+    resetPaging();
+    const p = PLUGINS[s];
+    if (p) { try { p.setFilter(''); p.onEnter(); } catch (e) { console.log('[wardrobe] sub enter', s, e); } }
+    if (s === 'npcs') refreshNffData();   // People shows NFF facts now
+    if (typeof prep === 'function') prep();
+    render();
+    if (els.body) els.body.scrollTop = 0;
+  }
+
   function renderNav() {
     els.nav.textContent = '';
     const counts = {
@@ -1007,13 +1039,7 @@ window.WardrobePane = (function () {
         type: 'button',
         title: 'Show the ' + (SUB_LABEL[s] || s) + ' section',
         'aria-current': ui.sub === s ? 'true' : null,
-        onclick: () => {
-          ui.sub = s; ui.filter = ''; els.search.value = ''; resetPaging();
-          const p = PLUGINS[s];
-          if (p) { try { p.setFilter(''); p.onEnter(); } catch (e) { console.log('[wardrobe] sub enter', s, e); } }
-          if (s === 'npcs') refreshNffData();   // People shows NFF facts now
-          render(); els.body.scrollTop = 0;
-        },
+        onclick: () => enterSub(s),
       }, SUB_LABEL[s], h('span', { class: 'wd-subtab-n' }, String(counts[s]))));
     });
   }
@@ -1122,7 +1148,10 @@ window.WardrobePane = (function () {
         }));
       } else {
         const n = state.outfitMeta.filter((m) => (m.categoryIds || []).indexOf(c.id) !== -1).length;
-        pill.append(c.name, h('span', { style: 'opacity:.6;font-size:11px' }, String(n)));
+        /* .wd-pill-n, never an inline font-size — the Inventory pills moved to
+           the class so the count stays legible at couch distance; this call
+           site was the one left behind, still drawing 11px. */
+        pill.append(c.name, h('span', { class: 'wd-pill-n' }, String(n)));
       }
       els.cats.append(pill);
     });
@@ -2109,7 +2138,11 @@ window.WardrobePane = (function () {
     } else if (a && a.mode === 'wardrobe') {
       const w = wardrobeById(a.wardrobeId);
       sub.append(h('span', { class: 'wd-chip gold' }, '◇ ' + (w ? w.name : 'missing wardrobe')));
-      sub.append(h('span', { class: 'wd-chip' }, 'every ' + cadenceLabel(a.cadenceHours)));
+      const eff = effCadence(a);
+      sub.append(h('span', {
+        class: 'wd-chip',
+        title: a.cadenceInherit ? 'Follows the wardrobe’s default cadence' : null,
+      }, (eff ? 'every ' + cadenceLabel(eff) : 'on demand') + (a.cadenceInherit ? ' ↳' : '')));
     } else if (a && a.mode === 'outfit' && a.outfit) {
       sub.append(h('span', { class: 'wd-chip' + (isMissing(a.outfit) ? ' warn' : '') }, a.outfit));
     } else {
@@ -2766,11 +2799,38 @@ window.WardrobePane = (function () {
 
   /* The rendered armour for an item, or '' — key normalisation matches the
    * C++ index exactly (UPPERCASE hex | lowercase plugin). */
+  function itemIconKey(item) {
+    if (!item || !item.formId || !item.plugin) return '';
+    return String(item.formId).toUpperCase() + '|' + String(item.plugin).toLowerCase();
+  }
+
   function itemIconFor(item) {
-    if (!item || !item.formId || !item.plugin)
-      return '';
-    const key = String(item.formId).toUpperCase() + '|' + String(item.plugin).toLowerCase();
+    const key = itemIconKey(item);
+    if (!key) return '';
     return (state.itemIcons && state.itemIcons[key]) || '';
+  }
+
+  /* Why this piece will never get a picture, or '' if it still might.
+     C++ ships a verdict per dead end (no world model / the renderer never
+     produced one), because a tile with no art and no explanation is
+     indistinguishable from one still in the queue — Rober sat waiting on a wig
+     and a face that had already failed (2026-08-15). Panes use this to paint an
+     honest x with the reason, and offer the retry below. */
+  function itemIconFailed(item) {
+    const key = itemIconKey(item);
+    if (!key) return '';
+    if (state.itemIcons && state.itemIcons[key]) return '';   // it rendered after all
+    return (state.itemIconFails && state.itemIconFails[key]) || '';
+  }
+
+  /* "Try again" — forget the verdict in C++ and walk the normal path. */
+  function retryItemIcon(item) {
+    const key = itemIconKey(item);
+    if (!key) return false;
+    if (state.itemIconFails) delete state.itemIconFails[key];
+    toGame('whIconRetry', JSON.stringify({ items: [{ formId: item.formId, plugin: item.plugin,
+                                                     name: item.name || item.n || '' }] }));
+    return true;
   }
 
   /* A big look at one rendered piece. The rows are 40-some pixels; the render
@@ -3335,15 +3395,54 @@ window.WardrobePane = (function () {
       touch();
     };
     /* How this wardrobe picks. Bag = everything worn once before repeats; that
-     * is what people mean by "vary her clothes". Random = independent rolls. */
+     * is what people mean by "vary her clothes". Random = independent rolls.
+     * BOTH options are drawn with the current one lit — the old single pill
+     * named only the current mode, which read as a badge, not a control. */
     els.builderMode.textContent = '';
-    const bag = (w.mode || 'bag') === 'bag';
-    els.builderMode.append(h('button', {
-      class: 'wd-cat-pill on', type: 'button',
-      title: bag ? 'Every outfit is worn once before any repeats — click for true random'
-        : 'Independent random rolls — click for a shuffle bag',
-      onclick: () => { w.mode = bag ? 'random' : 'bag'; w.bag = []; touch(); },
-    }, bag ? '⇄ Shuffle bag' : '⚄ Random'));
+    const curMode = (w.mode || 'bag') === 'bag' ? 'bag' : 'random';
+    [['bag', '⇄ Shuffle bag', 'Every outfit is worn once before any repeats'],
+     ['random', '⚄ Random', 'Independent rolls — repeats can cluster, but never twice running']]
+      .forEach(([v, label, tip]) => {
+        els.builderMode.append(h('button', {
+          class: 'wd-cat-pill' + (curMode === v ? ' on' : ''), type: 'button',
+          title: tip,
+          onclick: () => {
+            /* Re-clicking the lit pill must not dump the bag — emptying it
+               mid-cycle would let outfits repeat before the cycle finishes. */
+            if (curMode === v) return;
+            w.mode = v; w.bag = []; touch();
+          },
+        }, label));
+      });
+
+    /* Default cadence for wearers whose assignment says "Wardrobe's cadence".
+       Same chip idiom as the sheet, so the two surfaces read as one control. */
+    els.builderCad.textContent = '';
+    const bcur = CADENCE[cadenceIndex(w.cadenceHours || 0)];
+    const bseg = h('div', { class: 'wd-seg wd-cad-seg', role: 'group', 'aria-label': 'Default cadence for wearers' });
+    CADENCE.forEach((hrs) => {
+      bseg.append(h('button', {
+        type: 'button', class: bcur === hrs ? 'on' : '',
+        title: hrs ? 'Inheriting wearers change every ' + cadenceLabel(hrs) + ' of game time'
+             : 'No default — inheriting wearers never change on their own',
+        onclick: () => { w.cadenceHours = hrs; touch(); },
+      }, cadenceLabel(hrs)));
+    });
+    /* Who actually follows this default RIGHT NOW — a setting nobody inherits
+       reads very differently from one that just re-timed four people. */
+    const followers = state.assignments.filter((a2) =>
+      a2.mode === 'wardrobe' && a2.wardrobeId === w.id && a2.cadenceInherit);
+    els.builderCad.append(
+      h('span', { class: 'wd-field-k' }, 'Wearers change every'),
+      bseg,
+      h('span', { class: 'wd-cad-next' },
+        followers.length
+          ? [h('b', null, followers.length === 1 ? (followers[0].name || '1 wearer')
+              : followers.length + ' wearers'),
+             document.createTextNode(
+               (followers.length === 1 ? ' follows' : ' follow') +
+               ' this default — anyone’s own explicit cadence beats it.')]
+          : 'The default for anyone whose assignment says “↳ Wardrobe’s” — nobody inherits it yet.'));
 
     els.builderDel.textContent = '';
     els.builderDel.append(armedBtn('✕ Delete', 'Delete — click again', {
@@ -3489,7 +3588,7 @@ window.WardrobePane = (function () {
     }
     if (managed === 'off') {
       body.append(h('div', { class: 'wd-field' },
-        h('span', { style: 'font-size:12.5px;color:#6f6a5e' },
+        h('span', { style: 'font-size:13.5px;color:#8b8678' },
           'Nobody manages her clothes. Pick Wardrobe or NFF above, or leave her be.')));
       renderSheetTail(body, npc);
       return;
@@ -3521,31 +3620,72 @@ window.WardrobePane = (function () {
       body.append(h('div', { class: 'wd-field' }, h('span', { class: 'wd-field-k' }, 'Wardrobe'), sel));
 
       /* --- cadence --- */
-      const idx = cadenceIndex(a.cadenceHours);
-      const val = h('span', { class: 'wd-cad-v' + (CADENCE[idx] ? '' : ' off') }, cadenceLabel(CADENCE[idx]));
-      const range = h('input', {
-        type: 'range', min: '0', max: String(CADENCE.length - 1), step: '1', value: String(idx),
-        'aria-label': 'Re-roll cadence',
-        oninput: (e) => {
-          const hrs = CADENCE[clamp(Number(e.target.value) | 0, 0, CADENCE.length - 1)];
-          val.textContent = cadenceLabel(hrs);
-          val.className = 'wd-cad-v' + (hrs ? '' : ' off');
-        },
-        onchange: (e) => {
-          a.cadenceHours = CADENCE[clamp(Number(e.target.value) | 0, 0, CADENCE.length - 1)];
-          touch();
-        },
+      /* Discrete stops as a chip row, not a slider: every option is visible
+         and one tap away (the deck's no-range-input law — a native slider
+         hides its stops until you drag, and drag precision is poor from the
+         couch). A stored value that isn't a stop (the portal clamps 0..720
+         freely) lights the NEAREST chip, exactly the old slider's snap.
+         The leading ↳ chip inherits the WARDROBE's default cadence (set in
+         its builder) — her own explicit stop always beats it. */
+      const wsel = wardrobeById(a.wardrobeId);
+      const curCad = CADENCE[cadenceIndex(a.cadenceHours)];
+      const cseg = h('div', { class: 'wd-seg wd-cad-seg', role: 'group', 'aria-label': 'Re-roll cadence' });
+      cseg.append(h('button', {
+        type: 'button', class: 'wd-cad-inherit' + (a.cadenceInherit ? ' on' : ''),
+        title: 'Follow the wardrobe’s own default cadence — change it once in the wardrobe, every inheriting wearer follows',
+        onclick: () => { a.cadenceInherit = true; touch(); },
+      }, '↳ Wardrobe’s (' + cadenceLabel((wsel && wsel.cadenceHours) || 0) + ')'));
+      CADENCE.forEach((hrs) => {
+        cseg.append(h('button', {
+          type: 'button', class: (!a.cadenceInherit && curCad === hrs) ? 'on' : '',
+          title: hrs ? 'A fresh outfit from her wardrobe every ' + cadenceLabel(hrs) + ' of game time'
+               : 'Never changes on her own — only when you hit Dress',
+          onclick: () => { a.cadenceInherit = false; a.cadenceHours = hrs; touch(); },
+        }, cadenceLabel(hrs)));
       });
-      const ticks = h('div', { class: 'wd-cad-ticks', 'aria-hidden': 'true' },
-        h('span', null, 'never'), h('span', null, '6h'), h('span', null, '1d'), h('span', null, '7d'));
       body.append(h('div', { class: 'wd-field' },
         h('span', { class: 'wd-field-k' }, 'Change outfit'),
-        h('div', { class: 'wd-cad' },
-          h('span', { class: 'wd-cad-label' }, 'every'),
-          h('div', { class: 'wd-cad-wrap' }, range, ticks),
-          val),
+        cseg,
         h('span', { class: 'wd-cad-next' },
-          a.cadenceHours ? nextChangeNodes(a) : 'Only changes when you hit Dress, or on a location override.')));
+          effCadence(a) ? nextChangeNodes(a) : 'Only changes when you hit Dress, or on a location override.')));
+
+      /* --- how she draws --- */
+      /* "" = the wardrobe's way: its mode, and in bag mode its SHARED bag, so
+         a group wearing one wardrobe never repeats each other within a cycle.
+         Her own bag/random gives her a private roll instead. */
+      const poolMode = (wsel && wsel.mode === 'random') ? 'random' : 'bag';
+      const dseg = h('div', { class: 'wd-seg' });
+      [['', 'Wardrobe’s way (' + (poolMode === 'bag' ? '⇄ bag' : '⚄ random') + ')',
+        poolMode === 'bag'
+          ? 'Draw from the wardrobe’s shared bag — wearers never repeat each other within a cycle'
+          : 'The wardrobe rolls random, so she does too'],
+       ['bag', 'Her own bag',
+        'A private shuffle bag: she personally wears every outfit once before any repeats, whatever the others draw'],
+       ['random', 'Her own random',
+        'Independent rolls just for her — repeats can cluster, never twice running']]
+        .forEach(([v, label, tip]) => {
+          dseg.append(h('button', {
+            type: 'button', class: (a.draw || '') === v ? 'on' : '', title: tip,
+            onclick: () => { a.draw = v; touch(); },
+          }, label));
+        });
+      /* A live consequence line, not just hover titles — hover text is useless
+         from the couch, and what a choice MEANS is the whole question here. */
+      const drawHint = (() => {
+        if (a.draw === 'bag') {
+          const unworn = Array.isArray(a.bag) ? a.bag.length : 0;
+          return 'Her private cycle: every outfit once before any repeats.' +
+            (unworn ? ' ' + unworn + ' still unworn this cycle.' : '');
+        }
+        if (a.draw === 'random')
+          return 'Independent rolls just for her — never the same outfit twice running.';
+        return poolMode === 'bag'
+          ? 'She draws from the wardrobe’s shared bag — the group never repeats within a cycle.'
+          : 'The wardrobe rolls random, so she does too.';
+      })();
+      body.append(h('div', { class: 'wd-field' },
+        h('span', { class: 'wd-field-k' }, 'She draws'), dseg,
+        h('span', { class: 'wd-cad-next' }, drawHint)));
     }
 
     /* --- location overrides --- */
@@ -3680,9 +3820,21 @@ window.WardrobePane = (function () {
     };
     img.onload = function () { img.classList.remove('hidden'); };
     img.src = want;
+    /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
+    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, plain);
     img.alt = '';
     img.title = npc.name || '';
     img.classList.remove('hidden');
+  }
+
+  /* Effective re-roll cadence for an assignment: hers, unless she inherits the
+   * wardrobe's default. The ONE implementation — row chip, sheet, quick card
+   * and the countdown all ask this, so they can never disagree. */
+  function effCadence(a) {
+    if (!a) return 0;
+    if (!a.cadenceInherit) return Number(a.cadenceHours) || 0;
+    const w = wardrobeById(a.wardrobeId);
+    return (w && Number(w.cadenceHours)) || 0;
   }
 
   /* "next change in ~5h" — only when C++ has told us the game clock, so the
@@ -3690,7 +3842,7 @@ window.WardrobePane = (function () {
   function nextChangeNodes(a) {
     const base = 'Re-rolls in game, never the same outfit twice in a row.';
     if (typeof state.now !== 'number' || !a.lastRollDay) return base;
-    const dueDays = a.lastRollDay + (a.cadenceHours / 24);
+    const dueDays = a.lastRollDay + (effCadence(a) / 24);
     const leftH = Math.round((dueDays - state.now) * 24);
     if (leftH <= 0) return [document.createTextNode('Due now — '), h('b', null, 'changes on the next tick.')];
     return [
@@ -3826,7 +3978,7 @@ window.WardrobePane = (function () {
       twoSystems: !!(who.info && who.info.conflict),  // Wardrobe AND NFF do
       label: label,
       cadence: (who.mode === 'wardrobe' && a && a.mode === 'wardrobe')
-        ? cadenceLabel(a.cadenceHours) : '',
+        ? cadenceLabel(effCadence(a)) : '',
       canDress: !!(state.soes.available && a && a.mode !== 'off'),
       soes: !!state.soes.available,
     };
@@ -4505,6 +4657,7 @@ window.WardrobePane = (function () {
     els.builderNote = $('wd-builder-note');
     els.builderDel = $('wd-builder-del');
     els.builderMode = $('wd-builder-mode');
+    els.builderCad = $('wd-builder-cad');
     els.builderSwatch = $('wd-builder-swatch');
     els.members = $('wd-members');
     els.membersEmpty = $('wd-members-empty');
@@ -4588,7 +4741,18 @@ window.WardrobePane = (function () {
       if (ui.combo && !inCombo(e.target)) comboClose(false);
     }, true);
 
-    document.addEventListener('keydown', (e) => {
+    /* ⚠ WINDOW capture, not document capture — the whole Escape cascade below
+       depends on it. app.js registers its own `keydown` on DOCUMENT with
+       capture at boot, i.e. before this pane ever inits, so a document-capture
+       listener here runs SECOND: app.js's Escape branch calls requestClose(),
+       which fires onHide() and clears ui.shown, and the guard on the next line
+       then skips the cascade entirely. Measured 2026-08-19: Escape closed the
+       whole deck with the builder still open, the bulk selection still armed
+       and the search filter still set — all of it still there on the next
+       open. Window capture runs one phase earlier than document capture, so
+       the pane backs out of its own dialogs first and only an unclaimed
+       Escape reaches app.js. Same idiom as finances-pane.js. */
+    window.addEventListener('keydown', (e) => {
       if (!ui.shown) return;
 
       /* FIRST, ahead of everything: the crop editor claims arrows, ± and
@@ -4846,8 +5010,13 @@ window.WardrobePane = (function () {
       const next = (j && j.icons) || {};
       const prev = state.itemIcons || {};
       const nk = Object.keys(next);
-      changed = nk.length !== Object.keys(prev).length || nk.some((k) => prev[k] !== next[k]);
+      const fails = (j && j.failed) || {};
+      const prevFails = state.itemIconFails || {};
+      const fk = Object.keys(fails);
+      changed = nk.length !== Object.keys(prev).length || nk.some((k) => prev[k] !== next[k]) ||
+                fk.length !== Object.keys(prevFails).length || fk.some((k) => prevFails[k] !== fails[k]);
       state.itemIcons = next;
+      state.itemIconFails = fails;
     } catch (e) { state.itemIcons = state.itemIcons || {}; }
     try { render(); } catch (e) { /* pushed before first init — the open render shows them */ }
     /* The Followers quick card draws worn gear from this same index (C++ now
@@ -4945,7 +5114,7 @@ window.WardrobePane = (function () {
     ];
     state.imageCrops = { 'wd-sfancy-blue.png': { z: 1.5, x: 0.1, y: -0.2 } };
     state.wardrobes = [
-      { id: 'w1', name: 'Evening Wear', hue: 38, note: '', outfits: ['Sfancy Blue', 'Cosplay Gala', 'Hellene Gown'] },
+      { id: 'w1', name: 'Evening Wear', hue: 38, note: '', outfits: ['Sfancy Blue', 'Cosplay Gala', 'Hellene Gown'], cadenceHours: 24 },
       { id: 'w2', name: 'Homewear', hue: 145, note: '', outfits: ['Riverwood Homespun', 'Bath Robe'] },
       { id: 'w3', name: 'On the road', hue: 200, note: '', outfits: ['Travelling Leathers', 'Snow Cloak', 'Ghost Outfit'] },
     ];
@@ -5304,11 +5473,63 @@ window.WardrobePane = (function () {
     T('sheet opens', () => !els.sheet.classList.contains('hidden'));
     T('sheet names the npc', () => els.sheetName.textContent === 'Camilla Valerius');
     T('mode segmented control renders 3 options', () => q('#wd-sheet-body .wd-seg button').length >= 3);
-    T('cadence slider renders for a wardrobe assignment', () => !!document.querySelector('#wd-sheet-body input[type=range]'));
-    T('cadence slider sits on the right stop', () => {
-      const r = document.querySelector('#wd-sheet-body input[type=range]');
-      return r && CADENCE[Number(r.value)] === 12;
+    T('cadence renders every stop as a chip plus the inherit chip',
+      () => q('#wd-sheet-body .wd-cad-seg button').length === CADENCE.length + 1);
+    T('the stored cadence chip is lit', () => {
+      const on = document.querySelector('#wd-sheet-body .wd-cad-seg button.on');
+      return on && on.textContent === '12h';
     });
+    T('the inherit chip names the wardrobe default', () => {
+      const inh = document.querySelector('#wd-sheet-body .wd-cad-inherit');
+      return inh && inh.textContent.indexOf('1 day') !== -1;
+    });
+    document.querySelector('#wd-sheet-body .wd-cad-inherit').click();
+    T('clicking inherit follows the wardrobe default', () => {
+      const a = state.assignments[0];
+      const inh = document.querySelector('#wd-sheet-body .wd-cad-inherit');
+      return a.cadenceInherit === true && inh && inh.classList.contains('on') &&
+        !document.querySelector('#wd-sheet-body .wd-cad-seg button.on:not(.wd-cad-inherit)');
+    });
+    T('the row chip shows the INHERITED cadence', () =>
+      els.list.textContent.indexOf('every 1 day ↳') !== -1);
+    (() => {   // back to her explicit 12h so later checks see the seed state
+      const chips = q('#wd-sheet-body .wd-cad-seg button');
+      for (let i = 0; i < chips.length; i++)
+        if (chips[i].textContent === '12h') { chips[i].click(); break; }
+    })();
+    T('an explicit stop turns inherit back off', () =>
+      state.assignments[0].cadenceInherit === false && state.assignments[0].cadenceHours === 12);
+    T('the draw field offers her three ways', () => {
+      const segs = q('#wd-sheet-body .wd-seg');
+      const d = Array.prototype.find.call(segs, (s) => s.textContent.indexOf('Her own bag') !== -1);
+      return d && d.querySelectorAll('button').length === 3 &&
+        d.textContent.indexOf('Wardrobe’s way') !== -1;
+    });
+    T('the draw hint explains the shared bag', () => {
+      const segs = q('#wd-sheet-body .wd-seg');
+      const d = Array.prototype.find.call(segs, (s) => s.textContent.indexOf('Her own bag') !== -1);
+      const hint = d && d.parentElement.querySelector('.wd-cad-next');
+      return hint && hint.textContent.indexOf('shared bag') !== -1;
+    });
+    (() => {
+      const segs = q('#wd-sheet-body .wd-seg');
+      const d = Array.prototype.find.call(segs, (s) => s.textContent.indexOf('Her own bag') !== -1);
+      d.querySelectorAll('button')[1].click();
+    })();
+    T('picking her own bag stores the draw override', () =>
+      state.assignments[0].draw === 'bag');
+    T('the draw hint follows the selection live', () => {
+      const segs = q('#wd-sheet-body .wd-seg');
+      const d = Array.prototype.find.call(segs, (s) => s.textContent.indexOf('Her own bag') !== -1);
+      const hint = d && d.parentElement.querySelector('.wd-cad-next');
+      return hint && hint.textContent.indexOf('Her private cycle') !== -1;
+    });
+    (() => {
+      const segs = q('#wd-sheet-body .wd-seg');
+      const d = Array.prototype.find.call(segs, (s) => s.textContent.indexOf('Her own bag') !== -1);
+      d.querySelectorAll('button')[0].click();
+    })();
+    T('and back to the wardrobe’s way', () => state.assignments[0].draw === '');
     T('location override row renders', () => q('#wd-sheet-body .wd-loc-row').length === 1);
     /* These two used to read a native <select>'s .value / .options. Same two
        facts, asked of the typeahead that replaced it: the field SHOWS the
@@ -5743,13 +5964,48 @@ window.WardrobePane = (function () {
 
     /* --- randomisation mode --- */
     openBuilder('w1');
-    T('a wardrobe defaults to the shuffle bag',
-      () => $('wd-builder-mode').textContent.indexOf('Shuffle bag') !== -1);
-    document.querySelector('#wd-builder-mode .wd-cat-pill').click();
+    T('both randomisation modes are drawn, shuffle bag lit', () => {
+      const pills = q('#wd-builder-mode .wd-cat-pill');
+      const on = document.querySelector('#wd-builder-mode .wd-cat-pill.on');
+      return pills.length === 2 && on && on.textContent.indexOf('Shuffle bag') !== -1;
+    });
+    q('#wd-builder-mode .wd-cat-pill')[1].click();
     T('it can be switched to true random', () => wardrobeById('w1').mode === 'random');
     T('switching modes empties the bag', () => (wardrobeById('w1').bag || []).length === 0);
-    document.querySelector('#wd-builder-mode .wd-cat-pill').click();
+    wardrobeById('w1').bag = ['sentinel'];
+    q('#wd-builder-mode .wd-cat-pill')[1].click();
+    T('re-clicking the lit mode keeps the bag', () =>
+      wardrobeById('w1').mode === 'random' && (wardrobeById('w1').bag || []).length === 1);
+    wardrobeById('w1').bag = [];
+    q('#wd-builder-mode .wd-cat-pill')[0].click();
     T('and back to the bag', () => wardrobeById('w1').mode === 'bag');
+
+    /* --- default cadence for wearers --- */
+    T('the builder offers a default cadence chip per stop',
+      () => q('#wd-builder-cad .wd-cad-seg button').length === CADENCE.length);
+    T('the seeded default (1 day) is lit', () => {
+      const on = document.querySelector('#wd-builder-cad .wd-cad-seg button.on');
+      return on && on.textContent === '1 day';
+    });
+    (() => {
+      const chips = q('#wd-builder-cad .wd-cad-seg button');
+      for (let i = 0; i < chips.length; i++)
+        if (chips[i].textContent === '2 days') { chips[i].click(); break; }
+    })();
+    T('clicking a stop stores the wardrobe default', () => wardrobeById('w1').cadenceHours === 48);
+    (() => {
+      const chips = q('#wd-builder-cad .wd-cad-seg button');
+      for (let i = 0; i < chips.length; i++)
+        if (chips[i].textContent === '1 day') { chips[i].click(); break; }
+    })();
+    T('with nobody inheriting, the builder bar says so',
+      () => $('wd-builder-cad').textContent.indexOf('nobody inherits it yet') !== -1);
+    state.assignments[0].cadenceInherit = true; render();
+    T('an inheriting wearer is named on the builder bar', () => {
+      const t = $('wd-builder-cad').textContent;
+      return t.indexOf('Camilla Valerius') !== -1 && t.indexOf('follows this default') !== -1;
+    });
+    state.assignments[0].cadenceInherit = false; render();
     closeBuilder();
 
     /* --- system settings --- */
@@ -6939,6 +7195,112 @@ window.WardrobePane = (function () {
     closeCtxPicker();
     devBoot(); setSub('outfits');
 
+    /* --- omni: the pane's own surfaces are findable by name (2026-08-19) ---
+       The search audit's finding: index() returned DATA only, so a control with
+       a name on its button — the settings panel, "Import outfits", "All armour
+       in the game" — could not be reached by typing that name. These assert
+       both halves: the row exists, AND firing it lands on the control rather
+       than merely on the tab that hides it. */
+    const omniRows = () => omniProvider.index();
+    const omniRow = (label) => omniRows().find((r) => r.label === label) || null;
+
+    T('every section is findable by its own name', () => {
+      const labels = omniRows().map((r) => r.label);
+      return ['Outfits', 'Wardrobes', 'People', 'Inventory'].every((n) => labels.indexOf(n) !== -1);
+    });
+    T('firing a section row switches to it', () => {
+      omniRow('Inventory').run();
+      return ui.sub === 'inventory';
+    });
+    T('the settings panel is a result, and its row OPENS it', () => {
+      omniRow('Outfit system settings').run();
+      return ui.sub === 'npcs' && ui.settings === true;
+    });
+    T('the importer lands ON the importer, not just on the settings panel', () => {
+      ui.importer = null;
+      omniRow('Import outfits from a mod').run();
+      return ui.sub === 'npcs' && ui.settings === true && !!ui.importer && ui.importer.q === '';
+    });
+    T('“All armour in the game” lands on the load-order browser', () => {
+      omniRow('All armour in the game').run();
+      return ui.sub === 'inventory' && ui.invSource === 'all';
+    });
+    T('“Build a new outfit” opens Inventory with a basket ready', () => {
+      omniRow('Build a new outfit').run();
+      return ui.sub === 'inventory' && ui.invSource === 'carried' && !!ui.build;
+    });
+    T('the two repairs fire SOES outright instead of opening a panel', () => {
+      const sent = [];
+      const keep = { all: window.wdRefreshAll, auto: window.wdResetAuto };
+      window.wdRefreshAll = () => sent.push('refresh');
+      window.wdResetAuto = () => sent.push('reset');
+      omniRow('Re-dress everyone now').run();
+      omniRow('Reset the auto-switcher').run();
+      window.wdRefreshAll = keep.all; window.wdResetAuto = keep.auto;
+      return sent.join(',') === 'refresh,reset';
+    });
+    T('an outfit is searchable by its note and its category, as the pane is', () => {
+      const r = omniRow('Sfancy Blue');
+      return !!r && r.keywords.indexOf('her favourite') !== -1 &&
+             r.keywords.indexOf('Evening') !== -1;
+    });
+    T('an outfit inherits the tags of the wardrobes holding it', () => {
+      const w = wardrobeById('w1');
+      w.tags = ['ballgown'];
+      const r = omniRow('Cosplay Gala');
+      delete w.tags;
+      return !!r && r.keywords.indexOf('ballgown') !== -1;
+    });
+    T('someone with no assignment is offered too, and nobody twice', () => {
+      const names = omniRows()
+        .filter((r) => r.kind === 'npc' || r.kind === 'dressed npc')
+        .map((r) => r.label);
+      return names.indexOf('Ysolda') !== -1 &&
+             names.filter((n) => n === 'Camilla Valerius').length === 1;
+    });
+    T('a person row opens her People card', () => {
+      omniRow('Ysolda').run();
+      return ui.sub === 'npcs' && ui.sheetKey === '0x0003a1b2|skyrim.esm';
+    });
+
+    /* The NFF module's provider is exercised HERE because wardrobe-nff.js
+       carries no selftest of its own and its harness runs this suite (it calls
+       WardrobePane._selftest()). Skipped in this pane's own harness, where the
+       module is not loaded at all. */
+    const nffOmni = window.WardrobeNff && window.WardrobeNff._omni;
+    if (nffOmni) {
+      const nfRows = () => nffOmni.index();
+      const nfRow = (label) => nfRows().find((r) => r.label === label) || null;
+      T('an NFF set is findable by the name the player gave it', () => {
+        const r = nfRow('Riverwood green');
+        return !!r && r.detail.indexOf('Camilla') !== -1 && typeof r.run === 'function';
+      });
+      T('her outfit chests and her satchel are findable by name', () =>
+        !!nfRow('Riverwood green chest') && !!nfRow('Camilla Valerius’s satchel'));
+      T('the SOES/NFF handover is a result, and it names the clash', () => {
+        const r = nfRow('Hand Ysolda to NFF');
+        return !!r && r.detail.indexOf('both systems hold her') !== -1;
+      });
+      T('someone NFF never dressed offers her card, not empty chests', () => {
+        const rows = nfRows().filter((r) =>
+          r.label.indexOf('Mjoll') !== -1 || r.detail.indexOf('Mjoll') !== -1);
+        return rows.length === 2 && !rows.some((r) => r.kind === 'nff chest');
+      });
+      T('with NFF absent the provider offers nothing at all', () => {
+        const st = window.WardrobeNff._state;
+        const was = st.nff;
+        st.nff = false;
+        const n = nfRows().length;
+        st.nff = was;
+        return n === 0;
+      });
+    }
+
+    closeSheet();
+    ui.settings = false; ui.importer = null; ui.build = null;
+    ui.invSource = 'carried'; ui.invSlot = '';
+    setSub('outfits');
+
     const pass = results.filter((r) => r.pass).length;
     const out = { pass: pass, total: results.length, results: results };
     window.__wdSelftest = out;
@@ -6947,15 +7309,41 @@ window.WardrobePane = (function () {
     return out;
   }
 
+  /* ---- omni's way in ---------------------------------------------------- *
+   * An omni result's run() does NOT switch tabs — hd-omni only does that for a
+   * jump — so a row that opens one of this pane's own surfaces has to hop the
+   * tab itself. setTab FIRST, then aim: onShow() re-reads state and re-renders,
+   * so anything set before the switch would be painted over. onShow() is also
+   * what init()s the pane, which is why nothing below has to check. */
+  function omniOpenAt(sub, prep) {
+    if (typeof window.__omniSetTab === 'function') window.__omniSetTab('wardrobe');
+    try { enterSub(sub, prep); } catch (e) { console.log('[wardrobe] omni open', sub, e); }
+  }
+
   /* ---- Omni search provider (universal search, v0.14.0) ---------------- *
-   * Outfits (SOES + our metadata, deduped by name), wardrobes, and every
-   * dressed NPC assignment. warm() pulls the slice on omni-open because
-   * wardrobe data otherwise only arrives the first time the tab is shown.
-   * setFilter guards on els.search: the pane lazily init()s on first show,
-   * so a jump from omni may be the thing that initialises it. */
-  if (window.HDOmni) HDOmni.register({
+   * Two halves. The DATA: outfits (SOES + our metadata, deduped by name),
+   * wardrobes, every dressed NPC assignment, and — since the 2026-08-19 search
+   * audit — the People roster itself, so "dress someone new" has an entry point
+   * and not only the already-solved cases are findable. The SURFACES: this
+   * pane's own named controls, which were reachable only by opening the tab and
+   * hunting for them (the SOES settings panel is a collapsed disclosure on the
+   * People section, the importer is collapsed again inside THAT, and "All
+   * armour in the game" is a pill that only exists once you are on Inventory).
+   * A control with a name on its button has to answer to that name in search.
+   *
+   * warm() pulls the slice on omni-open because wardrobe data otherwise only
+   * arrives the first time the tab is shown. setFilter guards on els.search:
+   * the pane lazily init()s on first show, so a jump from omni may be the thing
+   * that initialises it. */
+  const omniProvider = {
     id: 'wardrobe', label: 'Wardrobe', tab: 'wardrobe',
     warm: function () { toGame('wdGet', ''); },
+    /* Shelf/Super-Searcher activation for a pinned OUTFIT whose live row has
+       not warmed in yet: the snap carries the SOES name, which IS what wdWear
+       takes — so a pinned outfit dresses you even before wdGet replies. */
+    pinRun: function (snap) {
+      if (snap && snap.name) toGame('wdWear', JSON.stringify({ name: snap.name }));
+    },
     setFilter: function (q) {
       ui.filter = String(q || '').trim();
       if (els.search) els.search.value = ui.filter;
@@ -6964,11 +7352,47 @@ window.WardrobePane = (function () {
     index: function () {
       const items = [];
       const seen = {};
+
+      /* Tags and owner pills an outfit INHERITS from the wardrobes holding it.
+         Built in one pass over the wardrobes rather than by calling tagsOf() /
+         ownersOf() per outfit: each of those re-walks every wardrobe, and
+         index() runs on every keystroke — at a few hundred outfits that is the
+         difference between a search box that keeps up and one that stutters. */
+      const inherited = Object.create(null);
+      (state.wardrobes || []).forEach((w) => {
+        const extra = (w.tags || []).concat((w.forNpcs || []).map((t) => (t && t.name) || ''));
+        if (!extra.length) return;
+        (w.outfits || []).forEach((n) => {
+          inherited[n] = inherited[n] ? inherited[n].concat(extra) : extra.slice();
+        });
+      });
+
       const outfit = (name, detail) => {
         if (!name || seen[name]) return;
         seen[name] = true;
-        /* names are SOES's own identity for outfits — what wdWear takes */
-        items.push({ label: name, detail: detail || '', kind: 'outfit', pin: 'wd:o:' + name });
+        /* The pane's own filter matches an outfit by its NOTE and its CATEGORY
+           names (outfitMatches), and the F7 dock shows its tags and owner
+           pills — so omni has to match on all four or the very same outfit is
+           findable in the tab and invisible in search. */
+        const m = metaFor(name);
+        const words = [(m && m.note) || ''];
+        ((m && m.categoryIds) || []).forEach((id) => {
+          const c = catById(id);
+          if (c) words.push(c.name);
+        });
+        ((m && m.tags) || []).forEach((t) => words.push(t));
+        ((m && m.forNpcs) || []).forEach((t) => words.push((t && t.name) || ''));
+        if (inherited[name]) words.push.apply(words, inherited[name]);
+        /* names are SOES's own identity for outfits — what wdWear takes.
+           run() wears it on YOU (Rober, 2026-08-19: "wardrobes, clickable to
+           trigger") — the same wdWear the pane's own Wear button sends; the
+           jump ↗ still opens the Wardrobe tab for anything fancier. */
+        items.push({
+          label: name, detail: detail || '', kind: 'outfit', pin: 'wd:o:' + name,
+          snap: { name: name },
+          keywords: words.filter(Boolean).join(' '),
+          run: function () { toGame('wdWear', JSON.stringify({ name: name })); },
+        });
       };
       ((state.soes && state.soes.outfits) || []).forEach((o) => {
         const n = Array.isArray(o.items) ? o.items.length : (o.items >>> 0);
@@ -6985,18 +7409,173 @@ window.WardrobePane = (function () {
           pin: 'wd:w:' + (w.name || ''),
         });
       });
+      /* People. The assignments are the ones already dressed; the roster pass
+         after them is the one that was missing — without it "dress Ysolda" had
+         no entry point from search at all, because only people with an
+         assignment were indexed. Both open her People card, which is where
+         every per-person control (including the NFF block) lives; deduped by
+         the pane's own key so someone with an assignment is listed once. */
+      const seenNpc = Object.create(null);
+      const openPerson = (key) => {
+        if (typeof window.__omniSetTab === 'function') window.__omniSetTab('wardrobe');
+        try { refreshNffData(); quickFocus(key); } catch (e) { console.log('[wardrobe] omni person', e); }
+      };
+      /* The ↗ shows her IN the roster rather than opening her card — the one
+         thing Enter does not already do. The provider-level jump cannot: it
+         pre-fills the search without switching section, so her name would be
+         typed into a filter over the Outfits list. */
+      const showPerson = (name) => () => omniOpenAt('npcs', () => {
+        ui.filter = name;
+        if (els.search) els.search.value = name;
+      });
       (state.assignments || []).forEach((a) => {
+        const key = keyOf(a);
+        if (key) seenNpc[key] = true;
         items.push({
           label: a.name || '(npc)',
           detail: ['dressed', a.mode, a.outfit].filter(Boolean).join(' · '),
           kind: 'dressed npc',
-          keywords: a.outfit || '',
+          keywords: (a.outfit || '') + ' dressed people her clothes outfit card',
           pin: 'wd:a:' + (a.name || ''),
+          run: () => openPerson(key),
+          jump: showPerson(a.name || ''),
         });
       });
+      (state.npcs || []).forEach((n) => {
+        const key = keyOf(n);
+        if (!key || seenNpc[key]) return;
+        seenNpc[key] = true;
+        items.push({
+          label: n.name || '(npc)',
+          detail: n.wearing
+            ? 'wearing ' + n.wearing + ' · no Wardrobe assignment yet'
+            : 'no Wardrobe assignment yet',
+          kind: 'npc',
+          keywords: 'dress her people assign outfit wardrobe undressed unassigned'
+                  + (n.tracked ? ' tracked' : ''),
+          run: () => openPerson(key),
+          jump: showPerson(n.name || ''),
+        });
+      });
+
+      /* ---- the pane's own surfaces -------------------------------------- *
+         Opening one of these IS what the row is for, so run() and jump() are
+         the same act — the ↗ has nothing better to offer than the control
+         itself, and the provider-level jump would land on whichever section
+         was last open with the query typed into its filter. */
+
+      SUBS.forEach((s) => {
+        const go = () => omniOpenAt(s);
+        items.push({
+          label: SUB_LABEL[s] || s,
+          detail: 'Wardrobe section',
+          kind: 'section',
+          keywords: 'wardrobe section tab ' + (SUB_TERMS[s] || ''),
+          run: go, jump: go,
+        });
+      });
+
+      /* Every named control inside the collapsed "Outfit system settings"
+         disclosure. Each row opens the panel it belongs to, so you land ON the
+         control rather than merely on the tab that hides it. */
+      const setting = (label, detail, keywords, prep) => {
+        const go = () => omniOpenAt('npcs', () => { ui.settings = true; if (prep) prep(); });
+        items.push({
+          label: label, detail: detail, kind: 'setting',
+          keywords: 'outfit system settings soes ' + keywords,
+          run: go, jump: go,
+        });
+      };
+      setting('Outfit system settings',
+        'On or off, how outfits are conjured, the repairs and the importer',
+        'panel options preferences configure whole system');
+      setting('NPC outfits: Automatic or Immersive',
+        'Automatic conjures any piece they do not own; Immersive uses only what they have',
+        'conjure immersive automatic inventory mode npc followers');
+      setting('Your outfits: Automatic or Immersive',
+        'The same choice, for what YOU get dressed in',
+        'conjure immersive automatic inventory mode player me my');
+      setting('Turn the whole outfit system on or off',
+        'Off stops SOES dressing anyone — nothing is un-assigned, it simply stops acting',
+        'disable enable stop start pause suspend');
+      setting('Quick-swap power',
+        'The lesser power that raises a menu of your ★ outfits',
+        'lesser power spell menu favourite starred quickslot grant');
+      setting('Weather vs. place',
+        'Whether a blizzard outranks “she is in a city”',
+        'climate snow rain storm priority location outranks');
+      setting('Import outfits from a mod',
+        'Turn outfits a mod already defines into ones SOES can assign',
+        'browse mods importer otft records existing bring in hundreds',
+        () => {
+          ui.importer = { q: '', plugin: '', q2: '' };
+          state.modOutfits = null;
+          if (!state.outfitMods.length) toGame('wdOutfitMods', '');
+        });
+
+      /* The two one-shot repairs FIRE rather than open the panel — that is
+         exactly what their buttons do, and the toast is the answer. Their ↗
+         still opens the panel they live in, which is the one case where the
+         two gestures usefully differ. */
+      const repairPanel = () => omniOpenAt('npcs', () => { ui.settings = true; });
+      items.push({
+        label: 'Re-dress everyone now',
+        detail: 'Re-apply every assigned outfit — the fix when someone is wearing the wrong thing',
+        kind: 'action',
+        keywords: 'redress refresh reapply fix stuck wrong clothes everyone all soes',
+        run: () => { toGame('wdRefreshAll', ''); toast('Re-dressing everyone…'); },
+        jump: repairPanel,
+      });
+      items.push({
+        label: 'Reset the auto-switcher',
+        detail: 'Unwedge SOES’s automatic outfit switching',
+        kind: 'action',
+        keywords: 'reset auto switch switcher stuck wedged broken not changing soes',
+        run: () => { toGame('wdResetAuto', ''); toast('Auto-switch reset'); },
+        jump: repairPanel,
+      });
+
+      const browseAll = () => omniOpenAt('inventory', () => {
+        ui.invSource = 'all';
+        ui.invSlot = '';
+        if (!state.armorMods.length) toGame('wdArmorMods', '');
+      });
+      items.push({
+        label: 'All armour in the game',
+        detail: 'Browse every armour piece the load order defines, mod by mod',
+        kind: 'browse',
+        keywords: 'armour armor load order plugins mods every piece browse inventory',
+        run: browseAll, jump: browseAll,
+      });
+      /* buildState() mints the basket, so the Inventory section opens with it
+         already pinned above the list instead of an empty toolbar. */
+      const startBuild = () => omniOpenAt('inventory', () => {
+        ui.invSource = 'carried'; ui.invSlot = ''; buildState();
+      });
+      items.push({
+        label: 'Build a new outfit',
+        detail: 'Pick pieces in the basket and mint a real outfit',
+        kind: 'action',
+        keywords: 'new create make add outfit basket build pieces armour armor',
+        run: startBuild, jump: startBuild,
+      });
+      items.push({
+        label: 'Copy what I’m wearing into a new outfit',
+        detail: 'Fills the build basket with everything you have equipped',
+        kind: 'action',
+        keywords: 'copy equipped worn wearing bottle my clothes basket fill new outfit',
+        run: () => omniOpenAt('inventory', () => {
+          ui.invSource = 'carried'; ui.invSlot = ''; buildState();
+          toGame('wdWorn', '{}');
+          toast('Reading what you’re wearing…');
+        }),
+        jump: startBuild,
+      });
+
       return items;
     },
-  });
+  };
+  if (window.HDOmni) HDOmni.register(omniProvider);
 
   /* Build a brand-new Wardrobe outfit from an arbitrary list of items — the
      F7 quick card's "Copy outfit" feature (Rober, 2026-08-05): read what an NPC
@@ -7058,10 +7637,14 @@ window.WardrobePane = (function () {
        and the key normalisation ("0XABCD|plugin.esp") must have exactly ONE
        implementation or the two surfaces disagree about the same item. */
     itemIconFor: itemIconFor,
+    itemIconFailed: itemIconFailed,
+    retryItemIcon: retryItemIcon,
     createOutfitFromItems: createOutfitFromItems,
     nffDataChanged: nffDataChanged,
-    /* exposed for the harness + wiring */
-    _state: state, _ui: ui, _selftest: selftest,
+    /* exposed for the harness + wiring. `_omni` is the search provider itself:
+       the harness has no hd-omni.js, so HDOmni.register() never runs there and
+       this is the only handle its checks can index() through. */
+    _state: state, _ui: ui, _selftest: selftest, _omni: omniProvider,
     _picker: { open: openCtxPicker, close: closeCtxPicker, categories: openCategoryPicker },
     _cadence: { list: CADENCE, label: cadenceLabel, index: cadenceIndex },
     _locations: LOCATIONS,

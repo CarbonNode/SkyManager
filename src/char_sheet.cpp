@@ -1,6 +1,8 @@
 #include "char_sheet.h"
 
 #include "actor_identity.h"
+#include "faith.h"   // Wintersun's own tracker quest — the Faith card
+#include "hotbar.h"  // ClassifyConsumable / WaterDrinks — the ONE shared classifier
 
 #include <algorithm>
 #include <array>
@@ -79,6 +81,29 @@ namespace CharSheet
 			std::int64_t stamina = 0;
 			std::int64_t other = 0;
 			std::int64_t lockpicks = 0;
+			// Consumables (2026-08-15). The four potion cards above stay
+			// disjoint and keep summing to `total`; these four are their own
+			// row: poison/food count items, `drink` counts BOTTLES and
+			// includes water (the Drink category includes water everywhere),
+			// `water` counts DRINKS (a full waterskin is three of them).
+			std::int64_t poison = 0;
+			std::int64_t food = 0;
+			std::int64_t drink = 0;
+			std::int64_t water = 0;
+			// Resistances + equipment (2026-08-17, Rober's "bring the sheet up to
+			// Party Sheet" ask). Both ride the ONE existing walk on purpose: the
+			// brief forbids a second inventory pass, and both answers are already
+			// in front of us here.
+			//   armorPieces — WORN, non-clothing armour. Skyrim's physical damage
+			//     reduction is armourRating*0.12 + 3 per worn piece (capped 80),
+			//     so the piece COUNT is half the formula; without it the number
+			//     would be wrong, and a wrong number is worse than none.
+			//   ammoCount   — how many of the currently-nocked arrow/bolt you
+			//     carry. Deliberately NOT GetItemCount(ammo): that runs its own
+			//     inventory query, which is the exact call shape that faulted in
+			//     this DLL on the 4k-plugin profile.
+			std::int64_t armorPieces = 0;
+			std::int64_t ammoCount = 0;
 			bool ok = true;
 		};
 
@@ -103,7 +128,10 @@ namespace CharSheet
 			return mask;
 		}
 
-		__declspec(noinline) InventoryCounts ReadInventoryRaw(RE::PlayerCharacter* p)
+		// `nocked` is the currently-drawn ammo (may be null). Passed IN rather than
+		// fetched here so the SEH frame stays free of anything that needs a call
+		// into the engine before the walk it is guarding.
+		__declspec(noinline) InventoryCounts ReadInventoryRaw(RE::PlayerCharacter* p, RE::TESAmmo* nocked)
 		{
 			InventoryCounts out;
 			auto*        changes = p ? p->GetInventoryChanges() : nullptr;
@@ -121,11 +149,45 @@ namespace CharSheet
 						out.lockpicks += count;
 						continue;
 					}
+					// Nocked ammo: the quiver count the equipment tile shows.
+					if (nocked && obj == static_cast<RE::TESBoundObject*>(nocked)) {
+						out.ammoCount += count;
+						continue;
+					}
+					// Worn armour census for the damage-reduction formula. Clothing
+					// is excluded because it carries no armour rating and the
+					// engine's per-piece bonus does not apply to it.
+					if (obj->GetFormType() == RE::FormType::Armor) {
+						if (entry->IsWorn()) {
+							auto* armo = obj->As<RE::TESObjectARMO>();
+							if (armo && armo->GetArmorType() != RE::TESObjectARMO::ArmorType::kClothing)
+								++out.armorPieces;
+						}
+						continue;
+					}
 					if (obj->GetFormType() != RE::FormType::AlchemyItem)
 						continue;
 					auto* alch = obj->As<RE::AlchemyItem>();
-					if (!alch || alch->IsFood() || alch->IsPoison())
+					if (!alch)
 						continue;
+					using CK = Hotbar::ConsumableKind;
+					switch (Hotbar::ClassifyConsumable(alch)) {
+					case CK::kPoison:
+						out.poison += count;
+						continue;
+					case CK::kFood:
+						out.food += count;
+						continue;
+					case CK::kDrink:
+						out.drink += count;
+						continue;
+					case CK::kWater:
+						out.drink += count;
+						out.water += count * Hotbar::WaterDrinks(alch);
+						continue;
+					default:
+						break;  // a plain potion — the four pool cards below
+					}
 					switch (PotionPoolMask(alch)) {
 					case 1: out.health += count; break;
 					case 2: out.magicka += count; break;
@@ -137,10 +199,10 @@ namespace CharSheet
 			return out;
 		}
 
-		InventoryCounts ReadInventory(RE::PlayerCharacter* p)
+		InventoryCounts ReadInventory(RE::PlayerCharacter* p, RE::TESAmmo* nocked)
 		{
 			__try {
-				return ReadInventoryRaw(p);
+				return ReadInventoryRaw(p, nocked);
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				InventoryCounts out;
 				out.ok = false;
@@ -268,6 +330,481 @@ namespace CharSheet
 			}
 		}
 
+		// ============================================================ 2026-08-17 ==
+		// Rober saw Skyrim Party Sheet and asked for our equivalent surfaces at
+		// that bar: "the visuals of this is super nice… we could grab a lot of the
+		// features… active effects", then, on gear: "look at the equipment has
+		// +20, damage and count for arrows, a red number for swords, +x on
+		// trinkets". Everything below is the DATA half of that — the presentation
+		// is entirely charsheet-pane.{js,css}'s, per his constraint ("do not
+		// obviously copy… can take all the inspiration and flare").
+		//
+		// The engine plumbing (which actor value, which formula) was checked
+		// against Skyrim Party Sheet's MIT-licensed source, which builds on the
+		// same CommonLibSSE-NG we do — so every call spelled here is proven to
+		// compile and to be the right answer. Those are facts about Skyrim, not
+		// their expression; nothing below is copied text. See the session report
+		// for the attribution note.
+
+		// What one actor value is CALLED on a badge. Deliberately partial: it
+		// covers what an enchantment can plausibly fortify, and answers "" for
+		// anything else so the caller can fall back to a generic mark rather than
+		// print a made-up label.
+		const char* AvLabel(RE::ActorValue av)
+		{
+			using AV = RE::ActorValue;
+			switch (av) {
+			case AV::kHealth: return "Health";
+			case AV::kMagicka: return "Magicka";
+			case AV::kStamina: return "Stamina";
+			case AV::kCarryWeight: return "Carry";
+			case AV::kHealRate: case AV::kHealRateMult: return "Health regen";
+			case AV::kMagickaRate: case AV::kMagickaRateMult: return "Magicka regen";
+			case AV::kStaminaRate: case AV::kStaminaRateMult: return "Stamina regen";
+			case AV::kDamageResist: return "Armour";
+			case AV::kResistFire: return "Fire resist";
+			case AV::kResistFrost: return "Frost resist";
+			case AV::kResistShock: return "Shock resist";
+			case AV::kResistMagic: return "Magic resist";
+			case AV::kPoisonResist: return "Poison resist";
+			case AV::kResistDisease: return "Disease resist";
+			case AV::kSpeedMult: return "Speed";
+			case AV::kUnarmedDamage: return "Unarmed";
+			case AV::kOneHanded: case AV::kOneHandedModifier: return "One-Handed";
+			case AV::kTwoHanded: case AV::kTwoHandedModifier: return "Two-Handed";
+			case AV::kArchery: case AV::kMarksmanModifier: return "Archery";
+			case AV::kBlock: case AV::kBlockModifier: return "Block";
+			case AV::kSmithing: case AV::kSmithingModifier: return "Smithing";
+			case AV::kHeavyArmor: case AV::kHeavyArmorModifier: return "Heavy Armor";
+			case AV::kLightArmor: case AV::kLightArmorModifier: return "Light Armor";
+			case AV::kPickpocket: case AV::kPickpocketModifier: return "Pickpocket";
+			case AV::kLockpicking: case AV::kLockpickingModifier: return "Lockpicking";
+			case AV::kSneak: case AV::kSneakingModifier: return "Sneak";
+			case AV::kAlchemy: case AV::kAlchemyModifier: return "Alchemy";
+			case AV::kSpeech: case AV::kSpeechcraftModifier: return "Speech";
+			case AV::kAlteration: case AV::kAlterationModifier: return "Alteration";
+			case AV::kConjuration: case AV::kConjurationModifier: return "Conjuration";
+			case AV::kDestruction: case AV::kDestructionModifier: return "Destruction";
+			case AV::kIllusion: case AV::kIllusionModifier: return "Illusion";
+			case AV::kRestoration: case AV::kRestorationModifier: return "Restoration";
+			case AV::kEnchanting: case AV::kEnchantingModifier: return "Enchanting";
+			default: return "";
+			}
+		}
+
+		// Is this actor value expressed as a PERCENTAGE on an enchantment (so the
+		// badge reads "25%") rather than as flat points ("+25")? Resists and the
+		// *Modifier / *Rate variants are percentages; the pools and the base
+		// skills are points. Getting this wrong is how a +25 Health amulet would
+		// claim "25% Health".
+		bool AvIsPercent(RE::ActorValue av)
+		{
+			using AV = RE::ActorValue;
+			switch (av) {
+			case AV::kResistFire: case AV::kResistFrost: case AV::kResistShock:
+			case AV::kResistMagic: case AV::kPoisonResist: case AV::kResistDisease:
+			case AV::kHealRate: case AV::kMagickaRate: case AV::kStaminaRate:
+			case AV::kHealRateMult: case AV::kMagickaRateMult: case AV::kStaminaRateMult:
+			case AV::kSpeedMult:
+			case AV::kOneHandedModifier: case AV::kTwoHandedModifier:
+			case AV::kMarksmanModifier: case AV::kBlockModifier:
+			case AV::kSmithingModifier: case AV::kHeavyArmorModifier:
+			case AV::kLightArmorModifier: case AV::kPickpocketModifier:
+			case AV::kLockpickingModifier: case AV::kSneakingModifier:
+			case AV::kAlchemyModifier: case AV::kSpeechcraftModifier:
+			case AV::kAlterationModifier: case AV::kConjurationModifier:
+			case AV::kDestructionModifier: case AV::kIllusionModifier:
+			case AV::kRestorationModifier: case AV::kEnchantingModifier:
+				return true;
+			default:
+				return false;
+			}
+		}
+
+		// Item identity for the deck's mesh-render pipeline: origin plugin + the
+		// FILE-WIDTH-masked local id (never GetLocalFormID() — the actor_identity
+		// null-deref lesson). Writes nothing for a dynamic (0xFF…) form, so the
+		// view keeps a glyph instead of asking for a render that cannot exist.
+		void PutIdentity(json& row, RE::TESForm* f)
+		{
+			if (!f)
+				return;
+			auto* file = f->GetFile(0);
+			if (!file)
+				return;
+			const std::uint32_t local = f->GetFormID() & (file->IsLight() ? 0xFFFu : 0xFFFFFFu);
+			char buf[16];
+			std::snprintf(buf, sizeof(buf), "0x%06X", local);
+			row["formId"] = buf;
+			row["plugin"] = std::string(file->GetFilename());
+		}
+
+		// The "+N" / "25%" cluster on an equipment tile — Rober's "+x on trinkets".
+		// Read off the form's OWN enchantment record.
+		//
+		// ⚠ KNOWN GAP, deliberate: a PLAYER-made enchantment does not live on the
+		// base form (it rides ExtraEnchantment on the inventory entry), so a
+		// self-enchanted ring shows no badge here. That is a false NEGATIVE — the
+		// tile simply says nothing — which is the acceptable failure. Inventing a
+		// number would not be.
+		json EnchantBadges(RE::TESForm* form)
+		{
+			json badges = json::array();
+			auto* ench = form ? form->As<RE::TESEnchantableForm>() : nullptr;
+			auto* item = ench ? ench->formEnchanting : nullptr;
+			if (!item)
+				return badges;
+			int n = 0;
+			for (auto* effect : item->effects) {
+				if (n >= 3)   // three is all a tile can carry without clipping
+					break;
+				auto* base = effect ? effect->baseEffect : nullptr;
+				if (!base)
+					continue;
+				const double mag = static_cast<double>(effect->effectItem.magnitude);
+				if (mag <= 0.0)
+					continue;
+				const auto  av = base->data.primaryAV;
+				const char* label = AvLabel(av);
+				std::string text;
+				char        buf[24];
+				if (AvIsPercent(av))
+					std::snprintf(buf, sizeof(buf), "%.0f%%", mag);
+				else
+					std::snprintf(buf, sizeof(buf), "+%.0f", mag);
+				text = buf;
+				badges.push_back(json{
+					{ "text", text },
+					{ "av", label && *label ? label : "" },
+				});
+				++n;
+			}
+			// An enchantment whose every effect is scripted / zero-magnitude still
+			// makes the piece enchanted — say so with a bare mark rather than
+			// leaving the tile looking mundane.
+			if (badges.empty()) {
+				std::string nm;
+				if (const char* en = item->GetFullName(); en && *en)
+					nm = en;
+				badges.push_back(json{ { "text", "\xE2\x9C\xA6" }, { "av", nm } });   // ✦
+			}
+			return badges;
+		}
+
+		// One worn-armour tile. `armo` may be null — an EMPTY slot is still a tile
+		// (the grid must not reflow as you swap gear), it just carries no numbers.
+		json ArmorTile(const char* key, const char* label, RE::TESObjectARMO* armo)
+		{
+			json t{
+				{ "slot", key },
+				{ "label", label },
+				{ "kind", "armor" },
+				{ "name", "" },
+			};
+			if (!armo)
+				return t;
+			if (const char* nm = armo->GetFullName(); nm && *nm)
+				t["name"] = nm;
+			t["armor"] = static_cast<int>(armo->GetArmorRating());
+			t["badges"] = EnchantBadges(armo);
+			PutIdentity(t, armo);
+			return t;
+		}
+
+		// One hand. A hand can hold a weapon (damage, speed, reach), a shield or
+		// other armour, a spell, or a torch — so the tile says what it actually
+		// is instead of pretending everything is a sword.
+		//
+		// Damage: ask the ENGINE via GetDamage(entryData), which already folds in
+		// skill, fortify effects, the smithing temper and the weapon's own
+		// enchantment scaling. Deriving it by hand from base × (1 + skill/200)
+		// gets a number that is close and wrong; only the fallback (no entry data)
+		// does that, and it says so with `damageEstimated`.
+		json HandTile(RE::PlayerCharacter* p, bool left)
+		{
+			json t{
+				{ "slot", left ? "left" : "right" },
+				{ "label", left ? "Left hand" : "Right hand" },
+				{ "kind", "empty" },
+				{ "name", "" },
+			};
+			auto* form = p ? p->GetEquippedObject(left) : nullptr;
+			if (!form)
+				return t;
+			PutIdentity(t, form);
+			// The name is read off the CONCRETE record in each branch below.
+			// GetEquippedObject hands back a bare TESForm*, and asking a bare
+			// TESForm for a display name is the kind of "probably fine" call that
+			// only fails once the build is on Rober's rig.
+
+			if (auto* weap = form->As<RE::TESObjectWEAP>()) {
+				if (const char* nm = weap->GetFullName(); nm && *nm)
+					t["name"] = nm;
+				t["kind"]  = "weapon";
+				t["speed"] = static_cast<double>(weap->GetSpeed());
+				t["reach"] = static_cast<double>(weap->GetReach());
+				double dmg = static_cast<double>(weap->GetAttackDamage());
+				bool   est = true;
+				if (auto* entry = p->GetEquippedEntryData(left)) {
+					dmg = static_cast<double>(p->GetDamage(entry));
+					est = false;
+				}
+				t["damage"] = dmg < 0.0 ? 0.0 : dmg;
+				if (est)
+					t["damageEstimated"] = true;
+				const auto wt = weap->GetWeaponType();
+				const bool ranged = wt == RE::WEAPON_TYPE::kBow || wt == RE::WEAPON_TYPE::kCrossbow;
+				if (ranged)
+					t["ranged"] = true;
+				t["badges"] = EnchantBadges(weap);
+				return t;
+			}
+			if (auto* armo = form->As<RE::TESObjectARMO>()) {
+				if (const char* nm = armo->GetFullName(); nm && *nm)
+					t["name"] = nm;
+				t["kind"]   = "shield";
+				t["armor"]  = static_cast<int>(armo->GetArmorRating());
+				t["badges"] = EnchantBadges(armo);
+				return t;
+			}
+			if (auto* spell = form->As<RE::SpellItem>()) {
+				if (const char* nm = spell->GetFullName(); nm && *nm)
+					t["name"] = nm;
+				t["kind"] = "spell";
+				return t;
+			}
+			// A torch, a lantern, anything else holdable.
+			if (auto* obj = form->As<RE::TESBoundObject>()) {
+				if (const char* nm = obj->GetName(); nm && *nm)
+					t["name"] = nm;
+			}
+			t["kind"] = "other";
+			return t;
+		}
+
+		// The nocked arrow/bolt: its own damage and how many you have left. Both
+		// are what Rober asked for by name ("damage and count for arrows").
+		json AmmoTile(RE::TESAmmo* ammo, std::int64_t count)
+		{
+			json t{
+				{ "slot", "ammo" },
+				{ "label", "Ammo" },
+				{ "kind", "ammo" },
+				{ "name", "" },
+			};
+			if (!ammo)
+				return t;
+			if (const char* nm = ammo->GetName(); nm && *nm)
+				t["name"] = nm;
+			t["damage"] = static_cast<double>(ammo->GetRuntimeData().data.damage);
+			t["count"]  = count;
+			t["badges"] = EnchantBadges(ammo);
+			PutIdentity(t, ammo);
+			return t;
+		}
+
+		// Every worn slot, in a fixed order so the grid never reflows. Head falls
+		// back to hair then circlet, because a hood, a helmet and a circlet all
+		// answer "what is on your head" and only one of the three is ever the
+		// slot the record actually uses.
+		json EquipJson(RE::PlayerCharacter* p, RE::TESAmmo* nocked, std::int64_t ammoCount)
+		{
+			json out = json::array();
+			if (!p)
+				return out;
+			using Slot = RE::BIPED_MODEL::BipedObjectSlot;
+
+			auto worn = [p](Slot s) -> RE::TESObjectARMO* { return p->GetWornArmor(s); };
+			RE::TESObjectARMO* head = worn(Slot::kHead);
+			if (!head)
+				head = worn(Slot::kHair);
+			if (!head)
+				head = worn(Slot::kCirclet);
+
+			struct Row { const char* key; const char* label; RE::TESObjectARMO* armo; };
+			const Row rows[] = {
+				{ "head",   "Head",   head },
+				{ "body",   "Body",   worn(Slot::kBody) },
+				{ "hands",  "Hands",  worn(Slot::kHands) },
+				{ "feet",   "Feet",   worn(Slot::kFeet) },
+				{ "amulet", "Amulet", worn(Slot::kAmulet) },
+				{ "ring",   "Ring",   worn(Slot::kRing) },
+			};
+			// A robe or a full-body outfit occupies several slots at once; listing
+			// it once per slot would read as six copies of the same armour value.
+			// Same dedupe the wardrobe export uses.
+			std::vector<RE::FormID> seen;
+			for (const auto& r : rows) {
+				RE::TESObjectARMO* a = r.armo;
+				if (a) {
+					const auto id = a->GetFormID();
+					if (std::find(seen.begin(), seen.end(), id) != seen.end())
+						a = nullptr;   // already shown on an earlier slot
+					else
+						seen.push_back(id);
+				}
+				out.push_back(ArmorTile(r.key, r.label, a));
+			}
+			out.push_back(HandTile(p, false));
+			out.push_back(HandTile(p, true));
+			out.push_back(AmmoTile(nocked, ammoCount));
+			return out;
+		}
+
+		// Resistances. Six of the seven are plain actor values already expressed
+		// as percentages; `armor` is the raw rating and `phys` is what that rating
+		// actually BUYS you.
+		//
+		// phys = clamp(rating*0.12 + 3*wornPieces, 0, 80) — Skyrim's own armour
+		// formula (the per-piece bonus is why the piece census above exists), and
+		// the 80% figure is the engine's hard cap. `magic` caps at 85 in vanilla;
+		// both caps ride the payload so the view draws each meter against the
+		// right full scale instead of assuming 100.
+		json ResistJson(RE::ActorValueOwner* avo, std::int64_t armorPieces)
+		{
+			json r{
+				{ "armor", 0 }, { "phys", 0 }, { "fire", 0 }, { "frost", 0 },
+				{ "shock", 0 }, { "magic", 0 }, { "poison", 0 }, { "disease", 0 },
+				{ "pieces", static_cast<int>(armorPieces) },
+				{ "capMagic", 85 }, { "capPhys", 80 },
+			};
+			if (!avo)
+				return r;
+			const double rating = static_cast<double>(Floor0(avo->GetActorValue(RE::ActorValue::kDamageResist)));
+			double phys = rating * 0.12 + 3.0 * static_cast<double>(armorPieces);
+			if (phys < 0.0)
+				phys = 0.0;
+			if (phys > 80.0)
+				phys = 80.0;
+			r["armor"]   = rating;
+			r["phys"]    = phys;
+			r["fire"]    = static_cast<double>(avo->GetActorValue(RE::ActorValue::kResistFire));
+			r["frost"]   = static_cast<double>(avo->GetActorValue(RE::ActorValue::kResistFrost));
+			r["shock"]   = static_cast<double>(avo->GetActorValue(RE::ActorValue::kResistShock));
+			r["magic"]   = static_cast<double>(avo->GetActorValue(RE::ActorValue::kResistMagic));
+			r["poison"]  = static_cast<double>(avo->GetActorValue(RE::ActorValue::kPoisonResist));
+			r["disease"] = static_cast<double>(avo->GetActorValue(RE::ActorValue::kResistDisease));
+			return r;
+		}
+
+		// Regeneration, in POINTS PER SECOND — the number the reference sheet puts
+		// under each bar and the one Rober pointed at.
+		//
+		// Skyrim stores regen as a PERCENT OF MAX PER SECOND (kHealRate & co.,
+		// vanilla 0.7 / 3.0 / 5.0) scaled by a fortify multiplier expressed in
+		// percent (kHealRateMult, 100 = unmodified). So:
+		//     points/sec = max * (rate/100) * (mult/100)
+		// `inCombat` rides along because the engine applies a further combat
+		// penalty to HEALTH regen that is a game setting we cannot read — the view
+		// says "out of combat" rather than printing a number it cannot stand
+		// behind. Honest beats precise-looking.
+		json RegenJson(RE::ActorValueOwner* avo, RE::PlayerCharacter* p,
+			double hpMax, double magMax, double staMax)
+		{
+			json r{ { "has", false }, { "hp", 0 }, { "mag", 0 }, { "sta", 0 }, { "inCombat", false } };
+			if (!avo)
+				return r;
+			auto per = [avo](RE::ActorValue rate, RE::ActorValue mult, double mx) -> double {
+				const double base = static_cast<double>(avo->GetActorValue(rate));
+				const double m    = static_cast<double>(avo->GetActorValue(mult));
+				return mx * (base / 100.0) * (m / 100.0);
+			};
+			r["hp"]  = per(RE::ActorValue::kHealRate, RE::ActorValue::kHealRateMult, hpMax);
+			r["mag"] = per(RE::ActorValue::kMagickaRate, RE::ActorValue::kMagickaRateMult, magMax);
+			r["sta"] = per(RE::ActorValue::kStaminaRate, RE::ActorValue::kStaminaRateMult, staMax);
+			r["has"] = true;
+			if (p)
+				r["inCombat"] = p->IsInCombat();
+			return r;
+		}
+
+		// The stat block: what you hit for, how fast, how far, how quickly you
+		// move, and what you have left to spend. Damage/speed/reach come from the
+		// RIGHT hand's weapon (the hand the engine's own damage call reads), and
+		// fall back to unarmed when that hand is empty — an empty hand is not zero
+		// damage, it is your fists.
+		json CombatJson(RE::PlayerCharacter* p, RE::ActorValueOwner* avo)
+		{
+			json c{ { "damage", 0 }, { "speed", 0 }, { "reach", 0 }, { "move", 0 },
+				    { "perks", 0 }, { "unarmed", false } };
+			if (!p || !avo)
+				return c;
+			c["move"] = static_cast<double>(avo->GetActorValue(RE::ActorValue::kSpeedMult));
+
+			auto* form = p->GetEquippedObject(false);
+			auto* weap = form ? form->As<RE::TESObjectWEAP>() : nullptr;
+			if (weap) {
+				double dmg = static_cast<double>(weap->GetAttackDamage());
+				if (auto* entry = p->GetEquippedEntryData(false))
+					dmg = static_cast<double>(p->GetDamage(entry));
+				c["damage"] = dmg < 0.0 ? 0.0 : dmg;
+				// The weapon's own swing speed, scaled by whatever is fortifying it.
+				double mult = static_cast<double>(avo->GetActorValue(RE::ActorValue::kWeaponSpeedMult));
+				if (mult <= 0.0)
+					mult = 1.0;
+				c["speed"] = static_cast<double>(weap->GetSpeed()) * mult;
+				c["reach"] = static_cast<double>(weap->GetReach());
+			} else {
+				c["damage"]  = static_cast<double>(Floor0(avo->GetActorValue(RE::ActorValue::kUnarmedDamage)));
+				c["unarmed"] = true;
+			}
+			c["perks"] = static_cast<int>(p->GetGameStatsData().perkCount);
+			return c;
+		}
+
+		// Which pile an active effect belongs on: Rober asked for buff / debuff /
+		// disease / poison. "constant" is the fifth that the live profile forces —
+		// a modded save carries scores of permanent controller abilities, and
+		// filing those under "buff" would bury the twelve rows you actually came
+		// to read.
+		const char* EffectGroup(RE::MagicItem* src, bool harmful, double durSec)
+		{
+			using T = RE::MagicSystem::SpellType;
+			if (src) {
+				switch (src->GetSpellType()) {
+				case T::kDisease:
+				case T::kAddiction:
+					return "disease";
+				case T::kPoison:
+					return "poison";
+				default:
+					break;
+				}
+			}
+			if (harmful)
+				return "debuff";
+			if (durSec <= 0.0)
+				return "constant";
+			return "buff";
+		}
+
+		// Where an effect CAME from, in one word, straight off the source record's
+		// own spell type. No name-sniffing: guessing "blessing" from the English
+		// word in a spell's title is wrong the moment the game is not in English.
+		const char* EffectSourceKind(RE::MagicItem* src)
+		{
+			using T = RE::MagicSystem::SpellType;
+			if (!src)
+				return "";
+			switch (src->GetSpellType()) {
+			case T::kSpell:            return "spell";
+			case T::kLeveledSpell:     return "spell";
+			case T::kAbility:          return "ability";
+			case T::kPower:            return "power";
+			case T::kLesserPower:      return "power";
+			case T::kVoicePower:       return "shout";
+			case T::kEnchantment:      return "enchantment";
+			case T::kStaffEnchantment: return "staff";
+			case T::kScroll:           return "scroll";
+			case T::kWortCraft:        return "ingredient";
+			case T::kPotion:           return "potion";
+			case T::kPoison:           return "poison";
+			case T::kDisease:          return "disease";
+			case T::kAddiction:        return "addiction";
+			default:                   return "";
+			}
+		}
+
 		std::string EffectKey(const RE::ActiveEffect* ae)
 		{
 			if (!ae)
@@ -319,10 +856,24 @@ namespace CharSheet
 				? Floor0(ae->duration - ae->elapsedSeconds)
 				: 0.0;
 
-			const bool       harmful = base->data.flags.any(RE::EffectSetting::EffectSettingData::Flag::kDetrimental);
+			// "Harmful" is the record's own detrimental flag, plus the engine's
+			// hostility bit — a fear or a frenzy is hostile without being flagged
+			// detrimental, and filing it under Buffs would be a lie.
+			const bool harmful = base->data.flags.any(RE::EffectSetting::EffectSettingData::Flag::kDetrimental) ||
+				base->IsHostile();
 			const RemoveMode remove  = DispelMode(player, ae);
 			const char* removeName = remove == RemoveMode::kSafe ? "safe" :
 				(remove == RemoveMode::kConfirm ? "confirm" : "locked");
+
+			// 2026-08-17: the fields the rebuilt Active Effects card groups and
+			// explains by. `hidden` is the record's own kHideInUI flag — the game
+			// keeps those off the magic menu because they are plumbing. We keep
+			// the ROW (this tab is an inspector; you may well want to dispel one)
+			// and let the view fold it away, which is the honest middle.
+			const char* group  = EffectGroup(src, harmful, durSec);
+			const char* srcKind = EffectSourceKind(src);
+			const char* avName  = AvLabel(base->data.primaryAV);
+			const bool  hidden  = base->data.flags.any(RE::EffectSetting::EffectSettingData::Flag::kHideInUI);
 
 			return json{
 				{ "key", EffectKey(ae) },
@@ -334,6 +885,10 @@ namespace CharSheet
 				{ "durSec", durSec },
 				{ "remainSec", remainSec },
 				{ "harmful", harmful },
+				{ "group", group },
+				{ "sourceKind", srcKind },
+				{ "av", avName },
+				{ "hidden", hidden },
 				{ "removeMode", removeName },
 				{ "wantsRemove", remove != RemoveMode::kLocked },
 			};
@@ -464,6 +1019,8 @@ namespace CharSheet
 			out["gold"]    = 0;
 			out["inventory"] = json{
 				{ "potions", json{ { "health", 0 }, { "magicka", 0 }, { "stamina", 0 }, { "other", 0 }, { "total", 0 } } },
+				{ "consumables", json{ { "poison", 0 }, { "food", 0 }, { "drink", 0 }, { "water", 0 } } },
+				{ "waterOk", false },
 				{ "lockpicks", 0 },
 			};
 			out["souls"]   = json{ { "dragon", 0 } };
@@ -471,6 +1028,19 @@ namespace CharSheet
 			out["beast"]   = "";
 			out["skills"]  = json::array();
 			out["effects"] = json::array();
+			// 2026-08-17 blocks: present but empty, so the view's normalize sees
+			// the keys it expects and draws its own "no save" states rather than
+			// falling back to the pre-1.12 layout on a main-menu snapshot.
+			out["regen"]   = json{ { "has", false }, { "hp", 0 }, { "mag", 0 }, { "sta", 0 }, { "inCombat", false } };
+			out["resist"]  = json{ { "armor", 0 }, { "phys", 0 }, { "fire", 0 }, { "frost", 0 },
+				                   { "shock", 0 }, { "magic", 0 }, { "poison", 0 }, { "disease", 0 },
+				                   { "pieces", 0 }, { "capMagic", 85 }, { "capPhys", 80 } };
+			out["combat"]  = json{ { "damage", 0 }, { "speed", 0 }, { "reach", 0 }, { "move", 0 },
+				                   { "perks", 0 }, { "unarmed", false } };
+			out["equip"]   = json::array();
+			// Faith is read off Wintersun's quest script, which does not resolve
+			// with no save loaded — an absent card, not a wrong one.
+			out["faith"]   = json{ { "present", false }, { "active", false } };
 			out["meta"]    = MetaJson(meta);
 			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
@@ -497,7 +1067,10 @@ namespace CharSheet
 		out["sta"]   = Pool(avo, RE::ActorValue::kStamina);
 		out["carry"] = Pool(avo, RE::ActorValue::kCarryWeight);
 
-		const auto inv = ReadInventory(p);
+		// Fetched here, outside the guarded walk, and handed in: the walk counts
+		// how many of THIS ammo you carry (see InventoryCounts::ammoCount).
+		RE::TESAmmo* nocked = p->GetCurrentAmmo();
+		const auto   inv    = ReadInventory(p, nocked);
 		// Reached once per plugin lifetime: protects the dynamic inventory seam in
 		// the deploy marker registry without spamming the 5 s portal ticker.
 		static bool inventorySaid = false;
@@ -514,6 +1087,16 @@ namespace CharSheet
 				{ "other", inv.ok ? inv.other : 0 },
 				{ "total", inv.ok ? inv.health + inv.magicka + inv.stamina + inv.other : 0 },
 			} },
+			// Consumable cards (2026-08-15): poison/food/drink/water. drink
+			// includes water bottles; water counts DRINKS. waterOk lets the
+			// view hide the Water card honestly when no water mod is present.
+			{ "consumables", json{
+				{ "poison", inv.ok ? inv.poison : 0 },
+				{ "food", inv.ok ? inv.food : 0 },
+				{ "drink", inv.ok ? inv.drink : 0 },
+				{ "water", inv.ok ? inv.water : 0 },
+			} },
+			{ "waterOk", Hotbar::WaterModPresent() },
 			{ "lockpicks", inv.ok ? inv.lockpicks : 0 },
 		};
 
@@ -523,6 +1106,28 @@ namespace CharSheet
 		out["souls"]  = json{ { "dragon", dragon } };
 		out["bounty"] = ReadBounty(p);
 		out["beast"]  = BeastOf(p);
+
+		// ---- 2026-08-17: regen · resistances · combat stats · worn equipment ---
+		// All four ride the ONE snapshot this function already builds. Marker
+		// literal below is the deploy fingerprint for the whole block.
+		static bool sheetV2Said = false;
+		if (!sheetV2Said) {
+			sheetV2Said = true;
+			logger::info("charsheet gear+resist: equipment, resistances and regen ready");
+		}
+		{
+			// Read the pools back out of what we already serialized instead of
+			// asking the engine again — the regen figure is a fraction of the SAME
+			// max the bar above it is drawn against, and two reads a frame apart
+			// could disagree.
+			const double hpMax  = out["hp"].value("max", 0.0);
+			const double magMax = out["mag"].value("max", 0.0);
+			const double staMax = out["sta"].value("max", 0.0);
+			out["regen"]  = RegenJson(avo, p, hpMax, magMax, staMax);
+		}
+		out["resist"] = ResistJson(avo, inv.ok ? inv.armorPieces : 0);
+		out["combat"] = CombatJson(p, avo);
+		out["equip"]  = EquipJson(p, nocked, inv.ok ? inv.ammoCount : 0);
 
 		json skills = json::array();
 		if (avo) {
@@ -548,6 +1153,13 @@ namespace CharSheet
 		}
 		out["effects"] = std::move(effects);
 
+		// Faith (Wintersun). Rides the sheet's own snapshot rather than a bridge
+		// of its own: it is a card on this tab, the 2 s poll already refreshes it,
+		// and the phone portal keeps working unchanged (it simply ignores a key it
+		// does not know). `present:false` when Wintersun is not installed, and the
+		// view then draws nothing at all.
+		out["faith"] = Faith::BuildJson();
+
 		out["meta"] = MetaJson(meta);
 
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
@@ -558,18 +1170,37 @@ namespace CharSheet
 		// "health"|"magicka"|"stamina"|"other" -> the PotionPoolMask value a potion
 		// must EXACTLY match to belong to that card. "other" is the catch-all: any
 		// mask the three single-pool cards don't claim (0, or a multi-pool combo).
-		// Returns -1 for an unknown category name.
+		// The consumable categories (2026-08-15) ride negative sentinels and match
+		// through the shared classifier instead of the mask. Returns -1 for an
+		// unknown category name.
 		int CategoryMask(const std::string& category)
 		{
 			if (category == "health")  return 1;
 			if (category == "magicka") return 2;
 			if (category == "stamina") return 4;
 			if (category == "other")   return -2;  // sentinel: "not 1/2/4"
+			if (category == "poison")  return -3;
+			if (category == "food")    return -4;
+			if (category == "drink")   return -5;  // includes water, by design
+			if (category == "water")   return -6;
 			return -1;
 		}
 
 		bool PotionInCategory(const RE::AlchemyItem* alch, int wantMask)
 		{
+			using CK = Hotbar::ConsumableKind;
+			const auto kind = Hotbar::ClassifyConsumable(alch);
+			switch (wantMask) {
+			case -3: return kind == CK::kPoison;
+			case -4: return kind == CK::kFood;
+			case -5: return kind == CK::kDrink || kind == CK::kWater;
+			case -6: return kind == CK::kWater;
+			default: break;
+			}
+			// The four classic cards are POTIONS only — food/poison/drink/water
+			// belong to their own cards above, exactly as ReadInventoryRaw counts.
+			if (kind != CK::kPotion)
+				return false;
 			const int mask = PotionPoolMask(alch);
 			if (wantMask == -2)                       // "other"
 				return mask != 1 && mask != 2 && mask != 4;
@@ -628,8 +1259,11 @@ namespace CharSheet
 				if (obj->GetFormType() != RE::FormType::AlchemyItem)
 					continue;
 				auto* alch = obj->As<RE::AlchemyItem>();
-				if (!alch || alch->IsFood() || alch->IsPoison())
+				if (!alch)
 					continue;
+				// No food/poison pre-filter any more (2026-08-15): the category
+				// decides — PotionInCategory keeps the four classic cards
+				// potions-only and routes poison/food/drink/water to theirs.
 				if (!PotionInCategory(alch, wantMask))
 					continue;
 				PotionRow row;
@@ -670,6 +1304,10 @@ namespace CharSheet
 			if (category == "health")  return "Health";
 			if (category == "magicka") return "Magicka";
 			if (category == "stamina") return "Stamina";
+			if (category == "poison")  return "Poisons";
+			if (category == "food")    return "Food";
+			if (category == "drink")   return "Drinks";
+			if (category == "water")   return "Water";
 			return "Other";
 		}
 	}

@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace OpenDiag
@@ -38,14 +39,62 @@ namespace OpenDiag
 	// Side-thread watchdog: if Done() has not run after `afterMs`, log that
 	// `label` is still blocked — from the watchdog thread, since the main
 	// thread may be the thing that is hung. Destroying the object disarms.
+	//
+	// `onBlocked` (optional) also runs on the watchdog thread when it fires, so
+	// a caller can leave durable evidence of a hang the main thread can never
+	// record itself (the smooth-pause wedge sentinel writes its flag file here).
+	// It must touch NOTHING but the filesystem/atomics — the game thread is
+	// presumed hung underneath it. A callback keeps the watchdog armed even when
+	// bOpenTiming=0 has silenced the logging.
 	class Watchdog
 	{
 	public:
-		Watchdog(const char* label, std::int64_t afterMs);
+		Watchdog(const char* label, std::int64_t afterMs,
+			std::function<void()> onBlocked = nullptr);
 		~Watchdog();
 		void Done();
 
 	private:
 		std::shared_ptr<std::atomic<bool>> done_;
+	};
+
+	// ------------------------------------------------------ steady-state census
+	// The open path has told us where its milliseconds go since 2026-08-13. The
+	// PLAY path never has: this plugin posts ~20-25 tasks a second to the game
+	// thread while the player is just walking around (room guard, loot scan,
+	// auto-loot, no-auto-gear, the HUD roster scan, the hotbar visibility beat,
+	// the widgets rebuild, the portal watchdog), and nothing recorded what any
+	// of them cost. "Intense microstuttering" cannot be attributed or ruled out
+	// without that number, so each periodic main-thread task now times itself
+	// and ONE summary line per 60 s names the worst offenders — never a line per
+	// tick, and never any output at all when nothing was recorded.
+	//
+	// ON by default, same reasoning as bOpenTiming (a stuttering user cannot be
+	// asked to switch a setting on first). Opt out:
+	//     [Diagnostics]
+	//     bTickCensus=0
+	//
+	// MAIN THREAD ONLY. `label` must be a string LITERAL — buckets are keyed by
+	// pointer identity so the census never allocates or hashes on the hot path.
+	bool TickCensusEnabled();
+
+	// Record one completed main-thread task. Cheap: a pointer compare per bucket.
+	void NoteTick(const char* label, std::int64_t micros);
+
+	// Emit the summary if 60 s have passed since the last one and anything was
+	// recorded. Safe (and free) to call every second; call it on the main thread.
+	void FlushTickCensus();
+
+	// Scoped timer around a periodic main-thread task:
+	//     OpenDiag::TickTimer t("room-guard");
+	class TickTimer
+	{
+	public:
+		explicit TickTimer(const char* label);
+		~TickTimer();
+
+	private:
+		const char*   label_;
+		std::int64_t  startUs_;
 	};
 }

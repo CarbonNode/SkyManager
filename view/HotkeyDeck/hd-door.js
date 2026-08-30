@@ -50,6 +50,12 @@
     pick: 50,       // the level the Lock button will use
     busy: false,    // a drSet is in flight
     wasLocked: null, // previous locked state — a flip triggers the snap animation
+    /* True between our own drRefresh and the drTarget it brings back. It
+       separates "the palette just opened and there is no door" (a stale modal
+       must close, or it lies about what F7 was pointed at) from "we asked on
+       purpose from search" (the answer belongs ON the modal, even when the
+       answer is no door). */
+    asked: false,
   };
 
   let el = null;    // the backdrop node
@@ -108,13 +114,18 @@
   window.drTarget = function (payload) {
     let d = payload;
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch (_) { d = null; } }
+    const wasAsked = S.asked;
+    S.asked = false;
     S.target = (d && d.name) ? d : null;
     S.busy = false;
     if (!S.target) {
       /* Reopened with no door under the crosshair: a modal left over from the
-         previous open would be lying about what F7 was pointed at. */
+         previous open would be lying about what F7 was pointed at. A modal we
+         opened OURSELVES from search stays up instead and says so — closing
+         the thing the player just asked for would read as a broken button. */
       S.wasLocked = null;
-      if (S.open) close();
+      if (S.open && wasAsked) render();
+      else if (S.open) close();
       return;
     }
     /* Seed the picker from the door's current level, so "re-lock as it was"
@@ -232,7 +243,9 @@
       body.append(h('div', { class: 'dr-empty' },
         h('div', { class: 'dr-empty-ic' }, '🚪'),
         h('div', { class: 'dr-empty-t' },
-          'No door under the crosshair. Look straight at a door and press the deck key again.')));
+          S.asked
+            ? 'Checking what you are looking at…'
+            : 'No door under the crosshair. Look straight at a door and press the deck key again.')));
       return;
     }
 
@@ -316,9 +329,27 @@
     render();
   }
 
+  /* Open on demand rather than on the crosshair gesture: re-snapshot the door
+     first (drRefresh — C++ has always answered it) so the modal is about what
+     is in front of you NOW, not what the palette happened to see when it
+     opened. The answer lands asynchronously, so the modal goes up straight
+     away wearing the "checking" state. */
+  function ask() {
+    S.asked = true;
+    toGameSafe('drRefresh', '');
+    /* Through the EXPORT, never the closure-local open(): hd-css.js wraps the
+       exported method so this modal's lazy stylesheet has applied before the
+       box mounts, and an internal call is invisible to that wrapper. The
+       wrapper may defer, which is why S.asked is set FIRST — an answer that
+       beats the open then simply renders when the open lands. */
+    const via = (window.HDDoor && window.HDDoor.open) || open;
+    via();
+  }
+
   function close() {
     if (!S.open) return;
     S.open = false;
+    S.asked = false;
     if (el) el.classList.add('hidden');
     toGameSafe('hdCapture', '0');
   }
@@ -339,4 +370,40 @@
     _render: render,  // harness
     _tierOf: tierOf,  // harness
   };
+
+  /* ------------------------------------------------------------- omni --- *
+   * Until this row existed the modal had exactly one door in: stand at a
+   * door and press the deck key. Nothing on screen ever said the feature was
+   * there, so the only way to learn it was to be told — a whole named
+   * feature with no search presence. Now "lock", "unlock" or "door" lands
+   * here. There is no tab to jump to (the modal IS the destination), which
+   * is why `tab` is empty, and it must NOT be 'containers' or any gated tab:
+   * locking a door needs no mod at all.
+   *
+   * The row reads S.target — the snapshot C++ pushes on every palette open —
+   * so when you ARE looking at a door the row names it and says how it
+   * stands before you commit to opening anything. */
+  if (window.HDOmni && typeof HDOmni.register === 'function') {
+    HDOmni.register({
+      id: 'door', label: 'Doors', tab: '',
+      index: function () {
+        const t = S.target;
+        return [{
+          label: t ? ('Lock or unlock ' + t.name) : 'Lock or unlock a door',
+          detail: t
+            ? (t.hasLock
+              ? (t.locked ? 'Locked' : 'Unlocked') + ' · ' + t.tier + ' · level ' + t.level +
+                ' — set any level, or unlock it'
+              : 'No lock on it yet — locking it adds one')
+            : 'The door in your crosshair: lock it anywhere from Novice to ' +
+              'Requires Key, or unlock it',
+          kind: 'door',
+          keywords: 'lock unlock locked door doors key level novice apprentice ' +
+            'adept expert master requires key lockpick picking padlock bar seal ' +
+            'shut open secure',
+          run: function () { ask(); },
+        }];
+      },
+    });
+  }
 })();

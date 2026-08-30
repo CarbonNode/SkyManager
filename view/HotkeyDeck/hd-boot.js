@@ -98,18 +98,64 @@
     'domains-pane.js',
     'bases-pane.js',       // chains DomainsPane.onShow/onHide; must follow domains-pane
     'hd-portal.js',        // chains window.hdOpen (app.js core is already parsed)
+    'hd-itempick.js',      // shared load-order item picker — BEFORE the panes that
+                           // open it (containers: auto-loot rules + sort pins).
+                           // ixPickData is response-style (the picker always asks
+                           // first), so no STUB_FNS entry.
     'containers-pane.js',
     'rooms-pane.js',
     'loot-pane.js',
     'keys-pane.js',
     'hd-lightbox.js',
     'hd-facefit.js',       // before the panes that use it (npcs tiles, followers medallions)
+    'hd-potions.js',       // potion browser popout (pb* replies are response-style —
+                           // the pane always asks first, so no STUB_FNS entry; a
+                           // deep-open that races the load parks on __hdPendingPotions)
+    'hd-quiver.js',
+    'hd-super.js',         // Super Searcher popout — the omni search re-dressed as a
+                           // standalone widget. Chains nothing and every reply it
+                           // consumes (whInvList / hd-item-icons) is defined in CORE
+                           // (hd-wheel.js), so no STUB_FNS entry; a racing deep-open
+                           // parks on __hdPendingSuper (app.js router).
+    'survival-pane.js',    // Survival TAB (the dashboard); chains svStateResult
+    'hd-survival.js',      // survival popout (sv* replies are response-style —
+                           // the module always asks first, so no STUB_FNS entry;
+                           // a racing deep-open parks on __hdPendingSurvival)        // ammo radial (qv* replies response-style, same contract;
+                           // a racing deep-open parks on __hdPendingQuiver)
     'items-pane.js',
     'npcs-pane.js',
+    'spid-pane.js',        // Distributions tab — SPID/SkyPatcher inspector for the
+                           // crosshair NPC (dx* replies are response-style — the
+                           // pane always asks first, so no STUB_FNS entry)
+    'journal-pane.js',    // Journal tab — the book you write yourself. Free-standing
+                          // (chains nothing, every jr* reply is response-style: the
+                          // pane sends jrOpen on Show), so it needs no STUB_FNS entry.
+    'transmog-pane.js',   // Transmog tab — after wardrobe-pane lands (uses its
+                          // itemIconFor), before the panes below by adjacency
+    /* combat-arts-pane.js is NOT in this manifest: Combat Arts moved into the
+       Spell Deck view on 2026-08-15 (view/MagicDeck), which loads it directly
+       from its own index.html — this deck no longer hosts that pane. */
     'mounts-pane.js',
+    'settlement-pane.js',  // world-object placer; owns tab 'settle'. Depends on
+                           // wardrobe-pane.js (itemIconFor) + hd-lightbox.js above.
+    'wigs-pane.js',        // rendered wig catalogue; owns tab 'wigs'. Same deps
+                           // (itemIconFor + hd-lightbox); wv* replies are
+                           // response-style — the pane always asks first, so no
+                           // STUB_FNS entry
+    'spellcraft-pane.js',  // Oblivion-style spellmaker; owns tab 'spellcraft'.
+                           // sc* replies are response-style (the pane always
+                           // asks first: scState/scOpen on Show), so no STUB_FNS
+                           // entry; chains nothing, so its slot is free-standing.
+    'highking-pane.js',    // Become High King of Skyrim dashboard; owns tab
+                           // 'highking' (detection-gated). kg* replies are
+                           // response-style (kgState on Show), so no STUB_FNS
+                           // entry; free-standing like spellcraft.
     'charsheet-pane.js',
     'anim-pane.js',
     'ostim-pane.js',
+    'zaz-pane.js',         // ZaZ segment of the Animations tab (zz* replies are
+                           // response-style — the pane always asks first, so no
+                           // STUB_FNS entry)
     'light-pane.js',
     'faces-pane.js',
     'time-pane.js',
@@ -138,10 +184,19 @@
     'keys-pane.js': ['keys'],
     'items-pane.js': ['items'],
     'npcs-pane.js': ['npcs'],
+    'spid-pane.js': ['distr'],
+    'journal-pane.js': ['journal'],
+    'transmog-pane.js': ['transmog'],
     'mounts-pane.js': ['mounts'],
+    'settlement-pane.js': ['settle'],
+    'wigs-pane.js': ['wigs'],
+    'survival-pane.js': ['survival'],
+    'spellcraft-pane.js': ['spellcraft'],
+    'highking-pane.js': ['highking'],
     'charsheet-pane.js': ['sheet'],
     'anim-pane.js': ['anim'],
     'ostim-pane.js': ['anim'],       // OStim body lives inside the Animations tab
+    'zaz-pane.js': ['anim'],         // ZaZ body lives there too
     'faces-pane.js': ['faces'],
     'time-pane.js': ['time'],
     'finances-pane.js': ['finances'],
@@ -153,7 +208,10 @@
   var PANE_FOR_TAB = {
     followers: 'FolPane', wardrobe: 'WardrobePane', domains: 'DomainsPane',
     containers: 'ContainersPane', rooms: 'RoomsPane', loot: 'LootPane',
-    keys: 'KeysPane', items: 'ItemsPane', npcs: 'NpcsPane', mounts: 'MountsPane',
+    keys: 'KeysPane', items: 'ItemsPane', npcs: 'NpcsPane', distr: 'DistrPane', mounts: 'MountsPane',
+    transmog: 'TransmogPane', settle: 'SettlementPane', wigs: 'WigsPane',
+    spellcraft: 'SpellCraftPane', survival: 'SurvivalPane', journal: 'JournalPane',
+    highking: 'HighKingPane',
     sheet: 'CharSheetPane', anim: 'AnimPane', faces: 'FacesPane', time: 'TimePane',
     finances: 'FinancesPane'
   };
@@ -198,6 +256,8 @@
     'ctOpen', 'ctTarget', 'ctSaved',
     // rooms-pane.js — rgOpen unprompted at open (~4200); rgSaved ack (chained receivers)
     'rgOpen', 'rgSaved',
+    // containers-pane.js sort+auto-loot — csOpen + alOpen unprompted at open; *Saved acks
+    'csOpen', 'alOpen', 'csSaved', 'alSaved',
     // hd-door.js — drTarget unprompted at open (~4208; a null push closes a stale modal)
     'drTarget',
     // loot-pane.js — ltSaved ack (LootPane chains it; ltOpen arrives from LootPane.onShow,
@@ -271,6 +331,13 @@
    * re-run FolPane.init() for followers (app.js init() skipped it because the
    * script wasn't loaded yet). Safe: both are feature-detected and idempotent. */
   function maybeHydrate(file) {
+    try {
+      /* Staged CSS (hd-css.js): a popout module's stylesheet is loaded on the
+       * first call to its exported open(), so the wrapper has to be installed
+       * the moment the module exists. Cheap (a few typeof checks) and
+       * feature-detected — no HDCss means no staged CSS, nothing to arm. */
+      if (window.HDCss && typeof HDCss.armAll === 'function') HDCss.armAll();
+    } catch (e) {}
     try {
       if (file === 'followers-pane.js' && window.FolPane && typeof FolPane.init === 'function') {
         // app.js init() runs `if (window.FolPane) FolPane.init()`; with followers
@@ -352,6 +419,11 @@
     if (finished) return;   // both loadNext(end) and eagerRemainder can reach here — once only
     finished = true;
     flushReady();   // last pass
+    /* Staged CSS completeness pass: every popout module is loaded by now, so
+     * HDCss can prove each of its keys has a live trigger and eager-load any that
+     * does not — a key nothing can ever ask for would leave its DOM permanently
+     * gated, which is worse than the flash the gates exist to prevent. */
+    try { if (window.HDCss && typeof HDCss.audit === 'function') HDCss.audit(); } catch (e) {}
     var full = perf() - t0;
     // Completeness self-check (VERIFICATION BAR (a)): every stubbed fn must have
     // been overwritten by a real definition by now. A stub still live = a global
@@ -393,6 +465,14 @@
       if (started) return;
       started = true;
       t0 = perf();
+      /* Staged CSS: arm its triggers at the same moment we arm staged JS. setTab
+       * and render exist by now (app.js has parsed and init() is finishing), and
+       * the core modules the wraps target (HDWheel, HDOmni) are already loaded.
+       * Nothing can have opened a pane or a popout yet — C++'s first push is
+       * hdOpen, which comes after DOM-ready. */
+      try {
+        if (window.HDCss) { HDCss.armTabs(); HDCss.armAll(); }
+      } catch (e) { log('HDBoot: HDCss arming threw: ' + e); }
       try { loadNext(); }
       catch (e) {
         // If sequential injection itself throws, fall back to eager for ALL of it.
@@ -400,7 +480,11 @@
         eagerRemainder(0);
       }
     },
-    /* introspection for the harness */
+    /* introspection for the harness — and _paneForTab is also the map hd-css.js
+     * re-uses to re-fire a pane's onShow once its stylesheet lands, so that the
+     * two staging layers hydrate through ONE table rather than two copies. */
+    _paneForTab: PANE_FOR_TAB,
+    _tabOwner: TAB_OWNER,
     _manifest: MANIFEST,
     _stubFns: STUB_FNS,
     _buffer: buf,

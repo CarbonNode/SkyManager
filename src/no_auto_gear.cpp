@@ -183,7 +183,8 @@ namespace NoAutoGear
 		// cloak on). Removing the whole distributor set from the bag leaves nothing
 		// to auto-equip; the equip-sink below then catches anything a later outfit
 		// re-application adds.
-		int StripActor(RE::Actor* actor, const std::vector<std::string>& plugins)
+		int StripActor(RE::Actor* actor, const std::vector<std::string>& plugins,
+			const std::unordered_set<std::string>& blocked = {})
 		{
 			if (!actor)
 				return 0;
@@ -194,12 +195,21 @@ namespace NoAutoGear
 			for (auto& [obj, data] : inv) {
 				if (!obj || data.first <= 0)
 					continue;
-				// Cloaks, hoods and underwear are all ARMO. Restrict to armor so a
-				// distributor's non-armour token is never yanked by accident.
-				if (obj->GetFormType() != RE::FormType::Armor)
-					continue;
-				if (!PluginMatches(PluginOf(obj), plugins))
-					continue;
+				// An exact block was NAMED by the player against this specific person,
+				// so it is honoured whatever the form type — blocking a distributed
+				// potion or weapon is as legitimate as blocking a cloak, and the
+				// armour restriction below exists only because the PLUGIN rule is a
+				// blunt instrument that must not yank a mod's non-armour token.
+				const bool isBlocked = !blocked.empty() &&
+					blocked.count(KeyOf(PluginOf(obj), ActorIdentity::LocalIdOf(obj))) > 0;
+				if (!isBlocked) {
+					// Cloaks, hoods and underwear are all ARMO. Restrict to armor so a
+					// distributor's non-armour token is never yanked by accident.
+					if (obj->GetFormType() != RE::FormType::Armor)
+						continue;
+					if (!PluginMatches(PluginOf(obj), plugins))
+						continue;
+				}
 				doomed.emplace_back(obj, data.first);
 			}
 			if (doomed.empty())
@@ -226,18 +236,32 @@ namespace NoAutoGear
 
 		// Sweep every protected NPC currently loaded near the player. Returns the
 		// total pieces stripped.
+		// Defined below, used here: the sweep needs to know a form is blocked for a
+		// particular person, and whether that person is on the roster at all.
+		std::unordered_set<std::string> BlockSetFor(const Config& cfg,
+			const std::string& npcPlugin, std::uint32_t npcLocal);
+		bool Contains(const Config& cfg, const std::string& plugin, std::uint32_t localId);
+
 		int SweepRoster(const Config& cfg)
 		{
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			auto* tes = RE::TES::GetSingleton();
-			if (!player || !tes || !player->GetParentCell() || cfg.npcs.empty())
+			if (!player || !tes || !player->GetParentCell() ||
+				(cfg.npcs.empty() && cfg.blocks.empty()))
 				return 0;
 
+			// Blocking something for someone IS a reason to watch them, so an NPC
+			// with a block but no roster entry still gets swept — otherwise "block
+			// this outfit on Scarlett" would quietly do nothing until she was also
+			// protected, which is not what the button says.
 			std::unordered_set<std::string> roster;
-			roster.reserve(cfg.npcs.size() * 2);
+			roster.reserve(cfg.npcs.size() * 2 + cfg.blocks.size());
 			for (const auto& n : cfg.npcs)
 				if (n.valid())
 					roster.insert(KeyOf(n.plugin, n.localId));
+			for (const auto& b : cfg.blocks)
+				if (b.valid())
+					roster.insert(KeyOf(b.npc.plugin, b.npc.localId));
 			if (roster.empty())
 				return 0;
 
@@ -255,9 +279,16 @@ namespace NoAutoGear
 					const std::uint32_t local = ActorIdentity::LocalIdOf(base);
 					if (!local)
 						return RE::BSContainer::ForEachResult::kContinue;
-					if (!roster.count(KeyOf(PluginOf(base), local)))
+					const std::string basePlugin = PluginOf(base);
+					if (!roster.count(KeyOf(basePlugin, local)))
 						return RE::BSContainer::ForEachResult::kContinue;
-					stripped += StripActor(actor, cfg.plugins);
+					const auto blocked = BlockSetFor(cfg, basePlugin, local);
+					// Only-blocked NPCs are not on the protected roster, so the plugin
+					// rule must not apply to them — they asked for one thing gone, not
+					// for every distributor to be stripped.
+					const bool onRoster = Contains(cfg, basePlugin, local);
+					static const std::vector<std::string> kNoPlugins;
+					stripped += StripActor(actor, onRoster ? cfg.plugins : kNoPlugins, blocked);
 					return RE::BSContainer::ForEachResult::kContinue;
 				});
 			return stripped;
@@ -269,6 +300,36 @@ namespace NoAutoGear
 				{ "plugin", n.plugin },
 				{ "localId", ActorIdentity::HexOf(n.localId) },
 				{ "name", n.name } };
+		}
+
+		NpcRef RefFromJson(const json& j)
+		{
+			NpcRef n;
+			if (j.is_object()) {
+				n.plugin = j.value("plugin", std::string(""));
+				// The pane speaks the durable pair as {formId,plugin}; the config has
+				// always called the id localId. Accept either spelling rather than
+				// making one side translate — a silent mismatch here would look like
+				// "the block did nothing".
+				std::string hex = j.value("localId", std::string(""));
+				if (hex.empty())
+					hex = j.value("formId", std::string(""));
+				n.localId = ActorIdentity::ParseHex(hex);
+				n.name = j.value("name", std::string(""));
+			}
+			return n;
+		}
+
+		// The forms blocked for ONE actor, as identity keys.
+		std::unordered_set<std::string> BlockSetFor(const Config& cfg,
+			const std::string& npcPlugin, std::uint32_t npcLocal)
+		{
+			std::unordered_set<std::string> out;
+			const std::string who = KeyOf(npcPlugin, npcLocal);
+			for (const auto& b : cfg.blocks)
+				if (b.valid() && KeyOf(b.npc.plugin, b.npc.localId) == who)
+					out.insert(KeyOf(b.form.plugin, b.form.localId));
+			return out;
 		}
 
 		bool Contains(const Config& cfg, const std::string& plugin, std::uint32_t localId)
@@ -398,11 +459,16 @@ namespace NoAutoGear
 		json plugins = json::array();
 		for (const auto& p : c.plugins)
 			plugins.push_back(p);
+		json blocks = json::array();
+		for (const auto& b : c.blocks)
+			if (b.valid())
+				blocks.push_back(json{ { "npc", RefToJson(b.npc) }, { "form", RefToJson(b.form) } });
 		return json{
 			{ "enabled", c.enabled },
 			{ "notify", c.notify },
 			{ "tickMs", c.tickMs },
 			{ "npcs", npcs },
+			{ "blocks", blocks },
 			{ "plugins", plugins } };
 	}
 
@@ -424,6 +490,17 @@ namespace NoAutoGear
 					n.name = jn.value("name", std::string(""));
 					if (n.valid())
 						c.npcs.push_back(std::move(n));
+				}
+			}
+			if (j.contains("blocks") && j["blocks"].is_array()) {
+				for (const auto& jb : j["blocks"]) {
+					if (!jb.is_object())
+						continue;
+					Block b;
+					b.npc = RefFromJson(jb.value("npc", json::object()));
+					b.form = RefFromJson(jb.value("form", json::object()));
+					if (b.valid())
+						c.blocks.push_back(std::move(b));
 				}
 			}
 			if (j.contains("plugins") && j["plugins"].is_array()) {
@@ -542,6 +619,156 @@ namespace NoAutoGear
 		RefreshCache(cfg);
 		return Dump(json{ { "ok", true }, { "msg", msg }, { "added", added },
 			{ "count", static_cast<int>(cfg.npcs.size()) } });
+	}
+
+	// ---- exact-form blocks --------------------------------------------------
+	//
+	// The Distributions tab already knows precisely what SPID would hand this NPC,
+	// so "block this" names a form rather than guessing at a source. Nothing
+	// un-distributes in SPID, so the honest lever is to take the specific thing
+	// back off the specific person on every sweep — which is what a Block is.
+	std::string SetBlock(const std::string& reqJson, Config& cfg)
+	{
+		json in = json::object();
+		try {
+			in = json::parse(reqJson);
+		} catch (...) {
+		}
+
+		const NpcRef who = RefFromJson(in.value("npc", json::object()));
+		if (!who.valid())
+			return Dump(json{ { "ok", false }, { "msg", "no NPC to block that for" } });
+
+		const bool on = in.value("on", true);
+
+		// One form, or a whole list in a single tap ("block everything this line
+		// would give her") — the same code path either way, so a bulk block cannot
+		// drift from a single one.
+		std::vector<NpcRef> forms;
+		if (in.contains("forms") && in["forms"].is_array()) {
+			for (const auto& jf : in["forms"]) {
+				NpcRef f = RefFromJson(jf);
+				if (f.valid())
+					forms.push_back(std::move(f));
+			}
+		} else {
+			NpcRef f = RefFromJson(in.value("form", json::object()));
+			if (f.valid())
+				forms.push_back(std::move(f));
+		}
+		if (forms.empty())
+			return Dump(json{ { "ok", false }, { "msg", "nothing to block" } });
+
+		const std::string whoKey = KeyOf(who.plugin, who.localId);
+		int changed = 0;
+		for (const auto& f : forms) {
+			const std::string fk = KeyOf(f.plugin, f.localId);
+			auto it = std::find_if(cfg.blocks.begin(), cfg.blocks.end(), [&](const Block& b) {
+				return b.valid() && KeyOf(b.npc.plugin, b.npc.localId) == whoKey &&
+					KeyOf(b.form.plugin, b.form.localId) == fk;
+			});
+			if (on) {
+				if (it == cfg.blocks.end()) {
+					Block b;
+					b.npc = who;
+					b.form = f;
+					cfg.blocks.push_back(std::move(b));
+					++changed;
+				}
+			} else if (it != cfg.blocks.end()) {
+				cfg.blocks.erase(it);
+				++changed;
+			}
+		}
+
+		// Take effect NOW if she is standing there, rather than at the next tick —
+		// a button that visibly does nothing for five seconds reads as broken.
+		int stripped = 0;
+		if (on && changed) {
+			if (auto* form = ActorIdentity::Resolve(ActorIdentity::HexOf(who.localId), who.plugin)) {
+				if (auto* base = form->As<RE::TESNPC>()) {
+					(void)base;
+					const auto blocked = BlockSetFor(cfg, who.plugin, who.localId);
+					auto* player = RE::PlayerCharacter::GetSingleton();
+					auto* tes = RE::TES::GetSingleton();
+					if (player && tes && player->GetParentCell()) {
+						static const std::vector<std::string> kNoPlugins;
+						tes->ForEachReferenceInRange(player, kSweepRadius,
+							[&](RE::TESObjectREFR* ref) -> RE::BSContainer::ForEachResult {
+								auto* actor = ref ? ref->As<RE::Actor>() : nullptr;
+								if (!actor || actor == player)
+									return RE::BSContainer::ForEachResult::kContinue;
+								auto* ab = actor->GetActorBase();
+								if (!ab || ActorIdentity::LocalIdOf(ab) != who.localId ||
+									!PluginMatches(PluginOf(ab), { who.plugin }))
+									return RE::BSContainer::ForEachResult::kContinue;
+								stripped += StripActor(actor, kNoPlugins, blocked);
+								return RE::BSContainer::ForEachResult::kContinue;
+							});
+					}
+				}
+			}
+		}
+
+		logger::info("no-auto-gear: block {} — {} rule(s) for '{}', {} item(s) taken back",
+			on ? "on" : "off", changed, who.name.empty() ? who.plugin : who.name, stripped);
+
+		std::string msg;
+		if (!changed)
+			msg = on ? "already blocked" : "was not blocked";
+		else if (on)
+			msg = std::to_string(changed) + (changed == 1 ? " thing blocked" : " things blocked") +
+				(stripped ? " — " + std::to_string(stripped) + " taken back now" : "");
+		else
+			msg = std::to_string(changed) + (changed == 1 ? " block lifted" : " blocks lifted");
+		return Dump(json{ { "ok", true }, { "msg", msg }, { "changed", changed },
+			{ "stripped", stripped }, { "on", on } });
+	}
+
+	std::string BlocksFor(const std::string& reqJson, const Config& cfg)
+	{
+		json in = json::object();
+		try {
+			in = json::parse(reqJson);
+		} catch (...) {
+		}
+		const NpcRef who = RefFromJson(in.value("npc", json::object()));
+		if (!who.valid())
+			return Dump(json{ { "ok", true }, { "blocked", json::array() },
+				{ "rules", json::array() } });
+
+		// TWO shapes on purpose. "blocked" is the key set the pane badges rows
+		// with; "rules" is what each block IS, so a block can be listed and
+		// LIFTED even when nothing currently matching mentions it. Without the
+		// second, a rule on a form that stops matching — or simply belongs to an
+		// NPC you are no longer looking at — becomes invisible and unreachable,
+		// which is a trap rather than a feature.
+		json keys = json::array();
+		json rules = json::array();
+		const std::string whoKey = KeyOf(who.plugin, who.localId);
+		for (const auto& b : cfg.blocks) {
+			if (!b.valid() || KeyOf(b.npc.plugin, b.npc.localId) != whoKey)
+				continue;
+			keys.push_back(KeyOf(b.form.plugin, b.form.localId));
+			// The stored name is what it was called when blocked; if the form is
+			// still in the load order its CURRENT name is better, and if the mod
+			// is gone the stored one is all that is left. Prefer live, fall back.
+			std::string nm = b.form.name;
+			if (auto* f = ActorIdentity::Resolve(ActorIdentity::HexOf(b.form.localId), b.form.plugin)) {
+				if (const char* n = f->GetName(); n && *n)
+					nm = n;
+				else if (const char* ed = f->GetFormEditorID(); ed && *ed)
+					nm = ed;
+			}
+			rules.push_back(json{
+				{ "formId", ActorIdentity::HexOf(b.form.localId) },
+				{ "plugin", b.form.plugin },
+				{ "name", nm.empty() ? std::string("(unnamed)") : nm },
+				{ "key", KeyOf(b.form.plugin, b.form.localId) },
+			});
+		}
+		return Dump(json{ { "ok", true }, { "blocked", std::move(keys) },
+			{ "rules", std::move(rules) }, { "npc", RefToJson(who) } });
 	}
 
 	std::string SweepNow(Config& cfg)

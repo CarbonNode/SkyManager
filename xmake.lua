@@ -4,7 +4,7 @@ set_xmakever("2.8.2")
 includes("lib/commonlibsse-ng")
 
 set_project("HotkeyDeck")
-set_version("1.11.0")
+set_version("2.0.0")
 set_license("GPL-3.0")
 
 set_languages("c++23")
@@ -41,6 +41,10 @@ target("SkyManager")
     -- hd-markers.json markers stay pure ASCII, so the anti-clobber check is
     -- unaffected.
     add_cxflags("/utf-8")
+    -- main.cpp passed the COFF 65k-section ceiling on 2026-08-15 (C1128) — the
+    -- Containers auto-sort + Auto-Loot handlers tipped it. /bigobj lifts the
+    -- object-format limit; it costs nothing at runtime.
+    add_cxflags("/bigobj")
 
     add_files("src/**.cpp")
     add_headerfiles("src/**.h", "src/**.hpp")

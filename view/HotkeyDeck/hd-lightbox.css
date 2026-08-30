@@ -26,7 +26,7 @@
   background: linear-gradient(180deg, #1a1a21, #101015);
   border: 1px solid #3a3a46;
   border-radius: 14px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   padding: 18px;
   transform: scale(.96);
   transition: transform .16s ease;
@@ -69,6 +69,51 @@
 }
 .hdlb-spinnable .hdlb-img { cursor: grab; }
 .hdlb-spinnable .hdlb-img:active { cursor: grabbing; }
+
+/* ---- zoom + pan -------------------------------------------------------- *
+   Zoom re-LAYS OUT the image rather than transforming it: Ultralight decodes
+   an <img> at its layout size and scales that raster, so a transform-zoomed
+   render is a magnified thumbnail (the hd-facefit lesson). The stage clips,
+   so the image is free to be bigger than its frame. */
+.hdlb-stage { overflow: hidden; }
+.hdlb-zoomed .hdlb-img {
+  position: absolute;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+  cursor: grab;
+}
+.hdlb-zoomed.hdlb-dragging .hdlb-img { cursor: grabbing; }
+.hdlb-zoomlvl {
+  position: absolute;
+  top: 10px;
+  left: 14px;
+  font: 700 13px/1 Consolas, monospace;
+  color: #d9c48a;
+  background: rgba(0, 0, 0, .55);
+  border-radius: 6px;
+  padding: 4px 8px;
+  pointer-events: none;
+}
+.hdlb-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #8d8571;
+}
+/* turntable bake progress ("turning… 2 of 4 angles") — the zoom badge's twin,
+   opposite corner so the two never collide */
+.hdlb-spinstat {
+  position: absolute;
+  top: 10px;
+  right: 52px;   /* clear of the ✕ close button, which owns the corner */
+  font: 700 13px/1 Consolas, monospace;
+  color: #d9c48a;
+  background: rgba(0, 0, 0, .55);
+  border-radius: 6px;
+  padding: 4px 8px;
+  pointer-events: none;
+}
+.hdlb-spinstat:empty { display: none; }
 .hdlb-fallback {
   font-size: 96px;
   opacity: .5;
@@ -116,6 +161,7 @@
 .hdlb-caption {
   padding-top: 14px;
   text-align: center;
+  position: relative;   /* the zoom readout pins to this */
 }
 .hdlb-title {
   font-size: 19px;

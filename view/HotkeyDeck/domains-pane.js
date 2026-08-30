@@ -254,6 +254,15 @@ window.DomainsPane = (function () {
     document.documentElement.style.setProperty('--dm-ui-scale', String(v));
     if (els.uiVal) els.uiVal.textContent = Math.round(v * 100) + '%';
     if (els.uiRange && Number(els.uiRange.value) !== v) els.uiRange.value = String(v);
+    /* The HEIGHT half of that compensation is measured in JS and lives in
+       bases-pane.js (applyFit), because it needs the pane's flex allotment —
+       CSS cannot divide a height it was never given. Without this call a
+       slider drag re-scales the pane and leaves the bottom card row and the
+       ★ Mark this spot footer rendered below the panel's edge until the next
+       tab switch (Rober, 2026-08-30). Guarded: the Bases module is optional. */
+    try {
+      if (window.BasesPane && typeof BasesPane.refit === 'function') BasesPane.refit();
+    } catch (err) { /* a fit is cosmetic — never let it break the slider */ }
   }
   /* Row-image / medallion scale: drives --dm-thumb on the same root. */
   function applyDmThumb() {
@@ -597,6 +606,8 @@ window.DomainsPane = (function () {
     });
     if (f.portraitUrl) {
       const img = h('img', { class: 'dm-face-img', src: f.portraitUrl, alt: '', draggable: 'false' });
+      /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
+      if (window.HDFaceFit) HDFaceFit.paintPortrait(img, f.portraitUrl);
       // Same query-hostile-loader dance the Followers medallion needs: retry the
       // plain path once, then fall back to the initials medal.
       let retried = false;
@@ -1435,7 +1446,10 @@ window.DomainsPane = (function () {
 
   /* ============================================================ render == */
 
-  function render() { renderRail(); renderTagBar(); renderList(); renderFoot(); syncChrome(); }
+  /* A full render is the tab's "something structural changed" path (category
+     rail, edit mode, a save, a mutation) — the row cache is dropped there so
+     only the keystroke path, which calls renderList directly, reuses nodes. */
+  function render() { dropRowCache(); renderRail(); renderTagBar(); renderList(); renderFoot(); syncChrome(); }
 
   /* The active tag filter, as one dismissible pill above the list. Created
      lazily in JS rather than in domains-pane.html.frag, because the frag has to
@@ -1535,14 +1549,14 @@ window.DomainsPane = (function () {
      names the ones it stands for, so nothing is unreachable. */
   const TAG_ROW_CAP = 4;
 
-  function rowTags(m, q) {
+  function rowTags(m, q, hl) {
     const tags = m.tags || [];
     if (!tags.length) return null;
     const wrap = h('span', { class: 'dm-tags' });
     tags.slice(0, TAG_ROW_CAP).forEach((t) => {
       const f = t.toLowerCase();
       const on = ui.tagFilter === f;
-      wrap.append(h('span', {
+      const chip = h('span', {
         class: 'dm-tag' + (on ? ' on' : ''), role: 'button', tabindex: '-1',
         title: on ? 'Showing only domains tagged “' + t + '” — click to clear'
                   : 'Show only domains tagged “' + t + '”',
@@ -1550,7 +1564,10 @@ window.DomainsPane = (function () {
         // and the mousedown as well, or PDrag arms a row-drag from the chip.
         onClick: (e) => { e.stopPropagation(); setTagFilter(on ? '' : f); },
         onMousedown: (e) => e.stopPropagation(),
-      }, nameNodes(t, q)));
+      });
+      if (hl) hlInto(hl, chip, '', t);
+      else nameNodes(t, q).forEach((n) => chip.append(n));
+      wrap.append(chip);
     });
     const extra = tags.length - TAG_ROW_CAP;
     if (extra > 0) {
@@ -1579,21 +1596,69 @@ window.DomainsPane = (function () {
     el.classList.toggle('drop-into', !before && !after);
   }
 
+  /* ---- keyed row reuse -------------------------------------------------
+     A domain row is ~14 elements, an image-probe walk and half a dozen
+     listeners; the list used to throw all of them away and rebuild on every
+     keystroke (400 domains = 56,680 element creations and 21,780 listeners for
+     ten letters typed, plus a fresh image probe per row every time). Rows are
+     now cached by id and kept while their SIGNATURE holds. The two things a
+     keystroke really changes are written in place: the search highlight and
+     the .sel class. Everything the cache cannot see for itself — the who/faces
+     pushes — drops it explicitly at the source. */
+  const dmRowCache = new Map();
+  function dropRowCache() { dmRowCache.clear(); }
+
+  /* Append `prefix` (plain) + the highlighted `text` into `el`, and remember
+     the recipe on the row so a later query can be re-applied without rebuilding
+     anything around it. */
+  function hlInto(sink, el, prefix, text) {
+    if (prefix) el.append(document.createTextNode(prefix));
+    nameNodes(text, ui.filter.trim()).forEach((n) => el.append(n));
+    sink.push({ el: el, prefix: prefix || '', text: text });
+  }
+
+  function reHighlight(row, q) {
+    const hl = row.__dmHl;
+    if (!hl || row.__dmQ === q) return;
+    for (let i = 0; i < hl.length; i++) {
+      const it = hl[i];
+      it.el.textContent = '';
+      if (it.prefix) it.el.append(document.createTextNode(it.prefix));
+      nameNodes(it.text, q).forEach((n) => it.el.append(n));
+    }
+    row.__dmQ = q;
+  }
+
+  function rowSig(m, meta) {
+    return [m.id, meta && meta.child ? 1 : 0, meta && meta.hasKids ? 1 : 0,
+      meta && meta.expanded ? 1 : 0, m.name, m.note || '', m.category || '',
+      m.interior ? 1 : 0, placeOf(m), (m.tags || []).join('\u0001'),
+      ui.tagFilter || '', ui.cat === ALL ? 1 : 0, m.image || '',
+      noImage.has(m.id) ? 1 : 0].join('\u0000');
+  }
+
   function markRow(m, i, meta) {
     const q = ui.filter.trim();
     const isChild = !!(meta && meta.child);
+    const hl = [];
 
     const sub = [];
     // The placeholder keeps its slot when hidden, so it stays short: a long one
     // would indent every noteless row's chips away from the ones above it.
-    if (m.note) sub.push(h('span', { class: 'dm-note', title: m.note }, nameNodes(m.note, q)));
-    else sub.push(h('span', { class: 'dm-note empty', title: 'Right-click to add a note' }, '＋ note'));
-    sub.push(h('span', {
-      class: 'dm-chip' + (m.interior ? '' : ' exterior'), title: placeTitle(m),
-    }, placeGlyph(m) + ' ', nameNodes(placeOf(m), q)));
-    if (ui.cat === ALL && m.category)
-      sub.push(h('span', { class: 'dm-chip cat', title: 'Category' }, nameNodes(m.category, q)));
-    const tagWrap = rowTags(m, q);
+    if (m.note) {
+      const ne = h('span', { class: 'dm-note', title: m.note });
+      hlInto(hl, ne, '', m.note);
+      sub.push(ne);
+    } else sub.push(h('span', { class: 'dm-note empty', title: 'Right-click to add a note' }, '＋ note'));
+    const pe = h('span', { class: 'dm-chip' + (m.interior ? '' : ' exterior'), title: placeTitle(m) });
+    hlInto(hl, pe, placeGlyph(m) + ' ', placeOf(m));
+    sub.push(pe);
+    if (ui.cat === ALL && m.category) {
+      const ce = h('span', { class: 'dm-chip cat', title: 'Category' });
+      hlInto(hl, ce, '', m.category);
+      sub.push(ce);
+    }
+    const tagWrap = rowTags(m, q, hl);
     if (tagWrap) sub.push(tagWrap);
     // Who is standing there right now, as faces. Nothing when nobody is.
     const whoEl = whoStrip(m);
@@ -1620,7 +1685,10 @@ window.DomainsPane = (function () {
       }
     }
 
-    return h('div', {
+    const nameEl = h('div', { class: 'dm-name' });
+    hlInto(hl, nameEl, '', m.name);
+
+    const rowEl = h('div', {
       class: 'dm-row' + (isChild ? ' dm-child' : '') + (i === ui.sel ? ' sel' : ''),
       role: 'option', data: { id: m.id },
       title: 'Travel to ' + m.name,
@@ -1694,13 +1762,16 @@ window.DomainsPane = (function () {
       chevron,
       thumb,
       h('div', { class: 'dm-body' },
-        h('div', { class: 'dm-name' }, nameNodes(m.name, q)),
+        nameEl,
         h('div', { class: 'dm-sub' }, sub),
       ),
       // followers assigned here (Home field match) — top-level rows only
       isChild ? null : faceCluster(m),
       h('span', { class: 'dm-go', 'aria-hidden': 'true' }, '➤'),
     );
+    rowEl.__dmHl = hl;
+    rowEl.__dmQ = q;
+    return rowEl;
   }
 
   function renderList() {
@@ -1709,15 +1780,33 @@ window.DomainsPane = (function () {
     els.count.textContent = String(rows.length);
     if (ui.sel >= rows.length) ui.sel = rows.length - 1;
 
-    els.list.textContent = '';
     if (!rows.length) {
+      els.list.textContent = '';
       els.list.classList.add('hidden');
       renderEmpty();
       return;
     }
     els.empty.classList.add('hidden');
     els.list.classList.remove('hidden');
-    rows.forEach((r, i) => els.list.append(markRow(r.m, i, r)));
+    const q = ui.filter.trim();
+    let cur = els.list.firstChild;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const key = (r.child ? 'c' : 'p') + r.m.id;
+      const sig = rowSig(r.m, r);
+      let node = dmRowCache.get(key);
+      if (!node || node.__dmSig !== sig) {
+        node = markRow(r.m, i, r);
+        node.__dmSig = sig;
+        dmRowCache.set(key, node);
+      } else {
+        reHighlight(node, q);                       // the only thing a keystroke moves
+        node.classList.toggle('sel', i === ui.sel); // the other thing
+      }
+      if (cur === node) { cur = cur.nextSibling; continue; }
+      els.list.insertBefore(node, cur);             // insertBefore MOVES an attached node
+    }
+    while (cur) { const nx = cur.nextSibling; els.list.removeChild(cur); cur = nx; }
     if (ui.sel >= 0 && els.list.children[ui.sel]) els.list.children[ui.sel].scrollIntoView({ block: 'nearest' });
   }
 
@@ -3002,13 +3091,16 @@ window.DomainsPane = (function () {
              Followers pane resolving it a second time. */
           openFaceLightbox({
             name: x.name, original: x.original, formId: x.formId,
-            portraitUrl: 'portraits/' + p.file + (p.mtime ? '?v=' + p.mtime : ''),
+            /* PLAIN path, never ?v= — Ultralight drops the query and the file
+               does not load, and a background-image has no error event to
+               retry through (unlike bases-pane's <img> which earns its ?v=
+               with an error-retry). */
+            portraitUrl: 'portraits/' + p.file,
           });
         },
         onMousedown: (e) => e.stopPropagation(),
       }, p ? null : String(x.name || '?').trim().charAt(0).toUpperCase());
-      if (p) face.style.backgroundImage = 'url("portraits/' + p.file +
-        (p.mtime ? '?v=' + p.mtime : '') + '")';
+      if (p) face.style.backgroundImage = 'url("portraits/' + p.file + '")';
       wrap.append(face);
     });
     if (list.length > WHO_MAX)
@@ -3036,6 +3128,7 @@ window.DomainsPane = (function () {
     })));
     who.members = out;
     who.byCell = null;
+    dropRowCache();     // every row's who-strip and face cluster restate
     if (ui.inited && ui.shown) renderList();
   });
 
@@ -3049,6 +3142,7 @@ window.DomainsPane = (function () {
       m.whereId = (e && e.whereId) >>> 0 || 0;
     });
     who.byCell = null;
+    dropRowCache();     // NFF moved people: the who-strips restate
     if (ui.inited && ui.shown) renderList();
   });
 
@@ -3058,6 +3152,7 @@ window.DomainsPane = (function () {
     const map = Object.create(null);
     arr.forEach((p) => { if (p && p.slug) map[p.slug] = p; });
     who.portraits = map;
+    dropRowCache();     // faces gained (or lost) photos
     if (ui.inited && ui.shown) renderList();
   });
 

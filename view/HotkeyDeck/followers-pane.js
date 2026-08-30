@@ -104,6 +104,14 @@
        both at every palette open, and a second request name would be a second
        thing to keep in sync for no new data. */
     icons: { catalog: [], custom: [] },
+    /* PARTY SHEET — one snapshot of everyone who is with you, from
+       src/party_sheet.cpp via ptyScan -> ptyData. Never merged into `cats`:
+       this is LIVE engine truth about actors loaded right now, and the roster
+       is a durable filing cabinet that also lists people three holds away.
+       Keeping them apart is what lets the sheet say "4 too far away to read"
+       instead of quietly showing eight of twelve. */
+    party: { at: 0, asking: false, ok: true, msg: '', unloaded: 0,
+             members: [], skillNames: [] },
   };
 
   const ALL = 0;
@@ -205,6 +213,20 @@
     catIconFor: -1,
     catIconFilter: '',
     catIconShown: 0,
+    /* ---- Party sheet. Session-only, every one of them, and deliberately:
+       the followers config slice is round-tripped WHOLE by C++, so persisting
+       a layout preference here would cost a DLL change for a control you flip
+       a few times an hour (the same bargain fqFold and fqLastCat already
+       take). ptMode is the one a case could be made for; it is cheap to
+       re-pick and expensive to schema. */
+    ptOpen: false,      // the sheet is showing instead of the roster
+    ptMode: 'cards',    // 'cards' | 'table'
+    ptSort: 'issues',
+    ptScope: 'all',     // PT_SCOPES key
+    ptFilter: '',
+    ptSel: -1,
+    ptSummons: false,   // show conjured teammates too
+    ptSkills: false,    // ask C++ for the 18 skill values (nothing draws them yet)
   };
 
   let dragKind = null, dragFrom = null;
@@ -441,6 +463,74 @@
         title: 'Show or hide the name under each face',
         onClick: () => hudCfg('names', { on: !names }),
       }, names ? 'Aa Names on' : 'Aa Names off'));
+      /* Per-face extras (Party Sheet catch-up, 2026-08-17): level badge,
+         direction + distance, and the three pool bars — each its own toggle,
+         each one `part` op. Defaults mirror the DLL (level/dir/health on,
+         magicka/stamina off), so a missing field from an older DLL still
+         paints the button in its true default state. */
+      [['level', 'Lv badge', 'A level badge on each portrait', s.showLevel !== false],
+       ['dir', '➤ Direction', 'A chevron pointing at her, with the distance in meters', s.showDir !== false],
+       ['hp', '♥ Health', 'A live health bar under each face', s.showHp !== false],
+       ['mk', '✦ Magicka', 'A live magicka bar under each face', s.showMk === true],
+       ['st', '➶ Stamina', 'A live stamina bar under each face', s.showSt === true],
+      ].forEach(function (d) {
+        row.append(h('button', {
+          class: 'fd-hud-btn' + (d[3] ? ' on' : ''), type: 'button',
+          title: d[2] + (d[3] ? ' — shown' : ' — hidden'),
+          onClick: () => hudCfg('part', { key: d[0], on: !d[3] }),
+        }, (d[3] ? '◉ ' : '◯ ') + d[1]));
+      });
+      /* Portrait shape (2026-08-17 wave 2.1): four cuts, one active. Typographic
+         marks, not emoji — the 2026-08-16 icon law. */
+      const shape = ['circle', 'rounded', 'square', 'diamond']
+        .indexOf(s.faceShape) !== -1 ? s.faceShape : 'circle';
+      /* The WIDGETS door (Rober, 2026-08-18: the widget system "should be …
+         configurable in that popout"): one button into the on-screen editor —
+         the same surface the Home card opens, closing the deck so the editor
+         has the screen. */
+      row.append(h('button', {
+        class: 'fd-hud-btn', type: 'button',
+        title: 'Open the on-screen widget editor — readouts, vitals, potions, the four slot cards; drag anything, toggle everything',
+        onClick: () => toGame('hdFire', 'hd-widgets-edit'),
+      }, '⌗ Widgets…'));
+      [['circle', '◯', 'Round portraits (the classic strip)'],
+       ['rounded', '▢', 'Rounded-corner squares'],
+       ['square', '■', 'Sharp squares'],
+       ['diamond', '◆', 'Rotated diamonds, Party Sheet style'],
+      ].forEach(function (d) {
+        row.append(h('button', {
+          class: 'fd-hud-btn' + (shape === d[0] ? ' on' : ''), type: 'button',
+          title: d[2] + (shape === d[0] ? ' — current' : ''),
+          onClick: () => hudCfg('shape', { shape: d[0] }),
+        }, d[1] + ' ' + d[0].charAt(0).toUpperCase() + d[0].slice(1)));
+      });
+      /* Compact + the browse activator (Rober, 2026-08-18: "auto compacted to
+         just the faces … press an activator then use wasd or arrows and enter
+         to navigate"). Honest caveat in the titles: the deck's input sink
+         cannot consume keys, so WASD still moves you while browsing. */
+      const compactOn = s.compact === true;
+      row.append(h('button', {
+        class: 'fd-hud-btn' + (compactOn ? ' on' : ''), type: 'button',
+        title: compactOn
+          ? 'Compact is ON — the strip shows faces only until you browse it'
+          : 'Show faces only; level, bars and names appear when you browse a chip',
+        onClick: () => hudCfg('compact', { on: !compactOn }),
+      }, (compactOn ? '◉ ' : '◯ ') + '▣ Compact'));
+      const navArming = !!s.navArming;
+      const navLabel = (s.navKey && s.navKey.label) || '';
+      row.append(h('button', {
+        class: 'fd-hud-btn' + (navArming ? ' arming' : ''), type: 'button',
+        title: 'Bind the BROWSE key: press it to highlight the strip, WASD/arrows to step '
+          + 'through your followers, Enter to expand one, Esc or the key again to close. '
+          + '⚠ movement keys still move you while browsing — the game stays live.',
+        onClick: () => hudCfg(navArming ? 'state' : 'bindnav'),
+      }, navArming ? '⌨ Press a key…' : (navLabel ? ('⌨ Browse: ' + navLabel) : '⌨ Set browse key')));
+      if (navLabel && !navArming) {
+        row.append(h('button', {
+          class: 'fd-hud-btn fd-hud-x', type: 'button', title: 'Clear the browse key',
+          onClick: () => hudCfg('clearnav'),
+        }, '✕'));
+      }
       row.append(h('button', {
         class: 'fd-hud-btn' + (visible ? ' on' : ''), type: 'button',
         title: visible ? 'Temporarily hide without disabling' : 'Show it again',
@@ -471,8 +561,22 @@
   function closeHudModal() {
     const m = $('fd-hud-modal');
     if (m) m.remove();
+    document.removeEventListener('keydown', hudModalEsc, true);
   }
 
+  /* Esc closes THIS modal first — capture phase, so the deck's own Esc (which
+     closes the whole palette) never sees the key while the modal is up. The
+     2026-08-18 play-test: "followers hud popout x does nothing" — the law is
+     Esc closes every popout and so does its ✕, so both are wired twice here
+     (property + delegated listener): whatever ate the property click in-game,
+     the delegated path still lands. */
+  function hudModalEsc(e) {
+    if (e.key === 'Escape' || e.code === 'Escape' || e.keyCode === 27) {
+      e.stopPropagation();
+      e.preventDefault();
+      closeHudModal();
+    }
+  }
   function openHudModal() {
     if ($('fd-hud-modal')) { closeHudModal(); return; }
     /* Off document.body like the lightbox, so it sits above the whole deck and
@@ -488,7 +592,14 @@
         'The on-screen portrait strip of your current followers.'),
       h('div', { id: 'fd-hud-modal-body' }));
     modal.append(card);
+    modal.addEventListener('click', function (e) {
+      if (e.target && e.target.closest && e.target.closest('.fd-modal-x')) {
+        e.stopPropagation();
+        closeHudModal();
+      }
+    });
     document.body.appendChild(modal);
+    document.addEventListener('keydown', hudModalEsc, true);
     fillHudModal();
   }
 
@@ -1551,6 +1662,9 @@
        — including a prune we cannot compute here — and that push wins. */
     if (c) state.crops[file] = c;
     else delete state.crops[file];
+    /* Same beat as the store itself, so a crop the user just set is live on
+       every other surface without waiting for a config round-trip. */
+    if (window.HDFaceFit && HDFaceFit.setPortraitCrop) HDFaceFit.setPortraitCrop(file, c);
     /* `clear` rather than a z=1 crop, so C++ never has to decide whether an
        identity crop means "remove me" — the two are the same thing and saying
        so explicitly keeps the map free of no-op rows. */
@@ -2392,9 +2506,55 @@
   let fxAsked = { key: null, at: 0 };
   const FX_MIN_GAP = 1500;
   let fxModalCtx = null;              // { formId, who } while the modal is up
-  let fxFilter = '';
-  let fxTab = 'fx';                   // '✨ Effects' | '🎨 Skins' — remembered for the session
-  let fxSkinFilter = '';
+  let fxTab = 'fx';                   // '✨ Effects' | '🎨 Skins' | Pubes | Zaz — kept for the session
+  /* fx-global-search (Rober, 2026-08-17: "add searchability to the entire
+     effects thing"). ONE box, in the modal chrome rather than inside any tab,
+     for two reasons: every tab is searchable with no duplicated widget, and
+     because fillFxModal() only redraws the BODY, typing never destroys and
+     recreates the input — which is what the old per-tab filters had to paper
+     over with a re-focus-and-restore-caret dance after every keystroke. */
+  let fxSearch = '';
+  let fxTopHit = null;                // set by the active tab while it renders
+  let fxPubesType = 'all';            // 'all' | 'normal' | 'stylish' | 'hairy'
+  let fxEffMod = 'all';               // Effects tab: which mod's rows to show
+  let fxZazCat = 'all';               // Zaz tab: which zbfWorn* category
+  let fxZazPage = 0;                  // Zaz tab: paged so we never bulk-render
+  let fxZazWorn = false;              // Zaz tab: show only what she is wearing
+  let fxZazSort = 'cat';              // Zaz tab: 'cat' | 'name' | 'worn'
+  /* Every device key we have already asked C++ to render this session, and the
+     settle timer that batches the ask. Session-scoped, never persisted: a
+     render lands on disk and the next payload carries its path, so the only
+     thing this has to prevent is asking twice for the same in-flight piece. */
+  const fxZazAsked = {};
+  let   fxZazAskTimer = 0;
+  let   fxZazAskRun = null;           // the settled ask itself, so it can be flushed
+  const FX_ZAZ_SETTLE_MS = 400;
+  /* HOW BIG A PAGE. The original 7 was picked when every page turn queued its
+     tiles' mesh renders straight onto the game's D3D device — 202 devices at 7
+     a page is 29 page turns, which is not a catalogue, it is a filing cabinet.
+     Two things changed on 2026-08-17: the ask is once-per-key-per-session
+     behind a settle gate, and C++ paces renders while a menu is up. So the
+     page size is now a LAYOUT question with a first-visit cost attached.
+     The layout answer: the modal is 1120px wide and the grid is 52vh, so at
+     2560x1440 about 7 columns x 4 rows ≈ 28 tiles are on screen at once — 24
+     could not even fill the visible band, and the pager was doing work the
+     screen did not need. 56 fills it with one comfortable scroll and turns 202
+     devices into 4 pages. The picker is offered because the trade is real and
+     personal: a bigger page is fewer turns but a longer FIRST fill (renders are
+     kept forever, so every later visit is free either way). No "All" — every
+     tile decodes a PNG in a compositor-off engine, and 202 at once is a memory
+     bet nobody has measured. */
+  const FX_ZAZ_SIZES = [28, 56, 112];
+  let   fxZazSize = 56;
+  /* Renders land minutes after the ask, and the only thing that carries a new
+     icon path into the view is a fresh fxState — which C++ sends only in reply
+     to fxGet/fxSet. So while a page still has pictures coming, re-read her on
+     a slow clock (and immediately when a render batch lands), bounded so a
+     device whose mesh never renders cannot leave a poll running forever. */
+  const FX_ZAZ_POLL_MS = 3000;
+  const FX_ZAZ_REFRESH_MAX = 24;
+  let   fxZazPollT = 0;
+  let   fxZazRefreshN = 0;
   function fxKey(fid) { return '0x' + ((Number(fid) || 0) >>> 0).toString(16); }
   function askEffects(fid, force) {
     if (fxPresent === false || !fid) return;
@@ -2412,6 +2572,12 @@
   function fxTitle(env, who) {
     if (!env) return 'Effects — checking ' + who + '…';
     const on = fxActiveList(env).map((e) => e.label);
+    /* 3ba-body-tab: her physics mode belongs in the hover too — it is the one
+       thing in this modal that is ALWAYS in some state, so a tooltip listing
+       only ability-spell effects reads as "nothing here" on a 3BA rig. */
+    const b = env.body;
+    if (b && b.available && b.mode === 'smp')
+      on.push('SMP physics' + (b.cupLabel ? ' (cup ' + b.cupLabel + ')' : ''));
     let s = on.length
       ? '✨ Effects on ' + who + ': ' + on.join(', ')
       : '○ No effects on ' + who;
@@ -2437,8 +2603,18 @@
     const m = $('fd-fx-modal');
     if (m) m.remove();
     fxModalCtx = null;
-    fxFilter = '';
-    fxSkinFilter = '';                   // the active TAB is kept for the session
+    fxSearch = '';                       // the active TAB is kept for the session
+    fxTopHit = null;
+    /* Context resets with the person; PREFERENCES (sort, page size) do not.
+       A category or a worn-only filter left over from the last woman is a trap
+       — you reopen on someone else, see three devices, and believe that is her
+       whole catalogue. Sort order and page size say nothing about anyone. */
+    fxZazPage = 0;
+    fxZazCat = 'all';
+    fxZazWorn = false;
+    fxZazStopWatch();
+    if (fxZazAskTimer) { clearTimeout(fxZazAskTimer); fxZazAskTimer = 0; }
+    fxZazAskRun = null;
     if (isActive()) renderQuickCard();   // un-press the ✨
   }
 
@@ -2448,6 +2624,7 @@
   function openFxModal(t, who) {
     if ($('fd-fx-modal')) { closeFxModal(); return; }
     fxModalCtx = { formId: (Number(t.formId) || 0) >>> 0, who: who };
+    fxZazRefreshN = 0;                   // a fresh budget of re-reads per opening
     askEffects(t.formId, true);          // fresh truth under the list
     const modal = h('div', { id: 'fd-fx-modal', class: 'fd-modal-back',
       onClick: (e) => { if (e.target && e.target.id === 'fd-fx-modal') closeFxModal(); } });
@@ -2460,9 +2637,27 @@
         'Looks other mods can put on ' + who + ' — applied and removed through '
         + 'each mod’s own machinery, so it persists (and cleans up) exactly '
         + 'as that mod intends.'),
+      /* Built ONCE, outside the body fillFxModal() clears — see fxSearch. */
+      h('input', {
+        class: 'fx-search', type: 'text', value: fxSearch,
+        placeholder: 'Search every effect, skin, style and restraint… (Enter takes the top hit)',
+        onInput: (e) => { fxSearch = e.target.value; fxZazPage = 0; fillFxModal(); },
+        onKeyDown: (e) => {
+          if (e.key === 'Escape') {
+            /* Escape clears the search before it closes the modal — losing a
+               half-typed query is annoying, losing the whole modal is worse. */
+            if (fxSearch) { e.stopPropagation(); fxSearch = ''; e.target.value = ''; fillFxModal(); }
+            return;
+          }
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          if (typeof fxTopHit === 'function') fxTopHit();
+        },
+      }),
       h('div', { id: 'fd-fx-modal-body' }));
     modal.append(card);
     document.body.appendChild(modal);
+    fxEnsureModalStyles();
     fillFxModal();
   }
 
@@ -2484,41 +2679,110 @@
        pointless chrome, so with no Skins tab the modal stays exactly as it
        was (an older DLL sends no `skins` key at all and lands here too). */
     fxEnsureSkinStyles();
+    fxEnsureBodyStyles();
+    /* Unconditional: the Effects tab itself now uses the chip/tile
+       vocabulary these sheets define (mod chips), so loading them only
+       when Pubes or Restraints opens would leave the DEFAULT tab
+       rendering unstyled chips. */
+    fxEnsurePubesStyles();
+    fxEnsureModalStyles();
     const skins = env.skins;
-    const hasSkins = !!(skins && skins.available !== undefined && skins.present);
-    const tab = (hasSkins && fxTab === 'skins') ? 'skins' : 'fx';
-    if (hasSkins) {
-      const tabBtn = (id, label) => h('button', {
-        class: 'fx-tab' + (tab === id ? ' on' : ''), type: 'button',
-        title: id === 'skins'
-          ? 'Change ' + fxModalCtx.who + '’s skin — SkinShift’s preset skins, or back to her own'
-          : 'Looks other mods can put on ' + fxModalCtx.who,
-        onClick: () => { fxTab = id; fillFxModal(); },
-      }, label);
-      body.append(h('div', { class: 'fx-tabs' },
-        tabBtn('fx', '✨ Effects'), tabBtn('skins', '🎨 Skins')));
+    const bodyEnv = env.body;
+    const modalWho = fxModalCtx.who;
+    /* The tab row builds itself from what the DLL says is on the load order,
+       so a rig with only one kind of change never sees a one-tab seg row. An
+       older DLL sends neither `skins` nor `body` and lands on Effects alone. */
+    const tabs = [{ id: 'fx', label: '✨ Effects',
+      title: 'Looks other mods can put on ' + modalWho }];
+    if (skins && skins.available !== undefined && skins.present)
+      tabs.push({ id: 'skins', label: '🎨 Skins',
+        title: 'Change ' + modalWho + '’s skin — SkinShift’s preset skins, or back to her own' });
+    if (bodyEnv && bodyEnv.present)
+      tabs.push({ id: 'body', label: '🫧 Body',
+        title: 'CBBE 3BA’s body physics for ' + modalWho + ' — CBPC or SMP, '
+          + 'and which jiggle profile' });
+    /* pubes-tab — OPubes NG's catalogue, DETECTED from the load order. Label
+       is plain text on purpose: the no-emoji UI rule (CLAUDE.md) forbids new
+       colour emoji, and the siblings' ✨🎨🫧 are pre-existing debt, not a
+       licence to add a fourth. */
+    const pubesEnv = env.pubes;
+    if (pubesEnv && pubesEnv.present)
+      tabs.push({ id: 'pubes', label: 'Pubes',
+        title: 'Pick ' + modalWho + '’s pubic hair by looking at it — every '
+          + 'style OPubes can actually apply on this load order' });
+    const zazEnv = env.zaz;
+    if (zazEnv && zazEnv.present)
+      tabs.push({ id: 'zaz', label: 'Restraints',
+        title: 'ZaZ restraints — the same catalogue the Animations tab drives, '
+          + 'here with rendered mesh icons' });
+
+    const q = fxSearch.trim().toLowerCase();
+    const tab = tabs.some((t) => t.id === fxTab) ? fxTab : 'fx';
+    fxTopHit = null;                       // each tab re-arms this as it renders
+
+    if (tabs.length > 1) {
+      body.append(h('div', { class: 'fx-tabs' }, ...tabs.map((t) => {
+        /* While a search is live every tab shows how many of ITS rows match,
+           so a query that hits nothing here but plenty next door is visible
+           rather than looking like "no results anywhere". */
+        const n = q ? fxMatchCount(t.id, env, q) : -1;
+        return h('button', {
+          class: 'fx-tab' + (tab === t.id ? ' on' : '') + (n === 0 ? ' none' : ''),
+          type: 'button', title: t.title,
+          onClick: () => { fxTab = t.id; fillFxModal(); },
+        }, t.label, n >= 0 ? h('span', { class: 'fx-tab-n' }, String(n)) : null);
+      })));
     }
     if (tab === 'skins') { fillFxSkins(body, skins); return; }
-    let list = env.effects || [];
-    /* Typeable filter once the registry has real length (the shelf's 8+ rule —
-       one row doesn't need a search bar, a grown list must have one). */
-    if (list.length >= 8) {
-      const inp = h('input', { class: 'fx-filter', type: 'text',
-        placeholder: 'Filter effects…', value: fxFilter,
-        onInput: (e) => { fxFilter = e.target.value; fillFxModal();
-          const again = document.querySelector('#fd-fx-modal .fx-filter');
-          if (again) { again.focus(); again.setSelectionRange(fxFilter.length, fxFilter.length); } } });
-      body.append(inp);
-      const q = fxFilter.trim().toLowerCase();
-      if (q) list = list.filter((e) =>
-        (e.label + ' ' + (e.detail || '')).toLowerCase().indexOf(q) >= 0);
+    if (tab === 'body') { fillFxBody(body, bodyEnv); return; }
+    if (tab === 'pubes') { fxEnsurePubesStyles(); fillFxPubes(body, pubesEnv); return; }
+    if (tab === 'zaz') { fxEnsureZazStyles(); fillFxZaz(body, zazEnv); return; }
+
+    let list = (env.effects || []).filter((e) => fxRowMatches(e, q));
+
+    /* Mod chips — Rober, 2026-08-17: other oil / skin mods "need to be
+       separated by mod". The registry now mixes spell-driven and worn effects
+       from several mods, so the flat list stopped being readable. Chips appear
+       only once there IS more than one mod to separate. */
+    const mods = [];
+    (env.effects || []).forEach((e) => {
+      const m = e.mod || 'Other';
+      if (!mods.some((x) => x.id === m)) mods.push({ id: m, n: 0 });
+    });
+    list.forEach((e) => {
+      const row = mods.find((x) => x.id === (e.mod || 'Other'));
+      if (row) row.n += 1;
+    });
+    if (mods.length > 1) {
+      if (!mods.some((m) => m.id === fxEffMod)) fxEffMod = 'all';
+      body.append(h('div', { class: 'fxp-chips fx-mod-chips' },
+        h('button', {
+          class: 'fxp-chip' + (fxEffMod === 'all' ? ' on' : ''), type: 'button',
+          title: 'Every mod', onClick: () => { fxEffMod = 'all'; fillFxModal(); },
+        }, 'All', h('span', { class: 'fxp-chip-n' }, String(list.length))),
+        ...mods.map((m) => h('button', {
+          class: 'fxp-chip' + (fxEffMod === m.id ? ' on' : '') + (m.n === 0 ? ' none' : ''),
+          type: 'button', title: 'Only ' + m.id,
+          onClick: () => { fxEffMod = m.id; fillFxModal(); },
+        }, m.id, h('span', { class: 'fxp-chip-n' }, String(m.n))))));
+      if (fxEffMod !== 'all')
+        list = list.filter((e) => (e.mod || 'Other') === fxEffMod);
     }
+
     if (!list.length) {
-      body.append(h('div', { class: 'fx-empty' }, fxFilter
-        ? 'Nothing matches “' + fxFilter + '”.'
+      body.append(h('div', { class: 'fx-empty' }, fxSearch
+        ? 'Nothing matches “' + fxSearch + '”.'
         : 'No effects are available on this load order.'));
+      fxRenderWearMods(body, env);
       return;
     }
+    /* Enter applies the top hit, like every other searchable list in the deck. */
+    fxTopHit = () => {
+      const first = list.find((e) => e.present);
+      if (!first) return;
+      toGame('fxSet', JSON.stringify({
+        formId: fxModalCtx.formId, id: first.id, on: !first.active }));
+    };
     list.forEach((e) => {
       const row = h('div', { class: 'fx-row' + (e.present ? '' : ' is-missing') },
         h('span', { class: 'fx-glyph', 'aria-hidden': 'true' }, e.glyph || '✨'),
@@ -2545,6 +2809,56 @@
       }
       body.append(row);
     });
+    fxRenderWearMods(body, env);
+  }
+
+  /* Does one effect row match the global query? Mod name is included on
+     purpose — typing "liquid" should find the Liquid Pack's pieces even
+     though none of them says "liquid pack" in its own label. */
+  function fxRowMatches(e, q) {
+    if (!q) return true;
+    return ((e.label || '') + ' ' + (e.detail || '') + ' ' + (e.mod || '') + ' ' +
+            (e.reason || '')).toLowerCase().indexOf(q) >= 0;
+  }
+
+  /* How many rows in a given tab match — drives the tab strip's count badges.
+     Kept deliberately cheap: it counts, it does not build anything. */
+  function fxMatchCount(tabId, env, q) {
+    if (tabId === 'fx')
+      return (env.effects || []).filter((e) => fxRowMatches(e, q)).length;
+    if (tabId === 'skins') {
+      const p = (env.skins && env.skins.presets) || [];
+      return p.filter((s) => ((s.name || '') + ' ' + (s.key || ''))
+        .toLowerCase().indexOf(q) >= 0).length;
+    }
+    if (tabId === 'pubes') {
+      const s = (env.pubes && env.pubes.styles) || [];
+      return s.filter((x) => ((x.name || '') + ' ' + (x.pack || '') + ' ' + (x.type || ''))
+        .toLowerCase().indexOf(q) >= 0).length;
+    }
+    if (tabId === 'zaz') {
+      const d = (env.zaz && env.zaz.devices) || [];
+      return d.filter((x) => ((x.name || '') + ' ' + (x.cat || ''))
+        .toLowerCase().indexOf(q) >= 0).length;
+    }
+    if (tabId === 'body') return 0;   // a settings pane, nothing to search
+    return 0;
+  }
+
+  /* The per-mod detection report for WORN cosmetic mods. Same job the Pubes
+     tab's packs report does: a registered mod that is not installed says so
+     ONCE, instead of contributing a category of dead rows. */
+  function fxRenderWearMods(body, env) {
+    const mods = (env && env.wearMods) || [];
+    const missing = mods.filter((m) => !m.present);
+    if (!missing.length) return;
+    body.append(h('div', { class: 'fxp-packs' },
+      h('details', {},
+        h('summary', {}, 'Wearable skin mods not installed',
+          h('span', { class: 'fxp-warn' }, String(missing.length))),
+        ...missing.map((m) => h('div', { class: 'fxp-pack is-bad' },
+          h('span', { class: 'fxp-pack-n' }, m.mod),
+          h('span', { class: 'fxp-pack-d' }, m.plugin + ' isn’t in the load order'))))));
   }
 
   /* ---- 🎨 Skins — the SkinShift tab of the Effects modal ---------------- *
@@ -2578,6 +2892,52 @@
         : (unknown ? 'Current: unknown'
                    : 'No skin applied from the deck')));
 
+    /* skinshift-readback — THE verdict surface (diagnosis instrument,
+       2026-08-15). `skins.live` is read by C++ straight off her LOADED 3D
+       model: which diffuse texture each skin geometry is actually wearing,
+       plus the engine's race/gender tint. Everything above says what was
+       ASKED for; this one line says what her body IS wearing — a
+       …removenormals… path means the SkinShift swap really landed, a
+       vanilla/BnP path means she's in her normal skin no matter what
+       ok=true claimed. Absent `live` (older DLL) renders nothing. */
+    const live = skins.live;
+    if (live && live.loaded === false) {
+      body.append(h('div', { class: 'fx-skin-live' },
+        'her model isn’t loaded — nothing to read'));
+    } else if (live) {
+      const parts = live.parts || [];
+      /* The body-skin entry: first kind:"skin" whose geometry name says
+         "body"; any skin entry as fallback (hands/feet share the set). */
+      const skinParts = parts.filter((p) => p && p.kind === 'skin');
+      const pick = skinParts.filter((p) =>
+        String(p.geom || '').toLowerCase().indexOf('body') >= 0)[0] || skinParts[0];
+      if (!pick) {
+        body.append(h('div', { class: 'fx-skin-live' },
+          'no skin geometry readable on her model right now'));
+      } else {
+        const path = String(pick.diffuse || '');
+        const file = path ? (path.split(/[\\/]/).pop() || path) : '(no diffuse)';
+        const isPreset = path.toLowerCase().indexOf('removenormals') >= 0;
+        const title = 'Body diffuse: ' + (path || '(none)') + '\n\nAll parts:\n' +
+          parts.map((p) => (p.geom || '?') + ' [' + (p.kind || '?') + '] ' +
+            (p.diffuse || '(no diffuse)') +
+            (p.tint ? ' · tint ' + p.tint : '')).join('\n');
+        const line = h('div', { class: 'fx-skin-live', title: title },
+          'On her body right now: ' + file);
+        if (pick.tint) {
+          line.append(' · tint ');
+          line.append(h('span', { class: 'fx-skin-swatch',
+            style: 'background:' + pick.tint }));
+          line.append(' ' + pick.tint);
+        }
+        if (isPreset)
+          line.append(h('span', { class: 'fx-skin-live-chip' }, '(a SkinShift preset)'));
+        else
+          line.append(' · her normal skin');
+        body.append(line);
+      }
+    }
+
     /* ✕ back to her own skin — ALWAYS clickable (play-test fix 2026-08-15):
        the deck can't see skins applied outside it, so gating this on our own
        record locked Rober out of resetting. Clearing with nothing applied is
@@ -2603,35 +2963,24 @@
       return;
     }
 
-    /* Filter-as-you-type, always present (the house search-bar law); Enter
-       applies the top hit — the fd-ctx idiom. */
-    const inp = h('input', {
-      class: 'fx-filter fx-skin-filter', type: 'text',
-      placeholder: 'Search skins… (Enter applies the top hit)',
-      value: fxSkinFilter,
-      onInput: (e) => {
-        fxSkinFilter = e.target.value; fillFxModal();
-        const again = document.querySelector('#fd-fx-modal .fx-skin-filter');
-        if (again) { again.focus(); again.setSelectionRange(fxSkinFilter.length, fxSkinFilter.length); }
-      },
-      onKeydown: (e) => {
-        if (e.key !== 'Enter') return;
-        const top = document.querySelector(
-          '#fd-fx-modal .fx-skins-list .fx-act:not([disabled])');
-        if (top) top.click();
-      },
-    });
-    body.append(inp);
-
-    const q = fxSkinFilter.trim().toLowerCase();
+    /* Search is the modal's ONE box now (fx-global-search) — this tab reads
+       it rather than owning a second input. Enter still applies the top hit,
+       armed through fxTopHit instead of an onKeydown of our own. */
+    const q = fxSearch.trim().toLowerCase();
     const rows = q
       ? all.filter((p) => (p.name + ' ' + p.key).toLowerCase().indexOf(q) >= 0)
       : all;
 
+    fxTopHit = () => {
+      const top = document.querySelector(
+        '#fd-fx-modal .fx-skins-list .fx-act:not([disabled])');
+      if (top) top.click();
+    };
+
     const list = h('div', { class: 'fx-skins-list' });
     if (!rows.length) {
       list.append(h('div', { class: 'fx-empty' },
-        'Nothing matches “' + fxSkinFilter + '”.'));
+        'Nothing matches \u201c' + fxSearch + '\u201d.'));
     }
     rows.forEach((p) => {
       const isCur = !unknown && !!cur &&
@@ -2674,6 +3023,760 @@
      in-flight file, so the ADDITIONS live here beside the code that uses
      them. The list's vh cap divides by --ui-scale because the .fd-modal card
      is transform-scaled (the popup vh/vw audit rule). */
+  /* ---- Restraints — the ZaZ tab of the Effects modal -------------------- *
+   *  zaz-effects-tab (2026-08-17). Rober: "Add Zaz Items (with mesh icons) —
+   *  we have zaz in animation already but zaz if detected would be nice here
+   *  as well, using mesh render framework to show the icons. Paginate please,
+   *  so we dont do huge loading."
+   *
+   *  The catalogue is NOT rebuilt here: C++ hands over the same device list
+   *  the Animations tab drives (zaz_deck owns it), so the two surfaces can
+   *  never disagree. What this adds is icons and paging.
+   *
+   *  PAGING IS ABOUT RENDERS, NOT ROWS. A few hundred {key,name,cat} rows is
+   *  a few KB — nothing. Rendering a few hundred restraint meshes through the
+   *  Mesh Rendering Framework is minutes. So the whole list ships, the view
+   *  pages it, and only the VISIBLE page's icons are ever requested. Renders
+   *  are keep-forever, so a page revisited is instant.
+   *
+   *  2026-08-17 (second pass). 202 devices on Rober's install. Three things
+   *  the first cut lacked, all of them the deck's own standing UI law rather
+   *  than taste: a page that fills the screen (see FX_ZAZ_SIZES), a way to see
+   *  ONLY what she is wearing (the tab could strip everything and could not
+   *  show you anything), and a sort. Filter, category, sort and page all
+   *  COMPOSE: query narrows, worn-only narrows, the category chip narrows,
+   *  the sort orders what is left, and the page cuts it. Every chip's count is
+   *  computed against everything upstream of it, so a chip reading 0 is the
+   *  truth and not a stale tally.
+   * ---------------------------------------------------------------------- */
+  /* Total order, never a partial one: two devices with the same name in the
+     same category must compare 0 by every route, or Array.sort is free to
+     shuffle them differently on each repaint. */
+  function fxZazCmp() {
+    const nm = (d) => String(d.name || '').toLowerCase();
+    const ct = (d) => String(d.cat || '').toLowerCase();
+    const byName = (a, b) => (nm(a) < nm(b) ? -1 : nm(a) > nm(b) ? 1 : 0);
+    const byCat = (a, b) => (ct(a) < ct(b) ? -1 : ct(a) > ct(b) ? 1 : byName(a, b));
+    if (fxZazSort === 'name') return (a, b) => byName(a, b) || byCat(a, b);
+    if (fxZazSort === 'worn')
+      return (a, b) => ((a.worn ? 0 : 1) - (b.worn ? 0 : 1)) || byCat(a, b);
+    return byCat;                        // 'cat' — C++'s own order, made explicit
+  }
+
+  /* The worn-only toggle, the sort and the page size, in one wrapping row.
+     Everything here is a .fxp-chip: the tab already owns that vocabulary's
+     hover / active / dim states, and a second button look in the same modal
+     would be a near-duplicate for no reason (the design-token rule). */
+  function fxZazTools(who, wornN, poolN) {
+    const seg = (label, opts, cur, pick) => h('div', { class: 'fx-zaz-seg' },
+      h('span', { class: 'fx-zaz-seg-l' }, label),
+      ...opts.map((o) => h('button', {
+        class: 'fxp-chip' + (cur === o.id ? ' on' : ''), type: 'button', title: o.title,
+        onClick: () => { if (cur !== o.id) pick(o.id); },
+      }, o.label)));
+
+    const row = h('div', { class: 'fx-zaz-tools' });
+    row.append(h('button', {
+      class: 'fxp-chip fx-zaz-worn' + (fxZazWorn ? ' on' : '') + (wornN ? '' : ' none'),
+      type: 'button',
+      title: fxZazWorn
+        ? 'Showing only what ' + who + ' has on — click to show the whole catalogue again'
+        : (wornN
+            ? 'Show only the ' + wornN + ' device' + (wornN === 1 ? '' : 's') + ' ' + who + ' is wearing'
+            : who + ' is wearing nothing from this catalogue right now'),
+      onClick: () => { fxZazWorn = !fxZazWorn; fxZazPage = 0; fillFxModal(); },
+    }, 'Worn only', h('span', { class: 'fxp-chip-n' }, String(wornN))));
+
+    row.append(seg('Sort', [
+      { id: 'cat', label: 'Category', title: 'Grouped by kind (wrist, gag, collar…), name within each' },
+      { id: 'name', label: 'Name', title: 'Straight A→Z across every kind' },
+      { id: 'worn', label: 'Worn first', title: 'What ' + who + ' has on floats to the top, the rest follows by kind' },
+    ], fxZazSort, (id) => { fxZazSort = id; fxZazPage = 0; fillFxModal(); }));
+
+    /* Only worth the space once there is more than the smallest page to show. */
+    if (poolN > FX_ZAZ_SIZES[0]) {
+      row.append(seg('Per page', FX_ZAZ_SIZES.map((n) => ({
+        id: n, label: String(n),
+        title: n + ' at a time — fewer page turns, but the first visit to each '
+          + 'page draws that many meshes (they are kept, so every later visit '
+          + 'is instant)',
+      })), fxZazSize, (n) => {
+        /* Keep your place: the first tile of the page you are looking at stays
+           on the page you land on, so changing the size never teleports you. */
+        const first = fxZazPage * fxZazSize;
+        fxZazSize = n;
+        fxZazPage = Math.floor(first / n);
+        fillFxModal();
+      }));
+    }
+    return row;
+  }
+
+  /* --- the render-watch ------------------------------------------------- *
+   *  A settled ask queues real mesh work; the pictures arrive whenever the
+   *  framework gets to them. Nothing pushes them at the view on its own — the
+   *  `icon` path rides fxState, and C++ sends fxState only in REPLY. So while
+   *  a drawn page still has holes, re-read her: immediately when a render
+   *  batch drains (the hd-item-icons event the Wardrobe receiver raises), and
+   *  on a slow clock as the backstop for a batch that is still draining.
+   *  Bounded by FX_ZAZ_REFRESH_MAX, because a device whose mesh never renders
+   *  would otherwise poll for the rest of the session.
+   * ---------------------------------------------------------------------- */
+  function fxZazStopWatch() {
+    if (fxZazPollT) { clearInterval(fxZazPollT); fxZazPollT = 0; }
+  }
+  function fxZazRefresh() {
+    if (!fxModalCtx || fxTab !== 'zaz') { fxZazStopWatch(); return; }
+    if (fxZazRefreshN >= FX_ZAZ_REFRESH_MAX) { fxZazStopWatch(); return; }
+    fxZazRefreshN += 1;
+    askEffects(fxModalCtx.formId, true);
+  }
+  function fxZazWatch(pending) {
+    if (!pending || !fxModalCtx || fxZazRefreshN >= FX_ZAZ_REFRESH_MAX) {
+      fxZazStopWatch();
+      return;
+    }
+    if (fxZazPollT) return;              // already watching this fill
+    fxZazPollT = setInterval(fxZazRefresh, FX_ZAZ_POLL_MS);
+  }
+  /* A finished render batch re-pushes the icon index; the Wardrobe receiver
+     raises this only when it actually CHANGED, so this is a free "something
+     landed" tick rather than a poll. */
+  document.addEventListener('hd-item-icons', function () {
+    if (fxModalCtx && fxTab === 'zaz') fxZazRefresh();
+  });
+
+  /* The settled icon ask, kept as a function so it can be flushed (the harness
+     runs synchronously and cannot wait out a 400 ms settle). */
+  function fxZazFlushAsk() {
+    if (fxZazAskTimer) { clearTimeout(fxZazAskTimer); fxZazAskTimer = 0; }
+    const run = fxZazAskRun;
+    fxZazAskRun = null;
+    if (!run) return false;
+    run();
+    return true;
+  }
+
+  function fillFxZaz(body, env) {
+    const who = fxModalCtx ? fxModalCtx.who : 'her';
+    if (!env || !env.present) {
+      body.append(h('div', { class: 'fx-empty' },
+        (env && env.reason) || 'ZaZ Animation Pack isn’t in the load order.'));
+      return;
+    }
+    const all = env.devices || [];
+    if (!all.length) {
+      body.append(h('div', { class: 'fx-empty' },
+        'ZaZ is installed but no wearable devices were found.'));
+      return;
+    }
+
+    /* Category chips, from ZAP's OWN zbfWorn* taxonomy (Wrist, Gag, Collar…),
+       counted against everything upstream of them — the query AND the
+       worn-only toggle — so a chip showing 0 tells the truth about what
+       clicking it would give you. */
+    const q = fxSearch.trim().toLowerCase();
+    const matches = (d) => !q ||
+      ((d.name || '') + ' ' + (d.cat || '')).toLowerCase().indexOf(q) >= 0;
+    const searched = all.filter(matches);
+    const wornN = searched.filter((d) => d.worn).length;
+    const wornAll = all.filter((d) => d.worn).length;
+    const pool = fxZazWorn ? searched.filter((d) => d.worn) : searched;
+    const cats = (env.cats || []).map((c) => ({
+      id: c.cat, n: pool.filter((d) => d.cat === c.cat).length }));
+    if (!cats.some((c) => c.id === fxZazCat)) fxZazCat = 'all';
+
+    body.append(h('div', { class: 'fxp-chips fx-zaz-chips' },
+      h('button', {
+        class: 'fxp-chip' + (fxZazCat === 'all' ? ' on' : ''), type: 'button',
+        title: 'Every kind of device',
+        onClick: () => { fxZazCat = 'all'; fxZazPage = 0; fillFxModal(); },
+      }, 'All', h('span', { class: 'fxp-chip-n' }, String(pool.length))),
+      ...cats.map((c) => h('button', {
+        class: 'fxp-chip' + (fxZazCat === c.id ? ' on' : '') + (c.n === 0 ? ' none' : ''),
+        type: 'button', title: 'Only ' + c.id,
+        onClick: () => { fxZazCat = c.id; fxZazPage = 0; fillFxModal(); },
+      }, c.id, h('span', { class: 'fxp-chip-n' }, String(c.n))))));
+
+    body.append(fxZazTools(who, wornN, pool.length));
+
+    const shown = (fxZazCat === 'all' ? pool : pool.filter((d) => d.cat === fxZazCat))
+      .slice().sort(fxZazCmp());         // slice: env.devices is the cached payload
+    if (!shown.length) {
+      /* An empty grid always carries the way OUT of whatever emptied it — a
+         filter that hides everything and offers no escape reads as a broken
+         tab, and with three filters stacked it is not obvious which one did
+         it. So: say which, and give the one click that undoes it. */
+      body.append(h('div', { class: 'fx-empty' },
+        fxZazWorn && !wornAll ? who + ' isn’t wearing anything from this catalogue.'
+          : fxZazWorn ? 'Nothing ' + who + ' is wearing matches that.'
+          : q ? 'Nothing matches “' + fxSearch + '”' +
+              (fxZazCat === 'all' ? '.' : ' in ' + fxZazCat + '.')
+          : 'Nothing in that category.'));
+      const esc = [];
+      if (fxZazWorn) esc.push(h('button', {
+        class: 'fx-act', type: 'button',
+        title: 'Drop the worn-only filter and show the whole catalogue again',
+        onClick: () => { fxZazWorn = false; fxZazPage = 0; fillFxModal(); },
+      }, 'Show everything' + (searched.length ? ' (' + searched.length + ')' : '')));
+      if (fxZazCat !== 'all' && pool.length) esc.push(h('button', {
+        class: 'fx-act', type: 'button',
+        title: 'Stop narrowing to ' + fxZazCat,
+        onClick: () => { fxZazCat = 'all'; fxZazPage = 0; fillFxModal(); },
+      }, 'Every kind (' + pool.length + ')'));
+      if (esc.length) body.append(h('div', { class: 'fxp-acts fx-zaz-esc' }, ...esc));
+      fxZazWatch(false);
+      return;
+    }
+
+    const pages = Math.max(1, Math.ceil(shown.length / fxZazSize));
+    if (fxZazPage >= pages) fxZazPage = pages - 1;
+    if (fxZazPage < 0) fxZazPage = 0;
+    const start = fxZazPage * fxZazSize;
+    const page = shown.slice(start, start + fxZazSize);
+
+    fxTopHit = () => {
+      const first = page[0];
+      if (!first || !fxModalCtx) return;   // the modal owns the Enter key only while it is up
+      toGame('fxSet', JSON.stringify({
+        formId: fxModalCtx.formId, id: 'zaz:' + first.key, on: !first.worn }));
+    };
+
+    /* Ask C++ to render just this page's meshes.
+       ⛔ ONCE PER KEY PER SESSION, and only after the list has stopped moving.
+       The comment here used to say firing on every repaint was safe because
+       anything on disk is free — it is not: a repaint re-asks for the pieces
+       that are still RENDERING, and each ask queues real mesh work on the
+       game's D3D device. Rober's log, 2026-08-17: five identical
+       'zaz: effects view' requests inside 72 ms, each queueing seven renders,
+       with the game frozen while they ran. This is the Items tab's
+       settle-gate lesson (items-icon-settle) arriving late. */
+    const need = page.filter((d) => !d.icon && !fxZazAsked[d.key]).map((d) => d.key);
+    if (need.length && env.iconsAvailable !== false) {
+      const fid = fxModalCtx ? fxModalCtx.formId : 0;
+      fxZazAskRun = () => {
+        /* ⛔ The modal can be closed — or reopened on someone else — inside the
+           settle window. This used to read fxModalCtx.formId unguarded and
+           threw an uncaught TypeError every time that happened; in this engine
+           an uncaught error is never merely a lost ask. */
+        if (!fxModalCtx || fxModalCtx.formId !== fid || fxTab !== 'zaz') return;
+        const still = need.filter((k) => !fxZazAsked[k]);
+        if (!still.length) return;
+        still.forEach((k) => { fxZazAsked[k] = 1; });
+        fxZazRefreshN = 0;               // a new page earns a fresh watch budget
+        toGame('fxSet', JSON.stringify({
+          formId: fid, id: 'zaz:icons:' + still.join(','), on: true }));
+      };
+      if (fxZazAskTimer) clearTimeout(fxZazAskTimer);
+      fxZazAskTimer = setTimeout(fxZazFlushAsk, FX_ZAZ_SETTLE_MS);
+    } else if (fxZazAskRun) {
+      /* This page needs nothing — so neither does the ask armed by whatever
+         the list looked like a moment ago. Dropping it here is what makes the
+         gate a SETTLE gate rather than a delay: only the list you stopped on
+         ever queues work. */
+      fxZazAskRun = null;
+      if (fxZazAskTimer) { clearTimeout(fxZazAskTimer); fxZazAskTimer = 0; }
+    }
+
+    /* The loading line Rober asked for ("needs a loading indicator or a speed
+       up or something"). Honest and specific: how many of THIS page are still
+       being drawn, not a spinner that cannot say whether anything is happening.
+       It counts down and disappears by itself because of the render-watch
+       below: a fresh fxState is the only thing that can carry a new icon path
+       into the view, and nothing sends one unless we ask. */
+    const pending = page.filter((d) => !d.icon).length;
+    const live = pending > 0 && env.iconsAvailable !== false;
+    if (live) {
+      body.append(h('div', { class: 'fxp-loading' },
+        h('span', { class: 'fxp-spin' }, '⟳'),
+        fxZazRefreshN >= FX_ZAZ_REFRESH_MAX
+          /* Honest ending: the watch is spent. Some of these have no mesh the
+             framework can draw, and a line that says "drawing…" forever about
+             a picture that is never coming is the lie the loading line exists
+             to avoid. */
+          ? pending + ' of ' + page.length + ' still have no picture — turn the '
+            + 'page and back to look again'
+          : 'Drawing ' + pending + ' of ' + page.length
+            + ' — first look at a page only, they are kept after that'));
+    }
+    /* Re-read her while pictures are still coming (see the render-watch). */
+    fxZazWatch(live);
+
+    body.append(h('div', { class: 'fxp-grid fx-zaz-grid' }, ...page.map((d) => {
+      const tile = h('button', {
+        class: 'fxp-tile' + (d.worn ? ' on' : ''), type: 'button', 'data-key': d.key,
+        title: (d.worn ? 'Take off ' + who + ': ' : 'Put on ' + who + ': ') + d.name
+          + '\n' + d.cat
+          + (Array.isArray(d.slots) && d.slots.length
+              ? '\nBody slot' + (d.slots.length > 1 ? 's' : '') + ': ' + d.slots.join(', ')
+                + ' — anything else on those is displaced'
+              : '')
+          + '\napplied through ZAP’s own equip event, so its pose '
+          + 'and effect fire when the deck closes',
+        onClick: () => {
+          toGame('fxSet', JSON.stringify({
+            formId: fxModalCtx.formId, id: 'zaz:' + d.key, on: !d.worn }));
+        },
+      });
+      const shot = h('div', { class: 'fxp-shot' });
+      if (d.icon) {
+        const img = h('img', { src: d.icon, alt: d.name, loading: 'lazy' });
+        img.onerror = function () {
+          this.remove();
+          shot.append(h('span', { class: 'fxp-noshot' }, '⛓'));
+        };
+        shot.append(img);
+      } else {
+        /* Not "no preview" — it is very likely still rendering, and saying
+           "missing" about something that is about to appear is a lie. */
+        shot.append(h('span', { class: 'fxp-noshot' },
+          env.iconsAvailable === false ? '⛓' : 'rendering…'));
+      }
+      /* ⛔ h() skips null children; Element.append() STRINGIFIES them, so the
+         old `d.worn ? … : null` in this call printed the word "null" under
+         every device that was not worn. Rober saw it on all 202 of them. */
+      const slots = Array.isArray(d.slots) ? d.slots : [];
+      tile.append(shot,
+        h('div', { class: 'fxp-name' }, d.name),
+        /* The ON pill sits INLINE beside the category now. It used to be
+           absolutely positioned over the top-right of the tile, where it
+           landed on the render — an overlap that only appeared once something
+           was actually worn, which is why it survived the overlap pass. */
+        h('div', { class: 'fxp-sub' },
+          h('span', { class: 'fxp-cat' }, d.cat),
+          slots.length ? h('span', { class: 'fxp-slots', title: 'Uses body slot'
+            + (slots.length > 1 ? 's' : '') + ': ' + slots.join(', ')
+            + '\nAnything else on the same slot is displaced when this goes on.' },
+            '⛶ ' + (slots.length > 2 ? slots.length + ' slots' : slots.join(' · '))) : null,
+          d.worn ? h('span', { class: 'fxp-on' }, 'ON') : null));
+      return tile;
+    })));
+
+    /* Pager. Always rendered when there is more than one page, with the range
+       spelled out — "showing 25–48 of 312" is the thing that tells you the
+       list is big without you having to count. */
+    if (pages > 1) {
+      body.append(h('div', { class: 'fx-pager' },
+        h('button', {
+          class: 'fx-act', type: 'button', disabled: fxZazPage === 0,
+          title: 'Previous page',
+          onClick: () => { fxZazPage -= 1; fillFxModal(); },
+        }, '‹ Prev'),
+        h('span', { class: 'fx-pager-n' },
+          'Showing ' + (start + 1) + '–' + (start + page.length) +
+          ' of ' + shown.length + '  ·  page ' + (fxZazPage + 1) + '/' + pages +
+          (fxZazWorn ? '  ·  worn only' : '')),
+        h('button', {
+          class: 'fx-act', type: 'button', disabled: fxZazPage >= pages - 1,
+          title: 'Next page',
+          onClick: () => { fxZazPage += 1; fillFxModal(); },
+        }, 'Next ›')));
+    }
+
+    body.append(h('div', { class: 'fxp-acts' },
+      h('button', {
+        class: 'fx-act danger', type: 'button', disabled: !wornAll,
+        title: wornAll
+          ? 'Strip every ZaZ device ' + who + ' is wearing, in one go — ' + wornAll
+            + ' piece' + (wornAll === 1 ? '' : 's')
+          : who + ' is wearing nothing from this catalogue',
+        onClick: () => {
+          if (!fxModalCtx) return;
+          toGame('fxSet', JSON.stringify({
+            formId: fxModalCtx.formId, id: 'zaz:free', on: false }));
+        },
+      }, 'Free ' + who),
+      /* The companion to the strip button: it is the only way to SEE what that
+         button would take off, so it belongs beside it as well as in the tools
+         row — one click from "what is she wearing" to "take it all off". */
+      wornAll && !fxZazWorn ? h('button', {
+        class: 'fx-act', type: 'button',
+        title: 'List only the ' + wornAll + ' device' + (wornAll === 1 ? '' : 's')
+          + ' ' + who + ' has on',
+        onClick: () => { fxZazWorn = true; fxZazCat = 'all'; fxZazPage = 0; fillFxModal(); },
+      }, 'Show what’s on (' + wornAll + ')') : null));
+
+    body.append(h('div', { class: 'fxp-note' },
+      env.iconsAvailable === false
+        ? 'Mesh Rendering Framework isn’t loaded, so these stay as glyphs.'
+        : 'Icons render a page at a time and are kept, so pages you have '
+          + 'already seen open instantly — a bigger page is fewer turns, at the '
+          + 'cost of a longer first fill.'));
+  }
+
+  /* ---- Pubes — the OPubes NG tab of the Effects modal ------------------- *
+   *  pubes-tab (2026-08-17). Rober: "new detection based tab … of the picker
+   *  that you can apply to an npc and it saves", with "a preview of the
+   *  pubes". OPubes itself can only roll RANDOMLY or cycle — there is no way
+   *  to say "give her THAT one" — so this tab is the picker the mod lacks.
+   *
+   *  Everything painted here comes from the `pubes` block of fxState, which
+   *  C++ built by reading OPubes' OWN catalogue files. Choosing fires fxSet
+   *  with id "pubes:<key>"; "pubes:clear" shaves; "pubes:rescan" re-reads.
+   *  Each tile's picture is a PNG baked from that style's overlay texture,
+   *  so you pick by looking rather than by parsing a filename.
+   * ---------------------------------------------------------------------- */
+  function fillFxPubes(body, env) {
+    const who = fxModalCtx ? fxModalCtx.who : 'her';
+    if (!env) {
+      body.append(h('div', { class: 'fx-empty' }, 'Reading the OPubes catalogue…'));
+      return;
+    }
+    if (env.scanning) {
+      /* A skeleton sized like the real grid, so the panel does not jump when
+         the tiles land (the UI rules' loading-state requirement). */
+      body.append(h('div', { class: 'fxp-note' },
+        'Reading OPubes’ catalogue and drawing previews — this happens once.'));
+      body.append(h('div', { class: 'fxp-grid' }, ...Array.from({ length: 8 }, () =>
+        h('div', { class: 'fxp-tile fxp-skel' },
+          h('div', { class: 'fxp-shot' }), h('div', { class: 'fxp-name' })))));
+      return;
+    }
+    if (!env.available) {
+      body.append(h('div', { class: 'fx-empty' },
+        env.reason || 'No pube styles are available on this load order.'));
+      fxPubesPacks(body, env);
+      return;
+    }
+
+    const styles = env.styles || [];
+    const counts = env.counts || {};
+    const cur = env.current || null;
+
+    /* Type chips with live counts — the four states of the one filter that is
+       not free text. `all` first because it is the common case. */
+    const chips = [
+      { id: 'all', label: 'All', n: styles.length },
+      { id: 'normal', label: 'Normal', n: counts.normal || 0 },
+      { id: 'stylish', label: 'Stylish', n: counts.stylish || 0 },
+      { id: 'hairy', label: 'Hairy', n: counts.hairy || 0 },
+    ].filter((c) => c.n > 0);
+    if (!chips.some((c) => c.id === fxPubesType)) fxPubesType = 'all';
+
+    body.append(h('div', { class: 'fxp-head' },
+      h('div', { class: 'fxp-chips' }, ...chips.map((c) => h('button', {
+        class: 'fxp-chip' + (fxPubesType === c.id ? ' on' : ''), type: 'button',
+        title: c.id === 'all' ? 'Every style' : 'Only the ' + c.label.toLowerCase() + ' ones',
+        onClick: () => { fxPubesType = c.id; fillFxModal(); },
+      }, c.label, h('span', { class: 'fxp-chip-n' }, String(c.n)))))));
+
+    const q = fxSearch.trim().toLowerCase();
+    const shown = styles.filter((s) =>
+      (fxPubesType === 'all' || s.type === fxPubesType) &&
+      (!q || (s.name + ' ' + (s.pack || '') + ' ' + s.type).toLowerCase().indexOf(q) >= 0));
+
+    /* Enter applies the top hit — armed here rather than owned by an input,
+       because the search box lives in the modal chrome now (see fxSearch). */
+    fxTopHit = () => {
+      const top = document.querySelector('#fd-fx-modal .fxp-tile[data-key]');
+      if (top) top.click();
+    };
+
+    if (!shown.length) {
+      body.append(h('div', { class: 'fx-empty' }, q
+        ? 'Nothing matches “' + fxSearch + '”.'
+        : 'Nothing in that category.'));
+    } else {
+      body.append(h('div', { class: 'fxp-grid' }, ...shown.map((s) => {
+        const on = cur && cur === s.key;
+        const tile = h('button', {
+          class: 'fxp-tile' + (on ? ' on' : ''), type: 'button', 'data-key': s.key,
+          title: (on ? 'Already on ' + who + ' — ' : 'Put on ' + who + ': ')
+            + s.name + ' · ' + s.type + ' · from ' + (s.pack || 'unknown pack')
+            + '\nApplied through OPubes’ own machinery, so it persists exactly as that mod intends.',
+          onClick: () => {
+            toGame('fxSet', JSON.stringify({
+              formId: fxModalCtx.formId, id: 'pubes:' + s.key, on: true }));
+          },
+        });
+        const shot = h('div', { class: 'fxp-shot' });
+        if (s.icon) {
+          /* An <img> with a text fallback that removes ITSELF on error, so a
+             tile whose PNG never baked degrades to a word rather than a
+             broken-image box (the deck's standing icon rule). */
+          const img = h('img', { src: s.icon, alt: s.name, loading: 'lazy' });
+          img.onerror = function () {
+            this.remove();
+            shot.append(h('span', { class: 'fxp-noshot' }, 'no preview'));
+          };
+          shot.append(img);
+        } else {
+          shot.append(h('span', { class: 'fxp-noshot' }, 'no preview'));
+        }
+        tile.append(shot,
+          h('div', { class: 'fxp-name' }, s.name),
+          h('div', { class: 'fxp-sub' }, s.type),
+          on ? h('span', { class: 'fxp-on' }, 'ON') : null);
+        /* Zoom — Rober asked for "a lightbox popout so I can see better". The
+           deck already owns one (HDLightbox, built for exactly this on the
+           Items/NPC rows), so this reuses it rather than inventing a second.
+           It is its OWN control, not the tile's click: the tile applies, and
+           an accidental apply while browsing is the annoying failure. */
+        if (s.icon && window.HDLightbox) {
+          tile.append(h('button', {
+            class: 'fxp-zoom', type: 'button', title: 'Look at ' + s.name + ' bigger',
+            'aria-label': 'Enlarge ' + s.name,
+            onClick: (ev) => {
+              ev.stopPropagation();          // never apply just because they looked
+              window.HDLightbox.open({
+                /* Mount on the modal BACKDROP, not the card: the backdrop is
+                   fixed inset:0, so the popout fills the screen instead of
+                   being clipped to the card's rounded box. */
+                host: document.getElementById('fd-fx-modal') || document.body,
+                src: s.icon,
+                title: s.name,
+                sub: s.type + ' · ' + (s.pack || 'unknown pack')
+                  + ' · tinted in game from her hair colour',
+                glyph: '·',
+              });
+            },
+          }, '⌕'));
+        }
+        return tile;
+      })));
+    }
+
+    /* Actions. "Shaved" is OPubes' own removal path, not a bare strip. */
+    body.append(h('div', { class: 'fxp-acts' },
+      h('button', {
+        class: 'fx-act' + (cur ? ' danger' : ''), type: 'button', disabled: !cur,
+        title: cur
+          ? 'Shave ' + who + ' — OPubes’ own removal, so its bookkeeping stays in step'
+          : 'Nothing of ours is on ' + who,
+        onClick: () => toGame('fxSet', JSON.stringify({
+          formId: fxModalCtx.formId, id: 'pubes:clear', on: false })),
+      }, 'Shaved'),
+      h('button', {
+        class: 'fx-act', type: 'button',
+        title: 'Re-read OPubes’ catalogue and draw any missing preview — after installing a new pack',
+        onClick: () => toGame('fxSet', JSON.stringify({
+          formId: fxModalCtx.formId, id: 'pubes:rescan', on: false })),
+      }, 'Rescan')));
+
+    body.append(h('div', { class: 'fxp-note' },
+      cur
+        ? 'Wearing ' + (env.currentName || cur) + '. OPubes tints it from ' + who
+          + '’s hair colour, so the shade on the body follows her, not the tile.'
+        : 'OPubes can only roll these at random — this picker is the deck’s. '
+          + 'The tile is the raw overlay; in game it is tinted from her hair colour.'));
+
+    fxPubesPacks(body, env);
+  }
+
+  /* The detection report. This is the POINT of a detection-based tab: it says
+     what the load order actually offers, and names what it found broken —
+     on this rig two of OPubes' three shipped packs are dead, which is
+     invisible in game and would otherwise read as "the mod is just like
+     that". */
+  function fxPubesPacks(body, env) {
+    const packs = (env && env.packs) || [];
+    if (!packs.length) return;
+    const bad = packs.filter((p) => !p.ok);
+    const wrap = h('details', { class: 'fxp-packs' },
+      h('summary', {},
+        'Packs detected: ' + packs.filter((p) => p.ok).length + ' of ' + packs.length,
+        bad.length ? h('span', { class: 'fxp-warn' }, bad.length + ' skipped') : null));
+    packs.forEach((p) => {
+      wrap.append(h('div', { class: 'fxp-pack' + (p.ok ? '' : ' is-bad') },
+        h('span', { class: 'fxp-pack-n' }, p.name),
+        h('span', { class: 'fxp-pack-d' }, p.ok
+          ? (p.count + ' ' + (p.sex === 'male' ? 'male ' : '') + 'styles')
+          : (p.reason || 'skipped'))));
+    });
+    body.append(wrap);
+  }
+
+  /* The modal's own chrome: it is no longer a narrow list of three toggles but
+     a browser over hundreds of things, so it gets its own size rather than the
+     shared .fd-modal 560px (Rober, 2026-08-17: "we may want to increase the
+     modal popout width vertically and horizontally as well").
+     ⚠ Scoped to #fd-fx-modal — .fd-modal is shared with the settings modal and
+     widening that too would be an unrelated change nobody asked for.
+     ⚠ Both caps are DIVIDED by --ui-scale: .fd-modal carries
+     transform:scale(var(--ui-scale)), so a bare vw/vh would overflow the real
+     viewport at any scale above 1 (CLAUDE.md's vh rule). */
+  function fxEnsureModalStyles() {
+    if (document.getElementById('fx-modal-style')) return;
+    const st = document.createElement('style');
+    st.id = 'fx-modal-style';
+    st.textContent =
+      '#fd-fx-modal .fd-modal{width:min(1120px, calc(95vw / var(--ui-scale,1)));' +
+        'max-height:calc(90vh / var(--ui-scale,1));}' +
+      '.fx-search{width:100%;box-sizing:border-box;font:inherit;font-size:17px;' +
+        'padding:13px 16px;margin:12px 0 4px;border-radius:10px;color:#f6ecc8;' +
+        'background:#16161c;border:1px solid #3a382f;' +
+        'transition:border-color .12s ease,background .12s ease;}' +
+      '.fx-search::placeholder{color:#6f6a5d;}' +
+      '.fx-search:hover{border-color:#5a5647;}' +
+      '.fx-search:focus{outline:none;border-color:#c9a24b;background:#1a1a20;}' +
+      /* Tab count badges while a search is live. A zero-match tab dims rather
+         than disappearing — a tab that vanishes as you type is disorienting. */
+      '.fx-tab{display:inline-flex;align-items:center;justify-content:center;gap:8px;}' +
+      '.fx-tab-n{font-size:12px;font-weight:800;padding:1px 7px;border-radius:999px;' +
+        'background:rgba(240,214,140,.16);color:#f0d68c;}' +
+      '.fx-tab.none{opacity:.45;}' +
+      '.fx-tab.none .fx-tab-n{background:rgba(255,255,255,.07);color:#8a8577;}' +
+      '.fxp-chip.none{opacity:.5;}' +
+      '.fx-mod-chips,.fx-zaz-chips{margin-bottom:14px;}' +
+      /* Pager */
+      '.fx-pager{display:flex;align-items:center;gap:14px;margin-top:14px;' +
+        'flex-wrap:wrap;}' +
+      '.fx-pager-n{font-size:13px;color:#8a8577;}' +
+      /* The Zaz grid can be taller than the pubes one — the modal is bigger
+         now and a restraint tile is the thing you scan through most. */
+      '.fx-zaz-grid{max-height:calc(52vh / var(--ui-scale,1));}' +
+      '@media (max-width:820px){#fd-fx-modal .fd-modal{width:calc(96vw / var(--ui-scale,1));}' +
+        '.fx-search{font-size:16px;}}';
+    document.head.appendChild(st);
+  }
+
+  function fxEnsureZazStyles() {
+    /* The Zaz tab reuses the Pubes tab's tile/grid/chip vocabulary wholesale —
+       same shape of problem, same widgets. Only the grid height differs, and
+       that lives in fxEnsureModalStyles. So this guarantees the shared sheets
+       are present when Restraints is the first tab opened, and adds the one
+       row of chrome only this tab has. */
+    fxEnsurePubesStyles();
+    fxEnsureModalStyles();
+    if (document.getElementById('fx-zaz-style')) return;
+    const st = document.createElement('style');
+    st.id = 'fx-zaz-style';
+    st.textContent =
+      /* One wrapping row: worn-only, then Sort, then Per page. It WRAPS rather
+         than shrinking — at the deck's narrow floor each group drops to its own
+         line intact, which is the difference between three readable groups and
+         three squashed ones (the eleven-button quick-card row lesson). */
+      '.fx-zaz-tools{display:flex;align-items:center;flex-wrap:wrap;' +
+        'gap:10px 18px;margin:0 0 14px;}' +
+      '.fx-zaz-seg{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0;}' +
+      '.fx-zaz-seg-l{font-size:12.5px;font-weight:800;letter-spacing:.06em;' +
+        'text-transform:uppercase;color:#6f6a5d;white-space:nowrap;}' +
+      /* Nothing under 12px, and the chips here sit a touch tighter than the
+         category rail above so the two rows read as chrome, not as one soup. */
+      '.fx-zaz-tools .fxp-chip{font-size:13.5px;padding:7px 13px;}' +
+      '.fx-zaz-worn.on{color:#1a1a12;background:#f0d68c;border-color:#f0d68c;}' +
+      '.fx-zaz-worn.on .fxp-chip-n{color:#1a1a12;opacity:.7;}' +
+      '.fx-zaz-worn.on:hover{background:#f6e2a6;border-color:#f6e2a6;color:#1a1a12;}' +
+      '.fx-zaz-esc{flex-wrap:wrap;}' +
+      /* A dead control must LOOK dead, and must not light up on hover. */
+      '#fd-fx-modal .fx-act[disabled]{opacity:.42;cursor:default;}' +
+      '#fd-fx-modal .fx-act.danger[disabled]:hover{background:rgba(214,118,96,.08);' +
+        'border-color:rgba(214,118,96,.35);}' +
+      '#fd-fx-modal .fx-act[disabled]:active{transform:none;}' +
+      /* The tools row costs the card ~44px of height, which at the deck's
+         narrow floor was enough to push "Free her" past the card's own 90vh
+         cap and into a second, nested scrollbar. Give the grid that height
+         back at narrow widths — it is the one thing on this tab that scrolls
+         on purpose. */
+      '@media (max-width:820px){.fx-zaz-grid{max-height:calc(40vh / var(--ui-scale,1));}' +
+        '.fx-zaz-tools{gap:8px 12px;margin-bottom:12px;}}';
+    document.head.appendChild(st);
+  }
+
+  function fxEnsurePubesStyles() {
+    if (document.getElementById('fx-pubes-style')) return;
+    const st = document.createElement('style');
+    st.id = 'fx-pubes-style';   /* pubes-tab styles — every class namespaced
+       .fxp-* because a pane sharing a class with the deck's skeleton is the
+       bug that laid out the survival search box seven pixels tall. */
+    st.textContent =
+      '.fxp-head{display:flex;flex-direction:column;gap:10px;margin-bottom:14px;}' +
+      '.fxp-filter{font:inherit;font-size:16px;padding:12px 14px;border-radius:9px;' +
+        'color:#f6ecc8;background:#16161c;border:1px solid #3a382f;width:100%;' +
+        'box-sizing:border-box;transition:border-color .12s ease;}' +
+      '.fxp-filter::placeholder{color:#6f6a5d;}' +
+      '.fxp-filter:hover{border-color:#5a5647;}' +
+      '.fxp-filter:focus{outline:none;border-color:#c9a24b;}' +
+      '.fxp-chips{display:flex;gap:8px;flex-wrap:wrap;}' +
+      '.fxp-chip{font:inherit;font-size:14px;font-weight:700;padding:8px 14px;' +
+        'border-radius:999px;cursor:pointer;color:#8a8577;background:#16161c;' +
+        'border:1px solid #3a382f;display:inline-flex;align-items:center;gap:7px;' +
+        'transition:background .12s ease,border-color .12s ease,color .12s ease;}' +
+      '.fxp-chip:hover{border-color:#c9a24b;color:#ecd9a0;background:#1e1c16;}' +
+      '.fxp-chip.on{color:#f6ecc8;background:rgba(240,214,140,.14);' +
+        'border-color:rgba(240,214,140,.55);}' +
+      '.fxp-chip-n{font-size:12px;opacity:.75;}' +
+      /* auto-fill keeps the tiles a readable size whether there are 3 or 300,
+         and the grid scrolls INSIDE the modal rather than stretching it.
+         ⚠ The vh cap is DIVIDED by --ui-scale: .fd-modal carries
+         `transform: scale(var(--ui-scale))`, so this element has that
+         transform on an ancestor and a bare vh would be wrong at any scale
+         but 1 — the same reason .fx-skins-list divides (CLAUDE.md's vh rule). */
+      '.fxp-grid{display:grid;gap:12px;overflow-y:auto;padding:2px;' +
+        'max-height:calc(46vh / var(--ui-scale,1));' +
+        'grid-template-columns:repeat(auto-fill,minmax(132px,1fr));}' +
+      '.fxp-tile{position:relative;font:inherit;text-align:left;cursor:pointer;' +
+        'padding:10px;border-radius:11px;color:#cfc7ae;background:#16161c;' +
+        'border:1px solid #3a382f;display:flex;flex-direction:column;gap:8px;' +
+        'transition:background .12s ease,border-color .12s ease,transform .12s ease;}' +
+      '.fxp-tile:hover{border-color:#c9a24b;background:#1e1c16;transform:translateY(-1px);}' +
+      '.fxp-tile:focus-visible{outline:2px solid #c9a24b;outline-offset:2px;}' +
+      '.fxp-tile:active{transform:translateY(0);}' +
+      '.fxp-tile.on{border-color:rgba(240,214,140,.7);background:rgba(240,214,140,.12);' +
+        'color:#f6ecc8;}' +
+      '.fxp-shot{height:96px;border-radius:8px;overflow:hidden;background:#0f0f13;' +
+        'display:flex;align-items:center;justify-content:center;}' +
+      '.fxp-shot img{max-width:100%;max-height:100%;display:block;}' +
+      '.fxp-noshot{font-size:12px;color:#6f6a5d;}' +
+      '.fxp-name{font-size:15px;font-weight:700;line-height:1.25;' +
+        'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.fxp-sub{font-size:12px;color:#8a8577;text-transform:capitalize;' +
+        'display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;}' +
+      '.fxp-cat{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}' +
+      /* Which biped slots the piece occupies. Muted until hover — it is the
+         answer to "what will this displace", which you want when you are
+         deciding, not while you are scanning names. */
+      '.fxp-loading{display:flex;align-items:center;gap:8px;margin:0 0 8px;' +
+        'font-size:13px;color:#a79a72;}' +
+      /* No @keyframes: hud.css's no-looping-animation law applies to every
+         always-on surface, and a spinning glyph in a paused menu is exactly the
+         kind of forever-animation that keeps Ultralight repainting. */
+      '.fxp-spin{font-size:14px;color:#c9a24b;}' +
+      '.fxp-slots{font-size:11px;color:#6f6a5d;white-space:nowrap;' +
+        'padding:1px 6px;border-radius:999px;border:1px solid #34322b;}' +
+      '.fxp-tile:hover .fxp-slots{color:#a79a72;border-color:#4a4638;}' +
+      '.fxp-on{font-size:11px;font-weight:800;margin-left:auto;' +
+        'letter-spacing:.06em;padding:2px 8px;border-radius:999px;color:#1a1a12;' +
+        'background:#f0d68c;}' +
+      /* Zoom sits bottom-right of the picture, opposite the ON chip so the two
+         can never collide. Always visible (not hover-only): the deck is driven
+         from a couch with a mouse that is often not moving, and a control you
+         have to discover by hovering is a control that does not exist. */
+      '.fxp-zoom{position:absolute;top:78px;right:14px;width:26px;height:26px;' +
+        'display:flex;align-items:center;justify-content:center;font:inherit;' +
+        'font-size:14px;line-height:1;border-radius:7px;cursor:pointer;' +
+        'color:#cfc7ae;background:rgba(12,12,16,.72);border:1px solid #3a382f;' +
+        'transition:background .12s ease,border-color .12s ease,color .12s ease;}' +
+      '.fxp-zoom:hover{color:#f6ecc8;border-color:#c9a24b;background:rgba(30,28,22,.95);}' +
+      '.fxp-zoom:focus-visible{outline:2px solid #c9a24b;outline-offset:2px;}' +
+      /* The popout mounts into the modal backdrop, which is already z-index 60;
+         lift it over the card that sits in the same stacking context. */
+      '#fd-fx-modal .hdlb{z-index:70;}' +
+      '.fxp-acts{display:flex;gap:10px;margin-top:14px;}' +
+      '.fxp-acts .fx-act{flex:0 0 auto;}' +
+      '.fxp-note{font-size:13px;line-height:1.5;color:#8a8577;margin-top:12px;}' +
+      '.fxp-packs{margin-top:14px;border-top:1px solid #2c2a24;padding-top:12px;}' +
+      '.fxp-packs summary{font-size:14px;color:#8a8577;cursor:pointer;' +
+        'display:flex;align-items:center;gap:10px;}' +
+      '.fxp-packs summary:hover{color:#ecd9a0;}' +
+      '.fxp-warn{font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;' +
+        'color:#f0c98c;background:rgba(240,160,90,.16);' +
+        'border:1px solid rgba(240,160,90,.4);}' +
+      '.fxp-pack{display:flex;gap:10px;justify-content:space-between;' +
+        'font-size:13px;padding:7px 2px;border-bottom:1px solid #232119;}' +
+      '.fxp-pack:last-child{border-bottom:none;}' +
+      '.fxp-pack-n{color:#cfc7ae;font-weight:600;}' +
+      '.fxp-pack-d{color:#8a8577;text-align:right;}' +
+      '.fxp-pack.is-bad .fxp-pack-n{color:#8a8577;}' +
+      '.fxp-pack.is-bad .fxp-pack-d{color:#c9955f;}' +
+      /* Skeleton: sized like a real tile so nothing shifts when data lands. */
+      '.fxp-skel{pointer-events:none;}' +
+      '.fxp-skel .fxp-shot{background:#1a1a20;}' +
+      '.fxp-skel .fxp-name{height:15px;border-radius:4px;background:#1a1a20;}' +
+      '@media (max-width:700px){.fxp-grid{grid-template-columns:repeat(auto-fill,minmax(108px,1fr));}}';
+    document.head.appendChild(st);
+  }
+
   function fxEnsureSkinStyles() {
     if (document.getElementById('fx-skins-style')) return;
     const st = document.createElement('style');
@@ -2690,6 +3793,13 @@
       '.fx-skin-cur{font-size:14.5px;font-weight:700;color:#e9e2cf;' +
         'padding:2px 2px 10px;}' +
       '.fx-skin-gate{color:#d6a860;}' +
+      '.fx-skin-live{font-size:12.5px;color:#9a927e;line-height:1.5;' +
+        'padding:0 2px 10px;white-space:nowrap;overflow:hidden;' +
+        'text-overflow:ellipsis;}' +
+      '.fx-skin-swatch{display:inline-block;width:12px;height:12px;' +
+        'border-radius:3px;border:1px solid rgba(255,255,255,.25);' +
+        'vertical-align:-1px;}' +
+      '.fx-skin-live-chip{color:#ecd9a0;font-weight:700;margin-left:6px;}' +
       '.fx-skin-note{font-size:12.5px;color:#9a927e;line-height:1.45;' +
         'padding:10px 2px 2px;}' +
       '.fx-skin-clear{display:block;width:100%;box-sizing:border-box;' +
@@ -2709,6 +3819,253 @@
       '.fx-row.is-current .fx-act[disabled]{opacity:.7;cursor:default;' +
         'color:#f6ecc8;background:rgba(240,214,140,.14);' +
         'border-color:rgba(240,214,140,.5);}';
+    document.head.appendChild(st);
+  }
+
+  /* ---- 🫧 Body — the CBBE 3BA tab of the Effects modal ------------------ *
+   *  Rober (2026-08-16): "add to the f7 on npc effects menu dll integration
+   *  support for CBBE 3BA (specifically the toggle npc physics) - change cup,
+   *  - also im not sure how OSMP 3BA plays into account".
+   *
+   *  3BA gives every female body two physics engines and one switch: CBPC
+   *  (cheap, always running) or HDT-SMP (cloth sim). The switch is an
+   *  invisible armor she wears; the CUP (A–D) picks which of four SMP configs
+   *  that armor carries. It is a JIGGLE PROFILE — 3BA's own MCM says in so
+   *  many words "This does NOT affect breast size!" — and the tab says so too,
+   *  because "cup" reads as size to everyone who has not read the script.
+   *
+   *  The view paints only what `body` in fxState reports and fires fxSet with
+   *  "3ba:…" ids; C++ drives 3BA's OWN MCM functions, and the fresh fxState
+   *  riding every fxResult repaints this tab exactly like the effects rows. */
+  function fillFxBody(body, env) {
+    const who = fxModalCtx ? fxModalCtx.who : 'her';
+    if (!env || !env.available) {
+      body.append(h('div', { class: 'fx-empty fx-skin-gate' },
+        (env && env.reason) || 'CBBE 3BA’s MCM didn’t answer.'));
+      return;
+    }
+    const smp = env.mode === 'smp';
+    const blocked = env.blocked || '';
+    const isPlayer = !!env.isPlayer;
+
+    /* Where she is right now — the sentence the whole tab exists to answer. */
+    const head = h('div', { class: 'fxb-state' + (smp ? ' is-smp' : '') },
+      h('span', { class: 'fxb-mode' }, smp ? 'HDT-SMP' : 'CBPC'),
+      h('span', { class: 'fxb-mode-sub' }, smp
+        ? (env.cupLabel ? 'cloth simulation · cup ' + env.cupLabel : 'cloth simulation')
+        : 'the always-on bone physics'));
+    if (smp && env.slot)
+      head.append(h('span', { class: 'fxb-slot',
+        title: 'The switch is an invisible armor in biped slot ' + (env.wornSlot || env.slot)
+          + '. 3BA picks the slot in its own MCM — change it there if another '
+          + 'mod wants the same one.' }, 'slot ' + (env.wornSlot || env.slot)));
+    body.append(head);
+
+    if (env.stranded) {
+      body.append(h('div', { class: 'fxb-warn' },
+        '⚠ ' + who + ' carries 3BA’s switch but nothing is wearing it — an outfit '
+        + 'claimed the same biped slot, so she is on CBPC no matter what 3BA’s '
+        + 'own count says. Turning it on again re-equips it.'));
+    } else if (env.slotStale && smp) {
+      body.append(h('div', { class: 'fxb-warn' },
+        '⚠ she is wearing the slot ' + env.wornSlot + ' switch, but 3BA’s MCM is set '
+        + 'to slot ' + env.slot + ' now. Re-apply to move her onto the current slot.'));
+    }
+    if (blocked) body.append(h('div', { class: 'fxb-warn' }, '⚠ ' + blocked));
+
+    /* The one big control. Disabled only for a refusal we can state. */
+    body.append(h('button', {
+      class: 'fxb-toggle' + (smp ? ' is-on' : ''), type: 'button',
+      disabled: !!blocked,
+      title: blocked || (smp
+        ? 'Hand ' + who + '’s body back to CBPC — 3BA strips its switch and '
+          + 'restarts the bone physics it had stopped'
+        : 'Put ' + who + ' on HDT-SMP — 3BA equips its switch and stops CBPC on '
+          + 'the same bones, so the two never fight'),
+      onClick: (ev) => {
+        ev.stopPropagation();
+        toGame('fxSet', JSON.stringify({
+          formId: fxModalCtx.formId, id: '3ba:physics', on: !smp }));
+      },
+    }, smp ? '⏻ Back to CBPC' : '✨ Switch to SMP physics'));
+
+    /* The cup. Four tiles, not a dropdown — there are exactly four and each
+       wants its sentence (the house "no range input" habit, and a picker of
+       four hides three of them behind a click). */
+    if (!isPlayer) {
+      body.append(h('div', { class: 'fxb-head' }, 'Jiggle profile'));
+      body.append(h('div', { class: 'fxb-note' },
+        'Which of 3BA’s four SMP configs the switch carries. A is stiffest, C the '
+        + 'bounciest, D the heaviest. It does NOT change her body — 3BA’s own MCM '
+        + 'says so: the cup is physics, not size.'));
+      const grid = h('div', { class: 'fxb-cups' });
+      (env.cups || []).forEach((c) => {
+        const cur = smp && env.cup === c.n;
+        grid.append(h('button', {
+          class: 'fxb-cup' + (cur ? ' is-current' : ''), type: 'button',
+          disabled: !!blocked,
+          title: blocked || (cur
+            ? who + ' is on cup ' + c.label + ' — ' + c.detail
+            : (smp ? 'Move ' + who + ' to cup ' + c.label : 'Turn SMP on at cup ' + c.label)
+              + ' — ' + c.detail),
+          onClick: (ev) => {
+            ev.stopPropagation();
+            toGame('fxSet', JSON.stringify({
+              formId: fxModalCtx.formId, id: '3ba:cup:' + c.n, on: true }));
+          },
+        }, h('span', { class: 'fxb-cup-letter' }, c.label),
+           h('span', { class: 'fxb-cup-detail' }, c.detail)));
+      });
+      body.append(grid);
+      if (!smp && env.defaultCupLabel)
+        body.append(h('div', { class: 'fxb-note' },
+          'With SMP off, a cup turns it on. 3BA’s own default is ' + env.defaultCupLabel
+          + ' — the plain switch above uses that one.'));
+    } else {
+      body.append(h('div', { class: 'fxb-note' },
+        '3BA ships a single SMP setup for the player, with no cup choice — the '
+        + 'switch above is the whole control.'));
+    }
+
+    /* Which parts actually change hands. All six off is the honest answer to
+       "I flipped it and nothing moved", so it is stated rather than hidden. */
+    const parts = env.parts || [];
+    if (parts.length) {
+      const on = parts.filter((p) => p.on).map((p) => p.label);
+      if (env.partsOn === 0) {
+        body.append(h('div', { class: 'fxb-warn' },
+          '⚠ 3BA is set to hand over NO body parts, so the switch equips but '
+          + 'nothing changes. Turn parts on in 3BA’s MCM → Physics Manage.'));
+      } else {
+        body.append(h('div', { class: 'fxb-parts',
+          title: 'Set in 3BA’s own MCM (Physics Manage). Parts not listed keep '
+            + 'running on CBPC even while she is on SMP.' },
+          h('span', { class: 'fxb-parts-label' }, 'Hands over to SMP:'),
+          on.length ? on.join(' · ') : 'unknown'));
+      }
+    }
+
+    /* OSmp — the OStim bridge. It drives the SAME switch objects through the
+       SAME MCM, so this tab already tells the truth during and after a scene;
+       what Rober cannot see from here is whether a scene will overwrite his
+       choice, which is exactly what these four settings decide. */
+    const o = env.osmp;
+    if (o && o.present) {
+      body.append(h('div', { class: 'fxb-head' }, 'OSmp — during OStim scenes'));
+      body.append(h('div', { class: 'fxb-note' },
+        'OSmp flips the same switch automatically when a scene starts. It uses '
+        + '3BA’s own machinery, so what this tab shows stays true throughout.'));
+      const rows = [
+        { key: 'disabled', label: 'Don’t touch physics at scene start',
+          on: !!o.disabled,
+          hint: 'On: OSmp leaves everyone exactly as you set them. Off: it puts '
+            + 'every female in the scene on SMP.' },
+        { key: 'keepNpc', label: 'NPCs keep SMP after the scene', on: !!o.keepNpc,
+          hint: 'On: SMP you applied yourself survives the scene ending. Off: '
+            + 'OSmp puts her back on CBPC afterwards — including a switch you '
+            + 'set from here.' },
+        { key: 'keepPlayer', label: 'You keep SMP after the scene', on: !!o.keepPlayer,
+          hint: 'The same rule for the player.' },
+        { key: 'autoCup', label: 'Pick the cup from her weight', on: !!o.autoCup,
+          hint: (o.weights && o.weights.length === 4)
+            ? 'On: at scene start OSmp overwrites the cup from her weight (A up to '
+              + o.weights[0] + ', B to ' + o.weights[1] + ', C to ' + o.weights[2]
+              + ', else D) — so a cup you choose here holds only until then.'
+            : 'On: at scene start OSmp overwrites the cup from her weight, so a cup '
+              + 'you choose here holds only until then.' },
+      ];
+      rows.forEach((r) => {
+        body.append(h('div', { class: 'fxb-osmp-row', title: r.hint },
+          h('span', { class: 'fxb-osmp-label' }, r.label,
+            h('span', { class: 'fxb-osmp-hint' }, r.hint)),
+          h('button', {
+            class: 'fxb-sw' + (r.on ? ' is-on' : ''), type: 'button',
+            'aria-pressed': r.on ? 'true' : 'false',
+            title: (r.on ? 'Turn off' : 'Turn on') + ' — ' + r.label,
+            onClick: (ev) => {
+              ev.stopPropagation();
+              toGame('fxSet', JSON.stringify({
+                formId: fxModalCtx.formId, id: '3ba:osmp:' + r.key, on: !r.on }));
+            },
+          }, r.on ? 'ON' : 'off')));
+      });
+    }
+  }
+
+  function fxEnsureBodyStyles() {
+    if (document.getElementById('fx-body-style')) return;
+    const st = document.createElement('style');
+    st.id = 'fx-body-style';   /* 3ba-body-tab styles */
+    st.textContent =
+      '.fxb-state{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;' +
+        'padding:14px 16px;margin-bottom:12px;border-radius:10px;' +
+        'background:#16161c;border:1px solid #3a382f;}' +
+      '.fxb-state.is-smp{background:rgba(240,214,140,.10);' +
+        'border-color:rgba(240,214,140,.45);}' +
+      '.fxb-mode{font-size:19px;font-weight:800;color:#8a8577;letter-spacing:.4px;}' +
+      '.fxb-state.is-smp .fxb-mode{color:#f6ecc8;}' +
+      '.fxb-mode-sub{font-size:13.5px;color:#8a8577;}' +
+      '.fxb-slot{margin-left:auto;font-size:12px;font-weight:700;color:#9a927e;' +
+        'padding:3px 9px;border-radius:20px;border:1px solid #3a382f;' +
+        'background:#12121a;white-space:nowrap;}' +
+      '.fxb-warn{font-size:13px;line-height:1.5;color:#e7b7ad;' +
+        'background:rgba(214,118,96,.08);border:1px solid rgba(214,118,96,.3);' +
+        'border-radius:9px;padding:11px 13px;margin-bottom:12px;}' +
+      '.fxb-toggle{display:block;width:100%;box-sizing:border-box;' +
+        'margin-bottom:16px;padding:15px 14px;border-radius:10px;cursor:pointer;' +
+        'font:inherit;font-size:15.5px;font-weight:800;' +
+        'color:#ecd9a0;background:#1a1a22;border:1px solid #4a4636;' +
+        'transition:background .14s ease,border-color .14s ease,color .14s ease;}' +
+      '.fxb-toggle:hover:not([disabled]){background:rgba(240,214,140,.16);' +
+        'border-color:rgba(240,214,140,.6);color:#f6ecc8;}' +
+      '.fxb-toggle:active:not([disabled]){transform:translateY(1px);}' +
+      '.fxb-toggle.is-on{color:#e7b7ad;background:rgba(214,118,96,.08);' +
+        'border-color:rgba(214,118,96,.35);}' +
+      '.fxb-toggle.is-on:hover:not([disabled]){background:rgba(214,118,96,.16);' +
+        'border-color:rgba(214,118,96,.6);color:#f0cdc4;}' +
+      '.fxb-toggle[disabled]{opacity:.45;cursor:default;}' +
+      '.fxb-head{font-size:13px;font-weight:800;letter-spacing:.6px;' +
+        'text-transform:uppercase;color:#9a927e;padding:4px 2px 6px;}' +
+      '.fxb-note{font-size:12.5px;color:#9a927e;line-height:1.5;' +
+        'padding:0 2px 10px;}' +
+      '.fxb-cups{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;}' +
+      '.fxb-cup{flex:1 1 96px;min-width:96px;display:flex;flex-direction:column;' +
+        'gap:5px;align-items:flex-start;text-align:left;' +
+        'padding:13px 13px;border-radius:10px;cursor:pointer;font:inherit;' +
+        'color:#c9c3b2;background:#16161c;border:1px solid #3a382f;' +
+        'transition:background .12s ease,border-color .12s ease,color .12s ease;}' +
+      '.fxb-cup:hover:not([disabled]){background:#1e1c16;border-color:#c9a24b;' +
+        'color:#ecd9a0;}' +
+      '.fxb-cup:active:not([disabled]){transform:translateY(1px);}' +
+      '.fxb-cup.is-current{background:rgba(240,214,140,.14);' +
+        'border-color:rgba(240,214,140,.6);color:#f6ecc8;}' +
+      '.fxb-cup[disabled]{opacity:.45;cursor:default;}' +
+      '.fxb-cup-letter{font-size:22px;font-weight:800;line-height:1;}' +
+      '.fxb-cup-detail{font-size:12px;color:#8a8577;line-height:1.4;}' +
+      '.fxb-cup.is-current .fxb-cup-detail{color:#c3b68c;}' +
+      '.fxb-parts{font-size:12.5px;color:#9a927e;line-height:1.5;' +
+        'padding:10px 13px;margin-bottom:12px;border-radius:9px;' +
+        'background:#14141a;border:1px solid #2e2c26;}' +
+      '.fxb-parts-label{font-weight:700;color:#c9c3b2;margin-right:7px;}' +
+      '.fxb-osmp-row{display:flex;align-items:center;gap:14px;' +
+        'padding:11px 13px;margin-bottom:8px;border-radius:9px;' +
+        'background:#16161c;border:1px solid #3a382f;}' +
+      '.fxb-osmp-row:hover{border-color:rgba(240,214,140,.3);' +
+        'background:rgba(240,214,140,.06);}' +
+      '.fxb-osmp-label{flex:1;min-width:0;display:flex;flex-direction:column;' +
+        'gap:3px;font-size:14px;font-weight:700;color:#f2ecdc;}' +
+      '.fxb-osmp-hint{font-size:12px;font-weight:400;color:#8a8577;' +
+        'line-height:1.45;}' +
+      '.fxb-sw{flex:none;min-width:56px;padding:8px 12px;border-radius:20px;' +
+        'cursor:pointer;font:inherit;font-size:12px;font-weight:800;' +
+        'letter-spacing:.6px;color:#8a8577;background:#12121a;' +
+        'border:1px solid #3a382f;' +
+        'transition:background .12s ease,border-color .12s ease,color .12s ease;}' +
+      '.fxb-sw:hover{border-color:#c9a24b;color:#ecd9a0;}' +
+      '.fxb-sw:active{transform:translateY(1px);}' +
+      '.fxb-sw.is-on{color:#f6ecc8;background:rgba(240,214,140,.16);' +
+        'border-color:rgba(240,214,140,.6);' +
+        'box-shadow:0 0 8px rgba(240,214,140,.25);}';
     document.head.appendChild(st);
   }
 
@@ -2810,12 +4167,39 @@
       onClick: (e) => { e.stopPropagation();
         toGame('sgInbox', JSON.stringify({ formId: (Number(t.formId) || 0) >>> 0 })); },
     }, '＋ Add items…'));
+    /* ＋ By name (2026-08-20). The chest above needs you to be standing here
+       AND to own the thing; this grants from the item's identity, so a wig you
+       have never crafted can be enforced on her from this card. Same verb, same
+       grant, different door — WardrobeSpid owns the sgAdd contract so it is
+       written in exactly one place. */
+    if (window.HDItemPick && window.WardrobeSpid &&
+        typeof WardrobeSpid.enforce === 'function') {
+      box.append(h('button', {
+        class: 'fq-set', type: 'button',
+        disabled: (env && env.ok !== false) ? null : true,
+        title: 'Search every item in the load order and enforce one on ' + who +
+          ' — no chest, and you do not have to own it',
+        onClick: (e) => { e.stopPropagation(); sgAddByName(t, who); },
+      }, '＋ By name…'));
+    }
     box.append(h('button', {
       class: 'fq-set', type: 'button',
       title: 'Every NPC with SPID grants — items, dates, chances, removal',
       onClick: (e) => { e.stopPropagation();
         if (window.HDSpidGear) HDSpidGear.open(); },
     }, '⚙ All grants…'));
+    /* The Wardrobe's SPID page is the superset of this block — her card, her
+       faces, every other person's grants beside hers. Deep-linking to it
+       FILTERED to her name is the difference between "go find her" and "here
+       she is"; the page owns that landing (showSub), including the sub-tab
+       switch the host's own repaint would otherwise wipe. */
+    if (window.WardrobeSpid && typeof WardrobeSpid.show === 'function') {
+      box.append(h('button', {
+        class: 'fq-set', type: 'button',
+        title: 'Open the Wardrobe’s permanent-gear page on ' + who,
+        onClick: (e) => { e.stopPropagation(); WardrobeSpid.show(t.name || ''); },
+      }, '↗ Manage…'));
+    }
     box.append(h('button', {
       class: 'fq-set', type: 'button',
       title: 'Re-read her grant list now',
@@ -2835,6 +4219,38 @@
         'Applies at the next game launch — SPID reads the ini at startup.'));
     }
     return box;
+  }
+
+  /* The picker mounts into the followers pane itself (the ix-sheet idiom:
+     inset 0 INSIDE the panel, so it inherits the deck's scale and clips to its
+     corners). `multi` keeps it open, because granting a whole outfit is one
+     trip; each pick is answered by the DLL with a fresh sgState, which repaints
+     the card underneath. */
+  function sgAddByName(t, who) {
+    const host = document.getElementById('fol-pane');
+    if (!host || !window.HDItemPick || !window.WardrobeSpid) return;
+    const env = sgFor(t.formId);
+    const already = ((env && env.items) || []).map((it) => ({
+      plugin: it.plugin, localId: parseInt(String(it.localId), 16) >>> 0,
+    }));
+    HDItemPick.open({
+      host: host,
+      title: 'Enforce on ' + who,
+      hint: 'She is handed this at every launch, forever, until you pause or forget it.',
+      confirm: 'Enforce',
+      multi: true,
+      chosen: () => already,
+      onPick: (item) => {
+        WardrobeSpid.enforce({
+          formId: (Number(t.formId) || 0) >>> 0,
+          item: { plugin: item.plugin, localId: item.localId, name: item.name || '' },
+        });
+        already.push({ plugin: item.plugin, localId: (item.localId >>> 0) });
+        if (typeof toast === 'function')
+          toast('Enforcing ' + (item.name || 'that item') + ' on ' + who);
+      },
+      onClose: () => { askSpid(t.formId, true); },
+    });
   }
 
   function sgItemRow(env, it) {
@@ -3614,6 +5030,13 @@
   function forgetTuneAsks() { tuneAsked = Object.create(null); }
 
   function askTune(m) {
+    /* Never from a card nobody can see. Both callers (the Stats pill and the
+       corpse's Stats row) are built during the ⌕ search's reveal probe and the
+       omni snapshot, which construct the whole card into a DETACHED node — and
+       a card that is thrown away must not put a request on the wire. The three
+       nudges at the foot of the action row take the same guard at their call
+       sites; this one takes it here because two buttons share it. */
+    if (fqProbing) return;
     const k = tuneKeyOf(m);
     if (!k || tuneAsked[k]) return;
     tuneAsked[k] = true;
@@ -4198,15 +5621,6 @@
   let wornSpin = null;               // live lightbox state, or null when closed
   const wornSpinCache = {};          // key -> {base, frames[]} so a re-open is instant
 
-  function wspinSrcAt(base, i) {
-    if (!base || !i) return base || '';
-    const suffix = '-a' + ('00' + (i * WSPIN_STEP)).slice(-3);
-    const q = base.indexOf('?');           // Ultralight caches by URL; keep any ?v= intact
-    const path = q >= 0 ? base.slice(0, q) : base, tail = q >= 0 ? base.slice(q) : '';
-    const dot = path.lastIndexOf('.'), slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-    if (dot <= slash) return path + suffix + tail;       // no extension → append
-    return path.slice(0, dot) + suffix + path.slice(dot) + tail;
-  }
   function wspinCount() { let n = 0; if (wornSpin) for (let i = 0; i < WSPIN_N; i++) if (wornSpin.frames[i]) n++; return n; }
   function wspinDelta(a, b) { return ((a - b) % 360 + 540) % 360 - 180; }
   function wspinNearest(deg) {
@@ -4250,7 +5664,7 @@
     if (!wornSpin || wornSpin.asked || !wornSpin.key) return;
     wornSpin.asked = true;
     toGame('fdItemSpin', JSON.stringify({ formId: wornSpin.fid, plugin: wornSpin.plug }));
-    wspinProbe();
+    wspinPoll();
     wspinPaint();
   }
   function wspinLand(key, i, url) {
@@ -4258,24 +5672,33 @@
     if (!wornSpin || wornSpin.key !== key || wornSpin.frames[i]) return;
     wornSpin.frames[i] = url; wspinPaint();
   }
-  function wspinProbe() {
+  /* Frames land through the hdSpinState push, never Image() probes: the old
+     probe loop cache-busted its retries with ?sp=N, and Ultralight does not
+     load query-string URLs at all — the frames baked to disk and this view
+     polled dead URLs for 90 s, which is why the worn spin never turned for
+     anyone (found 2026-08-19: zero -aNNN files ever on the rig). C++ answers
+     fdItemSpin/hdSpin with the frames that EXIST; polling = re-sending the
+     ask (every leg is dedup-safe). */
+  document.addEventListener('hd-spin-state', function () {
+    if (!wornSpin || !window.HDLightbox || typeof HDLightbox._spinState !== 'function') return;
+    const d = HDLightbox._spinState();
+    if (!d || d.kind !== 'item' || !d.frames) return;
+    if (String(d.formId || '').toUpperCase() !== String(wornSpin.fid).toUpperCase() ||
+        String(d.plugin || '').toLowerCase() !== String(wornSpin.plug).toLowerCase()) return;
+    for (let i = 1; i < WSPIN_N; i++) {
+      const url = d.frames[String(i * WSPIN_STEP)];
+      if (url) wspinLand(wornSpin.key, i, url);
+    }
+  });
+  function wspinPoll() {
     if (!wornSpin) return;
     const sp = wornSpin;
     if (sp.poll) { clearTimeout(sp.poll); sp.poll = null; }
-    let missing = 0;
-    for (let i = 1; i < WSPIN_N; i++) {
-      if (sp.frames[i]) continue;
-      missing++;
-      const url = wspinSrcAt(sp.base, i) + (sp.tries ? (sp.base.indexOf('?') >= 0 ? '&' : '?') + 'sp=' + sp.tries : '');
-      const key = sp.key;
-      const probe = new Image();
-      probe.onload = () => wspinLand(key, i, url);
-      probe.onerror = () => {};        // not baked yet — the next pass re-asks
-      probe.src = url;
-    }
-    if (!missing || sp.tries >= WSPIN_POLL_TRIES) return;
+    if (wspinCount() >= WSPIN_N || sp.tries >= WSPIN_POLL_TRIES) return;
     sp.tries++;
-    sp.poll = setTimeout(wspinProbe, WSPIN_POLL_MS);
+    // Re-ask; the reply is the hdSpinState push the listener above consumes.
+    toGame('fdItemSpin', JSON.stringify({ formId: sp.fid, plugin: sp.plug }));
+    sp.poll = setTimeout(wspinPoll, WSPIN_POLL_MS);
   }
 
   function closeWornLightbox() {
@@ -4357,7 +5780,7 @@
     // costs zero renders; only turning it spends any. A subject re-opened after
     // its frames already baked this session shows them straight from the cache
     // above, so a second turn is instant.
-    if (key && wornSpin.frames.some((f, i) => i > 0 && f)) { wornSpin.asked = true; wspinProbe(); }
+    if (key && wornSpin.frames.some((f, i) => i > 0 && f)) { wornSpin.asked = true; wspinPoll(); }
     wspinPaint();
   }
 
@@ -4378,17 +5801,49 @@
      rendered-mesh SQUARE — click for a lightbox, hover to remove it — with
      Hide gear on the header line. The mesh comes from ItemIcons (169708); a
      piece that has not been rendered yet falls back to its slot glyph. */
+  /* Tile scale for the EQUIPPED grid (Rober, 2026-08-18: "lets add a scaling
+     slider for this element … to make the equipment larger"). A −/＋ stepper
+     per the no-range-input law; persisted in the shelf blob (the raw slice
+     C++ round-trips whole — a new settings key would be dropped). */
+  function eqScale() {
+    const s = window.__hdShelfSlice ? window.__hdShelfSlice('fqEquip') : {};
+    const v = Number(s.scale);
+    return (isFinite(v) && v >= 0.75 && v <= 2) ? v : 1;
+  }
+  function setEqScale(v) {
+    if (!window.__hdShelfSlice) return;
+    window.__hdShelfSlice('fqEquip').scale = v;
+    if (window.__hdShelfSave) window.__hdShelfSave();
+  }
+
   function equippedContainer(m, who) {
     const data = equippedFor(m);
     /* NOT .fq-sets — that class is the Outfit set-picker's identifier; this is a
        cgroup like Order/Move/Home. */
     const box = h('div', { class: 'fq-cgroup fq-equip' });
     const count = data && data.ok ? String((data.items || []).length) : '…';
-    /* Just the label + count — Hide/Delete live on each tile's hover flyout now
-       (Rober, 2026-08-05: "no need for a button"). */
-    box.append(h('span', { class: 'fq-sets-lbl fq-equip-head' },
+    /* Label + count, then the size stepper on the same line. */
+    const scaleNow = eqScale();
+    const head = h('span', { class: 'fq-sets-lbl fq-equip-head' },
       h('span', { class: 'fq-cg-ic' }, groupIcon('equip')), 'Equipped',
-      h('span', { class: 'fq-equip-ct' }, count)));
+      h('span', { class: 'fq-equip-ct' }, count));
+    const stepBtn = function (glyph, delta, title) {
+      return h('button', {
+        class: 'fq-eqstep', type: 'button', title: title,
+        onClick: (e) => {
+          e.stopPropagation();
+          const v = Math.round(Math.min(2, Math.max(0.75, eqScale() + delta)) * 100) / 100;
+          setEqScale(v);
+          renderQuickCard(); refreshOpenMenu();
+        },
+      }, glyph);
+    };
+    head.append(h('span', { class: 'fq-eqsize' },
+      stepBtn('−', -0.25, 'Smaller equipment tiles'),
+      h('b', { class: 'fq-eqsize-v', title: 'Equipment tile size — saved' },
+        Math.round(scaleNow * 100) + '%'),
+      stepBtn('＋', 0.25, 'Larger equipment tiles')));
+    box.append(head);
     /* Ensure we have the hidden-slot state to light the tile Hide toggles. */
     if (data && data.ok) {
       const fid = gearSubjectId();
@@ -4417,6 +5872,7 @@
        This is the only worn-mesh consumer; equippedBlock's list uses glyphs. */
     requestWornRenders(items);
     const grid = h('div', { class: 'fq-equip-grid' });
+    grid.style.setProperty('--fq-eqs', String(eqScale()));
     items.forEach(function (it) {
       const url = wornIconFor(it);
       const wk = wornKey(it);
@@ -4452,6 +5908,13 @@
       }
       if (it.count > 1) tile.append(h('span', { class: 'fq-equip-ct2' }, '×' + it.count));
       if (it.outfit) tile.append(h('span', { class: 'fq-equip-tag' }, 'outfit'));
+      /* The stat pill (Rober, 2026-08-18): armour in steel, damage in blood —
+         the gear-tiles-v2 idiom, inside the tile's corner (the tile clips). */
+      if (typeof it.armor === 'number' && it.armor > 0) {
+        tile.append(h('b', { class: 'fq-eqpill arm', title: 'Armour rating ' + it.armor }, String(it.armor)));
+      } else if (typeof it.dmg === 'number' && it.dmg > 0) {
+        tile.append(h('b', { class: 'fq-eqpill dmg', title: 'Damage ' + it.dmg }, String(it.dmg)));
+      }
       /* A hover FLYOUT on the tile itself (Rober, 2026-08-05): Hide (cull the
          3D, keeps it equipped) + Delete. No separate button. */
       const fly = h('div', { class: 'fq-equip-fly' });
@@ -4890,7 +6353,20 @@
   function medalEl(m, catIndex) {
     const hue = String(hueOf(catIndex));
     const p = portraitFor(m);
-    if (!p) return initialsMedal(m, hue);
+    if (!p) {
+      /* No portrait YET is not the same as no portrait: while this head's
+         render is queued in-game (facePending), the initials medallion wears
+         a spinning ring so the blank state reads as "loading her face", not
+         "she has no face" (Rober, 2026-08-19). The ring is a border-arc
+         animation on purpose — conic-gradient computes to none in Ultralight
+         (the LAWS), a border spinner does not. */
+      const el = initialsMedal(m, hue);
+      if (facePendingFor(m)) {
+        el.classList.add('wait');
+        el.appendChild(h('span', { class: 'medal-spin' }));
+      }
+      return el;
+    }
     /* ?v=<mtime> is the cache-bust that makes "replace a portrait mid-session"
        show (Ultralight caches view-relative images by URL). But Ultralight's
        view loader can also treat the query as part of the FILENAME — proven
@@ -4927,6 +6403,14 @@
     wrap.dataset.ext = p.ext;
     wrap.dataset.mtime = String(p.mtime || 0);
     wrap.dataset.name = m.name || '';
+    /* The abs flag MUST ride the dataset: openLightbox(medal.dataset) is how
+       both the roster rows and the F7 card open this. Without it a facegen
+       head render (abs path under icons/npcs/) was rebuilt as
+       "portraits/icons/npcs/…" — a path that exists nowhere — so the lightbox
+       opened, errored, retried the same wrong path, and self-closed (Rober's
+       2026-08-19 "opens for a second then closes"). Set only when true: a
+       dataset value is a STRING, and "false" would read truthy. */
+    if (p.abs) wrap.dataset.abs = '1';
     wrap.title = m.name ? (m.name + ' — click to enlarge') : 'Click to enlarge';
     wrap.style.cursor = 'zoom-in';
     let retried = false;
@@ -5044,7 +6528,18 @@
     ui.focusRosterOpen = false;
     ui.fqFold = false;   // the dedicated view wants the WHOLE dossier, not name-only
     applyFocusChrome();
-    renderQuickCard();
+    /* The card IS the focus view, so it has to be MOUNTED here, not merely
+       repainted: renderQuickCard() self-guards on a null quickHost, and both
+       exitFocus() and render() leave #fd-quick hidden with quickHost null. So
+       entering focus from the roster (app.js's fresh-open maybeAutoFocus, and
+       the fdTarget "last-closed tab was Followers" branch) painted the chrome —
+       tabs, rail and roster all hidden — over nothing at all. syncQuickHere()
+       is the single path that un-hides the host and mounts into it. */
+    syncQuickHere();
+    /* Off our tab the card lives on the deck's own #fq-card (app.js owns that
+       mount) and syncQuickHere leaves it alone — it still needs the repaint,
+       since focus swaps its ⤢ fullscreen button for the way back out. */
+    if (quickHost !== $('fd-quick')) renderQuickCard();
     return true;
   }
 
@@ -5130,7 +6625,10 @@
     box.append(row);
   }
 
-  function render() { renderHudCard(); renderRail(); renderList(); renderAdd(); syncQuickHere(); syncChrome(); applyFocusChrome(); renderEveryoneBar(); }
+  /* A full render is the tab's "something structural changed" path — the row
+     cache is dropped there, so only the keystroke path (which calls renderList
+     directly) reuses nodes. */
+  function render() { dropRowCache(); renderHudCard(); renderRail(); renderList(); renderAdd(); syncQuickHere(); syncChrome(); applyFocusChrome(); renderEveryoneBar(); renderParty(); }
 
   /* The quick-action card, on OUR tab.
    *
@@ -5697,6 +7195,79 @@
     return out;
   }
 
+  /* ---- keyed row reuse -------------------------------------------------
+     A roster row is a medallion, six possible chips, badges and four listeners;
+     the list used to be emptied and rebuilt on every keystroke (200 followers =
+     14,970 element creations and 4,500 listeners for ten letters typed, and a
+     fresh <img> per medallion each time — an <img> recreated is an <img>
+     re-decoded, which is the whole cost in Ultralight). Rows are cached by
+     category:index and kept while their SIGNATURE holds; a keystroke only
+     rewrites the search highlight and the .sel class.
+
+     Everything a row draws that does NOT live on the member object — portraits,
+     crops, NFF/MHiYH state — arrives through a push, and each of those pushes
+     drops the cache at the source. */
+  const fdRowCache = new Map();
+  const fdSecCache = new Map();
+  function dropRowCache() {
+    fdRowCache.clear(); fdSecCache.clear();
+    /* The party sheet's cards live under exactly the same law and are fed by
+       exactly the same pushes (portraits, crops, face renders): whatever
+       invalidates a roster row invalidates a card. Routed through the hoisted
+       ptDropCache() rather than touching its Map here, so this line is valid
+       however the two blocks are later reordered. */
+    ptDropCache();
+  }
+
+  /* The spans whose whole content is nameNodes() output. textContent is
+     lossless across a highlight (nameNodes splits the string, it never edits
+     it), so the source text can be read straight back off the node — no sink
+     to thread through nowChip/homeChip/whereChip. */
+  const FD_HL_SEL = '.fd-name, .fd-note, .fd-chip-field, .fd-home-name, .fd-now-at, .fd-where-name';
+
+  function fdCollectHl(rowEl) {
+    const out = [];
+    const els = rowEl.querySelectorAll(FD_HL_SEL);
+    for (let i = 0; i < els.length; i++) {
+      if (els[i].classList.contains('empty')) continue;   // the "No note yet" placeholder
+      out.push([els[i], els[i].textContent]);
+    }
+    rowEl.__fdHl = out;
+  }
+
+  function fdReHighlight(rowEl, q) {
+    if (rowEl.__fdQ === q) return;
+    const hl = rowEl.__fdHl;
+    if (hl) {
+      for (let i = 0; i < hl.length; i++) {
+        const el = hl[i][0];
+        el.textContent = '';
+        nameNodes(hl[i][1], q).forEach((n) => el.append(n));
+        /* app.css styles <mark> per container and the gold field chip is a NEW
+           container, so its marks are neutralised the same way memberRow does
+           when it builds one. */
+        if (el.classList.contains('fd-chip-field')) {
+          const marks = el.querySelectorAll('mark');
+          for (let mi = 0; mi < marks.length; mi++) {
+            marks[mi].style.background = 'transparent';
+            marks[mi].style.color = '#ecd9a0';
+            marks[mi].style.fontWeight = '700';
+          }
+        }
+      }
+    }
+    rowEl.__fdQ = q;
+  }
+
+  /* Every field the row draws off the member, in one shot — cheaper and far
+     safer than enumerating them, and it cannot miss one a later feature adds. */
+  function fdRowSig(row) {
+    let body;
+    try { body = JSON.stringify(row.m); } catch (e) { body = String(row.m && row.m.name); }
+    return row.cat + ':' + row.idx + '\u0000' + row.catName + '\u0000' +
+      (ui.cat === ALL ? 1 : 0) + '\u0000' + body;
+  }
+
   function memberRow(row, i) {
     const q = ui.filter.trim();
     const m = row.m;
@@ -5825,6 +7396,35 @@
     );
   }
 
+  /* Build-or-reuse for one roster row. */
+  function memberRowCached(row, i, q) {
+    const key = row.cat + ':' + row.idx;
+    const sig = fdRowSig(row);
+    let node = fdRowCache.get(key);
+    if (!node || node.__fdSig !== sig) {
+      node = memberRow(row, i);
+      node.__fdSig = sig;
+      node.__fdQ = q;
+      fdCollectHl(node);
+      fdRowCache.set(key, node);
+      return node;
+    }
+    fdReHighlight(node, q);
+    node.classList.toggle('sel', i === ui.sel);
+    return node;
+  }
+
+  /* Keyed reconcile against a host's live children. */
+  function fdReconcile(host, nodes) {
+    let cur = host.firstChild;
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      if (cur === node) { cur = cur.nextSibling; continue; }
+      host.insertBefore(node, cur);        // insertBefore MOVES an attached node
+    }
+    while (cur) { const nx = cur.nextSibling; host.removeChild(cur); cur = nx; }
+  }
+
   /* A sticky "Housecarls 24" bar that rides above its run of rows.
      Only earns its place when the list is actually mixed: filing by category is
      what the rail is for, so on a single-category view a header would just be
@@ -5843,9 +7443,9 @@
     if (ui.sel >= vis.length) ui.sel = vis.length - 1;
     syncCount();
 
-    list.textContent = '';
     const empty = $('fd-empty');
     if (!vis.length) {
+      list.textContent = '';
       list.classList.add('hidden');
       showEmpty(empty);
     } else {
@@ -5865,16 +7465,32 @@
       // — scroll into Nobles and you are looking at "Housecarls / Mercenaries /
       // Nobles" stacked. Boxing each run makes a header scroll away when its
       // own rows run out, which is the behaviour people expect.
-      let lastCat = null, sec = null;
-      vis.forEach((r, i) => {
-        if (!grouped) { list.append(memberRow(r, i)); return; }
-        if (r.catName !== lastCat) {
-          sec = h('div', { class: 'fd-sec' }, groupHeader(r.catName, runs.get(r.catName)));
-          list.append(sec);
-          lastCat = r.catName;
-        }
-        sec.append(memberRow(r, i));
-      });
+      /* Reconciled, not rebuilt: rows come out of the cache and are MOVED into
+         place, and a section keeps its own identity so its sticky header does
+         not flicker as the filter narrows. */
+      const q = ui.filter.trim();
+      if (!grouped) {
+        fdReconcile(list, vis.map((r, i) => memberRowCached(r, i, q)));
+      } else {
+        const order = [];
+        const secRows = new Map();
+        vis.forEach((r, i) => {
+          if (!secRows.has(r.catName)) { order.push(r.catName); secRows.set(r.catName, []); }
+          secRows.get(r.catName).push(memberRowCached(r, i, q));
+        });
+        const secs = order.map((cat) => {
+          let sec = fdSecCache.get(cat);
+          if (!sec) { sec = h('div', { class: 'fd-sec' }, groupHeader(cat, runs.get(cat))); fdSecCache.set(cat, sec); }
+          else {
+            const cnt = sec.querySelector('.fd-group-count');
+            if (cnt) cnt.textContent = String(runs.get(cat));
+          }
+          const head = sec.firstChild;
+          fdReconcile(sec, [head].concat(secRows.get(cat)));
+          return sec;
+        });
+        fdReconcile(list, secs);
+      }
 
       if (ui.sel >= 0) {
         // Ask for the selected ROW, not children[sel] — with group headers in
@@ -5960,6 +7576,58 @@
     const ma = (about && about.maras && typeof about.maras === 'object') ? about.maras : null;
     if (ma && typeof ma.spouse === 'boolean') return ma.spouse;
     return !!(known && known.m && known.m.spouse);
+  }
+
+  /* ------------------------------------------------------------- TRADE ------
+     Rober's ask (2026-08-17): "a open merchant / trade button when hitting f7
+     on an npc", modelled on Skyrim QuickTrade — barter for a non-hostile NPC on
+     at least neutral terms, her PACK for a companion or a spouse.
+
+     This PREDICTS which of the two the press will open, and nothing more. C++
+     (src/trade_actions.cpp) is the only thing that decides, on the live actor,
+     the instant you press — the view cannot see hostility or combat at all. The
+     prediction exists so the button's hover title names the real menu instead
+     of a generic word, because "barter with a stranger" and "here is your
+     wife's bag" are very different things to press by accident.
+
+     ⚠ Keep the three facts below in step with IsCompanionOrSpouse() in
+     trade_actions.cpp. When they disagree the button lies, which is worse than
+     having no title at all. Unknown is BARTER on purpose: that is what the rule
+     gives everyone the deck knows nothing special about, so a dossier that has
+     not landed yet under-promises rather than over-promises. */
+  const TRADE_LOVER_RANK = 4;   // +4 Lover — what a vanilla wedding writes (src/relationship.h)
+
+  function tradePlan(about, known, following) {
+    const spouse = marasSpouse(about, known);
+    const rankKnown = !!(about && about.relHas && typeof about.rank === 'number');
+    const rank = rankKnown ? clampRank(about.rank) : 0;
+    const lover = rankKnown && rank >= TRADE_LOVER_RANK;
+    const pack = !!following || spouse || lover;
+    return {
+      mode: pack ? 'inventory' : 'barter',
+      why: following ? 'she follows you'
+         : (spouse ? 'she is your spouse'
+         : (lover ? 'the game has her as your Lover' : '')),
+      /* Below Acquaintance and NOT a companion: C++ will refuse the barter.
+         Say so up front — a button that opens nothing reads as broken. A rank
+         the engine has never recorded is not a negative one, which is why this
+         needs `relHas` and not just a number. */
+      lowRank: (!pack && rankKnown && rank < 0) ? rankLabel(rank) : '',
+    };
+  }
+
+  function tradeTitle(who, dead, plan) {
+    if (dead) return 'Loot them in the world instead';
+    if (plan.mode === 'inventory')
+      return 'Open ' + who + '’s pack — ' + (plan.why || 'she is one of yours')
+           + ', so Trade hands you her inventory rather than a barter window '
+           + '(the deck closes)';
+    let t = 'Trade with ' + who + ' — the vanilla barter menu, buying and selling '
+          + 'against what she carries (the deck closes)';
+    if (plan.lowRank)
+      t += '\n⚠ The game has her as your ' + plan.lowRank + ', which is below the '
+         + 'neutral footing trading needs — she will refuse, and say so.';
+    return t;
   }
 
   /* ------------------------------------------------- the rank, in flight ---
@@ -6254,6 +7922,10 @@
       type: 'button',
       disabled: (opts && opts.disabled) ? true : null,
       'aria-pressed': (opts && typeof opts.pressed === 'boolean') ? String(opts.pressed) : null,
+      /* The full name behind an abbreviated face ("Distr" → "Distributions").
+         Read by screen readers AND by the card's ⌕ action search, which
+         completes a clipped face from it — see fqFaceOf. */
+      'aria-label': (opts && opts.aria) ? String(opts.aria) : null,
       title: title,
       onClick: (e) => { e.stopPropagation(); on(e); },
     }, h('span', { class: 'fq-btn-ic', 'aria-hidden': 'true' }, icon),
@@ -6696,6 +8368,710 @@
     return box;
   }
 
+  /* ======================================================================== *
+   *  ⌕ FIND AN ACTION — the quick card's own typeable search  (2026-08-19)
+   *
+   *  Rober: "NEED A TYPEABLE search bar here that populates with EVERYTHING in
+   *  the buttons below, including their popouts, that allows you to quickly do
+   *  a button call from the search, typing pops out a nicely polished ui popout
+   *  modal."
+   *
+   *  ---- WHY IT WALKS THE DOM RATHER THAN A HAND-WRITTEN LIST --------------
+   *  This card is ~1,400 lines of buttons and it grows every week (Trade,
+   *  Distr, Tune and Add-as-mount all landed inside a fortnight). A list of
+   *  actions maintained beside it would be wrong the day after it was written,
+   *  and nothing would say so. So the index is READ OFF THE RENDERED CARD:
+   *  every <button> the card drew is an action, its label is its label and its
+   *  `title` — the same string app.js's #hd-tip layer already draws on hover —
+   *  is its description AND its search keywords. A button added tomorrow is
+   *  searchable tomorrow, with no edit here. Same law as the HDOmni providers,
+   *  one surface down.
+   *
+   *  ---- THE POPOUTS ------------------------------------------------------
+   *  Two different kinds hang off this card, and they are indexed differently
+   *  on purpose:
+   *
+   *   · A MODULE MODAL (⛨ Outfit's dock, 📜 Quests, ⚒ Tune, 💬 CHIM, ⛔ Room
+   *     ban, ⛬ Formation, ⮌ Send back…, ⚑ Set a spot…, ＋ File…). Its opener
+   *     IS a button on the card, so the live walk already has it; running it
+   *     opens that module exactly as clicking would — anchored on the real
+   *     button, which is what those APIs measure themselves against. We do not
+   *     reach inside them: each owns its own searchable UI already.
+   *
+   *   · A REVEAL the card draws ITSELF when a ui flag is set (the framing pad,
+   *     the note fields, the facelight/SPID/debug blocks, and — only on a view
+   *     where hd-outfit.js failed to load — the inline clothes rows). Those
+   *     buttons are real card buttons that simply are not on screen yet, so
+   *     they ARE indexed: the card is rebuilt once into a DETACHED node with
+   *     the flag flipped, walked, and thrown away. Firing one sets the flag
+   *     for real, re-renders, and clicks the button that then exists. No verb
+   *     is re-implemented anywhere in here — every hit ends in a .click() on
+   *     the card's own control.
+   *
+   *  ⚠ The inline clothes reveal is probed ONLY when window.HDOutfit is
+   *  missing. With the dock present those rows are the retired path (see the
+   *  ⛨ Outfit button); surfacing them through search would put two
+   *  implementations of "wear this set" on screen at once.
+   *
+   *  ---- WHY THE POPOUT IS AN #overlay CHILD ------------------------------
+   *  #fd-quick is `overflow-y: auto`, so a dropdown mounted inside the card is
+   *  clipped by it and scrolls away with the content. It therefore mounts
+   *  beside #fd-ctx-menu, wears `transform: scale(--ui-scale)` itself and
+   *  multiplies its clamps by deckScale() — the same three rules that keep
+   *  every other menu on this pane on screen at ⛶ Fill.
+   *
+   *  ---- WHY TYPING NEVER RE-RENDERS THE CARD -----------------------------
+   *  renderQuickCard() replaces the whole card, taking the focused input with
+   *  it (the lesson the rank slider and the preset search already taught this
+   *  file). So a keystroke repaints ONLY the popout; the card is re-read for
+   *  the index when something else re-renders it, and fqFindRestore() puts the
+   *  caret back.
+   *
+   *  Marker: fq-find-actions (view identity).
+   * ======================================================================== */
+
+  const FQF = {
+    open: false, q: '', sel: 0, rows: [],
+    popEl: null, listEl: null, headEl: null,
+    probe: [], probeKey: '', probeAt: 0,
+  };
+  /* True while a DETACHED card is being built for the reveal probe. The three
+     ask* nudges at the foot of the action row are throttled, not free, and a
+     probe must not put bridge traffic on the wire for a card nobody sees. */
+  let fqProbing = false;
+
+  function fqTidy(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
+  function fqHasWord(s) { return /[0-9A-Za-z]/.test(String(s || '')); }
+
+  /* A title is a sentence (often several). The row's SUBTITLE is the whole
+     thing on one line, clamped by CSS; a label derived from a title takes only
+     its first clause, because "Replace Lydia's portrait" is a name and the
+     rest is the explanation under it. */
+  function fqFirstClause(title) {
+    let t = fqTidy(String(title || '').split('\n')[0]);
+    const dash = t.indexOf(' — ');
+    if (dash > 8) t = t.slice(0, dash);
+    const dot = t.indexOf('. ');
+    if (dot > 8) t = t.slice(0, dot);
+    if (t.length > 64) t = t.slice(0, 63).replace(/[\s,;:]+\S*$/, '') + '…';
+    return t;
+  }
+
+  /* Section names for buttons that do not sit under a labelled group. Order
+     matters: the first class that matches wins, so the specific ones lead. */
+  const FQ_SECT_CLASS = [
+    ['fq-headacts', 'This person'],
+    ['fq-wedge', 'Repair'],
+    ['fq-crew', 'Party'],
+    ['fq-everyone-top', 'Everyone'],
+    ['fq-party', 'Everyone'],
+    ['fq-eqs', 'Equipped'],
+    ['fq-equip', 'Equipped'],
+    ['fq-copy', 'Copy outfit'],
+    ['fq-framing', 'Frame'],
+    ['fq-edit', 'Notes'],
+    ['fq-rank', 'Relationship'],
+    ['fq-acts', 'Actions'],
+    ['fq-sets', 'Clothes'],
+    ['fq-orders', 'Orders'],
+  ];
+
+  /* A group label reads as a NAME ("Order", "Fill", "Everyone") — but the
+     elements that carry it also hold carets, counts and whole sentences
+     ("Equipped" wraps a − 100% ＋ stepper; the debug eyebrow is a sentence).
+     Take the element's OWN text nodes, cut at the first separator, drop a
+     leading glyph, and refuse anything still long enough to be prose — a bad
+     section name is worse than falling through to the class map. */
+  function fqSectText(el) {
+    let t = '';
+    const kids = el.childNodes || [];
+    for (let i = 0; i < kids.length; i++) if (kids[i].nodeType === 3) t += kids[i].nodeValue;
+    t = fqTidy(t) || fqTidy(el.textContent);
+    const dot = t.indexOf(' · ');
+    if (dot > 0) t = t.slice(0, dot);
+    const dash = t.indexOf(' — ');
+    if (dash > 0) t = t.slice(0, dash);
+    const m = /^[^\s0-9A-Za-z]{1,2}\s*(.+)$/.exec(t);
+    if (m) t = m[1];
+    t = fqTidy(t).replace(/[…:]+$/, '');
+    return (t.length && t.length <= 22) ? t : '';
+  }
+
+  /* The group a button belongs to, read off the card the same way a human
+     reads it: the labelled chip at the head of its row wins, and only when
+     there is none do we fall back to the row's class. */
+  function fqSectOf(btn, card) {
+    let n = btn.parentNode, guard = 0;
+    while (n && n !== card && n.nodeType === 1 && guard++ < 8) {
+      const kids = n.children || [];
+      for (let i = 0; i < kids.length; i++) {
+        const c = kids[i];
+        if (!c.classList) continue;
+        if (c.classList.contains('fq-sets-lbl') || c.classList.contains('fq-section-lbl')
+            || c.classList.contains('fq-eyebrow')) {
+          const lbl = fqSectText(c);
+          if (lbl) return lbl;
+        }
+      }
+      for (let j = 0; j < FQ_SECT_CLASS.length; j++) {
+        if (n.classList && n.classList.contains(FQ_SECT_CLASS[j][0])) return FQ_SECT_CLASS[j][1];
+      }
+      n = n.parentNode;
+    }
+    return 'Card';
+  }
+
+  /* icon + label, from whichever shape of button this is: the icon-mode action
+     buttons (.fq-btn-ic + .fq-btn-lbl), the chip buttons whose whole label is
+     "⚔ Recruit", the party faces, and the head's glyph-only icon buttons —
+     which have no words at all and borrow the first clause of their tooltip. */
+  function fqFaceOf(btn) {
+    const icEl = btn.querySelector ? btn.querySelector('.fq-btn-ic, .fq-cg-ic') : null;
+    const lblEl = btn.querySelector
+      ? btn.querySelector('.fq-btn-lbl, .fd-ctx-lbl, .fq-crew-name') : null;
+    let icon = icEl ? fqTidy(icEl.textContent) : '';
+    let label = fqTidy(lblEl ? lblEl.textContent : btn.textContent);
+    if (!lblEl && icon && label.indexOf(icon) === 0) label = fqTidy(label.slice(icon.length));
+    if (!icon) {
+      /* ⚠ `\s*`, not `\s+` (2026-08-19 design pass). A button that renders its
+         chevron as its own <span> and the word as a bare text node has NO
+         space between them, so the old rule could not split it and the results
+         list showed "▾Everyone" — a caret welded to the word, in a list whose
+         every other row is a clean name. The tail is pinned to an alphanumeric
+         so a label that legitimately opens on punctuation is never carved up. */
+      const m = /^([^\s0-9A-Za-z]{1,2})\s*([0-9A-Za-z].*)$/.exec(label);
+      if (m) { icon = m[1]; label = fqTidy(m[2]); }
+    }
+    const title = fqTidy(btn.getAttribute && btn.getAttribute('title'));
+    /* A glyph-only control (the head's ◉ ⚭ ✎ ⤢, a party face's initial, the
+       "Aa" labels toggle) has no words to search — so it borrows the first
+       clause of the tooltip app.js already draws on hover, and the glyph
+       becomes its icon. That is what makes those buttons findable at all. */
+    if (!fqHasWord(label) || label.length <= 2) {
+      const aria = fqTidy(btn.getAttribute && btn.getAttribute('aria-label'));
+      /* aria-label BEFORE the tooltip: a tooltip is written for the state the
+         button is in ("Lydia is dead"), so a disabled glyph button would be
+         indexed under its refusal instead of its name. The head's icon buttons
+         carry an aria-label for exactly this reason. */
+      if (aria || title) {
+        if (!icon || icon === '·') icon = label || '·';
+        label = aria || fqFirstClause(title);
+      }
+    }
+    /* …and a face that is an ABBREVIATION of its own accessible name takes the
+       full word (2026-08-19 design pass). The card's buttons are small, so some
+       wear a clipped face — "Distr" for Distributions — which is fine ON the
+       card, beside its icon, and useless in a search whose entire job is to
+       find things BY NAME (measured: "Distr" sat in a 640px-wide results row
+       with three lines of room). Gated on the aria-label STARTING with the
+       face, so this can only ever complete a word, never rename a button to
+       something unrelated — and the aria-label is the honest place for it,
+       because a screen reader was reading "Distr" too. */
+    const ariaFull = fqTidy(btn.getAttribute && btn.getAttribute('aria-label'));
+    if (ariaFull && ariaFull.length > label.length &&
+        ariaFull.toLowerCase().indexOf(label.toLowerCase()) === 0) label = ariaFull;
+    return { icon: icon || '·', label: label, title: title };
+  }
+
+  function fqFindCard() {
+    return (quickHost && quickHost.querySelector) ? quickHost.querySelector('.fq') : null;
+  }
+
+  /* Walk one card (live or probe) and hand back its actions. */
+  function fqScan(card, reveal) {
+    const rows = [];
+    if (!card || !card.querySelectorAll) return rows;
+    const btns = card.querySelectorAll('button');
+    for (let i = 0; i < btns.length; i++) {
+      const b = btns[i];
+      /* our own chrome is not an action */
+      if (b.closest && b.closest('.fq-find')) continue;
+      const face = fqFaceOf(b);
+      if (!face.label && !face.title) continue;
+      if (!fqHasWord(face.label)) continue;      // a glyph with no words and no tooltip
+      const sect = fqSectOf(b, card);
+      const off = !!(b.disabled || b.getAttribute('aria-disabled') === 'true');
+      rows.push({
+        key: sect + '' + face.label + '' + face.icon,
+        icon: face.icon,
+        label: face.label,
+        sub: face.title,
+        sect: sect,
+        disabled: off,
+        /* A disabled control on this card always says WHY in its tooltip —
+           that is the card's own law ("the inapplicable one is disabled with a
+           reason"), so the reason is already written and we just show it. */
+        why: off ? (face.title || 'Not available for this person right now') : '',
+        opens: /…$/.test(face.label) || b.getAttribute('aria-haspopup') === 'true',
+        reveal: reveal || '',
+        el: b,
+      });
+    }
+    return rows;
+  }
+
+  /* Which self-drawn reveals are worth probing on THIS build. */
+  function fqRevealFlags() {
+    const inlineClothes = !window.HDOutfit;   // the dock replaced these rows
+    const out = ['fqEdit', 'fqLight', 'fqSpid', 'fqDebug', 'fqFraming'];
+    if (inlineClothes) { out.push('fqSets'); out.push('fqCopy'); }
+    return out;
+  }
+
+  /* Build the card once per closed reveal, walk it, throw it away. Bounded to
+     one pass per 1.5 s per subject: the card re-renders on every bridge push
+     and re-probing on each of them would build the whole card five times for
+     nothing. */
+  function fqProbeRows(subjKey) {
+    const now = Date.now();
+    if (FQF.probeKey === subjKey && (now - FQF.probeAt) < 1500) return FQF.probe;
+    const rows = [];
+    fqRevealFlags().forEach(function (flag) {
+      if (ui[flag]) return;                     // already on screen: the live walk has it
+      let node = null;
+      ui[flag] = true;
+      fqProbing = true;
+      try { node = buildQuickCard(); } catch (e) { node = null; }
+      fqProbing = false;
+      ui[flag] = false;
+      if (node) fqScan(node, flag).forEach(function (r) { rows.push(r); });
+    });
+    FQF.probe = rows;
+    FQF.probeKey = subjKey;
+    FQF.probeAt = now;
+    return rows;
+  }
+
+  /* Who the card is about, as a cache key for the reveal probe. NOT the
+     module-level `fqSubjKey` above — that one is the equipped-ask's own state
+     and means something else. */
+  function fqFindSubjKey() {
+    const s = quickSubject();
+    if (s) return 'p:' + (s.original || s.name || '');
+    return 'c:' + ((state.target && (state.target.name + ':' + state.target.formId)) || '');
+  }
+
+  /* The whole index: what is on screen, then what a reveal would draw. */
+  function fqFindIndex() {
+    const card = fqFindCard();
+    const live = fqScan(card, '');
+    const seen = Object.create(null);
+    const out = [];
+    live.forEach(function (r) { if (!seen[r.key]) { seen[r.key] = 1; out.push(r); } });
+    fqProbeRows(fqFindSubjKey()).forEach(function (r) {
+      if (seen[r.key]) return;
+      seen[r.key] = 1;
+      out.push(r);
+    });
+    return out;
+  }
+
+  /* ---- ranking -----------------------------------------------------------
+     Label beats section beats tooltip, a word-start beats a mid-word hit, and
+     a disabled action sinks below every live one — you are searching for
+     something to DO, and an unavailable row that outranked a working one would
+     be the search actively getting in the way. Every term must match
+     somewhere, so "wait here" and "here wait" both find the same button. */
+  function fqScoreRow(r, terms) {
+    if (!terms.length) return 1;
+    const lbl = r.label.toLowerCase();
+    const sect = r.sect.toLowerCase();
+    const sub = String(r.sub || '').toLowerCase();
+    let score = 0;
+    for (let i = 0; i < terms.length; i++) {
+      const t = terms[i];
+      let best = 0;
+      const li = lbl.indexOf(t);
+      if (li === 0) best = 120;
+      else if (li > 0) best = /[\s([/·—-]/.test(lbl.charAt(li - 1)) ? 90 : 62;
+      if (!best && sect.indexOf(t) >= 0) best = 46;
+      if (!best && sub.indexOf(t) >= 0) best = 24;
+      if (!best) return 0;                     // every term has to land somewhere
+      score += best;
+    }
+    if (r.reveal) score -= 6;                   // an on-screen twin wins the tie
+    return score;
+  }
+
+  /* Highlighting for a MULTI-WORD query. nameNodes() takes one needle, so
+     "crop up" would highlight nothing at all — pick the term that lands
+     EARLIEST in this particular string, which is hd-omni's own rule. */
+  function fqHl(text, q) {
+    const terms = fqTidy(q).toLowerCase().split(' ').filter(function (t) { return !!t; });
+    if (terms.length < 2) return nameNodes(text, fqTidy(q));
+    const low = String(text == null ? '' : text).toLowerCase();
+    let best = '', at = -1;
+    terms.forEach(function (t) {
+      const i = low.indexOf(t);
+      if (i >= 0 && (at < 0 || i < at)) { at = i; best = t; }
+    });
+    return nameNodes(text, best);
+  }
+
+  function fqRank(rows, q) {
+    const terms = fqTidy(q).toLowerCase().split(' ').filter(function (t) { return !!t; });
+    const hits = [];
+    rows.forEach(function (r, i) {
+      const s = fqScoreRow(r, terms);
+      if (s > 0) hits.push({ r: r, s: s, i: i, off: r.disabled ? 1 : 0 });
+    });
+    /* Unavailable LAST, never GONE. Sorting on the flag rather than docking the
+       score is the whole point: a docked score can go negative and drop the row
+       out of the results entirely — which is how "inventory" on a corpse
+       briefly returned nothing at all instead of the greyed button that says
+       "Loot them in the world instead". */
+    hits.sort(function (a, b) { return (a.off - b.off) || (b.s - a.s) || (a.i - b.i); });
+    return hits.map(function (x) { return x.r; });
+  }
+
+  /* ---- the bar, in the card head ---------------------------------------- */
+
+  function fqFindBar(who) {
+    const first = fqTidy(String(who || '').split(' ')[0]) || 'her';
+    const wrap = h('div', {
+      class: 'fq-find' + (FQF.q ? ' has-q' : '') + (FQF.open ? ' is-open' : ''),
+      title: 'Search everything this card can do — including the controls '
+           + 'behind its popouts. Type, then ↑↓ and Enter.',
+      onClick: (e) => e.stopPropagation(),
+    });
+    const inp = h('input', {
+      class: 'fq-find-in', type: 'text', autocomplete: 'off', spellcheck: 'false',
+      placeholder: 'Search ' + first + '’s actions…',
+      value: FQF.q,
+      'aria-label': 'Search this card’s actions',
+      onInput: (e) => {
+        FQF.q = e.target.value;
+        FQF.sel = 0;
+        if (FQF.open) fqFindPaint(); else fqFindOpen('');
+      },
+      /* The pane's onKey (capture phase, from app.js) is what actually drives
+         the popout in game — this is the same handling for the harness and for
+         any build where the key router never reaches us. Both are idempotent. */
+      onKeydown: (e) => { if (fqFindKey(e)) { e.stopPropagation(); } },
+      onFocus: () => { if (!FQF.open) fqFindOpen(''); },
+    });
+    wrap.append(h('span', { class: 'fq-find-ic', 'aria-hidden': 'true' }, '⌕'), inp);
+    wrap.append(h('button', {
+      class: 'fq-find-x', type: 'button', title: 'Clear the search (Esc)',
+      onClick: (e) => {
+        e.stopPropagation();
+        FQF.q = ''; FQF.sel = 0;
+        const i = fqFindInput();
+        if (i) { i.value = ''; i.focus(); }
+        wrap.classList.remove('has-q');
+        if (FQF.open) fqFindPaint();
+      },
+    }, '✕'));
+    return wrap;
+  }
+
+  function fqFindInput() {
+    const card = fqFindCard();
+    return card ? card.querySelector('.fq-find-in') : null;
+  }
+
+  /* ---- the popout -------------------------------------------------------- */
+
+  function fqFindOutside(e) {
+    if (!FQF.popEl) return;
+    if (FQF.popEl.contains(e.target)) return;
+    const card = fqFindCard();
+    const bar = card ? card.querySelector('.fq-find') : null;
+    if (bar && bar.contains(e.target)) return;
+    fqFindClose();
+  }
+
+  function fqFindOpen(seed) {
+    const card = fqFindCard();
+    if (!card || card.querySelector('.fq-find') === null) return false;
+    if (seed) { FQF.q = String(seed); FQF.sel = 0; }
+    if (!FQF.open) {
+      FQF.open = true;
+      FQF.listEl = h('div', { class: 'fqf-list', role: 'listbox' });
+      FQF.headEl = h('div', { class: 'fqf-head' });
+      FQF.popEl = h('div', { id: 'fq-find-pop' }, FQF.headEl, FQF.listEl);
+      const host = $('overlay') || document.body;
+      host.append(FQF.popEl);
+      setTimeout(function () {
+        document.addEventListener('mousedown', fqFindOutside, true);
+      }, 0);
+    }
+    const bar = card.querySelector('.fq-find');
+    if (bar) bar.classList.add('is-open');
+    const inp = fqFindInput();
+    if (inp) {
+      if (inp.value !== FQF.q) inp.value = FQF.q;
+      if (document.activeElement !== inp) {
+        inp.focus();
+        try { inp.setSelectionRange(FQF.q.length, FQF.q.length); } catch (e) {}
+      }
+    }
+    fqFindPaint();
+    return true;
+  }
+
+  function fqFindClose() {
+    if (!FQF.open) return;
+    FQF.open = false;
+    FQF.q = '';
+    FQF.sel = 0;
+    FQF.rows = [];
+    if (FQF.popEl && FQF.popEl.remove) FQF.popEl.remove();
+    FQF.popEl = null; FQF.listEl = null; FQF.headEl = null;
+    document.removeEventListener('mousedown', fqFindOutside, true);
+    const card = fqFindCard();
+    const bar = card ? card.querySelector('.fq-find') : null;
+    if (bar) { bar.classList.remove('is-open', 'has-q'); }
+    const inp = fqFindInput();
+    if (inp) inp.value = '';
+  }
+
+  /* Place it under the bar, in #overlay's own coordinate space, with every
+     measurement multiplied by the deck scale — the clampCtx rules, applied to
+     a box that is anchored rather than free. */
+  function fqFindPlace() {
+    if (!FQF.popEl) return;
+    const card = fqFindCard();
+    const bar = card ? card.querySelector('.fq-find') : null;
+    const s = deckScale();
+    const vp = ctxViewport();
+    const r = (bar && bar.getBoundingClientRect) ? bar.getBoundingClientRect()
+                                                 : { left: 40, top: 100, bottom: 140, width: 320 };
+    /* Bound it to the DECK WINDOW, not just the screen, when the bar is inside
+       one. #fd-ctx-menu clamps to the viewport and is happy to overhang the
+       panel — it is a menu torn off a row. This is a dropdown belonging to a
+       control INSIDE the window, and a dropdown that spills past the window's
+       own edge reads as a rendering fault rather than a layer. Falls back to
+       the viewport when there is no panel (the harness mounts the card
+       standalone) and never lets the panel push it off screen. */
+    const panel = document.getElementById('panel');
+    let boundL = 0, boundR = vp.w, boundB = vp.h;
+    if (panel && bar && bar.closest && bar.closest('#panel')) {
+      const pr2 = panel.getBoundingClientRect();
+      if (pr2.width > 40) {
+        boundL = Math.max(0, pr2.left);
+        boundR = Math.min(vp.w, pr2.right);
+        /* The card head is always near the TOP of the window, so bounding the
+           bottom to the panel costs nothing and keeps the whole popout inside
+           the deck. Never below 240px of room, though — a squeezed list is
+           worse than a slight overhang. */
+        if (pr2.bottom - r.bottom > 240) boundB = Math.min(vp.h, pr2.bottom);
+      }
+    }
+    /* Layout px (pre-transform), because that is what width/max-height mean to
+       the element itself; the PAINTED box is this × scale. */
+    const wantW = Math.max(360, Math.min(640, (r.width || 320) / s * 1.6));
+    const capW = Math.max(300, (boundR - boundL - 12) / s);
+    const w = Math.min(wantW, capW);
+    FQF.popEl.style.width = w + 'px';
+    FQF.popEl.style.maxWidth = w + 'px';
+    /* 560 layout px ≈ nine rows. The list scrolls past that rather than
+       growing into a full-height wall of forty buttons — and it still has to
+       fit the room actually left under the bar, whichever is smaller. */
+    const room = Math.max(160, (boundB - r.bottom - 16) / s);
+    FQF.popEl.style.maxHeight = Math.min(560, Math.max(220, ctxMaxHpx(220)), room) + 'px';
+    let x = r.left;
+    let y = r.bottom + 6;
+    const pw = FQF.popEl.offsetWidth * s;
+    const ph = FQF.popEl.offsetHeight * s;
+    if (x + pw > boundR - 6) x = boundR - pw - 6;
+    if (x < boundL + 6) x = boundL + 6;
+    /* No room under the bar? Sit ABOVE it rather than off the bottom — the one
+       case where "anchored under" has to give way to "on screen". */
+    if (y + ph > boundB - 6) {
+      const above = r.top - 6 - ph;
+      y = above > 6 ? above : Math.max(6, boundB - ph - 6);
+    }
+    FQF.popEl.style.left = Math.max(6, x) + 'px';
+    FQF.popEl.style.top = Math.max(6, y) + 'px';
+  }
+
+  function fqFindPaint() {
+    if (!FQF.open || !FQF.listEl) return;
+    const card = fqFindCard();
+    const bar = card ? card.querySelector('.fq-find') : null;
+    if (bar) bar.classList.toggle('has-q', !!FQF.q);
+    const all = fqFindIndex();
+    const rows = fqRank(all, FQF.q);
+    FQF.rows = rows;
+    if (FQF.sel >= rows.length) FQF.sel = Math.max(0, rows.length - 1);
+    if (FQF.sel < 0) FQF.sel = 0;
+
+    FQF.headEl.textContent = '';
+    FQF.headEl.append(
+      h('span', { class: 'fqf-count' },
+        rows.length + ' of ' + all.length + ' action' + (all.length === 1 ? '' : 's')),
+      h('span', { class: 'fqf-hint' }, '↑↓ move · Enter run · Esc close'));
+
+    FQF.listEl.textContent = '';
+    if (!rows.length) {
+      FQF.listEl.append(h('div', { class: 'fqf-empty' },
+        h('div', { class: 'fqf-empty-ic', 'aria-hidden': 'true' }, '⌕'),
+        h('div', { class: 'fqf-empty-txt' },
+          h('div', { class: 'fqf-empty-l1' },
+            FQF.q ? 'No action matches “' + FQF.q + '”.' : 'Nothing on this card yet.'),
+          h('div', { class: 'fqf-empty-l2' },
+            'Try “freeze”, “outfit”, “inventory”, “home”, “quest” or “portrait”.'))));
+      fqFindPlace();
+      return;
+    }
+    rows.forEach(function (r, i) {
+      /* A glyph-only button's LABEL was taken from its tooltip, so the row
+         would otherwise print the same sentence twice ("Collapse to just the
+         name" over "Collapse to just the name"). Show only what the tooltip
+         adds; when it adds nothing, the row is just the label. */
+      let sub = r.sub || '';
+      if (sub && sub.toLowerCase().indexOf(r.label.toLowerCase()) === 0)
+        sub = fqTidy(sub.slice(r.label.length).replace(/^[\s—:.,-]+/, ''));
+      const row = h('button', {
+        class: 'fqf-row' + (i === FQF.sel ? ' sel' : '') + (r.disabled ? ' off' : ''),
+        type: 'button',
+        role: 'option',
+        'aria-selected': String(i === FQF.sel),
+        title: r.disabled ? r.why : (r.sub || r.label),
+        onMousemove: () => {
+          if (FQF.sel === i) return;
+          FQF.sel = i;
+          fqFindMark();
+        },
+        onClick: (e) => { e.stopPropagation(); fqFindFire(r); },
+      },
+        h('span', { class: 'fqf-ic', 'aria-hidden': 'true' }, r.icon),
+        h('span', { class: 'fqf-txt' },
+          h('span', { class: 'fqf-lbl' }, fqHl(r.label, FQF.q)),
+          sub ? h('span', { class: 'fqf-sub' }, fqHl(sub, FQF.q)) : null,
+          r.disabled ? h('span', { class: 'fqf-why' }, '⚠ ' + fqFirstClause(r.why)) : null),
+        h('span', { class: 'fqf-tags' },
+          r.opens ? h('span', { class: 'fqf-tag' }, 'opens') : null,
+          r.reveal ? h('span', { class: 'fqf-tag' }, 'reveals') : null,
+          h('span', { class: 'fqf-sect' }, r.sect)));
+      FQF.listEl.append(row);
+    });
+    fqFindPlace();
+    fqFindScrollTo();
+  }
+
+  /* Move the highlight without rebuilding the list — a rebuild on every arrow
+     press would throw away the row under the mouse and cost a paint. */
+  function fqFindMark() {
+    if (!FQF.listEl) return;
+    const kids = FQF.listEl.children;
+    for (let i = 0; i < kids.length; i++) {
+      const on = (i === FQF.sel);
+      kids[i].classList.toggle('sel', on);
+      kids[i].setAttribute('aria-selected', String(on));
+    }
+    fqFindScrollTo();
+  }
+
+  function fqFindScrollTo() {
+    if (!FQF.listEl) return;
+    const el = FQF.listEl.children[FQF.sel];
+    if (el && el.scrollIntoView) { try { el.scrollIntoView({ block: 'nearest' }); } catch (e) {} }
+  }
+
+  /* Put the caret back after something else re-rendered the card underneath
+     the open search — the index's element refs are all detached now, so this
+     re-reads them too. */
+  function fqFindRestore() {
+    if (!FQF.open) return;
+    const card = fqFindCard();
+    const bar = card ? card.querySelector('.fq-find') : null;
+    if (!bar) { fqFindClose(); return; }        // folded / no target: nothing to search
+    bar.classList.add('is-open');
+    const inp = fqFindInput();
+    if (inp) {
+      if (inp.value !== FQF.q) inp.value = FQF.q;
+      inp.focus();
+      try { inp.setSelectionRange(FQF.q.length, FQF.q.length); } catch (e) {}
+    }
+    fqFindPaint();
+  }
+
+  /* The live element behind a row. For a reveal, the flag is set and the card
+     re-rendered FIRST — so what gets clicked is the card's own button, in the
+     card, exactly as if you had opened the reveal and clicked it yourself. */
+  function fqFindResolve(row) {
+    if (!row) return null;
+    if (row.reveal && !ui[row.reveal]) {
+      ui[row.reveal] = true;
+      renderQuickCard();
+    }
+    if (!row.reveal && row.el && row.el.isConnected) return row.el;
+    const card = fqFindCard();
+    const live = fqScan(card, '');
+    for (let i = 0; i < live.length; i++) if (live[i].key === row.key) return live[i].el;
+    return null;
+  }
+
+  function fqFindFire(row) {
+    if (!row) return false;
+    if (row.disabled) {
+      /* Deliberately NOT closed: the reason is the useful thing on screen and
+         you are about to read it. Flash the row so the press is not silent. */
+      const el = FQF.listEl ? FQF.listEl.children[FQF.rows.indexOf(row)] : null;
+      if (el) {
+        el.classList.remove('nope');
+        void el.offsetWidth;
+        el.classList.add('nope');
+      }
+      return false;
+    }
+    const el = fqFindResolve(row);
+    fqFindClose();
+    if (el && el.isConnected) { el.click(); return true; }
+    /* The card changed under the search (she died, the roster refreshed) —
+       say so rather than doing nothing. */
+    if (typeof toast === 'function') toast('“' + row.label + '” is not on the card any more');
+    return false;
+  }
+
+  /* Key handling, shared by the input's own listener and the pane's onKey. */
+  function fqFindKey(e) {
+    if (!FQF.open) return false;
+    const k = e.key;
+    if (k === 'Escape') { e.preventDefault(); fqFindClose(); return true; }
+    if (k === 'ArrowDown') {
+      e.preventDefault();
+      FQF.sel = Math.min(FQF.rows.length - 1, FQF.sel + 1);
+      fqFindMark();
+      return true;
+    }
+    if (k === 'ArrowUp') {
+      e.preventDefault();
+      FQF.sel = Math.max(0, FQF.sel - 1);
+      fqFindMark();
+      return true;
+    }
+    if (k === 'Home' && FQF.rows.length) { e.preventDefault(); FQF.sel = 0; fqFindMark(); return true; }
+    if (k === 'End' && FQF.rows.length) {
+      e.preventDefault(); FQF.sel = FQF.rows.length - 1; fqFindMark(); return true;
+    }
+    if (k === 'Enter') {
+      e.preventDefault();
+      fqFindFire(FQF.rows[FQF.sel] || FQF.rows[0]);
+      return true;
+    }
+    return false;   // every other key belongs to the input
+  }
+
+  /* Does plain typing belong to THIS search?
+     Only when the card is the surface you are looking at: in F7 focus the
+     roster and its own search box are hidden, so a letter has nowhere else to
+     go. With the roster on screen the tab's existing law stands — typing finds
+     a PERSON — and quietly stealing it would break a reflex that predates this
+     feature. Measured off the roster search's visibility rather than guessed
+     from a flag, so it stays true if the chrome rules change. */
+  function fqFindClaimsTyping() {
+    if (FQF.open) return false;
+    const card = fqFindCard();
+    if (!card || !card.querySelector('.fq-find')) return false;
+    if (ctxEl) return false;                       // a menu owns the keyboard
+    const s = $('fd-search');
+    if (s && s.offsetParent !== null) return false;   // the roster search is on screen
+    return true;
+  }
+
   function buildQuickCard() {
     const subj = quickSubject();
     const t = subj
@@ -6892,6 +9268,11 @@
           dead ? h('span', { class: 'fq-tag dead' }, '☠ Dead')
                : (following ? h('span', { class: 'fq-tag following' }, 'Following') : null)),
         ui.fqFold ? null : sub),
+      /* ⌕ FIND AN ACTION — the empty space beside the name, spent (Rober,
+         2026-08-19). Not drawn while the card is FOLDED: folding builds no
+         action rows at all, so a search box there would be a control with
+         nothing to find. See the fq-find block above for how it indexes. */
+      ui.fqFold ? null : fqFindBar(who),
       /* Identity actions live in the HEAD, beside who they are, rather than as
          more rows: they are all "about this person" rather than things you do
          to them, and the card has enough rows. */
@@ -6902,6 +9283,10 @@
            would be worse than none. */
         subj ? h('button', {
           class: 'fq-iconbtn', type: 'button',
+          /* aria-label on every head icon: it is the button's NAME, which is
+             what the ⌕ action search indexes for a control whose whole face is
+             a glyph (its tooltip is state, and would read "Lydia is dead"). */
+          'aria-label': 'Back to the party',
           title: 'Back to the party — stop acting on ' + who,
           onClick: (e) => { e.stopPropagation(); ui.fqPick = ''; renderQuickCard(); syncQuickHere(); },
         }, '\u2190') : null,
@@ -6913,6 +9298,7 @@
         h('button', {
           class: 'fq-iconbtn', type: 'button',
           disabled: dead ? true : null,
+          'aria-label': (portraitFor(pseudo) ? 'Replace' : 'Capture') + ' their portrait',
           title: dead ? who + ' is dead'
                : (portraitFor(pseudo) ? 'Replace ' : 'Capture ') + who + '’s portrait'
                  + ' — hides the HUD, frames their face, saves it. They must be on screen.',
@@ -6923,6 +9309,7 @@
            must not quietly grow a second profile under her nickname. */
         (typeof SmPane !== 'undefined') ? h('button', {
           class: 'fq-iconbtn', type: 'button',
+          'aria-label': 'Sharmat profile (CHIM)',
           title: 'Sharmat profile — CHIM’s kinks / speak style / status for ' + who + '.\nEdits are LIVE.',
           onClick: (e) => { e.stopPropagation();
             SmPane.open((known && known.m.original) || who, who); },
@@ -6932,6 +9319,7 @@
         known ? h('button', {
           class: 'fq-iconbtn' + (ui.fqEdit ? ' on' : ''), type: 'button',
           'aria-pressed': String(!!ui.fqEdit),
+          'aria-label': 'Write a note / set their relationship',
           title: 'Write a note / set their relationship',
           onClick: (e) => { e.stopPropagation(); ui.fqEdit = !ui.fqEdit; renderQuickCard(); },
         }, '✎') : null,
@@ -6942,6 +9330,7 @@
            F7 again", which needs a close first. */
         !ui.npcFocus ? h('button', {
           class: 'fq-iconbtn', type: 'button',
+          'aria-label': 'Fullscreen — dedicate the deck to them',
           title: 'Fullscreen — dedicate the deck to ' + who
                + ' (hide the tabs, rail and roster)',
           onClick: (e) => { e.stopPropagation(); enterFocus(); },
@@ -6953,6 +9342,7 @@
         h('button', {
           class: 'fq-iconbtn' + (state.fqLabels ? ' fq-labels-on' : ''), type: 'button',
           'aria-pressed': String(!!state.fqLabels),
+          'aria-label': state.fqLabels ? 'Hide the action labels' : 'Always show the action labels',
           title: state.fqLabels ? 'Hide the action labels — icons only, names on hover'
                                 : 'Always show the action labels (instead of on hover)',
           onClick: (e) => { e.stopPropagation();
@@ -7061,6 +9451,14 @@
         quickBtn('☰', 'Inventory', dead ? 'Loot them in the world instead'
             : 'Force-open ' + who + '’s full container (the deck closes)',
           () => sendNpc('inventory', subj), { disabled: dead }),
+        /* ⚖ TRADE (Rober, 2026-08-17: "a open merchant / trade button when
+           hitting f7 on an npc") — Skyrim QuickTrade's job, on the card. The
+           title names the menu it will open FOR THIS PERSON rather than a
+           generic word, because barter and "here is her pack" are two very
+           different things to press by accident. tradePlan() only PREDICTS
+           (C++ decides on the live actor); see the note above it. */
+        quickBtn('⚖', 'Trade', tradeTitle(who, dead, tradePlan(about, known, following)),
+          () => sendNpc('trade', subj), { disabled: dead }),
         quickBtn('⛃', 'Spare', dead ? 'Loot them in the world instead'
             : 'Open ' + who + '’s NFF spare inventory — the extra storage chest, '
               + 'separate from her own pack and from her outfits (the deck closes)',
@@ -7163,7 +9561,87 @@
           if (window.OStimPane && OStimPane.smartLand) OStimPane.smartLand();
           else if (window.__omniSetTab) window.__omniSetTab('anim');
         },
-        { disabled: dead })),
+        { disabled: dead }),
+      /* ▥ FULL STATS (Rober, 2026-08-17, the Party Sheet catch-up: "main
+         thing missing is a dedicated more info or stats page … you can get
+         to by doing f7 then another button"). Opens the Finder's INSPECT
+         sheet aimed at this person — live health pools, resistances, weapon
+         damage, temperament, active effects and worn gear. Passed as `ref`
+         (the runtime formId this card already holds), so it reads anyone on
+         screen, rostered or not. Deliberately NOT disabled on the dead:
+         reading a corpse is exactly when you wonder what killed her. */
+      /* ▥ is a typographic mark, not colour emoji — the 2026-08-16 icon law. */
+      quickBtn('▥', 'Full stats',
+        'Open ' + who + '’s full stats sheet — live health, resistances, '
+          + 'weapon damage, temperament, active effects and worn gear',
+        () => {
+          const fid = subj ? (Number(subj.formId) || 0)
+                           : (state.target ? Number(state.target.formId) || 0 : 0);
+          const shot = portraitFor(pseudo);
+          if (window.__hdFinderGo) window.__hdFinderGo('npcs', '');
+          else if (window.__omniSetTab) window.__omniSetTab('npcs');
+          if (window.NpcsPane && window.NpcsPane._openInspect) {
+            window.NpcsPane._openInspect('', {
+              ref: fid ? fidHexOf(fid) : '',
+              name: who,
+              portrait: shot ? portraitSrc(shot) : '',
+              /* Hand the SHEET her framing too. This is a portrait PHOTO, whose
+                 crop lives in this pane's store — without it the sheet fell back
+                 to a centre crop and disagreed with every other surface showing
+                 the same face. */
+              crop: shot ? cropFor(shot) : null,
+              portraitKind: 'photo',   // a screen grab, not a FaceGen head render
+            });
+          }
+        }),
+      /* ◈ DISTRIBUTIONS (Rober, 2026-08-18: "hit f7 on an npc and inspect
+         them for any SPID/SkyPatcher's that effect them"). Opens the
+         Distributions tab PINNED to this person (DistrPane.openFor rides the
+         same runtime-formId `ref` the Full-stats sheet uses), so it reads
+         whoever this card is about even if the crosshair has moved on.
+         Works on the dead too — "what could she have been wearing" is a
+         record-level question, not a live one. ◈ is a typographic mark,
+         per the 2026-08-16 icon law. NOT gated on window.DistrPane: its
+         script sits later in the boot manifest than this one, so a fast
+         first F7 could race it — the fallback plain tab-switch still lands
+         on the right person, because in F7-focus the crosshair snapshot IS
+         this NPC. */
+      quickBtn('◈', 'Distr',
+        'What SPID and SkyPatcher could give ' + who + ' — the outfits, '
+          + 'items, spells and perks whose distribution filters they pass, '
+          + 'searchable, with each outfit expandable into its pieces',
+        () => {
+          const fid = subj ? (Number(subj.formId) || 0)
+                           : (state.target ? Number(state.target.formId) || 0 : 0);
+          if (window.DistrPane && DistrPane.openFor)
+            DistrPane.openFor({ ref: fid ? fidHexOf(fid) : '', name: who });
+          else if (window.__omniSetTab) window.__omniSetTab('distr');
+        },
+        /* The face stays "Distr" — it is a narrow icon button and that is what
+           fits. The full word lives here, which is what a screen reader reads
+           and what the ⌕ action search completes the row title from. */
+        { aria: 'Distributions' }),
+      /* ⚒ TUNE (Rober, 2026-08-18: "this would be nice as a f7 button with a
+         really polished nice UI modal popout, spacious") — the PROTEUS NPC
+         editor as HDNpcTune's modal: level, stats, size, the temperament
+         dials, Essential/Protected/Killable. Full stats READS her; this one
+         REWRITES her. ⚒ is a typographic mark, per the 2026-08-16 icon law.
+         Works on the dead too — making a corpse essential is meaningless,
+         but tuning someone right after a fight (or before a resurrect from
+         the console) is real; the modal shows a Dead chip. */
+      (window.HDNpcTune)
+        ? quickBtn('⚒', 'Tune',
+            'Tune ' + who + ' — level, health and stats, size, temperament '
+              + '(aggression, confidence…), and Essential / Protected / Killable. '
+              + 'Stats save with your game; level and protection are kept across launches.',
+            () => {
+              const fid = subj ? (Number(subj.formId) || 0)
+                               : (state.target ? Number(state.target.formId) || 0 : 0);
+              const shot = portraitFor(pseudo);
+              HDNpcTune.open({ formId: fid, name: who,
+                portrait: shot ? portraitSrc(shot) : '' });
+            })
+        : null),
       /* (File / Add-to-category moved to the bottom bar under STATS — Rober,
          2026-08-05: the top ⊞ File icon duplicated the prominent "+ Add … to a
          category" footer, so the icon is dropped and the footer is the one way.) */
@@ -7296,16 +9774,19 @@
       dead ? null : quickHeadPills(subj, t)));
 
     /* Keep her light state current while the card is about her (throttled to
-       one ask per 1.5 s per person — same loop-breaking gate as askEquipped). */
-    if (bflPresent !== false && t && t.formId && !dead) askFacelight(t.formId);
+       one ask per 1.5 s per person — same loop-breaking gate as askEquipped).
+       Skipped while fqProbing: the ⌕ search builds this card into a DETACHED
+       node to index the reveals, and a card nobody sees must not put bridge
+       traffic on the wire. */
+    if (!fqProbing && bflPresent !== false && t && t.formId && !dead) askFacelight(t.formId);
 
     /* Same discipline for her effects — the ✨ draws itself the moment the
        DLL answers, and stays current while the card is hers. */
-    if (fxPresent !== false && t && t.formId && !dead) askEffects(t.formId);
+    if (!fqProbing && fxPresent !== false && t && t.formId && !dead) askEffects(t.formId);
 
     /* Same discipline for her SPID grants — the 📦 draws itself the moment
        the DLL answers, and stays current while the card is hers. */
-    if (sgPresent !== false && t && t.formId && !dead) askSpid(t.formId);
+    if (!fqProbing && sgPresent !== false && t && t.formId && !dead) askSpid(t.formId);
 
     /* COPY OUTFIT reveal — the checklist of her worn pieces + a name + Create. */
     if (ui.fqCopy && !dead) card.append(copyOutfitBlock(subj, who));
@@ -8113,6 +10594,11 @@
       const s = quickHost.querySelector('.fq-rank-slider');
       if (s && s.focus) s.focus();
     }
+    /* The ⌕ search bar is DESTROYED by the same wipe — and its index holds
+       element refs into the card that just went away. Put the caret back and
+       re-read the card, or the first Enter after any bridge push would click a
+       detached button (i.e. nothing at all). */
+    if (FQF.open) fqFindRestore();
   }
 
   /* ================================================== member action menu == */
@@ -9001,11 +11487,144 @@
       : state.cats.reduce((n, c) => n + c.members.length, 0);
   }
 
+  /* Party-sheet search words, per scope. The ROWS are derived from PT_SCOPES
+     so a new scope becomes searchable the day it is added — but the words a
+     player would actually type for one ("who is hurt", "over-encumbered") are
+     not in the scope's own label or title, and a synonym list is exactly what
+     keywords are for. An unlisted key simply searches by its label. */
+  const PT_OMNI_KW = {
+    all: 'retinue whole party side by side compare',
+    here: 'with you at your back nearby present in the cell',
+    away: 'waiting parked left behind elsewhere told to wait',
+    issues: 'needs attention hurt wounded injured dying naked unarmed '
+          + 'no weapon no armour no armor out of arrows problems what is wrong',
+  };
+
+  /* Land on the party sheet, on a named scope. Shared by the omni rows below
+     and by anything else that wants to send you there with a question already
+     chosen, so the tab switch and the scope always happen in the same order. */
+  function ptOmniOpen(scopeKey) {
+    if (typeof window.__omniSetTab === 'function') window.__omniSetTab('followers');
+    ui.ptScope = scopeKey;
+    ui.ptSel = -1;
+    /* setPartyOpen early-returns when the sheet is ALREADY up, so the scope
+       change would be stored and never painted — repaint it ourselves in that
+       case. Two calls, one of which is always a no-op, is cheaper than a
+       second implementation of the sheet's own opening sequence. */
+    if (ui.ptOpen) renderParty(); else setPartyOpen(true);
+  }
+
   /* ---- Omni search provider (universal search, v0.14.0) ---------------- *
    * Indexes the LIVE roster at query time — categories, names, notes, the
    * v0.10.0 NPC fields (relationship/home/…) and the NFF/MHiYH home text all
    * ride the same haystacks visibleRows() already searches, so anything new
-   * that lands in a member is searchable with no omni change. */
+   * that lands in a member is searchable with no omni change.
+   *
+   * Beyond the roster it also carries the two NAMED SURFACES this tab owns and
+   * nothing else could reach — the party sheet (with its scopes) and the
+   * Followers HUD settings — plus the companions who are following you but
+   * have no Follower Organizer row at all. All three were invisible to search:
+   * the sheet and the HUD hang off small buttons in the search row, and a
+   * framework-driven companion is in state.liveParty, which the roster walk
+   * below never touches. */
+  function omniFollowersIndex() {
+    const items = [];
+    (state.cats || []).forEach((c) => {
+      const cl = c.override || c.name || c.original || '';
+      (c.members || []).forEach((m) => {
+        const rel = m.fields && m.fields.relationship;
+        const original = m.original || m.name || '';
+        items.push({
+          label: m.name || m.original || '(unnamed)',
+          detail: [rel, cl, m.desc].filter(Boolean).join(' · '),
+          kind: rel || 'follower',
+          keywords: [m.original, m.fieldsText, m.homeText].filter(Boolean).join(' '),
+          /* `original` — the same durable identity the recents strip keys
+             on: a rename must not split her, a re-file must not lose her */
+          pin: 'fol:' + original,
+          snap: { original: original, label: m.name || m.original || '' },
+          /* her portrait, plain path (no ?v= — Ultralight's loader can eat
+             the query as filename, see medalEl); shelf falls back to the
+             glyph if it fails to load */
+          icon: (function () {
+            const p = portraitFor(m);
+            return p ? portraitSrc(p) : '';
+          })(),
+        });
+      });
+    });
+
+    /* The people actually walking behind you who are NOT on the roster —
+       companions run by their own follower mod, CHIM soft-follow. partyList()
+       is the one place that merges state.liveParty in, and it already marks a
+       synthesised entry `live:true`, so this is that merge reused rather than
+       a second de-dup rule that could disagree with the crew strip.
+
+       No `pin`: her identity here lasts exactly as long as she follows you,
+       and a shelf star that greys out every time she is dismissed — then comes
+       back under a DIFFERENT key the day she is filed into a category — is a
+       worse promise than no star at all.
+
+       run() lands her on the party sheet with her name in its filter, because
+       that is the one surface in this pane that can say anything about her: the
+       roster is state.cats and she is not in it, and the quick card resolves
+       its subject through rosterEntryFor, which would not find her either. */
+    (partyList() || []).forEach(function (m) {
+      if (!m.live) return;
+      const nm = m.name || m.original || '';
+      if (!nm) return;
+      items.push({
+        label: nm,
+        detail: 'following you — not on the Follower Organizer roster',
+        kind: 'following now',
+        keywords: 'live party companion teammate follower mod not filed unlisted '
+                + 'behind you current party',
+        icon: (function () {
+          const p = portraitFor(m);
+          return p ? portraitSrc(p) : '';
+        })(),
+        run: function () {
+          ui.ptFilter = nm;
+          ptOmniOpen('all');
+        },
+      });
+    });
+
+    /* The party sheet, one row per scope. The scopes ARE the questions people
+       ask ("who needs attention"), so each gets its own row instead of one row
+       that lands on whatever scope was last used. */
+    PT_SCOPES.forEach(function (s) {
+      items.push({
+        label: s.key === 'all' ? 'Party sheet' : 'Party sheet: ' + s.label.toLowerCase(),
+        detail: s.title,
+        kind: 'page',
+        keywords: 'party sheet everyone gear health armour armor weapon damage '
+                + 'encumbered carry weight arrows level cards table '
+                + (PT_OMNI_KW[s.key] || ''),
+        run: function () { ptOmniOpen(s.key); },
+      });
+    });
+
+    items.push({
+      label: 'Followers HUD',
+      detail: 'The on-screen portrait strip of your current followers — enable it, '
+            + 'lay it out, pick what each face shows, bind its key.',
+      kind: 'settings',
+      keywords: 'hud portrait strip on screen overlay faces party bar health bars '
+              + 'names compact browse key vertical horizontal reposition widgets',
+      /* Tab FIRST, then the modal. The modal is a document.body child and would
+         open over any tab — but its own button lives in this pane's search row,
+         and landing somewhere the setting cannot be found again afterwards is
+         how a settings shortcut becomes a magic trick. */
+      run: function () {
+        if (typeof window.__omniSetTab === 'function') window.__omniSetTab('followers');
+        openHudModal();
+      },
+    });
+
+    return items;
+  }
+
   if (window.HDOmni) HDOmni.register({
     id: 'followers', label: 'Followers', tab: 'followers',
     /* Shelf activation: a pinned PERSON opens her ACTION MENU — summon / go
@@ -9025,34 +11644,139 @@
       if (s) s.value = ui.filter;
       try { renderList(); } catch (e) {}
     },
-    index: function () {
-      const items = [];
-      (state.cats || []).forEach((c) => {
-        const cl = c.override || c.name || c.original || '';
-        (c.members || []).forEach((m) => {
-          const rel = m.fields && m.fields.relationship;
-          const original = m.original || m.name || '';
-          items.push({
-            label: m.name || m.original || '(unnamed)',
-            detail: [rel, cl, m.desc].filter(Boolean).join(' · '),
-            kind: rel || 'follower',
-            keywords: [m.original, m.fieldsText, m.homeText].filter(Boolean).join(' '),
-            /* `original` — the same durable identity the recents strip keys
-               on: a rename must not split her, a re-file must not lose her */
-            pin: 'fol:' + original,
-            snap: { original: original, label: m.name || m.original || '' },
-            /* her portrait, plain path (no ?v= — Ultralight's loader can eat
-               the query as filename, see medalEl); shelf falls back to the
-               glyph if it fails to load */
-            icon: (function () {
-              const p = portraitFor(m);
-              return p ? portraitSrc(p) : '';
-            })(),
-          });
-        });
-      });
-      return items;
-    },
+    index: omniFollowersIndex,
+  });
+
+  /* ---- Omni provider: the quick card's own actions (2026-08-19) --------- *
+   *  ⌕ Find an action already indexes every button this card can draw — the
+   *  ~20 named verbs (Tune, Portrait, Inventory, Trade, Effects, Copy outfit,
+   *  Full stats, Quests, Animate, Preset, Distributions, Room ban, Spare, Add
+   *  as mount, CHIM, Adjust, Grab, Freeze, Formation…) plus the ones sitting
+   *  behind a closed reveal. But that index lived entirely inside the card, so
+   *  Ctrl+F from anywhere else in the deck returned nothing for any of them.
+   *  This is the SAME index, published to omni.
+   *
+   *  ---- why it is snapshotted, not walked per keystroke ------------------
+   *  index() runs on every keystroke and the walk costs a card build (the
+   *  reveal probe builds several). The game is PAUSED for the whole life of
+   *  the omni overlay, so the card cannot change underneath it — one snapshot
+   *  at warm() is not a shortcut, it is the honest reading. The subject key is
+   *  re-checked on every index() anyway, so a build whose host never calls
+   *  warm() still gets a correct (merely later) index.
+   *
+   *  ---- why run() re-resolves instead of clicking the row's element ------
+   *  A snapshot taken while the card was NOT mounted holds buttons from a
+   *  detached node, and clicking one of those is a no-op that looks like a
+   *  working press. So firing goes through the card's OWN fqFindResolve: land
+   *  on the Followers tab, make sure the card is actually mounted, open the
+   *  reveal if the action lives behind one, then click the live control. No
+   *  verb is re-implemented here — every hit ends in a .click() on the card.
+   * ---------------------------------------------------------------------- */
+
+  /* The snapshot. `key` is who it is about; an empty key means "no subject, so
+     there is no card and nothing to index". */
+  const FQ_OMNI = { key: '', items: [] };
+
+  function fqOmniSubject() {
+    const subj = quickSubject();
+    if (subj) return subj.name || subj.original || '';
+    return (state.target && state.target.name) ? String(state.target.name) : '';
+  }
+
+  /* Every action the card can offer right now, whether or not it is on screen.
+     With the card mounted this is exactly what its own ⌕ search sees. Without
+     one — omni opened from another tab — the base card is built DETACHED and
+     merged in front of the reveal probe's rows, which fqFindIndex cannot do for
+     itself because it reads the live card. `fqProbing` is set for the same
+     reason the probe sets it: a card nobody sees must not put asks on the
+     wire. */
+  function fqOmniRows() {
+    const rows = fqFindIndex();
+    if (fqFindCard()) return rows;
+    let node = null;
+    fqProbing = true;
+    try { node = buildQuickCard(); } catch (e) { node = null; }
+    fqProbing = false;
+    if (!node) return rows;
+    const seen = Object.create(null);
+    const out = [];
+    fqScan(node, '').forEach(function (r) {
+      if (seen[r.key]) return;
+      seen[r.key] = 1;
+      out.push(r);
+    });
+    rows.forEach(function (r) {
+      if (seen[r.key]) return;
+      seen[r.key] = 1;
+      out.push(r);
+    });
+    return out;
+  }
+
+  /* Put the card on screen so a hit has something to click. Uses the pane's own
+     entry points: a picked party member is already the subject and only needs
+     the host mounting, while a crosshair NPC gets the F7 dossier the card was
+     designed for. Returns whether a card actually made it onto the page. */
+  function fqOmniGo() {
+    if (typeof window.__omniSetTab === 'function') window.__omniSetTab('followers');
+    if (fqFindCard()) return true;
+    if (ui.fqPick || ui.npcFocus) syncQuickHere();
+    else if (state.target && state.target.name) enterFocus();
+    return !!fqFindCard();
+  }
+
+  function fqOmniItems() {
+    const who = fqOmniSubject();
+    /* No subject, no rows. With nobody picked the card draws the EVERYONE
+       orders instead, and those are not this provider's to publish: fqOmniGo
+       cannot mount a subject-less card, so every one of them would be a press
+       that quietly does nothing. */
+    if (!who) return [];
+    return fqOmniRows().map(function (r) {
+      const why = r.disabled ? fqFirstClause(r.why) : '';
+      return {
+        label: r.label,
+        detail: [r.sect, who, why ? '⚠ ' + why : fqFirstClause(r.sub)]
+          .filter(Boolean).join(' · '),
+        kind: r.disabled ? 'unavailable' : 'action',
+        keywords: [r.sect, r.sub, who, 'card button action'].filter(Boolean).join(' '),
+        /* Even an unavailable action jumps to the card, so the greyed control
+           and the reason written on it are what you land on — the card's own
+           law that a refusal is the useful sentence, carried into search. */
+        jump: function () { fqOmniGo(); },
+        run: r.disabled ? undefined : function () {
+          if (!fqOmniGo()) {
+            toast('Look at ' + (who || 'someone') + ' again — her card is not open');
+            return;
+          }
+          const el = fqFindResolve(r);
+          if (el && el.isConnected) { el.click(); return; }
+          toast('“' + r.label + '” is not on the card any more');
+        },
+      };
+    });
+  }
+
+  /* Re-read unconditionally: the overlay has just opened, so this is the one
+     moment the snapshot is guaranteed to be about the person on screen. */
+  function fqOmniWarm() {
+    FQ_OMNI.key = fqOmniSubject();
+    FQ_OMNI.items = fqOmniItems();
+  }
+
+  function fqOmniIndex() {
+    const who = fqOmniSubject();
+    if (who !== FQ_OMNI.key) {
+      FQ_OMNI.key = who;
+      FQ_OMNI.items = fqOmniItems();
+    }
+    return FQ_OMNI.items;
+  }
+
+  if (window.HDOmni) HDOmni.register({
+    id: 'follower-card', label: 'Follower card', tab: 'followers',
+    warm: fqOmniWarm,
+    index: fqOmniIndex,
   });
 
   /* Called by the Wardrobe host when NFF/SOES state changes underneath us, so
@@ -9064,6 +11788,942 @@
        a handover / wear / clear answered while it is up must repaint it too —
        it is not inside the card and never sees renderQuickCard(). */
     if (window.HDOutfit && HDOutfit.isOpen()) HDOutfit.refresh();
+  }
+
+  /* ====================================================================== *
+   *                            PARTY  SHEET
+   *  The whole retinue's gear, vitals and status on ONE page — the feature
+   *  Skyrim Party Sheet (Nexus SSE 167538) is named after and the one this
+   *  deck never had.
+   *
+   *  WHY IT IS NOT THE ROSTER. The roster answers "who exists and where is she
+   *  filed". It cannot answer the questions that actually cost you a fight,
+   *  because those are COMPARISONS:
+   *
+   *      who is hurt · who has no weapon · who is wearing nothing ·
+   *      who is over-encumbered · who is holding a bow with no arrows ·
+   *      who is parked in an inn three holds away
+   *
+   *  Twelve card opens cannot answer them either — each one reads a different
+   *  moment. So: one snapshot (src/party_sheet.cpp, ptyScan → ptyData), every
+   *  member side by side, two shapes to read it in.
+   *
+   *  THE SPLIT. C++ ships FACTS and never a verdict. Every threshold below —
+   *  what counts as hurt, whether an empty potion pouch is worth a chip — is a
+   *  judgement, and a judgement baked into the DLL costs a rebuild plus a game
+   *  exit to retune. Here it is PT_RULES, a text edit.
+   *
+   *  ONE SNAPSHOT IS ENOUGH, and that is not laziness: Followers is a
+   *  deck-class tab, so the game is PAUSED the whole time this is on screen.
+   *  Nothing can change under it. A poll would burn a bridge round trip per
+   *  tick to redraw identical numbers. ⟳ Refresh exists for the case where you
+   *  gave an order from the card and came back.
+   *
+   *  ENGINE LAWS THIS OBEYS (measured in PrismaUI's own Ultralight 1.4.1):
+   *    · conic-gradient computes to `none` — so every meter here is a LINEAR
+   *      bar. There are no rings on this page, by construction rather than by
+   *      fallback, because a fallback is a second thing to keep right.
+   *    · no looping animations, no animated background-position.
+   *    · colour emoji render monochrome at a ~1.4em advance, so the glyphs are
+   *      drawn from the set the deck already ships (⚔ ⛨ ➶ ☠ ⚠ ◆) and every
+   *      glyph box has a min-width.
+   *    · 12px floor on every rule in followers-pane.css.
+   *
+   *  KEYSTROKE COST. Same discipline as the roster and for the same measured
+   *  reason: cards are cached by formId, kept while their SIGNATURE holds, and
+   *  MOVED into place by the roster's own fdReconcile. A keystroke rewrites the
+   *  search highlight and nothing else. Every push that changes what a card
+   *  draws without changing the member object (portraits, face renders) drops
+   *  the cache at the source — see ptDropCache's callers.
+   * ====================================================================== */
+
+  /* Where the line is. Every number here is a JUDGEMENT, deliberately kept out
+     of the DLL so retuning it is a text edit — see the header above. */
+  const PT_RULES = {
+    hurt: 0.60,        // below this fraction of max health: hurt
+    critical: 0.25,    // …and below this: critical
+    lowMagicka: 0.25,  // a caster with an empty pool
+    far: 4096.0,       // game units — roughly a cell away
+    minArmour: 1,      // an armour rating under this reads as "none"
+  };
+
+  /* The four sort orders, plus the columns the table shares with them so a
+     header click and a chip click can never disagree about what "Armour" is. */
+  const PT_SORTS = [
+    { key: 'issues', label: 'Needs attention', title: 'Worst first — dead, then hurt, then missing gear.' },
+    { key: 'name',   label: 'Name',            title: 'A to Z.' },
+    { key: 'level',  label: 'Level',           title: 'Highest level first.' },
+    { key: 'health', label: 'Health',          title: 'Lowest health, as a share of her own maximum, first.' },
+    { key: 'armour', label: 'Armour',          title: 'Weakest armour first — who is going to get hurt.' },
+    { key: 'damage', label: 'Damage',          title: 'Highest weapon damage first.' },
+    { key: 'load',   label: 'Load',            title: 'Fullest pack first.' },
+  ];
+
+  const PT_SCOPES = [
+    { key: 'all',    label: 'Everyone',        title: 'Every follower the game can see right now.' },
+    { key: 'here',   label: 'With you',        title: 'Only the ones actually at your back.' },
+    { key: 'away',   label: 'Waiting',         title: 'Only the ones you told to wait somewhere.' },
+    { key: 'issues', label: 'Needs attention', title: 'Only the ones with something wrong.' },
+  ];
+
+  /* --------------------------------------------------------- the facts --- */
+
+  function ptMembers() {
+    const list = (state.party && Array.isArray(state.party.members)) ? state.party.members : [];
+    /* A conjured familiar IS a teammate, and grading one for owning no boots is
+       nonsense — C++ flags it rather than dropping it so this stays a setting
+       and not a rebuild. */
+    return ui.ptSummons ? list : list.filter(function (r) { return !r.summon; });
+  }
+
+  function ptNum(v) { const n = Number(v); return isFinite(n) ? n : 0; }
+
+  /* The bar's denominator. `hpMax` is base + PERMANENT modifiers, so a
+     TEMPORARY fortify pushes hp above it; drawing that literally gives a bar
+     overflowing its own track. Over-full is drawn as full — see party_sheet.h
+     for why C++ does not invent the total instead. */
+  function ptMax(cur, max) { return Math.max(ptNum(max), ptNum(cur), 1); }
+  function ptFrac(cur, max) { return Math.min(1, ptNum(cur) / ptMax(cur, max)); }
+
+  function ptHand(r, which) { return (r && r[which] && typeof r[which] === 'object') ? r[which] : {}; }
+  function ptArmed(t) { const k = t.kind; return k === 'weapon' || k === 'staff' || k === 'spell'; }
+
+  /* Her weapon, in one phrase. The right hand is the one that swings; a spell
+     in the left of an empty right hand is still what she fights with. */
+  function ptWeaponOf(r) {
+    const rh = ptHand(r, 'right'), lh = ptHand(r, 'left');
+    const main = ptArmed(rh) ? rh : (ptArmed(lh) ? lh : null);
+    if (!main) return { name: '', kind: '', damage: 0, est: false };
+    return { name: main.name || '(unnamed)', kind: main.kind,
+             damage: ptNum(main.damage), est: !!main.est, ranged: !!main.ranged };
+  }
+
+  /* -------------------------------------------------------- the verdict --- */
+
+  /* Everything wrong with one member, worst first. `tone` drives the colour:
+     bad = she is going to die or cannot fight · warn = she is worse off than
+     she should be · note = you probably want to know.
+     `why` is the hover sentence, and it always says what to DO where there is
+     something to do — a chip that only names a problem is half a report. */
+  function ptIssues(r) {
+    const out = [];
+    const push = function (key, tone, glyph, label, why) {
+      out.push({ key: key, tone: tone, glyph: glyph, label: label, why: why });
+    };
+    if (!r) return out;
+
+    if (r.dead) {
+      push('dead', 'bad', '☠', 'Dead',
+        'She is down for good. Resurrecting her is not something this deck does.');
+      return out;   // nothing else about a corpse is worth a chip
+    }
+
+    const hpF = ptFrac(r.hp, r.hpMax);
+    if (hpF <= PT_RULES.critical)
+      push('critical', 'bad', '◆', 'Critically hurt',
+        Math.round(hpF * 100) + '% of her health left. One more hit and she is on the floor.');
+    else if (hpF <= PT_RULES.hurt)
+      push('hurt', 'warn', '◆', 'Hurt',
+        Math.round(hpF * 100) + '% of her health left — she has not healed since the last fight.');
+
+    if (r.unarmed)
+      push('unarmed', 'bad', '⚔', 'No weapon',
+        'Both hands empty. She will punch things for ' + Math.round(ptNum(r.unarmedDamage))
+        + ' damage. Open her pack and give her something.');
+
+    const slots = (r.slots && typeof r.slots === 'object') ? r.slots : {};
+    if (!slots.body)
+      push('naked', 'bad', '⛨', 'Wearing nothing',
+        'Nothing in her body slot at all. If an outfit system is dressing her, it has not run.');
+    else if (r.bodyClothing)
+      push('clothes', 'warn', '⛨', 'In clothes',
+        '“' + (r.body || 'Her outfit') + '” is clothing, not armour — it carries no rating.');
+    else if (ptNum(r.armor) < PT_RULES.minArmour)
+      push('noarmour', 'warn', '⛨', 'No armour rating',
+        'She is wearing something, but the engine rates it at zero.');
+
+    const rh = ptHand(r, 'right');
+    const ammo = (r.ammo && typeof r.ammo === 'object') ? r.ammo : {};
+    if (rh.ranged && ptNum(ammo.count) <= 0)
+      push('noammo', 'bad', '➶', 'No arrows',
+        'She is holding ' + (rh.name || 'a bow') + ' and has nothing to fire from it.');
+
+    const load = ptNum(r.load), carry = ptNum(r.carry);
+    if (carry > 0 && load > carry)
+      push('over', 'warn', '■', 'Over-encumbered',
+        Math.round(load) + ' / ' + Math.round(carry) + ' — she cannot run, so she falls behind and '
+        + 'arrives after the fight.');
+
+    const pots = (r.potions && typeof r.potions === 'object') ? r.potions : {};
+    if (ptNum(pots.health) <= 0)
+      push('nopotion', 'note', '⚗', 'No healing potion',
+        'Nothing in her pack that restores health. She will not heal herself.');
+
+    if (ptNum(r.magMax) > 0 && ptFrac(r.mag, r.magMax) <= PT_RULES.lowMagicka &&
+        (rh.kind === 'spell' || ptHand(r, 'left').kind === 'spell' || rh.kind === 'staff'))
+      push('nomagicka', 'warn', '✦', 'Out of magicka',
+        'She casts, and her pool is nearly empty.');
+
+    if (r.waiting)
+      push('waiting', 'note', '✋', 'Waiting',
+        'Told to wait' + (r.where ? ' at ' + r.where : '') + ' — she is not with you.');
+    else if (!r.sameCell || ptNum(r.dist) > PT_RULES.far)
+      push('far', 'note', '⤷', 'Far away',
+        (r.where ? 'She is at ' + r.where + '. ' : '')
+        + 'Not in the room with you, and not told to wait either.');
+
+    /* The half-recruit nff_control.h documents: her factions say "current
+       follower" while the engine says she is not a teammate, so half her
+       dialogue is gone and her orders do not stick. Naming it here is the whole
+       point — it is invisible everywhere else in the game. */
+    if (r.source === 'faction')
+      push('wedged', 'warn', '⚠', 'Orders may not stick',
+        'The game has her in the follower faction but not as a teammate. That is the '
+        + 'half-recruited state — dismiss and recruit her again to clear it.');
+
+    if (r.invOk === false)
+      push('unread', 'note', '⁉', 'Bag unreadable',
+        'Her inventory could not be read this pass, so potions, arrows and gold are blank '
+        + 'rather than zero.');
+
+    return out;
+  }
+
+  const PT_TONE_WEIGHT = { bad: 100, warn: 10, note: 1 };
+  function ptSeverity(issues) {
+    let n = 0;
+    for (let i = 0; i < issues.length; i++) n += (PT_TONE_WEIGHT[issues[i].tone] || 0);
+    return n;
+  }
+
+  /* ------------------------------------------------------ search + sort --- */
+
+  /* The haystack. It deliberately includes the ISSUE LABELS, so typing "arrows"
+     or "encumbered" finds the people the sheet is complaining about — which is
+     the question you actually came here with. */
+  function ptHaystack(r, issues) {
+    const w = ptWeaponOf(r);
+    let hay = (r.name || '') + '\n' + (r.base || '') + '\n' + (r.race || '') + '\n'
+            + (w.name || '') + '\n' + (r.body || '') + '\n' + (r.where || '') + '\n'
+            + ((r.ammo && r.ammo.name) || '');
+    for (let i = 0; i < issues.length; i++) hay += '\n' + issues[i].label;
+    return hay.toLowerCase();
+  }
+
+  function ptScopeOk(r, issues) {
+    switch (ui.ptScope) {
+      case 'here':   return !r.waiting && !r.dead;
+      case 'away':   return !!r.waiting;
+      case 'issues': return issues.some(function (i) { return i.tone !== 'note'; });
+      default:       return true;
+    }
+  }
+
+  /* One pass: annotate, filter, sort. Returns the rows the page will draw, in
+     order, each carrying its own issues so nothing is computed twice. */
+  function ptVisible() {
+    const q = String(ui.ptFilter || '').trim().toLowerCase();
+    const rows = [];
+    ptMembers().forEach(function (r) {
+      const issues = ptIssues(r);
+      if (!ptScopeOk(r, issues)) return;
+      if (q && ptHaystack(r, issues).indexOf(q) < 0) return;
+      rows.push({ r: r, issues: issues, sev: ptSeverity(issues) });
+    });
+
+    const byName = function (a, b) {
+      return String(a.r.name || '').localeCompare(String(b.r.name || ''));
+    };
+    const desc = function (get) {
+      return function (a, b) { const d = get(b.r) - get(a.r); return d || byName(a, b); };
+    };
+    const asc = function (get) {
+      return function (a, b) { const d = get(a.r) - get(b.r); return d || byName(a, b); };
+    };
+    switch (ui.ptSort) {
+      case 'name':   rows.sort(byName); break;
+      case 'level':  rows.sort(desc(function (r) { return ptNum(r.level); })); break;
+      case 'health': rows.sort(asc(function (r) { return ptFrac(r.hp, r.hpMax); })); break;
+      case 'armour': rows.sort(asc(function (r) { return ptNum(r.phys); })); break;
+      case 'damage': rows.sort(desc(function (r) { return ptWeaponOf(r).damage; })); break;
+      case 'load':   rows.sort(desc(function (r) {
+                       return ptNum(r.carry) > 0 ? ptNum(r.load) / ptNum(r.carry) : 0; })); break;
+      default:       rows.sort(function (a, b) { return (b.sev - a.sev) || byName(a, b); });
+    }
+    return rows;
+  }
+
+  /* ----------------------------------------------------------- bridge ----- */
+
+  let ptLastAsk = 0;
+  const PT_MIN_GAP = 1200;   // folds the open + tab-show burst into one ask
+
+  function ptAsk(force) {
+    const now = Date.now();
+    if (!force && now - ptLastAsk < PT_MIN_GAP) return;
+    ptLastAsk = now;
+    state.party.asking = true;
+    /* The roster's own idea of who is following rides along, so a companion the
+       two faction tests miss is still MEASURED rather than silently absent —
+       and anyone we name who is not loaded comes back as an honest count. */
+    const ids = [];
+    const seen = {};
+    partyList().forEach(function (m) {
+      const n = Number(m.formId) >>> 0;
+      if (n && !seen[n]) { seen[n] = 1; ids.push(n); }
+    });
+    toGame('ptyScan', JSON.stringify({ ids: ids, skills: !!ui.ptSkills }));
+  }
+
+  window.ptyData = function (env) {
+    const v = coerce(env);
+    ptDropCache();
+    state.party.asking = false;
+    if (!v || typeof v !== 'object') {
+      state.party.ok = false;
+      state.party.msg = 'The party scan came back unreadable.';
+      state.party.members = [];
+    } else {
+      state.party.ok = v.ok !== false;
+      state.party.msg = String(v.msg || '');
+      state.party.members = Array.isArray(v.members) ? v.members : [];
+      state.party.unloaded = ptNum(v.unloaded);
+      state.party.skillNames = Array.isArray(v.skillNames) ? v.skillNames : [];
+    }
+    state.party.at = Date.now();
+    /* A face we have never rendered may have just walked into the party. */
+    requestFaceIcons(false);
+    if (isActive()) renderParty();
+  };
+
+  /* ------------------------------------------------------------ chrome ---- */
+
+  /* Party mode is a BODY CLASS, not a pile of .hidden toggles: renderList() and
+     syncQuickHere() own those, and fighting them for the same elements is how a
+     mode ends up half-applied. followers-pane.css hides the roster surfaces off
+     that one class and shows #pt-pane. */
+  function syncPartyChrome() {
+    if (typeof document === 'undefined' || !document.body) return;
+    document.body.classList.toggle('hd-partysheet', !!ui.ptOpen);
+    const t = $('pt-toggle');
+    if (t) {
+      t.setAttribute('aria-pressed', ui.ptOpen ? 'true' : 'false');
+      t.classList.toggle('on', !!ui.ptOpen);
+    }
+  }
+
+  function setPartyOpen(on, opts) {
+    const want = !!on;
+    if (ui.ptOpen === want) return;
+    ui.ptOpen = want;
+    ui.ptSel = -1;
+    syncPartyChrome();
+    if (want) {
+      /* Leaving NPC focus: the party sheet IS the wide view, and the dedicated
+         single-NPC chrome hides the tab bar it needs. */
+      if (ui.npcFocus) exitFocus();
+      ptAsk(true);
+      renderParty();
+      if (!(opts && opts.noFocus))
+        setTimeout(function () { const s = $('pt-search'); if (s) s.focus(); }, 30);
+    } else {
+      renderParty();
+      setTimeout(function () { const s = $('fd-search'); if (s) s.focus(); }, 30);
+    }
+  }
+
+  /* --------------------------------------------------------- the cache ---- */
+
+  /* Cards are kept while their signature holds; a keystroke only rewrites the
+     highlight. Everything a card draws that is NOT on the member object —
+     portraits, face renders — arrives through a push, and each of those drops
+     this cache at the source (see ptyData, and the roster's fdPortraits /
+     fdCrops / fdFaceIconsData, which call ptDropCache alongside their own). */
+  const ptCache = new Map();
+  function ptDropCache() { ptCache.clear(); }
+
+  const PT_HL_SEL = '.pt-name, .pt-sub, .pt-weap-name, .pt-where, .pt-chip-lbl';
+
+  function ptCollectHl(el) {
+    const out = [];
+    const els = el.querySelectorAll(PT_HL_SEL);
+    for (let i = 0; i < els.length; i++) out.push([els[i], els[i].textContent]);
+    el.__ptHl = out;
+  }
+
+  function ptReHighlight(el, q) {
+    if (el.__ptQ === q) return;
+    const hl = el.__ptHl;
+    if (hl) {
+      for (let i = 0; i < hl.length; i++) {
+        const node = hl[i][0];
+        node.textContent = '';
+        nameNodes(hl[i][1], q).forEach(function (n) { node.append(n); });
+      }
+    }
+    el.__ptQ = q;
+  }
+
+  function ptSig(row) {
+    let body;
+    try { body = JSON.stringify(row.r); } catch (e) { body = String(row.r && row.r.name); }
+    return ui.ptMode + ' ' + row.sev + ' ' + body;
+  }
+
+  /* ------------------------------------------------------------ pieces ---- */
+
+  /* A linear meter. NOT a ring: conic-gradient computes to `none` in the engine
+     that actually draws this, so a ring here would be an empty circle in game
+     and a perfect one in chromium — which is precisely how forty of them
+     shipped blank once already. The fill is an inline width, and inline width
+     is the one thing every engine agrees on. */
+  function ptMeter(cls, cur, max, label, title) {
+    const f = ptFrac(cur, max);
+    const bar = h('div', { class: 'pt-meter ' + cls, title: title || '' },
+      h('div', { class: 'pt-meter-track' },
+        h('div', { class: 'pt-meter-fill' })),
+      h('div', { class: 'pt-meter-txt' }, label));
+    const fill = bar.querySelector('.pt-meter-fill');
+    fill.style.width = Math.round(f * 100) + '%';
+    return bar;
+  }
+
+  function ptPoolMeter(r, kind) {
+    const spec = kind === 'hp'
+      ? { cls: 'hp', cur: r.hp, max: r.hpMax, name: 'Health' }
+      : kind === 'mag'
+      ? { cls: 'mag', cur: r.mag, max: r.magMax, name: 'Magicka' }
+      : { cls: 'sta', cur: r.sta, max: r.staMax, name: 'Stamina' };
+    const cur = Math.round(ptNum(spec.cur));
+    const max = Math.round(ptMax(spec.cur, spec.max));
+    return ptMeter(spec.cls, spec.cur, spec.max, cur + ' / ' + max,
+      spec.name + ' — ' + cur + ' of ' + max
+        + (ptNum(spec.cur) > ptNum(spec.max)
+             ? '\n(A temporary fortify has her above her permanent maximum, so the bar reads full.)'
+             : ''));
+  }
+
+  /* Her face, through the roster's own pipeline — a captured portrait if there
+     is one, else the facegen head render, else initials. Never a second
+     portrait resolver: medalEl / portraitFor already know every rule (the
+     store beating a frozen row, the ?v= retry, the layout-crop fit). */
+  function ptFace(r) {
+    const hit = ptRosterFor(r);
+    const m = {
+      name: r.name || '',
+      original: hit ? (hit.m.original || hit.m.name) : (r.base || r.name || ''),
+      formId: r.formId,
+      following: !r.waiting && !r.dead,
+      dead: !!r.dead,
+    };
+    return medalEl(m, hit ? hit.cat : 0);
+  }
+
+  /* The roster row for a scanned member, by formId first (the reliable key) and
+     by name as the fallback — the same order partyList() de-duplicates in. */
+  function ptRosterFor(r) {
+    const want = Number(r && r.formId) >>> 0;
+    let byName = null;
+    const names = [String((r && r.name) || '').toLowerCase(), String((r && r.base) || '').toLowerCase()];
+    for (let ci = 0; ci < state.cats.length; ci++) {
+      const c = state.cats[ci];
+      if (c.index === ALL) continue;
+      const mem = c.members || [];
+      for (let i = 0; i < mem.length; i++) {
+        const m = mem[i];
+        if (want && (Number(m.formId) >>> 0) === want) return { cat: c.index, idx: i, m: m };
+        if (!byName) {
+          const k = String(m.original || m.name || '').toLowerCase();
+          if (k && (k === names[0] || k === names[1])) byName = { cat: c.index, idx: i, m: m };
+        }
+      }
+    }
+    return byName;
+  }
+
+  function ptChip(issue) {
+    return h('span', { class: 'pt-chip ' + issue.tone, title: issue.label + ' — ' + issue.why },
+      h('span', { class: 'pt-chip-ic', 'aria-hidden': 'true' }, issue.glyph),
+      h('span', { class: 'pt-chip-lbl' }, issue.label));
+  }
+
+  /* Drill in: her card, exactly as F7-on-her would give it. The party sheet
+     implements no per-person verb of its own — every one already exists on the
+     quick card, and a second copy is the failure mode.
+
+     Someone the live scan found who has no Follower Organizer row cannot be
+     addressed that way (quickPick resolves against the roster), so she says so
+     and offers the roster's own Add flow instead of failing silently. */
+  function ptOpenMember(r) {
+    const hit = ptRosterFor(r);
+    if (!hit) {
+      if (typeof toast === 'function')
+        toast('“' + (r.name || 'She') + '” is not on the Follower Organizer roster yet — '
+            + 'add her from the roster and her card opens like everyone else’s');
+      return false;
+    }
+    setPartyOpen(false, { noFocus: true });
+    ui.cat = ALL;
+    enterFocus();
+    pickCrew(hit.m);
+    return true;
+  }
+
+  /* --------------------------------------------------------------- card --- */
+
+  function ptCard(row) {
+    const r = row.r;
+    const w = ptWeaponOf(r);
+    const ammo = (r.ammo && typeof r.ammo === 'object') ? r.ammo : {};
+    const card = h('div', {
+      class: 'pt-card' + (r.dead ? ' dead' : '') + (r.waiting ? ' waiting' : '')
+                       + (row.sev >= PT_TONE_WEIGHT.bad ? ' bad' : (row.sev >= PT_TONE_WEIGHT.warn ? ' warn' : '')),
+      'data-fid': String(r.formId || ''),
+      tabindex: '0',
+      role: 'button',
+      title: 'Open ' + (r.name || 'her') + '’s card — the same one F7 on her gives you',
+      onClick: function (e) { e.stopPropagation(); ptOpenMember(r); },
+      onKeydown: function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ptOpenMember(r); }
+      },
+    });
+
+    const head = h('div', { class: 'pt-card-head' });
+    head.append(h('span', { class: 'pt-face' }, ptFace(r)));
+    const who = h('div', { class: 'pt-who' },
+      h('div', { class: 'pt-name' }, r.name || 'Follower'),
+      h('div', { class: 'pt-sub' },
+        [r.race, r.level ? 'Level ' + r.level : '', r.summon ? 'summoned' : '']
+          .filter(Boolean).join(' · ')));
+    head.append(who);
+    head.append(h('span', {
+      class: 'pt-lv',
+      title: (r.name || 'She') + ' is level ' + (r.level || '?') + '.',
+    }, String(r.level || '?')));
+    card.append(head);
+
+    const bars = h('div', { class: 'pt-bars' });
+    bars.append(ptPoolMeter(r, 'hp'));
+    bars.append(ptPoolMeter(r, 'mag'));
+    bars.append(ptPoolMeter(r, 'sta'));
+    card.append(bars);
+
+    const gear = h('div', { class: 'pt-gear' });
+    gear.append(ptGearCell('⚔', 'Weapon',
+      w.name || 'Bare hands',
+      w.name ? (w.est ? '≈ ' : '') + Math.round(w.damage) : '—',
+      w.name
+        ? (w.name + ' — about ' + Math.round(w.damage) + ' damage a swing.\n'
+           + 'An estimate: the engine only computes the exact figure for the player, so this is '
+           + 'her weapon’s base damage scaled by her skill and fortify effects, and it '
+           + 'cannot see the temper on that particular blade.')
+        : 'Nothing in either hand — she fights with her fists for '
+           + Math.round(ptNum(r.unarmedDamage)) + '.',
+      'pt-weap-name'));
+    gear.append(ptGearCell('⛨', 'Armour',
+      r.body || (r.slots && r.slots.body ? 'Worn' : 'Nothing'),
+      Math.round(ptNum(r.armor)),
+      'Armour rating ' + Math.round(ptNum(r.armor)) + ', which is '
+        + Math.round(ptNum(r.phys)) + '% less physical damage taken (the cap is '
+        + ptNum(r.capPhys || 80) + '%).\n'
+        + (r.pieces || 0) + ' of the 4 armour pieces that carry the per-piece bonus.'));
+    gear.append(ptGearCell('➶', 'Ammo',
+      ammo.name || (w.ranged ? 'None' : '—'),
+      ammo.name ? String(ptNum(ammo.count)) : '—',
+      ammo.name
+        ? (ptNum(ammo.count) + ' × ' + ammo.name + ', ' + Math.round(ptNum(ammo.damage)) + ' damage each.')
+        : (w.ranged ? 'She is holding a ranged weapon and carrying nothing to fire.'
+                    : 'She is not using a ranged weapon.')));
+    gear.append(ptGearCell('■', 'Load',
+      Math.round(ptNum(r.load)) + ' / ' + Math.round(ptNum(r.carry)),
+      ptNum(r.carry) > 0 ? Math.round(100 * ptNum(r.load) / ptNum(r.carry)) + '%' : '—',
+      'Carrying ' + Math.round(ptNum(r.load)) + ' of ' + Math.round(ptNum(r.carry))
+        + '.\nOver her limit she cannot run, so she arrives after the fight.'));
+    card.append(gear);
+
+    const pots = (r.potions && typeof r.potions === 'object') ? r.potions : {};
+    const potTotal = ptNum(pots.health) + ptNum(pots.magicka) + ptNum(pots.stamina) + ptNum(pots.other);
+    const foot = h('div', { class: 'pt-card-foot' });
+    foot.append(h('span', {
+      class: 'pt-pot' + (ptNum(pots.health) > 0 ? '' : ' none'),
+      title: 'Potions in her pack: ' + ptNum(pots.health) + ' health, ' + ptNum(pots.magicka)
+           + ' magicka, ' + ptNum(pots.stamina) + ' stamina, ' + ptNum(pots.other) + ' other.'
+           + (r.invOk === false ? '\nHer bag could not be read this pass, so these are blank rather than zero.' : ''),
+    }, '⚗ ' + ptNum(pots.health) + (potTotal > ptNum(pots.health) ? ' (' + potTotal + ')' : '')));
+    if (r.where)
+      foot.append(h('span', { class: 'pt-where', title: 'She is at ' + r.where + '.' }, r.where));
+    card.append(foot);
+
+    if (row.issues.length) {
+      const chips = h('div', { class: 'pt-chips' });
+      row.issues.forEach(function (i) { chips.append(ptChip(i)); });
+      card.append(chips);
+    } else {
+      card.append(h('div', { class: 'pt-chips' },
+        h('span', { class: 'pt-chip ok', title: 'Nothing on this sheet is wrong with her.' },
+          h('span', { class: 'pt-chip-ic', 'aria-hidden': 'true' }, '✓'),
+          h('span', { class: 'pt-chip-lbl' }, 'Ready'))));
+    }
+    return card;
+  }
+
+  function ptGearCell(glyph, label, text, value, title, extraCls) {
+    return h('div', { class: 'pt-gear-cell', title: title || '' },
+      h('span', { class: 'pt-gear-ic', 'aria-hidden': 'true' }, glyph),
+      h('span', { class: 'pt-gear-body' },
+        h('span', { class: 'pt-gear-lbl' }, label),
+        h('span', { class: 'pt-gear-txt' + (extraCls ? ' ' + extraCls : '') }, text)),
+      h('span', { class: 'pt-gear-val' }, String(value)));
+  }
+
+  /* -------------------------------------------------------------- table --- */
+
+  /* The dense shape — the actual side-by-side. A CSS grid rather than a
+     <table> so one row can be a single grid child (which is what makes the
+     cached-node reconcile possible at all) and so a long name WRAPS in its own
+     column instead of stretching the page. */
+  const PT_COLS = [
+    { key: 'who',    label: 'Follower', sort: 'name',   title: 'Sort A to Z.' },
+    { key: 'level',  label: 'Lv',       sort: 'level',  title: 'Sort by level, highest first.' },
+    { key: 'hp',     label: 'Health',   sort: 'health', title: 'Sort by health, lowest first.' },
+    { key: 'mag',    label: 'Magicka',  sort: '',       title: 'Her magicka pool.' },
+    { key: 'sta',    label: 'Stamina',  sort: '',       title: 'Her stamina pool.' },
+    { key: 'armour', label: 'Armour',   sort: 'armour', title: 'Sort by armour, weakest first.' },
+    { key: 'weapon', label: 'Weapon',   sort: 'damage', title: 'Sort by damage, highest first.' },
+    { key: 'load',   label: 'Load',     sort: 'load',   title: 'Sort by pack fullness, fullest first.' },
+    { key: 'issues', label: 'Status',   sort: 'issues', title: 'Sort worst-first.' },
+  ];
+
+  function ptTableHead() {
+    const head = h('div', { class: 'pt-thead', role: 'row' });
+    PT_COLS.forEach(function (c) {
+      const active = c.sort && ui.ptSort === c.sort;
+      head.append(c.sort
+        ? h('button', {
+            class: 'pt-th sortable' + (active ? ' active' : ''), type: 'button',
+            'data-col': c.key, title: c.title,
+            onClick: function (e) { e.stopPropagation(); ui.ptSort = c.sort; renderParty(); },
+          }, c.label, active ? h('span', { class: 'pt-th-arrow', 'aria-hidden': 'true' }, '▾') : null)
+        : h('span', { class: 'pt-th', 'data-col': c.key, title: c.title }, c.label));
+    });
+    return head;
+  }
+
+  function ptTableRow(row) {
+    const r = row.r;
+    const w = ptWeaponOf(r);
+    const ammo = (r.ammo && typeof r.ammo === 'object') ? r.ammo : {};
+    const tr = h('div', {
+      class: 'pt-tr' + (r.dead ? ' dead' : '') + (r.waiting ? ' waiting' : '')
+                     + (row.sev >= PT_TONE_WEIGHT.bad ? ' bad' : (row.sev >= PT_TONE_WEIGHT.warn ? ' warn' : '')),
+      'data-fid': String(r.formId || ''),
+      role: 'row', tabindex: '0',
+      title: 'Open ' + (r.name || 'her') + '’s card',
+      onClick: function (e) { e.stopPropagation(); ptOpenMember(r); },
+      onKeydown: function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ptOpenMember(r); }
+      },
+    });
+
+    tr.append(h('span', { class: 'pt-td who' },
+      h('span', { class: 'pt-face sm' }, ptFace(r)),
+      h('span', { class: 'pt-who' },
+        h('span', { class: 'pt-name' }, r.name || 'Follower'),
+        h('span', { class: 'pt-sub' }, r.race || ''))));
+    tr.append(h('span', { class: 'pt-td num', title: 'Level' }, String(r.level || '?')));
+    tr.append(h('span', { class: 'pt-td' }, ptPoolMeter(r, 'hp')));
+    tr.append(h('span', { class: 'pt-td' }, ptPoolMeter(r, 'mag')));
+    tr.append(h('span', { class: 'pt-td' }, ptPoolMeter(r, 'sta')));
+    tr.append(h('span', {
+      class: 'pt-td num',
+      title: 'Armour rating ' + Math.round(ptNum(r.armor)) + ' — '
+           + Math.round(ptNum(r.phys)) + '% less physical damage, from '
+           + (r.pieces || 0) + ' of 4 bonus-carrying pieces.',
+    }, String(Math.round(ptNum(r.armor)))));
+    tr.append(h('span', { class: 'pt-td weap' },
+      h('span', { class: 'pt-weap-name', title: w.name || 'Bare hands' }, w.name || 'Bare hands'),
+      h('span', {
+        class: 'pt-weap-dmg',
+        title: w.name
+          ? 'About ' + Math.round(w.damage) + ' damage — an estimate, since the engine only '
+            + 'computes the exact figure for the player.'
+          : 'Unarmed.',
+      }, w.name ? (w.est ? '≈' : '') + Math.round(w.damage) : '—'),
+      ammo.name ? h('span', {
+        class: 'pt-weap-ammo' + (ptNum(ammo.count) <= 0 ? ' none' : ''),
+        title: ptNum(ammo.count) + ' × ' + ammo.name,
+      }, '➶' + ptNum(ammo.count)) : null));
+    tr.append(h('span', {
+      class: 'pt-td num' + (ptNum(r.carry) > 0 && ptNum(r.load) > ptNum(r.carry) ? ' over' : ''),
+      title: 'Carrying ' + Math.round(ptNum(r.load)) + ' of ' + Math.round(ptNum(r.carry)) + '.',
+    }, ptNum(r.carry) > 0 ? Math.round(100 * ptNum(r.load) / ptNum(r.carry)) + '%' : '—'));
+
+    const st = h('span', { class: 'pt-td chips' });
+    if (row.issues.length) row.issues.forEach(function (i) { st.append(ptChip(i)); });
+    else st.append(h('span', { class: 'pt-chip ok', title: 'Nothing wrong with her.' },
+      h('span', { class: 'pt-chip-ic', 'aria-hidden': 'true' }, '✓'),
+      h('span', { class: 'pt-chip-lbl' }, 'Ready')));
+    tr.append(st);
+    return tr;
+  }
+
+  /* ---------------------------------------------------------- the page ---- */
+
+  function ptMountPane() {
+    let pane = $('pt-pane');
+    if (pane) return pane;
+    const main = $('fd-main');
+    if (!main) return null;
+    pane = h('section', { id: 'pt-pane', 'aria-label': 'Party sheet' },
+      h('div', { class: 'pt-head' }),
+      h('div', { class: 'pt-filters' }),
+      h('div', { class: 'pt-body' }),
+      h('div', { class: 'pt-empty hidden' }));
+    /* Before the roster list, so the party sheet occupies the same slot the
+       roster does and inherits its scroll box rather than sitting under it. */
+    const before = $('fd-list');
+    if (before && before.parentNode === main) main.insertBefore(pane, before);
+    else main.append(pane);
+    return pane;
+  }
+
+  function ptCountLine() {
+    const all = ptMembers();
+    const here = all.filter(function (r) { return !r.waiting && !r.dead; }).length;
+    const away = all.filter(function (r) { return r.waiting; }).length;
+    const down = all.filter(function (r) { return r.dead; }).length;
+    const bits = [here + ' with you'];
+    if (away) bits.push(away + ' waiting');
+    if (down) bits.push(down + ' down');
+    if (state.party.unloaded) bits.push(state.party.unloaded + ' too far to read');
+    return bits.join(' · ');
+  }
+
+  function ptRenderHead(pane) {
+    const head = pane.querySelector('.pt-head');
+    head.textContent = '';
+
+    head.append(h('button', {
+      class: 'pt-back', type: 'button',
+      title: 'Back to the follower roster',
+      onClick: function (e) { e.stopPropagation(); setPartyOpen(false); },
+    }, h('span', { class: 'pt-back-chev', 'aria-hidden': 'true' }, '◂'), 'Roster'));
+
+    head.append(h('div', { class: 'pt-title-wrap' },
+      h('div', { class: 'pt-title' }, 'Party sheet'),
+      h('div', { class: 'pt-count', title: 'Read the instant this page opened. The game is paused while the deck is up, so nothing can change underneath it.' },
+        ptCountLine())));
+
+    const wrap = h('div', { class: 'pt-search-wrap' },
+      h('span', { class: 'pt-search-ic', 'aria-hidden': 'true' }, '⌕'));
+    const input = h('input', {
+      id: 'pt-search', type: 'text', autocomplete: 'off', spellcheck: 'false',
+      placeholder: 'Search names, weapons, places — or “arrows”, “hurt”, “encumbered”…',
+      title: 'Filters as you type. Enter opens the top match.',
+    });
+    input.value = ui.ptFilter || '';
+    input.addEventListener('input', function (e) {
+      ui.ptFilter = e.target.value; ui.ptSel = -1; ptRenderBody(pane);
+    });
+    /* Filter-as-you-type with the deck's own idiom: arrows move, Enter takes
+       the highlighted row (the TOP hit when you have not moved), Escape clears
+       the box before it leaves the mode. Handled on the input rather than in
+       FolPane.onKey because the pane's key router deliberately hands every
+       keystroke inside an <input> straight to that input — see its `inText`
+       branch, which exists so typing a name never steers the roster. */
+    input.addEventListener('keydown', function (e) {
+      const rows = ptVisible();
+      if (e.key === 'Enter') {
+        const pick = rows[ui.ptSel >= 0 ? ui.ptSel : 0];
+        if (pick) { e.preventDefault(); e.stopPropagation(); ptOpenMember(pick.r); }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault(); e.stopPropagation();
+        ui.ptSel = Math.min(rows.length - 1, ui.ptSel + 1); ptRenderBody(pane);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault(); e.stopPropagation();
+        ui.ptSel = Math.max(0, ui.ptSel < 0 ? 0 : ui.ptSel - 1); ptRenderBody(pane);
+      } else if (e.key === 'Escape' && ui.ptFilter) {
+        e.preventDefault(); e.stopPropagation();
+        ui.ptFilter = ''; ui.ptSel = -1; input.value = ''; ptRenderBody(pane);
+      }
+    });
+    wrap.append(input);
+    if (ui.ptFilter) wrap.append(h('button', {
+      class: 'pt-search-x', type: 'button', title: 'Clear the search',
+      onClick: function (e) { e.stopPropagation(); ui.ptFilter = ''; ptRenderHead(pane); ptRenderBody(pane);
+        const s = $('pt-search'); if (s) s.focus(); },
+    }, '✕'));
+    head.append(wrap);
+
+    const modes = h('div', { class: 'pt-modes', role: 'group', 'aria-label': 'Layout' });
+    [{ k: 'cards', ic: '▣', lbl: 'Cards', t: 'One card each — the readable shape.' },
+     { k: 'table', ic: '≡', lbl: 'Table', t: 'One dense row each, columns aligned — the comparing shape.' }]
+      .forEach(function (m) {
+        modes.append(h('button', {
+          class: 'pt-mode' + (ui.ptMode === m.k ? ' on' : ''), type: 'button',
+          'aria-pressed': ui.ptMode === m.k ? 'true' : 'false', title: m.t,
+          onClick: function (e) { e.stopPropagation(); if (ui.ptMode === m.k) return;
+            ui.ptMode = m.k; ptDropCache(); renderParty(); },
+        }, h('span', { class: 'pt-mode-ic', 'aria-hidden': 'true' }, m.ic),
+           h('span', { class: 'pt-mode-lbl' }, m.lbl)));
+      });
+    head.append(modes);
+
+    head.append(h('button', {
+      class: 'pt-refresh' + (state.party.asking ? ' busy' : ''), type: 'button',
+      title: 'Read the party again.\nThe game is paused while the deck is open, so this only '
+           + 'matters after you have given an order and come back.',
+      onClick: function (e) { e.stopPropagation(); ptAsk(true); renderParty(); },
+    }, '↻'));
+  }
+
+  function ptRenderFilters(pane) {
+    const bar = pane.querySelector('.pt-filters');
+    bar.textContent = '';
+
+    const scopes = h('div', { class: 'pt-scopes', role: 'group', 'aria-label': 'Who to show' });
+    PT_SCOPES.forEach(function (s) {
+      scopes.append(h('button', {
+        class: 'pt-fchip' + (ui.ptScope === s.key ? ' on' : ''), type: 'button',
+        'aria-pressed': ui.ptScope === s.key ? 'true' : 'false', title: s.title,
+        onClick: function (e) { e.stopPropagation(); ui.ptScope = s.key; ui.ptSel = -1; ptRenderFilters(pane); ptRenderBody(pane); },
+      }, s.label));
+    });
+    bar.append(scopes);
+
+    bar.append(h('span', { class: 'pt-filters-spring' }));
+
+    /* The table sorts from its own headers, so a second control saying the same
+       thing would be two places to look. */
+    if (ui.ptMode === 'cards') {
+      const sorts = h('div', { class: 'pt-sorts', role: 'group', 'aria-label': 'Sort by' });
+      sorts.append(h('span', { class: 'pt-sorts-lbl' }, 'Sort'));
+      PT_SORTS.forEach(function (s) {
+        sorts.append(h('button', {
+          class: 'pt-fchip' + (ui.ptSort === s.key ? ' on' : ''), type: 'button',
+          'aria-pressed': ui.ptSort === s.key ? 'true' : 'false', title: s.title,
+          onClick: function (e) { e.stopPropagation(); ui.ptSort = s.key; ptRenderFilters(pane); ptRenderBody(pane); },
+        }, s.label));
+      });
+      bar.append(sorts);
+    }
+
+    const hasSummon = (state.party.members || []).some(function (r) { return r.summon; });
+    if (hasSummon)
+      bar.append(h('button', {
+        class: 'pt-fchip' + (ui.ptSummons ? ' on' : ''), type: 'button',
+        'aria-pressed': ui.ptSummons ? 'true' : 'false',
+        title: 'A conjured familiar is a teammate too. Grading one for owning no boots is '
+             + 'nonsense, so they are hidden — turn them on if you want to see them.',
+        onClick: function (e) { e.stopPropagation(); ui.ptSummons = !ui.ptSummons; ptDropCache();
+          ptRenderFilters(pane); ptRenderBody(pane); ptRenderHead(pane); },
+      }, '✦ Summons'));
+  }
+
+  function ptRenderBody(pane) {
+    const body = pane.querySelector('.pt-body');
+    const empty = pane.querySelector('.pt-empty');
+    const rows = ptVisible();
+    const q = String(ui.ptFilter || '').trim();
+
+    if (!rows.length) {
+      body.textContent = '';
+      body.classList.add('hidden');
+      empty.classList.remove('hidden');
+      empty.textContent = '';
+      empty.append(h('div', { class: 'pt-em-ic', 'aria-hidden': 'true' }, q ? '⌕' : '⚔'));
+      if (state.party.asking && !state.party.at) {
+        empty.append(h('div', { class: 'pt-em-title' }, 'Reading the party…'));
+        empty.append(h('div', { class: 'pt-em-sub' }, 'Measuring everyone the game can see.'));
+      } else if (!state.party.ok) {
+        empty.append(h('div', { class: 'pt-em-title' }, 'The party could not be read'));
+        empty.append(h('div', { class: 'pt-em-sub' }, state.party.msg || 'No answer from the game.'));
+      } else if (q) {
+        empty.append(h('div', { class: 'pt-em-title' }, 'Nobody matches “' + q + '”'));
+        empty.append(h('div', { class: 'pt-em-sub' },
+          'The search covers names, weapons, places and the warnings themselves.'));
+      } else if (ui.ptScope !== 'all') {
+        empty.append(h('div', { class: 'pt-em-title' },
+          ui.ptScope === 'issues' ? 'Everyone is in good shape' : 'Nobody in this group'));
+        empty.append(h('div', { class: 'pt-em-sub' },
+          ui.ptScope === 'issues'
+            ? 'No missing weapons, no empty quivers, nobody badly hurt.'
+            : 'Try “Everyone”.'));
+      } else {
+        empty.append(h('div', { class: 'pt-em-title' }, 'Nobody is with you'));
+        empty.append(h('div', { class: 'pt-em-sub' },
+          state.party.unloaded
+            ? state.party.unloaded + ' of your followers are too far away for the game to read.'
+            : 'Recruit someone, or summon your retinue from the roster’s party row.'));
+      }
+      return;
+    }
+
+    empty.classList.add('hidden');
+    body.classList.remove('hidden');
+    body.classList.toggle('pt-as-table', ui.ptMode === 'table');
+    body.classList.toggle('pt-as-cards', ui.ptMode !== 'table');
+
+    const nodes = [];
+    if (ui.ptMode === 'table') {
+      let head = ptCache.get(' head');
+      const headSig = 'head ' + ui.ptSort;
+      if (!head || head.__ptSig !== headSig) {
+        head = ptTableHead();
+        head.__ptSig = headSig;
+        ptCache.set(' head', head);
+      }
+      nodes.push(head);
+    }
+    if (ui.ptSel >= rows.length) ui.ptSel = rows.length - 1;
+    rows.forEach(function (row, i) {
+      const key = String(row.r.formId || row.r.name);
+      const sig = ptSig(row);
+      let node = ptCache.get(key);
+      if (!node || node.__ptSig !== sig) {
+        node = ui.ptMode === 'table' ? ptTableRow(row) : ptCard(row);
+        node.__ptSig = sig;
+        node.__ptQ = q;
+        ptCollectHl(node);
+        ptCache.set(key, node);
+      } else {
+        ptReHighlight(node, q);
+      }
+      /* A class, not a rebuild — moving the highlight must not cost a node. */
+      node.classList.toggle('sel', i === ui.ptSel);
+      nodes.push(node);
+    });
+    fdReconcile(body, nodes);
+    if (ui.ptSel >= 0) {
+      const sel = body.querySelector('.sel');
+      if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function renderParty() {
+    if (!ui.ptOpen) return;
+    const pane = ptMountPane();
+    if (!pane) return;
+    ptRenderHead(pane);
+    ptRenderFilters(pane);
+    ptRenderBody(pane);
+  }
+
+  /* The switch into the sheet, living in the roster's search row where the eye
+     already is. Built here rather than in index.html so the party sheet needs
+     no skeleton edit — and so a build whose CSS never loaded still shows a
+     labelled button rather than a mystery box. */
+  function ptMountToggle() {
+    if ($('pt-toggle')) return;
+    const wrap = $('fd-search-wrap');
+    if (!wrap) return;
+    wrap.append(h('button', {
+      id: 'pt-toggle', type: 'button', 'aria-pressed': 'false',
+      title: 'Party sheet — everyone’s gear, health and status side by side, '
+           + 'so you can see who is hurt, who has no weapon and who is carrying too much.',
+      onClick: function (e) { e.stopPropagation(); setPartyOpen(!ui.ptOpen); },
+    }, h('span', { class: 'pt-toggle-ic', 'aria-hidden': 'true' }, '⚔'),
+       h('span', { class: 'pt-toggle-lbl' }, 'Party sheet')));
   }
 
   window.FolPane = {
@@ -9118,6 +12778,12 @@
       if (icRst) icRst.addEventListener('click', () => nudgeIcon(0));
       applyAvatarSize();   // paint the saved sizes before the first render
       applyUiScale();
+      /* The party-sheet switch lives in the search row where the eye already
+         is. Mounted from JS rather than index.html so the feature needs no
+         skeleton edit — and so a build whose stylesheet never loaded still
+         shows a labelled button instead of a mystery box. */
+      ptMountToggle();
+      syncPartyChrome();
       $('fd-list').addEventListener('scroll', closeCtx, true);
       chainIcons();
       /* Edit-mode icon slots, DELEGATED: the rail is re-rendered on every
@@ -9160,7 +12826,12 @@
     /* Called from hdClosed: the deck closing must not carry NPC-focus into the
        next open. hdClosed strips the body class; this clears the FLAG behind it
        so a re-open with no crosshair target can't re-paint an empty focus. */
-    _resetFocus() { ui.npcFocus = false; ui.focusRosterOpen = false; ui.focusDismissed = false; },
+    _resetFocus() {
+      ui.npcFocus = false; ui.focusRosterOpen = false; ui.focusDismissed = false;
+      /* The palette is closing: the card's ⌕ popout is an #overlay child and
+         would otherwise still be sitting there on the next open. */
+      fqFindClose();
+    },
 
     onShow() {
       ui.sel = -1;
@@ -9170,8 +12841,19 @@
       // Re-query every show: the roster can change through FO's native flows,
       // and the crosshair add-target is per-open (snapshotted by C++).
       toGame('fdRefresh');
+      /* The party sheet survives a tab switch, so coming back must re-read it:
+         the numbers are a SNAPSHOT, and a snapshot taken before you went and
+         gave an order is exactly the stale reading this page exists to avoid.
+         (Its own 1.2 s gate folds this into one ask when the show and the open
+         coincide.) */
+      ptMountToggle();
+      syncPartyChrome();
+      if (ui.ptOpen) ptAsk(false);
       render();
-      setTimeout(() => { const s = $('fd-search'); if (s) s.focus(); }, 30);
+      setTimeout(() => {
+        const s = $(ui.ptOpen ? 'pt-search' : 'fd-search');
+        if (s) s.focus();
+      }, 30);
     },
 
     onHide() {
@@ -9179,6 +12861,10 @@
       closeHudModal();   // the HUD settings modal must not outlive its tab
       closeWornLightbox();
       closeCtx();
+      /* Same law: the card's action search is an #overlay child, so leaving
+         the tab without closing it would leave a popout floating over whatever
+         comes next, eating clicks. */
+      fqFindClose();
       ui.editing = false;
       ui.filter = '';
       const s = $('fd-search'); if (s) s.value = '';
@@ -9188,6 +12874,13 @@
          a within-focus statement; leaving the tab is a clean reset. */
       ui.npcFocus = false;
       ui.focusRosterOpen = false;
+      /* The party sheet's own transient state. ptOpen is KEPT — which shape of
+         the tab you were last reading is a within-session preference, and
+         re-entering the tab to find the roster you did not ask for is the
+         annoyance this avoids. The filter is not: a search is about a moment. */
+      ui.ptFilter = '';
+      ui.ptSel = -1;
+      const ps = $('pt-search'); if (ps) ps.value = '';
       if (typeof document !== 'undefined' && document.body)
         document.body.classList.remove('hd-npcfocus', 'hd-focusroster');
     },
@@ -9231,11 +12924,27 @@
         }
         return true;   // swallow the rest rather than acting behind an overlay
       }
+      /* The card's ⌕ action search, when it is up. ABOVE the inText branch on
+         purpose: that branch blurs a focused input on Escape, which here would
+         leave the popout on screen with nothing driving it. app.js's key
+         router is capture-phase, so this runs BEFORE the input's own listener
+         and is the handling that actually happens in game. */
+      if (FQF.open && fqFindKey(e)) return true;
+
       const t = e.target;
       const inText = t && (t.tagName === 'INPUT' || t.tagName === 'SELECT');
       if (ctxEl) {
         if (e.key === 'Escape') { e.preventDefault(); closeCtx(); return true; }
         return true;  // typing lives inside the menu's inputs
+      }
+      /* The party sheet is a MODE, and Escape leaves a mode before it leaves
+         the deck — the same order the crop editor and the context menu already
+         keep. Its own search box handles Escape-with-text itself (clearing
+         beats leaving); this is the empty-box and the nothing-focused case, and
+         it sits ABOVE the `inText` branch below so it wins over that branch's
+         blur. */
+      if (ui.ptOpen && e.key === 'Escape' && !ui.ptFilter) {
+        e.preventDefault(); setPartyOpen(false); return true;
       }
       if (inText && t.id !== 'fd-search') {
         if (e.key === 'Escape') { e.preventDefault(); t.blur(); return true; }
@@ -9266,7 +12975,16 @@
         return true;
       }
       // funnel plain typing into our search box
-      if (!inText && e.key && e.key.length === 1) {
+      if (!inText && e.key && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        /* …or into the CARD's action search, when the card is the surface you
+           are looking at (F7 focus hides the roster and its search box, so the
+           letter has nowhere else to go). fqFindClaimsTyping measures that
+           rather than guessing it — see the note on the function. */
+        if (fqFindClaimsTyping()) {
+          e.preventDefault();
+          fqFindOpen(e.key);
+          return true;
+        }
         const s = $('fd-search');
         if (s && document.activeElement !== s) { s.focus(); }
       }
@@ -9281,7 +12999,10 @@
       syncChrome();
       toast('Followers key set to ' + label);
     },
-    closeMenus: closeCtx,
+    /* "clear the pane's popouts" — app.js calls this before it raises anything
+       of its own (the icon picker, the backdrop). The action search is one of
+       them, so it goes with the member menu rather than surviving underneath. */
+    closeMenus() { closeCtx(); fqFindClose(); },
     /* Read-only roster projection for the Domains tab's face clusters. Additive
        and side-effect free: it walks the SAME normalized members the tab already
        holds and hands back only what a face needs — the display name, the typed
@@ -9342,7 +13063,7 @@
       return portraitFor({ original: who.original, name: who.name });
     },
     /* test hooks */
-    _renderHudCard: renderHudCard, _hudCfg: hudCfg,
+    _renderHudCard: renderHudCard, _hudCfg: hudCfg, _hudSettingsRow: hudSettingsRow,
     _setHudState: function (s) { hudState = s; renderHudCard(); },
     _state: state, _ui: ui, _visibleRows: visibleRows, _render: render,
     _renderList: renderList, _syncCount: syncCount, _partyList: partyList,
@@ -9357,6 +13078,40 @@
     _openSpotPicker: openSpotPicker, _spotPhrase: spotPhrase,
     _rankLabel: rankLabel, _clampRank: clampRank, _rankNum: rankNum,
     _spouseChip: spouseChip, _rankView: rankView,
+    /* Trade (2026-08-17): exported so the harness can assert the barter-vs-pack
+       prediction WITHOUT a running game — it is the half that must not drift
+       from src/trade_actions.cpp. */
+    _tradePlan: tradePlan, _tradeTitle: tradeTitle,
+    /* Restraints (2026-08-17): the icon ask sits behind a 400 ms settle gate,
+       and the harness runs synchronously — so it flushes the pending ask
+       rather than sleeping. The rest is read-only state for the page-size and
+       sort checks. */
+    _fxZazFlushAsk: fxZazFlushAsk, _fxZazCmp: fxZazCmp,
+    _FX_ZAZ_SIZES: FX_ZAZ_SIZES,
+    _fxZazState: function () {
+      return { page: fxZazPage, size: fxZazSize, cat: fxZazCat,
+               worn: fxZazWorn, sort: fxZazSort, watching: !!fxZazPollT };
+    },
+    /* ---- Party sheet, for followers-pane.test.html ---- */
+    _PT_RULES: PT_RULES, _PT_SORTS: PT_SORTS, _PT_SCOPES: PT_SCOPES, _PT_COLS: PT_COLS,
+    _ptIssues: ptIssues, _ptSeverity: ptSeverity, _ptVisible: ptVisible,
+    _ptWeaponOf: ptWeaponOf, _ptFrac: ptFrac, _ptMax: ptMax, _ptMembers: ptMembers,
+    _ptHaystack: ptHaystack, _ptRosterFor: ptRosterFor, _ptOpenMember: ptOpenMember,
+    _renderParty: renderParty, _setPartyOpen: setPartyOpen, _ptAsk: ptAsk,
+    _ptMountPane: ptMountPane, _ptMountToggle: ptMountToggle, _ptCountLine: ptCountLine,
+    _ptDropCache: ptDropCache, _ptCacheSize: function () { return ptCache.size; },
+    /* ---- Omni providers. window.HDOmni is absent in the harness, so the
+       registrations never run there — the index builders are exported so the
+       checks drive the SHIPPED functions rather than a copy of them. ---- */
+    _omniIndex: omniFollowersIndex,
+    _fqOmni: {
+      state: FQ_OMNI, subject: fqOmniSubject, rows: fqOmniRows,
+      items: fqOmniItems, go: fqOmniGo,
+      index: fqOmniIndex, warm: fqOmniWarm,
+      /* An empty key is not a valid subject name, so the next index() is
+         guaranteed to re-read rather than trust a stale snapshot. */
+      forget: function () { FQ_OMNI.key = ''; FQ_OMNI.items = []; },
+    },
     _refreshOpenMenu: refreshOpenMenu, _disarm: disarm,
     _ramp: ramp, _oddPx: oddPx, _applyAvatarSize: applyAvatarSize, _AV_DEF: AV_DEF,
     _deckScale: deckScale, _ctxWidthPx: ctxWidthPx, _ctxMaxHpx: ctxMaxHpx,
@@ -9423,6 +13178,23 @@
     _openSpellShare: openSpellShare, _openTunePanel: openTunePanel,
     _openPerkGrant: openPerkGrant, _POOLS: POOLS,
     _syncQuickEquipped: syncQuickEquipped,
+    /* ⌕ the card's action search (fq-find-actions). The whole surface, so the
+       harness drives the real thing rather than a copy of its logic. */
+    _fqFind: {
+      state: FQF,
+      open: fqFindOpen, close: fqFindClose, paint: fqFindPaint,
+      key: fqFindKey, fire: fqFindFire, resolve: fqFindResolve,
+      index: fqFindIndex, scan: fqScan, rank: fqRank, score: fqScoreRow,
+      face: fqFaceOf, sect: fqSectOf, clause: fqFirstClause, hl: fqHl,
+      reveals: fqRevealFlags, claimsTyping: fqFindClaimsTyping,
+      probing: function () { return fqProbing; },
+      forgetProbe: function () { FQF.probeKey = ''; FQF.probeAt = 0; FQF.probe = []; },
+      bar: function () { const c = fqFindCard(); return c ? c.querySelector('.fq-find') : null; },
+      input: fqFindInput,
+      pop: function () { return FQF.popEl; },
+      outside: fqFindOutside,
+      place: fqFindPlace,
+    },
     _SANDBOX_STYLES: SANDBOX_STYLES, _openSandboxStyle: openSandboxStyle,
     /* The clothes block asks the Wardrobe modules once per palette open; the
        harness mounts the card dozens of times, so it needs the gate back. */
@@ -9446,6 +13218,7 @@
   };
 
   window.fdState = function (env) {
+    dropRowCache();   // a push the row signature cannot see for itself
     env = coerce(env);
     if (!env) return;
     if (env.msg) toast(env.msg);
@@ -9466,6 +13239,23 @@
      bounded, and only while the tab is up, because a templated NPC has no
      facegen file and would otherwise be polled forever. */
   let faceIconsTimer = 0, faceIconsPolls = 0, faceIconsLastAsk = 0;
+  /* Heads ASKED FOR but not yet delivered (formid-hex key → asked-at ms).
+     This is what lets a medallion show a LOADING ring instead of sitting on
+     bare initials while the render bakes (Rober, 2026-08-19: "show some sort
+     of loading animation between the blank profile pic and grabbing the
+     face"). Session-only. Cleared per-key when fdFaceIconsData delivers that
+     face, and wholesale when a reply says queued:0 — at that point nothing
+     more will ever land, so a surviving entry would spin forever over an NPC
+     who simply has no facegen file. The TTL in facePendingFor is the backstop
+     for a reply that never comes at all. */
+  const facePending = {};
+  function facePendingFor(m) {
+    const k = String((m && m.formId) || '').toLowerCase();
+    const at = k ? facePending[k] : 0;
+    if (!at) return false;
+    if (Date.now() - at > 150000) { delete facePending[k]; return false; }  // 24 polls × 5 s + slack
+    return true;
+  }
   function requestFaceIcons(reset) {
     if (reset) faceIconsPolls = 0;
     const now = Date.now();
@@ -9481,6 +13271,15 @@
       const k = String(m.formId || '').toLowerCase();
       if (k && !state.faceIcons[k]) ids[k] = 1;
     });
+    /* …and everyone the party sheet measured. Almost always the same people as
+       the live scan above, but not necessarily: a member the caller NAMED (a
+       roster row the two faction tests missed) is on the sheet without ever
+       having been in liveParty, and without this her card is the only face on
+       the page still drawing initials. */
+    ((state.party && state.party.members) || []).forEach(function (m) {
+      const k = String(m.formId || '').toLowerCase();
+      if (k && !state.faceIcons[k]) ids[k] = 1;
+    });
     /* The F7 LOOKING-AT card's subject rides along too (folded into the same
        ask when a roster refresh happens to coincide). Its dedicated trigger is
        requestTargetFace() below — this covers the case where it is already the
@@ -9490,6 +13289,7 @@
     const list = Object.keys(ids);
     if (!list.length) return;
     faceIconsLastAsk = now;
+    list.forEach(function (k) { if (!facePending[k]) facePending[k] = now; });
     toGame('fdFaceIcons', JSON.stringify({ ids: list }));
   }
 
@@ -9510,10 +13310,12 @@
     if (!tk || state.faceIcons[tk]) return;
     faceIconsPolls = 0;                     // re-arm the completion poll for this head
     faceIconsLastAsk = Date.now();
+    if (!facePending[tk]) facePending[tk] = Date.now();
     toGame('fdFaceIcons', JSON.stringify({ ids: [tk] }));
   }
 
   window.fdFaceIconsData = function (env) {
+    dropRowCache();   // a push the row signature cannot see for itself
     const v = coerce(env);
     if (!v || typeof v !== 'object') return;
     let changed = false;
@@ -9522,13 +13324,21 @@
       const path = String(icons[k] || '');
       const key = String(k).toLowerCase();
       if (path && state.faceIcons[key] !== path) { state.faceIcons[key] = path; changed = true; }
+      if (facePending[key]) { delete facePending[key]; changed = true; }
     });
+    clearTimeout(faceIconsTimer);
+    const queued = Number(v.queued) || 0;
+    /* queued:0 = the bridge has nothing baking, so no face beyond the ones
+       just delivered will EVER land from this ask — anything still pending is
+       a dead end (templated NPC, no facegen file) and its loading ring must
+       stop now rather than spin out the TTL over honest initials. */
+    if (queued === 0) {
+      Object.keys(facePending).forEach(function (k) { delete facePending[k]; changed = true; });
+    }
     if (changed) {
       if (isActive()) render();
       renderQuickCard();
     }
-    clearTimeout(faceIconsTimer);
-    const queued = Number(v.queued) || 0;
     if (queued > 0 && faceIconsPolls < 24) {
       faceIconsPolls++;
       faceIconsTimer = setTimeout(function () { if (isActive()) requestFaceIcons(false); }, 5000);
@@ -9541,6 +13351,7 @@
      mods, CHIM soft-follow) still show in "Current party". De-dup vs the roster is by
      formId there, so an FO member is never doubled. */
   window.fdLiveParty = function (env) {
+    dropRowCache();   // a push the row signature cannot see for itself
     const v = coerce(env);
     state.liveParty = Array.isArray(v) ? v : (v && Array.isArray(v.list) ? v.list : []);
     if (isActive()) render();
@@ -9625,15 +13436,17 @@
     state.equipped[''] = undefined;
     delete state.equipped[''];
     equippedAsked = { key: null, at: 0 };
-    renderQuickCard();
     /* A new person under the crosshair needs their facegen head fetched (or
        queued) so the LOOKING-AT medallion fills — the roster/live-party walk in
        requestFaceIcons never covers a stranger. Only on a genuine target change
        (nowId !== wasId) so a jittering crosshair on the same NPC doesn't spam
        the bridge. requestTargetFace dedupes against the cache, so an FO
        follower you look at costs nothing, and it bypasses the roster-refresh
-       debounce so a stranger's head is never swallowed by a coincident fdState. */
+       debounce so a stranger's head is never swallowed by a coincident fdState.
+       BEFORE renderQuickCard on purpose: the ask is what marks facePending,
+       and the card's very first paint must already wear the loading ring. */
     if (nowId !== wasId) requestTargetFace();
+    renderQuickCard();
     if (quickHost && quickHost.isConnected) askEquipped(null);
     if (isActive()) renderAdd();
     /* F7 NPC-focus, the "last-closed tab was Followers" path: there, hdOpen's
@@ -9657,6 +13470,7 @@
      slug. An object carrying a .portraits array is accepted too, so C++ can grow
      the envelope later without breaking this. */
   window.fdPortraits = function (list) {
+    dropRowCache();   // a push the row signature cannot see for itself
     list = coerce(list);
     const arr = Array.isArray(list) ? list
       : (list && Array.isArray(list.portraits) ? list.portraits : []);
@@ -9701,6 +13515,7 @@
      how a prune reaches the screen. Re-validated here anyway: hotkeys.json is
      hand-editable and this is the one input the editor's own clamp never saw. */
   window.fdCrops = function (obj) {
+    dropRowCache();   // a push the row signature cannot see for itself
     obj = coerce(obj);
     const src = (obj && typeof obj === 'object' && !Array.isArray(obj))
       ? (obj.crops && typeof obj.crops === 'object' ? obj.crops : obj) : {};
@@ -9718,6 +13533,12 @@
       n++;
     });
     state.crops = map;
+    /* Hand the whole map to the SHARED portrait lane. followers-pane still owns
+       this data (it loads, edits and persists it) — but every other surface that
+       draws a face needs to be able to ask for the framing, and before this the
+       store was private to this file, which is why fourteen panes centre-cropped
+       instead (2026-08-19 sweep). One push here, and they all agree. */
+    if (window.HDFaceFit && HDFaceFit.setPortraitCrops) HDFaceFit.setPortraitCrops(map);
     if (isActive()) renderList();
     renderQuickCard();
   };
@@ -9733,6 +13554,7 @@
      never fdFraming — a bridge name used for both directions unplugs the
      control (this has bitten four times). */
   window.fdFramingInfo = function (env) {
+    dropRowCache();   // a push the row signature cannot see for itself
     const e = coerce(env);
     if (!e || typeof e !== 'object') return;
     const num = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
@@ -9776,6 +13598,7 @@
   })();
 
   window.fdNff = function (env) {
+    dropRowCache();   // a push the row signature cannot see for itself
     env = coerce(env);
     const isMap = env && typeof env === 'object' && !env.members &&
                   typeof env.nff !== 'boolean' && !Array.isArray(env);
@@ -9841,6 +13664,7 @@
      handler deliberately changes no state, so a payload from a newer DLL
      than this view cannot corrupt anything. */
   window.fdMhiyhResult = function (env) {
+    dropRowCache();   // a push the row signature cannot see for itself
     env = coerce(env);
     if (!env || typeof env !== 'object') return;
     const msg = typeof env.msg === 'string' ? env.msg : '';
@@ -9961,6 +13785,7 @@
      spellbook. Request name is `fdTune`; a shared name would unplug the whole
      block (the deck law). */
   window.fdTuneInfo = function (env) {
+    dropRowCache();   // a push the row signature cannot see for itself
     env = coerce(env);
     if (!env || typeof env !== 'object') return;
     if (env.op === 'perks') {
@@ -10114,8 +13939,17 @@
     env = coerce(env);
     if (!env) return;
     if (env.msg) toast((env.ok === false ? '⚠ ' : '✨ ') + env.msg);
-    /* The fresh fxState C++ sends right behind this reply repaints the
-       modal's rows; nothing else to do here. */
+    /* A successful skin apply/clear CLOSES the palette (the party-orders
+       law): SkinShift's swap routes textures through a donor object whose 3D
+       must load, and a paused game makes no progress — the queued apply can
+       even time out. C++'s HUD notification survives the close; reopening
+       the modal re-reads the live truth. */
+    if (env.ok !== false && typeof env.id === 'string' &&
+        env.id.indexOf('skinshift:') === 0 &&
+        typeof requestClose === 'function')
+      requestClose();
+    /* Otherwise the fresh fxState C++ sends right behind this reply repaints
+       the modal's rows; nothing else to do here. */
   };
 
   window.bflState = function (env) {

@@ -59,13 +59,47 @@ namespace FollowersHud
 		// Show a downed teammate, greyed, rather than dropping her from the strip.
 		bool includeDead = true;
 
+		// Per-face extras (Rober, 2026-08-17, the Skyrim Party Sheet catch-up:
+		// "id love to add direction to our follower hud, level badge would be
+		// nice too, all toggable … options for health and things too, stamina,
+		// magicka"). Each is its own toggle so the strip can stay exactly as
+		// lean as he likes. Defaults: the two glanceable ones on, the two
+		// extra pools off — three bars per face is clutter nobody asked to
+		// start with. When a toggle is OFF its field is simply absent from the
+		// row JSON, so an unchanged party costs the change-gated push nothing.
+		bool showLevel = true;   // level badge on the portrait corner
+		bool showDir   = true;   // direction chevron + distance in meters
+		bool showHp    = true;   // health bar
+		bool showSt    = false;  // stamina bar
+		bool showMk    = false;  // magicka bar
+
+		// Portrait shape (Party Sheet's cuts): circle | rounded | square |
+		// diamond. A strip-level CSS class in the view; clamped on every read
+		// so a hand-edited config can never put the strip in an unknown state.
+		std::string faceShape = "circle";
+
 		// Show / hide toggle key — same shape as the deck's open keys. code 0 =
 		// unbound (the HUD then has no key and is toggled from the deck control).
 		std::string   keyDevice = "keyboard";
 		std::uint32_t keyCode = 0;
 		std::string   keyLabel = "";
+
+		// Compact + activator navigation (Rober, 2026-08-18: "auto compacted to
+		// just the faces ... press an activator then use wasd or arrows and
+		// enter to navigate ... hit hotkey again to close"). compact hides
+		// everything but the faces until a chip is browsed; navKey drives the
+		// browse state through the input sink WITHOUT focusing the view (the
+		// game stays live, hotbar slot-key precedent; the sink cannot consume,
+		// so WASD also does its vanilla job while browsing - documented).
+		bool          compact = true;   // faces-only IS the default (Rober's spec)
+		bool          compactSeeded = false;  // has this config seen the faces-only default?
+		std::string   navDevice = "keyboard";
+		std::uint32_t navCode = 0;
+		std::string   navLabel = "";
 	};
 
 	nlohmann::json ToJson(const Config& c);
 	void           FromJson(const nlohmann::json& j, Config& out);
+	// "circle" unless the value is exactly one of the four known shapes.
+	std::string    ClampShape(const std::string& s);
 }

@@ -9,6 +9,90 @@ html, body {
 
 .hidden { display: none !important; }
 
+/* ---------- native widget net (widget-base-reset) ----------
+   WHY THIS EXISTS — do not delete or "simplify" it away. Ultralight's UA
+   defaults paint native button/input/textarea/select WHITE, system-font,
+   light-chrome. So any widget whose class rule is missing, typo'd, or still
+   un-loaded (a lazily-added pane sheet) reads as a broken white box on the dark
+   deck (Rober, 2026-08-19: "random places broken button visuals, white weird
+   buttons or typing areas"). Two real sightings: the auto-loot filter and the
+   fd-ctx menu. The net is the backstop that makes a missing rule merely plain
+   instead of blinding.
+
+   ⚠ SPECIFICITY IS THE ENTIRE DESIGN HERE. `:not()` takes the specificity of
+   its ARGUMENT, so the previous form —
+       input:not([type=checkbox]):not([type=radio]):not([type=range])
+   — scored (0,3,1): three attribute selectors, which OUTRANKS every ordinary
+   single-class rule in the deck. The comment claimed 0-0-1 and it was simply
+   wrong. Measured 2026-08-19 in real chromium, that net was overriding the very
+   class rules it exists to defer to:
+     .fd-ctx-input   45px -> 26px tall, font 15.5px -> 14px, bg #0c0c10 -> #16161c
+     .al-find input  39px -> 27px tall, radius 9px -> 6px, and its own ink lost
+   i.e. it repainted 18 class-styled inputs across the followers and containers
+   panes alone. Hence the split below. Keep every selector in the COLOUR half a
+   bare element selector — specificity (0,0,1) — so that any class rule anywhere
+   beats it property-for-property. That promise is what the rest of this depends on.
+
+   COLOUR ONLY, NO BOX. The net sets font, colour and background and stops.
+   Border/radius/padding are deliberately absent, because a class rule routinely
+   sets only SOME box properties and relies on the UA for the rest — so ANY
+   netted border or padding silently changes a styled widget's box. That is
+   precisely the regression above.
+
+   ⚠ And do not try to be clever by gating a box on `:not([class])` ("only
+   widgets nothing has claimed"). It was tried on 2026-08-19 and it is UNSOUND:
+   a widget is very often claimed by a rule that puts the class on an ANCESTOR
+   or uses an id — `.al-find input` and `#ix-search` both style an element that
+   carries no class of its own. `input:not([class])…` is (0,4,1) and duly
+   flattened the auto-loot filter's 9px radius back to 6px, i.e. it reproduced
+   the very bug this is meant to fix. "Has a class attribute" is not a usable
+   proxy for "is styled".
+
+   ⚠ NO `:where()` here, deliberately, even though it is the tidier way to zero
+   specificity: it is UNVERIFIED on Ultralight (tools/ultralight-probe has never
+   tested it) and an unparsed selector drops the WHOLE selector list — which
+   would bring the white boxes straight back. The bare element selectors used
+   here need no modern selector feature at all. If a probe ever
+   proves :where() paints here, this can collapse into one rule; until then it
+   must not.
+
+   ⚠ The BUTTON rule below is deliberately left with an unconditional box.
+   Measured the same day: ~48 shipped buttons (.kc-legend-chip, .ix-pill,
+   .kc-btn, .fx-sw, .hm-drawer-head, .hud-set-*) set padding/radius but NO
+   border, and lean on the net's border. Removing it exposes the UA's 2px outset
+   and grows them (e.g. .kc-legend-chip 31px -> 35px). Buttons are also not part
+   of the regression — their selector really is 0-0-1, so class rules already
+   win. Do not "harmonise" button into the split without re-measuring those.
+
+   Checkbox/radio/range are no longer excluded — that exclusion IS the (0,3,1)
+   bomb described above, and it cost far more than it bought. They are
+   engine-drawn and mostly ignore our colours; with no box in the net there is
+   nothing left that could deform one. The one visible effect is that a
+   class-less range track stops painting stock white, which is the direction
+   this sheet wants anyway. Anything the deck styles itself wins outright. */
+button {
+  font: inherit; color: #e8e4da; cursor: pointer;
+  background: #1b1b22; border: 1px solid #3a3a44; border-radius: 6px; padding: 4px 9px;
+}
+/* colour only — unconditional, (0,0,1), so any class rule beats it outright */
+input, textarea, select { font: inherit; color: #e8e4da; background-color: #16161c; }
+/* A native <select> IGNORES background-color entirely and paints its own light
+   theme (measured: computed said #16161c, the pixels were light grey) —
+   appearance:none is the only thing that frees it, and it then needs a caret
+   of our own. Two linear-gradients, because this engine has no conic and no
+   guaranteed SVG-data-URI path; both this and the `right Npx` form were
+   verified to PAINT by tools/ultralight-probe (widgets3, 2026-08-19). */
+select {
+  -webkit-appearance: none; appearance: none;
+  padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, #8a857a 50%),
+                    linear-gradient(135deg, #8a857a 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+option { background: #16161c; color: #e8e4da; }
+
 /* ---------- overlay & panel ---------- */
 
 body:not(.open) #overlay { display: none; }
@@ -16,7 +100,12 @@ body:not(.open) #overlay { display: none; }
 #overlay {
   position: fixed; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  background: radial-gradient(ellipse at center, rgba(12,12,16,.38) 0%, rgba(5,5,8,.80) 100%);
+  /* FLAT, deliberately (overlay-dim-flat): the fullscreen radial-gradient
+     backdrop BANDS under Ultralight — its far edge clamps toward opaque and
+     painted a hard black strip along the screen bottom under the open deck
+     (Rober's widget-setup screenshot, 2026-08-18; same collapse as the wheel
+     vignette). Big gradient surfaces are not safe in this engine. */
+  background: rgba(8, 8, 11, 0.6);
   animation: fadeIn 140ms ease;
 }
 
@@ -38,7 +127,7 @@ body:not(.open) #overlay { display: none; }
   background: linear-gradient(180deg, #1a1a21 0%, #101015 100%);
   border: 1px solid #3d3a33;
   border-radius: 12px;
-  box-shadow: 0 18px 60px rgba(0,0,0,.65), 0 0 0 1px rgba(201,162,75,.10);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(201,162,75,.10);
   overflow: hidden;
   transform: scale(var(--ui-scale, 1));
   transform-origin: center center;
@@ -161,10 +250,15 @@ body:not(.open) #overlay { display: none; }
   flex: 1 1 auto; min-width: 0;
   display: flex; align-items: center; gap: 5px;
   overflow-x: auto; overflow-y: hidden;
-  padding: 2px 2px; scrollbar-width: thin;
+  padding: 2px 2px;
+  /* No scrollbar on the nav row (2026-08-15). overflow-x stays `auto` because
+     renderTabs() measures scrollWidth vs clientWidth to decide how many system
+     tabs fit — but the bar is supposed to SHED tabs into the More menu, never
+     scroll, so a visible 6px bar under the pills is only ever the symptom of a
+     mis-fit. Hiding it keeps the header clean; the fit loop is the real fix. */
+  scrollbar-width: none;
 }
-#tabs::-webkit-scrollbar { height: 6px; }
-#tabs::-webkit-scrollbar-thumb { background: #2f2f39; border-radius: 3px; }
+#tabs::-webkit-scrollbar { height: 0; width: 0; display: none; }
 .tab {
   flex: none;
   background: transparent; border: 1px solid transparent;
@@ -222,7 +316,14 @@ body.hk-sub #tabs { border-bottom-color: transparent; }
 .tab.launcher:hover .tab-launch { opacity: 1; }
 
 /* ---------- "More ▾" overflow tab + its dropdown ---------- */
-.tab.tab-more { display: inline-flex; align-items: center; }
+.tab.tab-more { display: inline-flex; align-items: center; min-width: 0; }
+/* the hoisted active-system label (More shows where you are when its tab is in
+   the overflow): clamp it so a long name ellipsizes instead of clipping */
+.tab.tab-more .tab-more-lbl {
+  display: inline-block; max-width: 148px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: bottom;
+}
 .tab.tab-more .tab-more-chev { transition: transform 140ms ease; }
 .tab.tab-more.open { color: #c9a24b; background: rgba(201,162,75,.10); border-color: #c9a24b55; }
 .tab.tab-more.open .tab-more-chev { transform: rotate(180deg); }
@@ -718,25 +819,46 @@ button.trigchip.unset:hover { color: #9fb4c4; border-color: #46606f; }
 .modkey:hover { border-color: #c9a24b88; }
 .modkey:focus-visible { outline: 2px solid #c9a24b66; }
 .modkey.on { border-color: #c9a24b; color: #c9a24b; background: rgba(201,162,75,.12); }
-.np-hint { font-size: 11.5px; color: #6f6a5e; margin-left: 6px; }
+.np-hint { font-size: 13px; color: #8b8578; margin-left: 6px; }
 
+/* The pad is a ROW OF CLUSTERS (2026-08-30), not one grid: numpad · navigation
+   · keyboard · function row, each with its own column count, wrapping onto a
+   second line when the deck is narrow. --npkey-w is the one number that sizes
+   every key, so the whole pad grows and shrinks together. */
 #numpad-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 76px);
-  grid-auto-rows: 60px;
-  gap: 8px;
+  --npkey-w: 76px;
+  --npkey-h: 60px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
   justify-content: center;
+  gap: 26px 34px;
   padding-bottom: 8px;
 }
+.np-group { display: flex; flex-direction: column; gap: 10px; }
+.np-group-title {
+  font-size: 12.5px; letter-spacing: 1.4px; text-transform: uppercase;
+  color: #8b8578; padding-left: 2px;
+}
+.np-keys { display: grid; grid-auto-rows: var(--npkey-h); gap: 8px; }
+.npgap { display: block; }
 .npkey {
+  position: relative;
   display: grid; place-items: center;
   background: linear-gradient(180deg, #202028, #16161c);
   border: 1px solid #33333d; border-radius: 8px;
-  color: #d6d1c4; font-size: 16px; font-family: Consolas, monospace;
+  color: #d6d1c4; font-size: 17px; font-family: Consolas, monospace;
   cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease, transform 90ms ease;
 }
-.npkey small { font-size: 10.5px; letter-spacing: .5px; color: #9a9587; }
+.npkey small { font-size: 13px; letter-spacing: .4px; color: #b3ada0; }
+/* The deck's own open key still fires — it just toggles the deck, so it says so
+   instead of pretending to be an ordinary key. */
+.npkey.deckkey { border-color: #c9a24b55; }
+.npkey-tag {
+  position: absolute; bottom: 3px; left: 0; right: 0;
+  font-size: 9.5px; letter-spacing: .6px; color: #c9a24b99; text-align: center;
+}
 .npkey:hover { border-color: #c9a24b88; background: linear-gradient(180deg, #26262f, #1a1a21); }
 .npkey:focus-visible { outline: 2px solid #c9a24b66; }
 .npkey:active { transform: translateY(1px) scale(.98); }
@@ -991,9 +1113,7 @@ body.editing #hints, body.hd-editing #hints {
 .q-skel {
   height: 46px; margin: 3px 0; border-radius: 8px;
   background: linear-gradient(90deg, #17171d 25%, #1f1f27 50%, #17171d 75%);
-  background-size: 400% 100%; animation: qShimmer 1.2s ease infinite;
 }
-@keyframes qShimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
 
 /* ---- detail ---- */
 
@@ -1479,7 +1599,7 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   max-height: calc(82vh / var(--ui-scale, 1)); overflow-y: auto;
   background: linear-gradient(180deg, #17171e, #131319);
   border: 1px solid #3a382f; border-radius: 14px;
-  box-shadow: 0 30px 80px -30px #000; padding: 18px 20px 20px;
+  box-shadow: 0 10px 28px -10px rgba(0, 0, 0, 0.45); padding: 18px 20px 20px;
 }
 .fd-modal-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
 .fd-modal-title { flex: 1; font-size: 18px; font-weight: 800; color: #ecd9a0; }
@@ -1608,6 +1728,18 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   flex: 1 1 0; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* The hairline between control groups — and the OTHER half of the measured
+   .wrapped toggle (syncEditRowWrap): once the groups wrap onto separate lines
+   a divider dangling at a line end is noise, so it goes. Both rules were
+   missing entirely — JS toggled a class no CSS consumed (2026-08-19 review). */
+.fd-ok-sep { flex: none; width: 1px; height: 18px; background: #3a3a44; }
+#fd-openkey-row.wrapped .fd-ok-sep { display: none; }
+/* The numeric readout between the −/+ keychips on the three sliders: fixed
+   width and tabular type so 8% -> 100% does not shuffle the buttons. */
+.fd-av-val {
+  flex: none; min-width: 44px; text-align: center;
+  font: 600 13px/1 Consolas, "Courier New", monospace; color: #e8e4da;
+}
 
 #fd-status {
   background: #180f10;
@@ -1685,6 +1817,21 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
 }
 .medal.following { box-shadow: 0 0 0 2px #3d6b4a; }
 .medal.dead { filter: grayscale(1) brightness(.8); }
+
+/* Face render in flight: a spinning gold arc around the initials medallion,
+   so "blank" reads as loading rather than missing. Border-arc, NOT
+   conic-gradient (which computes to none in Ultralight — see the LAWS). */
+.medal.wait { position: relative; }
+.medal-spin {
+  position: absolute; top: -4px; right: -4px; bottom: -4px; left: -4px;
+  border: 2px solid transparent;
+  border-top-color: hsla(var(--medal-hue, 45), 60%, 62%, .9);
+  border-right-color: hsla(var(--medal-hue, 45), 60%, 62%, .3);
+  border-radius: 50%;
+  animation: medalSpin 900ms linear infinite;
+  pointer-events: none;
+}
+@keyframes medalSpin { to { transform: rotate(360deg); } }
 
 .fd-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 /* Row typography scales off the avatar slider (--fd-* set by applyAvatarSize).
@@ -1785,7 +1932,7 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   background: linear-gradient(180deg, #1c1c24, #16161d);
   border: 1px solid #c9a24b77;
   border-radius: 10px;
-  box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
   animation: fdCtxIn .11s ease;
   /* #overlay child, OUTSIDE #panel's transform: scale(--ui-scale) — so at ⛶ Fill
      the deck grew and this form did not (SpudmanWP, 2026-08-13). Wear the same
@@ -2212,21 +2359,24 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
 #dm-toolbar { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; flex: none; }
 #dm-search-wrap { flex: 1; min-width: 0; position: relative; display: flex; align-items: center; }
 .dm-search-ic { position: absolute; left: 9px; color: #8b8678; font-size: 17px; line-height: 1; pointer-events: none; }
+/* Sized to sit level with the Places/Bases switch it now shares a row with
+   (.nb-seg is 15px / 9px 20px), and off Rober's small-text list. */
 #dm-search {
   width: 100%;
-  font-family: inherit; font-size: 13px; color: #e8e4da;
-  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 7px;
-  padding: 8px 10px 8px 29px;
+  font-family: inherit; font-size: 15px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 9px;
+  padding: 9px 12px 9px 34px;
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 #dm-search::placeholder { color: #6b675e; }
 #dm-search:focus { outline: none; border-color: #c9a24b77; box-shadow: 0 0 0 3px rgba(201,162,75,.08); }
+.dm-search-ic { left: 11px; }
 #dm-count {
   flex: none;
-  font-family: Consolas, "Courier New", monospace; font-size: 11px;
+  font-family: Consolas, "Courier New", monospace; font-size: 13px;
   color: #d9c48a; background: rgba(201,162,75,.06);
   border: 1px solid #c9a24b77; border-radius: 20px;
-  padding: 4px 9px; min-width: 24px; text-align: center;
+  padding: 6px 11px; min-width: 28px; text-align: center;
 }
 
 #dm-openkey {
@@ -2438,9 +2588,13 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
 .dm-faces { flex: none; display: flex; align-items: center; margin-left: 2px; }
 /* on a card the cluster is a footer strip under the body text */
 .dm-row:not(.dm-child) > .dm-faces { padding: 0 12px 10px; margin: -3px 0 0; }
+/* 34px, not the 24px this shipped with. A resident face is a PHOTOGRAPH and at
+   24px overlapped by 6 it read as a coloured dot -- Rober, 2026-08-17:
+   "profile images ... really hard to see". The narrow-panel step below moves
+   with it (28px, not 20). */
 .dm-face, .dm-face-more {
   position: relative; flex: none;
-  width: 24px; height: 24px; margin-left: -6px;
+  width: 34px; height: 34px; margin-left: -5px;
   border-radius: 50%;
   box-shadow: 0 0 0 1.5px #16161d;   /* ring in the row bg so overlaps read cleanly */
   transition: transform 140ms ease, box-shadow 140ms ease;
@@ -2455,7 +2609,7 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
 .dm-face-img { object-fit: cover; }
 .dm-face-medal {
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 8.5px; font-weight: 700; letter-spacing: .3px;
+  font-size: 12px; font-weight: 700; letter-spacing: .3px;
   color: hsl(var(--dm-hue, 45), 45%, 74%);
   background:
     radial-gradient(120% 120% at 30% 25%, hsla(var(--dm-hue, 45), 45%, 60%, .18), transparent 70%),
@@ -2464,7 +2618,7 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
 }
 .dm-face-more {
   display: inline-flex; align-items: center; justify-content: center;
-  font-family: Consolas, "Courier New", monospace; font-size: 9.5px; font-weight: 700;
+  font-family: Consolas, "Courier New", monospace; font-size: 12px; font-weight: 700;
   color: #d9c48a; background: #12121a; border: 1px solid #c9a24b55;
 }
 
@@ -2472,6 +2626,33 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
    #hd-tip bubble (screen-clamped). The hand-built .dm-face-tip that used to
    live here predated #hd-tip and rendered as a clipped fragment once the
    card layout gave rows overflow:hidden — removed. */
+
+/* ---------- "who is standing here" strip (dm-who) ----------
+   whoStrip() mounts these into .dm-sub. They shipped with only cursor/hover
+   rules and NO geometry, so the faces computed to 0x0 and painted nothing
+   (2026-08-19 CSS review). Smaller than the assigned-here .dm-face cluster on
+   purpose: this is ambient "who happens to be around", not the roster. */
+.dm-who { display: inline-flex; align-items: center; flex: none; }
+.dm-who > :first-child { margin-left: 0; }
+.dm-who-face {
+  position: relative; flex: none;
+  width: 22px; height: 22px; margin-left: -5px;
+  border-radius: 50%;
+  background-size: cover; background-position: 50% 20%; background-repeat: no-repeat;
+  box-shadow: 0 0 0 1.5px #16161d;
+}
+.dm-who-face.initials {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700;
+  color: hsl(var(--dm-hue, 45), 45%, 74%);
+  background: #0c0c10;
+  border: 1px solid hsla(var(--dm-hue, 45), 35%, 55%, .5);
+}
+.dm-who-more {
+  flex: none; margin-left: 4px;
+  font-family: Consolas, "Courier New", monospace; font-size: 12px; font-weight: 700;
+  color: #d9c48a;
+}
 
 /* ---------- empty state ---------- */
 
@@ -2512,7 +2693,7 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   padding: 5px;
   background: linear-gradient(180deg, #1c1c24, #16161d);
   border: 1px solid #c9a24b77; border-radius: 8px;
-  box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
   animation: fadeIn 110ms ease;
   transform: scale(var(--ui-scale, 1)); transform-origin: top left;
 }
@@ -2696,7 +2877,7 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   padding: 5px;
   background: linear-gradient(180deg, #1c1c24, #16161d);
   border: 1px solid #c9a24b77; border-radius: 8px;
-  box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
   /* #overlay child, OUTSIDE #panel's transform — wear the same scale, exactly
      like its sibling #dm-ctx (clampEl reads the post-transform rect, so the
      placement clamp needs no change). fadeIn is opacity-only, safe. */
@@ -2758,7 +2939,7 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   background: linear-gradient(180deg, #1a1a21, #101015);
   border: 1px solid #c9a24b77; border-radius: 12px;
   padding: 24px 22px 18px;
-  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   animation: capturePulse 1.4s ease-in-out infinite;
 }
 .dm-capture-title { font-size: 15.5px; color: #ecd9a0; margin-bottom: 8px; }
@@ -2885,8 +3066,8 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   .dm-body { padding: 8px 10px 9px; }
   .dm-row:not(.dm-child) > .dm-faces { padding: 0 10px 8px; }
   .dm-chip { max-width: 108px; }
-  .dm-face, .dm-face-more { width: 20px; height: 20px; margin-left: -5px; }
-  .dm-face-medal { font-size: 7.5px; }
+  .dm-face, .dm-face-more { width: 28px; height: 28px; margin-left: -4px; }
+  .dm-face-medal { font-size: 10px; }
   .dm-ok-hint { display: none; }
   .dm-row.dm-child { margin-left: 18px; }
   .dm-row.dm-child::before { left: -11px; width: 9px; }
@@ -2911,8 +3092,8 @@ body.panel-narrow .dm-name { font-size: 13.5px; }
 body.panel-narrow .dm-body { padding: 8px 10px 9px; }
 body.panel-narrow .dm-row:not(.dm-child) > .dm-faces { padding: 0 10px 8px; }
 body.panel-narrow .dm-chip { max-width: 108px; }
-body.panel-narrow .dm-face, body.panel-narrow .dm-face-more { width: 20px; height: 20px; margin-left: -5px; }
-body.panel-narrow .dm-face-medal { font-size: 7.5px; }
+body.panel-narrow .dm-face, body.panel-narrow .dm-face-more { width: 28px; height: 28px; margin-left: -4px; }
+body.panel-narrow .dm-face-medal { font-size: 10px; }
 body.panel-narrow .dm-ok-hint { display: none; }
 body.panel-narrow .dm-row.dm-child { margin-left: 18px; }
 body.panel-narrow .dm-row.dm-child::before { left: -11px; width: 9px; }
@@ -2922,7 +3103,6 @@ body.panel-narrow .dm-scale-row { gap: 7px; }
 body.panel-narrow .dm-scale-lbl { width: 58px; font-size: 11.5px; }
 body.panel-narrow .dm-scale-val { min-width: 34px; font-size: 11px; }
 body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
-
 
 /* ---------- place photos: crop layer, tags, and the big view ------------
    Three additions, all dm- prefixed and all APPEND-ONLY.
@@ -3024,7 +3204,7 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
 .dm-art-frame {
   position: relative; overflow: hidden; flex: none;
   border-radius: 10px; background: #0c0c10;
-  border: 1px solid #3a3a44; box-shadow: 0 18px 44px rgba(0,0,0,.6);
+  border: 1px solid #3a3a44; box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
 }
 /* the row draws this square as a circle — show the mask so the framing is
    honest rather than a surprise once the overlay closes */
@@ -3180,14 +3360,14 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
   flex: none;
   border-radius: 10px;
   border: 1px solid #3a3a44;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .6);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   background: #0c0c10;
   /* Sized in px by JS (lbFrameSize) — the editor divides pointer travel by
      this number, and a size that came from a CSS function Ultralight
      computes its own way would make the pan gain wrong in game and right in
      the harness. */
 }
-.fd-lb-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 18px 48px rgba(0, 0, 0, .6); }
+.fd-lb-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 10px 28px rgba(0, 0, 0, 0.45); }
 .fd-lb-frame.dragging { cursor: grabbing; }
 
 /* Overrides the free-aspect .fd-lb-img above: inside the frame the photo is
@@ -3289,7 +3469,6 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
   color: #6f6a5e;
 }
 
-
 /* ---- drag-to-resize grip + pointer-drag cursors (ported from Spell Deck) ---- */
 #resize-grip {
   position: absolute; right: 0; bottom: 0;
@@ -3314,7 +3493,19 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 /* ---- fixed-height XL panel: every pane fills, footer pins to the bottom ---- */
 #hints { margin-top: auto; }
 #numpad-pane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-#numpad-grid { flex: 1 1 auto; align-content: center; }
+/* Scrollable, and TOP-aligned on purpose. `align-content: center` (what the
+   one-grid pad used) traps content once the clusters wrap: the overflow is
+   split above and below the scroll box, and the half above the start edge
+   cannot be scrolled to — at a 760px-wide deck that hid the NUMPAD and
+   NAVIGATION headings and the whole NumLock row with no way to reach them.
+   `safe center` would express the intent but is not a keyword these views can
+   rely on, so this simply starts at the top and pads instead. */
+#numpad-grid {
+  flex: 1 1 auto; min-height: 0;
+  align-content: flex-start;
+  padding-top: 18px;
+  overflow-y: auto;
+}
 #notes-pane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 #notes-ta { flex: 1 1 auto; min-height: 0; height: auto; }
 
@@ -3349,7 +3540,7 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
   display: flex; flex-direction: column;
   background: linear-gradient(180deg, #1a1a21, #101015);
   border: 1px solid #c9a24b77; border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   /* NOT riseIn — that keyframe bakes scale(var(--ui-scale)) for #panel and
      would multiply the panel's own scale into this box. */
   animation: hkIconIn 160ms ease;
@@ -3690,7 +3881,7 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
   padding: 7px;
   background: linear-gradient(180deg, #1c1c24, #16161d);
   border: 1px solid #c9a24b77; border-radius: 8px;
-  box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
   animation: fadeIn 110ms ease;
   transform: scale(var(--ui-scale, 1)); transform-origin: top left;
 }
@@ -3836,7 +4027,7 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
   object-fit: contain;
   border-radius: 10px;
   border: 1px solid #3a3a44;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .6);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   background: #0c0c10;
 }
 
@@ -4082,19 +4273,19 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 .wd-dress:focus-visible { outline: 2px solid #ecd9a0; outline-offset: 2px; }
 .wd-dress:disabled { filter: grayscale(.6) brightness(.7); cursor: not-allowed; }
 
-/* ---------- cadence slider ---------- */
+/* ---------- cadence stops (chip row — the deck's no-range-input law) ---------- */
 
-.wd-cad { display: flex; align-items: center; gap: 9px; }
-.wd-cad-label { font-size: 13px; color: #8b8678; flex: none; }
-.wd-cad input[type=range] {
-  flex: 1; min-width: 90px; accent-color: #c9a24b; cursor: pointer; height: 18px;
+.wd-cad-seg { gap: 5px; }
+.wd-cad-seg button { min-width: 46px; text-align: center; }
+/* The inherit chip reads as a different KIND of choice, not another stop. */
+.wd-cad-seg .wd-cad-inherit { border-style: dashed; min-width: 0; }
+.wd-cad-seg .wd-cad-inherit.on { border-style: solid; }
+
+/* The wardrobe builder's default-cadence bar, between its header and columns. */
+#wd-builder-cad {
+  flex: none; display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 13px 8px; border-bottom: 1px solid #2e2e36;
 }
-.wd-cad input[type=range]:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; border-radius: 4px; }
-.wd-cad-v {
-  font-family: Consolas, "Courier New", monospace; font-size: 13px; color: #ecd9a0;
-  min-width: 54px; text-align: right; flex: none;
-}
-.wd-cad-v.off { color: #6f6a5e; }
 
 /* ---------- builder + sheet overlays ---------- */
 
@@ -4108,7 +4299,7 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
   display: flex; flex-direction: column; min-height: 0;
   width: 100%; max-width: 780px; max-height: 100%;
   background: #121218; border: 1px solid #3a3a44; border-radius: 12px;
-  box-shadow: 0 18px 48px rgba(0,0,0,.55); overflow: hidden;
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45); overflow: hidden;
 }
 #wd-pieces-head, #wd-builder-head, #wd-sheet-head {
   flex: none; display: flex; align-items: center; gap: 10px;
@@ -4120,8 +4311,20 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 }
 #wd-pieces-sub, #wd-builder-sub, #wd-sheet-sub { font-size: 12.5px; color: #7c776a; min-width: 0; }
 #wd-sheet-sub { flex: 1; }
-#wd-builder-id { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 0 1 auto; }
-#wd-builder-note { flex: 1; min-width: 80px; }
+/* The name IDENTIFIES the wardrobe; the note is optional prose beside it. The
+   old pair (`id: 0 1 auto` against `note: 1`) gave every free pixel of the head
+   to the note EVEN WHEN IT WAS EMPTY: measured 2026-08-19, a 45-character name
+   sat in 216px of the 422px it wanted while the empty "Add a note…" box held
+   130px. So the name grows first and the note keeps a basis just wide enough
+   for its placeholder — 112px is the measured width at which "Add a note…"
+   still reads in full. */
+#wd-builder-id { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+#wd-builder-note { flex: 0 1 112px; min-width: 112px; }
+/* …and what does not fit still has to READ as truncated. `text-overflow` on
+   #wd-builder-title can never fire — its only child is a replaced <input> — so
+   the ellipsis belongs on the fields themselves. Ultralight support is
+   unproven; without it this degrades to today's hard cut, never worse. */
+#wd-builder-head .wd-inline { text-overflow: ellipsis; }
 #wd-builder-swatch {
   width: 14px; height: 14px; border-radius: 4px; flex: none; padding: 0;
   border: 1px solid #3a3a44; cursor: pointer;
@@ -4403,13 +4606,20 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 .wd-card.sel { border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.16); }
 .wd-card.sel .wd-thumb { background-color: #1a1710; }
 
-/* the always-there menu affordance — right-click is not dependable in PrismaUI */
+/* the always-there menu affordance — right-click is not dependable in PrismaUI.
+   It has to earn both words: measured 2026-08-19 it was 28x20px (under the
+   ~30px floor, the shortest control in the pane) and `opacity: 0` until the
+   card was hovered — invisible on the only reliable route to a card's menu.
+   30x30 grid-centred, and it now rests at a readable dim instead of nothing;
+   hover/focus/selection still bring it to full. */
 .wd-dots {
   position: absolute; top: 4px; left: 6px;
+  min-width: 30px; min-height: 30px;
+  display: grid; place-items: center;
   font-size: 15px; line-height: 1; letter-spacing: 1px;
   color: #8b8678; background: rgba(12,12,16,.8);
   border: 1px solid #2e2e36; border-radius: 6px; padding: 0 5px 3px;
-  cursor: pointer; opacity: 0; transition: opacity 140ms ease, color 140ms ease;
+  cursor: pointer; opacity: .55; transition: opacity 140ms ease, color 140ms ease;
 }
 .wd-card:hover .wd-dots, .wd-card:focus-within .wd-dots, .wd-card.sel .wd-dots { opacity: 1; }
 .wd-dots:hover { color: #ecd9a0; border-color: #3a3a44; }
@@ -4426,7 +4636,7 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
   display: flex; flex-direction: column; min-height: 0;
   width: 100%; max-width: 440px; max-height: 100%;
   background: #121218; border: 1px solid #3a3a44; border-radius: 12px;
-  box-shadow: 0 18px 48px rgba(0,0,0,.55); overflow: hidden;
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45); overflow: hidden;
 }
 #wd-picker-head {
   flex: none; display: flex; align-items: center; gap: 10px;
@@ -4500,20 +4710,14 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 .wd-skel::after {
   content: ''; position: absolute; inset: 0;
   background: linear-gradient(90deg, transparent, rgba(201,162,75,.07), transparent);
-  transform: translateX(-100%);
-  animation: wdShimmer 1200ms ease-in-out infinite;
+  /* PERF: was a translateX sweep driven by @keyframes wdShimmer. The sheen is
+     static now — an infinite full-bleed transform over every skeleton row is a
+     per-frame repaint of the whole row under a compositor-off renderer. */
 }
-@keyframes wdShimmer { to { transform: translateX(100%); } }
 
-/* ---------- cadence ticks ---------- */
+/* ---------- next-change readout under the cadence chips ---------- */
 
-.wd-cad-wrap { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 90px; }
-.wd-cad-ticks {
-  display: flex; justify-content: space-between;
-  font-family: Consolas, "Courier New", monospace; font-size: 10px; color: #5a5650;
-  padding: 0 2px;
-}
-.wd-cad-next { font-size: 12.5px; color: #6f6a5e; }
+.wd-cad-next { font-size: 13.5px; color: #8b8678; }
 .wd-cad-next b { color: #d3c191; font-weight: 600; }
 
 /* ---------- keyboard roving focus ---------- */
@@ -4645,10 +4849,10 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
   flex: none;
   border-radius: 10px;
   border: 1px solid #3a3a44;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .6);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   background: #0c0c10;
 }
-.wd-art-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 18px 48px rgba(0, 0, 0, .6); }
+.wd-art-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 10px 28px rgba(0, 0, 0, 0.45); }
 .wd-art-frame.dragging { cursor: grabbing; }
 
 /* Backed, unlike the Followers lightbox's caption: what sits behind THIS
@@ -4767,6 +4971,12 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 #wd-sheet .wd-field { gap: 8px; margin-bottom: 6px; }
 #wd-sheet .wd-field-k { font-size: 14px; letter-spacing: .6px; }
 #wd-sheet .wd-seg button { font-size: 14.5px; padding: 9px 16px; }
+/* Eleven cadence chips share a row — slightly tighter than the 3-option segs
+   so the row wraps at most once at the deck's 640px floor, never smaller than
+   the 13px chip floor. */
+#wd-sheet .wd-cad-seg button { font-size: 13.5px; padding: 8px 12px; min-width: 48px; }
+/* Both randomisation pills in the builder head, side by side. */
+#wd-builder-mode { display: inline-flex; gap: 6px; }
 .nf-embed { gap: 12px; padding: 6px 0 8px; }
 .nf-embed .nf-chip { font-size: 13.5px; }
 .nf-embed .nf-hint { font-size: 13px; }
@@ -4791,7 +5001,7 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 #wd-item-lightbox img {
   max-width: min(86%, 640px); max-height: 74%;
   border-radius: 12px; border: 1px solid #3a3a44;
-  background: #101017; box-shadow: 0 18px 48px rgba(0,0,0,.6);
+  background: #101017; box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
 }
 #wd-item-lightbox .wd-lb-name { font-size: 17px; color: #e8e4da; }
 #wd-item-lightbox .wd-lb-x { position: absolute; top: 14px; right: 16px; font-size: 16px; padding: 8px 13px; }
@@ -4893,851 +5103,6 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 .wd-warn-fold { color: #e0b0b0; border-color: #6b3a3a; font-size: 14px; text-align: left; }
 .wd-warn-fold:hover { color: #f0c5c5; border-color: #a55565; }
 .wd-warn-detail { margin: 6px 0 0 14px; font-size: 13.5px; color: #d8b8b8; line-height: 1.5; }
-
-/* ===================================================================== *
- *  Outfit photo CROP (v0.14.4) — the WYSIWYG display crop for wardrobe art.
- *
- *  APPEND VERBATIM to view/HotkeyDeck/app.css, at the END of the Wardrobe
- *  block above. The game loads the ASSEMBLED app.css, never this fragment —
- *  a frag deployed on its own does nothing in-game.
- *
- *  WHY A LAYER, not the tile. The crop is a CSS transform, and a transform on
- *  the tile scales the tile's OWN border and rounded clip with it — a zoomed
- *  picture would grow its box and shoulder the grid apart (the follower
- *  portraits hit exactly this and had to grow a wrapper). So every tile keeps
- *  its box and gains a `.wd-art` child that owns the picture and the
- *  transform, clipped by the tile's overflow. The ★ / piece-count / ⋯ chrome
- *  is a sibling, so it never scales either.
- *
- *  The three tile rules below are RE-DECLARATIONS of rules earlier in this
- *  file, not edits: same selector, same specificity, later wins. They add
- *  only what a clipping host needs — a positioning context and an overflow —
- *  and drop the now-unused background shorthand's image slot.
- * ===================================================================== */
-
-.wd-thumb { overflow: hidden; }
-.wd-strip-i { position: relative; overflow: hidden; }
-.wd-pick-t { position: relative; overflow: hidden; }
-
-/* The picture itself. `center/cover` matches what the tiles used to do to
-   their own background, so an uncropped photo is pixel-identical to before. */
-.wd-art {
-  position: absolute;
-  top: 0; right: 0; bottom: 0; left: 0;
-  background: center/cover no-repeat;
-  /* Scenery: no drag payload, no hit test — the card is a select toggle and
-     the picture must not compete for the gesture. */
-  -webkit-user-drag: none;
-  user-select: none;
-  pointer-events: none;
-}
-
-/* The way in to the big view. Bottom-RIGHT because that is the one corner the
-   card does not already use (⋯ top-left, ★ top-right, piece count
-   bottom-left). Hidden until hover/focus, exactly like .wd-dots, so a wall of
-   cards stays a wall of pictures. */
-.wd-crop {
-  position: absolute; bottom: 5px; right: 6px;
-  font-size: 13px; line-height: 1;
-  color: #8b8678; background: rgba(12, 12, 16, .8);
-  border: 1px solid #2e2e36; border-radius: 6px; padding: 3px 5px;
-  cursor: pointer; opacity: 0;
-  transition: opacity 140ms ease, color 140ms ease, border-color 140ms ease;
-}
-.wd-card:hover .wd-crop, .wd-card:focus-within .wd-crop, .wd-card.sel .wd-crop { opacity: 1; }
-.wd-crop:hover { color: #ecd9a0; border-color: #3a3a44; }
-.wd-crop:focus-visible { opacity: 1; outline: none; border-color: #c9a24b; box-shadow: 0 0 0 2px rgba(201, 162, 75, .25); }
-
-/* ---- the large view / editor overlay ----
-   Hung off document.body, OUTSIDE #wd-scale: the tab zoom is a transform, and
-   a fixed element inside a transformed ancestor is positioned and clipped by
-   that ancestor rather than by the viewport. */
-.wd-art-lb {
-  position: fixed;
-  top: 0; right: 0; bottom: 0; left: 0;
-  z-index: 9000;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, .74);
-  cursor: zoom-out;
-  animation: wdArtIn 120ms ease-out;
-}
-@keyframes wdArtIn { from { opacity: 0; } to { opacity: 1; } }
-
-/* The cap matters: `.wd-art-hint` is `flex: 0 0 100%` inside the footer, and a
-   shrink-to-fit column would resolve that against the hint's max-content width
-   — the controls well then stretched the full width of the deck. Cap the
-   column and the hint wraps instead. */
-.wd-art-inner {
-  display: flex; flex-direction: column; align-items: center; gap: 10px;
-  max-width: min(560px, 92vw); max-height: 92vh;
-  cursor: default;
-}
-
-/* 3:4, the same letterbox `.wd-thumb` gives the picture — the editor's whole
-   promise is that what you frame here is what the card draws. Sized in px by
-   JS (artFrameSize), because the drag divides pointer travel by this number
-   and a size that came from a CSS function Ultralight computes its own way
-   would make the pan gain wrong in game and right in the harness. */
-.wd-art-frame {
-  position: relative;
-  overflow: hidden;
-  flex: none;
-  border-radius: 10px;
-  border: 1px solid #3a3a44;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .6);
-  background: #0c0c10;
-}
-.wd-art-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 18px 48px rgba(0, 0, 0, .6); }
-.wd-art-frame.dragging { cursor: grabbing; }
-
-/* Backed, unlike the Followers lightbox's caption: what sits behind THIS
-   overlay is a dense grid of outfit cards with their own names, and a bare
-   line of text lands on one and reads as part of it. */
-.wd-art-cap {
-  font-size: 15px; letter-spacing: .3px; color: #e8e8ef;
-  padding: 3px 10px; border-radius: 999px;
-  background: rgba(12, 12, 16, .82);
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-/* The controls get their OWN well rather than sitting bare on the backdrop:
-   the overlay is only 74% opaque, so an unbacked hint line lands legibly on
-   top of whatever card grid is behind it and the two read as one sentence. */
-.wd-art-foot {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
-  gap: 6px; max-width: 100%;
-  padding: 8px 10px;
-  border: 1px solid #2e2e38; border-radius: 10px;
-  background: rgba(12, 12, 16, .94);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
-}
-
-.wd-art-btn {
-  appearance: none;
-  min-width: 30px; padding: 5px 10px;
-  font: 600 12.5px/1 "Segoe UI", sans-serif;
-  color: #d8d4c8; background: #1a1a22;
-  border: 1px solid #3a3a44; border-radius: 6px;
-  cursor: pointer;
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
-}
-.wd-art-btn:hover:not(:disabled) { background: #23232e; border-color: #55555f; color: #f0ece0; }
-.wd-art-btn:focus-visible { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 2px rgba(201, 162, 75, .25); }
-.wd-art-btn:active:not(:disabled) { background: #2a2a36; }
-.wd-art-btn:disabled { opacity: .38; cursor: default; }
-.wd-art-btn.ok { color: #8fd19e; border-color: #3d6b4a; }
-.wd-art-btn.ok:hover:not(:disabled) { background: #1c2a20; border-color: #4f8560; }
-
-/* The six nudge keys as one block, so they read as a d-pad rather than as six
-   more buttons in the row. */
-.wd-art-pad {
-  display: flex; gap: 4px; padding: 3px;
-  border: 1px solid #2e2e38; border-radius: 8px;
-  background: rgba(0, 0, 0, .35);
-}
-.wd-art-pad .wd-art-btn { min-width: 26px; padding: 5px 7px; }
-
-.wd-art-val {
-  font: 12px/1 Consolas, monospace; letter-spacing: .3px;
-  color: #9d968a; padding: 0 4px; white-space: nowrap;
-}
-
-/* Full-width line under the controls; flex-basis rather than a block, so it
-   wraps to its own row however many buttons precede it. */
-.wd-art-hint {
-  flex: 0 0 100%; text-align: center;
-  font: 11.5px/1.5 "Segoe UI", sans-serif; color: #6f6a5e;
-}
-
-/* Narrow (phone-width portal / small deck scale): the d-pad and the verdict
-   still fit, the hint wraps. Nothing here may shrink the FRAME — JS owns its
-   px size and the drag gain reads it back. */
-@media (max-width: 620px) {
-  .wd-art-foot { gap: 5px; padding: 7px 8px; }
-  .wd-art-btn { padding: 5px 8px; font-size: 12px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .wd-art-lb { animation: none; }
-}
-
-/* ---- People redesign (2026-08-03) ------------------------------------- */
-/* The NFF mode chip: its own colour, because "who dresses her" is the row's
-   lead fact and gold already means a wardrobe pool. */
-.wd-chip.nff { color: #a8c6e8; border-color: #3d5470; background: rgba(40,58,82,.35); }
-
-/* Inventory + chevron pair: one visual unit, quieter than ✦ Dress. */
-.wd-invpair { display: inline-flex; gap: 1px; }
-.wd-dress.ghost {
-  background: #16161c; color: #b9b4a8; border-color: #33333d;
-  padding-left: 9px; padding-right: 9px;
-}
-.wd-dress.ghost:hover:not([disabled]) { color: #ecd9a0; border-color: #c9a24b; }
-.wd-invpair .wd-dress.ghost { border-radius: 8px 0 0 8px; }
-.wd-invpair .wd-dress.ghost.chev { border-radius: 0 8px 8px 0; border-left: none; padding-left: 7px; padding-right: 7px; }
-
-/* The inject picker rides the deck's context-menu look; positioned inside the
-   pane so it scrolls away with it rather than floating over another tab. */
-#wd-inject-menu, #wd-catpick {
-  position: fixed; z-index: 120; width: 290px; max-height: 340px;
-  overflow-y: auto; overflow-x: hidden;
-  background: #131318; border: 1px solid #3a3a44; border-radius: 10px;
-  box-shadow: 0 10px 28px rgba(0,0,0,.55); padding: 8px;
-  display: flex; flex-direction: column; gap: 6px;
-}
-
-/* NFF controls embedded in the People sheet: breathing room without the row
-   chrome they were designed against. */
-.nf-embed { display: flex; flex-direction: column; gap: 9px; padding: 2px 0 4px; }
-
-/* ---- People polish pass (2026-08-03, Rober's standing UI rules) --------- */
-/* No small text, spacious rows, real touch targets. Scoped to the People
-   surface + the sheet so the denser grids (outfits, inventory) keep their own
-   rhythm until their own pass. */
-.wd-npc { padding: 13px 14px; gap: 13px; border-radius: 11px; }
-.wd-npc-name { font-size: 17px; line-height: 1.3; }
-.wd-npc-sub { gap: 7px; margin-top: 4px; }
-.wd-chip { font-size: 13px; padding: 3px 11px; }
-.wd-dress { font-size: 14.5px; padding: 9px 15px; border-radius: 9px; }
-.wd-dress.ghost { font-size: 15px; padding: 9px 13px; }
-.wd-npc-right { display: flex; align-items: center; gap: 8px; }
-
-/* Her card: generous keys, readable values, air between fields. */
-#wd-sheet .wd-field { gap: 8px; margin-bottom: 6px; }
-#wd-sheet .wd-field-k { font-size: 14px; letter-spacing: .6px; }
-#wd-sheet .wd-seg button { font-size: 14.5px; padding: 9px 16px; }
-.nf-embed { gap: 12px; padding: 6px 0 8px; }
-.nf-embed .nf-chip { font-size: 13.5px; }
-.nf-embed .nf-hint { font-size: 13px; }
-
-/* The inject picker: bigger rows, a bigger filter — it is used mid-play. */
-#wd-inject-menu, #wd-catpick { width: 340px; padding: 10px; max-height: none; }
-#wd-inject-menu .fd-ctx-filter, #wd-catpick .fd-ctx-filter { font-size: 15px; padding: 9px 11px; }
-#wd-inject-menu .fd-ctx-item, #wd-catpick .fd-ctx-item { font-size: 15px; padding: 9px 10px; }
-#wd-inject-menu .fd-ctx-head, #wd-catpick .fd-ctx-head { font-size: 15.5px; }
-
-/* The polish pass grew the card body (17px names, 13px chips), so the skeleton
-   body grows with it — the whole point of the skeleton is that nothing jumps
-   when the real cards land. */
-.wd-skel-body { height: 84px; }
-
-/* ---- inventory item lightbox --------------------------------------------- */
-#wd-item-lightbox {
-  position: absolute; inset: 0; z-index: 80;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 12px; background: rgba(8,8,11,.88); cursor: zoom-out;
-}
-#wd-item-lightbox img {
-  max-width: min(86%, 640px); max-height: 74%;
-  border-radius: 12px; border: 1px solid #3a3a44;
-  background: #101017; box-shadow: 0 18px 48px rgba(0,0,0,.6);
-}
-#wd-item-lightbox .wd-lb-name { font-size: 17px; color: #e8e4da; }
-#wd-item-lightbox .wd-lb-x { position: absolute; top: 14px; right: 16px; font-size: 16px; padding: 8px 13px; }
-.wd-npc-face.haslb { cursor: zoom-in; }
-
-/* ---- the outfit importer (Outfit system settings) ------------------------ *
-   Two stacked searchable lists inside the settings panel. Both scroll
-   INTERNALLY rather than stretching the panel: a 4,780-mod load order has
-   hundreds of outfit-bearing plugins, and one of them can carry dozens. */
-.wd-imp-search {
-  width: 100%; box-sizing: border-box;
-  padding: 9px 11px; font: inherit; font-size: 14px;
-  color: #e8e4da; background: #14141b;
-  border: 1px solid #2e2e36; border-radius: 8px;
-  transition: border-color .14s ease, background .14s ease;
-}
-.wd-imp-search::placeholder { color: #6f6a5e; }
-.wd-imp-search:hover { border-color: #3a3a44; }
-.wd-imp-search:focus { outline: none; border-color: #c9a24b; background: #17171f; }
-.wd-imp-list {
-  display: flex; flex-direction: column; gap: 3px;
-  max-height: 208px; overflow-y: auto; overscroll-behavior: contain;
-  padding: 3px; border: 1px solid #26262e; border-radius: 8px; background: #101015;
-}
-.wd-imp-row {
-  display: flex; align-items: center; gap: 10px;
-  width: 100%; box-sizing: border-box; text-align: left;
-  padding: 8px 10px; font: inherit; font-size: 13.5px;
-  color: #cfcabd; background: transparent;
-  border: 1px solid transparent; border-radius: 6px; cursor: pointer;
-  transition: background .12s ease, color .12s ease, border-color .12s ease;
-}
-.wd-imp-row.static { cursor: default; }
-.wd-imp-row:hover { background: #191921; color: #ece7db; }
-.wd-imp-row.static:hover { background: #16161d; }
-.wd-imp-row:focus-visible { outline: 2px solid #c9a24b; outline-offset: -2px; }
-.wd-imp-row.on { background: #1d1c17; color: #e8dcb8; border-color: #c9a24b; }
-/* Long plugin names ellipsize instead of pushing the count off the row. */
-.wd-imp-n {
-  flex: 1; min-width: 0; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.wd-imp-c { flex: none; font-size: 12px; color: #6f6a5e; font-variant-numeric: tabular-nums; }
-.wd-imp-go {
-  flex: none; min-width: 34px; padding: 5px 9px;
-  font: inherit; font-size: 13px; color: #cfcabd;
-  background: #17171f; border: 1px solid #2e2e36; border-radius: 6px; cursor: pointer;
-  transition: color .12s ease, border-color .12s ease, background .12s ease;
-}
-.wd-imp-go:hover { color: #101015; background: linear-gradient(180deg, #d9c48a, #c9a24b); border-color: #c9a24b; }
-.wd-imp-go:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
-.wd-imp-go:disabled { filter: grayscale(.6) brightness(.7); cursor: not-allowed; }
-.wd-imp-go:disabled:hover { color: #cfcabd; background: #17171f; border-color: #2e2e36; }
-
-/* Inject picker set-step: the NAME must never lose to the hint. Two-line rows —
-   name full-size on top, hint beneath in the UI face (the mono pill crushed
-   "Adventure" to "A…" in game, 2026-08-03). */
-#wd-inject-menu .fd-ctx-item, #wd-catpick .fd-ctx-item { flex-wrap: wrap; row-gap: 2px; }
-#wd-inject-menu .fd-ctx-item .fd-ctx-lbl, #wd-catpick .fd-ctx-item .fd-ctx-lbl {
-  flex: 1 1 auto; overflow: visible; text-overflow: clip; white-space: normal;
-  font-size: 15.5px;
-}
-#wd-inject-menu .fd-ctx-item .fd-ctx-count, #wd-catpick .fd-ctx-item .fd-ctx-count {
-  flex: 1 1 100%; margin-left: 26px;
-  font-family: "Segoe UI", sans-serif; font-size: 12.5px; font-style: italic;
-  background: none; border: none; padding: 0; color: #8f8a7c;
-  text-align: left; white-space: normal;
-}
-
-/* ---- the searchable picker's own parts (categories, variant pieces) -------
-   Everything else it wears is #wd-inject-menu's, whose selectors were widened
-   to cover #wd-picker rather than cloned — one set of rules, no drift. */
-#wd-catpick .fd-ctx-item.on { background: rgba(201,162,75,.10); color: #f0e6cc; }
-#wd-catpick .fd-ctx-item.on .fd-ctx-check { color: #c9a24b; }
-#wd-catpick .fd-ctx-item.wd-pick-new { color: #cfe0b8; }
-#wd-catpick .fd-ctx-item.wd-pick-new .fd-ctx-check { color: #8fbf6a; }
-#wd-catpick .fd-ctx-item .fd-ctx-count {
-  font-size: 12px; color: #8a8271; flex: 0 0 auto; margin-left: auto; padding-left: 10px;
-}
-.wd-pick-foot:empty { display: none; }
-.wd-pick-foot {
-  margin-top: 8px; padding-top: 9px; border-top: 1px solid rgba(201,162,75,.16);
-}
-.wd-pick-note { font-size: 13px; color: #9a927f; }
-.wd-pick-foot-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
-.wd-pick-go {
-  font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 7px; cursor: pointer;
-  background: rgba(201,162,75,.16); color: #f0e6cc;
-  border: 1px solid rgba(201,162,75,.42);
-  transition: background .14s ease, border-color .14s ease, color .14s ease;
-}
-.wd-pick-go:hover:not(:disabled) { background: rgba(201,162,75,.28); border-color: #c9a24b; }
-.wd-pick-go:active:not(:disabled) { background: rgba(201,162,75,.36); }
-.wd-pick-go:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
-.wd-pick-go:disabled { opacity: .40; cursor: not-allowed; }
-
-/* Folded warning banner: the headline is a real button, the danger colour
-   stays, and the detail indents under it when opened. */
-.wd-warn-fold { color: #e0b0b0; border-color: #6b3a3a; font-size: 14px; text-align: left; }
-.wd-warn-fold:hover { color: #f0c5c5; border-color: #a55565; }
-.wd-warn-detail { margin: 6px 0 0 14px; font-size: 13.5px; color: #d8b8b8; line-height: 1.5; }
-
-/* ===================================================================== *
- *  Outfit photo CROP (v0.14.4) — the WYSIWYG display crop for wardrobe art.
- *
- *  APPEND VERBATIM to view/HotkeyDeck/app.css, at the END of the Wardrobe
- *  block above. The game loads the ASSEMBLED app.css, never this fragment —
- *  a frag deployed on its own does nothing in-game.
- *
- *  WHY A LAYER, not the tile. The crop is a CSS transform, and a transform on
- *  the tile scales the tile's OWN border and rounded clip with it — a zoomed
- *  picture would grow its box and shoulder the grid apart (the follower
- *  portraits hit exactly this and had to grow a wrapper). So every tile keeps
- *  its box and gains a `.wd-art` child that owns the picture and the
- *  transform, clipped by the tile's overflow. The ★ / piece-count / ⋯ chrome
- *  is a sibling, so it never scales either.
- *
- *  The three tile rules below are RE-DECLARATIONS of rules earlier in this
- *  file, not edits: same selector, same specificity, later wins. They add
- *  only what a clipping host needs — a positioning context and an overflow —
- *  and drop the now-unused background shorthand's image slot.
- * ===================================================================== */
-
-.wd-thumb { overflow: hidden; }
-.wd-strip-i { position: relative; overflow: hidden; }
-.wd-pick-t { position: relative; overflow: hidden; }
-
-/* The picture itself. `center/cover` matches what the tiles used to do to
-   their own background, so an uncropped photo is pixel-identical to before. */
-.wd-art {
-  position: absolute;
-  top: 0; right: 0; bottom: 0; left: 0;
-  background: center/cover no-repeat;
-  /* Scenery: no drag payload, no hit test — the card is a select toggle and
-     the picture must not compete for the gesture. */
-  -webkit-user-drag: none;
-  user-select: none;
-  pointer-events: none;
-}
-
-/* The way in to the big view. Bottom-RIGHT because that is the one corner the
-   card does not already use (⋯ top-left, ★ top-right, piece count
-   bottom-left). Hidden until hover/focus, exactly like .wd-dots, so a wall of
-   cards stays a wall of pictures. */
-.wd-crop {
-  position: absolute; bottom: 5px; right: 6px;
-  font-size: 13px; line-height: 1;
-  color: #8b8678; background: rgba(12, 12, 16, .8);
-  border: 1px solid #2e2e36; border-radius: 6px; padding: 3px 5px;
-  cursor: pointer; opacity: 0;
-  transition: opacity 140ms ease, color 140ms ease, border-color 140ms ease;
-}
-.wd-card:hover .wd-crop, .wd-card:focus-within .wd-crop, .wd-card.sel .wd-crop { opacity: 1; }
-.wd-crop:hover { color: #ecd9a0; border-color: #3a3a44; }
-.wd-crop:focus-visible { opacity: 1; outline: none; border-color: #c9a24b; box-shadow: 0 0 0 2px rgba(201, 162, 75, .25); }
-
-/* ---- the large view / editor overlay ----
-   Hung off document.body, OUTSIDE #wd-scale: the tab zoom is a transform, and
-   a fixed element inside a transformed ancestor is positioned and clipped by
-   that ancestor rather than by the viewport. */
-.wd-art-lb {
-  position: fixed;
-  top: 0; right: 0; bottom: 0; left: 0;
-  z-index: 9000;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, .74);
-  cursor: zoom-out;
-  animation: wdArtIn 120ms ease-out;
-}
-@keyframes wdArtIn { from { opacity: 0; } to { opacity: 1; } }
-
-/* The cap matters: `.wd-art-hint` is `flex: 0 0 100%` inside the footer, and a
-   shrink-to-fit column would resolve that against the hint's max-content width
-   — the controls well then stretched the full width of the deck. Cap the
-   column and the hint wraps instead. */
-.wd-art-inner {
-  display: flex; flex-direction: column; align-items: center; gap: 10px;
-  max-width: min(560px, 92vw); max-height: 92vh;
-  cursor: default;
-}
-
-/* 3:4, the same letterbox `.wd-thumb` gives the picture — the editor's whole
-   promise is that what you frame here is what the card draws. Sized in px by
-   JS (artFrameSize), because the drag divides pointer travel by this number
-   and a size that came from a CSS function Ultralight computes its own way
-   would make the pan gain wrong in game and right in the harness. */
-.wd-art-frame {
-  position: relative;
-  overflow: hidden;
-  flex: none;
-  border-radius: 10px;
-  border: 1px solid #3a3a44;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .6);
-  background: #0c0c10;
-}
-.wd-art-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 18px 48px rgba(0, 0, 0, .6); }
-.wd-art-frame.dragging { cursor: grabbing; }
-
-/* Backed, unlike the Followers lightbox's caption: what sits behind THIS
-   overlay is a dense grid of outfit cards with their own names, and a bare
-   line of text lands on one and reads as part of it. */
-.wd-art-cap {
-  font-size: 15px; letter-spacing: .3px; color: #e8e8ef;
-  padding: 3px 10px; border-radius: 999px;
-  background: rgba(12, 12, 16, .82);
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-/* The controls get their OWN well rather than sitting bare on the backdrop:
-   the overlay is only 74% opaque, so an unbacked hint line lands legibly on
-   top of whatever card grid is behind it and the two read as one sentence. */
-.wd-art-foot {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
-  gap: 6px; max-width: 100%;
-  padding: 8px 10px;
-  border: 1px solid #2e2e38; border-radius: 10px;
-  background: rgba(12, 12, 16, .94);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
-}
-
-.wd-art-btn {
-  appearance: none;
-  min-width: 30px; padding: 5px 10px;
-  font: 600 12.5px/1 "Segoe UI", sans-serif;
-  color: #d8d4c8; background: #1a1a22;
-  border: 1px solid #3a3a44; border-radius: 6px;
-  cursor: pointer;
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
-}
-.wd-art-btn:hover:not(:disabled) { background: #23232e; border-color: #55555f; color: #f0ece0; }
-.wd-art-btn:focus-visible { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 2px rgba(201, 162, 75, .25); }
-.wd-art-btn:active:not(:disabled) { background: #2a2a36; }
-.wd-art-btn:disabled { opacity: .38; cursor: default; }
-.wd-art-btn.ok { color: #8fd19e; border-color: #3d6b4a; }
-.wd-art-btn.ok:hover:not(:disabled) { background: #1c2a20; border-color: #4f8560; }
-
-/* The six nudge keys as one block, so they read as a d-pad rather than as six
-   more buttons in the row. */
-.wd-art-pad {
-  display: flex; gap: 4px; padding: 3px;
-  border: 1px solid #2e2e38; border-radius: 8px;
-  background: rgba(0, 0, 0, .35);
-}
-.wd-art-pad .wd-art-btn { min-width: 26px; padding: 5px 7px; }
-
-.wd-art-val {
-  font: 12px/1 Consolas, monospace; letter-spacing: .3px;
-  color: #9d968a; padding: 0 4px; white-space: nowrap;
-}
-
-/* Full-width line under the controls; flex-basis rather than a block, so it
-   wraps to its own row however many buttons precede it. */
-.wd-art-hint {
-  flex: 0 0 100%; text-align: center;
-  font: 11.5px/1.5 "Segoe UI", sans-serif; color: #6f6a5e;
-}
-
-/* Narrow (phone-width portal / small deck scale): the d-pad and the verdict
-   still fit, the hint wraps. Nothing here may shrink the FRAME — JS owns its
-   px size and the drag gain reads it back. */
-@media (max-width: 620px) {
-  .wd-art-foot { gap: 5px; padding: 7px 8px; }
-  .wd-art-btn { padding: 5px 8px; font-size: 12px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .wd-art-lb { animation: none; }
-}
-
-/* ---- People redesign (2026-08-03) ------------------------------------- */
-/* The NFF mode chip: its own colour, because "who dresses her" is the row's
-   lead fact and gold already means a wardrobe pool. */
-.wd-chip.nff { color: #a8c6e8; border-color: #3d5470; background: rgba(40,58,82,.35); }
-
-/* Inventory + chevron pair: one visual unit, quieter than ✦ Dress. */
-.wd-invpair { display: inline-flex; gap: 1px; }
-.wd-dress.ghost {
-  background: #16161c; color: #b9b4a8; border-color: #33333d;
-  padding-left: 9px; padding-right: 9px;
-}
-.wd-dress.ghost:hover:not([disabled]) { color: #ecd9a0; border-color: #c9a24b; }
-.wd-invpair .wd-dress.ghost { border-radius: 8px 0 0 8px; }
-.wd-invpair .wd-dress.ghost.chev { border-radius: 0 8px 8px 0; border-left: none; padding-left: 7px; padding-right: 7px; }
-
-/* The inject picker rides the deck's context-menu look; positioned inside the
-   pane so it scrolls away with it rather than floating over another tab. */
-#wd-inject-menu, #wd-catpick {
-  position: fixed; z-index: 120; width: 290px; max-height: 340px;
-  overflow-y: auto; overflow-x: hidden;
-  background: #131318; border: 1px solid #3a3a44; border-radius: 10px;
-  box-shadow: 0 10px 28px rgba(0,0,0,.55); padding: 8px;
-  display: flex; flex-direction: column; gap: 6px;
-}
-
-/* NFF controls embedded in the People sheet: breathing room without the row
-   chrome they were designed against. */
-.nf-embed { display: flex; flex-direction: column; gap: 9px; padding: 2px 0 4px; }
-
-/* ---- People polish pass (2026-08-03, Rober's standing UI rules) --------- */
-/* No small text, spacious rows, real touch targets. Scoped to the People
-   surface + the sheet so the denser grids (outfits, inventory) keep their own
-   rhythm until their own pass. */
-.wd-npc { padding: 13px 14px; gap: 13px; border-radius: 11px; }
-.wd-npc-name { font-size: 17px; line-height: 1.3; }
-.wd-npc-sub { gap: 7px; margin-top: 4px; }
-.wd-chip { font-size: 13px; padding: 3px 11px; }
-.wd-dress { font-size: 14.5px; padding: 9px 15px; border-radius: 9px; }
-.wd-dress.ghost { font-size: 15px; padding: 9px 13px; }
-.wd-npc-right { display: flex; align-items: center; gap: 8px; }
-
-/* Her card: generous keys, readable values, air between fields. */
-#wd-sheet .wd-field { gap: 8px; margin-bottom: 6px; }
-#wd-sheet .wd-field-k { font-size: 14px; letter-spacing: .6px; }
-#wd-sheet .wd-seg button { font-size: 14.5px; padding: 9px 16px; }
-.nf-embed { gap: 12px; padding: 6px 0 8px; }
-.nf-embed .nf-chip { font-size: 13.5px; }
-.nf-embed .nf-hint { font-size: 13px; }
-
-/* The inject picker: bigger rows, a bigger filter — it is used mid-play. */
-#wd-inject-menu, #wd-catpick { width: 340px; padding: 10px; max-height: none; }
-#wd-inject-menu .fd-ctx-filter, #wd-catpick .fd-ctx-filter { font-size: 15px; padding: 9px 11px; }
-#wd-inject-menu .fd-ctx-item, #wd-catpick .fd-ctx-item { font-size: 15px; padding: 9px 10px; }
-#wd-inject-menu .fd-ctx-head, #wd-catpick .fd-ctx-head { font-size: 15.5px; }
-
-/* The polish pass grew the card body (17px names, 13px chips), so the skeleton
-   body grows with it — the whole point of the skeleton is that nothing jumps
-   when the real cards land. */
-.wd-skel-body { height: 84px; }
-
-/* ---- inventory item lightbox --------------------------------------------- */
-#wd-item-lightbox {
-  position: absolute; inset: 0; z-index: 80;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 12px; background: rgba(8,8,11,.88); cursor: zoom-out;
-}
-#wd-item-lightbox img {
-  max-width: min(86%, 640px); max-height: 74%;
-  border-radius: 12px; border: 1px solid #3a3a44;
-  background: #101017; box-shadow: 0 18px 48px rgba(0,0,0,.6);
-}
-#wd-item-lightbox .wd-lb-name { font-size: 17px; color: #e8e4da; }
-#wd-item-lightbox .wd-lb-x { position: absolute; top: 14px; right: 16px; font-size: 16px; padding: 8px 13px; }
-.wd-npc-face.haslb { cursor: zoom-in; }
-
-/* ---- the outfit importer (Outfit system settings) ------------------------ *
-   Two stacked searchable lists inside the settings panel. Both scroll
-   INTERNALLY rather than stretching the panel: a 4,780-mod load order has
-   hundreds of outfit-bearing plugins, and one of them can carry dozens. */
-.wd-imp-search {
-  width: 100%; box-sizing: border-box;
-  padding: 9px 11px; font: inherit; font-size: 14px;
-  color: #e8e4da; background: #14141b;
-  border: 1px solid #2e2e36; border-radius: 8px;
-  transition: border-color .14s ease, background .14s ease;
-}
-.wd-imp-search::placeholder { color: #6f6a5e; }
-.wd-imp-search:hover { border-color: #3a3a44; }
-.wd-imp-search:focus { outline: none; border-color: #c9a24b; background: #17171f; }
-.wd-imp-list {
-  display: flex; flex-direction: column; gap: 3px;
-  max-height: 208px; overflow-y: auto; overscroll-behavior: contain;
-  padding: 3px; border: 1px solid #26262e; border-radius: 8px; background: #101015;
-}
-.wd-imp-row {
-  display: flex; align-items: center; gap: 10px;
-  width: 100%; box-sizing: border-box; text-align: left;
-  padding: 8px 10px; font: inherit; font-size: 13.5px;
-  color: #cfcabd; background: transparent;
-  border: 1px solid transparent; border-radius: 6px; cursor: pointer;
-  transition: background .12s ease, color .12s ease, border-color .12s ease;
-}
-.wd-imp-row.static { cursor: default; }
-.wd-imp-row:hover { background: #191921; color: #ece7db; }
-.wd-imp-row.static:hover { background: #16161d; }
-.wd-imp-row:focus-visible { outline: 2px solid #c9a24b; outline-offset: -2px; }
-.wd-imp-row.on { background: #1d1c17; color: #e8dcb8; border-color: #c9a24b; }
-/* Long plugin names ellipsize instead of pushing the count off the row. */
-.wd-imp-n {
-  flex: 1; min-width: 0; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.wd-imp-c { flex: none; font-size: 12px; color: #6f6a5e; font-variant-numeric: tabular-nums; }
-.wd-imp-go {
-  flex: none; min-width: 34px; padding: 5px 9px;
-  font: inherit; font-size: 13px; color: #cfcabd;
-  background: #17171f; border: 1px solid #2e2e36; border-radius: 6px; cursor: pointer;
-  transition: color .12s ease, border-color .12s ease, background .12s ease;
-}
-.wd-imp-go:hover { color: #101015; background: linear-gradient(180deg, #d9c48a, #c9a24b); border-color: #c9a24b; }
-.wd-imp-go:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
-.wd-imp-go:disabled { filter: grayscale(.6) brightness(.7); cursor: not-allowed; }
-.wd-imp-go:disabled:hover { color: #cfcabd; background: #17171f; border-color: #2e2e36; }
-
-/* Inject picker set-step: the NAME must never lose to the hint. Two-line rows —
-   name full-size on top, hint beneath in the UI face (the mono pill crushed
-   "Adventure" to "A…" in game, 2026-08-03). */
-#wd-inject-menu .fd-ctx-item, #wd-catpick .fd-ctx-item { flex-wrap: wrap; row-gap: 2px; }
-#wd-inject-menu .fd-ctx-item .fd-ctx-lbl, #wd-catpick .fd-ctx-item .fd-ctx-lbl {
-  flex: 1 1 auto; overflow: visible; text-overflow: clip; white-space: normal;
-  font-size: 15.5px;
-}
-#wd-inject-menu .fd-ctx-item .fd-ctx-count, #wd-catpick .fd-ctx-item .fd-ctx-count {
-  flex: 1 1 100%; margin-left: 26px;
-  font-family: "Segoe UI", sans-serif; font-size: 12.5px; font-style: italic;
-  background: none; border: none; padding: 0; color: #8f8a7c;
-  text-align: left; white-space: normal;
-}
-
-/* ---- the searchable picker's own parts (categories, variant pieces) -------
-   Everything else it wears is #wd-inject-menu's, whose selectors were widened
-   to cover #wd-picker rather than cloned — one set of rules, no drift. */
-#wd-catpick .fd-ctx-item.on { background: rgba(201,162,75,.10); color: #f0e6cc; }
-#wd-catpick .fd-ctx-item.on .fd-ctx-check { color: #c9a24b; }
-#wd-catpick .fd-ctx-item.wd-pick-new { color: #cfe0b8; }
-#wd-catpick .fd-ctx-item.wd-pick-new .fd-ctx-check { color: #8fbf6a; }
-#wd-catpick .fd-ctx-item .fd-ctx-count {
-  font-size: 12px; color: #8a8271; flex: 0 0 auto; margin-left: auto; padding-left: 10px;
-}
-.wd-pick-foot:empty { display: none; }
-.wd-pick-foot {
-  margin-top: 8px; padding-top: 9px; border-top: 1px solid rgba(201,162,75,.16);
-}
-.wd-pick-note { font-size: 13px; color: #9a927f; }
-.wd-pick-foot-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
-.wd-pick-go {
-  font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 7px; cursor: pointer;
-  background: rgba(201,162,75,.16); color: #f0e6cc;
-  border: 1px solid rgba(201,162,75,.42);
-  transition: background .14s ease, border-color .14s ease, color .14s ease;
-}
-.wd-pick-go:hover:not(:disabled) { background: rgba(201,162,75,.28); border-color: #c9a24b; }
-.wd-pick-go:active:not(:disabled) { background: rgba(201,162,75,.36); }
-.wd-pick-go:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
-.wd-pick-go:disabled { opacity: .40; cursor: not-allowed; }
-
-/* Folded warning banner: the headline is a real button, the danger colour
-   stays, and the detail indents under it when opened. */
-.wd-warn-fold { color: #e0b0b0; border-color: #6b3a3a; font-size: 14px; text-align: left; }
-.wd-warn-fold:hover { color: #f0c5c5; border-color: #a55565; }
-.wd-warn-detail { margin: 6px 0 0 14px; font-size: 13.5px; color: #d8b8b8; line-height: 1.5; }
-
-/* ===================================================================== *
- *  Outfit photo CROP (v0.14.4) — the WYSIWYG display crop for wardrobe art.
- *
- *  APPEND VERBATIM to view/HotkeyDeck/app.css, at the END of the Wardrobe
- *  block above. The game loads the ASSEMBLED app.css, never this fragment —
- *  a frag deployed on its own does nothing in-game.
- *
- *  WHY A LAYER, not the tile. The crop is a CSS transform, and a transform on
- *  the tile scales the tile's OWN border and rounded clip with it — a zoomed
- *  picture would grow its box and shoulder the grid apart (the follower
- *  portraits hit exactly this and had to grow a wrapper). So every tile keeps
- *  its box and gains a `.wd-art` child that owns the picture and the
- *  transform, clipped by the tile's overflow. The ★ / piece-count / ⋯ chrome
- *  is a sibling, so it never scales either.
- *
- *  The three tile rules below are RE-DECLARATIONS of rules earlier in this
- *  file, not edits: same selector, same specificity, later wins. They add
- *  only what a clipping host needs — a positioning context and an overflow —
- *  and drop the now-unused background shorthand's image slot.
- * ===================================================================== */
-
-.wd-thumb { overflow: hidden; }
-.wd-strip-i { position: relative; overflow: hidden; }
-.wd-pick-t { position: relative; overflow: hidden; }
-
-/* The picture itself. `center/cover` matches what the tiles used to do to
-   their own background, so an uncropped photo is pixel-identical to before. */
-.wd-art {
-  position: absolute;
-  top: 0; right: 0; bottom: 0; left: 0;
-  background: center/cover no-repeat;
-  /* Scenery: no drag payload, no hit test — the card is a select toggle and
-     the picture must not compete for the gesture. */
-  -webkit-user-drag: none;
-  user-select: none;
-  pointer-events: none;
-}
-
-/* The way in to the big view. Bottom-RIGHT because that is the one corner the
-   card does not already use (⋯ top-left, ★ top-right, piece count
-   bottom-left). Hidden until hover/focus, exactly like .wd-dots, so a wall of
-   cards stays a wall of pictures. */
-.wd-crop {
-  position: absolute; bottom: 5px; right: 6px;
-  font-size: 13px; line-height: 1;
-  color: #8b8678; background: rgba(12, 12, 16, .8);
-  border: 1px solid #2e2e36; border-radius: 6px; padding: 3px 5px;
-  cursor: pointer; opacity: 0;
-  transition: opacity 140ms ease, color 140ms ease, border-color 140ms ease;
-}
-.wd-card:hover .wd-crop, .wd-card:focus-within .wd-crop, .wd-card.sel .wd-crop { opacity: 1; }
-.wd-crop:hover { color: #ecd9a0; border-color: #3a3a44; }
-.wd-crop:focus-visible { opacity: 1; outline: none; border-color: #c9a24b; box-shadow: 0 0 0 2px rgba(201, 162, 75, .25); }
-
-/* ---- the large view / editor overlay ----
-   Hung off document.body, OUTSIDE #wd-scale: the tab zoom is a transform, and
-   a fixed element inside a transformed ancestor is positioned and clipped by
-   that ancestor rather than by the viewport. */
-.wd-art-lb {
-  position: fixed;
-  top: 0; right: 0; bottom: 0; left: 0;
-  z-index: 9000;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, .74);
-  cursor: zoom-out;
-  animation: wdArtIn 120ms ease-out;
-}
-@keyframes wdArtIn { from { opacity: 0; } to { opacity: 1; } }
-
-/* The cap matters: `.wd-art-hint` is `flex: 0 0 100%` inside the footer, and a
-   shrink-to-fit column would resolve that against the hint's max-content width
-   — the controls well then stretched the full width of the deck. Cap the
-   column and the hint wraps instead. */
-.wd-art-inner {
-  display: flex; flex-direction: column; align-items: center; gap: 10px;
-  max-width: min(560px, 92vw); max-height: 92vh;
-  cursor: default;
-}
-
-/* 3:4, the same letterbox `.wd-thumb` gives the picture — the editor's whole
-   promise is that what you frame here is what the card draws. Sized in px by
-   JS (artFrameSize), because the drag divides pointer travel by this number
-   and a size that came from a CSS function Ultralight computes its own way
-   would make the pan gain wrong in game and right in the harness. */
-.wd-art-frame {
-  position: relative;
-  overflow: hidden;
-  flex: none;
-  border-radius: 10px;
-  border: 1px solid #3a3a44;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .6);
-  background: #0c0c10;
-}
-.wd-art-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 18px 48px rgba(0, 0, 0, .6); }
-.wd-art-frame.dragging { cursor: grabbing; }
-
-/* Backed, unlike the Followers lightbox's caption: what sits behind THIS
-   overlay is a dense grid of outfit cards with their own names, and a bare
-   line of text lands on one and reads as part of it. */
-.wd-art-cap {
-  font-size: 15px; letter-spacing: .3px; color: #e8e8ef;
-  padding: 3px 10px; border-radius: 999px;
-  background: rgba(12, 12, 16, .82);
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-/* The controls get their OWN well rather than sitting bare on the backdrop:
-   the overlay is only 74% opaque, so an unbacked hint line lands legibly on
-   top of whatever card grid is behind it and the two read as one sentence. */
-.wd-art-foot {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
-  gap: 6px; max-width: 100%;
-  padding: 8px 10px;
-  border: 1px solid #2e2e38; border-radius: 10px;
-  background: rgba(12, 12, 16, .94);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
-}
-
-.wd-art-btn {
-  appearance: none;
-  min-width: 30px; padding: 5px 10px;
-  font: 600 12.5px/1 "Segoe UI", sans-serif;
-  color: #d8d4c8; background: #1a1a22;
-  border: 1px solid #3a3a44; border-radius: 6px;
-  cursor: pointer;
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
-}
-.wd-art-btn:hover:not(:disabled) { background: #23232e; border-color: #55555f; color: #f0ece0; }
-.wd-art-btn:focus-visible { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 2px rgba(201, 162, 75, .25); }
-.wd-art-btn:active:not(:disabled) { background: #2a2a36; }
-.wd-art-btn:disabled { opacity: .38; cursor: default; }
-.wd-art-btn.ok { color: #8fd19e; border-color: #3d6b4a; }
-.wd-art-btn.ok:hover:not(:disabled) { background: #1c2a20; border-color: #4f8560; }
-
-/* The six nudge keys as one block, so they read as a d-pad rather than as six
-   more buttons in the row. */
-.wd-art-pad {
-  display: flex; gap: 4px; padding: 3px;
-  border: 1px solid #2e2e38; border-radius: 8px;
-  background: rgba(0, 0, 0, .35);
-}
-.wd-art-pad .wd-art-btn { min-width: 26px; padding: 5px 7px; }
-
-.wd-art-val {
-  font: 12px/1 Consolas, monospace; letter-spacing: .3px;
-  color: #9d968a; padding: 0 4px; white-space: nowrap;
-}
-
-/* Full-width line under the controls; flex-basis rather than a block, so it
-   wraps to its own row however many buttons precede it. */
-.wd-art-hint {
-  flex: 0 0 100%; text-align: center;
-  font: 11.5px/1.5 "Segoe UI", sans-serif; color: #6f6a5e;
-}
-
-/* Narrow (phone-width portal / small deck scale): the d-pad and the verdict
-   still fit, the hint wraps. Nothing here may shrink the FRAME — JS owns its
-   px size and the drag gain reads it back. */
-@media (max-width: 620px) {
-  .wd-art-foot { gap: 5px; padding: 7px 8px; }
-  .wd-art-btn { padding: 5px 8px; font-size: 12px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .wd-art-lb { animation: none; }
-}
 
 /* ============================================================ her day: the
    WRITE half — telling My Home is Your Home NG where to put her.
@@ -5998,7 +5363,14 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 
 /* head: face, then who they are, then their state */
 .fq-head { display: flex; align-items: flex-start; gap: 10px; padding-bottom: 9px; }
-.fq-medal { flex: none; width: 38px; height: 38px; font-size: 13px; }
+/* The card face was a 38px thumbnail — roster-row scale on the one surface
+   that is ABOUT this person. Rober (2026-08-17, Party Sheet catch-up): "this
+   profile picture make a good deal bigger". 92px: a real portrait, still
+   small enough that the name + chips column keeps the width it needs at the
+   deck's 640px floor. The crop/face-fit math is percentage-based, so the
+   same framing simply paints larger — and Ultralight rasterises the img at
+   this LAYOUT size, so bigger here IS sharper, not a scaled-up raster. */
+.fq-medal { flex: none; width: 92px; height: 92px; font-size: 30px; }
 .fq-who   { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .fq-line  { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 
@@ -6139,8 +5511,10 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
   flex: 1 1 100%; width: 100%;
   display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px;
 }
+.fq-equip-grid { --fq-eqs: 1; }
 .fq-equip-tile {
-  position: relative; width: 72px; height: 72px; flex: none;
+  position: relative; flex: none;
+  width: calc(72px * var(--fq-eqs, 1)); height: calc(72px * var(--fq-eqs, 1));
   border: 1px solid #3a382f; border-radius: 10px; overflow: hidden;
   background: #14141a; display: grid; place-items: center;
   transition: border-color 120ms ease, transform 100ms ease;
@@ -6197,7 +5571,7 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 }
 .fq-lb-img {
   max-width: min(70vw, 640px); max-height: 72vh; object-fit: contain;
-  border-radius: 14px; box-shadow: 0 30px 80px -20px #000;
+  border-radius: 14px; box-shadow: 0 10px 28px -7px rgba(0, 0, 0, 0.45);
   background: #0c0c10;
   -webkit-user-drag: none; user-select: none;
 }
@@ -6738,8 +6112,6 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .fq-sk {
   border-radius: 4px;
   background: linear-gradient(90deg, #1b1b22 25%, #24242e 50%, #1b1b22 75%);
-  background-size: 200% 100%;
-  animation: fdEqSk 1.1s ease-in-out infinite;
 }
 .fq-sk-name { display: block; height: 15px; width: 190px; }
 .fq-sk-btn  { flex: 1 1 0; min-width: 0; max-width: 230px; height: 31px; border-radius: 6px; }
@@ -6853,12 +6225,6 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .fd-eq-sk {
   flex: 1; height: 11px; border-radius: 3px;
   background: linear-gradient(90deg, #1b1b22 25%, #24242e 50%, #1b1b22 75%);
-  background-size: 200% 100%;
-  animation: fdEqSk 1.1s ease-in-out infinite;
-}
-@keyframes fdEqSk {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
 }
 
 /* A chip that cannot be acted on right now says so by looking spent, not by
@@ -6995,14 +6361,216 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .fd-ctx-item.is-clear-spot { color: #8b8678; }
 .fd-ctx-item.is-clear-spot:hover:not(:disabled) { color: #d98a8a; background: #180f10; }
 
+/* ===== ⌕ FIND AN ACTION — the F7 card's own search (2026-08-19) ==========
+   Rober: "NEED A TYPEABLE search bar here … typing pops out a nicely polished
+   ui popout modal." The BAR lives in .fq-head, in the empty space between the
+   name block and the identity icons; the POPOUT is an #overlay child, because
+   #fd-quick is overflow-y:auto and would clip a dropdown drawn inside it.
+
+   Lives in app.css, beside the rest of the card, NOT in followers-pane.css:
+   that sheet is staged lazily on the `followers` key, and this card also
+   renders on the Hotkeys tab (#fq-card), where it would never have loaded. */
+/* The identity block must not be starved by the bar. Both are flex children of
+   .fq-head, and .fq-who's basis is 0 — so without a floor the search box took
+   the row at the deck's 640px panel width and a long "LOOKING AT <name of
+   <title>" line collapsed to one letter (measured, 2026-08-19). 150px is
+   the floor; the bar shrinks into it instead. Higher specificity than the
+   .fq-who rule above, so it wins wherever it sits in the file — and it only
+   ever binds when the two are actually competing. */
+.fq-head .fq-who { min-width: 150px; }
+/* At the deck's 640px floor there is genuinely not room for a 92px face, a
+   readable name, a typeable box AND seven icon buttons on one line — measured,
+   the head overflowed by 110px and #fd-quick's overflow-x:hidden CLIPPED the
+   fold and fullscreen buttons off the right edge. So the head WRAPS: the icon
+   group drops to its own line and stays flush right there, because it grows
+   into the leftover space and right-aligns its contents. At wide widths
+   nothing moves — the icons were already flush right. */
+.fq-head { flex-wrap: wrap; }
+/* ⌕ CENTRING THE BAR (Rober, 2026-08-19: "needs to look a little more
+   centered / visually nicer"). The bar sat left of centre because the two
+   things flanking it were not the same width: .fq-who is `1 1 0` but this was
+   `1 0 auto`, so the icon group kept its ~130px of content AND took an equal
+   share of the slack, leaving 600px of dead air on the right of a 1940px head
+   while the bar hugged the name block. Giving both sides the same `1 1 0`
+   makes them resolve to equal widths, which puts the bar dead centre for free
+   — no auto margins, which cannot win against a flex-grow sibling anyway.
+   The floor is what stops basis:0 from crushing the icons; they shrink to it
+   and the head wraps instead, exactly as before. Wrapped, this group is alone
+   on its line, grows to fill it and still right-aligns. */
+.fq-headacts { flex: 1 1 0; min-width: 132px; justify-content: flex-end; }
+.fq-find {
+  position: relative;
+  /* …and the bar needs its own floor for the same reason, or the name's floor
+     simply reverses the starvation (measured: 30px of input at 640). 140px
+     still holds a readable query; both floors together fit the 640px panel
+     with room to spare. */
+  flex: 1 1 200px; min-width: 140px; max-width: 460px;
+  /* Was flex-start + a 1px nudge, which pinned a 38px bar to the top of a
+     92px portrait and left it visibly floating. Centred against the face it
+     shares the row with; on the wrapped line it is the tallest thing there,
+     so centring changes nothing. */
+  align-self: center;
+  display: flex; align-items: center; gap: 8px;
+  height: 38px; padding: 0 10px;
+  background: #16161c; border: 1px solid #3a382f; border-radius: 9px;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.fq-find:hover { border-color: #4a4a55; }
+.fq-find.is-open,
+.fq-find:focus-within {
+  border-color: #c9a24b; background: #1a1a21;
+  box-shadow: 0 0 0 1px rgba(201,162,75,.25);
+}
+.fq-find-ic { flex: none; font-size: 15px; color: #8b8678; line-height: 1; }
+.fq-find.is-open .fq-find-ic, .fq-find:focus-within .fq-find-ic { color: #c9a24b; }
+/* 14.5px: the card's controls floor is 12px and this is a thing you TYPE in
+   from a couch, so it sits above the small print, not on it. */
+.fq-find-in {
+  flex: 1 1 auto; min-width: 0;
+  font: 500 14.5px/1.2 "Segoe UI", sans-serif;
+  /* ⚠ #e8e4da — the deck's established ink (109 uses, and this pane's own
+     `.fd-name`). It was #ece4d2, a colour that existed NOWHERE else in the
+     stylesheet except the two rules of this one feature: a near-duplicate of
+     #ece7db introduced by a single surface is exactly the drift that makes a
+     product look assembled rather than designed. */
+  color: #e8e4da; background: transparent; border: 0; padding: 0; margin: 0;
+  text-overflow: ellipsis;
+}
+.fq-find-in:focus { outline: none; }
+.fq-find-in::placeholder { color: #6f6a5e; }
+.fq-find-x {
+  flex: none; display: none;
+  width: 22px; height: 22px; padding: 0;
+  align-items: center; justify-content: center;
+  font: 400 12px/1 "Segoe UI", sans-serif; color: #8b8678;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.fq-find.has-q .fq-find-x { display: inline-flex; }
+.fq-find-x:hover { color: #ecd9a0; background: rgba(201,162,75,.12); }
+.fq-find-x:focus-visible { outline: 2px solid #c9a24b; outline-offset: 1px; }
+
+/* The popout. #overlay child, so it wears --ui-scale itself and every JS
+   measurement in fqFindPlace multiplies/divides by deckScale() — the
+   #fd-ctx-menu contract, applied to an anchored box. z-index sits one above
+   the member menu (60): the two are never open together, and if a fired
+   action opens one it must paint over whatever is left of this. */
+#fq-find-pop {
+  position: absolute; z-index: 61;
+  min-width: 300px; max-width: 720px;
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, #1c1c24, #16161d);
+  border: 1px solid #c9a24b77; border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
+  overflow: hidden;
+  transform: scale(var(--ui-scale, 1)); transform-origin: top left;
+  animation: fdCtxIn .11s ease;
+}
+.fqf-head {
+  flex: none; display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 9px 12px 8px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.fqf-count {
+  font: 600 12px/1 "Segoe UI", sans-serif; letter-spacing: .4px;
+  text-transform: uppercase; color: #8b8678;
+}
+.fqf-hint { font: 400 12px/1 "Segoe UI", sans-serif; color: #5f5b52; white-space: nowrap; }
+.fqf-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 6px; }
+.fqf-list::-webkit-scrollbar { width: 8px; }
+.fqf-list::-webkit-scrollbar-thumb { background: #2f2f39; border-radius: 4px; }
+.fqf-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  width: 100%; text-align: left; cursor: pointer;
+  padding: 9px 10px;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+/* ⚠ 6px, not 2 (2026-08-19 design pass). Each row is a glyph, a title and two
+   clamped lines of tooltip — ~70px tall — and 2px of air between two 70px
+   blocks reads as no separation at all: the list painted as one wall of text
+   (measured at 2560 with five hits). 6px is the gap the shelf's own cards and
+   the Home drawer's grid already use. */
+.fqf-row + .fqf-row { margin-top: 6px; }
+.fqf-row:hover { background: rgba(255,255,255,.04); }
+.fqf-row.sel { background: rgba(201,162,75,.12); border-color: #c9a24b; }
+.fqf-row:focus-visible { outline: 2px solid #c9a24b; outline-offset: 1px; }
+.fqf-row:active { transform: translateY(1px); }
+/* Greyed, never hidden: the tooltip already says WHY, and the row keeps it on
+   screen. Pressing one flashes rather than closing (see fqFindFire). */
+.fqf-row.off { opacity: .55; cursor: not-allowed; }
+.fqf-row.off:active { transform: none; }
+.fqf-row.nope { animation: fqfNope 220ms ease; }
+@keyframes fqfNope {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+.fqf-ic {
+  flex: none; width: 26px; text-align: center;
+  font: 400 17px/1.3 "Segoe UI", sans-serif; color: #c9a24b;
+}
+.fqf-row.off .fqf-ic { color: #6f6a5e; }
+.fqf-txt { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.fqf-lbl {
+  /* #e8e4da: the same ink `.fd-name` uses for a row label two panes over —
+     see the note on .fq-find-in. */
+  font: 600 14.5px/1.25 "Segoe UI", sans-serif; color: #e8e4da;
+  overflow: hidden; text-overflow: ellipsis;
+}
+/* Two lines of the button's own tooltip. max-height is the real clip —
+   -webkit-line-clamp is not something Ultralight is trusted to honour, so it
+   is the nicety and the height is the guarantee. */
+.fqf-sub {
+  font: 400 12.5px/1.35 "Segoe UI", sans-serif; color: #8b8678;
+  max-height: 3.5em; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.fqf-why { font: 600 12px/1.3 "Segoe UI", sans-serif; color: #c9a24b; }
+/* Marks are styled per container in this stylesheet — a new one that renders
+   highlights and forgets this rule paints browser-default yellow. */
+/* ⚠ #ecd9a0, the deck's ONE highlight gold — the same value `.fd-name mark`
+   uses ten lines of this pane away, and seventeen other mark rules across
+   Domains, Finances, Wardrobe and Rooms. #f0d795 was a brighter gold that
+   appeared exactly once in the whole stylesheet, so the deck's newest search
+   highlighted matches in a colour no other search in the deck uses. */
+#fq-find-pop mark { background: transparent; color: #ecd9a0; font-weight: 700; }
+.fqf-tags { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.fqf-sect {
+  font: 600 12px/1 "Segoe UI", sans-serif; letter-spacing: .4px; text-transform: uppercase;
+  color: #8b8678; background: rgba(255,255,255,.04);
+  border: 1px solid #3a3a44; border-radius: 20px; padding: 3px 8px;
+  white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis;
+}
+.fqf-tag {
+  font: 600 12px/1 "Segoe UI", sans-serif; letter-spacing: .4px; text-transform: uppercase;
+  color: #d9c48a; background: rgba(201,162,75,.10);
+  border: 1px solid #4a4433; border-radius: 20px; padding: 3px 8px; white-space: nowrap;
+}
+.fqf-empty { display: flex; align-items: flex-start; gap: 12px; padding: 18px 14px; }
+.fqf-empty-ic { flex: none; font-size: 22px; color: #4a4740; line-height: 1; }
+.fqf-empty-txt { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.fqf-empty-l1 { font: 600 14px/1.35 "Segoe UI", sans-serif; color: #b9b4a8; }
+.fqf-empty-l2 { font: 400 12.5px/1.4 "Segoe UI", sans-serif; color: #6f6a5e; }
+
+/* Narrow deck (the 640px floor, and the Hotkeys-tab card which is narrower
+   still): the bar keeps a usable width by giving up its cap, and the popout's
+   own min-width is what stops it collapsing with it. */
+@media (max-width: 900px) {
+  .fq-find { flex-basis: 160px; max-width: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .fq-btn, .fq-set, .fq-file, .fq-iconbtn { transition-duration: 1ms !important; }
   .fq-edit { animation: none; }
   .fd-eq-sk, .fq-sk { animation: none; background: #1b1b22; }
   .fq-sets, .fq-status, .fq-rank { animation: none; }
   .fq-rank-nudge, .fq-rank-seg { transition-duration: 1ms !important; }
+  .fq-find, .fq-find-x, .fqf-row { transition-duration: 1ms !important; }
+  #fq-find-pop { animation: none; }
+  .fqf-row.nope { animation: none; }
 }
-
 
 /* ===================================================================== *
  *  Recent — what has actually been fired this session.
@@ -7083,8 +6651,11 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 
 /* ---------- left rail: where you are + claim ---------- */
 
+/* 260px, not 232: the rail's type sits on the deck's 12px floor (see the
+   type-scale note below) and at 232px the three "This place is" segments and
+   the "Size 200u (5.7 m)" label had no room left to hold their words. */
 #rm-side {
-  width: 232px; flex: none;
+  width: 260px; flex: none;
   display: flex; flex-direction: column; gap: 10px;
   padding: 11px 10px;
   border-right: 1px solid #2e2e36;
@@ -7097,8 +6668,14 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   padding: 9px 10px;
   background: rgba(255,255,255,.02);
 }
+/* ---- type scale ----
+   12px is the deck's floor (Rober plays at 2560x1440 from a couch and the
+   panel is NOT sized by the viewport, so a 10px label is 10 real pixels on a
+   27" screen two metres away). Nothing in this pane goes under it; the small
+   end of the scale is 12px for the uppercase labels/chips and 12.5px for the
+   lines you actually read. */
 .rm-here-label {
-  font-size: 10px; letter-spacing: .8px; text-transform: uppercase;
+  font-size: 12px; letter-spacing: .8px; text-transform: uppercase;
   color: #6f6a5e;
 }
 .rm-here-name {
@@ -7106,7 +6683,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   font-size: 13.5px; color: #e8e4da; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.rm-here-status { margin-top: 4px; font-size: 11.5px; color: #b9b4a8; }
+.rm-here-status { margin-top: 4px; font-size: 12.5px; color: #b9b4a8; }
 .rm-here-status.claimed { color: #ecd9a0; }
 .rm-here-status.home    { color: #8fbf8f; }
 
@@ -7115,9 +6692,9 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .rm-field { display: flex; flex-direction: column; gap: 4px; }
 .rm-field-inline { flex-direction: row; align-items: center; gap: 8px; }
 .rm-field-label {
-  font-size: 10px; letter-spacing: .8px; text-transform: uppercase; color: #6f6a5e;
+  font-size: 12px; letter-spacing: .8px; text-transform: uppercase; color: #6f6a5e;
 }
-.rm-size-val { color: #d9c48a; font-family: Consolas, "Courier New", monospace; font-size: 11px; }
+.rm-size-val { color: #d9c48a; font-family: Consolas, "Courier New", monospace; font-size: 12px; }
 
 #rm-claim-name, #rm-search {
   background: rgba(0,0,0,.30); color: #e8e4da;
@@ -7132,11 +6709,15 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 
 /* segmented Rented / Home */
 .rm-seg { display: flex; gap: 4px; }
+/* min-height 30px on every clickable in this pane: these are couch targets hit
+   with a trackball, and the seg buttons / row actions / unseal buttons were
+   23-28px tall. Padding alone can't hold the floor once the label wraps, so the
+   floor is stated and the padding only sets the comfortable size above it. */
 .rm-seg-btn {
-  flex: 1; padding: 6px 4px;
+  flex: 1; padding: 6px 4px; min-height: 30px;
   background: rgba(0,0,0,.25); color: #b9b4a8;
   border: 1px solid #2e2e36; border-radius: 6px;
-  font-size: 11.5px; font-family: inherit; cursor: pointer;
+  font-size: 12.5px; font-family: inherit; cursor: pointer;
   transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
 }
 .rm-seg-btn:hover { background: rgba(201,162,75,.06); color: #ece7db; }
@@ -7158,22 +6739,22 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   opacity: .45; cursor: not-allowed; transform: none;
   background: rgba(255,255,255,.03); border-color: #2e2e36; color: #6f6a5e;
 }
-.rm-hint { font-size: 11px; color: #6f6a5e; line-height: 1.35; }
+.rm-hint { font-size: 12px; color: #6f6a5e; line-height: 1.35; }
 
 /* live occupancy readout */
 #rm-occupants { display: flex; flex-direction: column; gap: 3px; }
 .rm-occ-title {
-  font-size: 10px; letter-spacing: .8px; text-transform: uppercase; color: #6f6a5e;
+  font-size: 12px; letter-spacing: .8px; text-transform: uppercase; color: #6f6a5e;
   margin-bottom: 2px;
 }
 .rm-occ {
   display: flex; align-items: center; gap: 6px;
-  font-size: 11.5px; color: #b9b4a8;
+  font-size: 12.5px; color: #b9b4a8;
   padding: 3px 5px; border-radius: 5px; background: rgba(255,255,255,.02);
 }
 .rm-occ-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rm-occ-why {
-  flex: none; font-size: 10px; color: #8fbf8f;
+  flex: none; font-size: 12px; color: #8fbf8f;
   background: rgba(143,191,143,.10); border-radius: 8px; padding: 1px 6px;
 }
 .rm-occ.going .rm-occ-why { color: #d99a6c; background: rgba(217,154,108,.10); }
@@ -7181,7 +6762,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .rm-occ-allow {
   flex: none; border: 1px solid #2e2e36; border-radius: 5px;
   background: rgba(255,255,255,.04); color: #b9b4a8;
-  font-size: 11px; line-height: 1; padding: 2px 6px; cursor: pointer;
+  font-size: 12px; line-height: 1; padding: 4px 8px; cursor: pointer;
   transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
 }
 .rm-occ-allow:hover { background: rgba(143,191,143,.14); color: #a9d4a9; border-color: #8fbf8f66; }
@@ -7196,7 +6777,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .rm-search-ic { position: absolute; left: 8px; color: #5d594f; font-size: 13px; pointer-events: none; }
 #rm-search { flex: 1; padding-left: 24px; }
 #rm-count {
-  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 10.5px;
+  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 12px;
   color: #6f6a5e; background: rgba(255,255,255,.04); border-radius: 9px; padding: 3px 8px;
 }
 
@@ -7244,11 +6825,11 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .rm-sub {
-  margin-top: 2px; font-size: 11px; color: #6f6a5e;
+  margin-top: 2px; font-size: 12px; color: #6f6a5e;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .rm-chip {
-  flex: none; font-size: 10px; border-radius: 9px; padding: 2px 7px;
+  flex: none; font-size: 12px; border-radius: 9px; padding: 2px 7px;
   color: #d9c48a; background: rgba(201,162,75,.10);
 }
 .rm-chip.home { color: #8fbf8f; background: rgba(143,191,143,.10); }
@@ -7258,8 +6839,12 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .rm-chip.evict { color: #7fb6d9; background: rgba(110,168,214,.14); }
 
 .rm-actions { flex: none; display: flex; gap: 4px; margin-left: auto; }
+/* Six of these per row and each one is the ONLY way to reach what it does
+   (resize, ban, seal, retype, drop point, pause) — so they hold the 30px
+   floor in both axes, not just the width they happened to have. */
 .rm-act {
-  padding: 4px 8px; font-size: 11px; font-family: inherit;
+  padding: 4px 8px; min-height: 30px; min-width: 32px;
+  font-size: 12px; font-family: inherit;
   background: rgba(255,255,255,.04); color: #b9b4a8;
   border: 1px solid #2e2e36; border-radius: 5px; cursor: pointer;
   transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
@@ -7274,7 +6859,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 #rm-ignore-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .rm-ig {
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: 11px; color: #b9b4a8;
+  font-size: 12px; color: #b9b4a8;
   background: rgba(255,255,255,.04); border: 1px solid #2e2e36;
   border-radius: 10px; padding: 2px 4px 2px 8px;
 }
@@ -7284,6 +6869,26 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   transition: color 140ms ease, background 140ms ease;
 }
 .rm-ig-x:hover { color: #e79b93; background: rgba(200,80,70,.14); }
+
+/* Never-move filter (appears past 8 protected people). It takes the whole
+   row so the chips below it stay a clean wrap, and it deliberately reads
+   larger than the 11px chips — a control you type into must not be the
+   smallest text on the pane. */
+.rm-ig-findwrap {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  background: #16161d; border: 1px solid #3d3a33; border-radius: 9px;
+  padding: 5px 10px; margin: 2px 0 5px; max-width: 380px;
+  box-sizing: border-box;
+}
+.rm-ig-findg { color: #9a917d; font-size: 13px; line-height: 1; }
+.rm-ig-find {
+  flex: 1; min-width: 0;
+  background: transparent; border: none; outline: none;
+  color: #efe9da; font-size: 13px;
+}
+.rm-ig-find::placeholder { color: #7d7566; }
+.rm-ig-findn { color: #cbb27a; font-size: 12px; white-space: nowrap; }
+.rm-ig-none { width: 100%; color: #6f6a5e; font-size: 12.5px; padding: 4px 2px; }
 
 /* empty states — sized like real content so the list does not jump */
 #rm-empty { padding: 22px 12px; text-align: center; color: #6f6a5e; font-size: 12.5px; line-height: 1.5; }
@@ -7301,7 +6906,9 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   display: flex; flex-direction: column; gap: 8px;
 }
 .rm-tune-row { display: flex; align-items: center; gap: 9px; }
-.rm-tune-row .rm-field-label { flex: none; width: 74px; }
+/* 92px holds the longest label ("Up / down" = 77px at the 12px floor) without
+   clipping — the old 74px was sized for the 10px type. */
+.rm-tune-row .rm-field-label { flex: none; width: 92px; }
 .rm-tune-row input[type=range] { flex: 1; min-width: 0; accent-color: #c9a24b; }
 .rm-tune-row .rm-size-val { flex: none; width: 108px; text-align: right; }
 .rm-tune .rm-hint { color: #8a8478; }
@@ -7457,7 +7064,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 #rm-lock-banner.hidden { display: none; }
 .rm-lock-ban-t { font-size: 12.5px; color: #f0b4ac; font-weight: 600; }
 .rm-lock-ban-b {
-  padding: 5px 10px; font-size: 12px; font-family: inherit;
+  padding: 5px 10px; min-height: 30px; font-size: 12px; font-family: inherit;
   background: rgba(255,255,255,.05); color: #e7a49d;
   border: 1px solid #c8504644; border-radius: 6px; cursor: pointer;
   max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -7471,7 +7078,6 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   font-size: 12px; line-height: 1.35; color: #e7a49d;
   background: rgba(200,80,70,.12); border-radius: 6px; padding: 6px 8px;
 }
-
 
 /* ===================================================================== *
  * Time pane (tm-)  — MERGE this whole file into app.css (banner to next
@@ -7510,7 +7116,14 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
    makes "when am I" legible at a glance — night = dot on the dark half. */
 #tm-dial {
   width: 74px; height: 74px; border-radius: 50%; flex: none; position: relative;
-  background:
+  /* Split color + image ON PURPOSE: conic-gradient does not exist in
+     Ultralight, and inside a `background:` SHORTHAND its failure drops the
+     whole declaration — the dial shipped as a bare unfilled circle (2026-08-19
+     CSS review). As a separate background-image only THAT declaration is
+     dropped and the ring keeps a solid plate; a supporting engine (the
+     Chromium harness) still draws the day-arc. */
+  background-color: #191926;
+  background-image:
     conic-gradient(from 180deg,
       #14141c 0deg,  #2a3550 60deg,  #c9a24b55 120deg, #d8c07a66 180deg,
       #c9a24b55 240deg, #2a3550 300deg, #14141c 360deg);
@@ -7591,6 +7204,59 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 #tm-note.tm-ok  { background: rgba(201,162,75,.10); border: 1px solid #c9a24b44; color: #d8c07a; }
 .tm-hiddenish { opacity: 0; pointer-events: none; }
 #tm-note:not(.tm-hiddenish) { opacity: 1; }
+
+/* ---- Sky card (weather picker, 2026-08-17) ---------------------------- */
+#tm-sky-now { font-size: 14px; color: #b6ad99; }
+#tm-sky-now b { color: #e8e2d4; }
+#tm-sky-bar {
+  display: flex; align-items: center; gap: 10px;
+  background: #14141a; border: 1px solid #3a3a45; border-radius: 10px;
+  padding: 4px 6px 4px 12px;
+}
+.tm-sky-glyph { color: #8b8474; font-size: 15px; }
+#tm-sky-q {
+  flex: 1 1 auto; min-width: 0; background: none; border: none; outline: none;
+  color: #efe9da; font-size: 15px; padding: 8px 0;
+}
+#tm-sky-bar:focus-within { border-color: #c9a24b; }
+#tm-sky-release {
+  flex: 0 0 auto; background: #1d1d24; border: 1px solid #3a3a45; border-radius: 8px;
+  color: #d9d2bd; font-size: 13.5px; padding: 8px 12px; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+#tm-sky-release:hover { background: #26262f; border-color: #55503f; }
+#tm-sky-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 300px; overflow-y: auto;
+  border: 1px solid #2e2e38; border-radius: 10px; padding: 6px;
+  transition: opacity 160ms ease;
+}
+#tm-sky-list:not(.tm-hiddenish) { opacity: 1; }
+.tm-sky-row {
+  display: flex; align-items: baseline; gap: 10px; min-width: 0;
+  padding: 7px 10px; border-radius: 7px; cursor: pointer;
+  transition: background .1s ease;
+}
+.tm-sky-row:hover { background: #22222b; }
+.tm-sky-top { background: #1e1e27; box-shadow: inset 2px 0 0 #c9a24b; }
+.tm-sky-cur { box-shadow: inset 2px 0 0 #8fb8ff; }
+.tm-sky-kind {
+  flex: 0 0 auto; font-size: 12px; border-radius: 999px; padding: 2px 9px;
+  border: 1px solid #3a3a45; color: #b6ad99; text-transform: capitalize;
+}
+.tm-sky-kind.k-clear  { color: #ffd36a; border-color: #6b5a2c; }
+.tm-sky-kind.k-cloudy { color: #b9c2cf; border-color: #4a5260; }
+.tm-sky-kind.k-rain   { color: #8fb8ff; border-color: #3d5470; }
+.tm-sky-kind.k-snow   { color: #cfe6ff; border-color: #55636f; }
+.tm-sky-name {
+  font-size: 14.5px; color: #e8e2d4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.tm-sky-plug {
+  margin-left: auto; font-size: 12px; color: #8b8474; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 200px;
+}
+
 #tm-foot {
   margin-top: auto; padding-top: 10px; border-top: 1px solid #26262d;
   font-size: 12px; color: #6e6a5d; line-height: 1.5;
@@ -7674,7 +7340,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 #wd-item-lightbox img {
   max-width: min(86%, 640px); max-height: 74%;
   border-radius: 12px; border: 1px solid #3a3a44;
-  background: #101017; box-shadow: 0 18px 48px rgba(0,0,0,.6);
+  background: #101017; box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
 }
 #wd-item-lightbox .wd-lb-name { font-size: 17px; color: #e8e4da; }
 #wd-item-lightbox .wd-lb-x { position: absolute; top: 14px; right: 16px; font-size: 16px; padding: 8px 13px; }
@@ -7809,19 +7475,28 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
  *  fixed element, repositioned per show; pointer-events none so it can
  *  never trap the cursor it is following.
  * ===================================================================== */
+/* The bubble is body-mounted (so it can never be clipped by a pane's
+   overflow), which also means it sits OUTSIDE #panel's
+   transform: scale(var(--ui-scale)) — so until 2026-08-17 it painted at 1x
+   beside a Filled deck and was the smallest text on screen. It now wears the
+   deck's paint factor itself, via --hdtip-s set by showFor(); transform-origin
+   is the top-left corner because that is the point showFor() positions, and
+   the clamp there multiplies the pre-transform offsetWidth/Height by the same
+   factor (the #fd-ctx-menu / deckPaintScale idiom). */
 #hd-tip {
   position: fixed; z-index: 10050;
-  max-width: 340px;
+  max-width: 380px;
   pointer-events: none;
-  font-size: 13px; line-height: 1.4; color: #ece7db;
+  font-size: 14px; line-height: 1.45; color: #ece7db;
   background: #0c0c10;
   border: 1px solid #c9a24b77; border-radius: 7px;
-  padding: 7px 10px;
+  padding: 8px 11px;
   box-shadow: 0 10px 26px rgba(0,0,0,.6);
-  opacity: 0; transform: translateY(3px);
+  transform-origin: 0 0;
+  opacity: 0; transform: translateY(3px) scale(var(--hdtip-s, 1));
   transition: opacity 130ms ease, transform 130ms ease;
 }
-#hd-tip.show { opacity: 1; transform: none; }
+#hd-tip.show { opacity: 1; transform: scale(var(--hdtip-s, 1)); }
 
 /* ===================================================================== *
  *  Followers rail — PER-CATEGORY ICONS + the icon picker overlay.
@@ -7951,6 +7626,14 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .fd-catic-tile.none { border-style: dashed; }
 .fd-catic-x { font-size: 30px; line-height: 46px; height: 46px; color: #55523f; }
 .fd-catic-tile.none:hover .fd-catic-x { color: #d9c48a; }
+/* The Auto tile can now preview the shipped default glyph. Dim it so it reads
+   as "what you'd fall back to", not as a competing active pick; the dashed
+   .none border already marks it as the clear-override tile. (Merged from
+   followers-caticons.css.frag 2026-08-19 — the one block the original merge
+   missed, which let the 256px source PNG blow the picker grid open.) */
+.fd-catic-auto-img { width: 46px; height: 46px; object-fit: contain; display: block; pointer-events: none; opacity: .62; }
+.fd-catic-tile.none:hover .fd-catic-auto-img { opacity: 1; }
+.fd-catic-tile.none.on .fd-catic-auto-img { opacity: 1; }
 .fd-catic-more {
   grid-column: 1 / -1;
   padding: 9px 10px;
@@ -8390,6 +8073,20 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 }
 .pd-fav:hover { background: rgba(10,12,16,.8); border-color: rgba(240,214,140,.6); }
 .pd-fav.on { color: #f0d68c; border-color: rgba(240,214,140,.5); }
+/* ✕ / ⟲ — remove one preset from the tab, or bring it back (2026-08-15). Sits
+   under the ☆ so neither corner control ever covers the other, and stays quiet
+   until the tile is hovered: curation should be available, not shouted. */
+.pd-hide {
+  position: absolute; top: 32px; right: 4px; z-index: 2;
+  width: 24px; height: 24px; padding: 0; line-height: 22px; text-align: center;
+  font-size: 13px; cursor: pointer; border-radius: 6px;
+  background: rgba(10,12,16,.55); color: #b8b1a0;
+  border: 1px solid rgba(255,255,255,.14);
+  opacity: 0; transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.pd-tile:hover .pd-hide, .pd-tile:focus-within .pd-hide, .pd-hide.on { opacity: 1; }
+.pd-hide:hover { background: rgba(10,12,16,.85); color: #e08a8a; border-color: rgba(224,138,138,.6); }
+.pd-hide.on { color: #8fd18f; border-color: rgba(143,209,143,.5); }
 .pd-tile-cat {
   font-size: 11px; color: #a9c7e0; opacity: .85; margin-top: 2px;
   max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -8434,7 +8131,147 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .pd-autorender.is-stopping { animation: none; opacity: .85; border-color: rgba(214,120,110,.55); }
 .pd-redo { border-color: rgba(255,255,255,.16); }
 .pd-redo.is-armed { border-color: rgba(214,120,110,.6); background: rgba(214,120,110,.14); }
+/* The debug stand-in's dismissal — deliberately unlike the mode chips beside
+   it: it is not a mode, it is an action on something standing in the world
+   right now, and it only exists while she does (2026-08-16 in-game test). */
+.pd-standin {
+  border-color: rgba(214,120,110,.55);
+  background: rgba(214,120,110,.12);
+  color: #e9c9c3;
+}
+.pd-standin:hover { border-color: rgba(214,120,110,.85); background: rgba(214,120,110,.2); }
+.pd-standin:active { transform: translateY(1px); }
+.fc-armbar-probe { border-left-color: #8fb8d6; }
 
+
+/* ===================== the 2026-08-16 play-test pass ====================
+   Five fixes, one stylesheet block: the per-tile ⟳, the failure badge, the
+   "can't be rendered" card with its race override, the armed-mode banner, and
+   the batch's cost stated before the press.
+   ⚠ Ultralight rules that shaped these: no HTML5 drag, no <input type=range>,
+   and an animated background-position on a big gradient SMEARS ("watercolors
+   bleeding", proven on this rig the same day) — so the ONLY animation here is
+   a transform-rotate on one 26px glyph, which is proven safe. */
+
+/* Batch cost — the sentence that has to be on screen BEFORE he presses ✨:
+   114 faces is ~8 minutes of the game spawning and rendering a stand-in. */
+.pd-cost { font-size: 13px; line-height: 1.45; color: #d9cfa4; opacity: .9; padding: 0 2px; }
+.pd-autorender.is-starting { cursor: default; opacity: .85; }
+.pd-blocked-chip { border-color: rgba(224, 138, 138, .45); color: #f0cfc6; }
+.pd-blocked-chip:hover { background: rgba(224, 138, 138, .14); border-color: rgba(224, 138, 138, .7); }
+.pd-blocked-chip.on { background: rgba(224, 138, 138, .18); border-color: rgba(224, 138, 138, .75); color: #f6ddd6; }
+
+/* Armed-mode banner. "🖼 Set image seems to do nothing" was a MODE chip arming
+   silently — this is the sentence that says what the next tile click will do. */
+.fc-armbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: 12px 14px; border-radius: 11px;
+  background: rgba(140, 190, 250, .10); border: 1px solid rgba(140, 190, 250, .38);
+  border-left-width: 4px;
+}
+.fc-armbar-t { font-size: 15px; font-weight: 700; color: #dce9ff; }
+.fc-armbar-s { font-size: 13.5px; line-height: 1.5; color: #e7e2d4; opacity: .9; flex: 1 1 240px; }
+.fc-armbar-x {
+  font-size: 13px; padding: 8px 13px; border-radius: 9px; cursor: pointer; margin-left: auto;
+  color: #e9e2cf; background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .2);
+  transition: background .12s ease, border-color .12s ease;
+}
+.fc-armbar-x:hover { background: rgba(255, 255, 255, .14); border-color: rgba(240, 214, 140, .55); }
+.fc-armbar-x:active { transform: translateY(1px); }
+/* While a mode is armed the tiles hover BLUE — the same colour the picked tile
+   already wears — so the grid agrees with the banner about what a click means. */
+.fc-armed .pd-tile:hover { border-color: rgba(140, 190, 250, .7); background: rgba(140, 190, 250, .12); }
+
+/* "⚠ N can't be rendered — why?" — the six presets that failed every batch and
+   whose only evidence was the log. Reason on the row, a way out on every one. */
+.pd-blocked {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px; border-radius: 12px;
+  background: rgba(224, 138, 138, .07); border: 1px solid rgba(224, 138, 138, .3);
+}
+.pd-blocked-head { font-size: 15px; font-weight: 700; color: #f2d5cd; }
+.pd-blocked-sub { display: block; margin-top: 4px; font-size: 13px; font-weight: 400; line-height: 1.5; opacity: .82; }
+.pd-blocked-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  padding: 9px 11px; border-radius: 10px;
+  background: rgba(255, 255, 255, .045); border: 1px solid transparent;
+  transition: background .12s ease, border-color .12s ease;
+}
+.pd-blocked-row:hover { background: rgba(255, 255, 255, .08); }
+.pd-blocked-row.is-open { border-color: rgba(240, 214, 140, .55); background: rgba(240, 214, 140, .08); }
+.pd-blocked-name { font-size: 14px; font-weight: 600; color: #f2ecdc; flex: 0 1 auto; }
+/* Wrap, never clip — a truncated reason is exactly the useless half-sentence
+   this card exists to replace. */
+.pd-blocked-why { font-size: 13px; line-height: 1.45; color: #e6b9b3; flex: 1 1 220px; min-width: 0; word-break: break-word; }
+.pd-blocked-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.pd-blocked-b {
+  font-size: 13px; line-height: 1.2; padding: 8px 12px; border-radius: 9px; cursor: pointer;
+  color: #e9e2cf; background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .16);
+  transition: background .12s ease, border-color .12s ease, color .12s ease, transform .1s ease;
+}
+.pd-blocked-b:hover { background: rgba(240, 214, 140, .14); border-color: rgba(240, 214, 140, .55); color: #f6ecc8; }
+.pd-blocked-b:active { transform: translateY(1px); }
+.pd-blocked-b.on { background: rgba(240, 214, 140, .18); border-color: rgba(240, 214, 140, .72); color: #f8efce; }
+.pd-blocked-b.is-busy { opacity: .7; cursor: default; }
+
+/* The race/sex override: a searchable race list, because past ~10 options a
+   bare list is a defect here (standing UI rule) — and because a modded race
+   must be typeable, the input's raw text is sent when nothing matches. */
+.pd-raceed {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 14px; border-radius: 11px;
+  background: rgba(240, 214, 140, .07); border: 1px solid rgba(240, 214, 140, .32);
+}
+.pd-raceed-head { font-size: 14px; line-height: 1.45; color: #f2ecdc; }
+.pd-raceed-sex { display: flex; flex-wrap: wrap; gap: 8px; }
+.pd-racelist { max-height: 210px; overflow-y: auto; margin: 0; }
+.fc-catchip.is-guess { box-shadow: inset 0 0 0 1px rgba(140, 190, 250, .55); }
+.pd-raceq { width: 100%; box-sizing: border-box; }
+
+/* ⟳ on the face itself. Left column under 🔍, mirroring ☆/✕ on the right, so
+   the four corner controls can never land on one another. Visible at rest (a
+   control he could not find was the complaint) and full strength on hover. */
+.pd-rr {
+  position: absolute; top: 32px; left: 4px; z-index: 2;
+  width: 24px; height: 24px; padding: 0; line-height: 22px; text-align: center;
+  font-size: 14px; cursor: pointer; border-radius: 6px;
+  background: rgba(10, 12, 16, .6); color: #d8d4c8;
+  border: 1px solid rgba(255, 255, 255, .14);
+  opacity: .55; transition: opacity .12s ease, background .12s ease, border-color .12s ease, color .12s ease;
+}
+.pd-tile:hover .pd-rr, .pd-tile:focus-within .pd-rr { opacity: 1; }
+.pd-rr:hover { background: rgba(240, 214, 140, .2); border-color: rgba(240, 214, 140, .6); color: #f6ecc8; }
+.pd-rr:active { transform: translateY(1px); }
+.pd-rr.is-blocked { opacity: .3; cursor: default; }
+.pd-rr.is-busy { opacity: 1; color: #f0d68c; border-color: rgba(240, 214, 140, .6); cursor: default; }
+
+/* In-flight, ON the tile that was pressed. One rotating glyph — the animation
+   shape Ultralight draws cleanly (see the smear warning at the top). */
+.pd-rendering {
+  position: absolute; inset: 0; z-index: 1; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(8, 10, 14, .72);
+}
+.pd-rendering-g { font-size: 26px; color: #f0d68c; animation: pdRrSpin 1.1s linear infinite; }
+@keyframes pdRrSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.pd-tile.is-rendering { border-color: rgba(240, 214, 140, .6); }
+
+/* A preset the renderer refuses wears the reason, and clicking it opens the
+   fix — never a tile that just sits there with no image and no explanation. */
+.pd-failbar {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 1;
+  padding: 3px 4px; font-size: 12px; line-height: 1.35; text-align: center; cursor: pointer;
+  color: #ffe0da; background: rgba(150, 46, 46, .82);
+  border: 0; border-top: 1px solid rgba(255, 190, 180, .35);
+  transition: background .12s ease, color .12s ease;
+}
+.pd-failbar:hover { background: rgba(196, 62, 62, .92); color: #fff; }
+.pd-tile.is-failed { border-color: rgba(224, 138, 138, .55); }
+
+/* The Set-image strip: 234 files on his rig, so it gets a filter and room to
+   breathe instead of an unfiltered 120px scroller nobody could search. */
+.fc-body .pd-strip-row { max-height: 260px; }
+.pd-imgq { margin-bottom: 2px; }
 
 /* ===================================================================== *
  *  Animations tab — ZAP animation player pane for the Hotkey Deck view.
@@ -8500,7 +8337,12 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .an-crawl.disabled:hover { border-color: #2e2e36; background: rgba(255,255,255,.04); box-shadow: none; }
 
 .an-cats {
-  flex: 1; min-height: 0; overflow-y: auto;
+  /* The rail is this pane's primary navigation, and every sibling in #an-side
+     is a flex:none card — so without a floor the rail is the only thing that
+     can absorb a shortfall and it collapsed to 13px at 1280x720 (measured
+     2026-08-19: 0 of 8 rows visible). 122px = 3 rows (38px) + 2 gaps (4px);
+     the packs card below yields first. */
+  flex: 1 1 auto; min-height: 122px; overflow-y: auto;
   display: flex; flex-direction: column; gap: 4px;
   padding-right: 2px;
 }
@@ -8527,7 +8369,13 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 
 /* ---------- load-order packs card (in-game FNIS scan) ---------- */
 
-#an-packs-card { display: flex; flex-direction: column; min-height: 0; max-height: 44%; }
+/* Yields to the category rail when #an-side runs out of room (.an-card is
+   flex:none, which is what starved the rail): shrinkable, but never below the
+   card's own chrome + ~1.5 pack rows, and #an-pk-body scrolls what's left. */
+#an-packs-card {
+  display: flex; flex-direction: column;
+  flex: 0 1 auto; min-height: 108px; max-height: 44%;
+}
 #an-packs-card .an-card-title {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
@@ -8540,7 +8388,15 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 }
 .an-pk-rescan:hover { border-color: #c9a24b; background: rgba(201,162,75,.10); }
 .an-pk-rescan.hidden { display: none; }
-#an-pk-body { display: flex; flex-direction: column; gap: 7px; min-height: 0; }
+/* The card body is the scroller, not #an-pk-rows: .an-pk-hint below the rows
+   is a 3-line paragraph that cannot shrink, so in a squeezed card it outranked
+   the rows and left ONE of 7 packs visible (measured 1280x720: #an-pk-rows
+   64px of 283). Scrolling the body keeps every pack row reachable and pushes
+   the hint to the end where it belongs. */
+#an-pk-body {
+  display: flex; flex-direction: column; gap: 7px;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+}
 .an-pk-pitch { font-size: 12.5px; color: #9d988c; line-height: 1.45; }
 .an-pk-scan { margin-top: 2px; }
 .an-pk-filter {
@@ -8553,7 +8409,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .an-pk-filter::placeholder { color: #7f7a6e; }
 .an-pk-filter:focus { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.18); }
 #an-pk-rows {
-  min-height: 0; overflow-y: auto;
+  flex: none;                     /* #an-pk-body scrolls; see the note above */
   display: flex; flex-direction: column; gap: 4px;
   padding-right: 2px;
 }
@@ -8686,7 +8542,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   width: min(560px, calc(92vw / var(--ui-scale, 1)));
   max-height: calc(86vh / var(--ui-scale, 1)); display: flex; flex-direction: column;
   background: #14141a; border: 1px solid #3a3a44; border-radius: 12px;
-  box-shadow: 0 18px 54px rgba(0,0,0,.66);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   padding: 18px 18px 16px;
 }
 #vkey-picker .vk-head {
@@ -8697,7 +8553,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 #vkey-picker .vk-x {
   font: 400 18px/1 "Segoe UI", sans-serif; color: #8a857a;
   background: transparent; border: 1px solid #3a3a44; border-radius: 8px;
-  width: 34px; height: 34px; cursor: pointer; transition: all 120ms ease;
+  width: 34px; height: 34px; cursor: pointer; transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 #vkey-picker .vk-x:hover { color: #e8e4da; border-color: #6f6a5e; background: rgba(255,255,255,.04); }
 #vkey-picker .vk-search {
@@ -8748,7 +8604,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 #vkey-picker .vk-verb button {
   font: 600 13px/1 "Segoe UI", sans-serif; color: #b8b3a6; cursor: pointer;
   background: #1c1c24; border: 1px solid #3a3a44; border-radius: 8px;
-  padding: 9px 14px; transition: all 120ms ease;
+  padding: 9px 14px; transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 #vkey-picker .vk-verb button:hover { border-color: #6f6a5e; color: #e8e4da; }
 #vkey-picker .vk-verb button.on {
@@ -8758,14 +8614,14 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 #vkey-picker .vk-test {
   font: 600 14px/1 "Segoe UI", sans-serif; color: #b8b3a6; cursor: pointer;
   background: #1c1c24; border: 1px solid #3a3a44; border-radius: 9px;
-  padding: 12px 18px; transition: all 120ms ease;
+  padding: 12px 18px; transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 #vkey-picker .vk-test:hover { border-color: #6f8aad; color: #cfe0f2; }
 #vkey-picker .vk-add {
   flex: 1 1 auto;
   font: 700 15px/1 "Segoe UI", sans-serif; color: #10131a; cursor: pointer;
   background: #7aa2c9; border: 1px solid #7aa2c9; border-radius: 9px;
-  padding: 12px 18px; transition: all 120ms ease;
+  padding: 12px 18px; transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 #vkey-picker .vk-add:hover { background: #93b6d9; border-color: #93b6d9; }
 
@@ -8898,6 +8754,48 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   padding: 4px 7px; background: rgba(255,255,255,.03);
 }
 
+/* ---- open key (integrated from home-pane.css.frag, 2026-08-19) ----
+   The card had markup+css in the fragment only, so it never rendered in the
+   shipped view and home-pane.js's renderOpenKey/bindOpenKey were dead code —
+   while the Nexus report it was built for (a user who could not find how to
+   rebind F7) stayed unanswered. */
+#hm-openkey {
+  display: flex; align-items: center; gap: 15px;
+  padding: 15px 17px; margin: 0 0 20px;
+  background: linear-gradient(180deg, #1d1c22, #171620);
+  border: 1px solid #c9a24b40; border-radius: 14px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+}
+#hm-openkey .hm-ok-plate {
+  width: 46px; height: 46px; border-radius: 12px; flex: none;
+  display: grid; place-items: center; font-size: 24px; color: #c9a24b;
+  background: rgba(201,162,75,.14); border: 1px solid rgba(201,162,75,.34);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+}
+#hm-openkey .hm-ok-body { flex: 1; min-width: 0; }
+#hm-openkey .hm-ok-title {
+  font-size: 17px; font-weight: 650; color: #e8e4da; letter-spacing: .2px;
+}
+#hm-openkey .hm-ok-help {
+  font-size: 13px; color: #a49d8c; line-height: 1.4; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis;
+}
+#hm-openkey .hm-ok-key {
+  flex: none; font: 700 18px/1 Consolas, monospace; color: #e0bc6a;
+  background: rgba(201,162,75,.12); border: 1px solid rgba(201,162,75,.4);
+  border-radius: 12px; padding: 10px 16px; min-width: 56px; text-align: center;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px;
+}
+#hm-openkey .hm-ok-btn {
+  flex: none; font: 600 14px/1 inherit; color: #e8e4da; cursor: pointer;
+  background: rgba(255,255,255,.03); border: 1px solid #3a3a44; border-radius: 10px;
+  padding: 11px 16px;
+  transition: border-color 140ms ease, background 140ms ease, transform 120ms ease;
+}
+#hm-openkey .hm-ok-btn:hover { border-color: #c9a24b; background: rgba(201,162,75,.14); }
+#hm-openkey .hm-ok-btn:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+#hm-openkey .hm-ok-btn:active { transform: translateY(1px); }
+
 /* ---- section head ---- */
 .hm-sec-head { display: flex; align-items: baseline; gap: 10px; margin: 0 2px 14px; }
 .hm-sec-head h2 {
@@ -8975,42 +8873,158 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 #hm-grid.hm-editing .hm-card.drop-before::before { left: -9px; }
 #hm-grid.hm-editing .hm-card.drop-after::after  { right: -9px; }
 
-/* ---- UI Elements drawer: one row per on-screen element (home-ui-elements) ---- */
+/* ---- UI Elements drawer: one row per on-screen element (home-ui-elements) ----
+ *
+ * ⚠ THE DRAWER'S SHARED CONTROL METRIC (2026-08-19 uniformity pass).
+ * Rober, on the screenshot: "can we polish this to be more uniform? buttons all
+ * in same places, Titles more separated, just better visually." Measured, the
+ * drawer had THREE control heights (24 / 34.3 / 38.3 px), action rows landing at
+ * three different Y inside one grid row (26 px spread) and icons riding anywhere
+ * from 18.9 to 47.6 px down the card. Every pill, button and chip now takes the
+ * SAME height from one token, so they read as one family; --hm-ctl-h is the only
+ * place to change it. */
 .hm-uie-row {
+  --hm-ctl-h: 34px;
+  --hm-ctl-rad: 9px;
   display: flex; align-items: center; gap: 12px; padding: 11px 10px; border-radius: 9px;
   transition: background 140ms ease;
 }
 .hm-uie-row:hover { background: rgba(201,162,75,.06); }
 .hm-uie-row .hm-uie-ic {
-  width: 30px; height: 30px; border-radius: 8px; flex: none;
-  display: grid; place-items: center; font-size: 16px;
+  width: 36px; height: 36px; border-radius: 10px; flex: none;
+  display: grid; place-items: center; font-size: 18px;
   background: rgba(255,255,255,.05); color: #cfcabe;
 }
 .hm-uie-row .hm-uie-t { flex: 1; min-width: 0; }
-.hm-uie-row .hm-uie-t b { font-weight: 600; font-size: 15px; color: #e8e4da; display: block;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hm-uie-row .hm-uie-t span { color: #8a8478; font-size: 12.5px; }
+/* The title used to ellipsize on one line and sit flush against the grey
+   sub-line, so the two read as one paragraph. It wraps now (a clipped name is
+   never acceptable — Rober's no-truncation law) and owns a real gap under it. */
+.hm-uie-row .hm-uie-t b {
+  font-weight: 650; font-size: 15.5px; color: #e8e4da; display: block;
+  line-height: 1.25; letter-spacing: .2px; margin: 0 0 5px;
+  overflow-wrap: anywhere;
+}
+.hm-uie-row .hm-uie-t span {
+  color: #8a8478; font-size: 13px; line-height: 1.45; display: block;
+  overflow-wrap: anywhere;
+}
 .hm-uie-state {
   font: 700 12px/1 Consolas, monospace; flex: none;
-  border-radius: 999px; padding: 5px 10px; min-width: 34px; text-align: center;
+  height: var(--hm-ctl-h, 34px); box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px; padding: 0 13px; min-width: 56px; text-align: center;
   color: #6f6a5e; background: transparent; border: 1px solid #2e2e36;
 }
 .hm-uie-state.on  { color: #a9d3a9; background: rgba(120,200,120,.12); border-color: rgba(120,200,120,.32); }
 .hm-uie-state.off { color: #c9a2a2; background: rgba(200,120,120,.10); border-color: rgba(200,120,120,.28); }
+/* ---- THE THIRD FACE (2026-08-19, round 3) ---------------------------------
+   Enabled, but its own show/hide flag is down — nothing is on screen. Rober
+   caught the Action Bar reading a flat "ON" in exactly that state
+   (enabled=true, visible=false), which parses as "on but broken". Amber, so it
+   reads as neither the healthy green nor the switched-off red: a state that
+   wants a click, and clicking it shows the thing. Min-width grows because
+   "HIDDEN" is six characters against ON's two.
+
+   ⚠ THE CLASS IS `is-hidden`, NEVER `hidden` (2026-08-19). app.css line 10 owns
+   the global utility `.hidden { display: none !important; }`, so the original
+   `.hm-uie-state.hidden` matched it and the pill was NOT DRAWN AT ALL — measured
+   0x0 in chromium. The one row that most needs a switch (enabled, but nothing on
+   screen) was the one row with no switch. Never name a modifier `hidden`,
+   `open`, `on` or `off` at the top level of this sheet for the same reason. */
+.hm-uie-state.is-hidden {
+  color: #e0c383; background: rgba(201,162,75,.14); border-color: rgba(201,162,75,.45);
+  min-width: 72px;
+}
+.hm-uie-state.is-hidden.is-btn:hover { color: #f4e6c4; background: rgba(201,162,75,.24); border-color: #c9a24b; }
+/* the honest "a RULE is holding it back" line — a condition, not a switch, so
+   it is written under the name instead of being faked into the pill.
+   It WRAPS: it used to be nowrap+ellipsis and the Super Searcher's real text
+   ("No key yet — Config → “Bind a key”, and it opens mid-game") was clipped
+   mid-word on screen. */
+.hm-uie-row .hm-uie-t .hm-uie-why {
+  display: block; margin-top: 6px;
+  color: #d8bd85; font-size: 12.5px; line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+/* ---- the pill IS the switch (2026-08-19) ----------------------------------
+   Rober: "just make the on or off pill clickable". It is a real <button> when
+   the row has a toggle, so it needs the whole set of states a control owes the
+   player — hover, active, focus-visible (it is now the ONLY switch on the row,
+   so it has to be reachable from the keyboard) — plus a one-shot pop on the
+   flip, because the truth arrives asynchronously from the game and a pill that
+   sat still for 200ms read as a dead click. */
+.hm-uie-state.is-btn { cursor: pointer; font: 700 12px/1 Consolas, monospace; }
+.hm-uie-state.is-btn:hover { border-color: #c9a24b; color: #e8e4da; background: rgba(201,162,75,.14); }
+.hm-uie-state.is-btn:focus-visible { outline: 2px solid rgba(201,162,75,.55); outline-offset: 2px; }
+.hm-uie-state.is-btn:active { transform: scale(.94); }
+/* the "we cannot read this one" pill (the Action Bar lives in another view) —
+   pressable, but never dressed as a state it does not know */
+.hm-uie-state.unk { color: #a79f8c; background: rgba(201,162,75,.07); border-color: rgba(201,162,75,.26); }
+.hm-uie-state.is-flip { animation: hmUiePillPop 220ms ease-out; }
+@keyframes hmUiePillPop {
+  0%   { transform: scale(1); }
+  45%  { transform: scale(1.16); }
+  100% { transform: scale(1); }
+}
+/* One height, one radius, one minimum width for every button in the drawer, so
+   "Open" (was 60.3px tall 38.3) and "Config →" (84.4 / 38.3) and the ON pill
+   (36.4 / 24) stop being three different objects sitting on three baselines. */
 .hm-uie-btn {
   font: 600 13px/1 inherit; color: #e8e4da; cursor: pointer; flex: none;
-  background: rgba(255,255,255,.03); border: 1px solid #3a3a44; border-radius: 9px;
-  padding: 8px 12px;
+  height: var(--hm-ctl-h, 34px); box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,.03); border: 1px solid #3a3a44;
+  border-radius: var(--hm-ctl-rad, 9px);
+  padding: 0 14px; min-width: 88px;
   transition: border-color 140ms ease, background 140ms ease, transform 120ms ease;
 }
 .hm-uie-btn:hover { border-color: #c9a24b; background: rgba(201,162,75,.12); }
 .hm-uie-btn:active { transform: translateY(1px); }
 .hm-uie-btn.hm-uie-jump { color: #cfcabe; }
+/* ⚠ The UI font, not Consolas (2026-08-19 design pass). This chip carries
+   PROSE — "Bindable — Utilities tab", "Bindable — Combat tab", "Ctrl + your
+   deck key" — not a literal keycap, and setting three sentences in monospace
+   put a second typeface in a drawer whose every other word is Segoe UI. The
+   state pill keeps its monospace on purpose: ON / OFF / HIDDEN is a status
+   readout, and it is consistent across all three faces. */
+/* …and it is INFORMATION, not a control: it keeps the family's height and radius
+   so it sits on the same baseline as the buttons beside it, but wears a dashed
+   hairline over nothing instead of a button's filled plate, and a default
+   cursor. Rober's row read "Bindable — Utilities tab" as a third button. */
 .hm-uie-chord {
-  font: 600 12px/1 Consolas, monospace; color: #a49d8c; flex: none;
-  border: 1px solid #3a3a44; border-radius: 7px; padding: 6px 9px;
-  background: rgba(255,255,255,.03);
+  font: 600 12.5px/1 inherit; color: #8a8478; flex: none;
+  height: var(--hm-ctl-h, 34px); box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px dashed #3a3a44; border-radius: var(--hm-ctl-rad, 9px);
+  padding: 0 13px; background: transparent; cursor: default; user-select: none;
 }
+/* ---- UI Elements: the card's action group (2026-08-19 design pass) --------
+   ONE home for every control on a card — the state pill, the chord chip and
+   every button. They used to be loose children of the wrapping row, so a card
+   with two actions put one top-RIGHT and the wrapped one bottom-LEFT under the
+   icon: two buttons for one element in opposite corners of its own card, and a
+   ragged right edge down the whole grid (measured at 2560 on six of the ten
+   cards). `margin-left:auto` keeps the group against the right whether it
+   rides line 1 or drops whole to line 2; its own wrap keeps the buttons
+   together and right-aligned when the card is narrow.
+
+   2026-08-19: inside the card grid (see #hm-uie-body below) it is no longer a
+   flex sibling of the text — it OWNS the card's second grid row, spans both
+   columns and is pushed to the card's bottom edge, which is what finally makes
+   every action row in a grid row land on one Y. The `margin-left:auto` below
+   only matters if a future mount puts this back in a flex row. */
+.hm-uie-acts {
+  display: flex; align-items: center; justify-content: flex-end;
+  flex-wrap: wrap; gap: 8px;
+  margin-left: auto; flex: 0 1 auto; min-width: 0;
+}
+
+/* The buttons owed the same keyboard state their neighbouring pill already
+   had: `.hm-uie-state.is-btn` carries :focus-visible and these did not, so
+   tabbing through a card lit the switch and left every Config/Open/Roster
+   button with no ring at all. */
+.hm-uie-btn:focus-visible { outline: 2px solid rgba(201,162,75,.55); outline-offset: 2px; }
+
 .hm-uie-empty { color: #6f6a5e; font-size: 13.5px; padding: 10px; }
 
 /* ---- Recent drawer ---- */
@@ -9082,7 +9096,6 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   .hm-card { min-height: 112px; padding: 14px; }
   .hm-card .hm-plate { width: 44px; height: 44px; font-size: 22px; }
 }
-
 
 /* ============================ Containers tab (merged from containers-pane.css.frag) ============================ */
 /* ===================================================================== *
@@ -9212,7 +9225,9 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 /* ---------- list ---------- */
 
 #ct-list {
-  flex: 1; min-height: 74px;
+  /* 74px was less than ONE row — no floor at all. 180px keeps three rows on
+     screen however tall the Drop-box card grows (see #cs-cards' cap below). */
+  flex: 1; min-height: 180px;
   overflow-y: auto; overflow-x: hidden;
   display: flex; flex-direction: column; gap: 4px;
   padding-right: 2px;
@@ -9404,7 +9419,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   padding: 5px;
   background: linear-gradient(180deg, #1c1c24, #16161d);
   border: 1px solid #c9a24b77; border-radius: 8px;
-  box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
   /* body child, OUTSIDE #panel's transform — wear the same scale, exactly like
      #dm-ctx (openCtx reads the post-transform rect for its clamp — no JS edit). */
   transform: scale(var(--ui-scale, 1));
@@ -9589,7 +9604,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   padding: 5px;
   background: linear-gradient(180deg, #1c1c24, #16161d);
   border: 1px solid #c9a24b77; border-radius: 8px;
-  box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
   animation: fadeIn 110ms ease;
 }
 .ct-npc-searchwrap { position: relative; display: flex; align-items: center; margin: 3px 3px 5px; }
@@ -9646,7 +9661,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   background: linear-gradient(180deg, #1a1a21, #101015);
   border: 1px solid #c9a24b77; border-radius: 12px;
   padding: 24px 22px 18px;
-  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   animation: capturePulse 1.4s ease-in-out infinite;
 }
 .ct-capture-title { font-size: 15.5px; color: #ecd9a0; margin-bottom: 8px; }
@@ -9887,7 +9902,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .ct-art-frame {
   position: relative; overflow: hidden; flex: none;
   border-radius: 10px; background: #0c0c10;
-  border: 1px solid #3a3a44; box-shadow: 0 18px 44px rgba(0,0,0,.6);
+  border: 1px solid #3a3a44; box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
 }
 /* the row draws this square as a circle — show the mask so the framing is
    honest rather than a surprise once the overlay closes */
@@ -9923,6 +9938,294 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   .ct-tag { max-width: 84px; }
   .ct-art-hint { display: none; }
   .ct-art-val { min-width: 0; }
+}
+
+/* ===================================================================== *
+ *  Container Auto-Sort (cs-) + Auto-Loot (al-) — a second feature living
+ *  inside the Containers tab. All selectors cs-/al- prefixed; the deck's
+ *  own literals (#c9a24b gold / #e8e4da text / #2e2e36 lines / 140ms ease).
+ *  No token under 12px; every control carries hover/active/disabled.
+ * ===================================================================== */
+
+/* ---------- shared card + chip + stepper primitives ---------- */
+.cs-card, .al-inner {
+  background: #16161d; border: 1px solid #2e2e36; border-radius: 9px;
+  padding: 11px 13px; margin-bottom: 10px;
+  animation: fadeIn 140ms ease;
+}
+#cs-cards { flex: none; }
+#al-card { flex: none; padding: 0 14px 12px; }
+
+.cs-card-head, .al-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 9px; }
+.cs-card-title, .al-title { font-size: 14px; letter-spacing: .3px; color: #d9c48a; font-weight: 600; }
+.cs-card-sub { font-size: 12px; color: #6f6a5e; }
+.cs-field-lbl { display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: .3px; color: #b9b4a8; margin-bottom: 6px; }
+.cs-lbl, .al-lbl { flex: none; font-size: 12.5px; color: #b9b4a8; letter-spacing: .3px; }
+.cs-flex, .al-flex { flex: 1 1 auto; }
+.cs-hint { font-size: 12px; color: #6f6a5e; font-style: italic; }
+.cs-band, .al-readout { font-size: 12.5px; color: #d9c48a; margin-left: 4px; }
+
+.cs-chip {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  font-family: inherit; font-size: 12.5px; color: #b9b4a8;
+  background: #12121a; border: 1px solid #3a3a44; border-radius: 999px;
+  padding: 6px 12px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease, transform 100ms ease;
+}
+.cs-chip:hover { background: rgba(201,162,75,.08); color: #ece7db; border-color: #c9a24b55; }
+.cs-chip:active { transform: translateY(1px); }
+.cs-chip.on { color: #1a1a20; background: #c9a24b; border-color: #c9a24b; font-weight: 600; }
+.cs-chip:focus-visible { outline: 2px solid #c9a24b66; outline-offset: 1px; }
+.cs-chip.cs-enable { min-width: 88px; justify-content: center; }
+.cs-chip.al-cat.on { background: #9bbf7c; border-color: #9bbf7c; color: #10160b; }
+
+.cs-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.cs-chip-grp { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cs-grp-lbl {
+  flex: none; font-size: 11.5px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
+  margin-right: 2px;
+}
+
+.cs-step { display: inline-flex; align-items: center; gap: 3px; flex: none; }
+.cs-step-btn {
+  width: 28px; height: 28px; flex: none;
+  font-family: inherit; font-size: 13px; line-height: 1; color: #d9c48a;
+  background: #16161d; border: 1px solid #3a3a44; border-radius: 6px; cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.cs-step-btn:hover { background: rgba(201,162,75,.10); border-color: #c9a24b55; }
+.cs-step-btn:active { transform: translateY(1px); }
+.cs-step-val {
+  width: 62px; text-align: center;
+  font-family: Consolas, "Courier New", monospace; font-size: 12.5px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px; padding: 6px 4px; outline: none;
+}
+.cs-step-val:focus { border-color: #c9a24b77; box-shadow: 0 0 0 2px rgba(201,162,75,.08); }
+
+/* ---------- respawn-safety chip ---------- */
+.cs-safe {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font-size: 12px; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+}
+.cs-safe.ok { color: #9bbf7c; background: rgba(120,170,90,.10); border: 1px solid rgba(120,170,90,.34); }
+.cs-safe.warn { color: #e0b060; background: rgba(200,140,50,.10); border: 1px solid rgba(200,140,50,.4); }
+.cs-safe.warn.ack { color: #c99a4b; opacity: .9; }
+.cs-safe-why { color: inherit; opacity: .8; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.cs-tag-anyway {
+  font-family: inherit; font-size: 11.5px; color: #1a1a20; background: #e0b060;
+  border: 0; border-radius: 999px; padding: 3px 9px; cursor: pointer; margin-left: 2px;
+  transition: background 120ms ease;
+}
+.cs-tag-anyway:hover { background: #f0c274; }
+
+/* ---------- per-mark rule reveal ---------- */
+.cs-rulebtn, .cs-dropbtn {
+  flex: none; font-family: inherit; font-size: 12px; color: #8b8678;
+  background: rgba(255,255,255,.03); border: 1px solid #33333d; border-radius: 6px;
+  padding: 5px 9px; cursor: pointer; white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.cs-rulebtn:hover, .cs-dropbtn:hover { background: rgba(201,162,75,.08); color: #ecd9a0; border-color: #c9a24b55; }
+.cs-rulebtn.on, .cs-dropbtn.on { color: #1a1a20; background: #c9a24b; border-color: #c9a24b; font-weight: 600; }
+.cs-rulebtn.active:not(.on) { color: #d9c48a; border-color: #c9a24b55; }
+.cs-rule-flag { color: #c9a24b; }
+.cs-inbox-flag { color: #9bbf7c; }
+
+.cs-rowgroup { display: flex; flex-direction: column; }
+.cs-rule-wrap { animation: fadeIn 140ms ease; }
+.cs-rule {
+  margin: 3px 0 6px 8px;
+  background: #131319; border: 1px solid #2e2e36; border-left: 2px solid #c9a24b77; border-radius: 8px;
+  padding: 11px 12px; display: flex; flex-direction: column; gap: 10px;
+}
+.cs-rule-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.cs-field { display: flex; flex-direction: column; gap: 6px; }
+.cs-field.cs-row-inline { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px; }
+.cs-typefilter, .cs-kw-add {
+  width: 100%; font-family: inherit; font-size: 12.5px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px; padding: 7px 9px; outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.cs-typefilter::placeholder, .cs-kw-add::placeholder { color: #6b675e; }
+.cs-typefilter:focus, .cs-kw-add:focus { border-color: #c9a24b77; box-shadow: 0 0 0 2px rgba(201,162,75,.08); }
+.cs-kw {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  font-size: 12px; color: #b9a06a; background: rgba(201,162,75,.09);
+  border: 1px solid rgba(201,162,75,.28); border-radius: 999px; padding: 3px 9px;
+}
+.cs-kw-x { border: 0; background: transparent; color: inherit; opacity: .7; font-size: 11px; cursor: pointer; padding: 0 0 0 2px; }
+.cs-kw-x:hover { opacity: 1; color: #e0b0b0; }
+
+.cs-rule-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cs-preview { font-size: 12px; color: #d9c48a; }
+.cs-preview.muted { color: #6f6a5e; font-style: italic; }
+.cs-preview.hit { color: #9bbf7c; }
+.cs-unload {
+  flex: none; font-family: inherit; font-size: 12.5px; letter-spacing: .3px;
+  color: #d9c48a; background: rgba(201,162,75,.08);
+  border: 1px solid #c9a24b77; border-radius: 7px; padding: 7px 13px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.cs-unload:hover:not(:disabled) { background: rgba(201,162,75,.16); color: #ecd9a0; border-color: #c9a24b; }
+.cs-unload:active:not(:disabled) { transform: translateY(1px); }
+.cs-unload:disabled, .cs-unload.disabled { color: #6f6a5e; border-color: #33333d; background: transparent; cursor: not-allowed; }
+
+/* ---------- Drop-box card ---------- */
+.cs-inbox { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 9px; }
+.cs-inbox-name { font-size: 13.5px; color: #ece7db; font-weight: 600; }
+.cs-empty {
+  font-size: 12.5px; color: #6f6a5e; line-height: 1.5;
+  background: rgba(255,255,255,.02); border: 1px dashed #33333d; border-radius: 7px;
+  padding: 10px 12px; margin-bottom: 9px;
+}
+.cs-mini {
+  flex: none; font-family: inherit; font-size: 11.5px; color: #8b8678;
+  background: transparent; border: 1px solid #33333d; border-radius: 5px; padding: 4px 9px; cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease; margin-left: 6px;
+}
+.cs-mini:hover { color: #ecd9a0; border-color: #c9a24b55; background: rgba(201,162,75,.06); }
+.cs-sort-now {
+  width: 100%; font-family: inherit; font-size: 13px; letter-spacing: .3px;
+  color: #1a1a20; background: #c9a24b; border: 1px solid #c9a24b; border-radius: 8px;
+  padding: 11px 12px; cursor: pointer; font-weight: 600;
+  transition: background 120ms ease, transform 100ms ease;
+}
+.cs-sort-now:hover:not(:disabled) { background: #d9b45c; }
+.cs-sort-now:active:not(:disabled) { transform: translateY(1px); }
+.cs-sort-now:disabled, .cs-sort-now.disabled {
+  color: #6f6a5e; background: transparent; border-color: #33333d; cursor: not-allowed; font-weight: 400;
+}
+
+/* pin routing */
+.cs-pins { margin-top: 11px; padding-top: 10px; border-top: 1px solid #26262d; }
+.cs-pin {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  font-size: 12px; color: #cdc7b8; background: #12121a;
+  border: 1px solid #3a3a44; border-radius: 999px; padding: 4px 11px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cs-pin.broken { color: #e0b0b0; border-color: #a5556588; }
+.cs-pinpick { margin-top: 8px; }
+.cs-pinpick-row { display: flex; gap: 8px; align-items: center; }
+.cs-select {
+  flex: none; min-width: 130px; font-family: inherit; font-size: 12.5px; color: #b9b4a8;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px; padding: 7px 8px; cursor: pointer; outline: none;
+}
+.cs-select:focus { border-color: #c9a24b77; }
+
+/* ---------- csPicker: the typable combobox that replaced every <select> ----
+   ⛔ Ultralight RENDERS a native <select> but never OPENS it, so all four of
+   this pane's selects were dead in game. The trigger looks like the old field;
+   the body opens INLINE below it (never absolutely positioned) so it cannot
+   hang outside the scrolling card it lives in. Reuses .cs-cand-list/.cs-cand
+   for the rows, so the list already scrolls and has a scrollbar. */
+.cs-pick { flex: 1 1 auto; min-width: 150px; display: flex; flex-direction: column; gap: 6px; }
+.cs-pick.cs-pick-wide { min-width: 180px; }
+.cs-pick-btn {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px;
+  font-family: inherit; font-size: 12.5px; text-align: left; color: #b9b4a8;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px;
+  padding: 7px 10px; cursor: pointer; outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease, color 140ms ease;
+}
+.cs-pick-btn:hover { color: #ece7db; border-color: #c9a24b55; }
+.cs-pick-btn:focus-visible { border-color: #c9a24b77; box-shadow: 0 0 0 2px rgba(201,162,75,.08); }
+.cs-pick-btn.open { border-color: #c9a24b77; color: #ece7db; }
+.cs-pick-cur { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-pick-cur.none { color: #6b675e; }
+.cs-pick-caret { flex: none; font-size: 11px; color: #6f6a5e; }
+.cs-pick-btn.open .cs-pick-caret { color: #c9a24b; }
+.cs-pick-body { display: flex; flex-direction: column; gap: 0; }
+.cs-pick-body.hidden { display: none; }
+.cs-pick-in {
+  width: 100%; font-family: inherit; font-size: 12.5px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #c9a24b77; border-radius: 6px; padding: 7px 9px; outline: none;
+}
+.cs-pick-in::placeholder { color: #6b675e; }
+.cs-pick-list { max-height: 200px; }
+.cs-cand.hi { background: rgba(201,162,75,.10); color: #ece7db; border-color: #c9a24b44; }
+/* A picker grows downward, so its label must sit at the TOP of the row —
+   centred, it slides to the middle of the open list and reads as unrelated. */
+.ct-ctx-field.pick { align-items: flex-start; }
+.ct-ctx-field.pick > .ct-ctx-lbl { padding-top: 10px; }
+.cs-cand-list { margin-top: 6px; max-height: 210px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+.cs-cand-list::-webkit-scrollbar { width: 10px; }
+.cs-cand-list::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+.cs-cand {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  font-family: inherit; font-size: 12.5px; text-align: left; color: #b9b4a8;
+  background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 7px 9px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.cs-cand:hover { background: rgba(201,162,75,.08); color: #ece7db; border-color: #c9a24b44; }
+.cs-cand.cur { color: #d9c48a; }
+.cs-cand-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-cand-name mark { background: transparent; color: #c9a24b; font-weight: 600; }
+.cs-cand-plug { flex: none; font-size: 11px; color: #6f6a5e; }
+.cs-cand-plug.warn { color: #e0b060; }
+.cs-cand-empty { padding: 10px; font-size: 12px; color: #6f6a5e; text-align: center; }
+
+/* distribution summary */
+.cs-result {
+  margin-top: 11px; padding: 10px 11px; border-radius: 7px;
+  background: rgba(255,255,255,.02); border: 1px solid #26262d;
+}
+.cs-result-head { font-size: 12.5px; color: #d9c48a; margin-bottom: 6px; font-weight: 600; }
+.cs-result-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; color: #cdc7b8; padding: 2px 0; }
+.cs-result-to { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-result-n { flex: none; font-family: Consolas, "Courier New", monospace; color: #9bbf7c; }
+.cs-result-residue { font-size: 12px; color: #b9a06a; margin-top: 4px; }
+.cs-result-skip { font-size: 12px; color: #e0b0b0; margin-top: 3px; }
+
+/* ---------- Auto-Loot card ---------- */
+.al-master {
+  flex: 1 1 auto; min-width: 200px;
+  font-family: inherit; font-size: 13px; letter-spacing: .3px;
+  color: #b9b4a8; background: #12121a; border: 1px solid #3a3a44; border-radius: 8px;
+  padding: 10px 14px; cursor: pointer; text-align: center;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease, transform 100ms ease;
+}
+.al-master:hover { background: rgba(201,162,75,.08); color: #ece7db; border-color: #c9a24b55; }
+.al-master:active { transform: translateY(1px); }
+.al-master.on { color: #10160b; background: #9bbf7c; border-color: #9bbf7c; font-weight: 600; }
+.al-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 9px; }
+.al-cats-row { align-items: flex-start; }
+.al-note { flex: none; font-size: 12px; color: #6f6a5e; letter-spacing: .3px; }
+.al-warn {
+  margin-top: 7px; font-size: 12px; color: #e0b060;
+  background: rgba(200,140,50,.08); border: 1px solid rgba(200,140,50,.34); border-radius: 6px; padding: 7px 10px;
+}
+.al-seg { display: inline-flex; gap: 0; border: 1px solid #3a3a44; border-radius: 8px; overflow: hidden; }
+.al-seg-btn {
+  font-family: inherit; font-size: 12.5px; color: #b9b4a8; background: #12121a;
+  border: 0; border-right: 1px solid #3a3a44; padding: 7px 14px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.al-seg-btn:last-child { border-right: 0; }
+.al-seg-btn:hover { background: rgba(201,162,75,.08); color: #ece7db; }
+.al-seg-btn.on { color: #1a1a20; background: #c9a24b; font-weight: 600; }
+.al-cats { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.al-scan {
+  flex: none; font-family: inherit; font-size: 12.5px; letter-spacing: .3px;
+  color: #d9c48a; background: rgba(201,162,75,.08);
+  border: 1px solid #c9a24b77; border-radius: 7px; padding: 8px 14px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.al-scan:hover { background: rgba(201,162,75,.16); color: #ecd9a0; border-color: #c9a24b; }
+.al-scan:active { transform: translateY(1px); }
+.al-live { margin-top: 9px; font-size: 12px; color: #6f6a5e; letter-spacing: .3px; }
+
+/* ---------- narrow (deck 640px floor) ---------- */
+@media (max-width: 620px) {
+  #al-card { padding: 0 10px 10px; }
+  .cs-card, .al-inner { padding: 10px 11px; }
+  .cs-step-val { width: 52px; }
+  .cs-grp-lbl { width: 100%; }
+  .al-master { min-width: 0; }
+  .al-seg-btn { padding: 7px 10px; max-width: 150px; }
+  .cs-safe-why { max-width: 120px; }
+  .cs-rulebtn, .cs-dropbtn { padding: 5px 7px; }
 }
 
 /* ===================================================================== *
@@ -9989,7 +10292,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   position: fixed; z-index: 10050;
   width: 300px; max-width: calc(100vw - 16px); box-sizing: border-box;
   background: #14141b; border: 1px solid #c9a24b66; border-radius: 12px;
-  box-shadow: 0 16px 38px rgba(0,0,0,.6);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   animation: fadeIn 140ms ease;
 }
 #fill-hint.hidden { display: none; }
@@ -10061,10 +10364,14 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 #an-row  { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 
 #an-seg {
-  flex: none; display: flex; gap: 6px;
+  /* wraps: with the pane's own MAX_TABS=12 custom tabs the single nowrap line
+     flex-shrank every button to a 44-64px stub ("B…", "T…") at both 1280x720
+     and 2560x1440. A second row of full-width tabs beats a row of initials. */
+  flex: none; display: flex; flex-wrap: wrap; gap: 6px;
   padding: 10px 12px 0;
 }
 .an-seg-btn {
+  flex: none;                      /* never shrink a label to initials */
   padding: 9px 20px;
   font: 600 14px/1 inherit; color: #b8b3a7;
   background: rgba(255,255,255,.03);
@@ -10334,7 +10641,7 @@ button.keychip.console:focus-visible { outline: 2px solid #7fae6c66; outline-off
   width: min(620px, calc(92vw / var(--ui-scale, 1)));
   max-height: calc(86vh / var(--ui-scale, 1)); display: flex; flex-direction: column;
   background: #14141a; border: 1px solid #3a3a44; border-radius: 12px;
-  box-shadow: 0 18px 54px rgba(0,0,0,.66);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   padding: 18px 18px 16px;
 }
 #console-picker .cc-head {
@@ -10345,7 +10652,7 @@ button.keychip.console:focus-visible { outline: 2px solid #7fae6c66; outline-off
 #console-picker .cc-x {
   flex: none; font: 600 14px/1 "Segoe UI", sans-serif; color: #8a857a; cursor: pointer;
   background: none; border: 1px solid #3a3a44; border-radius: 7px; padding: 6px 10px;
-  transition: all 120ms ease;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 #console-picker .cc-x:hover { color: #e8e4da; border-color: #6f6a5e; background: rgba(255,255,255,.04); }
 #console-picker .cc-name {
@@ -10374,7 +10681,7 @@ button.keychip.console:focus-visible { outline: 2px solid #7fae6c66; outline-off
 #console-picker .cc-target button {
   font: 600 13px/1 "Segoe UI", sans-serif; color: #b8b3a6; cursor: pointer;
   background: #1c1c24; border: 1px solid #3a3a44; border-radius: 8px;
-  padding: 10px 14px; transition: all 120ms ease;
+  padding: 10px 14px; transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 #console-picker .cc-target button:hover { border-color: #6f6a5e; color: #e8e4da; }
 #console-picker .cc-target button.on {
@@ -10388,13 +10695,653 @@ button.keychip.console:focus-visible { outline: 2px solid #7fae6c66; outline-off
 #console-picker .cc-test {
   font: 600 14px/1 "Segoe UI", sans-serif; color: #b8b3a6; cursor: pointer;
   background: #1c1c24; border: 1px solid #3a3a44; border-radius: 9px;
-  padding: 12px 18px; transition: all 120ms ease;
+  padding: 12px 18px; transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 #console-picker .cc-test:hover { border-color: #7fae6c; color: #c8ecb8; }
 #console-picker .cc-add {
   flex: 1 1 auto;
   font: 700 15px/1 "Segoe UI", sans-serif; color: #0f1509; cursor: pointer;
   background: #8fbe7c; border: 1px solid #8fbe7c; border-radius: 9px;
-  padding: 12px 18px; transition: all 120ms ease;
+  padding: 12px 18px; transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 #console-picker .cc-add:hover { background: #a5d091; border-color: #a5d091; }
+
+/* ==================== Auto-Loot per-item rules (appended from containers-pane.css.frag, 2026-08-16) ====================
+   Appended rather than merged into the Containers block above: app.css
+   has drifted from the frag (hand-edits), so a whole-block replace would
+   silently drop those. Every selector here is new, so order is safe. */
+/* ---------- per-item rules (deny / allow), 2026-08-16 ---------- */
+.al-rules { margin-top: 14px; padding-top: 13px; border-top: 1px solid #2a2620; }
+.al-rules-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.al-rules-order {
+  font-size: 12px; color: #6f6a5e; letter-spacing: .3px;
+}
+.al-rule-cols { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+
+.al-rule-side {
+  flex: 1 1 300px; min-width: 0;
+  padding: 12px 13px;
+  border-radius: 9px;
+  background: rgba(255,255,255,.02);
+  border: 1px solid #2a2620;
+}
+/* the two sides read as opposites at a glance, not by label alone */
+.al-rule-side.deny  { border-color: #6b3a3a77; }
+.al-rule-side.allow { border-color: #c9a24b55; }
+
+.al-rule-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.al-rule-title { font-size: 14px; letter-spacing: .3px; color: #d8d2c4; }
+.al-rule-side.deny  .al-rule-title { color: #d99a9a; }
+.al-rule-side.allow .al-rule-title { color: #e0c682; }
+.al-rule-n { font-size: 12px; color: #6f6a5e; white-space: nowrap; }
+.al-rule-sub { margin-top: 3px; font-size: 12px; color: #7d7768; line-height: 1.4; }
+
+.al-rule-rows { margin-top: 9px; display: flex; flex-direction: column; gap: 5px; max-height: 210px; overflow-y: auto; }
+.al-rule-empty { font-size: 12px; color: #6f6a5e; line-height: 1.45; padding: 4px 0; }
+
+.al-rule-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 6px 9px; border-radius: 7px;
+  background: rgba(0,0,0,.22); border: 1px solid #26221c;
+}
+.al-rule-row.word { border-style: dashed; }
+.al-rule-name {
+  flex: 1 1 auto; min-width: 0; font-size: 13px; color: #ded7c7;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.al-rule-src {
+  flex: 0 1 auto; max-width: 42%;
+  font-size: 11.5px; color: #6f6a5e;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.al-rule-x {
+  flex: none; font-family: inherit; font-size: 12px; line-height: 1;
+  color: #8a8274; background: transparent; border: 0; cursor: pointer;
+  padding: 3px 5px; border-radius: 5px;
+  transition: color 120ms ease, background 120ms ease;
+}
+.al-rule-x:hover { color: #e6b3b3; background: rgba(180,80,80,.14); }
+
+.al-rule-add { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.al-rule-find {
+  flex: none; font-family: inherit; font-size: 12.5px;
+  color: #d9c48a; background: rgba(201,162,75,.08);
+  border: 1px solid #c9a24b77; border-radius: 7px; padding: 7px 12px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.al-rule-find:hover { background: rgba(201,162,75,.16); color: #ecd9a0; border-color: #c9a24b; }
+.al-rule-find:active { transform: translateY(1px); }
+.al-rule-word-in {
+  flex: 1 1 130px; min-width: 0;
+  font-family: inherit; font-size: 12.5px; color: #ded7c7;
+  background: rgba(0,0,0,.3); border: 1px solid #2f2a22; border-radius: 7px;
+  padding: 7px 10px; outline: none;
+  transition: border-color 120ms ease;
+}
+.al-rule-word-in::placeholder { color: #635e54; }
+.al-rule-word-in:focus { border-color: #c9a24b88; }
+
+/* exclusive mode — loud when armed, because it silences the categories above */
+.al-only-row { margin-top: 12px; align-items: center; gap: 10px; flex-wrap: wrap; }
+.al-only-row.armed {
+  padding: 8px 10px; border-radius: 8px;
+  background: rgba(201,162,75,.07); border: 1px solid #c9a24b55;
+}
+.al-only-note { font-size: 12px; color: #7d7768; }
+.al-only-row.armed .al-only-note { color: #d9c48a; }
+
+.al-weight-row { margin-top: 10px; align-items: center; gap: 9px; flex-wrap: wrap; }
+.al-weight-lbl { font-size: 12.5px; color: #7d7768; }
+.al-weight-live { font-size: 12px; color: #e0a86a; letter-spacing: .3px; }
+
+/* per-category gold floor popover (right-click a category chip) */
+.al-floor-pop {
+  margin-top: 10px; padding: 12px 13px;
+  border-radius: 9px; background: #16130f; border: 1px solid #3a332a;
+  box-shadow: 0 10px 26px rgba(0,0,0,.5);
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+}
+.al-floor-t { font-size: 13.5px; color: #ded7c7; }
+.al-floor-s { font-size: 12px; color: #7d7768; }
+.al-floor-btns { display: flex; gap: 8px; }
+.al-floor-ok, .al-floor-cancel {
+  font-family: inherit; font-size: 12.5px; padding: 7px 14px;
+  border-radius: 7px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.al-floor-ok {
+  color: #d9c48a; background: rgba(201,162,75,.1); border: 1px solid #c9a24b77;
+}
+.al-floor-ok:hover { background: rgba(201,162,75,.2); color: #ecd9a0; }
+.al-floor-cancel {
+  color: #8a8274; background: transparent; border: 1px solid #2f2a22;
+}
+.al-floor-cancel:hover { color: #ded7c7; border-color: #4a4238; }
+
+/* Finder-backed pin route row (auto-sort) */
+.cs-pinroute { display: flex; align-items: center; gap: 9px; margin-top: 9px; flex-wrap: wrap; }
+
+/* narrow deck: one column, or deny/allow squeeze each other to nothing */
+@media (max-width: 620px) {
+  .al-rule-cols { flex-direction: column; }
+  .al-rule-side { flex: 1 1 auto; }
+  .al-rule-src { max-width: 34%; }
+  .al-rules-order { width: 100%; }
+}
+
+/* ==================== Containers: two pages + Auto-Loot polish (v3, 2026-08-16) ====================
+   THE OVERLAP BUG THIS FIXES. #ct-pane used to stack the container roster and
+   the Auto-Loot card in one flex column. #ct-main has no overflow of its own and
+   its children carry hard minimums (#cs-cards ~290px + #ct-toolbar 48px +
+   #ct-list's `min-height:74px` floor + #ct-foot ~50px + padding ~= 484px), so
+   once Auto-Loot grew past ~700px the roster no longer fit in what was left and
+   its content OVERFLOWED #ct-body, painting on top of the card below — the
+   containers search bar landing inside the Auto-Loot header.
+   Fix is structural: two mutually exclusive full-height pages, so neither can
+   squeeze the other. Plus `#ct-main { overflow: hidden }` below, which kills the
+   whole CLASS of bug regardless of what lands in that column later. */
+
+/* ---------- page switch ---------- */
+#ct-modes {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 11px 14px 0;
+}
+.ct-mode {
+  display: inline-flex; align-items: center; gap: 9px;
+  font-family: inherit; font-size: 14px; letter-spacing: .3px;
+  color: #b9b4a8; background: #14141b;
+  border: 1px solid #2e2e36; border-radius: 9px;
+  padding: 9px 15px; cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease, transform 100ms ease;
+}
+.ct-mode:hover { background: rgba(201,162,75,.08); color: #ece7db; border-color: #c9a24b55; }
+.ct-mode:active { transform: translateY(1px); }
+.ct-mode:focus-visible { outline: 2px solid #c9a24b66; outline-offset: 2px; }
+.ct-mode.on { color: #1a1a20; background: #c9a24b; border-color: #c9a24b; font-weight: 600; }
+/* The switch glyphs are our own gold linework, not emoji (UI rule, 2026-08-16).
+   Size is load-bearing, not taste: Ultralight rasterises an <img> at its LAYOUT
+   size, so a 15px icon is ~15 real pixels of art and thin gold strokes collapse
+   to grey mush — the same trap the Faith card paid for with 38px marks. 26px is
+   where these two glyphs start reading (measured against the shipped set at
+   16/20/26/40). The span keeps a font-size so the ◆ fallback, which replaces the
+   <img> if the file is ever missing, is legible on its own. */
+.ct-mode-ic { font-size: 15px; line-height: 1; flex: none; display: inline-flex;
+              align-items: center; justify-content: center; width: 26px; height: 26px; }
+.ct-mode-ic img { width: 26px; height: 26px; display: block; }
+/* The ACTIVE page is a solid gold plate, and these glyphs are gold — so the icon
+   would sit gold-on-gold and disappear. Fixed with a dark disc behind it, which
+   is the same device .ct-mode.on .ct-mode-n already uses for its pill, and NOT
+   with a CSS filter: filter support is unproven under Ultralight, and a filter
+   that silently no-ops would leave the active tab's icon invisible. */
+.ct-mode.on .ct-mode-ic { background: rgba(0,0,0,.26); border-radius: 999px; }
+.ct-mode-lbl { white-space: nowrap; }
+/* count / state pill riding the switch, so "is Auto-Loot running?" is answerable
+   without opening the page at all */
+.ct-mode-n, .ct-mode-state {
+  flex: none; font-size: 12px; letter-spacing: .3px; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  background: #0e0e14; color: #8d8778; border: 1px solid #2e2e36;
+}
+.ct-mode.on .ct-mode-n, .ct-mode.on .ct-mode-state { background: rgba(0,0,0,.22); color: #33291a; border-color: transparent; }
+.ct-mode-state.live { background: #9bbf7c; color: #10160b; border-color: #9bbf7c; }
+.ct-mode.on .ct-mode-state.live { background: #1f3312; color: #b6dd97; border-color: transparent; }
+
+/* ---------- the two pages ---------- */
+#ct-pane.al-page #ct-body { display: none; }
+#ct-pane:not(.al-page) #al-card { display: none; }
+/* HARDENING: the roster column may never spill out of #ct-body again. */
+#ct-main { overflow: hidden; }
+
+/* Auto-Loot is now a full-height page that scrolls itself. */
+#al-card {
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  padding: 12px 16px 18px;
+}
+#al-card::-webkit-scrollbar { width: 10px; }
+#al-card::-webkit-scrollbar-track { background: transparent; }
+#al-card::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+#al-card::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+/* the page owns the padding now — the inner wrapper stops being a bordered card */
+#ct-pane.al-page .al-inner {
+  background: transparent; border: 0; border-radius: 0;
+  padding: 0; margin: 0;
+}
+
+/* ---------- hero: title · master · one-shot ---------- */
+.al-hero {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 4px 0 14px;
+}
+.al-hero .al-title { font-size: 17px; letter-spacing: .4px; }
+.al-hero-sub { flex: 1 1 220px; min-width: 0; font-size: 13px; color: #7d7768; letter-spacing: .3px; }
+#ct-pane.al-page .al-master {
+  font-size: 14px; padding: 11px 20px; border-radius: 9px; min-width: 250px;
+}
+#ct-pane.al-page .al-scan { font-size: 13.5px; padding: 11px 17px; }
+
+/* ---------- sections ---------- */
+.al-sec {
+  background: #16161d; border: 1px solid #2e2e36; border-radius: 10px;
+  padding: 13px 15px 15px; margin-bottom: 12px;
+  animation: fadeIn 140ms ease;
+}
+.al-sec-h {
+  display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap;
+  margin-bottom: 3px;
+}
+.al-sec-t {
+  font-size: 12px; letter-spacing: 1.1px; text-transform: uppercase;
+  color: #8d8778; font-weight: 600;
+}
+.al-sec-s { font-size: 12.5px; color: #6f6a5e; letter-spacing: .3px; }
+/* two sections side by side once there is room — his "use the screen space" rule */
+.al-grid { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.al-grid > .al-sec { flex: 1 1 380px; min-width: 0; margin-bottom: 0; }
+.al-grid { margin-bottom: 12px; }
+
+/* nothing under 13px on this page (the no-small-text rule) */
+#ct-pane.al-page .al-lbl,
+#ct-pane.al-page .cs-lbl { font-size: 13.5px; color: #c2bcae; }
+#ct-pane.al-page .al-note,
+#ct-pane.al-page .al-readout,
+#ct-pane.al-page .al-weight-lbl { font-size: 13px; color: #8d8778; }
+#ct-pane.al-page .cs-chip { font-size: 13px; padding: 8px 13px; }
+#ct-pane.al-page .al-seg-btn { font-size: 13.5px; padding: 9px 17px; }
+#ct-pane.al-page .al-live { font-size: 13px; }
+#ct-pane.al-page .al-rules-order { font-size: 12.5px; }
+
+/* the pick-up grid gets room to breathe rather than wrapping tight to a label */
+.al-cats-row { align-items: flex-start; }
+#ct-pane.al-page .al-cats { gap: 8px; }
+
+/* colour law, stated so it stays consistent:
+   GREEN  = loot is flowing (master on, a category will be taken)
+   GOLD   = an option is enabled (safety guards, toasts, modes)
+   Both already existed; this comment is what keeps them from drifting. */
+
+/* ---------- narrow (deck 640px floor) ---------- */
+@media (max-width: 620px) {
+  #ct-modes { padding: 9px 10px 0; gap: 6px; }
+  .ct-mode { padding: 8px 11px; font-size: 13.5px; gap: 7px; }
+  .ct-mode-ic { font-size: 14px; width: 22px; height: 22px; }
+  .ct-mode-ic img { width: 22px; height: 22px; }
+  #al-card { padding: 10px 11px 14px; }
+  .al-sec { padding: 11px 12px 13px; }
+  .al-grid > .al-sec { flex: 1 1 100%; }
+  #ct-pane.al-page .al-master { min-width: 0; width: 100%; }
+  .al-hero { gap: 10px; }
+}
+
+/* .al-rules is now an .al-sec too (it was a bare block with its own top rule).
+   Neutralise the old separator so the section doesn't draw a line inside its
+   own border. */
+.al-sec.al-rules { margin-top: 0; border-top: 0; padding-top: 13px; }
+.al-rule-cols { margin-top: 10px; }
+.al-only-row { margin-top: 12px; }
+
+/* No token under 12px anywhere in the Containers tab (standing UI rule).
+   These three badges predate the v3 pass at 10.5-11.5px; the overlap sweep
+   flagged them, so they are corrected here rather than left as known-bad. */
+.ct-rail-count { font-size: 12px; }
+#ct-count { font-size: 12px; }
+.cs-mini { font-size: 12px; }
+.ct-scale-lbl, .ct-scale-val, .ct-scale-reset { font-size: 12px; }
+@media (max-width: 620px) { .ct-scale-lbl { font-size: 12px; } }
+.ct-medal, .ct-icon-btn, #ct-here, .ct-ok-hint, .ct-ok-label { font-size: 12px; }
+.al-rule-src { font-size: 12px; }
+/* Added 2026-08-17. These two are the only tokens the Ultralight probe still
+   caught rendering under 12px (.ct-chev at 10, .ct-sub at 11) — the block above
+   was written from the stylesheet and missed them, which is the difference
+   between auditing the CSS and measuring what the engine drew. */
+.ct-chev { font-size: 12px; }
+.ct-sub { font-size: 12px; }
+
+/* ---------- when it may run + reach shaping (adopted from SmartHarvestSE, 2026-08-17) ----
+   The reach shapers are stacked rows under Range, so "how far" reads as one
+   idea; the town guard is a segment because its four states are an ORDER
+   (smallest place refused, and everything larger with it), not four switches. */
+.al-reach-shape { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.al-reach-shape .al-only-note { flex: 1 1 200px; min-width: 0; }
+.al-seg-towns { flex: none; }
+
+/* ---------- museum rule (LOTD, Auto-Loot "What it picks up", 2026-08-17) ------
+   Laid out like .al-only-row on purpose: same label + control + plain-English
+   note shape, so the two exclusive modes in this card read as one idea. The
+   `off` state greys the segment rather than hiding it, because "you do not have
+   the museum installed" is a more useful answer than a control that vanished. */
+.al-museum-row,
+.al-harvest-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.al-harvest-row.armed { border-color: #c9a24b55; }
+.al-harvest-row .al-only-note { flex: 1 1 260px; min-width: 0; }
+.al-museum-row.armed { border-color: #c9a24b55; }
+.al-museum-row .al-seg.off { opacity: .45; pointer-events: none; }
+.al-museum-row .al-only-note { flex: 1 1 260px; min-width: 0; }
+
+/* ---------- place rules (Auto-Loot "Where it won't run", 2026-08-16) ---------- */
+.al-sec-foot { margin-top: 11px; font-size: 12px; color: #6f6a5e; letter-spacing: .3px; }
+.al-places .al-rule-side.allow { border-color: #3a4a2e55; }
+
+/* ---------- crafting loan + retrieve + child type chips (2026-08-17) ----------
+   The taxonomy split gave the type picker parent/child tokens ("Two-handed"
+   under "Weapons"); a child reads as a narrower choice, not a different kind of
+   control, so it is the same chip one step quieter and inset. */
+.cs-chip-child { margin-left: 14px; opacity: .92; }
+.cs-chip-child::before {
+  content: '·'; color: #6f6a5e; margin-right: 6px;
+}
+.cs-chip-child.on { opacity: 1; }
+
+#cs-loan-card .cs-card-title { color: #d9c48a; }
+.cs-loan-grid { gap: 8px; margin-top: 6px; }
+.cs-loan-master { font-weight: 600; }
+/* The master switch reads its state from a colour, like the auto-loot hero:
+   amber-on-dark when it is doing something, plain when it is not. */
+.cs-loan-master.on { background: #2b2416; border-color: #6b5a2e; color: #f0dda6; }
+#cs-loan-card .cs-empty { margin-top: 10px; }
+#cs-loan-card .cs-hint { margin-top: 10px; }
+
+/* The Ultralight probe caught this one on 2026-08-17: the ✕ on a pin/keyword
+   chip rasterised at 11px, under the standing 12px floor. Measured, not read
+   off the stylesheet — which is why it survived the earlier sweep. */
+.cs-kw-x { font-size: 12px; }
+
+/* ---------- parity pass: gather presets + override editor (2026-08-17) ---------- */
+.cs-gather { gap: 8px; margin-top: 6px; }
+.cs-gather .cs-mini { padding: 7px 11px; }
+.cs-ov-edit { margin-top: 10px; }
+.cs-ov-edit .cs-card-title { font-size: 14px; }
+
+/* ---------- the cards column has to scroll now (2026-08-17) ----------
+   The parity pass (Put it all away + Gather presets + the override editor +
+   the crafting-loan card) pushed #cs-cards past the height of the pane. The
+   2026-08-16 hardening — #ct-main { overflow: hidden } — kept it from PAINTING
+   over the roster, which is why nothing looked broken, but the Ultralight probe
+   showed what it really cost: the toolbar, the whole roster and the "Save types"
+   button were simply cut off the bottom, unreachable. So the column that grows
+   gets its own scroll and a ceiling, exactly as #al-card does on the other page,
+   and the roster keeps its half of the pane whatever lands in the cards later.
+
+   ⚠ 52% did NOT leave the roster half the pane, because #ct-toolbar (33px),
+   #ct-foot (64px) and their margins come out of the OTHER 48% — measured
+   2026-08-19 at 6.2 rows of 220 at 2560x1440 and 2.3 rows at 1280x720. The cap
+   is a percentage of #ct-main's CONTENT box, so it must be set below half for
+   the roster to reach half. 40% + the #ct-list floor below gives 8.4 rows and
+   3.3 rows respectively. The card is a scroller and was already scrolling; the
+   roster was not, which is why the roster wins the argument. */
+#cs-cards {
+  flex: 0 1 auto; max-height: 40%; overflow-y: auto; overflow-x: hidden;
+  padding-right: 4px;
+}
+#cs-cards::-webkit-scrollbar { width: 10px; }
+#cs-cards::-webkit-scrollbar-track { background: transparent; }
+#cs-cards::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 6px; }
+#cs-cards::-webkit-scrollbar-thumb:hover { background: #3c3c46; }
+
+/* Measured at 11.5px by the probe — under the standing 12px floor. */
+.cs-grp-lbl { font-size: 12px; }
+
+/* ==================== couch-distance pass (2026-08-19) ====================
+   Rober plays at 2560x1440 from a sofa. Everything below fixes something that
+   was MEASURED wrong on that screen, not something that looked wrong. */
+
+/* ---- hit-target floor ----
+   Nine visible button classes sat under ~30px, the smallest at 11x14 — and the
+   two smallest are the DELETE affordances: .cs-kw-x removes a rule keyword, a
+   pin route or a type override; .al-rule-x removes an auto-loot rule. The box
+   is set on the BUTTON and the chip that hosts it gives back the padding the
+   button now supplies, so a chip row does not grow taller than the button. */
+.cs-kw-x, .al-rule-x, .ct-icon-btn, .ct-go {
+  min-width: 30px; min-height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.cs-kw { padding: 0 3px 0 11px; }
+.cs-pin { padding: 0 3px 0 11px; }
+.al-rule-x { padding: 0; }
+.cs-step-btn { width: 32px; height: 32px; }
+button.ct-rail-rename { min-width: 32px; min-height: 30px; padding: 5px 4px; }
+.cs-mini, .cs-rulebtn, .cs-dropbtn, .cs-tag-anyway, .cs-chip, .cs-unload, .al-rule-find {
+  min-height: 30px;
+}
+/* .cs-mini and .cs-tag-anyway are text buttons; centre the label now that the
+   box is taller than the line. */
+.cs-mini, .cs-tag-anyway { display: inline-flex; align-items: center; justify-content: center; }
+
+/* ---- the only scroller in the pane with no scrollbar ----
+   .al-rule-rows shows 5 of up to 26 rows and ended flush against the "＋ Find
+   an item…" row with nothing saying more existed. Every sibling scroller here
+   (#ct-list, #ct-rail, .ct-ctx-scroll, .ct-pick-list, .ct-npc-list,
+   .cs-cand-list, #al-card, #cs-cards) already carries this block. */
+.al-rule-rows::-webkit-scrollbar { width: 10px; }
+.al-rule-rows::-webkit-scrollbar-track { background: transparent; }
+.al-rule-rows::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+.al-rule-rows::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+/* Rows are taller now that the ✕ is a real target; keep ~5 of them visible. */
+.al-rule-rows { max-height: 260px; }
+
+/* ---- filter-as-you-type on the four auto-loot rule lists ----
+   43 rules and 20 places in a fixed scroller with only an ADD field meant
+   removing one entry was a blind scroll. Sized like .cs-typefilter so the two
+   read as the same control. */
+.al-rule-filter {
+  width: 100%; margin-top: 9px; font-family: inherit; font-size: 12.5px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px; padding: 8px 10px;
+  outline: none; min-height: 32px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.al-rule-filter::placeholder { color: #6b675e; }
+.al-rule-filter:focus { border-color: #c9a24b77; box-shadow: 0 0 0 2px rgba(201,162,75,.08); }
+.al-rule-name mark { background: transparent; color: #c9a24b; font-weight: 600; }
+
+/* ---- rail filter (31 categories had none) ----
+   The rail itself stops scrolling; #ct-rail-list does instead, so the filter
+   box and ＋ Category stay pinned while the categories move under them. */
+#ct-rail { overflow: hidden; }
+#ct-rail-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
+#ct-rail-list::-webkit-scrollbar { width: 8px; }
+#ct-rail-list::-webkit-scrollbar-track { background: transparent; }
+#ct-rail-list::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 4px; }
+#ct-rail-list::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+.ct-rail-filter {
+  flex: none; width: 100%; font-family: inherit; font-size: 12.5px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px;
+  padding: 7px 9px; min-height: 32px; outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.ct-rail-filter::placeholder { color: #6b675e; }
+.ct-rail-filter:focus { border-color: #c9a24b77; box-shadow: 0 0 0 2px rgba(201,162,75,.08); }
+.ct-rail-name mark { background: transparent; color: #c9a24b; font-weight: 600; }
+.ct-rail-none { font-size: 12px; color: #6f6a5e; padding: 8px 9px; line-height: 1.4; }
+
+/* ---- the selected category had no style at all ----
+   renderRail() marks the current category `.ct-rail-item.active`, but only
+   `.sel` was ever styled — so which category you were in was invisible, and
+   the rail filter's Enter (which selects the top hit) had no visible effect.
+   Same paint as .sel; kept here rather than merged into the rule above so the
+   pairing is documented where it was found. */
+.ct-rail-item.active {
+  background: linear-gradient(90deg, rgba(201,162,75,.10), transparent);
+  border-color: #c9a24b77; color: #ecd9a0;
+}
+.ct-rail-item.active .ct-rail-count { color: #d9c48a; background: rgba(201,162,75,.10); }
+
+/* ---- #cs-cards' bottom edge ----
+   Two scrollers stack in this column, so the card's last visible row is often
+   sliced mid-control. A hairline says "this panel ends here, scroll it" instead
+   of the cut reading as a broken row. */
+#cs-cards { border-bottom: 1px solid #26262d; padding-bottom: 6px; margin-bottom: 8px; }
+
+/* ---- rows that now host a csPicker ----
+   A picker grows downward when it opens, so a row that centres its children
+   drags the label and the neighbouring button to the middle of the open list.
+   Top-align them; the small padding keeps the label on the trigger's baseline
+   while the picker is closed. */
+.cs-pinroute, .cs-field.cs-row-inline { align-items: flex-start; }
+.cs-pinroute > .cs-hint, .cs-field.cs-row-inline > .cs-hint,
+.cs-field.cs-row-inline > .cs-field-lbl { padding-top: 9px; }
+.cs-pinroute > .cs-mini { margin-top: 1px; }
+
+/* ---- round 3 (2026-08-17): UI elements as a QUICK-CARD listing ---------- *
+ * Rober: "home tab - ui elements should have a quick card ui customization
+ * listing". The drawer's rows become a responsive card grid — one card per
+ * on-screen element, live ON/OFF chip, toggle + place/set-up actions. */
+#hm-uie-body {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 12px;
+  align-items: stretch;   /* a card fills its grid row — heights agree by construction */
+}
+/* ---- ONE card shape for every element (2026-08-19 uniformity pass) ---------
+ * The card was a flex ROW (icon · text · actions) that wrapped, so where the
+ * actions fitted beside the text they sat halfway down the card and where they
+ * did not they dropped to a second line — three different action-row Y values
+ * inside one grid row, measured at 2560. It is a two-row GRID now:
+ *
+ *     ┌───────┬────────────────────────────┐
+ *     │ plate │ Title                      │   row 1: auto  (top-aligned)
+ *     │       │ description…               │
+ *     ├───────┴────────────────────────────┤
+ *     │              [pill] [btn] [btn]    │   row 2: 1fr, contents at its END
+ *     └────────────────────────────────────┘
+ *
+ * Row 2 takes every leftover pixel and its content is `align-self: end`, so a
+ * one-line and a three-line description put their buttons on exactly the same
+ * baseline. The plate is `align-self: start`, so icons stop floating to the
+ * vertical centre of whatever description happens to be beside them.
+ * Placement is by grid-area, NOT by child order — the JS still appends
+ * icon → text → actions and every selector still reaches them by descent. */
+#hm-uie-body .hm-uie-row {
+  border: 1px solid rgba(201,162,75,.16); border-radius: 12px;
+  background: rgba(255,255,255,.025);
+  padding: 15px 15px 14px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  column-gap: 13px; row-gap: 12px;
+  align-items: start;
+  min-height: 140px;   /* the drawer's uniform floor */
+}
+#hm-uie-body .hm-uie-row .hm-uie-ic  { grid-column: 1; grid-row: 1; align-self: start; }
+#hm-uie-body .hm-uie-row .hm-uie-t   { grid-column: 2; grid-row: 1; }
+#hm-uie-body .hm-uie-row .hm-uie-acts {
+  grid-column: 1 / -1; grid-row: 2;
+  align-self: end; justify-self: stretch;
+  margin-left: 0; flex: initial; min-width: 0;
+}
+#hm-uie-body .hm-uie-row:hover { background: rgba(201,162,75,.07); border-color: rgba(201,162,75,.32); }
+
+/* round 3.1: the UI-element cards feel alive — hover lift + settling chips.
+   Transitions only (state-change driven); nothing loops. */
+#hm-uie-body .hm-uie-row {
+  transition: background 140ms ease, border-color 140ms ease,
+              transform 140ms ease, box-shadow 140ms ease;
+}
+#hm-uie-body .hm-uie-row:hover { transform: translateY(-1px); box-shadow: 0 5px 16px rgba(0, 0, 0, .28); }
+#hm-uie-body .hm-uie-row:active { transform: translateY(0); }
+.hm-uie-state { transition: background 180ms ease, color 180ms ease, border-color 180ms ease, transform 90ms ease; }
+.hm-uie-btn { transition: background 130ms ease, border-color 130ms ease, color 130ms ease, transform 90ms ease; }
+.hm-uie-btn:active { transform: translateY(1px); }
+
+
+/* ---- equipped-tile stat pills + size stepper (2026-08-18) --------------- */
+.fq-eqpill {
+  position: absolute; right: 3px; bottom: 3px; z-index: 2;
+  min-width: 20px; padding: 2px 6px; box-sizing: border-box; text-align: center;
+  font: 700 12px/1.2 "Segoe UI", sans-serif; font-style: normal;
+  border-radius: 8px; box-shadow: 0 1px 3px rgba(0, 0, 0, .55);
+}
+.fq-eqpill.arm { color: #dfe4ee; background: linear-gradient(180deg, #4d5566, #333a48); border: 1px solid #5d6678; }
+.fq-eqpill.dmg { color: #f4ded8; background: linear-gradient(180deg, #8e3a2b, #63251a); border: 1px solid #a45a49; }
+.fq-eqsize { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
+.fq-eqstep {
+  font: 700 13px/1 "Segoe UI", sans-serif; color: #d9d2bd;
+  width: 24px; height: 22px; border-radius: 7px; cursor: pointer;
+  background: #1d1d24; border: 1px solid #3a3a45;
+  transition: background .12s ease, border-color .12s ease;
+}
+.fq-eqstep:hover { background: #26262f; border-color: #55503f; }
+.fq-eqsize-v { font: 700 12px/1 "Segoe UI", sans-serif; color: #c9a24b; min-width: 36px; text-align: center; }
+
+
+/* UI Elements: the configure-in-place expander row (state-driven; home-pane
+   renderUie mounts it under its element's row). Unstyled it painted as a bare
+   div and contributed to "the settings button does nothing" reading. */
+.hm-uie-inline {
+  /* The drawer is a GRID — without the full-row span this panel flowed into
+     the NEXT CELL and painted over the neighbouring card ("css is broken
+     should be a popout", Rober 2026-08-18). Full-span + popout dressing. */
+  grid-column: 1 / -1;
+  margin: -2px 0 6px;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, rgba(16, 17, 22, .97), rgba(10, 11, 15, .97));
+  border: 1px solid rgba(201, 162, 75, .45);
+  border-radius: 12px;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .55);
+}
+.hm-uie-inline .fd-hud-row { margin: 0; }
+
+/* ---- UI Elements: the Equipped widget's expander (2026-08-19) ------------
+   Rober: the drawer must carry the merged widget's real configuration, not a
+   redirect. It is a full-width panel under its row (the drawer is a card
+   GRID, so it spans every column), built by home-pane.js buildEqInline. */
+.hm-uie-inline {
+  grid-column: 1 / -1;
+  margin: -2px 0 6px;
+  padding: 14px 16px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(201, 162, 75, .28);
+  background: rgba(201, 162, 75, .05);
+}
+.hm-eq { display: flex; flex-direction: column; gap: 14px; }
+.hm-eq-grp { display: flex; flex-direction: column; gap: 8px; }
+.hm-eq-lab {
+  font-size: 12.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  color: #8a8478;
+}
+.hm-eq-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.hm-eq-btn {
+  display: inline-flex; align-items: center; gap: 9px;
+  font: 600 14px/1 inherit; color: #e8e4da; cursor: pointer;
+  background: rgba(255, 255, 255, .03); border: 1px solid #3a3a44;
+  border-radius: 10px; padding: 10px 14px;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 90ms ease;
+}
+.hm-eq-btn:hover { border-color: #c9a24b; background: rgba(201, 162, 75, .12); }
+.hm-eq-btn:focus-visible { outline: 2px solid rgba(201, 162, 75, .55); outline-offset: 2px; }
+.hm-eq-btn:active { transform: translateY(1px); }
+.hm-eq-btn.on { color: #e5c877; border-color: #c9a24b; background: rgba(201, 162, 75, .16); }
+.hm-eq-btn.hm-eq-sz { min-width: 46px; justify-content: center; font-size: 15px; }
+/* ⚠ NOT `margin-left: auto` (2026-08-19 design pass). The push stranded
+   "⚙ Configure on screen" against the far right of a full-deck-width panel —
+   ~1,200px from the "⛓ One widget" button it belongs beside at 2560 — while
+   every OTHER group in the same panel (Lines · Orientation · Size) is
+   left-aligned. One row flinging its second button across the screen is the
+   inconsistency, not the separation. It sits in the flow now, with the group's
+   own gap; the note under the panel already says what it opens. */
+.hm-eq-btn.hm-eq-wide { margin-left: 0; }
+.hm-eq-ic {
+  width: 22px; height: 22px; flex: none; display: flex; align-items: center; justify-content: center;
+  font-size: 14px; color: #c9a24b;
+}
+.hm-eq-ic img { width: 18px; height: 18px; object-fit: contain; display: block; }
+.hm-eq-state {
+  font: 700 12.5px/1 Consolas, monospace; border-radius: 999px; padding: 5px 9px;
+  color: #6f6a5e; border: 1px solid #2e2e36;
+}
+.hm-eq-state.on  { color: #a9d3a9; background: rgba(120, 200, 120, .12); border-color: rgba(120, 200, 120, .32); }
+.hm-eq-state.off { color: #c9a2a2; background: rgba(200, 120, 120, .10); border-color: rgba(200, 120, 120, .28); }
+.hm-eq-state.unk { color: #6f6a5e; }
+.hm-eq-val {
+  min-width: 62px; text-align: center; font: 700 14px/1 Consolas, monospace; color: #cfcabe;
+}
+.hm-eq-note { margin: 0; font-size: 13px; line-height: 1.5; color: #8a8478; }
+.hm-uie-row .hm-uie-ic img { width: 26px; height: 26px; object-fit: contain; display: block; }
+.hm-uie-btn.hm-uie-jump.on { color: #e5c877; border-color: #c9a24b; background: rgba(201, 162, 75, .14); }
+
+/* A row with four actions (the Equipped widget: master · Place · Configure)
+   used to squeeze its NAME to "Equippe…" and stack the subtitle into a
+   column, because the text block shrank before the buttons wrapped. It cannot
+   happen at all now: the text owns its own grid row, the actions own theirs.
+   The 2-line floor under the description is what keeps a one-line card and a
+   two-line card the same height inside a grid row (2026-08-19). */
+#hm-uie-body .hm-uie-row .hm-uie-t { min-width: 0; }
+#hm-uie-body .hm-uie-row .hm-uie-t span { display: block; }
+#hm-uie-body .hm-uie-row .hm-uie-t > span:first-of-type { min-height: calc(2 * 1.45 * 13px); }

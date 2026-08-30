@@ -1,0 +1,309 @@
+/* ===================================================================== *
+ *  Survival tab — the dashboard. Own sheet (linked from index.html) so no
+ *  other pane's app.css section can truncate it — the sync_view_frags
+ *  lesson, same as items-pane.css.
+ *
+ *  Deck tokens (dark #1a1a21→#101015, gold #c9a24b, line #2e2e36, border
+ *  #3d3a33, radius 12). Nothing under 12px — couch rules.
+ * ===================================================================== */
+
+#sp-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 22px 14px;
+  gap: 14px;
+}
+#sp-pane.hidden { display: none; }
+
+/* --------------------------------------------------------------- head */
+
+#sp-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.sp-title { font: 700 24px/1 Georgia, "Times New Roman", serif; color: #c9a24b; letter-spacing: .5px; }
+.sp-sub { font-size: 14px; color: #8d8571; flex: 1; min-width: 160px; }
+.sp-headbtns { display: flex; gap: 9px; }
+.sp-btn {
+  font: 600 15px/1 "Segoe UI", sans-serif;
+  color: #b8b1a0;
+  background: #16161d;
+  border: 1px solid #2e2e36;
+  border-radius: 10px;
+  padding: 11px 17px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.sp-btn:hover { background: #1f1f28; color: #e8e2d4; border-color: #3d3a33; }
+.sp-btn:active { transform: translateY(1px); }
+.sp-btn.on { color: #c9a24b; background: rgba(201, 162, 75, .10); border-color: #c9a24b77; }
+.sp-btn:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+
+.sp-bar {  /* the search field's wrapper reuses the deck idiom */
+  display: flex; align-items: center; gap: 10px;
+  background: #0c0c10; border: 1px solid #2e2e36; border-radius: 12px;
+  padding: 2px 14px;
+}
+.sp-bar:focus-within { border-color: #c9a24b77; }
+#sp-search {
+  /* margin:0 + border-box is load-bearing, not tidiness: Ultralight gives an
+     <input> a UA margin, and the probe measured the field bleeding 3px BELOW
+     its own bar and onto the first row of cards at every width. */
+  flex: 1; font: 400 16px/1.3 "Segoe UI", sans-serif; color: #e8e2d4;
+  background: transparent; border: 0; outline: none;
+  padding: 12px 0; margin: 0; box-sizing: border-box; min-width: 0;
+}
+#sp-search::placeholder { color: #6f6a5e; }
+
+.sp-clear {
+  font: 700 15px/1 "Segoe UI", sans-serif;
+  color: #6f6a5e; background: transparent; border: 0;
+  padding: 8px 2px 8px 8px; cursor: pointer;
+  transition: color 120ms ease;
+}
+.sp-clear:hover { color: #e8e2d4; }
+.sp-clear:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.sp-clear.hidden { display: none; }
+
+/* While you are arranging, the filter would be lying about what the board
+   holds — so it stands down and says so. */
+#sp-pane.sp-arranging .sp-bar { opacity: .4; pointer-events: none; }
+
+.sp-btn.sp-armed {   /* second click confirms — Reset has no undo */
+  color: #e0a0a0; border-color: #6d3535; background: rgba(224, 138, 138, .10);
+}
+
+.sp-arrange-hint {
+  grid-column: 1 / -1;
+  font-size: 14px; color: #b8b1a0;
+  background: rgba(201, 162, 75, .07);
+  border: 1px solid #c9a24b44; border-radius: 10px;
+  padding: 12px 16px;
+}
+.sp-arrange-hint b { color: #c9a24b; font-weight: 700; }
+
+/* ------------------------------------------------------------- the grid */
+/* Sizes are COLUMN SPANS, not free positions: the page stays a grid at any
+   width instead of becoming boxes that overlap at the 640px floor. */
+
+#sp-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+  align-content: start;
+  padding-right: 4px;
+}
+#sp-body::-webkit-scrollbar { width: 10px; }
+#sp-body::-webkit-scrollbar-track { background: transparent; }
+#sp-body::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+#sp-body::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+
+.sp-card {
+  background: linear-gradient(180deg, #1c1c24 0%, #16161d 100%);
+  border: 1px solid #2e2e36;
+  border-radius: 12px;
+  padding: 14px 16px 16px;
+  min-width: 0;              /* long values must ellipsize, never widen a column */
+  transition: border-color 130ms ease, transform 90ms ease;
+}
+.sp-size-s { grid-column: span 2; }
+.sp-size-m { grid-column: span 3; }
+.sp-size-l { grid-column: span 6; }
+.sp-card.sp-editing { border-color: #3d3a33; }
+.sp-card.sp-cardoff { opacity: .42; }
+
+.sp-card-h { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.sp-card-t {
+  flex: 1; min-width: 0;
+  font: 700 13px/1 "Segoe UI", sans-serif;
+  letter-spacing: .9px; text-transform: uppercase; color: #8d8571;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sp-grip { color: #6f6a5e; cursor: grab; font-size: 15px; }
+.sp-grip:active { cursor: grabbing; }
+.sp-card-tools { display: flex; gap: 4px; }
+.sp-sz, .sp-onoff {
+  font: 700 12px/1 Consolas, monospace;
+  color: #8d8571; background: #101015;
+  border: 1px solid #2e2e36; border-radius: 7px;
+  padding: 6px 8px; cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.sp-sz:hover, .sp-onoff:hover { color: #e8e2d4; border-color: #3d3a33; background: #1a1a21; }
+.sp-sz.on { color: #c9a24b; border-color: #c9a24b77; background: rgba(201, 162, 75, .10); }
+.sp-onoff.on { color: #8fd18f; border-color: #3c5c3c; }
+.sp-sz:focus-visible, .sp-onoff:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+
+/* Accent per source: the board is scannable by colour instead of being a wall
+   of identical grey. A card whose mod we don't know keeps the neutral head. */
+.sp-a-sun   .sp-card-t { color: #9dcb8f; }
+.sp-a-camp  .sp-card-t { color: #d9c48a; }
+.sp-a-hunt  .sp-card-t { color: #d9a86c; }
+.sp-a-faith .sp-card-t { color: #b79bff; }
+.sp-a-life  .sp-card-t { color: #8fc9ff; }
+.sp-a-sun   { border-top: 2px solid rgba(157, 203, 143, .45); }
+.sp-a-camp  { border-top: 2px solid rgba(217, 196, 138, .45); }
+.sp-a-hunt  { border-top: 2px solid rgba(217, 168, 108, .45); }
+.sp-a-faith { border-top: 2px solid rgba(183, 155, 255, .45); }
+.sp-a-life  { border-top: 2px solid rgba(143, 201, 255, .45); }
+
+/* the card you are holding, and the ones it is pushing past */
+.sp-card.sp-lifted {
+  border-color: #c9a24b;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
+  transform: translateY(-2px);
+}
+body.sp-dragging .sp-card { cursor: grabbing; }
+
+.sp-mv {
+  font: 700 13px/1 "Segoe UI", sans-serif;
+  color: #8d8571; background: #101015;
+  border: 1px solid #2e2e36; border-radius: 7px;
+  padding: 6px 8px; cursor: pointer;
+}
+.sp-mv:hover:not(:disabled) { color: #e8e2d4; border-color: #3d3a33; background: #1a1a21; }
+.sp-mv:disabled { opacity: .3; cursor: default; }
+.sp-mv:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+
+.sp-chip {
+  font: 600 12px/1 "Segoe UI", sans-serif;
+  color: #8d8571; background: #101015;
+  border: 1px solid #2e2e36; border-radius: 999px;
+  padding: 6px 11px; margin-left: 8px; cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.sp-chip:hover { color: #c9a24b; border-color: #c9a24b77; }
+.sp-chip:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+
+/* ------------------------------------------------------- card contents */
+
+.sp-hint { font-size: 12.5px; color: #6f6a5e; margin-bottom: 10px; }
+.sp-none { font-size: 13px; color: #6f6a5e; }
+
+.sp-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(46, 46, 54, .55);
+}
+.sp-row:last-child { border-bottom: 0; }
+.sp-row-l {
+  font-size: 14px; color: #b8b1a0;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sp-row-l i { color: #6f6a5e; font-style: normal; font-size: 12px; }
+.sp-row-v { font: 700 16px/1 Consolas, monospace; color: #d9c48a; flex: none; }
+
+.sp-stats { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 4px; }
+.sp-stat { display: flex; flex-direction: column; gap: 2px; min-width: 62px; }
+.sp-stat-v { font: 700 24px/1 Georgia, "Times New Roman", serif; color: #d9c48a; }
+.sp-stat-l { font-size: 12.5px; color: #8d8571; }
+
+.sp-need { margin-top: 10px; }
+.sp-need:first-child { margin-top: 0; }
+.sp-need-top {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  font-size: 14px; color: #b8b1a0;
+}
+.sp-need-top b { font: 700 15px/1 Consolas, monospace; color: #d9c48a; }
+.sp-need.sp-off .sp-need-top, .sp-need.sp-off b { color: #6f6a5e; }
+/* NAME COLLISION, paid for once: this used to be .sp-bar too — the same class
+   the SEARCH FIELD's wrapper carries in index.html. Being the later rule it won,
+   so the search box was laid out 7px tall with overflow:hidden — a usable field
+   clipped to a hairline, in the game only. jsdom has no layout and the harness
+   never loaded the shipped skeleton's stylesheet order; the ultralight-probe
+   measured it. Progress bars are .sp-meter now, and nothing in this pane may
+   take a class name the deck's own skeleton already uses. */
+.sp-meter {
+  margin-top: 6px; height: 7px;
+  background: #0c0c10; border: 1px solid #2e2e36; border-radius: 5px; overflow: hidden;
+}
+.sp-meter span {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, #8a6f2f, #c9a24b);
+  transition: width 220ms ease;
+}
+/* ---- vitals parity with the popout (2026-08-18) ----
+   Same severity hues, same state words, same "the scale is assumed" mark —
+   because both surfaces read the SAME svStateResult through HDSurvival's one
+   semantics export. A meter whose direction the popout does not know arrives
+   here with no sevClass and no word, so it stays plain gold rather than being
+   coloured on a guess. Deck hues only: warn #dda962, danger #e08a8a. */
+.sp-need-ico { font-style: normal; margin-right: 7px; }
+.sp-need-foot {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  margin-top: 5px;
+}
+.sp-need-word {
+  font: 600 12.5px/1 "Segoe UI", sans-serif; color: #9a917d; letter-spacing: .3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: color 180ms ease;
+}
+.sp-need-scale { flex: none; font: 400 12px/1 "Segoe UI", sans-serif; color: #6f6a5e; }
+
+.sp-need.sv-sev-warn .sp-need-top b,
+.sp-need.sv-sev-warn .sp-need-word { color: #dda962; }
+.sp-need.sv-sev-low  .sp-need-top b,
+.sp-need.sv-sev-low  .sp-need-word,
+.sp-need.sv-sev-crit .sp-need-top b,
+.sp-need.sv-sev-crit .sp-need-word { color: #e08a8a; }
+.sp-need.sv-sev-warn .sp-meter span { background: linear-gradient(90deg, #8a6f2f, #dda962); }
+.sp-need.sv-sev-low  .sp-meter span { background: linear-gradient(90deg, #8a4a44, #d98a8a); }
+.sp-need.sv-sev-crit .sp-meter span { background: linear-gradient(90deg, #a24a46, #e08a8a); }
+.sp-need.sp-off .sp-need-word { color: #6f6a5e; }
+/* Cold is the one meter that CLIMBS, so at zero its track is legitimately
+   empty — tint it calm rather than leaving it reading as "no data". */
+.sp-need[data-need="cold"].sv-sev-ok .sp-meter {
+  background: linear-gradient(90deg, #101820, #0c0c10); border-color: #25303d;
+}
+.sp-need[data-need="cold"].sv-sev-ok .sp-meter span {
+  background: linear-gradient(90deg, #35506d, #8fc9ff);
+}
+
+.sp-flags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.sp-flag {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 600 12.5px/1 "Segoe UI", sans-serif; color: #b8b1a0;
+  background: #0c0c10;
+  border: 1px solid #2e2e36; border-radius: 999px; padding: 7px 12px;
+}
+.sp-flag i { font-style: normal; font-size: 13px; line-height: 1; }
+.sp-flag.sp-good { color: #8fd18f; border-color: #3c5c3c; background: #101a12; }
+.sp-flag.sp-bad { color: #8fc9ff; border-color: #35506d; background: #101620; }
+
+/* ---------------------------------------------------- empty + skeleton */
+
+.sp-hero-empty { grid-column: span 6; text-align: center; padding: 60px 20px; }
+.sp-hero-glyph { font-size: 46px; opacity: .5; }
+.sp-empty-t { font: 700 20px/1.3 "Segoe UI", sans-serif; color: #e8e2d4; margin-top: 12px; }
+.sp-empty-s { font-size: 15px; color: #8d8571; margin-top: 8px; }
+
+.sp-skel { pointer-events: none; }
+.sp-skel-box {
+  background: linear-gradient(90deg, #1d1d25 25%, #26262f 50%, #1d1d25 75%);
+  border-radius: 7px; height: 14px; margin-bottom: 10px;
+}
+.sp-w1 { width: 45%; }
+.sp-w2 { width: 80%; }
+
+/* ------------------------------------------------------------- narrow */
+
+@media (max-width: 1100px) {
+  #sp-body { grid-template-columns: repeat(4, 1fr); }
+  .sp-size-s { grid-column: span 2; }
+  .sp-size-m { grid-column: span 4; }
+  .sp-size-l { grid-column: span 4; }
+  .sp-hero-empty { grid-column: span 4; }
+}
+@media (max-width: 760px) {
+  #sp-pane { padding: 14px 12px 10px; }
+  #sp-body { grid-template-columns: 1fr; }
+  .sp-size-s, .sp-size-m, .sp-size-l, .sp-hero-empty { grid-column: span 1; }
+  .sp-title { font-size: 21px; }
+}

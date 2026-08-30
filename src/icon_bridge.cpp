@@ -205,7 +205,7 @@ namespace IconBridge
 				std::error_code fileEc;
 				if (!e.is_regular_file(fileEc) || fileEc)
 					continue;
-				const auto ext = ToLower(e.path().extension().string());
+				const auto ext = ToLower(PathU8(e.path().extension()));
 				if (ext != ".csv" && ext != ".dds")
 					continue;
 
@@ -228,7 +228,7 @@ namespace IconBridge
 
 			for (const auto& csv : csvs) {
 				Sheet s;
-				s.stem = csv.stem().string();
+				s.stem = PathU8(csv.stem());
 				s.csv = csv;
 				s.dds = csv;
 				s.dds.replace_extension(".dds");
@@ -288,7 +288,7 @@ namespace IconBridge
 		{
 			std::error_code ec;
 			const auto      a = fs::absolute(p, ec);
-			return ec ? p.string() : a.string();
+			return ec ? PathU8(p) : PathU8(a);
 		}
 
 		void Run(std::function<void()> onReady)
@@ -366,7 +366,7 @@ namespace IconBridge
 					continue;
 				}
 				if (!ReadBinaryFile(s.dds, dds)) {
-					logger::warn("icon-bridge: {} — could not read {}", s.stem, s.dds.filename().string());
+					logger::warn("icon-bridge: {} — could not read {}", s.stem, PathU8(s.dds.filename()));
 					++stats.sheetsSkipped;
 					continue;
 				}
@@ -414,7 +414,7 @@ namespace IconBridge
 				stats.icons, stats.atlases, ms, stats.rowsSkipped, stats.rectsRejected,
 				stats.writeFailures + targetWriteFailures);
 			logger::info("icon-bridge: library written to the MOD folder ({}) — sliced from this machine's own Spell Hotbar 2 install, nothing redistributed",
-				root.string());
+				PathU8(root));
 			SetStatus(std::to_string(stats.icons) + " icons from " + std::to_string(stats.atlases) + " atlases");
 
 			// A freshly built library is only useful if the view is told. The

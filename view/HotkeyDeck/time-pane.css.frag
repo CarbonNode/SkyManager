@@ -35,7 +35,17 @@
    makes "when am I" legible at a glance — night = dot on the dark half. */
 #tm-dial {
   width: 74px; height: 74px; border-radius: 50%; flex: none; position: relative;
-  background:
+  /* Split color + image ON PURPOSE: conic-gradient does not exist in
+     Ultralight, and inside a `background:` SHORTHAND its failure drops the
+     whole declaration — the dial shipped as a bare unfilled circle (2026-08-19
+     CSS review). As a separate background-image only THAT declaration is
+     dropped and the ring keeps a solid plate; a supporting engine (the
+     Chromium harness) still draws the day-arc.
+     ⚠ THE FRAGMENT IS THE SOURCE (tools/sync_view_frags.py). The fix landed in
+     the integrated app.css on 2026-08-19 but not here, so the next re-integrate
+     would have quietly re-shipped the bare circle. Keep the two in step. */
+  background-color: #191926;
+  background-image:
     conic-gradient(from 180deg,
       #14141c 0deg,  #2a3550 60deg,  #c9a24b55 120deg, #d8c07a66 180deg,
       #c9a24b55 240deg, #2a3550 300deg, #14141c 360deg);
@@ -116,6 +126,59 @@
 #tm-note.tm-ok  { background: rgba(201,162,75,.10); border: 1px solid #c9a24b44; color: #d8c07a; }
 .tm-hiddenish { opacity: 0; pointer-events: none; }
 #tm-note:not(.tm-hiddenish) { opacity: 1; }
+
+/* ---- Sky card (weather picker, 2026-08-17) ---------------------------- */
+#tm-sky-now { font-size: 14px; color: #b6ad99; }
+#tm-sky-now b { color: #e8e2d4; }
+#tm-sky-bar {
+  display: flex; align-items: center; gap: 10px;
+  background: #14141a; border: 1px solid #3a3a45; border-radius: 10px;
+  padding: 4px 6px 4px 12px;
+}
+.tm-sky-glyph { color: #8b8474; font-size: 15px; }
+#tm-sky-q {
+  flex: 1 1 auto; min-width: 0; background: none; border: none; outline: none;
+  color: #efe9da; font-size: 15px; padding: 8px 0;
+}
+#tm-sky-bar:focus-within { border-color: #c9a24b; }
+#tm-sky-release {
+  flex: 0 0 auto; background: #1d1d24; border: 1px solid #3a3a45; border-radius: 8px;
+  color: #d9d2bd; font-size: 13.5px; padding: 8px 12px; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+#tm-sky-release:hover { background: #26262f; border-color: #55503f; }
+#tm-sky-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 300px; overflow-y: auto;
+  border: 1px solid #2e2e38; border-radius: 10px; padding: 6px;
+  transition: opacity 160ms ease;
+}
+#tm-sky-list:not(.tm-hiddenish) { opacity: 1; }
+.tm-sky-row {
+  display: flex; align-items: baseline; gap: 10px; min-width: 0;
+  padding: 7px 10px; border-radius: 7px; cursor: pointer;
+  transition: background .1s ease;
+}
+.tm-sky-row:hover { background: #22222b; }
+.tm-sky-top { background: #1e1e27; box-shadow: inset 2px 0 0 #c9a24b; }
+.tm-sky-cur { box-shadow: inset 2px 0 0 #8fb8ff; }
+.tm-sky-kind {
+  flex: 0 0 auto; font-size: 12px; border-radius: 999px; padding: 2px 9px;
+  border: 1px solid #3a3a45; color: #b6ad99; text-transform: capitalize;
+}
+.tm-sky-kind.k-clear  { color: #ffd36a; border-color: #6b5a2c; }
+.tm-sky-kind.k-cloudy { color: #b9c2cf; border-color: #4a5260; }
+.tm-sky-kind.k-rain   { color: #8fb8ff; border-color: #3d5470; }
+.tm-sky-kind.k-snow   { color: #cfe6ff; border-color: #55636f; }
+.tm-sky-name {
+  font-size: 14.5px; color: #e8e2d4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.tm-sky-plug {
+  margin-left: auto; font-size: 12px; color: #8b8474; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 200px;
+}
+
 #tm-foot {
   margin-top: auto; padding-top: 10px; border-top: 1px solid #26262d;
   font-size: 12px; color: #6e6a5d; line-height: 1.5;

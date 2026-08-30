@@ -104,24 +104,6 @@ namespace ContainerActions
 			return nullptr;
 		}
 
-		// Re-resolve a marked container from its durable (plugin, localId) identity.
-		// TESDataHandler::LookupForm remaps the local id through the CURRENT load
-		// order (ESL-aware), so the runtime FormID it hands back is correct even
-		// after the plugin moved. Returns nullptr for a ref whose plugin is gone or
-		// whose form is no longer a reference.
-		RE::TESObjectREFR* ResolveRef(const std::string& plugin, std::uint32_t localId)
-		{
-			if (plugin.empty() || !localId)
-				return nullptr;
-			auto* dh = RE::TESDataHandler::GetSingleton();
-			if (!dh)
-				return nullptr;
-			auto* form = dh->LookupForm(localId, plugin);
-			if (!form || form->GetFormType() != RE::FormType::Reference)
-				return nullptr;
-			return static_cast<RE::TESObjectREFR*>(form);
-		}
-
 		// The session's summon marker, created on demand (forcePersist so it
 		// survives its cell unloading). Copy of PlaceActions::EnsureMarker.
 		RE::TESObjectREFR* EnsureMarker(RE::PlayerCharacter* player)
@@ -225,6 +207,30 @@ namespace ContainerActions
 
 		CrosshairSink g_crossSink;
 		MenuSink      g_menuSink;
+	}
+
+	// Re-resolve a marked container from its durable (plugin, localId) identity.
+	// TESDataHandler::LookupForm remaps the local id through the CURRENT load
+	// order (ESL-aware), so the runtime FormID it hands back is correct even after
+	// the plugin moved. Returns nullptr for a ref whose plugin is gone or whose
+	// form is no longer a reference. Public (was anonymous) so container_sort.cpp
+	// can resolve a destination chest ref for RemoveItem without summoning it.
+	RE::TESObjectREFR* ResolveRef(const std::string& plugin, std::uint32_t localId)
+	{
+		if (plugin.empty() || !localId)
+			return nullptr;
+		auto* dh = RE::TESDataHandler::GetSingleton();
+		if (!dh)
+			return nullptr;
+		auto* form = dh->LookupForm(localId, plugin);
+		if (!form || form->GetFormType() != RE::FormType::Reference)
+			return nullptr;
+		return static_cast<RE::TESObjectREFR*>(form);
+	}
+
+	RE::FormID CrosshairRef()
+	{
+		return g_crossRef;
 	}
 
 	void Init()

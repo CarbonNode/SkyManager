@@ -1,0 +1,757 @@
+/* ===================================================================== *
+ *  Settlement tab — the inline world-object placer. Own sheet (linked
+ *  from index.html) so no other pane's app.css section can truncate it —
+ *  the sync_view_frags lesson, same as keys-pane.css / items-pane.css.
+ *
+ *  Deck tokens: dark #1a1a21→#101015, gold rgba(201,162,75), border
+ *  #3d3a33, radius 12. No text below 12px — couch rules.
+ * ===================================================================== */
+
+#st-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 22px 14px;
+  gap: 14px;
+  position: relative;   /* toast + foot + render chip anchor to the pane */
+}
+#st-pane.hidden { display: none; }
+
+/* ------------------------------------------------------------- header -- */
+
+.st-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.st-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #e8e2d4;
+  letter-spacing: .3px;
+  white-space: nowrap;
+}
+.st-count {
+  font-size: 13px;
+  font-weight: 500;
+  color: #9a917d;
+  white-space: nowrap;
+}
+
+/* the "rendering N objects…" chip — top-right of the header band */
+.st-render-chip {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #d7cfae;
+  background: rgba(201, 162, 75, .12);
+  border: 1px solid rgba(201, 162, 75, .4);
+  border-radius: 999px;
+  padding: 5px 12px;
+  white-space: nowrap;
+}
+.st-render-chip.hidden { display: none; }
+.st-render-spin {
+  width: 12px; height: 12px;
+  border: 2px solid rgba(201, 162, 75, .35);
+  border-top-color: #ecd9a8;
+  border-radius: 50%;
+  animation: st-spin 0.8s linear infinite;
+}
+@keyframes st-spin { to { transform: rotate(360deg); } }
+
+/* --------------------------------------------------------- the ONE bar -- */
+
+.st-barwrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.st-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #16161d;
+  border: 1px solid #3d3a33;
+  border-radius: 12px;
+  padding: 12px 16px;
+  transition: border-color 130ms ease, box-shadow 130ms ease;
+}
+.st-bar:focus-within {
+  border-color: rgba(201, 162, 75, .6);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .18);
+}
+.st-bar-glyph {
+  font-size: 18px;
+  color: #9a917d;
+  flex: none;
+}
+#st-bar {
+  flex: 1;
+  min-width: 180px;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #efe9da;
+  font-size: 17px;
+  padding: 2px 0;
+}
+#st-bar::placeholder { color: #7d7566; }
+
+/* Gmail-token plugin chip, inside the bar */
+.st-plug-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: #ecd9a8;
+  background: rgba(201, 162, 75, .16);
+  border: 1px solid rgba(201, 162, 75, .5);
+  border-radius: 8px;
+  padding: 5px 10px;
+  white-space: nowrap;
+  max-width: 320px;
+}
+.st-plug-chip.hidden { display: none; }
+.st-plug-chip b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-chip-x {
+  cursor: pointer;
+  color: #cbb27a;
+  font-size: 13px;
+  padding: 0 2px;
+  transition: color 120ms ease;
+}
+.st-chip-x:hover { color: #fff; }
+
+/* ------------------------------------------------------------- pills -- */
+
+.st-pills {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.st-pill {
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 999px;
+  color: #cfc8b8;
+  font-size: 14px;
+  padding: 8px 15px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.st-pill:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.st-pill:active { background: #17171d; }
+.st-pill.st-pill-on {
+  background: rgba(201, 162, 75, .18);
+  border-color: rgba(201, 162, 75, .6);
+  color: #ecd9a8;
+}
+.st-pill.st-pill-camp.st-pill-on {
+  background: rgba(120, 180, 120, .18);
+  border-color: rgba(120, 180, 120, .6);
+  color: #b8e0b8;
+}
+
+/* ------------------------------------------------------- catalog rail -- */
+
+.st-cats {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.st-cats.hidden { display: none; }
+
+.st-cat-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #16161d;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  padding: 7px 12px;
+  max-width: 300px;
+}
+.st-cat-filter-g { color: #9a917d; font-size: 14px; }
+#st-cat-filter-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #efe9da;
+  font-size: 14px;
+}
+#st-cat-filter-input::placeholder { color: #7d7566; }
+
+.st-cat-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.st-cat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #1a1a22;
+  border: 1px solid #34313a;
+  border-radius: 8px;
+  color: #cfc8b8;
+  font-size: 13px;
+  padding: 7px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.st-cat-chip:hover { background: #24242d; border-color: #55503f; color: #efe9da; }
+.st-cat-chip.st-cat-on {
+  background: rgba(201, 162, 75, .18);
+  border-color: rgba(201, 162, 75, .6);
+  color: #ecd9a8;
+}
+.st-cat-chip.st-cat-drop {
+  border-color: rgba(201, 162, 75, .9);
+  box-shadow: 0 0 0 2px rgba(201, 162, 75, .3);
+}
+.st-cat-n {
+  font-size: 11px;
+  min-width: 16px;
+  text-align: center;
+  background: rgba(255, 255, 255, .08);
+  border-radius: 6px;
+  padding: 1px 5px;
+}
+.st-cat-camp { color: #b8e0b8; border-color: rgba(120, 180, 120, .4); }
+.st-cat-camp.st-cat-on { background: rgba(120, 180, 120, .18); border-color: rgba(120, 180, 120, .6); }
+.st-cat-new, .st-cat-import { color: #b6ad97; border-style: dashed; }
+.st-cat-placed.st-cat-on { background: rgba(140, 160, 220, .2); border-color: rgba(140, 160, 220, .6); color: #cdd6f2; }
+
+/* inline catalog name editor */
+.st-catedit { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#st-catedit-input {
+  flex: 1;
+  min-width: 200px;
+  background: #16161d;
+  border: 1px solid rgba(201, 162, 75, .5);
+  border-radius: 9px;
+  color: #efe9da;
+  font-size: 14px;
+  padding: 9px 12px;
+  outline: none;
+}
+
+/* Campfire subcategory row */
+.st-camp-subs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.st-camp-sub {
+  background: #1a1a22;
+  border: 1px solid #34313a;
+  border-radius: 7px;
+  color: #b6ad97;
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, color 130ms ease, border-color 130ms ease;
+}
+.st-camp-sub:hover { background: #24242d; color: #efe9da; }
+.st-camp-sub.st-camp-sub-on {
+  background: rgba(120, 180, 120, .18);
+  border-color: rgba(120, 180, 120, .6);
+  color: #b8e0b8;
+}
+.st-camp-unleashed {
+  font-size: 12px;
+  color: #7d7566;
+  padding: 5px 10px;
+  font-style: italic;
+}
+
+/* ------------------------------------------------------------- body -- */
+
+#st-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.st-sect {
+  font-size: 13px;
+  color: #9a917d;
+  padding: 6px 2px 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.st-sect b { color: #cbc3af; font-weight: 600; }
+.st-sect-back {
+  margin-left: auto;
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 8px;
+  color: #cfc8b8;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.st-sect-back:hover { background: #26262f; color: #efe9da; }
+/* live match count beside "My placements" — reads as a quiet aside, so the
+   total stays the headline number and the count never shifts the row's layout */
+.st-sect-n { color: #cbb27a; font-weight: 600; }
+
+/* The placements filter reuses .st-cat-filter's shell so the tab has one
+   search-box look; it only widens, because this row has the pane to itself
+   while the catalog filter shares its line with the chips. */
+.st-placed-filter { max-width: 520px; margin: 4px 2px 8px; }
+#st-placed-filter-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #efe9da;
+  font-size: 14px;
+}
+#st-placed-filter-input::placeholder { color: #7d7566; }
+.st-placed-none {
+  font-size: 13px;
+  color: #9a917d;
+  padding: 14px 4px;
+}
+.st-placed-none b { color: #cbc3af; font-weight: 600; }
+
+.st-firsthint {
+  font-size: 12px;
+  color: #cbb27a;
+  background: rgba(201, 162, 75, .08);
+  border: 1px solid rgba(201, 162, 75, .25);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 2px 0 4px;
+}
+
+/* rows */
+.st-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #16161d;
+  border: 1px solid #2c2a31;
+  border-radius: 11px;
+  padding: 10px 14px;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.st-row:hover { background: #1c1c24; border-color: #3d3a33; }
+.st-row.st-sel { border-color: rgba(201, 162, 75, .6); box-shadow: 0 0 0 2px rgba(201, 162, 75, .16); }
+.st-row.st-dragging-row { opacity: .5; }
+
+.st-glyph {
+  width: 64px; height: 64px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  background: #201f28;
+  border: 1px solid #34313a;
+  border-radius: 10px;
+  position: relative;
+  overflow: hidden;
+  color: #cbc3af;
+}
+.st-glyph.st-zoomable { cursor: zoom-in; }
+.st-glyph.st-has-art { color: transparent; }
+.st-glyph .st-art {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  background: #14141a;
+}
+/* The waiting sheen is STATIC. A moving background-position on a
+   background-size:200% gradient is the one animation this engine smears:
+   Ultralight runs these views with the compositor off and damages only part of
+   the box per frame, so a page full of them repainted as colour washes bleeding
+   across each other before the real grid landed (Rober, 2026-08-16:
+   "watercolors bleeding all over the place, then loaded"). The loading card's
+   spinner (a transform rotate on ONE small element) and the progress bar's width
+   transition are the only motion this page gets. */
+.st-glyph.st-loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, .05) 50%, transparent 80%);
+}
+
+/* per-type glyph hues */
+.st-t-stat { color: #c0b8a0; }
+.st-t-mstt { color: #cbb27a; }
+.st-t-furn { color: #d8b98a; }
+.st-t-cont { color: #cbb27a; }
+.st-t-acti { color: #9fb8d8; }
+.st-t-tree, .st-t-flor { color: #9dcb8f; }
+.st-t-door { color: #b6a0d8; }
+.st-t-ligh { color: #ecd9a8; }
+.st-t-camp { color: #b8e0b8; }
+
+.st-mid { flex: 1; min-width: 0; }
+.st-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 16px;
+  color: #efe9da;
+  font-weight: 600;
+}
+.st-name-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; }
+.st-name mark { background: rgba(201, 162, 75, .35); color: #fff; border-radius: 3px; padding: 0 1px; }
+
+.st-chip {
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+.st-chip-edid { background: rgba(150, 150, 170, .14); color: #a8a4bc; border: 1px solid rgba(150, 150, 170, .3); }
+.st-chip-camp { background: rgba(120, 180, 120, .14); color: #a8d8a8; border: 1px solid rgba(120, 180, 120, .35); }
+.st-chip-warn { background: rgba(200, 130, 90, .14); color: #e0a878; border: 1px solid rgba(200, 130, 90, .35); }
+
+.st-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: #9a917d;
+  margin-top: 4px;
+}
+.st-meta-type { color: #b6ad97; }
+.st-meta-plug, .st-meta-cell {
+  cursor: pointer;
+  color: #8fb0c8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+.st-meta-plug:hover { color: #b8d4e8; text-decoration: underline; }
+.st-meta-cell { cursor: default; color: #9a917d; }
+
+.st-act {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.st-btn {
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  color: #cfc8b8;
+  font-size: 13px;
+  padding: 8px 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.st-btn:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.st-btn:active { background: #17171d; }
+.st-btn:focus-visible {
+  outline: none;
+  border-color: rgba(201, 162, 75, .7);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .22);
+}
+.st-btn.st-btn-primary, .st-btn.st-primary {
+  background: rgba(201, 162, 75, .18);
+  border-color: rgba(201, 162, 75, .55);
+  color: #ecd9a8;
+}
+.st-btn.st-btn-primary:hover, .st-btn.st-primary:hover {
+  background: rgba(201, 162, 75, .28);
+  border-color: rgba(201, 162, 75, .8);
+}
+.st-btn.st-danger { color: #d59b91; }
+.st-btn.st-danger:hover { background: rgba(200, 90, 80, .16); border-color: rgba(200, 90, 80, .5); color: #f0b8b0; }
+.st-btn.st-do-fallback { color: #b6ad97; border-style: dashed; }
+
+.st-row-cat {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #9a917d;
+  font-size: 16px;
+  padding: 5px 9px;
+  cursor: pointer;
+  line-height: 1;
+  transition: background 120ms ease, color 120ms ease;
+}
+.st-row-cat:hover { background: #26262f; color: #efe9da; }
+
+/* skeletons */
+/* ---- first-open index walk: a progress card, not a frozen screen ------- *
+   The C++ walk is ~3 s on a big load order and pushes a state per stage; this
+   is what turns that wait into something legible instead of "did it crash?". */
+.st-loadcard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 26px 22px 22px;
+  margin-bottom: 10px;
+  background: #16161d;
+  border: 1px solid #2e2e36;
+  border-radius: 12px;
+  text-align: center;
+}
+.st-load-spin {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 3px solid #2e2e36;
+  border-top-color: #c9a24b;
+  animation: stSpin 900ms linear infinite;
+}
+@keyframes stSpin { to { transform: rotate(360deg); } }
+.st-load-title { font-size: 16px; font-weight: 700; color: #e8e2d4; }
+.st-load-sub { font-size: 14px; color: #b8b1a0; }
+.st-load-sub b { color: #d9c48a; }
+.st-load-bar {
+  width: min(420px, 90%);
+  height: 7px;
+  background: #101015;
+  border: 1px solid #2e2e36;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.st-load-bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #8a6f2f, #c9a24b);
+  transition: width 220ms ease;
+}
+.st-load-note { font-size: 12px; color: #8d8571; }
+
+.st-skel { pointer-events: none; }
+/* Static too, and for the same reason as the sheen above — a grid of animated
+   gradient boxes is exactly what smeared. */
+.st-skel-box {
+  background: linear-gradient(100deg, #1c1c24 30%, #24242d 50%, #1c1c24 70%);
+  border-radius: 8px;
+  display: block;
+}
+.st-skel .st-glyph.st-skel-box { width: 64px; height: 64px; }
+.st-skel-w1 { height: 16px; width: 42%; margin-bottom: 8px; }
+.st-skel-w2 { height: 12px; width: 26%; }
+.st-skel-btn { height: 34px; width: 120px; }
+
+/* --------------------------------------------------------- empty/hero -- */
+
+#st-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 12px;
+  padding: 24px;
+}
+#st-empty.hidden { display: none; }
+.st-hero-glyph { font-size: 56px; opacity: .8; }
+.st-empty-title { font-size: 20px; font-weight: 700; color: #e8e2d4; }
+.st-empty-sub { font-size: 15px; color: #a49d8c; max-width: 560px; line-height: 1.5; }
+.st-empty-sub b { color: #cbc3af; }
+.st-try { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+
+/* ------------------------------------------------------------- foot -- */
+
+.st-foot {
+  display: none;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 2px 2px;
+  border-top: 1px solid #26242b;
+  margin-top: 2px;
+}
+.st-foot.st-foot-on { display: flex; }
+.st-foot-nav {
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 8px;
+  color: #cfc8b8;
+  font-size: 13px;
+  padding: 7px 13px;
+  cursor: pointer;
+}
+.st-foot-nav:hover:not([disabled]) { background: #26262f; color: #efe9da; }
+.st-foot-nav[disabled] { opacity: .4; cursor: default; }
+.st-foot-count { font-size: 13px; color: #9a917d; }
+.st-foot-count b { color: #cbc3af; }
+.st-foot-per {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.st-foot-per-lbl { font-size: 12px; color: #7d7566; }
+.st-foot-size {
+  background: #1a1a22;
+  border: 1px solid #34313a;
+  border-radius: 7px;
+  color: #b6ad97;
+  font-size: 13px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+.st-foot-size:hover { background: #24242d; color: #efe9da; }
+.st-foot-size.st-foot-size-on {
+  background: rgba(201, 162, 75, .18);
+  border-color: rgba(201, 162, 75, .6);
+  color: #ecd9a8;
+}
+
+/* ------------------------------------------------------------- toast -- */
+
+.st-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%) translateY(12px);
+  background: #23231c;
+  border: 1px solid #55503f;
+  border-radius: 10px;
+  color: #ecd9a8;
+  font-size: 14px;
+  padding: 10px 18px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 40;
+  max-width: 80%;
+}
+.st-toast.st-toast-show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.st-toast.st-toast-err { background: #2a1c1a; border-color: #8a4a42; color: #f0c0b8; }
+
+/* ------------------------------------------------------- context menu -- */
+/* mounted to document.body (overlay), self-scaled by the deck in JS */
+
+.st-catmenu {
+  position: fixed;
+  z-index: 9200;
+  min-width: 190px;
+  max-width: 320px;
+  background: #1b1b22;
+  border: 1px solid #4a4638;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.st-cm-head {
+  font-size: 12px;
+  color: #9a917d;
+  padding: 6px 10px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-cm-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: #d5cdba;
+  font-size: 14px;
+  padding: 9px 11px;
+  cursor: pointer;
+  transition: background 110ms ease, color 110ms ease;
+}
+.st-cm-item:hover { background: #26262f; color: #efe9da; }
+.st-cm-item.st-cm-on { color: #ecd9a8; }
+.st-cm-item.st-cm-danger { color: #d59b91; }
+.st-cm-item.st-cm-danger:hover { background: rgba(200, 90, 80, .16); color: #f0b8b0; }
+.st-cm-item.st-cm-armed { background: rgba(200, 90, 80, .2); color: #f2c0b8; }
+.st-cm-item.st-cm-plus { color: #cbb27a; }
+.st-cm-empty { font-size: 13px; color: #9a917d; padding: 8px 11px; line-height: 1.4; }
+
+/* "File into…" catalog filter — same 8+ threshold as the catalog rail, so the
+   two places that list catalogs behave the same way. */
+.st-cm-find {
+  display: flex; align-items: center; gap: 7px;
+  margin: 2px 2px 4px; padding: 6px 9px;
+  background: #16161d; border: 1px solid #3d3a33; border-radius: 8px;
+}
+.st-cm-find-g { color: #9a917d; font-size: 13px; line-height: 1; }
+#st-cm-find-in {
+  flex: 1; min-width: 0;
+  background: transparent; border: none; outline: none;
+  color: #efe9da; font-size: 13.5px;
+}
+#st-cm-find-in::placeholder { color: #7d7566; }
+.st-cm-item.st-cm-nomatch { display: none; }
+.st-cm-none { display: none; font-size: 13px; color: #9a917d; padding: 8px 11px; line-height: 1.4; }
+.st-cm-none.st-cm-show { display: block; }
+.st-cm-empty code { background: rgba(255, 255, 255, .06); border-radius: 4px; padding: 1px 4px; }
+.st-import-menu { min-width: 260px; }
+.st-cm-import { }
+.st-cm-import-n { font-weight: 600; color: #e8e2d4; }
+.st-cm-import-c { font-size: 12px; color: #9a917d; }
+
+/* ------------------------------------------------- plugin / mod rows -- */
+
+.st-plug-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #17171f;
+  border: 1px solid #2c2a31;
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.st-plug-row:hover { background: #1e1e26; border-color: #3d3a33; }
+.st-plug-row.st-sel { border-color: rgba(201, 162, 75, .6); box-shadow: 0 0 0 2px rgba(201, 162, 75, .16); }
+.st-kindbadge {
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+.st-kind-esm { background: rgba(140, 160, 220, .16); color: #9fb2dc; }
+.st-kind-esp { background: rgba(201, 162, 75, .16); color: #d0b878; }
+.st-kind-esl { background: rgba(120, 200, 160, .16); color: #8fd0b0; }
+.st-plug-name { flex: 1; font-size: 15px; color: #e2dcce; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-plug-name mark { background: rgba(201, 162, 75, .35); color: #fff; border-radius: 3px; padding: 0 1px; }
+.st-plug-count { font-size: 12px; color: #9a917d; white-space: nowrap; }
+.st-plug-go { font-size: 13px; color: #cbb27a; white-space: nowrap; }
+
+/* --------------------------------------------------------- placements -- */
+
+.st-placed-row .st-glyph { cursor: default; }

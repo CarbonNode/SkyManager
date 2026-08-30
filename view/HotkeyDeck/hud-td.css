@@ -1,0 +1,197 @@
+/* ==========================================================================
+   Time Dial — the hotkey-openable circular wait dial (hud-td.js).
+
+   Styled after the vanilla-wait-menu reference Rober sent (2026-08-18): a
+   dark disc inside a thin gold tick ring, four cardinal sun/moon medallions,
+   a bright sweep arc from "now" to the chosen landing time, the time
+   transition in the middle and the date under it.
+
+   Lives in the HUD view (hud.html) as a sibling of #hud / #hud-free, so
+   body.hud-hidden / body.hud-strip-off never touch it — its ONE visibility
+   input is body.td-open, set by hud-td.js when C++ says tdShow("1").
+
+   ⚠ Ultralight, compositor off: no looping animations anywhere in this
+   sheet — every transition is a one-shot triggered by a class flip. And no
+   CSS transforms on SVG children (unproven here): the dial geometry is
+   written as SVG attributes by hud-td.js instead.
+   ========================================================================== */
+
+#hud-td { position: fixed; left: 0; top: 0; display: none; z-index: 40; pointer-events: none; }
+body.td-open #hud-td { display: block; }
+body.td-open #hud-td .td-frame { pointer-events: auto; }
+
+/* The movable/scalable assembly. Position + scale are written inline by
+   hud-td.js (the free-widget placeFree idiom); this rule only sets the box. */
+.td-frame {
+  position: fixed;
+  width: 560px;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+  font-family: inherit;
+  color: #e9e2cf;
+  /* one-shot entrance: tdShow adds .td-in a frame later */
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.td-frame.td-in { opacity: 1; }
+
+/* ---- header: WAIT n HOUR(S) ------------------------------------------- */
+.td-head {
+  text-align: center;
+  letter-spacing: 4px;
+  font-size: 22px;
+  color: #d8d2c0;
+  margin-bottom: 10px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+}
+.td-head b {
+  font-size: 34px;
+  letter-spacing: 1px;
+  color: #fff;
+  padding: 0 6px;
+  font-weight: 600;
+}
+
+/* ---- the dial ---------------------------------------------------------- */
+.td-dialwrap { position: relative; width: 560px; height: 560px; }
+.td-svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
+
+/* disc + rings are drawn in SVG; these are the stroke/fill palettes */
+.td-svg .td-disc   { fill: rgba(8, 9, 11, .78); }
+.td-svg .td-ring   { fill: none; stroke: rgba(214, 195, 148, .75); stroke-width: 2; }
+.td-svg .td-ring2  { fill: none; stroke: rgba(214, 195, 148, .28); stroke-width: 1; }
+.td-svg .td-track  { fill: none; stroke: rgba(255, 255, 255, .10); stroke-width: 7; }
+.td-svg .td-arc    { fill: none; stroke: #efe6cd; stroke-width: 7; stroke-linecap: round; }
+.td-svg .td-tick   { fill: rgba(222, 205, 160, .8); }
+.td-svg .td-handle-o { fill: rgba(10, 11, 13, .9); stroke: rgba(222, 205, 160, .95); stroke-width: 2; }
+.td-svg .td-handle-i { fill: #d9c58f; }
+
+/* the ring band is the drag surface — show it */
+.td-dialwrap.td-on-ring { cursor: pointer; }
+.td-dialwrap.td-dragging { cursor: grabbing; }
+
+/* ---- cardinal medallions (noon / dusk / midnight / dawn) --------------- */
+.td-card {
+  position: absolute;
+  width: 56px; height: 56px;
+  margin: -28px 0 0 -28px;      /* centered on the (left,top) the JS writes */
+  border-radius: 50%;
+  border: 2px solid rgba(214, 195, 148, .8);
+  background: rgba(14, 15, 18, .92);
+  color: #e6dcc2;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.td-card svg { width: 30px; height: 30px; display: block; }
+.td-card:hover {
+  background: rgba(42, 38, 26, .95);
+  border-color: #f0d68c;
+  box-shadow: 0 0 14px rgba(240, 214, 140, .35);
+}
+.td-card:active { background: rgba(58, 50, 30, .95); }
+
+/* ---- centre readout ---------------------------------------------------- */
+.td-center {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 340px;
+  margin-left: -170px;
+  transform: translateY(-50%);
+  text-align: center;
+  pointer-events: none;
+}
+.td-glyph { height: 46px; margin-bottom: 10px; color: #efe6cd; }
+.td-glyph svg { width: 46px; height: 46px; }
+.td-trans {
+  font-size: 34px;
+  letter-spacing: 2px;
+  color: #f3ecd9;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .9);
+}
+.td-trans .td-arrow { color: #d9c58f; font-size: 24px; padding: 0 8px; }
+.td-date {
+  margin-top: 8px;
+  font-size: 17px;
+  letter-spacing: 1px;
+  color: #b9b19c;
+}
+/* refusal / result line — hidden until it has something honest to say */
+.td-note {
+  margin-top: 12px;
+  font-size: 16px;
+  min-height: 20px;
+  color: #e79a9a;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+.td-note.show { opacity: 1; }
+.td-note.ok { color: #9edc96; }
+
+/* one-shot jump flash on the centre when a wait lands */
+.td-center.td-jumped .td-trans { text-shadow: 0 0 18px rgba(240, 214, 140, .9); }
+
+/* ---- footer ------------------------------------------------------------ */
+.td-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 14px;
+}
+.td-btn {
+  font: inherit;
+  font-size: 18px;
+  letter-spacing: 1px;
+  color: #f0e8d2;
+  background: rgba(20, 22, 26, .92);
+  border: 1px solid rgba(214, 195, 148, .55);
+  border-radius: 999px;
+  padding: 10px 26px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+.td-btn:hover { background: rgba(46, 41, 27, .95); border-color: #f0d68c; box-shadow: 0 0 12px rgba(240, 214, 140, .25); }
+.td-btn:active { background: rgba(60, 52, 32, .95); }
+.td-btn[disabled] { opacity: .45; cursor: default; box-shadow: none; }
+.td-btn.td-confirm { border-color: #e3cf96; color: #fff; }
+.td-btn.td-mode.is-days { background: rgba(46, 41, 27, .95); border-color: #f0d68c; }
+.td-btn.td-x { padding: 10px 16px; }
+
+/* ---- the move/size chip row -------------------------------------------- */
+.td-tools {
+  position: absolute;
+  left: 50%; top: -56px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  opacity: .35;
+  transition: opacity 140ms ease;
+}
+.td-frame:hover .td-tools { opacity: 1; }
+.td-tool {
+  font: inherit;
+  font-size: 15px;
+  color: #d8d2c0;
+  background: rgba(14, 15, 18, .9);
+  border: 1px solid rgba(214, 195, 148, .4);
+  border-radius: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.td-tool:hover { border-color: #f0d68c; color: #fff; }
+.td-tool.td-grip { cursor: grab; }
+.td-frame.td-moving .td-tool.td-grip { cursor: grabbing; }
+
+/* ---- hint line ---------------------------------------------------------- */
+.td-hint {
+  margin-top: 10px;
+  text-align: center;
+  font-size: 14px;
+  color: #948d7b;
+  letter-spacing: .5px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+}

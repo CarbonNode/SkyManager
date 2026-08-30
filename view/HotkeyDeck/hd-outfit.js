@@ -259,6 +259,8 @@
     if (!url) return h('span', { class: 'hdo-plate', 'aria-hidden': 'true' }, glyph);
     var box = h('span', { class: 'hdo-plate is-face', 'aria-hidden': 'true' });
     var img = h('img', { class: 'hdo-face-img', src: url, alt: '' });
+    /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
+    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, url);
     img.addEventListener('error', function () {
       box.classList.remove('is-face');
       if (img.parentNode) img.parentNode.removeChild(img);

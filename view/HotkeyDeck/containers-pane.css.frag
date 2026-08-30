@@ -125,7 +125,9 @@
 /* ---------- list ---------- */
 
 #ct-list {
-  flex: 1; min-height: 74px;
+  /* 74px was less than ONE row — no floor at all. 180px keeps three rows on
+     screen however tall the Drop-box card grows (see #cs-cards' cap below). */
+  flex: 1; min-height: 180px;
   overflow-y: auto; overflow-x: hidden;
   display: flex; flex-direction: column; gap: 4px;
   padding-right: 2px;
@@ -317,7 +319,7 @@
   padding: 5px;
   background: linear-gradient(180deg, #1c1c24, #16161d);
   border: 1px solid #c9a24b77; border-radius: 8px;
-  box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
   animation: fadeIn 110ms ease;
 }
 .ct-ctx-head {
@@ -370,11 +372,11 @@
    horizontally, category and nest under should be typable". The width and
    the type sizes here override the compact popup defaults above; the small
    anchored menus (the ★ Mark chooser) keep theirs by not carrying `.wide`. */
-#ct-ctx { max-height: calc(100vh - 20px); overflow-y: auto; }
+#ct-ctx { max-height: calc((100vh - 20px) / var(--ui-scale, 1)); overflow-y: auto; }
 /* Fixed width, but never wider than the screen. `min-width: 0` matters:
    the base rule's min-width would otherwise beat max-width on a narrow
    viewport and push the menu off the edge. */
-#ct-ctx.wide { width: 520px; min-width: 0; max-width: calc(100vw - 24px); padding: 8px; }
+#ct-ctx.wide { width: 520px; min-width: 0; max-width: calc((100vw - 24px) / var(--ui-scale, 1)); padding: 8px; }
 #ct-ctx .ct-ctx-head { font-size: 13.5px; }
 #ct-ctx .ct-ctx-where { font-size: 11.5px; }
 #ct-ctx .ct-ctx-item { font-size: 13.5px; padding: 9px 10px; }
@@ -498,7 +500,7 @@
   padding: 5px;
   background: linear-gradient(180deg, #1c1c24, #16161d);
   border: 1px solid #c9a24b77; border-radius: 8px;
-  box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
   animation: fadeIn 110ms ease;
 }
 .ct-npc-searchwrap { position: relative; display: flex; align-items: center; margin: 3px 3px 5px; }
@@ -555,7 +557,7 @@
   background: linear-gradient(180deg, #1a1a21, #101015);
   border: 1px solid #c9a24b77; border-radius: 12px;
   padding: 24px 22px 18px;
-  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   animation: capturePulse 1.4s ease-in-out infinite;
 }
 .ct-capture-title { font-size: 15.5px; color: #ecd9a0; margin-bottom: 8px; }
@@ -564,7 +566,9 @@
 /* ---------- fallback toast (only used when the host page has no #toast) */
 
 #ct-toast {
-  position: fixed; left: 50%; bottom: 6%; transform: translateX(-50%); z-index: 80;
+  position: fixed; left: 50%; bottom: 6%;
+  transform: translateX(-50%) scale(var(--ui-scale, 1)); transform-origin: bottom center;
+  z-index: 80;
   background: #16161c; border: 1px solid #c9a24b55; border-radius: 8px;
   color: #e8e4da; font-size: 13px; padding: 9px 18px;
   box-shadow: 0 8px 24px rgba(0,0,0,.5);
@@ -794,7 +798,7 @@
 .ct-art-frame {
   position: relative; overflow: hidden; flex: none;
   border-radius: 10px; background: #0c0c10;
-  border: 1px solid #3a3a44; box-shadow: 0 18px 44px rgba(0,0,0,.6);
+  border: 1px solid #3a3a44; box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
 }
 /* the row draws this square as a circle — show the mask so the framing is
    honest rather than a surprise once the overlay closes */
@@ -831,3 +835,766 @@
   .ct-art-hint { display: none; }
   .ct-art-val { min-width: 0; }
 }
+
+/* ===================================================================== *
+ *  Container Auto-Sort (cs-) + Auto-Loot (al-) — a second feature living
+ *  inside the Containers tab. All selectors cs-/al- prefixed; the deck's
+ *  own literals (#c9a24b gold / #e8e4da text / #2e2e36 lines / 140ms ease).
+ *  No token under 12px; every control carries hover/active/disabled.
+ * ===================================================================== */
+
+/* ---------- shared card + chip + stepper primitives ---------- */
+.cs-card, .al-inner {
+  background: #16161d; border: 1px solid #2e2e36; border-radius: 9px;
+  padding: 11px 13px; margin-bottom: 10px;
+  animation: fadeIn 140ms ease;
+}
+#cs-cards { flex: none; }
+#al-card { flex: none; padding: 0 14px 12px; }
+
+.cs-card-head, .al-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 9px; }
+.cs-card-title, .al-title { font-size: 14px; letter-spacing: .3px; color: #d9c48a; font-weight: 600; }
+.cs-card-sub { font-size: 12px; color: #6f6a5e; }
+.cs-field-lbl { display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: .3px; color: #b9b4a8; margin-bottom: 6px; }
+.cs-lbl, .al-lbl { flex: none; font-size: 12.5px; color: #b9b4a8; letter-spacing: .3px; }
+.cs-flex, .al-flex { flex: 1 1 auto; }
+.cs-hint { font-size: 12px; color: #6f6a5e; font-style: italic; }
+.cs-band, .al-readout { font-size: 12.5px; color: #d9c48a; margin-left: 4px; }
+
+.cs-chip {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  font-family: inherit; font-size: 12.5px; color: #b9b4a8;
+  background: #12121a; border: 1px solid #3a3a44; border-radius: 999px;
+  padding: 6px 12px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease, transform 100ms ease;
+}
+.cs-chip:hover { background: rgba(201,162,75,.08); color: #ece7db; border-color: #c9a24b55; }
+.cs-chip:active { transform: translateY(1px); }
+.cs-chip.on { color: #1a1a20; background: #c9a24b; border-color: #c9a24b; font-weight: 600; }
+.cs-chip:focus-visible { outline: 2px solid #c9a24b66; outline-offset: 1px; }
+.cs-chip.cs-enable { min-width: 88px; justify-content: center; }
+.cs-chip.al-cat.on { background: #9bbf7c; border-color: #9bbf7c; color: #10160b; }
+
+.cs-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.cs-chip-grp { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cs-grp-lbl {
+  flex: none; font-size: 11.5px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
+  margin-right: 2px;
+}
+
+.cs-step { display: inline-flex; align-items: center; gap: 3px; flex: none; }
+.cs-step-btn {
+  width: 28px; height: 28px; flex: none;
+  font-family: inherit; font-size: 13px; line-height: 1; color: #d9c48a;
+  background: #16161d; border: 1px solid #3a3a44; border-radius: 6px; cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.cs-step-btn:hover { background: rgba(201,162,75,.10); border-color: #c9a24b55; }
+.cs-step-btn:active { transform: translateY(1px); }
+.cs-step-val {
+  width: 62px; text-align: center;
+  font-family: Consolas, "Courier New", monospace; font-size: 12.5px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px; padding: 6px 4px; outline: none;
+}
+.cs-step-val:focus { border-color: #c9a24b77; box-shadow: 0 0 0 2px rgba(201,162,75,.08); }
+
+/* ---------- respawn-safety chip ---------- */
+.cs-safe {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font-size: 12px; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+}
+.cs-safe.ok { color: #9bbf7c; background: rgba(120,170,90,.10); border: 1px solid rgba(120,170,90,.34); }
+.cs-safe.warn { color: #e0b060; background: rgba(200,140,50,.10); border: 1px solid rgba(200,140,50,.4); }
+.cs-safe.warn.ack { color: #c99a4b; opacity: .9; }
+.cs-safe-why { color: inherit; opacity: .8; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.cs-tag-anyway {
+  font-family: inherit; font-size: 11.5px; color: #1a1a20; background: #e0b060;
+  border: 0; border-radius: 999px; padding: 3px 9px; cursor: pointer; margin-left: 2px;
+  transition: background 120ms ease;
+}
+.cs-tag-anyway:hover { background: #f0c274; }
+
+/* ---------- per-mark rule reveal ---------- */
+.cs-rulebtn, .cs-dropbtn {
+  flex: none; font-family: inherit; font-size: 12px; color: #8b8678;
+  background: rgba(255,255,255,.03); border: 1px solid #33333d; border-radius: 6px;
+  padding: 5px 9px; cursor: pointer; white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.cs-rulebtn:hover, .cs-dropbtn:hover { background: rgba(201,162,75,.08); color: #ecd9a0; border-color: #c9a24b55; }
+.cs-rulebtn.on, .cs-dropbtn.on { color: #1a1a20; background: #c9a24b; border-color: #c9a24b; font-weight: 600; }
+.cs-rulebtn.active:not(.on) { color: #d9c48a; border-color: #c9a24b55; }
+.cs-rule-flag { color: #c9a24b; }
+.cs-inbox-flag { color: #9bbf7c; }
+
+.cs-rowgroup { display: flex; flex-direction: column; }
+.cs-rule-wrap { animation: fadeIn 140ms ease; }
+.cs-rule {
+  margin: 3px 0 6px 8px;
+  background: #131319; border: 1px solid #2e2e36; border-left: 2px solid #c9a24b77; border-radius: 8px;
+  padding: 11px 12px; display: flex; flex-direction: column; gap: 10px;
+}
+.cs-rule-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.cs-field { display: flex; flex-direction: column; gap: 6px; }
+.cs-field.cs-row-inline { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px; }
+.cs-typefilter, .cs-kw-add {
+  width: 100%; font-family: inherit; font-size: 12.5px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px; padding: 7px 9px; outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.cs-typefilter::placeholder, .cs-kw-add::placeholder { color: #6b675e; }
+.cs-typefilter:focus, .cs-kw-add:focus { border-color: #c9a24b77; box-shadow: 0 0 0 2px rgba(201,162,75,.08); }
+.cs-kw {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  font-size: 12px; color: #b9a06a; background: rgba(201,162,75,.09);
+  border: 1px solid rgba(201,162,75,.28); border-radius: 999px; padding: 3px 9px;
+}
+.cs-kw-x { border: 0; background: transparent; color: inherit; opacity: .7; font-size: 11px; cursor: pointer; padding: 0 0 0 2px; }
+.cs-kw-x:hover { opacity: 1; color: #e0b0b0; }
+
+.cs-rule-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cs-preview { font-size: 12px; color: #d9c48a; }
+.cs-preview.muted { color: #6f6a5e; font-style: italic; }
+.cs-preview.hit { color: #9bbf7c; }
+.cs-unload {
+  flex: none; font-family: inherit; font-size: 12.5px; letter-spacing: .3px;
+  color: #d9c48a; background: rgba(201,162,75,.08);
+  border: 1px solid #c9a24b77; border-radius: 7px; padding: 7px 13px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.cs-unload:hover:not(:disabled) { background: rgba(201,162,75,.16); color: #ecd9a0; border-color: #c9a24b; }
+.cs-unload:active:not(:disabled) { transform: translateY(1px); }
+.cs-unload:disabled, .cs-unload.disabled { color: #6f6a5e; border-color: #33333d; background: transparent; cursor: not-allowed; }
+
+/* ---------- Drop-box card ---------- */
+.cs-inbox { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 9px; }
+.cs-inbox-name { font-size: 13.5px; color: #ece7db; font-weight: 600; }
+.cs-empty {
+  font-size: 12.5px; color: #6f6a5e; line-height: 1.5;
+  background: rgba(255,255,255,.02); border: 1px dashed #33333d; border-radius: 7px;
+  padding: 10px 12px; margin-bottom: 9px;
+}
+.cs-mini {
+  flex: none; font-family: inherit; font-size: 11.5px; color: #8b8678;
+  background: transparent; border: 1px solid #33333d; border-radius: 5px; padding: 4px 9px; cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease; margin-left: 6px;
+}
+.cs-mini:hover { color: #ecd9a0; border-color: #c9a24b55; background: rgba(201,162,75,.06); }
+.cs-sort-now {
+  width: 100%; font-family: inherit; font-size: 13px; letter-spacing: .3px;
+  color: #1a1a20; background: #c9a24b; border: 1px solid #c9a24b; border-radius: 8px;
+  padding: 11px 12px; cursor: pointer; font-weight: 600;
+  transition: background 120ms ease, transform 100ms ease;
+}
+.cs-sort-now:hover:not(:disabled) { background: #d9b45c; }
+.cs-sort-now:active:not(:disabled) { transform: translateY(1px); }
+.cs-sort-now:disabled, .cs-sort-now.disabled {
+  color: #6f6a5e; background: transparent; border-color: #33333d; cursor: not-allowed; font-weight: 400;
+}
+
+/* pin routing */
+.cs-pins { margin-top: 11px; padding-top: 10px; border-top: 1px solid #26262d; }
+.cs-pin {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  font-size: 12px; color: #cdc7b8; background: #12121a;
+  border: 1px solid #3a3a44; border-radius: 999px; padding: 4px 11px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cs-pin.broken { color: #e0b0b0; border-color: #a5556588; }
+.cs-pinpick { margin-top: 8px; }
+.cs-pinpick-row { display: flex; gap: 8px; align-items: center; }
+.cs-select {
+  flex: none; min-width: 130px; font-family: inherit; font-size: 12.5px; color: #b9b4a8;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px; padding: 7px 8px; cursor: pointer; outline: none;
+}
+.cs-select:focus { border-color: #c9a24b77; }
+
+/* ---------- csPicker: the typable combobox that replaced every <select> ----
+   ⛔ Ultralight RENDERS a native <select> but never OPENS it, so all four of
+   this pane's selects were dead in game. The trigger looks like the old field;
+   the body opens INLINE below it (never absolutely positioned) so it cannot
+   hang outside the scrolling card it lives in. Reuses .cs-cand-list/.cs-cand
+   for the rows, so the list already scrolls and has a scrollbar. */
+.cs-pick { flex: 1 1 auto; min-width: 150px; display: flex; flex-direction: column; gap: 6px; }
+.cs-pick.cs-pick-wide { min-width: 180px; }
+.cs-pick-btn {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px;
+  font-family: inherit; font-size: 12.5px; text-align: left; color: #b9b4a8;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px;
+  padding: 7px 10px; cursor: pointer; outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease, color 140ms ease;
+}
+.cs-pick-btn:hover { color: #ece7db; border-color: #c9a24b55; }
+.cs-pick-btn:focus-visible { border-color: #c9a24b77; box-shadow: 0 0 0 2px rgba(201,162,75,.08); }
+.cs-pick-btn.open { border-color: #c9a24b77; color: #ece7db; }
+.cs-pick-cur { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-pick-cur.none { color: #6b675e; }
+.cs-pick-caret { flex: none; font-size: 11px; color: #6f6a5e; }
+.cs-pick-btn.open .cs-pick-caret { color: #c9a24b; }
+.cs-pick-body { display: flex; flex-direction: column; gap: 0; }
+.cs-pick-body.hidden { display: none; }
+.cs-pick-in {
+  width: 100%; font-family: inherit; font-size: 12.5px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #c9a24b77; border-radius: 6px; padding: 7px 9px; outline: none;
+}
+.cs-pick-in::placeholder { color: #6b675e; }
+.cs-pick-list { max-height: 200px; }
+.cs-cand.hi { background: rgba(201,162,75,.10); color: #ece7db; border-color: #c9a24b44; }
+/* A picker grows downward, so its label must sit at the TOP of the row —
+   centred, it slides to the middle of the open list and reads as unrelated. */
+.ct-ctx-field.pick { align-items: flex-start; }
+.ct-ctx-field.pick > .ct-ctx-lbl { padding-top: 10px; }
+.cs-cand-list { margin-top: 6px; max-height: 210px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+.cs-cand-list::-webkit-scrollbar { width: 10px; }
+.cs-cand-list::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+.cs-cand {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  font-family: inherit; font-size: 12.5px; text-align: left; color: #b9b4a8;
+  background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 7px 9px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.cs-cand:hover { background: rgba(201,162,75,.08); color: #ece7db; border-color: #c9a24b44; }
+.cs-cand.cur { color: #d9c48a; }
+.cs-cand-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-cand-name mark { background: transparent; color: #c9a24b; font-weight: 600; }
+.cs-cand-plug { flex: none; font-size: 11px; color: #6f6a5e; }
+.cs-cand-plug.warn { color: #e0b060; }
+.cs-cand-empty { padding: 10px; font-size: 12px; color: #6f6a5e; text-align: center; }
+
+/* distribution summary */
+.cs-result {
+  margin-top: 11px; padding: 10px 11px; border-radius: 7px;
+  background: rgba(255,255,255,.02); border: 1px solid #26262d;
+}
+.cs-result-head { font-size: 12.5px; color: #d9c48a; margin-bottom: 6px; font-weight: 600; }
+.cs-result-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; color: #cdc7b8; padding: 2px 0; }
+.cs-result-to { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-result-n { flex: none; font-family: Consolas, "Courier New", monospace; color: #9bbf7c; }
+.cs-result-residue { font-size: 12px; color: #b9a06a; margin-top: 4px; }
+.cs-result-skip { font-size: 12px; color: #e0b0b0; margin-top: 3px; }
+
+/* ---------- Auto-Loot card ---------- */
+.al-master {
+  flex: 1 1 auto; min-width: 200px;
+  font-family: inherit; font-size: 13px; letter-spacing: .3px;
+  color: #b9b4a8; background: #12121a; border: 1px solid #3a3a44; border-radius: 8px;
+  padding: 10px 14px; cursor: pointer; text-align: center;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease, transform 100ms ease;
+}
+.al-master:hover { background: rgba(201,162,75,.08); color: #ece7db; border-color: #c9a24b55; }
+.al-master:active { transform: translateY(1px); }
+.al-master.on { color: #10160b; background: #9bbf7c; border-color: #9bbf7c; font-weight: 600; }
+.al-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 9px; }
+.al-cats-row { align-items: flex-start; }
+.al-note { flex: none; font-size: 12px; color: #6f6a5e; letter-spacing: .3px; }
+.al-warn {
+  margin-top: 7px; font-size: 12px; color: #e0b060;
+  background: rgba(200,140,50,.08); border: 1px solid rgba(200,140,50,.34); border-radius: 6px; padding: 7px 10px;
+}
+.al-seg { display: inline-flex; gap: 0; border: 1px solid #3a3a44; border-radius: 8px; overflow: hidden; }
+.al-seg-btn {
+  font-family: inherit; font-size: 12.5px; color: #b9b4a8; background: #12121a;
+  border: 0; border-right: 1px solid #3a3a44; padding: 7px 14px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.al-seg-btn:last-child { border-right: 0; }
+.al-seg-btn:hover { background: rgba(201,162,75,.08); color: #ece7db; }
+.al-seg-btn.on { color: #1a1a20; background: #c9a24b; font-weight: 600; }
+.al-cats { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.al-scan {
+  flex: none; font-family: inherit; font-size: 12.5px; letter-spacing: .3px;
+  color: #d9c48a; background: rgba(201,162,75,.08);
+  border: 1px solid #c9a24b77; border-radius: 7px; padding: 8px 14px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.al-scan:hover { background: rgba(201,162,75,.16); color: #ecd9a0; border-color: #c9a24b; }
+.al-scan:active { transform: translateY(1px); }
+.al-live { margin-top: 9px; font-size: 12px; color: #6f6a5e; letter-spacing: .3px; }
+
+/* ⚠ `.al-bind`, the whole option filter (`.al-find*`, `.al-nomatch`) and the
+   places heading `.al-rule-t` are NOT here — they live in the own-sheet
+   `containers-autoloot.css`, which the deck loads directly.
+
+   This fragment is not a stylesheet the game reads: it has to be hand-merged
+   into app.css, and that step was missed on 2026-08-17, so those rules shipped
+   to nobody and the filter's <input>/<button> painted as bare white boxes in
+   Ultralight (Rober, 2026-08-18). Put NEW Auto-Loot rules in that own sheet
+   too, not here — it cannot be dropped by a missed merge. */
+
+/* ---------- per-item rules (deny / allow), 2026-08-16 ---------- */
+.al-rules { margin-top: 14px; padding-top: 13px; border-top: 1px solid #2a2620; }
+.al-rules-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.al-rules-order {
+  font-size: 12px; color: #6f6a5e; letter-spacing: .3px;
+}
+.al-rule-cols { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+
+.al-rule-side {
+  flex: 1 1 300px; min-width: 0;
+  padding: 12px 13px;
+  border-radius: 9px;
+  background: rgba(255,255,255,.02);
+  border: 1px solid #2a2620;
+}
+/* the two sides read as opposites at a glance, not by label alone */
+.al-rule-side.deny  { border-color: #6b3a3a77; }
+.al-rule-side.allow { border-color: #c9a24b55; }
+
+.al-rule-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.al-rule-title { font-size: 14px; letter-spacing: .3px; color: #d8d2c4; }
+.al-rule-side.deny  .al-rule-title { color: #d99a9a; }
+.al-rule-side.allow .al-rule-title { color: #e0c682; }
+.al-rule-n { font-size: 12px; color: #6f6a5e; white-space: nowrap; }
+.al-rule-sub { margin-top: 3px; font-size: 12px; color: #7d7768; line-height: 1.4; }
+
+.al-rule-rows { margin-top: 9px; display: flex; flex-direction: column; gap: 5px; max-height: 210px; overflow-y: auto; }
+.al-rule-empty { font-size: 12px; color: #6f6a5e; line-height: 1.45; padding: 4px 0; }
+
+.al-rule-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 6px 9px; border-radius: 7px;
+  background: rgba(0,0,0,.22); border: 1px solid #26221c;
+}
+.al-rule-row.word { border-style: dashed; }
+.al-rule-name {
+  flex: 1 1 auto; min-width: 0; font-size: 13px; color: #ded7c7;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.al-rule-src {
+  flex: 0 1 auto; max-width: 42%;
+  font-size: 11.5px; color: #6f6a5e;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.al-rule-x {
+  flex: none; font-family: inherit; font-size: 12px; line-height: 1;
+  color: #8a8274; background: transparent; border: 0; cursor: pointer;
+  padding: 3px 5px; border-radius: 5px;
+  transition: color 120ms ease, background 120ms ease;
+}
+.al-rule-x:hover { color: #e6b3b3; background: rgba(180,80,80,.14); }
+
+.al-rule-add { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.al-rule-find {
+  flex: none; font-family: inherit; font-size: 12.5px;
+  color: #d9c48a; background: rgba(201,162,75,.08);
+  border: 1px solid #c9a24b77; border-radius: 7px; padding: 7px 12px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.al-rule-find:hover { background: rgba(201,162,75,.16); color: #ecd9a0; border-color: #c9a24b; }
+.al-rule-find:active { transform: translateY(1px); }
+.al-rule-word-in {
+  flex: 1 1 130px; min-width: 0;
+  font-family: inherit; font-size: 12.5px; color: #ded7c7;
+  background: rgba(0,0,0,.3); border: 1px solid #2f2a22; border-radius: 7px;
+  padding: 7px 10px; outline: none;
+  transition: border-color 120ms ease;
+}
+.al-rule-word-in::placeholder { color: #635e54; }
+.al-rule-word-in:focus { border-color: #c9a24b88; }
+
+/* exclusive mode — loud when armed, because it silences the categories above */
+.al-only-row { margin-top: 12px; align-items: center; gap: 10px; flex-wrap: wrap; }
+.al-only-row.armed {
+  padding: 8px 10px; border-radius: 8px;
+  background: rgba(201,162,75,.07); border: 1px solid #c9a24b55;
+}
+.al-only-note { font-size: 12px; color: #7d7768; }
+.al-only-row.armed .al-only-note { color: #d9c48a; }
+
+.al-weight-row { margin-top: 10px; align-items: center; gap: 9px; flex-wrap: wrap; }
+.al-weight-lbl { font-size: 12.5px; color: #7d7768; }
+.al-weight-live { font-size: 12px; color: #e0a86a; letter-spacing: .3px; }
+
+/* per-category gold floor popover (right-click a category chip) */
+.al-floor-pop {
+  margin-top: 10px; padding: 12px 13px;
+  border-radius: 9px; background: #16130f; border: 1px solid #3a332a;
+  box-shadow: 0 10px 26px rgba(0,0,0,.5);
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+}
+.al-floor-t { font-size: 13.5px; color: #ded7c7; }
+.al-floor-s { font-size: 12px; color: #7d7768; }
+.al-floor-btns { display: flex; gap: 8px; }
+.al-floor-ok, .al-floor-cancel {
+  font-family: inherit; font-size: 12.5px; padding: 7px 14px;
+  border-radius: 7px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.al-floor-ok {
+  color: #d9c48a; background: rgba(201,162,75,.1); border: 1px solid #c9a24b77;
+}
+.al-floor-ok:hover { background: rgba(201,162,75,.2); color: #ecd9a0; }
+.al-floor-cancel {
+  color: #8a8274; background: transparent; border: 1px solid #2f2a22;
+}
+.al-floor-cancel:hover { color: #ded7c7; border-color: #4a4238; }
+
+/* Finder-backed pin route row (auto-sort) */
+.cs-pinroute { display: flex; align-items: center; gap: 9px; margin-top: 9px; flex-wrap: wrap; }
+
+/* ---------- narrow (deck 640px floor) ---------- */
+@media (max-width: 620px) {
+  #al-card { padding: 0 10px 10px; }
+  /* one column: side-by-side deny/allow squeezes both names to nothing */
+  .al-rule-cols { flex-direction: column; }
+  .al-rule-side { flex: 1 1 auto; }
+  .al-rule-src { max-width: 34%; }
+  .al-rules-order { width: 100%; }
+  .cs-card, .al-inner { padding: 10px 11px; }
+  .cs-step-val { width: 52px; }
+  .cs-grp-lbl { width: 100%; }
+  .al-master { min-width: 0; }
+  .al-seg-btn { padding: 7px 10px; max-width: 150px; }
+  .cs-safe-why { max-width: 120px; }
+  .cs-rulebtn, .cs-dropbtn { padding: 5px 7px; }
+}
+
+/* ==================== Containers: two pages + Auto-Loot polish (v3, 2026-08-16) ====================
+   THE OVERLAP BUG THIS FIXES. #ct-pane used to stack the container roster and
+   the Auto-Loot card in one flex column. #ct-main has no overflow of its own and
+   its children carry hard minimums (#cs-cards ~290px + #ct-toolbar 48px +
+   #ct-list's `min-height:74px` floor + #ct-foot ~50px + padding ~= 484px), so
+   once Auto-Loot grew past ~700px the roster no longer fit in what was left and
+   its content OVERFLOWED #ct-body, painting on top of the card below — the
+   containers search bar landing inside the Auto-Loot header.
+   Fix is structural: two mutually exclusive full-height pages, so neither can
+   squeeze the other. Plus `#ct-main { overflow: hidden }` below, which kills the
+   whole CLASS of bug regardless of what lands in that column later. */
+
+/* ---------- page switch ---------- */
+#ct-modes {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 11px 14px 0;
+}
+.ct-mode {
+  display: inline-flex; align-items: center; gap: 9px;
+  font-family: inherit; font-size: 14px; letter-spacing: .3px;
+  color: #b9b4a8; background: #14141b;
+  border: 1px solid #2e2e36; border-radius: 9px;
+  padding: 9px 15px; cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease, transform 100ms ease;
+}
+.ct-mode:hover { background: rgba(201,162,75,.08); color: #ece7db; border-color: #c9a24b55; }
+.ct-mode:active { transform: translateY(1px); }
+.ct-mode:focus-visible { outline: 2px solid #c9a24b66; outline-offset: 2px; }
+.ct-mode.on { color: #1a1a20; background: #c9a24b; border-color: #c9a24b; font-weight: 600; }
+/* The switch glyphs are our own gold linework, not emoji (UI rule, 2026-08-16).
+   Size is load-bearing, not taste: Ultralight rasterises an <img> at its LAYOUT
+   size, so a 15px icon is ~15 real pixels of art and thin gold strokes collapse
+   to grey mush — the same trap the Faith card paid for with 38px marks. 26px is
+   where these two glyphs start reading (measured against the shipped set at
+   16/20/26/40). The span keeps a font-size so the ◆ fallback, which replaces the
+   <img> if the file is ever missing, is legible on its own. */
+.ct-mode-ic { font-size: 15px; line-height: 1; flex: none; display: inline-flex;
+              align-items: center; justify-content: center; width: 26px; height: 26px; }
+.ct-mode-ic img { width: 26px; height: 26px; display: block; }
+/* The ACTIVE page is a solid gold plate, and these glyphs are gold — so the icon
+   would sit gold-on-gold and disappear. Fixed with a dark disc behind it, which
+   is the same device .ct-mode.on .ct-mode-n already uses for its pill, and NOT
+   with a CSS filter: filter support is unproven under Ultralight, and a filter
+   that silently no-ops would leave the active tab's icon invisible. */
+.ct-mode.on .ct-mode-ic { background: rgba(0,0,0,.26); border-radius: 999px; }
+.ct-mode-lbl { white-space: nowrap; }
+/* count / state pill riding the switch, so "is Auto-Loot running?" is answerable
+   without opening the page at all */
+.ct-mode-n, .ct-mode-state {
+  flex: none; font-size: 12px; letter-spacing: .3px; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  background: #0e0e14; color: #8d8778; border: 1px solid #2e2e36;
+}
+.ct-mode.on .ct-mode-n, .ct-mode.on .ct-mode-state { background: rgba(0,0,0,.22); color: #33291a; border-color: transparent; }
+.ct-mode-state.live { background: #9bbf7c; color: #10160b; border-color: #9bbf7c; }
+.ct-mode.on .ct-mode-state.live { background: #1f3312; color: #b6dd97; border-color: transparent; }
+
+/* ---------- the two pages ---------- */
+#ct-pane.al-page #ct-body { display: none; }
+#ct-pane:not(.al-page) #al-card { display: none; }
+/* HARDENING: the roster column may never spill out of #ct-body again. */
+#ct-main { overflow: hidden; }
+
+/* Auto-Loot is now a full-height page that scrolls itself. */
+#al-card {
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  padding: 12px 16px 18px;
+}
+#al-card::-webkit-scrollbar { width: 10px; }
+#al-card::-webkit-scrollbar-track { background: transparent; }
+#al-card::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+#al-card::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+/* the page owns the padding now — the inner wrapper stops being a bordered card */
+#ct-pane.al-page .al-inner {
+  background: transparent; border: 0; border-radius: 0;
+  padding: 0; margin: 0;
+}
+
+/* ---------- hero: title · master · one-shot ---------- */
+.al-hero {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 4px 0 14px;
+}
+.al-hero .al-title { font-size: 17px; letter-spacing: .4px; }
+.al-hero-sub { flex: 1 1 220px; min-width: 0; font-size: 13px; color: #7d7768; letter-spacing: .3px; }
+#ct-pane.al-page .al-master {
+  font-size: 14px; padding: 11px 20px; border-radius: 9px; min-width: 250px;
+}
+#ct-pane.al-page .al-scan { font-size: 13.5px; padding: 11px 17px; }
+
+/* ---------- sections ---------- */
+.al-sec {
+  background: #16161d; border: 1px solid #2e2e36; border-radius: 10px;
+  padding: 13px 15px 15px; margin-bottom: 12px;
+  animation: fadeIn 140ms ease;
+}
+.al-sec-h {
+  display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap;
+  margin-bottom: 3px;
+}
+.al-sec-t {
+  font-size: 12px; letter-spacing: 1.1px; text-transform: uppercase;
+  color: #8d8778; font-weight: 600;
+}
+.al-sec-s { font-size: 12.5px; color: #6f6a5e; letter-spacing: .3px; }
+/* two sections side by side once there is room — his "use the screen space" rule */
+.al-grid { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.al-grid > .al-sec { flex: 1 1 380px; min-width: 0; margin-bottom: 0; }
+.al-grid { margin-bottom: 12px; }
+
+/* nothing under 13px on this page (the no-small-text rule) */
+#ct-pane.al-page .al-lbl,
+#ct-pane.al-page .cs-lbl { font-size: 13.5px; color: #c2bcae; }
+#ct-pane.al-page .al-note,
+#ct-pane.al-page .al-readout,
+#ct-pane.al-page .al-weight-lbl { font-size: 13px; color: #8d8778; }
+#ct-pane.al-page .cs-chip { font-size: 13px; padding: 8px 13px; }
+#ct-pane.al-page .al-seg-btn { font-size: 13.5px; padding: 9px 17px; }
+#ct-pane.al-page .al-live { font-size: 13px; }
+#ct-pane.al-page .al-rules-order { font-size: 12.5px; }
+
+/* the pick-up grid gets room to breathe rather than wrapping tight to a label */
+.al-cats-row { align-items: flex-start; }
+#ct-pane.al-page .al-cats { gap: 8px; }
+
+/* colour law, stated so it stays consistent:
+   GREEN  = loot is flowing (master on, a category will be taken)
+   GOLD   = an option is enabled (safety guards, toasts, modes)
+   Both already existed; this comment is what keeps them from drifting. */
+
+/* ---------- narrow (deck 640px floor) ---------- */
+@media (max-width: 620px) {
+  #ct-modes { padding: 9px 10px 0; gap: 6px; }
+  .ct-mode { padding: 8px 11px; font-size: 13.5px; gap: 7px; }
+  .ct-mode-ic { font-size: 14px; width: 22px; height: 22px; }
+  .ct-mode-ic img { width: 22px; height: 22px; }
+  #al-card { padding: 10px 11px 14px; }
+  .al-sec { padding: 11px 12px 13px; }
+  .al-grid > .al-sec { flex: 1 1 100%; }
+  #ct-pane.al-page .al-master { min-width: 0; width: 100%; }
+  .al-hero { gap: 10px; }
+}
+
+/* .al-rules is now an .al-sec too (it was a bare block with its own top rule).
+   Neutralise the old separator so the section doesn't draw a line inside its
+   own border. */
+.al-sec.al-rules { margin-top: 0; border-top: 0; padding-top: 13px; }
+.al-rule-cols { margin-top: 10px; }
+.al-only-row { margin-top: 12px; }
+
+/* No token under 12px anywhere in the Containers tab (standing UI rule). */
+.ct-rail-count { font-size: 12px; }
+#ct-count { font-size: 12px; }
+.cs-mini { font-size: 12px; }
+.ct-scale-lbl, .ct-scale-val, .ct-scale-reset { font-size: 12px; }
+@media (max-width: 620px) { .ct-scale-lbl { font-size: 12px; } }
+.ct-medal, .ct-icon-btn, #ct-here, .ct-ok-hint, .ct-ok-label { font-size: 12px; }
+.al-rule-src { font-size: 12px; }
+/* Added 2026-08-17. These two are the only tokens the Ultralight probe still
+   caught rendering under 12px (.ct-chev at 10, .ct-sub at 11) — the block above
+   was written from the stylesheet and missed them, which is the difference
+   between auditing the CSS and measuring what the engine drew. */
+.ct-chev { font-size: 12px; }
+.ct-sub { font-size: 12px; }
+
+/* ---------- when it may run + reach shaping (adopted from SmartHarvestSE, 2026-08-17) ----
+   The reach shapers are stacked rows under Range, so "how far" reads as one
+   idea; the town guard is a segment because its four states are an ORDER
+   (smallest place refused, and everything larger with it), not four switches. */
+.al-reach-shape { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.al-reach-shape .al-only-note { flex: 1 1 200px; min-width: 0; }
+.al-seg-towns { flex: none; }
+
+/* ---------- museum rule (LOTD, Auto-Loot "What it picks up", 2026-08-17) ------
+   Laid out like .al-only-row on purpose: same label + control + plain-English
+   note shape, so the two exclusive modes in this card read as one idea. The
+   `off` state greys the segment rather than hiding it, because "you do not have
+   the museum installed" is a more useful answer than a control that vanished. */
+.al-museum-row,
+.al-harvest-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.al-harvest-row.armed { border-color: #c9a24b55; }
+.al-harvest-row .al-only-note { flex: 1 1 260px; min-width: 0; }
+.al-museum-row.armed { border-color: #c9a24b55; }
+.al-museum-row .al-seg.off { opacity: .45; pointer-events: none; }
+.al-museum-row .al-only-note { flex: 1 1 260px; min-width: 0; }
+
+/* ---------- place rules (Auto-Loot "Where it won't run", 2026-08-16) ---------- */
+.al-sec-foot { margin-top: 11px; font-size: 12px; color: #6f6a5e; letter-spacing: .3px; }
+.al-places .al-rule-side.allow { border-color: #3a4a2e55; }
+
+/* ---------- crafting loan + retrieve + child type chips (2026-08-17) ----------
+   The taxonomy split gave the type picker parent/child tokens ("Two-handed"
+   under "Weapons"); a child reads as a narrower choice, not a different kind of
+   control, so it is the same chip one step quieter and inset. */
+.cs-chip-child { margin-left: 14px; opacity: .92; }
+.cs-chip-child::before {
+  content: '·'; color: #6f6a5e; margin-right: 6px;
+}
+.cs-chip-child.on { opacity: 1; }
+
+#cs-loan-card .cs-card-title { color: #d9c48a; }
+.cs-loan-grid { gap: 8px; margin-top: 6px; }
+.cs-loan-master { font-weight: 600; }
+/* The master switch reads its state from a colour, like the auto-loot hero:
+   amber-on-dark when it is doing something, plain when it is not. */
+.cs-loan-master.on { background: #2b2416; border-color: #6b5a2e; color: #f0dda6; }
+#cs-loan-card .cs-empty { margin-top: 10px; }
+#cs-loan-card .cs-hint { margin-top: 10px; }
+
+/* The Ultralight probe caught this one on 2026-08-17: the ✕ on a pin/keyword
+   chip rasterised at 11px, under the standing 12px floor. Measured, not read
+   off the stylesheet — which is why it survived the earlier sweep. */
+.cs-kw-x { font-size: 12px; }
+
+/* ---------- parity pass: gather presets + override editor (2026-08-17) ---------- */
+.cs-gather { gap: 8px; margin-top: 6px; }
+.cs-gather .cs-mini { padding: 7px 11px; }
+.cs-ov-edit { margin-top: 10px; }
+.cs-ov-edit .cs-card-title { font-size: 14px; }
+
+/* ---------- the cards column has to scroll now (2026-08-17) ----------
+   The parity pass (Put it all away + Gather presets + the override editor +
+   the crafting-loan card) pushed #cs-cards past the height of the pane. The
+   2026-08-16 hardening — #ct-main { overflow: hidden } — kept it from PAINTING
+   over the roster, which is why nothing looked broken, but the Ultralight probe
+   showed what it really cost: the toolbar, the whole roster and the "Save types"
+   button were simply cut off the bottom, unreachable. So the column that grows
+   gets its own scroll and a ceiling, exactly as #al-card does on the other page,
+   and the roster keeps its half of the pane whatever lands in the cards later.
+
+   ⚠ 52% did NOT leave the roster half the pane, because #ct-toolbar (33px),
+   #ct-foot (64px) and their margins come out of the OTHER 48% — measured
+   2026-08-19 at 6.2 rows of 220 at 2560x1440 and 2.3 rows at 1280x720. The cap
+   is a percentage of #ct-main's CONTENT box, so it must be set below half for
+   the roster to reach half. 40% + the #ct-list floor below gives 8.4 rows and
+   3.3 rows respectively. The card is a scroller and was already scrolling; the
+   roster was not, which is why the roster wins the argument. */
+#cs-cards {
+  flex: 0 1 auto; max-height: 40%; overflow-y: auto; overflow-x: hidden;
+  padding-right: 4px;
+}
+#cs-cards::-webkit-scrollbar { width: 10px; }
+#cs-cards::-webkit-scrollbar-track { background: transparent; }
+#cs-cards::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 6px; }
+#cs-cards::-webkit-scrollbar-thumb:hover { background: #3c3c46; }
+
+/* Measured at 11.5px by the probe — under the standing 12px floor. */
+.cs-grp-lbl { font-size: 12px; }
+
+/* ==================== couch-distance pass (2026-08-19) ====================
+   Rober plays at 2560x1440 from a sofa. Everything below fixes something that
+   was MEASURED wrong on that screen, not something that looked wrong. */
+
+/* ---- hit-target floor ----
+   Nine visible button classes sat under ~30px, the smallest at 11x14 — and the
+   two smallest are the DELETE affordances: .cs-kw-x removes a rule keyword, a
+   pin route or a type override; .al-rule-x removes an auto-loot rule. The box
+   is set on the BUTTON and the chip that hosts it gives back the padding the
+   button now supplies, so a chip row does not grow taller than the button. */
+.cs-kw-x, .al-rule-x, .ct-icon-btn, .ct-go {
+  min-width: 30px; min-height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.cs-kw { padding: 0 3px 0 11px; }
+.cs-pin { padding: 0 3px 0 11px; }
+.al-rule-x { padding: 0; }
+.cs-step-btn { width: 32px; height: 32px; }
+button.ct-rail-rename { min-width: 32px; min-height: 30px; padding: 5px 4px; }
+.cs-mini, .cs-rulebtn, .cs-dropbtn, .cs-tag-anyway, .cs-chip, .cs-unload, .al-rule-find {
+  min-height: 30px;
+}
+/* .cs-mini and .cs-tag-anyway are text buttons; centre the label now that the
+   box is taller than the line. */
+.cs-mini, .cs-tag-anyway { display: inline-flex; align-items: center; justify-content: center; }
+
+/* ---- the only scroller in the pane with no scrollbar ----
+   .al-rule-rows shows 5 of up to 26 rows and ended flush against the "＋ Find
+   an item…" row with nothing saying more existed. Every sibling scroller here
+   (#ct-list, #ct-rail, .ct-ctx-scroll, .ct-pick-list, .ct-npc-list,
+   .cs-cand-list, #al-card, #cs-cards) already carries this block. */
+.al-rule-rows::-webkit-scrollbar { width: 10px; }
+.al-rule-rows::-webkit-scrollbar-track { background: transparent; }
+.al-rule-rows::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 5px; }
+.al-rule-rows::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+/* Rows are taller now that the ✕ is a real target; keep ~5 of them visible. */
+.al-rule-rows { max-height: 260px; }
+
+/* ---- filter-as-you-type on the four auto-loot rule lists ----
+   43 rules and 20 places in a fixed scroller with only an ADD field meant
+   removing one entry was a blind scroll. Sized like .cs-typefilter so the two
+   read as the same control. */
+.al-rule-filter {
+  width: 100%; margin-top: 9px; font-family: inherit; font-size: 12.5px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px; padding: 8px 10px;
+  outline: none; min-height: 32px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.al-rule-filter::placeholder { color: #6b675e; }
+.al-rule-filter:focus { border-color: #c9a24b77; box-shadow: 0 0 0 2px rgba(201,162,75,.08); }
+.al-rule-name mark { background: transparent; color: #c9a24b; font-weight: 600; }
+
+/* ---- rail filter (31 categories had none) ----
+   The rail itself stops scrolling; #ct-rail-list does instead, so the filter
+   box and ＋ Category stay pinned while the categories move under them. */
+#ct-rail { overflow: hidden; }
+#ct-rail-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
+#ct-rail-list::-webkit-scrollbar { width: 8px; }
+#ct-rail-list::-webkit-scrollbar-track { background: transparent; }
+#ct-rail-list::-webkit-scrollbar-thumb { background: #2e2e36; border-radius: 4px; }
+#ct-rail-list::-webkit-scrollbar-thumb:hover { background: #3d3d47; }
+.ct-rail-filter {
+  flex: none; width: 100%; font-family: inherit; font-size: 12.5px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 6px;
+  padding: 7px 9px; min-height: 32px; outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.ct-rail-filter::placeholder { color: #6b675e; }
+.ct-rail-filter:focus { border-color: #c9a24b77; box-shadow: 0 0 0 2px rgba(201,162,75,.08); }
+.ct-rail-name mark { background: transparent; color: #c9a24b; font-weight: 600; }
+.ct-rail-none { font-size: 12px; color: #6f6a5e; padding: 8px 9px; line-height: 1.4; }
+
+/* ---- the selected category had no style at all ----
+   renderRail() marks the current category `.ct-rail-item.active`, but only
+   `.sel` was ever styled — so which category you were in was invisible, and
+   the rail filter's Enter (which selects the top hit) had no visible effect.
+   Same paint as .sel; kept here rather than merged into the rule above so the
+   pairing is documented where it was found. */
+.ct-rail-item.active {
+  background: linear-gradient(90deg, rgba(201,162,75,.10), transparent);
+  border-color: #c9a24b77; color: #ecd9a0;
+}
+.ct-rail-item.active .ct-rail-count { color: #d9c48a; background: rgba(201,162,75,.10); }
+
+/* ---- #cs-cards' bottom edge ----
+   Two scrollers stack in this column, so the card's last visible row is often
+   sliced mid-control. A hairline says "this panel ends here, scroll it" instead
+   of the cut reading as a broken row. */
+#cs-cards { border-bottom: 1px solid #26262d; padding-bottom: 6px; margin-bottom: 8px; }
+
+/* ---- rows that now host a csPicker ----
+   A picker grows downward when it opens, so a row that centres its children
+   drags the label and the neighbouring button to the middle of the open list.
+   Top-align them; the small padding keeps the label on the trigger's baseline
+   while the picker is closed. */
+.cs-pinroute, .cs-field.cs-row-inline { align-items: flex-start; }
+.cs-pinroute > .cs-hint, .cs-field.cs-row-inline > .cs-hint,
+.cs-field.cs-row-inline > .cs-field-lbl { padding-top: 9px; }
+.cs-pinroute > .cs-mini { margin-top: 1px; }

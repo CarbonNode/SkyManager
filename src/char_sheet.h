@@ -35,7 +35,47 @@
 //   * effects            player->AsMagicTarget()->GetActiveEffectList(): each
 //                        active effect's name, source spell + plugin, magnitude,
 //                        total + remaining seconds, harmful flag, and a
-//                        safe/confirm/locked removal mode.
+//                        safe/confirm/locked removal mode. Since 2026-08-17 also
+//                        `group` (buff|debuff|disease|poison|constant, off the
+//                        source record's spell type — never off its English
+//                        name), `sourceKind` (spell|potion|shout|enchantment|…),
+//                        `av` (the primary actor value's label, "" when it is
+//                        not one we can name) and `hidden` (the record's own
+//                        kHideInUI flag; the row is KEPT and the view folds it,
+//                        because this tab is an inspector).
+//
+// ADDED 2026-08-17 — Rober asked for the sheet at Skyrim Party Sheet's visual
+// bar ("active effects… the equipment has +20, damage and count for arrows, a
+// red number for swords, +x on trinkets"). Four new blocks, all off the SAME
+// snapshot and the SAME single inventory walk (no second pass):
+//
+//   * regen    {has, hp, mag, sta, inCombat} — points per second, derived the
+//              way the engine stores it: max * (kHealRate/100) *
+//              (kHealRateMult/100), and the Magicka/Stamina twins. `inCombat`
+//              rides along because the engine applies a further combat penalty
+//              to HEALTH regen out of a game setting we cannot read, so the
+//              view labels the figure rather than quietly printing a wrong one.
+//   * resist   {armor, phys, fire, frost, shock, magic, poison, disease,
+//              pieces, capMagic, capPhys} — the six resist actor values as
+//              percentages, the raw kDamageResist rating, and what that rating
+//              buys: phys = clamp(rating*0.12 + 3*wornPieces, 0, 80), Skyrim's
+//              own formula (hence the worn-armour census in the inventory walk).
+//              The caps ship with the data so the view draws each meter against
+//              the right full scale (magic tops out at 85, not 100).
+//   * combat   {damage, speed, reach, move, perks, unarmed} — damage from the
+//              ENGINE (GetDamage on the right hand's entry data, which folds in
+//              skill, fortifies and temper), weapon speed × kWeaponSpeedMult,
+//              reach, kSpeedMult, and unspent perk points. `unarmed:true` when
+//              the hand is empty and the figure is kUnarmedDamage.
+//   * equip    nine fixed tiles (head, body, hands, feet, amulet, ring, right,
+//              left, ammo) — never fewer, so the grid cannot reflow as gear is
+//              swapped. Each: {slot, label, kind, name, formId, plugin} plus
+//              armor | damage | count | speed | reach and a `badges` array of
+//              {text, av} read off the piece's OWN enchantment record.
+//              ⚠ A PLAYER-made enchantment lives on the inventory entry, not
+//              the base form, so it shows NO badge — a false negative, which is
+//              the acceptable failure. formId/plugin are the mesh-render
+//              pipeline's identity pair and are absent for a dynamic form.
 //
 // FREEFORM META (class, alignment, title, appearance details, homeland, patron,
 // background, history and portrait) is user-typed and lives in the config

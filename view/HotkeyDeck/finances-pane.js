@@ -262,6 +262,18 @@ window.FinancesPane = (function () {
     const q = ui.filter.trim().toLowerCase();
     return state.market.filter((m) => !q || marketHay(m).includes(q));
   }
+  /* The ledger's search box was on screen and focusable from the day the tab
+     shipped, but renderLedger never consulted ui.filter — so typing into it on
+     this sub-tab silently did nothing, which reads as "search is broken"
+     rather than "search is absent". The haystack is what the row actually
+     shows: the label, the kind chip and the timestamp. */
+  function ledgerHay(e) {
+    return ((e.label || '') + '\n' + (e.kind || 'settle') + '\n' + (e.stamp || '')).toLowerCase();
+  }
+  function visibleLedger() {
+    const q = ui.filter.trim().toLowerCase();
+    return state.ledger.filter((e) => !q || ledgerHay(e).includes(q));
+  }
 
   /* ============================================================ render == */
 
@@ -530,22 +542,27 @@ window.FinancesPane = (function () {
   }
 
   /* ---- Ledger ---- */
-  function ledgerRow(e) {
+  function ledgerRow(e, q) {
     const cls = e.delta > 0 ? 'pos' : e.delta < 0 ? 'neg' : '';
     return h('div', { class: 'fin-led-row' },
       h('span', { class: 'fin-led-kind k-' + (e.kind || 'settle') }, (e.kind || 'settle')),
       h('div', { class: 'fin-led-body' },
-        h('div', { class: 'fin-led-label' }, e.label || '\u2014'),
+        /* highlight the hit the same way every other sub-tab's rows do */
+        h('div', { class: 'fin-led-label' }, nameNodes(e.label || '\u2014', q || '')),
         h('div', { class: 'fin-led-stamp' }, (e.stamp || '') +
           (e.debtAfter ? ' \u00B7 debt ' + fmtGold(e.debtAfter) : ''))),
       h('span', { class: 'fin-led-delta ' + cls }, signed(e.delta) + ' g'));
   }
 
   function renderLedger() {
-    els.count.textContent = String(state.ledger.length);
-    if (!state.ledger.length) return showEmpty('No history yet',
-      'Settle, Buy and Sell all record here — newest first, with your gold before/after.');
-    state.ledger.forEach((e) => els.list.append(ledgerRow(e)));
+    const rows = visibleLedger();
+    const q = ui.filter.trim();
+    els.count.textContent = String(rows.length);
+    if (!rows.length) return showEmpty(
+      q ? 'No entry matches' : 'No history yet',
+      q ? 'Nothing in your history matches “' + q + '”.'
+        : 'Settle, Buy and Sell all record here — newest first, with your gold before/after.');
+    rows.forEach((e) => els.list.append(ledgerRow(e, q)));
   }
 
   function showEmpty(title, subtext) {
@@ -872,7 +889,7 @@ window.FinancesPane = (function () {
     renderBody();
     if (els.count) els.count.textContent = String(
       ui.sub === 'recurring' ? visibleLines().length : ui.sub === 'market' ? visibleMarket().length
-        : ui.sub === 'properties' ? visibleProps().length : state.ledger.length);
+        : ui.sub === 'properties' ? visibleProps().length : visibleLedger().length);
   }
   function toggleEdit() { closeCtx(); ui.editing = !ui.editing; render(); }
   function toggleAuto() {
@@ -1271,6 +1288,27 @@ window.FinancesPane = (function () {
     T('Ledger sub renders history newest-first', () => {
       ui.sub = 'ledger'; render();
       return rowCount() === 2 && els.list.querySelector('.fin-led-label').textContent === 'Monthly settle';
+    });
+    /* The ledger's search box was live but inert — renderLedger never read
+       ui.filter, so typing on this sub-tab looked broken rather than absent. */
+    T('ledger: search narrows by label', () => {
+      ui.sub = 'ledger'; setFilter('ebony'); return rowCount() === 1;
+    });
+    T('ledger: search matches the kind chip', () => { setFilter('settle'); return rowCount() === 1; });
+    T('ledger: search matches the timestamp', () => { setFilter('12 last seed'); return rowCount() === 1; });
+    T('ledger: the row count follows the filter', () => {
+      setFilter('ebony'); return els.count.textContent === '1';
+    });
+    T('ledger: search highlights the hit', () => {
+      setFilter('ebony'); return !!els.list.querySelector('.fin-led-label mark');
+    });
+    T('ledger: no match shows an honest empty state', () => {
+      setFilter('zzzz');
+      return !els.empty.classList.contains('hidden') &&
+        els.empty.textContent.indexOf('No entry matches') !== -1;
+    });
+    T('ledger: clearing the filter restores every entry', () => {
+      setFilter(''); return rowCount() === 2;
     });
 
     /* ---- search ---- */

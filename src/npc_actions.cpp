@@ -593,15 +593,80 @@ namespace NpcActions
 		// once and the followers have live targets to path toward. We never pull
 		// in a neutral — only actors already hostile to the player or already in
 		// combat — so this is "attack that group", never "start a massacre".
+
+		// Long-range designation ("longshot"). The crosshair ref is the vanilla
+		// activate pick and ResolveCrosshairActor's ray fallback stops at 600
+		// units — right for freeze/sit, useless for "attack that archer on the
+		// ridge" (EFF solved this with a targeting SPELL because a projectile
+		// travels; we solve it with a longer ray, which is also instant). Walks
+		// the camera's aim line out to kSicRange and picks the actor nearest
+		// the line — but ONLY one already hostile to the player or already in
+		// combat. At crosshair range you designate anyone deliberately; at 5000
+		// units auto-picking a neutral is how a stray key press starts a
+		// massacre, so distance narrows the rule instead of relaxing it.
+		RE::Actor* PickDistantHostile(float& outDist)
+		{
+			constexpr float kSicRange = 8000.0f;  // ~115 m — past any real bow fight
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* camera = RE::PlayerCamera::GetSingleton();
+			auto* lists  = RE::ProcessLists::GetSingleton();
+			if (!player || !camera || !camera->cameraRoot || !lists)
+				return nullptr;
+
+			auto&        wt  = camera->cameraRoot->world;
+			RE::NiPoint3 fwd = { -wt.rotate.entry[0][2], -wt.rotate.entry[1][2], -wt.rotate.entry[2][2] };
+
+			RE::Actor* best = nullptr;
+			float      bestOff = 1.0e9f;
+			float      bestDist = 0.0f;
+			auto check = [&](RE::ActorHandle& handle) {
+				auto ptr = handle.get();
+				auto* a  = ptr ? ptr.get() : nullptr;
+				if (!a || a->IsPlayerRef() || a->IsDead() || a->IsDisabled() || !a->Is3DLoaded())
+					return;
+				if (a->IsPlayerTeammate())
+					return;
+				if (!a->IsHostileToActor(player) && !a->IsInCombat())
+					return;
+				RE::NiPoint3 to = {
+					a->GetPositionX() - wt.translate.x,
+					a->GetPositionY() - wt.translate.y,
+					(a->GetPositionZ() + 80.0f) - wt.translate.z
+				};
+				const float t = to.x * fwd.x + to.y * fwd.y + to.z * fwd.z;  // along the ray
+				if (t < 100.0f || t > kSicRange)
+					return;
+				const float d2   = to.x * to.x + to.y * to.y + to.z * to.z;
+				// (std::max) — parenthesised so windows.h's max macro (this TU sees
+				// it without NOMINMAX) can't eat the call; C2589 on the rig build.
+				const float perp = std::sqrt((std::max)(0.0f, d2 - t * t));   // off the ray
+				// Aim-assist cone: ~3.5° half-angle plus a fixed base, so a couch
+				// aim a couple of body-widths off still designates the right camp.
+				if (perp > 150.0f + t * 0.06f)
+					return;
+				const float off = perp / t;  // angular offset — closest to the line wins
+				if (off < bestOff) { bestOff = off; best = a; bestDist = t; }
+			};
+			for (auto& h : lists->highActorHandles) check(h);
+			for (auto& h : lists->middleHighActorHandles) check(h);
+			outDist = bestDist;
+			return best;
+		}
+
 		void DoSicEm()
 		{
 			auto* target = TargetActor();
+			if (target && target->IsDead())
+				target = nullptr;  // a corpse can't be rushed — look past it
 			if (!target) {
-				Notify("Sic 'em: look at a target, then open the deck");
-				return;
+				float dist = 0.0f;
+				target = PickDistantHostile(dist);
+				if (target)
+					logger::info("NpcActions: sic-em longshot -> \"{}\" at {:.0f} units",
+						NameOf(target), dist);
 			}
-			if (target->IsDead()) {
-				Notify(NameOf(target) + " is already dead");
+			if (!target) {
+				Notify("Sic 'em: aim at an enemy — none under the crosshair or along your aim");
 				return;
 			}
 
@@ -1134,6 +1199,57 @@ namespace NpcActions
 			DoFreeze(actor);
 		else
 			DoFurniture(actor, action == "bed");
+		return true;
+	}
+
+	// Seat an arbitrary actor on an EXPLICIT furniture ref through the alias
+	// engine — DoFurniture's seat branch with the nearest-chair search replaced
+	// by the caller's pick (the ZaZ segment's "use this cross/pillory" verb).
+	// Always seats (a prior hold of ours is reclaimed first, never toggled off);
+	// the SitTarget package makes her walk there and holds her through AI
+	// re-evaluations, exactly like the deck's own "sit".
+	bool SeatOn(std::uint32_t actorFormId, std::uint32_t furnRefId, std::string& outMsg)
+	{
+		auto* actor = actorFormId ? RE::TESForm::LookupByID<RE::Actor>(actorFormId) : nullptr;
+		auto* furniture = furnRefId ? RE::TESForm::LookupByID<RE::TESObjectREFR>(furnRefId) : nullptr;
+		if (!actor || !furniture) {
+			outMsg = "She (or the furniture) isn't loaded right now";
+			return false;
+		}
+		if (!EnsureControlRunning()) {
+			outMsg = "No HD_NPCControl quest — HotkeyDeckWardrobe.esp v2 not loaded?";
+			return false;
+		}
+
+		const auto id = actor->GetFormID();
+		auto& state = g_managed[id];
+		if (state == NPCState::Sitting || state == NPCState::InBed)
+			actor->NotifyAnimationGraph("IdleForceDefaultState"sv);
+		// Framework first, same as DoFurniture: an NFF/Niri follow package
+		// fights the chair unless the framework is told to stand down.
+		const std::string via = HoldViaFramework(actor);
+		if (state == NPCState::Frozen)
+			UnlockActor(actor);  // a pinned actor cannot walk to the furniture
+		DropAliasHold(actor);
+
+		const int slot = AllocSlot(kSitBase, kSitCount);
+		if (slot < 0 || !ControlApply(actor, slot, furniture, TargetAliasFor(slot))) {
+			g_managed.erase(id);
+			outMsg = "All " + std::to_string(kSitCount) + " seat slots are busy — release someone first";
+			return false;
+		}
+		g_aliasHeld[id] = { NPCState::Sitting, slot, TargetAliasFor(slot) };
+		state = NPCState::Sitting;
+
+		auto name = furniture->GetName();
+		if (!name || !name[0])
+			if (auto* b = furniture->GetBaseObject())
+				name = b->GetName();
+		const std::string what = (name && name[0]) ? name : "the furniture";
+		logger::info("NpcActions: alias-seat \"{}\" ({:08X}) slot {} -> \"{}\" (explicit ref)",
+			NameOf(actor), static_cast<std::uint32_t>(id), slot, what);
+		outMsg = NameOf(actor) + " -> " + what + " (walking over)" + via;
+		Notify(outMsg);
 		return true;
 	}
 

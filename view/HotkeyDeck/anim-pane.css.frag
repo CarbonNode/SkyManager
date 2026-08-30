@@ -62,7 +62,12 @@
 .an-crawl.disabled:hover { border-color: #2e2e36; background: rgba(255,255,255,.04); box-shadow: none; }
 
 .an-cats {
-  flex: 1; min-height: 0; overflow-y: auto;
+  /* The rail is this pane's primary navigation, and every sibling in #an-side
+     is a flex:none card — so without a floor the rail is the only thing that
+     can absorb a shortfall and it collapsed to 13px at 1280x720 (measured
+     2026-08-19: 0 of 8 rows visible). 122px = 3 rows (38px) + 2 gaps (4px);
+     the packs card below yields first. */
+  flex: 1 1 auto; min-height: 122px; overflow-y: auto;
   display: flex; flex-direction: column; gap: 4px;
   padding-right: 2px;
 }
@@ -89,7 +94,13 @@
 
 /* ---------- load-order packs card (in-game FNIS scan) ---------- */
 
-#an-packs-card { display: flex; flex-direction: column; min-height: 0; max-height: 44%; }
+/* Yields to the category rail when #an-side runs out of room (.an-card is
+   flex:none, which is what starved the rail): shrinkable, but never below the
+   card's own chrome + ~1.5 pack rows, and #an-pk-body scrolls what's left. */
+#an-packs-card {
+  display: flex; flex-direction: column;
+  flex: 0 1 auto; min-height: 108px; max-height: 44%;
+}
 #an-packs-card .an-card-title {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
@@ -102,7 +113,15 @@
 }
 .an-pk-rescan:hover { border-color: #c9a24b; background: rgba(201,162,75,.10); }
 .an-pk-rescan.hidden { display: none; }
-#an-pk-body { display: flex; flex-direction: column; gap: 7px; min-height: 0; }
+/* The card body is the scroller, not #an-pk-rows: .an-pk-hint below the rows
+   is a 3-line paragraph that cannot shrink, so in a squeezed card it outranked
+   the rows and left ONE of 7 packs visible (measured 1280x720: #an-pk-rows
+   64px of 283). Scrolling the body keeps every pack row reachable and pushes
+   the hint to the end where it belongs. */
+#an-pk-body {
+  display: flex; flex-direction: column; gap: 7px;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+}
 .an-pk-pitch { font-size: 12.5px; color: #9d988c; line-height: 1.45; }
 .an-pk-scan { margin-top: 2px; }
 .an-pk-filter {
@@ -115,7 +134,7 @@
 .an-pk-filter::placeholder { color: #7f7a6e; }
 .an-pk-filter:focus { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.18); }
 #an-pk-rows {
-  min-height: 0; overflow-y: auto;
+  flex: none;                     /* #an-pk-body scrolls; see the note above */
   display: flex; flex-direction: column; gap: 4px;
   padding-right: 2px;
 }

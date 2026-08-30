@@ -385,12 +385,12 @@ namespace PortraitCapture
 				// backup someone parked next to the portraits. Deleting a file
 				// this module does not own is not a risk worth taking to save a
 				// few hundred KB.
-				auto ext = it->path().extension().string();
+				auto ext = PathU8(it->path().extension());
 				std::transform(ext.begin(), ext.end(), ext.begin(),
 					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 				if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".webp")
 					continue;
-				if (SlugFromFileStem(it->path().stem().string()) != slug)
+				if (SlugFromFileStem(PathU8(it->path().stem())) != slug)
 					continue;
 				if (std::filesystem::remove(it->path(), fec) && !fec)
 					++gone;
@@ -1828,7 +1828,7 @@ namespace PortraitCapture
 							}
 							Notify(("Photo saved: " + label).c_str());
 							if (g_onPhotoSaved)
-								g_onPhotoSaved(slug, written.filename().string(), label);
+								g_onPhotoSaved(slug, PathU8(written.filename()), label);
 						});
 					}).detach();
 				});
@@ -1943,7 +1943,7 @@ namespace PortraitCapture
 			if (IsLockedError(err)) {
 				if (!alwaysVersion)
 					logger::info("portrait: '{}' is held open by the running view (win32 {}) - writing a versioned file instead",
-						canonical.filename().string(), err);
+						PathU8(canonical.filename()), err);
 				const auto stamp = NowSeconds();
 				// Bump past a same-second collision; 8 is far more headroom than
 				// a human pressing a hotkey can ever need.
@@ -1960,7 +1960,7 @@ namespace PortraitCapture
 			}
 
 			if (err) {
-				logger::warn("portrait: write failed for '{}': {} (win32 {})", label, path.string(), err);
+				logger::warn("portrait: write failed for '{}': {} (win32 {})", label, PathU8(path), err);
 				return err;
 			}
 
@@ -1975,7 +1975,7 @@ namespace PortraitCapture
 			// at, and whether that was a downscale (good) or a stretch (the
 			// subject was too far away even after the zoom).
 			logger::info("portrait: captured '{}' -> {} ({}px crop at {},{} -> {}px out, {})",
-				label, path.filename().string(), box.size, box.x, box.y, outSize,
+				label, PathU8(path.filename()), box.size, box.x, box.y, outSize,
 				box.size > outSize ? "downscaled + sharpened" :
 									 (box.size == outSize ? "1:1" : "UPSCALED - subject was too far for a sharp portrait"));
 			written = path;
@@ -2104,7 +2104,7 @@ namespace PortraitCapture
 				std::filesystem::path written;
 				const auto            err = CaptureToFile(dir, slug, label, written, kFaceKeys, /*alwaysVersion=*/true);
 				SKSE::GetTaskInterface()->AddTask([err, written, done]() {
-					FinishPlayerCapture(done, err ? "" : written.filename().string());
+					FinishPlayerCapture(done, err ? "" : PathU8(written.filename()));
 					if (err) {
 						Notify(IsLockedError(err)
 								   ? "Portrait failed: that file is locked - restart Skyrim to replace it"
@@ -2158,11 +2158,11 @@ namespace PortraitCapture
 			}
 		}
 		if (err) {
-			logger::warn("portrait: portal write failed for '{}': {} (win32 {})", slug, path.string(), err);
+			logger::warn("portrait: portal write failed for '{}': {} (win32 {})", slug, PathU8(path), err);
 			return false;
 		}
 		PruneOtherVersions(dir, slug, path);
-		logger::info("portrait: portal bytes -> {}", path.filename().string());
+		logger::info("portrait: portal bytes -> {}", PathU8(path.filename()));
 		return true;
 	}
 
@@ -2242,7 +2242,7 @@ namespace PortraitCapture
 			}
 		}
 		EnterFreeCam(true);
-		logger::info("photo: mode started for '{}' -> {}", label, (dir / (slug + ".png")).string());
+		logger::info("photo: mode started for '{}' -> {}", label, PathU8((dir / (slug + ".png"))));
 		Notify("Photo mode: fly around, E to shoot, Esc to cancel");
 
 		// A REAL watchdog, not just the lazy check in PhotoModeActive(): that
@@ -2497,7 +2497,7 @@ namespace PortraitCapture
 	{
 		Tuning t = ReadTuning(dir, kPhotoKeys);
 		t.exposure = std::clamp(stops, kExpMin, kExpMax);
-		logger::info("photo: exposure set to {:+.2f} stop(s) in {}", t.exposure, dir.string());
+		logger::info("photo: exposure set to {:+.2f} stop(s) in {}", t.exposure, PathU8(dir));
 		return WriteTuning(dir, kPhotoKeys, t);
 	}
 

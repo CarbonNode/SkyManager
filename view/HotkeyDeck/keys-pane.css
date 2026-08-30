@@ -27,7 +27,18 @@
   flex-wrap: wrap;
 }
 
+/* The count chip lives INSIDE .kc-title and only fills in when the scan lands.
+   With the title sized to its content that made the whole header re-flow at the
+   worst possible moment — onShow() focuses the search box, so the box the user
+   was already typing into slid 231px sideways and lost 224px of width. Fixed by
+   removing the coupling, not by guessing a reserved width: the title absorbs the
+   free space (so the buttons stay pinned right whatever the chip says) and the
+   search box takes a full-width line of its own. Nothing moves when data lands,
+   and the box is bigger — which is what the couch wants anyway. */
 .kc-title {
+  order: 0;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 20px;
   font-weight: 700;
   color: #e8e2d4;
@@ -38,16 +49,22 @@
   white-space: nowrap;
 }
 
+.kc-head > .kc-btn { order: 1; }
+
 #kc-count-chip {
   font-size: 13px;
   font-weight: 500;
   color: #9a917d;
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 #kc-count-chip.kc-chip-warn { color: #d8a25a; }
 
 #kc-filter {
-  flex: 1 1 220px;
+  order: 2;
+  flex: 1 1 100%;
   min-width: 180px;
   background: #121218;
   border: 1px solid #3d3a33;
@@ -116,6 +133,11 @@
   text-decoration: line-through;
 }
 
+/* This button relabels itself mid-scan (Rescan all / Scanning… / Refreshing…).
+   It is the last item on a right-packed line, so every relabel shoved the two
+   buttons to its left by 7px. Reserve the widest label instead — in em, so it
+   tracks the font-size drop in the narrow-palette query below. */
+#kc-rescan { min-width: 9.5em; }
 #kc-rescan:disabled {
   opacity: .55;
   cursor: default;
@@ -212,10 +234,20 @@
   gap: 8px;
   padding-right: 6px;   /* room for the scrollbar, no content clipping */
 }
+/* An emptied body is still flex:1 in this column, so it would hold half the pane
+   open above #kc-empty and strand every empty/error message in the lower third
+   under a dead void. render() sets this whenever the empty panel takes over. */
+#kc-body.kc-body-off { display: none; }
 
 .kc-row {
   display: flex;
-  align-items: center;
+  /* flex-start, not center: on a key claimed by forty mods the row is taller
+     than the whole scroller, and a centred key chip starts life hundreds of
+     pixels below the fold — sticky can pull an identity chip UP as the row
+     scrolls, never up from below. Anchoring to the top puts it on screen from
+     the first pixel of the row. .kc-owners stretches back to the full row
+     height so an ordinary one-line row still reads as centred. */
+  align-items: flex-start;
   gap: 14px;
   background: #15151b;
   border: 1px solid #33302a;
@@ -233,6 +265,15 @@
   background: rgba(200, 80, 70, .07);
 }
 .kc-row-hard:hover { background: rgba(200, 80, 70, .12); border-color: rgba(200, 80, 70, .75); }
+
+/* A key claimed by a dozen mods makes a row TALLER than the scroller, and a
+   centred key chip then scrolls out of sight — you are left staring at a wall of
+   mod names with no idea which key they are fighting over. Sticky pins the row's
+   identity (its key and its verdict) to the top of the scrollport for as long as
+   the row is on screen, while leaving short rows exactly where they were. It is
+   scoped to the two identity chips on purpose; where sticky is unsupported this
+   degrades to today's behaviour, never to something worse. */
+.kc-key, .kc-badge { position: sticky; top: 0; }
 
 .kc-key {
   min-width: 84px;
@@ -253,6 +294,7 @@
 .kc-owners {
   flex: 1;
   min-width: 0;
+  align-self: stretch;   /* see .kc-row: keeps one-line rows visually centred */
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
@@ -271,7 +313,18 @@
   white-space: nowrap;
   overflow: hidden;
 }
-.kc-owner b { font-weight: 650; }
+/* The mod name is the chip's identity and the part most likely to be enormous,
+   so it ellipsizes like the control name beside it. Without this the chip's own
+   overflow:hidden sheared it mid-word with nothing to show the loss — and it
+   also let one 68-char chip eat a whole owners line. The tooltip written by
+   ownerChip() carries the full name. */
+.kc-owner b {
+  font-weight: 650;
+  min-width: 0;
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .kc-owner i {
   font-style: normal;
   opacity: .75;
@@ -286,6 +339,21 @@
 .kc-src-helper  { background: #1b2b28; border-color: #2f5148; color: #94d6c3; }
 .kc-src-deck    { background: #2a2417; border-color: #55503f; color: #ecd9a8; }
 .kc-src-chord   { background: #261e2e; border-color: #4a3960; color: #cbaBef; }
+.kc-src-plugin  { background: #1e2338; border-color: #3b4570; color: #adb8e8; }
+.kc-src-papyrus { background: #2a2a17; border-color: #55552f; color: #dcdc9c; }
+.kc-src-enb     { background: #2c2118; border-color: #5a422c; color: #e5b183; }
+.kc-src-reshade { background: #2b1b24; border-color: #5b3346; color: #e2a4c1; }
+.kc-src-shaders { background: #1e2a1c; border-color: #3d5636; color: #b3d99a; }
+
+/* A row whose code space was assumed rather than stated: dashed edge plus a
+   "?" tail, so the uncertainty is visible on the chip and not only in the
+   group's badge. */
+.kc-owner-guess { border-style: dashed; }
+.kc-owner u {
+  text-decoration: none;
+  font-weight: 700;
+  opacity: .65;
+}
 
 .kc-badge {
   font-size: 12.5px;
@@ -297,6 +365,7 @@
 }
 .kc-badge-hard { background: rgba(200, 80, 70, .18); color: #f0b1a8; border: 1px solid rgba(200, 80, 70, .5); }
 .kc-badge-soft { background: rgba(201, 162, 75, .12); color: #d8bd85; border: 1px solid rgba(201, 162, 75, .3); }
+.kc-badge-maybe { background: rgba(120, 140, 190, .14); color: #b8c4e2; border: 1px solid rgba(120, 140, 190, .38); }
 
 /* ------------------------------------------------------------- detail -- */
 
@@ -316,6 +385,7 @@
 .kc-detail-row {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 12px;
   font-size: 13.5px;
   min-width: 0;
@@ -323,6 +393,26 @@
 .kc-detail-mod { color: #d9d2c2; font-weight: 600; white-space: nowrap; }
 .kc-detail-ctl {
   color: #9a917d;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kc-detail-guess {
+  font-size: 12px;
+  color: #b8c4e2;
+  background: rgba(120, 140, 190, .14);
+  border: 1px dashed rgba(120, 140, 190, .45);
+  border-radius: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+/* Provenance — "says who?". Its own line under the row, because a config path
+   is long and must never squeeze the owner chip out of view. The full string is
+   on the row's hover title when it ellipsises. */
+.kc-detail-src {
+  flex: 1 0 100%;
+  color: #7f7768;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -352,18 +442,11 @@
 .kc-skel-box {
   border-radius: 8px;
   background: linear-gradient(90deg, #1b1b22 25%, #23232c 50%, #1b1b22 75%);
-  background-size: 200% 100%;
-  animation: kc-shimmer 1.3s infinite linear;
   border: none;
 }
 .kc-skel .kc-key { min-height: 36px; }
 .kc-skel-w1 { width: 140px; height: 27px; display: inline-block; }
 .kc-skel-w2 { width: 200px; height: 27px; display: inline-block; }
-
-@keyframes kc-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
 
 /* ------------------------------------------------- narrow palette (640) -- */
 
@@ -373,5 +456,6 @@
   .kc-title { font-size: 17px; }
   .kc-btn { padding: 9px 12px; font-size: 13px; }
   .kc-key { min-width: 64px; font-size: 13.5px; padding: 7px 9px; }
+  .kc-owner b { max-width: 22ch; }
   .kc-owner i { max-width: 18ch; }
 }

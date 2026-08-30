@@ -156,6 +156,24 @@
 .wdsp-forget:focus-visible { outline: 2px solid #a5556566; outline-offset: 1px; }
 .wdsp-forget.armed { color: #f0c9c9; border-color: #a55565; background: rgba(165, 85, 101, .20); }
 
+/* ＋ Add gear — the constructive verb, so it reads gold rather than the
+   forget button's warning red, and sits left of both switches. */
+.wdsp-add {
+  font-family: inherit;
+  font-size: 13px;
+  color: #d9c48a;
+  background: #101015;
+  border: 1px solid #34343d;
+  border-radius: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.wdsp-add:hover { border-color: #c9a24b88; color: #f0e2b8; background: rgba(201, 162, 75, .12); }
+.wdsp-add:active { transform: translateY(1px); }
+.wdsp-add:focus-visible { outline: 2px solid #c9a24b66; outline-offset: 1px; }
+
 /* ---- the grant rows ---------------------------------------------------- */
 .wdsp-items { padding: 6px 10px 10px; }
 .wdsp-item {

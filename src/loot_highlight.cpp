@@ -633,6 +633,19 @@ namespace LootHighlight
 		return a == "loot-vision";
 	}
 
+	// The code-side twin of the MenuSink: a system that empties a ref without a
+	// ContainerMenu (Auto-Loot's corpse sweep) says so here, and the next Tick
+	// drops the glow through the ordinary WasOpened() path — no engine mutation
+	// from the caller's thread, no second looted-set to keep in step. Cleared
+	// with the rest of the session state in OnPostLoadGame.
+	void NoteLooted(std::uint32_t refId)
+	{
+		if (!refId)
+			return;
+		std::lock_guard l(g_openedMutex);
+		g_opened.insert(refId);
+	}
+
 	// ------------------------------------------------------------- the tick
 
 	void Tick(const Config& cfg)

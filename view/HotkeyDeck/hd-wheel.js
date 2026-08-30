@@ -1031,6 +1031,12 @@ var HDWheel = (function () {
      so a stale path costs a blink instead of a broken-image box (the same
      contract the shelf's plates use). */
   function armImgFallbacks(host) {
+    /* Frame the faces while we are already walking this root. The wheel builds
+       its tiles as HTML strings, so there is no <img> handle at build time —
+       and without this every pinned follower was centre-cropped rather than
+       wearing the framing the user set (2026-08-19 sweep). `.face` is the
+       class the wheel already stamps on a portrait, so it is the right filter. */
+    if (window.HDFaceFit && HDFaceFit.paintPortraitsIn) HDFaceFit.paintPortraitsIn(host);
     var imgs = host.querySelectorAll('img');
     for (var i = 0; i < imgs.length; i++) {
       (function (im) {
@@ -1403,7 +1409,7 @@ var HDWheel = (function () {
     if (a === 'close') { close(true); return; }
     if (a === 'edit') { ui.edit = !ui.edit; ui.menu = null; ui.lookOpen = false; render(); return; }
     if (a === 'pick') { ui.lookOpen = false; openPicker(-1); return; }
-    if (a === 'settings') { ui.lookOpen = false; ui.sheet = 'settings'; render(); return; }
+    if (a === 'settings') { openSettings(''); return; }
     if (a === 'prev') { cycleWheel(-1); return; }
     if (a === 'next') { cycleWheel(1); return; }
   }
@@ -1707,6 +1713,29 @@ var HDWheel = (function () {
     }
   }
 
+  /* The ⚙ sheet, optionally parked on one of its named rows (see SETTINGS).
+     `focus` is the whole reason search can promise to land you ON a control:
+     the sheet's body scrolls, so opening it and SHOWING the row someone typed
+     the name of are two different things. '' opens it plainly, exactly as the
+     ⚙ button always has. */
+  function openSettings(focus) {
+    ui.lookOpen = false;
+    /* Landing on "Look & placement" with the preset list folded away would
+       show a dropdown button and nothing to pick from. Only touched when we
+       were sent somewhere, so the button keeps whatever it was left at. */
+    if (focus) ui.presetOpen = (focus === 'look');
+    ui.sheet = 'settings';
+    render();
+    if (!focus || !root) return;
+    var row = root.querySelector('.whl-sheet [data-set="' + focus + '"]');
+    /* Probed rather than called: Ultralight has scrollIntoView but the headless
+       harness's DOM does not, and a lost scroll is cosmetic — it must never
+       throw out of the search result that asked for it. */
+    if (row && typeof row.scrollIntoView === 'function') {
+      try { row.scrollIntoView(); } catch (e) {}
+    }
+  }
+
   function closeSheet() {
     ui.sheet = null;
     ui.rename = null;
@@ -1795,9 +1824,15 @@ var HDWheel = (function () {
     return 40;
   }
 
-  function pickResults() {
+  /* `matched` — the already-filtered set, when the caller has one. pickHtml
+     needs the same matches()-filtered list twice (once for the category counts,
+     once for the rows) and used to build it twice, i.e. two full walks of every
+     HDOmni provider's index() per keystroke. Passing it in makes that one walk.
+     A copy is taken because the sort below is in place. */
+  function pickResults(matched) {
     var q = ui.pickQ.trim();
-    var all = pickables().filter(function (r) { return matches(r, q); });
+    var all = matched ? matched.slice()
+                      : pickables().filter(function (r) { return matches(r, q); });
     if (ui.pickCat !== 'all') {
       all = all.filter(function (r) { return r.cat && r.cat.id === ui.pickCat; });
     }
@@ -1832,14 +1867,22 @@ var HDWheel = (function () {
     else if (ui.sheet === 'rename') sh.innerHTML = renameHtml();
     root.appendChild(sh);
     sh.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+    /* ⛔ The sheet was the ONE root never armed (2026-08-19 sweep): the ring,
+       the fan and the hub all call this, the picker results did not — and here
+       the glyph and the <img> are mutually exclusive, so a stale portrait left
+       a raw broken-image box with nothing behind it. Arming also frames the
+       faces, because armImgFallbacks now paints portraits on its way through. */
+    armImgFallbacks(sh);
     wireSheet(sh);
   }
 
   function pickHtml() {
-    var res = pickResults();
     var q = ui.pickQ.trim();
+    /* ONE provider walk per keystroke, shared by the counts and the rows. */
+    var matched = pickables().filter(function (r) { return matches(r, q); });
+    var res = pickResults(matched);
     var counts = {};
-    pickables().filter(function (r) { return matches(r, q); }).forEach(function (r) {
+    matched.forEach(function (r) {
       var id = r.cat ? r.cat.id : 'other';
       counts[id] = (counts[id] || 0) + 1;
       counts.all = (counts.all || 0) + 1;
@@ -2023,6 +2066,79 @@ var HDWheel = (function () {
     }).join('');
   }
 
+  /* ---- the named rows of the ⚙ sheet ------------------------------------
+     Every one of these is named TWICE: once as the heading you read in the
+     sheet, and once as a search row that lands you on it (the wheel's omni
+     provider, at the bottom of this file). They live in one table so the two
+     can never drift apart — a player who types the words printed on a control
+     has to find that control, and the settings sheet is otherwise invisible to
+     search: it sits behind the S key or a button on a menu you have to know how
+     to open first.
+       label  plain text; the sheet escapes it, the search row shows it as-is
+       sub    the sheet's own HTML (a couple carry <b> on the fixed keys), so it
+              is NOT escaped here either — same as when these were literals
+       find   the rest of the haystack: what someone would TYPE hunting for the
+              row, which is rarely what the row is called ("make it smaller",
+              "hold and release", "unbind")
+     label and sub may be functions where the text carries live numbers. */
+  var SETTINGS = [
+    { id: 'look', label: 'Look & placement',
+      sub: 'Where the wheel sits, how big it is and how much it dims the game — one pick. ' +
+        'Press <b>V</b> in the wheel to flick through them without opening this.',
+      find: 'preset presets look placement appearance where it sits position move corner centre center' },
+    { id: 'size', label: 'Wheel size',
+      sub: 'How big the whole assembly draws. It is capped by your window, so it can never spill off-screen.',
+      find: 'bigger smaller make it smaller shrink grow scale resize huge tiny percent' },
+    { id: 'anchor', label: 'Where it sits',
+      sub: 'Nudge the preset without leaving it — anything you change here just flips the pick to Custom.',
+      find: 'position move place corner centre center bottom top left right off to the side' },
+    { id: 'dim', label: 'How much it dims the game',
+      sub: 'Less dim keeps the fight visible; the wheel keeps its own dark pool underneath so it stays readable over snow or fire.',
+      find: 'dimming darken darkness see-through transparent opacity background too dark brightness' },
+    { id: 'openstyle', label: 'How the key opens it',
+      sub: 'Press = tap to open, tap again to close. Hold = keep the key down, point at a wedge, ' +
+        'and RELEASING fires it — one gesture, back to the game. A quick tap still opens it either way.',
+      find: 'press hold and release toggle tap gesture open close radial style' },
+    { id: 'slots',
+      label: function () { var wh = cur(); return 'Slots on “' + (wh ? wh.name : 'this wheel') + '”'; },
+      sub: MIN_SLOTS + '–' + MAX_SLOTS + '. Removing slots keeps every pin — it refuses rather than dropping one.',
+      find: 'slots wedges sections segments how many more fewer add remove empty' },
+    { id: 'name', label: 'Name of this wheel',
+      sub: 'Shown top-left, and on the tick you hover at the bottom right.',
+      find: 'rename name title call it' },
+    { id: 'wheels',
+      label: 'Wheels',
+      sub: function () {
+        var w = slice();
+        return (w ? w.wheels.length : 0) + ' of ' + MAX_WHEELS +
+          '. Cycle them with ← → , the mouse wheel, or the ticks at the bottom right.';
+      },
+      find: 'new wheel another wheel add delete remove second wheel pages how many wheels' },
+    { id: 'keys', label: 'Keys inside the wheel',
+      sub: 'Each one is a shortcut for a button on the bar, so turning one off costs nothing. ' +
+        '<b>Esc</b> (close), <b>1–9</b> (fire a slot) and <b>← →</b> (change wheel) are fixed — they are what the wheel IS, not preferences.',
+      find: 'key keys shortcut shortcuts rebind bind unbind turn off letter keyboard' },
+    { id: 'open', label: 'Opening the wheel',
+      sub: 'Ctrl + your deck key (F7) by default. It is also a bindable deck action — “Wheel Menu” in the Utilities tab — ' +
+        'so you can give it any key, or a mouse button.',
+      find: 'open key which key opens it ctrl f7 bind hotkey mouse button launch' },
+  ];
+  function settingById(id) {
+    for (var i = 0; i < SETTINGS.length; i++) if (SETTINGS[i].id === id) return SETTINGS[i];
+    return null;
+  }
+  function settingText(v) { return typeof v === 'function' ? String(v()) : String(v); }
+  /* A sub-line is sheet HTML; a search row's detail is plain text, so the tags
+     come off rather than showing up as literal angle brackets in a result. */
+  function plainText(html) { return String(html).replace(/<[^>]*>/g, ''); }
+  function rowLab(id) {
+    var s = settingById(id);
+    if (!s) return '';
+    return '<div class="whl-row-lab">' + esc(settingText(s.label)) +
+      '<div class="whl-row-sub">' + settingText(s.sub) + '</div>' +
+    '</div>';
+  }
+
   function settingsHtml() {
     var w = slice();
     var wh = w.wheels[w.active];
@@ -2034,11 +2150,8 @@ var HDWheel = (function () {
         '<button class="whl-btn" data-act="sheet-close" title="Close (Esc)">✕</button>' +
       '</div>' +
       '<div class="whl-sheet-body">' +
-        '<div class="whl-row whl-row-preset">' +
-          '<div class="whl-row-lab">Look &amp; placement' +
-            '<div class="whl-row-sub">Where the wheel sits, how big it is and how much it dims the game — one pick. ' +
-              'Press <b>V</b> in the wheel to flick through them without opening this.</div>' +
-          '</div>' +
+        '<div class="whl-row whl-row-preset" data-set="look">' +
+          rowLab('look') +
           '<button class="whl-dd" data-act="preset-toggle" title="Choose a visual preset">' +
             '<span class="whl-dd-lab">' + esc(pcur ? pcur.label : 'Custom') + '</span>' +
             '<span class="whl-dd-caret">' + (ui.presetOpen ? '▴' : '▾') + '</span>' +
@@ -2058,19 +2171,15 @@ var HDWheel = (function () {
                 : '') +
             '</div>'
           : '') +
-        '<div class="whl-row">' +
-          '<div class="whl-row-lab">Wheel size' +
-            '<div class="whl-row-sub">How big the whole assembly draws. It is capped by your window, so it can never spill off-screen.</div>' +
-          '</div>' +
+        '<div class="whl-row" data-set="size">' +
+          rowLab('size') +
           '<button class="whl-btn" data-act="size-" title="Smaller">−</button>' +
           '<div class="whl-val">' + pct + '%</div>' +
           '<button class="whl-btn" data-act="size+" title="Bigger">＋</button>' +
           '<button class="whl-btn" data-act="size0" title="Back to 100%">Reset</button>' +
         '</div>' +
-        '<div class="whl-row">' +
-          '<div class="whl-row-lab">Where it sits' +
-            '<div class="whl-row-sub">Nudge the preset without leaving it — anything you change here just flips the pick to Custom.</div>' +
-          '</div>' +
+        '<div class="whl-row" data-set="anchor">' +
+          rowLab('anchor') +
           /* the order IS the layout: row 1 = top-left, centre, top-right;
              row 2 = bottom-left, bottom-centre, bottom-right */
           '<div class="whl-seg pos">' +
@@ -2080,10 +2189,8 @@ var HDWheel = (function () {
             }).join('') +
           '</div>' +
         '</div>' +
-        '<div class="whl-row">' +
-          '<div class="whl-row-lab">How much it dims the game' +
-            '<div class="whl-row-sub">Less dim keeps the fight visible; the wheel keeps its own dark pool underneath so it stays readable over snow or fire.</div>' +
-          '</div>' +
+        '<div class="whl-row" data-set="dim">' +
+          rowLab('dim') +
           '<div class="whl-seg dim">' +
             [['full', 'Dimmed'], ['light', 'See-through'], ['none', 'None']].map(function (d) {
               return '<button class="whl-segb wide' + (w.dim === d[0] ? ' on' : '') + '" data-dim="' + d[0] +
@@ -2091,11 +2198,8 @@ var HDWheel = (function () {
             }).join('') +
           '</div>' +
         '</div>' +
-        '<div class="whl-row">' +
-          '<div class="whl-row-lab">How the key opens it' +
-            '<div class="whl-row-sub">Press = tap to open, tap again to close. Hold = keep the key down, point at a wedge, ' +
-              'and RELEASING fires it — one gesture, back to the game. A quick tap still opens it either way.</div>' +
-          '</div>' +
+        '<div class="whl-row" data-set="openstyle">' +
+          rowLab('openstyle') +
           '<div class="whl-seg style">' +
             [['toggle', 'Press'], ['hold', 'Hold & release']].map(function (o) {
               return '<button class="whl-segb wide' + (w.openStyle === o[0] ? ' on' : '') + '" data-openstyle="' + o[0] +
@@ -2105,36 +2209,26 @@ var HDWheel = (function () {
             }).join('') +
           '</div>' +
         '</div>' +
-        '<div class="whl-row">' +
-          '<div class="whl-row-lab">Slots on “' + esc(wh.name) + '”' +
-            '<div class="whl-row-sub">' + MIN_SLOTS + '–' + MAX_SLOTS + '. Removing slots keeps every pin — it refuses rather than dropping one.</div>' +
-          '</div>' +
+        '<div class="whl-row" data-set="slots">' +
+          rowLab('slots') +
           '<button class="whl-btn" data-act="slots-" title="One fewer slot">−</button>' +
           '<div class="whl-val">' + wh.slots.length + '</div>' +
           '<button class="whl-btn" data-act="slots+" title="One more slot">＋</button>' +
         '</div>' +
-        '<div class="whl-row">' +
-          '<div class="whl-row-lab">Name of this wheel' +
-            '<div class="whl-row-sub">Shown top-left, and on the tick you hover at the bottom right.</div>' +
-          '</div>' +
+        '<div class="whl-row" data-set="name">' +
+          rowLab('name') +
           '<input class="whl-input" data-act="wname" type="text" value="' + esc(wh.name) + '" maxlength="40">' +
         '</div>' +
-        '<div class="whl-row">' +
-          '<div class="whl-row-lab">Wheels' +
-            '<div class="whl-row-sub">' + w.wheels.length + ' of ' + MAX_WHEELS +
-              '. Cycle them with ← → , the mouse wheel, or the ticks at the bottom right.</div>' +
-          '</div>' +
+        '<div class="whl-row" data-set="wheels">' +
+          rowLab('wheels') +
           '<button class="whl-btn" data-act="wheel-new" title="Add another wheel">＋ New wheel</button>' +
           '<button class="whl-btn whl-danger" data-act="wheel-del"' +
             (w.wheels.length < 2 ? ' disabled title="The last wheel cannot be deleted"' : ' title="Delete this wheel"') + '>' +
             (ui.rename === 'armed-del' ? 'Really delete “' + esc(wh.name) + '”' : '✕ Delete this wheel') +
           '</button>' +
         '</div>' +
-        '<div class="whl-row whl-row-keys">' +
-          '<div class="whl-row-lab">Keys inside the wheel' +
-            '<div class="whl-row-sub">Each one is a shortcut for a button on the bar, so turning one off costs nothing. ' +
-              '<b>Esc</b> (close), <b>1–9</b> (fire a slot) and <b>← →</b> (change wheel) are fixed — they are what the wheel IS, not preferences.</div>' +
-          '</div>' +
+        '<div class="whl-row whl-row-keys" data-set="keys">' +
+          rowLab('keys') +
         '</div>' +
         '<div class="whl-keys">' +
           KEYSPEC.map(function (s) {
@@ -2155,10 +2249,8 @@ var HDWheel = (function () {
           }).join('') +
           (ui.capMsg ? '<div class="whl-key-msg">' + esc(ui.capMsg) + '</div>' : '') +
         '</div>' +
-        '<div class="whl-row">' +
-          '<div class="whl-row-lab">Opening the wheel' +
-            '<div class="whl-row-sub">Ctrl + your deck key (F7) by default. It is also a bindable deck action — “Wheel Menu” in the Utilities tab — so you can give it any key, or a mouse button.</div>' +
-          '</div>' +
+        '<div class="whl-row" data-set="open">' +
+          rowLab('open') +
         '</div>' +
       '</div>';
   }
@@ -2627,6 +2719,15 @@ var HDWheel = (function () {
            ([[esl-runtime-formids-shift-with-load-order]]). */
         pin: 'inv:' + String(it.plugin || '').toLowerCase() + ':' + String(it.formId || '').toUpperCase(),
         snap: { formId: it.formId, plugin: it.plugin, name: it.name, kind: kind },
+        /* the item's mesh render, when one exists — resolved through the ONE
+           Wardrobe index like everything else. '' = glyph, exactly as before;
+           the Super Searcher asks whIcons for the visible misses and the
+           'hd-item-icons' event upgrades these in place. */
+        icon: (function () {
+          if (!window.WardrobePane || typeof WardrobePane.itemIconFor !== 'function') return '';
+          try { return safeIcon(WardrobePane.itemIconFor({ formId: it.formId, plugin: it.plugin }) || ''); }
+          catch (e) { return ''; }
+        })(),
         run: function () { useItem(it.formId, it.plugin, kind); },
       };
     });
@@ -2648,6 +2749,108 @@ var HDWheel = (function () {
         useItem(snap.formId, snap.plugin, snap.kind);
       },
       index: invItems,
+    });
+  }
+
+  /* -------------------------------------------------- the wheel's own rows */
+  /* The `inventory` provider above answers "what am I carrying". This one
+     answers "where is that thing in the wheel" — its named wheels, its visual
+     presets, its settings — and it exists because none of that was reachable
+     by name. The seeded "Wheel Menu" action only OPENS the wheel; from there
+     the settings live behind the S key or a button on a menu you already had
+     to know how to open, so a player who remembers "hold and release" and
+     types it into search used to get nothing back.
+     No row carries a `pin`, deliberately: a pin is an offer to put the thing
+     on a wheel, and the wheel's own settings on a wheel wedge is a circle. */
+
+  /* An omni row runs with the deck showing whatever tab it was on, so every
+     one of these opens the wheel first. standalone=true matches the seeded
+     action: the errand WAS the wheel, so closing it hands the game back rather
+     than leaving you on a deck you never asked for. */
+  function omniOpen() { if (!ui.open) open(true); }
+
+  function wheelRows() {
+    var out = [];
+    var w = slice();
+    if (!w) return out;            // hookInto has not happened yet
+
+    out.push({
+      label: 'Wheel settings',
+      detail: 'Size, where it sits, dimming, slots, wheels and the keys inside it',
+      kind: 'wheel',
+      keywords: 'wheel menu radial ring options preferences configure setup settings',
+      run: function () { omniOpen(); openSettings(''); },
+    });
+
+    SETTINGS.forEach(function (s) {
+      out.push({
+        label: settingText(s.label),
+        detail: plainText(settingText(s.sub)),
+        kind: 'wheel setting',
+        keywords: 'wheel ' + s.find,
+        run: function () { omniOpen(); openSettings(s.id); },
+      });
+    });
+
+    /* A preset is a whole look in one pick, so the row APPLIES it rather than
+       dropping you in the sheet to find it again — the wheel is on screen by
+       then, wearing the answer. */
+    PRESETS.forEach(function (p) {
+      out.push({
+        label: 'Wheel look: ' + p.label,
+        detail: p.note,
+        kind: 'wheel look',
+        keywords: 'wheel look preset placement where it sits move ' +
+          (ANCHOR_NAME[p.anchor] || '') + ' ' +
+          (p.dim === 'full' ? 'dimmed' : p.dim === 'light' ? 'see-through' : 'no dim'),
+        run: function () { omniOpen(); applyPreset(p.id); },
+      });
+    });
+
+    w.wheels.forEach(function (wh, i) {
+      var filled = 0, names = [];
+      for (var k = 0; k < wh.slots.length; k++) {
+        if (!wh.slots[k]) continue;
+        filled++;
+        names.push(nameOf(wh.slots[k]));
+      }
+      out.push({
+        label: wh.name,
+        /* The one thing worth saying about a wheel you are not looking at is
+           whether you are already on it, and whether it has anything in it. */
+        detail: (i === w.active ? 'The wheel you are on' : 'Wheel ' + (i + 1) + ' of ' + w.wheels.length) +
+          ' · ' + filled + ' of ' + wh.slots.length + ' slots filled',
+        kind: 'wheel',
+        /* The pin names ride along so "which wheel is my Ebony Sword on?" is a
+           question search can answer. Bounded by MAX_SLOTS × MAX_WHEELS. */
+        keywords: 'wheel menu radial switch to ' + names.join(' '),
+        run: function () { omniOpen(); selectWheel(i); },
+      });
+
+      /* A flyout bundle is user-named content sitting one press deeper than
+         anything else on the ring, so it gets its own row. fire() is what a
+         press of that wedge does — reusing it means an empty bundle says so
+         and offers its editor, instead of fanning out nothing. */
+      wh.slots.forEach(function (p, si) {
+        if (!isFly(p)) return;
+        var kids = p.fly.map(nameOf);
+        out.push({
+          label: nameOf(p),
+          detail: (p.fly.length ? p.fly.length + ' inside' : 'empty') + ' · flyout on “' + wh.name + '”',
+          kind: 'flyout',
+          keywords: 'wheel flyout bundle fan group ' + wh.name + ' ' + kids.join(' '),
+          run: function () { omniOpen(); selectWheel(i); fire(si); },
+        });
+      });
+    });
+
+    return out;
+  }
+
+  if (window.HDOmni && typeof HDOmni.register === 'function') {
+    HDOmni.register({
+      id: 'wheel', label: 'Wheel Menu', tab: '',
+      index: wheelRows,
     });
   }
 
@@ -2690,6 +2893,9 @@ var HDWheel = (function () {
     _normPin: normPin,
     _maxFly: MAX_FLY,
     _onOpenKeyRelease: onOpenKeyRelease,
+    _omniRows: wheelRows,
+    _openSettings: openSettings,
+    _settingIds: function () { return SETTINGS.map(function (s) { return s.id; }); },
     _inv: function (list) { window.whInvList(JSON.stringify({ items: list })); },
   };
 })();

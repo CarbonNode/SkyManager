@@ -60,54 +60,167 @@
     log: function () {} }; }
 })();
 </script>
+<!-- ======================= STYLESHEETS: core eager, rest staged =======================
+     The deck ships 33 sheets / ~1.15 MB / ~8,300 selectors. Everything below with a
+     `rel="stylesheet"` is CORE: it paints on the very first frame of an open, so it
+     must be parsed before it. Everything with `data-hdcss` instead is a PLACEHOLDER —
+     an inert <link> holding that sheet's exact CASCADE SLOT (document order is the
+     cascade, and several sheets deliberately override app.css; hd-scale.css must stay
+     last) while hd-css.js loads the real sheet on first need.
+
+     Each placeholder declares three things and nothing else has to be edited:
+       data-hdcss       the file
+       data-hdcss-key   the key its trigger fires on (a tab id, or a popout key)
+       data-hdcss-gate  the selector(s) hd-css.js keeps display:none until that
+                        sheet has APPLIED — this, not the trigger, is what makes an
+                        unstyled flash impossible.
+     Read hd-css.js's header before changing any of it. ======================= -->
+
+<!-- CORE: the deck frame, header, nav, Home, hotkeys, quests, notes, numpad and every
+     pane merged in from a .css.frag (followers, wardrobe body, domains, containers,
+     rooms, loot, anim, ostim, faces, finances, light, time). Half the bytes, and all
+     of the first frame. -->
 <link rel="stylesheet" href="app.css">
 <!-- NFF-outfits sub-tab styles. A separate sheet on purpose: tools/sync_view_frags.py
      rebuilds app.css by truncating it at the "Wardrobe tab" marker, so anything
      appended after that marker would be dropped on the next sync. -->
-<link rel="stylesheet" href="wardrobe-nff.css">
+<link data-hdcss="wardrobe-nff.css" data-hdcss-key="wardrobe" data-hdcss-gate="#wd-pane">
 <!-- Sharmat popout styles. Its own sheet for the same reason as the line
      above: app.css is rebuilt from the wardrobe fragment by
      tools/sync_view_frags.py, and several sessions edit this checkout at
-     once, so an appended block there is liable to be truncated. -->
-<link rel="stylesheet" href="sharmat-pane.css">
-<!-- Recents strip. Own sheet for the same reason as the two above. -->
+     once, so an appended block there is liable to be truncated.
+     Keyed to `followers`, not to the popout: it also styles the Sharmat ROW in
+     the Followers pane's own context menu, which is visible without ever
+     opening the popout. -->
+<link data-hdcss="sharmat-pane.css" data-hdcss-key="followers" data-hdcss-gate=".sm-pop, .fd-ctx-item.sharmat">
+<!-- Party sheet — the Followers tab's second shape (everyone's gear, vitals and
+     status side by side). Own sheet for the same truncation-trap reason as the
+     lines above, and staged on the SAME `followers` key so it lands with the
+     tab rather than needing a trigger of its own. #pt-pane is its gate: the
+     pane is built entirely from JS, so without one it could mount and paint
+     before these rules had applied. -->
+<link data-hdcss="followers-pane.css" data-hdcss-key="followers" data-hdcss-gate="#pt-pane">
+<!-- Recents strip. Own sheet for the same reason as the two above.
+     CORE, and it has to be: besides the Followers tab's #fd-recents strip it also
+     OVERRIDES app.css for .rc-name / .rc-verb, and app.js renders those same
+     classes in the core Recent tab — staging it left the Recent list a size and a
+     shade off. Caught by the cold-visit computed-style diff. At 4.9 KB / 24
+     selectors it is not worth a second gate. -->
 <link rel="stylesheet" href="recents-strip.css">
-<!-- Omni (universal Search + Ask). Own sheet, same truncation-trap reason. -->
+<!-- Omni (universal Search + Ask). Own sheet, same truncation-trap reason.
+     CORE, and deliberately so: besides the overlay it styles #omni-btn, the ⌕
+     button that sits in the deck header on every open. -->
 <link rel="stylesheet" href="hd-omni.css">
-<!-- Favorites Shelf. Own sheet, same truncation-trap reason. -->
+<!-- Favorites Shelf. Own sheet, same truncation-trap reason. CORE: the shelf is a
+     wing of #panel and paints with the deck itself. -->
 <link rel="stylesheet" href="hd-shelf.css">
+<link rel="stylesheet" href="hd-npctune.css">
 <!-- Wheel Menu (Ctrl+F7, the radial palette). Own sheet, same reason. -->
-<link rel="stylesheet" href="hd-wheel.css">
+<link data-hdcss="hd-wheel.css" data-hdcss-key="wheel" data-hdcss-gate="#hd-wheel">
+<!-- Potion Browser (the paused quick-drink popout). Own sheet, same reason. -->
+<link data-hdcss="hd-potions.css" data-hdcss-key="potions" data-hdcss-gate="#hd-potions">
+<!-- Quiver (the ammo radial). Own sheet, same reason. -->
+<link data-hdcss="hd-quiver.css" data-hdcss-key="quiver" data-hdcss-gate="#hd-quiver">
+<!-- Super Searcher (hd-super.js): the widget skin over the omni overlay + its
+     config popup. The gate covers only #hd-super (the popup) — the body.ss-open
+     skin rules apply the moment HDCss's wrapped HDSuper.open() has awaited the
+     sheet, so the widget never paints unstyled. -->
+<link data-hdcss="hd-super.css" data-hdcss-key="super" data-hdcss-gate="#hd-super">
 <!-- Formation modal (Formation with Followers). Own sheet, same reason. -->
-<link rel="stylesheet" href="hd-formation.css">
+<link data-hdcss="hd-formation.css" data-hdcss-key="formation" data-hdcss-gate="#fm-modal">
 <!-- Keys tab: the load-order hotkey census. Own sheet, same reason. -->
-<link rel="stylesheet" href="keys-pane.css">
+<link data-hdcss="keys-pane.css" data-hdcss-key="keys" data-hdcss-gate="#kc-pane">
 <!-- Items tab: the inline item explorer. Own sheet, same reason. -->
-<link rel="stylesheet" href="items-pane.css">
-<link rel="stylesheet" href="hd-lightbox.css">
+<link data-hdcss="items-pane.css" data-hdcss-key="items" data-hdcss-gate="#ix-pane">
+<link data-hdcss="hd-lightbox.css" data-hdcss-key="lightbox" data-hdcss-gate=".hdlb">
+<link data-hdcss="hd-itempick.css" data-hdcss-key="itempick" data-hdcss-gate=".ip-wrap">
 <!-- NPCs tab: the fast NPC finder. Own sheet, same reason. -->
-<link rel="stylesheet" href="npcs-pane.css">
+<link data-hdcss="npcs-pane.css" data-hdcss-key="npcs" data-hdcss-gate="#nx-pane">
+<link data-hdcss="spid-pane.css" data-hdcss-key="distr" data-hdcss-gate="#dx-pane">
+<!-- Journal tab: its own sheet (the sync_view_frags lesson) — it also carries
+     the @font-face block for the shipped OFL fonts, which is a second reason to
+     stage it: a session that never opens the Journal never reads the fonts. -->
+<link data-hdcss="journal-pane.css" data-hdcss-key="journal" data-hdcss-gate="#jr-pane">
+<!-- Settlement tab: the inline world-object placer. Own sheet, same reason. -->
+<link data-hdcss="settlement-pane.css" data-hdcss-key="settle" data-hdcss-gate="#st-pane">
+<!-- Wigs tab: the rendered wig catalogue. Own sheet, same reason. -->
+<link data-hdcss="wigs-pane.css" data-hdcss-key="wigs" data-hdcss-gate="#wv-pane">
+<!-- Survival popout: paused camp-and-supplies menu. Own sheet, same reason. -->
+<!-- ⚠ Keyed to `survival`, the same key as the TAB below, and not to a key of
+     its own: the Survival tab's own markup borrows .sv-bar-glyph from this
+     sheet (index.html, inside #sp-pane), so splitting them leaves the tab's
+     search glyph unstyled. Caught by the cold-visit computed-style diff, not
+     by reading — if the tab ever stops using an sv-* class, they can split. -->
+<link data-hdcss="hd-survival.css" data-hdcss-key="survival" data-hdcss-gate="#hd-survival">
+<!-- Survival TAB: the dashboard (cards you arrange). Own sheet, same reason. -->
+<link data-hdcss="survival-pane.css" data-hdcss-key="survival" data-hdcss-gate="#sp-pane">
+<!-- Spell Crafting tab: the Oblivion-style spellmaker. Own sheet, same reason. -->
+<link data-hdcss="spellcraft-pane.css" data-hdcss-key="spellcraft" data-hdcss-gate="#sc-pane">
+<link data-hdcss="highking-pane.css" data-hdcss-key="highking" data-hdcss-gate="#hx-pane">
+<!-- Transmog tab: restyle your gear. Own sheet, same reason. -->
+<link data-hdcss="transmog-pane.css" data-hdcss-key="transmog" data-hdcss-gate="#tg-pane">
 <!-- Mounts tab: the stable. Own sheet, same reason. -->
-<link rel="stylesheet" href="mounts-pane.css">
+<link data-hdcss="mounts-pane.css" data-hdcss-key="mounts" data-hdcss-gate="#mt-pane">
+<!-- ZaZ segment of the Animations tab. Own sheet, same reason. The gate is
+     #zz-body rather than the whole tab: the rest of the Animations pane is
+     styled by app.css and must keep painting. NOTE this sheet is also what
+     hides #zz-body when the tab is in pose/OStim mode, which is precisely what
+     the gate stands in for until it lands. -->
+<link data-hdcss="zaz-pane.css" data-hdcss-key="anim" data-hdcss-gate="#zz-body, #zz-toast">
 <!-- Character tab: your personal character sheet. Own sheet, same reason. -->
-<link rel="stylesheet" href="charsheet-pane.css">
+<link data-hdcss="charsheet-pane.css" data-hdcss-key="sheet" data-hdcss-gate="#ps-pane">
 <!-- Door lock modal (F7 on a door). Own sheet, same reason. -->
-<link rel="stylesheet" href="hd-door.css">
-<!-- SPID Gear manager + F7 card block (hd-spidgear.js). Own sheet, same reason. -->
-<link rel="stylesheet" href="hd-spidgear.css">
-<link rel="stylesheet" href="wardrobe-spid.css">
+<link data-hdcss="hd-door.css" data-hdcss-key="door" data-hdcss-gate="#dr-modal">
+<!-- SPID Gear manager + F7 card block (hd-spidgear.js). Own sheet, same reason.
+     Keyed to `followers`: .fqsg-* renders inline in the quick card, not only in
+     the modal. -->
+<link data-hdcss="hd-spidgear.css" data-hdcss-key="followers" data-hdcss-gate="#sg-modal, .fqsg-rows">
+<link data-hdcss="wardrobe-spid.css" data-hdcss-key="wardrobe" data-hdcss-gate="#wd-pane">
 <!-- Outfit dock: the F7 card's ⛨ button, three popouts (hd-outfit.js). Same reason. -->
-<link rel="stylesheet" href="hd-outfit.css">
+<link data-hdcss="hd-outfit.css" data-hdcss-key="outfit" data-hdcss-gate="#hdo-layer">
 <!-- NPC Quests modal: the F7 card's 📜 button (hd-quests.js). Same reason. -->
-<link rel="stylesheet" href="hd-quests.css">
+<link data-hdcss="hd-quests.css" data-hdcss-key="npcquests" data-hdcss-gate="#hdq-layer">
 <!-- CHIM flyout (quick card's CHIM button). Own sheet, same reason. -->
-<link rel="stylesheet" href="chim-flyout.css">
-<!-- Bases mode of the Domains tab (bases-pane.js). Own sheet, same reason. -->
-<link rel="stylesheet" href="bases-pane.css">
+<link data-hdcss="chim-flyout.css" data-hdcss-key="chim" data-hdcss-gate=".chim-fly">
+<!-- Bases mode of the Domains tab (bases-pane.js). Own sheet, same reason. The
+     gate is #nb-body, the Bases body, so the Domains tab itself keeps painting. -->
+<link data-hdcss="bases-pane.css" data-hdcss-key="domains" data-hdcss-gate="#nb-body">
+<!-- Auto-Loot card: the option filter, the bind button, the places heading.
+     Own sheet for the hardest version of the truncation trap — the rest of the
+     Containers tab lives in containers-pane.css.frag, which has NO sync tool
+     (only the wardrobe fragment does) and must be hand-merged into app.css. On
+     2026-08-17 that merge was missed and six selectors shipped to nobody, so
+     the filter's input and buttons painted as bare white boxes. Gated on the
+     filter bar itself rather than #ct-pane: a sheet this small must never be
+     able to hide the whole tab. -->
+<link data-hdcss="containers-autoloot.css" data-hdcss-key="containers" data-hdcss-gate="#al-card .al-find">
 <!-- Per-tab UI size / image size. Own sheet, same truncation-trap reason —
      and it must load LAST, because several of its rules deliberately override
-     app.css's own padding/positioning to make room for the scale wrappers. -->
+     app.css's own padding/positioning to make room for the scale wrappers.
+     Every staged sheet above is inserted BEFORE its own placeholder, so this
+     stays last no matter what loads when. -->
 <link rel="stylesheet" href="hd-scale.css">
+<!-- The staged-CSS loader. Must come AFTER the placeholders (it reads them) and
+     BEFORE <body> (it stamps the gate classes onto <html> at parse time, so no
+     staged DOM can ever be laid out unstyled). -->
+<script src="hd-css.js"></script>
+<script>
+/* Broken-install fallback: if hd-css.js is missing, nothing would ever load the
+   staged sheets. Load them all, in place, right now — the deck ends up exactly
+   where it was before staged CSS existed. */
+(function () {
+  try {
+    if (window.HDCss) return;
+    var ph = document.querySelectorAll('link[data-hdcss]');
+    for (var i = 0; i < ph.length; i++) {
+      var l = document.createElement('link');
+      l.rel = 'stylesheet'; l.href = ph[i].getAttribute('data-hdcss');
+      ph[i].parentNode.insertBefore(l, ph[i]);
+    }
+    if (ph.length && window.console) console.log('[hdcss] hd-css.js absent — ' + ph.length + ' sheets loaded eagerly');
+  } catch (e) {}
+})();
+</script>
 </head>
 <body>
   <div id="overlay">
@@ -317,6 +430,24 @@
       <span class="hm-search-ic" aria-hidden="true">⌕</span>
       <span id="hm-search-label">Search everything</span>
       <span class="hm-search-kbd"><kbd>Ctrl</kbd><kbd>F</kbd></span>
+    </div>
+
+    <!-- Open key — the ONE control a new user hunts for and can't find (Nexus
+         feedback, IAMTOKKO: wanted to change F7, searched, gave up). Big
+         current-bind label + a Change… button running the SAME press-to-rebind
+         flow Edit ▸ settings has; filled by home-pane.js renderOpenKey().
+         Integrated from home-pane.html.frag 2026-08-19 — it had lived only in
+         the fragment, so the card never rendered in game and the JS that
+         drives it was dead code. -->
+    <div id="hm-openkey" role="group" aria-label="Open key">
+      <div class="hm-ok-plate" aria-hidden="true">⌨</div>
+      <div class="hm-ok-body">
+        <div class="hm-ok-title">Open key</div>
+        <div class="hm-ok-help">This key opens SkyManager anywhere in the game.</div>
+      </div>
+      <div class="hm-ok-key" id="hm-ok-key" title="The key that opens SkyManager">F7</div>
+      <button id="hm-ok-change" type="button" class="hm-ok-btn"
+              title="Press or pick the new key that opens SkyManager">Change…</button>
     </div>
 
     <div class="hm-sec-head">
@@ -567,6 +698,31 @@
 
 <!-- Containers tab — mark a container, remote-open it from anywhere. ct- prefixed. -->
 <section id="ct-pane" class="hidden" aria-label="Containers">
+  <!-- Page switch. The tab holds TWO full-height pages that are never on screen
+       together: the marked-container roster and the Auto-Loot settings. They
+       used to stack in one column, and once Auto-Loot grew its rules block the
+       roster column's own minimum height (#cs-cards + toolbar + #ct-list's 74px
+       floor + foot ~= 484px) no longer fit in what was left, so #ct-main's
+       content overflowed #ct-body and PAINTED OVER the card below it. Two
+       exclusive pages make that geometry impossible, and give Auto-Loot the
+       whole pane to lay itself out in. -->
+  <div id="ct-modes" role="tablist" aria-label="Containers pages">
+    <button id="ct-mode-marks" class="ct-mode on" role="tab" data-page="marks"
+            title="Your marked containers">
+      <span class="ct-mode-ic" aria-hidden="true"><img src="icons/custom/hm-containers.png" alt=""
+            draggable="false" onerror="this.parentNode.textContent='◆'"></span>
+      <span class="ct-mode-lbl">Containers</span>
+      <span class="ct-mode-n" id="ct-mode-count">0</span>
+    </button>
+    <button id="ct-mode-loot" class="ct-mode" role="tab" data-page="loot"
+            title="Auto-Loot — pick up nearby loot automatically">
+      <span class="ct-mode-ic" aria-hidden="true"><img src="icons/custom/hm-autoloot.png" alt=""
+            draggable="false" onerror="this.parentNode.textContent='◆'"></span>
+      <span class="ct-mode-lbl">Auto-Loot</span>
+      <span class="ct-mode-state" id="ct-mode-alstate">off</span>
+    </button>
+  </div>
+
   <div id="ct-body">
 
     <!-- LEFT: category rail (freeform, user-editable in F2 edit mode) -->
@@ -577,6 +733,9 @@
 
     <!-- RIGHT: search + the container list + the mark button -->
     <section id="ct-main">
+      <!-- container-sort cards (Drop-box + item routes) built by containers-pane.js -->
+      <div id="cs-cards"></div>
+
       <div id="ct-toolbar">
         <div id="ct-search-wrap">
           <span class="ct-search-ic" aria-hidden="true">⌕</span>
@@ -604,6 +763,11 @@
     </section>
 
   </div>
+
+  <!-- 🧲 Auto-Loot — the tab's SECOND page (see #ct-modes above), not a card
+       stapled under the roster. Built by containers-pane.js so its steppers /
+       segmented / chip-grid stay view-owned. Scrolls internally. -->
+  <div id="al-card" aria-label="Auto-Loot"></div>
 
   <div id="ct-capture" class="hidden">
     <div class="ct-capture-box">
@@ -667,6 +831,20 @@
                  aria-label="Claim radius">
           <span class="rm-hint">About one room. Too big reaches through the wall into
             the corridor — you can retune it after claiming.</span>
+        </div>
+
+        <!-- Integrated from rooms-pane.html.frag 2026-08-19: these two lived
+             ONLY in the fragment, so private-cell claim and follower eviction
+             were unreachable in game (rooms-pane.js null-guards them, so it
+             failed silently) — every claim went out wholeCell:false. -->
+        <div class="rm-field rm-keepout">
+          <span class="rm-field-label">Keep out</span>
+          <label class="rm-check"
+                 title="Guard the ENTIRE cell, not just the area you sized above — 'mark this cell private'. Anyone unwelcome anywhere in the cell is moved out and the size slider is ignored.">
+            <input id="rm-claim-whole" type="checkbox"> <span>The whole cell (private cell)</span></label>
+          <label class="rm-check"
+                 title="Push your FOLLOWERS out of this room too, not just strangers. They are told to wait (their own follower mod's wait) so they stop trailing you in, and rejoin when you leave the cell.">
+            <input id="rm-claim-evict" type="checkbox"> <span>My followers too</span></label>
         </div>
 
         <button id="rm-claim-btn" title="Claim the room you are standing in">★ Claim this room</button>
@@ -835,6 +1013,7 @@
   <div id="an-seg" role="tablist" aria-label="Animation source">
     <button id="an-seg-poses" class="an-seg-btn active" role="tab">Animations</button>
     <button id="an-seg-ostim" class="an-seg-btn" role="tab" title="Search & change OStim scenes">OStim</button>
+    <button id="an-seg-zaz" class="an-seg-btn" role="tab" title="ZaZ devices &amp; furniture on your target">ZaZ</button>
   </div>
   <!-- Poses body (unchanged ZAP player), wrapped so the OStim body can sit beside it -->
   <div id="an-row">
@@ -899,8 +1078,34 @@
     </div>
     <div id="os-list" role="list" aria-label="OStim scenes"></div>
   </section>
+  <!-- ZaZ body — devices & furniture on the target (zaz-pane.js).
+       The OStim body's structural twin; own sheet zaz-pane.css. -->
+  <section id="zz-body">
+    <div id="zz-status">
+      <div id="zz-status-top">
+        <span id="zz-target">ZaZ Animation Pack</span>
+        <span id="zz-target-hint">Whoever you were looking at when the deck opened — or you, if nothing.</span>
+      </div>
+      <div id="zz-worn" aria-label="Worn ZaZ devices"></div>
+      <div id="zz-controls">
+        <button id="zz-sub-dev" class="zz-ctl active" title="Wearable restraints — armbinders, gags, collars…">⛓ Devices</button>
+        <button id="zz-sub-furn" class="zz-ctl" title="ZaZ furniture loaded nearby — crosses, pillories, poles…">🪑 Furniture</button>
+        <span class="zz-ctl-sep" aria-hidden="true"></span>
+        <button id="zz-free" class="zz-ctl" title="Take every worn ZaZ device off the target" disabled>🧹 Free completely</button>
+        <button id="zz-refresh" class="zz-ctl" title="Re-read the target, worn gear and nearby furniture">⟳</button>
+      </div>
+    </div>
+    <div id="zz-searchbar">
+      <input id="zz-search" type="text" placeholder="Search devices… (Enter wears the top hit)"
+             autocomplete="off" spellcheck="false" aria-label="Search ZaZ devices">
+      <span id="zz-count" class="zz-count">—</span>
+    </div>
+    <div id="zz-pills" role="tablist" aria-label="Device categories"></div>
+    <div id="zz-list" role="list" aria-label="ZaZ devices and furniture"></div>
+  </section>
   <div id="an-toast" class="an-toast" role="status" aria-live="polite"></div>
   <div id="os-toast" class="os-toast" role="status" aria-live="polite"></div>
+  <div id="zz-toast" class="zz-toast" role="status" aria-live="polite"></div>
 </section>
 <!-- Faces tab: RaceMenu preset browser. faces-pane.js owns everything inside
      #faces-host; this section is just the mount point (like #lt-pane / #rm-pane). -->
@@ -1003,6 +1208,152 @@
   <div id="nx-toast" class="nx-toast" role="status" aria-live="polite"></div>
 </section>
 
+<!-- Distributions tab: what SPID / SkyPatcher could give the crosshair NPC
+     (spid-pane.js owns everything below the static skeleton; C++
+     spid_inspect.cpp owns the ini index and the filter evaluation). -->
+<section id="dx-pane" class="hidden" aria-label="Distributions">
+  <div class="dx-head">
+    <div class="dx-title">Distributions <span id="dx-count-chip"></span></div>
+    <div id="dx-target" class="dx-target"></div>
+  </div>
+  <div class="dx-barwrap">
+    <div class="dx-bar">
+      <span class="dx-bar-glyph">⌕</span>
+      <input id="dx-search" type="text"
+             placeholder="Search what could be given — an item, an outfit, a spell, or an ini name (Enter = open the top hit)"
+             autocomplete="off" spellcheck="false">
+    </div>
+    <div id="dx-pills"></div>
+  </div>
+  <div id="dx-body"></div>
+  <div id="dx-empty" class="hidden"></div>
+  <div id="dx-foot" class="dx-foot"></div>
+</section>
+
+<!-- Settlement tab: the inline world-object placer (settlement-pane.js owns
+     everything below the static skeleton; C++ settlement.cpp owns the index,
+     placement verbs, catalogs and the placement roster). -->
+<section id="st-pane" class="hidden" aria-label="Settlement">
+  <div class="st-head">
+    <span class="st-title">Settlement</span>
+    <span id="st-count" class="st-count"></span>
+    <span id="st-render-chip" class="st-render-chip hidden"></span>
+  </div>
+  <div class="st-barwrap">
+    <div class="st-bar">
+      <span class="st-bar-glyph">⌕</span>
+      <input id="st-bar" type="text"
+             placeholder="Search objects, or a mod name… (Enter = place the top hit)"
+             autocomplete="off" spellcheck="false">
+    </div>
+  </div>
+  <div id="st-pills" class="st-pills"></div>
+  <div id="st-cats" class="st-cats"></div>
+  <div id="st-body"></div>
+  <div id="st-empty" class="hidden"></div>
+  <div id="st-toast" class="st-toast" role="status" aria-live="polite"></div>
+</section>
+
+<!-- High King tab: the Become High King of Skyrim TNG dashboard (highking-pane.js
+     owns everything below the static skeleton; C++ high_king.cpp reads the mod's
+     own globals and dispatches its own scripts). Tab is detection-gated
+     (requires: 'highking' in SYS_TABS) so it only exists when the mod does. -->
+<section id="hx-pane" class="hidden" aria-label="High King">
+  <div class="hx-head">
+    <div class="hx-title"><img class="hx-title-ico" src="icons/custom/hm-highking.png" alt="" onerror="this.remove()">High King <span id="hx-crown-chip"></span></div>
+    <input id="hx-filter" type="text" placeholder="Filter holds, powers, council, stones… (Enter = top hit)"
+           autocomplete="off" spellcheck="false">
+    <button id="hx-refresh" class="hx-btn" title="Re-read the kingdom's ledgers">⟳ Refresh</button>
+  </div>
+  <div id="hx-toast" class="hidden"></div>
+  <div id="hx-hero" class="hidden"></div>
+  <div id="hx-body"></div>
+  <div id="hx-empty" class="hidden"></div>
+</section>
+
+<!-- Spell Crafting tab: the Oblivion-style spellmaker (spellcraft-pane.js owns
+     ALL of the markup below — it builds its own skeleton via ensureDom() into
+     this empty host on first Show; C++ spellcraft_actions.cpp owns FESC
+     detection, the effect/known-spell harvest and the craft/erase/settings/
+     tome verbs — bridge sc*). -->
+<section id="sc-pane" class="hidden" aria-label="Spell Crafting"></section>
+
+<!-- Wigs tab: the rendered wig catalogue (wigs-pane.js owns everything below
+     the static skeleton; C++ owns the wig index, the wear/strip/take verbs
+     and the sidecar persistence — bridge wv*). -->
+<section id="wv-pane" class="hidden" aria-label="Wigs">
+  <div class="wv-head">
+    <span class="wv-title">Wigs</span>
+    <span id="wv-count"></span>
+    <div id="wv-target" class="wv-target" role="tablist" aria-label="Who wears it"></div>
+  </div>
+  <div class="wv-barwrap">
+    <div class="wv-bar">
+      <span class="wv-bar-glyph">⌕</span>
+      <span id="wv-mod-chip" class="hidden"></span>
+      <input id="wv-search" type="text"
+             placeholder="Search wigs, or a style… (Enter = wear the top hit)"
+             autocomplete="off" spellcheck="false">
+    </div>
+  </div>
+  <div id="wv-pills" class="wv-pills"></div>
+  <div id="wv-mods" class="wv-mods"></div>
+  <div id="wv-body"></div>
+  <div id="wv-empty" class="hidden"></div>
+  <div id="wv-picker" class="hidden"></div>
+  <div id="wv-toast" class="wv-toast" role="status" aria-live="polite"></div>
+</section>
+
+<!-- Transmog tab: restyle a SPECIFIC piece of your gear to look like any
+     armor the load order ships (transmog-pane.js owns everything below the
+     static skeleton; C++ transmog.cpp owns the placeholder-ARMO pool, the
+     in-memory restyle, the instance swap and the 'HDTM' co-save; previews
+     render via the ItemIcons / Mesh Rendering Framework route). A SIBLING
+     of the other panes. Keep this markup in step with transmog-pane.test.html. -->
+<section id="tg-pane" class="hidden" aria-label="Transmog">
+  <div class="tg-head">
+    <div class="tg-title">Transmog <span id="tg-count-chip"></span></div>
+    <div class="tg-head-hint"
+         title="Player only for now — the follower systems (SOES-NG) own NPC outfits and would fight a transmog">
+      ◇ your gear only · stats stay, looks change</div>
+  </div>
+  <div class="tg-bar">
+    <span class="tg-bar-glyph">⌕</span>
+    <input id="tg-search" type="text"
+           placeholder="Filter your armor — worn and carried (Enter = restyle the top piece)"
+           autocomplete="off" spellcheck="false">
+  </div>
+  <div id="tg-body"></div>
+  <div id="tg-empty" class="hidden"></div>
+  <div id="tg-toast" class="tg-toast" role="status" aria-live="polite"></div>
+  <div id="tg-sheet" class="hidden"></div>
+</section>
+
+<!-- Survival tab: the dashboard of everything your survival mods track
+     (survival-pane.js owns everything below this static skeleton; C++
+     survival.cpp reads the mods' own globals and owns the card layout
+     sidecar). The quick-action popout is hd-survival.js, a different
+     surface on purpose. -->
+<section id="sp-pane" class="hidden" aria-label="Survival">
+  <div id="sp-head"></div>
+  <div class="sp-bar"><span class="sv-bar-glyph">⌕</span>
+    <input id="sp-search" type="text" autocomplete="off" spellcheck="false"
+           placeholder="Filter the numbers — temperature, thirst, perks…"></div>
+  <div id="sp-body"></div>
+</section>
+
+<!-- Combat Arts moved into the Spell Deck view on 2026-08-15 (Rober: "combat
+     arts is meant to be a spell deck tab not a main skymanager tab") — its
+     skeleton now lives in view/MagicDeck/index.html as that window's second
+     page, and combat-arts-pane.{js,css} moved with it. -->
+
+<!-- Journal tab: the book you write yourself (journal-pane.js owns everything
+     inside; C++ journal.cpp owns journal.json, the merge with the Deck Portal
+     and the picture pool in journal-images/). The pane paints its whole inside
+     from JS — this is only the mount point, a SIBLING of the other panes per
+     the tm-pane lesson. Keep in step with journal-pane.test.html. -->
+<section id="jr-pane" class="hidden" aria-label="Journal"></section>
+
 <!-- Mounts tab: the stable (mounts-pane.js owns everything below the static
      skeleton; C++ mounts.cpp owns the stable file, the conjured-NPC
      auto-detect and the summon/call/ride verbs; bodies render via
@@ -1103,6 +1454,8 @@
         <div id="ps-level-num" class="ps-level-num">—</div>
       </div>
       <div id="ps-level-foot" class="ps-level-foot"></div>
+      <button id="ps-tune-open" class="ps-tune-open"
+              title="Tune your character — skills, attributes, regen, resistances, carry weight, speed, perk points, dragon souls. Changes live in your save.">⚒ Tune</button>
     </div>
   </div>
 
@@ -1127,6 +1480,11 @@
     </div>
     <div id="ps-chips" class="ps-chips"></div>
   </div>
+
+  <!-- Faith (Wintersun). Hidden unless Wintersun's own tracker quest binds —
+       the whole card, head included, so an install without it shows nothing
+       rather than an empty box promising a feature. Filled by renderFaith(). -->
+  <div id="ps-faith" class="ps-card ps-faith hidden" aria-label="Faith"></div>
 
   <!-- Two columns: effects (searchable, removable) + skills grid -->
   <div class="ps-columns">
@@ -1218,6 +1576,21 @@
       <button id="tm-go" class="tm-primary">⏩ Wait</button>
     </div>
 
+
+    <!-- Sky: force any weather the load order ships, or hand it back.
+         (2026-08-17, the PROTEUS weather menu rebuilt over the whole order) -->
+    <div class="tm-group" id="tm-sky" aria-label="Sky">
+      <div class="tm-group-label">Sky</div>
+      <div id="tm-sky-now">reading the sky…</div>
+      <div id="tm-sky-bar">
+        <span class="tm-sky-glyph">⌕</span>
+        <input id="tm-sky-q" type="text" autocomplete="off" spellcheck="false"
+               placeholder="Search every weather — clear, storm, snow, ash… (Enter = top hit)">
+        <button id="tm-sky-release" title="Release the forced weather and let natural weather resume">Let the sky decide</button>
+      </div>
+      <div id="tm-sky-list" class="tm-hiddenish"></div>
+    </div>
+
     <div id="tm-note" class="tm-hiddenish" role="status"></div>
 
     <div id="tm-foot">
@@ -1233,7 +1606,7 @@
           <button class="modkey" data-mod="42">Shift</button>
           <button class="modkey" data-mod="29">Ctrl</button>
           <button class="modkey" data-mod="56">Alt</button>
-          <span class="np-hint">Stays open · game runs live on this tab · toggle modifiers, then click keys</span>
+          <span class="np-hint">Stays open · game runs live on this tab · toggle modifiers, then click keys · Esc and Tab are left out — the deck itself owns them while it is open</span>
         </div>
         <div id="numpad-grid"></div>
        </div><!-- /#np-scale -->
@@ -1381,6 +1754,8 @@
         <span id="wd-builder-del"></span>
         <button id="wd-builder-close" class="ghost-btn" title="Done (Esc)">Done</button>
       </header>
+      <!-- default re-roll cadence for wearers set to "Wardrobe's cadence" -->
+      <div id="wd-builder-cad"></div>
       <div id="wd-builder-cols">
         <section class="wd-col" aria-label="Members">
           <h3 class="wd-col-h">In this wardrobe <span id="wd-mem-count">0</span></h3>
@@ -1535,10 +1910,19 @@
        * ================================================================================ -->
   <!-- Omni loads before app.js: every pane registers its search provider at parse
        time, so the registry must already exist; app.js then calls HDOmni.hookInto(). -->
+  <!-- hd-art FIRST: it taps every icon reply C++ can push (wdItemIcons, nxIconsData,
+       hdIconIndex, hdIcons …) so the index is populated for any surface without that
+       surface wiring anything. It has NO dependencies and touches no DOM at load, so
+       it is safe as the very first script; being first is what guarantees it sees the
+       open-time pushes that land before the panes parse. Identical bytes to
+       ../MagicDeck/hd-art.js — the two view roots cannot see each other, so the file
+       is copied, not shared. -->
+  <script src="hd-art.js"></script>
   <script src="hd-scale.js"></script>
   <script src="hd-omni.js"></script>
   <!-- before app.js: its boot calls HDShelf.hookInto -->
   <script src="hd-shelf.js"></script>
+  <script src="hd-npctune.js"></script>
   <!-- Wheel Menu. Before app.js (its boot calls HDWheel.hookInto) and AFTER
        hd-omni.js, because it registers the `inventory` search provider at
        parse time — the registry has to exist by then. -->

@@ -369,7 +369,7 @@ namespace AnimActions
 					}
 				}
 			} else {
-				logger::warn("anim: zap-catalog.json not found at {}", file.string());
+				logger::warn("anim: zap-catalog.json not found at {}", PathU8(file));
 			}
 		}
 		const std::size_t n = g_catalog.contains("entries") && g_catalog["entries"].is_array()

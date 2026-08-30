@@ -101,6 +101,11 @@ window.KeysPane = (function () {
     chord:   ['Chord Keys', 'kc-src-chord'],
     helper:  ['MCM Helper', 'kc-src-helper'],
     mcm:     ['MCM', 'kc-src-mcm'],
+    plugin:  ['Plugin config', 'kc-src-plugin'],
+    papyrus: ['Papyrus script', 'kc-src-papyrus'],
+    enb:     ['ENB', 'kc-src-enb'],
+    reshade: ['ReShade', 'kc-src-reshade'],
+    shaders: ['Community Shaders', 'kc-src-shaders'],
   };
 
   /* ============================================================= state == */
@@ -175,6 +180,7 @@ window.KeysPane = (function () {
     state.count = state.bindings.length;
     state.seq = d.seq | 0;
     state.lastLoadedSeq = state.seq;
+    dropGroupMemo();          // new bindings: the grouping and the count chip restate
     /* A background refresh republishes as it goes — rows that change under the
        user must not jump the scroll position out from under them. Preserve and
        restore #kc-body's scrollTop across the re-render. */
@@ -191,9 +197,15 @@ window.KeysPane = (function () {
 
   /* ========================================================== grouping == */
 
-  /* bindings -> [{code, name, owners:[binding..], kind:'hard'|'soft'|''}]
-     hard = two or more non-vanilla owners on one key (a real fight);
-     soft = one non-vanilla owner sharing a key the game itself uses. */
+  /* bindings -> [{code, name, owners:[binding..], kind:'hard'|'maybe'|'soft'|''}]
+     hard  = two or more non-vanilla owners on one key, all of them certain
+             about which key they mean (a real fight);
+     maybe = the same collision, but at least one side is a row C++ marked
+             `guess` — a plugin config that never said whether its number is a
+             DirectInput scancode or a Windows virtual-key. Those two spaces
+             disagree (68 is D in one and F10 in the other), so calling it a
+             conflict would be a confident claim we cannot back;
+     soft  = one certain non-vanilla owner sharing a key the game itself uses. */
   function groupKeys(bindings) {
     const byCode = new Map();
     bindings.forEach((b) => {
@@ -207,11 +219,17 @@ window.KeysPane = (function () {
       const modded = g.owners.filter((o) => o.src !== 'vanilla');
       /* Distinct owners, not raw rows: one mod claiming a key twice (two MCM
          controls on one key) is that mod's own business, not a conflict. */
-      const mods = {};
-      modded.forEach((o) => { mods[o.mod || '?'] = true; });
-      const distinct = Object.keys(mods).length;
-      g.kind = distinct >= 2 ? 'hard'
-        : (distinct === 1 && g.owners.length > modded.length) ? 'soft' : '';
+      const distinctOf = (rows) => {
+        const seen = {};
+        rows.forEach((o) => { seen[o.mod || '?'] = true; });
+        return Object.keys(seen).length;
+      };
+      const distinct = distinctOf(modded);
+      const distinctSure = distinctOf(modded.filter((o) => !o.guess));
+      const overGame = g.owners.length > modded.length;
+      g.kind = distinctSure >= 2 ? 'hard'
+        : (distinctSure === 1 && overGame) ? 'soft'
+          : (distinct >= 2 || (distinct === 1 && overGame)) ? 'maybe' : '';
       out.push(g);
     });
     return out;
@@ -226,14 +244,48 @@ window.KeysPane = (function () {
     return state.bindings.filter(isDeadRow).map((b) => b.mod || '?');
   }
 
+  /* The haystack is built ONCE per group and hung off it, not re-lowercased for
+     every owner on every keystroke. A group object only ever comes out of
+     groupKeys, and groupedNow() rebuilds those whenever the bindings change, so
+     it cannot go stale. */
+  function hayOf(g) {
+    if (g.__hay === undefined) {
+      let h = String(g.name || '').toLowerCase();
+      for (let i = 0; i < g.owners.length; i++) {
+        const o = g.owners[i];
+        h += '\u0000' + String(o.mod || '').toLowerCase() +
+             '\u0000' + String(o.control || '').toLowerCase() +
+             '\u0000' + String(o.mods || '').toLowerCase();
+      }
+      g.__hay = h;
+    }
+    return g.__hay;
+  }
+
   function matches(g, needle) {
     if (!needle) return true;
-    const n = needle.toLowerCase();
-    if (g.name.toLowerCase().indexOf(n) !== -1) return true;
-    return g.owners.some((o) =>
-      (o.mod || '').toLowerCase().indexOf(n) !== -1 ||
-      (o.control || '').toLowerCase().indexOf(n) !== -1 ||
-      (o.mods || '').toLowerCase().indexOf(n) !== -1);
+    return hayOf(g).indexOf(needle.toLowerCase()) !== -1;
+  }
+
+  /* Row identity for the keyed reconcile below. The owner chips ARE the row's
+     content, so the signature has to hash WHO owns the key and what they call
+     it — an owner count cannot. Hashing only the count is what let a background
+     refresh that swapped one mod for another (iEquip -> TrueHUD, still one
+     owner) leave the old mod and control on screen forever: the model moved on
+     and the DOM never did. Memoised on the group exactly like __hay — a group
+     object only ever comes out of groupKeys, which is rebuilt whenever the
+     bindings change, so it cannot go stale. */
+  function ownerSig(g) {
+    if (g.__osig === undefined) {
+      let s = '';
+      for (let i = 0; i < g.owners.length; i++) {
+        const o = g.owners[i];
+        s += '\u0001' + String(o.src || '') + '\u0002' + String(o.mod || '') +
+             '\u0002' + String(o.control || '') + '\u0002' + String(o.mods || '');
+      }
+      g.__osig = s;
+    }
+    return g.__osig;
   }
 
   /* Legend chips subtract whole SOURCES before grouping, so conflict kinds
@@ -243,11 +295,38 @@ window.KeysPane = (function () {
     return state.bindings.filter((b) => !ui.srcOff[b.src] && !isDeadRow(b));
   }
 
+  /* groupKeys walks every binding and allocates a Map plus a group object per
+     key. It depends on the BINDINGS and on which sources are switched off —
+     never on the filter — so it is memoised on exactly those two. The old shape
+     re-grouped 900 bindings on every letter typed for a result that could not
+     have changed. */
+  let groupMemo = null, groupMemoKey = '';
+  function groupedNow() {
+    const key = state.seq + '|' + state.bindings.length + '|' + Object.keys(ui.srcOff)
+      .filter((k) => ui.srcOff[k]).sort().join(',');
+    if (!groupMemo || groupMemoKey !== key) { groupMemo = groupKeys(activeBindings()); groupMemoKey = key; }
+    return groupMemo;
+  }
+  /* The census as a whole, ignoring the legend's per-source hiding: the count
+     chip and the omni provider both speak for the WHOLE load order, so neither
+     may read groupedNow(). Memoised beside it and dropped by the same call. */
+  let allGroupMemo = null;
+  function allGroups() {
+    if (!allGroupMemo) allGroupMemo = groupKeys(state.bindings);
+    return allGroupMemo;
+  }
+  let omniMemo = null;
+  function dropGroupMemo() { groupMemo = null; allGroupMemo = null; omniMemo = null; }
+
   function visibleGroups() {
-    let groups = groupKeys(activeBindings());
+    let groups = groupedNow();
     if (ui.conflictsOnly) groups = groups.filter((g) => g.kind);
     groups = groups.filter((g) => matches(g, ui.filter));
-    const rank = { hard: 0, soft: 1, '': 2 };
+    const rank = { hard: 0, maybe: 1, soft: 2, '': 3 };
+    /* filter() already handed back a fresh array in every path above except the
+       unfiltered one, and sorting the memo in place would be a lie about what
+       is cached — copy before sorting. */
+    groups = groups.slice();
     groups.sort((a, b) =>
       (rank[a.kind] - rank[b.kind]) ||
       (b.owners.length - a.owners.length) ||
@@ -291,7 +370,9 @@ window.KeysPane = (function () {
     }
     const chip = $('kc-count-chip');
     if (chip) {
-      const groups = groupKeys(state.bindings);
+      /* The chip counts over ALL bindings (legend filters must not change the
+         census), so it cannot share groupedNow()'s memo — see allGroups(). */
+      const groups = allGroups();
       const hard = groups.filter((g) => g.kind === 'hard').length;
       const real = realBindings().length;
       chip.textContent = real
@@ -331,7 +412,8 @@ window.KeysPane = (function () {
     if (!box) return;
     const counts = {};
     realBindings().forEach((b) => { counts[b.src] = (counts[b.src] || 0) + 1; });
-    const order = ['mcm', 'helper', 'vanilla', 'deck', 'chord'];
+    const order = ['mcm', 'helper', 'plugin', 'papyrus', 'vanilla', 'deck', 'chord',
+      'enb', 'reshade', 'shaders'];
     const srcs = order.filter((s) => counts[s]).concat(
       Object.keys(counts).filter((s) => order.indexOf(s) === -1));
     if (!srcs.length) { box.innerHTML = ''; box.classList.add('hidden'); return; }
@@ -381,13 +463,29 @@ window.KeysPane = (function () {
       '<b>⟳ Rescan all</b> to retry.</span>';
   }
 
+  /* A row's provenance, when C++ sent one: the file and setting it was read
+     from. It is the answer to "says who?", so it rides the hover title of both
+     the chip and the detail row. */
+  function whereFrom(o) {
+    return o.detail ? '\n' + o.detail : '';
+  }
+
   function ownerChip(o) {
     const meta = SRC_META[o.src] || [o.src || '?', 'kc-src-mcm'];
     const modsPfx = o.mods ? esc(o.mods) + ' + ' : '';
-    return '<span class="kc-owner ' + meta[1] + '" title="' + esc(meta[0]) + ' · ' +
-      esc(o.control || '') + '">' +
+    /* The MOD NAME leads the tooltip because it is the part that ellipsizes: a
+       hover that omitted it left a truncated name with no way to read it. And
+       `guess` = the code space was assumed (see groupKeys) — said on the chip
+       itself, not only in the group badge, so the uncertainty travels with the
+       mod that owns it. */
+    const guessNote = o.guess
+      ? '\nAssumed to be a DirectInput scancode \u2014 the file didn\u2019t say.' : '';
+    return '<span class="kc-owner ' + meta[1] + (o.guess ? ' kc-owner-guess' : '') +
+      '" title="' + esc(o.mod || '?') + ' \u2014 ' + esc(meta[0]) + ' \u00b7 ' +
+      esc(o.control || '') + esc(guessNote) + esc(whereFrom(o)) + '">' +
       '<b>' + esc(o.mod || '?') + '</b>' +
       (o.control ? '<i>' + modsPfx + esc(o.control) + '</i>' : '') +
+      (o.guess ? '<u title="Assumed key code">?</u>' : '') +
       '</span>';
   }
 
@@ -404,6 +502,7 @@ window.KeysPane = (function () {
         '<div class="kc-owners"><span class="kc-skel-box kc-skel-w1"></span>' +
         '<span class="kc-skel-box kc-skel-w2"></span></div></div>').join('');
       empty.classList.add('hidden');
+      body.classList.remove('kc-body-off');
       return;
     }
 
@@ -411,13 +510,30 @@ window.KeysPane = (function () {
     if (!groups.length) {
       body.innerHTML = '';
       empty.classList.remove('hidden');
+      /* An emptied body is still flex:1 in the column, so it would hold half the
+         pane open above the message and strand it in the lower third. Take it
+         out of the flow entirely while the empty panel owns the space. */
+      body.classList.add('kc-body-off');
       if (!realBindings().length && state.phase !== 'error') {
-        empty.innerHTML = '<div class="kc-empty-title">No scan yet</div>' +
-          '<div class="kc-empty-sub">Hit <b>⟳ Rescan all</b> to census every hotkey in the load order — ' +
-          'MCM mods, MCM Helper mods, the game’s own controls, Chord Keys and the deck itself.</div>';
+        /* "No scan yet" is only honest if we never got an answer. A sweep that
+           finished and legitimately found nothing (SkyUI absent, every MCM timed
+           out, an unreadable ControlMap) must say THAT \u2014 telling the user the
+           census never ran when it did is the one lie this pane must not tell. */
+        const swept = state.scannedOnce || state.lastLoadedSeq >= 0 || state.phase === 'done';
+        empty.innerHTML = swept
+          ? ('<div class="kc-empty-title">No hotkeys found</div>' +
+             '<div class="kc-empty-sub">The sweep finished and came back empty \u2014 no MCM, MCM Helper, ' +
+             'SKSE plugin config, Papyrus script, Chord Keys or game control reported a key. ' +
+             'That usually means SkyUI didn\u2019t answer. ' +
+             'Hit <b>\u27f3 Rescan all</b> to force a full re-census.</div>')
+          : ('<div class="kc-empty-title">No scan yet</div>' +
+             '<div class="kc-empty-sub">Hit <b>\u27f3 Rescan all</b> to census every hotkey in the load order \u2014 ' +
+             'MCM mods, MCM Helper mods, SKSE plugin configs, compiled Papyrus scripts, ' +
+             'the game\u2019s own controls, Chord Keys, the deck itself, and ' +
+             'ENB / ReShade / Community Shaders.</div>');
       } else if (state.phase !== 'error') {
         empty.innerHTML = '<div class="kc-empty-title">' +
-          (ui.conflictsOnly && !ui.filter ? 'No conflicts 🎉' : 'Nothing matches') + '</div>' +
+          (ui.conflictsOnly && !ui.filter ? 'No conflicts' : 'Nothing matches') + '</div>' +
           '<div class="kc-empty-sub">' +
           (ui.conflictsOnly && !ui.filter
             ? 'Every claimed key has a single owner. That’s a tidy load order.'
@@ -426,40 +542,124 @@ window.KeysPane = (function () {
       return;
     }
     empty.classList.add('hidden');
+    body.classList.remove('kc-body-off');
 
-    let html = '';
-    groups.forEach((g) => {
+    /* Keyed reconcile instead of one big innerHTML. Every row and every open
+       detail block is cached by key code; a keystroke that only narrows the
+       list re-uses the nodes it keeps and creates nothing. The old shape
+       rebuilt all ~250 rows AND re-attached a click listener to each of them on
+       every letter typed. */
+    const want = [];
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i];
       const open = !!ui.expanded[g.code];
-      const badge = g.kind === 'hard'
-        ? '<span class="kc-badge kc-badge-hard">⚠ ' + 'conflict</span>'
-        : g.kind === 'soft'
-          ? '<span class="kc-badge kc-badge-soft">over game key</span>' : '';
-      html += '<div class="kc-row' + (g.kind === 'hard' ? ' kc-row-hard' : '') +
-        (open ? ' kc-row-open' : '') + '" data-code="' + g.code + '" tabindex="0" ' +
-        'title="Click for the full breakdown">' +
-        '<div class="kc-key' + (g.kind === 'hard' ? ' kc-key-hard' : '') + '">' + esc(g.name) + '</div>' +
-        '<div class="kc-owners">' + g.owners.map(ownerChip).join('') + '</div>' +
-        badge + '</div>';
+      want.push({ k: 'r' + g.code, sig: g.kind + (open ? '1' : '0') + '|' + g.name + ownerSig(g),
+        html: function () {
+          const badge = g.kind === 'hard'
+            ? '<span class="kc-badge kc-badge-hard">⚠ ' + 'conflict</span>'
+            : g.kind === 'maybe'
+              ? '<span class="kc-badge kc-badge-maybe" title="One of these came from a ' +
+                'plugin config that never said whether its number is a DirectInput scancode ' +
+                'or a Windows virtual-key — so this may or may not be the same key.">' +
+                'possible — assumed key code</span>'
+              : g.kind === 'soft'
+                ? '<span class="kc-badge kc-badge-soft">over game key</span>' : '';
+          return '<div class="kc-row' + (g.kind === 'hard' ? ' kc-row-hard' : '') +
+            (open ? ' kc-row-open' : '') + '" data-code="' + g.code + '" tabindex="0" ' +
+            'title="Click for the full breakdown">' +
+            '<div class="kc-key' + (g.kind === 'hard' ? ' kc-key-hard' : '') + '">' + esc(g.name) + '</div>' +
+            '<div class="kc-owners">' + g.owners.map(ownerChip).join('') + '</div>' +
+            badge + '</div>';
+        } });
       if (open) {
-        html += '<div class="kc-detail" data-code="' + g.code + '">' +
-          g.owners.map((o) => {
-            const meta = SRC_META[o.src] || [o.src || '?', 'kc-src-mcm'];
-            return '<div class="kc-detail-row">' +
-              '<span class="kc-owner ' + meta[1] + '"><b>' + esc(meta[0]) + '</b></span>' +
-              '<span class="kc-detail-mod">' + esc(o.mod || '?') + '</span>' +
-              '<span class="kc-detail-ctl">' + (o.mods ? esc(o.mods) + ' + ' : '') +
-              esc(o.control || '') + '</span></div>';
-          }).join('') + '</div>';
+        want.push({ k: 'd' + g.code, sig: ownerSig(g), html: function () {
+          return '<div class="kc-detail" data-code="' + g.code + '">' +
+            g.owners.map((o) => {
+              const meta = SRC_META[o.src] || [o.src || '?', 'kc-src-mcm'];
+              return '<div class="kc-detail-row"' +
+                (o.detail ? ' title="' + esc(o.detail) + '"' : '') + '>' +
+                '<span class="kc-owner ' + meta[1] + '"><b>' + esc(meta[0]) + '</b></span>' +
+                '<span class="kc-detail-mod">' + esc(o.mod || '?') + '</span>' +
+                '<span class="kc-detail-ctl">' + (o.mods ? esc(o.mods) + ' + ' : '') +
+                esc(o.control || '') + '</span>' +
+                (o.guess
+                  ? '<span class="kc-detail-guess" title="The config states a number but ' +
+                    'not which code space it is in; the census assumed DirectInput.">' +
+                    'assumed code</span>'
+                  : '') +
+                (o.detail ? '<span class="kc-detail-src">' + esc(o.detail) + '</span>' : '') +
+                '</div>';
+            }).join('') + '</div>';
+        } });
       }
-    });
-    body.innerHTML = html;
+    }
+    reconcile(body, want);
+    wireBodyDelegate(body);
+  }
 
-    body.querySelectorAll('.kc-row:not(.kc-skel)').forEach((row) => {
-      row.addEventListener('click', () => {
-        const code = row.getAttribute('data-code');
-        ui.expanded[code] = !ui.expanded[code];
-        render();
-      });
+  /* Keyed DOM reconcile — the same shape the other big-list panes use. A node
+     whose key and signature both hold is reused verbatim and only MOVED. */
+  const kcTmpl = document.createElement('div');
+  const kcNodes = new Map();
+  function reconcile(host, items) {
+    let cur = host.firstChild;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      let node = kcNodes.get(it.k);
+      if (!node || node.__kcSig !== it.sig) {
+        kcTmpl.innerHTML = it.html();
+        node = kcTmpl.firstElementChild;
+        if (!node) continue;
+        kcTmpl.removeChild(node);
+        node.__kcSig = it.sig;
+        kcNodes.set(it.k, node);
+      }
+      if (cur === node) { cur = cur.nextSibling; continue; }
+      host.insertBefore(node, cur);
+    }
+    while (cur) { const nx = cur.nextSibling; host.removeChild(cur); cur = nx; }
+  }
+
+  function rowOf(e, body) {
+    const t = e.target;
+    const row = t && t.closest ? t.closest('.kc-row') : null;
+    if (!row || row.classList.contains('kc-skel') || !body.contains(row)) return null;
+    return row;
+  }
+
+  function toggleRow(row, keepFocus) {
+    const code = row.getAttribute('data-code');
+    ui.expanded[code] = !ui.expanded[code];
+    render();
+    /* The reconcile replaces a row node whose open-state changed, so a keyboard
+       user's focus would land on <body> and the next Enter would do nothing.
+       Put it back on the row they just worked. (data-code is always a number,
+       so the selector needs no escaping.) */
+    if (keepFocus) {
+      const again = document.querySelector('#kc-body .kc-row[data-code="' + code + '"]');
+      if (again) again.focus();
+    }
+  }
+
+  /* ONE listener for the whole grid, attached once. */
+  let bodyWired = false;
+  function wireBodyDelegate(body) {
+    if (bodyWired) return;
+    bodyWired = true;
+    body.addEventListener('click', (e) => {
+      const row = rowOf(e, body);
+      if (row) toggleRow(row, false);
+    });
+    /* Rows ship tabindex="0" and a :focus-visible ring, so they ADVERTISE
+       themselves as keyboard-operable — Enter and Space must actually expand
+       them or the affordance is a lie. Space would otherwise scroll the list. */
+    body.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+      const row = rowOf(e, body);
+      if (!row) return;
+      e.preventDefault();
+      e.stopPropagation();
+      toggleRow(row, true);
     });
   }
 
@@ -491,6 +691,7 @@ window.KeysPane = (function () {
 
   function onShow() {
     ui.visible = true;
+    disarmSpotlight();   // the tab can never open already-listening
     const filter = $('kc-filter');
     if (filter) { filter.value = ui.filter; setTimeout(() => filter.focus(), 30); }
     toGame('kcState', '');
@@ -506,9 +707,37 @@ window.KeysPane = (function () {
     render();
   }
 
+  /* The spotlight is a MODE, and its chrome must never outlive it. Leaving the
+     tab drops capture, so a button still reading "Press any key…" on return
+     would send the next keypress into the search box as a literal letter while
+     claiming it was listening. One function owns both halves. */
+  function disarmSpotlight() {
+    ui.capturing = false;
+    const spot = $('kc-spotlight');
+    if (spot) { spot.classList.remove('kc-toggle-on'); spot.textContent = '⌨ Find a key'; }
+  }
+
+  /* The other half, so the mode has exactly one owner either way: the header
+     button and the omni row that opens the tab already listening both come
+     through here rather than each writing the chrome themselves. */
+  function armSpotlight() {
+    ui.capturing = true;
+    const spot = $('kc-spotlight');
+    if (spot) { spot.classList.add('kc-toggle-on'); spot.textContent = 'Press any key…'; }
+  }
+
+  /* Same reason as armSpotlight: the ⚠ button and the omni row that turns the
+     view on must not each keep their own idea of what the button reads. */
+  function setConflictsOnly(on) {
+    ui.conflictsOnly = !!on;
+    const btn = $('kc-conflicts-btn');
+    if (btn) btn.classList.toggle('kc-toggle-on', ui.conflictsOnly);
+    render();
+  }
+
   function onHide() {
     ui.visible = false;
-    ui.capturing = false;
+    disarmSpotlight();
     stopPoll();
   }
 
@@ -535,19 +764,26 @@ window.KeysPane = (function () {
           if (top) { ui.expanded[top.code] = true; render(); }
           e.stopPropagation();
         }
-        if (e.key === 'Escape' && filter.value) {
-          filter.value = ''; ui.filter = ''; render();
-          e.stopPropagation();
-        }
+        /* Escape is NOT handled here — see the window-capture listener below. */
       });
+      /* Escape while typing must clear the filter, not slam the whole deck shut.
+         app.js owns Escape from a document-level CAPTURE listener, so a bubble
+         handler on the input can never get there first — its stopPropagation
+         runs long after requestClose(). Capture order is window BEFORE document,
+         so this is the only seat from which the pane can win the key. Kept
+         deliberately narrow: our tab, our box, and only when there is something
+         to clear — every other Escape still closes the deck as it should. */
+      window.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape' || !ui.visible) return;
+        if (e.target !== filter || !filter.value) return;
+        filter.value = ''; ui.filter = ''; render();
+        e.preventDefault();
+        e.stopPropagation();
+      }, true);
     }
     const conflicts = $('kc-conflicts-btn');
     if (conflicts) {
-      conflicts.addEventListener('click', () => {
-        ui.conflictsOnly = !ui.conflictsOnly;
-        conflicts.classList.toggle('kc-toggle-on', ui.conflictsOnly);
-        render();
-      });
+      conflicts.addEventListener('click', () => setConflictsOnly(!ui.conflictsOnly));
     }
     const re = $('kc-rescan');
     if (re) re.addEventListener('click', () => rescan(true));
@@ -555,16 +791,13 @@ window.KeysPane = (function () {
     const spot = $('kc-spotlight');
     if (spot) {
       spot.addEventListener('click', () => {
-        ui.capturing = !ui.capturing;
-        spot.classList.toggle('kc-toggle-on', ui.capturing);
-        spot.textContent = ui.capturing ? 'Press any key…' : '⌨ Find a key';
+        if (ui.capturing) { disarmSpotlight(); return; }   // one owner for the "off" chrome
+        armSpotlight();
       });
       document.addEventListener('keydown', (e) => {
         if (!ui.capturing || !ui.visible) return;
         const dik = BROWSER_TO_DIK[e.code];
-        ui.capturing = false;
-        spot.classList.remove('kc-toggle-on');
-        spot.textContent = '⌨ Find a key';
+        disarmSpotlight();
         if (dik) {
           setFilter(keyName(dik));
           const f = $('kc-filter');
@@ -649,23 +882,106 @@ window.KeysPane = (function () {
   }
 
   /* ---- Omni search provider (universal search) ------------------------- */
+
+  /* This pane has no host object, so it reaches the deck the way every other
+     provider's item-level jump does — through the setTab app.js publishes. */
+  function goToTab() {
+    if (typeof window.__omniSetTab === 'function') window.__omniSetTab('keys');
+  }
+
+  /* Land ON the key, not merely on the tab: the row is expanded to its
+     breakdown first, then the pane's own filter is narrowed to that key's name
+     (the spotlight's idiom — a key name is what this pane searches by), and the
+     row is brought into view. */
+  function showKey(g) {
+    goToTab();
+    ui.expanded[g.code] = true;
+    setFilter(g.name);
+    const row = document.querySelector('#kc-body .kc-row[data-code="' + g.code + '"]');
+    /* Guarded the way every other pane guards it: an older webview without
+       scrollIntoView still lands on the right tab with the right row open. */
+    if (row && row.scrollIntoView) {
+      try { row.scrollIntoView({ block: 'center' }); } catch (e) { /* not fatal */ }
+    }
+  }
+
+  /* One row per KEY — the whole census, not just the fights. "Who owns F5",
+     "Wildcat", "Cycle Left" are all questions this tab holds the answer to, and
+     a key claimed by exactly ONE mod (the overwhelming majority) is the common
+     case, so filtering to conflicts made the deck's biggest data set answer
+     almost nothing.
+
+     index() is called on every keystroke, so the rows are memoised exactly like
+     the groupings they are built from, and dropped by the same
+     dropGroupMemo() — a fresh census rebuilds them, a keystroke never does. */
+  function omniRows() {
+    if (omniMemo) return omniMemo;
+    const rows = allGroups().map((g) => {
+      const mods = [];
+      g.owners.forEach((o) => {
+        const m = o.mod || '?';
+        if (mods.indexOf(m) === -1) mods.push(m);
+      });
+      const who = mods.slice(0, 3).join(', ') +
+        (mods.length > 3 ? ' +' + (mods.length - 3) + ' more' : '');
+      const what = g.owners.map((o) => o.control).filter(Boolean).slice(0, 3).join(' · ');
+      const lead = g.kind === 'hard'
+        ? '⚠ ' + mods.length + ' mods claim this key'
+        : g.kind === 'soft'
+          ? 'Over a game control'
+          : (SRC_META[g.owners[0].src] || ['Bound', ''])[0];
+      return {
+        label: g.name + ' — ' + who,
+        detail: lead + (what ? ' · ' + what : ''),
+        kind: g.kind === 'hard' ? 'key conflict' : 'key',
+        /* hayOf() is the pane's own search haystack (key name, every mod, every
+           control, every chord prefix), already built and memoised — reusing it
+           means omni and the tab can never disagree about what a key matches.
+           The player's words for the thing go in front of it. */
+        keywords: 'key hotkey bind binding keybind shortcut bound to who owns unbind ' +
+          hayOf(g).split('\u0000').join(' '),
+        jump: function () { showKey(g); },
+      };
+    });
+    /* The tools sit with the keys because they are what a player wants when the
+       census itself is the answer: find what a key does, see only the fights,
+       or re-take the whole census. */
+    rows.push({
+      label: '⌨ Find a key', detail: 'Press a key and its row lights up',
+      kind: 'keys',
+      keywords: 'keys find key press any key spotlight identify what is this key bound to which mod',
+      run: function () { goToTab(); armSpotlight(); },
+    });
+    rows.push({
+      label: '⚠ Show only key conflicts', detail: 'Hide every key that has a single owner',
+      kind: 'keys',
+      keywords: 'keys conflicts only clashes fights double bound two mods same key show',
+      run: function () { goToTab(); setConflictsOnly(true); },
+    });
+    rows.push({
+      label: '⟳ Rescan all hotkeys',
+      detail: 'Re-census the whole load order, retrying MCMs that didn’t answer',
+      kind: 'keys',
+      keywords: 'keys rescan re-scan refresh census again sweep update mcm bindings',
+      run: function () { goToTab(); rescan(true); },
+    });
+    rows.push({
+      label: 'Key Census', detail: 'Every hotkey in the load order, and what conflicts',
+      kind: 'keys', keywords: 'keys census hotkey conflict mcm scan bindings' });
+    omniMemo = rows;
+    return omniMemo;
+  }
+
   if (window.HDOmni) HDOmni.register({
     id: 'keys', label: 'Keys', tab: 'keys',
     setFilter: setFilter,
-    index: function () {
-      const items = groupKeys(state.bindings)
-        .filter((g) => g.kind === 'hard')
-        .map((g) => ({
-          label: g.name + ' — ' + g.owners.length + ' owners',
-          detail: 'Key conflict · ' + g.owners.map((o) => o.mod).join(' vs '),
-          kind: 'keys',
-          keywords: 'key conflict hotkey bind ' + g.name + ' ' + g.owners.map((o) => o.mod).join(' '),
-          filter: g.name,
-        }));
-      items.push({ label: 'Key Census', detail: 'Every hotkey in the load order, and what conflicts',
-        kind: 'keys', keywords: 'keys census hotkey conflict mcm scan bindings' });
-      return items;
-    },
+    /* Omni can be opened having never visited this tab, and index() may not talk
+       to the bridge — so the one cheap ask happens here. kcState only: if C++
+       already holds a census its reply's new seq pulls the rows in (see
+       kcStateResult). It never starts a sweep — that costs a Papyrus pass over
+       every MCM and stays the player's own choice. */
+    warm: function () { if (!state.bindings.length) toGame('kcState', ''); },
+    index: omniRows,
   });
 
   return {

@@ -1,6 +1,10 @@
 #include "effects_actions.h"
 
+#include "body_physics.h"
+#include "pubes_actions.h"
 #include "skinshift_actions.h"
+#include "wear_effects.h"
+#include "zaz_deck.h"
 
 // pch (force-included) provides RE::/SKSE::, logger and nlohmann json (<json.hpp>).
 
@@ -135,6 +139,11 @@ namespace EffectsActions
 			e["label"] = def.label;
 			e["glyph"] = def.glyph;
 			e["detail"] = def.detail;
+			// `mod` is what the view GROUPS by (Rober, 2026-08-17: other oil /
+			// skin mods "need to be separated by mod"), and `kind` says which
+			// mechanism drives it — a spell you carry vs a piece you wear.
+			e["mod"] = def.modName;
+			e["kind"] = "spell";
 			const bool present = PluginPresent(def.plugin);
 			e["present"] = present;
 			bool active = false;
@@ -155,6 +164,16 @@ namespace EffectsActions
 			e["active"] = active;
 			effects.push_back(e);
 		}
+
+		// Wear-driven cosmetic mods (Liquid Pack and whatever joins it) land in
+		// the SAME list rather than a parallel one — the view groups by `mod`,
+		// so one list with a grouping key beats two lists it has to reconcile.
+		const auto wearPieces = WearEffects::PiecesJson(formId);
+		for (const auto& p : wearPieces)
+			effects.push_back(p);
+		const bool wearPresent = WearEffects::AnyPresent();
+		j["wearMods"] = WearEffects::ModsJson();
+
 		j["effects"] = effects;
 
 		// 🎨 Skins block — the SkinShift integration rides the same fxState
@@ -164,10 +183,34 @@ namespace EffectsActions
 		const bool skinsPresent = skins.value("present", false);
 		j["skins"] = skins;
 
-		// The ✨ draws when EITHER kind of look is on the load order — a rig
-		// with SkinShift but none of the ability-spell mods still gets the
-		// modal (its Effects tab shows the honest per-mod reasons).
-		j["anyPresent"] = anyPresent || skinsPresent;
+		// 🫧 Body block — CBBE 3BA's CBPC/SMP switch and its cup, plus OSmp.
+		// Rides the same fxState payload for the same reason `skins` does
+		// (body_physics.cpp owns availability, the live read and the writes).
+		const auto body = BodyPhysics::BodyJson(formId);
+		const bool bodyPresent = body.value("present", false);
+		j["body"] = body;
+
+		// 🌿 Pubes block — OPubes NG's catalogue, detected from the load order
+		// rather than tabled here, with a baked preview per style. Rides the
+		// same fxState payload for the same reason `skins` and `body` do
+		// (pubes_actions.cpp owns detection, the tiles and the writes).
+		const auto pubes = PubesActions::PubesJson(formId);
+		const bool pubesPresent = pubes.value("present", false);
+		j["pubes"] = pubes;
+
+		// Zaz block — ZaZ's restraint catalogue, read from the SAME device list
+		// the Animations tab uses (zaz_deck owns it), with mesh icons and the
+		// paging the view drives. Rober, 2026-08-17: "we have zaz in animation
+		// already but zaz if detected would be nice here as well".
+		const auto zaz = ZazDeck::EffectsJson(formId);
+		const bool zazPresent = zaz.value("present", false);
+		j["zaz"] = zaz;
+
+		// The ✨ draws when ANY kind of change is on the load order — a rig
+		// with only 3BA still gets the modal (its Effects tab shows the honest
+		// per-mod reasons).
+		j["anyPresent"] = anyPresent || skinsPresent || bodyPresent || pubesPresent ||
+			wearPresent || zazPresent;
 
 		// Build marker (hd-markers.json: "effects-modal") — reached on every
 		// fxGet, i.e. each time the quick card looks at someone.
@@ -187,6 +230,38 @@ namespace EffectsActions
 			if (key == "clear" || !on)
 				return SkinShiftActions::Clear(formId);
 			return SkinShiftActions::Apply(formId, key);
+		}
+
+		// "3ba:" ids route to the body-physics bridge, same reasoning.
+		if (id.rfind("3ba:", 0) == 0)
+			return BodyPhysics::Apply(formId, id, on);
+
+		// "wear:" ids are armour-driven cosmetic mods (Liquid Pack et al).
+		if (id.rfind("wear:", 0) == 0)
+			return WearEffects::Apply(formId, id, on);
+
+		// "zaz:" ids are ZaZ restraints. ":icons:<k1,k2,…>" is the visible
+		// page's render request rather than a toggle — it rides this one entry
+		// point for the same reason every other sub-feature does: the fx*
+		// bridge forwards only { formId, id, on }, and adding a bridge pair
+		// means editing main.cpp, which carries other sessions' work.
+		if (id.rfind("zaz:", 0) == 0) {
+			const std::string rest = id.substr(4);
+			if (rest.rfind("icons:", 0) == 0)
+				return ZazDeck::RequestIcons(rest.substr(6));
+			return ZazDeck::ApplyTo(formId, rest, on);
+		}
+
+		// "pubes:" ids route to the OPubes bridge, same reasoning again.
+		// ":clear" (or on=false) shaves; ":rescan" re-reads the catalogue;
+		// anything else is a style key from the picker.
+		if (id.rfind("pubes:", 0) == 0) {
+			const std::string key = id.substr(6);
+			if (key == "rescan")
+				return PubesActions::Rescan();
+			if (key == "clear" || !on)
+				return PubesActions::Clear(formId);
+			return PubesActions::Apply(formId, key);
 		}
 
 		const auto* def = DefById(id);

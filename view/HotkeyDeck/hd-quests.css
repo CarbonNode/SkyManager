@@ -47,7 +47,7 @@
     linear-gradient(180deg, #1a1a21, #101015);
   border: 1px solid #c9a24b77;
   border-radius: 14px;
-  box-shadow: 0 22px 70px rgba(0, 0, 0, .6), 0 0 0 1px #00000055;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px #00000055;
   color: #e6e0d2;
 }
 .hdq-box.is-fresh { animation: hdqIn 180ms cubic-bezier(.2, .9, .3, 1.2); }
@@ -445,14 +445,8 @@
   border-radius: 11px;
   border: 1px solid #ffffff0d;
   background: linear-gradient(90deg, #ffffff07 0%, #ffffff12 50%, #ffffff07 100%);
-  background-size: 200% 100%;
-  animation: hdqShimmer 1.25s ease-in-out infinite;
 }
 .hdq-skel.is-tall { height: 132px; }
-@keyframes hdqShimmer {
-  from { background-position: 140% 0; }
-  to   { background-position: -40% 0; }
-}
 
 .hdq-empty {
   margin: auto;

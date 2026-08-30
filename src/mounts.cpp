@@ -211,7 +211,7 @@ namespace Mounts
 			{
 				std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
 				if (!out.is_open()) {
-					logger::error("mounts: could not open {} for write", tmp.string());
+					logger::error("mounts: could not open {} for write", PathU8(tmp));
 					return;
 				}
 				out << text;

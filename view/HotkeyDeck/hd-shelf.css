@@ -164,11 +164,11 @@ body.open.shf-open:not(.shf-left) #resize-grip { right: 348px; }
   flex-direction: column;
   background: linear-gradient(180deg, #1a1a21 0%, #101015 100%);
   border-left: 1px solid #3d3a33;
-  box-shadow: -18px 0 60px rgba(0,0,0,.6);
+  box-shadow: -10px 0 28px rgba(0,0,0, 0.45);
 }
 #hd-shelf.side-left .shf-panel {
   border-left: none; border-right: 1px solid #3d3a33;
-  box-shadow: 18px 0 60px rgba(0,0,0,.6);
+  box-shadow: 10px 0 28px rgba(0,0,0, 0.45);
 }
 #hd-shelf.expanded .shf-panel { display: flex; animation: shfSlide 160ms ease; }
 

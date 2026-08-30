@@ -38,6 +38,14 @@ window.NpcsPane = (function () {
   const PAGE_SIZES = [10, 25, 50, 100];
   const DEFAULT_PAGE_SIZE = 10;
 
+  /* The Mods roster is client-side (the plugin list arrives whole with nxState),
+     so it grows a chunk at a time instead of paging through C++. The cap is a
+     draw budget, never a claim about the roster — the section header always
+     names the FULL match count, and the tail row reveals the rest (4,780 mods
+     on the rig: capping silently hid most of them). */
+  const MODS_PAGE = 30;
+  const MODS_PREVIEW = 5;   // 'Everyone' searches show a taste of the mods, not the roster
+
   /* ============================================================== pills == */
 
   /* pseudo-kinds; 'all' and 'mods' the C++ never sees, the rest map to the
@@ -73,6 +81,7 @@ window.NpcsPane = (function () {
     sel: 0,
     pageSize: DEFAULT_PAGE_SIZE,  // rows per page — restored from state, persisted on change
     page: 0,                      // current page, 0-based — SESSION-ONLY, never persisted
+    modsShown: MODS_PAGE,         // how many mod rows are drawn — grows on "Show more", resets per search
     visible: false,
     debT: null,
     toastT: null,
@@ -81,6 +90,12 @@ window.NpcsPane = (function () {
     iconPollT: null,
     iconPollN: 0,
     hintSeen: false,   // the first-open "faces render in the background" hint
+    /* Rich detail (2026-08-15): level/race/class/stats/factions per NPC, lazily
+       fetched on expand. `expanded` = the open row id (one at a time); `detail`
+       caches computed blocks by id; `detailErr` holds an honest failure reason. */
+    expanded: '',
+    detail: {},
+    detailErr: {},
   };
 
   /* ============================================================= bridge == */
@@ -94,6 +109,7 @@ window.NpcsPane = (function () {
       if (DEV && fn === 'nxState') setTimeout(devState, 30);
       if (DEV && fn === 'nxQuery') setTimeout(function () { devQuery(arg); }, 30);
       if (DEV && fn === 'nxAct') setTimeout(function () { devAct(arg); }, 30);
+      if (DEV && fn === 'niInspect') setTimeout(function () { devInspect(arg); }, 30);
     }
   }
 
@@ -134,6 +150,17 @@ window.NpcsPane = (function () {
 
   window.nxResultData = function (d) {
     if (!d || typeof d !== 'object') return;
+    /* Detail reply (a row expansion) rides this SAME listener — keyed by the
+       `detail` field a page reply never carries — so no new C++ bridge was
+       needed. NOT gated on seq: a detail can land after the next page query
+       bumped state.seq, and dropping it would leave the block spinning. */
+    if (typeof d.detail === 'string' && d.detail) {
+      if (d.info && typeof d.info === 'object' && Object.keys(d.info).length)
+        { ui.detail[d.detail] = d.info; delete ui.detailErr[d.detail]; }
+      else ui.detailErr[d.detail] = d.err || 'Could not read this NPC';
+      if (ui.visible && ui.expanded === d.detail) patchDetailInPlace(d.detail);
+      return;
+    }
     if ((d.seq | 0) !== state.seq) return;   // stale reply from an older keystroke
     state.awaiting = false;
     state.total = d.total | 0;
@@ -155,6 +182,12 @@ window.NpcsPane = (function () {
 
   window.nxActResult = function (d) {
     if (!d || typeof d !== 'object') return;
+    /* The spawn guard: C++ answered "this copy would be faceless" instead of
+       placing anything. A toast is the wrong shape for that — it vanishes, and
+       it offers nothing to press. Open the card, which states the reason and
+       carries the verb that actually works. Any DLL that doesn't know about
+       the guard never sets `warn`, so this branch simply never fires. */
+    if (d.warn === 'faceless' && d.id) { openSpawnGuard(d); return; }
     toast(d.msg || (d.ok ? 'Done' : 'Failed'), !d.ok);
   };
 
@@ -263,7 +296,8 @@ window.NpcsPane = (function () {
      1; Prev/Next call with reset=false and set ui.page themselves first. Each
      query REPLACES the page — state.items is never carried across. */
   function runQuery(reset) {
-    if (reset) { ui.page = 0; chipLastLand = Date.now(); }   // a new search re-arms the render chip
+    /* a new search re-arms the render chip, and re-caps the mod roster */
+    if (reset) { ui.page = 0; ui.modsShown = MODS_PAGE; chipLastLand = Date.now(); }
     if (ui.type === 'mods') { state.awaiting = false; render(); return; }
     if (!ui.q && !ui.plugin && ui.type === 'all') {
       state.items = []; state.total = 0; state.awaiting = false; ui.page = 0;
@@ -330,7 +364,9 @@ window.NpcsPane = (function () {
       if (ok) out.push(p);
     }
     out.sort(function (a, b) { return (b.c | 0) - (a.c | 0); });
-    return out.slice(0, limit);
+    /* No limit = the honest total. Callers that draw rows pass one; callers
+       that COUNT must not, or the header reports its own cap as the total. */
+    return limit ? out.slice(0, limit) : out;
   }
 
   /* ================================================ secondary plugin filter ==
@@ -366,7 +402,12 @@ window.NpcsPane = (function () {
   function flatRows() {
     const rows = [];
     if (showsModSection()) {
-      modMatches(ui.type === 'mods' ? 30 : 5).forEach(function (p) { rows.push({ kind: 'plug', p: p }); });
+      const cap = ui.type === 'mods' ? ui.modsShown : MODS_PREVIEW;
+      const all = modMatches(0);
+      all.slice(0, cap).forEach(function (p) { rows.push({ kind: 'plug', p: p }); });
+      /* Selectable, so Down-Down-Enter reaches the rest without the mouse. */
+      if (ui.type === 'mods' && all.length > cap)
+        rows.push({ kind: 'more', left: all.length - cap });
     }
     if (ui.type !== 'mods') {
       state.items.forEach(function (it) {
@@ -388,13 +429,27 @@ window.NpcsPane = (function () {
   function activate(row) {
     if (!row) return;
     if (row.kind === 'plug') { setPlugin(row.p.n); return; }
+    if (row.kind === 'more') { showMoreMods(); return; }
     if (row.kind === 'npc') act('bring', row.it);
+  }
+
+  /* Grow the mod roster in place. Selection stays where it is, so the row the
+     button sat on becomes the first of the new batch. */
+  function showMoreMods() {
+    ui.modsShown += MODS_PAGE;
+    renderBodyPreservingScroll();
   }
 
   /* ============================================================= actions == */
 
-  function act(what, it) {
-    toGame('nxAct', JSON.stringify({ act: what, id: it.id }));
+  /* `opts.force` is the spawn guard's "Spawn anyway" — the ONLY thing that
+     sends force:true, and only after the user has read why the copy will be
+     faceless. Every other caller sends the same two-field payload it always
+     did, so an old DLL (which simply ignores an unknown key) still works. */
+  function act(what, it, opts) {
+    const req = { act: what, id: it.id };
+    if (opts && opts.force) req.force = true;
+    toGame('nxAct', JSON.stringify(req));
     if (what === 'spawn') toast('Placing ' + it.n + '…');
   }
 
@@ -657,12 +712,15 @@ window.NpcsPane = (function () {
 
   /* ============================================================ lightbox == */
 
-  /* Click the plate -> the big render (hd-lightbox.js). A face or a creature
-     body; neither has turntable siblings here, so this is the plain big view. */
+  /* Click the plate -> the big render (hd-lightbox.js). A FACE takes the
+     hdSpin turntable (hold + drag turns the head — baked on first drag, never
+     on open); a creature body stays the plain big view (its bake belongs to
+     the Mounts pane, which resolves the body NIF). */
   function openLightbox(it) {
     const art = artFor(it);
     const url = art ? art.url : '';
     if (!url || !window.HDLightbox) return;
+    const fp = !art.body ? faceParts(it.fc) : null;
     HDLightbox.open({
       host: $('nx-pane'),
       src: url,
@@ -670,10 +728,1113 @@ window.NpcsPane = (function () {
       title: it.n,
       sub: (it.r || (it.s === 'f' ? 'Woman' : 'Man')) + ' · ' + it.p +
         (it.u ? ' · ★ unique' : '') + (it.e ? ' · ⛨ essential' : ''),
+      spin: fp ? { kind: 'face', formId: fp.formId, plugin: fp.plugin } : null,
     });
   }
 
+  /* =========================================================== inspect == *
+   *  THE INSPECT CARD — "look at any NPC and see what they actually are"
+   *  (Rober, 2026-08-17, catching up with Skyrim Party Sheet's headline
+   *  feature). The ⓘ detail block below reads the BASE RECORD — who this
+   *  person is in the load order. This reads the LIVE ACTOR — what is
+   *  standing in front of you: a levelled bandit whose record says level 1
+   *  and 0/0/0 is, right now, level 48 with 700 health, a fortified axe and
+   *  three poisons running.
+   *
+   *  Bridge: niInspect({}|{id}|{ref}, seq) -> niInspectData({ok,…}). Disjoint
+   *  names, per the deck law. C++: src/npc_inspect.cpp.
+   *
+   *  It is a SHEET over the pane, not a row expansion: there is far too much
+   *  of it for an inline block, and it must be reachable with no search at
+   *  all (the crosshair path opens it straight from the header).
+   *
+   *  ENGINE LAWS THIS OBEYS — measured in PrismaUI's own Ultralight 1.4.1:
+   *    * NO conic-gradient (it computes to `none` there, silently). Every
+   *      meter in here is a linear track + a width-driven fill.
+   *    * NO vh/vw anywhere. The sheet lives INSIDE #panel, which carries
+   *      transform: scale(--ui-scale), so a bare viewport unit would render
+   *      at size×scale and clip at Fill. Percentages of the pane and plain
+   *      px scale correctly with it and need no calc() division.
+   *    * No looping animations, no animated background-position.
+   *    * Emoji rasterise monochrome at a 1.4em advance, so every glyph box is
+   *      sized ≥ 1.5em or the mark gets shaved.
+   * ====================================================================== */
+
+  /* Effect piles, in the order the sheet shows them. `all` is a pseudo-pile. */
+  const EFF_PILES = [
+    ['all', 'Everything', ''],
+    ['debuff', 'Debuffs', '▼'],
+    ['poison', 'Poisons', '☠'],
+    ['disease', 'Diseases', '☣'],
+    ['buff', 'Buffs', '▲'],
+    ['constant', 'Always on', '∞'],
+  ];
+
+  /* The nine equipment slots, in the fixed order C++ sends them. Kept here so
+     a tile can carry a label + glyph even when the slot is EMPTY — the grid
+     must not reflow as someone swaps gear mid-inspection. */
+  const EQ_GLYPH = {
+    head: '⌂', body: '⛨', hands: '✋', feet: '⇣', amulet: '◇', ring: '○',
+    right: '⚔', left: '✦', ammo: '➤',
+  };
+
+  const insp = {
+    open: false,
+    seq: 0,          // bumped per request; a reply with an older seq is dropped
+    data: null,      // the last good payload
+    err: '',         // an honest refusal sentence
+    why: '',         // its machine-readable reason
+    loading: false,
+    filter: '',      // ONE sheet-wide filter: effects + factions + skills
+    pile: 'all',
+    hidden: false,   // show the engine's kHideInUI plumbing effects too
+    portrait: '',    // the row's face render, when opened from a row
+    glyph: '♀',
+    title: '',       // who we ASKED about, so the loading state has a name
+    skillsOpen: false,
+    chim: null,      // { npcName, loading, err, reply } — CHIM's own facets, fetched separately (see fetchChim)
+  };
+
+  /* --------------------------------------------------------------- bridge -- */
+
+  window.niInspectData = function (d) {
+    if (!d || typeof d !== 'object') return;
+    if ((d.seq | 0) !== insp.seq) return;      // a reply from an older click
+    insp.loading = false;
+    if (d.ok) {
+      insp.data = d;
+      insp.err = '';
+      insp.why = '';
+      if (d.who && d.who.name) insp.title = d.who.name;
+      fetchChim(d.who && d.who.name);
+    } else {
+      insp.data = null;
+      insp.err = d.msg || 'That could not be read.';
+      insp.why = d.why || '';
+    }
+    renderInspect();
+  };
+
+  /* CHIM's own facets for the open NPC — a SEPARATE fetch from niInspect (that
+     one reads the live RE::Actor; this one asks CHIM's Postgres via the same
+     structured, instant, non-LLM channel the Home "Ask (CHIM)" overlay already
+     uses). Gated on the same 'chim' detection flag every other CHIM surface
+     reads. Keyed by name, not FormID/EditorID — CHIM's core_npc_master has no
+     other identity (sharmat-wiring.md's "Name resolution"). */
+  function fetchChim(name) {
+    insp.chim = null;
+    if (!name || window.__hdFlagAbsent('chim')) return;
+    if (!window.HDOmni || typeof HDOmni.askStructured !== 'function') return;
+    const target = name;
+    insp.chim = { npcName: target, loading: true, err: '', reply: null };
+    HDOmni.askStructured(target, 'tell me about them', function (env) {
+      /* The sheet may have moved to someone else (or a fresh fetch already
+         superseded this one) by the time CHIM answers — drop it silently,
+         same law as niInspect's own insp.seq guard above. */
+      if (!insp.chim || insp.chim.npcName !== target) return;
+      if (!env || !env.ok) {
+        insp.chim.loading = false;
+        insp.chim.err = (env && env.chimDown)
+          ? 'CHIM isn’t reachable — is the server up?'
+          : ((env && env.error) || 'CHIM ask failed.');
+        renderInspect();
+        return;
+      }
+      let body = env.json;
+      if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }
+      if (!body || body.ok === false) {
+        insp.chim.loading = false;
+        insp.chim.err = (body && body.error) || 'CHIM had nothing to say.';
+        renderInspect();
+        return;
+      }
+      insp.chim.loading = false;
+      insp.chim.reply = body;
+      renderInspect();
+    });
+  }
+
+  /* `id` null/'' = the crosshair target. `opts` carries the row's own face art
+     and name so the sheet has a face and a title while C++ is still reading. */
+  function openInspect(id, opts) {
+    const o = opts || {};
+    insp.open = true;
+    insp.loading = true;
+    insp.data = null;
+    insp.err = '';
+    insp.why = '';
+    insp.filter = '';
+    insp.pile = 'all';
+    insp.hidden = false;
+    insp.skillsOpen = false;
+    insp.chim = null;
+    insp.portrait = o.portrait || '';
+    /* The caller's saved framing for that picture, when it has one. Only the
+       caller knows WHICH art it handed us: a row lends a FaceGen head render
+       (measured/overridden by HDFaceFit), while the Followers card lends a
+       portrait PHOTO whose crop lives in that pane's own store. Passing the
+       crop rather than reaching into another pane keeps each pane the
+       authority on its own art — and npcs-pane can open with followers-pane
+       not yet parsed (it is later in the boot manifest). */
+    insp.crop = o.crop || null;
+    /* …and WHICH KIND of picture it is, because that decides the fitter even
+       when there is no crop yet. A photo with no crop must keep the
+       stylesheet's framing; running the head-render MEASUREMENT over it would
+       invent a framing from a heuristic calibrated for FaceGen heads on a plain
+       background, which a screen grab is not. */
+    insp.portraitKind = o.portraitKind === 'photo' ? 'photo' : 'render';
+    insp.glyph = o.glyph || '♀';
+    insp.title = o.name || '';
+    insp.seq++;
+    const req = { seq: insp.seq };
+    /* A caller with a RUNTIME formId (the F7 quick card's Full stats button)
+       passes opts.ref — C++ resolves the exact reference, so a spawned copy
+       is never confused with her template. `id` stays the roster-row spelling
+       (base plugin|formId), '' the crosshair. */
+    if (o.ref) req.ref = String(o.ref);
+    else if (id) req.id = id;
+    toGame('niInspect', JSON.stringify(req));
+    renderInspect();
+  }
+
+  function closeInspect() {
+    if (!insp.open) return;
+    insp.open = false;
+    insp.data = null;
+    insp.err = '';
+    insp.chim = null;
+    gearStopPoll();
+    const host = document.getElementById('nxi-sheet');
+    if (host) host.parentNode.removeChild(host);
+    const s = $('nx-search');
+    if (s) s.focus();
+  }
+
+  /* ------------------------------------------------------------ formatting -- */
+
+  function fmt1(n) {
+    const v = Number(n) || 0;
+    return (Math.round(v * 10) / 10).toFixed(1);
+  }
+
+  /* A duration a human reads: 8s · 2m 40s · 1h 12m. Anything past a day is a
+     day count — an effect with a 30-day timer is "constant" in every way that
+     matters and a six-digit second count says nothing. */
+  function fmtDur(sec) {
+    const s = Math.max(0, Math.round(Number(sec) || 0));
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+    return Math.floor(s / 86400) + 'd';
+  }
+
+  function pct(v, max) {
+    const m = Number(max) || 1;
+    const p = (Number(v) || 0) / m * 100;
+    return Math.max(0, Math.min(100, p));
+  }
+
+  function matchesFilter(text) {
+    if (!insp.filter) return true;
+    return String(text == null ? '' : text).toLowerCase().indexOf(insp.filter.toLowerCase()) !== -1;
+  }
+
+  /* ------------------------------------------------------------- sections -- */
+
+  function meterHtml(cls, label, valueText, fillPct, capNote) {
+    return '<div class="nxi-meter ' + cls + '">' +
+      '<div class="nxi-meter-head">' +
+      '<span class="nxi-meter-name">' + esc(label) + '</span>' +
+      '<span class="nxi-meter-val">' + esc(valueText) +
+      (capNote ? '<span class="nxi-meter-cap"> / ' + esc(capNote) + '</span>' : '') +
+      '</span></div>' +
+      '<div class="nxi-meter-track"><div class="nxi-meter-fill" style="width:' +
+      Math.round(fillPct) + '%"></div></div></div>';
+  }
+
+  function vitalsHtml(d) {
+    const pools = d.pools || {};
+    const regen = d.regen || {};
+    const rows = [
+      ['hp', 'Health', pools.hp, regen.hp],
+      ['mag', 'Magicka', pools.mag, regen.mag],
+      ['sta', 'Stamina', pools.sta, regen.sta],
+    ];
+    let html = '<div class="nxi-vitals">';
+    for (let i = 0; i < rows.length; i++) {
+      const key = rows[i][0], label = rows[i][1];
+      const p = rows[i][2] || { cur: 0, max: 0 };
+      const rate = rows[i][3];
+      const cur = Math.round(Number(p.cur) || 0);
+      const max = Math.round(Number(p.max) || 0);
+      let rateHtml = '';
+      if (regen.has && Number(rate)) {
+        const up = Number(rate) > 0;
+        rateHtml = '<span class="nxi-rate' + (up ? '' : ' nxi-rate-down') + '" title="' +
+          (up ? 'Points regained' : 'Points lost') + ' every second' +
+          (key === 'hp' && regen.inCombat
+            ? ' — they are IN COMBAT, and the engine slows health regen further by an amount it never exposes'
+            : '') + '">' + (up ? '+' : '') + fmt1(rate) + '/s' +
+          (key === 'hp' && regen.inCombat ? ' <b class="nxi-rate-caveat">out of combat</b>' : '') +
+          '</span>';
+      }
+      html += '<div class="nxi-vital nxi-v-' + key + '">' +
+        '<div class="nxi-vital-head"><span class="nxi-vital-name">' + label + '</span>' +
+        '<span class="nxi-vital-nums"><b>' + fmtN(cur) + '</b><span class="nxi-vital-max"> / ' +
+        fmtN(max) + '</span></span></div>' +
+        '<div class="nxi-vital-track"><div class="nxi-vital-fill" style="width:' +
+        Math.round(pct(cur, max || 1)) + '%"></div></div>' +
+        (rateHtml ? '<div class="nxi-vital-foot">' + rateHtml + '</div>' : '') +
+        '</div>';
+    }
+    return html + '</div>';
+  }
+
+  /* Defences. A NEGATIVE resist is the interesting number — that is a real
+     weakness, and it is exactly what a "know your enemy" style mod would tell
+     you, read straight off the actor values so it is true for whatever put it
+     there. It gets its own word and its own colour rather than a 0%-wide bar
+     nobody can read. */
+  function resistsHtml(d) {
+    const r = d.resist || {};
+    const capM = Number(r.capMagic) || 85;
+    const capP = Number(r.capPhys) || 80;
+    const defs = [
+      ['fire', 'Fire', r.fire, capP],
+      ['frost', 'Frost', r.frost, capP],
+      ['shock', 'Shock', r.shock, capP],
+      ['magic', 'Magic', r.magic, capM],
+      ['poison', 'Poison', r.poison, capP],
+      ['disease', 'Disease', r.disease, capP],
+    ];
+    let html = '<div class="nxi-armor">' +
+      meterHtml('nxi-m-armor', 'Armour rating ' + fmtN(r.armor || 0),
+        fmt1(r.phys || 0) + '%', pct(r.phys, capP), fmtN(capP) + '% cap') +
+      '<div class="nxi-armor-note">' +
+      esc('Rating × 0.12, plus 3% for each of the ' + (r.pieces | 0) +
+        ' armour piece' + ((r.pieces | 0) === 1 ? '' : 's') + ' they are wearing — Skyrim’s own formula.') +
+      '</div></div>';
+
+    html += '<div class="nxi-resists">';
+    for (let i = 0; i < defs.length; i++) {
+      const key = defs[i][0], label = defs[i][1];
+      const v = Number(defs[i][2]) || 0;
+      const cap = defs[i][3];
+      const weak = v < 0;
+      const capped = v >= cap;
+      html += '<div class="nxi-res nxi-res-' + key + (weak ? ' nxi-res-weak' : '') +
+        (capped ? ' nxi-res-capped' : '') + '" title="' +
+        esc(weak ? label + ' hurts them MORE than normal — ' + Math.abs(Math.round(v)) + '% extra damage taken'
+          : capped ? label + ' resistance is at the engine’s ' + cap + '% ceiling'
+            : label + ' resistance') + '">' +
+        '<div class="nxi-res-head"><span class="nxi-res-name">' + label + '</span>' +
+        '<span class="nxi-res-val">' + (v > 0 ? '+' : '') + Math.round(v) + '%</span></div>' +
+        '<div class="nxi-res-track"><div class="nxi-res-fill" style="width:' +
+        Math.round(pct(Math.abs(v), cap)) + '%"></div></div>' +
+        (weak ? '<div class="nxi-res-tag">weak</div>'
+          : capped ? '<div class="nxi-res-tag nxi-res-tag-cap">at the cap</div>' : '') +
+        '</div>';
+    }
+    return html + '</div>';
+  }
+
+  function attackHtml(d) {
+    const c = d.combat || {};
+    const cells = [];
+    cells.push(['Damage', fmt1(c.damage) + (c.unarmed ? '' : ''),
+      c.unarmed ? 'Bare hands — this is their unarmed damage, which on a beast is the whole story.'
+        : (c.estimated
+          ? 'Their weapon, their skill, their fortify effects. An ESTIMATE: the engine’s own damage call only answers for the player, so this is the documented formula instead.'
+          : '')]);
+    if (c.weapon) cells.push(['Weapon', c.weapon, 'What is in their right hand.']);
+    if (!c.unarmed) {
+      cells.push(['Swing speed', fmt1(c.speed), 'Attacks per second, after whatever is fortifying it.']);
+      cells.push(['Reach', fmt1(c.reach), 'How far the swing lands. 1.0 is a sword.']);
+    }
+    if (c.ranged && Number(c.arrow)) {
+      cells.push(['Ammunition', (c.arrowName || 'Ammo') + ' · ' + fmt1(c.arrow),
+        'The nocked round’s own damage, already folded into the figure above.']);
+    }
+    cells.push(['Move speed', Math.round(Number(c.move) || 0) + '%',
+      '100% is a normal person. Below that you can outrun them.']);
+    let html = '<div class="nxi-grid">';
+    for (let i = 0; i < cells.length; i++) {
+      html += '<div class="nxi-cell" title="' + esc(cells[i][2] || '') + '">' +
+        '<div class="nxi-cell-l">' + esc(cells[i][0]) + '</div>' +
+        '<div class="nxi-cell-v">' + esc(cells[i][1]) + '</div>' +
+        (cells[i][2] ? '<div class="nxi-cell-n">' + esc(cells[i][2]) + '</div>' : '') +
+        '</div>';
+    }
+    return html + '</div>';
+  }
+
+  /* The dispositions. Skyrim shows none of these anywhere, and they are what
+     actually decides whether someone swings at you, runs, or joins in. Each
+     row prints the engine's number AND the Creation Kit's own word for it. */
+  function aiHtml(d) {
+    const rows = Array.isArray(d.ai) ? d.ai : [];
+    if (!rows.length) return '';
+    let html = '<div class="nxi-ai">';
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      /* ⚠ ALWAYS four cells. The row is a four-column grid, and an actor value
+         with no Creation Kit word for it (Energy is a 0–100 scale, not an
+         enum) used to drop its number cell — which slid the note into the
+         44px column and printed it one word per line. A grid row that can
+         lose a child is a layout bug waiting for the one payload that does. */
+      const num = Math.round(Number(r.value) || 0);
+      html += '<div class="nxi-ai-row nxi-ai-' + esc(r.key) + '" title="' + esc(r.note || '') + '">' +
+        '<span class="nxi-ai-l">' + esc(r.label) + '</span>' +
+        '<span class="nxi-ai-w">' + esc(r.word || String(num)) + '</span>' +
+        '<span class="nxi-ai-v">' + (r.word ? num : '') + '</span>' +
+        '<span class="nxi-ai-n">' + esc(r.note || '') + '</span>' +
+        '</div>';
+    }
+    return html + '</div>';
+  }
+
+  function traitsHtml(d) {
+    const t = Array.isArray(d.traits) ? d.traits : [];
+    if (!t.length) return '';
+    return '<div class="nxi-traits">' + t.map(function (x) {
+      return '<span class="nxi-trait nxi-trait-' + esc(x.kind || 'type') + '">' + esc(x.text) + '</span>';
+    }).join('') + '</div>';
+  }
+
+  function badgeHtml(b) {
+    if (!b || !b.text) return '';
+    return '<span class="nxi-badge" title="' + esc(b.av || 'Enchanted') + '">' +
+      esc(b.text) + (b.av ? '<i>' + esc(b.av) + '</i>' : '') + '</span>';
+  }
+
+  /* Gear tiles v2 (Rober, 2026-08-17: "the equipped tab should be bigger like
+     in those images … their version even has stat pills around the equipment").
+     Each tile leads with a big ART PLATE — the item's real 3D render through
+     the exact whIcons pipeline the Finder's item rows use — with the armour /
+     damage value and the first enchant riding the plate's corners as PILLS,
+     Skyrim Party Sheet style. The slot glyph stays underneath as the honest
+     fallback while a render is queued (or on a rig without MRF), and every
+     equip kind here — armour, weapons, ammo — HAS a world model, so no kind
+     filter is needed. */
+  function equipHtml(d) {
+    const tiles = Array.isArray(d.equip) ? d.equip : [];
+    if (!tiles.length) return '';
+    let html = '<div class="nxi-gear">';
+    for (let i = 0; i < tiles.length; i++) {
+      const t = tiles[i];
+      const empty = !t.name;
+      let num = '', numT = '', numK = '';
+      if ((t.kind === 'weapon' || t.kind === 'ammo') && t.damage != null) {
+        num = fmt1(t.damage); numT = 'Damage ' + num; numK = 'dmg';
+      } else if (t.armor != null && Number(t.armor) > 0) {
+        num = fmtN(t.armor); numT = 'Armour rating ' + num; numK = 'arm';
+      }
+      const badges = Array.isArray(t.badges) ? t.badges : [];
+      const ench = (badges.length && badges[0] && badges[0].text) ? badges[0] : null;
+      const art = empty ? '' : gearIconFor(t);
+      html += '<div class="nxi-tile nxi-tile-' + esc(t.slot) + (empty ? ' nxi-tile-empty' : '') +
+        (t.kind === 'weapon' ? ' nxi-tile-weapon' : '') + '" data-eq="' + i + '" title="' +
+        esc(empty ? t.label + ' — nothing worn' : t.label + ': ' + t.name) + '">' +
+        '<div class="nxi-tile-art">' +
+        (art ? '<img class="nxi-tile-img" src="' + esc(art) + '" alt="">' : '') +
+        '<div class="nxi-tile-glyph">' + (EQ_GLYPH[t.slot] || '◻') + '</div>' +
+        (num ? '<b class="nxi-pill nxi-pill-' + numK + '" title="' + esc(numT) + '">' + esc(num) + '</b>' : '') +
+        (ench ? '<b class="nxi-pill nxi-pill-ench" title="' + esc(ench.av || 'Enchanted') + '">' + esc(ench.text) + '</b>' : '') +
+        '</div>' +
+        '<div class="nxi-tile-body">' +
+        '<div class="nxi-tile-l">' + esc(t.label) + '</div>' +
+        '<div class="nxi-tile-n">' + (empty ? '<i>empty</i>' : esc(t.name)) + '</div>' +
+        (badges.length > 1 ? '<div class="nxi-tile-badges">' + badges.map(badgeHtml).join('') + '</div>' : '') +
+        '</div></div>';
+    }
+    return html + '</div>';
+  }
+
+  /* ---- gear art plumbing --------------------------------------------------
+     Same three pieces as the Finder's item rows, scoped to the sheet's nine
+     tiles: resolve through WardrobePane's ONE index, ask C++ once per item per
+     session, and while drawn tiles still lack art nudge an EMPTY whIcons every
+     couple of seconds (queues nothing, replies with the on-disk index; the
+     wardrobe receiver raises 'hd-item-icons' only on change). Renders are
+     render-once-keep-forever, so most sheets resolve instantly. */
+  const gearReq = {};
+  let gearPollT = null, gearPollN = 0;
+  const GEAR_POLL_MS = 2500, GEAR_POLL_MAX = 24;
+
+  function gearIconFor(t) {
+    if (!t || !t.formId || !t.plugin) return '';
+    if (!window.WardrobePane || typeof WardrobePane.itemIconFor !== 'function') return '';
+    try {
+      const path = WardrobePane.itemIconFor({ formId: t.formId, plugin: t.plugin }) || '';
+      if (!path) return '';
+      if (path.indexOf('..') !== -1 || path[0] === '/' || path.indexOf(':') !== -1) return '';
+      return path;
+    } catch (e) { return ''; }
+  }
+
+  function gearMissing() {
+    const d = insp.data;
+    const tiles = d && Array.isArray(d.equip) ? d.equip : [];
+    for (let i = 0; i < tiles.length; i++) {
+      const t = tiles[i];
+      if (t && t.name && t.formId && t.plugin && !gearIconFor(t)) return true;
+    }
+    return false;
+  }
+
+  function gearStopPoll() {
+    if (gearPollT) { clearInterval(gearPollT); gearPollT = null; }
+  }
+
+  /* Gear lightbox (Rober, 2026-08-17 wave 2.1: "6. sure"): click a rendered
+     tile → the item large, with the Wardrobe turntable's -a090/-a180/-a270
+     frames offered as a spin — the exact items-pane idiom. HDLightbox probes
+     the frames itself; a piece nobody ever orbited just shows big. */
+  function gearLightbox(t) {
+    const url = gearIconFor(t);
+    if (!url || !window.HDLightbox) return;
+    const bits = [t.label];
+    if (t.armor != null && Number(t.armor) > 0) bits.push(fmtN(t.armor) + ' armour');
+    if ((t.kind === 'weapon' || t.kind === 'ammo') && t.damage != null) bits.push(fmt1(t.damage) + ' dmg');
+    if (t.plugin) bits.push(t.plugin);
+    HDLightbox.open({
+      host: $('nx-pane'),
+      src: url,
+      glyph: EQ_GLYPH[t.slot] || '◻',
+      title: t.name,
+      sub: bits.join(' · '),
+      frames: ['-a090', '-a180', '-a270'].map(function (s) {
+        return url.replace(/\.png$/, s + '.png');
+      }),
+      spin: { kind: 'item', formId: t.formId, plugin: t.plugin },
+    });
+  }
+
+  function gearAfterRender() {
+    const host = document.getElementById('nxi-sheet');
+    if (!host) return;
+    /* A render that 404s must fall back to the glyph, never a broken box. */
+    host.querySelectorAll('.nxi-tile-img').forEach(function (img) {
+      if (img.dataset.wired) return;
+      img.dataset.wired = '1';
+      img.addEventListener('error', function () {
+        if (img.parentNode) img.parentNode.removeChild(img);
+      });
+    });
+    /* Click-to-lightbox on every non-empty tile. The handler resolves art AT
+       CLICK TIME, so a tile whose render lands after this wiring still opens;
+       the affordance class rides gearUpgrade for the same reason. */
+    if (insp.data) {
+      const tiles0 = Array.isArray(insp.data.equip) ? insp.data.equip : [];
+      host.querySelectorAll('.nxi-tile[data-eq]').forEach(function (el) {
+        if (el.dataset.lb) return;
+        el.dataset.lb = '1';
+        const t0 = tiles0[Number(el.getAttribute('data-eq'))];
+        if (!t0 || !t0.name) return;
+        if (gearIconFor(t0)) el.classList.add('nxi-tile-click');
+        el.addEventListener('click', function () {
+          const tiles = insp.data && Array.isArray(insp.data.equip) ? insp.data.equip : [];
+          const t = tiles[Number(el.getAttribute('data-eq'))];
+          if (t && t.name) gearLightbox(t);
+        });
+      });
+    }
+    if (!insp.data) { gearStopPoll(); return; }
+    const tiles = Array.isArray(insp.data.equip) ? insp.data.equip : [];
+    const items = [], seen = {};
+    for (let i = 0; i < tiles.length; i++) {
+      const t = tiles[i];
+      if (!t || !t.name || !t.formId || !t.plugin) continue;
+      const key = t.formId + '|' + t.plugin;
+      if (gearReq[key] || seen[key]) continue;
+      if (gearIconFor(t)) continue;
+      seen[key] = 1; gearReq[key] = 1;
+      items.push({ formId: t.formId, plugin: t.plugin, name: t.name || '' });
+    }
+    if (items.length) toGame('whIcons', JSON.stringify({ items: items }));
+    gearStopPoll();
+    gearPollN = 0;
+    if (gearMissing()) {
+      gearPollT = setInterval(function () {
+        if (!insp.open || !gearMissing() || ++gearPollN > GEAR_POLL_MAX) { gearStopPoll(); return; }
+        toGame('whIcons', JSON.stringify({ items: [] }));
+      }, GEAR_POLL_MS);
+    }
+  }
+
+  /* Renders landing upgrade tiles IN PLACE — a full sheet re-render here would
+     eat the filter caret and the scroll position for a picture. */
+  function gearUpgrade() {
+    if (!insp.open || !insp.data) return;
+    const host = document.getElementById('nxi-sheet');
+    if (!host) return;
+    const tiles = Array.isArray(insp.data.equip) ? insp.data.equip : [];
+    host.querySelectorAll('.nxi-tile[data-eq]').forEach(function (el) {
+      const t = tiles[Number(el.getAttribute('data-eq'))];
+      if (!t || !t.name) return;
+      const box = el.querySelector('.nxi-tile-art');
+      if (!box || box.querySelector('.nxi-tile-img')) return;
+      const path = gearIconFor(t);
+      if (!path) return;
+      const img = document.createElement('img');
+      img.className = 'nxi-tile-img';
+      img.alt = '';
+      img.dataset.wired = '1';
+      img.addEventListener('error', function () {
+        if (img.parentNode) img.parentNode.removeChild(img);
+      });
+      img.src = path;
+      box.insertBefore(img, box.firstChild);
+      el.classList.add('nxi-tile-click');   // art landed — it opens large now
+    });
+    if (!gearMissing()) gearStopPoll();
+  }
+  document.addEventListener('hd-item-icons', gearUpgrade);
+
+  function effectRows(d) {
+    const all = Array.isArray(d.effects) ? d.effects : [];
+    return all.filter(function (e) {
+      if (!insp.hidden && e.hidden) return false;
+      if (insp.pile !== 'all' && e.group !== insp.pile) return false;
+      return matchesFilter((e.name || '') + ' ' + (e.source || '') + ' ' + (e.plugin || '') + ' ' + (e.av || ''));
+    });
+  }
+
+  function effectsHtml(d) {
+    const all = Array.isArray(d.effects) ? d.effects : [];
+    const hiddenCount = all.filter(function (e) { return e.hidden; }).length;
+    const counts = {};
+    for (let i = 0; i < all.length; i++) {
+      if (!insp.hidden && all[i].hidden) continue;
+      counts[all[i].group] = (counts[all[i].group] || 0) + 1;
+      counts.all = (counts.all || 0) + 1;
+    }
+    let html = '<div class="nxi-piles">';
+    for (let i = 0; i < EFF_PILES.length; i++) {
+      const k = EFF_PILES[i][0];
+      const n = counts[k] || 0;
+      if (k !== 'all' && !n) continue;      // never a pile that cannot have rows
+      html += '<button class="nxi-pile' + (insp.pile === k ? ' nxi-pile-on' : '') +
+        '" data-pile="' + k + '" title="Show only ' + esc(EFF_PILES[i][1].toLowerCase()) + '">' +
+        (EFF_PILES[i][2] ? EFF_PILES[i][2] + ' ' : '') + esc(EFF_PILES[i][1]) +
+        ' <b>' + n + '</b></button>';
+    }
+    if (hiddenCount) {
+      html += '<button class="nxi-pile nxi-pile-ghost' + (insp.hidden ? ' nxi-pile-on' : '') +
+        '" data-hidden="1" title="' + esc(hiddenCount + ' effect' + (hiddenCount === 1 ? '' : 's') +
+          ' the game hides from its own magic menu — engine plumbing, mod controllers, framework glue') +
+        '">◌ Hidden <b>' + hiddenCount + '</b></button>';
+    }
+    html += '</div>';
+
+    const rows = effectRows(d);
+    if (!rows.length) {
+      html += '<div class="nxi-none">' +
+        (all.length
+          ? (insp.filter ? 'Nothing here matches “' + esc(insp.filter) + '”.'
+            : 'Nothing in that pile right now.')
+          : 'Nothing is running on them — no buffs, no poisons, no diseases.') +
+        '</div>';
+      return html;
+    }
+    html += '<div class="nxi-effs">';
+    for (let i = 0; i < rows.length; i++) {
+      const e = rows[i];
+      const timed = Number(e.durSec) > 0;
+      const left = timed ? pct(e.remainSec, e.durSec) : 100;
+      html += '<div class="nxi-eff nxi-eff-' + esc(e.group || 'buff') + (e.hidden ? ' nxi-eff-ghost' : '') + '">' +
+        '<div class="nxi-eff-main">' +
+        '<span class="nxi-eff-n" title="' + esc(e.name) + '">' + highlight(e.name, insp.filter) + '</span>' +
+        (e.av ? '<span class="nxi-eff-av">' + esc(e.av) + '</span>' : '') +
+        (Number(e.magnitude) ? '<span class="nxi-eff-mag">' + fmt1(e.magnitude) + '</span>' : '') +
+        '</div>' +
+        '<div class="nxi-eff-sub">' +
+        (e.source ? '<span class="nxi-eff-src" title="' + esc(e.source) + '">' + highlight(e.source, insp.filter) + '</span>' : '') +
+        (e.sourceKind ? '<span class="nxi-eff-kind">' + esc(e.sourceKind) + '</span>' : '') +
+        (e.plugin ? '<span class="nxi-eff-plug" title="' + esc(e.plugin) + '">' + esc(e.plugin) + '</span>' : '') +
+        '</div>' +
+        '<div class="nxi-eff-time">' +
+        (timed
+          ? '<span class="nxi-eff-left">' + fmtDur(e.remainSec) + '</span>' +
+            '<span class="nxi-eff-of">of ' + fmtDur(e.durSec) + '</span>' +
+            '<span class="nxi-eff-track"><span class="nxi-eff-fill" style="width:' +
+            Math.round(left) + '%"></span></span>'
+          : '<span class="nxi-eff-perm" title="No timer — it runs until something removes it">always on</span>') +
+        '</div></div>';
+    }
+    return html + '</div>';
+  }
+
+  function socialHtml(d) {
+    const s = d.social || {};
+    const rank = s.rank || {};
+    let html = '<div class="nxi-social">';
+    html += '<div class="nxi-stand' + (rank.has ? '' : ' nxi-stand-none') + '" title="' +
+      esc(rank.has
+        ? 'Skyrim’s own relationship rank — vanilla dialogue, marriage and most follower frameworks branch on this number.'
+        : 'No relationship record exists between you at all. That is not the same as rank 0: the game has simply never had an opinion.') + '">' +
+      '<span class="nxi-stand-l">Toward you</span>' +
+      '<span class="nxi-stand-v">' + esc(rank.has ? (rank.label || '—') : 'No record') + '</span>' +
+      (rank.has ? '<span class="nxi-stand-n">' + (Number(rank.rank) > 0 ? '+' : '') + (rank.rank | 0) + '</span>' : '') +
+      '</div>';
+    const chips = [];
+    if (s.hostile) chips.push('<span class="nxi-chip nxi-chip-bad" title="They will attack you on sight">⚔ Hostile</span>');
+    if (s.teammate) chips.push('<span class="nxi-chip nxi-chip-good" title="They are following you right now">★ In your party</span>');
+    if (s.maras && s.maras.on) {
+      const m = s.maras;
+      chips.push('<span class="nxi-chip nxi-chip-maras" title="' +
+        esc('MARAS: ' + (m.statusText || '') + (m.mood ? ' · ' + m.mood : '') +
+          (m.affection >= 0 ? ' · affection ' + m.affection : '')) + '">' +
+        (m.spouse ? '💍 ' : '') + esc(m.statusText || 'Tracked') + '</span>');
+    }
+    if (chips.length) html += '<div class="nxi-chips">' + chips.join('') + '</div>';
+
+    const facs = (Array.isArray(s.factions) ? s.factions : []).filter(function (f) {
+      return f && f.n && matchesFilter(f.n);
+    });
+    if (facs.length) {
+      html += '<div class="nxi-facs">' + facs.map(function (f) {
+        const r = (f.rank != null && Number(f.rank) >= 0) ? 'rank ' + Number(f.rank) : '';
+        return '<div class="nxi-fac" title="' + esc(f.n) + (r ? ' — ' + r : '') + '">' +
+          '<span class="nxi-fac-n">' + highlight(f.n, insp.filter) + '</span>' +
+          (r ? '<span class="nxi-fac-r">' + r + '</span>' : '') + '</div>';
+      }).join('') + '</div>';
+    } else if (insp.filter) {
+      html += '<div class="nxi-none">No faction matches “' + esc(insp.filter) + '”.</div>';
+    } else {
+      html += '<div class="nxi-none">They belong to no named faction.</div>';
+    }
+    return html + '</div>';
+  }
+
+  function skillsHtml(d) {
+    const all = (Array.isArray(d.skills) ? d.skills : []).filter(function (s) {
+      return matchesFilter(s.name);
+    });
+    if (!all.length) {
+      return '<div class="nxi-none">' +
+        (insp.filter ? 'No skill matches “' + esc(insp.filter) + '”.' : 'No skills to read.') + '</div>';
+    }
+    const top = Math.max(100, all.reduce(function (m, s) { return Math.max(m, Number(s.level) || 0); }, 0));
+    return '<div class="nxi-skills">' + all.map(function (s) {
+      const v = Math.round(Number(s.level) || 0);
+      return '<div class="nxi-skill" title="' + esc(s.name) + ' — ' + v + ', live (level scaling, ' +
+        'fortifies and mod perks already in it)">' +
+        '<span class="nxi-skill-n">' + highlight(s.name, insp.filter) + '</span>' +
+        '<span class="nxi-skill-track"><span class="nxi-skill-fill" style="width:' +
+        Math.round(pct(v, top)) + '%"></span></span>' +
+        '<span class="nxi-skill-v">' + v + '</span></div>';
+    }).join('') + '</div>';
+  }
+
+  /* CHIM section — renders whatever fetchChim landed, using the SAME
+     facetCard the Home "Ask (CHIM)" overlay renders with (HDOmni.facetCard),
+     so this can never drift into a second, competing presentation of the
+     same data. 'profile' (which LLM is driving her dialogue) is skipped:
+     its quick-changer button reads st.ask.reply internally in hd-omni.js, a
+     coupling that only makes sense from the Ask overlay itself. */
+  function chimHtml() {
+    const c = insp.chim;
+    if (!c) return '';
+    if (c.loading) {
+      return '<div class="nxi-chim-load"><span class="nxi-load-dot"></span>Asking CHIM…</div>';
+    }
+    if (c.err) {
+      return '<div class="nxi-chim-err">' + esc(c.err) + '</div>';
+    }
+    const r = c.reply;
+    if (!r) return '';
+    const facets = r.facets || {};
+    const focus = r.focus || [];
+    const keys = Object.keys(facets).filter(function (k) { return k !== 'profile'; });
+    if (!keys.length) {
+      return '<div class="nxi-chim-empty">CHIM has nothing on ' + esc(c.npcName) +
+        ' yet — talk to them once in-game to register them.</div>';
+    }
+    keys.sort(function (x, y) {
+      return (focus.indexOf(x) !== -1 ? 0 : 1) - (focus.indexOf(y) !== -1 ? 0 : 1);
+    });
+    let html = r.answer ? '<div class="nxi-chim-answer">' + esc(r.answer) + '</div>' : '';
+    for (let i = 0; i < keys.length; i++) {
+      html += HDOmni.facetCard(keys[i], facets[keys[i]], focus.indexOf(keys[i]) !== -1);
+    }
+    return html;
+  }
+
+  function sectionHtml(id, title, body, sub) {
+    if (!body) return '';
+    return '<section class="nxi-sect nxi-sect-' + id + '">' +
+      '<div class="nxi-sect-h"><span class="nxi-sect-t">' + esc(title) + '</span>' +
+      (sub ? '<span class="nxi-sect-s">' + esc(sub) + '</span>' : '') + '</div>' +
+      body + '</section>';
+  }
+
+  function headHtml() {
+    const d = insp.data;
+    const who = (d && d.who) || {};
+    /* 'Reading…' is the LOADING placeholder. A refusal is a finished answer, so
+       the crosshair route (which opens with no title) must stop claiming to be
+       reading — the sheet said "Reading…" over a completed refusal. */
+    const name = who.name || insp.title ||
+      (insp.err ? (insp.why === 'nothing' ? 'No target' : 'Could not read them') : 'Reading…');
+    const bits = [];
+    if (who.level != null) bits.push('Level ' + fmtN(who.level));
+    if (who.race) bits.push(who.race);
+    if (who.cls) bits.push(who.cls);
+    if (who.sex) bits.push(who.sex);
+    const flags = [];
+    if (who.dead) flags.push('<span class="nxi-flag nxi-flag-dead" title="They are dead">☠ Dead</span>');
+    if (who.essential) flags.push('<span class="nxi-flag nxi-flag-ess" title="The game will not let them die">⛨ Essential</span>');
+    else if (who['protected']) flags.push('<span class="nxi-flag nxi-flag-prot" title="Only you can land the killing blow">🛡 Protected</span>');
+    if (who.unique) flags.push('<span class="nxi-flag nxi-flag-uniq" title="There is exactly one of them">★ Unique</span>');
+    if (who.inCombat) flags.push('<span class="nxi-flag nxi-flag-fight" title="They are fighting right now">⚔ In combat</span>');
+    if (who.summonable) flags.push('<span class="nxi-flag" title="A summon, not a resident of the world">✦ Summoned</span>');
+
+    const art = insp.portrait
+      ? '<img class="nxi-face-art" src="' + esc(insp.portrait) + '" alt="" draggable="false"' +
+        ' onerror="var b=this.parentNode;if(b){b.classList.remove(&quot;nxi-has-art&quot;);b.removeChild(this);}">'
+      : '';
+    /* The opening glyph is the CALLER's guess (a row lends its own ♀/♂); the
+       crosshair route has none and defaults to ♀. Once C++ has answered, the
+       payload's sex is the truth — otherwise Ulfric reads as ♀ Male. */
+    const glyph = who.sex
+      ? (String(who.sex).toLowerCase().charAt(0) === 'm' ? '♂' : '♀')
+      /* A refusal identified nobody — ♀ there is a claim about someone who was
+         never read, so the plate says "unknown" instead. */
+      : (insp.err && !insp.title ? '?' : insp.glyph);
+    return '<div class="nxi-head">' +
+      '<div class="nxi-face' + (insp.portrait ? ' nxi-has-art' : '') + '">' + glyph + art + '</div>' +
+      '<div class="nxi-head-mid">' +
+      '<div class="nxi-name" title="' + esc(name) + '">' + esc(name) + '</div>' +
+      (bits.length ? '<div class="nxi-sub">' + esc(bits.join(' · ')) + '</div>' : '') +
+      (flags.length ? '<div class="nxi-flags">' + flags.join('') + '</div>' : '') +
+      (who.plugin ? '<div class="nxi-origin" title="The plugin this character is defined in">' +
+        esc(who.plugin) + (who.formId ? ' · ' + esc(who.formId) : '') + '</div>' : '') +
+      '</div>' +
+      '<button class="nxi-x" id="nxi-close" title="Close (Esc)">✕</button>' +
+      '</div>';
+  }
+
+  function bodyHtml() {
+    if (insp.loading) {
+      return '<div class="nxi-load"><span class="nxi-load-dot"></span>' +
+        esc(insp.title ? 'Reading ' + insp.title + '…' : 'Reading whoever you were looking at…') +
+        '</div>';
+    }
+    if (insp.err) {
+      const hint = insp.why === 'unloaded'
+        ? 'Use ⤝ Bring on their row, or ⤞ Go to, and inspect them there.'
+        : insp.why === 'nothing'
+          ? 'Or search for anyone below and inspect them from their row.'
+          : '';
+      return '<div class="nxi-refuse">' +
+        '<div class="nxi-refuse-glyph">🔍</div>' +
+        '<div class="nxi-refuse-msg">' + esc(insp.err) + '</div>' +
+        (hint ? '<div class="nxi-refuse-hint">' + esc(hint) + '</div>' : '') +
+        '</div>';
+    }
+    const d = insp.data;
+    if (!d) return '';
+    const effCount = (Array.isArray(d.effects) ? d.effects : []).filter(function (e) { return !e.hidden; }).length;
+    const facCount = ((d.social || {}).factions || []).length;
+    return traitsHtml(d) +
+      sectionHtml('vitals', 'Vitals', vitalsHtml(d)) +
+      sectionHtml('def', 'Defences', resistsHtml(d), 'what actually gets through') +
+      sectionHtml('atk', 'Attack', attackHtml(d)) +
+      sectionHtml('ai', 'Disposition', aiHtml(d), 'the numbers Skyrim never shows you') +
+      sectionHtml('gear', 'Worn and held', equipHtml(d)) +
+      sectionHtml('eff', 'Running on them', effectsHtml(d),
+        effCount ? effCount + ' active' : 'nothing active') +
+      sectionHtml('soc', 'Standing', socialHtml(d), facCount ? facCount + ' factions' : '') +
+      sectionHtml('chim', 'CHIM', chimHtml(), 'what CHIM knows about them') +
+      '<section class="nxi-sect nxi-sect-skill">' +
+      '<div class="nxi-sect-h nxi-sect-toggle" id="nxi-skills-h" role="button" tabindex="0" ' +
+      'aria-expanded="' + (insp.skillsOpen ? 'true' : 'false') + '" ' +
+      'title="Their LIVE skill levels — level scaling, fortifies and mod perks already folded in">' +
+      '<span class="nxi-sect-t">Skills</span>' +
+      '<span class="nxi-sect-s">' + (insp.skillsOpen ? 'hide' : 'show all 18') + '</span></div>' +
+      (insp.skillsOpen ? skillsHtml(d) : '') +
+      '</section>';
+  }
+
+  function renderInspect() {
+    const pane = $('nx-pane');
+    if (!pane) return;
+    let host = document.getElementById('nxi-sheet');
+    if (!insp.open) {
+      if (host) host.parentNode.removeChild(host);
+      return;
+    }
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'nxi-sheet';
+      host.className = 'nxi-sheet';
+      /* Bound ONCE, on the host that survives every repaint — binding it per
+         render would stack a listener per keystroke of the filter. */
+      host.addEventListener('mousedown', function (e) {
+        if (e.target === host) closeInspect();     // click the dim, not the card
+      });
+      pane.appendChild(host);
+    }
+    const showFilter = !!insp.data;
+    host.innerHTML =
+      '<div class="nxi-card" id="nxi-card" role="dialog" aria-label="Inspect" tabindex="-1">' +
+      headHtml() +
+      (showFilter
+        ? '<div class="nxi-filter"><span class="nxi-filter-glyph">⌕</span>' +
+          '<input id="nxi-filter-input" type="text" autocomplete="off" spellcheck="false" ' +
+          'placeholder="Filter effects, factions and skills — type anything" value="' +
+          esc(insp.filter) + '">' +
+          /* Always present, shown/hidden in place — see the input handler. */
+          '<span class="nxi-filter-x' + (insp.filter ? '' : ' hidden') +
+          '" id="nxi-filter-clear" title="Clear">✕</span>' +
+          '</div>'
+        : '') +
+      '<div class="nxi-body" id="nxi-body">' + bodyHtml() + '</div>' +
+      '</div>';
+
+    /* ⛔ FIT THE PORTRAIT. `.nxi-face-art` is `object-fit: cover` in the sheet,
+       which is a naive CENTRE crop of the source — it is not where the face is,
+       and it silently threw away the framing the user had already set by hand
+       (Rober, 2026-08-19: "full stats popout doesnt use cropped image
+       correctly"). Every other surface routes through the ONE shared
+       crop->CSS mapping; this one drew raw. Re-applied on EVERY render because
+       the card rebuilds its innerHTML (typing in the filter re-creates this
+       img); ensure() caches per url, so the repeats are free. */
+    const faceImg = host.querySelector('.nxi-face-art');
+    if (faceImg && insp.portrait && window.HDFaceFit) {
+      if (insp.portraitKind === 'photo' && window.HDFaceFit.applyCrop) {
+        /* A portrait photo: its framing is the one the user set. baseline '' so
+           a crop-less photo keeps whatever bias the stylesheet gives it —
+           applyCrop with a null crop clears the transform and nothing else. */
+        window.HDFaceFit.applyCrop(faceImg, insp.crop, '');
+      } else if (window.HDFaceFit.ensure) {
+        /* A head render: measure it (or use a saved override — cssFor puts the
+           human's framing ahead of the measurement). */
+        window.HDFaceFit.ensure(faceImg, insp.portrait);
+      }
+    }
+
+    const close = document.getElementById('nxi-close');
+    if (close) close.addEventListener('click', closeInspect);
+
+    /* Esc closes from anywhere inside the card. The filter input handles its
+       own Esc first (clear, then close) and stops it there, so this never
+       double-fires. While loading or refusing there is no input, so the card
+       itself takes focus — Esc must work before there is anything to read. */
+    const card = document.getElementById('nxi-card');
+    if (card) {
+      card.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { e.stopPropagation(); closeInspect(); }
+      });
+      if (!insp.data) setTimeout(function () { try { card.focus(); } catch (err) {} }, 20);
+    }
+
+    const fi = document.getElementById('nxi-filter-input');
+    if (fi) {
+      fi.addEventListener('input', function () {
+        insp.filter = fi.value.trim();
+        /* Body only — rebuilding the whole card would drop the caret. */
+        const b = document.getElementById('nxi-body');
+        if (b) b.innerHTML = bodyHtml();
+        wireBody();
+        /* The ✕ toggles in place. Rebuilding the card to add it recreated this
+           <input>, and the restored focus came back with the caret at 0 — so
+           typing "frost" produced "rostf", and at speed the character typed
+           inside the refocus window was lost outright. Same in-place idiom as
+           syncPlugFilterActive(). */
+        const x = document.getElementById('nxi-filter-clear');
+        if (x) x.classList.toggle('hidden', !insp.filter);
+      });
+      fi.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          if (insp.filter) { insp.filter = ''; renderInspect(); document.getElementById('nxi-filter-input').focus(); }
+          else closeInspect();
+        } else if (e.key === 'Enter') {
+          e.preventDefault(); e.stopPropagation();   // never leaks to the deck's global handler
+        }
+      });
+      /* A rebuild only happens on open and on clear, where the end of the value
+         is where the caret belongs — restore it explicitly so focus never
+         re-enters the box at position 0. */
+      if (!insp.loading) setTimeout(function () {
+        try { fi.focus(); fi.setSelectionRange(fi.value.length, fi.value.length); } catch (err) {}
+      }, 20);
+    }
+    const fx = document.getElementById('nxi-filter-clear');
+    if (fx) fx.addEventListener('click', function () {
+      insp.filter = '';
+      renderInspect();
+      const i = document.getElementById('nxi-filter-input');
+      if (i) i.focus();
+    });
+    wireBody();
+  }
+
+  /* Delegated wiring for everything the body redraws (piles, the skills fold).
+     Re-run after every body-only repaint. */
+  function wireBody() {
+    const b = document.getElementById('nxi-body');
+    if (!b) return;
+    b.querySelectorAll('.nxi-pile').forEach(function (p) {
+      p.addEventListener('click', function () {
+        if (p.getAttribute('data-hidden')) insp.hidden = !insp.hidden;
+        else insp.pile = p.getAttribute('data-pile') || 'all';
+        b.innerHTML = bodyHtml();
+        wireBody();
+      });
+    });
+    const sh = document.getElementById('nxi-skills-h');
+    if (sh) {
+      const flip = function () {
+        insp.skillsOpen = !insp.skillsOpen;
+        b.innerHTML = bodyHtml();
+        wireBody();
+      };
+      sh.addEventListener('click', flip);
+      sh.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); }
+      });
+    }
+    /* Gear art: wire error fallbacks, ask for missing renders, arm the poll.
+       Runs on every body paint — deduped, so repeats are cheap. */
+    gearAfterRender();
+  }
+
+  /* ============================================================ detail == */
+
+  /* The rich per-NPC detail (Rober, 2026-08-15: "npc stats, factions, all sorts
+     of info"). Lazy: C++ reads TESNPC on expand and replies through the shared
+     nxResultData listener with a `detail` field. One row open at a time; cached
+     so re-expand is instant. */
+
+  function toggleDetail(id) {
+    if (ui.expanded === id) { ui.expanded = ''; renderBodyPreservingScroll(); return; }
+    ui.expanded = id;
+    /* Only a SUCCESS is cached. A failure re-asks on the next expand: expanding
+       is a deliberate act, the read is cheap, and the old negative cache made
+       one transient miss break that NPC's Info for the rest of the session. */
+    if (!ui.detail[id]) { delete ui.detailErr[id]; requestDetail(id); }
+    renderBodyPreservingScroll();
+  }
+
+  function requestDetail(id) {
+    toGame('nxQuery', JSON.stringify({ detail: id, seq: state.seq }));
+  }
+
+  function statHtml(label, value, cls) {
+    return '<div class="nx-stat"><span class="nx-stat-l">' + esc(label) + '</span>' +
+      '<span class="nx-stat-v' + (cls ? ' ' + cls : '') + '">' + esc(value) + '</span></div>';
+  }
+
+  /* Faction rank -1 is the vanilla "no rank" sentinel — show it as a dash. */
+  function factionRow(f) {
+    if (!f || !f.n) return '';
+    const rank = (f.rank != null && Number(f.rank) >= 0) ? ('rank ' + Number(f.rank)) : '';
+    return '<div class="nx-fac"><span class="nx-fac-n" title="' + esc(f.n) + '">' + esc(f.n) + '</span>' +
+      (rank ? '<span class="nx-fac-r">' + rank + '</span>' : '') + '</div>';
+  }
+
+  function skillChip(s) {
+    if (!s || !s.n) return '';
+    return '<span class="nx-skill" title="' + esc(s.n) + ' base ' + (s.v | 0) + '">' +
+      esc(s.n) + ' <b>' + (s.v | 0) + '</b></span>';
+  }
+
+  function detailInnerHtml(id, info) {
+    if (ui.detailErr[id] && !info)
+      return '<div class="nx-detail-err">⚠ ' + esc(ui.detailErr[id]) + '</div>';
+    if (!info)
+      return '<div class="nx-detail-load"><span class="nx-detail-spin"></span> Reading…</div>';
+
+    let html = '';
+
+    /* identity + level line */
+    let stats = '';
+    if (info.lvl != null) stats += statHtml('Level', fmtN(info.lvl) + (info.pcMult ? ' (scales)' : ''));
+    if (info.race) stats += statHtml('Race', info.race);
+    if (info.cls) stats += statHtml('Class', info.cls);
+    if (info.sex) stats += statHtml('Sex', info.sex);
+    if (stats) html += '<div class="nx-stats">' + stats + '</div>';
+
+    /* HMS attributes — the classic triple, colour-coded */
+    let attrs = '';
+    if (info.hp != null) attrs += statHtml('Health', fmtN(info.hp), 'nx-stat-hp');
+    if (info.mp != null) attrs += statHtml('Magicka', fmtN(info.mp), 'nx-stat-mp');
+    if (info.sp != null) attrs += statHtml('Stamina', fmtN(info.sp), 'nx-stat-sp');
+    if (attrs) {
+      html += '<div class="nx-stats nx-attrs">' + attrs + '</div>';
+      if (info.autoCalc && !info.hp && !info.mp && !info.sp)
+        html += '<div class="nx-detail-note">Auto-calculated — the engine derives HP/MP/SP at spawn from level and class, so the base record stores none.</div>';
+    }
+
+    /* flags row */
+    const flags = [];
+    if (info.uniq) flags.push('<span class="nx-flag nx-flag-uniq">★ Unique</span>');
+    if (info.ess) flags.push('<span class="nx-flag nx-flag-ess">⛨ Essential</span>');
+    else if (info.prot) flags.push('<span class="nx-flag nx-flag-prot">🛡 Protected</span>');
+    if (info.summon) flags.push('<span class="nx-flag">Summonable</span>');
+    if (flags.length) html += '<div class="nx-flags">' + flags.join('') + '</div>';
+
+    /* top base skills */
+    if (Array.isArray(info.skills) && info.skills.length) {
+      html += '<div class="nx-detail-sect"><div class="nx-detail-h">Top skills</div>' +
+        '<div class="nx-skills">' + info.skills.map(skillChip).join('') + '</div></div>';
+    }
+
+    /* combat style + voice */
+    let cv = '';
+    if (info.combat) cv += statHtml('Combat style', info.combat);
+    if (info.voice) cv += statHtml('Voice', info.voice);
+    if (cv) html += '<div class="nx-stats">' + cv + '</div>';
+
+    /* factions */
+    if (Array.isArray(info.factions) && info.factions.length) {
+      html += '<div class="nx-detail-sect"><div class="nx-detail-h">Factions <b>' + info.factions.length + '</b></div>' +
+        '<div class="nx-facs">' + info.factions.map(factionRow).join('') + '</div></div>';
+    }
+
+    if (!html) html = '<div class="nx-eff-none">No extra detail for this NPC.</div>';
+    return html;
+  }
+
+  function patchDetailInPlace(id) {
+    const box = document.querySelector('#nx-body .nx-detail[data-for="' + cssEsc(id) + '"]');
+    if (!box) return;
+    box.innerHTML = detailInnerHtml(id, ui.detail[id]);
+  }
+
+  function cssEsc(s) { return String(s == null ? '' : s).replace(/"/g, '\\"'); }
+
+  /* "🔍 Inspect target" in the pane header — the crosshair route, and the one
+     that needs NO search at all: look at someone, open the deck, press it.
+     Built dynamically into .nx-head-right (the plug-filter idiom) so the
+     shared index.html skeleton needs no edit. It never greys out: whether
+     there IS anyone in the crosshair is a question only C++ can answer, and a
+     button that refuses with a sentence beats one that is dead for a reason
+     the player cannot see. */
+  let inspectBtnEl = null;
+
+  function inspectTargetBtn() {
+    const right = document.querySelector('#nx-pane .nx-head-right');
+    if (!right) return null;
+    if (!inspectBtnEl || !inspectBtnEl.parentNode) {
+      inspectBtnEl = document.createElement('button');
+      inspectBtnEl.className = 'nxi-open';
+      inspectBtnEl.id = 'nxi-open-target';
+      inspectBtnEl.innerHTML = '🔍 Inspect target';
+      inspectBtnEl.setAttribute('title',
+        'Read whoever you were looking at when the deck opened — their real health, ' +
+        'resistances, gear, what is running on them, and how they feel about you');
+      inspectBtnEl.addEventListener('click', function () { openInspect('', {}); });
+      right.insertBefore(inspectBtnEl, right.firstChild);
+    }
+    return inspectBtnEl;
+  }
+
   function renderHeader() {
+    inspectTargetBtn();
     const chip = $('nx-count-chip');
     if (chip) {
       chip.textContent = state.ready
@@ -834,6 +1995,18 @@ window.NpcsPane = (function () {
       '<span class="nx-plug-go">Browse →</span></div>';
   }
 
+  /* Tail of a capped mod roster — a real row so Enter reaches it too. It must
+     NOT carry .nx-plug-row: that class is the browse-a-plugin click target and
+     counts as a mod in every measurement. */
+  function moreModsRowHtml(left, selIdx, idx) {
+    const next = Math.min(left, MODS_PAGE);
+    return '<button class="nx-plug-more' + (selIdx === idx ? ' nx-sel' : '') +
+      '" title="Draw the next ' + fmtN(next) + ' mods">' +
+      '<span class="nx-plug-more-t">Show ' + fmtN(next) + ' more</span>' +
+      '<span class="nx-plug-count">' + fmtN(left) + ' not shown</span>' +
+      '<span class="nx-plug-go">▼</span></button>';
+  }
+
   function npcRowHtml(it, selIdx, idx) {
     const art = artFor(it);
     const hasArt = !!art;
@@ -848,7 +2021,9 @@ window.NpcsPane = (function () {
        got a body render is pictured, just not by a face. */
     if (it.t && !faceParts(it.fc) && !hasArt)
       chips += '<span class="nx-chip nx-chip-tmpl" title="Built from a template — no baked face exists, so no portrait">🜲 template</span>';
-    return '<div class="nx-row' + (selIdx === idx ? ' nx-sel' : '') + '" data-id="' + esc(it.id) + '">' +
+    const open = ui.expanded === it.id;
+    return '<div class="nx-row' + (selIdx === idx ? ' nx-sel' : '') + (open ? ' nx-row-open' : '') +
+      '" data-id="' + esc(it.id) + '">' +
       '<div class="' + plateCls + '" title="' + esc(hasArt ? it.n + ' — click for a bigger look' : it.n) + '">' +
       plateInner(it) + '</div>' +
       '<div class="nx-mid">' +
@@ -858,10 +2033,18 @@ window.NpcsPane = (function () {
       '<span class="nx-meta-plug" data-plug="' + esc(it.p) + '" title="Browse everyone ' + esc(it.p) + ' ships">' + esc(it.p) + '</span>' +
       '</div></div>' +
       '<div class="nx-act">' +
+      '<button class="nx-btn nx-info' + (open ? ' nx-info-on' : '') + '" data-info="' + esc(it.id) +
+      '" title="The RECORD — level, race, class, base stats and factions as the mod author wrote them" ' +
+      'aria-expanded="' + (open ? 'true' : 'false') + '">ⓘ Info</button>' +
+      '<button class="nx-btn nx-inspect" data-inspect="' + esc(it.id) +
+      '" title="The LIVE person — real health, resistances, gear, active effects and how they feel ' +
+      'about you. Only works while they are loaded in the world.">🔍 Inspect</button>' +
       '<button class="nx-btn nx-do nx-primary" data-act="bring" title="Teleport them to you (Enter does this too)">⤝ Bring</button>' +
       '<button class="nx-btn nx-do" data-act="goto" title="Teleport yourself to wherever they are">⤞ Go to</button>' +
       '<button class="nx-btn nx-do nx-spawn" data-act="spawn" title="Place a COPY of them at your feet — the original, if any, is untouched">＋ Spawn</button>' +
-      '</div></div>';
+      '</div></div>' +
+      (open ? '<div class="nx-detail" data-for="' + esc(it.id) + '">' +
+        detailInnerHtml(it.id, ui.detail[it.id]) + '</div>' : '');
   }
 
   function renderBody() {
@@ -950,8 +2133,12 @@ window.NpcsPane = (function () {
     rows.forEach(function (r) {
       if (r.kind === 'plug' && !inMods) {
         inMods = true;
-        html += '<div class="nx-sect">Mods <b>' +
-          (ui.type === 'mods' ? modMatches(30).length : Math.min(5, modMatches(5).length)) + '</b></div>';
+        /* The count is the MATCH count, never the draw cap — say "N of M" when
+           they differ so the header can't contradict the indexed-mods chip. */
+        const modTotal = modMatches(0).length;
+        const modDrawn = rows.filter(function (x) { return x.kind === 'plug'; }).length;
+        html += '<div class="nx-sect">Mods <b>' + fmtN(modTotal) + '</b>' +
+          (modDrawn < modTotal ? '<b>· showing ' + fmtN(modDrawn) + '</b>' : '') + '</div>';
       }
       if (r.kind === 'npc' && !inNpcs) {
         inNpcs = true;
@@ -969,6 +2156,7 @@ window.NpcsPane = (function () {
             'background. Rows fill in as it lands.</div>';
       }
       if (r.kind === 'plug') html += plugRowHtml(r.p, ui.sel, idx);
+      else if (r.kind === 'more') html += moreModsRowHtml(r.left, ui.sel, idx);
       else if (r.kind === 'npc') html += npcRowHtml(r.it, ui.sel, idx);
       idx++;
     });
@@ -977,6 +2165,8 @@ window.NpcsPane = (function () {
     body.querySelectorAll('.nx-plug-row').forEach(function (row) {
       row.addEventListener('click', function () { setPlugin(row.getAttribute('data-plug')); });
     });
+    const moreBtn = body.querySelector('.nx-plug-more');
+    if (moreBtn) moreBtn.addEventListener('click', showMoreMods);
     body.querySelectorAll('.nx-row:not(.nx-skel)').forEach(function (row) {
       const id = row.getAttribute('data-id');
       function npc() {
@@ -988,6 +2178,26 @@ window.NpcsPane = (function () {
           e.stopPropagation();
           const it = npc();
           if (it) act(b.getAttribute('data-act'), it);
+        });
+      });
+      const infoBtn = row.querySelector('.nx-info');
+      if (infoBtn) infoBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        toggleDetail(infoBtn.getAttribute('data-info'));
+      });
+      /* Inspect from a row: hand the sheet the face render and the name it
+         already has, so the card has a portrait and a title the instant it
+         opens rather than after the round trip. */
+      const inspBtn = row.querySelector('.nx-inspect');
+      if (inspBtn) inspBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        const it = npc();
+        if (!it) return;
+        const art = artFor(it);
+        openInspect(it.id, {
+          portrait: art && !art.body ? art.url : '',
+          glyph: it.s === 'f' ? '♀' : '♂',
+          name: it.n,
         });
       });
       const zoom = row.querySelector('.nx-plate.nx-zoomable');
@@ -1131,6 +2341,127 @@ window.NpcsPane = (function () {
     ui.toastT = setTimeout(function () { t.classList.remove('nx-toast-show'); }, 2600);
   }
 
+  /* ======================================================= spawn guard == */
+  /* Rober, 2026-08-18: "＋ Spawn a copy" on Argos gave him "a weird headless
+     ghost". A sculpted NPC's face is BAKED into a facegen file keyed to the
+     original record; a placed copy is a fresh actor that assembles its head at
+     runtime and has nothing to read that sculpt from. C++ knows this before it
+     places anything (NpcFinder::CopyLookOf) and refuses with warn:"faceless".
+
+     This is the pane's half: state the reason in plain words and put the verb
+     that DOES work — Bring / Go to — under the user's finger, with "Spawn
+     anyway" still available because it is his game. Deliberately a card and not
+     a toast: a refusal the user can't act on is just a flicker.
+
+     It never appears for a generic actor. C++ only warns on a ★ Unique NPC
+     whose baked face is really on disk, so bandits, guards and creatures reach
+     the engine on the first press exactly as before. */
+
+  const guard = { open: false, d: null };
+
+  function guardEl() { return $('nx-guard'); }
+
+  function closeSpawnGuard(refocus) {
+    const g = guardEl();
+    if (g && g.parentNode) g.parentNode.removeChild(g);
+    guard.open = false;
+    guard.d = null;
+    if (refocus !== false) {
+      const s = $('nx-search');
+      if (s && s.focus) s.focus();
+    }
+  }
+
+  function openSpawnGuard(d) {
+    const pane = $('nx-pane');
+    if (!pane) { toast(d.msg || 'A copy would come out faceless', true); return; }
+    closeSpawnGuard(false);
+    /* act() toasted "Placing X…" optimistically on the press. Nothing is being
+       placed, so kill it the moment the card says otherwise — two statements
+       that contradict each other read as a bug. */
+    const tst = $('nx-toast');
+    if (tst) tst.classList.remove('nx-toast-show');
+    if (ui.toastT) { clearTimeout(ui.toastT); ui.toastT = null; }
+    guard.open = true;
+    guard.d = d;
+    const name = String(d.name || 'They');
+    /* Button labels name the person — but a 38-character mod name (think
+       "Herika the Wandering Scholar of Winterhold") turns four verbs into
+       four ragged rows.
+       Clip the label, keep the whole name in the title and in the prose above,
+       so nothing is hidden and the row still reads as a row. */
+    const shortName = name.length > 22 ? name.slice(0, 20).trim() + '…' : name;
+    const canBring = d.canBring !== false;
+    const g = document.createElement('div');
+    g.id = 'nx-guard';
+    g.className = 'nx-guard';
+    g.setAttribute('role', 'dialog');
+    g.setAttribute('aria-modal', 'true');
+    g.setAttribute('aria-labelledby', 'nx-guard-t');
+    g.innerHTML =
+      '<div class="nx-guard-card">' +
+        '<div class="nx-guard-head">' +
+          '<span class="nx-guard-glyph" aria-hidden="true">◍</span>' +
+          '<span class="nx-guard-t" id="nx-guard-t">A copy of ' + esc(name) + ' comes out faceless</span>' +
+        '</div>' +
+        '<p class="nx-guard-msg">' + esc(d.msg || '') + '</p>' +
+        '<p class="nx-guard-why">Their look is baked into a face file that belongs to the original ' +
+          'record. A copy is built fresh, so there is nothing for it to read that face from — ' +
+          'you get a blank, headless shape wearing their gear.</p>' +
+        (canBring ? '' :
+          '<p class="nx-guard-note">' + esc(name) + ' is not loaded in the world right now, so ' +
+          'Bring and Go to cannot reach them. Travel to where they live first, or spawn the ' +
+          'copy anyway knowing what it will look like.</p>') +
+        '<div class="nx-guard-acts">' +
+          '<button class="nx-gbtn nx-gbtn-primary" data-g="bring"' +
+            (canBring ? '' : ' disabled') +
+            ' title="' + (canBring
+              ? 'Teleport the real ' + esc(name) + ' to you — the face comes with them'
+              : esc(name) + ' is not loaded in the world right now') +
+            '">⤝ Bring ' + esc(shortName) + ' here</button>' +
+          '<button class="nx-gbtn" data-g="goto"' + (canBring ? '' : ' disabled') +
+            ' title="' + (canBring
+              ? 'Teleport yourself to wherever ' + esc(name) + ' is'
+              : esc(name) + ' is not loaded in the world right now') +
+            '">⤞ Go to ' + esc(shortName) + '</button>' +
+          '<button class="nx-gbtn nx-gbtn-warn" data-g="force"' +
+            ' title="Place the copy anyway — it will have no face">＋ Spawn anyway</button>' +
+          '<button class="nx-gbtn nx-gbtn-ghost" data-g="cancel" title="Leave it (Esc)">Cancel</button>' +
+        '</div>' +
+      '</div>';
+    pane.appendChild(g);
+
+    const it = { id: d.id, n: name };
+    g.querySelectorAll('[data-g]').forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (b.disabled) return;
+        const what = b.getAttribute('data-g');
+        closeSpawnGuard();
+        if (what === 'bring') act('bring', it);
+        else if (what === 'goto') act('goto', it);
+        else if (what === 'force') act('spawn', it, { force: true });
+      });
+    });
+    /* Click the dimmed surround (never the card) to dismiss — the deck's
+       click-away idiom, and the same thing Cancel does. */
+    g.addEventListener('click', function (e) {
+      if (e.target === g) { e.stopPropagation(); closeSpawnGuard(); }
+    });
+    /* Esc closes the card and nothing else: without stopPropagation it would
+       also clear the search box on its way to the palette. */
+    g.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSpawnGuard(); }
+    });
+    /* Focus a SAFE button, never "Spawn anyway": the card exists to stop a
+       reflex press, and putting the destructive verb under a waiting Enter
+       would hand the ghost over anyway. Bring when it can work, Cancel when
+       it can't. */
+    const first = g.querySelector('[data-g="bring"]:not([disabled])') ||
+                  g.querySelector('[data-g="cancel"]');
+    if (first && first.focus) setTimeout(function () { first.focus(); }, 20);
+  }
+
   /* ========================================================== lifecycle == */
 
   function onShow() {
@@ -1144,6 +2475,8 @@ window.NpcsPane = (function () {
 
   function onHide() {
     ui.visible = false;
+    closeSpawnGuard(false);   // a decision card must never survive the tab it belongs to
+    closeInspect();
     if (window.HDLightbox) HDLightbox.close();
     if (ui.debT) { clearTimeout(ui.debT); ui.debT = null; }
     if (ui.iconT) { clearTimeout(ui.iconT); ui.iconT = null; }
@@ -1247,9 +2580,30 @@ window.NpcsPane = (function () {
     });
   }
 
+  const DEV_DETAIL = {
+    'Skyrim.esm|00A2C8': { lvl: 6, pcMult: true, race: 'Nord', cls: 'Warrior1H', sex: 'Female',
+      ess: true, prot: false, uniq: true, summon: false, hp: 150, mp: 50, sp: 120, autoCalc: false,
+      skills: [{ n: 'One-Handed', v: 30 }, { n: 'Block', v: 25 }, { n: 'Heavy Armor', v: 22 }],
+      combat: 'csHousecarl', voice: 'FemaleEvenToned',
+      factions: [{ n: 'PotentialFollowerFaction', rank: 0 }, { n: 'WhiterunHousecarlFaction', rank: -1 }] },
+    'Skyrim.esm|013480': { lvl: 1, pcMult: false, race: 'Redguard', cls: 'Citizen', sex: 'Male',
+      ess: false, prot: false, uniq: true, hp: 50, mp: 50, sp: 50, autoCalc: false,
+      skills: [{ n: 'Speech', v: 20 }], factions: [{ n: 'WhiterunFarmerFaction', rank: -1 }] },
+    'CoolFollowers.esl|000801': { lvl: 10, race: 'Dunmer', cls: 'Sorcerer', sex: 'Female',
+      ess: true, uniq: true, hp: 0, mp: 0, sp: 0, autoCalc: true,
+      skills: [{ n: 'Destruction', v: 40 }, { n: 'Conjuration', v: 35 }], factions: [] },
+  };
+
   function devQuery(arg) {
     let req = {};
     try { req = JSON.parse(arg); } catch (e) {}
+    if (req.detail) {
+      const info = DEV_DETAIL[req.detail];
+      window.nxResultData(info
+        ? { seq: req.seq | 0, detail: req.detail, info: info }
+        : { seq: req.seq | 0, detail: req.detail, info: {}, err: 'No dev detail fixture' });
+      return;
+    }
     const q = String(req.q || '').toLowerCase();
     const toks = q.split(/\s+/).filter(Boolean);
     const rows = DEV_NPCS.filter(function (it) {
@@ -1271,9 +2625,104 @@ window.NpcsPane = (function () {
   function devAct(arg) {
     let req = {};
     try { req = JSON.parse(arg); } catch (e) {}
-    if (req.act === 'spawn') { window.nxActResult({ ok: true, act: 'spawn', found: true, msg: '✦ someone appears' }); return; }
+    if (req.act === 'spawn') {
+      /* Mirror of NpcFinder::CopyLookOf so ?dev=1 shows the real branch: a
+         ★ Unique row with a baked face (fc) warns unless force was sent. */
+      let row = null;
+      for (let i = 0; i < DEV_NPCS.length; i++) if (DEV_NPCS[i].id === req.id) row = DEV_NPCS[i];
+      if (row && row.u && row.fc && !req.force) {
+        const them = row.s === 'f' ? 'her' : 'him';
+        window.nxActResult({ ok: false, act: 'spawn', found: false, warn: 'faceless',
+          id: row.id, name: row.n, canBring: true, face: row.fc,
+          msg: row.n + ' has a sculpted face that only the real ' + them +
+               ' carries — a copy comes out faceless. Bring ' + them + ' instead.' });
+        return;
+      }
+      window.nxActResult({ ok: true, act: 'spawn', found: true, msg: '✦ someone appears' });
+      return;
+    }
     window.nxActResult({ ok: false, act: req.act, found: false,
       msg: "They aren't anywhere in the loaded world right now — Spawn a copy instead" });
+  }
+
+  /* A dense inspect subject for ?dev=1: every slot filled, long enchanted
+     names, a negative resist, a capped one, and effects across all five piles
+     plus the engine's hidden plumbing — the shape the layout has to survive. */
+  function devInspect(arg) {
+    let req = {};
+    try { req = JSON.parse(arg); } catch (e) {}
+    const piles = ['buff', 'debuff', 'disease', 'poison', 'constant'];
+    const effects = [];
+    for (let i = 0; i < 24; i++) {
+      const g = piles[i % 5];
+      effects.push({
+        name: i === 3 ? 'Fortify Restoration and Regenerate Magicka of the Waning Moon'
+          : ['Frost Damage', 'Fortify Smithing', 'Ataxia', 'Ravage Stamina', 'Blessing of Talos',
+             'Vampiric Drain', 'Muffle', 'Highborn'][i % 8],
+        source: ['Ice Spike', "Blacksmith's Elixir", 'Ataxia', 'Deathbell Poison', 'Shrine Blessing',
+                 'Vampire Lord', 'Muffle', 'Racial'][i % 8],
+        plugin: i % 3 === 0 ? 'Skyrim.esm' : (i % 3 === 1 ? 'Dawnguard.esm' : 'Apothecary.esp'),
+        magnitude: (i * 7) % 60, durSec: i % 4 === 3 ? 0 : 30 + i * 137,
+        remainSec: i % 4 === 3 ? 0 : 5 + i * 61,
+        harmful: g === 'debuff' || g === 'poison' || g === 'disease',
+        group: g, sourceKind: ['spell', 'potion', 'ability', 'shout', 'enchantment'][i % 5],
+        av: ['Health', 'Magicka', 'Smithing', '', 'One-Handed'][i % 5], hidden: i % 11 === 0,
+      });
+    }
+    window.niInspectData({
+      ok: true, seq: req.seq | 0, src: req.id ? 'id' : 'crosshair',
+      who: { name: 'Sylvara the Ashen', ref: '0xFF001A2C', formId: '0x000801',
+             plugin: 'CoolFollowers.esl', level: 48, race: 'Dark Elf', raceEditorId: 'DarkElfRace',
+             cls: 'Nightblade', sex: 'Female', voice: 'FemaleEvenToned', combatStyle: 'csMagicRanged',
+             dead: false, essential: true, 'protected': false, unique: true, summonable: false,
+             inCombat: true },
+      pools: { hp: { cur: 512, max: 740 }, mag: { cur: 300, max: 300 }, sta: { cur: 87, max: 210 } },
+      regen: { has: true, hp: 5.2, mag: 9.4, sta: -2.3, inCombat: true },
+      resist: { armor: 567, phys: 80, fire: -25, frost: 75, shock: 55, magic: 85, poison: 0,
+                disease: 100, pieces: 4, capMagic: 85, capPhys: 80 },
+      combat: { damage: 124.5, speed: 0.75, reach: 1.3, move: 126, unarmed: false, estimated: true,
+                weapon: 'Nightingale Blade of the Waning Moon', ranged: false, arrow: 0, arrowName: '' },
+      ai: [
+        { key: 'aggression', label: 'Aggression', value: 2, word: 'Very aggressive', note: 'Whether they pick the fight.' },
+        { key: 'confidence', label: 'Confidence', value: 4, word: 'Foolhardy', note: 'Whether they finish it.' },
+        { key: 'morality', label: 'Morality', value: 0, word: 'Any crime', note: 'What they will let you get away with.' },
+        { key: 'assistance', label: 'Assistance', value: 2, word: 'Helps friends and allies', note: 'Whether they join in.' },
+        { key: 'mood', label: 'Mood', value: 1, word: 'Angry', note: 'The idle expression.' },
+        { key: 'energy', label: 'Energy', value: 70, word: '', note: 'How much they wander.' },
+      ],
+      traits: [{ text: 'Person', kind: 'type' }, { text: 'Vampire', kind: 'beast' }],
+      equip: [
+        { slot: 'head', label: 'Head', kind: 'armor', name: 'Nightingale Hood', armor: 18,
+          badges: [{ text: '+20', av: 'Illusion' }] },
+        { slot: 'body', label: 'Body', kind: 'armor', armor: 137,
+          name: 'Ancient Shrouded Armour of Eminent Extreme Destruc',
+          badges: [{ text: '25%', av: 'One-Handed' }, { text: '+60', av: 'Stamina' }] },
+        { slot: 'hands', label: 'Hands', kind: 'armor', name: 'Gauntlets of Extreme Smithing', armor: 25,
+          badges: [{ text: '+25', av: 'Smithing' }] },
+        { slot: 'feet', label: 'Feet', kind: 'armor', name: 'Nightingale Boots', armor: 10, badges: [] },
+        { slot: 'amulet', label: 'Amulet', kind: 'armor', name: 'Gauldur Amulet Fragment', armor: 0,
+          badges: [{ text: '+50', av: 'Magicka' }] },
+        { slot: 'ring', label: 'Ring', kind: 'armor', name: '', badges: [] },
+        { slot: 'right', label: 'Right hand', kind: 'weapon', name: 'Nightingale Blade of the Waning Moon',
+          damage: 124.5, speed: 0.75, reach: 1.3, damageEstimated: true,
+          badges: [{ text: '+30', av: 'Fire resist' }] },
+        { slot: 'left', label: 'Left hand', kind: 'spell', name: 'Sparks', badges: [] },
+        { slot: 'ammo', label: 'Ammo', kind: 'ammo', name: '', badges: [] },
+      ],
+      skills: [['One-Handed', 100], ['Two-Handed', 42], ['Archery', 76], ['Block', 55],
+        ['Smithing', 100], ['Heavy Armor', 88], ['Light Armor', 30], ['Pickpocket', 15],
+        ['Lockpicking', 40], ['Sneak', 62], ['Alchemy', 90], ['Speech', 78], ['Alteration', 45],
+        ['Conjuration', 66], ['Destruction', 80], ['Illusion', 33], ['Restoration', 72],
+        ['Enchanting', 100]].map(function (s) { return { name: s[0], level: s[1] }; }),
+      effects: effects,
+      social: {
+        rank: { has: true, rank: 3, label: 'Ally' }, teammate: true, hostile: false,
+        maras: { on: true, spouse: true, status: 2, statusText: 'Married', hierarchy: 0,
+                 affection: 80, mood: 'happy' },
+        factions: [{ n: 'PotentialFollowerFaction', rank: 0 }, { n: 'WhiterunHousecarlFaction', rank: -1 },
+          { n: 'PlayerFaction', rank: 1 }, { n: 'CrimeFactionWhiterun', rank: -1 }],
+      },
+    });
   }
 
   /* ========================================================== selftest == */
@@ -1419,6 +2868,11 @@ window.NpcsPane = (function () {
     _pageCount: pageCount, _gotoPage: gotoPage, _changePageSize: changePageSize,
     _clampPageSize: clampPageSize, _footVisible: footVisible,
     _pluginFuzzy: pluginFuzzy, _plugFilterVisible: plugFilterVisible,
+    _toggleDetail: toggleDetail, _detailInnerHtml: detailInnerHtml,
+    _insp: insp, _openInspect: openInspect, _closeInspect: closeInspect,
+    _renderInspect: renderInspect, _effectRows: effectRows, _fmtDur: fmtDur,
+    _inspectTargetBtn: inspectTargetBtn,
+    _openSpawnGuard: openSpawnGuard, _closeSpawnGuard: closeSpawnGuard, _guard: guard,
   };
 })();
 
