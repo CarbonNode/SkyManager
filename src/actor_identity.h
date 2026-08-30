@@ -77,8 +77,22 @@ namespace ActorIdentity
 	// Resolve a stored pair to the live form. An empty plugin falls back to a
 	// raw runtime lookup, because that is what older configs (and the crosshair
 	// snapshot, which only ever has a runtime id) hand us.
+	//
+	// A successful plugin-qualified resolve is MEMOISED (see the comment beside
+	// g_resolveCache in the .cpp): the answer is immutable once data has loaded,
+	// and the uncached by-name plugin scan underneath it was being paid on every
+	// call. Nulls are never remembered, the empty-plugin path is never
+	// remembered, and the memo is capped and cleared wholesale when it fills.
 	RE::TESForm* Resolve(const std::string& formId, const std::string& plugin);
 	RE::Actor*   ResolveActor(const std::string& formId, const std::string& plugin);
+
+	// The same lookup for a caller that ALREADY HOLDS the id as a number. The
+	// string form exists because "0x81A" is how every config and every bridge
+	// payload spells an id — but the hotbar's per-tick slot resolve held a
+	// std::uint32_t and was formatting it to hex only for Resolve() to parse it
+	// straight back. Identical behaviour in every respect; this is the same
+	// function, minus the round trip.
+	RE::TESForm* Resolve(std::uint32_t rawFormId, const std::string& plugin);
 
 	// The durable identity of a live form. False = it has none (dynamic form,
 	// or no source file), and the caller must keep whatever it already had.

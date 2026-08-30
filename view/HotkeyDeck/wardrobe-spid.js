@@ -135,13 +135,97 @@ window.WardrobeSpid = (function () {
     return wrap;
   }
 
+  /* ---- head renders (2026-08-20) --------------------------------------
+     A captured photo is the best picture and stays first, but almost nobody
+     on this page has one: these are people you granted a wig to, not people
+     you travel with. The deck already bakes a facegen head for every NPC the
+     Finder shows, and that pool is keyed by the FACE OWNER — for a templated
+     NPC a donor record in another plugin — which is why this needs its own
+     door (sgFaces) rather than the followers' runtime-id one. Renders that
+     exist come back at once; missing ones bake and we re-ask on a slow,
+     BOUNDED clock, because an NPC with no facegen file never lands and an
+     unbounded poll would ask forever (the 2026-08-14 lesson). */
+  var faces = {};          // "plugin|0xlocal" -> icons/npcs/… path
+  var faceAsked = {};      // keys already sent this session
+  var facePolls = 0;
+  var facePollT = null;
+  var MAX_FACE_POLLS = 12;
+
+  function faceKey(npc) {
+    return (npc && npc.plugin && npc.localId) ? (npc.plugin + '|' + npc.localId) : '';
+  }
+
+  function requestFaces() {
+    var ask = [];
+    state.npcs.forEach(function (npc) {
+      var k = faceKey(npc);
+      if (!k || faceAsked[k] || faces[k]) return;
+      var shot = portraitFor(npc);
+      if (shot && shot.file) return;          // a real photo already wins
+      faceAsked[k] = true;
+      ask.push({ plugin: npc.plugin, localId: npc.localId });
+    });
+    if (!ask.length) return;
+    facePolls = 0;
+    toGame('sgFaces', JSON.stringify({ npcs: ask }));
+  }
+
+  function receiveFaces(payload) {
+    var d = payload;
+    if (typeof d === 'string') { try { d = JSON.parse(d); } catch (_) { d = null; } }
+    if (!d || typeof d !== 'object') return;
+    var got = 0;
+    if (d.icons && typeof d.icons === 'object') {
+      for (var k in d.icons) {
+        if (!Object.prototype.hasOwnProperty.call(d.icons, k)) continue;
+        if (faces[k] !== d.icons[k]) { faces[k] = d.icons[k]; got++; }
+      }
+    }
+    if (got) redraw();
+    /* Still baking: ask again, but only so many times. The empty re-ask
+       queues nothing — it just reads the on-disk index. */
+    if (facePollT) { clearTimeout(facePollT); facePollT = null; }
+    if ((d.queued | 0) > 0 && facePolls < MAX_FACE_POLLS) {
+      facePolls++;
+      facePollT = setTimeout(function () {
+        facePollT = null;
+        var again = [];
+        state.npcs.forEach(function (npc) {
+          var k = faceKey(npc);
+          if (k && !faces[k]) again.push({ plugin: npc.plugin, localId: npc.localId });
+        });
+        if (again.length) toGame('sgFaces', JSON.stringify({ npcs: again }));
+      }, 3000);
+    }
+  }
+
   function faceEl(npc) {
     var shot = portraitFor(npc);
-    if (!shot || !shot.file) return faceGlyph();
+    if (!shot || !shot.file) {
+      var render = faces[faceKey(npc)];
+      if (render) {
+        var rwrap = h('span', { class: 'wdsp-face' });
+        var rimg = h('img', { src: render, alt: '' });
+        /* Head renders are framed by the shared face-fit lane, exactly as the
+           roster and the Finder frame the SAME png — three surfaces, one
+           framing, or the same face looks cropped differently in each. */
+        if (window.HDFaceFit && typeof HDFaceFit.paint === 'function')
+          HDFaceFit.paint(rimg, render);
+        rimg.addEventListener('error', function () {
+          var g = faceGlyph();
+          if (rwrap.parentNode) rwrap.parentNode.replaceChild(g, rwrap);
+        });
+        rwrap.append(rimg);
+        return rwrap;
+      }
+      return faceGlyph();
+    }
     var wrap = h('span', { class: 'wdsp-face' });
     /* Plain path, no ?v= cache-buster: Ultralight treats the query as part
        of the filename and 404s (the Favorites Shelf learned this). */
     var img = h('img', { src: 'portraits/' + shot.file, alt: '' });
+    /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
+    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, 'portraits/' + shot.file);
     img.addEventListener('error', function () {
       var g = faceGlyph();
       if (wrap.parentNode) wrap.parentNode.replaceChild(g, wrap);
@@ -165,6 +249,11 @@ window.WardrobeSpid = (function () {
        headline can never disagree with the switches underneath it. */
     state.lines = countLive();
     state.loaded = true;
+    /* A roster reply is the only moment we learn about a person we have never
+       drawn — a grant just added, or the first load of the session — so this
+       is where the faces for her get asked for. Anyone already answered or
+       already asked is skipped inside. */
+    requestFaces();
     if (ctx && typeof ctx.render === 'function' && isShowing()) ctx.render();
   }
 
@@ -207,6 +296,65 @@ window.WardrobeSpid = (function () {
       plugin: it.plugin, localId: it.localId, enabled: !!on,
     }));
     say((it.name || 'Grant') + (on ? ' — on at next launch' : ' — off, kept in the list'));
+  }
+
+  /* ---- add a grant from an item's identity (2026-08-20) ----------------
+     No optimistic row here, unlike every other mutation on this page. The
+     DLL is the only thing that can say whether the item resolves in THIS
+     load order and whether it is something an NPC can carry, and drawing a
+     grant that the answer then refuses would be a lie the page had to take
+     back. sgAdd always answers with a fresh sgAllState, so the row appears
+     the moment it is real. */
+  function addGrant(npc, item, count) {
+    if (!npc || !item || !item.plugin) return;
+    toGame('sgAdd', JSON.stringify({
+      npcPlugin: npc.plugin, npcLocal: npc.localId, npcName: npc.name || '',
+      itemPlugin: item.plugin,
+      itemLocal: HDItemPickLocal(item),
+      itemName: item.name || '',
+      count: Math.max(1, Math.min(999, count | 0 || 1)),
+      chance: 100,
+    }));
+  }
+
+  /* The picker hands back localId as a NUMBER; every sg* payload speaks the
+     "0x…" string form (ActorIdentity::ParseHex on the other side). One place
+     does the conversion so a future caller cannot get it subtly wrong. */
+  function HDItemPickLocal(item) {
+    if (typeof item.localId === 'string') return item.localId;
+    return '0x' + Number(item.localId >>> 0).toString(16);
+  }
+
+  function openAddFor(npc) {
+    /* The picker mounts inset:0 INSIDE a pane element, so it inherits the
+       deck's scale and clips to its rounded corners (the ix-sheet idiom). The
+       host hands us its own pane in the render context — that is the right
+       one; the lookups after it are only for a host that predates the ctx or
+       a harness that draws us bare. */
+    var host = (ctx && ctx.pane) || null;
+    if (!host && ctx && ctx.list && ctx.list.closest) host = ctx.list.closest('section');
+    if (!host) host = document.getElementById('wd-pane');
+    if (!window.HDItemPick || !host) {
+      say('The item finder is not available here');
+      return;
+    }
+    var already = (npc.items || []).map(function (it) {
+      return { plugin: it.plugin, localId: parseInt(String(it.localId), 16) >>> 0 };
+    });
+    HDItemPick.open({
+      host: host,
+      title: 'Enforce on ' + (npc.name || 'her'),
+      hint: 'She is handed this at every launch, forever, until you pause or forget it.',
+      confirm: 'Enforce',
+      multi: true,        // granting a whole outfit is one trip, not five
+      chosen: function () { return already; },
+      onPick: function (it) {
+        addGrant(npc, it, 1);
+        already.push({ plugin: it.plugin, localId: (it.localId >>> 0) });
+        say('Enforcing ' + (it.name || 'that item') + ' on ' + (npc.name || 'her'));
+      },
+      onClose: function () { redraw(); },
+    });
   }
 
   function sendEnableNpc(npc, on) {
@@ -343,6 +491,19 @@ window.WardrobeSpid = (function () {
     head.append(idBox);
 
     var acts = h('div', { class: 'wdsp-acts' });
+    /* ＋ Add gear (2026-08-20). Until now the ONLY way to grant anything was
+       the inbox chest on her F7 card: you had to be standing in front of her
+       AND already own the item. So "give her the wig I have not crafted yet",
+       or granting from this page at all, was impossible. The picker is the
+       Finder's own index (hd-itempick.js), so it searches every item in the
+       load order, and the grant is made from identity — no physical object
+       changes hands. */
+    acts.append(h('button', {
+      class: 'wdsp-add', type: 'button',
+      title: 'Search every item in the load order and enforce one on ' +
+        (npc.name || 'her') + ' — no need to be near her, or to own it',
+      onClick: function (e) { e.stopPropagation(); openAddFor(npc); },
+    }, '＋ Add gear'));
     acts.append(toggle(on, on ? 'Enforced' : 'Paused',
       on ? 'Pause every grant for ' + (npc.name || 'her') + ' — kept in the list, none distributed'
          : 'Enforce ' + (npc.name || 'her') + '’s grants again from the next launch',
@@ -427,24 +588,99 @@ window.WardrobeSpid = (function () {
         if (typeof prev === 'function') prev(payload);
       }
     };
+    /* sgFacesData is OURS alone (no other surface asks for grant faces), but
+       it is chained on the same principle anyway: a future owner appearing
+       above us must not be unplugged by this line. */
+    var prevFaces = window.sgFacesData;
+    window.sgFacesData = function (payload) {
+      try { receiveFaces(payload); } finally {
+        if (typeof prevFaces === 'function') prevFaces(payload);
+      }
+    };
     request();
   }
 
-  function onEnter() { disarm(); request(); }
+  function onEnter() { disarm(); request(); requestFaces(); }
 
   function setFilter(q) { ui.filter = String(q || '').trim().toLowerCase(); }
 
   /* --------------------------------------------------------- omni hook -- */
 
+  /* Landing on THIS page from anywhere. It is a SUB-tab of the Wardrobe, never
+     a button in the deck's top nav, so omni's tab fallback cannot reach it and
+     a result that merely opened the Wardrobe would drop you on whichever
+     section you happened to use last — a worse answer than no result.
+     Two things the ordering has to survive. app.js's setTab() returns early
+     when its tab is already open, so switching the sub cannot rely on it. And
+     the host re-pushes ITS filter into every sub-tab on each render, so the
+     query belongs in the Wardrobe's own search box: setting ours alone is wiped
+     by the very repaint that would show it. */
+  function showSub(q) {
+    var host = window.WardrobePane;
+    var text = String(q == null ? '' : q);
+    if (host && host._ui) host._ui.sub = 'spid';
+    onEnter();                    // disarm anything half-armed, re-ask the roster
+    if (typeof window.__omniSetTab === 'function') window.__omniSetTab('wardrobe');
+    /* The Wardrobe's own omni provider is the single implementation of "put
+       this in the wardrobe search box and repaint" — filter, input value and
+       render, in the order the host needs them. Without it (a harness, or a
+       boot where the host has not registered yet) we still filter and redraw,
+       so the landing is never a silent no-op. */
+    var wardrobe = (window.HDOmni && typeof window.HDOmni.providerById === 'function')
+      ? window.HDOmni.providerById('wardrobe') : null;
+    if (wardrobe && typeof wardrobe.setFilter === 'function') wardrobe.setFilter(text);
+    else { setFilter(text); redraw(); }
+  }
+
   function omniIndex() {
     var out = [];
+    var people = state.npcs.length;
+    /* The page itself, first. Every other row here is named after an item or a
+       person, so without this one nothing in the deck answers "spid",
+       "permanent gear", "grant" or "enforce" — the words this whole feature is
+       built around, and the ones someone hunting for it would actually type. */
+    out.push({
+      label: 'Permanent gear — SPID grants',
+      detail: people
+        ? people + (people === 1 ? ' person · ' : ' people · ') + state.lines +
+          ' line' + (state.lines === 1 ? '' : 's') + ' live · applies at next launch'
+        : 'Nobody has permanent gear yet — the page explains how to grant some',
+      kind: 'wardrobe',
+      keywords: 'spid permanent gear grant grants granted enforce enforced wig wigs ' +
+        'distr ini distribution distributed always wears forever wardrobe',
+      pin: 'spid:page',
+      run: function () { showSub(''); },
+    });
     state.npcs.forEach(function (npc) {
-      (npc.items || []).forEach(function (it) {
+      var items = npc.items || [];
+      var live = items.filter(function (it) { return it.enabled !== false; }).length;
+      /* Her card, by her name. "What is Lydia permanently granted" used to
+         depend on one of her item names happening to match, and the two verbs
+         that live on the card — pause everything, forget everything — had no
+         name at all in search. */
+      out.push({
+        label: npc.name || 'Unnamed',
+        detail: 'Permanent gear · ' + (npc.enabled === false
+          ? items.length + ' grant' + (items.length === 1 ? '' : 's') + ' held, all paused'
+          : live + ' of ' + items.length + ' at next launch'),
+        kind: 'person',
+        keywords: 'spid permanent gear grant enforce enforced pause paused forget ' +
+          (npc.plugin || ''),
+        pin: 'spid:' + keyOf(npc),
+        snap: { name: npc.name || '' },
+        run: function () { showSub(npc.name || ''); },
+      });
+      items.forEach(function (it) {
         out.push({
           label: (it.name || 'Grant') + ' → ' + (npc.name || 'someone'),
           detail: 'SPID gear · ' + (it.enabled === false || npc.enabled === false ? 'off' : 'on'),
           keywords: 'spid gear permanent ' + (npc.plugin || '') + ' ' + (it.plugin || ''),
           pin: 'spid:' + keyOf(npc) + '|' + keyOf(it),
+          snap: { name: it.name || '' },
+          /* Filtered to the ITEM rather than to her: the search that found this
+             row was about the thing, and her card sits one line above it in the
+             filtered page either way. */
+          run: function () { showSub(it.name || ''); },
         });
       });
     });
@@ -461,10 +697,39 @@ window.WardrobeSpid = (function () {
     count: count,
     render: render,
     setFilter: setFilter,
+    /* ---- the door other surfaces come in through (2026-08-20) ----------
+       The Wigs tab and the F7 card both want "enforce THIS on HER, then show
+       me where that lives". They must not learn the sgAdd payload shape:
+       this page owns the grant contract, and a second copy of it elsewhere
+       is how the item-id-vs-hex mistakes get made.
+         enforce({npc:{plugin,localId,name} | formId, item:{plugin,localId,name}, count?})
+       `formId` is the crosshair's RUNTIME id — the DLL resolves her durable
+       identity from it, so a caller that only has a live actor is fine.
+       `show` opens the page, optionally filtered to a name. */
+    enforce: function (req) {
+      if (!req || !req.item || !req.item.plugin) return false;
+      var it = req.item;
+      toGame('sgAdd', JSON.stringify({
+        npcPlugin: (req.npc && req.npc.plugin) || '',
+        npcLocal: (req.npc && req.npc.localId) || '',
+        npcName: (req.npc && req.npc.name) || '',
+        formId: req.formId || 0,
+        itemPlugin: it.plugin,
+        itemLocal: HDItemPickLocal(it),
+        itemName: it.name || '',
+        count: Math.max(1, Math.min(999, (req.count | 0) || 1)),
+        chance: 100,
+      }));
+      return true;
+    },
+    show: showSub,
     /* exposed for the harness */
     _state: state, _ui: ui, _receive: receive, _keyOf: keyOf,
+    _addGrant: addGrant, _openAddFor: openAddFor, _receiveFaces: receiveFaces,
+    _faces: function () { return faces; }, _requestFaces: requestFaces,
     _matches: matches, _npcCard: npcCard, _itemRow: itemRow, _faceEl: faceEl,
-    _countLive: countLive, _omniIndex: omniIndex, _setCtx: function (c) { ctx = c; },
+    _countLive: countLive, _omniIndex: omniIndex, _showSub: showSub,
+    _setCtx: function (c) { ctx = c; },
   };
 
   if (window.WardrobePane && typeof window.WardrobePane.registerSub === 'function')
@@ -472,9 +737,19 @@ window.WardrobeSpid = (function () {
 
   if (window.HDOmni && typeof window.HDOmni.register === 'function') {
     window.HDOmni.register({
-      id: 'spidgear', tab: 'wardrobe',
+      /* The label is the group heading omni prints above these rows. It was
+         missing, and the heading is rendered verbatim — so every SPID result
+         sat under a blank line with a bare count beside it, looking like rows
+         nobody owned. */
+      id: 'spidgear', label: 'SPID gear', tab: 'wardrobe',
       warm: function () { request(); },
-      setFilter: function (q) { setFilter(q); },
+      /* A jump (Shift+Enter, or the shelf's tab-jump) has to land on the SPID
+         sub-tab as well — the Wardrobe tab on its own would show whichever
+         section was open last. */
+      setFilter: function (q) { showSub(q); },
+      /* Shelf activation for a pin whose live row has not warmed in yet: her
+         page, filtered to the name the pin remembered, beats a dead button. */
+      pinRun: function (snap) { showSub((snap && snap.name) || ''); },
       index: omniIndex,
     });
   }

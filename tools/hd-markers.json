@@ -26,6 +26,14 @@
     "the config_manager.php path in sharmat.cpp would be a useless marker."
   ],
   "dll": {
+    "portal-containers": "portal containers: {} setting(s) applied",
+    "container-sort-redirect": "container-sort: container redirect hooks installed",
+    "container-sort-sweepall": "container-sort: put away ",
+    "container-sort-gather": "container-sort: gathered ",
+    "container-sort-taxonomy": "container-sort: craft index built from ",
+    "container-sort-sinks": "container-sort: sinks installed",
+    "container-sort-loan": "container-sort: crafting loan lent ",
+    "container-sort-retrieve": "container-sort: retrieved ",
     "controls-fix": "controls-fix: engine enabledControls",
     "portrait-lock-fallback": "is held open by the running view",
     "portrait-no-freecam": "no free-camera toggle",
@@ -92,6 +100,9 @@
     "item-icons-render": "item icons: rendering '",
     "item-icons-bound": "item icons: Mesh Rendering Framework bound",
     "face-render-persist": "known face/body render(s) from npc-icons.json",
+    "render-backlog-resume": "unfinished render(s) remembered from last session",
+    "hud-custom-icons": "hudCustomIcons(",
+    "face-turntable": "face turntable frame(s) queued",
     "bridge-fdmhiyh-result": "fdMhiyhResult",
     "bridge-rgstate-result": "rgStateResult",
     "bridge-wdarmormodlist": "wdArmorModList",
@@ -106,6 +117,7 @@
     "npc-grab-omo": "NpcActions: grab delegated to OMO",
     "npc-grab-cancel": "OMO grab cancelled by the deck key",
     "npc-sic-em": "NpcActions: sic-em",
+    "npc-sic-em-longshot": "sic-em longshot",
     "omo-pick-seed": "Object Manipulation Overhaul picks up the item",
     "nff-home-ref": "has no My Home is Your Home home yet",
     "portal-portraits-live": "portal portraits: applied live",
@@ -120,6 +132,8 @@
     "item-icons-swap-fallback": "retrying as the bare mesh",
     "item-icons-render-gate": "Main/Mist/Map/Book menus are open",
     "item-icons-live-swap": "texture-swap entries applied to the live model",
+    "item-icons-swap-empty-diffuse": "carries no diffuse",
+    "item-icons-swap-epoch": "swap-epoch=",
     "item-icons-swap-restore": "could NOT be restored to their original",
     "photo-attach-cpp": "photo: attached '",
     "instant-wait": "time: jumped {} game hour",
@@ -232,6 +246,7 @@
     "ostim-role-swap": "ostim: DOM/SUB swap scheduled",
     "no-auto-gear": "no-auto-gear: armed",
     "no-auto-gear-equipsink": "no-auto-gear: equip-sink armed",
+    "no-auto-gear-block": "no-auto-gear: block",
     "spid-gear": "spid-gear: armed",
     "spid-enable-disable": "live NPC block(s) of",
     "room-blacklist-npcs": "RoomGuard: room blacklist + npc picker ready",
@@ -254,12 +269,19 @@
     "wheel-menu": "wheel menu: {} wheels, {} pinned slots",
     "wheel-inventory": "wheel: inventory read",
     "item-icons-list": "item icons: {} listed render(s) queued",
+    "item-icons-fit": "extents from MRF vertex bounds",
+    "item-icons-fit-desync": "fit DESYNC",
+    "item-icons-fit-fallback": "re-armed on the framework's own bounding-sphere fit",
+    "item-icons-render-refused": "the renderer REFUSED the picture it made",
+    "item-icons-render-refused-twice": "refused AGAIN",
     "icon-bridge": "icon-bridge: generated",
     "icon-bridge-inert": "the deck uses its built-in SVG glyphs",
     "portal-host": "portal-host: started the Deck Portal on",
     "wheel-spell-equip": "hdOmniEquip: equip-toggle",
     "keys-scan": "keys-scan complete:",
     "keys-cache": "keys-cache: persistent MCM sweep cache active",
+  "keys-file-sources": "keys-scan: file sources --",
+  "keys-pex-scan": "keys-pex: papyrus scan --",
     "seed-icons": "seeded new action entry '{}' into tab '{}' (icon '{}')",
     "seed-suppress": "seed-suppress: '{}' stays deleted by user choice",
     "atomic-config-write": "atomic config swap failed",
@@ -270,13 +292,30 @@
     "open-timing-diag": "open-diag: {} took {} ms",
     "item-explorer-index": "item-explorer: index built",
     "item-explorer-add": "item-explorer: add {} x{} from {} (paid {})",
+    "item-explorer-detail": "item-explorer-detail: built for '{}'",
+    "item-edit-apply": "item-edit: applied {} field(s) to '{}'",
+    "item-edit-reapply": "item-edit: reapplied {} field(s) on {} item(s)",
+    "spell-edit-apply": "spell-edit: applied {} value(s) to '{}'",
+    "spell-edit-reapply": "spell-edit: reapplied {} value(s) on {} spell(s)",
+    "player-tune": "player-tune: applied {} field(s)",
+    "weather-force": "weather: forced '{}'",
+    "npc-tune-apply": "npc-tune: applied {} field(s) to '{}'",
+    "npc-tune-reapply": "npc-tune: reapplied {} field(s) on {} npc(s)",
     "anim-lo-scan": "anim: load-order scan",
     "anim-pack-set": "anim: pack '",
     "anim-scan-sidecar": "anim: scan sidecar loaded",
     "anim-user-store": "anim: user data saved",
     "anim-scan-v2": "anim: scan v2 tallies",
     "npc-finder-index": "npc-finder: index built",
+    "spid-inspect-index": "spid-inspect: index built",
+    "spid-inspect-eval": "spid-inspect: evaluated",
+    "spid-inspect-leveled": "spid-inspect: expanded leveled list",
+    "seed-icon-backfill": "seed-icons: backfilled",
+    "npc-finder-detail": "npc-finder-detail: built for '{}'",
+    "wardrobe-rotation-v2": "draws her own",
     "npc-finder-faces": "npc face render(s) queued",
+    "face-hair-headparts": "hair from head part",
+    "face-hair-wornskin": "hair from worn-armor skin",
     "npc-finder-move": "npc-finder: goto '",
     "portrait-present-hook": "present-grab hook installed",
     "portrait-present-grab": "present-thread grab ok",
@@ -304,7 +343,7 @@
     "face-render-purge": "stale render(s) from",
     "face-render-generation": "facegen render generation changed",
     "npc-finder-creature-body": "npc-finder: creature body queued",
-    "item-icons-boxfit": "' box-fit",
+    "npc-finder-faceless-copy": "npc-finder: faceless copy ",
     "item-icons-disk-index": "known item render(s) from item-icons.json",
     "item-icons-item-gen": "item render generation changed",
     "open-diag-view-report": "open-diag(view):",
@@ -313,6 +352,7 @@
     "open-press-to-shown": "press -> shown (end to end",
     "warm-up-cancel": "cancelled the queued open (toggle intent)",
     "effects-modal": "effects: state",
+    "3ba-body-physics": "3ba-body-physics: state",
     "eager-deck-view": "deck view created eagerly at startup",
     "render-warm-start": "roster faces queued at idle",
     "render-idle-settle": "render warm-start: settle window passed",
@@ -323,9 +363,215 @@
     "console-cmd-fire": "console-cmd: fire '",
     "hb-new-console": "hbNewConsole: created '",
     "skinshift-bridge": "skinshift: bridge bound",
-    "skinshift-apply": "skinshift: apply '"
+    "skinshift-apply": "skinshift: apply '",
+    "skinshift-readback": "skinshift-readback",
+    "skinshift-retint": "skinshift-retint:",
+    "container-sort": "container-sort: unloaded ",
+    "container-sort-distribute": "container-sort: distributed ",
+    "auto-loot": "auto-loot: picked ",
+    "auto-loot-toggle": "auto-loot: master toggled ",
+    "auto-loot-clear-glow": "auto-loot: glow cleared on corpse ",
+    "auto-loot-item-rules": "auto-loot: rules loaded ",
+    "auto-loot-weight-guard": "over the carry-weight guard",
+    "auto-loot-place-rules": "auto-loot: place rules",
+    "auto-loot-lotd": "auto-loot: museum rule = ",
+    "auto-loot-guards": "auto-loot: when/where",
+    "auto-loot-harvest": "auto-loot: harvested '",
+    "auto-loot-vw": "auto-loot: worth-the-weight",
+    "auto-loot-veins": "auto-loot: veins+critters",
+    "auto-loot-corpse-owner": "auto-loot: scan-now refused",
+    "item-pick-bridge": "ixPickData",
+    "seed-npc-basics": "freeze hold statue",
+    "deck-detect-mhiyh-quicklight": "mhiyh={} quicklight={}",
+    "keyseed-suppress": "seed-suppress: key '",
+    "hb-catalog-detect-gate": "detection-gated entr",
+    "widgets-config": "widgets: config loaded",
+    "trade-actions": "trade-action: opening the",
+    "charsheet-gear-resist": "charsheet gear+resist: equipment, resistances and regen ready",
+    "widgets-survival-globals": "widgets: survival globals resolved",
+    "widgets-player-state": "widgets: player state live",
+    "widgets-hud-view": "widgets: pushed to the HUD view",
+    "widgets-context-config": "widgets: context config",
+    "widgets-inv-sink": "widgets: inventory sink armed",
+    "widgets-loc-keywords": "widgets: location keywords resolved",
+    "widgets-trackers": "widgets: trackers resolved",
+    "widgets-mount": "widgets: mount tracked",
+    "widgets-context-live": "widgets: context readouts live",
+    "widgets-live": "widgets: live",
+    "widgets-master-toggle": "widgets: master toggled",
+    "widgets-stack-master-only": "readout stack only; free widgets keep their own switches",
+    "widgets-vis-split": "wgVis(",
+    "potion-browser-list": "potion-browser: list",
+    "potion-browser-use": "potion-browser: use '",
+    "transmog-restyle": "transmog: restyle slot",
+    "transmog-apply": "transmog: apply slot",
+    "transmog-cosave": "transmog: cosave registered",
+    "transmog-donor-catalog": "transmog: donor catalog built",
+    "transmog-deep-open": "hdShowTab(\"transmog\")",
+    "quiver-list": "quiver: list built",
+    "quiver-nock": "quiver: nock '",
+    "quiver-art": "quiver: art remembered",
+    "wigs-index": "wigs: index built",
+    "wigs-wear": "wigs: wear '",
+    "settlement-index": "settlement: index built",
+    "settlement-place": "settlement: placed",
+    "faces-preset-hide": "faces: preset '{}' {}",
+    "icon-fail-ledger": "item icons: retry requested for",
+    "survival-menu": "survival: state built - ",
+    "survival-use": "survival: use ",
+    "settlement-index-pump": "settlement: index walk started - stepped",
+    "item-icons-palette-fast": "item icons: menu up - renders paced",
+    "settlement-campplace": "settlement: campfire place",
+    "settlement-catalog": "settlement: catalog",
+    "settlement-seed": "settlement: seeded camping",
+    "settlement-restore": "settlement: placements reconciled",
+    "combat-arts-page": "combat-arts: opening the Spell Deck on its Combat Arts page",
+    "spellcraft-bridge": "spellcraft: bound",
+    "spellcraft-craft": "spellcraft: craft '",
+    "spellcraft-deck": "spellcraft: '{}' added to Spell Deck (Crafted)",
+    "zaz-deck": "zaz: deck segment ready",
+    "zaz-apply": "zaz: apply '",
+    "zaz-furniture": "zaz: seat '",
+    "transmog-stat-overrides": "transmog: stat overrides",
+    "transmog-weapon-pool": "transmog: weapon pool",
+    "consumables-classify": "consumables: classified",
+    "potion-ai-toggle": "potion-ai: toggled",
+    "potion-ai-drank": "potion-ai: drank '",
+    "potion-combo-fired": "potion-combo: fired '",
+    "potion-combo-entries": "potion-combo: entries ensured",
+    "skymanager-ini": "SkyManager.ini overrides:",
+    "settlement-form-probe": "settlement: skipped unreadable ",
+    "settlement-global-sweep": "settlement: global sweep - ",
+    "faces-selfheal": "faces: self-heal adopted ",
+    "faces-assign-atomic": "faces: assign.json NOT saved",
+    "preset-render-one": "preset render-one: ",
+    "face-wig-compose": "head composed with ",
+    "faces-race-list": "playable race(s) offered for the render-as override",
+    "perf-census": "perf-census ({}s, main thread): ",
+    "render-load-hold": "load screen up - renders held",
+    "preset-probe": "preset probe: '",
+    "preset-standin": "preset stand-in: cleared",
+    "config-write-skip": "config write: byte-identical to the last save",
+    "identity-resolve-cache": "actor-identity: resolve cache reached its",
+    "settlement-stage-count": "settlement: {} - kept ",
+    "journal-seed": "journal: seeded empty journal.json",
+    "journal-save": "journal: saved {} book(s), {} page(s){}",
+    "journal-sweep": "journal: swept {} picture(s) from the inbox",
+    "journal-photo": "journal: photo mode for '{}' ({})",
+    "faith-wintersun": "faith: Wintersun tracker bound",
+    "pubes-tab": "pubes: scan done",
+    "smooth-wedge-sentinel": "smooth-wedge: flag from a previous session",
+    "wear-effects": "wear: apply",
+    "npc-inspect": "npc-inspect: live-actor card ready",
+    "widgets-menu-gate": "wgMenus(",
+    "party-sheet": "party-sheet: scan teammates=",
+    "zaz-effects-tab": "zaz: effects view",
+    "hud-face-extras": "followers HUD extras: level=",
+    "widgets-voice-slot": "widgets: voice slot live",
+    "widgets-quick-items": "widgets: quick items live",
+    "widgets-toggle-one": "widgets: toggle refused (unknown widget",
+    "hud-spell-icons": "hud: spell icon index pushed",
+    "hud-face-shape": "followers HUD face shape:",
+    "hud-edit-rescue": "force-close: hud edit force-ended",
+    "hud-nav-browse": "hud nav: ",
+    "hud-icons-reply": "hudIconsData(",
+    "hud-compact-migrate": "compact default migrated",
+    "hud-repos-defer": "hud repos: focus deferred",
+    "time-dial-open": "time-dial: open",
+    "time-dial-wait": "time-dial: waited",
+    "editor-cursor": "editor-cursor: focus menu kept",
+    "widgets-edit-hud-view": "widgets-edit: opening the hud view editor",
+    "widgets-hud-blob": "widgets: hud view prefs stored",
+    "time-dial-menu-gate": "time-dial: menu gate closed it",
+    "hud-nav-focus": "hud-nav-focus: browse ",
+    "widgets-quick2-live": "widgets: custom quick items live",
+    "widgets-quick2-use": "widgets: quick2 used",
+    "widgets-quick2-catalog": "widgets: quick2 catalog built",
+    "widgets-loot-provider": "widgets: loot state provider",
+    "widgets-loot-toggle": "widgets: loot lamp toggled",
+    "hud-icon-mirror": "hud icon mirror:",
+    "hud-icon-repush": "hud: icon index re-push armed",
+    "hud-icon-generic-warn": "hud: icon index has NO generic map",
+    "hud-icon-index-domready": "hud: icon index pushed at dom-ready",
+    "hotbar-icon-index-domready": "hotbar: icon index pushed at dom-ready",
+    "magic-id-repair": "magic id repair:",
+    "face-hair-strict": "hair-only head-part filter",
+    "home-grp-relay": "home-grp-relay: equipped group cmd",
+    "hud-shelf-open": "hud shelf: opening on",
+    "hud-shelf-invoke": "hudShelf(",
+    "api-deep-open-gate": "SkyManager C API: deep-open keys",
+    "hk-supporters-live": "supportersNeeded",
+    "hud-strip-cfg-bridge": "hud-strip-cfg-bridge: hudCfg listening on the HUD view too",
+    "uie-effective-state": "hotbarEffective",
+    "render-priority-user-first": "is now FIRST; waiting: user",
+    "render-priority-wait": "render-priority hold",
+    "render-priority-bulk-sweep": "queued at bulk priority",
+    "face-no-humanoid-body": "no head and no body for",
+    "super-search-deep-open": "super searcher: deep-open",
+    "spid-skypatcher-cat": "non-npc SkyPatcher file(s)",
+    "spid-undecided-count": "rejected with an unjudgeable filter",
+    "spid-open-file": "spid-inspect: open '",
+    "spid-desktop-report": "spid-inspect: report written",
+    "high-king-quest-start": "quest start dispatched",
+    "smart-potion-fit": "smart-potion-fit: ",
+    "smart-potion-prefs": "smart-potion-prefs: mode ",
+    "spid-add-grant": "spid-add-grant: ",
+    "spid-faces": "spid-faces: "
   },
   "view": {
+    "spid-pane.js": {
+      "spid-pane-module": "window.DistrPane =",
+      "spid-pane-pin": "function openFor",
+      "spid-pane-pills": "dx-pill",
+      "spid-pane-honesty": "chance is a dice roll SPID made at load",
+      "spid-pane-pager": "dx-pager",
+      "spid-pane-artstate": "function artState",
+      "spid-pane-openini": "dxOpenFile",
+      "spid-pane-report": "dxReport",
+      "distributions-omni": "id: 'distr'"
+    },
+    "hd-lightbox.js": {
+      "lightbox-module": "window.HDLightbox = (function"
+    },
+    "hd-art.js": {
+      "hd-art-module": "window.HDArt =",
+      "hd-art-group": "HDArt.group("
+    },
+    "survival-pane.js": {
+      "survival-tab": "window.SurvivalPane",
+      "survival-cards": "sp-card",
+      "survival-arrange": "sp-arrange",
+      "survival-accent": "sp-a-",
+      "survival-reset": "sp-reset",
+      "survival-omni": "id: 'survival'"
+    },
+    "hd-survival.js": {
+      "survival-needs": "sv-need-bar",
+      "survival-view": "window.HDSurvival",
+      "survival-pills": "sv-pill",
+      "survival-vitals": "sv-need-state",
+      "survival-quick-omni": "id: 'survival-quick'"
+    },
+    "hd-survival.css": {
+      "survival-vitals-css": "sv-vit-grid"
+    },
+    "containers-autoloot.css": {
+      "autoloot-filter-css": "al-find-x",
+      "autoloot-filter-hide": "al-nomatch"
+    },
+    "hd-quiver.js": {
+      "quiver": "window.HDQuiver = ",
+      "quiver-ring": "function renderRing",
+      "quiver-launcher": "function renderLauncher",
+      "quiver-window": "function applyPlace",
+      "quiver-resize": "function makeResizable",
+      "quiver-art-wait": "function paintPending",
+      "quiver-art-retry": "function retryArt"
+    },
+    "hd-quiver.css": {
+      "quiver-sheet": "#hd-quiver {",
+      "quiver-art-spinner": ".qv-plate.is-waiting::after"
+    },
     "items-pane.js": {
       "items-pane": "window.ItemsPane",
       "items-price-sheet": "function openSheet",
@@ -334,7 +580,9 @@
       "items-icon-settle": "function scheduleIconWork",
       "items-lightbox": "function openLightbox",
       "items-finder-switch": "#ix-pane .fx-sw",
-      "items-loading-window": "chipLastLand"
+      "items-loading-window": "chipLastLand",
+      "items-modify-sheet": "function renderEditSheet",
+      "items-modify-edited-chip": "ix-edited-chip"
     },
     "items-pane.css": {
       "items-sheet": "#ix-pane {",
@@ -344,7 +592,10 @@
       "spid-wardrobe-tab": "id: 'spid'",
       "spid-item-switch": "function sendEnableItem",
       "spid-npc-switch": "function sendEnableNpc",
-      "spid-forget-npc": "function sendForgetNpc"
+      "spid-forget-npc": "function sendForgetNpc",
+      "spid-add-by-identity": "function openAddFor",
+      "spid-grant-faces": "function requestFaces",
+      "spid-enforce-door": "enforce: function (req)"
     },
     "hd-shelf.js": {
       "shelf-core": "function firePin",
@@ -361,9 +612,14 @@
     "time-pane.js": {
       "time-pane-core": "function renderForecast",
       "time-pane-omni": "Wait until Morning",
-      "time-pane-pins": "t:until:7"
+      "time-pane-pins": "t:until:7",
+      "time-sky-picker": "function renderSkyList"
     },
     "followers-pane.js": {
+      "fq-find-actions": "function fqFindIndex",
+      "fq-find-reveal-probe": "function fqProbeRows",
+      "fq-distr-btn": "DistrPane.openFor({ ref:",
+      "party-sheet-view": "window.ptyData =",
       "equipped-slot-icons": "function eqIcon",
       "portrait-winning-filename": "typeof p.file",
       "sharmat-menu-entry": "SmPane.open",
@@ -416,12 +672,76 @@
       "crop-pan-hint": "then drag to reframe",
       "quickcard-add-as-mount": "Add as mount",
       "effects-quick-modal": "function fxQuickBtn",
-      "skinshift-skins-tab": "skinshift-skins-tab"
+      "skinshift-skins-tab": "skinshift-skins-tab",
+      "3ba-body-tab": "function fillFxBody",
+      "pubes-tab": "function fillFxPubes",
+      "pubes-tab-styles": "fxp-grid",
+      "fx-global-search": "fx-search",
+      "zaz-effects-tab": "function fillFxZaz",
+      "fx-modal-wide": "fx-modal-style",
+      "fq-full-stats": "Full stats",
+      "hud-browse-bind": "Set browse key",
+      "fq-equip-pills": "fq-eqpill",
+      "medal-face-loading-ring": "function facePendingFor",
+      "lightbox-abs-dataset": "wrap.dataset.abs = '1'",
+      "follower-card-omni": "id: 'follower-card'",
+      "spid-add-by-name": "function sgAddByName"
     },
     "hud.js": {
+      "widgets-menu-gate-view": "window.wgMenus =",
       "hud-core": "window.hudData =",
+      "hud-widget-bg": "openBgPick",
+      "hud-widget-bg-layer": "hud-bgwrap",
       "hud-edit-mode": "function setEditing",
-      "hud-drag": "function onPointerMove"
+      "hud-drag": "function onPointerMove",
+      "hud-face-extras-view": "class: 'hud-facebox'",
+      "hud-free-widgets": "function renderFree",
+      "hud-spell-ladder": "window.hudIconIndex",
+      "hud-face-shape-view": "class: 'hud-face-in'",
+      "hud-hurt-ring": "hud-hurt",
+      "hud-esc-exit": "e.code === 'Escape'",
+      "hud-chip-bars": "class: 'hud-cb '",
+      "hud-dir-glyphs": "DIR_GLYPHS",
+      "hud-potions-readout": "POT_POOLS",
+      "hud-nav-view": "window.hudNav",
+      "hud-compact-mode": "el.body.classList.toggle('hud-compact'",
+      "hud-icon-key-canon": "function canonHex8",
+      "hud-strip-only-hide": "hud-strip-off",
+      "hud-detach-blocks": "floatBlock",
+      "hud-slot-group": "hud-fw-grp",
+      "hud-det-seeded-split": "seedDetach",
+      "hud-settings-popout": "function placeSettings",
+      "hud-shell-retired": "function applyShell",
+      "hud-readouts-split": "const RO_DET",
+      "hud-art-zero-guard": "img.naturalWidth) fail",
+      "hud-browse-v2": "function onNavKey",
+      "hud-quick2-view": "function buildQuick2",
+      "hud-loot-lamp-view": "function buildLoot",
+      "hud-potion-payload": "o.potions = pots",
+      "hud-slot-accent": "function fwAccent",
+      "hud-nav-hint": "NAV_HINT_TEXT",
+      "hud-opt-filter": "function applyOptFilter",
+      "hud-pack-widgets": "function findSlot",
+      "hud-dir-needle": "function setNeedle",
+      "hud-equipped-merged": "function buildGrpSection",
+      "hud-grp-orient": "wgrp.orient === 'horiz'",
+      "hud-one-drag-path": "function moveWidgetBy",
+      "hud-scale-sweep": "function sizeIdFor",
+      "hud-ready-retry": "function pingReady",
+      "hud-shelf-open-api": "window.hudShelf",
+      "hud-spell-ladder-parity": "function spellGenericKeys",
+      "hud-shelf-reveal": "function revealInShelf",
+      "hud-shelf-side": "function setShelfSide",
+      "hud-shelf-wheel-step": "HUD_WHEEL_STEP",
+      "hud-grp-relay-api": "window.hudGrpCmd",
+      "hud-shelf-rows": "function elRow",
+      "hud-grp-link": "function grpLink",
+      "hud-strip-gear-shelf": "strip gear: opening the widget shelf",
+      "hud-edit-ghosts": "function blockGhosted",
+      "hud-strip-scope": "function stripEditing",
+      "hud-strip-shelf": "STRIP_SECTION_KEYS",
+      "hud-strip-state": "window.hudCfgState",
+      "hud-panel-blank": "function panelHasContent"
     },
     "sharmat-pane.js": {
       "sharmat-read-modify-write": "could not re-read before saving",
@@ -441,6 +761,7 @@
       "domains-click-to-enlarge": "function openFaceLightbox"
     },
     "app.css": {
+      "fq-find-css": "#fq-find-pop {",
       "domains-subarea-css": "dm-chev",
       "domains-npc-picker-css": "dm-npc-item",
       "nff-quick-card-css": "fq-btn",
@@ -481,7 +802,12 @@
       "anim-packs-css": "#an-pk-rows {",
       "popup-self-scale-wave": "@keyframes fqSetsInScaled",
       "effects-modal-styles": ".fx-row",
-      "console-editor-css": "#console-picker {"
+      "console-editor-css": "#console-picker {",
+      "overlay-dim-flat": "overlay-dim-flat",
+      "medal-spin-css": "medal-spin",
+      "uie-hidden-pill-css": ".hm-uie-state.hidden",
+      "widget-base-reset": "native widget net (widget-base-reset",
+      "dm-who-strip": ".dm-who-face"
     },
     "wardrobe-pane.js": {
       "wardrobe-photo-menu": "wdPortrait",
@@ -539,7 +865,8 @@
     "hd-door.js": {
       "door-modal-core": "window.HDDoor =",
       "door-tier-chips": "Requires Key",
-      "door-auto-open": "window.drTarget ="
+      "door-auto-open": "window.drTarget =",
+      "doors-omni": "id: 'door'"
     },
     "hd-door.css": {
       "door-sheet": "#dr-modal {",
@@ -550,7 +877,21 @@
       "omni-ask-mode": "Think about it",
       "omni-pin-contract": "function resolvePin",
       "omni-pin-star": "omni-pin",
-      "omni-tab-gate": "function providerGated"
+      "omni-tab-gate": "function providerGated",
+      "omni-closed-hook": "setClosedHook",
+      "omni-row-art": "omni-row-ic",
+      "omni-ext-ask": "function askStructured",
+      "omni-overflow-tabs": "env.overflowTabs"
+    },
+    "hd-super.js": {
+      "super-module": "window.HDSuper =",
+      "super-anchors": "data-ss-anchor",
+      "super-sources": "function toggleSource",
+      "super-inv-icons": "function requestVisibleInvIcons"
+    },
+    "hd-super.css": {
+      "super-skin-css": "body.ss-open #panel",
+      "super-anchor-grid-css": "ss-anchor-grid"
     },
     "app.js": {
       "ext-fkeys-in-dik": "EXT_NAMES.forEach((n) => { if (!DIK[n]) DIK[n] = [EXT_RAW[n], n]; });",
@@ -582,9 +923,13 @@
       "tab-fit-memo": "tabFitCache",
       "console-editor": "function openConsoleEditor",
       "console-chip": "console-edit-btn",
-      "commands-tab": "function ensureCommandsTab"
+      "commands-tab": "function ensureCommandsTab",
+      "deck-settings-omni": "id: 'deck-settings'"
     },
     "index.html": {
+      "staged-css-placeholders": "data-hdcss-key=\"",
+      "staged-css-loader": "src=\"hd-css.js\"",
+      "autoloot-sheet-link": "containers-autoloot.css",
       "followers-scale-wrapper": "id=\"fd-scale\"",
       "tab-scale-card": "id=\"tab-scale-card\"",
       "tab-scale-wrappers": "id=\"q-scale\"",
@@ -614,12 +959,14 @@
     },
     "wardrobe-nff.js": {
       "nff-section-api": "function controlsFor",
-      "nff-system-row": "function systemRow"
+      "nff-system-row": "function systemRow",
+      "nff-omni": "id: 'wardrobe-nff'"
     },
     "faces-pane.js": {
       "faces-tab": "window.FacesPane",
       "faces-categories": "const buildItems",
-      "preset-autorender-button": "pd-autorender"
+      "preset-autorender-button": "pd-autorender",
+      "faces-omni": "id: 'faces'"
     },
     "home-pane.js": {
       "home-core": "function renderCards",
@@ -627,17 +974,30 @@
       "home-recent-drawer": "function toggleRecent",
       "home-search-launcher": "function bindSearch",
       "home-card-reorder": "function sanitizeOrder",
-      "home-ui-elements": "function toggleUie"
+      "home-ui-elements": "function toggleUie",
+      "uie-widget-cards": "hdWidgetToggle",
+      "home-config-inline": "hm-uie-inline",
+      "uie-inline-state": "uie.inlineOpen",
+      "home-equipped-row": "id: 'fw-eq'",
+      "home-grp-send": "toGame('hdWidgetGrp'",
+      "uie-pill-is-switch": "chip.className = 'hm-uie-state '",
+      "uie-expander-split": "el.expandLabel",
+      "uie-strip-shelf-door": "op: 'shelf', key: 'strip'",
+      "uie-hidden-pill": "hidden ? 'HIDDEN'",
+      "uie-rule-note": "hidden by rule: only in combat",
+      "uielements-omni": "id: 'uielements'"
     },
     "hd-formation.js": {
       "formation-modal-core": "window.HDFormation",
-      "formation-pad": "fm-pad-cell"
+      "formation-pad": "fm-pad-cell",
+      "formation-omni": "id: 'formation'"
     },
     "hd-formation.css": {
       "formation-sheet": "#fm-modal {"
     },
     "hd-spidgear.js": {
-      "spidgear-manager": "window.HDSpidGear"
+      "spidgear-manager": "window.HDSpidGear",
+      "spid-roster-omni": "id: 'spid-roster'"
     },
     "hd-spidgear.css": {
       "spidgear-sheet": "#sg-modal {"
@@ -658,10 +1018,13 @@
       "wheel-flyout-fan": "prov: '_fly'",
       "wheel-flyout-editor": "function flyEditHtml",
       "wheel-hold-release": "window.hdWheelKeyUp",
-      "wheel-newcc": "function newConsoleFromSheet"
+      "wheel-newcc": "function newConsoleFromSheet",
+      "wheel-settings-omni": "id: 'wheel'"
     },
     "hd-wheel.css": {
-      "wheel-css": "#hd-wheel .whl-slot {"
+      "wheel-css": "#hd-wheel .whl-slot {",
+      "wheel-edit-dim": "#hd-wheel.editing .whl-pool",
+      "wheel-dim-flat": "wheel-dim-flat"
     },
     "hotbar.js": {
       "hotbar-center-offset": "s.left = 'calc(50% + '",
@@ -674,32 +1037,47 @@
       "hotbar-chrome-toggles": "'hb-showPages', 'showPages'",
       "hotbar-panel-search": "function applyPanelFilter",
       "hotbar-grip-pos": "cfg.gripPos === 'top'",
-      "hb-newcc": "function openNewCc"
+      "hb-newcc": "function openNewCc",
+      "legacy-widgets-retired": "RETIRED (2026-08-18)",
+      "hotbar-ready-retry": "function announceReady"
     },
     "hotbar.css": {
       "hotbar-press-feedback": ".hb-slot.is-fired {",
       "hotbar-modal-preview": ".hb-root.is-edit-preview-hidden {",
       "hotbar-no-outline": ".hb-root.hb-no-outline",
       "hotbar-panel-search-css": ".hb-filtered",
-      "hotbar-hidden-override": ".hb-pages[hidden]"
+      "hotbar-hidden-override": ".hb-pages[hidden]",
+      "hotbar-panel-side-css": ".hb-panel.side-left",
+      "widget-base-reset-hotbar": "widget-base-reset"
     },
     "hd-portal.js": {
       "portal-button": "window.ptState = function"
     },
     "keys-pane": "kcResultData",
+  "keys-pane-file-sources": "kc-src-plugin",
+  "keys-pane-assumed-code": "kc-badge-maybe",
+  "keys-pane-papyrus": "kc-src-papyrus",
     "charsheet-pane": "ps-eff-harm-row",
     "charsheet-portrait-capture": "window.psPortraitTaken",
     "chim-detection-gate": "function detectedGate",
     "npcs-pane.js": {
+      "npc-inspect-view": "niInspectData",
       "npcs-module": "window.NpcsPane = (function",
       "npcs-face-key": "function faceKey",
       "npcs-lightbox": "function openLightbox",
       "npcs-finder-switch": "#nx-pane .fx-sw",
       "npcs-body-render": "bodyIconFor",
-      "npcs-loading-window": "chipLastLand"
+      "npcs-loading-window": "chipLastLand",
+      "nxi-gear-art": "nxi-tile-art",
+      "nxi-gear-lightbox": "function gearLightbox",
+      "npc-inspect-portrait-fit": "insp.portraitKind",
+      "npcs-spawn-guard": "function openSpawnGuard",
+      "nxi-chim-section": "function fetchChim"
     },
     "npcs-pane.css": {
-      "npcs-css": "#nx-pane {"
+      "npcs-css": "#nx-pane {",
+      "npcs-spawn-guard-css": ".nx-guard-card {",
+      "nxi-chim-css": ".nxi-chim-load"
     },
     "mounts-pane.js": {
       "mounts-module": "window.MountsPane = (function",
@@ -711,17 +1089,167 @@
     "mounts-pane.css": {
       "mounts-css": "#mt-pane {"
     },
-    "hd-lightbox.js": {
-      "lightbox-module": "window.HDLightbox = (function"
+    "settlement-pane.js": {
+      "settlement-loadcard": "st-loadcard",
+      "settlement-module": "window.SettlementPane = (function",
+      "settlement-pane": "stResultData",
+      "settlement-pane-id": "settlement-pane.js",
+      "settlement-campfire": "campplace",
+      "settlement-catalogs": "function renderCats",
+      "settlement-placed": "function renderPlaced"
+    },
+    "settlement-pane.css": {
+      "settlement-css": "#st-pane {"
     },
     "charsheet-pane.css": {
-      "portrait-actions-wrap": "buttons were cut off"
+      "portrait-actions-wrap": "buttons were cut off",
+      "faith-card-css": ".ps-faith-sigil {"
     },
     "charsheet-pane.js": {
-      "pack-icon-upgrade": "packIconFor"
+      "pack-icon-upgrade": "packIconFor",
+      "faith-card": "function renderFaith",
+      "faith-meter": "ps-faith-tick",
+      "charsheet-tune-modal": "function renderTuneModal"
+    },
+    "spellcraft-pane.js": {
+      "spellcraft-modify-subtab": "function renderModify",
+      "spellcraft-mode-seg": "sc-modeseg"
+    },
+    "hd-npctune.js": {
+      "npctune-module": "window.HDNpcTune",
+      "npctune-seg-dials": "nt-seg-btn",
+      "npctune-omni": "id: 'npctune'"
     },
     "hd-boot.js": {
-      "hd-boot": "HDBoot"
+      "hd-boot": "HDBoot",
+      "staged-css-arm": "HDCss.armTabs()"
+    },
+    "hd-css.js": {
+      "staged-css": "HDCss gates",
+      "staged-css-need": "function need(key, cb)",
+      "staged-css-gate-rule": "{ display: none !important; }",
+      "staged-css-observer": "function armObserver",
+      "staged-css-sheet-poll": "l.sheet"
+    },
+    "log-pane.js": {
+      "log-pane": "window.LogPane = ",
+      "log-tab-reply": "window.lgTailData =",
+      "log-tab-poll": "function requestTail"
+    },
+    "hotbar.html": {
+      "hotbar-panel-side-btn": "id=\"hb-side\""
+    },
+    "hd-potions.js": {
+      "potion-browser": "window.HDPotions",
+      "potions-quick-use": "function drink",
+      "potions-icon-idiom": "hd-item-icons",
+      "smart-pick-sheet": "function renderSmartSheet",
+      "smart-pick-bar": "function toggleBar"
+    },
+    "hd-potions.css": {
+      "potions-overlay": "#hd-potions {",
+      "overlay-dim-flat-potions": "overlay-dim-flat",
+      "smart-pick-css": ".pb-seg-b"
+    },
+    "transmog-pane.js": {
+      "transmog-pager": "tg-pager",
+      "transmog-pane": "window.TransmogPane",
+      "transmog-donor-sheet": "function renderSheet",
+      "transmog-confirm-strip": "Make it look like this?",
+      "transmog-icon-settle": "function scheduleIconWork",
+      "transmog-loading-window": "chipLastLand",
+      "transmog-stat-editor": "function renderStatsSheet",
+      "transmog-weapon-donors": "same weapon type"
+    },
+    "transmog-pane.css": {
+      "transmog-sheet": "#tg-pane {",
+      "transmog-confirm-css": ".tg-confirm-plate {",
+      "transmog-stat-editor-css": ".tg-st-row {"
+    },
+    "zaz-pane.js": {
+      "zaz-pane-core": "window.ZazPane =",
+      "zaz-act": "toGame('zzAct'",
+      "zaz-furniture-use": "toGame('zzUse'",
+      "zaz-detection-gate": "function zazGatedOut"
+    },
+    "containers-pane.js": {
+      "containers-pane": "ContainersPane",
+      "container-sort-rules": "function renderRuleEditor",
+      "auto-loot-card": "function renderAutoLootCard",
+      "auto-loot-rules-ui": "function renderRulesBlock",
+      "auto-loot-places-ui": "function renderPlacesBlock",
+      "containers-two-pages": "function renderModes",
+      "pin-finder": "function openPinFinder",
+      "containers-loan-card": "function renderLoanCard",
+      "containers-retrieve": "function csRetrieve",
+      "containers-taxonomy": "function taxGroups",
+      "containers-gather": "function renderGatherBlock",
+      "containers-overrides": "function renderOverrideBlock"
+    },
+    "hd-itempick.js": {
+      "item-pick-module": "window.HDItemPick",
+      "item-pick-door": "ixPickData"
+    },
+    "journal-pane.js": {
+      "journal-pane": "window.JournalPane =",
+      "journal-wrap-floats": "box.className = 'jr-wrapbox'",
+      "journal-dropcap": "<span class=\"jr-cap\">",
+      "journal-save": "toGame('jrSave'",
+      "journal-book-filter": "Search books… (Enter opens the top one)"
+    },
+    "journal-pane.css": {
+      "journal-sheet": "#jr-pane {",
+      "journal-fonts": "font-family: 'HDIMFell'"
+    },
+    "hud.css": {
+      "hud-tools-nowrap": "THE LOCK-IN LESSON",
+      "hud-face-clip": "overflow: hidden; border-radius: inherit;",
+      "hud-potions-chips": ".hud-ro-pots",
+      "hud-face-block-sliver": "hud-face-block-sliver",
+      "hud-slot-accent-css": ".hud-fw-card.fw-k-spell",
+      "hud-nav-hint-css": ".hud-navhint",
+      "hud-opt-filter-css": ".hud-set-filter",
+      "hud-badge-row-inline": ".hud-fw-badges .hud-badge",
+      "hud-grp-horiz-css": ".hud-fw-grp.is-horiz",
+      "hud-size-stepper-css": ".hud-sz-row",
+      "hud-opt-nest-css": ".hud-opt-nest",
+      "hud-shelf-dock": "hudShelfIn",
+      "hud-shelf-rows-css": ".hud-el-sec",
+      "hud-shelf-side-css": "body.hud-cfg-left .hud-settings",
+      "hud-editoff-css": ".hud-fw.is-editoff .hud-fw-card",
+      "hud-strip-scope-css": "body.hud-editing.hud-strip-edit .hud-strip-grip",
+      "hud-strip-seg-css": ".hud-el-seg",
+      "widget-base-reset-hud": "widget-base-reset"
+    },
+    "hud-td.js": {
+      "time-dial-view": "window.tdShow",
+      "time-dial-geometry": "function hourFromPoint",
+      "time-dial-place": "function savePlacement",
+      "time-dial-mouse-fallback": "addEventListener('mousedown', dialDown)"
+    },
+    "hud-td.css": {
+      "time-dial-sheet": "#hud-td {",
+      "time-dial-cards": ".td-card {"
+    },
+    "highking-pane.js": {
+      "hk-supporters-denominator": "king.supportersNeeded",
+      "hk-begin-screen": "hx-begin-btn"
+    },
+    "spid-pane.css": {
+      "spid-pane-pager-css": "dx-pg-at",
+      "spid-pane-noart-css": "dx-plate.dx-noart"
+    },
+    "hd-facefit.js": {
+      "facefit-portrait-lane": "paintPortraitsIn"
+    },
+    "keys-pane.js": {
+      "keys-omni-findkey": "label: '⌨ Find a key'"
+    },
+    "wigs-pane.js": {
+      "wig-enforce-spid": "label: '🔒 Enforce forever (SPID)'"
+    },
+    "wardrobe-spid.css": {
+      "spid-add-css": ".wdsp-add {"
     }
   }
 }

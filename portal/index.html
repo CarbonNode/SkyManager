@@ -513,7 +513,7 @@ img.wd-item-render { filter: brightness(1.5) saturate(1.08) contrast(1.04); }
 
 /* ---------------- icon tile ---------------- */
 
-#icons-grid { display: grid; gap: 9px; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
+#icons-grid, #hud-bg-grid { display: grid; gap: 9px; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
 .tile {
   position: relative;
   display: flex; flex-direction: column; align-items: center; gap: 7px;
@@ -1913,6 +1913,207 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
 @media (max-width:389px) {
   .sh-rp-grid { grid-template-columns:1fr; }
 }
+
+/* ===================== the Journal ===================================== *
+ *  A phone-shaped version of the deck's Journal tab: one page at a time, the
+ *  same markup, the same normalised picture coordinates and the same float
+ *  wrap, so what you lay out here is what the book looks like in game.
+ *  Fonts are the SAME shipped OFL faces the deck view carries — served from
+ *  the deck's view folder through the portal so the phone renders the page in
+ *  the hand it will actually be written in.
+ * ======================================================================= */
+@font-face { font-family: 'HDIMFell'; src: url('/view/fonts/IMFellEnglish-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'HDIMFell'; font-style: italic; src: url('/view/fonts/IMFellEnglish-Italic.ttf') format('truetype'); }
+@font-face { font-family: 'HDCardo'; src: url('/view/fonts/Cardo-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'HDGoudy'; src: url('/view/fonts/SortsMillGoudy-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'HDQuill'; src: url('/view/fonts/Tangerine-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'HDHand'; src: url('/view/fonts/Kalam-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'HDMedieval'; src: url('/view/fonts/MedievalSharp-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'HDPirata'; src: url('/view/fonts/PirataOne-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'HDFraktur'; src: url('/view/fonts/UnifrakturMaguntia-Regular.ttf') format('truetype'); }
+
+#pane-journal {
+  --jr-f-imfell: 'HDIMFell', 'Palatino Linotype', Georgia, serif;
+  --jr-f-cardo: 'HDCardo', 'Palatino Linotype', Georgia, serif;
+  --jr-f-goudy: 'HDGoudy', Georgia, serif;
+  --jr-f-quill: 'HDQuill', 'Edwardian Script ITC', cursive;
+  --jr-f-hand: 'HDHand', 'Segoe Script', cursive;
+  --jr-f-medieval: 'HDMedieval', 'Old English Text MT', serif;
+  --jr-f-pirata: 'HDPirata', 'Old English Text MT', serif;
+  --jr-f-fraktur: 'HDFraktur', 'Old English Text MT', serif;
+  --jr-ink: #4a3320; --jr-ink-soft: #70563a; --jr-rubric: #8c2f1d;
+  --jr-paper-a: #efe2c4; --jr-paper-b: #e4d3ae;
+}
+#pane-journal.jr-ink-black { --jr-ink: #201a13; --jr-ink-soft: #4a3f31; }
+#pane-journal.jr-ink-oxblood { --jr-ink: #4b1f18; --jr-ink-soft: #6f3a2c; }
+#pane-journal.jr-ink-indigo { --jr-ink: #22304f; --jr-ink-soft: #45557a; }
+#pane-journal.jr-paper-vellum { --jr-paper-a: #f6efdd; --jr-paper-b: #ece0c6; }
+#pane-journal.jr-paper-old { --jr-paper-a: #e0cda3; --jr-paper-b: #cbb488; }
+#pane-journal.jr-paper-linen { --jr-paper-a: #eae4d2; --jr-paper-b: #d9d1bb; }
+#pane-journal.jr-paper-ash { --jr-paper-a: #d8cdbb; --jr-paper-b: #bdb09b; }
+
+.jr-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.jr-bar .jr-grow { flex: 1 1 auto; }
+.jr-b {
+  background: #23222a; border: 1px solid #3a3945; border-radius: 9px; color: #e6e1d3;
+  font: inherit; font-size: 15px; padding: 10px 13px; cursor: pointer; min-height: 44px;
+}
+.jr-b:hover { background: #2c2b35; border-color: #55535f; }
+.jr-b.on { background: #4a3c1c; border-color: #c9a24b; color: #ffe9b4; }
+.jr-b:disabled { opacity: .45; }
+.jr-b.sm { padding: 7px 10px; font-size: 14px; min-height: 38px; }
+.jr-b.danger:hover { background: #4a1f18; border-color: #b3543f; }
+.jr-tag { font-size: 13px; color: #9d97a8; border: 1px solid #35343f; border-radius: 999px; padding: 5px 10px; }
+.jr-tag.ok { color: #a7c98a; border-color: #3f5233; }
+.jr-tag.warn { color: #e0b86a; border-color: #5b4726; }
+.jr-tag.bad { color: #e39184; border-color: #5f3129; }
+
+.jr-page {
+  position: relative; overflow: hidden; margin: 0 auto 12px auto; width: 100%; max-width: 720px;
+  color: var(--jr-ink); border-radius: 8px; padding: 30px 26px 40px 26px;
+  background:
+    radial-gradient(60% 40% at 18% 22%, rgba(160,124,72,.13), rgba(160,124,72,0) 60%),
+    radial-gradient(50% 36% at 82% 68%, rgba(140,104,58,.12), rgba(140,104,58,0) 62%),
+    linear-gradient(174deg, var(--jr-paper-a), var(--jr-paper-b));
+  box-shadow: inset 0 0 30px rgba(120,92,52,.25), 0 10px 26px rgba(0,0,0,.45);
+  min-height: 60vh;
+}
+.jr-pagebg { position: absolute; inset: 0; z-index: 0; background-repeat: no-repeat; background-position: center; background-size: cover; pointer-events: none; }
+.jr-pagebg.fit-contain { background-size: contain; }
+.jr-pagebg.fit-tile { background-size: auto; background-repeat: repeat; }
+.jr-runhead {
+  position: absolute; left: 26px; right: 26px; top: 10px; z-index: 2; text-align: center;
+  font-family: var(--jr-f-goudy); font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
+  color: rgba(90,66,34,.6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.jr-flow {
+  position: relative; z-index: 2; font-family: var(--jr-face, var(--jr-f-imfell));
+  font-size: var(--jr-size, 19px); line-height: var(--jr-line, 30px); word-wrap: break-word;
+}
+.jr-flow.just { text-align: justify; }
+.jr-flow p { margin: 0 0 .78em 0; }
+.jr-flow h1 { font-family: var(--jr-f-medieval); font-size: 1.5em; color: var(--jr-rubric); margin: 0 0 .4em 0; font-weight: 400; }
+.jr-flow h2 { font-family: var(--jr-f-goudy); font-size: 1.2em; letter-spacing: 1.2px; text-transform: uppercase; margin: .7em 0 .3em 0; font-weight: 400; }
+.jr-flow blockquote { margin: .5em 0 .7em 1em; padding-left: .8em; border-left: 2px solid rgba(120,90,50,.4); color: var(--jr-ink-soft); font-style: italic; }
+.jr-flow ul, .jr-flow ol { margin: 0 0 .8em 1.3em; padding: 0; }
+.jr-flow hr { border: 0; text-align: center; margin: .9em 0; color: var(--jr-ink-soft); }
+.jr-flow hr::after { content: '❦'; font-size: 1.15em; }
+.jr-flow .jr-cap { font-family: var(--jr-f-fraktur); float: left; font-size: 3em; line-height: .78; padding: .04em .09em 0 0; color: var(--jr-rubric); }
+.jr-flow .jr-t-script { font-family: var(--jr-f-quill); font-size: 1.4em; line-height: .95; }
+.jr-flow .jr-t-hand { font-family: var(--jr-f-hand); }
+.jr-flow .jr-t-black { font-family: var(--jr-f-fraktur); }
+.jr-flow .jr-t-caps { font-variant: small-caps; letter-spacing: .6px; }
+.jr-flow .jr-t-red { color: var(--jr-rubric); }
+.jr-flow .jr-t-faded { color: var(--jr-ink-soft); opacity: .82; }
+.jr-flow .jr-t-big { font-size: 1.3em; }
+.jr-folio { position: absolute; left: 0; right: 0; bottom: 12px; text-align: center; font-family: var(--jr-f-goudy); color: rgba(90,66,34,.66); z-index: 2; }
+
+.jr-img { position: absolute; z-index: 3; touch-action: none; }
+.jr-img.m-under { z-index: 1; }
+.jr-img.m-over { z-index: 4; }
+.jr-img img { display: block; width: 100%; height: auto; -webkit-user-drag: none; user-select: none; }
+.jr-img.flip img { transform: scaleX(-1); }
+.jr-img.fr-plate img { border: 1px solid rgba(80,56,26,.55); padding: 6px; background: rgba(245,235,210,.72); box-shadow: 0 6px 16px rgba(60,40,16,.35); }
+.jr-img.fr-sketch img { box-shadow: 0 3px 10px rgba(60,40,16,.3); }
+.jr-img.fr-tape::before, .jr-img.fr-tape::after {
+  content: ''; position: absolute; top: -10px; width: 54px; height: 20px;
+  background: linear-gradient(180deg, rgba(226,208,158,.85), rgba(198,176,124,.78));
+}
+.jr-img.fr-tape::before { left: 6%; transform: rotate(-6deg); }
+.jr-img.fr-tape::after { right: 6%; transform: rotate(5deg); }
+.jr-img.fr-wax::after {
+  content: '✹'; position: absolute; right: -10px; bottom: -10px; width: 34px; height: 34px;
+  line-height: 34px; text-align: center; border-radius: 50%; color: #efd9c8;
+  background: radial-gradient(circle at 36% 32%, #a8342a, #6d1c15 72%);
+}
+.jr-img.sel { box-shadow: 0 0 0 2px rgba(201,162,75,.95), 0 0 0 6px rgba(201,162,75,.22); }
+#pane-journal.editing .jr-img { cursor: move; }
+.jr-h {
+  position: absolute; width: 34px; height: 34px; border-radius: 50%; padding: 0;
+  background: #26221a; border: 2px solid #c9a24b; color: #ffe9b4; font-size: 14px;
+  line-height: 30px; text-align: center; touch-action: none;
+}
+.jr-h.size { right: -17px; bottom: -17px; }
+.jr-h.rot { left: 50%; margin-left: -17px; top: -44px; }
+
+.jr-card { background: #1c1b22; border: 1px solid #2f2e38; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.jr-card h4 { margin: 0 0 10px 0; font-size: 13px; letter-spacing: 1.3px; text-transform: uppercase; color: #9d97a8; font-weight: 600; }
+.jr-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.jr-row:last-child { margin-bottom: 0; }
+.jr-row .lab { color: #a9a3b4; font-size: 14px; min-width: 76px; }
+.jr-in {
+  width: 100%; background: #16161c; border: 1px solid #3a3945; border-radius: 9px;
+  color: #efe9db; font: inherit; font-size: 16px; padding: 11px 12px;
+}
+.jr-in:focus { border-color: #c9a24b; outline: none; }
+.jr-ta {
+  width: 100%; min-height: 220px; background: #f2e7cd; color: #2f2416;
+  border: 1px solid #6b5c3c; border-radius: 9px; padding: 12px;
+  font-family: var(--jr-f-cardo); font-size: 17px; line-height: 1.55; resize: vertical;
+}
+.jr-tb { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.jr-tb .jr-b { min-width: 44px; padding: 8px 10px; }
+.jr-pool { display: flex; flex-wrap: wrap; gap: 8px; }
+.jr-pool .t {
+  position: relative; width: 84px; height: 84px; border-radius: 9px; overflow: hidden;
+  border: 1px solid #3d3c47; padding: 0; cursor: pointer;
+  background: repeating-conic-gradient(#2a2930 0% 25%, #212027 0% 50%) 50% / 16px 16px;
+}
+.jr-pool .t img { width: 100%; height: 100%; object-fit: contain; }
+.jr-pool .t .x {
+  position: absolute; top: 2px; right: 2px; width: 24px; height: 24px; line-height: 22px;
+  border-radius: 50%; background: rgba(20,16,12,.85); border: 1px solid #5b5340; color: #e5c9c2; padding: 0;
+}
+.jr-pool .t .nm { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(16,13,9,.82);
+  color: #d5ccb3; font-size: 12.5px; padding: 3px 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jr-plist { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+.jr-prow {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: #1e1d24; border: 1px solid #2f2e38; border-radius: 9px; color: #ddd6c2;
+  font: inherit; font-size: 15.5px; padding: 11px 10px; cursor: pointer; min-height: 44px;
+}
+.jr-prow.on { background: #33291495; border-color: #c9a24b; color: #ffeec2; }
+.jr-prow .n { color: #8d8697; min-width: 22px; text-align: right; font-size: 13.5px; }
+.jr-prow .t { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jr-fontrow { display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left;
+  background: #1e1d24; border: 1px solid #2f2e38; border-radius: 9px; color: #e4dcc6;
+  padding: 10px; margin-bottom: 5px; cursor: pointer; min-height: 44px; }
+.jr-fontrow.on { background: #33291495; border-color: #c9a24b; }
+.jr-fontrow .nm { font-size: 13px; color: #9d97a8; min-width: 88px; }
+.jr-fontrow .sp { font-size: 21px; overflow: hidden; white-space: nowrap; }
+.jr-note { color: #8d8697; font-size: 13.5px; line-height: 1.55; margin-top: 8px; }
+.jr-note code { font-family: ui-monospace, Consolas, monospace; color: #d9c48a; background: #23201a; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+@media (min-width: 900px) {
+  .jr-split { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: start; }
+}
+
+/* ---------------------------- Containers ------------------------------
+   Phone-first: every control is a 44px+ target on its own row with a real
+   sentence under it, because this tab is read one-handed, standing in a
+   doorway, deciding whether to press something that MOVES YOUR THINGS. */
+.ct-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 13px 14px; margin-bottom: 11px;
+}
+.ct-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.ct-name { font-size: 16px; color: var(--text); font-weight: 600; min-width: 0;
+           overflow: hidden; text-overflow: ellipsis; }
+.ct-sub { font-size: 13px; color: var(--text-dim); margin-top: 3px; }
+.ct-row { display: flex; align-items: flex-start; gap: 12px; margin-top: 12px; }
+.ct-row-b { min-width: 0; flex: 1 1 auto; }
+.ct-row-b .t { font-size: 14.5px; color: var(--text); }
+.ct-row-b .s { font-size: 13px; color: var(--text-dim); margin-top: 2px; line-height: 1.45; }
+.ct-acts { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 12px; }
+.ct-acts .btn { flex: 1 1 auto; min-height: 46px; font-size: 14.5px; }
+.ct-big { min-height: 54px; font-size: 16px; }
+.ct-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.ct-chips .chip { font-size: 13.5px; padding: 10px 13px; min-height: 42px;
+                  display: inline-flex; align-items: center; }
+.ct-sel { min-height: 44px; font-size: 14.5px; max-width: 58%; }
+@media (max-width: 520px) {
+  .ct-sel { max-width: 100%; }
+  .ct-acts .btn { flex: 1 1 100%; }
+}
 </style>
 </head>
 <body>
@@ -1933,10 +2134,12 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
       <button class="tab" data-tab="finances" type="button">Finances <span class="n" id="n-finances"></span></button>
       <button class="tab" data-tab="wardrobe" type="button">Wardrobe <span class="n" id="n-wardrobe"></span></button>
       <button class="tab" data-tab="domains" type="button">Domains <span class="n" id="n-domains"></span></button>
+      <button class="tab" data-tab="containers" type="button">Containers <span class="n" id="n-containers"></span></button>
       <button class="tab" data-tab="bases" type="button">Bases <span class="n" id="n-bases"></span></button>
       <button class="tab" data-tab="dragons" type="button">Dragons <span class="n" id="n-dragons"></span></button>
       <button class="tab" data-tab="ask" type="button">Ask</button>
       <button class="tab" data-tab="faces" type="button">Faces <span class="n" id="n-faces"></span></button>
+      <button class="tab" data-tab="journal" type="button">Journal <span class="n" id="n-journal"></span></button>
     </nav>
     <div class="toolbar">
       <span class="search-wrap">
@@ -1956,6 +2159,7 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
 
   <main id="pane-icons" hidden>
     <div id="spells-body"></div>
+    <div id="combat-arts-body"></div>
     <div id="icons-body"></div>
   </main>
 
@@ -1975,11 +2179,29 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
     <div id="domains-body"></div>
   </main>
 
+  <!-- Containers. The deck's Containers tab, on the phone: the marked-container
+       roster with its sort rules, the crafting loan, the drop-box and the
+       physical redirects — plus the verbs (put it all away, sort, gather) that
+       only fire while the game is actually running. Reads the `containers`
+       slice of hotkeys.json; queues every edit into portal-containers.json. -->
+  <main id="pane-containers" hidden>
+    <div id="containers-body"></div>
+  </main>
+
   <!-- NFF home bases. Deck writes portal-bases.json (the nbOpen model); we edit
        residents / names / schedule and queue portal-bases-ops.json. Registering
        a spot needs the player's body, so it stays in-game. -->
   <main id="pane-bases" hidden>
     <div id="bases-body"></div>
+  </main>
+
+  <!-- Journal. The one pane that edits a game-owned file DIRECTLY (see the
+       Journal block in server.js): journal.json is merged on both sides, so the
+       phone and the deck can both write pages. Pictures upload into the deck's
+       own journal-images/ folder and are dragged onto the page here exactly as
+       they are in game. -->
+  <main id="pane-journal" hidden>
+    <div id="journal-body"></div>
   </main>
 
   <!-- Dragon Roost. Its own mod, its own status + queue files; nothing on this
@@ -2207,6 +2429,10 @@ var state = {
      them mark the PLAYER'S FEET — see mhiyhRowFor() and mhSend(). */
   mhiyh: null,
   domains: null,       // /api/domains payload — marked places + which have an image
+  containers: null,    // /api/containers payload — marked containers + rules + loan
+  journal: null,       // /api/journal payload — the whole journal + its picture pool
+  jr: { page: 0, sel: '', edit: true, q: '', poolQ: '', dirty: false, saving: false,
+        savedAt: 0, err: '', tearArm: '', dropArm: '', drag: null, saveT: null },
   faces: null,         // /api/faces payload — RaceMenu presets + images + registry
   faceTarget: '',      // apply target: a follower formId, or "14" for the player
   domExpanded: {},     // top-level domain id -> true while its sub-areas are open (NOT persisted)
@@ -2378,6 +2604,8 @@ function fetchAll() {
     api('GET', '/api/nff'), api('GET', '/api/domains'), api('GET', '/api/roost'),
     api('GET', '/api/mhiyh'), api('GET', '/api/spell-cat-icons'), api('GET', '/api/faces'),
     api('GET', '/api/bases'), api('GET', '/api/sheet'),
+    api('GET', '/api/combat-art-icons'), api('GET', '/api/journal'),
+    api('GET', '/api/containers'),
   ]).then(function (r) {
     state.roster = r[0];
     state.icons = r[1];
@@ -2397,6 +2625,12 @@ function fetchAll() {
     // The Character Sheet snapshot (+ its queued meta edits). Named
     // `charsheet` on purpose — `state.sheet` is the modal detail overlay.
     state.charsheet = r[15];
+    foldCombatArtsResp(r[16]);
+    /* Never clobber a page being written: a background refresh that replaced
+       the model mid-sentence would eat the paragraph (the same law the pending
+       poller follows for sheets). */
+    if (!state.jr.dirty) state.journal = r[17];
+    state.containers = r[18];
   }).then(function () {
     /* Sharmat is fetched SEPARATELY and deliberately not awaited with the
        rest: it is the only call that leaves the box, and CHIM is down
@@ -2429,7 +2663,9 @@ function totalPending() {
     /* A queued class/background/history/portrait edit keeps the poll alive
        until the game's next tick eats portal-sheet-edits.json. */
     ((state.charsheet && state.charsheet.pendingEdits) || 0) +
-    (state.spellCatsPending || 0);
+    (state.spellCatsPending || 0) +
+    ((state.containers && state.containers.pending) || 0) +
+    (state.caPending || 0);
 }
 
 function paintStatus() {
@@ -2455,6 +2691,8 @@ function paintStatus() {
     ? ((state.wardrobe.wardrobes || []).length) : 0) || '';
   $('n-domains').textContent = (state.domains && state.domains.ok
     ? ((state.domains.domains || []).length) : 0) || '';
+  $('n-containers').textContent = (state.containers && state.containers.ok
+    ? ((state.containers.marks || []).length) : 0) || '';
   $('n-bases').textContent = (state.bases && state.bases.nff
     ? ((state.bases.bases || []).filter(function (b) { return b.used; }).length) : 0) || '';
   $('n-faces').textContent = (state.faces && state.faces.ok
@@ -2684,6 +2922,14 @@ var UPLOAD = {
     body: function (p, img) { return { cat: p.id, ext: img.ext, dataBase64: img.dataBase64 }; },
     toast: function (p, r) { return '✓ ' + (r.cat || p.name || 'Category') + ' — ' + LANDS + landedNote(r); },
   },
+  // Art for a COMBAT ART (Ashes of War) — one hop like cat-icon: the file
+  // lands in the pool (both view trees) and the assignment is queued
+  // server-side, keyed by the art id.
+  'combat-art-icon': {
+    url: '/api/combat-art-icon-image', square: false,
+    body: function (p, img) { return { art: p.id, ext: img.ext, dataBase64: img.dataBase64 }; },
+    toast: function (p, r) { return '✓ ' + (r.artName || p.name || 'Combat art') + ' — ' + LANDS + landedNote(r); },
+  },
   // The image lands in the shared pool; applyUploaded() then queues a set-icon
   // op so the row points at it. Square, like a portrait — finance rows are tiles.
   // An outfit photo. Unlike fin-image this is ONE hop: /api/wardrobe-image
@@ -2788,6 +3034,10 @@ function pasteTarget() {
     if (sh.kind === 'spellcaticon') {
       var c4 = spellCatByName(sh.cat);
       if (c4) return { kind: 'spell-cat-icon', id: c4.name, key: spellCatKey(c4.name), name: c4.name };
+    }
+    if (sh.kind === 'cbarticon') {
+      var ca4 = caById(sh.id);
+      if (ca4) return { kind: 'combat-art-icon', id: ca4.id, key: caKey(ca4.id), name: ca4.name };
     }
     if (sh.kind === 'wd') return { kind: 'wd-image', id: sh.id, key: sh.id, name: sh.id };
   }
@@ -2911,6 +3161,11 @@ function applyUploaded(p, r) {
     var scu = spellCatByName(p.id);
     if (scu) { scu.pendingIcon = r.icon; scu.pendingIconUrl = r.url; scu.pendingIconKind = 'custom'; }
     state.spellCatsPending = r.pendingSpellCatIcons;
+    state.sheet = null;
+  } else if (p.kind === 'combat-art-icon') {
+    var cau = caById(p.id);
+    if (cau) { cau.pendingIcon = r.icon; cau.pendingIconUrl = r.url; cau.pendingIconKind = 'custom'; }
+    state.caPending = r.pendingCombatArtIcons;
     state.sheet = null;
   } else if (p.kind === 'wd-image') {
     var om = wdOutfitByName(p.id);
@@ -3864,6 +4119,13 @@ var QUEUE = {
     count: function (r) { state.spellCatsPending = r.pendingSpellCatIcons; },
     after: function () { return null; },
   },
+  /* A COMBAT ART's icon — same dialog once more, keyed by art id. */
+  cbarticon: {
+    url: '/api/combat-art-icon', idField: 'art', find: caById, key: caKey,
+    emptyKind: 'none', cleared: function (n) { return '✓ ' + n + ' — icon removed'; },
+    count: function (r) { state.caPending = r.pendingCombatArtIcons; },
+    after: function () { return null; },
+  },
 };
 
 function queueIcon(kind, id, icon) {
@@ -3970,6 +4232,128 @@ function spellCatIconHtml(c) {
     inner + (busy ? '<span class="spin" aria-label="Working"></span>' : '') +
   '</button>';
 }
+
+/* ---- Combat Arts icons (the weapon-art collection's per-art icons) ----
+   Same generic queue/sheet machinery as everything above; rows come from the
+   game module's own combat-arts.json (via /api/combat-art-icons) and land in
+   portal-combat-art-icons.json in the DECK view dir. Keyed by ART ID
+   ("<plugin>|<hex>") — the durable identity the module itself stores. */
+function foldCombatArtsResp(r) {
+  state.combatArts = (r && r.ok) ? r : null;
+  state.caArts = (r && r.ok && Array.isArray(r.arts)) ? r.arts : [];
+  state.caPending = (r && r.pending) || 0;
+  state.caNote = (r && r.note) || '';
+}
+function caById(id) {
+  var arts = state.caArts || [];
+  for (var i = 0; i < arts.length; i++) if (arts[i].id === id) return arts[i];
+  return null;
+}
+function caKey(id) { return 'cart\n' + id; }
+function assignCombatArtIcon(id, icon) { queueIcon('cbarticon', id, icon); }
+/* Library art resolved in the DECK tree — the Combat Arts tab is a deck view. */
+function openCombatArtIconSheet(id) { state.sheet = { kind: 'cbarticon', id: id }; resetSheetUi(); render(); libFetch('hotkey', '', '', false); }
+
+function renderCombatArtIconSheet(a) {
+  renderIconSheet(a, {
+    busyKey: caKey(a.id),
+    emptyWord: 'None',
+    sub: 'Combat Art · ' + (a.owned ? 'collected' : 'undiscovered') + ' · ' +
+      currentLabel(a, 'no icon', 'no icon'),
+    clearLabel: '✕ No icon',
+    title: a.name,
+    back: false,
+    view: 'hotkey',
+  });
+}
+
+function caMatches(a, q) {
+  if (!q) return true;
+  return (a.name + '\n' + (a.full || '') + '\n' + a.id + '\n' +
+    (a.owned ? 'collected owned' : 'undiscovered')).toLowerCase().indexOf(q) >= 0;
+}
+
+function caRow(a, q) {
+  var key = caKey(a.id);
+  var busy = !!state.busy[key];
+  var err = state.err[key];
+  var pills = iconPills(a, 'combat art');
+  var meta = (a.owned
+    ? '<span class="pill" title="You have collected this art">collected</span>'
+    : '<span class="pill" title="Not collected yet — the icon still applies when you find it">undiscovered</span>') +
+    (pills ? ' ' + pills : '');
+  return '<button class="spell' + (busy ? ' busy' : '') + (err ? ' err' : '') +
+      (a.pendingIcon !== null ? ' pending' : '') + '" type="button" data-act="cbart" data-id="' + esc(a.id) + '"' +
+      (busy ? ' disabled' : '') + (a.owned ? '' : ' style="opacity:.55"') +
+      ' title="Change the icon for ' + esc(a.name) + '">' +
+    iconSlotHtml(a, 'None', key) +
+    '<span class="body">' +
+      '<span class="nm">' + hi(a.name, q) + '</span>' +
+      '<span class="meta">' + meta + '</span>' +
+      (err ? '<span class="row-msg">' + esc(err) + '</span>' : '') +
+    '</span>' +
+    '<span class="go" aria-hidden="true">›</span>' +
+  '</button>';
+}
+
+/* The Combat Arts section on the Spells tab: owned arts first (the server
+   sorts; a queued change keeps its place), the tab's own search box filters
+   as you type — names, ids and collected/undiscovered are all searched. */
+function renderCombatArts() {
+  var host = $('combat-arts-body');
+  if (!host) return;
+  var arts = state.caArts || [];
+  if (!state.combatArts) {
+    // Never fetched (older server) or the fetch failed outright: say nothing —
+    // an empty section on every load would read as a broken feature.
+    host.innerHTML = '';
+    return;
+  }
+  var head = function (count) {
+    return '<div class="sect-head"><h2>Combat Arts</h2>' +
+      (count ? '<span class="n">' + count + '</span>' : '') +
+      '<span class="hint">Weapon arts from Ashes of War — tap one to give it an icon. Changes are queued — the ' +
+      'running game applies them within a second, a closed one on its next Combat Arts open. Undiscovered arts are ' +
+      'greyed; an icon set now still applies when you collect them.</span></div>';
+  };
+  if (!arts.length) {
+    host.innerHTML = '<section class="sect">' + head(0) +
+      '<div class="empty"><div class="ic">⚔</div><div class="t">No combat arts yet</div>' +
+      '<div class="s">' + esc(state.caNote || 'Open the Combat Arts tab in game once — it publishes the arts list this page reads.') +
+      '</div></div></section>';
+    return;
+  }
+  var q = state.q.trim().toLowerCase();
+  var rows = arts.filter(function (a) { return caMatches(a, q); });
+  var pend = state.caPending || 0;
+  var banner = '';
+  if (pend) {
+    banner = '<div class="banner warn"><b>' + pend + ' combat-art icon change' + (pend === 1 ? '' : 's') + ' waiting</b>' +
+      'With Skyrim running ' + (pend === 1 ? 'it lands' : 'they land') + ' within a second — no restart, no save reload. ' +
+      'If the game is closed, the deck picks ' + (pend === 1 ? 'it' : 'them') + ' up on its next Combat Arts open.</div>';
+  }
+  if (!rows.length) {
+    host.innerHTML = '<section class="sect">' + head(0) + banner +
+      '<div class="empty"><div class="ic">⌕</div><div class="t">No combat art matches</div>' +
+      '<div class="s">Nothing matches “' + esc(state.q.trim()) + '”. Art names and collected/undiscovered are searched.</div></div>' +
+      '</section>';
+    return;
+  }
+  var owned = rows.filter(function (a) { return a.owned; });
+  var missing = rows.filter(function (a) { return !a.owned; });
+  var out = [];
+  var group = function (title, list) {
+    if (!list.length) return;
+    out.push('<section class="cat">' +
+      '<div class="cat-head"><h2>' + title + '</h2><span class="n">' + list.length + '</span></div>' +
+      '<div class="grid">' + list.map(function (a) { return caRow(a, q); }).join('') + '</div>' +
+    '</section>');
+  };
+  group('Collected', owned);
+  group('Undiscovered', missing);
+  host.innerHTML = '<section class="sect">' + head(rows.length) + banner + out.join('') + '</section>';
+}
+
 function openNpcSheet(slug) { state.sheet = { kind: 'npc', slug: slug }; resetSheetUi(); render(); }
 function closeSheet() { state.sheet = null; resetSheetUi(); render(); }
 function sheetIs(kind) { return !!state.sheet && state.sheet.kind === kind; }
@@ -4104,6 +4488,22 @@ function addIcon() {
     return;
   }
   pickFile('icon', name, name);
+}
+
+/* A HUD widget background (2026-08-19). Same pool, same /api/icon door, same
+   both-trees landing and live import — the `hud-bg-` prefix is what files it
+   under the in-game background picker's "Your art" and under its own section
+   here. Any image works; the widget crops/scales it in-game. */
+function addHudBg() {
+  var name = window.prompt('Background name (letters, digits, space, _ and -):', '');
+  if (name == null) return;
+  name = name.trim();
+  if (!name) return;
+  if (!/^[A-Za-z0-9][A-Za-z0-9 _-]{0,72}$/.test(name)) {
+    toast('Bad name — letters, digits, space, _ and - only, no dots.', 'bad');
+    return;
+  }
+  pickFile('icon', 'hud-bg-' + name, name);
 }
 
 /* ------------------------------- render ------------------------------ */
@@ -4893,7 +5293,7 @@ function libKey(view, q, pack) { return view + '\n' + q + '\n' + pack; }
    kind cannot silently search the wrong tree (which is exactly what the
    category picker did on its first run). */
 function libViewForSheet() {
-  return (sheetIs('hkicon') || sheetIs('caticon')) ? 'hotkey' : 'magic';
+  return (sheetIs('hkicon') || sheetIs('caticon') || sheetIs('cbarticon')) ? 'hotkey' : 'magic';
 }
 
 /** Fetch a page. append=false replaces the grid (new search), true adds to it. */
@@ -6745,6 +7145,7 @@ function renderSheet() {
     case 'hkicon': row = hotkeyById(state.sheet.id); draw = renderHotkeyIconSheet; break;
     case 'caticon': row = catByIndex(state.sheet.cat); draw = renderCatIconSheet; break;
     case 'spellcaticon': row = spellCatByName(state.sheet.cat); draw = renderSpellCatIconSheet; break;
+    case 'cbarticon': row = caById(state.sheet.id); draw = renderCombatArtIconSheet; break;
     case 'fin': row = finRowById(state.sheet.target, state.sheet.id); draw = renderFinSheet; break;
     case 'wd': row = wdSheetRow(); draw = renderWdSheet; break;
     case 'dr': row = drSheetRow(); draw = renderDrSheet; break;
@@ -6760,7 +7161,12 @@ function renderSheet() {
 
 function renderIcons() {
   var host = $('icons-body');
-  var all = (state.icons && state.icons.icons) || [];
+  var pool = (state.icons && state.icons.icons) || [];
+  /* HUD widget backgrounds live in the same pool under a hud-bg- prefix —
+     their own section below, out of the icon grid, so neither list buries
+     the other */
+  var all = pool.filter(function (i) { return i.name.indexOf('hud-bg-') !== 0; });
+  var bgAll = pool.filter(function (i) { return i.name.indexOf('hud-bg-') === 0; });
   var head = '<div class="sect-head"><h2>Icon library</h2>' +
     (all.length ? '<span class="n">' + all.length + '</span>' : '') +
     '<span class="hint">The shared pool — one set of art for spells AND hotkeys. Everything here is pickable ' +
@@ -6778,6 +7184,32 @@ function renderIcons() {
 
   var add = '<button class="tile add" type="button" id="icon-add">' +
     '<span class="plus">＋</span><span class="lbl">Add icon</span></button>';
+
+  /* ---- HUD widget backgrounds: their own section, same pool ---- */
+  var bgList = bgAll.filter(function (i) { return !q || i.name.toLowerCase().indexOf(q) >= 0; });
+  var bgAdd = '<button class="tile add" type="button" id="hud-bg-add">' +
+    '<span class="plus">＋</span><span class="lbl">Add background</span></button>';
+  var bgTiles = bgList.map(function (i) {
+    var busy = !!state.busy[i.name];
+    var armed = !!state.armed[i.name];
+    var src = '/api/icon-file/' + encodeURIComponent(i.name) + '?v=' + (i.mtime || 0);
+    var shown = i.name.replace(/^hud-bg-/, '');
+    return '<div class="tile' + (busy ? ' busy' : '') + '">' +
+      '<button class="rm' + (armed ? ' armed' : '') + '" type="button" data-act="rm-icon" data-name="' + esc(i.name) + '"' +
+        (busy ? ' disabled' : '') + ' title="' + (armed ? 'Click again to delete' : 'Delete background') + '">' + (armed ? '!' : '✕') + '</button>' +
+      '<button class="thumb" type="button" data-act="up-icon" data-name="' + esc(i.name) + '" title="Replace this background" style="padding:0;cursor:pointer">' +
+        '<img src="' + esc(src) + '" alt="" loading="lazy" decoding="async">' +
+      '</button>' +
+      '<span class="lbl" title="' + esc(shown) + '">' + hi(shown, q) + '</span>' +
+      '<span class="sz">' + esc(i.ext) + ' · ' + Math.max(1, Math.round((i.size || 0) / 1024)) + ' KB</span>' +
+    '</div>';
+  }).join('');
+  var bgSect = '<section class="sect"><div class="sect-head"><h2>HUD backgrounds</h2>' +
+    (bgAll.length ? '<span class="n">' + bgAll.length + '</span>' : '') +
+    '<span class="hint">Skins for the HUD widgets — the Equipped cards and the follower strip. ' +
+    'Upload any image here, then pick it in game: HUD ⚙ shelf → a widget\'s <b>⬒ Background</b> ' +
+    '(it lands under “Your art”, next to the shipped plates). Scaling and see-through are set there.</span></div>' +
+    '<div id="hud-bg-grid">' + bgAdd + bgTiles + '</div></section>';
 
   var tiles = list.map(function (i) {
     var busy = !!state.busy[i.name];
@@ -6798,7 +7230,7 @@ function renderIcons() {
     host.innerHTML = '<section class="sect">' + head +
       '<div class="empty"><div class="ic">⌕</div><div class="t">No icon matches</div>' +
       '<div class="s">Nothing named like “' + esc(state.q.trim()) + '”.</div></div>' +
-      '<div id="icons-grid">' + add + '</div></section>';
+      '<div id="icons-grid">' + add + '</div></section>' + bgSect;
     return;
   }
   if (!list.length) {
@@ -6807,10 +7239,10 @@ function renderIcons() {
       '<div class="s">Add one here, or upload art straight onto a spell above or a hotkey on the Hotkeys tab — ' +
       'either way it joins this pool and becomes pickable everywhere. The name you give it is the label ' +
       'you\'ll search for.</div></div>' +
-      '<div id="icons-grid">' + add + '</div></section>';
+      '<div id="icons-grid">' + add + '</div></section>' + bgSect;
     return;
   }
-  host.innerHTML = '<section class="sect">' + head + '<div id="icons-grid">' + add + tiles + '</div></section>';
+  host.innerHTML = '<section class="sect">' + head + '<div id="icons-grid">' + add + tiles + '</div></section>' + bgSect;
 }
 
 /* ONE description of each tab: its pane, what it renders, what it searches and
@@ -7715,8 +8147,10 @@ function wdWardrobeRow(w) {
 function wdPersonRow(a) {
   var w = a.wardrobeId ? wdById(a.wardrobeId) : null;
   var nOv = (a.locationOverrides || []).length;
+  var effCad = a.cadenceInherit ? ((w && Number(w.cadenceHours)) || 0) : (Number(a.cadenceHours) || 0);
   var what = (a.mode === 'wardrobe'
-    ? '◇ ' + (w ? w.name : 'missing wardrobe') + ' · every ' + wdCadenceLabel(a.cadenceHours)
+    ? '◇ ' + (w ? w.name : 'missing wardrobe') + ' · ' +
+      (effCad ? 'every ' + wdCadenceLabel(effCad) + (a.cadenceInherit ? ' ↳' : '') : 'on demand')
     : a.mode === 'outfit' ? (a.outfit || 'no outfit chosen') : 'not managed') +
     (nOv ? ' · ' + nOv + (nOv === 1 ? ' override' : ' overrides') : '');
   return wdCard('wd-person', wdAssignKey(a), wdFaceArt(a.name, '🧍'), a.name || wdAssignKey(a), esc(what), a.pending);
@@ -7952,6 +8386,12 @@ function renderWdSheet(row) {
         '<button type="button" class="chip' + (bag ? '' : ' on') + '" data-act="wd-pool-mode" data-mode="random" ' +
           'title="Uniform pick, avoiding only the last one">Random</button>' +
       '</div></div>' +
+      '<div class="frow"><label class="flab">Wearers change every</label><select id="wd-pool-cad" class="fin-in">' +
+      WD_CADENCE.map(function (h) {
+        return '<option value="' + h + '"' + (Number(row.cadenceHours) === h ? ' selected' : '') + '>' +
+          wdCadenceLabel(h) + '</option>';
+      }).join('') + '</select></div>' +
+      '<div class="hint">The default for anyone whose assignment says “Wardrobe’s cadence” — her own setting beats it.</div>' +
       (members.length
         ? '<div class="hint">Members, in order — the deck lists them like this and the shuffle-bag refills in it. ' +
           'Tap ✕ to take one out.</div>' +
@@ -8018,11 +8458,19 @@ function renderWdSheet(row) {
         onPick: function (v) { wdSetAssign(row, 'wardrobeId', v, function (x) { x.wardrobeId = v; }); },
       }) + '</div>' +
       '<div class="frow"><label class="flab">Change outfit every</label><select id="wd-cad" class="fin-in">' +
+      '<option value="inherit"' + (row.cadenceInherit ? ' selected' : '') + '>↳ Wardrobe’s (' +
+        wdCadenceLabel((wdById(row.wardrobeId || '') || {}).cadenceHours || 0) + ')</option>' +
       WD_CADENCE.map(function (h) {
-        return '<option value="' + h + '"' + (Number(row.cadenceHours) === h ? ' selected' : '') + '>' +
+        return '<option value="' + h + '"' + (!row.cadenceInherit && Number(row.cadenceHours) === h ? ' selected' : '') + '>' +
           wdCadenceLabel(h) + '</option>';
       }).join('') + '</select></div>' +
-      '<div class="hint">Re-rolls in game, never the same outfit twice running.</div>';
+      '<div class="frow"><label class="flab">She draws</label><select id="wd-draw" class="fin-in">' +
+      [['', 'Wardrobe’s way (shared)'], ['bag', 'Her own bag'], ['random', 'Her own random']]
+        .map(function (o) {
+          return '<option value="' + o[0] + '"' + ((row.draw || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+        }).join('') + '</select></div>' +
+      '<div class="hint">Re-rolls in game, never the same outfit twice running. Shared = the wardrobe’s one bag ' +
+      'across all wearers; her own bag means she personally cycles every outfit.</div>';
   } else if (row.mode === 'outfit') {
     body += '<div class="frow"><label class="flab">Outfit</label>' +
       comboHtml('wd-outfit-sel', {
@@ -8098,7 +8546,18 @@ function wdWirePersonSheet(row) {
   });
   var c = $('wd-cad');
   if (c) c.addEventListener('change', function () {
+    if (c.value === 'inherit') {
+      wdSetAssign(row, 'cadenceInherit', '1', function (x) { x.cadenceInherit = true; });
+      return;
+    }
+    /* An explicit stop also turns inherit off — same one-click rule as the
+       deck's chip row, else the select shows hours the tick ignores. */
+    if (row.cadenceInherit) wdSetAssign(row, 'cadenceInherit', '0', function (x) { x.cadenceInherit = false; });
     wdSetAssign(row, 'cadenceHours', c.value, function (x) { x.cadenceHours = parseInt(c.value, 10) || 0; });
+  });
+  var d = $('wd-draw');
+  if (d) d.addEventListener('change', function () {
+    wdSetAssign(row, 'draw', d.value, function (x) { x.draw = d.value; });
   });
 }
 /* The pool sheet's rename field — change (not input), so half-typed names are
@@ -8110,6 +8569,11 @@ function wdWirePoolHead(row) {
     if (!v || v === row.name) return;
     wdQueue({ op: 'pool-set', id: row.id, key: 'name', value: v },
       function () { var w = wdById(row.id); if (w) { w.name = v; w.pending = true; } });
+  });
+  var pc = $('wd-pool-cad');
+  if (pc) pc.addEventListener('change', function () {
+    wdQueue({ op: 'pool-set', id: row.id, key: 'cadenceHours', value: pc.value },
+      function () { var w = wdById(row.id); if (w) { w.cadenceHours = parseInt(pc.value, 10) || 0; w.pending = true; } });
   });
 }
 
@@ -8679,6 +9143,221 @@ function renderFaces() {
   host.querySelectorAll('[data-face-img]').forEach(function (b) { b.onclick = function () { faceUpload(b.getAttribute('data-face-img')); }; });
   host.querySelectorAll('[data-face-clr]').forEach(function (b) { b.onclick = function () { faceClearImage(b.getAttribute('data-face-clr')); }; });
   host.querySelectorAll('[data-face-apply]').forEach(function (b) { b.onclick = function () { faceApply(b.getAttribute('data-face-apply')); }; });
+}
+
+/* ============================ CONTAINERS ==============================
+   The phone's half of the deck's Containers tab. Reads the `containers`
+   slice out of hotkeys.json (server side) and QUEUES every edit into
+   portal-containers.json — this pane never writes a file the game owns.
+
+   Two kinds of control, and the difference is stated in the UI rather than
+   hidden: a SETTING (rule on, lend, drop-box, redirect, loan switches) lands
+   whenever the deck next opens, while an ACTION (put it all away, sort,
+   gather, unload, retrieve) needs the game to actually be running — the
+   plugin drops a queued action rather than firing it an hour later in a
+   different cell. */
+
+var CT_GATHER = [
+  ['Cooking & brewing', ['reagent', 'ingredient']],
+  ['Smithing ingredients', ['catalyst']],
+  ['Ore & ingots', ['oreIngot', 'craftMat']],
+  ['Hides', ['hide', 'tanMat']],
+  ['Raw food', ['rawFood']],
+  ['Empty soul gems', ['soulgemEmpty']],
+  ['Filled soul gems', ['soulgemFilled']],
+  ['Spell tomes', ['spellbook']],
+  ['Potions', ['potion', 'restorative']],
+];
+
+var CT_LOAN = [
+  ['smithing', 'Forge & armour table'],
+  ['smelting', 'Smelter'],
+  ['tanning', 'Tanning rack'],
+  ['cooking', 'Cooking fire'],
+  ['alchemy', 'Alchemy lab'],
+  ['enchanting', 'Arcane enchanter'],
+];
+
+/** Queue one op and re-render from the reply, so a switch shows its new state
+ *  immediately (the server folds pending ops onto the view for exactly this). */
+function ctOp(body, note) {
+  return api('POST', '/api/containers/op', body).then(function (r) {
+    if (!r || !r.ok) { toast((r && r.error) || 'Could not queue that'); return; }
+    if (r.containers) state.containers = r.containers;
+    if (note) toast(note);
+    renderContainers();
+    paintStatus();
+  });
+}
+
+function ctMarkName(id) {
+  var c = state.containers;
+  if (!c || !c.marks) return '';
+  for (var i = 0; i < c.marks.length; i++) if (c.marks[i].id === id) return c.marks[i].name;
+  return '';
+}
+
+function ctSafePill(mk) {
+  if (!mk.safe.respawns) {
+    return '<span class="pill" title="' + esc(mk.safe.reason || 'Safe to store here') + '">Safe</span>';
+  }
+  if (mk.safe.acknowledged) {
+    return '<span class="pill pend" title="You tagged this respawning container anyway">Respawns · tagged</span>';
+  }
+  return '<span class="pill del" title="' + esc(mk.safe.reason || 'This container respawns — items stored here can be DELETED on cell reset') +
+    '">Respawns</span>';
+}
+
+function ctSwitch(on, act, data, label) {
+  var attrs = '';
+  for (var k in data) if (Object.prototype.hasOwnProperty.call(data, k)) attrs += ' data-' + k + '="' + esc(String(data[k])) + '"';
+  return '<button class="sm-sw' + (on ? ' on' : '') + '" type="button" role="switch" aria-checked="' + (on ? 'true' : 'false') +
+    '" aria-label="' + esc(label) + '" data-act="' + act + '"' + attrs + '></button>';
+}
+
+function renderContainers() {
+  var host = $('containers-body');
+  var c = state.containers;
+
+  if (state.loading && !c) {
+    host.innerHTML = '<div class="cat"><div class="grid">' +
+      new Array(5).join('x').split('x').map(function () { return '<div class="sk"></div>'; }).join('') +
+      '</div></div>';
+    return;
+  }
+  if (c && !c.ok) {
+    host.innerHTML = '<div class="banner"><b>Containers unavailable</b>' + esc(c.error || '') +
+      '<div style="margin-top:6px">The list is read from the deck config (<code>hotkeys.json</code>). ' +
+      'Mark a container in-game (deck ▸ Containers ▸ ★ Mark this container), then hit ⟳.</div></div>';
+    $('n-containers').textContent = '';
+    return;
+  }
+  c = c || { marks: [], opts: {}, loan: {}, overrides: [], pending: 0 };
+  var marks = c.marks || [];
+  var q = state.q.trim().toLowerCase();
+  var shown = !q ? marks : marks.filter(function (m) {
+    return (m.name + ' ' + m.category + ' ' + m.place + ' ' + m.note).toLowerCase().indexOf(q) !== -1;
+  });
+
+  var anyRule = marks.some(function (m) { return m.rule.enabled; });
+  var html = '';
+
+  if (c.pendingActs) {
+    html += '<div class="banner warn"><b class="in">' + c.pendingActs + ' action' + (c.pendingActs === 1 ? '' : 's') +
+      ' waiting</b> — these only run while Skyrim is up. If the game is closed the deck drops them rather than ' +
+      'firing them later in the wrong place.</div>';
+  }
+
+  /* ---- do something now ---- */
+  html += '<div class="cat"><h2>Right now</h2>' +
+    '<div class="ct-acts">' +
+    '<button class="btn primary ct-big" type="button" data-act="ct-sweep"' + (anyRule ? '' : ' disabled') + '>' +
+      'Put it all away</button>' +
+    '<button class="btn ct-big" type="button" data-act="ct-sortnow"' + (c.inbox ? '' : ' disabled') + '>' +
+      'Sort the drop-box</button>' +
+    '</div>' +
+    '<div class="fhint">' + (anyRule
+      ? 'Sweeps your whole bag into the containers your rules name. Anything no rule claims stays with you.'
+      : 'Give a container a rule in-game first — nothing has one yet.') + '</div>' +
+    '<div class="ct-row" style="margin-top:12px">' +
+      ctSwitch(!!c.opts.sortOnClose, 'ct-sort', { k: 'sortOnClose', v: c.opts.sortOnClose ? '0' : '1' }, 'Sort when I close the drop-box') +
+      '<div class="ct-row-b"><div class="t">Sort when I close it</div>' +
+      '<div class="s">' + (c.inbox ? esc(ctMarkName(c.inbox) || 'the drop-box') + ' distributes itself when you shut the lid'
+        : 'Needs a drop-box — pick one below') + '</div></div>' +
+    '</div>' +
+  '</div>';
+
+  /* ---- gather ---- */
+  html += '<div class="cat"><h2>Gather from every container</h2><div class="ct-chips">' +
+    CT_GATHER.map(function (g, i) {
+      return '<button class="chip" type="button" data-act="ct-gather" data-i="' + i + '">' + esc(g[0]) + '</button>';
+    }).join('') +
+    '</div><div class="fhint">Pulls matching items to you out of every container that is reachable right now.</div></div>';
+
+  /* ---- crafting loan ---- */
+  html += '<div class="cat"><h2>Crafting loan</h2>' +
+    '<div class="ct-row">' +
+      ctSwitch(!!c.loan.enabled, 'ct-loan', { k: 'enabled', v: c.loan.enabled ? '0' : '1' }, 'Crafting loan') +
+      '<div class="ct-row-b"><div class="t">' + (c.loan.enabled ? 'On — materials come to the bench' : 'Off') + '</div>' +
+      '<div class="s">Standing at a station borrows what it uses from every container you flagged “lends”.</div></div>' +
+    '</div>' +
+    '<div class="ct-row">' +
+      ctSwitch(!!c.loan.returnOnExit, 'ct-loan', { k: 'returnOnExit', v: c.loan.returnOnExit ? '0' : '1' }, 'Put it back after') +
+      '<div class="ct-row-b"><div class="t">Put it back after</div>' +
+      '<div class="s">What you did not spend goes home when you step away.</div></div>' +
+    '</div>' +
+    '<div class="ct-chips" style="margin-top:10px">' +
+      CT_LOAN.map(function (b) {
+        return '<button class="chip' + (c.loan[b[0]] ? ' on' : '') + '" type="button" data-act="ct-loan-b" data-k="' + b[0] +
+          '" data-v="' + (c.loan[b[0]] ? '0' : '1') + '">' + esc(b[1]) + '</button>';
+      }).join('') +
+    '</div></div>';
+
+  /* ---- the containers ---- */
+  html += '<div class="cat"><h2>Containers <span class="n">' + shown.length + '</span></h2>';
+  if (!marks.length) {
+    html += '<div class="fhint">None marked yet. In game: look at a chest, open the deck, Containers ▸ ★ Mark this container.</div>';
+  } else if (!shown.length) {
+    html += '<div class="fhint">Nothing matches “' + esc(state.q.trim()) + '”.</div>';
+  }
+  shown.forEach(function (m) {
+    var isInbox = c.inbox === m.id;
+    html += '<div class="ct-card">' +
+      '<div class="ct-head"><div class="ct-name">' + esc(m.name) + '</div>' + ctSafePill(m) + '</div>' +
+      (m.place || m.category
+        ? '<div class="ct-sub">' + esc([m.category, m.place].filter(Boolean).join(' · ')) + '</div>' : '') +
+      '<div class="ct-row">' +
+        ctSwitch(m.rule.enabled, 'ct-mark', { id: m.id, k: 'ruleEnabled', v: m.rule.enabled ? '0' : '1' }, 'Rule on') +
+        '<div class="ct-row-b"><div class="t">Sort rule ' + (m.rule.enabled ? 'on' : 'off') + '</div>' +
+        '<div class="s">' + (m.rule.types.length || m.rule.keywords.length
+          ? esc(m.rule.types.concat(m.rule.keywords).slice(0, 6).join(', '))
+          : 'no types yet — set them in game') + '</div></div>' +
+      '</div>' +
+      '<div class="ct-row">' +
+        ctSwitch(m.lend, 'ct-mark', { id: m.id, k: 'lend', v: m.lend ? '0' : '1' }, 'Lends at benches') +
+        '<div class="ct-row-b"><div class="t">Lends at benches</div>' +
+        '<div class="s">Hands you its materials at a crafting station.</div></div>' +
+      '</div>' +
+      '<div class="ct-row">' +
+        ctSwitch(isInbox, 'ct-inbox', { id: m.id, v: isInbox ? '' : m.id }, 'Drop-box') +
+        '<div class="ct-row-b"><div class="t">Drop-box</div>' +
+        '<div class="s">Fill this one and everything else sorts out of it.</div></div>' +
+      '</div>' +
+      (m.safe.respawns && !m.safe.acknowledged
+        ? '<div class="ct-row">' +
+            ctSwitch(false, 'ct-mark', { id: m.id, k: 'acknowledged', v: '1' }, 'Store here anyway') +
+            '<div class="ct-row-b"><div class="t">Store here anyway</div>' +
+            '<div class="s">' + esc(m.safe.reason || 'This container respawns') +
+            ' — items stored here can be deleted on a cell reset.</div></div>' +
+          '</div>'
+        : '') +
+      '<div class="ct-row"><div class="ct-row-b"><div class="t">Activating it opens</div></div>' +
+        '<select class="txt ct-sel" data-act="ct-redirect" data-id="' + esc(m.id) + '">' +
+          '<option value="">itself (no redirect)</option>' +
+          marks.filter(function (x) { return x.id !== m.id; }).map(function (x) {
+            return '<option value="' + esc(x.id) + '"' + (m.redirectTo === x.id ? ' selected' : '') + '>' + esc(x.name) + '</option>';
+          }).join('') +
+        '</select></div>' +
+      '<div class="ct-acts">' +
+        '<button class="btn" type="button" data-act="ct-unload" data-id="' + esc(m.id) + '"' +
+          (m.rule.enabled ? '' : ' disabled') + '>Unload into it</button>' +
+        '<button class="btn" type="button" data-act="ct-retrieve" data-id="' + esc(m.id) + '">Take it all</button>' +
+      '</div>' +
+    '</div>';
+  });
+  html += '</div>';
+
+  /* ---- overrides (read-only here: picking an item needs the in-game Finder) ---- */
+  if (c.overrides && c.overrides.length) {
+    html += '<div class="cat"><h2>Item types you overrode</h2><div class="ct-chips">' +
+      c.overrides.map(function (o) {
+        return '<span class="pill">' + esc((o.name || (o.plugin + ':' + o.localId)) + ' → ' + o.types.join(', ')) + '</span>';
+      }).join('') +
+      '</div><div class="fhint">Add or remove these in game — picking the item needs the deck’s item finder.</div></div>';
+  }
+
+  host.innerHTML = html;
+  $('n-containers').textContent = marks.length ? String(marks.length) : '';
 }
 
 function renderDomains() {
@@ -11347,6 +12026,914 @@ function skeletonBases() {
   }).join('') + '</div>';
 }
 
+
+/* ===================== the Journal ===================================== *
+ *  Rober, 2026-08-16: "ability to on web-server edit your journal, upload
+ *  transparent background images, new text options … make it look like an
+ *  actual medieval journal … and drag your images wherever you want in the
+ *  pages, over text, wrap text".
+ *
+ *  This is the phone half of the deck's Journal tab. Three things are
+ *  deliberately IDENTICAL to view/HotkeyDeck/journal-pane.js, and must stay
+ *  that way or a page written here would not look like the page in game:
+ *    1. jrRenderMarkup()  — the markup and exactly what HTML it produces.
+ *    2. picture coordinates — normalised 0..1 of the page box, never pixels.
+ *    3. jrLayoutPage()    — the invisible float pair that wraps text around a
+ *       free-placed picture (shim + box, both `clear`ed to their side; the cap
+ *       first, floats after; carve from the picture's REAL rendered box).
+ *  The deck file carries the long-form reasoning for each; this is the mirror.
+ *
+ *  Saving writes journal.json DIRECTLY (see the Journal block in server.js) —
+ *  the one place the portal does that instead of queueing — and the server
+ *  merges page-by-page, so writing here while the game is open is safe.
+ * ======================================================================= */
+
+var JR_FONTS = [
+  { id: 'imfell', name: 'Fell English', css: 'var(--jr-f-imfell)', samp: 'The old press' },
+  { id: 'cardo', name: 'Cardo', css: 'var(--jr-f-cardo)', samp: 'A clear hand' },
+  { id: 'goudy', name: 'Goudy', css: 'var(--jr-f-goudy)', samp: 'Old style' },
+  { id: 'hand', name: 'Pen hand', css: 'var(--jr-f-hand)', samp: 'Written quickly' },
+  { id: 'quill', name: 'Quill script', css: 'var(--jr-f-quill)', samp: 'Flowing quill' },
+  { id: 'medieval', name: 'Medieval', css: 'var(--jr-f-medieval)', samp: 'Of the age' },
+  { id: 'pirata', name: 'Blackletter', css: 'var(--jr-f-pirata)', samp: 'Gothic letters' },
+  { id: 'fraktur', name: 'Fraktur', css: 'var(--jr-f-fraktur)', samp: 'Heavy black' }
+];
+var JR_PAPERS = [{ id: 'parchment', name: 'Parchment' }, { id: 'vellum', name: 'Vellum' },
+  { id: 'old', name: 'Old' }, { id: 'linen', name: 'Linen' }, { id: 'ash', name: 'Ash' }];
+var JR_INKS = [{ id: 'sepia', name: 'Sepia' }, { id: 'black', name: 'Iron gall' },
+  { id: 'oxblood', name: 'Oxblood' }, { id: 'indigo', name: 'Indigo' }];
+var JR_FRAMES = [{ id: 'none', name: 'None' }, { id: 'plate', name: 'Plate' },
+  { id: 'sketch', name: 'Sketch' }, { id: 'tape', name: 'Taped' }, { id: 'wax', name: 'Wax' }];
+var JR_MODES = [{ id: 'wrap', name: 'Wrap text' }, { id: 'over', name: 'Over text' }, { id: 'under', name: 'Behind text' }];
+var JR_INLINE = ['script', 'hand', 'black', 'caps', 'red', 'faded', 'big'];
+var JR_SAVE_MS = 1200;
+
+function jrDoc() { return (state.journal && state.journal.doc) || null; }
+function jrImages() { return (state.journal && state.journal.images) || []; }
+function jrNowSec() { return Math.floor(Date.now() / 1000); }
+function jrId(p) { return (p || 'j') + '_' + Math.random().toString(36).slice(2, 9); }
+function jrClamp(v, d, lo, hi) { var n = Number(v); if (!isFinite(n)) return d; return Math.max(lo, Math.min(hi, n)); }
+
+function jrBook() {
+  var d = jrDoc();
+  if (!d || !Array.isArray(d.books) || !d.books.length) return null;
+  for (var i = 0; i < d.books.length; i++) if (d.books[i].id === d.activeBook) return d.books[i];
+  return d.books[0];
+}
+function jrPages() { var b = jrBook(); return (b && Array.isArray(b.pages)) ? b.pages : []; }
+function jrPage() { return jrPages()[state.jr.page] || null; }
+function jrStyle() {
+  var d = jrDoc();
+  var st = (d && d.style && typeof d.style === 'object') ? d.style : {};
+  return {
+    paper: st.paper || 'parchment', ink: st.ink || 'sepia', font: st.font || 'imfell',
+    size: jrClamp(st.size, 19, 13, 34), justify: !!st.justify, ruled: !!st.ruled, spread: st.spread !== false
+  };
+}
+
+function jrTouch(p) {
+  var d = jrDoc(), b = jrBook();
+  if (p) p.updatedAt = jrNowSec();
+  if (b) b.updatedAt = jrNowSec();
+  if (d) d.updatedAt = jrNowSec();
+  state.jr.dirty = true;
+  jrSaveSoon();
+}
+
+function jrSaveSoon() {
+  if (state.jr.saveT) clearTimeout(state.jr.saveT);
+  state.jr.saveT = setTimeout(jrSaveNow, JR_SAVE_MS);
+  jrPaintChip();
+}
+
+function jrSaveNow() {
+  if (state.jr.saveT) { clearTimeout(state.jr.saveT); state.jr.saveT = null; }
+  var d = jrDoc();
+  if (!d || !state.jr.dirty) return Promise.resolve();
+  state.jr.saving = true;
+  jrPaintChip();
+  return api('PUT', '/api/journal', { doc: d }).then(function (r) {
+    state.jr.saving = false;
+    if (!r || !r.ok) {
+      state.jr.err = (r && (r.error || r.msg)) || 'The journal could not be saved.';
+      jrPaintChip();
+      toast(state.jr.err, 'bad');
+      return;
+    }
+    state.jr.err = '';
+    state.jr.dirty = false;
+    state.jr.savedAt = Date.now();
+    /* Reconcile onto what LANDED — the server merged our save with whatever the
+       game had written, so keeping what we sent would show a page that is not
+       the page on disk. Never while a field has focus. */
+    var keep = jrPage() ? jrPage().id : '';
+    if (r.doc && !jrBusy()) {
+      state.journal.doc = r.doc;
+      var idx = jrIndexOf(keep);
+      if (idx >= 0) state.jr.page = idx;
+    }
+    if (r.merged) toast('Saved — and pages written in game merged in.', 'ok');
+    renderJournal();
+  }).catch(function (e) {
+    state.jr.saving = false;
+    state.jr.err = 'Could not reach the portal: ' + e.message;
+    jrPaintChip();
+  });
+}
+
+/* Is the user in the middle of typing? Then a repaint must not replace the DOM
+   under the caret (the same law busyEditing() enforces for the sheets). */
+function jrBusy() {
+  var ae = document.activeElement;
+  return !!(ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT') && ae.closest && ae.closest('#pane-journal'));
+}
+
+function jrIndexOf(id) {
+  var ps = jrPages();
+  for (var i = 0; i < ps.length; i++) if (ps[i].id === id) return i;
+  return -1;
+}
+
+function jrPaintChip() {
+  var el = $('jr-chip');
+  if (!el) return;
+  var j = state.jr;
+  if (j.err) { el.className = 'jr-tag bad'; el.textContent = '⚠ not saved'; return; }
+  if (j.saving) { el.className = 'jr-tag'; el.textContent = 'saving…'; return; }
+  if (j.dirty || j.saveT) { el.className = 'jr-tag warn'; el.textContent = 'unsaved'; return; }
+  if (j.savedAt) { el.className = 'jr-tag ok'; el.textContent = 'saved'; return; }
+  el.className = 'jr-tag'; el.textContent = '';
+}
+
+/* ---- markup: byte-for-byte the deck's renderMarkup ---------------------- */
+
+function jrInline(s) {
+  var out = esc(s);
+  JR_INLINE.forEach(function (t) {
+    out = out.replace(new RegExp('\\{\\{' + t + '\\}\\}', 'g'), '<span class="jr-t-' + t + '">')
+             .replace(new RegExp('\\{\\{\\/' + t + '\\}\\}', 'g'), '</span>');
+  });
+  out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  out = out.replace(/__([^_\n]+)__/g, '<u>$1</u>');
+  out = out.replace(/~~([^~\n]+)~~/g, '<s>$1</s>');
+  return out;
+}
+
+function jrRenderMarkup(text, opts) {
+  var drop = !!(opts && opts.drop);
+  var lines = String(text == null ? '' : text).replace(/\r\n?/g, '\n').split('\n');
+  var out = [], para = [], list = null, capDone = false;
+  function flushPara() {
+    if (!para.length) return;
+    var cap = '';
+    if (drop && !capDone) {
+      capDone = true;
+      if (/^[A-Za-z0-9]/.test(para[0])) {
+        cap = '<span class="jr-cap">' + esc(para[0].charAt(0)) + '</span>';
+        para[0] = para[0].slice(1);
+      }
+    }
+    out.push(cap + '<p>' + para.map(jrInline).join('<br>') + '</p>');
+    para = [];
+  }
+  function flushList() { if (list) { out.push('</' + list + '>'); list = null; } }
+  function flush() { flushPara(); flushList(); }
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].replace(/\s+$/, ''), m;
+    if (!line.trim()) { flush(); continue; }
+    if ((m = /^\s{0,3}(#{1,2})\s+(.*)$/.exec(line))) {
+      flush();
+      var tag = m[1].length === 1 ? 'h1' : 'h2';
+      out.push('<' + tag + '>' + jrInline(m[2]) + '</' + tag + '>');
+      continue;
+    }
+    if (/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flush(); out.push('<hr>'); continue; }
+    if ((m = /^\s{0,3}>\s?(.*)$/.exec(line))) { flush(); out.push('<blockquote>' + jrInline(m[1]) + '</blockquote>'); continue; }
+    if ((m = /^\s{0,3}[-*•]\s+(.*)$/.exec(line))) {
+      flushPara();
+      if (list !== 'ul') { flushList(); out.push('<ul>'); list = 'ul'; }
+      out.push('<li>' + jrInline(m[1]) + '</li>');
+      continue;
+    }
+    if ((m = /^\s{0,3}\d+[.)]\s+(.*)$/.exec(line))) {
+      flushPara();
+      if (list !== 'ol') { flushList(); out.push('<ol>'); list = 'ol'; }
+      out.push('<li>' + jrInline(m[1]) + '</li>');
+      continue;
+    }
+    flushList();
+    para.push(line);
+  }
+  flush();
+  return out.join('');
+}
+
+/* ---- the page ---------------------------------------------------------- */
+
+function jrImgUrl(f) {
+  var pool = jrImages();
+  for (var i = 0; i < pool.length; i++) if (pool[i].f === f) return pool[i].url;
+  return '/api/journal-image-file/' + encodeURIComponent(f);
+}
+
+function jrPageHtml(p, i) {
+  if (!p) return '';
+  var st = jrStyle();
+  var face = JR_FONTS.filter(function (f) { return f.id === ((p.style && p.style.font) || st.font); })[0] || JR_FONTS[0];
+  var size = jrClamp((p.style && p.style.size) || st.size, 19, 13, 34);
+  var drop = !(p.style && p.style.drop === false) && !!String(p.text || '').trim();
+  var bg = p.bg && p.bg.src
+    ? '<div class="jr-pagebg fit-' + esc(p.bg.fit || 'cover') + '" style="background-image:url(\'' +
+      esc(jrImgUrl(p.bg.src)) + '\');opacity:' + jrClamp(p.bg.op, .55, .03, 1) + '"></div>' : '';
+  var imgs = (p.images || []).map(function (im) {
+    var cls = ['jr-img', 'm-' + (im.mode || 'wrap'), 'fr-' + (im.frame || 'none')];
+    if (im.flip) cls.push('flip');
+    if (state.jr.edit && state.jr.sel === im.id) cls.push('sel');
+    var handles = (state.jr.edit && state.jr.sel === im.id)
+      ? '<button class="jr-h rot" data-jrh="rot" type="button" title="Turn it">↻</button>' +
+        '<button class="jr-h size" data-jrh="size" type="button" title="Resize">⇲</button>' : '';
+    return '<div class="' + cls.join(' ') + '" data-jrimg="' + esc(im.id) + '" style="left:0;top:0;width:0">' +
+      '<img src="' + esc(jrImgUrl(im.src)) + '" alt="">' + handles + '</div>';
+  }).join('');
+  var body = String(p.text || '').trim()
+    ? jrRenderMarkup(p.text, { drop: drop })
+    : '<p class="jr-t-faded"><em>This page is blank. Write it below — or add a picture.</em></p>';
+  return '<div class="jr-page" data-jrpage="' + i + '" style="--jr-face:' + face.css +
+    ';--jr-size:' + size + 'px;--jr-line:' + Math.round(size * 1.58) + 'px">' +
+    bg +
+    (String(p.title || '').trim() ? '<div class="jr-runhead">' + esc(p.title) + '</div>' : '') +
+    '<div class="jr-flow' + (st.justify ? ' just' : '') + '">' + body + '</div>' +
+    imgs +
+    '<div class="jr-folio">' + (i + 1) + '</div></div>';
+}
+
+/* The wrap engine — the mirror of layoutPage() in journal-pane.js. Every line
+   of reasoning behind it lives there; the short version is: floats, `clear` per
+   side, the drop cap first, the origin measured with a zero-height probe, and
+   the carve taken from the picture's REAL rendered box. */
+function jrLayoutPage(pageEl, page) {
+  var flow = pageEl.querySelector('.jr-flow');
+  if (!flow) return;
+  var old = flow.querySelectorAll('.jr-shim, .jr-wrapbox');
+  for (var k = 0; k < old.length; k++) old[k].parentNode.removeChild(old[k]);
+  var pw = pageEl.clientWidth, ph = pageEl.clientHeight;
+  if (!pw || !ph) return;
+  var fx = flow.offsetLeft, fy = flow.offsetTop, fw = flow.clientWidth || pw;
+
+  var wrappers = [];
+  (page.images || []).forEach(function (im) {
+    var node = pageEl.querySelector('.jr-img[data-jrimg="' + String(im.id).replace(/["\\]/g, '\\$&') + '"]');
+    if (!node) return;
+    var w = jrClamp(im.w, .36, .04, 1.6) * pw;
+    var left = jrClamp(im.x, .1, -.5, 1.5) * pw;
+    var top = jrClamp(im.y, .1, -.5, 2.5) * ph;
+    node.style.left = left + 'px';
+    node.style.top = top + 'px';
+    node.style.width = w + 'px';
+    node.style.opacity = String(jrClamp(im.op, 1, .05, 1));
+    node.style.transform = im.rot ? 'rotate(' + im.rot + 'deg)' : '';
+    if ((im.mode || 'wrap') !== 'wrap') return;
+    var ow = node.offsetWidth || w, oh = node.offsetHeight || (w * jrClamp(im.ar, .68, .05, 12));
+    var bw = ow, bh = oh;
+    if (im.rot) {
+      var a = Math.abs(im.rot) * Math.PI / 180, c = Math.abs(Math.cos(a)), si = Math.abs(Math.sin(a));
+      bw = ow * c + oh * si; bh = ow * si + oh * c;
+    }
+    wrappers.push({ im: im, w: bw, h: bh, left: left + ow / 2 - bw / 2, top: top + oh / 2 - bh / 2 });
+  });
+  if (!wrappers.length) return;
+  wrappers.sort(function (a, b) { return a.top - b.top; });
+
+  var cap = flow.querySelector('.jr-cap');
+  var before = cap ? cap.nextSibling : flow.firstChild;
+  var probe = document.createElement('span');
+  probe.className = 'jr-shim';
+  probe.style.cssText = 'display:block;height:0;width:0;';
+  if (before) flow.insertBefore(probe, before); else flow.appendChild(probe);
+  var originY = probe.getBoundingClientRect().top - flow.getBoundingClientRect().top;
+  flow.removeChild(probe);
+
+  var usedLeft = cap ? cap.offsetHeight : 0, usedRight = 0;
+  var frag = document.createDocumentFragment();
+  wrappers.forEach(function (it) {
+    var im = it.im, pad = jrClamp(im.pad, 10, 0, 80);
+    var left = it.left, right = left + it.w, centre = left + it.w / 2;
+    var side = (im.side === 'left' || im.side === 'right') ? im.side : (centre > pw / 2 ? 'right' : 'left');
+    var boxW = side === 'left'
+      ? Math.max(0, Math.min(fw, (right - fx) + pad))
+      : Math.max(0, Math.min(fw, (fx + fw - left) + pad));
+    if (boxW <= 1) return;
+    var boxH = it.h + pad * 2;
+    var topInFlow = it.top - fy - pad - originY;
+    var used = side === 'left' ? usedLeft : usedRight;
+    var shimH = Math.max(0, topInFlow - used);
+    if (shimH > 0) {
+      var shim = document.createElement('span');
+      shim.className = 'jr-shim';
+      shim.style.cssText = 'display:block;float:' + side + ';clear:' + side + ';width:1px;height:' + shimH +
+        'px;margin-' + (side === 'left' ? 'right' : 'left') + ':-1px;';
+      frag.appendChild(shim);
+    }
+    var box = document.createElement('span');
+    box.className = 'jr-wrapbox';
+    box.style.cssText = 'display:block;float:' + side + ';clear:' + side + ';width:' + boxW + 'px;height:' + boxH + 'px;';
+    frag.appendChild(box);
+    if (side === 'left') usedLeft += shimH + boxH; else usedRight += shimH + boxH;
+  });
+  if (before) flow.insertBefore(frag, before); else flow.appendChild(frag);
+}
+
+function jrLayoutAll() {
+  var host = $('journal-body');
+  if (!host) return;
+  var ps = jrPages();
+  var nodes = host.querySelectorAll('.jr-page[data-jrpage]');
+  for (var i = 0; i < nodes.length; i++) {
+    var idx = parseInt(nodes[i].getAttribute('data-jrpage'), 10);
+    if (ps[idx]) jrLayoutPage(nodes[i], ps[idx]);
+  }
+}
+
+/* ---- render ------------------------------------------------------------ */
+
+function jrPageLabel(p, i) {
+  if (String(p.title || '').trim()) return p.title.trim();
+  var t = String(p.text || '').replace(/[#>*_~\-]/g, ' ').replace(/\s+/g, ' ').trim();
+  return t ? (t.slice(0, 42) + (t.length > 42 ? '…' : '')) : ('Page ' + (i + 1));
+}
+
+function jrSeg(list, cur, attr) {
+  return list.map(function (o) {
+    return '<button class="jr-b sm' + (o.id === cur ? ' on' : '') + '" type="button" data-' + attr + '="' + o.id + '">' +
+      esc(o.name) + '</button>';
+  }).join('');
+}
+
+function jrStep(id, label, value, unit) {
+  return '<div class="jr-row"><span class="lab">' + esc(label) + '</span>' +
+    '<button class="jr-b sm" type="button" data-jrstep="' + id + ':-1">−</button>' +
+    '<span class="jr-tag">' + esc(value) + (unit || '') + '</span>' +
+    '<button class="jr-b sm" type="button" data-jrstep="' + id + ':1">＋</button></div>';
+}
+
+function renderJournal() {
+  var host = $('journal-body');
+  if (!host) return;
+  var d = jrDoc();
+  var pane = $('pane-journal');
+
+  if (state.loading && !state.journal) {
+    host.innerHTML = '<div class="jr-card"><span class="sk" style="width:60%"></span></div>';
+    return;
+  }
+  if (state.journal && state.journal.ok === false) {
+    host.innerHTML = '<div class="banner"><b>Journal unavailable</b>' + esc(state.journal.error || '') + '</div>';
+    return;
+  }
+  if (!d || !jrPages().length) {
+    host.innerHTML = '<div class="banner"><b>No journal yet</b>' +
+      '<div style="margin-top:6px">Open SkyManager in game once (F7 ▸ Journal) so the plugin can create it, then hit ⟳. ' +
+      'You can also start one right here.</div>' +
+      '<div style="margin-top:10px"><button class="jr-b" type="button" data-jract="startbook">✚ Start my journal</button></div></div>';
+    $('n-journal').textContent = '';
+    return;
+  }
+
+  var ps = jrPages();
+  if (state.jr.page >= ps.length) state.jr.page = ps.length - 1;
+  if (state.jr.page < 0) state.jr.page = 0;
+  var p = jrPage();
+  var st = jrStyle();
+  pane.className = 'jr-paper-' + st.paper + ' jr-ink-' + st.ink + (state.jr.edit ? ' editing' : '');
+  $('n-journal').textContent = ps.length;
+
+  var q = state.q.trim().toLowerCase();
+  var rows = ps.map(function (pg, i) {
+    if (q && (pg.title + ' ' + pg.text).toLowerCase().indexOf(q) === -1) return '';
+    return '<button class="jr-prow' + (i === state.jr.page ? ' on' : '') + '" type="button" data-jrgo="' + i + '">' +
+      '<span class="n">' + (i + 1) + '</span><span class="t">' + esc(jrPageLabel(pg, i)) + '</span>' +
+      ((pg.images || []).length ? '<span style="color:#c9a24b">❖</span>' : '') + '</button>';
+  }).join('');
+  if (!rows) rows = '<div class="jr-note">No page mentions “' + esc(state.q.trim()) + '”.</div>';
+
+  var pool = jrImages().filter(function (im) {
+    var pq = state.jr.poolQ.trim().toLowerCase();
+    return !pq || im.f.toLowerCase().indexOf(pq) !== -1;
+  });
+  var tiles = pool.map(function (im) {
+    return '<div class="t" data-jradd="' + esc(im.f) + '" title="' + esc(im.f) + '">' +
+      '<img src="' + esc(im.url) + '" alt="">' +
+      '<button class="x" type="button" data-jrdrop="' + esc(im.f) + '">✕</button>' +
+      '<span class="nm">' + esc(im.f) + '</span></div>';
+  }).join('') || '<div class="jr-note">No pictures yet. Upload one below — a transparent PNG lies over the paper beautifully.</div>';
+
+  var sel = (p.images || []).filter(function (x) { return x.id === state.jr.sel; })[0];
+
+  host.innerHTML =
+    '<div class="jr-bar">' +
+      '<button class="jr-b' + (state.jr.edit ? ' on' : '') + '" type="button" data-jract="edit">' +
+        (state.jr.edit ? '✓ Done writing' : '✎ Write') + '</button>' +
+      '<span class="jr-tag">' + esc((jrBook() || {}).title || 'Journal') + '</span>' +
+      '<span class="jr-tag">Page ' + (state.jr.page + 1) + ' of ' + ps.length + '</span>' +
+      '<span class="jr-grow"></span>' +
+      '<span id="jr-chip" class="jr-tag"></span>' +
+      '<button class="jr-b sm" type="button" data-jract="prev"' + (state.jr.page <= 0 ? ' disabled' : '') + '>‹</button>' +
+      '<button class="jr-b sm" type="button" data-jract="next"' + (state.jr.page >= ps.length - 1 ? ' disabled' : '') + '>›</button>' +
+    '</div>' +
+    '<div class="jr-split">' +
+      '<div>' + jrPageHtml(p, state.jr.page) + '</div>' +
+      '<div>' +
+        (state.jr.edit ? jrWriteCard(p) : '') +
+        (state.jr.edit ? jrPicCard(sel, tiles) : '') +
+        (state.jr.edit && sel ? jrSelCard(sel) : '') +
+        (state.jr.edit ? jrPageCard(p) : '') +
+        (state.jr.edit ? jrStyleCard(st) : '') +
+        '<div class="jr-card"><h4>Pages</h4><div class="jr-plist">' + rows + '</div>' +
+          '<div class="jr-row" style="margin-top:8px">' +
+            '<button class="jr-b sm" type="button" data-jract="newpage">✚ New page</button></div></div>' +
+      '</div>' +
+    '</div>';
+
+  jrPaintChip();
+  jrWire();
+  /* The carve is measured from each picture's RENDERED box, so a layout that
+     runs before the bytes arrive cuts a hole 2*pad tall and the words run
+     straight through the picture (measured in Ultralight, 2026-08-16: a 176x189
+     picture got a 225x40 hole). Lay out now for the cached case, and again on
+     every picture's own load event — the timers alone are a guess, and a phone
+     on a slow link outlives them. */
+  jrLayoutAll();
+  host.querySelectorAll('.jr-page img').forEach(function (im) {
+    if (im.complete && im.naturalWidth) return;
+    im.addEventListener('load', jrLayoutAll);
+    im.addEventListener('error', jrLayoutAll);
+  });
+  setTimeout(jrLayoutAll, 150);
+}
+
+function jrWriteCard(p) {
+  return '<div class="jr-card"><h4>Write</h4>' +
+    '<div class="jr-row"><input class="jr-in" id="jr-title" type="text" placeholder="Page heading (optional)" value="' + esc(p.title || '') + '"></div>' +
+    '<div class="jr-tb">' +
+      '<button class="jr-b sm" type="button" data-jrmark="**" style="font-weight:700">B</button>' +
+      '<button class="jr-b sm" type="button" data-jrmark="*" style="font-style:italic">I</button>' +
+      '<button class="jr-b sm" type="button" data-jrmark="__">U</button>' +
+      '<button class="jr-b sm" type="button" data-jrmark="{{script}}" style="font-family:var(--jr-f-quill);font-size:20px">S</button>' +
+      '<button class="jr-b sm" type="button" data-jrmark="{{hand}}" style="font-family:var(--jr-f-hand)">h</button>' +
+      '<button class="jr-b sm" type="button" data-jrmark="{{black}}" style="font-family:var(--jr-f-fraktur)">B</button>' +
+      '<button class="jr-b sm" type="button" data-jrmark="{{caps}}">ᴀᴀ</button>' +
+      '<button class="jr-b sm" type="button" data-jrmark="{{red}}">◆</button>' +
+      '<button class="jr-b sm" type="button" data-jrline="# ">H1</button>' +
+      '<button class="jr-b sm" type="button" data-jrline="## ">H2</button>' +
+      '<button class="jr-b sm" type="button" data-jrline="> ">❝</button>' +
+      '<button class="jr-b sm" type="button" data-jrline="- ">•</button>' +
+      '<button class="jr-b sm" type="button" data-jrins="\n---\n">❦</button>' +
+    '</div>' +
+    '<textarea class="jr-ta" id="jr-ta" placeholder="Write here. Blank line starts a new paragraph.">' + esc(p.text || '') + '</textarea>' +
+    '<div class="jr-note">Marks: <code>**bold**</code> <code>*italic*</code> <code># heading</code> ' +
+      '<code>&gt; note</code> <code>- bullet</code> <code>---</code></div></div>';
+}
+
+function jrPicCard(sel, tiles) {
+  return '<div class="jr-card"><h4>Pictures</h4>' +
+    (jrImages().length > 8
+      ? '<div class="jr-row"><input class="jr-in" id="jr-poolq" type="search" placeholder="Search pictures…" value="' + esc(state.jr.poolQ) + '"></div>'
+      : '') +
+    '<div class="jr-pool">' + tiles + '</div>' +
+    '<div class="jr-row" style="margin-top:10px">' +
+      '<input id="jr-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" multiple>' +
+      '<button class="jr-b" type="button" data-jract="upload">⬆ Upload a picture</button>' +
+    '</div>' +
+    '<div class="jr-note">PNGs keep their transparency, so a cut-out or a flourish lies straight on the paper. ' +
+      'Pictures land in the deck\'s own folder and show up in game.</div></div>';
+}
+
+function jrSelCard(im) {
+  var sides = [{ id: 'auto', name: 'Auto' }, { id: 'left', name: 'Left' }, { id: 'right', name: 'Right' }];
+  return '<div class="jr-card"><h4>The picture — ' + esc(im.src) + '</h4>' +
+    '<div class="jr-row"><span class="lab">Text</span>' + jrSeg(JR_MODES, im.mode || 'wrap', 'jrmode') + '</div>' +
+    ((im.mode || 'wrap') === 'wrap'
+      ? '<div class="jr-row"><span class="lab">Wrap to</span>' + jrSeg(sides, im.side || 'auto', 'jrside') + '</div>' : '') +
+    '<div class="jr-row"><span class="lab">Frame</span>' + jrSeg(JR_FRAMES, im.frame || 'none', 'jrframe') + '</div>' +
+    jrStep('w', 'Size', Math.round(jrClamp(im.w, .36, .04, 1.6) * 100), '%') +
+    jrStep('rot', 'Turn', Math.round(im.rot || 0), '°') +
+    jrStep('op', 'Fade', Math.round(jrClamp(im.op, 1, .05, 1) * 100), '%') +
+    '<div class="jr-row">' +
+      '<button class="jr-b sm" type="button" data-jrimgact="flip">⇋ Flip</button>' +
+      '<button class="jr-b sm" type="button" data-jrimgact="bg">▤ As background</button>' +
+      '<button class="jr-b sm danger" type="button" data-jrimgact="remove">✕ Remove</button>' +
+    '</div>' +
+    '<div class="jr-note">Drag it anywhere on the page — including over the words, or off the edge.</div></div>';
+}
+
+function jrPageCard(p) {
+  return '<div class="jr-card"><h4>This page</h4>' +
+    '<div class="jr-row"><span class="lab">Drop cap</span>' +
+      '<button class="jr-b sm' + (!(p.style && p.style.drop === false) ? ' on' : '') + '" type="button" data-jrpageact="drop">' +
+      (!(p.style && p.style.drop === false) ? 'On' : 'Off') + '</button></div>' +
+    (p.bg && p.bg.src
+      ? '<div class="jr-row"><span class="lab">Background</span><span class="jr-tag">' + esc(p.bg.src) + '</span>' +
+        '<button class="jr-b sm" type="button" data-jrbg="fit">' + esc(p.bg.fit || 'cover') + '</button>' +
+        '<button class="jr-b sm" type="button" data-jrbg="less">−</button>' +
+        '<button class="jr-b sm" type="button" data-jrbg="more">＋</button>' +
+        '<button class="jr-b sm danger" type="button" data-jrbg="clear">✕</button></div>'
+      : '<div class="jr-note">No background picture. Pick one above, then ▤ As background.</div>') +
+    '<div class="jr-row" style="margin-top:8px">' +
+      '<button class="jr-b sm" type="button" data-jrpageact="before">✚ Page before</button>' +
+      '<button class="jr-b sm" type="button" data-jrpageact="after">✚ Page after</button>' +
+      '<button class="jr-b sm danger" type="button" data-jrpageact="tear">✂ Tear out</button>' +
+    '</div></div>';
+}
+
+function jrStyleCard(st) {
+  var fonts = JR_FONTS.map(function (f) {
+    return '<button class="jr-fontrow' + (f.id === st.font ? ' on' : '') + '" type="button" data-jrfont="' + f.id + '">' +
+      '<span class="nm">' + esc(f.name) + '</span>' +
+      '<span class="sp" style="font-family:' + f.css + '">' + esc(f.samp) + '</span></button>';
+  }).join('');
+  return '<div class="jr-card"><h4>The book</h4>' +
+    '<div class="jr-row"><span class="lab">Paper</span>' + jrSeg(JR_PAPERS, st.paper, 'jrpaper') + '</div>' +
+    '<div class="jr-row"><span class="lab">Ink</span>' + jrSeg(JR_INKS, st.ink, 'jrink') + '</div>' +
+    jrStep('size', 'Text size', st.size, 'px') +
+    '<h4 style="margin-top:14px">Hand</h4>' + fonts + '</div>';
+}
+
+/* ---- events ------------------------------------------------------------ */
+
+function jrWire() {
+  var host = $('journal-body');
+  if (!host || host.__jrWired) return;
+  host.__jrWired = true;                 // #journal-body survives every repaint
+  host.addEventListener('click', jrClick);
+  host.addEventListener('input', jrInput);
+  host.addEventListener('change', jrChange);
+  host.addEventListener('pointerdown', jrDown);
+  window.addEventListener('resize', function () { if (state.tab === 'journal') jrLayoutAll(); });
+}
+
+function jrClick(e) {
+  var t = e.target;
+  if (!t || !t.closest) return;
+  var hit = function (a) { var n = t.closest('[data-' + a + ']'); return n ? n.getAttribute('data-' + a) : null; };
+  var d = jrDoc(), p = jrPage();
+
+  var go = hit('jrgo');
+  if (go !== null) { state.jr.page = parseInt(go, 10) || 0; state.jr.sel = ''; renderJournal(); return; }
+
+  var act = hit('jract');
+  if (act) {
+    if (act === 'edit') { state.jr.edit = !state.jr.edit; state.jr.sel = ''; renderJournal(); return; }
+    if (act === 'prev') { state.jr.page = Math.max(0, state.jr.page - 1); state.jr.sel = ''; renderJournal(); return; }
+    if (act === 'next') { state.jr.page = Math.min(jrPages().length - 1, state.jr.page + 1); state.jr.sel = ''; renderJournal(); return; }
+    if (act === 'newpage') { jrAddPage(jrPages().length); return; }
+    if (act === 'upload') { var f = $('jr-file'); if (f) f.click(); return; }
+    if (act === 'startbook') { jrStartBook(); return; }
+  }
+
+  var drop = hit('jrdrop');
+  if (drop !== null) { e.stopPropagation(); jrDropPicture(drop); return; }
+  var add = hit('jradd');
+  if (add !== null) { jrPlace(add); return; }
+
+  var mark = hit('jrmark');
+  if (mark !== null) { jrWrapSel(mark); return; }
+  var line = hit('jrline');
+  if (line !== null) { jrPrefix(line); return; }
+  var ins = hit('jrins');
+  if (ins !== null) { jrInsert(ins.replace(/\\n/g, '\n')); return; }
+
+  var font = hit('jrfont');
+  if (font !== null) { d.style = d.style || {}; d.style.font = font; jrTouch(null); renderJournal(); return; }
+  var paper = hit('jrpaper');
+  if (paper !== null) { d.style = d.style || {}; d.style.paper = paper; jrTouch(null); renderJournal(); return; }
+  var ink = hit('jrink');
+  if (ink !== null) { d.style = d.style || {}; d.style.ink = ink; jrTouch(null); renderJournal(); return; }
+
+  var step = hit('jrstep');
+  if (step !== null) { jrDoStep(step); return; }
+
+  var mode = hit('jrmode');
+  if (mode !== null) { jrSetImg('mode', mode); return; }
+  var side = hit('jrside');
+  if (side !== null) { jrSetImg('side', side); return; }
+  var frame = hit('jrframe');
+  if (frame !== null) { jrSetImg('frame', frame); return; }
+  var ia = hit('jrimgact');
+  if (ia !== null) { jrImgAct(ia); return; }
+  var bg = hit('jrbg');
+  if (bg !== null) { jrBgAct(bg); return; }
+  var pa = hit('jrpageact');
+  if (pa !== null) { jrPageAct(pa); return; }
+
+  var img = t.closest('.jr-img');
+  if (img && state.jr.edit) { state.jr.sel = img.getAttribute('data-jrimg'); renderJournal(); return; }
+  if (t.closest('.jr-page') && state.jr.edit && state.jr.sel) { state.jr.sel = ''; renderJournal(); }
+}
+
+function jrInput(e) {
+  var t = e.target, p = jrPage();
+  if (!t || !t.id || !p) return;
+  if (t.id === 'jr-title') { p.title = t.value; jrTouch(p); jrRepaintPage(); return; }
+  if (t.id === 'jr-ta') { p.text = t.value; jrTouch(p); jrRepaintPage(); return; }
+  if (t.id === 'jr-poolq') { state.jr.poolQ = t.value; return; }
+}
+
+/* Repaint ONLY the page while typing — rebuilding the cards would take the
+   textarea out from under the caret. */
+function jrRepaintPage() {
+  var host = $('journal-body');
+  if (!host) return;
+  var old = host.querySelector('.jr-page');
+  if (!old) return;
+  var tmp = document.createElement('div');
+  tmp.innerHTML = jrPageHtml(jrPage(), state.jr.page);
+  old.parentNode.replaceChild(tmp.firstChild, old);
+  jrLayoutAll();
+  jrPaintChip();
+}
+
+function jrChange(e) {
+  if (!e.target || e.target.id !== 'jr-file') return;
+  var files = Array.prototype.slice.call(e.target.files || []);
+  if (!files.length) return;
+  e.target.value = '';
+  files.reduce(function (chain, file) {
+    return chain.then(function () { return jrUpload(file); });
+  }, Promise.resolve()).then(function () {
+    return api('GET', '/api/journal');
+  }).then(function (r) {
+    if (r && r.ok) state.journal.images = r.images;
+    renderJournal();
+  });
+}
+
+function jrUpload(file) {
+  return new Promise(function (resolve) {
+    var fr = new FileReader();
+    fr.onload = function () {
+      var b64 = String(fr.result || '').split(',')[1] || '';
+      var ext = (file.name.split('.').pop() || 'png').toLowerCase();
+      api('POST', '/api/journal-image', { name: file.name, ext: ext, dataBase64: b64 })
+        .then(function (r) {
+          if (!r || !r.ok) toast((r && (r.error || r.msg)) || 'Upload failed', 'bad');
+          else toast(r.file + ' added', 'ok');
+          resolve();
+        }).catch(function (err) { toast('Upload failed: ' + err.message, 'bad'); resolve(); });
+    };
+    fr.onerror = function () { toast('Could not read ' + file.name, 'bad'); resolve(); };
+    fr.readAsDataURL(file);
+  });
+}
+
+/* ---- text helpers ------------------------------------------------------ */
+
+function jrTa() { return $('jr-ta'); }
+
+function jrWrapSel(mark) {
+  var el = jrTa();
+  if (!el) return;
+  var open = mark, close = mark.indexOf('{{') === 0 ? mark.replace('{{', '{{/') : mark;
+  var s = el.selectionStart, e2 = el.selectionEnd, sel = el.value.slice(s, e2) || 'text';
+  el.value = el.value.slice(0, s) + open + sel + close + el.value.slice(e2);
+  el.focus();
+  try { el.setSelectionRange(s + open.length, s + open.length + sel.length); } catch (err) { /* older webview */ }
+  jrCommit(el);
+}
+
+function jrPrefix(prefix) {
+  var el = jrTa();
+  if (!el) return;
+  var v = el.value, s = el.selectionStart;
+  var start = v.lastIndexOf('\n', Math.max(0, s - 1)) + 1;
+  el.value = v.slice(0, start) + prefix + v.slice(start);
+  el.focus();
+  try { el.setSelectionRange(s + prefix.length, s + prefix.length); } catch (err) { /* older webview */ }
+  jrCommit(el);
+}
+
+function jrInsert(txt) {
+  var el = jrTa();
+  if (!el) return;
+  var s = el.selectionStart, e2 = el.selectionEnd;
+  el.value = el.value.slice(0, s) + txt + el.value.slice(e2);
+  el.focus();
+  try { el.setSelectionRange(s + txt.length, s + txt.length); } catch (err) { /* older webview */ }
+  jrCommit(el);
+}
+
+function jrCommit(el) {
+  var p = jrPage();
+  if (!p) return;
+  p.text = el.value;
+  jrTouch(p);
+  jrRepaintPage();
+}
+
+/* ---- pictures + pages -------------------------------------------------- */
+
+function jrSel() {
+  var p = jrPage();
+  if (!p) return null;
+  return (p.images || []).filter(function (x) { return x.id === state.jr.sel; })[0] || null;
+}
+
+function jrSetImg(field, v) {
+  var im = jrSel();
+  if (!im) return;
+  im[field] = v;
+  jrTouch(jrPage());
+  renderJournal();
+}
+
+function jrDoStep(spec) {
+  var parts = String(spec).split(':'), what = parts[0], dir = parseInt(parts[1], 10) || 1;
+  var d = jrDoc();
+  if (what === 'size') {
+    d.style = d.style || {};
+    d.style.size = jrClamp((d.style.size || 19) + dir, 19, 13, 34);
+    jrTouch(null); renderJournal(); return;
+  }
+  var im = jrSel();
+  if (!im) return;
+  if (what === 'w') im.w = jrClamp(jrClamp(im.w, .36, .04, 1.6) + dir * 0.03, im.w, .04, 1.6);
+  if (what === 'rot') im.rot = jrClamp((im.rot || 0) + dir * 2, 0, -180, 180);
+  if (what === 'op') im.op = jrClamp(jrClamp(im.op, 1, .05, 1) + dir * 0.05, 1, .05, 1);
+  jrTouch(jrPage());
+  renderJournal();
+}
+
+function jrImgAct(act) {
+  var p = jrPage(), im = jrSel();
+  if (!p || !im) return;
+  if (act === 'flip') im.flip = !im.flip;
+  if (act === 'bg') p.bg = { src: im.src, fit: 'cover', op: 0.55 };
+  if (act === 'remove') {
+    p.images = (p.images || []).filter(function (x) { return x.id !== im.id; });
+    state.jr.sel = '';
+  }
+  jrTouch(p);
+  renderJournal();
+}
+
+function jrBgAct(act) {
+  var p = jrPage();
+  if (!p || !p.bg) return;
+  if (act === 'clear') p.bg = null;
+  if (act === 'fit') p.bg.fit = p.bg.fit === 'cover' ? 'contain' : (p.bg.fit === 'contain' ? 'tile' : 'cover');
+  if (act === 'more') p.bg.op = jrClamp((p.bg.op || .55) + .08, .55, .03, 1);
+  if (act === 'less') p.bg.op = jrClamp((p.bg.op || .55) - .08, .55, .03, 1);
+  jrTouch(p);
+  renderJournal();
+}
+
+function jrPlace(f) {
+  var p = jrPage();
+  if (!p) return;
+  p.images = p.images || [];
+  if (p.images.length >= 40) { toast('That page already holds 40 pictures.', 'bad'); return; }
+  var im = { id: jrId('i'), src: f, x: 0.14, y: 0.14 + (p.images.length % 4) * 0.06, w: 0.36,
+    ar: 0.68, rot: 0, op: 1, pad: 10, mode: 'wrap', side: 'auto', frame: 'none', flip: false };
+  p.images.push(im);
+  state.jr.sel = im.id;
+  jrTouch(p);
+  renderJournal();
+  toast('Placed — drag it where you want it.', 'ok');
+}
+
+function jrDropPicture(f) {
+  var used = 0;
+  (jrDoc().books || []).forEach(function (b) {
+    (b.pages || []).forEach(function (pg) {
+      if ((pg.images || []).some(function (x) { return x.src === f; }) || (pg.bg && pg.bg.src === f)) used++;
+    });
+  });
+  if (used && state.jr.dropArm !== f) {
+    state.jr.dropArm = f;
+    toast('That picture is on ' + used + ' page' + (used === 1 ? '' : 's') + ' — press ✕ again to delete it anyway.', 'warn');
+    return;
+  }
+  state.jr.dropArm = '';
+  api('DELETE', '/api/journal-image/' + encodeURIComponent(f)).then(function (r) {
+    if (!r || !r.ok) { toast((r && r.error) || 'Could not delete it', 'bad'); return; }
+    state.journal.images = r.images || [];
+    renderJournal();
+  });
+}
+
+function jrAddPage(at) {
+  var b = jrBook();
+  if (!b) return;
+  if (b.pages.length >= 400) { toast('This book is full at 400 pages.', 'bad'); return; }
+  var p = { id: jrId('p'), title: '', text: '', images: [], bg: null, style: {}, updatedAt: jrNowSec() };
+  b.pages.splice(Math.max(0, Math.min(b.pages.length, at)), 0, p);
+  state.jr.page = jrIndexOf(p.id);
+  state.jr.sel = '';
+  jrTouch(null);
+  renderJournal();
+}
+
+function jrPageAct(act) {
+  var b = jrBook(), p = jrPage();
+  if (!b || !p) return;
+  var i = jrIndexOf(p.id);
+  if (act === 'drop') { p.style = p.style || {}; p.style.drop = p.style.drop === false; jrTouch(p); renderJournal(); return; }
+  if (act === 'before') { jrAddPage(i); return; }
+  if (act === 'after') { jrAddPage(i + 1); return; }
+  if (act === 'tear') {
+    if (state.jr.tearArm !== p.id) {
+      state.jr.tearArm = p.id;
+      toast('Press ✂ again to tear this page out — it cannot be undone.', 'warn');
+      return;
+    }
+    state.jr.tearArm = '';
+    /* A tombstone, not just a splice: the game may still hold this page, and
+       without the stamp the next merge would put it straight back. */
+    var d = jrDoc();
+    d.trash = Array.isArray(d.trash) ? d.trash : [];
+    d.trash.push({ id: p.id, at: jrNowSec() });
+    b.pages = b.pages.filter(function (x) { return x.id !== p.id; });
+    if (!b.pages.length) b.pages.push({ id: jrId('p'), title: '', text: '', images: [], style: {}, updatedAt: jrNowSec() });
+    state.jr.page = Math.max(0, Math.min(b.pages.length - 1, i));
+    jrTouch(null);
+    jrSaveNow();
+    renderJournal();
+  }
+}
+
+function jrStartBook() {
+  if (!state.journal) state.journal = { ok: true, doc: null, images: [] };
+  state.journal.doc = {
+    version: 1, updatedAt: jrNowSec(), activeBook: 'b_first',
+    style: { paper: 'parchment', ink: 'sepia', font: 'imfell', size: 19, spread: true },
+    books: [{ id: 'b_first', title: 'Journal', updatedAt: jrNowSec(),
+      pages: [{ id: jrId('p'), title: '', text: '', images: [], style: {}, updatedAt: jrNowSec() }] }],
+    trash: []
+  };
+  state.jr.page = 0;
+  state.jr.dirty = true;
+  jrSaveNow();
+  renderJournal();
+}
+
+/* ---- dragging a picture (touch + mouse, one code path) ----------------- */
+
+function jrDown(e) {
+  if (!state.jr.edit || (e.button !== undefined && e.button !== 0)) return;
+  var node = e.target.closest ? e.target.closest('.jr-img') : null;
+  if (!node) return;
+  var handle = e.target.closest('[data-jrh]');
+  var id = node.getAttribute('data-jrimg');
+  var p = jrPage();
+  var im = p ? (p.images || []).filter(function (x) { return x.id === id; })[0] : null;
+  var pageEl = node.closest('.jr-page');
+  if (!im || !pageEl) return;
+
+  e.preventDefault();
+  if (state.jr.sel !== id) { state.jr.sel = id; renderJournal(); return jrDown(e); }
+
+  var r = pageEl.getBoundingClientRect();
+  state.jr.drag = {
+    kind: handle ? handle.getAttribute('data-jrh') : 'move', im: im, page: p, pageEl: pageEl,
+    pw: r.width, ph: r.height, left: r.left, top: r.top,
+    x0: e.clientX, y0: e.clientY, ix: im.x, iy: im.y, iw: im.w, moved: false
+  };
+  try { (handle || node).setPointerCapture(e.pointerId); } catch (err) { /* mouse fallback */ }
+  document.addEventListener('pointermove', jrMove, true);
+  document.addEventListener('pointerup', jrUp, true);
+  document.addEventListener('pointercancel', jrUp, true);
+}
+
+function jrMove(e) {
+  var d = state.jr.drag;
+  if (!d) return;
+  e.preventDefault();
+  var dx = e.clientX - d.x0, dy = e.clientY - d.y0;
+  if (Math.abs(dx) > 2 || Math.abs(dy) > 2) d.moved = true;
+  if (d.kind === 'move') {
+    d.im.x = jrClamp(d.ix + dx / d.pw, d.ix, -.5, 1.5);
+    d.im.y = jrClamp(d.iy + dy / d.ph, d.iy, -.5, 2.5);
+  } else if (d.kind === 'size') {
+    d.im.w = jrClamp(((e.clientX - d.left) - d.im.x * d.pw) / d.pw, d.iw, .04, 1.6);
+  } else if (d.kind === 'rot') {
+    var cx = d.left + (d.im.x + d.im.w / 2) * d.pw;
+    var cy = d.top + (d.im.y * d.ph) + (d.im.w * d.pw * jrClamp(d.im.ar, .68, .05, 12)) / 2;
+    d.im.rot = jrClamp(Math.round((Math.atan2(e.clientY - cy, e.clientX - cx) * 180 / Math.PI + 90) / 2) * 2, 0, -180, 180);
+  }
+  jrLayoutPage(d.pageEl, d.page);
+}
+
+function jrUp() {
+  var d = state.jr.drag;
+  document.removeEventListener('pointermove', jrMove, true);
+  document.removeEventListener('pointerup', jrUp, true);
+  document.removeEventListener('pointercancel', jrUp, true);
+  state.jr.drag = null;
+  if (!d || !d.moved) return;
+  jrTouch(d.page);
+  renderJournal();
+}
+
 function renderBases() {
   var host = $('bases-body');
   if (!host) return;
@@ -11425,9 +13012,10 @@ var TABS = {
   },
   icons: {
     // 'spellcaticon' = the category-glyph picker, opened off a category header.
-    pane: 'pane-icons', sheet: 'spell', sheets: ['spell', 'spellcaticon'],
-    placeholder: 'Search spells, schools, icons…',
-    render: function () { renderSpells(); renderIcons(); },
+    // 'cbarticon' = a Combat Art's icon picker, opened off its row below.
+    pane: 'pane-icons', sheet: 'spell', sheets: ['spell', 'spellcaticon', 'cbarticon'],
+    placeholder: 'Search spells, combat arts, schools, icons…',
+    render: function () { renderSpells(); renderCombatArts(); renderIcons(); },
   },
   hotkeys: {
     // Two sheets belong to this tab: the edit sheet and the icon picker it
@@ -11452,6 +13040,13 @@ var TABS = {
     pane: 'pane-domains', sheet: null, sheets: [],
     placeholder: 'Search domains, places, categories…',
     render: function () { renderDomains(); },
+  },
+  containers: {
+    // No modal sheet — every control is inline on the card, because on a phone
+    // a switch you can reach beats a sheet you have to open (sheets:[]).
+    pane: 'pane-containers', sheet: null, sheets: [],
+    placeholder: 'Search containers, categories, places…',
+    render: function () { renderContainers(); },
   },
   bases: {
     // No modal sheet — the detail is an inline expanded card, so any other tab's
@@ -11484,6 +13079,13 @@ var TABS = {
     pane: 'pane-faces', sheet: null, sheets: [],
     placeholder: 'Search RaceMenu presets…',
     render: function () { renderFaces(); },
+  },
+  journal: {
+    /* The pane owns its own page search in-rail; the global box up top filters
+       pages too, so it is wired straight through to the same filter. */
+    pane: 'pane-journal', sheet: null, sheets: [],
+    placeholder: 'Search your journal — headings and prose…',
+    render: function () { renderJournal(); },
   },
 };
 var TAB_NAMES = Object.keys(TABS);
@@ -11740,6 +13342,21 @@ document.addEventListener('click', function (e) {
     if (act === 'sm-kink-add') { smAddKink(b.dataset.w); return; }
     if (act === 'sm-kink-del') { smDelKink(b.dataset.w, Number(b.dataset.i)); return; }
     if (act === 'sm-save') { smCommit(); return; }
+    /* ---- containers ---- */
+    if (act === 'ct-sweep') { ctOp({ op: 'act', act: 'sweep' }, 'Queued — it runs the moment the game sees it'); return; }
+    if (act === 'ct-sortnow') { ctOp({ op: 'act', act: 'sortNow' }, 'Queued — sorting the drop-box'); return; }
+    if (act === 'ct-gather') {
+      var g = CT_GATHER[Number(b.dataset.i) || 0];
+      if (g) ctOp({ op: 'act', act: 'gather', types: g[1] }, 'Queued — gathering ' + g[0].toLowerCase());
+      return;
+    }
+    if (act === 'ct-unload') { ctOp({ op: 'act', act: 'unload', markId: b.dataset.id }, 'Queued — unloading'); return; }
+    if (act === 'ct-retrieve') { ctOp({ op: 'act', act: 'retrieve', markId: b.dataset.id }, 'Queued — taking it all'); return; }
+    if (act === 'ct-mark') { ctOp({ op: 'mark', id: b.dataset.id, key: b.dataset.k, value: b.dataset.v === '1' }); return; }
+    if (act === 'ct-inbox') { ctOp({ op: 'sort', key: 'inbox', value: b.dataset.v || '' }); return; }
+    if (act === 'ct-sort') { ctOp({ op: 'sort', key: b.dataset.k, value: b.dataset.v === '1' }); return; }
+    if (act === 'ct-loan') { ctOp({ op: 'sort', key: 'loan.' + b.dataset.k, value: b.dataset.v === '1' }); return; }
+    if (act === 'ct-loan-b') { ctOp({ op: 'sort', key: 'loan.' + b.dataset.k, value: b.dataset.v === '1' }); return; }
     /* ---- wardrobe ---- */
     if (act === 'wd-sub') {
       state.wdSub = b.dataset.sub;
@@ -12127,6 +13744,9 @@ document.addEventListener('click', function (e) {
       } else if (sheetIs('spellcaticon')) {
         var sc2 = spellCatByName(state.sheet.cat);
         if (sc2) pickFile('spell-cat-icon', sc2.name, sc2.name, spellCatKey(sc2.name));
+      } else if (sheetIs('cbarticon')) {
+        var ca2 = caById(state.sheet.id);
+        if (ca2) pickFile('combat-art-icon', ca2.id, ca2.name, caKey(ca2.id));
       }
       return;
     }
@@ -12135,6 +13755,7 @@ document.addEventListener('click', function (e) {
       else if (sheetIs('hkicon')) assignHotkey(state.sheet.id, '');
       else if (sheetIs('caticon')) assignCatIcon(state.sheet.cat, '');
       else if (sheetIs('spellcaticon')) assignSpellCatIcon(state.sheet.cat, '');
+      else if (sheetIs('cbarticon')) assignCombatArtIcon(state.sheet.id, '');
       return;
     }
     if (act === 'lib-more') {
@@ -12152,6 +13773,7 @@ document.addEventListener('click', function (e) {
       else if (sheetIs('hkicon')) assignHotkey(state.sheet.id, b.dataset.icon);
       else if (sheetIs('caticon')) assignCatIcon(state.sheet.cat, b.dataset.icon);
       else if (sheetIs('spellcaticon')) assignSpellCatIcon(state.sheet.cat, b.dataset.icon);
+      else if (sheetIs('cbarticon')) assignCombatArtIcon(state.sheet.id, b.dataset.icon);
       return;
     }
     /* ---- the Followers rail's category glyphs ---- */
@@ -12159,6 +13781,8 @@ document.addEventListener('click', function (e) {
     if (act === 'cat-icon-clear-all') { clearAllCatIcons(); return; }
     /* ---- the Spell Deck rail's category glyphs ---- */
     if (act === 'spell-cat-icon-open') { openSpellCatIconSheet(b.dataset.cat); return; }
+    /* ---- the Combat Arts rows (Icons tab) ---- */
+    if (act === 'cbart') { openCombatArtIconSheet(b.dataset.id); return; }
     /* ---- the hotkey edit sheet ---- */
     if (act === 'hk-icon-open') { if (sheetIs('hotkey')) openHotkeyIconSheet(state.sheet.id); return; }
     if (act === 'hk-cat') { if (sheetIs('hotkey')) setHotkeyCategory(state.sheet.id, b.dataset.cat); return; }
@@ -12219,6 +13843,7 @@ document.addEventListener('click', function (e) {
     }
   }
   if (e.target.closest('#icon-add')) { addIcon(); return; }
+  if (e.target.closest('#hud-bg-add')) { addHudBg(); return; }
   if (e.target.closest('#sheet-back')) { sheetBack(); return; }
   if (e.target.closest('#sheet-close') || e.target.id === 'sheet-bg') { closeSheet(); return; }
   // Clicking anywhere else disarms a pending delete — but never while the

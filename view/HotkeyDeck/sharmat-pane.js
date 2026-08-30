@@ -471,6 +471,8 @@ var SmPane = (function () {
     var faceEl;
     if (st.face && st.face.file) {
       faceEl = h('img', { class: 'sm-face', src: 'portraits/' + st.face.file + '?v=' + (st.face.mtime || 0), alt: '', draggable: 'false' });
+      /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
+      if (window.HDFaceFit) HDFaceFit.paintPortrait(faceEl, 'portraits/' + st.face.file);
       /* The listener STAYS attached across the retry. Detaching it on the
          first error (as this did) meant the retry's own failure was never
          heard, so a genuinely missing file left an empty styled circle

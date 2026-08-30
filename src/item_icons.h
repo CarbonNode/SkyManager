@@ -165,6 +165,25 @@ namespace ItemIcons
 	// fid/plugin are the FACE OWNER's local id + origin plugin (FaceOwnerOf).
 	std::string FacePathFor(const std::string& fid, const std::string& plugin);
 
+	// The FACE turntable (2026-08-19, Rober: "make anything scrollable? any
+	// item or face... left click and hold to spin it around"). 90°-step frames
+	// of the baked FaceGen head — the SAME mesh set frame 0 used, wig
+	// composition included — landing as icons/npcs/<file>-a090….png siblings.
+	// Baked lazily when a face lightbox is first dragged; keyed "@f###" so no
+	// index ever sees the frames. MAIN THREAD ONLY.
+	void CaptureFaceAngles(const std::string& fid, const std::string& plugin);
+
+	// One subject's turntable truth, straight off the disk: which frames exist
+	// RIGHT NOW, as {kind, formId, plugin, step, count, frames:{"0":path,
+	// "90":path,…}} with view-relative paths. kind: "item" | "face" | "body".
+	// This is the hdSpin reply — the view sets an <img> src only to a path
+	// this listed, so it never probes a not-yet-baked URL (Ultralight's
+	// query-string cache-bust does not work, and a probed-missing bare URL is
+	// exactly the kind of thing its cache may pin — see hd-lightbox.js).
+	// Read-only, safe from any thread.
+	std::string SpinStateJson(const std::string& fid, const std::string& plugin,
+		const std::string& kind);
+
 	// {"version":1,"icons":{"0XABCD|plugin.esp":"icons/items/<file>.png",…}}
 	// — the on-disk truth right now. Keys are UPPERCASE local-hex + '|' +
 	// lowercase plugin, the same normalisation the portal uses everywhere.
@@ -187,4 +206,21 @@ namespace ItemIcons
 	// at Init if icons already exist), so main.cpp can push the index into the
 	// view. Set it once during startup.
 	void SetOnBatchDone(std::function<void()> cb);
+
+	// "Is one of our palettes open right now?" — set once by main.cpp.
+	// Render pacing exists so a render cannot hitch the world draw, and it keys
+	// off RE::UI::GameIsPaused(). Under the deck's default SMOOTH PAUSE the game
+	// is NOT engine-paused (it runs at sgtm 0 with the view supplying its own
+	// cursor), so a player staring at a grid of pictures was getting the slow,
+	// one-render-per-400ms treatment meant for live gameplay: 21 queued objects
+	// trickled in over ~15 s and the Settlement tab looked broken (Rober,
+	// 2026-08-15: "having trouble loading meshes loaded only 2"). With a palette
+	// up there is no world draw to protect, so renders run at full speed.
+	void SetPaletteOpenProbe(std::function<bool()> probe);
+
+	// {items:[{formId,plugin}]} — forget those keys in both the asked set and
+	// the failure ledger, so the next request renders them from scratch. This is
+	// what a tile's "try again" calls; without it a dead end is permanent for
+	// the session and the tile can only ever apologise.
+	void RetryIcons(const std::string& listJson);
 }

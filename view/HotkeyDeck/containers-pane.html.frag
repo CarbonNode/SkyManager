@@ -22,6 +22,9 @@
 
     <!-- RIGHT: search + the container list + the mark button -->
     <section id="ct-main">
+      <!-- container-sort cards (Drop-box + item routes) built by containers-pane.js -->
+      <div id="cs-cards"></div>
+
       <div id="ct-toolbar">
         <div id="ct-search-wrap">
           <span class="ct-search-ic" aria-hidden="true">⌕</span>
@@ -49,6 +52,10 @@
     </section>
 
   </div>
+
+  <!-- 🧲 Auto-Loot card — a related-but-separate container feature; built by
+       containers-pane.js so its steppers/segmented/chip-grid stay view-owned -->
+  <div id="al-card" aria-label="Auto-Loot"></div>
 
   <!-- press-to-rebind capture — the pane's own, so app.js's #capture-modal
        flow (deck entries / ext keys) is left completely alone -->

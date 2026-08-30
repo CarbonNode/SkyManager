@@ -63,8 +63,17 @@
 }
 #nb-status.hidden { display: none; }
 
-/* The Domains footer (★ Mark this spot) belongs to Places only. */
-#dm-foot.nb-suppressed { display: none; }
+/* The Domains footer (★ Mark this spot) and the Places search belong to
+   Places only — Bases has its own search in #nb-rail-head. */
+#dm-foot.nb-suppressed, #dm-toolbar.nb-suppressed { display: none; }
+
+/* Places' search + count, moved into this bar 2026-08-30 so it sits in line
+   with the Places/Bases switch instead of starting past the category rail.
+   It takes the row's free width; the mode switch and the status chip keep
+   their intrinsic size. #dm-toolbar's own `margin-bottom` was spacing it off
+   the list it no longer sits above. */
+#nb-modebar > #dm-toolbar { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
+#nb-modebar > #dm-toolbar > #dm-search-wrap { flex: 1 1 auto; min-width: 0; }
 
 /* ------------------------------------------------------------- body --- */
 
@@ -79,6 +88,12 @@
 
 #nb-rail {
   flex: 0 0 clamp(240px, 28%, 340px);
+  /* min-width:0 is what makes that basis STICK. A flex item's automatic minimum
+     size is its content, so one 62-char base name blew the rail out to 654px
+     (90-char: 810px) and ate the detail column until the Move here / travel /
+     clear buttons wrapped — measured 2026-08-19. The rows already ellipsize;
+     they just needed to be allowed to. */
+  min-width: 0;
   display: flex; flex-direction: column; min-height: 0;
   border-right: 1px solid #26262d;
   background: #101015;
@@ -186,19 +201,11 @@
 .nb-skel {
   height: 58px; cursor: default;
   background: linear-gradient(90deg, #16161d 0%, #1c1c24 50%, #16161d 100%);
-  background-size: 200% 100%;
-  animation: nbShimmer 1.3s ease-in-out infinite;
 }
 .nb-skel:hover { background: linear-gradient(90deg, #16161d 0%, #1c1c24 50%, #16161d 100%); border-color: #2e2e36; }
-@keyframes nbShimmer {
-  from { background-position: 200% 0; }
-  to   { background-position: -200% 0; }
-}
 .nb-skelline {
   height: 15px; border-radius: 6px; margin: 10px 0;
   background: linear-gradient(90deg, #16161d 0%, #1c1c24 50%, #16161d 100%);
-  background-size: 200% 100%;
-  animation: nbShimmer 1.3s ease-in-out infinite;
 }
 .nb-skelline.w60 { width: 60%; }
 .nb-skelline.w90 { width: 90%; }
@@ -275,17 +282,20 @@
    of floating in its top 40% with a black void beneath (Rober, 2026-08-12).
    It is a flex column itself: a pinned head + an internally-scrolling body, so
    a base with 200 residents scrolls inside the card rather than stretching the
-   page, and a base with none still holds the height with a real empty state.
-   min-height:0 is the load-bearing part — without it a flex child refuses to
-   shrink below its content and the internal scroller never engages. */
+   page, and a base with none still holds the height with a real empty state. */
 .nb-card-grow {
   flex: 1 1 auto;
-  /* min-height:0 (NOT a fixed floor) is load-bearing: it lets the card SHRINK
-     when hero + locations + an expanded settings card leave little room, so its
-     internal scroller engages and #nb-main itself never overflows. A fixed
-     floor here instead forces the whole detail column to scroll — the very
-     thing this layout avoids. When there IS room, flex-grow fills it. */
-  min-height: 0;
+  /* A FLOOR, not min-height:0. The original premise — "shrink it and #nb-main
+     never overflows" — was false: #nb-main DOES overflow (hero + locations +
+     residents + settings is taller than the panel at 1280x720, and taller than
+     2560x1440 the moment Shared base settings is expanded). With no floor the
+     flex algorithm then shrank this card to its non-shrinkable head and the
+     WHOLE roster became invisible: card 34px, scroller clientHeight 0 against
+     a 1863px roster (measured 2026-08-19). The floor is head + the empty
+     state's own 150px, so the card always shows either the empty state or ~3
+     resident rows; #nb-main scrolls when even that does not fit, which is the
+     lesser evil by a mile. When there IS room, flex-grow still fills it. */
+  min-height: 200px;
   display: flex; flex-direction: column;
 }
 .nb-card-grow > .nb-card-head { flex: 0 0 auto; }
@@ -349,9 +359,19 @@
   color: #6f6a5e;
 }
 
-.nb-collapse { cursor: pointer; margin-bottom: 0; transition: color 140ms ease; }
-.nb-collapse:hover { color: #e8e4da; }
-.nb-collapse.open { margin-bottom: 14px; }
+/* The one way in to ownership + the daily hours, so it has to be hittable from
+   a couch: baseline-aligned uppercase text is only 16px tall at 2560x1440 and
+   the card's padding around it is NOT clickable (measured 2026-08-19). The
+   negative margins pull the enlarged hit box back out over that padding so the
+   whole header strip reacts without the label moving. */
+.nb-collapse {
+  cursor: pointer; margin-bottom: 0; transition: color 140ms ease;
+  min-height: 32px; align-items: center;
+  padding: 6px 18px; margin-left: -18px; margin-right: -18px;
+  border-radius: 8px;
+}
+.nb-collapse:hover { color: #e8e4da; background: #1c1c24; }
+.nb-collapse.open { margin-bottom: 8px; }
 .nb-caret { font-size: 12px; color: #8b8678; }
 
 /* ---- crests & faces --------------------------------------------------- *
@@ -396,8 +416,12 @@
 .nb-crest-sm .nb-crest-ini { font-size: 13px; }
 .nb-crest-lg { width: 76px; height: 76px; }
 .nb-crest-lg .nb-crest-ini { font-size: 26px; }
-.nb-face-sm { width: 30px; height: 30px; }
-.nb-face-sm .nb-face-ini { font-size: 12px; }
+/* 40px, not the 30px this shipped with. A resident face is a PHOTOGRAPH — at
+   30px, overlapped by 10, roughly twenty pixels of each face survived and the
+   stack read as coloured dots. Rober, 2026-08-17: "profile images ... really
+   hard to see". */
+.nb-face-sm { width: 40px; height: 40px; }
+.nb-face-sm .nb-face-ini { font-size: 16px; }
 
 .nb-crest.empty {
   background: #101015;
@@ -437,17 +461,31 @@
 
 /* Overlapping face stack — the one glance that answers "who lives here". */
 .nb-stack { display: inline-flex; align-items: center; }
+/* -8 on a 40px face leaves 32px of every portrait showing, so the stack reads
+   as faces rather than as a row of discs; hovering still fans them apart, and
+   hovering ONE face names her (each carries its own title). */
 .nb-stack .nb-face {
-  margin-left: -10px;
+  margin-left: -8px;
   box-shadow: 0 0 0 2px #16161d;
-  transition: transform 160ms ease, margin 160ms ease;
+  /* No `margin` in the transition list: animating margin reflows the whole
+     hero row for 160ms x N faces on every hover (2026-08-19 perf review). The
+     un-overlap on hover still happens — it just snaps, which at 10px of
+     travel is imperceptible; transform/box-shadow keep their ease. */
+  transition: transform 160ms ease, box-shadow 160ms ease;
 }
 .nb-stack .nb-face:first-child { margin-left: 0; }
-.nb-stack:hover .nb-face { margin-left: -3px; }
+.nb-stack:hover .nb-face { margin-left: 2px; }
 .nb-stack:hover .nb-face:first-child { margin-left: 0; }
+/* the one under the cursor lifts clear of its neighbours and takes a gold ring,
+   so it is obvious WHICH face the hover bubble is naming */
+.nb-stack .nb-face:hover {
+  z-index: 20 !important;
+  transform: scale(1.12);
+  box-shadow: 0 0 0 2px #16161d, 0 0 0 4px #c9a24b99;
+}
 .nb-stack-more {
   margin-left: 8px;
-  font-size: 12.5px; font-weight: 700; color: #8b8678;
+  font-size: 14px; font-weight: 700; color: #8b8678;
 }
 
 /* ---- head card ------------------------------------------------------- */
@@ -463,10 +501,20 @@
 .nb-title {
   margin: 0; min-width: 0;
   font-size: 24px; font-weight: 600; color: #e8e4da;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  overflow: hidden;
   cursor: text;
   display: flex; align-items: center; gap: 10px;
   transition: color 140ms ease;
+}
+/* The name lives in its OWN span, and the ellipsis lives there with it:
+   text-overflow does not apply to a flex container, so declaring it on
+   .nb-title did nothing and a long base name was hard-cut mid-word — measured
+   scrollWidth 880 against clientWidth 309, no '…' rendered (2026-08-19). The
+   flex row is still wanted here for the ✎ pen, hence the inner span rather
+   than dropping display:flex. */
+.nb-title-txt {
+  min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .nb-title:hover { color: #c9a24b; }
 .nb-title-pen { font-size: 15px; color: #6f6a5e; opacity: 0; transition: opacity 140ms ease; }

@@ -59,6 +59,37 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ---------- native widget net (widget-base-reset, 2026-08-19) ----------
+   Ultralight's UA defaults paint native button/input/textarea/select WHITE
+   and system-font. Element selectors (specificity 0-0-1) lose to every class
+   rule, so this only catches widgets whose own styling is missing or not yet
+   loaded — the "white weird buttons / typing areas" failure mode. */
+button {
+  font: inherit; color: #e8e4da; cursor: pointer;
+  background: #1b1b22; border: 1px solid #3a3a44; border-radius: 6px; padding: 4px 9px;
+}
+input:not([type=checkbox]):not([type=radio]):not([type=range]),
+textarea, select {
+  font: inherit; color: #e8e4da; background-color: #16161c;
+  border: 1px solid #3a3a44; border-radius: 6px; padding: 4px 8px;
+}
+/* A native <select> IGNORES background-color entirely and paints its own light
+   theme (measured: computed said #16161c, the pixels were light grey) —
+   appearance:none is the only thing that frees it, and it then needs a caret
+   of our own. Two linear-gradients, because this engine has no conic and no
+   guaranteed SVG-data-URI path; both this and the `right Npx` form were
+   verified to PAINT by tools/ultralight-probe (widgets3, 2026-08-19). */
+select {
+  -webkit-appearance: none; appearance: none;
+  padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, #8a857a 50%),
+                    linear-gradient(135deg, #8a857a 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+option { background: #16161c; color: #e8e4da; }
+
 html, body {
   width: 100%; height: 100%;
   background: transparent;
@@ -77,7 +108,10 @@ html, body {
 #overlay {
   position: fixed; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  background: radial-gradient(120% 120% at 50% 40%, rgba(0,0,0,.35), rgba(0,0,0,.68));
+  /* FLAT (overlay-dim-flat law, 2026-08-18): fullscreen radial backdrops
+     BAND under Ultralight — this one painted the grey/black smears around
+     the Spell Deck panel (Rober's screenshot). Flat fills only at this size. */
+  background: rgba(0, 0, 0, 0.55);
   opacity: 0;
   transition: opacity .14s var(--ease);
 }
@@ -116,7 +150,7 @@ body:not(.open) #overlay { display: none; }
   background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
   border: 1px solid var(--line-2);
   border-radius: var(--radius);
-  box-shadow: 0 24px 70px rgba(0,0,0,.6), 0 0 0 1px rgba(201,162,75,.05) inset;
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(201,162,75,.05) inset;
   transform: scale(var(--ui-scale, 1));
   transform-origin: center center;
   overflow: hidden;
@@ -174,6 +208,41 @@ body.resizing .spell, body.resizing .rail-item, body.resizing .combo-card { poin
 }
 .header-actions { display: flex; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
 
+/* ------------------------------------------------------- page switcher --- *
+ * Two pages in one window: the spell list and Combat Arts (2026-08-15). A
+ * segmented control in the header — big couch-readable type, its own hover /
+ * active / selected states, and it shrinks (never wraps mid-word) when the
+ * panel is dragged to its 720px floor. */
+#md-pages {
+  display: flex; align-items: stretch; gap: 4px;
+  padding: 4px;
+  background: rgba(0,0,0,.28);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-width: 0;
+}
+.md-page {
+  font: 600 15px/1 "Segoe UI", sans-serif;
+  color: var(--text-2, #b9b4a8);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 9px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .12s var(--ease), color .12s var(--ease), border-color .12s var(--ease);
+}
+.md-page:hover { color: var(--gold-soft, #d8c48a); background: rgba(201,162,75,.08); }
+.md-page:active { transform: translateY(1px); }
+.md-page.on {
+  color: var(--gold, #c9a24b);
+  background: var(--gold-wash, rgba(201,162,75,.10));
+  border-color: var(--gold-line, rgba(201,162,75,.35));
+}
+@media (max-width: 1100px) {
+  .md-page { padding: 8px 11px; font-size: 14px; }
+}
+
 /* ------------------------------------------------------ ghost button --- */
 
 .ghost-btn {
@@ -201,6 +270,8 @@ body.resizing .spell, body.resizing .rail-item, body.resizing .combo-card { poin
 /* -------------------------------------------------------------- body --- */
 
 #body { flex: 1; display: flex; min-height: 0; }
+/* the Combat Arts page is #body's sibling and takes the same slot when shown */
+#ca-pane { flex: 1; min-height: 0; }
 
 /* ------------------------------------------------------- category rail --- */
 
@@ -360,6 +431,11 @@ body.resizing .spell, body.resizing .rail-item, body.resizing .combo-card { poin
   padding: 6px 8px;
 }
 #scale-val { font: 600 12.5px/1 Consolas, monospace; color: var(--dim); min-width: 42px; text-align: center; }
+/* The group label ("Icons") and the icon-size readout — both shipped with no
+   rule (2026-08-19 CSS review) and drew at UA 16px full-brightness beside
+   their 12.5px siblings. */
+.ctl-tag { font: 600 12.5px/1 "Segoe UI", sans-serif; color: var(--dim); letter-spacing: .3px; }
+#icon-size-val { font: 600 12.5px/1 Consolas, monospace; color: var(--dim); min-width: 30px; text-align: center; }
 /* live panel-size readout — "Auto" until the grip is dragged, then "1500×1000" */
 #panel-size-val { font: 600 12.5px/1 Consolas, monospace; color: var(--dim); min-width: 76px; text-align: center; }
 #panel-size-val.custom { color: var(--gold-soft); }
@@ -601,6 +677,29 @@ body.editing .spell .glyph.pickable:hover {
 }
 .removed-note { font-size: 12.5px; line-height: 1.45; color: var(--dim-2); padding: 2px 4px 7px; }
 
+/* Drawer filter (appears past 8 removed spells). It sticks to the top of the
+   drawer's own scroll box, so scrolling a long list never scrolls the search
+   field out of reach — the whole reason it exists. */
+.removed-find {
+  position: sticky; top: -10px; z-index: 2;
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 7px; padding: 8px 11px;
+  background: var(--sunk);
+  border: 1px solid var(--line); border-radius: var(--radius-s);
+}
+.removed-find-g { flex-shrink: 0; color: var(--dim-2); font-size: 14px; line-height: 1; }
+#removed-search {
+  flex: 1; min-width: 0;
+  background: transparent; border: none; outline: none;
+  color: var(--text-2); font: 400 13.5px/1.2 "Segoe UI", sans-serif;
+}
+#removed-search::placeholder { color: var(--dim-2); }
+.removed-find-n {
+  flex-shrink: 0; color: var(--gold, #cbb27a);
+  font: 600 12.5px/1 "Segoe UI", sans-serif; white-space: nowrap;
+}
+.removed-none { font-size: 12.5px; line-height: 1.45; color: var(--dim-2); padding: 10px 4px; }
+
 .removed-row {
   display: flex; align-items: center; gap: 12px;
   padding: 9px 11px;
@@ -677,7 +776,7 @@ body.editing .spell .glyph.pickable:hover {
   background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
   border: 1px solid var(--gold-line);
   border-radius: var(--radius);
-  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   animation: riseIn .16s var(--ease);
   overflow: hidden;
 }
@@ -754,7 +853,7 @@ body.editing .spell .glyph.pickable:hover {
   background: linear-gradient(180deg, var(--raised-2), var(--raised));
   border: 1px solid var(--gold-line);
   border-radius: var(--radius-s);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, .62), 0 0 0 1px rgba(0, 0, 0, .35);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, .35);
   animation: ctxIn .11s var(--ease);
   /* Outside #panel's transform: scale(--ui-scale) (it is an #overlay child), so
      wear the same scale or it paints 1x beside a Fill'd deck. clampCtx()
@@ -921,8 +1020,6 @@ body.pdragging .rail-item { cursor: grabbing; }
 .skel {
   height: 56px; border-radius: var(--radius-s);
   background: linear-gradient(90deg, var(--raised) 25%, var(--raised-2) 50%, var(--raised) 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.2s linear infinite;
 }
 
 /* ------------------------------------------------------- capture box --- */
@@ -934,7 +1031,7 @@ body.pdragging .rail-item { cursor: grabbing; }
   border: 1px solid var(--gold-line);
   border-radius: var(--radius);
   padding: 32px 30px 25px;
-  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   animation: capturePulse 1.4s ease-in-out infinite;
 }
 .capture-title { font-size: 19.5px; color: var(--gold-bright); font-weight: 600; margin-bottom: 10px; }
@@ -963,11 +1060,10 @@ body.pdragging .rail-item { cursor: grabbing; }
   100% { background: var(--raised); }
 }
 @keyframes capturePulse {
-  0%, 100% { box-shadow: 0 20px 60px rgba(0,0,0,.6), 0 0 0 0 rgba(201,162,75,.0); }
-  50% { box-shadow: 0 20px 60px rgba(0,0,0,.6), 0 0 0 4px rgba(201,162,75,.18); }
+  0%, 100% { box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 0 rgba(201,162,75,.0); }
+  50% { box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 4px rgba(201,162,75,.18); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
 /* ---- per-spell icon picker ---------------------------------------------- *
  * Searchable grid over the whole extracted library (~1900 icons) + the live
@@ -979,7 +1075,7 @@ body.pdragging .rail-item { cursor: grabbing; }
   background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
   border: 1px solid var(--gold-line);
   border-radius: var(--radius);
-  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   animation: riseIn .16s var(--ease);
   overflow: hidden;
 }

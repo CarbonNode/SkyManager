@@ -166,7 +166,7 @@ namespace ItemExplorer
 			{
 				std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
 				if (!out.is_open()) {
-					logger::warn("item-explorer: could not write {}", tmp.string());
+					logger::warn("item-explorer: could not write {}", PathU8(tmp));
 					return;
 				}
 				out << Dump(json{ { "pay", g_pay }, { "mult", g_mult }, { "pageSize", g_pageSize } });
@@ -335,6 +335,192 @@ namespace ItemExplorer
 				return 4;                                     // only the plugin matches
 			return -1;
 		}
+
+		// ------------------------------------------------------------- detail --
+		// Everything below runs ONLY when a row is expanded (one item at a time),
+		// never during the index walk — so the effect/enchant list reads are cheap
+		// and bounded. Each is null-guarded: a third-party ESP can hand us a form
+		// whose enchantment or effect array is malformed, and a detail block that
+		// crashes is far worse than one that is missing a section.
+
+		std::string FullNameOf(RE::TESForm* f)
+		{
+			if (!f)
+				return {};
+			if (auto* fn = f->As<RE::TESFullName>()) {
+				const char* nm = fn->GetFullName();
+				if (nm && *nm)
+					return nm;
+			}
+			const char* nm = f->GetName();
+			return (nm && *nm) ? std::string(nm) : std::string();
+		}
+
+		const char* WeaponTypeLabel(RE::WEAPON_TYPE t)
+		{
+			using T = RE::WEAPON_TYPE;
+			switch (t) {
+			case T::kHandToHandMelee: return "Hand to Hand";
+			case T::kOneHandSword:    return "One-Handed Sword";
+			case T::kOneHandDagger:   return "Dagger";
+			case T::kOneHandAxe:      return "One-Handed Axe";
+			case T::kOneHandMace:     return "One-Handed Mace";
+			case T::kTwoHandSword:    return "Two-Handed Sword";
+			case T::kTwoHandAxe:      return "Two-Handed Axe / Warhammer";
+			case T::kBow:             return "Bow";
+			case T::kStaff:           return "Staff";
+			case T::kCrossbow:        return "Crossbow";
+			default:                  return "Weapon";
+			}
+		}
+
+		// One Effect* -> {name, mag, dur, area, school, detrimental}. Skyrim's own
+		// convention: an effect with 0 duration is instant. Names come from the
+		// EffectSetting's TESFullName; a nameless base effect is skipped by the
+		// caller (it would render as an empty row).
+		const char* SkillAvLabel(RE::ActorValue av)
+		{
+			using AV = RE::ActorValue;
+			switch (av) {
+			case AV::kAlteration:  return "Alteration";
+			case AV::kConjuration: return "Conjuration";
+			case AV::kDestruction: return "Destruction";
+			case AV::kIllusion:    return "Illusion";
+			case AV::kRestoration: return "Restoration";
+			case AV::kEnchanting:  return "Enchanting";
+			case AV::kAlchemy:     return "Alchemy";
+			default:               return "";
+			}
+		}
+
+		json EffectRow(RE::Effect* eff)
+		{
+			if (!eff || !eff->baseEffect)
+				return json();
+			auto* base = eff->baseEffect;
+			std::string nm = FullNameOf(base);
+			if (nm.empty()) {
+				// Fall back to the editor id so a nameless base effect still names
+				// itself rather than showing a blank row.
+				const char* eid = base->GetFormEditorID();
+				if (eid && *eid)
+					nm = eid;
+			}
+			if (nm.empty())
+				return json();
+			json r;
+			r["n"] = nm;
+			r["mag"] = eff->effectItem.magnitude;
+			r["dur"] = eff->effectItem.duration;   // seconds; 0 = instant
+			r["area"] = eff->effectItem.area;
+			r["harm"] = base->IsDetrimental();
+			if (const char* sch = SkillAvLabel(base->data.associatedSkill); sch && *sch)
+				r["school"] = sch;
+			return r;
+		}
+
+		// The MagicItem effect list (potions, scrolls, ingredients, and an
+		// enchantment's effects) -> [{n,mag,dur,area,...}], capped so a pathological
+		// mod can't hand us a thousand-effect array to serialise.
+		json EffectList(RE::MagicItem* mi)
+		{
+			json out = json::array();
+			if (!mi)
+				return out;
+			int n = 0;
+			for (auto* eff : mi->effects) {
+				if (n >= 24)
+					break;
+				json r = EffectRow(eff);
+				if (!r.is_null()) {
+					out.push_back(std::move(r));
+					++n;
+				}
+			}
+			return out;
+		}
+
+		// Keywords (both weapons/armour and misc carry BGSKeywordForm) — the
+		// editor ids, which read as "WeapMaterialEbony" / "ArmorHeavy" etc. Capped.
+		json KeywordList(RE::TESForm* f)
+		{
+			json out = json::array();
+			auto* kf = f ? f->As<RE::BGSKeywordForm>() : nullptr;
+			if (!kf)
+				return out;
+			const std::uint32_t count = kf->GetNumKeywords();
+			for (std::uint32_t i = 0; i < count && out.size() < 24; ++i) {
+				auto kw = kf->GetKeywordAt(i);
+				if (!kw || !*kw)
+					continue;
+				const char* eid = (*kw)->GetFormEditorID();
+				if (eid && *eid)
+					out.push_back(std::string(eid));
+			}
+			return out;
+		}
+
+		// Compute the full detail block for one resolved bound object. Sections are
+		// present only when they apply, so the view renders exactly what exists.
+		json DetailFor(RE::TESBoundObject* bound, Kind kind)
+		{
+			json info;
+			info["v"] = bound->GetGoldValue();
+			info["w"] = bound->GetWeight();
+
+			// Enchantment (weapons + armour + a few misc via TESEnchantableForm).
+			if (auto* ench = bound->As<RE::TESEnchantableForm>()) {
+				if (auto* e = ench->formEnchanting) {
+					json ej;
+					ej["name"] = FullNameOf(e);
+					ej["charge"] = ench->amountofEnchantment;   // 0 = staff/apparel (no charge)
+					ej["effects"] = EffectList(e);   // EnchantmentItem IS-A MagicItem
+					info["ench"] = std::move(ej);
+				}
+			}
+
+			switch (kind) {
+			case Kind::Weap:
+				if (auto* w = bound->As<RE::TESObjectWEAP>()) {
+					info["dmg"] = w->GetAttackDamage();
+					info["speed"] = w->GetSpeed();
+					info["reach"] = w->GetReach();
+					info["crit"] = w->GetCritDamage();
+					info["wtype"] = WeaponTypeLabel(w->GetWeaponType());
+				}
+				break;
+			case Kind::Armo:
+				if (auto* a = bound->As<RE::TESObjectARMO>()) {
+					// GetArmorRating() returns the CK-scaled base rating (the raw
+					// armorRating field is that value ×100). One decimal is plenty.
+					info["armor"] = a->GetArmorRating();
+				}
+				break;
+			case Kind::Alch:
+			case Kind::Food:
+				if (auto* p = bound->As<RE::AlchemyItem>()) {
+					info["effects"] = EffectList(p);
+					info["poison"] = p->IsPoison();
+					info["food"] = p->IsFood();
+				}
+				break;
+			case Kind::Scrl:
+				if (auto* sc = bound->As<RE::MagicItem>())
+					info["effects"] = EffectList(sc);
+				break;
+			case Kind::Ingr:
+				if (auto* ing = bound->As<RE::IngredientItem>())
+					info["effects"] = EffectList(ing);
+				break;
+			default:
+				break;
+			}
+
+			json kw = KeywordList(bound);
+			if (!kw.empty())
+				info["keywords"] = std::move(kw);
+			return info;
+		}
 	}
 
 	// ================================================================ API ==
@@ -366,6 +552,51 @@ namespace ItemExplorer
 		try {
 			in = json::parse(req);
 		} catch (...) {}
+
+		// --- detail path: expand ONE row (lazy, on demand). Routed through this
+		// same reply so no new main.cpp listener is needed. The reply carries a
+		// `detail` field the view keys on; a page reply never does. ------------
+		if (in.contains("detail")) {
+			const int         seq = in.value("seq", 0);
+			const std::string id = in.value("detail", std::string(""));
+			auto detailFail = [&](const std::string& why) {
+				logger::info("item-explorer-detail: {} for '{}'", why, id);
+				return Dump(json{ { "seq", seq }, { "detail", id }, { "info", json::object() },
+					{ "err", why } });
+			};
+			const auto bar = id.find('|');
+			if (bar == std::string::npos || bar == 0)
+				return detailFail("Malformed item id");
+			const std::string   plugin = id.substr(0, bar);
+			const std::uint32_t local = static_cast<std::uint32_t>(
+				std::strtoul(id.c_str() + bar + 1, nullptr, 16));
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			if (!dh)
+				return detailFail("No game loaded");
+			auto* form = dh->LookupForm(local, plugin);
+			auto* bound = form ? form->As<RE::TESBoundObject>() : nullptr;
+			if (!bound)
+				return detailFail("Item no longer in the load order");
+			// Kind: prefer the indexed classification (matches the row's glyph),
+			// fall back to deriving it from the resolved form type.
+			Kind kind = Kind::Misc;
+			bool known = false;
+			for (const auto& it : g_items) {
+				if (it.localId == local && g_plugins[it.plug].lower == Lower(plugin)) {
+					kind = it.kind; known = true; break;
+				}
+			}
+			if (!known) {
+				if (bound->As<RE::TESObjectWEAP>()) kind = Kind::Weap;
+				else if (bound->As<RE::TESObjectARMO>()) kind = Kind::Armo;
+				else if (bound->As<RE::ScrollItem>()) kind = Kind::Scrl;
+				else if (bound->As<RE::IngredientItem>()) kind = Kind::Ingr;
+				else if (auto* al = bound->As<RE::AlchemyItem>()) kind = al->IsFood() ? Kind::Food : Kind::Alch;
+			}
+			logger::info("item-explorer-detail: built for '{}'", id);
+			return Dump(json{ { "seq", seq }, { "detail", id }, { "info", DetailFor(bound, kind) } });
+		}
+
 		const std::string q = in.value("q", std::string(""));
 		const std::string typeKey = in.value("type", std::string("all"));
 		const std::string plugin = in.value("plugin", std::string(""));

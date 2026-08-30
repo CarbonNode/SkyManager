@@ -80,6 +80,7 @@ window.RoomsPane = (function () {
     shown: false,
     editing: false,
     filter: '',
+    ignoreFilter: '',              // filter-as-you-type over the never-move list (8+)
     sel: -1,
     kind: 'inn',                   // claim-form kind
     shape: 'circle',               // claim-form footprint
@@ -1166,10 +1167,65 @@ window.RoomsPane = (function () {
   }
 
   function renderIgnore() {
+    /* The list is rebuilt from scratch, and the occupancy poll can rebuild it
+       underneath the player mid-typing — so remember whether the filter had
+       focus and where the caret sat, and put both back at the end. */
+    const hadFocus = document.activeElement &&
+      document.activeElement.id === 'rm-ig-find';
+    const caret = hadFocus ? document.activeElement.selectionStart : 0;
+
     els.ignoreList.replaceChildren();
-    if (!state.ignore.length) return;
+    if (!state.ignore.length) { ui.ignoreFilter = ''; return; }
     els.ignoreList.append(h('span', { class: 'rm-occ-title', style: 'width:100%' }, 'Never moved'));
-    for (const n of state.ignore) {
+
+    /* ---- filter-as-you-type over the never-move list ---------------------
+       This is the one roster here with no ceiling: it is every person in the
+       playthrough the guard must never touch, and it only ever grows. Past a
+       handful of chips it became a wall you had to read left-to-right to find
+       out whether someone was already protected.
+
+       Threshold 8 — below that the chips ARE the index, and a search box over
+       six names is noise. */
+    const q = String(ui.ignoreFilter || '').trim().toLowerCase();
+    const shown = state.ignore.filter((n) => !q ||
+      ((n.name || '') + ' ' + (n.plugin || '')).toLowerCase().indexOf(q) >= 0);
+
+    if (state.ignore.length >= 8) {
+      const input = h('input', {
+        id: 'rm-ig-find', class: 'rm-ig-find', type: 'text',
+        placeholder: 'Find someone you protect…',
+        title: 'Narrows the never-move list as you type. Enter jumps to the top hit, Esc clears.',
+        autocomplete: 'off', spellcheck: 'false', value: ui.ignoreFilter,
+        oninput: (e) => { ui.ignoreFilter = e.target.value; renderIgnore(); },
+        onkeydown: (e) => {
+          if (e.key === 'Escape') {
+            e.stopPropagation();            // clear the filter before the deck closes
+            if (!ui.ignoreFilter) return;
+            ui.ignoreFilter = ''; renderIgnore();
+            const again = $('rm-ig-find'); if (again) again.focus();
+            return;
+          }
+          if (e.key === 'Enter') {
+            /* Enter takes the top hit — but the ONLY verb a protect-chip has
+               is "stop protecting them", and firing that off a keystroke is
+               how you silently un-protect the wrong person. So Enter moves
+               focus to the top hit's × instead: the hit is taken, the
+               destructive part still needs a deliberate press. */
+            e.preventDefault();
+            const first = els.ignoreList.querySelector('.rm-ig .rm-ig-x');
+            if (first) first.focus();
+          }
+        }
+      });
+      const wrap = h('span', { class: 'rm-ig-findwrap' },
+        h('span', { class: 'rm-ig-findg' }, '⌕'),
+        input,
+        q ? h('span', { class: 'rm-ig-findn' },
+          shown.length + ' of ' + state.ignore.length) : null);
+      els.ignoreList.append(wrap);
+    }
+
+    for (const n of shown) {
       els.ignoreList.append(h('span', { class: 'rm-ig' },
         n.name || (n.plugin + '|' + n.localId),
         h('button', {
@@ -1179,6 +1235,19 @@ window.RoomsPane = (function () {
             save(); render();
           }
         }, '×')));
+    }
+
+    if (q && !shown.length) {
+      els.ignoreList.append(h('span', { class: 'rm-ig-none' },
+        'Nobody you protect matches “' + ui.ignoreFilter + '”.'));
+    }
+
+    if (hadFocus) {
+      const again = $('rm-ig-find');
+      if (again) {
+        again.focus();
+        try { again.setSelectionRange(caret, caret); } catch (e) {}
+      }
     }
   }
 
@@ -1435,6 +1504,7 @@ window.RoomsPane = (function () {
     els.claimWhole = $('rm-claim-whole');
     els.claimEvict = $('rm-claim-evict');
     els.kindToggle = $('rm-kind-toggle');
+    els.shapeToggle = $('rm-shape-toggle');
     els.radius = $('rm-radius');
     els.sizeVal = $('rm-size-val');
     els.occ = $('rm-occupants');
@@ -1470,16 +1540,26 @@ window.RoomsPane = (function () {
       ui.claimEvict = els.claimEvict.checked;
     });
 
-    els.kindToggle.addEventListener('click', (e) => {
-      const b = e.target.closest('.rm-seg-btn');
-      if (!b) return;
-      ui.kind = b.dataset.kind;
-      for (const btn of els.kindToggle.querySelectorAll('.rm-seg-btn')) {
-        const on = btn === b;
-        btn.classList.toggle('active', on);
-        btn.setAttribute('aria-checked', on ? 'true' : 'false');
-      }
-    });
+    /* The claim form has TWO segmented choosers with identical behaviour, so
+       they share one wiring. They did not: the Footprint one shipped with its
+       markup and no listener at all, which left ui.shape pinned at 'circle' and
+       made a Box room impossible to claim from this form. One helper means a
+       future segment cannot repeat that — it is wired by construction. */
+    const wireSeg = (toggle, key, set) => {
+      if (!toggle) return;
+      toggle.addEventListener('click', (e) => {
+        const b = e.target.closest('.rm-seg-btn');
+        if (!b || !b.dataset[key]) return;
+        set(b.dataset[key]);
+        for (const btn of toggle.querySelectorAll('.rm-seg-btn')) {
+          const on = btn === b;
+          btn.classList.toggle('active', on);
+          btn.setAttribute('aria-checked', on ? 'true' : 'false');
+        }
+      });
+    };
+    wireSeg(els.kindToggle, 'kind', (v) => { ui.kind = v; });
+    wireSeg(els.shapeToggle, 'shape', (v) => { ui.shape = v; });
 
     smoothRange(els.radius);
     smoothRange(els.grace);
@@ -1492,6 +1572,19 @@ window.RoomsPane = (function () {
     // Search-as-you-type: the list is expected to accumulate (every inn in
     // Skyrim is a candidate), so it filters live rather than paging.
     els.search.addEventListener('input', () => { ui.filter = els.search.value; renderList(); });
+    /* Enter takes the top hit. A room row has no single "fire" verb, and two of
+       its actions are destructive (release, remove) — so Enter does what the
+       row's OWN first button does: open the 📐 size panel on the top match.
+       Navigation, never a mutation. */
+    els.search.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const rows = visible();
+      if (!rows.length) return;
+      ui.expanded = (ui.expanded === rows[0].id) ? null : rows[0].id;
+      ui.banFor = null;
+      renderList();
+    });
 
     els.editBtn.addEventListener('click', toggleEdit);
     els.enabled.addEventListener('change', () => { state.enabled = els.enabled.checked; save(); });
@@ -1598,6 +1691,52 @@ window.RoomsPane = (function () {
     ok('ignore chip rendered', els.ignoreList.querySelectorAll('.rm-ig').length === 1);
     ok('here name shown', els.hereName.textContent === 'The Bannered Mare');
 
+    /* never-move filter: hidden while the chips are their own index, present
+       past 8, narrows on name AND plugin, and never fires the destructive × */
+    (function () {
+      const keepIgnore = state.ignore.slice();
+      ok('never-move: no filter box under the threshold', !$('rm-ig-find'));
+
+      state.ignore = [];
+      for (let i = 0; i < 9; i++) {
+        state.ignore.push({ plugin: (i === 4 ? 'TestFollower.esp' : 'Skyrim.esm'),
+          localId: 100 + i, name: (i === 4 ? 'TestFollower' : 'Guard ' + i) });
+      }
+      renderIgnore();
+      ok('never-move: filter box appears past 8', !!$('rm-ig-find'));
+      ok('never-move: all chips before filtering',
+        els.ignoreList.querySelectorAll('.rm-ig').length === 9);
+
+      ui.ignoreFilter = 'testfollower'; renderIgnore();
+      ok('never-move: filter narrows by name',
+        els.ignoreList.querySelectorAll('.rm-ig').length === 1);
+      ok('never-move: query survives the re-render',
+        ($('rm-ig-find') || {}).value === 'testfollower');
+      ok('never-move: live count shown', !!els.ignoreList.querySelector('.rm-ig-findn'));
+
+      ui.ignoreFilter = 'testfollower.esp'; renderIgnore();
+      ok('never-move: filter matches the plugin',
+        els.ignoreList.querySelectorAll('.rm-ig').length === 1);
+
+      ui.ignoreFilter = 'zzzz'; renderIgnore();
+      ok('never-move: honest empty result',
+        !!els.ignoreList.querySelector('.rm-ig-none') &&
+        els.ignoreList.querySelectorAll('.rm-ig').length === 0);
+
+      /* Enter takes the top hit WITHOUT un-protecting anyone: it focuses the
+         ×, it must never press it. */
+      ui.ignoreFilter = 'testfollower'; renderIgnore();
+      const before = state.ignore.length;
+      const fin = $('rm-ig-find');
+      if (fin) fin.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      ok('never-move: Enter focuses the top hit remove button',
+        !!document.activeElement && document.activeElement.classList.contains('rm-ig-x'));
+      ok('never-move: Enter removes nobody', state.ignore.length === before);
+
+      ui.ignoreFilter = ''; state.ignore = keepIgnore; renderIgnore();
+      ok('never-move: filter self-clears below the threshold', !$('rm-ig-find'));
+    })();
+
     // search
     ui.filter = 'breeze'; renderList();
     ok('search narrows to 1', els.list.querySelectorAll('.rm-row').length === 1);
@@ -1607,6 +1746,20 @@ window.RoomsPane = (function () {
     ok('no-match empty state', !els.empty.classList.contains('hidden'));
     ui.filter = ''; renderList();
     ok('filter cleared restores 2', els.list.querySelectorAll('.rm-row').length === 2);
+
+    /* Enter takes the top hit: it opens that room's size panel (the row's own
+       first action) and must never fire a destructive one. */
+    (function () {
+      ui.expanded = null; ui.filter = 'breeze';
+      els.search.value = ui.filter; renderList();
+      const roomsBefore = state.rooms.length;
+      els.search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      ok('Enter opens the top hit’s size panel', ui.expanded === 'r2');
+      ok('Enter removes no room', state.rooms.length === roomsBefore);
+      els.search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      ok('Enter again folds it back', ui.expanded === null);
+      ui.filter = ''; els.search.value = ''; renderList();
+    })();
 
     // occupancy
     receive('state', {

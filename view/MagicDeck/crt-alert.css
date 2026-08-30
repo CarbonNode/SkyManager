@@ -3,6 +3,37 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ---------- native widget net (widget-base-reset, 2026-08-19) ----------
+   Ultralight's UA defaults paint native button/input/textarea/select WHITE
+   and system-font. Element selectors (specificity 0-0-1) lose to every class
+   rule, so this only catches widgets whose own styling is missing or not yet
+   loaded — the "white weird buttons / typing areas" failure mode. */
+button {
+  font: inherit; color: #e8e4da; cursor: pointer;
+  background: #1b1b22; border: 1px solid #3a3a44; border-radius: 6px; padding: 4px 9px;
+}
+input:not([type=checkbox]):not([type=radio]):not([type=range]),
+textarea, select {
+  font: inherit; color: #e8e4da; background-color: #16161c;
+  border: 1px solid #3a3a44; border-radius: 6px; padding: 4px 8px;
+}
+/* A native <select> IGNORES background-color entirely and paints its own light
+   theme (measured: computed said #16161c, the pixels were light grey) —
+   appearance:none is the only thing that frees it, and it then needs a caret
+   of our own. Two linear-gradients, because this engine has no conic and no
+   guaranteed SVG-data-URI path; both this and the `right Npx` form were
+   verified to PAINT by tools/ultralight-probe (widgets3, 2026-08-19). */
+select {
+  -webkit-appearance: none; appearance: none;
+  padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, #8a857a 50%),
+                    linear-gradient(135deg, #8a857a 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+option { background: #16161c; color: #e8e4da; }
+
 html, body {
   width: 100%;
   height: 100%;
@@ -31,7 +62,7 @@ html, body {
   border-radius: 18px;
   background: linear-gradient(180deg, #1b1f27 0%, #14171e 100%);
   border: 1px solid rgba(214, 173, 96, 0.34);   /* SkyManager gold hairline */
-  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(0,0,0,0.4) inset;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0,0,0,0.4) inset;
   color: #e8ebf2;
   text-align: center;
   transform: translateY(0) scale(1);

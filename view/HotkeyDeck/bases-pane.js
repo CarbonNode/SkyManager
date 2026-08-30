@@ -173,6 +173,8 @@
       class: 'nb-face-img', alt: '', draggable: 'false',
       src: p.url ? p.url : (plain + '?v=' + (p.mtime || 0)),
     });
+    /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
+    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, plain);
     let retried = false;
     img.addEventListener('error', function () {
       if (!retried) { retried = true; img.src = plain; return; }
@@ -308,6 +310,20 @@
 
     pane.insertBefore(bar, dmBody);
     pane.insertBefore(body, dmBody.nextSibling);
+
+    /* The Places search rides the MODE BAR (Rober, 2026-08-30: "the search bar
+       should be (on top) in line with places / bases"). It was sunk inside
+       #dm-main, so it started to the right of the category rail and read as a
+       property of the list rather than of the tab — and the top row carried a
+       lone pair of buttons across an otherwise empty 2000px.
+
+       Moving the EXISTING element (rather than building a second input) keeps
+       domains-pane.js the sole owner of #dm-search: its listeners, its Enter
+       handling, its focus calls and its omni deep-link all still address the
+       one node they always did. If domains-pane's markup ever loses the
+       toolbar this is simply skipped. */
+    const dmToolbar = document.getElementById('dm-toolbar');
+    if (dmToolbar && statusChip) bar.insertBefore(dmToolbar, statusChip);
     S.mounted = true;
 
     /* Re-measure when the window is resized OR when the deck's own resize
@@ -327,10 +343,36 @@
     else setTimeout(run, 16);
   }
 
+  /* Places' row menus live on #overlay, NOT inside #dm-body — so hiding the
+     Places body does not take them with it, and a full-size domain editor
+     stayed parked on top of the Bases UI at z-index 60, covering the entire
+     base detail card (measured 2026-08-19: 520x684 of overlap, 43% of the
+     Bases body at 1280x720). A real mouse click on the segment happens to
+     dismiss them via Domains' own outside-mousedown listener, but every
+     PROGRAMMATIC route in — the omnibar's "jump to base" run/pinRun below —
+     does not, so the switch has to drop them itself.
+
+     Domains exposes no close-menus seam (its closeAllMenus is private and
+     onHide() would also clear the tab's filter and edit state, which switching
+     mode must not do), so we take the nodes out by hand. Blur first: a focused
+     rename input that leaves the DOM never fires 'change', and Domains commits
+     the rename on blur. Its own pointer self-heals on the next mousedown. */
+  function closePlacesMenus() {
+    ['dm-ctx', 'dm-npc'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const ae = document.activeElement;
+      if (ae && ae.tagName === 'INPUT' && el.contains(ae)) { try { ae.blur(); } catch (_) {} }
+      const still = document.getElementById(id);
+      if (still) still.remove();
+    });
+  }
+
   function setMode(mode) {
     if (S.mode === mode) return;
     S.mode = mode;
     disarm();
+    closePlacesMenus();
     applyMode();
     if (mode === 'bases') {
       if (!S.data) refresh();
@@ -354,13 +396,20 @@
        the mark button under the Bases list would fire the wrong feature. */
     const foot = document.getElementById('dm-foot');
     if (foot) foot.classList.toggle('nb-suppressed', bases);
-    /* Our height compensation (applyFit) caps #dm-pane while Bases owns it.
-       Places manages its own layout and must not inherit that cap, so release
-       it the moment Places takes over; applyFit re-applies it on the way back. */
-    if (!bases) {
-      const pane = document.getElementById('dm-pane');
-      if (pane) pane.style.maxHeight = '';
-    }
+    /* The Places search now lives in this bar, so it hides with Places — the
+       Bases list has its own search in #nb-rail-head and two search boxes for
+       two different datasets, both on screen, is worse than none. */
+    const dmToolbar = document.getElementById('dm-toolbar');
+    if (dmToolbar) dmToolbar.classList.toggle('nb-suppressed', bases);
+    /* applyFit's height compensation belongs to BOTH modes (fixed 2026-08-30).
+       It used to be released here on the way back to Places, on the theory that
+       "Places manages its own layout" — but Places is a card GRID inside a
+       transform-scaled pane, and it is the mode that was clipping: at Rober's
+       Domains UI size the bottom card row and the whole ★ Mark this spot footer
+       were rendered BELOW the panel's edge, where no amount of scrolling
+       #dm-list can reach them, because #dm-pane compensates its width for
+       --dm-ui-scale and never its height. The cap is mode-agnostic, so it stays
+       on and render() re-applies it for whichever mode is showing. */
   }
 
   function onSearchInput(e) {
@@ -479,9 +528,11 @@
   function render() {
     if (!ensureDom()) return;
     applyMode();
+    /* Height compensation first and for EITHER mode — Places clips without it
+       (see applyMode). applyWidth and the rail/main paint below are Bases-only. */
+    applyFit();
     if (S.mode !== 'bases') return;
     applyWidth();
-    applyFit();
     renderStatus();
     renderRail();
     renderMain();
@@ -680,7 +731,8 @@
       : h('h2', {
           class: 'nb-title', title: 'Click to rename this base',
           onclick: () => { S.renaming = 'name'; render(); focusRename(); },
-        }, baseTitle(b), h('span', { class: 'nb-title-pen' }, '✎'));
+        }, h('span', { class: 'nb-title-txt' }, baseTitle(b)),
+           h('span', { class: 'nb-title-pen' }, '✎'));
 
     const clearKey = 'clear:' + b.i;
     const res = b.residents || [];
@@ -695,6 +747,12 @@
           ...res.slice(0, STACK).map((r, i) => {
             const f = faceEl(r.name, hueOf(b.i + i), 'nb-face-sm');
             f.style.zIndex = String(STACK - i);
+            /* Her own name on her own face. The stack's title lists everyone,
+               which is what you want off the +N cap — but hovering a specific
+               portrait and being told the whole roster is not an answer.
+               #hd-tip walks UP from the target, so the child wins here and the
+               stack's list still shows on the gap and the +N. */
+            f.setAttribute('title', r.name);
             return f;
           }),
           res.length > STACK
@@ -1150,11 +1208,20 @@
     let d = payload;
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch (_) { d = null; } }
     if (!d) return;
+    /* Read the OUTGOING state before it is replaced: re-picking the selection
+       depends on whether the selected slot has just STOPPED being a base. */
+    const was = baseAt(S.sel);
     S.data = d;
     S.loading = false;
+    const now = baseAt(S.sel);
     /* Land on something real the first time: the base the player most likely
-       means is the first one they actually set up. */
-    if (S.sel < 0) {
+       means is the first one they actually set up. And re-land after a removal
+       — NFF frees the slot in place, so S.sel kept pointing at it and the
+       detail column went on offering "✕ Remove base" for a base that no longer
+       existed (2026-08-19). Deliberately only on the used→free transition: a
+       slot that was ALREADY free may be selected on purpose — a search hit, or
+       the slot "New base here" has just claimed and is still waiting on. */
+    if (S.sel < 0 || (was && was.used && !(now && now.used))) {
       const first = (d.bases || []).find((b) => b.used);
       S.sel = first ? first.i : -1;
     }
@@ -1214,6 +1281,10 @@
     refresh: refresh,
     state: function () { return S; },
     render: render,
+    /* Re-run the pane's height compensation without repainting anything —
+       domains-pane.js calls this the moment its UI-size slider moves, because
+       a new --dm-ui-scale changes exactly what applyFit measures against. */
+    refit: applyFit,
     _mount: ensureDom,
     _ingest: function (d) { window.nbOpen(d); },
   };

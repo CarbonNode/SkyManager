@@ -338,6 +338,7 @@ window.AnimPane = (function () {
     ui.activeCat = 'All';
     ui.activePack = '';
     if (window.OStimPane && ostimMode()) OStimPane.setMode('poses');
+    if (window.ZazPane && ZazPane.active && ZazPane.active()) ZazPane.leave();
     syncSegActive();
     renderCats();
     renderScope();
@@ -345,7 +346,9 @@ window.AnimPane = (function () {
   }
 
   function syncSegActive() {
-    const inOstim = ostimMode();
+    // "in another segment's body" — OStim or ZaZ; either parks every
+    // poses/fav/custom button inactive.
+    const inOstim = ostimMode() || !!(window.ZazPane && ZazPane.active && ZazPane.active());
     const segPoses = $('an-seg-poses');
     if (segPoses) segPoses.classList.toggle('active', !inOstim && ui.view === 'poses');
     if (els.seg) {
@@ -399,6 +402,8 @@ window.AnimPane = (function () {
     add.title = 'New tab — a collection you fill from any animation’s right-click menu';
     add.addEventListener('click', (ev) => openNamer(ev.currentTarget, null));
     if (segOstim) seg.append(segOstim);   // OStim now sits after the custom tabs…
+    const segZaz = $('an-seg-zaz');
+    if (segZaz) seg.append(segZaz);       // …ZaZ rides beside it (zaz-pane.js owns it)…
     seg.append(add);                      // …and the ＋ trails it as the last control.
 
     syncSegActive();
@@ -727,6 +732,10 @@ window.AnimPane = (function () {
         empty.textContent = 'No favorites yet — hover any animation and hit its ☆.';
       else if (t && !t.items.length)
         empty.textContent = 'Nothing in “' + t.name + '” yet — right-click any animation and “Add to “' + t.name + '””.';
+      // name the control that is actually filtering — a pack scope leaves
+      // ui.activeCat on 'All', so "in this category" pointed at the wrong one
+      else if (ui.activePack)
+        empty.textContent = 'No animations in “' + ui.activePack + '” — clear the pack scope (✕ beside the search box) to see everything.';
       else empty.textContent = 'No animations in this category.';
       els.list.append(empty);
       return;
@@ -775,7 +784,9 @@ window.AnimPane = (function () {
       }
       row.append(btn);
 
-      if (!e.needsFurniture) row.addEventListener('click', (ev) => {
+      // a furniture row is wired up too: apply() refuses it with a toast, which
+      // beats a click that does nothing at all
+      row.addEventListener('click', (ev) => {
         if (ev.target === btn || ev.target.classList.contains('an-star')) return;
         apply(e);
       });
@@ -933,8 +944,36 @@ window.AnimPane = (function () {
     ui.toastT = setTimeout(() => { els.toast.className = 'an-toast'; }, 2200);
   }
 
+  /* Leaving the Poses segment takes our toast with it — it is a sibling of
+     #an-row, so it stays on screen over the OStim / ZaZ list otherwise.
+     Called by OStimPane.setMode / ZazPane.setMode. */
+  function hideToast() {
+    if (!els.toast) return;
+    clearTimeout(ui.toastT);
+    els.toast.className = 'an-toast';
+  }
+
+  /* The Target card's two verbs live here rather than inline in init(), because
+     Omni fires them too — a second copy of "reset" is how the button and the
+     search row drift apart. */
+  function resetPose() {
+    toGame('anReset');
+    toast('reset', true);
+  }
+
+  function toggleCrawl() {
+    if (!state.crawlReady) { toast('crawl not available — rebuild the wardrobe ESP', false); return; }
+    toGame('anCrawl');
+  }
+
   function apply(e) {
-    if (!e || e.needsFurniture) return;
+    if (!e) return;
+    // The search box promises "Enter applies the top hit", so a furniture pose
+    // has to refuse OUT LOUD — a silent return reads as a broken Enter key.
+    if (e.needsFurniture) {
+      toast('needs furniture — put her on a ZaZ piece first (ZaZ segment)', false);
+      return;
+    }
     toGame('anPlay', e.event);
     toast('▸ ' + (e.label || e.event), true);   // optimistic; anResult confirms
     glog('apply ' + e.event);
@@ -962,6 +1001,12 @@ window.AnimPane = (function () {
       eventIndex = null;
       ui.scanning = false;
       if (ui.view !== 'poses' && ui.view !== 'fav' && !tabById(ui.view)) ui.view = 'poses';
+      // ...and the pack scope, for the same reason: a rescan or an anPack untick
+      // can drop the pack the 📦 chip points at, and the chip survived as a dead
+      // filter reading "0 animations". Tested against the live ENTRIES (that is
+      // what the scope actually filters), not state.packs — the built-in ZaZ /
+      // Halo poses never appear in the scanned-packs list.
+      if (ui.activePack && !state.entries.some((e) => packKeyOf(e) === ui.activePack)) ui.activePack = '';
       if (els.source) {
         const nScan = state.packs.filter((p) => p.count).length;
         els.source.textContent = state.entries.length + ' animations · ZaZ + Halo built in' +
@@ -1039,11 +1084,8 @@ window.AnimPane = (function () {
         renderCats(); renderScope(); renderList();
       }
     });
-    els.reset.addEventListener('click', () => { toGame('anReset'); toast('reset', true); });
-    els.crawl.addEventListener('click', () => {
-      if (!state.crawlReady) { toast('crawl not available — rebuild the wardrobe ESP', false); return; }
-      toGame('anCrawl');
-    });
+    els.reset.addEventListener('click', resetPose);
+    els.crawl.addEventListener('click', toggleCrawl);
     if (els.rescan) els.rescan.addEventListener('click', startScan);
 
     // the static Poses/OStim buttons: ostim-pane owns the mode flip; we track
@@ -1082,12 +1124,17 @@ window.AnimPane = (function () {
     ui.shown = true;
     if (els.search) els.search.value = ui.query;
     toGame('anGet');
-    // The OStim segment of this tab rides the Animations tab's lifecycle.
+    // The OStim + ZaZ segments of this tab ride the Animations tab's lifecycle.
     if (window.OStimPane) OStimPane.onAnimShow();
+    if (window.ZazPane) ZazPane.onAnimShow();
     syncSegActive();
   }
 
-  function onHide() { ui.shown = false; closeCtx(); if (window.OStimPane) OStimPane.onAnimHide(); }
+  function onHide() {
+    ui.shown = false; closeCtx();
+    if (window.OStimPane) OStimPane.onAnimHide();
+    if (window.ZazPane) ZazPane.onAnimHide();
+  }
   function toggleEdit() { /* no edit chrome */ }
   function wantsPause() { return true; }
 
@@ -1138,14 +1185,117 @@ window.AnimPane = (function () {
     console.log(out.join('\n'));
   }
 
+  /* ---- Omni landings ---------------------------------------------------
+     A row that fires a VERB works from anywhere, but a row that names a
+     SURFACE — a collection tab, the packs card — has to put that surface on
+     screen. Landing on the tab and leaving the player to find the thing they
+     just typed is the failure the search exists to end. */
+
+  function omniTab() {
+    if (typeof window.__omniSetTab === 'function') window.__omniSetTab('anim');
+    else if (typeof window.setTab === 'function') window.setTab('anim');
+  }
+
+  function goView(v) { omniTab(); setView(v); }
+
+  function goPacks(scan) {
+    goView('poses');            // the packs card lives in the Poses body's sidebar
+    if (scan) startScan();
+    // That card sits at the foot of a scrolling rail, so on a short window it
+    // can land off screen — bring it into view rather than merely near it.
+    try {
+      const card = $('an-packs-card');
+      if (card && card.scrollIntoView) card.scrollIntoView();
+    } catch (e) { /* older webview without scrollIntoView — the tab is still right */ }
+  }
+
   /* ---- Omni search provider (universal search) ------------------------- */
   if (window.HDOmni) HDOmni.register({
     id: 'anim', label: 'Animations', tab: 'anim',
     setFilter: function (q) { ui.query = q || ''; if (els.search) els.search.value = ui.query; renderList(); },
+    /* The catalogue only exists in this pane once anOpen has answered, and that
+       is asked in onShow() — so until the player had visited the tab this
+       session, all ~5,800 animations were invisible to search. Asked ONCE, when
+       we hold nothing: anOpen carries the whole catalogue, and re-paying that
+       on every omni open would hitch the view for a list that barely changes;
+       onShow keeps it fresh from the first visit on. */
+    warm: function () { if (!ui.gotOpen) toGame('anGet'); },
     index: function () {
+      const items = [];
+
+      /* The Target card's verbs. Reset is the escape hatch after a bad pose —
+         the one thing you need when you cannot remember where the tab is. */
+      items.push({
+        label: '↺ Reset pose',
+        detail: 'Animations · ' + (state.target.player ? 'you' : esc(state.target.name)) +
+          ' back to a normal idle',
+        kind: 'anim',
+        keywords: 'reset pose stop animation cancel clear idle stand up normal stuck',
+        run: resetPose,
+        pin: 'anim:verb:reset',
+        snap: { verb: 'reset' },
+      });
+      items.push({
+        label: state.target.crawl ? '🐾 Crawling — stop' : '🐾 Crawl',
+        detail: 'Animations · ' + (state.target.crawl ? 'back onto their feet' : 'on all fours'),
+        kind: 'anim',
+        keywords: 'crawl crawling all fours hands and knees floor',
+        run: toggleCrawl,
+        pin: 'anim:verb:crawl',
+        snap: { verb: 'crawl' },
+      });
+
+      /* The load-order scan is what turns a two-mod catalogue into a
+         whole-load-order one, and it lives behind one button inside a sidebar
+         card — the least discoverable control in the tab. */
+      items.push({
+        label: state.scanned ? '⟳ Rescan the load order for animation packs'
+                             : '⌕ Scan the load order for animation packs',
+        detail: state.scanned
+          ? 'Animations · ' + state.packs.length + ' pack' + (state.packs.length === 1 ? '' : 's') + ' found so far'
+          : 'Animations · find every FNIS pose pack your mods ship',
+        kind: 'anim',
+        keywords: 'scan rescan load order animation pose packs fnis nemesis pandora find mods',
+        run: function () { goPacks(true); },
+        pin: 'anim:verb:scan',
+        snap: { verb: 'scan' },
+      });
+      if (state.scanned) items.push({
+        label: 'Load-order packs',
+        detail: 'Animations · show or hide each scanned pack',
+        kind: 'anim',
+        keywords: 'packs pack list toggle enable disable hide show scanned mods',
+        run: function () { goPacks(false); },
+        pin: 'anim:verb:packs',
+        snap: { verb: 'packs' },
+      });
+
+      /* Favorites and the custom tabs are surfaces the PLAYER named, so their
+         own words are the ones they will type. */
+      const nFav = Object.keys(state.user.favs).length;
+      items.push({
+        label: '★ Favorites',
+        detail: 'Animations · ' + nFav + ' starred animation' + (nFav === 1 ? '' : 's'),
+        kind: 'anim',
+        keywords: 'favorites favourites starred saved collection tab animations',
+        run: function () { goView('fav'); },
+        pin: 'anim:view:fav',
+        snap: { view: 'fav' },
+      });
+      for (const t of state.user.tabs) {
+        items.push({
+          label: t.name,
+          detail: 'Animation tab · ' + t.items.length + ' animation' + (t.items.length === 1 ? '' : 's'),
+          kind: 'anim',
+          keywords: 'tab collection animations poses ' + t.name,
+          run: function () { goView(t.id); },
+          pin: 'anim:view:' + t.id,
+          snap: { view: t.id },
+        });
+      }
+
       // Only the directly-applyable ones are searchable from Omni (furniture
       // needs a furniture object, not a crosshair target).
-      const items = [];
       for (const e of state.entries) {
         if (e.needsFurniture) continue;
         items.push({
@@ -1161,12 +1311,20 @@ window.AnimPane = (function () {
       return items;
     },
     pinRun: function (snap) {
-      if (snap && snap.event) apply({ event: snap.event, label: snap.label, needsFurniture: false });
+      if (!snap) return;
+      // Verb and collection pins carry no event — they name a control or a
+      // surface, and the shelf must fire the same thing the omni row does.
+      if (snap.verb === 'reset') { resetPose(); return; }
+      if (snap.verb === 'crawl') { toggleCrawl(); return; }
+      if (snap.verb === 'scan') { goPacks(true); return; }
+      if (snap.verb === 'packs') { goPacks(false); return; }
+      if (snap.view) { goView(snap.view); return; }
+      if (snap.event) apply({ event: snap.event, label: snap.label, needsFurniture: false });
     },
   });
 
   return {
-    init, onShow, onHide, toggleEdit, wantsPause, segAlwaysOn,
+    init, onShow, onHide, toggleEdit, wantsPause, segAlwaysOn, hideToast,
     _state: state, _ui: ui, _devUser: () => devState.user   // test hooks only
   };
 })();

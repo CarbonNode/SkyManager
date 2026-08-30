@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Spell Deck</title>
   <link rel="stylesheet" href="app.css">
+  <!-- Combat Arts page (moved out of the main deck 2026-08-15): own sheet, per
+       the sync_view_frags lesson. -->
+  <link rel="stylesheet" href="combat-arts-pane.css">
 </head>
 <body>
   <div id="overlay">
@@ -14,6 +17,15 @@
         <div class="title-wrap">
           <h1>Spell&nbsp;Deck</h1>
           <span id="count-chip" title="Spells in view">0</span>
+        </div>
+        <!-- Page switcher (2026-08-15, Rober: "combat arts is meant to be a
+             spell deck tab not a main skymanager tab"). Two pages share this
+             window: the spell list and the Ashes-of-War collection. -->
+        <div id="md-pages" role="tablist" aria-label="Spell Deck pages">
+          <button id="md-page-spells" class="md-page on" role="tab" data-page="spells"
+                  aria-selected="true" title="Your spells, combos and categories">&#10022;&nbsp;Spells</button>
+          <button id="md-page-arts" class="md-page" role="tab" data-page="arts"
+                  aria-selected="false" title="Combat Arts — collect weapon arts, equip one on your blade">&#9876;&nbsp;Combat&nbsp;Arts</button>
         </div>
         <div class="header-actions">
           <button id="deck-btn" class="ghost-btn back" title="Back to the main deck (F7)">&#8592;&nbsp;Deck</button>
@@ -89,6 +101,33 @@
           <div id="removed-section" class="hidden"></div>
         </section>
       </div>
+
+      <!-- Combat Arts page: the Ashes of War collection/equip screen
+           (combat-arts-pane.js owns everything below this static skeleton;
+           C++ combat_arts.cpp owns the roster, the equip and the icon
+           persistence via the ca* bridge). A SIBLING of #body, shown by the
+           page switcher above. Keep this markup in step with
+           combat-arts-pane.test.html. -->
+      <section id="ca-pane" class="hidden" aria-label="Combat Arts">
+        <div class="ca-head">
+          <div class="ca-title">Combat Arts <span id="ca-count-chip"></span></div>
+          <div class="ca-head-hint"
+               title="Ashes of War — collectible weapon arts; at most one rides your weapon at a time">
+            ⚔ one art on your weapon at a time</div>
+        </div>
+        <div id="ca-equip" class="ca-equip hidden"></div>
+        <div id="ca-err" class="ca-err hidden" role="alert"></div>
+        <div class="ca-bar">
+          <span class="ca-bar-glyph">⌕</span>
+          <input id="ca-search" type="text"
+                 placeholder="Search your combat arts — name or number (Enter = equip the top hit)"
+                 autocomplete="off" spellcheck="false">
+        </div>
+        <div id="ca-body"></div>
+        <div id="ca-empty" class="hidden"></div>
+        <div id="ca-toast" class="ca-toast" role="status" aria-live="polite"></div>
+        <div id="ca-picker" class="hidden"></div>
+      </section>
 
       <footer id="hints">
         <span>↑↓ select</span><span>Enter cast/equip</span><span>1–9,0 quick-fire</span>
@@ -166,7 +205,15 @@
          reason #ctx-menu is appended here. -->
     <div id="desc-tip" class="hidden"></div>
   </div>
+  <!-- hd-art BEFORE app.js: the shared art module taps every icon reply C++ pushes
+       (mdIconIndex, mdIcons …) so any surface in this view resolves art without
+       wiring anything. Byte-identical to ../HotkeyDeck/hd-art.js — a PrismaUI view
+       cannot read another view's folder, so the file is copied, not shared. -->
+  <script src="hd-art.js"></script>
   <script src="app.js"></script>
+  <!-- Combat Arts page. After app.js: it takes the custom icon pool from HDArt and
+       lets the module resolve which view it is in, so the same file works in either. -->
+  <script src="combat-arts-pane.js"></script>
   <!-- Engine text-entry guard (Spell Deck): same shared hdTextInput bridge as
        the deck view. Must load after app.js. -->
   <script src="md-textinput.js"></script>

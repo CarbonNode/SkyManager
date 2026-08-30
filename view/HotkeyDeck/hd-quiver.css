@@ -1,0 +1,683 @@
+/* ====================================================================== *
+ *  Quiver (hd-quiver.js) — the ammo radial.
+ *
+ *  A full-screen overlay hanging off document.body (OUTSIDE #panel's
+ *  transform, so bare vh/vw here is CORRECT — the 2026-08-14 audit's rule),
+ *  shown under body.qv-open, deck panel hidden behind it.
+ *
+ *  Identity: looking DOWN into the quiver — round ammo plates fanned in a
+ *  ring around a leather-dark hub, gold fletching accents, a drawn bowstring
+ *  of a ring-line behind the tiles. Deliberately NOT the wheel's wedges and
+ *  NOT the potion browser's list: same family, its own face.
+ *
+ *  Tokens are the deck's own, restated as hex per app.css's convention:
+ *    #1a1a21/#101015 panels · #c9a24b gold · #c9a24b77 gold-line
+ *    #0c0c10 sunk · #16161d raised · #2e2e36 line · #8b8678 dim
+ *    poison green #6fbf5f · enchant violet #9d7fe8
+ *  Big type on purpose: read from a couch at 2560×1440.
+ * ====================================================================== */
+
+/* The layer is a POSITIONING CONTEXT, not a scrim: no backdrop, and no
+   pointer events, so the frozen world you are aiming at stays visible and the
+   quiver is a window over it rather than a takeover (Rober's ask). The box
+   below turns pointer events back on for itself — hd-outfit's floater idiom. */
+#hd-quiver {
+  position: fixed;
+  inset: 0;
+  z-index: 900;              /* the wheel's own layer; the two never co-open */
+  display: none;
+  pointer-events: none;
+  background: none;
+  animation: qv-fade-in 140ms ease-out;
+  cursor: default;
+  user-select: none;
+}
+body.qv-open #hd-quiver { display: block; }
+
+/* The deck panel is meaningless behind the ring — hide, don't dim. */
+body.qv-open #panel { visibility: hidden; }
+
+@keyframes qv-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ------------------------------------------------ the window's own chrome */
+
+.qv-head { cursor: grab; }
+.qv-head:active { cursor: grabbing; }
+.qv-head button { cursor: pointer; }     /* ✕ / ↺ are not drag handles */
+
+.qv-grip {
+  color: #6f6a5e;
+  font-size: 17px;
+  margin-right: 2px;
+  transition: color 120ms ease;
+}
+.qv-head:hover .qv-grip { color: #c9a24b; }
+
+.qv-size {                      /* the resize corner */
+  position: absolute;
+  right: 4px; bottom: 4px;
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  color: #6f6a5e; font-size: 15px;
+  cursor: nwse-resize;
+  border-radius: 7px;
+  transition: color 120ms ease, background 120ms ease;
+}
+.qv-size:hover { color: #c9a24b; background: #c9a24b1a; }
+
+/* While moving or resizing: no text selection anywhere, and the window says
+   it is live. Transitions are OFF so the box tracks the pointer exactly. */
+body.qv-moving { user-select: none; }
+body.qv-moving .qv-box {
+  border-color: #c9a24b;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px #c9a24b55;
+  transition: none;
+}
+
+.qv-foot-2 {
+  display: block;
+  margin-top: 3px;
+  opacity: .72;
+}
+
+/* ------------------------------------------------------------- the box */
+
+.qv-box {
+  position: absolute;        /* placed by applyPlace — left/top/width inline */
+  left: 0; top: 0;
+  /* border-box or the clamp maths is a lie: the probe measured an 880px window
+     occupying 934 real px (padding + border), and the clamp let that overhang
+     the right edge by exactly the difference. */
+  box-sizing: border-box;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: min(880px, 94vw);   /* fallback only; the inline width wins */
+  max-height: calc(100vh - 16px);
+  padding: 18px 26px 14px;
+  border-radius: 18px;
+  border: 1px solid #c9a24b55;
+  background: linear-gradient(180deg, #1a1a21f2 0%, #101015f6 100%);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), inset 0 1px 0 #ffffff10;
+}
+
+.qv-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #c9a24b33;
+}
+.qv-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: #c9a24b;
+  letter-spacing: 0.04em;
+  flex: none;               /* the name never shrinks */
+}
+/* Title · count · rendering-chip · ↺ · ✕ on ONE line at every width the box
+   can be dragged to. The COUNT is the only thing allowed to give: it shrinks
+   and ellipsizes, so a 520px-wide quiver can never wrap the chip onto a
+   second row or shove the ✕ off the header (the mandatory overlap pass). */
+.qv-count {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 15px;
+  color: #8b8678;
+}
+.qv-count-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qv-x {
+  margin-left: auto;
+  width: 38px; height: 38px;
+  border-radius: 10px;
+  border: 1px solid #2e2e36;
+  background: #16161d;
+  color: #8b8678;
+  font-size: 17px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.qv-x:hover { background: #22222b; color: #e8e2d4; border-color: #c9a24b66; }
+
+/* ---------------------------------------------------------- controls -- */
+
+.qv-controls { display: flex; flex-direction: column; gap: 10px; padding: 12px 0 6px; }
+
+.qv-qrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  height: 48px;
+  border-radius: 12px;
+  border: 1px solid #2e2e36;
+  background: #0c0c10;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.qv-qrow:focus-within { border-color: #c9a24b88; box-shadow: 0 0 0 3px #c9a24b22; }
+.qv-qrow .g { font-size: 18px; color: #8b8678; }
+.qv-qrow input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #e8e2d4;
+  font-size: 17px;
+}
+.qv-qrow input::placeholder { color: #6b675c; }
+
+.qv-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.qv-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 15px;
+  border-radius: 999px;
+  border: 1px solid #2e2e36;
+  background: #16161d;
+  color: #b8b2a4;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.qv-pill:hover { background: #1e1e26; color: #e8e2d4; }
+.qv-pill.is-on { background: #c9a24b1f; color: #c9a24b; border-color: #c9a24b88; }
+.qv-pill .c { font-size: 13px; color: #8b8678; }
+.qv-pill.is-on .c { color: #c9a24baa; }
+
+.qv-tunerow { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.qv-sorts, .qv-rings { display: flex; align-items: center; gap: 7px; }
+.qv-sorts .lbl, .qv-rings .lbl { font-size: 14px; color: #6b675c; margin-right: 3px; }
+.qv-sort, .qv-ringn {
+  padding: 7px 13px;
+  border-radius: 9px;
+  border: 1px solid #2e2e36;
+  background: #16161d;
+  color: #b8b2a4;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.qv-sort:hover, .qv-ringn:hover { background: #1e1e26; color: #e8e2d4; }
+.qv-sort.is-on, .qv-ringn.is-on { background: #c9a24b1f; color: #c9a24b; border-color: #c9a24b88; }
+
+/* ------------------------------------------------------------ the ring */
+
+.qv-stage {
+  position: relative;
+  align-self: center;
+  /* the ring IS what the window's width is for — applyPlace sets --qv-stage
+     from the box width and the screen height, so resizing means bigger plates */
+  width: var(--qv-stage, min(560px, 58vh, 86vw));
+  height: var(--qv-stage, min(560px, 58vh, 86vw));
+  /* the grown margins are overhang room: the sel-label above a 12-o'clock
+     tile, the damage badge + page chip below the 6-o'clock one */
+  margin: 26px 0 40px;
+  flex: 0 0 auto;
+}
+/* the bowstring: a faint ring-line the tiles sit on */
+.qv-stage::before {
+  content: '';
+  position: absolute;
+  inset: var(--qv-ring-inset, 44px);   /* renderRing tracks the real radius */
+  border-radius: 50%;
+  border: 2px solid #c9a24b2e;
+  box-shadow: inset 0 0 44px rgba(201, 162, 75, 0.06);
+  pointer-events: none;
+}
+
+.qv-tile {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 2px solid #2e2e36;
+  background: radial-gradient(circle at 32% 28%, #22222b 0%, #14141a 68%);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.qv-tile:hover, .qv-tile.is-sel {
+  border-color: #c9a24b;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.6), 0 0 18px #c9a24b44;
+  transform: translate(-50%, -50%) scale(1.07);
+  z-index: 3;
+}
+.qv-tile.is-nocked { border-color: #c9a24b; }
+.qv-tile.is-nocked::after {
+  content: '';
+  position: absolute;
+  inset: -7px;
+  border-radius: 50%;
+  border: 2px solid #c9a24b99;
+  pointer-events: none;
+}
+.qv-tile.is-gone { opacity: 0.4; filter: grayscale(0.6); }
+
+.qv-plate {
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  color: #c9a24b;
+  background: #0c0c10;
+}
+.qv-plate img.qv-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #0c0c10;
+  animation: qv-art-in 200ms ease both;   /* a render landing fades in, never pops */
+}
+@keyframes qv-art-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---- waiting on a render (Rober: "show some sort of loading animation on
+   the arrows") ---------------------------------------------------------- *
+   A nock ring turning around the fletching glyph: the glyph dims and pulses
+   so the tile still reads as ITS ammo, and one gold arc sweeps the rim so the
+   whole ring says "these are being drawn" at a glance. Two cheap transforms,
+   no JS loop — 16 of them can turn at once without costing a frame. */
+.qv-plate.is-waiting { color: #6a6152; animation: qv-wait-pulse 1.5s ease-in-out infinite; }
+.qv-plate.is-waiting::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: #c9a24b;
+  border-right-color: #c9a24b66;
+  animation: qv-spin 900ms linear infinite;
+  pointer-events: none;
+}
+/* the framework said no (or there is nothing to render from): stop promising
+   a picture — the glyph stands on its own, dimmed, reason on hover */
+.qv-plate.is-noart { color: #4a4740; }
+
+@keyframes qv-spin { to { transform: rotate(360deg); } }
+@keyframes qv-wait-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+
+/* the header's "rendering N" chip — the same spinner, small */
+.qv-rendering {
+  display: inline-flex;
+  align-items: center;
+  flex: none;          /* the chip is the fixed part; the count text gives */
+  gap: 7px;
+  margin-left: 12px;
+  padding: 2px 11px 3px;
+  border: 1px solid #c9a24b3d;
+  border-radius: 999px;
+  background: #c9a24b12;
+  color: #c9a24b;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.qv-rendering .qv-spin {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid #c9a24b3d;
+  border-top-color: #c9a24b;
+  animation: qv-spin 900ms linear infinite;
+}
+
+/* damage — on EVERY tile, the ask made it law */
+.qv-dmg {
+  position: absolute;
+  left: 50%;
+  bottom: -12px;
+  transform: translateX(-50%);
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid #c9a24b66;
+  background: #101015;
+  color: #c9a24b;
+  font-size: 15px;
+  font-weight: 700;
+  z-index: 2;
+}
+.qv-dmg::before { content: '⚔ '; font-size: 11px; }
+.qv-cnt {
+  position: absolute;
+  top: -8px;
+  right: -6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid #2e2e36;
+  background: #16161d;
+  color: #b8b2a4;
+  font-size: 13.5px;
+  z-index: 2;
+}
+.qv-dots {
+  position: absolute;
+  top: -7px;
+  left: -5px;
+  display: flex;
+  gap: 2px;
+  z-index: 2;
+}
+.qv-dot {
+  width: 23px; height: 23px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  border: 1px solid #2e2e36;
+  background: #101015;
+}
+.qv-dot.d-poison { color: #6fbf5f; border-color: #6fbf5f66; }
+.qv-dot.d-ench   { color: #9d7fe8; border-color: #9d7fe866; }
+.qv-dot.d-fav    { color: #c9a24b; border-color: #c9a24b66; }
+
+.qv-sel-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  max-width: 240px;
+  padding: 4px 12px;
+  border-radius: 9px;
+  border: 1px solid #c9a24b55;
+  background: #101015ee;
+  color: #e8e2d4;
+  font-size: 15.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* --------------------------------------------------------------- hub -- */
+
+.qv-hub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 280px;   /* fallback — renderRing sets the real size from the ring geometry */
+  height: 280px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  text-align: center;
+  padding: 18px 16px;
+  border-radius: 50%;
+  justify-content: center;
+  transition: width 140ms ease, height 140ms ease;
+  background: radial-gradient(circle at 50% 34%, #191920 0%, #0e0e13 78%);
+  border: 1px solid #c9a24b33;
+  box-shadow: inset 0 0 34px rgba(0, 0, 0, 0.55);
+}
+.qv-hub-kind { font-size: 14px; color: #8b8678; letter-spacing: 0.06em; text-transform: uppercase; }
+.qv-hub-kind .nk { color: #c9a24b; }
+.qv-hub-name {
+  max-width: 100%;
+  font-size: 19px;
+  font-weight: 700;
+  color: #e8e2d4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.qv-hub-nums { display: flex; gap: 14px; font-size: 15px; color: #b8b2a4; }
+.qv-hub-nums .n-dmg { color: #c9a24b; }
+.qv-hub-nums .n-dmg b { font-size: 17px; }
+.qv-hub-fx {
+  max-width: 100%;
+  font-size: 14.5px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.qv-hub-fx.is-poison { color: #6fbf5f; }
+.qv-hub-fx.is-ench { color: #9d7fe8; }
+.qv-hub-fx .sub { display: block; color: #8b8678; font-size: 13.5px; }
+.qv-hub-act { display: flex; align-items: center; gap: 9px; margin-top: 4px; }
+#qv-nock {
+  padding: 10px 22px;
+  border-radius: 11px;
+  border: 1px solid #c9a24b88;
+  background: linear-gradient(180deg, #c9a24b2b 0%, #c9a24b14 100%);
+  color: #c9a24b;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+#qv-nock:hover:not(:disabled) { box-shadow: 0 0 16px #c9a24b44; }
+#qv-nock:disabled { opacity: 0.45; cursor: default; }
+#qv-fav, #qv-reart {
+  width: 42px; height: 42px;
+  border-radius: 11px;
+  border: 1px solid #2e2e36;
+  background: #16161d;
+  color: #6b675c;
+  font-size: 18px;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+#qv-fav:hover, #qv-reart:hover { color: #c9a24b; border-color: #c9a24b55; }
+#qv-fav.is-on { color: #c9a24b; border-color: #c9a24b88; }
+#qv-fav:focus-visible, #qv-reart:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+
+.qv-hub-none { font-size: 44px; color: #2e2e36; }
+.qv-hub-skel { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 70%; }
+.qv-hub-skel > div {
+  border-radius: 7px;
+  background: linear-gradient(90deg, #16161d 25%, #1e1e26 50%, #16161d 75%);
+}
+.qv-hub-skel .s1 { width: 45%; height: 13px; }
+.qv-hub-skel .s2 { width: 80%; height: 21px; }
+.qv-hub-skel .s3 { width: 60%; height: 15px; }
+
+.qv-page {
+  position: absolute;
+  left: 50%;
+  bottom: -36px;   /* in the stage's grown bottom margin, clear of the
+                      6-o'clock tile's damage badge */
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 14px;
+  color: #8b8678;
+  z-index: 5;
+}
+.qv-pg {
+  width: 32px; height: 32px;
+  border-radius: 9px;
+  border: 1px solid #2e2e36;
+  background: #16161d;
+  color: #b8b2a4;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+.qv-pg:hover { background: #22222b; color: #c9a24b; }
+
+.qv-empty {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 78%;
+  text-align: center;
+  font-size: 17px;
+  line-height: 1.5;
+  color: #8b8678;
+}
+.qv-empty b { color: #e8e2d4; }
+
+/* ----------------------------------------------------- launcher strip -- */
+
+.qv-launcher {
+  min-height: 26px;
+  padding: 9px 4px 2px;
+  border-top: 1px solid #c9a24b22;
+  font-size: 15px;
+  color: #b8b2a4;
+  text-align: center;
+}
+.qv-launcher b { color: #e8e2d4; }
+.qv-launcher .dim { color: #6b675c; }
+.qv-lp { color: #6fbf5f; }
+
+.qv-foot {
+  padding-top: 7px;
+  font-size: 13.5px;
+  color: #6b675c;
+  text-align: center;
+}
+
+/* --------------------------------------------------------------- toast */
+
+.qv-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 74px;
+  transform: translateX(-50%) translateY(8px);
+  padding: 11px 22px;
+  border-radius: 11px;
+  border: 1px solid #c9a24b66;
+  background: #101015f2;
+  color: #e8e2d4;
+  font-size: 16px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 6;
+}
+.qv-toast.is-on { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ------------------------------------------------- narrow / short fits */
+
+@media (max-height: 860px) {
+  /* stage size comes from --qv-stage (applyPlace already folds in the screen
+     height), so no override here — it would beat the window's own width */
+  .qv-hub-name { font-size: 16.5px; }
+  /* the foot carries the only clue that the window MOVES — shrink it on a
+     short screen, never hide it */
+  .qv-foot { font-size: 12.5px; padding-top: 4px; }
+  .qv-foot-1, .qv-foot-2 { display: block; }
+}
+@media (max-width: 700px) {
+  .qv-box { padding: 12px 14px 10px; }
+  .qv-title { font-size: 20px; }
+  .qv-tunerow { justify-content: center; }
+}
+
+/* ================================================================== *
+ *  Polish pass (2026-08-15): density classes, entrance motion,
+ *  pressed/focus states, tight-hub mode. renderRing() sets qv-nN on
+ *  the stage and qv-hub-tight when the ring leaves the hub < 220px.
+ * ================================================================== */
+
+/* the 16-ring wears smaller jewellery so neighbours never collide */
+.qv-n16 .qv-plate { font-size: 24px; }
+.qv-n16 .qv-dmg { font-size: 13px; padding: 1px 8px; bottom: -10px; }
+.qv-n16 .qv-dmg::before { font-size: 10px; }
+.qv-n16 .qv-cnt { font-size: 12px; padding: 1px 7px; top: -6px; right: -4px; }
+.qv-n16 .qv-dot { width: 19px; height: 19px; font-size: 11px; }
+/* the 8-ring can afford bigger art glyphs */
+.qv-n8 .qv-plate { font-size: 38px; }
+
+/* entrance: plates pop in staggered around the ring, the hub breathes in —
+   scoped to .qv-enter, which open() removes after 550 ms, so re-renders
+   (arrow keys, filters, pages) never replay it */
+.qv-enter .qv-tile {
+  animation: qv-pop 240ms cubic-bezier(0.2, 0.9, 0.3, 1.15) backwards;
+  animation-delay: calc(var(--i, 0) * 18ms);
+}
+.qv-enter .qv-hub {
+  animation: qv-hub-in 240ms ease-out backwards;
+}
+@keyframes qv-pop {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.55); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes qv-hub-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+/* pressed states — a control that doesn't push back reads as dead */
+.qv-pill:active, .qv-sort:active, .qv-ringn:active, .qv-pg:active,
+.qv-x:active, #qv-fav:active { transform: scale(0.95); }
+#qv-nock:active:not(:disabled) { transform: scale(0.97); }
+
+/* keyboard focus — same gold ring the search row wears */
+.qv-pill:focus-visible, .qv-sort:focus-visible, .qv-ringn:focus-visible,
+.qv-pg:focus-visible, .qv-x:focus-visible,
+#qv-nock:focus-visible, #qv-fav:focus-visible {
+  outline: 2px solid #c9a24b88;
+  outline-offset: 2px;
+}
+
+/* search-hit highlight, in the hub name and the floating label */
+.qv-hub-name mark, .qv-sel-label mark {
+  background: #c9a24b33;
+  color: #ffe9b3;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+/* tight hub (short screens / the 8-ring on a small stage): keep it readable
+   by shedding the least-load-bearing rows instead of shrinking the type */
+.qv-hub-tight { gap: 4px; padding: 12px 12px; }
+.qv-hub-tight .qv-hub-name { font-size: 16.5px; -webkit-line-clamp: 1; }
+.qv-hub-tight .qv-hub-fx { -webkit-line-clamp: 1; }
+.qv-hub-tight .qv-hub-fx .sub { display: none; }
+.qv-hub-tight #qv-nock { padding: 8px 16px; font-size: 15px; }
+.qv-hub-tight #qv-fav { width: 38px; height: 38px; }
+
+/* ---------------- big screens: use the space (UI rule 2) ---------------- *
+ * Rober plays at 2560x1440 from a couch — an 880px box in that field reads
+ * miniature. Past 1800px the whole surface steps up a size: real layout
+ * sizes, never a transform (Ultralight rasters at layout size — the
+ * face-fit pixelation lesson). */
+@media (min-width: 1800px) and (min-height: 1000px) {
+  .qv-box { padding: 24px 34px 18px; border-radius: 22px; }   /* width is the user's now */
+  .qv-title { font-size: 30px; }
+  .qv-count { font-size: 17px; }
+  .qv-x { width: 44px; height: 44px; font-size: 19px; }
+  .qv-qrow { height: 58px; border-radius: 14px; }
+  .qv-qrow input { font-size: 20px; }
+  .qv-qrow .g { font-size: 21px; }
+  .qv-pill { font-size: 17px; padding: 11px 19px; }
+  .qv-pill .c { font-size: 15px; }
+  .qv-sort, .qv-ringn { font-size: 16px; padding: 9px 16px; }
+  .qv-sorts .lbl, .qv-rings .lbl { font-size: 15px; }
+  .qv-dmg { font-size: 17px; }
+  .qv-cnt { font-size: 15px; }
+  .qv-dot { width: 26px; height: 26px; font-size: 15px; }
+  .qv-n16 .qv-dmg { font-size: 15px; }
+  .qv-n16 .qv-cnt { font-size: 13.5px; }
+  .qv-n16 .qv-dot { width: 22px; height: 22px; font-size: 12.5px; }
+  .qv-sel-label { font-size: 17px; max-width: 320px; }
+  .qv-hub-kind { font-size: 15.5px; }
+  .qv-hub-name { font-size: 23px; }
+  .qv-hub-nums { font-size: 17px; }
+  .qv-hub-nums .n-dmg b { font-size: 20px; }
+  .qv-hub-fx { font-size: 16px; }
+  .qv-hub-fx .sub { font-size: 14.5px; }
+  #qv-nock { font-size: 18px; padding: 12px 26px; }
+  #qv-fav { width: 48px; height: 48px; font-size: 21px; }
+  .qv-launcher { font-size: 17px; }
+  .qv-foot { font-size: 15px; }
+  .qv-empty { font-size: 19px; }
+  .qv-toast { font-size: 18px; }
+}

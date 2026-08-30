@@ -294,6 +294,8 @@ window.WardrobeNff = (function () {
       class: 'nf-face', src: plain + '?v=' + (p.mtime || 0), alt: '',
       title: npc.name || '', draggable: 'false',
     });
+    /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
+    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, plain);
     let retried = false;
     img.addEventListener('error', function () {
       if (!retried) { retried = true; img.src = plain; return; }
@@ -326,6 +328,12 @@ window.WardrobeNff = (function () {
   function rerender() { if (host && typeof host.render === 'function') host.render(); }
   function toast(msg) {
     if (host && typeof host.toast === 'function') { host.toast(msg); return; }
+    /* `host` is only handed over by render(ctx), and this module stopped
+       rendering a tab of its own in the People redesign — so in the game the
+       host is null and a refusal used to end up in a console nobody reads.
+       app.js publishes the deck's own toast as a global; use it, and keep the
+       log for the standalone harness, where there is no deck around it. */
+    if (typeof window.toast === 'function') { window.toast(msg); return; }
     console.log('[nff toast]', msg);
   }
 
@@ -1659,6 +1667,143 @@ window.WardrobeNff = (function () {
     ui.loading = false;
   }
 
+  /* ---- Omni search provider (universal search) -------------------------- *
+   *
+   * This module has no sub-tab of its own any more: its surfaces are drawn
+   * INSIDE the host's People sheet and inside the F7 quick card, so there is no
+   * button anywhere that says "NFF". That made search the only door to it, and
+   * the door was shut — the host's provider indexes SOES outfits, wardrobes and
+   * assignments, and everything here lives in state.npcs. Typing the name a
+   * player gave one of her sets ("Riverwood green"), or "satchel", or "NFF",
+   * found nothing at all.
+   *
+   * Every row carries its own jump() to her People card. The provider-level
+   * jump would land on the Wardrobe tab's last-used section, which is not the
+   * one person the row is about — and her card is where all of these controls
+   * are drawn anyway, so the ↗ is always the honest "show me where this lives".
+   *
+   * warm() asks for the roster on omni-open: nfGet otherwise only fires when
+   * the People section is entered, so the first search of a session would index
+   * an empty roster and quietly report that NFF knows nobody. */
+  function omniHerCard(npc) {
+    const H = window.WardrobePane;
+    /* setTab FIRST, then aim: the host's onShow() re-reads its state and
+       re-renders, which would wipe a sheet opened before the switch. */
+    if (typeof window.__omniSetTab === 'function') window.__omniSetTab('wardrobe');
+    if (H && typeof H.quickFocus === 'function' && H.quickFocus(keyOf(npc))) return;
+    /* Both rosters are built from the same Follower Organizer data, so this is
+       the rare case — name the list she is missing from rather than leave a
+       result that quietly did nothing. */
+    toast((npc.name || 'She') + ' is on NFF’s roster but not on the Wardrobe’s People list.');
+  }
+
+  const omniProvider = {
+    id: 'wardrobe-nff', label: 'NFF outfits', tab: 'wardrobe',
+    warm: function () { toGame('nfGet', ''); },
+    index: function () {
+      const items = [];
+      /* NFF absent: there is nothing here to find, and offering rows that every
+         one of them would refuse is worse than offering none. */
+      if (!state.nff) return items;
+
+      state.npcs.forEach((npc) => {
+        const key = keyOf(npc);
+        const m = metaFor(key);
+        const who = npc.name || '(unnamed)';
+        const claimed = !!(m && m.claimed);
+        const jump = () => omniHerCard(npc);
+        /* "Known" = NFF has actually dressed her at some point: she owns a
+           storage slot, or one of the three sets has clothes in it. For anyone
+           else the only useful row is the person herself — her card is where
+           you give her a first outfit. */
+        const known = npc.slot >= 0 || (npc.have || []).some(Boolean);
+
+        items.push({
+          label: who,
+          detail: 'NFF outfits' + (claimed ? ' · NFF dresses her'
+            : (npc.wardrobe ? ' · the Wardrobe dresses her' : '')),
+          kind: 'nff follower',
+          keywords: 'nff nether follower framework outfits clothes sets '
+                  + ((m && m.note) || ''),
+          /* Enter and ↗ are the same act here: her card IS what this row is. */
+          run: jump, jump: jump,
+        });
+
+        if (known) {
+          SETS.forEach((s) => {
+            const t = s.t;
+            const label = setLabel(m, t);
+            const has = !!(npc.have && npc.have[t]);
+            const named = !!(m && m.sets && m.sets[t] && m.sets[t].label);
+            const count = npc.counts ? npc.counts[t] : -1;
+            /* A set she has, or one she has NAMED — the player who typed that
+               name is looking for it whether or not it has clothes in it yet.
+               An untouched empty set is not a thing anyone searches for. */
+            if (has || named) {
+              items.push({
+                label: label,
+                detail: who + ' · ' + (has
+                  ? (count >= 0 ? count + ' piece' + (count === 1 ? '' : 's') : 'ready')
+                  : 'empty — fill it first') + ' · ' + s.hint,
+                kind: 'nff set',
+                keywords: 'nff outfit set wear dress put on ' + s.name + ' ' + who + ' '
+                        + ((m && m.sets[t] && m.sets[t].note) || ''),
+                /* wearSet() answers {ok,msg} instead of toasting, because the
+                   quick card wanted the sentence rather than the overlay — so
+                   the caller says it, and a refusal explains itself. */
+                run: () => { const r = wearSet(key, t); if (r.msg) toast(r.msg); },
+                jump: jump,
+              });
+            }
+            items.push({
+              label: label + ' chest',
+              detail: who + ' · put clothes into her ' + s.name + ' outfit',
+              kind: 'nff chest',
+              keywords: 'nff chest container fill give clothes outfit storage '
+                      + s.name + ' ' + who,
+              run: () => { const r = openChest(key, t); if (r.msg) toast(r.msg); },
+              jump: jump,
+            });
+          });
+          if (npc.slot >= 0) {
+            items.push({
+              label: who + '’s satchel',
+              detail: 'The fourth container — what she carries, not one of the three sets',
+              kind: 'nff satchel',
+              keywords: 'nff satchel bag pack container storage carry ' + who,
+              run: () => { const r = openSatchel(key); if (r.msg) toast(r.msg); },
+              jump: jump,
+            });
+          }
+        }
+
+        /* The exclusive handover. This is the control that resolves the
+           documented SOES-vs-NFF double-management crash, and until now you had
+           to find her in the People card before you could reach it. */
+        items.push({
+          label: (claimed ? 'Release ' + who + ' from NFF' : 'Hand ' + who + ' to NFF'),
+          detail: npc.conflict
+            ? '⚠ both systems hold her — this is the fix'
+            : (claimed ? 'Give her back to the Wardrobe'
+              : 'NFF dresses her from now on; her Wardrobe assignment is cleared'),
+          kind: 'handover',
+          keywords: 'nff soes handover clash two systems dressed by switch claim '
+                  + 'release swap backend ' + who,
+          run: () => {
+            if (!setClaim(key, !claimed)) { toast('NFF doesn’t know her.'); return; }
+            toast(claimed
+              ? 'Releasing ' + who + ' — the Wardrobe can dress her again.'
+              : 'Handing ' + who + ' to NFF — her Wardrobe assignment is cleared.');
+          },
+          jump: jump,
+        });
+      });
+
+      return items;
+    },
+  };
+  if (window.HDOmni) HDOmni.register(omniProvider);
+
   /* ============================================================ export == */
 
   const api = {
@@ -1693,8 +1838,10 @@ window.WardrobeNff = (function () {
     /* Optional plug-in hook: the host draws its "◇ NFF outfits" affordance only
      * for a sub-tab that offers this, so an older host simply never calls it. */
     focusNpc: focusNpc,
-    /* exposed for the harness */
-    _state: state, _ui: ui, _sets: SETS, _els: els,
+    /* exposed for the harness. `_omni` is the search provider itself: the
+       harness has no hd-omni.js, so HDOmni.register() never runs there and this
+       is the only handle its checks can index() through. */
+    _state: state, _ui: ui, _sets: SETS, _els: els, _omni: omniProvider,
     _iconSrc: iconSrc, _matches: matches, _setLabel: setLabel, _ensureMeta: ensureMeta,
     _devBoot: devBoot, _receive: receive, _openSheet: openSheet, _closeSheet: closeSheet,
     _openPicker: openPicker, _closePicker: closePicker, _guard: guard, _keyOf: keyOf,

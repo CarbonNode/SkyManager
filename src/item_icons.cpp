@@ -13,8 +13,58 @@
 #include <fstream>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+/* Mesh Rendering Framework's OWN public API header, vendored (2026-08-20).
+ *
+ * Generated from upstream's `MeshRenderingFrameworkAPI.h` by
+ * modding/tools/gen_mrf_header.py — the one way this repo obtains MRF's API,
+ * shared with Preset Director (modding/preset-director/src/director.cpp is the
+ * in-repo precedent). It is COMMITTED here rather than generated at build time
+ * because the build door copies `src/*` into the xmake workspace and builds —
+ * there is no step in that path that could run python first, so a generated-but-
+ * uncommitted header would simply be missing. The generator's docstring says the
+ * same thing from the other side, and README.md has the regenerate command.
+ *
+ * WHY IT REPLACED THE OLD ARRANGEMENT. This file used to hand-type MRF's export
+ * signatures and hand-mirror its IMesh struct, on the strength of a comment
+ * claiming the framework "only exports four C functions". That was true of
+ * v3.0.0 and is not true today, and the mirror had already drifted: upstream's
+ * IMesh grew `bodyTintColor[3]` + `useBodyTint` (MeshRenderingFrameworkAPI.h
+ * :43-44), so the real struct is 0x98 bytes and our mirror still static_asserted
+ * 0x88 — an assert that only ever checked the mirror against ITSELF. Nothing was
+ * corrupted by that (we never read or write past 0x81), but the drift was
+ * invisible, which is the actual defect. Below, every offset is now checked
+ * against upstream's real type by the compiler.
+ *
+ * `--core-only`: the generated header keeps the IMesh ABI, GetFunction and every
+ * IMesh_* soft-bind wrapper (verbatim upstream text) and drops MRF's
+ * NPC-composition helper layer. We call none of that layer — the face path here
+ * composes head + wig itself and is deliberately frozen — and it is a wall of
+ * non-template inline functions reaching deep into CommonLibSSE-NG, which would
+ * be compiled whether called or not. See the generator for the full list.
+ *
+ * NOT vendored, and still hand-declared below: `IMesh_SetShapeTextureSet`. That
+ * export is OURS (mrf-build patch zz-shape-textureset.patch), so it is absent
+ * from upstream's header by definition. */
+#include "mrf_api.h"
+
+// mrf_api.h brings <d3d11.h>, which re-pulls windows.h — and windows.h defines
+// min/max as MACROS unless NOMINMAX was set before it, swallowing every
+// std::min/std::max in the translation unit behind useless diagnostics
+// ("illegal token on right side of '::'" then a cascade of unmatched braces).
+// portrait_capture.cpp, keys_scan.cpp and spellcraft_actions.cpp all pay this
+// tax already; undef here rather than fight the include order. (This file's one
+// use is written `(std::min)(…)`, which is immune on its own — the guard is so
+// that ADDING a plain std::min later cannot resurrect the failure.)
+#ifdef min
+#	undef min
+#endif
+#ifdef max
+#	undef max
+#endif
 
 namespace ItemIcons
 {
@@ -90,6 +140,23 @@ namespace ItemIcons
 		// still ignores this entirely, so opening the Finder stays full-speed.
 		constexpr auto kPaceGapIdle = std::chrono::milliseconds(3000);
 
+		/* ⛔ A PAUSED GAME IS NOT AN IDLE GPU. The pacing below used to stop
+		 * entirely whenever the world was not being drawn — "nothing to protect".
+		 * Half true: the world is not drawn, but the MENU is, and on this rig it
+		 * is composited through the upscaler. Measured 2026-08-17 from three deck
+		 * opens in one session: the one that coincided with 26 queued renders
+		 * took `paint 1572 ms`, against 105 ms and 46 ms for the opens either
+		 * side of it. Rober's words for that session were "intense lag ...
+		 * opening menu" and "basically unplayable".
+		 *
+		 * So a menu now gets two things. A GRACE window where nothing starts at
+		 * all, so the palette's first paint is never raced — that is the one the
+		 * player feels — and a modest gap between starts afterwards, so browsing
+		 * stays smooth. Both are far shorter than the live-play gaps: a paused
+		 * game really can afford more render work, just not unbounded work. */
+		constexpr auto kMenuOpenGrace = std::chrono::milliseconds(900);
+		constexpr auto kPaceGapMenu   = std::chrono::milliseconds(160);
+
 		// After the first load of a session settles, hold the IDLE tier off the
 		// D3D device entirely for this long while the game is LIVE — the window
 		// where the cell is streaming in and every stolen frame is felt hardest.
@@ -98,6 +165,18 @@ namespace ItemIcons
 		// Paused time (deck/menus/load screen) does not count against it — see
 		// GamePaused in Pump. User renders are never delayed by this.
 		constexpr auto kIdleSettleDelay = std::chrono::seconds(45);
+
+		// ...and hold it off for this long after a LOAD SCREEN closes, regardless
+		// of whether the game is paused (2026-08-16). kIdleSettleDelay above is
+		// bypassed whenever the world is not being drawn — deliberately, so that
+		// opening the Finder right after boot still fills with faces. But the
+		// player opening the deck ten seconds after a load would then release the
+		// whole warm-start burst at paused full-speed while the cell is STILL
+		// streaming behind the paused palette, which is the tail of the same
+		// startup stutter. This is the "no loading menu for N seconds" gate: it
+		// narrows the IDLE tier only — a page the player actually opened renders
+		// immediately, always.
+		constexpr auto kPostLoadIdleHold = std::chrono::seconds(12);
 
 		/* A safety net for the texture swap, not a diagnosis — the diagnosis lives
 		 * in ApplySwaps, which explains what the framework actually does.
@@ -125,19 +204,59 @@ namespace ItemIcons
 		constexpr std::uint32_t kSpinStep   = 90;
 		constexpr std::uint32_t kSpinFrames = 360 / kSpinStep;   // 4
 
-		// How long the watcher will keep pumping a batch. 600 ticks (~7 min) cut
-		// the 2026-08-02 batch off mid-flight: four pieces armed at 21:22:35 were
-		// only retired at 21:24:32, when an unrelated EnsureIcons() happened to
+		// How long the watcher will keep pumping a batch. A 600-tick budget (~7 min)
+		// cut the 2026-08-02 batch off mid-flight: four pieces armed at 21:22:35
+		// were only retired at 21:24:32, when an unrelated EnsureIcons() happened to
 		// pump. A batch that keeps making progress must be allowed to finish; the
-		// loop still exits the instant the queue and the in-flight list are both
-		// empty, so this cap only bounds a batch that is genuinely stuck.
-		constexpr int kWatchTicks = 5000;   // ~58 min at 700 ms
+		// loop still exits the instant the queues and the in-flight list are all
+		// empty, so this cap only bounds a batch that is genuinely stuck. Wall-clock
+		// rather than a tick count, because the tick is now adaptive (below).
+		constexpr auto kWatchMax = std::chrono::minutes(58);
 
-		/* ── the framework's IMesh, mirrored ────────────────────────────────
-		 * Field-for-field mirror of MeshRenderingFrameworkAPI's IMesh, layout
-		 * fixed by THIS file and the asserts — not by a header that could
-		 * re-pad a type. Identical to portraits.cpp; see there for the field
-		 * provenance. */
+		/* How often the watcher looks. The pump is the ONLY place a render is
+		 * started and the only place a finished one is retired, so the tick is a
+		 * hard ceiling on throughput for whatever the player is waiting on. The
+		 * flat 700 ms was well under the render cost while the world was being
+		 * drawn, but far over it with the deck open (renders measured ~250-700 ms
+		 * on 2026-08-19, started 700 ms apart) — so a user batch crawled at the
+		 * watcher's speed, not the framework's. It now ticks fast while any USER
+		 * work is queued or in flight and drops back to the quiet tick otherwise.
+		 * kTickUser stays comfortably above kPaceGapMenu so the menu-paint pacing,
+		 * not the watcher, remains the thing that spaces starts. */
+		constexpr auto kTickIdle = std::chrono::milliseconds(700);
+		constexpr auto kTickUser = std::chrono::milliseconds(250);
+
+		// MRF's real types, from its real header. Everything below that used to be
+		// hand-typed is now derived from these.
+		namespace MRF = MeshRenderingFrameworkAPI;
+		using MrfMesh  = MRF::Internal::IMesh;
+
+		/* ── the framework's IMesh, as a flat-float VIEW ─────────────────────
+		 * `MrfMesh` above IS the framework's struct now — this is not a second
+		 * definition of it, it is a same-layout view that spells the vector
+		 * fields as plain float arrays.
+		 *
+		 * WHY THE VIEW SURVIVES the header adoption, since a view is exactly the
+		 * kind of thing this change exists to delete: the clutter fit reads the
+		 * bounds as `abi->boundMax[0]` and lives inside the machine-guarded
+		 * ⛔ RENDER-GEOMETRY region (scripts/guarded-regions.py). Upstream spells
+		 * those fields RE::NiPoint3, so using MrfMesh directly there would mean
+		 * editing fenced lines — and a commit touching that region owes an in-game
+		 * A/B trailer, which a no-visual-change refactor has no business spending.
+		 * The fit is what makes a potion fill its frame and what keeps its bottom
+		 * half out of the near plane; it is not a refactor target. So the view
+		 * stays, and the asserts below make it impossible for it to drift.
+		 *
+		 * That is the real change here. The old asserts checked this struct's
+		 * offsets against HARDCODED NUMBERS — i.e. against itself — which is why
+		 * nobody noticed upstream growing `bodyTintColor` + `useBodyTint` past the
+		 * asserted 0x88 size. Every offset is now ALSO compared to the same field
+		 * of the framework's own type, so a future upstream re-pad is a build
+		 * error in this file instead of a silent misread at runtime.
+		 *
+		 * The absolute numbers are kept beside the cross-checks on purpose: they
+		 * are the layout the deployed DLL was disassembled at, so if the two ever
+		 * disagree the failing assert says WHICH side moved. */
 		struct IMeshAbi
 		{
 			std::uint64_t id;               // 0x00
@@ -166,15 +285,75 @@ namespace ItemIcons
 		static_assert(offsetof(IMeshAbi, savePath) == 0x78, "IMesh mirror drifted");
 		static_assert(offsetof(IMeshAbi, mustUpdate) == 0x80, "IMesh mirror drifted");
 		static_assert(offsetof(IMeshAbi, alwaysUpdate) == 0x81, "IMesh mirror drifted");
-		static_assert(sizeof(IMeshAbi) == 0x88, "IMesh mirror drifted");
 
-		/* ── binding (soft, like the FollowerOrganizer bridge) ─────────────── */
+		/* ── and the same offsets against the FRAMEWORK'S OWN TYPE ───────────
+		 * The view may only ever be read through fields that land in the same
+		 * place upstream puts them. `sizeof` is deliberately `<=`, not `==`:
+		 * upstream's struct legitimately carries two more fields after
+		 * `alwaysUpdate` (bodyTintColor, useBodyTint) that this view has no
+		 * business knowing about — it must never be the LARGER of the two, which
+		 * is the only version of that comparison that could hurt anyone. */
+		static_assert(offsetof(MrfMesh, id) == offsetof(IMeshAbi, id), "IMesh view drifted from MRF: id");
+		static_assert(offsetof(MrfMesh, rotation) == offsetof(IMeshAbi, rotation), "IMesh view drifted from MRF: rotation");
+		static_assert(offsetof(MrfMesh, position) == offsetof(IMeshAbi, position), "IMesh view drifted from MRF: position");
+		static_assert(offsetof(MrfMesh, boundMin) == offsetof(IMeshAbi, boundMin), "IMesh view drifted from MRF: boundMin");
+		static_assert(offsetof(MrfMesh, boundMax) == offsetof(IMeshAbi, boundMax), "IMesh view drifted from MRF: boundMax");
+		static_assert(offsetof(MrfMesh, scale) == offsetof(IMeshAbi, scale), "IMesh view drifted from MRF: scale");
+		static_assert(offsetof(MrfMesh, width) == offsetof(IMeshAbi, width), "IMesh view drifted from MRF: width");
+		static_assert(offsetof(MrfMesh, height) == offsetof(IMeshAbi, height), "IMesh view drifted from MRF: height");
+		static_assert(offsetof(MrfMesh, texture) == offsetof(IMeshAbi, texture), "IMesh view drifted from MRF: texture");
+		static_assert(offsetof(MrfMesh, SRV) == offsetof(IMeshAbi, SRV), "IMesh view drifted from MRF: SRV");
+		static_assert(offsetof(MrfMesh, saveNextFrame) == offsetof(IMeshAbi, saveNextFrame), "IMesh view drifted from MRF: saveNextFrame");
+		static_assert(offsetof(MrfMesh, deleteAfterSave) == offsetof(IMeshAbi, deleteAfterSave), "IMesh view drifted from MRF: deleteAfterSave");
+		static_assert(offsetof(MrfMesh, savePath) == offsetof(IMeshAbi, savePath), "IMesh view drifted from MRF: savePath");
+		static_assert(offsetof(MrfMesh, mustUpdate) == offsetof(IMeshAbi, mustUpdate), "IMesh view drifted from MRF: mustUpdate");
+		static_assert(offsetof(MrfMesh, alwaysUpdate) == offsetof(IMeshAbi, alwaysUpdate), "IMesh view drifted from MRF: alwaysUpdate");
+		static_assert(sizeof(IMeshAbi) <= sizeof(MrfMesh), "IMesh view is larger than MRF's own struct");
+		static_assert(sizeof(float[9]) == sizeof(MrfMesh::rotation), "IMesh view: rotation is not a 3x3 float block");
+		static_assert(sizeof(float[3]) == sizeof(MrfMesh::boundMin), "IMesh view: boundMin is not a float triple");
 
-		using CreateByNifFn     = void* (*)(const char*, std::uint32_t, std::uint32_t);
-		using DeleteFn          = void (*)(void*);
+		/* ── binding (soft, like the FollowerOrganizer bridge) ───────────────
+		 * The SIGNATURES are upstream's, taken off its own declarations — never
+		 * hand-typed here again. `decltype(&…)` of an inline wrapper yields the
+		 * exact function-pointer type the export has, calling convention
+		 * included, so a signature change upstream is a compile error rather than
+		 * a stack corruption.
+		 *
+		 * We still resolve and CALL through raw pointers instead of using the
+		 * header's inline wrappers directly, for one reason: every call into the
+		 * framework goes through an SEH shim below (`Call*`, __try/__except on
+		 * ACCESS_VIOLATION), and those shims must stay POD-only bodies calling a
+		 * plain pointer. Upstream's wrapper adds a function-local static module
+		 * handle; putting that inside a __try is a compile risk for no gain, and
+		 * this file's whole reason for existing is that MRF has faulted on us. */
+
+		using CreateByNifFn     = decltype(&MRF::Internal::IMesh_CreateByNifPath);
+		using DeleteFn          = decltype(&MRF::Internal::IMesh_Delete);
+		// Our own MRF patch (zz-shape-textureset.patch, from-source build): a
+		// per-shape texture-set override with NO skin gate — the export the
+		// new-architecture framework needs before a retexture VARIANT (the
+		// yeti-cap lesson) can render true. Absent on stock/older MRF builds,
+		// in which case swaps stay latched off exactly as before.
+		//
+		// The ONE signature still written out by hand, and necessarily so: this
+		// export does not exist upstream, so upstream's header cannot declare it.
+		// Its shape is fixed by our own patch (include/API.h in the patch), and
+		// the mesh parameter stays `void*` rather than MrfMesh* so the call site
+		// in ApplySwapViaApi needs no cast — upstream declares it IMesh*, which is
+		// the same pointer.
+		using SetShapeTexFn     = bool (*)(void*, const char*, std::uint32_t,
+			const char* const*, std::uint32_t);
+		// Compose ONE render out of several NIFs — the export MRF's own
+		// CreateWholeNpc uses to bolt head parts onto a body. We use it for
+		// exactly one thing: a facegen head plus the WIG that head cannot
+		// contain (see HairNifsForFace). Soft-bound like everything else here:
+		// if it does not resolve, faces render bare-facegen exactly as before.
+		using CreateBySetFn     = decltype(&MRF::Internal::IMesh_CreateByNifPathSet);
 
 		CreateByNifFn     g_createByNif     = nullptr;
 		DeleteFn          g_delete          = nullptr;
+		SetShapeTexFn     g_setShapeTex     = nullptr;
+		CreateBySetFn     g_createBySet     = nullptr;
 
 		bool g_resolved = false;
 		bool g_abiOk    = true;   // cleared for the session if the layout probe fails
@@ -192,6 +371,43 @@ namespace ItemIcons
 			std::uint32_t      index3D{ 0 };
 			std::string        name3D;
 		};
+
+		/* ── render priority tiers ──────────────────────────────────────────
+		 * Rober, 2026-08-19: "needs to prioritize if i hit f7 to load quickly,
+		 * efficiently". He pressed F7 on Scarlett at 22:50:23 and her equipped
+		 * tiles were glyphs for ~45 s. The log says exactly why: 260 ms BEFORE
+		 * the card's own ask, the wardrobe's speculative catalogue sweep
+		 * (EnsureIcons — "59 armour render(s) queued") had appended 59 renders
+		 * to the SAME deque, and the card's three landed behind all of them in
+		 * a strict FIFO ('Whiterun Heavy Gauntlets' rendered at 22:51:06). The
+		 * two-tier design was sound and simply had the wrong things in the
+		 * front tier: everything that was not the boot warm-start counted as
+		 * "user".
+		 *
+		 * So a sweep is no longer a user ask:
+		 *   User — a surface the player is looking at RIGHT NOW: the F7 quick
+		 *          card's worn tiles, a Finder/Items/NPCs query, the wardrobe
+		 *          rows on screen, follower faces on an open tab, the wheel /
+		 *          hotbar / Potion Browser / Quiver popouts, a turntable being
+		 *          dragged. Drains completely before anything else STARTS.
+		 *   Bulk — speculative catalogue work nobody is waiting on this frame
+		 *          (EnsureIcons' walk of wardrobe-inventory/catalogue). Runs
+		 *          promptly when the user tier is empty, is preempted by the
+		 *          next user ask, and never occupies the reserved slot.
+		 *   Idle — the boot warm-start and the resumed backlog: also gated by
+		 *          the settle/post-load holds, so it is the quietest lane.
+		 */
+		enum class Tier : std::uint8_t
+		{
+			User = 0,
+			Bulk = 1,
+			Idle = 2,
+		};
+
+		const char* TierName(Tier t)
+		{
+			return t == Tier::User ? "user" : (t == Tier::Bulk ? "bulk" : "idle");
+		}
 
 		struct Request
 		{
@@ -216,6 +432,22 @@ namespace ItemIcons
 			// renders set this; faces/bodies (own downstream framing) and
 			// turntable frames (must match frame 0) leave it false.
 			bool                refit{ false };
+			// This request is the ONE retry allowed after the renderer refused the
+			// picture it made (see the rejection marker in Pump). It re-renders on
+			// the framework's own bounding-sphere fit — the most conservative framing
+			// there is — and, whatever it produces, is never retried again: a second
+			// refusal goes to the failure ledger and the tile keeps its glyph. Renders
+			// are keep-forever, so "never write a bad one" outranks any repair path.
+			bool                fallback{ false };
+			// Extra NIFs composed onto nifPath in ONE mesh (IMesh_CreateByNifPathSet).
+			// FACE renders only, and only ever the NPC's wig — see HairNifsForFace.
+			// Empty (the common case) keeps the plain single-NIF create untouched.
+			std::vector<std::string> extraNifs;
+			// Which lane this came from — see Tier. Carried into InFlight so a
+			// swap-retry is re-armed at its OWN priority (a bulk piece that has
+			// to fall back to the bare mesh must not jump the user queue) and so
+			// the watcher can tell whether anyone is waiting on the render.
+			Tier                tier{ Tier::User };
 		};
 
 		struct InFlight
@@ -230,7 +462,9 @@ namespace ItemIcons
 			bool                                  swapped{ false };
 			std::uint32_t                         angle{ 0 };   // turntable frame; 0 = frame 0
 			std::uint32_t                         px{ kSize };  // the canvas this mesh was created at
-			bool                                  refit{ false }; // FitClutter this frame-0 item render
+			bool                                  refit{ false }; // FitClutter this item render
+			bool                                  fallback{ false }; // the one conservative retry
+			Tier                                  tier{ Tier::User };   // the lane it started from
 			std::chrono::steady_clock::time_point armed{};
 			// No node is kept alive here any more: the framework clones the model
 			// synchronously inside the create call (see ApplySwaps), so nothing of
@@ -238,18 +472,72 @@ namespace ItemIcons
 		};
 
 		std::mutex                      g_mutex;
+		// USER tier — a surface the player is looking at right now. Pump() drains
+		// this completely (per budget) before anything else STARTS, and the newest
+		// batch is rotated to its FRONT (FrontLoadUserBatch), so pressing F7 beats
+		// the Finder page you scrolled past a minute ago.
 		std::deque<Request>             g_queue;
-		// IDLE tier (render warm-start): proactively-queued renders that must NEVER
-		// delay a user-requested one. Pump() drains g_queue (user work + swap
-		// retries) completely-per-budget first and only pulls from here when g_queue
-		// is empty and the in-flight budget still has room — so a page the player
-		// actually opens always jumps ahead of the warm-start set. Same Request
-		// shape, same in-flight machinery, same render-once dedup; only the ORDER of
-		// starting differs. Capped separately (kMaxIdleQueued) so a warm-start can
-		// never crowd out the user queue's headroom.
+		// BULK tier — the wardrobe's speculative catalogue sweep. Nobody is waiting
+		// on these THIS frame (every row actually on screen asks through
+		// EnsureIconsForList, which is user tier), so they must never sit in front
+		// of a user ask. Same Request shape, same in-flight machinery, same
+		// render-once dedup; only the ORDER of starting differs.
+		std::deque<Request>             g_bulkQueue;
+		// IDLE tier (render warm-start + the resumed backlog): proactively-queued
+		// renders that must NEVER delay a user-requested one, and that additionally
+		// respect the settle / post-load holds. Capped separately (kMaxIdleQueued)
+		// so a warm-start can never crowd out the user queue's headroom.
 		std::deque<Request>             g_idleQueue;
 		std::vector<InFlight>           g_inFlight;
 		std::unordered_set<std::string> g_asked;   // key -> queued/failed this session
+
+		// The one place that maps a tier to its deque and its ceiling, so a new
+		// lane can never be half-wired.
+		std::deque<Request>& QueueFor(Tier t)
+		{
+			return t == Tier::User ? g_queue : (t == Tier::Bulk ? g_bulkQueue : g_idleQueue);
+		}
+		std::size_t CapFor(Tier t) { return t == Tier::Idle ? kMaxIdleQueued : kMaxQueued; }
+
+		// How many renders are in flight for lanes NOBODY is waiting on. g_mutex held.
+		std::size_t BackgroundInFlight()
+		{
+			std::size_t n = 0;
+			for (const auto& job : g_inFlight)
+				if (job.tier != Tier::User)
+					++n;
+			return n;
+		}
+
+		/* The newest user ask goes to the FRONT of the user queue. g_mutex held.
+		 *
+		 * Within one tier a plain FIFO still gets the ordering wrong for the
+		 * thing Rober actually asked for: open the Finder (20 tiles queued),
+		 * then press F7 on someone — the card's tiles would be 21st. The
+		 * surface on screen NOW is the one being waited on, so each public
+		 * entry point records the queue length before its walk and rotates
+		 * whatever it appended (its own new asks AND anything it promoted out
+		 * of bulk/idle) to the front, order within the batch preserved. The
+		 * older batch is not dropped — it renders straight after. */
+		void FrontLoadUserBatch(std::size_t before)
+		{
+			if (before < g_queue.size())
+				std::rotate(g_queue.begin(),
+					g_queue.begin() + static_cast<std::ptrdiff_t>(before), g_queue.end());
+		}
+
+		/* The line that makes the next "slow tiles" report diagnosable: what a
+		 * user ask found in front of it, per tier. Without it the 2026-08-19
+		 * diagnosis needed a 1,000-line log read to discover that 59 bulk
+		 * renders had been queued 260 ms earlier. g_mutex held.
+		 * Build marker (hd-markers.json: "render-priority-user-first"). */
+		void LogUserAskDepth(const char* who, std::size_t added, std::size_t promoted)
+		{
+			logger::info("item icons: render-priority — {} ask (+{} new, {} promoted) is now FIRST; "
+						 "waiting: user {} / bulk {} / idle {}, in flight {} ({} background)",
+				who, added, promoted, g_queue.size(), g_bulkQueue.size(), g_idleQueue.size(),
+				g_inFlight.size(), BackgroundInFlight());
+		}
 
 		/* Item-icon keys known to have a render on disk, loaded from the
 		 * persisted item-icons.json at Init and kept current as batches land.
@@ -315,6 +603,12 @@ namespace ItemIcons
 		// ends (queues + in-flight all empty) so the next live burst logs afresh.
 		bool g_paceLogged = false;
 
+		// Once-per-burst too: a user ask that could not START because the in-flight
+		// budget was full. That is the ONLY thing that can still delay a user ask
+		// once the tiers and the reserved slot are in place, so it must be visible
+		// in the log rather than inferred — see the user-loop tail in Pump().
+		bool g_userWaitLogged = false;
+
 		// Accumulated LIVE (game-unpaused, framework-unblocked) wall time since the
 		// first pump, used to hold the idle/warm-start tier off the shared D3D
 		// device for kIdleSettleDelay right after the player loads in. Counting
@@ -325,6 +619,12 @@ namespace ItemIcons
 		std::chrono::steady_clock::duration g_liveElapsed{ 0 };
 		// Once-per-session log: the idle tier's first release after the settle hold.
 		bool g_idleSettleLogged = false;
+		// When a load screen was last seen up (see LoadingNow). Default-constructed
+		// means "never", which makes the post-load hold below a no-op until the
+		// first real load — a session that never loads is never held. Main thread
+		// only (Pump).
+		std::chrono::steady_clock::time_point g_lastLoadingSeen{};
+		bool                                  g_loadHoldLogged = false;
 
 		// The framework keeps our savePath pointer and reads it a frame later;
 		// a deque never invalidates references to existing elements.
@@ -334,7 +634,7 @@ namespace ItemIcons
 
 		/* ── SEH-guarded calls (POD-only wrappers, C2712) ──────────────────── */
 
-		void* CallCreateByNif(CreateByNifFn a_fn, const char* a_nif, std::uint32_t a_w, std::uint32_t a_h) noexcept
+		MrfMesh* CallCreateByNif(CreateByNifFn a_fn, const char* a_nif, std::uint32_t a_w, std::uint32_t a_h) noexcept
 		{
 			__try {
 				return a_fn(a_nif, a_w, a_h);
@@ -344,10 +644,25 @@ namespace ItemIcons
 			}
 		}
 
+		MrfMesh* CallCreateBySet(CreateBySetFn a_fn, const char* const* a_base, std::uint32_t a_baseCount,
+			const char* const* a_attach, std::uint32_t a_attachCount,
+			std::uint32_t a_w, std::uint32_t a_h) noexcept
+		{
+			__try {
+				return a_fn(a_base, a_baseCount, a_attach, a_attachCount, a_w, a_h);
+			} __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+																		 : EXCEPTION_CONTINUE_SEARCH) {
+				return nullptr;
+			}
+		}
+
 		bool CallDelete(DeleteFn a_fn, void* a_mesh) noexcept
 		{
 			__try {
-				a_fn(a_mesh);
+				// The cast is the same pointer: `a_mesh` is only ever an IMesh* the
+				// framework itself handed back. It is spelled void* through this
+				// file's plumbing (InFlight::mesh) so no caller needs the type.
+				a_fn(static_cast<MrfMesh*>(a_mesh));
 				return true;
 			} __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
 																		 : EXCEPTION_CONTINUE_SEARCH) {
@@ -363,6 +678,32 @@ namespace ItemIcons
 				return CallCreateByNif(g_createByNif, nifPath.c_str(), px, px);
 			} catch (...) {
 				logger::warn("item icons: IMesh_CreateByNifPath threw — skipping '{}'", nifPath);
+				return nullptr;
+			}
+		}
+
+		// One BASE nif (the facegen head) + N attachments (the wig), composed by
+		// the framework into a single mesh. Returns null for every "not possible"
+		// case so the caller can simply fall through to the bare-head create —
+		// a missing wig must never cost a face its render.
+		void* SafeCreateByNifSet(const std::string& basePath,
+			const std::vector<std::string>& extras, std::uint32_t px)
+		{
+			if (!g_createBySet || basePath.empty() || extras.empty())
+				return nullptr;
+			std::vector<const char*> attach;
+			attach.reserve(extras.size());
+			for (const auto& e : extras)
+				if (!e.empty())
+					attach.push_back(e.c_str());
+			if (attach.empty())
+				return nullptr;
+			const char* base[1] = { basePath.c_str() };
+			try {
+				return CallCreateBySet(g_createBySet, base, 1u, attach.data(),
+					static_cast<std::uint32_t>(attach.size()), px, px);
+			} catch (...) {
+				logger::warn("item icons: IMesh_CreateByNifPathSet threw — bare head for '{}'", basePath);
 				return nullptr;
 			}
 		}
@@ -390,6 +731,18 @@ namespace ItemIcons
 		 * with the deck closed), so this gate deliberately does not care whether
 		 * the palette is open — it only stops us from burning the render leash
 		 * against a wall the framework put up on purpose.
+		 *
+		 * ⚠ KEPT ON PURPOSE — it is NOT a duplicate of anything upstream, whatever
+		 * a reading of MRF's source suggests at a glance (checked 2026-08-20 against
+		 * master @afc369a + our 16-patch stack). MRF does carry a `Menu::IsOpen()`
+		 * — include/Menu.h, `IsApplicationMenuOpen || IsItemMenuOpen ||
+		 * IsModalMenuOpen || GameIsPaused` — and it is DEAD CODE: nothing in
+		 * src/*.cpp or include/*.h calls it, so the framework does not skip a
+		 * render for any menu. It is also a different question (four broad UI
+		 * predicates, one of which is "the game is paused" — the deck pauses the
+		 * game, so adopting it would stop every render the palette asks for).
+		 * Deleting this in favour of "MRF's own skip logic" would be deleting a
+		 * gate and adopting nothing. Don't.
 		 *
 		 * MAIN THREAD ONLY (UI menu map). Pump() is the only caller and it always
 		 * runs inside an SKSE task. */
@@ -425,7 +778,7 @@ namespace ItemIcons
 		 * it purges icons/npcs and icons/mounts ONCE, so the next in-game ask
 		 * re-bakes every face/body through the current framework. Bump kFaceGenEpoch
 		 * to force a one-time re-bake without an MRF change. */
-		constexpr int kFaceGenEpoch = 2;   // 2026-08-14: MRF facegen convention-aware patch
+		constexpr int kFaceGenEpoch = 4;   // 2026-08-19: hair-only head-part filter (`.any(kHair)` leaked eyes/brows as attachments -> default eyeball drew over the real eyes)
 
 		/* ── the ITEM render GENERATION ─────────────────────────────────────
 		 * Item renders (icons/items) are model art the facegen posing never
@@ -442,7 +795,8 @@ namespace ItemIcons
 		 * folding MRF identity in would needlessly re-bake thousands of item
 		 * icons on every framework bump). Bump this to force a one-time re-bake
 		 * of every item render after a look-affecting change to this file. */
-		constexpr int kItemRenderEpoch = 1;   // 2026-08-14: clutter framing fill fix (FitClutter)
+		constexpr int kSwapRenderEpoch = 1;   // 2026-08-20: the PARTIAL-override fix (a BGSTextureSet names only the slots the variant changes, but the framework's per-shape override wrote all 8 — so every slot the record left empty CLEARED the texture the NIF had, and a missing map renders as solid white; every "-s2" render baked through the swap route since the new architecture went live can be washed out)
+		constexpr int kItemRenderEpoch = 2;   // 2026-08-19: swept-cylinder fit (the X/Z box-fit ignored model-Y, so deep meshes rendered with the camera inside them and every turntable angle was framed differently)
 
 		std::string MrfIdentity()
 		{
@@ -506,7 +860,7 @@ namespace ItemIcons
 			for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
 				if (!it->is_regular_file(ec))
 					continue;
-				auto ext = it->path().extension().string();
+				auto ext = PathU8(it->path().extension());
 				for (auto& c : ext)
 					c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 				if (ext != ".png")
@@ -517,7 +871,7 @@ namespace ItemIcons
 					++n;
 			}
 			if (n)
-				logger::info("item icons: purged {} stale render(s) from {}", n, dir.string());
+				logger::info("item icons: purged {} stale render(s) from {}", n, PathU8(dir));
 		}
 
 		/* Compare the on-disk facegen render generation to the current token;
@@ -622,53 +976,162 @@ namespace ItemIcons
 				logger::info("item icons: loaded {} known face/body render(s) from npc-icons.json", n);
 		}
 
+		/* ── The unfinished-render backlog (icon-backlog.json) ────────────────
+		 * The queues are memory-only, so a render still WAITING when the game
+		 * exits used to be silently dropped — it came back only if the same
+		 * pane re-asked next session. That is the one place a "thumbnail"
+		 * was not remembered across a reload (Rober, 2026-08-19: anywhere
+		 * thumbnails generate must persist and be remembered on reload). So:
+		 * every accepted ask is written here as {formId, plugin, name, kind
+		 * [,nif]}, dropped the moment its PNG lands (or the miss is proven
+		 * permanent: no world model / no facegen file), and REPLAYED at the
+		 * next Init through the exact same enqueue doors — idle tier, so a
+		 * resumed backlog can never delay a page the player actually opens.
+		 * Entries the idle ceiling refuses stay in the file and resume on a
+		 * later boot; nothing is ever lost, only deferred. Saves are cheap
+		 * (one small json) and happen after every ask burst plus every
+		 * watcher tick while work is pending. */
+		std::unordered_map<std::string, nlohmann::json> g_backlog;
+		bool                                            g_backlogDirty = false;
+		constexpr std::size_t                           kMaxBacklog = 1024;
+
+		std::filesystem::path BacklogFile()
+		{
+			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icon-backlog.json";
+		}
+
+		// g_mutex held.
+		void BacklogAdd(const std::string& key, const std::string& fid, const std::string& plugin,
+			const std::string& name, const char* kind, const std::string& nif = std::string())
+		{
+			if (g_backlog.size() >= kMaxBacklog && !g_backlog.count(key))
+				return;   // a runaway caller cannot grow the file without bound
+			nlohmann::json e{ { "formId", fid }, { "plugin", plugin }, { "name", name }, { "kind", kind } };
+			if (!nif.empty())
+				e["nif"] = nif;
+			g_backlog[key] = std::move(e);
+			g_backlogDirty = true;
+		}
+
+		// g_mutex held.
+		void BacklogDrop(const std::string& key)
+		{
+			if (g_backlog.erase(key))
+				g_backlogDirty = true;
+		}
+
+		// Snapshot under the lock, write outside it (the write is file IO).
+		void BacklogSaveIfDirty()
+		{
+			std::string out;
+			{
+				std::lock_guard l(g_mutex);
+				if (!g_backlogDirty)
+					return;
+				g_backlogDirty = false;
+				nlohmann::json pending = nlohmann::json::object();
+				for (const auto& [k, v] : g_backlog)
+					pending[k] = v;
+				out = nlohmann::json{ { "v", 1 }, { "pending", std::move(pending) } }
+				          .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			}
+			std::error_code ec;
+			std::filesystem::create_directories(BacklogFile().parent_path(), ec);
+			std::ofstream f(BacklogFile(), std::ios::binary | std::ios::trunc);
+			if (f.is_open())
+				f << out;
+		}
+
+		/* Is this render's stem a SWAP render ("<slug>-<hex>-s2")? A turntable frame
+		 * carries its angle AFTER the swap marker ("…-s2-a090"), so a bare "ends with
+		 * -s2" test files the spun frames as PLAIN renders and a set gets purged in
+		 * half — frame 0 kept, the spins deleted — which is exactly the self-
+		 * disagreement epoch 2 set out to end. Strip a trailing "-aNNN" first. */
+		bool IsSwapRenderStem(std::string stem)
+		{
+			if (stem.size() >= 5) {
+				const std::size_t at = stem.size() - 5;
+				if (stem[at] == '-' && stem[at + 1] == 'a' &&
+					std::isdigit(static_cast<unsigned char>(stem[at + 2])) &&
+					std::isdigit(static_cast<unsigned char>(stem[at + 3])) &&
+					std::isdigit(static_cast<unsigned char>(stem[at + 4])))
+					stem.erase(at);
+			}
+			return stem.size() >= 3 && stem.compare(stem.size() - 3, 3, "-s2") == 0;
+		}
+
 		/* Item-render generation: purge item icons ONCE after a look-affecting
 		 * change to this file (kItemRenderEpoch). The stamp lives beside the item
 		 * renders (icons/items/.render-gen). Unlike the facegen check this keys on
 		 * the epoch ALONE — item framing is our math, not the framework's, so an
 		 * MRF build change must not needlessly re-bake thousands of item icons.
 		 *
-		 * Only PLAIN-name renders are purged. The old "-s2" swap renders (baked by
-		 * the OLD game-renderer architecture, textures and lighting intact) are the
-		 * best pictures we have for those variants and the new nifly renderer
-		 * cannot reproduce them (its IMesh_SetTextureSet is skin/facetint-only —
-		 * proven from MRF source, so swaps stay latched off); keeping them means
-		 * the index still prefers them. Everything purged re-bakes lazily on the
-		 * next ask, now through FitClutter. g_diskIndex is cleared to match so a
-		 * purged key is not falsely reported until it re-renders. */
+		 * TWO generations, because two independent things can spoil a picture and
+		 * each must be able to invalidate only its own. kItemRenderEpoch is OUR
+		 * framing maths and governs the PLAIN-name renders. kSwapRenderEpoch is the
+		 * texture-swap ROUTE and governs the "-s2" renders.
+		 *
+		 * Until 2026-08-20 there was only the first, and "-s2" renders were kept
+		 * unconditionally: they were baked by the OLD game-renderer architecture
+		 * with textures and lighting intact, a nifly renderer WITHOUT our
+		 * IMesh_SetShapeTextureSet patch cannot reproduce them (its own
+		 * IMesh_SetTextureSet is skin/facetint-only — proven from MRF source, so
+		 * swaps latch off there), and the index prefers "-s2". That reasoning
+		 * expired the day the patched framework started BAKING "-s2" files itself:
+		 * a variant washed white by the whole-set override bug then survived every
+		 * epoch bump there was, because nothing in this file could ever invalidate it.
+		 * A fix to the swap route that cannot be seen is not a fix, so bumping
+		 * kSwapRenderEpoch is now the lever for exactly that.
+		 *
+		 * Everything purged re-bakes lazily on the next ask. g_diskIndex is cleared
+		 * to match so a purged key is not falsely reported until it re-renders. */
 		void ReconcileItemGeneration()
 		{
-			const auto want  = std::string("item-epoch=") + std::to_string(kItemRenderEpoch);
-			const auto stamp = IconDir() / ".render-gen";
-			std::string have;
+			const auto wantItem = std::string("item-epoch=") + std::to_string(kItemRenderEpoch);
+			const auto wantSwap = std::string("swap-epoch=") + std::to_string(kSwapRenderEpoch);
+			const auto stamp    = IconDir() / ".render-gen";
+			std::string haveItem;
+			std::string haveSwap;
 			{
 				std::ifstream in(stamp, std::ios::binary);
-				if (in.is_open())
-					std::getline(in, have);
+				if (in.is_open()) {
+					std::getline(in, haveItem);
+					std::getline(in, haveSwap);   // absent in a pre-2026-08-20 stamp
+				}
 			}
-			if (have == want)
-				return;   // generation matches — the index Init loaded is trusted
+			const bool itemStale = haveItem != wantItem;
+			const bool swapStale = haveSwap != wantSwap;
+			if (!itemStale && !swapStale)
+				return;   // both generations match — the index Init loaded is trusted
 
-			// Purge only the plain-name item PNGs; keep every "-s2" swap render.
+			// Purge the PNGs whose own generation went stale — plain renders on an
+			// item-epoch bump, "-s2" swap renders on a swap-epoch bump, both when both.
 			std::error_code ec;
 			std::size_t purged = 0;
 			if (std::filesystem::exists(IconDir(), ec)) {
 				for (std::filesystem::directory_iterator it(IconDir(), ec), end; !ec && it != end; it.increment(ec)) {
 					if (!it->is_regular_file(ec))
 						continue;
-					const auto stem = it->path().stem().string();   // no extension
-					auto ext = it->path().extension().string();
+					const auto stem = PathU8(it->path().stem());   // no extension
+					auto ext = PathU8(it->path().extension());
 					for (auto& c : ext)
 						c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 					if (ext != ".png")
 						continue;
-					// Keep swap renders ("-s2") and turntable frames ("-aNNN"):
-					// FitClutter reframes only the plain frame-0 renders, and a
-					// spun frame is re-derived off frame 0 anyway.
-					if (stem.size() >= 3 && stem.compare(stem.size() - 3, 3, "-s2") == 0)
+					// Swap renders ("-s2") answer to their OWN generation, because the
+					// thing that can spoil them is the swap ROUTE, not our framing — and
+					// nothing could invalidate them until 2026-08-20, which is why a
+					// white-washed variant icon survived every epoch bump.
+					const bool swapRender = IsSwapRenderStem(stem);
+					if (swapRender ? !swapStale : !itemStale)
 						continue;
-					if (stem.size() >= 5 && stem[stem.size() - 5] == '-' && stem[stem.size() - 4] == 'a')
-						continue;   // "-a045" etc.
+					// Turntable frames ("-aNNN") are PURGED with their frame 0 as of
+					// epoch 2. They used to be kept, on the reasoning that only frame
+					// 0 was re-framed — which stopped being true, and then the framing
+					// bug lived almost entirely in the spun frames: they are the ones
+					// that showed a weapon end-on at a scale chosen for its broadside.
+					// A set must re-bake as a SET or it goes back to disagreeing with
+					// itself, which is the whole defect.
 					std::error_code del;
 					std::filesystem::remove(it->path(), del);
 					if (!del)
@@ -681,10 +1144,11 @@ namespace ItemIcons
 			std::filesystem::create_directories(IconDir(), ec);
 			std::ofstream out(stamp, std::ios::binary | std::ios::trunc);
 			if (out.is_open())
-				out << want << "\n";
-			logger::info("item icons: item render generation changed ('{}' -> '{}') - purged {} plain "
-			             "render(s); items re-render through the clutter-fill framing on next ask",
-				have.empty() ? std::string("<none>") : have, want, purged);
+				out << wantItem << "\n" << wantSwap << "\n";
+			logger::info("item icons: item render generation changed (item '{}'->'{}', swap '{}'->'{}') - "
+			             "purged {} render(s); they re-bake on the next ask",
+				haveItem.empty() ? std::string("<none>") : haveItem, wantItem,
+				haveSwap.empty() ? std::string("<none>") : haveSwap, wantSwap, purged);
 		}
 
 		// The portal's normalisation, exactly: UPPERCASE hex, lowercase plugin.
@@ -733,8 +1197,15 @@ namespace ItemIcons
 		 * swap renders to '<slug>-<hex>-s2.png' instead, and the index prefers
 		 * that file when it exists. The old name is simply left alone: nothing
 		 * reads it once the new one lands, and it cannot be deleted while the
-		 * view has it mapped anyway. Bump the suffix again if the swap renderer
-		 * ever changes in a way that invalidates what it already wrote. */
+		 * view has it mapped anyway.
+		 *
+		 * ⚠ SUPERSEDED (2026-08-20): "bump the suffix again if the swap renderer
+		 * changes in a way that invalidates what it already wrote" was the old
+		 * remedy, and it would mean touching "-s2" in a dozen places and leaving
+		 * the bad pictures on disk forever. Bump kSwapRenderEpoch instead — it
+		 * purges exactly the "-s2" renders, once, from Init (before the view has
+		 * mapped anything, so the deletes actually succeed), and it leaves the
+		 * filenames alone. */
 		std::string FileFor(const std::string& fid, const std::string& plugin, bool swapped = false)
 		{
 			std::string hex = fid;
@@ -745,10 +1216,62 @@ namespace ItemIcons
 			return Slug(plugin) + "-" + hex + (swapped ? "-s2" : "") + ".png";
 		}
 
-		bool FileExists(const std::string& p)
+		/* Takes a PATH, not a string: a caller must never have to convert, because
+		 * path::string() throws on any name the ANSI code page cannot hold (see
+		 * PathU8 in pch.h). std::string callers still bind — string converts to
+		 * path implicitly — so this is a widening, not a break. */
+		bool FileExists(const std::filesystem::path& p)
 		{
 			std::error_code ec;
 			return std::filesystem::exists(p, ec);
+		}
+
+		/* ── the renderer's refusal channel ──────────────────────────────────
+		 *
+		 * A render is written once and kept forever, so the one thing that must
+		 * never happen is a BAD picture landing at a good filename. The framework
+		 * is the only party that ever sees the pixels — it has the CPU-side image
+		 * in hand a line before it writes the PNG — so that is where the check
+		 * lives (mrf-build/patches/…-render-validate.patch). When it refuses, it
+		 * writes NOTHING at outPath and drops "<outPath>.rejected" holding the
+		 * reason instead.
+		 *
+		 * A sidecar file rather than a new ABI field on purpose: the deck mirrors
+		 * MRF's IMesh struct byte-for-byte and static_asserts its size, so growing
+		 * that struct couples the two builds into a matched pair for all time,
+		 * while a file the deck already polls for costs nothing and degrades
+		 * perfectly — an OLD framework simply never writes one and every path here
+		 * stays dormant. */
+		std::filesystem::path RejectMarkerFor(const std::filesystem::path& out)
+		{
+			std::filesystem::path m = out;
+			m += ".rejected";
+			return m;
+		}
+
+		// Reads the reason and removes the marker, so a later retry of the same
+		// item starts clean rather than inheriting an old verdict. Bounded read:
+		// the framework writes one short line, and a huge file here would be a
+		// bug in it, not a reason to load it.
+		std::string TakeRejectReason(const std::filesystem::path& out)
+		{
+			const auto    marker = RejectMarkerFor(out);
+			std::string   why;
+			std::error_code ec;
+			{
+				std::ifstream in(marker, std::ios::binary);
+				if (in) {
+					char buf[512]{};
+					in.read(buf, sizeof(buf) - 1);
+					why.assign(buf, static_cast<std::size_t>(in.gcount()));
+				}
+			}
+			std::filesystem::remove(marker, ec);
+			while (!why.empty() && (why.back() == '\n' || why.back() == '\r' || why.back() == ' '))
+				why.pop_back();
+			if (why.empty())
+				why = "no reason given";
+			return why;
 		}
 
 		/* THE TURNTABLE FILENAME CONTRACT (ported verbatim from portraits.cpp).
@@ -858,78 +1381,226 @@ namespace ItemIcons
 		 * pure request-side number — write it into abi->scale exactly as ApplySpin
 		 * writes abi->rotation.
 		 *
-		 * This box-fit is SAFE in every case and STRICTLY BETTER in the common one:
-		 *   - it can NEVER clip. scale = min(fillX, fillZ), so whichever screen axis
-		 *     needs the smaller scale lands exactly at kFillTarget (< 1) and the
-		 *     other stays under it — the whole box is inside the canvas.
-		 *   - it does NOT harm compact armour, which fills the frame today (~98%):
-		 *     its box-fit lands at kFillTarget, a hair off the very edge, still a
-		 *     full tile, never clipped (measured armour: 98.6% x 98%).
-		 *   - it RECOVERS clutter whose fit was inflated ALONG DEPTH (model-Y): the
-		 *     bounding SPHERE the framework fit is sqrt(x^2+y^2+z^2), so a shape
-		 *     offset in Y (a common potion EditorMarker / attach node) balloons the
-		 *     sphere — shrinking everything — while the X/Z box stays the visible
-		 *     bottle. Fitting X/Z instead of the sphere gives the bottle the frame.
+		 * ── WHY THE FIRST BOX-FIT WAS WRONG (2026-08-19, Rober: "mesh rendering
+		 * really need to be smarter in general, so we dont have issues like this") ──
 		 *
-		 * It is NEVER worse than today: the box fits inside the sphere, so fitting
-		 * the box needs an equal-or-larger scale (boxScale >= sphereScale always) —
-		 * clutter can only grow or stay, never shrink. HONEST LIMIT: if the
-		 * inflation is along a SCREEN axis (model-X or -Z) it is in the box too, so
-		 * box-fit recovers less than the depth case (though still >= the sphere).
-		 * Fully fixing that is an MRF-side change — the bounds loop should ignore
-		 * fully-transparent / marker shapes — and belongs in Mesh::Fit, not here.
-		 * The diagnostic log prints the box and both scales so the first play-test
-		 * says which case each item is; where box-fit is not enough, the MRF bounds
-		 * fix is the follow-up.
+		 * The paragraph above says "model-Y is DEPTH and never touches the on-screen
+		 * footprint". BOTH halves of that are false, and each one shipped a visible
+		 * bug:
+		 *
+		 *  1. DEPTH IS NOT FREE. The camera is PERSPECTIVE (fov = 2*atan(halfSpan /
+		 *     820)), so 130 units is the half-span AT THE SUBJECT PLANE only. Geometry
+		 *     in front of that plane projects LARGER. Fitting X/Z as if the object
+		 *     were flat therefore hands out a scale that shoves the near end of a
+		 *     deep mesh toward — and past — the eye. Proven from the rig's own log,
+		 *     no screenshots needed: Akatosh Mace (OBR2SSE - Weapons.esp 0x000804)
+		 *     logged box[x=46.4 z=7.9] sphereScale=2.0240 -> boxScale=4.7651. MRF's
+		 *     sphere fit is fittedRadius/boundingRadius with fittedRadius =
+		 *     0.9*130*820/(820+0.9*130) = 102.39, so its boundingRadius was 50.6 —
+		 *     which with halfX 23.2 and halfZ 3.95 puts the mace's model-Y half-extent
+		 *     at ~44.8. The object is 89.6 units long ALONG THE ONE AXIS THE FIT NEVER
+		 *     LOOKED AT. At 4.7651x that is +/-213 units of depth: the nearest
+		 *     geometry sits 607 units from an eye that is 820 from the plane, and
+		 *     projects 1.35x bigger than the fit assumed. That is the "camera inside
+		 *     the mesh" tile — a full-frame magnified surface instead of a weapon.
+		 *
+		 *  2. MODEL-Y BECOMES SCREEN-X THE MOMENT THE TURNTABLE TURNS. ApplySpin
+		 *     rotates about model-Z, so X and Y trade places. The same mace at 90 deg
+		 *     puts that 89.6-unit length across the screen: half-width 213.4 against a
+		 *     130 half-span = 164% of the frame. One fixed number, two silhouettes
+		 *     1.93x apart — which is exactly Rober's screenshot of one frame centred
+		 *     and filling the plate and the next one framed completely differently.
+		 *     (Daedric Warhammer 0x000870: 174.9 vs 130, same shape of failure.)
+		 *
+		 * ── WHAT REPLACES IT: fit the OBJECT once, not the frame ──
+		 *
+		 * The turntable spins about model-Z, so the only horizontal extent that is
+		 * INVARIANT under the spin is the radius of the cylinder X and Y sweep,
+		 * r = hypot(halfX, halfY). Model-Z is the spin axis and is perpendicular to
+		 * the view direction, so it contributes exactly zero depth. Therefore r is
+		 * simultaneously (a) the worst-case on-screen half-width at ANY angle and
+		 * (b) the worst-case half-depth at any angle. Fit r horizontally and halfZ
+		 * vertically, at the nearest depth, and the result is one number that is a
+		 * pure function of the mesh — so frame 0 and every -aNNN sibling get
+		 * identical framing BY CONSTRUCTION, and the object turns inside a fixed
+		 * frame instead of the frame being re-chosen per angle.
+		 *
+		 * It is still a strict improvement on the framework's own fit, which is what
+		 * the potion case needed: the sphere folds all three axes into one radius and
+		 * fits it to the LIMITING half-span, while this fits width and height
+		 * separately and only folds the two axes the rotation actually mixes. A tall
+		 * thin bottle keeps its recovery; a long weapon stops being lied about.
+		 *
+		 * And it CANNOT put the camera inside the mesh, for any mesh: the horizontal
+		 * solution bounds r*scale at kFillTarget*130*820/(820+kFillTarget*130) ~= 97,
+		 * so the nearest geometry is always >= 723 units from the eye. That is not a
+		 * heuristic, it is the closed form.
 		 *
 		 * FACES and creature BODIES are deliberately EXEMPT: their framing is owned
 		 * downstream (hd-facefit's layout crop) and their bounds include hair/limbs
-		 * that a box-fit would mis-frame — only item renders (px == kSize, angle 0)
-		 * are re-fit. Turntable frames (angle != 0) are left to the same scale the
-		 * framework chose so a spun frame matches frame 0. */
-		void FitClutter(IMeshAbi* abi, const std::string& label)
+		 * that this would mis-frame — only item renders (px == kSize) are re-fit. */
+		// ⛔ RENDER-GEOMETRY BEGIN — do not change without an in-game A/B.
+		//
+		// Everything between this line and the closing fence below is what makes a
+		// rendered item look RIGHT rather than merely appear: the fixed camera
+		// mirrored from MRF's own RenderManager, the fill target, and the
+		// object-fit that makes a tiny mesh — a potion above all — fill its frame
+		// instead of sitting as a speck in the middle of it. It took a long time
+		// and several play-tests to get here, and it cannot be verified from a
+		// harness: the only test is rendering something and LOOKING at it.
+		//
+		// The commit hook refuses a diff that touches this region unless the
+		// message carries a RENDER-GEOMETRY: line saying what you compared
+		// in-game. That is not bureaucracy — twice this year the renderer
+		// shipped visibly broken (all-black faces, then heads torn from their
+		// hair) and both times a human eye found it weeks later, because
+		// nothing else can.
+
+		// One fit per OBJECT, in one struct, so nothing downstream can recompute a
+		// different one for a different frame. `scale` is what goes on the mesh; the
+		// rest exists so the log can say WHY without anyone taking a screenshot.
+		struct ClutterFit
 		{
+			float scale{ 0.0f };          // what we wrote to abi->scale
+			float sweptRadius{ 0.0f };    // hypot(halfX, halfY) — invariant under the spin
+			float halfZ{ 0.0f };
+			float halfX{ 0.0f }, halfY{ 0.0f };
+			float sphereScale{ 0.0f };    // what the framework had chosen
+			float nearestDepth{ 0.0f };   // camera-to-nearest-geometry, units
+			bool  usable{ false };
+			bool  cappedBySphere{ false };  // the framework's own fit was the larger one
+			const char* limit{ "none" };    // which axis decided: "width" | "height"
+		};
+
+		// Pure function of the mesh's bounds — no angle, no filename, no state. That
+		// purity is the whole point: every turntable sibling of an item is a fresh
+		// mesh built from the SAME nif, so it lands on the same numbers here, and the
+		// set cannot drift. (Pump also cross-checks it per set; see g_fitBySource.)
+		ClutterFit ComputeClutterFit(const IMeshAbi* abi)
+		{
+			ClutterFit f;
 			if (!abi)
-				return;
+				return f;
 			// The fixed camera, mirrored from RenderManager::RenderLocked. If MRF
 			// ever changes these the worst case is a slightly loose fit, never a
 			// crash or a clip — the target below is unconditional and < 1.
-			constexpr float kHorizHalfSpan = 130.0f;    // model-X maps here
-			constexpr float kFillTarget    = 0.90f;     // fraction of the frame to fill
+			constexpr float kHorizHalfSpan  = 130.0f;   // half-span AT THE SUBJECT PLANE
+			constexpr float kCameraDistance = 820.0f;   // eye y=+320 -> subject plane y=-500
+			constexpr float kFillTarget     = 0.85f;    // fraction of the frame to fill
 			const float aspect = abi->height > 0 ? static_cast<float>(abi->width) /
 			                                       static_cast<float>(abi->height)
 			                                     : 1.0f;
 			const float vertHalfSpan = aspect > 0.0001f ? kHorizHalfSpan / aspect : kHorizHalfSpan;
 
-			// Centred model-space half-extents. Skyrim is Z-up and the camera looks
-			// down -Y, so screen-X <- model-X and screen-Y <- model-Z; model-Y is
-			// depth and does not affect the on-screen footprint.
-			const float halfX = std::fabs(abi->boundMax[0] - abi->boundMin[0]) * 0.5f;
-			const float halfZ = std::fabs(abi->boundMax[2] - abi->boundMin[2]) * 0.5f;
-			if (halfX < 0.0001f && halfZ < 0.0001f)
-				return;   // degenerate box — leave the framework's fit alone
+			// Centred model-space half-extents, all THREE of them. Skyrim is Z-up and
+			// the camera looks down -Y with +Z as screen-up, so model-Z is the spin
+			// axis AND the screen-vertical axis, and model-X/model-Y are the pair the
+			// turntable rotates into each other.
+			f.halfX = std::fabs(abi->boundMax[0] - abi->boundMin[0]) * 0.5f;
+			f.halfY = std::fabs(abi->boundMax[1] - abi->boundMin[1]) * 0.5f;
+			f.halfZ = std::fabs(abi->boundMax[2] - abi->boundMin[2]) * 0.5f;
+			f.sphereScale = abi->scale;
+			f.sweptRadius = std::sqrt(f.halfX * f.halfX + f.halfY * f.halfY);
+			if (f.sweptRadius < 0.0001f && f.halfZ < 0.0001f)
+				return f;   // degenerate box — leave the framework's fit alone
 
-			const float sphereScale = abi->scale;
+			const float d  = kCameraDistance;
+			const float th = kFillTarget * kHorizHalfSpan;
+			const float tv = kFillTarget * vertHalfSpan;
 
-			// Scale that lands the LIMITING axis at kFillTarget and keeps the other
-			// under it: min over the two per-axis fills. Never clips (target < 1).
-			const float scaleX = halfX > 0.0001f ? (kFillTarget * kHorizHalfSpan) / halfX : 1.0e9f;
-			const float scaleZ = halfZ > 0.0001f ? (kFillTarget * vertHalfSpan) / halfZ : 1.0e9f;
-			const float boxScale = (std::min)(scaleX, scaleZ);
-			if (boxScale <= 0.0f || boxScale >= 1.0e8f)
-				return;   // no usable extent — leave the framework's fit alone
+			// Perspective, not orthographic. Requiring the swept silhouette to stay
+			// inside the frame AT ITS NEAREST DEPTH (d - sweptRadius*s) gives a closed
+			// form — the same one MRF's own Mesh::Fit uses for the bounding sphere,
+			// generalised to a cylinder so height is fitted independently of width:
+			//     horizontal:  sweptRadius*s / (d - sweptRadius*s)  <=  th/d
+			//     vertical:          halfZ*s / (d - sweptRadius*s)  <=  tv/d
+			const float denomH = f.sweptRadius * (d + th);
+			const float denomV = f.halfZ * d + tv * f.sweptRadius;
+			const float scaleH = denomH > 0.0001f ? (th * d) / denomH : 1.0e9f;
+			const float scaleV = denomV > 0.0001f ? (tv * d) / denomV : 1.0e9f;
+			float fit = (std::min)(scaleH, scaleV);
+			f.limit = scaleH <= scaleV ? "width" : "height";
+			if (!(fit > 0.0f) || fit >= 1.0e8f)
+				return f;   // no usable extent — leave the framework's fit alone
 
-			abi->scale = boxScale;
-			// Log when it meaningfully enlarges the fit (boxScale >= sphereScale
-			// always; a potion jumps many-fold, compact armour barely moves), so a
-			// play-test reveals the real bounds and both scales — the evidence that
-			// says whether a still-small item was inflated along depth (recovered)
-			// or along a screen axis (needs the MRF-side bounds fix).
-			if (boxScale > sphereScale * 1.15f)
-				logger::info("item icons: '{}' box-fit — box[x={:.1f} z={:.1f}] "
-				             "sphereScale={:.4f} -> boxScale={:.4f} ({:.1f}x)",
-					label, halfX * 2.0f, halfZ * 2.0f, sphereScale, boxScale,
-					sphereScale > 0.0001f ? boxScale / sphereScale : 0.0f);
+			// Floor at the framework's own choice. Its sphere fit lands the bounding
+			// sphere at exactly 0.9 of the half-span after perspective (substitute
+			// fittedRadius back into r*d/(d-r) and the d's cancel), so it is provably
+			// clip-free too; where kFillTarget's 0.85 would render SMALLER than what
+			// MRF already does, take MRF's. Keeps the old promise that this never
+			// shrinks an icon, without keeping the old promise's arithmetic.
+			if (fit < f.sphereScale) {
+				fit = f.sphereScale;
+				f.cappedBySphere = true;
+			}
+			f.scale        = fit;
+			f.nearestDepth = d - f.sweptRadius * fit;
+			f.usable       = true;
+			return f;
+		}
+		// ⛔ RENDER-GEOMETRY END
+
+		/* ── one fit per turntable SET, and a tripwire that proves it ────────
+		 *
+		 * ComputeClutterFit is a pure function of the mesh bounds, so every frame of
+		 * a turntable — built from the same nif at the same px — already lands on the
+		 * same number. That is the design. This map turns "already true" into
+		 * "enforced and audible": the first frame of a source records its scale, every
+		 * later frame is compared against it, and a disagreement is a WARNING plus the
+		 * first frame's number, not a silently different picture.
+		 *
+		 * It exists because the failure it guards is invisible: a spun frame framed
+		 * differently from frame 0 looks like a bad render, never like a bad rule, and
+		 * that is precisely how the per-angle box-fit survived a play-test. Keyed by
+		 * "<nif>|<px>" because that pair is exactly what decides the geometry.
+		 * Bounded: cleared wholesale past a few hundred entries — it is a
+		 * within-a-session consistency check, not a cache anything depends on. */
+		std::unordered_map<std::string, float> g_fitBySource;
+
+		void FitClutter(IMeshAbi* abi, const std::string& label,
+			const std::string& nifPath, std::uint32_t px, std::uint32_t angle)
+		{
+			if (!abi)
+				return;
+			const ClutterFit f = ComputeClutterFit(abi);
+			if (!f.usable) {
+				logger::info("item icons: '{}' fit — extents from MRF vertex bounds "
+				             "[x={:.1f} y={:.1f} z={:.1f}]; no usable extent, keeping the "
+				             "framework's own fit {:.4f}",
+					label, f.halfX * 2.0f, f.halfY * 2.0f, f.halfZ * 2.0f, f.sphereScale);
+				return;
+			}
+
+			float scale = f.scale;
+			if (!nifPath.empty()) {
+				if (g_fitBySource.size() > 512)
+					g_fitBySource.clear();
+				const std::string srcKey = nifPath + "|" + std::to_string(px);
+				const auto        seen   = g_fitBySource.find(srcKey);
+				if (seen == g_fitBySource.end()) {
+					g_fitBySource.emplace(srcKey, scale);
+				} else if (std::fabs(seen->second - scale) > seen->second * 0.001f) {
+					// Marker: item-icons-fit-desync.
+					logger::warn("item icons: '{}' fit DESYNC — this frame computed {:.4f} but the "
+					             "set's first frame used {:.4f}; using the set's. The framing math "
+					             "is supposed to be angle-independent, so this means the mesh's "
+					             "bounds changed under us.",
+						label, scale, seen->second);
+					scale = seen->second;
+				}
+			}
+
+			abi->scale = scale;
+			// Unconditional, one line per item render, because the LAST time this was
+			// conditional the log printed x and z and not the y that caused the bug.
+			// Marker: item-icons-fit.
+			logger::info("item icons: '{}' fit — extents from MRF vertex bounds "
+			             "[x={:.1f} y={:.1f} z={:.1f}] swept r={:.1f} -> scale {:.4f} "
+			             "(framework {:.4f}{}), {}-limited, nearest geometry {:.0f} units "
+			             "from the eye, angle {}",
+				label, f.halfX * 2.0f, f.halfY * 2.0f, f.halfZ * 2.0f, f.sweptRadius,
+				scale, f.sphereScale, f.cappedBySphere ? ", kept" : "", f.limit,
+				f.nearestDepth, angle);
 		}
 
 		/* ── texture-swap machinery, ported from portraits.cpp ─────────────── */
@@ -1064,6 +1735,92 @@ namespace ItemIcons
 																		 : EXCEPTION_CONTINUE_SEARCH) {
 				return false;
 			}
+		}
+
+		/* ── the texture swap as DATA (new-architecture MRF) ─────────────────
+		 * The nifly rewrite parses the NIF itself, so painting the game's cached
+		 * model (ApplySwaps below) shows it nothing. Our MRF patch adds
+		 * IMesh_SetShapeTextureSet — the swap is handed over as data instead:
+		 * same (name3D, index3D) target the AlternateTexture record carries,
+		 * texture paths in the renderer's NIF slot order. A BGSTextureSet
+		 * stores the ESP TX order, so glow/height/environment/env-mask remap
+		 * here (TX03→NIF2, TX04→NIF3, TX05→NIF4, TX02→NIF5). */
+
+		// POD-only (__try, C2712). Collects the 8 paths in NIF slot order.
+		bool CallCollectTexPaths(RE::BSTextureSet* a_set, const char** a_out8) noexcept
+		{
+			__try {
+				using TS  = RE::BSTextureSet::Texture;
+				a_out8[0] = a_set->GetTexturePath(TS::kDiffuse);
+				a_out8[1] = a_set->GetTexturePath(TS::kNormal);
+				a_out8[2] = a_set->GetTexturePath(TS::kGlowMap);
+				a_out8[3] = a_set->GetTexturePath(TS::kHeight);
+				a_out8[4] = a_set->GetTexturePath(TS::kEnvironment);
+				a_out8[5] = a_set->GetTexturePath(TS::kEnvironmentMask);
+				a_out8[6] = a_set->GetTexturePath(TS::kMultilayer);
+				a_out8[7] = a_set->GetTexturePath(TS::kBacklightMask);
+				return true;
+			} __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+																		 : EXCEPTION_CONTINUE_SEARCH) {
+				return false;
+			}
+		}
+
+		// POD-only (__try, C2712).
+		bool CallSetShapeTex(void* a_mesh, const char* a_name, std::uint32_t a_index,
+			const char* const* a_paths, std::uint32_t a_count) noexcept
+		{
+			__try {
+				return g_setShapeTex(a_mesh, a_name, a_index, a_paths, a_count);
+			} __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+																		 : EXCEPTION_CONTINUE_SEARCH) {
+				return false;
+			}
+		}
+
+		bool ApplySwapViaApi(void* mesh, const AltTex& swap)
+		{
+			if (!g_setShapeTex || !mesh || !swap.set)
+				return false;
+			const char* raw[8] = {};
+			if (!CallCollectTexPaths(swap.set, raw))
+				return false;
+			const char* paths[8];
+			for (int i = 0; i < 8; ++i)
+				paths[i] = raw[i] ? raw[i] : "";
+			/* An EMPTY slot means "this variant does not change this map" — a
+			 * BGSTextureSet is a PARTIAL override and names only what it changes.
+			 * The framework honours that on every one of the eight slots (mrf-build
+			 * patch zz-…-override-white-flood, 2026-08-20): an empty entry keeps the
+			 * shape's own texture. Before it did, the override replaced the whole
+			 * set, so each empty slot CLEARED a texture the NIF had and a missing
+			 * map renders white — the pale "Practical Pirate Boots - Dark".
+			 *
+			 * A texture set with no DIFFUSE at all is the loud case and it is a
+			 * plugin data bug: the picture comes out in the mesh's BASE colour
+			 * wearing the variant's other maps, which is a variant in the wrong
+			 * colour rather than a white silhouette. Say so here — nothing else in
+			 * this log can explain the wrong colour, and the fault is not ours. */
+			if (!paths[0][0])
+				logger::warn("item icons: texture-swap set for shape '{}' carries no diffuse — "
+				             "the render will wear the mesh's own base colour",
+					swap.name3D.empty() ? "<by index>" : swap.name3D.c_str());
+			return CallSetShapeTex(mesh, swap.name3D.c_str(), swap.index3D, paths, 8);
+		}
+
+		/* "<slug>-<hex>-s2[-aNNN].png" → the same name without its "-s2".
+		 * Where a swap was asked but nothing applied, the bare picture must land
+		 * under the PLAIN name — "-s2" is the name the index prefers, reserved
+		 * for renders that really wore the variant's textures. */
+		std::string PlainNameOf(std::string path)
+		{
+			// Only the FILENAME suffix forms "-s2.png" / "-s2-aNNN.png" — a
+			// plugin slug that happens to contain "-s2" is left alone.
+			const auto pos = path.rfind("-s2");
+			if (pos != std::string::npos &&
+				(path.compare(pos, 7, "-s2.png") == 0 || path.compare(pos, 5, "-s2-a") == 0))
+				path.erase(pos, 3);
+			return path;
 		}
 
 		/* ── the texture swap, applied where the framework will actually SEE it ──
@@ -1261,9 +2018,34 @@ namespace ItemIcons
 			return true;
 		}
 
-		// We never call IMesh_Save: it dereferences mesh->SRV with no null
-		// check and a fresh mesh has none. Arm the deferred save and let their
-		// render loop write; the mesh is freed in Pump() once the file lands.
+		/* We never call IMesh_Save: it dereferences mesh->SRV with no null
+		 * check and a fresh mesh has none. Arm the deferred save and let their
+		 * render loop write; the mesh is freed in Pump() once the file lands.
+		 *
+		 * ⚠ AND WE DO NOT CALL upstream's `Mesh::Save()` wrapper either
+		 * (MeshRenderingFrameworkAPI.h:612-621), even though its not-ready branch
+		 * — `savePath = strdup(filePath); saveNextFrame = true;` — is the same two
+		 * writes this function ends with. Checked from source 2026-08-20; three
+		 * reasons, any one of which is enough:
+		 *
+		 *   1. It is a method of upstream's `Mesh` CLASS, which owns the IMesh and
+		 *      deletes it in its destructor. We hold the raw IMesh* (InFlight::mesh)
+		 *      and free it ourselves in Pump() once the PNG lands. Adopting the
+		 *      wrapper means adopting the ownership, i.e. rewriting the queue.
+		 *   2. It `strdup`s the path and MRF never frees it (RenderManager.cpp
+		 *      :1461 just nulls the pointer) — one small leak per render, thousands
+		 *      of renders. Our g_savePaths deque hands over a stable pointer with
+		 *      no allocation per save.
+		 *   3. It writes ONLY those two fields. Everything else here is load-
+		 *      bearing and has no upstream equivalent: the layout probe that
+		 *      latches the session off if the ABI moved, the turntable spin, the
+		 *      clutter fit, `deleteAfterSave=false` (upstream's static Render()
+		 *      sets it TRUE — the framework would free the mesh behind our back
+		 *      while Pump still holds the pointer), `mustUpdate=true`, the output
+		 *      directory, and clearing a stale reject marker.
+		 *
+		 * So this is not a re-implementation of Save(); Save() is a two-line
+		 * subset of it, on a different ownership model. */
 		bool ArmSave(void* mesh, const InFlight& job)
 		{
 			auto* abi = static_cast<IMeshAbi*>(mesh);
@@ -1277,15 +2059,37 @@ namespace ItemIcons
 			// frame's angle before the save is armed. A no-op for angle 0 (the
 			// ordinary icon), so the common path is unchanged.
 			ApplySpin(abi->rotation, job.angle, 'z');
-			// Clutter framing: enlarge the sphere fit to a box fit so a potion
-			// fills the frame instead of sitting as a speck. Frame-0 item renders
-			// only (job.refit); never shrinks and never clips (see FitClutter).
-			if (job.refit && job.angle % 360u == 0)
-				FitClutter(abi, job.label);
+			// Clutter framing: replace the framework's bounding-SPHERE fit with the
+			// swept-cylinder fit so a potion fills its frame without a long weapon
+			// being driven through the camera (see ComputeClutterFit). Applies to
+			// every ITEM render that asked (job.refit) — frame 0 and every turntable
+			// angle alike, and by construction they all get the SAME number, so the
+			// object turns inside a fixed frame.
+			//
+			// job.fallback is the one way out: a render this framing already produced
+			// and the validator REFUSED is re-armed with the framework's own fit,
+			// which is the most conservative framing available (full bounding sphere,
+			// 0.9 of the frame). One retry, then the failure ledger — a keep-forever
+			// file is never written on a guess.
+			if (job.refit && !job.fallback)
+				FitClutter(abi, job.label, job.nifPath, job.px, job.angle);
+			else if (job.fallback)
+				logger::info("item icons: '{}' re-armed on the framework's own bounding-sphere "
+				             "fit ({:.4f}) after its first picture was refused",
+					job.label, abi->scale);   // marker: item-icons-fit-fallback
 			std::error_code ec;
 			std::filesystem::create_directories(std::filesystem::path(job.outPath).parent_path(), ec);
 			if (ec)
 				return false;
+			// Clear any refusal marker left at this path — normally we consume it in
+			// Pump, but a crash between the framework writing one and us reading it
+			// would otherwise make the NEXT attempt read as refused before it had
+			// even rendered. The marker means "the render that just ran was bad", so
+			// it must never outlive that render.
+			{
+				std::error_code rm;
+				std::filesystem::remove(RejectMarkerFor(job.outPath), rm);
+			}
 			g_savePaths.push_back(job.outPath);
 			abi->savePath        = g_savePaths.back().c_str();
 			abi->saveNextFrame   = true;
@@ -1299,27 +2103,67 @@ namespace ItemIcons
 		{
 			if (!Ready())
 				return false;
-			void* mesh    = nullptr;
-			bool  swapped = false;
-			// A retexture variant is painted onto the CACHED model, rendered
-			// through the framework's own path route while the paint is wet, and
-			// put back the instant that call returns — see ApplySwaps for the
-			// disassembly this is built on. Every failure restores and falls
-			// through to the plain mesh, so it can only make the picture better.
+			void*       mesh    = nullptr;
+			bool        swapped = false;
+			std::string outPath = r.outPath;
 			if (!r.swaps.empty() && !g_swapDisabled) {
-				RE::NiPointer<RE::NiNode> src;
-				if (!DemandExact(r.nifPath, src) || !src) {
-					logger::warn("item icons: '{}' — the framework's own model path would not load here, "
-								 "so its texture swap cannot be applied; plain mesh",
-						r.label);
+				if (g_setShapeTex) {
+					// New architecture with our patch: the framework parses the
+					// NIF itself, so the swap is handed over as per-shape data
+					// (ApplySwapViaApi) instead of painted onto a model it never
+					// reads. Zero entries taking means this mesh wears its BASE
+					// textures — that picture must land under the PLAIN name,
+					// never "-s2" (the name the index prefers for good).
+					mesh = SafeCreateByNif(r.nifPath, r.px);
+					if (mesh) {
+						std::size_t applied = 0;
+						for (const auto& swap : r.swaps)
+							if (ApplySwapViaApi(mesh, swap))
+								++applied;
+						if (applied) {
+							swapped = true;
+							logger::info("item icons: '{}' — {} of {} texture-swap entries applied via the framework API",
+								r.label, applied, r.swaps.size());
+						} else {
+							outPath = PlainNameOf(outPath);
+							logger::warn("item icons: '{}' — no texture-swap entry matched a shape; rendering "
+										 "bare under the plain name",
+								r.label);
+						}
+					}
 				} else {
-					auto saved = ApplySwaps(src.get(), r.swaps, r.label);
-					if (!saved.empty()) {
-						mesh    = SafeCreateByNif(r.nifPath, r.px);   // clones the model NOW
-						swapped = mesh != nullptr;
-						RestoreSwaps(saved, r.label);                 // ...and it is wet no longer
+					// Old architecture: the variant is painted onto the CACHED
+					// model, rendered through the framework's own path route
+					// while the paint is wet, and put back the instant that call
+					// returns — see ApplySwaps for the disassembly this is built
+					// on. Every failure restores and falls through to the plain
+					// mesh, so it can only make the picture better.
+					RE::NiPointer<RE::NiNode> src;
+					if (!DemandExact(r.nifPath, src) || !src) {
+						logger::warn("item icons: '{}' — the framework's own model path would not load here, "
+									 "so its texture swap cannot be applied; plain mesh",
+							r.label);
+					} else {
+						auto saved = ApplySwaps(src.get(), r.swaps, r.label);
+						if (!saved.empty()) {
+							mesh    = SafeCreateByNif(r.nifPath, r.px);   // clones the model NOW
+							swapped = mesh != nullptr;
+							RestoreSwaps(saved, r.label);                 // ...and it is wet no longer
+						}
 					}
 				}
+			}
+			// A face whose hair lives in a WIG: compose head + wig into one mesh.
+			// Falls through to the bare head on ANY failure — a composed render is
+			// better than a bald one, but a bald one is far better than none.
+			if (!mesh && !r.extraNifs.empty()) {
+				mesh = SafeCreateByNifSet(r.nifPath, r.extraNifs, r.px);
+				if (mesh)
+					logger::info("item icons: '{}' — head composed with {} wig nif(s)",
+						r.label, r.extraNifs.size());   // marker: face-wig-compose
+				else
+					logger::warn("item icons: '{}' — wig composition did not build a mesh; bare head",
+						r.label);
 			}
 			if (!mesh)
 				mesh = SafeCreateByNif(r.nifPath, r.px);
@@ -1329,7 +2173,7 @@ namespace ItemIcons
 			}
 			InFlight job;
 			job.mesh    = mesh;
-			job.outPath = r.outPath;
+			job.outPath = std::move(outPath);
 			job.key     = r.key;
 			job.label   = r.label;
 			job.nifPath = r.nifPath;
@@ -1337,13 +2181,18 @@ namespace ItemIcons
 			job.angle   = r.angle;
 			job.px      = r.px;
 			job.refit   = r.refit;
+			job.fallback = r.fallback;
+			job.tier    = r.tier;   // a swap-retry re-arms in the lane it came from
 			job.armed   = std::chrono::steady_clock::now();
 			if (!ArmSave(mesh, job)) {
 				SafeDelete(mesh);
 				++g_failed;
 				return false;
 			}
-			logger::info("item icons: rendering '{}' -> {}", r.label, r.outPath);
+			// The lane is part of the line now: "which tier is holding the GPU"
+			// was the question the 2026-08-19 slow-tiles report could not answer
+			// from the log. (marker item-icons-render matches the prefix.)
+			logger::info("item icons: rendering '{}' [{}] -> {}", r.label, TierName(r.tier), r.outPath);
 			g_inFlight.push_back(std::move(job));
 			return true;
 		}
@@ -1353,23 +2202,129 @@ namespace ItemIcons
 		// menu map. GameIsPaused() is true for the deck palette, inventory, map,
 		// magic and the console — every state where the world is NOT being drawn,
 		// so an MRF render there contends with nothing and needs no pacing.
+		// ---- the failure ledger ------------------------------------------
+		//
+		// Rober, 2026-08-15: "the wig and the face def got stuck i sat there
+		// waiting for some time...". They had not stuck — they had FAILED, and
+		// nothing said so. A render that never lands leaves the tile on its
+		// placeholder forever, indistinguishable from one still in the queue,
+		// because the view only ever hears about SUCCESSES (icons appearing in
+		// IndexJson). Every dead end now writes a reason here, IndexJson ships
+		// it, and the tile can wear an honest x with that reason and a retry.
+		//
+		// Keyed exactly like g_asked, so the view's own lookup key finds it.
+		std::unordered_map<std::string, std::string> g_failedWhy;
+
+		void MarkFailed(const std::string& key, std::string why)
+		{
+			if (key.empty())
+				return;
+			g_failedWhy[key] = std::move(why);
+		}
+
+		// An explicit retry clears the verdict so the tile can go back to
+		// "rendering" rather than staying condemned by a stale reason.
+		void ClearFailed(const std::string& key) { g_failedWhy.erase(key); }
+
+
+		std::function<bool()> g_paletteProbe;
+
 		bool GamePaused()
 		{
 			auto* ui = RE::UI::GetSingleton();
 			return ui && ui->GameIsPaused();
 		}
 
+		/* A LOAD SCREEN is the worst moment to render, and it looks like the best
+		 * one (2026-08-16).
+		 *
+		 * WorldIdle() below treats "the engine is paused" as "there is no world
+		 * being drawn, so hammer away" — true for the deck palette, the
+		 * inventory, the map. It is FALSE for the loading menu: the engine is
+		 * paused AND it is streaming the cell, decompressing archives and
+		 * building the scene, and the load screen itself runs an animated 3D
+		 * model, so there is very much a draw loop to contend with. The
+		 * framework's own skip-list (FrameworkBlocked) does not include it
+		 * either, so MRF happily renders straight through a load.
+		 *
+		 * Result before this: the boot warm-start queued 5 s after kPostLoadGame
+		 * would find paced == false, skip the settle hold entirely (idleSettled
+		 * is forced true when not paced), and start kMaxInFlight offscreen passes
+		 * with NO gap, right in the middle of load-in. That is the "intense
+		 * microstuttering on startup" — the pacing gate was working exactly as
+		 * designed and simply did not consider a load screen dangerous.
+		 *
+		 * So loading counts as BLOCKED, not as free time: it starts nothing and
+		 * it pauses the in-flight leashes, which is precisely the behaviour we
+		 * want and is machinery that is already proven.
+		 */
+		bool LoadingNow()
+		{
+			auto* ui = RE::UI::GetSingleton();
+			if (!ui)
+				return false;
+			// String literals to match FrameworkBlocked's style. "Mist Menu" is
+			// already treated as a framework skip-menu; these two are the real
+			// load screens.
+			return ui->IsMenuOpen("Loading Menu") || ui->IsMenuOpen("LoadWaitSpinner");
+		}
+
+		// The world is not being drawn for the player in either case: engine
+		// pause, or one of our palettes up (smooth pause freezes the world at
+		// sgtm 0 without setting the engine's paused flag). Both mean "nothing
+		// to protect from a render".
+		bool                                  g_paletteFastLogged = false;
+		// When the current not-drawing-the-world stretch began. Pump holds every
+		// start for kMenuOpenGrace after it, so a palette paints before any
+		// render competes with it.
+		std::chrono::steady_clock::time_point g_idleSince{};
+
+		bool WorldIdle()
+		{
+			const bool paused = GamePaused();
+			bool       palette = false;
+			if (!paused && g_paletteProbe) {
+				try {
+					palette = g_paletteProbe();
+				} catch (...) {}
+			}
+			if (paused || palette) {
+				if (!g_paletteFastLogged) {
+					g_paletteFastLogged = true;
+					g_idleSince = std::chrono::steady_clock::now();
+					logger::info("item icons: menu up - renders paced for the UI paint");  // marker: render-menu-pace
+				}
+				return true;
+			}
+			g_paletteFastLogged = false;
+			g_idleSince = {};
+			return false;
+		}
+
 		// Retire finished / stuck renders, then start queued ones. g_mutex held.
 		void Pump()
 		{
-			const auto now     = std::chrono::steady_clock::now();
-			const bool blocked = FrameworkBlocked();
+			const auto now = std::chrono::steady_clock::now();
+			// Loading is blocked, not idle — see LoadingNow(). Folded in here
+			// rather than into FrameworkBlocked() because that function means
+			// "MRF itself refuses to draw", and this is our own policy.
+			const bool loading = LoadingNow();
+			if (loading) {
+				g_lastLoadingSeen = now;
+				if (!g_loadHoldLogged) {
+					g_loadHoldLogged = true;
+					logger::info("item icons: load screen up - renders held (streaming the cell)");  // marker: render-load-hold
+				}
+			} else if (g_loadHoldLogged) {
+				g_loadHoldLogged = false;
+			}
+			const bool blocked = FrameworkBlocked() || loading;
 			// Pace render STARTS only while the game is LIVE (unpaused): a render on
 			// the game's D3D11 device contends with the world draw and hitches. When
 			// the world is not being drawn (paused / a framework skip-menu is up) we
 			// start at full speed — the deck palette pauses the game, so the Finder
 			// stays fast. See kPaceGapUser/kPaceGapIdle.
-			const bool paced = !blocked && !GamePaused();
+			const bool paced = !blocked && !WorldIdle();
 
 			// Pause every in-flight leash for exactly the interval the framework
 			// spent refusing to draw. Without this, opening the map for a minute
@@ -1390,13 +2345,62 @@ namespace ItemIcons
 
 			for (std::size_t i = 0; i < g_inFlight.size();) {
 				const bool done = FileExists(g_inFlight[i].outPath);
+				// The framework looked at what it drew and refused to keep it. This
+				// is checked BEFORE `late` so a refusal is instant feedback rather
+				// than a 30-second timeout wearing the wrong reason.
+				const bool refused = !done && FileExists(RejectMarkerFor(g_inFlight[i].outPath));
 				const bool late = (now - g_inFlight[i].armed) > kRenderTimeout;
-				if (!done && !late) {
+				if (!done && !refused && !late) {
 					++i;
 					continue;
 				}
 				SafeDelete(g_inFlight[i].mesh);
-				if (done) {
+				if (refused) {
+					const std::string why = TakeRejectReason(g_inFlight[i].outPath);
+					if (!g_inFlight[i].fallback && g_inFlight[i].refit &&
+						!g_inFlight[i].nifPath.empty()) {
+						// ONE retry, on the framework's own bounding-sphere fit. If
+						// our framing is what made the picture unusable, this is the
+						// framing that cannot: it is the fit MRF ships, and it lands
+						// the whole sphere at 0.9 of the frame.
+						++g_failed;
+						Request again;
+						// The retry carries no swap entries, so it wears the BASE
+						// textures — and a base-texture picture must never land under
+						// the "-s2" name the index prefers for true swap renders.
+						again.outPath  = g_inFlight[i].swapped
+							? PlainNameOf(g_inFlight[i].outPath)
+							: g_inFlight[i].outPath;
+						again.key      = g_inFlight[i].key;
+						again.nifPath  = g_inFlight[i].nifPath;
+						again.label    = g_inFlight[i].label;
+						again.angle    = g_inFlight[i].angle;
+						again.px       = g_inFlight[i].px;
+						again.refit    = g_inFlight[i].refit;
+						again.fallback = true;   // ...and never again after this one
+						again.tier     = g_inFlight[i].tier;
+						QueueFor(again.tier).push_front(std::move(again));
+						// Marker: item-icons-render-refused.
+						logger::warn("item icons: '{}' — the renderer REFUSED the picture it made "
+						             "({}). Nothing was written. Retrying once on the framework's "
+						             "own bounding-sphere fit.",
+							g_inFlight[i].label, why);
+					} else {
+						// Second refusal (or a render we never framed). Do NOT write a
+						// keep-forever file on a guess: condemn it honestly, release
+						// the key so a later ask can retry, and let the tile wear its
+						// glyph with a reason instead of a broken picture.
+						++g_failed;
+						g_asked.erase(g_inFlight[i].key);
+						BacklogDrop(g_inFlight[i].key);
+						MarkFailed(g_inFlight[i].key,
+							"the renderer refused the picture it made (" + why + ")");
+						// Marker: item-icons-render-refused-twice.
+						logger::error("item icons: '{}' — refused AGAIN ({}) even on the "
+						              "framework's own fit. No file kept; the tile keeps its glyph.",
+							g_inFlight[i].label, why);
+					}
+				} else if (done) {
 					++g_done;
 					++g_landed;   // the view is told after the lock is released
 					// Remember this render as on-disk truth so it is named in every
@@ -1421,6 +2425,8 @@ namespace ItemIcons
 						logger::info("item icons: the texture-swap route DOES render on this setup "
 									 "('{}') — keeping it", g_inFlight[i].label);
 					}
+					ClearFailed(g_inFlight[i].key);   // it arrived after all
+					BacklogDrop(g_inFlight[i].key);  // landed — nothing left to remember
 					logger::info("item icons: '{}' saved ({} done, {} failed)", g_inFlight[i].label, g_done, g_failed);
 				} else if (g_inFlight[i].swapped && !g_inFlight[i].nifPath.empty()) {
 					// The convicted route (see kSwapStrikes). Do NOT release the
@@ -1437,19 +2443,32 @@ namespace ItemIcons
 							g_swapStrikes);
 					}
 					Request again;
-					again.outPath = g_inFlight[i].outPath;
+					// The bare retry lands under the PLAIN name — "-s2" stays
+					// reserved for renders that really wore the variant.
+					again.outPath = PlainNameOf(g_inFlight[i].outPath);
 					again.key     = g_inFlight[i].key;
 					again.nifPath = g_inFlight[i].nifPath;
 					again.label   = g_inFlight[i].label;
 					again.angle   = g_inFlight[i].angle;   // same turntable frame
+					again.refit   = g_inFlight[i].refit;   // ...and the SAME framing — a
+					// bare retry that dropped the box-fit baked a permanently
+					// mis-framed icon under the plain name (2026-08-19 swarm find)
+					again.tier    = g_inFlight[i].tier;    // ...and its own lane
 					// swaps deliberately empty — that IS the retry.
-					g_queue.push_front(std::move(again));
+					QueueFor(again.tier).push_front(std::move(again));
 					logger::warn("item icons: '{}' drew nothing through its texture swap in {}s — "
 								 "retrying as the bare mesh",
 						g_inFlight[i].label, static_cast<long long>(kRenderTimeout.count()));
 				} else {
 					++g_failed;
 					g_asked.erase(g_inFlight[i].key);   // a later call may retry
+					// A timeout is not resumed across sessions either — replaying a
+					// render the framework already refused once per boot would grind
+					// the same dead end forever. A fresh USER ask (or Retry) still
+					// re-queues it, and that ask re-enters the backlog.
+					BacklogDrop(g_inFlight[i].key);
+					MarkFailed(g_inFlight[i].key,
+						"the renderer never produced a picture for it (timed out)");
 					logger::warn("item icons: '{}' did not render within {}s — mesh freed. (The framework "
 								 "declines to draw while its Main/Mist/Map/Book menus are open; that time "
 								 "is not counted.)",
@@ -1465,11 +2484,16 @@ namespace ItemIcons
 			// speed. The first start of a live burst (g_lastStart in the distant
 			// past, or unset) always passes, so pacing spreads a burst without ever
 			// blocking its opening render.
+			// A menu is up: hold everything for the grace window, then use the
+			// short menu gap rather than no gap at all. See kMenuOpenGrace.
+			const bool inMenuGrace = !paced && g_idleSince != std::chrono::steady_clock::time_point{} &&
+			                         (now - g_idleSince) < kMenuOpenGrace;
 			auto paceOk = [&](std::chrono::milliseconds gap) -> bool {
-				if (!paced)
-					return true;
+				if (inMenuGrace)
+					return false;
+				const auto eff = paced ? gap : kPaceGapMenu;
 				if (g_lastStart != std::chrono::steady_clock::time_point{} &&
-					(now - g_lastStart) < gap) {
+					(now - g_lastStart) < eff) {
 					if (!g_paceLogged) {
 						g_paceLogged = true;
 						logger::info("item icons: pacing renders (game unpaused)");
@@ -1494,12 +2518,67 @@ namespace ItemIcons
 				else
 					g_asked.erase(r.key);
 			}
-			// IDLE tier LAST: only when the user queue is empty and there is still
-			// in-flight room. A user request that arrives later push_back()s onto
-			// g_queue and is taken on the NEXT pump before any of these, so the
-			// warm-start never delays a page the player opened. Live, the idle tier
-			// gets the LONGER gap (kPaceGapIdle) — nobody is waiting on it, so it
-			// spreads even more gently.
+
+			/* ── the reserved slot ──────────────────────────────────────────
+			 * Draining the user queue first is only half of "user asks are
+			 * strictly first": if both in-flight slots were already carrying
+			 * background renders, the next user ask still had to wait for one
+			 * of them to finish. MRF gives us no way to cancel a render that is
+			 * already armed (the framework writes the file from its own render
+			 * loop), so the fix is to never let the background fill the budget:
+			 * at most kMaxBgInFlight of the kMaxInFlight slots may hold work
+			 * nobody is waiting on. A user ask therefore always finds a free
+			 * slot and starts on the next pump — no in-flight render is ever
+			 * preempted, and none has to be.
+			 *
+			 * The other half: while ANY user work is queued, the background
+			 * lanes start nothing at all, even into a free slot. */
+			constexpr std::size_t kMaxBgInFlight = 1;
+			static_assert(kMaxBgInFlight < kMaxInFlight, "no slot left reserved for user asks");
+			const bool  userPending = !g_queue.empty();
+			std::size_t bgInFlight  = BackgroundInFlight();
+
+			// The one residual delay, said out loud: the budget was full when a user
+			// ask wanted a slot. Nothing is cancelled mid-render (the framework
+			// writes the PNG from its own render loop and has no cancel), so the ask
+			// starts as soon as one of these retires — worst case one render.
+			// Build marker (hd-markers.json: "render-priority-wait").
+			if (!blocked && userPending && g_inFlight.size() >= kMaxInFlight) {
+				if (!g_userWaitLogged) {
+					g_userWaitLogged = true;
+					logger::info("item icons: render-priority hold — {} user render(s) waiting on {} in flight "
+								 "({} background); the next free slot is theirs",
+						g_queue.size(), g_inFlight.size(), bgInFlight);
+				}
+			}
+
+			/* BULK tier: the wardrobe's catalogue sweep. It runs as soon as the
+			 * user tier is quiet — these ARE the pictures the tab wants — but it
+			 * is preempted by the next user ask, it can hold only the
+			 * non-reserved slot, and while the game is live it takes the long
+			 * background gap (nobody is waiting on it, so it must not race the
+			 * world draw). Unlike the idle tier it is NOT subject to the
+			 * warm-start settle / post-load holds: a sweep asked for by an open
+			 * tab should not wait 45 s of play. */
+			while (!blocked && !userPending && !g_bulkQueue.empty() &&
+				g_inFlight.size() < kMaxInFlight && bgInFlight < kMaxBgInFlight &&
+				paceOk(kPaceGapIdle)) {
+				Request r = std::move(g_bulkQueue.front());
+				g_bulkQueue.pop_front();
+				if (Start(r)) {
+					g_lastStart = now;
+					++bgInFlight;
+				} else {
+					g_asked.erase(r.key);
+				}
+			}
+			// IDLE tier LAST: only when the user AND bulk queues are empty and there
+			// is still in-flight room (minus the reserved slot). A user request that
+			// arrives later is rotated to the FRONT of g_queue and is taken on the
+			// NEXT pump before any of these, so the warm-start never delays a page
+			// the player opened. Live, the idle tier gets the LONGER gap
+			// (kPaceGapIdle) — nobody is waiting on it, so it spreads even more
+			// gently.
 			//
 			// And while the game is LIVE, hold the idle tier off entirely for the
 			// first kIdleSettleDelay of live play: that is the boot re-bake burst's
@@ -1509,10 +2588,12 @@ namespace ItemIcons
 			// load-in. When PAUSED (deck open / load screen) there is no world to
 			// contend with, so `idleSettled` is forced true — a player who opens the
 			// Finder right after boot still gets warm-start faces immediately.
-			// Also capped to ONE idle render in flight at a time while live, so the
-			// background burst can never run two offscreen passes at once against the
-			// world draw (kMaxInFlight applies to the shared list; this narrows the
-			// idle tier's share of it).
+			// Background lanes are capped at kMaxBgInFlight (see the reserved slot
+			// above) whether the game is live or paused: one offscreen pass at a
+			// time against the world draw, and always a free slot for the next user
+			// ask. Warm-start throughput with the deck open is halved by that on
+			// purpose — a fast warm-start that can make the F7 card wait is exactly
+			// the trade Rober rejected.
 			const bool idleSettled = !paced || g_liveElapsed >= kIdleSettleDelay;
 			if (paced && idleSettled && !g_idleSettleLogged &&
 				g_liveElapsed >= kIdleSettleDelay && !g_idleQueue.empty()) {
@@ -1521,21 +2602,31 @@ namespace ItemIcons
 					static_cast<long long>(
 						std::chrono::duration_cast<std::chrono::seconds>(g_liveElapsed).count()));
 			}
-			const std::size_t idleInFlightCap = paced ? std::size_t{ 1 } : kMaxInFlight;
-			while (!blocked && idleSettled && g_queue.empty() && !g_idleQueue.empty() &&
-				g_inFlight.size() < idleInFlightCap && paceOk(kPaceGapIdle)) {
+			// The post-load hold (see kPostLoadIdleHold): applies whether or not the
+			// game is paused, because "paused" right after a load usually means the
+			// player opened the deck while the cell is still streaming.
+			const bool postLoadHold =
+				g_lastLoadingSeen != std::chrono::steady_clock::time_point{} &&
+				(now - g_lastLoadingSeen) < kPostLoadIdleHold;
+			while (!blocked && idleSettled && !postLoadHold && !userPending && g_bulkQueue.empty() &&
+				!g_idleQueue.empty() && g_inFlight.size() < kMaxInFlight &&
+				bgInFlight < kMaxBgInFlight && paceOk(kPaceGapIdle)) {
 				Request r = std::move(g_idleQueue.front());
 				g_idleQueue.pop_front();
-				if (Start(r))
+				if (Start(r)) {
 					g_lastStart = now;
-				else
+					++bgInFlight;
+				} else {
 					g_asked.erase(r.key);
+				}
 			}
 
 			// Burst boundary: once nothing is queued or in flight, re-arm the
 			// once-per-burst pacing log so the NEXT live burst says so afresh.
-			if (g_queue.empty() && g_idleQueue.empty() && g_inFlight.empty())
-				g_paceLogged = false;
+			if (g_queue.empty() && g_bulkQueue.empty() && g_idleQueue.empty() && g_inFlight.empty()) {
+				g_paceLogged     = false;
+				g_userWaitLogged = false;
+			}
 		}
 
 		// The portal cannot call IndexJson(), so the same map is dropped beside
@@ -1568,19 +2659,39 @@ namespace ItemIcons
 				return;   // already named in the index
 			// A retexture variant renders under "-s2"; the swap-less fallback
 			// renders under the plain name. Either on disk means "we have it".
-			if (FileExists((IconDir() / FileFor(fid, plugin, true)).string()) ||
-				FileExists((IconDir() / FileFor(fid, plugin, false)).string()))
+			if (FileExists(IconDir() / FileFor(fid, plugin, true)) ||
+				FileExists(IconDir() / FileFor(fid, plugin, false)))
 				g_diskIndex.insert(key);
 		}
 
+		// Declared with the face machinery below; used here so a user ask can lift
+		// a bulk- or backlog-queued item into the user lane the same way it lifts
+		// a face. Returns true if it moved one.
+		bool PromoteToUser(const std::string& key);
+
+		// Counts what the current public entry point promoted out of the background
+		// lanes, so its log line can say so. Only ever touched under g_mutex, and
+		// only by the public entry points that reset it before their walk.
+		std::size_t g_promotedThisAsk = 0;
+
 		// Queue one item if it needs rendering. g_mutex held. Returns true if queued.
-		bool EnqueueLocked(const std::string& fid, const std::string& plugin, const std::string& name)
+		// `tier` parks it on the user, bulk or idle deque — same dedup, same
+		// derivation, same file; only WHICH deque and WHICH ceiling differ.
+		bool EnqueueLocked(const std::string& fid, const std::string& plugin, const std::string& name,
+			Tier tier = Tier::User)
 		{
-			if (fid.empty() || plugin.empty() || g_queue.size() >= kMaxQueued)
+			if (fid.empty() || plugin.empty() || QueueFor(tier).size() >= CapFor(tier))
 				return false;
 			const auto key = KeyOf(fid, plugin);
-			if (g_asked.count(key))
+			if (g_asked.count(key)) {
+				// Already asked this session. A USER ask finding it parked on a
+				// background lane (the wardrobe sweep or a backlog replay queued
+				// it) promotes it, so the page the player opened is never stuck
+				// behind work nobody is waiting on.
+				if (tier == Tier::User && PromoteToUser(key))
+					++g_promotedThisAsk;
 				return false;
+			}
 			// The look has to be derived FIRST now, because whether this piece has
 			// a texture swap decides which filename it renders to — and therefore
 			// whether the icon already sitting on disk is one of ours or one of
@@ -1588,6 +2699,13 @@ namespace ItemIcons
 			auto look = LookOf(fid, plugin);
 			if (look.nif.empty()) {
 				g_asked.insert(key);   // nothing to render; don't re-derive every call
+				BacklogDrop(key);      // a permanent miss never resumes across sessions
+				// THE silent case: a form with no world model can never render, and
+				// until now the tile just waited. Say so once, out loud and on the
+				// tile (the wig that "got stuck" on 2026-08-15).
+				MarkFailed(key, "this record ships no world model, so there is nothing to render");
+				logger::info("item icons: '{}' has no world model - nothing to render ({})",
+					name.empty() ? key : name, key);
 				return false;
 			}
 			/* With swaps latched off (new-architecture MRF, or two strikes) a
@@ -1596,16 +2714,18 @@ namespace ItemIcons
 			 * reserved for renders that really carried the variant's textures). */
 			const bool hasSwaps = !look.swaps.empty();
 			const bool wantSwap = hasSwaps && !g_swapDisabled;
-			const auto out = (IconDir() / FileFor(fid, plugin, wantSwap)).string();
+			const auto out = PathU8((IconDir() / FileFor(fid, plugin, wantSwap)));
 			if (FileExists(out)) {   // render once, keep forever
 				g_asked.insert(key);
+				BacklogDrop(key);
 				return false;
 			}
 			if (hasSwaps && !wantSwap &&
-				FileExists((IconDir() / FileFor(fid, plugin, true)).string())) {
+				FileExists(IconDir() / FileFor(fid, plugin, true))) {
 				// a good swap-rendered icon from an earlier session still wins the
 				// index — don't burn a render on a bare duplicate beside it
 				g_asked.insert(key);
+				BacklogDrop(key);
 				return false;
 			}
 			Request r;
@@ -1615,13 +2735,15 @@ namespace ItemIcons
 			r.swaps   = wantSwap ? std::move(look.swaps) : std::vector<AltTex>{};
 			r.label   = name.empty() ? key : name;
 			r.refit   = true;   // frame-0 item render: box-fit so clutter fills the frame
-			g_queue.push_back(std::move(r));
+			r.tier    = tier;
+			QueueFor(tier).push_back(std::move(r));
 			g_asked.insert(key);
+			BacklogAdd(key, fid, plugin, name, "item");
 			return true;
 		}
 
 		// Pull {formId,plugin,name} triples out of one of the deck's export files.
-		std::size_t EnqueueFromFile(const std::filesystem::path& file, bool nested)
+		std::size_t EnqueueFromFile(const std::filesystem::path& file, bool nested, Tier tier)
 		{
 			std::ifstream in(file, std::ios::binary);
 			if (!in.is_open())
@@ -1636,7 +2758,8 @@ namespace ItemIcons
 					for (const auto& it : j["items"])
 						if (it.is_object() &&
 							EnqueueLocked(it.value("formId", std::string("")),
-								it.value("plugin", std::string("")), it.value("name", std::string(""))))
+								it.value("plugin", std::string("")), it.value("name", std::string("")),
+								tier))
 							++queued;
 			} else {   // wardrobe-catalogue.json: {outfits:[{items:[...]}]}
 				if (j.contains("outfits") && j["outfits"].is_array())
@@ -1645,7 +2768,8 @@ namespace ItemIcons
 							for (const auto& it : o["items"])
 								if (it.is_object() &&
 									EnqueueLocked(it.value("formId", std::string("")),
-										it.value("plugin", std::string("")), it.value("name", std::string(""))))
+										it.value("plugin", std::string("")),
+										it.value("name", std::string("")), tier))
 									++queued;
 			}
 			return queued;
@@ -1660,8 +2784,10 @@ namespace ItemIcons
 				return;
 			std::thread([]() {
 				using namespace std::chrono_literals;
-				for (int i = 0; i < kWatchTicks; ++i) {
-					std::this_thread::sleep_for(700ms);
+				const auto deadline = std::chrono::steady_clock::now() + kWatchMax;
+				auto       tick     = kTickIdle;
+				while (std::chrono::steady_clock::now() < deadline) {
+					std::this_thread::sleep_for(tick);
 					bool busy = false;
 					// Pump under the lock, then notify OUTSIDE it: the callback
 					// re-enters IndexJson(), which takes the same mutex.
@@ -1682,10 +2808,28 @@ namespace ItemIcons
 							if (g_onBatchDone)
 								g_onBatchDone();
 						}
+						// Keep the unfinished-render backlog current while work is
+						// pending, so a crash or quit mid-batch forgets nothing.
+						BacklogSaveIfDirty();
 					});
 					{
 						std::lock_guard l(g_mutex);
-						busy = !g_queue.empty() || !g_idleQueue.empty() || !g_inFlight.empty();
+						busy = !g_queue.empty() || !g_bulkQueue.empty() || !g_idleQueue.empty() ||
+							!g_inFlight.empty();
+						// The tick IS the throughput ceiling for anything the player
+						// is waiting on: nothing starts and nothing is retired
+						// between pumps, so at 700 ms a user batch could never
+						// exceed ~1.4 renders/s no matter how idle the GPU was
+						// (measured 2026-08-19: starts 700 ms apart for renders that
+						// each finished in ~250 ms). While a user ask is queued or
+						// rendering, look far more often — the pacing gaps
+						// (kPaceGapUser / kPaceGapMenu, and the menu grace window)
+						// still decide when a render may START, so this only stops
+						// the watcher from being the slower of the two limits. (Covered
+						// by the render-priority-* markers: same file, same change.)
+						const bool userBusy = !g_queue.empty() ||
+							g_inFlight.size() > BackgroundInFlight();
+						tick = userBusy ? kTickUser : kTickIdle;
 					}
 					if (!busy)
 						break;
@@ -1700,6 +2844,10 @@ namespace ItemIcons
 			}).detach();
 		}
 	}
+
+	// Defined after the face/body enqueue machinery below; declared here so Init
+	// can replay the persisted unfinished-render backlog once binding is done.
+	void ResumeBacklog();
 
 	void Init()
 	{
@@ -1727,6 +2875,10 @@ namespace ItemIcons
 		// then skips its own setup while still returning a mesh - which is exactly
 		// how 53 icon renders produced nothing on 2026-08-02. See ApplySwaps.
 		g_delete          = reinterpret_cast<DeleteFn>(GetProcAddress(mod, "IMesh_Delete"));
+		// Optional: composes a facegen head with a worn wig in ONE mesh. Absent on
+		// an old framework, in which case faces render bare-facegen (bald wig NPCs)
+		// exactly as they did before 2026-08-16 — never an error.
+		g_createBySet     = reinterpret_cast<CreateBySetFn>(GetProcAddress(mod, "IMesh_CreateByNifPathSet"));
 		if (!g_createByNif || !g_delete) {
 			logger::warn("item icons: MeshRenderingFramework.dll loaded but exports did not resolve — "
 						 "a newer or different API; item icons stay off");
@@ -1739,25 +2891,41 @@ namespace ItemIcons
 		 * wet-paint texture swap (ApplySwaps on the cached node) silently paints a
 		 * model the renderer never reads, and a "-s2" file would bake the WRONG
 		 * (base) textures under the preferred filename, permanently. The rewrite
-		 * is detectable by an export the old architecture never had; when it is
-		 * present, latch the existing swap-disable so retexture variants render
-		 * as the bare mesh under the plain filename (existing good -s2 icons on
-		 * disk keep winning the index). The trade is deliberate: the rewrite is
-		 * what renders FaceGen heads (skin posing + facetint) — the NPC Finder's
-		 * portraits — which the old architecture drew as a black square. */
+		 * is detectable by an export the old architecture never had.
+		 *
+		 * Our from-source MRF build (zz-shape-textureset.patch, 2026-08-15) adds
+		 * IMesh_SetShapeTextureSet — a per-shape texture-set override with no
+		 * skin gate — so on that build the swap goes through the framework API
+		 * (ApplySwapViaApi) and retexture variants render TRUE again. On a
+		 * rewrite WITHOUT the patch (stock Nexus build), latch the swap-disable
+		 * as before: bare mesh under the plain filename, existing good -s2 icons
+		 * keep winning the index. Either way the rewrite is what renders FaceGen
+		 * heads (skin posing + facetint) — the NPC Finder's portraits — which
+		 * the old architecture drew as a black square. */
 		if (GetProcAddress(mod, "IMesh_SetTextureSet")) {
-			g_swapDisabled = true;
-			logger::info("item icons: new-architecture Mesh Rendering Framework detected — "
-						 "texture swaps off (bare-mesh renders), FaceGen head renders on");
+			g_setShapeTex = reinterpret_cast<SetShapeTexFn>(GetProcAddress(mod, "IMesh_SetShapeTextureSet"));
+			if (g_setShapeTex) {
+				logger::info("item icons: new-architecture Mesh Rendering Framework with per-shape "
+							 "texture sets — swaps go through the framework API (variants render true)");
+			} else {
+				g_swapDisabled = true;
+				logger::info("item icons: new-architecture Mesh Rendering Framework detected — "
+							 "texture swaps off (bare-mesh renders), FaceGen head renders on");
+			}
 		}
 		// A new MRF build (or a bumped epoch) invalidates every kept face/body
 		// render — do the one-time purge now, before anything asks for one.
 		ReconcileFaceGenGeneration();
 		// A bumped item epoch (a look-affecting change to this file, e.g. the
 		// 2026-08-14 clutter-fill framing) purges the plain item renders once so
-		// they re-bake framed correctly; the good old "-s2" swap renders survive.
+		// they re-bake framed correctly; a bumped SWAP epoch does the same for the
+		// "-s2" renders when the swap route itself changes. Each generation only
+		// ever purges its own renders.
 		ReconcileItemGeneration();
 		logger::info("item icons: Mesh Rendering Framework bound — armour renders at {}px", kSize);
+		// Renders still queued when the last session ended resume now, at idle
+		// priority — the "remembered on reload" half of render-once-keep-forever.
+		ResumeBacklog();
 	}
 
 	bool Available() { return Ready(); }
@@ -1768,14 +2936,25 @@ namespace ItemIcons
 			return;
 		const auto viewDir = std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck";
 		std::size_t queued  = 0;
-		queued += EnqueueFromFile(viewDir / "wardrobe-inventory.json", false);
-		queued += EnqueueFromFile(viewDir / "wardrobe-catalogue.json", true);
+		/* BULK, not user (2026-08-19). This is a speculative sweep of the two
+		 * wardrobe exports — every piece the player owns plus every catalogued
+		 * outfit — and it fires on a tab open, a catalogue export or a portal
+		 * inventory refresh. On 2026-08-19 it put 59 renders into the shared user
+		 * queue 260 ms before Rober pressed F7 on an NPC, and his quick card's
+		 * three worn tiles rendered 41 s later, dead last. The rows actually ON
+		 * SCREEN never depended on this walk: they ask through EnsureIconsForList
+		 * (user tier) as they are drawn. So the sweep runs in the lane that yields
+		 * to a real ask. */
+		queued += EnqueueFromFile(viewDir / "wardrobe-inventory.json", false, Tier::Bulk);
+		queued += EnqueueFromFile(viewDir / "wardrobe-catalogue.json", true, Tier::Bulk);
 		// Even with nothing to render, the walk above just learned which icons
 		// already exist — put that on disk for the portal.
 		WriteIndexFile();
+		BacklogSaveIfDirty();
 		if (!queued)
 			return;
-		logger::info("item icons: {} armour render(s) queued", queued);
+		logger::info("item icons: {} armour render(s) queued at bulk priority (yields to anything asked for on screen)",
+			queued);   // marker: render-priority-bulk-sweep
 		{
 			std::lock_guard l(g_mutex);
 			Pump();   // start the first kMaxInFlight immediately
@@ -1827,9 +3006,17 @@ namespace ItemIcons
 		auto j = nlohmann::json::parse(wornReplyJson, nullptr, false);
 		if (j.is_discarded() || !j.is_object() || !j.contains("items") || !j["items"].is_array())
 			return;
-		std::size_t queued = 0;
+		std::size_t queued = 0, promoted = 0;
 		{
 			std::lock_guard l(g_mutex);
+			// Everything appended (or promoted out of bulk/idle) by this walk is
+			// rotated to the FRONT of the user queue: this list is a surface the
+			// player is looking at RIGHT NOW — the F7 quick card's worn tiles, a
+			// Finder page, the Potion Browser / Quiver / wheel popout, wardrobe
+			// rows — and it must beat both the background lanes and any older
+			// user batch. See FrontLoadUserBatch.
+			const std::size_t before = g_queue.size();
+			g_promotedThisAsk        = 0;
 			for (const auto& it : j["items"]) {
 				if (!it.is_object())
 					continue;
@@ -1838,19 +3025,23 @@ namespace ItemIcons
 						it.value("name", std::string())))
 					++queued;
 			}
+			promoted = g_promotedThisAsk;
+			FrontLoadUserBatch(before);
+			if (queued || promoted) {
+				LogUserAskDepth("listed", queued, promoted);
+				Pump();   // and start it NOW rather than on the next watcher tick
+			}
 		}
 		// Even with nothing new to render, the walk above registered the worn
 		// keys — the index now names every piece that already has a PNG, which
 		// is what the quick card needs on a session where the Wardrobe tab
 		// never opened (IndexJson only reports keys asked THIS session).
 		WriteIndexFile();
-		if (!queued)
+		BacklogSaveIfDirty();
+		if (!queued && !promoted)
 			return;
-		logger::info("item icons: {} listed render(s) queued", queued);
-		{
-			std::lock_guard l(g_mutex);
-			Pump();
-		}
+		if (queued)
+			logger::info("item icons: {} listed render(s) queued", queued);
 		StartWatcher();
 	}
 
@@ -1866,43 +3057,212 @@ namespace ItemIcons
 			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "npcs";
 		}
 
-		// If `key` is still parked (not yet started) in the IDLE queue, splice it to
-		// the BACK of the USER queue so it renders at user priority. g_mutex held.
-		// Called when a page requests a face the boot warm-start already idle-queued:
-		// without this the render would stay idle-tier and could be DELAYED behind the
-		// warm-start set — the exact priority inversion the two-tier design must not
-		// have. Returns true if it moved one.
-		bool PromoteIdleToUser(const std::string& key)
+		/* A WIG is never in the facegen file — the "bald Frau Peach" fix.
+		 *
+		 * The CK bakes every HEAD PART into <plugin>\<8hex>.nif, so a facegen
+		 * render normally carries hair, brows, lashes and eyes with the head.
+		 * It can NEVER carry a WIG: HDT-SMP hair has to be a worn ARMO (head
+		 * parts get no physics), so a follower whose hair is a wig renders BALD
+		 * from her facegen alone. Proven on the rig 2026-08-16: Frau Peach's
+		 * facegen holds 9 shapes — head, mouth, lashes, eyes, two lens dummies,
+		 * two eye overlays, brows — and not one hair shape, which is exactly
+		 * what Rober photographed ("rendering without hair or eyes ... it has to
+		 * be smarter than this").
+		 *
+		 * So hand the framework the wig as an ATTACHMENT nif beside the head —
+		 * the same composition MRF's own CreateWholeNpc performs. Hair slots
+		 * only (31 kHair / 41 kLongHair, wigs.cpp's rule): this is a FACE tile,
+		 * so no body, no outfit, nothing else.
+		 *
+		 * TRAP: this must stay best-effort and silent. Every miss (no such NPC,
+		 * no outfit, no hair armour, file absent) returns empty and the face
+		 * renders exactly as it did before.
+		 */
+		std::vector<std::string> HairNifsForFace(const std::string& fid, const std::string& plugin)
 		{
-			for (auto it = g_idleQueue.begin(); it != g_idleQueue.end(); ++it) {
-				if (it->key == key) {
-					g_queue.push_back(std::move(*it));
-					g_idleQueue.erase(it);
-					return true;
+			std::vector<std::string> out;
+			std::uint32_t            local = 0;
+			try {
+				local = static_cast<std::uint32_t>(std::stoul(
+					fid.rfind("0x", 0) == 0 || fid.rfind("0X", 0) == 0 ? fid.substr(2) : fid, nullptr, 16));
+			} catch (...) {
+				return out;
+			}
+			if (!local)
+				return out;
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			if (!dh)
+				return out;
+			RE::TESForm* form = dh->LookupForm(local, plugin);
+			auto*        npc  = form ? form->As<RE::TESNPC>() : nullptr;
+			if (!npc || !npc->race)
+				return out;
+			auto*     race = npc->race;
+			const int sex =
+				npc->actorData.actorBaseFlags.any(RE::ACTOR_BASE_DATA::Flag::kFemale) ? 1 : 0;
+			// Same gate the head itself passes: probe the game's own resource
+			// stack (loose + BSA, MO2 VFS applied) so a missing file costs the
+			// framework nothing. Cap + dedupe shared by every source below.
+			auto addModel = [&](const std::string& model) {
+				if (model.empty() || out.size() >= 4)
+					return;   // a head wears one hairdo; a runaway list is a bug, not a hairstyle
+				RE::BSResourceNiBinaryStream probe(("meshes\\" + model).c_str());
+				if (!probe.good())
+					return;
+				if (std::find(out.begin(), out.end(), model) == out.end())
+					out.push_back(model);
+			};
+			// GetSlotMask() hands back the raw bit-flag enum, not an EnumSet —
+			// test the bits (wigs.cpp's hard-won note).
+			using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
+			const std::uint32_t hairMask = static_cast<std::uint32_t>(Slot::kHair) |
+										   static_cast<std::uint32_t>(Slot::kLongHair);
+			auto addWig = [&](RE::TESObjectARMO* armo) {
+				if (!armo || (static_cast<std::uint32_t>(armo->GetSlotMask()) & hairMask) == 0)
+					return;
+				// Per-ADDON, not per-armour: a multi-slot ARMO (a follower's
+				// custom SKIN, a full outfit) matches the hair mask at the
+				// armour level while its first addon is the TORSO - composing
+				// that onto a head would be worse than staying bald. Only ARMAs
+				// whose OWN slots are hair contribute their model.
+				bool added = false;
+				for (auto* arma : armo->armorAddons) {
+					if (!arma ||
+						(static_cast<std::uint32_t>(arma->GetSlotMask()) & hairMask) == 0)
+						continue;
+					const char* m = arma->bipedModels[sex].GetModel();
+					if (!m || !*m)
+						m = arma->bipedModels[sex ? 0 : 1].GetModel();   // some wigs fill only one sex slot
+					if (m && *m) {
+						addModel(m);
+						added = true;
+					}
+				}
+				// A wig authored with slots only at the ARMO level still gets
+				// its race addon, exactly like before.
+				if (!added) {
+					std::string model;
+					if (auto* arma = armo->GetArmorAddon(race)) {
+						if (const char* m = arma->bipedModels[sex].GetModel(); m && *m)
+							model = m;
+						else if (const char* m2 = arma->bipedModels[sex ? 0 : 1].GetModel(); m2 && *m2)
+							model = m2;
+					}
+					addModel(model);
+				}
+			};
+
+			// 1. The outfit wig — the original source.
+			if (npc->defaultOutfit)
+				for (auto* item : npc->defaultOutfit->outfitItems)
+					addWig(item ? item->As<RE::TESObjectARMO>() : nullptr);
+
+			// 2. HEAD-PART hair (the Frau Peach case): custom-race followers
+			// (UBE and kin) keep hair as a real head part their facegen bake
+			// never includes, so the bare facegen renders BALD. Vanilla-style
+			// NPCs bake hair INTO the facegen — MRF's composite skips an
+			// attached hair shape when the base already carries substantial
+			// hair, which is what makes passing it unconditionally safe for
+			// both. Ships as a matched set with the MRF flags-additive-hair
+			// patch; an older MRF simply ignores the attachment.
+			for (std::int8_t i = 0; i < npc->numHeadParts; ++i) {
+				auto* hp = npc->headParts ? npc->headParts[i] : nullptr;
+				/* EQUALITY, not .any(): HeadPartType is a plain sequential enum
+				 * (kEyes=2, kHair=3, kEyebrows=6), so the bitwise .any(kHair)
+				 * test also matched eyes (2&3) and brows (6&3). Those leaked in
+				 * as attachments, and the composite dedupe only knows how to
+				 * drop duplicate HAIR — so a default un-morphed EyesMale.nif
+				 * drew OVER the facegen's real eyes: Rober's 2026-08-19 "he has
+				 * no eyes" blank-white-orbs report, proven from the MRF draw
+				 * log (both 'maleeyeshumanhazelbrown' AND 'eyesmale' drawn). */
+				if (!hp || hp->type.get() != RE::BGSHeadPart::HeadPartType::kHair) {
+					if (hp && hp->GetModel() && *hp->GetModel())
+						logger::debug("item icons: head part '{}' is not hair - not composed (hair-only head-part filter)", hp->GetModel());  // marker: face-hair-strict
+					continue;
+				}
+				if (const char* m = hp->GetModel(); m && *m) {
+					logger::info("item icons: hair from head part '{}' for face {}|{}", m, fid, plugin);  // marker: face-hair-headparts
+					addModel(m);
+				}
+				for (auto* extra : hp->extraParts) {
+					if (!extra)
+						continue;
+					if (const char* em = extra->GetModel(); em && *em)
+						addModel(em);
+				}
+			}
+
+			// 3. WORN-ARMOR (WNAM skin) hair addons - Frau Peach's ACTUAL
+			// setup, read out of her ESP: no hair head part, empty inventory,
+			// no outfit - her skin ARMO carries a dedicated hair ARMA
+			// (slots kHair|kLongHair, model !UBE\...\Hair.nif) beside the
+			// body/hands/feet addons. addWig's per-addon rule keeps the body
+			// parts out.
+			{
+				const std::size_t before = out.size();
+				addWig(npc->skin);
+				if (out.size() > before)
+					logger::info("item icons: hair from worn-armor skin for face {}|{}", fid, plugin);  // marker: face-hair-wornskin
+			}
+
+			// 4. INVENTORY wigs: plenty of followers carry the wig as a plain
+			// carried item they equip at runtime, never listed in the outfit.
+			if (auto* container = npc->As<RE::TESContainer>()) {
+				for (std::uint32_t i = 0; i < container->numContainerObjects; ++i) {
+					auto* entry = container->containerObjects ? container->containerObjects[i] : nullptr;
+					addWig(entry && entry->obj ? entry->obj->As<RE::TESObjectARMO>() : nullptr);
+				}
+			}
+			return out;
+		}
+
+		/* If `key` is still parked (not yet started) in a BACKGROUND queue, splice
+		 * it onto the tail of the USER queue — where its caller's
+		 * FrontLoadUserBatch will then rotate it to the front with the rest of
+		 * that ask. g_mutex held. Returns true if it moved one.
+		 *
+		 * Called when a page requests something a background lane already queued:
+		 * the boot warm-start's roster faces, the resumed backlog, or (since
+		 * 2026-08-19) the wardrobe's bulk sweep — which is how Rober's F7 card
+		 * ended up behind 59 catalogue renders. Without this the render would
+		 * stay in the background lane and could be delayed behind the whole set,
+		 * the exact priority inversion the tiers exist to prevent. Bulk is
+		 * scanned first: it is the lane most likely to hold what a page wants. */
+		bool PromoteToUser(const std::string& key)
+		{
+			for (auto* q : { &g_bulkQueue, &g_idleQueue }) {
+				for (auto it = q->begin(); it != q->end(); ++it) {
+					if (it->key == key) {
+						it->tier = Tier::User;
+						g_queue.push_back(std::move(*it));
+						q->erase(it);
+						return true;
+					}
 				}
 			}
 			return false;
 		}
 
-		// g_mutex held. Returns true if a NEW render was queued. idle=true parks it on
-		// the idle tier (render warm-start) instead of the user queue — same dedup,
-		// same probe, same file; only WHICH deque and WHICH ceiling differ.
+		// g_mutex held. Returns true if a NEW render was queued. `tier` parks it on
+		// the user, bulk or idle deque (the warm-start and the resumed backlog are
+		// idle) — same dedup, same probe, same file; only WHICH deque and WHICH
+		// ceiling differ.
 		bool EnqueueFaceLocked(const std::string& fid, const std::string& plugin, const std::string& name,
-			bool idle = false)
+			Tier tier = Tier::User)
 		{
 			if (fid.empty() || plugin.empty())
 				return false;
-			if ((idle ? g_idleQueue.size() : g_queue.size()) >= (idle ? kMaxIdleQueued : kMaxQueued))
+			if (QueueFor(tier).size() >= CapFor(tier))
 				return false;
 			// Distinct asked-key namespace: IndexJson skips any key with '@',
 			// and Pump's failure-erase works on this key unchanged.
 			const auto key = KeyOf(fid, plugin) + "@face";
 			if (g_asked.count(key)) {
 				// Already asked this session. If a USER request finds it still waiting
-				// on the idle tier (boot warm-start queued it), promote it so the page
-				// the player opened is not stuck behind the warm-start set.
-				if (!idle)
-					PromoteIdleToUser(key);
+				// on a background lane (boot warm-start or the backlog queued it),
+				// promote it so the page the player opened is not stuck behind that set.
+				if (tier == Tier::User && PromoteToUser(key))
+					++g_promotedThisAsk;
 				return false;
 			}
 			// The CK's file name: 8 hex digits, lowercase, zero-padded.
@@ -1924,11 +3284,13 @@ namespace ItemIcons
 			RE::BSResourceNiBinaryStream probe(("meshes\\" + rel).c_str());
 			if (!probe.good()) {
 				g_asked.insert(key);
+				BacklogDrop(key);   // no facegen file — a permanent miss never resumes
 				return false;
 			}
-			const auto out = (FaceDir() / FileFor(fid, plugin, false)).string();
+			const auto out = PathU8((FaceDir() / FileFor(fid, plugin, false)));
 			if (FileExists(out)) {   // render once, keep forever
 				g_asked.insert(key);
+				BacklogDrop(key);
 				return false;
 			}
 			std::error_code ec;
@@ -1939,9 +3301,15 @@ namespace ItemIcons
 			r.nifPath = rel;      // swaps deliberately empty: the head is self-contained
 			r.label   = name.empty() ? key : name;
 			r.px      = kFaceSize;   // face-fit zooms a WINDOW of this canvas; density is the fix for pixelated tiles
+			// Hair the facegen file cannot hold (a worn wig). Resolved here, at
+			// queue time, so Start() stays a pure consumer of the Request.
+			if (g_createBySet)
+				r.extraNifs = HairNifsForFace(fid, plugin);
+			r.tier = tier;
 
-			(idle ? g_idleQueue : g_queue).push_back(std::move(r));
+			QueueFor(tier).push_back(std::move(r));
 			g_asked.insert(key);
+			BacklogAdd(key, fid, plugin, name, "face");
 			return true;
 		}
 	}
@@ -1953,10 +3321,12 @@ namespace ItemIcons
 		auto j = nlohmann::json::parse(itemsJson, nullptr, false);
 		if (j.is_discarded() || !j.is_object() || !j.contains("items") || !j["items"].is_array())
 			return 0;
-		std::size_t queued = 0;
+		std::size_t queued = 0, promoted = 0;
 		bool        any    = false;
 		{
 			std::lock_guard l(g_mutex);
+			const std::size_t before = g_queue.size();
+			g_promotedThisAsk        = 0;
 			for (const auto& it : j["items"]) {
 				if (!it.is_object())
 					continue;
@@ -1966,16 +3336,24 @@ namespace ItemIcons
 						it.value("name", std::string())))
 					++queued;
 			}
+			promoted = g_promotedThisAsk;
+			// Faces asked for by an OPEN tab (the Finder's rows, the followers
+			// roster) are the surface on screen — front of the user queue, ahead of
+			// any older user batch as well as the background lanes.
+			FrontLoadUserBatch(before);
+			if (queued || promoted)
+				LogUserAskDepth("face", queued, promoted);
 			// Pump under the same lock: a user request that only PROMOTED an
-			// already-idle-queued face (queued stays 0, but EnqueueFaceLocked moved
-			// it onto g_queue) must still start now, not wait for the next watcher
-			// tick — otherwise the promotion wouldn't actually beat the warm-start
-			// set to the render slot.
+			// already-background-queued face (queued stays 0, but EnqueueFaceLocked
+			// moved it onto g_queue) must still start now, not wait for the next
+			// watcher tick — otherwise the promotion wouldn't actually beat the
+			// warm-start set to the render slot.
 			if (any)
 				Pump();
 		}
 		if (queued)
 			logger::info("item icons: {} npc face render(s) queued at {}px", queued, kFaceSize);  // marker: face-render-density
+		BacklogSaveIfDirty();
 		if (any)
 			StartWatcher();
 		return queued;
@@ -2012,13 +3390,14 @@ namespace ItemIcons
 				if (EnqueueFaceLocked(it.value("formId", std::string()),
 						it.value("plugin", std::string()),
 						it.value("name", std::string()),
-						/*idle=*/true))
+						Tier::Idle))
 					++queued;
 			}
 		}
 		if (!queued)
 			return 0;   // every roster face was already on disk or has no facegen file
 		logger::info("render warm-start: {} roster faces queued at idle", queued);  // marker: render-warm-start
+		BacklogSaveIfDirty();
 		{
 			std::lock_guard l(g_mutex);
 			Pump();   // kicks the idle tier only if the user queue is empty right now
@@ -2056,27 +3435,35 @@ namespace ItemIcons
 			return "meshes\\" + nif;
 		}
 
-		// g_mutex held. Returns true if a render was queued.
+		// g_mutex held. Returns true if a render was queued. `tier` parks it on the
+		// user, bulk or idle deque (the backlog replay is idle) — same dedup, probe
+		// and file.
 		bool EnqueueBodyLocked(const std::string& fid, const std::string& plugin,
-			const std::string& name, const std::string& nif)
+			const std::string& name, const std::string& nif, Tier tier = Tier::User)
 		{
-			if (fid.empty() || plugin.empty() || nif.empty() || g_queue.size() >= kMaxQueued)
+			if (fid.empty() || plugin.empty() || nif.empty() ||
+				QueueFor(tier).size() >= CapFor(tier))
 				return false;
 			const auto key = KeyOf(fid, plugin) + "@body";
-			if (g_asked.count(key))
+			if (g_asked.count(key)) {
+				if (tier == Tier::User && PromoteToUser(key))
+					++g_promotedThisAsk;
 				return false;
+			}
 			// Probe through the game's resource stack (loose + BSA, MO2 VFS)
 			// before burning a mesh — a mod can ship a record whose model file
 			// never made it into the archive.
 			RE::BSResourceNiBinaryStream probe(ProbePathOf(nif).c_str());
 			if (!probe.good()) {
 				g_asked.insert(key);
+				BacklogDrop(key);   // the model is not in the load order — permanent
 				logger::warn("item icons: mount body '{}' — model '{}' is not in the load order", name, nif);
 				return false;
 			}
-			const auto out = (BodyDir() / FileFor(fid, plugin, false)).string();
+			const auto out = PathU8((BodyDir() / FileFor(fid, plugin, false)));
 			if (FileExists(out)) {   // render once, keep forever
 				g_asked.insert(key);
+				BacklogDrop(key);
 				return false;
 			}
 			std::error_code ec;
@@ -2086,8 +3473,10 @@ namespace ItemIcons
 			r.key     = key;
 			r.nifPath = nif;      // swaps deliberately empty (new-arch MRF ignores them anyway)
 			r.label   = name.empty() ? key : name;
-			g_queue.push_back(std::move(r));
+			r.tier    = tier;
+			QueueFor(tier).push_back(std::move(r));
 			g_asked.insert(key);
+			BacklogAdd(key, fid, plugin, name, "body", nif);
 			return true;
 		}
 	}
@@ -2099,9 +3488,11 @@ namespace ItemIcons
 		auto j = nlohmann::json::parse(itemsJson, nullptr, false);
 		if (j.is_discarded() || !j.is_object() || !j.contains("items") || !j["items"].is_array())
 			return 0;
-		std::size_t queued = 0;
+		std::size_t queued = 0, promoted = 0;
 		{
 			std::lock_guard l(g_mutex);
+			const std::size_t before = g_queue.size();
+			g_promotedThisAsk        = 0;
 			for (const auto& it : j["items"]) {
 				if (!it.is_object())
 					continue;
@@ -2111,16 +3502,79 @@ namespace ItemIcons
 						it.value("nif", std::string())))
 					++queued;
 			}
+			promoted = g_promotedThisAsk;
+			FrontLoadUserBatch(before);   // the Mounts tab / Finder rows on screen now
+			if (queued || promoted) {
+				LogUserAskDepth("body", queued, promoted);
+				Pump();
+			}
 		}
-		if (!queued)
+		BacklogSaveIfDirty();
+		if (!queued && !promoted)
 			return 0;
-		logger::info("item icons: {} mount body render(s) queued", queued);
+		if (queued)
+			logger::info("item icons: {} mount body render(s) queued", queued);
+		StartWatcher();
+		return queued;
+	}
+
+	/* Replay the persisted unfinished-render backlog (icon-backlog.json) through
+	 * the same enqueue doors it was written by — at IDLE priority, so resumed
+	 * background work can never delay a page the player opens. Entries already
+	 * on disk or provably dead are pruned by the enqueues themselves; entries
+	 * the idle ceiling refuses stay in the file untouched and resume on a later
+	 * boot. Called once from Init (kDataLoaded: forms and the resource stack are
+	 * both up, and the pacing gate keeps any actual render out of the load). */
+	void ResumeBacklog()
+	{
+		nlohmann::json j;
+		{
+			std::ifstream in(BacklogFile(), std::ios::binary);
+			if (!in.is_open())
+				return;
+			j = nlohmann::json::parse(in, nullptr, false);
+		}
+		if (j.is_discarded() || !j.is_object() || !j.contains("pending") || !j["pending"].is_object())
+			return;
+		std::size_t resumed = 0, kept = 0;
+		{
+			std::lock_guard l(g_mutex);
+			// Seed the in-memory backlog with EVERYTHING first: an entry the idle
+			// ceiling refuses below must survive into the next save untouched.
+			for (auto it = j["pending"].begin(); it != j["pending"].end(); ++it)
+				if (it.value().is_object() && g_backlog.size() < kMaxBacklog)
+					g_backlog[it.key()] = it.value();
+			for (const auto& [key, e] : j["pending"].items()) {
+				if (!e.is_object())
+					continue;
+				const auto fid    = e.value("formId", std::string());
+				const auto plugin = e.value("plugin", std::string());
+				const auto name   = e.value("name", std::string());
+				const auto kind   = e.value("kind", std::string("item"));
+				bool queued = false;
+				if (kind == "face")
+					queued = EnqueueFaceLocked(fid, plugin, name, Tier::Idle);
+				else if (kind == "body")
+					queued = EnqueueBodyLocked(fid, plugin, name, e.value("nif", std::string()), Tier::Idle);
+				else
+					queued = EnqueueLocked(fid, plugin, name, Tier::Idle);
+				if (queued)
+					++resumed;
+			}
+			kept = g_backlog.size();
+			g_backlogDirty = true;   // persist whatever the enqueues just pruned
+		}
+		BacklogSaveIfDirty();
+		if (!resumed)
+			return;
+		// Build marker (hd-markers.json: "render-backlog-resume").
+		logger::info("item icons: {} unfinished render(s) remembered from last session — resumed at idle priority ({} still backlogged)",
+			resumed, kept);
 		{
 			std::lock_guard l(g_mutex);
 			Pump();
 		}
 		StartWatcher();
-		return queued;
 	}
 
 	std::string BodyIndexJson()
@@ -2143,7 +3597,7 @@ namespace ItemIcons
 			if (bar == std::string::npos)
 				return;
 			const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
-			if (FileExists((BodyDir() / file).string()))
+			if (FileExists(BodyDir() / file))
 				icons[base] = "icons/mounts/" + file;
 		};
 		for (const auto& key : g_asked)
@@ -2159,7 +3613,7 @@ namespace ItemIcons
 		if (fid.empty() || plugin.empty())
 			return {};
 		const auto file = FileFor(fid, plugin, false);
-		if (!FileExists((BodyDir() / file).string()))
+		if (!FileExists(BodyDir() / file))
 			return {};
 		return "icons/mounts/" + file;
 	}
@@ -2205,7 +3659,7 @@ namespace ItemIcons
 				const std::string akey = KeyOf(fid, plugin) + akeybuf;
 				if (g_asked.count(akey))
 					continue;
-				const auto out = (BodyDir() / AngleFile(baseFile, angle)).string();
+				const auto out = PathU8((BodyDir() / AngleFile(baseFile, angle)));
 				if (FileExists(out)) {   // baked already — keep forever
 					g_asked.insert(akey);
 					continue;
@@ -2251,7 +3705,7 @@ namespace ItemIcons
 			if (bar == std::string::npos)
 				return;
 			const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
-			if (FileExists((FaceDir() / file).string()))
+			if (FileExists(FaceDir() / file))
 				icons[base] = "icons/npcs/" + file;
 		};
 		for (const auto& key : g_asked)
@@ -2270,9 +3724,118 @@ namespace ItemIcons
 		if (fid.empty() || plugin.empty())
 			return {};
 		const auto file = FileFor(fid, plugin, false);
-		if (!FileExists((FaceDir() / file).string()))
+		if (!FileExists(FaceDir() / file))
 			return {};
 		return "icons/npcs/" + file;
+	}
+
+	void CaptureFaceAngles(const std::string& fid, const std::string& plugin)
+	{
+		if (!Ready() || fid.empty() || plugin.empty())
+			return;
+		// The same facegen NIF derivation EnqueueFaceLocked uses — the angles
+		// MUST spin the exact mesh set frame 0 rendered (head + composed wig),
+		// or the turn would swap one face for another mid-drag.
+		std::string hex = fid;
+		if (hex.rfind("0x", 0) == 0 || hex.rfind("0X", 0) == 0)
+			hex = hex.substr(2);
+		for (auto& c : hex)
+			c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		if (hex.empty() || hex.size() > 8)
+			return;
+		while (hex.size() < 8)
+			hex.insert(hex.begin(), '0');
+		const std::string rel =
+			"actors\\character\\facegendata\\facegeom\\" + plugin + "\\" + hex + ".nif";
+		RE::BSResourceNiBinaryStream probe(("meshes\\" + rel).c_str());
+		if (!probe.good())
+			return;   // templated NPC — no facegen file, no turntable
+		const auto  baseFile = FileFor(fid, plugin, false);
+		const auto  wigs     = g_createBySet ? HairNifsForFace(fid, plugin) : std::vector<std::string>{};
+		std::size_t queued   = 0;
+		{
+			std::lock_guard l(g_mutex);
+			for (std::uint32_t f = 1; f < kSpinFrames; ++f) {
+				const std::uint32_t angle = f * kSpinStep;
+				// Distinct asked-key namespace ("<key>@f090"): never re-derived
+				// per open, never seen by any index ('@' skip).
+				char akeybuf[8]{};
+				std::snprintf(akeybuf, sizeof(akeybuf), "@f%03u", static_cast<unsigned>(angle));
+				const std::string akey = KeyOf(fid, plugin) + akeybuf;
+				if (g_asked.count(akey))
+					continue;
+				const auto out = PathU8((FaceDir() / AngleFile(baseFile, angle)));
+				if (FileExists(out)) {   // baked already — keep forever
+					g_asked.insert(akey);
+					continue;
+				}
+				if (g_queue.size() >= kMaxQueued)
+					break;
+				Request r;
+				r.outPath   = out;
+				r.key       = akey;
+				r.nifPath   = rel;
+				r.label     = fid + "|" + plugin + " face @" + std::to_string(angle) + "deg";
+				r.angle     = angle;
+				r.px        = kFaceSize;   // matches frame 0 — a lightbox zooms this canvas
+				r.extraNifs = wigs;
+				g_queue.push_back(std::move(r));
+				g_asked.insert(akey);
+				++queued;
+			}
+			if (queued)
+				Pump();
+		}
+		if (queued) {
+			// Build marker (hd-markers.json: "face-turntable").
+			logger::info("item icons: {} face turntable frame(s) queued for {}|{}", queued, fid, plugin);
+			StartWatcher();
+		}
+	}
+
+	std::string SpinStateJson(const std::string& fid, const std::string& plugin,
+		const std::string& kind)
+	{
+		nlohmann::json        frames = nlohmann::json::object();
+		std::filesystem::path dir;
+		std::string           dirRel;
+		std::uint32_t         step = kSpinStep;
+		std::string           baseFile;
+		if (kind == "face") {
+			dir = FaceDir();
+			dirRel = "icons/npcs/";
+			baseFile = FileFor(fid, plugin, false);
+		} else if (kind == "body") {
+			dir = BodyDir();
+			dirRel = "icons/mounts/";
+			baseFile = FileFor(fid, plugin, false);
+			step = kBodySpinStep;
+		} else {
+			dir = IconDir();
+			dirRel = "icons/items/";
+			// The angles live beside whichever base CaptureAngles chose — the
+			// "-s2" name whenever a swap-rendered frame 0 (or any of its angle
+			// frames) exists, the plain name otherwise. Check the swapped base
+			// first so the reply can never point a spin at mixed textures.
+			const auto s2 = FileFor(fid, plugin, true);
+			bool useS2 = FileExists(dir / s2);
+			if (!useS2)
+				for (std::uint32_t a = step; !useS2 && a < 360u; a += step)
+					useS2 = FileExists(dir / AngleFile(s2, a));
+			baseFile = useS2 ? s2 : FileFor(fid, plugin, false);
+		}
+		if (!fid.empty() && !plugin.empty()) {
+			if (FileExists(dir / baseFile))
+				frames["0"] = dirRel + baseFile;
+			for (std::uint32_t a = step; a < 360u; a += step) {
+				const auto f = AngleFile(baseFile, a);
+				if (FileExists(dir / f))
+					frames[std::to_string(a)] = dirRel + f;
+			}
+		}
+		return nlohmann::json{ { "kind", kind }, { "formId", fid }, { "plugin", plugin },
+			{ "step", step }, { "count", 360u / step }, { "frames", std::move(frames) } }
+			.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
 	void CaptureAngles(const std::string& fid, const std::string& plugin)
@@ -2294,7 +3857,7 @@ namespace ItemIcons
 			 * would either mix textures or land under names never probed — so
 			 * no turntable at all for this piece. With only a plain frame 0,
 			 * bare angles under plain names are consistent and fine. */
-			if (FileExists((IconDir() / FileFor(fid, plugin, true)).string()))
+			if (FileExists(IconDir() / FileFor(fid, plugin, true)))
 				return;
 			swapped = false;
 		}
@@ -2310,7 +3873,7 @@ namespace ItemIcons
 				const std::string akey = KeyOf(fid, plugin) + "@" + std::to_string(angle);
 				if (g_asked.count(akey))
 					continue;
-				const auto out = (IconDir() / AngleFile(baseFile, angle)).string();
+				const auto out = PathU8((IconDir() / AngleFile(baseFile, angle)));
 				if (FileExists(out)) {   // baked already — keep forever
 					g_asked.insert(akey);
 					continue;
@@ -2323,6 +3886,12 @@ namespace ItemIcons
 				r.nifPath = look.nif;
 				r.swaps   = swapped ? look.swaps : std::vector<AltTex>{};
 				r.label   = fid + "|" + plugin + " @" + std::to_string(angle) + "deg";
+				// Frame 0 of an ITEM render box-fits (FitClutter) — the angles
+				// must too, or the piece visibly SHRINKS the moment a drag
+				// leaves frame 0 (2026-08-19 verification-swarm find; the old
+				// "must match frame 0" comment said the right thing and did
+				// the opposite).
+				r.refit   = true;
 				r.angle   = angle;
 				g_queue.push_back(std::move(r));
 				g_asked.insert(akey);
@@ -2352,9 +3921,9 @@ namespace ItemIcons
 				return {};
 			const auto swapped = FileFor(key.substr(0, bar), key.substr(bar + 1), true);
 			const auto plain   = FileFor(key.substr(0, bar), key.substr(bar + 1), false);
-			if (FileExists((IconDir() / swapped).string()))
+			if (FileExists(IconDir() / swapped))
 				return "icons/items/" + swapped;
-			if (FileExists((IconDir() / plain).string()))
+			if (FileExists(IconDir() / plain))
 				return "icons/items/" + plain;
 			return {};
 		};
@@ -2379,7 +3948,41 @@ namespace ItemIcons
 			if (!rel.empty())
 				icons[key] = rel;
 		}
-		return nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		// Dead ends ride along, keyed the same way, so a tile can say WHY it has
+		// no picture instead of sitting on a placeholder forever. A key that has
+		// since rendered is never in here (the landing clears it), and one that
+		// somehow has both is treated as rendered — `icons` wins in the view.
+		nlohmann::json failed = nlohmann::json::object();
+		for (const auto& [key, why] : g_failedWhy)
+			if (!icons.contains(key))
+				failed[key] = why;
+		return nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) },
+			{ "failed", std::move(failed) } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	void RetryIcons(const std::string& listJson)
+	{
+		// The view's "try again" on a failed tile. Forgetting the key in BOTH
+		// ledgers is the whole trick: g_asked is what stops a re-queue, and
+		// g_failedWhy is what paints the x. The next whIcons for that item then
+		// walks the normal path from scratch.
+		auto j = nlohmann::json::parse(listJson, nullptr, false);
+		if (j.is_discarded() || !j.is_object() || !j.contains("items") || !j["items"].is_array())
+			return;
+		std::lock_guard l(g_mutex);
+		std::size_t n = 0;
+		for (const auto& it : j["items"]) {
+			if (!it.is_object())
+				continue;
+			const auto key = KeyOf(it.value("formId", std::string()), it.value("plugin", std::string()));
+			if (key.empty())
+				continue;
+			g_asked.erase(key);
+			ClearFailed(key);
+			++n;
+		}
+		if (n)
+			logger::info("item icons: retry requested for {} item(s)", n);
 	}
 
 	std::string IconPathIfRendered(const std::string& fid, const std::string& plugin)
@@ -2397,9 +4000,9 @@ namespace ItemIcons
 		std::lock_guard l(g_mutex);
 		const auto swapped = FileFor(fid, plugin, true);
 		const auto plain   = FileFor(fid, plugin, false);
-		if (FileExists((IconDir() / swapped).string()))
+		if (FileExists(IconDir() / swapped))
 			return "icons/items/" + swapped;
-		if (FileExists((IconDir() / plain).string()))
+		if (FileExists(IconDir() / plain))
 			return "icons/items/" + plain;
 		return {};
 	}
@@ -2407,6 +4010,12 @@ namespace ItemIcons
 	void SetOnBatchDone(std::function<void()> cb)
 	{
 		g_onBatchDone = std::move(cb);
+	}
+
+	void SetPaletteOpenProbe(std::function<bool()> probe)
+	{
+		std::lock_guard l(g_mutex);
+		g_paletteProbe = std::move(probe);
 	}
 
 	namespace
@@ -2447,7 +4056,7 @@ namespace ItemIcons
 						return;
 					const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
 					const auto dir = face ? FaceDir() : BodyDir();
-					if (FileExists((dir / file).string()))
+					if (FileExists(dir / file))
 						icons[key] = (face ? "icons/npcs/" : "icons/mounts/") + file;
 				};
 				for (const auto& key : g_faceDiskIndex)

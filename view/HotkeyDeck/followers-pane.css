@@ -1,0 +1,408 @@
+/* ======================================================================== *
+ *  PARTY SHEET — the Followers tab's second shape.
+ *
+ *  ITS OWN SHEET, not a block appended to app.css, and that is not a style
+ *  choice: tools/sync_view_frags.py REBUILDS app.css by truncating it at the
+ *  "Wardrobe tab" marker, so anything appended past that marker is dropped on
+ *  the next sync. Several sessions edit this checkout at once, which is how
+ *  that trap gets sprung. Same reason wardrobe-nff.css, sharmat-pane.css,
+ *  hd-omni.css and hd-shelf.css each have one.
+ *
+ *  Staged by hd-css.js under the `followers` key, with #pt-pane as its gate —
+ *  so this DOM cannot paint before these rules have applied, and an unstyled
+ *  flash is impossible by construction rather than by timing.
+ *
+ *  ------------------------------------------------------- ENGINE LAWS ----
+ *  Measured in PrismaUI's own Ultralight 1.4.1, which is what actually draws
+ *  the deck. Chromium agrees with none of these.
+ *
+ *   · conic-gradient() computes to `none`. There is therefore NOT ONE RING on
+ *     this page — every meter is a linear bar whose fill is an inline width,
+ *     which is the one thing every engine agrees on. This is deliberately not
+ *     "a ring with an @supports fallback": a fallback is a second rendering to
+ *     keep correct, and forty rings once shipped drawn-blank in game while
+ *     looking perfect in chromium.
+ *   · backdrop-filter is unsupported — the surfaces here are opaque.
+ *   · colour emoji rasterise MONOCHROME at roughly a 1.4em advance, so every
+ *     glyph box below carries a min-width and the glyphs themselves come from
+ *     the set the deck already ships (⚔ ⛨ ➶ ☠ ⚠ ◆ ✦ ⚗ ✓).
+ *   · no looping animations and no animated background-position (it smears);
+ *     the transitions here are one-shot hover/press states only.
+ *
+ *  ------------------------------------------------------------ SCALING ----
+ *  Everything is in px on purpose. #fd-scale carries
+ *  transform: scale(var(--fd-ui-scale)) around the whole tab, so these rules
+ *  ride the tab's own zoom without knowing it exists — and no rule here needs
+ *  the calc(Xvh / var(--ui-scale)) correction, because nothing here is a popup
+ *  mounted outside #panel's transform.
+ *
+ *  12px is the floor for every font-size in this file. Rober reads this from a
+ *  couch at 2560x1440; "compact" is a defect.
+ * ======================================================================== */
+
+/* ---------------------------------------------------------- mode switch --
+   The party sheet is a MODE, driven by ONE body class rather than by toggling
+   .hidden on half a dozen elements: renderList() and syncQuickHere() own those
+   classes and fighting them for the same nodes is how a mode ends up half
+   applied. */
+#pt-pane { display: none; }
+body.hd-partysheet #pt-pane {
+  display: flex; flex-direction: column;
+  flex: 1; min-height: 0; min-width: 0; gap: 10px;
+}
+body.hd-partysheet #fd-search-wrap,
+body.hd-partysheet #fd-list,
+body.hd-partysheet #fd-empty,
+body.hd-partysheet #fd-quick,
+body.hd-partysheet #fd-everyone,
+body.hd-partysheet #fd-recents,
+body.hd-partysheet #fd-status,
+body.hd-partysheet #fd-add-btn,
+body.hd-partysheet #fd-shot-btn,
+body.hd-partysheet #fd-add-hint { display: none !important; }
+
+/* ------------------------------------------------------------- the switch --
+   Lives at the right end of the roster's search row, beside the HUD control,
+   and borrows that button's language exactly — same fact-shaped control, same
+   shape. */
+#pt-toggle {
+  flex: none; margin-left: auto;
+  display: inline-flex; align-items: center; gap: 7px;
+  font: 600 12.5px/1 "Segoe UI", sans-serif; color: #cfc7b2;
+  background: #16161c; border: 1px solid #3a382f; border-radius: 8px;
+  padding: 8px 12px; cursor: pointer; white-space: nowrap;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+#pt-toggle:hover  { color: #ecd9a0; border-color: #c9a24b; background: #1e1c16; }
+#pt-toggle:active { transform: translateY(1px); }
+#pt-toggle:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+#pt-toggle.on { color: #ecd9a0; border-color: #c9a24b; background: #221e14; }
+.pt-toggle-ic  { min-width: 1.4em; text-align: center; font-size: 14px; line-height: 1; }
+.pt-toggle-lbl { font-weight: 700; }
+
+/* ------------------------------------------------------------------ head -- */
+.pt-head {
+  flex: none;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+  padding-bottom: 10px; border-bottom: 1px solid #2a2822;
+}
+
+.pt-back {
+  flex: none; display: inline-flex; align-items: center; gap: 6px;
+  font: 600 12.5px/1 "Segoe UI", sans-serif; color: #b9b4a8;
+  background: transparent; border: 1px solid #3a3a44; border-radius: 8px;
+  padding: 8px 12px; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.pt-back:hover  { color: #ecd9a0; border-color: #c9a24b88; background: rgba(201,162,75,.06); }
+.pt-back:active { transform: translateY(1px); }
+.pt-back:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.pt-back-chev { min-width: 1em; text-align: center; }
+
+.pt-title-wrap { flex: none; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.pt-title {
+  font: 700 18px/1.15 "Segoe UI", sans-serif; color: #ecd9a0;
+  letter-spacing: .3px;
+}
+.pt-count { font: 400 12.5px/1.2 "Segoe UI", sans-serif; color: #8b8678; }
+
+/* The search box takes the slack, so it is the widest thing in the row at
+   every width — which is right, because it is the control you use most. */
+.pt-search-wrap {
+  position: relative; flex: 1 1 240px; min-width: 180px;
+  display: flex; align-items: center;
+}
+.pt-search-ic {
+  position: absolute; left: 11px; color: #8b8678; font-size: 15px;
+  min-width: 1.2em; text-align: center; pointer-events: none;
+}
+#pt-search {
+  width: 100%; user-select: text;
+  font: 400 14px/1.2 "Segoe UI", sans-serif; color: #e8e4da;
+  background: #14141a; border: 1px solid #3a3a44; border-radius: 8px;
+  padding: 10px 34px 10px 34px;
+  transition: border-color .12s ease, background .12s ease;
+}
+#pt-search::placeholder { color: #6f6a5e; }
+#pt-search:hover { border-color: #4a4a55; }
+#pt-search:focus { outline: none; border-color: #c9a24b; background: #17171e; }
+.pt-search-x {
+  position: absolute; right: 6px;
+  width: 24px; height: 24px; display: grid; place-items: center;
+  background: transparent; border: none; border-radius: 6px;
+  color: #8b8678; font-size: 13px; cursor: pointer;
+  transition: color .12s ease, background .12s ease;
+}
+.pt-search-x:hover { color: #ecd9a0; background: rgba(201,162,75,.10); }
+
+.pt-modes { flex: none; display: flex; gap: 0; }
+.pt-mode {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 600 12.5px/1 "Segoe UI", sans-serif; color: #b9b4a8;
+  background: #14141a; border: 1px solid #3a3a44;
+  padding: 8px 12px; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.pt-mode:first-child { border-radius: 8px 0 0 8px; }
+.pt-mode:last-child  { border-radius: 0 8px 8px 0; border-left-width: 0; }
+.pt-mode:hover { color: #ecd9a0; background: #1c1c24; }
+.pt-mode:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.pt-mode.on {
+  color: #ecd9a0; background: #221e14; border-color: #c9a24b;
+}
+.pt-mode.on + .pt-mode { border-left-color: #c9a24b; }
+.pt-mode-ic { min-width: 1.3em; text-align: center; font-size: 14px; }
+
+.pt-refresh {
+  flex: none; width: 38px; height: 38px;
+  display: grid; place-items: center;
+  background: #14141a; border: 1px solid #3a3a44; border-radius: 8px;
+  color: #b9b4a8; font-size: 17px; line-height: 1; cursor: pointer;
+  transition: color .12s ease, border-color .12s ease, background .12s ease;
+}
+.pt-refresh:hover  { color: #ecd9a0; border-color: #c9a24b88; background: rgba(201,162,75,.06); }
+.pt-refresh:active { transform: translateY(1px); }
+.pt-refresh:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+/* No spinner: a looping animation is exactly what this engine cannot draw, and
+   a frozen half-turned arrow reads as broken. Busy is a colour. */
+.pt-refresh.busy { color: #c9a24b; border-color: #c9a24b; }
+
+/* --------------------------------------------------------------- filters -- */
+.pt-filters {
+  flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px;
+}
+.pt-filters-spring { flex: 1 1 0; min-width: 0; }
+.pt-scopes, .pt-sorts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.pt-sorts-lbl {
+  font: 600 12px/1 "Segoe UI", sans-serif; color: #6f6a5e;
+  text-transform: uppercase; letter-spacing: .6px; margin-right: 2px;
+}
+.pt-fchip {
+  font: 600 12.5px/1 "Segoe UI", sans-serif; color: #b9b4a8;
+  background: #14141a; border: 1px solid #3a3a44; border-radius: 20px;
+  padding: 7px 13px; cursor: pointer; white-space: nowrap;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.pt-fchip:hover  { color: #ecd9a0; border-color: #c9a24b88; background: rgba(201,162,75,.06); }
+.pt-fchip:active { transform: translateY(1px); }
+.pt-fchip:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.pt-fchip.on { color: #ecd9a0; background: #221e14; border-color: #c9a24b; }
+
+/* ------------------------------------------------------------------ body -- */
+.pt-body { flex: 1; min-height: 0; min-width: 0; overflow: auto; }
+
+/* Cards: auto-fill, so one follower gets a big readable card and twenty pack
+   into a grid without anything being told a column count. */
+.pt-body.pt-as-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+  align-content: start;
+  padding: 2px 4px 4px 2px;
+}
+
+.pt-card {
+  display: flex; flex-direction: column; gap: 10px;
+  min-width: 0;
+  background: #15151b; border: 1px solid #2e2c26; border-radius: 10px;
+  padding: 12px 13px 11px; cursor: pointer;
+  transition: border-color .14s ease, background .14s ease, transform .14s ease;
+}
+.pt-card:hover {
+  border-color: #c9a24b88; background: #1a1a21; transform: translateY(-1px);
+}
+.pt-card:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.pt-card.warn { border-color: #5e452699; }
+.pt-card.bad  { border-color: #5a3a3a; background: #171214; }
+.pt-card.sel  { border-color: #c9a24b; box-shadow: 0 0 0 1px #c9a24b55; }
+.pt-card.dead, .pt-tr.dead { opacity: .72; }
+
+.pt-card-head { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.pt-face { flex: none; display: inline-flex; --fd-avatar: 56px; }
+.pt-face .medal, .pt-face .medal.img { width: 56px; height: 56px; font-size: 18px; }
+.pt-face.sm .medal, .pt-face.sm .medal.img { width: 38px; height: 38px; font-size: 13px; }
+
+.pt-who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pt-name {
+  font: 700 15px/1.2 "Segoe UI", sans-serif; color: #ede8db;
+  overflow-wrap: anywhere;      /* a 40-character follower name WRAPS, never clips */
+}
+.pt-sub {
+  font: 400 12px/1.25 "Segoe UI", sans-serif; color: #8b8678;
+  overflow-wrap: anywhere;
+}
+.pt-lv {
+  flex: none; min-width: 38px; height: 38px;
+  display: grid; place-items: center;
+  font: 700 14px/1 Consolas, monospace; color: #d9c48a;
+  background: #1c1a12; border: 1px solid #4a4128; border-radius: 50%;
+}
+
+/* ------------------------------------------------------------------ bars -- */
+.pt-bars { display: flex; flex-direction: column; gap: 5px; }
+.pt-meter { position: relative; display: block; min-width: 0; }
+.pt-meter-track {
+  height: 16px; border-radius: 4px; overflow: hidden;
+  background: #0e0e13; border: 1px solid #2a2830;
+}
+.pt-meter-fill { height: 100%; width: 0; transition: width .16s ease; }
+.pt-meter.hp  .pt-meter-fill { background: linear-gradient(180deg, #cf6f6a 0%, #a24a46 100%); }
+.pt-meter.mag .pt-meter-fill { background: linear-gradient(180deg, #6f88cf 0%, #46589f 100%); }
+.pt-meter.sta .pt-meter-fill { background: linear-gradient(180deg, #79bf87 0%, #4a8657 100%); }
+.pt-meter-txt {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font: 600 12px/1 Consolas, monospace; color: #f0ece0;
+  text-shadow: 0 1px 2px rgba(0,0,0,.85);
+  pointer-events: none; white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ gear -- */
+.pt-gear {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px;
+}
+.pt-gear-cell {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 5px 7px; border-radius: 6px; background: #101015;
+}
+.pt-gear-ic {
+  flex: none; min-width: 1.4em; text-align: center;
+  font-size: 13px; line-height: 1; color: #8b8678;
+}
+.pt-gear-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.pt-gear-lbl {
+  font: 600 12px/1 "Segoe UI", sans-serif; color: #6f6a5e;
+  text-transform: uppercase; letter-spacing: .5px;
+}
+.pt-gear-txt {
+  font: 400 12.5px/1.25 "Segoe UI", sans-serif; color: #cfc7b2;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pt-gear-val {
+  flex: none; font: 700 13px/1 Consolas, monospace; color: #d9c48a;
+}
+
+.pt-card-foot {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  font: 400 12px/1.2 "Segoe UI", sans-serif; color: #8b8678;
+}
+.pt-pot { color: #a9a294; }
+.pt-pot.none { color: #7a6f5c; }
+.pt-where {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 60%; color: #8b8678;
+}
+
+/* ----------------------------------------------------------------- chips -- */
+.pt-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.pt-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: 600 12px/1 "Segoe UI", sans-serif;
+  padding: 4px 8px; border-radius: 20px;
+  border: 1px solid transparent; max-width: 100%;
+}
+.pt-chip-ic { min-width: 1.3em; text-align: center; line-height: 1; }
+.pt-chip-lbl { overflow-wrap: anywhere; }
+.pt-chip.bad  { color: #e09a9a; background: #1a1012; border-color: #6b3f3f; }
+.pt-chip.warn { color: #dda962; background: #1a1409; border-color: #5e4526; }
+.pt-chip.note { color: #9a9488; background: rgba(255,255,255,.035); border-color: #3a3a44; }
+.pt-chip.ok   { color: #8fd19e; background: #0e150f; border-color: #3d6b4a; }
+
+/* ----------------------------------------------------------------- table --
+   A CSS grid rather than a <table>: one row has to be ONE grid child for the
+   cached-node reconcile to move it around, and a long name has to wrap inside
+   its own column instead of stretching the page. Below the min-width the BODY
+   scrolls sideways — the pane never does. */
+.pt-body.pt-as-table {
+  display: block;
+  --pt-cols: minmax(190px, 1.7fr) 52px minmax(112px, 1fr) minmax(112px, 1fr)
+             minmax(112px, 1fr) 78px minmax(150px, 1.2fr) 74px minmax(210px, 1.7fr);
+}
+.pt-thead, .pt-tr {
+  display: grid; grid-template-columns: var(--pt-cols);
+  gap: 10px; align-items: center; min-width: 1120px;
+}
+.pt-thead {
+  position: sticky; top: 0; z-index: 4;
+  /* The VERTICAL padding lives on .pt-th, not here: these headers are <button>s,
+     and padding on the row put 8px of dead header above and below each one — a
+     12px target inside a 29px row, so clicking the header where it visibly is
+     did nothing. Only the horizontal inset stays. */
+  padding: 0 10px; margin-bottom: 2px;
+  background: #14141a; border-bottom: 1px solid #33313a; border-radius: 6px 6px 0 0;
+}
+.pt-th {
+  font: 700 12px/1 "Segoe UI", sans-serif; color: #8b8678;
+  text-transform: uppercase; letter-spacing: .6px; text-align: left;
+  background: transparent; border: none;
+  /* 9px, so the button is the whole 30px row and clears the hit-target floor. */
+  padding: 9px 0;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.pt-th.sortable { cursor: pointer; transition: color .12s ease; }
+.pt-th.sortable:hover { color: #ecd9a0; }
+.pt-th.sortable:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.pt-th.active { color: #d9c48a; }
+/* 12px, not the 11 that reads as "right for a glyph": the floor is a floor,
+   and the geometry pass in followers-pane.test.html reports every rule under
+   it — this one was the only offender on the page. */
+.pt-th-arrow { font-size: 12px; line-height: 1; min-width: 1em; text-align: center; }
+
+.pt-tr {
+  padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent;
+  transition: background .12s ease, border-color .12s ease;
+}
+.pt-tr:nth-child(even) { background: rgba(255,255,255,.017); }
+.pt-tr:hover { background: #1b1b22; border-color: #c9a24b66; }
+.pt-tr:focus-visible { outline: 2px solid #c9a24b; outline-offset: -2px; }
+.pt-tr.warn { border-color: #5e452677; }
+.pt-tr.bad  { border-color: #5a3a3a; background: #171214; }
+.pt-tr.sel  { border-color: #c9a24b; }
+
+.pt-td { min-width: 0; font: 400 13px/1.25 "Segoe UI", sans-serif; color: #cfc7b2; }
+.pt-td.who { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.pt-td.num { font: 700 13.5px/1 Consolas, monospace; color: #d9c48a; text-align: right; }
+.pt-td.num.over { color: #e09a9a; }
+.pt-td.weap { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.pt-weap-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pt-weap-dmg { flex: none; font: 700 13px/1 Consolas, monospace; color: #d9c48a; }
+.pt-weap-ammo {
+  flex: none; font: 600 12px/1 Consolas, monospace; color: #9a9488;
+  min-width: 2.2em; text-align: right;
+}
+.pt-weap-ammo.none { color: #e09a9a; }
+.pt-td.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+/* The table is a scanning surface: full labels turn nine columns into a wall,
+   so a chip there is its glyph and its hover sentence. The cards keep words. */
+.pt-td.chips .pt-chip { padding: 3px 6px; }
+.pt-td.chips .pt-chip-lbl { display: none; }
+.pt-td.chips .pt-chip.ok .pt-chip-lbl { display: inline; }
+
+/* ----------------------------------------------------------------- empty -- */
+.pt-empty {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  text-align: center; gap: 8px; padding: 40px 24px; color: #8b8678;
+}
+.pt-em-ic { font-size: 34px; min-width: 1.4em; line-height: 1; color: #4a463d; }
+.pt-em-title { font: 700 16px/1.25 "Segoe UI", sans-serif; color: #cfc7b2; }
+.pt-em-sub { font: 400 13px/1.45 "Segoe UI", sans-serif; max-width: 46ch; }
+
+/* --------------------------------------------------------------- narrow --
+   The deck's floor is 640px wide. The head stops being one line, the gear grid
+   stops being two columns, and the table keeps its own horizontal scroll
+   rather than squashing nine columns into nothing. Nothing is hidden — a
+   control you cannot find is worse than one you have to scroll to. */
+@media (max-width: 760px) {
+  .pt-head { gap: 8px; }
+  .pt-title { font-size: 16px; }
+  .pt-search-wrap { flex: 1 1 100%; order: 5; }
+  .pt-body.pt-as-cards { grid-template-columns: 1fr; }
+  .pt-gear { grid-template-columns: 1fr; }
+  .pt-mode-lbl { display: none; }
+  .pt-toggle-lbl { display: none; }
+}

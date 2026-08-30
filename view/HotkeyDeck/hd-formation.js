@@ -40,10 +40,16 @@
     loading: false,
     rescueArmed: 0,    // timestamp of the first click, two-click confirm
     capturing: false,  // cast-key rebind: waiting for the next keypress
+    /* Set when the modal was opened FOR the rescue button (from search).
+       Cleared by the render that finally draws that button — the first paint
+       after open() is the loading state, which has no footer to scroll to. */
+    focusRescue: false,
   };
 
   let el = null;          // the backdrop node
   let applyTimer = 0;     // debounce for slider commits
+  /* Set by openRescue() and consumed by the open() it triggers — see there. */
+  let rescuePending = false;
 
   /* Cast-key rebind maps. app.js owns the canonical DIK tables and exposes
      window.hdKeyScan / hdKeyLabel; we PREFER those. This compact fallback only
@@ -83,6 +89,26 @@
   }
   function say(msg) {
     if (typeof window.toast === 'function') window.toast(msg);
+  }
+
+  /* The person under the crosshair, in the quick card's own whoOf() shape.
+     The palette snapshots her at open into the Followers pane's state, and
+     that is the same snapshot the quick card's Formation button reads — so
+     opening this modal from search lands on exactly the person the button
+     would have. No target is not an error: C++ falls back to its own
+     crosshair snapshot when `formId` is absent (ResolveSubject), so `{}` is
+     a legitimate "whoever I am looking at".
+
+     The id is rendered in BASE 16 on the way out: the snapshot carries a
+     NUMBER and C++ reads every formId with strtoul(…, 16), so shipping its
+     decimal digits would resolve a different form entirely. */
+  function crosshair() {
+    try {
+      const t = window.FolPane && FolPane._state && FolPane._state.target;
+      const id = t ? (Number(t.formId) || 0) >>> 0 : 0;
+      if (id) return { formId: '0x' + id.toString(16), name: String(t.name || '') };
+    } catch (e) {}
+    return {};
   }
 
   /* --------------------------------------------------------------- dom -- */
@@ -227,6 +253,26 @@
   }
 
   function num(v) { return typeof v === 'number' ? v : parseFloat(v) || 0; }
+
+  /* How the formation stands right now, in one line, for the search rows.
+     Reads the last fmOpen payload — which the omni provider's warm() asks
+     for — and returns '' when the game has never answered, so the caller can
+     fall back to describing the feature instead of asserting a state it does
+     not know. The three absences are kept apart here exactly as the modal
+     keeps them apart: they need different words. */
+  function summary() {
+    const d = S.data;
+    if (!d) return '';
+    if (!d.installed) return 'Formation with Followers isn’t in the load order';
+    if (!d.present) return 'Installed, but its plugin isn’t enabled';
+    if (d.bound === false) return 'Loaded but never initialized — open its MCM once';
+    const g = d.global || {};
+    const formed = String(d.count || 0) + ' of ' + String(d.max || 64) + ' formed up';
+    if (d.running === false) return 'The mod is switched OFF · ' + formed;
+    if (g.enabled === false) return 'Formation is turned OFF · ' + formed;
+    return formed + ' · spacing ' + Math.round(num(g.defaultX)) + ' ⇄ ' +
+      Math.round(num(g.defaultY)) + ' ⇅';
+  }
 
   /* ------------------------------------------------------------ render -- */
 
@@ -445,6 +491,19 @@
           }
         },
       }, rescueArmed ? 'Stand down — click again' : '🛟 Rescue: stand it all down')));
+
+    /* Opened FROM the rescue search row: bring the button into view rather
+       than firing it. Scrolling only — deliberately not focus(), because a
+       focused button turns the next Enter into a click on the one control in
+       here that stands the whole system down, and the two-click arming is the
+       only thing between a mistyped key and that. */
+    if (S.focusRescue) {
+      S.focusRescue = false;
+      const btn = box.querySelector('.fm-foot .fm-btn');
+      if (btn && btn.scrollIntoView) {
+        try { btn.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+      }
+    }
   }
 
   /* ------------------------------------------------------------ public -- */
@@ -454,6 +513,8 @@
     S.who = who || (subj && subj.name) || '';
     S.open = true;
     S.rescueArmed = 0;
+    S.focusRescue = rescuePending;
+    rescuePending = false;
     S.data = null;
     ensureDom().classList.remove('hidden');
     toGameSafe('hdCapture', '1');   // digits must not quick-fire under us
@@ -461,9 +522,35 @@
     render();
   }
 
+  /* Open through the EXPORT rather than the closure-local open(): hd-css.js
+     wraps the exported method so this modal's lazy stylesheet has applied
+     before the box mounts, and an internal call is invisible to that wrapper
+     (its MutationObserver backstop would still fetch the sheet, but only
+     after the box had painted unstyled). Every door that is not the quick
+     card's own button comes through here. */
+  function openVia(subj, who) {
+    const via = (window.HDFormation && window.HDFormation.open) || open;
+    via(subj, who);
+  }
+
+  /* The rescue button, reached without knowing where it lives. It is the
+     escape hatch for a documented save-poisoner, and it sat two levels down
+     (quick card → modal → footer); someone whose saves are wedging needs to
+     find it by typing "rescue". Opens the modal and lets the footer come to
+     the top of the fold — the destructive op still takes its two clicks.
+
+     The intent rides `rescuePending` rather than being set on S afterwards,
+     because openVia can DEFER the call: setting the flag after a deferred
+     open would have that open clear it a few ms later. */
+  function openRescue(subj, who) {
+    rescuePending = true;
+    openVia(subj, who);
+  }
+
   function close() {
     if (!S.open) return;
     S.open = false;
+    S.focusRescue = false;
     if (el) el.classList.add('hidden');
     toGameSafe('hdCapture', '0');
   }
@@ -490,10 +577,55 @@
 
   window.HDFormation = {
     open: open,
+    openRescue: openRescue,
     close: close,
     isOpen: function () { return S.open; },
     onKey: onKey,
     _state: S,        // harness introspection only
     _render: render,  // harness
   };
+
+  /* ------------------------------------------------------------- omni --- *
+   * An entire mod's settings surface used to hang off one button on one
+   * card: "formation", "spacing" and "marching order" all found nothing.
+   * Two rows, because the rescue is the one control someone hunts for under
+   * pressure and it is the furthest from the surface.
+   *
+   * `tab` is empty on purpose. The modal is the destination, and the obvious
+   * alternative — 'followers' — is gated on Follower Organizer being
+   * installed, which would take the whole Formation feature out of search on
+   * a rig that never had FO. */
+  if (window.HDOmni && typeof HDOmni.register === 'function') {
+    HDOmni.register({
+      id: 'formation', label: 'Formation', tab: '',
+      /* One read when the overlay opens, so the rows can say how the
+         formation actually stands instead of describing it in the abstract.
+         Deliberately NOT request(): that one commits S.subj and the loading
+         flag, which belong to a modal that is not open. */
+      warm: function () { toGameSafe('fmGet', JSON.stringify(crosshair())); },
+      index: function () {
+        const live = summary();
+        return [{
+          label: 'Formation — where your followers walk',
+          detail: live || 'Direction pad, spacing, walk-to reach, settle zone, ' +
+            'in towns, indoors and the cast key (Formation with Followers)',
+          kind: 'formation',
+          keywords: 'formation spacing marching order walk position walking ' +
+            'sneaking sneak combat offsets side ahead behind flank front ' +
+            'follower followers group party line reform re-form interval ' +
+            'towns habitation indoors dungeon cast key quick menu register',
+          run: function () { const c = crosshair(); openVia(c, c.name || ''); },
+        }, {
+          label: 'Formation: Rescue — stand it all down',
+          detail: 'Unregister everyone, kill the updates the mod has running ' +
+            'and stop its quest — the clean stand-down before a save',
+          kind: 'formation',
+          keywords: 'rescue stand down stand-down emergency panic stop off ' +
+            'disable unregister release save corruption corrupt poisoned ' +
+            'infinite loading screen wedged broken formation',
+          run: function () { const c = crosshair(); openRescue(c, c.name || ''); },
+        }];
+      },
+    });
+  }
 })();

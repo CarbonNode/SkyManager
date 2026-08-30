@@ -38,14 +38,39 @@ namespace NpcFinder
 	//        humanoid whose author never exported a head) — in that case the
 	//        head render can never land, so it is blanked and instead:
 	//   bd = "SkinPlugin.esp|HEX6" — the SKIN-SOURCE identity (usually the race)
-	//        whose body render pictures this creature, "" when no body NIF
-	//        resolves. Keyed by skin source so same-race creatures share one
-	//        render. Its render is QUEUED as a side effect of the query (only
-	//        for the drawn page) and arrives through the shared icon index.
+	//        whose body render pictures this CREATURE, "" when no body NIF
+	//        resolves AND always "" for a FaceGen-Head (humanoid) race: her
+	//        body is the race's naked skin, keyed by the race, so it would be
+	//        one shared picture for every facegen-less person of that race —
+	//        the pair-of-bare-feet portrait of 2026-08-30. Keyed by skin source
+	//        so same-race creatures share one render. Its render is QUEUED as a
+	//        side effect of the query (only for the drawn page) and arrives
+	//        through the shared icon index.
+	//
+	// DETAIL PATH (2026-08-15): a request carrying "detail":"Plugin.esp|HEX6"
+	// is answered NOT as a page but as a lazy per-NPC detail block through the
+	// SAME nxResultData reply — {seq, detail:"<id>", info:{...}} — so no new
+	// main.cpp listener is needed. info carries level, race, class, sex,
+	// essential/protected/unique, base health/magicka/stamina, the top base
+	// skills, combat style, voice type, and factions (name + rank). Read off
+	// TESNPC on the main thread only; every access is null-guarded.
 	std::string QueryJson(const std::string& req);
 
-	// {"act":"spawn"|"goto"|"bring","id":"Plugin.esp|HEX6"} -> {ok,msg,act,found}
+	// {"act":"spawn"|"goto"|"bring","id":"Plugin.esp|HEX6"[,"force":bool]}
+	//   -> {ok,msg,act,found}
 	// "spawn" places a copy at the player and leaves the palette open.
+	//
+	// SPAWN GUARD (2026-08-18): a UNIQUE NPC whose baked FaceGen file exists on
+	// disk cannot be copied faithfully — the sculpt lives in
+	// facegeom/<plugin>/<8-hex>.nif keyed to the ORIGINAL record, and a placed
+	// copy assembles its head at runtime with nothing to read that from (Rober:
+	// Argos came out "a weird headless ghost"). So spawn REFUSES first and
+	// answers {ok:false, warn:"faceless", msg, id, name, canBring, face} — the
+	// pane turns that into a card offering Bring / Go to. "force":true is the
+	// card's "Spawn anyway" and is the only way past it. A non-unique actor
+	// (bandit, guard, creature) is never probed and never warns; an
+	// inconclusive probe spawns anyway with a caution in the notification —
+	// a failed lookup must never make the button useless.
 	// "goto"/"bring" only RESOLVE here: found=true means the caller (main.cpp)
 	// should close the palette and call ExecuteMove; found=false carries the
 	// honest refusal for the still-open pane.

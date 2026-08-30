@@ -49,6 +49,24 @@ namespace NoAutoGear
 		bool valid() const { return !plugin.empty() && localId != 0; }
 	};
 
+	// "Never let THIS person have THAT thing." An exact-identity rule, unlike the
+	// plugin list above, which is a blunt "anything from these mods".
+	//
+	// Why both exist: the plugin list answers "stop distributors dressing my
+	// followers" and needs no knowledge of what was distributed. A Block answers
+	// the question the Distributions tab can finally ask precisely — it already
+	// computes exactly what SPID would hand this NPC, so blocking a row is
+	// naming a form, not guessing at a source. That also sidesteps the thing SPID
+	// cannot do: nothing un-distributes, so the only honest lever is to take the
+	// specific thing back off the specific person, every sweep.
+	struct Block
+	{
+		NpcRef npc;   // who it applies to (base form identity)
+		NpcRef form;  // what they may never keep
+
+		bool valid() const { return npc.valid() && form.valid(); }
+	};
+
 	struct Config
 	{
 		// The protected roster (view-owned). An NPC on this list has distributor
@@ -63,6 +81,11 @@ namespace NoAutoGear
 			"Cloaks.esp",                // Cloaks of Skyrim — cloaks
 			"1nivWICCloaks.esp",         // Winter is Coming — cloaks + hoods
 		};
+
+		// Exact-form blocks. Independent of the roster: blocking something for
+		// someone implies watching them, so a Block alone is enough to sweep an
+		// NPC who is not otherwise protected.
+		std::vector<Block> blocks;
 
 		bool enabled = true;  // master switch
 		bool notify  = false; // corner message when a piece is stripped (default off — noisy)
@@ -94,6 +117,17 @@ namespace NoAutoGear
 
 	// Protect every current teammate/follower in one tap. Replies {ok,msg,added}.
 	std::string ProtectParty(Config& cfg);
+
+	// dxBlock → reply "dxBlockResult". Add or drop one exact-form block and strip
+	// it immediately if the target is loaded. Payload:
+	//   { npc:{formId,plugin,name}, form:{formId,plugin,name}, on:bool }
+	// With `all:true` and a `forms` array instead, blocks every form in one go —
+	// that is the Distributions tab's "block everything this line would give her".
+	std::string SetBlock(const std::string& reqJson, Config& cfg);
+
+	// Which forms are blocked for one NPC, for the pane to badge its rows.
+	//   { npc:{formId,plugin} } -> { ok, blocked:[ "plugin|hex", … ] }
+	std::string BlocksFor(const std::string& reqJson, const Config& cfg);
 
 	// Sweep NOW: strip distributor gear from every protected NPC in range.
 	// roomId-less; returns count stripped. Used by the pane's "Sweep now" button.

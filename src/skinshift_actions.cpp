@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -258,7 +260,7 @@ namespace SkinShiftActions
 			{
 				std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
 				if (!out.is_open()) {
-					logger::warn("skinshift: could not write {}", tmp.string());
+					logger::warn("skinshift: could not write {}", PathU8(tmp));
 					return;
 				}
 				nlohmann::json j;
@@ -397,6 +399,144 @@ namespace SkinShiftActions
 			j["on"] = on;
 			return Dump(j);
 		}
+
+		// ---- the diagnosis instrument's helpers (2026-08-15) --------------
+		// Play-test verdict was undecidable: applies answered ok=true but the
+		// player saw no change ("all three look the same") and a dark elf
+		// turned yellow. SkinShift's own logging is disabled, so these read
+		// the ground truth off the live model around every apply/clear.
+
+		std::string HexColor(const RE::NiColor& c)
+		{
+			const auto ch = [](float v) {
+				const int i = static_cast<int>(v * 255.0f + 0.5f);
+				return i < 0 ? 0 : (i > 255 ? 255 : i);
+			};
+			char buf[8];
+			std::snprintf(buf, sizeof(buf), "#%02X%02X%02X",
+				ch(c.red), ch(c.green), ch(c.blue));
+			return buf;
+		}
+
+		std::string FileNameOf(const std::string& path)
+		{
+			const auto cut = path.find_last_of("/\\");
+			return cut == std::string::npos ? path : path.substr(cut + 1);
+		}
+
+		bool ContainsCi(const std::string& hay, const char* needle)
+		{
+			auto lower = hay;
+			std::transform(lower.begin(), lower.end(), lower.begin(),
+				[](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+			return lower.find(needle) != std::string::npos;
+		}
+
+		// One line per snapshot: `<geom>=<diffuseFileName> tint=#RRGGBB`
+		// joined with " | " (filename only — the full path of the FIRST body
+		// entry comes back via *firstBodyPath and is logged once beside it,
+		// for certainty about WHICH femalebody_1.dds it is).
+		std::string CompactLive(const nlohmann::json& live, std::string* firstBodyPath)
+		{
+			if (firstBodyPath)
+				firstBodyPath->clear();
+			if (!live.value("loaded", false))
+				return "model not loaded";
+			const auto it = live.find("parts");
+			if (it == live.end() || !it->is_array() || it->empty())
+				return "no skin/face geometry found";
+			std::string out;
+			std::string firstSkin;  // fallback when no geom name says "body"
+			for (const auto& p : *it) {
+				const auto geom = p.value("geom", std::string("?"));
+				const auto diffuse = p.value("diffuse", std::string(""));
+				if (firstBodyPath && p.value("kind", std::string("")) == "skin" &&
+					!diffuse.empty()) {
+					if (firstBodyPath->empty() && ContainsCi(geom, "body"))
+						*firstBodyPath = diffuse;
+					if (firstSkin.empty())
+						firstSkin = diffuse;
+				}
+				if (!out.empty())
+					out += " | ";
+				out += geom;
+				out += '=';
+				out += diffuse.empty() ? "(no diffuse)" : FileNameOf(diffuse);
+				out += " tint=";
+				out += p.value("tint", std::string("-"));
+			}
+			if (firstBodyPath && firstBodyPath->empty())
+				*firstBodyPath = firstSkin;
+			return out;
+		}
+
+		// The AFTER snapshot, ~1.5s out, without blocking anything: the
+		// detached thread ONLY sleeps (the codebase's mhiyh_control/nff
+		// delay-thread precedent); the actual scenegraph READ happens inside
+		// the AddTask, on the main thread, where it is legal.
+		//
+		// Deliberately log-only: main.cpp's PushToView is file-local (no
+		// cross-module push helper exists — other modules note "no way into
+		// a PrismaUI Invoke" from off-main contexts too), and this instrument
+		// must not touch main.cpp. The next modal open re-reads live truth,
+		// so the view stays honest without the push.
+		// Three beats (1.5s / 5s / 10s), because round-3 RE proved the apply is
+		// NOT reliably immediate: textures route through a spawned donor whose
+		// 3D must load — paused, that makes no progress, and a cold cache can
+		// take seconds after unpause. The beats capture the warm-up curve.
+		//
+		// Each beat also runs the RE-TINT EXPERIMENT: SkinShift re-tints only
+		// the HEAD (it bakes the actor's tint into a generated facetint) and
+		// never re-applies the engine body tint after a body swap — that is
+		// the proven reason a Dunmer turns yellow. When a beat SEES a preset
+		// diffuse on skin geometry (the swap landed), it calls the engine's
+		// own NiAVObject::UpdateBodyTint with her real bodyTintColor — the
+		// exact byte SkinShift itself reads (TESNPC+0x246) for the head. If
+		// the theory holds, her race grey comes back over the preset skin;
+		// either way the next beat's read logs what it did.
+		void SchedulePostReadback(std::uint32_t formId)
+		{
+			std::thread([formId]() {
+				static constexpr int kBeatsMs[] = { 1500, 3500, 5000 };  // cumulative 1.5/5/10s
+				int beat = 0;
+				for (const int ms : kBeatsMs) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+					++beat;
+					SKSE::GetTaskInterface()->AddTask([formId, beat]() {
+						auto*       a = ActorFor(formId);
+						const auto  live = LiveSkinJson(a);
+						std::string firstBody;
+						// Marker (hd-markers.json: "skinshift-readback").
+						logger::info("skinshift-readback[post {}]: {:08X} {}",
+							beat, formId, CompactLive(live, &firstBody));
+						if (!firstBody.empty())
+							logger::info("skinshift-readback[post {}]: {:08X} body diffuse full path: {}",
+								beat, formId, firstBody);
+
+						// Re-tint experiment, only once the swap is visibly on
+						// her (a preset diffuse present on skin geometry).
+						if (!a || firstBody.empty())
+							return;
+						if (!ContainsCi(firstBody, "removenormals"))
+							return;
+						auto* base = a->GetActorBase();
+						auto* root = a->Get3D();
+						if (!base || !root)
+							return;
+						const RE::NiColor tint{
+							base->bodyTintColor.red / 255.0f,
+							base->bodyTintColor.green / 255.0f,
+							base->bodyTintColor.blue / 255.0f
+						};
+						root->UpdateBodyTint(tint);
+						// Marker (hd-markers.json: "skinshift-retint").
+						logger::info(
+							"skinshift-retint: {:08X} body tint re-applied {} over preset skin (beat {})",
+							formId, HexColor(tint), beat);
+					});
+				}
+			}).detach();
+		}
 	}
 
 	bool Available(std::string* whyNot)
@@ -407,10 +547,89 @@ namespace SkinShiftActions
 		return g_gateOk;
 	}
 
+	// Ground truth off the LIVE loaded model — see the header for the shape.
+	// READ-ONLY, MAIN-THREAD-ONLY: it walks the scenegraph the renderer owns
+	// and touches nothing (all callers are already on the main thread — the
+	// fx* handlers AddTask here, and SchedulePostReadback reads inside its
+	// AddTask). Skin geometry is recognised by the material FEATURE, exactly
+	// how the engine types it: kFaceGenRGBTint = tinted body/hands/feet skin
+	// (BSLightingShaderMaterialFacegenTint carries the race/gender tintColor
+	// — the dark-elf-turned-yellow question is answered by reading it), and
+	// kFaceGen = the facegen head with its baked facetint.
+	nlohmann::json LiveSkinJson(RE::Actor* a)
+	{
+		nlohmann::json out;
+		RE::NiAVObject* root = a ? a->Get3D() : nullptr;
+		if (!root) {
+			out["loaded"] = false;
+			return out;
+		}
+		out["loaded"] = true;
+		auto parts = nlohmann::json::array();
+		RE::BSVisit::TraverseScenegraphGeometries(root,
+			[&parts](RE::BSGeometry* geom) -> RE::BSVisit::BSVisitControl {
+				if (parts.size() >= 24)  // an actor model is ~a dozen shapes;
+					return RE::BSVisit::BSVisitControl::kStop;  // cap paranoia
+				if (!geom)
+					return RE::BSVisit::BSVisitControl::kContinue;
+				auto* prop = geom->GetGeometryRuntimeData()
+				                 .properties[RE::BSGeometry::States::kEffect].get();
+				auto* lsp = netimmerse_cast<RE::BSLightingShaderProperty*>(prop);
+				auto* mat = lsp ? static_cast<RE::BSLightingShaderMaterialBase*>(lsp->material) :
+				                  nullptr;
+				if (!mat)
+					return RE::BSVisit::BSVisitControl::kContinue;
+				const auto feat = mat->GetFeature();
+				const bool skin = feat == RE::BSShaderMaterial::Feature::kFaceGenRGBTint;
+				const bool face = feat == RE::BSShaderMaterial::Feature::kFaceGen;
+				if (!skin && !face)
+					return RE::BSVisit::BSVisitControl::kContinue;
+
+				nlohmann::json e;
+				const char* nm = geom->name.c_str();
+				e["geom"] = (nm && *nm) ? nm : "(unnamed)";
+				e["kind"] = skin ? "skin" : "face";
+
+				// Diffuse: the texture SET's path is what the shader was set
+				// up from; the runtime diffuseTexture can differ when someone
+				// (SkinShift included) swapped textures under the set — both
+				// are captured so a swap that bypassed the set is visible.
+				const char* setPath =
+					mat->textureSet ?
+						mat->textureSet->GetTexturePath(RE::BSTextureSet::Texture::kDiffuse) :
+						nullptr;
+				const char* rtPath =
+					mat->diffuseTexture ? mat->diffuseTexture->name.c_str() : nullptr;
+				e["diffuse"] = (setPath && *setPath) ? setPath :
+				               ((rtPath && *rtPath) ? rtPath : "");
+				if (rtPath && *rtPath)
+					e["runtimeDiffuse"] = rtPath;
+
+				// GetFeature()==kFaceGenRGBTint IS the concrete-type proof —
+				// only BSLightingShaderMaterialFacegenTint returns it.
+				if (skin) {
+					const auto* tinted =
+						static_cast<const RE::BSLightingShaderMaterialFacegenTint*>(mat);
+					e["tint"] = HexColor(tinted->tintColor);
+				}
+				parts.push_back(std::move(e));
+				return RE::BSVisit::BSVisitControl::kContinue;
+			});
+		out["parts"] = std::move(parts);
+		return out;
+	}
+
 	nlohmann::json SkinsJson(std::uint32_t formId)
 	{
 		nlohmann::json s;
 		s["present"] = ::GetModuleHandleW(L"SkinShift.dll") != nullptr;
+
+		// The diagnosis instrument rides EVERY state read: what her skin
+		// geometry is ACTUALLY wearing right now, straight off the live
+		// model — independent of SkinShift's availability, because it is
+		// exactly the read that settles "did the swap land".
+		if (auto* live = ActorFor(formId))
+			s["live"] = LiveSkinJson(live);
 
 		std::string why;
 		const bool avail = Available(&why);
@@ -483,6 +702,18 @@ namespace SkinShiftActions
 		EnsureScan(false);
 		const std::string display = DisplayFor(presetKey);
 
+		// Diagnosis instrument: snapshot what her skin wears BEFORE the
+		// apply, so the [post] line 1.5s later proves (or disproves) that
+		// the swap actually landed on the model.
+		{
+			std::string firstBody;
+			const auto  compact = CompactLive(LiveSkinJson(a), &firstBody);
+			logger::info("skinshift-readback[pre]: {:08X} {}", formId, compact);
+			if (!firstBody.empty())
+				logger::info("skinshift-readback[pre]: {:08X} body diffuse full path: {}",
+					formId, firstBody);
+		}
+
 		// SetTargetActor immediately before the apply — it latches the
 		// current-target FormID into SkinShift's global, which is what
 		// ApplyWholePresetToCurrentTarget reads (no actor-arg overload).
@@ -491,6 +722,10 @@ namespace SkinShiftActions
 		const bool ok = g_apply(&sv);
 		// Marker (hd-markers.json: "skinshift-apply").
 		logger::info("skinshift: apply '{}' -> {:08X} ok={}", presetKey, formId, ok);
+
+		// The AFTER snapshot fires even for a refused apply — "nothing
+		// changed" is itself evidence.
+		SchedulePostReadback(formId);
 
 		if (!ok)
 			return Reply(false,
@@ -504,13 +739,17 @@ namespace SkinShiftActions
 		g_applied[IdentityOf(a)] = { { "key", presetKey }, { "name", display } };
 		SaveApplied();
 
-		// On success SkinShift stored the assignment AND kicked its own apply
-		// pipeline (immediate attempt + self-queued retries) — fire once, no
-		// polling. The save/area caveat is the mod's own documented behavior.
+		// On success SkinShift stored the assignment and kicked its pipeline —
+		// but round-3 RE proved the swap routes through a spawned donor whose
+		// 3D must LOAD, and a paused game makes no progress (the queued apply
+		// can even time out). So the view closes the palette on this reply
+		// (the party-orders law: work that needs the game running closes the
+		// deck), and the HUD notification below survives that close.
+		RE::DebugNotification(
+			(display + " — " + NameOf(a) + "'s skin is changing…").c_str());
 		return Reply(true,
-			display + " applied — " + NameOf(a) +
-				"'s skin will change in a moment (it settles fully after a save "
-				"or area change if it doesn't show at once)",
+			display + " applied — closing the deck so it can take (the swap "
+			          "needs the game running; give it a few seconds)",
 			id, true);
 	}
 
@@ -523,6 +762,17 @@ namespace SkinShiftActions
 		auto* a = ActorFor(formId);
 		if (!a)
 			return Reply(false, "that NPC isn't loaded any more", "skinshift:clear", false);
+
+		// Diagnosis instrument: before/after around the clear too — the
+		// revert landing (or lingering) is the same question as the apply.
+		{
+			std::string firstBody;
+			const auto  compact = CompactLive(LiveSkinJson(a), &firstBody);
+			logger::info("skinshift-readback[pre]: {:08X} {}", formId, compact);
+			if (!firstBody.empty())
+				logger::info("skinshift-readback[pre]: {:08X} body diffuse full path: {}",
+					formId, firstBody);
+		}
 
 		// SkinShift's own "Clear Target Setting" button does exactly this:
 		// latch the target, Remove(formId), and on success queue the rescan +
@@ -552,9 +802,15 @@ namespace SkinShiftActions
 		}
 		logger::info("skinshift: cleared {:08X} (store had={} deck had={})",
 			formId, had, hadOurs);
+		SchedulePostReadback(formId);
+		// Same unpause dependency as the apply: the revert rides SkinShift's
+		// queued rescan, which only progresses while the game runs.
+		RE::DebugNotification(
+			(NameOf(a) + " is going back to her own skin…").c_str());
 		return Reply(true,
-			NameOf(a) + " is back to her own skin — the old textures may linger "
-			            "until the area reloads",
+			NameOf(a) + " is back to her own skin — closing the deck so the "
+			            "revert can run (old textures can linger until the "
+			            "area reloads)",
 			"skinshift:clear", false);
 	}
 }

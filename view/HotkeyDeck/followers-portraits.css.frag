@@ -101,14 +101,14 @@
   flex: none;
   border-radius: 10px;
   border: 1px solid #3a3a44;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .6);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   background: #0c0c10;
   /* Sized in px by JS (lbFrameSize) — the editor divides pointer travel by
      this number, and a size that came from a CSS function Ultralight
      computes its own way would make the pan gain wrong in game and right in
      the harness. */
 }
-.fd-lb-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 18px 48px rgba(0, 0, 0, .6); }
+.fd-lb-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 10px 28px rgba(0, 0, 0, 0.45); }
 .fd-lb-frame.dragging { cursor: grabbing; }
 
 /* Overrides the free-aspect .fd-lb-img above: inside the frame the photo is

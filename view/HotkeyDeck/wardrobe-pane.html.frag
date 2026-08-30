@@ -7,9 +7,9 @@
      <footer id="hints">. Every id/class is wd- prefixed, so nothing here
      collides with the deck, notes, quests, domains, finances or numpad panes.
 
-     Also add, after app.js:
-       <script src="wardrobe-pane.js"></script>
-     (after, so the pane can chain window.hdClosed.)
+     wardrobe-pane.js is NOT a script tag here — it is loaded by the staged-boot
+     loader (hd-boot.js MANIFEST), after app.js, so it still chains window.hdClosed
+     exactly as before. Do not re-add a script tag for it: that would double-load.
 
      Backbone is SOES-NG — see modding/guides/wardrobe_system_design.md.
  * ===================================================================== -->
@@ -87,6 +87,8 @@
         <span id="wd-builder-del"></span>
         <button id="wd-builder-close" class="ghost-btn" title="Done (Esc)">Done</button>
       </header>
+      <!-- default re-roll cadence for wearers set to "Wardrobe's cadence" -->
+      <div id="wd-builder-cad"></div>
       <div id="wd-builder-cols">
         <section class="wd-col" aria-label="Members">
           <h3 class="wd-col-h">In this wardrobe <span id="wd-mem-count">0</span></h3>

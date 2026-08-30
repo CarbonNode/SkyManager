@@ -310,7 +310,9 @@
   gap: 1px;
   position: relative;
   /* rim = conic progress over a dark track; the :before face covers all but
-     the outer 7px, leaving a clean ring. */
+     the outer 7px, leaving a clean ring.
+     ⚠ ULTRALIGHT HAS NO conic-gradient — see the @supports block at the end of
+     this file, which paints the quiet fallback band there. */
   background:
     conic-gradient(var(--ps-ring-col) calc(var(--ps-ring) * 1%),
                    rgba(201, 162, 75, .16) 0);
@@ -637,7 +639,14 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 420px;
+  /* 2026-08-17: grouping added a heading per pile and a taller row (the
+     duration ring), so the window gets a little more room -- and it now GROWS
+     into whatever height the card has spare, instead of scrolling inside 420px
+     while 400px of empty card sits underneath it. The cap still stops a save
+     with eighty controller effects from making the sheet endless. */
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 560px;
   overflow-y: auto;
   padding-right: 4px;
 }
@@ -840,6 +849,11 @@
   opacity: .85;
 }
 .ps-inv img { width: 42px; height: 42px; object-fit: contain; display: block; }
+/* Glyph stand-in for a card whose art PNG is missing (remove-on-error adds
+   .ps-inv-noart) — honest fallback, never a broken image box. */
+.ps-inv-glyph { display: none; width: 42px; height: 42px; font-size: 30px;
+  line-height: 42px; text-align: center; color: #c9a24b; }
+.ps-inv-noart .ps-inv-glyph { display: block; }
 .ps-inv-body { display: flex; align-items: baseline; justify-content: center; gap: 5px; min-width: 0; }
 .ps-inv-name { color: #8d8471; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ps-inv-count { color: #eee7d7; font-size: 16px; line-height: 1; font-weight: 800; font-variant-numeric: tabular-nums; }
@@ -848,6 +862,10 @@
 .ps-inv-stamina { --ps-inv-accent: #d58a2f; background-color: rgba(199,121,25,.08); }
 .ps-inv-utility { --ps-inv-accent: #9d70d1; background-color: rgba(111,67,153,.09); }
 .ps-inv-lockpicks { --ps-inv-accent: #b7a77e; background-color: rgba(150,139,110,.07); }
+.ps-inv-poison { --ps-inv-accent: #7fb069; background-color: rgba(88,132,72,.08); }
+.ps-inv-food { --ps-inv-accent: #c98f4c; background-color: rgba(154,101,40,.08); }
+.ps-inv-drink { --ps-inv-accent: #d1b05e; background-color: rgba(160,128,54,.08); }
+.ps-inv-water { --ps-inv-accent: #6fb8d8; background-color: rgba(63,124,158,.08); }
 
 /* Clickable potion cards (all but Lockpicks with a count): a hover lift + a
    small ⋯ affordance so it reads as "there's more inside". */
@@ -897,7 +915,7 @@
   background: linear-gradient(180deg, #1c1c24 0%, #131318 100%);
   border: 1px solid rgba(201, 162, 75, .5);
   border-radius: 14px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .55), inset 0 0 0 1px rgba(201, 162, 75, .07);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(201, 162, 75, .07);
   overflow: hidden;
   animation: ps-pack-rise 140ms ease;
 }
@@ -1088,16 +1106,10 @@
 .ps-skel-box {
   border-radius: 8px;
   background: linear-gradient(90deg, #1b1b22 25%, #23232c 50%, #1b1b22 75%);
-  background-size: 200% 100%;
-  animation: ps-shimmer 1.3s infinite linear;
 }
 .ps-loading .ps-name,
 .ps-loading .ps-bar-nums,
 .ps-loading .ps-chip-val { color: transparent; }
-@keyframes ps-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
 
 /* =============================================================== narrow == */
 
@@ -1105,6 +1117,19 @@
   #ps-pane { padding: 14px 14px 12px; gap: 14px; }
   .ps-header { flex-wrap: wrap; gap: 16px; padding: 16px; }
   .ps-portrait { width: 120px; height: 156px; }
+  /* The EMPTY card is the one that overflows here: the glyph, the six-line
+     hint and the Take button add up to ~175px inside a 156px box, and
+     .ps-portrait's overflow:hidden SLICED THE ONLY CALL TO ACTION IN HALF at
+     the 640px deck floor (Ultralight probe render, 2026-08-17 — the 2026-08-13
+     "buttons were cut off" fix covered the filled card's hover bar, not this
+     one). Let the empty card grow to its content; a FILLED portrait keeps the
+     fixed frame the display-crop maths is measured against. */
+  .ps-portrait-empty { height: auto; min-height: 156px; }
+  /* ...and 14px of padding each side leaves 92px of a 120px card, four pixels
+     short of the button — so the same probe still measured a 4px slice off its
+     right edge. Trim the padding, never the type: 12.5px is already the floor
+     Rober's "no small text" rule allows. */
+  .ps-portrait-empty .ps-portrait-hint { padding: 10px 8px; gap: 7px; }
   .ps-name { font-size: 26px; white-space: normal; }
   /* The medallion stays a centered circle at narrow width — it wraps to a full
      row of its own and sits centered, ring + number intact (no bar reflow). */
@@ -1261,8 +1286,6 @@
    on top. Dropped the moment art lands (.ps-has-art) or the window closes. */
 .ps-pack-ico.ps-pack-loading {
   background: linear-gradient(90deg, #1b1b22 25%, #26262f 50%, #1b1b22 75%);
-  background-size: 200% 100%;
-  animation: ps-shimmer 1.3s infinite linear;
   border-color: #34333d;
 }
 .ps-pack-ico.ps-has-art.ps-pack-loading { animation: none; }   /* landed wins */
@@ -1275,3 +1298,1110 @@
 @media (max-width: 600px) {
   .ps-pack-ico { width: 54px; height: 54px; font-size: 25px; }
 }
+
+/* ================================================================= faith == *
+ *  Wintersun's own state, drawn as one card between the vitals and the two
+ *  columns. Hidden outright (.hidden on #ps-faith) when Wintersun is not in the
+ *  load order — see charsheet-pane.js renderFaith.
+ *
+ *  Type never drops below 12px and the prose runs at 14, because the tenets are
+ *  the point of the card and Rober reads them from a couch.
+ * =========================================================================== */
+
+.ps-faith { gap: 14px; }
+/* Rober, 2026-08-16: "so it not being in the user's loadorder doesn't leave a
+   big ugly area." app.css already carries a global .hidden, but the card owns
+   its own rule too — a Wintersun-less install must show NOTHING here, and that
+   promise should not depend on another sheet loading first. */
+#ps-faith.hidden { display: none; }
+
+.ps-faith-state {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  color: #a79a7d;
+  border: 1px solid #4a4638;
+  border-radius: 999px;
+  padding: 4px 12px;
+  background: #17171d;
+  white-space: nowrap;
+}
+.ps-faith-state.is-favoured {
+  color: #f0d79a;
+  border-color: #7d6a3c;
+  background: linear-gradient(180deg, #2a2418 0%, #1c1a13 100%);
+  box-shadow: 0 0 10px rgba(201, 162, 75, .18);
+}
+
+/* -- who you follow ---------------------------------------------------- */
+
+.ps-faith-top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* A monogram, not a symbol font: Ultralight's glyph coverage for the Daedric /
+   religious characters is unproven, and a missing glyph would draw a tofu box
+   where the god's name should be. A letter always renders. */
+.ps-faith-sigil {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+  color: #f0d79a;
+  background: radial-gradient(circle at 35% 30%, #2e2718 0%, #171510 100%);
+  border: 1px solid #7d6a3c;
+  box-shadow: inset 0 0 12px rgba(201, 162, 75, .12);
+}
+
+.ps-faith-who { flex: 1 1 auto; min-width: 0; }
+.ps-faith-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: #e8e2d4;
+  letter-spacing: .3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ps-faith-pantheon {
+  font-size: 13px;
+  color: #9a917d;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-faith-num {
+  flex: 0 0 auto;
+  text-align: right;
+  line-height: 1.1;
+}
+.ps-faith-num b {
+  display: block;
+  font-size: 28px;
+  font-weight: 700;
+  color: #f0d79a;
+}
+.ps-faith-num span {
+  font-size: 12px;
+  letter-spacing: .8px;
+  text-transform: uppercase;
+  color: #8d8471;
+}
+
+/* -- the favour meter -------------------------------------------------- */
+
+.ps-faith-meter { display: flex; flex-direction: column; gap: 6px; }
+.ps-faith-track {
+  position: relative;
+  height: 14px;
+  border-radius: 8px;
+  background: #22222b;
+  border: 1px solid #2b2b34;
+  overflow: hidden;
+}
+.ps-faith-fill {
+  height: 100%;
+  border-radius: 8px 0 0 8px;
+  background: linear-gradient(90deg, #6d5a2f 0%, #b8933f 100%);
+  transition: width 180ms ease;
+}
+.ps-faith-fill.is-favoured {
+  background: linear-gradient(90deg, #a4842f 0%, #f0d79a 100%);
+  box-shadow: 0 0 10px rgba(240, 215, 154, .25);
+}
+/* The Favoured line. Inside the track (which clips), so it is a hairline the
+   fill runs past rather than a marker that can escape the bar.
+   A pale line VANISHED once the gold fill ran past it (seen in the 2026-08-16
+   render pass) — and the moment it disappears is exactly the moment it matters,
+   because you are Favoured. So it is a DARK core inside a light ring: legible on
+   the gold fill and on the empty track alike, and above both. */
+.ps-faith-tick {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  margin-left: -1px;
+  background: #14141a;
+  box-shadow: 0 0 0 1px rgba(239, 230, 207, .92);
+  z-index: 2;
+}
+
+/* The Favoured label, on its own row, anchored to the tick — see faithMeter().
+   Its own row because a threshold that is not halfway would otherwise put the
+   label somewhere the tick is not. */
+.ps-faith-mark {
+  position: relative;
+  height: 17px;
+  font-size: 12px;
+  color: #a79a7d;
+}
+.ps-faith-mark span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+}
+.ps-faith-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: #8d8471;
+}
+.ps-faith-scale span { white-space: nowrap; }
+
+/* -- the facts strip --------------------------------------------------- */
+
+.ps-faith-facts { display: flex; flex-wrap: wrap; gap: 8px; }
+.ps-faith-fact {
+  font-size: 13px;
+  color: #b9b09a;
+  background: #17171d;
+  border: 1px solid #33302a;
+  border-radius: 999px;
+  padding: 5px 12px;
+  white-space: nowrap;
+}
+.ps-faith-fact-down { color: #d99a8a; border-color: #4a3630; }
+.ps-faith-fact-up { color: #9ec894; border-color: #33452f; }
+.ps-faith-fact-warn { color: #e0c07a; border-color: #5a4a29; }
+
+/* -- what you get ------------------------------------------------------ */
+
+.ps-faith-list { display: flex; flex-direction: column; gap: 10px; }
+
+.ps-faith-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 13px;
+  background: #121218;
+  border: 1px solid #2b2922;
+  border-radius: 10px;
+  border-left: 3px solid var(--ps-faith-accent, #c9a24b);
+  transition: border-color 140ms ease, background 140ms ease;
+  min-width: 0;
+}
+.ps-faith-row:hover { background: #16161d; border-color: #3d3a33; border-left-color: var(--ps-faith-accent, #c9a24b); }
+.ps-faith-boon1 { --ps-faith-accent: #c9a24b; }
+.ps-faith-boon2 { --ps-faith-accent: #f0d79a; }
+.ps-faith-blessing { --ps-faith-accent: #7fa8c9; }
+.ps-faith-tenets { --ps-faith-accent: #9b8bc0; }
+
+/* Not yet yours: dimmed, never hidden — knowing what the next threshold buys
+   is exactly why you look at this card. */
+.ps-faith-row.is-locked { opacity: .55; border-left-style: dashed; }
+
+/* The row mark: our own gold-glyph PNG, sized to the prose it sits beside. The
+   box keeps its width whether the art or the fallback character is inside, so a
+   missing icons/ deploy cannot reflow the row. */
+.ps-faith-glyph {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 17px;
+  line-height: 1;
+  color: var(--ps-faith-accent, #c9a24b);
+}
+.ps-faith-glyph-img {
+  /* 38, not 28: measured in Ultralight (tools/ultralight-probe/faith-probe.html).
+     The engine rasterises an <img> at its LAYOUT size, so at 28px the emblem's
+     thin gold strokes averaged below a pixel and the art read grey and muddy.
+     The source PNGs were emboldened for the same reason. */
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+  display: block;
+}
+/* Dimmed with its row, so an unearned boon's mark reads as unearned too. */
+.ps-faith-row.is-locked .ps-faith-glyph-img { filter: grayscale(.35); }
+
+/* Fact-chip art (praying) — same idea, at chip scale. */
+.ps-faith-facticon {
+  width: 21px;
+  height: 21px;
+  object-fit: contain;
+  vertical-align: -3px;
+  margin-right: 6px;
+}
+.ps-faith-body { flex: 1 1 auto; min-width: 0; display: block; }
+.ps-faith-rowhead {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ps-faith-rowname {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e8e2d4;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ps-faith-tag {
+  font-size: 12px;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  color: #8d8471;
+  border: 1px solid #33302a;
+  border-radius: 6px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+.ps-faith-note { font-size: 12px; color: #a79a7d; font-style: italic; }
+.ps-faith-text {
+  display: block;
+  margin-top: 5px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #b9b09a;
+  overflow-wrap: anywhere;
+}
+.ps-faith-text i { color: #7e7767; }
+
+/* -- no god ------------------------------------------------------------ */
+
+.ps-faith-none {
+  font-size: 14px;
+  line-height: 1.55;
+  color: #9a917d;
+  background: #121218;
+  border: 1px dashed #3d3a33;
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+/* At narrow width the favour number moves under the name rather than squeezing
+   the god's name into an ellipsis, and the scale legend stacks. */
+@media (max-width: 600px) {
+  .ps-faith-top { flex-wrap: wrap; }
+  .ps-faith-who { flex-basis: calc(100% - 68px); }
+  .ps-faith-num { flex-basis: 100%; text-align: left; }
+  .ps-faith-num b { font-size: 24px; }
+  .ps-faith-scale { flex-wrap: wrap; }
+  .ps-faith-row { padding: 10px 11px; gap: 9px; }
+}
+
+/* ===================================================================== *
+ *  2026-08-17 — the Party-Sheet-grade pass.
+ *
+ *  Rober, after seeing Skyrim Party Sheet (Nexus SSE 167538): "the visuals of
+ *  this is super nice… we could grab a lot of the features. and improve our
+ *  visuals - active effects", then "look at the equipment has +20, damage and
+ *  count for arrows, a red number for swords, +x on trinkets and things" —
+ *  with the standing constraint "do not obviously copy… but can take all the
+ *  inspiration and flare."
+ *
+ *  So the IDEAS are theirs (grouped effects with a duration ring, a badge per
+ *  worn piece, a resistance panel, regen under the bars) and every pixel below
+ *  is the deck's own: the same antique gold rgba(201,162,75), the same #15151b
+ *  plates, #33302a borders and 8–12px radii the rest of this sheet uses. No
+ *  imported art, no imported layout.
+ *
+ *  TWO RULES THIS FILE OBEYS, because Ultralight runs compositor-off:
+ *    - NO looping animation and NO animated background-position (the tree-wide
+ *      purge of 2026-08-16, after Rober watched one smear). Rings and bars step
+ *      on the 1 s tick; only one-shot width/colour transitions are used.
+ *    - an <img> rasterises at its LAYOUT size, so gear art is laid out at the
+ *      size it is drawn at and never scaled up by a transform.
+ * ===================================================================== */
+
+/* ---------------------------------------------- regen under each bar -- */
+
+.ps-bar-rate {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #83cf8f;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .2px;
+  line-height: 1;
+  margin-top: -2px;
+  cursor: help;
+}
+.ps-bar-rate.hidden { display: none; }
+.ps-bar-rate b { font-weight: 700; }
+/* A negative rate is not a failure state, it is a fact (a survival mod, a
+   drain). Amber rather than alarm red — red is reserved for damage. */
+.ps-bar-rate.ps-rate-down { color: #d9a05c; }
+/* Health regen in combat carries an unreadable engine penalty on top; the
+   dotted underline is the "there is a caveat, hover me" mark. */
+.ps-bar-rate.ps-rate-caveat {
+  border-bottom: 1px dotted rgba(201,162,75,.45);
+  display: inline-block;
+  padding-bottom: 1px;
+}
+/* ...and that `display:inline-block` outranked `.ps-bar-rate.hidden` above by
+   order alone (same specificity, declared later), so a health line that had
+   ever carried the in-combat caveat could never be hidden again: a DLL that
+   stopped sending `regen` left the OLD number on screen for ever. Found by the
+   Ultralight probe on 2026-08-17 — the harness had asserted the `hidden` CLASS
+   was added, which it was; nothing had asked what the engine computed. */
+.ps-bar-rate.hidden,
+.ps-bar-rate.ps-rate-caveat.hidden { display: none; }
+.ps-bar-hp  .ps-bar-rate { color: #e0a24a; }
+.ps-bar-mag .ps-bar-rate { color: #7fb2e8; }
+.ps-bar-sta .ps-bar-rate { color: #83cf8f; }
+.ps-loading .ps-bar-rate { color: transparent; }
+
+/* the reserved placeholder strip retires once real equipment exists */
+.ps-slots.hidden { display: none; }
+
+/* ============================================================ equipment == */
+
+.ps-gear.hidden { display: none; }
+.ps-gear-total {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ecd9a8;
+  background: rgba(201,162,75,.12);
+  border: 1px solid rgba(201,162,75,.34);
+  border-radius: 8px;
+  padding: 5px 11px;
+  white-space: nowrap;
+  cursor: help;
+}
+.ps-gear-grid {
+  display: grid;
+  /* auto-fill, so the row spends whatever width the deck has instead of
+     leaving a gutter — the "use the screen space" rule. */
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 12px;
+}
+.ps-gear-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 10px 11px;
+  background: #17171d;
+  border: 1px solid #33302a;
+  border-radius: 11px;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+.ps-gear-tile:hover {
+  background: #1c1c24;
+  border-color: rgba(201,162,75,.48);
+  transform: translateY(-1px);
+}
+/* An empty slot recedes but keeps its footprint, so nothing shifts when you
+   put a ring on. */
+.ps-gear-none {
+  border-style: dashed;
+  border-color: #35322b;
+  background: repeating-linear-gradient(135deg, #14141a 0 10px, #16161d 10px 20px);
+}
+.ps-gear-none:hover { transform: none; border-color: #4a4638; }
+
+.ps-gear-plate {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: radial-gradient(circle at 50% 34%, rgba(201,162,75,.12), rgba(201,162,75,.02) 70%), #101015;
+  border: 1px solid #3a372f;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ps-gear-none .ps-gear-plate { background: #101015; border-style: dashed; }
+/* A plate carrying a figure centres its glyph ABOVE that strip. The rendered
+   <img> is absolutely positioned and unaffected, so real art still fills the
+   plate edge to edge. */
+.ps-gear-plate.ps-plate-fig {
+  box-sizing: border-box;
+  padding-bottom: 22px;
+}
+.ps-gear-glyph {
+  font-size: 30px;
+  line-height: 1;
+  opacity: .55;
+  color: #c9a24b;
+}
+.ps-gear-none .ps-gear-glyph { opacity: .3; }
+/* The render is laid out AT the plate size — never a scaled-up small raster
+   (Ultralight rasterises an <img> at its layout box). */
+.ps-gear-art {
+  position: absolute;
+  inset: 4px;
+  width: calc(100% - 8px);
+  height: calc(100% - 8px);
+  object-fit: contain;
+  display: none;
+}
+.ps-gear-plate.ps-has-art .ps-gear-art { display: block; }
+.ps-gear-plate.ps-has-art .ps-gear-glyph { display: none; }
+
+/* The figure: damage in the warm red Rober pointed at, armour in cool steel.
+   Bottom-left of the plate, so it never sits on the silhouette's face. */
+.ps-gear-fig {
+  position: absolute;
+  left: 5px;
+  bottom: 4px;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+  background: rgba(10,10,14,.82);
+  cursor: help;
+}
+.ps-gear-dmg { color: #ef8069; border: 1px solid rgba(200,80,70,.5); }
+.ps-gear-arm { color: #a9c4dd; border: 1px solid rgba(120,160,200,.4); }
+.ps-gear-qty {
+  color: #d8d1c0;
+  background: rgba(255,255,255,.05);
+  border-color: #4a4638;
+}
+
+.ps-gear-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0d8c4;
+  text-align: center;
+  line-height: 1.3;
+  /* wrap to two lines then ellipsize — a long enchanted name must not push the
+     tile wider or get cut mid-word */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* belt and braces: if -webkit-line-clamp is not honoured, the height cap
+     still stops a five-word enchanted name from growing the tile and making
+     the grid ragged. The full name is always in the tile's tooltip. */
+  max-height: 5.1em;
+  overflow-wrap: anywhere;
+  width: 100%;
+}
+.ps-gear-none .ps-gear-name { color: #5f5a4e; }
+.ps-gear-slot {
+  font-size: 12px;
+  color: #7d7563;
+  text-transform: uppercase;
+  letter-spacing: .9px;
+  line-height: 1;
+}
+.ps-gear-badges {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+}
+.ps-gear-badge {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ecd9a8;
+  background: rgba(201,162,75,.15);
+  border: 1px solid rgba(201,162,75,.42);
+  border-radius: 6px;
+  padding: 2px 6px;
+  line-height: 1.25;
+  white-space: nowrap;
+  cursor: help;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ================================================ stats + resistances == */
+
+.ps-battle.hidden { display: none; }
+/* A STACK, not two side-by-side panels: the stat list is seven rows and the
+   resistances two, so side-by-side left a quarter of the card empty at deck-Fill
+   width. Stacked, each band spends the whole width and the card has no dead
+   space at any size. (It is also further from the reference's own layout, which
+   is the constraint Rober set.) */
+.ps-battle-cols {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ps-battle-sec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ps-battle-lab {
+  font-size: 12.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: #8d8471;
+}
+.ps-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+.ps-stat {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #17171d;
+  border: 1px solid #2b2b34;
+  border-radius: 8px;
+  padding: 8px 12px;
+  min-width: 0;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.ps-stat:hover { background: #1c1c24; border-color: #4a4638; }
+/* 22px, not 18: Ultralight resolves ⚔ / 👣 / 🛡 through a fallback face whose
+   advance is 1.4em — 21px at this size — so an 18px box shaved the blade tips
+   and the outer footprint off (measured and seen in the probe render,
+   2026-08-17; chromium's narrower emoji advance fitted, which is why the
+   harness passed). Widen the box rather than shrink the type. */
+.ps-stat-ico { font-size: 15px; line-height: 1; width: 22px; text-align: center; opacity: .8; }
+.ps-stat-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: #b0a894;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-stat-val {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e8e2d4;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ps-stat-dmg .ps-stat-val { color: #ef8069; }
+.ps-stat-good .ps-stat-val { color: #9fd3a8; }
+.ps-stat-gold .ps-stat-val { color: #ecd9a8; }
+
+.ps-resists {
+  display: grid;
+  /* THREE across, not auto-fill. Auto-fill at deck-Fill width laid the six out
+     as five-plus-one, and a lone orphaned Disease row reads as a mistake. Two
+     tidy rows of three is a block; it also keeps each meter wide enough to be
+     worth drawing. */
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+.ps-res {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #17171d;
+  border: 1px solid #2b2b34;
+  border-radius: 9px;
+  padding: 9px 11px;
+  min-width: 0;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.ps-res:hover { background: #1c1c24; border-color: #4a4638; }
+.ps-res.is-capped { border-color: rgba(201,162,75,.42); }
+.ps-res-ico {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+/* Our own glyph art when it ships; the character is the honest fallback, the
+   FAITH_ICON idiom — the view deploy does not recurse into icons/. */
+.ps-res-ico img { width: 26px; height: 26px; object-fit: contain; display: block; }
+.ps-res-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.ps-res-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ps-res-name {
+  font-size: 12.5px;
+  color: #b0a894;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-res-val {
+  font-size: 14px;
+  font-weight: 700;
+  color: #e8e2d4;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ps-res.is-capped .ps-res-val { color: #ecd9a8; }
+.ps-res-track {
+  height: 6px;
+  border-radius: 4px;
+  background: #22222b;
+  border: 1px solid #2b2b34;
+  overflow: hidden;
+  display: block;
+}
+.ps-res-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  min-width: 0;
+  transition: width 300ms ease;
+  background: linear-gradient(90deg, #6c6552, #a89464);
+}
+.ps-res-fire    .ps-res-fill { background: linear-gradient(90deg, #a8442c, #e08a4a); }
+.ps-res-fire    .ps-res-name { color: #dd9070; }
+.ps-res-frost   .ps-res-fill { background: linear-gradient(90deg, #2f6bbf, #7fd0e8); }
+.ps-res-frost   .ps-res-name { color: #8fc6e0; }
+.ps-res-shock   .ps-res-fill { background: linear-gradient(90deg, #6a52b8, #d8c05c); }
+.ps-res-shock   .ps-res-name { color: #cdbd7c; }
+.ps-res-magic   .ps-res-fill { background: linear-gradient(90deg, #6a3f9c, #b98fdc); }
+.ps-res-magic   .ps-res-name { color: #bb9adb; }
+.ps-res-poison  .ps-res-fill { background: linear-gradient(90deg, #3d7a3a, #8cc36a); }
+.ps-res-poison  .ps-res-name { color: #94c47c; }
+.ps-res-disease .ps-res-fill { background: linear-gradient(90deg, #7a6a3a, #c9a24b); }
+.ps-res-disease .ps-res-name { color: #c9b07a; }
+
+/* ================================================== skills, grouped == */
+
+/* The three guardian-stone families become the grid's three cells, so the
+   existing responsive column counts keep working unchanged. */
+/* A load order that renames the vanilla skills lands everything in one "Other"
+   family; a lone group would otherwise draw as one narrow column with two
+   empty ones beside it. On its own it takes the whole width and lays its rows
+   out in the same responsive grid the three families occupy together. */
+.ps-skgroup:only-child { grid-column: 1 / -1; }
+.ps-skgroup:only-child .ps-skgroup-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 7px;
+}
+.ps-skgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.ps-skgroup-head {
+  font-size: 12.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: #8d8471;
+  padding: 0 2px 4px;
+  border-bottom: 1px solid #2b2b34;
+}
+.ps-skgroup-warrior .ps-skgroup-head { color: #dd9070; border-bottom-color: rgba(200,110,80,.28); }
+.ps-skgroup-thief   .ps-skgroup-head { color: #94c47c; border-bottom-color: rgba(120,180,110,.26); }
+.ps-skgroup-mage    .ps-skgroup-head { color: #8fc6e0; border-bottom-color: rgba(110,160,200,.28); }
+.ps-skgroup-rows { display: flex; flex-direction: column; gap: 6px; }
+/* Legibility ramp, NOT a claim about whether a skill was trained — see
+   skillWeight() in charsheet-pane.js for why that claim cannot be made
+   honestly. The number itself is always drawn in full. */
+.ps-skill { transition: background 130ms ease, border-color 130ms ease; }
+.ps-skill:hover { background: #1c1c24; border-color: #4a4638; }
+.ps-skill-low  .ps-skill-name { color: #7a7364; }
+.ps-skill-low  .ps-skill-lvl  { color: #8d8471; }
+.ps-skill-mid  .ps-skill-lvl  { color: #c3bba7; }
+.ps-skill-high .ps-skill-lvl  { color: #e8e2d4; }
+.ps-skill-max {
+  border-color: rgba(201,162,75,.4);
+  background: linear-gradient(180deg, rgba(201,162,75,.09), rgba(201,162,75,.02));
+}
+.ps-skill-max .ps-skill-name { color: #d6c8a6; }
+.ps-skill-max .ps-skill-lvl  { color: #ecd9a8; }
+
+/* ======================================== active effects, rebuilt == */
+
+.ps-eff-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.ps-eff-groups.hidden { display: none; }
+.ps-eff-gchip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #b0a894;
+  background: #17171d;
+  border: 1px solid #33302a;
+  border-radius: 999px;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.ps-eff-gchip:hover { background: #1f1f28; border-color: #4a4638; color: #e0d8c4; }
+.ps-eff-gchip:focus-visible {
+  outline: none;
+  border-color: rgba(201,162,75,.75);
+  box-shadow: 0 0 0 2px rgba(201,162,75,.18);
+}
+.ps-eff-gchip.is-on {
+  color: #f0d79d;
+  background: rgba(201,162,75,.16);
+  border-color: rgba(201,162,75,.6);
+}
+.ps-eff-gchip-n {
+  font-size: 12px;
+  font-weight: 700;
+  color: #8d8471;
+  background: rgba(0,0,0,.32);
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-variant-numeric: tabular-nums;
+}
+.ps-eff-gchip.is-on .ps-eff-gchip-n { color: #ecd9a8; }
+.ps-eff-gchip-debuff.is-on,
+.ps-eff-gchip-poison.is-on,
+.ps-eff-gchip-disease.is-on {
+  color: #f0b1a8;
+  background: rgba(200,80,70,.16);
+  border-color: rgba(200,80,70,.55);
+}
+
+.ps-eff-group { display: flex; flex-direction: column; gap: 8px; }
+.ps-eff-group + .ps-eff-group { margin-top: 12px; }
+.ps-eff-ghead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: help;
+}
+.ps-eff-gname {
+  font-size: 12.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: #8d8471;
+}
+.ps-eff-gcount {
+  font-size: 12px;
+  font-weight: 700;
+  color: #7d7563;
+  background: rgba(0,0,0,.3);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-variant-numeric: tabular-nums;
+}
+.ps-eff-ghead::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #2b2b34;
+}
+.ps-eff-group-debuff  .ps-eff-gname { color: #f0b1a8; }
+.ps-eff-group-disease .ps-eff-gname { color: #c9a24b; }
+.ps-eff-group-poison  .ps-eff-gname { color: #94c47c; }
+.ps-eff-group-buff    .ps-eff-gname { color: #8fc6e0; }
+
+/* -- the duration ring ------------------------------------------------- *
+ * The BRIGHT arc is what is LEFT, so the ring empties as the effect runs out
+ * — an "elapsed" ring that fills up reads backwards on a countdown. Stepped
+ * once a second by tick(); no keyframes anywhere near it. */
+.ps-eff-ring {
+  position: relative;
+  width: 46px;
+  height: 46px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* ⚠ ULTRALIGHT HAS NO conic-gradient — see the @supports block at the end of
+     this file. */
+  background: conic-gradient(var(--ps-eff-arc, rgba(201,162,75,.85)) calc(var(--ps-eff-pct, 100) * 1%),
+                             rgba(255,255,255,.07) 0);
+}
+/* A permanent effect has no honest fraction — a full quiet band, never an
+   empty ring (an empty ring reads as "about to expire"). */
+.ps-eff-ring.is-perm {
+  background: conic-gradient(rgba(201,162,75,.28) 100%, rgba(201,162,75,.28) 0);
+}
+.ps-eff-face {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #1f1f28, #141419);
+  box-shadow: inset 0 0 0 1px rgba(201,162,75,.14);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ps-eff-face b {
+  font-size: 15px;
+  font-weight: 800;
+  color: #e8e2d4;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ps-eff-mark { font-size: 15px; line-height: 1; opacity: .75; }
+.ps-eff-g-debuff  .ps-eff-ring { --ps-eff-arc: rgba(224,120,105,.9); }
+.ps-eff-g-poison  .ps-eff-ring { --ps-eff-arc: rgba(140,195,106,.9); }
+.ps-eff-g-disease .ps-eff-ring { --ps-eff-arc: rgba(201,162,75,.9); }
+.ps-eff-g-buff    .ps-eff-ring { --ps-eff-arc: rgba(143,198,224,.9); }
+.ps-eff-g-debuff  .ps-eff-face b,
+.ps-eff-g-poison  .ps-eff-face b { color: #f0b1a8; }
+
+/* -- row trimmings ----------------------------------------------------- */
+
+.ps-eff-name { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.ps-eff-name > span { flex-shrink: 0; }
+.ps-eff-kind {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: #8d8471;
+  background: rgba(255,255,255,.05);
+  border-radius: 5px;
+  padding: 2px 6px;
+  cursor: help;
+}
+.ps-eff-hid {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: #6d675a;
+  border: 1px dashed #4a4638;
+  border-radius: 5px;
+  padding: 1px 5px;
+  cursor: help;
+}
+/* The game keeps these off its own magic menu; we keep the row but let it sit
+   back, so it is never mistaken for something you cast. */
+.ps-eff-is-hidden { opacity: .72; }
+.ps-eff-is-hidden:hover { opacity: 1; }
+.ps-eff-sub .ps-eff-dot { margin: 0 6px; color: #4f4a40; }
+.ps-eff-sub .ps-eff-src { color: #9a917d; }
+.ps-eff-bar {
+  display: block;
+  width: 74px;
+  height: 4px;
+  border-radius: 3px;
+  background: #22222b;
+  overflow: hidden;
+}
+.ps-eff-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: rgba(201,162,75,.7);
+  transition: width 900ms linear;
+}
+.ps-eff-g-debuff .ps-eff-bar > i,
+.ps-eff-g-poison .ps-eff-bar > i { background: rgba(224,120,105,.75); }
+.ps-eff-g-buff   .ps-eff-bar > i { background: rgba(143,198,224,.75); }
+
+/* ================================================== narrow (this pass) == */
+
+@media (max-width: 900px) {
+  /* Three families into two columns left the third alone beside a gap. One
+     family per row instead, each laying its six skills out across the width —
+     no orphan column at any narrow size. */
+  .ps-skills-grid { grid-template-columns: 1fr; gap: 12px; }
+  .ps-skgroup-rows {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 7px;
+  }
+  .ps-gear-grid { grid-template-columns: repeat(auto-fill, minmax(126px, 1fr)); gap: 10px; }
+  .ps-gear-plate { width: 72px; height: 72px; }
+  .ps-resists { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+}
+@media (max-width: 600px) {
+  .ps-gear-grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
+  .ps-gear-plate { width: 64px; height: 64px; }
+  .ps-gear-glyph { font-size: 24px; }
+  .ps-resists { grid-template-columns: 1fr; }
+  .ps-eff-ring { width: 40px; height: 40px; }
+  .ps-eff-face { width: 33px; height: 33px; }
+  /* the mini bar is the first thing to go — the countdown text says the same
+     thing and the row must not clip */
+  .ps-eff-bar { display: none; }
+}
+
+
+/* ===================================================================== *
+ *  ENGINE FALLBACK — Ultralight cannot draw a conic-gradient
+ *
+ *  Measured on 2026-08-17 with tools/ultralight-probe against PrismaUI's OWN
+ *  1.4.1 binaries (the ones the game loads): `conic-gradient(...)` computes to
+ *  `none` there, so BOTH ring surfaces — the level medallion's progress rim and
+ *  every active effect's duration ring — painted nothing at all. Chromium drew
+ *  them, which is why no harness ever saw it.
+ *
+ *  It has to be @supports rather than a plain fallback declaration above the
+ *  conic: those two rules interpolate custom properties, and a conic holding a
+ *  var() is "invalid at COMPUTED-VALUE time", which unsets the property instead
+ *  of falling back to the previous declaration. Measured too — the one rule
+ *  with no var() (.ps-eff-ring.is-perm) fell back correctly and the two with
+ *  var() came out transparent.
+ *
+ *  Nothing here changes what a conic-capable engine draws: the block is inert
+ *  wherever conic-gradient exists.
+ * ===================================================================== */
+@supports not (background: conic-gradient(#000 0deg, #fff 180deg)) {
+  /* A quiet full gold band, exactly the picture the "XP unknown" state draws
+     on purpose. The foot line under it still prints the real percentage, so
+     the medallion never claims a number it cannot show. */
+  .ps-level-ring { background-color: rgba(201, 162, 75, .30); }
+  .ps-level:not(.ps-level-has-xp) .ps-level-ring { background-color: rgba(201, 162, 75, .5); }
+  /* The ring's own TRACK colour, never the arc: a full bright ring would claim
+     "all the time left". The row already states the truth twice — the bar under
+     the countdown and "1m 6s left" in words. */
+  .ps-eff-ring { background-color: rgba(255, 255, 255, .07); }
+  .ps-eff-ring.is-perm { background-color: rgba(201, 162, 75, .28); }
+}
+
+/* ================================================== Tune modal (2026-08-17) ==
+   PROTEUS's player editor as a Character-sheet modal. Rides the pack modal's
+   overlay/card tokens; only the dial grid is new. */
+
+.ps-tune-open {
+  margin-top: 8px;
+  background: #1d1d24;
+  border: 1px solid #3a3a45;
+  border-radius: 8px;
+  color: #d9d2bd;
+  font-size: 13.5px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.ps-tune-open:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.ps-tune-open:active { background: #17171d; }
+
+.ps-tune-card { width: min(720px, 94%); max-height: calc(86vh / var(--ui-scale, 1)); display: flex; flex-direction: column; }
+.ps-tune-lvl {
+  margin-left: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #c9a24b;
+  background: rgba(201, 162, 75, .12);
+  border: 1px solid rgba(201, 162, 75, .4);
+  border-radius: 999px;
+  padding: 3px 10px;
+  vertical-align: 2px;
+}
+.ps-tune-body { overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding: 4px 2px; }
+.ps-tune-warn {
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: #b6ad99;
+  background: rgba(201, 162, 75, .07);
+  border: 1px solid rgba(201, 162, 75, .25);
+  border-radius: 8px;
+  padding: 9px 12px;
+}
+.ps-tune-filterrow input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #14141a;
+  border: 1px solid #3a3a45;
+  border-radius: 10px;
+  color: #efe9da;
+  font-size: 15px;
+  padding: 10px 14px;
+}
+.ps-tune-filterrow input:focus { outline: none; border-color: #c9a24b; }
+.ps-tune-h {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e8e2d4;
+  margin-bottom: 8px;
+}
+.ps-tune-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 20px;
+}
+@media (max-width: 900px) { .ps-tune-grid { grid-template-columns: 1fr; } }
+.ps-tune-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.ps-tune-label {
+  font-size: 14px;
+  color: #b6ad99;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ps-tune-ctrl { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.ps-tune-num {
+  width: 76px;
+  text-align: center;
+  background: #14141a;
+  border: 1px solid #3a3a45;
+  border-radius: 8px;
+  color: #efe9da;
+  font-size: 15px;
+  padding: 8px 6px;
+}
+.ps-tune-num:focus { outline: none; border-color: #c9a24b; }
+.ps-tune-step {
+  width: 30px;
+  height: 34px;
+  background: #1d1d24;
+  border: 1px solid #3a3a45;
+  border-radius: 8px;
+  color: #d9d2bd;
+  font-size: 17px;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.ps-tune-step:hover { background: #26262f; border-color: #55503f; }
+.ps-tune-step:active { background: #17171d; }
+.ps-tune-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid #2a2a33;
+}
+.ps-tune-status { flex: 1 1 auto; font-size: 13.5px; color: #c9a24b; min-width: 0; }
+.ps-tune-btn {
+  background: #1d1d24;
+  border: 1px solid #3a3a45;
+  border-radius: 8px;
+  color: #d9d2bd;
+  font-size: 14px;
+  padding: 9px 16px;
+  cursor: pointer;
+}
+.ps-tune-btn:hover { background: #26262f; border-color: #55503f; }
+.ps-tune-apply {
+  background: rgba(201, 162, 75, .22);
+  border: 1px solid #c9a24b;
+  border-radius: 8px;
+  color: #ffe9b8;
+  font-size: 14.5px;
+  font-weight: 600;
+  padding: 9px 18px;
+  cursor: pointer;
+  transition: background .12s ease;
+}
+.ps-tune-apply:hover:not(:disabled) { background: rgba(201, 162, 75, .3); }
+.ps-tune-apply:disabled { opacity: .5; cursor: default; }

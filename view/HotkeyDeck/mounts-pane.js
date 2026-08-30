@@ -102,6 +102,7 @@ window.MountsPane = (function () {
     zoomOX: 50,          // cursor-anchored transform origin, % of the img box
     zoomOY: 50,
     spinAsked: {},       // mountId -> 1 (this session)
+    artDead: {},         // img-path -> 1, a render that failed to load (cleared on every onShow)
     frames: {},          // img-path -> {45:'ok'|'bad', …} probe results
     framePollT: null,
     framePollN: 0,
@@ -785,6 +786,11 @@ window.MountsPane = (function () {
     }
 
     const src = stageSrc(m);
+    // A path is not a picture: the file can be gone (renders are keep-forever,
+    // but scan_renders.py --quarantine renames a degenerate one aside while
+    // mounts.json keeps the path). Anything the stage has already watched fail
+    // draws as the glyph instead — see wireStageArt.
+    const art = !!src && !ui.artDead[src];
     box.innerHTML =
       '<div class="mt-d-head">' +
       '<div class="mt-d-name">' + (m.fav ? '<span class="mt-fav-star">★</span> ' : '') + esc(m.name) + '</div>' +
@@ -792,12 +798,14 @@ window.MountsPane = (function () {
       (m.kind === 'spell' ? ' · summon' : ' · beast') + '</div>' +
       '</div>' +
       '<div class="mt-stage" id="mt-stage" title="Drag to turn · scroll to zoom · double-click to reset">' +
-      (src
+      (art
         ? '<img id="mt-stage-img" src="' + esc(src) + '" alt="" draggable="false">'
         : '<div class="mt-stage-glyph">' + glyphOf(m) + '</div>') +
       '<div class="mt-stage-note' + (stageNote(m) ? '' : ' hidden') + '" id="mt-stage-note">' + esc(stageNote(m)) + '</div>' +
-      '<div class="mt-stage-hint">' + (m.img ? '⟲ drag to turn · scroll to zoom' :
-        (state.mrf ? 'render on its way — it appears here when the framework finishes' : 'previews off — Mesh Rendering Framework is not installed')) + '</div>' +
+      '<div class="mt-stage-hint">' + (art ? '⟲ drag to turn · scroll to zoom' :
+        (!state.mrf ? 'previews off — Mesh Rendering Framework is not installed' :
+          (src ? 'render missing — asked the framework to make it again'
+               : 'render on its way — it appears here when the framework finishes'))) + '</div>' +
       '</div>' +
       '<div class="mt-status' + ((m.kind === 'spell' ? m.known === false : (m.found === false || m.dead)) ? ' mt-status-warn' : '') + '">' +
       statusLine(m) + '</div>' +
@@ -805,9 +813,42 @@ window.MountsPane = (function () {
       (ui.editing ? editRowHtml(m) : '') +
       '<div class="mt-actions" id="mt-actions">' + detailActionsHtml(m) + '</div>';
 
-    wireStage(m);
+    if (art) { wireStage(m); wireStageArt(m, src); }
     wireDetailActions(m);
     if (ui.editing) wireEditRow(m);
+  }
+
+  /* The stage's degrade, mirroring the inline onerror the ROW's <img> carries:
+     without it a vanished render leaves a dead 0x0 image on the stage while the
+     hint still promises "drag to turn". Remember the path so the repaint draws
+     the glyph rather than flashing the same broken src, and nudge the game once
+     so the framework can bake it again — a re-push of the SAME path leaves
+     m.img untouched, so that cannot loop. ui.artDead is cleared on every
+     onShow, which is what gives a re-baked render its next chance. */
+  function wireStageArt(m, src) {
+    const img = $('mt-stage-img');
+    if (!img || !src) return;
+    function dead() {
+      // onDragMove swaps the src on the SAME element, so read the failing path
+      // off the img rather than trusting the one we were wired with.
+      const bad = img.getAttribute('src') || src;
+      if (bad !== m.img) {
+        // a turntable frame died after probing ok — demote it and let stageSrc
+        // fall back to frame 0, which is the art the row itself shows
+        const f = frameStateFor(m) || {};
+        let hit = false;
+        for (const a in f) if (f[a] === 'ok' && angleFile(m.img, a) === bad) { f[a] = 'bad'; hit = true; }
+        if (!hit) return;
+      } else {
+        if (ui.artDead[bad]) return;
+        ui.artDead[bad] = 1;
+        if (state.mrf) toGame('mtIcons');
+      }
+      renderDetail();
+    }
+    img.addEventListener('error', dead);
+    // a src that already failed can be complete-and-empty before we get here
+    if (img.complete && !img.naturalWidth) dead();
   }
 
   function editRowHtml(m) {
@@ -1366,6 +1407,7 @@ window.MountsPane = (function () {
 
   function onShow() {
     ui.visible = true;
+    ui.artDead = {};     // every open re-tries a render that was missing last time
     toGame('mtState');   // loads mounts.json on first ask; cheap after
     const s = $('mt-search');
     if (s) { s.value = ui.q; setTimeout(function () { s.focus(); }, 30); }

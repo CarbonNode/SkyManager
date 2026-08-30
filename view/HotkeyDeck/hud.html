@@ -3,27 +3,147 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Followers HUD</title>
+  <title>SkyManager HUD</title>
   <link rel="stylesheet" href="hud.css" />
+  <link rel="stylesheet" href="hud-td.css" />
 </head>
 <body class="hud-hidden">
-  <!-- The whole movable assembly. C++ pushes placement via window.hudConfig and
-       the follower list via window.hudData; reposition edit-mode via window.hudEdit. -->
+  <!-- The whole movable assembly. C++ pushes placement via window.hudConfig, the
+       follower list via window.hudData and the widget feed via window.hudWidgets
+       (+ window.hudWidgetCfg); reposition edit-mode via window.hudEdit.
+
+       2026-08-17 (Rober, after Skyrim Party Sheet): this view stopped being just
+       the follower strip and became the HUD HOST — quick readouts, a
+       context-aware weather/place slot, pinned item tiles and a mount widget all
+       stack inside the SAME movable panel, so there is still exactly one thing to
+       place and one scale to set. Every block is its own toggle; nothing is drawn
+       for data the game did not send (no mount ⇒ no mount block, never zeros). -->
   <div id="hud">
     <div class="hud-tools">
       <span class="hud-tool hud-grip" data-role="grip" title="Drag to move">⠿ Move</span>
       <button class="hud-tool" data-role="flip" type="button" title="Switch between a row and a column">⇄ Flip</button>
       <button class="hud-tool" data-role="grow" type="button" title="Flip which corner it grows from (so it can grow left / up from a screen edge)">⤢ Grow</button>
       <button class="hud-tool" data-role="names" type="button" title="Show or hide the name captions">Aa Names</button>
+      <button class="hud-tool" data-role="cfg" type="button" title="Open the widget shelf — every HUD element, its size and its options">⚙ Widgets</button>
       <button class="hud-tool hud-done" data-role="done" type="button" title="Lock it here">✓ Done</button>
     </div>
+
     <div class="hud-panel" id="hud-panel">
+      <!-- 2026-08-18 (Rober): the panel SHELL is retired — during play there is
+           no plate, no border, no padding here, so the follower strip floats on
+           its own like every other widget. This ⚙ grip is the whole panel-shaped
+           thing that is left, and it exists ONLY while configuring: it is what
+           you grab to move the strip once the plate is gone. -->
+      <div class="hud-strip-grip" id="hud-strip-grip" data-role="grip"
+           title="Drag to move the follower strip — click to open the widget shelf">⚙</div>
+
+      <!-- Widget stack. Each block is built only when its data + its toggle say
+           so; an off or absent block leaves NO empty box behind. -->
+      <div class="hud-widgets" id="hud-widgets">
+        <!-- Retired 2026-08-18: the readouts USED to share one row. Rober:
+             "every one of these widgets should be movable and seperate too by
+             default" — so each line now owns the element below and this one is
+             kept, always empty, only so an older script/skeleton pairing can
+             never null-deref it (the need() law). -->
+        <div class="hud-readouts" id="hud-readouts"></div>
+        <div class="hud-ro-one" id="hud-ro-gold"></div>
+        <div class="hud-ro-one" id="hud-ro-carry"></div>
+        <div class="hud-ro-one" id="hud-ro-time"></div>
+        <div class="hud-ro-one" id="hud-ro-context"></div>
+        <div class="hud-ro-one" id="hud-ro-pots"></div>
+        <!-- Round 2 (2026-08-17): the player's own state. Order is deliberate —
+             vitals first because it is what you glance at, then the numbers that
+             qualify them (resist), then what is running on you (effects), then
+             what you are holding (equip), then the survival needs. -->
+        <div class="hud-vitals" id="hud-vitals"></div>
+        <div class="hud-resist" id="hud-resist"></div>
+        <div class="hud-effects" id="hud-effects"></div>
+        <div class="hud-equip" id="hud-equip"></div>
+        <div class="hud-survival" id="hud-survival"></div>
+        <div class="hud-mount" id="hud-mount"></div>
+        <div class="hud-pins" id="hud-pins"></div>
+        <div class="hud-sets" id="hud-sets"></div>
+      </div>
+
       <div class="hud-strip horiz" id="hud-strip"></div>
+      <!-- Quest allies sit UNDER the follower row on purpose: they are the
+           people fighting beside you who are not on your roster, so they read as
+           an annex of the party, not as another readout. -->
+      <div class="hud-allies" id="hud-allies"></div>
       <div class="hud-empty" id="hud-empty">No one is following you right now.<br />Drag to place the HUD — it appears here when a follower joins.</div>
       <div class="hud-resize" data-role="resize" title="Drag to resize">⤡</div>
     </div>
-    <div class="hud-hint">Drag the bar to move · corner to resize · Flip for row/column · Done to lock</div>
+
+    <div class="hud-hint">Drag the bar to move · corner to resize · Flip for row/column · ⚙ Widgets opens the shelf — every element, its size and its options · Done to lock</div>
   </div>
+
+  <!-- THE HUD SHELF. Edit-mode only. Rober, 2026-08-19: "it should open a
+       right popout shelf like action bar does, and have all configuration
+       there, individual hud element configuration, scaling, resizing etc…
+       easily searchable for settings." So it is hinged on the RIGHT EDGE,
+       full height, one row per element, with the search box at the top.
+
+       ⚠ It lives OUTSIDE #hud on purpose (the 2026-08-18 lesson, unchanged):
+       #hud carries transform: scale(--hud-scale), and a transformed ancestor
+       becomes the containing block for position:fixed — a panel glued inside
+       it could neither escape the HUD's scale nor sit against the screen
+       edge. Its geometry is pure CSS now; the old dragged x/y is retired. -->
+  <div class="hud-settings" id="hud-settings">
+    <div class="hud-set-head">
+      <span class="hud-set-title">HUD widgets</span>
+      <!-- 2026-08-19: the shelf docks to EITHER edge (Rober: "should be able to
+           move to other side of screen, so you can line stuff on right if you
+           need to"). One ⇄ button, the Favorites Shelf's own idiom; the side is
+           remembered in the hud prefs blob. -->
+      <button class="hud-set-side" id="hud-shelf-side" type="button" data-shelfact="side"
+              title="Dock the shelf on the left edge">⇄</button>
+      <button class="hud-set-close" type="button" data-shelfact="close"
+              title="Close the shelf (the HUD stays in edit mode)">✕</button>
+      <span class="hud-presets" id="hud-presets"></span>
+    </div>
+    <div class="hud-opts" id="hud-opts"></div>
+  </div>
+
+  <!-- Round 3 (2026-08-17): the four FREE slot widgets — right hand, left
+       hand, shout/power, quick items. A separate fixed layer, NOT inside the
+       movable assembly: each widget carries its OWN x/y/anchor/scale from
+       src/widgets.cpp's Widget config ("place anywhere on screen
+       indvidually"). Contents are built by hud.js; empty roots here so a
+       script newer than the skeleton can never null-deref (the need() law). -->
+  <div id="hud-free">
+    <div class="hud-fw is-off" id="hud-fw-handR" data-fw="handR"></div>
+    <div class="hud-fw is-off" id="hud-fw-handL" data-fw="handL"></div>
+    <div class="hud-fw is-off" id="hud-fw-voice" data-fw="voice"></div>
+    <div class="hud-fw is-off" id="hud-fw-quick" data-fw="quick"></div>
+    <!-- Round 4 (2026-08-18): the custom quick items you curate yourself, and
+         the loot glow / auto-loot lamp. Same free layer, same drag and wheel
+         scale; only their builders differ. -->
+    <div class="hud-fw is-off" id="hud-fw-quick2" data-fw="quick2"></div>
+    <div class="hud-fw is-off" id="hud-fw-lootStatus" data-fw="lootStatus"></div>
+  </div>
+
+  <!-- Round 4 popouts. They live OUTSIDE #hud for the same reason the ⚙ card
+       does: #hud carries transform: scale(--hud-scale), and a transformed
+       ancestor becomes the containing block for position:fixed, so nothing
+       inside it can be a centred screen popout. Empty roots — hud.js fills
+       them, and an older skeleton simply gets a detached div (the need() law).
+         · #hud-navcard — the follower info card, opened with Enter/E while
+           browsing the strip.
+         · #hud-q2pick  — "Add items", the searchable carried-item picker.
+         · #hud-toast   — one line of feedback, auto-hiding.
+         · #hud-navhint — the one-line key hint that stays up while browsing
+           (browsing takes the keyboard, so the keys that hand it back have to
+           be readable on screen; hud.js writes its text and picks the half of
+           the screen the follower strip is not in). -->
+  <div id="hud-navcard" class="hud-navcard"></div>
+  <div id="hud-navhint" class="hud-navhint"></div>
+  <div id="hud-q2pick" class="hud-q2pick"></div>
+  <div id="hud-toast" class="hud-toast"></div>
+  <!-- Time Dial (2026-08-18): the hotkey-openable circular wait dial. Empty
+       root here so a script newer than the skeleton can never null-deref (the
+       need() law); hud-td.js builds the dial inside it on first open. -->
+  <div id="hud-td"></div>
   <script src="hud.js"></script>
+  <script src="hud-td.js"></script>
 </body>
 </html>

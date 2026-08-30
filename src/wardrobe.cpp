@@ -296,7 +296,8 @@ namespace Wardrobe
 		nlohmann::json PoolJson(const Pool& p)
 		{
 			auto j = nlohmann::json{ { "id", p.id }, { "name", p.name }, { "note", p.note },
-				{ "hue", p.hue }, { "outfits", p.outfits }, { "mode", p.mode }, { "bag", p.bag } };
+				{ "hue", p.hue }, { "outfits", p.outfits }, { "mode", p.mode }, { "bag", p.bag },
+				{ "cadenceHours", p.cadenceHours } };
 			j.update(TagsJson(p.tags, p.forNpcs));
 			return j;
 		}
@@ -312,6 +313,8 @@ namespace Wardrobe
 			p.mode = j.value("mode", std::string("bag"));
 			if (p.mode != "bag" && p.mode != "random")
 				p.mode = "bag";
+			// Same guard as the assignment's: a hostile default must not spin the tick.
+			p.cadenceHours = std::clamp(j.value("cadenceHours", 0), 0, 24 * 30);
 			if (j.contains("outfits") && j["outfits"].is_array())
 				for (const auto& o : j["outfits"])
 					if (o.is_string())
@@ -332,7 +335,8 @@ namespace Wardrobe
 					{ "outfit", o.outfit } });
 			return nlohmann::json{ { "formId", a.formId }, { "plugin", a.plugin }, { "name", a.name },
 				{ "mode", a.mode }, { "wardrobeId", a.wardrobeId }, { "outfit", a.outfit },
-				{ "cadenceHours", a.cadenceHours }, { "locationOverrides", ov },
+				{ "cadenceHours", a.cadenceHours }, { "cadenceInherit", a.cadenceInherit },
+				{ "draw", a.draw }, { "bag", a.bag }, { "locationOverrides", ov },
 				{ "lastRollDay", a.lastRollDay }, { "lastOutfit", a.lastOutfit } };
 		}
 		Assignment AssignFrom(const nlohmann::json& j)
@@ -347,6 +351,14 @@ namespace Wardrobe
 			a.wardrobeId   = j.value("wardrobeId", std::string(""));
 			a.outfit       = j.value("outfit", std::string(""));
 			a.cadenceHours = j.value("cadenceHours", 0);
+			a.cadenceInherit = j.value("cadenceInherit", false);
+			a.draw         = j.value("draw", std::string(""));
+			if (a.draw != "bag" && a.draw != "random")
+				a.draw = "";
+			if (j.contains("bag") && j["bag"].is_array())
+				for (const auto& o : j["bag"])
+					if (o.is_string())
+						a.bag.push_back(o.get<std::string>());
 			a.lastRollDay  = j.value("lastRollDay", 0.0);
 			a.lastOutfit   = j.value("lastOutfit", std::string(""));
 			if (j.contains("locationOverrides") && j["locationOverrides"].is_array())
@@ -418,10 +430,11 @@ namespace Wardrobe
 		 * Outfits SOES no longer knows are skipped either way, so a stale
 		 * membership can never dress someone in nothing. `pool` is mutated (the
 		 * bag is state), hence non-const. */
-		std::string RollFrom(Pool& pool, const std::string& avoid)
+		std::string RollWith(const std::vector<std::string>& outfits, const std::string& mode,
+			std::vector<std::string>& bag, const std::string& avoid)
 		{
 			std::vector<std::string> live;
-			for (const auto& n : pool.outfits)
+			for (const auto& n : outfits)
 				if (CatalogueHas(n))
 					live.push_back(n);
 			if (live.empty())
@@ -429,7 +442,7 @@ namespace Wardrobe
 			if (live.size() == 1)
 				return live.front();
 
-			if (pool.mode == "random") {
+			if (mode == "random") {
 				std::vector<std::string> ok = live;
 				if (!avoid.empty())
 					std::erase(ok, avoid);
@@ -440,18 +453,44 @@ namespace Wardrobe
 			}
 
 			// shuffle bag — drop anything no longer in the wardrobe, then refill
-			std::erase_if(pool.bag, [&](const std::string& n) {
+			std::erase_if(bag, [&](const std::string& n) {
 				return std::find(live.begin(), live.end(), n) == live.end();
 			});
-			if (pool.bag.empty()) {
-				pool.bag = live;
-				std::shuffle(pool.bag.begin(), pool.bag.end(), Rng());
+			if (bag.empty()) {
+				bag = live;
+				std::shuffle(bag.begin(), bag.end(), Rng());
 				// a fresh cycle should not open with what she already has on
-				if (pool.bag.size() > 1 && !avoid.empty() && pool.bag.front() == avoid)
-					std::swap(pool.bag.front(), pool.bag.back());
+				if (bag.size() > 1 && !avoid.empty() && bag.front() == avoid)
+					std::swap(bag.front(), bag.back());
 			}
-			const std::string pick = pool.bag.front();
-			pool.bag.erase(pool.bag.begin());
+			const std::string pick = bag.front();
+			bag.erase(bag.begin());
+			return pick;
+		}
+
+		std::string RollFrom(Pool& pool, const std::string& avoid)
+		{
+			return RollWith(pool.outfits, pool.mode, pool.bag, avoid);
+		}
+
+		/* Roll for one assignment, honouring her draw override. "" = the
+		 * wardrobe's way (its mode; bag mode shares the pool's bag across all
+		 * wearers, so a group never repeats each other within a cycle). "bag" =
+		 * her PRIVATE bag — she personally wears everything once before any
+		 * repeat, regardless of what the others draw. "random" = her own
+		 * independent rolls. Location-override wardrobes deliberately stay on
+		 * RollFrom (the wardrobe's own way): the override names a different
+		 * pool, and her draw preference is about her main wardrobe. */
+		std::string RollForAssign(Pool& pool, Assignment& a)
+		{
+			const bool own = (a.draw == "bag" || a.draw == "random");
+			if (!own)
+				return RollFrom(pool, a.lastOutfit);
+			const std::string pick =
+				RollWith(pool.outfits, a.draw, a.bag, a.lastOutfit);
+			if (!pick.empty())
+				logger::info("Wardrobe: {} draws her own {} from \"{}\"",
+					a.name.empty() ? "someone" : a.name, a.draw, pool.name);
 			return pick;
 		}
 
@@ -596,7 +635,7 @@ namespace Wardrobe
 		std::filesystem::create_directories(file.parent_path(), ec);
 		std::ofstream out(file, std::ios::binary | std::ios::trunc);
 		if (!out.is_open()) {
-			logger::warn("Wardrobe: could not write {}", file.string());
+			logger::warn("Wardrobe: could not write {}", PathU8(file));
 			return false;
 		}
 		out << nlohmann::json{ { "version", 1 }, { "items", items } }.dump(2);
@@ -826,6 +865,7 @@ namespace Wardrobe
 				a.outfit.clear();
 			if (a.lastOutfit == name)
 				a.lastOutfit.clear();
+			std::erase(a.bag, name);
 			std::erase_if(a.locationOverrides,
 				[&](const LocOverride& o) { return o.outfit == name; });
 		}
@@ -909,6 +949,9 @@ namespace Wardrobe
 				a.outfit = to;
 			if (a.lastOutfit == from)
 				a.lastOutfit = to;
+			for (auto& n : a.bag)   // her private bag holds names too
+				if (n == from)
+					n = to;
 			for (auto& o : a.locationOverrides)
 				if (o.outfit == from)
 					o.outfit = to;
@@ -1280,12 +1323,13 @@ namespace Wardrobe
 		// must never be the authority on when someone last changed clothes.
 		struct Roll
 		{
-			double      day;
-			std::string outfit;
+			double                   day;
+			std::string              outfit;
+			std::vector<std::string> bag;   // her private bag — state, like the day
 		};
 		std::vector<std::pair<std::string, Roll>> keep;
 		for (const auto& a : cfg.assignments)
-			keep.emplace_back(ActorKey(a.formId, a.plugin), Roll{ a.lastRollDay, a.lastOutfit });
+			keep.emplace_back(ActorKey(a.formId, a.plugin), Roll{ a.lastRollDay, a.lastOutfit, a.bag });
 
 		Config next;
 		// Seed the C++-owned crop map BEFORE the parse: FromJson preserves what
@@ -1309,8 +1353,13 @@ namespace Wardrobe
 				if (k == key) {
 					a.lastRollDay = r.day;
 					a.lastOutfit  = r.outfit;
+					a.bag         = r.bag;
 					break;
 				}
+			// Leaving "her own bag" restarts her cycle, exactly as the builder's
+			// mode switch clears the shared bag — and keeps the config tidy.
+			if (a.draw != "bag")
+				a.bag.clear();
 		}
 		cfg = std::move(next);
 		if (activated)
@@ -1408,7 +1457,7 @@ namespace Wardrobe
 		// the `outfit-crop-prune` build marker, and a marker only protects a
 		// feature while the string it names still exists in the binary.
 		if (dropped)
-			logger::info("outfit crops pruned: trimmed against {}", dir.filename().string());
+			logger::info("outfit crops pruned: trimmed against {}", PathU8(dir.filename()));
 		return dropped;
 	}
 
@@ -1428,7 +1477,7 @@ namespace Wardrobe
 			std::error_code fec;
 			if (!it->is_regular_file(fec))
 				continue;
-			live.insert(fold(it->path().filename().string()));
+			live.insert(fold(PathU8(it->path().filename())));
 		}
 		if (live.empty())
 			return false;   // see the header: an empty read is never a mandate to delete
@@ -1443,7 +1492,7 @@ namespace Wardrobe
 		}
 		if (dropped)
 			logger::info("photo crops pruned: {} whose picture is gone (dir {})", dropped,
-				dir.filename().string());
+				PathU8(dir.filename()));
 		return dropped > 0;
 	}
 
@@ -2195,7 +2244,7 @@ namespace Wardrobe
 			Pool* p = FindPool(cfg, a->wardrobeId);
 			if (!p)
 				return nlohmann::json{ { "ok", false }, { "msg", "That wardrobe is gone" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-			pick = RollFrom(*p, a->lastOutfit);
+			pick = RollForAssign(*p, *a);
 			if (pick.empty())
 				return nlohmann::json{ { "ok", false },
 					{ "msg", "\"" + p->name + "\" has no outfit SOES still knows" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
@@ -2316,7 +2365,15 @@ namespace Wardrobe
 
 		bool changed = false;
 		for (auto& a : cfg.assignments) {
-			if (a.mode != "wardrobe" || a.cadenceHours <= 0)
+			if (a.mode != "wardrobe")
+				continue;
+			// Effective cadence: hers, unless she inherits the wardrobe's
+			// default. The pool lookup moved ahead of the guard for that; a
+			// gone wardrobe means no cadence either way.
+			Pool* pool = FindPool(cfg, a.wardrobeId);
+			const std::int32_t cad =
+				(a.cadenceInherit && pool) ? pool->cadenceHours : a.cadenceHours;
+			if (!pool || cad <= 0)
 				continue;
 
 			// First sight: stamp the clock so enabling a cadence never fires a
@@ -2326,7 +2383,7 @@ namespace Wardrobe
 				changed       = true;
 				continue;
 			}
-			const double due = a.lastRollDay + (static_cast<double>(a.cadenceHours) / 24.0);
+			const double due = a.lastRollDay + (static_cast<double>(cad) / 24.0);
 			if (now < due)
 				continue;
 
@@ -2339,10 +2396,7 @@ namespace Wardrobe
 				changed       = true;
 				continue;
 			}
-			Pool* p = FindPool(cfg, a.wardrobeId);
-			if (!p)
-				continue;
-			const std::string pick = RollFrom(*p, a.lastOutfit);
+			const std::string pick = RollForAssign(*pool, a);
 			if (pick.empty())
 				continue;
 
@@ -2362,11 +2416,11 @@ namespace Wardrobe
 	//   { "version":1, "ops":[
 	//       {"op":"image","outfit":"<name>","value":"wardrobe/foo.png"},
 	//       {"op":"set","target":"outfit","name":"<n>","key":"note"|"fav","value":"..."},
-	//       {"op":"set","target":"assign","formId":"..","plugin":"..","key":"cadenceHours"|"mode"|"wardrobeId"|"outfit","value":".."},
+	//       {"op":"set","target":"assign","formId":"..","plugin":"..","key":"cadenceHours"|"cadenceInherit"|"draw"|"mode"|"wardrobeId"|"outfit","value":".."},
 	//       {"op":"pool","id":"<wardrobeId>","add":"<outfit>"|"remove":"<outfit>"},
 	//       {"op":"pool-new","id":"<id>","name":"<n>","hue"?:38,"mode"?:"bag","outfits"?:["..."]},
 	//       {"op":"pool-del","id":"<id>"},
-	//       {"op":"pool-set","id":"<id>","key":"name"|"note"|"mode"|"hue","value":".."},
+	//       {"op":"pool-set","id":"<id>","key":"name"|"note"|"mode"|"hue"|"cadenceHours","value":".."},
 	//       {"op":"pool-order","id":"<id>","outfits":["..."]},
 	//       {"op":"pools-order","ids":["..."]},
 	//       {"op":"loc-set","formId":"..","plugin":"..","loc":5600,"wardrobeId":""} ] }
@@ -2525,6 +2579,8 @@ namespace Wardrobe
 								p->bag.clear();   // mode change restarts the cycle, as in-game
 							} else if (key == "hue")
 								p->hue = std::clamp(std::atoi(val.c_str()), 0, 359);
+							else if (key == "cadenceHours")
+								p->cadenceHours = std::clamp(std::atoi(val.c_str()), 0, 24 * 30);
 							else
 								continue;
 							changed = true;
@@ -2699,6 +2755,13 @@ namespace Wardrobe
 										a->outfit = val;
 									else if (key == "cadenceHours")
 										a->cadenceHours = std::clamp(std::atoi(val.c_str()), 0, 24 * 30);
+									else if (key == "cadenceInherit")
+										a->cadenceInherit = (val == "1" || val == "true");
+									else if (key == "draw") {
+										a->draw = (val == "bag" || val == "random") ? val : "";
+										if (a->draw != "bag")
+											a->bag.clear();   // leaving her own bag restarts her cycle
+									}
 									changed = true;
 								}
 							}

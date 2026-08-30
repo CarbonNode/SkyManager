@@ -9,11 +9,13 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -22,10 +24,12 @@
 #include "wardrobe.h"
 #include "item_icons.h"
 #include "wheel.h"
+#include "quiver.h"
 #include "nff_outfits.h"
 #include "follower_deck.h"
 #include "live_api.h"
 #include "fertility_bridge.h"
+#include "faith.h"   // Wintersun's tracker quest — cached bind, dropped on load
 #include "mhiyh_control.h"
 #include "chim_control.h"
 #include "nff_bridge.h"
@@ -44,21 +48,39 @@
 #include "npc_actions.h"
 #include "save_actions.h"
 #include "fix_actions.h"
+#include "trade_actions.h"   // Trade: barter menu / pack on the crosshair NPC (Rober, 2026-08-17)
 #include "console_actions.h"
 #include "place_actions.h"
 #include "container_actions.h"
+#include "container_sort.h"  // Container Auto-Sort backend (cs* bridge): rule-tag marked chests, Unload/Sort
+#include "auto_loot.h"  // Auto-Loot backend (al* bridge): configurable loose-item pickup to player / marked container
 #include "door_actions.h"
 #include "portal_host.h"
 #include "portrait_capture.h"
 #include "quest_tools.h"
+#include "high_king.h"  // Become High King of Skyrim TNG — kingdom dashboard + royal verbs (kg* bridge)
 #include "relationship.h"
 #include "ask.h"
 #include "room_guard.h"
 #include "loot_highlight.h"
 #include "keys_scan.h"   // Keys tab: the load-order hotkey census (kc* bridge)
 #include "item_explorer.h"  // Items tab: the inline item explorer (ix* bridge)
+#include "item_edit.h"      // Finder Modify sheet: base-record editor (ie* bridge)
+#include "spell_edit.h"     // Spellcraft Modify sub-tab: per-effect spell editor (sx* bridge)
+#include "player_tune.h"    // Character sheet Tune modal: player AV editor (psTune*)
+#include "weather_actions.h" // Time tab Sky card: weather picker (tmWeather*)
+#include "npc_tune.h"        // F7 quick-card Tune modal: NPC editor (nt* bridge)
 #include "npc_finder.h"     // NPCs tab: the fast NPC finder (nx* bridge)
+#include "party_sheet.h"    // Party sheet: live read-only stats for the party (pty* bridge)
+#include "npc_inspect.h"    // Inspect card: the live actor behind the crosshair (ni* bridge)
+#include "spid_inspect.h"   // Distributions tab: SPID/SkyPatcher candidate pool (dx* bridge)
+#include "survival.h"   // Survival popout: camp gear + water/food/drink you carry (sv* bridge)
+#include "settlement.h"     // Settlement tab: the world-object placer (st* bridge)
+#include "camp_actions.h"   // camp-*/hb-* self-cast seeds (Campfire + Hunterborn)
 #include "mounts.h"         // Mounts tab: the stable (mt* bridge, mounts.json)
+#include "transmog.h"       // Transmog tab: restyled-pool instance transmog (tg* bridge)
+#include "wigs.h"           // Wigs tab: wig-mod registry + hair-slot browser (wv* bridge)
+#include "combat_arts.h"    // Combat Arts tab: Ashes of War ash collection (ca* bridge)
 #include "open_diag.h"      // open/close timing + hang watchdogs (Nexus freeze triage)
 #include "no_auto_gear.h"
 #include "spid_gear.h"
@@ -69,12 +91,16 @@
 #include "effects_actions.h"   // ✨ Effects modal on the quick card (fx* bridge)
 #include "followers_hud.h"
 #include "hotbar.h"
+#include "widgets.h"   // HUD widgets (wg* on the hotbar view) + potion browser (pb* on the deck view)
 #include "anim_actions.h"
 #include "ostim_deck.h"
+#include "zaz_deck.h"
 #include "follower_tune.h"
 #include "scene_stage.h"
 #include "sharmat.h"
 #include "spell_actions.h"
+#include "spellcraft_actions.h"
+#include "journal.h"   // Journal tab: the book you write yourself (jr* bridge, journal.json)
 
 using json = nlohmann::json;
 
@@ -90,6 +116,11 @@ namespace
 	// RUNTIME-ONLY on purpose — never persisted, so a crash/uninstall of the
 	// caller can never leave the deck permanently keyless.
 	std::atomic<bool>           g_apiHotkeyDisabled{ false };
+	// Same contract for the DEEP-OPEN binds (magic/followers/domains/containers):
+	// SkyManager_SetDeepOpenHotkeysEnabled(false) stands them down while another
+	// menu owns input (asked for by Risa's All In One Menu, whose own F18 press
+	// was opening the Spell Deck). RUNTIME-ONLY, never persisted, same as above.
+	std::atomic<bool>           g_apiDeepOpenDisabled{ false };
 	// open-diag: when view creation was requested, so the captureless DOM-ready
 	// callback can log how long the load actually took on this machine.
 	std::atomic<std::int64_t>   g_diagViewT0{ 0 };
@@ -175,6 +206,15 @@ namespace
 	// The next real key press is captured as the HUD toggle key while this is set
 	// (armed from the deck's "Set show/hide key" control).
 	std::atomic<bool>           g_hudKeyArming{ false };
+	std::atomic<bool>           g_hudNavArming{ false };
+	std::atomic<bool>           g_hudNavActive{ false };
+	// Browse mode v2 (2026-08-18): the HUD view holds REAL keyboard focus while
+	// browsing, so WASD reaches the view and the player stops walking. True only
+	// while that Focus is actually held — a refused Focus (another view owns it,
+	// the view is not ready) leaves this false and the input sink's own
+	// forward-the-arrows fallback keeps browse mode usable, exactly as it was
+	// before. The two must never both run: a focused view already gets the key.
+	std::atomic<bool>           g_hudNavFocused{ false };
 
 	// CRT Guard alert — the FIFTH PrismaUI view (MagicDeck/crt-alert.html). A
 	// branded modal shown when the separate CRT Guard plugin catches a swallowed
@@ -216,6 +256,13 @@ namespace
 	// When the player was last seen in combat, for showMode's linger.
 	std::atomic<long long>      g_hbLastCombatMs{ 0 };
 
+	// HUD widgets (potions / gold / lockpicks) RIDE the hotbar view — extra
+	// absolutely-positioned roots in the same document, no new PrismaUI view
+	// (the VIEW_HTML_ENTRYPOINTS packager trap stays closed). Their edit mode
+	// is mutually exclusive with the bar's: two panels fighting over one
+	// Focus would leave one Shown, Focused and deaf.
+	std::atomic<bool>           g_wgEditing{ false };
+
 	std::atomic<bool>           g_magicViewRequested{ false };
 	std::atomic<bool>           g_magicOpen{ false };
 	std::atomic<bool>           g_magicFocusPaused{ false };
@@ -224,12 +271,34 @@ namespace
 	// lives INSIDE the deck view — its fd* bridge registers on g_view and F14
 	// deep-opens the palette onto that tab via g_pendingTab.
 	std::string g_pendingTab;  // main thread only: consumed by OpenPalette()
+	// Which page the Spell Deck lands on when it next opens (2026-08-15: that
+	// window now hosts TWO pages — the spell list and Combat Arts). Empty = the
+	// spell list, which is what F18 means; a deep-open sets it to "arts".
+	// Consumed by OpenMagicPalette, exactly as g_pendingTab is by OpenPalette,
+	// so it can never stick across opens. Main thread only.
+	std::string g_magicPendingPage;
 
 	// v0.11.0 per-hotkey icons: each view owns its OWN icons/ tree (Ultralight
 	// resolves an <img src> against the view that loaded the page), so the heavy
 	// sh_index.json is pushed once per session PER VIEW — this is the deck's flag,
 	// g_iconIndexPushed is the Spell Deck's.
 	std::atomic<bool> g_deckIconIndexPushed{ false };
+	// Round 3 (2026-08-17): the HUD view's copy — its slot widgets resolve
+	// spell/shout art through the same sh_index maps.
+	// ⚠ LATCH-ON-SUCCESS ONLY (2026-08-18): MirrorSpellIconsAsync() is a detached
+	// thread, so on a cold disk the HUD's own icons/sh_index.json may not exist
+	// yet when the view reports DOM-ready. Setting this flag on a "null" read
+	// would strand the view on SVG glyphs for the whole session. See
+	// HudPushIconIndex().
+	std::atomic<bool> g_hudIconIndexPushed{ false };
+	// How many times HudPushIconIndex() has read (or tried to read) the index.
+	// Bounds both the retry loop and the log noise it costs.
+	std::atomic<int>  g_hudIconIndexTries{ 0 };
+	// Same pair for the hotbar view (view/MagicDeck/hotbar.html): its icon pool
+	// used to ride hbReady only, which is dropped when the view boots before the
+	// C++ listener is registered.
+	std::atomic<bool> g_hbIconIndexPushed{ false };
+	std::atomic<int>  g_hbIconIndexTries{ 0 };
 	// A save is loaded (or a new game started): Follower Organizer's roster exists,
 	// so the Deck Portal's NPC-field replay may safely run. Set in SKSEMessageHandler.
 	std::atomic<bool> g_gameReady{ false };
@@ -357,9 +426,22 @@ namespace
 		// Smooth pause: when pausing, DON'T use a menu pause (which makes Skyrim's
 		// cursor floaty/framerate-coupled). Instead focus the view UN-paused and
 		// freeze the world with sgtm 0 — the render loop keeps running at full FPS
-		// so the cursor is buttery, while time/AI/physics are frozen. Default on;
-		// uncheck for the classic menu pause. Only matters when pauseOnOpen is set.
-		bool          smoothPause = true;
+		// so the cursor is buttery, while time/AI/physics are frozen.
+		//
+		// ⛔ DEFAULT OFF since 2026-08-17, on TWO independent confirmations that
+		// it wedges the game: Ank164 on Nexus ("opens once, then freezes solid";
+		// their own differential was turning this off), and Rober the same day on
+		// this rig — his log shows the once-a-second perf census stopping dead
+		// 0.2 s after a palette close, never to resume, with the world left at
+		// sgtm 0. That last part is why the symptom reads as "animations have
+		// stopped, NPCs are floating, nothing responds": time is frozen and the
+		// restore lives on the thread that just died. The smooth path is the only
+		// one that focuses PrismaUI with the game still RUNNING, and we can
+		// neither reproduce it here on demand nor fix PrismaUI from this side.
+		// The wedge sentinel below still exists as a second net; this makes the
+		// dangerous mode opt-IN rather than opt-out. Settings → Smooth pause
+		// turns it back on for anyone whose install is fine with it.
+		bool          smoothPause = false;
 		bool          closeAfterFire = true;
 		bool          stickyNpMods = false;  // numpad Shift/Ctrl/Alt stay on across presses
 		// Open the palette while looking at an NPC and land on the Followers tab
@@ -696,6 +778,63 @@ namespace
 		float         y = 0.0f;
 		float         z = 0.0f;
 		float         angleZ = 0.0f;
+
+		// Container Auto-Sort (2026-08-15): a per-mark rule + the respawn-safety
+		// verdict. Append-only fields; ContMarkFromJson reads them with carry-over
+		// (an omitted `rule`/`safe` keeps the prior value, exactly like `image`) so
+		// a partial ctSave / portal replay never wipes them. The rule mirror is
+		// ContainerSort::SortRule; only `safeAcknowledged` of the safety block is
+		// durable (respawns/reason are recomputed live by EvaluateSafety).
+		ContainerSort::SortRule sortRule;
+		bool                    safeAcknowledged = false;
+		std::string             safeReason;    // last computed, display only
+		bool                    safeRespawns = false;  // last computed, display only
+
+		// Crafting loan (2026-08-17): this container lends its materials to you at a
+		// crafting station and takes them back when you step away. Opt-in per mark and
+		// independent of `sortRule.enabled` — a lending materials store need not also
+		// be a sweep destination.
+		bool                    lend = false;
+		// Physical redirect (2026-08-17): activating THIS container in the world
+		// opens the mark named here instead, and the crosshair prompt says so —
+		// a barrel by the door becomes the mouth of the chest upstairs. "" = none.
+		std::string             redirectTo;
+	};
+
+	// Global container-sort settings, stored INSIDE the containers slice (not a
+	// sibling): they attach conceptually to the marks and inherit the same
+	// round-trip. Auto-LOOT settings are a separate slice the next agent adds.
+	struct ContainerSortOpts
+	{
+		std::string inboxMarkId;  // "" = no drop-box designated
+		struct Pin
+		{
+			std::string   plugin, markId;
+			std::uint32_t localId = 0;
+		};
+		std::vector<Pin> pins;              // per-item exact routing, checked FIRST
+		bool             excludeEquipped = true;
+		bool             excludeFavorited = true;
+		bool             excludeQuest = true;
+		bool             keepGold = true;   // always effectively true; exposed for honesty
+		// Close the drop-box's own transfer menu and it distributes itself (the
+		// "conduit" idiom). Default OFF — an automatic bulk move is not something to
+		// spring on someone who only wanted to look inside.
+		bool             sortOnClose = false;
+		// Crafting loan: at a bench, borrow materials from every mark flagged `lend`
+		// and put them back on the way out. Master defaults OFF.
+		ContainerSort::LoanOpts loan;
+		// Per-item classification overrides: "this form IS these types", whatever
+		// the classifier would have said. Unlike a pin (which routes one item to one
+		// container), an override changes what the item IS everywhere — rules, the
+		// crafting loan and Gather all see the new answer. `name` is a display cache.
+		struct Override
+		{
+			std::string              plugin, name;
+			std::uint32_t            localId = 0;
+			std::vector<std::string> types;
+		};
+		std::vector<Override> overrides;
 	};
 
 	struct ContainerConfig
@@ -707,6 +846,93 @@ namespace
 		double                   thumbSize = 1.0;
 		std::vector<std::string> categories;
 		std::vector<ContainerMark> marks;
+		ContainerSortOpts        sort;  // global sort settings (inbox + pins + exclusions)
+	};
+
+	// Auto-Loot (2026-08-15): GLOBAL settings (not per-mark), so its own sibling
+	// slice `autoLoot` — cloned from the ContainerConfig plumbing (Default/To/From
+	// + one WriteConfigFile param + one PersistAll snapshot + one load/reset
+	// branch). Master defaults OFF (Loot Vision precedent). The engine ops live in
+	// auto_loot.cpp, which reads this only through the SetConfigProvider snapshot.
+	struct AutoLootCats
+	{
+		bool coins = true;        // Gold001 + lockpicks (the "always want" tier)
+		bool gems = true;
+		bool potions = true;      // potions + poisons
+		bool food = false;        // default OFF (clutter)
+		bool ingredients = true;
+		bool soulgems = true;
+		bool scrolls = true;
+		bool ammo = true;
+		bool books = false;       // default OFF (spam)
+		bool valuables = true;    // MISC over valueFloor
+		bool gear = false;        // weapons/armor default OFF (weight)
+		// Split out on 2026-08-16 — defaults chosen to REPRODUCE pre-split
+		// behaviour: keys were hard-skipped in CatKeyOf, lockpicks rode "coins".
+		bool keys = false;        // door/quest keys, default OFF
+		bool lockpicks = true;    // was part of the coins tier
+	};
+	struct AutoLootConfig
+	{
+		bool          enabled = false;    // MASTER toggle, default OFF
+		float         radius = 400.0f;    // pickup range, game units (dial 150..1200)
+		std::string   dest = "player";    // "player" | "<markId>"
+		bool          questGuard = true;  // don't pick up quest items
+		bool          toastRare = true;   // HUD toast on rare finds
+		std::int32_t  valueFloor = 250;   // "high-value" toast + valuables/gear gate
+		AutoLootCats  cats;
+		bool          corpses = true;     // include deferred dead-actor drops
+		bool          lootOwned = false;  // NEVER steal (UI never exposes true)
+		bool          clearGlow = true;   // a corpse we empty stops glowing (LootHighlight::NoteLooted)
+		// Per-item rules (2026-08-16). Identity is (plugin, local FormID) — the
+		// Item Explorer's identity, ESL-safe and stable across load orders. `name`
+		// is a DISPLAY cache only: the engine never matches on it, so a renamed or
+		// missing item still resolves, and a stale cached name is cosmetic.
+		struct AutoLootItem
+		{
+			std::string   plugin;
+			std::uint32_t localId = 0;
+			std::string   name;
+		};
+		std::vector<AutoLootItem> deny, allow;
+		std::vector<std::string>  denyWords, allowWords;  // stored lowercase
+		bool                      allowOnly = false;
+		std::map<std::string, std::int32_t> catFloors;    // cat key -> gold floor
+		bool                      weightGuard = true;
+		std::int32_t              weightPct = 90;
+		// Place rules (2026-08-16). Same AutoLootItem shape as the item lists, but
+		// the identity is a CELL's (plugin, local FormID) — the durable cell key
+		// Domains and Room Guard already use. homeGuard is the smart default: skip
+		// any cell the player OWNS, which is the engine's own "your house".
+		bool                      homeGuard = true;
+		std::vector<AutoLootItem> areaDeny, areaAllow;
+		bool                      areaAllowOnly = false;
+		// LOTD museum rule (2026-08-17): "off" | "always" | "only". Stored as the
+		// STRING the view uses so an unknown future mode round-trips instead of
+		// collapsing to a number nobody can read in hotkeys.json.
+		std::string               lotd = "off";
+		// When it may run, and how far/often (2026-08-17). Every default here
+		// reproduces the previous behaviour exactly.
+		bool                      pauseInCombat = false;
+		bool                      pauseWeaponDrawn = false;
+		bool                      pauseConcealed = false;
+		std::string               townGuard = "off";  // off|settlements|towns|cities
+		std::int32_t              radiusIndoors = 0;  // 0 = same as radius
+		float                     verticalFactor = 1.0f;
+		bool                      doorClamp = false;
+		std::int32_t              intervalMs = 500;
+		std::int32_t              intervalIndoorsMs = 0;
+		// Harvesting: plants, fungi and harvestable trees (2026-08-17).
+		bool                      harvestFlora = false;
+		// Worth the weight (2026-08-17). 0 = off for both numbers.
+		float                     vwRatio = 0.0f;
+		std::int32_t              weightlessMinValue = 0;
+		bool                      unknownIngredients = false;
+		// Ore veins + critters (2026-08-17), identified by activation verb.
+		bool                      harvestCritters = false;
+		bool                      mineOre = false;
+		bool                      miningNeedsPick = true;
+		std::int32_t              maxMineStrikes = 2;
 	};
 
 	// Per-domain and whole-config ceilings on tags. A stuck key must not be able
@@ -725,6 +951,7 @@ namespace
 	// step, so it needs no lock.
 	std::string g_photoDomainId;
 	ContainerConfig g_contConfig;  // guarded by g_configMutex, persisted under "containers"
+	AutoLootConfig g_autoLootConfig;  // guarded by g_configMutex, persisted under "autoLoot"
 	// The container a photo is being taken FOR (Containers tab), same single-slot
 	// contract as g_photoDomainId — photo mode is single-flight.
 	std::string g_photoContainerId;
@@ -746,6 +973,112 @@ namespace
 		return std::filesystem::path("Data") / "SKSE" / "Plugins" / "HotkeyDeck" / "hotkeys.json";
 	}
 
+	// SkyManager.ini — optional, hand-editable ESCAPE HATCH. The deck is fully
+	// configurable from its in-game Settings tab, but that tab needs a working
+	// cursor to reach. A user whose cursor is dead inside the view (a smooth-pause
+	// cursor-capture conflict, gamepad mode, etc.) or whose open key got rebound to
+	// something unreachable is then locked out with no way in. This file lets them
+	// override the input/pause-critical settings straight from disk.
+	//
+	// Semantics: ONLY keys that are present (uncommented) here override hotkeys.json,
+	// and they do so on EVERY load. A key left commented out / absent is not touched,
+	// so the in-game menu keeps full control of it. The file ships entirely commented
+	// out — a no-op until the user opts in — and the DLL only ever READS it, never
+	// writes it (so it can never fight the in-game config the way hotkeys.json would).
+	//
+	//   Data/SKSE/Plugins/SkyManager.ini
+	//     [Settings]
+	//     SmoothPause=0        ; 0 = classic menu pause (real cursor), 1 = smooth
+	//     PauseOnOpen=1
+	//     CloseAfterFire=1
+	//     UiScale=1.0          ; 0.6 - 1.6
+	//     OpenKeyCode=0x41     ; DIK scancode of the open key (0x41 = F7); dec or 0x-hex
+	//     OpenKeyLabel=F7      ; what the deck shows for that key
+	std::filesystem::path IniPath()
+	{
+		return std::filesystem::path("Data") / "SKSE" / "Plugins" / "SkyManager.ini";
+	}
+
+	// Overlays SkyManager.ini's [Settings] onto an already-parsed Settings block.
+	// Returns the number of keys actually overridden (0 when the file is absent) so
+	// the caller can log it unconditionally as a build marker.
+	int ApplyIniOverrides(Settings& s)
+	{
+		std::ifstream in(IniPath());
+		if (!in.is_open())
+			return 0;
+
+		auto trim = [](std::string v) -> std::string {
+			const char* ws = " \t\r\n";
+			const auto b = v.find_first_not_of(ws);
+			if (b == std::string::npos)
+				return std::string();
+			return v.substr(b, v.find_last_not_of(ws) - b + 1);
+		};
+		auto lower = [](std::string v) -> std::string {
+			for (auto& ch : v)
+				if (ch >= 'A' && ch <= 'Z')
+					ch = static_cast<char>(ch + 32);
+			return v;
+		};
+		auto toBool = [&lower](const std::string& v, bool& out) -> bool {
+			const std::string l = lower(v);
+			if (l == "1" || l == "true" || l == "on" || l == "yes") { out = true;  return true; }
+			if (l == "0" || l == "false" || l == "off" || l == "no") { out = false; return true; }
+			return false;
+		};
+
+		int         applied = 0;
+		bool        inSection = true;  // keys before any [section] header count as [Settings]
+		std::string line;
+		while (std::getline(in, line)) {
+			const std::string t = trim(line);
+			if (t.empty() || t[0] == ';' || t[0] == '#')
+				continue;
+			if (t.front() == '[') {
+				inSection = (lower(t) == "[settings]");
+				continue;
+			}
+			if (!inSection)
+				continue;
+			const auto eq = t.find('=');
+			if (eq == std::string::npos)
+				continue;
+			const std::string key = lower(trim(t.substr(0, eq)));
+			const std::string val = trim(t.substr(eq + 1));
+			if (val.empty())
+				continue;
+
+			if (key == "smoothpause") {
+				bool b;
+				if (toBool(val, b)) { s.smoothPause = b; ++applied; }
+			} else if (key == "pauseonopen") {
+				bool b;
+				if (toBool(val, b)) { s.pauseOnOpen = b; ++applied; }
+			} else if (key == "closeafterfire") {
+				bool b;
+				if (toBool(val, b)) { s.closeAfterFire = b; ++applied; }
+			} else if (key == "uiscale") {
+				try {
+					const double d = std::stod(val);
+					if (d >= 0.6 && d <= 1.6) { s.uiScale = d; ++applied; }
+				} catch (...) {}
+			} else if (key == "openkeycode") {
+				try {
+					const unsigned long code = std::stoul(val, nullptr, 0);  // 0 = auto dec/0x-hex
+					if (code > 0 && code <= 0xFF) {
+						s.openDevice = "keyboard";
+						s.openCode = static_cast<std::uint32_t>(code);
+						++applied;
+					}
+				} catch (...) {}
+			} else if (key == "openkeylabel") {
+				s.openLabel = val.substr(0, 16);  // cosmetic; paired with OpenKeyCode
+			}
+		}
+		return applied;
+	}
+
 	Config DefaultConfig()
 	{
 		// What a FRESH INSTALL gets, and nobody else: written only when there
@@ -756,6 +1089,11 @@ namespace
 		c.categories = { "Combat", "Followers", "NPC", "Fixes", "Misc", "Menus" };
 		c.entries = {
 			// Combat
+			// Every row below ships its gold-glyph icon (2026-08-15 seed audit):
+			// the SeedMissingActions copies always carried icons, so an UPGRADED
+			// deck showed art where a FRESH install showed bare glyph plates for
+			// the very same listings. Tenth aggregate field = HotkeyEntry::icon
+			// (keystroke rows pass "" for the unused 9th field, action).
 			// KEYSTROKE entries ship UNBOUND (code 0). They press a key at
 			// ANOTHER mod, and only the player knows what key that mod is
 			// configured with — shipping the author's own binds would fire
@@ -764,31 +1102,36 @@ namespace
 			// and F2 edit mode press-to-binds it in two seconds. (The Menus
 			// entries below need no key at all: they READ the target mod's own
 			// config and synthesize whatever it is listening for.)
-			{ "stance-1", "Stance 1", "Fires your combat/stance mod's first stance key. Unbound - press F2 and set the key you use.", "keyboard", 0, "", {}, "Combat" },
-			{ "stance-2", "Stance 2", "Fires your combat/stance mod's second stance key. Unbound - press F2 and set the key you use.", "keyboard", 0, "", {}, "Combat" },
-			{ "stance-3", "Stance 3", "Fires your combat/stance mod's third stance key. Unbound - press F2 and set the key you use.", "keyboard", 0, "", {}, "Combat" },
-			{ "weapon-wheel", "Weapon Wheel", "Opens your weapon-wheel mod. Unbound - press F2 and set the key that mod uses.", "keyboard", 0, "", {}, "Combat" },
-			{ "block", "Block", "Fires your combat mod's block/parry key. Unbound - press F2 and set the key you use.", "keyboard", 0, "", {}, "Combat" },
+			{ "stance-1", "Stance 1", "Fires your combat/stance mod's first stance key. Unbound - press F2 and set the key you use.", "keyboard", 0, "", {}, "Combat", "", "icons/custom/hk-stance-1.png" },
+			{ "stance-2", "Stance 2", "Fires your combat/stance mod's second stance key. Unbound - press F2 and set the key you use.", "keyboard", 0, "", {}, "Combat", "", "icons/custom/hk-stance-2.png" },
+			{ "stance-3", "Stance 3", "Fires your combat/stance mod's third stance key. Unbound - press F2 and set the key you use.", "keyboard", 0, "", {}, "Combat", "", "icons/custom/hk-stance-3.png" },
+			{ "weapon-wheel", "Weapon Wheel", "Opens your weapon-wheel mod. Unbound - press F2 and set the key that mod uses.", "keyboard", 0, "", {}, "Combat", "", "icons/custom/hk-weapon-wheel.png" },
+			{ "block", "Block", "Fires your combat mod's block/parry key. Unbound - press F2 and set the key you use.", "keyboard", 0, "", {}, "Combat", "", "icons/custom/hk-block.png" },
 			// Followers
-			{ "quick-follower", "Quick Follower Command", "Opens your quick follower-command mod's menu. Unbound - press F2 and set its key.", "keyboard", 0, "", {}, "Followers" },
-			{ "followers-control", "Follower Control (NFF)", "Opens Nether's Follower Framework's control menu. Unbound - set this to the key NFF is configured with in its MCM.", "keyboard", 0, "", {}, "Followers" },
-			{ "followers-teleport", "Followers: Teleport", "Teleports your followers to you via NFF. Unbound - set this to NFF's teleport key from its MCM.", "keyboard", 0, "", {}, "Followers" },
-			{ "follower-organizer", "Follower Organizer", "Opens Follower Organizer's own menu. Unbound - set this to its MCM key.", "keyboard", 0, "", {}, "Followers" },
+			{ "quick-follower", "Quick Follower Command", "Opens your quick follower-command mod's menu. Unbound - press F2 and set its key.", "keyboard", 0, "", {}, "Followers", "", "icons/custom/hk-follower-command.png" },
+			{ "followers-control", "Follower Control (NFF)", "Opens Nether's Follower Framework's control menu. Unbound - set this to the key NFF is configured with in its MCM.", "keyboard", 0, "", {}, "Followers", "", "icons/custom/hk-nff-control.png" },
+			{ "followers-teleport", "Followers: Teleport", "Teleports your followers to you via NFF. Unbound - set this to NFF's teleport key from its MCM.", "keyboard", 0, "", {}, "Followers", "", "icons/custom/hk-follower-teleport.png" },
+			{ "follower-organizer", "Follower Organizer", "Opens Follower Organizer's own menu. Unbound - set this to its MCM key.", "keyboard", 0, "", {}, "Followers", "", "icons/custom/hk-follower-organizer.png" },
 			// NPC (native actions)
-			{ "npc-freeze", "Freeze NPC", "Hold the targeted NPC in place - toggle (ported from CommandNPC)", "action", 0, "Freeze", {}, "NPC", "freeze" },
-			{ "npc-sit", "Sit NPC", "Send targeted NPC to nearest chair (ground if none); toggle to release", "action", 0, "Sit", {}, "NPC", "sit" },
-			{ "npc-bed", "Bed NPC", "Send targeted NPC to nearest bed (ground if none); toggle to release", "action", 0, "Bed", {}, "NPC", "bed" },
-			{ "npc-release-all", "Release All NPCs", "Free every NPC held/seated by these actions", "action", 0, "Release", {}, "NPC", "release-all" },
-			{ "npc-grab", "Grab NPC", "Pick up the targeted NPC with Object Manipulation Overhaul (Groovatron-style): follows your crosshair, left-click places, right-click puts them back; stands up sitters", "action", 0, "Grab", {}, "NPC", "grab" },
-			{ "npc-attack-target", "Sic 'em (Attack Target)", "Send every follower to attack whoever you're looking at, right now - plus any enemies already fighting near them. Skips the follower detection lag. Bind a key for combat (EFF-style assault command)", "action", 0, "Sic 'em", {}, "NPC", "attack-target" },
-			{ "npc-no-auto-gear", "No Auto-Gear", "Toggle: stop SPID/SkyPatcher distributors putting cloaks, hoods or underwear on the NPC you're looking at, and strip what's worn. Bind a key or fire from the palette (no auto gear cloak hood underwear)", "action", 0, "NoGear", {}, "NPC", "no-auto-gear" },
-			{ "npc-no-auto-gear-party", "No Auto-Gear: Party", "Protect every follower with you right now from distributor cloaks/hoods/underwear (no auto gear party)", "action", 0, "NoGear+", {}, "NPC", "no-auto-gear-party" },
+			{ "npc-freeze", "Freeze NPC", "Hold the targeted NPC in place - toggle (ported from CommandNPC)", "action", 0, "Freeze", {}, "NPC", "freeze", "icons/custom/hk-freeze.png" },
+			{ "npc-sit", "Sit NPC", "Send targeted NPC to nearest chair (ground if none); toggle to release", "action", 0, "Sit", {}, "NPC", "sit", "icons/custom/hk-sit.png" },
+			{ "npc-bed", "Bed NPC", "Send targeted NPC to nearest bed (ground if none); toggle to release", "action", 0, "Bed", {}, "NPC", "bed", "icons/custom/hk-bed.png" },
+			{ "npc-release-all", "Release All NPCs", "Free every NPC held/seated by these actions", "action", 0, "Release", {}, "NPC", "release-all", "icons/custom/hk-release-all.png" },
+			{ "npc-grab", "Grab NPC", "Pick up the targeted NPC with Object Manipulation Overhaul (Groovatron-style): follows your crosshair, left-click places, right-click puts them back; stands up sitters", "action", 0, "Grab", {}, "NPC", "grab", "icons/custom/hk-grab.png" },
+			// Trade (Rober, 2026-08-17) — QuickTrade's job, from a key. Unbound
+			// like every other seed: guessing a key on someone else's keyboard
+			// collides with whatever they already have.
+			{ "npc-trade", "Trade", "Trade with the NPC you're looking at - the vanilla barter menu, or her pack if she's a follower or your spouse (merchant barter buy sell shop quicktrade)", "action", 0, "Trade", {}, "NPC", "trade", "icons/custom/hk-trade.png" },
+			{ "npc-trade-inventory", "Trade: inventory", "Open the pack of the NPC you're looking at instead of the barter menu - the forced-inventory half of Trade (barter merchant bag container quicktrade)", "action", 0, "Pack", {}, "NPC", "trade-inventory", "icons/custom/hk-trade-inventory.png" },
+			{ "npc-attack-target", "Sic 'em (Attack Target)", "Send every follower to attack whoever you're looking at - even a distant enemy along your aim - right now, plus any enemies already fighting near them. Skips the follower detection lag. Bind a key for combat (EFF-style assault command)", "action", 0, "Sic 'em", {}, "NPC", "attack-target", "icons/custom/hk-attack-target.png" },
+			{ "npc-no-auto-gear", "No Auto-Gear", "Toggle: stop SPID/SkyPatcher distributors putting cloaks, hoods or underwear on the NPC you're looking at, and strip what's worn. Bind a key or fire from the palette (no auto gear cloak hood underwear)", "action", 0, "NoGear", {}, "NPC", "no-auto-gear", "icons/custom/hk-no-auto-gear.png" },
+			{ "npc-no-auto-gear-party", "No Auto-Gear: Party", "Protect every follower with you right now from distributor cloaks/hoods/underwear (no auto gear party)", "action", 0, "NoGear+", {}, "NPC", "no-auto-gear-party", "icons/custom/hk-no-auto-gear.png" },
 			// Fixes / Unstuck (native console-backed actions) — for modded-game jank
-			{ "fix-recycle", "Unstick NPC", "Rebuild the crosshair NPC's 3D and AI (recycleactor) - the fix for a T-posing, invisible, frozen or wedged follower", "action", 0, "Unstick", {}, "Fixes", "fix-recycle" },
-			{ "fix-resetai", "Reset AI", "Re-evaluate the crosshair NPC's AI packages (resetai) - for someone stuck standing, not following, or ignoring their schedule", "action", 0, "Reset AI", {}, "Fixes", "fix-resetai" },
-			{ "fix-calm", "Calm NPC", "Stop the crosshair NPC's combat and drop aggression to 0 - end a fight that should not be happening", "action", 0, "Calm", {}, "Fixes", "fix-calm" },
-			{ "fix-resurrect", "Resurrect NPC", "Bring the crosshair corpse back keeping its inventory (resurrect 1) - undo a death you did not want", "action", 0, "Resurrect", {}, "Fixes", "fix-resurrect" },
-			{ "fix-noclip", "Toggle Noclip (me)", "Toggle player collision (tcl) - walk out when you are stuck in geometry, fire again to turn it back on", "action", 0, "Noclip", {}, "Fixes", "fix-noclip" },
+			{ "fix-recycle", "Unstick NPC", "Rebuild the crosshair NPC's 3D and AI (recycleactor) - the fix for a T-posing, invisible, frozen or wedged follower", "action", 0, "Unstick", {}, "Fixes", "fix-recycle", "icons/custom/hk-fix-unstick.png" },
+			{ "fix-resetai", "Reset AI", "Re-evaluate the crosshair NPC's AI packages (resetai) - for someone stuck standing, not following, or ignoring their schedule", "action", 0, "Reset AI", {}, "Fixes", "fix-resetai", "icons/custom/hk-fix-resetai.png" },
+			{ "fix-calm", "Calm NPC", "Stop the crosshair NPC's combat and drop aggression to 0 - end a fight that should not be happening", "action", 0, "Calm", {}, "Fixes", "fix-calm", "icons/custom/hk-fix-calm.png" },
+			{ "fix-resurrect", "Resurrect NPC", "Bring the crosshair corpse back keeping its inventory (resurrect 1) - undo a death you did not want", "action", 0, "Resurrect", {}, "Fixes", "fix-resurrect", "icons/custom/hk-fix-resurrect.png" },
+			{ "fix-noclip", "Toggle Noclip (me)", "Toggle player collision (tcl) - walk out when you are stuck in geometry, fire again to turn it back on", "action", 0, "Noclip", {}, "Fixes", "fix-noclip", "icons/custom/hk-fix-noclip.png" },
 			// CHIM (native action) — unbound on purpose: it is a "when I feel
 			// like it" action fired from the palette, not something you want
 			// under a finger during combat.
@@ -796,21 +1139,21 @@ namespace
 			// Followers tab's LOOKING-AT card, next to the other things you do to
 			// the person in front of you. The "portrait" ACTION verb below is kept
 			// so an entry someone already has (or binds by hand) still fires.
-			{ "tailor-open", "Tailor (Outfits & Wigs)", "Opens Tailor's outfit/wig manager. Unbound - set this to the key Tailor is configured with.", "keyboard", 0, "", {}, "Followers" },
+			{ "tailor-open", "Tailor (Outfits & Wigs)", "Opens Tailor's outfit/wig manager. Unbound - set this to the key Tailor is configured with.", "keyboard", 0, "", {}, "Followers", "", "icons/custom/hk-tailor.png" },
 			// Misc
-			{ "followers-loot", "NPC Sandbox / Skinshift", "Fires the key your NPC-sandbox or Skinshift mod listens for. Unbound - press F2 and set it.", "keyboard", 0, "", {}, "Misc" },
-			{ "hd-additem-menu", "AddItemMenu", "Open AddItemMenu's mod-list popup - browse any installed mod's items and take them (add item menu)", "action", 0, "AddItemMenu", {}, "Misc", "additem-menu" },
-			{ "hd-additem-search", "AddItemMenu: Search", "Open AddItemMenu straight into name search - type an item name and take it (add item search)", "action", 0, "Search", {}, "Misc", "additem-search" },
+			{ "followers-loot", "NPC Sandbox / Skinshift", "Fires the key your NPC-sandbox or Skinshift mod listens for. Unbound - press F2 and set it.", "keyboard", 0, "", {}, "Misc", "", "icons/custom/hk-sandbox.png" },
+			{ "hd-additem-menu", "AddItemMenu", "Open AddItemMenu's mod-list popup - browse any installed mod's items and take them (add item menu)", "action", 0, "AddItemMenu", {}, "Misc", "additem-menu", "icons/custom/hk-additem.png" },
+			{ "hd-additem-search", "AddItemMenu: Search", "Open AddItemMenu straight into name search - type an item name and take it (add item search)", "action", 0, "Search", {}, "Misc", "additem-search", "icons/custom/hk-additem-search.png" },
 			// (Two "free slot" placeholders lived here for the author's spare
 			// mouse buttons. A stranger's deck should start with no empty
 			// mystery rows — add your own with the + button instead.)
-			{ "omo-pick", "OMO: Pick Object", "Object Manipulation Overhaul picks up the item under your crosshair (decorating; NPCs use the Grab action instead). Unbound - set this to OMO's own pick key from its KeyConfiguration.txt.", "keyboard", 0, "", {}, "Misc" },
+			{ "omo-pick", "OMO: Pick Object", "Object Manipulation Overhaul picks up the item under your crosshair (decorating; NPCs use the Grab action instead). Unbound - set this to OMO's own pick key from its KeyConfiguration.txt.", "keyboard", 0, "", {}, "Misc", "", "icons/custom/hk-omo-pick.png" },
 			// Menus — open another mod's settings menu from the deck, no dedicated
 			// keyboard hotkey to remember. Each synthesizes the key that mod is
 			// configured to listen for (read live from its own config).
-			{ "open-prisma-mcm", "Prisma MCM", "Open the Prisma MCM Redux settings menu (the general PrismaUI MCM) - no hotkey needed", "action", 0, "Prisma MCM", {}, "Menus", "open-prisma-mcm" },
-			{ "open-smf", "SKSE Menu", "Open the SKSE Menu Framework menu - no hotkey needed (double-taps its toggle key for you)", "action", 0, "SKSE Menu", {}, "Menus", "open-smf" },
-			{ "open-community-shaders", "Community Shaders", "Open the Community Shaders menu (needs Community Shaders installed; default key End)", "action", 0, "Community Shaders", {}, "Menus", "open-community-shaders" },
+			{ "open-prisma-mcm", "Prisma MCM", "Open the Prisma MCM Redux settings menu (the general PrismaUI MCM) - no hotkey needed", "action", 0, "Prisma MCM", {}, "Menus", "open-prisma-mcm", "icons/custom/hk-prisma-mcm.png" },
+			{ "open-smf", "SKSE Menu", "Open the SKSE Menu Framework menu - no hotkey needed (double-taps its toggle key for you)", "action", 0, "SKSE Menu", {}, "Menus", "open-smf", "icons/custom/hk-skse-menu.png" },
+			{ "open-community-shaders", "Community Shaders", "Open the Community Shaders menu (needs Community Shaders installed; default key End)", "action", 0, "Community Shaders", {}, "Menus", "open-community-shaders", "icons/custom/hk-community-shaders.png" },
 		};
 		return c;
 	}
@@ -961,19 +1304,70 @@ namespace
 			// Tailor plugin — the seeded "tailor-open" row opens Tailor's own
 			// PrismaUI view; unbound + mod-absent it is a dead key.
 			{ "tailor", plugin("Tailor.esp") },
+			// 2026-08-15 seed audit — the last ungated integration seeds. MHiYH
+			// backs the "Her Home Is Here" action (nff_bridge resolves its
+			// keywords from MHiYH.esl); Quick Light backs the "Quick Light"
+			// toggle (quick_light.cpp casts QuickLight.esp's own alias). Both
+			// refuse honestly when fired absent, but per the 2026-08-12 policy a
+			// row whose backing mod is missing should not show at all.
+			{ "mhiyh", plugin("MHiYH.esl") },
+			{ "quicklight", plugin("QuickLight.esp") },
+			// Become High King of Skyrim TNG — backs the High King tab (whole-tab
+			// gate, like soes/zap) and the kingdom seeds below.
+			{ "highking", plugin("BecomeKingofSkyrimTNG.esp") },
 		};
 		done = true;
 		// Build marker (hd-markers.json: "deck-mod-detection"): unconditional so it
 		// is reached the first time the deck opens. KEEP the leading literal
 		// "deck: mod-detection omo=" intact (build marker) — new flags append.
-		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={} prisma={} chim={} soes={} presetdirector={} ostim={} zap={} tailor={}",
+		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={} prisma={} chim={} soes={} presetdirector={} ostim={} zap={} tailor={} mhiyh={} quicklight={} highking={}",
 			cached["omo"].get<bool>(), cached["additemmenu"].get<bool>(),
 			cached["followerorganizer"].get<bool>(), cached["nff"].get<bool>(),
 			cached["smf"].get<bool>(), cached["cs"].get<bool>(), cached["virtualkey"].get<bool>(),
 			cached["bfl"].get<bool>(), cached["prisma"].get<bool>(), cached["chim"].get<bool>(),
 			cached["soes"].get<bool>(), cached["presetdirector"].get<bool>(),
-			cached["ostim"].get<bool>(), cached["zap"].get<bool>(), cached["tailor"].get<bool>());
+			cached["ostim"].get<bool>(), cached["zap"].get<bool>(), cached["tailor"].get<bool>(),
+			cached["mhiyh"].get<bool>(), cached["quicklight"].get<bool>(),
+			cached["highking"].get<bool>());
 		return cached;
+	}
+
+	// The C++ twin of the view's HK_REQUIRES map (app.js): which seeded entry
+	// ids REQUIRE another mod, by DetectedModsJson flag. Used where a surface
+	// other than the deck list enumerates entries (the hotbar assign picker's
+	// catalog) so a listing whose backing mod is absent is not offered there
+	// either. Explicit-false law as everywhere: a missing flag reads as
+	// PRESENT, so nothing vanishes if a flag is ever renamed.
+	bool EntryBackingModAbsent(const HotkeyEntry& e)
+	{
+		const json& det = DetectedModsJson();
+		const auto  absent = [&](const char* flag) {
+			const auto it = det.find(flag);
+			return it != det.end() && it->is_boolean() && !it->get<bool>();
+		};
+		if (e.device == "vkey")
+			return absent("virtualkey");
+		struct Req { const char* id; const char* flag; };
+		static constexpr Req kReq[] = {
+			{ "npc-grab", "omo" }, { "omo-pick", "omo" },
+			{ "hd-additem-menu", "additemmenu" }, { "hd-additem-search", "additemmenu" },
+			{ "follower-organizer", "followerorganizer" },
+			{ "followers-control", "nff" }, { "followers-teleport", "nff" },
+			{ "open-smf", "smf" }, { "hd-open-smf", "smf" },
+			{ "open-community-shaders", "cs" }, { "hd-open-community-shaders", "cs" },
+			{ "open-prisma-mcm", "prisma" }, { "hd-open-prisma-mcm", "prisma" },
+			{ "tailor-open", "tailor" },
+			{ "hd-party-wait", "nff" }, { "hd-party-follow", "nff" },
+			{ "hd-party-summon", "nff" }, { "hd-party-relax", "nff" },
+			{ "hd-party-regroup", "nff" }, { "npc-nff-recruit", "nff" },
+			{ "npc-mhiyh-home", "mhiyh" }, { "hd-quick-light", "quicklight" },
+			{ "hd-highking", "highking" }, { "hd-hk-collect-taxes", "highking" },
+			{ "hd-hk-highreach-tp", "highking" },
+		};
+		for (const auto& r : kReq)
+			if (e.id == r.id)
+				return absent(r.flag);
+		return false;
 	}
 
 	bool ValidDevice(const std::string& d) { return d == "keyboard" || d == "mouse"; }
@@ -1002,7 +1396,8 @@ namespace
 			if (j.contains("settings") && j["settings"].is_object()) {
 				const auto& s = j["settings"];
 				c.settings.pauseOnOpen = s.value("pauseOnOpen", true);
-				c.settings.smoothPause = s.value("smoothPause", true);
+				// Missing key => the safe mode, matching the struct default above.
+				c.settings.smoothPause = s.value("smoothPause", false);
 				c.settings.closeAfterFire = s.value("closeAfterFire", true);
 				c.settings.stickyNpMods = s.value("stickyNpMods", false);
 				// Absent in every config written before v0.14 — default TRUE so the
@@ -1155,10 +1550,16 @@ namespace
 				}
 			}
 			// Deliberately-deleted built-ins (see the Config struct comment).
+			// ⚠ Into the LOCAL `c`, like every sibling slice — this function
+			// ends with `out = std::move(c)`, so a slice parsed into `out` is
+			// wiped right there. That exact bug shipped and resurrected every
+			// deleted seeded entry on each load (found by the 2026-08-19
+			// verification swarm; the same class of bug ate this slice once
+			// before, via OnJsSave).
 			if (j.contains("suppressedSeeds") && j["suppressedSeeds"].is_array()) {
 				for (const auto& v : j["suppressedSeeds"])
-					if (v.is_string() && out.suppressedSeeds.size() < 64)
-						out.suppressedSeeds.push_back(v.get<std::string>());
+					if (v.is_string() && c.suppressedSeeds.size() < 64)
+						c.suppressedSeeds.push_back(v.get<std::string>());
 			}
 			// Favorites Shelf — raw passthrough (see the Config struct comment).
 			// The cap is the only rule: a runaway payload must not bloat
@@ -1819,6 +2220,43 @@ namespace
 		return c;  // no marks until the player marks a container in-game
 	}
 
+	// The per-mark sort rule, as JSON — mirrors ContainerSort::SortRule. Split out
+	// so the csSaveRule handler and ContMarkToJson emit an identical shape.
+	json SortRuleToJson(const ContainerSort::SortRule& r)
+	{
+		return json{
+			{ "enabled", r.enabled },
+			{ "types", r.types },
+			{ "minValue", r.minValue },
+			{ "maxValue", r.maxValue },
+			{ "keywords", r.keywords },
+			{ "enchantedOnly", r.enchantedOnly },
+			{ "priority", r.priority } };
+	}
+
+	// Parse a JSON rule object into ContainerSort::SortRule (defensive: clamps
+	// value band non-negative; string arrays only). Used by csSaveRule and load.
+	void SortRuleFromJson(const json& jr, ContainerSort::SortRule& out)
+	{
+		if (!jr.is_object())
+			return;
+		out.enabled = jr.value("enabled", false);
+		out.minValue = (std::max)(0, jr.value("minValue", 0));
+		out.maxValue = (std::max)(0, jr.value("maxValue", 0));
+		out.enchantedOnly = jr.value("enchantedOnly", false);
+		out.priority = jr.value("priority", 0);
+		out.types.clear();
+		if (jr.contains("types") && jr["types"].is_array())
+			for (const auto& t : jr["types"])
+				if (t.is_string() && !t.get<std::string>().empty())
+					out.types.push_back(t.get<std::string>());
+		out.keywords.clear();
+		if (jr.contains("keywords") && jr["keywords"].is_array())
+			for (const auto& k : jr["keywords"])
+				if (k.is_string() && !k.get<std::string>().empty())
+					out.keywords.push_back(k.get<std::string>());
+	}
+
 	json ContMarkToJson(const ContainerMark& m)
 	{
 		return json{
@@ -1828,7 +2266,13 @@ namespace
 			{ "cellName", m.cellName }, { "cellId", m.cellId }, { "cellEdid", m.cellEdid },
 			{ "worldspaceId", m.worldspaceId }, { "worldspaceName", m.worldspaceName },
 			{ "interior", m.interior },
-			{ "x", m.x }, { "y", m.y }, { "z", m.z }, { "angleZ", m.angleZ } };
+			{ "x", m.x }, { "y", m.y }, { "z", m.z }, { "angleZ", m.angleZ },
+			// Container-sort: the rule, and the safety verdict (respawns/reason are
+			// last-computed display cache; acknowledged is the durable half).
+			{ "rule", SortRuleToJson(m.sortRule) },
+			{ "lend", m.lend }, { "redirectTo", m.redirectTo },
+			{ "safe", json{ { "respawns", m.safeRespawns }, { "reason", m.safeReason },
+				{ "acknowledged", m.safeAcknowledged } } } };
 	}
 
 	// Returns false when the mark can no longer address a container reference —
@@ -1857,6 +2301,18 @@ namespace
 		m.y = jm.value("y", 0.0f);
 		m.z = jm.value("z", 0.0f);
 		m.angleZ = jm.value("angleZ", 0.0f);
+		// Container-sort rule + safety. OMITTED "rule"/"safe" leave defaults here;
+		// the caller carries the previous value over by id (same contract "image"
+		// honours), so a partial ctSave / portal replay can't wipe them.
+		if (jm.contains("rule") && jm["rule"].is_object())
+			SortRuleFromJson(jm["rule"], m.sortRule);
+		m.lend = jm.value("lend", false);
+		m.redirectTo = jm.value("redirectTo", std::string(""));
+		if (jm.contains("safe") && jm["safe"].is_object()) {
+			m.safeAcknowledged = jm["safe"].value("acknowledged", false);
+			m.safeRespawns = jm["safe"].value("respawns", false);
+			m.safeReason = jm["safe"].value("reason", std::string(""));
+		}
 		return !m.id.empty() && !m.plugin.empty() && m.localId != 0;
 	}
 
@@ -1865,12 +2321,41 @@ namespace
 		json marks = json::array();
 		for (const auto& m : c.marks)
 			marks.push_back(ContMarkToJson(m));
+		json pins = json::array();
+		for (const auto& p : c.sort.pins)
+			pins.push_back(json{ { "plugin", p.plugin }, { "localId", p.localId }, { "markId", p.markId } });
 		return json{
 			{ "openKey", json{ { "device", c.openDevice }, { "code", c.openCode }, { "label", c.openLabel } } },
 			{ "uiScale", c.uiScale },
 			{ "thumbSize", c.thumbSize },
 			{ "categories", c.categories },
-			{ "marks", marks } };
+			{ "marks", marks },
+			// Global container-sort settings (inbox designation + per-item pins +
+			// sweep exclusions), stored inside the containers slice by design.
+			{ "sort", json{
+				{ "inboxMarkId", c.sort.inboxMarkId },
+				{ "pins", std::move(pins) },
+				{ "excludeEquipped", c.sort.excludeEquipped },
+				{ "excludeFavorited", c.sort.excludeFavorited },
+				{ "excludeQuest", c.sort.excludeQuest },
+				{ "keepGold", c.sort.keepGold },
+				{ "sortOnClose", c.sort.sortOnClose },
+			{ "overrides", [&c] {
+				json ov = json::array();
+				for (const auto& o : c.sort.overrides)
+					ov.push_back(json{ { "plugin", o.plugin }, { "localId", o.localId },
+						{ "name", o.name }, { "types", o.types } });
+				return ov;
+			}() },
+				{ "loan", json{
+					{ "enabled", c.sort.loan.enabled },
+					{ "smithing", c.sort.loan.smithing },
+					{ "smelting", c.sort.loan.smelting },
+					{ "tanning", c.sort.loan.tanning },
+					{ "cooking", c.sort.loan.cooking },
+					{ "alchemy", c.sort.loan.alchemy },
+					{ "enchanting", c.sort.loan.enchanting },
+					{ "returnOnExit", c.sort.loan.returnOnExit } } } } } };
 	}
 
 	// `out` is the PREVIOUS config: a mark object that OMITS "image" keeps its
@@ -1902,13 +2387,99 @@ namespace
 					ContainerMark m;
 					if (!ContMarkFromJson(jm, m))
 						continue;
+					// Carry-over by id for the fields a partial payload may omit — the
+					// same discipline for `image`, now also the sort `rule` and the
+					// `safe` verdict. An older view / the portal that never learned
+					// these keys must not wipe them on its next whole-slice save.
 					const bool hasImage = jm.is_object() && jm.contains("image");
-					if (!hasImage) {
-						for (const auto& prev : out.marks)
-							if (prev.id == m.id) { m.image = prev.image; break; }
+					const bool hasRule = jm.is_object() && jm.contains("rule");
+					const bool hasSafe = jm.is_object() && jm.contains("safe");
+					const bool hasLend = jm.is_object() && jm.contains("lend");
+					const bool hasRedir = jm.is_object() && jm.contains("redirectTo");
+					if (!hasImage || !hasRule || !hasSafe || !hasLend || !hasRedir) {
+						for (const auto& prev : out.marks) {
+							if (prev.id != m.id)
+								continue;
+							if (!hasImage)
+								m.image = prev.image;
+							if (!hasRule)
+								m.sortRule = prev.sortRule;
+							if (!hasSafe) {
+								m.safeAcknowledged = prev.safeAcknowledged;
+								m.safeRespawns = prev.safeRespawns;
+								m.safeReason = prev.safeReason;
+							}
+							if (!hasLend)
+								m.lend = prev.lend;
+							if (!hasRedir)
+								m.redirectTo = prev.redirectTo;
+							break;
+						}
 					}
 					c.marks.push_back(std::move(m));
 				}
+			}
+			// Global sort block (inbox + pins + exclusions). Absent ⇒ defaults, which
+			// is a fresh install or an old view — both correct (no inbox, all guards on).
+			if (j.contains("sort") && j["sort"].is_object()) {
+				const auto& js = j["sort"];
+				c.sort.inboxMarkId = js.value("inboxMarkId", std::string(""));
+				c.sort.excludeEquipped = js.value("excludeEquipped", true);
+				c.sort.excludeFavorited = js.value("excludeFavorited", true);
+				c.sort.excludeQuest = js.value("excludeQuest", true);
+				c.sort.keepGold = js.value("keepGold", true);
+				// Append-only keys: an older view / the portal that never learned them
+				// carries the LIVE value over rather than resetting it to the default.
+				c.sort.sortOnClose = js.value("sortOnClose", out.sort.sortOnClose);
+				c.sort.loan = out.sort.loan;
+				if (js.contains("loan") && js["loan"].is_object()) {
+					const auto& jl = js["loan"];
+					c.sort.loan.enabled = jl.value("enabled", c.sort.loan.enabled);
+					c.sort.loan.smithing = jl.value("smithing", c.sort.loan.smithing);
+					c.sort.loan.smelting = jl.value("smelting", c.sort.loan.smelting);
+					c.sort.loan.tanning = jl.value("tanning", c.sort.loan.tanning);
+					c.sort.loan.cooking = jl.value("cooking", c.sort.loan.cooking);
+					c.sort.loan.alchemy = jl.value("alchemy", c.sort.loan.alchemy);
+					c.sort.loan.enchanting = jl.value("enchanting", c.sort.loan.enchanting);
+					c.sort.loan.returnOnExit = jl.value("returnOnExit", c.sort.loan.returnOnExit);
+				}
+				// Overrides: absent ⇒ carry the live list (an older view never sends
+				// them), present ⇒ replace wholesale (the editor owns the list).
+				c.sort.overrides = out.sort.overrides;
+				if (js.contains("overrides") && js["overrides"].is_array()) {
+					c.sort.overrides.clear();
+					for (const auto& jo : js["overrides"]) {
+						if (!jo.is_object())
+							continue;
+						ContainerSortOpts::Override o;
+						o.plugin = jo.value("plugin", std::string(""));
+						o.localId = jo.value("localId", 0u);
+						o.name = jo.value("name", std::string(""));
+						if (jo.contains("types") && jo["types"].is_array())
+							for (const auto& t : jo["types"])
+								if (t.is_string() && !t.get<std::string>().empty())
+									o.types.push_back(t.get<std::string>());
+						if (!o.plugin.empty() && o.localId && !o.types.empty())
+							c.sort.overrides.push_back(std::move(o));
+					}
+				}
+				c.sort.pins.clear();
+				if (js.contains("pins") && js["pins"].is_array()) {
+					for (const auto& jp : js["pins"]) {
+						if (!jp.is_object())
+							continue;
+						ContainerSortOpts::Pin p;
+						p.plugin = jp.value("plugin", std::string(""));
+						p.localId = jp.value("localId", 0u);
+						p.markId = jp.value("markId", std::string(""));
+						if (!p.plugin.empty() && p.localId && !p.markId.empty())
+							c.sort.pins.push_back(std::move(p));
+					}
+				}
+			} else {
+				// Preserve the live sort block when the payload omits it wholesale (a
+				// partial ctSave from an old view) — same carry-over spirit as marks.
+				c.sort = out.sort;
 			}
 		}
 		if (c.categories.empty())
@@ -1916,11 +2487,308 @@ namespace
 		out = std::move(c);
 	}
 
+	// ----------------------------------------------------------- auto-loot slice --
+	// Its own sibling slice `autoLoot` (global, not per-mark) — the ContainerConfig
+	// plumbing cloned: Default/To/From here + one WriteConfigFile param + one
+	// PersistAll snapshot + one load/reset branch. Fully round-tripped, so it is
+	// safe from the OnJsSave wholesale-replace trap by construction (the view edits
+	// it only through the dedicated alSave/alToggle handlers, which mutate the live
+	// g_autoLootConfig in place — never a whole-config replace).
+	AutoLootConfig DefaultAutoLootConfig()
+	{
+		return AutoLootConfig{};  // the struct's member defaults ARE the §1.3 defaults
+	}
+
+	// Ceilings on the per-item rules, same reasoning as kMaxTagsPerMark: a stuck
+	// key or a runaway picker must not be able to grow hotkeys.json without
+	// bound, and the pane re-renders every row on every keystroke of its filter.
+	constexpr std::size_t kMaxLootRules = 256;  // per list (deny / allow)
+	constexpr std::size_t kMaxLootWords = 48;   // per word list
+	constexpr std::size_t kMaxLootWordLen = 40;
+
+	json AutoLootItemsToJson(const std::vector<AutoLootConfig::AutoLootItem>& v)
+	{
+		json a = json::array();
+		for (const auto& e : v)
+			a.push_back(json{ { "plugin", e.plugin }, { "localId", e.localId }, { "name", e.name } });
+		return a;
+	}
+
+	// Reads a rule list, dropping anything that cannot be an identity (no plugin,
+	// or a local id that no file width could produce) and de-duplicating on
+	// (plugin, localId) so the same item added twice is stored once.
+	std::vector<AutoLootConfig::AutoLootItem> AutoLootItemsFromJson(const json& j)
+	{
+		std::vector<AutoLootConfig::AutoLootItem> out;
+		if (!j.is_array())
+			return out;
+		for (const auto& e : j) {
+			if (!e.is_object())
+				continue;
+			AutoLootConfig::AutoLootItem it;
+			it.plugin = e.value("plugin", std::string{});
+			it.localId = e.value("localId", 0u);
+			it.name = e.value("name", std::string{});
+			if (it.plugin.empty() || it.localId == 0)
+				continue;
+			bool dup = false;
+			for (const auto& p : out)
+				if (p.localId == it.localId && _stricmp(p.plugin.c_str(), it.plugin.c_str()) == 0) {
+					dup = true;
+					break;
+				}
+			if (dup)
+				continue;
+			out.push_back(std::move(it));
+			if (out.size() >= kMaxLootRules)
+				break;
+		}
+		return out;
+	}
+
+	// Words are stored LOWERCASE so the engine's match never has to case-fold per
+	// item per tick; blanks and over-long entries are dropped rather than stored.
+	std::vector<std::string> AutoLootWordsFromJson(const json& j)
+	{
+		std::vector<std::string> out;
+		if (!j.is_array())
+			return out;
+		for (const auto& e : j) {
+			if (!e.is_string())
+				continue;
+			std::string w = e.get<std::string>();
+			// trim
+			const auto b = w.find_first_not_of(" \t");
+			const auto f = w.find_last_not_of(" \t");
+			w = (b == std::string::npos) ? std::string{} : w.substr(b, f - b + 1);
+			if (w.empty() || w.size() > kMaxLootWordLen)
+				continue;
+			for (auto& ch : w)
+				ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+			if (std::find(out.begin(), out.end(), w) != out.end())
+				continue;
+			out.push_back(std::move(w));
+			if (out.size() >= kMaxLootWords)
+				break;
+		}
+		return out;
+	}
+
+	json AutoLootConfigToJson(const AutoLootConfig& c)
+	{
+		return json{
+			{ "enabled", c.enabled },
+			{ "radius", c.radius },
+			{ "dest", c.dest },
+			{ "questGuard", c.questGuard },
+			{ "toastRare", c.toastRare },
+			{ "valueFloor", c.valueFloor },
+			{ "corpses", c.corpses },
+			{ "clearGlow", c.clearGlow },
+			{ "allowOnly", c.allowOnly },
+			{ "weightGuard", c.weightGuard },
+			{ "weightPct", c.weightPct },
+			{ "deny", AutoLootItemsToJson(c.deny) },
+			{ "allow", AutoLootItemsToJson(c.allow) },
+			{ "denyWords", c.denyWords },
+			{ "allowWords", c.allowWords },
+			{ "catFloors", c.catFloors },
+			{ "homeGuard", c.homeGuard },
+			{ "lotd", c.lotd },
+			{ "pauseInCombat", c.pauseInCombat },
+			{ "pauseWeaponDrawn", c.pauseWeaponDrawn },
+			{ "pauseConcealed", c.pauseConcealed },
+			{ "townGuard", c.townGuard },
+			{ "radiusIndoors", c.radiusIndoors },
+			{ "verticalFactor", c.verticalFactor },
+			{ "doorClamp", c.doorClamp },
+			{ "intervalMs", c.intervalMs },
+			{ "intervalIndoorsMs", c.intervalIndoorsMs },
+			{ "harvestFlora", c.harvestFlora },
+			{ "vwRatio", c.vwRatio },
+			{ "weightlessMinValue", c.weightlessMinValue },
+			{ "unknownIngredients", c.unknownIngredients },
+			{ "harvestCritters", c.harvestCritters },
+			{ "mineOre", c.mineOre },
+			{ "miningNeedsPick", c.miningNeedsPick },
+			{ "maxMineStrikes", c.maxMineStrikes },
+			{ "areaAllowOnly", c.areaAllowOnly },
+			{ "areaDeny", AutoLootItemsToJson(c.areaDeny) },
+			{ "areaAllow", AutoLootItemsToJson(c.areaAllow) },
+			{ "lootOwned", c.lootOwned },
+			{ "cats", json{
+				{ "coins", c.cats.coins },
+				{ "gems", c.cats.gems },
+				{ "potions", c.cats.potions },
+				{ "food", c.cats.food },
+				{ "ingredients", c.cats.ingredients },
+				{ "soulgems", c.cats.soulgems },
+				{ "scrolls", c.cats.scrolls },
+				{ "ammo", c.cats.ammo },
+				{ "books", c.cats.books },
+				{ "valuables", c.cats.valuables },
+				{ "gear", c.cats.gear },
+				{ "keys", c.cats.keys },
+				{ "lockpicks", c.cats.lockpicks } } } };
+	}
+
+	// `out` seeds the defaults, so a missing key keeps the prior value (or the
+	// built-in default on a fresh load). radius is clamped to the dial range; dest
+	// is trusted as-is (a markId or "player" — the resolver refuses a bad one live).
+	void AutoLootConfigFromJson(const json& j, AutoLootConfig& out)
+	{
+		AutoLootConfig c = out;  // carry prior; overwrite only what's present
+		if (j.is_object()) {
+			c.enabled = j.value("enabled", c.enabled);
+			c.radius = j.value("radius", c.radius);
+			if (c.radius < 150.0f)
+				c.radius = 150.0f;
+			if (c.radius > 1200.0f)
+				c.radius = 1200.0f;
+			c.dest = j.value("dest", c.dest);
+			c.questGuard = j.value("questGuard", c.questGuard);
+			c.toastRare = j.value("toastRare", c.toastRare);
+			c.valueFloor = j.value("valueFloor", c.valueFloor);
+			if (c.valueFloor < 0)
+				c.valueFloor = 0;
+			c.corpses = j.value("corpses", c.corpses);
+			c.clearGlow = j.value("clearGlow", c.clearGlow);
+			c.allowOnly = j.value("allowOnly", c.allowOnly);
+			c.weightGuard = j.value("weightGuard", c.weightGuard);
+			c.weightPct = j.value("weightPct", c.weightPct);
+			if (c.weightPct < 10)
+				c.weightPct = 10;  // below this the guard would refuse everything
+			if (c.weightPct > 100)
+				c.weightPct = 100;
+			// Present-key-wins, absent-key-carries — the same rule the rest of the
+			// slice uses, so a partial save can never silently empty a rule list.
+			if (j.contains("homeGuard") && j["homeGuard"].is_boolean())
+				c.homeGuard = j["homeGuard"].get<bool>();
+			// Only the three known modes are accepted. A typo or a value from a
+			// newer build must not leave the vacuum in "only museum pieces", which
+			// would look like auto-loot had stopped working.
+			if (j.contains("lotd") && j["lotd"].is_string()) {
+				const auto v = j["lotd"].get<std::string>();
+				if (v == "off" || v == "always" || v == "only")
+					c.lotd = v;
+			}
+			if (j.contains("pauseInCombat") && j["pauseInCombat"].is_boolean())
+				c.pauseInCombat = j["pauseInCombat"].get<bool>();
+			if (j.contains("pauseWeaponDrawn") && j["pauseWeaponDrawn"].is_boolean())
+				c.pauseWeaponDrawn = j["pauseWeaponDrawn"].get<bool>();
+			if (j.contains("pauseConcealed") && j["pauseConcealed"].is_boolean())
+				c.pauseConcealed = j["pauseConcealed"].get<bool>();
+			// Same discipline as `lotd`: only the known values, so a typo cannot
+			// leave the vacuum refusing to run in places nobody asked it to skip.
+			if (j.contains("townGuard") && j["townGuard"].is_string()) {
+				const auto v = j["townGuard"].get<std::string>();
+				if (v == "off" || v == "settlements" || v == "towns" || v == "cities")
+					c.townGuard = v;
+			}
+			if (j.contains("radiusIndoors") && j["radiusIndoors"].is_number())
+				c.radiusIndoors = j["radiusIndoors"].get<std::int32_t>();
+			if (c.radiusIndoors < 0)
+				c.radiusIndoors = 0;
+			if (j.contains("verticalFactor") && j["verticalFactor"].is_number())
+				c.verticalFactor = j["verticalFactor"].get<float>();
+			if (c.verticalFactor < 0.05f)
+				c.verticalFactor = 0.05f;
+			if (c.verticalFactor > 1.0f)
+				c.verticalFactor = 1.0f;
+			if (j.contains("doorClamp") && j["doorClamp"].is_boolean())
+				c.doorClamp = j["doorClamp"].get<bool>();
+			if (j.contains("intervalMs") && j["intervalMs"].is_number())
+				c.intervalMs = j["intervalMs"].get<std::int32_t>();
+			if (c.intervalMs < 500)
+				c.intervalMs = 500;  // the poller's own floor; below it is a lie
+			if (c.intervalMs > 10000)
+				c.intervalMs = 10000;
+			if (j.contains("intervalIndoorsMs") && j["intervalIndoorsMs"].is_number())
+				c.intervalIndoorsMs = j["intervalIndoorsMs"].get<std::int32_t>();
+			if (c.intervalIndoorsMs && c.intervalIndoorsMs < 500)
+				c.intervalIndoorsMs = 500;
+			if (c.intervalIndoorsMs > 10000)
+				c.intervalIndoorsMs = 10000;
+			if (j.contains("harvestFlora") && j["harvestFlora"].is_boolean())
+				c.harvestFlora = j["harvestFlora"].get<bool>();
+			if (j.contains("vwRatio") && j["vwRatio"].is_number())
+				c.vwRatio = j["vwRatio"].get<float>();
+			if (c.vwRatio < 0.0f)
+				c.vwRatio = 0.0f;
+			if (c.vwRatio > 100.0f)
+				c.vwRatio = 100.0f;
+			if (j.contains("weightlessMinValue") && j["weightlessMinValue"].is_number())
+				c.weightlessMinValue = j["weightlessMinValue"].get<std::int32_t>();
+			if (c.weightlessMinValue < 0)
+				c.weightlessMinValue = 0;
+			if (j.contains("unknownIngredients") && j["unknownIngredients"].is_boolean())
+				c.unknownIngredients = j["unknownIngredients"].get<bool>();
+			if (j.contains("harvestCritters") && j["harvestCritters"].is_boolean())
+				c.harvestCritters = j["harvestCritters"].get<bool>();
+			if (j.contains("mineOre") && j["mineOre"].is_boolean())
+				c.mineOre = j["mineOre"].get<bool>();
+			if (j.contains("miningNeedsPick") && j["miningNeedsPick"].is_boolean())
+				c.miningNeedsPick = j["miningNeedsPick"].get<bool>();
+			if (j.contains("maxMineStrikes") && j["maxMineStrikes"].is_number())
+				c.maxMineStrikes = j["maxMineStrikes"].get<std::int32_t>();
+			if (c.maxMineStrikes < 1)
+				c.maxMineStrikes = 1;
+			if (c.maxMineStrikes > 10)
+				c.maxMineStrikes = 10;
+			if (j.contains("areaAllowOnly") && j["areaAllowOnly"].is_boolean())
+				c.areaAllowOnly = j["areaAllowOnly"].get<bool>();
+			if (j.contains("areaDeny"))
+				c.areaDeny = AutoLootItemsFromJson(j["areaDeny"]);
+			if (j.contains("areaAllow"))
+				c.areaAllow = AutoLootItemsFromJson(j["areaAllow"]);
+			if (j.contains("deny"))
+				c.deny = AutoLootItemsFromJson(j["deny"]);
+			if (j.contains("allow"))
+				c.allow = AutoLootItemsFromJson(j["allow"]);
+			if (j.contains("denyWords"))
+				c.denyWords = AutoLootWordsFromJson(j["denyWords"]);
+			if (j.contains("allowWords"))
+				c.allowWords = AutoLootWordsFromJson(j["allowWords"]);
+			if (j.contains("catFloors") && j["catFloors"].is_object()) {
+				std::map<std::string, std::int32_t> f;
+				for (auto it = j["catFloors"].begin(); it != j["catFloors"].end(); ++it) {
+					if (!it.value().is_number_integer())
+						continue;
+					const auto v = it.value().get<std::int32_t>();
+					if (v > 0)  // 0 means "no floor" — store nothing rather than a zero
+						f[it.key()] = v;
+				}
+				c.catFloors = std::move(f);
+			}
+			c.lootOwned = false;  // never steal — the UI never sends true, but pin it here too
+			if (j.contains("cats") && j["cats"].is_object()) {
+				const auto& jc = j["cats"];
+				c.cats.coins = jc.value("coins", c.cats.coins);
+				c.cats.gems = jc.value("gems", c.cats.gems);
+				c.cats.potions = jc.value("potions", c.cats.potions);
+				c.cats.food = jc.value("food", c.cats.food);
+				c.cats.ingredients = jc.value("ingredients", c.cats.ingredients);
+				c.cats.soulgems = jc.value("soulgems", c.cats.soulgems);
+				c.cats.scrolls = jc.value("scrolls", c.cats.scrolls);
+				c.cats.ammo = jc.value("ammo", c.cats.ammo);
+				c.cats.books = jc.value("books", c.cats.books);
+				c.cats.valuables = jc.value("valuables", c.cats.valuables);
+				c.cats.gear = jc.value("gear", c.cats.gear);
+				// Split out of the original eleven on 2026-08-16. An older config
+				// has neither key, so the struct defaults (keys OFF, lockpicks ON)
+				// carry — which is exactly the behaviour it had before the split.
+				c.cats.keys = jc.value("keys", c.cats.keys);
+				c.cats.lockpicks = jc.value("lockpicks", c.cats.lockpicks);
+			}
+		}
+		out = std::move(c);
+	}
+
 	// Single writer for ALL config slices — the deck under the root keys, the
 	// Spell Deck under "magic", the Followers tab under "followers", the
 	// Domains tab under "domains" — so no save path clobbers another's data.
 	bool WriteConfigFile(const Config& c, const MagicConfig& m, const FollowerConfig& f, const DomainsConfig& d,
-		const ContainerConfig& ct,
+		const ContainerConfig& ct, const AutoLootConfig& al,
 		const Finance::Config& fin, const Wardrobe::Config& wd, const NffOutfits::Config& nf,
 		const RoomGuard::Config& rg, const FollowerTune::Config& tn, const LootHighlight::Config& lt,
 		const FollowersHud::Config& hd, const NoAutoGear::Config& ng, const SpidGear::Config& sg,
@@ -1943,6 +2811,7 @@ namespace
 			j["followers"] = FollowerConfigToJson(f);
 			j["domains"] = DomainsConfigToJson(d);
 			j["containers"] = ContainerConfigToJson(ct);
+			j["autoLoot"] = AutoLootConfigToJson(al);
 			j["finances"] = Finance::ToJson(fin);
 			j["wardrobe"] = Wardrobe::ToJson(wd);
 			j["nffOutfits"] = NffOutfits::ToJson(nf);
@@ -1955,9 +2824,44 @@ namespace
 			j["hotbar"] = Hotbar::ToJson(hb);
 			const std::string text = j.dump(2);
 
+			// PERF (2026-08-16, round two): a save that would rewrite the file with
+			// the bytes it already holds does no disk work at all.
+			//
+			// This is not a rare case, it is the COMMON one. The view sends its
+			// whole config on interactions that changed nothing a save can see — a
+			// tab switch, closing the deck — and every one of those paid a .bak
+			// copy, a full write and a rename, on whichever thread pressed the
+			// button. That is precisely the "hitch exactly when I press something"
+			// shape, and it is pure waste.
+			//
+			// Correctness rests on one fact, and it is a fact this file already
+			// documents elsewhere: while the game is running, NOTHING but us writes
+			// hotkeys.json. The Deck Portal deliberately does not (see
+			// ApplyPortalAssignments' header — we rewrite the file wholesale, so a
+			// portal write would be clobbered anyway) and MO2's VFS gives no other
+			// writer a path to it. The cached text is only ever set after a rename
+			// SUCCEEDED, so a failed save never arms the skip, and the file's
+			// continued existence is re-checked every time — delete it by hand and
+			// the next save writes it back out in full.
+			static std::string s_lastWritten;
+			const bool         onDisk = std::filesystem::exists(path, ec);
+			if (onDisk && !s_lastWritten.empty() && s_lastWritten == text) {
+				// Once at INFO so a fresh log proves the path is live (and so its
+				// marker is a line this build demonstrably reaches), then DEBUG —
+				// on a quiet session this fires several times a minute.
+				static bool said = false;   // g_writeMutex is held: no atomic needed
+				if (!said) {
+					said = true;
+					logger::info("config write: byte-identical to the last save - skipped the disk work");
+				} else {
+					logger::debug("config write: byte-identical to the last save - skipped");
+				}
+				return true;
+			}
+
 			// One rotating backup, so even a torn write (power loss mid-flush) is
 			// recoverable by hand. Best-effort: a failed copy must not block the save.
-			if (std::filesystem::exists(path, ec)) {
+			if (onDisk) {
 				auto bak = path;
 				bak.replace_extension(".bak");
 				std::filesystem::copy_file(path, bak, std::filesystem::copy_options::overwrite_existing, ec);
@@ -1973,13 +2877,13 @@ namespace
 			{
 				std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
 				if (!out.is_open()) {
-					logger::error("could not open {} for writing", tmp.string());
+					logger::error("could not open {} for writing", PathU8(tmp));
 					return false;
 				}
 				out << text;
 				out.flush();
 				if (!out.good()) {
-					logger::error("config write to {} failed mid-stream", tmp.string());
+					logger::error("config write to {} failed mid-stream", PathU8(tmp));
 					return false;
 				}
 			}
@@ -1988,6 +2892,10 @@ namespace
 				logger::error("atomic config swap failed: {}", ec.message());
 				return false;
 			}
+			// ONLY here — the file now demonstrably holds these bytes. Arming the
+			// skip anywhere earlier would let a failed write teach us a lie and
+			// then suppress the retry that would have fixed it.
+			s_lastWritten = text;
 			return true;
 		} catch (const std::exception& ex) {
 			logger::error("config save error: {}", ex.what());
@@ -2003,6 +2911,7 @@ namespace
 		FollowerConfig  f;
 		DomainsConfig   d;
 		ContainerConfig ct;
+		AutoLootConfig  al;
 		Finance::Config fin;
 		Wardrobe::Config wd;
 		NffOutfits::Config nf;
@@ -2020,6 +2929,7 @@ namespace
 			f = g_folConfig;
 			d = g_domConfig;
 			ct = g_contConfig;
+			al = g_autoLootConfig;
 			fin = g_finConfig;
 			wd  = g_wardrobeConfig;
 			nf  = g_nffConfig;
@@ -2031,7 +2941,7 @@ namespace
 			sg  = g_spidConfig;
 			hb  = g_hbConfig;
 		}
-		return WriteConfigFile(c, m, f, d, ct, fin, wd, nf, rg, tn, lt, hd, ng, sg, hb);
+		return WriteConfigFile(c, m, f, d, ct, al, fin, wd, nf, rg, tn, lt, hd, ng, sg, hb);
 	}
 
 	// A native action added in a new build only reaches a player who already has
@@ -2054,10 +2964,27 @@ namespace
 			// whatever icon (or none) they already saved. Scrubbed by
 			// ValidViewIconPath before it reaches the webview, same as any icon.
 			const char* icon = "";
+			// When set, this seed only lands if the named plugin is in the load
+			// order (TESDataHandler::LookupModByName). Used by the camp-*/hb-*
+			// camping seeds so a Campfire/Hunterborn action never appears for a
+			// player who has neither mod. nullptr = always seed (the default).
+			const char* requiresMod = nullptr;
+			// The icon this seed USED to ship, when `icon` has since been split
+			// off a shared default into a dedicated glyph (the 2026-08-19 audit:
+			// ten Potions rows wore one bottle, five Party rows borrowed other
+			// entries' art). An existing entry still wearing exactly this old
+			// path migrates to `icon`; any other non-empty icon is a user's own
+			// pick and is never touched. nullptr = no migration for this seed.
+			const char* oldIcon = nullptr;
 		};
 		static constexpr Seed kSeeds[] = {
+			// Filed under NPC since 2026-08-15: the seed used to create a "CHIM"
+			// tab, which is this rig's AI-companion stack — a public install got
+			// a one-row tab named after a mod it doesn't have. The capture itself
+			// is standalone (our own D3D grab). Existing rows keep their tab; the
+			// verb match means nobody gets a duplicate.
 			{ "portrait", "chim-portrait", "Capture Portrait",
-			  "Photograph the targeted NPC's face and save it as their portrait", "CHIM", "icons/custom/hk-portrait.png" },
+			  "Photograph the targeted NPC's face and save it as their portrait", "NPC", "icons/custom/hk-portrait.png" },
 			// Unbound like the rest: guessing a key on someone else's keyboard
 			// collides with whatever they already have bound, and the row is
 			// usable as-is — click it, or give it a key in F2. (Rober's G12
@@ -2078,6 +3005,21 @@ namespace
 			// Groovatron in the desc on purpose — it doubles as an omni keyword.
 			{ "grab", "npc-grab", "Grab NPC",
 			  "Pick up the targeted NPC with Object Manipulation Overhaul (Groovatron-style): follows your crosshair, left-click places, right-click puts them back; stands up sitters", "NPC", "icons/custom/hk-grab.png" },
+			// The NPC basics (2026-08-15 seed audit): these five lived ONLY in
+			// DefaultConfig, so they reached fresh installs and nobody else — a
+			// player whose hotkeys.json predates any of them (or who was handed
+			// a config) never saw the listing. Verb-keyed like every seed, so an
+			// existing row (any name, any tab) is recognised and never duplicated.
+			{ "freeze", "npc-freeze", "Freeze NPC",
+			  "Hold the NPC you are looking at right where they stand - fire again to release (freeze hold statue stay pin)", "NPC", "icons/custom/hk-freeze.png" },
+			{ "sit", "npc-sit", "Sit NPC",
+			  "Send the NPC you are looking at to the nearest chair - ground if none; fire again to release (sit chair seat)", "NPC", "icons/custom/hk-sit.png" },
+			{ "bed", "npc-bed", "Bed NPC",
+			  "Send the NPC you are looking at to the nearest bed - ground if none; fire again to release (bed sleep lie down)", "NPC", "icons/custom/hk-bed.png" },
+			{ "release-all", "npc-release-all", "Release All NPCs",
+			  "Free every NPC held, seated or bedded by these actions (release let go all)", "NPC", "icons/custom/hk-release-all.png" },
+			{ "attack-target", "npc-attack-target", "Sic 'em (Attack Target)",
+			  "Send every follower to attack whoever you're looking at - even a distant enemy along your aim - right now, plus any enemies already fighting near them. Skips the follower detection lag (sic em attack assault command)", "NPC", "icons/custom/hk-attack-target.png" },
 			// Instant waits (2026-08-02): the vanilla Sleep/Wait menu ticks one
 			// hour per REAL frame and this rig's frame generation throttles real
 			// frames, so the menu crawls at any displayed FPS. These jump the
@@ -2090,6 +3032,11 @@ namespace
 			  "Instantly pass 12 game hours - skips the slow sleep wait menu entirely (fast wait)", "Misc", "icons/custom/hk-wait-12.png" },
 			{ "wait-24", "hd-wait-24", "Wait 24 Hours",
 			  "Instantly pass 24 game hours - a full day in one step (fast sleep wait)", "Misc", "icons/custom/hk-wait-24.png" },
+			// Time Dial (2026-08-18): the openable circular wait dial on the
+			// HUD view — the wait actions' pretty face, same one-step
+			// GameHour jump underneath.
+			{ "time-dial", "hd-time-dial", "Time Dial",
+			  "Open the circular wait dial - drag the ring to choose hours or days, confirm, and the time passes in one step. Scalable, draggable, remembers its spot on screen (time dial wait clock sundial widget)", "Misc", "icons/custom/hk-time-dial.png", nullptr, "icons/custom/hm-time.png" },
 			// AddItemMenu (2026-08-03): the deck casts the mod's own lesser
 			// powers, so its Papyrus flow runs exactly as shipped — no
 			// inventory digging for the [AddItemMenuSE] items. Unbound like
@@ -2109,7 +3056,7 @@ namespace
 			{ "no-auto-gear", "npc-no-auto-gear", "No Auto-Gear",
 			  "Toggle: stop distributor mods (SPID/SkyPatcher) putting cloaks, hoods or underwear on the NPC you're looking at, and strip what's there (no auto gear cloak hood underwear distributor)", "NPC", "icons/custom/hk-no-auto-gear.png" },
 			{ "no-auto-gear-party", "npc-no-auto-gear-party", "No Auto-Gear: Party",
-			  "Protect every follower with you right now from distributor cloaks/hoods/underwear (no auto gear party)", "NPC", "icons/custom/hk-no-auto-gear.png" },
+			  "Protect every follower with you right now from distributor cloaks/hoods/underwear (no auto gear party)", "NPC", "icons/custom/hk-no-auto-gear-party.png", nullptr, "icons/custom/hk-no-auto-gear.png" },
 			// Fixes / Unstuck (2026-08-09): one-click rescues for modded-game jank.
 			// Console-backed, run on the crosshair NPC (or the player for noclip).
 			// "unstuck fix stuck broken jank" omni keywords on purpose.
@@ -2144,6 +3091,8 @@ namespace
 			  "Open the SKSE Menu Framework menu - no hotkey needed; double-taps its toggle key for you (mcm settings config)", "Menus", "icons/custom/hk-skse-menu.png" },
 			{ "open-community-shaders", "hd-open-community-shaders", "Community Shaders",
 			  "Open the Community Shaders menu - needs Community Shaders installed (default key End) (settings config shaders enb)", "Menus", "icons/custom/hk-community-shaders.png" },
+			{ "open-ied", "hd-open-ied", "Immersive Equipment Displays",
+			  "Open Immersive Equipment Displays' own UI - place and tune your displayed gear (ied gear displays settings config)", "Menus", "icons/custom/hk-ied-menu.png" },
 			// Rooms privacy (2026-08-11): seal the room you are standing in —
 			// nobody in at all, followers and allowed people included — and fire
 			// it again to go back to that room's normal welcome list. Bindable
@@ -2158,24 +3107,51 @@ namespace
 			// favorites" in the desc are omni keywords on purpose.
 			{ "wheel", "hd-wheel-open", "Wheel Menu",
 			  "Open the radial wheel - a ring of anything you pinned to it: weapons, armour, potions, followers, outfits, spells, places. Also on Ctrl + your deck key (radial ring circle quick wheel favorites)", "Utilities", "icons/custom/hk-wheel.png" },
+			// Container Auto-Sort (2026-08-15): distribute your drop-box inbox into
+			// rule-matching marked containers. Needs the unpaused world (RemoveItem),
+			// so it closes the palette first. "auto sort organize stash drop box
+			// distribute" keywords for omni on purpose.
+			{ "put-it-away", "hd-put-it-away", "Put It All Away",
+			  "Sweep your whole bag into the marked containers your rules name - one press, every container, residue stays with you (unload stash store sort put away tidy)", "Utilities", "icons/custom/hk-put-away.png", nullptr, "icons/custom/hk-sort-now.png" },
+			{ "sort-now", "hd-sort-now", "Sort Drop-Box",
+			  "Distribute your drop-box inbox into rule-matching marked containers - designate a drop-box in the Containers tab first (auto sort organize stash distribute drop box)", "Utilities", "icons/custom/hk-sort-now.png" },
+			// Auto-Loot (2026-08-15): the master toggle for the nearby-loot vacuum,
+			// and a one-shot "loot around me now". Both instant / bindable; "loot
+			// vacuum magnet pickup grab" keywords for omni on purpose. Configure the
+			// range / destination / categories in the Containers tab's Auto-Loot card.
+			{ "auto-loot", "hd-auto-loot", "Auto-Loot",
+			  "Toggle auto-pickup of nearby loot to you or a marked container - configure range, destination and categories in the Containers tab (loot vacuum magnet pickup auto)", "Utilities", "icons/custom/hk-auto-loot.png" },
+			{ "auto-loot-now", "hd-auto-loot-now", "Loot Around Me",
+			  "Pick up all eligible nearby loot right now - a one-shot sweep, works with the deck closed (auto loot vacuum sweep grab pickup)", "Utilities", "icons/custom/hk-auto-loot-now.png" },
 			// Party orders (2026-08-14): NFF's own group verbs with a bindable
 			// key on them - every one dispatches through NffControl::Apply, so
 			// the deck never re-implements a follower rule. "party followers
 			// group order everyone" keywords for omni on purpose.
 			{ "party-wait", "hd-party-wait", "Party: Wait Here",
-			  "Every loaded follower waits where they stand - NFF's own group order, from a key (party followers wait stay group everyone)", "NPC", "icons/custom/hk-halt-ai.png" },
+			  "Every loaded follower waits where they stand - NFF's own group order, from a key (party followers wait stay group everyone)", "NPC", "icons/custom/hk-party-wait.png", nullptr, "icons/custom/hk-halt-ai.png" },
 			{ "party-follow", "hd-party-follow", "Party: Follow Me",
-			  "Every loaded follower follows again - the other half of Wait Here (party followers follow resume group everyone)", "NPC", "icons/custom/hk-follower-command.png" },
+			  "Every loaded follower follows again - the other half of Wait Here (party followers follow resume group everyone)", "NPC", "icons/custom/hk-party-follow.png", nullptr, "icons/custom/hk-follower-command.png" },
 			{ "party-summon", "hd-party-summon", "Party: Summon Everyone",
-			  "Teleport every follower to you - NFF's group summon, reaches even unloaded followers (party summon teleport gather everyone lost follower)", "NPC", "icons/custom/hk-follower-teleport.png" },
+			  "Teleport every follower to you - NFF's group summon, reaches even unloaded followers (party summon teleport gather everyone lost follower)", "NPC", "icons/custom/hk-party-summon.png", nullptr, "icons/custom/hk-follower-teleport.png" },
 			{ "party-relax", "hd-party-relax", "Party: Relax",
-			  "The whole party starts sandboxing here - sit, eat, wander - until you tell them to stop (party relax sandbox camp rest everyone)", "NPC", "icons/custom/hk-sandbox.png" },
+			  "The whole party starts sandboxing here - sit, eat, wander - until you tell them to stop (party relax sandbox camp rest everyone)", "NPC", "icons/custom/hk-party-relax.png", nullptr, "icons/custom/hk-sandbox.png" },
 			{ "party-regroup", "hd-party-regroup", "Party: Stop Relaxing",
-			  "End the party's sandboxing and bring everyone back to your side (party regroup stop relax sandbox back)", "NPC", "icons/custom/hk-sandbox.png" },
+			  "End the party's sandboxing and bring everyone back to your side (party regroup stop relax sandbox back)", "NPC", "icons/custom/hk-party-regroup.png", nullptr, "icons/custom/hk-sandbox.png" },
 			{ "nff-recruit", "npc-nff-recruit", "Recruit Follower",
-			  "Recruit the NPC you are looking at through NFF - no dialogue trip; refuses honestly if she can't follow (recruit hire follower crosshair nff)", "NPC", "icons/custom/hk-nff-control.png" },
+			  "Recruit the NPC you are looking at through NFF - no dialogue trip; refuses honestly if she can't follow (recruit hire follower crosshair nff)", "NPC", "icons/custom/hk-recruit.png", nullptr, "icons/custom/hk-nff-control.png" },
 			{ "mhiyh-home", "npc-mhiyh-home", "Her Home Is Here",
-			  "Mark where you are standing as the crosshair follower's HOME via My Home is Your Home - she lives here now; schedules and all (home house live here mhiyh assign)", "NPC", "icons/custom/hk-bed.png" },
+			  "Mark where you are standing as the crosshair follower's HOME via My Home is Your Home - she lives here now; schedules and all (home house live here mhiyh assign)", "NPC", "icons/custom/hk-her-home.png", nullptr, "icons/custom/hk-bed.png" },
+			// Trade (Rober, 2026-08-17: "a open merchant / trade button when
+			// hitting f7 on an npc"). Skyrim QuickTrade's job, as two verb-keyed
+			// seeds: one applies the rule (barter, or her pack when she is a
+			// companion/spouse), the other forces the pack — QuickTrade's MCM
+			// override, which the deck spends a bindable entry on rather than a
+			// setting nobody would find. "quicktrade" is in both descriptions on
+			// purpose: it is what someone coming off that mod will search omni for.
+			{ "trade", "npc-trade", "Trade",
+			  "Trade with the NPC you are looking at - the vanilla barter menu, or her pack when she is a follower or your spouse; refuses out loud if she is hostile or thinks too little of you (merchant barter buy sell shop trade quicktrade)", "NPC", "icons/custom/hk-trade.png" },
+			{ "trade-inventory", "npc-trade-inventory", "Trade: inventory",
+			  "Open the PACK of the NPC you are looking at instead of the barter menu - the forced-inventory half of Trade (merchant barter bag container pack quicktrade)", "NPC", "icons/custom/hk-trade-inventory.png" },
 			// Hotbar (2026-08-11). TWO seeds, because they are two different
 			// jobs: one shows/hides the bar mid-play, the other opens the panel
 			// where you build it. Both unbound — the SETUP one is the entry
@@ -2185,15 +3161,169 @@ namespace
 			{ "hotbar-toggle", "hd-hotbar-toggle", "Action Bar: Show/Hide",
 			  "Show or hide the on-screen action bar without changing anything on it (hotbar spell bar quick bar buttons wow)", "Utilities", "icons/custom/hk-hotbar.png" },
 			{ "hotbar-edit", "hd-hotbar-edit", "Action Bar: Set Up",
-			  "Open the action bar's editor - choose how many buttons, one or two rows, horizontal or vertical, where it sits, which key fires each button, and what goes on the shift/ctrl/alt pages (hotbar spell bar action bar wow configure resize icons)", "Utilities", "icons/custom/hk-hotbar.png" },
+			  "Open the action bar's editor - choose how many buttons, one or two rows, horizontal or vertical, where it sits, which key fires each button, and what goes on the shift/ctrl/alt pages (hotbar spell bar action bar wow configure resize icons)", "Utilities", "icons/custom/hk-hotbar-edit.png", nullptr, "icons/custom/hk-hotbar.png" },
 			// Item Explorer (2026-08-13): deep-open the deck on the Items tab.
 			// "additem spawn give cheat buy" in the desc are omni keywords on
 			// purpose — the people who want this know it as "additem".
 			{ "item-explorer", "hd-item-explorer", "Item Explorer",
 			  "Find any item any mod ships - type a mod or an item name and take it, or turn on merchant mode and pay real gold for it (additem add item spawn give cheat search buy)", "Utilities", "icons/custom/hk-item-explorer.png" },
+			// Journal (2026-08-16): deep-open the deck on the Journal tab. The
+			// desc carries "diary notes write log book" as omni keywords —
+			// people look for this by every one of those words.
+			{ "journal", "hd-journal", "Journal",
+			  "Open your journal - write pages by hand, lay pictures anywhere on them and let the text wrap around, in a real book (diary notes write log book chronicle memoir)", "Utilities", "icons/custom/hk-journal.png" },
 			// NPC Finder (2026-08-13): deep-open the deck on the NPCs tab.
 			{ "npc-finder", "hd-npc-finder", "NPC Finder",
 			  "Find anyone the load order ships - type a name or a mod, then go to them, bring them to you, or spawn a copy (npc actor character find teleport summon placeatme)", "Utilities", "icons/custom/hk-npc-finder.png" },
+			// Super Searcher (2026-08-19): the standalone quick-search widget —
+			// deep-opens the deck with the panel hidden and the omni search
+			// dressed as an anchored, scaled popup (hd-super.js). Unbound like
+			// every seed; the widget's own Config popup arms the trigger.
+			// "search everything find quick launcher" omni keywords on purpose.
+			{ "super-search", "hd-super-search", "Super Searcher",
+			  "Search everything from one key, mid-game - hotkeys, spells, people, outfits, quests and your own bag with real item pictures; click a result to fire, cast, equip or drink, Esc back to the game. Configure it in Home - UI Elements (search everything quick find universal launcher finder omni)", "Utilities", "icons/custom/hm-finder.png" },
+			// Spell Crafting (2026-08-15): deep-open the deck on the Spell
+			// Crafting tab. requiresMod-gated — the row only appears when
+			// Fourth Era Spell-Crafting is actually in the load order.
+			// "spellmaker oblivion custom spell" in the desc are omni
+			// keywords on purpose.
+			{ "spellcraft", "hd-spellcraft", "Spell Crafting",
+			  "Design your own spell from effects you know - Oblivion-style spellmaking through Fourth Era Spell-Crafting: pick effects, set magnitude and duration, name it, pay the gold (spellmaker craft custom spell create fesc)", "Utilities", "icons/custom/hk-spellcraft.png",
+			  "EM03SpellCrafting.esp" },
+			// High King (2026-08-18): deep-open the deck on the High King tab.
+			// requiresMod-gated on Become High King of Skyrim TNG — the whole
+			// surface reads that mod's globals. Omni keywords cover every word
+			// someone rules a kingdom by.
+			{ "highking", "hd-highking", "High King",
+			  "Rule Skyrim from the deck - treasury, per-hold taxes, approval, faith, economy, rebellions, your council and your royal powers (kingdom throne crown king bhkos become high king reign)", "Utilities", "icons/custom/hk-highking.png",
+			  "BecomeKingofSkyrimTNG.esp" },
+			// The two kingdom verbs worth a bound key of their own. Both go
+			// through the mod's own scripts / spells — see high_king.cpp.
+			{ "hk-collect-taxes", "hd-hk-collect-taxes", "Kingdom: Collect Taxes",
+			  "Send the collectors to every hold now instead of waiting for Sundas - the mod's own weekly collection, approval effects included (high king tax gold treasury kingdom collect)", "Utilities", "icons/custom/hk-collect-taxes.png",
+			  "BecomeKingofSkyrimTNG.esp" },
+			{ "hk-highreach-tp", "hd-hk-highreach-tp", "Kingdom: Teleport to Highreach",
+			  "Cast the crown's own recall - first press saves where you stand and takes you to Highreach, the next brings you back (high king teleport travel castle keep home)", "Utilities", "icons/custom/hk-highreach-tp.png",
+			  "BecomeKingofSkyrimTNG.esp" },
+			// Combat Arts (2026-08-15): deep-open the SPELL DECK on its Combat
+			// Arts page — the Ashes of War collection lives in that window now,
+			// not on this deck's tab bar. "ashes of war weapon art elden ring
+			// skills" in the desc are omni keywords on purpose.
+			{ "combat-arts", "hd-combat-arts", "Combat Arts",
+			  "Your collected weapon arts - Ashes of War found in loot land here instead of your bag; equip or swap one with a click (ashes of war weapon art elden ring skills moveset additional attack)", "Utilities", "icons/custom/hk-combat-arts.png" },
+			// Transmog (2026-08-15): deep-open the deck on the Transmog tab.
+			{ "transmog", "hd-transmog", "Transmog",
+			  "Restyle a specific piece of your gear to look like any armor any mod ships - stats, name and enchantment stay, only the look changes (transmog glamour appearance cosmetic outfit skin restyle)", "Utilities", "icons/custom/hk-transmog.png" },
+			// Wigs (2026-08-15): deep-open the deck on the Wigs tab. No
+			// requiresMod gate on purpose — the tab works vanilla (register any
+			// plugin that ships hair-slot ARMO).
+			{ "wigs", "hd-wigs", "Wigs",
+			  "Browse every wig your wig mods ship - add a wig mod by plugin, see real renders, and wear one on yourself or whoever you're looking at (hair wig salon hairstyle try on)", "Utilities", "icons/custom/hk-wigs.png" },
+			// Potion Browser (2026-08-15): a paused popout in the deck view —
+			// the wheel's structural twin. One master entry plus four category
+			// variants so "just health potions" can have its own key (Rober:
+			// "a master hotkey … or specific hotkey for say just health
+			// potions"). All five share the icon; the @suffix rides the
+			// hdShowTab payload and lands as the initial pill.
+			// Survival popout (2026-08-15): camp gear + water/food/drink you are
+			// CARRYING, in one searchable menu. "tent waterskin campfire
+			// tentapalooza" in the desc are omni keywords on purpose.
+			{ "survival-tab", "hd-survival-tab", "Survival (dashboard)",
+			  "Open the Survival tab - needs, temperature, camp skills and everything else your survival mods track, arranged how you like (survival stats needs thirst hunger cold campfire hunterborn sunhelm wintersun)", "Utilities", "icons/custom/hk-survival.png" },
+			{ "survival", "hd-survival", "Survival (quick actions)",
+			  "Open the survival menu - the tents, bedrolls, fire, cooking gear, waterskins, food and drink you are carrying, searchable, one click to pitch or use (camp tent bedroll campfire tentapalooza waterskin water food drink survival sunhelm)", "Utilities", "icons/custom/hk-survival-quick.png", nullptr, "icons/custom/hk-survival.png" },
+			{ "potion-browser", "hd-potion-browser", "Potion Browser",
+			  "Open the potion browser - every potion you carry, searchable, sortable by strength or value, quick-drink from the list; the game pauses while it is open (potions drink health magicka stamina cure browser)", "Utilities", "icons/custom/hk-potion-browser.png" },
+			{ "potions-health", "hd-potions-health", "Potions: Health",
+			  "Open the potion browser straight on your HEALTH potions - quick-drink, strongest first (health heal potion drink)", "Utilities", "icons/custom/hk-potion-health.png", nullptr, "icons/custom/hk-potion-browser.png" },
+			{ "potions-magicka", "hd-potions-magicka", "Potions: Magicka",
+			  "Open the potion browser straight on your MAGICKA potions - quick-drink, strongest first (magicka potion drink)", "Utilities", "icons/custom/hk-potion-magicka.png", nullptr, "icons/custom/hk-potion-browser.png" },
+			{ "potions-stamina", "hd-potions-stamina", "Potions: Stamina",
+			  "Open the potion browser straight on your STAMINA potions - quick-drink, strongest first (stamina potion drink)", "Utilities", "icons/custom/hk-potion-stamina.png", nullptr, "icons/custom/hk-potion-browser.png" },
+			{ "potions-cure", "hd-potions-cure", "Potions: Cure",
+			  "Open the potion browser straight on your CURE potions - disease and poison remedies, quick-drink (cure disease potion drink)", "Utilities", "icons/custom/hk-potion-cure.png", nullptr, "icons/custom/hk-potion-browser.png" },
+			// Consumable categories (2026-08-15): the browser grew poison /
+			// food / drink / water pills, so each gets its own door — the
+			// same @suffix road as the four pool variants above.
+			{ "potions-poison", "hd-potions-poison", "Potions: Poison",
+			  "Open the potion browser straight on your POISONS - quick-apply coats your equipped weapon (poison venom apply blade coat)", "Utilities", "icons/custom/hk-potion-poison.png", nullptr, "icons/custom/hk-potion-browser.png" },
+			{ "potions-food", "hd-potions-food", "Potions: Food",
+			  "Open the potion browser straight on your FOOD - quick-eat from the list (food eat meal bread stew)", "Utilities", "icons/custom/hk-potion-food.png", nullptr, "icons/custom/hk-potion-browser.png" },
+			{ "potions-drink", "hd-potions-drink", "Potions: Drink",
+			  "Open the potion browser straight on your DRINKS - ale, mead, wine, tea, milk and water, quick-drink (drink ale mead wine beverage)", "Utilities", "icons/custom/hk-potion-drink.png", nullptr, "icons/custom/hk-potion-browser.png" },
+			{ "potions-water", "hd-potions-water", "Potions: Water",
+			  "Open the potion browser straight on your WATER - fresh waterskins and bottles, drinks counted (water waterskin thirst survival sunhelm)", "Utilities", "icons/custom/hk-potion-water.png", nullptr, "icons/custom/hk-potion-browser.png" },
+			// Potion AI (2026-08-15): "Automatic potion usage with threshold
+			// control. Used before death for magicka, health or stamina."
+			// Thresholds live in the potion browser's ⚕ Potion AI panel; this
+			// is the master switch, bindable so mid-fight arming costs one key.
+			{ "potion-ai-toggle", "hd-potion-ai", "Potion AI: On/Off",
+			  "Turn the automatic potion drinker on or off - it drinks your strongest matching potion when health, magicka or stamina falls under your thresholds (potion ai auto drink threshold emergency)", "Utilities", "icons/custom/hk-potion-ai.png", nullptr, "icons/custom/hk-potion-browser.png" },
+			// Quiver (2026-08-15): the ammo radial — the wheel's blood
+			// relative with its own identity. Auto-populates with every arrow
+			// and bolt carried; damage on every tile, poison and enchant
+			// effects called out, searchable, sortable, favorites. One master
+			// entry plus the two family doors ("just my bolts" can have its
+			// own key, the potion-browser precedent). "arrows bolts ammo
+			// nock" keywords for omni on purpose.
+			{ "quiver", "hd-quiver-open", "Quiver",
+			  "Open the quiver - a ring of every arrow and bolt you carry: damage on every tile, poisons and enchantments called out, search, sort, favorites; click one to nock it (quiver ammo arrows bolts ring radial nock equip)", "Combat", "icons/custom/hk-quiver.png" },
+			{ "quiver-arrows", "hd-quiver-arrows", "Quiver: Arrows",
+			  "Open the quiver straight on your ARROWS - damage on every tile, click to nock (ammo arrows quiver)", "Combat", "icons/custom/hk-quiver-arrows.png", nullptr, "icons/custom/hk-quiver.png" },
+			{ "quiver-bolts", "hd-quiver-bolts", "Quiver: Bolts",
+			  "Open the quiver straight on your BOLTS - damage on every tile, click to nock (ammo bolts crossbow quiver)", "Combat", "icons/custom/hk-quiver-bolts.png", nullptr, "icons/custom/hk-quiver.png" },
+			// HUD widgets (2026-08-15): on-screen potion counts, gold and
+			// lockpicks riding the hotbar view. Same two-seed split as the
+			// hotbar: one shows/hides everything mid-play, the other opens the
+			// panel where you arrange them.
+			{ "widgets-toggle", "hd-widgets-toggle", "Widgets: Show/Hide",
+			  "Show or hide the on-screen HUD widgets - potion counts, gold, lockpicks - without changing how they are set up (widgets hud overlay counters)", "Utilities", "icons/custom/hk-widgets.png" },
+			{ "widgets-edit", "hd-widgets-edit", "Widgets: Set Up",
+			  "Open the widget editor - choose which widgets show (potions, gold, lockpicks), which potion pools the counter lists, and drag each one where you want it (widgets hud overlay configure move resize)", "Utilities", "icons/custom/hk-widgets-edit.png", nullptr, "icons/custom/hk-widgets.png" },
+			// Settlement (2026-08-15): deep-open the deck on the Settlement tab -
+			// place statics, furniture and camp gear from a searchable palette.
+			{ "settlement", "hd-settlement", "Settlement",
+			  "Place any static, furniture or camp object the load order ships - search, place at your crosshair, move or remove; build catalogs (object static furniture place spawn build settlement camp catalog)", "Utilities", "icons/custom/hk-settlement.png" },
+			// Campfire seeds (2026-08-15): each self-casts Campfire's own hotkey
+			// spell, so the mod's flow runs exactly as shipped. Filed in a
+			// "Camping" tab so the auto-populated camping actions group together.
+			// ONLY seeded when Campfire.esm is present (SeedCampMissingActions).
+			{ "camp-build", "hd-camp-build", "Build Campfire",
+			  "Place a campfire (Campfire's own build spell) - fire, warmth, cooking (camp campfire build fire)", "Camping", "icons/custom/hk-camp-build.png", "Campfire.esm" },
+			{ "camp-instincts", "hd-camp-instincts", "Instincts",
+			  "Campfire's Survival Instincts vision - highlights nearby resources and shelter (camp instincts survival vision)", "Camping", "icons/custom/hk-camp-instincts.png", "Campfire.esm" },
+			{ "camp-harvestwood", "hd-camp-harvestwood", "Harvest Wood",
+			  "Campfire's harvest-wood action - gather firewood from a tree or log (camp firewood harvest wood)", "Camping", "icons/custom/hk-camp-harvestwood.png", "Campfire.esm" },
+			{ "camp-createitem", "hd-camp-createitem", "Create Item",
+			  "Campfire's crafting menu - tents, cookware and camp gear from your materials (camp craft create tent)", "Camping", "icons/custom/hk-camp-createitem.png", "Campfire.esm" },
+			{ "camp-options", "hd-camp-options", "Options: Campfire",
+			  "Open Campfire's own configuration menu (camp campfire options settings config)", "Camping", "icons/custom/hk-camp-options.png", "Campfire.esm" },
+			// Hunterborn seeds (2026-08-15): each self-casts Hunterborn's own
+			// hotkey spell. ONLY seeded when Hunterborn.esp is present.
+			{ "hb-fielddress", "hd-hb-fielddress", "Field Dress",
+			  "Hunterborn: field-dress the carcass you're looking at - the first step before skinning (hunterborn field dress carcass hunt)", "Camping", "icons/custom/hk-hb-fielddress.png", "Hunterborn.esp" },
+			{ "hb-skin", "hd-hb-skin", "Skin",
+			  "Hunterborn: skin the carcass for pelts and leather (hunterborn skin pelt hide hunt)", "Camping", "icons/custom/hk-hb-skin.png", "Hunterborn.esp" },
+			{ "hb-harvest", "hd-hb-harvest", "Harvest",
+			  "Hunterborn: harvest meat, organs and materials from the carcass (hunterborn harvest meat butcher hunt)", "Camping", "icons/custom/hk-hb-harvest.png", "Hunterborn.esp" },
+			{ "hb-butcher", "hd-hb-butcher", "Butcher",
+			  "Hunterborn: butcher the carcass down (hunterborn butcher carcass meat hunt)", "Camping", "icons/custom/hk-hb-butcher.png", "Hunterborn.esp" },
+			{ "hb-process", "hd-hb-process", "Process",
+			  "Hunterborn: process/refine harvested materials (hunterborn process refine tan hunt)", "Camping", "icons/custom/hk-hb-process.png", "Hunterborn.esp" },
+			{ "hb-forage", "hd-hb-forage", "Forage",
+			  "Hunterborn: forage for plants and ingredients around you (hunterborn forage gather ingredients)", "Camping", "icons/custom/hk-hb-forage.png", "Hunterborn.esp" },
+			{ "hb-taxonomy", "hd-hb-taxonomy", "Taxonomy",
+			  "Hunterborn: study an animal to learn its taxonomy (hunterborn taxonomy study animal identify)", "Camping", "icons/custom/hk-hb-taxonomy.png", "Hunterborn.esp" },
+			{ "hb-scrimshaw", "hd-hb-scrimshaw", "Scrimshaw",
+			  "Hunterborn: carve scrimshaw from bones and antlers (hunterborn scrimshaw carve bone craft)", "Camping", "icons/custom/hk-hb-scrimshaw.png", "Hunterborn.esp" },
+			{ "hb-sensedir", "hd-hb-sensedir", "Sense Direction",
+			  "Hunterborn: sense which way you're facing - a survival compass (hunterborn sense direction compass navigate)", "Camping", "icons/custom/hk-hb-sensedir.png", "Hunterborn.esp" },
+			{ "hb-tracking", "hd-hb-tracking", "Tracking",
+			  "Hunterborn: track nearby animals by their trail (hunterborn tracking pathfinding trail hunt)", "Camping", "icons/custom/hk-hb-tracking.png", "Hunterborn.esp" },
+			{ "hb-primcook", "hd-hb-primcook", "Primitive Cooking",
+			  "Hunterborn: primitive cooking over a fire without a cookpot (hunterborn primitive cooking campfire cook)", "Camping", "icons/custom/hk-hb-primcook.png", "Hunterborn.esp" },
+			{ "hb-options", "hd-hb-options", "Options: Hunterborn",
+			  "Open Hunterborn's own configuration menu (hunterborn options settings config)", "Camping", "icons/custom/hk-hb-options.png", "Hunterborn.esp" },
 		};
 
 		// Plain key entries added in a new build. Keyed by ID rather than by a
@@ -2210,6 +3340,8 @@ namespace
 			const char*   label;
 			std::uint32_t mod;   // 0 = none
 			const char*   category;
+			// View-relative icon path, "" for none — same contract as Seed::icon.
+			const char*   icon = "";
 		};
 		// Seeded UNBOUND (code 0), for the same reason as DefaultConfig's
 		// keystroke rows: each one presses a key at ANOTHER mod, and only the
@@ -2219,26 +3351,52 @@ namespace
 		// labelled placeholder until F2 press-to-bind gives it a key.
 		static constexpr KeySeed kKeySeeds[] = {
 			{ "tailor-open", "Tailor (Outfits & Wigs)",
-			  "Opens Tailor's outfit/wig manager. Unbound - set this to the key Tailor is configured with.", 0, "", 0, "Followers" },
+			  "Opens Tailor's outfit/wig manager. Unbound - set this to the key Tailor is configured with.", 0, "", 0, "Followers", "icons/custom/hk-tailor.png" },
 			// OMO's Pick, as a deck button — fires the real key, so OMO's own
 			// pick filter applies (objects, not NPCs; the NPC path is Grab).
 			{ "omo-pick", "OMO: Pick Object",
-			  "Object Manipulation Overhaul picks up the item under your crosshair (decorating; NPCs use the Grab action). Unbound - set this to OMO's pick key from its KeyConfiguration.txt.", 0, "", 0, "Misc" },
+			  "Object Manipulation Overhaul picks up the item under your crosshair (decorating; NPCs use the Grab action). Unbound - set this to OMO's pick key from its KeyConfiguration.txt.", 0, "", 0, "Misc", "icons/custom/hk-omo-pick.png" },
 			// Two common combat keys, on the deck so they are clickable,
 			// searchable and re-bindable in one place. Whichever mod owns them
 			// reacts exactly as if the key had been pressed by hand.
 			{ "grip-switch", "Grip Switch (1H / 2H)",
-			  "Switches your weapon grip between one-handed and two-handed, if a mod of yours binds that (grip stance 1h 2h one handed two handed). Unbound - press F2 and set your key.", 0, "", 0, "Combat" },
+			  "Switches your weapon grip between one-handed and two-handed, if a mod of yours binds that (grip stance 1h 2h one handed two handed). Unbound - press F2 and set your key.", 0, "", 0, "Combat", "icons/custom/hk-grip-switch.png" },
 			{ "combat-kick", "Kick",
-			  "Fires your combat mod's kick (combat kick shove stagger knock back). Unbound - press F2 and set your key.", 0, "", 0, "Combat" },
+			  "Fires your combat mod's kick (combat kick shove stagger knock back). Unbound - press F2 and set your key.", 0, "", 0, "Combat", "icons/custom/hk-kick.png" },
 		};
 
 		bool changed = false;
 		for (const auto& k : kKeySeeds) {
-			const bool have = std::any_of(c.entries.begin(), c.entries.end(),
-				[&](const HotkeyEntry& e) { return e.id == k.id; });
+			// Existing rows: retro-decorate a BLANK icon (Rober, 2026-08-19:
+			// "review every hotkey and make sure each has a dedicated generated
+			// icon ... some are missing"). Configs older than a seed's icon
+			// stayed blank forever, because seeds only ever touched new rows. A
+			// non-empty icon is the user's own state and is never touched.
+			bool have = false;
+			for (auto& e : c.entries) {
+				if (e.id != k.id)
+					continue;
+				have = true;
+				if (e.icon.empty() && k.icon && *k.icon) {
+					std::string ic = k.icon;
+					if (ValidViewIconPath(ic)) {
+						logger::info("seed-icons: backfilled '{}' -> '{}' (was blank)", e.name, ic);
+						e.icon = std::move(ic);
+						changed = true;
+					}
+				}
+			}
 			if (have)
 				continue;
+			// The user deleted this seeded key row on purpose — honor it, same
+			// law as the action seeds below. The view records "key:<id>" (an id
+			// has no verb, so the prefix keeps it out of the action namespace;
+			// an older DLL simply never matches the prefixed string).
+			if (std::find(c.suppressedSeeds.begin(), c.suppressedSeeds.end(),
+					std::string("key:") + k.id) != c.suppressedSeeds.end()) {
+				logger::info("seed-suppress: key '{}' stays deleted by user choice", k.id);
+				continue;
+			}
 			if (std::find(c.categories.begin(), c.categories.end(), k.category) == c.categories.end())
 				c.categories.emplace_back(k.category);
 			HotkeyEntry e;
@@ -2251,14 +3409,45 @@ namespace
 			if (k.mod)
 				e.mods.push_back(k.mod);
 			e.category = k.category;
+			if (k.icon && *k.icon) {
+				std::string ic = k.icon;
+				if (ValidViewIconPath(ic))
+					e.icon = ic;
+			}
 			c.entries.push_back(std::move(e));
 			logger::info("seeded new hotkey '{}' into tab '{}'", k.name, k.category);
 			changed = true;
 		}
 
 		for (const auto& s : kSeeds) {
-			const bool have = std::any_of(c.entries.begin(), c.entries.end(),
-				[&](const HotkeyEntry& e) { return e.device == "action" && e.action == s.action; });
+			// Existing rows: two retro-decorations, both provably safe, applied
+			// to EVERY entry carrying this verb (duplicates included):
+			//  - a BLANK icon adopts the seed's — the row predates the icon in
+			//    the seed table, and seeds only ever decorated new rows;
+			//  - a row still wearing the seed's OLD shared default (s.oldIcon)
+			//    migrates to the dedicated glyph that replaced it.
+			// Anything else is an icon the user picked, and is never touched.
+			// (Rober, 2026-08-19: "make sure each has a dedicated generated icon".)
+			bool have = false;
+			for (auto& e : c.entries) {
+				if (e.device != "action" || e.action != s.action)
+					continue;
+				have = true;
+				if (!s.icon || !*s.icon)
+					continue;
+				const bool blank = e.icon.empty();
+				const bool oldDefault = !blank && s.oldIcon && *s.oldIcon &&
+				                        e.icon == s.oldIcon && e.icon != s.icon;
+				if (blank || oldDefault) {
+					std::string ic = s.icon;
+					if (ValidViewIconPath(ic) && ic != e.icon) {
+						logger::info("seed-icons: backfilled '{}' -> '{}' ({})",
+							e.name, ic, blank ? "was blank" : "old shared default");
+						e.icon = std::move(ic);
+						changed = true;
+					}
+				}
+			}
 			if (have)
 				continue;
 			// The user deleted this built-in on purpose — honor it. Without this
@@ -2266,6 +3455,15 @@ namespace
 			if (std::find(c.suppressedSeeds.begin(), c.suppressedSeeds.end(), s.action) != c.suppressedSeeds.end()) {
 				logger::info("seed-suppress: '{}' stays deleted by user choice", s.action);
 				continue;
+			}
+			// Mod-gated seed: a camp-*/hb-* camping action only lands when its
+			// owning mod is in the load order (TESDataHandler::LookupModByName).
+			// A player who later installs Campfire/Hunterborn gets the actions on
+			// the next launch; one who never does never sees a dead row.
+			if (s.requiresMod && *s.requiresMod) {
+				auto* dh = RE::TESDataHandler::GetSingleton();
+				if (!dh || !dh->LookupModByName(s.requiresMod))
+					continue;
 			}
 			// Put the tab back too if it was deleted, or the entry would land in
 			// a category the tab bar does not draw.
@@ -2289,6 +3487,12 @@ namespace
 				if (ValidViewIconPath(ic))
 					e.icon = ic;
 			}
+			// A Settlement-family seed (the deck-open action, or a mod-gated
+			// camp-*/hb-* camping action) logs a distinct marker so the deploy
+			// fingerprint proves the Settlement seeds shipped, separate from the
+			// generic line below (which every seed emits).
+			if (s.requiresMod || std::string(s.action) == "settlement")
+				logger::info("settlement: seeded camping action '{}' into tab '{}'", s.name, s.category);
 			c.entries.push_back(std::move(e));
 			logger::info("seeded new action entry '{}' into tab '{}' (icon '{}')", s.name, s.category, e.icon);
 			changed = true;
@@ -2411,6 +3615,36 @@ namespace
 					ContainerConfigFromJson(j["containers"], ctc);
 				else
 					ctc = DefaultContainerConfig();
+				// Auto-Loot: seed defaults, then overlay the slice if present
+				// (AutoLootConfigFromJson carries `out` as prior, so an absent key
+				// keeps the default — a fresh install or an old view is master-OFF).
+				AutoLootConfig alc = DefaultAutoLootConfig();
+				if (j.is_object() && j.contains("autoLoot"))
+					AutoLootConfigFromJson(j["autoLoot"], alc);
+				// Reached every launch, so it is a safe build marker AND the first
+				// thing to read when "my blacklist did nothing": it says whether the
+				// rules survived the round-trip at all.
+				logger::info("auto-loot: rules loaded — {} denied, {} allowed, {} deny-words, "
+							 "{} allow-words, {} floors, allowOnly={}",
+					alc.deny.size(), alc.allow.size(), alc.denyWords.size(),
+					alc.allowWords.size(), alc.catFloors.size(), alc.allowOnly);
+				logger::info("auto-loot: place rules — homeGuard={}, {} never-here, {} only-here, areaAllowOnly={}",
+					alc.homeGuard, alc.areaDeny.size(), alc.areaAllow.size(), alc.areaAllowOnly);
+				// Build marker AND the first line to read when "it isn't taking
+				// museum pieces": says which mode survived the round-trip.
+				logger::info("auto-loot: museum rule = {}", alc.lotd);
+				// Build marker AND the answer to "why did it stand down there":
+				// every situational guard and the reach shaping, in one line.
+				logger::info("auto-loot: when/where — combat={} drawn={} concealed={} towns={} "
+							 "indoorRadius={} vertical={} doorClamp={} every {}ms/{}ms",
+					alc.pauseInCombat, alc.pauseWeaponDrawn, alc.pauseConcealed, alc.townGuard,
+					alc.radiusIndoors, alc.verticalFactor, alc.doorClamp,
+					alc.intervalMs, alc.intervalIndoorsMs);
+				logger::info("auto-loot: harvest flora = {}", alc.harvestFlora);
+				logger::info("auto-loot: worth-the-weight — v/w>={} weightless>={} unknownIngredients={}",
+					alc.vwRatio, alc.weightlessMinValue, alc.unknownIngredients);
+				logger::info("auto-loot: veins+critters — mine={} needsPick={} strikes={} critters={}",
+					alc.mineOre, alc.miningNeedsPick, alc.maxMineStrikes, alc.harvestCritters);
 				Finance::Config fin;
 				Wardrobe::Config wd;
 				NffOutfits::Config nf;
@@ -2453,12 +3687,19 @@ namespace
 					Hotbar::FromJson(j["hotbar"], hb);
 				else
 					Hotbar::SeedDefaults(hb);
+				// SkyManager.ini escape hatch: overlay disk overrides onto the
+				// parsed settings AFTER json, BEFORE they go live. Logged
+				// unconditionally (0 when absent) so the literal is always reached
+				// and usable as a deploy marker (hd-markers.json: skymanager-ini).
+				const int iniOverrides = ApplyIniOverrides(c.settings);
+				logger::info("SkyManager.ini overrides: {}", iniOverrides);
 				std::lock_guard l(g_configMutex);
 				g_config = std::move(c);
 				g_magicConfig = std::move(m);
 				g_folConfig = std::move(f);
 				g_domConfig = std::move(d);
 				g_contConfig = std::move(ctc);
+				g_autoLootConfig = std::move(alc);
 				g_finConfig = std::move(fin);
 				g_wardrobeConfig = std::move(wd);
 				g_nffConfig = std::move(nf);
@@ -2479,8 +3720,15 @@ namespace
 						: 0));
 				logger::info("followers HUD: enabled={} orient={} key={} — config loaded",
 					g_hudConfig.enabled, g_hudConfig.orient, g_hudConfig.keyCode);
+				// Build marker (hd-markers.json: "hud-face-extras"). Unconditional
+				// so the deploy check always finds it reached, not just compiled.
+				logger::info("followers HUD extras: level={} dir={} bars hp={} st={} mk={}",
+					g_hudConfig.showLevel, g_hudConfig.showDir,
+					g_hudConfig.showHp, g_hudConfig.showSt, g_hudConfig.showMk);
+				// Build marker (hd-markers.json: "hud-face-shape"). Unconditional.
+				logger::info("followers HUD face shape: {}", g_hudConfig.faceShape);
 				logger::info("loaded {} hotkeys + {} spells from {}",
-					g_config.entries.size(), g_magicConfig.spells.size(), path.string());
+					g_config.entries.size(), g_magicConfig.spells.size(), PathU8(path));
 				// Build marker (hd-markers.json: "tab-scales"). Unconditional, so it is
 				// REACHED on every successful load -- a marker sitting inside an `if`
 				// that never fires is one the linker may strip and the deploy check can
@@ -2488,13 +3736,14 @@ namespace
 				logger::info("tab sizes: {} tab(s) with a size override", g_config.settings.tabScales.size());
 				return;
 			}
-			logger::error("{} is invalid JSON — using built-in defaults (file left untouched)", path.string());
+			logger::error("{} is invalid JSON — using built-in defaults (file left untouched)", PathU8(path));
 			std::lock_guard l(g_configMutex);
 			g_config = DefaultConfig();
 			g_magicConfig = DefaultMagicConfig();
 			g_folConfig = FollowerConfig{};
 			g_domConfig = DefaultDomainsConfig();
 			g_contConfig = DefaultContainerConfig();
+			g_autoLootConfig = DefaultAutoLootConfig();
 			g_finConfig = Finance::Config{};
 			g_wardrobeConfig = Wardrobe::Config{};
 			g_nffConfig = NffOutfits::Config{};
@@ -2504,7 +3753,7 @@ namespace
 			Hotbar::SeedDefaults(g_hbConfig);                      // 8 empty buttons on 1..8
 			return;
 		}
-		logger::info("no config at {} — writing seeded defaults", path.string());
+		logger::info("no config at {} — writing seeded defaults", PathU8(path));
 		{
 			std::lock_guard l(g_configMutex);
 			g_config = DefaultConfig();
@@ -2512,6 +3761,7 @@ namespace
 			g_folConfig = FollowerConfig{};
 			g_domConfig = DefaultDomainsConfig();
 			g_contConfig = DefaultContainerConfig();
+			g_autoLootConfig = DefaultAutoLootConfig();
 			g_finConfig = Finance::Config{};
 			g_wardrobeConfig = Wardrobe::Config{};
 			g_nffConfig = NffOutfits::Config{};
@@ -2747,6 +3997,7 @@ namespace
 		while (true) {
 			std::this_thread::sleep_for(500ms);
 			SKSE::GetTaskInterface()->AddTask([]() {
+				OpenDiag::TickTimer diag("room-guard");
 				bool        dirty = false;
 				std::string open;
 				{
@@ -2779,8 +4030,28 @@ namespace
 		while (true) {
 			std::this_thread::sleep_for(400ms);
 			SKSE::GetTaskInterface()->AddTask([]() {
+				OpenDiag::TickTimer diag("loot-glow");
 				std::lock_guard l(g_configMutex);
 				LootHighlight::Tick(g_lootConfig);
+			});
+		}
+	}
+
+	// Auto-Loot poller (clone of LootTickLoop): the thread only sleeps and posts;
+	// AutoLoot::Tick snapshots the config through its provider (which takes the
+	// lock itself), early-outs when disabled / paused / no player+cell, and takes
+	// up to a small per-tick budget of loose refs. NOT wrapped in the config lock
+	// here — Tick's provider does that; the engine work (Activate/RemoveItem) runs
+	// outside any lock, on the main thread inside the AddTask. Never re-posts
+	// itself (the AddTask self-repost freeze).
+	void AutoLootTickLoop()
+	{
+		using namespace std::chrono_literals;
+		while (true) {
+			std::this_thread::sleep_for(500ms);
+			SKSE::GetTaskInterface()->AddTask([]() {
+				OpenDiag::TickTimer diag("auto-loot");
+				AutoLoot::Tick();
 			});
 		}
 	}
@@ -2794,6 +4065,7 @@ namespace
 		while (true) {
 			std::this_thread::sleep_for(1000ms);
 			SKSE::GetTaskInterface()->AddTask([]() {
+				OpenDiag::TickTimer diag("no-auto-gear");
 				std::lock_guard l(g_configMutex);
 				NoAutoGear::Tick(g_ngConfig);
 			});
@@ -2816,12 +4088,27 @@ namespace
 		};
 		std::array<KeyState, kExtCount> ks{};
 
+		// PERF (2026-08-16, round two): this loop wakes 100 times a second and
+		// used to take g_configMutex on EVERY pass for two values that only move
+		// when the player edits the F13-F24 map in the deck's F2 mode. That is 100
+		// acquisitions a second on the plugin's busiest lock — the same one the
+		// MAIN thread wants for the room-guard, loot, auto-loot and no-auto-gear
+		// ticks, for the hotbar's live push and for every PersistAll snapshot — so
+		// the cost lands as main-thread wait that no census bucket would ever
+		// attribute back to this thread. Re-read on a ~200 ms beat instead: a
+		// rebind takes at most a fifth of a second to be honoured, which is a menu
+		// action nobody times, and the released-key bookkeeping below is immune
+		// either way because it replays the DIK captured at PRESS time.
+		bool                                 enabled = false;
+		std::array<std::uint32_t, kExtCount> map{};
+		int                                  cfgAgeMs = 0;  // 0 = read on the first pass
+
 		while (true) {
 			std::this_thread::sleep_for(kTick);
 
-			bool                                 enabled;
-			std::array<std::uint32_t, kExtCount> map;
-			{
+			cfgAgeMs -= static_cast<int>(kTick.count());
+			if (cfgAgeMs <= 0) {
+				cfgAgeMs = 200;
 				std::lock_guard l(g_configMutex);
 				enabled = g_config.settings.extEnabled;
 				map = g_config.settings.extMap;
@@ -2894,6 +4181,7 @@ namespace
 		std::thread(RoomGuardTickLoop).detach();
 		std::thread(LootTickLoop).detach();
 		std::thread(NoAutoGearTickLoop).detach();
+		std::thread(AutoLootTickLoop).detach();  // Auto-Loot: the 500ms nearby-loot vacuum poller
 
 		// Keys tab: how the scan learns the deck's OWN claims (open key +
 		// every entry trigger). Called at scan time under the config lock, so
@@ -2923,6 +4211,180 @@ namespace
 				out.push_back(KeysScan::OwnBinding{ e.name, e.trigCode, std::move(mods) });
 			}
 			return out;
+		});
+
+		// Container Auto-Sort: how the engine loop reads the live rules/pins/inbox
+		// without touching g_contConfig itself. Called at op time (Unload/Sort/
+		// state); takes the config lock here so UnloadTo/SortDropBox never hold it
+		// across a RemoveItem. Mirrors KeysScan's own-keys provider exactly.
+		ContainerSort::SetConfigProvider([]() {
+			ContainerSort::Snapshot snap;
+			std::lock_guard         l(g_configMutex);
+			int                     order = 0;
+			for (const auto& m : g_contConfig.marks) {
+				ContainerSort::MarkSnap ms;
+				ms.id = m.id;
+				ms.name = m.name;
+				ms.category = m.category;
+				ms.plugin = m.plugin;
+				ms.localId = m.localId;
+				ms.rule = m.sortRule;
+				ms.safeAcknowledged = m.safeAcknowledged;
+				ms.lend = m.lend;
+				ms.redirectTo = m.redirectTo;
+				// The redirect hook needs the DESTINATION's home cell + pose to be
+				// able to summon it, and those live only on the mark — so hand the
+				// engine the mark exactly as the config writes it.
+				ms.markJson = ContMarkToJson(m).dump(-1, ' ', false,
+					json::error_handler_t::replace);
+				ms.order = order++;
+				snap.marks.push_back(std::move(ms));
+			}
+			snap.inboxMarkId = g_contConfig.sort.inboxMarkId;
+			for (const auto& p : g_contConfig.sort.pins)
+				snap.pins.push_back({ p.plugin, p.markId, p.localId });
+			snap.excludeEquipped = g_contConfig.sort.excludeEquipped;
+			snap.excludeFavorited = g_contConfig.sort.excludeFavorited;
+			snap.excludeQuest = g_contConfig.sort.excludeQuest;
+			snap.keepGold = g_contConfig.sort.keepGold;
+			snap.sortOnClose = g_contConfig.sort.sortOnClose;
+			snap.loan = g_contConfig.sort.loan;
+			for (const auto& o : g_contConfig.sort.overrides)
+				snap.overrides.push_back({ o.plugin, o.localId, o.types });
+			return snap;
+		});
+
+		// A sweep the user did not press a button for — the drop-box sorting itself
+		// on close, a crafting loan at a bench — still reports itself to the view, so
+		// the Containers tab shows what moved the next time it is opened.
+		ContainerSort::SetResultSink([](const std::string& payload) {
+			PushToView("csResult", payload);
+		});
+
+		// Auto-Loot: how the poller/scan reads the live `autoLoot` slice without
+		// touching g_autoLootConfig itself (the same provider discipline). Called
+		// every ~500ms from the tick; takes the config lock only to copy the slice.
+		AutoLoot::SetConfigProvider([]() {
+			AutoLoot::Snapshot s;
+			std::lock_guard    l(g_configMutex);
+			const auto&        c = g_autoLootConfig;
+			s.enabled = c.enabled;
+			s.radius = c.radius;
+			s.dest = c.dest;
+			s.questGuard = c.questGuard;
+			s.toastRare = c.toastRare;
+			s.valueFloor = c.valueFloor;
+			s.corpses = c.corpses;
+			s.clearGlow = c.clearGlow;
+			s.allowOnly = c.allowOnly;
+			s.weightGuard = c.weightGuard;
+			s.weightPct = c.weightPct;
+			s.homeGuard = c.homeGuard;
+			s.lotd = c.lotd == "only"     ? AutoLoot::Snapshot::Lotd::Only :
+			         c.lotd == "always"   ? AutoLoot::Snapshot::Lotd::Always :
+			                                AutoLoot::Snapshot::Lotd::Off;
+			s.pauseInCombat = c.pauseInCombat;
+			s.pauseWeaponDrawn = c.pauseWeaponDrawn;
+			s.pauseConcealed = c.pauseConcealed;
+			s.townGuard = c.townGuard == "settlements" ? AutoLoot::Snapshot::Towns::Settlements :
+			              c.townGuard == "towns"       ? AutoLoot::Snapshot::Towns::Towns :
+			              c.townGuard == "cities"      ? AutoLoot::Snapshot::Towns::Cities :
+			                                             AutoLoot::Snapshot::Towns::Off;
+			s.radiusIndoors = c.radiusIndoors;
+			s.verticalFactor = c.verticalFactor;
+			s.doorClamp = c.doorClamp;
+			s.intervalMs = c.intervalMs;
+			s.intervalIndoorsMs = c.intervalIndoorsMs;
+			s.harvestFlora = c.harvestFlora;
+			s.vwRatio = c.vwRatio;
+			s.weightlessMinValue = c.weightlessMinValue;
+			s.unknownIngredients = c.unknownIngredients;
+			s.harvestCritters = c.harvestCritters;
+			s.mineOre = c.mineOre;
+			s.miningNeedsPick = c.miningNeedsPick;
+			s.maxMineStrikes = c.maxMineStrikes;
+			s.areaAllowOnly = c.areaAllowOnly;
+			s.areaDeny.clear();
+			s.areaDeny.reserve(c.areaDeny.size());
+			for (const auto& e : c.areaDeny)
+				s.areaDeny.push_back(AutoLoot::Snapshot::ItemRef{ e.plugin, e.localId });
+			s.areaAllow.clear();
+			s.areaAllow.reserve(c.areaAllow.size());
+			for (const auto& e : c.areaAllow)
+				s.areaAllow.push_back(AutoLoot::Snapshot::ItemRef{ e.plugin, e.localId });
+			// The display `name` is deliberately NOT copied: the engine matches on
+			// identity only, so the snapshot stays small and a stale cached name
+			// can never influence a take.
+			s.deny.clear();
+			s.deny.reserve(c.deny.size());
+			for (const auto& e : c.deny)
+				s.deny.push_back(AutoLoot::Snapshot::ItemRef{ e.plugin, e.localId });
+			s.allow.clear();
+			s.allow.reserve(c.allow.size());
+			for (const auto& e : c.allow)
+				s.allow.push_back(AutoLoot::Snapshot::ItemRef{ e.plugin, e.localId });
+			s.denyWords = c.denyWords;
+			s.allowWords = c.allowWords;
+			s.catFloors = c.catFloors;
+			s.lootOwned = false;  // never steal
+			s.coins = c.cats.coins;
+			s.gems = c.cats.gems;
+			s.potions = c.cats.potions;
+			s.food = c.cats.food;
+			s.ingredients = c.cats.ingredients;
+			s.soulgems = c.cats.soulgems;
+			s.scrolls = c.cats.scrolls;
+			s.ammo = c.cats.ammo;
+			s.books = c.cats.books;
+			s.valuables = c.cats.valuables;
+			s.gear = c.cats.gear;
+			s.keys = c.cats.keys;
+			s.lockpicks = c.cats.lockpicks;
+			return s;
+		});
+
+		// Auto-Loot dest resolver: a markId → the live container ref (nullptr for
+		// "player" or an unreachable/gone id) + its display name + reachability. The
+		// markId's identity (plugin, localId) is read under the lock; the ref
+		// resolution (ContainerActions::ResolveRef) is a main-thread engine call, so
+		// this resolver is only ever invoked from inside an AddTask (the tick / a
+		// bridge handler). Never held across the resolve.
+		AutoLoot::SetDestResolver([](const std::string& markId) {
+			AutoLoot::DestResolve dr;
+			if (markId.empty() || markId == "player")
+				return dr;  // player route
+			std::string plugin, name;
+			std::uint32_t localId = 0;
+			{
+				std::lock_guard l(g_configMutex);
+				for (const auto& m : g_contConfig.marks) {
+					if (m.id != markId)
+						continue;
+					dr.known = true;
+					plugin = m.plugin;
+					localId = m.localId;
+					name = m.name;
+					break;
+				}
+			}
+			dr.name = name;
+			if (!dr.known)
+				return dr;
+			auto* ref = ContainerActions::ResolveRef(plugin, localId);
+			if (ref && ref->GetContainer()) {
+				dr.ref = ref;
+				dr.reachable = true;
+			}
+			return dr;
+		});
+
+		// Auto-Loot master toggler: flips g_autoLootConfig.enabled under the lock and
+		// returns the NEW value, so AutoLoot::ToggleMaster stays out of the config
+		// struct. The caller persists after (outside the lock).
+		AutoLoot::SetMasterToggler([]() {
+			std::lock_guard l(g_configMutex);
+			g_autoLootConfig.enabled = !g_autoLootConfig.enabled;
+			return g_autoLootConfig.enabled;
 		});
 	}
 
@@ -3008,6 +4470,7 @@ namespace
 	void OnJsHistoryClear(const char* data);  // Recent tab: forget it       // v0.15.0 quick recruit / dismiss / inventory
 	void OnJsFolEquipped(const char* data);  // v0.15.0 the worn set, read off the engine
 	void OnJsItemSpin(const char* data);     // bake the turntable for one worn piece
+	void OnJsSpin(const char* data);         // hdSpin: bake item/face turntable, reply hdSpinState
 	void OnJsFolTune(const char* data);      // v0.15.1 essential / health / shared spells
 	void OnJsFolRank(const char* data);      // the player's RELA rank: read, and set
 	void OnJsFolRefresh(const char* data);
@@ -3029,6 +4492,16 @@ namespace
 	// Followers HUD — defined far below (after the portrait helpers it reuses),
 	// but registered on the deck view and pushed on deck-open, both above.
 	void        OnJsHudCfg(const char* data);
+	// Round 3 (2026-08-17): the Home tab's UI-elements cards — one state
+	// snapshot for every on-screen element, and a per-widget toggle. Requests
+	// hdUiState / hdWidgetToggle, reply hdUiStateData (one name per direction).
+	void        OnJsUiState(const char* data);
+	void        OnJsWidgetToggle(const char* data);
+	// 2026-08-19: the merged "Equipped widget" row in that drawer — master,
+	// orientation, size, lock and linking, relayed into the HUD view's own
+	// group functions (request hdWidgetGrp; there is no reply of its own, the
+	// HUD's save pushes fresh hdUiStateData).
+	void        OnJsWidgetGrp(const char* data);
 	void        HudPushDeckState();
 	std::string HudDeckStateJson();
 	// The live teammate/faction follower scan — defined far below with the HUD
@@ -3047,6 +4520,14 @@ namespace
 	void        ShowCrtAlert(std::string culprit, std::string message);
 	void        HbToggleVisible();
 	void        HbOpenEdit();
+	// HUD widgets — defined in the hotbar block far below (they share its
+	// view), but FireAction (a long way above it) dispatches the two seeded
+	// actions, so they need declaring here (the C2065 trap — see 3c015dc).
+	void        WgOpenEdit();
+	void        WgToggleAll();
+	// Time Dial — defined in the HUD block far below; FireAction dispatches
+	// the seeded `time-dial` action, so it needs the decl here too.
+	void        TdToggleDial();
 	void        OnJsFolCropSave(const char* data);
 	bool        PrunePortraitCrops();
 	// Same reason: the crosshair snapshot goes out with the open payload, so the
@@ -3072,6 +4553,7 @@ namespace
 	void OnJsWheelInv(const char* data);
 	void OnJsWheelAct(const char* data);
 	void OnJsWheelIcons(const char* data);
+	void OnJsIconRetry(const char* data);
 	// Domains tab (pd* bridge on the deck view) forward decls.
 	void OnJsPlaceMark(const char* data);
 	void OnJsPlaceRecall(const char* data);
@@ -3089,6 +4571,28 @@ namespace
 	void OnJsContPhoto(const char* data);
 	void OnJsContRefresh(const char* data);
 	void OnJsContLog(const char* data);
+	// Container Auto-Sort (cs* bridge on the deck view): rule-tag chests, Unload,
+	// drop-box Sort, per-item pins, respawn-safety verdicts.
+	void OnJsCsSaveRule(const char* data);
+	void OnJsCsSetInbox(const char* data);
+	void OnJsCsPin(const char* data);
+	void OnJsCsSaveOpts(const char* data);
+	void OnJsCsUnload(const char* data);
+	void OnJsCsRetrieve(const char* data);
+	void OnJsCsSweepAll(const char* data);
+	void OnJsCsGather(const char* data);
+	void OnJsCsOverride(const char* data);
+	void OnJsCsSortNow(const char* data);
+	void OnJsCsState(const char* data);
+	void OnJsCsRevalidate(const char* data);
+	// Auto-Loot (al* bridge on the deck view): configurable loose-item pickup to
+	// the player or a marked container. alGet/alSave/alToggle/alState/alScanNow.
+	void OnJsAlGet(const char* data);
+	void OnJsAlSave(const char* data);
+	void OnJsAlHere(const char*);
+	void OnJsAlToggle(const char* data);
+	void OnJsAlState(const char* data);
+	void OnJsAlScanNow(const char* data);
 	// Door lock modal (dr* bridge on the deck view): drSet→drResult, drRefresh→drTarget.
 	void OnJsDoorSet(const char* data);
 	void OnJsDoorRefresh(const char* data);
@@ -3109,18 +4613,107 @@ namespace
 	void OnJsKeysResult(const char* data);
 	void OnJsItemsState(const char* data);
 	void OnJsItemsQuery(const char* data);
+	void OnJsItemsPick(const char* data);
 	void OnJsItemsAdd(const char* data);
 	void OnJsItemsSave(const char* data);
+	void OnJsItemEditGet(const char* data);
+	void OnJsItemEditApply(const char* data);
+	void OnJsItemEditRevert(const char* data);
+	void OnJsItemEditList(const char* data);
+	void OnJsItemEditEnch(const char* data);
+	void OnJsSpellEditQuery(const char* data);
+	void OnJsSpellEditGet(const char* data);
+	void OnJsSpellEditApply(const char* data);
+	void OnJsSpellEditRevert(const char* data);
+	void OnJsSpellEditList(const char* data);
+	void OnJsPlayerTuneGet(const char* data);
+	void OnJsPlayerTuneSet(const char* data);
+	void OnJsWeatherList(const char* data);
+	void OnJsWeatherSet(const char* data);
+	void OnJsNpcTuneGet(const char* data);
+	void OnJsNpcTuneApply(const char* data);
+	void OnJsNpcTuneRevert(const char* data);
+	void OnJsCombatArtsState(const char* data);
+	void OnJsCombatArtsAct(const char* data);
+	void OnJsCombatArtsSave(const char* data);
 	void OnJsNpcFinderSave(const char* data);
 	void OnJsNpcFinderState(const char* data);
 	void OnJsNpcFinderQuery(const char* data);
 	void OnJsNpcFinderAct(const char* data);
 	void OnJsNpcFinderIcons(const char* data);
+	void OnJsPartyScan(const char* data);
+	void OnJsNpcInspect(const char* data);
+	// Distributions tab (dx* bridge on the deck view — spid_inspect.cpp).
+	void OnJsDistrState(const char* data);
+	void OnJsDistrQuery(const char* data);
+	void OnJsDistrLeveled(const char* data);
+	void OnJsDistrOpenFile(const char* data);
+	void OnJsDistrReport(const char* data);
+	void OnJsDistrBlock(const char* data);
+	void OnJsDistrBlocks(const char* data);
+	// Settlement tab (st* bridge on the deck view). Defined with the Items/NPCs
+	// handlers far below; forward-declared here for the registration block.
+	// Survival popout (sv* bridge on the deck view).
+	void OnJsSurvivalState(const char* data);
+	void OnJsSurvivalAct(const char* data);
+	void OnJsSurvivalLayoutGet(const char* data);
+	void OnJsSurvivalLayout(const char* data);
+
+	void PumpSettlementIndex();
+	void OnJsSettlementState(const char* data);
+	void OnJsSettlementQuery(const char* data);
+	void OnJsSettlementAct(const char* data);
+	void OnJsSettlementSpin(const char* data);
+	void OnJsSettlementSave(const char* data);
+	void OnJsSettlementCat(const char* data);
+	void OnJsSettlementPlaced(const char* data);
+	// Potion Browser (pb* bridge on the deck view). Requests pbList/pbUse/
+	// pbSave; replies pbListData/pbUseResult/pbSaved — disjoint per the deck
+	// law. Defined with the Items handlers far below.
+	void OnJsPbList(const char* data);
+	void OnJsPbUse(const char* data);
+	void OnJsPbSave(const char* data);
+	void OnJsPbCombo(const char* data);
+	// Quiver (qv* bridge on the deck view). Requests qvList/qvUse/qvSave;
+	// replies qvListData/qvUseResult/qvSaved — disjoint per the deck law.
+	// Defined with the Items handlers far below.
+	void OnJsQvList(const char* data);
+	void OnJsQvUse(const char* data);
+	void OnJsQvSave(const char* data);
 	// Mounts tab (mt* bridge on the deck view).
 	void OnJsMountsState(const char* data);
 	void OnJsMountsSpells(const char* data);
 	void OnJsMountsAct(const char* data);
 	void OnJsMountsIcons(const char* data);
+	// Transmog tab (tg* bridge on the deck view). Requests tgState/tgList/
+	// tgDonors/tgApply/tgRevert; replies tgStateResult/tgListData/
+	// tgDonorsData/tgApplyResult/tgRevertResult — disjoint per the deck law.
+	void OnJsTgState(const char* data);
+	void OnJsTgList(const char* data);
+	void OnJsTgDonors(const char* data);
+	void OnJsTgApply(const char* data);
+	void OnJsTgRevert(const char* data);
+	void OnJsTgStats(const char* data);
+	// Wigs tab (wv* bridge on the deck view). Requests wvState/wvMods/wvQuery/
+	// wvUse/wvSave; replies wvStateResult/wvModsData/wvResultData/wvUseResult/
+	// wvSaved — disjoint per the deck law. Defined with the Items handlers far
+	// below.
+	// Journal tab (jr* bridge). Forward decls: the handlers are defined with the
+	// other file-work handlers far below, but they are REGISTERED up in
+	// StartExtBridge — without these the registration does not compile. (Added
+	// 2026-08-15 while landing another session's in-flight Journal work that a
+	// shared-checkout `git add` swept into a commit.)
+	void OnJsJournalOpen(const char* data);
+	void OnJsJournalSave(const char* data);
+	void OnJsJournalImages(const char* data);
+	void OnJsJournalDropImage(const char* data);
+	void OnJsJournalPhoto(const char* data);
+
+	void OnJsWigsState(const char* data);
+	void OnJsWigsMods(const char* data);
+	void OnJsWigsQuery(const char* data);
+	void OnJsWigsUse(const char* data);
+	void OnJsWigsSave(const char* data);
 	void OnJsTimeWait(const char* data);
 	void OnJsRoomSave(const char* data);
 	void OnJsRoomLog(const char* data);
@@ -3131,6 +4724,10 @@ namespace
 	void OnJsLootToggle(const char* data);
 	void OnJsLootState(const char* data);
 	void OnJsLootLog(const char* data);
+	// High King tab (kg* bridge on the deck view) forward decls.
+	void OnJsHighKingState(const char* data);
+	void OnJsHighKingAct(const char* data);
+	void OnJsHighKingTax(const char* data);
 	void OnJsNgGet(const char* data);
 	void OnJsNgSave(const char* data);
 	void OnJsNgToggle(const char* data);
@@ -3141,6 +4738,8 @@ namespace
 	// SPID Gear (sg* bridge on the deck view, F7 card) forward decls.
 	void OnJsSgGet(const char* data);
 	void OnJsSgInbox(const char* data);
+	void OnJsSgAdd(const char* data);
+	void OnJsSgFaces(const char* data);
 	void OnJsSgRemove(const char* data);
 	void OnJsSgChance(const char* data);
 	void OnJsSgAll(const char* data);
@@ -3158,6 +4757,16 @@ namespace
 	void OnJsBflSet(const char* data);
 	void OnJsFxGet(const char* data);
 	void OnJsFxSet(const char* data);
+	// Spell Crafting tab (FESC bridge, sc*). See spellcraft_actions.h.
+	void OnJsScState(const char* data);
+	void OnJsScOpen(const char* data);
+	void OnJsScCraft(const char* data);
+	void OnJsScErase(const char* data);
+	void OnJsScLearn(const char* data);
+	void OnJsScSettings(const char* data);
+	void OnJsScTome(const char* data);
+	void OnJsScIcon(const char* data);
+	void OnJsScDeck(const char* data);
 	// Character Sheet tab (ps* bridge on the deck view) forward decls.
 	// request psGet -> reply psData; psRemoveEffect -> psResult + psData;
 	// psSetMeta -> psResult + psData (one name per direction, deck law).
@@ -3189,6 +4798,12 @@ namespace
 	void OnJsOstimFurn(const char* data);
 	void OnJsOstimSwap(const char* data);
 	void OnJsOstimLog(const char* data);
+	// ZaZ segment of the Animations tab (zz* bridge on the deck view).
+	void OnJsZazGet(const char* data);
+	void OnJsZazPoll(const char* data);
+	void OnJsZazAct(const char* data);
+	void OnJsZazUse(const char* data);
+	void OnJsZazLog(const char* data);
 	// Finances tab (fin* bridge on the deck view) forward decls.
 	void OnJsFinGet(const char* data);
 	void OnJsSharmatCall(const char* data);
@@ -3423,6 +5038,39 @@ namespace
 		return sz != kCatIconEmptyBytes;
 	}
 
+	// ---------------------------------------------------------- containers --
+	// The phone's Containers queue. Same three laws as the category-icon bridge
+	// above: SEEDED before launch (MO2 snapshots its file listing at launch, so a
+	// file the portal has to CREATE mid-session is invisible to the running game),
+	// TRUNCATED rather than deleted after each batch, and size-gated so the poll
+	// costs one stat().
+	void EnsureContainersBridge(bool force)
+	{
+		const auto      file = DeckViewDir() / "portal-containers.json";
+		std::error_code ec;
+		if (!force && std::filesystem::exists(file, ec))
+			return;
+		std::filesystem::create_directories(DeckViewDir(), ec);
+		static const std::string kEmpty = R"({"version":1,"ops":[]})";
+		std::ofstream            out(file, std::ios::binary | std::ios::trunc);
+		if (!out.is_open()) {
+			logger::warn("portal containers: could not seed the bridge file");
+			return;
+		}
+		out << kEmpty;
+	}
+
+	constexpr std::size_t kContainersEmptyBytes = sizeof(R"({"version":1,"ops":[]})") - 1;
+
+	bool ContainersQueuePending()
+	{
+		std::error_code ec;
+		const auto      sz = std::filesystem::file_size(DeckViewDir() / "portal-containers.json", ec);
+		if (ec)
+			return false;
+		return sz != kContainersEmptyBytes;
+	}
+
 	std::filesystem::path MagicViewDir();  // defined with the magic-view plumbing below
 
 	// The SPELL DECK's category-glyph queue — same laws as the follower one above
@@ -3458,6 +5106,7 @@ namespace
 
 	bool ApplyPortalPortraits();
 	bool ApplyPortalCatIcons();
+	bool ApplyPortalContainers();
 	void OnJsFolFraming(const char*);
 	void OnJsFolSetFraming(const char*);
 	void FramingReply();
@@ -3628,6 +5277,14 @@ namespace
 		 * lightbox was dragged). No reply — the view derives and probes the
 		 * angle-frame URLs itself, exactly like Dragon Roost's drSpin. */
 		g_prisma->RegisterJSListener(g_view, "fdItemSpin", OnJsItemSpin);
+		/* hdSpin in, hdSpinState out — the shared lightbox's turntable
+		 * (items AND faces). Unlike fdItemSpin this one ANSWERS, with the
+		 * frames that exist on disk, because Ultralight cannot be trusted to
+		 * re-probe a URL it has already seen missing (and its query-string
+		 * cache-bust does not load at all) — the view only ever shows a frame
+		 * this reply named. Polling = re-sending hdSpin; every path is
+		 * dedup-safe. */
+		g_prisma->RegisterJSListener(g_view, "hdSpin", OnJsSpin);
 		/* fdTune in, fdTuneInfo out — disjoint names, per the deck law. */
 		g_prisma->RegisterJSListener(g_view, "fdTune", OnJsFolTune);
 		g_prisma->RegisterJSListener(g_view, "fdRank", OnJsFolRank);
@@ -3651,10 +5308,17 @@ namespace
 		// Followers HUD control (the card in the Followers tab). hudCfg in,
 		// hudCfgState out — the two-names-per-direction deck law.
 		g_prisma->RegisterJSListener(g_view, "hudCfg", OnJsHudCfg);
+		g_prisma->RegisterJSListener(g_view, "hdUiState", OnJsUiState);
+		g_prisma->RegisterJSListener(g_view, "hdWidgetToggle", OnJsWidgetToggle);
+		g_prisma->RegisterJSListener(g_view, "hdWidgetGrp", OnJsWidgetGrp);
 		// Wheel Menu (v0.16): the player's carryables, and using one.
 		g_prisma->RegisterJSListener(g_view, "whInv", OnJsWheelInv);
 		g_prisma->RegisterJSListener(g_view, "whAct", OnJsWheelAct);
 		g_prisma->RegisterJSListener(g_view, "whIcons", OnJsWheelIcons);
+		// whIconRetry: the same payload, but it first forgets the failure verdict
+		// so a dead-end tile can be asked again (2026-08-15: a wig and a face sat
+		// on their placeholders forever because nothing recorded the failure).
+		g_prisma->RegisterJSListener(g_view, "whIconRetry", OnJsIconRetry);
 		// Domains tab (v0.9.0): mark & recall, same deck view.
 		g_prisma->RegisterJSListener(g_view, "pdMark", OnJsPlaceMark);
 		g_prisma->RegisterJSListener(g_view, "pdRecall", OnJsPlaceRecall);
@@ -3681,6 +5345,31 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "ctPhoto", OnJsContPhoto);
 		g_prisma->RegisterJSListener(g_view, "ctRefresh", OnJsContRefresh);
 		g_prisma->RegisterJSListener(g_view, "ctLog", OnJsContLog);
+		// Container Auto-Sort (2026-08-15): cs* — disjoint from ct*. JS→C++ request
+		// names only; C++→JS replies (csStateResult / csResult / csSaved / csOpen)
+		// are never registered (a shared name clobbers the handler — the deck law).
+		g_prisma->RegisterJSListener(g_view, "csSaveRule", OnJsCsSaveRule);
+		g_prisma->RegisterJSListener(g_view, "csSetInbox", OnJsCsSetInbox);
+		g_prisma->RegisterJSListener(g_view, "csPin", OnJsCsPin);
+		g_prisma->RegisterJSListener(g_view, "csSaveOpts", OnJsCsSaveOpts);
+		g_prisma->RegisterJSListener(g_view, "csUnload", OnJsCsUnload);
+		g_prisma->RegisterJSListener(g_view, "csRetrieve", OnJsCsRetrieve);
+		g_prisma->RegisterJSListener(g_view, "csSweepAll", OnJsCsSweepAll);
+		g_prisma->RegisterJSListener(g_view, "csGather", OnJsCsGather);
+		g_prisma->RegisterJSListener(g_view, "csOverride", OnJsCsOverride);
+		g_prisma->RegisterJSListener(g_view, "csSortNow", OnJsCsSortNow);
+		g_prisma->RegisterJSListener(g_view, "csState", OnJsCsState);
+		g_prisma->RegisterJSListener(g_view, "csRevalidate", OnJsCsRevalidate);
+		// Auto-Loot: JS→C++ request names only; the C++→JS replies (alStateData /
+		// alResult / alSaved / alOpen) are disjoint per the bridge law and never
+		// registered. NOTE: alState is a JS→C++ REQUEST here; its reply is the
+		// separately-named alStateData push (a shared name would clobber the handler).
+		g_prisma->RegisterJSListener(g_view, "alGet", OnJsAlGet);
+		g_prisma->RegisterJSListener(g_view, "alSave", OnJsAlSave);
+		g_prisma->RegisterJSListener(g_view, "alHere", OnJsAlHere);
+		g_prisma->RegisterJSListener(g_view, "alToggle", OnJsAlToggle);
+		g_prisma->RegisterJSListener(g_view, "alState", OnJsAlState);
+		g_prisma->RegisterJSListener(g_view, "alScanNow", OnJsAlScanNow);
 		// Door lock modal: F7 on a door -> lock / unlock at a chosen level.
 		g_prisma->RegisterJSListener(g_view, "drSet", OnJsDoorSet);
 		g_prisma->RegisterJSListener(g_view, "drRefresh", OnJsDoorRefresh);
@@ -3705,8 +5394,77 @@ namespace
 		// per the deck law.
 		g_prisma->RegisterJSListener(g_view, "ixState", OnJsItemsState);
 		g_prisma->RegisterJSListener(g_view, "ixQuery", OnJsItemsQuery);
+		// The SHARED item picker (auto-loot rule lists, auto-sort pin routes) runs
+		// the Item Explorer's own index and query — but it must answer on its OWN
+		// reply name. `ixResultData` already has an owner (items-pane.js), and the
+		// bridge law is one listener per name: a second consumer would clobber the
+		// Items tab's results the moment a picker was open behind it.
+		g_prisma->RegisterJSListener(g_view, "ixPick", OnJsItemsPick);
 		g_prisma->RegisterJSListener(g_view, "ixAdd", OnJsItemsAdd);
 		g_prisma->RegisterJSListener(g_view, "ixSave", OnJsItemsSave);
+		// Finder Modify sheet (Item Edit — PROTEUS-class base-record editing).
+		// Requests ieGet/ieApply/ieRevert/ieList/ieEnch; replies ieGetResult/
+		// ieApplyResult/ieRevertResult/ieListResult/ieEnchResult — disjoint
+		// per the deck law.
+		g_prisma->RegisterJSListener(g_view, "ieGet", OnJsItemEditGet);
+		g_prisma->RegisterJSListener(g_view, "ieApply", OnJsItemEditApply);
+		g_prisma->RegisterJSListener(g_view, "ieRevert", OnJsItemEditRevert);
+		g_prisma->RegisterJSListener(g_view, "ieList", OnJsItemEditList);
+		g_prisma->RegisterJSListener(g_view, "ieEnch", OnJsItemEditEnch);
+		// Spellcraft Modify sub-tab (Spell Edit — item_edit's twin for spells).
+		// Requests sxQuery/sxGet/sxApply/sxRevert/sxList; replies sxResultData/
+		// sxGetResult/sxApplyResult/sxRevertResult/sxListResult.
+		g_prisma->RegisterJSListener(g_view, "sxQuery", OnJsSpellEditQuery);
+		g_prisma->RegisterJSListener(g_view, "sxGet", OnJsSpellEditGet);
+		g_prisma->RegisterJSListener(g_view, "sxApply", OnJsSpellEditApply);
+		g_prisma->RegisterJSListener(g_view, "sxRevert", OnJsSpellEditRevert);
+		g_prisma->RegisterJSListener(g_view, "sxList", OnJsSpellEditList);
+		// Time tab's Sky card (weather picker). Requests tmWeatherList/
+		// tmWeatherSet; replies tmWeatherListData/tmWeatherResult.
+		g_prisma->RegisterJSListener(g_view, "tmWeatherList", OnJsWeatherList);
+		g_prisma->RegisterJSListener(g_view, "tmWeatherSet", OnJsWeatherSet);
+		// NPC Tune modal (F7 quick card). Requests ntGet/ntApply/ntRevert;
+		// replies ntGetResult/ntApplyResult/ntRevertResult.
+		g_prisma->RegisterJSListener(g_view, "ntGet", OnJsNpcTuneGet);
+		g_prisma->RegisterJSListener(g_view, "ntApply", OnJsNpcTuneApply);
+		g_prisma->RegisterJSListener(g_view, "ntRevert", OnJsNpcTuneRevert);
+		// Journal tab. Requests jrOpen/jrSave/jrImages/jrDropImage/jrPhoto;
+		// replies jrData/jrSaved/jrImagesData/jrDropped — disjoint per the deck
+		// law (jrPhoto answers through the picture pool, not a reply of its own:
+		// the shot lands as a file the next jrImages poll reports).
+		g_prisma->RegisterJSListener(g_view, "jrOpen", OnJsJournalOpen);
+		g_prisma->RegisterJSListener(g_view, "jrSave", OnJsJournalSave);
+		g_prisma->RegisterJSListener(g_view, "jrImages", OnJsJournalImages);
+		g_prisma->RegisterJSListener(g_view, "jrDropImage", OnJsJournalDropImage);
+		g_prisma->RegisterJSListener(g_view, "jrPhoto", OnJsJournalPhoto);
+		// Spell Crafting tab (FESC). Requests scState/scOpen/scCraft/scErase/
+		// scLearn/scSettings/scTome/scIcon/scDeck; replies scStateResult/
+		// scOpenData/scCraftResult/scEraseResult/scLearnResult/scSettingsResult/
+		// scTomeResult/scIconResult/scDeckResult — disjoint per the deck law.
+		g_prisma->RegisterJSListener(g_view, "scState", OnJsScState);
+		g_prisma->RegisterJSListener(g_view, "scOpen", OnJsScOpen);
+		g_prisma->RegisterJSListener(g_view, "scCraft", OnJsScCraft);
+		g_prisma->RegisterJSListener(g_view, "scErase", OnJsScErase);
+		g_prisma->RegisterJSListener(g_view, "scLearn", OnJsScLearn);
+		g_prisma->RegisterJSListener(g_view, "scSettings", OnJsScSettings);
+		g_prisma->RegisterJSListener(g_view, "scTome", OnJsScTome);
+		g_prisma->RegisterJSListener(g_view, "scIcon", OnJsScIcon);
+		g_prisma->RegisterJSListener(g_view, "scDeck", OnJsScDeck);
+		// Combat Arts moved to the SPELL DECK view on 2026-08-15 — its ca*
+		// listeners are registered on g_magicView (EnsureMagicView below), not
+		// here, because a listener is per-view and the deck no longer hosts
+		// that pane.
+		// Potion Browser (the paused popout). Requests pbList/pbUse/pbSave;
+		// replies pbListData/pbUseResult/pbSaved — disjoint per the deck law.
+		g_prisma->RegisterJSListener(g_view, "pbList", OnJsPbList);
+		g_prisma->RegisterJSListener(g_view, "pbUse", OnJsPbUse);
+		g_prisma->RegisterJSListener(g_view, "pbSave", OnJsPbSave);
+		g_prisma->RegisterJSListener(g_view, "pbCombo", OnJsPbCombo);
+		// Quiver (the ammo radial). Requests qvList/qvUse/qvSave; replies
+		// qvListData/qvUseResult/qvSaved — disjoint per the deck law.
+		g_prisma->RegisterJSListener(g_view, "qvList", OnJsQvList);
+		g_prisma->RegisterJSListener(g_view, "qvUse", OnJsQvUse);
+		g_prisma->RegisterJSListener(g_view, "qvSave", OnJsQvSave);
 		// NPCs tab (NPC Finder). Requests nxState/nxQuery/nxAct/nxIcons;
 		// replies nxStateResult/nxResultData/nxActResult/nxIconsData —
 		// disjoint per the deck law.
@@ -3715,6 +5473,40 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "nxAct", OnJsNpcFinderAct);
 		g_prisma->RegisterJSListener(g_view, "nxIcons", OnJsNpcFinderIcons);
 		g_prisma->RegisterJSListener(g_view, "nxSave", OnJsNpcFinderSave);
+		// Party sheet (read-only live stats for the teammates around you).
+		// Request ptyScan; reply ptyData — disjoint per the deck law.
+		g_prisma->RegisterJSListener(g_view, "ptyScan", OnJsPartyScan);
+		// Inspect card (the LIVE actor, unlike the Finder's record-level detail).
+		// Request niInspect; reply niInspectData — disjoint per the deck law.
+		g_prisma->RegisterJSListener(g_view, "niInspect", OnJsNpcInspect);
+		// Distributions tab (SPID / SkyPatcher candidate pool for the crosshair
+		// NPC). Requests dxState/dxQuery; replies dxStateResult/dxResultData —
+		// disjoint per the deck law. Both response-style: the pane always asks
+		// first, so no boot stub is needed.
+		g_prisma->RegisterJSListener(g_view, "dxState", OnJsDistrState);
+		g_prisma->RegisterJSListener(g_view, "dxQuery", OnJsDistrQuery);
+		g_prisma->RegisterJSListener(g_view, "dxLeveled", OnJsDistrLeveled);
+		g_prisma->RegisterJSListener(g_view, "dxBlock", OnJsDistrBlock);
+		g_prisma->RegisterJSListener(g_view, "dxBlocks", OnJsDistrBlocks);
+		g_prisma->RegisterJSListener(g_view, "dxOpenFile", OnJsDistrOpenFile);
+		g_prisma->RegisterJSListener(g_view, "dxReport", OnJsDistrReport);
+		// Settlement tab (the world-object placer). Requests stState/stQuery/
+		// stAct/stSpin/stSave/stCat/stPlaced; replies stStateResult/stResultData/
+		// stActResult/stSaved/stCatResult/stPlacedResult (stSpin pushes no reply).
+		// Icon requests reuse whIcons (icons/items/) — no st-icon bridge.
+		// Survival popout. Requests svState/svAct; replies svStateResult/
+		// svActResult — disjoint per the deck law. Renders reuse whIcons.
+		g_prisma->RegisterJSListener(g_view, "svState", OnJsSurvivalState);
+		g_prisma->RegisterJSListener(g_view, "svAct", OnJsSurvivalAct);
+		g_prisma->RegisterJSListener(g_view, "svLayoutGet", OnJsSurvivalLayoutGet);
+		g_prisma->RegisterJSListener(g_view, "svLayout", OnJsSurvivalLayout);
+		g_prisma->RegisterJSListener(g_view, "stState", OnJsSettlementState);
+		g_prisma->RegisterJSListener(g_view, "stQuery", OnJsSettlementQuery);
+		g_prisma->RegisterJSListener(g_view, "stAct", OnJsSettlementAct);
+		g_prisma->RegisterJSListener(g_view, "stSpin", OnJsSettlementSpin);
+		g_prisma->RegisterJSListener(g_view, "stSave", OnJsSettlementSave);
+		g_prisma->RegisterJSListener(g_view, "stCat", OnJsSettlementCat);
+		g_prisma->RegisterJSListener(g_view, "stPlaced", OnJsSettlementPlaced);
 		// Mounts tab (the stable). Requests mtState/mtSpells/mtAct/mtIcons;
 		// replies mtStateResult/mtSpellsData/mtActResult/mtIconsData —
 		// disjoint, same law.
@@ -3722,6 +5514,23 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "mtSpells", OnJsMountsSpells);
 		g_prisma->RegisterJSListener(g_view, "mtAct", OnJsMountsAct);
 		g_prisma->RegisterJSListener(g_view, "mtIcons", OnJsMountsIcons);
+		// Transmog tab. Requests tgState/tgList/tgDonors/tgApply/tgRevert;
+		// replies tgStateResult/tgListData/tgDonorsData/tgApplyResult/
+		// tgRevertResult — disjoint per the deck law.
+		g_prisma->RegisterJSListener(g_view, "tgState", OnJsTgState);
+		g_prisma->RegisterJSListener(g_view, "tgList", OnJsTgList);
+		g_prisma->RegisterJSListener(g_view, "tgDonors", OnJsTgDonors);
+		g_prisma->RegisterJSListener(g_view, "tgApply", OnJsTgApply);
+		g_prisma->RegisterJSListener(g_view, "tgRevert", OnJsTgRevert);
+		g_prisma->RegisterJSListener(g_view, "tgStats", OnJsTgStats);
+		// Wigs tab. Requests wvState/wvMods/wvQuery/wvUse/wvSave; replies
+		// wvStateResult/wvModsData/wvResultData/wvUseResult/wvSaved —
+		// disjoint per the deck law.
+		g_prisma->RegisterJSListener(g_view, "wvState", OnJsWigsState);
+		g_prisma->RegisterJSListener(g_view, "wvMods", OnJsWigsMods);
+		g_prisma->RegisterJSListener(g_view, "wvQuery", OnJsWigsQuery);
+		g_prisma->RegisterJSListener(g_view, "wvUse", OnJsWigsUse);
+		g_prisma->RegisterJSListener(g_view, "wvSave", OnJsWigsSave);
 		g_prisma->RegisterJSListener(g_view, "rgSave", OnJsRoomSave);
 		g_prisma->RegisterJSListener(g_view, "rgLog", OnJsRoomLog);
 		g_prisma->RegisterJSListener(g_view, "rgRing", OnJsRoomRing);
@@ -3752,6 +5561,16 @@ namespace
 		// Pack Check chip -> per-category potion modal. Request psPackList(cat),
 		// reply psPackListData(payload) — disjoint names, one per direction.
 		g_prisma->RegisterJSListener(g_view, "psPackList", OnJsSheetPackList);
+		// Character sheet Tune modal (Player Tune — base-AV editor).
+		// Requests psTuneGet/psTuneSet; replies psTuneData/psTuneResult.
+		g_prisma->RegisterJSListener(g_view, "psTuneGet", OnJsPlayerTuneGet);
+		g_prisma->RegisterJSListener(g_view, "psTuneSet", OnJsPlayerTuneSet);
+
+		// High King tab. Requests kgState/kgAct/kgTax; replies kgStateResult/
+		// kgActResult — disjoint per the deck law (one name per direction).
+		g_prisma->RegisterJSListener(g_view, "kgState", OnJsHighKingState);
+		g_prisma->RegisterJSListener(g_view, "kgAct", OnJsHighKingAct);
+		g_prisma->RegisterJSListener(g_view, "kgTax", OnJsHighKingTax);
 
 		g_prisma->RegisterJSListener(g_view, "ltGet", OnJsLootGet);
 		g_prisma->RegisterJSListener(g_view, "ltSave", OnJsLootSave);
@@ -3771,6 +5590,8 @@ namespace
 		// replies sgState/sgResult.
 		g_prisma->RegisterJSListener(g_view, "sgGet", OnJsSgGet);
 		g_prisma->RegisterJSListener(g_view, "sgInbox", OnJsSgInbox);
+		g_prisma->RegisterJSListener(g_view, "sgAdd", OnJsSgAdd);
+		g_prisma->RegisterJSListener(g_view, "sgFaces", OnJsSgFaces);
 		g_prisma->RegisterJSListener(g_view, "sgRemove", OnJsSgRemove);
 		g_prisma->RegisterJSListener(g_view, "sgChance", OnJsSgChance);
 		g_prisma->RegisterJSListener(g_view, "sgAll", OnJsSgAll);
@@ -3799,6 +5620,12 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "osFurn", OnJsOstimFurn);
 		g_prisma->RegisterJSListener(g_view, "osSwap", OnJsOstimSwap);
 		g_prisma->RegisterJSListener(g_view, "osLog", OnJsOstimLog);
+		// ZaZ segment: requests zz*, replies zzOpen/zzState/zzResult.
+		g_prisma->RegisterJSListener(g_view, "zzGet", OnJsZazGet);
+		g_prisma->RegisterJSListener(g_view, "zzPoll", OnJsZazPoll);
+		g_prisma->RegisterJSListener(g_view, "zzAct", OnJsZazAct);
+		g_prisma->RegisterJSListener(g_view, "zzUse", OnJsZazUse);
+		g_prisma->RegisterJSListener(g_view, "zzLog", OnJsZazLog);
 		g_prisma->RegisterJSListener(g_view, "pdCapture", OnJsCapture);  // shares g_capturing
 		g_prisma->RegisterJSListener(g_view, "pdNpcList", OnJsPlaceNpcList);  // Summon NPC here: roster
 		g_prisma->RegisterJSListener(g_view, "pdNpcTo", OnJsPlaceNpcTo);      // Summon NPC here: move
@@ -4032,37 +5859,138 @@ namespace
 	// running at full FPS — buttery cursor — while time/AI/physics are frozen.
 	std::atomic<bool> g_worldFrozen{ false };
 
-	// Console command on the MAIN thread (CompileAndRun touches game state). Same
-	// pattern as PortraitCapture::RunConsole.
-	void RunConsoleCmd(const char* cmd)
-	{
-		auto* factory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::Script>();
-		auto* script  = factory ? factory->Create() : nullptr;
-		if (!script)
-			return;
-		script->SetCommand(cmd);
-		script->CompileAndRun(nullptr);
-		delete script;
-	}
-
 	// Idempotent. sgtm 0 == world frozen, sgtm 1 == normal. Restored on every
 	// close path (ClosePalette / ForceClosePalettes / the 1 s watchdog) and before
 	// a load, so the player can never be stranded frozen. Restore forces 1.0 (the
 	// standard menu behaviour); a mod running permanent slow-mo is the one edge
 	// this does not preserve, and is vanishingly rare.
+	//
+	// DIRECT ENGINE CALL, deliberately not a console command (2026-08-17, the
+	// smooth-wedge triage): this used to build an RE::Script and CompileAndRun
+	// "sgtm 0/1", which drags the script compiler AND every console-hooking mod
+	// on the install into the smooth-only path — third-party code we cannot see,
+	// sitting exactly where the Nexus freeze lives, twice per open/close cycle.
+	// BSTimer::SetGlobalTimeMultiplier is what the console command resolves to
+	// anyway; calling it removes that whole class of suspects. The remaining
+	// smooth-only surface is PrismaUI's Focus with the game left running, which
+	// the wedge sentinel covers.
+	// ⛔ NEVER EXACTLY ZERO. 2026-08-17, from the one fact that finally narrowed
+	// this: TEN other PrismaUI mods are installed on this rig (CHIM, OStim Prism,
+	// Tailor, MARA, Prisma MCM Redux, Sanguine's Trade, Dragon Roost, Conquest of
+	// Skyrim, OutfitCyclerUI) and none of them wedge — and `Focus(view, pauseGame
+	// = false)` is PrismaUI's own DEFAULT, so they are all using the very path we
+	// had blamed. The unpaused focus is therefore NOT the differential. What only
+	// this mod does is stop game time dead while a view holds that focus.
+	//
+	// A multiplier of exactly 0 means anything in the engine — or in PrismaUI —
+	// that waits on game time to advance waits FOREVER. A hair above zero keeps
+	// every such clock ticking while the world stays frozen to the eye: at 0.005,
+	// ten seconds in the menu is fifty milliseconds of world time, which is less
+	// than one frame of animation.
+	//
+	// This is the best-supported hypothesis, not a proven fix — the decisive test
+	// is to turn smooth pause back on and spam the open key, which is what
+	// produced both confirmed wedges.
+	constexpr float kFrozenMult = 0.005f;
+
 	void FreezeWorld(bool freeze)
 	{
 		if (freeze == g_worldFrozen.load())
 			return;
-		RunConsoleCmd(freeze ? "sgtm 0" : "sgtm 1");
+		if (auto* timer = RE::BSTimer::GetSingleton())
+			timer->SetGlobalTimeMultiplier(freeze ? kFrozenMult : 1.0f, true);
 		g_worldFrozen = freeze;
-		logger::info("smooth-pause: world {} (sgtm)", freeze ? "frozen" : "resumed");  // marker: smooth-pause-sgtm
+		logger::info("smooth-pause: world {} (sgtm {})", freeze ? "frozen" : "resumed",
+			freeze ? kFrozenMult : 1.0f);  // marker: smooth-pause-sgtm
 	}
 
 	bool SmoothPauseOn()
 	{
 		std::lock_guard l(g_configMutex);
 		return g_config.settings.smoothPause;
+	}
+
+	// ---- smooth-pause wedge sentinel (Nexus, Ank164 confirmed 2026-08-17) ------
+	// The "freezes ~10 s on press / freezes solid" reports stop the moment
+	// smoothPause is off — Ank164 proved it by hand-editing hotkeys.json. The only
+	// thing smooth mode does differently is Focus(view, pauseGame=FALSE) plus the
+	// sgtm calls, so on those installs PrismaUI's UNPAUSED focus path wedges the
+	// render/main thread where the classic menu pause never does. We cannot
+	// reproduce it on this rig and cannot fix PrismaUI from this side, so the deck
+	// defends itself instead:
+	//
+	//   * a hang while smooth is engaged drops a flag file (from the watchdog
+	//     thread — the main thread is the thing that is hung);
+	//   * the NEXT launch consumes the flag, flips the setting to the classic
+	//     menu pause, persists it, and tells the player in-game;
+	//   * a stall that RECOVERS in-session (the 10 s shape) flips it right away.
+	//
+	// Worst case becomes ONE freeze, instead of a bricked mod plus a hand edit of
+	// hotkeys.json. Re-enabling smooth pause in Settings is always allowed — the
+	// flag is consumed, never a standing override.
+	std::filesystem::path SmoothWedgeFlagPath()
+	{
+		return std::filesystem::path("Data") / "SKSE" / "Plugins" / "HotkeyDeck" / "smooth-wedge.flag";
+	}
+
+	// Watchdog-thread safe: touches only the filesystem and the logger.
+	void WriteSmoothWedgeFlag(const char* phase)
+	{
+		std::error_code ec;
+		std::filesystem::create_directories(SmoothWedgeFlagPath().parent_path(), ec);
+		std::ofstream out(SmoothWedgeFlagPath(), std::ios::trunc);
+		if (out)
+			out << phase << '\n';
+		logger::warn("smooth-wedge: {} blocked while smooth pause was engaged - flagged; "
+		             "the next launch falls back to the classic menu pause", phase);  // marker: smooth-wedge-sentinel
+	}
+
+	// Set when a previous session's flag was consumed; the once-a-second tick
+	// delivers the notification once a save is actually loaded (kDataLoaded is
+	// the main menu, where DebugNotification is lost).
+	std::atomic<bool> g_smoothWedgeNotify{ false };
+
+	// Main thread, in-session: the wedge released instead of hanging for good.
+	// Flip to classic now — the player should not have to eat a second stall.
+	void SmoothWedgeFallbackNow(const char* where, std::int64_t ms)
+	{
+		{
+			std::lock_guard l(g_configMutex);
+			if (!g_config.settings.smoothPause)
+				return;
+			g_config.settings.smoothPause = false;
+		}
+		std::error_code ec;
+		std::filesystem::remove(SmoothWedgeFlagPath(), ec);  // handled in-session
+		PersistAll();
+		logger::warn("smooth-wedge: {} took {} ms with smooth pause engaged - switched to "
+		             "the classic menu pause and saved it", where, ms);
+		RE::DebugNotification("SkyManager: smooth pause stalled on this setup - switched to the classic menu pause (re-enable it in Settings to retry).");
+	}
+
+	// kDataLoaded, right after LoadConfig(): a wedge flagged by a previous session
+	// (usually one the player had to kill) forces the fallback before the open key
+	// can freeze them again.
+	void ConsumeSmoothWedgeFlag()
+	{
+		std::error_code ec;
+		if (!std::filesystem::exists(SmoothWedgeFlagPath(), ec))
+			return;
+		std::filesystem::remove(SmoothWedgeFlagPath(), ec);
+		bool wasOn;
+		{
+			std::lock_guard l(g_configMutex);
+			wasOn = g_config.settings.smoothPause;
+			g_config.settings.smoothPause = false;
+		}
+		// A stale flag with smooth already off (the in-session fallback beat us,
+		// or an INI override) is just cleaned up — no rewrite, no notification.
+		if (wasOn) {
+			PersistAll();
+			g_smoothWedgeNotify = true;
+		}
+		logger::warn("smooth-wedge: flag from a previous session - smooth pause is now OFF "
+		             "(classic menu pause); the player will be told once in-game");
 	}
 
 	// The single focus+pause routine every site funnels through. In smooth mode a
@@ -4121,6 +6049,7 @@ namespace
 		const std::string iconList = DeckCustomIconsJson();
 		std::string payload, fcfg, domPayload, roomPayload, contPayload;
 		bool        pause;
+		bool        smoothNow = false;
 		bool        cropsPruned = false;
 		{
 			std::lock_guard l(g_configMutex);
@@ -4148,6 +6077,7 @@ namespace
 			// pane can offer Claim with a suggested name the moment it is shown.
 			roomPayload = RoomGuard::OpenJson(g_roomConfig);
 			pause = g_config.settings.pauseOnOpen;
+			smoothNow = g_config.settings.smoothPause;
 		}
 		if (cropsPruned)
 			PersistAll();   // outside the lock: PersistAll takes it itself
@@ -4163,10 +6093,35 @@ namespace
 		OpenDiag::LogMs("open prep (portal appliers + icon scan + config serialize)",
 			OpenDiag::NowMs() - diagT0, 800);
 		const auto diagT1 = OpenDiag::NowMs();
-		g_open = true;
-		g_prisma->Show(g_view);
-		FocusDeck(pause);   // smooth pause (sgtm 0 + unpaused focus) or classic menu pause
-		OpenDiag::LogMs("show + focus", OpenDiag::NowMs() - diagT1, 800);
+		// Smooth-wedge sentinel: this scope is EXACTLY the smooth mechanism
+		// (Show + unpaused Focus + sgtm) — nothing else runs inside it, so a hang
+		// here while smooth is engaged implicates smooth and only smooth. The
+		// broader wdOpen above stays log-only: the payload pushes after this can
+		// be slow for their own reasons and must never cost anyone the setting.
+		const bool willSmooth = pause && smoothNow;
+		{
+			std::function<void()> onBlocked;
+			if (willSmooth)
+				onBlocked = []() { WriteSmoothWedgeFlag("palette open (show + focus)"); };
+			OpenDiag::Watchdog wdFocus("show + focus", 2500, std::move(onBlocked));
+			g_open = true;
+			g_prisma->Show(g_view);
+			FocusDeck(pause);   // smooth pause (sgtm 0 + unpaused focus) or classic menu pause
+		}
+		const auto showFocusMs = OpenDiag::NowMs() - diagT1;
+		OpenDiag::LogMs("show + focus", showFocusMs, 800);
+		// The stall RECOVERED (Ank164's ~10 s shape) — don't wait for a relaunch.
+		if (willSmooth && showFocusMs >= 2500) {
+			SmoothWedgeFallbackNow("palette open (show + focus)", showFocusMs);
+			// The open payload was serialized BEFORE the flip and goes to the view
+			// below; OnJsSave replaces the config wholesale, so a settings save from
+			// this open would resurrect smoothPause=true from the stale snapshot.
+			// Rebuild it so the view and the config agree (trap-1 discipline).
+			std::lock_guard l(g_configMutex);
+			json cj = ConfigToJson(g_config);
+			cj["detected"] = DetectedModsJson();
+			payload = cj.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
 		// Cooperative half of the search-box fix: mods that check textEntryCount
 		// hold their hotkeys while we own the keyboard. Guarded so it cannot leak.
 		SetTextInputGuard(true);
@@ -4237,6 +6192,12 @@ namespace
 		// Containers tab: its slice + the crosshair-container snapshot taken above.
 		g_prisma->Invoke(g_view, ("ctOpen(" + contPayload + ")").c_str());
 		g_prisma->Invoke(g_view, ("ctTarget(" + ContainerActions::TargetJson() + ")").c_str());
+		// Container Auto-Sort state, pushed UNPROMPTED at open (needs an hd-boot
+		// STUB): rules + pins + inbox + opts + live respawn-safety verdicts.
+		g_prisma->Invoke(g_view, ("csOpen(" + ContainerSort::StateJson() + ")").c_str());
+		// Auto-Loot config + live runtime state, pushed UNPROMPTED at open (needs an
+		// hd-boot STUB): full slice + destName/destResolvable + last-tick picked.
+		g_prisma->Invoke(g_view, ("alOpen(" + AutoLoot::StateJson() + ")").c_str());
 		// Opened while looking at a DOOR -> the lock modal raises itself over
 		// whatever tab loads (hd-door.js auto-opens on a fresh non-null push;
 		// a null push closes any stale modal from the previous open).
@@ -4304,9 +6265,17 @@ namespace
 		struct InFlightGuard { ~InFlightGuard() { g_openInFlight = false; } } _inflight;
 		// open-diag: the freeze-solid-on-close report (Ank164) — if Unfocus/Hide
 		// blocks on a sick renderer, the watchdog thread says so in the log even
-		// though this thread never comes back to say it itself.
+		// though this thread never comes back to say it itself. When this open ran
+		// under smooth pause (the world is frozen right now), a hang here also
+		// drops the smooth-wedge flag: "third press freezes solid" is the close
+		// leg of the same PrismaUI unpaused-focus wedge, and the flag is the only
+		// thing a killed session leaves behind for the next launch to act on.
 		const auto      diagT0 = OpenDiag::NowMs();
-		OpenDiag::Watchdog wdClose("palette close (Unfocus/Hide)", 2000);
+		const bool      wasSmooth = g_worldFrozen.load();
+		std::function<void()> onCloseBlocked;
+		if (wasSmooth)
+			onCloseBlocked = []() { WriteSmoothWedgeFlag("palette close (Unfocus/Hide)"); };
+		OpenDiag::Watchdog wdClose("palette close (Unfocus/Hide)", 2000, std::move(onCloseBlocked));
 		g_capturing = false;  // hdClosed() clears the JS capture without notifying us
 		g_prisma->Invoke(g_view, "hdClosed()");
 		g_prisma->Unfocus(g_view);
@@ -4314,7 +6283,11 @@ namespace
 		g_focusPaused = false;
 		FreezeWorld(false);   // never leave the world frozen after a close
 		SetTextInputGuard(false);
-		OpenDiag::LogMs("palette close", OpenDiag::NowMs() - diagT0, 800);
+		const auto closeMs = OpenDiag::NowMs() - diagT0;
+		OpenDiag::LogMs("palette close", closeMs, 800);
+		// Recovered stall on the close leg: same in-session fallback as the open.
+		if (wasSmooth && closeMs >= 2000)
+			SmoothWedgeFallbackNow("palette close (Unfocus/Hide)", closeMs);
 	}
 
 	// Unconditional close. ClosePalette()/CloseMagicPalette() both bail out when
@@ -4335,7 +6308,14 @@ namespace
 	//
 	// So: ignore the flags, tell PrismaUI to let go, and put the flags back in
 	// sync with reality afterwards.
-	void ForceClosePalettes(const char* why)
+	void HudApplyVisibility();   // defined with the HUD block below
+	void HudPushConfig();
+	// The other two claimants on the HUD view's Focus, also below: the Time
+	// Dial and compact-browse. The rescue verb has to be able to stand both
+	// down, or "let go of EVERYTHING" would leave a Focused overlay behind.
+	void TdCloseDial(bool fromView);
+	void HudNavStop(const char* why, bool fromView);
+	void ForceClosePalettes(const char* why, bool releaseHudEdit = true)
 	{
 		if (!g_prisma)
 			return;
@@ -4359,6 +6339,43 @@ namespace
 		g_magicOpen       = false;
 		g_focusPaused     = false;
 		g_magicFocusPaused = false;
+		// The HUD's reposition mode holds focus on ITS view — on 2026-08-18 a
+		// buried Done button stranded the player there and this rescue could
+		// not reach it, so killing the game was the only way out. Never again:
+		// the rescue verb means "let go of EVERYTHING", HUD edit included.
+		// Build marker (hd-markers.json: "hud-edit-rescue").
+		// The RESCUE verbs (LiveApi close-view, the Esc panics) release the HUD
+		// view unconditionally — the flag desyncs, so they must not trust it
+		// (Opus verification, 2026-08-18). The WATCHDOG's desync calls pass
+		// releaseHudEdit=false: "palette open while another view holds the
+		// keyboard" is the NORMAL state one second into a legitimate
+		// reposition (the HUD view holds focus on purpose), and tearing edit
+		// mode down from here was exactly the "i hit reposition and have no
+		// mouse control" play-test bug — the move menu died ~2s after opening.
+		if (releaseHudEdit) {
+			// The Time Dial and compact-browse hold this same view's Focus.
+			// Unfocusing underneath them would leave their FLAGS set — a dial
+			// that thinks it is open and a browse mode that thinks it owns the
+			// keyboard, both invisible and neither reachable. Close them
+			// PROPERLY first (both are self-guarded no-ops when not up), so the
+			// rescue leaves consistent state rather than orphans.
+			// ⚠ The WATCHDOG never reaches here (it passes releaseHudEdit=false),
+			// so a legitimate dial/browse session is never shot from a timer —
+			// only by an explicit rescue.
+			// Called unconditionally: both are early-return no-ops when their
+			// state is already closed, and their flags live further down this
+			// file than this function does.
+			TdCloseDial(false);
+			HudNavStop("force-close", false);
+			if (g_hudEditing.exchange(false))
+				logger::warn("force-close: hud edit force-ended");
+			if (g_hudView && g_hudViewReady.load()) {
+				g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
+				g_prisma->Unfocus(g_hudView);
+			}
+			HudApplyVisibility();
+			HudPushConfig();   // saved placement, not an interrupted drag's
+		}
 		FreezeWorld(false);        // the rescue must also thaw a frozen world
 		SetTextInputGuard(false);  // never strand the engine's text-entry refcount
 	}
@@ -4378,6 +6395,11 @@ namespace
 		// (an unforeseen close, a mod force-hiding our view) within a second.
 		if (g_worldFrozen.load() && !g_open.load() && !g_magicOpen.load())
 			FreezeWorld(false);
+		// Deliver the smooth-wedge fallback notice once a save is loaded — at
+		// kDataLoaded (where the flag is consumed) the player is on the main menu
+		// and a DebugNotification evaporates unseen.
+		if (g_smoothWedgeNotify.load() && g_gameReady.load() && g_smoothWedgeNotify.exchange(false))
+			RE::DebugNotification("SkyManager: smooth pause froze the last session - switched to the classic menu pause (re-enable it in Settings to retry).");
 		if (!PalettesDesynced()) {
 			g_desyncTicks = 0;
 			return;
@@ -4395,7 +6417,8 @@ namespace
 			                       ViewOpenButUnfocused(g_magicView, g_magicOpen.load());
 			ForceClosePalettes(unfocused
 				? "watchdog: palette OPEN but another view holds the keyboard"
-				: "watchdog: view shown but palette flag says closed");
+				: "watchdog: view shown but palette flag says closed",
+				/*releaseHudEdit=*/ false);
 		}
 	}
 
@@ -4688,6 +6711,22 @@ namespace
 			return;
 		}
 
+		// Trade (Rober, 2026-08-17: "a open merchant / trade button when hitting
+		// f7 on an npc"). Opens the vanilla barter menu, or her pack when she is
+		// a companion/spouse — QuickTrade's own rule. Two things this must NOT
+		// do, both learned elsewhere in this file: the palette closes FIRST
+		// (Papyrus does not run while it holds the game paused, and the menu we
+		// asked for must not open UNDER the deck — the same reason the fdNpc
+		// container ops close), and it deliberately does NOT reopen, because
+		// reopening would paint the palette straight back over the barter menu.
+		if (TradeActions::IsAction(action)) {
+			SKSE::GetTaskInterface()->AddTask([action]() {
+				ClosePalette();
+				TradeActions::Fire(action);
+			});
+			return;
+		}
+
 		// Party orders + MHiYH home (Rober, 2026-08-14: "bindable actions we
 		// hook from NFF and MHIYH"). Every verb here is NffControl::Apply /
 		// MhiyhControl::Apply — the deck adds a key, never a reimplementation.
@@ -4784,6 +6823,69 @@ namespace
 			return;
 		}
 
+		// Super Searcher: a palette surface like the Item Explorer above, but a
+		// POPOUT token, not a tab — the view's hdShowTab router special-cases
+		// "supersearch" into hd-super.js (panel hidden, omni dressed as the
+		// widget). Same deep-open road, same toggle-when-up semantics.
+		if (action == "super-search") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"supersearch\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				logger::info("super searcher: deep-open");  // marker: super-search
+				g_pendingTab = "supersearch";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// Journal: same palette-surface shape as the Item Explorer above — deep-
+		// open the deck on the Journal tab, or just switch to it when it is up.
+		if (action == "journal") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"journal\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "journal";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// Combat Arts: the pane moved INTO the Spell Deck view on 2026-08-15
+		// (Rober: "combat arts is meant to be a spell deck tab not a main
+		// skymanager tab"), so this action opens THAT window on its Combat Arts
+		// page. Already open there = just switch the page; otherwise it is the
+		// same handoff the Spells launcher does (deck closes first — PrismaUI
+		// focus is single-view).
+		if (action == "combat-arts") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				logger::info("combat-arts: opening the Spell Deck on its Combat Arts page");
+				if (g_magicOpen.load()) {
+					if (g_prisma && g_magicViewReady.load())
+						g_prisma->Invoke(g_magicView, "mdShowPage(\"arts\")");
+					return;
+				}
+				g_magicPendingPage = "arts";
+				if (g_open.load()) {
+					OnJsOpenSpells("arts");   // closes the deck, then opens the Spell Deck
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				EnsureMagicViewAndOpen();
+			});
+			return;
+		}
+
 		// NPC Finder: same shape, the NPCs tab.
 		if (action == "npc-finder") {
 			SKSE::GetTaskInterface()->AddTask([]() {
@@ -4795,6 +6897,126 @@ namespace
 				if (!CanOpenNow())
 					return;
 				g_pendingTab = "npcs";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// High King: same palette-surface shape — deep-open the deck on the
+		// High King tab (or just switch to it if the deck is already up).
+		if (action == "highking") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"highking\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "highking";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// Kingdom: Collect Taxes — dispatch into KingdomTaxManager (the mod's
+		// own weekly collection). The result is a notification either way; no
+		// palette reopen (the flow runs in the Papyrus VM — a paused palette
+		// would starve it, the AddItemMenu law).
+		if (action == "hk-collect-taxes") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				ClosePalette();
+				const auto res = json::parse(HighKing::ActJson("collect"), nullptr, false);
+				const auto msg = res.is_object() ? res.value("msg", std::string("")) : std::string("");
+				if (!msg.empty())
+					RE::DebugNotification(msg.c_str());
+			});
+			return;
+		}
+
+		// Kingdom: Teleport to Highreach — self-cast the mod's OWN recall spell
+		// (AAKingTeleportSpell 0x05FDF6: first cast saves a return marker and
+		// moves you to Highreach, the next brings you back). Gated on actually
+		// knowing the spell: casting an unearned royal power would hand out the
+		// keep before the mod does.
+		if (action == "hk-highreach-tp") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				auto* dh = RE::TESDataHandler::GetSingleton();
+				auto* spell = dh ? dh->LookupForm<RE::SpellItem>(0x05FDF6, HighKing::kPlugin) : nullptr;
+				auto* player = RE::PlayerCharacter::GetSingleton();
+				if (!spell) {
+					RE::DebugNotification("Become High King of Skyrim is not in the load order.");
+					return;
+				}
+				if (!player || !player->HasSpell(spell)) {
+					RE::DebugNotification("You haven't been granted the crown's recall yet.");
+					return;
+				}
+				ClosePalette();  // the teleport needs the live world, same as Domains travel
+				SpellActions::Cast(HighKing::kPlugin, 0x05FDF6, 0);
+			});
+			return;
+		}
+
+		// Spell Crafting: same shape, the Spell Crafting tab.
+		if (action == "spellcraft") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"spellcraft\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "spellcraft";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// Wigs: same shape, the Wigs tab.
+		if (action == "wigs") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"wigs\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "wigs";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// Settlement: same shape, the Settlement tab (the world-object placer).
+		if (action == "settlement") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"settle\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "settle";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// Transmog: same shape, the Transmog tab.
+		if (action == "transmog") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"transmog\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "transmog";
 				EnsureViewAndOpen();
 			});
 			return;
@@ -4815,6 +7037,152 @@ namespace
 				// before we ask for it — grabbing it in the same task is how you
 				// get a view that is Shown, Focused and deaf.
 				SKSE::GetTaskInterface()->AddTask([]() { HbOpenEdit(); });
+			});
+			return;
+		}
+
+		// HUD widgets — the hotbar's twins: show/hide only flips a flag, SET UP
+		// closes the deck first and takes Focus a frame later (same reasoning
+		// as hotbar-edit above, same deaf-view trap).
+		if (action == "widgets-toggle") {
+			SKSE::GetTaskInterface()->AddTask([]() { WgToggleAll(); });
+			return;
+		}
+		if (action == "widgets-edit") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				ClosePalette();
+				SKSE::GetTaskInterface()->AddTask([]() { WgOpenEdit(); });
+			});
+			return;
+		}
+
+		// Time Dial — the openable circular wait dial on the HUD view. A
+		// toggle: fired from the palette it closes the deck FIRST and takes
+		// Focus one task later (the deaf-view / Place-freeze discipline).
+		if (action == "time-dial") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (AnyOpen())
+					ClosePalette();
+				SKSE::GetTaskInterface()->AddTask([]() { TdToggleDial(); });
+			});
+			return;
+		}
+
+		// Potion Browser: a palette surface like the wheel — the popout lives
+		// in the deck view, so this takes the g_pendingTab -> hdShowTab road.
+		// The four category variants ride an @suffix that HDPotions parses as
+		// the initial pill.
+		if (action == "potion-browser" || action == "potions-health" ||
+			action == "potions-magicka" || action == "potions-stamina" ||
+			action == "potions-cure" || action == "potions-poison" ||
+			action == "potions-food" || action == "potions-drink" ||
+			action == "potions-water") {
+			const std::string tab =
+				action == "potions-health"  ? "potions@heal" :
+				action == "potions-magicka" ? "potions@magicka" :
+				action == "potions-stamina" ? "potions@stamina" :
+				action == "potions-cure"    ? "potions@cure" :
+				action == "potions-poison"  ? "potions@poison" :
+				action == "potions-food"    ? "potions@food" :
+				action == "potions-drink"   ? "potions@drink" :
+				action == "potions-water"   ? "potions@water" : "potions";
+			SKSE::GetTaskInterface()->AddTask([tab]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, ("hdShowTab(\"" + tab + "\")").c_str());
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = tab;
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// Potion AI master switch — flips, persists, says so. Works with the
+		// deck open or closed; the browser's ⚕ panel repaints on its next
+		// pbList, so no push is owed here.
+		if (action == "potion-ai-toggle") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				const bool now = Widgets::ToggleAi();
+				RE::DebugNotification(now ? "Potion AI on" : "Potion AI off");
+			});
+			return;
+		}
+
+		// A saved potion combo — every combo IS a deck entry whose action is
+		// "potion-combo:<id>" (EnsureComboEntries), which is what makes it
+		// bindable in F2, slottable on the hotbar and pinnable to the wheel/
+		// shelf with zero extra wiring. EquipObject works from the paused
+		// palette (the potion browser's own proof), so no close/reopen dance.
+		if (action.rfind("potion-combo:", 0) == 0) {
+			const std::string comboId = action.substr(13);
+			SKSE::GetTaskInterface()->AddTask([comboId]() {
+				const std::string res = Widgets::FireComboJson(comboId);
+				// FireComboJson toasts its own success; a refusal only returns
+				// the reason — say it, or a bound key that does nothing reads
+				// as a dead key.
+				const auto j = json::parse(res, nullptr, false);
+				if (j.is_object() && !j.value("ok", false))
+					RE::DebugNotification(j.value("msg", std::string("That combo can't fire")).c_str());
+				PushToView("pbComboResult", res);  // the browser's toast, if open behind us
+			});
+			return;
+		}
+
+		// Survival: TWO surfaces on purpose (Rober, 2026-08-15) — the popout is
+		// quick verbs (pitch, drink, pray, harvest), the tab is the dashboard you
+		// read. "survival" opens the popout, "survival-tab" the dashboard; both
+		// take the same g_pendingTab -> hdShowTab road.
+		if (action == "survival-tab") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"survival\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "survival";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		if (action == "survival") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"survival-quick\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "survival-quick";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// Quiver: a palette surface like the wheel — the ring lives in the
+		// deck view, so this takes the same g_pendingTab -> hdShowTab road as
+		// the Potion Browser. The two family variants ride an @suffix that
+		// HDQuiver parses as the initial pill.
+		if (action == "quiver" || action == "quiver-arrows" || action == "quiver-bolts") {
+			const std::string tab =
+				action == "quiver-arrows" ? "quiver@arrows" :
+				action == "quiver-bolts"  ? "quiver@bolts" : "quiver";
+			SKSE::GetTaskInterface()->AddTask([tab]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, ("hdShowTab(\"" + tab + "\")").c_str());
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = tab;
+				EnsureViewAndOpen();
 			});
 			return;
 		}
@@ -4883,6 +7251,84 @@ namespace
 			return;
 		}
 
+		// Sort Drop-Box (Container Auto-Sort): distribute the designated inbox into
+		// rule-matching marked containers. Close the palette first — a paused world
+		// with the deck painted over it is the wrong place to run a bulk move, and
+		// it matches the loot-vision/treasure-sense shape. A Containers pane open
+		// behind the reopen gets the csResult so its distribution summary lands.
+		// Put It All Away: the same close-first discipline as Sort Drop-Box — a bulk
+		// move wants the live world, not a paused one with the deck painted over it.
+		if (ContainerSort::IsSweepAction(action)) {
+			SKSE::GetTaskInterface()->AddTask([reopen]() {
+				ClosePalette();
+				const std::string res = ContainerSort::RunSweepAction();
+				PushToView("csResult", res);
+				if (reopen)
+					SKSE::GetTaskInterface()->AddTask([]() {
+						if (CanOpenNow())
+							OpenPalette();
+					});
+			});
+			return;
+		}
+
+		if (ContainerSort::IsUnloadAction(action)) {
+			SKSE::GetTaskInterface()->AddTask([reopen]() {
+				ClosePalette();
+				const std::string res = ContainerSort::RunUnloadAction();  // fires HUD + returns csResult JSON
+				PushToView("csResult", res);
+				if (reopen)
+					SKSE::GetTaskInterface()->AddTask([]() {
+						if (CanOpenNow())
+							OpenPalette();
+					});
+			});
+			return;
+		}
+
+		// Auto-Loot master toggle: an instant state flip, nothing owns the screen —
+		// so like Loot Vision it follows the normal close-after-fire preference. The
+		// Containers pane (if open behind the reopen) gets alResult so its master
+		// switch tracks the truth. ToggleMaster flips through the installed toggler
+		// (takes the lock itself), so PersistAll runs after, outside the lock.
+		if (AutoLoot::IsToggleAction(action)) {
+			SKSE::GetTaskInterface()->AddTask([reopen]() {
+				ClosePalette();
+				const std::string res = AutoLoot::ToggleMaster();
+				PersistAll();  // takes the lock itself — never held here
+				PushToView("alResult", res);
+				if (reopen)
+					SKSE::GetTaskInterface()->AddTask([]() {
+						if (CanOpenNow())
+							OpenPalette();
+					});
+			});
+			return;
+		}
+
+		// Auto-Loot "Loot Around Me": one-shot pickup of everything eligible nearby.
+		// The take (Activate + a RemoveItem forward) needs the UNPAUSED world, so it
+		// runs with the palette CLOSED and honours the normal close-after-fire. A
+		// Containers pane open behind the reopen gets alResult so its last-picked
+		// line updates. ScanAndLootNow snapshots the config through the provider.
+		if (AutoLoot::IsScanNowAction(action)) {
+			SKSE::GetTaskInterface()->AddTask([reopen]() {
+				ClosePalette();
+				std::string msg;
+				const int   n = AutoLoot::ScanAndLootNow(&msg);
+				if (!msg.empty())
+					RE::DebugNotification(msg.c_str());
+				PushToView("alResult", json{ { "ok", true }, { "enabled", AutoLoot::IsEnabled() },
+											   { "picked", n }, { "msg", msg } }
+											   .dump(-1, ' ', false, json::error_handler_t::replace));
+				if (reopen)
+					SKSE::GetTaskInterface()->AddTask([]() {
+						if (CanOpenNow())
+							OpenPalette();
+					});
+			});
+			return;
+		}
 		// No Auto-Gear: toggle protection on the crosshair NPC, or protect the
 		// whole party. Instant, nothing owns the screen — normal close-after-fire.
 		if (action == "no-auto-gear" || action == "no-auto-gear-party") {
@@ -4952,6 +7398,18 @@ namespace
 			SKSE::GetTaskInterface()->AddTask([action]() {
 				ClosePalette();
 				AimActions::Fire(action);
+			});
+			return;
+		}
+
+		// Campfire / Hunterborn seeded actions: self-cast the owning mod's own
+		// hotkey spell so its Papyrus flow runs exactly as shipped (the
+		// AddItemMenu shape). Close and stay closed — the flow runs unpaused
+		// through the VM, and a reopened (pause-on-open) palette would freeze it.
+		if (CampActions::IsAction(action)) {
+			SKSE::GetTaskInterface()->AddTask([action]() {
+				ClosePalette();
+				CampActions::Fire(action);
 			});
 			return;
 		}
@@ -5100,6 +7558,11 @@ namespace
 			// deck opened). Re-aim NPC actions at the live crosshair now.
 			if (NpcActions::IsAction(entry.action) || AnimActions::IsAction(entry.action) ||
 				FixActions::IsAction(entry.action) ||
+				// Trade is crosshair-scoped like the rest (Rober, 2026-08-17) —
+				// without this line a key/Action Bar/wheel press would barter
+				// with whoever you happened to be looking at the LAST time the
+				// deck opened, which is the whole class of bug this list exists for.
+				TradeActions::IsAction(entry.action) ||
 				entry.action == "no-auto-gear" ||
 				entry.action == "nff-recruit" || entry.action == "mhiyh-home")
 				NpcActions::SnapshotTarget();
@@ -5555,7 +8018,7 @@ namespace
 
 	bool IsImageExt(std::filesystem::path p)
 	{
-		auto ext = p.extension().string();
+		auto ext = PathU8(p.extension());
 		std::transform(ext.begin(), ext.end(), ext.begin(),
 			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 		return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".gif" || ext == ".svg";
@@ -5585,9 +8048,9 @@ namespace
 				std::filesystem::copy_options::overwrite_existing, fec);
 			if (!fec) {
 				++copied;
-				logger::info("{}: copied '{}'", what, it->path().filename().string());
+				logger::info("{}: copied '{}'", what, PathU8(it->path().filename()));
 			} else {
-				logger::warn("{}: could not copy '{}': {}", what, it->path().filename().string(), fec.message());
+				logger::warn("{}: could not copy '{}': {}", what, PathU8(it->path().filename()), fec.message());
 			}
 		}
 		return copied;
@@ -5629,7 +8092,7 @@ namespace
 				continue;
 			if (!IsImageExt(it->path()))
 				continue;
-			rows.emplace_back(it->path().stem().string(), "icons/custom/" + it->path().filename().string());
+			rows.emplace_back(PathU8(it->path().stem()), "icons/custom/" + PathU8(it->path().filename()));
 		}
 		std::sort(rows.begin(), rows.end());
 		for (auto& [label, file] : rows)
@@ -5668,6 +8131,13 @@ namespace
 	// v0.11.0: also called every second by PortalPollLoop(), so a phone edit no
 	// longer waits for the next palette open. Returns true only when an icon
 	// actually changed — that is the poller's "worth re-pushing the view" signal.
+	// Mirror the icon pool across to the HUD's view tree, then clear the
+	// once-per-session latch and push the spell-icon index again — the door a
+	// per-spell icon change goes through (marker hud-icon-repush). Defined with
+	// the HUD view machinery far below; declared HERE because the portal-queue
+	// drain right underneath is its first caller. Safe to call from any thread.
+	void HudRefreshIconIndex(const char* whence);
+
 	bool ApplyPortalAssignments(const std::filesystem::path& customDir)
 	{
 		const auto      file = customDir / "portal-assignments.json";
@@ -5732,6 +8202,13 @@ namespace
 		}
 		if (changed && !PersistAll())
 			logger::error("portal assignments applied in memory but the config write failed");
+		// A phone-assigned icon must reach the HUD's Equipped widget too, not
+		// just the Spell Deck (2026-08-19). Hooked HERE rather than in
+		// RefreshMagicIcons because that one early-returns when the magic view
+		// is closed — and assigning from the portal with the deck shut is the
+		// normal case. Marker: hud-icon-repush.
+		if (changed)
+			HudRefreshIconIndex("portal-assignments");
 		return changed;
 	}
 
@@ -5773,6 +8250,12 @@ namespace
 		g_prisma->RegisterJSListener(g_magicView, "mdRestoreSpell", OnJsMagicRestoreSpell);
 		g_prisma->RegisterJSListener(g_magicView, "mdGetDesc", OnJsMagicGetDesc);
 		g_prisma->RegisterJSListener(g_magicView, "mdIconList", OnJsMagicIconList);
+		// Combat Arts (Ashes of War) is this window's second page since
+		// 2026-08-15. Requests caState/caAct/caSave; replies caStateResult/
+		// caActResult/caSaved — disjoint per the deck law.
+		g_prisma->RegisterJSListener(g_magicView, "caState", OnJsCombatArtsState);
+		g_prisma->RegisterJSListener(g_magicView, "caAct", OnJsCombatArtsAct);
+		g_prisma->RegisterJSListener(g_magicView, "caSave", OnJsCombatArtsSave);
 	}
 
 	// Main thread only.
@@ -5814,6 +8297,12 @@ namespace
 		if (!g_iconIndexPushed.exchange(true))
 			g_prisma->Invoke(g_magicView, ("mdIconIndex(" + IconIndexJson() + ")").c_str());
 		g_prisma->Invoke(g_magicView, ("mdIcons(" + CustomIconsJson() + ")").c_str());
+		// ...and only THEN the page, so mdOpen's own "a fresh open lands on the
+		// spell list" reset cannot undo a requested deep-open.
+		if (!g_magicPendingPage.empty()) {
+			g_prisma->Invoke(g_magicView, ("mdShowPage(\"" + g_magicPendingPage + "\")").c_str());
+			g_magicPendingPage.clear();
+		}
 	}
 
 	// Main thread only.
@@ -5963,6 +8452,26 @@ namespace
 		});
 	}
 
+	// A cheap fingerprint of the per-spell ICON OVERRIDES only — the one part of
+	// the magic slice the HUD's icon index carries. mdSave fires on every edit
+	// the Spell Deck makes (a rename, a reorder, a category move, 350 ms after
+	// each), and re-pushing a 1,900-entry index for a rename would be a real
+	// cost for nothing. Caller must NOT hold g_configMutex.
+	std::string SpellIconOverrideSig()
+	{
+		std::string sig;
+		std::lock_guard l(g_configMutex);
+		for (const auto& sp : g_magicConfig.spells) {
+			if (sp.icon.empty())
+				continue;
+			sig += sp.id;
+			sig += '=';
+			sig += sp.icon;
+			sig += ';';
+		}
+		return sig;
+	}
+
 	// mdSave: the view edited categories / spells / open-key — persist the magic slice.
 	void OnJsMagicSave(const char* data)
 	{
@@ -5971,12 +8480,18 @@ namespace
 		const auto j = json::parse(data, nullptr, false);
 		bool       ok = false;
 		if (!j.is_discarded()) {
-			MagicConfig m;
+			const std::string before = SpellIconOverrideSig();
+			MagicConfig       m;
 			MagicConfigFromJson(j, m);
 			{
 				std::lock_guard l(g_configMutex);
 				g_magicConfig = std::move(m);
 			}
+			// The in-deck icon picker has no bridge of its own — it edits the
+			// spell locally and the whole slice arrives here. So "did an icon
+			// change" is answered by comparing, not by being told.
+			if (SpellIconOverrideSig() != before)
+				HudRefreshIconIndex("mdSave");
 			ok = PersistAll();  // emits both slices (magic just-updated + deck unchanged)
 			if (ok)
 				logger::info("magic config saved");
@@ -6099,6 +8614,246 @@ namespace
 		});
 	}
 
+	// ------------------------------------------- magic config: id reconcile
+	/* Runtime FormIDs are NOT durable, and the Spell Deck's config stores them
+	 * beside the durable (plugin, localId) pair. On 2026-08-18 Rober's
+	 * "Dragonknight" (KittyClass_Dragonknight.esp|0x88C) moved from mod index
+	 * 0x81 to 0x80 — the plugin stopped counting as a full plugin — and every
+	 * stored 0x81xxxxxx id in magic went stale in one launch. The visible
+	 * damage: ten entries "with no engine metadata" (the view's enrich pass
+	 * keys off the id), and a re-added Dragonknight sitting as a SECOND entry
+	 * with icon:"" in front of the original that still held
+	 * icons/custom/Dragonknight-2.png.
+	 *
+	 * So: re-resolve every stored id from its durable pair, then merge the
+	 * duplicates that the stale ids allowed to be created.
+	 *
+	 * ⛔ kPostLoadGame ONLY — with no save loaded LookupForm answers nothing and
+	 * this would "repair" a config into zeroes. Runs on the main thread (SKSE
+	 * message dispatch). Marker: "magic id repair:".
+	 *
+	 * Local ids are stored file-width-masked already (KnownSpellsJson builds
+	 * them through ActorIdentity::LocalIdOf, which masks — never CommonLib's
+	 * GetLocalFormID()), so they are handed to LookupForm as-is: that is the
+	 * ESL-safe lookup. */
+	std::string MagicIdKey(const std::string& plugin, std::uint32_t localId)
+	{
+		if (plugin.empty() || !localId)
+			return {};
+		std::string k = plugin;
+		std::transform(k.begin(), k.end(), k.begin(),
+			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		char hex[16];
+		std::snprintf(hex, sizeof(hex), "|%x", localId);
+		k += hex;
+		return k;
+	}
+
+	// The live runtime id for a durable pair, or 0 when it cannot be resolved
+	// (plugin no longer in the load order, no save loaded, record removed).
+	std::uint32_t MagicLiveFormId(const std::string& plugin, std::uint32_t localId)
+	{
+		if (plugin.empty() || !localId)
+			return 0;
+		auto* dh = RE::TESDataHandler::GetSingleton();
+		if (!dh)
+			return 0;
+		auto* form = dh->LookupForm(localId, plugin);
+		return form ? form->GetFormID() : 0;
+	}
+
+	// Fill dst's blank metadata from src. Never overwrites a non-empty field —
+	// the survivor's own choices (and the player's) always win.
+	void MagicFillBlanks(SpellEntry& dst, const SpellEntry& src)
+	{
+		auto take = [](std::string& d, const std::string& s) {
+			if (d.empty() && !s.empty())
+				d = s;
+		};
+		take(dst.icon, src.icon);
+		take(dst.name, src.name);
+		take(dst.slot, src.slot);
+		take(dst.school, src.school);
+		take(dst.element, src.element);
+		take(dst.archetype, src.archetype);
+		take(dst.tier, src.tier);
+		take(dst.category, src.category);
+		// A "voice" slot is real information a blank can't express: an entry
+		// that knows it is a shout/power must not be flattened to a hand spell.
+		if (dst.slot != "voice" && src.slot == "voice")
+			dst.slot = "voice";
+	}
+
+	// Returns a one-line summary of what was repaired, or "" when nothing was.
+	// Caller persists (outside the config lock).
+	std::string MagicReconcileIds()
+	{
+		int idFixed = 0, merged = 0, metaFixed = 0, unresolved = 0;
+		std::vector<std::string> mergedNames;
+		{
+			std::lock_guard l(g_configMutex);
+
+			// --- pass 1: re-resolve every stored runtime id from its pair ----
+			auto fixEntryId = [&](const std::string& plugin, std::uint32_t localId,
+								  std::uint32_t& formId, int& counter) {
+				if (plugin.empty() || !localId)
+					return;
+				const auto live = MagicLiveFormId(plugin, localId);
+				if (!live) {
+					++unresolved;
+					return;
+				}
+				if (live != formId) {
+					formId = live;
+					++counter;
+				}
+			};
+			for (auto& s : g_magicConfig.spells)
+				fixEntryId(s.plugin, s.localId, s.formId, idFixed);
+			for (auto& m : g_magicConfig.removed)
+				fixEntryId(m.plugin, m.localId, m.formId, metaFixed);
+			for (auto& c : g_magicConfig.combos)
+				for (auto& m : c.spells)
+					fixEntryId(m.plugin, m.localId, m.formId, metaFixed);
+
+			/* --- pass 2: merge duplicates ------------------------------------
+			 * Keyed (plugin, localId, CATEGORY) — deliberately NOT the pair
+			 * alone. The same spell in two different categories is a SUPPORTED
+			 * configuration, not a bug: the add-picker's "already added" check
+			 * is scoped to the target category (knownRow's inCat) and
+			 * newSpellId() mints "0x…-2" precisely so a second copy can exist.
+			 * Merging on the pair alone would silently delete a rail the player
+			 * built on purpose. Two rows of one spell in ONE category is the
+			 * shape that only ever appears by accident — that is the one the
+			 * stale ids created, and the only one dropped here.
+			 *
+			 * FIRST occurrence survives: it is the older entry, the one
+			 * carrying the icon and the mode the player set. A later duplicate
+			 * only ever contributes what the survivor lacks. */
+			std::unordered_map<std::string, std::size_t> firstAt;
+			std::vector<SpellEntry>                      keep;
+			std::unordered_map<std::string, std::string> idRemap;  // dropped entry id -> survivor id
+			keep.reserve(g_magicConfig.spells.size());
+			for (auto& s : g_magicConfig.spells) {
+				const auto pairKey = MagicIdKey(s.plugin, s.localId);
+				const auto key = pairKey.empty() ? std::string() : (pairKey + "#" + s.category);
+				if (key.empty()) {   // no durable identity — never merged
+					keep.push_back(std::move(s));
+					continue;
+				}
+				const auto it = firstAt.find(key);
+				if (it == firstAt.end()) {
+					firstAt.emplace(key, keep.size());
+					keep.push_back(std::move(s));
+					continue;
+				}
+				SpellEntry& survivor = keep[it->second];
+				MagicFillBlanks(survivor, s);
+				if (!s.id.empty() && s.id != survivor.id)
+					idRemap.emplace(s.id, survivor.id);
+				mergedNames.push_back(survivor.name.empty() ? survivor.id : survivor.name);
+				++merged;
+			}
+			// ALWAYS written back: every element above was moved OUT of the
+			// original vector, so leaving it in place on the no-duplicate path
+			// would hand the deck a list of blanked entries.
+			g_magicConfig.spells = std::move(keep);
+
+			/* --- pass 2b: the art rescue across categories --------------------
+			 * The same spell filed under two categories is legal (above), so the
+			 * copy the player just re-added under a DIFFERENT rail keeps its own
+			 * row — but it must not sit there iconless while its sibling holds
+			 * the art. Blanks only, first non-blank sibling wins; nothing is
+			 * deleted and no non-empty field is touched. */
+			{
+				std::unordered_map<std::string, const SpellEntry*> donors;
+				for (const auto& s : g_magicConfig.spells) {
+					const auto key = MagicIdKey(s.plugin, s.localId);
+					if (key.empty())
+						continue;
+					if (!s.icon.empty() || !s.school.empty() || !s.slot.empty())
+						donors.emplace(key, &s);   // first informative row wins
+				}
+				for (auto& s : g_magicConfig.spells) {
+					const auto key = MagicIdKey(s.plugin, s.localId);
+					if (key.empty())
+						continue;
+					const auto it = donors.find(key);
+					if (it == donors.end() || it->second == &s)
+						continue;
+					const bool wasBlank = s.icon.empty();
+					MagicFillBlanks(s, *it->second);
+					if (wasBlank && !s.icon.empty())
+						++metaFixed;
+				}
+			}
+
+			// --- pass 3: references ------------------------------------------
+			// Combo members and the Removed drawer are SNAPSHOTS keyed by the
+			// same durable pair, so what they need from a merge is the
+			// survivor's art (a member that resolved to the dropped duplicate
+			// would otherwise keep drawing the glyph the duplicate had).
+			{
+				std::unordered_map<std::string, const SpellEntry*> byKey;
+				for (const auto& s : g_magicConfig.spells) {
+					const auto key = MagicIdKey(s.plugin, s.localId);
+					if (!key.empty())
+						byKey.emplace(key, &s);
+				}
+				auto adoptFrom = [&](SpellMeta& m) {
+					const auto key = MagicIdKey(m.plugin, m.localId);
+					if (key.empty())
+						return;
+					const auto it = byKey.find(key);
+					if (it == byKey.end())
+						return;
+					const SpellEntry& s = *it->second;
+					if (m.icon.empty() && !s.icon.empty()) { m.icon = s.icon; ++metaFixed; }
+					if (m.name.empty() && !s.name.empty()) m.name = s.name;
+					if (m.school.empty() && !s.school.empty()) m.school = s.school;
+					if (m.element.empty() && !s.element.empty()) m.element = s.element;
+					if (m.archetype.empty() && !s.archetype.empty()) m.archetype = s.archetype;
+					if (m.tier.empty() && !s.tier.empty()) m.tier = s.tier;
+				};
+				for (auto& m : g_magicConfig.removed)
+					adoptFrom(m);
+				for (auto& c : g_magicConfig.combos)
+					for (auto& m : c.spells)
+						adoptFrom(m);
+				// The Removed drawer can itself hold two rows for one spell,
+				// for exactly the same reason the entries could.
+				std::unordered_map<std::string, std::size_t> seenRemoved;
+				std::vector<SpellMeta>                       keepRemoved;
+				keepRemoved.reserve(g_magicConfig.removed.size());
+				for (auto& m : g_magicConfig.removed) {
+					const auto key = MagicIdKey(m.plugin, m.localId);
+					if (key.empty() || seenRemoved.emplace(key, keepRemoved.size()).second)
+						keepRemoved.push_back(std::move(m));
+					else
+						++merged;
+				}
+				g_magicConfig.removed = std::move(keepRemoved);
+				// Nothing else in the magic slice references a spell ENTRY by
+				// its id (combos hold snapshots by construction), so idRemap is
+				// diagnostics — logged, not silently dropped.
+				if (!idRemap.empty())
+					logger::info("magic id repair: {} duplicate entry id(s) folded away", idRemap.size());
+			}
+		}
+
+		if (!idFixed && !merged && !metaFixed)
+			return {};
+		std::string names;
+		for (std::size_t i = 0; i < mergedNames.size() && i < 6; ++i)
+			names += (i ? ", " : "") + mergedNames[i];
+		std::string msg = "magic id repair: " + std::to_string(idFixed) + " stale formId(s) re-resolved, " +
+						  std::to_string(merged) + " duplicate(s) merged, " + std::to_string(metaFixed) +
+						  " snapshot field(s) healed, " + std::to_string(unresolved) + " unresolvable";
+		if (!names.empty())
+			msg += " [" + names + "]";
+		return msg;
+	}
+
 	// The Magic Menu capture key: snapshot the highlighted spell, file it into
 	// the deck (under the category named like its school when one exists),
 	// optionally clear it from the vanilla spellbook (magic.removeOnAdd),
@@ -6143,8 +8898,18 @@ namespace
 					}
 				}
 			}
+			/* Duplicate check by DURABLE identity first (plugin, localId), with
+			 * the runtime formId only as the fallback for a form that has no
+			 * pair (a dynamic 0xFF… id). Keying this on formId alone is what
+			 * let Rober re-add "Dragonknight" as a second entry on 2026-08-18:
+			 * its plugin's mod index had shifted 0x81 -> 0x80, so the stored id
+			 * no longer equalled the live one and the deck saw a new spell. */
+			const auto addKey = MagicIdKey(plugin, localId);
 			for (const auto& s : g_magicConfig.spells) {
-				if (s.formId == formId) {
+				const bool same = addKey.empty()
+					? (s.formId == formId)
+					: (MagicIdKey(s.plugin, s.localId) == addKey);
+				if (same) {
 					wasDup = true;
 					category = s.category;  // report where it already lives
 					break;
@@ -6191,8 +8956,13 @@ namespace
 				m.archetype = rr.value("archetype", std::string(""));
 				m.tier = rr.value("tier", std::string(""));
 				std::lock_guard l(g_configMutex);
-				std::erase_if(g_magicConfig.removed,
-					[&](const SpellMeta& x) { return x.formId == m.formId; });
+				// Durable pair first here too, or a stale runtime id leaves the
+				// old row behind and the drawer grows a second copy.
+				const auto rmKey = MagicIdKey(m.plugin, m.localId);
+				std::erase_if(g_magicConfig.removed, [&](const SpellMeta& x) {
+					return rmKey.empty() ? (x.formId == m.formId)
+										 : (MagicIdKey(x.plugin, x.localId) == rmKey);
+				});
 				g_magicConfig.removed.insert(g_magicConfig.removed.begin(), std::move(m));
 			}
 		}
@@ -6402,7 +9172,7 @@ namespace
 			if (!it->is_regular_file(fec))
 				continue;
 
-			auto ext = it->path().extension().string();
+			auto ext = PathU8(it->path().extension());
 			std::transform(ext.begin(), ext.end(), ext.begin(),
 				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 			// Deliberately narrow: no gif/svg. A portrait is a still photo in a
@@ -6412,12 +9182,18 @@ namespace
 				continue;
 			}
 
-			const auto slug = PortraitCapture::SlugFromFileStem(it->path().stem().string());
+			const auto slug = PortraitCapture::SlugFromFileStem(PathU8(it->path().stem()));
 			if (slug.empty())
 				continue;
 
+			// PERF (2026-08-16): `it->last_write_time()`, NOT the free function on
+			// the path. The MSVC directory_entry already carries the times the
+			// directory enumeration handed back, so the member form is a struct
+			// read; the free function re-opens the FILE. This walk runs on the
+			// game thread every 30 s (the floor below), and at 87 portraits that
+			// was 87 file opens per pass. Same value, same tie-break, no syscall.
 			std::uint64_t stamp = 0;
-			const auto    ft = std::filesystem::last_write_time(it->path(), fec);
+			const auto    ft = it->last_write_time(fec);
 			if (!fec) {
 				const auto secs = static_cast<std::uint64_t>(ft.time_since_epoch().count()) / kTicksPerSec;
 				stamp = secs > kWinToUnix ? secs - kWinToUnix : secs;
@@ -6427,7 +9203,7 @@ namespace
 			// key is folded. Windows is case-insensitive so `Elana-Darkfire.JPG`
 			// would probably load either way, but handing the loader a name that
 			// is not the one on disk is a gamble with nothing to win.
-			auto       file = it->path().filename().string();
+			auto       file = PathU8(it->path().filename());
 			const auto fold = LowerCopy(file);
 
 			// THE WINNER RULE, and portal/server.js betterPortrait() must match it
@@ -6497,6 +9273,11 @@ namespace
 			logger::info("mirrored {} custom icon(s) into the deck view", copied);
 	}
 
+	// Defined with the HUD view machinery below; used by DeckCustomIconsJson so a
+	// mid-session icon change reaches the HotkeyDeck tree without a relaunch.
+	void MirrorSpellIconsAsync();
+	void MirrorSpellIconsAsync(std::function<void()> onDone);
+
 	// Cheap "did this folder's file SET change" probe: the directory's own
 	// last_write_time, which NTFS bumps on entry create/delete/rename. One syscall,
 	// no per-file stat. Content-in-place edits do not bump it, and that is exactly
@@ -6546,6 +9327,12 @@ namespace
 
 		SweepDesktopIcons(magicDir);   // may create+populate magicDir (bumps magicGen)
 		MirrorCustomIcons(magicDir, deckDir);
+		// A real rescan means an icon folder CHANGED — re-run the HUD's spell-pool
+		// mirror too (worker thread, skip-existing, no-op when nothing is new), so
+		// art uploaded or dropped mid-session reaches the HotkeyDeck tree the HUD
+		// and hotbar read NOW instead of after the next launch (the old "honest
+		// limit" in MirrorSpellIconsAsync — closed 2026-08-19).
+		MirrorSpellIconsAsync();
 		s_cache = CustomIconsJsonIn(deckDir);
 		s_have  = true;
 		// Re-probe AFTER the sweep/mirror: those two just changed the folders we are
@@ -6565,7 +9352,12 @@ namespace
 	void OnJsIconList(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
-			PushToView("hdIcons", DeckCustomIconsJson(true));
+			const auto listing = DeckCustomIconsJson(true);
+			PushToView("hdIcons", listing);
+			// ...and the HUD's widget-background picker keeps step: a fresh
+			// upload/drop is choosable there without waiting for a relaunch.
+			if (g_prisma && g_hudView)
+				g_prisma->Invoke(g_hudView, ("hudCustomIcons(" + listing + ")").c_str());
 		});
 	}
 
@@ -6574,9 +9366,17 @@ namespace
 	// task hop — CanOpenNow() gates on HasAnyActiveFocus() and on the pause the
 	// deck was holding, and neither is guaranteed to have settled in the same
 	// frame as the Unfocus. Same nested-AddTask shape OnJsFolWorld already uses.
-	void OnJsOpenSpells(const char*)
+	void OnJsOpenSpells(const char* data)
 	{
-		SKSE::GetTaskInterface()->AddTask([]() { ClosePalette(); });
+		// Optional payload: "arts" deep-opens the Spell Deck on its Combat Arts
+		// page (the Home card / omni row / the bindable action). Anything else
+		// — including the empty string every older caller sends — is the spell
+		// list, so this stays backwards compatible with a stale view.
+		const std::string page = (data && std::string(data) == "arts") ? "arts" : "";
+		SKSE::GetTaskInterface()->AddTask([page]() {
+			g_magicPendingPage = page;
+			ClosePalette();
+		});
 		// ClosePalette() only STARTS the handoff: PrismaUI still owns focus (and
 		// the pause with it) for a frame or more afterwards, so CanOpenNow() is
 		// reliably FALSE on the very next task — which is how this shipped, and
@@ -6836,6 +9636,201 @@ namespace
 		// invisible to the running game, so the empty queue is written back to
 		// keep this one alive for the next batch.
 		EnsureCatIconBridge(true);
+		return applied > 0;
+	}
+
+	// The phone's Containers queue, replayed. Two kinds of op with two very
+	// different contracts:
+	//
+	//   CONFIG ("mark" / "sort") — a flag on a container or a global setting.
+	//   Applies whether or not a save is loaded, persists, and is what the phone
+	//   folds onto its own view so a toggle looks instant.
+	//
+	//   VERBS ("act") — put-it-all-away, sort, gather, unload, retrieve. These
+	//   MOVE ITEMS, so they need a live world and the main thread. At the main
+	//   menu they are DROPPED with a log line rather than held: a sweep that
+	//   fires an hour later, in a different cell, is not what was pressed.
+	//
+	// Main thread only (the verbs walk inventories). Returns true when config
+	// changed, so the caller knows whether to persist + repaint.
+	bool ApplyPortalContainers()
+	{
+		const auto      file = DeckViewDir() / "portal-containers.json";
+		std::error_code ec;
+		if (!std::filesystem::exists(file, ec))
+			return false;
+
+		std::string text;
+		{
+			std::ifstream in(file, std::ios::binary);
+			if (!in.is_open()) {
+				logger::warn("portal containers present but unreadable — retrying");
+				return false;
+			}
+			text.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		}
+
+		const auto j = json::parse(text, nullptr, false);
+		if (j.is_discarded() || !j.is_object() || !j.contains("ops") || !j["ops"].is_array()) {
+			logger::error("portal containers file is malformed — discarding it");
+			EnsureContainersBridge(true);
+			return false;
+		}
+
+		// Is there a world to act in? A verb at the main menu is dropped, not held.
+		bool inGame = false;
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* ui = RE::UI::GetSingleton();
+			inGame = player && player->GetParentCell() && ui &&
+				!ui->IsMenuOpen(RE::MainMenu::MENU_NAME) &&
+				!ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
+		}
+
+		std::size_t             applied = 0, dropped = 0;
+		std::vector<json>       verbs;
+		for (const auto& e : j["ops"]) {
+			if (!e.is_object())
+				continue;
+			const auto op = e.value("op", std::string(""));
+
+			if (op == "act") {
+				if (!inGame) {
+					++dropped;
+					continue;
+				}
+				verbs.push_back(e);
+				continue;
+			}
+
+			if (op == "mark") {
+				const auto id = e.value("id", std::string(""));
+				const auto key = e.value("key", std::string(""));
+				if (id.empty() || key.empty())
+					continue;
+				std::lock_guard l(g_configMutex);
+				for (auto& m : g_contConfig.marks) {
+					if (m.id != id)
+						continue;
+					if (key == "lend")
+						m.lend = e.value("value", false);
+					else if (key == "ruleEnabled")
+						m.sortRule.enabled = e.value("value", false);
+					else if (key == "acknowledged")
+						m.safeAcknowledged = e.value("value", false);
+					else if (key == "redirectTo")
+						m.redirectTo = e.value("value", std::string(""));
+					else
+						break;   // unknown key: not our business, not an error
+					++applied;
+					logger::info("portal containers: {} {} on '{}'", key,
+						e.value("value", false) ? "on" : "set", m.name);
+					break;
+				}
+				continue;
+			}
+
+			if (op == "sort") {
+				const auto key = e.value("key", std::string(""));
+				if (key.empty())
+					continue;
+				std::lock_guard l(g_configMutex);
+				auto&           st = g_contConfig.sort;
+				if (key == "inbox") {
+					const auto want = e.value("value", std::string(""));
+					// A drop-box that names no real mark would be a silent no-op
+					// in every later sort, so refuse it here where we can say so.
+					const bool known = want.empty() ||
+						std::any_of(g_contConfig.marks.begin(), g_contConfig.marks.end(),
+							[&want](const ContainerMark& m) { return m.id == want; });
+					if (!known) {
+						logger::info("portal containers: drop-box '{}' is not a marked container — ignored", want);
+						continue;
+					}
+					st.inboxMarkId = want;
+				} else if (key == "sortOnClose") {
+					st.sortOnClose = e.value("value", false);
+				} else if (key == "excludeEquipped") {
+					st.excludeEquipped = e.value("value", true);
+				} else if (key == "excludeFavorited") {
+					st.excludeFavorited = e.value("value", true);
+				} else if (key == "excludeQuest") {
+					st.excludeQuest = e.value("value", true);
+				} else if (key.rfind("loan.", 0) == 0) {
+					const auto which = key.substr(5);
+					const bool v = e.value("value", false);
+					if (which == "enabled") st.loan.enabled = v;
+					else if (which == "smithing") st.loan.smithing = v;
+					else if (which == "smelting") st.loan.smelting = v;
+					else if (which == "tanning") st.loan.tanning = v;
+					else if (which == "cooking") st.loan.cooking = v;
+					else if (which == "alchemy") st.loan.alchemy = v;
+					else if (which == "enchanting") st.loan.enchanting = v;
+					else if (which == "returnOnExit") st.loan.returnOnExit = v;
+					else continue;
+				} else {
+					continue;
+				}
+				++applied;
+				logger::info("portal containers: sort setting '{}' applied", key);
+				continue;
+			}
+		}
+
+		if (applied) {
+			if (!PersistAll())
+				logger::error("portal containers: applied but failed to write to disk");
+			logger::info("portal containers: {} setting(s) applied", applied);
+		}
+		if (dropped)
+			logger::info("portal containers: {} action(s) dropped — no game loaded to run them in", dropped);
+
+		// The verbs run AFTER the config, so a "turn this container on, then put
+		// it all away" pair from one phone screen does what it looks like.
+		for (const auto& v : verbs) {
+			const auto act = v.value("act", std::string(""));
+			const int  keep = v.value("keep", 0);
+			const int  only = v.value("only", 0);
+			std::vector<std::string> types;
+			if (v.contains("types") && v["types"].is_array())
+				for (const auto& t : v["types"])
+					if (t.is_string() && !t.get<std::string>().empty())
+						types.push_back(t.get<std::string>());
+
+			ContainerSort::MoveReport rep;
+			const char*               opName = "sweep";
+			if (act == "sweep") {
+				rep = ContainerSort::SweepAll(keep, only);
+			} else if (act == "sortNow") {
+				opName = "sort";
+				rep = ContainerSort::SortDropBox();
+			} else if (act == "gather") {
+				opName = "gather";
+				rep = ContainerSort::GatherAll(types, keep);
+			} else if (act == "unload") {
+				opName = "unload";
+				rep = ContainerSort::UnloadTo(v.value("markId", std::string("")), keep, only);
+			} else if (act == "retrieve") {
+				opName = "retrieve";
+				rep = ContainerSort::RetrieveFrom(v.value("markId", std::string("")), keep, types);
+			} else {
+				continue;
+			}
+			if (!rep.msg.empty())
+				RE::DebugNotification(rep.msg.c_str());
+			json byC = json::array();
+			for (const auto& b : rep.byContainer)
+				byC.push_back(json{ { "markId", b.markId }, { "name", b.name }, { "count", b.count } });
+			PushToView("csResult", json{ { "ok", !rep.refused }, { "op", opName },
+										   { "moved", rep.moved }, { "byContainer", std::move(byC) },
+										   { "residue", rep.residue }, { "skipped", json::array() },
+										   { "msg", rep.msg } }
+										   .dump(-1, ' ', false, json::error_handler_t::replace));
+			logger::info("portal containers: '{}' from the phone -> {}", act, rep.msg);
+		}
+
+		// TRUNCATE, never delete (the portrait-bridge law).
+		EnsureContainersBridge(true);
 		return applied > 0;
 	}
 
@@ -8018,9 +11013,56 @@ namespace
 	std::atomic<int>  g_presetAutoFailed{ 0 };
 	std::mutex        g_presetAssignLock;
 
-	// assign.json is truncate+written by the auto-render worker while the
-	// index (game thread / JS-listener thread) reads it — every access goes
-	// through g_presetAssignLock or a torn read paints an icon-less gallery.
+	// Rolling wall-clock cost of one rendered face, so the tab's "N faces ·
+	// ≈ M min" line stops being a hardcoded guess. Only SUCCESSFUL renders
+	// count — a failure returns in a fraction of the time and would talk the
+	// estimate down. Includes our own breather, because that is time the
+	// player actually waits. 0 = nothing measured yet; the view keeps its own
+	// fallback for that. A short EMA (~last 3), not a running mean: the batch
+	// speeds up once one stand-in is serving a whole race run.
+	std::atomic<int> g_presetAvgMs{ 0 };
+
+	// Filenames Ultralight has already cached THIS session (a re-render must
+	// never reuse one — the view would keep showing the old cached bytes).
+	// Declared up here because the self-heal in PresetIndexJson consults it.
+	std::set<std::string> g_presetBurnedNames;  // guarded by g_presetAssignLock
+
+	// Presets whose icon the PLAYER cleared by hand (op "img" with icon:"").
+	// The orphan self-heal below must never undo that — an image he deleted
+	// reappearing on the next repaint reads as the deck fighting him.
+	std::set<std::string> g_presetNoAdopt;  // guarded by g_presetAssignLock
+
+	// Presets queued for a forced re-render ("↻ Re-render all"). The redo used
+	// to DELETE every auto assignment up front; this set replaces that — see
+	// the long note on op "autorender-redo". Guarded by g_presetAssignLock.
+	std::set<std::string> g_presetRedoSet;
+
+	// Why a render did not happen, per preset, verbatim from the shape pass or
+	// from PD's /thumb reply — reported to the view as index.fails so a
+	// failure is visible in the tab instead of only in HotkeyDeck.log
+	// (Rober, 2026-08-16: pressed "✨ Render missing (6)", nothing appeared to
+	// happen, six presets had been failing identically since the first batch).
+	// Cleared for a preset the moment it gets an image. Session-scoped on
+	// purpose: it describes THIS run of the game, not a durable property.
+	std::map<std::string, std::string> g_presetFails;  // guarded by g_presetAssignLock
+
+	// What the shape pass managed to infer, EVEN WHEN it was not confident —
+	// {race, sex, faceEdid, confident}. A preset PD refuses is exactly the one
+	// the player needs to answer "render it as which race?" for, and that
+	// answer is far easier to give when the tab can pre-fill the guess.
+	std::map<std::string, json> g_presetShape;  // guarded by g_presetAssignLock
+
+	// Batch pacing (Rober, 2026-08-16: "the face generation stuff causes some
+	// pretty bad lag in general"). Each /thumb spawns a stand-in, runs Papyrus
+	// and renders in the LIVE world, so back-to-back calls never let the game
+	// catch its breath. These are the deck's own spacing — PD's internal
+	// settle timings are its business and are deliberately untouched.
+	constexpr int kPresetShapeBreatherMs = 40;   // 120 shape probes = 120 game hops
+	constexpr int kPresetRenderBreatherMs = 350;  // ~25% on a ~1.3 s render
+
+	// assign.json is rewritten by the auto-render worker while the index (game
+	// thread / JS-listener thread) reads it — every access goes through
+	// g_presetAssignLock or a torn read paints an icon-less gallery.
 	json PresetAssignmentsUnlocked()
 	{
 		json          m = json::object();
@@ -8037,6 +11079,120 @@ namespace
 	{
 		std::lock_guard lock(g_presetAssignLock);
 		return PresetAssignmentsUnlocked();
+	}
+
+	// ATOMIC write — temp file + rename, the deck's config-write idiom.
+	// A plain truncate+write leaves a window in which assign.json is empty or
+	// half a document, and this map is the ONLY thing tying 200-odd renders to
+	// their presets: lose it and every tile goes blank while the PNGs sit
+	// uselessly on disk. Caller holds g_presetAssignLock.
+	void WritePresetAssignmentsUnlocked(const json& m)
+	{
+		std::error_code ec;
+		const auto      dir = PresetIconsDir();
+		std::filesystem::create_directories(dir, ec);
+		const auto dst = dir / "assign.json";
+		const auto tmp = dir / "assign.json.tmp";
+		{
+			std::ofstream outF(tmp, std::ios::trunc);
+			if (!outF) {
+				logger::error("faces: assign.json NOT saved — can't open the temp file");
+				return;
+			}
+			outF << m.dump(2);
+			outF.flush();
+			if (!outF) {
+				logger::error("faces: assign.json NOT saved — the temp write failed");
+				return;
+			}
+		}
+		// MoveFileEx-with-replace on Windows: the reader sees the old complete
+		// document or the new one, never a truncated one. NEVER remove dst
+		// first — that is the exact window this function exists to close.
+		std::filesystem::rename(tmp, dst, ec);
+		if (ec) {
+			logger::error("faces: assign.json rename failed ({}) — writing in place instead", ec.message());
+			std::ofstream outF(dst, std::ios::trunc);
+			if (outF)
+				outF << m.dump(2);
+			std::error_code ec2;
+			std::filesystem::remove(tmp, ec2);
+		}
+	}
+
+	// Filename stem for a preset's auto render. Declared before the self-heal,
+	// which reads the same naming law it writes.
+	std::string PresetAutoStem(const std::string& preset)
+	{
+		std::string s = "auto-" + preset;
+		for (auto& c : s)
+			if (c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' ||
+				c == '|' || c == '?' || c == '*')
+				c = '-';
+		while (!s.empty() && (s.back() == ' ' || s.back() == '.'))
+			s.pop_back();
+		return s;
+	}
+
+	// Every auto filename this preset could ever have used, newest first.
+	// "Newest" is the file's own mtime, NOT the .rN number: a reclaimed name
+	// can be reused, so a high N is not a promise of a recent render.
+	std::vector<std::string> PresetAutoFilesOnDisk(const std::string& preset,
+		const std::set<std::string>& onDisk)
+	{
+		const std::string stem = PresetAutoStem(preset);
+		std::vector<std::pair<std::filesystem::file_time_type, std::string>> found;
+		for (int v = 1; v <= 99; ++v) {
+			const std::string cand = (v == 1) ? stem + ".png" : stem + ".r" + std::to_string(v) + ".png";
+			if (!onDisk.count(cand))
+				continue;
+			std::error_code ec;
+			const auto      when = std::filesystem::last_write_time(PresetIconsDir() / cand, ec);
+			found.emplace_back(ec ? std::filesystem::file_time_type{} : when, cand);
+		}
+		std::stable_sort(found.begin(), found.end(),
+			[](const auto& a, const auto& b) { return a.first > b.first; });
+		std::vector<std::string> out;
+		for (auto& f : found)
+			out.push_back(std::move(f.second));
+		return out;
+	}
+
+	// SELF-HEAL: re-adopt renders whose mapping was lost.
+	//
+	// 2026-08-16 play-test: 234 auto-*.png on disk, TEN entries in assign.json.
+	// The destructive redo (since fixed below) dropped 114 good mappings and a
+	// cancel meant they never came back, while std::filesystem::remove could
+	// not actually delete the files (Ultralight memory-maps every image it has
+	// drawn and holds it for the session, so the delete fails with a sharing
+	// violation and the error_code was swallowed). The renders were all still
+	// there; nothing was willing to claim them. So: any preset with no
+	// assignment whose auto file exists gets it back, newest render wins.
+	// Cheap — it reuses the directory listing PresetIndexJson already builds.
+	void PresetAdoptOrphanRenders(const std::vector<std::string>& presetNames,
+		const std::set<std::string>&                              onDisk)
+	{
+		std::lock_guard lock(g_presetAssignLock);
+		json            m = PresetAssignmentsUnlocked();
+		int             adopted = 0;
+		for (const auto& preset : presetNames) {
+			if (preset.rfind("PD_", 0) == 0)  // our own face backups, never tiles
+				continue;
+			if (m.contains(preset) || g_presetNoAdopt.count(preset))
+				continue;
+			for (const auto& cand : PresetAutoFilesOnDisk(preset, onDisk)) {
+				if (g_presetBurnedNames.count(cand))
+					continue;  // stale bytes: Ultralight would paint the OLD face
+				m[preset] = cand;
+				g_presetFails.erase(preset);
+				++adopted;
+				break;
+			}
+		}
+		if (adopted) {
+			WritePresetAssignmentsUnlocked(m);
+			logger::info("faces: self-heal adopted {} orphan render(s) into assign.json", adopted);
+		}
 	}
 
 	// Favorites + categories for the Faces tab. One file beside assign.json:
@@ -8059,6 +11215,13 @@ namespace
 			m["cats"] = json::array();
 		if (!m.contains("catOf") || !m["catOf"].is_object())
 			m["catOf"] = json::object();
+		// Presets the player has taken OUT of the tab (Rober, 2026-08-15: "ability
+		// to remove individual wigs or faces?"). Nothing on disk is touched — the
+		// .jslot stays exactly where it is, this is a curation list — so a hidden
+		// preset can always be brought back, and the tab stops burning renders on
+		// the ones he will never use (including the race-unknown failures).
+		if (!m.contains("hidden") || !m["hidden"].is_array())
+			m["hidden"] = json::array();
 		return m;
 	}
 
@@ -8069,6 +11232,81 @@ namespace
 		std::ofstream out(PresetMetaPath(), std::ios::trunc);
 		if (out)
 			out << m.dump(2);
+	}
+
+	// ---- The load order's playable races, for "🎭 Render as…" ----
+	// The six presets whose head part never resolves can only be rendered by
+	// NAMING their race, and on this load order a hardcoded vanilla ten would
+	// send Rober typing a modded race blind. So the deck ships the real list.
+	//
+	// The identity is the EDITOR ID, because that is exactly what PD's /shape
+	// answers with (race->GetFormEditorID()) and what /thumb must resolve the
+	// override against — anything else and the two ends would disagree. A race
+	// with no editor id is dropped: PD could not look it up, so offering it
+	// would be a button that cannot work.
+	//
+	// Playability is asked via the virtual GetPlayable(), never by reaching
+	// into data.flags — the flag holder's type differs between CommonLib forks
+	// (stl::enumeration vs REX::EnumSet) and that is a needless build trap.
+	//
+	// Walked ONCE per session and cached: TESDataHandler's form arrays are
+	// fixed after load, and PresetIndexJson runs on every landed face.
+	std::mutex  g_presetRaceLock;
+	std::string g_presetRaceJson;  // serialized array, "" = not walked yet
+
+	json PresetPlayableRaces()
+	{
+		{
+			std::lock_guard lock(g_presetRaceLock);
+			if (!g_presetRaceJson.empty()) {
+				json cached = json::parse(g_presetRaceJson, nullptr, false);
+				if (!cached.is_discarded())
+					return cached;
+			}
+		}
+		auto* dh = RE::TESDataHandler::GetSingleton();
+		if (!dh)
+			return json::array();  // no save / too early — don't cache a lie
+		std::vector<std::pair<std::string, std::string>> rows;  // name, edid
+		std::set<std::string>                            seen;
+		std::size_t                                      noEdid = 0;
+		for (auto* race : dh->GetFormArray<RE::TESRace>()) {
+			if (!race || !race->GetPlayable())
+				continue;
+			const char* ed = race->GetFormEditorID();
+			if (!ed || !*ed) {
+				++noEdid;
+				continue;
+			}
+			if (!seen.insert(ed).second)
+				continue;
+			const char* nm = race->GetName();
+			rows.emplace_back((nm && *nm) ? nm : ed, ed);
+		}
+		std::sort(rows.begin(), rows.end());
+		json out = json::array();
+		for (const auto& [name, edid] : rows)
+			out.push_back(json{ { "edid", edid }, { "name", name } });
+		logger::info("faces: {} playable race(s) offered for the render-as override ({} skipped, no editor id)",
+			out.size(), noEdid);
+		{
+			std::lock_guard lock(g_presetRaceLock);
+			g_presetRaceJson = out.dump(-1, ' ', false, json::error_handler_t::replace);
+		}
+		return out;
+	}
+
+	// Every preset name PD can see, from a parsed /presets reply. Both the
+	// index and the batch need this list and they must agree on it.
+	std::vector<std::string> PresetCatalogueNames(const json& presets)
+	{
+		std::set<std::string> names;
+		if (!presets.is_discarded() && presets.is_object())
+			for (const char* key : { "exported", "presets" })
+				for (const auto& p : presets.value(key, json::array()))
+					if (p.is_string())
+						names.insert(p.get<std::string>());
+		return { names.begin(), names.end() };
 	}
 
 	std::string PresetIndexJson()
@@ -8082,21 +11320,42 @@ namespace
 		out["registry"] = registry.is_discarded() ? json::object() : registry;
 		// Icon files living in the view's own folder (like portraits/), so the
 		// tiles are plain relative URLs the webview can already reach.
-		json            icons = json::array();
-		std::error_code ec;
-		const auto      dir = PresetIconsDir();
+		json                  icons = json::array();
+		std::set<std::string> onDisk;
+		std::error_code       ec;
+		const auto            dir = PresetIconsDir();
 		std::filesystem::create_directories(dir, ec);
 		for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
 			if (!it->is_regular_file(ec))
 				continue;
-			auto ext = it->path().extension().string();
+			auto ext = PathU8(it->path().extension());
 			for (auto& c : ext)
 				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-			if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp")
-				icons.push_back(it->path().filename().string());
+			if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp") {
+				icons.push_back(PathU8(it->path().filename()));
+				onDisk.insert(PathU8(it->path().filename()));
+			}
 		}
 		out["icons"] = icons;
+		// Re-adopt renders whose mapping was lost BEFORE reading the map, so
+		// the tab, the "Render missing" count and the batch all see the healed
+		// picture in the same breath. Free ride on the scan just done.
+		PresetAdoptOrphanRenders(PresetCatalogueNames(presets), onDisk);
 		out["assign"] = PresetAssignments();
+		// Why a preset has no image, and what the shape pass guessed about it.
+		// A failure the player cannot see is a failure he retries forever.
+		{
+			std::lock_guard lock(g_presetAssignLock);
+			json            fails = json::object();
+			for (const auto& [preset, why] : g_presetFails)
+				fails[preset] = why;
+			out["fails"] = fails;
+			json shape = json::object();
+			for (const auto& [preset, s] : g_presetShape)
+				shape[preset] = s;
+			out["shape"] = shape;
+		}
+		out["races"] = PresetPlayableRaces();
 		// Live batch state, so a reopened deck shows "Rendering k/N" + Stop
 		// instead of a dead ✨ button while the worker runs — and "Stopping…"
 		// the moment cancel lands (the flag only takes effect between renders).
@@ -8104,33 +11363,21 @@ namespace
 			{ "cancelling", g_presetAutoBusy.load() && g_presetAutoCancel.load() },
 			{ "done", g_presetAutoDone.load() },
 			{ "failed", g_presetAutoFailed.load() },
-			{ "total", g_presetAutoTotal.load() } };
+			{ "total", g_presetAutoTotal.load() },
+			{ "avgMs", g_presetAvgMs.load() } };
 		const json meta = PresetMeta();
 		out["fav"] = meta["fav"];
 		out["cats"] = meta["cats"];
 		out["catOf"] = meta["catOf"];
+		out["hidden"] = meta["hidden"];
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
 	// ---- Faces auto-render: batch preset thumbnails via PD /thumb ----
 	// One worker at a time; assign.json writes are shared with op "img", so
 	// both go through g_presetAssignLock (state atomics declared up beside
-	// PresetIconsDir — PresetIndexJson reports them).
-	std::string PresetAutoStem(const std::string& preset)
-	{
-		std::string s = "auto-" + preset;
-		for (auto& c : s)
-			if (c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' ||
-				c == '|' || c == '?' || c == '*')
-				c = '-';
-		while (!s.empty() && (s.back() == ' ' || s.back() == '.'))
-			s.pop_back();
-		return s;
-	}
-
-	// Filenames Ultralight has already cached THIS session (a re-render must
-	// never reuse one — the view would keep showing the old cached bytes).
-	std::set<std::string> g_presetBurnedNames;  // guarded by g_presetAssignLock
+	// PresetIconsDir — PresetIndexJson reports them). PresetAutoStem and
+	// g_presetBurnedNames moved up beside that state: the self-heal needs both.
 
 	// Pick the auto file for a preset: an existing non-burned candidate means
 	// "already rendered, just associate"; otherwise the first free name.
@@ -8160,19 +11407,48 @@ namespace
 		return { firstFree.empty() ? stem + ".png" : firstFree, false };
 	}
 
+	// Burn EVERY auto file this preset already has, so the next pick lands on a
+	// fresh name and the shape pass's "already rendered, just associate"
+	// short-circuit can't hand back the very render we are replacing. Used by
+	// the redo and by op "render-one"; the old files are left on disk on
+	// purpose (see the redo note — the delete cannot succeed this session).
+	void PresetBurnExistingFiles(const std::string& preset)
+	{
+		const std::string stem = PresetAutoStem(preset);
+		std::lock_guard   lock(g_presetAssignLock);
+		for (int v = 1; v <= 99; ++v) {
+			const std::string cand = (v == 1) ? stem + ".png" : stem + ".r" + std::to_string(v) + ".png";
+			std::error_code   ec;
+			if (std::filesystem::exists(PresetIconsDir() / cand, ec))
+				g_presetBurnedNames.insert(cand);
+		}
+	}
+
 	void PresetAssignIcon(const std::string& preset, const std::string& icon)
 	{
 		std::lock_guard lock(g_presetAssignLock);
 		json            m = PresetAssignmentsUnlocked();
-		if (icon.empty())
+		if (icon.empty()) {
 			m.erase(preset);
-		else
+			// A hand-clear is a decision, not damage — the self-heal must not
+			// hand the file straight back on the next repaint.
+			g_presetNoAdopt.insert(preset);
+		} else {
 			m[preset] = icon;
-		std::error_code ec;
-		std::filesystem::create_directories(PresetIconsDir(), ec);
-		std::ofstream outF(PresetIconsDir() / "assign.json", std::ios::trunc);
-		if (outF)
-			outF << m.dump(2);
+			g_presetNoAdopt.erase(preset);
+			// It has a picture now, so whatever went wrong before is history.
+			g_presetFails.erase(preset);
+			g_presetRedoSet.erase(preset);
+		}
+		WritePresetAssignmentsUnlocked(m);
+	}
+
+	// Record why a preset produced no image (shape pass reason, or PD's /thumb
+	// error verbatim). The view reads these back as index.fails.
+	void PresetNoteFailure(const std::string& preset, const std::string& why)
+	{
+		std::lock_guard lock(g_presetAssignLock);
+		g_presetFails[preset] = why;
 	}
 
 	void PresetAutoRenderWorker()
@@ -8182,24 +11458,44 @@ namespace
 				t->AddTask([msg = std::move(msg)]() { RE::DebugNotification(msg.c_str()); });
 		};
 
+		// Sleep between game-touching calls, in slices, so Stop lands within
+		// ~50 ms instead of after a whole breather (Bug 4, 2026-08-16).
+		const auto breathe = [](int ms) {
+			for (int left = ms; left > 0 && !g_presetAutoCancel.load(); left -= 50)
+				std::this_thread::sleep_for(std::chrono::milliseconds(left < 50 ? left : 50));
+		};
+
 		// Every preset PD can see, minus our own face backups and anything
-		// already wearing an image.
+		// already wearing an image — plus anything the redo queued for a
+		// FORCED re-render (it has an image, and that image is the problem).
 		std::vector<std::string> missing;
 		{
 			json presets = json::parse(PresetBridge::Call("GET", "/presets", ""), nullptr, false);
-			std::set<std::string> names;
-			if (!presets.is_discarded())
-				for (const char* key : { "exported", "presets" })
-					for (const auto& p : presets.value(key, json::array()))
-						if (p.is_string())
-							names.insert(p.get<std::string>());
+			const std::vector<std::string> names = PresetCatalogueNames(presets);
+			std::set<std::string>          redo;
+			{
+				std::lock_guard lock(g_presetAssignLock);
+				redo = g_presetRedoSet;
+			}
 			const json assign = PresetAssignments();  // locks internally
+			// A preset the player HID is not missing an image — it is out of the
+			// tab on purpose, so rendering it would burn a mannequin, a spawn and
+			// ~3 s for a tile nobody will see. This is also how the race-unknown
+			// failures stop re-failing on every batch: hide them once.
+			std::set<std::string> hidden;
+			for (const auto& h : PresetMeta().value("hidden", json::array()))
+				if (h.is_string())
+					hidden.insert(h.get<std::string>());
 			for (const auto& n : names)
-				if (n.rfind("PD_", 0) != 0 && !assign.contains(n))
+				if (n.rfind("PD_", 0) != 0 && (!assign.contains(n) || redo.count(n)) && !hidden.count(n))
 					missing.push_back(n);
 		}
 		if (missing.empty()) {
 			notify("Every preset already has an image.");
+			{
+				std::lock_guard lock(g_presetAssignLock);
+				g_presetRedoSet.clear();
+			}
 			g_presetAutoBusy.store(false);
 			return;
 		}
@@ -8243,16 +11539,35 @@ namespace
 			const std::string res = PresetBridge::Call("POST", "/shape",
 				body.dump(-1, ' ', false, json::error_handler_t::replace));
 			json r = json::parse(res, nullptr, false);
+			// Every /shape is a game-thread hop; 120 of them back to back is
+			// its own stutter even before a single face is drawn.
+			breathe(kPresetShapeBreatherMs);
 			if (r.is_discarded() || !r.value("ok", false)) {
 				g_presetAutoFailed.store(static_cast<int>(++failed));
-				logger::warn("preset autorender: '{}' unreadable: {}", preset,
-					r.is_discarded() ? res : r.value("error", res));
+				const std::string why = r.is_discarded() ? res : r.value("error", res);
+				PresetNoteFailure(preset, "Preset Director could not read this preset: " + why);
+				logger::warn("preset autorender: '{}' unreadable: {}", preset, why);
 				continue;
+			}
+			// Keep the guess EVEN WHEN it isn't confident — it is what lets the
+			// tab offer "render as <race>" instead of a dead end (Bug 3).
+			{
+				std::lock_guard lock(g_presetAssignLock);
+				g_presetShape[preset] = json{ { "race", r.value("race", "") },
+					{ "sex", r.value("sex", "") },
+					{ "faceEdid", r.value("faceEdid", "") },
+					{ "confident", r.value("confident", false) } };
 			}
 			if (!r.value("confident", false)) {
 				g_presetAutoFailed.store(static_cast<int>(++failed));
+				const std::string face = r.value("faceEdid", "");
+				PresetNoteFailure(preset,
+					"Can't tell which race this preset is for" +
+						(face.empty() ? std::string(" (its head part didn't resolve)") :
+										std::string(" (face part: ") + face + ")") +
+						" — pick a race and re-render just this one.");
 				logger::warn("preset autorender: '{}' skipped — can't tell its race (face part: {})",
-					preset, r.value("faceEdid", "unresolved"));
+					preset, face.empty() ? "unresolved" : face);
 				continue;
 			}
 			jobs.push_back({ preset, r.value("race", ""), r.value("sex", "") });
@@ -8273,29 +11588,32 @@ namespace
 		// it would waste minutes. Distinct per-preset errors keep going.
 		std::string sameErr;
 		int         sameErrRun = 0;
+		std::size_t lastDone = done;  // did THIS pass land a face? (feeds avgMs)
 
 		for (const auto& job : jobs) {
 			if (g_presetAutoCancel.load()) {
 				logger::info("preset autorender: cancelled at {}/{}", done, missing.size());
 				break;
 			}
+			const auto started = std::chrono::steady_clock::now();
 			const auto pick = PresetAutoFilePick(job.preset);
 			json       body;
 			body["preset"] = job.preset;
-			body["out"] = (PresetIconsDir() / pick.file).string();
+			body["out"] = PathU8((PresetIconsDir() / pick.file));
 			body["px"] = 1024;
 			body["flags"] = 3;
 			const std::string res = PresetBridge::Call("POST", "/thumb",
 				body.dump(-1, ' ', false, json::error_handler_t::replace));
 			json r = json::parse(res, nullptr, false);
 			if (!r.is_discarded() && r.value("ok", false) && r.value("saved", false)) {
-				PresetAssignIcon(job.preset, pick.file);
+				PresetAssignIcon(job.preset, pick.file);  // clears any earlier fail
 				g_presetAutoDone.store(static_cast<int>(++done));
 				sameErrRun = 0;
 				pushIndex();
 			} else {
 				const std::string err = r.is_discarded() ? res : r.value("error", res);
 				g_presetAutoFailed.store(static_cast<int>(++failed));
+				PresetNoteFailure(job.preset, err);
 				logger::warn("preset autorender: '{}' failed: {}", job.preset, err);
 				sameErrRun = (err == sameErr) ? sameErrRun + 1 : 1;
 				sameErr = err;
@@ -8308,9 +11626,30 @@ namespace
 			if ((done + failed) % 5 == 0)
 				notify("Preset faces: " + std::to_string(done + failed) + "/" +
 					   std::to_string(missing.size()) + "…");
+			// Give the game a beat. A /thumb spawns a stand-in, runs Papyrus and
+			// renders in the LIVE world; 114 of them nose-to-tail is the "pretty
+			// bad lag" Rober reported on 2026-08-16. Sliced, so Stop still bites.
+			breathe(kPresetRenderBreatherMs);
+			// Measured AFTER the breather: the estimate should describe the wait,
+			// not the render. Only when the face actually landed (see g_presetAvgMs).
+			if (done > lastDone) {
+				lastDone = done;
+				const auto ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - started)
+														 .count());
+				const int prev = g_presetAvgMs.load();
+				g_presetAvgMs.store(prev > 0 ? (prev * 2 + ms) / 3 : ms);
+			}
 		}
 
 		PresetBridge::Call("POST", "/thumb-cleanup", "{}");
+		// A forced re-render is spent whether it finished or was stopped — a
+		// preset left in the set would keep showing up under "Render missing"
+		// while wearing a perfectly good picture. Press ↻ again to resume.
+		{
+			std::lock_guard lock(g_presetAssignLock);
+			g_presetRedoSet.clear();
+		}
 		const bool cancelled = g_presetAutoCancel.load();
 		logger::info("preset autorender: {} rendered, {} failed{}", done, failed,
 			cancelled ? " (cancelled)" : "");
@@ -8321,6 +11660,232 @@ namespace
 					" — open the Faces tab."));
 		g_presetAutoBusy.store(false);
 		pushIndex();  // after busy clears, so the view's Stop chip retires
+	}
+
+	// ---- One preset, on demand (op "render-one") ----
+	// Rober, 2026-08-16: one bad face used to mean re-running the whole
+	// library. This ALWAYS renders — never the batch's "already has an image,
+	// just associate" short-circuit — because the whole point is that the
+	// image it has is wrong. `race`/`sex`, when given, override PD's shape
+	// inference: that is how the six presets whose head part never resolved
+	// ('Preset_6-6-2017_12-51-4', drae1..drae5) become renderable at all.
+	// A failure comes back as fdPresetResult AND lands in index.fails — a
+	// button that does nothing and says nothing is the bug we are fixing.
+	// `keepStandIn` (2026-08-16, Rober's in-game face experiment): ask PD to PIN
+	// the stand-in it spawned so a later batch's cleanup cannot delete it, and
+	// skip our own /thumb-cleanup — she is left standing next to the player to
+	// be looked at. Default false, so the everyday path is byte-identical.
+	void PresetRenderOneWorker(std::string preset, std::string race, std::string sex, bool keepStandIn)
+	{
+		const auto notify = [](std::string msg) {
+			if (auto* t = SKSE::GetTaskInterface())
+				t->AddTask([msg = std::move(msg)]() { RE::DebugNotification(msg.c_str()); });
+		};
+		const auto reply = [](const json& r) {
+			const std::string s = r.dump(-1, ' ', false, json::error_handler_t::replace);
+			if (auto* t = SKSE::GetTaskInterface())
+				t->AddTask([s]() { PushToView("fdPresetResult", s); });
+		};
+
+		// Burn what it has now: Ultralight caches by filename for the whole
+		// session, so re-rendering over the same name would repaint the very
+		// bytes we are replacing. The old file stays on disk — it cannot be
+		// deleted while Ultralight holds it mapped, and the self-heal prefers
+		// the NEWEST render, so a leftover is harmless.
+		PresetBurnExistingFiles(preset);
+		const auto pick = PresetAutoFilePick(preset);
+
+		json body;
+		body["preset"] = preset;
+		body["out"] = PathU8((PresetIconsDir() / pick.file));
+		body["px"] = 1024;
+		body["flags"] = 3;
+		if (!race.empty())
+			body["race"] = race;
+		if (!sex.empty())
+			body["sex"] = sex;
+		if (keepStandIn)
+			body["keepStandIn"] = true;
+		const std::string res = PresetBridge::Call("POST", "/thumb",
+			body.dump(-1, ' ', false, json::error_handler_t::replace));
+		json r = json::parse(res, nullptr, false);
+
+		// PD answers these two only when it pinned something; absent = the
+		// ordinary render, and the view simply never sees the keys.
+		const std::string standIn = (!r.is_discarded() && r.is_object()) ? r.value("standIn", std::string()) : std::string();
+		const bool        kept    = (!r.is_discarded() && r.is_object()) && r.value("kept", false);
+
+		bool        ok = false;
+		std::string err;
+		if (!r.is_discarded() && r.value("ok", false) && r.value("saved", false)) {
+			ok = true;
+			PresetAssignIcon(preset, pick.file);  // clears any earlier fail
+			g_presetAutoDone.store(1);
+			logger::info("preset render-one: '{}' rendered as {}{}", preset, pick.file,
+				race.empty() ? "" : (" (forced race " + race + "/" + (sex.empty() ? "male" : sex) + ")"));
+		} else {
+			err = r.is_discarded() ? res : r.value("error", res);
+			g_presetAutoFailed.store(1);
+			PresetNoteFailure(preset, err);
+			logger::warn("preset render-one: '{}' failed: {}", preset, err);
+		}
+
+		// The pinned stand-in is the POINT when keepStandIn is set — cleaning up
+		// here would delete the very thing the player asked to look at. Op
+		// "standin-clear" is how she goes away.
+		if (!keepStandIn)
+			PresetBridge::Call("POST", "/thumb-cleanup", "{}");
+		if (kept)
+			logger::info("preset stand-in: kept {} next to the player (render-one '{}')",
+				standIn.empty() ? "the stand-in" : standIn, preset);
+		notify(ok ? (kept ? ("Rendered " + preset + " — she is standing next to you.") :
+							("Rendered " + preset + " — open the Faces tab.")) :
+					("Couldn't render " + preset + ": " + err));
+		g_presetAutoBusy.store(false);
+		// op rides along so the view matches this reply EXACTLY rather than
+		// inferring it from the preset name — fdPresetResult is a shared channel.
+		reply(json{ { "op", "render-one" },
+			{ "ok", ok },
+			{ "preset", preset },
+			{ "icon", ok ? pick.file : "" },
+			{ "standIn", standIn },
+			{ "kept", kept },
+			{ "error", err } });
+		// Built off the game thread, pushed as a task — same law as the batch.
+		const std::string idx = PresetIndexJson();
+		if (auto* t = SKSE::GetTaskInterface())
+			t->AddTask([idx]() { PushToView("fdPresetData", idx); });
+	}
+
+	// ---- The face experiment (ops "render-probe" / "standin-clear") ----
+	// Rober, 2026-08-16: look at the preset IN GAME instead of judging it from a
+	// 1024px tile. Deliberately a SIBLING of render-one rather than more flags on
+	// it, for three reasons worth keeping:
+	//   1. PD's `headOnly` is an A/B knob that must NEVER become the everyday
+	//      default. A separate op makes that structural instead of a promise
+	//      about flag discipline.
+	//   2. A probe NEVER assigns, never notes a failure and never burns the
+	//      preset's filenames — so a failed experiment cannot blank a good tile
+	//      or plant an entry in index.fails.
+	//   3. Its output goes to its OWN filename, so it cannot overwrite the real
+	//      tile even by accident (the coordinator's explicit requirement).
+	// render-one keeps its exact previous contract; only the optional
+	// keepStandIn passthrough was added there.
+
+	// A fresh name per probe. Ultralight memory-maps every image it has drawn and
+	// holds it for the session, so reusing one filename would repaint the FIRST
+	// probe's bytes forever — the counter is what makes A/B actually visible.
+	// "probe-" can never collide with the "auto-<preset>[.rN]" naming law that
+	// PresetAutoFilesOnDisk / the self-heal scan, so a probe is invisible to
+	// every path that adopts renders.
+	std::string PresetProbeFileName(const std::string& preset)
+	{
+		static std::atomic<int> s_seq{ 0 };
+		// PresetAutoStem sanitises the preset name and always starts "auto-".
+		const std::string stem = PresetAutoStem(preset).substr(5);
+		return "probe-" + stem + "-" + std::to_string(s_seq.fetch_add(1) + 1) + ".png";
+	}
+
+	void PresetRenderProbeWorker(std::string preset, std::string race, std::string sex,
+		bool headOnly, bool keepStandIn)
+	{
+		const auto notify = [](std::string msg) {
+			if (auto* t = SKSE::GetTaskInterface())
+				t->AddTask([msg = std::move(msg)]() { RE::DebugNotification(msg.c_str()); });
+		};
+		const auto reply = [](const json& r) {
+			const std::string s = r.dump(-1, ' ', false, json::error_handler_t::replace);
+			if (auto* t = SKSE::GetTaskInterface())
+				t->AddTask([s]() { PushToView("fdPresetResult", s); });
+		};
+
+		const std::string file = PresetProbeFileName(preset);
+
+		json body;
+		body["preset"] = preset;
+		body["out"] = PathU8((PresetIconsDir() / file));
+		body["px"] = 1024;
+		body["flags"] = 3;
+		if (!race.empty())
+			body["race"] = race;
+		if (!sex.empty())
+			body["sex"] = sex;
+		if (headOnly)
+			body["headOnly"] = true;
+		if (keepStandIn)
+			body["keepStandIn"] = true;
+		const std::string res = PresetBridge::Call("POST", "/thumb",
+			body.dump(-1, ' ', false, json::error_handler_t::replace));
+		const json r = json::parse(res, nullptr, false);
+
+		const bool        obj  = !r.is_discarded() && r.is_object();
+		const bool        ok   = obj && r.value("ok", false) && r.value("saved", false);
+		const std::string standIn = obj ? r.value("standIn", std::string()) : std::string();
+		const bool        kept = obj && r.value("kept", false);
+		const std::string err  = ok ? std::string() : (obj ? r.value("error", res) : res);
+
+		if (ok)
+			// Build marker (hd-markers.json: "preset probe:").
+			logger::info("preset probe: '{}' rendered as {} (headOnly={}, standIn={}, kept={})",
+				preset, file, headOnly ? "yes" : "no",
+				standIn.empty() ? "-" : standIn, kept ? "yes" : "no");
+		else
+			logger::warn("preset probe: '{}' failed: {}", preset, err);
+
+		if (!keepStandIn)
+			PresetBridge::Call("POST", "/thumb-cleanup", "{}");
+
+		// std::string on every branch: a bare literal here would make the outer
+		// ternary mix const char* with std::string and fail to compile.
+		notify(ok ? (kept ? std::string("Probe rendered — she is standing next to you.") :
+							std::string("Probe rendered — check the Faces tab.")) :
+					("Probe failed: " + err));
+		g_presetAutoBusy.store(false);
+		// NO PresetAssignIcon / PresetNoteFailure / PresetBurnExistingFiles here,
+		// and no fdPresetData push: a probe changes nothing the tab draws.
+		reply(json{ { "op", "render-probe" },
+			{ "ok", ok },
+			{ "preset", preset },
+			{ "file", ok ? file : "" },
+			{ "headOnly", headOnly },
+			{ "standIn", standIn },
+			{ "kept", kept },
+			{ "error", err } });
+	}
+
+	// Send a pinned stand-in away. Worker thread, because PresetBridge::Call
+	// blocks on a game-thread round trip.
+	void PresetStandInClearWorker()
+	{
+		const std::string res = PresetBridge::Call("POST", "/thumb-cleanup", R"({"force":true})");
+		const json        r = json::parse(res, nullptr, false);
+		const bool        obj = !r.is_discarded() && r.is_object();
+		const std::string err = obj ? r.value("error", std::string()) : res;
+		// `ok` DEFAULTS TRUE on a well-formed object with no error: render-one has
+		// always fired /thumb-cleanup and thrown the reply away, so this route's
+		// success shape is unverified from here. An explicit ok:false or an error
+		// string is still believed — a forgiving default must not make a real
+		// refusal read as success.
+		const bool        ok = obj && r.value("ok", true) && err.empty();
+		// PD reports `kept` as "is one STILL pinned" — true here would mean the
+		// force did not take, so it is reported rather than assumed away.
+		const bool        kept = obj && r.value("kept", false);
+
+		// Build marker (hd-markers.json: "preset stand-in: cleared").
+		if (ok)
+			logger::info("preset stand-in: cleared (still pinned: {})", kept ? "yes" : "no");
+		else
+			logger::warn("preset stand-in: clear failed: {}", err.empty() ? res : err);
+
+		if (auto* t = SKSE::GetTaskInterface())
+			t->AddTask([ok, kept, err]() {
+				const std::string msg = ok ? std::string("Stand-in sent away.") :
+											 ("Couldn't send the stand-in away: " + err);
+				RE::DebugNotification(msg.c_str());
+				PushToView("fdPresetResult",
+					json{ { "op", "standin-clear" }, { "ok", ok }, { "kept", kept }, { "error", err } }
+						.dump(-1, ' ', false, json::error_handler_t::replace));
+			});
 	}
 
 	void OnJsFolPreset(const char* data)
@@ -8388,11 +11953,142 @@ namespace
 			return;
 		}
 
+		if (op == "render-one") {
+			// One preset, always re-rendered, optionally forced to a race/sex.
+			// {op:"render-one", preset, race?, sex?, keepStandIn?} → fdPresetResult
+			//   {ok, preset, icon, standIn, kept, error} + a fresh fdPresetData.
+			// keepStandIn leaves her in the world afterwards (op "standin-clear"
+			// sends her away); omitted, this path is exactly what it always was.
+			const std::string preset = j.value("preset", "");
+			const std::string race = j.value("race", "");
+			const std::string sex = j.value("sex", "");
+			const bool        keepStandIn = j.value("keepStandIn", false);
+			// Every refusal echoes op + preset too, so the view clears the right
+			// pending tile instead of waiting out its 120 s backstop.
+			const auto refuse = [&](const std::string& why) {
+				PushToView("fdPresetResult",
+					json{ { "op", "render-one" }, { "ok", false }, { "preset", preset }, { "error", why } }
+						.dump(-1, ' ', false, json::error_handler_t::replace));
+			};
+			if (preset.empty()) {
+				refuse("which preset?");
+				return;
+			}
+			if (!PresetBridge::Available()) {
+				refuse("Preset Director isn't loaded — rendering needs it");
+				return;
+			}
+			// Firing this mid-batch is a normal thing to try; say so plainly
+			// rather than queueing a second stand-in into the same world.
+			if (g_presetAutoBusy.exchange(true)) {
+				refuse("a render is already running — stop it first");
+				return;
+			}
+			g_presetAutoCancel.store(false);
+			g_presetAutoTotal.store(1);
+			g_presetAutoDone.store(0);
+			g_presetAutoFailed.store(0);
+			logger::info("preset render-one: '{}' requested{}", preset,
+				race.empty() ? "" : (" as " + race));
+			// Same law as the batch: /thumb applies the preset through Papyrus,
+			// and Papyrus does not run while the palette has the game paused.
+			ClosePalette();
+			std::thread(PresetRenderOneWorker, preset, race, sex, keepStandIn).detach();
+			return;
+		}
+
+		if (op == "render-probe") {
+			// The in-game face experiment. {op:"render-probe", preset, race?, sex?,
+			// headOnly?, keepStandIn?} → fdPresetResult {op, ok, preset, file,
+			// headOnly, standIn, kept, error}. NO fdPresetData follows — a probe
+			// changes nothing the tab draws.
+			//
+			// keepStandIn DEFAULTS TRUE here (unlike render-one): standing next to
+			// her is the entire purpose of the op. headOnly defaults FALSE and is
+			// an explicit A/B opt-in — it must never become the everyday path.
+			const std::string preset = j.value("preset", "");
+			const std::string race = j.value("race", "");
+			const std::string sex = j.value("sex", "");
+			const bool        headOnly = j.value("headOnly", false);
+			const bool        keepStandIn = j.value("keepStandIn", true);
+			const auto        refuse = [&](const std::string& why) {
+				PushToView("fdPresetResult",
+					json{ { "op", "render-probe" }, { "ok", false }, { "preset", preset },
+						{ "headOnly", headOnly }, { "error", why } }
+						.dump(-1, ' ', false, json::error_handler_t::replace));
+			};
+			if (preset.empty()) {
+				refuse("which preset?");
+				return;
+			}
+			if (!PresetBridge::Available()) {
+				refuse("Preset Director isn't loaded — the probe needs it");
+				return;
+			}
+			if (g_presetAutoBusy.exchange(true)) {
+				refuse("a render is already running — stop it first");
+				return;
+			}
+			g_presetAutoCancel.store(false);
+			// Deliberately NOT touching total/done/failed: those drive the tab's
+			// "Rendering k/N" chip, and a probe is not part of any batch.
+			// Build marker (hd-markers.json: "preset probe: '").
+			logger::info("preset probe: '{}' requested (headOnly={}, keepStandIn={}){}",
+				preset, headOnly ? "yes" : "no", keepStandIn ? "yes" : "no",
+				race.empty() ? "" : (" as " + race));
+			// Same law as render-one: /thumb applies the preset through Papyrus,
+			// which does not run while the palette has the game paused.
+			ClosePalette();
+			std::thread(PresetRenderProbeWorker, preset, race, sex, headOnly, keepStandIn).detach();
+			return;
+		}
+
+		if (op == "standin-clear") {
+			// {op:"standin-clear"} → fdPresetResult {op, ok, kept, error}.
+			// Refused mid-render on purpose: a FORCED cleanup would delete the
+			// stand-in the running batch is using.
+			const auto refuse = [&](const std::string& why) {
+				PushToView("fdPresetResult",
+					json{ { "op", "standin-clear" }, { "ok", false }, { "error", why } }
+						.dump(-1, ' ', false, json::error_handler_t::replace));
+			};
+			if (!PresetBridge::Available()) {
+				refuse("Preset Director isn't loaded");
+				return;
+			}
+			if (g_presetAutoBusy.load()) {
+				refuse("a render is running — it is using the stand-in; stop it first");
+				return;
+			}
+			// Palette closed first for the same reason render-one does it: the PD
+			// call blocks on a game-thread round trip, and a paused world is how
+			// that turns into a wedged worker rather than a slow one.
+			ClosePalette();
+			std::thread(PresetStandInClearWorker).detach();
+			return;
+		}
+
 		if (op == "autorender-redo") {
-			// Re-render EVERY auto thumbnail (the first batch left glitched
-			// ones). Drop the auto- assignments + files, burn the old names
-			// (Ultralight caches by URL for the session — reusing a name would
-			// show the stale bytes), then run the normal batch.
+			// Re-render EVERY auto thumbnail (an early batch left glitched
+			// ones).
+			//
+			// ⚠ THE 2026-08-16 TRAP — do not reintroduce it. This used to
+			// ERASE every auto- assignment and delete its file BEFORE
+			// rendering anything. Two things then went wrong at once: the
+			// delete silently failed (Ultralight memory-maps every image it
+			// has drawn and holds it for the session, so remove() returns a
+			// sharing violation into an ignored error_code), and a batch that
+			// was cancelled — or crashed, or was walked away from — never
+			// rebuilt the map it had just thrown away. Measured that day:
+			// 234 auto-*.png on disk, TEN entries in assign.json, the human's
+			// whole library blank. 109 + 114 + 1 + 10 = 234, i.e. every render
+			// ever made was still there and nothing claimed it.
+			//
+			// So the redo destroys NOTHING up front. It only (a) burns the
+			// filenames so the next pick is fresh, and (b) queues the presets
+			// for a forced re-render. Each assignment is replaced the moment
+			// its new render lands, so a cancel costs exactly the faces not
+			// yet redone — never the ones already good.
 			if (!PresetBridge::Available()) {
 				PushToView("fdPresetResult",
 					R"({"ok":false,"error":"Preset Director isn't loaded — the auto-render needs it"})");
@@ -8402,27 +12098,32 @@ namespace
 				PushToView("fdPresetResult", R"({"ok":false,"error":"a render batch is already running"})");
 				return;
 			}
+			std::size_t queued = 0;
 			{
 				std::lock_guard lock(g_presetAssignLock);
-				json            m = PresetAssignmentsUnlocked();
-				json            keep = json::object();
+				const json      m = PresetAssignmentsUnlocked();
 				for (const auto& [preset, icon] : m.items()) {
 					const std::string file = icon.is_string() ? icon.get<std::string>() : "";
-					if (file.rfind("auto-", 0) == 0) {
-						std::error_code ec;
-						std::filesystem::remove(PresetIconsDir() / file, ec);
-						g_presetBurnedNames.insert(file);
-					} else {
-						keep[preset] = icon;
-					}
+					if (file.rfind("auto-", 0) != 0)
+						continue;  // a hand-picked image is the player's, never ours to redo
+					g_presetRedoSet.insert(preset);
+					++queued;
 				}
-				std::error_code ec;
-				std::filesystem::create_directories(PresetIconsDir(), ec);
-				std::ofstream outF(PresetIconsDir() / "assign.json", std::ios::trunc);
-				if (outF)
-					outF << keep.dump(2);
-				logger::info("preset autorender: redo — {} auto name(s) burned", g_presetBurnedNames.size());
 			}
+			// Burn outside the map walk (PresetBurnExistingFiles takes the same
+			// lock): every generation on disk, so the shape pass's "already
+			// rendered" short-circuit can't hand back the render we are redoing.
+			{
+				std::set<std::string> queuedNames;
+				{
+					std::lock_guard lock(g_presetAssignLock);
+					queuedNames = g_presetRedoSet;
+				}
+				for (const auto& preset : queuedNames)
+					PresetBurnExistingFiles(preset);
+			}
+			logger::info("preset autorender: redo — {} preset(s) queued, assignments kept until each one lands",
+				queued);
 			g_presetAutoCancel.store(false);
 			ClosePalette();
 			std::thread(PresetAutoRenderWorker).detach();
@@ -8446,6 +12147,28 @@ namespace
 				arr.push_back(preset);
 			m["fav"] = arr;
 			WritePresetMeta(m);
+			PushToView("fdPresetData", PresetIndexJson());
+			return;
+		}
+		if (op == "hide") {
+			// Remove one preset from the tab (on=true) or bring it back. Same
+			// shape as "fav": a name list in meta.json, never a file operation.
+			const std::string preset = j.value("preset", "");
+			const bool        on = j.value("on", true);
+			if (preset.empty())
+				return;
+			json m = PresetMeta();
+			json arr = json::array();
+			bool present = false;
+			for (auto& e : m["hidden"]) {
+				if (e.is_string() && e.get<std::string>() == preset) { present = true; continue; }
+				arr.push_back(e);
+			}
+			if (on && !present)
+				arr.push_back(preset);
+			m["hidden"] = arr;
+			WritePresetMeta(m);
+			logger::info("faces: preset '{}' {}", preset, on ? "hidden" : "restored");
 			PushToView("fdPresetData", PresetIndexJson());
 			return;
 		}
@@ -8558,11 +12281,32 @@ namespace
 		// inventory opened UNDER the palette, which is the overlap this project
 		// treats as a bug (Rober, 2026-08-03).
 		const auto        npcOp  = j.value("op", std::string(""));
-		const bool        closing = (npcOp == "inventory" || npcOp == "storage");
+		// Trade (Rober, 2026-08-17) rides this same door rather than a bridge of
+		// its own: the card already sends every per-person verb through fdNpc,
+		// and the reply shape fdNpcResult renders is the one TradeActions
+		// answers with. Whichever menu it picks — barter or pack — needs the
+		// focus, so it joins the closing set.
+		const bool        trade   = TradeActions::IsAction(npcOp);
+		const bool        closing = (npcOp == "inventory" || npcOp == "storage" || trade);
 
-		SKSE::GetTaskInterface()->AddTask([cmd, closing]() {
+		SKSE::GetTaskInterface()->AddTask([cmd, closing, trade]() {
 			if (closing)
 				ClosePalette();  // the container menu needs the focus back
+
+			if (trade) {
+				// One answer, no callback: the barter dispatch is fire-and-forget
+				// (trade_actions.h), and the palette is already shut, so the
+				// on-screen notification is the only reply the player can read.
+				const auto res = TradeActions::Apply(cmd);
+				PushToView("fdNpcResult", res);
+				const auto jt = json::parse(res, nullptr, false);
+				if (!jt.is_discarded()) {
+					const auto msg = jt.value("msg", std::string(""));
+					if (!msg.empty())
+						RE::DebugNotification(msg.c_str());
+				}
+				return;
+			}
 
 			const auto pre = NffControl::Apply(cmd, [](const std::string& res) {
 				// Already on the main thread — NffControl hops for us.
@@ -8819,6 +12563,39 @@ namespace
 			const std::string fid    = j.value("formId", std::string());
 			const std::string plugin = j.value("plugin", std::string());
 			ItemIcons::CaptureAngles(fid, plugin);
+			// The worn lightbox listens for hdSpinState now too (its old
+			// Image()-probe polling relied on ?sp= cache-busting, which
+			// Ultralight does not load — the frames baked and the view never
+			// saw them). Same reply the hdSpin path sends.
+			PushToView("hdSpinState", ItemIcons::SpinStateJson(fid, plugin, "item"));
+		});
+	}
+
+	// hdSpin: the shared lightbox was dragged on an item or a face — bake that
+	// subject's turntable and answer with every frame already on disk. The view
+	// re-sends this while frames are missing (bake ~seconds/frame); every leg
+	// is idempotent, so polling by re-ask is safe and needs no new state.
+	void OnJsSpin(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto j = json::parse(req, nullptr, false);
+			if (j.is_discarded() || !j.is_object())
+				return;
+			const std::string fid    = j.value("formId", std::string());
+			const std::string plugin = j.value("plugin", std::string());
+			const std::string kind   = j.value("kind", std::string("item"));
+			// bake:false = state-only (the lightbox OPENING, which must cost
+			// zero renders — frames from a prior session still paint). The
+			// first real drag re-sends with bake:true.
+			const bool bake = j.value("bake", true);
+			if (bake && kind == "face")
+				ItemIcons::CaptureFaceAngles(fid, plugin);
+			else if (bake && kind == "item")
+				ItemIcons::CaptureAngles(fid, plugin);
+			// "body" never bakes from here — mounts own that (the bake needs
+			// the resolved race-skin NIF); the state reply still answers.
+			PushToView("hdSpinState", ItemIcons::SpinStateJson(fid, plugin, kind));
 		});
 	}
 
@@ -9025,7 +12802,7 @@ namespace
 			std::error_code fec;
 			if (!it->is_regular_file(fec))
 				continue;
-			auto name = it->path().filename().string();
+			auto name = PathU8(it->path().filename());
 			std::transform(name.begin(), name.end(), name.begin(),
 				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 			live.insert(std::move(name));
@@ -9101,6 +12878,13 @@ namespace
 			{ "anchorV", c.anchorV == "bottom" ? "bottom" : "top" },
 			{ "visible", c.enabled && c.visible },
 			{ "showNames", c.showNames },
+			{ "showLevel", c.showLevel },
+			{ "showDir", c.showDir },
+			{ "showHp", c.showHp },
+			{ "showSt", c.showSt },
+			{ "showMk", c.showMk },
+			{ "faceShape", FollowersHud::ClampShape(c.faceShape) },
+			{ "compact", c.compact },
 		}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
@@ -9116,7 +12900,16 @@ namespace
 			{ "anchorH", c.anchorH == "right" ? "right" : "left" },
 			{ "anchorV", c.anchorV == "bottom" ? "bottom" : "top" },
 			{ "showNames", c.showNames },
+			{ "showLevel", c.showLevel },
+			{ "showDir", c.showDir },
+			{ "showHp", c.showHp },
+			{ "showSt", c.showSt },
+			{ "showMk", c.showMk },
+			{ "faceShape", FollowersHud::ClampShape(c.faceShape) },
+			{ "compact", c.compact },
 			{ "arming", g_hudKeyArming.load() },
+			{ "navArming", g_hudNavArming.load() },
+			{ "navKey", json{ { "device", c.navDevice }, { "code", c.navCode }, { "label", c.navLabel } } },
 			{ "key", json{ { "device", c.keyDevice }, { "code", c.keyCode }, { "label", c.keyLabel } } },
 		}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
@@ -9126,10 +12919,16 @@ namespace
 	{
 		int  maxFaces = 12;
 		bool includeDead = true;
+		bool exLevel = true, exDir = true, exHp = true, exSt = false, exMk = false;
 		{
 			std::lock_guard l(g_configMutex);
 			maxFaces = g_hudConfig.maxFaces;
 			includeDead = g_hudConfig.includeDead;
+			exLevel = g_hudConfig.showLevel;
+			exDir = g_hudConfig.showDir;
+			exHp = g_hudConfig.showHp;
+			exSt = g_hudConfig.showSt;
+			exMk = g_hudConfig.showMk;
 		}
 
 		// file -> {z,x,y}, parsed from the same helper the roster uses (a bad parse
@@ -9271,6 +13070,48 @@ namespace
 
 				json row{ { "name", name }, { "formId", id }, { "following", true }, { "dead", dead } };
 
+				// Per-face extras (Party Sheet catch-up, 2026-08-17). Each field
+				// exists only while its toggle is on: the view draws what is
+				// there, and a switched-off extra costs the change-gated push
+				// nothing. Pools use the widgets' own {cur,max} contract —
+				// permanent max, the number the bar is drawn against.
+				if (auto* avo = a->AsActorValueOwner()) {
+					auto pool = [avo](RE::ActorValue av) {
+						float cur = avo->GetActorValue(av);
+						float mx = avo->GetPermanentActorValue(av);
+						if (cur < 0.0f) cur = 0.0f;
+						if (mx < cur) mx = cur;
+						return json{ { "cur", (int)std::lround(cur) }, { "max", (int)std::lround(mx) } };
+					};
+					if (exHp) row["hp"] = pool(RE::ActorValue::kHealth);
+					if (exSt) row["st"] = pool(RE::ActorValue::kStamina);
+					if (exMk) row["mk"] = pool(RE::ActorValue::kMagicka);
+				}
+				if (exLevel)
+					row["lvl"] = (int)a->GetLevel();
+				if (exDir && player) {
+					// Bearing RELATIVE TO WHERE THE PLAYER FACES, so the chevron
+					// means "she is that way from your nose", exactly the Party
+					// Sheet reading. Skyrim's Z angle and atan2(dx,dy) share the
+					// same convention (0 = +Y, clockwise from above), so the
+					// difference IS the relative bearing. Quantised to 5° and
+					// whole meters so a party standing still does not defeat the
+					// changed-JSON push gate with float noise.
+					const auto pp = player->GetPosition();
+					const auto ap = a->GetPosition();
+					const double dx = (double)ap.x - pp.x, dy = (double)ap.y - pp.y;
+					double rel = std::atan2(dx, dy) - (double)player->GetAngleZ();
+					const double kPi = 3.14159265358979323846;
+					while (rel > kPi) rel -= 2.0 * kPi;
+					while (rel < -kPi) rel += 2.0 * kPi;
+					const int deg = (int)std::lround(rel * 180.0 / kPi / 5.0) * 5;
+					// 1 game unit = 1/70.0284 m — the community-measured constant.
+					const int meters = (int)std::lround(std::sqrt(dx * dx + dy * dy +
+						((double)ap.z - pp.z) * ((double)ap.z - pp.z)) / 70.0284);
+					row["dir"] = deg;
+					row["dist"] = meters;
+				}
+
 				// Roster-parity order: FO original (exact roster key) → base name →
 				// current display name. First candidate with a portrait file wins.
 				std::vector<std::string> cand;
@@ -9306,6 +13147,14 @@ namespace
 		return arr.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
 
+	// ---- Time Dial runtime state (the dial itself lives in hud-td.js) ------
+	// Open/close is RUNTIME state, never persisted — a crash while the dial is
+	// up must not strand a Focused overlay into the next session. Placement
+	// persists separately, as Widgets::timeDial. g_tdOpenedAt feeds the menus
+	// beat's grace window (see WgApplyHudVisibility).
+	std::atomic<bool>                     g_tdOpen{ false };
+	std::chrono::steady_clock::time_point g_tdOpenedAt{};
+
 	// Show/Hide the view per enabled && (visible || editing). Main thread.
 	void HudApplyVisibility()
 	{
@@ -9317,7 +13166,18 @@ namespace
 			enabled = g_hudConfig.enabled;
 			visible = g_hudConfig.visible;
 		}
-		const bool want = enabled && (visible || g_hudEditing.load());
+		// The widgets live in this document too (2026-08-17): a player who
+		// keeps the follower strip OFF but turns a widget on must still get
+		// the view. The strip's own show/hide key keeps ruling the STRIP; the
+		// widgets ride wgMenus / their own master switch inside the page, so
+		// Show here never over-draws — an all-off page paints nothing.
+		const bool want = (enabled && (visible || g_hudEditing.load())) ||
+		                  Widgets::AnyEnabled() || g_hudEditing.load() ||
+		                  g_tdOpen.load() ||        // the Time Dial rides this view too
+		                  g_hudNavActive.load();    // …and so does browse mode, which
+		                                            // holds the keyboard: hiding the
+		                                            // view under it would leave the
+		                                            // player driving an invisible list
 		if (want)
 			g_prisma->Show(g_hudView);
 		else
@@ -9347,19 +13207,342 @@ namespace
 	// Push the deck-side control's state (Followers tab card).
 	void HudPushDeckState()
 	{
+		const std::string js = HudDeckStateJson();
 		if (g_prisma && g_viewReady.load() && g_open.load())
-			g_prisma->Invoke(g_view, ("hudCfgState(" + HudDeckStateJson() + ")").c_str());
+			g_prisma->Invoke(g_view, ("hudCfgState(" + js + ")").c_str());
+		// ---- and to the HUD view's own shelf (2026-08-19, round 3) ----------
+		// Its Followers-HUD section needs the two things HudConfigJson cannot
+		// carry: `enabled` and `visible` as SEPARATE flags (that push folds them
+		// into one), and the two bound keys with their arming state. This is the
+		// one funnel every arming/clear/toggle path already calls — including
+		// the input sink's capture completion — so the shelf's key rows repaint
+		// the instant a key is pressed, with no second push to keep in step.
+		if (g_prisma && g_hudView && g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView, ("hudCfgState(" + js + ")").c_str());
+	}
+
+	// ================================================================ Time Dial
+	// The hotkey-openable circular wait dial (Rober, 2026-08-18). View logic in
+	// view/HotkeyDeck/hud-td.js; the clock maths is TimeActions' — the SAME
+	// one-step GameHour jump the Time tab and the seeded wait actions use.
+	//
+	// Bridge (one name per direction, listeners on g_hudView):
+	//   requests  tdGet / tdWait(hours) / tdClose
+	//   replies   tdShow("1"|"0") / tdState(Widget json) / tdInfo / tdResult
+
+	void TdPushInfo()
+	{
+		if (g_prisma && g_hudView && g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView, ("tdInfo(" + TimeActions::InfoJson() + ")").c_str());
+	}
+
+	// MAIN THREAD. Show + Focus the HUD view with the dial up. Focus here is
+	// the hud-reposition kind — unpaused, cursor owned by the view.
+	void TdOpenDial()
+	{
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
+			RE::DebugNotification("The Time Dial needs the HUD view - reinstall hud.html");
+			return;
+		}
+		// The dial and reposition edit-mode are rivals for this view's Focus —
+		// stand the editor down first (the WgOpenEdit/HbOpenEdit discipline).
+		if (g_hudEditing.exchange(false))
+			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
+		g_tdOpen = true;
+		g_tdOpenedAt = std::chrono::steady_clock::now();
+		logger::info("time-dial: open");   // marker: time-dial-open
+		g_prisma->Show(g_hudView);
+		g_prisma->Invoke(g_hudView, ("tdState(" + Widgets::TimeDialJson() + ")").c_str());
+		TdPushInfo();
+		g_prisma->Invoke(g_hudView, "tdShow(\"1\")");
+		// focus menu ON — it is the CURSOR menu; disabling it is the frozen-
+		// screen/dead-mouse bug the editors just shed (editor-cursor).
+		g_prisma->Focus(g_hudView, true);
+	}
+
+	// MAIN THREAD. fromView = the view already closed itself (Esc / ✕) and only
+	// needs C++ to release Focus and re-evaluate whether the view still shows.
+	void TdCloseDial(bool fromView)
+	{
+		if (!g_tdOpen.exchange(false))
+			return;
+		logger::info("time-dial: closed");
+		if (g_prisma && g_hudView && g_hudViewReady.load()) {
+			if (!fromView)
+				g_prisma->Invoke(g_hudView, "tdShow(\"0\")");
+			if (!g_hudEditing.load())
+				g_prisma->Unfocus(g_hudView);
+		}
+		HudApplyVisibility();
+	}
+
+	void TdToggleDial()
+	{
+		if (g_tdOpen.load())
+			TdCloseDial(false);
+		else
+			TdOpenDial();
+	}
+
+	// ============================================ Followers HUD: browse mode v2
+	// (Rober, 2026-08-18: browsing the strip made the player WALK.) v1 forwarded
+	// WASD to the view through the input sink with no focus at all — and this
+	// sink CANNOT CONSUME, so every step also drove the character. v2 gives the
+	// view REAL keyboard focus instead:
+	//
+	//   Focus(g_hudView, /*pauseGame=*/false)
+	//
+	// unpaused (the world keeps running — you are browsing mid-play, not in a
+	// menu) with the focus menu ON, because the FocusMenu IS the cursor and the
+	// input capture: it is what stops the movement keys reaching the player, and
+	// disabling it is the frozen-screen/dead-mouse bug this codebase keeps
+	// re-learning (marker editor-cursor). Keys then arrive in the view as real
+	// KeyboardEvents and hud.js does the stepping.
+	//
+	// The v1 sink path is KEPT as the fallback for a refused Focus — see
+	// g_hudNavFocused. C++'s side of the contract is unchanged either way: the
+	// view is told hudNav("open") / hudNav("close") exactly as before, and it
+	// can end browse mode itself with hudNavDone.
+	void HudNavStop(const char* why, bool fromView)
+	{
+		if (!g_hudNavActive.exchange(false)) {
+			g_hudNavFocused = false;
+			return;
+		}
+		// Build marker (hd-markers.json: "hud-nav-focus").
+		logger::info("hud-nav-focus: browse closed ({})", why ? why : "toggle");
+		const bool hadFocus = g_hudNavFocused.exchange(false);
+		if (g_prisma && g_hudView && g_hudViewReady.load()) {
+			// fromView = the view already closed itself and only needs the
+			// Focus released (the TdCloseDial discipline) — telling it to close
+			// twice is how a view ends up fighting its own state.
+			if (!fromView)
+				g_prisma->Invoke(g_hudView, "hudNav(\"close\")");
+			// Only release what browse mode itself took: the reposition editor
+			// and the Time Dial are the other two claimants on this view's
+			// Focus, and pulling it out from under either would strand them.
+			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load())
+				g_prisma->Unfocus(g_hudView);
+		}
+		HudApplyVisibility();
+	}
+
+	void HudNavStart()
+	{
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
+			RE::DebugNotification("Browse needs the HUD view - reinstall hud.html");
+			return;
+		}
+		// The dial and the reposition editor are rivals for this view's Focus —
+		// stand them down first (the TdOpenDial / WgOpenEdit discipline).
+		if (g_tdOpen.load())
+			TdCloseDial(false);
+		if (g_hudEditing.exchange(false))
+			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
+		// Browsing an invisible strip reads as a dead key, so the browse key
+		// also ARMS the HUD — exactly what HudToggleVisible's first press does,
+		// and the same reasoning as Widgets::ArmForEdit.
+		bool armed = false;
+		{
+			std::lock_guard l(g_configMutex);
+			if (!g_hudConfig.enabled) { g_hudConfig.enabled = true; armed = true; }
+			if (!g_hudConfig.visible) { g_hudConfig.visible = true; armed = true; }
+		}
+		if (armed) {
+			PersistAll();   // outside the lock — PersistAll takes it too
+			HudPushDeckState();
+		}
+		g_hudNavActive = true;
+		g_prisma->Show(g_hudView);
+		HudPushConfig();
+		HudPushData(true);   // a browse list must never open empty
+		g_prisma->Invoke(g_hudView, "hudNav(\"open\")");
+		// pauseGame=false: the world keeps running. disableFocusMenu is left
+		// OFF (default) on purpose — see the block comment above.
+		const bool ok = g_prisma->Focus(g_hudView, false);
+		g_hudNavFocused = ok;
+		// Build marker (hd-markers.json: "hud-nav-focus").
+		logger::info("hud-nav-focus: browse opened, keyboard {}",
+			ok ? "held by the view (the player stops moving)"
+			   : "REFUSED - falling back to the sink forwarder");
+	}
+
+	void HudNavToggle()
+	{
+		if (g_hudNavActive.load())
+			HudNavStop("browse key", false);
+		else
+			HudNavStart();
+	}
+
+	// The view finished browsing on its own (Enter opened a card, Esc, a click
+	// away). Registered as "hudNavDone" beside hudSave.
+	void OnJsHudNavDone(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { HudNavStop("the view said done", true); });
+	}
+
+	void OnJsTdGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { TdPushInfo(); });
+	}
+
+	void OnJsTdWait(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			float hours = 0.0f;
+			try { hours = std::stof(payload); } catch (...) {}
+			std::string err;
+			const bool ok = TimeActions::Jump(hours, err);
+			if (ok)
+				logger::info("time-dial: waited {:.1f} h", hours);
+			nlohmann::json r{ { "ok", ok }, { "hours", static_cast<int>(hours + 0.5f) } };
+			if (!ok)
+				r["msg"] = err.empty() ? "Could not wait here." : err;
+			if (g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView, ("tdResult(" + r.dump() + ")").c_str());
+			TdPushInfo();
+		});
+	}
+
+	void OnJsTdClose(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { TdCloseDial(true); });
 	}
 
 	// ---- view -> C++ listeners (registered on g_hudView) ----
+	/* Declared here because the widgets now live in the HUD document and its
+	 * ready handler sits ABOVE their definitions in this file — a forward
+	 * declaration is the whole cost of keeping the wg* block where it has
+	 * always been rather than shuffling 100 lines around it. */
+	void WgPushConfig();
+	void WgPushLive(bool force);
+	void WgApplyHudVisibility();
+	/* Round 4 (2026-08-18): the custom quick strip + the loot lamp. Same
+	 * reason as the three above — CreateHudView registers them and sits
+	 * above the wg* block where they are defined. */
+	void OnJsWgQuick2Use(const char*);
+	void OnJsWgQuick2Catalog(const char*);
+	void OnJsWgLootToggle(const char*);
+
+	/* Round 3: the spell-icon library, once per session per view (the deck's own
+	 * g_deckIconIndexPushed discipline). The slot widgets' spell/shout tiles
+	 * resolve through the same ladder the Spell Deck uses, so they need the same
+	 * byForm/generic maps — plus the player's own per-spell overrides
+	 * (magic.spells[].icon), keyed exactly as the deck's resolver keys them:
+	 * plugin lower | bare lowercase hex localId.
+	 *
+	 * ⚠ 2026-08-18: this used to live INSIDE OnJsHudReady, i.e. it rode the
+	 * view's own toGame('hudReady') boot call — and that call is silently
+	 * dropped when the C++ listener is not registered yet (the view's DOM is
+	 * ready before RegisterJSListener runs). On 2026-08-18's rig log the DOM was
+	 * ready at 17:38:00 and OnJsHudReady's effects only appeared at 17:39:17,
+	 * dragged in by an unrelated toggle; "hud: spell icon index pushed" never
+	 * appeared at all. So it is now pushed from BOTH the DOM-ready callback and
+	 * hudReady, and the latch below is what makes the double delivery free.
+	 *
+	 * Latch discipline: g_hudIconIndexPushed is set ONLY when a real index was
+	 * read. MirrorSpellIconsAsync() is a detached thread that may not have
+	 * copied sh_index.json into the HUD's view dir yet, and latching a "null"
+	 * read as done would cost the whole session's art. After kMaxTries the
+	 * overrides go out with whatever base we have (an install with no icon
+	 * library is a real, supported case) and the latch closes for good.
+	 * Marker: "hud: icon index pushed at dom-ready". Main thread only. */
+	void HudPushIconIndex(const char* whence)
+	{
+		if (!g_prisma || !g_hudView || g_hudIconIndexPushed.load())
+			return;
+		constexpr int kMaxTries = 20;
+		const int     tries = g_hudIconIndexTries.fetch_add(1) + 1;
+
+		json idx = json::parse(DeckIconIndexJson(), nullptr, false);
+		const bool haveIdx = !idx.is_discarded() && idx.is_object() && !idx.empty();
+		if (!haveIdx) {
+			idx = json::object();
+			if (tries < kMaxTries) {
+				// NOT latched — the icon mirror thread may still be copying.
+				if (tries == 1)
+					logger::info("hud: icon index not on disk yet ({}), will retry", whence);
+				return;
+			}
+			logger::warn("hud: icon index still unreadable after {} tries — pushing overrides only", tries);
+		}
+
+		json ov = json::object();
+		{
+			std::lock_guard l(g_configMutex);
+			for (const auto& sp : g_magicConfig.spells) {
+				if (sp.icon.empty() || sp.plugin.empty())
+					continue;
+				std::string key = sp.plugin;
+				std::transform(key.begin(), key.end(), key.begin(),
+					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+				char hex[16];
+				std::snprintf(hex, sizeof(hex), "%x", sp.localId);
+				key += "|";
+				key += hex;
+				ov[key] = sp.icon;
+			}
+		}
+		const std::size_t nOv = ov.size();
+		idx["overrides"] = std::move(ov);
+		// ⚠ Count what actually WENT OVER, not just the overrides. The old line
+		// reported overrides only, so an index that arrived with an EMPTY
+		// `generic` map — the rung a shout or a power lands on, and the one that
+		// had the Equipped widget drawing a glyph — logged as a healthy push and
+		// told nobody (2026-08-19 triage). A zero here now names its own bug.
+		const std::size_t nByForm  = (idx.contains("byForm") && idx["byForm"].is_object())
+			? idx["byForm"].size() : 0;
+		const std::size_t nGeneric = (idx.contains("generic") && idx["generic"].is_object())
+			? idx["generic"].size() : 0;
+		if (g_hudIconIndexPushed.exchange(true))
+			return;  // another path won the race between the load above and here
+		g_prisma->Invoke(g_hudView,
+			("hudIconIndex(" + idx.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
+		logger::info("hud: spell icon index pushed ({} byForm, {} generic, {} override(s), via {})",
+			nByForm, nGeneric, nOv, whence);
+		if (nGeneric == 0)
+			logger::warn("hud: icon index has NO generic map — shouts and powers "
+			             "will fall back to their drawn glyph (icons/sh_index.json)");
+		// Which path actually delivered it, and how long it took to become
+		// readable — the whole point of the 2026-08-18 fix. Marker:
+		// "hud: icon index pushed at dom-ready".
+		logger::info("hud: icon index pushed at dom-ready (path '{}', try {})", whence, tries);
+	}
+
+	/* Everything the HUD document needs for its FIRST paint. Called from the
+	 * view's DOM-ready callback (the reliable one — C++ owns that timing) and
+	 * from hudReady (kept, so a view that re-announces itself is still served).
+	 * Every piece is idempotent: the pushes are plain state deliveries and the
+	 * icon index carries its own one-shot latch. */
+	void HudPushBoot(const char* whence)
+	{
+		HudPushConfig();
+		HudPushData(true);
+		HudApplyVisibility();
+		/* The widgets live in THIS document (2026-08-17), so its first
+		 * paint needs their config and a live tick too — without this the
+		 * readouts sit empty until something else happens to change. */
+		WgPushConfig();
+		WgPushLive(true);
+		if (g_prisma && g_hudView)
+			g_prisma->Invoke(g_hudView,
+				("wdItemIcons(" + ItemIcons::IndexJson() + ")").c_str());
+		HudPushIconIndex(whence);
+		// The widget-background picker's "Your art" source: the same custom
+		// listing the deck's icon picker shows. Cached in DeckCustomIconsJson,
+		// so this costs a string in the steady state.
+		// Build marker (hd-markers.json: "hud-custom-icons").
+		if (g_prisma && g_hudView)
+			g_prisma->Invoke(g_hudView,
+				("hudCustomIcons(" + DeckCustomIconsJson(false) + ")").c_str());
+	}
+
 	void OnJsHudReady(const char*)
 	{
 		g_hudViewReady = true;
-		SKSE::GetTaskInterface()->AddTask([]() {
-			HudPushConfig();
-			HudPushData(true);
-			HudApplyVisibility();
-		});
+		SKSE::GetTaskInterface()->AddTask([]() { HudPushBoot("hudReady"); });
 	}
 	void OnJsHudLog(const char* data)
 	{
@@ -9402,7 +13585,117 @@ namespace
 	}
 
 	// ---- deck -> C++ control (registered on g_view as "hudCfg") ----
-	// { op: enable|visible|orient|names|reposition|bindkey|state, on?, orient? }
+	// { op: enable|visible|orient|names|reposition|shelf|bindkey|state,
+	//   on?, orient?, key? }
+	// ---- Home tab: UI-elements cards (round 3, 2026-08-17) -----------------
+	// One snapshot of every on-screen element's on/off truth, so the Home
+	// cards can wear real chips instead of guessing: the hotbar and follower
+	// strip flags plus the ENTIRE widgets config (the view reads
+	// widgets.widgets[id].enabled — same document the wgConfig push carries,
+	// one serializer, no second dialect).
+	std::string UiStateJson()
+	{
+		json w = json::parse(Widgets::ConfigJson(), nullptr, false);
+		if (w.is_discarded())
+			w = json::object();
+		// ---- ENABLED IS NOT THE SAME AS ON SCREEN (2026-08-19, round 3) -----
+		// Rober's live config was `enabled=true, visible=false, showMode=always`
+		// and the Home drawer's Action Bar row said "ON" while nothing was on
+		// screen — which reads as "enabled but broken". Both the Action Bar and
+		// the Followers HUD carry TWO flags (a master `enabled` and their own
+		// show/hide `visible`), and the bar carries a THIRD gate on top: the
+		// automatic `showMode` rule, whose live verdict is g_hbEffVisible. All
+		// of it is readable right here, so the drawer stops guessing: the pill
+		// shows the EFFECTIVE state and the row says which flag is holding it
+		// down. (Round 2's law stands — a pill never fakes a state it cannot
+		// read. This state IS readable, so it is read.)
+		bool        hb = false, hud = false, hbVis = false, hudVis = false;
+		std::string hbMode = "always";
+		{
+			std::lock_guard l(g_configMutex);
+			hb = g_hbConfig.enabled;
+			hbVis = g_hbConfig.visible;
+			hbMode = g_hbConfig.showMode;
+			hud = g_hudConfig.enabled;
+			hudVis = g_hudConfig.visible;
+		}
+		return json{
+			{ "hotbar", hb },
+			{ "hotbarVisible", hbVis },
+			{ "hotbarShowMode", hbMode },
+			// the live verdict of the automatic rule — false while "only in
+			// combat" is holding an otherwise-shown bar off screen
+			{ "hotbarEffective", g_hbEffVisible.load() },
+			{ "hud", hud },
+			{ "hudVisible", hudVis },
+			{ "widgets", std::move(w) },
+		}.dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
+	void OnJsUiState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("hdUiStateData", UiStateJson());
+		});
+	}
+
+	// ---- the deck's Home drawer, driving the HUD's linked GROUP ------------
+	// { op:'master'|'orient'|'size'|'lock'|'link', on?, orient?, size?, key? }
+	//
+	// A RELAY, deliberately: the group's master memory, orientation, scale and
+	// membership live in the HUD VIEW's own `hud.grp` blob (Widgets stores the
+	// `hud` key verbatim and never parses it), and the deck view cannot call
+	// into another PrismaUI view. So the command is handed to hud.js's
+	// hudGrpCmd, which runs the same functions the shelf's own buttons run —
+	// a second implementation on either side could only ever disagree with the
+	// one the player sees. The result flows back the ordinary way: the HUD
+	// saves (wgSave), and that push carries fresh hdUiStateData to the deck.
+	void OnJsWidgetGrp(const char* data)
+	{
+		const auto j = json::parse(data ? data : "", nullptr, false);
+		if (j.is_discarded() || !j.is_object() || !j.contains("op")) {
+			logger::warn("hdWidgetGrp: no op in payload");
+			return;
+		}
+		const std::string payload = j.dump(-1, ' ', false, json::error_handler_t::replace);
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
+				logger::warn("hdWidgetGrp: the HUD view is not up yet — '{}' dropped", payload);
+				return;
+			}
+			// Build marker (hd-markers.json: "home-grp-relay").
+			logger::info("home-grp-relay: equipped group cmd {}", payload);
+			g_prisma->Invoke(g_hudView, ("hudGrpCmd(" + payload + ")").c_str());
+		});
+	}
+
+	// {id:"handR"} (or a bare id string): flip that one widget. The whole
+	// follow-up — config push to the views, live re-tick, both visibility
+	// passes, and the fresh state back to the deck — happens on the main
+	// thread, so a card click behaves exactly like the same edit made in the
+	// widget editor.
+	void OnJsWidgetToggle(const char* data)
+	{
+		std::string id = data ? data : "";
+		if (const auto j = json::parse(id, nullptr, false); j.is_object())
+			id = j.value("id", std::string());
+		if (id.empty()) {
+			logger::warn("hdWidgetToggle: no widget id in payload");
+			return;
+		}
+		SKSE::GetTaskInterface()->AddTask([id]() {
+			Widgets::ToggleOne(id);
+			WgPushConfig();
+			if (Widgets::AnyEnabled())
+				WgPushLive(true);
+			// The widgets draw on the HUD view (widgets-hud-view), so that is
+			// the visibility pass a toggle must re-run. The hotbar's own pass
+			// re-evaluates on its 150 ms beat regardless.
+			HudApplyVisibility();
+			PushToView("hdUiStateData", UiStateJson());
+		});
+	}
+
 	void OnJsHudCfg(const char* data)
 	{
 		const auto j = json::parse(data ? data : "", nullptr, false);
@@ -9410,6 +13703,11 @@ namespace
 			return;
 		const std::string op = j.value("op", std::string());
 		bool persist = true, pushHud = true, pushCfg = false, reposition = false, pushData = false;
+		// 2026-08-19: op 'shelf' rides the SAME arming path reposition does (it
+		// is the same act — the deck hands the screen to the HUD editor), and
+		// then opens the shelf on one element. Empty key = just open it.
+		std::string shelfKey;
+		bool        shelf = false;
 
 		if (op == "enable") {
 			std::lock_guard l(g_configMutex);
@@ -9419,7 +13717,12 @@ namespace
 			// (CSS), so Show() alone leaves nothing on screen until the next scan lands.
 			// Push config + a forced scan NOW, the same feed reposition does, so
 			// enabling shows the strip immediately.
-			if (g_hudConfig.enabled) { pushCfg = true; pushData = true; }
+			// ⚠ pushCfg on BOTH directions: disabling without telling the view
+			// left the strip painting forever while the widgets kept the shared
+			// view alive — "turning it off did nothing, still see a face of an
+			// npc" (Rober, 2026-08-18).
+			pushCfg = true;
+			if (g_hudConfig.enabled) pushData = true;
 		} else if (op == "visible") {
 			std::lock_guard l(g_configMutex);
 			g_hudConfig.visible = j.value("on", !g_hudConfig.visible);
@@ -9430,6 +13733,31 @@ namespace
 		} else if (op == "names") {
 			std::lock_guard l(g_configMutex);
 			g_hudConfig.showNames = j.value("on", !g_hudConfig.showNames);
+			pushCfg = true;
+		} else if (op == "part") {
+			// The per-face extras: { op:'part', key:'level'|'dir'|'hp'|'st'|'mk', on }.
+			// One op, five keys — the settings modal is five identical toggle
+			// buttons and five op spellings would be four chances to typo one.
+			// pushData rides along because the toggles decide which FIELDS the
+			// row JSON carries, not just whether the view draws them.
+			const std::string key = j.value("key", std::string());
+			std::lock_guard   l(g_configMutex);
+			bool* f = key == "level" ? &g_hudConfig.showLevel :
+			          key == "dir"   ? &g_hudConfig.showDir :
+			          key == "hp"    ? &g_hudConfig.showHp :
+			          key == "st"    ? &g_hudConfig.showSt :
+			          key == "mk"    ? &g_hudConfig.showMk : nullptr;
+			if (!f)
+				return;
+			*f = j.value("on", !*f);
+			pushCfg = true;
+			pushData = true;
+		} else if (op == "shape") {
+			// { op:'shape', shape:'circle'|'rounded'|'square'|'diamond' } —
+			// clamped, so an unknown word from an older/newer view lands on
+			// circle instead of an unstyled strip.
+			std::lock_guard l(g_configMutex);
+			g_hudConfig.faceShape = FollowersHud::ClampShape(j.value("shape", g_hudConfig.faceShape));
 			pushCfg = true;
 		} else if (op == "grow") {
 			// Cycle the anchor corner: TL -> TR -> BR -> BL -> TL. The stored x/y
@@ -9443,6 +13771,16 @@ namespace
 			else if (right && bottom)   { g_hudConfig.anchorH = "left"; }
 			else                        { g_hudConfig.anchorV = "top"; }
 			pushCfg = true;
+		} else if (op == "compact") {
+			std::lock_guard l(g_configMutex);
+			g_hudConfig.compact = j.value("on", !g_hudConfig.compact);
+			pushCfg = true;
+		} else if (op == "bindnav") {
+			g_hudNavArming = true;
+			persist = false; pushHud = false;
+		} else if (op == "clearnav") {
+			std::lock_guard l(g_configMutex);
+			g_hudConfig.navCode = 0; g_hudConfig.navLabel.clear(); g_hudConfig.navDevice = "keyboard";
 		} else if (op == "bindkey") {
 			g_hudKeyArming = true;
 			persist = false; pushHud = false;
@@ -9456,6 +13794,21 @@ namespace
 				g_hudConfig.enabled = true;
 			}
 			reposition = true;
+		} else if (op == "shelf") {
+			// { op:'shelf', key?:'handR' } — the deck's "configure it on screen"
+			// door (Home tab → UI Elements). Arms HUD edit mode exactly as
+			// reposition does, then asks the view to open its shelf on that
+			// element; the deferred task below is where the Invoke lands, after
+			// the palette teardown has released the cursor.
+			{
+				std::lock_guard l(g_configMutex);
+				g_hudConfig.enabled = true;
+			}
+			reposition = true;
+			shelf = true;
+			shelfKey = j.value("key", std::string());
+			if (shelfKey.size() > 32)
+				shelfKey.clear();
 		} else if (op == "state") {
 			persist = false; pushHud = false;
 		}
@@ -9463,19 +13816,51 @@ namespace
 		if (persist)
 			PersistAll();
 		const bool doCfg = pushCfg, doHud = pushHud, doRepos = reposition, doData = pushData;
-		SKSE::GetTaskInterface()->AddTask([doCfg, doHud, doRepos, doData]() {
+		const bool        doShelf = shelf;
+		const std::string shelfOn = shelfKey;
+		SKSE::GetTaskInterface()->AddTask([doCfg, doHud, doRepos, doData, doShelf, shelfOn]() {
 			if (doHud) HudApplyVisibility();
 			if (doCfg) HudPushConfig();
 			if (doData) HudPushData(true);
 			if (doRepos) {
+				// The deck palette initiated this and is still OPEN — close it
+				// NOW, or its fullscreen surface keeps the mouse for the ~2s
+				// until the desync watchdog shoots it (and the player reads
+				// that as "reposition has no mouse control").
+				if (AnyOpen())
+					ClosePalette();
 				g_hudEditing = true;
-				if (g_prisma && g_hudView && g_hudViewReady.load()) {
-					g_prisma->Show(g_hudView);
-					HudPushConfig();
-					HudPushData(true);
-					g_prisma->Focus(g_hudView, true, true);
-					g_prisma->Invoke(g_hudView, "hudEdit(\"1\")");
-				}
+				// DEFERRED one task: ClosePalette queues its own teardown
+				// (unfocus, cursor release) — focusing the HUD in the SAME
+				// task let that teardown land AFTER our Focus and eat the
+				// cursor, which played as "place freezes the screen, mouse
+				// wont move" (Rober, 2026-08-18).
+				SKSE::GetTaskInterface()->AddTask([doShelf, shelfOn]() {
+					if (!g_hudEditing.load())
+						return;
+					if (g_prisma && g_hudView && g_hudViewReady.load()) {
+						// Build marker (hd-markers.json: "hud-repos-defer").
+						logger::info("hud repos: focus deferred a task");
+						g_prisma->Show(g_hudView);
+						HudPushConfig();
+						HudPushData(true);
+						// pauseGame=true, focus menu ON. The FocusMenu is PrismaUI's
+						// CURSOR menu (kModal, non-pausing — ViewManager.cpp);
+						// disableFocusMenu=true gave a paused world with NO cursor,
+						// which is the whole "place freezes the screen, mouse wont
+						// move" family (Rober, 2026-08-17/18). Marker: editor-cursor.
+						g_prisma->Focus(g_hudView, true);
+						logger::info("editor-cursor: focus menu kept (hud edit)");
+						g_prisma->Invoke(g_hudView, "hudEdit(\"1\")");
+						if (doShelf) {
+							// Build marker (hd-markers.json: "hud-shelf-open").
+							logger::info("hud shelf: opening on '{}'", shelfOn);
+							const json arg{ { "key", shelfOn } };
+							g_prisma->Invoke(g_hudView,
+								("hudShelf(" + arg.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
+						}
+					}
+				});
 			}
 			HudPushDeckState();
 		});
@@ -9486,8 +13871,15 @@ namespace
 	{
 		{
 			std::lock_guard l(g_configMutex);
-			if (!g_hudConfig.enabled) g_hudConfig.enabled = true;  // first press also arms it
-			g_hudConfig.visible = !g_hudConfig.visible;
+			// Same first-press law as the Action Bar above (round 3): arming the
+			// strip means showing it. Arm-then-flip left enabled=true with
+			// visible=false, i.e. "on" and invisible.
+			if (!g_hudConfig.enabled) {
+				g_hudConfig.enabled = true;
+				g_hudConfig.visible = true;
+			} else {
+				g_hudConfig.visible = !g_hudConfig.visible;
+			}
 		}
 		PersistAll();
 		HudApplyVisibility();
@@ -9495,24 +13887,164 @@ namespace
 	}
 
 	// Create the HUD view at load. Shown per config; never Focused except to edit.
+	// The spell icon pool (1,913 extracted PNGs + the Spell Deck's custom
+	// uploads) lives in the MAGICDECK view folder, and a view cannot read
+	// another view's folder — probe-proven (dac9a2cc): an <img> pointed at
+	// ../MagicDeck/… silently loads 0x0. So the HUD view gets a MIRROR: any
+	// icons/ file MagicDeck has that HotkeyDeck lacks is copied across, once
+	// per launch, on a worker thread (pure file IO — never the main thread on
+	// a 4,780-mod VFS). Skip-existing keeps HotkeyDeck's own art authoritative
+	// and makes reruns cheap. Under MO2 the copies land in Overwrite, exactly
+	// like the render-once icon files already do. Runs once per launch here,
+	// and again from DeckCustomIconsJson whenever an icon folder actually
+	// changes — so a custom icon uploaded mid-session reaches the HUD on the
+	// next palette open, not the next launch (gap closed 2026-08-19).
+	// Build marker (hd-markers.json: "hud-icon-mirror").
+	// `onDone` (optional) runs on the WORKER thread the moment the copy pass has
+	// finished — including the early-out when there is no source folder, so a
+	// caller waiting on it can never be stranded. It exists for the icon re-push
+	// below: pushing a path into the view before the file exists under the HUD's
+	// own tree would just draw a broken <img> once and never retry.
+	void MirrorSpellIconsAsync(std::function<void()> onDone)
+	{
+		std::thread([onDone = std::move(onDone)]() {
+			namespace fs = std::filesystem;
+			std::error_code ec;
+			const fs::path src = fs::path("Data") / "PrismaUI" / "views" / "MagicDeck" / "icons";
+			const fs::path dst = fs::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons";
+			if (!fs::exists(src, ec)) {
+				if (onDone)
+					onDone();
+				return;
+			}
+			fs::create_directories(dst, ec);
+			std::size_t copied = 0, present = 0;
+			for (auto it = fs::recursive_directory_iterator(src, ec);
+			     !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+				if (!it->is_regular_file(ec))
+					continue;
+				const fs::path rel = fs::relative(it->path(), src, ec);
+				if (ec)
+					continue;
+				const fs::path out = dst / rel;
+				if (fs::exists(out, ec)) {
+					++present;
+					continue;
+				}
+				fs::create_directories(out.parent_path(), ec);
+				if (fs::copy_file(it->path(), out, fs::copy_options::skip_existing, ec))
+					++copied;
+			}
+			logger::info("hud icon mirror: {} copied, {} already present", copied, present);
+			if (onDone)
+				onDone();
+		}).detach();
+	}
+	void MirrorSpellIconsAsync()
+	{
+		MirrorSpellIconsAsync(nullptr);
+	}
+
+	/* ---- a MID-SESSION icon change reaches the HUD (2026-08-19) -------------
+	 * Rober: "BUT, i added an icon for it and it didnt update."
+	 *
+	 * The spell-icon library goes over ONCE per session, behind a latch — which
+	 * is right for the 1,900-entry index and wrong for the `overrides` map that
+	 * rides with it, because that map is the player's own per-spell picks and it
+	 * changes whenever they pick one (the Spell Deck's icon picker, or a portal
+	 * upload replayed by the queue). Nothing cleared the latch, so the Equipped
+	 * widget kept whatever art it was born with until the next launch.
+	 *
+	 * Two things have to happen, in this order:
+	 *   1. MIRROR — a freshly uploaded PNG lives in the MagicDeck tree; the HUD
+	 *      view cannot read another view's folder, so the file must be copied
+	 *      across before its path is worth pushing.
+	 *   2. RE-PUSH — clear the latch AND the tries counter (the counter is
+	 *      capped at kMaxTries, so leaving it spent would silently refuse the
+	 *      re-push later in a long session), then push on the main thread.
+	 *
+	 * Callers: OnJsMagicSave (the in-deck picker) and RefreshMagicIcons (the
+	 * portal queue's own repaint choke point — the 1 Hz poller and the LiveApi
+	 * fast path both land there). Marker: hud-icon-repush.
+	 *
+	 * The hotbar is deliberately NOT re-pushed: its per-slot art is its own
+	 * `Slot::icon` field, resolved before the index is consulted, so it is
+	 * already live. hbIconIndex carries no `overrides` map at all. */
+	void HudRefreshIconIndex(const char* whence)
+	{
+		// ⚠ Deliberately NO `if (!g_prisma || !g_hudView) return;` here. This is
+		// called from WORKER threads (the portal poller, the LiveApi handler)
+		// and those are main-thread-owned pointers. HudPushIconIndex makes that
+		// exact check on the main thread, where reading them is valid; the
+		// mirror pass below is idempotent and harmless if the view never exists.
+		const std::string why = whence ? whence : "?";
+		MirrorSpellIconsAsync([why]() {
+			auto* task = SKSE::GetTaskInterface();
+			if (!task)
+				return;
+			task->AddTask([why]() {
+				g_hudIconIndexPushed = false;
+				g_hudIconIndexTries = 0;
+				logger::info("hud: icon index re-push armed (via {})", why);
+				HudPushIconIndex("icon-change");
+			});
+		});
+	}
+
 	void CreateHudView()
 	{
 		if (!g_prisma || g_hudView)
 			return;
 		if (!ViewFileOnDisk("HotkeyDeck/hud.html")) return;
+		MirrorSpellIconsAsync();
 		g_hudView = g_prisma->CreateView("HotkeyDeck/hud.html", [](PrismaView v) {
 			g_hudViewReady = true;
 			logger::info("followers HUD view DOM ready (handle {})", v);
-			SKSE::GetTaskInterface()->AddTask([]() {
-				HudPushConfig();
-				HudPushData(true);
-				HudApplyVisibility();
-			});
+			/* The FULL boot delivery, not just the three placement pushes.
+			 * hudReady is the view ASKING for this, and that ask is dropped
+			 * outright when the DOM beats RegisterJSListener below — which is
+			 * exactly what stranded the icon index all of 2026-08-18. C++ owns
+			 * this callback's timing, so this is the delivery that cannot be
+			 * lost; hudReady stays as the second chance. */
+			SKSE::GetTaskInterface()->AddTask([]() { HudPushBoot("domReady"); });
 		});
 		g_prisma->RegisterJSListener(g_hudView, "hudReady", OnJsHudReady);
+		/* The HUD's equipment and pinned-item tiles want the SAME rendered art
+		 * the deck's own grids use, so the widget view has to be able to ASK.
+		 * Registering the existing handler here rather than writing a second
+		 * request path is what keeps one render queue and one on-disk index —
+		 * the alternative is two features rendering the same form twice. */
+		g_prisma->RegisterJSListener(g_hudView, "whIcons", OnJsWheelIcons);
 		g_prisma->RegisterJSListener(g_hudView, "hudSave", OnJsHudSave);
+		// ---- the Followers-HUD shelf section (2026-08-19, shelf round 3) ----
+		// Rober: "the Followers HUD needs the same shelf treatment — its own
+		// config button opening a popout right panel, not whatever the hell
+		// this is" (the deck drawer's inline strip of nineteen 9px chips). The
+		// shelf lives in THIS view, so it needs the deck card's own bridge:
+		// the SAME handler, registered on both views, so a shelf row and a deck
+		// chip run one implementation of enable / visible / orient / names /
+		// part / shape / compact / bindnav / bindkey / clear*. Registering a
+		// second handler here would be a second place for the ops to drift.
+		// Build marker (hd-markers.json: "hud-strip-cfg-bridge").
+		g_prisma->RegisterJSListener(g_hudView, "hudCfg", OnJsHudCfg);
+		logger::info("hud-strip-cfg-bridge: hudCfg listening on the HUD view too");
 		g_prisma->RegisterJSListener(g_hudView, "hudEditDone", OnJsHudEditDone);
+		// Browse mode v2: the view ends browsing itself (Enter opened a card,
+		// Esc, a click away) and C++ answers by releasing the keyboard.
+		g_prisma->RegisterJSListener(g_hudView, "hudNavDone", OnJsHudNavDone);
 		g_prisma->RegisterJSListener(g_hudView, "hudLog", OnJsHudLog);
+		// Widgets round 4: the custom quick strip's own bridge (its picker and
+		// its row presses) and the loot lamp's toggle. Registered here rather
+		// than in CreateHotbarView with the other wg* names because they are
+		// HUD-view-only by construction — the retired hotbar widget DOM has no
+		// custom strip to press.
+		g_prisma->RegisterJSListener(g_hudView, "wgQuick2Use", OnJsWgQuick2Use);
+		g_prisma->RegisterJSListener(g_hudView, "wgQuick2Catalog", OnJsWgQuick2Catalog);
+		g_prisma->RegisterJSListener(g_hudView, "wgLootToggle", OnJsWgLootToggle);
+		// Time Dial (td* bridge) — see the Time Dial block above.
+		g_prisma->RegisterJSListener(g_hudView, "tdGet", OnJsTdGet);
+		g_prisma->RegisterJSListener(g_hudView, "tdWait", OnJsTdWait);
+		g_prisma->RegisterJSListener(g_hudView, "tdClose", OnJsTdClose);
 		logger::info("followers-hud: view created + listeners registered");
 	}
 
@@ -9536,7 +14068,16 @@ namespace
 				std::this_thread::sleep_for(std::chrono::milliseconds(std::max<std::uint32_t>(300, ms)));
 				if (!on || !g_hudViewReady.load())
 					continue;
-				SKSE::GetTaskInterface()->AddTask([]() { HudPushData(false); });
+				SKSE::GetTaskInterface()->AddTask([]() {
+					OpenDiag::TickTimer diag("hud-roster");
+					HudPushData(false);
+					/* The retry the latch discipline promises: the icon mirror
+					 * is a detached thread, so sh_index.json can land seconds
+					 * after the view booted. No-op once pushed, and bounded by
+					 * g_hudIconIndexTries so a library-less install costs a
+					 * handful of reads, not one per tick forever. */
+					HudPushIconIndex("tick");
+				});
 			}
 		}).detach();
 	}
@@ -9576,12 +14117,40 @@ namespace
 	// name for something that is gone.
 	std::string HbLiveJson()
 	{
+		// PERF (2026-08-16, round two): a LIGHT read, for the same reason the
+		// ticker thread already gives one line above its own copy. This used to
+		// take the plugin's busiest lock and deep-copy the WHOLE hotbar slice —
+		// four pages x 24 stored slots, five strings each plus a flyout child
+		// vector, ~96 slot structs — several times a second, to read ONE page's
+		// visible buttons. LiveJson touches exactly two things: cols/rows (for
+		// VisibleSlots) and c.pages[page].slots. So only those cross the lock.
+		//
+		// The pages vector keeps its real SIZE so the `p >= pages.size()` guard
+		// inside LiveJson still answers the same question; only the chosen page's
+		// slots carry data. They are truncated to the visible count because the
+		// loop never reads past it, and the `present = i < slots.size()` test
+		// gives the identical answer either way (a bar with fewer stored slots
+		// than buttons already drew the tail as empty).
+		//
+		// The page index is clamped HERE with LiveJson's own rule, so the page we
+		// FILL is always the page it READS — a light copy must never be able to
+		// hand it a page it left empty.
+		const int      page = std::clamp(g_hbLivePage.load(), 0, Hotbar::kPageCount - 1);
 		Hotbar::Config c;
 		{
 			std::lock_guard l(g_configMutex);
-			c = g_hbConfig;
+			c.cols = g_hbConfig.cols;
+			c.rows = g_hbConfig.rows;
+			c.pages.assign(g_hbConfig.pages.size(), Hotbar::Page{});
+			if (page >= 0 && page < static_cast<int>(g_hbConfig.pages.size())) {
+				const auto& src = g_hbConfig.pages[page].slots;
+				const auto  keep = std::min<std::size_t>(
+					static_cast<std::size_t>(std::max<int>(0, c.VisibleSlots())), src.size());
+				c.pages[page].slots.assign(src.begin(),
+					src.begin() + static_cast<std::ptrdiff_t>(keep));
+			}
 		}
-		auto j = json::parse(Hotbar::LiveJson(c, g_hbLivePage.load()), nullptr, false);
+		auto j = json::parse(Hotbar::LiveJson(c, page), nullptr, false);
 		if (!j.is_object() || !j.contains("slots") || !j["slots"].is_array())
 			return j.is_discarded() ? std::string(R"({"page":0,"slots":[]})") : j.dump(-1, ' ', false, json::error_handler_t::replace);
 
@@ -9717,16 +14286,79 @@ namespace
 		return true;
 	}
 
+	// ---- HUD widgets: their half of the shared view's visibility ----------
+	// Should the WIDGETS be on screen right now? Editing always wins (you
+	// cannot place a widget you cannot see); otherwise any widget enabled and
+	// a save actually running. Per-widget hideInMenus is a VIEW-side CSS rule
+	// fed by the menusOpen flag below — the view stays Shown so the check
+	// stays one cheap class toggle instead of Show/Hide churn. MAIN THREAD
+	// ONLY (it reads the player actor and the menu stack).
+	bool WgWantVisible()
+	{
+		if (g_wgEditing.load())
+			return true;
+		// ⚠ StackEnabled(), NOT AnyEnabled() (widgets-vis-split, 2026-08-19).
+		// This is the HOTBAR view's widget tenant — potions / gold / lockpicks /
+		// carry — and every one of those lives behind the readout stack's
+		// master. AnyEnabled() now also answers true for a FREE HUD widget, so
+		// asking it here would show this tenant because something in a
+		// different document was switched on.
+		if (!Widgets::StackEnabled())
+			return false;
+		// The same "is a save actually running" probe HbWantVisible opens
+		// with — a gold counter over the main menu is as wrong as the bar was
+		// (Rober, 2026-08-13).
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player || !player->GetParentCell())
+			return false;
+		auto* ui = RE::UI::GetSingleton();
+		if (ui && (ui->IsMenuOpen(RE::MainMenu::MENU_NAME) ||
+					  ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)))
+			return false;
+		return true;
+	}
+
+	// Push the shared view's visibility SPLIT to the JS side, diff-gated:
+	// {bar, wg, menus}. The view hides #hb-root / #wg-root with CSS classes,
+	// because the ONE PrismaUI Show/Hide below now answers for both tenants
+	// and can no longer speak for either alone.
+	void WgPushVis(bool bar, bool wg, bool menus)
+	{
+		static int s_last = -1;
+		const int  now = (bar ? 1 : 0) | (wg ? 2 : 0) | (menus ? 4 : 0);
+		if (now == s_last)
+			return;
+		s_last = now;
+		if (g_prisma && g_hbView && g_hbViewReady.load())
+			g_prisma->Invoke(g_hbView,
+				("wgVis(" + json{ { "bar", bar }, { "wg", wg }, { "menus", menus } }
+					.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
+	}
+
 	void HbApplyVisibility()
 	{
 		if (!g_prisma || !g_hbView || !g_hbViewReady.load())
 			return;
-		const bool want = HbWantVisible();
+		const bool barWant = HbWantVisible();
 		// The keys follow the PICTURE, deliberately. "Show only in combat" that
 		// still cast Fireball while the bar was hidden would be a trap, and a
 		// hidden bar handing 1-8 back to vanilla favourites is the behaviour you
-		// actually want out of combat.
-		g_hbEffVisible = want;
+		// actually want out of combat. g_hbEffVisible answers for the BAR alone
+		// — widgets sharing the view must never make its keys fire.
+		g_hbEffVisible = barWant;
+
+		// The widgets' half. With every widget off this whole block is inert
+		// (wgWant false, menus flag unchanged) and the view Show/Hide below is
+		// byte-identical to the bar-only behaviour.
+		const bool wgWant = WgWantVisible();
+		bool       menusOpen = false;
+		if (wgWant) {
+			auto* ui = RE::UI::GetSingleton();
+			menusOpen = ui && ui->GameIsPaused();
+		}
+		WgPushVis(barWant, wgWant, menusOpen);
+
+		const bool want = barWant || wgWant;
 		if (want == g_hbShown.load())
 			return;   // Show/Hide every 150 ms is Ultralight work for nothing
 		g_hbShown = want;
@@ -9843,13 +14475,23 @@ namespace
 		// ---- deck entries: actions, key chords, vkeys --------------------
 		{
 			std::lock_guard l(g_configMutex);
+			int gated = 0;
 			for (const auto& e : g_config.entries) {
+				// A listing whose backing mod is absent is hidden in the deck
+				// list (HK_REQUIRES) — the assign picker must not offer it
+				// either: a slot that can only refuse is a dead button.
+				if (EntryBackingModAbsent(e)) {
+					++gated;
+					continue;
+				}
 				out["entries"].push_back(json{
 					{ "name", e.name },
 					{ "refId", e.id },
 					{ "detail", e.category.empty() ? std::string("Deck") : e.category },
 				});
 			}
+			if (gated)
+				logger::info("hb-catalog: {} detection-gated entr(ies) withheld", gated);
 			for (const auto& cb : g_magicConfig.combos) {
 				out["combos"].push_back(json{
 					{ "name", cb.name },
@@ -9896,7 +14538,7 @@ namespace
 		const fs::path src = DeckViewDir() / fs::path(hkImage);
 		if (!fs::exists(src, ec) || ec)
 			return "";
-		const std::string file = src.filename().string();
+		const std::string file = PathU8(src.filename());
 		if (file.empty())
 			return "";
 
@@ -10114,6 +14756,44 @@ namespace
 
 	// ---- view -> C++ listeners (registered on g_hbView) ------------------
 
+	/* The icon pool, pushed once per session exactly as the Spell Deck gets it —
+	 * this view is in that folder so the paths match.
+	 *
+	 * ⚠ 2026-08-18: same bug class as the HUD's (see HudPushIconIndex). This rode
+	 * hbReady only, and the view's toGame('hbReady') is silently dropped when the
+	 * DOM is ready before RegisterJSListener runs — so a booting hotbar could sit
+	 * on glyphs for the whole session. Pushed from the DOM-ready callback too,
+	 * and latched ONLY on a real index read so a cold-disk miss is retried rather
+	 * than remembered as done. Main thread only. */
+	void HbPushIconIndex(const char* whence)
+	{
+		if (!g_prisma || !g_hbView || g_hbIconIndexPushed.load())
+			return;
+		constexpr int kMaxTries = 20;
+		const int     tries = g_hbIconIndexTries.fetch_add(1) + 1;
+
+		const std::string idxJson = IconIndexJson();
+		const auto        parsed = json::parse(idxJson, nullptr, false);
+		const bool        haveIdx = !parsed.is_discarded() && parsed.is_object() && !parsed.empty();
+		if (!haveIdx && tries < kMaxTries) {
+			if (tries == 1) {
+				// The player's own PNGs do not depend on the library index, so
+				// they go out now rather than waiting on a retry that may take
+				// seconds — the pool is re-sent on the success path and on
+				// every picker open, and the view just replaces its list.
+				g_prisma->Invoke(g_hbView, ("hbIcons(" + CustomIconsJson() + ")").c_str());
+				logger::info("hotbar: icon index not readable yet ({}), will retry", whence);
+			}
+			return;   // NOT latched
+		}
+		if (g_hbIconIndexPushed.exchange(true))
+			return;
+		g_prisma->Invoke(g_hbView, ("hbIconIndex(" + (haveIdx ? idxJson : std::string("{}")) + ")").c_str());
+		g_prisma->Invoke(g_hbView, ("hbIcons(" + CustomIconsJson() + ")").c_str());
+		logger::info("hotbar: icon index pushed at dom-ready (path '{}', try {}{})",
+			whence, tries, haveIdx ? "" : ", EMPTY index");
+	}
+
 	void OnJsHbReady(const char*)
 	{
 		g_hbViewReady = true;
@@ -10121,12 +14801,7 @@ namespace
 			HbPushConfig();
 			HbPushLive(true);
 			HbApplyVisibility();
-			if (g_prisma && g_hbView) {
-				// The icon pool, pushed once per session exactly as the Spell
-				// Deck gets it — this view is in that folder so the paths match.
-				g_prisma->Invoke(g_hbView, ("hbIconIndex(" + IconIndexJson() + ")").c_str());
-				g_prisma->Invoke(g_hbView, ("hbIcons(" + CustomIconsJson() + ")").c_str());
-			}
+			HbPushIconIndex("hbReady");
 		});
 	}
 
@@ -10305,6 +14980,282 @@ namespace
 		});
 	}
 
+	// ------------------------------------------------------- HUD widgets --
+	// wg* bridge, registered on the HOTBAR view (the widgets live in its
+	// document). One name per direction: requests wgReady/wgSave/wgEditDone,
+	// replies wgConfig/wgLive/wgEdit/wgVis.
+
+	/* 2026-08-17: the widgets moved to the FOLLOWERS-HUD view. The rebuilt
+	 * readouts (weather / place / clock / mount / pinned tiles) live in
+	 * hud.html, so the wg* payload is pushed there; the hotbar view's older
+	 * widget DOM is left un-fed on purpose and therefore never builds itself
+	 * (its buildWidgets() only runs from wgConfig), which is what stops the
+	 * two implementations drawing the same numbers twice. Both views get the
+	 * push while the handlers are registered on both, so a stale hotbar view
+	 * cannot strand the feature. marker: widgets-hud-view */
+	void WgPushConfig()
+	{
+		const std::string js = "wgConfig(" + Widgets::ConfigJson() + ")";
+		if (g_prisma && g_hudView && g_hudViewReady.load()) {
+			// Say it once, so a log answers "which document is drawing the
+			// widgets?" without a bisect. A marker must be a real emitted
+			// literal — a `marker:` comment is stripped by the compiler and the
+			// deploy guard rightly refuses a registry entry it cannot find.
+			static bool s_said = false;
+			if (!s_said) {
+				s_said = true;
+				logger::info("widgets: pushed to the HUD view (hud.html owns the readouts)");
+			}
+			g_prisma->Invoke(g_hudView, js.c_str());
+		}
+	}
+
+	// Live counts, diff-gated exactly like HbPushLive — repainting three
+	// static numbers at 1.1 Hz is Ultralight work for nothing. MAIN THREAD.
+	void WgPushLive(bool force)
+	{
+		static std::string s_last;
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load())
+			return;
+		std::string js = Widgets::LiveJson();
+		if (!force && js == s_last)
+			return;
+		s_last = js;
+		g_prisma->Invoke(g_hudView, ("wgLive(" + js + ")").c_str());
+	}
+
+	// ⛔ The widgets moved from the hotbar view to the HUD view (marker
+	// widgets-hud-view) and THIS GATE DID NOT FOLLOW THEM. wgVis / the menusOpen
+	// flag still only reach g_hbView, so the HUD readouts kept drawing over the
+	// main menu and every loading screen — and drawing PLACEHOLDERS there, since
+	// with no save loaded there is no purse and no pack to read (Rober,
+	// 2026-08-17: "some widgets showing on main menu / loading screen"). Same
+	// question as the hotbar's, asked of the view that actually paints them.
+	// MAIN THREAD (RE::UI), diff-gated — this is asked on a 150 ms beat.
+	void WgPushHudMenus(bool menus)
+	{
+		static int s_last = -1;
+		const int  now = menus ? 1 : 0;
+		if (now == s_last)
+			return;
+		s_last = now;
+		if (g_prisma && g_hudView && g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView, (std::string("wgMenus(") + (menus ? "1" : "0") + ")").c_str());
+	}
+
+	// A menu owns the screen, OR no save is loaded at all. GameIsPaused covers
+	// the main menu, loading screens, inventory, map, console and the deck in
+	// one call — the same test the hotbar has used since it shipped. The cell
+	// check is the second half: on the main menu the player singleton exists but
+	// has no world around it, which is exactly the state that produced "0 gold,
+	// 0/300 carry, 8:00 AM" over a loading screen.
+	void WgApplyHudVisibility()
+	{
+		auto*      ui = RE::UI::GetSingleton();
+		const bool paused = ui && ui->GameIsPaused();
+		auto*      pc = RE::PlayerCharacter::GetSingleton();
+		const bool noWorld = !pc || !pc->GetParentCell();
+		WgPushHudMenus(paused || noWorld);
+		// A menu (or the main menu) owning the screen closes the Time Dial —
+		// a Focused overlay underneath the game's own UI is a stranded
+		// cursor. The 600 ms grace covers the open-from-palette hand-off,
+		// where the palette's pause can outlive ClosePalette by a beat.
+		//
+		// ⛔ BUT THE DIAL'S OWN PAUSE IS NOT A MENU. TdOpenDial takes
+		// Focus(g_hudView, /*pauseGame=*/true), and a PrismaUI focus-pause IS a
+		// GameIsPaused() — it is the very same call that answers true for the
+		// deck palette. So this gate shot the dial ~600 ms after every open:
+		// "shows for a moment then closes before i can do anything" (Rober,
+		// 2026-08-18). A pause OUR OWN view is holding is ours; only a pause
+		// nobody on our side asked for means something else owns the screen.
+		if (g_tdOpen.load() &&
+			std::chrono::steady_clock::now() - g_tdOpenedAt > std::chrono::milliseconds(600)) {
+			const bool ours = g_prisma && g_hudView && g_prisma->HasFocus(g_hudView);
+			if (noWorld || (paused && !ours)) {
+				// Build marker (hd-markers.json: "time-dial-menu-gate").
+				logger::info("time-dial: menu gate closed it (noWorld {}, paused {}, ours {})",
+					noWorld, paused, ours);
+				TdCloseDial(false);
+			}
+		}
+		// Compact-browse holds the same view with an UNPAUSED focus, so it
+		// cannot be shot by its own pause — but a real menu, or no save at all,
+		// must still hand the keyboard back. Same test, same reasoning.
+		if (g_hudNavActive.load()) {
+			const bool ours = g_prisma && g_hudView && g_prisma->HasFocus(g_hudView);
+			if (noWorld || (paused && !ours))
+				HudNavStop("a menu took the screen", false);
+		}
+	}
+
+	void OnJsWgReady(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			WgPushConfig();
+			if (Widgets::AnyEnabled())
+				WgPushLive(true);
+			HbApplyVisibility();
+		});
+	}
+
+	// The whole editable config, written after any edit. Round-tripped through
+	// Widgets::ApplyViewConfig so every clamp happens in ONE place — the view
+	// is not trusted to have got them right.
+	void OnJsWgSave(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		Widgets::ApplyViewConfig(payload);
+		SKSE::GetTaskInterface()->AddTask([]() {
+			WgPushLive(true);
+			HudApplyVisibility();  // round 3: the hud view answers for the widgets
+			HbApplyVisibility();   // an enable flip changes whether the view shows
+			// 2026-08-19: the deck's Home tab draws the same widgets' on/off and
+			// the group's orientation/size from this very config, so any edit
+			// made on screen has to reach it — otherwise the drawer keeps
+			// showing the state from whenever it last asked. It is the SAME
+			// serializer, so the two surfaces cannot drift.
+			PushToView("hdUiStateData", UiStateJson());
+		});
+	}
+
+	// ---- widgets round 4 (2026-08-18): the custom quick strip + loot lamp ---
+	// Bridge (listeners on g_hudView, one name per direction):
+	//   requests  wgQuick2Use { plugin, formId, notify? }
+	//             wgQuick2Catalog   (no payload)
+	//             wgLootToggle { which: "glow" | "auto" }
+	//   replies   wgQuick2Result { ok, msg, plugin, formId, newCount? }
+	//             wgQuick2CatalogData { rows:[{name,count,kind,formId,plugin}], capped }
+	//             …and a forced wgLive after a use or a loot flip, so the row
+	//             count and the lamp colour follow the act immediately instead
+	//             of waiting out the diff-gated tick.
+	void OnJsWgQuick2Use(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		// Engine work — resolve, carried check, EquipObject — is MAIN THREAD.
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			const std::string res = Widgets::Quick2UseJson(payload);
+			if (g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView, ("wgQuick2Result(" + res + ")").c_str());
+			// A drink is one fewer bottle; the container-changed sink will mark
+			// the cache dirty, and this makes the strip show it on the next
+			// frame rather than up to a tick later.
+			WgPushLive(true);
+		});
+	}
+
+	void OnJsWgQuick2Catalog(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			const std::string res = Widgets::Quick2CatalogJson();
+			if (g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView, ("wgQuick2CatalogData(" + res + ")").c_str());
+		});
+	}
+
+	// {which:"glow"|"auto"} — flip the OTHER module's master switch through the
+	// SAME function its seeded action calls (LootHighlight::ToggleMaster /
+	// AutoLoot::ToggleMaster), never a second implementation: a lamp that could
+	// disagree with the Loot tab would be worse than no lamp. Their own panes
+	// get their own result payloads, exactly as the seeded actions send them.
+	void OnJsWgLootToggle(const char* data)
+	{
+		std::string which = data ? data : "";
+		if (const auto j = json::parse(which, nullptr, false); j.is_object())
+			which = j.value("which", std::string());
+		if (which != "glow" && which != "auto") {
+			logger::warn("wgLootToggle: unknown switch '{}'", which);
+			return;
+		}
+		SKSE::GetTaskInterface()->AddTask([which]() {
+			if (which == "glow") {
+				std::string res;
+				{
+					std::lock_guard l(g_configMutex);
+					res = LootHighlight::ToggleMaster(g_lootConfig);
+				}
+				PersistAll();  // outside the lock — PersistAll takes it too
+				PushToView("ltResult", res);
+			} else {
+				const std::string res = AutoLoot::ToggleMaster();
+				PersistAll();  // takes the lock itself — never held here
+				PushToView("alResult", res);
+			}
+			// Build marker (hd-markers.json: "widgets-loot-toggle").
+			logger::info("widgets: loot lamp toggled '{}'", which);
+			WgPushLive(true);   // the lamp must change colour on the same frame
+		});
+	}
+
+	void OnJsWgEditDone(const char*)
+	{
+		g_wgEditing = false;
+		SKSE::GetTaskInterface()->AddTask([]() {
+			if (g_prisma && g_hbView)
+				g_prisma->Unfocus(g_hbView);
+			HbApplyVisibility();
+		});
+	}
+
+	// Open the widget editor: Focus the shared view and tell it to draw the
+	// widget panel. HbOpenEdit's twin — and its rival: only one of the two
+	// edit sessions may hold the view, so each stands the other down first.
+	void WgOpenEdit()
+	{
+		if (g_hbEditing.exchange(false)) {
+			if (g_prisma && g_hbView && g_hbViewReady.load())
+				g_prisma->Invoke(g_hbView, "hbEdit(\"0\")");
+		}
+		// Arming the editor also arms the feature — a panel for a thing that
+		// stays invisible after Done would read as broken.
+		Widgets::ArmForEdit();
+		// The widgets LIVE IN THE HUD VIEW since 2026-08-18 (hud.html owns the
+		// readouts; the hotbar-view widget block is retired). Focusing the old
+		// hotbar-view panel here put a paused game behind a stale editor —
+		// Rober's "hud widgets, place button just freezes screen". Set Up and
+		// every per-widget Place now open the HUD view's own edit mode, where
+		// the stack and the free widgets are actually draggable.
+		// Marker: widgets-edit-hud-view.
+		logger::info("widgets-edit: opening the hud view editor");
+		g_hudEditing = true;
+		SKSE::GetTaskInterface()->AddTask([]() {
+			if (!g_hudEditing.load())
+				return;
+			if (g_prisma && g_hudView && g_hudViewReady.load()) {
+				g_prisma->Show(g_hudView);
+				HudPushConfig();
+				HudPushData(true);
+				WgPushConfig();
+				WgPushLive(true);
+				g_prisma->Focus(g_hudView, true);
+				g_prisma->Invoke(g_hudView, "hudEdit(\"1\")");
+				// 2026-08-19: "Set Up" means the SHELF — the one place every
+				// element's switch, size and options live. Opening edit mode
+				// without it left the player looking at draggable widgets and
+				// no settings, which is the complaint this shelf answers.
+				// Build marker (hd-markers.json: "hud-shelf-open").
+				logger::info("hud shelf: opening on ''");
+				g_prisma->Invoke(g_hudView, "hudShelf({\"key\":\"\"})");
+			}
+		});
+	}
+
+	void WgToggleAll()
+	{
+		const bool now = Widgets::ToggleAll();
+		SKSE::GetTaskInterface()->AddTask([]() {
+			WgPushConfig();
+			if (Widgets::AnyEnabled())
+				WgPushLive(true);
+			HbApplyVisibility();
+			// Round 3: the widgets draw on the HUD view, whose Show/Hide now
+			// answers for them even with the follower strip off — so a master
+			// toggle must re-run ITS pass too, or a strip-off user's widgets
+			// only appear when something else happens to re-evaluate.
+			HudApplyVisibility();
+		});
+		RE::DebugNotification(now ? "Widgets on" : "Widgets off");
+	}
+
 	void CreateHotbarView()
 	{
 		if (!g_prisma || g_hbView)
@@ -10317,6 +15268,9 @@ namespace
 				HbPushConfig();
 				HbPushLive(true);
 				HbApplyVisibility();
+				// The icon pool rides THIS callback now, not the view's hbReady
+				// ask — see HbPushIconIndex for why that ask cannot be trusted.
+				HbPushIconIndex("domReady");
 			});
 		});
 		// Prisma views begin visible. Hide the bar before its first DOM-ready
@@ -10334,6 +15288,19 @@ namespace
 		g_prisma->RegisterJSListener(g_hbView, "hbNewConsole", OnJsHbNewConsole);
 		g_prisma->RegisterJSListener(g_hbView, "hbOutfits", OnJsHbOutfits);
 		g_prisma->RegisterJSListener(g_hbView, "hbLog", OnJsHbLog);
+		// HUD widgets share this view (see the Wg block above).
+		g_prisma->RegisterJSListener(g_hbView, "wgReady", OnJsWgReady);
+		g_prisma->RegisterJSListener(g_hbView, "wgSave", OnJsWgSave);
+		g_prisma->RegisterJSListener(g_hbView, "wgEditDone", OnJsWgEditDone);
+		/* …and on the HUD view, which is where the rebuilt widgets actually
+		 * live since 2026-08-17. Registering on both costs nothing and means a
+		 * save from either document reaches the same handler — the alternative
+		 * is a view whose switches silently do not persist. */
+		if (g_hudView) {
+			g_prisma->RegisterJSListener(g_hudView, "wgReady", OnJsWgReady);
+			g_prisma->RegisterJSListener(g_hudView, "wgSave", OnJsWgSave);
+			g_prisma->RegisterJSListener(g_hudView, "wgEditDone", OnJsWgEditDone);
+		}
 		logger::info("hotbar: view created + listeners registered");
 	}
 
@@ -10418,9 +15385,19 @@ namespace
 		std::string mode;
 		{
 			std::lock_guard l(g_configMutex);
-			if (!g_hbConfig.enabled)
-				g_hbConfig.enabled = true;   // first press also arms it
-			g_hbConfig.visible = !g_hbConfig.visible;
+			// ⚠ ROUND 3 (2026-08-19) — the first press must SHOW it, not hide it.
+			// The old shape armed `enabled` and then flipped `visible` in the
+			// same breath, so a fresh config (enabled=false, visible=true) came
+			// out of the very first press as enabled=true, visible=FALSE: the
+			// bar was "on" and nothing was on screen, with no obvious way back.
+			// That is exactly the state Rober's live config was found in, and
+			// the state the Home drawer was reporting as a flat "ON".
+			if (!g_hbConfig.enabled) {
+				g_hbConfig.enabled = true;
+				g_hbConfig.visible = true;   // arming it means SHOWING it
+			} else {
+				g_hbConfig.visible = !g_hbConfig.visible;
+			}
 			nowVisible = g_hbConfig.visible;
 			mode       = g_hbConfig.showMode;
 		}
@@ -10441,6 +15418,13 @@ namespace
 	// mouse) and tell it to draw the panel.
 	void HbOpenEdit()
 	{
+		// The widgets share this view — their edit session must fold before
+		// the bar's opens, or two panels fight over one Focus (see WgOpenEdit,
+		// which does the same in the other direction).
+		if (g_wgEditing.exchange(false)) {
+			if (g_prisma && g_hbView && g_hbViewReady.load())
+				g_prisma->Invoke(g_hbView, "wgEdit(\"0\")");
+		}
 		{
 			std::lock_guard l(g_configMutex);
 			g_hbConfig.enabled = true;
@@ -10451,7 +15435,7 @@ namespace
 			g_prisma->Show(g_hbView);
 			HbPushConfig();
 			HbPushLive(true);
-			g_prisma->Focus(g_hbView, true, true);
+			g_prisma->Focus(g_hbView, true);  // focus menu ON = cursor (editor-cursor)
 			g_prisma->Invoke(g_hbView, "hbEdit(\"1\")");
 		}
 	}
@@ -10470,13 +15454,51 @@ namespace
 			bool          prevShift = false, prevCtrl = false, prevAlt = false;
 			std::uint32_t sinceLive = 0;
 			std::uint32_t sinceVis  = 0;
-			for (;;) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			std::uint32_t sinceWg   = 0;
+			std::uint32_t sinceWgVis = 0;
+			std::uint32_t sinceAi   = 0;
 
-				// A LIGHT read, deliberately: this runs 20x a second, and copying
-				// the whole Config would allocate ~100 slot structs (five strings
-				// each) every tick for the sake of four booleans. Only the page
-				// flags and the three scalars come across; `c` is a stand-in
+			// PERF (2026-08-16): the 50 ms beat exists for ONE consumer — the
+			// modifier page swap, which has to feel instant. That branch is below
+			// the `!c.enabled` early-out, so with the bar off nothing on this
+			// thread wants finer than the visibility beat's 150 ms, yet it still
+			// woke 20 times a second forever. The period is now chosen from what
+			// the LAST pass found enabled: 50 ms with a live bar, 150 ms without.
+			//
+			// Every counter below accumulates the period ACTUALLY slept rather
+			// than a hardcoded 50, so no beat changes: 150 / 300 / 900 are all
+			// multiples of both periods, and the potion-AI and widget branches
+			// keep their exact cadence whether the bar is on or off. Starts at
+			// 50 ms so the very first pass is never slower than before.
+			std::uint32_t periodMs = 50;
+			for (;;) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(periodMs));
+
+				// Potion AI rides this same thread at its own ~300 ms beat,
+				// independent of the bar AND of the widgets — a bar you turned
+				// off must not turn the guardian off with it. AiEnabled() is an
+				// atomic snapshot; the tick itself is AddTask'd (it reads actor
+				// values and the inventory — main thread only). Our own edit
+				// surfaces stand it down: an unpaused hotbar/widget edit session
+				// is not a fight, and a drink mid-drag would be noise.
+				if (Widgets::AiEnabled() && g_gameReady.load()) {
+					sinceAi += periodMs;
+					if (sinceAi >= 300) {
+						sinceAi = 0;
+						SKSE::GetTaskInterface()->AddTask([]() {
+							OpenDiag::TickTimer diag("potion-ai");
+							if (!g_hbEditing.load() && !g_wgEditing.load())
+								Widgets::AiTick();
+						});
+					}
+				} else {
+					sinceAi = 0;
+				}
+
+				// A LIGHT read, deliberately: this runs up to 20x a second, and
+				// copying the whole Config would allocate ~100 slot structs (five
+				// strings each) every tick for the sake of four booleans. Only the
+				// page flags and the three scalars come across; `c` is a stand-in
 				// carrying just enough for PageForMods.
 				Hotbar::Config c;
 				c.pages.assign(Hotbar::kPageCount, Hotbar::Page{});
@@ -10489,13 +15511,70 @@ namespace
 						 p < static_cast<int>(g_hbConfig.pages.size()); ++p)
 						c.pages[p].enabled = g_hbConfig.pages[p].enabled;
 				}
+				// Choose the NEXT period now, while the answer is fresh, so both
+				// the disabled path (which `continue`s below) and the live path
+				// agree. Only the page-swap branch needs 50 ms, and it lives past
+				// the early-out — so a bar that is off, or whose view is not up
+				// yet, drops this thread to the 150 ms visibility beat.
+				periodMs = (c.enabled && g_hbViewReady.load()) ? 50u : 150u;
+				// The WIDGETS ride this same thread at their own ~900 ms beat,
+				// independent of the bar's master switch — that independence is
+				// the whole point of the visibility decoupling. AnyEnabled() is
+				// an atomic snapshot; the build itself is AddTask'd (inventory
+				// is never read on this worker thread).
+				// Gated on the HUD view, not the hotbar's: that is where the
+				// widgets draw now, and the old coupling meant a user with no
+				// hotbar view got no widget tick at all.
+				const bool viewUp = g_hudViewReady.load();
+				const bool wgOn = Widgets::AnyEnabled() && viewUp;
+				if (wgOn) {
+					sinceWg += periodMs;
+					if (sinceWg >= 900) {
+						sinceWg = 0;
+						SKSE::GetTaskInterface()->AddTask([]() { OpenDiag::TickTimer diag("widgets-live"); WgPushLive(false); });
+					}
+				} else {
+					sinceWg = 0;
+				}
+				// ⚠ WgApplyHudVisibility() is NOT a widgets-only job and must not
+				// ride a widgets flag (widgets-vis-split, 2026-08-19). It pushes
+				// the menu / no-world gate for the whole HUD document AND it
+				// carries two safety releases that belong to entirely different
+				// features: the Time Dial's auto-close, and browse mode's "a menu
+				// took the screen" release — and browse mode holds the player's
+				// KEYBOARD (Focus on the HUD view). With every widget switched
+				// off, AnyEnabled() went false, this beat stopped, and that
+				// release could never fire. So it runs whenever the view is up,
+				// which is the only condition it actually depends on.
+				//
+				// A loading screen must take the readouts down promptly, and this
+				// beat must not sit behind the hotbar view's readiness the way the
+				// bar's own visibility pass does.
+				if (viewUp) {
+					sinceWgVis += periodMs;
+					if (sinceWgVis >= 150) {
+						sinceWgVis = 0;
+						SKSE::GetTaskInterface()->AddTask([]() { WgApplyHudVisibility(); });
+					}
+				} else {
+					sinceWgVis = 0;
+				}
+
 				if (!c.enabled || !g_hbViewReady.load()) {
 					sinceLive = 0;
-					sinceVis  = 0;
-					// An enabled bar that has just been switched off still has
-					// to come DOWN once, or it stays painted over the game.
-					if (g_hbShown.load() && g_hbViewReady.load())
-						SKSE::GetTaskInterface()->AddTask([]() { HbApplyVisibility(); });
+					// Widgets alone still need the 150 ms visibility beat (the
+					// menusOpen flag and the world probe live there); without
+					// them, one pass to bring a just-disabled bar down is all
+					// this branch owes, exactly as before.
+					if (g_hbViewReady.load() && (wgOn || g_hbShown.load())) {
+						sinceVis += periodMs;
+						if (sinceVis >= 150 || !wgOn) {
+							sinceVis = 0;
+							SKSE::GetTaskInterface()->AddTask([]() { OpenDiag::TickTimer diag("hotbar-visibility"); HbApplyVisibility(); });
+						}
+					} else {
+						sinceVis = 0;
+					}
 					continue;
 				}
 
@@ -10504,10 +15583,10 @@ namespace
 				// rather than reading here. 150 ms is fast enough that the bar is
 				// up before the first swing lands, and a seventh of the cost of
 				// doing it on every 50 ms poll.
-				sinceVis += 50;
+				sinceVis += periodMs;
 				if (sinceVis >= 150) {
 					sinceVis = 0;
-					SKSE::GetTaskInterface()->AddTask([]() { HbApplyVisibility(); });
+					SKSE::GetTaskInterface()->AddTask([]() { OpenDiag::TickTimer diag("hotbar-visibility"); HbApplyVisibility(); });
 				}
 
 				const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -10552,10 +15631,16 @@ namespace
 					continue;
 				}
 
-				sinceLive += 50;
+				sinceLive += periodMs;
 				if (sinceLive >= std::max<std::uint32_t>(200, c.tickMs)) {
 					sinceLive = 0;
-					SKSE::GetTaskInterface()->AddTask([]() { HbPushLive(false); });
+					SKSE::GetTaskInterface()->AddTask([]() {
+						OpenDiag::TickTimer diag("hotbar-live");
+						HbPushLive(false);
+						// Bounded retry for a cold-disk icon index (no-op once
+						// pushed) — the twin of the HUD ticker's.
+						HbPushIconIndex("tick");
+					});
 				}
 			}
 		}).detach();
@@ -10664,11 +15749,19 @@ namespace
 				}
 				// no head file — fall through to the body route below
 			}
-			// Creature (or a headless humanoid): try a body silhouette.
+			// CREATURE only: try a body silhouette. BodyRenderFor refuses a
+			// FaceGen-Head race, so a humanoid whose facegen was never exported
+			// lands on `continue` below and keeps her initials medallion —
+			// rather than the race's naked skin, which is keyed by the RACE and
+			// so would be the SAME picture for every facegen-less Nord. That is
+			// the pair-of-bare-feet portrait Rober hit on 2026-08-30: the skin
+			// ARMO's first addon is the feet, not the body.
 			std::string bnif;
 			const std::string bid = NpcFinder::BodyRenderFor(base, bnif);
-			if (bid.empty() || bnif.empty())
+			if (bid.empty() || bnif.empty()) {
+				logger::debug("faces: no head and no body for {} — honest glyph", ids);  // marker: face-no-humanoid-body
 				continue;   // neither head nor body — honest glyph
+			}
 			const auto bar = bid.find('|');
 			if (bar == std::string::npos || bar == 0)
 				continue;   // malformed identity — never index a bad key
@@ -11211,6 +16304,533 @@ namespace
 			logger::info("[containers tab] {}", data);
 	}
 
+	// ==================================================== Container Auto-Sort ==
+	// The cs* handlers. Config lives ON g_contConfig.marks[].sortRule and
+	// g_contConfig.sort (round-tripped by ContainerConfigTo/FromJson with the same
+	// carry-over discipline `image` uses). Each mutating handler mutates the live
+	// config IN PLACE under g_configMutex, then PersistAll() OUTSIDE the lock
+	// (PersistAll takes the lock itself). The engine ops (Unload/Sort) read a
+	// snapshot through the ContainerSort provider installed in InstallCsProvider,
+	// so they never touch g_contConfig while doing RemoveItem — the OnJsContSave
+	// / loot-vision lock discipline exactly.
+
+	// csSaveRule {markId, rule:{enabled,types[],minValue,maxValue,keywords[],
+	// enchantedOnly,priority}, acknowledged?}. Persists one mark's rule; the
+	// optional `acknowledged` is the "Tag anyway" affordance (§4.6) — a phone/old
+	// view that omits it keeps the prior value (carry-over).
+	void OnJsCsSaveRule(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto j = json::parse(req, nullptr, false);
+			bool       ok = false;
+			if (!j.is_discarded() && j.is_object()) {
+				const auto markId = j.value("markId", std::string(""));
+				if (!markId.empty()) {
+					// Mutate the live mark in place under the lock; PersistAll (which
+					// re-locks) runs AFTER the guard's scope closes, never nested.
+					std::lock_guard l(g_configMutex);
+					for (auto& m : g_contConfig.marks) {
+						if (m.id != markId)
+							continue;
+						if (j.contains("rule") && j["rule"].is_object()) {
+							SortRuleFromJson(j["rule"], m.sortRule);
+							// The VIEW sends "Tag anyway" INSIDE the rule object
+							// (rule.acknowledged) — honour it there first.
+							if (j["rule"].contains("acknowledged"))
+								m.safeAcknowledged = j["rule"].value("acknowledged", false);
+						}
+						// "Tag anyway": only mutate acknowledged if the payload sent it,
+						// so a rule-only save can't silently reset a prior override.
+						if (j.contains("acknowledged"))
+							m.safeAcknowledged = j.value("acknowledged", false);
+						// Crafting-loan opt-in rides the same save, and by the same
+						// law: only when the payload actually carries it.
+						if (j.contains("lend"))
+							m.lend = j.value("lend", false);
+						// Same for the physical redirect ("" clears it).
+						if (j.contains("redirectTo"))
+							m.redirectTo = j.value("redirectTo", std::string(""));
+						ok = true;
+						break;
+					}
+				}
+			}
+			if (ok)
+				PersistAll();  // lock is already released (scoped inside the if above)
+			PushToView("csSaved",
+				json{ { "ok", ok }, { "what", "rule" } }.dump(-1, ' ', false,
+					json::error_handler_t::replace));
+		});
+	}
+
+	// csSetInbox {markId}  ("" clears the drop-box designation).
+	void OnJsCsSetInbox(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto j = json::parse(req, nullptr, false);
+			bool       ok = false;
+			if (!j.is_discarded() && j.is_object()) {
+				const auto markId = j.value("markId", std::string(""));
+				{
+					std::lock_guard l(g_configMutex);
+					// "" clears; a non-empty id is accepted only if it names a real mark.
+					if (markId.empty()) {
+						g_contConfig.sort.inboxMarkId.clear();
+						ok = true;
+					} else {
+						for (const auto& m : g_contConfig.marks)
+							if (m.id == markId) {
+								g_contConfig.sort.inboxMarkId = markId;
+								ok = true;
+								break;
+							}
+					}
+				}
+			}
+			if (ok)
+				PersistAll();
+			PushToView("csSaved", json{ { "ok", ok }, { "what", "inbox" } }.dump(-1, ' ',
+										  false, json::error_handler_t::replace));
+		});
+	}
+
+	// csPin {plugin, localId, markId}  (markId "" removes any pin for that base form).
+	void OnJsCsPin(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto j = json::parse(req, nullptr, false);
+			bool       ok = false;
+			if (!j.is_discarded() && j.is_object()) {
+				const auto plugin = j.value("plugin", std::string(""));
+				const auto localId = j.value("localId", 0u);
+				const auto markId = j.value("markId", std::string(""));
+				if (!plugin.empty() && localId) {
+					std::lock_guard l(g_configMutex);
+					auto& pins = g_contConfig.sort.pins;
+					// A pin is keyed by (plugin, localId): one route per base form. Remove
+					// any existing pin for this form first, then re-add unless markId=="".
+					pins.erase(std::remove_if(pins.begin(), pins.end(),
+								   [&](const ContainerSortOpts::Pin& p) {
+									   return p.plugin == plugin && p.localId == localId;
+								   }),
+						pins.end());
+					if (!markId.empty()) {
+						// Accept only a route to a real mark (a pin to a gone container is
+						// a dead route the sort would forever skip).
+						for (const auto& m : g_contConfig.marks)
+							if (m.id == markId) {
+								ContainerSortOpts::Pin p;
+								p.plugin = plugin;
+								p.localId = localId;
+								p.markId = markId;
+								pins.push_back(std::move(p));
+								break;
+							}
+					}
+					ok = true;
+				}
+			}
+			if (ok)
+				PersistAll();
+			PushToView("csSaved", json{ { "ok", ok }, { "what", "pin" } }.dump(-1, ' ',
+										  false, json::error_handler_t::replace));
+		});
+	}
+
+	// csSaveOpts {excludeEquipped,excludeFavorited,excludeQuest}. keepGold is never
+	// exposed (§4.4 — gold is unconditionally never swept); it stays true.
+	void OnJsCsSaveOpts(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto j = json::parse(req, nullptr, false);
+			bool       ok = false;
+			if (!j.is_discarded() && j.is_object()) {
+				std::lock_guard l(g_configMutex);
+				g_contConfig.sort.excludeEquipped = j.value("excludeEquipped",
+					g_contConfig.sort.excludeEquipped);
+				g_contConfig.sort.excludeFavorited = j.value("excludeFavorited",
+					g_contConfig.sort.excludeFavorited);
+				g_contConfig.sort.excludeQuest = j.value("excludeQuest",
+					g_contConfig.sort.excludeQuest);
+				g_contConfig.sort.keepGold = true;
+				g_contConfig.sort.sortOnClose = j.value("sortOnClose",
+					g_contConfig.sort.sortOnClose);
+				if (j.contains("loan") && j["loan"].is_object()) {
+					const auto& jl = j["loan"];
+					auto&       lo = g_contConfig.sort.loan;
+					lo.enabled = jl.value("enabled", lo.enabled);
+					lo.smithing = jl.value("smithing", lo.smithing);
+					lo.smelting = jl.value("smelting", lo.smelting);
+					lo.tanning = jl.value("tanning", lo.tanning);
+					lo.cooking = jl.value("cooking", lo.cooking);
+					lo.alchemy = jl.value("alchemy", lo.alchemy);
+					lo.enchanting = jl.value("enchanting", lo.enchanting);
+					lo.returnOnExit = jl.value("returnOnExit", lo.returnOnExit);
+				}
+				ok = true;
+			}
+			if (ok)
+				PersistAll();
+			PushToView("csSaved", json{ { "ok", ok }, { "what", "opts" } }.dump(-1, ' ',
+										  false, json::error_handler_t::replace));
+		});
+	}
+
+	// csUnload {markId}: sweep the player's inventory into ONE marked container by
+	// its rule. The engine work runs on the main thread (AddTask) with the palette
+	// still open — a bulk RemoveItem into a resolved ref needs no unpaused world,
+	// unlike the Papyrus-driven seeded action. Result -> csResult.
+	void OnJsCsUnload(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto        j = json::parse(req, nullptr, false);
+			const bool        obj = !j.is_discarded() && j.is_object();
+			const std::string markId = obj ? j.value("markId", std::string("")) : "";
+			// keep: leave N of each stack in the bag. only: move at most N of each
+			// (the "put one copy away" verb). Both absent = move everything matching.
+			const int  keep = obj ? (std::max)(0, j.value("keep", 0)) : 0;
+			const int  only = obj ? (std::max)(0, j.value("only", 0)) : 0;
+			const auto rep = ContainerSort::UnloadTo(markId, keep, only);
+			json       byC = json::array();
+			for (const auto& b : rep.byContainer)
+				byC.push_back(json{ { "markId", b.markId }, { "name", b.name }, { "count", b.count } });
+			json skipped = json::array();
+			for (const auto& s : rep.skipped)
+				skipped.push_back(json{ { "name", s.name }, { "reason", s.reason } });
+			if (!rep.refused && !rep.msg.empty())
+				RE::DebugNotification(rep.msg.c_str());
+			PushToView("csResult", json{
+										   { "ok", !rep.refused },
+										   { "op", "unload" },
+										   { "moved", rep.moved },
+										   { "byContainer", std::move(byC) },
+										   { "residue", rep.residue },
+										   { "skipped", std::move(skipped) },
+										   { "msg", rep.msg } }
+										   .dump(-1, ' ', false, json::error_handler_t::replace));
+		});
+	}
+
+	// csRetrieve {markId, keep?, types?[]}: the other direction — pull a marked
+	// container's contents back to the player. `types` empty means everything it
+	// holds; `keep` leaves that many of each stack behind ("take my spares").
+	void OnJsCsRetrieve(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto               j = json::parse(req, nullptr, false);
+			std::string              markId;
+			int                      keep = 0;
+			std::vector<std::string> types;
+			if (!j.is_discarded() && j.is_object()) {
+				markId = j.value("markId", std::string(""));
+				keep = (std::max)(0, j.value("keep", 0));
+				if (j.contains("types") && j["types"].is_array())
+					for (const auto& t : j["types"])
+						if (t.is_string() && !t.get<std::string>().empty())
+							types.push_back(t.get<std::string>());
+			}
+			const auto rep = ContainerSort::RetrieveFrom(markId, keep, types);
+			json       byC = json::array();
+			for (const auto& b : rep.byContainer)
+				byC.push_back(json{ { "markId", b.markId }, { "name", b.name }, { "count", b.count } });
+			json skipped = json::array();
+			for (const auto& s : rep.skipped)
+				skipped.push_back(json{ { "name", s.name }, { "reason", s.reason } });
+			if (!rep.refused && !rep.msg.empty())
+				RE::DebugNotification(rep.msg.c_str());
+			PushToView("csResult", json{ { "ok", !rep.refused },
+										   { "op", "retrieve" },
+										   { "moved", rep.moved },
+										   { "byContainer", std::move(byC) },
+										   { "residue", rep.residue },
+										   { "skipped", std::move(skipped) },
+										   { "msg", rep.msg } }
+										   .dump(-1, ' ', false, json::error_handler_t::replace));
+		});
+	}
+
+	// csSweepAll {keep?, only?}: put it ALL away — the drop-box routing pass run
+	// over the player's bag, so one press files everything across every container
+	// its rules name. Residue stays in the bag.
+	void OnJsCsSweepAll(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto j = json::parse(req, nullptr, false);
+			const bool obj = !j.is_discarded() && j.is_object();
+			const int  keep = obj ? (std::max)(0, j.value("keep", 0)) : 0;
+			const int  only = obj ? (std::max)(0, j.value("only", 0)) : 0;
+			const auto rep = ContainerSort::SweepAll(keep, only);
+			json       byC = json::array();
+			for (const auto& b : rep.byContainer)
+				byC.push_back(json{ { "markId", b.markId }, { "name", b.name }, { "count", b.count } });
+			json skipped = json::array();
+			for (const auto& s : rep.skipped)
+				skipped.push_back(json{ { "name", s.name }, { "reason", s.reason } });
+			if (!rep.msg.empty())
+				RE::DebugNotification(rep.msg.c_str());
+			PushToView("csResult", json{ { "ok", !rep.refused },
+										   { "op", "sweep" },
+										   { "moved", rep.moved },
+										   { "byContainer", std::move(byC) },
+										   { "residue", rep.residue },
+										   { "skipped", std::move(skipped) },
+										   { "msg", rep.msg } }
+										   .dump(-1, ' ', false, json::error_handler_t::replace));
+		});
+	}
+
+	// csGather {types[], keep?}: pull matching items to the player from EVERY
+	// reachable marked container — "bring me every reagent I own", one press.
+	void OnJsCsGather(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto               j = json::parse(req, nullptr, false);
+			std::vector<std::string> types;
+			int                      keep = 0;
+			if (!j.is_discarded() && j.is_object()) {
+				keep = (std::max)(0, j.value("keep", 0));
+				if (j.contains("types") && j["types"].is_array())
+					for (const auto& t : j["types"])
+						if (t.is_string() && !t.get<std::string>().empty())
+							types.push_back(t.get<std::string>());
+			}
+			const auto rep = ContainerSort::GatherAll(types, keep);
+			json       byC = json::array();
+			for (const auto& b : rep.byContainer)
+				byC.push_back(json{ { "markId", b.markId }, { "name", b.name }, { "count", b.count } });
+			if (!rep.msg.empty())
+				RE::DebugNotification(rep.msg.c_str());
+			PushToView("csResult", json{ { "ok", !rep.refused },
+										   { "op", "gather" },
+										   { "moved", rep.moved },
+										   { "byContainer", std::move(byC) },
+										   { "residue", rep.residue },
+										   { "skipped", json::array() },
+										   { "msg", rep.msg } }
+										   .dump(-1, ' ', false, json::error_handler_t::replace));
+		});
+	}
+
+	// csOverride {plugin, localId, name?, types[]}: "this form IS these types".
+	// An empty `types` REMOVES the override. Mutates the live config in place, then
+	// replies with the item's tokens as the engine now reads them, so the editor
+	// shows the truth rather than what it hoped it wrote.
+	void OnJsCsOverride(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto j = json::parse(req, nullptr, false);
+			bool       ok = false;
+			std::string plugin;
+			std::uint32_t localId = 0;
+			if (!j.is_discarded() && j.is_object()) {
+				plugin = j.value("plugin", std::string(""));
+				localId = j.value("localId", 0u);
+				std::vector<std::string> types;
+				if (j.contains("types") && j["types"].is_array())
+					for (const auto& t : j["types"])
+						if (t.is_string() && !t.get<std::string>().empty())
+							types.push_back(t.get<std::string>());
+				if (!plugin.empty() && localId) {
+					std::lock_guard l(g_configMutex);
+					auto&           list = g_contConfig.sort.overrides;
+					list.erase(std::remove_if(list.begin(), list.end(),
+								   [&](const ContainerSortOpts::Override& o) {
+									   return o.localId == localId &&
+										   _stricmp(o.plugin.c_str(), plugin.c_str()) == 0;
+								   }),
+						list.end());
+					if (!types.empty()) {
+						ContainerSortOpts::Override o;
+						o.plugin = plugin;
+						o.localId = localId;
+						o.name = j.value("name", std::string(""));
+						o.types = std::move(types);
+						list.push_back(std::move(o));
+					}
+					ok = true;
+				}
+			}
+			if (ok)
+				PersistAll();
+			const auto now = ContainerSort::TokensForForm(plugin, localId);
+			PushToView("csSaved", json{ { "ok", ok }, { "what", "override" },
+										  { "plugin", plugin }, { "localId", localId },
+										  { "types", now } }
+										  .dump(-1, ' ', false, json::error_handler_t::replace));
+		});
+	}
+
+	// csSortNow {}: the drop-box flow — read the designated inbox, distribute to
+	// every rule-matching marked container. Result -> csResult.
+	void OnJsCsSortNow(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			const auto rep = ContainerSort::SortDropBox();
+			json       byC = json::array();
+			for (const auto& b : rep.byContainer)
+				byC.push_back(json{ { "markId", b.markId }, { "name", b.name }, { "count", b.count } });
+			json skipped = json::array();
+			for (const auto& s : rep.skipped)
+				skipped.push_back(json{ { "name", s.name }, { "reason", s.reason } });
+			if (!rep.refused && !rep.msg.empty())
+				RE::DebugNotification(rep.msg.c_str());
+			PushToView("csResult", json{
+										   { "ok", !rep.refused },
+										   { "op", "sort" },
+										   { "moved", rep.moved },
+										   { "byContainer", std::move(byC) },
+										   { "residue", rep.residue },
+										   { "skipped", std::move(skipped) },
+										   { "msg", rep.msg } }
+										   .dump(-1, ' ', false, json::error_handler_t::replace));
+		});
+	}
+
+	// csState {}: current sort state (marks+rules+pins+inbox+opts+safe+playerGold).
+	// StateJson reads g_contConfig through the provider (takes the lock itself).
+	void OnJsCsState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("csStateResult", ContainerSort::StateJson());
+		});
+	}
+
+	// csRevalidate {markId} ("" = all): recompute the respawn-safety verdict(s) and
+	// cache them onto the marks (display-only fields), then push fresh state. The
+	// verdict needs the ref resolved, so it runs on the main thread.
+	void OnJsCsRevalidate(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto        j = json::parse(req, nullptr, false);
+			const std::string one =
+				(!j.is_discarded() && j.is_object()) ? j.value("markId", std::string("")) : "";
+			bool changed = false;
+			{
+				std::lock_guard l(g_configMutex);
+				for (auto& m : g_contConfig.marks) {
+					if (!one.empty() && m.id != one)
+						continue;
+					const auto v = ContainerSort::EvaluateSafety(m.plugin, m.localId);
+					if (m.safeRespawns != v.respawns || m.safeReason != v.reason) {
+						m.safeRespawns = v.respawns;
+						m.safeReason = v.reason;
+						changed = true;
+					}
+				}
+			}
+			if (changed)
+				PersistAll();  // the display cache is durable; keep it on disk in step
+			PushToView("csStateResult", ContainerSort::StateJson());
+		});
+	}
+
+	// ---------------------------------------------------------------- auto-loot --
+	// alGet {} / alState {}: current config + live runtime state. StateJson reads
+	// g_autoLootConfig through the provider (takes the lock itself) and resolves
+	// dest name + reachability live. Both requests reply with the disjoint
+	// alStateData push (a shared name would clobber the alState listener).
+	void OnJsAlGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("alStateData", AutoLoot::StateJson());
+		});
+	}
+
+	void OnJsAlState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("alStateData", AutoLoot::StateJson());
+		});
+	}
+
+	// alSave {enabled,radius,dest,questGuard,toastRare,valueFloor,cats{...},corpses}:
+	// persist the config by MUTATING the live slice in place (AutoLootConfigFromJson
+	// seeds from the current g_autoLootConfig, so an omitted key keeps its value —
+	// never a wholesale replace, so this slice can't be eaten by the OnJsSave trap).
+	void OnJsAlSave(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto j = json::parse(req, nullptr, false);
+			bool       ok = false;
+			if (!j.is_discarded() && j.is_object()) {
+				std::lock_guard l(g_configMutex);
+				AutoLootConfigFromJson(j, g_autoLootConfig);  // in place, carry-over
+				ok = true;
+			}
+			if (ok)
+				PersistAll();  // outside the lock — PersistAll takes it too
+			PushToView("alSaved", json{ { "ok", ok } }.dump(-1, ' ', false,
+									  json::error_handler_t::replace));
+			// Push fresh live state so the card's on/off + reachability track the save.
+			PushToView("alStateData", AutoLoot::StateJson());
+		});
+	}
+
+	// alHere {}: identify the cell the player is standing in, so the Auto-Loot
+	// page's "＋ This place" button has something durable to store. Reply ->
+	// alHereData {ok, plugin, localId, name, interior, owned} (or ok:false + msg
+	// for a cell with no plugin — a runtime cell cannot carry a rule).
+	void OnJsAlHere(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("alHereData", AutoLoot::HereJson());
+		});
+	}
+
+	// alToggle {}: flip the master switch (the bindable-action path shares
+	// AutoLoot::ToggleMaster). ToggleMaster flips through the installed toggler
+	// (takes the lock itself), so PersistAll runs after, outside the lock. Reply
+	// -> alResult (the master switch tracks the truth) + fresh alStateData.
+	void OnJsAlToggle(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			const std::string res = AutoLoot::ToggleMaster();
+			PersistAll();
+			PushToView("alResult", res);
+			PushToView("alStateData", AutoLoot::StateJson());
+		});
+	}
+
+	// alScanNow {}: one-shot "loot everything around me now". The take (Activate +
+	// a RemoveItem forward) needs the UNPAUSED world, so — like the seeded action —
+	// close the palette, scan, then reopen if it was toggled to stay open. The
+	// Containers pane behind the reopen gets alResult (last-picked) + alStateData.
+	void OnJsAlScanNow(const char*)
+	{
+		bool reopen;
+		{
+			std::lock_guard l(g_configMutex);
+			reopen = !g_config.settings.closeAfterFire;
+		}
+		SKSE::GetTaskInterface()->AddTask([reopen]() {
+			ClosePalette();
+			std::string msg;
+			const int   n = AutoLoot::ScanAndLootNow(&msg);
+			if (!msg.empty())
+				RE::DebugNotification(msg.c_str());
+			PushToView("alResult", json{ { "ok", true }, { "enabled", AutoLoot::IsEnabled() },
+										   { "picked", n }, { "msg", msg } }
+										   .dump(-1, ' ', false, json::error_handler_t::replace));
+			PushToView("alStateData", AutoLoot::StateJson());
+			if (reopen)
+				SKSE::GetTaskInterface()->AddTask([]() {
+					if (CanOpenNow())
+						OpenPalette();
+				});
+		});
+	}
+
 	// pdSave: the pane edited categories / marks / open key — persist the slice.
 	void OnJsPlaceSave(const char* data)
 	{
@@ -11621,6 +17241,15 @@ namespace
 		});
 	}
 
+	// Same index, same query, different door — see the RegisterJSListener note.
+	void OnJsItemsPick(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ixPickData", ItemExplorer::QueryJson(req));
+		});
+	}
+
 	void OnJsItemsAdd(const char* data)
 	{
 		const std::string req = data ? data : "{}";
@@ -11634,6 +17263,726 @@ namespace
 		const std::string req = data ? data : "{}";
 		SKSE::GetTaskInterface()->AddTask([req]() {
 			PushToView("ixSaved", ItemExplorer::Save(req));
+		});
+	}
+
+	// Finder Modify sheet (ie* bridge). Every handler AddTasks — form field
+	// writes, the enchantment walk and the sidecar all follow item_explorer's
+	// "task thread only, no locks" contract.
+	void OnJsItemEditGet(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ieGetResult", ItemEdit::GetJson(req));
+		});
+	}
+
+	void OnJsItemEditApply(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ieApplyResult", ItemEdit::ApplyJson(req));
+		});
+	}
+
+	void OnJsItemEditRevert(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ieRevertResult", ItemEdit::RevertJson(req));
+		});
+	}
+
+	void OnJsItemEditList(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("ieListResult", ItemEdit::ListJson());
+		});
+	}
+
+	void OnJsItemEditEnch(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ieEnchResult", ItemEdit::EnchSearchJson(req));
+		});
+	}
+
+	// Spellcraft Modify sub-tab (sx* bridge). Every handler AddTasks — the
+	// spell walk, the effect writes and the sidecar all follow item_explorer's
+	// "task thread only, no locks" contract.
+	void OnJsSpellEditQuery(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("sxResultData", SpellEdit::QueryJson(req));
+		});
+	}
+
+	void OnJsSpellEditGet(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("sxGetResult", SpellEdit::GetJson(req));
+		});
+	}
+
+	void OnJsSpellEditApply(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("sxApplyResult", SpellEdit::ApplyJson(req));
+		});
+	}
+
+	void OnJsSpellEditRevert(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("sxRevertResult", SpellEdit::RevertJson(req));
+		});
+	}
+
+	void OnJsSpellEditList(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("sxListResult", SpellEdit::ListJson());
+		});
+	}
+
+	// Character sheet Tune modal (psTune* on the ps* family). AddTask'd —
+	// ActorValue reads/writes on the player are engine state.
+	void OnJsPlayerTuneGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("psTuneData", PlayerTune::GetJson());
+		});
+	}
+
+	void OnJsPlayerTuneSet(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("psTuneResult", PlayerTune::ApplyJson(req));
+		});
+	}
+
+	// NPC Tune modal (nt* bridge). AddTask'd — actor resolution, AV writes,
+	// base-flag writes and the targeted console are all engine state.
+	void OnJsNpcTuneGet(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ntGetResult", NpcTune::GetJson(req));
+		});
+	}
+
+	void OnJsNpcTuneApply(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ntApplyResult", NpcTune::ApplyJson(req));
+		});
+	}
+
+	void OnJsNpcTuneRevert(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ntRevertResult", NpcTune::RevertJson(req));
+		});
+	}
+
+	// Time tab Sky card (tmWeather* on the tm* family). AddTask'd — the
+	// weather walk and Sky calls are engine state.
+	void OnJsWeatherList(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("tmWeatherListData", WeatherActions::ListJson(req));
+		});
+	}
+
+	void OnJsWeatherSet(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("tmWeatherResult", WeatherActions::SetJson(req));
+		});
+	}
+
+	// ------------------------------------------------------ Journal (jr* bridge)
+	// Pure file work (journal.h explains why none of it touches the engine), but
+	// still AddTask'd so its replies stay ordered with every other push to the
+	// view — a jrData that overtook the open sequence would paint into a pane
+	// that has not been shown yet.
+	void OnJsJournalOpen(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("jrData", Journal::OpenJson());
+		});
+	}
+
+	void OnJsJournalSave(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("jrSaved", Journal::Save(req));
+		});
+	}
+
+	void OnJsJournalImages(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("jrImagesData", Journal::ImagesJson(req));
+		});
+	}
+
+	void OnJsJournalDropImage(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("jrDropped", Journal::DropImage(req));
+		});
+	}
+
+	// jrPhoto {name}: paste the world into the journal. Same flow as the Domains
+	// photo — close the palette, let the HUD settle, then hand the free camera to
+	// PortraitCapture, whose PNG lands straight in journal-images/ (a write made
+	// by the game process, so MO2 puts it where the renderer can load it). The
+	// pane picks the new file up with its next jrImages poll.
+	void OnJsJournalPhoto(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			auto j = json::parse(req, nullptr, false);
+			if (j.is_discarded() || !j.is_object())
+				j = json::object();
+			std::string name = j.value("name", std::string{});
+			// The file stem is ours to mint: a journal picture has no durable id
+			// the way a domain does, so it is stamped and always unique — a second
+			// shot can never overwrite the first (which the renderer may hold open
+			// anyway).
+			std::string stem = "shot-" + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
+														   std::chrono::system_clock::now().time_since_epoch())
+														   .count());
+			if (name.empty())
+				name = "Journal picture";
+			ClosePalette();
+			logger::info("journal: photo mode for '{}' ({})", name, stem);
+			std::thread([stem, name]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(450));
+				SKSE::GetTaskInterface()->AddTask([stem, name]() {
+					PortraitCapture::StartPhotoMode(Journal::ImageDir(), stem, name);
+				});
+			}).detach();
+		});
+	}
+
+	// ------------------------------------------------ Spell Crafting (sc* bridge)
+	// FESC (Fourth Era Spell-Crafting) driven through its own Papyrus + the
+	// DynamicPersistentForms statics — see spellcraft_actions.h for the whole
+	// contract (and why override crafts NEVER go through their CraftTheSpell).
+	// Every handler AddTasks: the module touches the VM, form arrays and the
+	// player, and its threading contract is "task thread only".
+
+	// Craft/Settings/Tome validate in-pane and ARM the dispatch; the palette
+	// then closes and RunPending() fires ~200ms later so the Papyrus lands on
+	// the unpaused world — the FireConsoleAndClose timing exactly. No reopen:
+	// the flow runs in the Papyrus VM, and a paused palette would starve it.
+	void ScCloseAndRunPending()
+	{
+		ClosePalette();
+		std::thread([]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			SKSE::GetTaskInterface()->AddTask([]() { SpellCraft::RunPending(); });
+		}).detach();
+	}
+
+	void OnJsScState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("scStateResult", SpellCraft::StateJson());
+		});
+	}
+
+	void OnJsScOpen(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			// The engine pass runs in THIS task; the module's worker only
+			// serialises copied plain data, then delivers on the main thread.
+			SpellCraft::Open([](std::string payload) {
+				PushToView("scOpenData", std::move(payload));
+			});
+		});
+	}
+
+	void OnJsScCraft(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			bool closing = false;
+			PushToView("scCraftResult", SpellCraft::Craft(req, closing));
+			if (closing)
+				ScCloseAndRunPending();
+		});
+	}
+
+	void OnJsScErase(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("scEraseResult", SpellCraft::Erase(req));
+		});
+	}
+
+	void OnJsScLearn(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("scLearnResult", SpellCraft::Learn(req));
+		});
+	}
+
+	void OnJsScSettings(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			bool closing = false;
+			PushToView("scSettingsResult", SpellCraft::Settings(req, closing));
+			if (closing)
+				ScCloseAndRunPending();
+		});
+	}
+
+	void OnJsScTome(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			bool closing = false;
+			PushToView("scTomeResult", SpellCraft::Tome(closing));
+			if (closing)
+				ScCloseAndRunPending();
+		});
+	}
+
+	void OnJsScIcon(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("scIconResult", SpellCraft::Icon(req));
+		});
+	}
+
+	// scDeck: put a crafted spell on the Spell Deck under a "Crafted" category.
+	// Lives HERE (not the module) because it edits g_magicConfig — the
+	// DoAddHighlighted shape, minus the capture snapshot. The entry's identity
+	// is the (plugin, localId) pair, which for a crafted spell is DPF.esp plus
+	// its allocated slot — durable as long as DPF.esp's load position rules are
+	// respected (they are; see the DFG/DPF block in CLAUDE.md).
+	void OnJsScDeck(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			auto reply = [](bool ok, const std::string& msg) {
+				PushToView("scDeckResult",
+					json{ { "ok", ok }, { "msg", msg } }
+						.dump(-1, ' ', false, json::error_handler_t::replace));
+			};
+			const auto j = json::parse(req, nullptr, false);
+			if (j.is_discarded() || !j.is_object()) {
+				reply(false, "Malformed payload");
+				return;
+			}
+			const auto plugin = j.value("plugin", std::string(""));
+			const auto localId = j.value("localId", 0u);
+			auto       icon = j.value("icon", std::string(""));
+			if (!ValidViewIconPath(icon))
+				icon.clear();  // a bad path costs the icon, never the add
+
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			auto* form = (dh && !plugin.empty() && localId) ? dh->LookupForm(localId, plugin) : nullptr;
+			auto* spell = form ? form->As<RE::SpellItem>() : nullptr;
+			if (!spell) {
+				reply(false, "That spell isn't in the load order any more");
+				return;
+			}
+			const char*       nm = spell->GetName();
+			const std::string name = (nm && *nm) ? nm : "Crafted spell";
+			const auto        formId = spell->GetFormID();
+			char              hex[11];
+			std::snprintf(hex, sizeof(hex), "0x%08X", formId);
+
+			bool wasDup = false;
+			{
+				std::lock_guard l(g_configMutex);
+				if (g_magicConfig.categories.empty())
+					g_magicConfig.categories = DefaultMagicConfig().categories;
+				if (std::find(g_magicConfig.categories.begin(), g_magicConfig.categories.end(),
+						std::string("Crafted")) == g_magicConfig.categories.end())
+					g_magicConfig.categories.push_back("Crafted");
+				// Durable identity first, runtime formId only as the fallback —
+				// same reasoning as DoAddHighlighted's check above.
+				const auto addKey = MagicIdKey(plugin, localId);
+				for (const auto& s : g_magicConfig.spells) {
+					const bool same = addKey.empty()
+						? (s.formId == formId)
+						: (MagicIdKey(s.plugin, s.localId) == addKey);
+					if (same) {
+						wasDup = true;
+						break;
+					}
+				}
+				if (!wasDup) {
+					SpellEntry e;
+					e.id = hex;
+					while (std::any_of(g_magicConfig.spells.begin(), g_magicConfig.spells.end(),
+						[&](const SpellEntry& s) { return s.id == e.id; }))
+						e.id += "+";
+					e.plugin = plugin;
+					e.localId = localId;
+					e.formId = formId;
+					e.name = name;
+					e.mode = "cast";
+					e.hand = "right";
+					e.category = "Crafted";
+					e.slot = "hand";  // crafted spells are hand spells by construction
+					e.icon = icon;    // "" = auto; scIcon's sidecar look is view-side
+					g_magicConfig.spells.push_back(std::move(e));
+				}
+			}
+			if (wasDup) {
+				reply(true, name + " is already on the Spell Deck");
+				return;
+			}
+			PersistAll();
+			logger::info("spellcraft: '{}' added to Spell Deck (Crafted)", name);
+			reply(true, name + " added to the Spell Deck - Crafted");
+		});
+	}
+
+	// Combat Arts tab (Ashes of War). Same threading contract as the Items
+	// tab: every handler AddTasks — state builds the index / runs the adoption
+	// sweep, act touches the player's inventory and the equip manager.
+	// Every ca* reply goes to the SPELL DECK view (the pane's home since
+	// 2026-08-15) — PushToMagicView, never PushToView: PushToView would invoke
+	// into a deck that no longer defines these receivers.
+	void OnJsCombatArtsState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToMagicView("caStateResult", CombatArts::StateJson());
+		});
+	}
+
+	void OnJsCombatArtsAct(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToMagicView("caActResult", CombatArts::Act(req));
+			// An equip/unequip changes rows (gold border, banner) — follow with
+			// fresh state so the pane never has to derive it from the act reply.
+			PushToMagicView("caStateResult", CombatArts::StateJson());
+		});
+	}
+
+	void OnJsCombatArtsSave(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToMagicView("caSaved", CombatArts::Save(req));
+		});
+	}
+
+	// Potion Browser (the paused popout). Same threading contract as the
+	// Items tab: every handler AddTasks — the list walks the inventory, the
+	// use touches the equip manager.
+	void RefreshDeckIcons();  // defined with the portal poller below
+
+	// Every saved potion combo IS a deck entry (id "pcombo-<id>", action
+	// "potion-combo:<id>") — THAT is what makes a combo findable in every UI
+	// system for free: F2 press-to-bind, the hotbar's entry slots, the wheel's
+	// FireEntryById pins, the shelf's hk: pins and the omni hotkeys provider
+	// all index live config entries and pick these up with zero edits.
+	//
+	// Contract (2026-08-15): only MISSING entries are created; an existing one
+	// keeps its category/trigger/binding wherever the player moved it — only
+	// name/desc/icon follow a combo rename. A deleted combo retires its entry
+	// only while it is still device=="action" with our verb; anything else was
+	// deliberately repurposed and is left alone, logged. Caller persists.
+	bool EnsureComboEntries()
+	{
+		const auto combos = json::parse(Widgets::CombosJson(), nullptr, false);
+		if (!combos.is_array())
+			return false;
+		bool changed = false;
+		{
+			std::lock_guard l(g_configMutex);
+			std::unordered_set<std::string> liveActions;
+			for (const auto& c : combos) {
+				if (!c.is_object())
+					continue;
+				const std::string cid = c.value("id", std::string());
+				const std::string name = c.value("name", std::string());
+				if (cid.empty() || name.empty())
+					continue;
+				const std::string action = "potion-combo:" + cid;
+				liveActions.insert(action);
+
+				std::string names;
+				if (c.contains("items") && c["items"].is_array()) {
+					for (const auto& it : c["items"]) {
+						const std::string nm =
+							it.is_object() ? it.value("name", std::string()) : std::string();
+						if (nm.empty())
+							continue;
+						if (!names.empty())
+							names += ", ";
+						names += nm;
+					}
+				}
+				const std::string desc = "Quick-drink combo: " +
+					(names.empty() ? std::string("nothing in it yet") : names) +
+					" (potion combo drink)";
+				std::string icon = c.value("icon", std::string());
+				if (!icon.empty() && !ValidViewIconPath(icon))
+					icon.clear();
+				if (icon.empty())
+					icon = "icons/custom/hk-potion-browser.png";
+
+				auto it = std::find_if(g_config.entries.begin(), g_config.entries.end(),
+					[&action](const HotkeyEntry& e) {
+						return e.device == "action" && e.action == action;
+					});
+				if (it == g_config.entries.end()) {
+					if (std::find(g_config.categories.begin(), g_config.categories.end(),
+							"Utilities") == g_config.categories.end())
+						g_config.categories.emplace_back("Utilities");
+					HotkeyEntry e;
+					e.id = "pcombo-" + cid;
+					e.name = name;
+					e.desc = desc;
+					e.device = "action";
+					e.code = 0;
+					e.label = name;
+					e.category = "Utilities";
+					e.action = action;
+					e.icon = icon;
+					g_config.entries.push_back(std::move(e));
+					logger::info("potion-combo: entry created for '{}' (pcombo-{})", name, cid);
+					changed = true;
+				} else if (it->name != name || it->desc != desc || it->icon != icon) {
+					// Renames follow the combo; the player's tab/binding stay.
+					it->name = name;
+					it->label = name;
+					it->desc = desc;
+					it->icon = icon;
+					logger::info("potion-combo: entry refreshed for '{}'", name);
+					changed = true;
+				}
+			}
+			// Retire entries for deleted combos — ours only, honestly logged.
+			for (auto it = g_config.entries.begin(); it != g_config.entries.end();) {
+				if (it->device == "action" && it->action.rfind("potion-combo:", 0) == 0 &&
+					!liveActions.count(it->action)) {
+					logger::info("potion-combo: entry retired ('{}' — its combo was deleted)", it->name);
+					it = g_config.entries.erase(it);
+					changed = true;
+					continue;
+				}
+				++it;
+			}
+		}
+		if (changed)
+			// Build marker (hd-markers.json: "potion-combo: entries ensured").
+			logger::info("potion-combo: entries ensured ({} live combo(s))", combos.size());
+		return changed;
+	}
+
+	void OnJsPbList(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("pbListData", Widgets::PbListJson());
+		});
+	}
+
+	void OnJsPbUse(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("pbUseResult", Widgets::PbUseJson(req));
+		});
+	}
+
+	void OnJsPbSave(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("pbSaved", Widgets::PbSaveJson(req));
+		});
+	}
+
+	// pbCombo — one request, op-routed; reply pbComboResult (disjoint names,
+	// the deck law). save: {op:"save", combos:[…]} replaces the whole list,
+	// re-ensures the deck entries and live-pushes the deck config so the F2
+	// list shows the new action without a reopen. fire: {op:"fire", id} — the
+	// browser's ▶ test button rides the same verb a bound key does.
+	void OnJsPbCombo(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto j = json::parse(req, nullptr, false);
+			const std::string op = (j.is_object()) ? j.value("op", std::string()) : std::string();
+			if (op == "fire") {
+				const std::string id = j.is_object() ? j.value("id", std::string()) : std::string();
+				PushToView("pbComboResult", Widgets::FireComboJson(id));
+				return;
+			}
+			if (op == "save") {
+				const std::string list =
+					(j.is_object() && j.contains("combos") && j["combos"].is_array())
+						? j["combos"].dump(-1, ' ', false, json::error_handler_t::replace)
+						: std::string("[]");
+				const std::string res = Widgets::ApplyCombosJson(list);
+				if (EnsureComboEntries()) {
+					if (!PersistAll())
+						logger::error("pbCombo: entries ensured but hotkeys.json write failed");
+					RefreshDeckIcons();  // live hdOpen re-push — F2 updates now
+				}
+				PushToView("pbComboResult", res);
+				return;
+			}
+			PushToView("pbComboResult", R"({"ok":false,"msg":"Unknown combo op"})");
+		});
+	}
+
+	// Quiver (the ammo radial). Same threading contract as the Potion
+	// Browser: every handler AddTasks — the list walks the inventory, the
+	// use touches the equip manager.
+	void OnJsQvList(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			// Renders are queued HERE, off the list walk, rather than waiting
+			// for the view's settle-gated whIcons round trip: the ring's whole
+			// content is known the moment the list is built, and every frame
+			// spent waiting is a frame of fletching glyphs (Rober, 2026-08-16:
+			// "it just takes time to load"). EnsureIconsForList is render-once
+			// and idempotent, so an ammo kind already on disk costs a
+			// directory read; the index push right after is what paints those.
+			std::string iconItems;
+			PushToView("qvListData", Quiver::ListJson(&iconItems));
+			if (!iconItems.empty()) {
+				ItemIcons::EnsureIconsForList(iconItems);
+				PushToView("wdItemIcons", ItemIcons::IndexJson());
+			}
+		});
+	}
+
+	void OnJsQvUse(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("qvUseResult", Quiver::UseJson(req));
+		});
+	}
+
+	void OnJsQvSave(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("qvSaved", Quiver::SaveJson(req));
+		});
+	}
+
+	// Transmog tab. Every handler AddTasks: the pool restyle, the donor walk
+	// and the instance swap all touch engine structures (form arrays, the
+	// player's inventory-changes list), and Transmog's threading contract is
+	// "task thread only, no locks" (the item_explorer law).
+	void OnJsTgState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("tgStateResult", Transmog::StateJson());
+		});
+	}
+
+	void OnJsTgList(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("tgListData", Transmog::ListJson());
+		});
+	}
+
+	void OnJsTgDonors(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("tgDonorsData", Transmog::DonorsJson(req));
+		});
+	}
+
+	void OnJsTgApply(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("tgApplyResult", Transmog::ApplyJson(req));
+		});
+	}
+
+	void OnJsTgRevert(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("tgRevertResult", Transmog::RevertJson(req));
+		});
+	}
+
+	void OnJsTgStats(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("tgStatsResult", Transmog::StatsJson(req));
+		});
+	}
+
+	// Wigs tab. Every handler AddTasks: the index walk, the census, the query
+	// and the wear/strip/take all touch engine structures (form arrays, names,
+	// inventories, the equip manager), and Wigs' threading contract is "task
+	// thread only, no locks" (the item_explorer law).
+	void OnJsWigsState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("wvStateResult", Wigs::StateJson());
+		});
+	}
+
+	void OnJsWigsMods(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("wvModsData", Wigs::ModsJson(req));
+		});
+	}
+
+	void OnJsWigsQuery(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("wvResultData", Wigs::QueryJson(req));
+		});
+	}
+
+	void OnJsWigsUse(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("wvUseResult", Wigs::UseJson(req));
+		});
+	}
+
+	void OnJsWigsSave(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("wvSaved", Wigs::SaveJson(req));
 		});
 	}
 
@@ -11660,6 +18009,69 @@ namespace
 		const std::string req = data ? data : "{}";
 		SKSE::GetTaskInterface()->AddTask([req]() {
 			PushToView("nxResultData", NpcFinder::QueryJson(req));
+		});
+	}
+
+	void OnJsNpcInspect(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("niInspectData", NpcInspect::InspectJson(req));
+		});
+	}
+
+	void OnJsDistrState(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("dxStateResult", SpidInspect::StateJson(req));
+		});
+	}
+
+	void OnJsDistrQuery(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("dxResultData", SpidInspect::QueryJson(req));
+		});
+	}
+
+	// Expand a leveled list for the Distributions tab. Main thread like its
+	// siblings — it walks live forms, so it cannot run on the parse worker.
+	void OnJsDistrLeveled(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("dxLeveledData", SpidInspect::LeveledJson(req));
+		});
+	}
+
+	// Write the Distributions diagnostic report to the Desktop. Main thread like
+	// its siblings — it walks live forms and expands leveled lists.
+	void OnJsDistrReport(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("dxReportResult", SpidInspect::ReportJson(req));
+		});
+	}
+
+	// Open a distribution ini on the PC (Rober: "open the spid doc on the pc with
+	// a button in the UI"). Main thread: it resolves a real path off our own
+	// module handle and then calls the shell.
+	void OnJsDistrOpenFile(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("dxOpenResult", SpidInspect::OpenFileJson(req));
+		});
+	}
+
+	void OnJsPartyScan(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ptyData", PartySheet::BuildPartyJson(req));
 		});
 	}
 
@@ -11709,6 +18121,179 @@ namespace
 			// of atronachs/spiders/draugr upgrades from glyph to silhouette.
 			ItemIcons::EnsureFaceIcons(payload);
 			PushToView("nxIconsData", ItemIcons::NpcIconsJson());
+		});
+	}
+
+	// Settlement tab (the world-object placer). Same threading contract as the
+	// Items/NPCs tabs: every handler AddTasks — the index walk, the query, the
+	// placement calls and the sidecar all touch engine structures. stAct's
+	// physical ops (place/campplace/move/remove/jumpto) follow the NpcFinder
+	// goto/bring shape: close the palette first so the placement lands in the
+	// live, unpaused world (the party-orders law), and push NO reply on that
+	// path (the view is gone). Icons ride the shared whIcons/icons/items route.
+	// The Settlement index is a ~3 s walk of the whole load order on the MAIN
+	// thread. Built in one task that is a 3-second hard freeze the first time
+	// the tab opens -- "took a while to load - thought i crashed" (Rober,
+	// 2026-08-15). So we PUMP it: one stage per task, pushing a fresh state in
+	// between, which lets the game draw frames and the pane paint a real
+	// progress bar. Self-scheduling rather than a loop, because a loop inside
+	// one task is exactly the freeze we are removing.
+	void PumpSettlementIndex()
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			const bool done = Settlement::BuildIndexStep();
+			PushToView("stStateResult", Settlement::StateJson());
+			if (!done)
+				PumpSettlementIndex();
+		});
+	}
+
+	void OnJsSettlementState(const char*)
+	{
+		if (!Settlement::IndexReady()) {
+			// Answer the FIRST frame with "building" (StateJson does not block
+			// while the index is incomplete), then walk it a stage at a time.
+			SKSE::GetTaskInterface()->AddTask([]() {
+				PushToView("stStateResult", Settlement::StateJson());
+				PumpSettlementIndex();
+			});
+			return;
+		}
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("stStateResult", Settlement::StateJson());
+		});
+	}
+
+	// Survival: both entry points read (and the act mutates) engine state, so
+	// they run as tasks like every other inventory-touching handler.
+	void OnJsSurvivalState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("svStateResult", Survival::StateJson());
+		});
+	}
+
+	// The tab's card arrangement. Pure file work — no engine state — but it
+	// rides a task like everything else so the ordering with state pushes is
+	// the one the view expects.
+	void OnJsSurvivalLayoutGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("svLayoutData", Survival::LayoutJson());
+		});
+	}
+
+	void OnJsSurvivalLayout(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			Survival::SaveLayout(req);
+		});
+	}
+
+	void OnJsSurvivalAct(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const std::string res = Survival::ActJson(req);
+			PushToView("svActResult", res);
+			// Camp placement hands control to Campfire's own UI, which cannot
+			// work under a paused palette - so the view is told to close and we
+			// close the palette here, the same handoff the wheel's fire does.
+			const auto j = json::parse(res, nullptr, false);
+			if (!j.is_discarded() && j.is_object() && j.value("close", false)) {
+				const int tap = j.value("keyTap", 0);
+				ClosePalette();
+				// A relayed key (SunHelm's own fill key) must land AFTER the
+				// palette is down and has released input — same order every
+				// keystroke entry uses, on a detached sleep so nothing blocks
+				// the main thread.
+				if (tap > 0 && tap <= 255) {
+					std::thread([tap]() {
+						using namespace std::chrono;
+						std::this_thread::sleep_for(milliseconds(140));
+						SendScan(static_cast<std::uint32_t>(tap), true);
+						std::this_thread::sleep_for(milliseconds(45));
+						SendScan(static_cast<std::uint32_t>(tap), false);
+					}).detach();
+				}
+			} else {
+				PushToView("svStateResult", Survival::StateJson());   // counts moved
+			}
+		});
+	}
+
+	void OnJsSettlementQuery(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("stResultData", Settlement::QueryJson(req));
+		});
+	}
+
+	void OnJsSettlementAct(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const std::string res = Settlement::ActJson(req);
+			const auto        j = json::parse(res, nullptr, false);
+			const bool        ok = !j.is_discarded() && j.value("ok", false);
+			const bool        close = !j.is_discarded() && j.value("close", false);
+			if (ok && close) {
+				// Physical — the Domains/NpcFinder recall discipline: close the
+				// palette so the placement runs in the live world, execute, notify,
+				// then optionally reopen onto the tab. No reply is pushed here.
+				bool reopen;
+				{
+					std::lock_guard l(g_configMutex);
+					reopen = !g_config.settings.closeAfterFire;
+				}
+				ClosePalette();
+				const std::string msg = Settlement::ExecuteAct(req);
+				if (!msg.empty())
+					RE::DebugNotification(msg.c_str());
+				if (reopen)
+					SKSE::GetTaskInterface()->AddTask([]() {
+						if (CanOpenNow()) {
+							g_pendingTab = "settle";
+							OpenPalette();
+						}
+					});
+				return;
+			}
+			PushToView("stActResult", res);
+		});
+	}
+
+	void OnJsSettlementSpin(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			Settlement::Spin(req);   // no reply; the view probes the -aNNN siblings
+		});
+	}
+
+	void OnJsSettlementSave(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("stSaved", Settlement::Save(req));
+		});
+	}
+
+	void OnJsSettlementCat(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("stCatResult", Settlement::Cat(req));
+		});
+	}
+
+	void OnJsSettlementPlaced(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("stPlacedResult", Settlement::Placed(req));
 		});
 	}
 
@@ -11884,6 +18469,28 @@ namespace
 		});
 	}
 
+	// A tile's "try again" on a failed render: forget the verdict, then walk the
+	// normal path. Same payload shape as whIcons, so the view sends the rows it
+	// wants retried and gets the usual index push back.
+	void OnJsIconRetry(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			ItemIcons::RetryIcons(payload);
+			ItemIcons::EnsureIconsForList(payload);
+			const std::string idx = ItemIcons::IndexJson();
+			PushToView("wdItemIcons", idx);
+			// The HUD view asks through this same listener — and used to never
+			// hear back (PushToView is the DECK view), which is why every
+			// pin/equip/slot-card plate kept its glyph in-game even after the
+			// key-dialect fix (Rober, 2026-08-18: "items dont render at all").
+			// Build marker (hd-markers.json: "hud-icons-reply").
+			if (g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView,
+					("hudIconsData(" + idx + ")").c_str());
+		});
+	}
+
 	void OnJsWheelIcons(const char* data)
 	{
 		const std::string payload = data ? data : "";
@@ -11893,7 +18500,16 @@ namespace
 			// asking on every wheel open costs a directory read once the
 			// pictures exist.
 			ItemIcons::EnsureIconsForList(payload);
-			PushToView("wdItemIcons", ItemIcons::IndexJson());
+			const std::string idx = ItemIcons::IndexJson();
+			PushToView("wdItemIcons", idx);
+			// The HUD view asks through this same listener — and used to never
+			// hear back (PushToView is the DECK view), which is why every
+			// pin/equip/slot-card plate kept its glyph in-game even after the
+			// key-dialect fix (Rober, 2026-08-18: "items dont render at all").
+			// Build marker (hd-markers.json: "hud-icons-reply").
+			if (g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView,
+					("hudIconsData(" + idx + ")").c_str());
 		});
 	}
 
@@ -11948,6 +18564,55 @@ namespace
 			PersistAll();  // outside the lock — PersistAll takes it too
 			PushToView("ltResult", res);
 			PushToView("ltOpen", cfg);
+		});
+	}
+
+	// ---- High King tab (kg* bridge) — high_king.cpp owns everything ------
+
+	// kgState: the whole kingdom dashboard, read fresh from the mod's globals.
+	// Read-only; reply kgStateResult, NOT kgState (the rgState lesson).
+	void OnJsHighKingState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("kgStateResult", HighKing::StateJson());
+		});
+	}
+
+	// kgAct({op:"collect"|"ledger"|"start"}): a verb through the mod's own scripts.
+	// The result lands as kgActResult, then a fresh kgStateResult so the pane
+	// never has to guess what the verb changed.
+	void OnJsHighKingAct(const char* data)
+	{
+		std::string op;
+		if (data) {
+			const auto j = json::parse(data, nullptr, false);
+			if (j.is_object())
+				op = j.value("op", std::string(""));
+		}
+		SKSE::GetTaskInterface()->AddTask([op]() {
+			const auto res = HighKing::ActJson(op);
+			PushToView("kgActResult", res);
+			PushToView("kgStateResult", HighKing::StateJson());
+		});
+	}
+
+	// kgTax({hold, rate}): write one hold's tax-rate global — the exact value
+	// the mod's own court dialogue writes; steps validated in high_king.cpp.
+	void OnJsHighKingTax(const char* data)
+	{
+		std::string hold;
+		double      rate = -1.0;
+		if (data) {
+			const auto j = json::parse(data, nullptr, false);
+			if (j.is_object()) {
+				hold = j.value("hold", std::string(""));
+				rate = j.value("rate", -1.0);
+			}
+		}
+		SKSE::GetTaskInterface()->AddTask([hold, rate]() {
+			const auto res = HighKing::SetTaxRateJson(hold, rate);
+			PushToView("kgActResult", res);
+			PushToView("kgStateResult", HighKing::StateJson());
 		});
 	}
 
@@ -12038,6 +18703,39 @@ namespace
 		});
 	}
 
+	// dxBlock: "never let THIS person have THAT" from the Distributions tab.
+	// Mutates config, so it takes the lock and persists like its ng siblings.
+	void OnJsDistrBlock(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			std::string res, blocks;
+			{
+				std::lock_guard l(g_configMutex);
+				res = NoAutoGear::SetBlock(req, g_ngConfig);
+				blocks = NoAutoGear::BlocksFor(req, g_ngConfig);
+			}
+			PersistAll();  // outside the lock — PersistAll takes it too
+			PushToView("dxBlockResult", res);
+			PushToView("dxBlocksData", blocks);
+		});
+	}
+
+	// Read-only: which forms are already blocked for the pane's target, so rows
+	// can be badged without the view keeping its own copy of the truth.
+	void OnJsDistrBlocks(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			std::string blocks;
+			{
+				std::lock_guard l(g_configMutex);
+				blocks = NoAutoGear::BlocksFor(req, g_ngConfig);
+			}
+			PushToView("dxBlocksData", blocks);
+		});
+	}
+
 	void OnJsNgSweep(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
@@ -12110,6 +18808,115 @@ namespace
 				if (!msg.empty())
 					RE::DebugNotification(msg.c_str());
 			}
+		});
+	}
+
+	// sgAdd — record a grant from an item's IDENTITY rather than from the inbox
+	// chest (2026-08-20). Same mutation shape as its siblings: mutate under the
+	// lock, snapshot, then do the file IO outside it. The manager sends durable
+	// npc ids and no runtime id at all (its rows are about people who may not be
+	// loaded), so the card refresh is conditional exactly as in OnJsSgRemove,
+	// and the roster reply always goes out because every SPID surface listens
+	// to sgAllState.
+	void OnJsSgAdd(const char* data)
+	{
+		const std::string payload = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			const auto j = json::parse(payload, nullptr, false);
+			if (j.is_discarded() || !j.is_object()) {
+				PushToView("sgResult", R"({"ok":false,"msg":"Bad request"})");
+				return;
+			}
+			const std::uint32_t fid = j.value("formId", 0u);
+			std::string         res, all, state;
+			SpidGear::Config    snap;
+			bool                ok = false;
+			{
+				std::lock_guard l(g_configMutex);
+				res = SpidGear::AddGrant(g_spidConfig, j);
+				const auto jr = json::parse(res, nullptr, false);
+				ok = !jr.is_discarded() && jr.value("ok", false);
+				if (ok) {
+					snap = g_spidConfig;
+					all = SpidGear::AllJson(g_spidConfig);
+					if (fid)
+						state = SpidGear::StateJson(g_spidConfig, fid);
+				}
+			}
+			if (ok) {
+				SpidGear::WriteIni(snap);
+				PersistAll();
+			}
+			PushToView("sgResult", res);
+			if (ok) {
+				PushToView("sgAllState", all);
+				if (fid)
+					PushToView("sgState", state);
+			}
+			// Said out loud as well as returned: the wig and F7 flows fire this
+			// with the palette closed, where a toast in a view nobody is looking
+			// at is no answer at all.
+			const auto jr = json::parse(res, nullptr, false);
+			if (!jr.is_discarded()) {
+				const auto msg = jr.value("msg", std::string(""));
+				if (!msg.empty() && !g_open.load())
+					RE::DebugNotification(msg.c_str());
+			}
+		});
+	}
+
+	// sgFaces — face renders for grant rows. The follower path (fdFaceIcons)
+	// keys on RUNTIME ids and a grant has none; this takes the BASE identity a
+	// grant stores, walks it to its FACE OWNER (a templated NPC wears a donor's
+	// face, often from another plugin) and answers with the same render pool
+	// the Finder and the roster use — so a face is never baked twice.
+	// Reply keys are the caller's own "plugin|0xlocal" strings, verbatim.
+	void OnJsSgFaces(const char* data)
+	{
+		const std::string payload = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			const auto j = json::parse(payload, nullptr, false);
+			if (j.is_discarded() || !j.is_object() || !j.contains("npcs") || !j["npcs"].is_array())
+				return;
+			json icons = json::object();
+			json queue = json::array();
+			for (const auto& n : j["npcs"]) {
+				if (!n.is_object())
+					continue;
+				const auto plugin = n.value("plugin", std::string(""));
+				const auto localS = n.value("localId", std::string(""));
+				const auto local = ActorIdentity::ParseHex(localS);
+				if (plugin.empty() || !local)
+					continue;
+				const std::string key = plugin + "|" + localS;
+				std::string       fplugin, fname;
+				std::uint32_t     flocal = 0;
+				if (!SpidGear::FaceOwnerFor(plugin, local, fplugin, flocal, fname))
+					continue;   // her mod is off, or the record has no face — glyph
+				char fidHex[16];
+				std::snprintf(fidHex, sizeof(fidHex), "0x%x", flocal);
+				const auto path = ItemIcons::FacePathFor(fidHex, fplugin);
+				if (!path.empty()) {
+					icons[key] = path;
+					continue;
+				}
+				queue.push_back({ { "formId", std::string(fidHex) }, { "plugin", fplugin },
+					{ "name", fname } });
+			}
+			// As with fdFaceIcons: `queued` must be what the render route
+			// ACTUALLY took, never the input size — a templated NPC with no
+			// facegen file is dropped by the BSResource probe, and reporting the
+			// intent instead is what wedged the followers view into a permanent
+			// re-ask loop on 2026-08-14.
+			std::size_t queued = 0;
+			if (!queue.empty())
+				queued = ItemIcons::EnsureFaceIcons(json{ { "items", std::move(queue) } }
+						.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+			// Build marker (hd-markers.json: "spid-faces").
+			logger::info("spid-faces: {} resolved, {} queued", icons.size(), queued);
+			PushToView("sgFacesData",
+				json{ { "icons", std::move(icons) }, { "queued", queued } }
+					.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 		});
 	}
 
@@ -12431,45 +19238,70 @@ namespace
 	// logged warning, never a crash.
 	void WriteSheetStatus(const std::string& payload)
 	{
-		std::error_code ec;
-		const auto      dir = DeckViewDir();
-		std::filesystem::create_directories(dir, ec);
-
-		// Merge the timestamp into the payload object without reparsing twice.
-		auto j = json::parse(payload, nullptr, false);
-		if (j.is_discarded() || !j.is_object())
+		// PERF (2026-08-16): the caller has ALREADY dumped this object once. The
+		// old code parsed that string back into a DOM and dumped it again purely
+		// to add one integer key — on the game thread, every ~5 s, for a payload
+		// that carries the whole sheet (skills, effects, inventory counts). The
+		// timestamp is spliced in textually instead: the payload is a compact
+		// object dump, so it always starts '{' and ends '}', and inserting the
+		// key right after the brace is the same JSON the merge produced. Guarded
+		// so a non-object or an empty object can never make malformed output —
+		// exactly the cases the old is_discarded()/is_object() check bailed on.
+		if (payload.size() < 2 || payload.front() != '{' || payload.back() != '}')
 			return;
-		j["at"] = static_cast<long long>(
+		const auto nowMs = static_cast<long long>(
 			std::chrono::duration_cast<std::chrono::milliseconds>(
 				std::chrono::system_clock::now().time_since_epoch())
 				.count());
-		const std::string text = j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		std::string text;
+		text.reserve(payload.size() + 32);
+		text += "{\"at\":";
+		text += std::to_string(nowMs);
+		if (payload.size() > 2)         // "{...}" -> keep the comma; "{}" -> don't
+			text += ',';
+		text.append(payload, 1, payload.size() - 1);   // everything after the '{'
 
-		const auto file = dir / "charsheet-status.json";
-		auto       tmp  = file;
-		tmp += ".tmp";
-		{
-			std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
-			if (!out.is_open()) {
-				logger::warn("charsheet export: could not open {} for writing", tmp.string());
-				return;
+		// PERF: and the DISK work leaves the game thread. create_directories +
+		// ofstream + rename is three syscalls plus the write itself, and on this
+		// rig they run against an MO2 VFS path with AV in the way. The payload is
+		// already a finished string — nothing below touches game state, so a
+		// detached writer is safe. The static mutex serialises writers so two
+		// exports can never race on the same .tmp file (the deck's psGet path and
+		// the 5 s portal ticker can overlap).
+		std::thread([text = std::move(text)]() {
+			static std::mutex s_writeMtx;
+			std::lock_guard   wl(s_writeMtx);
+
+			std::error_code ec;
+			const auto      dir = DeckViewDir();
+			std::filesystem::create_directories(dir, ec);
+
+			const auto file = dir / "charsheet-status.json";
+			auto       tmp  = file;
+			tmp += ".tmp";
+			{
+				std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
+				if (!out.is_open()) {
+					logger::warn("charsheet export: could not open {} for writing", PathU8(tmp));
+					return;
+				}
+				out << text;
 			}
-			out << text;
-		}
-		std::filesystem::rename(tmp, file, ec);
-		if (ec)
-			logger::warn("charsheet export: atomic swap failed: {}", ec.message());
-		else {
-			// Once at INFO so the marker string is present in a fresh log (and so
-			// hd-markers.json's fingerprint is a line this build demonstrably
-			// reaches), then DEBUG — the ticker writes this every few seconds.
-			static bool said = false;
-			if (!said) {
-				said = true;
-				logger::info("charsheet export: wrote charsheet-status.json for the portal");
-			} else
-				logger::debug("charsheet export: refreshed charsheet-status.json");
-		}
+			std::filesystem::rename(tmp, file, ec);
+			if (ec)
+				logger::warn("charsheet export: atomic swap failed: {}", ec.message());
+			else {
+				// Once at INFO so the marker string is present in a fresh log (and so
+				// hd-markers.json's fingerprint is a line this build demonstrably
+				// reaches), then DEBUG — the ticker writes this every few seconds.
+				// Atomic now that this runs off the main thread.
+				static std::atomic<bool> said{ false };
+				if (!said.exchange(true))
+					logger::info("charsheet export: wrote charsheet-status.json for the portal");
+				else
+					logger::debug("charsheet export: refreshed charsheet-status.json");
+			}
+		}).detach();
 	}
 
 	// Push psData to an open deck AND refresh the portal sidecar in one place, so
@@ -12821,6 +19653,47 @@ namespace
 	{
 		if (data)
 			logger::info("[ostim] {}", data);
+	}
+
+	// -------------------------------------------------- ZaZ segment
+	// The OStim segment's structural twin for ZaZ Animation Pack (zaz_deck.cpp):
+	// devices (zbf-keyword ARMO) on the anim target + nearby ZaZ furniture. All
+	// entry points touch TESDataHandler / actor state — main thread via AddTask.
+
+	void OnJsZazGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("zzOpen", ZazDeck::OpenJson());
+		});
+	}
+
+	void OnJsZazPoll(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("zzState", ZazDeck::StateJson());
+		});
+	}
+
+	void OnJsZazAct(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			PushToView("zzResult", ZazDeck::ActJson(payload));
+		});
+	}
+
+	void OnJsZazUse(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			PushToView("zzResult", ZazDeck::UseJson(payload));
+		});
+	}
+
+	void OnJsZazLog(const char* data)
+	{
+		if (data)
+			logger::info("[zaz] {}", data);
 	}
 
 	// pdNpcList: build the summonable roster (followers + nearby loaded actors) on
@@ -14114,7 +20987,11 @@ namespace
 			// runs whether or not there is any portal work to do, which is exactly
 			// when it is needed. The check itself must happen on the main thread
 			// (it touches PrismaUI), so hop.
-			SKSE::GetTaskInterface()->AddTask([]() { DesyncWatchdogTick(); });
+			SKSE::GetTaskInterface()->AddTask([]() { OpenDiag::TickTimer diag("desync-watchdog"); DesyncWatchdogTick(); OpenDiag::FlushTickCensus(); });
+
+			// Combat Arts phone icon queue: one stat() on this worker thread,
+			// real work hops to the main thread inside PollTick itself.
+			CombatArts::PollTick();
 
 			// Character Sheet export for the phone: refresh charsheet-status.json
 			// every ~5th tick (~5 s) while a save is loaded, on the main thread
@@ -14128,7 +21005,10 @@ namespace
 				if (++s_sheetTick >= 5) {
 					s_sheetTick = 0;
 					if (g_gameReady.load())
-						SKSE::GetTaskInterface()->AddTask([]() { WriteSheetStatus(BuildSheetPayload()); });
+						SKSE::GetTaskInterface()->AddTask([]() {
+							OpenDiag::TickTimer diag("charsheet-export");
+							WriteSheetStatus(BuildSheetPayload());
+						});
 				}
 			}
 
@@ -14188,8 +21068,13 @@ namespace
 			// loaded save — a glyph chosen at the main menu still lands.
 			const bool haveCatIcon = CatIconQueuePending();
 			const bool haveSpellCatIcon = SpellCatIconQueuePending();
+			// Containers from the phone. Mixed: the settings are config-only, but
+			// the same queue can carry a "put it all away", which moves items — so
+			// unlike the icon sidecars this one is applied on the MAIN thread, and
+			// ApplyPortalContainers itself drops the verbs when no save is loaded.
+			const bool haveCont = ContainersQueuePending();
 			if (!haveSpell && !haveIcon && !haveEdit && !haveNpc && !haveFo && !haveMhiyh &&
-				!havePortrait && !haveCatIcon && !haveSpellCatIcon && !haveSheet)
+				!havePortrait && !haveCatIcon && !haveSpellCatIcon && !haveSheet && !haveCont)
 				continue;
 
 			// Config-only, so safe on this thread and safe at the main menu. Each
@@ -14240,11 +21125,17 @@ namespace
 			const bool doBases = haveBases && g_gameReady.load();
 
 			if (!spellChanged && !iconChanged && !editChanged && !portraitChanged &&
-				!catIconChanged && !doNpc && !doFo && !doMhiyh && !doBases && !sheetChanged)
+				!catIconChanged && !doNpc && !doFo && !doMhiyh && !doBases && !sheetChanged &&
+				!haveCont)
 				continue;  // nothing worth waking the main thread for
 
 			g_portalPollBusy = true;
-			SKSE::GetTaskInterface()->AddTask([spellChanged, iconChanged, editChanged, portraitChanged, catIconChanged, doNpc, doFo, doMhiyh, doBases, sheetChanged]() {
+			SKSE::GetTaskInterface()->AddTask([spellChanged, iconChanged, editChanged, portraitChanged, catIconChanged, doNpc, doFo, doMhiyh, doBases, sheetChanged, haveCont]() {
+				// Containers first: a phone screen that flips a rule on and then
+				// presses "put it all away" queues both, and the sweep has to see
+				// the rule. ApplyPortalContainers runs the verbs itself.
+				if (haveCont && ApplyPortalContainers())
+					PushToView("csOpen", ContainerSort::StateJson());
 				// Main thread from here. The FO replay runs BEFORE the pushes —
 				// RefreshFollowersState() must read the state FO just wrote.
 				const bool npcChanged = doNpc && ApplyPortalNpcFields();
@@ -14416,7 +21307,7 @@ namespace
 					}
 					std::ofstream out(dst, std::ios::binary | std::ios::trunc);
 					if (!out.is_open()) {
-						logger::warn("live api: import-icon could not write {}", dst.string());
+						logger::warn("live api: import-icon could not write {}", PathU8(dst));
 						return;
 					}
 					out << in.rdbuf();
@@ -14458,6 +21349,7 @@ namespace
 			else if (kind == "cat-icons")     file = deckDir / "portal-cat-icons.json";
 			else if (kind == "spell-cat-icons") file = MagicViewDir() / "portal-spell-cat-icons.json";
 			else if (kind == "finances")      file = deckDir / "portal-finances.json";
+			else if (kind == "containers")    file = deckDir / "portal-containers.json";
 			else {
 				res["msg"] = "unknown kind";
 				return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
@@ -14624,6 +21516,23 @@ namespace
 				return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 			}
 
+			// Containers: config ops are cheap, but the VERBS in the same queue
+			// move items, so the whole apply is main-thread (AddTask) like the
+			// finances one. A changed config re-pushes csOpen so an open
+			// Containers tab updates in place; with the tab closed the push is a
+			// no-op and the new state is simply there on the next open.
+			if (kind == "containers") {
+				SKSE::GetTaskInterface()->AddTask([]() {
+					const bool changed = ApplyPortalContainers();
+					if (changed)
+						PushToView("csOpen", ContainerSort::StateJson());
+				});
+				res["ok"] = true;
+				res["queued"] = true;
+				res["msg"] = "applying";
+				return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			}
+
 			if (kind == "cat-icons") {
 				const bool changed = ApplyPortalCatIcons();
 				if (changed) {
@@ -14689,8 +21598,29 @@ namespace
 			if (!a_events || !g_prisma)
 				return RE::BSEventNotifyControl::kContinue;
 
-			std::string   dev, devMagic, devAdd, devFol, devDom, devCont, devHud, devHb;
-			std::uint32_t code, codeMagic, codeAdd, codeFol, codeDom, codeCont, codeHud, codeHb;
+			// PERF (2026-08-16): this sink runs on the GAME THREAD for every input
+			// batch the engine dispatches — which is every frame the player moves
+			// the mouse, not just when a key goes down. The snapshot below takes
+			// g_configMutex, the busiest lock in the plugin (the 10 ms F-key
+			// poller, the 50 ms hotbar poller and every ticker task all want it),
+			// so a mouse-look frame used to park the game thread behind whichever
+			// worker happened to hold it. Every branch in the loop starts with
+			// `AsButtonEvent()`, so a batch with no button event does nothing at
+			// all — pre-scan for one and leave before touching the lock. Pure
+			// early-out: a batch that DOES carry a button event behaves exactly as
+			// before. This is the "floaty mouse" candidate, so keep it first.
+			bool anyButton = false;
+			for (auto e = *a_events; e; e = e->next) {
+				if (e->AsButtonEvent()) {
+					anyButton = true;
+					break;
+				}
+			}
+			if (!anyButton)
+				return RE::BSEventNotifyControl::kContinue;
+
+			std::string   dev, devMagic, devAdd, devFol, devDom, devCont, devHud, devHb, devNav;
+			std::uint32_t code, codeMagic, codeAdd, codeFol, codeDom, codeCont, codeHud, codeHb, codeNav = 0;
 			ModAction     msShift, msCtrl, msAlt;
 			{
 				std::lock_guard l(g_configMutex);
@@ -14708,6 +21638,8 @@ namespace
 				codeCont  = g_contConfig.openCode;
 				devHud    = g_hudConfig.keyDevice;
 				codeHud   = g_hudConfig.keyCode;
+				devNav    = g_hudConfig.navDevice;
+				codeNav   = g_hudConfig.navCode;
 				devHb     = g_hbConfig.keyDevice;
 				codeHb    = g_hbConfig.keyCode;
 				msShift   = g_config.settings.openShift;
@@ -14943,6 +21875,69 @@ namespace
 					SKSE::GetTaskInterface()->AddTask([]() { PersistAll(); HudPushDeckState(); });
 					break;  // consume the bind press
 				}
+				// Nav-key arming — same shape as the toggle-key bind above.
+				if (g_hudNavArming.load() && (isKb || isMs) && idc != 0) {
+					const bool cancel = isKb && idc == 0x01;
+					if (!cancel) {
+						std::lock_guard l(g_configMutex);
+						g_hudConfig.navDevice = isKb ? "keyboard" : "mouse";
+						g_hudConfig.navCode = idc;
+						g_hudConfig.navLabel = (isKb ? "Key " : "Mouse ") + std::to_string((int)idc);
+					}
+					g_hudNavArming = false;
+					SKSE::GetTaskInterface()->AddTask([]() { PersistAll(); HudPushDeckState(); });
+					break;
+				}
+
+				// --- Followers HUD: compact-browse activator + navigation ------
+				// The activator toggles browse mode, and since 2026-08-18 that
+				// hands the HUD view REAL keyboard focus (HudNavToggle) so the
+				// movement keys reach the VIEW and the player stops walking.
+				// The toggle itself stays here rather than in the view, because
+				// the same press has to work from the un-focused state.
+				//
+				// ⚠ OurViewHasKeyboard() covers the DECK and Spell Deck views
+				// only, never the HUD — which is exactly what keeps this branch
+				// reachable while browse mode holds the HUD's focus, so the same
+				// key still closes it.
+				// Build marker (hd-markers.json: "hud-nav-browse").
+				if (codeNav != 0 && !OurViewHasKeyboard() &&
+					((isKb && devNav == "keyboard") || (isMs && devNav == "mouse")) && idc == codeNav) {
+					logger::info("hud nav: {}", g_hudNavActive.load() ? "close" : "open");
+					SKSE::GetTaskInterface()->AddTask([]() { HudNavToggle(); });
+					break;
+				}
+				// FALLBACK ONLY. With the view focused the keys arrive there as
+				// real KeyboardEvents and hud.js does the stepping, so forwarding
+				// them too would step twice per press. This path is what browse
+				// mode still runs on when the Focus was REFUSED.
+				if (g_hudNavActive.load() && !g_hudNavFocused.load() &&
+					isKb && !OurViewHasKeyboard()) {
+					const char* navOp = nullptr;
+					switch (idc) {
+					case 0x11: case 0xC8: case 0x1E: case 0xCB: navOp = "prev"; break;   // W Up A Left
+					case 0x1F: case 0xD0: case 0x20: case 0xCD: navOp = "next"; break;   // S Down D Right
+					case 0x1C: case 0x9C: navOp = "enter"; break;                        // Enter / NumEnter
+					case 0x01: navOp = "close"; break;                                   // Esc
+					default: break;
+					}
+					if (navOp) {
+						// Esc goes through the ONE closer, so the fallback path
+						// leaves exactly the state the focused path does (flags
+						// cleared, view re-evaluated) instead of a second
+						// spelling of "closed" that forgets half of it.
+						if (idc == 0x01) {
+							SKSE::GetTaskInterface()->AddTask([]() { HudNavStop("Escape", false); });
+							break;
+						}
+						const std::string navCall = std::string("hudNav(\"") + navOp + "\")";
+						SKSE::GetTaskInterface()->AddTask([navCall]() {
+							if (g_prisma && g_hudView && g_hudViewReady.load())
+								g_prisma->Invoke(g_hudView, navCall.c_str());
+						});
+						break;
+					}
+				}
 
 				// --- Followers HUD: the show/hide toggle key -------------------
 				// Independent of any palette (it is its own overlay). Skipped while
@@ -14993,6 +21988,19 @@ namespace
 							SKSE::GetTaskInterface()->AddTask([pg, slot]() { HbFireSlot(pg, slot); });
 							break;
 						}
+						// Custom quick-item binds (widgets round 4): same two
+						// gates and the same caveat — the sink cannot consume,
+						// so a bound key also does its vanilla job. Tested AFTER
+						// the bar, because a shared key belongs to the thing you
+						// are looking at, and Quick2ForKey already refuses when
+						// the strip is not on screen.
+						const std::string q2 = Widgets::Quick2ForKey(isKb, isMs, idc);
+						if (!q2.empty()) {
+							SKSE::GetTaskInterface()->AddTask([q2]() {
+								Widgets::Quick2UseJson(q2);
+							});
+							break;
+						}
 					}
 				}
 
@@ -15038,16 +22046,20 @@ namespace
 				// g_apiHotkeyDisabled: an external plugin (SkyManager_SetHotkeyEnabled)
 				// owns open/close right now — the deck's own open key (and its
 				// Shift/Ctrl/Alt chords, which live inside this branch) stand down.
-				// Deep-open keys (Followers/Domains/…) are separate binds and stay.
+				// Deep-open keys (Followers/Domains/…) are separate binds with their
+				// own stand-down: SkyManager_SetDeepOpenHotkeysEnabled gates all four
+				// (deep = g_apiDeepOpenDisabled), so an integrating menu can inject
+				// F18 etc. without the deck answering too.
+				const bool deep = !g_apiDeepOpenDisabled.load();
 				const bool matchDeck = !g_apiHotkeyDisabled.load() &&
 					((isKb && dev == "keyboard") || (isMs && dev == "mouse")) && idc == code;
-				const bool matchMagic =
+				const bool matchMagic = deep &&
 					((isKb && devMagic == "keyboard") || (isMs && devMagic == "mouse")) && idc == codeMagic;
-				const bool matchFol =
+				const bool matchFol = deep &&
 					((isKb && devFol == "keyboard") || (isMs && devFol == "mouse")) && idc == codeFol;
-				const bool matchDom =
+				const bool matchDom = deep &&
 					((isKb && devDom == "keyboard") || (isMs && devDom == "mouse")) && idc == codeDom;
-				const bool matchCont =
+				const bool matchCont = deep &&
 					((isKb && devCont == "keyboard") || (isMs && devCont == "mouse")) && idc == codeCont;
 				if (!matchDeck && !matchMagic && !matchFol && !matchDom && !matchCont)
 					continue;
@@ -15223,6 +22235,9 @@ namespace
 			// Fertility Mode's storage quest is cached as a bound VM object, and a
 			// handle from the outgoing session is not valid in the next one.
 			FertilityBridge::Invalidate();
+			// Wintersun's tracker quest is cached the same way, and WorshipID is
+			// save data — the next session may follow a different god entirely.
+			Faith::Invalidate();
 			return;
 		}
 		if (message->type == SKSE::MessagingInterface::kPostLoadGame) {
@@ -15238,13 +22253,53 @@ namespace
 			// holds may have been remapped, and a tick would fling whatever
 			// they now resolve to.
 			NpcActions::OnPostLoadGame();
+			// Second drop of Wintersun's cached tracker: kPreLoadGame already
+			// cleared it, but anything that re-bound DURING the load would hold a
+			// handle from the outgoing session.
+			Faith::Invalidate();
 			// Loot glows PERSIST in the save (ReferenceEffects serialize) and the
 			// tracking map does not — sweep them before the scanner repopulates,
 			// and drop the session "opened" set, which described the old save.
 			LootHighlight::OnPostLoadGame();
+			// Auto-Loot's session sets (taken refs, corpse death-grace counters,
+			// toast dedupe) describe the OLD save's FormIDs — drop them, or the
+			// new session's refs inherit a stranger's looted/toasted state.
+			AutoLoot::ClearLootedSet();
+			// Settlement "My placements" roster is save-scoped (no co-save
+			// serializer): re-resolve every stored ref against the LIVE save and
+			// prune anything that belonged to a different save. HERE, not at
+			// kDataLoaded — with no save loaded the ref FormIDs don't resolve.
+			Settlement::OnPostLoadGame();
+			// Transmog pool records are restyled IN MEMORY only — replay every
+			// active slot from the just-loaded co-save now, before the player
+			// can open an inventory (forms resolve here, not at kDataLoaded;
+			// a vanished donor degrades to the original's own look, logged).
+			Transmog::OnPostLoadGame();
+			// The HUD widgets' cached truth is per-SAVE: the pinned/collectible
+			// forms were resolved against the OUTGOING load order (a light
+			// plugin's runtime ids move by 0x1000 when any ESL ahead of it
+			// flips), the tracked mount handle points at another session's
+			// actor, and the place cache holds a cell id that may now be a
+			// different cell. Drop all three and force one rebuild.
+			Widgets::OnPostLoadGame();
+			// Spell Deck config repair: re-resolve every stored runtime formId
+			// from its durable (plugin, localId) pair and merge the duplicates a
+			// stale id let the pickers create. HERE and not at kDataLoaded —
+			// LookupForm answers nothing without a save loaded, and "repairing"
+			// against that would zero every id in the slice.
+			// See MagicReconcileIds(); marker "magic id repair:".
+			if (const auto repaired = MagicReconcileIds(); !repaired.empty()) {
+				logger::info("{}", repaired);
+				PersistAll();
+			}
 		// Crawl faction membership persists in the save; the forced sneak does
 		// not — re-assert it on the player if they are still a crawl member.
 		AnimActions::OnPostLoadGame();
+			// Combat Arts adoption sweep: store every loose ash the just-loaded
+			// save carries and reconcile which one is WORN against the save's
+			// truth. HERE and not at kDataLoaded — the sweep reads the player's
+			// live inventory, which doesn't exist without a save.
+			CombatArts::OnPostLoadGame();
 			// Release any furniture a PREVIOUS session left blocked. BlockActivation
 			// lives on the reference and persists in the save, so a claim that ended
 			// while refs were blocked (config edited outside the game, mod removed and
@@ -15308,18 +22363,24 @@ namespace
 		if (message->type == SKSE::MessagingInterface::kNewGame) {
 			g_gameReady = true;
 			FertilityBridge::Invalidate();
+			Faith::Invalidate();
 			return;
 		}
 		if (message->type != SKSE::MessagingInterface::kDataLoaded)
 			return;
 
 		LoadConfig();
+		// After LoadConfig (it owns settings): a smooth-pause hang flagged by a
+		// previous session flips the setting to the classic menu pause and
+		// persists it before the open key can freeze anyone again.
+		ConsumeSmoothWedgeFlag();
 		PortraitCapture::InstallPresentGrab();  // frame grabs run on the present thread (upscaler-safe)
 		NpcActions::Init();   // crosshair sink for freeze/sit/bed/release-all action entries
 		QuestTools::Init();   // quest inspector; its alias index builds lazily on first use
 		SpellActions::Init();  // Spell Deck backend (known-spell enum, cast, equip-toggle)
 		PlaceActions::Init();  // Domains tab backend (location snapshot + recall marker)
 		ContainerActions::Init();  // Containers tab backend (crosshair snapshot + remote open)
+		ContainerSort::Init();     // drop-box sort-on-close + crafting-loan sinks
 		RoomGuard::Init();     // Rooms tab backend (claim volumes + eviction marker)
 		// Deck Portal: start its node server with the game and let the Job
 		// Object take it down with us. Safe to do unattended because the portal
@@ -15328,6 +22389,17 @@ namespace
 		// than logged as a fault.
 		PortalHost::Start();
 		LootHighlight::Init(); // Loot tab backend (glow scanner + container-open sink)
+		// Item Edit: base-record edits are runtime patches the engine forgets
+		// on relaunch — replay the sidecar HERE (base records resolve at
+		// kDataLoaded and do not reset on a save load, so once per launch).
+		ItemEdit::ReapplyAll();
+		// Spell Edit rides the same law: base-record effect edits are runtime
+		// patches — replay its sidecar once per launch, right beside item-edit.
+		SpellEdit::ReapplyAll();
+		// NPC Tune's base tier (level / essential / protected) is the same
+		// class of runtime patch — replay it here; actors resync as they load.
+		NpcTune::ReapplyAll();
+		AutoLoot::Init();      // Auto-Loot backend (loose-ref vacuum; providers wired in StartExtBridge)
 		NoAutoGear::Init();    // No Auto-Gear: strip distributor cloaks/hoods/underwear from tagged NPCs
 		// SPID Gear: inbox chest → per-NPC SPID ini (F7 card). The callback runs
 		// on the main thread when the inbox's transfer menu closes: read the
@@ -15364,10 +22436,24 @@ namespace
 			g_deckIconIndexPushed = false;
 		});
 		AnimActions::Init();   // Animations tab: load zap-catalog.json + resolve crawl faction
+		// Combat Arts (Ashes of War): build the 74-art index, arm the pickup
+		// intercept sink, seed the portal icon bridge file. Stands down
+		// honestly when the plugin is absent. The push hook lets an intercept
+		// landing mid-play refresh an OPEN Combat Arts tab live.
+		// Unsolicited live state (an art picked up / equipped while the page is
+		// up) lands in the Spell Deck view too — same move, same reason.
+		CombatArts::SetStatePush([](const std::string& s) { PushToMagicView("caStateResult", s); });
+		CombatArts::InstallSink();
 		OstimDeck::Init();     // OStim segment: reset cache (Thread API acquired lazily on first open)
+		ZazDeck::Init();       // ZaZ segment: reset device catalogue (built lazily on first open)
 		Finance::Init();       // Finances tab backend (gold move + settle/buy/sell)
 		Wardrobe::Init();      // Wardrobe tab backend (SOES-NG pools, cadence, builds)
 		ItemIcons::Init();     // armour renders via Mesh Rendering Framework (soft-bound)
+		// Render pacing protects the WORLD DRAW, and there is none while a palette
+		// is up. The engine's own paused flag misses that under smooth pause (the
+		// default: unpaused + sgtm 0), which had the Settlement tab dribbling in
+		// renders at one per 400 ms while the player stared at the list.
+		ItemIcons::SetPaletteOpenProbe([]() { return g_open.load() || g_magicOpen.load(); });
 		ItemIcons::SetOnBatchDone([]() {
 			PushToView("wdItemIcons", ItemIcons::IndexJson());
 			// Face renders ride the same queue; the NPCs pane listens for this.
@@ -15417,6 +22503,35 @@ namespace
 
 		// Same deal for the Hotbar — always-on, so created here rather than on a
 		// key press. Its poller also idles while the bar is disabled.
+		// The HUD widgets ride the hotbar view; their sidecar loads first so
+		// the ticker's AnyEnabled() reads the truth from its first beat.
+		Widgets::Load();
+		// And arm the widgets' inventory sink (2026-08-17). The pinned-item and
+		// collectible-set counts refresh when something MOVES in the bag rather
+		// than on the live tick's clock — that is what keeps the new trackers
+		// from re-adding the per-second inventory walk 2026-08-16 removed.
+		Widgets::InstallSink();
+		// Round 4: the loot lamp reads two OTHER modules' master switches.
+		// Loot Vision's lives in THIS file's hotkeys.json slice (under
+		// g_configMutex) and Auto-Loot's behind its own provider, so widgets.cpp
+		// is handed a reader rather than either header — a capture-less lambda,
+		// which is exactly a LootStateFn. Called from the live tick on the main
+		// thread with the widgets' own lock RELEASED, so taking g_configMutex
+		// here can never invert against a wgSave.
+		Widgets::SetLootStateProvider([](bool& glow, bool& autoLoot) {
+			{
+				std::lock_guard l(g_configMutex);
+				glow = g_lootConfig.enabled;
+			}
+			autoLoot = AutoLoot::IsEnabled();
+		});
+		// Combos load with the widgets sidecar; their deck entries must exist
+		// before the first palette open (F2 / hotbar / wheel / omni all index
+		// entries). A sidecar hand-edited while the game was closed lands here.
+		if (EnsureComboEntries()) {
+			if (!PersistAll())
+				logger::error("potion-combo: entries ensured at load but hotkeys.json write failed");
+		}
 		CreateHotbarView();
 		StartHotbarTicker();
 
@@ -15441,6 +22556,14 @@ namespace
 		// or a glyph chosen on the phone this session cannot be seen by the game.
 		EnsureCatIconBridge(false);
 		EnsureSpellCatIconBridge(false);  // and the Spell Deck rail's twin
+		// ...and the Containers queue, so a toggle (or a "put it all away")
+		// pressed on the phone THIS session is a file the running game can see.
+		EnsureContainersBridge(false);
+		// The Journal's own two artefacts, for the same reason in both halves:
+		// journal.json must exist before the phone can edit it this session, and
+		// journal-images/ must be a folder MO2 has already listed or a picture
+		// uploaded from the phone has nowhere the renderer can see it.
+		Journal::EnsureSeeded();
 
 		StartExtBridge();
 		StartPortalPoller();  // outside the lock below: its first act is a 1 s sleep
@@ -15528,6 +22651,12 @@ extern "C" DLLEXPORT void SkyManager_SetHotkeyEnabled(bool a_enabled)
 	logger::info("SkyManager C API: native open key {}", a_enabled ? "re-enabled" : "disabled by an external plugin");
 }
 
+extern "C" DLLEXPORT void SkyManager_SetDeepOpenHotkeysEnabled(bool a_enabled)
+{
+	g_apiDeepOpenDisabled.store(!a_enabled);
+	logger::info("SkyManager C API: deep-open keys {}", a_enabled ? "re-enabled" : "disabled by an external plugin");
+}
+
 extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_skse)
 {
 	REL::Module::reset();
@@ -15540,6 +22669,11 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
 	SKSE::Init(a_skse, false);  // a_log=false: we install our own sink in SetupLog()
 	SetupLog();
 	SKSE::AllocTrampoline(1 << 10);
+
+	// Transmog co-save ('HDTM') — SKSE requires serialization callbacks to be
+	// registered at plugin-load time. ONE set per plugin: a future co-save
+	// consumer must share Transmog's callbacks, not register its own.
+	Transmog::InitSerialization();
 
 	g_messaging->RegisterListener("SKSE", SKSEMessageHandler);
 

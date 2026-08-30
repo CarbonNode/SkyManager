@@ -101,6 +101,34 @@ function canonHex(s) {
   return isNaN(n) ? '' : hexId(n);
 }
 
+/* ---- durable spell identity ----------------------------------------------
+   A runtime formId is NOT an identity: it carries the plugin's CURRENT mod
+   index, which moves the moment the load order changes what counts as a light
+   plugin. On 2026-08-18 KittyClass_Dragonknight.esp went 0x81 -> 0x80 and
+   every stored id in the magic slice went stale in one launch — ten entries
+   lost their engine metadata (the lookups below all keyed off the id) and a
+   re-add minted a SECOND "Dragonknight" with no icon in front of the original.
+
+   (plugin, localId) is the pair that survives that, and KnownSpellsJson has
+   carried both since it was written (o["plugin"] / o["localId"]). So every
+   lookup goes through pidKey() first and falls back to the id only for a row
+   with no plugin info (a dynamic form, or an entry written by an old build). */
+function pidKey(o) {
+  if (!o) return '';
+  const p = String(o.plugin || '').toLowerCase();
+  const l = (o.localId >>> 0);
+  return (p && l) ? (p + '|' + l.toString(16)) : '';
+}
+/* "Are these two rows the same spell?" — the durable pair when BOTH sides have
+   one, the runtime id otherwise (a dynamic form, or an old entry with no
+   plugin). Used wherever two saved/engine rows are compared. */
+function sameSpell(a, b) {
+  if (!a || !b) return false;
+  const ka = pidKey(a), kb = pidKey(b);
+  if (ka && kb) return ka === kb;
+  return (a.formId >>> 0) === (b.formId >>> 0);
+}
+
 /* ============================================================= state ==== */
 
 const state = {
@@ -134,7 +162,8 @@ const ui = {
   sel: -1,                        // keyboard selection in the visible list
   equip: { left: '', right: '', voice: new Set() },  // hex strings from engine
   known: [],                      // last mdSpells payload
-  knownById: new Map(),           // hex -> {slot,type,delivery,casting}
+  knownById: new Map(),           // hex -> {slot,type,delivery,casting,formId} — FALLBACK
+  knownByPid: new Map(),          // "plugin|localidhex" -> same — the DURABLE key
   knownLoading: false,
   addOpen: false,
   addCat: null,                   // category the add-modal writes into
@@ -143,6 +172,7 @@ const ui = {
   armDelCat: null,                // category name armed for delete (two-click)
   armBookCat: null,               // category armed for remove-all-from-spellbook (two-click)
   removedOpen: false,             // is the "Removed from spellbook" section expanded
+  removedFilter: '',              // filter-as-you-type inside that drawer (8+)
 };
 
 /* drag scratch. comboDragActive = a VIEW-mode spell drag is in flight, so the
@@ -348,15 +378,23 @@ window.HDSmoothScroll = (function () {
   var targets = new WeakMap();   // el -> target scrollTop
   var raf = 0, active = [];
 
+  /* PERF: getComputedStyle is the most expensive DOM read there is, and this
+     walked every overflowing ancestor on EVERY wheel notch. A flick is a burst
+     of notches carrying the same node, so the answer is remembered per node and
+     re-validated (still in the document, still scrollable) before reuse. */
+  var lastNode = null, lastScroller = null;
   function scrollableUnder(node) {
+    if (node === lastNode && lastScroller && lastScroller.isConnected &&
+        lastScroller.scrollHeight > lastScroller.clientHeight + 1) return lastScroller;
     var el = node;
     while (el && el.nodeType === 1 && el !== document.body) {
       if (el.scrollHeight > el.clientHeight + 1) {
         var oy = getComputedStyle(el).overflowY;
-        if (oy === 'auto' || oy === 'scroll') return el;
+        if (oy === 'auto' || oy === 'scroll') { lastNode = node; lastScroller = el; return el; }
       }
       el = el.parentElement;
     }
+    lastNode = node; lastScroller = null;
     return null;
   }
 
@@ -513,19 +551,36 @@ function gripUp() {
 }
 
 function countIn(cat) { return state.spells.filter((s) => s.category === cat).length; }
+
+/* The ONE place a saved entry is matched against the live spellbook: durable
+   pair first, runtime id second. Every lookup that used to read
+   ui.knownById.get(hexId(x.formId)) goes through here — that expression is
+   exactly what a load-order shuffle breaks. */
+function knownFor(o) {
+  if (!o) return null;
+  const pk = pidKey(o);
+  return (pk && ui.knownByPid.get(pk)) || ui.knownById.get(hexId(o.formId)) || null;
+}
+/* The id the ENGINE is using for this entry right now — the stored one only
+   until the live row says otherwise. Equip badges compare against ids the
+   engine sent this session, so they must be compared in the engine's terms. */
+function liveHex(o) {
+  const k = knownFor(o);
+  return hexId((k && k.formId) || (o && o.formId) || 0);
+}
 function slotOf(spell) {
-  const k = ui.knownById.get(hexId(spell.formId));
+  const k = knownFor(spell);
   return k ? k.slot : 'hand';   // default to hand controls when the spell isn't currently known
 }
 function isShout(spell) {
   // Shouts are the ONE thing the spellbook-remove path refuses (a TESShout has
   // no spellbook entry). Unknown-id fallback is "not a shout" — the C++ side
   // answers honestly if a shout slips through.
-  const k = ui.knownById.get(hexId(spell.formId));
+  const k = knownFor(spell);
   return !!k && k.type === 'shout';
 }
 function deliveryOf(spell) {
-  const k = ui.knownById.get(hexId(spell.formId));
+  const k = knownFor(spell);
   return k ? k.delivery : '';
 }
 
@@ -610,12 +665,14 @@ function glyphEl(key, extra) {
 
 /* merge live engine metadata (authoritative) over the entry's saved snapshot */
 function metaFor(s) {
-  const k = ui.knownById.get(hexId(s.formId));
+  const k = knownFor(s);
   return {
     name: s.name,
     plugin: s.plugin || '',
     localId: s.localId,
-    formId: s.formId,
+    // The LIVE id when the engine knows this spell — resolveIconPath and the
+    // description cache both key off it, and a stale one resolves to nothing.
+    formId: (k && k.formId) || s.formId,
     icon: s.icon || '',
     slot: (k && k.slot) || s.slot || 'hand',
     type: (k && k.type) || s.type || '',
@@ -773,6 +830,18 @@ window.mdIcons = function (r) {
 function render() { renderRail(); renderCombos(); renderList(); renderRemoved(); syncChrome(); }
 
 function syncChrome() {
+  if (isArtsPage()) {
+    /* Edit on this page belongs to the pane; the spell list's tools stay put
+       and hidden with #body, so only the button's face needs saying. */
+    const P = window.CombatArtsPane;
+    const on = !!(P && P.isEditing && P.isEditing());
+    $('edit-btn').classList.toggle('on', on);
+    $('edit-btn').textContent = on ? 'Done' : 'Edit';
+    $('edit-btn').title = 'Assign icons to your combat arts';
+    applyScale();
+    return;
+  }
+  $('edit-btn').title = 'Edit categories & spells (F2)';
   const ed = ui.editing;
   document.body.classList.toggle('editing', ed);
   $('edit-btn').classList.toggle('on', ed);
@@ -882,7 +951,9 @@ function spellRow(spell, i) {
   const q = ui.filter.trim();
   const isEquip = spell.mode === 'equip';
   const slot = slotOf(spell);
-  const hx = hexId(spell.formId);
+  // ui.equip holds ids the ENGINE sent this session, so the comparison uses the
+  // live id for this entry (liveHex), not whatever the config happens to store.
+  const hx = liveHex(spell);
   const eqL = ui.equip.left === hx, eqR = ui.equip.right === hx, eqV = ui.equip.voice.has(hx);
   const equipped = isEquip && (slot === 'voice' ? eqV : (eqL || eqR));
 
@@ -981,11 +1052,10 @@ function spellRow(spell, i) {
 
 function renderList() {
   const list = $('list');
+  const want = [];
   const vis = visibleSpells();
   $('count-chip').textContent = String(vis.length);
   if (ui.sel >= vis.length) ui.sel = vis.length - 1;
-
-  list.textContent = '';
 
   /* Bulk spellbook cleanup for THIS category — the per-spell "Remove from
      spellbook…" done N times in one armed click. Edit mode only, never on
@@ -997,7 +1067,7 @@ function renderList() {
     const removable = state.spells.filter((s) => s.category === ui.cat && !isShout(s));
     if (removable.length) {
       const armed = ui.armBookCat === ui.cat;
-      list.append(h('button', {
+      want.push({ k: 'bulk', sig: 'b' + (armed ? 1 : 0) + removable.length + ui.cat, build: () => h('button', {
         class: 'ctx-item danger list-bulk' + (armed ? ' confirm' : ''),
         title: 'Clears every spell in this category from your spellbook — each restorable from the Removed list',
         onClick: (e) => {
@@ -1011,7 +1081,7 @@ function renderList() {
       }, h('span', { class: 'ctx-check' }, '🗑'),
         h('span', { class: 'ctx-lbl' }, armed
           ? 'Delete ' + removable.length + ' from spellbook — click again'
-          : 'Remove all ' + removable.length + ' in “' + ui.cat + '” from spellbook…')));
+          : 'Remove all ' + removable.length + ' in “' + ui.cat + '” from spellbook…')) });
     }
   }
   const empty = $('empty-state');
@@ -1021,12 +1091,98 @@ function renderList() {
   } else {
     empty.classList.add('hidden');
     list.classList.remove('hidden');
-    vis.forEach((s, i) => list.append(spellRow(s, i)));
+    const q = ui.filter.trim();
+    vis.forEach((s, i) => want.push({ k: 'r' + s.id, spell: s, idx: i, sig: rowSig(s), build: () => spellRow(s, i) }));
+    reconcileList(list, want, q);
     if (ui.sel >= 0) {
       const sel = list.children[ui.sel];
       if (sel) sel.scrollIntoView({ block: 'nearest' });
     }
+    return;
   }
+  reconcileList(list, want, ui.filter.trim());
+}
+
+/* ---- keyed row reuse ------------------------------------------------------
+   Every spell row is a hyperscript tree of ~10 elements with a real <img>, and
+   the list used to be emptied and rebuilt from scratch on every keystroke: on a
+   400-spell deck that is 38,000 element creations and 19,000 listeners for ten
+   letters typed, plus 400 image decodes each time (an <img> recreated is an
+   <img> re-decoded — the whole cost in Ultralight).
+
+   A row is now cached by spell id and kept while its SIGNATURE holds. The three
+   things a keystroke really changes are written in place instead: the search
+   highlight inside .name, the .sel class, and the positional quick-fire keycap.
+   Everything else — icon, badges, hands, category select — is untouched. */
+const mdRowCache = new Map();
+
+function rowSig(spell) {
+  const slot = slotOf(spell);
+  const hx = liveHex(spell);   // same live-id rule as spellRow's badges
+  const eqL = ui.equip.left === hx, eqR = ui.equip.right === hx, eqV = ui.equip.voice.has(hx);
+  /* The RESOLVED icon path is part of the signature, not just spell.icon: the
+     icon index lands asynchronously (mdIconIndex / mdIcons), and a row whose
+     art just became available has to redraw. */
+  return [spell.name, spell.plugin, spell.category, spell.mode, spell.hand, spell.icon,
+    resolveIconPath(metaFor(spell)) || '',
+    slot, deliveryOf(spell), ui.editing ? 1 : 0, ui.cat === ALL ? 1 : 0,
+    eqL ? 1 : 0, eqR ? 1 : 0, eqV ? 1 : 0,
+    ui.editing ? state.categories.join('\u0001') : ''].join('\u0000');
+}
+
+/* A row's handlers close over the spell OBJECT, so the cache has to go whenever
+   the deck is handed a fresh set of them — otherwise a rebuilt spell with
+   identical fields would keep a node wired to the object it replaced. */
+function dropRowCache() { mdRowCache.clear(); }
+
+/* The volatile bits, rewritten on a node we are keeping. */
+function refreshRow(row, spell, i, q) {
+  row.classList.toggle('sel', i === ui.sel);
+  const nameEl = row.querySelector('.body > .name');
+  if (nameEl && nameEl.__mdQ !== q) {
+    nameEl.textContent = '';
+    nameNodes(spell.name, q).forEach((n) => nameEl.append(n));
+    nameEl.__mdQ = q;
+  }
+  /* Quick-fire keycap: positional, so it re-numbers with the search exactly as
+     the key handler that mirrors it does. */
+  const right = row.querySelector('.row-right');
+  let qk = row.querySelector('.qkey');
+  if (i < 10 && !ui.editing) {
+    const digit = i === 9 ? '0' : String(i + 1);
+    if (!qk && right) {
+      qk = h('button', { class: 'qkey', title: 'Quick-fire — press ' + digit + ' (or click)',
+        onClick: (e) => { e.stopPropagation(); fireEntry(spell.id); } }, digit);
+      right.append(qk);
+    } else if (qk && qk.textContent !== digit) {
+      qk.textContent = digit;
+      qk.title = 'Quick-fire — press ' + digit + ' (or click)';
+    }
+  } else if (qk) {
+    qk.remove();
+  }
+}
+
+function reconcileList(host, items, q) {
+  let cur = host.firstChild;
+  for (let n = 0; n < items.length; n++) {
+    const it = items[n];
+    let node = mdRowCache.get(it.k);
+    if (!node || node.__mdSig !== it.sig) {
+      node = it.build();
+      node.__mdSig = it.sig;
+      if (it.spell) {
+        const ne = node.querySelector('.body > .name');
+        if (ne) ne.__mdQ = q;
+      }
+      mdRowCache.set(it.k, node);
+    } else if (it.spell) {
+      refreshRow(node, it.spell, it.idx, q);
+    }
+    if (cur === node) { cur = cur.nextSibling; continue; }
+    host.insertBefore(node, cur);       // insertBefore MOVES an attached node
+  }
+  while (cur) { const nx = cur.nextSibling; host.removeChild(cur); cur = nx; }
 }
 
 function showEmpty(el) {
@@ -1077,7 +1233,7 @@ function newComboId() {
 }
 
 function createCombo(targetSpell, draggedSpell) {
-  if ((targetSpell.formId >>> 0) === (draggedSpell.formId >>> 0)) { toast('That is already the same spell'); return; }
+  if (sameSpell(targetSpell, draggedSpell)) { toast('That is already the same spell'); return; }
   const c = { id: newComboId(), name: '', spells: [comboMemberFrom(targetSpell), comboMemberFrom(draggedSpell)] };
   state.combos.push(c);
   saveSoon(); renderCombos();
@@ -1087,7 +1243,7 @@ function createCombo(targetSpell, draggedSpell) {
 function addSpellToCombo(combo, spellId) {
   const spell = state.spells.find((s) => s.id === spellId);
   if (!spell) return;
-  if (combo.spells.some((m) => (m.formId >>> 0) === (spell.formId >>> 0))) { toast(spell.name + ' is already in this combo'); return; }
+  if (combo.spells.some((m) => sameSpell(m, spell))) { toast(spell.name + ' is already in this combo'); return; }
   if (combo.spells.length >= COMBO_MAX) { toast('Combo is full (' + COMBO_MAX + ' spells max)'); return; }
   combo.spells.push(comboMemberFrom(spell));
   saveSoon(); renderCombos();
@@ -1416,6 +1572,9 @@ function renderRemoved() {
   if (!sec) return;
   sec.textContent = '';
   const n = state.removed.length;
+  /* Restoring spells shrinks the drawer back under the threshold; drop the
+     query with the box so a stale filter can never hide the last few rows. */
+  if (n < 8) ui.removedFilter = '';
   if (!n) { sec.classList.add('hidden'); return; }
   sec.classList.remove('hidden');
 
@@ -1434,7 +1593,61 @@ function renderRemoved() {
   const body = h('div', { class: 'removed-body' });
   body.append(h('div', { class: 'removed-note' },
     'Cleared from your spellbook — the spell itself is never lost. Restore adds it straight back.'));
-  state.removed.forEach((r) => {
+
+  /* ---- filter-as-you-type inside the drawer ----------------------------
+     This drawer only ever grows: every spell the capture key has stripped
+     across a whole playthrough sits here until it is restored one at a time.
+     It also scrolls internally (max-height 240px), so past a handful the one
+     spell you came to restore is off-screen with no way to ask for it.
+
+     Threshold 8 — under that the drawer is shorter than its own scroll box,
+     and a search field over six rows is just chrome. */
+  const q = String(ui.removedFilter || '').trim().toLowerCase();
+  const shown = state.removed.filter((r) => !q ||
+    ((r.name || '') + ' ' + (r.plugin || '')).toLowerCase().indexOf(q) >= 0);
+
+  if (n >= 8) {
+    const input = h('input', {
+      id: 'removed-search', type: 'text', autocomplete: 'off', spellcheck: 'false',
+      placeholder: 'Find a removed spell — Enter restores the top hit',
+      title: 'Narrows the drawer as you type. Enter restores the top hit, Esc clears.',
+      value: ui.removedFilter,
+    });
+    input.addEventListener('input', () => {
+      ui.removedFilter = input.value;
+      renderRemoved();
+      /* the drawer is rebuilt from scratch, so hand the caret back */
+      const again = $('removed-search');
+      if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();                 // clear the filter before closing the deck
+        if (!ui.removedFilter) return;
+        ui.removedFilter = ''; renderRemoved();
+        const again = $('removed-search'); if (again) again.focus();
+        return;
+      }
+      if (e.key === 'Enter') {
+        /* Enter takes the top hit. Restoring is additive and undoable — it
+           puts the spell back in the spellbook — so firing it off a keystroke
+           costs nothing if it was the wrong one. */
+        e.preventDefault();
+        if (shown.length) restoreSpell(shown[0]);
+      }
+    });
+    body.append(h('div', { class: 'removed-find' },
+      h('span', { class: 'removed-find-g' }, '⌕'),
+      input,
+      q ? h('span', { class: 'removed-find-n' }, shown.length + ' of ' + n) : null));
+  }
+
+  if (q && !shown.length) {
+    body.append(h('div', { class: 'removed-none' },
+      'No removed spell matches “' + ui.removedFilter + '”.'));
+  }
+
+  shown.forEach((r) => {
     body.append(h('div', { class: 'removed-row' },
       iconEl(r),
       h('div', { class: 'body' },
@@ -1647,7 +1860,14 @@ function renderAddList() {
 }
 
 function knownRow(k) {
-  const inCat = state.spells.some((s) => hexId(s.formId) === hexId(k.formId) && s.category === ui.addCat);
+  /* "Already in this category?" — by durable pair, with the runtime id only as
+     the fallback. Comparing ids alone is what let a load-order shuffle offer
+     "Add" for a spell already sitting in the list, which is how the duplicate
+     Dragonknight entry was created (2026-08-18). */
+  const kk = pidKey(k);
+  const inCat = state.spells.some((s) => s.category === ui.addCat &&
+    (kk ? (pidKey(s) === kk || (!pidKey(s) && hexId(s.formId) === hexId(k.formId)))
+        : hexId(s.formId) === hexId(k.formId)));
   const sub = [k.plugin || 'unknown'];
   if (k.type === 'shout') sub.push('shout');
   else if (k.slot === 'voice') sub.push('voice'); else if (k.type && k.type !== 'spell') sub.push(k.type);
@@ -2019,6 +2239,15 @@ function onKeyDown(e) {
     return;
   }
 
+  /* The Combat Arts page owns its own keys (its search box handles ↑↓/Enter
+     itself). Only the window-level verbs stay ours, and Escape falls back to
+     the spell list first so it never takes two presses to get out of arts. */
+  if (isArtsPage()) {
+    if (e.key === 'F2') { e.preventDefault(); toggleEdit(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); setPage('spells'); return; }
+    return;
+  }
+
   if (e.key === 'Escape') {
     e.preventDefault();
     if (ui.filter) { ui.filter = ''; $('search').value = ''; ui.sel = -1; renderList(); }
@@ -2063,7 +2292,64 @@ function onMouseDown(e) {
   }
 }
 
+/* ======================================================== pages ========= *
+ * Two pages share this window (2026-08-15, Rober: "combat arts is meant to be
+ * a spell deck tab not a main skymanager tab"): the spell list (#body) and the
+ * Combat Arts collection (#ca-pane, combat-arts-pane.js). The switcher lives in
+ * the header. This is a VIEW-level swap, not a route: both pages stay in the
+ * DOM, so the spell list keeps its scroll, filter and selection while you're
+ * off looking at your arts.
+ *
+ * The page is deliberately NOT persisted — F18 always lands you on your spells,
+ * which is what the key means; the deep-open action is what asks for arts. */
+let mdPage = 'spells';
+
+function isArtsPage() { return mdPage === 'arts'; }
+
+function setPage(p, opts) {
+  p = (p === 'arts') ? 'arts' : 'spells';
+  const same = p === mdPage;
+  mdPage = p;
+  const arts = p === 'arts';
+  closeCtx(); cancelDesc();
+  const body = $('body'), pane = $('ca-pane');
+  if (body) body.classList.toggle('hidden', arts);
+  if (pane) pane.classList.toggle('hidden', !arts);
+  ['spells', 'arts'].forEach((id) => {
+    const b = $('md-page-' + id);
+    if (!b) return;
+    b.classList.toggle('on', id === p);
+    b.setAttribute('aria-selected', id === p ? 'true' : 'false');
+  });
+  const hints = $('hints');
+  if (hints) hints.classList.toggle('hidden', arts);   // the arts page teaches its own keys
+  /* The pane is a guest with the standard host contract (init/onShow/onHide) —
+     feature-detected so a view missing the file degrades to an empty page
+     rather than throwing on every switch. */
+  const P = window.CombatArtsPane;
+  if (P) {
+    if (arts) { if (P.init) P.init(); if (P.onShow) P.onShow(); }
+    else if (!same && P.onHide) P.onHide();
+  }
+  if (arts) setTimeout(() => { const f = $('ca-search'); if (f) f.focus(); }, 40);
+  else if (!same && !(opts && opts.quiet)) setTimeout(() => { const s = $('search'); if (s) s.focus(); }, 40);
+  syncChrome();
+}
+
+/* C++ deep-open (the "Combat Arts" bindable action opens THIS view on that
+   page). Safe before the first mdOpen — the skeleton is static markup. */
+window.mdShowPage = function (p) {
+  setPage(typeof p === 'string' ? p.replace(/^"|"$/g, '') : 'spells');
+};
+
 function toggleEdit() {
+  /* On the arts page Edit means the pane's own icon-assign chrome — the spell
+     list's edit mode would paint tools on a hidden page. */
+  if (isArtsPage()) {
+    if (window.CombatArtsPane && window.CombatArtsPane.toggleEdit) window.CombatArtsPane.toggleEdit();
+    syncChrome();   // the header button wears the pane's edit state
+    return;
+  }
   closeCtx();
   ui.editing = !ui.editing;
   ui.armDelCat = null;
@@ -2111,6 +2397,11 @@ function wire() {
   $('resize-grip').addEventListener('mousedown', gripDown);
   $('resize-grip').addEventListener('dblclick', resetPanelSize);
   $('panel-size-reset').addEventListener('click', resetPanelSize);
+
+  ['spells', 'arts'].forEach((id) => {
+    const b = $('md-page-' + id);
+    if (b) b.addEventListener('click', () => setPage(id));
+  });
 
   $('search').addEventListener('input', (e) => { ui.filter = e.target.value; ui.sel = -1; renderList(); });
   $('add-search').addEventListener('input', (e) => { ui.addFilter = e.target.value; renderAddList(); });
@@ -2222,6 +2513,7 @@ window.mdOpen = function (cfg) {
   // C++ re-pushes this payload for LIVE updates (a phone icon assignment landing
   // through the portal poller). Already open = data refresh only: the resets below
   // would close the icon picker, drop the search text and steal focus mid-keystroke.
+  dropRowCache();          // a fresh payload means fresh spell objects
   const wasOpen = document.body.classList.contains('open');
   if (!wasOpen) { closeCtx(); cancelDesc(); }
   cfg = coerce(cfg);
@@ -2235,6 +2527,9 @@ window.mdOpen = function (cfg) {
     ui.sel = -1;
     ui.armDelCat = null;
     if ($('search')) $('search').value = '';
+    /* F18 means "my spells" — a deep-open onto Combat Arts arrives as a
+       mdShowPage("arts") right after this, and flips it. */
+    setPage('spells', { quiet: true });
   }
   applyScale();
   applyIconSize();
@@ -2260,14 +2555,22 @@ window.mdEquipState = function (s) {
 window.mdSpells = function (rows) {
   rows = coerce(rows);
   if (!Array.isArray(rows)) rows = [];
+  dropRowCache();          // knownById feeds metaFor, which feeds every row's art
   ui.known = rows;
   ui.knownLoading = false;
   ui.knownById = new Map();
-  rows.forEach((k) => ui.knownById.set(hexId(k.formId), {
-    slot: k.slot || 'hand', type: k.type, delivery: k.delivery, casting: k.casting,
-    school: k.school || '', element: k.element || '', archetype: k.archetype || '',
-    tier: k.tier || '',
-  }));
+  ui.knownByPid = new Map();
+  rows.forEach((k) => {
+    const v = {
+      slot: k.slot || 'hand', type: k.type, delivery: k.delivery, casting: k.casting,
+      school: k.school || '', element: k.element || '', archetype: k.archetype || '',
+      tier: k.tier || '', formId: k.formId >>> 0,
+    };
+    ui.knownById.set(hexId(k.formId), v);
+    // Same object in both maps on purpose — one row, two ways in.
+    const pk = pidKey(k);
+    if (pk) ui.knownByPid.set(pk, v);
+  });
   enrichFromKnown();
   if (ui.addOpen) renderAddList();
   renderList();   // equip controls now know hand vs voice
@@ -2288,15 +2591,21 @@ function enrichFromKnown() {
   let filled = 0;
   const orphans = [];
   const fill = (o) => {
-    const k = ui.knownById.get(hexId(o.formId));
+    const k = knownFor(o);
     if (!k) return false;
     let any = false;
     META_FIELDS.forEach((f) => { if (!o[f] && k[f]) { o[f] = k[f]; any = true; } });
+    /* Heal the stored id from the live row while we are here. C++ does this
+       properly at post-load (MagicReconcileIds), but an entry added by an
+       older build — or one whose plugin shifted mid-session — would otherwise
+       keep a dead id in the file until then. Durable-pair rows only: a row
+       matched by id alone cannot have moved. */
+    if (pidKey(o) && k.formId && (o.formId >>> 0) !== k.formId) { o.formId = k.formId; any = true; }
     return any;
   };
   state.spells.forEach((s) => {
     if (fill(s)) filled++;
-    if (!ui.knownById.has(hexId(s.formId)) && !s.school) orphans.push(s.name || s.id);
+    if (!knownFor(s) && !s.school) orphans.push(s.name || s.id);
   });
   state.combos.forEach((c) => c.spells.forEach((m) => { if (fill(m)) filled++; }));
   if (filled) saveSoon();
@@ -2334,18 +2643,20 @@ window.mdRemoved = function (res) {
   const fid = res.formId >>> 0;
   // deck entries pointing at this spell are now dead (can't cast/equip an unknown
   // spell) — drop every copy across categories, and prune it out of every combo
-  // (a combo that empties out goes with it)
-  state.spells = state.spells.filter((s) => (s.formId >>> 0) !== fid);
-  state.combos.forEach((c) => { c.spells = c.spells.filter((m) => (m.formId >>> 0) !== fid); });
+  // (a combo that empties out goes with it). Matched on the DURABLE pair the
+  // engine sent back, so an entry still carrying a pre-shuffle runtime id is
+  // still recognised as this spell.
+  state.spells = state.spells.filter((s) => !sameSpell(s, res));
+  state.combos.forEach((c) => { c.spells = c.spells.filter((m) => !sameSpell(m, res)); });
   state.combos = state.combos.filter((c) => c.spells.length);
-  // record it in the restorable list (newest first, deduped by formId)
+  // record it in the restorable list (newest first, deduped by identity)
   const entry = {
     plugin: res.plugin || '', localId: res.localId >>> 0, formId: fid,
     name: res.name || 'spell', type: res.type || '',
     school: res.school || '', element: res.element || '', archetype: res.archetype || '',
     tier: res.tier || '',
   };
-  state.removed = state.removed.filter((x) => (x.formId >>> 0) !== fid);
+  state.removed = state.removed.filter((x) => !sameSpell(x, entry));
   state.removed.unshift(entry);
   ui.removedOpen = true;          // reveal so the user sees where it went
   save();                         // persist immediately (full round-trip)
@@ -2359,9 +2670,8 @@ window.mdRestored = function (res) {
   res = coerce(res);
   if (!res) return;
   if (!res.ok) { if (res.msg) toast(res.msg); return; }
-  const fid = res.formId >>> 0;
-  const e = state.removed.find((x) => (x.formId >>> 0) === fid);
-  state.removed = state.removed.filter((x) => (x.formId >>> 0) !== fid);
+  const e = state.removed.find((x) => sameSpell(x, res));
+  state.removed = state.removed.filter((x) => !sameSpell(x, res));
   save();
   render();
   toGame('mdKnown');              // back in the spellbook -> back in the add-picker
@@ -2369,6 +2679,8 @@ window.mdRestored = function (res) {
 };
 
 window.mdClosed = function () {
+  if (isArtsPage() && window.CombatArtsPane && window.CombatArtsPane.onHide)
+    window.CombatArtsPane.onHide();
   closeCtx();
   cancelDesc();
   closeIconPicker();
@@ -2545,6 +2857,56 @@ function runSelfTest() {
   const flames = state.spells.find((s) => s.name === 'Flames');
   ok('equip badge reconciles hex', flames && ui.equip.left === hexId(flames.formId));
 
+  /* ---- durable identity: a load-order shuffle must not orphan an entry ----
+     Simulates exactly the 2026-08-18 Dragonknight case: the entry's stored
+     runtime id is stale (its plugin's mod index moved) while the durable
+     (plugin, localId) pair is unchanged. */
+  {
+    const known = ui.known.find((k) => k.name === 'Vampiric Drain');
+    // The saved entry a player would have for it (the deck stores exactly this
+    // shape), built from the live row so the pair is right by construction.
+    const vd = known ? {
+      id: hexId(known.formId), plugin: known.plugin, localId: known.localId,
+      formId: known.formId, name: known.name, mode: 'cast', hand: 'right',
+      category: 'Destruction',
+    } : null;
+    ok('idkey: sample carries a Dawnguard spell', !!vd && !!known);
+    if (vd && known) {
+      const liveId = known.formId >>> 0;
+      const stale = { ...vd, formId: 0x81000000 | (vd.localId >>> 0) };
+      ok('idkey: pidKey is plugin|localhex',
+         pidKey(stale) === 'dawnguard.esm|' + (vd.localId >>> 0).toString(16));
+      ok('idkey: stale id still finds the live row', knownFor(stale) === knownFor(known));
+      ok('idkey: liveHex answers the ENGINE id, not the stored one',
+         liveHex(stale) === hexId(liveId));
+      ok('idkey: metaFor keeps resolving metadata through a stale id',
+         !!metaFor(stale).school);
+      ok('idkey: sameSpell matches on the pair, not the id',
+         sameSpell(stale, vd) === true);
+      ok('idkey: sameSpell separates two different spells',
+         sameSpell(vd, state.spells.find((s) => s.name === 'Firebolt') || {}) === false);
+      ok('idkey: add-picker sees a stale-id entry as already added',
+         (function () {
+           const savedCat = ui.addCat, savedSpells = state.spells;
+           state.spells = [{ ...stale, category: 'Destruction' }];
+           ui.addCat = 'Destruction';
+           const row = knownRow(known);
+           const already = !!row.querySelector('.done-mark');
+           state.spells = savedSpells; ui.addCat = savedCat;
+           return already;
+         })());
+      ok('idkey: enrich heals the stored id from the live row',
+         (function () {
+           const savedSpells = state.spells;
+           const probe = { ...stale };
+           state.spells = [probe];
+           enrichFromKnown();
+           state.spells = savedSpells;
+           return (probe.formId >>> 0) === liveId;
+         })());
+    }
+  }
+
   // add flow
   const before = state.spells.length;
   ui.addCat = 'Restoration';
@@ -2634,6 +2996,62 @@ function runSelfTest() {
   ok('remove ok:false is a no-op', state.removed.length === removedNow);
   window.mdRestored({ ok: true, formId: rmFid });
   ok('restore drops from Removed list', state.removed.every((x) => (x.formId >>> 0) !== rmFid));
+
+  /* Removed-drawer filter: absent while the drawer is short, present past 8,
+     narrows on name AND plugin, survives the rebuild, Enter restores the top hit */
+  (function () {
+    const keepRemoved = state.removed.slice();
+    ui.removedOpen = true;
+    ok('removed: no filter box under the threshold', (renderRemoved(), !$('removed-search')));
+
+    state.removed = [];
+    for (let i = 0; i < 9; i++) {
+      state.removed.push({
+        formId: 0xDEAD0000 + i, localId: 0x800 + i,
+        plugin: (i === 5 ? 'Apocalypse.esp' : 'Skyrim.esm'),
+        name: (i === 5 ? 'Wall of Whispers' : 'Flames ' + i), type: 'spell',
+      });
+    }
+    renderRemoved();
+    ok('removed: filter box appears past 8', !!$('removed-search'));
+    ok('removed: all rows before filtering',
+      $('removed-section').querySelectorAll('.removed-row').length === 9);
+
+    ui.removedFilter = 'whispers'; renderRemoved();
+    ok('removed: filter narrows by name',
+      $('removed-section').querySelectorAll('.removed-row').length === 1);
+    ok('removed: query survives the rebuild', ($('removed-search') || {}).value === 'whispers');
+    ok('removed: live count shown', !!$('removed-section').querySelector('.removed-find-n'));
+
+    ui.removedFilter = 'apocalypse'; renderRemoved();
+    ok('removed: filter matches the plugin',
+      $('removed-section').querySelectorAll('.removed-row').length === 1);
+
+    ui.removedFilter = 'zzzz'; renderRemoved();
+    ok('removed: honest empty result', !!$('removed-section').querySelector('.removed-none') &&
+      $('removed-section').querySelectorAll('.removed-row').length === 0);
+
+    /* Enter restores the top hit — additive and undoable, so it may fire */
+    ui.removedFilter = 'whispers'; renderRemoved();
+    const sent = [];
+    const realRestore = window.mdRestoreSpell;
+    window.mdRestoreSpell = function (a) { try { sent.push(JSON.parse(a)); } catch (e) { sent.push(a); } };
+    const rin = $('removed-search');
+    if (rin) rin.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    window.mdRestoreSpell = realRestore;
+    ok('removed: Enter restores the top hit',
+      sent.length === 1 && (sent[0].formId >>> 0) === ((0xDEAD0000 + 5) >>> 0));
+
+    /* a stale query must never survive the drawer shrinking back under 8 */
+    ui.removedFilter = 'whispers';
+    state.removed = state.removed.slice(0, 4);
+    renderRemoved();
+    ok('removed: filter self-clears below the threshold',
+      ui.removedFilter === '' && !$('removed-search') &&
+      $('removed-section').querySelectorAll('.removed-row').length === 4);
+
+    state.removed = keepRemoved; ui.removedOpen = false; renderRemoved();
+  })();
 
   // ---- combos: drag together, add, dedupe, cast payload, menu ops, prune ----
   ui.editing = false;
@@ -2940,6 +3358,35 @@ function runSelfTest() {
     $('deck-btn').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     ok('back: ← Deck fires the mdOpenDeck bridge verb', sent === 'mdOpenDeck');
     window.mdOpenDeck = prev;
+  }
+
+  // ---- Pages: the spell list and Combat Arts share this window ------------
+  {
+    const pane = $('ca-pane'), body = $('body');
+    setPage('arts');
+    ok('pages: Combat Arts shows its section and hides the spell list',
+      !pane.classList.contains('hidden') && body.classList.contains('hidden') &&
+      $('md-page-arts').classList.contains('on') &&
+      $('md-page-arts').getAttribute('aria-selected') === 'true');
+    ok('pages: the footer hint row belongs to the spell list',
+      $('hints').classList.contains('hidden'));
+    /* Escape on the arts page falls back to the spell list rather than closing
+       the window — getting out of a page must never cost two presses. */
+    let closed = false;
+    const prevClose = window.mdClose;
+    window.mdClose = function () { closed = true; };
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    window.mdClose = prevClose;
+    ok('pages: Escape leaves Combat Arts for the spell list, not the window',
+      !closed && !isArtsPage() && !body.classList.contains('hidden') &&
+      pane.classList.contains('hidden'));
+    /* C++ deep-open (the bindable action / Home card / omni row) */
+    window.mdShowPage('arts');
+    ok('pages: mdShowPage("arts") is the C++ deep-open', isArtsPage());
+    $('md-page-spells').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    ok('pages: the header switcher flips back', !isArtsPage());
+    ok('pages: an unknown page name lands on the spell list',
+      (window.mdShowPage('nonsense'), !isArtsPage()));
   }
 
   // ---- Smooth scroll: one shared handler eases toward a target -------------

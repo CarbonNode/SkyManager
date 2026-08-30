@@ -85,6 +85,10 @@ namespace Wardrobe
 		// cycle and refills when it empties.
 		std::string              mode = "bag";     // bag | random
 		std::vector<std::string> bag;
+		// Default re-roll cadence for wearers whose assignment says "inherit"
+		// (cadenceInherit below). 0 = never. Per-NPC hours always win when the
+		// assignment doesn't inherit, so existing configs behave identically.
+		std::int32_t             cadenceHours = 0;
 	};
 
 	struct LocOverride
@@ -107,6 +111,18 @@ namespace Wardrobe
 		std::string              mode = "off";   // off | outfit | wardrobe
 		std::string              wardrobeId, outfit;
 		std::int32_t             cadenceHours = 0;   // 0 = never re-roll
+		// true = follow the wardrobe's own cadenceHours instead of hers. Default
+		// false so every pre-existing assignment keeps its explicit timing.
+		bool                     cadenceInherit = false;
+		// How SHE rolls from the wardrobe. "" = the wardrobe's way (its mode,
+		// and for bag mode its SHARED bag — group variety, wearers never repeat
+		// each other within a cycle). "bag" = her own private shuffle bag (she
+		// personally cycles every outfit). "random" = her own independent rolls.
+		std::string              draw = "";
+		// Her private bag when draw == "bag". C++-owned bookkeeping like
+		// lastRollDay/lastOutfit: preserved across MergeViewSlice, never taken
+		// from the view's echo.
+		std::vector<std::string> bag;
 		std::vector<LocOverride> locationOverrides;
 		double                   lastRollDay = 0.0;  // Calendar::GetDaysPassed()
 		std::string              lastOutfit;

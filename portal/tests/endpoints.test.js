@@ -176,6 +176,23 @@ const j = async (m, p, b) => {
   T('bad mode rejected', r.s === 400);
   r = await j('POST', '/api/wardrobe', { op: 'set', target: 'outfit', name: 'Sfancy Blue', key: 'evil', value: 'x' });
   T('unknown key rejected', r.s === 400);
+  /* rotation v2: per-NPC draw override + cadence inherit + wardrobe default */
+  r = await j('POST', '/api/wardrobe', { op: 'set', target: 'assign', formId: '0x1A6A1', plugin: 'Skyrim.esm', key: 'draw', value: 'bag' });
+  T('queue draw override', r.s === 200);
+  r = await j('GET', '/api/wardrobe');
+  T('pending draw folds into the view', r.b.assignments[0].draw === 'bag');
+  r = await j('POST', '/api/wardrobe', { op: 'set', target: 'assign', formId: '0x1A6A1', plugin: 'Skyrim.esm', key: 'draw', value: 'chaos' });
+  T('bad draw rejected', r.s === 400);
+  r = await j('POST', '/api/wardrobe', { op: 'set', target: 'assign', formId: '0x1A6A1', plugin: 'Skyrim.esm', key: 'cadenceInherit', value: '1' });
+  T('queue cadence inherit', r.s === 200);
+  r = await j('GET', '/api/wardrobe');
+  T('pending inherit folds in as a boolean', r.b.assignments[0].cadenceInherit === true);
+  r = await j('POST', '/api/wardrobe', { op: 'pool-set', id: 'w1', key: 'cadenceHours', value: '24' });
+  T('queue wardrobe default cadence', r.s === 200);
+  r = await j('GET', '/api/wardrobe');
+  T('wardrobe default folds in as a number', r.b.wardrobes[0].cadenceHours === 24);
+  r = await j('POST', '/api/wardrobe', { op: 'pool-set', id: 'w1', key: 'cadenceHours', value: 'soon' });
+  T('bad wardrobe default rejected', r.s === 400);
   await j('POST', '/api/wardrobe', { op: 'pool', id: 'w1', add: 'Cosplay Gala' });
   r = await j('GET', '/api/wardrobe');
   T('pool add folds in', r.b.wardrobes[0].outfits.length === 2 && r.b.wardrobes[0].pending === true);

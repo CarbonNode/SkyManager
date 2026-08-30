@@ -1,0 +1,282 @@
+/* ====================================================================== *
+ *  HDItemPick — the shared load-order item picker (see hd-itempick.js).
+ *
+ *  Mounted INSIDE the pane's <section> (the ix-sheet idiom), so it already
+ *  sits under #panel's scale transform: every size here is plain px and
+ *  must NOT be divided by --ui-scale. (The vh/vw law only bites elements
+ *  that carry the transform themselves or hang off <body>; this hangs off
+ *  a pane, which is inside it. See the CLAUDE.md popup audit.)
+ *
+ *  Rober's standing UI rules apply: nothing under 12px, spacious, every
+ *  control gets hover/active states.
+ * ====================================================================== */
+
+.ip-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 8, 11, 0.72);
+  backdrop-filter: blur(2px);
+  animation: ipIn 140ms ease-out;
+}
+
+@keyframes ipIn { from { opacity: 0; } to { opacity: 1; } }
+
+.ip-card {
+  width: min(92%, 880px);
+  max-height: 88%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px 22px 16px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #171b22 0%, #12151b 100%);
+  border: 1px solid #2c3543;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* ---- head -------------------------------------------------------------- */
+
+.ip-head { display: flex; align-items: flex-start; gap: 14px; }
+.ip-head-txt { flex: 1 1 auto; min-width: 0; }
+
+.ip-title {
+  font-size: 21px;
+  font-weight: 700;
+  color: #f0e6d2;
+  letter-spacing: 0.2px;
+}
+
+.ip-hint {
+  margin-top: 4px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: #93a1b4;
+}
+
+.ip-count {
+  flex: 0 0 auto;
+  align-self: center;
+  font-size: 13px;
+  color: #7e8b9d;
+  white-space: nowrap;
+}
+
+.ip-x {
+  flex: 0 0 auto;
+  width: 34px; height: 34px;
+  border-radius: 8px;
+  border: 1px solid #2c3543;
+  background: #1b2029;
+  color: #c9d4e2;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.ip-x:hover { background: #26303c; color: #fff; border-color: #3d4a5c; }
+.ip-x:active { background: #1b2029; }
+
+/* ---- search + filters -------------------------------------------------- */
+
+.ip-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 13px 15px;
+  font-size: 16px;
+  color: #f0e6d2;
+  background: #0e1116;
+  border: 1px solid #303a49;
+  border-radius: 10px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.ip-search::placeholder { color: #64707f; }
+.ip-search:focus { border-color: #c8a45c; box-shadow: 0 0 0 3px rgba(200, 164, 92, 0.14); }
+
+.ip-pills { display: flex; flex-wrap: wrap; gap: 7px; }
+
+.ip-pill {
+  padding: 7px 12px;
+  font-size: 12.5px;
+  color: #b6c2d1;
+  background: #1a1f28;
+  border: 1px solid #2b3442;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.ip-pill:hover { background: #232c37; color: #e7eef7; }
+.ip-pill.on {
+  background: #3a2f18;
+  border-color: #c8a45c;
+  color: #f2d9a0;
+}
+
+.ip-scope { display: flex; align-items: center; gap: 9px; }
+.ip-scope-l { font-size: 12.5px; color: #7e8b9d; }
+.ip-scope-chip {
+  padding: 6px 11px;
+  font-size: 12.5px;
+  color: #f2d9a0;
+  background: #3a2f18;
+  border: 1px solid #c8a45c;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+.ip-scope-chip:hover { background: #4a3c1e; }
+
+/* ---- rows -------------------------------------------------------------- */
+
+.ip-list {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  overflow-x: hidden;      /* long names ellipsize; the page never scrolls sideways */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 4px;
+}
+
+.ip-row {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: #151a21;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+.ip-row:hover { background: #1d242e; border-color: #2f3a49; transform: translateY(-1px); }
+.ip-row.sel { background: #1f2833; border-color: #c8a45c; }
+.ip-row.added { opacity: 0.55; cursor: default; }
+.ip-row.added:hover { transform: none; background: #151a21; border-color: transparent; }
+
+.ip-plate {
+  position: relative;
+  flex: 0 0 auto;
+  width: 46px; height: 46px;
+  border-radius: 8px;
+  background: #0f1319;
+  border: 1px solid #262f3b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.ip-glyph { font-size: 20px; opacity: 0.85; }
+.ip-art {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  background: #0f1319;
+}
+
+.ip-txt { flex: 1 1 auto; min-width: 0; }
+
+.ip-name {
+  font-size: 15px;
+  color: #eef3f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ip-sub {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 3px;
+  min-width: 0;
+}
+
+.ip-plug {
+  flex: 0 1 auto;
+  max-width: 46%;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: #9fb0c4;
+  background: #131922;
+  border: 1px solid #2a3442;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 140ms ease, color 140ms ease;
+}
+.ip-plug:hover { background: #1e2733; color: #d8e3f0; }
+
+.ip-meta {
+  font-size: 12px;
+  color: #76839a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ip-add {
+  flex: 0 0 auto;
+  padding: 8px 15px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #f2d9a0;
+  background: #3a2f18;
+  border: 1px solid #c8a45c;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+.ip-add:hover { background: #55431f; color: #fff0cd; }
+.ip-add:active { background: #3a2f18; }
+.ip-add.on {
+  color: #8fbf95;
+  background: #1a2a1c;
+  border-color: #37613c;
+  cursor: default;
+}
+
+/* ---- loading / empty --------------------------------------------------- */
+
+.ip-skel {
+  height: 66px;              /* the real row's height, so nothing jumps */
+  border-radius: 10px;
+  background: linear-gradient(90deg, #151a21 0%, #1d242e 50%, #151a21 100%);
+}
+
+.ip-empty {
+  margin: auto;
+  padding: 26px 18px;
+  text-align: center;
+}
+.ip-empty-g { font-size: 34px; opacity: 0.4; }
+.ip-empty-t { margin-top: 10px; font-size: 15px; color: #c4cfdd; }
+.ip-empty-s { margin-top: 5px; font-size: 13px; color: #76839a; }
+
+.ip-foot {
+  font-size: 12.5px;
+  color: #6f7c8e;
+  text-align: center;
+  padding-top: 2px;
+}
+
+/* ---- narrow deck ------------------------------------------------------- */
+
+@media (max-width: 760px) {
+  .ip-card { width: 96%; padding: 16px 14px 12px; }
+  .ip-title { font-size: 18px; }
+  .ip-add { padding: 8px 11px; }
+  .ip-plate { width: 40px; height: 40px; }
+  /* the meta line is the first thing to go when width is scarce — the name
+     and the mod chip are what identify the item */
+  .ip-meta { display: none; }
+  .ip-plug { max-width: 70%; }
+}

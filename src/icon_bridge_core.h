@@ -46,6 +46,7 @@
 // ============================================================================
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
@@ -254,10 +255,39 @@ namespace IconBridgeCore
 
 	inline std::uint32_t Rd32(const std::uint8_t* p) { return static_cast<std::uint32_t>(p[0]) | (p[1] << 8) | (p[2] << 16) | (static_cast<std::uint32_t>(p[3]) << 24); }
 
-	// Decodes MIP 0 of a DDS into RGBA8. Returns false with a reason in `err`
-	// for anything it does not understand — never a partial image.
+	// A sub-rectangle of the image in NORMALISED (0..1) coordinates. Normalised
+	// rather than pixels because the caller asking for a crop usually does not
+	// know which mip level it is about to get — it measured the region on a
+	// cheap small mip and wants the SAME region at full resolution.
+	//
+	// The decode is snapped OUTWARD to whole 4x4 blocks: block-compressed data
+	// cannot be decoded at finer granularity, and a few extra pixels of margin
+	// costs nothing on a crop that is about to be padded anyway.
+	struct NormRect
+	{
+		double x0 = 0.0, y0 = 0.0, x1 = 1.0, y1 = 1.0;
+
+		bool full() const { return x0 <= 0.0 && y0 <= 0.0 && x1 >= 1.0 && y1 >= 1.0; }
+	};
+
+	// Decodes a DDS into RGBA8 — MIP 0 by default. Returns false with a reason
+	// in `err` for anything it does not understand — never a partial image.
+	//
+	// `preferMaxDim` > 0 asks for a SMALLER mip instead: the decoder walks the
+	// mip chain and stops at the smallest level whose longest side is still at
+	// least `preferMaxDim`, so a thumbnail of a 4096x4096 body overlay costs a
+	// 256x256 decode (0.26 MB) rather than a 4096x4096 one (67 MB). A file with
+	// no mip chain, or one whose chain does not reach that small, simply decodes
+	// the level it has — the caller downscales. This is what makes the Pubes
+	// tab's bake affordable: 20 overlays at mip 0 would be 1.3 GB of transient
+	// RGBA, and none of it visible in a 192 px tile.
+	// `rect` decodes ONLY that part of the chosen level. Combined with
+	// preferMaxDim = 0 (mip 0) this is how a thumbnail of a tiny detail inside
+	// a huge texture stays cheap AND sharp: a 4096x4096 body overlay whose art
+	// covers 9% of the width costs a ~370x256 decode instead of the full 67 MB,
+	// while still being full-resolution art rather than an upscaled mip.
 	inline bool DecodeDds(const std::uint8_t* data, std::size_t size, Image& out, std::string& err,
-		int maxDim = 8192)
+		int maxDim = 8192, int preferMaxDim = 0, NormRect rect = {})
 	{
 		out = Image{};
 		if (!data || size < 128) {
@@ -273,13 +303,17 @@ namespace IconBridgeCore
 			err = "unexpected DDS header size " + std::to_string(headerSize);
 			return false;
 		}
-		const std::uint32_t height = Rd32(data + 12);
-		const std::uint32_t width = Rd32(data + 16);
-		if (width == 0 || height == 0 || width > static_cast<std::uint32_t>(maxDim) ||
-			height > static_cast<std::uint32_t>(maxDim)) {
-			err = "implausible atlas size " + std::to_string(width) + "x" + std::to_string(height);
+		const std::uint32_t height0 = Rd32(data + 12);
+		const std::uint32_t width0 = Rd32(data + 16);
+		if (width0 == 0 || height0 == 0 || width0 > static_cast<std::uint32_t>(maxDim) ||
+			height0 > static_cast<std::uint32_t>(maxDim)) {
+			err = "implausible atlas size " + std::to_string(width0) + "x" + std::to_string(height0);
 			return false;
 		}
+		// Mutable working size — the mip walk below may step these down. Every
+		// decode path past this point reads these, so nothing else changes.
+		std::uint32_t width = width0;
+		std::uint32_t height = height0;
 
 		const std::uint32_t pfFlags = Rd32(data + 80);
 		const std::uint32_t fourCc = Rd32(data + 84);
@@ -314,6 +348,46 @@ namespace IconBridgeCore
 			default:
 				err = "unsupported DXGI format " + std::to_string(dxgi);
 				return false;
+			}
+		}
+
+		// ---- mip walk. DDSD_MIPMAPCOUNT (0x20000) in dwFlags@8 says mipMapCount@28
+		// is meaningful. Levels follow mip 0 back to back, each half the size of
+		// the last (floored, min 1), so advancing `payload` by each level's byte
+		// size lands on the next. We stop BEFORE a level whose longest side would
+		// drop under `preferMaxDim`, so the chosen mip is always >= the requested
+		// size and the caller only ever downscales.
+		if (preferMaxDim > 0) {
+			const bool hasChain = (Rd32(data + 8) & 0x20000u) != 0;
+			const std::uint32_t mipCount = hasChain ? Rd32(data + 28) : 1u;
+			const std::size_t blockBytes = (fmt == BcFormat::Bc1) ? 8u : 16u;
+
+			auto levelBytes = [&](std::uint32_t w, std::uint32_t h) -> std::size_t {
+				if (fmt == BcFormat::None)
+					return static_cast<std::size_t>(w) * h * 4;  // the 32bpp path
+				return ((w + 3) / 4) * static_cast<std::size_t>((h + 3) / 4) * blockBytes;
+			};
+
+			for (std::uint32_t level = 1; level < mipCount; ++level) {
+				const std::uint32_t nextW = width > 1 ? width / 2 : 1;
+				const std::uint32_t nextH = height > 1 ? height / 2 : 1;
+				if (static_cast<int>(nextW > nextH ? nextW : nextH) < preferMaxDim)
+					break;  // this level is already the smallest one big enough
+				// Advance only if the level we LAND on is fully present. Checking
+				// just the skip is not enough: a truncated file can leave us
+				// sitting on a level whose own block data is half missing, which
+				// the decode below would then (correctly) refuse. Keeping the
+				// last COMPLETE level instead means a chopped mip chain still
+				// yields a usable thumbnail.
+				const std::size_t skip = levelBytes(width, height);
+				const std::size_t landing = levelBytes(nextW, nextH);
+				if (payload + skip + landing > size)
+					break;  // truncated chain — keep the level we can actually read
+				payload += skip;
+				width = nextW;
+				height = nextH;
+				if (width == 1 && height == 1)
+					break;
 			}
 		}
 
@@ -370,12 +444,45 @@ namespace IconBridgeCore
 			return false;
 		}
 
-		out.w = static_cast<int>(width);
-		out.h = static_cast<int>(height);
-		out.rgba.assign(static_cast<std::size_t>(width) * height * 4, 0);
+		// The block window to decode. A full rect is the whole grid, so the
+		// common path is unchanged; a sub-rect snaps outward to whole blocks
+		// and clamps, and an inverted or off-image rect collapses to one block
+		// rather than producing an empty image the caller would have to guess
+		// about.
+		std::size_t bx0 = 0, by0 = 0, bx1 = bx - 1, by1 = by - 1;
+		if (!rect.full()) {
+			const auto clampB = [](double v, std::size_t hi) -> std::size_t {
+				if (!(v > 0.0))
+					return 0;
+				const auto i = static_cast<std::size_t>(v);
+				return i > hi ? hi : i;
+			};
+			// x1/y1 are EXCLUSIVE, so a rect that lands exactly on a block
+			// boundary does not drag in the next block: {0, 0, 0.5, 0.5} of an
+			// 8px image is pixels 0..3, one block, not two.
+			bx0 = clampB(rect.x0 * width / 4.0, bx - 1);
+			by0 = clampB(rect.y0 * height / 4.0, by - 1);
+			bx1 = clampB(std::ceil(rect.x1 * width / 4.0) - 1.0, bx - 1);
+			by1 = clampB(std::ceil(rect.y1 * height / 4.0) - 1.0, by - 1);
+			if (bx1 < bx0)
+				bx1 = bx0;
+			if (by1 < by0)
+				by1 = by0;
+		}
 
-		for (std::size_t byi = 0; byi < by; ++byi) {
-			for (std::size_t bxi = 0; bxi < bx; ++bxi) {
+		// Pixel origin of the window, and its size clipped to the real image
+		// (the last block column/row of a non-multiple-of-4 texture is padding).
+		const std::size_t px0 = bx0 * 4, py0 = by0 * 4;
+		const std::size_t pxEnd = std::min<std::size_t>(width, (bx1 + 1) * 4);
+		const std::size_t pyEnd = std::min<std::size_t>(height, (by1 + 1) * 4);
+		const std::size_t ow = pxEnd - px0, oh = pyEnd - py0;
+
+		out.w = static_cast<int>(ow);
+		out.h = static_cast<int>(oh);
+		out.rgba.assign(ow * oh * 4, 0);
+
+		for (std::size_t byi = by0; byi <= by1; ++byi) {
+			for (std::size_t bxi = bx0; bxi <= bx1; ++bxi) {
 				const std::uint8_t* blk = data + payload + (byi * bx + bxi) * blockBytes;
 				std::uint8_t        texels[64]{};
 				std::uint8_t        alpha[16];
@@ -396,9 +503,9 @@ namespace IconBridgeCore
 				for (int t = 0; t < 16; ++t) {
 					const std::size_t px = bxi * 4 + (t % 4);
 					const std::size_t py = byi * 4 + (t / 4);
-					if (px >= width || py >= height)
+					if (px >= pxEnd || py >= pyEnd)
 						continue;  // padding texels of a non-multiple-of-4 atlas
-					const std::size_t o = (py * width + px) * 4;
+					const std::size_t o = ((py - py0) * ow + (px - px0)) * 4;
 					out.rgba[o + 0] = texels[t * 4 + 0];
 					out.rgba[o + 1] = texels[t * 4 + 1];
 					out.rgba[o + 2] = texels[t * 4 + 2];

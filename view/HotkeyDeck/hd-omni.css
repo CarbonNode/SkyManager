@@ -27,7 +27,7 @@
   display: flex; flex-direction: column;
   background: linear-gradient(180deg, #1a1a21, #101015);
   border: 1px solid #c9a24b77; border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   animation: omniIn 160ms ease;   /* NOT riseIn — that bakes the panel scale */
   overflow: hidden;
   transform: scale(var(--ui-scale, 1)); transform-origin: center center;
@@ -123,7 +123,23 @@
   background: rgba(201,162,75,.10);
   border-color: #c9a24b55;
 }
+/* Result art plate (Super Searcher, hd-super.js) — renderResults ALWAYS emits
+   `.omni-row-art` (picture and/or family mark), but it is SHOWN only under
+   body.ss-open, where hd-super.css sizes it. These defaults live HERE, in a
+   CORE sheet, on purpose: hd-super.css is lazy, and without them a session
+   that never opens the widget would paint raw unsized images and stray marks
+   in the classic overlay. */
+.omni-row-art { display: none; }
+/* the mark is the FALLBACK: present only while no picture is. The picture
+   removes itself on error, which un-matches this rule and reveals the mark. */
+.omni-row-ic + .omni-row-gl { display: none; }
 .omni-row-main { flex: 1; min-width: 0; }
+/* per-group count, sits inline in the section header */
+.omni-sect-n {
+  margin-left: 8px; padding: 1px 7px;
+  border: 1px solid #2e2e36; border-radius: 9px;
+  color: #6b675e; font-size: 12px; font-weight: 500;
+}
 .omni-row-l {
   color: #e8e4da; font-size: 16.5px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -166,6 +182,26 @@
 .omni-blank-s { color: #6b675e; font-size: 14px; margin-top: 9px; line-height: 1.6; }
 .omni-blank-s b { color: #b9a06a; }
 
+/* the searchable sources, as chips wearing their family mark — the blank state
+   teaches what the box can find instead of listing names in one grey run-on */
+.omni-blank-chips {
+  display: flex; flex-wrap: wrap; gap: 7px;
+  justify-content: center;
+  margin: 16px auto 0; max-width: 620px;
+}
+.omni-bchip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 13px;
+  border: 1px solid #2a2a33; border-radius: 18px;
+  background: rgba(255, 255, 255, .02);
+  color: #9a948a; font-size: 13.5px; white-space: nowrap;
+}
+.omni-bchip-g { font-size: 14px; color: #8a8478; }
+.omni-blank-keys {
+  margin-top: 20px;
+  color: #5d594f; font-size: 13px;
+}
+
 /* ---------- ask: answer card + facets ---------- */
 
 .omni-npc {
@@ -200,7 +236,11 @@
 }
 .omni-fold-h:hover { background: rgba(255,255,255,.03); }
 .omni-facet.focus .omni-fold-h { color: #e8d9ad; }
-.omni-chev { color: #6b675e; font-size: 12px; }
+.omni-chev { color: #6b675e; font-size: 12px; display: inline-block; transition: transform 120ms ease; }
+/* A live click toggles .folded WITHOUT re-rendering (hd-omni.js), so the same
+   chevron span serves both states — turn it when the facet is open instead of
+   leaving it pointing sideways forever (2026-08-19 CSS review). */
+.omni-fold-h:not(.folded) .omni-chev { transform: rotate(90deg); }
 .omni-fold-b { padding: 3px 16px 13px; }
 
 .omni-fact { display: flex; gap: 12px; padding: 4px 0; font-size: 15px; }
@@ -293,7 +333,7 @@
   display: flex; flex-direction: column;
   background: linear-gradient(180deg, #1c1c23, #131318);
   border: 1px solid #c9a24b88; border-radius: 12px;
-  box-shadow: 0 18px 60px rgba(0,0,0,.6);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   overflow: hidden;
 }
 .omni-prof-bar {

@@ -168,6 +168,10 @@ namespace Hotbar
 		// is what almost every action-bar game does, and faking it with a fixed x
 		// breaks the moment the window is resized.
 		std::string anchorH = "center";   // "left" | "center" | "right"
+		// Which screen edge the SETUP PANEL docks to: "left" | "right". NOT the
+		// bar's anchor (anchorH above) — the editor's own dock, so the bar can
+		// be lined up against the edge the panel is not using.
+		std::string side = "right";
 		std::string anchorV = "bottom";   // "top"  | "bottom"
 
 		// Shape. cols = buttons per row, rows = 1 or 2 ("vertical or horizontal
@@ -295,12 +299,150 @@ namespace Hotbar
 	// so it can never overwrite a bar you have already filled in.
 	void SeedDefaults(Config& out);
 
-	// Drink the strongest carried potion of the named pool ("heal" | "magicka" |
+	// Drink the RIGHT carried potion of the named pool ("heal" | "magicka" |
 	// "stamina" | "cure"). The pick happens AT PRESS TIME against the live
 	// inventory — that is the whole point of a smart button: it can never grey
 	// out because you drank the last of one specific tier. Food and poisons are
 	// never candidates. Returns {ok,msg}; a refusal names why. MAIN THREAD ONLY.
 	std::string FireSmart(const std::string& ref);
+
+	// ---- how "the right potion" is decided (2026-08-19) -------------------
+	// Until this date the answer was simply "the biggest magnitude you carry",
+	// which drinks an Ultimate Healing Potion to top off 10 lost HP. The pick
+	// is now DEFICIT-AWARE: it measures how much of the pool is actually
+	// missing (max - current, the char sheet's own formula) and chooses the
+	// least wasteful potion that answers it.
+	//
+	// Credit where it is due: the idea — and the proof that players want it —
+	// comes from wSkeever's "Smart Optimal Salves" and ItzIvy05's SKSE port of
+	// its scan. Nothing here is their code; this is our own implementation on
+	// our own data path (their scan is a Papyrus native called from an MCM
+	// script, ours is the deck's C++ press-time pick), and it goes further:
+	// fortify effects can no longer masquerade as restores, regeneration
+	// potions are understood, and the emergency rule below has no counterpart
+	// there.
+	struct SmartPrefs
+	{
+		// false = the pre-2026-08-19 behaviour (always the strongest potion),
+		// kept because it is what a player who never opens the settings had.
+		bool optimal = true;
+		// May a potion that restores MORE than is missing be drunk at all?
+		// Off, a pool with only oversized potions refuses out loud rather than
+		// burning one — which is a real playstyle, not a bug.
+		bool allowOverheal = true;
+		// On: top off completely (the smallest potion that COVERS the deficit).
+		// Off: waste nothing (the biggest potion that fits INSIDE the deficit).
+		bool preferOverheal = false;
+		// Below this percent of the pool, behave as if preferOverheal were on —
+		// at 12% health the cheapest sip is not the answer. 0 disables.
+		int emergencyPct = 25;
+		// Refuse when the pool is already full instead of drinking anyway.
+		bool blockWhenFull = true;
+		// Potions the picker must never choose, as "plugin|0x……" LOCAL ids
+		// (the actor_identity law — a runtime id moves when an ESL is toggled).
+		// Counting is deliberately NOT filtered by this: you still carry them,
+		// so the widgets still say so; they are simply never auto-chosen.
+		std::vector<std::string> exclude;
+	};
+
+	// The prefs live in the WIDGETS sidecar (widgets.json, key "smart") because
+	// that is where the potion browser that edits them already persists — but
+	// they are CACHED here so the picker never calls back into that module.
+	// That direction matters: Widgets::AiTick already calls FireSmart, and a
+	// reverse call under the other module's lock is how deadlocks are written.
+	// Setting them re-resolves the exclusion list on next use. Thread-safe.
+	void       SetSmartPrefs(const SmartPrefs& p);
+	SmartPrefs GetSmartPrefs();
+
+	// ---- the smart classification, exported (widgets / potion browser) ----
+	// The HUD widgets and the paused potion browser count and categorise
+	// potions with the SAME pool matcher the smart buttons drink through —
+	// these are thin public wrappers over the file-local SmartMatches /
+	// SmartFind, never a second copy of the rule (two definitions of "is this
+	// a healing potion" would disagree the day one is edited).
+
+	// Does this carried-or-not potion feed the named pool ("heal" | "magicka" |
+	// "stamina" | "cure")? outScore ranks it against its own pool (bigger =
+	// stronger). Food and poisons never match, detrimental effects never count.
+	//
+	// ⚠ outScore is NOT a raw magnitude any more (2026-08-19). A potion that
+	// restores 5 points a second for 60 s puts back 300, and ranking it by "5"
+	// put it below a 25-point sip; the score is now the POINTS RESTORED, and a
+	// regeneration potion (one that lifts the HealRate actor values rather than
+	// Health itself) ranks in a band below every direct restore because it can
+	// never be relied on to answer a deficit right now. Nothing outside this
+	// module compares scores ACROSS pools, so a single ordering is enough.
+	//
+	// Fortify effects are excluded here, which is the bug this note exists for:
+	// Fortify Health is the same archetype on the same actor value as Restore
+	// Health and differs only by the MGEF's Recover flag (and its
+	// MagicAlchFortify… keyword), so before this date a Fortify Health potion
+	// was a candidate healing potion — and, being a big number, usually the
+	// WINNER. It raises your ceiling; it does not heal you.
+	bool PoolMatch(const std::string& ref, const RE::AlchemyItem* alch, float& outScore);
+
+	// How much of `ref`'s pool is missing right now, in points (0 when full or
+	// when the pool has no deficit concept, e.g. "cure"). max is
+	// GetPermanentActorValue and cur is GetActorValue — the char sheet's own
+	// Pool() formula, so the bar you see and the potion you get can never
+	// disagree. MAIN THREAD ONLY.
+	float PoolDeficit(const std::string& ref);
+
+	// Pool census over the live inventory: how many matching potions are
+	// carried (all tiers), and the strongest one's name. MAIN THREAD ONLY.
+	struct SmartInfo
+	{
+		int         total = 0;
+		std::string bestName;
+		float       bestScore = 0.0f;
+	};
+	SmartInfo SmartCount(const std::string& ref);
+
+	// Every carried AlchemyItem that is a POTION (not food, not poison) —
+	// the widgets' "All" figure. MAIN THREAD ONLY.
+	int CountAllPotions();
+
+	// ---- consumable classification (2026-08-15: "Poison support, food,
+	// drinks … Hook to campfire fit water as well") -------------------------
+	// ONE implementation, shared by the HUD widgets, the potion browser and
+	// the character sheet's Pack Check — the same reason PoolMatch exists:
+	// two definitions of "is this a drink" would disagree the day one is
+	// edited. Everything here is engine-read only; callers respect the same
+	// MAIN THREAD ONLY rule as the census functions above.
+	//
+	//   kPoison — alch->IsPoison()
+	//   kWater  — fresh, DRINKABLE water: the exact SunHelm bottle/skin forms
+	//             (salt water excluded), plus a narrow name fallback for other
+	//             survival mods' waters. Water is also a drink — the Drink
+	//             category deliberately INCLUDES water everywhere (pills,
+	//             chips, Pack Check); the Water category shows only water.
+	//   kDrink  — IsFood() split from solid food by the consumption sound
+	//             (ITMPotionUse = the vanilla drink gulp), the VendorItemDrink
+	//             keyword when some mod ships one, or a word-boundary name
+	//             heuristic (ale/mead/wine/…). Honest belt-and-braces: a mod
+	//             food that defeats all three signals counts as food.
+	//   kFood   — IsFood() and none of the drink signals
+	//   kPotion — everything else (the four pools + "other", as before)
+	enum class ConsumableKind
+	{
+		kPotion,
+		kPoison,
+		kFood,
+		kDrink,
+		kWater,
+	};
+	ConsumableKind ClassifyConsumable(const RE::AlchemyItem* alch);
+
+	// How many DRINKS this water item holds (SunHelm's _SHWaterskin_3 = 3),
+	// 0 when it is not fresh water at all. The water census counts drinks,
+	// not bottles — a full waterskin is three of them.
+	int WaterDrinks(const RE::AlchemyItem* alch);
+
+	// Is SunHelmSurvival.esp in the load order? When it is not, the Water
+	// category degrades honestly: the views hide the Water pill/chip/card
+	// (name-matched waters still classify as kWater and stay reachable under
+	// Drink, which includes water by design).
+	bool WaterModPresent();
 
 	// Live state for one page, read fresh from the engine. MAIN THREAD ONLY —
 	// it touches the player actor, the inventory and the magic caster.

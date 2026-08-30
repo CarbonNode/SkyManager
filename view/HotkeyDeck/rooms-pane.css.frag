@@ -17,8 +17,11 @@
 
 /* ---------- left rail: where you are + claim ---------- */
 
+/* 260px, not 232: the rail's type sits on the deck's 12px floor (see the
+   type-scale note below) and at 232px the three "This place is" segments and
+   the "Size 200u (5.7 m)" label had no room left to hold their words. */
 #rm-side {
-  width: 232px; flex: none;
+  width: 260px; flex: none;
   display: flex; flex-direction: column; gap: 10px;
   padding: 11px 10px;
   border-right: 1px solid #2e2e36;
@@ -31,8 +34,14 @@
   padding: 9px 10px;
   background: rgba(255,255,255,.02);
 }
+/* ---- type scale ----
+   12px is the deck's floor (Rober plays at 2560x1440 from a couch and the
+   panel is NOT sized by the viewport, so a 10px label is 10 real pixels on a
+   27" screen two metres away). Nothing in this pane goes under it; the small
+   end of the scale is 12px for the uppercase labels/chips and 12.5px for the
+   lines you actually read. */
 .rm-here-label {
-  font-size: 10px; letter-spacing: .8px; text-transform: uppercase;
+  font-size: 12px; letter-spacing: .8px; text-transform: uppercase;
   color: #6f6a5e;
 }
 .rm-here-name {
@@ -40,7 +49,7 @@
   font-size: 13.5px; color: #e8e4da; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.rm-here-status { margin-top: 4px; font-size: 11.5px; color: #b9b4a8; }
+.rm-here-status { margin-top: 4px; font-size: 12.5px; color: #b9b4a8; }
 .rm-here-status.claimed { color: #ecd9a0; }
 .rm-here-status.home    { color: #8fbf8f; }
 
@@ -49,9 +58,9 @@
 .rm-field { display: flex; flex-direction: column; gap: 4px; }
 .rm-field-inline { flex-direction: row; align-items: center; gap: 8px; }
 .rm-field-label {
-  font-size: 10px; letter-spacing: .8px; text-transform: uppercase; color: #6f6a5e;
+  font-size: 12px; letter-spacing: .8px; text-transform: uppercase; color: #6f6a5e;
 }
-.rm-size-val { color: #d9c48a; font-family: Consolas, "Courier New", monospace; font-size: 11px; }
+.rm-size-val { color: #d9c48a; font-family: Consolas, "Courier New", monospace; font-size: 12px; }
 
 #rm-claim-name, #rm-search {
   background: rgba(0,0,0,.30); color: #e8e4da;
@@ -66,11 +75,15 @@
 
 /* segmented Rented / Home */
 .rm-seg { display: flex; gap: 4px; }
+/* min-height 30px on every clickable in this pane: these are couch targets hit
+   with a trackball, and the seg buttons / row actions / unseal buttons were
+   23-28px tall. Padding alone can't hold the floor once the label wraps, so the
+   floor is stated and the padding only sets the comfortable size above it. */
 .rm-seg-btn {
-  flex: 1; padding: 6px 4px;
+  flex: 1; padding: 6px 4px; min-height: 30px;
   background: rgba(0,0,0,.25); color: #b9b4a8;
   border: 1px solid #2e2e36; border-radius: 6px;
-  font-size: 11.5px; font-family: inherit; cursor: pointer;
+  font-size: 12.5px; font-family: inherit; cursor: pointer;
   transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
 }
 .rm-seg-btn:hover { background: rgba(201,162,75,.06); color: #ece7db; }
@@ -92,22 +105,22 @@
   opacity: .45; cursor: not-allowed; transform: none;
   background: rgba(255,255,255,.03); border-color: #2e2e36; color: #6f6a5e;
 }
-.rm-hint { font-size: 11px; color: #6f6a5e; line-height: 1.35; }
+.rm-hint { font-size: 12px; color: #6f6a5e; line-height: 1.35; }
 
 /* live occupancy readout */
 #rm-occupants { display: flex; flex-direction: column; gap: 3px; }
 .rm-occ-title {
-  font-size: 10px; letter-spacing: .8px; text-transform: uppercase; color: #6f6a5e;
+  font-size: 12px; letter-spacing: .8px; text-transform: uppercase; color: #6f6a5e;
   margin-bottom: 2px;
 }
 .rm-occ {
   display: flex; align-items: center; gap: 6px;
-  font-size: 11.5px; color: #b9b4a8;
+  font-size: 12.5px; color: #b9b4a8;
   padding: 3px 5px; border-radius: 5px; background: rgba(255,255,255,.02);
 }
 .rm-occ-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rm-occ-why {
-  flex: none; font-size: 10px; color: #8fbf8f;
+  flex: none; font-size: 12px; color: #8fbf8f;
   background: rgba(143,191,143,.10); border-radius: 8px; padding: 1px 6px;
 }
 .rm-occ.going .rm-occ-why { color: #d99a6c; background: rgba(217,154,108,.10); }
@@ -115,7 +128,7 @@
 .rm-occ-allow {
   flex: none; border: 1px solid #2e2e36; border-radius: 5px;
   background: rgba(255,255,255,.04); color: #b9b4a8;
-  font-size: 11px; line-height: 1; padding: 2px 6px; cursor: pointer;
+  font-size: 12px; line-height: 1; padding: 4px 8px; cursor: pointer;
   transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
 }
 .rm-occ-allow:hover { background: rgba(143,191,143,.14); color: #a9d4a9; border-color: #8fbf8f66; }
@@ -130,7 +143,7 @@
 .rm-search-ic { position: absolute; left: 8px; color: #5d594f; font-size: 13px; pointer-events: none; }
 #rm-search { flex: 1; padding-left: 24px; }
 #rm-count {
-  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 10.5px;
+  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 12px;
   color: #6f6a5e; background: rgba(255,255,255,.04); border-radius: 9px; padding: 3px 8px;
 }
 
@@ -178,11 +191,11 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .rm-sub {
-  margin-top: 2px; font-size: 11px; color: #6f6a5e;
+  margin-top: 2px; font-size: 12px; color: #6f6a5e;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .rm-chip {
-  flex: none; font-size: 10px; border-radius: 9px; padding: 2px 7px;
+  flex: none; font-size: 12px; border-radius: 9px; padding: 2px 7px;
   color: #d9c48a; background: rgba(201,162,75,.10);
 }
 .rm-chip.home { color: #8fbf8f; background: rgba(143,191,143,.10); }
@@ -192,8 +205,12 @@
 .rm-chip.evict { color: #7fb6d9; background: rgba(110,168,214,.14); }
 
 .rm-actions { flex: none; display: flex; gap: 4px; margin-left: auto; }
+/* Six of these per row and each one is the ONLY way to reach what it does
+   (resize, ban, seal, retype, drop point, pause) — so they hold the 30px
+   floor in both axes, not just the width they happened to have. */
 .rm-act {
-  padding: 4px 8px; font-size: 11px; font-family: inherit;
+  padding: 4px 8px; min-height: 30px; min-width: 32px;
+  font-size: 12px; font-family: inherit;
   background: rgba(255,255,255,.04); color: #b9b4a8;
   border: 1px solid #2e2e36; border-radius: 5px; cursor: pointer;
   transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
@@ -208,7 +225,7 @@
 #rm-ignore-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .rm-ig {
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: 11px; color: #b9b4a8;
+  font-size: 12px; color: #b9b4a8;
   background: rgba(255,255,255,.04); border: 1px solid #2e2e36;
   border-radius: 10px; padding: 2px 4px 2px 8px;
 }
@@ -218,6 +235,26 @@
   transition: color 140ms ease, background 140ms ease;
 }
 .rm-ig-x:hover { color: #e79b93; background: rgba(200,80,70,.14); }
+
+/* Never-move filter (appears past 8 protected people). It takes the whole
+   row so the chips below it stay a clean wrap, and it deliberately reads
+   larger than the 11px chips — a control you type into must not be the
+   smallest text on the pane. */
+.rm-ig-findwrap {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  background: #16161d; border: 1px solid #3d3a33; border-radius: 9px;
+  padding: 5px 10px; margin: 2px 0 5px; max-width: 380px;
+  box-sizing: border-box;
+}
+.rm-ig-findg { color: #9a917d; font-size: 13px; line-height: 1; }
+.rm-ig-find {
+  flex: 1; min-width: 0;
+  background: transparent; border: none; outline: none;
+  color: #efe9da; font-size: 13px;
+}
+.rm-ig-find::placeholder { color: #7d7566; }
+.rm-ig-findn { color: #cbb27a; font-size: 12px; white-space: nowrap; }
+.rm-ig-none { width: 100%; color: #6f6a5e; font-size: 12.5px; padding: 4px 2px; }
 
 /* empty states — sized like real content so the list does not jump */
 #rm-empty { padding: 22px 12px; text-align: center; color: #6f6a5e; font-size: 12.5px; line-height: 1.5; }
@@ -235,7 +272,9 @@
   display: flex; flex-direction: column; gap: 8px;
 }
 .rm-tune-row { display: flex; align-items: center; gap: 9px; }
-.rm-tune-row .rm-field-label { flex: none; width: 74px; }
+/* 92px holds the longest label ("Up / down" = 77px at the 12px floor) without
+   clipping — the old 74px was sized for the 10px type. */
+.rm-tune-row .rm-field-label { flex: none; width: 92px; }
 .rm-tune-row input[type=range] { flex: 1; min-width: 0; accent-color: #c9a24b; }
 .rm-tune-row .rm-size-val { flex: none; width: 108px; text-align: right; }
 .rm-tune .rm-hint { color: #8a8478; }
@@ -392,7 +431,7 @@
 #rm-lock-banner.hidden { display: none; }
 .rm-lock-ban-t { font-size: 12.5px; color: #f0b4ac; font-weight: 600; }
 .rm-lock-ban-b {
-  padding: 5px 10px; font-size: 12px; font-family: inherit;
+  padding: 5px 10px; min-height: 30px; font-size: 12px; font-family: inherit;
   background: rgba(255,255,255,.05); color: #e7a49d;
   border: 1px solid #c8504644; border-radius: 6px; cursor: pointer;
   max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

@@ -38,12 +38,44 @@
     <div id="hb-grip" class="hb-grip" hidden title="Drag to move the bar">✥</div>
   </div>
 
+  <!-- ══ HUD widgets ═════════════════════════════════════════════════════ -->
+  <!-- Potion counts / gold / lockpicks — extra absolutely-positioned roots in
+       THIS view (no new PrismaUI view: the packager allowlist trap stays
+       closed, and icons/custom/… resolves here exactly as it does for the
+       bar). The individual widget elements are built by the widgets section
+       of hotbar.js; this root is their stage. Transparent and inert in play
+       mode like everything else here. -->
+  <div id="wg-root" class="wg-root" aria-label="HUD widgets"></div>
+
+  <!-- ══ widget edit panel ═══════════════════════════════════════════════ -->
+  <!-- The bar's editor's twin, reachable only while Focused (body.wg-edit).
+       The per-widget rows are built by JS into #wg-edit-body; this shell is
+       static so the harness can copy it verbatim. -->
+  <div id="wg-edit" class="hb-panel wg-panel" hidden>
+    <header class="hb-edit-head">
+      <h1>Widgets</h1>
+      <button id="wg-done" class="hb-btn hb-btn-primary" type="button"
+              title="Close the editor and hand the mouse back to the game">Done</button>
+    </header>
+    <div class="hb-panel-qrow">
+      <input id="wg-panel-q" class="hb-search hb-panel-q" type="text" autocomplete="off"
+             title="Filter every setting below as you type — matches names and their hover text."
+             placeholder="Search these settings — try “gold”, “opacity”, “menus”…">
+    </div>
+    <div id="wg-edit-body" class="hb-edit-body"></div>
+  </div>
+
   <!-- ══ edit panel ═════════════════════════════════════════════════════ -->
   <!-- Only reachable while Focused. Big controls and big type on purpose: this
        is read from a couch at 2560×1440. -->
   <div id="hb-edit" class="hb-panel" hidden>
     <header class="hb-edit-head">
       <h1>Action Bar</h1>
+      <!-- 2026-08-19: setup docks to EITHER edge (Rober: "same with action bar
+           popout (need to be able to move to left"). One ⇄ button, the HUD
+           shelf's own idiom; the side is persisted in the hotbar slice. -->
+      <button id="hb-side" class="hb-btn hb-side-btn" type="button"
+              title="Dock setup on the left edge">⇄</button>
       <button id="hb-done" class="hb-btn hb-btn-primary" type="button"
               title="Close the editor and hand the mouse back to the game">Done</button>
     </header>

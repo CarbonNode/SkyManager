@@ -136,13 +136,68 @@ function normCode(e) {
   return (e.key && e.key.length > 1) ? e.key : '';
 }
 
-const NUMPAD_LAYOUT = [
-  { l: 'NumLock', c: 0x45, small: true }, { l: '/', c: 0xB5 }, { l: '*', c: 0x37 }, { l: '−', c: 0x4A, real: 'Num -' },
-  { l: '7', c: 0x47 }, { l: '8', c: 0x48 }, { l: '9', c: 0x49 }, { l: '+', c: 0x4E, cls: 'tall' },
-  { l: '4', c: 0x4B }, { l: '5', c: 0x4C }, { l: '6', c: 0x4D },
-  { l: '1', c: 0x4F }, { l: '2', c: 0x50 }, { l: '3', c: 0x51 }, { l: 'Enter', c: 0x9C, cls: 'tall', small: true },
-  { l: '0', c: 0x52, cls: 'wide' }, { l: '.', c: 0x53 },
+/* ---- the on-screen keypad ----------------------------------------------
+   Rober, 2026-08-30: "i need this to be more than a numpad, things like page
+   up page down, end home all that stuff." So the tab is no longer ONE grid: it
+   is a row of labelled clusters laid out the way a real keyboard arranges
+   them, spending the empty space the 4-column pad was leaving.
+
+   `c` is the DirectInput scancode — the same alphabet keys-pane.js names and
+   hdFireKey expects, NOT a JS keyCode. `name` is what the fired chord is
+   LABELLED ("Num 7" on the pad, "Home" on the nav block); it is the single
+   source of that string, so no caller has to re-derive a "Num " prefix.
+   A key with no `c` is a SPACER — it holds the arrow block's shape and is
+   drawn as a hole, never a button.
+
+   ⛔ Deliberately absent: Esc and Tab. While the palette is open the DECK owns
+   both — Esc closes it, Tab switches to this very tab — so those buttons would
+   close the deck instead of firing. A button that does the wrong thing is
+   worse than a button that isn't there; the hint under the pad says so. */
+const KEYPAD_GROUPS = [
+  { id: 'num', title: 'Numpad', cols: 4, keys: [
+    { l: 'NumLock', c: 0x45, name: 'NumLock', small: true }, { l: '/', c: 0xB5, name: 'Num /' },
+    { l: '*', c: 0x37, name: 'Num *' }, { l: '−', c: 0x4A, name: 'Num -' },
+    { l: '7', c: 0x47, name: 'Num 7' }, { l: '8', c: 0x48, name: 'Num 8' },
+    { l: '9', c: 0x49, name: 'Num 9' }, { l: '+', c: 0x4E, name: 'Num +', cls: 'tall' },
+    { l: '4', c: 0x4B, name: 'Num 4' }, { l: '5', c: 0x4C, name: 'Num 5' }, { l: '6', c: 0x4D, name: 'Num 6' },
+    { l: '1', c: 0x4F, name: 'Num 1' }, { l: '2', c: 0x50, name: 'Num 2' }, { l: '3', c: 0x51, name: 'Num 3' },
+    { l: 'Enter', c: 0x9C, name: 'Num Enter', cls: 'tall', small: true },
+    { l: '0', c: 0x52, name: 'Num 0', cls: 'wide' }, { l: '.', c: 0x53, name: 'Num .' },
+  ] },
+  /* The editing block and the arrow T, in their real keyboard shape: the blank
+     row between them is what makes the cluster readable at a glance. */
+  { id: 'nav', title: 'Navigation', cols: 3, keys: [
+    { l: 'Insert', c: 0xD2, name: 'Insert', small: true }, { l: 'Home', c: 0xC7, name: 'Home', small: true },
+    { l: 'PgUp', c: 0xC9, name: 'PgUp', small: true },
+    { l: 'Delete', c: 0xD3, name: 'Delete', small: true }, { l: 'End', c: 0xCF, name: 'End', small: true },
+    { l: 'PgDn', c: 0xD1, name: 'PgDn', small: true },
+    {}, {}, {},
+    {}, { l: '↑', c: 0xC8, name: 'Up' }, {},
+    { l: '←', c: 0xCB, name: 'Left' }, { l: '↓', c: 0xD0, name: 'Down' }, { l: '→', c: 0xCD, name: 'Right' },
+  ] },
+  { id: 'sys', title: 'Keyboard', cols: 3, keys: [
+    { l: 'Bksp', c: 0x0E, name: 'Backspace', small: true }, { l: 'Enter', c: 0x1C, name: 'Enter', small: true },
+    { l: 'Space', c: 0x39, name: 'Space', small: true },
+    { l: 'Caps', c: 0x3A, name: 'CapsLock', small: true }, { l: 'ScrLk', c: 0x46, name: 'ScrollLock', small: true },
+    { l: 'Pause', c: 0xC5, name: 'Pause', small: true },
+    { l: 'PrtScr', c: 0xB7, name: 'PrtScr', small: true }, { l: '\\', c: 0x2B, name: '\\' },
+    { l: '`', c: 0x29, name: '`' },
+  ] },
+  { id: 'fn', title: 'Function row', cols: 6, keys: [
+    { l: 'F1', c: 0x3B, name: 'F1', small: true }, { l: 'F2', c: 0x3C, name: 'F2', small: true },
+    { l: 'F3', c: 0x3D, name: 'F3', small: true }, { l: 'F4', c: 0x3E, name: 'F4', small: true },
+    { l: 'F5', c: 0x3F, name: 'F5', small: true }, { l: 'F6', c: 0x40, name: 'F6', small: true },
+    { l: 'F7', c: 0x41, name: 'F7', small: true }, { l: 'F8', c: 0x42, name: 'F8', small: true },
+    { l: 'F9', c: 0x43, name: 'F9', small: true }, { l: 'F10', c: 0x44, name: 'F10', small: true },
+    { l: 'F11', c: 0x57, name: 'F11', small: true }, { l: 'F12', c: 0x58, name: 'F12', small: true },
+  ] },
 ];
+
+/* The FLAT list every fire goes through — a button's data-i indexes THIS, so
+   the click handler never has to know which cluster the key came from, and the
+   pre-2026-08-30 numpad indices stay first and unchanged. */
+const NUMPAD_LAYOUT = KEYPAD_GROUPS.reduce(
+  (all, g) => all.concat(g.keys.filter((k) => k && k.c)), []);
 
 /* ============================================================= state ==== */
 
@@ -239,16 +294,33 @@ function installScrollSpeed() {
     if (active.length) raf = requestAnimationFrame(tick);
   }
 
+  /* PERF: the ancestor walk below runs getComputedStyle — the single most
+     expensive DOM read there is — once per overflowing ancestor, and the deck
+     nests ~8-12 deep. A flick is a burst of notches that all carry the SAME
+     e.target, so the answer is remembered for that target and re-validated
+     (still in the document, still scrollable) rather than recomputed per notch.
+     A different target, or a scroller that left the DOM, walks again. */
+  var lastWheelTarget = null, lastWheelScroller = null;
+
   document.addEventListener('wheel', function (e) {
     if (!e.deltaY) return;
     var mult = clampScroll(state.settings.scrollSpeed) * SCROLL_BASE;
-    var el = e.target;
-    while (el && el !== document.body && el.nodeType === 1) {
-      if (el.scrollHeight > el.clientHeight + 1) {
-        var oy = getComputedStyle(el).overflowY;
-        if (oy === 'auto' || oy === 'scroll') break;
+    var el = null;
+    if (e.target === lastWheelTarget && lastWheelScroller &&
+        lastWheelScroller.isConnected &&
+        lastWheelScroller.scrollHeight > lastWheelScroller.clientHeight + 1) {
+      el = lastWheelScroller;
+    } else {
+      el = e.target;
+      while (el && el !== document.body && el.nodeType === 1) {
+        if (el.scrollHeight > el.clientHeight + 1) {
+          var oy = getComputedStyle(el).overflowY;
+          if (oy === 'auto' || oy === 'scroll') break;
+        }
+        el = el.parentElement;
       }
-      el = el.parentElement;
+      lastWheelTarget = e.target;
+      lastWheelScroller = (el && el !== document.body && el.nodeType === 1) ? el : null;
     }
     if (!el || el === document.body || el.nodeType !== 1) return;
     var max = el.scrollHeight - el.clientHeight;
@@ -493,7 +565,7 @@ function pdScan(e, zones) {
       if (zone.eligible && !zone.eligible(el)) continue;
       const r = el.getBoundingClientRect();
       if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
-        found = { el, zone };
+        found = { el, zone, r };   // keep the rect: the before/after split below wants it
         break;
       }
     }
@@ -507,7 +579,12 @@ function pdScan(e, zones) {
     found.el.classList.add('drop-into');
     pdCur = { el: found.el, mode: 'into', after: false };
   } else {
-    const r = found.el.getBoundingClientRect();
+    /* PERF: re-reading the rect HERE — after the classList writes above — forced
+       a second full layout on every mousemove of every pane drag. It is the same
+       element the hit test just measured, so reuse that rect: one layout per
+       move instead of two, and the split now agrees with the hit test by
+       construction rather than by luck. */
+    const r = found.r;
     const after = (e.clientY - r.top) > r.height / 2;
     found.el.classList.toggle('drop-after', after);
     found.el.classList.toggle('drop-before', !after);
@@ -820,7 +897,14 @@ function render() {
                 ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
                 ui.tab === 'rooms' || ui.tab === 'time' || ui.tab === 'loot' ||
                 ui.tab === 'anim' || ui.tab === 'keys' || ui.tab === 'items' || ui.tab === 'npcs' ||
-                ui.tab === 'mounts' || ui.tab === 'sheet' ||
+                ui.tab === 'mounts' || ui.tab === 'sheet' || ui.tab === 'transmog' ||
+                ui.tab === 'spellcraft' || ui.tab === 'journal' || ui.tab === 'highking' ||
+                /* settle + wigs were missing here (2026-08-15): setTab() switched
+                   ui.tab and called their onShow, but this whitelist fell through
+                   to 'deck', so the click "did nothing" and the hotkey list stayed
+                   on screen. Every top-level pane MUST be listed here. */
+                ui.tab === 'settle' || ui.tab === 'wigs' || ui.tab === 'survival' ||
+                ui.tab === 'distr' ||
                 ui.tab === 'wardrobe' || ui.tab === 'faces' || ui.tab === 'recent') ? ui.tab : 'deck';
   const deck = pane === 'deck';
   window.__hdActiveTab = pane;   // panes (followers/domains) key their re-renders off this
@@ -839,7 +923,15 @@ function render() {
   $('kc-pane').classList.toggle('hidden', pane !== 'keys');
   $('ix-pane').classList.toggle('hidden', pane !== 'items');
   $('nx-pane').classList.toggle('hidden', pane !== 'npcs');
+  $('dx-pane').classList.toggle('hidden', pane !== 'distr');
+  $('jr-pane').classList.toggle('hidden', pane !== 'journal');
+  $('tg-pane').classList.toggle('hidden', pane !== 'transmog');
   $('mt-pane').classList.toggle('hidden', pane !== 'mounts');
+  $('st-pane').classList.toggle('hidden', pane !== 'settle');
+  $('sc-pane').classList.toggle('hidden', pane !== 'spellcraft');
+  $('hx-pane').classList.toggle('hidden', pane !== 'highking');
+  $('wv-pane').classList.toggle('hidden', pane !== 'wigs');
+  $('sp-pane').classList.toggle('hidden', pane !== 'survival');
   $('ps-pane').classList.toggle('hidden', pane !== 'sheet');
   $('fin-pane').classList.toggle('hidden', pane !== 'finances');
   $('wd-pane').classList.toggle('hidden', pane !== 'wardrobe');
@@ -887,7 +979,7 @@ function render() {
  *  control belongs beside that tab's other settings, not in a second card
  *  floating above it, and those panes never flip ui.edit anyway.
  */
-const TAB_SCALE_CARD_TABS = ['quests', 'notes', 'numpad', 'recent', 'time', 'loot', 'anim', 'items', 'npcs', 'mounts'];
+const TAB_SCALE_CARD_TABS = ['quests', 'notes', 'numpad', 'recent', 'time', 'loot', 'anim', 'items', 'npcs', 'mounts', 'transmog'];
 
 function renderTabScaleCard(pane) {
   const card = $('tab-scale-card');
@@ -1445,6 +1537,12 @@ function renderHints(pane) {
       '<span>⤞ Go to · ＋ Spawn a copy</span><span>F7 / Esc close</span>';
     return;
   }
+  if (pane === 'transmog') {
+    h.innerHTML = '<span>Click a piece — pick any look, stats stay</span><span>Enter = restyle the top piece</span>' +
+      '<span>◇ rows are transmogged — Revert restores</span><span>click a picture for a big look</span>' +
+      '<span>F7 / Esc close</span>';
+    return;
+  }
   if (pane === 'anim') {
     h.innerHTML = '<span>Search, then Apply (Enter = top hit)</span><span>plays on who you looked at, or you</span>' +
       '<span>Reset returns the pose</span><span>F7 / Esc close</span>';
@@ -1510,12 +1608,35 @@ const SYS_TABS = [
      C++ hdShowTab deep-opens, HDScale and the harnesses all keep working
      untouched. */
   { tab: 'finder',     label: 'Finder',     img: 'icons/custom/hm-finder.png',     title: 'Find any item or anyone the load order ships — take, bring, go to, spawn' },
+  /* deliberately UNGATED: with no SPID / SkyPatcher files in the load order the
+     pane says so itself (the survival precedent — more useful than vanishing). */
+  { tab: 'distr',      label: 'Distributions', img: 'icons/custom/hm-distr.png',   title: 'What SPID and SkyPatcher could give the NPC in your crosshair — outfits, items, spells, searchable' },
+  { tab: 'transmog',   label: 'Transmog',   img: 'icons/custom/hm-transmog.png',   title: 'Restyle a specific piece of your gear to look like any armor any mod ships' },
+  /* Combat Arts is NOT here (2026-08-15, Rober: "combat arts is meant to be a
+     spell deck tab not a main skymanager tab") — the pane moved into the Spell
+     Deck view as its second page. It is still reachable from the Home card, the
+     omni provider below, and its own bindable action, all of which open the
+     Spell Deck on that page via hdOpenSpells('arts'). */
   { tab: 'mounts',     label: 'Mounts',     img: 'icons/custom/hm-mounts.png',     title: 'Your stable — summon, call and ride anything you can sit on' },
+  { tab: 'settle',     label: 'Settlement', img: 'icons/custom/hm-settlement.png', title: 'Place objects, statics, camp gear — build a camp, keep catalogs' },
+  /* deliberately UNGATED: with no survival mod installed the pane says so
+     itself, which is more useful than a tab that quietly vanishes. */
+  { tab: 'survival',   label: 'Survival',   img: 'icons/custom/hm-survival.png',   title: 'Everything your survival mods track — needs, temperature, skills — arranged how you like' },
+  { tab: 'wigs',       label: 'Wigs',       img: 'icons/custom/hm-wigs.png',       title: 'Every wig your wig mods ship - rendered, searchable, one click to wear' },
   { tab: 'sheet',      label: 'Character',  img: 'icons/custom/hm-sheet.png',      title: 'Your character sheet - stats, effects, story' },
+  { tab: 'journal',    label: 'Journal',    img: 'icons/custom/hm-journal.png',    title: 'Write your own pages - a real book, with pictures anywhere on them' },
   { tab: 'anim',       label: 'Animations', img: 'icons/custom/hm-anim.png',       title: 'Apply a pose / animation to an NPC or yourself', requires: 'zap' },
   { tab: 'finances',   label: 'Finances',   img: 'icons/custom/hm-finances.png',   title: 'Your ledger, properties and market' },
   { tab: 'wardrobe',   label: 'Wardrobe',   img: 'icons/custom/hm-wardrobe.png',   title: 'Outfits, wardrobes and NPC dressing', requires: 'soes' },
   { tab: 'faces',      label: 'Faces',      img: 'icons/custom/hm-faces.png',      title: 'Browse RaceMenu presets and apply a face', requires: 'presetdirector' },
+  /* deliberately UNGATED (no `requires`): the sc* bridge's own present:false
+     answer paints the honest "Fourth Era Spell-Crafting is not in the load
+     order" hero inside the pane, per its contract (the combatarts precedent). */
+  { tab: 'spellcraft', label: 'Spell Crafting', img: 'icons/custom/hm-spellcraft.png', title: 'Design your own spell — Oblivion-style spellmaking (Fourth Era Spell-Crafting)' },
+  /* Detection-GATED (requires: 'highking'): every surface on this tab reads
+     Become High King of Skyrim TNG's own globals — without the mod there is
+     nothing honest to draw, so the tab vanishes rather than refuses. */
+  { tab: 'highking', label: 'High King', img: 'icons/custom/hm-highking.png', title: 'Rule Skyrim — treasury, taxes, approval, rebellions, council and royal powers', requires: 'highking' },
 ];
 
 /* True unless the tab's required mod is EXPLICITLY detected-absent. Mirrors
@@ -1556,6 +1677,25 @@ window.__hdFinderGo = function (target, q) {
   setTab(target);
   const pane = target === 'items' ? window.ItemsPane : window.NpcsPane;
   if (pane && typeof pane.setFilter === 'function') pane.setFilter(String(q == null ? '' : q));
+};
+
+/* "Give this action a key", from any pane that owns a seeded action's own UI.
+   A seeded action lives in a hotkey category and is bound the same way as
+   everything else — F2, then press-to-rebind — but a player looking at the
+   Auto-Loot card has no reason to guess that (Rober, 2026-08-17: "im not seeing
+   any sort of obvious like enable auto loot toggle bindable hotkey"). This
+   lands them on the row, in edit mode, with the filter already narrowed to it.
+   Same shape as __hdFinderGo above: the pane holds the string, app.js owns the
+   navigation. */
+window.__hdGoBind = function (q) {
+  setTab('all');
+  ui.edit = true;
+  ui.search = String(q == null ? '' : q);
+  const box = $('search');
+  if (box) box.value = ui.search;
+  ui.sel = 0;
+  render();
+  if (box && typeof box.focus === 'function') { try { box.focus(); } catch (e) {} }
 };
 
 /* The gate keyed by tab id, for callers that hold a tab string not a SYS_TABS
@@ -1628,6 +1768,19 @@ function hintsPrefs() {
    — k/s are the in-game DEFAULT framing dials (hd-facefit.js tunables),
    files are per-NPC hand framings saved from the followers lightbox.
    facefit-prefs */
+/* Panes persist SMALL UI prefs through this door into the shelf blob — the
+   raw-JSON slice C++ round-trips whole, which is what makes a brand-new pref
+   key survive the save (a new `settings` field would be silently dropped by
+   the field-by-field C++ parse; the facefit/tabbar precedent). Returns a LIVE
+   object; call __hdShelfSave() after mutating it. */
+window.__hdShelfSlice = function (name) {
+  if (!state.shelf || typeof state.shelf !== 'object' || Array.isArray(state.shelf)) state.shelf = {};
+  let o = state.shelf[name];
+  if (!o || typeof o !== 'object' || Array.isArray(o)) o = state.shelf[name] = {};
+  return o;
+};
+window.__hdShelfSave = function () { saveSoon(); };
+
 function facefitPrefs() {
   if (!state.shelf || typeof state.shelf !== 'object' || Array.isArray(state.shelf)) state.shelf = {};
   let ff = state.shelf.facefit;
@@ -1886,7 +2039,11 @@ function paintTabsRow(n, compactMore) {
         ? '<img class="tab-icon" src="' + activeMore.img + '" alt="' + esc(activeMore.label) + '" draggable="false">'
         : '⋯')
     : (compactMore ? '⋯'
-        : (activeMore ? esc(activeMore.label) : (tabOverflow.length ? 'More' : '⋯')));
+        /* the hoisted label rides its own span so CSS can ellipsize it rather
+           than let a long system name ("Spell Crafting") clip mid-word against
+           the header chrome — belt and braces behind the fit loop's re-measure */
+        : (activeMore ? '<span class="tab-more-lbl">' + esc(activeMore.label) + '</span>'
+            : (tabOverflow.length ? 'More' : '⋯')));
   html += '<button class="tab tab-more' + (icons ? ' tab-ic' : '') + (activeMore ? ' active' : '') + (ui.moreOpen ? ' open' : '') +
     '" data-act="more" aria-haspopup="true" aria-expanded="' + (!!ui.moreOpen) +
     '" title="' + (activeMore ? esc(activeMore.label) + ' — ' + moreTitle : moreTitle) + '">' +
@@ -1921,9 +2078,17 @@ function renderTabs() {
   let n = order.length;
   let compact = false;
   /* Signature of everything that can change the fitted width. sysOrder()'s ids
-     in order capture both the count and WHICH tabs (label widths differ). */
+     in order capture both the count and WHICH tabs (label widths differ).
+     The ACTIVE system tab is in here too (2026-08-15) even though the old
+     comment above says the active tab only changes colour: that is true of a
+     tab ON the bar, but an active tab in the OVERFLOW hoists its full LABEL
+     onto the More button ("More"/"⋯" -> "Spell Crafting"), which is wider than
+     what was measured. Without it, a cache hit repainted a wider row than the
+     one that fitted — the label clipped under the hotkey-count chip and the
+     row grew a scrollbar (Rober's screenshot, Spell Crafting). */
   const sig = cw + '|' + (tabbarPrefs().style === 'icons' ? 'i' : 'l') + '|'
-    + (state.settings.uiScale || 1) + '|' + order.map((t) => t.tab).join(',');
+    + (state.settings.uiScale || 1) + '|' + order.map((t) => t.tab).join(',')
+    + '|' + (order.filter(sysActive).map((t) => t.tab)[0] || '-');
 
   if (cw && tabFitCache.sig === sig && tabFitCache.n >= 0) {
     /* Unchanged fit — reuse the count, paint once, no reflow loop. */
@@ -2141,6 +2306,25 @@ const HK_REQUIRES = {
      setup without it no longer shows a dead unbound "Tailor (Outfits & Wigs)"
      row. Both the seed id and the bare id are the same string here. */
   'tailor-open':               { flag: 'tailor', label: 'Tailor' },
+  /* 2026-08-15 seed audit — the party orders, quick recruit and Home Is Here
+     all dispatch through NFF / MHiYH's own scripts, and Quick Light casts
+     QuickLight.esp's own alias: without the backing mod each is a refusal
+     toast at best. Gated like every other integration so a fresh install only
+     surfaces what will actually work. C++ flags: nff (existing), mhiyh +
+     quicklight (DetectedModsJson, added with this block). */
+  'hd-party-wait':             { flag: 'nff',        label: "Nether's Follower Framework" },
+  'hd-party-follow':           { flag: 'nff',        label: "Nether's Follower Framework" },
+  'hd-party-summon':           { flag: 'nff',        label: "Nether's Follower Framework" },
+  'hd-party-relax':            { flag: 'nff',        label: "Nether's Follower Framework" },
+  'hd-party-regroup':          { flag: 'nff',        label: "Nether's Follower Framework" },
+  'npc-nff-recruit':           { flag: 'nff',        label: "Nether's Follower Framework" },
+  'npc-mhiyh-home':            { flag: 'mhiyh',      label: 'My Home Is Your Home' },
+  'hd-quick-light':            { flag: 'quicklight', label: 'Quick Light SE' },
+  /* High King seeds (2026-08-18): the tab opener and both kingdom verbs all
+     read/dispatch Become High King of Skyrim TNG's own globals and scripts. */
+  'hd-highking':               { flag: 'highking', label: 'Become High King of Skyrim TNG' },
+  'hd-hk-collect-taxes':       { flag: 'highking', label: 'Become High King of Skyrim TNG' },
+  'hd-hk-highreach-tp':        { flag: 'highking', label: 'Become High King of Skyrim TNG' },
 };
 /* The missing-mod label if this entry's required mod is NOT detected, else ''.
    device:"vkey" requires VirtualKey. A DLL that predates cfg.detected sends no
@@ -2519,11 +2703,267 @@ function renderExt() {
   g.innerHTML = html;
 }
 
+/* ============================================ deck settings, searchable ==== *
+ *  The Deck settings card is the least discoverable surface SkyManager has:
+ *  a dozen named settings behind two collapsed chevrons, inside F2 edit mode,
+ *  on one tab. A player who wants "smooth pause" or "close after firing" has
+ *  to know the card exists before they can find it — the same miss the open
+ *  key had until home-pane.js registered it with omni. So the card registers
+ *  itself with omni too, control by control.
+ *
+ *  Enter DOES the thing — flips the checkbox through its own change handler,
+ *  starts the rebind, opens the size popover. Shift+Enter (the jump) only
+ *  unfolds the card ON that control, for when you want to read a setting
+ *  before you touch it. Both are honest: the row's `detail` carries the live
+ *  value, so nothing changes state you could not already see.
+ * ========================================================================== */
+
+/* Unfold the settings card and land on one control inside it. That card only
+   exists on the hotkey pane in edit mode, so getting there is part of the job.
+   `sel` is a SELECTOR, not an element, because renderExt() rebuilds the F-key
+   grid on every paint — anything looked up before render() would be a detached
+   orphan by the time we focused it. Returns the control, or null. */
+function openDeckSettings(sel, inExt) {
+  if (!isHotkeyTab()) setTab(hkTabToken());
+  ui.edit = true;
+  ui.setOpen = true;
+  if (inExt) ui.extOpen = true;
+  render();
+  const el = sel ? document.querySelector(sel) : null;
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center' });
+  if (el && el.focus) el.focus();
+  return el;
+}
+
+/* Flip one of the card's checkboxes by clicking the checkbox itself, so its
+   existing change handler stays the ONE implementation of what the setting
+   means (pause also enables/disables Smooth pause, ext-cb repaints the grid).
+   A disabled box is left alone and says why — silently doing nothing is how a
+   search result earns a player's distrust. */
+function toggleDeckSetting(row) {
+  const el = openDeckSettings('#' + row.id, !!row.ext);
+  if (!el) return;
+  if (el.disabled) { toast(row.why || 'That setting is not available right now'); return; }
+  el.click();
+  toast(row.name + ': ' + (el.checked ? 'on' : 'off'));
+}
+
+/* Every checkbox in the card, with the live reading omni shows in `detail`.
+   `why` is the honest refusal for the one control that can be disabled. */
+const DECK_SETTING_CBS = [
+  { id: 'pause-cb', name: 'Pause game while open',
+    keywords: 'pause freeze stop time world while open menu unpause',
+    detail: () => (state.settings.pauseOnOpen
+      ? 'On — the world stops while the deck is up'
+      : 'Off — the game keeps running behind the deck') },
+  { id: 'smoothpause-cb', name: 'Smooth pause',
+    keywords: 'smooth pause sgtm frozen time cursor lag stutter framerate snappy mouse',
+    why: 'Smooth pause only matters with “Pause game while open” on',
+    detail: () => (!state.settings.pauseOnOpen
+      ? 'Needs “Pause game while open” — turn that on first'
+      : (state.settings.smoothPause !== false
+        ? 'On — time freezes instead of a menu pause, so the cursor stays smooth'
+        : 'Off — the classic menu pause')) },
+  { id: 'close-cb', name: 'Close after firing',
+    keywords: 'close after firing shut dismiss stay open auto close palette',
+    detail: () => (state.settings.closeAfterFire
+      ? 'On — the deck closes when you fire something'
+      : 'Off — the deck stays open after firing') },
+  { id: 'sticky-cb', name: 'Sticky numpad modifiers',
+    keywords: 'sticky numpad modifiers shift ctrl alt latch hold toggle',
+    detail: () => (state.settings.stickyNpMods
+      ? 'On — Shift/Ctrl/Alt stay on until you toggle them off'
+      : 'Off — a modifier lasts for one numpad press') },
+  { id: 'tgtfol-cb', name: 'Looking at someone? Open on the Followers tab',
+    keywords: 'crosshair target npc person followers tab open on quick card dismiss inventory outfit wait',
+    detail: () => (state.settings.targetOpensFollowers !== false
+      ? 'On — opening with someone in your crosshair lands on her card'
+      : 'Off — the deck always opens where you left it') },
+  { id: 'ext-cb', name: 'Extended F-keys (F13–F24)', ext: true,
+    keywords: 'extended f keys fkey f13 f14 f15 f16 f17 f18 f19 f20 f21 f22 f23 f24 ' +
+              'bridge macro mouse scimitar mcm bind remap',
+    detail: () => {
+      const ek = extKeysState();
+      const mapped = EXT_NAMES.filter((n) => ek.map[n] > 0).length;
+      return ek.enabled
+        ? 'On — ' + mapped + '/12 physical keys bridged into the game'
+        : 'Off — F13–F24 presses are ignored';
+    } },
+];
+
+/* Open the header's ⤢ Display popover (menu size · scroll speed · Fill
+   screen). It works on every tab with no edit mode, which is why the size
+   rows point here rather than at the card's own −/＋. */
+function openDisplayPopover() {
+  const pop = $('uiscale-pop');
+  if (pop && !pop.classList.contains('hidden')) return;   // already up — don't toggle it shut
+  const btn = $('uiscale-btn');
+  if (btn) btn.click();
+}
+
+function registerDeckSettingsOmni() {
+  if (!window.HDOmni || !HDOmni.register) return;
+  HDOmni.register({
+    /* tab '' — these rows are not one tab's contents, and each carries its own
+       jump (unfold the card on that control) rather than a shared one. */
+    id: 'deck-settings', label: 'Deck settings', tab: '',
+    index: function () {
+      const items = [];
+      DECK_SETTING_CBS.forEach((row) => {
+        items.push({
+          label: row.name, detail: row.detail(), kind: 'setting',
+          keywords: row.keywords,
+          run: function () { toggleDeckSetting(row); },
+          jump: function () { openDeckSettings('#' + row.id, !!row.ext); },
+        });
+      });
+
+      /* Quick-fire: hold a modifier + the open key and the deck fires that key
+         without ever painting. One row per slot — each is its own binding, and
+         the useful half of the answer is which key it currently fires. */
+      const ok = (state.settings && state.settings.openKey) || {};
+      const okLbl = ok.label || (ok.code ? (ok.device + ' ' + ok.code) : 'the open key');
+      ['shift', 'ctrl', 'alt'].forEach((m) => {
+        const cap = m.charAt(0).toUpperCase() + m.slice(1);
+        const sl = modSlot(m);
+        items.push({
+          label: 'Quick-fire: ' + cap + ' + ' + okLbl,
+          detail: sl.code
+            ? 'Fires ' + (sl.label || (sl.device + ' ' + sl.code)) + ' straight away, skipping the menu'
+            : 'Not set — Enter to press the key it should fire',
+          kind: 'setting',
+          keywords: 'quick fire quickfire modifier chord ' + m + ' skip menu shortcut rebind bind ' +
+                    'weapon wheel ' + (sl.label || ''),
+          run: function () { openDeckSettings('#mod' + m + '-btn'); startCapture('mod' + m, null); },
+          jump: function () { openDeckSettings('#mod' + m + '-btn'); },
+        });
+      });
+
+      /* The three display controls that live in the header popover. "Make the
+         deck bigger" is the single most common thing a player wants and the
+         slider was buried in edit mode until 2026-08-07 — it must be findable
+         by every name it goes by. */
+      items.push({
+        label: 'Menu size', kind: 'setting',
+        detail: 'Currently ' + Math.round(clampScale(state.settings.uiScale) * 100) +
+                '% — scales the whole deck window',
+        keywords: 'menu size scale ui scale bigger smaller larger zoom resize ' +
+                  'text size tiny huge 4k display',
+        run: openDisplayPopover, jump: openDisplayPopover,
+      });
+      items.push({
+        label: 'Fill screen', kind: 'setting',
+        /* Deliberately a fixed line: isFilled() measures the panel through
+           fitScale(), which writes --ui-scale and reads offsetWidth — a forced
+           reflow, and index() runs on every keystroke. The state is read once,
+           in run(), where one reflow is free. */
+        detail: 'Auto-scale the deck to fill your screen — press again for 100%',
+        keywords: 'fill screen fullscreen full screen maximise maximize biggest ' +
+                  'auto scale fit monitor 4k',
+        run: function () { toggleFill(); toast(isFilled() ? 'Filling the screen' : 'Back to 100%'); },
+        jump: openDisplayPopover,
+      });
+      items.push({
+        label: 'Scroll speed', kind: 'setting',
+        detail: 'Currently ' + Math.round(clampScroll(state.settings.scrollSpeed) * 100) +
+                '% — how far one wheel notch scrolls a list',
+        keywords: 'scroll speed wheel mouse faster slower scrolling lists',
+        run: openDisplayPopover,
+        jump: function () { openDeckSettings('#scrollspeed-edit-range'); },
+      });
+      /* Row-icon size is deliberately NOT in the popover: the deck can stay at
+         100% while the pictures grow, which is what "bigger images" means on a
+         list of named keys. It only exists inside the card. */
+      items.push({
+        label: 'Row icon size', kind: 'setting',
+        detail: 'How big the pictures on the hotkey rows are',
+        keywords: 'row icon size image bigger pictures art thumbnails hotkey rows',
+        run: function () { openDeckSettings('#deck-img-row'); },
+        jump: function () { openDeckSettings('#deck-img-row'); },
+      });
+
+      /* One row per bridged F-key, so "F19" finds what F19 actually does
+         rather than nothing at all. Enter opens the same press-to-rebind the
+         grid's own key chip does. */
+      const ek = extKeysState();
+      EXT_NAMES.forEach((n) => {
+        const code = ek.map[n];
+        items.push({
+          label: 'Extended key ' + n, kind: 'setting',
+          detail: code
+            ? 'Fires ' + extTargetLabel(n, code) + ' in-game' + (ek.enabled ? '' : ' — bridge is off')
+            : 'Off — ' + n + ' sends nothing',
+          keywords: 'extended f keys fkey bridge remap macro mouse scimitar mcm bind ' + n,
+          run: function () {
+            openDeckSettings('.ext-target[data-ext="' + n + '"]', true);
+            startCapture('ext', n);
+          },
+          jump: function () { openDeckSettings('.ext-target[data-ext="' + n + '"]', true); },
+        });
+      });
+
+      /* Tab style lives behind a chevron inside the More ▾ dropdown — a real
+         display setting for the whole bar, two levels down from anything. */
+      items.push({
+        label: 'Tab style — names or icons', kind: 'setting',
+        detail: (tabbarPrefs().style === 'icons' ? 'Icons' : 'Names') +
+                ' — how the tab bar shows each system',
+        keywords: 'tab style icons names bar labels compact glyphs more menu overflow',
+        run: function () { ui.moreOpen = true; ui.moreStyleOpen = true; renderTabs(); },
+        jump: function () { ui.moreOpen = true; ui.moreStyleOpen = true; renderTabs(); },
+      });
+
+      /* The Deck Portal button carries no text label and hides itself when
+         Node is absent, so a player who has read about the phone UI has no way
+         to find it. Indexed only while the button is really there — a search
+         result for a feature this install cannot run is the same lie as a
+         button that does nothing. */
+      const pb = $('portal-btn');
+      if (pb && !pb.classList.contains('hidden')) {
+        const pd = (window.HDPortal && HDPortal.state() && HDPortal.state().data) || {};
+        items.push({
+          label: 'Deck Portal', kind: 'setting',
+          detail: pd.running
+            ? 'Running at ' + (pd.url || 'this PC') + ' — opens in your browser'
+            : 'Start the portal and open it in your browser',
+          keywords: 'deck portal phone browser web ui upload portraits icons keyboard ' +
+                    'server node localhost remote',
+          run: function () { pb.click(); },
+          jump: function () { pb.click(); },
+        });
+      }
+      /* "settings" / "options" is what a player types when they know a knob
+         exists but not what it is called — the whole group answers to it.
+         Added here rather than on every row so no row can be forgotten. */
+      items.forEach((it) => { it.keywords = 'settings options ' + (it.keywords || ''); });
+      return items;
+    },
+  });
+}
+
+/* One cluster per group, each its own grid so a group's column count is its
+   own business. The deck's OWN open key is marked rather than hidden: firing
+   it really does toggle the deck, so saying that out loud beats a button that
+   looks broken (or a hole where F7 should be on a keyboard picture). */
 function buildNumpad() {
+  const openCode = (state.settings.openKey && state.settings.openKey.device === 'keyboard')
+    ? Number(state.settings.openKey.code) || 0 : 0;
   let html = '';
-  NUMPAD_LAYOUT.forEach((k, i) => {
-    const lbl = k.small ? '<small>' + esc(k.l) + '</small>' : esc(k.l);
-    html += '<button class="npkey ' + (k.cls || '') + '" data-i="' + i + '">' + lbl + '</button>';
+  KEYPAD_GROUPS.forEach((g) => {
+    html += '<div class="np-group" data-g="' + esc(g.id) + '">' +
+      '<div class="np-group-title">' + esc(g.title) + '</div>' +
+      '<div class="np-keys" style="grid-template-columns: repeat(' + g.cols + ', var(--npkey-w))">';
+    g.keys.forEach((k) => {
+      if (!k || !k.c) { html += '<span class="npgap" aria-hidden="true"></span>'; return; }
+      const i = NUMPAD_LAYOUT.indexOf(k);
+      const deck = k.c === openCode;
+      const lbl = k.small ? '<small>' + esc(k.l) + '</small>' : esc(k.l);
+      html += '<button class="npkey ' + (k.cls || '') + (deck ? ' deckkey' : '') +
+        '" data-i="' + i + '" title="' + esc(k.name) +
+        (deck ? ' — this is the deck’s own open key, so firing it closes the deck' : '') + '">' +
+        lbl + (deck ? '<span class="npkey-tag">deck</span>' : '') + '</button>';
+    });
+    html += '</div></div>';
   });
   $('numpad-grid').innerHTML = html;
 }
@@ -2715,6 +3155,9 @@ function startCapture(mode, id) {
 
 /* pane-facing hook (followers-pane.js binds its Open-key button to this) */
 window.startFolCapture = function () { startCapture('folopen', null); };
+/* module-facing hook (hd-super.js's "Bind a key…" arms the seeded action's
+   fire-from-anywhere trigger — the same capture the entry row's ⚡ starts) */
+window.__hdStartTriggerCapture = function (entryId) { startCapture('trigger', entryId); };
 
 function endCapture(applied) {
   const cap = ui.capture;
@@ -2864,6 +3307,28 @@ function selectPickedKey(code, label) {
 }
 
 /* ============================================================ events ==== */
+
+/* Is a text-entry element holding the keyboard RIGHT NOW? The one authority
+   for "the player is typing, so the deck's list keys must stand down".
+   Prefers hd-textinput.js's shipped predicate (it is the same question the
+   engine text-entry guard already answers) and mirrors it inline, because
+   that module is in the DEFERRED boot set and this runs from core — a race
+   must degrade to the correct answer, never to a thrown error. */
+function hdTyping() {
+  const ae = document.activeElement;
+  if (!ae || ae.nodeType !== 1) return false;
+  try {
+    if (window.HDTextInput && typeof HDTextInput.isTextTarget === 'function')
+      return !!HDTextInput.isTextTarget(ae);
+  } catch (err) { /* fall through to the mirror */ }
+  if (ae.tagName === 'TEXTAREA') return true;
+  if (ae.tagName === 'INPUT') {
+    const t = String(ae.type || 'text').toLowerCase();
+    return t === 'text' || t === 'search' || t === 'password' ||
+           t === 'email' || t === 'url' || t === 'tel' || t === 'number';
+  }
+  return !!ae.isContentEditable;
+}
 
 function onKeyDown(e) {
   if (!ui.visible) return;
@@ -3019,9 +3484,23 @@ function onKeyDown(e) {
      and Esc (cancel/blur, don't close the whole palette) */
   const ae = document.activeElement;
   const isTabInput = ae && ae.classList && ae.classList.contains('tab-input');
-  const inNotes = ae && ae.id === 'notes-ta';
+  const inNotes = ae && (ae.id === 'notes-ta' || ae.id === 'hm-notes-ta');
+  /* ESCAPE keeps the NARROW set on purpose: Escape's job is "close the
+     palette", and the deck's own #search holds focus on most tabs — widening
+     this would make Esc blur instead of close and cost a second press on the
+     most-used key in the mod. Only the fields where blur-first is unambiguous
+     (an entry being renamed, a tab being renamed, a notes buffer) opt in.
+     ⚠ Panes with their own Escape cascades (wardrobe sheets, items price /
+     modify sheets, the keys filter) are still pre-empted by requestClose()
+     below — that needs a pane-delegation hook, filed from the 2026-08-19
+     swarm, and is deliberately NOT bolted on here blind. */
   const inEditInput = (ae && ae.tagName === 'INPUT' &&
     (ae.classList.contains('name-input') || ae.classList.contains('desc-input'))) || isTabInput || inNotes;
+  /* TAB is the opposite case and DOES widen: Tab in any text field must
+     traverse fields, never abandon the pane. Measured 2026-08-19: Tab in a
+     Character-sheet or Journal field cycled the deck to the next tab and
+     threw focus into the deck's search box, mid-sentence. */
+  const inAnyText = hdTyping() || isTabInput;
 
   /* the Followers pane owns its keys first (its menus/search/F2); Tab-cycling
      and palette-close Escape fall through to the shell below */
@@ -3041,7 +3520,7 @@ function onKeyDown(e) {
     return;
   }
   if (code === 'Tab') {
-    if (inEditInput) return; // native focus traversal between edit fields
+    if (inAnyText) return; // native focus traversal between edit fields
     e.preventDefault();
     const order = tabOrder();
     setTab(order[(order.indexOf(ui.tab) + 1) % order.length]);
@@ -3052,15 +3531,43 @@ function onKeyDown(e) {
   if (ui.tab === 'numpad' || ui.tab === 'notes' || ui.tab === 'quests' ||
       ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
       ui.tab === 'items' || ui.tab === 'npcs' ||   // Finder rosters own their own search Enter (fire the top hit) — never the deck's quick-fire
+      ui.tab === 'distr' ||   // Distributions owns its search too — without this, a digit typed in dx-search QUICK-FIRES a hotkey (ui.search is the deck's box, empty here)
+      /* 2026-08-19 sweep (check_pane_wiring found TEN more panes with text
+         inputs outside this list — every one had the distr digit-quick-fire
+         hazard): any tab that is a full pane owns its own keys; the list-nav /
+         quick-fire / search-funnel below belong to the hotkey-list tabs only.
+         Esc, F2, Ctrl+F and the modal routers all sit ABOVE this return. */
+      ui.tab === 'rooms' || ui.tab === 'keys' || ui.tab === 'transmog' ||
+      ui.tab === 'mounts' || ui.tab === 'settle' || ui.tab === 'survival' ||
+      ui.tab === 'wigs' || ui.tab === 'sheet' || ui.tab === 'anim' ||
+      ui.tab === 'highking' || ui.tab === 'journal' || ui.tab === 'spellcraft' ||
+      /* loot + time added 2026-08-19 (swarm): both are full panes and both were
+         MEASURED leaking — a bare digit on either fired a real hotkey into the
+         game, and Enter in the Sky weather box both picked a weather AND fired
+         the hidden list's selection (one press, two game actions). */
+      ui.tab === 'loot' || ui.tab === 'time' ||
       ui.tab === 'wardrobe' || ui.tab === 'faces') return;  // hotkey-list keys below apply to deck tabs only
 
-  const inTextInput = document.activeElement &&
-    document.activeElement.tagName === 'INPUT' &&
-    document.activeElement.type === 'text';
   const inSearch = document.activeElement === $('search');
+  /* "typing somewhere that is NOT the hotkey list's own filter". The deck's
+     #search IS that list's filter, so the list keys below are its whole point
+     (arrows move the selection, Enter fires it, and a digit quick-fires while
+     the box is still empty — the documented behaviour). Every OTHER text
+     field in the view belongs to a pane, and the list keys must stand down. */
+  const inTextInput = hdTyping() && !inSearch;
 
-  /* list navigation works from the search box too */
-  if (!ui.edit) {
+  /* ⛔ THE TYPING GUARD — the root fix for the whole quick-fire leak family
+     (2026-08-19 swarm audit: eight SEVERE findings, all one shape). The
+     per-tab whitelist above is necessary but NOT sufficient: it protects a
+     PANE, while the block below fires on whatever has FOCUS. Every unguarded
+     text field on any non-whitelisted surface therefore leaked — the Home
+     Notes drawer swallowed digits AND fired that hotkey into the running
+     game, Enter fired the hidden list's selection instead of inserting a
+     newline, arrows drove a list nobody could see. Focus is the correct
+     authority here, so the list keys now stand down whenever a text-entry
+     element owns the keyboard, whatever tab is up. The whitelist stays as
+     defense in depth (and for the BARE-key case, where nothing is focused). */
+  if (!ui.edit && !inTextInput) {
     if (code === 'ArrowDown') { e.preventDefault(); ui.sel++; renderList(); return; }
     if (code === 'ArrowUp') { e.preventDefault(); ui.sel = Math.max(0, ui.sel - 1); renderList(); return; }
     if (code === 'Enter') {
@@ -3076,7 +3583,6 @@ function onKeyDown(e) {
       return;
     }
   }
-
   /* funnel typing into the search box */
   if (!ui.edit && !inSearch && !inTextInput && e.key && e.key.length === 1) {
     focusSearch();
@@ -3148,7 +3654,15 @@ function setTab(t) {
   if (prev === 'keys' && window.KeysPane) KeysPane.onHide();
   if (prev === 'items' && window.ItemsPane) ItemsPane.onHide();
   if (prev === 'npcs' && window.NpcsPane) NpcsPane.onHide();
+  if (prev === 'distr' && window.DistrPane) DistrPane.onHide();
+  if (prev === 'journal' && window.JournalPane) JournalPane.onHide();
+  if (prev === 'transmog' && window.TransmogPane) TransmogPane.onHide();
   if (prev === 'mounts' && window.MountsPane) MountsPane.onHide();
+  if (prev === 'settle' && window.SettlementPane) SettlementPane.onHide();
+  if (prev === 'spellcraft' && window.SpellCraftPane) SpellCraftPane.onHide();
+  if (prev === 'highking' && window.HighKingPane) HighKingPane.onHide();
+  if (prev === 'wigs' && window.WigsPane) WigsPane.onHide();
+  if (prev === 'survival' && window.SurvivalPane) SurvivalPane.onHide();
   if (prev === 'sheet' && window.CharSheetPane) CharSheetPane.onHide();
   if (prev === 'anim' && window.AnimPane) AnimPane.onHide();
   if (prev === 'finances' && window.FinancesPane) FinancesPane.onHide();
@@ -3210,8 +3724,56 @@ function setTab(t) {
     if (window.NpcsPane) NpcsPane.onShow();   // first look builds the C++ NPC index
     return;
   }
+  if (t === 'distr') {
+    if (window.DistrPane) DistrPane.onShow();   // re-asks: the crosshair target is per-open; first look parses the inis
+    return;
+  }
+  if (t === 'journal') {
+    /* Always re-reads journal.json: the phone may have written a page since the
+       last look, and the C++ side sweeps the picture drop-folder on the way.
+       The hook is handed over HERE rather than at boot because this pane is in
+       the deferred set — it does not exist yet when HomePane.hookInto runs. It
+       is idempotent, so re-handing it on every visit is free. */
+    if (window.JournalPane) {
+      if (JournalPane.hookInto) {
+        JournalPane.hookInto({
+          setTab: setTab,
+          /* The old Notes text, for the one-time copy onto a blank journal's
+             first page. Notes itself is untouched — it still lives as the Home
+             drawer it became. */
+          getNotes: function () { return state.notes || ''; },
+        });
+      }
+      JournalPane.onShow();
+    }
+    return;
+  }
   if (t === 'mounts') {
     if (window.MountsPane) MountsPane.onShow();   // re-reads the stable + tops up body renders
+    return;
+  }
+  if (t === 'settle') {
+    if (window.SettlementPane) SettlementPane.onShow();   // first look builds the C++ object index
+    return;
+  }
+  if (t === 'spellcraft') {
+    if (window.SpellCraftPane) SpellCraftPane.onShow();   // scState + scOpen — detection + effect/spell harvest
+    return;
+  }
+  if (t === 'highking') {
+    if (window.HighKingPane) HighKingPane.onShow();   // kgState — the globals are live facts, re-read each look
+    return;
+  }
+  if (t === 'survival') {
+    if (window.SurvivalPane) SurvivalPane.onShow();   // re-reads the mods' globals: they are live facts
+    return;
+  }
+  if (t === 'wigs') {
+    if (window.WigsPane) WigsPane.onShow();   // first look builds the C++ wig index
+    return;
+  }
+  if (t === 'transmog') {
+    if (window.TransmogPane) TransmogPane.onShow();   // re-pulls state + your gear each look
     return;
   }
   if (t === 'sheet') {
@@ -3263,6 +3825,70 @@ window.hdShowTab = function (t) {
       return;
     }
     HDWheel.open(true);
+    return;
+  }
+  /* 'potions' (and 'potions@heal' etc — the category rides an @suffix from
+     the seeded variants) is the wheel's sibling: a paused popout, not a tab.
+     Same open sequence, same press-again-to-close with the 700 ms guard.
+     hd-potions.js is DEFERRED (hd-boot manifest), so a deep-open that lands
+     during the sub-second load window parks its category on the window and
+     the module consumes it at parse — never a dropped keypress. */
+  /* 'survival' — the camp-and-supplies popout, the Potion Browser's twin:
+     a paused overlay rather than a tab, same open sequence and the same
+     press-again-to-close guard. hd-survival.js is DEFERRED (hd-boot manifest),
+     so a deep-open landing inside the load window parks on the window and the
+     module consumes it at parse — never a dropped keypress. */
+  /* 'survival-quick' is the POPOUT (verbs); the plain 'survival' token is the
+     TAB (the dashboard) and falls through to the pane router below. Two
+     surfaces, two tokens — Rober's split, 2026-08-15. */
+  /* 'supersearch' — the Super Searcher widget (hd-super.js): the omni search
+     re-dressed as a standalone popup, panel hidden. A paused overlay like the
+     Potion Browser, same open sequence, same press-again-to-close guard, same
+     deferred-load parking idiom. */
+  if (t === 'supersearch') {
+    if (!window.HDSuper) { window.__hdPendingSuper = 1; return; }
+    if (!HDSuper.hooked()) HDSuper.hookInto({ closeDeck: requestClose });
+    if (HDSuper.isOpen()) {
+      if (Date.now() - (ui.openedAt || 0) > 700) requestClose();
+      return;
+    }
+    HDSuper.open(true);
+    return;
+  }
+  if (t === 'survival-quick') {
+    if (!window.HDSurvival) { window.__hdPendingSurvival = 1; return; }
+    if (!HDSurvival.hooked()) HDSurvival.hookInto({ closeDeck: requestClose });
+    if (HDSurvival.isOpen()) {
+      if (Date.now() - (ui.openedAt || 0) > 700) requestClose();
+      return;
+    }
+    HDSurvival.open(true);
+    return;
+  }
+  if (t === 'potions' || t.indexOf('potions@') === 0) {
+    var pbCat = t.indexOf('@') !== -1 ? t.slice(t.indexOf('@') + 1) : '';
+    if (!window.HDPotions) { window.__hdPendingPotions = pbCat || '1'; return; }
+    if (!HDPotions.hooked()) HDPotions.hookInto({ closeDeck: requestClose });
+    if (HDPotions.isOpen()) {
+      if (Date.now() - (ui.openedAt || 0) > 700) requestClose();
+      return;
+    }
+    HDPotions.open(true, pbCat);
+    return;
+  }
+  /* 'quiver' (and 'quiver@arrows' / 'quiver@bolts') — the ammo radial, the
+     potion browser's structural twin: a paused body-level overlay, not a
+     tab. hd-quiver.js is DEFERRED too, so the same parking idiom covers the
+     load-window race. */
+  if (t === 'quiver' || t.indexOf('quiver@') === 0) {
+    var qvCat = t.indexOf('@') !== -1 ? t.slice(t.indexOf('@') + 1) : '';
+    if (!window.HDQuiver) { window.__hdPendingQuiver = qvCat || '1'; return; }
+    if (!HDQuiver.hooked()) HDQuiver.hookInto({ closeDeck: requestClose });
+    if (HDQuiver.isOpen()) {
+      if (Date.now() - (ui.openedAt || 0) > 700) requestClose();
+      return;
+    }
+    HDQuiver.open(true, qvCat);
     return;
   }
   if (ui.tab === t) {
@@ -3421,6 +4047,16 @@ function onListClick(e) {
       if (entry.device === 'action' && entry.action) {
         if (!Array.isArray(state.suppressedSeeds)) state.suppressedSeeds = [];
         if (state.suppressedSeeds.indexOf(entry.action) === -1) state.suppressedSeeds.push(entry.action);
+      } else if (entry.device === 'keyboard' || entry.device === 'mouse') {
+        /* Key seeds re-seed by ID (kKeySeeds), so a deleted Tailor / OMO Pick /
+           Grip Switch / Kick row resurrected every launch — the same bug the
+           2026-08-12 audit fixed for actions. Record "key:<id>"; the prefix
+           keeps ids out of the action-verb namespace, and recording EVERY
+           keystroke delete costs a string but covers future key seeds with no
+           view edit. C++ ignores strings it has no seed for. */
+        if (!Array.isArray(state.suppressedSeeds)) state.suppressedSeeds = [];
+        const kk = 'key:' + entry.id;
+        if (state.suppressedSeeds.indexOf(kk) === -1) state.suppressedSeeds.push(kk);
       }
       state.entries = state.entries.filter((x) => x.id !== id);
       ui.confirmDelete = null;
@@ -3464,8 +4100,10 @@ function onNumpadClick(e) {
   if (!btn) return;
   const k = NUMPAD_LAYOUT[Number(btn.dataset.i)];
   if (!k) return;
-  const keyLabel = k.real || ('Num ' + k.l).replace('Num NumLock', 'NumLock').replace('Num Enter', 'Num Enter');
-  const label = chordLabel(ui.npMods, k.small ? k.l : keyLabel);
+  /* k.name IS the label — it used to be rebuilt here by prefixing "Num " and
+     then patching the two keys that must not carry it, which had no answer at
+     all for Home/PgUp/F5. Each key now states its own name once. */
+  const label = chordLabel(ui.npMods, k.name || k.l);
   btn.classList.add('flash');
   setTimeout(() => btn.classList.remove('flash'), 280);
   toGame('hdFireKey', JSON.stringify({ device: 'keyboard', code: k.c, mods: ui.npMods.slice(), label: label }));
@@ -3563,6 +4201,15 @@ function renderQuests() {
 function showQEmpty() {
   const e = $('q-empty');
   e.classList.remove('hidden');
+  /* Hide the (now empty) list too. #q-list is `flex:1; min-height:60px`, so an
+     emptied-but-visible list still claims the whole pane and strands the empty
+     state at the very bottom behind a ~700px black void — measured 2026-08-19:
+     the hero sat 758px down a 941px pane, flush against the bottom edge, which
+     at couch distance is indistinguishable from a broken tab. Every caller of
+     showQEmpty() has just cleared the list, and renderQuestList's success path
+     un-hides it again. */
+  const list = $('q-list');
+  if (list) list.classList.add('hidden');
   if (ui.qMode === 'search') {
     e.innerHTML = ui.qSearch.trim().length < 2
       ? '<div class="empty-icon">🔍</div><div class="empty-title">Search every quest</div>' +
@@ -3584,12 +4231,14 @@ function renderQuestList() {
   const list = $('q-list');
   if (ui.qLoading) {
     list.innerHTML = '<div class="q-skel"></div><div class="q-skel"></div><div class="q-skel"></div>';
+    list.classList.remove('hidden');   // skeletons are the list, not an empty state
     $('q-empty').classList.add('hidden');
     return;
   }
   const payload = ui.qList;
   const quests = (payload && payload.quests) || [];
   if (!payload || !quests.length) { list.innerHTML = ''; showQEmpty(); return; }
+  list.classList.remove('hidden');   // paired with showQEmpty()'s hide
   $('q-empty').classList.add('hidden');
 
   const q = ui.qMode === 'search' ? ui.qSearch.trim() : '';
@@ -3872,20 +4521,31 @@ window.hdSpellIconPath = function (m) {
     if (byForm[k]) return normPath(byForm[k]);
   }
   const gen = ICONS.generic || {};
-  let g = '';
-  if (m.type === 'voice') g = 'SHOUT_GENERIC';
-  else if (m.type === 'power') g = 'GREATER_POWER';
-  else if (m.type === 'lesser') g = 'LESSER_POWER';
-  else if (!m.type && m.slot === 'voice') g = 'GREATER_POWER';
+  /* Candidates, best first — the FIRST one the index actually holds wins.
+     A list rather than a single key because the atlas names Destruction by
+     ELEMENT (DESTRUCTION_FIRE_ADEPT … plus DESTRUCTION_GENERIC_ADEPT), so a
+     destruction spell whose element we don't know has no `DESTRUCTION_ADEPT`
+     row to land on and used to fall through to the bare glyph. */
+  const cand = [];
+  if (m.type === 'voice') cand.push('SHOUT_GENERIC');
+  else if (m.type === 'power') cand.push('GREATER_POWER');
+  else if (m.type === 'lesser') cand.push('LESSER_POWER');
+  else if (!m.type && m.slot === 'voice') cand.push('GREATER_POWER');
   else {
     const t = SPELL_TIER_KEY[m.tier] || 'ADEPT';
-    const school = m.school || '';
-    const el = m.element || '';
-    if (school === 'destruction' && (el === 'fire' || el === 'frost' || el === 'shock'))
-      g = 'DESTRUCTION_' + el.toUpperCase() + '_' + t;
-    else if (school) g = school.toUpperCase() + '_' + t;
+    const school = String(m.school || '').toLowerCase();
+    const el = String(m.element || '').toLowerCase();
+    if (school === 'destruction') {
+      if (el === 'fire' || el === 'frost' || el === 'shock')
+        cand.push('DESTRUCTION_' + el.toUpperCase() + '_' + t);
+      cand.push('DESTRUCTION_GENERIC_' + t);
+    } else if (school) {
+      cand.push(school.toUpperCase() + '_' + t);
+      cand.push(school.toUpperCase() + '_GENERIC_' + t);
+    }
   }
-  return (g && gen[g]) ? normPath(gen[g]) : '';
+  for (let i = 0; i < cand.length; i++) if (gen[cand[i]]) return normPath(gen[cand[i]]);
+  return '';
 };
 
 window.hdIcons = function (r) {
@@ -4210,6 +4870,13 @@ window.hdClosed = function () {
      does NOT hide it — without this the next open would greet you with last
      session's ring floating over the deck, eating every click. */
   if (window.HDWheel) HDWheel.onDeckClosed();
+  /* The potion browser is the wheel's sibling — same body-level overlay,
+     same teardown obligation. */
+  if (window.HDPotions) HDPotions.onDeckClosed();
+  if (window.HDQuiver) HDQuiver.onDeckClosed();
+  /* Super Searcher: body.ss-open hides #panel, so a leaked super mode would
+     greet the next F7 with an invisible deck — tear it down with the close. */
+  if (window.HDSuper) HDSuper.onDeckClosed();
   /* The ⛨ Outfit dock draws INSIDE #panel, so closing the deck hides it — but
      hiding is not closing: it would still hold hdCapture (C++ keeps routing
      keys to the view), and the next F7 would greet you with a card whose ⛨ is
@@ -4356,6 +5023,15 @@ function init() {
          provider so a hidden tab's rows never surface (2026-08-12 sweep). A
          provider whose tab has no SYS_TABS entry is never gated. */
       tabAvailable: function (t) { return tabIdAvailable(t); },
+      /* The systems that did NOT fit on the bar this paint. Omni's tab
+         fallback indexes the RENDERED buttons, and an overflowed system has
+         none — so without this the tabs that are hardest to reach were the
+         only ones search could not find, and the narrower the deck the more
+         of them there were. sysOrder() has already dropped detection-absent
+         systems, so nothing here needs gating again. */
+      overflowTabs: function () {
+        return tabOverflow.map((t) => ({ tab: t.tab, label: t.label, title: t.title }));
+      },
       setSearch: function (q) {
         ui.search = String(q || '');
         const s = $('search');
@@ -4364,14 +5040,24 @@ function init() {
         if (isHotkeyTab()) renderList();
       },
       fireEntry: function (id) { fireEntry(id, null); },
+      /* detection gate for the hotkeys provider: omni (and the wheel + shelf,
+         which ride it) must not resurface an entry the deck list hides. */
+      hkNeeds: hkNeeds,
       fireAction: function (action) {
         const en = state.entries.find((x) => x.device === 'action' && x.action === action);
         if (en) fireEntry(en.id, null);
         else toast('Not on the deck yet — Edit → ＋ Action to add it');
       },
       deckActions: DECK_ACTIONS,
-      openSpells: function () { toGame('hdOpenSpells'); },
+      /* The Spell Deck launcher. `page` deep-opens that view on one of its two
+         pages — '' / 'spells' = the spell list, 'arts' = Combat Arts (which
+         moved into that window on 2026-08-15). */
+      openSpells: function (page) { toGame('hdOpenSpells', page === 'arts' ? 'arts' : ''); },
     });
+    /* The Deck settings card indexes itself (see registerDeckSettingsOmni) —
+       after hookInto, so the built-in providers keep their order in the
+       results and this group lands beneath them. */
+    registerDeckSettingsOmni();
     /* omni's quest results land here: the Quests tab in search mode, with the
        clicked quest's detail already loading */
     window.__omniOpenQuest = function (qu) {
@@ -4740,7 +5426,15 @@ function init() {
     window.fdState(FOL_FAKE);
     window.fdNff(FOL_NFF);
     window.fdTarget(FOL_TARGET);
-    window.fdWorn(FOL_WORN);
+    /* fdWorn is NOT in hd-boot's STUB_FNS (it's response-style in production),
+       so at DEV-boot time it does not exist yet — calling it bare THREW here
+       and killed this whole block before the auto-hdOpen below, leaving every
+       browser-harness run a blank page (found 2026-08-19 by the Distributions
+       audit). Retry until followers-pane lands instead. */
+    (function pushWorn(n) {
+      if (typeof window.fdWorn === 'function') window.fdWorn(FOL_WORN);
+      else if (n < 50) setTimeout(function () { pushWorn(n + 1); }, 100);
+    })(0);
     /* The quick card's two request bridges. Named apart from their replies
        (fdNpcResult / fdWorn) — reuse a name and toGame() calls the view's own
        receiver instead of the plugin, which is how this shipped dead once. */
@@ -5045,6 +5739,56 @@ function runSelfTest() {
     return (!!shown && notDimmed) || ('shown=' + !!shown + ' notDimmed=' + !!notDimmed);
   });
 
+  T('party / MHiYH / Quick Light rows are gated on their backing mod', () => {
+    const savedDet = state.detected, savedEdit = ui.edit;
+    state.detected = { nff: false, mhiyh: false, quicklight: true };
+    const gone = hkNeeds({ id: 'hd-party-wait' }) !== '' &&
+                 hkNeeds({ id: 'npc-nff-recruit' }) !== '' &&
+                 hkNeeds({ id: 'npc-mhiyh-home' }) !== '' &&
+                 hkNeeds({ id: 'hd-quick-light' }) === '';   // its mod IS present
+    state.detected = { nff: true, mhiyh: true, quicklight: false };
+    const back = hkNeeds({ id: 'hd-party-wait' }) === '' &&
+                 hkNeeds({ id: 'npc-mhiyh-home' }) === '' &&
+                 /Quick Light/.test(hkNeeds({ id: 'hd-quick-light' }));
+    state.detected = savedDet; ui.edit = savedEdit;
+    return (gone && back) || ('gone=' + gone + ' back=' + back);
+  });
+
+  T('deleting a KEY row records key:<id> so a key seed stays gone', () => {
+    const savedEdit = ui.edit, savedSup = state.suppressedSeeds;
+    state.suppressedSeeds = [];
+    state.entries.push({ id: 'st-keyseed', name: 'ST Key', desc: '', device: 'keyboard', code: 0, label: '', mods: [], category: '' });
+    ui.edit = true; render();
+    const del = document.querySelector('.row[data-id="st-keyseed"] .del');
+    let gone = false, recorded = false;
+    if (del) {
+      del.click();   // arm the confirm
+      const del2 = document.querySelector('.row[data-id="st-keyseed"] .del');
+      if (del2) del2.click();   // confirm
+      gone = !state.entries.some((x) => x.id === 'st-keyseed');
+      recorded = state.suppressedSeeds.indexOf('key:st-keyseed') !== -1;
+    }
+    state.entries = state.entries.filter((x) => x.id !== 'st-keyseed');
+    state.suppressedSeeds = savedSup; ui.edit = savedEdit; render();
+    return (gone && recorded) || ('del=' + !!del + ' gone=' + gone + ' recorded=' + recorded);
+  });
+
+  T('omni hotkeys provider withholds detection-gated entries (wheel + shelf ride it)', () => {
+    if (!window.HDOmni || typeof HDOmni.providers !== 'function') return true;  // omni deferred out of this run
+    const savedDet = state.detected;
+    state.entries.push({ id: 'hd-party-wait', name: 'Party: Wait Here', desc: '', device: 'action', code: 0, label: '', mods: [], category: 'NPC', action: 'party-wait' });
+    let pv = null;
+    HDOmni.providers().forEach(function (p) { if (p && p.id === 'hotkeys') pv = p; });
+    if (!pv) { state.entries = state.entries.filter((x) => x.id !== 'hd-party-wait'); state.detected = savedDet; return 'no hotkeys provider'; }
+    state.detected = { nff: false };
+    const hidden = !pv.index().some((r) => r.pin === 'hk:hd-party-wait');
+    state.detected = { nff: true };
+    const shown = pv.index().some((r) => r.pin === 'hk:hd-party-wait');
+    state.entries = state.entries.filter((x) => x.id !== 'hd-party-wait');
+    state.detected = savedDet;
+    return (hidden && shown) || ('hidden=' + hidden + ' shown=' + shown);
+  });
+
   T('older DLL (no detected map) shows everything — nothing vanishes', () => {
     const savedDet = state.detected, savedEdit = ui.edit;
     state.detected = undefined;
@@ -5299,6 +6043,51 @@ function runSelfTest() {
     tabs.style.maxWidth = '';
     setTab('all');
     return good || 'More button did not reflect the active Rooms tab';
+  });
+  /* The hoisted label is WIDER than the "More"/"⋯" face the fit loop measured,
+     so it must invalidate the tab-fit cache — otherwise the row it repaints is
+     wider than the one that fitted: the label clips under the header chrome and
+     #tabs grows a scrollbar (Rober, 2026-08-15, on Spell Crafting). */
+  T('nav: hoisting an overflowed tab onto More never overflows the row', () => {
+    const tabs = $('tabs');
+    tabs.style.maxWidth = '430px';
+    setTab('all'); render();                       // fit measured with a short More face
+    setTab('spellcraft'); render();                // now More wears "Spell Crafting"
+    const over = tabs.scrollWidth > tabs.clientWidth + 1;
+    const lbl = tabs.querySelector('[data-act="more"] .tab-more-lbl');
+    tabs.style.maxWidth = '';
+    setTab('all');
+    return (!over && !!lbl) || ('overflow=' + over + ' hoistedLabel=' + !!lbl);
+  });
+  /* Every top-level pane must be in render()'s whitelist — Settlement and Wigs
+     were not, so their tabs switched ui.tab and left the hotkey list on screen. */
+  T('nav: every SYS_TABS pane actually shows its own section', () => {
+    const back = ui.tab;
+    const bad = [];
+    SYS_TABS.forEach((s) => {
+      if (!tabAvailable(s)) return;
+      setTab(s.tab);
+      if ($('deck-pane') && !$('deck-pane').classList.contains('hidden') && !isHotkeyTab(ui.tab))
+        bad.push(s.tab);
+    });
+    setTab(back);
+    return !bad.length || ('fell back to the hotkey list: ' + bad.join(', '));
+  });
+  T('spell art: a school with no bare-tier row lands on its GENERIC row', () => {
+    const keep = ICONS.generic;
+    ICONS.generic = {
+      DESTRUCTION_FIRE_ADEPT: 'icons/sh/d/fire.png',
+      DESTRUCTION_GENERIC_ADEPT: 'icons/sh/d/generic.png',
+      ALTERATION_ADEPT: 'icons/sh/a/alt.png',
+    };
+    const el = hdSpellIconPath({ school: 'destruction', element: 'fire', tier: 'adept' });
+    const noEl = hdSpellIconPath({ school: 'Destruction', tier: 'adept' });   // case-insensitive too
+    const alt = hdSpellIconPath({ school: 'alteration', tier: 'adept' });
+    const none = hdSpellIconPath({ school: 'conjuration', tier: 'adept' });
+    ICONS.generic = keep;
+    return (el === 'icons/sh/d/fire.png' && noEl === 'icons/sh/d/generic.png' &&
+            alt === 'icons/sh/a/alt.png' && none === '') ||
+      ('el=' + el + ' noEl=' + noEl + ' alt=' + alt + ' none=' + none);
   });
   T('nav: icons style renders glyph tabs with hover names, and persists a toggle', () => {
     const tb = tabbarPrefs();
@@ -6212,6 +7001,127 @@ function runSelfTest() {
       return got === 1 || ('got=' + got);
     });
 
+  /* ---- Deck settings are searchable (registerDeckSettingsOmni) ---- *
+   * The card is the deck's least discoverable surface, so these checks are
+   * about COVERAGE first: every control the card carries has a row, and the
+   * row tells the truth about the setting's current value. */
+  (function () {
+    function settingsProvider() {
+      if (!window.HDOmni || typeof HDOmni.providers !== 'function') return null;
+      let pv = null;
+      HDOmni.providers().forEach(function (p) { if (p && p.id === 'deck-settings') pv = p; });
+      return pv;
+    }
+    function rowNamed(name) {
+      const pv = settingsProvider();
+      if (!pv) return null;
+      return pv.index().filter((r) => r.label === name)[0] || null;
+    }
+
+    T('omni: every Deck settings control has a row', () => {
+      const pv = settingsProvider();
+      if (!pv) return true;   // omni deferred out of this run
+      const labels = pv.index().map((r) => r.label);
+      const want = ['Pause game while open', 'Smooth pause', 'Close after firing',
+                    'Sticky numpad modifiers', 'Looking at someone? Open on the Followers tab',
+                    'Extended F-keys (F13–F24)', 'Menu size', 'Fill screen', 'Scroll speed',
+                    'Row icon size', 'Tab style — names or icons'];
+      const missing = want.filter((w) => labels.indexOf(w) === -1);
+      /* the generated families: one quick-fire row per modifier, one per F-key */
+      const quick = labels.filter((l) => l.indexOf('Quick-fire:') === 0).length;
+      const ext = labels.filter((l) => l.indexOf('Extended key F') === 0).length;
+      return (!missing.length && quick === 3 && ext === EXT_NAMES.length) ||
+        ('missing=' + missing.join(',') + ' quick=' + quick + ' ext=' + ext);
+    });
+
+    T('omni: a settings row reports the LIVE value, not a guess', () => {
+      const keep = state.settings.closeAfterFire;
+      state.settings.closeAfterFire = true;
+      const on = rowNamed('Close after firing');
+      state.settings.closeAfterFire = false;
+      const off = rowNamed('Close after firing');
+      state.settings.closeAfterFire = keep;
+      if (!on || !off) return 'row missing';
+      return (/^On/.test(on.detail) && /^Off/.test(off.detail)) ||
+        ('on=' + on.detail + ' off=' + off.detail);
+    });
+
+    T('omni: Enter on a settings row flips the real setting and unfolds the card', () => {
+      const keepEdit = ui.edit, keepOpen = ui.setOpen, keepTab = ui.tab;
+      const before = !!state.settings.closeAfterFire;
+      const row = rowNamed('Close after firing');
+      if (!row) return 'row missing';
+      row.run();
+      const flipped = !!state.settings.closeAfterFire !== before;
+      const landed = ui.edit === true && ui.setOpen === true && isHotkeyTab() &&
+                     !$('settings-body').classList.contains('hidden');
+      state.settings.closeAfterFire = before;
+      ui.edit = keepEdit; ui.setOpen = keepOpen; ui.tab = keepTab; render();
+      return (flipped && landed) || ('flipped=' + flipped + ' landed=' + landed);
+    });
+
+    T('omni: Smooth pause refuses honestly while the pause is off', () => {
+      const keepEdit = ui.edit, keepOpen = ui.setOpen, keepTab = ui.tab;
+      const keepPause = state.settings.pauseOnOpen, keepSmooth = state.settings.smoothPause;
+      state.settings.pauseOnOpen = false; state.settings.smoothPause = true;
+      render();   // the change handler disables the box; renderSettings mirrors it
+      const row = rowNamed('Smooth pause');
+      const said = !!row && /Needs/.test(row.detail);
+      if (row) row.run();
+      const untouched = state.settings.smoothPause === true;
+      state.settings.pauseOnOpen = keepPause; state.settings.smoothPause = keepSmooth;
+      ui.edit = keepEdit; ui.setOpen = keepOpen; ui.tab = keepTab; render();
+      return (said && untouched) || ('said=' + said + ' untouched=' + untouched);
+    });
+
+    T('omni: the jump lands ON the control without changing it', () => {
+      const keepEdit = ui.edit, keepOpen = ui.setOpen, keepTab = ui.tab;
+      const before = !!state.settings.stickyNpMods;
+      const row = rowNamed('Sticky numpad modifiers');
+      if (!row) return 'row missing';
+      ui.setOpen = false;
+      row.jump();
+      const unfolded = ui.setOpen === true && ui.edit === true;
+      const focused = document.activeElement === $('sticky-cb');
+      const same = !!state.settings.stickyNpMods === before;
+      ui.edit = keepEdit; ui.setOpen = keepOpen; ui.tab = keepTab; render();
+      return (unfolded && focused && same) ||
+        ('unfolded=' + unfolded + ' focused=' + focused + ' same=' + same);
+    });
+
+    T('omni: the F-key rows name what each bridged key actually fires', () => {
+      const ek = extKeysState();
+      const keep = ek.map.F19;
+      ek.map.F19 = 0;
+      const off = rowNamed('Extended key F19');
+      ek.map.F19 = EXT_RAW.F19;
+      const raw = rowNamed('Extended key F19');
+      ek.map.F19 = keep; render();
+      if (!off || !raw) return 'row missing';
+      return (/^Off/.test(off.detail) && raw.detail.indexOf('raw') !== -1) ||
+        ('off=' + off.detail + ' raw=' + raw.detail);
+    });
+
+    T('omni tabs: a system pushed into the More menu is still findable', () => {
+      if (!window.HDOmni || typeof HDOmni.providers !== 'function') return true;
+      let pv = null;
+      HDOmni.providers().forEach(function (p) { if (p && p.id === 'tabs') pv = p; });
+      if (!pv) return 'no tabs provider';
+      /* Force an overflow the way a narrow deck does — jsdom measures every
+         width as 0, so the fit loop can never shed anything by itself. */
+      paintTabsRow(1);
+      const hidden = tabOverflow[0];
+      const rows = pv.index();
+      const found = !!hidden && rows.some((r) => r.label === hidden.label &&
+                                                 r.pin === 'tab:' + hidden.tab);
+      const once = !hidden ? 0 :
+        rows.filter((r) => r.pin === 'tab:' + hidden.tab).length;
+      renderTabs();
+      return (found && once === 1) ||
+        ('hidden=' + (hidden ? hidden.label : 'none') + ' found=' + found + ' rows=' + once);
+    });
+  })();
+
   ui.qDetail = null; ui.qList = null; ui.qNpc = null; ui.qNote = ''; ui.qConfirmStage = null;
   ui.tab = 'all'; ui.hkTab = 'all';
   ui.edit = false; ui.extOpen = false; ui.capture = null;
@@ -6288,11 +7198,19 @@ if (DEV && location.search.indexOf('selftest=1') !== -1) {
       var t = ensureTip();
       t.textContent = text;
       t.classList.add('show');
+      /* The bubble lives on <body>, outside #panel's scale(--ui-scale), so it
+         has to paint itself at the deck's factor or it is the smallest text on
+         a Filled screen. offsetWidth/Height stay PRE-transform layout px, so
+         every viewport clamp below multiplies by the same s. */
+      var s = 1;
+      try { if (typeof deckPaintScale === 'function') s = deckPaintScale(); } catch (_) {}
+      if (!(s > 0)) s = 1;
+      t.style.setProperty('--hdtip-s', s);
       /* measure, then clamp inside the viewport; below the control by
          default, flipped above when there is no room */
       var r = el.getBoundingClientRect();
       t.style.left = '0px'; t.style.top = '0px';
-      var w = t.offsetWidth, h = t.offsetHeight;
+      var w = t.offsetWidth * s, h = t.offsetHeight * s;
       var x = r.left + r.width / 2 - w / 2;
       var y = r.bottom + 8;
       if (x < 6) x = 6;

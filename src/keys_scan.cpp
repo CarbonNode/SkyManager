@@ -19,6 +19,8 @@
 
 #include "keys_scan.h"
 
+#include "keys_pex.h"
+#include "keys_sources.h"
 #include "pch.h"
 
 #include <algorithm>
@@ -58,11 +60,18 @@ namespace KeysScan
 
 		struct Binding
 		{
-			std::string src;      // vanilla | deck | chord | helper | mcm
+			std::string src;      // vanilla | deck | chord | helper | mcm | plugin | enb | reshade | shaders
 			std::string mod;      // display name of the owner
 			std::string control;  // display name of the function on the key
 			std::uint32_t code;   // DXScanCode (keyboard 1..255, mouse 256..263)
 			std::string modsText; // "" or "Shift+Alt" (deck triggers / chords)
+			// Set only by the generic plugin-config source, where the file states
+			// no code space and DIK is an assumption (keys_sources.h). The pane
+			// shows such a row as assumed and never lets it alone raise a hard
+			// conflict -- two codes that may not be in the same space cannot be
+			// honestly called a collision.
+			bool        guessed = false;
+			std::string detail;   // provenance (file + setting), shown as a title
 		};
 
 		std::mutex               g_mutex;
@@ -194,13 +203,13 @@ namespace KeysScan
 				{
 					std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
 					if (!out.is_open()) {
-						logger::warn("keys-cache: could not open {} for writing", tmp.string());
+						logger::warn("keys-cache: could not open {} for writing", PathU8(tmp));
 						return;
 					}
 					out << text;
 					out.flush();
 					if (!out.good()) {
-						logger::warn("keys-cache: write to {} failed mid-stream", tmp.string());
+						logger::warn("keys-cache: write to {} failed mid-stream", PathU8(tmp));
 						return;
 					}
 				}
@@ -412,7 +421,7 @@ namespace KeysScan
 		// A bare-bones ini reader: [Section] key=value, later files overlay.
 		using IniMap = std::unordered_map<std::string, std::string>;  // "section:key" -> value
 
-		void LoadIni(const std::string& path, IniMap& into)
+		void LoadIni(const std::filesystem::path& path, IniMap& into)
 		{
 			std::ifstream in(path);
 			if (!in) {
@@ -489,7 +498,7 @@ namespace KeysScan
 				if (doc.is_discarded() || !doc.is_object()) {
 					continue;
 				}
-				const auto modName = doc.value("modName", dir.path().filename().string());
+				const auto modName = doc.value("modName", PathU8(dir.path().filename()));
 
 				std::vector<const json*> keymaps;
 				FindKeymaps(doc, keymaps);
@@ -501,7 +510,7 @@ namespace KeysScan
 				const auto display = Translate(trans, doc.value("displayName", modName));
 
 				IniMap ini;
-				LoadIni((dir.path() / "settings.ini").string(), ini);          // mod defaults
+				LoadIni(dir.path() / "settings.ini", ini);          // mod defaults
 				LoadIni("Data/MCM/Settings/" + modName + ".ini", ini);         // user values win
 
 				for (const auto* km : keymaps) {
@@ -705,7 +714,8 @@ namespace KeysScan
 		}
 
 		// The complete non-MCM half of the census (ControlMap, MCM Helper, Chord,
-		// deck) -- the "instant" sources. Rebuilt on every scan; cheap.
+		// deck, the renderer overlays and the generic plugin configs) -- the
+		// "instant" sources. Rebuilt on every scan; cheap.
 		std::vector<Binding> InstantSources()
 		{
 			std::vector<Binding> acc;
@@ -717,6 +727,16 @@ namespace KeysScan
 					acc.push_back(Binding{ "deck", "SkyManager", std::move(b.control), b.code, std::move(b.modsText) });
 				}
 			}
+			// File-based sources (keys_sources.cpp): ENB / ReShade / Community
+			// Shaders, then every hotkey setting under Data/SKSE/Plugins.
+			const auto take = [&acc](std::vector<KeysSources::Row> rows) {
+				for (auto& r : rows) {
+					acc.push_back(Binding{ std::move(r.src), std::move(r.mod), std::move(r.control),
+						r.code, std::move(r.modsText), r.guessed, std::move(r.detail) });
+				}
+			};
+			take(KeysSources::ScanOverlays());
+			take(KeysSources::ScanPluginConfigs());
 			return acc;
 		}
 
@@ -771,7 +791,20 @@ namespace KeysScan
 				// The instant sources are always rebuilt fresh -- they are cheap
 				// and reflect live state (user ControlMap remaps, MCM Helper .ini).
 				SetPhase("scanning", "game controls & MCM Helper");
-				const std::vector<Binding> instant = InstantSources();
+				std::vector<Binding> instant = InstantSources();
+
+				// Compiled Papyrus is the one file source that is not instant on
+				// a cold cache -- it walks every loose script in Data/Scripts --
+				// so the cheap rows are painted FIRST and the walk runs under its
+				// own progress note. An empty tab for its duration would read as
+				// a hang. (A warm cache makes it near-free, and the publish below
+				// happens again either way.)
+				PublishBindings(instant);
+				SetPhase("scanning", "reading compiled Papyrus");
+				for (auto& r : KeysPex::Scan(force)) {
+					instant.push_back(Binding{ "papyrus", std::move(r.script),
+						std::move(r.control), r.code, "", false, std::move(r.detail) });
+				}
 
 				auto configs = RegisteredConfigs();
 				{
@@ -966,6 +999,12 @@ namespace KeysScan
 				};
 				if (!b.modsText.empty()) {
 					e["mods"] = b.modsText;
+				}
+				if (b.guessed) {
+					e["guess"] = true;
+				}
+				if (!b.detail.empty()) {
+					e["detail"] = b.detail;
 				}
 				arr.push_back(std::move(e));
 			}

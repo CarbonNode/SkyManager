@@ -88,7 +88,6 @@
   color: #ecd9a8;
 }
 
-
 /* --------------------------------------------------------- the ONE bar -- */
 
 .nx-barwrap {
@@ -330,8 +329,40 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* the search-term hit inside a plugin name — the deck's gold, never the
+   browser's default <mark> (pure yellow on black, which is what shipped) */
+.nx-plug-name mark {
+  background: rgba(201, 162, 75, .25);
+  color: #f2e2b0;
+  border-radius: 3px;
+  padding: 0 1px;
+}
 .nx-plug-count { font-size: 13px; color: #9a917d; white-space: nowrap; }
 .nx-plug-go { font-size: 14px; color: #d8bd85; white-space: nowrap; }
+
+/* tail of a capped mod roster — "Show 30 more". Same shell as a plug row so
+   the list keeps its rhythm, but it is a <button>, not a browse target. */
+.nx-plug-more {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  background: #14141b;
+  border: 1px dashed #4a4438;
+  border-radius: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.nx-plug-more:hover { background: #1c1c25; border-color: rgba(201, 162, 75, .5); }
+/* kept SEPARATE from the :focus-visible rule below: an engine that cannot parse
+   that pseudo-class would drop the whole group, and .nx-sel is the keyboard
+   selection Ultralight must draw */
+.nx-plug-more.nx-sel { border-color: rgba(201, 162, 75, .6); background: #1c1c25; }
+.nx-plug-more:focus-visible { border-color: rgba(201, 162, 75, .6); outline: none; }
+.nx-plug-more-t { flex: 1; min-width: 0; font-size: 15.5px; font-weight: 650; color: #d8bd85; }
 
 .nx-kindbadge {
   font-size: 12px;
@@ -445,8 +476,6 @@
 }
 .nx-meta-plug:hover { color: #ecd9a8; text-decoration: underline; }
 
-
-
 .nx-act .nx-primary {
   background: linear-gradient(180deg, rgba(201, 162, 75, .22), rgba(201, 162, 75, .11));
   border: 1px solid rgba(201, 162, 75, .5);
@@ -504,7 +533,6 @@
   margin-top: 4px;
 }
 .nx-try .nx-pill { font-size: 14px; }
-
 
 /* ------------------------------------------------------- pagination foot -- */
 
@@ -625,19 +653,12 @@
 .nx-skel-box {
   border-radius: 8px;
   background: linear-gradient(90deg, #1b1b22 25%, #23232c 50%, #1b1b22 75%);
-  background-size: 200% 100%;
-  animation: nx-shimmer 1.3s infinite linear;
   border: none;
 }
 .nx-skel .nx-plate { border: none; }
 .nx-skel-w1 { width: 46%; height: 18px; }
 .nx-skel-w2 { width: 30%; height: 13px; }
 .nx-skel-btn { width: 84px; height: 38px; }
-
-@keyframes nx-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
 
 /* ------------------------------------------------- narrow palette (640) -- */
 
@@ -819,8 +840,6 @@
    Reuses the nx-shimmer keyframes the skeletons already ride. */
 .nx-plate.nx-loading {
   background: linear-gradient(90deg, #1b1b22 25%, #26262f 50%, #1b1b22 75%);
-  background-size: 200% 100%;
-  animation: nx-shimmer 1.3s infinite linear;
   border-color: #34333d;
   color: #cbc2ad;
 }
@@ -835,4 +854,1103 @@
   padding: 9px 14px;
   margin: 2px 0 4px;
   line-height: 1.4;
+}
+
+/* ── rich per-NPC detail (2026-08-15) ─────────────────────────────────────
+   Rober: "expand our finder section … npc stats, factions, all sorts of info."
+   The Items tab's detail twin: an inline expandable block under the row (one
+   open at a time), fed lazily by C++ on expand. Labeled sections — identity,
+   HMS attributes, flags, top skills, combat/voice, factions — nothing under
+   12px, spacious. */
+
+.nx-info {
+  flex-shrink: 0;
+}
+.nx-info.nx-info-on {
+  background: rgba(201, 162, 75, .16);
+  border-color: rgba(201, 162, 75, .55);
+  color: #ecd9a8;
+}
+
+/* the open row loses its bottom rounding so the detail reads as attached */
+.nx-row.nx-row-open {
+  border-color: rgba(201, 162, 75, .5);
+  background: #1b1b23;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.nx-detail {
+  margin-top: -8px;
+  background: #131319;
+  border: 1px solid rgba(201, 162, 75, .5);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  padding: 14px 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: nx-detail-in 140ms ease;
+}
+@keyframes nx-detail-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.nx-detail-load, .nx-detail-err {
+  font-size: 14px;
+  color: #9a917d;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.nx-detail-err { color: #e0b48f; }
+.nx-detail-spin {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid #4a4438; border-top-color: #e6c982;
+  animation: nx-render-spin .8s linear infinite;
+  display: inline-block;
+}
+.nx-detail-note { font-size: 12.5px; color: #8d8471; line-height: 1.45; font-style: italic; }
+
+/* the identity / attributes stats grid */
+.nx-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+}
+.nx-stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.nx-stat-l {
+  font-size: 12px;
+  color: #6d675a;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+}
+.nx-stat-v { font-size: 16px; font-weight: 700; color: #e2dbca; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30ch; }
+.nx-attrs .nx-stat-v.nx-stat-hp { color: #e8a49c; }
+.nx-attrs .nx-stat-v.nx-stat-mp { color: #9ec3e8; }
+.nx-attrs .nx-stat-v.nx-stat-sp { color: #a7d69c; }
+
+/* flag chips */
+.nx-flags { display: flex; flex-wrap: wrap; gap: 8px; }
+.nx-flag {
+  font-size: 12px;
+  font-weight: 650;
+  padding: 4px 9px;
+  border-radius: 8px;
+  background: #1b1b22;
+  border: 1px solid #33302a;
+  color: #b6ad99;
+  white-space: nowrap;
+}
+.nx-flag-uniq { background: rgba(201, 162, 75, .14); border-color: rgba(201, 162, 75, .45); color: #ecd9a8; }
+.nx-flag-ess { background: #21232b; border-color: #414659; color: #aab3c6; }
+.nx-flag-prot { background: #1c2530; border-color: #33465c; color: #9ec3e8; }
+
+/* titled sub-sections */
+.nx-detail-sect { display: flex; flex-direction: column; gap: 8px; }
+.nx-detail-h {
+  font-size: 13px;
+  font-weight: 700;
+  color: #cdbf94;
+  letter-spacing: .3px;
+}
+.nx-detail-h b { color: #9a917d; font-weight: 650; }
+
+/* top-skill chips */
+.nx-skills { display: flex; flex-wrap: wrap; gap: 7px; }
+.nx-skill {
+  font-size: 13px;
+  color: #cfc8b8;
+  background: #1b1b22;
+  border: 1px solid #33302a;
+  border-radius: 8px;
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+.nx-skill b { color: #e6c982; font-weight: 700; margin-left: 3px; }
+
+/* factions list — name + rank pairs */
+.nx-facs { display: flex; flex-direction: column; gap: 5px; }
+.nx-fac {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13.5px;
+  color: #cfc8b8;
+}
+.nx-fac-n {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: #e6dfce;
+}
+.nx-fac-r {
+  font-size: 12px;
+  color: #9a917d;
+  border: 1px solid #33302a;
+  border-radius: 6px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.nx-eff-none { font-size: 13.5px; color: #8d8471; font-style: italic; }
+
+@media (max-width: 760px) {
+  .nx-detail { padding: 12px 12px 14px; gap: 12px; }
+  .nx-stats { gap: 8px 16px; }
+  .nx-stat-v { font-size: 15px; }
+}
+
+/* ===================================================================== *
+ *  INSPECT CARD (nxi-*) — "look at any NPC and see what they actually
+ *  are" (Rober, 2026-08-17).  A sheet over the pane, not a row block:
+ *  there is far too much of it to inline, and the crosshair route has to
+ *  open it with no search at all.
+ *
+ *  ENGINE LAWS BAKED IN — measured in PrismaUI's own Ultralight 1.4.1:
+ *    * NO conic-gradient anywhere.  Every meter here is a linear track
+ *      plus a width-driven fill, which is the same idiom the character
+ *      sheet's resistance rows already ship and play-prove.
+ *    * NO backdrop-filter.  The dim behind the card is a flat rgba wash.
+ *    * NO vh/vw.  The sheet lives inside #panel, which carries
+ *      transform: scale(var(--ui-scale)); a bare viewport unit would
+ *      render at size×scale and clip at Fill.  Percentages of the pane
+ *      and plain px both scale correctly and need no calc() division.
+ *    * NO looping animation and NO animated background-position.  The
+ *      only motion is one-shot transitions on hover/focus.
+ *    * Emoji rasterise MONOCHROME at a 1.4em advance, so every glyph box
+ *      is ≥ 1.6em wide with centred text — otherwise the mark is shaved.
+ *    * 12px is the type floor; nothing here is below 12.5px, and the
+ *      numbers a player squints at are 15–30px.
+ * ===================================================================== */
+
+/* Header entry point, injected into .nx-head-right by the pane. */
+.nxi-open {
+  background: rgba(201, 162, 75, .14);
+  border: 1px solid rgba(201, 162, 75, .5);
+  border-radius: 10px;
+  color: #ecd9a8;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: .2px;
+  padding: 9px 16px 9px 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.nxi-open:hover { background: rgba(201, 162, 75, .24); border-color: rgba(201, 162, 75, .78); color: #fbf1d8; }
+.nxi-open:active { background: rgba(201, 162, 75, .1); }
+.nxi-open:focus-visible {
+  outline: none;
+  border-color: rgba(201, 162, 75, .9);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .24);
+}
+
+/* Row entry point — quieter than Bring, louder than Info. */
+.nx-btn.nx-inspect { color: #d7c79c; border-color: #4a442f; }
+.nx-btn.nx-inspect:hover { background: rgba(201, 162, 75, .16); border-color: rgba(201, 162, 75, .6); color: #f4e8c8; }
+
+/* ------------------------------------------------------------- sheet -- */
+
+.nxi-sheet {
+  position: absolute;
+  left: 0; top: 0; right: 0; bottom: 0;
+  background: rgba(8, 8, 11, .78);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 18px;
+  z-index: 40;
+}
+
+.nxi-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  /* Wide on purpose: Rober plays at 2560×1440 and the standing rule is "use
+     the screen space". At this width the six resistances sit on ONE row and
+     the skills column is three across, which is the whole card in two
+     scrolls instead of five. It is a CAP, so a narrow deck is unaffected. */
+  max-width: 1440px;
+  min-height: 0;
+  background: linear-gradient(180deg, #1b1b23 0%, #131318 100%);
+  border: 1px solid #46412f;
+  border-radius: 16px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  outline: none;
+}
+
+/* ------------------------------------------------------------- head --- */
+
+.nxi-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid #2c2a22;
+  background: linear-gradient(180deg, rgba(201, 162, 75, .07), rgba(201, 162, 75, 0));
+}
+
+.nxi-face {
+  position: relative;
+  flex: 0 0 auto;
+  width: 104px;
+  height: 104px;
+  border-radius: 14px;
+  background: #23222a;
+  border: 1px solid #4a4638;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 44px;
+  line-height: 1;
+  color: #6f6a58;
+  overflow: hidden;
+}
+.nxi-face.nxi-has-art { color: transparent; }
+.nxi-face-art {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.nxi-head-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+
+.nxi-name {
+  font-size: 30px;
+  font-weight: 700;
+  color: #f2ead6;
+  letter-spacing: .2px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;     /* a 60-character modded name WRAPS, never clips */
+}
+.nxi-sub { font-size: 16px; color: #b3ab97; }
+.nxi-origin { font-size: 12.5px; color: #7f7765; letter-spacing: .3px; }
+
+.nxi-flags { display: flex; flex-wrap: wrap; gap: 8px; }
+.nxi-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #cfc8b8;
+  background: #201f27;
+  border: 1px solid #3a3730;
+  border-radius: 999px;
+  padding: 4px 12px;
+  white-space: nowrap;
+}
+.nxi-flag-dead { color: #e79a92; border-color: #5a3330; background: rgba(160, 60, 52, .18); }
+.nxi-flag-ess { color: #9fd0ea; border-color: #2f4b5c; background: rgba(60, 120, 160, .16); }
+.nxi-flag-prot { color: #a8cfa8; border-color: #35502f; background: rgba(70, 130, 70, .15); }
+.nxi-flag-uniq { color: #ecd9a8; border-color: rgba(201, 162, 75, .5); background: rgba(201, 162, 75, .14); }
+.nxi-flag-fight { color: #f0b48a; border-color: #5c4028; background: rgba(180, 100, 40, .18); }
+
+.nxi-x {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #22212a;
+  border: 1px solid #3d3a33;
+  color: #b3ab97;
+  font-size: 17px;
+  cursor: pointer;
+  transition: background 130ms ease, color 130ms ease, border-color 130ms ease;
+}
+.nxi-x:hover { background: #2e2d38; color: #f0e8d4; border-color: #5b5442; }
+.nxi-x:focus-visible { outline: none; border-color: rgba(201,162,75,.8); box-shadow: 0 0 0 3px rgba(201,162,75,.22); }
+
+/* ------------------------------------------------------------ filter -- */
+
+.nxi-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 24px 0;
+  padding: 6px 14px 6px 16px;
+  background: #101015;
+  border: 1px solid #3d3a33;
+  border-radius: 999px;
+  transition: border-color 130ms ease, box-shadow 130ms ease;
+}
+.nxi-filter:focus-within { border-color: rgba(201, 162, 75, .65); box-shadow: 0 0 0 3px rgba(201, 162, 75, .16); }
+.nxi-filter-glyph { font-size: 18px; width: 1.6em; text-align: center; color: #8d8471; flex: 0 0 auto; }
+#nxi-filter-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #eee6d2;
+  font-size: 16px;
+  padding: 10px 0;
+}
+#nxi-filter-input::placeholder { color: #6f6858; }
+.nxi-filter-x {
+  flex: 0 0 auto;
+  width: 1.7em;
+  text-align: center;
+  font-size: 14px;
+  color: #9a917d;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 130ms ease, background 130ms ease;
+}
+.nxi-filter-x:hover { color: #f0e8d4; background: #26262f; }
+
+/* -------------------------------------------------------------- body -- */
+
+.nxi-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 18px 24px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* loading + refusal: both are FULL states with a sentence, never a blank */
+.nxi-load {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 8px;
+  font-size: 17px;
+  color: #a49b86;
+}
+.nxi-load-dot {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: #c9a24b;
+  flex: 0 0 auto;
+  /* deliberately static — Ultralight renders frame 0 and looping keyframes
+     are banned here, so this is a mark, not a spinner */
+}
+.nxi-refuse {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 48px 24px;
+  text-align: center;
+}
+.nxi-refuse-glyph { font-size: 46px; line-height: 1.2; width: 1.6em; color: #5f5949; }
+.nxi-refuse-msg { font-size: 19px; color: #ddd4bf; max-width: 620px; line-height: 1.5; }
+.nxi-refuse-hint { font-size: 15px; color: #8d8471; max-width: 560px; }
+
+/* CHIM section — the same three honest states as everything else here,
+   sized for a card WITHIN the sheet rather than the whole sheet. Facet
+   cards themselves render via hd-omni.css's .omni-facet (HDOmni.facetCard),
+   reused as-is so this can never visually drift from the Ask overlay. */
+.nxi-chim-load {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 4px; font-size: 15px; color: #a49b86;
+}
+.nxi-chim-err {
+  padding: 14px 4px; font-size: 14.5px; color: #d99a90;
+}
+.nxi-chim-empty {
+  padding: 14px 4px; font-size: 14.5px; color: #8d8471; line-height: 1.5;
+}
+.nxi-chim-answer {
+  margin: 0 0 6px; padding: 12px 14px;
+  background: rgba(201,162,75,.07);
+  border: 1px solid #c9a24b44; border-radius: 10px;
+  color: #e8e4da; font-size: 14.5px; line-height: 1.6;
+  user-select: text;
+}
+
+/* ----------------------------------------------------------- section -- */
+
+.nxi-sect { display: flex; flex-direction: column; gap: 12px; }
+.nxi-sect-h {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #2a2823;
+}
+.nxi-sect-t {
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: #c9a24b;
+}
+.nxi-sect-s { font-size: 13px; color: #857d6b; }
+.nxi-sect-toggle { cursor: pointer; transition: border-color 130ms ease; outline: none; }
+.nxi-sect-toggle:hover { border-bottom-color: rgba(201, 162, 75, .6); }
+.nxi-sect-toggle:hover .nxi-sect-s { color: #ecd9a8; }
+.nxi-sect-toggle:focus-visible { border-bottom-color: rgba(201, 162, 75, .9); }
+
+.nxi-none { font-size: 14.5px; color: #8d8471; font-style: italic; padding: 6px 0; }
+
+/* ------------------------------------------------------------ traits -- */
+
+.nxi-traits { display: flex; flex-wrap: wrap; gap: 9px; }
+.nxi-trait {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #cfc8b8;
+  background: #212029;
+  border: 1px solid #3c3930;
+  border-radius: 8px;
+  padding: 6px 13px;
+}
+.nxi-trait-beast { color: #e0b0d8; border-color: #503050; background: rgba(140, 70, 140, .17); }
+
+/* ------------------------------------------------------------ vitals -- */
+
+.nxi-vitals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px;
+}
+.nxi-vital { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.nxi-vital-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.nxi-vital-name { font-size: 15px; font-weight: 700; letter-spacing: .3px; }
+.nxi-vital-nums { font-size: 20px; font-weight: 700; color: #efe7d3; white-space: nowrap; }
+.nxi-vital-max { font-size: 15px; font-weight: 500; color: #7d7563; }
+.nxi-vital-track {
+  height: 16px;
+  border-radius: 8px;
+  background: #17171d;
+  border: 1px solid #33302a;
+  overflow: hidden;
+}
+.nxi-vital-fill { height: 100%; border-radius: 8px 0 0 8px; transition: width 180ms ease; }
+.nxi-v-hp .nxi-vital-name { color: #e59a86; }
+.nxi-v-hp .nxi-vital-fill { background: linear-gradient(90deg, #b8443a, #e0a24a); }
+.nxi-v-mag .nxi-vital-name { color: #7fb2e8; }
+.nxi-v-mag .nxi-vital-fill { background: linear-gradient(90deg, #2f6bbf, #5fa8e6); }
+.nxi-v-sta .nxi-vital-name { color: #83cf8f; }
+.nxi-v-sta .nxi-vital-fill { background: linear-gradient(90deg, #3a8f4c, #6fc97f); }
+.nxi-vital-foot { min-height: 18px; }
+.nxi-rate { font-size: 13.5px; font-weight: 600; color: #8fbf8f; }
+.nxi-rate-down { color: #d9a05c; }
+.nxi-rate-caveat { font-weight: 500; color: #8d8471; font-size: 12.5px; }
+
+/* ---------------------------------------------------------- defences -- */
+
+.nxi-armor { display: flex; flex-direction: column; gap: 8px; }
+.nxi-armor-note { font-size: 13px; color: #857d6b; line-height: 1.5; }
+.nxi-meter { display: flex; flex-direction: column; gap: 7px; }
+.nxi-meter-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.nxi-meter-name { font-size: 15px; font-weight: 700; color: #ded5c0; }
+.nxi-meter-val { font-size: 19px; font-weight: 700; color: #ecd9a8; white-space: nowrap; }
+.nxi-meter-cap { font-size: 13px; font-weight: 500; color: #7d7563; }
+.nxi-meter-track {
+  height: 14px; border-radius: 7px; background: #17171d;
+  border: 1px solid #33302a; overflow: hidden;
+}
+.nxi-meter-fill {
+  height: 100%; border-radius: 7px 0 0 7px;
+  background: linear-gradient(90deg, #8a6f2c, #d8b45e);
+  transition: width 180ms ease;
+}
+
+.nxi-resists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px 18px;
+}
+.nxi-res {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 13px 12px;
+  background: #191921;
+  border: 1px solid #2f2d27;
+  border-radius: 11px;
+  min-width: 0;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.nxi-res:hover { background: #1e1e27; border-color: #4a4638; }
+.nxi-res-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.nxi-res-name { font-size: 14px; font-weight: 600; color: #cfc8b8; }
+.nxi-res-val { font-size: 17px; font-weight: 700; color: #e6dfce; white-space: nowrap; }
+.nxi-res-track {
+  height: 9px; border-radius: 5px; background: #131319;
+  border: 1px solid #2c2a24; overflow: hidden;
+}
+.nxi-res-fill { height: 100%; border-radius: 5px 0 0 5px; transition: width 180ms ease; }
+.nxi-res-tag {
+  font-size: 12.5px; font-weight: 700; letter-spacing: .6px;
+  text-transform: uppercase; color: #ef9a86;
+}
+.nxi-res-tag-cap { color: #ecd9a8; }
+.nxi-res-fire .nxi-res-fill { background: linear-gradient(90deg, #a8442c, #e08a4a); }
+.nxi-res-fire .nxi-res-name { color: #dd9070; }
+.nxi-res-frost .nxi-res-fill { background: linear-gradient(90deg, #2f6bbf, #7fd0e8); }
+.nxi-res-frost .nxi-res-name { color: #8fc6e0; }
+.nxi-res-shock .nxi-res-fill { background: linear-gradient(90deg, #9a8420, #ecd45e); }
+.nxi-res-shock .nxi-res-name { color: #ded18a; }
+.nxi-res-magic .nxi-res-fill { background: linear-gradient(90deg, #6a3fa0, #b48ae0); }
+.nxi-res-magic .nxi-res-name { color: #bd9ce0; }
+.nxi-res-poison .nxi-res-fill { background: linear-gradient(90deg, #3f7a34, #86cf72); }
+.nxi-res-poison .nxi-res-name { color: #9ccf8a; }
+.nxi-res-disease .nxi-res-fill { background: linear-gradient(90deg, #6d5a3c, #b8a078); }
+.nxi-res-disease .nxi-res-name { color: #bfae90; }
+.nxi-res-weak { border-color: rgba(190, 70, 60, .6); background: rgba(150, 50, 42, .13); }
+.nxi-res-weak:hover { border-color: rgba(215, 90, 78, .85); }
+.nxi-res-weak .nxi-res-val { color: #ef9a86; }
+.nxi-res-capped { border-color: rgba(201, 162, 75, .45); }
+.nxi-res-capped .nxi-res-val { color: #ecd9a8; }
+
+/* ------------------------------------------------------------ attack -- */
+
+.nxi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px 18px;
+}
+.nxi-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px 14px 13px;
+  background: #191921;
+  border: 1px solid #2f2d27;
+  border-radius: 11px;
+  min-width: 0;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.nxi-cell:hover { background: #1e1e27; border-color: #4a4638; }
+.nxi-cell-l { font-size: 12.5px; letter-spacing: .8px; text-transform: uppercase; color: #8d8471; }
+.nxi-cell-v { font-size: 21px; font-weight: 700; color: #efe7d3; overflow-wrap: anywhere; line-height: 1.2; }
+.nxi-cell-n { font-size: 12.5px; color: #7f7765; line-height: 1.45; }
+
+/* ------------------------------------------------------- disposition -- */
+
+.nxi-ai { display: flex; flex-direction: column; gap: 2px; }
+.nxi-ai-row {
+  display: grid;
+  grid-template-columns: 140px minmax(120px, auto) 44px 1fr;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  transition: background 130ms ease;
+}
+.nxi-ai-row:hover { background: #1d1d25; }
+.nxi-ai-l { font-size: 13px; letter-spacing: .7px; text-transform: uppercase; color: #8d8471; }
+.nxi-ai-w { font-size: 16.5px; font-weight: 700; color: #e6dfce; overflow-wrap: anywhere; }
+.nxi-ai-v {
+  font-size: 13px; color: #7d7563; text-align: right;
+  border: 1px solid #33302a; border-radius: 6px; padding: 2px 6px;
+}
+/* A disposition with no Creation Kit word (Energy is a 0–100 scale) still
+   emits this cell so the four-column grid holds — it just has nothing to
+   draw, and a bordered empty box would read as a missing value. */
+.nxi-ai-v:empty { border-color: transparent; padding: 0; }
+.nxi-ai-n { font-size: 13px; color: #7f7765; line-height: 1.45; min-width: 0; }
+.nxi-ai-aggression .nxi-ai-w { color: #f0b48a; }
+.nxi-ai-confidence .nxi-ai-w { color: #9fd0ea; }
+.nxi-ai-morality .nxi-ai-w { color: #b8a078; }
+.nxi-ai-assistance .nxi-ai-w { color: #a8cfa8; }
+
+/* -------------------------------------------------------------- gear -- */
+
+.nxi-gear {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px 16px;
+}
+.nxi-tile {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: #191921;
+  border: 1px solid #2f2d27;
+  border-radius: 11px;
+  min-width: 0;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.nxi-tile:hover { background: #1e1e27; border-color: #4a4638; }
+.nxi-tile-empty { opacity: .5; }
+.nxi-tile-empty:hover { opacity: .72; }
+.nxi-tile-weapon { border-color: #4a3f2a; }
+
+/* Gear tiles v2 (2026-08-17): the ART PLATE leads. 84px of real render —
+   sized like the Finder's item plates, laid out at this size so Ultralight
+   decodes sharp — with the slot glyph underneath as the queued/no-MRF
+   fallback and the stat pills riding the plate's corners. */
+.nxi-tile-art {
+  position: relative;
+  flex: 0 0 auto;
+  width: 84px;
+  height: 84px;
+  border-radius: 10px;
+  background: radial-gradient(circle at 50% 38%, #262633, #191920 78%);
+  border: 1px solid #3a3730;
+  overflow: visible;        /* the pills overhang the corners on purpose */
+}
+.nxi-tile-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 10px;
+}
+.nxi-tile-glyph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;          /* 1.6em+ box: an emoji's 1.4em advance still fits */
+  line-height: 1;
+  color: #a49b86;
+}
+/* A landed render owns the plate; the glyph waits behind it (DOM order is
+   img-then-glyph, so the sibling selector is the whole mechanism — removing a
+   404'd img brings the glyph straight back). */
+.nxi-tile-img ~ .nxi-tile-glyph { display: none; }
+
+/* The stat pills — Skyrim Party Sheet's corner badges, our palette. Armour
+   bottom-right in steel, damage bottom-right in blood, enchant top-right in
+   gold. 12px floor, real borders so they read over any render. */
+.nxi-pill {
+  position: absolute;
+  z-index: 2;
+  min-width: 22px;
+  padding: 2px 6px;
+  box-sizing: border-box;
+  text-align: center;
+  font: 700 12px/1.2 "Segoe UI", sans-serif;
+  font-style: normal;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .55);
+}
+.nxi-pill-arm {
+  right: -7px; bottom: -7px;
+  color: #dfe4ee;
+  background: linear-gradient(180deg, #4d5566, #333a48);
+  border: 1px solid #5d6678;
+}
+.nxi-pill-dmg {
+  right: -7px; bottom: -7px;
+  color: #f4ded8;
+  background: linear-gradient(180deg, #8e3a2b, #63251a);
+  border: 1px solid #a45a49;
+}
+.nxi-pill-ench {
+  right: -7px; top: -7px;
+  color: #241c0c;
+  background: linear-gradient(180deg, #e2c576, #b48d3f);
+  border: 1px solid #6e5320;
+}
+.nxi-tile-empty .nxi-tile-art { opacity: .55; }
+.nxi-tile-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.nxi-tile-l { font-size: 12.5px; letter-spacing: .8px; text-transform: uppercase; color: #8d8471; }
+.nxi-tile-n {
+  font-size: 15px; font-weight: 600; color: #e6dfce;
+  overflow-wrap: anywhere; line-height: 1.35;
+}
+.nxi-tile-n i { color: #6f6858; font-weight: 400; }
+.nxi-tile-num { font-size: 13.5px; font-weight: 700; color: #ecd9a8; }
+.nxi-tile-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.nxi-badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #b6e0b6;
+  background: rgba(70, 130, 70, .16);
+  border: 1px solid #35502f;
+  border-radius: 6px;
+  padding: 3px 8px;
+  max-width: 100%;
+}
+.nxi-badge i {
+  font-style: normal; font-weight: 500; color: #8fae8f;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+
+/* ----------------------------------------------------------- effects -- */
+
+.nxi-piles { display: flex; flex-wrap: wrap; gap: 8px; }
+.nxi-pile {
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 999px;
+  color: #b3ab97;
+  font-size: 13.5px;
+  padding: 7px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.nxi-pile b { color: #ecd9a8; font-weight: 700; margin-left: 3px; }
+.nxi-pile:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.nxi-pile-on { background: rgba(201, 162, 75, .16); border-color: rgba(201, 162, 75, .55); color: #ecd9a8; }
+.nxi-pile:focus-visible { outline: none; border-color: rgba(201,162,75,.85); box-shadow: 0 0 0 3px rgba(201,162,75,.2); }
+.nxi-pile-ghost { margin-left: auto; }
+
+.nxi-effs { display: flex; flex-direction: column; gap: 8px; }
+.nxi-eff {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) 152px;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 11px 14px;
+  background: #191921;
+  border: 1px solid #2f2d27;
+  border-left-width: 4px;
+  border-radius: 10px;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.nxi-eff:hover { background: #1e1e27; border-color: #4a4638; border-left-color: #c9a24b; }
+.nxi-eff-buff { border-left-color: #6fc97f; }
+.nxi-eff-debuff { border-left-color: #d9705c; }
+.nxi-eff-poison { border-left-color: #86cf72; }
+.nxi-eff-disease { border-left-color: #b8a078; }
+.nxi-eff-constant { border-left-color: #7fb2e8; }
+.nxi-eff-ghost { opacity: .62; }
+.nxi-eff-main { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.nxi-eff-n { font-size: 15px; font-weight: 600; color: #e9e1cd; overflow-wrap: anywhere; }
+.nxi-eff-n mark { background: rgba(201, 162, 75, .3); color: #fbf1d8; border-radius: 3px; }
+.nxi-eff-av {
+  font-size: 12.5px; color: #9a917d;
+  border: 1px solid #33302a; border-radius: 6px; padding: 2px 7px; white-space: nowrap;
+}
+.nxi-eff-mag { font-size: 15px; font-weight: 700; color: #ecd9a8; }
+.nxi-eff-sub { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; min-width: 0; font-size: 12.5px; }
+.nxi-eff-src { color: #b3ab97; overflow-wrap: anywhere; }
+.nxi-eff-src mark { background: rgba(201, 162, 75, .3); color: #fbf1d8; border-radius: 3px; }
+.nxi-eff-kind { color: #7f7765; text-transform: uppercase; letter-spacing: .6px; }
+.nxi-eff-plug {
+  color: #7f7765; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nxi-eff-time { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; min-width: 0; }
+.nxi-eff-left { font-size: 15px; font-weight: 700; color: #e6dfce; white-space: nowrap; }
+.nxi-eff-of { font-size: 12.5px; color: #7d7563; white-space: nowrap; }
+.nxi-eff-track {
+  display: block; width: 100%; height: 6px; border-radius: 3px;
+  background: #131319; border: 1px solid #2c2a24; overflow: hidden;
+}
+.nxi-eff-fill {
+  display: block; height: 100%; border-radius: 3px 0 0 3px;
+  background: linear-gradient(90deg, #8a6f2c, #d8b45e);
+  transition: width 180ms ease;
+}
+.nxi-eff-perm { font-size: 13px; color: #7f7765; font-style: italic; white-space: nowrap; }
+
+/* ---------------------------------------------------------- standing -- */
+
+.nxi-social { display: flex; flex-direction: column; gap: 14px; }
+.nxi-stand {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 13px 16px;
+  background: rgba(201, 162, 75, .09);
+  border: 1px solid rgba(201, 162, 75, .32);
+  border-radius: 11px;
+  flex-wrap: wrap;
+}
+.nxi-stand-none { background: #191921; border-color: #2f2d27; }
+.nxi-stand-l { font-size: 12.5px; letter-spacing: .8px; text-transform: uppercase; color: #8d8471; }
+.nxi-stand-v { font-size: 21px; font-weight: 700; color: #ecd9a8; }
+.nxi-stand-none .nxi-stand-v { color: #a49b86; }
+.nxi-stand-n {
+  font-size: 14px; font-weight: 700; color: #b3ab97;
+  border: 1px solid #4a4638; border-radius: 7px; padding: 3px 9px; margin-left: auto;
+}
+.nxi-chips { display: flex; flex-wrap: wrap; gap: 9px; }
+.nxi-chip {
+  font-size: 13.5px; font-weight: 600; color: #cfc8b8;
+  background: #212029; border: 1px solid #3c3930; border-radius: 999px; padding: 5px 13px;
+}
+.nxi-chip-bad { color: #ef9a86; border-color: #5a3330; background: rgba(160, 60, 52, .18); }
+.nxi-chip-good { color: #a8cfa8; border-color: #35502f; background: rgba(70, 130, 70, .16); }
+.nxi-chip-maras { color: #e0b0d8; border-color: #503050; background: rgba(140, 70, 140, .17); }
+
+.nxi-facs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 6px 16px;
+}
+.nxi-fac {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 7px 10px; border-radius: 8px; min-width: 0;
+  font-size: 13.5px; color: #cfc8b8;
+  transition: background 130ms ease;
+}
+.nxi-fac:hover { background: #1d1d25; }
+.nxi-fac-n {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 600; color: #e6dfce;
+}
+.nxi-fac-n mark { background: rgba(201, 162, 75, .3); color: #fbf1d8; border-radius: 3px; }
+.nxi-fac-r {
+  font-size: 12.5px; color: #9a917d; border: 1px solid #33302a; border-radius: 6px;
+  padding: 2px 7px; white-space: nowrap; margin-left: auto; flex-shrink: 0;
+}
+
+/* ------------------------------------------------------------ skills -- */
+
+.nxi-skills {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 6px 20px;
+}
+.nxi-skill {
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 10px; border-radius: 8px; min-width: 0;
+  transition: background 130ms ease;
+}
+.nxi-skill:hover { background: #1d1d25; }
+.nxi-skill-n {
+  flex: 0 0 128px; font-size: 13.5px; color: #cfc8b8;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nxi-skill-n mark { background: rgba(201, 162, 75, .3); color: #fbf1d8; border-radius: 3px; }
+.nxi-skill-track {
+  flex: 1; min-width: 0; display: block; height: 8px; border-radius: 4px;
+  background: #17171d; border: 1px solid #2c2a24; overflow: hidden;
+}
+.nxi-skill-fill {
+  display: block; height: 100%; border-radius: 4px 0 0 4px;
+  background: linear-gradient(90deg, #6a5a2c, #c9a24b);
+  transition: width 180ms ease;
+}
+.nxi-skill-v {
+  flex: 0 0 34px; text-align: right;
+  font-size: 14px; font-weight: 700; color: #e6dfce;
+}
+
+/* --------------------------------------------------- narrow (640 deck) -- */
+
+@media (max-width: 900px) {
+  /* 2026-08-17, the Inspect button: a FIFTH fixed-width control in a row that
+     never wrapped squeezed the name column to NOTHING — the baseline already
+     clipped a long name to "L…" at the deck's 640px floor, and five buttons
+     erased it and started eating the ★ Unique chip. So below 900px the row
+     WRAPS and the action cluster takes its own full-width line: the same fix
+     the F7 quick card took when its eleven buttons clipped nine labels.
+     ⚠ These two rules MUST live here, after .nx-row / .nx-act are defined —
+     the earlier @media(max-width:900px) block sits ABOVE them in the file, so
+     an override written there loses the cascade to the later base rule. */
+  .nx-row { flex-wrap: wrap; }
+  .nx-act { flex: 1 1 100%; justify-content: flex-start; }
+
+  .nxi-eff { grid-template-columns: 1fr; gap: 6px; }
+  .nxi-eff-time { align-items: flex-start; }
+  .nxi-eff-track { max-width: 240px; }
+  .nxi-ai-row { grid-template-columns: 1fr auto; gap: 4px 10px; }
+  .nxi-ai-v { display: none; }
+  .nxi-ai-n { grid-column: 1 / -1; }
+}
+
+@media (max-width: 760px) {
+  .nxi-sheet { padding: 10px; }
+  .nxi-card { border-radius: 12px; }
+  .nxi-head { padding: 16px 16px 14px; gap: 14px; }
+  .nxi-face { width: 74px; height: 74px; font-size: 32px; border-radius: 11px; }
+  .nxi-name { font-size: 23px; }
+  .nxi-sub { font-size: 14.5px; }
+  .nxi-filter { margin: 12px 16px 0; }
+  #nxi-filter-input { font-size: 15px; }
+  .nxi-body { padding: 14px 16px 20px; gap: 16px; }
+  .nxi-vitals { grid-template-columns: 1fr; gap: 14px; }
+  .nxi-resists { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .nxi-grid, .nxi-gear, .nxi-facs, .nxi-skills { grid-template-columns: 1fr; }
+  .nxi-skill-n { flex-basis: 108px; }
+  .nxi-pile-ghost { margin-left: 0; }
+}
+
+/* Gear lightbox affordance (2026-08-17 wave 2.1): a rendered tile opens large
+   on click — say so with the cursor and a lifted plate, nothing louder. */
+.nxi-tile-click { cursor: pointer; }
+.nxi-tile-click:hover .nxi-tile-art {
+  border-color: #6b5c35;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .45);
+}
+
+/* ======================================================== spawn guard == *
+ *  "＋ Spawn a copy" on a sculpted NPC would place a faceless ghost (Rober,
+ *  2026-08-18: Argos). C++ refuses BEFORE placing anything and the pane says
+ *  why here, with the verb that actually works under the finger.
+ *
+ *  Anchored to #nx-pane (position: relative), exactly like .nxi-sheet — so it
+ *  rides inside the deck's --ui-scale transform and needs no vh/vw anywhere
+ *  (the 2026-08-14 popup-scale audit: divide ONLY when the element itself
+ *  carries the scale; a pane-anchored px card must not).
+ * ====================================================================== */
+
+.nx-guard {
+  position: absolute;
+  left: 0; top: 0; right: 0; bottom: 0;
+  background: rgba(8, 8, 11, .8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 70;                 /* above the inspect sheet (40), toast (50) and lightbox (60) */
+  animation: nxGuardIn 140ms ease-out;
+}
+
+@keyframes nxGuardIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.nx-guard-card {
+  width: 100%;
+  max-width: 760px;
+  max-height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 30px 34px 26px;
+  background: linear-gradient(180deg, #1e1e26 0%, #14141a 100%);
+  border: 1px solid rgba(201, 162, 75, .42);
+  border-radius: 16px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  animation: nxGuardCardIn 160ms ease-out;
+}
+
+@keyframes nxGuardCardIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.nx-guard-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.nx-guard-glyph {
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 27px;
+  background: rgba(201, 162, 75, .14);
+  border: 1px solid rgba(201, 162, 75, .38);
+  color: #ecd9a8;
+}
+
+.nx-guard-t {
+  font-size: 22px;
+  font-weight: 700;
+  color: #efe7d5;
+  line-height: 1.25;
+}
+
+.nx-guard-msg {
+  margin: 0 0 14px;
+  font-size: 17px;
+  line-height: 1.55;
+  color: #e2dbca;
+}
+
+.nx-guard-why {
+  margin: 0 0 18px;
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: #a9a394;
+}
+
+.nx-guard-note {
+  margin: 0 0 18px;
+  padding: 13px 16px;
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: #f0c9a8;
+  background: rgba(200, 130, 70, .1);
+  border: 1px solid rgba(200, 130, 70, .34);
+  border-radius: 10px;
+}
+
+.nx-guard-acts {
+  display: flex;
+  flex-wrap: wrap;             /* four verbs must never squash — the F7-card lesson */
+  gap: 12px;
+  padding-top: 6px;
+}
+
+.nx-gbtn {
+  font: inherit;
+  font-size: 16px;
+  font-weight: 650;
+  padding: 13px 20px;
+  min-height: 48px;
+  border-radius: 11px;
+  cursor: pointer;
+  color: #ded7c6;
+  background: #22222b;
+  border: 1px solid #3a3a46;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease,
+              transform 140ms ease, box-shadow 140ms ease;
+}
+.nx-gbtn:hover { background: #2b2b36; border-color: #56525f; color: #f0e9d8; }
+.nx-gbtn:active { transform: translateY(1px); }
+.nx-gbtn:focus-visible {
+  outline: none;
+  border-color: rgba(201, 162, 75, .8);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .26);
+}
+.nx-gbtn[disabled] {
+  cursor: not-allowed;
+  opacity: .45;
+  background: #1b1b22;
+  border-color: #2e2e38;
+  color: #8d8879;
+}
+.nx-gbtn[disabled]:hover { background: #1b1b22; border-color: #2e2e38; color: #8d8879; }
+.nx-gbtn[disabled]:active { transform: none; }
+
+.nx-gbtn-primary {
+  background: rgba(201, 162, 75, .2);
+  border-color: rgba(201, 162, 75, .62);
+  color: #f3e2b4;
+}
+.nx-gbtn-primary:hover {
+  background: rgba(201, 162, 75, .3);
+  border-color: rgba(201, 162, 75, .85);
+  color: #fdf1cd;
+}
+
+.nx-gbtn-warn { color: #e6b6ab; border-color: rgba(190, 96, 82, .48); }
+.nx-gbtn-warn:hover {
+  background: rgba(190, 96, 82, .18);
+  border-color: rgba(190, 96, 82, .7);
+  color: #f6cec4;
+}
+
+.nx-gbtn-ghost { background: transparent; border-color: transparent; color: #9b9587; }
+.nx-gbtn-ghost:hover { background: #22222b; border-color: #3a3a46; color: #ded7c6; }
+
+/* Narrow deck: the card keeps its rhythm and the verbs stack full-width so no
+   label ever clips (the 640px floor the F7 quick card was measured at). */
+@media (max-width: 760px) {
+  .nx-guard { padding: 14px; }
+  .nx-guard-card { padding: 22px 20px 20px; border-radius: 13px; }
+  .nx-guard-glyph { width: 44px; height: 44px; font-size: 23px; border-radius: 11px; }
+  .nx-guard-t { font-size: 19px; }
+  .nx-guard-msg { font-size: 16px; }
+  .nx-guard-why, .nx-guard-note { font-size: 15px; }
+  .nx-gbtn { width: 100%; text-align: center; }
 }

@@ -104,7 +104,12 @@
 /* Name over verb. Both ellipsize — a 90-character follower name must shorten
    the chip, never widen the strip. */
 .rc-body { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
-.rc-name {
+/* Scoped to the chip ON PURPOSE (2026-08-19): recents-strip.css is EAGER, so
+   an unscoped .rc-name also hit the core Recent tab's rows (app.css owns those
+   at 13.5px) and shrank them — while app.css's flex .rc-name broke the strip's
+   ellipsis in return. One class name, two owners; the scope ends the fight. */
+.rc-chip .rc-name {
+  display: block;
   font: 500 11.5px/1.2 "Segoe UI", sans-serif; color: #e8e4da;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

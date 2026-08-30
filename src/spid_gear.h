@@ -98,6 +98,38 @@ namespace SpidGear
 	// asks for fresh state with it after a harvest lands.
 	std::uint32_t PendingRuntimeId();
 
+	// Add a grant WITHOUT the inbox chest (2026-08-20). Until now the chest was
+	// the ONLY way in: to enforce a wig you had to be standing in front of her,
+	// open the inbox, and physically own the wig. That makes the obvious
+	// requests impossible — "give this to her from the manager", "enforce the
+	// wig I just picked in the Wigs tab" — so this is the same grant, made from
+	// an item's durable identity instead of from a pile of physical objects.
+	//
+	// The request names the NPC either durably (npcPlugin + npcLocal, what the
+	// manager has) or by RUNTIME form id (`formId`, what the crosshair has),
+	// and the item durably. Both are validated against the live load order
+	// before anything is recorded: a plugin that is off, or an id that resolves
+	// to something you cannot put in an inventory, is refused with the reason
+	// rather than written into an ini that would silently do nothing.
+	//   { npcPlugin?, npcLocal?, npcName?, formId?,
+	//     itemPlugin, itemLocal, count?, chance? }
+	// Reply: { ok, msg, npc:{plugin,localId,name}, item:{…}, toppedUp }.
+	// Caller holds the config lock. MAIN THREAD (it reads game forms).
+	std::string AddGrant(Config& cfg, const nlohmann::json& req);
+
+	// Face renders for grant rows (2026-08-20). A grant stores the NPC's BASE
+	// identity, and a face render is keyed by the FACE OWNER — for a templated
+	// NPC that is a donor record, often in a different plugin — so neither the
+	// followers' fdFaceIcons (runtime ids) nor the Finder's own path could
+	// answer for a grant row. The resolution itself lives in main.cpp beside
+	// its sibling handlers; this is only the identity walk they share.
+	//
+	// Returns the face owner's plugin + local id for one base identity, or
+	// false when the plugin is off, the id is not an NPC, or the record has no
+	// resolvable face. MAIN THREAD.
+	bool FaceOwnerFor(const std::string& npcPlugin, std::uint32_t npcLocal,
+		std::string& outPlugin, std::uint32_t& outLocal, std::string& outName);
+
 	// Grant mutations from the card. Caller holds the config lock.
 	std::string RemoveGrant(Config& cfg, const std::string& npcPlugin, std::uint32_t npcLocal,
 		const std::string& itemPlugin, std::uint32_t itemLocal);

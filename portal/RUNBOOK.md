@@ -83,3 +83,21 @@ single upload) or appear at the next launch.
 | `DECK_PORTAL_PORT` | `8090` | Port. |
 | `DECK_PORTAL_PORTRAIT_DIR` | `<mod>\PrismaUI\views\HotkeyDeck\portraits` | Where portraits live, if you keep them in a separate mod from the deck's source (MO2 merges them in-game; the portal needs the real folder). |
 | `DECK_PORTAL_CHIM_DISTRO` | `DwemerAI4Skyrim3` | WSL distro name, only used if you have CHIM installed. |
+| `DECK_PORTAL_VIEW_ROOTS` | *(searched)* | `;`-separated mod roots that own a piece of `PrismaUI\views\{MagicDeck,HotkeyDeck}`, highest precedence first. Only needed if the search below gets it wrong: normally MO2's Overwrite, the personal-content mod, any mod found holding a view's `icons/` tree (an icon pack split out of the deck's mod), and the deck's own mod are all found automatically. Icon **reads** and the pool/library **listings** span every root; an **upload** lands in the highest-precedence mod folder that already holds the pool (never Overwrite), and a delete sweeps every root so no lower-priority copy resurfaces. |
+| `DECK_PORTAL_HD_CONFIG_DIR` | *(searched)* | The folder holding the plugin's own sidecars — `hotkeys.json`, `combat-arts.json`, `journal.json`. Normally found on its own: MO2's Overwrite, then the deck's mod folder, then a split personal-content mod (derived from `DECK_PORTAL_PORTRAIT_DIR`, or found by sweeping the sibling mod folders for the one that really holds `hotkeys.json`). Set it to skip the search. |
+
+If the Icons page says *"Spell Deck config unavailable — hotkeys.json not
+found"*, open `/api/health`: `hkCfgDirs` lists every folder searched, `hkJson`
+names the winner, and a non-empty `hkCfgSwept` means the configured folders
+were all wrong and the startup sweep had to go find the config (the startup log
+says so too). A moved config — e.g. splitting personal content into its own MO2
+mod, after which the game keeps rewriting the file in place there — is the
+usual cause.
+
+Same page, same cause, different symptom: every spell row wearing a **"missing
+art"** chip, or an icon library that counts far fewer icons than are installed,
+means the portal is looking at only some of the mods that hold the view trees.
+`/api/health` → `viewRoots` lists the roots it found (in precedence order),
+`viewRootsSwept` the ones it had to go looking for, and `poolWriteDir` where an
+upload would land. The deck itself never notices a split like this, because MO2
+merges every enabled mod into one virtual `Data`.

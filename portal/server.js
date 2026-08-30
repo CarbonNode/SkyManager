@@ -363,12 +363,307 @@ function pdReq(method, pathname, bodyObj) {
  *  Read fresh on every request — the game rewrites it constantly.
  * ======================================================================= */
 
+/* ---- where the plugin's OWN SKSE sidecars live -------------------------- *
+ *  hotkeys.json, combat-arts.json and journal.json all sit in the same
+ *  SKSE\Plugins\HotkeyDeck folder, so they get ONE search chain instead of
+ *  three that can drift apart. In MO2's own precedence order:
+ *
+ *    1. MO2's Overwrite       — where a file the GAME newly creates lands.
+ *    2. the deck's mod folder — MOD_HD, the classic single-mod layout.
+ *    3. a SPLIT personal mod  — the config is playthrough-personal content,
+ *       so an install that redistributes the source mod moves it (with the
+ *       portraits) into a mod of its own. MO2 merges the two in-game, and —
+ *       this is the part that bites — once the file EXISTS in that mod
+ *       folder the game keeps rewriting it IN PLACE, so it never reappears
+ *       in Overwrite and never comes back to MOD_HD.
+ *
+ *  (3) is why a two-entry chain went blind on the rig: the 2026-08-12
+ *  "SkyManager - Personal Data" split moved hotkeys.json out of the source
+ *  mod, and the portal then reported "hotkeys.json not found" while the deck
+ *  itself was perfectly happy (it reads through the VFS, which merges both).
+ *
+ *  Nobody hardcodes a mod name for (3). It is found artefact-first:
+ *    - DECK_PORTAL_PORTRAIT_DIR already points INTO that mod when a split
+ *      exists, so the mod root is four levels above the portraits folder;
+ *    - and if that misses, the sibling mod folders are swept ONCE at startup
+ *      for the one that actually holds hotkeys.json — but only when none of
+ *      the candidates above does, so a healthy install pays nothing.
+ *
+ *  DECK_PORTAL_HD_CONFIG_DIR pins the folder outright for an odd layout, and
+ *  the per-file DECK_PORTAL_HK_JSON / _COMBAT_ARTS / _JOURNAL_JSON pins still
+ *  win over everything, as they always did. */
+
+const HD_CFG_SUBPATH = path.join('SKSE', 'Plugins', 'HotkeyDeck');
+
+/** The mod root of a split personal-content mod, inferred from
+ *  DECK_PORTAL_PORTRAIT_DIR: <mod>\PrismaUI\views\HotkeyDeck\portraits ->
+ *  <mod>. Returns null unless the tail really is that shape (an operator who
+ *  points the var at some other folder must not silently gain a bogus
+ *  candidate). */
+function personalModRootFromPortraits() {
+  if (!process.env.DECK_PORTAL_PORTRAIT_DIR) return null;
+  try {
+    const want = ['portraits', 'hotkeydeck', 'views', 'prismaui'];
+    let cur = path.resolve(PORTRAIT_DIR);
+    for (const seg of want) {
+      if (path.basename(cur).toLowerCase() !== seg) return null;
+      cur = path.dirname(cur);
+    }
+    return cur;
+  } catch (_) { return null; }
+}
+
+/** Last resort, and only when the config is in none of the known places:
+ *  walk the sibling mod folders of MOD_HD and return the first one that holds
+ *  a real hotkeys.json. One readdir + one stat per mod, once, at startup. */
+function sweepModsForCfgDir(seenLower) {
+  let modsRoot;
+  try { modsRoot = path.dirname(path.resolve(MOD_HD)); } catch (_) { return null; }
+  let entries;
+  try { entries = fs.readdirSync(modsRoot, { withFileTypes: true }); } catch (_) { return null; }
+  const names = entries.filter((e) => { try { return e.isDirectory(); } catch (_) { return false; } })
+    .map((e) => e.name).sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1));
+  for (const name of names) {
+    const dir = path.join(modsRoot, name, HD_CFG_SUBPATH);
+    if (seenLower.has(path.resolve(dir).toLowerCase())) continue;
+    try { if (fs.statSync(path.join(dir, 'hotkeys.json')).isFile()) return dir; } catch (_) { /* next mod */ }
+  }
+  return null;
+}
+
+/** Set when the sweep above had to run — reported by /api/health, because a
+ *  swept path means the configured ones were all wrong and somebody should
+ *  know. */
+let HD_CFG_DIR_SWEPT = '';
+
+const HD_CFG_DIR_CANDIDATES = (() => {
+  if (process.env.DECK_PORTAL_HD_CONFIG_DIR) return [process.env.DECK_PORTAL_HD_CONFIG_DIR];
+  const out = [];
+  const seen = new Set();
+  const add = (d) => {
+    if (!d) return;
+    let k;
+    try { k = path.resolve(d).toLowerCase(); } catch (_) { return; }
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(d);
+  };
+  add(path.join(MO_OVERWRITE, HD_CFG_SUBPATH));
+  add(path.join(MOD_HD, HD_CFG_SUBPATH));
+  const personal = personalModRootFromPortraits();
+  if (personal) add(path.join(personal, HD_CFG_SUBPATH));
+  const holdsConfig = (d) => {
+    try { return fs.statSync(path.join(d, 'hotkeys.json')).isFile(); } catch (_) { return false; }
+  };
+  if (!out.some(holdsConfig)) {
+    const found = sweepModsForCfgDir(seen);
+    if (found) { HD_CFG_DIR_SWEPT = found; add(found); }
+  }
+  return out;
+})();
+
+/** Every candidate for one sidecar basename, in chain order. */
+function hdCfgCandidates(basename) {
+  return HD_CFG_DIR_CANDIDATES.map((d) => path.join(d, basename));
+}
+
 const HK_JSON_CANDIDATES = process.env.DECK_PORTAL_HK_JSON
   ? [process.env.DECK_PORTAL_HK_JSON]
-  : [
-    path.join(MO_OVERWRITE, 'SKSE', 'Plugins', 'HotkeyDeck', 'hotkeys.json'),
-    path.join(MOD_HD, 'SKSE', 'Plugins', 'HotkeyDeck', 'hotkeys.json'),
-  ];
+  : hdCfgCandidates('hotkeys.json');
+
+/* =================== where the VIEW TREES actually are ================= *
+ *  Same disease as the config chain above, one folder over. `PrismaUI\views\
+ *  MagicDeck` and `…\HotkeyDeck` used to be wholly inside MOD_HD, so ICON_DIR
+ *  and DECK_ICON_DIR were single absolute paths. On a real install they are
+ *  spread across SEVERAL MO2 mods, because splitting a big shippable mod is
+ *  what people do:
+ *
+ *    - MO2's Overwrite            — anything the RUNNING GAME wrote (rendered
+ *                                   item art, captured photos, mirrored icons).
+ *    - the personal-content mod   — the player's own uploads: on the rig
+ *                                   "SkyManager - Personal Data" holds
+ *                                   icons/custom/* (Dragonknight-2.png & co.).
+ *    - the icon-pack mod          — the bulky shipped art: on the rig
+ *                                   "SkyManager Source - Icons" holds the
+ *                                   1,913-file icons/sh/** library + sh_index.
+ *    - MOD_HD                     — the deck's own mod: the views, the code,
+ *                                   whatever art was never split out.
+ *
+ *  The GAME never noticed the split (MO2 merges every enabled mod into one
+ *  virtual Data), which is exactly why it is invisible until the portal — the
+ *  only thing here that reads REAL folders — starts reporting "missing art"
+ *  for icons the deck paints perfectly.
+ *
+ *  So every icon READ resolves across the roots below in MO2's precedence
+ *  order, and every listing (the pool, the library) is their UNION with the
+ *  first root winning a filename collision. Roots are found artefact-first:
+ *  the two split mods above are pointed at by DECK_PORTAL_PORTRAIT_DIR / the
+ *  resolved config dir when they carry those, and ANY other mod that owns a
+ *  piece of a view tree is found by one bounded sweep of the sibling mod
+ *  folders — nobody hardcodes a mod name.
+ *
+ *  Order note: a split mod is carved OUT of MOD_HD and MO2 places it above the
+ *  mod it came from (verified on the rig: Personal Data 4830 > Source 4829,
+ *  and the icon pack beats Source too), so MOD_HD sits LAST among the mod
+ *  roots and Overwrite — which outranks every mod — sits first. Duplicates are
+ *  usually byte-identical leftovers, so this only decides which copy is read.
+ *
+ *  DECK_PORTAL_VIEW_ROOTS pins the whole list (delimiter-separated, highest
+ *  precedence first) for an install this cannot work out on its own. */
+
+const VIEW_SUBPATH = path.join('PrismaUI', 'views');
+
+/** Mod roots swept up because they own part of a view tree — reported by
+ *  /api/health so a split nobody told the portal about is visible. */
+let VIEW_ROOTS_SWEPT = [];
+
+/** Every sibling mod folder that owns a piece of either view tree. One
+ *  readdir plus one cheap stat per mod, once, at startup; the deeper probes
+ *  only run for folders that have a PrismaUI\views at all. */
+function sweepModsForViewRoots(seenLower, limit) {
+  const out = [];
+  let modsRoot;
+  try { modsRoot = path.dirname(path.resolve(MOD_HD)); } catch (_) { return out; }
+  let entries;
+  try { entries = fs.readdirSync(modsRoot, { withFileTypes: true }); } catch (_) { return out; }
+  const names = entries.filter((e) => { try { return e.isDirectory(); } catch (_) { return false; } })
+    .map((e) => e.name).sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1));
+  for (const name of names) {
+    if (out.length >= limit) break;
+    const root = path.join(modsRoot, name);
+    let key;
+    try { key = path.resolve(root).toLowerCase(); } catch (_) { continue; }
+    if (seenLower.has(key)) continue;
+    const views = path.join(root, VIEW_SUBPATH);
+    try { if (!fs.statSync(views).isDirectory()) continue; } catch (_) { continue; }
+    // A view tree we care about is one that actually carries icons — not, say,
+    // some other mod that merely ships a PrismaUI view of its own.
+    const owns = ['MagicDeck', 'HotkeyDeck'].some((v) => {
+      try { return fs.statSync(path.join(views, v, 'icons')).isDirectory(); } catch (_) { return false; }
+    });
+    if (!owns) continue;
+    seenLower.add(key);
+    out.push(root);
+  }
+  return out;
+}
+
+const VIEW_ROOTS = (() => {
+  const raw = process.env.DECK_PORTAL_VIEW_ROOTS;
+  const out = [];
+  const seen = new Set();
+  const add = (d) => {
+    if (!d) return;
+    let k;
+    try { k = path.resolve(d).toLowerCase(); } catch (_) { return; }
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(d);
+  };
+  if (raw) {
+    // ';' only: a Windows path carries a ':' of its own, so path.delimiter is
+    // not a safe separator for this on the platform that needs it.
+    String(raw).split(';').forEach((s) => add(s.trim()));
+    if (out.length) return out;
+  }
+  add(MO_OVERWRITE);
+  const personal = personalModRootFromPortraits();
+  if (personal) add(personal);
+  // The mod that ended up holding the config is a personal-content mod too.
+  try {
+    const cfgDir = HD_CFG_DIR_CANDIDATES.find((d) => {
+      try { return fs.statSync(path.join(d, 'hotkeys.json')).isFile(); } catch (_) { return false; }
+    });
+    if (cfgDir) add(path.resolve(cfgDir, '..', '..', '..'));
+  } catch (_) { /* no config resolved — the chain above already says so */ }
+  // MOD_HD is excluded from the sweep and appended afterwards, so the deck's
+  // own mod stays LAST among the roots (see the order note above).
+  const skip = new Set(seen);
+  try { skip.add(path.resolve(MOD_HD).toLowerCase()); } catch (_) { /* unresolvable */ }
+  VIEW_ROOTS_SWEPT = sweepModsForViewRoots(skip, 8);
+  VIEW_ROOTS_SWEPT.forEach(add);
+  add(MOD_HD);                       // the deck's own mod, always last
+  return out;
+})();
+
+/** The <root>\PrismaUI\views\<View> folders, in precedence order. */
+function viewDirsFor(view) {
+  const v = viewName(view) === 'hotkey' ? 'HotkeyDeck' : 'MagicDeck';
+  return VIEW_ROOTS.map((r) => path.join(r, VIEW_SUBPATH, v));
+}
+
+/** The icons/custom folders of one tree, in precedence order. */
+function poolDirs(view) {
+  return viewDirsFor(view).map((d) => path.join(d, 'icons', 'custom'));
+}
+
+/** Where an UPLOAD lands: the highest-precedence MOD folder that already holds
+ *  this tree's pool, else MOD_HD's.
+ *
+ *  Never Overwrite — that belongs to the running game, not to us. Writing into
+ *  the mod that already owns the pool is what keeps reads and writes agreeing:
+ *  MO2 merges every enabled mod, so the game sees the file either way, but a
+ *  same-named older copy in a LOWER-priority mod would otherwise keep winning
+ *  in-game while the phone showed the new art. (removePoolIcon deletes the stem
+ *  from EVERY root for the same reason.) The running game still gets the bytes
+ *  immediately through writePoolIcon's liveSend import — MO2 composes its VFS
+ *  at launch, so a file dropped into a mod folder now is invisible to the
+ *  session already running, whichever folder it was. */
+function poolWriteDir(view) {
+  const dirs = poolDirs(view);
+  const ovKey = (() => { try { return path.resolve(MO_OVERWRITE).toLowerCase(); } catch (_) { return ''; } })();
+  const inOverwrite = (d) => { try { return path.resolve(d).toLowerCase().startsWith(ovKey); } catch (_) { return false; } };
+  for (const d of dirs) {
+    if (ovKey && inOverwrite(d)) continue;
+    try { if (fs.statSync(d).isDirectory()) return d; } catch (_) { /* next root */ }
+  }
+  return viewName(view) === 'hotkey' ? DECK_ICON_DIR : ICON_DIR;
+}
+
+/** The subset of `dirs` that exists. Anything that iterates pool roots must
+ *  filter through this first: listImages() and removeStem() both ensureDir(),
+ *  so an unfiltered loop CREATES an empty icons/custom in MO2's Overwrite and
+ *  in every unrelated mod it looked at. */
+function existingDirs(dirs) {
+  return dirs.filter((d) => {
+    try { return fs.statSync(d).isDirectory(); } catch (_) { return false; }
+  });
+}
+
+/** First root that really has `<tree>/icons/custom/<file>`, or null. */
+function findPoolFile(file, view) {
+  for (const dir of poolDirs(view)) {
+    const abs = confine(dir, file);
+    if (!abs) return null;                       // the name itself is illegal
+    try { if (fs.statSync(abs).isFile()) return abs; } catch (_) { /* next root */ }
+  }
+  return null;
+}
+
+/** listImages() over one tree's pool, merged across roots, first root winning
+ *  a filename collision. Rows carry the `dir` they came from. */
+function listPoolImages(view) {
+  const seen = Object.create(null);
+  const out = [];
+  for (const dir of existingDirs(poolDirs(view))) {
+    for (const r of listImages(dir, ICON_EXTS)) {
+      const k = r.file.toLowerCase();
+      if (seen[k]) continue;
+      seen[k] = true;
+      out.push(Object.assign({}, r, { dir }));
+    }
+  }
+  return out;
+}
+
+/** findByStem() across every root of one tree's pool. */
+function findPoolByStem(stem, view) {
+  const want = String(stem).toLowerCase();
+  for (const r of listPoolImages(view)) {
+    if (r.stem.toLowerCase() === want) return r;
+  }
+  return null;
+}
 
 /* ======================= the assignment sidecar ======================== *
  *  Lives INSIDE icons/custom/ on purpose: that folder is already scanned by
@@ -523,7 +818,7 @@ const FIN_MARKET_KEYS = ['name', 'side', 'price', 'note', 'icon'];
  *    {op:"image", outfit:"<name>", value:"icons/custom/x.png"},
  *    {op:"set", target:"outfit", name:"<n>", key:"note"|"fav", value:"..."},
  *    {op:"set", target:"assign", formId, plugin, key:"mode"|"wardrobeId"|
- *               "outfit"|"cadenceHours", value:"..."},
+ *               "outfit"|"cadenceHours"|"cadenceInherit"|"draw", value:"..."},
  *    {op:"pool", id:"<wardrobeId>", add?:"<outfit>", remove?:"<outfit>"} ] }
  *  "set" ops are deduped by target+identity+key; "image" by outfit.
  * ===================================================================== */
@@ -531,13 +826,14 @@ const WARDROBE_BASENAME = 'portal-wardrobe.json';
 const WARDROBE_FILE = path.join(DECK_VIEW_DIR, WARDROBE_BASENAME);
 const WARDROBE_MAX = 400;
 const WD_OUTFIT_KEYS = ['note', 'fav'];
-const WD_ASSIGN_KEYS = ['mode', 'wardrobeId', 'outfit', 'cadenceHours'];
+const WD_ASSIGN_KEYS = ['mode', 'wardrobeId', 'outfit', 'cadenceHours', 'cadenceInherit', 'draw'];
 const WD_MODES = ['off', 'outfit', 'wardrobe'];
+const WD_DRAWS = ['', 'bag', 'random'];  // "" = the wardrobe's way (shared bag)
 const WD_CADENCE_MAX = 24 * 30;          // matches the clamp in wardrobe.cpp
 /* Wardrobe (pool) management from the phone: create / delete / rename /
  * reorder, consumed by the pool-new / pool-del / pool-set / pool-order /
  * pools-order branches in wardrobe.cpp ApplyPortalWardrobe. */
-const WD_POOL_KEYS = ['name', 'note', 'mode', 'hue'];
+const WD_POOL_KEYS = ['name', 'note', 'mode', 'hue', 'cadenceHours'];
 const WD_POOL_MODES = ['bag', 'random'];
 const WD_POOL_NAME_MAX = 64;
 const WD_POOL_OUTFITS_MAX = 200;         // one order op carries the whole member list
@@ -601,10 +897,7 @@ const ITEMICON_INDEX_CANDIDATES = [
   path.join(DECK_VIEW_DIR, 'item-icons.json'),
   path.join(MO_OVERWRITE, 'PrismaUI', 'views', 'HotkeyDeck', 'item-icons.json'),
 ];
-const ITEMICON_DIRS = [
-  path.join(MO_OVERWRITE, 'PrismaUI', 'views', 'HotkeyDeck', 'icons', 'items'),
-  path.join(DECK_VIEW_DIR, 'icons', 'items'),
-];
+const ITEMICON_DIRS = viewDirsFor('hotkey').map((d) => path.join(d, 'icons', 'items'));
 function readItemIconIndex() {
   let best = null;
   for (const f of ITEMICON_INDEX_CANDIDATES) {
@@ -1039,6 +1332,11 @@ const MIME = {
   webp: 'image/webp',
   gif: 'image/gif',
   svg: 'image/svg+xml',
+  // the Journal's shipped OFL faces, served to the phone from the view folder
+  ttf: 'font/ttf',
+  otf: 'font/otf',
+  woff: 'font/woff',
+  woff2: 'font/woff2',
 };
 
 /* ============================ slug rule ================================ *
@@ -1109,10 +1407,22 @@ function confineView(rel, view) {
   if (segs.length > 5) return null;
   for (const s of segs) if (!VIEW_SEG_RE.test(s)) return null;
   if (!ICON_EXTS.includes(normExt(path.extname(rel)))) return null;
-  const abs = path.resolve(base, segs.join(path.sep));
-  const root = path.resolve(base) + path.sep;
-  if (!abs.startsWith(root)) return null;
-  return abs;
+  const tail = segs.join(path.sep);
+  /* The guarded tail is resolved against EVERY root that owns a piece of this
+     view tree (icons split into their own MO2 mod is normal — see the
+     VIEW_ROOTS banner), first existing wins, and the canonical MOD_HD path is
+     the answer when nothing exists yet so callers still get a real path to
+     report. The confinement re-check runs per root, unchanged. */
+  const roots = (typeof viewDirsFor === 'function') ? viewDirsFor(view) : [base];
+  let canonical = null;
+  for (const dir of roots.concat([base])) {
+    const abs = path.resolve(dir, tail);
+    const root = path.resolve(dir) + path.sep;
+    if (!abs.startsWith(root)) continue;
+    if (canonical === null) canonical = abs;
+    try { if (fs.statSync(abs).isFile()) return abs; } catch (_) { /* next root */ }
+  }
+  return canonical;
 }
 
 function ensureDir(dir) {
@@ -2333,6 +2643,260 @@ function removeSpellCatIcons(pred) {
   return { list, removed };
 }
 
+/* ============ Combat Arts icons (portal-combat-art-icons.json) ========= *
+ *  Third sibling of the two cat-icon queues above, for the deck's Combat
+ *  Arts tab (74 collectible weapon arts out of "Ashes of War Additional
+ *  Attack v Items.esp"). Keyed by ART ID — "<plugin>|<hex local id>", the
+ *  durable identity the game module itself stores — and the queue lives in
+ *  the HOTKEYDECK view dir (the Combat Arts tab is a deck view, so that is
+ *  the tree its icons resolve in). Wire shape the game consumes:
+ *      { "queue": [ { "art": "<artId>", "icon": "icons/custom/x.png" } ] }
+ *  ("" / null icon = clear the assignment.) Same seeded + truncated bridge
+ *  law as its siblings: never deleted, overwrite copy probed first.
+ *
+ *  The ARTS themselves are read from the game module's own sidecar,
+ *  SKSE\Plugins\HotkeyDeck\combat-arts.json — resolved beside hotkeys.json
+ *  (same base-walk: overwrite → the deck/personal-data mod, env-pinnable),
+ *  newest copy that parses wins (the Dragon Roost resolver's rule: a stale
+ *  seed must never shadow what the game just published).
+ * ===================================================================== */
+const CAICON_BASENAME = 'portal-combat-art-icons.json';
+const CAICON_FILE = path.join(DECK_VIEW_DIR, CAICON_BASENAME);
+const CAICON_MAX = 160;                  // absurd-input guard; 74 arts today
+const CA_ID_MAX = 128;
+
+/** "<anything without a pipe>|<1..8 hex>" — the artId shape the module mints. */
+function combatArtIdOk(s) {
+  return typeof s === 'string' && s.length > 0 && s.length <= CA_ID_MAX &&
+    /^[^|]+\|[0-9A-Fa-f]{1,8}$/.test(s);
+}
+
+/** WHICH COPY IS LIVE — see the portrait-bridge banner (overwrite shadows). */
+function combatArtIconBridgeFile() {
+  const ow = path.join(MO_OVERWRITE, 'PrismaUI', 'views', 'HotkeyDeck', CAICON_BASENAME);
+  try { if (fs.existsSync(ow)) return ow; } catch (_) {}
+  return CAICON_FILE;
+}
+
+function readCombatArtIcons() {
+  const file = combatArtIconBridgeFile();
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (_) {
+    return { list: [], file, exists: false, malformed: false };
+  }
+  let j;
+  try { j = JSON.parse(raw.replace(/^﻿/, '')); } catch (_) {
+    return { list: [], file, exists: true, malformed: true };
+  }
+  if (!j || typeof j !== 'object' || !Array.isArray(j.queue)) {
+    return { list: [], file, exists: true, malformed: true };
+  }
+  const out = [];
+  const at = Object.create(null);
+  for (const e of j.queue) {
+    if (!e || typeof e !== 'object') continue;
+    if (!combatArtIdOk(e.art)) continue;
+    // "" is legal and means CLEAR the assignment — kept, not filtered out.
+    const icon = typeof e.icon === 'string' ? e.icon.replace(/\\/g, '/') : '';
+    const rec = { art: e.art, icon };
+    if (at[e.art] !== undefined) out[at[e.art]] = rec;   // last write per art wins
+    else { at[e.art] = out.length; out.push(rec); }
+  }
+  return { list: out, file, exists: true, malformed: false };
+}
+
+/** Temp + rename, like every sibling: the plugin's reader discards a queue it
+ *  cannot parse, so a half-written file would throw the phone's change away. */
+function writeCombatArtIcons(list) {
+  const file = combatArtIconBridgeFile();
+  if (!ensureDir(path.dirname(file))) throw Object.assign(new Error('Cannot create ' + path.dirname(file)), { code: 500 });
+  const body = JSON.stringify({ version: 1, queue: list }, null, 2);
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, body);
+  renameWithRetry(tmp, file);
+  liveFlush('combat-art-icons', file);   // ~1 s poller is the fallback; this is the fast path
+}
+
+function mergeCombatArtIcon(art, icon) {
+  const cur = readCombatArtIcons();
+  const list = cur.list.filter((e) => e.art !== art);
+  list.push({ art, icon });
+  if (list.length > CAICON_MAX) list.splice(0, list.length - CAICON_MAX);
+  writeCombatArtIcons(list);
+  return list;
+}
+
+function removeCombatArtIcons(pred) {
+  const cur = readCombatArtIcons();
+  if (!pred) {
+    const removed = cur.list.length;
+    if (removed) writeCombatArtIcons([]);
+    return { list: [], removed };
+  }
+  const list = cur.list.filter((e) => !pred(e));
+  const removed = cur.list.length - list.length;
+  if (removed) writeCombatArtIcons(list);
+  return { list, removed };
+}
+
+/** Seed the queue once, at portal startup, so the file exists before MO2 fixes
+ *  its launch-time file list (the portrait-bridge law — a file created
+ *  mid-session is invisible to the already-running game). Only when NEITHER
+ *  copy exists yet; an existing file, either tree, is left alone. */
+function seedCombatArtIconQueue() {
+  try {
+    const ow = path.join(MO_OVERWRITE, 'PrismaUI', 'views', 'HotkeyDeck', CAICON_BASENAME);
+    if (fs.existsSync(ow) || fs.existsSync(CAICON_FILE)) return;
+    if (!ensureDir(DECK_VIEW_DIR)) return;
+    fs.writeFileSync(CAICON_FILE, JSON.stringify({ version: 1, queue: [] }, null, 2));
+    log('combat-art icon queue seeded: ' + CAICON_FILE);
+  } catch (e) {
+    log('warning: could not seed ' + CAICON_BASENAME + ': ' + e.message);
+  }
+}
+
+/* ------- the game module's own sidecar: SKSE\...\combat-arts.json ------- */
+
+const COMBAT_ARTS_BASENAME = 'combat-arts.json';
+/* Derived from wherever hotkeys.json lives (overwrite / mod / DECK_PORTAL_HK_JSON
+ * pin), because the module writes its sidecar into that same folder. Env
+ * override for an unusual layout, like every other path in this file. */
+const COMBAT_ARTS_CANDIDATES = process.env.DECK_PORTAL_COMBAT_ARTS
+  ? [process.env.DECK_PORTAL_COMBAT_ARTS]
+  : HK_JSON_CANDIDATES.map((f) => path.join(path.dirname(f), COMBAT_ARTS_BASENAME));
+
+/** Newest candidate that parses, or ok:false (the honest "open the tab in game
+ *  once" resting state — before the module has ever run there is nothing). */
+function readCombatArtsRoot() {
+  const found = [];
+  for (const f of COMBAT_ARTS_CANDIDATES) {
+    try { const st = fs.statSync(f); if (st.isFile()) found.push({ f, mtimeMs: st.mtimeMs }); } catch (_) { /* next */ }
+  }
+  found.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const c of found) {
+    let j;
+    try { j = JSON.parse(fs.readFileSync(c.f, 'utf8').replace(/^﻿/, '')); } catch (_) { continue; }
+    if (!j || typeof j !== 'object' || Array.isArray(j)) continue;
+    return { ok: true, file: c.f, root: j };
+  }
+  return { ok: false, file: found.length ? found[0].f : COMBAT_ARTS_CANDIDATES[0], root: null };
+}
+
+/** Fold the sidecar into plain rows { id, num, name, full, owned, icon },
+ *  tolerantly: an `arts` array is trusted when present, otherwise rows are
+ *  built from the union of the owned / icons / names maps — so the portal
+ *  works against whichever of the two shapes the module settles on. */
+function foldCombatArts(root) {
+  const rows = [];
+  const seen = Object.create(null);
+  const asIcon = (v) => (typeof v === 'string' ? v.replace(/\\/g, '/') : '');
+  const numOf = (id, v) => {
+    if (Number.isFinite(v)) return v;
+    const hex = String(id).split('|')[1] || '';
+    const n = parseInt(hex, 16);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const push = (id, r) => {
+    if (!combatArtIdOk(id) || seen[id]) return;
+    seen[id] = true;
+    const name = (r && typeof r.name === 'string' && r.name) ? r.name
+      : 'Art ' + (String(id).split('|')[1] || id).toUpperCase();
+    rows.push({
+      id,
+      num: numOf(id, r && r.num),
+      name,
+      full: (r && typeof r.full === 'string' && r.full) ? r.full : name,
+      owned: !!(r && r.owned),
+      icon: asIcon(r && r.icon),
+    });
+  };
+  if (Array.isArray(root.arts)) {
+    for (const a of root.arts) {
+      if (!a || typeof a !== 'object') continue;
+      push(String(a.id || ''), a);
+    }
+  }
+  const owned = (root.owned && typeof root.owned === 'object' && !Array.isArray(root.owned)) ? root.owned : {};
+  const icons = (root.icons && typeof root.icons === 'object' && !Array.isArray(root.icons)) ? root.icons : {};
+  const names = (root.names && typeof root.names === 'object' && !Array.isArray(root.names)) ? root.names : {};
+  const ids = Object.keys(owned).concat(Object.keys(icons), Object.keys(names));
+  for (const id of ids) {
+    push(id, { name: typeof names[id] === 'string' ? names[id] : '', owned: owned[id], icon: icons[id] });
+  }
+  // Rows that came from the arts array still take owned/icon from the maps when
+  // the array didn't carry them (the maps are the module's mutable state).
+  for (const r of rows) {
+    if (!r.owned && owned[r.id]) r.owned = true;
+    if (!r.icon && typeof icons[r.id] === 'string') r.icon = asIcon(icons[r.id]);
+  }
+  rows.sort((a, b) => (b.owned - a.owned) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  return rows;
+}
+
+/** Icon validation for a combat art: everything checkAssignIcon allows for the
+ *  deck view, PLUS a pool path that exists only in the DECK tree — the deck's
+ *  own shipped glyphs (hk-… / hm-….png) live there and are never mirrored into
+ *  the canonical MagicDeck pool, and refusing them would grey out exactly the
+ *  art the deck itself ships. */
+function checkCombatArtIcon(icon) {
+  const first = checkAssignIcon(icon, 'hotkey');
+  if (first.ok) return first;
+  if (typeof icon === 'string') {
+    const p = icon.replace(/\\/g, '/');
+    if (p.startsWith(ICON_PREFIX)) {
+      const file = p.slice(ICON_PREFIX.length);
+      const abs = findPoolFile(file, 'hotkey');
+      if (abs && ICON_EXTS.includes(normExt(path.extname(file)))) {
+        return { ok: true, icon: ICON_PREFIX + file };
+      }
+    }
+  }
+  return first;
+}
+
+/** URL for a combat-art icon: the shared resolver first; a deck-tree-only pool
+ *  file (missing from the canonical pool) is served through the view tree it
+ *  actually lives in. */
+function combatArtIconUrl(icon) {
+  const shown = iconUrlFor(icon, 'hotkey');
+  if (shown && shown.url && !shown.missing) return shown;
+  const p = String(icon || '').replace(/\\/g, '/');
+  const abs = p ? confineView(p, 'hotkey') : null;
+  if (abs && fs.existsSync(abs)) {
+    let mt = 0;
+    try { mt = Math.floor(fs.statSync(abs).mtimeMs / 1000); } catch (_) { /* fine */ }
+    return { url: '/api/view-icon?p=' + encodeURIComponent(p) + '&view=hotkey&v=' + mt, kind: 'custom' };
+  }
+  return shown;
+}
+
+/** The pickable pool for the Combat Arts UI: the deck view's icons/custom
+ *  UNION the canonical (MagicDeck) pool — deck tree first, so a stem collision
+ *  resolves to the file the deck view actually paints. */
+function combatArtIconPool() {
+  const seen = Object.create(null);
+  const out = [];
+  const dirs = [].concat(
+    poolDirs('hotkey').map((dir) => ({ dir, tree: 'hotkey' })),
+    poolDirs('magic').map((dir) => ({ dir, tree: 'magic' })),
+  );
+  for (const d of dirs.filter((x) => existingDirs([x.dir]).length)) {
+    for (const r of listImages(d.dir, ICON_EXTS)) {
+      const k = r.file.toLowerCase();
+      if (seen[k]) continue;
+      seen[k] = true;
+      const icon = ICON_PREFIX + r.file;
+      const shown = combatArtIconUrl(icon);
+      out.push({
+        name: r.stem, file: r.file, ext: r.ext, mtime: r.mtime, size: r.size,
+        icon, url: shown ? shown.url : null, tree: d.tree,
+      });
+    }
+  }
+  out.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  return out;
+}
+
 /** One slot's CURRENT glyph (what the game has on disk), or "". */
 function liveCatIcon(cat) { return readCatIconsLive().icons[cat] || ''; }
 
@@ -2834,6 +3398,9 @@ function wdIdentity(o) {
 function wdAssignValue(key, raw) {
   const v = typeof raw === 'string' ? raw.trim() : '';
   if (key === 'mode') return WD_MODES.includes(v) ? v : null;
+  if (key === 'draw') return WD_DRAWS.includes(v) ? v : null;
+  if (key === 'cadenceInherit')
+    return (raw === true || v === '1' || v === 'true') ? '1' : '0';
   if (key === 'cadenceHours') {
     const n = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
     if (!Number.isFinite(n)) return null;
@@ -3289,7 +3856,7 @@ function wardrobeView() {
     for (const key of WD_POOL_KEYS) {
       const v = poolSets[w.id + '\n' + key];
       if (v === undefined) continue;
-      out[key] = key === 'hue' ? (parseInt(v, 10) || 0) : v;
+      out[key] = (key === 'hue' || key === 'cadenceHours') ? (parseInt(v, 10) || 0) : v;
       pending = true;
     }
     if (poolOrders[w.id]) {
@@ -3321,7 +3888,7 @@ function wardrobeView() {
     }
     for (const key of WD_POOL_KEYS) {
       const v = poolSets[w.id + '\n' + key];
-      if (v !== undefined) w[key] = key === 'hue' ? (parseInt(v, 10) || 0) : v;
+      if (v !== undefined) w[key] = (key === 'hue' || key === 'cadenceHours') ? (parseInt(v, 10) || 0) : v;
     }
     wardrobes.push(w);
   });
@@ -3342,7 +3909,9 @@ function wardrobeView() {
     for (const key of WD_ASSIGN_KEYS) {
       const v = setAssign[id + '\n' + key];
       if (v === undefined) continue;
-      out[key] = key === 'cadenceHours' ? (parseInt(v, 10) || 0) : v;
+      out[key] = key === 'cadenceHours' ? (parseInt(v, 10) || 0)
+        : key === 'cadenceInherit' ? v === '1'
+        : v;
       pending = true;
     }
     // queued per-location overrides, mirrored the way the plugin will apply
@@ -3770,7 +4339,9 @@ function iconUrlFor(icon, view) {
   const v = viewName(view);
   const p = icon.replace(/\\/g, '/');            // the view normalises the same way
   const custom = p.startsWith(ICON_PREFIX);
-  const abs = custom ? confine(ICON_DIR, p.slice(ICON_PREFIX.length)) : confineView(p, v);
+  const abs = custom
+    ? (findPoolFile(p.slice(ICON_PREFIX.length), 'magic') || findPoolFile(p.slice(ICON_PREFIX.length), v))
+    : confineView(p, v);
   if (!abs || !fs.existsSync(abs)) {
     return { url: null, kind: custom ? 'custom' : 'library', missing: true };
   }
@@ -3812,7 +4383,14 @@ function iconUrlFor(icon, view) {
 const SH_CACHE = { magic: null, hotkey: null };
 function shLibrary(view) {
   const v = viewName(view);
-  const file = path.join(VIEW_DIRS[v], 'icons', 'sh_index.json');
+  // The library often lives in its OWN mod (the rig's "SkyManager Source -
+  // Icons"), so the index is looked for across every view root, not just
+  // MOD_HD's — otherwise a full 1,913-icon pool reads as a rump.
+  let file = path.join(VIEW_DIRS[v], 'icons', 'sh_index.json');
+  for (const d of viewDirsFor(v)) {
+    const cand = path.join(d, 'icons', 'sh_index.json');
+    try { if (fs.statSync(cand).isFile()) { file = cand; break; } } catch (_) { /* next root */ }
+  }
   let stamp = 0;
   try { stamp = Math.floor(fs.statSync(file).mtimeMs / 1000); } catch (_) {
     return { ok: false, error: 'No icon library index at ' + file + ' — the Spell Hotbar icons are not deployed in the ' + v + ' view' };
@@ -3886,11 +4464,11 @@ function checkAssignIcon(icon, view) {
     return { ok: false, error: 'icon must be "", a "' + ICON_PREFIX + '" upload, or a "' + LIB_PREFIX + '" library icon (got "' + p.slice(0, 60) + '")' };
   }
   const file = p.slice(ICON_PREFIX.length);
-  const abs = confine(ICON_DIR, file);   // rejects traversal, separators, subdirs
-  if (!abs || !ICON_EXTS.includes(normExt(path.extname(file)))) {
+  const named = confine(ICON_DIR, file);   // rejects traversal, separators, subdirs
+  if (!named || !ICON_EXTS.includes(normExt(path.extname(file)))) {
     return { ok: false, error: 'Bad icon path "' + p.slice(0, 60) + '"' };
   }
-  if (!fs.existsSync(abs)) {
+  if (!findPoolFile(file, 'magic') && !findPoolFile(file, view)) {
     return { ok: false, error: 'No custom icon file named "' + file + '" — upload it first' };
   }
   return { ok: true, icon: ICON_PREFIX + file };
@@ -3917,7 +4495,7 @@ function freeIconName(stem, keepFile) {
   for (let i = 1; i < 100; i++) {
     const cand = i === 1 ? stem : (stem + ' ' + i).slice(0, 80).trim();
     if (!validIconName(cand)) break;
-    const hit = findByStem(ICON_DIR, cand, ICON_EXTS);
+    const hit = findPoolByStem(cand, 'magic');
     if (!hit || (keepFile && hit.file.toLowerCase() === String(keepFile).toLowerCase())) return cand;
   }
   return stem;
@@ -3934,13 +4512,20 @@ function freeIconName(stem, keepFile) {
 
 /** Write to the pool (both trees). Returns the canonical write's info. */
 function writePoolIcon(stem, ext, buf) {
-  const info = writeImage(ICON_DIR, stem, ext, buf);
+  const magicDir = poolWriteDir('magic');
+  const deckDir = poolWriteDir('hotkey');
+  // Replace, don't stack: an older copy of this stem in ANY root would keep
+  // winning somewhere (MO2 picks by mod priority, we pick by root order).
+  removePoolIcon(stem);
+  if (!ensureDir(magicDir)) throw Object.assign(new Error('Cannot create ' + magicDir), { code: 500 });
+  const info = writeImage(magicDir, stem, ext, buf);
   try {
     // Mirror under the name that ACTUALLY landed (writeImage may have had to
     // sidestep a locked file), or the deck would draw the stale bytes.
     const landed = path.parse(info.file).name;
-    removeStem(DECK_ICON_DIR, landed, ICON_EXTS);   // replace, never stack extensions
-    writeImage(DECK_ICON_DIR, landed, ext, buf);
+    existingDirs(poolDirs('hotkey')).forEach((d) => { try { removeStem(d, landed, ICON_EXTS); } catch (_) { /* absent root */ } });
+    ensureDir(deckDir);
+    writeImage(deckDir, landed, ext, buf);
   } catch (e) {
     // Not fatal: the canonical copy landed, and the in-game Magic → Deck mirror
     // is the backstop. Say so in the log rather than failing the upload.
@@ -3962,14 +4547,22 @@ function writePoolIcon(stem, ext, buf) {
      Fire-and-forget: the game being closed is not an error, it just means the
      next launch picks the file up the ordinary way. */
   liveSend({ kind: 'import-icon', name: info.file,
-    src: path.join(DECK_ICON_DIR, info.file) }).catch(() => {});
+    src: path.join(deckDir, info.file) }).catch(() => {});
   return info;
 }
 
 /** Remove from the pool (both trees). Returns the canonical removal count. */
 function removePoolIcon(stem) {
-  const n = removeStem(ICON_DIR, stem, ICON_EXTS);
-  try { removeStem(DECK_ICON_DIR, stem, ICON_EXTS); } catch (_) { /* see above */ }
+  /* EVERY root, BOTH trees. A copy left behind in another mod folder would
+     resurface the moment the winning one goes — which, with MO2 merging the
+     lot, reads in-game as "the delete did nothing". */
+  let n = 0;
+  existingDirs(poolDirs('magic')).forEach((d) => {
+    try { n += removeStem(d, stem, ICON_EXTS); } catch (_) { /* absent root */ }
+  });
+  existingDirs(poolDirs('hotkey')).forEach((d) => {
+    try { removeStem(d, stem, ICON_EXTS); } catch (_) { /* see above */ }
+  });
   return n;
 }
 
@@ -3979,15 +4572,15 @@ function removePoolIcon(stem) {
  *  only now being assigned to a hotkey. Size-compared, so it is a no-op once the
  *  bytes match; same rule the C++ mirror uses. */
 function ensureDeckCopy(file) {
-  const from = confine(ICON_DIR, file);
-  const to = confine(DECK_ICON_DIR, file);
+  const from = findPoolFile(file, 'magic');
+  const to = confine(poolWriteDir('hotkey'), file);
   if (!from || !to) return false;
   try {
     const a = fs.statSync(from);
     let b = null;
     try { b = fs.statSync(to); } catch (_) { /* missing — copy below */ }
     if (b && b.isFile() && b.size === a.size) return true;
-    if (!ensureDir(DECK_ICON_DIR)) return false;
+    if (!ensureDir(path.dirname(to))) return false;
     fs.copyFileSync(from, to);
     log('icon mirrored into the deck view: ' + file);
     return true;
@@ -5052,6 +5645,15 @@ async function route(req, res, url) {
       portraitDir: PORTRAIT_DIR,
       iconDir: ICON_DIR,
       deckIconDir: DECK_ICON_DIR,
+      // Every mod root that owns a piece of a view tree, in precedence
+      // order, plus where an upload would land. A split icon pack that the
+      // portal never found is the difference between real art and a page
+      // full of "missing art" chips.
+      viewRoots: VIEW_ROOTS.map((r) => ({ path: r, exists: fs.existsSync(r) })),
+      viewRootsSwept: VIEW_ROOTS_SWEPT,
+      poolDirs: poolDirs('magic').map((d) => ({ path: d, exists: fs.existsSync(d) })),
+      poolWriteDir: poolWriteDir('magic'),
+      deckPoolWriteDir: poolWriteDir('hotkey'),
       portraitDirExists: fs.existsSync(PORTRAIT_DIR),
       overwriteDir: MO_OVERWRITE,
       overwritePortraitDir: OVERWRITE_PORTRAIT_DIR,
@@ -5065,6 +5667,12 @@ async function route(req, res, url) {
       // when the spell or hotkey list looks stale or empty.
       hkJson: cfg.file,
       hkJsonCandidates: HK_JSON_CANDIDATES.map((c) => ({ path: c, exists: fs.existsSync(c) })),
+      // The shared sidecar folder chain (hotkeys / combat-arts / journal). A
+      // non-empty hkCfgSwept means the configured folders were all wrong and
+      // the startup sweep had to go find the config — worth fixing properly.
+      hkCfgDirs: HD_CFG_DIR_CANDIDATES.map((d) => ({ path: d, exists: fs.existsSync(d) })),
+      hkCfgSwept: HD_CFG_DIR_SWEPT || '',
+      combatArtsCandidates: COMBAT_ARTS_CANDIDATES.map((c) => ({ path: c, exists: fs.existsSync(c) })),
       magic: {
         ok: mg.ok,
         error: mg.error || null,
@@ -5538,8 +6146,8 @@ async function route(req, res, url) {
       name = freeIconName(iconNameFrom(dest.category.name, 'category icon'), curFile);
     }
 
-    const replaced = !!findByStem(ICON_DIR, name, ICON_EXTS);
-    removeStem(ICON_DIR, name, ICON_EXTS);
+    const replaced = !!findPoolByStem(name, 'magic');
+    removePoolIcon(name);
     let info;
     try { info = writePoolIcon(name, ext, buf); } catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
 
@@ -5666,8 +6274,8 @@ async function route(req, res, url) {
       name = freeIconName(iconNameFrom(cat, 'spell category icon'), curFile);
     }
 
-    const replaced = !!findByStem(ICON_DIR, name, ICON_EXTS);
-    removeStem(ICON_DIR, name, ICON_EXTS);
+    const replaced = !!findPoolByStem(name, 'magic');
+    removePoolIcon(name);
     let info;
     try { info = writePoolIcon(name, ext, buf); } catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
 
@@ -5745,6 +6353,172 @@ async function route(req, res, url) {
     }
     log('spell cat icon cleared: "' + cat + '"');
     sendJson(res, 200, { ok: true, cleared: out.removed, pendingSpellCatIcons: out.list.length, file: spellCatIconBridgeFile() });
+    return;
+  }
+
+  /* ---- Combat Arts icons (portal-combat-art-icons.json) ---- *
+   *  Third sibling of the two cat-icon quartets above, keyed by ART ID.
+   *  Arts come from the game module's own combat-arts.json sidecar; the
+   *  queue lands in the HotkeyDeck view dir. */
+  if (m === 'GET' && p === '/api/combat-art-icons') {
+    const cur = readCombatArtIcons();
+    const ca = readCombatArtsRoot();
+    if (!ca.ok) {
+      // Honest resting state: the module has never published its sidecar.
+      sendJson(res, 200, {
+        ok: true, arts: [], pool: combatArtIconPool(),
+        pending: cur.list.length, set: cur.list, file: cur.file, malformed: cur.malformed,
+        sidecar: null, note: 'Open the Combat Arts tab in game once — the portal reads the arts list from ' +
+          COMBAT_ARTS_BASENAME + ' (tried: ' + COMBAT_ARTS_CANDIDATES.join(' | ') + ')',
+      });
+      return;
+    }
+    const queuedAt = Object.create(null);
+    for (const e of cur.list) queuedAt[e.art] = e;
+    // Folded per-art rows in the roster's wire shape (icon / iconUrl / iconKind /
+    // iconMissing / pendingIcon / pendingIconUrl / pendingIconKind) so the SPA's
+    // effectiveIcon()/effectiveUrl()/icon sheet work on them unchanged.
+    const arts = foldCombatArts(ca.root).map((a) => {
+      const shown = a.icon ? combatArtIconUrl(a.icon) : null;
+      const row = {
+        id: a.id, num: a.num, name: a.name, full: a.full, owned: a.owned,
+        icon: a.icon,
+        iconUrl: shown ? shown.url : null,
+        iconKind: a.icon ? (a.icon.startsWith(LIB_PREFIX) ? 'library' : 'custom') : 'none',
+        iconMissing: !!(shown && shown.missing),
+        pendingIcon: null, pendingIconUrl: null, pendingIconKind: null,
+      };
+      const qd = queuedAt[a.id];
+      if (qd) {
+        row.pendingIcon = qd.icon;
+        const pu = qd.icon ? combatArtIconUrl(qd.icon) : null;
+        row.pendingIconUrl = pu ? pu.url : null;
+        row.pendingIconKind = qd.icon ? (qd.icon.startsWith(LIB_PREFIX) ? 'library' : 'custom') : 'none';
+      }
+      return row;
+    });
+    sendJson(res, 200, {
+      ok: true, arts, pool: combatArtIconPool(),
+      pending: cur.list.length, set: cur.list, file: cur.file, malformed: cur.malformed,
+      sidecar: ca.file,
+    });
+    return;
+  }
+
+  if (m === 'POST' && p === '/api/combat-art-icon') {
+    const body = await readJsonBody(req);
+    const art = typeof body.art === 'string' ? body.art : '';
+    if (!combatArtIdOk(art)) {
+      sendErr(res, 400, 'art must be the art id ("<plugin>|<hex>", 1–' + CA_ID_MAX + ' chars)');
+      return;
+    }
+    const ca = readCombatArtsRoot();
+    if (!ca.ok) {
+      sendErr(res, 503, 'No ' + COMBAT_ARTS_BASENAME + ' yet — open the Combat Arts tab in game once so the module publishes its arts list');
+      return;
+    }
+    const rows = foldCombatArts(ca.root);
+    const hit = rows.find((a) => a.id === art);
+    if (!hit) {
+      sendErr(res, 404, 'No combat art with id "' + art.slice(0, 80) + '" in ' + COMBAT_ARTS_BASENAME);
+      return;
+    }
+    const chk = checkCombatArtIcon(body.icon);
+    if (!chk.ok) { sendErr(res, 400, chk.error); return; }
+    let list;
+    try { list = mergeCombatArtIcon(art, chk.icon); } catch (e) {
+      sendErr(res, httpCode(e.code, 500), e.message); return;
+    }
+    log('combat art icon queued: "' + hit.name + '" (' + art + ') -> ' + (chk.icon || '(none)'));
+    const shown = chk.icon ? combatArtIconUrl(chk.icon) : null;
+    sendJson(res, 200, {
+      ok: true, art, artName: hit.name, icon: chk.icon,
+      iconUrl: shown ? shown.url : null,
+      pendingCombatArtIcons: list.length, file: combatArtIconBridgeFile(),
+    });
+    return;
+  }
+
+  /* Upload art FOR A COMBAT ART: pool write + queued assignment, one tap —
+     the same twin-shape as /api/spell-cat-icon-image above. */
+  if (m === 'POST' && p === '/api/combat-art-icon-image') {
+    const body = await readJsonBody(req);
+    const art = typeof body.art === 'string' ? body.art : '';
+    if (!combatArtIdOk(art)) { sendErr(res, 400, 'art must be the art id ("<plugin>|<hex>")'); return; }
+    const ca = readCombatArtsRoot();
+    if (!ca.ok) {
+      sendErr(res, 503, 'No ' + COMBAT_ARTS_BASENAME + ' yet — open the Combat Arts tab in game once');
+      return;
+    }
+    const rows = foldCombatArts(ca.root);
+    const hit = rows.find((a) => a.id === art);
+    if (!hit) { sendErr(res, 404, 'No combat art with id "' + art.slice(0, 80) + '"'); return; }
+
+    let ext = normExt(body.ext);
+    if (!ICON_EXTS.includes(ext)) { sendErr(res, 400, 'Bad extension "' + ext + '" — allowed: ' + ICON_EXTS.join(', ')); return; }
+    let buf;
+    try { buf = decodeImage(body.dataBase64); } catch (e) { sendErr(res, httpCode(e.code, 400), e.message); return; }
+    const sniff = sniffExt(buf);
+    if (!sniff || !ICON_EXTS.includes(sniff)) {
+      sendErr(res, 400, 'That file is not an image the deck can load (magic bytes say "' + (sniff || 'unknown') + '")'); return;
+    }
+    if (sniff !== ext) ext = sniff;
+
+    const explicit = typeof body.iconName === 'string' && body.iconName.trim();
+    let name;
+    if (explicit) {
+      name = body.iconName.trim();
+      if (!validIconName(name)) {
+        sendErr(res, 400, 'Bad icon name — letters, digits, space, _ and - only, no dots (got "' +
+          String(body.iconName).slice(0, 60) + '")'); return;
+      }
+    } else {
+      const queued = readCombatArtIcons().list.filter((e) => e.art === art)[0];
+      const curFile = ownPoolFile(hit.icon || '', queued ? queued.icon : undefined);
+      name = freeIconName(iconNameFrom(hit.name, 'combat art icon'), curFile);
+    }
+
+    const replaced = !!findPoolByStem(name, 'magic');
+    removePoolIcon(name);
+    let info;
+    try { info = writePoolIcon(name, ext, buf); } catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
+
+    const icon = ICON_PREFIX + info.file;
+    let list;
+    try { list = mergeCombatArtIcon(art, icon); } catch (e) {
+      sendErr(res, httpCode(e.code, 500), 'Icon saved as ' + info.file + ' but the assignment could not be queued: ' + e.message);
+      return;
+    }
+    const landed = path.parse(info.file).name;
+    log('combat art icon: ' + info.file + ' (' + Math.round(info.size / 1024) + ' KB) queued for "' + hit.name + '" (' + art + ')');
+    sendJson(res, 200, {
+      ok: true, art, artName: hit.name, icon,
+      name: landed, requested: name, renamed: !!info.renamed,
+      ext: info.ext, mtime: info.mtime, size: info.size, replaced,
+      url: '/api/icon-file/' + encodeURIComponent(landed) + '?v=' + info.mtime,
+      pendingCombatArtIcons: list.length,
+    });
+    return;
+  }
+
+  if (m === 'DELETE' && p === '/api/combat-art-icon') {
+    if (url.searchParams.get('all') === '1') {
+      const out = removeCombatArtIcons(null);
+      log('combat art icons cleared: ' + out.removed + ' dropped');
+      sendJson(res, 200, { ok: true, cleared: out.removed, pendingCombatArtIcons: out.list.length, file: combatArtIconBridgeFile() });
+      return;
+    }
+    let body = {};
+    try { body = await readJsonBody(req); } catch (_) { body = {}; }
+    const art = typeof body.art === 'string' ? body.art : '';
+    if (!combatArtIdOk(art)) { sendErr(res, 400, 'art (the art id) is required to clear one entry (or pass ?all=1)'); return; }
+    const out = removeCombatArtIcons((e) => e.art === art);
+    if (!out.removed) {
+      sendErr(res, 404, 'Nothing was queued for "' + art.slice(0, 80) + '" — reload (⟳); the game may already have applied it.');
+      return;
+    }
+    log('combat art icon cleared: "' + art + '"');
+    sendJson(res, 200, { ok: true, cleared: out.removed, pendingCombatArtIcons: out.list.length, file: combatArtIconBridgeFile() });
     return;
   }
 
@@ -6182,6 +6956,10 @@ async function route(req, res, url) {
         const n = parseInt(value, 10);
         if (!isFinite(n) || n < 0 || n > 359) { sendErr(res, 400, 'hue must be 0–359'); return; }
         value = String(n);
+      } else if (key === 'cadenceHours') {
+        const n = parseInt(String(value).replace(/[^0-9]/g, ''), 10);
+        if (!Number.isFinite(n)) { sendErr(res, 400, 'cadenceHours must be a number of hours (0–' + WD_CADENCE_MAX + ')'); return; }
+        value = String(Math.max(0, Math.min(WD_CADENCE_MAX, n)));
       } else value = value.slice(0, FIELD_VALUE_MAX);
       rec = { op, id, key, value };
     } else if (op === 'pool-order') {
@@ -6219,6 +6997,8 @@ async function route(req, res, url) {
         if (value === null) {
           sendErr(res, 400, key === 'mode'
             ? 'mode must be one of: ' + WD_MODES.join(', ')
+            : key === 'draw'
+            ? 'draw must be "" (the wardrobe’s way), bag, or random'
             : 'cadenceHours must be a number of hours (0–' + WD_CADENCE_MAX + ')'); return;
         }
         rec = { op, target, formId, plugin, key, value };
@@ -7098,9 +7878,12 @@ async function route(req, res, url) {
     // `file` is the REAL on-disk filename. The client builds override paths as
     // ICON_PREFIX + file, so a hand-dropped "foo.jpeg" (whose ext normalises to
     // "jpg") still assigns a path that actually exists.
-    const list = listImages(ICON_DIR, ICON_EXTS)
+    const list = listPoolImages('magic')
       .map((r) => ({ name: r.stem, file: r.file, ext: r.ext, mtime: r.mtime, size: r.size }));
-    sendJson(res, 200, { ok: true, dir: ICON_DIR, deckDir: DECK_ICON_DIR, icons: list });
+    sendJson(res, 200, {
+      ok: true, dir: poolWriteDir('magic'), deckDir: poolWriteDir('hotkey'),
+      dirs: poolDirs('magic'), icons: list,
+    });
     return;
   }
 
@@ -7117,7 +7900,7 @@ async function route(req, res, url) {
       sendErr(res, 400, 'That file is not an image the Spell Deck can load (magic bytes say "' + (sniff || 'unknown') + '")'); return;
     }
     if (sniff !== ext) ext = sniff;
-    removeStem(ICON_DIR, name, ICON_EXTS);
+    removePoolIcon(name);
     let info;
     try { info = writePoolIcon(name, ext, buf); } catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
     const landed = path.parse(info.file).name;   // may differ: the game had the old file open
@@ -7139,9 +7922,9 @@ async function route(req, res, url) {
   if (m === 'GET' && p.startsWith('/api/icon-file/')) {
     const name = decodeURIComponent(p.slice('/api/icon-file/'.length));
     if (!validIconName(name)) { sendErr(res, 400, 'Bad icon name'); return; }
-    const r = findByStem(ICON_DIR, name, ICON_EXTS);
+    const r = findPoolByStem(name, 'magic') || findPoolByStem(name, 'hotkey');
     if (!r) { sendErr(res, 404, 'No icon named "' + name + '"'); return; }
-    const abs = confine(ICON_DIR, r.file);
+    const abs = confine(r.dir, r.file);
     if (!abs) { sendErr(res, 400, 'Refusing to serve outside the icons folder'); return; }
     sendFile(res, abs, r.ext);
     return;
@@ -7235,8 +8018,8 @@ async function route(req, res, url) {
       name = freeIconName(iconNameFrom(hit.spell.name, 'spell icon'), curFile);
     }
 
-    const replaced = !!findByStem(ICON_DIR, name, ICON_EXTS);
-    removeStem(ICON_DIR, name, ICON_EXTS);
+    const replaced = !!findPoolByStem(name, 'magic');
+    removePoolIcon(name);
     let info;
     try { info = writePoolIcon(name, ext, buf); } catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
 
@@ -7329,8 +8112,8 @@ async function route(req, res, url) {
       name = freeIconName(iconNameFrom(hit.entry.name, 'hotkey icon'), curFile);
     }
 
-    const replaced = !!findByStem(ICON_DIR, name, ICON_EXTS);
-    removeStem(ICON_DIR, name, ICON_EXTS);
+    const replaced = !!findPoolByStem(name, 'magic');
+    removePoolIcon(name);
     let info;
     try { info = writePoolIcon(name, ext, buf); } catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
 
@@ -7486,6 +8269,52 @@ async function route(req, res, url) {
    *  Domains view can load it by convention (domain-images/<id>.png|jpg|jpeg|webp
    *  with an onerror fallback). Uploads land in DOMAIN_IMG_DIR inside the deck's
    *  own view folder, which MO2's VFS passes through mid-game. */
+  if (m === 'GET' && p === '/api/containers') {
+    // 200 even when ok:false — same contract as /api/domains: the SPA renders
+    // the diagnostic inline instead of collapsing.
+    sendJson(res, 200, readContainersView());
+    return;
+  }
+
+  if (m === 'POST' && p === '/api/containers/op') {
+    const body = await readJsonBody(req);
+    const op = str(body.op);
+    let rec = null;
+    if (op === 'mark') {
+      const id = str(body.id);
+      const key = str(body.key);
+      if (!contIdOk(id)) { sendErr(res, 400, 'Bad container id'); return; }
+      if (CONT_MARK_KEYS.indexOf(key) === -1) { sendErr(res, 400, 'Unknown key "' + key + '" — allowed: ' + CONT_MARK_KEYS.join(', ')); return; }
+      const value = key === 'redirectTo' ? str(body.value).slice(0, CONT_ID_MAX) : !!body.value;
+      rec = { op: 'mark', id, key, value };
+    } else if (op === 'sort') {
+      const key = str(body.key);
+      if (CONT_SORT_KEYS.indexOf(key) === -1) { sendErr(res, 400, 'Unknown key "' + key + '" — allowed: ' + CONT_SORT_KEYS.join(', ')); return; }
+      const value = key === 'inbox' ? str(body.value).slice(0, CONT_ID_MAX) : !!body.value;
+      rec = { op: 'sort', key, value };
+    } else if (op === 'act') {
+      const act = str(body.act);
+      if (CONT_ACTS.indexOf(act) === -1) { sendErr(res, 400, 'Unknown action "' + act + '" — allowed: ' + CONT_ACTS.join(', ')); return; }
+      rec = { op: 'act', act };
+      if (contIdOk(str(body.markId))) rec.markId = str(body.markId);
+      if (Array.isArray(body.types)) rec.types = body.types.filter((t) => typeof t === 'string' && t).slice(0, CONT_TYPES_MAX);
+      if (contKeepOk(body.keep)) rec.keep = body.keep;
+      if (contKeepOk(body.only)) rec.only = body.only;
+      if ((act === 'unload' || act === 'retrieve') && !rec.markId) { sendErr(res, 400, act + ' needs a container'); return; }
+      if (act === 'gather' && !(rec.types && rec.types.length)) { sendErr(res, 400, 'gather needs at least one type'); return; }
+    } else {
+      sendErr(res, 400, 'Unknown op "' + op + '" — allowed: mark, sort, act');
+      return;
+    }
+    let list;
+    try { list = mergeContainerOp(rec); }
+    catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
+    log('containers op queued: ' + JSON.stringify(rec));
+    sendJson(res, 200, { ok: true, pending: list.length, queueFile: contBridgeFile(),
+      containers: readContainersView() });
+    return;
+  }
+
   if (m === 'GET' && p === '/api/domains') {
     // 200 even when ok:false — same contract as /api/roster and /api/spells:
     // the SPA renders the diagnostic inline instead of collapsing.
@@ -7547,6 +8376,95 @@ async function route(req, res, url) {
     const abs = confine(DOMAIN_IMG_DIR, r.file);
     if (!abs) { sendErr(res, 400, 'Refusing to serve outside the domain-images folder'); return; }
     sendFile(res, abs, r.ext);
+    return;
+  }
+
+
+  /* ---- the Journal (write your own pages, from the phone) ---------------- *
+   *  The ONE place in this portal that edits a game-owned file DIRECTLY rather
+   *  than queueing: journal.json is not held in memory by the game the way
+   *  hotkeys.json and FollowerOrganizer.json are — the deck re-reads it on every
+   *  open and MERGES on every save (journal.cpp), so both sides can write. The
+   *  merge here is the same rule, mirrored, so whoever saves second keeps the
+   *  other's pages instead of flattening them.
+   *
+   *  GET    /api/journal              the whole journal + the picture pool
+   *  PUT    /api/journal              {doc} -> merge with disk, write, answer merged doc
+   *  POST   /api/journal-image        {name, ext, dataBase64} upload a picture
+   *  DELETE /api/journal-image/<file> drop one
+   *  GET    /api/journal-image-file/<file>  serve one
+   */
+  if (m === 'GET' && p === '/api/journal') {
+    sendJson(res, 200, readJournal());
+    return;
+  }
+
+  if ((m === 'PUT' || m === 'POST') && p === '/api/journal') {
+    const body = await readJsonBody(req);
+    if (!body || typeof body.doc !== 'object' || !body.doc) { sendErr(res, 400, 'That save carried no journal'); return; }
+    let out;
+    try { out = writeJournal(body.doc); }
+    catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
+    log('journal saved from the phone' + (out.merged ? ' (merged with the game\'s copy)' : ''));
+    sendJson(res, 200, out);
+    return;
+  }
+
+  if (m === 'POST' && p === '/api/journal-image') {
+    const body = await readJsonBody(req);
+    const name = typeof body.name === 'string' ? body.name : '';
+    let ext = normExt(body.ext);
+    if (!JOURNAL_EXTS.includes(ext)) { sendErr(res, 400, 'Bad extension "' + ext + '" — allowed: ' + JOURNAL_EXTS.join(', ')); return; }
+    let buf;
+    try { buf = decodeImage(body.dataBase64); } catch (e) { sendErr(res, httpCode(e.code, 400), e.message); return; }
+    const sniff = sniffExt(buf);
+    if (!sniff || !JOURNAL_EXTS.includes(sniff)) {
+      sendErr(res, 400, 'That file is not a PNG/JPEG/WebP/GIF image (magic bytes say "' + (sniff || 'unknown') + '")'); return;
+    }
+    if (sniff !== ext) ext = sniff;   // trust the bytes over the label
+    let info;
+    try { info = writeJournalImage(name, ext, buf); }
+    catch (e) {
+      if (e && e.locked) { sendJson(res, 200, { ok: false, locked: true, error: e.message }); return; }
+      sendErr(res, httpCode(e.code, 500), e.message); return;
+    }
+    log('journal picture saved: ' + info.file + ' (' + Math.round(info.size / 1024) + ' KB)');
+    sendJson(res, 200, Object.assign({ ok: true }, info, { images: listJournalImages() }));
+    return;
+  }
+
+  if (m === 'DELETE' && p.startsWith('/api/journal-image/')) {
+    const f = decodeURIComponent(p.slice('/api/journal-image/'.length));
+    if (!validJournalName(f)) { sendErr(res, 400, 'Bad picture name'); return; }
+    const gone = removeJournalImage(f);
+    if (!gone) {
+      sendErr(res, 423, 'That picture is open in the running game and cannot be deleted — close Skyrim and retry.');
+      return;
+    }
+    log('journal picture deleted: ' + f);
+    sendJson(res, 200, { ok: true, images: listJournalImages() });
+    return;
+  }
+
+  /* The shipped OFL fonts, served straight out of the deck's view folder so the
+     phone renders a journal page in the SAME hand the game will. Read-only, one
+     folder, extension-locked — it is the only static path this server exposes
+     outside /api. */
+  if (m === 'GET' && p.startsWith('/view/fonts/')) {
+    const f = decodeURIComponent(p.slice('/view/fonts/'.length));
+    if (!/^[A-Za-z0-9._-]+\.(ttf|otf|woff2?)$/.test(f)) { sendErr(res, 400, 'Not a font file'); return; }
+    const abs = confine(path.join(DECK_VIEW_DIR, 'fonts'), f);
+    if (!abs || !fs.existsSync(abs)) { sendErr(res, 404, 'No font called "' + f + '"'); return; }
+    sendFile(res, abs, path.extname(f).replace('.', '').toLowerCase());
+    return;
+  }
+
+  if (m === 'GET' && p.startsWith('/api/journal-image-file/')) {
+    const f = decodeURIComponent(p.slice('/api/journal-image-file/'.length));
+    if (!validJournalName(f)) { sendErr(res, 400, 'Bad picture name'); return; }
+    const abs = confine(JOURNAL_IMG_DIR, f);
+    if (!abs || !fs.existsSync(abs)) { sendErr(res, 404, 'No picture called "' + f + '"'); return; }
+    sendFile(res, abs, path.extname(f).replace('.', '').toLowerCase());
     return;
   }
 
@@ -7658,6 +8576,286 @@ async function route(req, res, url) {
   sendErr(res, 404, 'No route for ' + m + ' ' + p);
 }
 
+
+/* ======================== the Journal =================================== *
+ *  Rober, 2026-08-16: "ability to on web-server edit your journal, upload
+ *  transparent background images … drag your images wherever you want in the
+ *  pages, over text, wrap text".
+ *
+ *  TWO AUTHORS, ONE FILE, NO QUEUE. Every other write in this portal is handed
+ *  over as a sidecar because the running game owns the target file wholesale in
+ *  memory (hotkeys.json, FollowerOrganizer.json). journal.json is different:
+ *  nothing holds it but the deck's Journal tab, which RE-READS it on every open
+ *  and MERGES on every save. So the phone writes it directly, and does the same
+ *  merge on its way in — union of books and pages, newest updatedAt per page,
+ *  `trash` tombstones honoured. The merge below is deliberately the mirror of
+ *  Journal::MergeDocs in src/journal.cpp; change one, change the other.
+ *
+ *  Pictures land in the deck's own view folder (journal-images/), the exact
+ *  domain-images convention: MO2's VFS passes new files in a mounted mod dir
+ *  straight through, so a picture uploaded from the phone is on the page in
+ *  game. They are ALSO copied to the plugin's drop-folder inbox — a real path
+ *  outside the game's Data tree that the DLL sweeps on every open — so if the
+ *  VFS has not listed the new file this session, the sweep still brings it in.
+ * ======================================================================== */
+
+const JOURNAL_JSON_CANDIDATES = process.env.DECK_PORTAL_JOURNAL_JSON
+  ? [process.env.DECK_PORTAL_JOURNAL_JSON]
+  : hdCfgCandidates('journal.json');
+const JOURNAL_IMG_DIR = path.join(DECK_VIEW_DIR, 'journal-images');
+/* The plugin's drop folder. Same default as Journal::InboxDir() in the DLL
+   (SkyManager.ini [Journal] sImageDir overrides it there; this env var here). */
+const JOURNAL_INBOX = process.env.DECK_PORTAL_JOURNAL_INBOX ||
+  path.join(os.homedir(), 'Desktop', 'SkyManager Journal Images');
+const JOURNAL_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
+const JOURNAL_NAME_RE = /^[A-Za-z0-9 ()'+&,._-]+$/;
+
+function validJournalName(f) {
+  if (typeof f !== 'string' || !f || f.length > 160) return false;
+  if (f.indexOf('/') >= 0 || f.indexOf('\\') >= 0 || f.indexOf('..') >= 0) return false;
+  if (!JOURNAL_NAME_RE.test(f)) return false;
+  return JOURNAL_EXTS.includes(path.extname(f).replace('.', '').toLowerCase());
+}
+
+/** The journal file that actually exists (overwrite wins, as MO2 does), or the
+ *  first candidate when there is none yet. */
+function journalFile() {
+  for (const c of JOURNAL_JSON_CANDIDATES) {
+    try { if (fs.existsSync(c)) return c; } catch (_) { /* unreadable — try the next */ }
+  }
+  /* None yet. Create it beside the config the game is actually using, so on a
+   * split install the journal (playthrough-personal prose) lands in the same
+   * personal mod as hotkeys.json rather than inside the redistributable source
+   * mod. Falls back to the last candidate when nothing resolved at all. */
+  if (!process.env.DECK_PORTAL_JOURNAL_JSON) {
+    const hk = resolveHkJson();
+    if (hk) return path.join(path.dirname(hk), 'journal.json');
+  }
+  return JOURNAL_JSON_CANDIDATES[JOURNAL_JSON_CANDIDATES.length - 1];
+}
+
+function blankJournal() {
+  return { version: 1, updatedAt: 0, activeBook: '', style: {}, books: [], trash: [] };
+}
+
+function readJournalDoc() {
+  const file = journalFile();
+  try {
+    const raw = fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
+    const j = JSON.parse(raw);
+    if (!j || typeof j !== 'object' || Array.isArray(j)) return blankJournal();
+    if (!Array.isArray(j.books)) j.books = [];
+    if (!Array.isArray(j.trash)) j.trash = [];
+    return j;
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return blankJournal();
+    return blankJournal();
+  }
+}
+
+function listJournalImages() {
+  return listImages(JOURNAL_IMG_DIR, JOURNAL_EXTS)
+    .filter((r) => validJournalName(r.file))
+    .sort((a, b) => b.mtime - a.mtime)
+    .map((r) => ({
+      f: r.file, mt: r.mtime, sz: r.size || 0,
+      url: '/api/journal-image-file/' + encodeURIComponent(r.file) + '?v=' + r.mtime,
+    }));
+}
+
+function readJournal() {
+  const file = journalFile();
+  let exists = false;
+  try { exists = fs.existsSync(file); } catch (_) { exists = false; }
+  return {
+    ok: true, file, exists,
+    doc: readJournalDoc(),
+    images: listJournalImages(),
+    inbox: JOURNAL_INBOX,
+  };
+}
+
+/* ---- the merge (mirror of Journal::MergeDocs, src/journal.cpp) ---------- */
+
+function jrNum(o, k) { return (o && typeof o[k] === 'number') ? o[k] : 0; }
+function jrStr(o, k) { return (o && typeof o[k] === 'string') ? o[k] : ''; }
+
+function jrTrashMap(doc) {
+  const m = new Map();
+  const list = (doc && Array.isArray(doc.trash)) ? doc.trash : [];
+  for (const t of list) {
+    const id = jrStr(t, 'id');
+    if (!id) continue;
+    const at = jrNum(t, 'at');
+    if (!m.has(id) || at > m.get(id)) m.set(id, at);
+  }
+  return m;
+}
+
+function jrMergeTrash(a, b) {
+  const m = jrTrashMap(a);
+  for (const [id, at] of jrTrashMap(b)) if (!m.has(id) || at > m.get(id)) m.set(id, at);
+  const out = [];
+  for (const [id, at] of m) out.push({ id, at });
+  return out.slice(-2000);
+}
+
+function jrBuried(trash, id, updatedAt) {
+  return trash.has(id) && updatedAt <= trash.get(id);
+}
+
+function jrMergePages(mine, other, trash, note) {
+  const byId = new Map();
+  const order = [];
+  for (const p of (Array.isArray(other) ? other : [])) {
+    const id = jrStr(p, 'id');
+    if (!id || byId.has(id)) continue;
+    byId.set(id, p); order.push(id);
+  }
+  const out = [];
+  const taken = new Set();
+  for (const p of (Array.isArray(mine) ? mine : [])) {
+    const id = jrStr(p, 'id');
+    if (!id) continue;
+    let pick = p;
+    if (byId.has(id) && jrNum(byId.get(id), 'updatedAt') > jrNum(p, 'updatedAt')) {
+      pick = byId.get(id); note.merged = true;
+    }
+    if (jrBuried(trash, id, jrNum(pick, 'updatedAt'))) { taken.add(id); continue; }
+    out.push(pick); taken.add(id);
+  }
+  for (const id of order) {
+    if (taken.has(id)) continue;
+    const p = byId.get(id);
+    if (jrBuried(trash, id, jrNum(p, 'updatedAt'))) continue;
+    out.push(p); note.merged = true;
+  }
+  return out.slice(0, 400);
+}
+
+function jrMergeDocs(mine, disk, note) {
+  const trash = new Map();
+  for (const t of jrMergeTrash(mine, disk)) trash.set(t.id, t.at);
+
+  const diskById = new Map();
+  const diskOrder = [];
+  for (const b of (Array.isArray(disk.books) ? disk.books : [])) {
+    const id = jrStr(b, 'id');
+    if (!id || diskById.has(id)) continue;
+    diskById.set(id, b); diskOrder.push(id);
+  }
+  const out = Object.assign({}, mine);
+  const books = [];
+  const taken = new Set();
+  for (const b of (Array.isArray(mine.books) ? mine.books : [])) {
+    const id = jrStr(b, 'id');
+    if (!id) continue;
+    taken.add(id);
+    if (!diskById.has(id)) {
+      if (!jrBuried(trash, id, jrNum(b, 'updatedAt'))) books.push(b);
+      continue;
+    }
+    const d = diskById.get(id);
+    const newer = jrNum(d, 'updatedAt') > jrNum(b, 'updatedAt') ? d : b;
+    if (newer === d) note.merged = true;
+    const merged = Object.assign({}, newer);
+    merged.pages = jrMergePages(b.pages, d.pages, trash, note);
+    if (!jrBuried(trash, id, jrNum(merged, 'updatedAt'))) books.push(merged);
+  }
+  for (const id of diskOrder) {
+    if (taken.has(id)) continue;
+    const b = diskById.get(id);
+    if (jrBuried(trash, id, jrNum(b, 'updatedAt'))) continue;
+    books.push(b); note.merged = true;
+  }
+  if (jrNum(disk, 'updatedAt') > jrNum(mine, 'updatedAt')) {
+    if (disk.style) out.style = disk.style;
+    if (disk.activeBook) out.activeBook = disk.activeBook;
+    note.merged = true;
+  }
+  out.books = books.slice(0, 40);
+  out.trash = jrMergeTrash(mine, disk);
+  out.version = 1;
+  out.updatedAt = Math.floor(Date.now() / 1000);
+  return out;
+}
+
+function writeJournal(doc) {
+  const file = journalFile();
+  const note = { merged: false };
+  const merged = jrMergeDocs(doc, readJournalDoc(), note);
+  if (!ensureDir(path.dirname(file))) {
+    throw Object.assign(new Error('Cannot create ' + path.dirname(file)), { code: 500 });
+  }
+  const tmp = file + '.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(merged, null, '\t'));
+    renameWithRetry(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (_) { /* nothing to clean */ }
+    throw Object.assign(new Error('Could not write ' + file + ': ' + e.message), { code: 500 });
+  }
+  return { ok: true, doc: merged, merged: note.merged, file };
+}
+
+/* ---- pictures ---------------------------------------------------------- */
+
+/** A safe, unique-ish file name from whatever the phone offered. */
+function journalImageName(name, ext) {
+  let stem = String(name || '').replace(/\.[A-Za-z0-9]+$/, '').replace(/[^A-Za-z0-9 ()'+&,._-]/g, '-').trim();
+  if (!stem) stem = 'picture';
+  stem = stem.slice(0, 60);
+  let file = stem + '.' + ext;
+  let n = 2;
+  /* Never overwrite an existing picture: a page somewhere may be using it, and
+     the running game has it memory-mapped anyway. */
+  while (fs.existsSync(path.join(JOURNAL_IMG_DIR, file))) {
+    file = stem + '-' + n + '.' + ext;
+    if (++n > 999) break;
+  }
+  return file;
+}
+
+function writeJournalImage(name, ext, buf) {
+  if (!ensureDir(JOURNAL_IMG_DIR)) throw Object.assign(new Error('Cannot create ' + JOURNAL_IMG_DIR), { code: 500 });
+  const file = journalImageName(name, ext);
+  if (!validJournalName(file)) throw Object.assign(new Error('Could not make a safe file name from "' + name + '"'), { code: 400 });
+  const dest = confine(JOURNAL_IMG_DIR, file);
+  if (!dest) throw Object.assign(new Error('Refusing to write outside ' + JOURNAL_IMG_DIR), { code: 400 });
+  const tmp = dest + '.tmp';
+  try {
+    fs.writeFileSync(tmp, buf);
+    renameWithRetry(tmp, dest);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (_) { /* nothing to clean */ }
+    const locked = e && (e.code === 'EBUSY' || e.code === 'EPERM' || e.code === 'EACCES');
+    if (locked) {
+      throw Object.assign(new Error('That picture could not be written right now — the running game has the folder busy. Try again in a moment.'),
+        { code: 423, locked: true });
+    }
+    throw e;
+  }
+  /* The belt to the VFS brace: also drop it in the plugin's inbox, which the
+     DLL sweeps on every Journal open from a real (non-virtualised) path. */
+  try {
+    if (ensureDir(JOURNAL_INBOX)) fs.writeFileSync(path.join(JOURNAL_INBOX, file), buf);
+  } catch (_) { /* best effort — the view folder copy is the one that matters */ }
+  const st = fs.statSync(dest);
+  return {
+    file, ext, size: st.size, mtime: Math.floor(st.mtimeMs / 1000),
+    url: '/api/journal-image-file/' + encodeURIComponent(file) + '?v=' + Math.floor(st.mtimeMs / 1000),
+  };
+}
+
+function removeJournalImage(f) {
+  const abs = confine(JOURNAL_IMG_DIR, f);
+  if (!abs) return false;
+  try { fs.unlinkSync(abs); } catch (e) { if (e.code !== 'ENOENT') return false; }
+  try { fs.unlinkSync(path.join(JOURNAL_INBOX, f)); } catch (_) { /* may not be there */ }
+  return !fs.existsSync(abs);
+}
+
+
 /* ========================= domain images ============================== *
  *  The Domains tab (hotkeys.json -> domains.marks[]) gets ONE optional image
  *  per marked place — uploaded from the phone, drawn as a thumbnail here AND,
@@ -7751,6 +8949,230 @@ function removeDomainImage(id) {
  *  READ-ONLY, re-read-every-request contract as the spell and hotkey slices: the
  *  game rewrites this file constantly. `place` mirrors the in-game view's
  *  placeOf(): cellName, else worldspaceName, else cellEdid. */
+
+/* ===================== the containers sidecar ========================= *
+ *  The phone's half of the Containers tab (marked containers + the sort
+ *  rules + the crafting loan + the physical redirects). Same law as every
+ *  other tab here and for the same reason:
+ *
+ *      ⛔ THE PORTAL NEVER WRITES hotkeys.json. ⛔
+ *
+ *  The plugin rewrites that file wholesale on every PersistAll, so an edit
+ *  made underneath it is discarded without a sound. So the phone READS the
+ *  `containers` slice out of hotkeys.json and QUEUES its edits here; the
+ *  plugin replays them (ApplyPortalContainers) on the next Containers-tab
+ *  open, and within ~1 s through the live pipe when the game is running.
+ *
+ *  Shape: { version:1, ops:[ … ] } with three kinds:
+ *    { op:"mark", id, key:"lend"|"ruleEnabled"|"redirectTo"|"acknowledged",
+ *      value }                                  — one flag on one container
+ *    { op:"sort", key:"inbox"|"sortOnClose"|"excludeEquipped"|
+ *      "excludeFavorited"|"excludeQuest"|"loan.enabled"|"loan.smithing"|…,
+ *      value }                                  — one global setting
+ *    { op:"act", act:"sweep"|"sortNow"|"gather"|"unload"|"retrieve",
+ *      markId?, types?[], keep?, only? }        — DO something, now
+ *
+ *  `mark` and `sort` ops are CONFIG: they dedupe by their key (last write
+ *  wins) and apply whether or not a save is loaded. `act` ops are VERBS:
+ *  they never dedupe, they need the live world, and the plugin drops them
+ *  rather than queueing them forever if no game is running — a "put it all
+ *  away" that fires an hour later, in a different cell, is not what anyone
+ *  pressed the button for.
+ * ===================================================================== */
+const CONT_BASENAME = 'portal-containers.json';
+const CONT_FILE = path.join(DECK_VIEW_DIR, CONT_BASENAME);
+const CONT_MAX = 300;                    // absurd-input guard
+const CONT_MARK_KEYS = ['lend', 'ruleEnabled', 'redirectTo', 'acknowledged'];
+const CONT_SORT_KEYS = ['inbox', 'sortOnClose', 'excludeEquipped', 'excludeFavorited',
+  'excludeQuest', 'loan.enabled', 'loan.smithing', 'loan.smelting', 'loan.tanning',
+  'loan.cooking', 'loan.alchemy', 'loan.enchanting', 'loan.returnOnExit'];
+const CONT_ACTS = ['sweep', 'sortNow', 'gather', 'unload', 'retrieve'];
+const CONT_ID_MAX = 64;
+const CONT_TYPES_MAX = 24;               // a filter, not a whole taxonomy dump
+
+function contIdOk(s) { return typeof s === 'string' && s.length > 0 && s.length <= CONT_ID_MAX; }
+function contKeepOk(n) { return Number.isInteger(n) && n >= 0 && n <= 99; }
+
+/** WHICH COPY IS LIVE — the same probe portraitBridgeFile()/catIconBridgeFile()
+ *  do: once the game has run once, the plugin's own seed+truncate lands in
+ *  MO2's Overwrite, and that is the copy it reads. Writing the mod-folder copy
+ *  then is writing a file nobody looks at. */
+function contBridgeFile() {
+  const ow = path.join(MO_OVERWRITE, 'PrismaUI', 'views', 'HotkeyDeck', CONT_BASENAME);
+  try { if (fs.existsSync(ow)) return ow; } catch (_) {}
+  return CONT_FILE;
+}
+
+function readContainerOps() {
+  let raw;
+  try { raw = fs.readFileSync(contBridgeFile(), 'utf8'); } catch (_) {
+    return { list: [], exists: false, malformed: false };
+  }
+  let j;
+  try { j = JSON.parse(raw.replace(/^﻿/, '')); } catch (_) {
+    return { list: [], exists: true, malformed: true };
+  }
+  if (!j || typeof j !== 'object' || !Array.isArray(j.ops)) {
+    return { list: [], exists: true, malformed: true };
+  }
+  const out = [];
+  const setAt = Object.create(null);
+  for (const e of j.ops) {
+    if (!e || typeof e !== 'object') continue;
+    if (e.op === 'mark') {
+      if (!contIdOk(e.id) || CONT_MARK_KEYS.indexOf(e.key) === -1) continue;
+      const value = e.key === 'redirectTo'
+        ? (typeof e.value === 'string' ? e.value.slice(0, CONT_ID_MAX) : '')
+        : !!e.value;
+      const k = 'mark\n' + e.id + '\n' + e.key;
+      const rec = { op: 'mark', id: e.id, key: e.key, value };
+      if (setAt[k] !== undefined) out[setAt[k]] = rec;
+      else { setAt[k] = out.length; out.push(rec); }
+    } else if (e.op === 'sort') {
+      if (CONT_SORT_KEYS.indexOf(e.key) === -1) continue;
+      const value = e.key === 'inbox'
+        ? (typeof e.value === 'string' ? e.value.slice(0, CONT_ID_MAX) : '')
+        : !!e.value;
+      const k = 'sort\n' + e.key;
+      const rec = { op: 'sort', key: e.key, value };
+      if (setAt[k] !== undefined) out[setAt[k]] = rec;
+      else { setAt[k] = out.length; out.push(rec); }
+    } else if (e.op === 'act') {
+      if (CONT_ACTS.indexOf(e.act) === -1) continue;
+      const rec = { op: 'act', act: e.act };
+      if (contIdOk(e.markId)) rec.markId = e.markId;
+      if (Array.isArray(e.types)) {
+        rec.types = e.types.filter((t) => typeof t === 'string' && t).slice(0, CONT_TYPES_MAX);
+      }
+      if (contKeepOk(e.keep)) rec.keep = e.keep;
+      if (contKeepOk(e.only)) rec.only = e.only;
+      out.push(rec);   // verbs never dedupe
+    }
+  }
+  return { list: out, exists: true, malformed: false };
+}
+
+function writeContainerOps(list) {
+  const file = contBridgeFile();
+  if (!ensureDir(path.dirname(file))) throw Object.assign(new Error('Cannot create ' + path.dirname(file)), { code: 500 });
+  const body = JSON.stringify({ version: 1, ops: list }, null, 2);
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, body);
+  renameWithRetry(tmp, file);
+  liveFlush('containers', file);
+}
+
+function mergeContainerOp(op) {
+  const cur = readContainerOps();
+  let list = cur.list;
+  if (op.op === 'mark')
+    list = list.filter((e) => !(e.op === 'mark' && e.id === op.id && e.key === op.key));
+  else if (op.op === 'sort')
+    list = list.filter((e) => !(e.op === 'sort' && e.key === op.key));
+  list.push(op);
+  if (list.length > CONT_MAX) list.splice(0, list.length - CONT_MAX);
+  writeContainerOps(list);
+  return list;
+}
+
+/** The `containers` slice as the phone wants it, with queued edits folded ON
+ *  so a toggle shows its new state the moment it is pressed rather than after
+ *  the game has replayed it. `pending` is what is still waiting for the game. */
+function readContainersView(src) {
+  const s = src || readHkRoot();
+  if (!s.ok) return { ok: false, file: s.file, error: s.error, marks: [], pending: 0 };
+  const root = (s.root && typeof s.root === 'object' && !Array.isArray(s.root)) ? s.root : {};
+  const ct = (root.containers && typeof root.containers === 'object' && !Array.isArray(root.containers))
+    ? root.containers : {};
+  const sort = (ct.sort && typeof ct.sort === 'object' && !Array.isArray(ct.sort)) ? ct.sort : {};
+  const loan = (sort.loan && typeof sort.loan === 'object' && !Array.isArray(sort.loan)) ? sort.loan : {};
+  const pend = readContainerOps();
+
+  const markSet = Object.create(null);   // id\nkey -> value
+  const sortSet = Object.create(null);   // key -> value
+  let acts = 0;
+  for (const o of pend.list) {
+    if (o.op === 'mark') markSet[o.id + '\n' + o.key] = o.value;
+    else if (o.op === 'sort') sortSet[o.key] = o.value;
+    else acts++;
+  }
+  const foldMark = (id, key, live) => {
+    const k = id + '\n' + key;
+    return Object.prototype.hasOwnProperty.call(markSet, k) ? markSet[k] : live;
+  };
+  const foldSort = (key, live) =>
+    (Object.prototype.hasOwnProperty.call(sortSet, key) ? sortSet[key] : live);
+
+  const marks = [];
+  for (const mk of (Array.isArray(ct.marks) ? ct.marks : [])) {
+    if (!mk || typeof mk !== 'object') continue;
+    const id = typeof mk.id === 'string' ? mk.id : '';
+    if (!id) continue;
+    const rule = (mk.rule && typeof mk.rule === 'object') ? mk.rule : {};
+    const safe = (mk.safe && typeof mk.safe === 'object') ? mk.safe : {};
+    marks.push({
+      id,
+      name: str(mk.name) || 'Unnamed container',
+      category: str(mk.category),
+      place: str(mk.cellName) || str(mk.worldspaceName) || str(mk.cellEdid),
+      note: str(mk.note),
+      lend: !!foldMark(id, 'lend', !!mk.lend),
+      redirectTo: String(foldMark(id, 'redirectTo', str(mk.redirectTo)) || ''),
+      rule: {
+        enabled: !!foldMark(id, 'ruleEnabled', !!rule.enabled),
+        types: Array.isArray(rule.types) ? rule.types.filter((t) => typeof t === 'string') : [],
+        keywords: Array.isArray(rule.keywords) ? rule.keywords.filter((t) => typeof t === 'string') : [],
+        minValue: Number(rule.minValue) || 0,
+        maxValue: Number(rule.maxValue) || 0,
+        enchantedOnly: !!rule.enchantedOnly,
+        priority: Number(rule.priority) || 0,
+      },
+      /* respawns/reason are the plugin's last computed verdict — a display
+         cache, recomputed live in game. `acknowledged` is the durable half and
+         the only piece the phone may change. */
+      safe: {
+        respawns: !!safe.respawns,
+        reason: str(safe.reason),
+        acknowledged: !!foldMark(id, 'acknowledged', !!safe.acknowledged),
+      },
+    });
+  }
+
+  return {
+    ok: true,
+    file: s.file,
+    marks,
+    inbox: String(foldSort('inbox', str(sort.inboxMarkId)) || ''),
+    opts: {
+      sortOnClose: !!foldSort('sortOnClose', !!sort.sortOnClose),
+      excludeEquipped: !!foldSort('excludeEquipped', sort.excludeEquipped !== false),
+      excludeFavorited: !!foldSort('excludeFavorited', sort.excludeFavorited !== false),
+      excludeQuest: !!foldSort('excludeQuest', sort.excludeQuest !== false),
+    },
+    loan: {
+      enabled: !!foldSort('loan.enabled', !!loan.enabled),
+      smithing: !!foldSort('loan.smithing', loan.smithing !== false),
+      smelting: !!foldSort('loan.smelting', loan.smelting !== false),
+      tanning: !!foldSort('loan.tanning', loan.tanning !== false),
+      cooking: !!foldSort('loan.cooking', loan.cooking !== false),
+      alchemy: !!foldSort('loan.alchemy', loan.alchemy !== false),
+      enchanting: !!foldSort('loan.enchanting', loan.enchanting !== false),
+      returnOnExit: !!foldSort('loan.returnOnExit', loan.returnOnExit !== false),
+    },
+    overrides: (Array.isArray(sort.overrides) ? sort.overrides : [])
+      .filter((o) => o && typeof o === 'object')
+      .map((o) => ({ plugin: str(o.plugin), localId: Number(o.localId) || 0,
+        name: str(o.name), types: Array.isArray(o.types) ? o.types.filter((t) => typeof t === 'string') : [] })),
+    /* Everything still waiting for the game, split so the UI can say WHICH —
+       a queued toggle lands whenever the deck next opens, a queued verb only
+       fires if the game is actually running. */
+    pending: pend.list.length,
+    pendingActs: acts,
+    queueFile: contBridgeFile(),
+    malformed: pend.malformed,
+  };
+}
+
 function readDomains(src) {
   const s = src || readHkRoot();
   if (!s.ok) return { ok: false, file: s.file, error: s.error, dir: DOMAIN_IMG_DIR, domains: [] };
@@ -9038,6 +10460,7 @@ ensureDir(PORTRAIT_DIR);
 ensureDir(ICON_DIR);
 ensureDir(DECK_ICON_DIR);   // the deck view's half of the pool + its sidecar
 ensureDir(DOMAIN_IMG_DIR);  // one image per marked domain, drawn by the Domains tab
+seedCombatArtIconQueue();   // seeded once so it exists before MO2 snapshots the file list
 
 server.listen(PORT, BIND, () => {
   log('Deck Portal listening on http://' + BIND + ':' + PORT + '/');
@@ -9045,7 +10468,9 @@ server.listen(PORT, BIND, () => {
     ? '  REACHABLE FROM THE NETWORK — password required (loopback exempt)'
     : '  this machine only (127.0.0.1) — no password needed, nothing exposed');
   log('  portraits → ' + PORTRAIT_DIR);
-  log('  icons     → ' + ICON_DIR);
+  log('  icons     → ' + poolWriteDir('magic') + '  (pool roots: ' + poolDirs('magic').length + ')');
+  if (VIEW_ROOTS_SWEPT.length)
+    log('  view roots found by sweeping the mod folders: ' + VIEW_ROOTS_SWEPT.join(' | '));
   log('  hk icons  → ' + DECK_ICON_DIR + (fs.existsSync(DECK_ICON_DIR) ? '' : '  (MISSING)'));
   log('  roster    → ' + FO_JSON);
   const r = readRoster();
@@ -9064,6 +10489,9 @@ server.listen(PORT, BIND, () => {
   const cfg = readHkRoot();          // one snapshot for both slices below
   const sp = spellsPayload(cfg);
   log('  deck cfg  → ' + (sp.hkJson || 'NOT FOUND (' + HK_JSON_CANDIDATES.join(' | ') + ')'));
+  if (HD_CFG_DIR_SWEPT)
+    log('  deck cfg found by sweeping the mod folders: ' + HD_CFG_DIR_SWEPT +
+        ' — set DECK_PORTAL_HD_CONFIG_DIR to it to skip the search');
   log(sp.ok
     ? '  spell deck: ' + sp.total + ' spells in ' + sp.categories.length + ' categories'
     : '  spell deck UNAVAILABLE: ' + sp.error);

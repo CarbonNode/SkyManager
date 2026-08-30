@@ -57,6 +57,21 @@
       <button id="tm-go" class="tm-primary">⏩ Wait</button>
     </div>
 
+
+    <!-- Sky: force any weather the load order ships, or hand it back.
+         (2026-08-17, the PROTEUS weather menu rebuilt over the whole order) -->
+    <div class="tm-group" id="tm-sky" aria-label="Sky">
+      <div class="tm-group-label">Sky</div>
+      <div id="tm-sky-now">reading the sky…</div>
+      <div id="tm-sky-bar">
+        <span class="tm-sky-glyph">⌕</span>
+        <input id="tm-sky-q" type="text" autocomplete="off" spellcheck="false"
+               placeholder="Search every weather — clear, storm, snow, ash… (Enter = top hit)">
+        <button id="tm-sky-release" title="Release the forced weather and let natural weather resume">Let the sky decide</button>
+      </div>
+      <div id="tm-sky-list" class="tm-hiddenish"></div>
+    </div>
+
     <div id="tm-note" class="tm-hiddenish" role="status"></div>
 
     <div id="tm-foot">

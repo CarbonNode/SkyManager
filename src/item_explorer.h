@@ -35,6 +35,15 @@ namespace ItemExplorer
 	// plugin as a fallback), ranked prefix > word start > substring. `limit` is
 	// the view's page size (clamped 1..100); a request WITHOUT it defaults to 60,
 	// the pre-pagination behaviour, so an old view keeps working against a new DLL.
+	//
+	// DETAIL PATH (2026-08-15): a request carrying a "detail":"Plugin.esp|HEX6"
+	// field is answered NOT as a page but as a lazy per-item detail block through
+	// the SAME ixResultData reply — {seq, detail:"<id>", info:{...}} — so no new
+	// main.cpp listener is needed. The rich fields (weapon damage/reach/speed,
+	// armour rating + type, enchantment magic effects, potion/scroll/ingredient
+	// effect lists w/ magnitude·duration·area, keywords) are computed HERE, only
+	// on expand, never for the whole index — the 4,780-mod cost stays off the
+	// steady-state walk. Every form access is null-guarded and ESL-safe.
 	[[nodiscard]] std::string QueryJson(const std::string& req);
 
 	// {id, count, pay, price} -> {ok, msg, gold}. pay=true checks the player's

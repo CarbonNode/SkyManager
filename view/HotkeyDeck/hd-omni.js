@@ -84,12 +84,32 @@ var HDOmni = (function () {
   var DEV = location.search.indexOf('dev=1') !== -1;
 
   var providers = [];
+  /* Super Searcher (hd-super.js) plumbing — both default to "absent", so the
+     classic omni is byte-for-byte the old behaviour until hd-super installs
+     them for the duration of a super-mode open and clears them on exit.
+       extraGateFn(provider) -> false hides that provider's rows/lazy/warm
+         (the widget's "what shows in search" source toggles);
+       closedHook(reason)    -> called AFTER close() has torn the overlay
+         down, with why: 'jump' (into a tab), 'run' (a result fired),
+         'esc' | 'close' (plain dismissal). hd-super routes 'jump' back into
+         the deck and everything else out to the game. */
+  var extraGateFn = null;
+  var closedHook = null;
+  /* The key legend under the blank state. The Super Searcher overrides it,
+     because there Esc hands the game back rather than merely closing a modal —
+     and that is the one thing a player needs told on a surface they opened
+     mid-combat. */
+  var BLANK_NOTE_DEFAULT = '↑↓ move · Enter run · Shift+Enter open its tab · Esc close';
+  var blankNote = BLANK_NOTE_DEFAULT;
   /* app.js-supplied explicit-false tab gate (set in hookInto). Default lets
      everything through, so omni works standalone / on an older host. */
   var tabGateFn = function () { return true; };
   /* A provider is gated OFF when it is bound to a tab whose mod is
      detected-absent. Providers with no tab (or an ungated tab) always pass. */
   function providerGated(p) {
+    if (extraGateFn && p) {
+      try { if (extraGateFn(p) === false) return true; } catch (e) {}
+    }
     return !!(p && p.tab && !tabGateFn(p.tab));
   }
   var st = {
@@ -124,6 +144,15 @@ var HDOmni = (function () {
     },
   };
   var inputTimer = null;
+
+  /* External callers (e.g. npcs-pane.js's inspect sheet) can ride the SAME
+     haAsk/haAnswer pipe without touching st.ask's own request tracking — each
+     call gets an 'ext-N' id and a private callback, so a slow inspect-sheet
+     ask can never clobber (or be clobbered by) the Ask overlay's own reply.
+     Sibling of st.prof's own-namespace trick, just callback-shaped instead of
+     state-shaped since callers outside this closure have no st to read. */
+  var extReqs = {};
+  var extSeq = 0;
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
@@ -232,6 +261,59 @@ var HDOmni = (function () {
   var GROUP_LIMIT = 6;   // rows shown per provider before "show all"
   var expanded = {};     // providerId -> true after "show all"
 
+  /* ---------------------------------------------------------- row family */
+  /* Every row is sorted into one of nine FAMILIES, which drive the art plate's
+     fallback mark and (in the Super Searcher) the chip tint. Measured need:
+     the first Ultralight render of the widget showed rows with art starting
+     55px right of rows without, because the <img> was emitted only when one
+     existed — no single column for the eye to follow. The plate is now always
+     emitted, so the left edge is straight whatever art exists.
+
+     The PROVIDER decides first and the kind only refines it, because `kind` is
+     free text — the followers provider puts a relationship there ("wife",
+     "housecarl"), so keying on kind alone would drop most people into "thing".
+
+     ⛔ Marks are restricted to the set already shipping in the deck's own Home
+     rows (◎ ▦ ⌗ † ◈ ≋ ◍ ➶ ✧). They are typographic marks, not emoji (the
+     no-emoji law), and being already on screen daily is what proves they
+     render in Ultralight — an unproven codepoint draws as a speck or tofu. */
+
+  var FAM_GLYPH = {
+    gear: '†', wear: '◈', consumable: '◍', ammo: '➶', magic: '✧',
+    person: '◎', deck: '▦', lore: '≋', thing: '⌗',
+  };
+
+  var KIND_FAM = {
+    weapon: 'gear', armour: 'gear', armor: 'gear', shield: 'gear',
+    ammo: 'ammo',
+    potion: 'consumable', food: 'consumable', drink: 'consumable',
+    ingredient: 'consumable', scroll: 'consumable', 'soul gem': 'consumable',
+    outfit: 'wear', wardrobe: 'wear', 'dressed npc': 'wear',
+    book: 'lore', note: 'lore', quest: 'lore',
+    key: 'thing', misc: 'thing',
+  };
+
+  var PROV_FAM = {
+    inventory: 'thing',        // refined by kind below — it carries every type
+    spells: 'magic', followers: 'person', wardrobe: 'wear',
+    quests: 'lore', notes: 'lore', hotkeys: 'deck', 'deck-actions': 'deck',
+    tabs: 'deck', domains: 'thing', rooms: 'thing',
+  };
+
+  function famOf(provId, kind) {
+    var k = String(kind || '').toLowerCase();
+    /* kind wins where it is a KNOWN word (an inventory row is a weapon before
+       it is an "inventory"); the provider carries everything else. */
+    if (KIND_FAM[k]) return KIND_FAM[k];
+    for (var key in KIND_FAM) {
+      if (KIND_FAM.hasOwnProperty(key) && k.indexOf(key) !== -1) return KIND_FAM[key];
+    }
+    if (k.indexOf('spell') !== -1 || k.indexOf('combo') !== -1 ||
+        k.indexOf('shout') !== -1 || k.indexOf('power') !== -1) return 'magic';
+    if (PROV_FAM[provId]) return PROV_FAM[provId];
+    return 'thing';
+  }
+
   function collect() {
     var q = st.q.trim().toLowerCase();
     var words = q.split(/\s+/).filter(function (w) { return w; });
@@ -281,7 +363,7 @@ var HDOmni = (function () {
   /* ------------------------------------------------------------ actions */
 
   function jumpTo(provider, item, q) {
-    close();
+    close('jump');
     if (item && typeof item.jump === 'function') { item.jump(); return; }
     if (!provider.tab) return;
     /* setTab FIRST: several panes reset their own filter inside onShow()
@@ -297,7 +379,7 @@ var HDOmni = (function () {
     if (!row) return;
     var item = row.item, p = row.provider;
     if (!viaJump && typeof item.run === 'function') {
-      close();
+      close('run');
       try { item.run(); } catch (e) {}
       return;
     }
@@ -389,14 +471,33 @@ var HDOmni = (function () {
     var words = q.toLowerCase().split(/\s+/).filter(function (w) { return w; });
 
     if (!q) {
-      var provNames = providers.map(function (p) { return p.label; }).join(' · ');
+      /* THE FIRST FRAME OF EVERY OPEN, so it is worth more than a run-on list
+         of provider names (which is what it was until the 2026-08-19 render
+         pass showed 500px of dead space under one grey line). Each searchable
+         source becomes a chip wearing its family mark, so the blank state
+         teaches what the box can find AND looks like part of the deck. */
+      var chips = '';
+      for (var pi = 0; pi < providers.length; pi++) {
+        var pv = providers[pi];
+        if (providerGated(pv)) continue;   // a source toggled off is not advertised
+        var pfam = famOf(pv.id, '');
+        chips += '<span class="omni-bchip" data-fam="' + esc(pfam) + '">' +
+          '<span class="omni-bchip-g">' + esc(FAM_GLYPH[pfam] || FAM_GLYPH.thing) + '</span>' +
+          esc(pv.label) + '</span>';
+      }
+      host.className = 'omni-results is-blank';
       host.innerHTML = '<div class="omni-blank">' +
         '<div class="omni-blank-ic">⌕</div>' +
         '<div class="omni-blank-t">Search everything</div>' +
-        '<div class="omni-blank-s">' + esc(provNames || 'no providers registered') + '</div></div>';
+        (chips
+          ? '<div class="omni-blank-chips">' + chips + '</div>'
+          : '<div class="omni-blank-s">no sources are switched on</div>') +
+        '<div class="omni-blank-keys">' + esc(blankNote) + '</div>' +
+        '</div>';
       st.flat = [];
       return;
     }
+    host.className = 'omni-results';
 
     var groups = collect();
     st.flat = [];
@@ -407,7 +508,11 @@ var HDOmni = (function () {
       var show = expanded[grp.provider.id] ? grp.hits : grp.hits.slice(0, GROUP_LIMIT);
       if (grp.pending) anyPending = true;
       if (!show.length && !grp.pending) continue;
+      /* the count tells you whether the 6 rows below are the whole answer or
+         the top of a longer one — the "show all" button only says so once you
+         have already scrolled to it */
       html += '<div class="omni-sect">' + esc(grp.provider.label) +
+        '<span class="omni-sect-n">' + grp.hits.length + '</span>' +
         (grp.pending ? ' <span class="omni-spin">…</span>' : '') + '</div>';
       for (var h = 0; h < show.length; h++) {
         var row = show[h];
@@ -419,7 +524,24 @@ var HDOmni = (function () {
            Shelf from right here; filled when it already has */
         var pinnable = !!it.pin && window.HDShelf;
         var pinned = pinnable && window.HDShelf.isPinned(row.provider.id, it.pin);
-        html += '<div class="omni-row' + (idx === st.sel ? ' selected' : '') + '" data-idx="' + idx + '">' +
+        var fam = famOf(row.provider.id, it.kind);
+        html += '<div class="omni-row' + (idx === st.sel ? ' selected' : '') +
+                '" data-fam="' + esc(fam) + '" data-idx="' + idx + '">' +
+          /* The art plate (super mode only — hd-super.css reveals it under
+             body.ss-open; the classic overlay keeps its exact old look).
+             ALWAYS emitted, so every row's text starts at the same x whether
+             or not a picture exists — that straight edge is the whole point.
+             The picture removes ITSELF on error, which un-matches the
+             `.omni-row-ic + .omni-row-gl` rule and lets the family mark take
+             over: a stale path degrades to a mark, never a broken-image box,
+             with no JS involved. */
+          '<div class="omni-row-art">' +
+            (it.icon
+              ? '<img class="omni-row-ic" src="' + esc(it.icon) +
+                '" draggable="false" onerror="this.parentNode&&this.parentNode.removeChild(this)">'
+              : '') +
+            '<span class="omni-row-gl">' + esc(FAM_GLYPH[fam] || FAM_GLYPH.thing) + '</span>' +
+          '</div>' +
           '<div class="omni-row-main">' +
             '<div class="omni-row-l">' + highlight(it.label, words) + '</div>' +
             (it.detail ? '<div class="omni-row-d">' + highlight(it.detail, words) + '</div>' : '') +
@@ -530,6 +652,12 @@ var HDOmni = (function () {
       onProfileAnswer(env);
       return;
     }
+    if (typeof env.id === 'string' && env.id.indexOf('ext-') === 0) {
+      var cb = extReqs[env.id];
+      delete extReqs[env.id];
+      if (cb) cb(env);
+      return;
+    }
     if (env.id !== 'ask-' + st.ask.reqId) return;   // stale reply
     st.ask.busy = false;
     st.ask.phase = '';
@@ -551,6 +679,23 @@ var HDOmni = (function () {
     st.ask.reply = body;
     if (body.npc && body.npc.name) st.ask.lastNpc = body.npc.name;
     renderAsk();
+  }
+
+  /* A structured (non-LLM, instant) CHIM facet fetch for another pane —
+     e.g. the NPC inspect sheet's CHIM section. `question` only steers which
+     facet comes back "focused" (deck_ask.php's own keyword table); every
+     facet CHIM holds rides along regardless, same as the Ask overlay gets.
+     `callback(env)` fires once with the raw haAnswer envelope — the caller
+     decodes env.json itself (mirrors onAnswer's own string-or-object guard),
+     so this stays a thin, opinion-free pipe. */
+  function askStructured(npcName, question, callback) {
+    extSeq++;
+    var id = 'ext-' + extSeq;
+    extReqs[id] = callback;
+    var qs = 'q=' + encodeURIComponent(question || 'tell me about them') +
+      '&npc=' + encodeURIComponent(npcName || '') + '&mode=structured';
+    toGame('haAsk', JSON.stringify({ id: id, query: qs, llm: false }));
+    return id;
   }
 
   var FACET_LABELS = {
@@ -1031,6 +1176,7 @@ var HDOmni = (function () {
       if (tgt && tgt.name && !tgt.dead) st.ask.lastNpc = String(tgt.name);
     } catch (e) {}
     for (var i = 0; i < providers.length; i++) {
+      if (providerGated(providers[i])) continue;   // a toggled-off source is not warmed either
       if (typeof providers[i].warm === 'function') { try { providers[i].warm(); } catch (e) {} }
     }
     var inp = $('omni-input');
@@ -1040,13 +1186,19 @@ var HDOmni = (function () {
     setTimeout(function () { inp.focus(); inp.select(); }, 30);
   }
 
-  function close() {
+  /* `reason` is a plain string for the closedHook ('jump'/'run'/'esc'/…).
+     Event-handler call sites pass the DOM event here — anything that is not
+     a string is normalised to 'close', so the hook never sees an Event. */
+  function close(reason) {
     if (!st.open) return;
     if (st.prof.open) closeProfilePicker();   // never leave the sheet orphaned
     st.open = false;
     var m = $('omni-modal');
     if (m) m.classList.add('hidden');
     toGame('hdCapture', '0');
+    if (closedHook) {
+      try { closedHook(typeof reason === 'string' ? reason : 'close'); } catch (e) {}
+    }
   }
 
   /* Open Ask about a SPECIFIC npc and run it immediately. Used by the quick
@@ -1079,7 +1231,7 @@ var HDOmni = (function () {
          rest so they don't reach search/ask underneath */
       return true;
     }
-    if (code === 'Escape') { close(); return true; }
+    if (code === 'Escape') { close('esc'); return true; }
     if (st.mode === 'search') {
       if (code === 'ArrowDown') { st.sel = Math.min(st.sel + 1, Math.max(0, st.flat.length - 1)); renderResults(); return true; }
       if (code === 'ArrowUp') { st.sel = Math.max(0, st.sel - 1); renderResults(); return true; }
@@ -1114,7 +1266,13 @@ var HDOmni = (function () {
       id: 'hotkeys', label: 'Hotkeys', tab: 'all',
       setFilter: function (q) { env.setSearch(q); },
       index: function () {
-        return (env.state.entries || []).map(function (en) {
+        return (env.state.entries || []).filter(function (en) {
+          /* An entry whose backing mod is detection-absent is hidden in the
+             deck list (hkNeeds/HK_REQUIRES) — omni must not resurface it, and
+             the wheel picker + shelf ride this provider too. Older host
+             without the hook: no filtering, nothing vanishes. */
+          return typeof env.hkNeeds !== 'function' || env.hkNeeds(en) === '';
+        }).map(function (en) {
           return {
             label: en.name || '(unnamed)',
             detail: [en.desc, en.category, en.label].filter(Boolean).join(' · '),
@@ -1140,27 +1298,59 @@ var HDOmni = (function () {
       /* shelf fallback: a pinned tab whose button is not rendered right now
          (the deck repaints the nav per render) still opens from its snap */
       pinRun: function (snap) {
-        if (snap && snap.act === 'spells') { env.openSpells(); return; }
+        if (snap && snap.act === 'spells') { env.openSpells(snap.page); return; }
         if (snap && snap.tok) env.setTab(snap.tok);
       },
       index: function () {
         var items = [];
+        var seen = {};
+        var i;
+        function addTab(tok, label, detail) {
+          if (!tok || !label || seen[tok]) return;
+          seen[tok] = true;
+          items.push({
+            label: label, kind: 'tab', detail: detail || ('open the ' + label + ' tab'),
+            pin: 'tab:' + tok, snap: { tok: tok },
+            run: function () { env.setTab(tok); },
+          });
+        }
+        /* The bar only paints the systems that FIT. Everything else lives in
+           the More ▾ dropdown with no button of its own, so the rendered nav
+           alone would leave the least reachable tabs unsearchable — take the
+           overflow list from the host first, then the buttons. Hosts without
+           the hook (an older app.js) simply get the buttons, as before. */
+        if (typeof env.overflowTabs === 'function') {
+          var over = env.overflowTabs() || [];
+          for (i = 0; i < over.length; i++) {
+            addTab(over[i].tab, over[i].label,
+              over[i].title || ('open the ' + over[i].label + ' tab'));
+          }
+        }
         var tabsEl = document.getElementById('tabs');
-        if (!tabsEl) return items;
-        var btns = tabsEl.querySelectorAll('.tab[data-tab]');
-        for (var i = 0; i < btns.length; i++) {
-          (function (tok, label) {
-            items.push({
-              label: label, kind: 'tab', detail: 'open the ' + label + ' tab',
-              pin: 'tab:' + tok, snap: { tok: tok },
-              run: function () { env.setTab(tok); },
-            });
-          })(btns[i].dataset.tab, btns[i].textContent.replace(/[✕✎◂▸]+/g, '').trim());
+        var btns = tabsEl ? tabsEl.querySelectorAll('.tab[data-tab]') : [];
+        for (i = 0; i < btns.length; i++) {
+          /* In the icons-only tab style a button holds nothing but its <img>,
+             so its textContent is empty — read the alt, which app.js fills
+             with the same system label the names style prints. */
+          var txt = btns[i].textContent.replace(/[✕✎◂▸]+/g, '').trim();
+          if (!txt) {
+            var im = btns[i].querySelector('img');
+            txt = (im && im.getAttribute('alt')) || '';
+          }
+          addTab(btns[i].dataset.tab, txt);
         }
         /* the Spell Deck launcher is data-act, not data-tab — add it by hand */
         items.push({ label: 'Spells', kind: 'tab', detail: 'open the Spell Deck (F18)',
                      pin: 'tab:spells!', snap: { act: 'spells' },
                      run: function () { env.openSpells(); } });
+        /* Combat Arts is the Spell Deck's SECOND page (2026-08-15), not a tab
+           of this deck any more — so it needs its own row here, or searching
+           "combat arts" would find nothing at all. */
+        items.push({ label: 'Combat Arts', kind: 'tab',
+                     detail: 'Ashes of War — opens the Spell Deck on its Combat Arts page',
+                     keywords: 'ashes of war weapon art equip blade',
+                     pin: 'tab:arts!', snap: { act: 'spells', page: 'arts' },
+                     run: function () { env.openSpells('arts'); } });
         return items;
       },
     });
@@ -1467,9 +1657,25 @@ var HDOmni = (function () {
     open: open,
     close: close,
     askAbout: askAbout,
+    /* For other panes that want CHIM facets INLINE rather than by jumping to
+       the Ask overlay (the NPC inspect sheet's CHIM section) — see askStructured
+       and its doc comment above. facetCard renders ONE facet the exact way the
+       Ask overlay itself does, so a reused card never drifts from the real one. */
+    askStructured: askStructured,
+    facetCard: facetCard,
     isOpen: function () { return st.open; },
     onKey: onKey,
     hookInto: hookInto,
+    /* Super Searcher plumbing (hd-super.js): a temporary provider gate for the
+       source toggles, a closed-reason hook for its route-out, and a repaint
+       handle so late-landing item renders can upgrade glyphs in place. All
+       no-ops until installed; pass null to clear. */
+    setProviderGate: function (fn) { extraGateFn = typeof fn === 'function' ? fn : null; },
+    setClosedHook: function (fn) { closedHook = typeof fn === 'function' ? fn : null; },
+    /* null/'' restores the default legend — hd-super clears it on exit so the
+       classic overlay never inherits the widget's wording */
+    setBlankNote: function (s) { blankNote = s ? String(s) : BLANK_NOTE_DEFAULT; },
+    rerender: function () { if (st.open && st.mode === 'search') renderResults(); },
     takeQuestReply: takeQuestReply,
     lazyResults: lazyResults,
     /* exposed for the test harness */

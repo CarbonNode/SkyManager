@@ -283,6 +283,8 @@
     if (!shot) return h('div', { class: 'hdq-plate' }, glyph);
     var plate = h('div', { class: 'hdq-plate is-face' });
     var img = h('img', { class: 'hdq-face-img', src: shot, alt: '' });
+    /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
+    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, shot);
     /* Remove-on-error, never a broken-image box: the portrait file can be gone
        while the roster still remembers it. Plain path, no ?v= — Ultralight can
        treat the query as part of the filename. */

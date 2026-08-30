@@ -1,0 +1,872 @@
+/* ===================================================================== *
+ *  Distributions tab — SPID / SkyPatcher inspector (spid-pane.js).
+ *  Derived from the Finder panes so the explorers share one visual
+ *  language: same bar, same pills, same row rhythm. Every class is
+ *  dx-namespaced (the .sp-bar collision law).
+ * ===================================================================== */
+
+#dx-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 22px 14px;
+  gap: 14px;
+  position: relative;
+}
+#dx-pane.hidden { display: none; }
+
+/* ------------------------------------------------------------- header -- */
+
+.dx-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.dx-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #e8e2d4;
+  letter-spacing: .3px;
+  white-space: nowrap;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+#dx-count-chip {
+  font-size: 13px;
+  font-weight: 500;
+  color: #9a917d;
+  white-space: nowrap;
+}
+
+.dx-target {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.dx-t-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: #ecd9a8;
+  white-space: nowrap;
+}
+
+.dx-t-meta {
+  font-size: 14px;
+  color: #9a917d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 420px;
+}
+
+/* -------------------------------------------------------------- chips -- */
+
+.dx-chip {
+  font-size: 13px;
+  font-weight: 600;
+  color: #cfc8b8;
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 8px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+.dx-chip-now    { color: #ecd9a8; border-color: #55503f; }
+.dx-chip-chance { color: #d8b86a; border-color: #55503f; }
+.dx-chip-warn   { color: #d89a8a; border-color: #5a4038; }
+.dx-chip-unc    { color: #b0a68c; border-style: dashed; }
+
+/* ---------------------------------------------------------------- bar -- */
+
+.dx-barwrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dx-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #16161c;
+  border: 1px solid #3d3a33;
+  border-radius: 11px;
+  padding: 4px 14px;
+  transition: border-color 130ms ease;
+}
+.dx-bar:focus-within { border-color: #6a6350; }
+
+.dx-bar-glyph {
+  font-size: 18px;
+  color: #9a917d;
+}
+
+#dx-search {
+  flex: 1;
+  min-height: 44px;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: #efe9da;
+  font-size: 17px;
+  font-family: inherit;
+}
+#dx-search::placeholder { color: #6f6857; }
+
+#dx-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dx-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  color: #cfc8b8;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.dx-pill:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
+.dx-pill-on {
+  background: #2a2618;
+  border-color: #8a7a4d;
+  color: #ecd9a8;
+}
+.dx-pill-dim { opacity: .45; }
+.dx-pill-glyph { font-size: 14px; }
+.dx-pill-n {
+  font-size: 12px;
+  color: #9a917d;
+  background: #14141a;
+  border-radius: 7px;
+  padding: 1px 7px;
+}
+.dx-pill-on .dx-pill-n { color: #d8c48c; }
+
+/* ---------------------------------------------------------------- body -- */
+
+#dx-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.dx-row {
+  background: #191920;
+  border: 1px solid #2e2c26;
+  border-radius: 11px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.dx-row:hover { background: #1f1f28; border-color: #4a463a; }
+.dx-row.dx-open { background: #201f18; border-color: #6a6350; }
+
+.dx-row-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.dx-plate {
+  flex: none;
+  /* 46 -> 60: the row is two lines of text tall, so a 46px plate left the art
+     smaller than the words describing it. 60 fills the row height without
+     growing it (2026-08-19). */
+  width: 60px;
+  height: 60px;
+  border-radius: 9px;
+  background: #14141a;
+  border: 1px solid #2e2c26;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.dx-plate.dx-has-art { border-color: #4a463a; }
+.dx-art { width: 100%; height: 100%; object-fit: contain; }
+.dx-glyph { font-size: 28px; color: #8a8270; }
+/* glyph sits UNDER the art and shows through when errFor drops a failed img */
+.dx-plate.dx-has-art .dx-glyph { display: none; }
+.dx-plate { position: relative; }
+.dx-plate .dx-art { position: absolute; inset: 0; }
+
+.dx-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.dx-label {
+  font-size: 16px;
+  font-weight: 700;
+  color: #e8e2d4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dx-sub {
+  font-size: 13px;
+  color: #8a8270;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dx-right {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dx-src {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .4px;
+  border-radius: 7px;
+  padding: 4px 9px;
+  white-space: nowrap;
+}
+.dx-src-spid { color: #d8c48c; background: #262214; border: 1px solid #55503f; }
+.dx-src-sky  { color: #a8c4d8; background: #171d22; border: 1px solid #3a4550; }
+
+.dx-caret { font-size: 12px; color: #6f6857; }
+
+/* -------------------------------------------------- items / ops chips -- */
+
+.dx-items, .dx-ops, .dx-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.dx-item, .dx-op, .dx-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: #cfc8b8;
+  background: #14141a;
+  border: 1px solid #2e2c26;
+  border-radius: 8px;
+  padding: 5px 10px;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dx-item-more { color: #8a8270; border-style: dashed; }
+/* 26px was a favicon beside a 14px label — the whole point of rendering an
+   outfit's pieces is to SEE what the piece is, and at 26 a jewelled heel and a
+   boot are the same brown smudge (Rober, 2026-08-19: "make icons for item
+   larger"). 40px reads as artwork and still sits inside the chip's line box.
+   Ultralight rasterises an <img> at its LAYOUT size, so this is genuinely more
+   pixels, not a magnified 26px raster — the source renders are 512px. */
+.dx-item-art {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  flex: none;
+}
+.dx-op-k, .dx-filter-k {
+  color: #d8c48c;
+  font-weight: 700;
+}
+
+/* ------------------------------------------------------------- detail -- */
+
+.dx-detail { margin-top: 4px; }
+
+.dx-unc-list { margin-top: 9px; }
+.dx-unc-line {
+  font-size: 13px;
+  color: #b0a68c;
+  padding: 2px 0;
+}
+
+.dx-fileline {
+  margin-top: 9px;
+  font-size: 12px;
+  color: #6f6857;
+}
+
+.dx-truncated {
+  text-align: center;
+  font-size: 14px;
+  color: #9a917d;
+  padding: 12px 0 6px;
+}
+
+/* --------------------------------------------------- hero / skeleton -- */
+
+.dx-hero {
+  margin: auto;
+  max-width: 640px;
+  text-align: center;
+  padding: 44px 24px;
+}
+.dx-hero-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #e8e2d4;
+  margin-bottom: 10px;
+}
+.dx-hero-msg {
+  font-size: 15px;
+  color: #9a917d;
+  line-height: 1.5;
+}
+
+#dx-empty { flex: 1; display: flex; }
+#dx-empty.hidden { display: none; }
+
+.dx-skel {
+  height: 68px;
+  border-radius: 11px;
+  background: #191920;
+  border: 1px solid #2e2c26;
+  opacity: .6;
+}
+
+/* ---------------------------------------------------------------- foot -- */
+
+.dx-foot {
+  flex: none;
+  font-size: 13px;
+  color: #8a8270;
+  line-height: 1.45;
+  border-top: 1px solid #2e2c26;
+  padding-top: 10px;
+}
+
+/* ============================================== grouped by source ini ==
+   Rober, 2026-08-19: "group or sort by mod", and "this specific spid adds
+   items from these 3 esps". The header is the whole point — it names the file
+   a user would go and disable, how many of its lines hit THIS npc, and which
+   plugins the forms it hands out come from. Sticky, because with 57 matches
+   across a dozen inis you lose track of which file you are reading. */
+
+.dx-group { display: flex; flex-direction: column; gap: 8px; }
+
+.dx-g-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  margin-bottom: 2px;
+  background: #15151b;
+  border: 1px solid #33302a;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.dx-g-head:hover { background: #1d1c24; border-color: #55503f; }
+
+/* ⚠ Always the PROVEN ▼ glyph, turned by CSS. The engine renders ▸ (the SMALL
+   right triangle) as a speck — documented — and there is no reason to gamble on
+   its siblings when a rotation of a glyph we have seen work costs nothing. */
+.dx-g-caret {
+  flex: none;
+  font-size: 13px;
+  color: #8a8270;
+  width: 12px;
+  text-align: center;
+  transition: transform 140ms ease, color 140ms ease;
+}
+.dx-g-shut .dx-g-caret { transform: rotate(-90deg); }
+.dx-g-head:hover .dx-g-caret { color: #ecd9a8; }
+
+.dx-g-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ecd9a8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.dx-g-n {
+  flex: none;
+  font-size: 13px;
+  font-weight: 700;
+  color: #d8c48c;
+  background: #262214;
+  border: 1px solid #55503f;
+  border-radius: 7px;
+  padding: 1px 8px;
+}
+
+/* Pushed right and allowed to shrink first: the file name and the count are
+   the identity, the attribution is the detail. */
+.dx-g-plugins {
+  margin-left: auto;
+  min-width: 0;
+  font-size: 13px;
+  color: #8a8270;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dx-g-more { color: #d8c48c; font-weight: 700; }
+
+.dx-g-rows { display: flex; flex-direction: column; gap: 8px; }
+.dx-g-shut .dx-g-head { background: #131318; }
+
+/* A separator so the view toggle does not read as another filter pill. */
+.dx-pill-sep {
+  width: 1px;
+  height: 22px;
+  background: #3d3a33;
+  margin: 0 4px;
+  flex: none;
+}
+
+/* Queued, not broken: a plate whose form resolved but whose render has not
+   been reached yet. Renders are paced while the game is unpaused and then kept
+   forever, so this is a "wait a moment" state — it earned its own look after
+   Rober asked why only one of three chips had art when nothing had failed. */
+.dx-plate.dx-pending {
+  border-style: dashed;
+  border-color: #3f3b31;
+}
+.dx-plate.dx-pending .dx-glyph {
+  color: #5f5a4c;
+  animation: dx-pulse 1.9s ease-in-out infinite;
+}
+@keyframes dx-pulse {
+  0%, 100% { opacity: .45; }
+  50%      { opacity: .95; }
+}
+
+/* The view toggle borrows .dx-pill's shape but never its filter meaning, so it
+   reads a shade cooler when off and takes the same gold when on. */
+.dx-pill-tog { color: #b9b2a2; }
+.dx-pill-tog:hover { color: #efe9da; }
+.dx-pill-tog.dx-pill-on { color: #ecd9a8; }
+
+/* ================================================ leveled list viewer ==
+   "what items are in the leveled list if i click one" — the contents are the
+   only real answer for a row whose form has no name. Indentation carries the
+   nesting; the tags carry the odds. */
+
+.dx-lv {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #131318;
+  border: 1px solid #2e2c26;
+  border-radius: 9px;
+}
+
+.dx-lv-head {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  color: #8a8270;
+  margin-bottom: 8px;
+}
+
+.dx-lv-wait { font-size: 14px; color: #6f6857; font-style: italic; }
+
+.dx-lv-node {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 15px;
+  border-radius: 6px;
+  color: #cfc8b8;
+  min-width: 0;
+}
+
+.dx-lv-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A nested list is a branch, not a thing you receive — gold marks it as
+   something that rolls again rather than an item. */
+.dx-lv-islist { color: #ecd9a8; font-weight: 700; }
+
+.dx-lv-x   { color: #d8c48c; font-weight: 700; }
+.dx-lv-type { font-size: 13px; color: #7d7768; }
+
+.dx-lv-tag {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #9a917d;
+  background: #1b1b22;
+  border: 1px solid #33302a;
+  border-radius: 6px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.dx-lv-kind { color: #b9b2a2; }
+.dx-lv-all  { color: #b7d8a8; border-color: #3f5038; }
+.dx-lv-none { color: #d8b86a; border-color: #55503f; }
+.dx-lv-warn { color: #d89a8a; border-color: #5a4038; }
+
+/* ---------------------------------------------------- polish + states -- */
+
+/* Pressed state on the group header: it is a button in everything but tag, and
+   a header that highlights on hover but does nothing on press feels dead. */
+.dx-g-head:active { background: #262430; border-color: #6a6350; }
+
+/* A row of the tree lights up under the pointer so the eye can track a line
+   across the indent — at four levels deep the name and its tags are far apart. */
+.dx-lv-node:hover { background: #191920; }
+
+/* The contents bar: title, count, and the filter the deck's own rule demands of
+   any list worth scrolling. Wraps rather than crushing the input on a narrow
+   panel. */
+.dx-lv-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.dx-lv-head { margin-bottom: 0; }
+
+.dx-lv-n {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #d8c48c;
+  background: #262214;
+  border: 1px solid #55503f;
+  border-radius: 7px;
+  padding: 1px 8px;
+}
+
+.dx-lv-find {
+  flex: 1 1 200px;
+  min-width: 140px;
+  max-width: 380px;
+  min-height: 34px;
+  padding: 0 12px;
+  font: 500 14.5px/1.2 inherit;
+  color: #ece4d2;
+  background: #16161c;
+  border: 1px solid #3a382f;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.dx-lv-find::placeholder { color: #6f6a5e; }
+.dx-lv-find:hover { border-color: #4a4a55; }
+.dx-lv-find:focus { border-color: #c9a24b; background: #1a1a21; }
+
+/* ====================================================== block controls ==
+   "blacklist entire npc from all spid … or a specific outfit from this npc."
+   SPID cannot un-distribute, so a block is a standing instruction to take the
+   thing back off her — which is why the ON state reads "Blocked" (a condition)
+   rather than "Block" (a promise). Destructive-ish and permanent-feeling, so it
+   is deliberately quiet until hovered. */
+
+.dx-block {
+  flex: none;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  color: #b0a68c;
+  background: #1b1b22;
+  border: 1px solid #3d3a33;
+  border-radius: 8px;
+  padding: 5px 12px;
+  min-height: 30px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.dx-block:hover  { background: #2a2028; border-color: #6a4a4a; color: #e8c9c0; }
+.dx-block:active { background: #33232b; }
+
+/* Gold, not red: this is a rule the player WANTS in force, and the deck's gold
+   is its "this is on" colour everywhere else. */
+.dx-block-on {
+  color: #ecd9a8;
+  background: #2a2618;
+  border-color: #8a7a4d;
+}
+.dx-block-on:hover { background: #332d1c; border-color: #a89152; color: #f4e6bd; }
+
+.dx-blockall {
+  flex: none;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #cfc8b8;
+  background: #1d1d25;
+  border: 1px solid #3d3a33;
+  border-radius: 9px;
+  padding: 7px 14px;
+  min-height: 34px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.dx-blockall:hover  { background: #2a2028; border-color: #6a4a4a; color: #e8c9c0; }
+.dx-blockall:active { background: #33232b; }
+
+/* ===================================================== blocks manager ==
+   The one place a rule on an UNMATCHED form can be seen and lifted. It sits
+   above the list rather than in a modal because it is a state you are working
+   in, not a dialogue you dismiss. */
+
+.dx-rules {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: #1a1620;
+  border: 1px solid #4a3a44;
+  border-radius: 11px;
+}
+
+.dx-rules-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.dx-rules-title { font-size: 15px; font-weight: 700; color: #e8c9c0; }
+.dx-rules-note  { font-size: 13px; color: #8a8270; }
+
+.dx-rules-clear {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 700;
+  color: #cfc8b8;
+  background: #241c22;
+  border: 1px solid #5a4048;
+  border-radius: 8px;
+  padding: 5px 12px;
+  min-height: 30px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.dx-rules-clear:hover  { background: #2f2229; border-color: #7a545e; color: #f0dcd6; }
+.dx-rules-clear:active { background: #382730; }
+
+.dx-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid #2e2630;
+  min-width: 0;
+}
+.dx-rule:first-of-type { border-top: 0; }
+
+.dx-rule-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 15px;
+  color: #ece4d2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dx-rule-src {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  color: #8a8270;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dx-rule-lift {
+  flex: none;
+  font-size: 13px;
+  font-weight: 700;
+  color: #b0a68c;
+  background: #1b1b22;
+  border: 1px solid #3d3a33;
+  border-radius: 7px;
+  padding: 4px 11px;
+  min-height: 28px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.dx-rule-lift:hover  { background: #26262f; border-color: #6a6350; color: #efe9da; }
+.dx-rule-lift:active { background: #2e2e38; }
+
+/* The head button that opens it — reads as a live count, not a filter pill. */
+.dx-rules-btn {
+  flex: none;
+  font-size: 13px;
+  font-weight: 700;
+  color: #e8c9c0;
+  background: #241c22;
+  border: 1px solid #5a4048;
+  border-radius: 8px;
+  padding: 5px 12px;
+  min-height: 30px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.dx-rules-btn:hover  { background: #2f2229; border-color: #7a545e; }
+.dx-rules-btn:active { background: #382730; }
+.dx-rules-on { background: #33232b; border-color: #8a5a66; color: #f4ddd6; }
+
+/* Sort pills read as a set: same shape as the group filters, quieter when off. */
+.dx-pill-sort { color: #b9b2a2; }
+.dx-pill-sort:hover { color: #efe9da; }
+.dx-pill-sort.dx-pill-on { color: #ecd9a8; }
+
+/* ============================================================ pagination ==
+   Rober, 2026-08-19: "we definetly want to add pagination, so not everything
+   trys to do a mesh render storm for the thumbnails." The pager is the visible
+   half of that; the load-bearing half is visibleArtSpecs() asking for the
+   current page only. */
+
+.dx-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 14px 6px 6px;
+  padding: 12px 14px;
+  border: 1px solid #33302a;
+  border-top-color: #443f34;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .015);
+}
+.dx-pg {
+  flex: none;
+  padding: 9px 20px;
+  font: inherit;
+  font-size: 15px;
+  color: #d8d2c2;
+  background: #201d17;
+  border: 1px solid #4b4638;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 130ms ease, color 130ms ease, background 130ms ease;
+}
+.dx-pg:hover:not(:disabled) { border-color: #8a7a4e; color: #f0e6cc; background: #2a2519; }
+.dx-pg:active:not(:disabled) { transform: translateY(1px); }
+.dx-pg:disabled { opacity: .35; cursor: default; }
+.dx-pg:focus-visible {
+  outline: none;
+  border-color: #c9a24b99;
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .14);
+}
+.dx-pg-at {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 15px;
+  color: #d8c48c;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.dx-pg-sub { font-size: 12.5px; font-weight: 400; color: #8a8272; }
+
+/* the "N of M on this page" suffix on a group's count */
+.dx-g-of { color: #8a8272; font-weight: 400; }
+
+/* ------------------------------------------------- open the ini on the PC --
+   Per FILE, because the file is what you would actually go and read or edit. */
+.dx-g-open {
+  flex: none;
+  margin-left: 10px;
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 13.5px;
+  color: #bdb4a0;
+  background: transparent;
+  border: 1px solid #454034;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: border-color 130ms ease, color 130ms ease, background 130ms ease;
+}
+.dx-g-open:hover { border-color: #8a7a4e; color: #f0e6cc; background: rgba(201, 162, 75, .1); }
+.dx-g-open:active { transform: translateY(1px); }
+.dx-g-open:focus-visible {
+  outline: none;
+  border-color: #c9a24b99;
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .14);
+}
+
+/* --------------------------------------------------------- no preview ever --
+   Distinct from .dx-pending on purpose. Pending pulses because it is going to
+   change; this one is the FINAL answer for a record with no mesh to render, so
+   it sits still and reads as settled rather than stuck. Rober, 2026-08-19: "a
+   lot of the thumbnails seem to never populate or have nothing to populate". */
+.dx-plate.dx-noart {
+  border-style: solid;
+  border-color: #2e2b24;
+  background: rgba(255, 255, 255, .012);
+}
+.dx-plate.dx-noart .dx-glyph { color: #4e4a40; }
+
+/* the footer's honesty clause — visible, not buried in grey body text */
+.dx-foot-warn {
+  color: #d8c48c;
+  border-bottom: 1px dotted #6d6247;
+  cursor: help;
+}
+
+/* ------------------------------------------------- desktop report button --
+   Rober, 2026-08-20: "drop a spid report to desktop". Sits beside the target
+   name, quieter than the block controls next to it — it is a diagnostic, not
+   something you reach for mid-play. */
+.dx-report-btn {
+  flex: none;
+  margin-left: 8px;
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 13.5px;
+  color: #bdb4a0;
+  background: transparent;
+  border: 1px solid #454034;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: border-color 130ms ease, color 130ms ease, background 130ms ease;
+}
+.dx-report-btn:hover { border-color: #8a7a4e; color: #f0e6cc; background: rgba(201, 162, 75, .1); }
+.dx-report-btn:active { transform: translateY(1px); }
+.dx-report-btn:disabled { opacity: .5; cursor: default; transform: none; }
+.dx-report-btn:focus-visible {
+  outline: none;
+  border-color: #c9a24b99;
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .14);
+}

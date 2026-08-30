@@ -1,7 +1,7 @@
 #pragma once
 
 // Keys tab: one registry of every hotkey the load order claims, and who claims
-// it. Five sources, merged:
+// it. Eight sources, merged:
 //
 //   vanilla  - the LIVE ControlMap (user remaps included), gameplay context
 //   deck     - SkyManager's own entry triggers / open keys (provider injected
@@ -10,6 +10,18 @@
 //   helper   - MCM Helper mods: Data/MCM/Config/*/config.json keymaps, values
 //              from Config/<mod>/settings.ini overlaid by Settings/<mod>.ini,
 //              labels resolved via Interface/Translations/<mod>_ENGLISH.txt
+//   plugin   - the generic sweep of Data/SKSE/Plugins/**: DLL mods that keep
+//              their binds in their own ini/json and register no MCM at all
+//              (keys_sources.cpp). ⚠ These rows may carry `guessed`, meaning
+//              the file never said whether its number is a DirectInput
+//              scancode or a Windows virtual-key and DIK was assumed.
+//   overlays - ENB, ReShade and Community Shaders (also keys_sources.cpp).
+//              They sit outside the mod list entirely, so no other source can
+//              see them, yet they hold real keys. Their virtual-key codes are
+//              CONVERTED into the census space, never assumed.
+//   papyrus  - RegisterForKey calls read out of compiled scripts
+//              (keys_pex.cpp), for the classic script mod that binds a key and
+//              ships no MCM at all. Skips scripts the live MCM sweep owns.
 //   mcm      - classic SkyUI MCMs, swept LIVE through SkyUI's own conflict
 //              surface: SKI_ConfigManager's registered configs are each asked
 //              GetCustomControl(k) for every key/mouse code -- the exact API

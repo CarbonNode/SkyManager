@@ -271,4 +271,40 @@
     _state: S,        // harness introspection only
     _render: render,  // harness
   };
+
+  /* ------------------------------------------------------------- omni -- *
+   *  This roster had exactly ONE door: the ⚙ All grants… button inside the
+   *  SPID section of the F7 quick card — which needs somebody in your
+   *  crosshair. A whole-save list of permanent gear was therefore gated
+   *  behind looking at one particular person, and nothing in the deck named
+   *  it, so "all grants", "spid roster" and "permanent gear" found nothing.
+   *
+   *  ONE row on purpose. wardrobe-spid.js indexes the very same sgAllState
+   *  payload person by person and grant by grant, so indexing its contents
+   *  here as well would print every SPID result twice, under two headings.
+   *  There is no `tab`: this is a modal that opens over whatever you are
+   *  looking at, not a place the deck navigates to. */
+  if (window.HDOmni && typeof window.HDOmni.register === 'function') {
+    window.HDOmni.register({
+      id: 'spid-roster', label: 'SPID roster', tab: '',
+      warm: request,
+      index: function () {
+        var npcs = (S.data && S.data.npcs) || [];
+        var grants = 0;
+        for (var i = 0; i < npcs.length; i++) grants += (npcs[i].items || []).length;
+        return [{
+          label: 'All SPID grants',
+          detail: npcs.length
+            ? grants + ' grant' + (grants === 1 ? '' : 's') + ' across ' + npcs.length +
+              ' NPC' + (npcs.length === 1 ? '' : 's') + ' — chance, history and removal'
+            : 'Every permanent grant in this save — chance, history and removal',
+          kind: 'wardrobe',
+          keywords: 'spid permanent gear grant grants roster manager history chance ' +
+            'distr ini distribution everyone all npcs wig enforce',
+          pin: 'sg:all',
+          run: open,
+        }];
+      },
+    });
+  }
 })();

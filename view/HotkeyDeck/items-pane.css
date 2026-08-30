@@ -310,6 +310,11 @@
   gap: 8px;
   padding-right: 6px;
 }
+/* With nothing to show the body must NOT keep splitting the pane's height with
+   #ix-empty (which is flex:1 too) — that pushed the hero into the bottom half.
+   Set from showEmptyState() in items-pane.js, not :empty, so it holds whatever
+   the engine's selector support is. */
+#ix-body.ix-body-yield { flex: 0 0 auto; }
 
 .ix-sect {
   font-size: 12.5px;
@@ -445,7 +450,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ix-name mark {
+/* both highlight() call sites — the item name and the mod row's plugin name.
+   An unstyled <mark> falls back to the browser's #ff0-on-black highlighter,
+   which is a searing block in a gold-on-dark pane. */
+.ix-name mark,
+.ix-plug-name mark {
   background: rgba(201, 162, 75, .25);
   color: #f2e2b0;
   border-radius: 3px;
@@ -618,7 +627,7 @@
   background: linear-gradient(180deg, #1a1a21, #101015);
   border: 1px solid #55503f;
   border-radius: 14px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, .6);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   padding: 22px 24px;
   display: flex;
   flex-direction: column;
@@ -833,19 +842,12 @@
 .ix-skel-box {
   border-radius: 8px;
   background: linear-gradient(90deg, #1b1b22 25%, #23232c 50%, #1b1b22 75%);
-  background-size: 200% 100%;
-  animation: ix-shimmer 1.3s infinite linear;
   border: none;
 }
 .ix-skel .ix-glyph { border: none; }
 .ix-skel-w1 { width: 46%; height: 18px; }
 .ix-skel-w2 { width: 30%; height: 13px; }
 .ix-skel-btn { width: 84px; height: 38px; }
-
-@keyframes ix-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
 
 /* ------------------------------------------------- narrow palette (640) -- */
 
@@ -892,8 +894,6 @@
    emoji stays legible on top (dimmed a touch) so the row is never blank. */
 .ix-glyph.ix-loading {
   background: linear-gradient(90deg, #1b1b22 25%, #26262f 50%, #1b1b22 75%);
-  background-size: 200% 100%;
-  animation: ix-shimmer 1.3s infinite linear;
   border-color: #34333d;
   color: #c9c2ae;
 }
@@ -967,3 +967,351 @@
   box-shadow: inset 0 0 0 2px rgba(201, 162, 75, .6);
 }
 #ix-pane .fx-sw.fx-sw-on { background: #33301f; color: #ffd36a; cursor: default; }
+
+/* ── rich per-item detail (2026-08-15) ────────────────────────────────────
+   Rober: "expand our finder section for items and npcs — effects, enchants,
+   damage, factions, npc stats, all sorts of info." An inline expandable block
+   under the row (one open at a time), fed lazily by C++ on expand. The ⓘ button
+   toggles it; content is labeled sections — stats grid, enchantment, magic
+   effects, keywords — nothing under 12px, spacious. */
+
+.ix-info {
+  background: #17171e;
+  border: 1px solid #33302a;
+  border-radius: 9px;
+  color: #b6ad99;
+  font-size: 17px;
+  line-height: 1;
+  width: 40px;
+  height: 38px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.ix-info:hover { background: #20202a; border-color: #4a4638; color: #e2dbca; }
+.ix-info:active { background: #17171e; }
+.ix-info:focus-visible {
+  outline: none;
+  border-color: rgba(201, 162, 75, .7);
+  box-shadow: 0 0 0 3px rgba(201, 162, 75, .22);
+}
+.ix-info.ix-info-on {
+  background: rgba(201, 162, 75, .16);
+  border-color: rgba(201, 162, 75, .55);
+  color: #ecd9a8;
+}
+
+/* the open row loses its bottom rounding so the detail block reads as attached */
+.ix-row.ix-row-open {
+  border-color: rgba(201, 162, 75, .5);
+  background: #1b1b23;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+/* the detail block itself — a sibling under the row in the flex column, pulled
+   up to butt against the row (the column gap would otherwise float it) */
+.ix-detail {
+  margin-top: -8px;
+  background: #131319;
+  border: 1px solid rgba(201, 162, 75, .5);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  padding: 14px 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: ix-detail-in 140ms ease;
+}
+@keyframes ix-detail-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.ix-detail-load, .ix-detail-err {
+  font-size: 14px;
+  color: #9a917d;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ix-detail-err { color: #e0b48f; }
+.ix-detail-spin {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid #4a4438; border-top-color: #e6c982;
+  animation: ix-render-spin .8s linear infinite;
+  display: inline-block;
+}
+
+/* the headline stats grid — value/weight/damage/armor/type/… */
+.ix-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+}
+.ix-stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ix-stat-l {
+  font-size: 12px;
+  color: #6d675a;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+}
+.ix-stat-v { font-size: 16px; font-weight: 700; color: #e2dbca; white-space: nowrap; }
+.ix-stat-v.ix-stat-dmg { color: #e8a49c; }
+.ix-stat-v.ix-stat-arm { color: #9ec3e8; }
+.ix-stat-v.ix-stat-harm { color: #e8a49c; }
+
+/* a titled sub-section (Enchantment / Magic effects / Keywords) */
+.ix-detail-sect { display: flex; flex-direction: column; gap: 8px; }
+.ix-detail-h {
+  font-size: 13px;
+  font-weight: 700;
+  color: #cdbf94;
+  letter-spacing: .3px;
+}
+.ix-detail-hsub { color: #b6ad99; font-weight: 600; }
+
+/* one magic-effect line */
+.ix-eff {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #cfc8b8;
+  flex-wrap: wrap;
+}
+.ix-eff-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #7fbf8f; flex-shrink: 0;
+}
+.ix-eff.ix-eff-harm .ix-eff-dot { background: #d98a80; }
+.ix-eff-name { font-weight: 650; color: #e6dfce; }
+.ix-eff-mag { color: #9a917d; }
+.ix-eff-mag b { color: #e6c982; font-weight: 700; }
+.ix-eff-school {
+  font-size: 12px;
+  color: #9a917d;
+  border: 1px solid #33302a;
+  border-radius: 6px;
+  padding: 2px 7px;
+  margin-left: auto;
+}
+.ix-eff-none { font-size: 13.5px; color: #8d8471; font-style: italic; }
+
+/* keyword chips */
+.ix-kw-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+.ix-kw {
+  font-size: 12px;
+  color: #a9a291;
+  background: #1b1b22;
+  border: 1px solid #33302a;
+  border-radius: 7px;
+  padding: 4px 9px;
+  max-width: 30ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .ix-info { width: 34px; height: 34px; font-size: 15px; }
+  .ix-detail { padding: 12px 12px 14px; gap: 12px; }
+  .ix-stats { gap: 8px 16px; }
+  .ix-stat-v { font-size: 15px; }
+  .ix-eff { font-size: 13px; }
+}
+
+/* ==================================================== Modify (2026-08-17) ==
+   The base-record edit sheet (PROTEUS-class), plus the ✎ edited chips on rows
+   and the Modify/Revert foot inside a detail block. Tokens match the price
+   sheet above — same card, same gold accents. */
+
+.ix-detail-acts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #2a2a33;
+}
+.ix-edit-open, .ix-edit-revert { font-size: 14px; padding: 7px 14px; }
+.ix-edited-note { font-size: 13px; color: #c9a24b; }
+
+.ix-edited-chip {
+  display: inline-block;
+  margin-left: 8px;
+  color: #c9a24b;
+  font-size: 13px;
+  vertical-align: 1px;
+}
+
+/* 680, not 560: at 560 a two-column row could not hold label + stepper + the
+   "was N" marker together (needed 307px per column, had 249), so every marker
+   wrapped and the card outgrew 86vh at 720p. */
+.ix-ed-card { width: min(680px, 94%); max-height: calc(86vh / var(--ui-scale, 1)); overflow-y: auto; }
+.ix-ed-count {
+  margin-left: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #c9a24b;
+  background: rgba(201, 162, 75, .12);
+  border: 1px solid rgba(201, 162, 75, .4);
+  border-radius: 999px;
+  padding: 3px 10px;
+  vertical-align: 2px;
+}
+.ix-ed-warn {
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: #b6ad99;
+  background: rgba(201, 162, 75, .07);
+  border: 1px solid rgba(201, 162, 75, .25);
+  border-radius: 8px;
+  padding: 9px 12px;
+}
+
+.ix-ed-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.ix-ed-label { font-size: 14px; color: #b6ad99; white-space: nowrap; }
+.ix-ed-namerow .ix-ed-label { width: 64px; }
+.ix-ed-ctrl { display: flex; align-items: center; gap: 6px; }
+.ix-ed-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: #14141a;
+  border: 1px solid #3a3a45;
+  border-radius: 8px;
+  color: #efe9da;
+  font-size: 15px;
+  padding: 8px 11px;
+}
+.ix-ed-num {
+  width: 76px;
+  text-align: center;
+  background: #14141a;
+  border: 1px solid #3a3a45;
+  border-radius: 8px;
+  color: #efe9da;
+  font-size: 15px;
+  padding: 8px 6px;
+}
+.ix-ed-text:focus, .ix-ed-num:focus, #ix-ed-ench-q:focus {
+  outline: none;
+  border-color: #c9a24b;
+}
+.ix-ed-step {
+  width: 30px;
+  height: 34px;
+  background: #1d1d24;
+  border: 1px solid #3a3a45;
+  border-radius: 8px;
+  color: #d9d2bd;
+  font-size: 17px;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.ix-ed-step:hover { background: #26262f; border-color: #55503f; }
+.ix-ed-step:active { background: #17171d; }
+.ix-ed-was {
+  font-size: 12.5px;
+  color: #8b8474;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 130px;
+}
+.ix-ed-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 18px;
+}
+.ix-ed-grid .ix-ed-field { justify-content: space-between; flex-wrap: wrap; }
+/* "was N" is the only thing telling you what Revert restores, and it used to be
+   shaved to a bare 'v' (measured 2px of 33px) because it was the one flex item
+   in the row without a size of its own. It keeps its natural width now; if a
+   value is long enough to still not fit, the wrap above drops it onto its own
+   line under the control rather than crushing it again. */
+.ix-ed-grid .ix-ed-was {
+  flex: 0 0 auto;
+  margin-left: auto;
+  max-width: 100%;
+}
+@media (max-width: 760px) { .ix-ed-grid { grid-template-columns: 1fr; } }
+
+.ix-ed-ench {
+  border: 1px solid #2e2e38;
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ix-ed-ench-head {
+  font-size: 15px;
+  font-weight: 600;
+  color: #cbb8ff;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.ix-ed-ench-cur {
+  font-weight: 400;
+  color: #d9d2bd;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ix-ed-ench-pending { font-size: 13.5px; color: #c9a24b; }
+.ix-ed-ench-acts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ix-ed-charge { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.ix-ed-enchpick { display: flex; flex-direction: column; gap: 8px; }
+#ix-ed-ench-q {
+  background: #14141a;
+  border: 1px solid #3a3a45;
+  border-radius: 8px;
+  color: #efe9da;
+  font-size: 14.5px;
+  padding: 9px 12px;
+}
+.ix-ed-ench-rows {
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ix-ed-ench-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  min-width: 0;
+  transition: background .1s ease;
+}
+.ix-ed-ench-row:hover { background: #22222b; }
+.ix-ed-ench-top { background: #1e1e27; box-shadow: inset 2px 0 0 #c9a24b; }
+.ix-ed-ench-n {
+  font-size: 14.5px;
+  color: #e8e2d4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ix-ed-ench-eff {
+  font-size: 12.5px;
+  color: #8b8474;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.ix-ed-actions { display: flex; align-items: center; gap: 10px; }
+.ix-ed-actgap { flex: 1 1 auto; }
+.ix-ed-revertbtn { color: #e0b48a; border-color: #55503f; }

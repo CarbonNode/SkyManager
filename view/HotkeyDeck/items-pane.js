@@ -15,6 +15,13 @@
  *  mult,plugins}) · ixResultData({seq,total,offset,items}) · ixAddResult(
  *  {ok,msg,gold}) · ixSaved({ok,pay,mult})
  *
+ *  Modify (2026-08-17, the PROTEUS-class base-record editor — item_edit.cpp):
+ *  requests ieGet/ieApply/ieRevert/ieList/ieEnch · replies ieGetResult/
+ *  ieApplyResult/ieRevertResult/ieListResult/ieEnchResult. The ✎ button in a
+ *  row's detail block opens the edit sheet; edits change EVERY copy of the
+ *  item, persist in the DLL's item-edits.json sidecar across launches, and
+ *  revert live from stored originals.
+ *
  *  Host contract (mirrors KeysPane): ItemsPane.init() · onShow() · onHide() ·
  *  toggleEdit() (no edit chrome) · wantsPause() -> true
  * ====================================================================== */
@@ -75,6 +82,8 @@ window.ItemsPane = (function () {
     items: [],       // accumulated rows for the current query (paging appends)
     awaiting: false,
     askedOnce: false,
+    editedSet: {},   // item id -> edited-field count (from ieListResult) — drives the ✎ chips
+    edited: [],      // the same reply's rows [{id,n,p,fields}] — omni needs the NAMES
   };
 
   const ui = {
@@ -96,6 +105,19 @@ window.ItemsPane = (function () {
     iconPollT: null, // on-disk index poll while drawn rows still lack art
     iconPollN: 0,
     hintSeen: false, // the first-open "art renders in the background" hint
+    /* Rich detail (2026-08-15): the expanded row's info (damage/armor/enchants/
+       effects/keywords). `expanded` is the id of the row currently open (only one
+       at a time, keyboard-navigable); `detail` caches computed blocks by id so
+       re-expanding is instant and a page repaint never re-asks. `detailErr` holds
+       an honest "couldn't read" reason per id. */
+    expanded: '',
+    detail: {},
+    detailErr: {},
+    /* Modify sheet (2026-08-17): {id, it, data(null until ieGetResult),
+       pendingEnch(undefined|'none'|id), pendingEnchName, enchOpen, enchRows,
+       busy} while the edit sheet is up. */
+    editSheet: null,
+    enchT: null,     // debounce timer for the enchantment picker's search
   };
 
   /* ============================================================= bridge == */
@@ -110,6 +132,11 @@ window.ItemsPane = (function () {
       if (DEV && fn === 'ixQuery') setTimeout(function () { devQuery(arg); }, 30);
       if (DEV && fn === 'ixAdd') setTimeout(function () { devAdd(arg); }, 30);
       if (DEV && fn === 'ixSave') setTimeout(function () { devSave(arg); }, 30);
+      if (DEV && fn === 'ieGet') setTimeout(function () { devIeGet(arg); }, 30);
+      if (DEV && fn === 'ieApply') setTimeout(function () { devIeApply(arg); }, 30);
+      if (DEV && fn === 'ieRevert') setTimeout(function () { devIeRevert(arg); }, 30);
+      if (DEV && fn === 'ieList') setTimeout(devIeList, 30);
+      if (DEV && fn === 'ieEnch') setTimeout(function () { devIeEnch(arg); }, 30);
     }
   }
 
@@ -135,6 +162,20 @@ window.ItemsPane = (function () {
 
   window.ixResultData = function (d) {
     if (!d || typeof d !== 'object') return;
+    /* Detail reply (a row expansion) rides this SAME listener — keyed by the
+       `detail` field a page reply never carries — so no new C++ bridge was
+       needed. Cache it and patch only the open row's detail block in place, so
+       a landing detail never rebuilds the whole list. It is NOT gated on seq:
+       the detail seq is the page's seq at expand time, but a detail can arrive
+       after the next page query bumped state.seq (a fast typer), and dropping
+       it would leave the block spinning forever. */
+    if (typeof d.detail === 'string' && d.detail) {
+      const hasInfo = d.info && typeof d.info === 'object' && Object.keys(d.info).length > 0;
+      if (hasInfo) ix.detailCacheSet(d.detail, d.info, '');
+      else ix.detailCacheSet(d.detail, null, d.err || 'Could not read this item');
+      if (ui.visible && ui.expanded === d.detail) patchDetailInPlace(d.detail);
+      return;
+    }
     if ((d.seq | 0) !== state.seq) return;   // stale reply from an older keystroke
     state.awaiting = false;
     state.total = d.total | 0;
@@ -159,6 +200,66 @@ window.ItemsPane = (function () {
     if (typeof d.gold === 'number') state.gold = d.gold;
     toast(d.msg || (d.ok ? 'Done' : 'Failed'), !d.ok);
     if (ui.visible) renderHeader();
+  };
+
+  /* ---- Modify replies (ie* bridge) -------------------------------------- */
+
+  window.ieGetResult = function (d) {
+    if (!d || typeof d !== 'object') return;
+    if (!ui.editSheet || d.id !== ui.editSheet.id) return;
+    if (!d.ok) { closeEditSheet(); toast(d.msg || 'Could not read that item', true); return; }
+    ui.editSheet.data = d;
+    renderEditSheet();
+  };
+
+  /* Apply and revert answer with the same fresh-state shape — fold both into
+     one landing: sync the edited set, patch the row's stale name/value/weight,
+     drop the cached detail so the next expand re-reads truth. */
+  function editLanded(d) {
+    if (!d || typeof d !== 'object') return;
+    if (!d.ok) { toast(d.msg || 'Failed', true); if (ui.editSheet) ui.editSheet.busy = false; return; }
+    const edited = Array.isArray(d.edited) ? d.edited : [];
+    if (edited.length) state.editedSet[d.id] = edited.length;
+    else delete state.editedSet[d.id];
+    if (d.fields && typeof d.fields === 'object') {
+      for (let i = 0; i < state.items.length; i++) {
+        if (state.items[i].id !== d.id) continue;
+        if (typeof d.fields.name === 'string' && d.fields.name) state.items[i].n = d.fields.name;
+        if (typeof d.fields.value === 'number') state.items[i].v = d.fields.value;
+        if (typeof d.fields.weight === 'number') state.items[i].w = d.fields.weight;
+      }
+    }
+    delete ui.detail[d.id];
+    delete ui.detailErr[d.id];
+    closeEditSheet();
+    toast(d.msg || 'Done', false);
+    if (ui.visible) {
+      if (ui.expanded === d.id) requestDetail(d.id);
+      renderBodyPreservingScroll();
+    }
+  }
+
+  window.ieApplyResult = function (d) { editLanded(d); };
+  window.ieRevertResult = function (d) { editLanded(d); };
+
+  window.ieListResult = function (d) {
+    if (!d || typeof d !== 'object' || !Array.isArray(d.edits)) return;
+    state.editedSet = {};
+    /* The rows are kept whole as well: the id->count map drives the ✎ chips,
+       but omni has to NAME what a "revert" would undo, and only these rows
+       carry the item's name and its owning plugin. */
+    state.edited = d.edits.slice();
+    for (let i = 0; i < d.edits.length; i++) {
+      const e = d.edits[i];
+      if (e && e.id) state.editedSet[e.id] = (e.fields | 0) || 1;
+    }
+    if (ui.visible) renderBodyPreservingScroll();
+  };
+
+  window.ieEnchResult = function (d) {
+    if (!d || typeof d !== 'object' || !ui.editSheet || !ui.editSheet.enchOpen) return;
+    ui.editSheet.enchRows = Array.isArray(d.ench) ? d.ench : [];
+    renderEnchResults();
   };
 
   window.ixSaved = function (d) {
@@ -477,6 +578,304 @@ window.ItemsPane = (function () {
     setTimeout(function () { price.focus(); price.select(); }, 30);
   }
 
+  /* ========================================================= edit sheet == */
+
+  /* Modify (2026-08-17) — the PROTEUS-class base-record editor. Numeric field
+     spec per kind: [key, label, step, decimals]. name/value/weight are common;
+     ench/charge render as their own block when the reply carries them. */
+  const EDIT_NUM_FIELDS = {
+    weap: [
+      ['damage', 'Damage', 1, 0], ['crit', 'Crit damage', 1, 0],
+      ['speed', 'Speed', 0.05, 2], ['reach', 'Reach', 0.05, 2],
+      ['stagger', 'Stagger', 0.05, 2],
+    ],
+    armo: [['armor', 'Armor rating', 1, 1]],
+    ammo: [['damage', 'Damage', 1, 1]],
+    other: [],
+  };
+  const EDIT_COMMON = [['value', 'Value (gold)', 1, 0], ['weight', 'Weight', 0.1, 1]];
+
+  function openEditSheet(it) {
+    closeSheet();                       // one sheet at a time in #ix-sheet
+    ui.editSheet = { id: it.id, it: it, data: null, pendingEnch: undefined,
+      pendingEnchName: '', enchOpen: false, enchRows: [], busy: false };
+    renderEditSheet();                  // loading skeleton until ieGetResult
+    toGame('ieGet', JSON.stringify({ id: it.id }));
+  }
+
+  function closeEditSheet() {
+    if (!ui.editSheet) return;
+    ui.editSheet = null;
+    if (ui.enchT) { clearTimeout(ui.enchT); ui.enchT = null; }
+    const sh = $('ix-sheet');
+    if (sh) { sh.classList.add('hidden'); sh.innerHTML = ''; }
+    const s = $('ix-search');
+    if (s) s.focus();
+  }
+
+  /* Typed-but-unapplied values must survive a sheet re-render (opening the
+     enchantment picker, picking a hit) — snapshot the live inputs first and
+     let the render prefer the snapshot over the record's fields. */
+  function captureEditDraft() {
+    const es = ui.editSheet;
+    const sh = $('ix-sheet');
+    if (!es || !sh) return;
+    const draft = es.draft || (es.draft = {});
+    const nameEl = $('ix-ed-name');
+    if (nameEl) draft.name = nameEl.value;
+    sh.querySelectorAll('.ix-ed-field[data-step]').forEach(function (row) {
+      const input = row.querySelector('.ix-ed-num');
+      if (input) draft[row.getAttribute('data-key')] = input.value;
+    });
+    const chargeEl = $('ix-ed-charge');
+    if (chargeEl) draft.charge = chargeEl.value;
+  }
+
+  function editNumRow(key, label, step, dec, cur, origVal, draft) {
+    const edited = origVal !== undefined && origVal !== null;
+    let shown = dec > 0 ? (Math.round(Number(cur) * Math.pow(10, dec)) / Math.pow(10, dec)) : Math.round(Number(cur));
+    if (draft && draft[key] !== undefined) shown = draft[key];
+    return '<div class="ix-ed-field" data-key="' + esc(key) + '" data-step="' + step + '" data-dec="' + dec + '">' +
+      '<span class="ix-ed-label">' + esc(label) + '</span>' +
+      '<span class="ix-ed-ctrl">' +
+      '<button class="ix-ed-step" data-d="-1" title="Less">−</button>' +
+      '<input class="ix-ed-num" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" value="' + shown + '">' +
+      '<button class="ix-ed-step" data-d="1" title="More">+</button>' +
+      '</span>' +
+      /* the title carries the VALUE, not the explainer — when the marker is
+         narrow this tooltip is the only way back to the number Revert restores */
+      (edited ? '<span class="ix-ed-was" title="Was ' + esc(String(origVal)) +
+        ' before this Modify edit — Revert restores it">was ' +
+        esc(String(origVal)) + '</span>' : '<span class="ix-ed-was"></span>') +
+      '</div>';
+  }
+
+  function renderEditSheet() {
+    const sh = $('ix-sheet');
+    if (!sh || !ui.editSheet) return;
+    const es = ui.editSheet;
+    sh.classList.remove('hidden');
+
+    if (!es.data) {
+      sh.innerHTML = '<div class="ix-sheet-card ix-ed-card">' +
+        '<div class="ix-sheet-title">✎ Modify</div>' +
+        '<div class="ix-detail-load"><span class="ix-detail-spin"></span> Reading the record…</div></div>';
+      sh.onclick = function (e) { if (e.target === sh) closeEditSheet(); };
+      return;
+    }
+
+    const d = es.data;
+    const f = d.fields || {};
+    const orig = d.orig || {};
+    const kind = d.kind || 'other';
+    const meta = kindMeta(es.it ? es.it.t : 'misc');
+    const nums = (EDIT_NUM_FIELDS[kind] || []).concat(EDIT_COMMON)
+      .filter(function (r) { return f[r[0]] !== undefined; });
+
+    /* enchantment block — only when the form is enchantable */
+    let enchHtml = '';
+    if (f.ench !== undefined) {
+      const curNone = !d.ench;
+      const pendingTxt = es.pendingEnch === undefined ? '' :
+        (es.pendingEnch === 'none' ? 'will be removed on Apply' :
+          '→ ' + esc(es.pendingEnchName || es.pendingEnch) + ' on Apply');
+      enchHtml =
+        '<div class="ix-ed-ench">' +
+        '<div class="ix-ed-ench-head">✦ Enchantment' +
+        '<span class="ix-ed-ench-cur"' + (curNone ? '' : ' title="' + esc(d.ench.n) + '"') + '>' +
+        (curNone ? 'none' : esc(d.ench.n)) + '</span>' +
+        (orig.ench !== undefined ? '<span class="ix-ed-was">edited</span>' : '') +
+        '</div>' +
+        (pendingTxt ? '<div class="ix-ed-ench-pending">' + pendingTxt + '</div>' : '') +
+        '<div class="ix-ed-ench-acts">' +
+        '<button id="ix-ed-ench-change" class="ix-btn">' + (es.enchOpen ? 'Close list' : 'Change…') + '</button>' +
+        ((!curNone || es.pendingEnch) ? '<button id="ix-ed-ench-none" class="ix-btn">Remove</button>' : '') +
+        '<span class="ix-ed-charge"><span class="ix-ed-label">Charge</span>' +
+        '<input id="ix-ed-charge" class="ix-ed-num" type="text" inputmode="numeric" autocomplete="off" value="' +
+        esc(String(es.draft && es.draft.charge !== undefined ? es.draft.charge : (f.charge | 0))) + '"></span>' +
+        '</div>' +
+        (es.enchOpen ?
+          '<div class="ix-ed-enchpick">' +
+          '<input id="ix-ed-ench-q" type="text" placeholder="Search enchantments — Enter takes the top hit" ' +
+          'autocomplete="off" spellcheck="false">' +
+          '<div id="ix-ed-ench-rows" class="ix-ed-ench-rows"></div></div>' : '') +
+        '</div>';
+    }
+
+    const editedCount = Array.isArray(d.edited) ? d.edited.length : 0;
+    sh.innerHTML =
+      '<div class="ix-sheet-card ix-ed-card">' +
+      '<div class="ix-sheet-title">✎ Modify' +
+      (editedCount ? '<span class="ix-ed-count">' + editedCount + ' field' + (editedCount === 1 ? '' : 's') + ' edited</span>' : '') +
+      '</div>' +
+      '<div class="ix-sheet-item">' +
+      '<div class="ix-glyph ix-sheet-glyph ix-t-' + esc(es.it ? es.it.t : 'misc') + '">' + esc(meta[2]) + '</div>' +
+      '<div class="ix-sheet-item-txt"><b title="' + esc(d.n || '') + '">' + esc(d.n || '') + '</b>' +
+      '<span>' + esc(meta[1]) + ' · ' + esc(d.plugin || '') + '</span></div></div>' +
+      '<div class="ix-ed-warn">Changes the BASE record — every copy in the game, ' +
+      'yours and the world’s. Kept across launches; Revert restores the originals.</div>' +
+      '<div class="ix-ed-field ix-ed-namerow" data-key="name">' +
+      '<span class="ix-ed-label">Name</span>' +
+      '<input id="ix-ed-name" class="ix-ed-text" type="text" maxlength="200" autocomplete="off" spellcheck="false" value="' +
+      esc(String(es.draft && es.draft.name !== undefined ? es.draft.name : (f.name || ''))) + '">' +
+      (orig.name !== undefined ? '<span class="ix-ed-was" title="' + esc(String(orig.name)) + '">was ' +
+        esc(String(orig.name)) + '</span>' : '<span class="ix-ed-was"></span>') +
+      '</div>' +
+      '<div class="ix-ed-grid">' +
+      nums.map(function (r) { return editNumRow(r[0], r[1], r[2], r[3], f[r[0]], orig[r[0]], es.draft); }).join('') +
+      '</div>' +
+      enchHtml +
+      '<div class="ix-sheet-actions ix-ed-actions">' +
+      (editedCount ? '<button id="ix-ed-revert" class="ix-btn ix-ed-revertbtn" title="Restore every original value and forget the edits">↺ Revert all</button>' : '') +
+      '<span class="ix-ed-actgap"></span>' +
+      '<button id="ix-ed-cancel" class="ix-btn">Cancel</button>' +
+      '<button id="ix-ed-apply" class="ix-pay">' + (es.busy ? 'Applying…' : 'Apply') + '</button>' +
+      '</div></div>';
+
+    /* ---- wiring ---- */
+    sh.onclick = function (e) { if (e.target === sh) closeEditSheet(); };
+    sh.querySelectorAll('.ix-ed-step').forEach(function (b) {
+      b.addEventListener('click', function () {
+        const row = b.closest('.ix-ed-field');
+        const input = row.querySelector('.ix-ed-num');
+        const step = parseFloat(row.getAttribute('data-step')) || 1;
+        const dec = parseInt(row.getAttribute('data-dec'), 10) || 0;
+        const d2 = parseInt(b.getAttribute('data-d'), 10) || 0;
+        const cur = parseFloat(String(input.value).replace(/[^0-9.\-]/g, ''));
+        const next = (isNaN(cur) ? 0 : cur) + d2 * step;
+        input.value = String(Math.max(0, Math.round(next * Math.pow(10, dec)) / Math.pow(10, dec)));
+      });
+    });
+    sh.querySelectorAll('.ix-ed-num, .ix-ed-text').forEach(function (input) {
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.stopPropagation(); doEditApply(); }
+        if (e.key === 'Escape') { e.stopPropagation(); closeEditSheet(); }
+      });
+    });
+    const cancel = $('ix-ed-cancel');
+    if (cancel) cancel.addEventListener('click', closeEditSheet);
+    const apply = $('ix-ed-apply');
+    if (apply) apply.addEventListener('click', doEditApply);
+    const revert = $('ix-ed-revert');
+    if (revert) revert.addEventListener('click', function () {
+      if (es.busy) return;
+      es.busy = true;
+      toGame('ieRevert', JSON.stringify({ id: es.id }));
+    });
+    const chg = $('ix-ed-ench-change');
+    if (chg) chg.addEventListener('click', function () {
+      captureEditDraft();
+      es.enchOpen = !es.enchOpen;
+      renderEditSheet();
+      if (es.enchOpen) {
+        const q = $('ix-ed-ench-q');
+        if (q) { q.focus(); }
+        requestEnch('');
+      }
+    });
+    const none = $('ix-ed-ench-none');
+    if (none) none.addEventListener('click', function () {
+      captureEditDraft();
+      es.pendingEnch = 'none';
+      es.pendingEnchName = '';
+      es.enchOpen = false;
+      renderEditSheet();
+    });
+    const eq = $('ix-ed-ench-q');
+    if (eq) {
+      eq.addEventListener('input', function () {
+        if (ui.enchT) clearTimeout(ui.enchT);
+        ui.enchT = setTimeout(function () { requestEnch(eq.value); }, 200);
+      });
+      eq.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {           // Enter = top hit (the deck law)
+          e.stopPropagation();
+          if (es.enchRows.length) pickEnch(es.enchRows[0]);
+        }
+        if (e.key === 'Escape') { e.stopPropagation(); captureEditDraft(); es.enchOpen = false; renderEditSheet(); }
+      });
+      renderEnchResults();
+    }
+  }
+
+  function requestEnch(q) {
+    if (!ui.editSheet) return;
+    const kind = ui.editSheet.data ? ui.editSheet.data.kind : '';
+    toGame('ieEnch', JSON.stringify({ q: String(q || ''), kind: kind === 'weap' || kind === 'armo' ? kind : '' }));
+  }
+
+  function pickEnch(row) {
+    const es = ui.editSheet;
+    if (!es || !row) return;
+    captureEditDraft();
+    es.pendingEnch = row.id;
+    es.pendingEnchName = row.n;
+    es.enchOpen = false;
+    renderEditSheet();
+  }
+
+  function renderEnchResults() {
+    const es = ui.editSheet;
+    const box = $('ix-ed-ench-rows');
+    if (!es || !box) return;
+    if (!es.enchRows.length) {
+      box.innerHTML = '<div class="ix-eff-none">No named enchantment matches.</div>';
+      return;
+    }
+    box.innerHTML = es.enchRows.map(function (r, i) {
+      return '<div class="ix-ed-ench-row' + (i === 0 ? ' ix-ed-ench-top' : '') + '" data-i="' + i + '">' +
+        '<span class="ix-ed-ench-n" title="' + esc(r.n) + '">' + esc(r.n) + '</span>' +
+        (r.eff ? '<span class="ix-ed-ench-eff" title="' + esc(r.eff) + '">' + esc(r.eff) + '</span>' : '') +
+        '</div>';
+    }).join('');
+    box.querySelectorAll('.ix-ed-ench-row').forEach(function (el) {
+      el.addEventListener('click', function () {
+        pickEnch(es.enchRows[parseInt(el.getAttribute('data-i'), 10) | 0]);
+      });
+    });
+  }
+
+  /* Collect only the fields that DIFFER from what the record holds now, so the
+     C++ apply loop (and its original-capture) sees real changes only. */
+  function collectEditChanges() {
+    const es = ui.editSheet;
+    if (!es || !es.data) return null;
+    const f = es.data.fields || {};
+    const set = {};
+    const nameEl = $('ix-ed-name');
+    if (nameEl) {
+      const nm = String(nameEl.value || '').trim();
+      if (nm && nm !== String(f.name || '')) set.name = nm;
+    }
+    const sh = $('ix-sheet');
+    if (sh) sh.querySelectorAll('.ix-ed-field[data-step]').forEach(function (row) {
+      const key = row.getAttribute('data-key');
+      const input = row.querySelector('.ix-ed-num');
+      if (!key || !input || f[key] === undefined) return;
+      const n = parseFloat(String(input.value).replace(/[^0-9.\-]/g, ''));
+      if (isNaN(n) || n < 0) return;                    // garbage typed — skip the field
+      if (Math.abs(n - Number(f[key])) > 1e-4) set[key] = n;
+    });
+    const chargeEl = $('ix-ed-charge');
+    if (chargeEl && f.charge !== undefined) {
+      const c = parseInt(String(chargeEl.value).replace(/[^0-9]/g, ''), 10);
+      if (!isNaN(c) && c !== (f.charge | 0)) set.charge = c;
+    }
+    if (es.pendingEnch !== undefined) set.ench = es.pendingEnch;
+    return set;
+  }
+
+  function doEditApply() {
+    const es = ui.editSheet;
+    if (!es || !es.data || es.busy) return;
+    const set = collectEditChanges();
+    if (!set || !Object.keys(set).length) { closeEditSheet(); return; }   // nothing changed
+    captureEditDraft();
+    es.busy = true;
+    renderEditSheet();
+    toGame('ieApply', JSON.stringify({ id: es.id, set: set }));
+  }
+
   /* ============================================================= render == */
 
   function $(id) { return document.getElementById(id); }
@@ -733,8 +1132,187 @@ window.ItemsPane = (function () {
       title: it.n,
       sub: meta[1] + ' · ' + it.p + ' · 🜚 ' + fmtGold(Math.max(0, it.v | 0)) + ' g · ' + w + ' wt',
       frames: frames,
+      /* hold + drag bakes the turntable through the hdSpin bridge — opening
+         costs zero renders (hd-lightbox.js owns the whole flow) */
+      spin: (function () { const p = idParts(it.id); return p ? { kind: 'item', formId: p.formId, plugin: p.plugin } : null; })(),
     });
   }
+
+  /* ============================================================ detail == */
+
+  /* The rich per-item detail (Rober, 2026-08-15: "expand our finder section for
+     items and npcs — effects, enchants, damage, factions, npc stats, all sorts
+     of info"). Lazy: C++ computes the block only when a row is expanded, replies
+     through the shared ixResultData listener with a `detail` field. One row open
+     at a time; the block is cached so re-expanding is instant. */
+  const ix = {
+    detailCacheSet: function (id, info, err) {
+      if (info) { ui.detail[id] = info; delete ui.detailErr[id]; }
+      else { ui.detailErr[id] = err || 'Could not read this item'; }
+    },
+  };
+
+  /* Toggle the expanded row. Collapsing just clears; expanding asks C++ (unless
+     cached) and repaints the body so the block mounts under the row. */
+  function toggleDetail(id) {
+    if (ui.expanded === id) { ui.expanded = ''; renderBodyPreservingScroll(); return; }
+    ui.expanded = id;
+    if (!ui.detail[id] && !ui.detailErr[id]) requestDetail(id);
+    renderBodyPreservingScroll();
+    revealDetail();
+  }
+
+  /* renderBodyPreservingScroll restores scrollTop VERBATIM, so a block mounted
+     under a row near the fold lands entirely below it and the ⓘ reads as dead
+     (measured: at 2560x1440 row 5 showed 0 of 283px, at 1280x720 rows 1+ showed
+     0). Scroll down just enough to bring the block into view — and never past
+     the top of the row that owns it: a headerless slab of stats is worse than a
+     clipped one. Scrolls DOWN only, so a detail landing late (the C++ reply, or
+     a re-read after Apply) can't yank a list the player has scrolled away. */
+  function revealDetail() {
+    const body = $('ix-body');
+    if (!body) return;
+    const d = body.querySelector('.ix-detail');
+    if (!d) return;
+    const row = d.previousElementSibling;
+    const br = body.getBoundingClientRect();
+    const dr = d.getBoundingClientRect();
+    const rowTop = row ? row.getBoundingClientRect().top : dr.top;
+    const need = Math.max(0, dr.bottom - br.bottom);          // how far it falls short
+    const room = Math.max(0, rowTop - br.top);                // before the row leaves the top
+    const delta = Math.min(need, room);
+    if (delta > 1) body.scrollTop += delta;
+  }
+
+  function requestDetail(id) {
+    toGame('ixQuery', JSON.stringify({ detail: id, seq: state.seq }));
+  }
+
+  /* One effect line: "Fire Damage · 25 pts for 10s in 15ft" — magnitude, then
+     duration (0 = instant), then area (0 = self/touch). Harmful effects tint
+     red, beneficial gold. */
+  function effectRowHtml(e) {
+    if (!e || !e.n) return '';
+    const bits = [];
+    if (e.mag != null && Number(e.mag) > 0) bits.push('<b>' + fmtGold(Math.round(Number(e.mag))) + '</b> pts');
+    if (e.dur != null && Number(e.dur) > 0) bits.push('for ' + fmtGold(Number(e.dur)) + 's');
+    if (e.area != null && Number(e.area) > 0) bits.push('in ' + fmtGold(Number(e.area)) + 'ft');
+    const meta = bits.length ? bits.join(' ') : 'constant';
+    return '<div class="ix-eff' + (e.harm ? ' ix-eff-harm' : '') + '">' +
+      '<span class="ix-eff-dot"></span>' +
+      '<span class="ix-eff-name" title="' + esc(e.n) + '">' + esc(e.n) + '</span>' +
+      '<span class="ix-eff-mag">' + meta + '</span>' +
+      (e.school ? '<span class="ix-eff-school">' + esc(e.school) + '</span>' : '') +
+      '</div>';
+  }
+
+  function statHtml(label, value, cls) {
+    return '<div class="ix-stat"><span class="ix-stat-l">' + esc(label) + '</span>' +
+      '<span class="ix-stat-v' + (cls ? ' ' + cls : '') + '">' + esc(value) + '</span></div>';
+  }
+
+  /* Build the inner HTML of a detail block from a cached info object. Sections
+     appear only when the data has them, so a plain misc item shows just its
+     value/weight and (if any) keywords. */
+  function detailInnerHtml(id, info) {
+    if (ui.detailErr[id] && !info)
+      return '<div class="ix-detail-err">⚠ ' + esc(ui.detailErr[id]) + '</div>';
+    if (!info)
+      return '<div class="ix-detail-load"><span class="ix-detail-spin"></span> Reading…</div>';
+
+    let html = '';
+
+    /* headline stats grid — whatever numeric facts this kind has */
+    let stats = '';
+    if (info.dmg != null) stats += statHtml('Damage', fmtGold(info.dmg), 'ix-stat-dmg');
+    if (info.armor != null) stats += statHtml('Armor', String(Math.round(Number(info.armor) * 10) / 10), 'ix-stat-arm');
+    if (info.wtype) stats += statHtml('Type', info.wtype);
+    if (info.speed != null && Number(info.speed) > 0) stats += statHtml('Speed', String(Math.round(Number(info.speed) * 100) / 100));
+    if (info.reach != null && Number(info.reach) > 0) stats += statHtml('Reach', String(Math.round(Number(info.reach) * 100) / 100));
+    if (info.crit != null && Number(info.crit) > 0) stats += statHtml('Crit', fmtGold(info.crit));
+    if (info.v != null) stats += statHtml('Value', '🜚 ' + fmtGold(info.v));
+    if (info.w != null) stats += statHtml('Weight', (Math.round(Number(info.w) * 10) / 10) + ' wt');
+    if (info.poison) stats += statHtml('', 'Poison', 'ix-stat-harm');
+    if (stats) html += '<div class="ix-stats">' + stats + '</div>';
+
+    /* enchantment — its own titled block with effect lines */
+    if (info.ench) {
+      html += '<div class="ix-detail-sect"><div class="ix-detail-h">✦ Enchantment' +
+        (info.ench.name ? ' · <span class="ix-detail-hsub">' + esc(info.ench.name) + '</span>' : '') +
+        (info.ench.charge ? ' <span class="ix-detail-hsub">· ' + fmtGold(info.ench.charge) + ' charge</span>' : '') +
+        '</div>';
+      const effs = Array.isArray(info.ench.effects) ? info.ench.effects : [];
+      html += effs.length ? effs.map(effectRowHtml).join('') :
+        '<div class="ix-eff-none">No listed magic effects.</div>';
+      html += '</div>';
+    }
+
+    /* potion / scroll / ingredient effects */
+    if (Array.isArray(info.effects) && info.effects.length) {
+      html += '<div class="ix-detail-sect"><div class="ix-detail-h">🧪 Magic effects</div>' +
+        info.effects.map(effectRowHtml).join('') + '</div>';
+    }
+
+    /* keywords — quiet chips at the foot */
+    if (Array.isArray(info.keywords) && info.keywords.length) {
+      html += '<div class="ix-detail-sect"><div class="ix-detail-h">Keywords</div>' +
+        '<div class="ix-kw-wrap">' +
+        info.keywords.map(function (k) { return '<span class="ix-kw" title="' + esc(k) + '">' + esc(k) + '</span>'; }).join('') +
+        '</div></div>';
+    }
+
+    if (!html) html = '<div class="ix-eff-none">No extra detail for this item.</div>';
+
+    /* Modify foot — the door into the base-record editor. Present whenever the
+       detail is real (not the spinner / error branches above). */
+    const editedN = state.editedSet[id] | 0;
+    html += '<div class="ix-detail-acts">' +
+      '<button class="ix-btn ix-edit-open" data-edit="' + esc(id) +
+      '" title="Edit this record — damage, name, value, enchantment. Changes every copy; kept across launches.">✎ Modify</button>' +
+      (editedN ? '<button class="ix-btn ix-edit-revert" data-revert="' + esc(id) +
+        '" title="Restore the original values and forget the edits">↺ Revert</button>' +
+        '<span class="ix-edited-note">✎ ' + editedN + ' field' + (editedN === 1 ? '' : 's') + ' edited</span>' : '') +
+      '</div>';
+    return html;
+  }
+
+  /* Wire the Modify/Revert buttons inside detail blocks under `scope` — called
+     after renderBody AND after patchDetailInPlace, because both paths write
+     detail HTML with innerHTML and lose any prior listeners. */
+  function wireDetailActions(scope) {
+    if (!scope) return;
+    scope.querySelectorAll('.ix-edit-open').forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        const id = b.getAttribute('data-edit');
+        let it = null;
+        for (let i = 0; i < state.items.length; i++) if (state.items[i].id === id) { it = state.items[i]; break; }
+        openEditSheet(it || { id: id, t: 'misc', n: '', p: '', v: 0, w: 0 });
+      });
+    });
+    scope.querySelectorAll('.ix-edit-revert').forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        toGame('ieRevert', JSON.stringify({ id: b.getAttribute('data-revert') }));
+      });
+    });
+  }
+
+  /* Patch just the open row's detail block — called when a detail reply lands so
+     the "Reading…" spinner swaps to real content without a body rebuild. */
+  function patchDetailInPlace(id) {
+    const box = document.querySelector('#ix-body .ix-detail[data-for="' + cssEsc(id) + '"]');
+    if (!box) return;
+    box.innerHTML = detailInnerHtml(id, ui.detail[id]);
+    wireDetailActions(box);
+    /* the spinner block was ~40px; the real one is ~283px, so the reveal has to
+       run again once the content that needs the room is actually in it */
+    revealDetail();
+  }
+
+  /* CSS.escape isn't in Ultralight; ids are "Plugin.esp|HEX6" — the only risky
+     char for an attribute selector is the quote we wrap in, so escape that. */
+  function cssEsc(s) { return String(s == null ? '' : s).replace(/"/g, '\\"'); }
 
   function renderHeader() {
     const chip = $('ix-count-chip');
@@ -934,13 +1512,17 @@ window.ItemsPane = (function () {
     const hasArt = !!iconFor(it.id);
     const loading = !hasArt && rowLoading(it);
     const val = fmtGold(Math.max(0, it.v | 0));
-    return '<div class="ix-row' + (selIdx === idx ? ' ix-sel' : '') + '" data-id="' + esc(it.id) + '">' +
+    const open = ui.expanded === it.id;
+    return '<div class="ix-row' + (selIdx === idx ? ' ix-sel' : '') + (open ? ' ix-row-open' : '') +
+      '" data-id="' + esc(it.id) + '">' +
       '<div class="ix-glyph ix-t-' + esc(it.t) + (hasArt ? ' ix-has-art ix-zoomable' : '') +
       (loading ? ' ix-loading' : '') +
       '" title="' + esc(hasArt ? it.n + ' — click for a bigger look' : (loading ? 'rendering…' : meta[1])) + '">' +
       glyphInner(it.id, meta[2]) + '</div>' +
       '<div class="ix-mid">' +
-      '<div class="ix-name" title="' + esc(it.n) + '">' + highlight(it.n, ui.q) + '</div>' +
+      '<div class="ix-name" title="' + esc(it.n) + '">' + highlight(it.n, ui.q) +
+      (state.editedSet[it.id] ? '<span class="ix-edited-chip" title="Carries Modify edits — open ⓘ to see or revert them">✎</span>' : '') +
+      '</div>' +
       '<div class="ix-meta">' +
       '<span class="ix-meta-type">' + esc(meta[1]) + '</span>' +
       '<span class="ix-meta-plug" data-plug="' + esc(it.p) + '" title="Browse everything ' + esc(it.p) + ' ships">' + esc(it.p) + '</span>' +
@@ -950,11 +1532,28 @@ window.ItemsPane = (function () {
       '</span>' +
       '</div></div>' +
       '<div class="ix-act">' +
+      '<button class="ix-info' + (open ? ' ix-info-on' : '') + '" data-info="' + esc(it.id) +
+      '" title="Show damage / armor / enchantments / effects / keywords" aria-expanded="' +
+      (open ? 'true' : 'false') + '">ⓘ</button>' +
       '<span class="ix-qty"><button data-d="-1" title="Fewer">−</button><b>' + qty + '</b>' +
       '<button data-d="1" title="More">+</button></span>' +
       '<button class="ix-take" title="' +
       (state.pay ? 'Asks the price, then pays real gold' : 'Add to your inventory') + '">' + btn + '</button>' +
-      '</div></div>';
+      '</div></div>' +
+      (open ? '<div class="ix-detail" data-for="' + esc(it.id) + '">' +
+        detailInnerHtml(it.id, ui.detail[it.id]) + '</div>' : '');
+  }
+
+  /* Show/hide the hero-or-empty state. #ix-body and #ix-empty are BOTH flex:1,
+     so an emptied body kept claiming half the pane and the state that owns the
+     screen rendered in the bottom half under a dead band (measured: 333px of
+     void, hero centre 148px below the content centre at 2560x1440). The body
+     yields its share whenever it has nothing to show. */
+  function showEmptyState(on) {
+    const body = $('ix-body');
+    const empty = $('ix-empty');
+    if (empty) empty.classList.toggle('hidden', !on);
+    if (body) body.classList.toggle('ix-body-yield', !!on);
   }
 
   function renderBody() {
@@ -969,7 +1568,7 @@ window.ItemsPane = (function () {
         '<div class="ix-mid"><span class="ix-skel-box ix-skel-w1"></span>' +
         '<span class="ix-skel-box ix-skel-w2"></span></div>' +
         '<span class="ix-skel-box ix-skel-btn"></span></div>').join('');
-      empty.classList.add('hidden');
+      showEmptyState(false);
       return;
     }
 
@@ -978,7 +1577,7 @@ window.ItemsPane = (function () {
     /* hero — nothing asked yet */
     if (!rows.length && !ui.q && !ui.plugin && ui.type === 'all') {
       body.innerHTML = '';
-      empty.classList.remove('hidden');
+      showEmptyState(true);
       empty.innerHTML =
         '<div class="ix-hero-glyph">⚒</div>' +
         '<div class="ix-empty-title">Every item the load order ships</div>' +
@@ -1003,7 +1602,7 @@ window.ItemsPane = (function () {
     /* honest empties */
     if (!rows.length) {
       body.innerHTML = '';
-      empty.classList.remove('hidden');
+      showEmptyState(true);
       if (state.awaiting) {
         empty.innerHTML = '<div class="ix-empty-title">Searching…</div>';
       } else if (ui.plugFilter && state.items.length > 0) {
@@ -1031,7 +1630,7 @@ window.ItemsPane = (function () {
       }
       return;
     }
-    empty.classList.add('hidden');
+    showEmptyState(false);
 
     let html = '';
     let idx = 0;
@@ -1083,6 +1682,11 @@ window.ItemsPane = (function () {
         const it = item();
         if (it) activate({ kind: 'item', it: it });
       });
+      const infoBtn = row.querySelector('.ix-info');
+      if (infoBtn) infoBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        toggleDetail(infoBtn.getAttribute('data-info'));
+      });
       const zoom = row.querySelector('.ix-glyph.ix-zoomable');
       if (zoom) zoom.addEventListener('click', function (e) {
         e.stopPropagation();
@@ -1107,6 +1711,10 @@ window.ItemsPane = (function () {
         if (it) activate({ kind: 'item', it: it });
       });
     });
+
+    /* the expanded row's detail block was rewritten with the body — re-wire
+       its Modify/Revert buttons (innerHTML ate the old listeners) */
+    wireDetailActions(body);
 
     /* ask C++ for the meshes of the rows we just drew — via the settle gate,
        so a mid-typing render never floods the render queue */
@@ -1213,6 +1821,14 @@ window.ItemsPane = (function () {
   function toast(msg, err) {
     const t = $('ix-toast');
     if (!t) return;
+    /* Lift clear of the pagination bar. #ix-foot is the pane's last in-flow row,
+       so a toast pinned at the pane's foot sits squarely on Next › and the
+       page-size buttons for the 2.6s it shows (measured: 543x40 of overlap,
+       covering the whole 84x40 Next ›). The bar WRAPS on a narrow panel, so its
+       height is measured every time, never assumed. */
+    const foot = $('ix-foot');
+    const lift = (foot && foot.classList.contains('ix-foot-on')) ? foot.offsetHeight + 10 : 0;
+    t.style.bottom = (18 + lift) + 'px';
     t.textContent = msg;
     t.classList.toggle('ix-toast-err', !!err);
     t.classList.add('ix-toast-show');
@@ -1225,6 +1841,7 @@ window.ItemsPane = (function () {
   function onShow() {
     ui.visible = true;
     toGame('ixState');   // first call builds the C++ index; later calls refresh gold
+    toGame('ieList');    // which items carry Modify edits — drives the ✎ chips
     state.askedOnce = true;
     const s = $('ix-search');
     if (s) { s.value = ui.q; setTimeout(function () { s.focus(); }, 30); }
@@ -1235,6 +1852,7 @@ window.ItemsPane = (function () {
   function onHide() {
     ui.visible = false;
     closeSheet();
+    closeEditSheet();
     if (window.HDLightbox) HDLightbox.close();
     if (ui.debT) { clearTimeout(ui.debT); ui.debT = null; }
     if (ui.iconT) { clearTimeout(ui.iconT); ui.iconT = null; }
@@ -1368,9 +1986,29 @@ window.ItemsPane = (function () {
     });
   }
 
+  const DEV_DETAIL = {
+    'Skyrim.esm|00013989': { v: 720, w: 15, dmg: 13, speed: 1, reach: 1, crit: 6, wtype: 'One-Handed Sword',
+      ench: { name: 'Fiery Soul Trap', charge: 500, effects: [
+        { n: 'Fire Damage', mag: 10, dur: 0, area: 0, harm: true, school: 'Destruction' },
+        { n: 'Soul Trap', mag: 0, dur: 3, area: 0, harm: true, school: 'Conjuration' } ] },
+      keywords: ['WeapTypeSword', 'WeapMaterialEbony'] },
+    'CoolSwords.esl|000801': { v: 2500, w: 9, dmg: 22, speed: 0.9, reach: 1.1, crit: 15, wtype: 'Two-Handed Sword',
+      keywords: ['WeapTypeGreatsword'] },
+    'Skyrim.esm|00064B71': { v: 5, w: 0.2, food: true, effects: [
+      { n: 'Restore Health', mag: 5, dur: 0, area: 0, harm: false } ] },
+    'Skyrim.esm|0002E4E2': { v: 500, w: 0.5, keywords: ['VendorItemSoulGem'] },
+  };
+
   function devQuery(arg) {
     let req = {};
     try { req = JSON.parse(arg); } catch (e) {}
+    if (req.detail) {
+      const info = DEV_DETAIL[req.detail];
+      window.ixResultData(info
+        ? { seq: req.seq | 0, detail: req.detail, info: info }
+        : { seq: req.seq | 0, detail: req.detail, info: {}, err: 'No dev detail fixture' });
+      return;
+    }
     const q = String(req.q || '').toLowerCase();
     const toks = q.split(/\s+/).filter(Boolean);
     let rows = DEV_ITEMS.filter(function (it) {
@@ -1403,6 +2041,85 @@ window.ItemsPane = (function () {
     if ('pay' in req) state.pay = !!req.pay;
     if ('mult' in req) state.mult = Number(req.mult) || 1;
     window.ixSaved({ ok: true, pay: state.pay, mult: state.mult });
+  }
+
+  /* ---- Modify dev fixtures — mirror item_edit.cpp's store semantics so the
+     harness can walk the full open → apply → revert loop offline. ---------- */
+  const DEV_EDIT_FIELDS = {
+    'Skyrim.esm|00013989': { name: 'Ebony Sword', value: 720, weight: 15, damage: 13, crit: 6,
+      speed: 1, reach: 1, stagger: 0.75, ench: 'none', charge: 0 },
+  };
+  const DEV_EDIT_STORE = {};   // id -> {set:{}, orig:{}}
+  const DEV_ENCH = [
+    { id: 'Skyrim.esm|0490FE', n: 'Fiery Soul Trap', eff: 'Fire Damage 10 pts' },
+    { id: 'Skyrim.esm|048C6D', n: 'Frost Damage', eff: 'Frost Damage 15 pts' },
+    { id: 'Skyrim.esm|0AD486', n: 'Absorb Health', eff: 'Absorb Health 10 pts' },
+  ];
+  let DEV_LAST_APPLY = null;   // the harness asserts the exact wire payload
+
+  function devEditState(id) {
+    const f = DEV_EDIT_FIELDS[id];
+    const st = DEV_EDIT_STORE[id];
+    const edited = st ? Object.keys(st.set) : [];
+    return { ok: true, id: id, kind: 'weap', n: f.name, plugin: 'Skyrim.esm',
+      fields: JSON.parse(JSON.stringify(f)),
+      ench: f.ench !== 'none' ? { id: f.ench, n: 'Some Enchantment' } : undefined,
+      orig: st ? st.orig : undefined, edited: edited, count: Object.keys(DEV_EDIT_STORE).length };
+  }
+
+  function devIeGet(arg) {
+    let req = {};
+    try { req = JSON.parse(arg); } catch (e) {}
+    const f = DEV_EDIT_FIELDS[req.id];
+    window.ieGetResult(f ? devEditState(req.id) : { ok: false, id: req.id, msg: 'No dev fixture' });
+  }
+
+  function devIeApply(arg) {
+    let req = {};
+    try { req = JSON.parse(arg); } catch (e) {}
+    DEV_LAST_APPLY = req;
+    const f = DEV_EDIT_FIELDS[req.id];
+    if (!f) { window.ieApplyResult({ ok: false, id: req.id, msg: 'No dev fixture' }); return; }
+    const st = DEV_EDIT_STORE[req.id] || (DEV_EDIT_STORE[req.id] = { set: {}, orig: {} });
+    Object.keys(req.set || {}).forEach(function (k) {
+      if (!(k in f)) return;
+      if (!(k in st.orig)) st.orig[k] = f[k];
+      f[k] = req.set[k];
+      if (st.orig[k] === req.set[k]) { delete st.set[k]; delete st.orig[k]; }
+      else st.set[k] = req.set[k];
+    });
+    if (!Object.keys(st.set).length) delete DEV_EDIT_STORE[req.id];
+    const out = devEditState(req.id);
+    out.msg = 'Changed - every copy of it, saved across launches';
+    window.ieApplyResult(out);
+  }
+
+  function devIeRevert(arg) {
+    let req = {};
+    try { req = JSON.parse(arg); } catch (e) {}
+    const f = DEV_EDIT_FIELDS[req.id];
+    const st = DEV_EDIT_STORE[req.id];
+    if (f && st) Object.keys(st.orig).forEach(function (k) { f[k] = st.orig[k]; });
+    delete DEV_EDIT_STORE[req.id];
+    const out = f ? devEditState(req.id) : { ok: true, id: req.id, edited: [] };
+    out.msg = 'Restored to its original values';
+    window.ieRevertResult(out);
+  }
+
+  function devIeList() {
+    window.ieListResult({ edits: Object.keys(DEV_EDIT_STORE).map(function (id) {
+      return { id: id, n: DEV_EDIT_FIELDS[id] ? DEV_EDIT_FIELDS[id].name : '?',
+        p: id.split('|')[0], fields: Object.keys(DEV_EDIT_STORE[id].set).length };
+    }), count: Object.keys(DEV_EDIT_STORE).length });
+  }
+
+  function devIeEnch(arg) {
+    let req = {};
+    try { req = JSON.parse(arg); } catch (e) {}
+    const q = String(req.q || '').toLowerCase();
+    window.ieEnchResult({ ench: DEV_ENCH.filter(function (r) {
+      return !q || r.n.toLowerCase().indexOf(q) !== -1;
+    }) });
   }
 
   /* ========================================================== selftest == */
@@ -1513,17 +2230,169 @@ window.ItemsPane = (function () {
     console.log(out.join('\n'));
   }
 
-  /* ---- Omni search provider (universal search) ------------------------- */
+  /* ---- Omni search provider (universal search) -------------------------
+     Until 2026-08-19 this indexed exactly one row — the tab itself — so the
+     deck-wide search could not reach a single one of the 400,000-odd items
+     the C++ side indexes, nor Modify, nor Merchant mode, nor any type pill.
+     Three things fix that: the doors below (index(), live state, cheap), the
+     edited-record rows (so "revert" names what it would undo), and lazy(),
+     which asks the same C++ index the bar asks. */
+
+  /* A row that has to act INSIDE the pane opens the tab first: setTab runs the
+     pane's onShow (its DOM, its data), and re-selecting the tab you are already
+     on is a no-op, so this is safe from either place. */
+  function omniLand() {
+    if (typeof window.__omniSetTab === 'function') window.__omniSetTab('items');
+  }
+
+  /* Open the tab on one type pill, the way clicking that pill does. */
+  function omniOpenKind(t) {
+    omniLand();
+    ui.type = t;
+    ui.plugin = '';
+    ui.plugFilter = '';
+    ui.q = '';
+    const s = $('ix-search');
+    if (s) s.value = '';
+    runQuery(true);
+  }
+
+  /* ---- lazy item rows ---------------------------------------------------
+     These ride ixPick / ixPickData — the PICKER's door, never the pane's own
+     ixQuery / ixResultData, because a second consumer of that reply would
+     fight the tab's own list for state.items (one listener per reply name is
+     the bridge law). HDItemPick loads before this file and already owns
+     ixPickData, so its handler is CHAINED rather than replaced, and our
+     requests carry sequence numbers from a range the picker never mints —
+     so neither side can swallow the other's answer. */
+  const OMNI_SEQ_BASE = 500000;
+  const OMNI_LIMIT = 12;          // omni is a shortlist; the tab is where you browse
+  let omniSeq = OMNI_SEQ_BASE;
+  let omniT = null;
+  const omniPrevPick = window.ixPickData;
+
+  function omniAsk(q) {
+    omniSeq++;
+    toGame('ixPick', JSON.stringify({ q: q, type: 'all', plugin: '',
+      limit: OMNI_LIMIT, offset: 0, seq: omniSeq }));
+  }
+
+  function omniItemRow(it) {
+    const meta = kindMeta(it.t);
+    const w = Math.round((Number(it.w) || 0) * 10) / 10;
+    return {
+      label: it.n || '(unnamed item)',
+      detail: meta[1] + ' · ' + (it.p || '?') + ' · 🜚 ' + fmtGold(Math.max(0, it.v | 0)) + ' · ' + w + ' wt',
+      kind: 'item',
+      keywords: (it.p || '') + ' ' + meta[1] + ' additem add spawn give take buy',
+      /* Merchant mode never charges silently — it opens the tab and the price
+         sheet, exactly as pressing Enter on the row inside the pane does. A
+         free take needs no tab at all: the DLL's own "+ Ebony Sword"
+         notification is the receipt. */
+      run: function () {
+        if (state.pay) { omniLand(); openSheet(it, 1); }
+        else takeItem(it, 1, false, 0);
+      },
+    };
+  }
+
+  window.ixPickData = function (d) {
+    if (typeof omniPrevPick === 'function') { try { omniPrevPick(d); } catch (e) {} }
+    let j = null;
+    try { j = (typeof d === 'string') ? JSON.parse(d) : (d || {}); } catch (e) { return; }
+    if (!j || (j.seq | 0) !== omniSeq) return;   // the picker's own reply, or one typed past
+    if (!window.HDOmni) return;
+    const rows = Array.isArray(j.items) ? j.items : [];
+    HDOmni.lazyResults('items', rows.map(omniItemRow));
+  };
+
   if (window.HDOmni) HDOmni.register({
     id: 'items', label: 'Items', tab: 'items',
     setFilter: setFilter,
+    /* Which records carry Modify edits is only known after the tab has been
+       opened once — asking here costs one bridge call per omni open and makes
+       "revert" answerable from a cold session. */
+    warm: function () { toGame('ieList'); },
+    lazy: function (q) {
+      /* Debounced exactly like the pane's own bar: C++ answers a query by
+         walking the whole index on the main thread, so one request per
+         keystroke would queue work the player has already typed past. */
+      if (omniT) clearTimeout(omniT);
+      omniT = setTimeout(function () { omniT = null; omniAsk(q); }, DEBOUNCE_MS);
+    },
     index: function () {
-      return [{
+      const rows = [{
         label: 'Item Explorer',
         detail: 'Find any item any mod ships — take it, or pay gold for it',
         kind: 'items',
         keywords: 'item explorer additem add item spawn give cheat search buy merchant mod esp esl esm',
       }];
+
+      rows.push({
+        label: 'Merchant mode',
+        detail: state.pay
+          ? 'ON — taking an item asks a price and pays real gold. Run to go back to free take.'
+          : 'OFF — items are free. Run to make them cost gold (it asks the price each time).',
+        kind: 'items',
+        keywords: 'merchant mode buy pay gold price cost multiplier free take cheat shop',
+        /* The same optimistic flip the header toggle does — ixSaved confirms it
+           and the tab comes along so the toggle visibly agrees. */
+        run: function () {
+          omniLand();
+          state.pay = !state.pay;
+          renderHeader(); renderBody();
+          toGame('ixSave', JSON.stringify({ pay: state.pay }));
+        },
+      });
+
+      rows.push({
+        label: 'Modify an item',
+        detail: 'Edit any item\'s record — damage, armor, value, weight, name, enchantment. ' +
+          'Search the item, open its ⓘ, then ✎ Modify.',
+        kind: 'items',
+        keywords: 'modify edit change item record damage armor rating value weight rename ' +
+          'enchantment stronger weaker buff nerf rebalance proteus',
+        /* There is no standalone editor to land on — the sheet belongs to one
+           item — so this opens the tab and says where the button is, rather
+           than dropping the player somewhere that looks unchanged. */
+        run: function () { omniLand(); toast('Search an item, open its ⓘ, then ✎ Modify'); },
+      });
+
+      /* One row per record that carries edits, so "revert" is answerable by the
+         item's own name. Running it is the same one-click revert the ✎ Revert
+         button in the row's detail block does. */
+      for (let i = 0; i < state.edited.length; i++) {
+        (function (e) {
+          if (!e || !e.id) return;
+          const n = (e.fields | 0) || 1;
+          rows.push({
+            label: 'Revert edits: ' + (e.n || e.id),
+            detail: n + ' field' + (n === 1 ? '' : 's') + ' edited · ' + (e.p || '?') +
+              ' — restores the original values and forgets the edits',
+            kind: 'items',
+            keywords: 'revert undo restore original modify edit ' + (e.p || ''),
+            run: function () { toGame('ieRevert', JSON.stringify({ id: e.id })); },
+          });
+        })(state.edited[i]);
+      }
+
+      /* The type pills as doors, the shape hd-potions and hd-quiver both ship.
+         'all' is the Item Explorer row above; every other pill, Mods included,
+         is a real place to land. */
+      KINDS.forEach(function (k) {
+        if (k[0] === 'all') return;
+        rows.push({
+          label: 'Items: ' + k[1],
+          detail: k[0] === 'mods'
+            ? 'Browse the load order by mod — pick one and see its whole catalogue'
+            : 'Open the Finder on every ' + k[1].toLowerCase() + ' the load order ships',
+          kind: 'items',
+          keywords: k[1].toLowerCase() + ' browse list all',
+          run: function () { omniOpenKind(k[0]); },
+        });
+      });
+
+      return rows;
     },
   });
 
@@ -1539,6 +2408,11 @@ window.ItemsPane = (function () {
     _pageCount: pageCount, _gotoPage: gotoPage, _changePageSize: changePageSize,
     _clampPageSize: clampPageSize, _footVisible: footVisible,
     _pluginFuzzy: pluginFuzzy, _plugFilterVisible: plugFilterVisible,
+    _toggleDetail: toggleDetail, _detailInnerHtml: detailInnerHtml,
+    _openEditSheet: openEditSheet, _closeEditSheet: closeEditSheet,
+    _collectEditChanges: collectEditChanges, _doEditApply: doEditApply,
+    /* the omni lazy ask, without its debounce — a harness cannot wait */
+    _omniAsk: omniAsk,
   };
 })();
 

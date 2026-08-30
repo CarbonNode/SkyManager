@@ -12,6 +12,15 @@
 //    a dynamic or leveled form means no face file exists — honest "" and the
 //    view keeps its glyph (Rober signed off on that: "obviously for templates
 //    this wouldnt work well").
+//    That split is also why a row's tile can be named after a DIFFERENT form
+//    id than the row itself — Argos is DividedByNine2.esp|000AF4 and renders as
+//    dividedbynine2-esp-0000089c.png. Not a bug: `id` is the row's own local id
+//    (%06X) and the render is named for the FACE OWNER's (%08X). Both halves of
+//    every action use `id`, so the pane and the engine can never disagree about
+//    WHO is being acted on.
+//  - Spawning a copy of a sculpted NPC cannot work (CopyLookOf below) — the
+//    baked facegen belongs to the original record. The Finder refuses first and
+//    offers Bring instead, rather than handing over a faceless ghost.
 //  - goto/bring find a LIVE reference by scanning ProcessLists' four handle
 //    arrays (the Room Guard / Loot Highlighter precedent for ref walking) —
 //    high first so a loaded-and-visible copy beats a far-away simulated one,
@@ -138,7 +147,7 @@ namespace NpcFinder
 			{
 				std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
 				if (!out.is_open()) {
-					logger::warn("npc-finder: could not write {}", tmp.string());
+					logger::warn("npc-finder: could not write {}", PathU8(tmp));
 					return;
 				}
 				out << Dump(json{ { "pageSize", g_pageSize } });
@@ -216,17 +225,54 @@ namespace NpcFinder
 			auto* race = npc->race;
 			if (!race)
 				return look;
+			/* The body silhouette is the CREATURE route, and only that. A race
+			 * flagged FaceGen-Head pictures its people with a baked facegen
+			 * head; when that head was never exported the honest answer is the
+			 * initials medallion, NOT a body — because the body of a humanoid
+			 * is the RACE's naked skin, keyed by the race, so every
+			 * facegen-less Nord in the load order would share one picture of a
+			 * headless nude body. Falling humanoids into this branch was the
+			 * deliberate "at least a silhouette instead of a bare glyph" choice
+			 * that produced Caraleth's pair-of-feet portrait (Rober,
+			 * 2026-08-30); a shared, wrong face is worse than no face. */
+			if (race->data.flags.any(RE::RACE_DATA::Flag::kFaceGenHead))
+				return look;
 			const int sex =
 				npc->actorData.actorBaseFlags.any(RE::ACTOR_BASE_DATA::Flag::kFemale) ? 1 : 0;
+			// The model on ONE addon, this NPC's sex first (many creatures fill
+			// only one sex slot, so the other is the honest fallback).
+			const auto modelOf = [&](RE::TESObjectARMA* arma) -> std::string {
+				if (!arma)
+					return {};
+				if (const char* mdl = arma->bipedModels[sex].GetModel(); mdl && *mdl)
+					return mdl;
+				if (const char* mdl = arma->bipedModels[sex ? 0 : 1].GetModel(); mdl && *mdl)
+					return mdl;
+				return {};
+			};
+			/* A skin ARMO with SEPARATE parts — every humanoid SkinNaked, and
+			 * plenty of creature skins — answers GetArmorAddon() with whichever
+			 * addon happens to come FIRST in its list, not with the body. On
+			 * this load order that first part is the FEET, which is how a
+			 * follower's portrait medallion came back as a pair of bare feet
+			 * (Rober, 2026-08-30). Ask for the BODY slot by mask first; only
+			 * fall back to "any addon" for a single-part creature skin whose
+			 * one mesh IS the whole body and may carry no kBody slot flag. */
 			const auto fromArmor = [&](RE::TESObjectARMO* armo) -> std::string {
 				if (!armo)
 					return {};
-				if (auto* arma = armo->GetArmorAddon(race)) {
-					if (const char* mdl = arma->bipedModels[sex].GetModel(); mdl && *mdl)
-						return mdl;
-					if (const char* mdl = arma->bipedModels[sex ? 0 : 1].GetModel(); mdl && *mdl)
-						return mdl;   // many creatures fill only one sex slot
-				}
+				if (auto s = modelOf(armo->GetArmorAddonByMask(
+						race, RE::BIPED_MODEL::BipedObjectSlot::kBody));
+					!s.empty())
+					return s;
+				if (auto s = modelOf(armo->GetArmorAddon(race)); !s.empty())
+					return s;
+				// Same preference again over the raw list, for a skin whose
+				// addons do not name this race at all.
+				for (auto* ad : armo->armorAddons)
+					if (ad && ad->HasPartOf(RE::BIPED_MODEL::BipedObjectSlot::kBody))
+						if (auto s = modelOf(ad); !s.empty())
+							return s;
 				for (auto* ad : armo->armorAddons) {
 					if (!ad)
 						continue;
@@ -499,6 +545,178 @@ namespace NpcFinder
 			cache.emplace(fc, ok);
 			return ok;
 		}
+
+		// ------------------------------------------------------------- detail --
+		// Computed ONLY when a row is expanded (one NPC at a time) — never during
+		// the index walk. Every read is null-guarded; a third-party plugin can
+		// hand us an NPC with a malformed faction array or a null class, and a
+		// detail block that is missing a section beats one that crashes.
+
+		std::string FullNameOf(RE::TESForm* f)
+		{
+			if (!f)
+				return {};
+			if (auto* fn = f->As<RE::TESFullName>()) {
+				const char* nm = fn->GetFullName();
+				if (nm && *nm)
+					return nm;
+			}
+			const char* nm = f->GetName();
+			return (nm && *nm) ? std::string(nm) : std::string();
+		}
+
+		// The 18 base skills, labelled by the Skills::k* index order. `values[]`
+		// is the NPC's base skill (before level scaling). Returned sorted highest
+		// first, capped to the top few so a row's detail is a highlight not a dump.
+		const char* kSkillNames[RE::TESNPC::Skills::kTotal] = {
+			"One-Handed", "Two-Handed", "Archery", "Block", "Smithing",
+			"Heavy Armor", "Light Armor", "Pickpocket", "Lockpicking", "Sneak",
+			"Alchemy", "Speech", "Alteration", "Conjuration", "Destruction",
+			"Illusion", "Restoration", "Enchanting"
+		};
+
+		json TopSkills(const RE::TESNPC::Skills& sk, int topN)
+		{
+			struct Sk { const char* name; int val; };
+			std::vector<Sk> v;
+			v.reserve(RE::TESNPC::Skills::kTotal);
+			for (int i = 0; i < RE::TESNPC::Skills::kTotal; ++i)
+				v.push_back({ kSkillNames[i], static_cast<int>(sk.values[i]) });
+			std::sort(v.begin(), v.end(), [](const Sk& a, const Sk& b) { return a.val > b.val; });
+			json out = json::array();
+			for (int i = 0; i < topN && i < static_cast<int>(v.size()); ++i)
+				out.push_back(json{ { "n", v[i].name }, { "v", v[i].val } });
+			return out;
+		}
+
+		// factions -> [{name, rank}] for factions that carry a real name, capped.
+		json FactionList(RE::TESNPC* npc)
+		{
+			json out = json::array();
+			if (!npc)
+				return out;
+			for (const auto& fr : npc->factions) {
+				if (out.size() >= 24)
+					break;
+				if (!fr.faction)
+					continue;
+				std::string nm = FullNameOf(fr.faction);
+				if (nm.empty()) {
+					const char* eid = fr.faction->GetFormEditorID();
+					if (eid && *eid)
+						nm = eid;
+				}
+				if (nm.empty())
+					continue;
+				out.push_back(json{ { "n", nm }, { "rank", static_cast<int>(fr.rank) } });
+			}
+			return out;
+		}
+
+		json DetailForNpc(RE::TESNPC* npc)
+		{
+			json info;
+			info["lvl"] = npc->GetLevel();
+			info["pcMult"] = npc->actorData.actorBaseFlags.any(
+				RE::ACTOR_BASE_DATA::Flag::kPCLevelMult);   // level scales with the player
+			if (auto* race = npc->GetRace())
+				info["race"] = FullNameOf(race);
+			if (npc->npcClass)
+				info["cls"] = FullNameOf(npc->npcClass);
+			info["sex"] = npc->IsFemale() ? "Female" : "Male";
+			info["ess"] = npc->IsEssential();
+			info["prot"] = npc->IsProtected();
+			info["uniq"] = npc->IsUnique();
+			info["summon"] = npc->IsSummonable();
+			// Base attributes (auto-calc NPCs store 0 here — the engine derives
+			// them at spawn — so a 0/0/0 triple is reported honestly by the view).
+			info["hp"] = npc->playerSkills.health;
+			info["mp"] = npc->playerSkills.magicka;
+			info["sp"] = npc->playerSkills.stamina;
+			info["autoCalc"] = npc->actorData.actorBaseFlags.any(
+				RE::ACTOR_BASE_DATA::Flag::kAutoCalcStats);
+			info["skills"] = TopSkills(npc->playerSkills, 6);
+			if (npc->combatStyle) {
+				std::string cs = FullNameOf(npc->combatStyle);
+				if (cs.empty()) {
+					const char* eid = npc->combatStyle->GetFormEditorID();
+					if (eid && *eid)
+						cs = eid;
+				}
+				if (!cs.empty())
+					info["combat"] = cs;
+			}
+			if (npc->voiceType) {
+				const char* veid = npc->voiceType->GetFormEditorID();
+				if (veid && *veid)
+					info["voice"] = veid;
+			}
+			json fac = FactionList(npc);
+			if (!fac.empty())
+				info["factions"] = std::move(fac);
+			return info;
+		}
+
+		/* ------------------------------------------------- faceless copies --
+		 * Rober, 2026-08-18: "＋ Spawn a copy" on Argos (a UNIQUE NPC out of
+		 * DividedByNine2.esp) produced "a weird headless ghost".
+		 *
+		 * Why: a sculpted NPC's look is not in the plugin record — it is BAKED,
+		 * at export time, into meshes\actors\character\facegendata\facegeom\
+		 * <plugin>\<8-hex>.nif plus its facetint DDS, keyed to ONE record. A
+		 * PlaceObjectAtMe copy is a fresh dynamic reference whose head the
+		 * engine assembles at runtime from the head-parts list, and for an NPC
+		 * whose whole appearance lives in that baked file the assembled head
+		 * comes out missing/untinted. We cannot fix that — the copy has nowhere
+		 * to read the sculpt from. What we CAN do is know it in advance and say
+		 * so instead of handing over a ghost.
+		 *
+		 * The probe reuses what the Finder already has, exactly:
+		 *   FaceOwner()    — the TRAITS-template / faceNPC chain root, i.e. the
+		 *                    record the facegen file is actually named after
+		 *                    (Argos is DividedByNine2.esp|0AF4 but wears
+		 *                    …|0000089C's face — that is the whole reason his
+		 *                    tile rendered as dividedbynine2-esp-0000089c.png).
+		 *   FaceNifExists()— the session-cached BSResource existence probe the
+		 *                    row emit already runs, MO2 VFS applied. A face
+		 *                    identity drawn on screen is ALREADY in that cache,
+		 *                    so the check on a visible row costs a map lookup.
+		 *
+		 * Gate order matters for rule 3 (don't slow down / don't nag the normal
+		 * case): a NON-UNIQUE actor — bandit, guard, creature, generic townsfolk
+		 * — returns kFine after ONE flag read, no probe, no string built. Only a
+		 * ★ Unique NPC is ever probed, and only a Unique one whose baked face
+		 * really is on disk warns. A unique with no baked face (a creature, an
+		 * author who never exported a head) copies fine: its look is all race +
+		 * skin, which the copy inherits, so it is kFine too. */
+		enum class CopyLook
+		{
+			kFine,       // the copy will look like the original — spawn silently
+			kFaceless,   // a baked sculpt the copy cannot inherit — warn first
+			kUnknown     // could not tell — spawn, but say so (never block on a failed lookup)
+		};
+
+		CopyLook CopyLookOf(RE::TESNPC* npc, std::string& outFace, bool& outOwnFace)
+		{
+			outFace.clear();
+			outOwnFace = true;
+			if (!npc)
+				return CopyLook::kUnknown;
+			if (!npc->actorData.actorBaseFlags.any(RE::ACTOR_BASE_DATA::Flag::kUnique))
+				return CopyLook::kFine;   // generic actor: the fast path, untouched
+			auto* face = FaceOwner(npc);
+			if (!face)
+				return CopyLook::kUnknown;
+			outOwnFace = (face == npc);
+			auto* ffile = face->GetFile(0);
+			if (!ffile)
+				return CopyLook::kUnknown;   // dynamic face owner — nothing to probe
+			char fbuf[16];
+			std::snprintf(fbuf, sizeof(fbuf), "%08X",
+				face->GetFormID() & (ffile->IsLight() ? 0xFFFu : 0xFFFFFFu));
+			outFace = std::string(ffile->GetFilename()) + "|" + fbuf;
+			return FaceNifExists(outFace) ? CopyLook::kFaceless : CopyLook::kFine;
+		}
 	}
 
 	// ================================================================ API ==
@@ -542,6 +760,23 @@ namespace NpcFinder
 		try {
 			in = json::parse(req);
 		} catch (...) {}
+
+		// --- detail path: expand ONE row (lazy, on demand). Same reply as a page,
+		// distinguished by the `detail` field so no new main.cpp listener exists.
+		if (in.contains("detail")) {
+			const int         seq = in.value("seq", 0);
+			const std::string id = in.value("detail", std::string(""));
+			std::string       name;
+			auto* npc = ResolveId(id, &name);
+			if (!npc) {
+				logger::info("npc-finder-detail: unresolved '{}'", id);
+				return Dump(json{ { "seq", seq }, { "detail", id }, { "info", json::object() },
+					{ "err", "That NPC is not in the load order any more" } });
+			}
+			logger::info("npc-finder-detail: built for '{}'", id);
+			return Dump(json{ { "seq", seq }, { "detail", id }, { "info", DetailForNpc(npc) } });
+		}
+
 		const std::string q = in.value("q", std::string(""));
 		const std::string type = in.value("type", std::string("all"));
 		const std::string plugin = in.value("plugin", std::string(""));
@@ -622,9 +857,10 @@ namespace NpcFinder
 			 * `fc` so the view never asks for a head that can't render, resolve
 			 * the creature's BODY (race-skin ARMA biped model, the Mounts
 			 * route), and hand back a `bd` identity keyed by the SKIN SOURCE so
-			 * same-race creatures share one render. A humanoid whose facegen
-			 * simply never shipped falls into the same branch and at least gets
-			 * a body silhouette instead of a bare glyph. */
+			 * same-race creatures share one render. A HUMANOID whose facegen
+			 * never shipped gets neither: BodyLookFor refuses a FaceGen-Head
+			 * race, so `bd` stays empty and the row keeps its honest glyph
+			 * rather than a race-shared body (see BodyLookFor's gate). */
 			std::string bd;
 			const bool faceOnDisk = fc.empty() ? false : FaceNifExists(fc);
 			if (!faceOnDisk) {
@@ -688,12 +924,42 @@ namespace NpcFinder
 			return fail("That NPC is not in the load order any more");
 
 		if (act == "spawn") {
+			/* A copy of a sculpted NPC comes out faceless (see CopyLookOf). Say
+			 * so BEFORE placing anything, and hand the pane the material for a
+			 * real choice: the alternative verb, and whether that verb would
+			 * actually work right now. `force:true` is the view's "Spawn anyway"
+			 * — the only way past this, and it is never the default. */
+			std::string face;
+			bool        ownFace = true;
+			const bool  forced = in.value("force", false);
+			const CopyLook look = forced ? CopyLook::kFine : CopyLookOf(npc, face, ownFace);
+			if (look == CopyLook::kFaceless) {
+				const bool  female = npc->actorData.actorBaseFlags.any(
+					RE::ACTOR_BASE_DATA::Flag::kFemale);
+				const std::string them = female ? "her" : "him";
+				const bool loaded = FindLoaded(npc).actor != nullptr;
+				logger::info("npc-finder: faceless copy refused - '{}' ({}) wears baked facegen {}{}",
+					name, id, face, ownFace ? "" : " (another record's sculpt)");
+				return Dump(json{
+					{ "ok", false }, { "act", act }, { "found", false },
+					{ "warn", "faceless" },
+					{ "msg", name + " has a sculpted face that only the real " + them +
+							 " carries \xE2\x80\x94 a copy comes out faceless. Bring " + them +
+							 " instead." },
+					{ "id", id }, { "name", name }, { "canBring", loaded },
+					{ "face", face } });
+			}
 			auto ref = player->PlaceObjectAtMe(npc, false);
 			if (!ref)
 				return fail("The engine refused to place " + name);
-			const std::string msg = "\xE2\x9C\xA6 " + name + " appears";  // ✦
+			std::string msg = "\xE2\x9C\xA6 " + name + " appears";  // ✦
+			if (look == CopyLook::kUnknown)
+				msg += " \xE2\x80\x94 the copy may not carry their face";
 			RE::DebugNotification(msg.c_str());
-			logger::info("npc-finder: spawned '{}' ({})", name, id);
+			if (forced)
+				logger::info("npc-finder: faceless copy spawned anyway - '{}' ({})", name, id);
+			else
+				logger::info("npc-finder: spawned '{}' ({})", name, id);
 			return Dump(json{ { "ok", true }, { "act", act }, { "found", true }, { "msg", msg } });
 		}
 

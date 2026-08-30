@@ -18,10 +18,14 @@
 #an-row  { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 
 #an-seg {
-  flex: none; display: flex; gap: 6px;
+  /* wraps: with the pane's own MAX_TABS=12 custom tabs the single nowrap line
+     flex-shrank every button to a 44-64px stub ("B…", "T…") at both 1280x720
+     and 2560x1440. A second row of full-width tabs beats a row of initials. */
+  flex: none; display: flex; flex-wrap: wrap; gap: 6px;
   padding: 10px 12px 0;
 }
 .an-seg-btn {
+  flex: none;                      /* never shrink a label to initials */
   padding: 9px 20px;
   font: 600 14px/1 inherit; color: #b8b3a7;
   background: rgba(255,255,255,.03);

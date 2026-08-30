@@ -1,6 +1,7 @@
 #include "spid_gear.h"
 
 #include "actor_identity.h"
+#include "npc_finder.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -190,6 +191,47 @@ namespace SpidGear
 			std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d",
 				tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
 			return buf;
+		}
+
+		// Record one grant against one NPC, creating her block if this is her
+		// first. Returns true when an existing grant was TOPPED UP rather than
+		// a new one added — the two callers word their reply differently.
+		//
+		// ⚠ ONE implementation on purpose. This body was inside Harvest, and
+		// AddGrant (2026-08-20) needs the identical merge: the same key
+		// comparison, the same 1..999 clamp, the same "topping up counts as a
+		// fresh grant" stamp. Two copies would drift the day one is edited, and
+		// the divergence would show up as a grant the manager records
+		// differently from the chest — the exact confusion the manager exists to
+		// end. `chance` is honoured only for a NEW grant: an existing row's
+		// chance is the player's own setting, and quietly overwriting it from a
+		// second add would undo a deliberate choice.
+		bool MergeGrant(Config& cfg, const Npc& who, const std::string& itemPlugin,
+			std::uint32_t itemLocal, const std::string& itemName, int count, int chance)
+		{
+			Npc* npc = FindNpc(cfg, who.plugin, who.localId);
+			if (!npc) {
+				cfg.npcs.push_back(Npc{ who.plugin, who.localId, who.name, {} });
+				npc = &cfg.npcs.back();
+			}
+			// (windows.h defines min/max macros — clamp sidesteps them)
+			const int add = std::clamp(count, 1, 999);
+			if (auto* have = FindItem(*npc, itemPlugin, itemLocal)) {
+				have->count = std::clamp(have->count + add, 1, 999);
+				have->when = Today();  // topped up counts as a fresh grant
+				if (have->name.empty() && !itemName.empty())
+					have->name = itemName;
+				return true;
+			}
+			Item it;
+			it.plugin = itemPlugin;
+			it.localId = itemLocal;
+			it.count = add;
+			it.chance = std::clamp(chance, 1, 100);
+			it.when = Today();
+			it.name = itemName;
+			npc->items.push_back(std::move(it));
+			return false;
 		}
 
 		// The transfer menu closing on OUR inbox. Narrow like the Containers
@@ -476,27 +518,11 @@ namespace SpidGear
 					continue;
 				}
 				const std::uint32_t local = ActorIdentity::ParseHex(id);
-				Npc* npc = FindNpc(cfg, g_pendingNpc.plugin, g_pendingNpc.localId);
-				if (!npc) {
-					cfg.npcs.push_back(Npc{ g_pendingNpc.plugin, g_pendingNpc.localId,
-						g_pendingNpc.name, {} });
-					npc = &cfg.npcs.back();
-				}
-				if (auto* have = FindItem(*npc, plugin, local)) {
-					// (windows.h defines min/max macros — clamp sidesteps them)
-					have->count = std::clamp(have->count + static_cast<int>(data.first), 1, 999);
-					have->when = Today();  // topped up counts as a fresh grant
-				} else {
-					Item it;
-					it.plugin = plugin;
-					it.localId = local;
-					it.count = std::clamp(static_cast<int>(data.first), 1, 999);
-					it.chance = 100;
-					it.when = Today();
-					if (const char* n = obj->GetName(); n && *n)
-						it.name = n;
-					npc->items.push_back(std::move(it));
-				}
+				std::string         nm;
+				if (const char* n = obj->GetName(); n && *n)
+					nm = n;
+				MergeGrant(cfg, g_pendingNpc, plugin, local,
+					nm, static_cast<int>(data.first), 100);
 				++added;
 			}
 		}
@@ -520,6 +546,106 @@ namespace SpidGear
 		logger::info("spid-gear: harvest for {} - {} recorded, {} skipped",
 			g_pendingNpc.name, added, skipped);
 		return Dump(out);
+	}
+
+	// ------------------------------------------------------- add by identity
+
+	std::string AddGrant(Config& cfg, const json& req)
+	{
+		json out;
+		out["ok"] = false;
+		const auto refuse = [&out](const std::string& why) {
+			out["msg"] = why;
+			return Dump(out);
+		};
+		if (!req.is_object())
+			return refuse("Bad request");
+
+		// ---- who ------------------------------------------------------------
+		// Durable identity is preferred because it works whether or not she is
+		// loaded — this is a file editor. A runtime id is accepted for the
+		// callers that only have the crosshair (the F7 card, the Wigs tab).
+		Npc who;
+		who.plugin = req.value("npcPlugin", std::string());
+		who.localId = ActorIdentity::ParseHex(req.value("npcLocal", std::string()));
+		who.name = req.value("npcName", std::string());
+		if (!who.valid()) {
+			const auto rid = static_cast<std::uint32_t>(req.value("formId", 0u));
+			auto*      form = rid ? RE::TESForm::LookupByID(rid) : nullptr;
+			auto*      actor = form ? form->As<RE::Actor>() : nullptr;
+			if (!IdentityOf(actor, who))
+				return refuse("She has no durable identity - SPID can't target a spawned copy");
+		}
+		// A name is cosmetic, but an empty one makes an unreadable card. The
+		// live record's name beats whatever the caller remembered.
+		if (auto* dh = RE::TESDataHandler::GetSingleton()) {
+			if (auto* nform = dh->LookupForm(who.localId, who.plugin)) {
+				if (auto* np = nform->As<RE::TESNPC>()) {
+					if (const char* n = np->GetName(); n && *n)
+						who.name = n;
+				}
+			}
+		}
+
+		// ---- what -----------------------------------------------------------
+		const std::string itemPlugin = req.value("itemPlugin", std::string());
+		const std::uint32_t itemLocal = ActorIdentity::ParseHex(req.value("itemLocal", std::string()));
+		if (itemPlugin.empty() || !itemLocal)
+			return refuse("That item has no plugin identity - a runtime-made item can't go in an ini");
+
+		auto* dh = RE::TESDataHandler::GetSingleton();
+		auto* iform = dh ? dh->LookupForm(itemLocal, itemPlugin) : nullptr;
+		if (!iform)
+			return refuse("Nothing in the load order answers to " + itemPlugin +
+				" " + ActorIdentity::HexOf(itemLocal) + " - is that mod still on?");
+		// SPID Item lines put things in an INVENTORY. A spell, a perk or a cell
+		// would be written happily and then do nothing at all on the next
+		// launch, which is the worst kind of silence.
+		auto* obj = iform->As<RE::TESBoundObject>();
+		if (!obj)
+			return refuse(std::string("That form is a ") + RE::FormTypeToString(iform->GetFormType()).data() +
+				", not something an NPC can carry");
+		std::string itemName = req.value("itemName", std::string());
+		if (const char* n = obj->GetName(); n && *n)
+			itemName = n;
+
+		const int count = std::clamp(req.value("count", 1), 1, 999);
+		const int chance = std::clamp(req.value("chance", 100), 1, 100);
+
+		const bool toppedUp = MergeGrant(cfg, who, itemPlugin, itemLocal, itemName, count, chance);
+
+		out["ok"] = true;
+		out["toppedUp"] = toppedUp;
+		out["npc"] = json{ { "plugin", who.plugin }, { "localId", ActorIdentity::HexOf(who.localId) },
+			{ "name", who.name } };
+		out["item"] = json{ { "plugin", itemPlugin }, { "localId", ActorIdentity::HexOf(itemLocal) },
+			{ "name", itemName }, { "count", count }, { "chance", chance } };
+		const std::string label = itemName.empty() ? std::string("That item") : itemName;
+		out["msg"] = (toppedUp ? "Topped up " : "Enforcing ") + label + " on " +
+			(who.name.empty() ? std::string("her") : who.name) + " - applies at next launch (SPID)";
+		// Build marker (hd-markers.json: "spid-add-grant").
+		logger::info("spid-add-grant: {} x{} -> {} ({})", label, count, who.name,
+			toppedUp ? "topped up" : "new");
+		return Dump(out);
+	}
+
+	bool FaceOwnerFor(const std::string& npcPlugin, std::uint32_t npcLocal,
+		std::string& outPlugin, std::uint32_t& outLocal, std::string& outName)
+	{
+		auto* dh = RE::TESDataHandler::GetSingleton();
+		auto* form = (dh && !npcPlugin.empty() && npcLocal) ? dh->LookupForm(npcLocal, npcPlugin) : nullptr;
+		auto* base = form ? form->As<RE::TESNPC>() : nullptr;
+		if (!base)
+			return false;   // her mod is off, or the id was never an NPC
+		if (const char* n = base->GetName(); n && *n)
+			outName = n;
+		auto* face = NpcFinder::FaceOwnerOf(base);
+		auto* ffile = face ? face->GetFile(0) : nullptr;
+		if (!ffile)
+			return false;   // a dynamic or fileless record has no face to key on
+		outPlugin = ffile->GetFilename();
+		outLocal = face->GetFormID() & (ffile->IsLight() ? 0xFFFu : 0xFFFFFFu);
+		return true;
 	}
 
 	// -------------------------------------------------------------- mutations
@@ -674,11 +800,11 @@ namespace SpidGear
 			}
 			std::ofstream out(path, std::ios::trunc);
 			if (!out.is_open()) {
-				logger::error("spid-gear: could not open {} for writing", path.string());
+				logger::error("spid-gear: could not open {} for writing", PathU8(path));
 				return false;
 			}
 			out << text;
-			logger::info("spid-gear: wrote {} ({} live NPC block(s) of {})", path.string(),
+			logger::info("spid-gear: wrote {} ({} live NPC block(s) of {})", PathU8(path),
 				blocks,
 				std::count_if(c.npcs.begin(), c.npcs.end(),
 					[](const Npc& n) { return n.valid() && !n.items.empty(); }));

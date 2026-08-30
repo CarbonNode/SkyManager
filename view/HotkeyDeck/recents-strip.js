@@ -156,6 +156,8 @@ var Recents = (function () {
          listener STAYS attached across the retry — detaching it is how the
          Sharmat header ended up showing an empty circle for a missing file. */
       var img = h('img', { class: 'rc-face', src: 'portraits/' + e.file + '?v=' + (e.mtime || 0), alt: '', draggable: 'false' });
+      /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
+      if (window.HDFaceFit) HDFaceFit.paintPortrait(img, 'portraits/' + e.file);
       img.addEventListener('error', function () {
         if (img.dataset.retried) { img.replaceWith(medal(e)); return; }
         img.dataset.retried = '1';

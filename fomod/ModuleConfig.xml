@@ -12,6 +12,7 @@
       Optional/WardrobeExecutor/HotkeyDeckWardrobe.esp
       Optional/WardrobeExecutor/Scripts/*.pex
       Optional/WardrobeExecutor/Scripts/Source/*.psc
+      Optional/TransmogPool/SkyManagerTransmog.esp
       Docs/LICENSE
 
   The Spell Hotbar icon pool is NOT here — it ships as its own standalone
@@ -102,6 +103,47 @@ the mod page.)
                 <folder source="Optional\WardrobeExecutor\Scripts\Source"
                         destination="Scripts\Source" priority="2" />
               </files>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+
+        <group name="Transmog pool" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Install the Transmog pool (needed for the Transmog tab)">
+              <description>
+Installs SkyManagerTransmog.esp — 128 placeholder armour records and 64 weapon
+records that the Transmog tab restyles in memory.
+
+This is what makes transmog PER-ITEM instead of per-base: applying a look moves
+that one inventory item onto a pool record whose appearance is copied from the
+donor and whose stats, name, temper and enchantment stay yours. Nothing in the
+world is edited, so other copies of the same armour are untouched, and the same
+mechanism is what makes the stat editor stick to one specific item.
+
+ESL-flagged — it costs NO plugin slot.
+
+Skip it and the Transmog tab simply reports that it is unavailable; every other
+tab is unaffected.
+              </description>
+              <image path="Core\PrismaUI\views\HotkeyDeck\icons\custom\hm-transmog.png" />
+              <files>
+                <folder source="Optional\TransmogPool" destination="" priority="5" />
+              </files>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+
+            <plugin name="Skip it — no Transmog tab">
+              <description>
+No transmog plugin is installed. The Transmog tab will tell you it is missing
+and do nothing; you can install it later by re-running this installer, and the
+deck picks it up at runtime.
+              </description>
+              <files />
               <typeDescriptor>
                 <type name="Optional" />
               </typeDescriptor>

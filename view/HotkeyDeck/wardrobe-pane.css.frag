@@ -233,19 +233,19 @@
 .wd-dress:focus-visible { outline: 2px solid #ecd9a0; outline-offset: 2px; }
 .wd-dress:disabled { filter: grayscale(.6) brightness(.7); cursor: not-allowed; }
 
-/* ---------- cadence slider ---------- */
+/* ---------- cadence stops (chip row — the deck's no-range-input law) ---------- */
 
-.wd-cad { display: flex; align-items: center; gap: 9px; }
-.wd-cad-label { font-size: 13px; color: #8b8678; flex: none; }
-.wd-cad input[type=range] {
-  flex: 1; min-width: 90px; accent-color: #c9a24b; cursor: pointer; height: 18px;
+.wd-cad-seg { gap: 5px; }
+.wd-cad-seg button { min-width: 46px; text-align: center; }
+/* The inherit chip reads as a different KIND of choice, not another stop. */
+.wd-cad-seg .wd-cad-inherit { border-style: dashed; min-width: 0; }
+.wd-cad-seg .wd-cad-inherit.on { border-style: solid; }
+
+/* The wardrobe builder's default-cadence bar, between its header and columns. */
+#wd-builder-cad {
+  flex: none; display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 13px 8px; border-bottom: 1px solid #2e2e36;
 }
-.wd-cad input[type=range]:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; border-radius: 4px; }
-.wd-cad-v {
-  font-family: Consolas, "Courier New", monospace; font-size: 13px; color: #ecd9a0;
-  min-width: 54px; text-align: right; flex: none;
-}
-.wd-cad-v.off { color: #6f6a5e; }
 
 /* ---------- builder + sheet overlays ---------- */
 
@@ -259,7 +259,7 @@
   display: flex; flex-direction: column; min-height: 0;
   width: 100%; max-width: 780px; max-height: 100%;
   background: #121218; border: 1px solid #3a3a44; border-radius: 12px;
-  box-shadow: 0 18px 48px rgba(0,0,0,.55); overflow: hidden;
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45); overflow: hidden;
 }
 #wd-pieces-head, #wd-builder-head, #wd-sheet-head {
   flex: none; display: flex; align-items: center; gap: 10px;
@@ -271,8 +271,20 @@
 }
 #wd-pieces-sub, #wd-builder-sub, #wd-sheet-sub { font-size: 12.5px; color: #7c776a; min-width: 0; }
 #wd-sheet-sub { flex: 1; }
-#wd-builder-id { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 0 1 auto; }
-#wd-builder-note { flex: 1; min-width: 80px; }
+/* The name IDENTIFIES the wardrobe; the note is optional prose beside it. The
+   old pair (`id: 0 1 auto` against `note: 1`) gave every free pixel of the head
+   to the note EVEN WHEN IT WAS EMPTY: measured 2026-08-19, a 45-character name
+   sat in 216px of the 422px it wanted while the empty "Add a note…" box held
+   130px. So the name grows first and the note keeps a basis just wide enough
+   for its placeholder — 112px is the measured width at which "Add a note…"
+   still reads in full. */
+#wd-builder-id { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+#wd-builder-note { flex: 0 1 112px; min-width: 112px; }
+/* …and what does not fit still has to READ as truncated. `text-overflow` on
+   #wd-builder-title can never fire — its only child is a replaced <input> — so
+   the ellipsis belongs on the fields themselves. Ultralight support is
+   unproven; without it this degrades to today's hard cut, never worse. */
+#wd-builder-head .wd-inline { text-overflow: ellipsis; }
 #wd-builder-swatch {
   width: 14px; height: 14px; border-radius: 4px; flex: none; padding: 0;
   border: 1px solid #3a3a44; cursor: pointer;
@@ -554,13 +566,20 @@
 .wd-card.sel { border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.16); }
 .wd-card.sel .wd-thumb { background-color: #1a1710; }
 
-/* the always-there menu affordance — right-click is not dependable in PrismaUI */
+/* the always-there menu affordance — right-click is not dependable in PrismaUI.
+   It has to earn both words: measured 2026-08-19 it was 28x20px (under the
+   ~30px floor, the shortest control in the pane) and `opacity: 0` until the
+   card was hovered — invisible on the only reliable route to a card's menu.
+   30x30 grid-centred, and it now rests at a readable dim instead of nothing;
+   hover/focus/selection still bring it to full. */
 .wd-dots {
   position: absolute; top: 4px; left: 6px;
+  min-width: 30px; min-height: 30px;
+  display: grid; place-items: center;
   font-size: 15px; line-height: 1; letter-spacing: 1px;
   color: #8b8678; background: rgba(12,12,16,.8);
   border: 1px solid #2e2e36; border-radius: 6px; padding: 0 5px 3px;
-  cursor: pointer; opacity: 0; transition: opacity 140ms ease, color 140ms ease;
+  cursor: pointer; opacity: .55; transition: opacity 140ms ease, color 140ms ease;
 }
 .wd-card:hover .wd-dots, .wd-card:focus-within .wd-dots, .wd-card.sel .wd-dots { opacity: 1; }
 .wd-dots:hover { color: #ecd9a0; border-color: #3a3a44; }
@@ -577,7 +596,7 @@
   display: flex; flex-direction: column; min-height: 0;
   width: 100%; max-width: 440px; max-height: 100%;
   background: #121218; border: 1px solid #3a3a44; border-radius: 12px;
-  box-shadow: 0 18px 48px rgba(0,0,0,.55); overflow: hidden;
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45); overflow: hidden;
 }
 #wd-picker-head {
   flex: none; display: flex; align-items: center; gap: 10px;
@@ -651,20 +670,14 @@
 .wd-skel::after {
   content: ''; position: absolute; inset: 0;
   background: linear-gradient(90deg, transparent, rgba(201,162,75,.07), transparent);
-  transform: translateX(-100%);
-  animation: wdShimmer 1200ms ease-in-out infinite;
+  /* PERF: was a translateX sweep driven by @keyframes wdShimmer. The sheen is
+     static now — an infinite full-bleed transform over every skeleton row is a
+     per-frame repaint of the whole row under a compositor-off renderer. */
 }
-@keyframes wdShimmer { to { transform: translateX(100%); } }
 
-/* ---------- cadence ticks ---------- */
+/* ---------- next-change readout under the cadence chips ---------- */
 
-.wd-cad-wrap { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 90px; }
-.wd-cad-ticks {
-  display: flex; justify-content: space-between;
-  font-family: Consolas, "Courier New", monospace; font-size: 10px; color: #5a5650;
-  padding: 0 2px;
-}
-.wd-cad-next { font-size: 12.5px; color: #6f6a5e; }
+.wd-cad-next { font-size: 13.5px; color: #8b8678; }
 .wd-cad-next b { color: #d3c191; font-weight: 600; }
 
 /* ---------- keyboard roving focus ---------- */
@@ -796,10 +809,10 @@
   flex: none;
   border-radius: 10px;
   border: 1px solid #3a3a44;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .6);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   background: #0c0c10;
 }
-.wd-art-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 18px 48px rgba(0, 0, 0, .6); }
+.wd-art-frame.editing { cursor: grab; box-shadow: 0 0 0 2px #c9a24b, 0 10px 28px rgba(0, 0, 0, 0.45); }
 .wd-art-frame.dragging { cursor: grabbing; }
 
 /* Backed, unlike the Followers lightbox's caption: what sits behind THIS
@@ -918,6 +931,12 @@
 #wd-sheet .wd-field { gap: 8px; margin-bottom: 6px; }
 #wd-sheet .wd-field-k { font-size: 14px; letter-spacing: .6px; }
 #wd-sheet .wd-seg button { font-size: 14.5px; padding: 9px 16px; }
+/* Eleven cadence chips share a row — slightly tighter than the 3-option segs
+   so the row wraps at most once at the deck's 640px floor, never smaller than
+   the 13px chip floor. */
+#wd-sheet .wd-cad-seg button { font-size: 13.5px; padding: 8px 12px; min-width: 48px; }
+/* Both randomisation pills in the builder head, side by side. */
+#wd-builder-mode { display: inline-flex; gap: 6px; }
 .nf-embed { gap: 12px; padding: 6px 0 8px; }
 .nf-embed .nf-chip { font-size: 13.5px; }
 .nf-embed .nf-hint { font-size: 13px; }
@@ -942,7 +961,7 @@
 #wd-item-lightbox img {
   max-width: min(86%, 640px); max-height: 74%;
   border-radius: 12px; border: 1px solid #3a3a44;
-  background: #101017; box-shadow: 0 18px 48px rgba(0,0,0,.6);
+  background: #101017; box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
 }
 #wd-item-lightbox .wd-lb-name { font-size: 17px; color: #e8e4da; }
 #wd-item-lightbox .wd-lb-x { position: absolute; top: 14px; right: 16px; font-size: 16px; padding: 8px 13px; }

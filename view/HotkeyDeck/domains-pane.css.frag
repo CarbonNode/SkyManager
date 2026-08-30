@@ -94,21 +94,24 @@
 #dm-toolbar { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; flex: none; }
 #dm-search-wrap { flex: 1; min-width: 0; position: relative; display: flex; align-items: center; }
 .dm-search-ic { position: absolute; left: 9px; color: #8b8678; font-size: 17px; line-height: 1; pointer-events: none; }
+/* Sized to sit level with the Places/Bases switch it now shares a row with
+   (.nb-seg is 15px / 9px 20px), and off Rober's small-text list. */
 #dm-search {
   width: 100%;
-  font-family: inherit; font-size: 13px; color: #e8e4da;
-  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 7px;
-  padding: 8px 10px 8px 29px;
+  font-family: inherit; font-size: 15px; color: #e8e4da;
+  background: #0c0c10; border: 1px solid #3a3a44; border-radius: 9px;
+  padding: 9px 12px 9px 34px;
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 #dm-search::placeholder { color: #6b675e; }
 #dm-search:focus { outline: none; border-color: #c9a24b77; box-shadow: 0 0 0 3px rgba(201,162,75,.08); }
+.dm-search-ic { left: 11px; }
 #dm-count {
   flex: none;
-  font-family: Consolas, "Courier New", monospace; font-size: 11px;
+  font-family: Consolas, "Courier New", monospace; font-size: 13px;
   color: #d9c48a; background: rgba(201,162,75,.06);
   border: 1px solid #c9a24b77; border-radius: 20px;
-  padding: 4px 9px; min-width: 24px; text-align: center;
+  padding: 6px 11px; min-width: 28px; text-align: center;
 }
 
 #dm-openkey {
@@ -320,9 +323,13 @@
 .dm-faces { flex: none; display: flex; align-items: center; margin-left: 2px; }
 /* on a card the cluster is a footer strip under the body text */
 .dm-row:not(.dm-child) > .dm-faces { padding: 0 12px 10px; margin: -3px 0 0; }
+/* 34px, not the 24px this shipped with. A resident face is a PHOTOGRAPH and at
+   24px overlapped by 6 it read as a coloured dot -- Rober, 2026-08-17:
+   "profile images ... really hard to see". The narrow-panel step below moves
+   with it (28px, not 20). */
 .dm-face, .dm-face-more {
   position: relative; flex: none;
-  width: 24px; height: 24px; margin-left: -6px;
+  width: 34px; height: 34px; margin-left: -5px;
   border-radius: 50%;
   box-shadow: 0 0 0 1.5px #16161d;   /* ring in the row bg so overlaps read cleanly */
   transition: transform 140ms ease, box-shadow 140ms ease;
@@ -337,7 +344,7 @@
 .dm-face-img { object-fit: cover; }
 .dm-face-medal {
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 8.5px; font-weight: 700; letter-spacing: .3px;
+  font-size: 12px; font-weight: 700; letter-spacing: .3px;
   color: hsl(var(--dm-hue, 45), 45%, 74%);
   background:
     radial-gradient(120% 120% at 30% 25%, hsla(var(--dm-hue, 45), 45%, 60%, .18), transparent 70%),
@@ -346,7 +353,7 @@
 }
 .dm-face-more {
   display: inline-flex; align-items: center; justify-content: center;
-  font-family: Consolas, "Courier New", monospace; font-size: 9.5px; font-weight: 700;
+  font-family: Consolas, "Courier New", monospace; font-size: 12px; font-weight: 700;
   color: #d9c48a; background: #12121a; border: 1px solid #c9a24b55;
 }
 
@@ -386,7 +393,7 @@
   padding: 5px;
   background: linear-gradient(180deg, #1c1c24, #16161d);
   border: 1px solid #c9a24b77; border-radius: 8px;
-  box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
   animation: fadeIn 110ms ease;
 }
 .dm-ctx-head {
@@ -567,7 +574,7 @@
   padding: 5px;
   background: linear-gradient(180deg, #1c1c24, #16161d);
   border: 1px solid #c9a24b77; border-radius: 8px;
-  box-shadow: 0 16px 44px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45), 0 0 0 1px rgba(0,0,0,.35);
   animation: fadeIn 110ms ease;
 }
 .dm-npc-searchwrap { position: relative; display: flex; align-items: center; margin: 3px 3px 5px; }
@@ -624,7 +631,7 @@
   background: linear-gradient(180deg, #1a1a21, #101015);
   border: 1px solid #c9a24b77; border-radius: 12px;
   padding: 24px 22px 18px;
-  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
   animation: capturePulse 1.4s ease-in-out infinite;
 }
 .dm-capture-title { font-size: 15.5px; color: #ecd9a0; margin-bottom: 8px; }
@@ -749,8 +756,8 @@
   .dm-body { padding: 8px 10px 9px; }
   .dm-row:not(.dm-child) > .dm-faces { padding: 0 10px 8px; }
   .dm-chip { max-width: 108px; }
-  .dm-face, .dm-face-more { width: 20px; height: 20px; margin-left: -5px; }
-  .dm-face-medal { font-size: 7.5px; }
+  .dm-face, .dm-face-more { width: 28px; height: 28px; margin-left: -4px; }
+  .dm-face-medal { font-size: 10px; }
   .dm-ok-hint { display: none; }
   .dm-row.dm-child { margin-left: 18px; }
   .dm-row.dm-child::before { left: -11px; width: 9px; }
@@ -775,8 +782,8 @@ body.panel-narrow .dm-name { font-size: 13.5px; }
 body.panel-narrow .dm-body { padding: 8px 10px 9px; }
 body.panel-narrow .dm-row:not(.dm-child) > .dm-faces { padding: 0 10px 8px; }
 body.panel-narrow .dm-chip { max-width: 108px; }
-body.panel-narrow .dm-face, body.panel-narrow .dm-face-more { width: 20px; height: 20px; margin-left: -5px; }
-body.panel-narrow .dm-face-medal { font-size: 7.5px; }
+body.panel-narrow .dm-face, body.panel-narrow .dm-face-more { width: 28px; height: 28px; margin-left: -4px; }
+body.panel-narrow .dm-face-medal { font-size: 10px; }
 body.panel-narrow .dm-ok-hint { display: none; }
 body.panel-narrow .dm-row.dm-child { margin-left: 18px; }
 body.panel-narrow .dm-row.dm-child::before { left: -11px; width: 9px; }
@@ -833,6 +840,32 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
    overlay still acknowledges itself on the row you clicked. */
 .dm-thumb-box.zoom:active, .dm-who-face.zoom:active { transform: scale(.94); }
 .dm-face.zoom:active { transform: translateY(-2px) scale(.94); }
+
+/* ---------- "who is standing here" strip (dm-who) ----------
+   MIRROR of the block in app.css (2026-08-19): whoStrip() mounts these into
+   .dm-sub, and until this block existed the faces had only the cursor/hover
+   rules above — no geometry — so they computed to 0x0 and painted nothing. */
+.dm-who { display: inline-flex; align-items: center; flex: none; }
+.dm-who > :first-child { margin-left: 0; }
+.dm-who-face {
+  position: relative; flex: none;
+  width: 22px; height: 22px; margin-left: -5px;
+  border-radius: 50%;
+  background-size: cover; background-position: 50% 20%; background-repeat: no-repeat;
+  box-shadow: 0 0 0 1.5px #16161d;
+}
+.dm-who-face.initials {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700;
+  color: hsl(var(--dm-hue, 45), 45%, 74%);
+  background: #0c0c10;
+  border: 1px solid hsla(var(--dm-hue, 45), 35%, 55%, .5);
+}
+.dm-who-more {
+  flex: none; margin-left: 4px;
+  font-family: Consolas, "Courier New", monospace; font-size: 12px; font-weight: 700;
+  color: #d9c48a;
+}
 .dm-art {
   position: absolute; inset: 0;
   background-position: 50% 50%; background-size: cover; background-repeat: no-repeat;
@@ -888,7 +921,7 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
 .dm-art-frame {
   position: relative; overflow: hidden; flex: none;
   border-radius: 10px; background: #0c0c10;
-  border: 1px solid #3a3a44; box-shadow: 0 18px 44px rgba(0,0,0,.6);
+  border: 1px solid #3a3a44; box-shadow: 0 10px 28px rgba(0,0,0, 0.45);
 }
 /* the row draws this square as a circle — show the mask so the framing is
    honest rather than a surprise once the overlay closes */

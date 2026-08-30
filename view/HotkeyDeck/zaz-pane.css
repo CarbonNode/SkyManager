@@ -1,0 +1,174 @@
+/* ===================================================================== *
+ *  ZaZ segment of the Animations tab — devices & furniture on the target.
+ *  The OStim segment's structural twin (zaz-pane.js drives it).
+ *
+ *  OWN SHEET on purpose (the sync_view_frags truncation trap): app.css is
+ *  rebuilt from fragments, so anything appended there is liable to be
+ *  dropped on the next sync. Linked from index.html after mounts-pane.css.
+ *
+ *  Deck literals only (#c9a24b gold / #e8e4da text / #2e2e36 lines /
+ *  140ms / 12px type floor). Loads AFTER app.css, so the .mode-zaz body
+ *  rules below win ties against the .mode-ostim ones at equal specificity.
+ * ===================================================================== */
+
+/* mode switch: the third body of the Animations column */
+#zz-body { display: none; }
+#an-pane.mode-zaz #an-row  { display: none; }
+#an-pane.mode-zaz #os-body { display: none; }
+#an-pane.mode-zaz #zz-body { display: flex; }
+
+#zz-body {
+  flex: 1; min-height: 0;
+  flex-direction: column; gap: 12px;
+  padding: 14px 16px;
+}
+
+/* ---------------------------------------------------- status header ---- */
+#zz-status {
+  flex: none;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 13px 15px;
+  border: 1px solid #2e2e36; border-radius: 11px;
+  background: rgba(255,255,255,.02);
+}
+#zz-status-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+#zz-target { font-size: 18px; font-weight: 700; color: #e8e4da; display: inline-flex; align-items: center; gap: 9px; }
+.zz-tgt-name { color: #ecd9a0; }
+.zz-tgt-dot {
+  width: 9px; height: 9px; flex: none; border-radius: 50%;
+  background: #c9a24b; box-shadow: 0 0 6px rgba(201,162,75,.6);
+}
+.zz-tgt-dot.me { background: #7fb2d9; box-shadow: 0 0 6px rgba(127,178,217,.6); }
+#zz-target-hint { font-size: 13px; color: #9d988c; }
+#zz-body.zz-nozap #zz-target { color: #b8b3a7; }
+
+/* worn chips */
+/* Capped at 3 chip rows (32px + 2 x 39px pitch) and scrolled: #zz-status is
+   flex:none, so an uncapped wrapping strip grew straight out of #zz-list —
+   40 worn devices left the device list 51px tall with ZERO rows visible at
+   1280x720 (measured 2026-08-19). */
+#zz-worn {
+  display: flex; gap: 7px; flex-wrap: wrap; align-items: center;
+  min-height: 28px; max-height: 110px; overflow-y: auto;
+}
+.zz-worn-none { font-size: 13px; color: #8a8478; }
+.zz-worn-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 13px; font-weight: 600; color: #ecd9a0;
+  padding: 4px 6px 4px 11px; border-radius: 999px;
+  border: 1px solid rgba(201,162,75,.4); background: rgba(201,162,75,.08);
+}
+.zz-worn-x {
+  padding: 2px 7px;
+  font: 700 12px/1 inherit; color: #b8b3a7;
+  background: rgba(255,255,255,.05);
+  border: 1px solid #2e2e36; border-radius: 999px; cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+.zz-worn-x:hover { border-color: #c85046; color: #fff; background: rgba(200,80,70,.25); }
+
+/* control row: sub-view toggle + free + refresh */
+#zz-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.zz-ctl {
+  padding: 8px 13px;
+  font: 600 13px/1 inherit; color: #e8e4da;
+  background: rgba(255,255,255,.04);
+  border: 1px solid #2e2e36; border-radius: 8px; cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+.zz-ctl:hover:not(:disabled) { border-color: #c9a24b; background: rgba(201,162,75,.10); }
+.zz-ctl:disabled { opacity: .45; cursor: not-allowed; }
+.zz-ctl.active { color: #14120e; background: #c9a24b; border-color: #e0bc6a; }
+/* must out-specify .zz-ctl:hover:not(:disabled) above: that rule replaced the
+   gold fill with a 10% wash but left the near-black label, so hovering the
+   SELECTED sub-view made it unreadable (~1.1:1). Keep the fill, ring it. */
+.zz-ctl.active:hover:not(:disabled) {
+  background: #c9a24b; border-color: #e0bc6a; box-shadow: 0 0 0 3px rgba(201,162,75,.25);
+}
+.zz-ctl-sep { width: 1px; align-self: stretch; background: #2e2e36; margin: 2px 4px; }
+#zz-free:hover:not(:disabled) { border-color: #c85046; background: rgba(200,80,70,.12); }
+
+/* ------------------------------------------------------ search + list ---- */
+#zz-searchbar { display: flex; align-items: center; gap: 12px; flex: none; }
+#zz-search {
+  flex: 1; min-width: 0;
+  padding: 11px 13px;
+  font-size: 15px; font-family: inherit; color: #e8e4da;
+  background: rgba(0,0,0,.25); border: 1px solid #2e2e36; border-radius: 9px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+#zz-search::placeholder { color: #7f7a6e; }
+#zz-search:focus { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.18); }
+.zz-count { flex: none; font-size: 13px; color: #9d988c; font-family: Consolas, "Courier New", monospace; }
+
+/* category pills (devices sub-view only) */
+/* same cap as #zz-worn: a mod with many device categories wraps the pill row
+   and it would otherwise eat #zz-list. 3 rows = 30px + 2 x 36px pitch. */
+#zz-pills { display: flex; gap: 6px; flex-wrap: wrap; flex: none; max-height: 102px; overflow-y: auto; }
+#zz-pills.hidden { display: none; }
+.zz-pill {
+  padding: 6px 13px;
+  font: 600 12.5px/1 inherit; color: #b8b3a7;
+  background: rgba(255,255,255,.03);
+  border: 1px solid #2e2e36; border-radius: 999px; cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+.zz-pill:hover { border-color: #c9a24b; color: #e8e4da; }
+.zz-pill.active { color: #14120e; background: #c9a24b; border-color: #e0bc6a; }
+
+#zz-list {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 6px;
+  padding-right: 2px;
+}
+.zz-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px;
+  border: 1px solid #2e2e36; border-radius: 9px;
+  background: rgba(255,255,255,.02);
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.zz-row:hover { border-color: #3a3a44; background: rgba(255,255,255,.045); }
+.zz-row.worn { border-color: rgba(201,162,75,.4); background: rgba(201,162,75,.05); }
+
+.zz-row-main { flex: 1; min-width: 0; }
+.zz-row-name {
+  font-size: 15px; font-weight: 600; color: #e8e4da;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zz-row-meta { margin-top: 2px; font-size: 12px; color: #9d988c; }
+
+.zz-go {
+  flex: none; min-width: 78px;
+  padding: 8px 16px;
+  font: 700 13px/1 inherit; color: #14120e; background: #c9a24b;
+  border: 1px solid #e0bc6a; border-radius: 8px; cursor: pointer;
+  transition: box-shadow 140ms ease, background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.zz-go:hover:not(:disabled) { box-shadow: 0 0 0 3px rgba(201,162,75,.25); }
+.zz-go:disabled {
+  color: #8a8478; background: rgba(255,255,255,.04); border-color: #2e2e36;
+  cursor: not-allowed; box-shadow: none;
+}
+/* "Take off" reads as the reverse action — outline, not gold fill */
+.zz-go.off {
+  color: #e8e4da; background: rgba(255,255,255,.04); border-color: #2e2e36;
+}
+.zz-go.off:hover:not(:disabled) { border-color: #c85046; background: rgba(200,80,70,.12); box-shadow: none; }
+
+.zz-empty, .zz-more { padding: 18px 12px; text-align: center; color: #9d988c; font-size: 13px; }
+.zz-more { color: #7f7a6e; font-size: 12.5px; }
+
+/* toast (the os-toast placement idiom) */
+.zz-toast {
+  position: absolute; left: 50%; bottom: 14px; transform: translate(-50%, 12px);
+  padding: 9px 16px;
+  font-size: 13.5px; color: #14120e; background: #c9a24b;
+  border-radius: 999px; box-shadow: 0 6px 20px rgba(0,0,0,.4);
+  opacity: 0; pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zz-toast.show { opacity: 1; transform: translate(-50%, 0); }
+.zz-toast.bad { background: #c85046; color: #fff; }

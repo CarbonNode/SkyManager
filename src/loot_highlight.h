@@ -138,6 +138,16 @@ namespace LootHighlight
 	// Native action entry (seeded in Misc as "Loot Vision").
 	bool IsAction(const std::string& a);
 
+	// Mark a reference "looted" WITHOUT a ContainerMenu ever opening — the door
+	// for a system that empties a corpse or container in code (Auto-Loot's
+	// deferred corpse sweep). Without it the highlighter's only looted-signal is
+	// the menu sink, so a body auto-loot has already stripped keeps glowing
+	// "dead + not yet opened" until you walk over and open it by hand.
+	// Thread-safe (takes the opened-set's own mutex, like the sink) and does no
+	// engine work, so it is safe from any thread; the NEXT Tick kills the glow,
+	// exactly as it does for a hand-opened corpse.
+	void NoteLooted(std::uint32_t refId);
+
 	// The scanner. MAIN THREAD ONLY; caller holds the config lock. Early-outs
 	// on cadence, pause, and master-off (sweeping leftovers exactly once).
 	void Tick(const Config& cfg);
