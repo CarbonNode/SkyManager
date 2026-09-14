@@ -1,7 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
+
+namespace RE
+{
+	class Actor;
+}
 
 // Native NPC-command actions ported from the CommandNPC plugin, exposed to the
 // Hotkey Deck as fireable "action" entries (device == "action"). No keypress is
@@ -50,6 +56,16 @@ namespace NpcActions
 	// Run an action against the snapshotted target. Main thread only.
 	// Returns false for an unknown action id.
 	bool Run(const std::string& action);
+
+	// "Sic 'em" against a SUBSET of the loaded followers. `allow` decides who
+	// joins the charge; a null `allow` means every loaded follower, which is
+	// what the bindable "attack-target" action fires. `who` names the subset in
+	// the refusal when none of them is nearby ("Dragon Guard"), so a group
+	// order cannot report the party's answer. Target designation, the longshot
+	// ray and the nearby-hostile wake-up are identical either way.
+	// Returns false if nothing was ordered (the reason is already on screen).
+	// Main thread only.
+	bool SicEm(const std::function<bool(RE::Actor*)>& allow, const std::string& who);
 
 	// Seat an actor on an EXPLICIT furniture reference through the alias engine
 	// (SitTarget package at the paired chair alias) — the ZaZ segment's

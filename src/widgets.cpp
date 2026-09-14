@@ -4,6 +4,7 @@
 #include "finance.h"
 #include "hotbar.h"
 #include "item_icons.h"
+#include "ward_actions.h"
 
 #include <algorithm>
 #include <atomic>
@@ -223,6 +224,18 @@ namespace Widgets
 			Widget  handL;     // left hand — shows the nocked ammo behind a bow
 			Widget  voice;     // shout / power slot, with the recovery veil
 			Widget  quick;     // quick items: everything you favourited, live counts
+			// ---- ward (2026-09-01) -----------------------------------------
+			// A fifth FREE widget: is a ward up right now? Reads the engine's
+			// WardPower actor value (so a hand-cast ward lights it too) plus
+			// WardActions' maintained flag; pairs with the "ward-toggle" deck
+			// action. Same silent-arrival law as the other four.
+			Widget  ward;      // ward up/down, strength, best known ward
+			// ---- 2026-08-31: the season readout -----------------------------
+			// A FREE widget too (Rober: "not apart of other widgets … drag,
+			// move around, toggle on or off"), fed by Seasons of Skyrim's own
+			// Papyrus API — see SeasonJson far below for why the month is never
+			// enough on its own.
+			Widget  season;
 			// ---- round 4, 2026-08-18: the CUSTOM quick items ----------------
 			// `quick` above is the game's own favourites and the player cannot
 			// curate it from here. This is its twin, entirely theirs: any
@@ -330,6 +343,20 @@ namespace Widgets
 				handL.enabled = false;
 				voice.enabled = false;
 				quick.enabled = false;
+				// Ward: left of the slot row, same shelf, same silence. -520
+				// matches hud.js's wfree.ward default exactly (the two must
+				// agree or a fresh install jumps on first config push), and
+				// clears the 158px cards' handR at -352.
+				ward.anchorH = "center"; ward.anchorV = "bottom"; ward.x = -520; ward.y = 96;
+				ward.enabled = false;
+				// Season (2026-08-31): a FREE widget like the four above, so it
+				// gets its own spot rather than a line in someone else's stack
+				// (Rober: "not apart of other widgets"). Parked top-right and
+				// BELOW the context column's default four, so turning it on
+				// while clock/weather/place/mount are up still lands clear.
+				season.anchorH = "right"; season.anchorV = "top";
+				season.x = 24; season.y = 320;
+				season.enabled = false;
 				// Round 4: the custom quick strip sits one row ABOVE the
 				// favourites strip (same x, +54 y) so enabling both at once
 				// has no overlap to fix; the loot lamp hangs off the
@@ -409,12 +436,17 @@ namespace Widgets
 			         g_cfg.clock.enabled || g_cfg.mount.enabled ||
 			         g_cfg.vitals.enabled || g_cfg.effects.enabled || g_cfg.equip.enabled ||
 			         g_cfg.resist.enabled || g_cfg.survival.enabled || g_cfg.allies.enabled ||
+			         g_cfg.handR.enabled || g_cfg.handL.enabled ||
+			         g_cfg.voice.enabled || g_cfg.quick.enabled ||
+			         g_cfg.ward.enabled ||
 			         (g_cfg.pins.enabled && !g_cfg.pinList.empty()) ||
 			         (g_cfg.sets.enabled && !g_cfg.setList.empty()));
 			// The free widgets: NOT gated on g_cfg.enabled, by design.
 			const bool free =
 			        g_cfg.handR.enabled || g_cfg.handL.enabled ||
 			        g_cfg.voice.enabled || g_cfg.quick.enabled ||
+			        g_cfg.ward.enabled ||
+			        g_cfg.season.enabled ||
 			        g_cfg.lootStatus.enabled ||
 			        // Same rule as the trackers: an enabled custom strip with
 			        // nothing in it has nothing to draw, and arming the live
@@ -866,6 +898,8 @@ namespace Widgets
 					{ "handL", WidgetJson(g_cfg.handL) },
 					{ "voice", WidgetJson(g_cfg.voice) },
 					{ "quick", WidgetJson(g_cfg.quick) },
+					{ "ward", WidgetJson(g_cfg.ward) },
+					{ "season", WidgetJson(g_cfg.season) },
 					{ "quick2", std::move(q2) },
 					{ "lootStatus", WidgetJson(g_cfg.lootStatus) },
 				} },
@@ -976,6 +1010,10 @@ namespace Widgets
 					WidgetFrom(w["voice"], g_cfg.voice);
 				if (w.contains("quick"))
 					WidgetFrom(w["quick"], g_cfg.quick);
+				if (w.contains("ward"))
+					WidgetFrom(w["ward"], g_cfg.ward);
+				if (w.contains("season"))
+					WidgetFrom(w["season"], g_cfg.season);
 				// Round 4. `max` and `items` land only when PRESENT — the same
 				// partial-write rule the tracker lists live by, so a view that
 				// saves just the placement it dragged can never empty the
@@ -1445,6 +1483,337 @@ namespace Widgets
 			out["monthName"] = mn;
 			out["year"] = yr;
 			out["date"] = std::to_string(day) + " " + mn + ", 4E " + std::to_string(yr);
+			return out;
+		}
+
+		// ------------------------------------------------------------ season --
+		// (Rober, 2026-08-31: "a season widget would be nice. not sure how to
+		// best hook to seasons of skyrim".)
+		//
+		// ⛔ NEVER COMPUTE THE SEASON FROM THE MONTH. It is the obvious shortcut
+		// and it is wrong on this very rig. Seasons of Skyrim's month->season
+		// map lives in its INI and mods rewrite it: the load order here also
+		// carries "Four Seasons - Faster Seasons of Skyrim", which ships a map
+		// running autumn-winter-spring-summer THREE times a year so the world
+		// turns over every month. (Its INI is `.mohidden` on this rig today, so
+		// the stock map is the live one — which is exactly the point: a
+		// hardcoded "Frostfall means autumn" would be right this week and a lie
+		// the moment that file is unhidden.)
+		//
+		// So we ASK, through the mod's own documented API — its shipped
+		// Source/scripts/SeasonsOfSkyrim.psc:
+		//
+		//     int Function GetCurrentSeason()  global native
+		//     int Function GetSeasonOverride() global native
+		//     0 none · 1 winter · 2 spring · 3 summer · 4 autumn
+		//
+		// A Papyrus dispatch answers on the VM's own thread, so this NEVER
+		// blocks a tick: LiveJson reads a LATCH and re-arms the dispatch on a
+		// slow beat. A season can only turn over across an interior->exterior
+		// transition (the mod's own rule), so kSeasonPollMs is already far
+		// finer-grained than the thing it watches.
+		//
+		// The INI is read too, but only for what the API cannot say: whether
+		// seasons are switched off / pinned at all (Season Type), and how many
+		// days are left before the next one — and the map is used as the
+		// ANSWER only when the mod is absent, in which case the payload says so
+		// (`src:"calendar"`) instead of pretending to be authoritative.
+		constexpr int         kSeasonPollMs = 5000;   // re-ask at most this often
+		constexpr int         kSeasonStuckMs = 15000; // a dispatch that never called back
+
+		const char* const kSeasonIds[5] = { "", "winter", "spring", "summer", "autumn" };
+		const char* const kSeasonNames[5] = { "", "Winter", "Spring", "Summer", "Autumn" };
+
+		// Skyrim's own month lengths — needed only for "spring in 6 days".
+		const int kMonthDays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+
+		std::atomic<int>       g_season{ -1 };        // -1 = never answered
+		std::atomic<int>       g_seasonOvr{ -1 };     // GetSeasonOverride, same scale
+		std::atomic<int>       g_seasonApi{ 0 };      // 0 unknown · 1 present · -1 absent
+		std::atomic<bool>      g_seasonFlight{ false };
+		std::atomic<long long> g_seasonAsked{ 0 };
+
+		long long NowMs()
+		{
+			using namespace std::chrono;
+			return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+		}
+
+		// ---- the INI, read once ------------------------------------------
+		// Relative "Data/…" is the idiom the rest of this plugin uses
+		// (keys_scan.cpp, journal.cpp): under MO2 the VFS resolves it to the
+		// WINNING copy, which is by construction the same file Seasons itself
+		// opened. On this rig that winner lives in MO2's Overwrite, which is
+		// exactly why the path must not be hardcoded to a mod folder.
+		// The two facts are tracked SEPARATELY on purpose. A file that gives us
+		// `Season Type` but no month lines would otherwise leave the shipped map
+		// standing in as if it had been read, and "Spring in 6 days" would be a
+		// number invented from a default. Each claim below is gated on the fact
+		// it actually needs.
+		struct SeasonIni
+		{
+			bool read = false;      // the parse ran (success or not)
+			bool haveType = false;  // a `Season Type` line was read
+			bool haveMap = false;   // all twelve month lines were read
+			int  type = 5;          // 0 off · 1-4 pinned · 5 seasonal
+			int  map[12] = { 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 1 };  // po3's shipped map
+		};
+		SeasonIni g_sini;
+
+		// "Frost Fall" (the INI's spelling) and "Frostfall" (the engine's) must
+		// compare equal, and so must "Sun's Dawn" against "suns dawn".
+		std::string MonthKey(std::string s)
+		{
+			std::string out;
+			for (unsigned char c : s) {
+				if (std::isalpha(c))
+					out.push_back(static_cast<char>(std::tolower(c)));
+			}
+			return out;
+		}
+
+		void LoadSeasonIni()
+		{
+			if (g_sini.read)
+				return;
+			g_sini.read = true;
+			std::ifstream in("Data/SKSE/Plugins/po3_SeasonsOfSkyrim.ini");
+			if (!in.is_open()) {
+				logger::info("widgets: season — no po3_SeasonsOfSkyrim.ini on disk");
+				return;
+			}
+			// The month keys, in engine order, matched by letters only.
+			const std::string want[12] = {
+				MonthKey("Morning Star"), MonthKey("Sun's Dawn"), MonthKey("First Seed"),
+				MonthKey("Rain's Hand"), MonthKey("Second Seed"), MonthKey("Mid Year"),
+				MonthKey("Sun's Height"), MonthKey("Last Seed"), MonthKey("Hearthfire"),
+				MonthKey("Frost Fall"), MonthKey("Sun's Dusk"), MonthKey("Evening Star")
+			};
+			bool        inSettings = false;
+			int         found = 0;
+			std::string line;
+			while (std::getline(in, line)) {
+				// strip comment + trim
+				if (const auto c = line.find(';'); c != std::string::npos)
+					line.erase(c);
+				const auto b = line.find_first_not_of(" \t\r\n");
+				if (b == std::string::npos)
+					continue;
+				const auto e = line.find_last_not_of(" \t\r\n");
+				line = line.substr(b, e - b + 1);
+				if (line.empty())
+					continue;
+				if (line.front() == '[') {
+					// [Settings] holds the map; [Winter]/[Spring]/… hold swap
+					// flags whose keys ("Grass = true") must never be read as
+					// months. One section, and we stop when it ends.
+					inSettings = (MonthKey(line) == "settings");
+					continue;
+				}
+				if (!inSettings)
+					continue;
+				const auto eq = line.find('=');
+				if (eq == std::string::npos)
+					continue;
+				const std::string key = MonthKey(line.substr(0, eq));
+				const std::string val = line.substr(eq + 1);
+				int               n = 0;
+				try {
+					n = std::stoi(val);
+				} catch (...) {
+					continue;
+				}
+				if (key == "seasontype") {
+					if (n >= 0 && n <= 5) {
+						g_sini.type = n;
+						g_sini.haveType = true;
+					}
+					continue;
+				}
+				for (int m = 0; m < 12; ++m) {
+					if (key == want[m]) {
+						if (n >= 0 && n <= 4)
+							g_sini.map[m] = n;
+						++found;
+						break;
+					}
+				}
+			}
+			g_sini.haveMap = (found >= 12);
+			logger::info("widgets: season ini (type {}{}, {} month(s) mapped)",
+				g_sini.type, g_sini.haveType ? "" : " assumed", found);
+		}
+
+		// ---- the Papyrus latch -------------------------------------------
+		// The Int a SeasonsOfSkyrim global answers, delivered on the VM's own
+		// thread. Nothing here touches game state, so unlike mhiyh's BoolResult
+		// it does not need a main-thread hop — it only stores into atomics.
+		// `primary` is the GetCurrentSeason call, and ONLY it owns the two
+		// session-wide verdicts (does the API exist, is a dispatch outstanding).
+		// The override call rides the same beat and must never be able to
+		// declare the mod absent on its own — one companion answering oddly
+		// would otherwise switch the whole widget to the INI fallback.
+		class SeasonResult : public RE::BSScript::IStackCallbackFunctor
+		{
+		public:
+			SeasonResult(std::atomic<int>* into, bool primary) :
+				_into(into), _primary(primary)
+			{}
+
+			void operator()(RE::BSScript::Variable a_result) override
+			{
+				// The in-flight flag is cleared FIRST and unconditionally: an
+				// early return below would otherwise strand it and the widget
+				// would freeze at whatever it last knew, forever.
+				if (_primary)
+					g_seasonFlight = false;
+				// IsInt() before GetSInt(): Variable::Get* reinterprets a union,
+				// and a call into a script that is not loaded answers None, not 0
+				// (the BoolResult lesson in mhiyh_control.cpp).
+				if (!a_result.IsInt()) {
+					if (_primary && g_seasonApi.exchange(-1) == 0)
+						logger::info("widgets: season — SeasonsOfSkyrim answered nothing; "
+						             "falling back to the INI month map");
+					return;
+				}
+				const int v = static_cast<int>(a_result.GetSInt());
+				if (_into)
+					_into->store((v >= 0 && v <= 4) ? v : 0);
+				if (_primary && g_seasonApi.exchange(1) == 0)
+					logger::info("widgets: season live (Seasons of Skyrim answered {})", v);
+			}
+
+			bool CanSave() const override { return false; }
+			void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+
+		private:
+			std::atomic<int>* _into;
+			bool              _primary;
+		};
+
+		bool DispatchSeason(const char* fn, std::atomic<int>* into, bool primary)
+		{
+			auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+			if (!vm)
+				return false;
+			RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> cb(new SeasonResult(into, primary));
+			auto args = RE::MakeFunctionArguments();
+			return vm->DispatchStaticCall("SeasonsOfSkyrim", fn, args, cb);
+		}
+
+		// Re-arm the two dispatches if the latch has gone stale. MAIN THREAD.
+		void PollSeason()
+		{
+			if (g_seasonApi.load() < 0)
+				return;   // proven absent — never ask again this session
+			const long long now = NowMs();
+			if (g_seasonFlight.load()) {
+				// A dispatch that never called back would wedge the latch. The
+				// VM drops stacks on load screens, which is exactly when this
+				// widget's answer changes, so a stuck flag is not theoretical.
+				if (now - g_seasonAsked.load() < kSeasonStuckMs)
+					return;
+				g_seasonFlight = false;
+			}
+			if (g_season.load() >= 0 && now - g_seasonAsked.load() < kSeasonPollMs)
+				return;
+			g_seasonAsked.store(now);
+			g_seasonFlight = true;
+			if (!DispatchSeason("GetCurrentSeason", &g_season, true)) {
+				g_seasonFlight = false;
+				if (g_seasonApi.exchange(-1) == 0)
+					logger::info("widgets: season — SeasonsOfSkyrim.GetCurrentSeason is not "
+					             "available (mod not installed?); falling back to the INI month map");
+				return;
+			}
+			// The override rides the same beat; its own callback clears nothing
+			// but its latch, and a refusal here is not worth a second warning —
+			// GetCurrentSeason above already decided whether the API exists.
+			(void)DispatchSeason("GetSeasonOverride", &g_seasonOvr, false);
+		}
+
+		json SeasonJson()
+		{
+			LoadSeasonIni();
+			PollSeason();
+
+			auto* cal = RE::Calendar::GetSingleton();
+			const int mon = cal ? static_cast<int>(cal->GetMonth()) : -1;
+			const int day = cal ? static_cast<int>(cal->GetDay()) : 0;
+
+			// Where the answer comes from. The mod wins whenever it has spoken;
+			// the INI map is the fallback and SAYS it is one.
+			int         n = 0;
+			const char* src = "";
+			const bool  noApi = g_seasonApi.load() < 0;
+			const bool  pinned = g_sini.haveType && g_sini.type >= 1 && g_sini.type <= 4;
+			if (g_seasonApi.load() > 0 && g_season.load() >= 0) {
+				n = g_season.load();
+				src = "mod";
+			} else if (noApi && pinned) {
+				n = g_sini.type;
+				src = "calendar";
+			} else if (noApi && g_sini.haveMap && (!g_sini.haveType || g_sini.type == 5) &&
+			           mon >= 0 && mon < 12) {
+				n = g_sini.map[mon];
+				src = "calendar";
+			}
+			// Nothing to say: seasons disabled, or nobody has answered yet. The
+			// key is OMITTED (widgets.h's omit-or-tell law) — the view draws
+			// nothing and its switch greys honestly, rather than showing a
+			// season the world is not wearing.
+			if (n < 1 || n > 4)
+				return nullptr;
+
+			json out{
+				{ "id", kSeasonIds[n] },
+				{ "name", kSeasonNames[n] },
+				{ "n", n },
+				{ "src", src },
+			};
+			if (mon >= 0 && mon < 12) {
+				out["month"] = mon;
+				out["monthName"] = kMonthNames[mon];
+				out["day"] = day;
+			}
+			if (cal)
+				out["year"] = static_cast<int>(cal->GetYear());
+
+			// Pinned by the INI (Season Type 1-4) — there is no "next" and the
+			// view should not imply one.
+			if (pinned)
+				out["fixed"] = true;
+			const int ovr = g_seasonOvr.load();
+			if (ovr >= 1 && ovr <= 4) {
+				out["override"] = true;
+				out["overrideName"] = kSeasonNames[ovr];
+			}
+
+			// "Spring in 6 days". Only when the whole chain is honest: the INI
+			// gave us a real map, seasons are actually cycling, nothing has
+			// overridden them, and the mod's own answer AGREES with what the map
+			// says this month should be. That last check is what stops a wrong
+			// or stale INI (a second copy winning the VFS, a mod that reloads
+			// the map at runtime) from being reported as fact.
+			if (!pinned && !(ovr >= 1 && ovr <= 4) && g_sini.haveMap &&
+				(!g_sini.haveType || g_sini.type == 5) &&
+				mon >= 0 && mon < 12 && g_sini.map[mon] == n) {
+				int days = kMonthDays[mon] - day;   // days left in THIS month
+				if (days < 0)
+					days = 0;
+				int nxt = 0;
+				for (int step = 1; step <= 12; ++step) {
+					const int m = (mon + step) % 12;
+					if (g_sini.map[m] != n && g_sini.map[m] >= 1 && g_sini.map[m] <= 4) {
+						nxt = g_sini.map[m];
+						break;
+					}
+					days += kMonthDays[m];
+				}
+				if (nxt >= 1 && nxt <= 4)
+					out["next"] = json{ { "id", kSeasonIds[nxt] },
+						{ "name", kSeasonNames[nxt] }, { "in", days } };
+			}
 			return out;
 		}
 
@@ -3023,6 +3392,15 @@ namespace Widgets
 		// pointer is a form and survives a load like every other form.
 		g_shoutScale = 0.0f;
 		g_combatSeen = {};
+		// The season latch described the OUTGOING save — a different save can
+		// be in a different month, and the mod re-evaluates across the load
+		// screen anyway. Drop the answer (not the api verdict: whether
+		// SeasonsOfSkyrim exists is a property of the load order, not the save)
+		// and let the next tick re-ask immediately.
+		g_season.store(-1);
+		g_seasonOvr.store(-1);
+		g_seasonFlight = false;
+		g_seasonAsked.store(0);
 	}
 
 	void Save()
@@ -3060,6 +3438,8 @@ namespace Widgets
 			            id == "handL" ? &g_cfg.handL :
 			            id == "voice" ? &g_cfg.voice :
 			            id == "quick" ? &g_cfg.quick :
+			            id == "ward" ? &g_cfg.ward :
+			            id == "season" ? &g_cfg.season :
 			            id == "quick2" ? &g_cfg.quick2 :
 			            id == "lootStatus" ? &g_cfg.lootStatus :
 			            id == "vitals" ? &g_cfg.vitals :
@@ -3168,6 +3548,51 @@ namespace Widgets
 		g_invDirty = true;
 	}
 
+	namespace
+	{
+		// The ward widget's live row (2026-09-01). Emitted whenever the player
+		// KNOWS a ward or one is up right now — "ward down" is the message half
+		// the widget exists for, so a known-but-inactive ward still reports.
+		// Omitted only when there is truly nothing to say (no ward known, none
+		// active). `on` reads the engine's WardPower actor value, so a ward
+		// cast BY HAND lights the widget exactly like the maintained one.
+		// Quantised per the diff-gate law: power to whole points (it only moves
+		// during the cast ramp), everything else discrete.
+		json WardJson()
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!player)
+				return json();
+			auto* avo = player->AsActorValueOwner();
+			const int power = avo
+				? static_cast<int>(std::lround(avo->GetActorValue(RE::ActorValue::kWardPower)))
+				: 0;
+			auto* best = WardActions::BestKnownWard(player);
+			if (!best && power <= 0)
+				return json();
+			json w{ { "on", power > 0 }, { "maint", WardActions::Enabled() } };
+			if (power > 0)
+				w["power"] = power;
+			if (best) {
+				const char* n = best->GetFullName();
+				w["name"] = (n && *n) ? n : "Ward";
+				PutItemIdentity(w, best);
+				PutSpellIconMeta(w, best);
+			} else {
+				w["name"] = "Ward";
+			}
+			// One line the first time the row is built, so a live log proves
+			// the path (hd-markers.json: "widgets: ward live").
+			static bool s_wd = false;
+			if (!s_wd) {
+				s_wd = true;
+				logger::info("widgets: ward live (power {}, maintained {})",
+					power, WardActions::Enabled());
+			}
+			return w;
+		}
+	}
+
 	std::string LiveJson()
 	{
 		// One-time marker so the tick path is provably reached in a live log
@@ -3203,6 +3628,8 @@ namespace Widgets
 		bool                   wantPins, wantSets;
 		bool                   wantVitals, wantFx, wantEquip, wantResist, wantSurv, wantAllies;
 		bool                   wantHandR, wantHandL, wantVoice, wantQuick;
+		bool                   wantWard;
+		bool                   wantSeason;
 		bool                   wantQuick2, wantLoot;
 		std::string            follow;
 		std::vector<TrackSnap> pinSnap, setSnap;
@@ -3232,6 +3659,8 @@ namespace Widgets
 			wantHandL = g_cfg.handL.enabled;
 			wantVoice = g_cfg.voice.enabled;
 			wantQuick = g_cfg.quick.enabled;
+			wantWard = g_cfg.ward.enabled;
+			wantSeason = g_cfg.season.enabled;
 			wantQuick2 = g_cfg.quick2.enabled && !g_cfg.quick2Items.empty();
 			wantLoot = g_cfg.lootStatus.enabled;
 			// Re-resolve the tracker forms only when the generation moved (a
@@ -3323,6 +3752,14 @@ namespace Widgets
 			if (m.is_object())
 				out["mount"] = std::move(m);
 		}
+		if (wantSeason) {
+			// Cheap by construction: a latch read plus, at most once every
+			// kSeasonPollMs, one fire-and-forget VM dispatch. Nothing here
+			// waits on the VM, so a busy Papyrus frame cannot stall a tick.
+			json s = SeasonJson();
+			if (s.is_object())
+				out["season"] = std::move(s);
+		}
 		if (wantPins && pinsJson.is_array() && !pinsJson.empty())
 			out["pins"] = std::move(pinsJson);
 		if (wantSets && setsJson.is_array() && !setsJson.empty())
@@ -3352,6 +3789,11 @@ namespace Widgets
 		}
 		if (wantQuick && g_inv.quick.is_array() && !g_inv.quick.empty())
 			out["quick"] = g_inv.quick;
+		if (wantWard) {
+			json wd = WardJson();
+			if (wd.is_object())
+				out["ward"] = std::move(wd);
+		}
 		// Round 4: the player's OWN strip. Emitted even when every row is
 		// missing — "your mod is off" is the useful sentence, and the rows
 		// carry `missing` to say it.

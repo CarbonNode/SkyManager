@@ -1,5 +1,7 @@
 #include "fertility_bridge.h"
 
+#include "actor_identity.h"
+
 #include "follower_deck.h"
 
 #include <algorithm>
@@ -423,6 +425,60 @@ namespace FertilityBridge
 
 		out["tracked"] = tracked;
 		out["pregnant"] = pregnant;
+		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	std::string AllTrackedJson()
+	{
+		nlohmann::json out{
+			{ "ok", true },
+			{ "available", Available() },
+			{ "actors", nlohmann::json::object() },
+		};
+		auto storage = Storage();
+		if (!storage) {
+			out["available"] = false;
+			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
+		auto* obj = storage.get();
+		auto  arr = PropArray(obj, "TrackedActors");
+		int   tracked = 0;
+		int   pregnant = 0;
+		if (arr) {
+			const auto n = arr->size();
+			for (std::uint32_t i = 0; i < n; ++i) {
+				auto* actor = VarActor(&(*arr)[i]);
+				if (!actor)
+					continue;   // a slot FM compacted away, or an unloaded ref
+				const auto status = For(actor);
+				if (!status.tracked)
+					continue;
+				++tracked;
+				if (status.pregnant)
+					++pregnant;
+				auto j = ToJson(status);
+				if (const char* nm = actor->GetDisplayFullName())
+					j["name"] = nm;
+				const std::string ref = ActorIdentity::HexOf(actor->GetFormID());
+				j["ref"] = ref;
+				std::string base;
+				if (auto* npc = actor->GetActorBase()) {
+					if (auto* file = npc->GetFile(0)) {
+						const auto local = ActorIdentity::LocalIdOf(npc);
+						if (local) {
+							char lbuf[16];
+							std::snprintf(lbuf, sizeof(lbuf), "%06X", local);
+							base = std::string(file->GetFilename()) + "|" + lbuf;
+						}
+					}
+				}
+				j["base"] = base;
+				out["actors"][ref] = std::move(j);
+			}
+		}
+		out["tracked"] = tracked;
+		out["pregnant"] = pregnant;
+		logger::info("fertility: all tracked -> {} actor(s), {} pregnant", tracked, pregnant);
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 

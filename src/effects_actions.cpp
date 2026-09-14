@@ -2,6 +2,7 @@
 
 #include "body_physics.h"
 #include "pubes_actions.h"
+#include "skin_actions.h"
 #include "skinshift_actions.h"
 #include "wear_effects.h"
 #include "zaz_deck.h"
@@ -176,10 +177,25 @@ namespace EffectsActions
 
 		j["effects"] = effects;
 
-		// 🎨 Skins block — the SkinShift integration rides the same fxState
-		// payload the modal already repaints from (skinshift_actions.cpp owns
-		// availability, the preset list and the current-assignment read).
-		const auto skins = SkinShiftActions::SkinsJson(formId);
+		// 🎨 Skins block — TWO providers, one payload shape. SkyManager's own
+		// RaceMenu/skee override route (skin_actions.cpp) is preferred: it is
+		// public API rather than SkinShift's build-pinned RVA hooks, it can
+		// carry user-made packs, and it says what it did. SkinShift stays as
+		// the fallback for a rig with no RaceMenu, and the `provider` /
+		// `idPrefix` keys tell the view which id family to send back — the
+		// tab itself renders either one.
+		std::string    nativeSkinWhy;
+		nlohmann::json skins;
+		if (SkinActions::Available(&nativeSkinWhy)) {
+			skins = SkinActions::SkinsJson(formId);
+		} else {
+			skins = SkinShiftActions::SkinsJson(formId);
+			skins["provider"] = "skinshift";
+			skins["idPrefix"] = "skinshift:";
+			// Why the better route isn't the one in use, stated on the tab
+			// rather than buried in a log nobody opens mid-play.
+			skins["nativeReason"] = nativeSkinWhy;
+		}
 		const bool skinsPresent = skins.value("present", false);
 		j["skins"] = skins;
 
@@ -225,6 +241,17 @@ namespace EffectsActions
 		// main.cpp carries another session's in-flight work (matched-set
 		// law) — so the whole Skins feature hangs off the existing fxSet
 		// entry point instead of a new bridge pair.
+		// "skin:" is the native provider's id family (skin_actions.cpp), same
+		// entry point and same reasoning as every other sub-feature below.
+		if (id.rfind("skin:", 0) == 0) {
+			const std::string key = id.substr(5);
+			if (key == "rescan")
+				return SkinActions::Rescan();
+			if (key == "clear" || !on)
+				return SkinActions::Clear(formId);
+			return SkinActions::Apply(formId, key);
+		}
+
 		if (id.rfind("skinshift:", 0) == 0) {
 			const std::string key = id.substr(10);
 			if (key == "clear" || !on)

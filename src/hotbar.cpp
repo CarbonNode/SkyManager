@@ -1,18 +1,29 @@
 #include "hotbar.h"
 
 #include "actor_identity.h"
+#include "spell_actions.h"
+#include "wheel.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 
 // pch (force-included) provides RE::/SKSE:: and nlohmann json.hpp.
+
+// <Windows.h> (pulled in transitively) defines GetObject as an object-like
+// macro -> GetObjectA, which mangles BGSDefaultObjectManager::GetObject<T> and
+// InventoryEntryData::GetObject() below (2026-09-13: both broke the first
+// canonical build of the gear-set batch). The GDI call is not used here.
+#ifdef GetObject
+#	undef GetObject
+#endif
 
 namespace Hotbar
 {
@@ -62,19 +73,42 @@ namespace Hotbar
 		}
 		std::string ClampKind(const std::string& s)
 		{
-			static const char* kKinds[] = { "spell", "item", "entry", "combo", "flyout", "smart" };
+			static const char* kKinds[] = { "spell", "item", "entry", "combo", "flyout", "smart", "set" };
 			for (const char* k : kKinds)
 				if (s == k)
 					return s;
 			return "";
 		}
-		// A flyout CHILD may be any fireable kind but never another flyout —
-		// the one-level rule is enforced here, at parse time, so no fire path
-		// ever has to consider recursion.
-		std::string ClampChildKind(const std::string& s)
+		// A CHILD may be any fireable kind but never another bundle — the
+		// one-level rule is enforced here, at parse time, so no fire path ever
+		// has to consider recursion. A gear set is stricter still: it holds
+		// gear and hand spells only (IsSetChildKind), because "equip all of
+		// this" has no meaning for a deck action or a potion pool.
+		std::string ClampChildKind(const std::string& s, const std::string& parentKind)
 		{
 			const std::string k = ClampKind(s);
-			return k == "flyout" ? std::string() : k;
+			if (k == "flyout" || k == "set")
+				return std::string();
+			if (parentKind == "set" && !IsSetChildKind(k))
+				return std::string();
+			return k;
+		}
+
+		// The fields every slot and every child share, read once here so the
+		// bar and its bundles can never disagree about a key's spelling.
+		// `kind` is NOT read here: the caller clamps it with the rule that
+		// fits its position (top-level vs child-of-what).
+		void ReadSlotFields(const json& js, Slot& s)
+		{
+			s.plugin = js.value("plugin", std::string());
+			s.localId = js.value("localId", 0u);
+			s.formId = js.value("formId", 0u);
+			s.refId = js.value("refId", std::string());
+			s.label = js.value("label", std::string());
+			s.icon = js.value("icon", std::string());
+			s.uniqueId = static_cast<std::uint16_t>(js.value("uniqueId", 0u) & 0xFFFFu);
+			const std::string hand = js.value("hand", std::string());
+			s.hand = (hand == "left" || hand == "right") ? hand : std::string();
 		}
 
 		// Resolve a slot's durable identity back to a live form. All of the
@@ -618,6 +652,73 @@ namespace Hotbar
 			outCount = it->second.first;
 			outWorn  = it->second.second && it->second.second->IsWorn();
 		}
+
+		// ---- instance identity (2026-09-13) ------------------------------
+		// The ONE carried copy a slot's `uniqueId` names, or null when no copy
+		// with that ExtraUniqueID is in the bag any more. An inventory entry
+		// keeps one ExtraDataList per distinguishable copy (enchanted, tempered,
+		// worn…); a plain stack of ten has none at all, and a plain stack is
+		// never what a uniqueId was recorded from.
+		RE::ExtraDataList* FindInstance(RE::InventoryEntryData* entry, std::uint16_t uniqueId)
+		{
+			if (!entry || !uniqueId || !entry->extraLists)
+				return nullptr;
+			for (auto* xl : *entry->extraLists) {
+				if (!xl)
+					continue;
+				if (auto* uid = xl->GetByType<RE::ExtraUniqueID>(); uid && uid->uniqueID == uniqueId)
+					return xl;
+			}
+			return nullptr;
+		}
+
+		// Is THIS copy on the body? Worn-ness is stamped on the copy's own
+		// extra list, which is what makes it answerable per instance at all.
+		bool InstanceWorn(const RE::ExtraDataList* xl)
+		{
+			return xl && (xl->HasType(RE::ExtraDataType::kWorn) || xl->HasType(RE::ExtraDataType::kWornLeft));
+		}
+
+		// Which hand this copy is worn in: "left" | "right" | "" (not a hand
+		// thing, or not worn). kWornLeft is the left-hand stamp; kWorn is
+		// everything else, which for a weapon means the right hand.
+		std::string InstanceHand(const RE::ExtraDataList* xl)
+		{
+			if (!xl)
+				return {};
+			if (xl->HasType(RE::ExtraDataType::kWornLeft))
+				return "left";
+			if (xl->HasType(RE::ExtraDataType::kWorn))
+				return "right";
+			return {};
+		}
+
+		// The right-/left-hand equip slots, resolved the way SpellActions does.
+		const RE::BGSEquipSlot* HandSlot(bool left)
+		{
+			auto* dobj = RE::BGSDefaultObjectManager::GetSingleton();
+			if (!dobj)
+				return nullptr;
+			return dobj->GetObject<RE::BGSEquipSlot>(
+				left ? RE::DEFAULT_OBJECT::kLeftHandEquip : RE::DEFAULT_OBJECT::kRightHandEquip);
+		}
+
+		// A one-handed weapon or a hand spell can go in either hand; that is
+		// the only class a hand choice means anything for. Bows, crossbows and
+		// two-handers fill both; shields/torches/armour have their own slots.
+		bool OneHanded(const RE::TESForm* form)
+		{
+			if (auto* wp = form ? form->As<RE::TESObjectWEAP>() : nullptr)
+				return !(wp->IsTwoHandedAxe() || wp->IsTwoHandedSword() || wp->IsBow() || wp->IsCrossbow());
+			if (auto* sp = form ? form->As<RE::SpellItem>() : nullptr)
+				return sp->GetSpellType() == RE::MagicSystem::SpellType::kSpell;
+			return false;
+		}
+	}
+
+	bool IsSetChildKind(const std::string& kind)
+	{
+		return kind == "item" || kind == "spell";
 	}
 
 	int Config::VisibleSlots() const
@@ -632,13 +733,28 @@ namespace Hotbar
 		return std::clamp(n, 1, kMaxSlots);
 	}
 
-	int PageForMods(const Config& c, bool shift, bool ctrl, bool alt)
+	int PageForMods(const Config& c, bool shift, bool ctrl, bool alt, const bool* customHeld)
 	{
 		// Fixed precedence, deliberately: with shift+ctrl both down the player
 		// must always land on the same page, or the bar is a coin flip mid-fight.
 		const auto live = [&c](int idx) {
 			return idx >= 0 && idx < static_cast<int>(c.pages.size()) && c.pages[idx].enabled;
 		};
+		// A custom key is the most explicit thing the player can hold.
+		if (customHeld) {
+			for (int p = 1; p < kPageCount; ++p)
+				if (customHeld[p] && live(p) && c.pages[p].modCode)
+					return p;
+		}
+		// Two modifiers before one: "shift+ctrl" must never read as "shift".
+		// A combo page that is switched off falls through to the singles, so
+		// shift+ctrl on a bar with only a Shift page still lands on Shift.
+		if (shift && ctrl && live(kPageShiftCtrl))
+			return kPageShiftCtrl;
+		if (shift && alt && live(kPageShiftAlt))
+			return kPageShiftAlt;
+		if (ctrl && alt && live(kPageCtrlAlt))
+			return kPageCtrlAlt;
 		if (shift && live(kPageShift))
 			return kPageShift;
 		if (ctrl && live(kPageCtrl))
@@ -661,10 +777,14 @@ namespace Hotbar
 			if (!s.refId.empty()) o["refId"] = s.refId;
 			if (!s.label.empty()) o["label"] = s.label;
 			if (!s.icon.empty())  o["icon"]  = s.icon;
-			if (s.kind == "flyout") {
+			// Instance + hand ride only when set, so a slot that never had
+			// them round-trips byte-identical to a pre-2026-09 one.
+			if (s.uniqueId)       o["uniqueId"] = s.uniqueId;
+			if (!s.hand.empty())  o["hand"]     = s.hand;
+			if (s.kind == "flyout" || s.kind == "set") {
 				json kids = json::array();
 				for (const auto& c : s.items)
-					kids.push_back(SlotToJson(c));   // children are never flyouts (FromJson)
+					kids.push_back(SlotToJson(c));   // children are never bundles (FromJson)
 				o["items"] = std::move(kids);
 			}
 			return o;
@@ -683,7 +803,7 @@ namespace Hotbar
 				// A flyout is written even when EMPTY of children — an empty
 				// bundle you just made must survive the round-trip, or the
 				// editor's "new flyout" would vanish on the next save.
-				if (s.Empty() && s.kind != "flyout") {
+				if (s.Empty() && s.kind != "flyout" && s.kind != "set") {
 					slots.push_back(json::object());
 					continue;
 				}
@@ -693,6 +813,11 @@ namespace Hotbar
 				{ "enabled", p.enabled },
 				{ "name", p.name },
 				{ "slots", std::move(slots) },
+				{ "mod", json{
+					{ "device", p.modDevice.empty() ? std::string("keyboard") : p.modDevice },
+					{ "code", p.modCode },
+					{ "label", p.modLabel },
+				} },
 			});
 		}
 
@@ -725,6 +850,7 @@ namespace Hotbar
 			{ "hideInMenus", c.hideInMenus },
 			{ "skin", ClampSkin(c.skin) },
 			{ "modHold", c.modHold },
+			{ "menuBind", c.menuBind },
 			{ "tickMs", c.tickMs },
 			{ "pages", std::move(pages) },
 			{ "slotKeys", std::move(keys) },
@@ -783,6 +909,7 @@ namespace Hotbar
 		out.hideInMenus = j.value("hideInMenus", out.hideInMenus);
 		out.skin = ClampSkin(j.value("skin", out.skin));
 		out.modHold = j.value("modHold", out.modHold);
+		out.menuBind = j.value("menuBind", out.menuBind);
 		out.tickMs = std::max<std::uint32_t>(200, j.value("tickMs", out.tickMs));
 
 		if (j.contains("key") && j["key"].is_object()) {
@@ -805,32 +932,30 @@ namespace Hotbar
 				if (jp.is_object()) {
 					p.enabled = jp.value("enabled", false);
 					p.name = jp.value("name", std::string());
+					if (jp.contains("mod") && jp["mod"].is_object()) {
+						const auto& m = jp["mod"];
+						p.modDevice = m.value("device", std::string("keyboard")) == "mouse" ? "mouse" : "keyboard";
+						p.modCode   = m.value("code", 0u);
+						p.modLabel  = m.value("label", std::string());
+					}
 					if (jp.contains("slots") && jp["slots"].is_array()) {
 						for (const auto& js : jp["slots"]) {
 							Slot s;
 							if (js.is_object()) {
 								s.kind = ClampKind(js.value("kind", std::string()));
-								s.plugin = js.value("plugin", std::string());
-								s.localId = js.value("localId", 0u);
-								s.formId = js.value("formId", 0u);
-								s.refId = js.value("refId", std::string());
-								s.label = js.value("label", std::string());
-								s.icon = js.value("icon", std::string());
-								if (s.kind == "flyout" && js.contains("items") && js["items"].is_array()) {
+								ReadSlotFields(js, s);
+								if ((s.kind == "flyout" || s.kind == "set") &&
+									js.contains("items") && js["items"].is_array()) {
 									for (const auto& jc : js["items"]) {
 										if (!jc.is_object())
 											continue;
 										Slot c;
-										c.kind = ClampChildKind(jc.value("kind", std::string()));
-										c.plugin = jc.value("plugin", std::string());
-										c.localId = jc.value("localId", 0u);
-										c.formId = jc.value("formId", 0u);
-										c.refId = jc.value("refId", std::string());
-										c.label = jc.value("label", std::string());
-										c.icon = jc.value("icon", std::string());
+										c.kind = ClampChildKind(jc.value("kind", std::string()), s.kind);
+										ReadSlotFields(jc, c);
 										// a child that clamped to nothing (it was a
-										// nested flyout, or garbage) is dropped, not
-										// kept as a dead fan tile
+										// nested bundle, a deck action in a gear set,
+										// or garbage) is dropped, not kept as a dead
+										// fan tile
 										if (c.Empty())
 											continue;
 										if (static_cast<int>(s.items.size()) < kMaxFlyItems)
@@ -853,6 +978,15 @@ namespace Hotbar
 			p.slots.resize(kMaxSlots);
 		// The base page is not optional — nothing would draw.
 		pages[kPageBase].enabled = true;
+		// Build marker (hd-markers.json: "hotbar-pages-7"). Debug level; the
+		// literal is what the deploy check greps for.
+		{
+			int custom = 0;
+			for (const auto& p : pages)
+				if (p.modCode)
+					++custom;
+			logger::debug("hotbar-pages: {} pages, {} with a custom modifier key", pages.size(), custom);
+		}
 		out.pages = std::move(pages);
 
 		// ---- per-slot keys --------------------------------------------------
@@ -880,9 +1014,12 @@ namespace Hotbar
 			p.slots.resize(kMaxSlots);
 		out.pages[kPageBase].enabled = true;
 		out.pages[kPageBase].name  = "Main";
-		out.pages[kPageShift].name = "Shift";
-		out.pages[kPageCtrl].name  = "Ctrl";
-		out.pages[kPageAlt].name   = "Alt";
+		out.pages[kPageShift].name     = "Shift";
+		out.pages[kPageCtrl].name      = "Ctrl";
+		out.pages[kPageAlt].name       = "Alt";
+		out.pages[kPageShiftCtrl].name = "Shift+Ctrl";
+		out.pages[kPageShiftAlt].name  = "Shift+Alt";
+		out.pages[kPageCtrlAlt].name   = "Ctrl+Alt";
 
 		// 1..8 on the number row — the WoW muscle memory, and the shape Rober
 		// asked for. DIK 0x02..0x09 are '1'..'8'.
@@ -1109,6 +1246,27 @@ namespace Hotbar
 				std::int32_t count = 0;
 				bool         worn  = false;
 				InventoryStateIn(inv, obj, count, worn);
+				// The bound COPY, when the slot names one: worn-ness and the
+				// hand come off that copy's own extra list, so a button bound
+				// to your enchanted blade rings only when THAT blade is in
+				// hand — the plain one on your back does not light it.
+				if (s.uniqueId) {
+					RE::ExtraDataList* xl = nullptr;
+					if (auto it = inv.find(obj); it != inv.end())
+						xl = FindInstance(it->second.second.get(), s.uniqueId);
+					row["instance"] = xl != nullptr;
+					if (xl) {
+						worn = InstanceWorn(xl);
+						if (const auto hand = InstanceHand(xl); !hand.empty())
+							row["wornHand"] = hand;
+					} else if (count > 0) {
+						// gone, but another copy is here — the fire path will
+						// use it and say so; the row says it first
+						row["msg"] = "Your bound copy is gone - another one will be used";
+					}
+				}
+				if (!s.hand.empty())
+					row["hand"] = s.hand;
 				row["count"] = count;
 				row["equipped"] = worn;
 				row["ok"] = count > 0;
@@ -1194,7 +1352,7 @@ namespace Hotbar
 			};
 			const int scan = std::min<int>(shown, static_cast<int>(slots.size()));
 			for (int i = 0; i < scan; ++i) {
-				if (slots[i].kind == "flyout") {
+				if (slots[i].kind == "flyout" || slots[i].kind == "set") {
 					for (const auto& kid : slots[i].items)
 						note(kid);
 				} else {
@@ -1217,12 +1375,61 @@ namespace Hotbar
 			// An empty FLYOUT still draws (as a bundle with nothing in it) so
 			// the button you just made does not vanish from the bar between
 			// the editor and its first child.
-			if (!present || (slots[i].Empty() && slots[i].kind != "flyout")) {
+			if (!present || (slots[i].Empty() && slots[i].kind != "flyout" && slots[i].kind != "set")) {
 				row["kind"] = "";
 				arr.push_back(std::move(row));
 				continue;
 			}
 			const Slot& s = slots[i];
+			if (s.kind == "set") {
+				// A gear set's face: the children's live rows (so the editor
+				// lists them with the same art and grey-outs as the bar), and
+				// two summary facts the button itself draws — how much of the
+				// set is in the bag, and whether ALL of what is carried is on,
+				// which is exactly the condition under which the next press
+				// strips it (FireSet), so the ring can never lie about that.
+				row["kind"] = "set";
+				if (!s.icon.empty())
+					row["icon"] = s.icon;
+				if (!s.label.empty())
+					row["label"] = s.label;
+				json kids = json::array();
+				int  carried = 0, worn = 0;
+				for (int k = 0; k < static_cast<int>(s.items.size()); ++k) {
+					json kid{ { "i", k } };
+					FillLiveRow(kid, s.items[k], player, fx, voiceCd, inv, forms);
+					if (kid.value("ok", false)) {
+						++carried;
+						if (kid.value("equipped", false))
+							++worn;
+						// a hand spell counts as "worn" when it is in a hand —
+						// FillLiveRow reports known-ness, not equipped-ness,
+						// for spells, so it is read here
+						if (s.items[k].kind == "spell" && player) {
+							const auto cached = forms.find(&s.items[k]);
+							RE::TESForm* f = cached != forms.end() ? cached->second : nullptr;
+							if (f && (player->GetEquippedObject(false) == f || player->GetEquippedObject(true) == f)) {
+								kid["equipped"] = true;
+								++worn;
+							}
+						}
+					}
+					kids.push_back(std::move(kid));
+				}
+				row["items"] = std::move(kids);
+				row["count"] = carried;
+				row["total"] = static_cast<int>(s.items.size());
+				row["equipped"] = carried > 0 && worn == carried;
+				row["ok"] = carried > 0;
+				if (s.items.empty())
+					row["msg"] = "Nothing in this gear set yet";
+				else if (carried == 0)
+					row["msg"] = "None of this set is in your bag";
+				else if (carried < static_cast<int>(s.items.size()))
+					row["msg"] = std::to_string(static_cast<int>(s.items.size()) - carried) + " piece(s) not in your bag";
+				arr.push_back(std::move(row));
+				continue;
+			}
 			if (s.kind == "flyout") {
 				row["kind"] = "flyout";
 				row["ok"] = !s.items.empty();
@@ -1532,5 +1739,542 @@ namespace Hotbar
 	{
 		std::lock_guard l(g_smartMx);
 		return g_smartPrefs;
+	}
+	// ======================================================================
+	//  Instance-aware item use, gear sets, bind-from-menu (2026-09-13)
+	// ======================================================================
+	// The three STB Hotkey System ideas worth having, built on the verbs the
+	// bar already fires. Nothing here talks to a menu it does not read
+	// honestly, and nothing here greys out a button it could still fire.
+
+	namespace
+	{
+		std::string Dump(const json& j)
+		{
+			return j.dump(-1, ' ', false, json::error_handler_t::replace);
+		}
+
+		std::string NameFor(RE::TESBoundObject* obj, RE::InventoryEntryData* entry)
+		{
+			if (entry) {
+				if (const char* n = entry->GetDisplayName(); n && *n)
+					return n;
+			}
+			if (obj) {
+				if (const char* n = obj->GetName(); n && *n)
+					return n;
+			}
+			return "that";
+		}
+
+		// The entry for one base object, read from a filtered walk.
+		RE::InventoryEntryData* EntryFor(RE::PlayerCharacter* player, RE::TESBoundObject* obj,
+			std::int32_t& outCount, InvMap& holder)
+		{
+			outCount = 0;
+			if (!player || !obj)
+				return nullptr;
+			holder = player->GetInventory([obj](RE::TESBoundObject& o) { return &o == obj; });
+			for (auto& [o, data] : holder) {
+				if (o != obj)
+					continue;
+				outCount = data.first;
+				return data.second.get();
+			}
+			return nullptr;
+		}
+
+		// Everything about a child a set needs to decide what to do with it.
+		// Lives in a std::list, never a vector: `hold` is an inventory map of
+		// unique_ptrs, so the struct is move-only, and a vector's growth path
+		// instantiates the (deleted) copy — the second canonical build failure
+		// of 2026-09-13. A list never relocates its elements.
+		struct SetPiece
+		{
+			const Slot*             slot   = nullptr;
+			RE::TESForm*            form   = nullptr;
+			RE::TESBoundObject*     obj    = nullptr;   // items only
+			RE::SpellItem*          spell  = nullptr;   // hand spells only
+			RE::InventoryEntryData* entry  = nullptr;
+			RE::ExtraDataList*      xl     = nullptr;   // the bound copy, when found
+			InvMap                  hold;                // keeps `entry` alive
+			std::int32_t            count  = 0;
+			bool                    worn   = false;
+			std::string             name;
+		};
+	}
+
+	std::string FireItem(const Slot& s)
+	{
+		// The plain case is the wheel's, verbatim — no new behaviour for a
+		// slot that recorded nothing new.
+		if (!s.uniqueId && s.hand.empty()) {
+			return WheelMenu::Use(Dump(json{
+				{ "formId", ActorIdentity::HexOf(s.localId) },
+				{ "plugin", s.plugin },
+			}));
+		}
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player)
+			return Dump(json{ { "ok", false }, { "msg", "No save loaded" } });
+		auto* form = ResolveForm(s);
+		auto* obj  = form ? form->As<RE::TESBoundObject>() : nullptr;
+		if (!obj)
+			return Dump(json{ { "ok", false }, { "msg", "That item didn't resolve - its mod may be off" } });
+
+		InvMap       hold;
+		std::int32_t count = 0;
+		auto*        entry = EntryFor(player, obj, count, hold);
+		const std::string who = NameFor(obj, entry);
+		if (count <= 0 || !entry)
+			return Dump(json{ { "ok", false }, { "msg", "You aren't carrying " + who + " any more" } });
+
+		auto* eqm = RE::ActorEquipManager::GetSingleton();
+		if (!eqm)
+			return Dump(json{ { "ok", false }, { "msg", "The equip manager isn't up" } });
+
+		// The bound copy first; any copy second, said out loud.
+		RE::ExtraDataList* xl = FindInstance(entry, s.uniqueId);
+		std::string note;
+		if (s.uniqueId && !xl)
+			note = " (your bound copy is gone - used another)";
+		const bool worn = xl ? InstanceWorn(xl) : entry->IsWorn();
+
+		// Toggle, like the wheel: the thing you already hold goes away. Only
+		// for the kinds that can be worn at all — a potion is never "worn".
+		const bool wearable = obj->Is(RE::FormType::Weapon) || obj->Is(RE::FormType::Armor) ||
+		                      obj->Is(RE::FormType::Light) || obj->Is(RE::FormType::Ammo);
+		if (worn && wearable) {
+			eqm->UnequipObject(player, obj, xl);
+			logger::info("hotbar-item: instance {} put away '{}'", s.uniqueId, who);
+			return Dump(json{ { "ok", true }, { "msg", "Put away " + who }, { "equipped", false } });
+		}
+		const RE::BGSEquipSlot* slot = nullptr;
+		if (!s.hand.empty() && OneHanded(obj))
+			slot = HandSlot(s.hand == "left");
+		eqm->EquipObject(player, obj, xl, 1, slot);
+		// Build marker (hd-markers.json: "hotbar-item-instance").
+		logger::info("hotbar-item: instance {} hand '{}' equipped '{}'{}", s.uniqueId, s.hand, who,
+			xl ? "" : " [copy not found, base used]");
+		const std::string verb = obj->Is(RE::FormType::AlchemyItem) ? "Drank " :
+		                         obj->Is(RE::FormType::Scroll)      ? "Readied " : "Equipped ";
+		return Dump(json{ { "ok", true }, { "msg", verb + who + note }, { "equipped", true } });
+	}
+
+	std::string FireSet(const Slot& s)
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player)
+			return Dump(json{ { "ok", false }, { "msg", "No save loaded" } });
+		if (s.items.empty())
+			return Dump(json{ { "ok", false }, { "msg", "Nothing in this gear set yet" } });
+		auto* eqm = RE::ActorEquipManager::GetSingleton();
+		if (!eqm)
+			return Dump(json{ { "ok", false }, { "msg", "The equip manager isn't up" } });
+
+		// Resolve every piece first, so the decision (equip vs strip) is made
+		// on the whole set and not piece by piece.
+		std::list<SetPiece>      pieces;
+		std::vector<std::string> missing;
+		for (const auto& c : s.items) {
+			SetPiece& p = pieces.emplace_back();
+			p.slot = &c;
+			p.form = ResolveForm(c);
+			if (!p.form) {
+				missing.push_back(c.label.empty() ? std::string("?") : c.label);
+				pieces.pop_back();
+				continue;
+			}
+			if (c.kind == "spell") {
+				p.spell = p.form->As<RE::SpellItem>();
+				if (!p.spell || !KnowsSpell(player, p.spell)) {
+					missing.push_back(p.form->GetName() ? p.form->GetName() : "spell");
+					pieces.pop_back();
+					continue;
+				}
+				p.name  = p.spell->GetName() ? p.spell->GetName() : "spell";
+				p.count = 1;
+				p.worn  = player->GetEquippedObject(false) == p.spell || player->GetEquippedObject(true) == p.spell;
+			} else {
+				p.obj = p.form->As<RE::TESBoundObject>();
+				if (!p.obj) {
+					missing.push_back(p.form->GetName() ? p.form->GetName() : "?");
+					pieces.pop_back();
+					continue;
+				}
+				p.entry = EntryFor(player, p.obj, p.count, p.hold);
+				p.name  = NameFor(p.obj, p.entry);
+				if (p.count <= 0 || !p.entry) {
+					missing.push_back(p.name);
+					pieces.pop_back();
+					continue;
+				}
+				p.xl   = FindInstance(p.entry, c.uniqueId);
+				p.worn = p.xl ? InstanceWorn(p.xl) : p.entry->IsWorn();
+			}
+		}
+		if (pieces.empty())
+			return Dump(json{ { "ok", false }, { "msg", "None of this set is in your bag" } });
+
+		const std::string setName = s.label.empty() ? std::string("the set") : s.label;
+		bool allWorn = true;
+		for (const auto& p : pieces)
+			if (!p.worn) { allWorn = false; break; }
+
+		if (allWorn) {
+			// Strip: items only. There is no unequip verb for a spell, so hands
+			// holding set spells keep them — the message says so once.
+			int stripped = 0, spellsKept = 0;
+			for (auto& p : pieces) {
+				if (p.spell) { ++spellsKept; continue; }
+				eqm->UnequipObject(player, p.obj, p.xl);
+				++stripped;
+			}
+			logger::info("hotbar-set: '{}' stripped ({} item(s), {} spell(s) kept in hand)", setName, stripped, spellsKept);
+			std::string msg = "Put away " + setName;
+			if (spellsKept)
+				msg += " (spells stay in hand)";
+			return Dump(json{ { "ok", true }, { "msg", msg }, { "equipped", false } });
+		}
+
+		// Equip, with hand placement. A recorded hand wins; otherwise the
+		// FIRST one-handed weapon / hand spell takes the right hand, the next
+		// one the left, and shields / torches always the left. Right before
+		// left, so a two-hander in the right hand is replaced before a shield
+		// tries to take the left. Already-worn pieces are left alone: re-
+		// equipping a worn weapon makes the engine sheathe-and-draw it.
+		int rightTaken = 0, leftTaken = 0;
+		// pass 1: the hands
+		for (auto& p : pieces) {
+			if (p.worn || !OneHanded(p.form))
+				continue;
+			bool left;
+			if (p.slot->hand == "left")       left = true;
+			else if (p.slot->hand == "right") left = false;
+			else                              left = rightTaken > 0 && leftTaken == 0;
+			if (left) ++leftTaken; else ++rightTaken;
+			if (p.spell) {
+				eqm->EquipSpell(player, p.spell, HandSlot(left));
+			} else {
+				eqm->EquipObject(player, p.obj, p.xl, 1, HandSlot(left));
+			}
+		}
+		// pass 2: everything else (two-handers, bows, shields, torches, armour,
+		// ammo, powers) — the engine picks the slot
+		for (auto& p : pieces) {
+			if (p.worn || OneHanded(p.form))
+				continue;
+			if (p.spell) {
+				eqm->EquipSpell(player, p.spell);
+			} else {
+				eqm->EquipObject(player, p.obj, p.xl);
+			}
+		}
+		std::string names;
+		for (const auto& p : pieces) {
+			if (!names.empty())
+				names += ", ";
+			names += p.name;
+		}
+		// Build marker (hd-markers.json: "hotbar-set-fire").
+		logger::info("hotbar-set: '{}' equipped {} piece(s) [{}]{}", setName, pieces.size(), names,
+			missing.empty() ? "" : (" - missing: " + std::to_string(missing.size())));
+		std::string msg = "Wearing " + setName + ": " + names;
+		if (!missing.empty())
+			msg += " (" + std::to_string(missing.size()) + " not in your bag)";
+		return Dump(json{ { "ok", true }, { "msg", msg }, { "equipped", true } });
+	}
+
+	namespace
+	{
+		// One carried thing -> the slot-shaped answer HighlightedJson gives.
+		void FillHighlightedItem(json& res, RE::TESBoundObject* obj, RE::InventoryEntryData* entry,
+			const char* source)
+		{
+			if (!obj) {
+				res["msg"] = "Nothing is highlighted";
+				return;
+			}
+			std::string plugin, hex;
+			ActorIdentity::DurableOf(obj, hex, plugin);
+			res["ok"]       = true;
+			res["kind"]     = "item";
+			res["plugin"]   = plugin;
+			res["localId"]  = ActorIdentity::LocalIdOf(obj);
+			// A player-enchanted piece is a DYNAMIC base form (0xFF…) with no
+			// durable pair; created forms keep their id across loads of the
+			// same save, which is exactly as durable as the piece itself.
+			res["formId"]   = obj->GetFormID();
+			res["name"]     = NameFor(obj, entry);
+			res["source"]   = source;
+			res["uniqueId"] = 0;
+			res["hand"]     = "";
+			// The highlighted ROW is one copy: the menu builds one entry per
+			// distinguishable extra list, so the first list with an id is the
+			// copy under the cursor. A stack of plain ones has no id — fine,
+			// "any copy" is the right binding for those.
+			if (entry && entry->extraLists) {
+				for (auto* xl : *entry->extraLists) {
+					if (!xl)
+						continue;
+					if (auto* uid = xl->GetByType<RE::ExtraUniqueID>()) {
+						res["uniqueId"] = uid->uniqueID;
+						res["hand"]     = InstanceHand(xl);
+						break;
+					}
+				}
+				if (res.value("hand", std::string()).empty()) {
+					for (auto* xl : *entry->extraLists) {
+						if (const auto h = InstanceHand(xl); !h.empty()) {
+							res["hand"] = h;
+							break;
+						}
+					}
+				}
+			}
+			// Only a one-handed thing has a hand worth remembering; a bow worn
+			// "right" would otherwise be re-equipped through the wrong slot.
+			if (!OneHanded(obj))
+				res["hand"] = "";
+		}
+
+		void FillHighlightedSpell(json& res, RE::TESForm* form, const char* source)
+		{
+			std::string plugin, hex;
+			ActorIdentity::DurableOf(form, hex, plugin);
+			res["ok"]       = true;
+			res["kind"]     = "spell";
+			res["plugin"]   = plugin;
+			res["localId"]  = ActorIdentity::LocalIdOf(form);
+			res["formId"]   = form->GetFormID();
+			res["name"]     = form->GetName() ? form->GetName() : "spell";
+			res["source"]   = source;
+			res["uniqueId"] = 0;
+			res["hand"]     = "";
+			if (auto* sp = form->As<RE::SpellItem>(); sp && OneHanded(sp)) {
+				if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+					if (player->GetEquippedObject(true) == sp)
+						res["hand"] = "left";
+					else if (player->GetEquippedObject(false) == sp)
+						res["hand"] = "right";
+				}
+			}
+		}
+	}
+
+	std::string HighlightedJson()
+	{
+		json res{ { "ok", false } };
+		auto* ui = RE::UI::GetSingleton();
+		if (!ui) {
+			res["msg"] = "The UI isn't up";
+			return Dump(res);
+		}
+
+		// Magic menu: the Spell Deck's capture reader, menu-sourced ONLY — its
+		// hand fallback answers "whatever you are holding", which is not what
+		// a press on a highlighted row means.
+		if (ui->IsMenuOpen(RE::MagicMenu::MENU_NAME)) {
+			const auto j = json::parse(SpellActions::HighlightedSpellJson(), nullptr, false);
+			if (j.is_object() && j.value("ok", false) && j.value("src", std::string()) == "menu") {
+				if (auto* f = RE::TESForm::LookupByID(j.value("formId", 0u))) {
+					FillHighlightedSpell(res, f, "magic");
+					return Dump(res);
+				}
+			}
+			res["msg"] = "No spell is highlighted in the magic menu";
+			return Dump(res);
+		}
+
+		if (ui->IsMenuOpen(RE::InventoryMenu::MENU_NAME)) {
+			auto menu = ui->GetMenu<RE::InventoryMenu>();
+			RE::ItemList::Item* item = nullptr;
+			if (menu) {
+				auto& rt = menu->GetRuntimeData();
+				if (rt.itemList)
+					item = rt.itemList->GetSelectedItem();
+			}
+			auto* entry = item ? item->data.objDesc : nullptr;
+			auto* obj   = entry ? entry->GetObject() : nullptr;
+			if (!obj)
+				res["msg"] = "Nothing is highlighted in your inventory";
+			else
+				FillHighlightedItem(res, obj, entry, "inventory");
+			return Dump(res);
+		}
+
+		if (ui->IsMenuOpen(RE::FavoritesMenu::MENU_NAME)) {
+			auto menu = ui->GetMenu<RE::FavoritesMenu>();
+			if (!menu) {
+				res["msg"] = "Couldn't reach the favourites menu";
+				return Dump(res);
+			}
+			auto& rt = menu->GetRuntimeData();
+			// The highlighted row lives in Scaleform: Menu_mc.itemList
+			// .selectedIndex (vanilla spells it "itemList"; the capitalised
+			// name is tried too, cheaply, so a reskinned SWF still answers).
+			// The row's own "formId" member, when the SWF carries one, beats
+			// the index — an index is only as good as the list's order.
+			int          sel  = -1;
+			RE::TESForm* byId = nullptr;
+			const char*  how  = "none";
+			if (rt.root.IsObject()) {
+				for (const char* nm : { "itemList", "ItemList" }) {
+					RE::GFxValue list;
+					if (!rt.root.GetMember(nm, &list) || !list.IsObject())
+						continue;
+					RE::GFxValue idx;
+					if (list.GetMember("selectedIndex", &idx) && idx.IsNumber())
+						sel = static_cast<int>(idx.GetNumber());
+					RE::GFxValue entries, ent, fid;
+					if (sel >= 0 && list.GetMember("entryList", &entries) && entries.IsArray() &&
+						entries.GetElement(static_cast<std::uint32_t>(sel), &ent) && ent.IsObject() &&
+						ent.GetMember("formId", &fid) && fid.IsNumber()) {
+						byId = RE::TESForm::LookupByID(static_cast<RE::FormID>(static_cast<std::uint32_t>(fid.GetNumber())));
+						how  = "formId";
+					} else if (sel >= 0) {
+						how = "index";
+					}
+					break;
+				}
+			}
+			const RE::FavoritesMenu::Entry* pick = nullptr;
+			if (byId) {
+				for (const auto& e : rt.favorites)
+					if (e.item == byId) { pick = &e; break; }
+			}
+			if (!pick && sel >= 0 && sel < static_cast<int>(rt.favorites.size()))
+				pick = &rt.favorites[static_cast<std::uint32_t>(sel)];
+			logger::debug("hotbar-bind: favourites read via {} (sel {}, {} entries)", how, sel, rt.favorites.size());
+			if (!pick || !pick->item) {
+				res["msg"] = "Couldn't tell which favourite is highlighted - bind it from the inventory or magic menu instead";
+				return Dump(res);
+			}
+			if (pick->item->As<RE::SpellItem>() || pick->item->As<RE::TESShout>()) {
+				FillHighlightedSpell(res, pick->item, "favorites");
+				return Dump(res);
+			}
+			auto* obj = pick->item->As<RE::TESBoundObject>();
+			if (!obj) {
+				res["msg"] = "That favourite isn't something the bar can hold";
+				return Dump(res);
+			}
+			// The favourites entry's own InventoryEntryData is the copy the
+			// row stands for; when it is missing, fall back to a bag walk so
+			// the hand and the copy still come from the real inventory.
+			if (pick->entryData) {
+				FillHighlightedItem(res, obj, pick->entryData, "favorites");
+			} else if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+				InvMap       hold;
+				std::int32_t count = 0;
+				auto*        entry = EntryFor(player, obj, count, hold);
+				FillHighlightedItem(res, obj, entry, "favorites");
+			} else {
+				FillHighlightedItem(res, obj, nullptr, "favorites");
+			}
+			return Dump(res);
+		}
+
+		res["msg"] = "Open your inventory, magic menu or favourites first";
+		return Dump(res);
+	}
+
+	// ======================================================================
+	//  Vanilla favourites hotkeys -> the bar (2026-09-13)
+	// ======================================================================
+	std::string ImportVanillaHotkeys(Config& c, int page)
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player)
+			return Dump(json{ { "ok", false }, { "msg", "No save loaded" } });
+		const int p = std::clamp(page, 0, kPageCount - 1);
+		if (p >= static_cast<int>(c.pages.size()))
+			return Dump(json{ { "ok", false }, { "msg", "No such page" } });
+		auto& slots = c.pages[p].slots;
+		if (slots.size() < 8)
+			slots.resize(kMaxSlots);
+
+		// slot index (0-7) -> what vanilla has on it
+		Slot found[8];
+		bool have[8] = {};
+
+		// spells, shouts, powers: MagicFavorites keeps the hotkey array in slot order
+		if (auto* mf = RE::MagicFavorites::GetSingleton()) {
+			for (std::uint32_t i = 0; i < 8 && i < mf->hotkeys.size(); ++i) {
+				RE::TESForm* f = mf->hotkeys[i];
+				if (!f)
+					continue;
+				if (!(f->As<RE::SpellItem>() || f->As<RE::TESShout>()))
+					continue;
+				std::string plugin, hex;
+				ActorIdentity::DurableOf(f, hex, plugin);
+				Slot s;
+				s.kind    = "spell";
+				s.plugin  = plugin;
+				s.localId = ActorIdentity::LocalIdOf(f);
+				s.formId  = f->GetFormID();
+				s.label   = "";
+				found[i]  = std::move(s);
+				have[i]   = true;
+			}
+		}
+		// items: the hotkey is stamped on the carried copy's extra list
+		{
+			auto inv = player->GetInventory();
+			for (auto& [obj, data] : inv) {
+				if (!obj || data.first <= 0 || !data.second || !data.second->extraLists)
+					continue;
+				for (auto* xl : *data.second->extraLists) {
+					if (!xl)
+						continue;
+					auto* hk = xl->GetByType<RE::ExtraHotkey>();
+					if (!hk)
+						continue;
+					const int idx = static_cast<int>(static_cast<std::uint8_t>(hk->hotkey.get()));
+					if (idx < 0 || idx > 7 || have[idx])
+						continue;
+					std::string plugin, hex;
+					ActorIdentity::DurableOf(obj, hex, plugin);
+					Slot s;
+					s.kind    = "item";
+					s.plugin  = plugin;
+					s.localId = ActorIdentity::LocalIdOf(obj);
+					s.formId  = obj->GetFormID();
+					if (auto* uid = xl->GetByType<RE::ExtraUniqueID>())
+						s.uniqueId = uid->uniqueID;
+					if (OneHanded(obj))
+						s.hand = InstanceHand(xl);
+					found[idx] = std::move(s);
+					have[idx]  = true;
+				}
+			}
+		}
+
+		int  imported = 0, skipped = 0, none = 0;
+		json names = json::array();
+		for (int i = 0; i < 8; ++i) {
+			if (!have[i]) {
+				++none;
+				continue;
+			}
+			if (!slots[i].Empty()) {
+				++skipped;
+				continue;
+			}
+			slots[i] = found[i];
+			++imported;
+			if (auto* f = ResolveForm(slots[i]); f && f->GetName())
+				names.push_back(std::string(f->GetName()));
+		}
+		std::string msg;
+		if (none == 8)
+			msg = "Skyrim has no favourites hotkeys set (1-8 in the favourites menu)";
+		else
+			msg = "Imported " + std::to_string(imported) + " of Skyrim's hotkeys" +
+			      (skipped ? " (" + std::to_string(skipped) + " skipped: those buttons are already filled)" : "");
+		// Build marker (hd-markers.json: "hotbar-import-vanilla").
+		logger::info("hotbar-import: vanilla hotkeys -> page {}: {} imported, {} skipped, {} empty", p, imported, skipped, none);
+		return Dump(json{ { "ok", imported > 0 }, { "imported", imported }, { "skipped", skipped },
+			{ "names", std::move(names) }, { "msg", msg } });
 	}
 }

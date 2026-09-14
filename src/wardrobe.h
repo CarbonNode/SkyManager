@@ -385,6 +385,12 @@ namespace Wardrobe
 	std::string SetInventoryMode(const std::string& reqJson);              // {"who":"player"|"npc","mode":1|2}
 	std::string SetSoesEnabled(const std::string& reqJson);                // {"on":true}
 	std::string RefreshAll();                                              // re-dress every tracked actor
+
+	// Is SOES tracking this actor right now? Read off the last catalogue sync
+	// (the same list StateJson reports as `tracked`), keyed the durable way.
+	// Exported for Loadouts: force-equipping a tracked actor is undone by
+	// SOES's 2 s poll, so a class dress must refuse her honestly instead.
+	bool IsTrackedActor(const std::string& formId, const std::string& plugin);
 	std::string ResetAutoSwitch();                                         // clear the auto-switch state machine
 
 	// Cadence tick. For every wardrobe assignment whose cadence has elapsed in

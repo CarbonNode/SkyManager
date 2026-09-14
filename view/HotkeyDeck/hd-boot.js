@@ -117,6 +117,10 @@
                            // consumes (whInvList / hd-item-icons) is defined in CORE
                            // (hd-wheel.js), so no STUB_FNS entry; a racing deep-open
                            // parks on __hdPendingSuper (app.js router).
+    'hd-places.js',        // Places — the searchable teleport, an Omni provider only
+                           // (no pane, no CSS). hdPlacesData is response-style (the
+                           // provider always asks first), so no STUB_FNS entry; the
+                           // registry (hd-omni.js) is CORE so registering here is safe.
     'survival-pane.js',    // Survival TAB (the dashboard); chains svStateResult
     'hd-survival.js',      // survival popout (sv* replies are response-style —
                            // the module always asks first, so no STUB_FNS entry;
@@ -136,6 +140,9 @@
        Spell Deck view on 2026-08-15 (view/MagicDeck), which loads it directly
        from its own index.html — this deck no longer hosts that pane. */
     'mounts-pane.js',
+    'loadouts-pane.js',    // Follower Loadouts; owns tab 'loadouts'. Depends on
+                           // hd-face.js + hd-itempick.js above; lo* replies are
+                           // response-style (loState on Show), so no STUB_FNS entry
     'settlement-pane.js',  // world-object placer; owns tab 'settle'. Depends on
                            // wardrobe-pane.js (itemIconFor) + hd-lightbox.js above.
     'wigs-pane.js',        // rendered wig catalogue; owns tab 'wigs'. Same deps
@@ -150,6 +157,11 @@
                            // 'highking' (detection-gated). kg* replies are
                            // response-style (kgState on Show), so no STUB_FNS
                            // entry; free-standing like spellcraft.
+    'household-pane.js',  // Household tab — the wives and the expecting. Owns tab
+                          // 'household'. MUST load after followers-pane.js: the whole
+                          // page is a view of FolPane.householdRoster(), and it sends
+                          // fdRefresh rather than owning a bridge, so every reply is
+                          // response-style and it needs no STUB_FNS entry.
     'charsheet-pane.js',
     'anim-pane.js',
     'ostim-pane.js',
@@ -188,11 +200,13 @@
     'journal-pane.js': ['journal'],
     'transmog-pane.js': ['transmog'],
     'mounts-pane.js': ['mounts'],
+    'loadouts-pane.js': ['loadouts'],
     'settlement-pane.js': ['settle'],
     'wigs-pane.js': ['wigs'],
     'survival-pane.js': ['survival'],
     'spellcraft-pane.js': ['spellcraft'],
     'highking-pane.js': ['highking'],
+    'household-pane.js': ['household'],
     'charsheet-pane.js': ['sheet'],
     'anim-pane.js': ['anim'],
     'ostim-pane.js': ['anim'],       // OStim body lives inside the Animations tab
@@ -208,10 +222,11 @@
   var PANE_FOR_TAB = {
     followers: 'FolPane', wardrobe: 'WardrobePane', domains: 'DomainsPane',
     containers: 'ContainersPane', rooms: 'RoomsPane', loot: 'LootPane',
-    keys: 'KeysPane', items: 'ItemsPane', npcs: 'NpcsPane', distr: 'DistrPane', mounts: 'MountsPane',
+    keys: 'KeysPane', items: 'ItemsPane', npcs: 'NpcsPane', distr: 'DistrPane', mounts: 'MountsPane', loadouts: 'LoadoutsPane',
     transmog: 'TransmogPane', settle: 'SettlementPane', wigs: 'WigsPane',
     spellcraft: 'SpellCraftPane', survival: 'SurvivalPane', journal: 'JournalPane',
     highking: 'HighKingPane',
+    household: 'HouseholdPane',
     sheet: 'CharSheetPane', anim: 'AnimPane', faces: 'FacesPane', time: 'TimePane',
     finances: 'FinancesPane'
   };

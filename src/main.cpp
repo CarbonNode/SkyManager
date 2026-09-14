@@ -29,6 +29,7 @@
 #include "follower_deck.h"
 #include "live_api.h"
 #include "fertility_bridge.h"
+#include "court_status.h"   // marriage + pregnancy → court-status.json for CHIM's `court` plugin
 #include "faith.h"   // Wintersun's tracker quest — cached bind, dropped on load
 #include "mhiyh_control.h"
 #include "chim_control.h"
@@ -48,6 +49,7 @@
 #include "npc_actions.h"
 #include "save_actions.h"
 #include "fix_actions.h"
+#include "book_reader.h"   // Read Every Book: vanilla read of every book in the bag, no Book Menu (2026-09-14)
 #include "trade_actions.h"   // Trade: barter menu / pack on the crosshair NPC (Rober, 2026-08-17)
 #include "console_actions.h"
 #include "place_actions.h"
@@ -78,6 +80,7 @@
 #include "settlement.h"     // Settlement tab: the world-object placer (st* bridge)
 #include "camp_actions.h"   // camp-*/hb-* self-cast seeds (Campfire + Hunterborn)
 #include "mounts.h"         // Mounts tab: the stable (mt* bridge, mounts.json)
+#include "loadouts.h"       // Loadouts tab: follower groups + gear classes (lo* bridge, loadouts.json)
 #include "transmog.h"       // Transmog tab: restyled-pool instance transmog (tg* bridge)
 #include "wigs.h"           // Wigs tab: wig-mod registry + hair-slot browser (wv* bridge)
 #include "combat_arts.h"    // Combat Arts tab: Ashes of War ash collection (ca* bridge)
@@ -92,6 +95,7 @@
 #include "followers_hud.h"
 #include "hotbar.h"
 #include "widgets.h"   // HUD widgets (wg* on the hotbar view) + potion browser (pb* on the deck view)
+#include "ward_actions.h"   // ward-toggle: maintain your best ward, WardAnytime-style
 #include "anim_actions.h"
 #include "ostim_deck.h"
 #include "zaz_deck.h"
@@ -101,6 +105,7 @@
 #include "spell_actions.h"
 #include "spellcraft_actions.h"
 #include "journal.h"   // Journal tab: the book you write yourself (jr* bridge, journal.json)
+#include "places.h"    // Places: the searchable teleport (hdPlaces* bridge, Omni `places` provider)
 
 using json = nlohmann::json;
 
@@ -377,6 +382,12 @@ namespace
 		std::uint32_t              trigCode = 0;
 		std::string                trigLabel;
 		std::vector<std::uint32_t> trigMods;    // DIK codes that must be held
+		// Gesture (2026-09-13): "" = tap (fires on press, as always) |
+		// "double" = two taps within kDoubleTapMs | "hold" = held kHoldMs.
+		// One key, three actions. A key that carries a double or hold
+		// binding fires its TAP on release / after the double window instead
+		// of on press — the only way the three can be told apart.
+		std::string                trigGesture;
 	};
 
 	struct ModAction  // Shift/Ctrl/Alt + open-key quick action (code 0 = off)
@@ -1218,7 +1229,8 @@ namespace
 					{ "device", e.trigDevice },
 					{ "code", e.trigCode },
 					{ "label", e.trigLabel },
-					{ "mods", e.trigMods } } } });
+					{ "mods", e.trigMods },
+					{ "gesture", e.trigGesture } } } });
 		}
 		return json{ { "settings", SettingsToJson(c.settings) },
 			{ "categories", c.categories },
@@ -1360,6 +1372,8 @@ namespace
 			{ "hd-party-wait", "nff" }, { "hd-party-follow", "nff" },
 			{ "hd-party-summon", "nff" }, { "hd-party-relax", "nff" },
 			{ "hd-party-regroup", "nff" }, { "npc-nff-recruit", "nff" },
+			{ "hd-lo-deploy", "nff" }, { "hd-lo-follow", "nff" },
+			{ "hd-lo-wait", "nff" }, { "hd-lo-sic", "nff" }, { "hd-lo-disengage", "nff" },
 			{ "npc-mhiyh-home", "mhiyh" }, { "hd-quick-light", "quicklight" },
 			{ "hd-highking", "highking" }, { "hd-hk-collect-taxes", "highking" },
 			{ "hd-hk-highreach-tp", "highking" },
@@ -1522,6 +1536,9 @@ namespace
 						e.trigDevice = t.value("device", std::string(""));
 						e.trigCode   = t.value("code", 0u);
 						e.trigLabel  = t.value("label", std::string(""));
+						e.trigGesture = t.value("gesture", std::string(""));
+						if (e.trigGesture != "double" && e.trigGesture != "hold")
+							e.trigGesture.clear();
 						e.trigMods.clear();
 						if (t.contains("mods") && t["mods"].is_array())
 							for (const auto& m : t["mods"])
@@ -3123,10 +3140,31 @@ namespace
 			  "Toggle auto-pickup of nearby loot to you or a marked container - configure range, destination and categories in the Containers tab (loot vacuum magnet pickup auto)", "Utilities", "icons/custom/hk-auto-loot.png" },
 			{ "auto-loot-now", "hd-auto-loot-now", "Loot Around Me",
 			  "Pick up all eligible nearby loot right now - a one-shot sweep, works with the deck closed (auto loot vacuum sweep grab pickup)", "Utilities", "icons/custom/hk-auto-loot-now.png" },
+			// Read Every Book (2026-09-14): the vanilla inventory Read for every
+			// book/note/tome in the bag in one press, no Book Menu. Skill books
+			// level, tomes teach + are eaten, scripted quest books get OnRead.
+			// "read all books library tomes" keywords for omni on purpose.
+			{ "read-books", "hd-read-books", "Read Every Book",
+			  "Read every unread book, note and spell tome in your bag at once - skills go up, spells are learned and their tomes consumed, quest books fire their scripts, no book menu popups (read all books auto read library tomes notes journals letters)", "Utilities", "icons/custom/hk-read-books.png" },
 			// Party orders (2026-08-14): NFF's own group verbs with a bindable
 			// key on them - every one dispatches through NffControl::Apply, so
 			// the deck never re-implements a follower rule. "party followers
 			// group order everyone" keywords for omni on purpose.
+			// The KEYED GROUP's orders (2026-09-14). The deck buttons need the
+			// palette open, which is the wrong place to be mid-fight; these
+			// command the group the player starred in the Loadouts tab, from a
+			// key, with the deck closed. Icons are shared with the party-wide
+			// actions on purpose — same verb, narrower target.
+			{ "lo-deploy", "hd-lo-deploy", "Group: Deploy",
+			  "Bring and recruit your starred group - the Loadouts tab's Deploy, from a key (group loadout deploy squad gather star)", "NPC", "icons/custom/hk-party-summon.png" },
+			{ "lo-follow", "hd-lo-follow", "Group: Follow",
+			  "Your starred group falls in - the rest of your followers are left as they are (group loadout follow squad star)", "NPC", "icons/custom/hk-party-follow.png" },
+			{ "lo-wait", "hd-lo-wait", "Group: Wait",
+			  "Your starred group holds where they stand - everyone else carries on (group loadout wait hold squad star)", "NPC", "icons/custom/hk-party-wait.png" },
+			{ "lo-sic", "hd-lo-sic", "Group: Sic 'em",
+			  "Send your starred group at whoever you are aiming at - even a distant enemy along your aim (group loadout attack assault squad star)", "NPC", "icons/custom/hk-attack-target.png" },
+			{ "lo-disengage", "hd-lo-disengage", "Group: Disengage",
+			  "Your starred group breaks off the fight, sheathes and falls back in (group loadout disengage break off retreat squad star)", "NPC", "icons/custom/hk-party-follow.png" },
 			{ "party-wait", "hd-party-wait", "Party: Wait Here",
 			  "Every loaded follower waits where they stand - NFF's own group order, from a key (party followers wait stay group everyone)", "NPC", "icons/custom/hk-party-wait.png", nullptr, "icons/custom/hk-halt-ai.png" },
 			{ "party-follow", "hd-party-follow", "Party: Follow Me",
@@ -3182,6 +3220,15 @@ namespace
 			// "search everything find quick launcher" omni keywords on purpose.
 			{ "super-search", "hd-super-search", "Super Searcher",
 			  "Search everything from one key, mid-game - hotkeys, spells, people, outfits, quests and your own bag with real item pictures; click a result to fire, cast, equip or drink, Esc back to the game. Configure it in Home - UI Elements (search everything quick find universal launcher finder omni)", "Utilities", "icons/custom/hm-finder.png" },
+			// Places / Teleport (2026-09-14, Rober: "a quick teleport hotkeyable
+			// function … i type in name of area like crystaldrift and it says ok
+			// i think you mean coc ______"). Deep-opens the Super Searcher locked
+			// to the `places` source (hd-places.js): every cell with an editor ID
+			// and every map marker in the load order, Enter teleports (`coc` /
+			// `player.moveto` through the console Script runner). Unbound like
+			// every seed. "teleport travel coc cell" are omni keywords on purpose.
+			{ "places", "hd-places", "Teleport",
+			  "Type any place - crystaldrift, breezehome, whiterun, a mod's own cell - and go there: every interior cell and map marker in the load order, coc without opening the console. Enter teleports; star a place to keep it on the shelf (teleport travel goto cell coc map marker warp fast travel places)", "Utilities", "icons/custom/hk-follower-teleport.png" },
 			// Spell Crafting (2026-08-15): deep-open the deck on the Spell
 			// Crafting tab. requiresMod-gated — the row only appears when
 			// Fourth Era Spell-Crafting is actually in the load order.
@@ -3259,6 +3306,13 @@ namespace
 			// is the master switch, bindable so mid-fight arming costs one key.
 			{ "potion-ai-toggle", "hd-potion-ai", "Potion AI: On/Off",
 			  "Turn the automatic potion drinker on or off - it drinks your strongest matching potion when health, magicka or stamina falls under your thresholds (potion ai auto drink threshold emergency)", "Utilities", "icons/custom/hk-potion-ai.png", nullptr, "icons/custom/hk-potion-browser.png" },
+			// Ward (2026-09-01): WardAnytime's trick as a deck action — raise
+			// your strongest known ward from ANY stance (kInstant re-cast +
+			// the vanilla per-second magicka drain, src/ward_actions.cpp) and
+			// keep it up until pressed again or the magicka runs dry. Pairs
+			// with the HUD "ward" widget, which shows up/down live.
+			{ "ward-toggle", "hd-ward-toggle", "Ward: Best Ward",
+			  "Raise your STRONGEST known ward and keep it up - works in any stance, no hands needed; magicka drains at the ward's own cost; press again to lower it (ward block magic shield protect absorb spellbreaker)", "Combat", "icons/custom/hk-ward.png" },
 			// Quiver (2026-08-15): the ammo radial — the wheel's blood
 			// relative with its own identity. Auto-populates with every arrow
 			// and bolt carried; damage on every tile, poison and enchant
@@ -3715,9 +3769,12 @@ namespace
 				// that never fires is one the deploy check can never see.
 				logger::info("hotbar: {}x{} buttons, skin={}, {} modifier page(s) on — config loaded",
 					g_hbConfig.cols, g_hbConfig.rows, g_hbConfig.skin,
-					(g_hbConfig.pages.size() > 3
-						? (g_hbConfig.pages[1].enabled + g_hbConfig.pages[2].enabled + g_hbConfig.pages[3].enabled)
-						: 0));
+					[&]() {
+						int on = 0;
+						for (std::size_t p = 1; p < g_hbConfig.pages.size(); ++p)
+							on += g_hbConfig.pages[p].enabled ? 1 : 0;
+						return on;
+					}());
 				logger::info("followers HUD: enabled={} orient={} key={} — config loaded",
 					g_hudConfig.enabled, g_hudConfig.orient, g_hudConfig.keyCode);
 				// Build marker (hd-markers.json: "hud-face-extras"). Unconditional
@@ -4174,9 +4231,26 @@ namespace
 		}
 	}
 
+	// court-status writer. Pregnancy and marriage change on a scale of game
+	// days, so a 60s wall-clock cadence is plenty; CourtStatus::Write() itself
+	// skips the disk when the payload is unchanged, so the steady state is one
+	// roster build per minute and no I/O. The Followers-tab rails also write it
+	// on every open/refresh, so a deck open is always fresh.
+	void CourtStatusTickLoop()
+	{
+		using namespace std::chrono_literals;
+		while (true) {
+			std::this_thread::sleep_for(60s);
+			SKSE::GetTaskInterface()->AddTask([]() {
+				CourtStatus::Write(FollowerDeck::StateJson());
+			});
+		}
+	}
+
 	void StartExtBridge()
 	{
 		std::thread(ExtPollLoop).detach();  // lives for the whole process
+		std::thread(CourtStatusTickLoop).detach();  // court-status.json for CHIM, once a minute
 		std::thread(WardrobeTickLoop).detach();
 		std::thread(RoomGuardTickLoop).detach();
 		std::thread(LootTickLoop).detach();
@@ -4204,12 +4278,43 @@ namespace
 					if (m == 0x2A || m == 0x36) mods += "Shift+";
 					else if (m == 0x1D || m == 0x9D) mods += "Ctrl+";
 					else if (m == 0x38 || m == 0xB8) mods += "Alt+";
+					else mods += "key#" + std::to_string(m) + "+";   // any-key chord modifier
 				}
 				if (!mods.empty()) {
 					mods.pop_back();
 				}
-				out.push_back(KeysScan::OwnBinding{ e.name, e.trigCode, std::move(mods) });
+				std::string name = e.name;
+				if (e.trigGesture == "double") name += " (double-tap)";
+				else if (e.trigGesture == "hold") name += " (hold)";
+				out.push_back(KeysScan::OwnBinding{ std::move(name), e.trigCode, std::move(mods) });
 			}
+			// The action bar's own claims (2026-09-13): its show/hide key,
+			// every visible button's key on every enabled page (the page's
+			// modifier is the chord), and the pages' custom keys.
+			if (g_hbConfig.enabled) {
+				if (g_hbConfig.keyDevice == "keyboard" && g_hbConfig.keyCode)
+					out.push_back(KeysScan::OwnBinding{ "Action Bar show/hide", g_hbConfig.keyCode, "" });
+				static const char* kPageMods[Hotbar::kPageCount] = { "", "Shift", "Ctrl", "Alt", "Shift+Ctrl", "Shift+Alt", "Ctrl+Alt" };
+				const int n = g_hbConfig.VisibleSlots();
+				for (int p = 0; p < Hotbar::kPageCount && p < static_cast<int>(g_hbConfig.pages.size()); ++p) {
+					const auto& pg = g_hbConfig.pages[p];
+					if (!pg.enabled)
+						continue;
+					const std::string pname = pg.name.empty() ? std::string(kPageMods[p]) : pg.name;
+					if (p > 0 && pg.modDevice == "keyboard" && pg.modCode)
+						out.push_back(KeysScan::OwnBinding{ "Action Bar " + pname + " page key", pg.modCode, "" });
+					for (int i = 0; i < n && i < static_cast<int>(g_hbConfig.slotKeys.size()); ++i) {
+						const auto& k = g_hbConfig.slotKeys[i];
+						if (k.device != "keyboard" || !k.code)
+							continue;
+						out.push_back(KeysScan::OwnBinding{
+							"Action Bar button " + std::to_string(i + 1) + (p ? " (" + pname + " page)" : ""),
+							k.code, p ? std::string(kPageMods[p]) : std::string() });
+					}
+				}
+			}
+			if (g_magicConfig.addDevice == "keyboard" && g_magicConfig.addCode)
+				out.push_back(KeysScan::OwnBinding{ "Spell Deck capture key", g_magicConfig.addCode, "" });
 			return out;
 		});
 
@@ -4430,6 +4535,8 @@ namespace
 	void OnJsVkCatalog(const char* data);
 	void OnJsVkTest(const char* data);
 	void OnJsConsoleTest(const char* data);
+	void OnJsPlacesQuery(const char* data);
+	void OnJsPlacesGo(const char* data);
 
 	// Spell Deck (second view) forward decls.
 	void OpenMagicPalette();
@@ -4455,6 +4562,8 @@ namespace
 	// CHIM button (chim_control): activate/deactivate + read agent state.
 	void OnJsChState(const char* data);
 	void OnJsChSet(const char* data);
+	void OnJsChAgents(const char* data);   // chAgents -> chAgentsResult: every CHIM agent (formId + names)
+	void OnJsFmAll(const char* data);      // fmAll -> fmAllResult: everyone Fertility Mode tracks
 	// Formation with Followers modal (formation_actions.cpp does the work).
 	void OnJsFmGet(const char* data);
 	void OnJsFmApply(const char* data);
@@ -4684,6 +4793,8 @@ namespace
 	void OnJsMountsState(const char* data);
 	void OnJsMountsSpells(const char* data);
 	void OnJsMountsAct(const char* data);
+	void OnJsLoadoutsState(const char* data);   // Loadouts tab (loadouts.cpp)
+	void OnJsLoadoutsAct(const char* data);
 	void OnJsMountsIcons(const char* data);
 	// Transmog tab (tg* bridge on the deck view). Requests tgState/tgList/
 	// tgDonors/tgApply/tgRevert; replies tgStateResult/tgListData/
@@ -5238,6 +5349,10 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "vkTest", OnJsVkTest);
 		// Console-command entries: the editor's ▶ Test (fires without saving).
 		g_prisma->RegisterJSListener(g_view, "hdConsoleTest", OnJsConsoleTest);
+		// Places: the searchable teleport (places.cpp) — the Omni `places`
+		// provider queries per keystroke, Enter runs hdPlacesGo.
+		g_prisma->RegisterJSListener(g_view, "hdPlacesQuery", OnJsPlacesQuery);
+		g_prisma->RegisterJSListener(g_view, "hdPlacesGo", OnJsPlacesGo);
 		logger::info("console-cmd entries: Script runner ready");  // marker: console-cmd-entries
 		logger::info("virtualkey device: native InputEvent dispatch ready");
 		// Followers tab (v0.9.0): the fd* bridge lives on the deck view now.
@@ -5268,6 +5383,14 @@ namespace
 		// (optimistic first, then reconciled from the mod's own agent set).
 		g_prisma->RegisterJSListener(g_view, "chState", OnJsChState);
 		g_prisma->RegisterJSListener(g_view, "chSet", OnJsChSet);
+		// chAgents -> chAgentsResult: the WHOLE agent set in one call
+		// (findAllAgentsFormId), so the omni rows' CHIM mark and the F7 card's
+		// lit 💬 cost one Papyrus dispatch, not one per NPC.
+		g_prisma->RegisterJSListener(g_view, "chAgents", OnJsChAgents);
+		// fmAll -> fmAllResult: everyone Fertility Mode tracks, keyed by ref and
+		// by base record, so the NPC Finder's rows and a non-roster crosshair
+		// card can say "pregnant" without a Follower Organizer row.
+		g_prisma->RegisterJSListener(g_view, "fmAll", OnJsFmAll);
 		// Recent tab. Request names hdHistory/hdHistoryClear, reply pushed as
 		// hdRecent — disjoint, or toGame() would call the view's own receiver.
 		g_prisma->RegisterJSListener(g_view, "hdHistory", OnJsHistory);
@@ -5514,6 +5637,10 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "mtSpells", OnJsMountsSpells);
 		g_prisma->RegisterJSListener(g_view, "mtAct", OnJsMountsAct);
 		g_prisma->RegisterJSListener(g_view, "mtIcons", OnJsMountsIcons);
+		// Loadouts tab (follower groups + gear classes). Requests loState/loAct;
+		// replies loStateResult/loActResult - disjoint, same law.
+		g_prisma->RegisterJSListener(g_view, "loState", OnJsLoadoutsState);
+		g_prisma->RegisterJSListener(g_view, "loAct", OnJsLoadoutsAct);
 		// Transmog tab. Requests tgState/tgList/tgDonors/tgApply/tgRevert;
 		// replies tgStateResult/tgListData/tgDonorsData/tgApplyResult/
 		// tgRevertResult — disjoint per the deck law.
@@ -6711,6 +6838,24 @@ namespace
 			return;
 		}
 
+		// Read Every Book: the whole sweep is synchronous engine work on the
+		// main thread (Read / SendEvent / RemoveItem per book), so it runs
+		// inside one task with the palette closed - the HUD lines the engine
+		// prints for skill-ups and learned spells belong on the world, not
+		// under the deck. Reopen per preference like the other one-shots.
+		if (BookReader::IsAction(action)) {
+			SKSE::GetTaskInterface()->AddTask([action, reopen]() {
+				ClosePalette();
+				BookReader::Fire(action);
+				if (reopen)
+					SKSE::GetTaskInterface()->AddTask([]() {
+						if (CanOpenNow())
+							OpenPalette();
+					});
+			});
+			return;
+		}
+
 		// Trade (Rober, 2026-08-17: "a open merchant / trade button when hitting
 		// f7 on an npc"). Opens the vanilla barter menu, or her pack when she is
 		// a companion/spouse — QuickTrade's own rule. Two things this must NOT
@@ -6733,6 +6878,19 @@ namespace
 		// Papyrus only runs while the game is UNPAUSED, so these close the
 		// palette and deliberately do NOT reopen: a reopened (paused) palette
 		// would hold the dispatched VM stack hostage until the next close.
+		if (action == "lo-deploy" || action == "lo-follow" || action == "lo-wait" ||
+			action == "lo-sic" || action == "lo-disengage") {
+			const std::string what = action == "lo-deploy" ? "deploy" :
+			                         action == "lo-follow" ? "groupFollow" :
+			                         action == "lo-wait"   ? "groupWait" :
+			                         action == "lo-sic"    ? "groupSic" : "groupDisengage";
+			SKSE::GetTaskInterface()->AddTask([what]() {
+				ClosePalette();
+				logger::info("loadouts: keyed group order '{}'", what);  // marker: loadouts-keyed-order
+				Loadouts::FireActiveOrder(what);
+			});
+			return;
+		}
 		if (action == "party-wait" || action == "party-follow" || action == "party-summon" ||
 			action == "party-relax" || action == "party-regroup" || action == "nff-recruit") {
 			const std::string op = action == "party-wait"    ? "allWait" :
@@ -6838,6 +6996,26 @@ namespace
 					return;
 				logger::info("super searcher: deep-open");  // marker: super-search
 				g_pendingTab = "supersearch";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
+		// Places / Teleport: the Super Searcher deep-open, locked to ONE source.
+		// The token carries the provider id after '@' — app.js's hdShowTab
+		// router hands it to HDSuper.open(true, {only}) (hd-super.js), which
+		// gates every other provider off for that open and says so in the box.
+		if (action == "places") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"supersearch@places\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				logger::info("places: deep-open the teleport search");  // marker: places-deep-open
+				g_pendingTab = "supersearch@places";
 				EnsureViewAndOpen();
 			});
 			return;
@@ -7097,6 +7275,14 @@ namespace
 				g_pendingTab = tab;
 				EnsureViewAndOpen();
 			});
+			return;
+		}
+
+		// Ward toggle — raise/lower the maintained best ward. Toggle() does its
+		// own notifications (including the "you know no ward spell" refusal),
+		// and the ticker's ward beat takes over from there.
+		if (action == "ward-toggle") {
+			SKSE::GetTaskInterface()->AddTask([]() { WardActions::Toggle(); });
 			return;
 		}
 
@@ -7602,31 +7788,250 @@ namespace
 	// Does this key press match an entry's global trigger? Palette-closed only --
 	// with the deck open the view owns the keyboard and its own rows handle firing.
 	// Returns the entry id, or "" for no match.
-	std::string TriggerMatch(bool isKb, bool isMs, std::uint32_t idc)
+	// ---- what is HELD right now (2026-09-13, any-key chords) ----------------
+	// The input sink sees every key down and up, so it keeps the set of held
+	// keys itself — that is what lets ANY key be a chord's modifier ("hold Q,
+	// press 1") with no DIK->VK table. The three real modifiers still read
+	// through GetAsyncKeyState (they are reliable there and the sink can miss
+	// an up while a menu owns input); every other key comes from the set, and a
+	// stale entry self-heals: a scancode that Windows can name is re-checked
+	// against the live key state, and dropped when Windows says it is up.
+	std::mutex              g_heldMx;
+	std::set<std::uint32_t> g_heldKb;   // DIK codes down right now
+	std::set<std::uint32_t> g_heldMs;   // mouse button codes down right now
+
+	void NoteHeld(bool isKb, std::uint32_t code, bool down)
+	{
+		std::lock_guard l(g_heldMx);
+		auto& set = isKb ? g_heldKb : g_heldMs;
+		if (down)
+			set.insert(code);
+		else
+			set.erase(code);
+	}
+
+	bool RealModHeld(std::uint32_t dik, int& outVk)
+	{
+		outVk = 0;
+		if (dik == 0x2A || dik == 0x36) outVk = VK_SHIFT;
+		else if (dik == 0x1D || dik == 0x9D) outVk = VK_CONTROL;
+		else if (dik == 0x38 || dik == 0xB8) outVk = VK_MENU;
+		if (!outVk)
+			return false;
+		return (GetAsyncKeyState(outVk) & 0x8000) != 0;
+	}
+
+	bool DikHeld(bool isKb, std::uint32_t code)
+	{
+		{
+			std::lock_guard l(g_heldMx);
+			const auto& set = isKb ? g_heldKb : g_heldMs;
+			if (!set.count(code))
+				return false;
+		}
+		// Confirm against Windows when it can name the key; drop a stale entry.
+		int vk = 0;
+		if (isKb) {
+			const UINT scan = code < 0x80 ? code : (0xE000u | (code & 0x7Fu));
+			vk = static_cast<int>(::MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX));
+		} else {
+			vk = code == 2 ? VK_MBUTTON : code == 3 ? VK_XBUTTON1 : code == 4 ? VK_XBUTTON2 : 0;
+		}
+		if (vk && !(GetAsyncKeyState(vk) & 0x8000)) {
+			NoteHeld(isKb, code, false);
+			return false;
+		}
+		return true;
+	}
+
+	// Is this chord modifier (a DIK code) down? Real modifiers by VK, the
+	// rest by the sink's own held set.
+	bool ModHeld(std::uint32_t dik)
+	{
+		int vk = 0;
+		if (dik == 0x2A || dik == 0x36 || dik == 0x1D || dik == 0x9D || dik == 0x38 || dik == 0xB8)
+			return RealModHeld(dik, vk);
+		return DikHeld(true, dik);
+	}
+
+	// Most-specific chord wins, and a chord is EXCLUSIVE (2026-09-13). Two
+	// rules that were missing: (1) the candidate whose required modifiers are
+	// all held AND who requires the MOST of them fires — so "Shift+1" beats a
+	// plain "1" when Shift is down; (2) a plain trigger never fires while a
+	// real modifier (Shift/Ctrl/Alt) is held that it did not ask for — Shift+1
+	// with only a plain "1" bound does nothing, which leaves the chord to the
+	// game (or to the bar's Shift page) instead of double-firing. A held CUSTOM
+	// key that nobody asked for does not block: you may be holding W to walk.
+	// Mouse triggers honour chords too now (keyboard modifiers + a mouse
+	// button), which the old matcher silently ignored.
+	std::string TriggerMatch(bool isKb, bool isMs, std::uint32_t idc, const std::string& gesture = std::string())
 	{
 		std::lock_guard l(g_configMutex);
+		std::string bestId;
+		int         bestCount = -1;
+		bool        bestReal  = false;   // the winner asked for a real modifier
 		for (const auto& e : g_config.entries) {
 			if (e.trigDevice.empty() || e.trigCode != idc)
 				continue;
+			if (e.trigGesture != gesture)
+				continue;
 			if (!((isKb && e.trigDevice == "keyboard") || (isMs && e.trigDevice == "mouse")))
 				continue;
-			// Only the three real modifiers are honoured, checked the same way the
-			// quick-fire slots already do it. A trigger is meant to be one key you
-			// can hit blind; arbitrary DIK chords would need a DIK->VK table that
-			// does not exist here, and would be worse to remember anyway.
-			bool modsHeld = true;
+			bool ok = true, anyReal = false;
 			for (const auto m : e.trigMods) {
+				if (!ModHeld(m)) { ok = false; break; }
 				int vk = 0;
-				if (m == 0x2A || m == 0x36) vk = VK_SHIFT;        // L/R shift
-				else if (m == 0x1D || m == 0x9D) vk = VK_CONTROL; // L/R ctrl
-				else if (m == 0x38 || m == 0xB8) vk = VK_MENU;    // L/R alt
-				else continue;                                    // unknown -> not required
-				if (!(GetAsyncKeyState(vk) & 0x8000)) { modsHeld = false; break; }
+				if (RealModHeld(m, vk)) anyReal = true;
 			}
-			if (modsHeld)
-				return e.id;
+			if (!ok)
+				continue;
+			const int n = static_cast<int>(e.trigMods.size());
+			if (n > bestCount) {
+				bestCount = n;
+				bestId    = e.id;
+				bestReal  = anyReal;
+			}
 		}
-		return {};
+		if (bestId.empty())
+			return {};
+		// Exclusivity against the real modifiers: every held Shift/Ctrl/Alt
+		// must be one the winner asked for.
+		const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+		const bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+		const bool alt   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+		if (shift || ctrl || alt) {
+			bool wantShift = false, wantCtrl = false, wantAlt = false;
+			for (const auto& e : g_config.entries) {
+				if (e.id != bestId)
+					continue;
+				for (const auto m : e.trigMods) {
+					if (m == 0x2A || m == 0x36) wantShift = true;
+					else if (m == 0x1D || m == 0x9D) wantCtrl = true;
+					else if (m == 0x38 || m == 0xB8) wantAlt = true;
+				}
+				break;
+			}
+			if ((shift && !wantShift) || (ctrl && !wantCtrl) || (alt && !wantAlt))
+				return {};
+		}
+		(void)bestReal;
+		return bestId;
+	}
+
+	// ---- trigger gestures: tap / double-tap / hold (2026-09-13) --------------
+	// One key, three actions. State is per KEY (the last key that went down
+	// with a gesture binding); a new key replaces it. Timers are detached
+	// threads that post back through the task interface and check a
+	// generation counter, so a cancelled gesture simply expires.
+	inline constexpr long long kDoubleTapMs = 350;
+	inline constexpr long long kHoldMs      = 450;
+	struct GestState
+	{
+		bool          isMs      = false;
+		std::uint32_t code      = 0;
+		long long     downMs    = 0;      // 0 = nothing pending
+		bool          consumed  = false;  // a hold / double already fired for this press
+		long long     lastUpMs  = 0;      // for the double-tap window
+		std::uint32_t lastUpCode = 0;
+		bool          lastUpIsMs = false;
+		std::uint32_t gen       = 0;
+	};
+	std::mutex g_gestMx;
+	GestState  g_gest;
+
+	void FireTriggerNow(const std::string& id, const char* how)
+	{
+		if (id.empty())
+			return;
+		// Build marker (hd-markers.json: "trigger-gestures").
+		logger::info("trigger gesture: {} -> '{}'", how, id);
+		SKSE::GetTaskInterface()->AddTask([id]() { FireEntryById(id, "key"); });
+	}
+
+	// The key went DOWN and at least one gesture binding sits on it. Decides
+	// double-tap on the spot, arms the hold timer, and defers the tap.
+	void GestureDown(bool isMs, std::uint32_t idc, const std::string& tapId,
+		const std::string& dblId, const std::string& holdId)
+	{
+		const long long now = NowMs();
+		std::uint32_t   gen = 0;
+		bool            isDouble = false;
+		{
+			std::lock_guard l(g_gestMx);
+			if (!dblId.empty() && g_gest.lastUpCode == idc && g_gest.lastUpIsMs == isMs &&
+				g_gest.lastUpMs && now - g_gest.lastUpMs <= kDoubleTapMs) {
+				isDouble = true;
+				g_gest.lastUpMs = 0;   // a third tap starts over, never a "triple"
+			}
+			g_gest.isMs     = isMs;
+			g_gest.code     = idc;
+			g_gest.downMs   = now;
+			g_gest.consumed = isDouble;   // the release of the second tap fires nothing
+			gen             = ++g_gest.gen;
+		}
+		if (isDouble) {
+			FireTriggerNow(dblId, "double-tap");
+			return;
+		}
+		if (!holdId.empty()) {
+			const bool kb = !isMs;
+			std::thread([gen, kb, idc, holdId]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(kHoldMs));
+				{
+					std::lock_guard l(g_gestMx);
+					if (g_gest.gen != gen || g_gest.consumed || !g_gest.downMs)
+						return;
+					if (!DikHeld(kb, idc))
+						return;   // released early — the UP path already decided
+					g_gest.consumed = true;
+				}
+				FireTriggerNow(holdId, "hold");
+			}).detach();
+		}
+		(void)tapId;   // fires on release (GestureUp), or after the double window
+	}
+
+	// The key came UP. A press the hold timer consumed fires nothing more; a
+	// short press fires its tap now, or after the double-tap window when a
+	// double binding could still claim it.
+	void GestureUp(bool isMs, std::uint32_t idc)
+	{
+		std::string tapId, dblId;
+		{
+			std::lock_guard l(g_gestMx);
+			if (g_gest.code != idc || g_gest.isMs != isMs || !g_gest.downMs)
+				return;
+			g_gest.downMs = 0;
+			if (g_gest.consumed) {
+				g_gest.consumed = false;
+				return;
+			}
+			g_gest.lastUpMs   = NowMs();
+			g_gest.lastUpCode = idc;
+			g_gest.lastUpIsMs = isMs;
+		}
+		tapId = TriggerMatch(!isMs, isMs, idc, "");
+		dblId = TriggerMatch(!isMs, isMs, idc, "double");
+		if (dblId.empty()) {
+			FireTriggerNow(tapId, "tap (released, hold binding on this key)");
+			return;
+		}
+		if (tapId.empty())
+			return;
+		std::uint32_t gen = 0;
+		{
+			std::lock_guard l(g_gestMx);
+			gen = ++g_gest.gen;
+		}
+		std::thread([gen, tapId]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(kDoubleTapMs + 20));
+			{
+				std::lock_guard l(g_gestMx);
+				if (g_gest.gen != gen)
+					return;   // a second tap came — it fired the double
+			}
+			FireTriggerNow(tapId, "tap (double window passed)");
+		}).detach();
 	}
 
 	// Raw chord from the numpad tab: {"device":"keyboard","code":181,"mods":[42],"label":"Num /"}
@@ -7898,10 +8303,39 @@ namespace
 			const auto cmd = j.value("command", std::string());
 			if (cmd.empty() || cmd.size() > ConsoleActions::kCommandMax)
 				return;
-			ConsoleActions::Fire("Console test", cmd, j.value("crosshair", false));
+			// `name` (2026-09-13): the Omni's "run in the console" row sends
+			// its own label so the HUD/log say what ran, not "Console test".
+			const auto name = j.value("name", std::string("Console test"));
+			ConsoleActions::Fire(name.empty() ? "Console test" : name, cmd, j.value("crosshair", false));
 		} catch (const std::exception& e) {
 			logger::warn("hdConsoleTest: bad payload ({})", e.what());
 		}
+	}
+
+	// Places: {"q","seq","limit"} -> hdPlacesData({seq,q,total,count,rows}).
+	// Builds the index on first use (main thread, logged); every later call is
+	// a scored scan of the in-memory rows.
+	void OnJsPlacesQuery(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("hdPlacesData", Places::QueryJson(req));
+		});
+	}
+
+	// Places: {"kind":"cell","edid"} | {"kind":"marker","id"} — physical, not
+	// administrative (the NPC Finder goto discipline): close the palette FIRST
+	// so the jump lands in the live world, run the console road, notify. No
+	// reply is pushed and the deck is not reopened — you asked to be elsewhere.
+	void OnJsPlacesGo(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			ClosePalette();
+			const std::string msg = Places::Go(req);
+			if (!msg.empty())
+				RE::DebugNotification(msg.c_str());
+		});
 	}
 
 	void OnJsQuestSearch(const char* data)
@@ -9011,6 +9445,13 @@ namespace
 			{ "following", actor->IsPlayerTeammate() },
 			{ "wedged", NffControl::IsWedgedFollower(actor) },
 			{ "imported", NffControl::IsImported(actor) },
+			// A FIFTH state, and the one that makes Dismiss reachable: NFF's
+			// OWN follower faction. `following` above is IsPlayerTeammate(),
+			// and NFF keeps followers through states the engine does not count
+			// as teammate — so without this the card offered Recruit to
+			// someone NFF was already managing and hid the only control that
+			// would release her (Rober, 2026-09-10).
+			{ "nffFollower", NffBridge::IsNffFollower(actor) },
 			// Whether the game will let you ask her to follow AT ALL
 			// (PotentialFollowerFaction). Most NPCs are not in it — that is
 			// what NFF's "Force Follower" grants, so the card only offers it
@@ -10931,6 +11372,35 @@ namespace
 		});
 	}
 
+	// fmAll: every actor Fertility Mode tracks -> fmAllResult (see
+	// FertilityBridge::AllTrackedJson). A synchronous property read, no
+	// Papyrus dispatch — same posture as the per-roster fdFertility push.
+	void OnJsFmAll(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("fmAllResult", FertilityBridge::AllTrackedJson());
+		});
+	}
+
+	// chAgents: every CHIM agent right now -> chAgentsResult
+	//   { ok, agents: [{ formId, name, base }] }
+	// The view (chim-flyout.js) keys its "is she activated" answer on formId
+	// OR either name, so a renamed follower still matches her roster row.
+	void OnJsChAgents(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			ChimControl::QueryAgents([](const std::vector<ChimControl::Agent>& agents, bool ok) {
+				json list = json::array();
+				for (const auto& a : agents) {
+					list.push_back(json{ { "formId", a.formId }, { "name", a.name }, { "base", a.base } });
+				}
+				PushToView("chAgentsResult",
+					json{ { "ok", ok }, { "agents", std::move(list) } }
+						.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+			});
+		});
+	}
+
 	// fdNpc: quick recruit / dismiss / open-inventory against ONE actor —
 	//
 	// NAMING: the request listener is `fdNpc`, the reply is pushed as
@@ -12401,10 +12871,9 @@ namespace
 
 	void OnJsFmRescue(const char* data)
 	{
-		FmMutate(data, [](const std::string& r) {
-			(void)r;
-			return FormationActions::Rescue();
-		});
+		// The request carries `provider` now — the router needs it to know
+		// WHICH formation mod is being stood down.
+		FmMutate(data, [](const std::string& r) { return FormationActions::Rescue(r); });
 	}
 
 	/* ---- Domains tab: NFF home bases -----------------------------------
@@ -12726,6 +13195,9 @@ namespace
 			PushToView("fdCrops", FolCropsJson());
 			PushFollowerNff(fo);
 			PushToView("fdFertility", FertilityBridge::StateJson(fo));
+		// court-status.json for CHIM: marriage (MARAS) + pregnancy (FM) per follower.
+		// Same roster, same read-only posture; skips the disk when nothing changed.
+		CourtStatus::Write(fo);
 		});
 	}
 
@@ -14688,15 +15160,31 @@ namespace
 			return;
 		}
 		if (s.kind == "item") {
-			logger::info("hotbar-fire: page {} button {} -> item {}|{:X}", p, i + 1, s.plugin, s.localId);
-			const std::string req = json{
-				{ "formId", ActorIdentity::HexOf(s.localId) },
-				{ "plugin", s.plugin },
-			}.dump(-1, ' ', false, json::error_handler_t::replace);
-			const auto res = json::parse(WheelMenu::Use(req), nullptr, false);
-			// The wheel answers {ok,msg} instead of toasting, so a refusal is a
-			// useful sentence — say it, or the button looks broken.
-			if (res.is_object() && !res.value("ok", false)) {
+			logger::info("hotbar-fire: page {} button {} -> item {}|{:X} (uid {}, hand '{}')",
+				p, i + 1, s.plugin, s.localId, s.uniqueId, s.hand);
+			// Hotbar::FireItem is the wheel's verb for a plain slot and the
+			// instance-aware / hand-aware equip for one that recorded either.
+			const auto res = json::parse(Hotbar::FireItem(s), nullptr, false);
+			// {ok,msg} instead of toasting, so a refusal is a useful sentence —
+			// say it, or the button looks broken. A "used another copy" note
+			// rides on a SUCCESS and is worth saying too.
+			if (res.is_object()) {
+				const std::string msg = res.value("msg", std::string());
+				if (!res.value("ok", false))
+					RE::DebugNotification(msg.empty() ? "That didn't work" : msg.c_str());
+				else if (msg.find("bound copy") != std::string::npos)
+					RE::DebugNotification(msg.c_str());
+			}
+			return;
+		}
+		if (s.kind == "set") {
+			// hotbar-set-fire: the whole set on, or — when all of it is already
+			// worn — off. FireSet answers a summary either way and it is always
+			// worth reading: it names what went on and what was not in the bag.
+			logger::info("hotbar-fire: page {} button {} -> gear set '{}' ({} pieces)",
+				p, i + 1, s.label, s.items.size());
+			const auto res = json::parse(Hotbar::FireSet(s), nullptr, false);
+			if (res.is_object()) {
 				const std::string msg = res.value("msg", std::string("That didn't work"));
 				RE::DebugNotification(msg.c_str());
 			}
@@ -14871,6 +15359,28 @@ namespace
 		if (data && data[0])
 			logger::info("hotbar: button assigned {}", data);
 		SKSE::GetTaskInterface()->AddTask([]() { HbPushLive(true); });
+	}
+
+	// hbImportVanilla -> hbImportDone: copy Skyrim's own 1-8 favourites
+	// hotkeys onto the bar's Main page (empty buttons only). Runs on the task
+	// thread: the import reads MagicFavorites + the inventory.
+	void OnJsHbImportVanilla(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			std::string res;
+			{
+				std::lock_guard l(g_configMutex);
+				res = Hotbar::ImportVanillaHotkeys(g_hbConfig, Hotbar::kPageBase);
+			}
+			PersistAll();
+			HbPushConfig();
+			HbPushLive(true);
+			const auto j = json::parse(res, nullptr, false);
+			if (j.is_object())
+				RE::DebugNotification(j.value("msg", std::string("Import finished")).c_str());
+			if (g_prisma && g_hbView && g_hbViewReady.load())
+				g_prisma->Invoke(g_hbView, ("hbImportDone(" + res + ")").c_str());
+		});
 	}
 
 	void OnJsHbCatalog(const char*)
@@ -15287,6 +15797,7 @@ namespace
 		g_prisma->RegisterJSListener(g_hbView, "hbCatalog", OnJsHbCatalog);
 		g_prisma->RegisterJSListener(g_hbView, "hbNewConsole", OnJsHbNewConsole);
 		g_prisma->RegisterJSListener(g_hbView, "hbOutfits", OnJsHbOutfits);
+		g_prisma->RegisterJSListener(g_hbView, "hbImportVanilla", OnJsHbImportVanilla);
 		g_prisma->RegisterJSListener(g_hbView, "hbLog", OnJsHbLog);
 		// HUD widgets share this view (see the Wg block above).
 		g_prisma->RegisterJSListener(g_hbView, "wgReady", OnJsWgReady);
@@ -15452,11 +15963,13 @@ namespace
 			return;
 		std::thread([]() {
 			bool          prevShift = false, prevCtrl = false, prevAlt = false;
+			bool          prevCustom[Hotbar::kPageCount] = {};
 			std::uint32_t sinceLive = 0;
 			std::uint32_t sinceVis  = 0;
 			std::uint32_t sinceWg   = 0;
 			std::uint32_t sinceWgVis = 0;
 			std::uint32_t sinceAi   = 0;
+			std::uint32_t sinceWard = 0;
 
 			// PERF (2026-08-16): the 50 ms beat exists for ONE consumer — the
 			// modifier page swap, which has to feel instant. That branch is below
@@ -15495,6 +16008,24 @@ namespace
 					sinceAi = 0;
 				}
 
+				// The maintained ward rides the same thread at a ~150 ms beat
+				// (both sleep periods divide it) — armed by the ward-toggle
+				// action, independent of the bar and the widgets exactly like
+				// the potion AI above. Enabled() is an atomic snapshot; the
+				// pass itself is AddTask'd (it reads actor values and casts).
+				if (WardActions::Enabled() && g_gameReady.load()) {
+					sinceWard += periodMs;
+					if (sinceWard >= 150) {
+						sinceWard = 0;
+						SKSE::GetTaskInterface()->AddTask([]() {
+							OpenDiag::TickTimer diag("ward-tick");
+							WardActions::Tick();
+						});
+					}
+				} else {
+					sinceWard = 0;
+				}
+
 				// A LIGHT read, deliberately: this runs up to 20x a second, and
 				// copying the whole Config would allocate ~100 slot structs (five
 				// strings each) every tick for the sake of four booleans. Only the
@@ -15508,8 +16039,11 @@ namespace
 					c.modHold = g_hbConfig.modHold;
 					c.tickMs  = g_hbConfig.tickMs;
 					for (int p = 0; p < Hotbar::kPageCount &&
-						 p < static_cast<int>(g_hbConfig.pages.size()); ++p)
-						c.pages[p].enabled = g_hbConfig.pages[p].enabled;
+						 p < static_cast<int>(g_hbConfig.pages.size()); ++p) {
+						c.pages[p].enabled   = g_hbConfig.pages[p].enabled;
+						c.pages[p].modDevice = g_hbConfig.pages[p].modDevice;
+						c.pages[p].modCode   = g_hbConfig.pages[p].modCode;
+					}
 				}
 				// Choose the NEXT period now, while the answer is fresh, so both
 				// the disabled path (which `continue`s below) and the live path
@@ -15592,10 +16126,17 @@ namespace
 				const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 				const bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 				const bool alt   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+				// Custom page keys (2026-09-13): read off the sink's held set.
+				bool customHeld[Hotbar::kPageCount] = {};
+				for (int p = 1; p < Hotbar::kPageCount; ++p) {
+					const auto& pg = c.pages[p];
+					if (pg.enabled && pg.modCode)
+						customHeld[p] = DikHeld(pg.modDevice != "mouse", pg.modCode);
+				}
 
 				int want;
 				if (c.modHold) {
-					want = Hotbar::PageForMods(c, shift, ctrl, alt);
+					want = Hotbar::PageForMods(c, shift, ctrl, alt, customHeld);
 				} else {
 					// Tap to latch: the RISING edge of a modifier toggles its
 					// page. Tapping the page you are already on returns to base,
@@ -15610,7 +16151,20 @@ namespace
 					const bool rc = edge(ctrl, prevCtrl);
 					const bool ra = edge(alt, prevAlt);
 					int latched = g_hbLatchPage.load();
-					if (rs && c.pages.size() > Hotbar::kPageShift && c.pages[Hotbar::kPageShift].enabled)
+					// A custom page key latches on its rising edge, like the
+					// modifiers do. The combo pages are hold-only: a "tap" of two
+					// keys at once is not a gesture anyone can make reliably.
+					int customRose = -1;
+					for (int p = 1; p < Hotbar::kPageCount; ++p) {
+						const bool now  = customHeld[p];
+						const bool rose = now && !prevCustom[p];
+						prevCustom[p]   = now;
+						if (rose && customRose < 0)
+							customRose = p;
+					}
+					if (customRose > 0)
+						latched = (latched == customRose) ? Hotbar::kPageBase : customRose;
+					else if (rs && c.pages.size() > Hotbar::kPageShift && c.pages[Hotbar::kPageShift].enabled)
 						latched = (latched == Hotbar::kPageShift) ? Hotbar::kPageBase : Hotbar::kPageShift;
 					else if (rc && c.pages.size() > Hotbar::kPageCtrl && c.pages[Hotbar::kPageCtrl].enabled)
 						latched = (latched == Hotbar::kPageCtrl) ? Hotbar::kPageBase : Hotbar::kPageCtrl;
@@ -15619,7 +16173,11 @@ namespace
 					g_hbLatchPage = latched;
 					want = latched;
 				}
-				if (c.modHold) { prevShift = shift; prevCtrl = ctrl; prevAlt = alt; }
+				if (c.modHold) {
+					prevShift = shift; prevCtrl = ctrl; prevAlt = alt;
+					for (int p = 0; p < Hotbar::kPageCount; ++p)
+						prevCustom[p] = customHeld[p];
+				}
 
 				if (want != g_hbLivePage.load()) {
 					g_hbLivePage = want;
@@ -15661,6 +16219,25 @@ namespace
 	// Palette-CLOSED only and never while the game is paused: with a menu up the
 	// number keys belong to that menu (and to the console), and a bar that cast
 	// Fireball because you typed "1" into the console would be a disaster.
+	// Exclusivity for the bar (2026-09-13): in hold mode a real modifier that
+	// selects NO page means "this chord is not the bar's" — Shift+1 on a bar
+	// without a Shift page stays silent, so a deck trigger on Shift+1 (or the
+	// game's own Shift meaning) gets the press instead of a double-fire. A
+	// custom page key held does not count against it (it selects a page).
+	// Latch mode has no held chords, so the rule does not apply there.
+	bool HbChordIsSomeoneElses()
+	{
+		// caller holds g_configMutex
+		if (!g_hbConfig.modHold)
+			return false;
+		const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+		const bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+		const bool alt   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+		if (!(shift || ctrl || alt))
+			return false;
+		return g_hbLivePage.load() == Hotbar::kPageBase;
+	}
+
 	int HbSlotForKey(bool isKb, bool isMs, std::uint32_t idc)
 	{
 		// EFFECTIVE visibility, not the raw config flags — see HbApplyVisibility.
@@ -15671,6 +16248,8 @@ namespace
 		std::lock_guard l(g_configMutex);
 		if (!g_hbConfig.enabled || !g_hbConfig.visible)
 			return -1;
+		if (HbChordIsSomeoneElses())
+			return -1;
 		const int n = g_hbConfig.VisibleSlots();
 		for (int i = 0; i < n && i < static_cast<int>(g_hbConfig.slotKeys.size()); ++i) {
 			const auto& k = g_hbConfig.slotKeys[i];
@@ -15680,6 +16259,110 @@ namespace
 				return i;
 		}
 		return -1;
+	}
+
+	// The same match with NO visibility gate, for the one place a slot key
+	// means something while the bar is off screen: a game menu, where the
+	// press BINDS the highlighted row instead of firing (see HbBindFromMenu).
+	// Still honours the master switch and the menuBind setting, so turning
+	// the feature off makes the keys inert in menus exactly as before.
+	int HbSlotForKeyInMenu(bool isKb, bool isMs, std::uint32_t idc)
+	{
+		std::lock_guard l(g_configMutex);
+		if (!g_hbConfig.enabled || !g_hbConfig.menuBind)
+			return -1;
+		if (HbChordIsSomeoneElses())
+			return -1;
+		const int n = g_hbConfig.VisibleSlots();
+		for (int i = 0; i < n && i < static_cast<int>(g_hbConfig.slotKeys.size()); ++i) {
+			const auto& k = g_hbConfig.slotKeys[i];
+			if (!k.code || k.code != idc)
+				continue;
+			if ((isKb && k.device == "keyboard") || (isMs && k.device == "mouse"))
+				return i;
+		}
+		return -1;
+	}
+
+	// Bind from the menu (2026-09-13, the STB Hotkey System idea): the row
+	// highlighted in the open inventory / magic / favourites menu lands on
+	// button `slotIdx` of page `page`. A single button is REPLACED (and the
+	// notification says what it replaced); a gear set or flyout is ADDED TO,
+	// which is how a set gets built without ever opening the editor —
+	// highlight, press the key, highlight the next piece, press it again.
+	// MAIN THREAD ONLY (Hotbar::HighlightedJson reads menus + the inventory).
+	void HbBindFromMenu(int page, int slotIdx)
+	{
+		const auto j = json::parse(Hotbar::HighlightedJson(), nullptr, false);
+		if (!j.is_object() || !j.value("ok", false)) {
+			const std::string msg = j.is_object() ? j.value("msg", std::string()) : std::string();
+			RE::DebugNotification(msg.empty() ? "Nothing to bind here" : msg.c_str());
+			return;
+		}
+		Hotbar::Slot ns;
+		ns.kind     = j.value("kind", std::string());
+		ns.plugin   = j.value("plugin", std::string());
+		ns.localId  = j.value("localId", 0u);
+		ns.formId   = j.value("formId", 0u);
+		ns.uniqueId = static_cast<std::uint16_t>(j.value("uniqueId", 0u) & 0xFFFFu);
+		ns.hand     = j.value("hand", std::string());
+		const std::string name = j.value("name", std::string("that"));
+		if (ns.kind.empty() || (!ns.localId && !ns.formId)) {
+			RE::DebugNotification("That can't go on the bar");
+			return;
+		}
+
+		std::string note;
+		{
+			std::lock_guard l(g_configMutex);
+			const int p = std::clamp(page, 0, Hotbar::kPageCount - 1);
+			if (p >= static_cast<int>(g_hbConfig.pages.size()))
+				return;
+			auto& slots = g_hbConfig.pages[p].slots;
+			if (slotIdx < 0 || slotIdx >= static_cast<int>(slots.size()))
+				return;
+			auto&             cur    = slots[slotIdx];
+			const std::string button = "button " + std::to_string(slotIdx + 1) +
+				(p ? (" (" + (g_hbConfig.pages[p].name.empty() ? std::string("page ") + std::to_string(p + 1) : g_hbConfig.pages[p].name) + ")") : std::string());
+			if (cur.kind == "set" || cur.kind == "flyout") {
+				const bool set = cur.kind == "set";
+				if (set && !Hotbar::IsSetChildKind(ns.kind)) {
+					note = "A gear set holds gear and spells only";
+				} else {
+					bool dup = false;
+					for (const auto& c : cur.items) {
+						if (c.kind == ns.kind && c.plugin == ns.plugin && c.localId == ns.localId &&
+							c.formId == ns.formId && c.uniqueId == ns.uniqueId) {
+							dup = true;
+							break;
+						}
+					}
+					if (dup) {
+						note = name + " is already in the " + (set ? "gear set" : "flyout") + " on " + button;
+					} else if (static_cast<int>(cur.items.size()) >= Hotbar::kMaxFlyItems) {
+						note = "The " + std::string(set ? "gear set" : "flyout") + " on " + button + " is full";
+					} else {
+						ns.label = name;   // children carry their name for the editor
+						cur.items.push_back(ns);
+						note = "Added " + name + " to the " + (set ? "gear set" : "flyout") + " on " + button +
+							" (" + std::to_string(cur.items.size()) + " inside)";
+					}
+				}
+			} else {
+				const bool had = !cur.Empty();
+				cur  = ns;
+				note = button + ": " + name + (had ? " (replaced)" : "");
+				if (!ns.hand.empty())
+					note += " - " + ns.hand + " hand";
+			}
+		}
+		// Build marker (hd-markers.json: "hotbar-menu-bind").
+		logger::info("hotbar-bind: {} <- {} {}|{:X} uid {} hand '{}' from {}", note, ns.kind, ns.plugin,
+			ns.localId, ns.uniqueId, ns.hand, j.value("source", std::string()));
+		PersistAll();
+		HbPushConfig();
+		HbPushLive(true);
+		RE::DebugNotification(note.c_str());
 	}
 
 	// fdCropSave: one crop written from the editor. Reply is `fdCrops` — a
@@ -18360,6 +19043,34 @@ namespace
 		});
 	}
 
+	// Loadouts tab. loState builds the whole picture (groups, classes, the FO
+	// roster with faces, who is with you now, the combat-style catalogue);
+	// loAct mutates and saves, or - for deploy/summon/dismiss/dress - validates,
+	// closes the palette and runs the serialised NFF job in the live world
+	// (loadouts.h explains why one recruit at a time). The palette is NOT
+	// reopened afterwards: a paused palette would stall the very Papyrus
+	// updates the job is waiting on.
+	void OnJsLoadoutsState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("loStateResult", Loadouts::StateJson());
+		});
+	}
+
+	void OnJsLoadoutsAct(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const std::string res = Loadouts::ActJson(req);
+			PushToView("loActResult", res);
+			const auto j = json::parse(res, nullptr, false);
+			if (j.is_discarded() || !j.value("ok", false) || !j.value("physical", false))
+				return;
+			ClosePalette();
+			Loadouts::Execute(req);
+		});
+	}
+
 	// Time pane. tmGet -> tmInfo (the live game clock); tmWait(hours) -> tmResult
 	// then a fresh tmInfo, so the pane's dial sweeps to where the world now is.
 	// One name per direction, as the law demands.
@@ -20941,6 +21652,9 @@ namespace
 		PushToView("fdCrops", FolCropsJson());
 		PushFollowerNff(fo);
 		PushToView("fdFertility", FertilityBridge::StateJson(fo));
+		// court-status.json for CHIM: marriage (MARAS) + pregnancy (FM) per follower.
+		// Same roster, same read-only posture; skips the disk when nothing changed.
+		CourtStatus::Write(fo);
 	}
 
 	// The v0.11.0 headline fix. Until now ApplyPortalAssignments() ran only inside
@@ -21651,11 +22365,28 @@ namespace
 				const auto btn = e->AsButtonEvent();
 				if (!btn)
 					continue;
+				// Held-key bookkeeping for any-key chords (2026-09-13): every
+				// press adds, every release removes. Before every gate below, so
+				// a key released while some branch `break`s is still forgotten.
+				{
+					const auto dev = btn->GetDevice();
+					if (dev == RE::INPUT_DEVICE::kKeyboard || dev == RE::INPUT_DEVICE::kMouse) {
+						if (btn->IsUp())
+							NoteHeld(dev == RE::INPUT_DEVICE::kKeyboard, btn->GetIDCode(), false);
+						else if (btn->IsPressed())
+							NoteHeld(dev == RE::INPUT_DEVICE::kKeyboard, btn->GetIDCode(), true);
+					}
+				}
 				// Hold-to-release wheel: the UP of the key that opened it ends the
 				// gesture. Checked before the IsDown gate (releases are otherwise
 				// invisible here); the view decides what "release" means — in
 				// toggle mode it ignores the call entirely.
 				if (btn->IsUp()) {
+					{
+						const auto dev = btn->GetDevice();
+						if (dev == RE::INPUT_DEVICE::kKeyboard || dev == RE::INPUT_DEVICE::kMouse)
+							GestureUp(dev == RE::INPUT_DEVICE::kMouse, btn->GetIDCode());
+					}
 					if (g_wheelHoldArmed.load() &&
 						(btn->GetDevice() == RE::INPUT_DEVICE::kMouse) == g_wheelHoldMouse.load() &&
 						btn->GetIDCode() == g_wheelHoldCode.load()) {
@@ -21970,6 +22701,28 @@ namespace
 					}
 				}
 
+				// Bind from the menu: with the inventory, magic menu or favourites
+				// OPEN (the game is paused, so the fire branch below never sees
+				// these), a slot key binds the highlighted row onto that button.
+				// Never the console, never the map — only the three menus that
+				// have a highlighted thing to bind. ⚠ The sink cannot consume, so
+				// in the FAVOURITES menu a number key ALSO does its vanilla job
+				// (assigns the vanilla hotkey) — the same double the bar already
+				// warns about for 1-8 in play.
+				if (!AnyOpen() && !OurViewHasKeyboard()) {
+					auto* pui = RE::UI::GetSingleton();
+					if (pui && (pui->IsMenuOpen(RE::InventoryMenu::MENU_NAME) ||
+								pui->IsMenuOpen(RE::MagicMenu::MENU_NAME) ||
+								pui->IsMenuOpen(RE::FavoritesMenu::MENU_NAME))) {
+						const int slot = HbSlotForKeyInMenu(isKb, isMs, idc);
+						if (slot >= 0) {
+							const int pg = g_hbLivePage.load();
+							SKSE::GetTaskInterface()->AddTask([pg, slot]() { HbBindFromMenu(pg, slot); });
+							break;
+						}
+					}
+				}
+
 				// Hotbar slot keys: palette CLOSED and the game UNPAUSED only. A
 				// paused game means a menu owns the keyboard — inventory, map, and
 				// above all the CONSOLE, where typing "1" must not cast Fireball.
@@ -22009,7 +22762,15 @@ namespace
 				// here would double-fire. Tested before the open-key matches so a
 				// trigger can share a key with nothing else we handle.
 				if (!AnyOpen()) {
+					// Gestures first: a key carrying a double-tap or hold binding
+					// defers its plain tap (it cannot know yet which one this is).
+					const auto dblId  = TriggerMatch(isKb, isMs, idc, "double");
+					const auto holdId = TriggerMatch(isKb, isMs, idc, "hold");
 					const auto trigId = TriggerMatch(isKb, isMs, idc);
+					if (!dblId.empty() || !holdId.empty()) {
+						GestureDown(isMs, idc, trigId, dblId, holdId);
+						break;
+					}
 					if (!trigId.empty()) {
 						if (TriggerFiresWheel(trigId)) {
 							// same hold-to-release memory as the Ctrl+chord path
@@ -22282,6 +23043,15 @@ namespace
 			// actor, and the place cache holds a cell id that may now be a
 			// different cell. Drop all three and force one rebuild.
 			Widgets::OnPostLoadGame();
+			// The maintained ward is runtime-only state about the OUTGOING
+			// session — a save that never armed it must not load into a
+			// magicka drain. Silent stand-down, no dispel (the incoming
+			// save's effects are its own).
+			WardActions::Reset();
+			// Places index: map-marker discovered/enabled flags are SAVE state,
+			// and a different save may carry different mods' markers. Drop it;
+			// the next teleport search rebuilds (a few hundred ms, logged).
+			Places::Reset();
 			// Spell Deck config repair: re-resolve every stored runtime formId
 			// from its durable (plugin, localId) pair and merge the duplicates a
 			// stale id let the pickers create. HERE and not at kDataLoaded —
@@ -22341,6 +23111,9 @@ namespace
 						}
 						if (!snap.rows.empty())
 							FollowerTune::Reapply(snap);
+						// Loadouts: combat styles this deck set (NFF restores only
+						// its own twelve) - same deferral, same reason.
+						Loadouts::OnPostLoadGame();
 					});
 				}).detach();
 				// Render warm-start (perf item 3): ONCE per session, after the first
@@ -22541,6 +23314,8 @@ namespace
 
 		if (auto idm = RE::BSInputDeviceManager::GetSingleton()) {
 			idm->AddEventSink(OpenKeySink::GetSingleton());
+			// Build marker (hd-markers.json: "chord-any-key").
+			logger::info("chords: any-key modifiers + exclusive matching armed (sink tracks held keys)");
 			logger::info("input sink registered");
 		} else {
 			logger::critical("BSInputDeviceManager unavailable — open key will not work");

@@ -1010,6 +1010,93 @@ body.hb-edit .hb-slot.is-selected {
    but with the fan glyph readable */
 .hb-slot.is-fly .hb-glyph { color: #cdb075; }
 
+/* ── gear sets (2026-09-13) ─────────────────────────────────────────────── */
+/* Same chip as a flyout's count, but it reads "have/total" — how much of the
+   set is in the bag — and the equipped ring lights only when ALL of it is on.
+   No direction arrow: a set never fans. */
+.hb-slot.is-set .hb-glyph { color: #cdb075; font-size: calc(var(--hb-cell) * .52); }
+.hb-setn { font-size: max(12px, calc(var(--hb-cell) * .19)); letter-spacing: .02em; }
+.hb-slot.is-set.is-equipped { box-shadow: 0 0 0 2px rgba(226, 190, 110, 0.85), 0 0 14px rgba(226, 190, 110, 0.45); }
+
+/* hand memory: a small R / L in the top-left of a single item or spell */
+.hb-hand {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  min-width: calc(var(--hb-cell) * .3);
+  height: calc(var(--hb-cell) * .3);
+  padding: 0 3px;
+  border-radius: calc(var(--hb-cell) * .15);
+  background: rgba(12, 12, 16, 0.82);
+  border: 1px solid rgba(226, 190, 110, 0.55);
+  color: #f2e0b0;
+  font-size: max(11px, calc(var(--hb-cell) * .18));
+  font-weight: 700;
+  line-height: calc(var(--hb-cell) * .28);
+  text-align: center;
+  z-index: 2;
+}
+.hb-hand.hand-left { color: #b8d8f0; border-color: rgba(150, 200, 240, 0.55); }
+
+/* page rows (2026-09-13): a two-column GRID, so every "+ key" button sits on
+   the same vertical line — a wrapping flex row put them wherever the label's
+   width left them. Each row is [switch | key], key hugging the right edge. */
+#hb-pagetoggles {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);   /* one column: "Shift+Ctrl page" must never truncate */
+  row-gap: 2px;
+}
+.hb-pagerow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.hb-pagerow:last-child { border-bottom: 0; }
+.hb-pagerow .hb-check { min-width: 0; }
+.hb-pagerow .hb-check span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hb-pagekey {
+  min-width: 96px;
+  height: 42px;
+  padding: 0 14px;
+  font-size: 15px;
+  letter-spacing: .02em;
+}
+.hb-pagekey.is-unbound { border-style: dashed; font-weight: 600; }
+.hb-pagekey.is-unbound:hover { border-style: solid; color: var(--gold-soft); }
+
+/* the vanilla-hotkeys import row: button, then its answer beneath at note size */
+.hb-importrow { flex-direction: column; align-items: flex-start; gap: 6px; }
+.hb-import-note { margin: 0; min-height: 0; }
+.hb-import-note:empty { display: none; }
+
+/* set editor rows: a piece that is not in the bag reads dim with its reason in
+   the warn colour; a piece that is currently ON carries a gold index */
+.hb-flyed-row.is-missing .thumb { opacity: .55; }
+.hb-flyed-row.is-missing .what .nm { color: var(--dim); }
+.hb-flyed-row.is-missing .what .sub { color: var(--danger-soft, #e0b0b0); }
+.hb-flyed-row.is-on .idx { color: var(--gold-bright); }
+.hb-onchip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--gold-line);
+  color: var(--gold-bright);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  vertical-align: 1px;
+}
+
+/* the per-piece hand toggle in the set editor */
+.hb-handbtn { min-width: 66px; font-weight: 700; letter-spacing: .02em; }
+.hb-handbtn:not(.is-on) { color: var(--dim); font-weight: 600; }
+.hb-handbtn.is-on { color: var(--gold); border-color: var(--gold-line); }
+
 .hb-fly {
   position: absolute;
   display: flex;

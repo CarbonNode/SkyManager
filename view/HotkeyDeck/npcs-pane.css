@@ -725,6 +725,13 @@
 .nx-chip-uniq { background: rgba(201, 162, 75, .14); border: 1px solid rgba(201, 162, 75, .45); color: #ecd9a8; }
 .nx-chip-ess  { background: #21232b; border: 1px solid #414659; color: #aab3c6; }
 .nx-chip-tmpl { background: #1f1f26; border: 1px solid #3a3a46; color: #8d8878; }
+/* ◍ expecting (Fertility Mode) and 💬 CHIM agent — the roster's rose and the
+   deck's gold, hover for the detail; `help` cursor because the tooltip is the
+   point (hd-omni.css .omni-mark-* wear the same two hues). */
+.nx-chip-preg { background: rgba(217,138,166,.09); border: 1px solid #d98aa655; color: #d98aa6; cursor: help; }
+.nx-chip-chim { background: rgba(201,162,75,.10); border: 1px solid #c9a24b66; color: #e8c96a; cursor: help; }
+.nx-chip-preg:hover { border-color: #d98aa6; }
+.nx-chip-chim:hover { border-color: #e8c96a; }
 
 /* the face plate: portrait-shaped, art fills it */
 .nx-plate {

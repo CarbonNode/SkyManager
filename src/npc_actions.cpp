@@ -653,7 +653,7 @@ namespace NpcActions
 			return best;
 		}
 
-		void DoSicEm()
+		bool DoSicEm(const std::function<bool(RE::Actor*)>& allow, const std::string& who)
 		{
 			auto* target = TargetActor();
 			if (target && target->IsDead())
@@ -667,14 +667,14 @@ namespace NpcActions
 			}
 			if (!target) {
 				Notify("Sic 'em: aim at an enemy — none under the crosshair or along your aim");
-				return;
+				return false;
 			}
 
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			auto* lists  = RE::ProcessLists::GetSingleton();
 			if (!player || !lists) {
 				Notify("Sic 'em: unavailable right now");
-				return;
+				return false;
 			}
 
 			// Loaded followers (teammates), same predicate the rest of the deck
@@ -687,11 +687,14 @@ namespace NpcActions
 					continue;
 				if (!a->IsPlayerTeammate())
 					continue;
+				if (allow && !allow(a))
+					continue;          // a group order: only ITS members charge
 				followers.push_back(a);
 			}
 			if (followers.empty()) {
-				Notify("Sic 'em: no followers nearby to command");
-				return;
+				Notify(who.empty() ? "Sic 'em: no followers nearby to command"
+									: ("Sic 'em: nobody from " + who + " is nearby to command"));
+				return false;
 			}
 
 			// Already-hostile actors near the target — wake these into the fight.
@@ -725,13 +728,15 @@ namespace NpcActions
 			for (auto* e : nearHostiles)
 				CallStartCombat(e, player);
 
-			logger::info("NpcActions: sic-em — {} follower(s) onto \"{}\" (+{} nearby hostile)",
-				followers.size(), NameOf(target), nearHostiles.size());
+			logger::info("NpcActions: sic-em — {} follower(s) onto \"{}\" (+{} nearby hostile){}",
+				followers.size(), NameOf(target), nearHostiles.size(),
+				who.empty() ? std::string() : (" [" + who + "]"));
 			std::string msg = "⚔ " + std::to_string(static_cast<int>(followers.size())) +
 				" on " + NameOf(target);
 			if (!nearHostiles.empty())
 				msg += " +" + std::to_string(static_cast<int>(nearHostiles.size()));
 			Notify(msg);
+			return true;
 		}
 
 		// ---- grab drag ("grab") ---------------------------------------------
@@ -1173,6 +1178,11 @@ namespace NpcActions
 		return true;
 	}
 
+	bool SicEm(const std::function<bool(RE::Actor*)>& allow, const std::string& who)
+	{
+		return DoSicEm(allow, who);
+	}
+
 	bool Run(const std::string& action)
 	{
 		if (action == "release-all") {
@@ -1184,7 +1194,7 @@ namespace NpcActions
 			return true;
 		}
 		if (action == "attack-target") {
-			DoSicEm();
+			DoSicEm(nullptr, {});
 			return true;
 		}
 		if (action != "freeze" && action != "sit" && action != "bed")

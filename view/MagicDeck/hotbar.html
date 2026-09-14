@@ -241,6 +241,15 @@
       <section class="hb-sect">
         <h2>Buttons <em id="hb-page-name" class="hb-page-name"></em></h2>
         <p class="hb-note" id="hb-slot-note">Pick a button, then choose what it does and which key fires it.</p>
+        <div class="hb-row hb-checks">
+          <label class="hb-check" title="With your inventory, magic menu or favourites open, highlight a row and press a button's key: it lands on that button - no editor needed. On a gear set or flyout the key ADDS to it. Off = the keys do nothing in menus."><input id="hb-menuBind" type="checkbox"><span>Bind from the inventory / magic / favourites menus</span></label>
+        </div>
+        <p class="hb-note">In a menu: highlight something, press a button’s key, it’s bound — the exact copy you picked, in the hand you held it. Press a gear set’s key to add the piece to the set.</p>
+        <div class="hb-row hb-importrow">
+          <button id="hb-import-vanilla" class="hb-btn" type="button"
+                  title="Copy whatever Skyrim's own favourites hotkeys 1-8 hold (set in the favourites menu) onto Main page buttons 1-8. Only empty buttons are filled; anything you already put there is kept.">↓ Import Skyrim’s favourites hotkeys (1–8)</button>
+          <p id="hb-import-note" class="hb-note hb-import-note"></p>
+        </div>
         <div id="hb-slotlist" class="hb-slotlist"></div>
       </section>
 
@@ -268,6 +277,8 @@
                 title="Empty this button - it keeps its key, so you can put something else on it later">Clear this button</button>
         <button id="hb-pick-fly" class="hb-btn" type="button"
                 title="Turn this button into a flyout - one key opens a fan of up to 9 actions. Whatever is on the button now becomes the first one.">⧉ Make this a flyout</button>
+        <button id="hb-pick-set" class="hb-btn" type="button"
+                title="Turn this button into a gear set - one key equips up to 9 pieces at once (weapons, shield, armour, spells), and puts them all away when pressed again. An item already on the button becomes the first piece.">⛨ Make this a gear set</button>
         <button id="hb-pick-newcc" class="hb-btn" type="button"
                 title="Type any console command and put it straight on this button - one command per line, like a batch file">＞ New console command…</button>
         <span class="hb-hint">Enter = top hit · Esc = close</span>

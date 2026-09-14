@@ -2012,6 +2012,53 @@
     return chip;
   }
 
+  /* ---- EVERYONE Fertility Mode tracks (2026-09-14) ----------------------
+     fmAllResult is the whole-map twin of fdFertility: keyed by reference
+     (runtime formId) AND by base record ("<plugin>|<LOCAL6HEX>", the NPC
+     Finder's row id), so a person with no Follower Organizer row — a Finder
+     row, or whoever is in the crosshair — can still wear the ◍. Asked for on
+     demand (ensureFertAll, 8 s throttle), never pushed unprompted. */
+  const fertAll = { byRef: Object.create(null), byBase: Object.create(null),
+                    list: [], known: false, available: false, at: 0 };
+  const FERT_ALL_TTL = 8000;
+  function ensureFertAll(force) {
+    const now = Date.now();
+    if (!force && fertAll.at && (now - fertAll.at) < FERT_ALL_TTL) return;
+    fertAll.at = now;
+    toGame('fmAll', '');
+  }
+  /* { formId?, base? } -> status | null (known, not tracked) | undefined (nothing answered yet) */
+  function fertFor(ident) {
+    if (!fertAll.known) return undefined;
+    if (!ident) return null;
+    const fid = Number(ident.formId) >>> 0;
+    if (fid && fertAll.byRef[fid]) return fertAll.byRef[fid];
+    const b = String(ident.base || '').trim().toLowerCase();
+    if (b && fertAll.byBase[b]) return fertAll.byBase[b];
+    return null;
+  }
+  window.fmAllResult = function (env) {
+    env = coerce(env);
+    if (!env || !env.ok) return;
+    const actors = (env.actors && typeof env.actors === 'object') ? env.actors : {};
+    const byRef = Object.create(null), byBase = Object.create(null), list = [];
+    Object.keys(actors).forEach(function (k) {
+      const v = actors[k];
+      if (!v || typeof v !== 'object') return;
+      const fid = Number(v.ref || k) >>> 0;
+      if (fid) byRef[fid] = v;
+      const b = String(v.base || '').trim().toLowerCase();
+      /* two refs sharing one base (a non-unique NPC) — the base key is then
+         ambiguous, so it is dropped rather than pointing at the wrong woman */
+      if (b) byBase[b] = Object.prototype.hasOwnProperty.call(byBase, b) ? null : v;
+      list.push(v);
+    });
+    fertAll.byRef = byRef; fertAll.byBase = byBase; fertAll.list = list;
+    fertAll.known = true; fertAll.available = !!env.available; fertAll.at = Date.now();
+    try { window.dispatchEvent(new CustomEvent('hd-fert-all')); } catch (e) {}
+    try { renderQuickCard(); } catch (e) {}
+  };
+
   /* Fertility Mode, folded on the same way as the NFF/MHiYH snapshot: fdState
      and fdFertility can land in either order, so both receivers re-merge. */
   function mergeFert(m) {
@@ -2696,7 +2743,11 @@
       title: 'Looks other mods can put on ' + modalWho }];
     if (skins && skins.available !== undefined && skins.present)
       tabs.push({ id: 'skins', label: '🎨 Skins',
-        title: 'Change ' + modalWho + '’s skin — SkinShift’s preset skins, or back to her own' });
+        title: 'Change ' + modalWho + '’s skin — '
+          + (skins.provider === 'skymanager'
+            ? 'your own skin packs, written as RaceMenu texture overrides'
+            : 'SkinShift’s preset skins')
+          + ', or back to her own' });
     if (bodyEnv && bodyEnv.present)
       tabs.push({ id: 'body', label: '🫧 Body',
         title: 'CBBE 3BA’s body physics for ' + modalWho + ' — CBPC or SMP, '
@@ -2870,12 +2921,22 @@
    *  every fxResult repaints this tab exactly like the effects rows. */
   function fillFxSkins(body, skins) {
     const who = fxModalCtx ? fxModalCtx.who : 'her';
+    /* skin-native-provider (2026-09-06). TWO providers now feed this one tab:
+       "skymanager" = our own RaceMenu/skee override route (skin_actions.cpp,
+       public interface, user-made packs), "skinshift" = the older RVA route.
+       C++ picks; the view follows `idPrefix` and never hardcodes an id family
+       again. Everything below that reads `skins.*` is shared by both. */
+    const native = skins.provider === 'skymanager';
+    const P = skins.idPrefix || 'skinshift:';
     if (!skins.available) {
-      /* SkinShift IS loaded but its bytes aren't the build we verified —
-         calling into it anyway would be a crash, so the tab says why not. */
+      /* Whichever provider answered, it says why it can't work — SkinShift's
+         bytes aren't the build we verified, or RaceMenu never answered the
+         interface exchange. Calling in anyway is a crash, so we say why not. */
       body.append(h('div', { class: 'fx-empty fx-skin-gate' },
-        skins.reason || 'SkinShift’s version isn’t the one SkyManager knows — '
-        + 'the Skins tab needs an update'));
+        skins.reason || 'the Skins tab has no working provider on this rig'));
+      if (skins.nativeReason)
+        body.append(h('div', { class: 'fx-skin-note' },
+          'SkyManager’s own skin route is off too: ' + skins.nativeReason));
       return;
     }
     const unknown = !!skins.unknown;
@@ -2887,10 +2948,23 @@
        SkinShift's F1 menu may still have (its internal store can't be read
        reliably: first play-test 2026-08-15), so the copy claims only what
        the deck actually knows. */
-    body.append(h('div', { class: 'fx-skin-cur' },
+    const curLine = h('div', { class: 'fx-skin-cur' },
       cur ? 'Current: ' + curName
         : (unknown ? 'Current: unknown'
-                   : 'No skin applied from the deck')));
+                   : 'No skin applied from the deck'));
+    /* Which engine is actually driving this tab, on the tab — during the first
+       play-test that is the single most useful fact on screen, and afterwards
+       it is how "why did nothing happen" gets answered without a log dive. */
+    if (native)
+      curLine.append(h('span', {
+        class: 'fx-skin-prov',
+        title: 'SkyManager writes RaceMenu texture overrides itself.\n'
+          + 'Route: ' + (skins.route || 'unknown')
+          + ' (RaceMenu Override interface v' + (skins.interfaceVersion || '?') + ')\n'
+          + 'Reading: ' + ((skins.roots || []).map((r) => r.path + ' — '
+              + r.packs + ' pack' + (r.packs === 1 ? '' : 's')).join('\n') || 'no roots'),
+      }, 'SkyManager · ' + (skins.presets || []).length + ' skins'));
+    body.append(curLine);
 
     /* skinshift-readback — THE verdict surface (diagnosis instrument,
        2026-08-15). `skins.live` is read by C++ straight off her LOADED 3D
@@ -2917,7 +2991,12 @@
       } else {
         const path = String(pick.diffuse || '');
         const file = path ? (path.split(/[\\/]/).pop() || path) : '(no diffuse)';
-        const isPreset = path.toLowerCase().indexOf('removenormals') >= 0;
+        /* Both providers leave a recognisable fingerprint in the path: ours
+           writes under textures\SkyManagerSkins\, SkinShift's presets live
+           under removenormals\. Either one means the swap really landed. */
+        const lowPath = path.toLowerCase();
+        const isOurs = lowPath.indexOf('skymanagerskins') >= 0;
+        const isPreset = isOurs || lowPath.indexOf('removenormals') >= 0;
         const title = 'Body diffuse: ' + (path || '(none)') + '\n\nAll parts:\n' +
           parts.map((p) => (p.geom || '?') + ' [' + (p.kind || '?') + '] ' +
             (p.diffuse || '(no diffuse)') +
@@ -2931,7 +3010,8 @@
           line.append(' ' + pick.tint);
         }
         if (isPreset)
-          line.append(h('span', { class: 'fx-skin-live-chip' }, '(a SkinShift preset)'));
+          line.append(h('span', { class: 'fx-skin-live-chip' },
+            isOurs ? '(a SkyManager skin)' : '(a SkinShift preset)'));
         else
           line.append(' · her normal skin');
         body.append(line);
@@ -2942,24 +3022,61 @@
        the deck can't see skins applied outside it, so gating this on our own
        record locked Rober out of resetting. Clearing with nothing applied is
        a safe no-op with an honest toast from C++. */
-    body.append(h('button', {
+    /* One toolbar ROW, not a stack of full-width bars: two stacked bars ate
+       the vertical space the list wants, and the deck's rule is to spend the
+       screen on content. They share the row evenly and wrap at the 640px
+       floor rather than squashing their labels. */
+    const tools = h('div', { class: 'fx-skin-tools' });
+    tools.append(h('button', {
       class: 'fx-skin-clear', type: 'button',
-      title: 'Back to ' + who + '’s own skin — SkinShift forgets the '
-        + 'assignment and re-scans, so it reverts without a reload '
-        + '(harmless if nothing is applied)',
+      title: native
+        ? 'Back to ' + who + '’s own skin — removes only the texture channels '
+          + 'SkyManager put on her, so anything another mod owns is untouched'
+        : 'Back to ' + who + '’s own skin — SkinShift forgets the '
+          + 'assignment and re-scans, so it reverts without a reload '
+          + '(harmless if nothing is applied)',
       onClick: (ev) => {
         ev.stopPropagation();
         toGame('fxSet', JSON.stringify({
-          formId: fxModalCtx.formId, id: 'skinshift:clear', on: false }));
+          formId: fxModalCtx.formId, id: P + 'clear', on: false }));
       },
     }, '✕ Her own skin'));
 
+    /* The native provider reads packs off disk, so it can gain one mid-session
+       — and an empty catalogue has to be re-checkable without a relaunch. */
+    if (native)
+      tools.append(h('button', {
+        class: 'fx-skin-clear fx-skin-rescan', type: 'button',
+        title: 'Re-read the skin packs from disk — after dropping a new pack '
+          + 'into Data\\Textures\\SkyManagerSkins or Data\\BodySkin',
+        onClick: (ev) => {
+          ev.stopPropagation();
+          toGame('fxSet', JSON.stringify({
+            formId: fxModalCtx.formId, id: P + 'rescan', on: true }));
+        },
+      }, '⟳ Rescan packs'));
+    body.append(tools);
+
     const all = skins.presets || [];
     if (!all.length) {
-      body.append(h('div', { class: 'fx-empty' },
-        'No skin presets found — SkinShift reads them from '
-        + 'Data/textures/removenormals/presets/Preset01…Preset99, each with '
-        + 'Body / Hands / Feet / Head texture folders.'));
+      if (native) {
+        /* WHERE it looked, always — "no skins" with no path reads as broken
+           rather than as empty, and the answer is usually a missing folder. */
+        const roots = skins.roots || [];
+        const box = h('div', { class: 'fx-empty' },
+          'No skin packs found. Drop one into either of these and hit '
+          + '⟳ Rescan packs:');
+        roots.forEach((r) => box.append(h('div', { class: 'fx-skin-note' },
+          r.path + (r.layout === 'native'
+            ? '\\<pack name>\\actors\\character\\female\\femalebody_1.dds …'
+            : '\\<pack name>\\Textures\\actors\\character\\… (Body Change NG layout)'))));
+        body.append(box);
+      } else {
+        body.append(h('div', { class: 'fx-empty' },
+          'No skin presets found — SkinShift reads them from '
+          + 'Data/textures/removenormals/presets/Preset01…Preset99, each with '
+          + 'Body / Hands / Feet / Head texture folders.'));
+      }
       return;
     }
 
@@ -2967,9 +3084,9 @@
        it rather than owning a second input. Enter still applies the top hit,
        armed through fxTopHit instead of an onKeydown of our own. */
     const q = fxSearch.trim().toLowerCase();
-    const rows = q
-      ? all.filter((p) => (p.name + ' ' + p.key).toLowerCase().indexOf(q) >= 0)
-      : all;
+    const hay = (p) => (p.name + ' ' + p.key + ' ' + (p.pack || '') + ' ' +
+      (p.race || '') + ' ' + (p.sex || '') + ' ' + (p.layout || '')).toLowerCase();
+    const rows = q ? all.filter((p) => hay(p).indexOf(q) >= 0) : all;
 
     fxTopHit = () => {
       const top = document.querySelector(
@@ -2986,24 +3103,44 @@
       const isCur = !unknown && !!cur &&
         (cur.toLowerCase() === p.key.toLowerCase() ||
          cur.toLowerCase() === String(p.name).toLowerCase());
-      const row = h('div', { class: 'fx-row fx-skin-row' + (isCur ? ' is-current' : '') },
+      /* A pack for another race/sex is SHOWN and disabled with the reason,
+         never hidden: "my pack isn't in the list" is a worse bug report than
+         "that pack is for a male argonian". C++ decides `fits`; an older DLL
+         omits the key, and an absent key means the old always-enabled row. */
+      const fits = p.fits !== false;
+      const parts = (p.parts || []).join(' · ');
+      const detail = (parts ? parts + ' — ' : '') +
+        (p.files || 0) + ' texture file' + (p.files === 1 ? '' : 's');
+      const row = h('div', { class: 'fx-row fx-skin-row' + (isCur ? ' is-current' : '') +
+          (fits ? '' : ' is-unfit') },
         h('span', { class: 'fx-glyph', 'aria-hidden': 'true' }, '🎨'),
         h('span', { class: 'fx-main' },
+          /* The chip earns its place only when it SAYS something the name
+             doesn't: "Sunkiss Skin 4K — Female" beside a chip reading
+             "female" is noise. Beast and UBE rows keep theirs, because that
+             is the part a pack name never tells you. */
           h('span', { class: 'fx-label' }, p.name,
-            h('span', { class: 'fx-chip fx-key-chip' }, p.key)),
-          h('span', { class: 'fx-detail' },
-            (p.files || 0) + ' texture file' + (p.files === 1 ? '' : 's'))),
+            (p.layout && p.layout !== 'female' && p.layout !== 'male')
+              ? h('span', { class: 'fx-chip fx-key-chip' }, p.layout)
+              : (native ? null : h('span', { class: 'fx-chip fx-key-chip' }, p.key))),
+          h('span', { class: 'fx-detail' }, fits ? detail : (p.reason || detail))),
         h('button', {
           class: 'fx-act', type: 'button',
-          disabled: isCur ? true : null,
+          disabled: (isCur || !fits) ? true : null,
           title: isCur
             ? p.name + ' is already applied to ' + who
-            : 'Change ' + who + '’s skin to ' + p.name + ' — through SkinShift’s '
-              + 'own store, so it persists across saves exactly as the mod intends',
+            : (!fits
+              ? (p.reason || 'that pack doesn’t match ' + who + '’s race or sex')
+              : 'Change ' + who + '’s skin to ' + p.name + (native
+                ? ' — written as RaceMenu texture overrides on her live body, '
+                  + 'hands, feet and face; her meshes, armour and inventory are '
+                  + 'never touched'
+                : ' — through SkinShift’s own store, so it persists across '
+                  + 'saves exactly as the mod intends')),
           onClick: (ev) => {
             ev.stopPropagation();
             toGame('fxSet', JSON.stringify({
-              formId: fxModalCtx.formId, id: 'skinshift:' + p.key, on: true }));
+              formId: fxModalCtx.formId, id: P + p.key, on: true }));
           },
         }, isCur ? 'applied' : 'Apply'));
       list.append(row);
@@ -3012,10 +3149,14 @@
 
     /* The dark-elf lesson (play-test 2026-08-15): a preset is a flat texture
        set applied verbatim — human-tone skins show untinted (yellowish) on
-       elf and beast races. Said once, small, at the foot. */
-    body.append(h('div', { class: 'fx-skin-note' },
-      'Presets apply as-is: human-tone skins look untinted on elf/beast '
-      + 'races — those want their own race-toned preset slot.'));
+       elf and beast races. The native provider answers half of that by
+       refusing cross-race rows outright, so it earns a different footnote. */
+    body.append(h('div', { class: 'fx-skin-note' }, native
+      ? ('Skins are texture overrides on her live body — beast races only ever '
+        + 'see beast packs, and a channel another mod already owns is left '
+        + 'alone rather than painted over. Route: ' + (skins.route || '?') + '.')
+      : ('Presets apply as-is: human-tone skins look untinted on elf/beast '
+        + 'races — those want their own race-toned preset slot.')));
   }
 
   /* Styles for the tab row + skins list, injected once (the ostim-pane
@@ -3793,15 +3934,30 @@
       '.fx-skin-cur{font-size:14.5px;font-weight:700;color:#e9e2cf;' +
         'padding:2px 2px 10px;}' +
       '.fx-skin-gate{color:#d6a860;}' +
-      '.fx-skin-live{font-size:12.5px;color:#9a927e;line-height:1.5;' +
+      /* 13.5px: this line is the verdict surface — "what is she ACTUALLY
+         wearing" — so it is read on every apply. Nothing read that often
+         gets to be small (Rober's standing UI rule). */
+      '.fx-skin-live{font-size:13.5px;color:#a9a08a;line-height:1.5;' +
         'padding:0 2px 10px;white-space:nowrap;overflow:hidden;' +
         'text-overflow:ellipsis;}' +
       '.fx-skin-swatch{display:inline-block;width:12px;height:12px;' +
         'border-radius:3px;border:1px solid rgba(255,255,255,.25);' +
         'vertical-align:-1px;}' +
       '.fx-skin-live-chip{color:#ecd9a0;font-weight:700;margin-left:6px;}' +
-      '.fx-skin-note{font-size:12.5px;color:#9a927e;line-height:1.45;' +
-        'padding:10px 2px 2px;}' +
+      /* 13.5px, not 12.5: this foot-note is real copy that answers "why did
+         nothing happen", and the deck's standing rule is that nothing a
+         person has to READ gets to be small. */
+      '.fx-skin-note{font-size:13.5px;color:#a9a08a;line-height:1.5;' +
+        'padding:12px 2px 2px;}' +
+      /* The two toolbar buttons share one row and wrap instead of squashing
+         at the deck's 640px floor. */
+      '.fx-skin-tools{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;}' +
+      '.fx-skin-tools .fx-skin-clear{flex:1 1 220px;margin-bottom:0;}' +
+      /* Which engine is live, as a chip on the header line. */
+      '.fx-skin-prov{margin-left:10px;padding:3px 9px;border-radius:999px;' +
+        'font-size:12.5px;font-weight:700;letter-spacing:.02em;' +
+        'color:#e6d6a6;background:rgba(240,214,140,.10);' +
+        'border:1px solid rgba(240,214,140,.30);white-space:nowrap;}' +
       '.fx-skin-clear{display:block;width:100%;box-sizing:border-box;' +
         'margin-bottom:10px;padding:11px 12px;border-radius:9px;cursor:pointer;' +
         'font:inherit;font-size:13.5px;font-weight:700;text-align:left;' +
@@ -3811,6 +3967,33 @@
       '.fx-skin-clear:hover:not([disabled]){background:rgba(214,118,96,.15);' +
         'border-color:rgba(214,118,96,.6);}' +
       '.fx-skin-clear[disabled]{opacity:.5;cursor:default;}' +
+      /* Rescan is the same shape as "her own skin" but reads as a utility,
+         not a revert — parchment gold instead of the clear button's red. */
+      '.fx-skin-rescan{color:#e6d6a6;background:rgba(240,214,140,.06);' +
+        'border-color:rgba(240,214,140,.28);}' +
+      '.fx-skin-rescan:hover:not([disabled]){background:rgba(240,214,140,.14);' +
+        'border-color:rgba(240,214,140,.55);}' +
+      /* A pack that can't go on this actor stays visible and LEGIBLE. Dimming
+         the whole row was the easy way and the wrong one — the row's job in
+         that state is to be read, because it carries the reason. So: mute the
+         plate, keep the text at full strength, and let the reason italicise
+         itself. */
+      '.fx-skin-row.is-unfit{background:rgba(255,255,255,.02);' +
+        'border-color:rgba(255,255,255,.07);}' +
+      '.fx-skin-row.is-unfit .fx-glyph{opacity:.45;}' +
+      '.fx-skin-row.is-unfit .fx-detail{color:#b9a98a;font-style:italic;}' +
+      /* A disabled Apply MUST NOT look like an enabled one. Measured from the
+         2026-09-06 screenshot: the incompatible row's button rendered pixel-
+         identical to a live one (max luma 222 both), because the generic
+         `#fd-fx-modal .fx-act[disabled]` rule lives in a sheet this surface
+         cannot count on. So the skins sheet states it itself: gold means
+         clickable, grey means it will not do anything. */
+      '.fx-skin-row .fx-act[disabled]{cursor:not-allowed;}' +
+      '.fx-skin-row.is-unfit .fx-act[disabled]{color:#7e7767;' +
+        'background:rgba(255,255,255,.03);border-color:rgba(255,255,255,.10);}' +
+      '.fx-skin-row.is-unfit .fx-act[disabled]:hover{' +
+        'background:rgba(255,255,255,.03);border-color:rgba(255,255,255,.10);' +
+        'color:#7e7767;}' +
       '.fx-skins-list{max-height:calc(44vh / var(--ui-scale,1));' +
         'overflow-y:auto;padding-right:2px;}' +
       '.fx-skin-row .fx-key-chip{flex:none;}' +
@@ -8431,7 +8614,7 @@
    * ======================================================================== */
 
   const FQF = {
-    open: false, q: '', sel: 0, rows: [],
+    open: false, q: '', sel: 0, rows: [], partial: false,
     popEl: null, listEl: null, headEl: null,
     probe: [], probeKey: '', probeAt: 0,
   };
@@ -8442,6 +8625,129 @@
 
   function fqTidy(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
   function fqHasWord(s) { return /[0-9A-Za-z]/.test(String(s || '')); }
+
+  /* ---- what you CALL it vs what the button SAYS (fq-find-aliases) ---------
+     Rober, 2026-09-14, typing "teleport back" on Elana's card: "No action
+     matches" — when ⤵ Summon, ➜ Go to and ⮌ Send back… were all right there
+     on the MOVE row. The card names its buttons in its own voice ("Summon",
+     "Send back…") and the search only knew that voice, so the word a player
+     reaches for first — teleport — found nothing except the Everyone row.
+
+     Keyed by the button's label with its glyph, trailing "…" and ": On/Off"
+     state stripped (fqLabelKey), so a state chip and its plain twin share one
+     entry. The value is the vocabulary a person might type INSTEAD of the
+     label — never a second implementation of anything, just words. A hit
+     here ranks under a label hit and over a section hit: "teleport" lists
+     Summon / Go to / Send back… under the literal ⤵ Teleport (Everyone). */
+  const FQ_ALIASES = {
+    'summon':            'teleport bring call fetch come here to me',
+    'go to':             'teleport travel warp visit jump find',
+    'send back':         'teleport return undo send to where they were home domain',
+    'where they were':   'teleport back return undo summon previous location',
+    'teleport':          'summon everyone all bring party gather to me',
+    'wait':              'stay hold stop everyone',
+    'wait here':         'stay hold stop stand',
+    'follow me':         'come follow',
+    'stop':              'halt everyone',
+    'sandbox':           'relax idle wander chill everyone',
+    'her sandbox':       'relax idle wander',
+    'dismiss':           'fire release go home leave remove follower',
+    'recruit':           'follow hire join take',
+    'freeze':            'hold still stop statue pause pin',
+    'grab':              'drag move carry pick up drop',
+    'formation':         'arrange spacing line walk with me',
+    'track':             'map marker locate find where',
+    'stop tracking':     'map marker untrack',
+    'track on map':      'marker locate find where',
+    'stop tracking on map': 'marker untrack',
+    'home is here':      'set home live here mhiyh my home is your home',
+    'set a spot':        'spot marker home',
+    'nff base':          'base nether follower framework home',
+    'her home':          'mhiyh my home is your home',
+    'her nff base':      'nether follower framework home',
+    'add to framework':  'nff nether import',
+    'remove from framework': 'nff nether',
+    'inventory':         'items loot bag carry',
+    'trade':             'give take gold items barter',
+    'spare':             'chest storage stash',
+    'outfit':            'clothes wardrobe wear dress armor gear',
+    'portrait':          'photo picture face capture screenshot',
+    'full stats':        'sheet skills level stats',
+    'debug':             'dump engine factions',
+    'adjust':            'tune scale size',
+    'quests':            'journal quest',
+    'chim':              'ai talk prompt voice',
+    'notes':             'edit fields note',
+    'tune':              'adjust stats',
+    'dismiss all':       'everyone release',
+  };
+
+  /* The lookup key for a label: lowercase, glyph off the front, "…" and a
+     ": state" tail off the back. "☾ Her sandbox: Off" → "her sandbox". */
+  function fqLabelKey(label) {
+    let t = fqTidy(label).toLowerCase();
+    t = t.replace(/^[^0-9a-z]+/, '');
+    t = t.replace(/\s*[:：].*$/, '');
+    t = t.replace(/[…]+$/, '').replace(/\.\.\.$/, '');
+    return fqTidy(t);
+  }
+  function fqAliasFor(label) {
+    const k = fqLabelKey(label);
+    if (!k) return '';
+    if (FQ_ALIASES[k]) return FQ_ALIASES[k];
+    /* "Send Lydia to…" / "Stop tracking Lydia on the map": the longest key
+       the label STARTS with, so a name baked into a label still lands. */
+    let best = '';
+    Object.keys(FQ_ALIASES).forEach(function (key) {
+      if (k.indexOf(key + ' ') === 0 && key.length > best.length) best = key;
+    });
+    return best ? FQ_ALIASES[best] : '';
+  }
+
+  /* Light stemming for the query: "teleporting" / "teleports" / "summoned"
+     should find the same buttons as the bare verb. Returns the term and its
+     shorter forms, longest first; nothing shorter than three letters. */
+  function fqStems(t) {
+    const out = [t];
+    const push = function (x) { if (x.length >= 3 && out.indexOf(x) < 0) out.push(x); };
+    if (/ing$/.test(t)) push(t.slice(0, -3));
+    if (/ies$/.test(t)) push(t.slice(0, -3) + 'y');
+    if (/es$/.test(t))  push(t.slice(0, -2));
+    if (/ed$/.test(t))  push(t.slice(0, -2));
+    if (/s$/.test(t))   push(t.slice(0, -1));
+    return out;
+  }
+
+  /* One typo of slack — a letter wrong, missing, extra, or two swapped —
+     between a typed term and a word on the card. Only for terms of four
+     letters or more (with three, everything is one edit from everything),
+     and only word-vs-word, never against a whole sentence. Bounded
+     Damerau–Levenshtein; bails as soon as the answer is "more than one". */
+  function fqNear(a, b) {
+    if (a === b) return true;
+    const la = a.length, lb = b.length;
+    if (la < 4 || Math.abs(la - lb) > 1) return false;
+    if (la === lb) {
+      let d = 0, first = -1;
+      for (let i = 0; i < la; i++) {
+        if (a.charAt(i) !== b.charAt(i)) { d++; if (first < 0) first = i; if (d > 2) return false; }
+      }
+      if (d <= 1) return true;
+      return d === 2 && first + 1 < la && a.charAt(first) === b.charAt(first + 1)
+        && a.charAt(first + 1) === b.charAt(first);          // transposition
+    }
+    const s = la < lb ? a : b, l = la < lb ? b : a;         // l is one longer
+    let i = 0, j = 0, skipped = false;
+    while (i < s.length && j < l.length) {
+      if (s.charAt(i) === l.charAt(j)) { i++; j++; continue; }
+      if (skipped) return false;
+      skipped = true; j++;
+    }
+    return true;
+  }
+  function fqWordsOf(text) {
+    return String(text || '').toLowerCase().split(/[^0-9a-z]+/).filter(function (w) { return !!w; });
+  }
 
   /* A title is a sentence (often several). The row's SUBTITLE is the whole
      thing on one line, clamped by CSS; a label derived from a title takes only
@@ -8651,18 +8957,124 @@
     return 'c:' + ((state.target && (state.target.name + ':' + state.target.formId)) || '');
   }
 
-  /* The whole index: what is on screen, then what a reveal would draw. */
+  /* ---- actions the card cannot DRAW right now --------------------------
+     The ORDER row is one status button deep on purpose: it shows the single
+     thing that is actually available, so the slot never offers a control the
+     game would refuse. That is right on screen and wrong in SEARCH — you type
+     a verb to find out whether it exists at all, and a word that returns
+     nothing reads as "this deck cannot do that" rather than "not for her".
+
+     Rober hit exactly that on 2026-09-10: searching "dismiss" on a wife who
+     was at home answered "No action matches “dismiss”", when the deck has
+     driven NFF's RemoveFollower since the ORDER row was built.
+
+     So these rows exist for every subject and carry their own refusal. A
+     disabled row already renders its reason and never fires (fqFindFire), so
+     this adds an ANSWER, never a dead button. */
+  function fqVirtualRows() {
+    const t = state.target;
+    if (!t || !t.name || t.dead) return [];
+    const who = t.name;
+    const known = rosterEntryFor(who);   /* same lookup buildQuickCard uses */
+    const nffManaged = !!(known && known.m && known.m.nffManaged);
+    const rows = [];
+
+    /* ⊘ Dismiss. When she IS following, the ORDER row draws the real button
+       and the live scan indexes it — this one dedupes away by key. */
+    let why = '';
+    /* nffFollower draws a REAL chip in ORDER now, so there is nothing to
+       explain — and the live row would win the dedupe anyway. */
+    if (!t.following && !t.nffFollower) {
+      if (t.wedged) {
+        why = who + '\u2019s follower state is broken, so NFF has nothing to '
+          + 'dismiss \u2014 use \u201cRepair follower state\u201d in Order first.';
+      } else if (nffManaged) {
+        why = 'NFF has ' + who + ' in its framework, but does not list her as one of '
+          + 'your followers \u2014 there is nothing to dismiss. Use Remove from '
+          + 'framework to take her out of NFF.';
+      } else if (t.canFollow === false) {
+        why = who + ' is not following you, and cannot be asked to \u2014 she is not '
+          + 'one of the game\u2019s potential followers.';
+      } else {
+        why = who + ' is not following you, so there is nothing to dismiss. '
+          + '\u2694 Recruit is in Order.';
+      }
+      rows.push({
+        key: 'Order\u0001Dismiss\u0001\u2298',
+        icon: '\u2298',
+        label: 'Dismiss',
+        sub: 'Send her home through Nether\u2019s Follower Framework',
+        sect: 'Order',
+        disabled: true,
+        why: why,
+        opens: false,
+        reveal: '',
+        el: null,
+      });
+    }
+    return rows;
+  }
+
+  /* ---- the ⮌ Send back… picker, flattened (fq-find-sendto) --------------
+     The picker is a module modal, and the rule above says we do not reach
+     inside those — but its rows are the ONE place the deck can put someone
+     back where she stood before a summon, and "teleport back" / "where she
+     was" / "send her home" are exactly what gets typed. So its destinations
+     are indexed as rows of their own, gated the way the MOVE row is (someone
+     Follower Organizer has, in the world), and fire the same senders the
+     picker's own buttons call — through `run`, since there is no card button
+     to click until the picker is open. Not in the world: the rows stay,
+     disabled, and say why. Domain marks ride along, capped, because the
+     picker is typeable for a reason. */
+  function fqSendToRows() {
+    const t = state.target;
+    if (!t || !t.name || t.dead) return [];
+    const known = rosterEntryFor(t.name);
+    if (!known || !known.m) return [];
+    const m = known.m, cat = known.cat.index, idx = known.idx, who = m.name || t.name;
+    const off = !m.inWorld;
+    const why = off ? who + ' is not in the world right now \u2014 nothing to move.' : '';
+    const mk = function (icon, label, sub, run) {
+      return { key: 'Send to\u0001' + label + '\u0001' + icon, icon: icon, label: label,
+               sub: sub, sect: 'Send to', disabled: off, why: why, opens: false,
+               reveal: '', el: null, run: off ? null : run };
+    };
+    const rows = [];
+    rows.push(mk('\u2B8C', 'Where they were',
+      'Back where ' + who + ' stood before you summoned them \u2014 undo the summon',
+      function () { sendWorld('sendback', cat, idx, '\u2B8C ' + who + ' returns'); }));
+    if (m.mhHome)
+      rows.push(mk('\u2302', 'Her home', 'Send ' + who + ' to ' + String(m.mhHome) + ' (My Home Is Your Home)',
+        function () { sendNpc('sendHome', m, { dest: 'mhiyh' }); }));
+    if (m.nffHome)
+      rows.push(mk('\u2302', 'Her NFF base', 'Send ' + who + ' to ' + String(m.nffHome) + ' (Nether\u2019s Follower Framework)',
+        function () { sendNpc('sendHome', m, { dest: 'nff' }); }));
+    domainMarks().slice(0, 60).forEach(function (mark) {
+      if (!mark || !mark.name) return;
+      rows.push(mk(mark.interior ? '\u2302' : '\u25B2', String(mark.name),
+        'Send ' + who + ' to this domain' + (mark.category ? ' \u00B7 ' + mark.category : ''),
+        function () { sendToDomain(m, mark); }));
+    });
+    return rows;
+  }
+
+  /* The whole index: what is on screen, then what a reveal would draw, then
+     what this person's state has taken off the card entirely. */
   function fqFindIndex() {
     const card = fqFindCard();
     const live = fqScan(card, '');
     const seen = Object.create(null);
     const out = [];
-    live.forEach(function (r) { if (!seen[r.key]) { seen[r.key] = 1; out.push(r); } });
-    fqProbeRows(fqFindSubjKey()).forEach(function (r) {
+    const push = function (r) {
       if (seen[r.key]) return;
       seen[r.key] = 1;
+      if (r.alias == null) r.alias = fqAliasFor(r.label);
       out.push(r);
-    });
+    };
+    live.forEach(push);
+    fqProbeRows(fqFindSubjKey()).forEach(push);
+    fqVirtualRows().forEach(push);
+    fqSendToRows().forEach(push);
     return out;
   }
 
@@ -8672,25 +9084,60 @@
      something to DO, and an unavailable row that outranked a working one would
      be the search actively getting in the way. Every term must match
      somewhere, so "wait here" and "here wait" both find the same button. */
-  function fqScoreRow(r, terms) {
-    if (!terms.length) return 1;
+  /* How well ONE term lands on a row, best hit wins:
+       120 label starts with it · 90 a label word starts with it · 80 an alias
+       word starts with it · 62 inside a label word · 46 section · 24 tooltip ·
+       40 one typo away from a label/alias word. A stemmed form of the term
+       ("summoning" → "summon") scores the same tier minus 4, so the exact
+       spelling still wins a tie. 0 = this term found nothing on this row. */
+  function fqTermScore(r, t) {
     const lbl = r.label.toLowerCase();
     const sect = r.sect.toLowerCase();
     const sub = String(r.sub || '').toLowerCase();
-    let score = 0;
+    const alias = String(r.alias || '').toLowerCase();
+    const forms = fqStems(t);
+    for (let f = 0; f < forms.length; f++) {
+      const x = forms[f];
+      const dock = f ? 4 : 0;
+      const li = lbl.indexOf(x);
+      if (li === 0) return 120 - dock;
+      if (li > 0) return (/[\s([/·—-]/.test(lbl.charAt(li - 1)) ? 90 : 62) - dock;
+      if (alias) {
+        const ai = alias.indexOf(x);
+        if (ai === 0 || (ai > 0 && alias.charAt(ai - 1) === ' ')) return 80 - dock;
+      }
+      if (sect.indexOf(x) >= 0) return 46 - dock;
+      if (sub.indexOf(x) >= 0) return 24 - dock;
+    }
+    if (t.length >= 4) {
+      const words = fqWordsOf(lbl).concat(fqWordsOf(alias));
+      for (let i = 0; i < words.length; i++) if (fqNear(t, words[i])) return 40;
+    }
+    return 0;
+  }
+
+  /* Every term against one row: how many landed, and the summed score. */
+  function fqScoreTerms(r, terms) {
+    let n = 0, score = 0;
     for (let i = 0; i < terms.length; i++) {
-      const t = terms[i];
-      let best = 0;
-      const li = lbl.indexOf(t);
-      if (li === 0) best = 120;
-      else if (li > 0) best = /[\s([/·—-]/.test(lbl.charAt(li - 1)) ? 90 : 62;
-      if (!best && sect.indexOf(t) >= 0) best = 46;
-      if (!best && sub.indexOf(t) >= 0) best = 24;
-      if (!best) return 0;                     // every term has to land somewhere
-      score += best;
+      const s = fqTermScore(r, terms[i]);
+      if (s) { n++; score += s; }
     }
     if (r.reveal) score -= 6;                   // an on-screen twin wins the tie
-    return score;
+    /* A menu OPENER ("Send back…") sits just under the concrete action it
+       leads to when both land: "teleport back" should run the undo, not open
+       the picker that lists it. Small enough that the opener still wins on
+       its own name ("send back"). */
+    if (r.opens) score -= 12;
+    return { n: n, score: score };
+  }
+
+  /* The strict score: every term must land, else 0. Kept as the exported
+     shape the harness scores rows with. */
+  function fqScoreRow(r, terms) {
+    if (!terms.length) return 1;
+    const x = fqScoreTerms(r, terms);
+    return x.n === terms.length ? Math.max(1, x.score) : 0;
   }
 
   /* Highlighting for a MULTI-WORD query. nameNodes() takes one needle, so
@@ -8711,10 +9158,31 @@
   function fqRank(rows, q) {
     const terms = fqTidy(q).toLowerCase().split(' ').filter(function (t) { return !!t; });
     const hits = [];
-    rows.forEach(function (r, i) {
-      const s = fqScoreRow(r, terms);
-      if (s > 0) hits.push({ r: r, s: s, i: i, off: r.disabled ? 1 : 0 });
-    });
+    FQF.partial = false;
+    if (!terms.length) {
+      rows.forEach(function (r, i) { hits.push({ r: r, s: 1, i: i, off: r.disabled ? 1 : 0 }); });
+    } else {
+      const scored = [];
+      let full = 0;
+      rows.forEach(function (r, i) {
+        const x = fqScoreTerms(r, terms);
+        if (!x.n) return;
+        if (x.n === terms.length) full++;
+        scored.push({ r: r, s: x.score, n: x.n, i: i, off: r.disabled ? 1 : 0 });
+      });
+      /* Every term landed somewhere on at least one row: those rows, only.
+         Otherwise the query is HALF right — "teleport her" — and a blank
+         answer would say the deck cannot do it. Show the rows the most
+         terms landed on instead, flagged as near misses (fq-find-near). */
+      if (full) {
+        scored.forEach(function (x) { if (x.n === terms.length) hits.push(x); });
+      } else if (terms.length > 1) {
+        FQF.partial = true;
+        scored.forEach(function (x) { hits.push(x); });
+        hits.sort(function (a, b) { return (a.off - b.off) || (b.n - a.n) || (b.s - a.s) || (a.i - b.i); });
+        return hits.map(function (x) { return x.r; });
+      }
+    }
     /* Unavailable LAST, never GONE. Sorting on the flag rather than docking the
        score is the whole point: a docked score can go negative and drop the row
        out of the results entirely — which is how "inventory" on a corpse
@@ -8900,10 +9368,15 @@
     FQF.headEl.textContent = '';
     FQF.headEl.append(
       h('span', { class: 'fqf-count' },
-        rows.length + ' of ' + all.length + ' action' + (all.length === 1 ? '' : 's')),
+        FQF.partial ? rows.length + ' close match' + (rows.length === 1 ? '' : 'es')
+                    : rows.length + ' of ' + all.length + ' action' + (all.length === 1 ? '' : 's')),
       h('span', { class: 'fqf-hint' }, '↑↓ move · Enter run · Esc close'));
 
     FQF.listEl.textContent = '';
+    if (rows.length && FQF.partial) {
+      FQF.listEl.append(h('div', { class: 'fqf-near', role: 'note' },
+        'Nothing matches all of “' + FQF.q + '” — closest actions:'));
+    }
     if (!rows.length) {
       FQF.listEl.append(h('div', { class: 'fqf-empty' },
         h('div', { class: 'fqf-empty-ic', 'aria-hidden': 'true' }, '⌕'),
@@ -8911,7 +9384,8 @@
           h('div', { class: 'fqf-empty-l1' },
             FQF.q ? 'No action matches “' + FQF.q + '”.' : 'Nothing on this card yet.'),
           h('div', { class: 'fqf-empty-l2' },
-            'Try “freeze”, “outfit”, “inventory”, “home”, “quest” or “portrait”.'))));
+            'Try “teleport”, “freeze”, “dismiss”, “outfit”, “inventory”, “home” '
+            + 'or “portrait”.'))));
       fqFindPlace();
       return;
     }
@@ -9016,6 +9490,11 @@
         el.classList.add('nope');
       }
       return false;
+    }
+    if (typeof row.run === 'function') {   // a picker row: no card button to click
+      fqFindClose();
+      row.run();
+      return true;
     }
     const el = fqFindResolve(row);
     fqFindClose();
@@ -9226,6 +9705,14 @@
       if (nc) sub.append(nc);
       const fc = fertChip(known.m);
       if (fc) sub.append(fc);
+    }
+    /* No roster row (or one FM has not been merged onto): read the whole-map
+       answer by her reference, so a crosshair NPC who was never filed still
+       shows ◍ when Fertility Mode says she is expecting (Rober, 2026-09-14). */
+    if (!(known && known.m && known.m.fert) && t && t.formId && !dead) {
+      const fa = fertFor({ formId: t.formId });
+      if (fa && fa.pregnant) sub.append(fertChip({ fert: fa }));
+      if (fa === undefined && !fqProbing) ensureFertAll();
     }
 
     /* WHO DRESSES HER, as a chip — the Wardrobe tab's People row leads with
@@ -9662,16 +10149,31 @@
          Background (the dossier, via Omni Ask), Sharmat Background (the live
          editor), and Activate/Disable NPC (manual AI activation). Owned by
          chim-flyout.js; the button is ours so it matches the row. */
-      (window.ChimBtn) ? quickBtn('💬', 'CHIM', dead ? who + ' is dead'
-          : 'CHIM tools for ' + who + ' — background, Sharmat profile, and '
-            + 'activate / disable manual AI',
-        (e) => ChimBtn.open(e.currentTarget, {
+      (window.ChimBtn) ? (function () {
+        const ident = {
           original: (known && known.m && known.m.original) || who,
-          who: who, dead: dead,
+          name: who,
           formId: subj ? (Number(subj.formId) || 0)
                        : (state.target ? (Number(state.target.formId) || 0) : 0),
-        }),
-        { disabled: dead }) : null,
+        };
+        /* Lit GOLD when she is a CHIM agent right now (2026-09-14) — read
+           from the whole-set answer chim-flyout.js keeps, so the card shows
+           it without opening the flyout. Unknown (nothing answered yet)
+           draws the neutral button; ensureAgents() is throttled, so a
+           repaint storm costs one chAgents at most every few seconds. */
+        const on = !dead && typeof ChimBtn.isAgent === 'function'
+                   && ChimBtn.isAgent(ident) === true;
+        if (!dead && !fqProbing && typeof ChimBtn.ensureAgents === 'function') ChimBtn.ensureAgents();
+        return quickBtn('💬', on ? 'CHIM: on' : 'CHIM', dead ? who + ' is dead'
+            : (on ? 'CHIM AI is ON for ' + who + ' — she is a live CHIM agent. '
+                  : 'CHIM AI is off for ' + who + '. ')
+              + 'Opens CHIM tools — background, Sharmat profile, and '
+              + (on ? 'Disable' : 'Activate') + ' NPC (manual AI)',
+          (e) => ChimBtn.open(e.currentTarget, {
+            original: ident.original, who: who, dead: dead, formId: ident.formId,
+          }),
+          { disabled: dead, active: on, pressed: on });
+      })() : null,
       /* Room ban (Rober, 2026-08-09: "just hit f7 on an npc … blacklist from —
          then pops up with a typable search bar"). Blacklist the person in
          front of you from a claimed Room Guard room — or protect her
@@ -9908,6 +10410,35 @@
           }, '↩ Undo recruitable'));
         }
       }
+
+      /* ⊘ Dismiss, a SECOND chip, when NFF disagrees with the engine.
+         Rober, 2026-09-10: "this could use a dismiss button under order as
+         well, if NFF detects they are following."
+
+         The status button above keys off `following`, which is
+         IsPlayerTeammate(). NFF keeps its followers in nwsFF_FollowerFac
+         through states the engine does not count as a teammate — and in that
+         state the card offered ⚔ Recruit (or ✚ Make recruitable) and hid the
+         one control that would release her. So the disagreement gets its own
+         chip rather than another state of that button: both facts are true at
+         once, and collapsing them would have to throw one away.
+
+         Not shown when she is simply following — the status button IS the
+         Dismiss then, and two of them would be the same click twice. */
+      if (!following && t.nffFollower) {
+        order.append(h('button', {
+          class: 'fq-set danger', type: 'button',
+          title: 'Nether\'s Follower Framework still lists ' + who + ' as one of '
+            + 'your followers, even though the game does not have her as a '
+            + 'teammate.\nDismissing releases her from NFF — the same call its '
+            + 'own dismiss dialogue makes.\nClick twice.',
+          onClick: (e) => { e.stopPropagation();
+            arm(e.currentTarget, 'Dismiss ' + who + '?',
+              'Click again to release her from NFF',
+              () => sendNpc('dismiss', subj)); },
+        }, '⊘ Dismiss'));
+      }
+
       /* Add to / remove from the framework — NFF's own "[Add to Framework
          (Import)]" verb, offered on ANY NPC (Rober, 2026-08-11: "force import
          (add to framework) … under the ORDER tab"). NFF only shows that
@@ -11425,6 +11956,22 @@
     return typeof ui !== 'undefined' && window.__hdActiveTab === 'followers';
   }
 
+  /* ---- who else is painting these faces (2026-09-13) --------------------
+     The Followers tab is no longer the only consumer of the facegen-head
+     rail: the Household tab draws the SAME renders (household-pane.js reads
+     them through householdRoster -> portraitFor). Both the repaint AND the
+     completion POLL have to honour it.
+
+     The poll is the load-bearing half. A head that is not on disk yet comes
+     back as `queued`, and the ONLY thing that ever collects it is the 5 s
+     re-ask below — gated, until now, on the Followers tab being up. So
+     opening Household asked for every missing face, C++ rendered them, and
+     the view never went back for them: the page sat on initials forever and
+     only filled in if you happened to visit Followers afterwards. */
+  function faceConsumerActive() {
+    return isActive() || window.__hdActiveTab === 'household';
+  }
+
   /* Anything -> { key: "non-empty string" }. Non-object input, array input,
      numeric/boolean/null values, blank values and unusable keys are all
      dropped rather than propagated: every consumer downstream (chip, search,
@@ -11534,11 +12081,82 @@
       (c.members || []).forEach((m) => {
         const rel = m.fields && m.fields.relationship;
         const original = m.original || m.name || '';
+        /* ---- the wife / expecting markers (2026-09-13) -------------------
+           Rober: "Searchable npcs in command k search with a marker for
+           pregnant or wife." Both facts are already merged onto the member —
+           `spouse` from M.A.R.A.S (via fdNff's rel slice) and `fert` from
+           Fertility Mode — so the row can carry them without a single new
+           read. They ride in THREE places on purpose:
+             kind     the chip the result row draws, so the marker is visible
+                      at a glance without reading the detail line;
+             detail   "♥ wife · ◍ expecting 46%", because how far along is the
+                      thing actually worth knowing about a pregnancy;
+             keywords so typing "wife" or "pregnant" FINDS her — including the
+                      MARAS spouse whose Relationship field you never filled
+                      in, which is the case that made this necessary.
+           The hues are the roster's own (violet married, rose pregnant); omni
+           rows are text, so the glyphs ♥ / ◍ carry the same distinction the
+           chips do — matching spouseChip() and fertChip() exactly. */
+        const f = (m.fert && typeof m.fert === 'object') ? m.fert : null;
+        const preg = !!(f && f.pregnant);
+        const pregPct = (preg && f.termDays && typeof f.percent === 'number')
+          ? (' ' + f.percent + '%') : '';
+        /* A wife by EITHER answer: the game's (MARAS married her) or yours
+           (you typed it in her Relationship field). They disagree often
+           enough in a harem playthrough that picking one would be wrong half
+           the time — same rule household-pane.js documents. */
+        const wifeField = /(^|[^a-z])(wife|wives|spouse|husband|consort|bride)([^a-z]|$)/
+          .test(String(rel || '').toLowerCase());
+        const isWife = !!m.spouse || wifeField;
+        const marks = [
+          isWife ? '\u2665 wife' : '',
+          preg ? ('\u25CD expecting' + pregPct) : '',
+        ].filter(Boolean);
+        /* The same two facts as ICONS on the name itself (Rober, 2026-09-14:
+           "show if pregnant or a wife next to their name by an icon") — the
+           detail line above says it in words, this says it where the eye
+           lands first. Same glyphs, same hues (hd-omni.css .omni-mark-*). */
+        const nameMarks = [];
+        if (isWife) nameMarks.push({ g: '\u2665', cls: 'wife',
+          title: m.spouse ? 'Married to you \u2014 M.A.R.A.S' : 'Your wife \u2014 her Relationship field' });
+        if (preg) nameMarks.push({ g: '\u25CD', cls: 'expecting',
+          title: 'Expecting' + pregPct + (f.father ? ' \u2014 father: ' + f.father : '') });
+        /* 💬 — she is a live CHIM agent (Rober, 2026-09-14: "when searching
+           can show a hoverable chim icon showing activated"). chim-flyout.js
+           owns the agent set (one chAgents call as the omni opens); this
+           just asks it. Empty until the set is known, never a stale badge. */
+        if (window.ChimBtn && typeof ChimBtn.markFor === 'function') {
+          try { ChimBtn.markFor(m).forEach((mk) => nameMarks.push(mk)); } catch (e) {}
+        }
         items.push({
           label: m.name || m.original || '(unnamed)',
-          detail: [rel, cl, m.desc].filter(Boolean).join(' · '),
-          kind: rel || 'follower',
-          keywords: [m.original, m.fieldsText, m.homeText].filter(Boolean).join(' '),
+          marks: nameMarks,
+          /* Enter / click = HER CARD, the F7-on-her behaviour (Rober,
+             2026-09-14: "it should act as if i hit f7 on her directly"). The
+             old default only jumped to the Followers tab with her name in the
+             filter, which reads as "nothing happened" when the roster was
+             already showing her. pickCrew() is the party strip's own path:
+             ui.fqPick names her, the card mounts in #fd-quick. The pick is
+             set BEFORE the tab switch so whatever render the switch runs
+             already paints her card, and syncQuickHere() after it is the
+             belt to that brace. Shift+Enter / ↗ still jumps to the roster. */
+          run: function () {
+            ui.fqPick = original;
+            if (typeof window.__omniSetTab === 'function') window.__omniSetTab('followers');
+            try { renderQuickCard(); syncQuickHere(); } catch (e) {}
+          },
+          detail: marks.concat([rel, cl, m.desc].filter(Boolean)).join(' \u00b7 '),
+          /* The marker WINS the chip when there is one — "expecting" says more
+             about her than "follower" or whatever you typed, and a pregnancy
+             is the rarer, more time-critical fact. */
+          kind: preg ? 'expecting' : (isWife ? 'wife' : (rel || 'follower')),
+          keywords: [m.original, m.fieldsText, m.homeText,
+                     isWife ? 'wife wives spouse married maras household' : '',
+                     preg ? 'pregnant expecting with child carrying baby heir '
+                          + (f.termDays ? ('day ' + f.day + ' of ' + f.termDays) : '')
+                          + (f.father ? (' father ' + f.father) : '') : '',
+                     (f && f.births > 0) ? 'mother children born' : '',
+                    ].filter(Boolean).join(' '),
           /* `original` — the same durable identity the recents strip keys
              on: a rename must not split her, a re-file must not lose her */
           pin: 'fol:' + original,
@@ -11627,6 +12245,10 @@
 
   if (window.HDOmni) HDOmni.register({
     id: 'followers', label: 'Followers', tab: 'followers',
+    /* People FIRST. Every other group sorts by score; this one sits above
+       them whenever it has a hit at all, so "elana" shows Elana before the
+       24 quests named after her (Rober, 2026-09-14). */
+    rank: 0,
     /* Shelf activation: a pinned PERSON opens her ACTION MENU — summon / go
        to / send back, the roster row's own menu. Tab switch FIRST, then the
        exact resolve-by-identity path the recents strip uses, so the menu
@@ -11782,6 +12404,13 @@
   /* Called by the Wardrobe host when NFF/SOES state changes underneath us, so
      the quick card's clothes block repaints in place instead of waiting for
      the next open. Guarded on our tab being the visible one. */
+  /* The CHIM agent set landed or a toggle moved someone (chim-flyout.js
+     agentsChanged): the card's 💬 reads its lit state at build time, so
+     repaint. renderQuickCard is a no-op without a mounted host. */
+  window.addEventListener('hd-chim-agents', function () {
+    try { renderQuickCard(); } catch (e) {}
+  });
+
   function clothesChanged() {
     if (isActive()) renderQuickCard();
     /* The outfit dock reads the same two modules and is drawn OVER the card, so
@@ -13034,6 +13663,102 @@
       });
       return out;
     },
+    /* ---- the Household tab's roster (household-pane.js, 2026-09-13) ------
+       Rober: "SkyManager dedicated auto populating wife and pregnant women
+       page, that shows how far along, hooks to profile pictures."
+
+       AUTO-POPULATING MEANS THIS EXPORT, and nothing else. Every fact the
+       Household page shows already lands here on the rails this pane owns:
+         · the roster itself        — fdState   (Follower Organizer)
+         · married / engine rank    — fdNff's per-actor `rel` slice
+                                      (src/maras.cpp + src/relationship.cpp)
+         · pregnancy and cycle      — fdFertility (src/fertility_bridge.cpp)
+         · the face                 — portraitFor(), which already prefers a
+                                      captured photo and falls back to the
+                                      facegen head render
+       So the page needs NO new bridge and no DLL change: it reads what the
+       Followers tab is already told, through the pane that owns it. A second
+       copy of any of these rules is a second thing to drift — the reason the
+       Wardrobe's People card calls this file's verbs instead of re-deriving
+       them, and the same reason here.
+
+       Read-only, side-effect free, and safe before fdState has ever landed
+       (an empty array, which the page renders as "reading the roster…"
+       rather than as "you have no wives"). */
+    householdRoster() {
+      const out = [];
+      (state.cats || []).forEach(function (c) {
+        const cl = c.override || c.name || c.original || '';
+        (c.members || []).forEach(function (m) {
+          const p = portraitFor(m);
+          const f = (m.fert && typeof m.fert === 'object') ? m.fert : null;
+          out.push({
+            /* Identity: `original` is the durable roster key (a rename must
+               not split her), formId is what the face rail is keyed on. */
+            original: String(m.original || m.name || ''),
+            name: String(m.name || m.original || ''),
+            formId: String(m.formId || ''),
+            category: String(cl || ''),
+            note: String(m.desc || ''),
+            /* What YOU typed about her (her Relationship field) — your note
+               to yourself, and NOT the same fact as the marriage below. */
+            relationship: String((m.fields && m.fields.relationship) || ''),
+            fieldsText: String(m.fieldsText || ''),
+            /* What the GAME believes. `spouse` is M.A.R.A.S's marriage;
+               relHas/relRank are the engine's RELA rank. Kept apart on
+               purpose — you can be married at Foe (see spouseChip). */
+            spouse: !!m.spouse,
+            relHas: !!m.relHas,
+            relRank: (typeof m.relRank === 'number') ? m.relRank : 0,
+            rankLabel: m.relHas ? rankLabel(m.relRank) : '',
+            /* Fertility Mode, verbatim — never re-computed here. A null
+               means FM is not reporting on her, which the page says out
+               loud instead of drawing an empty bar. */
+            fert: f ? {
+              pregnant: !!f.pregnant,
+              day: (typeof f.day === 'number') ? f.day : 0,
+              termDays: (typeof f.termDays === 'number') ? f.termDays : 0,
+              percent: (typeof f.percent === 'number') ? f.percent : 0,
+              trimester: (typeof f.trimester === 'number') ? f.trimester : 0,
+              daysLeft: (typeof f.daysLeft === 'number') ? f.daysLeft : null,
+              father: String(f.father || ''),
+              births: (typeof f.births === 'number') ? f.births : 0,
+              cycleDay: (typeof f.cycleDay === 'number') ? f.cycleDay : 0,
+              ovulating: !!f.ovulating,
+              tracked: (f.tracked === undefined) ? true : !!f.tracked,
+            } : null,
+            /* The tooltip the roster row already writes for this pregnancy —
+               shared so the two surfaces cannot word it differently. */
+            fertTitle: f ? fertTitle(f) : '',
+            following: !!m.following,
+            waiting: !!m.waiting,
+            dead: !!m.dead,
+            where: String(m.where || ''),
+            homeText: String(m.homeText || ''),
+            /* The winning face, already resolved: a captured photo outranks
+               the facegen head render, exactly as everywhere else. */
+            portraitUrl: p ? (portraitSrc(p) + (p.abs ? '' : '?v=' + (p.mtime || 0))) : null,
+            /* Her head render was ASKED for and has not landed — the page
+               shows a baking ring instead of initials that look final. */
+            facePending: facePendingFor(m),
+          });
+        });
+      });
+      return out;
+    },
+    /* Whether Fertility Mode answered at all, so the Household page can tell
+       "nobody is pregnant" apart from "the mod is not installed / has not
+       initialised" — two very different pages, and only one of them is good
+       news. Mirrors the fdFertility envelope's own flags. */
+    fertilityStatus() {
+      const s = state.fert || null;
+      return {
+        answered: !!(s && typeof s === 'object'),
+        available: !!(s && s.available),
+        tracked: (s && typeof s.tracked === 'number') ? s.tracked : null,
+        loaded: !!state.loaded,
+      };
+    },
     /* Portrait lookup for a pane that holds someone's DISPLAY name and formId
        but not FO's un-renamed `original` — which is what a portrait is actually
        keyed on (slugOf(original || name)). The Wardrobe tab is exactly that
@@ -13158,6 +13883,11 @@
     _buildQuickCard: buildQuickCard, _renderQuickCard: renderQuickCard,
     _NFF_SETS: NFF_SETS, _fillNffOutfit: fillNffOutfit,
     _rosterEntryFor: rosterEntryFor, _capturePortrait: capturePortrait,
+    /* Fertility Mode for ANYONE (fmAllResult) — the NPC Finder's rows and the
+       crosshair card read these; fertTitle/fertChip so the wording matches. */
+    fertFor: fertFor, ensureFertAll: ensureFertAll,
+    fertTitle: fertTitle, fertChip: fertChip,
+    _fertAll: fertAll,
     _fqStatus: function () { return fqStatus; },
     _syncQuickHere: syncQuickHere,
     /* Fire the mount's give-up timer now instead of waiting 1.2s, so the
@@ -13185,6 +13915,8 @@
       open: fqFindOpen, close: fqFindClose, paint: fqFindPaint,
       key: fqFindKey, fire: fqFindFire, resolve: fqFindResolve,
       index: fqFindIndex, scan: fqScan, rank: fqRank, score: fqScoreRow,
+      termScore: fqTermScore, aliasFor: fqAliasFor, labelKey: fqLabelKey,
+      near: fqNear, stems: fqStems, sendToRows: fqSendToRows,
       face: fqFaceOf, sect: fqSectOf, clause: fqFirstClause, hl: fqHl,
       reveals: fqRevealFlags, claimsTyping: fqFindClaimsTyping,
       probing: function () { return fqProbing; },
@@ -13229,6 +13961,9 @@
       ? (env.msg || 'Follower Organizer is not available') : '';
     if (isActive()) render();
     requestFaceIcons(true);
+    /* Same reason as fdFertility's: the Household tab is drawn from this
+       roster and cannot see the push itself. */
+    try { if (window.HouseholdPane) HouseholdPane.dataChanged(); } catch (e) {}
   };
 
   /* ---- facegen head renders as default portraits ------------------------
@@ -13338,10 +14073,13 @@
     if (changed) {
       if (isActive()) render();
       renderQuickCard();
+      /* The Household tab paints the same faces and cannot see this push. */
+      try { if (window.HouseholdPane) HouseholdPane.dataChanged(); } catch (e) {}
     }
     if (queued > 0 && faceIconsPolls < 24) {
       faceIconsPolls++;
-      faceIconsTimer = setTimeout(function () { if (isActive()) requestFaceIcons(false); }, 5000);
+      faceIconsTimer = setTimeout(
+        function () { if (faceConsumerActive()) requestFaceIcons(false); }, 5000);
     }
   };
 
@@ -13385,6 +14123,12 @@
          button then offers "Add to framework", and importing someone who
          already is gets refused in words by C++ rather than done twice. */
       imported: !!t.imported,
+      /* NFF's OWN follower faction. Separate from `following` above (which is
+         IsPlayerTeammate) because NFF keeps followers through states the
+         engine does not count as a teammate — and it is the answer that
+         decides whether a Dismiss would do anything. Optional and absent =
+         false, so a pre-2026-09-10 DLL simply behaves as it always did. */
+      nffFollower: !!t.nffFollower,
       /* PotentialFollowerFaction — whether the game will let you ask her to
          follow at all.
          THREE-VALUED ON PURPOSE, unlike the flags above: null means the DLL
@@ -14080,9 +14824,22 @@
       const v = actors[k];
       if (v && typeof v === 'object') map[String(k).toLowerCase()] = v;
     });
-    state.fert = { available: !!(env && env.available), actors: map };
+    /* `tracked` / `pregnant` are FM's OWN tallies over the whole payload
+       (src/fertility_bridge.cpp) and were being dropped here. The Household
+       tab needs them to tell "nobody is pregnant" apart from "FM is tracking
+       nobody yet" — the roster row never asked, so nothing missed them. */
+    state.fert = {
+      available: !!(env && env.available),
+      tracked: (env && typeof env.tracked === 'number') ? env.tracked : null,
+      pregnant: (env && typeof env.pregnant === 'number') ? env.pregnant : null,
+      actors: map,
+    };
     remergeFert();
     if (isActive()) renderList();
+    /* The Household tab reads this pane's roster (householdRoster), so a
+       pregnancy push must repaint it too — it is a different tab and
+       isActive() above is only ever true for ours. */
+    try { if (window.HouseholdPane) HouseholdPane.dataChanged(); } catch (e) {}
   };
 
   window.fdSaved = function (ok) {

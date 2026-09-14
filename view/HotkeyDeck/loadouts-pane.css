@@ -1,0 +1,934 @@
+/* ===================================================================== *
+ *  Loadouts tab — follower groups + gear classes (loadouts-pane.js).
+ *
+ *  DESIGN DIRECTION (Rober, 2026-09-14): "professional modern, sleek,
+ *  thought through, symetrical (important)." So this sheet is built on
+ *  Linear's dark-dashboard structure — a near-black canvas, charcoal
+ *  panels, hairline borders, a tight type scale with negative tracking,
+ *  and ONE accent used only where it means something — re-voiced in the
+ *  deck's own gold so the tab still belongs to SkyManager rather than
+ *  reading as a second skin. No parchment, no carved frames, no emoji as
+ *  chrome: every UI glyph is a stroked inline SVG (the followers-pane
+ *  svgIcon idiom, play-proven under Ultralight). Emoji survive in exactly
+ *  one place — the emblem a person CHOSE for a group or a class, which is
+ *  content, not chrome.
+ *
+ *  SYMMETRY IS A HARD RULE HERE, not a preference:
+ *   - every repeating block is an EQUAL-cell grid that divides evenly.
+ *     The order deck is 1 full-width primary over 4 identical secondaries
+ *     (4 -> 2 -> 1 as it narrows, never a ragged last row); the stat strip
+ *     is always exactly 4 cells; member cards are auto-fill 1fr tracks.
+ *   - importance is carried by COLOUR AND WEIGHT, never by making one
+ *     sibling wider than the others.
+ *   - one spacing scale, one radius scale, one hairline.
+ *
+ *  Couch rules still apply: nothing under 13.5px, 44px hit targets,
+ *  generous padding. Shadows stay SMALL — this view is a transparent
+ *  overlay on the game and a big dark shadow reads as a black slab
+ *  (leash check_shadow_slabs). No screen-sized radial gradients either:
+ *  Ultralight collapses them into opaque bands.
+ * ===================================================================== */
+
+#lo-pane {
+  /* ---- palette ------------------------------------------------------ */
+  --lo-canvas:   #0b0b0e;
+  --lo-s1:       #111115;   /* panels, cards, wells */
+  --lo-s2:       #16161c;   /* hover / raised */
+  --lo-s3:       #1d1d24;   /* pressed / input */
+  --lo-line:     #24242c;   /* hairline */
+  --lo-line-hi:  #34343e;   /* hairline, emphasised */
+
+  --lo-ink:      #f2f0ea;   /* primary text */
+  --lo-ink-2:    #b3afa4;   /* secondary */
+  --lo-ink-3:    #7c786f;   /* tertiary / labels */
+
+  --lo-gold:     #c9a24b;   /* THE accent. Primary action, focus, selection. */
+  --lo-gold-hi:  #e9cb85;
+  --lo-gold-ink: #f6e7bf;
+  --lo-gold-dim: #52431f;
+
+  --lo-with:     #6ecf8e;   /* she is with you */
+  --lo-warn:     #d9a76a;
+  --lo-bad:      #d9776a;
+
+  /* ---- one spacing scale -------------------------------------------- */
+  --lo-1: 4px;  --lo-2: 8px;  --lo-3: 12px;
+  --lo-4: 16px; --lo-5: 24px; --lo-6: 32px;
+
+  /* ---- one radius scale --------------------------------------------- */
+  --lo-r1: 6px; --lo-r2: 10px; --lo-r3: 14px;
+
+  /* ---- the two-column measure --------------------------------------- */
+  --lo-rail: 380px;
+
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;             /* the tab may never be pushed wider than the deck */
+  min-height: 0;
+  padding: var(--lo-5) var(--lo-5) var(--lo-4);
+  gap: var(--lo-4);
+  position: relative;       /* toast + picker anchor to the pane */
+  color: var(--lo-ink);
+  font-variant-numeric: tabular-nums;
+}
+#lo-pane.hidden { display: none; }
+
+/* The deck's sheet does not set this globally, so a rail row with
+   width:100% + padding + borders measured 407px inside a 380px rail and
+   bled over the detail column. Scoped to the pane, so nothing else moves. */
+#lo-pane, #lo-pane *, #lo-pane *::before, #lo-pane *::after { box-sizing: border-box; }
+
+/* Chrome icons. One stroke weight, one size rhythm, currentColor so an
+   icon always agrees with the text beside it. */
+#lo-pane svg { display: block; flex: 0 0 auto; }
+
+/* ============================================================ header == */
+
+.lo-head {
+  display: flex;
+  align-items: center;
+  gap: var(--lo-4);
+  flex-wrap: wrap;
+  min-height: 44px;
+}
+.lo-title {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.4px;
+  color: var(--lo-ink);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--lo-1) var(--lo-3);
+}
+#lo-count-chip {
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--lo-ink-3);
+  white-space: nowrap;
+}
+
+/* segmented control — two equal halves, so it is symmetric by construction */
+.lo-seg {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: var(--lo-1);
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r2);
+  padding: var(--lo-1);
+}
+.lo-seg button {
+  background: none;
+  border: none;
+  border-radius: var(--lo-r1);
+  color: var(--lo-ink-2);
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+  padding: 0 var(--lo-5);
+  min-height: 36px;
+  min-width: 108px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.lo-seg button:hover { color: var(--lo-ink); background: var(--lo-s2); }
+.lo-seg button.on { background: var(--lo-s3); color: var(--lo-gold-ink); box-shadow: inset 0 0 0 1px var(--lo-gold-dim); }
+.lo-seg button:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+
+.lo-head-right { margin-left: auto; display: flex; align-items: center; gap: var(--lo-2); flex-wrap: wrap; }
+#lo-nff-note, #lo-busy {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--lo-warn);
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r1);
+  padding: var(--lo-2) var(--lo-3);
+  white-space: nowrap;
+}
+#lo-busy { color: var(--lo-with); }
+
+/* =========================================================== columns == */
+
+.lo-cols { display: flex; gap: var(--lo-5); flex: 1; min-width: 0; min-height: 0; }
+.lo-left {
+  flex: 0 0 var(--lo-rail);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--lo-3);
+  min-height: 0;
+}
+.lo-right { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+
+/* ============================================================== rail == */
+
+.lo-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--lo-3);
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r2);
+  padding: 0 var(--lo-3);
+  min-height: 48px;
+  transition: border-color 120ms ease;
+}
+.lo-bar:focus-within { border-color: var(--lo-gold-dim); }
+.lo-bar-glyph { color: var(--lo-ink-3); display: flex; align-items: center; }
+.lo-bar:focus-within .lo-bar-glyph { color: var(--lo-gold); }
+.lo-bar input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--lo-ink);
+  font: inherit;
+  font-size: 15px;
+  letter-spacing: -0.1px;
+  padding: var(--lo-3) 0;
+}
+.lo-bar input::placeholder { color: var(--lo-ink-3); }
+
+#lo-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: var(--lo-2); padding-right: var(--lo-1); }
+#lo-list:empty { flex: 0 0 auto; }   /* else the empty note is pushed to the floor of the rail */
+
+.lo-row {
+  display: flex;
+  align-items: center;
+  gap: var(--lo-3);
+  min-width: 0;          /* stretch to the rail, never widen it */
+  text-align: left;
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-left: 2px solid transparent;
+  border-radius: var(--lo-r2);
+  padding: var(--lo-3);
+  color: var(--lo-ink);
+  font: inherit;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.lo-row:hover { background: var(--lo-s2); border-color: var(--lo-line-hi); }
+.lo-row:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+.lo-row.lo-sel { background: var(--lo-s2); border-color: var(--lo-line-hi); border-left-color: var(--lo-gold); }
+.lo-row.lo-cursor { border-color: var(--lo-gold-dim); }   /* arrow-key cursor */
+
+.lo-row-glyph-cls { }
+.lo-row-glyph {
+  flex: 0 0 auto;
+  width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 21px; line-height: 1;
+  background: var(--lo-s3);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r1);
+}
+.lo-row.lo-sel .lo-row-glyph { border-color: var(--lo-gold-dim); }
+.lo-row-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--lo-2); }
+.lo-row-name {
+  font-size: 16px; font-weight: 600; letter-spacing: -0.2px; color: var(--lo-ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lo-row-name mark { background: none; color: var(--lo-gold-hi); }
+.lo-row-sub {
+  font-size: 13.5px; color: var(--lo-ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lo-row-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: var(--lo-1); }
+/* the quantity stepper on a gear row: one group of − ×N +, with air */
+.lo-count { display: flex; align-items: center; gap: var(--lo-2); flex: 0 0 auto; }
+/* ★ the group a bound key commands */
+.lo-star {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px;
+  background: none; border: 1px solid transparent; border-radius: var(--lo-r1);
+  color: var(--lo-ink-3); cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.lo-star:hover { color: var(--lo-gold-hi); background: var(--lo-s3); border-color: var(--lo-line); }
+.lo-star:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 1px; }
+.lo-star.on { color: var(--lo-gold); }
+.lo-star.on svg { fill: var(--lo-gold); }
+
+.lo-keyed {
+  display: flex; align-items: center; gap: var(--lo-2);
+  font-size: 13.5px; font-weight: 600; color: var(--lo-gold-ink);
+  background: var(--lo-s1); border: 1px solid var(--lo-gold-dim);
+  border-radius: var(--lo-r1); padding: var(--lo-2) var(--lo-3);
+  align-self: flex-start;
+}
+
+/* the party-wide order that cannot be scoped, kept apart from the deck */
+.lo-aside {
+  display: flex; align-items: center; gap: var(--lo-3);
+  padding-top: var(--lo-1);
+}
+.lo-aside-label {
+  font-size: 13.5px; font-weight: 650; letter-spacing: 0.7px; text-transform: uppercase;
+  color: var(--lo-ink-3);
+}
+
+.lo-count-n {
+  font-size: 15.5px; font-weight: 700; color: var(--lo-gold-ink);
+  min-width: 44px; text-align: center; white-space: nowrap;
+}
+
+/* portrait stack + the with-you meter */
+.lo-stack { display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 1px 0; }
+.lo-stack .lo-face { margin-right: -10px; box-shadow: 0 0 0 2px var(--lo-s1); }
+.lo-stack .lo-face:last-child { margin-right: 0; }
+.lo-stack-more { font-size: 13.5px; color: var(--lo-ink-3); margin-left: var(--lo-3); }
+.lo-stack-none { font-size: 13.5px; color: var(--lo-ink-3); }
+
+.lo-meter { height: 3px; border-radius: 2px; background: var(--lo-s3); overflow: hidden; }
+.lo-meter-fill { height: 100%; background: var(--lo-ink-3); border-radius: 2px; }
+.lo-meter.some .lo-meter-fill { background: var(--lo-gold); }
+.lo-meter.full .lo-meter-fill { background: var(--lo-with); }
+
+.lo-addrow { display: flex; }
+.lo-addrow .lo-btn { width: 100%; justify-content: center; }
+
+#lo-empty { padding: var(--lo-5) var(--lo-4); text-align: center; display: flex; flex-direction: column; align-items: center; gap: var(--lo-2); }
+#lo-empty.hidden { display: none; }
+
+/* =========================================================== buttons == */
+
+.lo-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--lo-2);
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r1);
+  color: var(--lo-ink);
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+  padding: 0 var(--lo-4);
+  min-height: 40px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.lo-btn:hover { background: var(--lo-s2); border-color: var(--lo-line-hi); }
+.lo-btn:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+.lo-btn:disabled { opacity: .4; cursor: default; }
+.lo-btn-primary { background: var(--lo-gold); border-color: var(--lo-gold); color: #17130a; }
+.lo-btn-primary:hover { background: var(--lo-gold-hi); border-color: var(--lo-gold-hi); }
+.lo-btn-quiet { background: transparent; border-color: transparent; color: var(--lo-ink-3); }
+.lo-btn-quiet:hover { background: var(--lo-s2); border-color: var(--lo-line); color: var(--lo-ink); }
+.lo-btn-danger-armed { background: #2c1715; border-color: #6d3a33; color: #f0c4bc; }
+.lo-btn-danger-armed:hover { background: #371c19; border-color: #86473e; color: #f0c4bc; }
+
+.lo-mini {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--lo-1);
+  min-width: 38px; min-height: 38px;
+  padding: 0 var(--lo-2);
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r1);
+  color: var(--lo-ink-2);
+  font: inherit; font-size: 13.5px; font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.lo-mini:hover { background: var(--lo-s2); border-color: var(--lo-line-hi); color: var(--lo-ink); }
+.lo-mini:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+.lo-mini:disabled { opacity: .4; cursor: default; }
+.lo-mini.armed { background: #2c1715; border-color: #6d3a33; color: #f0c4bc; }
+.lo-mini-ghost { background: transparent; border-color: transparent; color: var(--lo-ink-3); }
+.lo-mini-ghost:hover { background: var(--lo-s2); border-color: var(--lo-line); color: var(--lo-ink); }
+
+.lo-toggle {
+  display: inline-flex; align-items: center; gap: var(--lo-3);
+  background: none; border: none; padding: var(--lo-2) 0;
+  color: var(--lo-ink); font: inherit; font-size: 14.5px; cursor: pointer;
+  min-height: 44px;
+}
+.lo-toggle input {
+  position: absolute;
+  width: 1px; height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.lo-toggle-knob {
+  flex: 0 0 auto; width: 44px; height: 26px; border-radius: 999px;
+  background: var(--lo-s3); border: 1px solid var(--lo-line);
+  position: relative; transition: background 140ms ease, border-color 140ms ease;
+}
+.lo-toggle-knob::after {
+  content: ''; position: absolute; top: 3px; left: 3px;
+  width: 18px; height: 18px; border-radius: 999px;
+  background: var(--lo-ink-3);
+  transition: transform 140ms ease, background 140ms ease;
+}
+.lo-toggle input:checked + .lo-toggle-knob { background: var(--lo-gold-dim); border-color: var(--lo-gold); }
+.lo-toggle input:checked + .lo-toggle-knob::after { transform: translateX(18px); background: var(--lo-gold-hi); }
+.lo-toggle input:focus-visible + .lo-toggle-knob { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+.lo-toggle-text { text-align: left; }
+
+/* ============================================================ detail == */
+
+#lo-detail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--lo-5);
+  padding: 0 var(--lo-1) var(--lo-6) 0;
+}
+#lo-detail.lo-enter { animation: lo-in 180ms ease-out; }
+@keyframes lo-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { #lo-detail.lo-enter { animation: none; } }
+
+/* ---- the last order's summary ---- */
+.lo-banner {
+  display: flex; align-items: center; gap: var(--lo-3);
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-left: 2px solid var(--lo-with);
+  border-radius: var(--lo-r2);
+  padding: var(--lo-3) var(--lo-3) var(--lo-3) var(--lo-4);
+}
+.lo-banner-glyph { color: var(--lo-with); display: flex; }
+.lo-banner-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--lo-1); }
+.lo-banner-text { font-size: 14.5px; font-weight: 600; color: var(--lo-ink); }
+.lo-banner-when { font-size: 13.5px; color: var(--lo-ink-3); }
+
+/* ---- hero band ---- */
+.lo-hero { display: flex; align-items: center; gap: var(--lo-4); }
+.lo-hero-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--lo-2); }
+.lo-hero-line { display: flex; align-items: center; gap: var(--lo-2); min-width: 0; }
+.lo-glyph-btn {
+  flex: 0 0 auto;
+  width: 76px; height: 76px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 34px; line-height: 1;
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r3);
+  color: var(--lo-ink); font-family: inherit;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.lo-glyph-btn:hover { background: var(--lo-s2); border-color: var(--lo-gold-dim); }
+.lo-glyph-btn:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+.lo-title-big {
+  font-size: 30px; font-weight: 650; letter-spacing: -0.7px; line-height: 1.1;
+  color: var(--lo-ink); cursor: text;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lo-note-text { font-size: 15px; color: var(--lo-ink-2); line-height: 1.45; }
+
+.lo-glyphs {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: var(--lo-2);
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r2);
+  padding: var(--lo-3);
+}
+.lo-glyph-pick {
+  aspect-ratio: 1 / 1;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+  background: var(--lo-s3); border: 1px solid transparent; border-radius: var(--lo-r1);
+  color: var(--lo-ink); font-family: inherit;
+  cursor: pointer;
+}
+.lo-glyph-pick:hover { border-color: var(--lo-gold-dim); }
+
+.lo-edit-row { display: flex; gap: var(--lo-2); align-items: center; flex: 1; min-width: 0; flex-wrap: wrap; }
+.lo-edit-row input {
+  flex: 1; min-width: 200px;
+  background: var(--lo-s1); border: 1px solid var(--lo-line); border-radius: var(--lo-r1);
+  color: var(--lo-ink); font: inherit; font-size: 15px;
+  padding: var(--lo-3); min-height: 44px; outline: none;
+}
+.lo-edit-row input:focus { border-color: var(--lo-gold-dim); }
+
+/* ---- stat strip: ALWAYS exactly four equal cells ---- */
+.lo-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--lo-3);
+}
+.lo-stat {
+  display: flex; flex-direction: column; gap: var(--lo-1);
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r2);
+  padding: var(--lo-3) var(--lo-4);
+  min-width: 0;
+}
+.lo-stat-n { font-size: 24px; font-weight: 650; letter-spacing: -0.5px; color: var(--lo-ink); line-height: 1.1; }
+.lo-stat-k {
+  font-size: 13.5px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--lo-ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lo-stat-n.text { font-size: 16px; font-weight: 600; letter-spacing: -0.2px; line-height: 1.35;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lo-stat-good .lo-stat-n { color: var(--lo-with); }
+.lo-stat-warn .lo-stat-n { color: var(--lo-warn); }
+
+.lo-alert {
+  display: flex; align-items: center; gap: var(--lo-2);
+  font-size: 14px; color: var(--lo-bad);
+  background: var(--lo-s1); border: 1px solid var(--lo-line);
+  border-left: 2px solid var(--lo-bad);
+  border-radius: var(--lo-r2); padding: var(--lo-3) var(--lo-4);
+}
+
+/* legacy inline chips (classes page, member row tags) */
+.lo-chips { display: flex; flex-wrap: wrap; gap: var(--lo-2); }
+.lo-chip {
+  font-size: 13.5px; font-weight: 600; color: var(--lo-ink-2);
+  background: var(--lo-s1); border: 1px solid var(--lo-line);
+  border-radius: 999px; padding: var(--lo-2) var(--lo-3);
+  white-space: nowrap;
+}
+.lo-chip-all { color: var(--lo-with); border-color: var(--lo-gold-dim); }
+.lo-chip-some { color: var(--lo-gold-ink); border-color: var(--lo-gold-dim); }
+.lo-chip-dim { color: var(--lo-ink-3); }
+.lo-chip-bad { color: var(--lo-bad); }
+
+/* ---- THE ORDER DECK ------------------------------------------------- *
+ * One full-width primary over four identical secondaries. Deploy is the
+ * loud one because it is GOLD, not because it is wider: the four below it
+ * are exactly equal, and 4 divides to 2 and then to 1 as the deck narrows,
+ * so there is never a ragged last row.                                   */
+.lo-orders {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--lo-3);
+}
+.lo-order {
+  display: flex;
+  align-items: center;
+  gap: var(--lo-3);
+  min-width: 0;
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r2);
+  color: var(--lo-ink);
+  font: inherit;
+  padding: var(--lo-3) var(--lo-4);
+  min-height: 72px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.lo-order:hover { background: var(--lo-s2); border-color: var(--lo-line-hi); }
+.lo-order:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+.lo-order:disabled { opacity: .38; cursor: default; }
+.lo-order-glyph { color: var(--lo-ink-3); display: flex; align-items: center; }
+.lo-order:hover .lo-order-glyph { color: var(--lo-ink-2); }
+.lo-order-text { display: flex; flex-direction: column; gap: var(--lo-1); min-width: 0; }
+.lo-order-label { font-size: 16px; font-weight: 650; letter-spacing: -0.2px; }
+.lo-order-sub {
+  font-size: 13.5px; color: var(--lo-ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.lo-order-primary {
+  grid-column: 1 / -1;
+  background: var(--lo-gold);
+  border-color: var(--lo-gold);
+  color: #17130a;
+  min-height: 76px;
+}
+.lo-order-primary:hover { background: var(--lo-gold-hi); border-color: var(--lo-gold-hi); }
+.lo-order-primary .lo-order-glyph,
+.lo-order-primary:hover .lo-order-glyph { color: #17130a; }
+.lo-order-primary .lo-order-label { font-size: 18px; }
+.lo-order-primary .lo-order-sub { color: #4a3c1c; }
+.lo-order-primary:disabled { background: var(--lo-s1); border-color: var(--lo-line); color: var(--lo-ink); }
+.lo-order-primary:disabled .lo-order-glyph { color: var(--lo-ink-3); }
+.lo-order-primary:disabled .lo-order-sub { color: var(--lo-ink-3); }
+
+.lo-order-armed { background: #2c1715; border-color: #6d3a33; color: #f0c4bc; }
+.lo-order-armed:hover { background: #371c19; border-color: #86473e; }
+.lo-order-armed .lo-order-glyph, .lo-order-armed:hover .lo-order-glyph { color: #d9776a; }
+.lo-order-armed .lo-order-sub { color: #c79289; }
+
+.lo-hint { font-size: 14px; color: var(--lo-ink-3); }
+
+/* ---- section heads -------------------------------------------------- */
+.lo-section {
+  display: flex; align-items: center; gap: var(--lo-2);
+  flex-wrap: wrap;
+  padding-bottom: var(--lo-3);
+  border-bottom: 1px solid var(--lo-line);
+}
+.lo-section-label {
+  flex: 1; min-width: 0;
+  font-size: 13.5px; font-weight: 650; letter-spacing: 0.7px; text-transform: uppercase;
+  color: var(--lo-ink-3);
+}
+
+/* ---- member cards: equal tracks, centred content --------------------- */
+.lo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: var(--lo-3);
+}
+.lo-grid-empty {
+  grid-column: 1 / -1;
+  display: flex; flex-direction: column; align-items: center; gap: var(--lo-2);
+  text-align: center; padding: var(--lo-6) var(--lo-4);
+  color: var(--lo-ink-3);
+}
+.lo-card {
+  display: flex; flex-direction: column; align-items: center; gap: var(--lo-3);
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r3);
+  padding: var(--lo-4) var(--lo-3);
+  min-width: 0;
+  position: relative;
+  cursor: grab;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.lo-card:hover { background: var(--lo-s2); border-color: var(--lo-line-hi); }
+.lo-card-dead { opacity: .6; }
+.lo-card-lost { border-style: dashed; }
+.lo-card-classed { border-color: var(--lo-line-hi); }
+.lo-card.dragging { opacity: .45; }
+.lo-card.dropbefore { border-left-color: var(--lo-gold); }
+.lo-card.dropafter { border-right-color: var(--lo-gold); }
+
+.lo-card-facewrap { position: relative; display: flex; }
+.lo-card-name {
+  font-size: 16px; font-weight: 600; letter-spacing: -0.2px; color: var(--lo-ink);
+  text-align: center; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lo-card-status {
+  display: flex; align-items: center; justify-content: center; gap: var(--lo-2);
+  flex-wrap: wrap;
+  font-size: 13.5px; color: var(--lo-ink-3);
+  text-align: center;
+}
+.lo-card-clsglyph {
+  position: absolute; top: -2px; left: -2px;
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1;
+  background: var(--lo-s3);
+  border: 1px solid var(--lo-line);
+  border-radius: 999px;
+}
+.lo-card-tools {
+  display: flex; gap: var(--lo-1);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.lo-card:hover .lo-card-tools, .lo-card:focus-within .lo-card-tools { opacity: 1; }
+
+.lo-class-chip {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--lo-2);
+  max-width: 100%;
+  font-size: 13.5px; font-weight: 600;
+  background: var(--lo-s3); border: 1px solid var(--lo-line);
+  border-radius: 999px; padding: var(--lo-2) var(--lo-3);
+  color: var(--lo-ink); font-family: inherit;
+  min-height: 34px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.lo-class-chip:hover { border-color: var(--lo-gold-dim); background: var(--lo-s2); }
+.lo-class-chip:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+.lo-class-chip.none { border-style: dashed; color: var(--lo-ink-3); background: transparent; }
+.lo-class-chip-dot { width: 8px; height: 8px; border-radius: 999px; flex: 0 0 auto; }
+.lo-class-chip span:not(.lo-class-chip-dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.lo-tag {
+  font-size: 12.5px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
+  color: var(--lo-ink-3); border: 1px solid var(--lo-line); border-radius: var(--lo-r1);
+  padding: 2px var(--lo-2);
+  white-space: nowrap;
+}
+.lo-tag-nff { color: var(--lo-warn); border-color: var(--lo-gold-dim); }
+
+/* ---- portraits ------------------------------------------------------ */
+.lo-face {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  overflow: hidden;
+  background: hsl(var(--lo-hue, 40) 26% 26%);
+  color: #f2eee4;
+  font-weight: 650;
+  letter-spacing: -0.3px;
+  border: 1px solid var(--lo-line-hi);
+}
+.lo-face-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lo-face-xs { width: 28px; height: 28px; font-size: 12.5px; }
+.lo-face-sm { width: 34px; height: 34px; font-size: 14px; }
+.lo-face-md { width: 52px; height: 52px; font-size: 17px; }
+.lo-face-lg { width: 104px; height: 104px; font-size: 32px; }
+.lo-face.with  { border-color: var(--lo-with); }
+.lo-face.away  { border-color: var(--lo-line-hi); opacity: .72; }
+.lo-face.lo-ring { border-color: var(--lo-gold-dim); }
+.lo-face.has-face { background: var(--lo-s3); }
+.lo-face.rendering::after {
+  content: ''; position: absolute; inset: -1px; border-radius: 999px;
+  border: 2px solid transparent; border-top-color: var(--lo-gold-dim);
+  animation: lo-spin 900ms linear infinite;
+}
+@keyframes lo-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .lo-face.rendering::after { animation: none; } }
+
+.lo-badge {
+  position: absolute; right: -1px; bottom: -1px;
+  min-width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; line-height: 1;
+  border-radius: 999px;
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line-hi);
+  color: var(--lo-ink-3);
+}
+.lo-badge-with { color: var(--lo-with); border-color: var(--lo-with); }
+.lo-badge-dead { color: var(--lo-bad); border-color: var(--lo-bad); }
+.lo-badge-lost { color: var(--lo-warn); border-color: var(--lo-warn); }
+
+/* ---- foot ----------------------------------------------------------- */
+.lo-foot {
+  display: flex; align-items: center; gap: var(--lo-3);
+  padding-top: var(--lo-4);
+  border-top: 1px solid var(--lo-line);
+}
+.lo-foot-hint { flex: 1; min-width: 0; font-size: 13.5px; color: var(--lo-ink-3); }
+
+.lo-detail-empty, .lo-new {
+  padding: var(--lo-6) var(--lo-5);
+  text-align: center;
+  display: flex; flex-direction: column; gap: var(--lo-3); align-items: center;
+  margin: auto 0;
+}
+.lo-new .lo-edit-row { width: min(560px, 100%); }
+.lo-empty-glyph { color: var(--lo-ink-3); display: flex; }
+.lo-empty-big { font-size: 22px; font-weight: 650; letter-spacing: -0.4px; color: var(--lo-ink); }
+.lo-empty-sub { font-size: 15px; color: var(--lo-ink-2); max-width: 560px; line-height: 1.5; }
+
+/* ====================================================== classes page == */
+
+.lo-two {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--lo-3);
+  align-items: stretch;   /* the two halves of a kit end on the same line */
+}
+.lo-panel {
+  background: var(--lo-s1);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r3);
+  padding: var(--lo-4);
+  display: flex; flex-direction: column; gap: var(--lo-3);
+  min-width: 0;
+}
+
+.lo-style-cur {
+  display: flex; align-items: center; gap: var(--lo-3);
+  width: 100%;
+  background: var(--lo-s3);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r2);
+  padding: var(--lo-3) var(--lo-4);
+  min-height: 60px;
+  color: var(--lo-ink); font: inherit; text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.lo-style-cur:hover { border-color: var(--lo-gold-dim); background: var(--lo-s2); }
+.lo-style-cur:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+.lo-style-glyph { color: var(--lo-gold); font-size: 17px; display: flex; }
+.lo-style-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lo-style-name { font-size: 15.5px; font-weight: 600; letter-spacing: -0.2px; }
+.lo-style-sub { font-size: 13.5px; color: var(--lo-ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.lo-gear { display: flex; flex-direction: column; gap: var(--lo-2); }
+.lo-gear-row {
+  display: flex; align-items: center; gap: var(--lo-4);
+  background: var(--lo-s3);
+  border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r2);
+  padding: var(--lo-3) var(--lo-4);
+  min-height: 68px;
+}
+.lo-gear-art {
+  flex: 0 0 auto; width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--lo-canvas); border: 1px solid var(--lo-line); border-radius: var(--lo-r1);
+  color: var(--lo-ink-3); font-size: 17px;
+  overflow: hidden;
+}
+.lo-gear-img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.lo-gear-art.has-art { background: var(--lo-s1); }
+.lo-gear-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.lo-gear-name { font-size: 15px; font-weight: 600; letter-spacing: -0.1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lo-gear-sub { font-size: 13.5px; color: var(--lo-ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.lo-wearers {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: var(--lo-2);
+}
+.lo-wearer {
+  display: flex; align-items: center; gap: var(--lo-3);
+  background: var(--lo-s1); border: 1px solid var(--lo-line);
+  border-radius: var(--lo-r2); padding: var(--lo-2) var(--lo-3);
+  min-width: 0; min-height: 56px;
+  color: var(--lo-ink); font: inherit; text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.lo-wearer:hover { background: var(--lo-s2); border-color: var(--lo-line-hi); }
+.lo-wearer:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+.lo-wearer-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.lo-wearer-name { font-size: 14.5px; font-weight: 600; color: var(--lo-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lo-wearer-group { font-size: 13.5px; color: var(--lo-ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ============================================================ picker == */
+
+#lo-picker {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(6, 6, 9, .72);
+  padding: var(--lo-5);
+  z-index: 5;
+}
+#lo-picker.hidden { display: none; }
+.lo-picker-card {
+  width: min(880px, 100%);
+  max-height: 100%;
+  display: flex; flex-direction: column; gap: var(--lo-4);
+  background: var(--lo-canvas);
+  border: 1px solid var(--lo-line-hi);
+  border-radius: var(--lo-r3);
+  padding: var(--lo-5);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .42);
+  animation: lo-in 160ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) { .lo-picker-card { animation: none; } }
+/* The header is ONE container (.lo-picker-title) holding the title span
+   (.lo-picker-h), a <small> subtitle and the close button — so lay it out as
+   a two-column grid with the close pinned top-right, not as a flex row. */
+.lo-picker-title {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "h x" "s x";
+  column-gap: var(--lo-3);
+  row-gap: var(--lo-1);
+  align-items: start;
+}
+.lo-picker-h { grid-area: h; font-size: 20px; font-weight: 650; letter-spacing: -0.4px; color: var(--lo-ink); }
+.lo-picker-title small { grid-area: s; font-size: 14px; font-weight: 400; color: var(--lo-ink-3); line-height: 1.45; }
+.lo-picker-x { grid-area: x; align-self: start; }
+.lo-picker-card.lo-picker-narrow { width: min(620px, 100%); }
+.lo-picker-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--lo-3); padding-right: var(--lo-1); }
+.lo-picker-group {
+  font-size: 13.5px; font-weight: 650; letter-spacing: 0.7px; text-transform: uppercase;
+  color: var(--lo-ink-3);
+  padding-top: var(--lo-1);
+}
+.lo-picker-foot { font-size: 13.5px; color: var(--lo-ink-3); text-align: center; }
+
+.lo-picker-list.lo-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  gap: var(--lo-3);
+  align-content: start;
+}
+.lo-picker-list.lo-picker-grid .lo-picker-group { grid-column: 1 / -1; }
+.lo-tile {
+  display: flex; flex-direction: column; align-items: center; gap: var(--lo-2);
+  background: var(--lo-s1); border: 1px solid var(--lo-line); border-radius: var(--lo-r2);
+  padding: var(--lo-4) var(--lo-2);
+  color: var(--lo-ink); font: inherit;
+  cursor: pointer; min-width: 0;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.lo-tile:hover { background: var(--lo-s2); border-color: var(--lo-line-hi); }
+.lo-tile:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+.lo-tile.sel { border-color: var(--lo-gold); }
+.lo-tile.off { opacity: .42; cursor: default; }
+.lo-tile-facewrap { position: relative; display: flex; }
+.lo-tile-name { font-size: 14.5px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lo-tile-sub { font-size: 13.5px; color: var(--lo-ink-3); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lo-tile-check { color: var(--lo-with); display: flex; }
+
+.lo-pick-row {
+  display: flex; align-items: center; gap: var(--lo-3);
+  width: 100%; text-align: left;
+  background: var(--lo-s1); border: 1px solid var(--lo-line); border-radius: var(--lo-r2);
+  padding: var(--lo-3) var(--lo-4);
+  min-height: 60px;
+  color: var(--lo-ink); font: inherit;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.lo-pick-row:hover { background: var(--lo-s2); border-color: var(--lo-line-hi); }
+.lo-pick-row:focus-visible { outline: 2px solid var(--lo-gold); outline-offset: 2px; }
+.lo-pick-row.sel { border-color: var(--lo-gold); }
+.lo-pick-mid { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.lo-pick-name { font-size: 15px; font-weight: 600; letter-spacing: -0.1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lo-pick-sub { font-size: 13.5px; color: var(--lo-ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ============================================================= toast == */
+
+.lo-toast {
+  position: absolute; left: 50%; bottom: var(--lo-5);
+  transform: translate(-50%, 8px);
+  background: var(--lo-s3);
+  border: 1px solid var(--lo-line-hi);
+  border-radius: var(--lo-r2);
+  padding: var(--lo-3) var(--lo-5);
+  font-size: 14.5px; font-weight: 600; color: var(--lo-ink);
+  max-width: 80%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 6;
+}
+.lo-toast.show { opacity: 1; transform: translate(-50%, 0); }
+.lo-toast.err { border-color: #6d3a33; color: #f0c4bc; }
+
+/* ============================================================ narrow == */
+/* The deck is a 2560-wide couch UI, but its window can be dragged small.
+   Every step below keeps the cells EQUAL — 4 -> 2 -> 1, never ragged. */
+
+@media (max-width: 1240px) {
+  .lo-orders { grid-template-columns: repeat(2, 1fr); }
+  .lo-stats  { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 1000px) {
+  .lo-cols { flex-direction: column; }
+  .lo-left { flex: 0 0 auto; max-height: 38%; }
+  .lo-two  { grid-template-columns: 1fr; }
+  .lo-face-lg { width: 88px; height: 88px; font-size: 27px; }
+  .lo-title-big { font-size: 25px; }
+}
+@media (max-width: 620px) {
+  #lo-pane { padding: var(--lo-3); gap: var(--lo-3); }
+  .lo-cols { gap: var(--lo-3); }
+  .lo-orders { grid-template-columns: 1fr; }
+  .lo-stats  { grid-template-columns: repeat(2, 1fr); }
+  .lo-grid   { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .lo-seg button { min-width: 0; padding: 0 var(--lo-4); }
+}

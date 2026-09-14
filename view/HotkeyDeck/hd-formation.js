@@ -44,6 +44,8 @@
        Cleared by the render that finally draws that button — the first paint
        after open() is the loading state, which has no footer to scroll to. */
     focusRescue: false,
+    provider: '',      // '' = let C++ pick (last used / only installed)
+    wSlot: 0,          // Walk With Me: which party slot the grid edits
   };
 
   let el = null;          // the backdrop node
@@ -144,6 +146,10 @@
   function subjPayload() {
     const p = {};
     if (S.subj && S.subj.formId) p.formId = String(S.subj.formId);
+    /* Which formation mod this request is for. Absent on the first open of a
+       session: the router then picks the last-used / only-installed one and
+       tells us which in the reply, so the view never has to guess. */
+    if (S.provider) p.provider = S.provider;
     return p;
   }
 
@@ -167,6 +173,7 @@
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch (_) { d = null; } }
     if (!d) return;
     S.data = d;
+    if (d.provider) S.provider = d.provider;
     S.loading = false;
     if (S.open) render();
   };
@@ -276,6 +283,347 @@
 
   /* ------------------------------------------------------------ render -- */
 
+  function provOf(d) { return (d && d.provider) || S.provider || 'fwf'; }
+
+  /* ------------------------------------------------------- providers -- */
+
+  /* One tab per INSTALLED formation mod. Hidden entirely with a single one,
+     so the common rig sees exactly the modal it saw before. Rober's call
+     (2026-09-10) when Walk With Me landed: "No swap, just support for both"
+     — so this switches which mod the modal drives, it never retires one. */
+  function providerTabs(d) {
+    const list = (d && Array.isArray(d.providers) ? d.providers : [])
+      .filter((p) => p && p.installed);
+    if (list.length < 2) return null;
+    const row = h('div', { class: 'fm-prov' });
+    list.forEach((p) => {
+      const on = p.id === (d.provider || 'fwf');
+      row.append(h('button', {
+        class: 'fm-prov-tab' + (on ? ' on' : '') + (p.live ? ' live' : ''),
+        type: 'button',
+        title: p.live
+          ? p.label + ' is driving your followers right now'
+          : (p.wired === false
+            ? p.label + ' is installed — the deck can’t drive it yet'
+            : p.label + ' — installed, idle'),
+        onClick: () => {
+          if (on) return;
+          S.provider = p.id;
+          S.data = null;          /* never paint one mod's state under the
+                                     other's tab, not even for a frame */
+          S.loading = true;
+          render();
+          request();
+        },
+      }, p.live ? '● ' : '', p.label));
+    });
+    return row;
+  }
+
+  /* Two formation mods LIVE at once is the one way "both installed" hurts:
+     they rewrite the same followers' travel packages every tick and fight.
+     Installed-but-idle is fine and says nothing. */
+  function conflictBanner(d) {
+    if (!d || !d.conflict) return null;
+    const others = (Array.isArray(d.providers) ? d.providers : [])
+      .filter((p) => p && p.live && p.id !== d.provider);
+    const other = others[0] || null;
+    const warn = h('div', { class: 'fm-warn fm-conflict' },
+      h('div', { class: 'fm-off-text' },
+        '⚠ Two formation mods are running at once'
+        + (other ? ' — this one and ' + other.label : '')
+        + '. They will fight over where your followers walk. Turn one off.'));
+    /* The stand-down button only exists for a provider the deck can actually
+       stand down; for one it can't, the sentence is the whole answer. */
+    if (other && other.wired !== false) {
+      warn.append(h('button', {
+        class: 'fm-btn fm-off-btn', type: 'button',
+        title: 'Stand ' + other.label + ' down and leave this one running',
+        onClick: () => {
+          toGameSafe('fmRescue', JSON.stringify({ provider: other.id }));
+          setTimeout(request, 700);
+        },
+      }, '⛔ Turn ' + other.label + ' off'));
+    }
+    return warn;
+  }
+
+
+  /* ==================================================================== *
+   *  Walk With Me (Nexus 191283) — the second provider's body.
+   *
+   *  A different mod, so a different surface: it has no per-follower offset
+   *  properties at all. It has FIVE ORDERS, and each order owns a table of
+   *  ten party-slot positions in its own ini. The author said on release day
+   *  that per-slot positioning is exactly what his in-game menu cannot do
+   *  yet — which is why the positions grid below is the centre of this pane
+   *  rather than an afterthought.
+   *
+   *  Everything here writes `Data/SKSE/Plugins/Wayfarer.ini` and then calls
+   *  the mod's own ReloadSettings(), so the deck and its own configuration
+   *  menu can never disagree about what is running.
+   * ==================================================================== */
+
+  /* The ten slots drawn as a little top-down map, player at the centre. Click
+     to place the selected slot: a click, never a drag — Ultralight forwards
+     drags to the game, and every other pad in this deck is click-placed for
+     the same reason. */
+  function slotMap(d, slots, commit) {
+    const SIDE = 420, FWD = 700;                 // half-extents the map shows
+    const wrap = h('div', { class: 'fm-map', title: 'Top-down: you are the '
+      + 'gold dot. Click to move the selected companion’s place.' });
+    wrap.append(h('div', { class: 'fm-map-you', title: 'You' }, '◆'));
+    wrap.append(h('div', { class: 'fm-map-ax fm-map-ax-v' }));
+    wrap.append(h('div', { class: 'fm-map-ax fm-map-ax-h' }));
+    const max = Math.max(1, num(d.max) || slots.length);
+    slots.forEach((sl, i) => {
+      const x = 50 + (Math.max(-SIDE, Math.min(SIDE, num(sl.side))) / SIDE) * 46;
+      const y = 50 - (Math.max(-FWD, Math.min(FWD, num(sl.forward))) / FWD) * 46;
+      const on = i === S.wSlot;
+      wrap.append(h('button', {
+        class: 'fm-map-dot' + (on ? ' on' : '') + (i >= max ? ' over' : ''),
+        type: 'button',
+        style: 'left:' + x.toFixed(2) + '%;top:' + y.toFixed(2) + '%',
+        title: 'Place ' + (i + 1) + (i >= max
+          ? ' — beyond your companion limit, so nobody stands here'
+          : ' · side ' + Math.round(num(sl.side)) + ', ahead ' + Math.round(num(sl.forward))),
+        onClick: () => { S.wSlot = i; render(); },
+      }, String(i + 1)));
+    });
+    wrap.addEventListener('click', (e) => {
+      if (e.target !== wrap) return;              // a dot handled it
+      const r = wrap.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      const side = ((e.clientX - r.left) / r.width - 0.5) * 2 * SIDE;
+      const fwd = (0.5 - (e.clientY - r.top) / r.height) * 2 * FWD;
+      commit(Math.round(side), Math.round(fwd));
+    });
+    return wrap;
+  }
+
+  function renderWwm(body, d) {
+    const g = d.global || {};
+    const safety = d.safety || {};
+    const modes = Array.isArray(d.modes) ? d.modes : [];
+    const mode = num(g.mode);
+
+    /* ---- the order: what the party is actually doing ---- */
+    if (modes.length) {
+      const row = h('div', { class: 'fm-orders' });
+      modes.forEach((m) => {
+        const on = num(m.id) === mode;
+        row.append(h('button', {
+          class: 'fm-order' + (on ? ' on' : ''), type: 'button',
+          title: on ? 'Current order — the game shows “' + (m.hud || '') + '”'
+                    : 'Give the order “' + m.label + '”',
+          onClick: () => {
+            if (on) return;
+            apply({ global: { mode: num(m.id) } });
+            g.mode = num(m.id); S.wSlot = 0; render();
+          },
+        }, h('span', { class: 'fm-order-l' }, m.label),
+           h('span', { class: 'fm-order-h' }, m.hud || '')));
+      });
+      body.append(row);
+    }
+
+    /* ---- switched off entirely: the loudest thing in the pane ---- */
+    if (g.enabled === false) {
+      body.append(h('div', { class: 'fm-warn fm-off' },
+        h('div', { class: 'fm-off-text' },
+          '⚠ Walk With Me is switched OFF — your followers are on their own AI '
+          + 'and nothing below takes effect until you turn it on.'),
+        h('button', {
+          class: 'fm-btn primary fm-off-btn', type: 'button',
+          title: 'Hand the party back to Walk With Me',
+          onClick: () => { apply({ global: { enabled: true } }); g.enabled = true; render(); },
+        }, '✦ Turn it on')));
+    }
+
+    /* ---- her place in the party ---- */
+    const sub = d.subject;
+    if (sub) {
+      const her = h('div', { class: 'fm-sec' });
+      body.append(her);
+      /* Three states, and they need three different sentences: in the party,
+         out of it, and "the game hasn't answered yet" — which is NOT the
+         same as "no". */
+      const known = typeof sub.registered === 'boolean';
+      const inParty = sub.registered === true;
+      const excluded = Array.isArray(d.excludedPlugins) && sub.plugin &&
+        d.excludedPlugins.some((p) => String(p).toLowerCase() === String(sub.plugin).toLowerCase());
+      her.append(h('div', { class: 'fm-sec-t' },
+        h('span', {}, sub.name || S.who || 'Her place'),
+        h('span', { class: 'fm-chip' + (inParty ? ' on' : '') },
+          !known ? 'asking the game…' : (inParty ? 'walking with you' : 'not in the party'))));
+
+      if (excluded) {
+        her.append(h('div', { class: 'fm-note' },
+          'Walk With Me is set to leave ' + (sub.plugin || 'her mod')
+          + ' alone (its excluded-plugins list), so she keeps her own follower AI.'));
+      }
+
+      const btns = h('div', { class: 'fm-btnrow' });
+      her.append(btns);
+      if (inParty) {
+        btns.append(h('button', {
+          class: 'fm-btn danger', type: 'button',
+          title: 'Take ' + (sub.name || 'her') + ' out of the walking party for now',
+          onClick: () => toGameSafe('fmReg', JSON.stringify(
+            Object.assign(subjPayload(), { op: 'unregister' }))),
+        }, '⊘ Leave the party'));
+      } else {
+        const can = sub.teammate !== false || g.requireTeammate === false;
+        btns.append(h('button', {
+          class: 'fm-btn primary', type: 'button', disabled: can ? null : '',
+          title: can ? 'Give ' + (sub.name || 'her') + ' a place in the party'
+                     : (sub.name || 'She') + ' isn’t following you, and “require '
+                       + 'teammate” is on — turn that off below, or recruit her first',
+          onClick: () => { if (can) toGameSafe('fmReg', JSON.stringify(
+            Object.assign(subjPayload(), { op: 'register' }))); },
+        }, '★ Walk with me'));
+      }
+      /* Exclude/include is the DURABLE pair — the mod remembers it across
+         saves, which is what a companion with her own follower mod wants. */
+      btns.append(h('button', {
+        class: 'fm-btn', type: 'button',
+        title: 'Permanently leave ' + (sub.name || 'her') + ' to her own follower '
+          + 'AI. Remembered across saves — use it for a companion who has her own '
+          + 'follower mod.',
+        onClick: () => toGameSafe('fmReg', JSON.stringify(
+          Object.assign(subjPayload(), { op: 'exclude' }))),
+      }, '🚫 Never manage her'));
+      btns.append(h('button', {
+        class: 'fm-btn', type: 'button',
+        title: 'Undo that — let Walk With Me manage ' + (sub.name || 'her') + ' again',
+        onClick: () => toGameSafe('fmReg', JSON.stringify(
+          Object.assign(subjPayload(), { op: 'include' }))),
+      }, '↩ Allow her back'));
+    }
+
+    /* ---- where everyone walks: the ten places of THIS order ---- */
+    const pos = h('div', { class: 'fm-sec' });
+    body.append(pos);
+    const orderName = (modes[mode] && modes[mode].label) || 'this order';
+    const slots = Array.isArray(d.slots) ? d.slots : null;
+    pos.append(h('div', { class: 'fm-sec-t' },
+      h('span', {}, 'Where they walk'),
+      h('span', { class: 'fm-chip' }, orderName),
+      h('span', { class: 'fm-chip' },
+        String(d.count == null || d.count < 0 ? '…' : d.count) + ' / ' + String(d.max || 10))));
+
+    if (!slots) {
+      pos.append(h('div', { class: 'fm-note' },
+        'This order has no formation to edit — everyone anchors wherever you '
+        + 'stopped and finds their own seat. Pick another order above to lay '
+        + 'out places.'));
+    } else {
+      const chips = h('div', { class: 'fm-slots' });
+      slots.forEach((sl, i) => {
+        chips.append(h('button', {
+          class: 'fm-slot' + (i === S.wSlot ? ' on' : '')
+            + (i >= (num(d.max) || 10) ? ' over' : ''),
+          type: 'button',
+          title: 'Edit place ' + (i + 1),
+          onClick: () => { S.wSlot = i; render(); },
+        }, String(i + 1)));
+      });
+      pos.append(chips);
+
+      const cur = slots[S.wSlot] || { side: 0, forward: 0 };
+      const commit = (side, forward) => {
+        apply({ slot: { mode: mode, slot: S.wSlot, side: side, forward: forward } });
+        cur.side = side; cur.forward = forward; render();
+      };
+      pos.append(h('div', { class: 'fm-map-wrap' },
+        slotMap(d, slots, commit),
+        h('div', { class: 'fm-fine' },
+          h('div', { class: 'fm-fine-t' }, 'Place ' + (S.wSlot + 1)),
+          /* ±1000 rather than the C++ clamp's ±1024, and a step that divides
+             it: with min -1024 and step 5 the grid is -1024, -1019 … and
+             DEAD CENTRE IS UNREACHABLE, which is the one value you most want
+             for a slot directly ahead of you. */
+          slider('Side', '− left of you · + right of you', -1000, 1000, 5,
+            num(cur.side), '',
+            (v) => { apply({ slot: { mode: mode, slot: S.wSlot, side: v } }); cur.side = v; }),
+          slider('Ahead', '− behind you · + ahead of you', -1000, 1000, 5,
+            num(cur.forward), '',
+            (v) => { apply({ slot: { mode: mode, slot: S.wSlot, forward: v } }); cur.forward = v; }))));
+      if (S.wSlot >= (num(d.max) || 10)) {
+        pos.append(h('div', { class: 'fm-note' },
+          'Place ' + (S.wSlot + 1) + ' is past your companion limit of '
+          + (num(d.max) || 10) + ', so nobody stands here yet.'));
+      }
+    }
+
+    /* ---- how they travel ---- */
+    const trav = h('div', { class: 'fm-sec' });
+    body.append(trav);
+    trav.append(h('div', { class: 'fm-sec-t' },
+      h('span', {}, 'How they travel'),
+      toggle('Walk With Me', 'Master switch — off hands the whole party back to '
+        + 'their own follower AI', g.enabled !== false,
+        (v) => { apply({ global: { enabled: v } }); g.enabled = v; render(); })));
+    trav.append(
+      slider('Spacing', 'How far apart they spread as you travel', 0.25, 3, 0.05,
+        num(g.spacing), '×', (v) => { apply({ global: { spacing: v } }); g.spacing = v; }),
+      slider('Catch-up speed', 'Extra speed a straggler gets to rejoin you', 0, 600, 10,
+        num(g.catchUpBonus), '', (v) => { apply({ global: { catchUpBonus: v } }); g.catchUpBonus = v; }),
+      slider('Arrival radius', 'How close to their place counts as arrived', 16, 512, 4,
+        num(g.arrivalRadius), '', (v) => { apply({ global: { arrivalRadius: v } }); g.arrivalRadius = v; }),
+      slider('Individuality', 'How much each companion’s reaction time and turn '
+        + 'response varies from the others', 0, 2, 0.05,
+        num(g.individuality), '×', (v) => { apply({ global: { individuality: v } }); g.individuality = v; }),
+      slider('Companion limit', 'How many walk in formation at once', 1, 10, 1,
+        num(g.maxFollowers) || 10, '',
+        (v) => { apply({ global: { maxFollowers: v } }); g.maxFollowers = v; render(); }));
+    trav.append(h('div', { class: 'fm-toggles' },
+      toggle('Order emblem', 'Show the current order on the right of the screen',
+        g.showHud !== false, (v) => { apply({ global: { showHud: v } }); g.showHud = v; }),
+      toggle('Find them for me', 'Pick up new followers automatically as they join you',
+        g.autoDiscover !== false, (v) => { apply({ global: { autoDiscover: v } }); g.autoDiscover = v; }),
+      toggle('Teammates only', 'Only manage people who are actually following you',
+        g.requireTeammate !== false,
+        (v) => { apply({ global: { requireTeammate: v } }); g.requireTeammate = v; render(); })));
+
+    /* ---- when it lets go ---- */
+    const saf = h('div', { class: 'fm-sec' });
+    body.append(saf);
+    saf.append(h('div', { class: 'fm-sec-t' }, h('span', {}, 'When it lets go')));
+    saf.append(h('div', { class: 'fm-toggles' },
+      toggle('In combat', 'Hand them back the moment a fight starts',
+        safety.combat !== false, (v) => { apply({ safety: { combat: v } }); safety.combat = v; }),
+      toggle('While sneaking', 'Hand them back while you are sneaking',
+        safety.sneaking !== false, (v) => { apply({ safety: { sneaking: v } }); safety.sneaking = v; }),
+      toggle('Weapon drawn', 'Hand them back with a weapon or spell out',
+        safety.weaponDrawn !== false,
+        (v) => { apply({ safety: { weaponDrawn: v } }); safety.weaponDrawn = v; }),
+      toggle('Cutscenes', 'Hand them back whenever the game takes your controls',
+        safety.controlsDisabled !== false,
+        (v) => { apply({ safety: { controlsDisabled: v } }); safety.controlsDisabled = v; }),
+      toggle('Indoors', 'Never form up inside — on = interiors are left alone',
+        safety.indoors === true, (v) => { apply({ safety: { indoors: v } }); safety.indoors = v; }),
+      /* The one that matters on this rig: the deck drives NFF for the party
+         orders, so two systems can end up steering the same follower. */
+      toggle('Override NFF', 'Let Walk With Me take travel control away from '
+        + 'Nether’s Follower Framework. The deck’s own party orders go through '
+        + 'NFF — turn this OFF if they start fighting each other.',
+        safety.enforceNff !== false,
+        (v) => { apply({ safety: { enforceNff: v } }); safety.enforceNff = v; })));
+    saf.append(slider('Let go beyond', 'Distance at which a companion is released '
+      + 'to catch up on her own', 200, 10000, 50, num(safety.releaseDistance), '',
+      (v) => { apply({ safety: { releaseDistance: v } }); safety.releaseDistance = v; }));
+
+    if (d.warming) {
+      body.append(h('div', { class: 'fm-note' },
+        'Party numbers are still coming back from the game — they fill in a moment '
+        + 'after the mod answers.'));
+    }
+
+    rescueFoot(body, 'Return the whole party to their own follower AI and switch '
+      + 'Walk With Me off. Its own “Return to follower AI” order, from here.');
+  }
+
   function render() {
     const root = ensureDom();
     root.textContent = '';
@@ -291,6 +639,9 @@
         onClick: () => close(),
       }, '✕')));
 
+    const tabs = providerTabs(d);
+    if (tabs) box.append(tabs);
+
     const body = h('div', { class: 'fm-body' });
     box.append(body);
 
@@ -298,6 +649,19 @@
       body.append(h('div', { class: 'fm-empty' },
         h('div', { class: 'fm-empty-ic' }, '⛬'),
         h('div', { class: 'fm-empty-t' }, 'Asking the game…')));
+      return;
+    }
+
+    if (d && provOf(d) !== 'fwf' && (d.wired === false || !d.present)) {
+      /* A provider the deck knows about but cannot drive yet. Say that in its
+         own words — the FWF copy below is about a different mod entirely. */
+      body.append(h('div', { class: 'fm-empty' },
+        h('div', { class: 'fm-empty-ic' }, '⛬'),
+        h('div', { class: 'fm-empty-t' },
+          (d.label || 'This formation mod')
+          + (d.wired === false ? ' isn’t wired up yet' : ' isn’t ready')),
+        h('div', { class: 'fm-empty-d' },
+          d.note || 'The deck can see it, but can’t drive it yet.')));
       return;
     }
 
@@ -324,6 +688,12 @@
        sliders gave no hint why). Two depths: the whole MOD switched off
        (quest stopped) vs. formation released (the master switch). One click
        turns it on — C++ restarts the mod if that is what "off" means. -- */
+    const conflict = conflictBanner(d);
+    if (conflict) body.append(conflict);
+
+    /* A different mod needs a different body — see renderWwm's header. */
+    if (provOf(d) === 'wwm') { renderWwm(body, d); return; }
+
     const gg = d.global || {};
     const modOff = d.running === false;
     const released = gg.enabled === false;
@@ -472,18 +842,23 @@
             onClick: () => { S.capturing = true; render(); } },
             keyLabel(g.hotkey == null ? -1 : g.hotkey))));
 
-    /* ---- the way out: stand everything down so the next save is clean ---- */
+    rescueFoot(body);
+  }
+
+  /* The way out, shared by every provider: stand the mod down so the next save
+     is clean. Two clicks, because it releases the whole party. */
+  function rescueFoot(body, title) {
     const rescueArmed = S.rescueArmed && (Date.now() - S.rescueArmed < 4000);
     body.append(h('div', { class: 'fm-foot' },
       h('button', {
         class: 'fm-btn danger' + (rescueArmed ? ' armed' : ''), type: 'button',
-        title: 'Unregister every follower, kill every update the mod has '
+        title: title || ('Unregister every follower, kill every update the mod has '
           + 'running, and stop its quest — the clean stand-down before a save '
-          + 'or before unticking the mod. Works on the original scripts too.',
+          + 'or before unticking the mod. Works on the original scripts too.'),
         onClick: () => {
           if (rescueArmed) {
             S.rescueArmed = 0;
-            toGameSafe('fmRescue', '{}');
+            toGameSafe('fmRescue', JSON.stringify({ provider: provOf(S.data) }));
           } else {
             S.rescueArmed = Date.now();
             render();
@@ -499,7 +874,9 @@
        only thing between a mistyped key and that. */
     if (S.focusRescue) {
       S.focusRescue = false;
-      const btn = box.querySelector('.fm-foot .fm-btn');
+      /* `body`, not `box`: the foot lives in the body, and this block now
+         runs inside the shared rescueFoot() rather than render(). */
+      const btn = body.querySelector('.fm-foot .fm-btn');
       if (btn && btn.scrollIntoView) {
         try { btn.scrollIntoView({ block: 'nearest' }); } catch (e) {}
       }

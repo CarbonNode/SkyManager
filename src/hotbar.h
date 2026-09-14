@@ -42,11 +42,17 @@ namespace Hotbar
 	// the shift/ctrl/alt pages. Storing them positionally (rather than keyed by
 	// name) is what lets the sink turn "which modifiers are down right now" into
 	// an index with no lookup, on every keypress.
-	inline constexpr int kPageCount = 4;
-	inline constexpr int kPageBase  = 0;
-	inline constexpr int kPageShift = 1;
-	inline constexpr int kPageCtrl  = 2;
-	inline constexpr int kPageAlt   = 3;
+	// 2026-09-13: three two-modifier pages joined (Rober: "more extended
+	// hotkeys like alt + key shift + key"). Positional, like the first four —
+	// an older file simply grows three disabled pages on load.
+	inline constexpr int kPageCount     = 7;
+	inline constexpr int kPageBase      = 0;
+	inline constexpr int kPageShift     = 1;
+	inline constexpr int kPageCtrl      = 2;
+	inline constexpr int kPageAlt       = 3;
+	inline constexpr int kPageShiftCtrl = 4;
+	inline constexpr int kPageShiftAlt  = 5;
+	inline constexpr int kPageCtrlAlt   = 6;
 
 	// Flyout bundles (Rober, 2026-08-13: "an action bar set to be a fly out —
 	// pops out with a quantifiable amount (3-9?) bundle"). A slot whose kind is
@@ -69,6 +75,12 @@ namespace Hotbar
 	//   "smart"  -> FireSmart (below): "the best potion of X I am carrying",
 	//               re-picked at press time. refId names the pool:
 	//               "heal" | "magicka" | "stamina" | "cure"
+	//   "set"    -> FireSet (below): a GEAR SET — every child equipped in one
+	//               press with STB-style hand placement (first weapon or hand
+	//               spell right, the next one left, shields and torches left,
+	//               a recorded `hand` wins), and STRIPPED on the next press
+	//               when all of it is already worn. Children ride `items`
+	//               like a flyout's, but may only be "item" / "spell".
 	//   ""       -> empty slot
 	//
 	// Identity is the same durable pair used everywhere else in this plugin —
@@ -81,6 +93,19 @@ namespace Hotbar
 		std::string   plugin;           // source file, e.g. "Skyrim.esm"
 		std::uint32_t localId = 0;      // local FormID within `plugin`
 		std::uint32_t formId  = 0;      // raw runtime id — fallback only
+
+		// ---- instance identity + hand memory (2026-09-13, STB-style) ------
+		// `uniqueId` is the engine's ExtraUniqueID stamped on ONE carried copy
+		// — the enchanted / tempered one you bound from the inventory, not
+		// "an ebony sword". 0 = any copy (the pre-2026-09 behaviour). The fire
+		// path prefers that copy and falls back to any other of the same base
+		// form, saying so, rather than greying out: a binding must survive the
+		// bound copy being sold and bought back (it gets a new id then).
+		std::uint16_t uniqueId = 0;
+		// "" = let the engine choose | "right" | "left". Recorded at bind time
+		// from the hand you were holding it in, honoured on every press, and
+		// the tie-break a gear set uses before its own placement rule.
+		std::string   hand;
 
 		// For kind=="entry" / "combo": the deck-side id of the thing to run.
 		// Kept separate from the form identity so an entry can never be mistaken
@@ -106,7 +131,7 @@ namespace Hotbar
 
 		bool Empty() const
 		{
-			if (kind == "flyout")
+			if (kind == "flyout" || kind == "set")
 				return items.empty();
 			return kind.empty() || (kind == "spell" && !localId && !formId) ||
 			       (kind == "item" && !localId && !formId) ||
@@ -124,6 +149,16 @@ namespace Hotbar
 		bool              enabled = false;   // page 0 is forced on in FromJson
 		std::string       name;              // shown in edit mode; "" = the default
 		std::vector<Slot> slots;             // sized to kMaxSlots on load
+
+		// A CUSTOM modifier for this page (2026-09-13, the STB "any key can be
+		// the modifier" idea): while this key is held the page is live, on top
+		// of (not instead of) the page's own Shift/Ctrl/Alt meaning. code 0 =
+		// none. The input sink tracks every held key, so any keyboard key
+		// works — "hold Q, press 1". Checked BEFORE the modifier rules, lowest
+		// page index first, so a custom key is never out-voted by Shift.
+		std::string   modDevice = "keyboard";
+		std::uint32_t modCode   = 0;
+		std::string   modLabel;
 	};
 
 	// A per-slot key binding. `code` 0 = unbound, in which case the button is
@@ -252,6 +287,14 @@ namespace Hotbar
 		// needs no DLL change.
 		std::string skin = "plain";
 
+		// Bind straight from the game's own menus (2026-09-13, the STB Hotkey
+		// System idea): with the inventory, magic menu or favourites open,
+		// highlight a row and press a slot's key — that row lands on the
+		// button of the page your modifiers select, no editor, no picker. A
+		// key pressed on a gear set or flyout ADDS to it instead. Default on;
+		// off = slot keys stay inert in menus exactly as before.
+		bool menuBind = true;
+
 		// How the modifier pages behave. true (default, and what WoW does) =
 		// HOLD the modifier to see and fire that page, release to fall back.
 		// false = TAP the modifier to latch that page until you tap it again,
@@ -286,9 +329,13 @@ namespace Hotbar
 
 	// Which page index the given modifier state selects, honouring `enabled`:
 	// a held-but-disabled modifier falls back to base rather than showing a page
-	// the player switched off. Priority when several are held is shift > ctrl >
-	// alt — fixed, so the same combination always lands on the same page.
-	int PageForMods(const Config& c, bool shift, bool ctrl, bool alt);
+	// the player switched off. Order: a page whose CUSTOM key is held (lowest
+	// index first) > the two-modifier pages (shift+ctrl > shift+alt > ctrl+alt)
+	// > the singles (shift > ctrl > alt) — most specific first, then fixed, so
+	// the same combination always lands on the same page. `customHeld[p]` says
+	// whether page p's custom key is down right now; null = none held.
+	int PageForMods(const Config& c, bool shift, bool ctrl, bool alt,
+		const bool* customHeld = nullptr);
 
 	// Config <-> json for the "hotbar" slice.
 	nlohmann::json ToJson(const Config& c);
@@ -443,6 +490,48 @@ namespace Hotbar
 	// (name-matched waters still classify as kWater and stay reachable under
 	// Drink, which includes water by design).
 	bool WaterModPresent();
+
+	// ---- instance-aware item use, gear sets, bind-from-menu (2026-09-13) --
+	// All three MAIN THREAD ONLY (inventory walks + the equip manager).
+
+	// Use one item slot: the bound COPY when `uniqueId` names one that is still
+	// carried (else any copy of the base form, and the msg says so), equipped
+	// into the remembered `hand` when there is one. A plain slot (no uniqueId,
+	// no hand) goes through WheelMenu::Use unchanged — the play-proven path
+	// stays the play-proven path. Toggle semantics are the wheel's: pressing
+	// what you already hold puts it away. Returns {ok,msg,equipped}.
+	std::string FireItem(const Slot& s);
+
+	// Equip a whole gear set, or strip it. Every carried child that is not
+	// worn is equipped, in order, with hand placement (see the kind table at
+	// the top); when EVERY carried child is already worn the press unequips
+	// the items instead (spells stay in hand — the engine has no unequip verb
+	// for a spell). Returns {ok,msg,equipped} where equipped = the set is now
+	// worn. A set with nothing of it in the bag refuses honestly.
+	std::string FireSet(const Slot& s);
+
+	// The row highlighted in the OPEN game menu — InventoryMenu (the selected
+	// ItemList row: base form + its ExtraUniqueID + the hand it is worn in),
+	// MagicMenu (the item card's spell/shout, via SpellActions), FavoritesMenu
+	// (the selected favourite, read off the Scaleform list and cross-checked
+	// against the menu's own entry array). Answers a slot-shaped object:
+	//   {"ok":true,"kind":"item"|"spell","plugin","localId","formId",
+	//    "uniqueId","hand","name","source":"inventory"|"magic"|"favorites"}
+	// or {"ok":false,"msg"} naming which menu was open and why it could not
+	// read it. Never guesses: a menu it cannot read says so.
+	std::string HighlightedJson();
+
+	// Which slot kinds a gear set may hold. The parse clamps children to this.
+	bool IsSetChildKind(const std::string& kind);
+
+	// Import Skyrim's OWN favourites hotkeys (the vanilla 1-8) onto `page`
+	// (2026-09-13, the STB "vanilla migration" idea): spells/shouts/powers from
+	// MagicFavorites::hotkeys, items from the ExtraHotkey stamped on the carried
+	// copy (which also gives the exact copy + uniqueId). Only EMPTY buttons are
+	// filled — a button you built is never overwritten; the reply says what was
+	// skipped. MAIN THREAD ONLY. Returns
+	//   {"ok":bool,"imported":n,"skipped":n,"names":["…"],"msg":"…"}
+	std::string ImportVanillaHotkeys(Config& c, int page);
 
 	// Live state for one page, read fresh from the engine. MAIN THREAD ONLY —
 	// it touches the player actor, the inventory and the magic caster.

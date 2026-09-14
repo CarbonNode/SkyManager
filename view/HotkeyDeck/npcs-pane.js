@@ -168,6 +168,7 @@ window.NpcsPane = (function () {
        accumulation the old "Show more" foot built up. This is what shrinks the
        face-render burst with page size: requestIcons() only ever sees one page. */
     state.items = Array.isArray(d.items) ? d.items : [];
+    if (state.items.length) askStatusMaps();   // a page landed: make sure its chips can
     /* A page that no longer exists (total shrank under a stale offset, or the
        last page emptied) — step back to the last real page and re-ask. */
     if (!state.items.length && state.total > 0 && ui.page > 0 &&
@@ -2007,6 +2008,30 @@ window.NpcsPane = (function () {
       '<span class="nx-plug-go">▼</span></button>';
   }
 
+  /* Fertility Mode by base record, through the Followers pane's whole-map
+     read; null/undefined when it is not loaded, so a partial deploy shows no
+     chip rather than a wrong one. */
+  function fertOf(it) {
+    const F = window.FolPane;
+    if (!F || typeof F.fertFor !== 'function' || !it || !it.id) return null;
+    try { return F.fertFor({ base: it.id }); } catch (e) { return null; }
+  }
+  function fertTitleOf(f) {
+    const F = window.FolPane;
+    if (F && typeof F.fertTitle === 'function') { try { return F.fertTitle(f); } catch (e) {} }
+    return 'Fertility Mode: pregnant';
+  }
+  /* The two whole-map reads a drawn page needs. Throttled at the source, so a
+     page flip costs at most one ask per few seconds each. */
+  function askStatusMaps() {
+    try { if (window.FolPane && typeof FolPane.ensureFertAll === 'function') FolPane.ensureFertAll(); } catch (e) {}
+    try { if (window.ChimBtn && typeof ChimBtn.ensureAgents === 'function') ChimBtn.ensureAgents(); } catch (e) {}
+  }
+  /* …and when either answer lands, the drawn rows put their chips on. */
+  function onStatusMaps() { if (ui.visible && state.ready) { try { renderBodyPreservingScroll(); } catch (e) {} } }
+  window.addEventListener('hd-fert-all', onStatusMaps);
+  window.addEventListener('hd-chim-agents', onStatusMaps);
+
   function npcRowHtml(it, selIdx, idx) {
     const art = artFor(it);
     const hasArt = !!art;
@@ -2021,6 +2046,24 @@ window.NpcsPane = (function () {
        got a body render is pictured, just not by a face. */
     if (it.t && !faceParts(it.fc) && !hasArt)
       chips += '<span class="nx-chip nx-chip-tmpl" title="Built from a template — no baked face exists, so no portrait">🜲 template</span>';
+    /* ◍ expecting / 💬 CHIM (Rober, 2026-09-14: "pregnancy status as well?
+       … yea search rows"). Both read the whole-map answers the Followers pane
+       and chim-flyout keep (fmAllResult / chAgentsResult), matched by this
+       row's BASE record — so only UNIQUE people get them: a base shared by
+       twenty bandits cannot say which one is carrying. */
+    if (it.u) {
+      const f = fertOf(it);
+      if (f && f.pregnant) {
+        const pct = (typeof f.percent === 'number' && f.termDays) ? f.percent + '%' : 'expecting';
+        chips += '<span class="nx-chip nx-chip-preg" title="' + esc(fertTitleOf(f)) + '">◍ ' + esc(pct) + '</span>';
+      }
+      if (window.ChimBtn && typeof ChimBtn.isAgent === 'function'
+          && ChimBtn.isAgent({ name: it.n, base: it.n }) === true) {
+        chips += '<span class="nx-chip nx-chip-chim" title="' +
+          esc('CHIM AI is ON — ' + it.n + ' is a live CHIM agent. The 💬 on her F7 card turns it off.') +
+          '">💬 CHIM</span>';
+      }
+    }
     const open = ui.expanded === it.id;
     return '<div class="nx-row' + (selIdx === idx ? ' nx-sel' : '') + (open ? ' nx-row-open' : '') +
       '" data-id="' + esc(it.id) + '">' +
@@ -2467,6 +2510,7 @@ window.NpcsPane = (function () {
   function onShow() {
     ui.visible = true;
     toGame('nxState');   // first call builds the C++ index; later calls are cheap
+    askStatusMaps();     // ◍ / 💬 chips for the rows about to be drawn
     const s = $('nx-search');
     if (s) { s.value = ui.q; setTimeout(function () { s.focus(); }, 30); }
     if (state.ready && (ui.q || ui.plugin || ui.type !== 'all')) runQuery(true);

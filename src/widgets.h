@@ -207,6 +207,33 @@ namespace Widgets
 	//            "spell" now also carry school/element/tier, which is what
 	//            lets the HUD run the Spell Deck's own icon resolve ladder
 	//            (override -> byForm exact -> school/tier generic -> glyph).
+	// ---- SEASON (2026-08-31) ----------------------------------------------
+	// (Rober: "a season widget would be nice. not sure how to best hook to
+	// seasons of skyrim … same suite of configurations, drag, move around,
+	// toggle on or off, not apart of other widgets, part of hud widget
+	// suite".) A FIFTH free widget, drawn at its own placement like the four
+	// slot widgets. One more optional key, same omit-or-tell law:
+	//
+	//   season   { id:"winter"|"spring"|"summer"|"autumn", name:"Winter",
+	//              n:1-4, src:"mod"|"calendar",
+	//              month?:int (0-based), monthName?, day?:int, year?:int,
+	//              fixed?:true,                 INI pinned to one season
+	//              override?:true, overrideName?,  a SetSeasonOverride is live
+	//              next?:{ id, name, in:int } }    whole game days
+	//            ABSENT when seasons are off, when the mod has not answered
+	//            yet, or when nothing can say which season it is — never a
+	//            guessed one.
+	//
+	// ⛔ The season is ASKED, never derived from the month. Seasons of Skyrim's
+	// month->season map is INI-driven and mods rewrite it (this rig also runs
+	// "Four Seasons - Faster Seasons of Skyrim", which cycles all four seasons
+	// three times a year). The source of truth is the mod's own documented
+	// Papyrus API — SeasonsOfSkyrim.GetCurrentSeason() / GetSeasonOverride() —
+	// dispatched fire-and-forget into a latch; the INI is parsed only for what
+	// the API cannot say (seasons off / pinned, and days until the next one),
+	// and becomes the ANSWER only when the mod is absent, in which case `src`
+	// says "calendar" out loud.
+	//
 	//   quick    [ { id, name, count, kind, formId, plugin, hk? } ] <= 12 rows
 	//            everything the player FAVOURITED in inventory (the game's own
 	//            quick items — "we should have source"), counts live off the
@@ -237,8 +264,8 @@ namespace Widgets
 	//            than two permanently-off lamps.
 	std::string LiveJson();
 
-	// Flip ONE widget's enabled flag by config key ("handR", "voice", "gold",
-	// …). Turning a widget on also arms the master switch (a toggle that
+	// Flip ONE widget's enabled flag by config key ("handR", "voice", "season",
+	// "gold", …). Turning a widget on also arms the master switch (a toggle that
 	// leaves the feature dark reads as broken). Persists; returns the new
 	// state. Unknown key: returns false, changes nothing.
 	bool ToggleOne(const std::string& id);

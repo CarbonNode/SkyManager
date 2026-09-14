@@ -102,6 +102,13 @@ namespace NffBridge
 	int  SandboxLevel();
 	bool SetSandboxLevel(int level);
 
+	// Whether NFF ITSELF holds this actor as a follower (nwsFF_FollowerFac).
+	// Deliberately NOT the same question as Actor::IsPlayerTeammate(): NFF
+	// keeps followers in its faction through states the engine does not count
+	// as teammate, and the quick card needs that answer to know whether a
+	// Dismiss would do anything. False on every kind of "don't know".
+	bool IsNffFollower(RE::Actor* actor);
+
 	// Whether THIS follower is included in sandboxing — NFF's own per-follower
 	// MCM checkbox, stored as her rank in nwsFF_BoxFaction (rank 0 excludes;
 	// not in the faction at all is the default-allowed state). Returns NFF's

@@ -728,6 +728,33 @@ namespace NffBridge
 		return actor->GetFactionRank(nff.boxFac, false) >= 1;
 	}
 
+	/* ---------------------------------------------------------------------
+	 *  Does NFF ITSELF hold her as a follower?
+	 *
+	 *  Not the same question as Actor::IsPlayerTeammate(), which is what the
+	 *  rest of the deck calls "following". NFF puts its followers in
+	 *  nwsFF_FollowerFac and keeps them there through states the engine does
+	 *  not count as teammate — the case Rober hit on 2026-09-10, where the
+	 *  card offered Recruit to someone NFF was already managing as a follower
+	 *  and no Dismiss was reachable at all.
+	 *
+	 *  Read the way everything else in this file is read: the faction comes
+	 *  off a BOUND SCRIPT PROPERTY, never a hardcoded FormID (NFF's ids move
+	 *  between versions) and never a Papyrus call (this rig has a documented
+	 *  CTD bucket in the native-call path — see the header).
+	 *
+	 *  False when NFF is absent, no save is loaded, or the property could not
+	 *  be read: an unknown answer must never read as "yes, she is following",
+	 *  because that is the answer that puts an armed Dismiss on the card.
+	 * ------------------------------------------------------------------- */
+	bool IsNffFollower(RE::Actor* actor)
+	{
+		const auto nff = ResolveNff();
+		if (!actor || !nff.followerFac)
+			return false;
+		return actor->IsInFaction(nff.followerFac);
+	}
+
 	bool SetSandboxAllowedFor(RE::Actor* actor, bool allow)
 	{
 		const auto nff = ResolveNff();

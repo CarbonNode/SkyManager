@@ -773,8 +773,18 @@ function esc(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/* DIK -> label, for chords whose modifier is an ordinary key ("Q + 1").
+   Built lazily from the DIK table so the two can never disagree. */
+let DIK_LABEL_BY_CODE = null;
+function dikLabel(code) {
+  if (!DIK_LABEL_BY_CODE) {
+    DIK_LABEL_BY_CODE = {};
+    Object.keys(DIK).forEach((k) => { const v = DIK[k]; if (v && !(v[0] in DIK_LABEL_BY_CODE)) DIK_LABEL_BY_CODE[v[0]] = v[1]; });
+  }
+  return DIK_LABEL_BY_CODE[code];
+}
 function chordLabel(mods, keyLabel) {
-  const parts = (mods || []).map((m) => MOD_LABEL[m] || '?');
+  const parts = (mods || []).map((m) => MOD_LABEL[m] || dikLabel(m) || ('#' + m));
   parts.push(keyLabel);
   return parts.join(' + ');
 }
@@ -796,8 +806,10 @@ function trigOf(e) {
   return t;
 }
 
+/* gesture prefix (2026-09-13): one key, three actions */
+const GESTURE_LABEL = { '': '', double: '2× ', hold: 'Hold ' };
 function trigChipLabel(t) {
-  return chordLabel(t.device === 'keyboard' ? t.mods : [], t.label || ('#' + t.code));
+  return (GESTURE_LABEL[t.gesture] || '') + chordLabel(t.mods || [], t.label || ('#' + t.code));
 }
 
 function trigChipHtml(e, edit) {
@@ -904,7 +916,8 @@ function render() {
                    to 'deck', so the click "did nothing" and the hotkey list stayed
                    on screen. Every top-level pane MUST be listed here. */
                 ui.tab === 'settle' || ui.tab === 'wigs' || ui.tab === 'survival' ||
-                ui.tab === 'distr' ||
+                ui.tab === 'distr' || ui.tab === 'household' ||
+                ui.tab === 'loadouts' ||
                 ui.tab === 'wardrobe' || ui.tab === 'faces' || ui.tab === 'recent') ? ui.tab : 'deck';
   const deck = pane === 'deck';
   window.__hdActiveTab = pane;   // panes (followers/domains) key their re-renders off this
@@ -927,6 +940,8 @@ function render() {
   $('jr-pane').classList.toggle('hidden', pane !== 'journal');
   $('tg-pane').classList.toggle('hidden', pane !== 'transmog');
   $('mt-pane').classList.toggle('hidden', pane !== 'mounts');
+  $('lo-pane').classList.toggle('hidden', pane !== 'loadouts');
+  $('hh-pane').classList.toggle('hidden', pane !== 'household');
   $('st-pane').classList.toggle('hidden', pane !== 'settle');
   $('sc-pane').classList.toggle('hidden', pane !== 'spellcraft');
   $('hx-pane').classList.toggle('hidden', pane !== 'highking');
@@ -1548,6 +1563,17 @@ function renderHints(pane) {
       '<span>Reset returns the pose</span><span>F7 / Esc close</span>';
     return;
   }
+  if (pane === 'household') {
+    h.innerHTML = '<span>Type to search the household</span><span>Enter = open the top hit</span>' +
+      '<span>↑↓ move · click a card for her full card</span>' +
+      '<span>Household = wives + expecting</span><span>F7 / Esc close</span>';
+    return;
+  }
+  if (pane === 'loadouts') {
+    h.innerHTML = '<span>Groups: pick one, ⚡ Deploy brings + recruits everyone</span><span>Classes: gear + combat style per role</span>' +
+      '<span>click a face\'s class chip to change it</span><span>F7 / Esc close</span>';
+    return;
+  }
   if (pane === 'mounts') {
     h.innerHTML = '<span>Type to search the stable</span><span>Enter = ride the top hit</span>' +
       '<span>drag the big picture to turn it</span><span>＋ add the beast you look at · ✨ add a summon</span>' +
@@ -1617,7 +1643,15 @@ const SYS_TABS = [
      Deck view as its second page. It is still reachable from the Home card, the
      omni provider below, and its own bindable action, all of which open the
      Spell Deck on that page via hdOpenSpells('arts'). */
+  /* Household (2026-09-13, Rober: "dedicated auto populating wife and pregnant
+     women page"). Deliberately UNGATED: with neither M.A.R.A.S nor Fertility
+     Mode answering, the pane says so itself in its own banner — the survival /
+     spellcraft precedent, which is more useful than a tab that quietly
+     vanishes. It requires Follower Organizer in practice (the roster is its
+     source), and says that too rather than disappearing. */
+  { tab: 'household',  label: 'Household',  img: 'icons/custom/hm-household.png',  title: 'Your wives and who is expecting — how far along, with portraits' },
   { tab: 'mounts',     label: 'Mounts',     img: 'icons/custom/hm-mounts.png',     title: 'Your stable — summon, call and ride anything you can sit on' },
+  { tab: 'loadouts',   label: 'Loadouts',   img: 'icons/custom/hm-loadouts.png',   title: 'Follower groups you switch between in one press — summon, recruit, dress by class' },
   { tab: 'settle',     label: 'Settlement', img: 'icons/custom/hm-settlement.png', title: 'Place objects, statics, camp gear — build a camp, keep catalogs' },
   /* deliberately UNGATED: with no survival mod installed the pane says so
      itself, which is more useful than a tab that quietly vanishes. */
@@ -3141,8 +3175,19 @@ function quickFire(slotDigit) {
 /* =========================================================== capture ==== */
 
 function startCapture(mode, id) {
-  ui.capture = { mode: mode, id: id, picking: false };
+  ui.capture = { mode: mode, id: id, picking: false, gesture: '' };
   $('capture-picker').classList.add('hidden');   // always start on press-to-rebind
+  /* gesture chips (2026-09-13): triggers only. Preselect what the entry has,
+     so a rebind keeps its gesture unless you change it. */
+  const gest = $('capture-gest');
+  if (gest) {
+    gest.classList.toggle('hidden', mode !== 'trigger');
+    if (mode === 'trigger') {
+      const e = state.entries.find((x) => x.id === id);
+      ui.capture.gesture = (e && e.trigger && (e.trigger.gesture === 'double' || e.trigger.gesture === 'hold')) ? e.trigger.gesture : '';
+      renderGestureChips();
+    }
+  }
   toGame('hdCapture', '1');
   $('capture-title').textContent =
     mode === 'open' ? 'Press the new OPEN key or mouse button…' :
@@ -3151,6 +3196,19 @@ function startCapture(mode, id) {
     mode === 'trigger' ? 'Press the key that should fire this from anywhere…' :
                       'Press a key or mouse button…';
   $('capture-modal').classList.remove('hidden');
+}
+
+function renderGestureChips() {
+  const gest = $('capture-gest');
+  if (!gest || !ui.capture) return;
+  gest.querySelectorAll('[data-gesture]').forEach((b) => {
+    b.classList.toggle('is-on', (b.getAttribute('data-gesture') || '') === (ui.capture.gesture || ''));
+  });
+}
+function setCaptureGesture(g) {
+  if (!ui.capture) return;
+  ui.capture.gesture = (g === 'double' || g === 'hold') ? g : '';
+  renderGestureChips();
 }
 
 /* pane-facing hook (followers-pane.js binds its Open-key button to this) */
@@ -3208,12 +3266,14 @@ function applyCapture(binding) {
         device: binding.device,
         code: binding.code,
         label: binding.keyLabel,
-        /* Mouse chords aren't supported by the C++ matcher — it only checks
-           Shift/Ctrl/Alt for keyboard triggers — so never store mods we can't
-           honour, or the key would silently refuse to fire. */
-        mods: binding.device === 'keyboard' ? (binding.mods || []) : []
+        /* Chords on either device (2026-09-13): the C++ matcher checks
+           Shift/Ctrl/Alt by key state and any other held key through the
+           input sink's own held set, for keyboard AND mouse triggers. */
+        mods: binding.mods || [],
+        /* tap (default) | double | hold — chosen on the capture modal */
+        gesture: cap.gesture || ''
       };
-      toast(e.name + ' ⚡ ' + binding.keyLabel);
+      toast(e.name + ' ⚡ ' + (GESTURE_LABEL[e.trigger.gesture] || '') + binding.keyLabel);
     }
     endCapture(true);
     save();
@@ -3365,6 +3425,33 @@ function onKeyDown(e) {
     if (e.shiftKey) mods.push(MOD_DIK.SHIFT);
     if (e.ctrlKey) mods.push(MOD_DIK.CTRL);
     if (e.altKey) mods.push(MOD_DIK.ALT);
+    /* Any-key chords for TRIGGERS (2026-09-13, the STB idea): the first
+       ordinary key is HELD as the modifier, the second key pressed while it
+       is down is the trigger ("Q + 1"). Let the first key go on its own and
+       it binds plain, exactly as before — the release is the decision, so a
+       single press still costs a single press. Shift/Ctrl/Alt ride along
+       either way. Only triggers: an entry's own key is what it SENDS, and a
+       held ordinary key cannot be sent. */
+    if (ui.capture.mode === 'trigger' && EXT_NAMES.indexOf(code) === -1) {
+      /* (F13-F24 never wait for a release: they arrive through the bridge's
+         poll re-emit, whose key-up timing is not something to build a
+         gesture on, and nobody holds a Scimitar side button as a modifier.) */
+      if (e.repeat) return;
+      const held = ui.capture.held;
+      if (held && held.code !== hit[0]) {
+        const cm = mods.slice();
+        if (cm.indexOf(held.code) < 0) cm.push(held.code);
+        ui.capture.held = null;
+        applyCapture({ device: 'keyboard', code: hit[0], mods: cm, keyLabel: chordLabel(cm, hit[1]) });
+        return;
+      }
+      if (!held) {
+        ui.capture.held = { code: hit[0], label: hit[1], mods: mods };
+        $('capture-title').textContent =
+          'Holding ' + chordLabel(mods, hit[1]) + ' — press another key for a chord, or let go to bind it';
+      }
+      return;
+    }
     applyCapture({
       device: 'keyboard',
       code: hit[0],
@@ -3506,6 +3593,12 @@ function onKeyDown(e) {
      and palette-close Escape fall through to the shell below */
   if (ui.tab === 'followers' && code !== 'Tab' && window.FolPane && FolPane.onKey(e)) return;
 
+  /* The Household pane owns arrows / Enter / a filter-clearing Escape while
+     it is up; Tab-cycling and the palette-close Escape fall through to the
+     shell below, exactly as they do for Followers. */
+  if (ui.tab === 'household' && code !== 'Tab' &&
+      window.HouseholdPane && HouseholdPane.onKey(e)) { e.preventDefault(); return; }
+
   /* ---- global keys ---- */
   if (code === 'Escape') {
     e.preventDefault();
@@ -3539,8 +3632,12 @@ function onKeyDown(e) {
          Esc, F2, Ctrl+F and the modal routers all sit ABOVE this return. */
       ui.tab === 'rooms' || ui.tab === 'keys' || ui.tab === 'transmog' ||
       ui.tab === 'mounts' || ui.tab === 'settle' || ui.tab === 'survival' ||
+      ui.tab === 'loadouts' ||   // full pane: its search + picker own the keys (2026-09-14)
       ui.tab === 'wigs' || ui.tab === 'sheet' || ui.tab === 'anim' ||
       ui.tab === 'highking' || ui.tab === 'journal' || ui.tab === 'spellcraft' ||
+      /* household owns its own search box — without this a digit typed into it
+         quick-fires a real hotkey into the game (the distr lesson). */
+      ui.tab === 'household' ||
       /* loot + time added 2026-08-19 (swarm): both are full panes and both were
          MEASURED leaking — a bare digit on either fired a real hotkey into the
          game, and Enter in the Sky weather box both picked a weather AND fired
@@ -3589,6 +3686,19 @@ function onKeyDown(e) {
   }
 }
 
+/* The release half of the hold-chord capture: letting go of the held key
+   with nothing pressed in between binds it as a plain trigger. */
+function onKeyUp(e) {
+  if (!ui.visible || !ui.capture || ui.capture.mode !== 'trigger' || !ui.capture.held) return;
+  const hit = DIK[normCode(e)];
+  if (!hit || hit[0] !== ui.capture.held.code) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const held = ui.capture.held;
+  ui.capture.held = null;
+  applyCapture({ device: 'keyboard', code: held.code, mods: held.mods, keyLabel: chordLabel(held.mods, held.label) });
+}
+
 function onMouseDown(e) {
   if (!ui.visible || !ui.capture) return;
   // Let the capture-box's own controls work: Cancel, the "Pick from a list"
@@ -3607,7 +3717,18 @@ function onMouseDown(e) {
     toast('Keyboard keys only — F-keys can’t fire mouse buttons');
     return;
   }
-  applyCapture({ device: 'mouse', code: hit[0], mods: [], keyLabel: hit[1] });
+  /* mouse chords (2026-09-13): Shift/Ctrl/Alt, or the key you are holding,
+     plus a mouse button — the C++ matcher honours them for triggers now */
+  const mmods = [];
+  if (ui.capture.mode === 'trigger') {
+    if (e.shiftKey) mmods.push(MOD_DIK.SHIFT);
+    if (e.ctrlKey) mmods.push(MOD_DIK.CTRL);
+    if (e.altKey) mmods.push(MOD_DIK.ALT);
+    const held = ui.capture.held;
+    if (held && mmods.indexOf(held.code) < 0) mmods.push(held.code);
+    ui.capture.held = null;
+  }
+  applyCapture({ device: 'mouse', code: hit[0], mods: mmods, keyLabel: chordLabel(mmods, hit[1]) });
 }
 
 function requestClose() {
@@ -3658,6 +3779,8 @@ function setTab(t) {
   if (prev === 'journal' && window.JournalPane) JournalPane.onHide();
   if (prev === 'transmog' && window.TransmogPane) TransmogPane.onHide();
   if (prev === 'mounts' && window.MountsPane) MountsPane.onHide();
+  if (prev === 'loadouts' && window.LoadoutsPane) LoadoutsPane.onHide();
+  if (prev === 'household' && window.HouseholdPane) HouseholdPane.onHide();
   if (prev === 'settle' && window.SettlementPane) SettlementPane.onHide();
   if (prev === 'spellcraft' && window.SpellCraftPane) SpellCraftPane.onHide();
   if (prev === 'highking' && window.HighKingPane) HighKingPane.onHide();
@@ -3748,8 +3871,17 @@ function setTab(t) {
     }
     return;
   }
+  if (t === 'loadouts') {
+    if (window.LoadoutsPane) LoadoutsPane.onShow();   // loState: groups, classes, roster, who is with you
+    return;
+  }
   if (t === 'mounts') {
     if (window.MountsPane) MountsPane.onShow();   // re-reads the stable + tops up body renders
+    return;
+  }
+  if (t === 'household') {
+    // re-reads the roster, marriages and pregnancies (one fdRefresh does all three)
+    if (window.HouseholdPane) HouseholdPane.onShow();
     return;
   }
   if (t === 'settle') {
@@ -3845,14 +3977,17 @@ window.hdShowTab = function (t) {
      re-dressed as a standalone popup, panel hidden. A paused overlay like the
      Potion Browser, same open sequence, same press-again-to-close guard, same
      deferred-load parking idiom. */
-  if (t === 'supersearch') {
-    if (!window.HDSuper) { window.__hdPendingSuper = 1; return; }
+  /* 'supersearch@<provider>' locks that open to ONE source — the seeded Teleport
+     action sends supersearch@places (hd-places.js). */
+  if (t === 'supersearch' || t.indexOf('supersearch@') === 0) {
+    const ssOnly = t.indexOf('@') !== -1 ? t.slice(t.indexOf('@') + 1) : '';
+    if (!window.HDSuper) { window.__hdPendingSuper = ssOnly || 1; return; }
     if (!HDSuper.hooked()) HDSuper.hookInto({ closeDeck: requestClose });
     if (HDSuper.isOpen()) {
       if (Date.now() - (ui.openedAt || 0) > 700) requestClose();
       return;
     }
-    HDSuper.open(true);
+    HDSuper.open(true, ssOnly ? { only: ssOnly } : undefined);
     return;
   }
   if (t === 'survival-quick') {
@@ -5307,6 +5442,14 @@ function init() {
   $('notes-ta').addEventListener('input', (e) => { state.notes = e.target.value; saveSoon(); });
 
   document.addEventListener('keydown', onKeyDown, true);
+  document.addEventListener('keyup', onKeyUp, true);
+  const gestRow = $('capture-gest');
+  if (gestRow) gestRow.addEventListener('click', (e) => {
+    const b = e.target && e.target.closest ? e.target.closest('[data-gesture]') : null;
+    if (!b) return;
+    e.preventDefault(); e.stopPropagation();
+    setCaptureGesture(b.getAttribute('data-gesture') || '');
+  });
   document.addEventListener('mousedown', onMouseDown, true);
   document.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -6422,7 +6565,7 @@ function runSelfTest() {
     return good || ('cap=' + inCapture + ' t=' + JSON.stringify(t) + ' chip=' + (chip && chip.textContent));
   });
 
-  T('trigger: a MOUSE trigger never stores modifiers the C++ matcher ignores', () => {
+  T('trigger: a MOUSE trigger keeps its chord modifiers (the matcher honours them now)', () => {
     const e = trigEntry();
     delete e.trigger;
     ui.edit = true; render();
@@ -6430,8 +6573,70 @@ function runSelfTest() {
     applyCapture({ device: 'mouse', code: 3, mods: [42, 29], keyLabel: 'Mouse4' });
     const t = e.trigger;
     ui.edit = false; render();
-    return (t && t.device === 'mouse' && t.mods.length === 0) ||
+    return (t && t.device === 'mouse' && t.mods.length === 2 && t.mods[0] === 42) ||
       ('stored=' + JSON.stringify(t));
+  });
+
+  T('trigger: an ordinary key can be the chord modifier and gets its own label', () => {
+    return chordLabel([16, 42], '1') === 'Q + Shift + 1' || chordLabel([16, 42], '1');
+  });
+
+  T('trigger: hold-a-key capture — first key held, second key pressed = chord', () => {
+    const e = trigEntry();
+    delete e.trigger;
+    ui.visible = true;
+    startCapture('trigger', e.id);
+    const kd = (code) => onKeyDown({ code: code, key: '', keyCode: 0, shiftKey: false, ctrlKey: false, altKey: false, repeat: false, preventDefault() {}, stopPropagation() {} });
+    kd('KeyQ');
+    const holding = !!(ui.capture && ui.capture.held && ui.capture.held.code === 16) && !e.trigger;
+    kd('Digit1');
+    const t = e.trigger;
+    const good = holding && t && t.code === 2 && t.mods.length === 1 && t.mods[0] === 16 && /Q \+ 1/.test(t.label);
+    delete e.trigger;
+    return good || ('holding=' + holding + ' t=' + JSON.stringify(t));
+  });
+
+  T('trigger: the capture modal offers Tap / Double-tap / Hold and stores the choice', () => {
+    const e = trigEntry();
+    delete e.trigger;
+    ui.visible = true;
+    startCapture('trigger', e.id);
+    const row = $('capture-gest');
+    const shown = row && !row.classList.contains('hidden') && row.querySelectorAll('[data-gesture]').length === 3;
+    setCaptureGesture('hold');
+    const chipOn = row && row.querySelector('[data-gesture="hold"]').classList.contains('is-on');
+    applyCapture({ device: 'keyboard', code: 16, mods: [], keyLabel: 'Q' });
+    const t = e.trigger;
+    const good = shown && chipOn && t && t.gesture === 'hold' && /^Hold Q$/.test(trigChipLabel(t));
+    delete e.trigger;
+    return good || ('shown=' + shown + ' chipOn=' + chipOn + ' t=' + JSON.stringify(t));
+  });
+
+  T('trigger: a rebind preselects the entry\'s existing gesture; other modes hide the row', () => {
+    const e = trigEntry();
+    e.trigger = { device: 'keyboard', code: 16, label: 'Q', mods: [], gesture: 'double' };
+    ui.visible = true;
+    startCapture('trigger', e.id);
+    const pre = ui.capture.gesture === 'double';
+    endCapture(false);
+    startCapture('open', null);
+    const hidden = $('capture-gest').classList.contains('hidden');
+    endCapture(false);
+    delete e.trigger;
+    return (pre && hidden) || ('pre=' + pre + ' hidden=' + hidden);
+  });
+
+  T('trigger: hold-a-key capture — releasing the held key alone binds it plain', () => {
+    const e = trigEntry();
+    delete e.trigger;
+    ui.visible = true;
+    startCapture('trigger', e.id);
+    onKeyDown({ code: 'KeyQ', key: '', keyCode: 0, shiftKey: false, ctrlKey: false, altKey: false, repeat: false, preventDefault() {}, stopPropagation() {} });
+    onKeyUp({ code: 'KeyQ', key: '', keyCode: 0, preventDefault() {}, stopPropagation() {} });
+    const t = e.trigger;
+    const good = t && t.code === 16 && t.mods.length === 0 && t.label === 'Q';
+    delete e.trigger;
+    return good || ('t=' + JSON.stringify(t));
   });
 
   T('trigger: the ✕ clears it and the row falls back to Set…', () => {

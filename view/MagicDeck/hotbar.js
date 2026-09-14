@@ -55,7 +55,24 @@
      children is comfortable, short enough that "press once, wait" reads as
      instant-ish. Not configurable yet — feel first, knobs later. */
   const FLY_DWELL = 900;
-  const PAGE_NAMES = ['Main', 'Shift', 'Ctrl', 'Alt'];
+  /* Seven pages since 2026-09-13: the four originals plus the two-modifier
+     combos. POSITIONAL — a contract with hotbar.h's kPage* constants. Each
+     page (except Main) may also carry a CUSTOM modifier key (`mod`): hold it
+     and the page is live, on top of its Shift/Ctrl/Alt meaning. */
+  const PAGE_NAMES = ['Main', 'Shift', 'Ctrl', 'Alt', 'Shift+Ctrl', 'Shift+Alt', 'Ctrl+Alt'];
+  const PAGE_COUNT = PAGE_NAMES.length;
+  const PAGE_MAX = PAGE_COUNT - 1;
+  function pageMod(p) {
+    if (!p.mod || typeof p.mod !== 'object') p.mod = { device: 'keyboard', code: 0, label: '' };
+    return p.mod;
+  }
+  /* what you hold to see page i: the modifier(s), the custom key, or both */
+  function pageHoldText(i) {
+    const p = pageAt(i);
+    const m = pageMod(p);
+    if (i === 0) return '';
+    return m.code ? (PAGE_NAMES[i] + ' or ' + (m.label || ('#' + m.code))) : PAGE_NAMES[i];
+  }
 
   /* ── state ───────────────────────────────────────────────────────────── */
 
@@ -129,7 +146,8 @@
    'hb-togglekey', 'hb-togglekey-clear', 'hb-show-note', 'hb-preview-note',
    'hb-uiscale', 'hb-uiscale-val', 'hb-opacity', 'hb-opacity-val', 'hb-reset-pos',
    'hb-pick', 'hb-pick-title', 'hb-pick-q', 'hb-pick-tabs', 'hb-pick-list', 'hb-pick-wrap',
-   'hb-pick-close', 'hb-pick-clear', 'hb-pick-fly', 'hb-pick-newcc',
+   'hb-pick-close', 'hb-pick-clear', 'hb-pick-fly', 'hb-pick-set', 'hb-pick-newcc', 'hb-menuBind',
+   'hb-import-vanilla', 'hb-import-note',
    'hb-newcc', 'hb-newcc-name', 'hb-newcc-cmd', 'hb-newcc-tgt',
    'hb-newcc-add', 'hb-newcc-close', 'hb-newcc-hint',
    'hb-flyed', 'hb-flyed-title', 'hb-flyed-name', 'hb-flyed-list', 'hb-flyed-note',
@@ -267,8 +285,9 @@
 
   function pageAt(i) {
     if (!Array.isArray(cfg.pages)) cfg.pages = [];
-    while (cfg.pages.length < 4) cfg.pages.push({ enabled: cfg.pages.length === 0, name: '', slots: [] });
-    const p = cfg.pages[clamp(i, 0, 3)];
+    while (cfg.pages.length < PAGE_COUNT) cfg.pages.push({ enabled: cfg.pages.length === 0, name: '', slots: [] });
+    const p = cfg.pages[clamp(i, 0, PAGE_MAX)];
+    pageMod(p);
     if (!Array.isArray(p.slots)) p.slots = [];
     while (p.slots.length < MAX_SLOTS) p.slots.push({});
     return p;
@@ -286,10 +305,27 @@
     if (!s || !s.kind) return true;
     /* A flyout with nothing in it still OCCUPIES the button (you just made it
        and are about to fill it) — "empty" here means "shows the + socket". */
-    if (s.kind === 'flyout') return false;
+    if (s.kind === 'flyout' || s.kind === 'set') return false;
     if (s.kind === 'entry' || s.kind === 'combo' || s.kind === 'smart') return !s.refId;
     return !s.localId && !s.formId;
   }
+
+  /* ── gear sets (2026-09-13, the STB Hotkey System idea) ─────────────────
+     A bundle like a flyout, but its key EQUIPS EVERY CHILD at once (first
+     one-handed weapon or hand spell right, the next left, shields and torches
+     left, a recorded hand wins) and STRIPS them on the next press when all of
+     it is already worn. Children are gear and hand spells only — "equip all
+     of this" means nothing for a deck action or a potion pool. The set shares
+     the flyout's storage shape (`items`, cap MAX_FLY) and its editor. */
+  const SET_KINDS = ['item', 'spell'];
+  function isSetSlot(s) { return !!(s && s.kind === 'set'); }
+  function isBundle(s) { return isFlySlot(s) || isSetSlot(s); }
+  function bundleItems(s) { return (isBundle(s) && Array.isArray(s.items)) ? s.items : []; }
+  /* hand memory: '' = let the engine choose | 'right' | 'left' */
+  const HANDS = ['', 'right', 'left'];
+  const HAND_LABEL = { '': 'Either hand', right: 'Right hand', left: 'Left hand' };
+  const HAND_SHORT = { '': '', right: 'R', left: 'L' };
+  function nextHand(h) { return HANDS[(HANDS.indexOf(h || '') + 1) % HANDS.length]; }
 
   /* The four smart consumable buttons — fixed entries, not catalog rows: the
      THING they fire is re-picked from your bag at press time (see FireSmart in
@@ -333,7 +369,9 @@
       side: cfg.side,
       key: cfg.key,
       skin: cfg.skin, modHold: cfg.modHold,
-      pages: cfg.pages.map((p) => ({ enabled: !!p.enabled, name: p.name || '', slots: p.slots })),
+      menuBind: cfg.menuBind !== false,
+      pages: cfg.pages.map((p) => ({ enabled: !!p.enabled, name: p.name || '', slots: p.slots,
+        mod: { device: (p.mod && p.mod.device) || 'keyboard', code: (p.mod && p.mod.code) | 0, label: (p.mod && p.mod.label) || '' } })),
       slotKeys: cfg.slotKeys,
     }));
   }
@@ -758,7 +796,8 @@
        live row is a tick behind (kind '') and must not paint the + socket
        over a button that exists. */
     const fly0 = isFlySlot(s);
-    const empty = fly0 ? false : (isEmptySlot(s) || !L.kind);
+    const set0 = isSetSlot(s);
+    const empty = (fly0 || set0) ? false : (isEmptySlot(s) || !L.kind);
     const dead = !empty && L.ok === false;
     const name = s.label || L.label || L.name || '';
 
@@ -767,17 +806,19 @@
        at once, while the matching hbLive is a tick behind — so an ungated badge
        paints the PREVIOUS occupant's stack count on an empty socket. */
     const fly = fly0;
-    const flyLive = fly ? ((L.items && L.items.length) ? L.items : flyItems(s)) : [];
+    const set = set0;
+    const flyLive = (fly || set) ? ((L.items && L.items.length) ? L.items : bundleItems(s)) : [];
     const cls = ['hb-slot'];
     if (empty) cls.push('is-empty');
     if (dead && !fly) cls.push('is-dead');
     if (fly) cls.push('is-fly');
+    if (set) cls.push('is-set');
     if (fly && flyState.open && flyState.page === livePage && flyState.i === i) cls.push('is-fly-open');
     if (!empty && L.equipped) cls.push('is-equipped');
     if (!empty && L.voice) cls.push('is-voice');
     if (editing && i === selected) cls.push('is-selected');
 
-    const flyName = fly ? (s.label || 'Flyout') : '';
+    const flyName = fly ? (s.label || 'Flyout') : set ? (s.label || 'Gear set') : '';
     const btn = h('div', {
       class: cls.join(' '),
       'data-i': String(i),
@@ -785,11 +826,30 @@
       title: empty ? ('Button ' + (i + 1) + ' — empty')
            : fly ? (flyName + ' — flyout, ' + flyLive.length + ' inside. Its key opens the fan; '
                     + 'press again to step, pause to fire.')
-                 : (name + (dead && L.msg ? ' — ' + L.msg : '')),
+           : set ? (flyName + ' — gear set, ' + flyLive.length + ' piece' + (flyLive.length === 1 ? '' : 's')
+                    + (L.equipped ? '. All on — its key puts it away.' : '. Its key puts it all on.')
+                    + (dead && L.msg ? ' ' + L.msg : ''))
+                 : (name + (dead && L.msg ? ' — ' + L.msg : '')
+                    + (s.hand ? ' · ' + HAND_LABEL[s.hand].toLowerCase() : '')
+                    + (s.uniqueId ? ' · bound to this exact copy' : '')),
     });
 
     if (empty) {
       btn.appendChild(h('span', { class: 'hb-glyph', text: '+' }));
+    } else if (set) {
+      /* Face of the set: its own icon, else the FIRST piece's art, else the
+         shield glyph. The chip says how much of it is in the bag ("3/4"),
+         and the equipped ring lights only when ALL of it is on — which is
+         exactly when the next press strips it, so the ring never lies. */
+      const first = flyLive[0];
+      const faceModel = s.icon ? { icon: s.icon }
+        : (first ? Object.assign({}, first, { icon: (s.items && s.items[0] && s.items[0].icon) || first.icon }) : null);
+      if (faceModel && (faceModel.icon || resolveIconPath(faceModel)))
+        btn.appendChild(artFor(faceModel, flyName));
+      else
+        btn.appendChild(h('span', { class: 'hb-glyph', text: '⛨' }));
+      const have = (typeof L.count === 'number') ? L.count : flyLive.length;
+      btn.appendChild(h('span', { class: 'hb-flyn hb-setn', text: have + '/' + flyLive.length }));
     } else if (fly) {
       /* Face of the bundle: its own icon override, else the FIRST child's art
          (the live child row carries school/element/tier for the generic
@@ -814,8 +874,12 @@
       btn.appendChild(artFor(Object.assign({}, L, { icon: s.icon || L.icon }), name));
     }
     if (!empty && !fly) ringEls(L, livePage + ':' + i).forEach((n) => btn.appendChild(n));
+    /* hand memory on a single item/spell: a small R / L in the top-left, so
+       a bar with the same blade bound twice (one per hand) reads at a glance */
+    if (!empty && !fly && !set && s.hand)
+      btn.appendChild(h('span', { class: 'hb-hand hand-' + s.hand, text: HAND_SHORT[s.hand], title: HAND_LABEL[s.hand] }));
     if (cfg.showKeys && k.code) btn.appendChild(h('span', { class: 'hb-key', text: k.label || '' }));
-    if (!empty && !fly && cfg.showCounts && L.count > 1)
+    if (!empty && !fly && !set && cfg.showCounts && L.count > 1)
       btn.appendChild(h('span', { class: 'hb-count', text: 'x' + L.count }));
 
     if (editing) {
@@ -832,16 +896,18 @@
     if (!box) return;
     /* showPages === false kills the Main/Shift/… strip outright — the pages
        still swap under the modifiers, the bar just carries no text about it. */
-    const any = cfg.showPages !== false && [1, 2, 3].some((i) => pageAt(i).enabled);
+    const any = cfg.showPages !== false && [1, 2, 3, 4, 5, 6].some((i) => pageAt(i).enabled);
     box.hidden = !any;
     if (!any) return;
     clear(box);
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < PAGE_COUNT; i++) {
       const p = pageAt(i);
       if (i > 0 && !p.enabled) continue;
+      /* a page with a custom key says so on its pip: "Shift · Q" */
+      const pm = i > 0 ? pageMod(p) : null;
       box.appendChild(h('span', {
         class: 'hb-pip' + (i === livePage ? ' is-live' : ''),
-        text: p.name || PAGE_NAMES[i],
+        text: (p.name || PAGE_NAMES[i]) + (pm && pm.code ? ' · ' + (pm.label || '') : ''),
       }));
     }
   }
@@ -1173,6 +1239,7 @@
     el['hb-showOutline'].checked = cfg.showOutline !== false;
     setVal('hb-gripPos', cfg.gripPos || 'auto');
     el['hb-modHold'].checked = !!cfg.modHold;
+    if (el['hb-menuBind']) el['hb-menuBind'].checked = cfg.menuBind !== false;
     setVal('hb-idle', String(Math.round((cfg.idleMs || 0) / 1000)));
     el['hb-idle-val'].textContent = cfg.idleMs ? (Math.round(cfg.idleMs / 1000) + 's') : 'Never';
 
@@ -1224,10 +1291,13 @@
       el['hb-skins'].appendChild(tile);
     });
 
-    /* page toggles */
+    /* page toggles — one row per page: the switch, and a "custom key" button
+       (2026-09-13) so any key can drive the page on top of its modifier.
+       The combo pages are hold-only in latch mode; the note says so. */
     clear(el['hb-pagetoggles']);
-    [1, 2, 3].forEach((i) => {
+    [1, 2, 3, 4, 5, 6].forEach((i) => {
       const p = pageAt(i);
+      const m = pageMod(p);
       const box = h('input', { type: 'checkbox' });
       box.checked = !!p.enabled;
       box.addEventListener('change', () => {
@@ -1235,12 +1305,23 @@
         if (!p.enabled && selectedPage === i) { selectedPage = 0; }
         saveCfg(); renderEdit(); render();
       });
+      const keyBtn = h('button', {
+        class: 'hb-keybtn hb-pagekey' + (m.code ? '' : ' is-unbound'), type: 'button',
+        title: m.code
+          ? ('Also live while you hold ' + m.label + ' — click to change, Unbind in the dialog to remove')
+          : ('Give this page a key of its own: hold it and the page is live, no ' + PAGE_NAMES[i] + ' needed. Any key works — Q, Tab, Caps Lock…'),
+        text: m.code ? (m.label || ('#' + m.code)) : '+ key',
+      });
+      keyBtn.addEventListener('click', () => openCapture(-100 - i));
       el['hb-pagetoggles'].appendChild(
-        h('label', {
-          class: 'hb-check',
-          title: 'Hold ' + PAGE_NAMES[i] + ' to swap the whole bar to a second set of actions. '
-               + 'Off means ' + PAGE_NAMES[i] + ' keeps whatever the game already does with it.',
-        }, box, h('span', { text: PAGE_NAMES[i] + ' page' })));
+        h('div', { class: 'hb-pagerow' },
+          h('label', {
+            class: 'hb-check',
+            title: 'Hold ' + PAGE_NAMES[i] + ' to swap the whole bar to a second set of actions. '
+                 + 'Off means ' + PAGE_NAMES[i] + ' keeps whatever the game already does with it.'
+                 + (i >= 4 ? ' Two-modifier pages only work in hold mode.' : ''),
+          }, box, h('span', { text: PAGE_NAMES[i] + ' page' })),
+          keyBtn));
     });
 
     renderSlotList();
@@ -1261,12 +1342,12 @@
 
     /* page tabs for the editor */
     const tabs = h('div', { class: 'hb-chips', style: 'margin-bottom:12px' });
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < PAGE_COUNT; i++) {
       if (i > 0 && !pageAt(i).enabled) continue;
       const c = h('button', {
         class: 'hb-chip' + (i === selectedPage ? ' is-on' : ''), type: 'button',
         title: i === 0 ? 'The buttons you see with no modifier held'
-                       : ('The buttons you see while holding ' + PAGE_NAMES[i]),
+                       : ('The buttons you see while holding ' + pageHoldText(i)),
         text: pageAt(i).name || PAGE_NAMES[i],
       });
       c.addEventListener('click', () => { selectedPage = i; renderSlotList(); });
@@ -1287,7 +1368,7 @@
         text: selectedPage === 0
           ? 'Nothing on the bar yet. Click a button below and pick a spell, a shout, '
             + 'something from your bag, or any deck action.'
-          : 'This page is empty — hold ' + PAGE_NAMES[selectedPage]
+          : 'This page is empty — hold ' + pageHoldText(selectedPage)
             + ' in game and the bar shows these buttons instead. The keys stay the same.' }));
     }
     const rows = (live && live.page === selectedPage && Array.isArray(live.slots)) ? live.slots : [];
@@ -1297,12 +1378,15 @@
       const k = keyAt(i);
       const empty = isEmptySlot(s);
       const fly = isFlySlot(s);
+      const set = isSetSlot(s);
       const name = fly ? (s.label || 'Flyout')
+                 : set ? (s.label || 'Gear set')
                        : (s.label || L.name || (empty ? 'Empty' : (s.refId || 'Unknown')));
 
-      const thumb = h('div', { class: 'thumb', title: fly ? 'Change the flyout’s icon' : 'Change this icon' },
+      const thumb = h('div', { class: 'thumb', title: fly ? 'Change the flyout’s icon' : set ? 'Change the set’s icon' : 'Change this icon' },
         empty ? h('span', { class: 'g', text: '+' })
               : fly ? (s.icon ? artFor({ icon: s.icon }, name) : h('span', { class: 'g', text: '⧉' }))
+              : set ? (s.icon ? artFor({ icon: s.icon }, name) : h('span', { class: 'g', text: '⛨' }))
                     : artFor(Object.assign({}, L, { icon: s.icon }), name));
       thumb.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1314,8 +1398,14 @@
         h('div', { class: 'nm' + (empty ? ' is-blank' : ''), title: name, text: name }),
         h('div', { class: 'sub', text: empty ? 'Click to choose an action'
           : fly ? ('Flyout · ' + flyItems(s).length + ' of ' + MAX_FLY + ' — click to edit what’s inside')
-                : (kindLabel(s.kind) + (L.ok === false && L.msg ? ' · ' + L.msg : '')) }));
-      what.addEventListener('click', () => { if (fly) openFlyEd(i); else openPicker(i); });
+          : set ? ('Gear set · ' + bundleItems(s).length + ' of ' + MAX_FLY
+                   + (typeof L.count === 'number' && L.count < bundleItems(s).length ? ' · ' + L.count + ' in your bag' : '')
+                   + ' — click to edit the pieces')
+                : (kindLabel(s.kind)
+                   + (s.hand ? ' · ' + HAND_LABEL[s.hand].toLowerCase() : '')
+                   + (s.uniqueId ? ' · this exact copy' : '')
+                   + (L.ok === false && L.msg ? ' · ' + L.msg : '')) }));
+      what.addEventListener('click', () => { if (fly || set) openFlyEd(i); else openPicker(i); });
 
       const keyBtn = h('button', {
         class: 'hb-keybtn' + (k.code ? '' : ' is-unbound'), type: 'button',
@@ -1349,7 +1439,8 @@
   function kindLabel(k) {
     return k === 'spell' ? 'Spell' : k === 'item' ? 'Item'
          : k === 'entry' ? 'Deck action' : k === 'combo' ? 'Combo'
-         : k === 'flyout' ? 'Flyout' : k === 'smart' ? 'Smart button' : '';
+         : k === 'flyout' ? 'Flyout' : k === 'smart' ? 'Smart button'
+         : k === 'set' ? 'Gear set' : '';
   }
 
   /* ── edit-panel control wiring ───────────────────────────────────────── */
@@ -1393,10 +1484,27 @@
    ['hb-showCounts', 'showCounts'], ['hb-showEmpty', 'showEmpty'],
    ['hb-showPages', 'showPages'], ['hb-showGrip', 'showGrip'],
    ['hb-showOutline', 'showOutline'],
-   ['hb-modHold', 'modHold'], ['hb-hideInMenus', 'hideInMenus']].forEach(([id, key]) => {
+   ['hb-modHold', 'modHold'], ['hb-hideInMenus', 'hideInMenus'],
+   ['hb-menuBind', 'menuBind']].forEach(([id, key]) => {
     if (!el[id]) return;
     el[id].addEventListener('change', () => { cfg[key] = el[id].checked; saveCfg(); render(); });
   });
+
+  /* Skyrim's own 1-8 favourites hotkeys -> Main page (2026-09-13). C++ reads
+     MagicFavorites + the ExtraHotkey on carried items, fills EMPTY buttons only,
+     pushes the config back and answers hbImportDone with the tally. */
+  if (el['hb-import-vanilla']) el['hb-import-vanilla'].addEventListener('click', () => {
+    if (el['hb-import-note']) el['hb-import-note'].textContent = 'Reading Skyrim’s hotkeys…';
+    toGame('hbImportVanilla');
+  });
+  window.hbImportDone = function (j) {
+    const d = coerce(j);
+    if (!el['hb-import-note']) return;
+    if (!d || typeof d !== 'object') { el['hb-import-note'].textContent = ''; return; }
+    const names = Array.isArray(d.names) && d.names.length ? ' — ' + d.names.join(', ') : '';
+    el['hb-import-note'].textContent = (d.msg || '') + names;
+    renderSlotList(); render();
+  };
 
   if (el['hb-gripPos']) el['hb-gripPos'].addEventListener('change', () => {
     cfg.gripPos = el['hb-gripPos'].value;
@@ -1516,16 +1624,21 @@
   function openPicker(i, forFly) {
     pick.open = true; pick.slot = i; pick.q = ''; pick.cursor = 0;
     pick.forFly = !!forFly;
+    /* adding into a GEAR SET narrows the picker to gear and spells — the
+       tabs that cannot go in a set are not offered rather than refused */
+    pick.forSet = pick.forFly && isSetSlot(slotAt(selectedPage, i));
+    if (pick.forSet && pick.tab !== 'spells' && pick.tab !== 'items') pick.tab = 'all';
     el['hb-pick-title'].textContent = (pick.forFly
-        ? 'Add to the flyout on button ' + (i + 1)
+        ? (pick.forSet ? 'Add a piece to the gear set on button ' : 'Add to the flyout on button ') + (i + 1)
         : 'Put something on button ' + (i + 1)) +
       (selectedPage ? ' (' + PAGE_NAMES[selectedPage] + ' page)' : '');
     el['hb-pick'].hidden = false;
     el['hb-pick-q'].value = '';
     /* the footer swaps meaning with the mode: assigning offers "make this a
-       flyout", adding-to-a-flyout has nothing to clear */
+       flyout" / "make this a gear set", adding-to-a-bundle has nothing to clear */
     if (el['hb-pick-clear']) el['hb-pick-clear'].hidden = pick.forFly;
     if (el['hb-pick-fly']) el['hb-pick-fly'].hidden = pick.forFly;
+    if (el['hb-pick-set']) el['hb-pick-set'].hidden = pick.forFly;
     if (!CATALOG.loaded) toGame('hbCatalog');
     renderPickTabs();
     renderPickList();
@@ -1533,7 +1646,7 @@
   }
   function closePicker() {
     const wasFly = pick.forFly;
-    pick.open = false; pick.forFly = false;
+    pick.open = false; pick.forFly = false; pick.forSet = false;
     el['hb-pick'].hidden = true;
     /* adding to a bundle returns you to the bundle, not to the void */
     if (wasFly && flyEd.open) renderFlyEd();
@@ -1549,6 +1662,7 @@
   function renderPickTabs() {
     clear(el['hb-pick-tabs']);
     PICK_TABS.forEach((t) => {
+      if (pick.forSet && t.id !== 'all' && t.id !== 'spells' && t.id !== 'items') return;
       const n = t.id === 'all' ? candidates('all').length : (CATALOG[t.id] || []).length;
       const c = h('button', {
         class: 'hb-chip' + (pick.tab === t.id ? ' is-on' : ''), type: 'button',
@@ -1563,6 +1677,14 @@
 
   function candidates(tab) {
     const tag = (arr, kind) => (arr || []).map((r) => Object.assign({ _kind: kind }, r));
+    if (pick.forSet) {
+      /* gear and spells only, and no smart buttons: a set equips, it does
+         not drink. Voice powers and shouts stay listed — the engine files
+         them into the voice slot, which is still "equip". */
+      if (tab === 'spells') return tag(CATALOG.spells, 'spell');
+      if (tab === 'items')  return tag(CATALOG.items, 'item');
+      return [].concat(tag(CATALOG.items, 'item'), tag(CATALOG.spells, 'spell'));
+    }
     if (tab === 'spells')  return tag(CATALOG.spells, 'spell');
     if (tab === 'items')   return SMART_DEFS.concat(tag(CATALOG.items, 'item'));
     if (tab === 'entries') return tag(CATALOG.entries, 'entry');
@@ -1684,7 +1806,10 @@
     if (pick.forFly) {
       if (!r) return;
       const fs = pageAt(selectedPage).slots[pick.slot];
-      if (!isFlySlot(fs)) { closePicker(); return; }
+      if (!isBundle(fs)) { closePicker(); return; }
+      /* a set takes gear and spells only — the picker never offers anything
+         else, but a stale row or a harness can still try */
+      if (isSetSlot(fs) && SET_KINDS.indexOf(r._kind) < 0) return;
       if (!Array.isArray(fs.items)) fs.items = [];
       if (fs.items.length >= MAX_FLY) { closePicker(); return; }
       fs.items.push({
@@ -1695,6 +1820,8 @@
         refId: r.refId || r.id || '',
         label: r.name || '',
         icon: '',
+        uniqueId: r.uniqueId || 0,
+        hand: r.hand || '',
       });
       saveCfg();
       closePicker();
@@ -1718,6 +1845,28 @@
     closePicker();
     renderSlotList();
     render();
+  }
+
+  /* "Make this button a gear set" — an item or spell already on it becomes
+     piece 1 (anything else is dropped: a deck action cannot be worn), and the
+     bundle editor opens so the next click is already "add the second piece".
+     The other way to build one is in-game: bind from the inventory onto a set
+     and the row is ADDED, not replaced (C++ HbBindFromMenu). */
+  function makeSetSlot(i) {
+    const page = pageAt(selectedPage);
+    const old = page.slots[i];
+    const seed = (old && !isEmptySlot(old) && !isBundle(old) && SET_KINDS.indexOf(old.kind) >= 0) ? old : null;
+    page.slots[i] = {
+      kind: 'set',
+      plugin: '', localId: 0, formId: 0, refId: '',
+      label: '',
+      icon: '',
+      items: seed ? [Object.assign({}, seed, { label: seed.label || '' })] : [],
+    };
+    saveCfg();
+    renderSlotList();
+    render();
+    openFlyEd(i);
   }
 
   /* "Make this button a flyout" — whatever is on it becomes child 1, and the
@@ -1755,6 +1904,11 @@
     const i = pick.slot;
     closePicker();
     makeFlySlot(i);
+  });
+  if (el['hb-pick-set']) el['hb-pick-set'].addEventListener('click', () => {
+    const i = pick.slot;
+    closePicker();
+    makeSetSlot(i);
   });
 
   /* ── "＞ New console command…" — create it right here, land it on the
@@ -1872,35 +2026,58 @@
   function renderFlyEd() {
     if (!flyEd.open) return;
     const s = slotAt(selectedPage, flyEd.slot);
-    if (!isFlySlot(s)) { closeFlyEd(); return; }
-    const items = flyItems(s);
+    if (!isBundle(s)) { closeFlyEd(); return; }
+    const set = isSetSlot(s);
+    const items = bundleItems(s);
     const rows = (live && live.page === selectedPage && Array.isArray(live.slots))
       ? ((live.slots[flyEd.slot] || {}).items || []) : [];
 
-    el['hb-flyed-title'].textContent = 'Flyout on button ' + (flyEd.slot + 1) +
+    el['hb-flyed-title'].textContent = (set ? 'Gear set on button ' : 'Flyout on button ') + (flyEd.slot + 1) +
       (selectedPage ? ' (' + PAGE_NAMES[selectedPage] + ' page)' : '');
     if (document.activeElement !== el['hb-flyed-name'])
       el['hb-flyed-name'].value = s.label || '';
+    el['hb-flyed-name'].placeholder = set ? 'Gear set' : 'Flyout';
 
     const list = el['hb-flyed-list'];
     clear(list);
     if (!items.length) {
       list.appendChild(h('div', { class: 'hb-pick-empty',
-        text: 'Nothing inside yet — “Add an action” below. Its key will open the fan; '
+        text: set
+          ? 'Nothing in the set yet — “Add a piece” below, or open your inventory in game, '
+            + 'highlight a piece and press this button’s key: it lands here.'
+          : 'Nothing inside yet — “Add an action” below. Its key will open the fan; '
             + 'press again to step along it, pause a beat to fire.' }));
     }
     items.forEach((c, k) => {
       const R = rows[k] || {};
-      const nm = c.label || R.label || R.name || kindLabel(c.kind) || 'Action';
-      const row = h('div', { class: 'hb-slotrow hb-flyed-row', title: nm },
+      const nm = c.label || R.label || R.name || kindLabel(c.kind) || (set ? 'Piece' : 'Action');
+      const sub = kindLabel(c.kind)
+        + (set && c.hand ? ' · ' + HAND_LABEL[c.hand].toLowerCase() : '')
+        + (c.uniqueId ? ' · this exact copy' : '')
+        + (R.ok === false && R.msg ? ' · ' + R.msg : '');
+      const isOn = set && R.ok !== false && !!R.equipped;
+      const nmEl = h('div', { class: 'nm', title: nm, text: nm });
+      if (isOn) nmEl.appendChild(h('span', { class: 'hb-onchip', text: 'ON', title: 'Currently worn / in hand' }));
+      const row = h('div', { class: 'hb-slotrow hb-flyed-row' + (R.ok === false ? ' is-missing' : '') + (isOn ? ' is-on' : ''), title: nm },
         h('div', { class: 'idx', text: String(k + 1) }),
         h('div', { class: 'thumb' }, artFor(Object.assign({}, R, { icon: c.icon || R.icon }), nm)),
         h('div', { class: 'what' },
-          h('div', { class: 'nm', title: nm, text: nm }),
-          h('div', { class: 'sub', text: kindLabel(c.kind) + (R.ok === false && R.msg ? ' · ' + R.msg : '') })));
-      const up = h('button', { class: 'hb-btn hb-fed-btn', type: 'button', title: 'Earlier in the fan', text: '↑' });
-      const dn = h('button', { class: 'hb-btn hb-fed-btn', type: 'button', title: 'Later in the fan', text: '↓' });
-      const rm = h('button', { class: 'hb-btn hb-btn-danger hb-fed-btn', type: 'button', title: 'Take it out of the flyout', text: '✕' });
+          nmEl,
+          h('div', { class: 'sub', text: sub })));
+      if (set) {
+        /* hand memory per piece: Either → Right → Left. Only a one-handed
+           weapon or a hand spell can honour it; C++ ignores it for the rest,
+           so a bow marked "left" is harmless, not wrong. */
+        const hb = h('button', { class: 'hb-btn hb-fed-btn hb-handbtn' + (c.hand ? ' is-on' : ''), type: 'button',
+          title: (HAND_LABEL[c.hand || ''] + ' — click to change. One-handed weapons and hand spells only; '
+                  + 'the rest ignore it.'),
+          text: c.hand ? HAND_SHORT[c.hand] : 'Auto' });
+        hb.addEventListener('click', () => { c.hand = nextHand(c.hand); saveCfg(); renderFlyEd(); render(); });
+        row.appendChild(hb);
+      }
+      const up = h('button', { class: 'hb-btn hb-fed-btn', type: 'button', title: set ? 'Equip earlier (the first one-handed piece takes the right hand)' : 'Earlier in the fan', text: '↑' });
+      const dn = h('button', { class: 'hb-btn hb-fed-btn', type: 'button', title: set ? 'Equip later' : 'Later in the fan', text: '↓' });
+      const rm = h('button', { class: 'hb-btn hb-btn-danger hb-fed-btn', type: 'button', title: set ? 'Take it out of the set' : 'Take it out of the flyout', text: '✕' });
       if (k === 0) up.disabled = true;
       if (k === items.length - 1) dn.disabled = true;
       up.addEventListener('click', () => { items.splice(k - 1, 0, items.splice(k, 1)[0]); saveCfg(); renderFlyEd(); render(); });
@@ -1913,12 +2090,17 @@
     el['hb-flyed-add'].disabled = items.length >= MAX_FLY;
     el['hb-flyed-add'].textContent = items.length >= MAX_FLY
       ? 'Full — ' + MAX_FLY + ' of ' + MAX_FLY
-      : '＋ Add an action (' + items.length + ' of ' + MAX_FLY + ')';
+      : (set ? '＋ Add a piece (' : '＋ Add an action (') + items.length + ' of ' + MAX_FLY + ')';
     el['hb-flyed-dissolve'].hidden = items.length !== 1;
-    el['hb-flyed-note'].textContent =
-      'Pops ' + ({ up: 'upward', down: 'downward', left: 'to the left', right: 'to the right' }[popDirection()]) +
-      ' — it follows the bar’s direction on its own. In play: press the button’s key to open, ' +
-      'press again to step, pause a beat to fire. The last tile is Cancel.';
+    el['hb-flyed-clear'].textContent = set ? 'Remove the gear set' : 'Remove the flyout';
+    el['hb-flyed-note'].textContent = set
+      ? 'One press puts every piece on: the first one-handed weapon or hand spell takes the right hand, '
+        + 'the next the left, shields and torches go left, and a piece with a hand set keeps it. '
+        + 'Press again while all of it is on and the set comes off (spells stay in hand). '
+        + 'Pieces not in your bag are skipped and named.'
+      : 'Pops ' + ({ up: 'upward', down: 'downward', left: 'to the left', right: 'to the right' }[popDirection()]) +
+        ' — it follows the bar’s direction on its own. In play: press the button’s key to open, ' +
+        'press again to step, pause a beat to fire. The last tile is Cancel.';
   }
 
   if (el['hb-flyed-close']) el['hb-flyed-close'].addEventListener('click', closeFlyEd);
@@ -1927,14 +2109,14 @@
   });
   if (el['hb-flyed-name']) el['hb-flyed-name'].addEventListener('input', () => {
     const s = slotAt(selectedPage, flyEd.slot);
-    if (!isFlySlot(s)) return;
+    if (!isBundle(s)) return;
     s.label = String(el['hb-flyed-name'].value || '').slice(0, 40);
     saveCfg();
   });
   if (el['hb-flyed-dissolve']) el['hb-flyed-dissolve'].addEventListener('click', () => {
     const page = pageAt(selectedPage);
     const s = page.slots[flyEd.slot];
-    if (!isFlySlot(s) || flyItems(s).length !== 1) return;
+    if (!isBundle(s) || bundleItems(s).length !== 1) return;
     page.slots[flyEd.slot] = s.items[0];
     saveCfg();
     closeFlyEd();
@@ -1948,7 +2130,7 @@
       return;
     }
     b.setAttribute('data-armed', '0');
-    b.textContent = 'Remove the flyout';
+    b.textContent = isSetSlot(slotAt(selectedPage, flyEd.slot)) ? 'Remove the gear set' : 'Remove the flyout';
     pageAt(selectedPage).slots[flyEd.slot] = {};
     toGame('hbAssign', JSON.stringify({ page: selectedPage, i: flyEd.slot, slot: null }));
     saveCfg();
@@ -2058,9 +2240,20 @@
   /* slot === -1 means the bar's own show/hide key. One modal for both, because
      they are the same interaction and a second copy would drift. */
   const cap = { open: false, slot: 0 };
+  /* slot >= 0 = a button's key · -1 = the show/hide key · <= -100 = a PAGE's
+     custom modifier key (page index = -100 - slot) */
+  function capPage() { return cap.slot <= -100 ? (-100 - cap.slot) : -1; }
+  function capTarget() {
+    const pg = capPage();
+    if (pg > 0) return pageMod(pageAt(pg));
+    return cap.slot < 0 ? (cfg.key = cfg.key || {}) : keyAt(cap.slot);
+  }
   function openCapture(i) {
     cap.open = true; cap.slot = i;
-    el['hb-cap-title'].textContent = i < 0
+    const pg = capPage();
+    el['hb-cap-title'].textContent = pg > 0
+      ? ('Press the key that should also show the ' + PAGE_NAMES[pg] + ' page')
+      : i < 0
       ? 'Press a key to show / hide the bar'
       : ('Press a key for button ' + (i + 1));
     el['hb-cap-key'].textContent = 'Waiting for a key…';
@@ -2080,7 +2273,7 @@
       el['hb-cap-key'].className = 'hb-cap-key is-bad';
       return;
     }
-    const k = cap.slot < 0 ? (cfg.key = cfg.key || {}) : keyAt(cap.slot);
+    const k = capTarget();
     k.device = 'keyboard';
     k.code = dik;
     k.label = prettyKey(e.code);
@@ -2091,7 +2284,7 @@
   }, true);
 
   if (el['hb-cap-clear']) el['hb-cap-clear'].addEventListener('click', () => {
-    const k = cap.slot < 0 ? (cfg.key = cfg.key || {}) : keyAt(cap.slot);
+    const k = capTarget();
     k.code = 0; k.label = '';
     saveCfg(); closeCapture(); renderEdit(); render();
   });
@@ -2134,7 +2327,7 @@
        moved */
     if (cfg.side !== 'left') cfg.side = 'right';
     applyPanelSide();
-    pageAt(3); keyAt(MAX_SLOTS - 1);          // normalise lengths once
+    pageAt(PAGE_MAX); keyAt(MAX_SLOTS - 1);   // normalise lengths once
     applyUiScale();
     if (editing) renderEdit();
     render();
@@ -2159,7 +2352,7 @@
     const d = coerce(j);
     const p = d && typeof d === 'object' ? (d.page | 0) : (parseInt(j, 10) || 0);
     if (p === livePage) return;
-    livePage = clamp(p, 0, 3);
+    livePage = clamp(p, 0, PAGE_MAX);
     /* a modifier swap under an open fan: the fan belongs to the old page's
        button, so it folds up rather than firing across pages */
     if (flyState.open) closeFlyPop();
@@ -2225,7 +2418,7 @@
 
   /* ── boot ────────────────────────────────────────────────────────────── */
 
-  pageAt(3); keyAt(MAX_SLOTS - 1);
+  pageAt(PAGE_MAX); keyAt(MAX_SLOTS - 1);
   render();
 
   /* Announce ourselves — but ONLY once the DLL has actually registered the
@@ -2276,6 +2469,8 @@
     applyPanelFilter,
     panelSide, togglePanelSide, applyPanelSide, editPreviewLayout,
     isFlySlot, flyItems, popDirection, makeFlySlot,
+    isSetSlot, isBundle, bundleItems, makeSetSlot, SET_KINDS, nextHand, HAND_LABEL,
+    PAGE_NAMES, PAGE_COUNT, pageMod, pageHoldText, capPage,
     openFlyEd, closeFlyEd, renderFlyEd,
     flyState, openFlyPop, closeFlyPop, fireFlySelected, renderFlyPop,
     get flyEd() { return flyEd; },

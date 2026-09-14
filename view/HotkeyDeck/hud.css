@@ -1632,6 +1632,28 @@ body.hud-editing .hud-fw:active { cursor: grabbing; }
   box-shadow: 0 0 10px rgba(230, 196, 99, .45), inset 0 1px 0 rgba(255, 245, 210, .1);
 }
 
+/* ---- ward widget (2026-09-01): the up/down verdict is card chrome -------
+   UP rides the existing is-ready gold glow; DOWN dims the art and says so.
+   The status chip mirrors the keycap badge's plate so the two corners of
+   the card read as one family. Nothing under 12px (the UI rules). */
+.hud-fw-card.is-ward-down .hud-fw-art {
+  filter: grayscale(1) brightness(.62);
+}
+.hud-fw-card.is-ward-down .hud-fw-name { color: var(--hud-dim); }
+.hud-fw-wardst {
+  position: absolute; top: 4px; right: 4px; z-index: 3;
+  height: 18px; padding: 0 5px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 800; letter-spacing: .06em;
+  background: rgba(10, 11, 15, .82);
+  border: 1px solid var(--hud-line-lit);
+  border-radius: 5px;
+  pointer-events: none;
+  text-shadow: var(--hud-tshadow);
+}
+.hud-fw-wardst.st-up { color: var(--hud-gold-lit); border-color: var(--hud-gold); }
+.hud-fw-wardst.st-down { color: var(--hud-dim); }
+
 /* quick items: a strip of small tiles with counts + the vanilla hotkey digit */
 .hud-fw-qrow { display: flex; gap: 6px; flex-wrap: wrap; max-width: 420px; justify-content: center; }
 .hud-fw-qart { width: 64px; height: 64px; border-radius: 10px 4px 10px 4px; }
@@ -2276,3 +2298,79 @@ body.hud-editing .hud-loot-chip:hover { border-color: var(--hud-gold-lit); color
   text-overflow: ellipsis;
 }
 .hud-bgpick-tile.is-none .hud-bgpick-lbl { position: static; background: none; font-size: 13px; }
+
+
+/* ======================================================================
+   SEASON WIDGET (2026-08-31) — the fifth free widget.
+   Rober: "a season widget would be nice … with nice generted icons in our
+   apps theme, same suite of configurations, drag, move around, toggle on or
+   off, not apart of other widgets".
+
+   It reuses the free layer's card wholesale (drag, anchor, scale, opacity,
+   bare, the selection outline and the mini toolbar all come for free) and
+   adds three things: a wider plate, because "Frostfall" and "Winter in 14
+   days" are words rather than a number; a per-season accent so the card
+   reads at a glance from the couch; and the one deliberate divergence —
+   `showLabel` hides the DETAIL lines and never the season name, because the
+   name is the entire point of the widget.
+   ====================================================================== */
+.hud-fw-scard {
+  /* wider than a slot card: this one carries sentences, not a damage number */
+  max-width: 176px;
+  padding: 9px 12px 8px;
+}
+.hud-fw.is-nolabel .hud-fw-scard .hud-sn-name { display: block; }
+
+.hud-sn-art {
+  /* a touch larger than the slot art — the season glyph IS the widget when
+     the detail lines are switched off */
+  width: 84px; height: 84px;
+  border-radius: 16px 6px 16px 6px;
+}
+.hud-sn-glyph { position: relative; }
+/* The painted PNG rides over the always-present SVG, exactly as the weather
+   and location glyphs do: a missing file removes itself and uncovers the
+   vector, so the card never shows a hole. Laid out at its final size —
+   an <img> rasterises at LAYOUT size in Ultralight (the face-fit lesson). */
+.hud-sn-glyph .hud-glyph-img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; display: block;
+}
+.hud-sn-name {
+  max-width: 158px;
+  font-size: 17px; font-weight: 700; letter-spacing: .02em;
+  color: var(--hud-gold-pale);
+}
+.hud-sn-sub {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 13px; color: var(--hud-dim); text-shadow: var(--hud-tshadow);
+  max-width: 158px; overflow: hidden; white-space: nowrap;
+}
+.hud-sn-sub b { font-weight: 600; color: var(--hud-ink); text-overflow: ellipsis; overflow: hidden; }
+.hud-sn-sub i { font-style: normal; font-weight: 700; color: var(--hud-gold); }
+.hud-sn-sub i:empty { display: none; }
+.hud-sn-foot {
+  font-size: 12.5px; font-weight: 600; letter-spacing: .01em;
+  color: var(--hud-dim); text-shadow: var(--hud-tshadow);
+  padding-top: 1px;
+}
+.hud-sn-foot:empty { display: none; }
+/* "Forced" / "Locked all year" is a STATE of the world, not a countdown —
+   it reads in steel so it can never be mistaken for time remaining. */
+.hud-sn-foot.is-forced { color: var(--hud-steel); }
+
+/* Per-season accent. Flat colour on a small element — never a fullscreen
+   gradient (Ultralight bands those). The tint lands on the glyph, the name
+   and the art's edge, so `bare` (which strips the plate) keeps it. */
+.hud-fw-scard.is-winter .hud-sn-glyph { color: #a9cbe6; }
+.hud-fw-scard.is-winter .hud-sn-name { color: #d6e8f5; }
+.hud-fw-scard.is-winter .hud-sn-art { border-color: rgba(169, 203, 230, .40); }
+.hud-fw-scard.is-spring .hud-sn-glyph { color: #a8d69a; }
+.hud-fw-scard.is-spring .hud-sn-name { color: #dceed4; }
+.hud-fw-scard.is-spring .hud-sn-art { border-color: rgba(168, 214, 154, .40); }
+.hud-fw-scard.is-summer .hud-sn-glyph { color: #e6c463; }
+.hud-fw-scard.is-summer .hud-sn-name { color: #f5e6b4; }
+.hud-fw-scard.is-summer .hud-sn-art { border-color: rgba(230, 196, 99, .45); }
+.hud-fw-scard.is-autumn .hud-sn-glyph { color: #dd9a5c; }
+.hud-fw-scard.is-autumn .hud-sn-name { color: #f2d2ad; }
+.hud-fw-scard.is-autumn .hud-sn-art { border-color: rgba(221, 154, 92, .42); }
