@@ -52,7 +52,19 @@ var HDSuper = (function () {
     iconTimer: null,     // debounce for visible-row render requests
     iconAsked: {},       // formId|plugin already requested this open (never re-ask)
     inputHooked: false,  // #omni-input listener installed
+    only: '',            // ONLY-MODE: a provider id this open is locked to ('' = the
+                         // configured sources). The seeded "Teleport" action opens
+                         // us as supersearch@places — every other source is gated
+                         // off for that open and the box says what it wants typed.
   };
+
+  /* what the input asks for when locked to one source */
+  var ONLY_HINT = {
+    places: 'Type a place… crystaldrift, breezehome, whiterun — Enter teleports',
+  };
+  function onlyHint(id) {
+    return ONLY_HINT[id] || ('Search ' + id + '…');
+  }
 
   var ANCHORS = ['tl', 'tc', 'tr', 'cl', 'cc', 'cr', 'bl', 'bc', 'br'];
   var ANCHOR_NAMES = {
@@ -121,6 +133,7 @@ var HDSuper = (function () {
 
   function gate(p) {
     if (!ui.active || !p) return true;
+    if (ui.only) return p.id === ui.only;   // locked open: one source, nothing else
     return sourceOn(p.id);
   }
 
@@ -200,7 +213,8 @@ var HDSuper = (function () {
 
   /* ----------------------------------------------------------- open/close */
 
-  function open(standalone) {
+  /* opts.only = provider id to lock this open to (the Teleport seed passes 'places') */
+  function open(standalone, opts) {
     if (!window.HDOmni) return;
     var c = cfg();
     if (c.enabled === false) {
@@ -214,15 +228,23 @@ var HDSuper = (function () {
     if (ui.active) return;
     ui.active = true;
     ui.standalone = !!standalone;
+    ui.only = (opts && opts.only) ? String(opts.only) : '';
     ui.iconAsked = {};
     applyChrome();
     HDOmni.setProviderGate(gate);
     HDOmni.setClosedHook(onOmniClosed);
     if (HDOmni.setBlankNote) {
-      HDOmni.setBlankNote('↑↓ move · Enter fire it · Shift+Enter open its tab · Esc back to the game');
+      HDOmni.setBlankNote(ui.only === 'places'
+        ? '↑↓ move · Enter teleport · Esc back to the game'
+        : '↑↓ move · Enter fire it · Shift+Enter open its tab · Esc back to the game');
     }
     if (!HDOmni.isOpen()) HDOmni.open('search');
     else HDOmni.rerender();
+    if (ui.only) {
+      var inp = $('omni-input');
+      if (inp) inp.placeholder = onlyHint(ui.only);
+      document.body.setAttribute('data-ss-only', ui.only);
+    }
     injectGear();
     hookInput();
   }
@@ -232,6 +254,8 @@ var HDSuper = (function () {
   function exitSuper(closeDeck) {
     if (!ui.active) return;
     ui.active = false;
+    ui.only = '';
+    document.body.removeAttribute('data-ss-only');
     closeConfig();
     clearChrome();
     clearTimeout(ui.iconTimer);
@@ -576,11 +600,14 @@ var HDSuper = (function () {
 
   /* a C++ deep-open raced our (deferred) load — app.js parked it */
   if (window.__hdPendingSuper) {
+    /* a string other than '1' is the only-mode source id (supersearch@<id>) */
+    var pend = window.__hdPendingSuper;
     delete window.__hdPendingSuper;
+    var pendOpts = (typeof pend === 'string' && pend !== '1') ? { only: pend } : undefined;
     if (window.HDCss && typeof HDCss.need === 'function') {
-      HDCss.need('super', function () { open(true); });
+      HDCss.need('super', function () { open(true, pendOpts); });
     } else {
-      open(true);
+      open(true, pendOpts);
     }
   }
 

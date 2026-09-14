@@ -52,6 +52,12 @@
  *    lazy(q)  optional — fire an async lookup for this query; call
  *             HDOmni.lazyResults(id, items) when the answer lands.
  *    setFilter(q) optional — pre-fill the pane's own search on jump.
+ *    rank     optional group ORDER, lower first (default 50). Groups still
+ *             sort by best score within a rank; the rank only decides who
+ *             goes above whom when both have hits. The followers provider
+ *             uses 0: a PERSON always lands above a quest, book or spell
+ *             that merely carries her name (Rober, 2026-09-14 — "elana"
+ *             returned 24 quests before the follower herself).
  *    pinRun(snap, item?) optional — the Favorites Shelf's activation hook:
  *             called with a pin's stored `snap` when the shelf fires a pin
  *             whose live item has no run() (followers → open her menu), or
@@ -77,7 +83,16 @@
  *    icon     optional VIEW-RELATIVE image path (an entry's icons/… file,
  *             a follower's portraits/… face, a domain's photo). The shelf
  *             renders it on the pin's plate, falling back to the glyph on
- *             load error — so a guessed path costs nothing.
+ *             load error — so a guessed path costs nothing. Since
+ *             2026-09-14 the RESULT ROW shows it too (classic overlay, not
+ *             only the Super Searcher): a row with an icon gets `has-art`
+ *             and its plate is painted; a row without keeps the old look.
+ *    marks    optional [{ g, cls?, title? }] — typographic MARKS drawn right
+ *             after the name on the title line (♥ wife, ◍ expecting). `g`
+ *             is the glyph (use one the deck already ships — it has to
+ *             render in Ultralight), `cls` a hue key ('wife' | 'expecting'
+ *             | free text → .omni-mark-<cls>), `title` the tooltip. They are
+ *             identity, not search text — put the words in `keywords`.
  * ====================================================================== */
 
 var HDOmni = (function () {
@@ -281,6 +296,7 @@ var HDOmni = (function () {
   var FAM_GLYPH = {
     gear: '†', wear: '◈', consumable: '◍', ammo: '➶', magic: '✧',
     person: '◎', deck: '▦', lore: '≋', thing: '⌗',
+    console: '＞',   /* the deck's own console chip mark — already on screen daily */
   };
 
   var KIND_FAM = {
@@ -298,7 +314,147 @@ var HDOmni = (function () {
     spells: 'magic', followers: 'person', wardrobe: 'wear',
     quests: 'lore', notes: 'lore', hotkeys: 'deck', 'deck-actions': 'deck',
     tabs: 'deck', domains: 'thing', rooms: 'thing',
+    console: 'console',
   };
+
+  /* ------------------------------------------------- console detection */
+  /* Rober, 2026-09-13: "smart if I enter in a command that it thinks is meant
+     for console it can ask. Like tfc". The ASK is a row: when the query reads
+     as a console command, a "Run in the console" row is offered — first when
+     the verb is one the game knows, so Enter runs it, and never silently: the
+     detail says what will happen. Detection is a VERB LIST, not a shape
+     heuristic — "lydia" must never be offered as a command. player.xxx and
+     prid are the two prefixes that carry their own verb. */
+  var CONSOLE_VERBS = {
+    tfc: 'toggle the free camera', tgm: 'god mode', tcl: 'no clipping', tim: 'immortal mode',
+    tmm: 'map markers', tai: 'toggle AI', tcai: 'toggle combat AI', tdetect: 'toggle detection',
+    tfow: 'fog of war', tm: 'toggle the HUD', tws: 'water', tg: 'grass', twf: 'wireframe',
+    tt: 'trees', tsb: 'sky box', tcg: 'collision geometry', tp: 'pathing',
+    sgtm: 'game speed', fw: 'force weather', sw: 'set weather', coc: 'go to a cell',
+    cow: 'go to a world position', kill: 'kill the target', killall: 'kill everything nearby',
+    resurrect: 'bring the target back', disable: 'hide the target', enable: 'show the target',
+    markfordelete: 'delete the target', moveto: 'move to a reference', unlock: 'unlock the target',
+    lock: 'lock the target', setstage: 'set a quest stage', getstage: 'read a quest stage',
+    completequest: 'complete a quest', resetquest: 'reset a quest', startquest: 'start a quest',
+    stopquest: 'stop a quest', sqs: 'show quest stages', sqv: 'show quest variables', sqt: 'quest targets',
+    showracemenu: 'open the race menu', showlimitedracemenu: 'race menu (limited)',
+    additem: 'add an item', removeitem: 'remove an item', placeatme: 'spawn at the target',
+    setav: 'set an actor value', modav: 'modify an actor value', forceav: 'force an actor value',
+    getav: 'read an actor value', addperk: 'add a perk', removeperk: 'remove a perk',
+    addspell: 'add a spell', removespell: 'remove a spell', setlevel: 'set the level',
+    advskill: 'advance a skill', setscale: 'set the scale', setessential: 'essential flag',
+    setrelationshiprank: 'relationship rank', addtofaction: 'add to a faction', removefac: 'remove from a faction',
+    help: 'look up forms', pcb: 'purge cell buffers', save: 'save', load: 'load', qqq: 'quit to desktop',
+    csb: 'clear screen blood', ts: 'toggle sky', fov: 'field of view', setownership: 'take ownership',
+    setgs: 'set a game setting', showinventory: 'show the inventory', sexchange: 'change sex',
+    setrace: 'set the race', equipitem: 'equip an item', unequipitem: 'unequip an item',
+    setnpcweight: 'NPC weight', str: 'show the render info', bat: 'run a batch file',
+    cf: 'call a function', caqs: 'complete all quest stages', saq: 'start all quests',
+    tdt: 'debug text', ssg: 'show scene graph', prid: 'pick a reference', bc: 'toggle the console bounds',
+    rimod: 'remove an image-space modifier', imod: 'apply an image-space modifier',
+    sucsm: 'free camera speed', sm: 'set marker', tscr: 'toggle scripts', tfh: 'full help',
+    player: 'a player.* command', set: 'set a global', settimescale: 'set the timescale',
+  };
+  function consoleVerb(q) {
+    var t = String(q || '').trim();
+    if (!t) return null;
+    var m = t.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_]*))?(?:\s|$)/);
+    if (!m) return null;
+    var head = m[1].toLowerCase(), sub = m[2] ? m[2].toLowerCase() : '';
+    if (head === 'player' || head === 'prid') {
+      if (head === 'player' && sub && !CONSOLE_VERBS[sub]) return null;   // player.somethingmadeup
+      return { verb: sub || head, why: CONSOLE_VERBS[sub] || CONSOLE_VERBS[head] || '' };
+    }
+    if (sub) return null;   // "lydia.foo" is not a command
+    if (CONSOLE_VERBS[head]) return { verb: head, why: CONSOLE_VERBS[head] };
+    return null;
+  }
+  function looksLikeConsole(q) { return !!consoleVerb(q); }
+  var CONSOLE_PROV = { id: 'console', label: 'Console', tab: null, index: function () { return []; } };
+  function runConsole(cmd) {
+    var c = String(cmd || '').trim();
+    if (!c) return;
+    toGame('hdConsoleTest', JSON.stringify({ command: c, crosshair: false, name: 'Search: ' + c }));
+  }
+  function consoleItem(cmd, why) {
+    return {
+      label: cmd, kind: 'console',
+      detail: 'Run this in the console' + (why ? ' — ' + why : '') + ' · Enter runs it',
+      run: function () { remember(CONSOLE_PROV, { label: cmd, kind: 'console' }, cmd); runConsole(cmd); },
+      pin: 'con:' + cmd,
+    };
+  }
+
+  /* ----------------------------------------------------------- recents */
+  /* "History (remembers last)" (Rober, 2026-09-13). Two things: the LAST QUERY
+     comes back into the box on the next open (selected, so typing replaces
+     it), and the last twelve things RUN are listed on the blank frame, live-
+     resolved through the same pin keys the Favorites Shelf uses — a recent
+     whose item is gone greys with the reason rather than vanishing. Stored in
+     the shelf blob (state.shelf.omniRecent), the tabbar/finder/hints
+     precedent, so an older DLL cannot drop it. */
+  var RECENT_MAX = 12;
+  var RECENT_SLIM = 5;   // how many the Super Searcher's slim blank frame shows
+  var localRecent = { items: [], lastQ: '' };
+  function recentSlice() {
+    if (typeof window.__hdShelfSlice === 'function') return window.__hdShelfSlice('omniRecent');
+    return localRecent;
+  }
+  function recents() {
+    var r = recentSlice();
+    if (!Array.isArray(r.items)) r.items = [];
+    if (typeof r.lastQ !== 'string') r.lastQ = '';
+    return r;
+  }
+  function saveRecents() { if (typeof window.__hdShelfSave === 'function') window.__hdShelfSave(); }
+  function remember(provider, item, q) {
+    if (!provider || !item) return;
+    var key = item.pin || ('lbl:' + String(item.label || ''));
+    var r = recents();
+    var kept = [];
+    for (var i = 0; i < r.items.length; i++) {
+      var x = r.items[i];
+      if (x && !(x.prov === provider.id && x.key === key)) kept.push(x);
+    }
+    kept.unshift({ prov: provider.id, key: key, label: String(item.label || ''),
+                   detail: String(item.detail || ''), kind: String(item.kind || ''),
+                   icon: item.icon ? String(item.icon) : '', q: String(q || ''), at: Date.now() });
+    r.items = kept.slice(0, RECENT_MAX);
+    saveRecents();
+  }
+  function rememberQuery(q) {
+    var r = recents();
+    var v = String(q || '').trim();
+    if (r.lastQ !== v) { r.lastQ = v; saveRecents(); }
+  }
+  function forgetRecents() { var r = recents(); r.items = []; saveRecents(); }
+  /* the blank frame's rows: each recent resolved LIVE against its provider */
+  function recentRows() {
+    var out = [];
+    var r = recents();
+    for (var i = 0; i < r.items.length; i++) {
+      var x = r.items[i];
+      if (!x || !x.prov) continue;
+      if (x.prov === 'console') {
+        out.push({ item: consoleItem(x.label, (consoleVerb(x.label) || {}).why), provider: CONSOLE_PROV, score: 1, when: x.at });
+        continue;
+      }
+      var res = resolvePin(x.prov, x.key);
+      if (res.item && res.provider && !providerGated(res.provider)) {
+        out.push({ item: res.item, provider: res.provider, score: 1, when: x.at });
+      } else if (res.provider && res.indexed && !providerGated(res.provider)) {
+        /* gone: an honest dead row, never a silent drop */
+        out.push({ item: { label: x.label, detail: 'not here any more', kind: x.kind, icon: x.icon, gone: true },
+                   provider: res.provider, score: 0, when: x.at });
+      } else if (res.provider) {
+        /* data not in yet (warm/lazy provider): show it from the snapshot; a
+           press re-resolves through activate() */
+        out.push({ item: { label: x.label, detail: x.detail, kind: x.kind, icon: x.icon,
+                           _recent: x }, provider: res.provider, score: 0, when: x.at });
+      }
+    }
+    return out;
+  }
 
   function famOf(provId, kind) {
     var k = String(kind || '').toLowerCase();
@@ -337,8 +493,21 @@ var HDOmni = (function () {
                     top: hits.length ? hits[0].score : 0,
                     pending: !!st.lazyPending[p.id] });
     }
-    groups.sort(function (a, b) { return b.top - a.top; });
+    groups.sort(function (a, b) {
+      var ra = groupRank(a.provider), rb = groupRank(b.provider);
+      if (ra !== rb) return ra - rb;
+      return b.top - a.top;
+    });
     return groups;
+  }
+
+  /* A provider's group ORDER: lower first, 50 when it never said. See the
+     `rank` line of the provider contract — people above things named after
+     them. Read per sort, not at register(), so a re-register can change it. */
+  var RANK_DEFAULT = 50;
+  function groupRank(p) {
+    var r = p && p.rank;
+    return (typeof r === 'number' && isFinite(r)) ? r : RANK_DEFAULT;
   }
 
   function runLazy() {
@@ -378,11 +547,21 @@ var HDOmni = (function () {
   function activate(row, viaJump) {
     if (!row) return;
     var item = row.item, p = row.provider;
+    if (item && item.gone) return;   // a dead recent: nothing to run, nothing to jump to
+    if (item && item._recent) {
+      /* a recent whose provider had no data at render time — re-resolve now */
+      var live = resolvePin(p.id, item._recent.key);
+      if (live.item) { item = live.item; p = live.provider; }
+      else return;
+    }
     if (!viaJump && typeof item.run === 'function') {
+      rememberQuery(st.q);
+      if (p.id !== 'console') remember(p, item, st.q.trim());   // console rows remember themselves
       close('run');
       try { item.run(); } catch (e) {}
       return;
     }
+    rememberQuery(st.q);
     jumpTo(p, item, st.q.trim());
   }
 
@@ -485,21 +664,48 @@ var HDOmni = (function () {
           '<span class="omni-bchip-g">' + esc(FAM_GLYPH[pfam] || FAM_GLYPH.thing) + '</span>' +
           esc(pv.label) + '</span>';
       }
-      host.className = 'omni-results is-blank';
-      host.innerHTML = '<div class="omni-blank">' +
-        '<div class="omni-blank-ic">⌕</div>' +
-        '<div class="omni-blank-t">Search everything</div>' +
-        (chips
-          ? '<div class="omni-blank-chips">' + chips + '</div>'
-          : '<div class="omni-blank-s">no sources are switched on</div>') +
-        '<div class="omni-blank-keys">' + esc(blankNote) + '</div>' +
-        '</div>';
+      /* recents first — the thing you ran last is the likeliest thing you
+         want again, and it is one Enter away before you have typed a letter.
+         In the Super Searcher (body.ss-open) the frame stays SLIM: a handful
+         of recents and one quiet line, no chip wall — it opens as a bar and
+         grows with the results (Rober, 2026-09-13: "Starts sleek / small?"). */
+      var slim = document.body.classList.contains('ss-open');
+      var rrows = recentRows();
+      if (slim && rrows.length > RECENT_SLIM) rrows = rrows.slice(0, RECENT_SLIM);
       st.flat = [];
+      var rhtml = '';
+      if (rrows.length) {
+        rhtml += '<div class="omni-sect">Recent<span class="omni-sect-n">' + rrows.length + '</span>' +
+          '<button class="omni-forget" title="Clear the recent list">clear</button></div>';
+        for (var ri = 0; ri < rrows.length; ri++) rhtml += rowHtml(rrows[ri], [], st.flat.length, ri === st.sel);
+        for (var rj = 0; rj < rrows.length; rj++) st.flat.push(rrows[rj]);
+      }
+      host.className = 'omni-results is-blank' + (rrows.length ? ' has-recent' : '');
+      if (slim) {
+        host.innerHTML = rhtml + '<div class="omni-blank omni-blank-slim">' +
+          '<div class="omni-blank-keys">' + esc(blankNote) + '</div></div>';
+      } else {
+        host.innerHTML = rhtml + '<div class="omni-blank' + (rrows.length ? ' is-under' : '') + '">' +
+          (rrows.length ? '' : '<div class="omni-blank-ic">⌕</div>') +
+          '<div class="omni-blank-t">Search everything</div>' +
+          (chips
+            ? '<div class="omni-blank-chips">' + chips + '</div>'
+            : '<div class="omni-blank-s">no sources are switched on</div>') +
+          '<div class="omni-blank-keys">' + esc(blankNote) + '</div>' +
+          '</div>';
+      }
+      var rsel = host.querySelector('.omni-row.selected');
+      if (rsel) rsel.scrollIntoView({ block: 'nearest' });
       return;
     }
     host.className = 'omni-results';
 
     var groups = collect();
+    var cv = consoleVerb(q);
+    if (cv && !providerGated(CONSOLE_PROV)) {
+      groups.unshift({ provider: CONSOLE_PROV, hits: [{ item: consoleItem(q, cv.why), provider: CONSOLE_PROV, score: 1000 }],
+                       top: 1000, pending: false });
+    }
     st.flat = [];
     var html = '';
     var anyPending = false;
@@ -518,45 +724,7 @@ var HDOmni = (function () {
         var row = show[h];
         var idx = st.flat.length;
         st.flat.push(row);
-        var it = row.item;
-        var runnable = typeof it.run === 'function';
-        /* the ☆ — every item with a durable pin key can join the Favorites
-           Shelf from right here; filled when it already has */
-        var pinnable = !!it.pin && window.HDShelf;
-        var pinned = pinnable && window.HDShelf.isPinned(row.provider.id, it.pin);
-        var fam = famOf(row.provider.id, it.kind);
-        html += '<div class="omni-row' + (idx === st.sel ? ' selected' : '') +
-                '" data-fam="' + esc(fam) + '" data-idx="' + idx + '">' +
-          /* The art plate (super mode only — hd-super.css reveals it under
-             body.ss-open; the classic overlay keeps its exact old look).
-             ALWAYS emitted, so every row's text starts at the same x whether
-             or not a picture exists — that straight edge is the whole point.
-             The picture removes ITSELF on error, which un-matches the
-             `.omni-row-ic + .omni-row-gl` rule and lets the family mark take
-             over: a stale path degrades to a mark, never a broken-image box,
-             with no JS involved. */
-          '<div class="omni-row-art">' +
-            (it.icon
-              ? '<img class="omni-row-ic" src="' + esc(it.icon) +
-                '" draggable="false" onerror="this.parentNode&&this.parentNode.removeChild(this)">'
-              : '') +
-            '<span class="omni-row-gl">' + esc(FAM_GLYPH[fam] || FAM_GLYPH.thing) + '</span>' +
-          '</div>' +
-          '<div class="omni-row-main">' +
-            '<div class="omni-row-l">' + highlight(it.label, words) + '</div>' +
-            (it.detail ? '<div class="omni-row-d">' + highlight(it.detail, words) + '</div>' : '') +
-          '</div>' +
-          (it.kind ? '<span class="omni-kind">' + esc(it.kind) + '</span>' : '') +
-          (pinnable
-            ? '<button class="omni-pin' + (pinned ? ' on' : '') + '" data-idx="' + idx + '" title="' +
-              (pinned ? 'Unpin from the Favorites shelf' : 'Pin to the Favorites shelf') + '">' +
-              (pinned ? '★' : '☆') + '</button>'
-            : '') +
-          (row.provider.tab || typeof it.jump === 'function'
-            ? '<button class="omni-jump" data-idx="' + idx + '" title="' +
-              (runnable ? 'Open in its tab (Shift+Enter)' : 'Open in its tab') + '">↗</button>'
-            : '') +
-        '</div>';
+        html += rowHtml(row, words, idx, idx === st.sel);
       }
       if (!expanded[grp.provider.id] && grp.hits.length > GROUP_LIMIT) {
         html += '<button class="omni-more" data-more="' + esc(grp.provider.id) + '">show all ' +
@@ -576,7 +744,97 @@ var HDOmni = (function () {
     if (sel) sel.scrollIntoView({ block: 'nearest' });
   }
 
+  /* "just now" / "4 min" / "2 h" / "3 d" — the recent list's age chip */
+  function ago(at) {
+    var d = Date.now() - (Number(at) || 0);
+    if (!(d >= 0)) return '';
+    if (d < 60000) return 'just now';
+    if (d < 3600000) return Math.floor(d / 60000) + ' min';
+    if (d < 86400000) return Math.floor(d / 3600000) + ' h';
+    return Math.floor(d / 86400000) + ' d';
+  }
+
+  /* The marks after a name (item contract `marks`): ♥ wife, ◍ expecting.
+     Drawn INSIDE the title line, so they sit against the name at the name's
+     size and survive the row's ellipsis as one unit with it — a chip out on
+     the right edge is where the eye stops looking for "who is she". */
+  function marksHtml(marks) {
+    if (!marks || !marks.length) return '';
+    var out = '';
+    for (var i = 0; i < marks.length; i++) {
+      var m = marks[i];
+      if (!m || !m.g) continue;
+      var cls = String(m.cls || '').replace(/[^a-z0-9_-]/gi, '');
+      out += '<span class="omni-mark' + (cls ? ' omni-mark-' + cls : '') + '"' +
+             (m.title ? ' title="' + esc(m.title) + '"' : '') + '>' + esc(m.g) + '</span>';
+    }
+    return out ? '<span class="omni-marks">' + out + '</span>' : '';
+  }
+
+  /* One result row. Shared by the search groups and the blank frame's Recent
+     list, so a recent looks exactly like the hit it was. */
+  function rowHtml(row, words, idx, selected) {
+        var it = row.item;
+        var runnable = typeof it.run === 'function';
+        /* the ☆ — every item with a durable pin key can join the Favorites
+           Shelf from right here; filled when it already has */
+        var pinnable = !!it.pin && window.HDShelf && row.provider.id !== 'console';
+        var pinned = pinnable && window.HDShelf.isPinned(row.provider.id, it.pin);
+        var fam = famOf(row.provider.id, it.kind);
+        /* `has-art` — this row HAS a picture, so the classic overlay paints
+           its plate too (hd-omni.css). Emitted from the item, not from the
+           <img> loading, so the layout is decided before the first paint. */
+        var hasArt = !!it.icon;
+        var html = '<div class="omni-row' + (selected ? ' selected' : '') + (it.gone ? ' is-gone' : '') +
+                (hasArt ? ' has-art' : '') +
+                '" data-fam="' + esc(fam) + '" data-idx="' + idx + '">' +
+          /* The art plate (super mode only — hd-super.css reveals it under
+             body.ss-open; the classic overlay keeps its exact old look).
+             ALWAYS emitted, so every row's text starts at the same x whether
+             or not a picture exists — that straight edge is the whole point.
+             The picture removes ITSELF on error, which un-matches the
+             `.omni-row-ic + .omni-row-gl` rule and lets the family mark take
+             over: a stale path degrades to a mark, never a broken-image box,
+             with no JS involved. */
+          '<div class="omni-row-art">' +
+            (it.icon
+              ? '<img class="omni-row-ic" src="' + esc(it.icon) +
+                '" draggable="false" onerror="this.parentNode&&this.parentNode.removeChild(this)">'
+              : '') +
+            '<span class="omni-row-gl">' + esc(FAM_GLYPH[fam] || FAM_GLYPH.thing) + '</span>' +
+          '</div>' +
+          '<div class="omni-row-main">' +
+            /* With marks the title becomes name + marks side by side: the name
+               ellipsises, the marks never do — a wife whose row is narrow is
+               still visibly a wife (the 390px check clipped them otherwise).
+               Without marks the line is byte-for-byte what it was. */
+            (it.marks && it.marks.length
+              ? '<div class="omni-row-l has-marks"><span class="omni-row-name">' + highlight(it.label, words) +
+                '</span>' + marksHtml(it.marks) + '</div>'
+              : '<div class="omni-row-l">' + highlight(it.label, words) + '</div>') +
+            (it.detail ? '<div class="omni-row-d">' + highlight(it.detail, words) + '</div>' : '') +
+          '</div>' +
+          (row.when ? '<span class="omni-when" title="When you last ran it">' + esc(ago(row.when)) + '</span>' : '') +
+          (it.kind ? '<span class="omni-kind">' + esc(it.kind) + '</span>' : '') +
+          (row.provider.id === 'console' && !it.gone
+            ? '<button class="omni-run" data-idx="' + idx + '" title="Run it in the console (Enter)">Run ▸</button>'
+            : '') +
+          (pinnable
+            ? '<button class="omni-pin' + (pinned ? ' on' : '') + '" data-idx="' + idx + '" title="' +
+              (pinned ? 'Unpin from the Favorites shelf' : 'Pin to the Favorites shelf') + '">' +
+              (pinned ? '★' : '☆') + '</button>'
+            : '') +
+          (row.provider.tab || typeof it.jump === 'function'
+            ? '<button class="omni-jump" data-idx="' + idx + '" title="' +
+              (runnable ? 'Open in its tab (Shift+Enter)' : 'Open in its tab') + '">↗</button>'
+            : '') +
+        '</div>';
+    return html;
+  }
+
   function onResultsClick(e) {
+    var forget = e.target.closest('.omni-forget');
+    if (forget) { e.stopPropagation(); forgetRecents(); renderResults(); return; }
     var more = e.target.closest('.omni-more');
     if (more) { expanded[more.dataset.more] = true; renderResults(); return; }
     var pinBtn = e.target.closest('.omni-pin');
@@ -591,6 +849,8 @@ var HDOmni = (function () {
     }
     var jump = e.target.closest('.omni-jump');
     if (jump) { e.stopPropagation(); activate(st.flat[Number(jump.dataset.idx)], true); return; }
+    var runBtn = e.target.closest('.omni-run');
+    if (runBtn) { e.stopPropagation(); activate(st.flat[Number(runBtn.dataset.idx)], false); return; }
     var row = e.target.closest('.omni-row');
     if (row) { activate(st.flat[Number(row.dataset.idx)], false); return; }
     /* ask-mode delegated buttons */
@@ -1181,6 +1441,12 @@ var HDOmni = (function () {
     }
     var inp = $('omni-input');
     if (typeof seed === 'string') { inp.value = seed; st.q = seed; }
+    else if ((mode || 'search') === 'search') {
+      /* remembers last: the previous query comes back SELECTED, so a keystroke
+         replaces it and Enter re-runs it */
+      var lq = recents().lastQ;
+      inp.value = lq || ''; st.q = lq || '';
+    }
     setMode(mode || 'search');
     if (st.q) { runLazy(); }
     setTimeout(function () { inp.focus(); inp.select(); }, 30);
@@ -1678,6 +1944,11 @@ var HDOmni = (function () {
     rerender: function () { if (st.open && st.mode === 'search') renderResults(); },
     takeQuestReply: takeQuestReply,
     lazyResults: lazyResults,
+    /* console detection + recents (2026-09-13) */
+    looksLikeConsole: looksLikeConsole,
+    consoleVerb: consoleVerb,
+    recents: recents,
+    forgetRecents: forgetRecents,
     /* exposed for the test harness */
     _state: st,
     _collect: collect,

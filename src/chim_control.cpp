@@ -64,6 +64,66 @@ namespace ChimControl
 		private:
 			StateCb _then;
 		};
+
+		// findAllAgentsFormId returns int[] — the runtime formIds of every
+		// CHIM agent. Read the ints HERE (VM thread, plain array), then hop to
+		// the main thread to turn them into actors + names; the engine lookups
+		// belong on the main thread exactly like ActorResult's callback.
+		class IdsResult : public RE::BSScript::IStackCallbackFunctor
+		{
+		public:
+			explicit IdsResult(AgentsCb then) :
+				_then(std::move(then))
+			{}
+
+			void operator()(RE::BSScript::Variable a_result) override
+			{
+				std::vector<std::uint32_t> ids;
+				if (a_result.IsArray()) {
+					if (auto arr = a_result.GetArray()) {
+						const auto n = arr->size();
+						for (std::uint32_t i = 0; i < n; ++i) {
+							const auto& v = (*arr)[i];
+							// Papyrus ints are 32-bit signed; a formId above
+							// 0x7FFFFFFF (an ESL-space or runtime FF ref) comes
+							// back negative and must be reinterpreted, not clamped.
+							if (v.IsInt())
+								ids.push_back(static_cast<std::uint32_t>(v.GetSInt()));
+						}
+					}
+				}
+				auto then = _then;
+				if (!then)
+					return;
+				if (auto* task = SKSE::GetTaskInterface()) {
+					task->AddTask([then, ids = std::move(ids)]() {
+						std::vector<Agent> out;
+						out.reserve(ids.size());
+						for (const auto id : ids) {
+							Agent a;
+							a.formId = id;
+							if (auto* actor = ResolveActor(id)) {
+								if (const char* dn = actor->GetDisplayFullName())
+									a.name = dn;
+								if (auto* base = actor->GetActorBase()) {
+									if (const char* bn = base->GetName())
+										a.base = bn;
+								}
+							}
+							out.push_back(std::move(a));
+						}
+						logger::info("chim-agents: findAllAgentsFormId -> {} agent(s)", out.size());
+						then(out, true);
+					});
+				}
+			}
+
+			bool CanSave() const override { return false; }
+			void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+
+		private:
+			AgentsCb _then;
+		};
 	}
 
 	bool SetActive(std::uint32_t formId, const std::string& name, bool on)
@@ -109,6 +169,24 @@ namespace ChimControl
 			// The functor won't fire (cb was moved into it). The view keeps its
 			// last-known label; a state read is best-effort, never load-bearing.
 			logger::warn("chim-activate: getAgentByName dispatch failed for '{}'", name);
+		}
+	}
+
+	void QueryAgents(AgentsCb cb)
+	{
+		auto* vm = Vm();
+		if (!vm) {
+			if (cb)
+				cb({}, false);
+			return;
+		}
+		RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> functor(new IdsResult(std::move(cb)));
+		auto args = RE::MakeFunctionArguments();
+		if (!vm->DispatchStaticCall(kScript, "findAllAgentsFormId", args, functor)) {
+			// cb was moved into the functor and will not fire; the view keeps
+			// whatever it last knew (or nothing), and its rows fall back to the
+			// per-NPC getAgentByName read the flyout has always done.
+			logger::warn("chim-agents: findAllAgentsFormId dispatch failed (CHIM not loaded?)");
 		}
 	}
 }

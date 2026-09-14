@@ -78,10 +78,16 @@ body.ss-open .omni-box {
   }
 }
 
-/* height presets (the config's Compact / Normal / Tall) */
-body.ss-open[data-ss-size="compact"] .omni-box { height: min(520px, 62%); }
-body.ss-open[data-ss-size="normal"]  .omni-box { height: min(720px, 82%); }
-body.ss-open[data-ss-size="tall"]    .omni-box { height: min(940px, 94%); }
+/* height presets (the config's Compact / Normal / Tall) — CEILINGS since
+   2026-09-13 (Rober: "Starts sleek / small?"): the box hugs its content, so
+   it opens as a slim bar (head + input, plus a few recents) and grows with
+   the results up to the preset, never past it. */
+body.ss-open .omni-box { height: auto; min-height: 0; }
+body.ss-open[data-ss-size="compact"] .omni-box { max-height: min(520px, 62%); }
+body.ss-open[data-ss-size="normal"]  .omni-box { max-height: min(720px, 82%); }
+body.ss-open[data-ss-size="tall"]    .omni-box { max-height: min(940px, 94%); }
+body.ss-open .omni-results { min-height: 0; flex: 0 1 auto; }
+body.ss-open .omni-results:empty { display: none; }
 
 /* a thin gold rule under the head — the widget's signature line */
 body.ss-open .omni-head {
@@ -183,9 +189,20 @@ body.ss-open .omni-row.selected::before {
    their family colour so the widget introduces itself. */
 
 body.ss-open .omni-results.is-blank {
-  display: flex; align-items: center; justify-content: center;
+  display: block;
 }
 body.ss-open .omni-blank { padding: 20px; }
+/* the slim blank frame: one quiet line under the input, no chip wall —
+   the sleek start. Recents (when any) sit above it as ordinary rows. */
+body.ss-open .omni-blank.omni-blank-slim {
+  padding: 8px 12px 10px;
+  text-align: left;
+  opacity: 1;
+}
+body.ss-open .omni-blank-slim .omni-blank-keys {
+  padding: 0; margin: 0; border: 0;
+  font-size: 13.5px; color: #6b675e;
+}
 body.ss-open .omni-blank-ic {
   font-size: 52px; color: #6d6350; margin-bottom: 14px;
 }
@@ -230,6 +247,8 @@ body.ss-open .omni-sect-n {
   order: 1;                     /* keep the count beside the label, before the rule */
   border-color: #c9a24b3a; color: #9a927f;
 }
+/* the Recent list's clear pill goes AFTER the rule, at the right edge */
+body.ss-open .omni-forget { order: 3; float: none; margin: 0 0 0 12px; }
 
 /* ====================================================================== *
  *  The config popup (#hd-super) — Home → UI Elements → Config, and ⛭.

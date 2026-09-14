@@ -78,4 +78,17 @@ namespace FertilityBridge
 	// Convenience: fetches Follower Organizer's state itself. Use the overload
 	// above when the caller already has it — one FO build serves both.
 	std::string StateJson();
+
+	// EVERYONE Fertility Mode tracks (2026-09-14), not just the roster — the
+	// NPC Finder's rows and the F7 card for a crosshair NPC with no Follower
+	// Organizer row need "is she pregnant" for people FO never filed. One walk
+	// of FM's own TrackedActors array; each entry carries the same status
+	// object as StateJson plus `name`, `ref` (runtime formId hex) and `base`
+	// ("<plugin>|<LOCAL6HEX>", the Finder's row id spelling) so the view can
+	// match by reference OR by base record. Actors with no durable base (a
+	// 0xFF… spawn) carry base:"" and match by reference only.
+	//   { ok, available, actors: { "<ref hex>": {...status, name, ref, base} },
+	//     tracked, pregnant }
+	// MAIN THREAD ONLY.
+	std::string AllTrackedJson();
 }

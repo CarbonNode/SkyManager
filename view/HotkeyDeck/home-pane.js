@@ -59,6 +59,12 @@ window.HomePane = (function () {
     { id: 'spellcraft',name: 'Spell Crafting', icon: '✨', img: 'icons/custom/hm-spellcraft.png', hue: '#b79bff', sub: 'Craft your own spells',   act: 'tab', prov: 'spellcraft' },
     { id: 'highking',  name: 'High King',   icon: '👑', img: 'icons/custom/hm-highking.png',  hue: '#e5c877', sub: 'Rule Skyrim — taxes, approval, powers', act: 'tab', prov: 'highking', requires: 'highking' },
     { id: 'followers', name: 'Followers',  icon: '👥', img: 'icons/custom/hm-followers.png', hue: '#e0a86a', sub: 'Summon, order, dress',        act: 'tab', prov: 'followers', requires: 'followerorganizer' },
+    /* Household (2026-09-13) — sits beside Followers because it is the same
+       people seen a different way: the roster answers "who exists", this one
+       answers "who is my wife and who is expecting". Rose, the hue the roster
+       row already uses for a pregnancy. UNGATED for the same reason the tab
+       is: with FM or MARAS silent the pane says so itself. */
+    { id: 'household', name: 'Household',  icon: '♥', img: 'icons/custom/hm-household.png', hue: '#d98aa6', sub: 'Wives & who is expecting',    act: 'tab' },
     { id: 'quests',    name: 'Quests',     icon: '❈',  img: 'icons/custom/hm-quests.png',    hue: '#c9a24b', sub: 'Inspect & repair any quest',  act: 'tab' },
     { id: 'domains',   name: 'Domains',    icon: '📍', img: 'icons/custom/hm-domains.png',   hue: '#8fd8a0', sub: 'Mark a spot, click to travel',act: 'tab', prov: 'domains' },
     { id: 'containers',name: 'Containers', icon: '📦', img: 'icons/custom/hm-containers.png',hue: '#c9a24b', sub: 'Mark a chest, open it anywhere',act: 'tab', prov: 'containers' },
@@ -72,6 +78,7 @@ window.HomePane = (function () {
     /* Combat Arts lives in the Spell Deck window (2026-08-15), so its card is a
        LAUNCHER like the Spell Deck's own — act 'arts' opens that view on it. */
     { id: 'combatarts',name: 'Combat Arts',icon: '⚔',  img: 'icons/custom/hm-combat-arts.png',hue: '#e08a6a', sub: 'Ashes of War — equip an art',  act: 'arts' },
+    { id: 'loadouts',  name: 'Loadouts',   icon: '⚑',  img: 'icons/custom/hm-loadouts.png',  hue: '#e0a86a', sub: 'Follower groups — deploy in one press', act: 'tab' },
     { id: 'settle',    name: 'Settlement', icon: '🏕', img: 'icons/custom/hm-settlement.png',hue: '#9dcb8f', sub: 'Place objects & build a camp', act: 'tab', prov: 'settle' },
     { id: 'survival',  name: 'Survival',   icon: '⛺', img: 'icons/custom/hm-survival.png',  hue: '#9dcb8f', sub: 'Needs, camp, skills — your way', act: 'tab' },
     { id: 'wigs',      name: 'Wigs',       icon: '💇', img: 'icons/custom/hm-wigs.png',      hue: '#d9a86c', sub: 'Rendered wig catalogue - add a mod, wear a wig', act: 'tab', prov: 'wigs' },
@@ -123,7 +130,11 @@ window.HomePane = (function () {
               loot: null, hotbar: null, hotbarVisible: null,
               hotbarMode: 'always', hotbarEff: null, widgets: null,
               fw: { handR: null, handL: null, voice: null, quick: null,
-                    quick2: null, lootStatus: null },
+                    quick2: null, lootStatus: null,
+                    /* 2026-08-31: the season widget joined the free layer, so it
+                       reads its state through the same widgets.<id>.enabled walk
+                       below — nothing else here needed changing. */
+                    season: null },
               /* the merged Equipped widget's own facts, read straight off the
                  HUD view's `hud.grp` blob inside hdUiStateData (2026-08-19).
                  `known:false` = never heard from the game, so the expander
@@ -630,6 +641,13 @@ window.HomePane = (function () {
       jumpLabel: 'Config →',
       jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'fwgrp' })); },
       expandLabel: 'Lines ▾' },
+    { id: 'fw-season', fw: 'season', ic: '❉', img: 'icons/custom/sn-autumn.png',
+      name: 'Season Widget', sub: 'Which season the world is wearing — asked of Seasons of Skyrim itself',
+      kw: 'season winter spring summer autumn fall year month calendar seasons of skyrim weather',
+      state: function () { return uie.fw.season; },
+      toggle: function () { host.toGame && host.toGame('hdWidgetToggle', JSON.stringify({ id: 'season' })); },
+      jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'season' })); },
+      jumpLabel: 'Config →' },
     { id: 'fw-quick', fw: 'quick', ic: '★', img: 'icons/custom/hk-quick-light.png',
       name: 'Quick Items Widget', sub: 'Everything you favourited, with live counts and hotkey digits',
       kw: 'quick items favourites favorites star items counts hotkey digits favourite bar',

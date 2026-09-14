@@ -1,5 +1,7 @@
 #include "formation_actions.h"
 
+#include "formation_wwm.h"
+
 #include "npc_actions.h"  // TargetFormID(): the palette-open crosshair snapshot
 
 #include <algorithm>
@@ -346,13 +348,14 @@ namespace FormationActions
 
 	// ------------------------------------------------------------- state ----
 
-	std::string StateJson(const std::string& reqJson)
+	std::string Fwf::StateJson(const std::string& reqJson)
 	{
 		auto j = json::parse(reqJson, nullptr, false);
 		if (j.is_discarded() || !j.is_object())
 			j = json::object();
 
-		json out{ { "present", false } };
+		json out{ { "id", "fwf" }, { "label", "Formation with Followers" },
+			{ "present", false } };
 		auto* quest = CoreQuest();
 		if (!quest) {
 			// Two different absences, said apart: plugin not in the load
@@ -439,7 +442,7 @@ namespace FormationActions
 
 	// ------------------------------------------------------------- apply ----
 
-	std::string Apply(const std::string& reqJson)
+	std::string Fwf::Apply(const std::string& reqJson)
 	{
 		auto j = json::parse(reqJson, nullptr, false);
 		if (j.is_discarded() || !j.is_object())
@@ -552,7 +555,7 @@ namespace FormationActions
 
 	// ---------------------------------------------------- register/clear ----
 
-	std::string Reg(const std::string& reqJson)
+	std::string Fwf::Reg(const std::string& reqJson)
 	{
 		auto j = json::parse(reqJson, nullptr, false);
 		if (j.is_discarded() || !j.is_object())
@@ -584,7 +587,7 @@ namespace FormationActions
 
 	// ------------------------------------------------------------ rescue ----
 
-	std::string Rescue()
+	std::string Fwf::Rescue()
 	{
 		auto* quest = CoreQuest();
 		auto  core = BindForm(quest, kCoreClass);
@@ -616,5 +619,128 @@ namespace FormationActions
 		logger::info("Formation: rescue swept {} follower(s) on the UNPATCHED scripts", swept);
 		return Ok("Formation stood down (" + std::to_string(swept) +
 			" swept) — save in a quiet spot to bank it").dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	// ------------------------------------------------------------ router ----
+	//
+	// marker: formation-router (one provider per installed formation mod)
+
+	namespace
+	{
+		// The provider the view last acted on. Session-local on purpose: it is
+		// a preference, not state the save owns, and every fmGet re-derives it
+		// when the remembered one is no longer installed (a mod switched off
+		// between two palette opens must not strand the modal on a dead tab).
+		std::string g_active = "fwf";
+
+		json ProviderState(const std::string& id, const std::string& req)
+		{
+			auto s = json::parse(id == "wwm" ? FormationWwm::StateJson(req)
+											 : Fwf::StateJson(req),
+				nullptr, false);
+			if (s.is_discarded() || !s.is_object())
+				s = json::object();
+			s["id"] = id;
+			return s;
+		}
+
+		// "Live" = this mod is currently DRIVING followers. That, not merely
+		// being installed, is what makes a second provider a conflict — both
+		// rewriting the same travel packages is the one way "both" hurts.
+		bool IsLive(const json& s)
+		{
+			if (!s.value("present", false) || !s.value("running", false))
+				return false;
+			const auto g = s.value("global", json::object());
+			return g.is_object() ? g.value("enabled", true) : true;
+		}
+
+		json Slim(const json& s)
+		{
+			return json{
+				{ "id", s.value("id", std::string("")) },
+				{ "label", s.value("label", std::string("")) },
+				{ "installed", s.value("installed", false) },
+				{ "present", s.value("present", false) },
+				{ "wired", s.value("wired", true) },
+				{ "live", IsLive(s) },
+				{ "note", s.value("note", std::string("")) },
+			};
+		}
+
+		// Which provider a request lands on: what it asked for, else the last
+		// one used, else the only one installed. Never one that isn't there.
+		std::string PickProvider(const json& j, bool fwfIn, bool wwmIn)
+		{
+			auto in = [&](const std::string& id) { return id == "wwm" ? wwmIn : fwfIn; };
+			std::string want = j.is_object() ? j.value("provider", std::string("")) : "";
+			if (want != "fwf" && want != "wwm")
+				want.clear();
+			if (want.empty() || !in(want))
+				want = in(g_active) ? g_active : (fwfIn ? "fwf" : (wwmIn ? "wwm" : "fwf"));
+			g_active = want;
+			return want;
+		}
+
+		std::string RouteOf(const std::string& reqJson)
+		{
+			auto j = json::parse(reqJson, nullptr, false);
+			if (j.is_discarded() || !j.is_object())
+				j = json::object();
+			// Detection only — no VM work, so a mutation never pays for a
+			// second full state read just to decide where to send itself.
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			const bool fwfIn = dh && dh->LookupModByName("FormationWithFollowers.esp") != nullptr;
+			return PickProvider(j, fwfIn, FormationWwm::Installed());
+		}
+	}
+
+	std::string StateJson(const std::string& reqJson)
+	{
+		const json fwf = ProviderState("fwf", reqJson);
+		const json wwm = ProviderState("wwm", reqJson);
+
+		auto j = json::parse(reqJson, nullptr, false);
+		if (j.is_discarded() || !j.is_object())
+			j = json::object();
+		const auto want = PickProvider(j, fwf.value("installed", false),
+			wwm.value("installed", false));
+
+		// The ACTIVE provider's own state stays at the top level, so a view
+		// that predates providers keeps reading exactly the payload it knows.
+		json out = (want == "wwm") ? wwm : fwf;
+		out["provider"] = want;
+
+		// One line per session per shape, so a support log says which formation
+		// mods the rig actually has and which one the modal is driving.
+		static std::string s_said;
+		const std::string shape = want + "|" +
+			(fwf.value("installed", false) ? "1" : "0") +
+			(wwm.value("installed", false) ? "1" : "0");
+		if (s_said != shape) {
+			s_said = shape;
+			logger::info("Formation: provider(s) installed fwf={} wwm={}, active '{}'",
+				fwf.value("installed", false), wwm.value("installed", false), want);
+		}
+		out["providers"] = json::array({ Slim(fwf), Slim(wwm) });
+		out["conflict"] = IsLive(fwf) && IsLive(wwm);
+		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	std::string Apply(const std::string& reqJson)
+	{
+		return RouteOf(reqJson) == "wwm" ? FormationWwm::Apply(reqJson)
+										 : Fwf::Apply(reqJson);
+	}
+
+	std::string Reg(const std::string& reqJson)
+	{
+		return RouteOf(reqJson) == "wwm" ? FormationWwm::Reg(reqJson)
+										 : Fwf::Reg(reqJson);
+	}
+
+	std::string Rescue(const std::string& reqJson)
+	{
+		return RouteOf(reqJson) == "wwm" ? FormationWwm::Rescue() : Fwf::Rescue();
 	}
 }

@@ -1455,7 +1455,12 @@ namespace NffControl
 
 		// ---- dismiss --------------------------------------------------------
 		if (op == "dismiss") {
-			if (!follows)
+			// Either answer is enough. `follows` is IsPlayerTeammate(); NFF's
+			// own follower faction is the other, and RemoveFollower is exactly
+			// the call that unwinds THAT — refusing on the engine's answer
+			// alone left an NFF-held follower with no way out of the framework
+			// (Rober, 2026-09-10).
+			if (!follows && !NffBridge::IsNffFollower(actor))
 				return Refuse(name + " isn't following you").dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 			auto* q = NffQuest();
 			if (!q)

@@ -276,6 +276,24 @@
     fog: ['M3.5 8h17', 'M6 12h15', 'M3.5 16h13', 'M8 20h11'],
     ash: ['M4 8.5h16', 'M6.5 12.5h13', ['circle', 8, 17, .9], ['circle', 13, 18.5, .9], ['circle', 17.5, 16.5, .9]],
   };
+  /* Season glyphs (2026-08-31). The ALWAYS-present fallback under the painted
+     PNGs, same contract as the weather set: a snowflake, a sprouting shoot, a
+     sun, a falling leaf. Deliberately NOT re-using WEATHER_ART.snow for winter
+     — a season is not a sky, and reading "it is snowing" off a widget that
+     means "it is winter" is exactly the confusion worth one more glyph. */
+  const SEASON_ART = {
+    winter: ['M12 2.6v18.8', 'M4.3 7.1l15.4 8.8', 'M19.7 7.1L4.3 15.9',
+      'M9.2 4.4L12 6.4l2.8-2', 'M9.2 19.6L12 17.6l2.8 2',
+      'M4.6 11.2l.3 2.6', 'M19.4 11.2l-.3 2.6'],
+    spring: ['M12 21.4v-8.6', 'M12 12.8C12 9 9.4 6.6 5.6 6.6c0 3.8 2.6 6.2 6.4 6.2z',
+      'M12 12.8c0-3.4 2.4-5.6 5.8-5.6 0 3.4-2.4 5.6-5.8 5.6z', 'M6.6 21.4h10.8'],
+    summer: [['circle', 12, 12, 4.6], 'M12 2.4v2.6', 'M12 19v2.6', 'M2.4 12h2.6',
+      'M19 12h2.6', 'M5.2 5.2l1.9 1.9', 'M16.9 16.9l1.9 1.9',
+      'M18.8 5.2l-1.9 1.9', 'M7.1 16.9l-1.9 1.9'],
+    autumn: ['M12.6 20.8c0-5.4 1.6-9.4 5.6-12.4-.4 6.6-2.2 10.4-5.6 12.4z',
+      'M12.6 20.8C10.4 16 7 13.4 3.2 12.8c1.6 5 4.6 7.6 9.4 8z',
+      'M12.6 20.8v-3.2'],
+  };
   const WEATHER_ALIAS = {
     clear: 'clear', sunny: 'clear', fair: 'clear', pleasant: 'clear',
     cloudy: 'cloudy', partly: 'cloudy', overcast: 'overcast',
@@ -481,6 +499,7 @@
     wx: { clear: 'wx-clear', cloudy: 'wx-cloudy', overcast: 'wx-cloudy', rain: 'wx-rain',
       storm: 'wx-storm', snow: 'wx-snow', fog: 'wx-fog' },
     wxNight: { clear: 'wx-clear-night' },
+    sn: { winter: 'sn-winter', spring: 'sn-spring', summer: 'sn-summer', autumn: 'sn-autumn' },
     loc: { inn: 'loc-inn', house: 'loc-home', store: 'loc-shop', city: 'loc-city',
       cave: 'loc-cave', barrow: 'loc-dungeon', jail: 'loc-jail', fort: 'loc-fort',
       palace: 'loc-palace', temple: 'loc-temple', mine: 'loc-mine', camp: 'loc-camp',
@@ -520,6 +539,10 @@
     /* round 4 (2026-08-18) — the custom quick-items twin and the loot lamp.
        Default OFF, same law: a widget added later arrives silent. */
     quick2: false, lootStatus: false,
+    /* 2026-08-31 — the season readout, a free widget of its own. OFF, same law. */
+    season: false,
+    /* 2026-09-01 — the ward widget (WardAnytime). OFF, same law. */
+    ward: false,
     pinLabels: true, badges: true, barNumbers: true,
   };
   const LINE_KEYS = ['gold', 'carry', 'time', 'context', 'pots'];
@@ -564,7 +587,13 @@
      own wheel scale, own menu gate), so they ride this list rather than growing
      a third system beside it. Only the BUILDER differs, which renderFree picks
      per key. */
-  const FREE_KEYS = ['handR', 'handL', 'voice', 'quick', 'quick2', 'lootStatus'];
+  /* `season` joins in 2026-08-31 for the same reason quick2 and lootStatus did:
+     it is a free widget in every mechanical sense (own placement, own drag, own
+     wheel scale, own menu gate) and only its BUILDER differs. Rober asked for it
+     "not apart of other widgets" — this list is what grants that. */
+  /* `ward` joins 2026-09-01: same free-layer mechanics, its own builder (wardRow
+     through the slot-card path). */
+  const FREE_KEYS = ['handR', 'handL', 'voice', 'quick', 'quick2', 'lootStatus', 'season', 'ward'];
   /* The slot widgets that carry a per-key ⚙ switch. Since 2026-08-18 the card
      no longer draws them as one flat row — handR/handL/voice are nested inside
      the merged "Equipped slots" widget and quick/quick2 have their own group —
@@ -588,6 +617,14 @@
        audit 2026-08-18). 300 clears the strip with air to spare. */
     quick2: { x: 300, y: 300, anchorH: 'center', anchorV: 'bottom', scale: 1, opacity: 1, bare: false, showLabel: true, hideInMenus: true },
     lootStatus: { x: 24, y: 24, anchorH: 'right', anchorV: 'bottom', scale: 1, opacity: 1, bare: false, showLabel: true, hideInMenus: true },
+    /* Top-right, below the context column's default four, so switching it on
+       with clock/weather/place/mount already up lands clear. Mirrors the C++
+       Config() default exactly — the two must agree or a fresh install jumps
+       the first time C++ pushes its copy. */
+    season: { x: 24, y: 320, anchorH: 'right', anchorV: 'top', scale: 1, opacity: 1, bare: false, showLabel: true, hideInMenus: true },
+    /* Left of the equipped row, clear of the 158px cards. Mirrors the C++
+       Config() default exactly — the two must agree or a fresh install jumps. */
+    ward: { x: -520, y: 96, anchorH: 'center', anchorV: 'bottom', scale: 1, opacity: 1, bare: false, showLabel: true, hideInMenus: true },
   };
   /* ---- the custom quick items' own config (round 4) ----------------------
      `max` (1..16) is how many rows are DRAWN; `items` is what is STORED, up to
@@ -1488,6 +1525,22 @@
        (potPools reads this); absent means "nobody said", which is not false. */
     if (typeof j.waterOk === 'boolean') o.waterOk = j.waterOk;
 
+    /* ---- ward (2026-09-01): up/down, strength, and the best known ward.
+       The key is ABSENT when the player knows no ward and none is active —
+       the widget then hides in play and ghosts in edit, same as an empty
+       hand. `on` comes off the engine's WardPower actor value, so a ward
+       cast by hand lights it exactly like the maintained one. */
+    const wa = j.ward;
+    if (wa && typeof wa === 'object') {
+      o.ward = {
+        on: wa.on === true, maint: wa.maint === true,
+        name: String(wa.name || 'Ward'),
+        plugin: wa.plugin || '', formId: wa.formId || '',
+        school: wa.school || '', element: wa.element || '', tier: wa.tier || '',
+      };
+      if (isNum(wa.power)) o.ward.power = wa.power;
+    }
+
     const rs = j.resist;
     if (rs && typeof rs === 'object') {
       o.resist = { capMagic: num(rs.capMagic, 85), capPhys: num(rs.capPhys, 80),
@@ -1527,6 +1580,30 @@
         return { id: String(a.id || a.formId || ('ally' + i)), name: String(a.name || 'Ally'),
           hp: pool2(a.hp), dead: a.dead === true };
       }).filter(Boolean);
+    }
+
+    /* ---- 2026-08-31: the season ----------------------------------------
+       The id is checked against the CLOSED set the contract publishes, not
+       merely for being a string: the id picks a glyph and a colour, so an
+       unknown one would paint a blank card. A payload we cannot name leaves
+       `season` undefined and the widget stays away — the same omit rule the
+       DLL already applied on its side. */
+    const sn = j.season;
+    if (sn && typeof sn === 'object' && SEASON_ART[String(sn.id || '')]) {
+      const id = String(sn.id);
+      o.season = {
+        id: id,
+        name: sn.name || (id.charAt(0).toUpperCase() + id.slice(1)),
+        src: sn.src === 'calendar' ? 'calendar' : 'mod',
+        monthName: sn.monthName ? String(sn.monthName) : '',
+        day: isNum(sn.day) ? sn.day : null,
+        fixed: sn.fixed === true,
+        override: sn.override === true,
+        overrideName: sn.overrideName ? String(sn.overrideName) : '',
+      };
+      const nx = sn.next;
+      if (nx && typeof nx === 'object' && nx.name && isNum(nx.in))
+        o.season.next = { id: String(nx.id || ''), name: String(nx.name), in: nx.in };
     }
     return o;
   }
@@ -3813,6 +3890,8 @@
     equip: 'Equipped', survival: 'Survival needs', allies: 'Quest allies',
     handR: 'Right hand', handL: 'Left hand · ammo', voice: 'Shout / power', quick: 'Quick items',
     quick2: 'My items — pick your own', lootStatus: 'Loot lamp — glow · auto-loot',
+    season: 'Season',
+    ward: 'Ward — up or down',
     pinLabels: 'Item names', badges: 'Badges', barNumbers: 'Bar numbers', clock24: '24-hour clock',
   };
   const OPT_ABSENT = {
@@ -3826,6 +3905,13 @@
        have not filled yet, and the widget's own ＋ is how you fill it. The lamp
        IS absent until a loot mod answers. */
     lootStatus: () => !lootState(),
+    /* Greyed when nothing can honestly name the season — Seasons of Skyrim not
+       installed and no INI map, or seasons switched off. The switch still
+       flips; grey means "nothing to show right now", not "broken". */
+    season: () => !live.season,
+    /* Absent while the player knows no ward and none is active — the widget
+       then has nothing honest to say. */
+    ward: () => !live.ward,
   };
 
   function optButton(key) {
@@ -3950,6 +4036,7 @@
     handR: 'icons/custom/hd-sword.png', handL: 'icons/custom/hd-shield.png',
     voice: 'icons/custom/sc-shouts.png', quick: 'icons/custom/hk-quick-light.png',
     quick2: 'icons/custom/hm-items.png', lootStatus: 'icons/custom/hm-loot.png',
+    season: 'icons/custom/sn-autumn.png',
     strip: 'icons/custom/hm-followers.png', fwgrp: 'icons/custom/hk-widgets.png',
     /* the Followers-HUD section's own rows (round 3) — no art of their own,
        so they wear their typographic marks below */
@@ -3959,6 +4046,7 @@
     vitals: '❤', resist: '◈', effects: '✦', equip: '†', survival: '△',
     mount: '⌁', pins: '⚑', sets: '❈', allies: '⁂',
     handR: '†', handL: '◈', voice: '≋', quick: '★', quick2: '★', lootStatus: '✧',
+    season: '❉',
     pinLabels: 'Aa', badges: '●', barNumbers: '№', clock24: '◷',
     strip: '⁂', fwgrp: '⌗',
     'strip-shape': '◇', 'strip-face': '☉', 'strip-compact': '▣', 'strip-keys': '⌨',
@@ -3975,7 +4063,9 @@
     allies: 'quest allies companions', handR: 'right hand weapon spell',
     handL: 'left hand offhand ammo arrows shield', voice: 'shout power thuum dragon',
     quick: 'favourites favorites quick items', quick2: 'my items custom strip',
-    lootStatus: 'loot lamp glow auto-loot', pinLabels: 'names labels',
+    lootStatus: 'loot lamp glow auto-loot',
+    season: 'season winter spring summer autumn fall year month calendar seasons of skyrim',
+    pinLabels: 'names labels',
     badges: 'badges', barNumbers: 'numbers bars', clock24: '24 hour clock',
     strip: 'followers hud strip party faces portraits roster place position size enable shown hidden row column corner names',
     fwgrp: 'equipped group linked hands shout',
@@ -4530,6 +4620,12 @@
     el.opts.appendChild(buildGrpSection());
     el.opts.appendChild(buildElSection('items', 'Quick items', ['quick', 'quick2']));
     el.opts.appendChild(buildElSection('loot', 'Loot', ['lootStatus']));
+    /* The season rides the same free layer but is neither an equipment slot nor
+       a quick-items strip, so it gets its own section rather than being filed
+       under someone else's. */
+    el.opts.appendChild(buildElSection('world', 'World', ['season']));
+    /* The ward rides the free layer too; combat-flavoured, so its own card. */
+    el.opts.appendChild(buildElSection('ward', 'Ward', ['ward']));
     el.opts.appendChild(buildElSection('detail', 'Detail', DETAIL_KEYS,
       'Small print, everywhere at once.'));
     /* the strip's PLACEMENT only — the separation Rober asked for */
@@ -5560,6 +5656,8 @@
     quick: need('hud-fw-quick'),
     quick2: need('hud-fw-quick2'),
     lootStatus: need('hud-fw-lootStatus'),
+    season: need('hud-fw-season'),
+    ward: need('hud-fw-ward'),
   };
 
   function eqBySlot(slot) {
@@ -5727,7 +5825,7 @@
     }
     return null;
   }
-  const FW_SLOT_CHIP = { handR: 'R', handL: 'L', voice: 'Z', quick: 'Q' };
+  const FW_SLOT_CHIP = { handR: 'R', handL: 'L', voice: 'Z', quick: 'Q', ward: 'W' };
   const FW_GHOST = {
     handR: 'Right hand', handL: 'Left hand / ammo',
     voice: 'Shout / power', quick: 'Quick items — favourite something (★)',
@@ -5736,7 +5834,29 @@
        "easy / self explanatory" bar, 2026-08-18). */
     quick2: 'My items — nothing here yet.\nPress ＋ Add items below.',
     lootStatus: 'Loot lamp — no loot mod is answering right now',
+    /* The season ghost NAMES the mod, because "nothing here" and "you do not
+       have Seasons of Skyrim" look identical otherwise and only one of them is
+       something the player can act on. */
+    season: 'Season — needs Seasons of Skyrim',
+    ward: 'Ward — learn a ward spell to light this up',
   };
+
+  /* The ward widget's row: the live.ward document reshaped into the slot-card
+     vocabulary. kind "spell" on purpose — the art resolves through the SAME
+     Spell Deck icon ladder as a hand spell, so the tile shows the actual
+     ward's icon. `on` drives the up/down chrome; `count` doubles as the live
+     ward strength badge (the engine's WardPower, whole points). */
+  function wardRow() {
+    const w = live.ward;
+    if (!w) return null;
+    return {
+      kind: 'spell', on: w.on === true,
+      name: w.name + (w.maint ? ' · auto' : ''),
+      plugin: w.plugin || '', formId: w.formId || '',
+      school: w.school || 'restoration', element: w.element || '', tier: w.tier || '',
+      count: (w.on === true && isNum(w.power) && w.power > 0) ? w.power : undefined,
+    };
+  }
 
   /* ⚠ THREE INDEPENDENT SYSTEMS (Rober, 2026-08-19: "if hud widgets is off,
      other widgets stop showing, dont do that (equipped widget)" … "follower
@@ -5759,7 +5879,7 @@
   }
 
   /* ---- render ------------------------------------------------------------ */
-  const fwSigs = { handR: '', handL: '', voice: '', quick: '', quick2: '', lootStatus: '' };
+  const fwSigs = { handR: '', handL: '', voice: '', quick: '', quick2: '', lootStatus: '', season: '', ward: '' };
   let fwSelected = '';
 
   function fwArtFor(row) {
@@ -5773,7 +5893,11 @@
       return ['ghost', editing ? 'e' : '', wcfg[k] ? '1' : ''].join('|');
     return [row.kind, row.name, fwArtFor(row), (row.badges || []).length,
       isNum(row.damage) ? 'd' : '', isNum(row.armor) ? 'a' : '', isNum(row.count) ? 'c' : '',
-      row.cd ? 'cd' : '', wfree[k].bare ? 'b' : '', wfree[k].showLabel === false ? 'nl' : '',
+      row.cd ? 'cd' : '',
+      /* ward: up/down is card CHROME (glow vs dimmed + status chip), so a
+         state flip must rebuild — the sig carries it */
+      typeof row.on === 'boolean' ? (row.on ? 'W1' : 'W0') : '',
+      wfree[k].bare ? 'b' : '', wfree[k].showLabel === false ? 'nl' : '',
       editing ? 'e' : ''].join('|');
   }
 
@@ -5853,6 +5977,15 @@
       art.appendChild(h('b', { class: 'hud-fw-cdt' }));
     }
     card.appendChild(art);
+    /* ward: the up/down verdict is the widget's whole point, so it gets card
+       chrome of its own — gold ready-glow + "UP" chip while a ward is live,
+       dimmed art + "DOWN" while it is not. The is-ready class add also fires
+       the one-shot gold flash, which reads as the ward snapping up. */
+    if (typeof row.on === 'boolean') {
+      card.classList.add(row.on ? 'is-ready' : 'is-ward-down');
+      card.appendChild(h('span', { class: 'hud-fw-wardst ' + (row.on ? 'st-up' : 'st-down') },
+        row.on ? 'UP' : 'DOWN'));
+    }
     card.appendChild(h('span', { class: 'hud-fw-slot' }, FW_SLOT_CHIP[k]));
     const ench = h('div', { class: 'hud-fw-badges' });
     for (const b of (row.badges || [])) {
@@ -6099,14 +6232,89 @@
     root.appendChild(card);
   }
 
+  /* ---- the season card (2026-08-31) -------------------------------------
+     `live.season` is ABSENT whenever nothing can honestly name the season —
+     Seasons of Skyrim missing, seasons switched off, or the mod not having
+     answered yet (widgets.h's omit-or-tell law). So there is exactly one gate
+     here and it is the presence of the object; this view never derives a
+     season from the month, for the same reason C++ does not.
+
+     `showLabel` gates the DETAIL lines (the month, the countdown), not the
+     season name — the name IS the widget, and a season card that can hide the
+     word "Autumn" would just be an empty plate. */
+  function seasonData() {
+    const s = live.season;
+    return (s && typeof s === 'object' && s.id) ? s : null;
+  }
+  function seasonSig() {
+    const s = seasonData();
+    if (!s) return ['ghost', editing ? 'e' : '', wcfg.season ? '1' : ''].join('|');
+    /* Deliberately WITHOUT s.day and next.in — those move once a game day and
+       belong to the volatile pass, so the entrance animation plays on a real
+       season or month change and not every midnight. */
+    return [s.id, s.name, s.monthName || '', s.src || '', s.fixed ? 'f' : '',
+      s.override ? 'o' : '', s.next ? 'n' : '',
+      wfree.season.bare ? 'b' : '', wfree.season.showLabel === false ? 'nl' : '',
+      editing ? 'e' : ''].join('|');
+  }
+  function buildSeasonCard() {
+    const root = elFree.season;
+    root.innerHTML = '';
+    const s = seasonData();
+    const card = h('div', { class: 'hud-fw-card hud-fw-scard fw-in' });
+    if (!s) {
+      card.classList.add('is-ghost');
+      card.appendChild(h('div', { class: 'hud-fw-ghost' }, FW_GHOST.season));
+      root.appendChild(card);
+      return;
+    }
+    /* Per-season accent, CSS only — winter reads cold, autumn warm. The class
+       lives on the CARD so `bare` (which strips the plate) keeps the hue on
+       the glyph and the name. */
+    card.classList.add('is-' + s.id);
+    const art = h('div', { class: 'hud-fw-art hud-sn-art', title: s.name });
+    art.appendChild(glyphBox('hud-fw-glyph hud-sn-glyph',
+      SEASON_ART[s.id] || SEASON_ART.winter, PAINTED.sn[s.id], 44));
+    card.appendChild(art);
+    card.appendChild(h('div', { class: 'hud-fw-name hud-sn-name', title: s.name }, s.name));
+    if (wfree.season.showLabel !== false) {
+      /* The month is the honest second line: it is what the season is derived
+         FROM under a stock map, and the thing that changes under a faster-
+         seasons mod. Day rides it so the countdown below has a reference. */
+      const sub = h('div', { class: 'hud-fw-sub hud-sn-sub' });
+      sub.appendChild(h('b', { class: 'hud-sn-month' }, s.monthName || ''));
+      sub.appendChild(h('i', { class: 'hud-sn-day' }, ''));
+      card.appendChild(sub);
+      if (s.override)
+        card.appendChild(h('div', { class: 'hud-sn-foot is-forced' },
+          'Forced' + (s.overrideName ? ' · ' + s.overrideName : '')));
+      else if (s.fixed)
+        card.appendChild(h('div', { class: 'hud-sn-foot is-forced' }, 'Locked all year'));
+      else if (s.next)
+        card.appendChild(h('div', { class: 'hud-sn-foot hud-sn-next' }, ''));
+    }
+    root.appendChild(card);
+  }
+  /* Whole game days, said the way a person would. */
+  function seasonNextText(nx) {
+    if (!nx || !nx.name) return '';
+    const d = num(nx.in, -1);
+    if (d < 0) return nx.name + ' next';
+    if (d === 0) return nx.name + ' tomorrow';
+    if (d === 1) return nx.name + ' in a day';
+    return nx.name + ' in ' + d + ' days';
+  }
+
   function renderFree() {
     for (const k of FREE_KEYS) {
       const root = elFree[k];
       const on = fwGate(k);
-      const row = (k === 'quick' || k === 'quick2' || k === 'lootStatus') ? null : freeRow(k);
+      const row = (k === 'quick' || k === 'quick2' || k === 'lootStatus' || k === 'season')
+        ? null : k === 'ward' ? wardRow() : freeRow(k);
       const has = k === 'quick' ? quickList().length > 0
         : k === 'quick2' ? q2Rows().length > 0
         : k === 'lootStatus' ? !!lootState()
+        : k === 'season' ? !!seasonData()
         : !!(row && row.kind !== 'empty');
       /* ROUND 3: edit mode draws it whether its switch is on or off. An off
          widget used to be display:none, which left nothing to place — see the
@@ -6129,12 +6337,14 @@
       const sig = (k === 'quick' ? quickSig()
         : k === 'quick2' ? quick2Sig()
         : k === 'lootStatus' ? lootSig()
+        : k === 'season' ? seasonSig()
         : slotCardSig(k, row)) + (ghosted ? '|editoff' : '');
       if (sig !== fwSigs[k]) {
         fwSigs[k] = sig;
         if (k === 'quick') buildQuick();
         else if (k === 'quick2') buildQuick2();
         else if (k === 'lootStatus') buildLoot();
+        else if (k === 'season') buildSeasonCard();
         else buildSlotCard(k, row);
         scheduleIcons();
       }
@@ -6160,6 +6370,15 @@
           const c = art.querySelector('.hud-pin-count');
           if (c && !r.missing && isNum(r.count)) setBump(c, comma(r.count));
         });
+      } else if (k === 'season') {
+        /* Volatile: the day of the month and the countdown. Both move once a
+           game day, so they are written in place instead of rebuilding the card
+           and replaying its entrance every midnight. */
+        const s = seasonData();
+        if (s) {
+          setText(root.querySelector('.hud-sn-day'), isNum(s.day) ? String(s.day) : '');
+          setText(root.querySelector('.hud-sn-next'), seasonNextText(s.next));
+        }
       } else if (k === 'lootStatus') {
         /* the two lamps flip with a class, never a rebuild — this is the whole
            reason the sig does not carry the two booleans */
@@ -6297,7 +6516,8 @@
     bar.appendChild(mk('smaller', '−', 'Smaller'));
     bar.appendChild(mk('bigger', '＋', 'Bigger'));
     bar.appendChild(mk('bare', '◻', 'Bare — drop the plate, keep icon and numbers'));
-    bar.appendChild(mk('label', 'Aa', 'Show or hide the name'));
+    bar.appendChild(mk('label', 'Aa', k === 'season' ?
+      'Show or hide the month and the countdown' : 'Show or hide the name'));
     bar.appendChild(mk('cfg', '⚙', 'Open the widget shelf on this widget — size, options, linking'));
     bar.appendChild(mk('off', '✕', 'Hide this widget (turn it back on in the ⚙ shelf)'));
     root.appendChild(bar);
@@ -6666,6 +6886,9 @@
   window.__hud.fwAccent = fwAccent;
   window.__hud.freeRow = freeRow;
   window.__hud.FREE_KEYS = FREE_KEYS;
+  window.__hud.seasonData = seasonData;
+  window.__hud.seasonNextText = seasonNextText;
+  window.__hud.SEASON_ART = SEASON_ART;
   window.__hud.SICON = SICON;
   window.__hud.selectFree = function (k) { fwSelected = k; renderFree(); };
   /* round 4 surface — the harness drives the picker, the bind capture and the

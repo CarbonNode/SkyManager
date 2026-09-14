@@ -2774,4 +2774,11 @@ namespace Wardrobe
 		std::filesystem::remove(file, ec);
 		return changed;
 	}
+
+	bool IsTrackedActor(const std::string& formId, const std::string& plugin)
+	{
+		if (formId.empty())
+			return false;
+		return TrackedKey(ActorKey(formId, plugin));
+	}
 }

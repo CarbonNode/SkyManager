@@ -120,6 +120,12 @@
          scale; only their builders differ. -->
     <div class="hud-fw is-off" id="hud-fw-quick2" data-fw="quick2"></div>
     <div class="hud-fw is-off" id="hud-fw-lootStatus" data-fw="lootStatus"></div>
+    <!-- Season (2026-08-31): a free widget of its own. Same layer, same drag /
+         anchor / scale machinery — its data comes from Seasons of Skyrim's own
+         Papyrus API, never from the month (see src/widgets.cpp SeasonJson). -->
+    <div class="hud-fw is-off" id="hud-fw-season" data-fw="season"></div>
+    <!-- Ward (2026-09-01): another free widget — is a ward up right now? -->
+    <div class="hud-fw is-off" id="hud-fw-ward" data-fw="ward"></div>
   </div>
 
   <!-- Round 4 popouts. They live OUTSIDE #hud for the same reason the ⚙ card

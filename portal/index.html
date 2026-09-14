@@ -108,9 +108,24 @@ nav#tabs { display: flex; gap: 6px; margin-top: 9px; }
 .tab.on { color: var(--gold-hi); border-color: rgba(201,162,75,.55); background: rgba(201,162,75,.08); }
 .tab .n { color: var(--muted-2); font-size: 11.5px; margin-left: 5px; }
 .tab.on .n { color: var(--gold-soft); }
-/* Full-width thumb targets on a phone; content-width pills once there's room,
-   so the desktop header doesn't read as two enormous slabs. */
-@media (min-width: 700px) { .tab { flex: 0 0 auto; padding: 9px 20px; } }
+/* Full-width thumb targets on a phone; above that the rail is a GRID of equal
+   columns that wraps, not a flex row of content-width pills.
+   Two reasons, and the first one is a bug this fixes:
+     · a non-wrapping flex row has nowhere to put the 14th tab, so the last
+       tabs ran straight off the right edge of the page and were unreachable.
+       Adding the Standing tab is what tipped it over. A nav that can hide its
+       own items is broken, not merely untidy.
+     · equal columns give the row a rhythm — every tab the same width, rows
+       flush edge to edge, the count badges lining up down the page — which is
+       the standing requirement for every surface here (order, symmetry).
+   auto-fit keeps it honest as tabs are added or the window is resized: the
+   column count follows the width instead of being a number someone has to
+   remember to bump. .tab already ellipsises, so a narrow column truncates a
+   label rather than bleeding out of its cell. */
+@media (min-width: 700px) {
+  nav#tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(126px, 1fr)); gap: 6px; }
+  .tab { flex: none; padding: 9px 12px; text-align: center; }
+}
 /* …but SEVEN tabs no longer divide into 390px: at one-seventh each, every
    label collapsed to "P… S… H…" and the bar stopped being navigation. Below
    the breakpoint the row therefore SCROLLS instead of squeezing — each tab
@@ -277,10 +292,19 @@ img.wd-item-render { filter: brightness(1.5) saturate(1.08) contrast(1.04); }
   border: 1px solid var(--bad-line); background: var(--bad-bg); color: #e0b0b0;
   font-size: 13px;
 }
-.banner b { display: block; margin-bottom: 3px; color: var(--bad); }
-/* The block rule above is right for a banner's TITLE and wrong for emphasis
-   inside its sentence — "apply in-game / within a second / while playing" read
-   as three fragments. `.in` is the inline flavour, for a few words mid-line. */
+/* A banner's TITLE is its FIRST <b> and owns its own line; every other <b> in
+   it is emphasis inside a sentence and must stay inline.
+   This used to be the other way round — block for ALL of them, opt out with
+   `b.in` — and the opt-out is exactly the kind of thing a call site forgets.
+   Four of them had: the Faces, Spells, Finances and Followers banners each
+   broke a sentence into three fragments ("Open the / Faces / tab in-game
+   once…"). Making the FIRST one the special case means a mid-sentence <b> is
+   right by default and there is nothing left to remember.
+   Colour is kept on its own rule so `.banner.warn b` still wins it. */
+.banner b { color: var(--bad); }
+.banner > b:first-child { display: block; margin-bottom: 3px; }
+/* `.in` stays: existing markup uses it, and it is still the explicit way to
+   say "inline" if a banner ever needs a non-title <b> first. */
 .banner b.in { display: inline; margin: 0; }
 .banner code { font-family: Consolas, ui-monospace, monospace; font-size: 12px; color: var(--gold-soft); word-break: break-all; }
 /* break-all is right for a 90-character Windows path, and wrong for a filename
@@ -2114,6 +2138,185 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
   .ct-sel { max-width: 100%; }
   .ct-acts .btn { flex: 1 1 100%; }
 }
+
+/* ---------------- Standing (the court ledger) ----------------
+   GEOMETRY IS THE POINT HERE (Rober, 2026-09-14: "i like order, simetricalness").
+   Every row on this tab is a GRID of equal cells, never a flex row of
+   content-sized ones — a ragged right edge is the thing that reads as
+   disorganised at a glance, before a word of it has been read. Three rules
+   this sheet keeps and should keep:
+     · equal columns, flush rows (auto-fill + minmax, never flex-wrap)
+     · a set that doesn't divide evenly gets its odd member promoted to its own
+       full-width row, so it reads as deliberate rather than left over
+     · every card has the SAME internal row structure, so badges and chips line
+       up horizontally straight across the grid
+   Sizes stay at the large end of this sheet: nothing under 13.5px, 44px+ on
+   anything tappable.
+
+   ⚠ EVERY class here is cst-prefixed, including the ones inside a card, and
+   that is not tidiness. This sheet has BARE one- and two-letter classes in it
+   — `.lb` is the lightbox PANEL (gradient, border, radius, width:100%). A chip
+   label shipped as <span class="lb"> inherited the whole panel and drew a
+   lighter capsule inside every filter chip. Name a new inner element cst-<x>
+   even when the obvious short name looks free. */
+
+/* four tiles, two-up on a phone, four-up with room — always equal, never ragged */
+.cst-sum { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 2px 0 16px; }
+@media (min-width: 760px) { .cst-sum { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.cst-sum .cell {
+  display: flex; flex-direction: column; justify-content: space-between; gap: 6px;
+  min-height: 74px; padding: 11px 14px;
+  border: 1px solid var(--line-hi); border-radius: 12px; background: rgba(255,255,255,.03);
+}
+.cst-sum .k { font-size: 12.5px; color: var(--muted); letter-spacing: .3px; line-height: 1.3; }
+.cst-sum .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cst-sum .v.warn { color: #e0b64a; }
+.cst-sum .v.dim  { color: var(--muted); font-size: 15px; font-weight: 500; }
+.cst-hint { font-size: 14px; line-height: 1.55; color: var(--text-dim); margin: 0 0 14px; }
+
+/* one grid, identical widths, counts flush right — so the numbers make their
+   own column down the page instead of floating wherever the label ends */
+.cst-filters { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); margin: 0 0 6px; }
+.cst-filters .chip {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; min-height: 46px; padding: 10px 14px; font-size: 13.5px; text-align: left;
+}
+.cst-filters .chip .n { color: var(--muted-2); font-size: 12.5px; font-variant-numeric: tabular-nums; flex: none; }
+.cst-filters .chip.on .n { color: var(--gold-soft); }
+.cst-filters .chip .cst-lb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* rung groups — the list is a hierarchy, so it is drawn as one: highest rung
+   first, each group its own header and its own even grid */
+.cst-group { margin-top: 22px; }
+.cst-group-head {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 7px 0 9px; margin-bottom: 11px; border-bottom: 1px solid var(--line-hi);
+}
+.cst-group-head .rn {
+  flex: none; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--muted-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 2px 8px;
+}
+.cst-group-head .t { font-size: 13px; font-weight: 700; letter-spacing: 1.3px; text-transform: uppercase; color: var(--gold); }
+.cst-group-head .n { margin-left: auto; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.cst-list { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+@media (min-width: 1060px) { .cst-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* an open card takes the full width back: the rung grid and the paragraph
+   inside it want the room more than the column beside it does */
+@media (min-width: 1060px) { .cst-card.open { grid-column: 1 / -1; } }
+
+.cst-card {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--line); border-radius: 13px; background: var(--card);
+  transition: border-color var(--ease), background var(--ease);
+}
+.cst-card:hover { border-color: var(--line-hi); background: var(--card-hi); }
+.cst-card.open { border-color: rgba(201,162,75,.45); background: var(--card-hi); }
+
+/* THE fixed card skeleton: [crest] [name / meta / chips] [rung badge + caret].
+   Three columns and three rows, identical on every card, so a grid of them
+   lines up straight across and every card in a row is the same height. */
+.cst-head {
+  display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 8px 13px;
+  align-items: start; width: 100%; flex: 1 1 auto;
+  padding: 14px; background: none; border: 0; border-radius: 13px; text-align: left;
+}
+.cst-head:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+.cst-crest {
+  grid-row: 1 / span 3; align-self: start;
+  width: 48px; height: 48px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 700; letter-spacing: .5px;
+  color: hsl(var(--h) 62% 78%); background: hsl(var(--h) 34% 16%);
+  border: 1px solid hsl(var(--h) 38% 30%);
+}
+.cst-b { grid-column: 2; min-width: 0; }
+.cst-name { display: block; font-size: 17px; font-weight: 600; color: var(--text); line-height: 1.3; overflow-wrap: anywhere; }
+.cst-sub {
+  display: block; font-size: 14px; color: var(--text-dim); margin-top: 3px; line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.cst-sub .addr { color: var(--muted); }
+/* the chips row EXISTS on every card even when empty — that is what keeps the
+   card heights equal and the chips on one horizontal line across the grid */
+.cst-facts {
+  grid-column: 2; display: flex; gap: 7px; flex-wrap: wrap; align-content: flex-start;
+  min-height: 28px; margin-top: 2px;
+}
+.cst-facts .pill { font-size: 12.5px; padding: 4px 9px; }
+.cst-facts .pill.wed  { border-color: rgba(201,162,75,.5); color: var(--gold-soft); background: rgba(201,162,75,.08); }
+.cst-facts .pill.preg { border-color: var(--good-line); color: var(--good); background: var(--good-bg); }
+.cst-facts .pill.dim  { color: var(--muted-2); border-style: dashed; }
+/* right rail: the rung number sits at the same x on every card, so the eye can
+   run straight down the column and read the household off it */
+.cst-rail { grid-column: 3; grid-row: 1 / span 3; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.cst-badge {
+  font-size: 11.5px; font-variant-numeric: tabular-nums; letter-spacing: .4px;
+  color: hsl(var(--h) 55% 74%); background: hsl(var(--h) 30% 14%);
+  border: 1px solid hsl(var(--h) 34% 28%); border-radius: 8px; padding: 3px 8px; white-space: nowrap;
+}
+.cst-caret { color: var(--muted-2); font-size: 15px; line-height: 1; }
+.cst-card.open .cst-caret { color: var(--gold-soft); }
+
+.cst-body { padding: 0 14px 14px; border-top: 1px solid var(--line); padding-top: 15px; }
+.cst-lab {
+  font-size: 12.5px; letter-spacing: 1.2px; text-transform: uppercase;
+  color: var(--gold); font-weight: 700; margin: 0 0 10px;
+}
+.cst-lab.sp { margin-top: 22px; }
+/* six rungs in a grid that DIVIDES — 1, 2 or 3 columns, never a dangling
+   seventh. The rank-only default is not one of the six: it gets its own
+   full-width row below, which is what it is. */
+.cst-rungs { display: grid; gap: 9px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 560px)  { .cst-rungs { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1060px) { .cst-rungs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.cst-rungs.tail { margin-top: 9px; grid-template-columns: minmax(0, 1fr); }
+.cst-rung {
+  display: flex; flex-direction: column; gap: 5px; align-items: flex-start;
+  min-height: 74px; padding: 11px 13px; text-align: left;
+  border: 1px solid var(--line-hi); border-radius: 11px; background: transparent;
+  color: var(--text-dim); transition: border-color var(--ease), background var(--ease), color var(--ease);
+}
+.cst-rung:hover { border-color: rgba(201,162,75,.5); color: var(--text); background: rgba(201,162,75,.05); }
+.cst-rung.on { border-color: rgba(201,162,75,.65); background: rgba(201,162,75,.12); color: var(--gold-hi); }
+.cst-rung .t { display: flex; align-items: baseline; gap: 8px; width: 100%; font-size: 15px; font-weight: 600; }
+.cst-rung .t .rn { margin-left: auto; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--muted-2); }
+.cst-rung.on .t .rn { color: var(--gold-soft); }
+.cst-rung .d { font-size: 13px; color: var(--muted); line-height: 1.45; }
+.cst-rung.on .d { color: var(--gold-soft); }
+.cst-rung:disabled { opacity: .45; }
+.cst-rung:focus-visible,
+.cst-filters .chip:focus-visible { outline: 2px solid var(--gold-hi); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .cst-card, .cst-rung { transition: none; } }
+
+.cst-fields { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 640px) { .cst-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.cst-f { display: flex; flex-direction: column; gap: 5px; }
+.cst-f.wide { grid-column: 1 / -1; }
+.cst-f label { font-size: 13.5px; color: var(--text-dim); }
+.cst-f .why { font-size: 12.5px; color: var(--muted-2); line-height: 1.45; }
+.cst-f input {
+  min-height: 46px; padding: 10px 13px; font-size: 16px;   /* 16px: anything less zooms iOS */
+  border: 1px solid var(--line-hi); border-radius: 10px;
+  background: rgba(0,0,0,.25); color: var(--text);
+}
+.cst-f input:focus { outline: none; border-color: rgba(201,162,75,.6); box-shadow: 0 0 0 3px rgba(201,162,75,.10); }
+/* equal buttons, flush row — not flex:auto, which sizes each one to its own label */
+.cst-acts { display: grid; gap: 9px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-top: 18px; }
+.cst-acts .btn { min-height: 48px; font-size: 15px; width: 100%; }
+
+.cst-block {
+  margin: 0; padding: 14px 16px; font-size: 14.5px; line-height: 1.65;
+  color: var(--text-dim); background: rgba(0,0,0,.24);
+  border: 1px solid var(--line); border-left: 3px solid rgba(201,162,75,.5);
+  border-radius: 10px; white-space: pre-wrap;
+}
+.cst-block.dim { color: var(--muted-2); font-style: italic; white-space: normal; }
+.cst-empty {
+  border: 1px dashed var(--line-hi); border-radius: 12px;
+  padding: 18px; color: var(--text-dim); font-size: 14.5px; line-height: 1.55;
+}
+.cst-skel { height: 104px; border-radius: 13px; border: 1px solid var(--line); background: var(--card); }
 </style>
 </head>
 <body>
@@ -2133,6 +2336,7 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
       <button class="tab" data-tab="hotkeys" type="button">Hotkeys <span class="n" id="n-hotkeys"></span></button>
       <button class="tab" data-tab="finances" type="button">Finances <span class="n" id="n-finances"></span></button>
       <button class="tab" data-tab="wardrobe" type="button">Wardrobe <span class="n" id="n-wardrobe"></span></button>
+      <button class="tab" data-tab="loadouts" type="button">Loadouts <span class="n" id="n-loadouts"></span></button>
       <button class="tab" data-tab="domains" type="button">Domains <span class="n" id="n-domains"></span></button>
       <button class="tab" data-tab="containers" type="button">Containers <span class="n" id="n-containers"></span></button>
       <button class="tab" data-tab="bases" type="button">Bases <span class="n" id="n-bases"></span></button>
@@ -2140,6 +2344,7 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
       <button class="tab" data-tab="ask" type="button">Ask</button>
       <button class="tab" data-tab="faces" type="button">Faces <span class="n" id="n-faces"></span></button>
       <button class="tab" data-tab="journal" type="button">Journal <span class="n" id="n-journal"></span></button>
+      <button class="tab" data-tab="court" type="button">Standing <span class="n" id="n-court"></span></button>
     </nav>
     <div class="toolbar">
       <span class="search-wrap">
@@ -2175,6 +2380,17 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
     <div id="finances-body"></div>
   </main>
 
+  <!-- Loadouts. The deck's Loadouts tab on the phone: your follower groups,
+       who is in each and the class each one plays, plus the gear classes and
+       their wearers. READ-ONLY on purpose — a group order is a physical act
+       (teleports, NFF recruitment, combat) that only means anything with the
+       game running and that a phone cannot witness, so commanding stays
+       in-game. Reads the deck's own `loadouts.json`, a SIBLING of
+       hotkeys.json rather than a slice of it. -->
+  <main id="pane-loadouts" hidden>
+    <div id="loadouts-body"></div>
+  </main>
+
   <main id="pane-domains" hidden>
     <div id="domains-body"></div>
   </main>
@@ -2193,6 +2409,16 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
        a spot needs the player's body, so it stays in-game. -->
   <main id="pane-bases" hidden>
     <div id="bases-body"></div>
+  </main>
+
+  <!-- Standing — the court ledger: where every NPC stands under the player,
+       is what CHIM's `court` ext plugin injects into her prompt on every line
+       she speaks. The rungs live in Postgres inside the CHIM WSL box (only up
+       while the game is), so the page is cached and dated; the marriage and
+       pregnancy chips come from court-status.json, which the deck DLL writes
+       and which needs neither WSL nor a running game to read. -->
+  <main id="pane-court" hidden>
+    <div id="court-body"></div>
   </main>
 
   <!-- Journal. The one pane that edits a game-owned file DIRECTLY (see the
@@ -2428,6 +2654,7 @@ var state = {
      come from the plugin's export; the four write ops are queued, and two of
      them mark the PLAYER'S FEET — see mhiyhRowFor() and mhSend(). */
   mhiyh: null,
+  loadouts: null,      // /api/loadouts payload — follower groups + gear classes (read-only)
   domains: null,       // /api/domains payload — marked places + which have an image
   containers: null,    // /api/containers payload — marked containers + rules + loan
   journal: null,       // /api/journal payload — the whole journal + its picture pool
@@ -2605,7 +2832,7 @@ function fetchAll() {
     api('GET', '/api/mhiyh'), api('GET', '/api/spell-cat-icons'), api('GET', '/api/faces'),
     api('GET', '/api/bases'), api('GET', '/api/sheet'),
     api('GET', '/api/combat-art-icons'), api('GET', '/api/journal'),
-    api('GET', '/api/containers'),
+    api('GET', '/api/containers'), api('GET', '/api/loadouts'),
   ]).then(function (r) {
     state.roster = r[0];
     state.icons = r[1];
@@ -2617,6 +2844,7 @@ function fetchAll() {
     state.worn = r[7];
     state.nff = r[8];
     state.domains = r[9];
+    state.loadouts = r[19];
     state.roost = r[10];
     state.mhiyh = r[11];
     foldSpellCats(r[12]);
@@ -2702,6 +2930,11 @@ function paintStatus() {
      it and would be meaningless squeezed into a tab chip. */
   $('n-dragons').textContent = (state.roost && !state.roost.waiting
     ? ((state.roost.dragons || []).length) : 0) || '';
+  /* Standing is loaded lazily (its read shells into WSL), so this stays blank
+     until the tab has been opened once — blank is the honest answer for a
+     number nobody has asked for yet. */
+  $('n-court').textContent = (state.court && state.court.ok
+    ? ((state.court.rows || []).length) : 0) || '';
 }
 
 function loadAll() {
@@ -9360,6 +9593,142 @@ function renderContainers() {
   $('n-containers').textContent = marks.length ? String(marks.length) : '';
 }
 
+/* ---------------------------------------------------------- Loadouts ----
+ * The deck's Loadouts tab, read-only. Groups first (who is in each and the
+ * class she plays there), then the classes themselves with their wearers.
+ * Both halves are the portal's standard .grid, so the cells stay equal and
+ * the rows stay flush at every width instead of wrapping ragged.
+ */
+function loMatchGroup(l, q) {
+  if (!q) return true;
+  if (l.name.toLowerCase().indexOf(q) !== -1) return true;
+  if ((l.note || '').toLowerCase().indexOf(q) !== -1) return true;
+  return l.members.some(function (m) {
+    return m.name.toLowerCase().indexOf(q) !== -1 ||
+           (m.className || '').toLowerCase().indexOf(q) !== -1;
+  });
+}
+
+function loMatchClass(c, q) {
+  if (!q) return true;
+  if (c.name.toLowerCase().indexOf(q) !== -1) return true;
+  if ((c.styleName || '').toLowerCase().indexOf(q) !== -1) return true;
+  if (c.gear.some(function (g) { return g.name.toLowerCase().indexOf(q) !== -1; })) return true;
+  return c.wearers.some(function (w) { return w.name.toLowerCase().indexOf(q) !== -1; });
+}
+
+function renderLoadouts() {
+  var host = $('loadouts-body');
+  var ls = state.loadouts;
+
+  if (state.loading && !ls) {
+    host.innerHTML = '<div class="cat"><div class="grid">' +
+      new Array(7).join('x').split('x').map(function () { return '<div class="sk"></div>'; }).join('') +
+      '</div></div>';
+    return;
+  }
+
+  if (ls && !ls.ok) {
+    host.innerHTML = '<div class="banner"><b>Loadouts unavailable</b>' + esc(ls.error || '') +
+      '<div style="margin-top:6px">Groups are read from the deck\'s own <code>loadouts.json</code>, ' +
+      'beside <code>hotkeys.json</code>. Make a group in-game (deck ▸ Loadouts ▸ ＋ New group), then hit ⟳.</div></div>';
+    $('n-loadouts').textContent = '';
+    return;
+  }
+
+  var q = state.q.trim().toLowerCase();
+  var groups = ((ls && ls.loadouts) || []).filter(function (l) { return loMatchGroup(l, q); });
+  var classes = ((ls && ls.classes) || []).filter(function (c) { return loMatchClass(c, q); });
+  var total = ((ls && ls.loadouts) || []).length;
+  $('n-loadouts').textContent = total ? String(total) : '';
+
+  if (!total) {
+    host.innerHTML = '<div class="banner"><b>No groups yet</b>' +
+      'A group is a squad you bring with one press — the escort, the hunting party, the honour guard. ' +
+      'Make one in-game: deck ▸ Loadouts ▸ ＋ New group.</div>';
+    return;
+  }
+
+  if (!groups.length && !classes.length) {
+    host.innerHTML = '<div class="banner"><b>Nothing matches “' + esc(state.q.trim()) + '”</b>' +
+      'Group names, notes, the people in them, class names and their gear are all searched.</div>';
+    return;
+  }
+
+  var html = '';
+
+  if (groups.length) {
+    html += '<div class="cat"><div class="cat-head"><b>Groups</b>' +
+      '<span class="n">' + groups.length + '</span></div><div class="grid">';
+    html += groups.map(function (l) {
+      var classed = l.members.filter(function (m) { return !!m.cls; }).length;
+      var keyed = ls.active && ls.active === l.id;
+      var people = l.members.length
+        ? l.members.map(function (m) {
+            return '<span class="chip" title="' + esc(m.name) +
+              (m.className ? ' — ' + esc(m.className) : ' — no class in this group') + '">' +
+              hi(m.name, q) + (m.className ? ' <b>' + hi(m.className, q) + '</b>' : '') + '</span>';
+          }).join('')
+        : '<span class="mtext">Nobody in this group yet</span>';
+      return '<div class="card">' +
+        '<span class="body">' +
+          '<span class="nm" title="' + esc(l.name) + '">' +
+            (l.icon ? esc(l.icon) + ' ' : '') + hi(l.name, q) +
+            (keyed ? ' <span class="pill" title="Your Group: keys command this one in-game">★ keyed</span>' : '') +
+          '</span>' +
+          '<span class="meta"><span class="mtext">' +
+            l.members.length + (l.members.length === 1 ? ' follower' : ' followers') +
+            ' · ' + classed + '/' + l.members.length + ' classed' +
+          '</span></span>' +
+          (l.note ? '<span class="meta"><span class="mtext">' + hi(l.note, q) + '</span></span>' : '') +
+          '<span class="chips">' + people + '</span>' +
+        '</span>' +
+      '</div>';
+    }).join('');
+    html += '</div></div>';
+  }
+
+  if (classes.length) {
+    html += '<div class="cat"><div class="cat-head"><b>Gear classes</b>' +
+      '<span class="n">' + classes.length + '</span></div><div class="grid">';
+    html += classes.map(function (c) {
+      var gear = c.gear.length
+        ? c.gear.map(function (g) {
+            return '<span class="chip" title="' + esc(g.kind) + ' · ' + esc(g.plugin) + '">' +
+              hi(g.name, q) + (g.count > 1 ? ' ×' + g.count : '') + '</span>';
+          }).join('')
+        : '<span class="mtext">No gear in this kit yet</span>';
+      var wearers = c.wearers.length
+        ? c.wearers.map(function (w) {
+            return '<span class="chip" title="in ' + esc(w.group) + '">' + hi(w.name, q) + '</span>';
+          }).join('')
+        : '<span class="mtext">Nobody plays this class yet</span>';
+      return '<div class="card">' +
+        '<span class="body">' +
+          '<span class="nm" title="' + esc(c.name) + '">' +
+            (c.icon ? esc(c.icon) + ' ' : '') + hi(c.name, q) + '</span>' +
+          '<span class="meta"><span class="mtext">' +
+            c.gear.length + (c.gear.length === 1 ? ' piece' : ' pieces') +
+            ' · ' + (c.styleName ? hi(c.styleName, q) : 'her own style') +
+            ' · ' + (c.replace ? 'replaces worn armour' : 'adds on top') +
+          '</span></span>' +
+          '<span class="chips">' + gear + '</span>' +
+          '<span class="meta"><span class="mtext">Worn by</span></span>' +
+          '<span class="chips">' + wearers + '</span>' +
+        '</span>' +
+      '</div>';
+    }).join('');
+    html += '</div></div>';
+  }
+
+  html += '<div class="banner" style="margin-top:14px"><b>Read-only</b>' +
+    'Deploy, Swap, Follow, Wait and Sic \'em are physical orders — they teleport people, ' +
+    'recruit through NFF and start fights — so they only run in-game, where you can see what happened. ' +
+    'Give a group a ★ in the deck and your <b>Group:</b> keys command it without opening the palette.</div>';
+
+  host.innerHTML = html;
+}
+
 function renderDomains() {
   var host = $('domains-body');
   var dstate = state.domains;
@@ -12997,6 +13366,461 @@ function renderBases() {
   });
 }
 
+/* ===================== Standing (the court ledger) =====================
+   What every NPC is told about where she stands with the player — the block the
+   CHIM `court` ext plugin injects into her prompt on every line she speaks.
+
+   Two sources, two failure modes, and the page always says which it is on:
+     · the LEDGER (rungs) lives in Postgres inside the CHIM WSL box, which is
+       only up while the game is. Down = the server hands us its cached copy
+       and we date it and disable the writes, rather than drawing stale rungs
+       as though they were live.
+     · the LIVE FACTS (married / carrying a child) come from court-status.json,
+       written by the deck DLL. Pure file read: it survives the game closing,
+       so it is shown with its age instead of being hidden.
+
+   The rung buttons edit a DRAFT, not the row — one Save commits the lot. A
+   rung that wrote itself the instant a thumb brushed it would be the wrong
+   kind of responsive on a phone. */
+
+var courtUi = {
+  sel: null,          // npc_name of the open card
+  filter: 'all',      // 'all' | 'none' | a rung number as a string
+  busy: false,
+  loading: false,
+  loaded: false,
+  err: null,
+  draft: {},          // npc_name -> { rung, kind, address, note }
+  preview: {},        // npc_name -> { loading, block, err }
+};
+
+var COURT_HUE = { 0: 355, 1: 205, 2: 330, 3: 42, 4: 150, 5: 275, 9: 40 };
+function courtHue(r) { var h = COURT_HUE[Number(r)]; return h === undefined ? 40 : h; }
+
+function courtData() { return state.court || null; }
+function courtRungs() {
+  var d = courtData();
+  return (d && d.rungs && d.rungs.length) ? d.rungs : [];
+}
+function courtRung(r) {
+  var all = courtRungs();
+  for (var i = 0; i < all.length; i++) if (Number(all[i].rung) === Number(r)) return all[i];
+  return { rung: Number(r), label: 'rung ' + r, address: 'by rank', blurb: '' };
+}
+function courtIsLocked(row) {
+  var v = row && row.locked;
+  return v === true || v === 't' || v === '1' || v === 1;
+}
+
+/* court-status.json keys by display name; CHIM rows key by npc_name, and the
+   two agree except for case and the odd middot — so fall back the same way
+   court_lib.php's court_live_status() does rather than showing no facts. */
+function courtLive(name) {
+  var d = courtData();
+  var a = d && d.live && d.live.actors;
+  if (!a || !name) return null;
+  if (a[name]) return a[name];
+  var lc = String(name).toLowerCase();
+  for (var k in a) if (Object.prototype.hasOwnProperty.call(a, k) && k.toLowerCase() === lc) return a[k];
+  return null;
+}
+
+var COURT_WIFE_RANK = ['his first wife', 'his second wife', 'his third wife', 'his fourth wife', 'one of his later wives'];
+/** Her live facts as an ARRAY of pills — the card owns the row they go in, so
+ *  the same kind of chip lands in the same place on every card. */
+function courtFactPills(name) {
+  var live = courtLive(name);
+  if (!live) return [];
+  var out = [];
+  var m = live.maras;
+  if (m && m.spouse) {
+    var rank = (m.hierarchy === undefined || m.hierarchy === null)
+      ? 'his wife' : COURT_WIFE_RANK[Math.min(4, Math.max(0, Number(m.hierarchy)))];
+    out.push('<span class="pill wed">\u{1F48D} ' + esc(rank) + (m.affectionWord ? ' \u00b7 ' + esc(m.affectionWord) : '') + '</span>');
+  }
+  var f = live.fertility;
+  if (f && f.pregnant) {
+    var when = f.termDays ? ('day ' + Number(f.day || 0) + ' of ' + Number(f.termDays)) : ('day ' + Number(f.day || 0));
+    var tri = f.trimester ? ' \u00b7 ' + ['', 'early', 'showing', 'near her time'][Math.min(3, Number(f.trimester))] : '';
+    out.push('<span class="pill preg">\u25CD carrying a child \u2014 ' + esc(when + tri) + '</span>');
+  } else if (f && f.ovulating) {
+    out.push('<span class="pill">\u2661 her fertile days</span>');
+  }
+  if ((live.categories || []).length) {
+    out.push('<span class="pill">' + esc(live.categories.slice(0, 3).join(' \u00b7 ')) + '</span>');
+  }
+  return out;
+}
+
+/* Every row the list can hold: the real ledger rows, then the registered NPCs
+   with no row at all — those are the ones silently running on the rank-only
+   default, which is exactly the thing this page exists to surface. */
+function courtRows() {
+  var d = courtData();
+  if (!d) return [];
+  var rows = (d.rows || []).map(function (r) {
+    return {
+      name: r.npc_name, rung: Number(r.rung), kind: r.kind || '', address: r.address || '',
+      note: r.note || '', source: r.source || '', locked: courtIsLocked(r),
+      chim: r.chim_id ? true : false, has: true,
+    };
+  });
+  (d.noRow || []).forEach(function (n) {
+    rows.push({ name: n, rung: 9, kind: '', address: '', note: '', source: '', locked: false, chim: true, has: false });
+  });
+  return rows;
+}
+
+function courtMatch(r, q) {
+  if (!q) return true;
+  var live = courtLive(r.name);
+  var hay = [r.name, r.kind, r.address, r.note, courtRung(r.rung).label, r.source,
+    live && live.categories ? live.categories.join(' ') : '',
+    live && live.maras && live.maras.spouse ? 'married wife spouse' : '',
+    live && live.fertility && live.fertility.pregnant ? 'pregnant expecting' : '',
+  ].join(' ').toLowerCase();
+  return q.toLowerCase().split(/\s+/).filter(Boolean).every(function (t) { return hay.indexOf(t) !== -1; });
+}
+
+function courtDraft(r) {
+  if (!courtUi.draft[r.name]) {
+    courtUi.draft[r.name] = { rung: r.rung, kind: r.kind, address: r.address, note: r.note };
+  }
+  return courtUi.draft[r.name];
+}
+function courtDirty(r) {
+  var d = courtUi.draft[r.name];
+  if (!d) return false;
+  return Number(d.rung) !== Number(r.rung) || String(d.kind) !== String(r.kind) ||
+         String(d.address) !== String(r.address) || String(d.note) !== String(r.note) || !r.has;
+}
+
+function refreshCourt() {
+  courtUi.loading = true;
+  return api('GET', '/api/court').then(function (r) {
+    courtUi.loading = false;
+    courtUi.loaded = true;
+    courtUi.err = (r && r.ok) ? null : ((r && r.error) || 'The portal could not read the standing ledger');
+    if (r && r.ok) state.court = r;
+    if (state.tab === 'court') renderCourt();
+    paintStatus();
+  });
+}
+
+/* Lazy: the ledger read shells into WSL and can take seconds, so it is NOT in
+   fetchAll() — a tab nobody opened must not slow down every page load. */
+function courtEnsure() {
+  if (courtUi.loaded || courtUi.loading) return;
+  refreshCourt();
+}
+
+function courtPreview(name) {
+  if (courtUi.preview[name]) return;
+  courtUi.preview[name] = { loading: true };
+  api('GET', '/api/court-preview?name=' + encodeURIComponent(name)).then(function (r) {
+    courtUi.preview[name] = (r && r.ok)
+      ? { block: String(r.block || '').replace(/^<standing>\s*/, '').replace(/\s*<\/standing>$/, '') }
+      : { err: (r && r.error) || 'CHIM did not answer' };
+    if (state.tab === 'court') renderCourt();
+  });
+}
+
+function courtSave(r) {
+  if (courtUi.busy) return;
+  var d = courtDraft(r);
+  courtUi.busy = true;
+  renderCourt();
+  api('POST', '/api/court-set', {
+    name: r.name, rung: Number(d.rung), kind: d.kind, address: d.address, note: d.note,
+  }).then(function (res) {
+    courtUi.busy = false;
+    if (!res || !res.ok) { toast((res && res.error) || 'That standing change didn’t take', 'bad'); renderCourt(); return; }
+    delete courtUi.draft[r.name];
+    delete courtUi.preview[r.name];          // the block it renders has changed
+    if (state.court) { state.court.rows = res.rows || state.court.rows; state.court.noRow = res.noRow || state.court.noRow;
+                       state.court.ledger = res.ledger || state.court.ledger; }
+    toast(r.name + ' → ' + courtRung(d.rung).label, '');
+    renderCourt();
+  });
+}
+
+function courtLockToggle(r) {
+  if (courtUi.busy) return;
+  courtUi.busy = true;
+  renderCourt();
+  api('POST', '/api/court-lock', { name: r.name, on: !r.locked }).then(function (res) {
+    courtUi.busy = false;
+    if (!res || !res.ok) { toast((res && res.error) || 'Could not change the lock', 'bad'); renderCourt(); return; }
+    refreshCourt();
+  });
+}
+
+function courtAge(ms) {
+  var s = Math.max(0, Math.round(ms / 1000));
+  if (s < 90) return s + 's ago';
+  var mnt = Math.round(s / 60);
+  if (mnt < 90) return mnt + ' min ago';
+  var h = Math.round(mnt / 60);
+  if (h < 36) return h + 'h ago';
+  return Math.round(h / 24) + ' days ago';
+}
+
+/* The household reads top-down, so the list is drawn that way: highest rung
+   first, each rung its own titled group and its own even grid. A flat list of
+   68 people sorted by a number is data; this is a court. */
+var COURT_GROUP_ORDER = [5, 4, 3, 2, 1, 0];
+
+/* Short plurals for the filter rail. The full ladder label is the group
+   heading below; a chip that has to ellipsis its own name on a phone is a chip
+   with the wrong label, not a chip that needs more room. */
+var COURT_CHIP_LABEL = {
+  0: 'Slaves & thralls', 1: 'Servants', 2: 'Wives & mistresses',
+  3: 'Noble wives', 4: 'Companions', 5: 'Peers',
+};
+
+function courtCard(r, q) {
+  var open = courtUi.sel === r.name;
+  var spec = courtRung(r.rung);
+  var d = open ? courtDraft(r) : null;
+  var kind = r.kind || spec.label;
+  var addr = r.address || spec.address;
+
+  /* One chips row, always present. Order is fixed so the same KIND of chip sits
+     in the same place on every card: state first, then the live facts. */
+  var chips = [];
+  if (!r.has) chips.push('<span class="pill dim">◌ no row — rank only</span>');
+  else if (r.locked) chips.push('<span class="pill">🔒 locked</span>');
+  else if (r.source && r.source !== 'manual') chips.push('<span class="pill">' + esc(r.source.replace(/_/g, ' ')) + '</span>');
+  chips = chips.concat(courtFactPills(r.name));
+  if (!chips.length) chips.push('<span class="pill dim">no live facts yet</span>');
+
+  var html = '<div class="cst-card' + (open ? ' open' : '') + '">' +
+    '<button type="button" class="cst-head" data-cact="open" data-nm="' + esc(r.name) + '"' +
+      ' aria-expanded="' + (open ? 'true' : 'false') + '">' +
+      '<span class="cst-crest" aria-hidden="true" style="--h:' + courtHue(r.rung) + '">' + esc(initials(r.name)) + '</span>' +
+      '<span class="cst-b">' +
+        '<span class="cst-name">' + hi(r.name, q) + '</span>' +
+        '<span class="cst-sub">' + hi(kind, q) + ' · <span class="addr">calls him “' + esc(addr) + '”</span></span>' +
+      '</span>' +
+      '<span class="cst-facts">' + chips.join('') + '</span>' +
+      '<span class="cst-rail">' +
+        '<span class="cst-badge" style="--h:' + courtHue(r.rung) + '">rung ' + r.rung + '</span>' +
+        '<span class="cst-caret">' + (open ? '▾' : '▸') + '</span>' +
+      '</span>' +
+    '</button>';
+
+  if (!open) return html + '</div>';
+
+  var writable = courtData() && courtData().ledger && courtData().ledger.source === 'live';
+  var rungBtn = function (spec2) {
+    return '<button type="button" class="cst-rung' + (Number(d.rung) === Number(spec2.rung) ? ' on' : '') + '"' +
+      ' data-cact="rung" data-nm="' + esc(r.name) + '" data-rung="' + spec2.rung + '"' +
+      ' aria-pressed="' + (Number(d.rung) === Number(spec2.rung) ? 'true' : 'false') + '"' +
+      (writable ? '' : ' disabled') + '>' +
+      '<span class="t">' + esc(spec2.label) + '<span class="rn">' + spec2.rung + '</span></span>' +
+      '<span class="d">' + esc(spec2.blurb) + '</span></button>';
+  };
+  var ladder = courtRungs().filter(function (x) { return Number(x.rung) !== 9; });
+  var tail = courtRungs().filter(function (x) { return Number(x.rung) === 9; });
+
+  html += '<div class="cst-body">' +
+    '<div class="cst-lab">Where ' + esc(r.name.split(/\s+/)[0]) + ' stands</div>' +
+    '<div class="cst-rungs">' + ladder.map(rungBtn).join('') + '</div>' +
+    (tail.length ? '<div class="cst-rungs tail">' + tail.map(rungBtn).join('') + '</div>' : '') +
+
+    '<div class="cst-lab sp">In her own words</div>' +
+    '<div class="cst-fields">' +
+      '<div class="cst-f"><label for="cst-kind">What she is to him</label>' +
+        '<input id="cst-kind" type="text" autocomplete="off" data-cfield="kind" data-nm="' + esc(r.name) + '"' +
+        ' placeholder="' + esc(courtRung(d.rung).label) + '" value="' + esc(d.kind) + '"' + (writable ? '' : ' disabled') + '>' +
+        '<span class="why">Goes into the block verbatim — “common wife”, “mistress”, “sworn sword in his service”.</span></div>' +
+      '<div class="cst-f"><label for="cst-addr">What she calls him</label>' +
+        '<input id="cst-addr" type="text" autocomplete="off" data-cfield="address" data-nm="' + esc(r.name) + '"' +
+        ' placeholder="' + esc(courtRung(d.rung).address) + '" value="' + esc(d.address) + '"' + (writable ? '' : ' disabled') + '>' +
+        '<span class="why">A slash offers her both: <b>my lord / husband</b>.</span></div>' +
+      '<div class="cst-f wide"><label for="cst-note">Note to yourself</label>' +
+        '<input id="cst-note" type="text" autocomplete="off" data-cfield="note" data-nm="' + esc(r.name) + '"' +
+        ' placeholder="not sent to CHIM" value="' + esc(d.note) + '"' + (writable ? '' : ' disabled') + '>' +
+        '<span class="why">Never reaches the model — it is only here, for you.</span></div>' +
+    '</div>' +
+
+    '<div class="cst-acts">' +
+      '<button type="button" class="btn primary" data-cact="save" data-nm="' + esc(r.name) + '"' +
+        ((!writable || courtUi.busy || !courtDirty(r)) ? ' disabled' : '') + '>' +
+        (courtUi.busy ? 'Saving…' : (courtDirty(r) ? 'Save her standing' : 'Saved')) + '</button>' +
+      (courtDirty(r) ? '<button type="button" class="btn" data-cact="reset" data-nm="' + esc(r.name) + '">Undo changes</button>' : '') +
+      (r.has ? '<button type="button" class="btn" data-cact="lock" data-nm="' + esc(r.name) + '"' +
+        ((!writable || courtUi.busy) ? ' disabled' : '') + '>' +
+        (r.locked ? '🔓 Let the seeder move her' : '🔒 Lock this rung') + '</button>' : '') +
+    '</div>';
+
+  var pv = courtUi.preview[r.name];
+  html += '<div class="cst-lab sp">What she is actually told</div>';
+  if (!pv) {
+    html += '<div class="cst-acts" style="margin-top:0"><button type="button" class="btn" data-cact="preview" data-nm="' + esc(r.name) + '">Show the exact wording</button></div>';
+  } else if (pv.loading) {
+    html += '<div class="cst-block dim">Asking CHIM…</div>';
+  } else if (pv.err) {
+    html += '<div class="cst-block dim">' + esc(pv.err) + ' — the exact wording is rendered inside the CHIM box, which only runs while the game does.</div>';
+  } else {
+    html += '<blockquote class="cst-block">' + esc(pv.block) + '</blockquote>' +
+      '<div class="cst-f" style="margin-top:8px"><span class="why">This is injected right after her character profile, on every single line she speaks.</span></div>';
+  }
+  return html + '</div></div>';
+}
+
+/** One titled group: a header with the rung number, the label and the count,
+ *  then that rung's own even grid. Returns '' when nothing in it matches. */
+function courtGroup(label, rungNo, rows, q) {
+  if (!rows.length) return '';
+  return '<section class="cst-group">' +
+    '<div class="cst-group-head">' +
+      (rungNo === null ? '<span class="rn">—</span>' : '<span class="rn">' + rungNo + '</span>') +
+      '<span class="t">' + esc(label) + '</span>' +
+      '<span class="n">' + rows.length + '</span>' +
+    '</div>' +
+    '<div class="cst-list">' + rows.map(function (r) { return courtCard(r, q); }).join('') + '</div>' +
+  '</section>';
+}
+
+function renderCourt() {
+  var host = $('court-body');
+  if (!host) return;
+  courtEnsure();
+  var d = courtData();
+
+  if (!d && courtUi.loading) {
+    host.innerHTML = '<div class="cst-list">' +
+      '<div class="cst-skel"></div><div class="cst-skel"></div><div class="cst-skel"></div><div class="cst-skel"></div></div>';
+    return;
+  }
+  if (!d) {
+    host.innerHTML = '<div class="banner"><b>The standing ledger is out of reach</b>' +
+      '<div style="margin-top:6px">' + esc(courtUi.err || 'CHIM is not answering.') +
+      ' The rungs live in the CHIM box, which only runs while Skyrim does.</div></div>';
+    return;
+  }
+
+  var q = (state.q || '').trim().toLowerCase();
+  var all = courtRows();
+  var onLedger = all.filter(function (r) { return r.has; });
+  var noRow = all.filter(function (r) { return !r.has; });
+  var locked = onLedger.filter(function (r) { return r.locked; }).length;
+
+  var live = d.live || {};
+  var lg = d.ledger || {};
+  var stale = lg.source === 'cache';
+
+  var out = ['<section class="sect"><div class="sect-head"><h2>Standing</h2>' +
+    '<span class="n">' + onLedger.length + '</span>' +
+    '<div class="hint">Where each person stands with you — what the <b>court</b> plugin injects into her prompt on every line she speaks.</div></div>'];
+
+  out.push('<div class="cst-sum">' +
+    '<span class="cell"><span class="k">On the ledger</span><span class="v">' + onLedger.length + '</span></span>' +
+    '<span class="cell"><span class="k">Locked by hand</span><span class="v">' + locked + '</span></span>' +
+    '<span class="cell"><span class="k">No row — rank only</span><span class="v' + (noRow.length ? ' warn' : '') + '">' + noRow.length + '</span></span>' +
+    '<span class="cell"><span class="k">Marriage &amp; pregnancy</span><span class="v' + (live.ok ? '' : ' dim') + '">' +
+      (live.ok ? courtAge(live.ageMs) : 'no snapshot yet') + '</span></span>' +
+    '</div>');
+
+  if (stale) {
+    out.push('<div class="banner warn"><b>Showing the last copy — nothing here can be changed</b>' +
+      'CHIM’s database only runs while Skyrim does' + (lg.error ? ' (' + esc(lg.error) + ')' : '') + '. ' +
+      'These rungs were read ' + esc(courtAge(Date.now() - (lg.at || Date.now()))) +
+      '. Launch the game and this page goes live again.</div>');
+  }
+  if (!live.ok) {
+    out.push('<div class="cst-hint">No marriage or pregnancy facts yet — open the deck’s <b>Followers</b> tab once in-game and the DLL writes them, after which they survive the game closing.</div>');
+  }
+
+  var chip = function (key, label, n) {
+    return '<button type="button" class="chip' + (courtUi.filter === key ? ' on' : '') + '"' +
+      ' data-cfilter="' + esc(key) + '" aria-pressed="' + (courtUi.filter === key ? 'true' : 'false') + '">' +
+      '<span class="cst-lb">' + esc(label) + '</span><span class="n">' + n + '</span></button>';
+  };
+  var chips = [chip('all', 'Everyone', onLedger.length)];
+  COURT_GROUP_ORDER.forEach(function (rn) {
+    var n = onLedger.filter(function (r) { return r.rung === rn; }).length;
+    if (n) chips.push(chip(String(rn), COURT_CHIP_LABEL[rn] || courtRung(rn).label, n));
+  });
+  if (noRow.length) chips.push(chip('none', '◌ Told nothing', noRow.length));
+  out.push('<div class="cst-filters">' + chips.join('') + '</div>');
+
+  /* One group per rung, highest first, each filtered by the search box. The
+     rung chips SCOPE this rather than replacing it, so the shape of the page
+     is the same whichever one is on. */
+  var groups = [];
+  if (courtUi.filter !== 'none') {
+    COURT_GROUP_ORDER.forEach(function (rn) {
+      if (courtUi.filter !== 'all' && courtUi.filter !== String(rn)) return;
+      var rows = onLedger.filter(function (r) { return r.rung === rn && courtMatch(r, q); });
+      groups.push(courtGroup(courtRung(rn).label, rn, rows, q));
+    });
+  }
+  /* The rank-only pile shows on its own chip, and ALSO under "Everyone" the
+     moment you type — otherwise searching a name that has no row yet looks
+     like the person does not exist at all. */
+  if (courtUi.filter === 'none' || (courtUi.filter === 'all' && q)) {
+    groups.push(courtGroup('Nobody has told them anything', null,
+      noRow.filter(function (r) { return courtMatch(r, q); }), q));
+  }
+
+  var body = groups.filter(Boolean).join('');
+  if (!body) {
+    out.push('<div class="cst-empty" style="margin-top:16px">' + (q
+      ? 'Nobody here matches “' + esc(state.q) + '”.'
+      : (courtUi.filter === 'none'
+        ? 'Everyone CHIM knows has a standing. Nobody is running on the bare rank-only default.'
+        : 'Nothing on this rung yet.')) + '</div>');
+  } else {
+    out.push(body);
+  }
+  out.push('</section>');
+
+  /* Repaints land while a field is being typed into (the roster poll, a save
+     elsewhere). Put the caret back exactly where it was, or the tab eats
+     half-typed words — the same law every other input in this portal keeps. */
+  var act = document.activeElement;
+  var keep = (act && act.dataset && act.dataset.cfield)
+    ? { f: act.dataset.cfield, nm: act.dataset.nm, s: act.selectionStart, e: act.selectionEnd } : null;
+
+  host.innerHTML = out.join('');
+
+  if (keep) {
+    var back = host.querySelector('[data-cfield="' + cssq(keep.f) + '"][data-nm="' + cssq(keep.nm) + '"]');
+    if (back) { try { back.focus(); back.setSelectionRange(keep.s, keep.e); } catch (e) { back.focus(); } }
+  }
+
+  host.querySelectorAll('[data-cfilter]').forEach(function (el) {
+    el.onclick = function () { courtUi.filter = el.dataset.cfilter; renderCourt(); };
+  });
+  host.querySelectorAll('[data-cfield]').forEach(function (el) {
+    el.oninput = function () {
+      var row = courtRows().find(function (x) { return x.name === el.dataset.nm; });
+      if (!row) return;
+      courtDraft(row)[el.dataset.cfield] = el.value;
+      // Only the buttons change shape as you type; a full repaint here would
+      // fight the caret for no gain.
+      var save = host.querySelector('[data-cact="save"][data-nm="' + cssq(el.dataset.nm) + '"]');
+      if (save) { save.disabled = courtUi.busy || !courtDirty(row); save.textContent = courtDirty(row) ? 'Save her standing' : 'Saved'; }
+    };
+  });
+  host.querySelectorAll('[data-cact]').forEach(function (el) {
+    el.onclick = function () {
+      var nm = el.dataset.nm;
+      var row = courtRows().find(function (x) { return x.name === nm; });
+      var a = el.dataset.cact;
+      if (a === 'open') { courtUi.sel = (courtUi.sel === nm ? null : nm); renderCourt(); return; }
+      if (!row) return;
+      if (a === 'rung') { courtDraft(row).rung = Number(el.dataset.rung); renderCourt(); return; }
+      if (a === 'reset') { delete courtUi.draft[nm]; renderCourt(); return; }
+      if (a === 'save') { courtSave(row); return; }
+      if (a === 'lock') { courtLockToggle(row); return; }
+      if (a === 'preview') { courtPreview(nm); renderCourt(); return; }
+    };
+  });
+}
+
 var TABS = {
   portraits: {
     // Two sheets, same rule as the hotkeys tab below: the follower's detail
@@ -13033,6 +13857,13 @@ var TABS = {
     pane: 'pane-wardrobe', sheet: 'wd', sheets: ['wd', 'crop'],   // crop: the outfit-photo editor lives on this tab too
     placeholder: 'Search outfits, wardrobes, people…',
     render: function () { renderWardrobe(); },
+  },
+  loadouts: {
+    // No detail sheet: every fact about a group fits on its card, and there is
+    // nothing to edit from here.
+    pane: 'pane-loadouts', sheet: '', sheets: [],
+    placeholder: 'Search groups, people, classes, gear…',
+    render: function () { renderLoadouts(); },
   },
   domains: {
     // No detail sheet — a domain row is just its image; there is nothing to
@@ -13086,6 +13917,14 @@ var TABS = {
     pane: 'pane-journal', sheet: null, sheets: [],
     placeholder: 'Search your journal — headings and prose…',
     render: function () { renderJournal(); },
+  },
+  court: {
+    /* Inline expanding cards, no modal sheet — on a phone a control you can
+       reach beats one you have to open (same call as containers/bases), so
+       sheets:[] drops any other tab's sheet on arrival. */
+    pane: 'pane-court', sheet: null, sheets: [],
+    placeholder: 'Search people, rungs, wives, the expecting…',
+    render: function () { renderCourt(); },
   },
 };
 var TAB_NAMES = Object.keys(TABS);

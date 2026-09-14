@@ -1578,6 +1578,135 @@ async function chimSetField(name, field, value) {
 }
 
 
+
+/* ================== STANDING — the court ledger (Standing tab) ========== *
+ *  Two halves, and they fail independently on purpose:
+ *
+ *  1. THE LEDGER — who stands where under the player. It lives in Postgres inside
+ *     the CHIM WSL box (table court_standing), and the only thing that may
+ *     touch it is court.php, the same way npc.php owns core_npc_master: it
+ *     escapes its own values and holds the lock rules. We shell it with a
+ *     straight argv vector — never `bash -c` — for exactly the reason the
+ *     npcTool comment above gives.
+ *
+ *     That box is only alive while the CHIM launcher runs, and Postgres is
+ *     DOWN between play sessions. A Standing page that is blank whenever the
+ *     game is closed would be useless on a phone, so every successful read is
+ *     cached to disk and served (clearly labelled STALE) when the box is down.
+ *     The cache is portal runtime state, not deck data: it goes in the OS temp
+ *     dir, never into a mod folder MO2 mounts.
+ *
+ *  2. THE LIVE FACTS — marriage and pregnancy, written by the deck's DLL
+ *     (src/court_status.cpp) into SKSE/Plugins/HotkeyDeck/court-status.json.
+ *     Pure file read, same newest-of-the-candidates rule as every other deck
+ *     sidecar here, and it needs neither WSL nor the game to be running.
+ *
+ *  So: game up + CHIM up = everything live. Game closed = the ledger from
+ *  cache and the last snapshot of the facts, both dated in the reply. The
+ *  page never lies about which it is showing.
+ * ======================================================================= */
+
+const COURT_TOOL = process.env.DECK_PORTAL_COURT_TOOL ||
+  '/var/www/html/HerikaServer/ext/court/court.php';
+const COURT_STATUS_BASENAME = 'court-status.json';
+const COURT_CACHE_FILE = path.join(os.tmpdir(), 'deck-portal', 'court-ledger.json');
+
+/* The rung ladder, mirrored from court_lib.php's court_rungs(). Duplicated
+ * deliberately: the page must be able to draw the picker when the DB is down,
+ * which is the one moment it cannot ask the source. Keep the two in step —
+ * a rung that exists here and not there is set through and then rendered by
+ * court_render_block()'s default branch. */
+const COURT_RUNGS = [
+  { rung: 0, label: 'slave / thrall',          address: 'master',            blurb: 'Obeys. Never argues, advises unasked or uses his bare name.' },
+  { rung: 1, label: 'servant / staff',         address: 'my lord',           blurb: 'Reports and warns where duty requires; her opinion ends when he answers.' },
+  { rung: 2, label: 'common wife · mistress',  address: 'my lord / husband', blurb: 'May ask, worry, plead, and once in private say he is wrong — then defers.' },
+  { rung: 3, label: 'noble wife',              address: 'husband / my lord', blurb: 'Counsels and bargains in her own domain, yields with grace when he decides.' },
+  { rung: 4, label: 'independent companion',   address: 'my lord',           blurb: 'Frank, brief, respectful. May refuse a thing; never lectures him about it.' },
+  { rung: 5, label: 'peer or enemy',           address: 'by title',          blurb: 'Deals with him as an equal — and is still careful with him.' },
+  { rung: 9, label: 'no row — rank only',      address: 'by rank',           blurb: 'The default everyone starts on: deference as the floor, treated by rank.' },
+];
+
+/* One court.php call. Same shape and the same argv discipline as npcTool. */
+function courtTool(args, done) {
+  execFile('wsl',
+    ['-d', CHIM_DISTRO, '--', 'php', COURT_TOOL].concat(args),
+    { timeout: CHIM_DB_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 },
+    (err, stdout, stderr) => {
+      if (err) {
+        const first = String(stderr || err.message).split('\n')[0] || 'CHIM unreachable';
+        done({ ok: false, error: first.replace(/^court:\s*/, '').slice(0, 200) });
+        return;
+      }
+      done({ ok: true, out: String(stdout).trim() });
+    });
+}
+const courtToolAsync = (args) => new Promise((resolve) => courtTool(args, resolve));
+
+/* The live marriage/pregnancy snapshot. Newest of the sidecar's candidates,
+ * exactly like readMhiyhStatus — Overwrite usually wins, the mod folder wins
+ * when the file was already there. A torn write (the DLL renames into place,
+ * so this is close to impossible) simply reads as absent for one poll. */
+function readCourtStatus() {
+  let best = null;
+  for (const f of hdCfgCandidates(COURT_STATUS_BASENAME)) {
+    let st;
+    try { st = fs.statSync(f); } catch (_) { continue; }
+    if (!best || st.mtimeMs > best.mtimeMs) best = { file: f, mtimeMs: st.mtimeMs };
+  }
+  if (!best) return { ok: false, actors: {} };
+  try {
+    const j = JSON.parse(fs.readFileSync(best.file, 'utf8').replace(/^﻿/, ''));
+    if (j && j.actors && typeof j.actors === 'object') {
+      const written = Number(j.written || 0) * 1000 || best.mtimeMs;
+      return {
+        ok: true, file: best.file, written,
+        ageMs: Date.now() - written,
+        fertility: !!j.fertility, maras: !!j.maras,
+        actors: j.actors,
+      };
+    }
+  } catch (_) { /* mid-write; the next read gets it */ }
+  return { ok: false, actors: {} };
+}
+
+function courtCacheRead() {
+  try {
+    const j = JSON.parse(fs.readFileSync(COURT_CACHE_FILE, 'utf8'));
+    if (j && Array.isArray(j.rows)) return j;
+  } catch (_) { /* no cache yet, or unreadable — same answer either way */ }
+  return null;
+}
+function courtCacheWrite(payload) {
+  try {
+    fs.mkdirSync(path.dirname(COURT_CACHE_FILE), { recursive: true });
+    fs.writeFileSync(COURT_CACHE_FILE, JSON.stringify(payload));
+  } catch (e) { log('court: could not cache the ledger (' + e.message + ')'); }
+}
+
+/* The ledger, live if CHIM answers and from the cache if it does not. The
+ * caller is always told WHICH — `source` is 'live' or 'cache', and a cached
+ * answer carries the error that sent us to it, so the page can say "the game
+ * is closed" instead of showing month-old rungs as though they were fresh. */
+async function courtLedger() {
+  const r = await courtToolAsync(['list', '--json']);
+  if (r.ok) {
+    let j = null;
+    try { j = JSON.parse(r.out || ''); } catch (_) { j = null; }
+    if (j && Array.isArray(j.rows)) {
+      const payload = { rows: j.rows, noRow: j.no_row || [], at: Date.now() };
+      courtCacheWrite(payload);
+      return { ok: true, source: 'live', ...payload };
+    }
+    const cachedBad = courtCacheRead();
+    return cachedBad
+      ? { ok: true, source: 'cache', error: 'CHIM returned something unreadable', ...cachedBad }
+      : { ok: false, error: 'CHIM returned something unreadable (' + (r.out || '').length + ' bytes)' };
+  }
+  const cached = courtCacheRead();
+  if (cached) return { ok: true, source: 'cache', error: r.error, ...cached };
+  return { ok: false, error: r.error };
+}
+
 /* ============ live portrait bridge (portal -> plugin -> disk) ============ *
  *  A portrait the PORTAL writes is invisible to a running game: MO2 snapshots
  *  the directory LISTING at launch, so the deck's scanner — which iterates the
@@ -2103,6 +2232,94 @@ function resolveHkJson() {
  *  ONE request can build the spell payload AND the hotkey payload from ONE
  *  snapshot instead of two reads that might straddle a game save. Still no
  *  caching ACROSS requests — the plugin rewrites this file constantly. */
+/* ======================================================================= *
+ *  Loadouts — follower groups + gear classes.
+ *
+ *  Unlike every slice above, this does NOT live in hotkeys.json: the deck
+ *  keeps it in its own `loadouts.json` beside it (loadouts.cpp), so resolve
+ *  the sibling rather than projecting over readHkRoot(). Read-only here on
+ *  purpose — a group order is a PHYSICAL act (teleports, NFF recruitment,
+ *  combat) that only means anything with the game running, and the phone
+ *  cannot witness the result. So the portal shows you what your groups ARE;
+ *  commanding them stays in-game, where the answer is visible.
+ * ======================================================================= */
+function loadoutsPath() {
+  const hk = resolveHkJson();
+  if (!hk) return null;
+  return path.join(path.dirname(hk), 'loadouts.json');
+}
+
+function readLoadouts() {
+  const file = loadoutsPath();
+  if (!file) {
+    return { ok: false, file: null, error: 'hotkeys.json not found, so its loadouts.json sibling cannot be located.', loadouts: [], classes: [] };
+  }
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (e) {
+    if (e.code === 'ENOENT') {
+      // Not an error: the file only appears once a group exists.
+      return { ok: true, file, empty: true, loadouts: [], classes: [], active: '' };
+    }
+    return { ok: false, file, error: 'Could not read loadouts.json (' + e.code + ') at ' + file, loadouts: [], classes: [] };
+  }
+  let root;
+  try { root = JSON.parse(raw.replace(/^\uFEFF/, '')); } catch (e) {
+    return { ok: false, file, error: 'loadouts.json did not parse: ' + e.message, loadouts: [], classes: [] };
+  }
+  if (!root || typeof root !== 'object' || Array.isArray(root)) root = {};
+
+  const classes = (Array.isArray(root.classes) ? root.classes : []).map(function (c) {
+    if (!c || typeof c !== 'object') return null;
+    const id = str(c.id);
+    if (!id) return null;
+    const style = (c.style && typeof c.style === 'object') ? c.style : {};
+    return {
+      id, name: str(c.name) || 'Unnamed class', icon: str(c.icon), note: str(c.note),
+      replace: !!c.replace,
+      styleName: str(style.name),
+      gear: (Array.isArray(c.gear) ? c.gear : []).map(function (g) {
+        if (!g || typeof g !== 'object') return null;
+        return { name: str(g.name) || str(g.formId), kind: str(g.kind) || 'item',
+                 plugin: str(g.plugin), count: Number(g.count) || 1 };
+      }).filter(Boolean),
+    };
+  }).filter(Boolean);
+
+  const byClass = {};
+  for (const c of classes) byClass[c.id] = c;
+
+  const loadouts = (Array.isArray(root.loadouts) ? root.loadouts : []).map(function (l) {
+    if (!l || typeof l !== 'object') return null;
+    const id = str(l.id);
+    if (!id) return null;
+    return {
+      id, name: str(l.name) || 'Unnamed group', icon: str(l.icon), note: str(l.note),
+      members: (Array.isArray(l.members) ? l.members : []).map(function (m) {
+        if (!m || typeof m !== 'object') return null;
+        const cls = str(m.cls);
+        return {
+          name: str(m.name) || str(m.original) || 'Unknown',
+          original: str(m.original),
+          plugin: str(m.plugin),
+          cls,
+          className: cls && byClass[cls] ? byClass[cls].name : '',
+          classIcon: cls && byClass[cls] ? byClass[cls].icon : '',
+        };
+      }).filter(Boolean),
+    };
+  }).filter(Boolean);
+
+  // Wearers per class, so the Classes half can say who plays it.
+  for (const c of classes) {
+    c.wearers = [];
+    for (const l of loadouts)
+      for (const m of l.members)
+        if (m.cls === c.id) c.wearers.push({ name: m.name, group: l.name });
+  }
+
+  return { ok: true, file, loadouts, classes, active: str(root.active) };
+}
+
 function readHkRoot() {
   const file = resolveHkJson();
   if (!file) {
@@ -7410,6 +7627,86 @@ async function route(req, res, url) {
     return;
   }
 
+  /* ---- Standing (the court ledger) -------------------------------------
+   *  GET  /api/court          the whole board: ledger rows (live or cached),
+   *                           the NPCs with no row, the live marriage/pregnancy
+   *                           snapshot, and the rung ladder to draw the picker.
+   *  GET  /api/court-preview  the exact <standing> paragraph CHIM injects for
+   *                           one NPC — the honest answer to "what is she told?"
+   *  POST /api/court-set      move one person's rung (court.php set, locked).
+   *  POST /api/court-lock     lock / unlock a row.
+   *
+   *  Reads never fail the page: with CHIM down the ledger comes from cache and
+   *  says so. WRITES are not faked — a write needs the box up, and a refusal
+   *  says which half is missing rather than pretending it landed. */
+  if (m === 'GET' && p === '/api/court') {
+    const ledger = await courtLedger();
+    const live = readCourtStatus();
+    sendJson(res, 200, {
+      ok: true,
+      rungs: COURT_RUNGS,
+      rows: ledger.rows || [],
+      noRow: ledger.noRow || [],
+      ledger: { ok: !!ledger.ok, source: ledger.source || null, at: ledger.at || 0, error: ledger.error || null },
+      live: {
+        ok: !!live.ok, written: live.written || 0, ageMs: live.ok ? live.ageMs : 0,
+        fertility: !!live.fertility, maras: !!live.maras,
+        actors: live.actors || {},
+      },
+    });
+    return;
+  }
+
+  if (m === 'GET' && p === '/api/court-preview') {
+    const nm = String(url.searchParams.get('name') || '').trim();
+    if (!nm || nm.slice(0, 2) === '--') { sendErr(res, 400, 'name required'); return; }
+    const r = await courtToolAsync(['preview', nm]);
+    if (!r.ok) { sendErr(res, 503, r.error); return; }
+    sendJson(res, 200, { ok: true, name: nm, block: r.out });
+    return;
+  }
+
+  if (m === 'POST' && p === '/api/court-set') {
+    const body = await readJsonBody(req);
+    const nm = String(body.name || '').trim();
+    const rung = Number(body.rung);
+    if (!nm || nm.slice(0, 2) === '--') { sendErr(res, 400, 'name required'); return; }
+    if (!COURT_RUNGS.some((r) => r.rung === rung)) { sendErr(res, 400, 'Unknown rung ' + body.rung); return; }
+    // --force because nearly every row IS locked (that is what a hand-set rung
+    // means), and a Standing page whose buttons refuse the rows it just drew
+    // would be a dead control. Tapping a rung here IS the deliberate override.
+    const args = ['set', nm, String(rung), '--force'];
+    for (const [flag, key] of [['--kind', 'kind'], ['--address', 'address'], ['--note', 'note']]) {
+      if (body[key] === undefined || body[key] === null) continue;
+      const v = String(body[key]).slice(0, 200);
+      if (v.slice(0, 2) === '--') { sendErr(res, 400, key + ' may not start with --'); return; }
+      args.push(flag, v);
+    }
+    const r = await courtToolAsync(args);
+    if (!r.ok) { sendErr(res, 503, r.error); return; }
+    log('court: "' + nm + '" set to rung ' + rung);
+    // Re-read so the caller gets the row the DB actually holds, not our guess.
+    const ledger = await courtLedger();
+    sendJson(res, 200, {
+      ok: true, out: r.out,
+      row: (ledger.rows || []).find((x) => String(x.npc_name).toLowerCase() === nm.toLowerCase()) || null,
+      rows: ledger.rows || [], noRow: ledger.noRow || [],
+      ledger: { ok: !!ledger.ok, source: ledger.source || null, at: ledger.at || 0, error: ledger.error || null },
+    });
+    return;
+  }
+
+  if (m === 'POST' && p === '/api/court-lock') {
+    const body = await readJsonBody(req);
+    const nm = String(body.name || '').trim();
+    if (!nm || nm.slice(0, 2) === '--') { sendErr(res, 400, 'name required'); return; }
+    const r = await courtToolAsync(body.on === false ? ['lock', nm, '--off'] : ['lock', nm]);
+    if (!r.ok) { sendErr(res, 503, r.error); return; }
+    log('court: "' + nm + '" ' + (body.on === false ? 'unlocked' : 'locked'));
+    sendJson(res, 200, { ok: true, out: r.out });
+    return;
+  }
+
   /* ---- capture framing defaults ---- */
   if (m === 'GET' && p === '/api/portrait-defaults') {
     sendJson(res, 200, { ok: true, ...readCaptureIni() });
@@ -8312,6 +8609,13 @@ async function route(req, res, url) {
     log('containers op queued: ' + JSON.stringify(rec));
     sendJson(res, 200, { ok: true, pending: list.length, queueFile: contBridgeFile(),
       containers: readContainersView() });
+    return;
+  }
+
+  if (m === 'GET' && p === '/api/loadouts') {
+    // 200 even when ok:false — same contract as /api/domains: the SPA renders
+    // the diagnostic inline instead of collapsing.
+    sendJson(res, 200, readLoadouts());
     return;
   }
 

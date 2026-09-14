@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 // CHIM manual AI activation — driven through the mod's OWN Papyrus natives on
 // the `AIAgentFunctions` script, the same entry points CHIM's "activate AI"
@@ -42,4 +43,24 @@ namespace ChimControl
 	// `cb` fires on the main thread. If nothing could be dispatched, cb is
 	// invoked once with (false, false).
 	void QueryActive(std::uint32_t formId, const std::string& name, StateCb cb);
+
+	// ---- the whole agent set (2026-09-14) ---------------------------------
+	// One call for "who is CHIM-activated right now": AIAgentFunctions.
+	// findAllAgentsFormId() (int[]), resolved on the main thread to the
+	// actor's display name and base name so the view can match a roster row
+	// by EITHER identity (a renamed follower keeps her base name in the
+	// roster's `original`; a runtime formId is the durable key inside one
+	// session). This is what lights the 💬 on the F7 card and draws the CHIM
+	// mark on omni rows without one getAgentByName per NPC.
+	struct Agent
+	{
+		std::uint32_t formId{ 0 };
+		std::string   name;   // TESObjectREFR::GetDisplayFullName (renamed or not)
+		std::string   base;   // TESNPC::GetName — the name the roster calls `original`
+	};
+	using AgentsCb = std::function<void(const std::vector<Agent>& agents, bool ok)>;
+
+	// `cb` fires on the main thread. If nothing could be dispatched, cb is
+	// invoked once with ({}, false).
+	void QueryAgents(AgentsCb cb);
 }
