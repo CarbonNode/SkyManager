@@ -62,9 +62,11 @@
 .nf-row.clash:hover { border-color: #c07080; }
 
 .nf-face {
+  position: relative; overflow: hidden;
   flex: none; width: 38px; height: 38px; border-radius: 7px; object-fit: cover;
   background: #101017; border: 1px solid #2e2e36;
 }
+.nf-face > img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .nf-face.ph {
   display: flex; align-items: center; justify-content: center;
   font-size: 15px; color: #6f6a5e; letter-spacing: .5px;
@@ -332,7 +334,8 @@
   /* The label owns its own line on a phone; five buttons across 370 px is two
      or three tidy rows, not a squeeze against a leading caption. */
   .nf-sysrow .nf-hint { flex: 1 0 100%; }
-  .nf-face { width: 32px; height: 32px; }
+  .nf-face {
+  position: relative; overflow: hidden; width: 32px; height: 32px; }
   .nf-chip-n { max-width: 10ch; }
   .nf-ov { padding: 8px; }
   .nf-ov-card, .nf-ov-card.narrow { width: 100%; }

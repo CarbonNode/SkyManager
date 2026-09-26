@@ -254,10 +254,19 @@
      one reads as hers rather than as a form id's. Without one it is the plain
      gold plate, unchanged. The image is removed on error rather than left as a
      broken box, so a portrait file that has been renamed degrades to the plate. */
+  if (window.addEventListener) window.addEventListener('hd-portraits-changed', function () {
+    if (!root || !S.ctx) return;
+    const plate = root.querySelector('.hdo-plate');
+    if (plate && plate.parentNode) plate.parentNode.replaceChild(facePlate(plate.getAttribute('data-face-glyph') || ''), plate);
+  });
+
   function facePlate(glyph) {
     var url = String(ctx().portrait || '');
-    if (!url) return h('span', { class: 'hdo-plate', 'aria-hidden': 'true' }, glyph);
-    var box = h('span', { class: 'hdo-plate is-face', 'aria-hidden': 'true' });
+    var fp = window.FolPane;
+    var shotInfo = fp && fp.portraitInfoFor ? fp.portraitInfoFor({formId: ctx().formId || ctx().hex, name: ctx().who}) : null;
+    if (shotInfo) url = fp._portraitSrc(shotInfo);
+    if (!url) return h('span', { 'data-face-glyph': glyph, class: 'hdo-plate', 'aria-hidden': 'true' }, glyph);
+    var box = h('span', { 'data-face-glyph': glyph, class: 'hdo-plate is-face', 'aria-hidden': 'true' });
     var img = h('img', { class: 'hdo-face-img', src: url, alt: '' });
     /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
     if (window.HDFaceFit) HDFaceFit.paintPortrait(img, url);

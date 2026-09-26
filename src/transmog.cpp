@@ -1,3 +1,5 @@
+#include "npc_clearance.h"
+#include "npc_actions.h"
 // Transmog tab — runtime-restyled placeholder-ARMO pool. See transmog.h for
 // the contract and the mechanism rationale.
 //
@@ -823,6 +825,8 @@ namespace Transmog
 
 		void SaveCallback(SKSE::SerializationInterface* intfc)
 		{
+			NpcClearance::SaveCosave(intfc);
+			NpcActions::SaveConversations(intfc);
 			if (!intfc->OpenRecord(kCosaveRec, kCosaveVersion)) {
 				logger::warn("transmog: cosave OpenRecord failed");
 				return;
@@ -882,6 +886,8 @@ namespace Transmog
 				sl = Slot{};
 			std::uint32_t type = 0, version = 0, length = 0;
 			while (intfc->GetNextRecordInfo(type, version, length)) {
+				if (NpcClearance::LoadCosave(intfc, type, version, length)) continue;
+				if (NpcActions::LoadConversations(intfc, type, version, length)) continue;
 				if (type != kCosaveRec) {
 					logger::warn("transmog: unknown cosave record {:08X} skipped", type);
 					continue;
@@ -950,6 +956,8 @@ namespace Transmog
 
 		void RevertCallback(SKSE::SerializationInterface*)
 		{
+			NpcClearance::RevertCosave();
+			NpcActions::RevertConversations();
 			// New game / different save incoming — the table describes the OLD
 			// session. Clear it; the load callback repopulates when the new
 			// save carries our record.

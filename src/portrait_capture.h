@@ -1,5 +1,7 @@
 #pragma once
 
+#include "photo_lighting.h"
+
 #include <cstdint>
 #include <functional>
 #include <filesystem>
@@ -91,6 +93,12 @@ namespace PortraitCapture
 	// view rather than two constants that can drift.
 	Framing DefaultFraming();
 
+	// Portrait-only preferences, separate from domain lighting and display crops.
+	PhotoLighting::Settings GetNpcLighting(const std::filesystem::path& portraitDir);
+	bool SetNpcLighting(const std::filesystem::path& portraitDir, PhotoLighting::Settings settings);
+	// Called before loading a save: invalidate queued shots without reopening UI.
+	void ResetPortraitsForLoad();
+
 	// Write encoded image bytes as a portrait, reusing the capture's lock-safe
 	// versioned fallback. Used by the Deck Portal's live bridge: the portal hands
 	// over the BYTES and the plugin does the write, because a file the portal
@@ -143,7 +151,7 @@ namespace PortraitCapture
 
 	// ---- self-portrait ARM (Rober, 2026-08-13) ------------------------------
 	// Instead of firing on a fixed delay, ARM the self-portrait: close the
-	// palette, tell the player to line up their shot, and capture on the NEXT E
+	// palette, tell the player to line up their shot, and capture on the NEXT Enter
 	// press the input sink sees. `done` is the SAME completion callback
 	// FirePlayerSheet used (written filename on success, "" on failure), invoked
 	// on the MAIN THREAD. A ~60 s timeout disarms with a notification so an armed
@@ -156,20 +164,29 @@ namespace PortraitCapture
 		std::function<void(const std::string&)> done,
 		std::function<void()> onCancel = nullptr);
 
+	// ---- NPC retake ARM (Rober, 2026-09-23: "the retake photo for npcs should
+	// wait for me to press e") ------------------------------------------------
+	// The follower-portrait twin of ArmPlayerSheet: close the palette, let the
+	// player walk round and frame her, and photograph `targetFormId` on the NEXT
+	// Enter. It shares the self-portrait's arm state, so the input sink's existing
+	// Enter / Esc / open-key routing drives it and the two can never both be armed.
+	// Enter avoids the E/Quick Light conflict without disabling Activate.
+	bool ArmNpcPortrait(const std::filesystem::path& portraitDir, std::uint32_t targetFormId);
+
 	// True between ArmPlayerSheet and the moment the resulting capture's camera /
-	// HUD restore has completed. The input sink asks this to route an E press to
+	// HUD restore has completed. The input sink asks this to route an Enter press to
 	// the shot; CanOpenNow() asks it so the deck cannot REOPEN mid-capture and
 	// paint a half-laid-out panel over the transitioning world (the reopen-glitch
 	// fix). Also enforces the timeout lazily, so a forgotten arm cannot linger.
 	bool SelfPortraitArmed();
 
-	// A self-capture is IN FLIGHT (the E was pressed; the frame grab + camera/HUD
+	// A self-capture is IN FLIGHT (Enter was pressed; the frame grab + camera/HUD
 	// restore is running). Distinct from SelfPortraitArmed(): during the arm WAIT
 	// the game is normal and the deck may reopen (which cancels the arm), but once
 	// the shot fires the camera/menus are mid-transition and a reopen would glitch.
 	bool SelfCaptureBusy();
 
-	// Fire the armed self-portrait NOW (called by the sink on the E press). No-op
+	// Fire the armed self-portrait NOW (called by the sink on the Enter press). No-op
 	// if nothing is armed. Runs the capture on the main thread via the deferred
 	// idiom, exactly like FirePlayerSheet.
 	void SelfPortraitShootNow();
@@ -191,17 +208,28 @@ namespace PortraitCapture
 	// the clothes. Fire() cannot serve this — it shoots a second after the key,
 	// from wherever you happened to be.
 	//
-	// Turns on: menus hidden, fov 60, free camera with time frozen. All of it is
+	// Turns on: capture FOV (or the chosen relative FOV), free camera with time frozen. All of it is
 	// restored on every exit — shoot, cancel, or the 5-minute timeout — because
 	// a photo mode you cannot leave looks exactly like a hung game.
-	void StartPhotoMode(const std::filesystem::path& dir, const std::string& slug, const std::string& label);
+	enum class PhotoFov { Portrait, Keep, ZoomOut, ZoomIn, Exact };
+	void StartPhotoMode(const std::filesystem::path& dir, const std::string& slug, const std::string& label,
+		PhotoFov fov = PhotoFov::Portrait, bool freezeTime = true, float exactFov = 0.0f,
+		PhotoLighting::Settings lighting = {});
 
 	// Ask on every input event: also enforces the timeout, so no separate timer
 	// can stop running and strand the player in a frozen world.
 	bool PhotoModeActive();
+	// Side-effect-free epoch for the pre-dispatch input gate; zero outside photo.
+	std::uint64_t PhotoInputSession();
 
 	void PhotoShootNow();
+	// Queue a tap/release with a session-generation guard.
+	void PhotoLightKey(std::uint32_t code, bool down, bool up, float heldSeconds);
 	void PhotoCancel();
+	// Read-only HUD: main-thread delivery, never takes keyboard/mouse focus.
+	// active remains true while shooting, but visible becomes false BEFORE capture.
+	void SetPhotoLightingCallback(std::function<void(bool, bool, const PhotoLighting::Snapshot&)> cb);
+	void RefreshPhotoLights();
 
 	// Called after a successful photo with (slug, filename) so the caller can
 	// tell the view which image to hang on the outfit. Keeps this module free of
@@ -218,6 +246,11 @@ namespace PortraitCapture
 	// off this rather than off the saved callback, because a cancelled photo
 	// must put the world back exactly like a taken one.
 	void SetPhotoEndedCallback(std::function<void()> cb);
+
+	// Main-thread completion for photos AND NPC/player portraits, including
+	// cancellation and refused starts. Caller schedules any UI return after
+	// SelfCaptureBusy() clears; never focus a view from inside this callback.
+	void SetCaptureFinishedCallback(std::function<void()> cb);
 
 	// ---- photo-mode exposure (capture.ini `photoexposure`, in stops) --------
 	// 0 = the frame exactly as it was rendered, which is the default. This is a

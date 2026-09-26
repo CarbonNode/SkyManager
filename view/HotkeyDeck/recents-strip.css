@@ -89,16 +89,38 @@
 .rc-chip:focus-visible { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.12); }
 
 .rc-face {
+  position: relative; overflow: hidden;
   flex: none; width: 26px; height: 26px; border-radius: 50%;
   object-fit: cover; object-position: center top;
   border: 1px solid hsl(var(--rc-hue, 40) 30% 38% / .85);
   background: hsl(var(--rc-hue, 40) 22% 15%);
 }
+.rc-face > img { width: 100%; height: 100%; display: block; object-fit: cover; object-position: center top; }
 .rc-face.initials {
   display: inline-flex; align-items: center; justify-content: center;
   font: 600 9.5px/1 "Segoe UI", sans-serif;
   color: hsl(var(--rc-hue, 40) 42% 72%);
   letter-spacing: .3px;
+}
+/* Her head render is still baking. The roster medallion's ring, drawn INSIDE
+   the circle instead of around it: .rc-face clips (it has to, for the face
+   lane), so the medallion's -4px inset would simply be cut off. Border arc,
+   never conic-gradient — that computes to none in Ultralight. */
+.rc-face.initials.wait .rc-spin {
+  position: absolute; inset: 1px;
+  border: 2px solid transparent;
+  border-top-color: hsl(var(--rc-hue, 40) 60% 62% / .9);
+  border-right-color: hsl(var(--rc-hue, 40) 60% 62% / .3);
+  border-radius: 50%;
+  animation: rcSpin 900ms linear infinite;
+  pointer-events: none;
+}
+@keyframes rcSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .rc-face.initials.wait .rc-spin {
+    animation: none;
+    border-right-color: hsl(var(--rc-hue, 40) 60% 62% / .55);
+  }
 }
 
 /* Name over verb. Both ellipsize — a 90-character follower name must shorten
@@ -130,5 +152,6 @@
 
 /* At small avatar sizes the roster gets dense; keep the strip proportionate
    so it never dominates the thing it is a shortcut to. */
-#fol-pane[data-av="small"] .rc-face { width: 22px; height: 22px; }
+#fol-pane[data-av="small"] .rc-face {
+  position: relative; overflow: hidden; width: 22px; height: 22px; }
 #fol-pane[data-av="small"] .rc-name { font-size: 11px; }

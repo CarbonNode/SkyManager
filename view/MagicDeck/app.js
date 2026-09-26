@@ -139,6 +139,7 @@ const state = {
   iconPx: 0,                      // spell-row icon box in px (0 = the CSS default)
   panelW: 0,                      // user drag size, PRE-scale layout px (0 = auto)
   panelH: 0,
+  library: SpellLibrary.normalize({}, []), // view, sort and category parent map
   categories: [],                 // rail order (strings)
   spells: [],                     // {id,plugin,localId,formId,name,mode,hand,category}
   combos: [],                     // drag-spells-together groups, cast all at once:
@@ -171,8 +172,9 @@ const ui = {
   capture: null,                  // 'open' while rebinding the open key
   armDelCat: null,                // category name armed for delete (two-click)
   armBookCat: null,               // category armed for remove-all-from-spellbook (two-click)
-  removedOpen: false,             // is the "Removed from spellbook" section expanded
-  removedFilter: '',              // filter-as-you-type inside that drawer (8+)
+  removedOpen: false,             // is the "Removed from spellbook" popout up
+  removedFilter: '',              // filter-as-you-type inside that popout
+  densityApplied: 'balanced',     // the card density the Auto ladder last settled on (library-ui fitNow)
 };
 
 /* drag scratch. comboDragActive = a VIEW-mode spell drag is in flight, so the
@@ -237,11 +239,12 @@ function payload() {
     iconPx: state.iconPx | 0,
     panelW: state.panelW | 0,
     panelH: state.panelH | 0,
+    library: Object.assign({}, state.library, { parents: Object.assign({}, state.library.parents) }),
     categories: state.categories.slice(),
     spells: state.spells.map((s) => ({
       id: s.id, plugin: s.plugin, localId: s.localId, formId: s.formId,
       name: s.name, mode: s.mode, hand: s.hand, category: s.category,
-      slot: s.slot || '', school: s.school || '', element: s.element || '', archetype: s.archetype || '',
+      type: s.type || '', slot: s.slot || '', school: s.school || '', element: s.element || '', archetype: s.archetype || '',
       tier: s.tier || '', icon: s.icon || '',
     })),
     combos: state.combos.map((c) => ({
@@ -318,15 +321,20 @@ function setScale(v) {
  * momentarily neutralising the current scale, then restore it — measuring the
  * true natural size is what makes the fit exact regardless of where the scale
  * sits now or whether the user has drag-resized the panel. */
+/* 2026-09-24 (Rober: "i dont think the scaling is working anymore … no way to
+ * scale down the individual cards"): the panel now ALWAYS fills the screen —
+ * 94vw × 92vh of layout, divided by the zoom — so zooming out grows the layout
+ * box and shows more cards instead of shrinking a capped window in the middle
+ * of the screen. "Fill" therefore cannot be measured off the panel any more; it
+ * is a zoom PRESET: the zoom at which the deck's design size would exactly fill
+ * this screen (1.4 at 1440p, 2.1 at 4K, 1.1 at 1080p — the same numbers the
+ * old 1500×1000-capped panel produced, so nobody's saved zoom moves). */
+const DESIGN_W = 1500, DESIGN_H = 1000;
 function fitScale() {
   const p = $('panel');
-  if (!p || !p.offsetWidth) return 0;          // unmeasurable (deck closed) — caller handles
-  const st = document.documentElement.style;
-  const prev = st.getPropertyValue('--ui-scale');
-  st.setProperty('--ui-scale', '1');           // measure at 1:1
-  const natW = p.offsetWidth, natH = p.offsetHeight;
-  if (prev) st.setProperty('--ui-scale', prev); else st.removeProperty('--ui-scale');
-  if (!natW || !natH) return 0;
+  if (!p || !document.body.classList.contains('open')) return 0;   // deck closed — caller handles
+  const natW = state.panelW > 0 ? state.panelW : DESIGN_W;         // a drag size is the user's design size
+  const natH = state.panelH > 0 ? state.panelH : DESIGN_H;
   const s = Math.min(window.innerWidth / natW, window.innerHeight / natH);
   return Math.min(SFILLMAX, Math.max(SMIN, Math.round(s * 10) / 10));
 }
@@ -345,8 +353,8 @@ function syncFillBtn() {
   b.classList.toggle('on', on);
   b.setAttribute('aria-pressed', on ? 'true' : 'false');
   b.title = on
-    ? 'Filling the screen — click to return to 100%'
-    : 'Fill the screen — auto-scale the panel to fit your resolution';
+    ? 'Auto zoom is on — click to return to 100%'
+    : 'Auto zoom — pick the zoom that suits your resolution';
 }
 function toggleFill() {
   const fit = fitScale();
@@ -570,14 +578,14 @@ function liveHex(o) {
 }
 function slotOf(spell) {
   const k = knownFor(spell);
-  return k ? k.slot : 'hand';   // default to hand controls when the spell isn't currently known
+  return (k && k.slot) || spell.slot || 'hand';   // default to hand controls when the spell isn't currently known
 }
 function isShout(spell) {
   // Shouts are the ONE thing the spellbook-remove path refuses (a TESShout has
   // no spellbook entry). Unknown-id fallback is "not a shout" — the C++ side
   // answers honestly if a shout slips through.
   const k = knownFor(spell);
-  return !!k && k.type === 'shout';
+  return ((k && k.type) || spell.type) === 'shout';
 }
 function deliveryOf(spell) {
   const k = knownFor(spell);
@@ -788,7 +796,7 @@ function resolveIconPath(m) {
 function iconEl(m, extra) {
   const p = resolveIconPath(m);
   if (!p) return glyphEl(iconKeyFor(m), extra);
-  const img = h('img', { src: p, alt: '', draggable: 'false' });
+  const img = h('img', { src: p, alt: '', width: 96, height: 96, draggable: 'false' });
   const el = h('span', { class: 'glyph img' + (extra ? ' ' + extra : '') }, img);
   img.addEventListener('error', () => {
     const fb = glyphEl(iconKeyFor(m), extra);
@@ -827,7 +835,7 @@ window.mdIcons = function (r) {
 
 /* =========================================================== render ==== */
 
-function render() { renderRail(); renderCombos(); renderList(); renderRemoved(); syncChrome(); }
+function render() { renderRail(); renderCombos(); renderList(); renderRemoved(); syncChrome(); if (window.MagicLibraryUI) MagicLibraryUI.sync(); }
 
 function syncChrome() {
   if (isArtsPage()) {
@@ -848,7 +856,7 @@ function syncChrome() {
   $('edit-btn').textContent = ed ? 'Done' : 'Edit';
   $('edit-tools').classList.toggle('hidden', !ed);
   $('openkey-card').classList.toggle('hidden', !ed);
-  $('add-cat-btn').classList.toggle('hidden', !ed);
+  $('add-cat-btn').classList.remove('hidden');
   $('add-spell-btn').classList.remove('hidden');       // adding is the core action — always available
   applyIconSize();
   $('openkey-btn').textContent = state.openKey.label || 'F18';
@@ -934,17 +942,27 @@ function railRow(cat, label, count, editable, idx) {
 }
 
 function renderRail() {
+  if (window.MagicLibraryUI) { MagicLibraryUI.rail(); return; }
   const rl = $('rail-list');
   rl.textContent = '';
   rl.append(railRow(ALL, 'All spells', state.spells.length, false));
   state.categories.forEach((cat, i) => rl.append(railRow(cat, cat, countIn(cat), true, i)));
 }
 
+/* Search matches the spell's NAME or its PLUGIN (Rober, 2026-09-23: "filter
+   by esp as well by typing in search"). Every word must hit one or the other,
+   so "dragonknight" lists that mod's spells and "dragonknight standard" narrows
+   to one. The plugin is already printed under each name, so what you can read
+   is what you can type. */
+function spellMatches(s, q) {
+  const terms = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const hay = (String(s && s.name || '') + ' ' + String(s && s.plugin || '')).toLowerCase();
+  return terms.every((t) => hay.includes(t));
+}
+
 function visibleSpells() {
-  const q = ui.filter.trim().toLowerCase();
-  let arr = state.spells.filter((s) => ui.cat === ALL || s.category === ui.cat);
-  if (q) arr = arr.filter((s) => String(s.name || '').toLowerCase().includes(q));
-  return arr;
+  return SpellLibrary.visible(state.spells, state.library, ui, metaFor);
 }
 
 function spellRow(spell, i) {
@@ -959,16 +977,35 @@ function spellRow(spell, i) {
 
   const meta = metaFor(spell);
   const glyph = iconEl(meta, ui.editing ? 'pickable' : '');
+  if (!ui.editing && state.library.layout === 'icons') {
+    const inspect = h('button', {
+      type: 'button', class: 'ml-icon-inspect', 'aria-label': 'Details for ' + spell.name, 'aria-haspopup': 'dialog',
+      onClick: () => MagicLibraryUI.spellDetails(spell),
+      onFocus: (e) => {
+        ui.sel = visibleSpells().findIndex(s => s.id === spell.id); renderList();
+        requestDesc(meta, e.currentTarget);
+      }, onBlur: cancelDesc,
+    }, glyph, h('span', { class: 'body' }, h('span', { class: 'name' }, nameNodes(spell.name, q))));
+    return h('div', {
+      class: 'spell ml-icon-card' + (i === ui.sel ? ' sel' : '') + (equipped ? ' equipped' : ''),
+      role: 'option', 'aria-selected': String(i === ui.sel), data: { id: spell.id, school: (meta.school || SpellLibrary.kind(meta)).toLowerCase() },
+      onMousedown: (e) => pdArm(e, { kind: 'spell-view', spellId: spell.id }),
+      onContextmenu: (e) => { e.preventDefault(); openCtxMenu(spell, e.clientX, e.clientY); },
+      onMouseenter: (e) => requestDesc(meta, e.currentTarget), onMouseleave: leaveDesc,
+    }, inspect);
+  }
   if (ui.editing) {
     glyph.title = 'Change icon';
     glyph.addEventListener('click', (e) => { e.stopPropagation(); openIconPicker(spell); });
   }
 
   const body = h('div', { class: 'body' },
+    h('div', { class: 'ml-spell-kind' }, SpellLibrary.kind(meta) === 'unknown' ? 'Type unavailable' : SpellLibrary.kind(meta) === 'power' ? 'Power' : SpellLibrary.kind(meta) === 'shout' ? 'Shout' : (meta.school || 'Spell')),
     h('div', { class: 'name' }, nameNodes(spell.name, q)),
+    ui.editing ? null : cardStatsEl(meta),
     h('div', { class: 'sub' },
       h('span', { class: 'plugin', title: spell.plugin }, spell.plugin || 'unknown'),
-      ui.cat === ALL && spell.category ? h('span', null, '· ' + spell.category) : null,
+      spell.category ? h('span', { class: 'ml-spell-category', title: SpellLibrary.path(spell.category, state.library.parents) }, spell.category) : null,
     ),
   );
 
@@ -1000,7 +1037,7 @@ function spellRow(spell, i) {
 
     const row = h('div', {
       class: 'spell edit' + (i === ui.sel ? ' sel' : '') + (equipped ? ' equipped' : ''),
-      data: { id: spell.id },
+      data: { id: spell.id, school: (meta.school || SpellLibrary.kind(meta)).toLowerCase() },
       onMousedown: (e) => pdArm(e, { kind: 'spell-edit', spellId: spell.id }),
     },
       h('span', { class: 'drag-h', title: 'Drag to reorder' }, '⋮⋮'),
@@ -1009,21 +1046,17 @@ function spellRow(spell, i) {
     return row;
   }
 
-  // view mode — badges + live equipped state
-  right.append(h('span', { class: 'tag ' + (isEquip ? 'equip' : 'cast') }, isEquip ? 'Equip' : (slot === 'voice' ? 'Use' : 'Cast')));
-  if (isEquip) {
-    if (slot === 'voice') {
-      right.append(h('span', { class: 'tag voice' + (eqV ? '' : ''), style: eqV ? '' : 'opacity:.55' }, eqV ? 'Voice ✓' : 'Voice'));
-    } else {
-      right.append(h('div', { class: 'hand-state' },
-        h('span', { class: 'hand-pip' + (eqL ? ' on' : ''), title: 'Left hand' }, 'L'),
-        h('span', { class: 'hand-pip' + (eqR ? ' on' : ''), title: 'Right hand' }, 'R'),
-      ));
-    }
-  } else {
-    const d = deliveryOf(spell);
-    if (d && d !== 'other') right.append(h('span', { class: 'tag type', title: 'Delivery' }, d === 'self' ? 'self' : d));
-  }
+  // spell-card-actions: inspection and activation are separate, as on packages.
+  const handLabel = slot === 'voice' ? 'voice slot' : spell.hand === 'both' ? 'both hands' : (spell.hand || 'right') + ' hand';
+  const clearsSlot = isEquip && (slot === 'voice' ? eqV && !isShout(spell) : spell.hand === 'both' ? eqL && eqR : spell.hand === 'left' ? eqL : eqR);
+  const actionLabel = isEquip ? (clearsSlot ? 'Unequip' : 'Equip') : 'Cast now';
+  right.append(h('button', {
+    type: 'button', class: 'ml-spell-activate ' + (isEquip ? 'equip' : 'cast'),
+    'aria-label': actionLabel + ' ' + spell.name + (isEquip ? ' in ' + handLabel : ''),
+    title: isEquip ? actionLabel + ' ' + handLabel : 'Cast once using the configured spell action',
+    onClick: (e) => { e.stopPropagation(); fireEntry(spell.id); },
+  }, actionLabel, isEquip ? h('span', { class: 'ml-action-slot', 'aria-hidden': 'true' },
+    slot === 'voice' ? 'Voice' : spell.hand === 'both' ? 'L+R' : spell.hand === 'left' ? 'L' : 'R') : null));
 
   // quick-fire keycap — the digit that fires this row RIGHT NOW. Positional
   // (1..9,0 map to the first ten VISIBLE rows), so it re-numbers live with
@@ -1036,21 +1069,31 @@ function spellRow(spell, i) {
     }, digit));
   }
 
+  right.append(h('button', {
+    type: 'button', class: 'ml-spell-details', 'aria-label': 'Details for ' + spell.name, 'aria-haspopup': 'dialog',
+    onClick: (e) => { e.stopPropagation(); MagicLibraryUI.spellDetails(spell); },
+    onFocus: (e) => requestDesc(meta, e.currentTarget), onBlur: cancelDesc,
+  }, 'Details'));
+
   // view-mode rows drag too — not to reorder (that's edit mode) but to COMBO:
   // drop a spell onto another spell (or onto a combo card / "＋ New combo").
   // Pointer-based (see the pointer-drag engine) — Ultralight has no HTML5 DnD.
   return h('div', {
     class: 'spell' + (i === ui.sel ? ' sel' : '') + (equipped ? ' equipped' : ''),
-    role: 'option', data: { id: spell.id },
-    onClick: () => fireEntry(spell.id),
+    role: 'option', 'aria-selected': i === ui.sel ? 'true' : 'false', data: { id: spell.id, school: (meta.school || SpellLibrary.kind(meta)).toLowerCase() },
+    onClick: (e) => {
+      e.currentTarget.querySelector('.ml-spell-details').focus();
+      MagicLibraryUI.spellDetails(spell);
+    },
     onContextmenu: (e) => { e.preventDefault(); openCtxMenu(spell, e.clientX, e.clientY); },
     onMousedown: (e) => pdArm(e, { kind: 'spell-view', spellId: spell.id }),
     onMouseenter: (e) => requestDesc(meta, e.currentTarget),
-    onMouseleave: cancelDesc,
+    onMouseleave: leaveDesc,
   }, glyph, body, right);
 }
 
 function renderList() {
+  if (window.MagicLibraryUI) MagicLibraryUI.sync();
   const list = $('list');
   const want = [];
   const vis = visibleSpells();
@@ -1095,12 +1138,26 @@ function renderList() {
     vis.forEach((s, i) => want.push({ k: 'r' + s.id, spell: s, idx: i, sig: rowSig(s), build: () => spellRow(s, i) }));
     reconcileList(list, want, q);
     if (ui.sel >= 0) {
-      const sel = list.children[ui.sel];
+      const sel = list.querySelectorAll('.spell')[ui.sel];
       if (sel) sel.scrollIntoView({ block: 'nearest' });
+      if (sel && state.library.layout === 'icons' && document.activeElement.closest('.ml-icon-inspect')) {
+        const inspect = sel.querySelector('.ml-icon-inspect');
+        if (inspect && inspect !== document.activeElement) inspect.focus();
+      }
     }
+    scheduleFit();
     return;
   }
   reconcileList(list, want, ui.filter.trim());
+  scheduleFit();
+}
+
+/* The card-density ladder (library-ui.js fitNow) measures the list after it is
+ * built and tightens until nothing scrolls — Rober, 2026-09-24: "fit to four
+ * rows without scrolling". Coalesced onto the next frame by the library. */
+function scheduleFit() {
+  if (window.MagicLibraryUI && MagicLibraryUI.fit) MagicLibraryUI.fit();
+  scheduleCardStats();
 }
 
 /* ---- keyed row reuse ------------------------------------------------------
@@ -1124,8 +1181,8 @@ function rowSig(spell) {
      icon index lands asynchronously (mdIconIndex / mdIcons), and a row whose
      art just became available has to redraw. */
   return [spell.name, spell.plugin, spell.category, spell.mode, spell.hand, spell.icon,
-    resolveIconPath(metaFor(spell)) || '',
-    slot, deliveryOf(spell), ui.editing ? 1 : 0, ui.cat === ALL ? 1 : 0,
+    resolveIconPath(metaFor(spell)) || '', SpellLibrary.kind(metaFor(spell)), metaFor(spell).school, SpellLibrary.path(spell.category, state.library.parents),
+    slot, liveHex(spell), deliveryOf(spell), state.library.layout === 'icons' ? 1 : 0, ui.editing ? 1 : 0, ui.cat === ALL ? 1 : 0,
     eqL ? 1 : 0, eqR ? 1 : 0, eqV ? 1 : 0,
     ui.editing ? state.categories.join('\u0001') : ''].join('\u0000');
 }
@@ -1138,6 +1195,7 @@ function dropRowCache() { mdRowCache.clear(); }
 /* The volatile bits, rewritten on a node we are keeping. */
 function refreshRow(row, spell, i, q) {
   row.classList.toggle('sel', i === ui.sel);
+  row.setAttribute('aria-selected', i === ui.sel ? 'true' : 'false');
   const nameEl = row.querySelector('.body > .name');
   if (nameEl && nameEl.__mdQ !== q) {
     nameEl.textContent = '';
@@ -1188,11 +1246,11 @@ function reconcileList(host, items, q) {
 function showEmpty(el) {
   el.classList.remove('hidden');
   el.textContent = '';
-  const searching = !!ui.filter.trim();
+  const searching = !!ui.filter.trim() || (ui.kind && ui.kind !== 'all') || (ui.mode && ui.mode !== 'all');
   el.append(h('div', { class: 'em-ic' }, searching ? '⌕' : '✦'));
   if (searching) {
     el.append(h('div', { class: 'em-title' }, 'No spells match'));
-    el.append(h('div', { class: 'em-sub' }, 'Nothing here matches “' + ui.filter.trim() + '”. Clear the search to see the rest.'));
+    el.append(h('div', { class: 'em-sub' }, ui.filter.trim() ? 'Nothing here matches “' + ui.filter.trim() + '”. Clear filters to see the rest.' : 'No spells in this category match these filters. Clear filters to see the rest.'));
   } else {
     el.append(h('div', { class: 'em-title' }, ui.cat === ALL ? 'No spells yet' : '“' + ui.cat + '” is empty'));
     el.append(h('div', { class: 'em-sub' }, 'Add spells from your spellbook below. Tag each as Cast (fires on click) or Equip (toggles into a hand or your voice).'));
@@ -1237,7 +1295,7 @@ function createCombo(targetSpell, draggedSpell) {
   const c = { id: newComboId(), name: '', spells: [comboMemberFrom(targetSpell), comboMemberFrom(draggedSpell)] };
   state.combos.push(c);
   saveSoon(); renderCombos();
-  toast('Combo created — click to cast both, right-click to edit');
+  toast('Package created — Cast all fires both; open it to see the spells');
 }
 
 function addSpellToCombo(combo, spellId) {
@@ -1262,6 +1320,7 @@ function castCombo(c) {
 }
 
 function comboCard(c, i) {
+  if (window.MagicPackageUI) return MagicPackageUI.card(c, i);
   const glyphs = h('span', { class: 'cc-glyphs' },
     c.spells.slice(0, 4).map((m) => iconEl(m)));
   return h('div', {
@@ -1282,8 +1341,11 @@ function renderCombos() {
   const strip = $('combo-strip');
   if (!strip) return;
   strip.textContent = '';
+  var packageCount = document.querySelector('.ml-packages-link .rail-count');
+  if (packageCount) packageCount.textContent = state.combos.length;
   if (!state.combos.length && !comboDragActive) { strip.classList.add('hidden'); return; }
   strip.classList.remove('hidden');
+  if (window.MagicPackageUI) strip.append(MagicPackageUI.stripHeading());
   state.combos.forEach((c, i) => strip.append(comboCard(c, i)));
   if (comboDragActive) {
     // pure drop target — the pointer engine hit-tests and drops onto it
@@ -1311,7 +1373,7 @@ const pdrag = { armed: null, active: false, target: null, suppressClick: false }
 /* mousedown on a draggable element: remember the gesture, don't start yet */
 function pdArm(e, spec) {
   if (e.button !== 0) return;
-  if (e.target && e.target.closest && e.target.closest('button, input, select, textarea')) return;
+  if (e.target && e.target.closest && e.target.closest('button, input, select, textarea') && !e.target.closest('.ml-icon-inspect')) return;
   pdrag.armed = Object.assign({ x0: e.clientX, y0: e.clientY, srcEl: e.currentTarget }, spec);
 }
 
@@ -1338,6 +1400,12 @@ function pdHit(el, e) {
 
 function pdUpdateTarget(e) {
   const a = pdrag.armed;
+  if (a.kind === 'spell-view' || a.kind === 'spell-edit') {
+    const cats = $('rail-list').querySelectorAll('.ml-cat-row');
+    for (let i = 0; i < cats.length; i++) {
+      if (pdHit($('rail-list'), e) && pdHit(cats[i], e)) { pdSetTarget(cats[i], 'into', { drop: 'spell-category', cat: cats[i].dataset.cat }); return; }
+    }
+  }
   const strip = $('combo-strip');
   if (a.kind === 'spell-view') {
     // combo cards and the "new combo" ghost take priority over spell rows
@@ -1349,14 +1417,14 @@ function pdUpdateTarget(e) {
     const rows = $('list').querySelectorAll('.spell');
     for (let i = 0; i < rows.length; i++) {
       if (rows[i].dataset.id === a.spellId) continue;
-      if (pdHit(rows[i], e)) { pdSetTarget(rows[i], 'combo-target', { drop: 'combo-create', id: rows[i].dataset.id }); return; }
+      if (pdHit($('list'), e) && pdHit(rows[i], e)) { pdSetTarget(rows[i], 'combo-target', { drop: 'combo-create', id: rows[i].dataset.id }); return; }
     }
     pdClearTarget();
   } else if (a.kind === 'spell-edit') {
     const rows = $('list').querySelectorAll('.spell');
     for (let i = 0; i < rows.length; i++) {
       if (rows[i].dataset.id === a.spellId) continue;
-      if (pdHit(rows[i], e)) { pdSetTarget(rows[i], dropAfter(e, rows[i]) ? 'after' : 'before', { drop: 'spell-reorder', id: rows[i].dataset.id }); return; }
+      if (pdHit($('list'), e) && pdHit(rows[i], e)) { pdSetTarget(rows[i], dropAfter(e, rows[i]) ? 'after' : 'before', { drop: 'spell-reorder', id: rows[i].dataset.id }); return; }
     }
     pdClearTarget();
   } else if (a.kind === 'cat') {
@@ -1398,6 +1466,12 @@ function pdMove(e) {
     if (a.srcEl && a.srcEl.isConnected) a.srcEl.classList.add('dragging');
     document.body.classList.add('pdragging');
   }
+  ['rail-list', 'list'].forEach((id) => {
+    const host = $(id), rect = host.getBoundingClientRect();
+    if (e.clientX < rect.left || e.clientX > rect.right) return;
+    if (e.clientY > rect.bottom - 40 && e.clientY < rect.bottom) host.scrollTop += 22;
+    if (e.clientY < rect.top + 40 && e.clientY > rect.top) host.scrollTop -= 22;
+  });
   pdUpdateTarget(e);
 }
 
@@ -1423,7 +1497,10 @@ function pdFinish() {
   if (ghostWasUp) renderCombos();     // drop the ghost
 
   if (!t) { renderList(); return; }   // released over nothing
-  if (t.drop === 'combo-create') {
+  if (t.drop === 'spell-category') {
+    const spell = state.spells.find((s) => s.id === sid);
+    if (spell) { setCategory(spell, t.cat); toast('Moved to ' + t.cat); }
+  } else if (t.drop === 'combo-create') {
     const target = state.spells.find((s) => s.id === t.id);
     const dragged = state.spells.find((s) => s.id === sid);
     if (target && dragged && target !== dragged) createCombo(target, dragged);
@@ -1534,7 +1611,7 @@ function fireEntry(id) {
 }
 function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }
 
-function setMode(spell, mode) { if (spell.mode === mode) return; spell.mode = mode; saveSoon(); renderList(); }
+function setMode(spell, mode) { if (spell.mode === mode) return; spell.mode = mode; saveSoon(); render(); }
 function setHand(spell, hand) { if (spell.hand === hand) return; spell.hand = hand; saveSoon(); renderList(); }
 function setCategory(spell, cat) {
   if (!state.categories.includes(cat) || spell.category === cat) return;
@@ -1563,92 +1640,69 @@ function restoreSpell(r) {
   }));
 }
 
-/* Collapsible "Removed from spellbook" list at the bottom of #main. Hidden when
- * empty; opens automatically the moment a spell is removed so the user sees where
- * it went and the one-click Restore. Body scrolls internally so it stays tidy at
- * scale. */
+/* "Removed from spellbook" — the restorable list. It was a drawer at the bottom
+ * of #main; since 2026-09-24 it is a small header button (Removed · N) that
+ * opens a popout (Rober: "could be a small button up top with spells combat
+ * arts", and the standing rule that nothing expands inline). The button always
+ * carries the count; the popout is built by openRemoved() and refilled here
+ * whenever the list changes while it is up. */
 function renderRemoved() {
-  const sec = $('removed-section');
-  if (!sec) return;
-  sec.textContent = '';
   const n = state.removed.length;
-  /* Restoring spells shrinks the drawer back under the threshold; drop the
-     query with the box so a stale filter can never hide the last few rows. */
-  if (n < 8) ui.removedFilter = '';
-  if (!n) { sec.classList.add('hidden'); return; }
-  sec.classList.remove('hidden');
-
-  const open = ui.removedOpen;
-  sec.append(h('button', {
-    class: 'removed-head' + (open ? ' open' : ''),
-    title: open ? 'Hide removed spells' : 'Show removed spells',
-    onClick: () => { ui.removedOpen = !ui.removedOpen; renderRemoved(); },
-  },
-    h('span', { class: 'rh-caret' }, open ? '▾' : '▸'),
-    h('span', { class: 'rh-title' }, 'Removed from spellbook'),
-    h('span', { class: 'rh-count' }, String(n)),
-  ));
-  if (!open) return;
-
-  const body = h('div', { class: 'removed-body' });
-  body.append(h('div', { class: 'removed-note' },
+  if (!n) ui.removedFilter = '';            // an empty list has nothing to filter
+  const btn = $('removed-btn');
+  if (btn) {
+    const c = btn.querySelector('.rb-count'); if (c) c.textContent = String(n);
+    btn.disabled = !n;
+    btn.title = n ? (n + (n === 1 ? ' spell' : ' spells') + ' cleared from your spellbook — click to restore any of them')
+                  : 'Nothing has been removed from your spellbook';
+  }
+  const sec = $('removed-section');          // exists only while the popout is up
+  if (!sec) { ui.removedOpen = false; return; }
+  if (!n) { ui.removedOpen = false; if (window.MagicLibraryUI) MagicLibraryUI.close(); return; }
+  sec.textContent = '';
+  sec.append(h('div', { class: 'removed-note' },
     'Cleared from your spellbook — the spell itself is never lost. Restore adds it straight back.'));
 
-  /* ---- filter-as-you-type inside the drawer ----------------------------
-     This drawer only ever grows: every spell the capture key has stripped
-     across a whole playthrough sits here until it is restored one at a time.
-     It also scrolls internally (max-height 240px), so past a handful the one
-     spell you came to restore is off-screen with no way to ask for it.
-
-     Threshold 8 — under that the drawer is shorter than its own scroll box,
-     and a search field over six rows is just chrome. */
+  /* filter-as-you-type — always there (a list gets a search bar); Enter restores the top hit */
   const q = String(ui.removedFilter || '').trim().toLowerCase();
   const shown = state.removed.filter((r) => !q ||
     ((r.name || '') + ' ' + (r.plugin || '')).toLowerCase().indexOf(q) >= 0);
-
-  if (n >= 8) {
-    const input = h('input', {
-      id: 'removed-search', type: 'text', autocomplete: 'off', spellcheck: 'false',
-      placeholder: 'Find a removed spell — Enter restores the top hit',
-      title: 'Narrows the drawer as you type. Enter restores the top hit, Esc clears.',
-      value: ui.removedFilter,
-    });
-    input.addEventListener('input', () => {
-      ui.removedFilter = input.value;
-      renderRemoved();
-      /* the drawer is rebuilt from scratch, so hand the caret back */
-      const again = $('removed-search');
-      if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
-    });
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();                 // clear the filter before closing the deck
-        if (!ui.removedFilter) return;
-        ui.removedFilter = ''; renderRemoved();
-        const again = $('removed-search'); if (again) again.focus();
-        return;
-      }
-      if (e.key === 'Enter') {
-        /* Enter takes the top hit. Restoring is additive and undoable — it
-           puts the spell back in the spellbook — so firing it off a keystroke
-           costs nothing if it was the wrong one. */
-        e.preventDefault();
-        if (shown.length) restoreSpell(shown[0]);
-      }
-    });
-    body.append(h('div', { class: 'removed-find' },
-      h('span', { class: 'removed-find-g' }, '⌕'),
-      input,
-      q ? h('span', { class: 'removed-find-n' }, shown.length + ' of ' + n) : null));
-  }
+  const input = h('input', {
+    id: 'removed-search', type: 'text', autocomplete: 'off', spellcheck: 'false',
+    placeholder: 'Find a removed spell — Enter restores the top hit',
+    title: 'Narrows the list as you type. Enter restores the top hit, Esc clears.',
+    value: ui.removedFilter,
+  });
+  input.addEventListener('input', () => {
+    ui.removedFilter = input.value;
+    renderRemoved();
+    /* the list is rebuilt from scratch, so hand the caret back */
+    const again = $('removed-search');
+    if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      /* Enter takes the top hit. Restoring is additive and undoable — it puts
+         the spell back in the spellbook — so firing it off a keystroke costs
+         nothing if it was the wrong one. Escape belongs to the popout: it
+         clears a live filter first, then closes (openRemoved's __onEscape). */
+      e.preventDefault();
+      if (shown.length) restoreSpell(shown[0]);
+    }
+  });
+  sec.append(h('div', { class: 'removed-find' },
+    h('span', { class: 'removed-find-g' }, '⌕'),
+    input,
+    q ? h('span', { class: 'removed-find-n' }, shown.length + ' of ' + n) : null));
 
   if (q && !shown.length) {
-    body.append(h('div', { class: 'removed-none' },
+    sec.append(h('div', { class: 'removed-none' },
       'No removed spell matches “' + ui.removedFilter + '”.'));
   }
 
+  const rows = h('div', { class: 'removed-list' });
   shown.forEach((r) => {
-    body.append(h('div', { class: 'removed-row' },
+    rows.append(h('div', { class: 'removed-row' },
       iconEl(r),
       h('div', { class: 'body' },
         h('div', { class: 'name', title: r.name }, r.name || 'spell'),
@@ -1657,7 +1711,37 @@ function renderRemoved() {
       h('button', { class: 'restore-btn', title: 'Add it back to your spellbook', onClick: () => restoreSpell(r) }, '↩ Restore'),
     ));
   });
-  sec.append(body);
+  sec.append(rows);
+}
+
+/* The popout. Body-anchored through the library's dialog (which owns Escape and
+ * Tab while it is up); #removed-section lives INSIDE it so renderRemoved() can
+ * refill it after every restore — and the section vanishing with the dialog is
+ * what tells renderRemoved the popout is closed. */
+function openRemoved() {
+  if (!state.removed.length || !window.MagicLibraryUI || !MagicLibraryUI.openModal) return;
+  closeCtx(); cancelDesc();
+  const box = MagicLibraryUI.openModal('Removed from spellbook');
+  box.classList.add('ml-dialog-removed');
+  box.__onEscape = () => {                 // Esc clears a live filter first, then closes
+    if (!ui.removedFilter) return false;
+    ui.removedFilter = ''; renderRemoved();
+    const f = $('removed-search'); if (f) f.focus();
+    return true;
+  };
+  box.append(h('div', { id: 'removed-section' }));
+  ui.removedOpen = true;
+  renderRemoved();
+  const f = $('removed-search'); if (f) f.focus();
+}
+
+/* A removal lands in the header count; the pulse is "see where it went". */
+function pulseRemoved() {
+  const b = $('removed-btn'); if (!b) return;
+  b.classList.remove('pulse');
+  void b.offsetWidth;                        // restart the animation
+  b.classList.add('pulse');
+  setTimeout(() => b.classList.remove('pulse'), 800);
 }
 
 /* set mode (and hand) in one shot — used by the right-click menu */
@@ -1667,7 +1751,8 @@ function setModeHand(spell, mode, hand) {
   if (hand && spell.hand !== hand) { spell.hand = hand; changed = true; }
   if (!changed) return;
   saveSoon(); renderList();
-  toast((mode === 'equip' ? 'Equip' : 'Cast') + ' · ' + spell.name);
+  renderRail();
+  toast((mode === 'equip' ? 'Equip' : 'Cast now') + ' · ' + spell.name);
 }
 
 /* ---- right-click context menu (view mode) ---- */
@@ -1703,19 +1788,20 @@ function clampCtx(x, y) {
   place();
   setTimeout(place, 0);
 }
-function openCtxMenu(spell, x, y) {
+function openCtxMenu(spell, x, y, inDialog) {
   if (ui.editing) return;               // edit mode already has inline controls
   closeCtx();
   cancelDesc();
   const slot = slotOf(spell);
   const isEquip = spell.mode === 'equip';
+  const close = () => { closeCtx(); if (inDialog) MagicLibraryUI.close(); };
   const item = (label, active, danger, on) => h('button', {
     class: 'ctx-item' + (active ? ' active' : '') + (danger ? ' danger' : ''),
-    onClick: (e) => { e.stopPropagation(); closeCtx(); on(); },
+    onClick: (e) => { e.stopPropagation(); close(); on(); },
   }, h('span', { class: 'ctx-check' }, active ? '✓' : ''), h('span', { class: 'ctx-lbl' }, label));
 
   const items = [h('div', { class: 'ctx-head', title: spell.name }, spell.name || 'Spell')];
-  items.push(item('Cast on click', !isEquip, false, () => setModeHand(spell, 'cast', null)));
+  items.push(item('Cast now · single activation', !isEquip, false, () => setModeHand(spell, 'cast', null)));
   if (slot === 'voice') {
     items.push(item('Equip · Voice slot', isEquip, false, () => setModeHand(spell, 'equip', null)));
   } else {
@@ -1724,6 +1810,8 @@ function openCtxMenu(spell, x, y) {
     items.push(item('Equip · Both hands', isEquip && spell.hand === 'both',  false, () => setModeHand(spell, 'equip', 'both')));
   }
   items.push(h('div', { class: 'ctx-sep' }));
+  items.push(item('Move to category…', false, false, () => MagicLibraryUI.moveDialog(spell)));
+  items.push(item('Create package with this spell…', false, false, () => MagicPackageUI.edit(null, spell)));
   items.push(item('Change icon…', false, false, () => openIconPicker(spell)));
   items.push(h('div', { class: 'ctx-sep' }));
   items.push(item('Remove from deck', false, true, () => removeSpell(spell)));
@@ -1740,13 +1828,20 @@ function openCtxMenu(spell, x, y) {
       onClick: (e) => {
         e.stopPropagation();
         if (!armed) { armed = true; rmBtn.classList.add('confirm'); rmLbl.textContent = 'Delete from spellbook — click again'; return; }
-        closeCtx();
+        close();
         removeFromSpellbook(spell);
       },
     }, h('span', { class: 'ctx-check' }, '🗑'), rmLbl);
     items.push(rmBtn);
   }
 
+  if (inDialog) {
+    const box = MagicLibraryUI.openModal('Organize ' + spell.name);
+    box.classList.add('ml-manage-dialog');
+    box.append(h('div', { class: 'ml-manage-actions' }, items.slice(1)));
+    box.querySelector('.ml-manage-actions button').focus();
+    return;
+  }
   ctxEl = h('div', { id: 'ctx-menu', role: 'menu' }, items);
   $('overlay').append(ctxEl);
   clampCtx(x, y);
@@ -1755,6 +1850,7 @@ function openCtxMenu(spell, x, y) {
 }
 
 function addCategory() {
+  if (window.MagicLibraryUI) { MagicLibraryUI.categoryDialog(); return; }
   const name = uniqueCat('New Category', -1);
   state.categories.push(name);
   ui.cat = name; ui.sel = -1;
@@ -1810,6 +1906,7 @@ function reorderSpell(dragId, targetId, after) {
   if (ti < 0) { a.splice(fi, 0, m); return; }
   if (after) ti++;
   a.splice(ti, 0, m);
+  state.library.sort = 'custom';
   saveSoon(); renderList();
 }
 
@@ -1844,8 +1941,8 @@ function renderAddList() {
     for (let i = 0; i < 6; i++) box.append(h('div', { class: 'skel' }));
     return;
   }
-  const q = ui.addFilter.trim().toLowerCase();
-  const rows = ui.known.filter((k) => !q || String(k.name || '').toLowerCase().includes(q));
+  const q = ui.addFilter.trim();
+  const rows = ui.known.filter((k) => spellMatches(k, q));
   if (!rows.length) {
     empty.classList.remove('hidden');
     empty.textContent = '';
@@ -1904,7 +2001,7 @@ function addKnown(k, mode) {
     mode: mode === 'equip' ? 'equip' : 'cast',
     hand: 'right',
     category: ui.addCat,
-    slot: k.slot || 'hand',
+    type: k.type || '', slot: k.slot || 'hand',
     school: k.school || '', element: k.element || '', archetype: k.archetype || '',
     tier: k.tier || '', icon: '',
   };
@@ -2073,20 +2170,87 @@ function appendMoreIcons() {
  * auto-generated description (mdGetDesc → mdDesc), cached per formId. The
  * tooltip is display-only and clamped to the viewport like #ctx-menu.       */
 
-const desc = { cache: new Map(), timer: null, key: '', meta: null, anchor: null };
+const desc = { cache: new Map(), pending: new Map(), failures: new Map(), cardTimer: null, leaveTimer: null, timer: null, key: '', meta: null, anchor: null };
+
+// spell-card-stats: share hover/Details data, patch numbers without rebuilding
+// rows, and request only visible cards (at most two descriptions in flight).
+function paintCardStats(node, data) {
+  node.textContent = '';
+  SpellLibrary.cardStats(data).forEach(s => node.append(h('span', { class: 'ml-card-stat', title: s.note },
+    h('span', { class: 'ml-card-stat-label' }, s.label), h('strong', null, s.value))));
+}
+function cardStatsEl(meta) {
+  const node = h('div', { class: 'ml-card-stats', 'aria-label': 'Spell stats' });
+  node.__spellMeta = meta;
+  const key = hexId(meta.formId);
+  paintCardStats(node, desc.cache.get(key) || desc.failures.get(key) || (meta.formId ? null : { ok: false }));
+  return node;
+}
+function updateCardStats(key, data) {
+  $('list').querySelectorAll('.ml-card-stats').forEach(node => {
+    if (hexId(node.__spellMeta.formId) === key) paintCardStats(node, data);
+  });
+}
+function scheduleCardStats() {
+  if (desc.cardTimer) clearTimeout(desc.cardTimer);
+  desc.cardTimer = setTimeout(loadVisibleCardStats, 180);
+}
+function loadVisibleCardStats() {
+  desc.cardTimer = null;
+  const list = $('list');
+  if (!document.body.classList.contains('open') || ui.editing || isArtsPage() || ui.addOpen ||
+      dragKind || ui.capture || iconPicker.open || (window.MagicLibraryUI && MagicLibraryUI.isOpen()) ||
+      !list || list.classList.contains('hidden')) return;
+  if (desc.pending.size >= 2) { scheduleCardStats(); return; }
+  const bounds = list.getBoundingClientRect(), top = Math.max(0, bounds.top), bottom = Math.min(innerHeight, bounds.bottom);
+  if (bottom <= top) return;
+  const nodes = list.querySelectorAll('.ml-card-stats');
+  let requested = 0;
+  for (let i = 0; i < nodes.length && desc.pending.size < 2 && requested < 2; i++) {
+    const node = nodes[i], m = node.__spellMeta, key = hexId(m.formId);
+    if (!m.formId || desc.cache.has(key) || desc.failures.has(key) || desc.pending.has(key)) continue;
+    const rect = node.closest('.spell').getBoundingClientRect();
+    if (rect.bottom <= top || rect.top >= bottom || rect.right <= 0 || rect.left >= innerWidth) continue;
+    requested++; ensureDesc(m);
+  }
+}
+
+// One request serves hover and the persistent popout. Failed requests can be
+// retried; a late response may fill the cache but never another spell's modal.
+function ensureDesc(m, retry) {
+  if (!m || !m.formId) return;
+  const key = hexId(m.formId);
+  if (retry) { desc.cache.delete(key); desc.failures.delete(key); updateCardStats(key, null); }
+  if (desc.cache.has(key) || desc.pending.has(key)) return;
+  desc.pending.set(key, setTimeout(() => {
+    desc.pending.delete(key);
+    const failure = { ok: false, text: '', timedout: true };
+    desc.failures.set(key, failure); updateCardStats(key, failure); scheduleCardStats();
+    if (desc.key === key && desc.anchor) showDescTip(failure);
+    if (window.MagicLibraryUI) MagicLibraryUI.descriptionData(key, failure);
+  }, 4500));
+  toGame('mdGetDesc', JSON.stringify({ plugin: m.plugin || '', localId: (m.localId >>> 0) || 0, formId: m.formId >>> 0 }));
+}
 
 function hideDescTip() {
   const t = $('desc-tip');
   if (t) { t.classList.add('hidden'); t.textContent = ''; }
 }
 function cancelDesc() {
+  clearTimeout(desc.leaveTimer); desc.leaveTimer = null;
   if (desc.timer) { clearTimeout(desc.timer); desc.timer = null; }
   desc.key = '';
   desc.anchor = null;
   hideDescTip();
 }
+function leaveDesc() {
+  clearTimeout(desc.leaveTimer);
+  desc.leaveTimer = setTimeout(cancelDesc, 160); // cross the gap into the preview
+}
 function requestDesc(m, anchor) {
+  clearTimeout(desc.leaveTimer); desc.leaveTimer = null;
   if (ui.editing || dragKind || ctxEl || ui.capture || iconPicker.open) return;
+  if (window.MagicLibraryUI && MagicLibraryUI.isOpen()) return;
   if (!m || !m.formId) return;
   const key = hexId(m.formId);
   if (desc.anchor === anchor && desc.key === key) return;   // already pending / shown
@@ -2099,9 +2263,7 @@ function requestDesc(m, anchor) {
     const hit = desc.cache.get(key);
     if (hit) { showDescTip(hit); return; }
     showDescTip(null);   // loading state; mdDesc fills it in
-    toGame('mdGetDesc', JSON.stringify({
-      plugin: m.plugin || '', localId: (m.localId >>> 0) || 0, formId: (m.formId >>> 0) || 0,
-    }));
+    ensureDesc(m);
   }, 380);
 }
 function showDescTip(data) {
@@ -2115,9 +2277,12 @@ function showDescTip(data) {
   if (m.tier) bits.push(m.tier);
   if (m.type && m.type !== 'spell') bits.push(m.type);
   if (bits.length) tip.append(h('div', { class: 'dt-meta' }, bits.join(' · ')));
+  if (data && data.ok && data.stats) tip.append(h('div', { class: 'dt-stats' }, SpellLibrary.stats(data).map(s => s.label + ': ' + s.value).join(' · ')));
   if (!data) tip.append(h('div', { class: 'dt-loading' }, h('span', { class: 'spinner' }), 'Reading description…'));
+  else if (!data.ok) tip.append(h('div', { class: 'dt-text empty' }, 'Description unavailable. Open Details to retry.'));
   else if (data.text) tip.append(h('div', { class: 'dt-text' }, data.text));
-  else tip.append(h('div', { class: 'dt-text empty' }, 'No description.'));
+  else tip.append(h('div', { class: 'dt-text empty' }, 'This spell has no visible effect description.'));
+  tip.append(h('div', { class: 'dt-hint' }, 'Details opens the full description'));
   tip.classList.remove('hidden');
   placeDescTip(a);
 }
@@ -2157,9 +2322,13 @@ window.mdDesc = function (r) {
   r = coerce(r);
   if (!r) return;
   const key = hexId((r.formId >>> 0) || 0);
-  const data = { name: r.name || '', text: r.text || '', ok: !!r.ok };
-  desc.cache.set(key, data);
+  const data = { name: r.name || '', text: r.text || '', stats: r.stats || null, ok: !!r.ok };
+  clearTimeout(desc.pending.get(key)); desc.pending.delete(key);
+  if (data.ok) desc.cache.set(key, data);
+  if (data.ok) desc.failures.delete(key); else desc.failures.set(key, data);
+  updateCardStats(key, data); scheduleCardStats();
   if (desc.key === key && desc.anchor) showDescTip(data);
+  if (window.MagicLibraryUI) MagicLibraryUI.descriptionData(key, data);
 };
 
 /* ===================================================== open-key capture == */
@@ -2203,6 +2372,11 @@ function isTextTarget(t) {
 }
 
 function onKeyDown(e) {
+  if (window.MagicLibraryUI && MagicLibraryUI.onKey(e)) return;
+  if (e.key === 'Escape' && !$('desc-tip').classList.contains('hidden')) {
+    e.preventDefault(); cancelDesc(); return;
+  }
+  if (!isTextTarget(e.target) && e.target && e.target.closest && e.target.closest('button') && (e.key === 'Enter' || e.key === ' ')) return;
   // an open right-click menu is dismissed by the first keypress; Esc just closes
   // it (and is swallowed so it doesn't also clear search / close the view)
   if (ctxEl) {
@@ -2256,8 +2430,15 @@ function onKeyDown(e) {
   }
 
   const vis = visibleSpells();
-  if (e.key === 'ArrowDown') { e.preventDefault(); ui.sel = Math.min(vis.length - 1, ui.sel + 1); renderList(); return; }
-  if (e.key === 'ArrowUp') { e.preventDefault(); ui.sel = Math.max(0, (ui.sel < 0 ? 0 : ui.sel - 1)); renderList(); return; }
+  const rowNodes = $('list').querySelectorAll('.spell');
+  let stride = 1;
+  if (state.library.layout !== 'list' && rowNodes.length > 1) {
+    const firstTop = rowNodes[0].offsetTop;
+    while (stride < rowNodes.length && rowNodes[stride].offsetTop === firstTop) stride++;
+  }
+  if (!isTextTarget(e.target) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); ui.sel = Math.max(0, Math.min(vis.length - 1, ui.sel + (e.key === 'ArrowLeft' ? -1 : 1))); renderList(); return; }
+  if (e.key === 'ArrowDown') { e.preventDefault(); ui.sel = Math.min(vis.length - 1, ui.sel < 0 ? 0 : ui.sel + stride); renderList(); return; }
+  if (e.key === 'ArrowUp') { e.preventDefault(); ui.sel = Math.max(0, (ui.sel < 0 ? 0 : ui.sel - stride)); renderList(); return; }
   if (e.key === 'Enter') {
     e.preventDefault();
     const pick = ui.sel >= 0 ? vis[ui.sel] : vis[0];
@@ -2266,7 +2447,7 @@ function onKeyDown(e) {
   }
   // quick-fire digits: 1..9 -> 0..8, 0 -> 10th. Intercept even inside search
   // (spell names practically never need a typed digit to be found).
-  if (/^[0-9]$/.test(e.key)) {
+  if (!isTextTarget(e.target) && /^[0-9]$/.test(e.key)) {
     const idx = e.key === '0' ? 9 : (parseInt(e.key, 10) - 1);
     if (vis[idx]) { e.preventDefault(); fireEntry(vis[idx].id); }
     return;
@@ -2307,6 +2488,7 @@ let mdPage = 'spells';
 function isArtsPage() { return mdPage === 'arts'; }
 
 function setPage(p, opts) {
+  if (window.MagicLibraryUI) MagicLibraryUI.close();
   p = (p === 'arts') ? 'arts' : 'spells';
   const same = p === mdPage;
   mdPage = p;
@@ -2334,6 +2516,7 @@ function setPage(p, opts) {
   if (arts) setTimeout(() => { const f = $('ca-search'); if (f) f.focus(); }, 40);
   else if (!same && !(opts && opts.quiet)) setTimeout(() => { const s = $('search'); if (s) s.focus(); }, 40);
   syncChrome();
+  if (window.MagicLibraryUI) { MagicLibraryUI.sync(); if (!arts) scheduleFit(); }   // strip hides on arts; the list re-measures on return
 }
 
 /* C++ deep-open (the "Combat Arts" bindable action opens THIS view on that
@@ -2365,7 +2548,7 @@ function wire() {
   var deckBtn = $('deck-btn');
   if (deckBtn) deckBtn.addEventListener('click', () => toGame('mdOpenDeck'));
   var fillBtn = $('fill-btn');
-  if (fillBtn) fillBtn.addEventListener('click', toggleFill);
+  if (fillBtn) fillBtn.addEventListener('click', () => { if (window.MagicLibraryUI) MagicLibraryUI.close(); toggleFill(); });
   HDSmoothScroll.install();
   $('edit-btn').addEventListener('click', toggleEdit);
   $('add-spell-btn').addEventListener('click', openAdd);
@@ -2423,6 +2606,9 @@ function wire() {
   // the menu is anchored to a point — scrolling the list or resizing invalidates it
   $('list').addEventListener('scroll', closeCtx, true);
   $('list').addEventListener('scroll', cancelDesc, true);
+  $('list').addEventListener('scroll', scheduleCardStats, true);
+  $('desc-tip').addEventListener('mouseenter', () => { clearTimeout(desc.leaveTimer); desc.leaveTimer = null; });
+  $('desc-tip').addEventListener('mouseleave', leaveDesc);
   $('add-list').addEventListener('scroll', cancelDesc, true);
   window.addEventListener('resize', closeCtx);
   window.addEventListener('resize', cancelDesc);
@@ -2468,6 +2654,7 @@ function normalizeConfig(cfg) {
   state.panelH = (pw && ph) ? ph : 0;
   state.categories = Array.isArray(cfg.categories) ? cfg.categories.filter((c) => typeof c === 'string' && c) : [];
   if (!state.categories.length) state.categories = ['Destruction', 'Restoration', 'Alteration', 'Conjuration', 'Illusion'];
+  state.library = SpellLibrary.normalize(cfg.library, state.categories);
   state.catIcons = {};
   if (cfg.catIcons && typeof cfg.catIcons === 'object') {
     for (const k in cfg.catIcons) {
@@ -2484,7 +2671,7 @@ function normalizeConfig(cfg) {
     mode: s.mode === 'equip' ? 'equip' : 'cast',
     hand: (s.hand === 'left' || s.hand === 'both') ? s.hand : 'right',
     category: state.categories.includes(s.category) ? s.category : state.categories[0],
-    slot: s.slot || '', school: s.school || '', element: s.element || '', archetype: s.archetype || '',
+    type: s.type || '', slot: s.slot || '', school: s.school || '', element: s.element || '', archetype: s.archetype || '',
     tier: s.tier || '', icon: s.icon || '',
   })).filter((s) => s.id && (s.plugin || s.formId));
   state.combos = (Array.isArray(cfg.combos) ? cfg.combos : []).map((c) => ({
@@ -2510,6 +2697,7 @@ function normalizeConfig(cfg) {
 }
 
 window.mdOpen = function (cfg) {
+  cancelDesc(); desc.cache.clear(); desc.failures.clear();
   // C++ re-pushes this payload for LIVE updates (a phone icon assignment landing
   // through the portal poller). Already open = data refresh only: the resets below
   // would close the icon picker, drop the search text and steal focus mid-keystroke.
@@ -2586,7 +2774,7 @@ window.mdSpells = function (rows) {
  * school is exactly the case that falls through to a name-guessed glyph, and
  * naming it in HotkeyDeck.log is how we tell "stale snapshot" apart from
  * "engine reports no school for this modded spell". */
-const META_FIELDS = ['slot', 'school', 'element', 'archetype', 'tier'];
+const META_FIELDS = ['type', 'slot', 'school', 'element', 'archetype', 'tier'];
 function enrichFromKnown() {
   let filled = 0;
   const orphans = [];
@@ -2658,11 +2846,11 @@ window.mdRemoved = function (res) {
   };
   state.removed = state.removed.filter((x) => !sameSpell(x, entry));
   state.removed.unshift(entry);
-  ui.removedOpen = true;          // reveal so the user sees where it went
   save();                         // persist immediately (full round-trip)
   render();
+  pulseRemoved();                 // the header count is where it went
   toGame('mdKnown');              // it drops out of the add-picker's known list
-  toast(res.msg || ('Removed ' + entry.name));
+  toast(res.msg || ('Removed ' + entry.name + ' — “Removed · ' + state.removed.length + '” up top restores it'));
 };
 
 /* engine confirmed a restore — drop it from the Removed list */
@@ -2679,12 +2867,14 @@ window.mdRestored = function (res) {
 };
 
 window.mdClosed = function () {
+  if (window.MagicLibraryUI) MagicLibraryUI.close();
   if (isArtsPage() && window.CombatArtsPane && window.CombatArtsPane.onHide)
     window.CombatArtsPane.onHide();
   closeCtx();
   cancelDesc();
   closeIconPicker();
   document.body.classList.remove('open');
+  clearTimeout(desc.cardTimer); desc.cardTimer = null;
   pdrag.armed = null; pdrag.active = false; pdClearTarget();
   document.body.classList.remove('pdragging');
   dragKind = null; comboDragActive = false;
@@ -2713,6 +2903,7 @@ window.hdNativeMouse = function (info) {
 /* ============================================================== boot ==== */
 
 function init() {
+  if (window.MagicLibraryUI) MagicLibraryUI.init();
   wire();
   applyScale();
   render();
@@ -2838,7 +3029,7 @@ function runSelfTest() {
     canonHex('0x0002dd29') === '0x0002DD29' && canonHex('2DD29') === '0x0002DD29' && canonHex('junk') === '');
   ok('config loaded categories', state.categories.length >= 4);
   ok('config loaded spells', state.spells.length >= 4);
-  ok('rail rendered All + categories', $('rail-list').children.length === state.categories.length + 1);
+  ok('rail rendered library + categories', $('rail-list').querySelectorAll('.ml-smart').length === 6 && $('rail-list').querySelectorAll('.ml-cat-row').length === state.categories.length);
 
   ui.cat = ALL; ui.filter = ''; renderList();
   const totalRows = $('list').children.length;
@@ -2987,8 +3178,14 @@ function runSelfTest() {
   });
   ok('remove drops spell from deck', state.spells.every((s) => (s.formId >>> 0) !== rmFid));
   ok('remove adds to Removed list', state.removed.length === removedBefore + 1 && (state.removed[0].formId >>> 0) === rmFid);
-  ok('remove opens Removed drawer', ui.removedOpen === true);
-  ok('Removed section renders a row', !$('removed-section').classList.contains('hidden') && !!$('removed-section').querySelector('.removed-row'));
+  ok('remove marks the header button', !$('removed-btn').disabled &&
+    $('removed-btn').querySelector('.rb-count').textContent === String(state.removed.length) &&
+    $('removed-btn').classList.contains('pulse'));
+  openRemoved();
+  ok('Removed popout opens with a row', !!document.querySelector('.ml-dialog-removed') &&
+    !!$('removed-section') && !!$('removed-section').querySelector('.removed-row'));
+  MagicLibraryUI.close();
+  ok('closing the popout takes the section with it', !$('removed-section') && !document.querySelector('.ml-dialog-removed'));
   window.mdRemoved({ ok: true, formId: rmFid, plugin: rmTarget.plugin, localId: rmTarget.localId, name: rmTarget.name, type: rmTarget.type });
   ok('remove dedupes by formId', state.removed.filter((x) => (x.formId >>> 0) === rmFid).length === 1);
   const removedNow = state.removed.length;
@@ -2997,13 +3194,11 @@ function runSelfTest() {
   window.mdRestored({ ok: true, formId: rmFid });
   ok('restore drops from Removed list', state.removed.every((x) => (x.formId >>> 0) !== rmFid));
 
-  /* Removed-drawer filter: absent while the drawer is short, present past 8,
-     narrows on name AND plugin, survives the rebuild, Enter restores the top hit */
+  /* Removed-popout filter: always there (a list gets a search bar), narrows on
+     name AND plugin, survives the rebuild, Enter restores the top hit, Escape
+     clears before it closes, and an emptied list closes the popout itself */
   (function () {
     const keepRemoved = state.removed.slice();
-    ui.removedOpen = true;
-    ok('removed: no filter box under the threshold', (renderRemoved(), !$('removed-search')));
-
     state.removed = [];
     for (let i = 0; i < 9; i++) {
       state.removed.push({
@@ -3012,8 +3207,8 @@ function runSelfTest() {
         name: (i === 5 ? 'Wall of Whispers' : 'Flames ' + i), type: 'spell',
       });
     }
-    renderRemoved();
-    ok('removed: filter box appears past 8', !!$('removed-search'));
+    openRemoved();
+    ok('removed: the find box is always there', !!$('removed-search'));
     ok('removed: all rows before filtering',
       $('removed-section').querySelectorAll('.removed-row').length === 9);
 
@@ -3042,13 +3237,17 @@ function runSelfTest() {
     ok('removed: Enter restores the top hit',
       sent.length === 1 && (sent[0].formId >>> 0) === ((0xDEAD0000 + 5) >>> 0));
 
-    /* a stale query must never survive the drawer shrinking back under 8 */
-    ui.removedFilter = 'whispers';
-    state.removed = state.removed.slice(0, 4);
-    renderRemoved();
-    ok('removed: filter self-clears below the threshold',
-      ui.removedFilter === '' && !$('removed-search') &&
-      $('removed-section').querySelectorAll('.removed-row').length === 4);
+    /* the popout owns Escape: a live filter clears first, the next press closes */
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    ok('removed: Escape clears the filter before closing', ui.removedFilter === '' && !!document.querySelector('.ml-dialog-removed'));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    ok('removed: a second Escape closes the popout', !document.querySelector('.ml-dialog-removed') && !$('removed-section'));
+
+    /* restoring the last spell leaves nothing to show — the popout closes itself */
+    openRemoved(); ui.removedFilter = 'flames'; renderRemoved();
+    state.removed = []; renderRemoved();
+    ok('removed: an emptied list closes the popout, clears the filter and dims the button',
+      !document.querySelector('.ml-dialog-removed') && ui.removedFilter === '' && $('removed-btn').disabled);
 
     state.removed = keepRemoved; ui.removedOpen = false; renderRemoved();
   })();
@@ -3099,6 +3298,15 @@ function runSelfTest() {
   ok('combo: armed delete removes combo', state.combos.length === combosBefore);
   renderCombos();
   ok('combo: strip hides when empty', $('combo-strip').classList.contains('hidden'));
+
+  // ---- search: name OR plugin, every word must hit ----
+  const dk = { name: 'Standard of Authority', plugin: 'KittyClass_Dragonknight.esp' };
+  ok('search: plugin name matches', spellMatches(dk, 'dragonknight'));
+  ok('search: .esp matches', spellMatches(dk, 'kittyclass_dragonknight.esp'));
+  ok('search: name + plugin words both must hit', spellMatches(dk, 'dragonknight standard'));
+  ok('search: a miss on either word misses', !spellMatches(dk, 'dragonknight flames'));
+  ok('search: empty query matches all', spellMatches(dk, '  '));
+  ok('search: no plugin still matches by name', spellMatches({ name: 'Healing' }, 'heal'));
 
   // ---- SH icon library: resolver chain, tiers, overrides ----
   ok('sh: byForm key format', shKeyFor({ plugin: 'Skyrim.esm', localId: 0x2dd29 }) === 'skyrim.esm|2dd29');
@@ -3261,16 +3469,17 @@ function runSelfTest() {
   const cssPx = (n) => Math.round(parseFloat(cssVar(n)));
   const layoutW = () => $('panel').getBoundingClientRect().width / curScale();
   const layoutH = () => $('panel').getBoundingClientRect().height / curScale();
-  const defW = () => Math.min(1500, (window.innerWidth * 0.94) / curScale());
+  const defW = () => (window.innerWidth * 0.94) / curScale();
 
   setScale(1.0); resetPanelSize();
-  ok('panel: XL default is min(1500px, 94vw/scale)', Math.abs(layoutW() - defW()) <= 1);
+  ok('panel: the default fills 94vw/scale — the panel always fills the screen', Math.abs(layoutW() - defW()) <= 1);
   ok('panel: auto leaves the size vars unset', !cssVar('--panel-w') && !cssVar('--panel-h') &&
     state.panelW === 0 && state.panelH === 0 && payload().panelW === 0 && payload().panelH === 0);
-  // the 1500px cap only bites when there is room for it: scale 0.6 buys
-  // 94vw/0.6 of layout width, so the cap must win over the viewport there
+  // zoom is zoom (2026-09-24): zooming out grows the LAYOUT box so more cards
+  // fit, instead of shrinking a capped window in the middle of the screen
   setScale(0.6);
-  ok('panel: 1500px cap wins over 94vw at small scale', Math.abs(layoutW() - 1500) <= 1);
+  ok('panel: zooming out grows the layout box instead of shrinking the window',
+    Math.abs(layoutW() - defW()) <= 1 && layoutW() > 1500);
   setScale(1.0);
 
   // drag the grip: real mousedown -> mousemove -> mouseup, pulled INWARD so
@@ -3325,14 +3534,8 @@ function runSelfTest() {
   setScale(1.0); resetPanelSize();
   const fit = fitScale();
   ok('fill: fitScale returns a clamped in-range scale', fit >= SMIN && fit <= SFILLMAX);
-  ok('fill: fitScale matches min(innerW/natW, innerH/natH)', (() => {
-    const p = $('panel');
-    const st = document.documentElement.style, prev = st.getPropertyValue('--ui-scale');
-    st.setProperty('--ui-scale', '1'); const nw = p.offsetWidth, nh = p.offsetHeight;
-    if (prev) st.setProperty('--ui-scale', prev); else st.removeProperty('--ui-scale');
-    const want = Math.min(SFILLMAX, Math.max(SMIN, Math.round(Math.min(window.innerWidth / nw, window.innerHeight / nh) * 10) / 10));
-    return want === fit;
-  })());
+  ok('fill: fitScale maps the 1500×1000 design size onto the screen', fit === Math.min(SFILLMAX, Math.max(SMIN,
+    Math.round(Math.min(window.innerWidth / DESIGN_W, window.innerHeight / DESIGN_H) * 10) / 10)));
   toggleFill();
   ok('fill: toggle sets uiScale to the fit and persists via setScale',
     curScale() === fit && payload().uiScale === fit);

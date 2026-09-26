@@ -119,6 +119,7 @@ namespace LootHighlight
 		std::string lotdDisp = "dbmDisp";
 	};
 
+	bool Ping(std::uint32_t refId); // brief existing palette glow, main thread
 	void Init();  // menu sink registration + palette resolve probe (kDataLoaded)
 
 	// Persisted slice under "loot" in hotkeys.json.

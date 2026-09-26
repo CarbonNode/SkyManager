@@ -238,6 +238,26 @@ namespace Facelight
 		return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
+	bool Capture(std::uint32_t formId, Snapshot& out)
+	{
+		auto* a = ActorFor(formId);
+		if (!Present() || !a || !a->Get3D()) return false;
+		out.levels = LevelMask(a);
+		auto* sp = Applicator(); out.applicator = sp && a->HasSpell(sp);
+		return true;
+	}
+	bool Restore(std::uint32_t formId, const Snapshot& before)
+	{
+		auto* a = ActorFor(formId);
+		if (!Present() || !a || (before.levels & ~127u)) return false;
+		RemoveAllLights(a);
+		if (auto* sp = Applicator()) {
+			if (before.applicator) a->AddSpell(sp); else a->RemoveSpell(sp);
+		}
+		ApplyLights(a, before.levels, false);
+		return true;
+	}
+
 	std::string Apply(std::uint32_t formId, const std::string& op)
 	{
 		if (!Present())

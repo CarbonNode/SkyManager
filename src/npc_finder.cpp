@@ -48,6 +48,7 @@
 #include <vector>
 
 #include "item_icons.h"
+#include "facegen_resolver.h"
 
 namespace NpcFinder
 {
@@ -531,17 +532,7 @@ namespace NpcFinder
 			if (bar == std::string::npos || bar == 0)
 				return false;
 			const std::string plugin = fc.substr(0, bar);
-			std::string       hex = fc.substr(bar + 1);
-			for (auto& c : hex)
-				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-			if (hex.empty() || hex.size() > 8)
-				return false;
-			while (hex.size() < 8)
-				hex.insert(hex.begin(), '0');
-			const std::string rel =
-				"meshes\\actors\\character\\facegendata\\facegeom\\" + plugin + "\\" + hex + ".nif";
-			RE::BSResourceNiBinaryStream probe(rel.c_str());
-			const bool ok = probe.good();
+			const bool ok = !FaceGenResolver::Resolve(fc.substr(bar + 1), plugin).empty();
 			cache.emplace(fc, ok);
 			return ok;
 		}

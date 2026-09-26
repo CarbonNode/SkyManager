@@ -12,12 +12,9 @@
  *  version banner (fixed fork vs. original scripts) and a RESCUE button
  *  that stands the whole system down so the next save is clean.
  *
- *  Shape: a sibling of the icon picker (#hk-icon-modal) — an absolute
- *  inset-0 backdrop INSIDE #panel (so it inherits --ui-scale and clips to
- *  the window), flex-centered box, z-index 74 (above the icon picker at
- *  72, below toast at 80). Own sheet hd-formation.css, linked from
- *  index.html — NEVER merged into app.css (the sync_view_frags truncation
- *  trap is why every new surface ships its own <link>).
+ *  Shape: body-anchored modal, independent of the deck's scale transform.
+ *  Modern Walk With Me changes are drafted, validated and applied together;
+ *  the legacy FWF / WWM 0.15 controls remain for installs that use them.
  *
  *  Bridge (one name per direction): fmGet→fmOpen · fmApply→fmResult ·
  *  fmReg→fmResult · fmRescue→fmResult; every mutation is followed by a
@@ -46,10 +43,18 @@
     focusRescue: false,
     provider: '',      // '' = let C++ pick (last used / only installed)
     wSlot: 0,          // Walk With Me: which party slot the grid edits
+    section: 'travel',
+    draft: {},
+    picks: {},
+    filter: '',
+    error: '',
+    busy: false,
   };
 
   let el = null;          // the backdrop node
   let applyTimer = 0;     // debounce for slider commits
+  let opener = null;
+  let renderedSection = '';
   /* Set by openRescue() and consumed by the open() it triggers — see there. */
   let rescuePending = false;
 
@@ -131,13 +136,12 @@
 
   function ensureDom() {
     if (el && el.isConnected) return el;
-    const panel = document.getElementById('panel') || document.body;
     el = h('div', { id: 'fm-modal', class: 'hidden' });
     /* Backdrop click closes; clicks inside the box stay inside. */
     el.addEventListener('mousedown', (e) => {
       if (e.button === 0 && e.target === el) close();
     });
-    panel.appendChild(el);
+    document.body.appendChild(el);
     return el;
   }
 
@@ -183,6 +187,13 @@
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch (_) { d = null; } }
     if (!d) return;
     if (d.msg) say(d.msg);
+    S.busy = false;
+    if (S.data && S.data.modern) {
+      S.error = d.ok === false ? String(d.msg || 'The change could not be applied.') : '';
+      if (d.ok) { S.draft = {}; S.picks = {}; }
+      if (d.closeGameMenu && d.ok) close();
+      else if (S.open) render();
+    }
   };
 
   /* ---------------------------------------------------------- controls -- */
@@ -287,10 +298,8 @@
 
   /* ------------------------------------------------------- providers -- */
 
-  /* One tab per INSTALLED formation mod. Hidden entirely with a single one,
-     so the common rig sees exactly the modal it saw before. Rober's call
-     (2026-09-10) when Walk With Me landed: "No swap, just support for both"
-     — so this switches which mod the modal drives, it never retires one. */
+  /* Providers are supplied by native detection. An explicitly configured
+     Walk With Me replacement hides the retired FWF provider after cleanup. */
   function providerTabs(d) {
     const list = (d && Array.isArray(d.providers) ? d.providers : [])
       .filter((p) => p && p.installed);
@@ -402,6 +411,7 @@
   }
 
   function renderWwm(body, d) {
+    if (d.modern) { renderWwmModern(body, d); return; }
     const g = d.global || {};
     const safety = d.safety || {};
     const modes = Array.isArray(d.modes) ? d.modes : [];
@@ -624,18 +634,202 @@
       + 'Walk With Me off. Its own “Return to follower AI” order, from here.');
   }
 
+  /* formation-wwm-modern: controls come from the verified native 0.2.2
+     contract. Draft changes are committed together; ReloadSettings needs
+     the unpaused VM, so Apply returns to the game once, after saving. */
+  function pending() { return Object.keys(S.draft).length + Object.keys(S.picks).length; }
+  function modernChange(key, value, repaint) {
+    S.draft[key] = value;
+    S.error = '';
+    if (repaint !== false) render();
+    else {
+      const applyButton = el && el.querySelector('.fm-apply');
+      if (applyButton) { applyButton.disabled = false; applyButton.textContent = 'Apply & return to game'; }
+      const status = el && el.querySelector('.fm-draft-status');
+      if (status) status.textContent = 'Changes ready to apply';
+      const discard = el && el.querySelector('.fm-discard');
+      if (discard) discard.disabled = false;
+    }
+  }
+
+  function renderWwmModern(body, d) {
+    const settings = Object.assign({}, d.settings || {}, S.draft);
+    const sections = [['travel','Travel'], ['hands','Hand-holding'], ['rest','Rest'],
+      ['scout','Scouting'], ['safety','Compatibility'], ['display','Display']];
+    const nav = h('nav', { class: 'fm-section-nav', 'aria-label': 'Formation controls' });
+    sections.forEach(([id,label]) => nav.append(h('button', {
+      type:'button', class:'fm-section-tab' + (S.section === id ? ' on' : ''),
+      'aria-pressed':String(S.section === id), onClick:() => { S.section=id; S.filter=''; render(); }
+    },label)));
+    body.append(nav);
+    const intro = {
+      travel:['Walk together', 'Choose an order and the companions who travel with you.'],
+      hands:['A companion at your side', 'Experimental. Use third person with weapons sheathed. Pause to let your companion approach, then walk together.'],
+      rest:['Make yourselves at home', 'Choose what companions do while the party rests.'],
+      scout:['Let a companion find the way', 'Choose who scouts for nearby containers, bodies and valuable items.'],
+      safety:['Work with your follower setup', 'Decide when Walk With Me gives control back to other follower behavior.'],
+      display:['Your travel HUD', 'Set the size, position and visibility of Walk With Me’s own indicators.']
+    }[S.section];
+    body.append(h('div',{class:'fm-modern-intro'},
+      h('div',{},h('h2',{},intro[0]),h('p',{},intro[1])),
+      h('span',{class:'fm-chip'},String(d.count < 0 ? '…' : d.count || 0) + ' / ' + String(d.max || 10) + ' companions')));
+    if (S.error) body.append(h('div',{class:'fm-warn',role:'alert'},S.error));
+    if (!d.apiReady) body.append(h('div',{class:'fm-warn'},'The Walk With Me interface is unavailable. Check the installed DLL before applying changes.'));
+    if (d.handoffPending) body.append(h('div',{class:'fm-note'},'Finishing the switch from Formation with Followers. Close the deck and let the game run for a moment.'));
+    else if (d.handoffMessage && /paused|unavailable/.test(d.handoffMessage)) body.append(h('div',{class:'fm-warn',role:'alert'},d.handoffMessage));
+
+    if (S.section === 'travel' || S.section === 'hands') {
+      const modes = h('div',{class:'fm-orders'});
+      (d.modes || []).forEach(m => modes.append(h('button',{
+        type:'button',class:'fm-order' + (Number(settings.mode) === Number(m.id) ? ' on' : ''),
+        'aria-pressed':String(Number(settings.mode) === Number(m.id)),
+        onClick:()=>modernChange('mode',Number(m.id))
+      },h('span',{class:'fm-order-l'},m.label),h('span',{class:'fm-order-h'},m.hud))));
+      if (S.section === 'travel') body.append(modes);
+      else if (Number(settings.mode) !== 2 || settings.enabled === false) {
+        body.append(h('div',{class:'fm-note fm-action-note'},
+          h('span',{},'Hand-holding uses Companion mode with Walk With Me enabled.'),
+          h('button',{type:'button',class:'fm-btn',onClick:()=>{
+            S.draft.mode=2; modernChange('enabled',true);
+          }},'Use Companion mode')));
+      }
+      const side = h('div',{class:'fm-choice-row'},h('span',{class:'fm-lbl'},'Companion side'));
+      [[-1,'Left'],[1,'Right']].forEach(([value,label])=>side.append(h('button',{
+        type:'button',class:'fm-btn'+(Number(settings.preferredSide)===value?' primary':''),
+        'aria-pressed':String(Number(settings.preferredSide)===value),onClick:()=>modernChange('preferredSide',value)
+      },label)));
+      body.append(side);
+    }
+    if (S.section === 'hands') {
+      const row = h('div',{class:'fm-choice-row'},h('span',{class:'fm-lbl'},'Method'));
+      [['classic','Classic'],['tether','TETHER']].forEach(([value,label])=>row.append(h('button',{
+        type:'button',class:'fm-btn'+(settings.method===value?' primary':''),
+        disabled:value==='tether'&&!d.tetherAssets?'':null,
+        'aria-pressed':String(settings.method===value),onClick:()=>modernChange('method',value)
+      },label)));
+      body.append(row);
+      if (!d.tetherAssets) body.append(h('p',{class:'fm-help'},'Classic is available without extra animations. TETHER needs Open Animation Replacer and generated clasp animations.'));
+      body.append(h('p',{class:'fm-help'},'The selected partner is a preference. This interface cannot confirm that the hands have connected. Combat, sprinting and first person release the grip.'));
+    }
+    if (S.section === 'travel' || S.section === 'hands' || S.section === 'scout') renderModernRoster(body,d,settings);
+
+    const fields = h('div',{class:'fm-control-grid'});
+    (d.controls || []).filter(c=>c.group===S.section).forEach(c=>{
+      if (S.section==='hands' && /^palm|^gripGap$/.test(c.key) && settings.method!=='tether') return;
+      if (c.type==='toggle') {
+        fields.append(toggle(c.label,c.label,settings[c.key]===true,v=>modernChange(c.key,v)));
+      } else {
+        const input=h('input',{type:'number',class:'fm-number',name:c.key,
+          min:c.min,max:c.max,step:c.step,value:settings[c.key],inputmode:'decimal',
+          'aria-label':c.label,autocomplete:'off',onChange:e=>{
+            const value=Number(e.target.value);
+            if (e.target.value!=='' && Number.isFinite(value)) modernChange(c.key,value,false);
+          }});
+        fields.append(h('label',{class:'fm-number-row'},h('span',{},c.label),input));
+      }
+    });
+    body.append(fields);
+    if (S.section==='rest') body.append(h('button',{class:'fm-btn',type:'button',onClick:()=>{
+      S.draft.enabled=true; modernChange('mode',4);
+    }},'Set order: Relax here'));
+    const footer=h('div',{class:'fm-modern-foot'},
+      h('span',{class:'fm-draft-status','aria-live':'polite'},pending()?'Changes ready to apply':'Settings apply when you return to the game'),
+      h('button',{class:'fm-btn fm-discard',type:'button',disabled:pending()&&!S.busy?null:'',onClick:()=>{
+        S.draft={};S.picks={};S.error='';render();
+      }},'Discard'),
+      h('button',{class:'fm-btn primary fm-apply',type:'button',disabled:pending()&&d.apiReady&&!S.busy&&!d.handoffPending?null:'',onClick:()=>{
+        if (!pending() || !d.apiReady || S.busy || d.handoffPending) return;
+        S.busy=true;render();
+        toGameSafe('fmApply',JSON.stringify(Object.assign(subjPayload(),S.picks,{settings:S.draft})));
+      }},S.busy?'Applying…':'Apply & return to game'));
+    body.append(footer);
+  }
+
+  function renderModernRoster(body,d,settings) {
+    const selecting = S.section !== 'travel';
+    const hands = S.section === 'hands';
+    const choice = hands ? 'partnerId' : 'finderId';
+    const selected = hands ? d.partner || {} : d.finder || {};
+    const roster = Array.isArray(d.roster) ? d.roster : [];
+    const selectedRow = Object.prototype.hasOwnProperty.call(S.picks,choice)
+      ? roster.find(r=>r.formId===S.picks[choice]) : roster.find(r=>r.key && r.key===selected.key);
+    const pickedName = Object.prototype.hasOwnProperty.call(S.picks,choice)
+      ? selectedRow && selectedRow.name : selected.name;
+    const card=h('section',{class:'fm-party'},h('div',{class:'fm-sec-t'},
+      selecting ? (hands?'Hand-holding companion':'Loot scout') : 'Your nearby companions',
+      selecting ? h('span',{class:'fm-chip'},pickedName || (hands?'Choose a partner':'Nearest companion')) : null));
+    body.append(card);
+    if (selecting) card.append(h('button',{type:'button',class:'fm-btn fm-clear-partner',onClick:()=>{
+      S.picks[choice]=''; if(hands)S.draft.handsEnabled=false; render();
+    }},hands?'Clear partner':'Use the nearest companion'));
+    const input=h('input',{class:'fm-party-search',type:'search',name:'formation-companion-search',
+      placeholder:'Find a companion…','aria-label':'Find a companion',autocomplete:'off',value:S.filter});
+    card.append(input);
+    const list=h('div',{class:'fm-party-list'});card.append(list);
+    function paint() {
+      list.textContent='';
+      const matches=roster.filter(r=>String(r.name||'').toLowerCase().includes(S.filter.toLowerCase()));
+      if (!matches.length) list.append(h('p',{class:'fm-help'},roster.length?'No companions match this search.':'No companions nearby. Open Formation from a follower’s quick card to target them.'));
+      matches.forEach(r=>{
+        const picked = selecting && (Object.prototype.hasOwnProperty.call(S.picks,choice)
+          ? S.picks[choice]===r.formId : !!r.key&&r.key===selected.key);
+        const row=h('article',{class:'fm-party-card'+(picked?' selected':'')},
+          h('div',{class:'fm-party-name'},r.name || 'Companion'),
+          h('span',{class:'fm-help'},!r.key?'Temporary reference':r.managed?'In the walking party':'Not in the walking party'));
+        if(selecting) {
+          const can=r.managed && !!r.key;
+          row.append(h('button',{type:'button',class:'fm-btn'+(picked?' primary':''),disabled:can?null:'',
+            title:can?'Choose this companion':'Add this companion to the walking party on the Travel tab first',onClick:()=>{
+              if (!can) return;
+              S.picks[choice]=r.formId;
+              if(hands) { S.draft.handsEnabled=true; S.draft.mode=2; S.draft.enabled=true; }
+              render();
+            }},picked?'Selected':hands?'Hold hands':'Choose scout'));
+        } else {
+          row.append(h('button',{type:'button',class:'fm-btn'+(!r.managed?' primary':''),onClick:()=>{
+            if(S.busy || d.handoffPending) return;
+            if(pending()) { S.error='Apply or discard your settings before changing the walking party.';render();return; }
+            S.busy=true;render();
+            toGameSafe('fmReg',JSON.stringify({provider:'wwm',formId:r.formId,op:r.managed?'unregister':'register'}));
+          }},r.managed?'Leave party':'Walk with me'));
+        }
+        list.append(row);
+      });
+    }
+    input.addEventListener('input',()=>{S.filter=input.value;paint();});
+    input.addEventListener('keydown',e=>{if(e.key==='Enter'){
+      const top=list.querySelector('button:not([disabled])');if(top){e.preventDefault();top.click();}
+    }});
+    paint();
+  }
+
   function render() {
+    const before=el && el.querySelector('.fm-body');
+    const scroll=before && renderedSection===S.section ? before.scrollTop : 0;
+    const active=el && el.contains(document.activeElement) ? document.activeElement : null;
+    const identity=active && {tag:active.tagName,name:active.getAttribute('name'),cls:active.className,text:active.textContent};
+    renderContent();
+    renderedSection=S.section;
+    if(identity) {
+      const next=Array.from(el.querySelectorAll('button,input,select')).find(n=>n.tagName===identity.tag &&
+        (identity.name?n.getAttribute('name')===identity.name:n.className===identity.cls&&n.textContent===identity.text));
+      if(next) next.focus();
+    }
+    const body=el.querySelector('.fm-body');if(body)body.scrollTop=scroll;
+  }
+
+  function renderContent() {
     const root = ensureDom();
     root.textContent = '';
-    const box = h('div', { class: 'fm-box', role: 'dialog', 'aria-label': 'Formation settings' });
+    const box = h('div', { class: 'fm-box' + (S.data && S.data.modern ? ' fm-modern' : ''), role: 'dialog', 'aria-modal':'true', 'aria-label': 'Formation settings' });
     root.appendChild(box);
 
     const d = S.data;
     box.append(h('div', { class: 'fm-head' },
-      h('span', { class: 'fm-title' }, '⛬ Formation'),
+      h('span', { class: 'fm-title' }, d && d.modern ? 'Walk With Me' : 'Formation'),
       S.who ? h('span', { class: 'fm-who' }, S.who) : null,
       h('button', {
-        class: 'fm-close', type: 'button', title: 'Close (Esc)',
+        class: 'fm-close', type: 'button', title: 'Close (Esc)', 'aria-label':'Close formation controls',
         onClick: () => close(),
       }, '✕')));
 
@@ -886,6 +1080,7 @@
   /* ------------------------------------------------------------ public -- */
 
   function open(subj, who) {
+    opener=document.activeElement;
     S.subj = subj || null;
     S.who = who || (subj && subj.name) || '';
     S.open = true;
@@ -893,10 +1088,12 @@
     S.focusRescue = rescuePending;
     rescuePending = false;
     S.data = null;
+    S.draft = {}; S.picks = {}; S.error = ''; S.filter = ''; S.busy=false;
     ensureDom().classList.remove('hidden');
     toGameSafe('hdCapture', '1');   // digits must not quick-fire under us
     request();
     render();
+    const first=el.querySelector('.fm-close');if(first)first.focus();
   }
 
   /* Open through the EXPORT rather than the closure-local open(): hd-css.js
@@ -928,8 +1125,10 @@
     if (!S.open) return;
     S.open = false;
     S.focusRescue = false;
+    clearTimeout(applyTimer);
     if (el) el.classList.add('hidden');
     toGameSafe('hdCapture', '0');
+    if(opener && opener.isConnected && typeof opener.focus==='function') opener.focus();
   }
 
   function onKey(e) {
@@ -949,6 +1148,13 @@
       return true;   // consumed regardless — never fall through while capturing
     }
     if (e.key === 'Escape' || e.code === 'Escape') { close(); return true; }
+    if (e.key === 'Tab' && el) {
+      const nodes = Array.from(el.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled])'));
+      const index = nodes.indexOf(document.activeElement);
+      if (nodes.length && (index < 0 || (!e.shiftKey && index === nodes.length-1) || (e.shiftKey && index === 0))) {
+        nodes[e.shiftKey ? nodes.length-1 : 0].focus(); return true;
+      }
+    }
     return false;   // sliders/buttons keep their native keys
   }
 
@@ -984,13 +1190,13 @@
         const live = summary();
         return [{
           label: 'Formation — where your followers walk',
-          detail: live || 'Direction pad, spacing, walk-to reach, settle zone, ' +
-            'in towns, indoors and the cast key (Formation with Followers)',
+          detail: live || 'Walking companions, travel orders, hand-holding, rest and scouting',
           kind: 'formation',
           keywords: 'formation spacing marching order walk position walking ' +
             'sneaking sneak combat offsets side ahead behind flank front ' +
             'follower followers group party line reform re-form interval ' +
-            'towns habitation indoors dungeon cast key quick menu register',
+            'towns habitation indoors dungeon cast key quick menu register ' +
+            'walk with me hand holding hand-holding companion rest scout loot',
           run: function () { const c = crosshair(); openVia(c, c.name || ''); },
         }, {
           label: 'Formation: Rescue — stand it all down',

@@ -825,6 +825,7 @@ const FIN_MARKET_KEYS = ['name', 'side', 'price', 'note', 'icon'];
 const WARDROBE_BASENAME = 'portal-wardrobe.json';
 const WARDROBE_FILE = path.join(DECK_VIEW_DIR, WARDROBE_BASENAME);
 const WARDROBE_MAX = 400;
+function flairModel() { return require(path.join(DECK_VIEW_DIR, "wardrobe-flair-model.js")); }
 const WD_OUTFIT_KEYS = ['note', 'fav'];
 const WD_ASSIGN_KEYS = ['mode', 'wardrobeId', 'outfit', 'cadenceHours', 'cadenceInherit', 'draw'];
 const WD_MODES = ['off', 'outfit', 'wardrobe'];
@@ -1687,7 +1688,37 @@ function courtCacheWrite(payload) {
  * caller is always told WHICH — `source` is 'live' or 'cache', and a cached
  * answer carries the error that sent us to it, so the page can say "the game
  * is closed" instead of showing month-old rungs as though they were fresh. */
+/**
+ * The whole board in one shell-out — `court.php board`. Every call here costs a
+ * WSL spawn plus a PHP boot, so asking four verbs for four pieces would be four
+ * of those with a phone waiting on them.
+ *
+ * It falls back to `list --json` when the deployed court.php predates `board`,
+ * because the portal and the CHIM plugin deploy separately and WILL be out of
+ * step with each other at some point.
+ */
+async function courtBoard() {
+  const r = await courtToolAsync(['board']);
+  if (r.ok) {
+    try {
+      const j = JSON.parse(r.out || '');
+      if (j && Array.isArray(j.rows)) return { ok: true, board: j };
+    } catch (_) { /* fall through to the older verb */ }
+  }
+  return { ok: false, error: r.error || 'court.php has no `board` verb yet' };
+}
+
 async function courtLedger() {
+  const board = await courtBoard();
+  if (board.ok) {
+    const j = board.board;
+    const payload = {
+      rows: j.rows, noRow: j.no_row || [], at: Date.now(),
+      secrets: j.secrets || [], knows: j.knows || [], children: j.children || [], leaks: j.leaks || [],
+    };
+    courtCacheWrite(payload);
+    return { ok: true, source: 'live', ...payload };
+  }
   const r = await courtToolAsync(['list', '--json']);
   if (r.ok) {
     let j = null;
@@ -1705,6 +1736,97 @@ async function courtLedger() {
   const cached = courtCacheRead();
   if (cached) return { ok: true, source: 'cache', error: r.error, ...cached };
   return { ok: false, error: r.error };
+}
+
+/* ========================= UPLINK ======================================= *
+ *  Get a large file ONTO the rig from somewhere that cannot otherwise reach
+ *  its disk.
+ *
+ *  The case it was built for (2026-09-15): a Sharmat build had to be
+ *  installed, and the 33.7 MB server package existed only in a cloud session
+ *  that could open sockets TO the rig but could not be reached FROM it, was
+ *  not on any filesystem the fleet shares, and had no public URL for the rig
+ *  to fetch. Every other route ends in pushing the bytes through a
+ *  conversation as base64, which is absurd for tens of megabytes. The portal
+ *  is already on the rig, already authenticated and already reachable — it
+ *  just had no door that accepted a file which is not an image.
+ *
+ *  SECURITY — this is the one endpoint that writes an arbitrary binary, so it
+ *  is the one that has to be boring:
+ *
+ *    OFF UNLESS CONFIGURED. No DECK_PORTAL_UPLINK_DIR, no route — it 404s
+ *    exactly like a path that does not exist. A portal someone installs from
+ *    the public repo does not silently gain a file-drop.
+ *    BEHIND THE SAME GATE as everything else. On a LAN bind that means the
+ *    password; gateRequest runs before any of this.
+ *    CONFINED. The name is rebuilt from a validated charset, the extension
+ *    comes from a fixed list of ARCHIVE types, and the resolved absolute path
+ *    is re-checked against the staging dir before a byte is written. The
+ *    staging dir is its own folder, never a mod folder — nothing here lands
+ *    somewhere the game or MO2 reads. Moving it into place stays a separate,
+ *    deliberate act.
+ *    STREAMED, NOT BUFFERED, with a hard cap. A 34 MB upload should not become
+ *    34 MB of node heap, and an upload that lies about its length is cut off
+ *    mid-stream and its partial file removed.
+ *
+ *  It answers with the sha256 of what actually landed, so the sender can prove
+ *  the bytes survived rather than trusting a 200.
+ * ======================================================================= */
+
+const UPLINK_DIR = String(process.env.DECK_PORTAL_UPLINK_DIR || '');
+const UPLINK_MAX_BYTES = Number(process.env.DECK_PORTAL_UPLINK_MAX || 512 * 1024 * 1024);
+const UPLINK_EXTS = ['.zip', '.7z', '.rar', '.tar', '.gz', '.dwpkg', '.esp', '.esl', '.esm', '.dll', '.pex', '.bsa'];
+
+/** A filename rebuilt from scratch — never the one the caller sent. */
+function uplinkSafeName(raw) {
+  const s = String(raw || '').trim();
+  const dot = s.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const ext = s.slice(dot).toLowerCase();
+  if (UPLINK_EXTS.indexOf(ext) < 0) return null;
+  const stem = s.slice(0, dot).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 80);
+  if (!stem) return null;
+  return stem + ext;
+}
+
+/** Stream the body to disk under UPLINK_DIR, capped. Resolves with {bytes, sha256}. */
+function uplinkReceive(req, dest, limit) {
+  return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > limit) {
+      reject(Object.assign(new Error('That file is ' + Math.round(declared / 1048576) +
+        ' MB; the cap is ' + Math.round(limit / 1048576) + ' MB'), { code: 413 }));
+      return;
+    }
+    const hash = crypto.createHash('sha256');
+    const out = fs.createWriteStream(dest);
+    let size = 0, failed = false;
+    const fail = (err) => {
+      if (failed) return;
+      failed = true;
+      try { req.destroy(); } catch (_) {}
+      out.destroy();
+      // A partial archive left on disk is worse than none: someone will find
+      // it later and try to install it.
+      fs.unlink(dest, () => reject(err));
+    };
+    req.on('data', (c) => {
+      if (failed) return;
+      size += c.length;
+      if (size > limit) {
+        fail(Object.assign(new Error('Upload exceeded the ' + Math.round(limit / 1048576) + ' MB cap'), { code: 413 }));
+        return;
+      }
+      hash.update(c);
+      if (!out.write(c)) { req.pause(); out.once('drain', () => req.resume()); }
+    });
+    req.on('error', fail);
+    out.on('error', fail);
+    req.on('end', () => {
+      if (failed) return;
+      out.end(() => resolve({ bytes: size, sha256: hash.digest('hex') }));
+    });
+  });
 }
 
 /* ============ live portrait bridge (portal -> plugin -> disk) ============ *
@@ -2081,8 +2203,7 @@ function readRoster(_forceDisk) {
       // deck alike. Worth saying only because the spares are ~780 KB each and
       // are usually re-captures the running game would not let us overwrite.
       if (p && p.extras && p.extras.length) {
-        warnings.push('"' + slug + '" has ' + p.extras.length + ' superseded portrait file(s) — the newest (' +
-          p.file + ') is the one shown; the rest are ignored and can be deleted.');
+        warnings.push('"' + slug + '" has ' + p.extras.length + ' earlier portrait file(s) — available in Portrait gallery. The newest default is ' + p.file + '.');
       }
       const originalName = original || name;
       const pending = pendByName[originalName.toLowerCase()] || null;
@@ -2106,6 +2227,9 @@ function readRoster(_forceDisk) {
         original: originalName,
         desc: str(pick(m, K_DESC, '')),
         form: str(pick(m, K_FORM, '')),
+        // The Deck API's explicit reference identity. Never reinterpret FO's
+        // base_form_string as a placed actor reference for dossier edits.
+        actor: (m.liveFormId || m.formId) ? {formId: typeof (m.liveFormId || m.formId) === 'number' ? '0x'+(m.liveFormId || m.formId).toString(16) : String(m.liveFormId || m.formId), name: originalName} : null,
         slug,
         catIndex: index,
         // What FO has on disk right now …
@@ -3190,6 +3314,7 @@ function readWardrobeSlice(src) {
   const wd = (root.wardrobe && typeof root.wardrobe === 'object' && !Array.isArray(root.wardrobe)) ? root.wardrobe : {};
   return {
     ok: true, file: s.file,
+    flair: wd.flair && typeof wd.flair === "object" ? wd.flair : {},
     categories: Array.isArray(wd.categories) ? wd.categories : [],
     outfitMeta: Array.isArray(wd.outfitMeta) ? wd.outfitMeta : [],
     wardrobes: Array.isArray(wd.wardrobes) ? wd.wardrobes : [],
@@ -3732,7 +3857,9 @@ function readWardrobeOps() {
   const imgAt = Object.create(null);
   for (const e of j.ops) {
     if (!e || typeof e !== 'object') continue;
-    if (e.op === 'image') {
+    if (e.op === 'flair-edit') {
+      try { out.push({op:'flair-edit',edit:flairModel().validate(e.edit)}); } catch (_) {}
+    } else if (e.op === 'image') {
       const outfit = typeof e.outfit === 'string' ? e.outfit : '';
       if (!outfit) continue;
       const rec = { op: 'image', outfit, value: typeof e.value === 'string' ? e.value.slice(0, FIELD_VALUE_MAX) : '' };
@@ -4150,12 +4277,24 @@ function wardrobeView() {
     return out;
   });
 
-  return {
+  const result = {
     file: slice.file, sliceOk: slice.ok, error: slice.error,
-    categories, outfitMeta, wardrobes, assignments,
+    categories, outfitMeta:outfitMeta.filter(o=>!o.name.startsWith('~SkyManager Flair')), wardrobes, assignments,
+    flair: slice.flair || {},
     settings: slice.settings, soesOk: soes.ok, soesFile: soes.file,
     pending: pend.list.length, pendingFile: WARDROBE_FILE, malformed: pend.malformed,
   };
+  // Shared fields can be edited in either Wardrobe tab. Replay those writes
+  // in queue order so a later ordinary favorite/category edit still wins.
+  if(pend.list.some(op=>op.op==='flair-edit')) for(const op of pend.list) {
+    let edit=op.op==='flair-edit'?op.edit:null;
+    if(op.op==='set'&&op.target==='outfit'&&op.key==='fav') edit={type:'favorite',name:op.name,value:op.value==='1'||op.value==='true'};
+    if(op.op==='outfit-cats') edit={type:'categories',kind:'outfit',id:op.name,ids:op.categoryIds};
+    if(op.op==='cat-new'||(op.op==='cat-set'&&op.key==='name')) edit={type:'category',id:op.id,name:op.op==='cat-new'?op.name:op.value};
+    if(op.op==='cat-del') edit={type:'category-delete',id:op.id};
+    if(edit) try { flairModel().apply(result,edit); } catch(e) { result.flairError=e.message; }
+  }
+  return result;
 }
 
 /* amount/price on an ADD op MUST be a JSON number: the C++ LineFrom/MarketFrom
@@ -4807,8 +4946,45 @@ function ensureDeckCopy(file) {
   }
 }
 
+// Native spell-descriptions.json is a read-only snapshot refreshed on F18.
+// Durable identity wins over runtime FormID, which can point at another mod
+// after a load-order change. Never attach by name or fall back across plugins.
+function spellDescriptionKey(s) {
+  const plugin = String(s.plugin || '').toLowerCase(), local = Number(s.localId) >>> 0;
+  return plugin && local ? plugin + '|' + local : !plugin && (Number(s.formId) >>> 0) ? '#' + (Number(s.formId) >>> 0) : '';
+}
+function spellDescriptionStats(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const finite = n => typeof n === 'number' && Number.isFinite(n);
+  return { cost: finite(raw.cost) && raw.cost >= 0 ? raw.cost : null, costPerSecond: raw.costPerSecond === true, shout: raw.shout === true,
+    effects: (Array.isArray(raw.effects) ? raw.effects : []).slice(0,512).filter(e => e && typeof e === 'object').map(e => ({
+      name: typeof e.name === 'string' ? e.name.slice(0,500) : 'Effect', magnitude: finite(e.magnitude) ? e.magnitude : null,
+      kind: ['damage','healing'].includes(e.kind) ? e.kind : 'magnitude', perSecond: e.perSecond === true,
+      duration: finite(e.duration) && e.duration >= 0 ? e.duration : 0, area: finite(e.area) && e.area >= 0 ? e.area : 0,
+      words: [1,2,3].includes(e.words) ? e.words : 0
+    })) };
+}
+function readSpellDescriptions() {
+  let newest = null;
+  for (const file of hdCfgCandidates('spell-descriptions.json')) {
+    try {
+      if (fs.statSync(file).size > 4 * 1024 * 1024) continue;
+      const data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+      if (data.version !== 1 || !Number.isFinite(data.at) || !Array.isArray(data.spells)) continue;
+      if (!newest || data.at > newest.at) newest = data;
+    } catch (_) { /* No snapshot yet, or an unreadable export. */ }
+  }
+  const byId = new Map();
+  if (newest) newest.spells.slice(0, 2048).forEach(s => {
+    if (!s || typeof s !== 'object') return;
+    const key = spellDescriptionKey(s);
+    if (key) byId.set(key, { ok: s.ok === true, text: typeof s.text === 'string' ? s.text.slice(0, 64000) : '', stats: spellDescriptionStats(s.stats), at: newest.at });
+  });
+  return byId;
+}
 function spellsPayload(cfg) {
   const src = readMagic(cfg);
+  const descriptions = readSpellDescriptions();
   const pend = readAssignments();
   const pendBy = Object.create(null);
   pend.list.forEach((e) => { pendBy[e.spellId] = e.icon; });
@@ -4854,12 +5030,15 @@ function spellsPayload(cfg) {
       id,
       name: str(s.name) || 'spell',
       category: cat,
+      type: str(s.type),
       mode: str(s.mode),
       hand: str(s.hand),
       school: str(s.school),
       element: str(s.element),
       tier: str(s.tier),
       slot: str(s.slot),
+      plugin: str(s.plugin),
+      description: descriptions.get(spellDescriptionKey(s)) || null,
       icon,
       iconUrl: cur ? cur.url : null,
       iconKind: cur ? cur.kind : 'auto',
@@ -4889,6 +5068,13 @@ function spellsPayload(cfg) {
   return Object.assign({
     ok: true,
     hasMagic: !!magic,
+    library: magic && magic.library && typeof magic.library === 'object' ? magic.library : {},
+    combos: (magic && Array.isArray(magic.combos) ? magic.combos : []).filter(c => c && typeof c === 'object').map(c => ({
+      id: str(c.id), name: str(c.name), spells: (Array.isArray(c.spells) ? c.spells : []).filter(s => s && typeof s === 'object').map(s => {
+        const icon = str(s.icon), art = iconUrlFor(icon);
+        return { name: str(s.name), school: str(s.school), type: str(s.type), icon, iconUrl: art ? art.url : null, pendingIcon: null };
+      }),
+    })),
     categories,
     total,
     pendingUnknown: unknown,
@@ -5820,11 +6006,219 @@ async function saveNpc(name, patch) {
   return r;
 }
 
+// scene-privacy-portal: live native state, never edits the game's settings file.
+function scenePrivacySnapshot() {
+  const packets = hdCfgCandidates('scene-privacy-state.json').map(file => {
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return null; }
+  }).filter(p => p && p.version === 1 && p.ui && typeof p.at === 'number');
+  packets.sort((a, b) => b.at - a.at || b.sequence - a.sequence);
+  const p = packets[0];
+  if (!p) return { ok: false, error: 'Launch Skyrim and load a save to read privacy.' };
+  const age = Math.max(0, Date.now() / 1000 - p.at);
+  const ui = p.ui;
+  for (const key of ['rows', 'held', 'invited']) ui[key] = (ui[key] || []).map(a => {
+    const slug = slugOf(a.name || '');
+    const art = findPortrait(slug);
+    return { ...a, slug, hasPortrait: !!art, mtime: art ? art.mtime : 0, catIndex: 0 };
+  });
+  return { ...ui, epoch: p.epoch, age, live: age <= 5 };
+}
+
 /* =============================== routes ================================ */
+
+/* Shared dossier metadata stays game-owned. Phone requests are immutable,
+ * one file per operation, atomically published for the native queue. */
+const DOSSIER_OPS = new Set(['list','read','ensure','updatePerson','bindActor','addRelation','removeRelation','setPins','setEquipment','setPortrait','addNote','deleteNote']);
+const DOSSIER_ASSETS = new Set(['hd-dossier-tools.js','hd-dossier-tools.css','hd-dossier-social.js','hd-dossier-social.css','hd-family-tree.js','hd-family-tree.css']);
+function dossierSnapshot() {
+  const file = HD_CFG_DIR_CANDIDATES.map(d => path.join(d,'dossier.json')).find(f => fs.existsSync(f));
+  const raw = file ? JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'')) : {version:1,people:[],relations:[],history:[]};
+  if (!raw || !Array.isArray(raw.people) || !Array.isArray(raw.relations) || !Array.isArray(raw.history)) throw new Error('The saved dossier document is invalid. It has not been changed.');
+  return {version:raw.version || 1,people:raw.people,relations:raw.relations,history:raw.history};
+}
+function dossierQueue(body) {
+  if (!body || !DOSSIER_OPS.has(body.op)) throw Object.assign(new Error('Unknown dossier operation'),{code:400});
+  const requestId = 'phone-'+crypto.randomBytes(16).toString('hex');
+  const request = Object.assign({},body,{requestId});
+  const json = JSON.stringify(request);
+  if (Buffer.byteLength(json,'utf8')>32768) throw Object.assign(new Error('Dossier request is too large'),{code:413});
+  const roots = viewDirsFor('hotkey');
+  const base = roots.find(d => fs.existsSync(path.join(d,'dossier-requests'))) || DECK_VIEW_DIR;
+  const dir = path.join(base,'dossier-requests'); fs.mkdirSync(dir,{recursive:true});
+  if(fs.readdirSync(dir).filter(n=>/\.(json|processing)$/.test(n)).length>=1000) throw Object.assign(new Error('Too many dossier changes are waiting for Skyrim. Open the game before adding more.'),{code:429});
+  const target=path.join(dir,requestId+'.json'), temp=target+'.tmp';
+  try {fs.writeFileSync(temp,json,{flag:'wx'});fs.renameSync(temp,target);}finally{try{fs.unlinkSync(temp);}catch(_){}}
+  return requestId;
+}
+function dossierImageFile(relative) {
+  if(typeof relative!=='string'||!/^(portraits|icons\/npcs)\/[a-z0-9 _~().@+-]+\.(png|jpe?g|webp)$/i.test(relative))return null;
+  if(relative.startsWith('portraits/')) {const row=listPortraitFiles().find(r=>r.file===relative.slice(10));return row?path.join(row.dir,row.file):null;}
+  return viewDirsFor('hotkey').map(d=>path.join(d,relative)).find(f=>fs.existsSync(f))||null;
+}
+
+function appearanceSnapshot() {
+  const file=viewDirsFor('hotkey').map(d=>path.join(d,'appearances-status.json')).find(f=>fs.existsSync(f));
+  if(!file) return {ok:true,looks:[],online:false,raceMenu:false,customizeAvailable:false,at:0};
+  const raw=JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
+  if(!raw || !Array.isArray(raw.looks)) throw new Error('The appearance snapshot could not be read.');
+  raw.online=!!raw.online && Date.now()/1000-Number(raw.at)<15;
+  if(!raw.online)raw.busy=false;
+  return raw;
+}
 
 async function route(req, res, url) {
   const p = url.pathname;
   const m = req.method;
+
+  // formation-portal-live: the exact in-game panel, backed by live owner calls.
+  if (m==='GET' && p==='/formation') {
+    try {const bytes=fs.readFileSync(path.join(__dirname,'formation.html'));res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-cache'});res.end(bytes);}
+    catch(_){sendErr(res,404,'Formation page is not installed yet.');}return;
+  }
+  if (m==='GET' && p.startsWith('/api/formation-assets/')) {
+    const name=p.slice('/api/formation-assets/'.length);
+    if(!['hd-formation.js','hd-formation.css'].includes(name)){sendErr(res,404,'Unknown formation asset');return;}
+    try {const bytes=fs.readFileSync(path.join(DECK_VIEW_DIR,name));res.writeHead(200,{'Content-Type':name.endsWith('.css')?'text/css; charset=utf-8':'application/javascript; charset=utf-8','Cache-Control':'no-cache'});res.end(bytes);}
+    catch(_){sendErr(res,404,'Install the matched SkyManager formation files first.');}return;
+  }
+  if (m==='GET' && p==='/api/formation') {
+    const r=await liveSend({kind:'formation',op:'state'});
+    if(!r){sendErr(res,503,'Load Skyrim with the current SkyManager build to manage formations.');return;}
+    sendJson(res,r.ok?200:409,r);return;
+  }
+  if (m==='POST' && p==='/api/formation') {
+    const body=await readJsonBody(req);
+    if(!body || !['apply','party'].includes(body.op) || typeof body.epoch!=='string' || body.epoch.length>96 ||
+      !body.request || typeof body.request!=='object' || Array.isArray(body.request) || JSON.stringify(body).length>12000) {
+      sendErr(res,400,'Invalid formation request. Refresh the panel.');return;
+    }
+    const commandId=crypto.randomBytes(16).toString('hex');
+    const r=await liveSend({kind:'formation',op:body.op,epoch:body.epoch,request:body.request,commandId});
+    if(!r || !r.ok){sendErr(res,409,r&&r.msg||'Skyrim is unavailable. No formation change was queued.');return;}
+    sendJson(res,202,{ok:true,queued:true,commandId});return;
+  }
+
+  if(m==='GET' && p.startsWith('/api/appearance-assets/')) {
+    const name=p.slice('/api/appearance-assets/'.length);
+    if(!['appearance-presets.js','appearance-presets.css'].includes(name)){sendErr(res,404,'Unknown appearance asset');return;}
+    try {const bytes=fs.readFileSync(path.join(DECK_VIEW_DIR,name));res.writeHead(200,{'Content-Type':name.endsWith('.css')?'text/css; charset=utf-8':'application/javascript; charset=utf-8','Cache-Control':'no-cache','Content-Length':bytes.length});res.end(bytes);}
+    catch(_){sendErr(res,404,'The matched appearance files are not installed yet.');}return;
+  }
+  if(m==='GET' && p==='/api/appearances') {
+    try {sendJson(res,200,{ok:true,data:appearanceSnapshot()});}catch(e){sendErr(res,500,e.message);}return;
+  }
+  if(m==='POST' && p==='/api/appearances') {
+    try {
+      const body=await readJsonBody(req), current=appearanceSnapshot();
+      if(!current.online || !current.session) {sendErr(res,409,'Load Skyrim and refresh this gallery before sending an appearance action.');return;}
+      if(current.busy) {sendErr(res,409,'Finish the current appearance action first.');return;}
+      if(!body || !['save','switch','undo','customize','portrait','rename','replace','delete','role','quick','normal','sos-options','sos-save'].includes(body.op)) {sendErr(res,400,'Unknown appearance action');return;}
+      if(body.session!==undefined && body.session!==current.session) {sendErr(res,409,'The loaded save changed. Refresh Appearances before trying again.');return;}
+      const id='phone-'+crypto.randomBytes(16).toString('hex');
+      const record=Object.assign({},body,{session:current.session,at:Math.floor(Date.now()/1000)});
+      const json=JSON.stringify(record); if(Buffer.byteLength(json)>4096){sendErr(res,413,'Appearance request is too large');return;}
+      const roots=viewDirsFor('hotkey'),base=roots.find(d=>fs.existsSync(path.join(d,'appearance-requests'))) || DECK_VIEW_DIR;
+      const dir=path.join(base,'appearance-requests');fs.mkdirSync(dir,{recursive:true});
+      if(fs.readdirSync(dir).filter(n=>/\.(json|processing)$/.test(n)).length>=20){sendErr(res,429,'Too many appearance requests are waiting. Open Skyrim before trying again.');return;}
+      const target=path.join(dir,id+'.json'),temp=target+'.tmp';
+      try {fs.writeFileSync(temp,json,{flag:'wx'});fs.renameSync(temp,target);}finally{try{fs.unlinkSync(temp);}catch(_){}}
+      sendJson(res,202,{ok:true,pending:true,requestId:id,session:current.session,msg:'Waiting for Skyrim…'});
+    }catch(e){sendErr(res,httpCode(e.code,500),e.message);}return;
+  }
+  if(m==='GET' && p.startsWith('/api/appearance-result/')) {
+    const id=p.slice('/api/appearance-result/'.length);if(!/^phone-[a-f0-9]{32}$/.test(id)){sendErr(res,400,'Invalid appearance request ID');return;}
+    const file=viewDirsFor('hotkey').map(d=>path.join(d,'appearance-results',id+'.json')).find(f=>fs.existsSync(f));
+    if(!file){sendJson(res,202,{ok:true,pending:true,requestId:id});return;}
+    try {sendJson(res,200,JSON.parse(fs.readFileSync(file,'utf8')));}catch(_){sendErr(res,500,'The game result could not be read.');}return;
+  }
+  if(m==='GET' && p==='/api/appearance-portrait') {
+    const relative=url.searchParams.get('file')||'';
+    if(!/^portraits\/looks-[A-Za-z0-9-]+\/[A-Za-z0-9~.-]+\.png$/.test(relative)||relative.includes('..')){sendErr(res,400,'Invalid appearance portrait');return;}
+    const file=viewDirsFor('hotkey').map(d=>path.join(d,relative)).find(f=>fs.existsSync(f));
+    if(!file){sendErr(res,404,'Portrait unavailable');return;}sendFile(res,file,'png');return;
+  }
+
+  if(m==='GET' && p.startsWith('/api/domain-area-assets/')) {
+    const name=p.slice('/api/domain-area-assets/'.length);
+    if(!['domain-areas.js','domain-areas.css','domain-gallery.js','domain-gallery.css'].includes(name)){sendErr(res,404,'Unknown domain-area asset');return;}
+    const file=path.join(DECK_VIEW_DIR,name);
+    try{const bytes=fs.readFileSync(file);res.writeHead(200,{'Content-Type':name.endsWith('.css')?'text/css; charset=utf-8':'application/javascript; charset=utf-8','Cache-Control':'no-cache','Content-Length':bytes.length});res.end(bytes);}catch(_){sendErr(res,404,'Domain-area module is not deployed yet.');}return;
+  }
+  if(m==='GET' && p.startsWith('/api/wardrobe-assets/')) {
+    const name=p.slice('/api/wardrobe-assets/'.length);
+    if(!['wardrobe-flair-model.js','wardrobe-flair-ui.js','wardrobe-flair.css','wardrobe-nav.js','wardrobe-studio.css'].includes(name)){sendErr(res,404,'Unknown wardrobe asset');return;}
+    try {const bytes=fs.readFileSync(path.join(DECK_VIEW_DIR,name));res.writeHead(200,{'Content-Type':name.endsWith('.css')?'text/css; charset=utf-8':'application/javascript; charset=utf-8','Cache-Control':'no-cache','Content-Length':bytes.length});res.end(bytes);}
+    catch(_){sendErr(res,404,'The matched wardrobe view files are not installed yet.');}return;
+  }
+  if(m==='GET' && p.startsWith('/api/dossier-assets/')) {
+    const name=p.slice('/api/dossier-assets/'.length);
+    if(!DOSSIER_ASSETS.has(name)){sendErr(res,404,'Unknown dossier asset');return;}
+    const file=path.join(DECK_VIEW_DIR,name);
+    try{const bytes=fs.readFileSync(file);res.writeHead(200,{'Content-Type':name.endsWith('.css')?'text/css; charset=utf-8':'application/javascript; charset=utf-8','Cache-Control':'no-cache','Content-Length':bytes.length});res.end(bytes);}catch(_){sendErr(res,404,'Dossier module is not deployed yet.');}return;
+  }
+  if(m==='GET' && p==='/api/dossier') {
+    try{sendJson(res,200,{ok:true,data:dossierSnapshot()});}catch(e){sendErr(res,500,e.message);}return;
+  }
+  if(m==='POST' && p==='/api/dossier') {
+    try{const requestId=dossierQueue(await readJsonBody(req));sendJson(res,202,{ok:true,pending:true,requestId,msg:'Queued for Skyrim. The change is confirmed only when the game processes it.'});}catch(e){sendErr(res,httpCode(e.code,500),e.message);}return;
+  }
+  if(m==='GET' && p.startsWith('/api/dossier-result/')) {
+    const id=p.slice('/api/dossier-result/'.length);
+    if(!/^[A-Za-z0-9_-]{1,64}$/.test(id)){sendErr(res,400,'Invalid request ID');return;}
+    const file=viewDirsFor('hotkey').map(d=>path.join(d,'dossier-results',id+'.json')).find(f=>fs.existsSync(f));
+    if(!file){sendJson(res,202,{ok:true,pending:true,requestId:id,msg:'Waiting for Skyrim to process this change. Open the game and the deck.'});return;}
+    try{const result=JSON.parse(fs.readFileSync(file,'utf8'));if(result.requestId!==id)throw new Error('Request identity mismatch');if(result.data)delete result.data._requests;sendJson(res,200,result);}catch(_){sendErr(res,500,'Could not read the game’s dossier result.');}return;
+  }
+  if(m==='GET' && p==='/api/dossier-gallery') {
+    const slug=String(url.searchParams.get('slug')||'').toLowerCase(),all=url.searchParams.get('all')==='1';if(!all&&!validSlug(slug)){sendErr(res,400,'Invalid portrait subject');return;}
+    const portraits=listPortraitFiles().filter(r=>all||r.slug===slug).sort((a,b)=>b.mtime-a.mtime||b.file.localeCompare(a.file)).slice(0,250).map(r=>({file:'portraits/'+r.file,label:r.file,mtime:r.mtime,src:'/api/dossier-image?file='+encodeURIComponent('portraits/'+r.file)+'&v='+r.mtime}));
+    sendJson(res,200,{ok:true,portraits});return;
+  }
+  if(m==='GET' && p==='/api/dossier-image') {
+    const file=dossierImageFile(url.searchParams.get('file'));if(!file){sendErr(res,404,'Portrait file is unavailable');return;}sendFile(res,file,path.extname(file).slice(1));return;
+  }
+  if(m==='POST' && p==='/api/dossier-outfit') {
+    try {
+      const body=await readJsonBody(req), person=dossierSnapshot().people.find(x=>x.id===body.personId);
+      if(!person||!person.actor) {sendErr(res,400,'Link this person to a game NPC first.');return;}
+      const outfit=String(body.outfit||''), catalog=readSoesCatalogue();
+      if(!catalog.ok || !(catalog.outfits||[]).some(x=>(typeof x==='string'?x:x.name)===outfit)){sendErr(res,409,'This outfit is not in the game’s Wardrobe catalogue. Refresh Wardrobe first.');return;}
+      const a=person.actor, same=x=>String(x.plugin||'').toLowerCase()===String(a.plugin||'').toLowerCase()&&parseInt(String(x.formId),16)===parseInt(String(a.formId),16);
+      if(readNffSlice().npcs.some(x=>same(x)&&x.claimed)){sendErr(res,409,'NFF owns this NPC’s outfits. Use the in-game Equipment page to review the Wardrobe handoff first.');return;}
+      const current=readWardrobeOps();if(current.malformed){sendErr(res,409,'The Wardrobe queue needs repair before adding another change.');return;}
+      const list=current.list.filter(x=>!(x.op==='set'&&x.target==='assign'&&same(x)&&['mode','outfit'].includes(x.key)));
+      if(list.length+2>WARDROBE_MAX){sendErr(res,429,'The Wardrobe queue is full. Open Wardrobe in Skyrim first.');return;}
+      list.push({op:'set',target:'assign',formId:a.formId,plugin:a.plugin,key:'outfit',value:outfit},{op:'set',target:'assign',formId:a.formId,plugin:a.plugin,key:'mode',value:'outfit'});
+      writeWardrobeOps(list);
+      sendJson(res,202,{ok:true,pending:true,msg:'Wardrobe assignment queued. Open Wardrobe in Skyrim to apply it; clothing has not been verified.'});
+    }catch(e){sendErr(res,500,e.message);}return;
+  }
+
+  if (m === 'POST' && p === '/api/conversation-hold') {
+    const body = await readJsonBody(req);
+    const formId = Number(body.formId);
+    if (!['start', 'release'].includes(body.op) || !Number.isInteger(formId) || formId <= 0 || formId > 0xFFFFFFFF ||
+        typeof body.name !== 'string' || !body.name.trim()) { sendErr(res, 400, 'Choose a nearby NPC first'); return; }
+    const r = await liveSend({ kind: 'conversation-hold', op: body.op, formId, name: body.name });
+    // No sidecar fallback: a conversation hold is only meaningful NOW.
+    if (!r) { sendErr(res, 503, 'Skyrim did not confirm the hold. Load the current SkyManager build and retry; use Let them continue if needed.'); return; }
+    sendJson(res, r.ok ? 200 : 409, r); return;
+  }
+
+  if (m === 'GET' && p === '/api/scene-privacy') {
+    sendJson(res, 200, scenePrivacySnapshot()); return;
+  }
+  if (m === 'POST' && p === '/api/scene-privacy') {
+    const body = await readJsonBody(req);
+    const state = scenePrivacySnapshot();
+    if (!state.live || body.epoch !== state.epoch) { sendErr(res, 409, 'Game changed or paused at a menu; refresh privacy.'); return; }
+    if (!['automatic','scope','manual','release','invite','uninvite','removeInvitation'].includes(body.op)) { sendErr(res, 400, 'Unknown privacy action'); return; }
+    const commandId = crypto.randomBytes(12).toString('hex');
+    const r = await liveSend({ kind: 'scene-privacy', epoch: state.epoch, commandId,
+      op: body.op, value: body.value, formId: body.formId, key: body.key });
+    if (!r || !r.ok) { sendErr(res, 503, r && r.msg || 'Skyrim did not accept the privacy command.'); return; }
+    sendJson(res, 200, { ok: true, queued: true, commandId }); return;
+  }
 
   /* ---- SPA ---- */
   /* The SPA can sit open for days on a phone; this is how it notices a deploy.
@@ -6852,15 +7246,19 @@ async function route(req, res, url) {
      used to badge the roster — not N calls for N followers. */
   if (m === 'GET' && p === '/api/sharmat') {
     try {
-      const [npcs, styles] = await Promise.all([
+      const [npcs, styles, conns] = await Promise.all([
         chimCall('loadConfiguredNpcs', {}),
         chimCall('loadGlobalStyles', {}).catch(() => null),   // catalog is a nicety, not a blocker
+        chimCall('loadConnectors', {}).catch(() => null),     // and so is the model list
       ]);
       sendJson(res, 200, {
         ok: true,
         base: chimBase,
         npcs: (npcs && (npcs.npcs || npcs.data)) || [],
         styles: (styles && (styles.styles || styles.data)) || null,
+        // Labels only: the label IS what generateSexPrompt takes.
+        connectors: ((conns && conns.data) || [])
+          .map((c) => (c && c.label ? String(c.label) : '')).filter(Boolean),
       });
     } catch (e) {
       sendJson(res, 200, { ok: false, chimDown: !!e.chimDown, error: e.message, tried: e.tried || [] });
@@ -6897,6 +7295,70 @@ async function route(req, res, url) {
       sendJson(res, 200, { ok: true, name, data: fresh.data });
     } catch (e) {
       sendJson(res, 200, { ok: false, chimDown: !!e.chimDown, name, error: e.message });
+    }
+    return;
+  }
+
+  /* ---- the three per-NPC ACTIONS CHIM's own page has ------------------ *
+   *  These are NOT field edits, so they deliberately do not go through
+   *  saveNpc()'s read-modify-write: CHIM owns the whole write in each case.  */
+
+  /* Body: { name, connector }.
+     ⛔ handleGenerateSexPrompt() WRITES TO THE DATABASE before it answers,
+     and its reply is only a SUBSET of what it stored — so we answer with a
+     fresh READ, never with the generator's own reply. The phone must not be
+     able to merge that subset over a draft; see the deck's generate(). */
+  if (m === 'POST' && p === '/api/sharmat/generate') {
+    const body = await readJsonBody(req);
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const connector = typeof body.connector === 'string' ? body.connector.trim() : '';
+    if (!name) { sendErr(res, 400, 'name is required'); return; }
+    if (!connector) { sendErr(res, 400, 'connector is required'); return; }
+    try {
+      const r = await chimCall('generateSexPrompt', {}, chimForm({ npc: name, connector }));
+      if (!r || r.success !== true) throw new Error((r && r.error) || 'CHIM refused to generate');
+      const fresh = await loadNpc(name);
+      log('sharmat generate: ' + name + ' via ' + connector);
+      sendJson(res, 200, { ok: true, name, data: fresh.data, connector: r.connector_used || connector });
+    } catch (e) {
+      sendJson(res, 200, { ok: false, chimDown: !!e.chimDown, name, error: e.message });
+    }
+    return;
+  }
+
+  /* Body: { name }. CHIM calls this a delete; it unsets SOME fields and
+     leaves the unlock tiers, is_slave, the servitude voice, the pricing
+     table and every relationship field alone. The answer is a fresh read so
+     the phone repaints on what is actually left rather than on an assumption. */
+  if (m === 'POST' && p === '/api/sharmat/clear') {
+    const body = await readJsonBody(req);
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!name) { sendErr(res, 400, 'name is required'); return; }
+    try {
+      const r = await chimCall('deleteNpcNsfwSettings', {}, chimForm({ npc: name }));
+      if (!r || r.success !== true) throw new Error((r && r.error) || 'CHIM refused the clear');
+      const fresh = await loadNpc(name);
+      log('sharmat clear: ' + name);
+      sendJson(res, 200, { ok: true, name, data: fresh.data });
+    } catch (e) {
+      sendJson(res, 200, { ok: false, chimDown: !!e.chimDown, name, error: e.message });
+    }
+    return;
+  }
+
+  /* CHIM's own roster search, for the spouse field. Read-only. */
+  if (m === 'GET' && p === '/api/sharmat/spouse') {
+    const q = (url.searchParams.get('q') || '').trim();
+    if (q.length < 2) { sendJson(res, 200, { ok: true, q, hits: [] }); return; }
+    try {
+      const r = await chimCall('searchNpcsForSpouse', { q, limit: 12 });
+      if (!r || r.success !== true) throw new Error((r && r.error) || 'CHIM refused the search');
+      const hits = (r.data || r.results || [])
+        .map((x) => ({ name: String((x && x.name) || ''), player: !!(x && x.is_player) }))
+        .filter((x) => x.name);
+      sendJson(res, 200, { ok: true, q, hits });
+    } catch (e) {
+      sendJson(res, 200, { ok: false, chimDown: !!e.chimDown, q, error: e.message });
     }
     return;
   }
@@ -7084,13 +7546,16 @@ async function route(req, res, url) {
   if (m === 'POST' && p === '/api/wardrobe') {
     const body = await readJsonBody(req);
     const op = typeof body.op === 'string' ? body.op : '';
-    const WD_OPS = ['set', 'pool', 'image', 'pool-new', 'pool-del', 'pool-set', 'pool-order', 'pools-order',
+    const WD_OPS = ['flair-edit', 'set', 'pool', 'image', 'pool-new', 'pool-del', 'pool-set', 'pool-order', 'pools-order',
       'loc-set', 'cat-new', 'cat-del', 'cat-set', 'outfit-cats'];
     if (!WD_OPS.includes(op)) {
       sendErr(res, 400, 'op must be one of: ' + WD_OPS.join(', ')); return;
     }
     let rec;
-    if (op === 'loc-set') {
+    if (op === 'flair-edit') {
+      try { const edit=flairModel().validate(body.edit); const draft=wardrobeView(); flairModel().apply(draft,edit); rec={op,edit}; }
+      catch(e){sendErr(res,400,e.message);return;}
+    } else if (op === 'loc-set') {
       const formId = typeof body.formId === 'string' ? body.formId.trim() : '';
       const plugin = typeof body.plugin === 'string' ? body.plugin.trim() : '';
       if (!formId) { sendErr(res, 400, 'formId is required'); return; }
@@ -7319,6 +7784,18 @@ async function route(req, res, url) {
       ext: info.ext, mtime: info.mtime, size: info.size,
       url: '/api/icon-file/' + encodeURIComponent(path.parse(info.file).name) + '?v=' + info.mtime,
     });
+    return;
+  }
+
+  // Read-only mirror: the game owns rhythm presets and all schedule mutations.
+  if (m === 'GET' && p === '/api/rhythm-presets') {
+    const paths = HD_CFG_DIR_CANDIDATES.map(d => path.join(d, 'rhythm-presets.json'));
+    const selected = paths.find(f => fs.existsSync(f));
+    try {
+      const doc = selected ? JSON.parse(fs.readFileSync(selected, 'utf8').replace(/^\uFEFF/, '')) : { presets: [] };
+      if (!Array.isArray(doc.presets)) throw new Error('Invalid library');
+      sendJson(res, 200, { ok: true, presets: doc.presets.map(r => ({ id: r.id, name: r.name, source: r.source, destinations: Array.isArray(r.slots) ? r.slots.filter(Boolean).length : 0 })) });
+    } catch (_) { sendErr(res, 500, 'Saved rhythm library could not be read.'); }
     return;
   }
 
@@ -7639,6 +8116,54 @@ async function route(req, res, url) {
    *  Reads never fail the page: with CHIM down the ledger comes from cache and
    *  says so. WRITES are not faked — a write needs the box up, and a refusal
    *  says which half is missing rather than pretending it landed. */
+  /* ---- uplink: a file that is not an image, from off-box ----------------
+   *  404s unless DECK_PORTAL_UPLINK_DIR names a staging folder, so a portal
+   *  that nobody configured has no file-drop at all. See the block comment by
+   *  uplinkReceive for the rest of the reasoning. */
+  if (p === '/api/uplink') {
+    if (!UPLINK_DIR) {
+      sendErr(res, 404, 'Uplink is not configured on this portal (set DECK_PORTAL_UPLINK_DIR).');
+      return;
+    }
+    if (m === 'GET') {
+      let files = [];
+      try {
+        files = fs.readdirSync(UPLINK_DIR).map((n) => {
+          const st = fs.statSync(path.join(UPLINK_DIR, n));
+          return { name: n, bytes: st.size, at: st.mtimeMs };
+        }).sort((a, b) => b.at - a.at);
+      } catch (_) { /* dir not made yet: an empty list is the honest answer */ }
+      sendJson(res, 200, { ok: true, dir: UPLINK_DIR, maxBytes: UPLINK_MAX_BYTES, exts: UPLINK_EXTS, files });
+      return;
+    }
+    if (m !== 'POST') { sendErr(res, 405, 'POST a body, or GET to list'); return; }
+
+    const safe = uplinkSafeName(url.searchParams.get('name'));
+    if (!safe) {
+      sendErr(res, 400, 'name must end in one of: ' + UPLINK_EXTS.join(' '));
+      return;
+    }
+    let dest;
+    try {
+      fs.mkdirSync(UPLINK_DIR, { recursive: true });
+      dest = path.resolve(UPLINK_DIR, safe);
+      // The name was rebuilt from a validated charset, so this cannot fire —
+      // which is exactly why it is here. A traversal that gets past the first
+      // check must not also get past the last one.
+      if (path.dirname(dest) !== path.resolve(UPLINK_DIR)) { sendErr(res, 400, 'Refused'); return; }
+    } catch (e) { sendErr(res, 500, 'Could not prepare the staging folder: ' + e.message); return; }
+
+    try {
+      const got = await uplinkReceive(req, dest, UPLINK_MAX_BYTES);
+      log('uplink: received ' + safe + ' (' + Math.round(got.bytes / 1048576) + ' MB) from ' +
+        (req.socket && req.socket.remoteAddress));
+      sendJson(res, 200, { ok: true, name: safe, path: dest, bytes: got.bytes, sha256: got.sha256 });
+    } catch (e) {
+      sendErr(res, e && e.code === 413 ? 413 : 500, (e && e.message) || 'upload failed');
+    }
+    return;
+  }
+
   if (m === 'GET' && p === '/api/court') {
     const ledger = await courtLedger();
     const live = readCourtStatus();
@@ -7647,6 +8172,10 @@ async function route(req, res, url) {
       rungs: COURT_RUNGS,
       rows: ledger.rows || [],
       noRow: ledger.noRow || [],
+      secrets: ledger.secrets || [],
+      knows: ledger.knows || [],
+      children: ledger.children || [],
+      leaks: ledger.leaks || [],
       ledger: { ok: !!ledger.ok, source: ledger.source || null, at: ledger.at || 0, error: ledger.error || null },
       live: {
         ok: !!live.ok, written: live.written || 0, ageMs: live.ok ? live.ageMs : 0,
@@ -7693,6 +8222,61 @@ async function route(req, res, url) {
       rows: ledger.rows || [], noRow: ledger.noRow || [],
       ledger: { ok: !!ledger.ok, source: ledger.source || null, at: ledger.at || 0, error: ledger.error || null },
     });
+    return;
+  }
+
+  /* ---- Standing: the household fields, what she knows, and the leak queue ----
+   *  Everything here goes through court.php, which owns its own escaping and
+   *  its own lock rules — the portal never touches that database directly.
+   *  Each verb is a separate route rather than one generic passthrough: a
+   *  generic one would be a shell for whatever a caller invented. */
+
+  if (m === 'POST' && p === '/api/court-field') {
+    const body = await readJsonBody(req);
+    const nm = String(body.name || '').trim();
+    const field = String(body.field || '').trim();
+    const value = String(body.value == null ? '' : body.value).slice(0, 300);
+    const HOUSE = ['house', 'office', 'answers_to', 'duty'];
+    if (!nm || nm.slice(0, 2) === '--') { sendErr(res, 400, 'name required'); return; }
+    if (value.slice(0, 2) === '--') { sendErr(res, 400, 'a value may not start with --'); return; }
+
+    let r;
+    if (HOUSE.indexOf(field) >= 0) r = await courtToolAsync(['house', nm, field, value]);
+    else if (field === 'origin') r = await courtToolAsync(['origin', nm, value]);
+    else if (field === 'voice_lean') r = await courtToolAsync(['lean', nm, value || 'normal']);
+    else { sendErr(res, 400, 'Unknown field ' + field); return; }
+
+    if (!r.ok) { sendErr(res, 503, r.error); return; }
+    log('court: "' + nm + '" ' + field + ' set');
+    const ledger = await courtLedger();
+    sendJson(res, 200, { ok: true, rows: ledger.rows || [], noRow: ledger.noRow || [],
+      secrets: ledger.secrets || [], knows: ledger.knows || [], children: ledger.children || [],
+      leaks: ledger.leaks || [],
+      ledger: { ok: !!ledger.ok, source: ledger.source || null, at: ledger.at || 0, error: ledger.error || null } });
+    return;
+  }
+
+  if (m === 'POST' && p === '/api/court-knows') {
+    const body = await readJsonBody(req);
+    const nm = String(body.name || '').trim();
+    const key = String(body.key || '').trim();
+    if (!nm || !key || nm.slice(0, 2) === '--' || key.slice(0, 2) === '--') { sendErr(res, 400, 'name and key required'); return; }
+    const r = await courtToolAsync(['knows', nm, key, body.knows === false ? 'no' : 'yes']);
+    if (!r.ok) { sendErr(res, 503, r.error); return; }
+    log('court: "' + nm + '" ' + (body.knows === false ? 'no longer knows ' : 'knows ') + key);
+    const ledger = await courtLedger();
+    sendJson(res, 200, { ok: true, knows: ledger.knows || [], secrets: ledger.secrets || [] });
+    return;
+  }
+
+  if (m === 'POST' && p === '/api/court-leak') {
+    const body = await readJsonBody(req);
+    const id = Number(body.id);
+    if (!Number.isFinite(id) || id <= 0) { sendErr(res, 400, 'id required'); return; }
+    const r = await courtToolAsync(['leaks', 'resolve', String(Math.floor(id))]);
+    if (!r.ok) { sendErr(res, 503, r.error); return; }
+    const ledger = await courtLedger();
+    sendJson(res, 200, { ok: true, leaks: ledger.leaks || [] });
     return;
   }
 
@@ -7876,33 +8460,13 @@ async function route(req, res, url) {
       sendErr(res, 400, 'That file is not a PNG/JPEG/WebP image (magic bytes say "' + (sniff || 'unknown') + '")'); return;
     }
     if (sniff !== ext) ext = sniff; // trust the bytes over the label
-    // Clear BOTH authors, every version. MO2 gives overwrite priority and the
-    // newest file wins within a slug, so an in-game capture left sitting there
-    // would shadow this upload — "replace the portrait from my phone" has to
-    // actually replace it. Anything the running game holds open survives this;
-    // that is what the versioned name below is for.
-    const cleared = removeSlug(slug);
-    if (cleared) log('portrait: cleared ' + cleared + ' existing file(s) for "' + slug + '"');
-
-    /* Anything still standing is held open by the running game. That matters
-     * beyond the write: a survivor in OVERWRITE shadows a mod-folder file of the
-     * same name outright (MO2's rule), so landing this upload as `<slug>.<ext>`
-     * would put it somewhere the deck can never see — the upload would look like
-     * it worked and change nothing. Writing a version instead gives it a name
-     * the survivor cannot shadow, and being newer is what makes it win. */
-    const survivors = listPortraitFiles().filter((r) => r.slug === slug);
-    const stamp = Math.floor(Date.now() / 1000);
-    const versionName = (n) => slug + '~' + (stamp + n);
+    // Gallery versions are immutable. Never delete or overwrite an earlier
+    // photo when a new upload becomes the default portrait.
+    const stamp = Date.now().toString() + '-' + crypto.randomBytes(6).toString('hex');
+    const stem = slug + '~' + stamp;
     let info;
-    try {
-      info = survivors.length
-        ? writeImage(PORTRAIT_DIR, versionName(0), ext, buf, (n) => versionName(n + 1))
-        : writeImage(PORTRAIT_DIR, slug, ext, buf, versionName);
-    } catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
-    if (survivors.length) {
-      log('portrait: ' + survivors.length + ' file(s) for "' + slug + '" are open in the running game — saved as "' +
-        info.file + '", which supersedes them');
-    }
+    try { info = writeImage(PORTRAIT_DIR, stem, ext, buf, n => stem + '-' + n); }
+    catch (e) { sendErr(res, httpCode(e.code, 500), e.message); return; }
 
     /* Hand the same bytes to the plugin so a RUNNING game picks them up within
        a second, instead of at the next launch. */
@@ -8095,8 +8659,8 @@ async function route(req, res, url) {
   }
 
   /* Apply the toggled-on subset. Each slug goes through the EXACT single-
-     upload path: clear both authors, dodge files the running game holds open
-     with a `~stamp` version, and hand the bytes to the plugin bridge so a
+     upload path: retain earlier gallery photos, write an immutable
+     `~stamp` version, and hand the bytes to the plugin bridge so a
      running game repaints within a second. Per-slug results — one locked
      file must not abort the other thirty. */
   if (m === 'POST' && p === '/api/npc-pack/import') {
@@ -8113,14 +8677,8 @@ async function route(req, res, url) {
       const row = stash.rows.get(slug);
       if (!row) { results.push({ slug, ok: false, error: 'not in this pack' }); continue; }
       try {
-        const cleared = removeSlug(slug);
-        if (cleared) log('npc-pack: cleared ' + cleared + ' existing file(s) for "' + slug + '"');
-        const survivors = listPortraitFiles().filter((r) => r.slug === slug);
-        const stamp = Math.floor(Date.now() / 1000);
-        const versionName = (n) => slug + '~' + (stamp + n);
-        const info = survivors.length
-          ? writeImage(PORTRAIT_DIR, versionName(0), row.ext, row.data, (n) => versionName(n + 1))
-          : writeImage(PORTRAIT_DIR, slug, row.ext, row.data, versionName);
+        const stem = slug + '~' + Date.now() + '-' + crypto.randomBytes(6).toString('hex');
+        const info = writeImage(PORTRAIT_DIR, stem, row.ext, row.data, n => stem + '-' + n);
         if (queuePortraitForPlugin(slug, info.ext || row.ext, row.data.toString('base64'))) queued++;
         applied++;
         results.push({ slug, ok: true, file: info.file, mtime: info.mtime });
@@ -8619,6 +9177,22 @@ async function route(req, res, url) {
     return;
   }
 
+  if (m === 'POST' && p === '/api/domain-gallery') {
+    try {
+      const body = await readJsonBody(req);
+      const domain = readDomains().domains.find(d => d.id === body.id);
+      if (!domain || !['details','cover','remove'].includes(body.op) || !domain.photos.some(p => p.image === body.image)) {
+        sendErr(res,400,'Choose a photo in this domain gallery.');return;
+      }
+      const op={id:body.id,op:body.op,image:body.image};
+      if(body.op==='details') {op.label=String(body.label||'').trim().slice(0,80);op.tags=domainPhotoTags(body.tags);}
+      const dir=path.join(DECK_VIEW_DIR,'domain-photo-requests');fs.mkdirSync(dir,{recursive:true});
+      if(fs.readdirSync(dir).filter(n=>n.endsWith('.json')).length>=256){sendErr(res,429,'Open Skyrim to apply your queued gallery edits first.');return;}
+      const filename=String(Date.now())+'-'+String(++domainPhotoSequence).padStart(8,'0')+'-'+crypto.randomBytes(6).toString('hex')+'.json',dest=path.join(dir,filename),tmp=dest+'.tmp';
+      fs.writeFileSync(tmp,JSON.stringify(op));fs.renameSync(tmp,dest);
+      sendJson(res,200,{ok:true,queued:true});
+    } catch(e) {sendErr(res,httpCode(e.code,400),e.message);}return;
+  }
   if (m === 'GET' && p === '/api/domains') {
     // 200 even when ok:false — same contract as /api/roster and /api/spells:
     // the SPA renders the diagnostic inline instead of collapsing.
@@ -9477,18 +10051,53 @@ function readContainersView(src) {
   };
 }
 
+function domainPhotoTags(values) {
+  const out=[],seen=new Set();
+  for(let t of Array.isArray(values)?values:[]) {
+    if(typeof t!=='string')continue;t=t.replace(/\s+/g,' ').trim().slice(0,32);
+    if(t&&!seen.has(t.toLowerCase())&&out.length<12){seen.add(t.toLowerCase());out.push(t);}
+  }return out;
+}
+function domainGalleryPhotos(mark) {
+  const photos=[],seen=new Set(),saved=typeof mark.image==='string'?mark.image:'';
+  for(const p of (Array.isArray(mark.photos)?mark.photos:[]).concat(saved?[{image:saved,label:'Original photo',tags:[]}]:[])) {
+    if(!p||typeof p.image!=='string'||!/^domain-images\/[^\\/:?#]+\.(png|jpe?g|webp)$/i.test(p.image)||p.image.includes('..')||seen.has(p.image.toLowerCase())||photos.length>=128)continue;
+    seen.add(p.image.toLowerCase());photos.push({...p,label:typeof p.label==='string'?p.label.slice(0,80):'',tags:domainPhotoTags(p.tags)});
+  }return photos;
+}
+function applyDomainGalleryPreview(photos,cover,op) {
+  const p=photos.find(p=>p.image===op.image);if(!p)return {photos,cover};
+  if(op.op==='cover')cover=p.image;
+  if(op.op==='details'){p.label=String(op.label||'').slice(0,80);p.tags=domainPhotoTags(op.tags);}
+  if(op.op==='remove'){photos=photos.filter(x=>x!==p);if(cover===p.image)cover=photos.length?photos[0].image:'';}
+  return {photos,cover};
+}
+let domainPhotoSequence=0;
+function pendingDomainPhotoEdits() {
+  const dir=path.join(DECK_VIEW_DIR,'domain-photo-requests');
+  try{return fs.readdirSync(dir).filter(n=>n.endsWith('.json')).sort().slice(0,256).map(n=>{try{return JSON.parse(fs.readFileSync(path.join(dir,n),'utf8'));}catch(_){return null;}}).filter(Boolean);}catch(_){return [];}
+}
 function readDomains(src) {
   const s = src || readHkRoot();
   if (!s.ok) return { ok: false, file: s.file, error: s.error, dir: DOMAIN_IMG_DIR, domains: [] };
   const root = (s.root && typeof s.root === 'object' && !Array.isArray(s.root)) ? s.root : {};
   const dom = (root.domains && typeof root.domains === 'object' && !Array.isArray(root.domains)) ? root.domains : {};
   const marks = Array.isArray(dom.marks) ? dom.marks : [];
-  const out = [];
+  const out = [], edits=pendingDomainPhotoEdits();
   for (const mk of marks) {
     if (!mk || typeof mk !== 'object') continue;
     const id = typeof mk.id === 'string' ? mk.id : '';
     if (!id) continue;
     const img = findDomainImage(id);
+    // Match the game's saved photo first, including MO2 Overwrite / personal data.
+    // Captures use pd-<name>-<id>.png, so the older <id>.<ext> lookup missed them.
+    let gallery={photos:domainGalleryPhotos(mk),cover:str(mk.image).split('?')[0]};
+    const pending=edits.filter(e=>e.id===id);
+    for(const edit of pending)gallery=applyDomainGalleryPreview(gallery.photos,gallery.cover,edit);
+    const saved = gallery.cover;
+    const savedFile = /^(domain-images|icons\/custom)\//.test(saved) ? confineView(saved, 'hotkey') : null;
+    let captured = null;
+    try { if (savedFile && fs.statSync(savedFile).isFile()) captured = { mtime: fs.statSync(savedFile).mtimeMs }; } catch (_) { /* convention fallback */ }
     out.push({
       id,
       name: str(mk.name) || 'Unnamed domain',
@@ -9498,8 +10107,13 @@ function readDomains(src) {
       parentId: str(mk.parentId),
       place: str(mk.cellName) || str(mk.worldspaceName) || str(mk.cellEdid),
       interior: !!mk.interior,
-      hasImage: !!img,
-      imageUrl: img ? '/api/domain-image-file/' + encodeURIComponent(id) + '?v=' + img.mtime : null,
+      hasImage: !!(captured || img),
+      capturedImage: !!captured,
+      cover: saved,
+      photos: gallery.photos.map(photo=>({...photo,imageUrl:'/api/view-icon?view=hotkey&p='+encodeURIComponent(photo.image)})),
+      galleryPending: pending.length,
+      imageUrl: captured ? '/api/view-icon?view=hotkey&p=' + encodeURIComponent(saved) + '&v=' + captured.mtime
+        : img ? '/api/domain-image-file/' + encodeURIComponent(id) + '?v=' + img.mtime : null,
     });
   }
   return { ok: true, file: s.file, dir: DOMAIN_IMG_DIR, domains: out };

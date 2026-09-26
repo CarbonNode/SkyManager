@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <vector>
+#include <atomic>
 
 // pch (force-included) provides RE::/SKSE::/json/logger and std::literals.
 
@@ -19,6 +20,10 @@ namespace OstimDeck
 		// once acquired (the pointer is stable for the session).
 		OT::IThreadInterface* g_api = nullptr;
 		bool                  g_triedThisBoot = false;
+        std::atomic<std::uint64_t> g_sceneGeneration{0};
+        void SceneEvent(OT::ThreadEvent event, std::uint32_t thread, void*) {
+            if(thread==0 && event==OT::ThreadEvent::ThreadStarted)++g_sceneGeneration;
+        }
 
 		OT::IThreadInterface* Api()
 		{
@@ -30,6 +35,7 @@ namespace OstimDeck
 			if (g_api && !g_triedThisBoot) {
 				logger::info("ostim: Thread API acquired (marker: ostim-scene-deck)");
 				g_triedThisBoot = true;
+                g_api->RegisterEventCallback(SceneEvent, nullptr);
 			}
 			return g_api;
 		}
@@ -176,10 +182,13 @@ namespace OstimDeck
 
 	void Init()
 	{
+		LoadMetadata();
+		LoadExpressions();
 		g_api = nullptr;
 		g_triedThisBoot = false;
 		// Don't force-acquire here: OStim.dll may not be loaded yet at kDataLoaded.
 		// Api() lazily grabs it the first time the panel opens.
+		logger::info("ostim: npc-scene-status ready");
 		logger::info("ostim: deck segment ready (marker ostim-scene-deck)");
 	}
 
@@ -213,6 +222,7 @@ namespace OstimDeck
 				});
 			}
 		}
+		for(auto& scene:scenes)DecorateScene(scene);
 		out["scenes"] = scenes;
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
@@ -221,6 +231,37 @@ namespace OstimDeck
 	{
 		json out = json::object();
 		FillState(out, Api());
+		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	// The F7 landing question, answered without building any JSON.
+    std::uint64_t PlayerSceneGeneration() { Api(); return g_sceneGeneration.load(); }
+
+	bool PlayerInScene()
+	{
+		return InScene(Api());
+	}
+
+	// NPC-specific scene presence, including background threads. Never infer it
+	// from the player having a scene; every request is run on the main thread.
+	bool ActorInScene(std::uint32_t formId)
+	{
+		auto* api = Api();
+		return api && api->IsActorInAnyThread(formId);
+	}
+
+	std::string ActorStateJson(std::uint32_t formId)
+	{
+		auto api = Api();
+		json out;
+		FillState(out, api);
+		const bool actor = RE::TESForm::LookupByID<RE::Actor>(formId) != nullptr;
+		out["formId"] = formId;
+		out["active"] = actor && api && api->IsActorInAnyThread(formId);
+		bool inPlayerScene = false;
+		for (const auto& a : out["actors"])
+			if (a.value("formId", 0u) == formId) inPlayerScene = true;
+		out["inPlayerScene"] = inPlayerScene;
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
@@ -248,6 +289,7 @@ namespace OstimDeck
 				});
 			}
 		}
+		for(auto& scene:results)DecorateScene(scene);
 		return json{ { "query", query }, { "results", results } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
@@ -301,22 +343,7 @@ namespace OstimDeck
 			{ "speed", want }, { "maxSpeed", max } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
-	std::string ToggleAuto()
-	{
-		auto api = Api();
-		if (!api)
-			return ResultJson(false, "OStim not loaded");
-		const std::uint32_t tid = PlayerThread(api);
-		if (!api->IsThreadValid(tid))
-			return ResultJson(false, "Not in a scene");
-		// The Thread API is read-only for auto-mode; toggling is OStim's own key.
-		// We report the current state honestly rather than fake a write. (A real
-		// toggle lives in the Scene API — folded in with the start-scene work.)
-		const bool on = api->IsAutoMode(tid);
-		return json{ { "ok", true },
-			{ "msg", on ? "Auto mode is ON" : "Auto mode is OFF" },
-			{ "auto", on } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-	}
+	std::string ToggleAuto() { return SetAutoMode(); }
 
 	std::string SwitchFurniture(const std::string& mode)
 	{

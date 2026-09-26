@@ -161,6 +161,7 @@ window.HDPotions = (function () {
             '<input id="pb-q" type="text" autocomplete="off" spellcheck="false" ' +
               'placeholder="Search your potions — Enter drinks the top one">' +
           '</div>' +
+          '<div id="pb-smartrow" class="pb-smartrow"></div>' +
           '<div id="pb-pills" class="pb-pills"></div>' +
           '<div id="pb-sorts" class="pb-sorts"></div>' +
           '<div class="pb-tools">' +
@@ -725,6 +726,59 @@ window.HDPotions = (function () {
   }
 
   /* ------------------------------------------------------------- verbs */
+
+  /* ---- the smart row (2026-09-23) ------------------------------------------
+     Rober: "maybe a smart button for like use best potion (to heal my current
+     health gap)". Three equal cells - health, magicka, stamina - each naming
+     the gap and the bottle the smart rules would pick for it right now; the
+     press drinks exactly that, through the same FireSmart the hotbar's smart
+     slots and the Potion AI use. A full pool or an empty bag is an honest,
+     disabled cell - never a wasted bottle. */
+  var SMART_POOLS = [
+    { ref: 'heal',    glyph: '⚕', label: 'Heal me',         pool: 'Health' },
+    { ref: 'magicka', glyph: '✦', label: 'Restore magicka', pool: 'Magicka' },
+    { ref: 'stamina', glyph: '⚡', label: 'Restore stamina', pool: 'Stamina' }
+  ];
+  function renderSmartRow() {
+    var host = document.getElementById('pb-smartrow');
+    if (!host) return;
+    host.innerHTML = '';
+    var pools = state.pools;
+    SMART_POOLS.forEach(function (sp) {
+      var p = pools && pools[sp.ref];
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'pb-smart';
+      b.setAttribute('data-smart', sp.ref);
+      var title = document.createElement('span');
+      title.className = 'pb-smart-title';
+      title.textContent = sp.glyph + ' ' + sp.label;
+      var det = document.createElement('span');
+      det.className = 'pb-smart-detail';
+      var can = false;
+      if (!p) det.textContent = 'Reading your ' + sp.pool.toLowerCase() + '…';
+      else if (p.full || !(p.gap > 0)) det.textContent = sp.pool + ' full · ' + fmt(p.cur) + ' / ' + fmt(p.max);
+      else if (!p.ok) det.textContent = fmt(p.gap) + ' short · ' + (p.why || 'nothing to drink');
+      else {
+        can = true;
+        det.textContent = fmt(p.gap) + ' short → ' + p.name + ' (' + fmt(p.restores) + (p.overheal ? ', overheals' : '') + ')';
+      }
+      b.disabled = !can;
+      b.setAttribute('title', p
+        ? (sp.pool + ' ' + fmt(p.cur) + ' / ' + fmt(p.max) + (p.total ? ' · ' + p.total + ' matching potion(s) carried' : ''))
+        : 'Waiting for the list');
+      b.appendChild(title);
+      b.appendChild(det);
+      b.addEventListener('click', function () { drinkSmart(sp.ref); });
+      host.appendChild(b);
+    });
+  }
+  function drinkSmart(ref) {
+    if (ui.smartBusy) return;
+    ui.smartBusy = ref;
+    toGame('pbUse', JSON.stringify({ smart: ref }));
+    setTimeout(function () { ui.smartBusy = ''; }, 1500);
+  }
 
   function drink(r) {
     if (!r || !(r.count > 0)) return;
@@ -1315,6 +1369,7 @@ window.HDPotions = (function () {
     renderSorts();
     renderList();
     renderShelf();
+    renderSmartRow();   // placeholders until the list lands, never a blank band
     toGame('pbList');
     setTimeout(function () { if (ui.open && qEl) qEl.focus(); }, 30);
   }
@@ -1342,6 +1397,8 @@ window.HDPotions = (function () {
     if (!d || typeof d !== 'object') return;
     state.rows = Array.isArray(d.rows) ? d.rows : [];
     ui.loaded = true;
+    state.pools = (d.pools && typeof d.pools === 'object') ? d.pools : null;
+    renderSmartRow();
     /* ⚠ HYDRATE THE C++-OWNED SLICES. Combos and the Potion AI config are
        stored server-side and REPLACED wholesale on save (CombosFrom ends in
        a move; AiFrom clamps what it is sent). Until 2026-08-19 this receiver
@@ -1388,6 +1445,14 @@ window.HDPotions = (function () {
   window.pbUseResult = function (j) {
     var d = coerce(j);
     if (!d || typeof d !== 'object') return;
+    if (d.smart) {
+      /* a smart-row drink: the bottle was the DLL's choice, so re-list rather
+         than guess which row to decrement - counts and the gaps both moved */
+      ui.smartBusy = '';
+      toast(d.msg || (d.ok ? 'Drank it' : 'That didn\'t work'));
+      if (d.ok && d.relist && ui.open) toGame('pbList');
+      return;
+    }
     if (!d.ok) { toast(d.msg || 'That didn\'t work'); return; }
     toast(d.msg || 'Drank it');
     /* decrement IN PLACE — the row greys at zero with an honest note; the

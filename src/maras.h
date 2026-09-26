@@ -1,6 +1,8 @@
 #pragma once
 
 #include <string>
+#include <functional>
+#include <cstdint>
 
 namespace RE
 {
@@ -9,7 +11,7 @@ namespace RE
 
 // ---------------------------------------------------------------------------
 // M.A.R.A.S — "Marry Anyone Rule All Skyrim" (TT_MARAS.esp + MARAS.dll).
-// Reading, only. Nothing here marries or divorces anyone.
+// Reads faction mirrors; marriage writes use the mod’s own Papyrus native.
 //
 // WHERE MARAS ACTUALLY KEEPS A MARRIAGE — and why this file is faction reads
 // ---------------------------------------------------------------------------
@@ -79,6 +81,7 @@ namespace Maras
 
 	// True once TT_MARAS.esp is loaded and its tracking faction resolves.
 	bool Installed();
+    void Marry(std::uint32_t id, std::function<void(bool, std::string)> reply);
 
 	// MARAS's view of one actor. Safe on nullptr, before data load, and with the
 	// mod absent — all of which answer `installed:false, status:kUntracked`.

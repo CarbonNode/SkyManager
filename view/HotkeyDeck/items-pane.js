@@ -1724,6 +1724,36 @@ window.ItemsPane = (function () {
 
   /* Re-render the body but keep the scroll position — a render batch landing
      mid-scroll must not jump the list back to the top (keys-pane idiom). */
+  /* A render landed: upgrade the plates of the rows already on screen, and
+     leave every other node - the Take button above all - exactly where it is.
+     Same markup the row painter uses, so a patched plate is byte-identical to
+     a freshly painted one (and zoomable the same way). */
+  function patchRowsArt() {
+    const body = $('ix-body');
+    if (!body) return;
+    body.querySelectorAll('.ix-row:not(.ix-skel)').forEach(function (row) {
+      const id = row.getAttribute('data-id');
+      const plate = row.querySelector('.ix-glyph');
+      if (!id || !plate || plate.classList.contains('ix-has-art')) return;
+      let it = null;
+      for (let i = 0; i < state.items.length; i++) if (state.items[i].id === id) { it = state.items[i]; break; }
+      if (!it) return;
+      const meta = kindMeta(it.t);
+      if (iconFor(id)) {
+        plate.innerHTML = glyphInner(id, meta[2]);
+        plate.classList.add('ix-has-art');
+        plate.classList.add('ix-zoomable');
+        plate.classList.remove('ix-loading');
+        plate.setAttribute('title', it.n + ' — click for a bigger look');
+        plate.addEventListener('click', function (e) { e.stopPropagation(); openLightbox(it); });
+        return;
+      }
+      // Still expected, or the window closed on it: keep the shimmer honest.
+      if (rowLoading(it)) { plate.classList.add('ix-loading'); plate.setAttribute('title', 'rendering…'); }
+      else { plate.classList.remove('ix-loading'); plate.setAttribute('title', meta[1]); }
+    });
+  }
+
   function renderBodyPreservingScroll() {
     const body = $('ix-body');
     const top = body ? body.scrollTop : 0;
@@ -1956,7 +1986,14 @@ window.ItemsPane = (function () {
         if (!ui.visible) return;
         chipLastLand = Date.now();      // a render landed — keep the window open
         dismissHintIfDone();
-        renderBodyPreservingScroll();
+        /* IN PLACE, never a rebuild. This used to call renderBodyPreservingScroll():
+           renders land one by one for seconds after a search, and every landing
+           replaced the whole list - including the Take button under the cursor,
+           between mousedown and mouseup, so the click was simply lost. Rober,
+           2026-09-23: "items search refuses to give me item when i hit take 1
+           before its done loading fully". */
+        patchRowsArt();
+        updateRenderChip();
         if (ui.sheet) refreshSheetArt();
       });
     } catch (e) { /* no DOM in some harnesses */ }

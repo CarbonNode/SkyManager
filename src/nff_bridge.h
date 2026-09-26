@@ -109,6 +109,19 @@ namespace NffBridge
 	// Dismiss would do anything. False on every kind of "don't know".
 	bool IsNffFollower(RE::Actor* actor);
 
+	// The NFF follower SLOT this actor still fills, or -1. Slots are the
+	// DialogueFollower aliases NFF adds (FollowerExtra1..10, alias ids 2..11)
+	// and their twins in nwsFollowerPack / _High / _VHigh ("Follower Top
+	// Packages"). Read off the ENGINE's alias list, not NFF's faction —
+	// because the two can disagree: an interrupted dismiss (2026-09-23,
+	// Ambrelie) leaves her in both slots with her follower rank already -1
+	// and DismissedFollowerFaction set, so IsNffFollower() says no while NFF's
+	// Teleport All and her top package still treat her as one of the party.
+	// NFF's own RemoveFollower returns at its FIRST line for exactly that
+	// state (nwsFollowerControllerScript.RemoveAction, decompiled), so this is
+	// the only question that finds her.
+	int NffSlotOf(RE::Actor* actor);
+
 	// Whether THIS follower is included in sandboxing — NFF's own per-follower
 	// MCM checkbox, stored as her rank in nwsFF_BoxFaction (rank 0 excludes;
 	// not in the faction at all is the default-allowed state). Returns NFF's
@@ -129,6 +142,13 @@ namespace NffBridge
 
 	// True when MHiYH.esl is in the load order and its link keyword resolved.
 	bool MhiyhAvailable();
+
+	// Residents mode (src/residents.cpp): ONE actor's MHiYH slice — the same
+	// object StateJson files under "mhiyh", plus marker GEOMETRY on the home
+	// and every stop (cellId, cellName, worldspaceId/Name, interior, x, y, z,
+	// markerId) so a stop can be matched to a Domains mark by position rather
+	// than by name. The JSON literal `null` when NG holds nothing for her.
+	std::string MhiyhActorJson(RE::Actor* actor);
 
 	// Per-follower NFF + MHiYH facts for exactly the members in `foStateJson`
 	// (a Follower Organizer Deck API envelope — we reuse its formIds rather

@@ -85,6 +85,14 @@ var Recents = (function () {
       hue: hint && hint.hue != null ? hint.hue : 0,
       file: hint && hint.file ? hint.file : '',
       mtime: hint && hint.mtime ? hint.mtime : 0,
+      /* A captured photo lives under portraits/; a facegen HEAD RENDER carries
+         its own whole view-relative path (icons/npcs/...). Keeping the flag is
+         what stops faceFor rebuilding it as `portraits/icons/npcs/...` — a path
+         that exists nowhere, which is exactly how a chip stayed on initials for
+         anyone whose only face was a render (Rober, 2026-09-21: "melana had her
+         face generated automatically but recent doesnt update"). Same trap the
+         lightbox hit on 2026-08-14. */
+      abs: !!(hint && hint.abs),
     };
 
     // Move-to-front, deduped by identity: interacting with the same person
@@ -113,6 +121,7 @@ var Recents = (function () {
       if (!f) continue;
       list[i].file = f.file || '';
       list[i].mtime = f.mtime || 0;
+      list[i].abs = !!f.abs;
       if (f.hue != null) list[i].hue = f.hue;
     }
   }
@@ -148,40 +157,83 @@ var Recents = (function () {
     return (a + b).toUpperCase();
   }
 
-  function faceFor(e) {
-    if (e.file) {
+  /* The default URL rule, used when the caller supplies no `src` builder: a
+     captured photo under portraits/, a head render at its own path. The caller
+     SHOULD override it (followers-pane passes portraitSrc) so the deck has one
+     URL builder rather than two that can drift. */
+  function defaultSrc(e) {
+    if (!e || !e.file) return '';
+    return e.abs ? e.file : 'portraits/' + e.file;
+  }
+
+  function faceFor(e, opts) {
+    var base = '';
+    if (opts && typeof opts.src === 'function') base = opts.src(e) || '';
+    if (!base) base = defaultSrc(e);
+    if (base) {
       /* Same two-step src fallback as the roster row and the Sharmat header:
          Ultralight can treat the ?v= cache-bust as part of the FILENAME, so
          try the query form, retry plain once, then give up to initials. The
          listener STAYS attached across the retry — detaching it is how the
-         Sharmat header ended up showing an empty circle for a missing file. */
-      var img = h('img', { class: 'rc-face', src: 'portraits/' + e.file + '?v=' + (e.mtime || 0), alt: '', draggable: 'false' });
-      /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
-      if (window.HDFaceFit) HDFaceFit.paintPortrait(img, 'portraits/' + e.file);
+         Sharmat header ended up showing an empty circle for a missing file.
+         mtime 0 — every head render — sends NO query at all: renders are
+         render-once-keep-forever, so there is nothing to bust, and a `?v=0` is
+         one more thing Ultralight's loader can fold into the filename. */
+      var img = h('img', { src: base + (e.mtime ? '?v=' + e.mtime : ''), alt: '', draggable: 'false' });
+      /* The face is an <img> INSIDE a square frame, never the framed element:
+         a photo's crop is a transform (which would scale the framed element's
+         own rounded clip), and a head render's face-fit lays the image out
+         ABSOLUTELY against its parent — so the parent has to be the square
+         frame and not the whole pill. */
+      var frame = h('span', { class: 'rc-face' }, img);
+      /* the user's saved framing — one shared lane, or this centre-crops
+         (2026-08-19). A head render needs the FACE-FIT lane instead (MRF
+         frames the whole 512px canvas, so an unfitted head floats small inside
+         transparent margins), which only the caller knows how to drive. */
+      if (opts && typeof opts.fit === 'function') opts.fit(img, base, e);
+      else if (window.HDFaceFit) HDFaceFit.paintPortrait(img, base);
       img.addEventListener('error', function () {
-        if (img.dataset.retried) { img.replaceWith(medal(e)); return; }
+        if (img.dataset.retried) { frame.replaceWith(medal(e, opts)); return; }
         img.dataset.retried = '1';
-        img.src = 'portraits/' + e.file;
+        img.src = base;
       });
-      img.style.setProperty('--rc-hue', String(e.hue || 0));
-      return img;
+      frame.style.setProperty('--rc-hue', String(e.hue || 0));
+      return frame;
     }
-    return medal(e);
+    return medal(e, opts);
   }
-  function medal(e) {
+  function medal(e, opts) {
     var s = h('span', { class: 'rc-face initials' }, initialsOf(e.name));
+    /* No face YET is not the same as no face: while her head render is baking
+       the medallion wears a spinning arc, so the chip says "coming" rather
+       than "she hasn't got one" — the same answer the roster medallion gives
+       (2026-08-19), and the honest reply to "recent doesnt update". A border
+       arc, never a conic-gradient: that computes to none in Ultralight. */
+    var waiting = false;
+    if (opts && typeof opts.pending === 'function') {
+      try { waiting = !!opts.pending(e); } catch (err) { waiting = false; }
+    }
+    if (waiting) { s.classList.add('wait'); s.append(h('span', { class: 'rc-spin' })); }
     s.style.setProperty('--rc-hue', String(e.hue || 0));
     return s;
   }
 
-  /* Draw into `host`. `onPick(entry, chipEl)` fires on click — the caller
-     owns what "open" means, because only the pane knows how to resolve an
-     identity back to a live row and put a menu next to it.
+  /* Draw into `host`. `onPick(entry, chipEl)` fires on a LEFT click — the
+     caller owns what "open" means, because only the pane knows how to resolve
+     an identity back to a live row and act on her.
+
+     `opts` (all optional, all supplied by followers-pane in production):
+       src(entry)            -> the face URL, so the deck has ONE URL builder
+       fit(img, url, entry)  -> paint the framing (portrait lane vs face-fit)
+       pending(entry)        -> is her head render still baking? (loading ring)
+       onAlt(entry, chipEl)  -> RIGHT click; the second action the chip offers
+       hint                  -> a line appended to every chip's tooltip, so
+                                what a click does is written where it bites
 
      Returns true if anything was drawn. An EMPTY strip renders nothing at
      all (not an empty box with a label): before you have touched anyone it
      is pure chrome, and the roster is what the tab is for. */
-  function render(host, onPick) {
+  function render(host, onPick, opts) {
     if (!host) return false;
     host.innerHTML = '';
     if (!list.length) { host.classList.add('hidden'); return false; }
@@ -190,14 +242,33 @@ var Recents = (function () {
     host.append(h('span', { class: 'rc-label' }, 'Recent'));
     var scroller = h('div', { class: 'rc-scroll' });
 
+    var hint = (opts && opts.hint) ? '\n' + opts.hint : '';
+    /* The chip's SECOND action. Rober, 2026-09-21: clicking a recent should
+       "open as if you hit f7 on them - or open the popout menu it does now".
+       Both, and neither costs a chooser in front of the one you meant: the
+       card on the left button, the member menu on the right. */
+    function alt(e, chip) {
+      if (opts && typeof opts.onAlt === 'function') opts.onAlt(e, chip);
+      else if (onPick) onPick(e, chip);
+    }
     list.forEach(function (e) {
       var v = verbOf(e.op);
       var chip = h('button', {
         class: 'rc-chip', type: 'button',
-        title: e.name + ' — ' + v.t + (e.name !== e.id ? '\n(CHIM/FO name: ' + e.id + ')' : ''),
-        onClick: function (ev) { ev.stopPropagation(); if (onPick) onPick(e, chip); },
+        title: e.name + ' — ' + v.t + (e.name !== e.id ? '\n(CHIM/FO name: ' + e.id + ')' : '') + hint,
+        onClick: function (ev) {
+          ev.stopPropagation();
+          /* Shift is the KEYBOARD route to the second action — the chip is a
+             real button, so Enter reaches it, and right-click does not. */
+          if (ev.shiftKey) { alt(e, chip); return; }
+          if (onPick) onPick(e, chip);
+        },
+        onContextmenu: function (ev) {
+          ev.preventDefault(); ev.stopPropagation();
+          alt(e, chip);
+        },
       },
-        faceFor(e),
+        faceFor(e, opts),
         h('span', { class: 'rc-body' },
           h('span', { class: 'rc-name' }, e.name),
           h('span', { class: 'rc-verb' }, v.ic + ' ' + v.t)));
@@ -207,7 +278,7 @@ var Recents = (function () {
     host.append(scroller);
     host.append(h('button', {
       class: 'rc-clear', type: 'button', title: 'Clear the recent list',
-      onClick: function (ev) { ev.stopPropagation(); clear(); render(host, onPick); },
+      onClick: function (ev) { ev.stopPropagation(); clear(); render(host, onPick, opts); },
     }, '✕'));
     return true;
   }

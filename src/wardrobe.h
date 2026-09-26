@@ -126,6 +126,7 @@ namespace Wardrobe
 		std::vector<LocOverride> locationOverrides;
 		double                   lastRollDay = 0.0;  // Calendar::GetDaysPassed()
 		std::string              lastOutfit;
+		std::string              lastBedOutfit;  // native-owned, separate from the daytime roll
 	};
 
 	// A DISPLAY crop for ONE outfit-photo FILE. The plugin cannot re-cut the
@@ -154,6 +155,7 @@ namespace Wardrobe
 
 	struct Config
 	{
+		nlohmann::json flair = nlohmann::json::object(); // edited by wdFlairEdit, preserved across ordinary wdSave
 		std::vector<Category>   categories;
 		std::vector<OutfitMeta> outfitMeta;
 		std::vector<Pool>       wardrobes;
@@ -197,6 +199,7 @@ namespace Wardrobe
 	};
 
 	void Init();
+	std::string RollForDock(Config& cfg, const std::string& poolId);
 
 	// Persisted slice. ToJson returns a json OBJECT for WriteConfigFile to drop
 	// under "wardrobe"; FromJson is what LoadConfig reads back.
@@ -324,7 +327,7 @@ namespace Wardrobe
 	// wear: a tracked actor SOES cannot dress gets stripped every 2 s poll, which
 	// is the documented White Hearth crash-loop
 	// (modding/troubleshooting/soes_ng_crash_issue.md).
-	std::string SetTracked(const Config& cfg, const std::string& reqJson);
+	std::string SetTracked(Config& cfg, const std::string& reqJson);
 
 	// ---- browsing what the game has (engine-side, no Papyrus) ----
 
@@ -398,6 +401,9 @@ namespace Wardrobe
 	// it. Returns true if anything changed, so the caller persists and re-pushes.
 	// Cheap enough to call on a slow timer; it does nothing until a due date.
 	bool MaybeRoll(Config& cfg);
+	// Main thread, unpaused, loaded game only. Returns true if a pool was drawn.
+	bool PollBedOutfits(Config& cfg);
+	void ResetBedOutfits();
 
 	// Build a real SOES outfit from inventory pieces, straight from the deck.
 	// Same payload shape as the portal's POST /api/outfit, so the in-game and

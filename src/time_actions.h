@@ -28,5 +28,7 @@ namespace TimeActions
 
 	// Time-pane bridge. Both main thread.
 	std::string InfoJson();                          // {hour,day,month,year,daysPassed} or "null"
+	bool NeedsResume();
+	bool Request(const std::string& payload, float& hours, std::string& err);
 	bool        Jump(float hours, std::string& err); // arbitrary-hours jump; err set on refusal
 }

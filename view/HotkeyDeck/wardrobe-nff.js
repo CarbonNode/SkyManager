@@ -205,7 +205,8 @@ window.WardrobeNff = (function () {
     const k = keyOf(npc);
     let m = metaFor(k);
     if (!m) {
-      m = { formId: npc.formId, plugin: npc.plugin, name: npc.name || '',
+      m = { formId: npc.formId, plugin: npc.plugin, liveFormId: npc.liveFormId || '',
+            name: npc.name || '',
         sets: blankSets(), note: '', claimed: false };
       state.meta.push(m);
     }
@@ -270,7 +271,7 @@ window.WardrobeNff = (function () {
   function portraitFor(npc) {
     const F = window.FolPane;
     if (F && typeof F._portraitFor === 'function') {
-      const p = F._portraitFor({ original: npc.original, name: npc.name });
+      const p = (F.portraitInfoFor || F._portraitFor).call(F, { formId: npc.formId, original: npc.original, name: npc.name });
       if (p) return p;
     }
     const slug = slugOf(npc.original || npc.name);
@@ -289,20 +290,22 @@ window.WardrobeNff = (function () {
     const initials = () => h('span', { class: 'nf-face ph', 'aria-hidden': 'true' },
       ((npc.name || '?').trim().charAt(0) || '?').toUpperCase());
     if (!p) return initials();
-    const plain = 'portraits/' + p.file;
+    const plain = p.abs ? p.file : 'portraits/' + p.file;
     const img = h('img', {
-      class: 'nf-face', src: plain + '?v=' + (p.mtime || 0), alt: '',
+      class: 'nf-face', src: plain + (p.abs ? '' : '?v=' + (p.mtime || 0)), alt: '',
       title: npc.name || '', draggable: 'false',
     });
+    const frame = h('span', { class: 'nf-face' }, img);
+    img.className = '';
     /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
-    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, plain);
+    if (window.HDFaceFit) { if (p.abs) HDFaceFit.ensure(img, plain); else HDFaceFit.paintPortrait(img, plain); }
     let retried = false;
     img.addEventListener('error', function () {
       if (!retried) { retried = true; img.src = plain; return; }
       toGame('nfLog', 'portrait failed to load: ' + plain);
-      if (img.parentNode) img.parentNode.replaceChild(initials(), img);
+      if (frame.parentNode) frame.parentNode.replaceChild(initials(), frame);
     });
-    return img;
+    return frame;
   }
 
   /* ============================================================== save == */
@@ -1240,11 +1243,11 @@ window.WardrobeNff = (function () {
     const key = keyOf(npc);
     if (state.gearAsked[key]) return;
     state.gearAsked[key] = true;
-    toGame('nfGear', JSON.stringify({ formId: npc.formId, plugin: npc.plugin }));
+    toGame('nfGear', JSON.stringify(whoOf(npc)));
   }
 
   function setGear(npc, op) {
-    toGame('nfSetGear', JSON.stringify({ formId: npc.formId, plugin: npc.plugin, op: op }));
+    toGame('nfSetGear', JSON.stringify(Object.assign(whoOf(npc), { op: op })));
     /* C++ re-reads after the executor has had its beat and pushes nfGearState,
        so the control springs back if the Papyrus hop never landed rather than
        showing a state nobody applied. */
@@ -1401,8 +1404,22 @@ window.WardrobeNff = (function () {
 
   /* ============================================================ actions == */
 
+  /* `liveFormId` rides along on EVERY request. C++ puts it on a row whose
+     stored form is a BASE record — what Follower Organizer falls back to for a
+     follower spawned at runtime, since it cannot persist a 0xFF reference — and
+     it is the only handle that resolves to her actual actor. Without echoing it
+     back, every op on that row answered "Couldn't find that person in the game
+     right now" (src/nff_outfits.cpp, ResolveLive). Undefined on an ordinary
+     row, and an absent key is exactly the old payload. */
+  /* A declaration, not a const: askGear/setGear sit ABOVE this line and would
+     otherwise read it out of the temporal dead zone if either ever fired during
+     module evaluation. */
+  function whoOf(npc) {
+    return { formId: npc.formId, plugin: npc.plugin, liveFormId: npc.liveFormId || '' };
+  }
+
   const req = (npc, extra) =>
-    JSON.stringify(Object.assign({ formId: npc.formId, plugin: npc.plugin }, extra || {}));
+    JSON.stringify(Object.assign(whoOf(npc), extra || {}));
 
   function wear(npc, t) {
     if (!guard(npc, 'change her clothes')) return;
@@ -1558,6 +1575,7 @@ window.WardrobeNff = (function () {
   function chainFollowerFeeds() {
     const prevP = window.fdPortraits;
     window.fdPortraits = function (list) {
+      const result = typeof prevP === 'function' ? prevP.apply(this, arguments) : undefined;
       try {
         const raw = typeof list === 'string' ? JSON.parse(list) : list;
         const arr = Array.isArray(raw) ? raw
@@ -1581,8 +1599,7 @@ window.WardrobeNff = (function () {
         state.portraits = map;
         if (ui.shown) rerender();
       } catch (e) { /* the Followers pane logs its own parse failures */ }
-      if (typeof prevP === 'function') return prevP.apply(this, arguments);
-      return undefined;
+      return result;
     };
 
     const prevT = window.fdTarget;

@@ -1,4 +1,6 @@
 #include "item_icons.h"
+#include "item_icon_paths.h"
+#include "facegen_resolver.h"
 
 // pch (force-included) provides RE::/SKSE::, nlohmann json.hpp, logger and
 // Windows.h (via PrismaUI_API.h). SEH (__try) needs no extra include.
@@ -464,6 +466,9 @@ namespace ItemIcons
 			std::uint32_t                         px{ kSize };  // the canvas this mesh was created at
 			bool                                  refit{ false }; // FitClutter this item render
 			bool                                  fallback{ false }; // the one conservative retry
+			// Built as head + wig (extraNifs). A refused COMPOSED face is retried
+			// once as the bare facegen head — see the refusal branch in Pump.
+			bool                                  composed{ false };
 			Tier                                  tier{ Tier::User };   // the lane it started from
 			std::chrono::steady_clock::time_point armed{};
 			// No node is kept alive here any more: the framework clones the model
@@ -930,6 +935,8 @@ namespace ItemIcons
 		// or since-swapped file can never be reported stale). Best-effort: a
 		// missing or malformed file just leaves the set empty. g_mutex NOT held —
 		// called from Init before any watcher exists.
+		std::unordered_map<std::string, std::uint64_t> g_itemRevisions;
+
 		void LoadDiskIndex()
 		{
 			std::ifstream in(ItemIndexFile(), std::ios::binary);
@@ -938,6 +945,16 @@ namespace ItemIcons
 			auto j = nlohmann::json::parse(in, nullptr, false);
 			if (j.is_discarded() || !j.is_object() || !j.contains("icons") || !j["icons"].is_object())
 				return;
+			// Persisted separately from the PNG list: a failed/pending regeneration
+			// must not resurrect its old picture after a restart.
+			if (j.contains("revisions") && j["revisions"].is_object()) {
+				for (auto it = j["revisions"].begin(); it != j["revisions"].end(); ++it)
+					if (it.value().is_number_unsigned() && it.key().find('|') != std::string::npos &&
+						it.key().find('@') == std::string::npos) {
+						g_itemRevisions[it.key()] = it.value().get<std::uint64_t>();
+						g_diskIndex.insert(it.key());
+					}
+			}
 			std::size_t n = 0;
 			for (auto it = j["icons"].begin(); it != j["icons"].end(); ++it) {
 				const std::string& key = it.key();
@@ -1214,6 +1231,29 @@ namespace ItemIcons
 			for (auto& c : hex)
 				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 			return Slug(plugin) + "-" + hex + (swapped ? "-s2" : "") + ".png";
+		}
+
+		// g_mutex held. Only ITEM callers use these revisions; face/body filenames
+		// retain their existing generation contract. Ultralight locks displayed
+		// PNGs, so a retry writes a new name instead of deleting a mapped file.
+		std::string ItemFileFor(const std::string& fid, const std::string& plugin, bool swapped = false)
+		{
+			const auto it = g_itemRevisions.find(KeyOf(fid, plugin));
+			return ItemIconPaths::Versioned(FileFor(fid, plugin, swapped),
+				it == g_itemRevisions.end() ? 0 : it->second);
+		}
+
+		bool SupersededItemRender(const std::string& key, const std::string& path)
+		{
+			const auto baseKey = key.substr(0, key.find('@'));
+			if (!g_itemRevisions.count(baseKey))
+				return false;
+			const auto bar = baseKey.find('|');
+			if (bar == std::string::npos)
+				return false;
+			const auto file = PathU8(std::filesystem::path(path).filename());
+			return !ItemIconPaths::SameGeneration(file,
+				ItemFileFor(baseKey.substr(0, bar), baseKey.substr(bar + 1)));
 		}
 
 		/* Takes a PATH, not a string: a caller must never have to convert, because
@@ -1933,14 +1973,56 @@ namespace ItemIcons
 		}
 
 		/* ── the armour's picture source ────────────────────────────────────
-		 * The GROUND model — what an inventory icon shows — AND its texture
+		 * The WORN GARMENT — the armour addon's biped model — AND its texture
 		 * swap: retexture variants (the green Yeti Cap) are a mesh plus an
-		 * alternate texture set, so the swap travels with the path. worldModels
-		 * first, armor-addon biped model as fallback. */
+		 * alternate texture set, so the swap travels with the path. Biped model
+		 * first, the ground model as fallback.
+		 *
+		 * ⚠ THIS ORDER WAS THE OTHER WAY ROUND UNTIL 2026-09-20, and the ground
+		 * model is a trap (Rober, with a screenshot of four identical tiles:
+		 * "rendering as inventory art not actual 3d object?"). An ARMO's
+		 * worldModels entry is the prop it becomes when DROPPED, and nothing
+		 * makes that prop unique per item: Neo's Slave Leia Renewal points all
+		 * four of its pieces — bangle, body, boots, chain — at one shared
+		 * meshes\Neo\LeiaN\NeoGND.nif, a decorative "Neo's Gift" plaque. So
+		 * four different worn items rendered four byte-identical pictures of a
+		 * signboard (verified: same SHA256), and any outfit mod shipping one GND
+		 * prop for a whole set does the same. The biped model IS the garment,
+		 * which is what a "what is she wearing" grid is asking about.
+		 *
+		 * Weapons, torches and ammo are unaffected — their world model IS the
+		 * object, and they take the TESModelTextureSwap branch below.
+		 *
+		 * ⚠ SEX ORDER IS NOT "first non-empty" — that was wrong, and the real
+		 * records prove it. bipedModels is indexed [male, female], and these
+		 * outfit mods fill the MALE slot with a borrowed vanilla placeholder
+		 * while the garment itself lives in the FEMALE slot. Neo's, verbatim:
+		 *
+		 *   000810 chain   male Armor\AmuletsandRings\SilverAmulet_1.nif
+		 *                female NEO\LeiaN\LeiaChainG_1.nif
+		 *   000820 bangle  male Armor\Elven\M\Gauntlets_1.nif
+		 *                female NEO\LeiaN\LeiaBangleG_1.nif
+		 *   000829 body    male Armor\Elven\M\Cuirass_1.nif
+		 *                female NEO\LeiaN\LeiaBody0_1.nif
+		 *   00082A boots   male Armor\Elven\M\Boots_1.nif
+		 *                female NEO\LeiaN\LeiaBoots0_1.nif
+		 *
+		 * Taking the first non-empty would have rendered elven gauntlets and a
+		 * silver amulet — four DIFFERENT pictures, so it would have looked fixed
+		 * while being wrong, which is the worst failure available here.
+		 *
+		 * So: FEMALE first, male as the fallback. This is a property of the
+		 * RECORD, not of the wearer, and it has to be — a render is cached once
+		 * per item (fid+plugin), not per actor, and neither caller even has an
+		 * actor. For vanilla armour both slots are the same garment, so the
+		 * choice is free there; for a male-only piece the female slot is empty
+		 * and it falls through. A mesh that renders badly is caught by the
+		 * blank-render guard and keeps its glyph rather than showing a lie. */
 		struct Look
 		{
 			std::string         nif;
 			std::vector<AltTex> swaps;
+			std::string missing;
 		};
 		Look LookOf(const std::string& fid, const std::string& plugin)
 		{
@@ -1959,25 +2041,43 @@ namespace ItemIcons
 				form = dh->LookupForm(local, plugin);
 			if (!form)
 				return look;
+			auto readable = [&](const char* model) {
+				std::string path = model;
+				if (LowerS(path).rfind("meshes\\", 0) != 0 && LowerS(path).rfind("meshes/", 0) != 0)
+					path = "meshes\\" + path;
+				RE::BSResourceNiBinaryStream probe(path.c_str());
+				if (probe.good()) return true;
+				if (look.missing.empty()) look.missing = path;
+				logger::debug("item icons: missing model candidate {}", path);
+				return false;
+			};
 			if (auto* armo = form->As<RE::TESObjectARMO>()) {
-				for (const auto& wm : armo->worldModels) {
-					const char* m = wm.GetModel();
-					if (m && *m) {
-						look.nif   = m;
-						look.swaps = SwapsOf(&wm);
-						return look;
-					}
-				}
+				using Sex = RE::SEXES::SEX;
 				for (auto* addon : armo->armorAddons) {
 					if (!addon)
 						continue;
-					for (const auto& bm : addon->bipedModels) {
-						const char* m = bm.GetModel();
-						if (m && *m) {
+					// Female first — see the block comment above for why.
+					for (const auto sex : { Sex::kFemale, Sex::kMale }) {
+						const auto& bm = addon->bipedModels[sex];
+						const char* m  = bm.GetModel();
+						if (m && *m && readable(m)) {
 							look.nif   = m;
 							look.swaps = SwapsOf(&bm);
+							logger::debug("item icons: {}|{} -> worn garment '{}' ({})",  // marker: item-icons-worn-model
+								fid, plugin, m, sex == Sex::kFemale ? "female" : "male");
 							return look;
 						}
+					}
+				}
+				/* No readable biped model (including a missing loose/BSA resource):
+				 * the ground prop is better than nothing, and the shared-mesh
+				 * problem above cannot be worse than an empty tile. */
+				for (const auto& wm : armo->worldModels) {
+					const char* m = wm.GetModel();
+					if (m && *m && readable(m)) {
+						look.nif   = m;
+						look.swaps = SwapsOf(&wm);
+						return look;
 					}
 				}
 				return look;
@@ -2098,6 +2198,8 @@ namespace ItemIcons
 			return true;
 		}
 
+		void MarkFailed(const std::string& key, std::string why);
+
 		// g_mutex held.
 		bool Start(const Request& r)
 		{
@@ -2156,8 +2258,10 @@ namespace ItemIcons
 			// A face whose hair lives in a WIG: compose head + wig into one mesh.
 			// Falls through to the bare head on ANY failure — a composed render is
 			// better than a bald one, but a bald one is far better than none.
+			bool composed = false;
 			if (!mesh && !r.extraNifs.empty()) {
-				mesh = SafeCreateByNifSet(r.nifPath, r.extraNifs, r.px);
+				mesh     = SafeCreateByNifSet(r.nifPath, r.extraNifs, r.px);
+				composed = mesh != nullptr;
 				if (mesh)
 					logger::info("item icons: '{}' — head composed with {} wig nif(s)",
 						r.label, r.extraNifs.size());   // marker: face-wig-compose
@@ -2169,6 +2273,10 @@ namespace ItemIcons
 				mesh = SafeCreateByNif(r.nifPath, r.px);
 			if (!mesh) {
 				++g_failed;
+				++g_landed;   // publish a failure just as promptly as a finished picture
+				BacklogDrop(r.key);
+				MarkFailed(r.key, "could not load the item mesh: " + r.nifPath);
+				logger::warn("item icons: mesh load failed for '{}' ({})", r.label, r.nifPath);
 				return false;
 			}
 			InFlight job;
@@ -2182,11 +2290,15 @@ namespace ItemIcons
 			job.px      = r.px;
 			job.refit   = r.refit;
 			job.fallback = r.fallback;
+			job.composed = composed;
 			job.tier    = r.tier;   // a swap-retry re-arms in the lane it came from
 			job.armed   = std::chrono::steady_clock::now();
 			if (!ArmSave(mesh, job)) {
 				SafeDelete(mesh);
 				++g_failed;
+				++g_landed;
+				BacklogDrop(r.key);
+				MarkFailed(r.key, "the renderer could not start saving the picture");
 				return false;
 			}
 			// The lane is part of the line now: "which tier is holding the GPU"
@@ -2355,9 +2467,37 @@ namespace ItemIcons
 					continue;
 				}
 				SafeDelete(g_inFlight[i].mesh);
+				// An already-armed old generation is allowed to finish safely, but
+				// cannot clear the new generation's failure or requeue stale angles.
+				if (SupersededItemRender(g_inFlight[i].key, g_inFlight[i].outPath)) {
+					g_inFlight.erase(g_inFlight.begin() + static_cast<std::ptrdiff_t>(i));
+					continue;
+				}
 				if (refused) {
 					const std::string why = TakeRejectReason(g_inFlight[i].outPath);
-					if (!g_inFlight[i].fallback && g_inFlight[i].refit &&
+					if (!g_inFlight[i].fallback && g_inFlight[i].composed &&
+						!g_inFlight[i].nifPath.empty()) {
+						/* A COMPOSED face (head + wig) came out blank. Retry ONCE as
+						 * the bare facegen head. 2026-09-23: Willow, Vaelina and Adney
+						 * Swordhand all went blank this way (0.23-0.94% ink) and were
+						 * condemned after a single try, although their bare heads
+						 * render fine. A bald face beats initials; the wig is the part
+						 * that failed, so drop it rather than the whole portrait. */
+						++g_failed;
+						Request again;
+						again.outPath  = g_inFlight[i].outPath;
+						again.key      = g_inFlight[i].key;
+						again.nifPath  = g_inFlight[i].nifPath;
+						again.label    = g_inFlight[i].label;
+						again.angle    = g_inFlight[i].angle;
+						again.px       = g_inFlight[i].px;
+						again.fallback = true;   // extraNifs left EMPTY: the bare head
+						again.tier     = g_inFlight[i].tier;
+						QueueFor(again.tier).push_front(std::move(again));
+						logger::warn("item icons: '{}' — the head+wig composite came out blank ({}). "
+						             "Retrying once as the bare facegen head.",
+							g_inFlight[i].label, why);   // marker: face-wig-refused-bare-retry
+					} else if (!g_inFlight[i].fallback && g_inFlight[i].refit &&
 						!g_inFlight[i].nifPath.empty()) {
 						// ONE retry, on the framework's own bounding-sphere fit. If
 						// our framing is what made the picture unusable, this is the
@@ -2387,18 +2527,35 @@ namespace ItemIcons
 							g_inFlight[i].label, why);
 					} else {
 						// Second refusal (or a render we never framed). Do NOT write a
-						// keep-forever file on a guess: condemn it honestly, release
-						// the key so a later ask can retry, and let the tile wear its
-						// glyph with a reason instead of a broken picture.
+						// keep-forever file on a guess: condemn it honestly and let the
+						// tile wear its glyph with a reason instead of a broken picture.
+						//
+						// ⚠ AND KEEP THE KEY IN g_asked. It used to be erased here "so a
+						// later ask can retry", which turned a deterministic refusal into
+						// an infinite loop: a blank render is a property of the MESH, so
+						// the retry produces the identical blank, and every face poll and
+						// every deck open re-queued it. Measured 2026-09-17 on Rober's
+						// rig: Willow (0.36% ink) and Vaelina (0.49%) re-rendered and were
+						// refused every ~5 seconds for the whole session, two MRF renders
+						// a tick, and the log contained nothing else.
+						//
+						// Nothing is lost by keeping it: g_asked is per-session, so a
+						// relaunch re-tries on its own, and the EXPLICIT retry
+						// (whIconRetry -> RetryIcons) erases the key AND clears the
+						// verdict itself, so the tile's retry button still works.
+						// Marker: item-icons-refused-sticky.
 						++g_failed;
-						g_asked.erase(g_inFlight[i].key);
 						BacklogDrop(g_inFlight[i].key);
 						MarkFailed(g_inFlight[i].key,
 							"the renderer refused the picture it made (" + why + ")");
 						// Marker: item-icons-render-refused-twice.
-						logger::error("item icons: '{}' — refused AGAIN ({}) even on the "
-						              "framework's own fit. No file kept; the tile keeps its glyph.",
-							g_inFlight[i].label, why);
+						// "AGAIN" only when there WAS a first try — a face or body is
+						// never refit, so its first refusal lands here directly, and
+						// the old wording claimed a retry that never happened.
+						logger::error("item icons: '{}' — refused {}({}). No file kept; the tile "
+						              "keeps its glyph.",
+							g_inFlight[i].label, g_inFlight[i].fallback ? "AGAIN on the retry " : "",
+							why);
 					}
 				} else if (done) {
 					++g_done;
@@ -2659,8 +2816,8 @@ namespace ItemIcons
 				return;   // already named in the index
 			// A retexture variant renders under "-s2"; the swap-less fallback
 			// renders under the plain name. Either on disk means "we have it".
-			if (FileExists(IconDir() / FileFor(fid, plugin, true)) ||
-				FileExists(IconDir() / FileFor(fid, plugin, false)))
+			if (FileExists(IconDir() / ItemFileFor(fid, plugin, true)) ||
+				FileExists(IconDir() / ItemFileFor(fid, plugin, false)))
 				g_diskIndex.insert(key);
 		}
 
@@ -2692,6 +2849,7 @@ namespace ItemIcons
 					++g_promotedThisAsk;
 				return false;
 			}
+			if (g_failedWhy.count(key)) return false;  // only an explicit Retry clears a dead end
 			// The look has to be derived FIRST now, because whether this piece has
 			// a texture swap decides which filename it renders to — and therefore
 			// whether the icon already sitting on disk is one of ours or one of
@@ -2703,9 +2861,11 @@ namespace ItemIcons
 				// THE silent case: a form with no world model can never render, and
 				// until now the tile just waited. Say so once, out loud and on the
 				// tile (the wig that "got stuck" on 2026-08-15).
-				MarkFailed(key, "this record ships no world model, so there is nothing to render");
-				logger::info("item icons: '{}' has no world model - nothing to render ({})",
-					name.empty() ? key : name, key);
+				MarkFailed(key, look.missing.empty()
+					? "this record ships no world model, so there is nothing to render"
+					: "mesh file is missing: " + look.missing);
+				logger::info("item icons: '{}' has no readable model ({}) — {}",
+					name.empty() ? key : name, key, look.missing);
 				return false;
 			}
 			/* With swaps latched off (new-architecture MRF, or two strikes) a
@@ -2714,14 +2874,14 @@ namespace ItemIcons
 			 * reserved for renders that really carried the variant's textures). */
 			const bool hasSwaps = !look.swaps.empty();
 			const bool wantSwap = hasSwaps && !g_swapDisabled;
-			const auto out = PathU8((IconDir() / FileFor(fid, plugin, wantSwap)));
+			const auto out = PathU8((IconDir() / ItemFileFor(fid, plugin, wantSwap)));
 			if (FileExists(out)) {   // render once, keep forever
 				g_asked.insert(key);
 				BacklogDrop(key);
 				return false;
 			}
 			if (hasSwaps && !wantSwap &&
-				FileExists(IconDir() / FileFor(fid, plugin, true))) {
+				FileExists(IconDir() / ItemFileFor(fid, plugin, true))) {
 				// a good swap-rendered icon from an earlier session still wins the
 				// index — don't burn a render on a bare duplicate beside it
 				g_asked.insert(key);
@@ -3117,26 +3277,60 @@ namespace ItemIcons
 			using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
 			const std::uint32_t hairMask = static_cast<std::uint32_t>(Slot::kHair) |
 										   static_cast<std::uint32_t>(Slot::kLongHair);
+			const std::uint32_t headMask = static_cast<std::uint32_t>(Slot::kHead);
 			auto addWig = [&](RE::TESObjectARMO* armo) {
 				if (!armo || (static_cast<std::uint32_t>(armo->GetSlotMask()) & hairMask) == 0)
 					return;
+				/* A HELMET IS NOT A WIG (Adney Swordhand, 2026-09-23). Helmets,
+				 * hoods and hats claim the hair slot too — to hide the hair under
+				 * them — so the hair-mask test alone composed his outfit's Wolf
+				 * Helmet onto the face. The render came out 0.94% ink, MRF refused
+				 * it, and the tile sat on initials. A face tile is the FACE: head
+				 * gear is never composed. A real wig claims hair only; anything
+				 * that also claims the HEAD slot, or is keyworded as head gear,
+				 * is dropped here. */
+				if ((static_cast<std::uint32_t>(armo->GetSlotMask()) & headMask) != 0 ||
+					armo->HasKeywordID(0x0006C0EE) /* ArmorHelmet */ || armo->HasKeywordID(0x0010CD11) /* ClothingHead */) {
+					logger::debug("item icons: '{}' is head gear, not a wig - not composed onto face {}|{}",
+						armo->GetName() ? armo->GetName() : "", fid, plugin);  // marker: face-wig-not-helmet
+					return;
+				}
 				// Per-ADDON, not per-armour: a multi-slot ARMO (a follower's
 				// custom SKIN, a full outfit) matches the hair mask at the
 				// armour level while its first addon is the TORSO - composing
 				// that onto a head would be worse than staying bald. Only ARMAs
 				// whose OWN slots are hair contribute their model.
-				bool added = false;
-				for (auto* arma : armo->armorAddons) {
-					if (!arma ||
-						(static_cast<std::uint32_t>(arma->GetSlotMask()) & hairMask) == 0)
-						continue;
+				//
+				// And only the addon for THE NPC'S RACE: an armour ships one ARMA per
+				// race family (human / Khajiit / Argonian / Orc), all claiming the
+				// same slots, so the old loop stacked all four race variants onto
+				// one head. Addons valid for the NPC's race win; if none is (a
+				// custom race the author never listed), the FIRST hair addon alone
+				// stands in — never the whole set.
+				auto hairModel = [&](RE::TESObjectARMA* arma) -> const char* {
+					if (!arma || (static_cast<std::uint32_t>(arma->GetSlotMask()) & hairMask) == 0)
+						return nullptr;
 					const char* m = arma->bipedModels[sex].GetModel();
 					if (!m || !*m)
 						m = arma->bipedModels[sex ? 0 : 1].GetModel();   // some wigs fill only one sex slot
-					if (m && *m) {
-						addModel(m);
-						added = true;
-					}
+					return (m && *m) ? m : nullptr;
+				};
+				bool        added     = false;
+				const char* firstHair = nullptr;
+				for (auto* arma : armo->armorAddons) {
+					const char* m = hairModel(arma);
+					if (!m)
+						continue;
+					if (!firstHair)
+						firstHair = m;
+					if (!arma->IsValidRace(race))
+						continue;   // marker: face-wig-race-addon
+					addModel(m);
+					added = true;
+				}
+				if (!added && firstHair) {
+					addModel(firstHair);
+					added = true;
 				}
 				// A wig authored with slots only at the ARMO level still gets
 				// its race addon, exactly like before.
@@ -3265,24 +3459,10 @@ namespace ItemIcons
 					++g_promotedThisAsk;
 				return false;
 			}
-			// The CK's file name: 8 hex digits, lowercase, zero-padded.
-			std::string hex = fid;
-			if (hex.rfind("0x", 0) == 0 || hex.rfind("0X", 0) == 0)
-				hex = hex.substr(2);
-			for (auto& c : hex)
-				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-			if (hex.empty() || hex.size() > 8)
-				return false;
-			while (hex.size() < 8)
-				hex.insert(hex.begin(), '0');
-			const std::string rel =
-				"actors\\character\\facegendata\\facegeom\\" + plugin + "\\" + hex + ".nif";
-			// Probe through the game's own resource stack (loose files AND
-			// BSAs, MO2 VFS applied) BEFORE queueing: a templated NPC has no
-			// face file, and the framework must never burn a mesh finding
-			// that out. The mark makes the miss permanent for the session.
-			RE::BSResourceNiBinaryStream probe(("meshes\\" + rel).c_str());
-			if (!probe.good()) {
+			// Shared VFS lookup includes verified old-ID recovery. Keep the
+			// output key/filename and wig owner on the CURRENT actor identity.
+			const auto rel = FaceGenResolver::Resolve(fid, plugin);
+			if (rel.empty()) {
 				g_asked.insert(key);
 				BacklogDrop(key);   // no facegen file — a permanent miss never resumes
 				return false;
@@ -3736,19 +3916,8 @@ namespace ItemIcons
 		// The same facegen NIF derivation EnqueueFaceLocked uses — the angles
 		// MUST spin the exact mesh set frame 0 rendered (head + composed wig),
 		// or the turn would swap one face for another mid-drag.
-		std::string hex = fid;
-		if (hex.rfind("0x", 0) == 0 || hex.rfind("0X", 0) == 0)
-			hex = hex.substr(2);
-		for (auto& c : hex)
-			c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-		if (hex.empty() || hex.size() > 8)
-			return;
-		while (hex.size() < 8)
-			hex.insert(hex.begin(), '0');
-		const std::string rel =
-			"actors\\character\\facegendata\\facegeom\\" + plugin + "\\" + hex + ".nif";
-		RE::BSResourceNiBinaryStream probe(("meshes\\" + rel).c_str());
-		if (!probe.good())
+		const auto rel = FaceGenResolver::Resolve(fid, plugin);
+		if (rel.empty())
 			return;   // templated NPC — no facegen file, no turntable
 		const auto  baseFile = FileFor(fid, plugin, false);
 		const auto  wigs     = g_createBySet ? HairNifsForFace(fid, plugin) : std::vector<std::string>{};
@@ -3796,6 +3965,7 @@ namespace ItemIcons
 	std::string SpinStateJson(const std::string& fid, const std::string& plugin,
 		const std::string& kind)
 	{
+		std::lock_guard l(g_mutex);
 		nlohmann::json        frames = nlohmann::json::object();
 		std::filesystem::path dir;
 		std::string           dirRel;
@@ -3817,12 +3987,12 @@ namespace ItemIcons
 			// "-s2" name whenever a swap-rendered frame 0 (or any of its angle
 			// frames) exists, the plain name otherwise. Check the swapped base
 			// first so the reply can never point a spin at mixed textures.
-			const auto s2 = FileFor(fid, plugin, true);
+			const auto s2 = ItemFileFor(fid, plugin, true);
 			bool useS2 = FileExists(dir / s2);
 			if (!useS2)
 				for (std::uint32_t a = step; !useS2 && a < 360u; a += step)
 					useS2 = FileExists(dir / AngleFile(s2, a));
-			baseFile = useS2 ? s2 : FileFor(fid, plugin, false);
+			baseFile = useS2 ? s2 : ItemFileFor(fid, plugin, false);
 		}
 		if (!fid.empty() && !plugin.empty()) {
 			if (FileExists(dir / baseFile))
@@ -3847,24 +4017,25 @@ namespace ItemIcons
 		// as frame 0 — otherwise the spin would mix one piece with another's
 		// texture. An unrenderable form (no world model — e.g. a bow with only
 		// a first-person model, an abstract light) simply has no turntable.
-		auto look = LookOf(fid, plugin);
-		if (look.nif.empty())
-			return;
-		bool swapped = !look.swaps.empty();
-		if (swapped && g_swapDisabled) {
-			/* Bare frames cannot match a swap-rendered frame 0. If the view's
-			 * frame 0 is the "-s2" file (index preference), baking bare angles
-			 * would either mix textures or land under names never probed — so
-			 * no turntable at all for this piece. With only a plain frame 0,
-			 * bare angles under plain names are consistent and fine. */
-			if (FileExists(IconDir() / FileFor(fid, plugin, true)))
-				return;
-			swapped = false;
-		}
-		const auto  baseFile = FileFor(fid, plugin, swapped);
 		std::size_t queued   = 0;
 		{
 			std::lock_guard l(g_mutex);
+			auto look = LookOf(fid, plugin);
+			if (look.nif.empty())
+				return;
+			bool swapped = !look.swaps.empty();
+			if (swapped && g_swapDisabled) {
+				/* Bare frames cannot match a swap-rendered frame 0. If the view's
+				 * frame 0 is the "-s2" file (index preference), baking bare angles
+				 * would either mix textures or land under names never probed — so
+				 * no turntable at all for this piece. With only a plain frame 0,
+				 * bare angles under plain names are consistent and fine. */
+				if (FileExists(IconDir() / ItemFileFor(fid, plugin, true)))
+					return;
+				swapped = false;
+			}
+			const auto  baseFile = ItemFileFor(fid, plugin, swapped);
+
 			for (std::uint32_t f = 1; f < kSpinFrames; ++f) {
 				const std::uint32_t angle = f * kSpinStep;
 				// A DISTINCT asked-key namespace ("<key>@045") so a frame that
@@ -3919,8 +4090,8 @@ namespace ItemIcons
 			const auto bar = key.find('|');
 			if (bar == std::string::npos)
 				return {};
-			const auto swapped = FileFor(key.substr(0, bar), key.substr(bar + 1), true);
-			const auto plain   = FileFor(key.substr(0, bar), key.substr(bar + 1), false);
+			const auto swapped = ItemFileFor(key.substr(0, bar), key.substr(bar + 1), true);
+			const auto plain   = ItemFileFor(key.substr(0, bar), key.substr(bar + 1), false);
 			if (FileExists(IconDir() / swapped))
 				return "icons/items/" + swapped;
 			if (FileExists(IconDir() / plain))
@@ -3957,32 +4128,51 @@ namespace ItemIcons
 			if (!icons.contains(key))
 				failed[key] = why;
 		return nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) },
-			{ "failed", std::move(failed) } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			{ "failed", std::move(failed) }, { "revisions", g_itemRevisions } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
 	void RetryIcons(const std::string& listJson)
 	{
-		// The view's "try again" on a failed tile. Forgetting the key in BOTH
-		// ledgers is the whole trick: g_asked is what stops a re-queue, and
-		// g_failedWhy is what paints the x. The next whIcons for that item then
-		// walks the normal path from scratch.
 		auto j = nlohmann::json::parse(listJson, nullptr, false);
 		if (j.is_discarded() || !j.is_object() || !j.contains("items") || !j["items"].is_array())
 			return;
-		std::lock_guard l(g_mutex);
-		std::size_t n = 0;
-		for (const auto& it : j["items"]) {
-			if (!it.is_object())
-				continue;
-			const auto key = KeyOf(it.value("formId", std::string()), it.value("plugin", std::string()));
-			if (key.empty())
-				continue;
-			g_asked.erase(key);
-			ClearFailed(key);
-			++n;
+		const bool force = j.value("force", false);
+		{
+			std::lock_guard l(g_mutex);
+			std::size_t n = 0;
+			for (const auto& it : j["items"]) {
+				if (!it.is_object()) continue;
+				const std::string fid = it.value("formId", std::string());
+				const std::string plugin = it.value("plugin", std::string());
+				if (fid.empty() || plugin.empty()) continue;
+				const auto key = KeyOf(fid, plugin);
+				if (force) {
+					// Fresh filename: displayed PNGs are memory-mapped by Ultralight.
+					// Keep that file intact; the new index replaces it only when ready.
+					auto& revision = g_itemRevisions[key];
+					const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::system_clock::now().time_since_epoch()).count());
+					revision = std::max(revision + 1, now);
+					auto belongs = [&](const auto& k) { return k == key || k.rfind(key + "@", 0) == 0; };
+					for (auto* queue : { &g_queue, &g_bulkQueue, &g_idleQueue })
+						queue->erase(std::remove_if(queue->begin(), queue->end(),
+							[&](const Request& r) { return belongs(r.key); }), queue->end());
+					for (auto asked = g_asked.begin(); asked != g_asked.end(); )
+						if (belongs(*asked)) asked = g_asked.erase(asked); else ++asked;
+					for (auto failed = g_failedWhy.begin(); failed != g_failedWhy.end(); )
+						if (belongs(failed->first)) failed = g_failedWhy.erase(failed); else ++failed;
+					g_diskIndex.erase(key);
+					logger::info("item icons: re-render forced for {} (fresh revision {})", key, revision);
+					logger::info("item-icons-rerender-fresh: {}", ItemFileFor(fid, plugin));
+				}
+				g_asked.erase(key);
+				ClearFailed(key);
+				++n;
+			}
+			if (n) logger::info("item icons: retry requested for {} item(s)", n);
 		}
-		if (n)
-			logger::info("item icons: retry requested for {} item(s)", n);
+		// Persist before queueing, outside g_mutex (IndexJson takes it).
+		WriteIndexFile();
 	}
 
 	std::string IconPathIfRendered(const std::string& fid, const std::string& plugin)
@@ -3998,8 +4188,8 @@ namespace ItemIcons
 		if (fid.empty() || plugin.empty())
 			return {};
 		std::lock_guard l(g_mutex);
-		const auto swapped = FileFor(fid, plugin, true);
-		const auto plain   = FileFor(fid, plugin, false);
+		const auto swapped = ItemFileFor(fid, plugin, true);
+		const auto plain   = ItemFileFor(fid, plugin, false);
 		if (FileExists(IconDir() / swapped))
 			return "icons/items/" + swapped;
 		if (FileExists(IconDir() / plain))

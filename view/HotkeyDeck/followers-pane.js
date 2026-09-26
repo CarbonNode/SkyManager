@@ -49,6 +49,13 @@
        (the NPC finder's render pool, so both features share one PNG). Filled
        by fdFaceIconsData; empty on a rig that never renders faces. */
     faceIcons: {},
+    faceWhy: {},     // formId hex -> why no head render can ever land (fdFaceIconsData.why); cleared when one does
+    /* ORIGINAL name (lowercased) -> [{ group, id, cls }]: which Loadouts
+       group(s) this follower is in and the class she plays in each. Filled by
+       loGroupsData, asked once per onShow. Joined by `original` because that is
+       the key BOTH sides file people under — a runtime FormID is not stable
+       between the FO roster and loadouts.json. */
+    groupsByOriginal: {},
     /* file name -> { z, x, y }: the DISPLAY crop for one portrait FILE, pushed
        by C++ as `fdCrops` on the same rail as fdPortraits. Keyed by the file and
        never by the follower, so a fresh capture (which always lands under a new
@@ -73,9 +80,12 @@
        and a ~70-member roster does not need 70 of them.
        Each value: { ok, who, following, dead, outfit, items:[…], at:ms }. */
     equipped: {},
+    dayStatus: {},
     /* Row avatar diameter. 0 = "use the stylesheet's default" — kept as 0
        rather than 40 so the default is defined in exactly one place. */
     avatarPx: 0,
+    dossierSizePct: 100,
+    dossierFrames: {}, // Page-only portrait positions, keyed by the actual image file.
     /* Quick-card action labels: false = icons that name themselves on hover
        (the default), true = every label pinned open. Persisted via saveCfg. */
     fqLabels: false,
@@ -112,6 +122,20 @@
        instead of quietly showing eight of twelve. */
     party: { at: 0, asking: false, ok: true, msg: '', unloaded: 0,
              members: [], skillNames: [] },
+    /* Who's here (nh-): the last cell scan. TWO questions, one scan (Rober,
+       2026-09-20): in ROSTER mode rows = Follower Organizer people near the
+       player with the facts a missing picture turns on (see nhChips); in
+       EVERYONE mode rows = every actor loaded around you, each carrying
+       `roster` so a stranger reads as one and can be filed on the spot.
+       `all` is what the last reply answered — never what the switch says, so
+       the header cannot claim a mode the rows are not. */
+    here: { at: 0, asking: false, ok: false, msg: '', rows: [], cell: null,
+            rosterTotal: 0, seen: 0, shown: 0, queued: 0, mrf: true,
+            nearMeters: 0, all: false },
+    /* Recall roster (rr-): the last prRosterData — who the F17 recall would
+       answer for, who it leaves alone and why, and the register. */
+    recall: { at: 0, asking: false, ok: false, msg: '', rows: [], answer: 0, flagged: 0,
+              registered: 0, key: null },
   };
 
   const ALL = 0;
@@ -155,6 +179,7 @@
        A NAME rather than the member object, because fdState rebuilds the
        roster wholesale and a held reference would quietly go stale. */
     fqPick: '',
+    fqPickPinned: false,  // Explicit F7-on-this-person choice survives a crosshair refresh.
     tuneOpen: false,         // the Stats block, collapsed by default
     fqCrewFold: false,       // "Current party" folded? (session only)
     fqEveryoneFold: false,   // "Everyone" folded?
@@ -225,6 +250,12 @@
     ptScope: 'all',     // PT_SCOPES key
     ptFilter: '',
     ptSel: -1,
+    nhOpen: false,      // Who's here is showing instead of the roster
+    rrOpen: false,      // Recall roster is showing instead of the roster
+    rrFilter: '', rrSel: -1,
+    nhMode: 'roster',   // 'roster' (FO people here) | 'all' (every NPC in the cell)
+    nhFilter: '',
+    nhSel: -1,
     ptSummons: false,   // show conjured teammates too
     ptSkills: false,    // ask C++ for the 18 skill values (nothing draws them yet)
   };
@@ -330,7 +361,7 @@
     const p = portraitFor(m);
     Recents.touch(m, op, {
       cat: cat, idx: idx, hue: hueOf(cat),
-      file: p ? p.file : '', mtime: p ? p.mtime : 0,
+      file: p ? p.file : '', mtime: p ? p.mtime : 0, abs: !!(p && p.abs),
     });
     renderRecents();
   }
@@ -362,10 +393,48 @@
        after the first render. */
     if (Recents.refreshFaces) {
       Recents.refreshFaces(function (id) {
-        return portraitFor({ original: id, name: id });
+        /* Resolve against the REAL roster row, not a synthetic {original,name}.
+           portraitFor falls back to the facegen head render keyed by FORMID —
+           and a stand-in member object carries no formId, so that branch could
+           never fire and a chip stayed on initials even after her face had
+           rendered (Rober, 2026-09-21: "melana had her face generated
+           automatically but recent doesnt update"). hd-face.js's header names
+           this exact half-door. The stand-in is still the fallback for someone
+           who has LEFT the roster: her captured photo is filed by slug and
+           resolves without a row. */
+        const hit = rosterEntryFor(id);
+        const p = portraitFor(hit ? hit.m : { original: id, name: id });
+        if (!p) return null;
+        return {
+          file: p.file, mtime: p.mtime, abs: !!p.abs,
+          /* hue follows a re-file, since the chip is drawn from it */
+          hue: hit ? hueOf(hit.cat.index) : null,
+        };
       });
     }
-    Recents.render(host, openFromRecents);
+    Recents.render(host, pickFromRecents, {
+      /* ONE URL builder for the whole deck — portraits/ vs a head render's own
+         path — so the strip can never disagree with the roster row. */
+      src: (e) => portraitSrc({ file: e.file, abs: e.abs }),
+      /* Two framing lanes, and they are NOT interchangeable: a captured photo
+         wears the crop the user saved (a transform), a head render needs the
+         measured face-fit (a layout crop — a transform on a 26px tile samples
+         26 effective pixels and reads as blocks). Backwards is a pixelated or
+         a giant face; see hd-face.js. */
+      fit: (img, url, e) => {
+        if (e.abs) faceFitEnsure(img, url);
+        else if (window.HDFaceFit) HDFaceFit.paintPortrait(img, url);
+      },
+      /* Her head render is queued but has not landed: the chip says so with a
+         ring rather than sitting on bare initials. Same source of truth as the
+         roster medallion, so the two can never disagree about who is loading. */
+      pending: (e) => {
+        const hit = rosterEntryFor(e.id);
+        return !!(hit && facePendingFor(hit.m));
+      },
+      onAlt: openFromRecents,
+      hint: 'Click: open her card · Right-click (or Shift+click): her menu',
+    });
   }
 
   /* ===================================== Followers HUD control card ======
@@ -607,7 +676,11 @@
      Resolved by IDENTITY first: cat/idx are a hint that goes stale the moment
      anyone is re-filed or removed, and opening the menu on whoever happens to
      occupy that slot now would be worse than not opening one. */
-  function openFromRecents(entry, chipEl) {
+  /* Resolve a chip back to a live roster row. Shared by BOTH chip actions so
+     they can never disagree about who "Camilla" is: the hint (cat/idx) stored
+     at touch() time shifts the moment anything is re-filed, so identity wins
+     and the hint is not consulted at all. */
+  function recentsRow(entry) {
     let found = null;
     state.cats.forEach((c) => {
       (c.members || []).forEach((m, i) => {
@@ -615,10 +688,26 @@
         if ((m.original || m.name) === entry.id) found = { cat: c.index, idx: i, m: m, catName: catLabel(c) };
       });
     });
-    if (!found) {
-      toast('“' + entry.name + '” is no longer in the roster');
-      return;
-    }
+    if (!found) toast('“' + entry.name + '” is no longer in the roster');
+    return found;
+  }
+
+  /* LEFT click on a recent chip: open her card — exactly what F7-on-her does
+     (Rober, 2026-09-21: "recent clicking should ... open as if you hit f7 on
+     them"). It dispatches through pickCrew, the verb the Current-party strip
+     already fires, so the strip implements no behaviour of its own: one
+     subject-picking path, play-proven, and the card, the equipped ask and the
+     status line all keep agreeing about who they are about. The popout member
+     menu is still one press away, on the RIGHT button (openFromRecents). */
+  function pickFromRecents(entry) {
+    const found = recentsRow(entry);
+    if (!found) return;
+    pickCrew(found.m);
+  }
+
+  function openFromRecents(entry, chipEl) {
+    const found = recentsRow(entry);
+    if (!found) return;
     const r = chipEl ? chipEl.getBoundingClientRect() : null;
     openMemberMenu(found, r ? r.left : 120, r ? r.bottom + 6 : 120);
   }
@@ -635,6 +724,8 @@
     toGame('fdSave', JSON.stringify({
       openKey: state.openKey,
       avatarPx: state.avatarPx | 0,
+      dossierSizePct: clampDossierSize(state.dossierSizePct),
+      dossierFrames: state.dossierFrames,
       uiScale: curUi(),
       catIcons: state.catIcons,
       fqLabels: !!state.fqLabels,
@@ -1079,8 +1170,7 @@
          a roster of twenty new faces must not trigger twenty renders. */
       clearTimeout(faceFitRepaint);
       faceFitRepaint = setTimeout(function () {
-        if (isActive()) renderList();
-        renderQuickCard();
+        portraitsChanged();
       }, 180);
     });
   }
@@ -1101,6 +1191,7 @@
   const MEDAL_IDENTITY_BASELINE = '';   // inherit .medal-face { object-position: 50% 22% }
   function applyCropTo(face, file) {
     if (!face) return face;
+    if (window.HDFaceFit && HDFaceFit.applyBrightness) HDFaceFit.applyBrightness(face, file);
     if (isBodyRender(file)) { applyBodyFit(face); return face; }   // whole creature, never cropped
     paintCrop(face, cropFor(file), MEDAL_IDENTITY_BASELINE);
     return face;
@@ -1143,6 +1234,30 @@
     if (c.y) parts.push((c.y < 0 ? '↑' : '↓') + Math.round(Math.abs(c.y) * 100) + '%');
     if (c.x) parts.push((c.x < 0 ? '←' : '→') + Math.round(Math.abs(c.x) * 100) + '%');
     return parts.join(' · ');
+  }
+
+  // f7-portrait-crop: the dedicated circle owns its framing, separately from roster/page art.
+  const f7FallbackPrefs = {};
+  function f7CropMap() {
+    const prefs=typeof facefitPrefs==='function'?facefitPrefs():f7FallbackPrefs;
+    if(!prefs.f7 || typeof prefs.f7!=='object' || Array.isArray(prefs.f7))prefs.f7={};
+    return prefs.f7;
+  }
+  function f7CropFor(file) {
+    const own=f7CropMap()[file];
+    return own || (window.HDFaceFit && /^icons\/npcs\//.test(file)?HDFaceFit.cssFor(file):cropFor(file)) || {z:1,x:0,y:0};
+  }
+  function saveF7Crop(file,c) {
+    f7CropMap()[file]=clampCrop(c)||{z:1,x:0,y:0};
+    if(typeof saveSoon==='function')saveSoon();
+    portraitsChanged();
+    toast('F7 portrait framing saved');
+  }
+  function paintF7Crop(img,file,head) {
+    if(!img || !f7CropMap()[file])return;
+    img._hdPreviewOwned=true; // A pending global head fit must not replace this surface's crop.
+    if(head && window.HDFaceFit && HDFaceFit.paintHeadCrop)HDFaceFit.paintHeadCrop(img,f7CropFor(file));
+    else paintCrop(img,f7CropFor(file),MEDAL_IDENTITY_BASELINE);
   }
 
   /* ---- portrait lightbox ----------------------------------------------
@@ -1198,13 +1313,19 @@
     return { w: Math.max(120, Math.round(budget * a)), h: budget };
   }
 
+  let lbOpenedAt = 0;   // backdrop-close arming (see the onClick below)
   function openLightbox(d, startEditing) {
     closeLightbox();
     if (!d || !d.slug) return;
+    lbOpenedAt = Date.now();
     /* `file` is the real filename — a re-capture of someone the deck has already
        drawn lands as `<slug>~<n>.png`, so slug + ext no longer rebuilds it. The
        old form stays as the fallback for a dataset written before that change. */
     const file = d.file || (d.slug + '.' + (d.ext || 'png'));
+    if (/^icons\/(npcs|mounts)\//.test(file)) d = Object.assign({},d,{abs:true});
+    if(d.cropScope==='f7'){
+      d=Object.assign({},d,{_startCrop:f7CropFor(file),_onCommit:function(c){saveF7Crop(file,c);}});
+    }
     const base = portraitSrc(d.abs ? d : { file: file });
     const img = h('img', {
       class: 'fd-lb-img',
@@ -1215,6 +1336,7 @@
     // Same query-hostile-loader retry the row medallion needs.
     let retried = false;
     img.addEventListener('error', function () {
+      if (!lightbox || !lightbox.contains(img)) return; // stale image must not close a newer lightbox
       if (retried) { closeLightbox(); return; }
       retried = true;
       img.src = base;
@@ -1232,6 +1354,14 @@
        render, and skipping applyCropTo is what keeps cropFor's session fit
        off this img. */
     if (!d.abs) applyCropTo(img, file);
+    else {
+      // The large viewer shows the complete render; only its mini preview is fitted.
+      img._hdPreviewOwned = true;
+      img.style.objectFit = 'contain';
+      img.style.objectPosition = '50% 50%';
+      if (window.HDFaceFit) HDFaceFit.applyBrightness(img, file);
+    }
+    if(d.cropScope==='f7')paintF7Crop(img,file,d.abs);
 
     const foot = h('div', { class: 'fd-lb-foot' });
 
@@ -1239,8 +1369,13 @@
       class: 'fd-lb',
       /* Backdrop click closes — but ONLY while not editing. A pan that ends
          with the pointer outside the frame releases on the backdrop, and
-         throwing the edit away for that would be indistinguishable from a bug. */
-      onClick: function () { if (!lbEdit) closeLightbox(); },
+         throwing the edit away for that would be indistinguishable from a bug.
+         And ONLY once it has been up for a beat: Ultralight synthesises a click
+         on mouse-release for whatever is under the pointer by then, so a face
+         clicked on Domains mounted this overlay and the same press closed it
+         (Rober, 2026-09-21: "it opens then immediately closes"). The flyouts
+         arm their outside-click on a tick for the same reason. */
+      onClick: function () { if (!lbEdit && Date.now() - lbOpenedAt > 350) closeLightbox(); },
       title: 'Click anywhere to close',
     },
       h('div', {
@@ -1258,7 +1393,13 @@
 
     lbEdit = null;
     renderLbFoot(d, file, img, frame, foot);
-    if (startEditing) beginCrop(d, file, img, frame, foot);
+    if (startEditing) {
+      if (d.cropScope!=='f7' && d.abs && !isBodyRender(file) && window.HDFaceFit) {
+        d._startCrop = HDFaceFit.overrideFor(file) || HDFaceFit.cssFor(file) || cropFor(file);
+        d._onCommit = function(c){facefitSaveOverride(file,c);};
+      }
+      beginCrop(d, file, img, frame, foot);
+    }
   }
 
   /* GENERIC crop editor — the SAME lightbox + pan/zoom UI the follower roster
@@ -1337,6 +1478,16 @@
   function renderLbFoot(d, file, img, frame, foot) {
     foot.textContent = '';
     const c = cropFor(file);
+    if(d.cropScope==='f7'){
+      foot.append(h('button',{class:'fd-lb-btn fd-lb-crop-btn',type:'button',onClick:function(e){e.stopPropagation();beginCrop(d,file,img,frame,foot);}},'Adjust F7 portrait'));
+      if (d.abs && !isBodyRender(file)) foot.append(facefitAutoToggle(function () {
+        d._startCrop = f7CropFor(file); paintF7Crop(img,file,true);
+        renderLbFoot(d,file,img,frame,foot);
+      }));
+      appendRetakePhoto(d,foot);
+      foot.append(h('span',{class:'fd-lb-val'},'F7 circle only · separate from roster and fullscreen crops'));
+      return;
+    }
     /* A facegen head render: its framing persists in the SHELF blob
        (facefitPrefs — the portrait crop store is pruned against portraits/
        and would drop icons/npcs keys), so the editor is real here. Two
@@ -1346,18 +1497,227 @@
        framing live — the in-game twin of facefit.preview.html. */
     if (d && d.abs) {
       renderFaceFitFoot(d, file, img, frame, foot);
+      const br = brightRow(file);
+      if (br) foot.append(br);
+      appendRetakePhoto(d, foot);
       return;
     }
     foot.append(h('button', {
-      class: 'fd-lb-btn', type: 'button',
+      class: 'fd-lb-btn fd-lb-crop-btn', type: 'button',
       title: 'Pan and zoom this photo. Nothing is re-saved to disk — the deck '
            + 'remembers the framing and draws it everywhere this face appears.',
       onClick: function (e) { e.stopPropagation(); beginCrop(d, file, img, frame, foot); },
-    }, '✎ Adjust this photo'));
+    }, 'Crop photo'));
+    appendRetakePhoto(d, foot);
     foot.append(h('span', { class: 'fd-lb-val' }, c ? cropPhrase(c) : 'original framing'));
+    const br = brightRow(file);
+    if (br) foot.append(br);
+  }
+
+  /* ---- per-face BRIGHTNESS (Rober, 2026-09-23) -------------------------
+     "the ability to turn up brightnes would be cool too". A per-FILE value in
+     the facefit shelf slice (`bright`, keyed by bare file name), pushed into
+     hd-facefit.js, which applies it wherever the face is drawn — roster, F7
+     card, crew strip, and every other pane through ensure()/paintPortrait().
+     ± buttons in 10% steps (the deck's no-range-input law), live: every image
+     in the open lightbox repaints on each press, the rest on one debounced
+     portraitsChanged(). Independent of the framing edit — it saves at once. */
+  function setFaceBright(file, b) {
+    const FF = window.HDFaceFit;
+    if (!FF || !FF.setBrightness) return;
+    b = FF.clampBrightness(b);
+    const ff = (typeof facefitPrefs === 'function') ? facefitPrefs() : null;
+    if (ff) {
+      if (!ff.bright || typeof ff.bright !== 'object' || Array.isArray(ff.bright)) ff.bright = {};
+      const k = FF.portraitKey(file);
+      if (k) { if (b !== 1) ff.bright[k] = b; else delete ff.bright[k]; }
+    }
+    FF.setBrightness(file, b);
+    if (typeof saveSoon === 'function') saveSoon();
+    clearTimeout(faceFitRepaint);
+    faceFitRepaint = setTimeout(function () { portraitsChanged(); }, 180);
+  }
+
+  function brightRow(file) {
+    const FF = window.HDFaceFit;
+    if (!FF || !FF.setBrightness || !file) return null;
+    const val = h('b', { class: 'fd-lb-bright-val' });
+    const btn = (glyph, tip, fn) => h('button', {
+      class: 'fd-lb-btn', type: 'button', title: tip,
+      onClick: function (e) { e.stopPropagation(); fn(); },
+    }, glyph);
+    const sync = function () {
+      const b = FF.brightnessFor(file);
+      val.textContent = Math.round(b * 100) + '%';
+      rst.disabled = b === 1;
+      dn.disabled = b <= FF.BRIGHT_MIN;
+      up.disabled = b >= FF.BRIGHT_MAX;
+      if (lightbox) Array.prototype.forEach.call(lightbox.querySelectorAll('img'),
+        function (im) { FF.applyBrightness(im, file); });
+    };
+    const step = function (dv) { setFaceBright(file, FF.brightnessFor(file) + dv); sync(); };
+    /* Worded, not ＋/－: the crop pad's zoom buttons already own those
+       glyphs in the same overlay, and two identical "＋" a few pixels apart
+       is a coin flip for the thumb (and for any script that finds them). */
+    const dn = btn('Darker', 'Darker by 10%', function () { step(-0.1); });
+    const up = btn('Brighter', 'Brighter by 10% — for a face that rendered too dark', function () { step(0.1); });
+    const rst = btn('As rendered', 'Back to the brightness it was rendered at',
+      function () { setFaceBright(file, 1); sync(); });
+    const row = h('div', { class: 'fd-lb-bright' },
+      h('span', { class: 'fd-lb-bright-lbl' }, 'Brightness'), dn, val, up, rst);
+    sync();
+    return row;
+  }
+
+  /* ---- the live "how it will look" column, beside the editor -----------
+     Rober, 2026-09-23: "i would like if the popout reframe, would show to the
+     right or something how the reframe will show in the little profile pic".
+     Two circles at the sizes the deck actually draws her (the F7 card medal
+     and a roster row), each a scaled copy of the editor frame: same image,
+     same .fd-lb-frame .fd-lb-img cover fit, same paintCrop — percentage
+     translate/scale is size-independent, so the small copy IS the medallion.
+     Repainted by previewCrop on every drag, wheel and nudge. Follower faces
+     only — the generic editor (Character portrait) is not a circle. */
+  const PV_SIZES = [{ px: 92, label: 'F7 portrait' }, { px: 56, label: 'Roster row' }];
+  function buildPreviewSide(img, file, scope) {
+    const src = img.getAttribute('src') || img.src || '';
+    const items = (scope==='f7'?PV_SIZES.slice(0,1):PV_SIZES.slice(1)).map(function (s2) {
+      const pv = h('img', { class: 'fd-lb-img fd-lb-pv-img', src: src, alt: '', draggable: 'false' });
+      if (window.HDFaceFit && HDFaceFit.applyBrightness) HDFaceFit.applyBrightness(pv, file);
+      const fr = h('div', { class: 'fd-lb-frame fd-lb-pv' }, pv);
+      const live = s2.label === 'F7 portrait' && document.querySelector('.fq-medal');
+      const rect = live && live.getBoundingClientRect();
+      const size = rect && rect.width > 0 ? rect.width : s2.px;
+      fr.style.width = size + 'px';
+      fr.style.height = size + 'px';
+      return h('div', { class: 'fd-lb-pv-item' }, fr, h('div', { class: 'fd-lb-pv-lbl' }, s2.label));
+    });
+    const side = h('div', { class: 'fd-lb-side', onClick: function (e) { e.stopPropagation(); } },
+      h('div', { class: 'fd-lb-side-t' }, 'How it will look'), items);
+    const br = brightRow(file);
+    if (br) side.append(br);
+    return side;
+  }
+
+  // portrait-retake-setup: capture settings are a draft until Capture is pressed.
+  let captureSetup = null, captureSerial = 0;
+  function closePortraitCapture() {
+    if (!captureSetup) return;
+    const old=captureSetup;captureSetup=null;clearTimeout(old.timer);
+    document.removeEventListener('keydown',old.key,true);
+    if(old.root.parentNode)old.root.parentNode.removeChild(old.root);
+    if(old.focus && old.focus.focus && document.contains(old.focus))old.focus.focus();
+  }
+  function openPortraitCapture(subject) {
+    if(!subject || !subject.formId){toast('No NPC selected for the portrait');return;}
+    closePortraitCapture();
+    const focus=document.activeElement, inputs={}, outputs={}, modes={};let values=null,defaults=null,lighting=null,busy=false;
+    const status=h('p',{class:'fd-capture-status',role:'status'},'Reading capture settings…');
+    const take=h('button',{type:'button',class:'fd-lb-btn fd-capture-take',disabled:true,onClick:function(){
+      if(!values||busy)return;
+      busy=true;sync();status.textContent='Preparing capture…';
+      toGame('fdPortrait',JSON.stringify({formId:subject.formId,framing:values,lighting:lighting,requestId:captureSetup.id}));
+    }},'Start portrait');
+    function sync(){
+      Object.keys(inputs).forEach(function(k){inputs[k].disabled=!values||busy;if(values){inputs[k].value=String(k==='zoom'?Math.round(100/values.zoom):values[k]*100);outputs[k].textContent=k==='zoom'?(1/values.zoom).toFixed(1)+'×':Math.round(values[k]*100)+'%';}});
+      take.disabled=!values||busy;
+      Object.keys(modes).forEach(function(k){modes[k].disabled=!lighting||busy;modes[k].setAttribute('aria-pressed',String(!!lighting&&lighting.mode===k));});
+      strength.disabled=!lighting||busy||lighting.mode==='natural';
+      if(lighting){strength.value=String(Math.round(lighting.strength*100));strengthValue.textContent=Math.round(lighting.strength*100)+'%';}
+      lightNote.textContent=!lighting?'Face-light controls need the updated SkyManager plugin.':lighting.mode==='natural'?'Use the room’s existing lighting.':'Temporary light follows your camera while you frame the face. It disappears after the shot or when you cancel.';
+    }
+    function dial(key,label,min,max){
+      const input=h('input',{type:'range',min:String(min),max:String(max),step:'1',disabled:true,'aria-label':label,
+        onInput:function(){if(!values||busy)return;values[key]=key==='zoom'?Math.max(.15,100/Number(input.value)):Number(input.value)/100;sync();}});
+      const output=h('output');inputs[key]=input;outputs[key]=output;
+      return h('label',{class:'fd-capture-dial'},h('span',null,label),input,output);
+    }
+    const lightModes=h('div',{class:'fd-capture-modes',role:'group','aria-label':'Face light'});
+    [['natural','Natural','No added light'],['soft','Soft','Gentle face light'],['bright','Bright','Stronger fill']].forEach(function(m){
+      modes[m[0]]=h('button',{type:'button',class:'fd-lb-btn',disabled:true,'aria-pressed':'false',onClick:function(){if(!lighting||busy)return;lighting.mode=m[0];sync();}},h('strong',null,m[1]),h('span',null,m[2]));
+      lightModes.appendChild(modes[m[0]]);
+    });
+    const strength=h('input',{type:'range',min:'25',max:'300',step:'25',disabled:true,'aria-label':'Face-light brightness',onInput:function(){if(!lighting||busy||lighting.mode==='natural')return;lighting.strength=Number(strength.value)/100;sync();}});
+    const strengthValue=h('output',null,'100%'),lightNote=h('p',{class:'fd-capture-note'});
+    const cancel=h('button',{type:'button',class:'fd-lb-btn',onClick:function(){if(!busy)closePortraitCapture();}},'Cancel');
+    const reset=h('button',{type:'button',class:'fd-lb-btn',onClick:function(){if(defaults&&!busy){values=Object.assign({},defaults);if(lighting)lighting={mode:'soft',strength:1};sync();}}},'Reset');
+    const panel=h('div',{class:'fd-capture-panel',role:'dialog','aria-modal':'true','aria-label':'Portrait capture settings'},
+      h('h2',null,'Retake '+(subject.name||'portrait')),
+      h('div',{class:'fd-capture-body'},
+        h('p',{class:'fd-capture-intro'},'Keep the NPC visible in front of you. Choose the light and framing, then line up the shot.'),
+        h('div',{class:'fd-capture-columns'},
+          h('section',{class:'fd-capture-framing'},h('h3',null,'Framing'),
+            dial('zoom','Zoom',100,667),dial('offsetX','Horizontal position',-50,50),dial('offsetY','Vertical position',-50,50)),
+          h('section',{class:'fd-capture-lighting'},h('h3',null,'Face light'),lightModes,
+            h('label',{class:'fd-capture-dial'},h('span',null,'Light brightness'),strength,strengthValue),lightNote)),
+        h('p',{class:'fd-capture-note'},'These settings affect the new photograph. Your F7 and fullscreen display crops stay separate.')),
+      h('div',{class:'fd-capture-footer'},status,h('div',{class:'fd-capture-actions'},reset,cancel,take)));
+    const root=h('div',{class:'fd-capture-setup',onClick:function(e){e.stopPropagation();}},panel);
+    function key(e){if(e.key==='Escape'){e.preventDefault();e.stopPropagation();if(!busy)closePortraitCapture();}else if(e.key==='Tab'){
+      const nodes=Array.from(panel.querySelectorAll('button,input')).filter(x=>!x.disabled);
+      const first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}e.stopPropagation();}}
+    captureSetup={root:root,focus:focus,key:key,id:'portrait-'+(++captureSerial),load:function(f){
+      if(values)return;clearTimeout(captureSetup.timer);
+      values={zoom:f.zoom,offsetX:f.offsetX,offsetY:f.offsetY};defaults={zoom:f.defZoom,offsetX:f.defOffsetX,offsetY:f.defOffsetY};
+      lighting=f.lighting?{mode:f.lighting.mode,strength:f.lighting.strength}:null;
+      status.textContent='Start closes SkyManager. Frame the face, then Enter takes the photo. Esc cancels and returns.';sync();inputs.zoom.focus();
+    },result:function(r){busy=false;status.textContent=r.message||'Capture could not start.';sync();}};
+    document.body.appendChild(root);document.addEventListener('keydown',key,true);cancel.focus();
+    captureSetup.timer=setTimeout(function(){if(captureSetup&&!values)status.textContent='No settings received. Cancel and reopen Retake to retry.';},8000);
+    sync();
+    toGame('fdFraming','{}');
+  }
+  window.fdCaptureSetupResult=function(raw){const r=coerce(raw);if(!r||!captureSetup||r.requestId!==captureSetup.id)return;
+    if(r.ok)closePortraitCapture();else captureSetup.result(r);
+  };
+
+  function appendRetakePhoto(d, foot) {
+    /* Retake (Rober, 2026-09-21: "a button would be nice to (retake image)"):
+       the same fdPortrait verb the roster's ◉ menu item and the F7 card use —
+       the deck closes, photographs her, and the new file lands as <slug>~n.png
+       (a drawn portrait is memory-mapped and cannot be overwritten). Needs her
+       formId; a caller that has none (an old harness) simply gets no button. */
+    const fidHex = d && d.formId
+      ? (typeof d.formId === 'number' ? '0x' + (d.formId >>> 0).toString(16).toUpperCase() : String(d.formId))
+      : '';
+    if (fidHex) {
+      foot.append(h('button', {
+        class: 'fd-lb-btn fd-lb-retake-btn', type: 'button',
+        title: 'Choose zoom and position, then frame ' + (d.name || 'this NPC') + ' and press Enter to take the new portrait (Esc cancels).',
+        onClick: function (e) {
+          e.stopPropagation();
+          closeLightbox();
+          openPortraitCapture({formId:fidHex,name:d.name});
+        },
+      }, '◉ Retake photo'));
+    }
   }
 
   /* ---- head-render framing foot (face-fit v3) -------------------------- */
+  function facefitAutoToggle(onChange) {
+    const FF = window.HDFaceFit;
+    const enabled = !FF || !FF.isAutoEnabled || FF.isAutoEnabled();
+    return h('button', {
+      class:'fd-lb-btn fd-lb-auto-fit',type:'button',role:'switch',
+      'aria-checked':String(enabled),'aria-label':'Auto-frame faces',
+      title:'Adapt generated faces to their shape throughout SkyManager. Off shows complete heads. Your saved crops stay in place.',
+      disabled:!FF || !FF.setAutoEnabled || typeof facefitPrefs !== 'function',
+      onClick:function(e){
+        e.stopPropagation();
+        if (!FF || !FF.setAutoEnabled || typeof facefitPrefs !== 'function') return;
+        const next = !FF.isAutoEnabled();
+        facefitPrefs().auto = next;
+        FF.setAutoEnabled(next);
+        Object.keys(faceFit).forEach(function(key){if(!FF.overrideFor(key))delete faceFit[key];});
+        if (typeof saveSoon === 'function') saveSoon();
+        portraitsChanged();
+        if (onChange) onChange();
+        const control = lightbox && lightbox.querySelector('.fd-lb-auto-fit');
+        if (control) control.focus();
+      }
+    }, 'Auto-frame faces: ' + (enabled ? 'On' : 'Off'));
+  }
+
   function facefitSaveOverride(file, c) {
     const ff = (typeof facefitPrefs === 'function') ? facefitPrefs() : null;
     if (ff) {
@@ -1370,8 +1730,7 @@
     const eff = window.HDFaceFit ? window.HDFaceFit.cssFor(file) : c;
     if (eff) faceFit[file] = eff; else delete faceFit[file];
     if (typeof saveSoon === 'function') saveSoon();
-    if (isActive()) renderList();
-    renderQuickCard();
+    portraitsChanged();
   }
 
   function renderFaceFitFoot(d, file, img, frame, foot) {
@@ -1389,15 +1748,17 @@
 
     const adjust = h('button', {
       class: 'fd-lb-btn', type: 'button',
-      title: 'Pan and zoom HER face. Saved for this render only and remembered ' +
-             'across sessions — it beats the automatic framing everywhere she appears.',
+      title: 'Pan and zoom this face. Saved for this render only and remembered ' +
+             'across sessions — it takes priority over automatic framing.',
       onClick: function (e) {
         e.stopPropagation();
         d._startCrop = (FF && (FF.overrideFor(file) || FF.cssFor(file))) || cropFor(file) || null;
         d._onCommit = function (c) { facefitSaveOverride(file, c); };
         beginCrop(d, file, img, frame, foot);
       },
-    }, '✎ Adjust her framing');
+    }, '✎ Adjust framing');
+
+    foot.append(facefitAutoToggle(function(){renderLbFoot(d,file,img,frame,foot);}));
 
     /* default dials — ± buttons per the deck's no-range-input law */
     const dials = h('span', { class: 'fd-lb-val' });
@@ -1428,8 +1789,7 @@
       paintMini();
       clearTimeout(faceFitRepaint);
       faceFitRepaint = setTimeout(function () {
-        if (isActive()) renderList();
-        renderQuickCard();
+        portraitsChanged();
       }, 220);
     };
     dials.append(
@@ -1451,9 +1811,11 @@
         });
         syncReadout();
         paintMini();
-        if (isActive()) renderList();
-        renderQuickCard();
+        portraitsChanged();
       }));
+    if (FF && FF.isAutoEnabled && !FF.isAutoEnabled()) {
+      Array.prototype.forEach.call(dials.querySelectorAll('button'),function(button){button.disabled=true;});
+    }
 
     const row = h('div', {});
     row.style.cssText = 'display:flex;gap:12px;align-items:center;flex-wrap:wrap;';
@@ -1461,9 +1823,13 @@
     foot.append(row);
     const hint = h('div', { class: 'fd-lb-val' },
       (FF && FF.overrideFor(file))
-        ? 'her own framing — the dials skip her'
-        : 'auto-framed head render — dials retune every render');
+        ? 'Saved framing — default adjustments leave it unchanged'
+        : (FF && FF.isAutoEnabled && !FF.isAutoEnabled())
+          ? 'Automatic framing is off — showing complete heads'
+          : 'Adapts to each head — default adjustments apply across SkyManager');
     hint.style.marginTop = '6px';
+    hint.style.whiteSpace = 'normal';
+    hint.style.lineHeight = '1.4';
     foot.append(hint);
     syncReadout();
     paintMini();
@@ -1494,7 +1860,16 @@
        commitCrop can route a generic edit to its owner instead of state.crops. */
     lbEdit.ctx = { d: d, file: file, img: img, frame: frame, foot: foot,
                    onCommit: (d && typeof d._onCommit === 'function') ? d._onCommit : null };
+    img._hdPreviewOwned = true;
     frame.classList.add('editing');
+    if (file !== '__crop-editor__' && frame.parentNode && !lbEdit.side) {
+      const inner = frame.parentNode;
+      const stage = h('div', { class: 'fd-lb-stage' });
+      inner.insertBefore(stage, frame);
+      lbEdit.side = buildPreviewSide(img, file, d.cropScope);
+      stage.append(frame, lbEdit.side);
+      if (inner.classList) inner.classList.add('has-side');
+    }
     renderCropFoot(d, file, img, frame, foot);
     wireCropGestures(d, file, img, frame, foot);
     /* Paint the seed so the image opens already showing lbEdit's framing. A
@@ -1519,7 +1894,15 @@
        surface in openLightbox/openCropEditor, so identical {z,x,y} => identical
        picture. Kept off the roster's cropFor path — the editor drives the img
        directly from lbEdit. */
-    paintCrop(img, c, (lbEdit.baseline != null ? lbEdit.baseline : MEDAL_IDENTITY_BASELINE));
+    const head = lbEdit.ctx.d.abs && !isBodyRender(lbEdit.file) && window.HDFaceFit && HDFaceFit.paintHeadCrop;
+    const paintPreview = function(node){
+      if (head) HDFaceFit.paintHeadCrop(node,c);
+      else paintCrop(node,c,(lbEdit.baseline != null ? lbEdit.baseline : MEDAL_IDENTITY_BASELINE));
+    };
+    paintPreview(img);
+    if (lbEdit.side) Array.prototype.forEach.call(lbEdit.side.querySelectorAll('.fd-lb-pv-img'), function (pv) {
+      paintPreview(pv);
+    });
     const val = foot.querySelector('.fd-lb-val');
     if (val) val.textContent = cropPhrase(c);
     const rst = foot.querySelector('.fd-lb-reset');
@@ -1555,12 +1938,13 @@
     reset.disabled = !clampCrop(lbEdit);
 
     foot.append(pad, reset,
-      btn('✓ Save', 'Use this framing everywhere this face is drawn',
+      btn('✓ Save', d.cropScope==='f7'?'Save only this F7 circle’s framing':'Use this framing everywhere this face is drawn',
         () => commitCrop(d, file, img, frame, foot), 'ok'),
       btn('✕ Cancel', 'Leave the framing as it was',
         () => cancelCrop(d, file, img, frame, foot)),
       h('span', { class: 'fd-lb-val' }, cropPhrase(clampCrop(lbEdit))),
       h('div', { class: 'fd-lb-hint' },
+        d.cropScope==='f7'?'Drag or zoom to frame the F7 circle. Roster and fullscreen crops stay unchanged.':
         'Drag the photo to move it · wheel or ＋/－ to zoom · this changes how the '
         + 'deck DRAWS it, the file on disk is untouched'));
   }
@@ -1629,9 +2013,19 @@
   }
 
   function endCropMode(frame) {
+    if (lbEdit && lbEdit.ctx) lbEdit.ctx.img._hdPreviewOwned = false;
     if (lbEdit && lbEdit.unwire) lbEdit.unwire();
     lbEdit = null;
     if (frame) frame.classList.remove('editing', 'dragging');
+    /* Unwrap the preview column: the view foot is framed around the photo
+       alone, and a stale column would show a crop that was just cancelled. */
+    const stage = frame && frame.parentNode;
+    if (stage && stage.classList && stage.classList.contains('fd-lb-stage') && stage.parentNode) {
+      const inner = stage.parentNode;
+      inner.insertBefore(frame, stage);
+      inner.removeChild(stage);
+      if (inner.classList) inner.classList.remove('has-side');
+    }
   }
 
   function cancelCrop(d, file, img, frame, foot) {
@@ -1665,6 +2059,8 @@
     /* Same beat as the store itself, so a crop the user just set is live on
        every other surface without waiting for a config round-trip. */
     if (window.HDFaceFit && HDFaceFit.setPortraitCrop) HDFaceFit.setPortraitCrop(file, c);
+    window.dispatchEvent(new CustomEvent('hd-portrait-crops-changed'));
+    portraitsChanged();
     /* `clear` rather than a z=1 crop, so C++ never has to decide whether an
        identity crop means "remove me" — the two are the same thing and saying
        so explicitly keeps the map free of no-op rows. */
@@ -1673,8 +2069,6 @@
       : { file: file, clear: true }));
     applyCropTo(img, file);
     renderLbFoot(d, file, img, frame, foot);
-    if (isActive()) renderList();
-    renderQuickCard();
     toast(c ? 'Framing saved' : 'Framing reset');
   }
 
@@ -1775,6 +2169,19 @@
 
   const HOME_SRC = { nff: 'NFF', mhiyh: 'MHIYH' };
 
+  /* Where she is, as a PICTURE (Rober, 2026-09-17: "need to show a icon for
+     house and icon for location currently"). Byte-identical vocabulary to
+     hud.js's own `loc` map — one shipped icon set, two readouts, and a kind the
+     set has no art for keeps the glyph rather than painting the wrong house.
+     `loc-ruin`, `loc-wild` and `loc-shipwreck` do not exist, so interior /
+     wilderness / stronghold / mill / town / settlement / dragon fall through. */
+  const WHERE_ICON = {
+    inn: 'loc-inn', house: 'loc-home', home: 'loc-home', store: 'loc-shop',
+    city: 'loc-city', cave: 'loc-cave', barrow: 'loc-dungeon', dungeon: 'loc-dungeon',
+    jail: 'loc-jail', fort: 'loc-fort', palace: 'loc-palace', temple: 'loc-temple',
+    mine: 'loc-mine', camp: 'loc-camp', ship: 'loc-ship', farm: 'loc-farm',
+  };
+
   /* ===================================== My Home is Your Home: the day ==== *
    *  THE activity spec — one list, here, exactly like FIELDS above. C++ sends
    *  only MHiYH's own kind NUMBER (MMTYHNative.psc's public numbering) plus a
@@ -1842,6 +2249,13 @@
     const mhHome = (e && e.mhiyh && e.mhiyh.home && e.mhiyh.home.name) ? String(e.mhiyh.home.name) : '';
     const nffIdx = (e && e.nff && e.nff.home && typeof e.nff.home.i === 'number') ? e.nff.home.i : -1;
 
+    /* The REFERENCE C++ actually read this entry off. Normally the same id we
+       asked with — but for a row whose stored form is a BASE record (a follower
+       spawned at runtime: FO cannot persist a 0xFF ref and files her NPC_
+       instead) it is the live actor nff_bridge found for that base. Every
+       actor-keyed op must send THIS, because the base id addresses nobody. */
+    m.liveFormId = (e && typeof e.liveId === 'string') ? e.liveId : '';
+
     m.nffManaged = !!(e && e.nff && e.nff.managed);
     m.nffOutfit = !!(e && e.nff && e.nff.outfit && e.nff.outfit.has);
     /* Her own sandbox checkbox (NFF's per-follower MCM one, a rank on
@@ -1879,6 +2293,10 @@
        which is precisely the case worth saying out loud. */
     m.where = (e && typeof e.where === 'string') ? e.where : '';
     m.whereLoaded = !!(e && e.loaded);
+    /* What KIND of place that is, so the chip can wear the shipped loc-* icon
+       instead of a bare diamond. Same closed vocabulary as the HUD's place
+       readout (C++ Widgets::PlaceKindOf); '' when the game had no answer. */
+    m.whereKind = (e && typeof e.whereKind === 'string') ? e.whereKind : '';
     /* MHiYH's home specifically, kept apart from the DISPLAYED home above —
        which may be NFF's. Every write action in the day panel hangs off this
        one fact (MHiYH's own SetAreaMarker refuses every other stop until the
@@ -1968,6 +2386,22 @@
    *  A DIMMED chip means the actor is not 3D-loaded — so the cell is her last
    *  known one, not a live sighting. Saying that visually is the whole point:
    *  "Riverwood" for someone three holds away would otherwise read as fact. */
+  /* An icon box: the glyph always, with the shipped painting layered over it
+     when the place's kind has art. A dead path removes itself and uncovers the
+     glyph, so a missing PNG is never a broken-image box — the same idiom
+     hud.js uses for its own loc-* set. */
+  function placeIcon(kind, glyph, cls) {
+    const box = h('span', { class: cls, 'aria-hidden': 'true' }, glyph);
+    const file = WHERE_ICON[kind];
+    if (!file) return box;
+    const img = h('img', {
+      class: 'fd-loc-img', src: 'icons/custom/' + file + '.png', alt: '', draggable: 'false',
+    });
+    img.addEventListener('error', function () { if (img.parentNode) img.parentNode.removeChild(img); });
+    box.append(img);
+    return box;
+  }
+
   function whereChip(m, q) {
     if (!m.where) return null;
     if (m.homeName && m.where === m.homeName) return null;
@@ -1977,8 +2411,14 @@
                            : ('Last known: ' + m.where + '\nNot loaded right now, so this is where '
                               + 'the game still has them — not a live sighting.'),
     });
-    chip.append(h('span', { class: 'fd-where-ic', 'aria-hidden': 'true' },
-      m.whereLoaded ? '◈ ' : '◇ '));
+    chip.append(placeIcon(m.whereKind, m.whereLoaded ? '◈' : '◇', 'fd-where-ic'));
+    /* ⚠ SAY IT IN WORDS. Live and last-known used to differ by a hollow vs a
+       filled diamond and a 20% shift in the icon's colour, which at chip size
+       on a couch is no difference at all (Rober, 2026-09-17, on the same class
+       of complaint as the chevron). The distinction is fact vs guess, so it
+       gets a word — a guess must never read as a sighting. */
+    if (!m.whereLoaded)
+      chip.append(h('span', { class: 'fd-where-last' }, 'last'));
     chip.append(h('span', { class: 'fd-where-name' }, nameNodes(m.where, q)));
     return chip;
   }
@@ -1990,7 +2430,7 @@
       data: { src: m.homeSrc },
       title: homeTitle(m),
     });
-    chip.append(h('span', { class: 'fd-home-ic', 'aria-hidden': 'true' }, '⌂ '));
+    chip.append(placeIcon('home', '⌂', 'fd-home-ic'));
     const nm = h('span', { class: 'fd-home-name' }, nameNodes(m.homeName, q));
     chip.append(nm);
     chip.append(h('span', { class: 'fd-home-src' }, ' · ' + m.homeSrc));
@@ -2241,12 +2681,26 @@
    * ======================================================================== */
   const SETTABLE_KINDS = [0, 1, 2, 3, 4, 5, 6];
   const KIND_HOME = 0;
+  const DAY_ICONS = { 0: 'hm-home', 1: 'ns-moon', 2: 'cat-utilities', 3: 'cat-guards',
+    4: 'wx-clear', 5: 'sv-eat', 6: 'wx-clear-night', 7: 'cat-guards' };
+  function dayStatusKey(id) { return canonFormId(fidHexOf(id)); }
+  function updateDayStatus(env) {
+    const key = dayStatusKey(env.formId);
+    if (!key) return;
+    state.dayStatus[key] = { msg: env.msg || '', ok: env.ok !== false, pending: env.phase === 'sent' };
+    if (ctxEl && ctxEl._dossier) ctxEl._dossier.paintDayStatus();
+  }
 
   function canSetKind(k) { return SETTABLE_KINDS.indexOf(k) >= 0; }
 
   function sendMhiyh(op, m, kind) {
-    const msg = { op: op, formId: m.formId || '', name: m.name || '' };
+    /* `liveFormId` first: C++ fills it for a roster row whose stored form is a
+       BASE record rather than a reference (a spawned follower — see
+       actorSubjectOf and nff_bridge's base-form repair). MHiYH is handed a
+       reference or nothing; the base id would be refused. */
+    const msg = { op: op, formId: m.liveFormId || m.formId || '', name: m.name || '' };
     if (typeof kind === 'number') msg.kind = kind;
+    updateDayStatus({ formId: msg.formId, phase: 'sent', ok: true, msg: 'Waiting for My Home is Your Home to confirm…' });
     toGame('fdMhiyh', JSON.stringify(msg));
   }
 
@@ -2271,7 +2725,12 @@
        distinguishes "you named someone who isn't loaded" from "you named
        nobody", and the two need different words on screen. */
     if (!m) return {};
-    return { formId: String(m.formId || ''), name: String(m.name || '') };
+    /* `liveFormId` first, for the same reason sendMhiyh prefers it: a roster
+       row whose stored form is a BASE record (a follower spawned at runtime —
+       Follower Organizer cannot persist a 0xFF ref, so it files her NPC_)
+       carries an id that resolves to a form but never to an actor. C++ fills
+       liveFormId with the reference it actually found for that base. */
+    return { formId: String(m.liveFormId || m.formId || ''), name: String(m.name || '') };
   }
 
   /* Who the last recruit was aimed at, so a `guarded` refusal can re-send the
@@ -2285,6 +2744,7 @@
 
   function sendNpc(op, m, extra) {
     if (op === 'recruit' || op === 'forceFollower') { lastRecruitTarget = m || null; lastRecruitOp = op; }
+    if (op === 'dismiss') lastDismissTarget = m || null;
     /* The recents strip. sendApply and sendWorld have always recorded, and the
        note above them claims those are "the two calls every member action
        funnels through" — which stopped being true the day sendNpc was added as
@@ -2381,6 +2841,55 @@
     }
     clearForceRecruit(false);
     sendNpc('forceFollower', m);
+  }
+
+  /* ---- the quest-held second click (Dismiss) ----
+     The same shape as the guarded recruit, for the opposite verb. C++ refuses
+     a Dismiss with `held:true` when NFF does not hold her but a quest alias
+     runs a follow package on her (src/nff_control.cpp RecoverFollower). Before
+     2026-09-26 that refusal was a dead end: a toast reading "held by a quest"
+     over Ambrelie, who had no active quest at all (Rober: "dismiss needs to
+     force dismiss ... but i have no active quest for her"). Now the refusal
+     NAMES the quest and arms this: the next Dismiss click on any surface
+     (ORDER button, NFF-disagrees chip, roster row) sends force:true, which
+     clears her teammate flag and follower factions underneath that quest and
+     still verifies the result on three reads. Rendered FROM state, for the
+     same reason forceRecruit is. */
+  let lastDismissTarget = null;
+  let forceDismiss = null;
+
+  function clearForceDismiss(repaint) {
+    if (!forceDismiss) return;
+    if (forceDismiss.timer) clearTimeout(forceDismiss.timer);
+    forceDismiss = null;
+    if (repaint !== false) { renderQuickCard(); refreshOpenMenu(); }
+  }
+
+  function armForceDismiss(target, msg) {
+    if (forceDismiss && forceDismiss.timer) clearTimeout(forceDismiss.timer);
+    forceDismiss = {
+      target: target || null,
+      msg: msg || 'Click again to dismiss them regardless of the quest holding them',
+      /* Longer than the recruit arm: the message names a quest and says what
+         the force does, and it has to be readable from a couch. */
+      timer: setTimeout(function () { clearForceDismiss(); }, 9000),
+    };
+    renderQuickCard();
+    refreshOpenMenu();
+  }
+
+  /* THE one path every dismiss click takes once its two-click arm has fired.
+     Armed, it aims at the person who was REFUSED, not at whoever the control
+     normally targets — the swap the recruit check exists for. */
+  function dismissClick(m) {
+    if (forceDismiss) {
+      const target = forceDismiss.target;
+      clearForceDismiss(false);
+      sendNpc('dismiss', target, { force: true });
+      renderQuickCard();
+      return;
+    }
+    sendNpc('dismiss', m);
   }
 
   /* Add to / remove from NFF — its own Import/Export pair, NOT recruitment.
@@ -4483,6 +4992,91 @@
      name into context: which category she is filed under, and whatever you
      wrote in her Relationship field. Matched on the DISPLAY name, because that
      is all fdTarget carries and it is what FO shows on the row. */
+  /* ---- one card per PERSON, not per filing (2026-09-20) ---------------
+     A person filed in multiple categories must appear only once.
+
+     Follower Organizer stores someone filed in two categories as TWO member
+     objects, each with its own fields, and householdRoster walked categories
+     and pushed a row per (category, member) pair. So she rendered twice, and
+     the header counts double-counted her.
+
+     Merging must be GENEROUS, not first-wins. The two objects are independent
+     FO entries whose fields can genuinely disagree (her "Wifes" row may say
+     relationship "wife" while her "Servants" row says "servant"), and
+     household-pane's isWife() tests that very field — so keeping whichever
+     copy happened to come first could quietly stop counting her as a wife.
+     Instead every truth is unioned: booleans OR, rank takes the max, strings
+     keep the first non-empty, and the two fields a person can legitimately
+     hold twice — category and relationship — are joined. She IS both things,
+     and saying so is the honest card.
+
+     Identity is formId when there is one (two people can share a name) and
+     the durable un-renamed `original` otherwise — the same precedence the
+     rest of this file uses. */
+  function mergeHouseholdRows(rows) {
+    const byKey = Object.create(null);
+    const order = [];
+
+    const addWord = (list, v) => {
+      const t = String(v || '').trim();
+      if (!t) return;
+      if (list.some((x) => x.toLowerCase() === t.toLowerCase())) return;
+      list.push(t);
+    };
+    const firstOf = (a, b) => (String(a || '').trim() ? a : b);
+
+    rows.forEach(function (r) {
+      const fid = String(r.formId || '').trim().toLowerCase();
+      const key = fid || ('name:' + String(r.original || r.name || '').trim().toLowerCase());
+      if (!key || key === 'name:') return;
+
+      let m = byKey[key];
+      if (!m) {
+        m = byKey[key] = Object.assign({}, r);
+        m._cats = [];
+        m._rels = [];
+        addWord(m._cats, r.category);
+        addWord(m._rels, r.relationship);
+        order.push(key);
+        return;
+      }
+      addWord(m._cats, r.category);
+      addWord(m._rels, r.relationship);
+      // Booleans: if any filing says yes, it is yes.
+      m.spouse = m.spouse || r.spouse;
+      m.relHas = m.relHas || r.relHas;
+      m.following = m.following || r.following;
+      m.waiting = m.waiting || r.waiting;
+      m.dead = m.dead || r.dead;
+      m.facePending = m.facePending || r.facePending;
+      // Rank: the best one she holds, with the label that belongs to it.
+      if ((r.relRank || 0) > (m.relRank || 0)) {
+        m.relRank = r.relRank;
+        m.rankLabel = r.rankLabel;
+      }
+      // Facts that are per-ACTOR, not per-filing: first one that answered.
+      if (!m.fert && r.fert) { m.fert = r.fert; m.fertTitle = r.fertTitle; }
+      if (!m.portraitUrl && r.portraitUrl) m.portraitUrl = r.portraitUrl;
+      m.note = firstOf(m.note, r.note);
+      m.fieldsText = firstOf(m.fieldsText, r.fieldsText);
+      m.where = firstOf(m.where, r.where);
+      m.homeText = firstOf(m.homeText, r.homeText);
+      m.name = firstOf(m.name, r.name);
+    });
+
+    return order.map(function (k) {
+      const m = byKey[k];
+      m.category = m._cats.join(', ');
+      m.relationship = m._rels.join(', ');
+      /* Kept so a surface can show the filings separately without re-splitting
+         a joined string (which would break on a category containing a comma). */
+      m.categories = m._cats.slice();
+      delete m._cats;
+      delete m._rels;
+      return m;
+    });
+  }
+
   function rosterEntryFor(name) {
     const want = String(name || '').trim().toLowerCase();
     if (!want) return null;
@@ -5146,7 +5740,7 @@
       ? String(known.m.formId)
       : (t && t.formId ? '0x' + (t.formId >>> 0).toString(16).toUpperCase() : '');
     if (!hex) { toast('⚠ No form id for that NPC'); return; }
-    toGame('fdPortrait', JSON.stringify({ formId: hex }));
+    openPortraitCapture({formId:hex,name:(t && t.name) || (known && known.m.name)});
   }
 
   const KIND_IC = { armor: '⛨', weapon: '⚔', ammo: '➶', light: '✦', other: '◆' };
@@ -5670,6 +6264,10 @@
        rendered piece has no `it.icon` and falls through to the wardrobe index —
        which is empty for it until its LAZY whIcons render lands, at which point
        upgradeEquippedIconsInPlace mounts it with no flash. */
+    const pane = window.WardrobePane;
+    // A manual regeneration invalidates the DLL's eager stamp too. Otherwise
+    // a new PNG lands but this tile and its lightbox keep opening the old one.
+    if (pane && pane.itemIconAttempt && pane.itemIconAttempt(it)) return pane.itemIconFor(it);
     if (it.icon) return it.icon;
     const key = wornKey(it);
     if (!key) return '';
@@ -5758,35 +6356,84 @@
     if (!quickHost) return false;
     const grid = quickHost.querySelector('.fq-equip .fq-equip-grid');
     if (!grid) return false;
-    const tiles = grid.querySelectorAll('.fq-equip-tile[data-wkey]');
-    if (!tiles.length) return false;
-    const wp = (typeof window !== 'undefined') ? window.WardrobePane : null;
-    const idx = (wp && wp._state && wp._state.itemIcons) || null;
-    if (!idx) return true;   // grid exists but no icon index yet — nothing to mount, but we handled it
-    tiles.forEach(function (tile) {
-      const wk = tile.getAttribute('data-wkey');
-      if (!wk) return;
-      const url = idx[wk] || '';
-      if (!url) return;                              // still pending: keep glyph, no flash
-      if (tile.querySelector('.fq-equip-img')) return;   // already has its picture — DO NOT touch it
-      /* Mount the picture over the glyph. Remove the glyph span (it is what the
-         upgrade replaces); keep the count/outfit tags and the hover flyout. */
-      const glyph = tile.querySelector('.fq-equip-glyph');
-      const img = h('span', { class: 'fq-equip-img' });
-      img.style.backgroundImage = 'url("' + url + '")';
-      img.addEventListener('error', function () {});
-      /* Insert the image where the glyph was (first child), then drop the glyph,
-         so tag/flyout ordering is preserved. */
-      if (glyph) tile.insertBefore(img, glyph); else tile.insertBefore(img, tile.firstChild);
-      if (glyph) glyph.parentNode.removeChild(glyph);
-      tile.classList.add('haslb');
-      /* keep the title honest — it now opens the lightbox */
-      const t = tile.getAttribute('title') || '';
-      if (t.indexOf('Click to see it large') === -1) {
-        tile.setAttribute('title', t + '\nClick to see it large — then drag to turn it');
-      }
+    grid.querySelectorAll('.fq-equip-tile[data-wkey]').forEach(function (tile) {
+      if (tile._wornItem) syncEquippedTile(tile, tile._wornItem);
     });
+    paintEquippedRenderStatus(grid.parentNode);
     return true;
+  }
+
+  function positionEquippedFly(tile) {
+    const tray = tile.querySelector('.fq-equip-fly');
+    const box = tile.closest('.fq-equip');
+    if (!tray || !box || !tile.offsetWidth) return;
+    const rect = tile.getBoundingClientRect(), bounds = box.getBoundingClientRect();
+    const scale = rect.width / tile.offsetWidth || 1;
+    const right = rect.left + tray.offsetWidth * scale;
+    // Clamp inside the card even at its right edge and under deck UI scaling.
+    const shift = Math.max(bounds.left + 8 - rect.left, Math.min(0, bounds.right - 8 - right));
+    tray.style.left = (shift / scale) + 'px';
+  }
+
+  function syncEquippedTile(tile, it) {
+    const url = wornIconFor(it);
+    const wp = window.WardrobePane;
+    const attempt = wp && wp.itemIconAttempt && wp.itemIconAttempt(it);
+    const why = (attempt && attempt.why) || (wp && wp.itemIconFailed && wp.itemIconFailed(it)) || '';
+    let img = tile.querySelector('.fq-equip-img');
+    let glyph = tile.querySelector('.fq-equip-glyph');
+    // Preserve every unchanged image node (Ultralight's anti-flash contract).
+    if (url && tile.getAttribute('data-icon-url') !== url) {
+      if (!img) { img = h('span', { class: 'fq-equip-img' }); tile.insertBefore(img, tile.firstChild); }
+      img.style.backgroundImage = 'url("' + url + '")';
+      if (glyph) glyph.remove();
+      tile.setAttribute('data-icon-url', url);
+    } else if (!url && img) {
+      img.remove(); tile.removeAttribute('data-icon-url');
+      if (!glyph) { const ei = eqIcon(it); tile.insertBefore(h('span', { class: 'fq-equip-glyph' }, ei.ic), tile.firstChild); }
+    }
+    tile.classList.toggle('haslb', !!url);
+    tile.setAttribute('title', it.name + (it.plugin ? '\n' + it.plugin : '') +
+      (url ? '\nClick to see it large — then drag to turn it' : (why ? '\n' + why : '')));
+    const btn = tile.querySelector('.fq-equip-regenerate');
+    if (btn) {
+      btn.disabled = !!(attempt && attempt.phase === 'pending');
+      btn.textContent = btn.disabled ? '…' : '⟳';
+      btn.title = btn.disabled ? 'Rendering ' + it.name + '…'
+        : 'Regenerate image' + (why ? ' — ' + why : ' — make a new picture of ' + it.name);
+      btn.setAttribute('aria-label', (btn.disabled ? 'Rendering ' : 'Regenerate image of ') + it.name);
+    }
+    tile.setAttribute('aria-busy', String(!!(attempt && attempt.phase === 'pending')));
+    if (attempt && attempt.phase !== 'ready') delete wornSpinCache[wornKey(it)];
+  }
+
+  function paintEquippedRenderStatus(box) {
+    const msg = box.querySelector('.fq-equip-render-status');
+    if (!msg) return;
+    const wp = window.WardrobePane;
+    const messages = [];
+    box.querySelectorAll('.fq-equip-tile[data-wkey]').forEach(function (tile) {
+      const it = tile._wornItem;
+      const a = it && wp && wp.itemIconAttempt && wp.itemIconAttempt(it);
+      if (!a) return;
+      messages.push(it.name + ': ' + (a.phase === 'pending' ? 'Regenerating image…' :
+        a.phase === 'ready' ? 'Image updated.' : a.why || 'Image unavailable. Try again.'));
+    });
+    msg.textContent = messages.join(' · ');
+    msg.hidden = !messages.length;
+  }
+
+  function regenerateEquippedImage(it, tile) {
+    const wp = window.WardrobePane;
+    if (!wp || !wp.rerenderItemIcon || !wp.rerenderItemIcon(it)) {
+      const a = wp && wp.itemIconAttempt && wp.itemIconAttempt(it);
+      if (!a || a.phase !== 'pending') toast('Could not start the image. Open SkyManager in game and try again.');
+      return;
+    }
+    wornAsked[wornKey(it)] = true; // only the explicit retry owns this request
+    delete wornSpinCache[wornKey(it)];
+    syncEquippedTile(tile, it);
+    paintEquippedRenderStatus(tile.parentNode.parentNode);
   }
 
   /* ── worn-item lightbox: a drag-to-orbit TURNTABLE ──────────────────────
@@ -6071,7 +6718,11 @@
         title: it.name + (it.plugin ? '\n' + it.plugin : '')
              + (url ? '\nClick to see it large — then drag to turn it' : ''),
         'data-wkey': wk,
+        'data-icon-url': url,
       });
+      tile._wornItem = it;
+      tile.addEventListener('mouseenter', function () { positionEquippedFly(tile); });
+      tile.addEventListener('focusin', function () { positionEquippedFly(tile); });
       /* Clicking a tile opens the worn-mesh lightbox — but ONLY once it has art.
          Reading the CURRENT url through wornIconFor at click time (not the stale
          `url` closed over at build) means a tile upgraded in place afterwards is
@@ -6101,6 +6752,14 @@
       /* A hover FLYOUT on the tile itself (Rober, 2026-08-05): Hide (cull the
          3D, keeps it equipped) + Delete. No separate button. */
       const fly = h('div', { class: 'fq-equip-fly' });
+      /* Regenerate image — an icon in the same row as Hide/Strip/Remove, not a
+         full-width text button (Rober, 2026-09-26: it took way too much room). */
+      if (wk) fly.append(h('button', {
+        class: 'fq-equip-act regen fq-equip-regenerate', type: 'button',
+        title: 'Regenerate image — make a new picture of ' + it.name,
+        'aria-label': 'Regenerate image of ' + it.name,
+        onClick: function (e) { e.stopPropagation(); regenerateEquippedImage(it, tile); },
+      }, '⟳'));
       const grp = gearGroupFor(it);
       if (grp) {
         const hidNow = !!(gearState && gearState.hidden && gearState.hidden[grp]
@@ -6147,14 +6806,17 @@
         },
       }, '🗑'));
       tile.append(fly);
+      syncEquippedTile(tile, it);
       grid.append(tile);
     });
-    box.append(grid);
+    box.append(grid, h('div', { class: 'fq-equip-render-status', role: 'status', 'aria-live': 'polite' }));
+    paintEquippedRenderStatus(box);
     return box;
   }
 
-  function equippedBlock(m) {
-    const box = h('div', { class: 'fd-eq' + (ui.eqOpen ? ' open' : '') });
+  function equippedBlock(m, expanded) {
+    const isOpen = expanded || ui.eqOpen;
+    const box = h('div', { class: 'fd-eq' + (isOpen ? ' open' : '') });
     const data = equippedFor(m);
 
     /* COLLAPSIBLE, and collapsed by default — a measured decision, not a
@@ -6168,13 +6830,14 @@
        is showing you everything — and one click gives you the full list with
        nothing filtered. */
     const count = data && data.ok ? String((data.items || []).length) : '…';
-    const head = h('button', {
-      class: 'fd-eq-head', type: 'button',
-      'aria-expanded': String(!!ui.eqOpen),
+    const head = h(expanded ? 'div' : 'button', {
+      class: 'fd-eq-head', type: expanded ? null : 'button',
+      'aria-expanded': expanded ? null : String(!!isOpen),
       title: 'Everything they have on, read off the engine — including pieces the '
            + 'container menu may hide because they belong to an outfit.',
       onClick: (e) => {
         e.stopPropagation();
+        if (expanded) return;
         ui.eqOpen = !ui.eqOpen;
         /* BOTH hosts, because this block is rendered into two of them and the
            click has no idea which one it is in. refreshOpenMenu() redraws the
@@ -6186,12 +6849,12 @@
         renderQuickCard();
       },
     },
-      h('span', { class: 'fd-eq-caret' }, ui.eqOpen ? '▾' : '▸'),
+      h('span', { class: 'fd-eq-caret' }, expanded ? '' : ui.eqOpen ? '▾' : '▸'),
       h('span', { class: 'fd-eq-title' }, 'Equipped'),
       h('span', { class: 'fd-eq-count' }, count));
     box.append(head);
 
-    if (!ui.eqOpen) return box;
+    if (!isOpen) return box;
 
     if (!data) {
       /* Skeleton sized like the real rows, so the menu does not jump when the
@@ -6366,7 +7029,12 @@
        offer, disabled with its reason when the mod's own gate is shut: the
        rule ("she has to be following you") is worth learning once, and this
        is a popout you opened for one person, not a line on a 70-row roster. */
-    if (!acts.length && !hasHome && !m.inWorld) return null;
+    /* `liveFormId` counts as being in the world, and it is the whole point of
+       it: FO says inWorld:false for a row holding a BASE record, which is what
+       it falls back to for a follower spawned at runtime — but C++ went and
+       found her actual reference, and MHiYH can be handed that. Gating on FO's
+       answer alone denied the day panel to somebody standing right there. */
+    if (!acts.length && !hasHome && !m.inWorld && !m.liveFormId) return null;
 
     const rows = [h('div', { class: 'fd-ctx-sep' }),
                   h('div', { class: 'fd-ctx-field' }, h('label', { title: 'My Home is Your Home NG' }, 'Her day'))];
@@ -6427,7 +7095,9 @@
         title: a.spec.label + (a.place ? ' — ' + a.place : ' — no place set') +
                (headline ? '\nHappening now.' : (alsoOn ? '\nAlso in force right now.' : '')),
       },
-        h('span', { class: 'fd-day-dot', 'aria-hidden': 'true' }, a.spec.ic),
+        h('span', { class: 'fd-day-dot', 'aria-hidden': 'true' },
+          h('img', { class: 'fd-day-icon', src: 'icons/custom/' + (DAY_ICONS[a.k] || 'hm-time') + '.png', alt: '', width: '28', height: '28' }),
+          h('span', { class: 'fd-day-glyph' }, a.spec.ic)),
         h('span', { class: 'fd-day-txt' },
           h('span', { class: 'fd-day-label' }, a.spec.label),
           h('span', { class: 'fd-day-place' + (a.place ? '' : ' none') },
@@ -6478,6 +7148,13 @@
      both mis-resolve the NPC and never match the medallion's lookup. This is the
      one canonical hex form for a numeric/hex target id, used by BOTH the request
      and the pseudo so they always agree. Returns '' for a missing/0 id. */
+  /* Why the DLL could not bake a head for this member, or '' (fdFaceIconsData.why). */
+  function faceWhyFor(m) {
+    if (!m) return '';
+    const k = fidHexOf(m.formId) || fidHexOf(m.liveFormId);
+    return (k && state.faceWhy[k]) || '';
+  }
+
   function fidHexOf(v) {
     if (v == null || v === '') return '';
     /* A NUMBER (the common case: state.target.formId) must be rendered in base
@@ -6489,6 +7166,51 @@
     }
     const c = canonFormId(v);
     return (c && c !== '0') ? '0x' + c : '';
+  }
+
+  function sameFid(a, b) {
+    const x = canonFormId(a), y = canonFormId(b);
+    return !!x && x === y;
+  }
+
+  /* ============ who the card's actor is, as THE GAME can address her ======= *
+   *  Not always the id Follower Organizer stored. FO persists an EditorID or
+   *  "localId~Plugin.esp", and a DYNAMICALLY SPAWNED follower has NEITHER: for
+   *  a 0xFF runtime reference FO's FormToString() returns "", so Member's
+   *  serializer falls back to her BASE NPC_ record.
+   *
+   *  Proven 2026-09-20 with Kali — filed as "00_DemonKali", which is the NPC_
+   *  in Demon Kali.esp, not the ACHR; the roster row therefore resolves to a
+   *  base form, FO answers `inWorld:false` for someone standing in front of
+   *  you, and both card groups gated on that (Move, Home) silently vanished.
+   *  Rober: "weirdly no home tab options for this f7 on an npc?".
+   *
+   *  The crosshair snapshot always carries a REAL reference (C++ FolTargetJson
+   *  sends NpcActions::TargetFormID()), so while the card is LOOKING at
+   *  someone, that id is the truth and the roster's is decoration. A card
+   *  opened on a PICKED roster face has no crosshair behind it and keeps the
+   *  stored id — there is nothing better to use.
+   * ======================================================================== */
+  function liveTargetFid(t) {
+    return (t && !t.picked) ? fidHexOf(t.formId) : '';
+  }
+
+  /* The member object every ACTOR-KEYED op on the card should address. A CLONE
+     when the live id differs, never a mutation of the roster row: that object
+     is shared state the pushes own, and `formId` is the key mergeHome and the
+     portrait store look her up by. `storedFormId` is kept so a caller can still
+     tell what FO holds (the Move ops address THAT, not this). */
+  function actorSubjectOf(known, t, who) {
+    const live = liveTargetFid(t);
+    if (known) {
+      if (!live || sameFid(live, known.m.formId)) return known.m;
+      const c = Object.assign({}, known.m);
+      c.formId = live;
+      c.storedFormId = known.m.formId;
+      return c;
+    }
+    if (!live) return null;
+    return { name: who, original: who, formId: live };
   }
 
   function portraitFor(m) {
@@ -6511,7 +7233,7 @@
        URL through portraitSrc; mtime 0 keeps the cache-bust query off a path
        Ultralight has never seen change. A later real capture outranks this on
        the next repaint because the store checks run first. */
-    const fk = String((m && m.formId) || '').toLowerCase();
+    const fk = fidHexOf(m && m.formId);
     const fi = fk ? state.faceIcons[fk] : null;
     if (fi) return { slug: slug || (m.name || ''), file: fi, ext: 'png', mtime: 0, abs: true };
     return null;
@@ -6533,7 +7255,7 @@
      owns the cover fit and the crop transform, and is clipped by the wrapper's
      overflow:hidden. Shape is the same with and without a crop on purpose —
      one medallion to reason about, not two. */
-  function medalEl(m, catIndex) {
+  function medalEl(m, catIndex, cropScope) {
     const hue = String(hueOf(catIndex));
     const p = portraitFor(m);
     if (!p) {
@@ -6572,8 +7294,10 @@
        detached img and the absolute layout would escape to the pane and paint
        huge over the roster (the 2026-08-14 "giant face" bug). A captured photo
        keeps the transform crop path — it never goes absolute. */
+    if (p.abs && cropScope === 'f7') face._hdHeadCrop = function () { return f7CropFor(p.file); };
     if (p.abs) faceFitEnsure(face, p.file);
     else applyCropTo(face, p.file);
+    if(cropScope==='f7'){paintF7Crop(face,p.file,p.abs);wrap.dataset.cropScope='f7';}
     wrap.style.setProperty('--medal-hue', hue);
     /* Click the face to see it properly. A 40 px circle is unreadable — Rober's
        first words on the captured portrait were "too small to see, can't click
@@ -6586,6 +7310,13 @@
     wrap.dataset.ext = p.ext;
     wrap.dataset.mtime = String(p.mtime || 0);
     wrap.dataset.name = m.name || '';
+    /* Her formId rides too (Rober, 2026-09-21: "f7 on an npc the popout if i
+       click their profile pic should give me an option to retake image"): the
+       lightbox only offers ◉ Retake photo when it knows whom to photograph,
+       and openLightbox(medal.dataset) is how the roster rows and the F7 card
+       open it. Set only when known — an empty string means no button. */
+    const fidForRetake = fidHexOf(m.formId);
+    if (fidForRetake) wrap.dataset.formId = fidForRetake;
     /* The abs flag MUST ride the dataset: openLightbox(medal.dataset) is how
        both the roster rows and the F7 card open this. Without it a facegen
        head render (abs path under icons/npcs/) was rebuilt as
@@ -6704,9 +7435,15 @@
     renderFocusBar();
   }
 
-  /* Enter focus — only meaningful with a real crosshair NPC to focus ON. */
+  /* Enter focus — needs someone to focus ON: the crosshair NPC, or a person
+     you PICKED (a row's F7 Controls, a Current-party face). A pick used to get
+     only the capped card above the roster — cut off at HOME, with her own row
+     still listed underneath — never this view (Rober, 2026-09-23: "not the
+     dedicated f7" / "no reason to show caraleth at bottom... and cut off the
+     main f7"). */
   function enterFocus() {
-    if (!state.target || !state.target.name) return false;
+    const picked = !!(ui.fqPick && quickSubject());
+    if (!picked && (!state.target || !state.target.name)) return false;
     ui.npcFocus = true;
     ui.focusRosterOpen = false;
     ui.fqFold = false;   // the dedicated view wants the WHOLE dossier, not name-only
@@ -6734,6 +7471,9 @@
     if (!ui.npcFocus) { applyFocusChrome(); return; }
     ui.npcFocus = false;
     ui.focusRosterOpen = false;
+    /* A pick lives exactly as long as its dedicated view: leaving it must not
+       leave her card behind in the capped slot above the roster. */
+    ui.fqPick = ''; ui.fqPickPinned = false;
     applyFocusChrome();
     render();
   }
@@ -6750,7 +7490,8 @@
        re-paints hd-npcfocus over an empty card — the "weird state" Rober hit
        (F7 on an NPC, close, re-open on nothing). So if there is no valid target,
        force focus OFF and repaint normal chrome before deciding to enter. */
-    const canFocus = !!(state.target && state.target.name && state.targetKnown);
+    const canFocus = !!(state.target && state.target.name && state.targetKnown)
+      || !!(ui.npcFocus && ui.fqPick && quickSubject());
     if (!canFocus) {
       if (ui.npcFocus) {
         ui.npcFocus = false;
@@ -6811,7 +7552,7 @@
   /* A full render is the tab's "something structural changed" path — the row
      cache is dropped there, so only the keystroke path (which calls renderList
      directly) reuses nodes. */
-  function render() { dropRowCache(); renderHudCard(); renderRail(); renderList(); renderAdd(); syncQuickHere(); syncChrome(); applyFocusChrome(); renderEveryoneBar(); renderParty(); }
+  function render() { dropRowCache(); renderHudCard(); renderRail(); renderList(); renderAdd(); syncQuickHere(); syncChrome(); applyFocusChrome(); renderEveryoneBar(); renderParty(); renderHere(); }
 
   /* The quick-action card, on OUR tab.
    *
@@ -6832,6 +7573,10 @@
    *  hidden while that state was just the sentence "look at an NPC", which
    *  above a 70-row roster was noise. A row of live controls is not. */
   function syncQuickHere() {
+    if (ctxEl && ctxEl._dossier) {
+      if (ctxEl._dossier.controlsActive()) mountQuick(ctxEl._dossier.controlsHost);
+      return;
+    }
     const host = $('fd-quick');
     if (!host) return;
     /* The dossier card needs an EXPLICIT subject now (Rober, 2026-08-06): the
@@ -7284,6 +8029,21 @@
          card (Rober, 2026-08-05). With no crosshair target the roster is the
          normal view, so opening it is the only effect. */
       onClick: () => {
+        /* Picking a category is going BACK to the roster, so an open F7 card
+           (a pinned pick from a row's F7 button or the party strip, or NPC
+           focus) closes with it. It used to stay mounted above the list,
+           clipped to its cap, over a roster that no longer had anything to do
+           with it (Rober, 2026-09-23: "if i go to a category it still shows
+           the f7 cut off"). The search text is his and is left alone. */
+        const hadCard = !!(ui.fqPick || ui.npcFocus);
+        if (hadCard) {
+          ui.fqPick = ''; ui.fqPickPinned = false;
+          ui.cat = c.index; ui.rosterOpen = true;
+          ui.sel = -1;
+          if (ui.npcFocus) { exitFocus(); } else { render(); }
+          syncQuickHere();
+          return;
+        }
         if (ui.rosterOpen && ui.cat === c.index) { ui.rosterOpen = false; }
         else { ui.cat = c.index; ui.rosterOpen = true; }
         ui.sel = -1;
@@ -7325,7 +8085,7 @@
     const who = tgt.name;
     const known = rosterEntryFor(who);
     const pseudo = known ? known.m : { name: who, original: who, following: !!tgt.following, dead: !!tgt.dead };
-    const medal = medalEl(pseudo, known ? known.cat.index : 0);
+    const medal = medalEl(pseudo, known ? known.cat.index : 0, 'f7');
     medal.classList.add('fd-railtgt-medal');
     const active = !ui.rosterOpen;   // dedicated view is showing
     host.append(h('button', {
@@ -7375,6 +8135,17 @@
     if (m.dead) out.push(h('span', { class: 'fd-tag dead', title: 'Dead' }, '☠ Dead'));
     if (m.tracked) out.push(h('span', { class: 'fd-tag tracked', title: 'Tracked on the map (quest marker)' }, '⚑'));
     if (!m.resolved) out.push(h('span', { class: 'fd-tag missing', title: 'Their plugin is not loaded this session (entry is kept)' }, 'plugin missing'));
+    /* The Loadouts group(s) she rides with, and the class she plays there.
+       Read-only here: the Loadouts tab owns the editing, this only closes the
+       loop so her card stops pretending the squad does not exist. */
+    groupsFor(m).forEach(function (g) {
+      const label = String(g.group || '');
+      if (!label) return;
+      out.push(h('span', {
+        class: 'fd-tag group', title: 'In the Loadouts group "' + label + '"' +
+          (g.cls ? ' — plays ' + g.cls + ' there' : ' — no class set in that group'),
+      }, label + (g.cls ? ' · ' + g.cls : '')));
+    });
     return out;
   }
 
@@ -7528,13 +8299,30 @@
         const t = e.target && e.target.closest
           ? e.target.closest('[data-act="portrait"]') : null;
         if (t) { openLightbox(t.dataset); return; }
-        openMemberMenu(row, e.clientX, e.clientY);
+        openMemberMenu(row);
       },
       onContextmenu: (e) => { e.preventDefault(); openMemberMenu(row, e.clientX, e.clientY); },
       // pointer-drag: onto another category's rail row (move) or between rows
       // of the same category (reorder; not in All / while searching). The
       // engine swallows the drop's click so it never opens the member menu.
-      onMousedown: (e) => PDrag.arm(e, {
+      onMousedown: (e) => {
+        /* ⚠ RIGHT-CLICK IS READ FROM MOUSEDOWN, not from `contextmenu`.
+           Ultralight does not reliably fire the DOM contextmenu event in-game
+           — the same law domains-pane follows for its rows — so the handler
+           above is a no-op where it matters, and mousedown only ever armed a
+           drag. The result was that right-clicking a follower did NOTHING in
+           game, which put the Category dropdown and "Remove from this
+           category" at the bottom of this very menu out of reach (Rober,
+           2026-09-20: "no easy way to right click and move category or remove
+           from category either"). Left button still falls through to the drag
+           arm below, so reorder and move-by-drag are untouched. */
+        if (e.target && e.target.closest && e.target.closest('button')) return;
+        if (e.button === 2) {
+          e.preventDefault();
+          openMemberMenu(row, e.clientX, e.clientY);
+          return undefined;
+        }
+        return PDrag.arm(e, {
         onStart: () => { dragKind = 'member'; dragFrom = { cat: row.cat, idx: row.idx }; closeCtx(); },
         onMove: (ev) => pdScan(ev, [
           { sel: '.fd-rail-item:not(.all)', mode: 'into',
@@ -7563,7 +8351,8 @@
           }
         },
         onCancel: () => { dragKind = null; dragFrom = null; renderList(); },
-      }),
+        });
+      },
     },
       medalEl(m, row.cat),
       h('div', { class: 'fd-body' },
@@ -7575,7 +8364,14 @@
           nameNodes(m.name, q)),
         h('div', { class: 'fd-sub' }, subKids),
       ),
-      h('div', { class: 'fd-right' }, badgeEls(m)),
+      h('div', { class: 'fd-right' }, badgeEls(m),
+        h('div', { class: 'fd-row-views', role: 'group', 'aria-label': 'Open ' + m.name },
+          h('button', { type: 'button', class: 'fd-row-open', title: 'Full character page for ' + m.name,
+            onClick: (e) => { e.stopPropagation(); openMemberMenu(row); } },
+            h('img', { src: 'icons/custom/hk-portrait.png', alt: '', 'aria-hidden': 'true' }), 'Full page'),
+          h('button', { type: 'button', class: 'fd-row-quick', title: 'F7 controls for ' + m.name,
+            onClick: (e) => { e.stopPropagation(); omniOpenMember(m.original || m.name, row.cat, 'quick'); } },
+            h('span', { class: 'fd-row-key', 'aria-hidden': 'true' }, 'F7'), 'Controls'))),
     );
   }
 
@@ -7747,6 +8543,15 @@
   /* Last fdNpcResult, shown inline on the card. Cleared when the target
      changes — a verdict about someone else is noise. */
   let fqStatus = { msg: '', ok: true, pending: false };
+  /* The 🔧 flyout lives in its own module and can outlive itself — you fire a
+     fix, dismiss the flyout, and the answer arrives after it is gone. It hands
+     the result HERE so the card's own status line carries it, the same
+     courtesy Add-as-mount gets. Named on window because fixes-flyout.js loads
+     independently and must not reach into this closure. */
+  window.fqFixStatus = function (r) {
+    fqStatus = { msg: (r && r.msg) || '', ok: !r || r.ok !== false, pending: false };
+    if (isActive()) renderQuickCard();
+  };
 
   /* ------------------------------------------- M.A.R.A.S marriage state ---
      `about.maras` is the dossier slice C++ sends when the mod is installed:
@@ -7828,8 +8633,10 @@
 
   /* Which rank the card should DRAW, and where it came from. */
   function rankView(t) {
-    const key = String((t && t.formId) || '');
-    const about = (equippedFor(null) || {}).about || null;
+    const key = hexOf(Number((t && t.formId) || 0)).toLowerCase();
+    const entry = Object.keys(state.equipped).find(k => Number(k) === Number(t && (t.readFormId || t.formId)));
+    const about = (entry ? state.equipped[entry] : !quickSubject() ? equippedFor(null) : null) || {};
+    const detail = about.about || null;
     if (rankEdit.key !== null && rankEdit.key === key) {
       return { known: true, has: rankEdit.has, rank: clampRank(rankEdit.rank),
                pending: rankEdit.pending };
@@ -7837,22 +8644,23 @@
     /* No `rank` on the dossier means the DLL is older than this feature. That
        is not "Acquaintance" — it is no answer, and drawing a slider parked at 0
        would invite you to "confirm" a rank the game never reported. */
-    if (!about || typeof about.rank !== 'number') return { known: false };
-    return { known: true, has: !!about.relHas, rank: clampRank(about.rank), pending: false };
+    if (!detail || typeof detail.rank !== 'number') return { known: false };
+    return { known: true, has: !!detail.relHas, rank: clampRank(detail.rank), pending: false };
   }
 
   /* Commit a rank. Optimistic on purpose — the slider must not snap back to the
      old value for the second the VM takes — but the optimism is BOUNDED: a
      verify read is scheduled, and whatever the engine says then wins. */
-  function sendRank(v) {
-    const t = state.target;
+  function sendRank(v, t) {
+    t = t || state.target;
     if (!t || !t.formId) return;
     const r = clampRank(v);
-    rankEdit = { key: String(t.formId), has: true, rank: r, pending: true };
+    rankEdit = { key: hexOf(Number(t.formId)).toLowerCase(), has: true, rank: r, pending: true };
     fqStatus = { msg: 'Making ' + (t.name || 'them') + ' ' + rankLabel(r) + '…',
                  ok: true, pending: true };
     toGame('fdRank', JSON.stringify({ formId: hexOf(t.formId), rank: r }));
     renderQuickCard();
+    refreshOpenMenu();
 
     /* Re-read the ENGINE once the VM has plausibly run. Without this a stack
        the VM silently dropped would leave the card showing a rank that was
@@ -7863,7 +8671,7 @@
     if (rankVerify) clearTimeout(rankVerify);
     rankVerify = setTimeout(function () {
       rankVerify = 0;
-      askEquipped(null, true);
+      askEquipped({ formId: t.readFormId || t.formId, liveFormId: t.formId }, true);
     }, 900);
   }
 
@@ -7887,7 +8695,23 @@
      reads. So the fill grows OUT of the middle, warm to the right, cold to the
      left, and how far it has travelled from centre is the strength of the
      feeling in either direction. */
+  /* One class per STEP, so the readout can be coloured by the exact rank rather
+     than by which side of zero it is on (Rober, 2026-09-21: "rank should be
+     color coded below?"). Built here and not in CSS because the value is a
+     number: nine rules keyed off a class beat nine :nth-child selectors that
+     would have to know the bar's geometry. `rkp0` is Acquaintance — the
+     neutral centre, deliberately given a colour of its own rather than left to
+     inherit, so "no feeling either way" reads as a verdict too. */
+  function rankTone(r) {
+    const n = clampRank(r);
+    return 'rk' + (n < 0 ? 'm' : 'p') + Math.abs(n);
+  }
+
   function rankRow(t, who) {
+    const subject = quickSubject();
+    if (subject && [subject.formId, subject.liveFormId].some(id => id && Number(id) === Number(t && t.formId))) {
+      t = {formId:subject.liveFormId || subject.formId, readFormId:subject.formId, name:who};
+    }
     const rv = rankView(t);
     if (!rv.known) return null;
 
@@ -7898,7 +8722,8 @@
         'Rank'));
 
     const val = h('span', {
-      class: 'fq-rank-val' + (rv.rank > 0 ? ' good' : (rv.rank < 0 ? ' bad' : '')),
+      class: 'fq-rank-val ' + rankTone(rv.rank)
+        + (rv.rank > 0 ? ' good' : (rv.rank < 0 ? ' bad' : '')),
     }, h('b', { class: 'fq-rank-name' }, rankLabel(rv.rank)),
        h('span', { class: 'fq-rank-num' }, rankNum(rv.rank)));
 
@@ -7910,7 +8735,8 @@
       const c = clampRank(n);
       val.firstChild.textContent = rankLabel(c);
       val.lastChild.textContent = rankNum(c);
-      val.className = 'fq-rank-val' + (c > 0 ? ' good' : (c < 0 ? ' bad' : ''));
+      val.className = 'fq-rank-val ' + rankTone(c)
+        + (c > 0 ? ' good' : (c < 0 ? ' bad' : ''));
       segs.forEach((el, i) => {
         const r = RANK_MIN + i;
         // "Lit" means between the centre and the value, inclusive — the reach
@@ -7947,7 +8773,7 @@
         if (!d) return;
         e.preventDefault(); e.stopPropagation();
         const n = clampRank(rv.rank + d);
-        if (n !== rv.rank) { rankFocus = true; sendRank(n); }
+        if (n !== rv.rank) { rankFocus = true; sendRank(n, t); }
       },
     });
 
@@ -7969,7 +8795,7 @@
           dragging = false;
           if (dragTo === rv.rank) { preview(rv.rank); return; }  // put back: nothing to say
           rankFocus = true;            // survive the re-render this triggers
-          sendRank(dragTo);
+          sendRank(dragTo, t);
         },
       }, h('i', { class: 'fq-rank-tick' }));
       segs.push(seg);
@@ -7984,7 +8810,7 @@
       class: 'fq-rank-nudge', type: 'button',
       disabled: (delta < 0 ? rv.rank <= RANK_MIN : rv.rank >= RANK_MAX) ? true : null,
       title: tip,
-      onClick: (e) => { e.stopPropagation(); rankFocus = true; sendRank(rv.rank + delta); },
+      onClick: (e) => { e.stopPropagation(); rankFocus = true; sendRank(rv.rank + delta, t); },
     }, glyph);
 
     row.append(nudge(-1, '◂', 'One step colder — towards Archnemesis'));
@@ -8074,10 +8900,24 @@
 
   const PARTY_ACTS = [
     { op: 'allSummon',  ic: '\u2935', label: 'Teleport',
-      title: 'Warp every follower to you — including the ones in another hold.' },
+      title: 'Bring active followers from every framework, including distant companions. Waiting or busy followers stay put; residents and dismissed NPCs are left alone.' },
     /* 'Follow all' removed at Rober's request (2026-08-05). */
     { op: 'allWait',    ic: '\u270b', label: 'Wait',
       title: 'Everyone nearby waits where they stand.' },
+    /* Attack (Rober, 2026-09-23: "everyone attack target button integrated
+       into this?"). Not an NFF verb — it fires the deck's own seeded Sic 'em
+       entry, the play-proven NpcActions::DoSicEm, so there is ONE
+       implementation whether it is pressed here, bound to a key or pinned to
+       the Hotbar. `fire` is the ENTRY id (hdFire looks entries up by id, never
+       by action verb). C++ closes the deck and does not reopen it: the fight
+       must not stay paused under the palette. */
+    { fire: 'npc-attack-target', ic: '\u2694', label: 'Attack',
+      title: 'Every follower attacks the enemy you are aiming at, right now.\n'
+           + 'The one under your crosshair when you opened the deck, else the nearest '
+           + 'hostile along your aim out to ~115 m, else the nearest enemy already '
+           + 'fighting you — never one of your own — plus any enemies fighting '
+           + 'near it. Skips the follower detection lag.\n'
+           + 'The deck closes so the fight is not paused.' },
     { op: 'allRelax',   ic: '\u263e', label: 'Sandbox',
       title: 'Start NFF\u2019s group sandbox now instead of waiting for it.\n'
            + 'Relaxing is group-wide in NFF — there is no per-follower version.' },
@@ -8180,6 +9020,14 @@
   function pickCrew(m, e) {
     if (e) e.stopPropagation();
     ui.fqPick = m.original || m.name;
+    /* On the Followers tab a pick opens the DEDICATED F7 view for her — the
+       same full-pane card F7-on-her gives you — pinned so a crosshair refresh
+       cannot swap her out. Elsewhere (the Hotkeys tab's quick card) the card
+       simply becomes hers, as before. */
+    const fq = typeof document !== 'undefined' ? document.getElementById('fq-card') : null;
+    if (isActive() && !(fq && quickHost === fq)) {
+      if (enterFocus()) return;
+    }
     renderQuickCard();
     syncQuickHere();
   }
@@ -8347,9 +9195,14 @@
     wrap.append(ebNoFold ? sectionLabel('Everyone')
                          : foldEyebrow('fqEveryoneFold', 'Everyone'));
     if (!ebNoFold && ui.fqEveryoneFold) return wrap;
-    const acts = h('div', { class: 'fq-acts' });
+    /* fq-party-acts: an even three-across grid — orders on the first row
+       (Teleport · Wait · Attack), the sandbox trio on the second. */
+    const acts = h('div', { class: 'fq-acts fq-party-acts' });
     PARTY_ACTS.forEach(function (p) {
-      acts.append(quickBtn(p.ic, p.label, p.title, function () { sendParty(p.op); }));
+      acts.append(quickBtn(p.ic, p.label, p.title, function () {
+        if (p.fire) toGame('hdFire', p.fire);
+        else sendParty(p.op);
+      }));
     });
 
     /* NFF's own allow-sandboxing setting — a different question from "relax
@@ -8386,9 +9239,34 @@
      card showed a skeleton forever (2026-08-03 — picking someone off the party
      strip asked for the CROSSHAIR's worn set and then waited for hers). */
   function quickSubject() {
+    if (ctxEl && ctxEl._dossier) return ctxEl._dossier.subject();
     const hit = ui.fqPick ? rosterEntryFor(ui.fqPick) : null;
-    if (ui.fqPick && !hit) ui.fqPick = '';    // she left the roster; fall back
-    return hit ? hit.m : null;
+    if (hit) return hit.m;
+    /* Not on the roster: a LIVE party member (partyList's engine-scan merge —
+       a companion run by her own follower mod, CHIM soft-follow). Her chip is
+       on the party strip, so clicking it must open HER card, not quietly drop
+       the pick and fall back to the idle Everyone card (Rober, 2026-09-23, on
+       Caraleth: "i clicked cataleth and this is all i get current party again
+       plus everyone???"). She carries a real formId, which is all the card's
+       per-person actions address; every roster lookup the card does already
+       treats a missing row as "unfiled", so she gets the filing button rather
+       than Move controls — the same card an unfiled crosshair NPC gets. */
+    const live = ui.fqPick ? liveMemberFor(ui.fqPick) : null;
+    if (live) return live;
+    if (ui.fqPick) ui.fqPick = '';    // she left the roster AND the party; fall back
+    return null;
+  }
+
+  function liveMemberFor(name) {
+    const want = String(name || '').trim().toLowerCase();
+    if (!want) return null;
+    const list = partyList();
+    for (let i = 0; i < list.length; i++) {
+      const m = list[i];
+      if (!m.live || !m.formId) continue;
+      if (String(m.original || m.name || '').trim().toLowerCase() === want) return m;
+    }
+    return null;
   }
 
   /* One fdEquipped per subject per palette open — no more, and never none.
@@ -9075,7 +9953,158 @@
     fqProbeRows(fqFindSubjKey()).forEach(push);
     fqVirtualRows().forEach(push);
     fqSendToRows().forEach(push);
+    fqFixRows().forEach(push);
+    fqChimRows().forEach(push);
+    fqWigRows().forEach(push);
+    fqCategoryRows().forEach(push);
     return out;
+  }
+
+  /* ---- Wigs… (2026-09-23) --------------------------------------------------
+     Rober: "we have a pretty indepth wig picker, id like to add that as a
+     popout to a specific npc if i search wig. and the wig i pick immedietly
+     gets forced into inventory and equipped for that npc". One row; it opens
+     the Wigs pane as a popout aimed at THIS card's subject (WigsPane.openFor),
+     where a click wears the wig on her by FormID. The pane is a deferred
+     script, so until it has landed the row says so instead of vanishing. */
+  function fqWigRows() {
+    const t = state.target;
+    if (!t || !t.name || t.dead) return [];
+    const formId = Number(t.formId) || 0;
+    if (!formId) return [];
+    const who = t.name;
+    const loaded = !!(window.WigsPane && typeof WigsPane.openFor === 'function');
+    return [{
+      key: 'Look\u0001Wigs\u0001💇',
+      icon: h('img', { src: 'icons/custom/hk-wigs.png', width: 28, height: 28, alt: '' }),
+      label: 'Wigs\u2026',
+      sub: 'Pick a wig \u2014 it goes straight into ' + who + '\u2019s inventory and onto their head',
+      sect: 'Look',
+      alias: 'wig wigs hair hairstyle hairdo haircut head hair salon try on ks hairdos',
+      disabled: !loaded,
+      why: loaded ? '' : 'The Wigs pane is still loading \u2014 try again in a moment',
+      opens: true,
+      reveal: '',
+      el: null,
+      run: function () {
+        if (window.WigsPane && typeof WigsPane.openFor === 'function') WigsPane.openFor({ formId: formId, name: who });
+      },
+    }];
+  }
+
+  /* ---- Change category… (2026-09-23) --------------------------------------
+     Rober, with the card's search open on "follower organizer": "not in f7
+     menu either". The category chip is scanned as a button, but its words
+     are the category's NAME — "change", "move", "group" and "organizer" hit
+     nothing. One row that carries those words, opening the same move picker
+     the chip does. Unfiled subjects have the chip's own "file them" row. */
+  function fqCategoryRows() {
+    const t = state.target;
+    if (!t || !t.name || t.dead) return [];
+    const who = t.name;
+    const known = rosterEntryFor(t.original || who) || rosterEntryFor(who);
+    if (!known || !known.cat) return [];
+    const here = catLabel(known.cat);
+    const others = state.cats.filter((c) => c.index !== ALL && c.index !== known.cat.index).length;
+    return [{
+      key: 'Card\u0001Change category\u0001\u203a',
+      icon: '\u203a',
+      label: 'Change category\u2026',
+      sub: 'Move ' + who + ' out of ' + here + ' into another Follower Organizer group',
+      sect: 'Card',
+      alias: 'category categories change move switch group folder file filed roster organizer '
+           + 'follower organizer recategorize reassign transfer put her in another ' + here.toLowerCase(),
+      disabled: !others,
+      why: others ? '' : 'Follower Organizer has no other category to move ' + who + ' to',
+      opens: true,
+      reveal: '',
+      el: null,
+      run: function () {
+        const chip = document.querySelector('.fq-chip-cat');
+        openMoveTo(chip && chip.isConnected ? chip : null, known, who, known.m);
+      },
+    }];
+  }
+
+  /* The dropdown is mounted outside this card, so its controls need the same
+     explicit search adapter as Fixes. The CHIM module owns the actual action. */
+  function fqChimRows() {
+    const t = quickSubject() || state.target;
+    if (!t || !t.name || !window.ChimBtn || typeof ChimBtn.conversationAction !== 'function') return [];
+    const known = rosterEntryFor(t.name);
+    const ctx = { original: t.original || (known && known.m && known.m.original) || t.name,
+      who: t.name, formId: Number(t.formId) || 0, dead: !!t.dead };
+    const actions = [ChimBtn.conversationAction(ctx)];
+    if (ChimBtn.conversationReleaseAction) actions.push(ChimBtn.conversationReleaseAction(ctx));
+    return actions.map(a => Object.assign({}, a, { sect: 'CHIM', opens: true, reveal: '', el: null,
+      icon: h('img', { src: a.iconPath, width: 28, height: 28, alt: '' }) }));
+  }
+
+  /* ---- the Fixes verbs, flattened (fq-find-fixes) -----------------------
+     The Fixes flyout is a module modal whose buttons exist only while it is
+     open, so the live scan never saw them: typing "reset a" returned Preset,
+     Lamae's Rest and Grab and nothing else (Rober, 2026-09-21: "it should be
+     searchable..."). Past ~10 items an unsearchable list is a defect, and
+     this card is at ninety.
+
+     Built FROM FixBtn._fixes rather than restated here - two copies of a verb
+     table drift within the hour, and the flyout owns the labels, subs and the
+     deadOnly / needsBody gating, which this applies unchanged.
+
+     Stop her following OPENS instead of running: its refusal IS the feature,
+     so it goes through the flyout that can show the diagnosis. The other five
+     are one-shot engine verbs the flyout already fires on a single click, so
+     the search box fires them the same way and the card's status line
+     answers. */
+  function fqFixRows() {
+    const t = state.target;
+    if (!t || !t.name) return [];
+    if (!window.FixBtn || !Array.isArray(FixBtn._fixes)) return [];
+    const formId = Number(t.formId) || 0;
+    if (!formId) return [];
+    const dead = !!t.dead;
+    const ctx = { who: t.name, formId: formId, dead: dead };
+    const SEP = String.fromCharCode(1);
+
+    /* What a player actually types when this is what they want. The flyout's
+       labels are plain English ("Rebuild her"); the symptom is not. */
+    const ALIAS = {
+      unfollow:  'unfollow stop following trailing stuck teammate not a follower unstick',
+      resetai:   'reset ai resetai re-evaluate evaluate package routine stale stuck unstick',
+      recycle:   'recycle recycleactor rebuild t-pose tpose invisible wedged broken glitched',
+      calm:      'calm stop fighting combat aggression attacking hostile peace pacify',
+      resurrect: 'resurrect revive raise bring back dead corpse',
+      noclip:    'noclip tcl collision clip stuck in geometry walk through walls',
+    };
+
+    const rows = [];
+    FixBtn._fixes.forEach(function (f) {
+      if (f.deadOnly && !dead) return;
+      if (f.needsBody && dead) return;
+      const opens = f.id === 'unfollow';
+      rows.push({
+        key: ['Fixes', f.label, f.ic].join(SEP),
+        icon: f.ic,
+        label: f.label,
+        sub: f.sub,
+        sect: 'Fixes',
+        alias: ALIAS[f.id] || '',
+        disabled: false,
+        why: '',
+        opens: opens,
+        reveal: '',
+        el: null,
+        run: opens
+          ? function () {
+              /* Anchor it under the search bar the query was typed into. */
+              const card = fqFindCard();
+              const bar = card ? card.querySelector('.fq-find') : null;
+              FixBtn.open(bar, ctx);
+            }
+          : function () { FixBtn.run(ctx, f.id); },
+      });
+    });
+    return rows;
   }
 
   /* ---- ranking -----------------------------------------------------------
@@ -9553,13 +10582,36 @@
 
   function buildQuickCard() {
     const subj = quickSubject();
+    /* PICKED (you clicked a face on the party strip) vs the crosshair target.
+       The picked object is built from the ROSTER row, because that is the only
+       record we have for someone who is not under your crosshair.
+
+       ⚠ But the roster's `dead` / `inWorld` are Follower Organizer's cached
+       view, and they can be stale — a follower whose stored reference no longer
+       resolves comes back dead AND not-in-world even while she is walking
+       beside you. Every control group is gated on those two (Order on !dead,
+       Move and Home on inWorld), so a stale pair rendered a card with a name, a
+       green FOLLOWING chip and NOTHING ELSE. That is what Rober hit on Vayne:
+       "i clicked vayne in current party and its just opening a blank area".
+
+       So when the engine is talking about the SAME person, the engine wins.
+       state.target is a live read; the roster row is a cache. Matched on form
+       id when both have one, falling back to the name. */
+    const liveSame = (function () {
+      if (!subj || !state.target || !state.target.name) return false;
+      const a = fidHexOf(subj.formId), b = fidHexOf(state.target.formId);
+      if (a && b) return a === b;
+      return String(subj.name || '').toLowerCase() === String(state.target.name || '').toLowerCase();
+    })();
     const t = subj
-      ? { name: subj.name, formId: subj.formId, following: !!subj.following,
-          dead: !!subj.dead, picked: true }
+      ? { name: subj.name, formId: subj.formId,
+          following: liveSame ? !!state.target.following : !!subj.following,
+          dead: liveSame ? !!state.target.dead : !!subj.dead,
+          picked: true }
       : state.target;
     const card = h('div', { class: 'fq' + (subj ? ' picked' : '') });
 
-    if (!state.targetKnown) {
+    if (!state.targetKnown && !subj) {
       /* Loading, NOT empty. Sized like the real card - eyebrow line plus a
          button row - so the list below does not jump when the answer lands. */
       card.classList.add('loading');
@@ -9633,6 +10685,20 @@
         e.stopPropagation();
         openLightbox(medal.dataset);
       });
+    } else if (!dead) {
+      /* No picture yet (the initials medal): clicking it TAKES one. The
+         lightbox's ◉ Retake photo only exists once there is a photo to open,
+         so a face-less NPC had no door to a portrait from here at all (Rober,
+         2026-09-23: "i should be able to click the profile pic to retake
+         image"). Same fdPortrait verb Retake uses. */
+      medal.classList.add('fq-medal-take');
+      medal.title = 'No picture yet — click, frame ' + who + ', then press Enter to take the portrait (Esc cancels)';
+      medal.style.cursor = 'pointer';
+      medal.addEventListener('click', function (e) {
+        e.stopPropagation();
+        toast('◉ Portrait armed — frame ' + who + ', then press Enter');
+        capturePortrait(known, t);
+      });
     }
 
     /* One wrapping dossier row, ordered by how much you care: who she is to
@@ -9644,11 +10710,31 @@
     if (known) {
       const rel = CHIP_FIELD ? fieldValue(known.m, CHIP_FIELD.key) : '';
       if (rel) sub.append(h('span', { class: 'fq-chip rel', title: CHIP_FIELD.label }, rel));
-      sub.append(h('span', { class: 'fq-chip', title: 'Filed in Follower Organizer' },
-        catLabel(known.cat)));
+      /* The category chip is a BUTTON, and it is the card's way into filing.
+         Rober, 2026-09-20: typing "add" on a card offered only "Add to
+         framework" — NFF's import, which has no categories — and he expected
+         to be asked which category. The roster add already asks exactly that
+         (every category listed, the ones she is in ticked and disabled), it
+         just had no door on this surface. A button is also the only thing the
+         card's own search indexes (fqScan walks <button>), so this is what
+         makes "category" and "file" findable from that box. */
+      /* Rober, 2026-09-23, with the card's search open on "follower
+         organizer": "not in f7 menu either". The chip only ADDED her to a
+         second category; changing the one she is in was a dossier-only move.
+         It now opens the move picker (openMoveTo), whose last row is still
+         the old "also add" door. */
+      sub.append(h('button', {
+        class: 'fq-chip fq-chip-cat', type: 'button',
+        title: 'Filed in Follower Organizer under ' + catLabel(known.cat)
+             + '\nClick to change her category \u2014 move her to another group',
+        onClick: (e) => { e.stopPropagation(); openMoveTo(e.currentTarget || e.target, known, who, pseudo); },
+      }, catLabel(known.cat)));
     } else {
-      sub.append(h('span', { class: 'fq-chip new', title:
-        'Not in Follower Organizer yet — file them below' }, 'unfiled'));
+      sub.append(h('button', {
+        class: 'fq-chip new fq-chip-cat', type: 'button',
+        title: 'Not in Follower Organizer yet\nClick to file them under a category',
+        onClick: (e) => { e.stopPropagation(); openAddMenu(pseudo); },
+      }, 'unfiled — file them'));
     }
 
     /* Engine facts, from the same read that fetches the worn set. */
@@ -9753,7 +10839,16 @@
           h('span', { class: 'fq-eyebrow' }, 'Looking at'),
           h('span', { class: 'fq-name', title: who }, who),
           dead ? h('span', { class: 'fq-tag dead' }, '☠ Dead')
-               : (following ? h('span', { class: 'fq-tag following' }, 'Following') : null)),
+               : (following ? h('span', { class: 'fq-tag following' }, 'Following') : null),
+          /* The squad she rides with, if any — the F7 card is reached without
+             ever opening the Loadouts tab, so it has to say so itself. */
+          ...groupsFor(((rosterEntryFor(who) || {}).m) || { original: who, name: who }).map(function (g) {
+            return h('span', {
+              class: 'fq-tag group',
+              title: 'In the Loadouts group "' + g.group + '"' +
+                (g.cls ? ' — plays ' + g.cls + ' there' : ' — no class set in that group'),
+            }, g.group + (g.cls ? ' · ' + g.cls : ''));
+          })),
         ui.fqFold ? null : sub),
       /* ⌕ FIND AN ACTION — the empty space beside the name, spent (Rober,
          2026-08-19). Not drawn while the card is FOLDED: folding builds no
@@ -9775,7 +10870,12 @@
              a glyph (its tooltip is state, and would read "Lydia is dead"). */
           'aria-label': 'Back to the party',
           title: 'Back to the party — stop acting on ' + who,
-          onClick: (e) => { e.stopPropagation(); ui.fqPick = ''; renderQuickCard(); syncQuickHere(); },
+          onClick: (e) => { e.stopPropagation();
+            /* A pick's dedicated view has nothing to fall back to without a
+               crosshair NPC — step back out to the roster instead of leaving
+               an empty dedicated shell. */
+            if (ui.npcFocus && !(state.target && state.target.name)) { exitFocus(); return; }
+            ui.fqPick = ''; ui.fqPickPinned = false; renderQuickCard(); syncQuickHere(); },
         }, '\u2190') : null,
         /* Photograph them. Same bridge the roster's menu uses, and it names its
            subject explicitly, so it captures whoever you are looking at rather
@@ -9852,7 +10952,26 @@
             ui.fqFold = !ui.fqFold; renderQuickCard(); },
         }, ui.npcFocus ? '▴' : (ui.fqFold ? '▾' : '▴')))));
 
-    if (ui.fqFold) return card;
+    if (ui.fqFold) {
+      /* A folded card is a name, a follow chip and nothing else — which is
+         exactly what a BROKEN card looks like, and it got reported as one
+         (Rober, 2026-09-21: "i clicked vayne in current party and its just
+         opening a blank area….."). The fold is session state, so it survives
+         switching subject: you collapse it once and every follower you click
+         afterwards looks dead. Say it, and offer the way out as a real button
+         rather than leaving the ▾ in the corner to be noticed. A button is also
+         the only thing the card's own ⌕ search indexes (fqScan walks <button>),
+         so "show"/"controls"/"expand" find it. */
+      card.append(h('button', {
+        class: 'fq-folded-hint', type: 'button',
+        title: 'This card is collapsed to just the name. Click to bring back Order, '
+             + 'Move, Home and the rest.',
+        onClick: (e) => { e.stopPropagation(); ui.fqFold = false; renderQuickCard(); },
+      },
+        h('span', { class: 'fq-folded-ic', 'aria-hidden': 'true' }, '▾'),
+        h('span', null, 'Collapsed to just the name — show ' + who + '\u2019s controls')));
+      return card;
+    }
 
     /* Inline annotate. Saves on change through the SAME ops the member menu
        uses, so a note written here and one written there are the same field.
@@ -9998,8 +11117,8 @@
       h('span', { class: 'fq-igroup' },
         quickBtn('◉', 'Portrait', dead ? 'Photograph ' + who + ' anyway'
             : 'Hide the HUD, frame ' + who + ' and save it as their portrait',
-          () => { toGame('fdPortrait', JSON.stringify({
-            formId: subj ? (Number(subj.formId) || 0) : (state.target ? state.target.formId : 0) })); }),
+          () => { openPortraitCapture({name:who,
+            formId: subj ? (Number(subj.formId) || 0) : (state.target ? state.target.formId : 0) }); }),
         quickBtn('⛶', 'Adjust',
           'Open ' + who + '’s portrait large and drag to pan / scroll to zoom — sets how the '
             + 'deck DRAWS this face everywhere (the file on disk is never rewritten). '
@@ -10016,7 +11135,8 @@
             const shot = portraitFor(pseudo);
             if (shot) {
               openLightbox({ slug: shot.slug, file: shot.file, ext: shot.ext,
-                             mtime: shot.mtime, name: who }, true);
+                             mtime: shot.mtime, name: who, cropScope:'f7',
+                             formId: subj ? (Number(subj.formId) || 0) : (state.target ? state.target.formId : 0) }, true);
               return;
             }
             ui.fqFraming = !ui.fqFraming;
@@ -10035,20 +11155,12 @@
           else if (window.__omniSetTab) window.__omniSetTab('faces');
         },
         { disabled: dead }),
-      /* Animate (Rober, 2026-08-08: "if I hit F7 I can also click the animations
-         tab and apply to them easily"). Jumps to the Animations tab aimed at the
-         person you F7'd — the Poses target is the crosshair-open snapshot, which
-         in F7-focus IS this NPC — and forces the Poses segment (not OStim, which
-         is player-scene control). setTab handles leaving focus, like Preset. */
-      quickBtn('🕺', 'Animate', dead ? who + ' is dead'
-          : 'Open the Animations tab aimed at ' + who + ' — OStim scene controls if '
-            + 'you’re in a scene, otherwise poses',
-        () => {
-          // Smart: OStim segment while a scene runs, Poses otherwise.
-          if (window.OStimPane && OStimPane.smartLand) OStimPane.smartLand();
-          else if (window.__omniSetTab) window.__omniSetTab('anim');
-        },
-        { disabled: dead }),
+      window.NpcScene ? NpcScene.button({
+        formId: subj ? Number(subj.formId) : (state.target ? Number(state.target.formId) : 0),
+        name: who, dead: dead
+      }) : quickBtn('›', 'Animate', 'Open animations', () => {
+        if (window.OStimPane) OStimPane.smartLand();
+      }, { disabled: dead }),
       /* ▥ FULL STATS (Rober, 2026-08-17, the Party Sheet catch-up: "main
          thing missing is a dedicated more info or stats page … you can get
          to by doing f7 then another button"). Opens the Finder's INSPECT
@@ -10238,8 +11350,14 @@
          because addLook is about who you are LOOKING at, not a party-strip pick;
          absent when the Mounts pane didn't load, so a partial deploy shows no
          dead button. Disabled on a corpse with the reason the verb would give. */
-      (window.MountsPane && typeof MountsPane.addLookingAt === 'function' && !subj)
-        ? quickBtn('🐴', 'Add as mount', dead
+      /* ENLIST — its own bordered group (Rober, 2026-09-20: "we also have a
+         add as mount button, group that with another button add to follower
+         framework"). Both buttons answer the same question — "take this
+         person on" — and they were a lone 🐴 next to five unrelated verbs.
+         The group is the .fq-igroup idiom Stats already uses. */
+      (function () {
+        const canMount = !!(window.MountsPane && typeof MountsPane.addLookingAt === 'function' && !subj);
+        const mountBtn = canMount ? quickBtn('🐴', 'Add as mount', dead
             ? who + ' is dead — not much of a mount'
             : 'Add ' + who + ' to your Mounts stable (whoever is under your '
               + 'crosshair). If she is not something you can ride or register, '
@@ -10253,7 +11371,43 @@
               if (isActive()) renderQuickCard();
             });
           },
-          { disabled: dead }) : null,
+          { disabled: dead }) : null;
+        /* The framework add ASKS WHICH GROUP — that was the whole point of the
+           ask. openFrameworkMenu lists Follower Organizer's categories (the
+           ones she is already in ticked and disabled) and NFF's group-less
+           import underneath, labelled as the different thing it is. */
+        const fwBtn = quickBtn('👥', 'Add to framework',
+          dead ? who + ' is dead'
+            : 'File ' + who + ' under one of your Follower Organizer groups — it asks which — '
+              + 'or lend her Nether\u2019s Follower Framework. Neither is recruitment: '
+              + 'this is filing, not "follow me".',
+          (e) => { e.stopPropagation(); openFrameworkMenu(pseudo); },
+          { disabled: dead });
+        if (!mountBtn) return h('span', { class: 'fq-igroup' }, fwBtn);
+        return h('span', { class: 'fq-igroup' }, mountBtn, fwBtn);
+      })(),
+      /* 🔧 FIXES (Rober, 2026-09-20: "maybe a new button (like chim with
+         dropdown) with fixes"). The CHIM button's flyout shape, holding the
+         repair verbs that until now existed only as palette hotkeys — plus
+         the new one he asked for, Stop her following. It PROBES first and
+         prints what it found, because "she keeps following me" is four
+         different faults and three of them are invisible from here; see the
+         banner in fixes-flyout.js. Absent when the module didn't load, so a
+         partial deploy shows no dead button. Available on a corpse — that is
+         where Bring her back lives. */
+      (window.FixBtn) ? quickBtn('🔧', 'Fixes',
+        'Repair ' + who + ' when she is misbehaving — still following you when she is not your '
+          + 'follower, stuck in an old routine, T-posing, swinging at someone, or dead. '
+          + 'It reads the engine first and tells you which of those it actually is.',
+        (e) => {
+          FixBtn.open(e.currentTarget, {
+            who: who,
+            formId: subj ? (Number(subj.formId) || 0) : (t ? (Number(t.formId) || 0) : 0),
+            dead: dead,
+          });
+          renderQuickCard();
+        },
+        { active: FixBtn.isOpen(), pressed: FixBtn.isOpen() }) : null,
       /* 🔍 Debug (Rober, 2026-08-10: "a debug option when pressing f7 on an
          npc could be handy"). The raw engine dossier — teammate flag, every
          faction, follower frameworks, alias holds, the package in force —
@@ -10335,13 +11489,17 @@
          Each state offers the ONE thing that is actually available, so the
          slot never shows a control the game would refuse. */
       if (following) {
+        /* A quest-held refusal arms the FORCE (see armForceDismiss): the button
+           then says so, and one click fires — the refusal was the warning. */
+        const dsArmed = !!forceDismiss;
         order.append(h('button', {
-          class: 'fq-set danger', type: 'button',
-          title: 'Send ' + who + ' home through NFF — click twice',
+          class: 'fq-set danger' + (dsArmed ? ' armed' : ''), type: 'button',
+          title: dsArmed ? forceDismiss.msg : 'Send ' + who + ' home through NFF — click twice',
           onClick: (e) => { e.stopPropagation();
+            if (dsArmed) { dismissClick(subj); return; }
             arm(e.currentTarget, 'Dismiss ' + who + '?', 'Click again to send them home',
-              () => sendNpc('dismiss', subj)); },
-        }, '⊘ Dismiss'));
+              () => dismissClick(subj)); },
+        }, dsArmed ? '⊘ Force dismiss?' : '⊘ Dismiss'));
       } else if (t && t.wedged) {
         /* Recruiting a half-recruited NPC is what broke her — offer the
            repair in that slot instead, and say why the usual button is gone.
@@ -10426,17 +11584,20 @@
          Not shown when she is simply following — the status button IS the
          Dismiss then, and two of them would be the same click twice. */
       if (!following && t.nffFollower) {
+        const dsArmed = !!forceDismiss;
         order.append(h('button', {
-          class: 'fq-set danger', type: 'button',
-          title: 'Nether\'s Follower Framework still lists ' + who + ' as one of '
+          class: 'fq-set danger' + (dsArmed ? ' armed' : ''), type: 'button',
+          title: dsArmed ? forceDismiss.msg
+            : 'Nether\'s Follower Framework still lists ' + who + ' as one of '
             + 'your followers, even though the game does not have her as a '
             + 'teammate.\nDismissing releases her from NFF — the same call its '
             + 'own dismiss dialogue makes.\nClick twice.',
           onClick: (e) => { e.stopPropagation();
+            if (dsArmed) { dismissClick(subj); return; }
             arm(e.currentTarget, 'Dismiss ' + who + '?',
               'Click again to release her from NFF',
-              () => sendNpc('dismiss', subj)); },
-        }, '⊘ Dismiss'));
+              () => dismissClick(subj)); },
+        }, dsArmed ? '⊘ Force dismiss?' : '⊘ Dismiss'));
       }
 
       /* Add to / remove from the framework — NFF's own "[Add to Framework
@@ -10495,6 +11656,52 @@
           + 'More axes: Spacebar · Reset pose: Tab\nThe deck closes while you carry.',
         onClick: (e) => { e.stopPropagation(); toGame('hdFire', 'npc-grab'); },
       }, '✥ Grab'));
+      /* Attack — send HER at the enemy (Rober, 2026-09-23: "a npc specific
+         attack order as well"). The Everyone row's Attack, for one person:
+         NpcActions::SicEmOne over fdNpc, addressed by formId so a pick off the
+         party strip sends the picked follower, not the crosshair. The target
+         is never her and never one of yours: the enemy under your crosshair,
+         else along your aim, else the nearest one already fighting you — so
+         it works while you are looking at her. The deck closes (Papyrus). */
+      order.append(h('button', {
+        class: 'fq-set', type: 'button',
+        title: 'Send ' + who + ' to attack, right now — skips the detection lag.\n'
+          + 'Target: the enemy you are aiming at, or, if you are looking at '
+          + who + ', the nearest enemy already fighting you.\n'
+          + 'Frees her from a deck Freeze / Sit / Bed first. The deck closes.',
+        onClick: (e) => { e.stopPropagation(); sendNpc('attack', subj); },
+      }, '⚔ Attack'));
+      if (window.GetAway) order.append(h('button', {
+        class: 'fq-set', type: 'button',
+        title: 'Select nearby NPCs and give yourself 20–30 feet of space',
+        onClick: (e) => { e.stopPropagation(); GetAway.open(whoOf(subj).formId); },
+      }, 'Get away from me…'));
+      /* ⚡ Direct — hand the scene a director instruction ABOUT THIS PERSON
+         (Rober, 2026-09-21: "add a direct here as well if i search direct" and
+         "how do i know im sending it to right person to be direct?").
+
+         The Omni ⚡ Direct chip already exists but is scene-wide, so from there
+         you are typing a name and hoping. Opening it from HER card seeds her
+         name, which is the only steering the director pipe takes — and because
+         this is a <button>, the card's own ⌕ search indexes it, so typing
+         "direct" on the card finds it (fqScan walks buttons only, which is why
+         searching "direct" previously surfaced Preset and Formation and not
+         this).
+
+         ⚠ Honest limit, stated in the tooltip rather than implied by the
+         button: the DIRECTOR chooses who actually speaks. Naming her is a
+         nudge, not a guarantee, and it only reaches NPCs CHIM is driving. */
+      if (window.HDOmni && typeof HDOmni.open === 'function') {
+        order.append(h('button', {
+          class: 'fq-set', type: 'button',
+          title: 'Direct the scene with ' + who + ' named — opens the ⚡ Direct box '
+               + 'seeded with her name.\n'
+               + 'e.g. "' + who + ' brings up the baby over dinner".\n'
+               + '⚠ The director LLM decides who actually speaks, and it only '
+               + 'reaches NPCs CHIM is currently driving — the box lists them.',
+          onClick: (e) => { e.stopPropagation(); HDOmni.open('direct', who + ' '); },
+        }, '⚡ Direct…'));
+      }
       /* Formation — Rober, 2026-08-06: Formation with Followers captured as a
          deck surface. The button opens the CENTERED modal (hd-formation.js);
          everything in it is the mod's own Papyrus state, driven live. Always
@@ -10587,6 +11794,29 @@
           onClick: (e) => { e.stopPropagation();
             sendApply('setTracked', { cat: known.cat.index, idx: known.idx, on: !known.m.tracked }); } },
           known.m.tracked ? '✓ Tracked' : '⚑ Track')));
+    }
+    else if (known && liveTargetFid(t)) {
+      /* She IS on the roster and she IS standing here — but Follower Organizer
+         cannot address her, so its four ops are genuinely unavailable rather
+         than merely hidden. This happens to a follower who was SPAWNED: her
+         reference is a runtime 0xFF form with no source file, FO's
+         FormToString() returns "" for it, and Member's serializer falls back to
+         her BASE record (Kali, filed as "00_DemonKali"). FO then resolves that
+         base, which is a form but never an actor.
+         Say it, with the fix — re-filing her from this card stores whatever FO
+         can see of her now. Everything that speaks to the GAME rather than to
+         FO (Order, Home, her day) keeps working, because those address the
+         crosshair reference. */
+      card.append(h('div', { class: 'fq-orders is-move fq-cgroup is-noaddr' },
+        h('span', { class: 'fq-sets-lbl' },
+          h('span', { class: 'fq-cg-ic' }, groupIcon('move')), 'Move'),
+        h('span', { class: 'fq-noaddr-note', title:
+          'Follower Organizer stored ' + who + '’s BASE record rather than the '
+          + 'reference standing here — which is what it falls back to for someone '
+          + 'spawned at runtime. Summon, Go to, Send back and Track all go through '
+          + 'FO and address that stored form, so they have nobody to act on.' },
+          'Follower Organizer is holding ' + who + '’s base record, not the person '
+          + 'standing here — its Summon / Go to / Send back have nothing to aim at.')));
     }
 
     /* FILE — the other half of the "unfiled" chip. Saying someone is not on the
@@ -10862,33 +12092,51 @@
        the same setHome / forgetHome ops the member menu already sends, on the
        person standing in front of you, which is exactly when you know where
        you want her to live: you are standing in it.
-       Only for someone FO already has (the ops address her by form id + name
-       out of the roster) and only while she is in the world. */
-    if (known && known.m.inWorld) {
+       ⚠ THE GATE. This used to be `known && known.m.inWorld` — Follower
+       Organizer's own answer — and that is a different question from the one
+       being asked. FO says inWorld only when the form it STORED resolves to a
+       reference, and for a follower spawned at runtime it cannot store one: a
+       0xFF ref has no source file, so FO falls back to her BASE NPC_ record
+       and then truthfully reports "not in the world" about somebody standing
+       in front of you (Kali, 2026-09-20 — "weirdly no home tab options for
+       this f7 on an npc?"). The whole Home group vanished, and the answer was
+       her dialogue instead.
+       What MHiYH actually needs is a REFERENCE, and the crosshair always has
+       one. So the gate is "do we have an actor to hand it", and the ops are
+       addressed at `homeM` — the live reference when the card is looking at
+       her, the roster's stored id when it is showing a picked face. Someone FO
+       has never heard of gets the group too: MHiYH's own gates (and the borrow
+       that satisfies the follower one) are what decide, in words. */
+    const homeM = actorSubjectOf(known, t, who);
+    /* `!dead` guards only the WIDENING. The FO-addressable case is left exactly
+       as it was, corpse included: forgetting a dead follower's home is still a
+       thing you may want to do, and taking that away would be a regression
+       hiding inside a fix. */
+    if (homeM && ((liveTargetFid(t) && !dead) || (known && known.m.inWorld))) {
       const homeRow = h('div', { class: 'fq-sets fq-cgroup' },
         h('span', { class: 'fq-sets-lbl' }, h('span', { class: 'fq-cg-ic' }, groupIcon('home')), 'Home'));
       homeRow.append(h('button', {
         class: 'fq-set', type: 'button',
         title: 'Make where you are standing ' + who + '’s MHIYH home'
-             + (known.m.mhHome ? '\nReplaces: ' + known.m.mhHome : ''),
+             + (homeM.mhHome ? '\nReplaces: ' + homeM.mhHome : ''),
         onClick: (e) => {
           e.stopPropagation();
           fqStatus = { msg: 'Setting ' + who + '’s home here…', ok: true, pending: true };
-          sendMhiyh('setHome', known.m, KIND_HOME);
+          sendMhiyh('setHome', homeM, KIND_HOME);
           renderQuickCard();
         },
       }, '⌂ Home is here'));
-      if (known.m.mhHome) {
+      if (homeM.mhHome) {
         homeRow.append(h('button', {
           class: 'fq-set' + (ui.fqArmHome ? ' on' : ''), type: 'button',
           title: ui.fqArmHome ? 'Click again to forget it'
-                              : 'Forget ' + who + '’s home (' + known.m.mhHome + ')',
+                              : 'Forget ' + who + '’s home (' + homeM.mhHome + ')',
           onClick: (e) => {
             e.stopPropagation();
             if (!ui.fqArmHome) { ui.fqArmHome = true; renderQuickCard(); return; }
             ui.fqArmHome = false;
             fqStatus = { msg: 'Forgetting ' + who + '’s home…', ok: true, pending: true };
-            sendMhiyh('forgetHome', known.m, KIND_HOME);
+            sendMhiyh('forgetHome', homeM, KIND_HOME);
             renderQuickCard();
           },
         }, ui.fqArmHome ? '✕ Sure?' : '✕ Forget home'));
@@ -10902,7 +12150,7 @@
          stop until the home exists (its rule, not ours), and a control that
          quietly vanishes teaches nothing, while one that says why teaches the
          rule once. */
-      const canSpot = !!known.m.mhHome;
+      const canSpot = !!homeM.mhHome;
       homeRow.append(h('button', {
         class: 'fq-set', type: 'button',
         disabled: canSpot ? null : true,
@@ -10914,7 +12162,9 @@
         onClick: (e) => {
           e.stopPropagation();
           if (!canSpot) return;
-          openSpotPicker(e.currentTarget, known, who);
+          /* `homeM`, not `known` — the pickers only read `.m`, and the one they
+             must read is the actor we can actually address (see the gate). */
+          openSpotPicker(e.currentTarget, { m: homeM }, who);
         },
       }, '⚑ Set a spot…'));
       /* Her NFF BASE — the other home, and until now read-only here. Only
@@ -10924,8 +12174,8 @@
         homeRow.append(h('button', {
           class: 'fq-set', type: 'button',
           title: 'Set ' + who + '’s NFF home base'
-               + (known.m.nffHome ? '\nCurrently: ' + known.m.nffHome : ''),
-          onClick: (e) => { e.stopPropagation(); openNffBase(e.currentTarget, known, who); },
+               + (homeM.nffHome ? '\nCurrently: ' + homeM.nffHome : ''),
+          onClick: (e) => { e.stopPropagation(); openNffBase(e.currentTarget, { m: homeM }, who); },
         }, '⌂ NFF base…'));
       }
       /* A little inline card showing WHERE she actually lives — her assigned
@@ -10933,24 +12183,24 @@
          (Rober, 2026-08-05). On the same line as the Home buttons, so the
          answer to "where is she stationed" sits right beside the controls that
          set it. Silent when no home is assigned. */
-      if (known.m.homeName) {
+      if (homeM.homeName) {
         /* A CLICKABLE card showing WHERE she lives — her MHIYH home / NFF base,
            her portrait, and a jump to the Domains tab (Rober, 2026-08-05:
            "show the domain icon etc and clicking it takes you to that domain
            tab"). Pre-fills the Domains filter with the home name so the marked
            place, if you have one, is the top hit. */
         const info = h('button', { class: 'fq-homeinfo', type: 'button', title:
-          known.m.homeSrc + ' home: ' + known.m.homeName
-          + (known.m.homeAlt ? '\nAlso ' + (known.m.homeSrc === HOME_SRC.nff ? 'MHIYH' : 'NFF')
-                                       + ': ' + known.m.homeAlt : '')
+          homeM.homeSrc + ' home: ' + homeM.homeName
+          + (homeM.homeAlt ? '\nAlso ' + (homeM.homeSrc === HOME_SRC.nff ? 'MHIYH' : 'NFF')
+                                       + ': ' + homeM.homeAlt : '')
           + '\nClick → Domains tab',
           onClick: (e) => {
             e.stopPropagation();
             if (window.DomainsPane && window.DomainsPane.openWithFilter)
-              window.DomainsPane.openWithFilter(known.m.homeName);
+              window.DomainsPane.openWithFilter(homeM.homeName);
             else if (window.__omniSetTab) window.__omniSetTab('domains');
           } });
-        const p = portraitFor(known.m);
+        const p = portraitFor(homeM);
         if (p) {
           const face = h('span', { class: 'fq-homeinfo-face' });
           face.style.backgroundImage = 'url("' + portraitSrc(p) + (!p.abs && p.mtime ? '?v=' + p.mtime : '') + '")';
@@ -10959,14 +12209,17 @@
           info.append(h('span', { class: 'fq-homeinfo-ic' }, '⌂'));
         }
         info.append(h('span', { class: 'fq-homeinfo-txt' },
-          h('span', { class: 'fq-homeinfo-src' }, known.m.homeSrc),
-          h('span', { class: 'fq-homeinfo-name' }, known.m.homeName)));
+          h('span', { class: 'fq-homeinfo-src' }, homeM.homeSrc),
+          h('span', { class: 'fq-homeinfo-name' }, homeM.homeName)));
         info.append(h('span', { class: 'fq-homeinfo-go' }, '↗'));
         homeRow.append(info);
-      } else {
+      } else if (known) {
         /* No MHIYH/NFF home assigned yet — a muted placeholder so the domain
            slot is VISIBLE (Rober, 2026-08-05: "i see nothing in home that shows
-           a domain"). It becomes the live domain pill once a home is set. */
+           a domain"). It becomes the live domain pill once a home is set.
+           Only for someone ON THE ROSTER: her home is read off the entry C++
+           builds per roster member, so for an unfiled NPC "No home" would not
+           be a fact, it would be us not having looked. Say nothing instead. */
         homeRow.append(h('span', { class: 'fq-homeinfo empty' },
           h('span', { class: 'fq-homeinfo-ic' }, groupIcon('home')),
           h('span', { class: 'fq-homeinfo-txt' },
@@ -11064,7 +12317,27 @@
        card (renderEveryoneBar → #fd-everyone), so rendering them here too put a
        second copy at the BOTTOM (Rober, 2026-08-05: "everyone still at bottom
        of list too"). */
-    if (!quickHost || quickHost.id !== 'fd-quick') card.append(partyBlock());
+    if (!quickHost || (quickHost.id !== 'fd-quick' && quickHost.id !== 'fd-dossier-controls')) card.append(partyBlock());
+
+    /* A card with a name and NO controls is the one output this builder must
+       never produce — it reads as the deck being broken, which is exactly how
+       it was reported ("its just opening a blank area"). Every control group is
+       gated, and the gates can all close at once: Order on !dead, Move and Home
+       on inWorld. When that happens, say which gate shut and what it is reading
+       from, so the card is a diagnosis instead of a blank box. */
+    if (!card.querySelector('.fq-orders')) {
+      const why = [];
+      if (dead) why.push('as DEAD');
+      if (known && known.m && !known.m.inWorld) why.push('as not loaded in the world');
+      card.append(h('div', { class: 'fq-empty fq-empty-why' },
+        h('span', { class: 'fq-empty-ic' }, '⚠'),
+        h('span', null, why.length
+          ? ('Follower Organizer reports ' + who + ' ' + why.join(' and ')
+             + ', so none of her controls apply. If she is standing next to you that '
+             + 'record is stale — look at her directly and the card rebuilds from the '
+             + 'engine instead.')
+          : ('No controls apply to ' + who + ' right now.'))));
+    }
     return card;
   }
 
@@ -11130,6 +12403,7 @@
        re-read the card, or the first Enter after any bridge push would click a
        detached button (i.e. nothing at all). */
     if (FQF.open) fqFindRestore();
+    if (ctxEl && ctxEl._dossier && quickHost === ctxEl._dossier.controlsHost) ctxEl._dossier.refreshSearch();
   }
 
   /* ================================================== member action menu == */
@@ -11139,7 +12413,9 @@
   function closeCtx() {
     if (!ctxEl) return;
     disarm();           // an armed Forget must never survive its own menu
+    const dossier = ctxEl._dossier;
     ctxEl.remove(); ctxEl = null;
+    if (dossier) dossier.close();
     ui.menuFor = null;
     ui.catIconFor = -1;   // the icon picker rides this same element
     document.removeEventListener('mousedown', ctxOutside, true);
@@ -11156,12 +12432,16 @@
   function refreshOpenMenu() {
     if (!ctxEl || !ui.menuFor) return;
     const at = { x: parseFloat(ctxEl.style.left), y: parseFloat(ctxEl.style.top) };
+    const saved = ctxEl._dossier ? ctxEl._dossier.snapshot() : null;
     const want = ui.menuFor;
     const row = visibleRows().filter(function (r) {
-      return r.cat === want.cat && r.idx === want.idx;
+      return r.cat === want.cat && (want.formId
+        ? r.m.formId === want.formId && (r.m.original || r.m.name) === want.original
+        : r.idx === want.idx);
     })[0];
-    if (!row) return;   // filtered out or gone — leave what is on screen
-    openMemberMenu(row, isFinite(at.x) ? at.x : 120, isFinite(at.y) ? at.y : 120);
+    if (!row) { closeCtx(); return; } // Never leave stale action indices on screen.
+    if (ctxEl._dossier && ctxEl._dossier.keepEditing && ctxEl._dossier.keepEditing()) { ctxEl._dossier.paintDayStatus(); return; }
+    openMemberMenu(row, isFinite(at.x) ? at.x : 120, isFinite(at.y) ? at.y : 120, saved);
   }
   function clampCtx(x, y) {
     /* offsetWidth/Height, NOT getBoundingClientRect(). The menu opens under
@@ -11295,18 +12575,660 @@
     });
   }
 
-  function openMemberMenu(row, x, y) {
-    closeCtx();
-    ui.menuFor = { cat: row.cat, idx: row.idx };
+  function clampDossierSize(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.max(75, Math.min(130, Math.round(n / 5) * 5)) : 100;
+  }
+
+  // dossier-portrait-frame: page-only, layout-sized, draggable framing.
+  function dossierFrameValue(raw) {
+    const c = raw || {}, bound = (n, lo, hi, fallback) => typeof n === 'number' && isFinite(n) ? Math.max(lo,Math.min(hi,n)) : fallback;
+    const value = {z:bound(c.z,1,3,1), x:bound(c.x,0,1,.5), y:bound(c.y,0,1,.3)};
+    if (c.fit === 'contain') value.fit = 'contain';
+    return value;
+  }
+  function dossierPortraitFrame(frame, img, wrap, seed, commit) {
+    let value = dossierFrameValue(seed), savedValue = dossierFrameValue(seed), editing = false, drag = null;
+    const btn = (label,fn) => h('button',{type:'button',class:'fd-ds-button',onClick:function(e){e.stopPropagation();fn();}},label);
+    const adjust = btn('Adjust framing',function(){editing=true;paint();frame.focus();});
+    adjust.classList.add('fd-ds-frame-toggle');
+    adjust.setAttribute('aria-expanded','false');
+    const zoom = h('input',{type:'range',min:'100',max:'300',step:'5','aria-label':'Portrait zoom',onInput:function(e){value.z=Number(e.target.value)/100;value=dossierFrameValue(value);paint();}});
+    const output = h('output');
+    const hint = h('p',{class:'fd-ds-frame-hint'},'Drag the portrait or use arrow keys. Zoom in to move further.');
+    const tools = h('div',{class:'fd-ds-frame-tools'},h('label',null,'Zoom',zoom,output),
+      btn('Reset',function(){value=dossierFrameValue(seed && seed.fit === 'contain' ? {fit:'contain',y:.5} : null);paint();}),
+      btn('Cancel',function(){value=dossierFrameValue(savedValue);editing=false;drag=null;paint();adjust.focus();}),
+      btn('Save framing',function(){savedValue=dossierFrameValue(value);editing=false;drag=null;commit(savedValue);paint();adjust.focus();}),hint);
+    wrap.append(adjust,tools);
+    frame.setAttribute('tabindex','0');frame.setAttribute('aria-label','Portrait framing');
+    function paint() {
+      // At z=1, object-position pans the source's natural cover overflow.
+      img.style.position='absolute'; img.style.maxWidth='none';img.style.maxHeight='none';
+      img.style.width=(value.z*100)+'%';img.style.height=(value.z*100)+'%';
+      img.style.left=(-(value.z-1)*value.x*100)+'%';img.style.top=(-(value.z-1)*value.y*100)+'%';
+      img.style.objectFit=value.fit || 'cover';img.style.objectPosition=(value.x*100)+'% '+(value.y*100)+'%';img.style.transform='none';
+      tools.hidden=!editing;adjust.hidden=editing;adjust.setAttribute('aria-expanded',String(editing));
+      frame.classList.toggle('fd-ds-framing',editing);zoom.value=String(Math.round(value.z*100));output.textContent=zoom.value+'%';
+    }
+    function down(e){
+      if(!editing || (e.button !== undefined && e.button !== 0))return;
+      const r=frame.getBoundingClientRect(), iw=img.naturalWidth||r.width, ih=img.naturalHeight||r.height;
+      const scale=(value.fit === 'contain' ? Math.min(r.width/iw,r.height/ih) : Math.max(r.width/iw,r.height/ih))*value.z;
+      drag={x:e.clientX,y:e.clientY,vx:value.x,vy:value.y,ox:Math.max(0,iw*scale-r.width),oy:Math.max(0,ih*scale-r.height)};
+      e.preventDefault();e.stopPropagation();frame.focus();
+    }
+    function move(e){if(!drag)return;
+      value.x=drag.ox>0?drag.vx-(e.clientX-drag.x)/drag.ox:value.x;
+      value.y=drag.oy>0?drag.vy-(e.clientY-drag.y)/drag.oy:value.y;
+      value=dossierFrameValue(value);paint();e.preventDefault();
+    }
+    function up(){drag=null;}
+    function key(e){if(!editing || (e.key!=='Escape' && e.target!==frame))return;
+      const step=e.shiftKey?.1:.025;
+      if(e.key==='ArrowLeft')value.x+=step;else if(e.key==='ArrowRight')value.x-=step;
+      else if(e.key==='ArrowUp')value.y+=step;else if(e.key==='ArrowDown')value.y-=step;
+      else if(e.key==='Escape'){value=dossierFrameValue(savedValue);editing=false;drag=null;}
+      else return;
+      value=dossierFrameValue(value);paint();e.preventDefault();e.stopPropagation();e._fdDossierHandled=true;return true;
+    }
+    frame.addEventListener('mousedown',down);frame.addEventListener('keydown',key);
+    document.addEventListener('mousemove',move);document.addEventListener('mouseup',up);
+    paint();
+    return {key:key,snapshot:function(){return {value:dossierFrameValue(value),editing:editing};},
+      restore:function(s){value=dossierFrameValue(s.value);editing=!!s.editing;paint();},
+      destroy:function(){drag=null;document.removeEventListener('mousemove',move);document.removeEventListener('mouseup',up);}};
+  }
+
+  /* Full-screen character dossier. Existing action nodes keep their closures,
+     guards and bridge verbs; only the composition changes. fd-dossier-v1 */
+  function buildMemberDossier(row, groups, saved) {
     const m = row.m;
+    const returnTo = saved ? saved.returnTo : document.activeElement;
+    let page = saved ? saved.page : 'overview';
+    let query = saved ? saved.query : '';
+    const root = h('div', { id: 'fd-ctx-menu', class: 'fd-dossier', role: 'dialog',
+      'aria-modal': 'true', 'aria-labelledby': 'fd-dossier-name' });
+    let panelObserver = null, styleObserver = null;
+    function fitPanel() {
+      const panel = $('panel'), overlay = $('overlay');
+      if (!panel || !overlay) return;
+      const p = panel.getBoundingClientRect(), o = overlay.getBoundingClientRect();
+      if (!(p.width > 0 && p.height > 0 && o.width > 0 && o.height > 0)) return;
+      // p already includes the deck's scale transform. Apply those painted
+      // bounds once, as an unscaled overlay sibling, rather than scaling twice.
+      const left = Math.max(0, p.left - o.left), top = Math.max(0, p.top - o.top);
+      root.style.left = left + 'px'; root.style.top = top + 'px';
+      root.style.width = Math.max(0, Math.min(p.width, o.width - left)) + 'px';
+      root.style.height = Math.max(0, Math.min(p.height, o.height - top)) + 'px';
+    }
+    const button = (label, fn, cls, title) => h('button', { type: 'button',
+      class: cls || 'fd-ds-button', title: title || label, 'aria-label': title || label,
+      onClick: function (e) { e.stopPropagation(); fn(e); } }, label);
+    const tabs = [];
+    const sections = [];
+    let dossierClosed = false, socialMounted = null, socialPage = '', pinsMounted = null, galleryMounted = null, outfitMounted = null;
+    let personNavigation = 0;
+    const familyActorIds = Object.create(null), familyActorAsked = Object.create(null);
+    let galleryPhotos = [], libraryLoaded = false, libraryLoading = false, libraryError = '';
+    const dsClient = window.HDDossierClient ? HDDossierClient.session({formId:fidHexOf(m.liveFormId || m.formId),name:m.original || m.name}) : null;
+    function moduleModal() { return !!((socialMounted && socialMounted.hasModal()) || (window.HDDossierTools && HDDossierTools.isOpen())); }
+    function dsPerson() { return dsClient && dsClient.person() || {}; }
+    // Reuse the deck's shipped gold artwork; icons never replace action names.
+    const actionIcons = { '⤵': 'hk-party-summon', '➜': 'hk-follower-teleport',
+      '✥': 'hk-follower-teleport', '⮌': 'hk-her-home', '✓': 'hm-domains', '⚑': 'hm-domains',
+      '◉': 'sn-camera', '🎭': 'hm-faces', '⛶': 'hk-portrait', '⊘': 'sn-stop',
+      '⚔': 'hk-party-follow', '☰': 'hk-trade-inventory', '⛃': 'hm-containers',
+      '⚭': 'hd-heart', '🗑': 'sn-stop' };
+    function goldIcon(name) {
+      return h('img', { class: 'fd-ds-icon', src: 'icons/custom/' + name + '.png',
+        alt: '', 'aria-hidden': 'true', width: '32', height: '32', draggable: 'false',
+        onError: function (e) { e.target.style.visibility = 'hidden'; } });
+    }
+    function section(key, title, hint, nodes, pages) {
+      const body = h('section', { class: 'fd-ds-section fd-ds-' + key, 'aria-label': title },
+        title ? h('div', { class: 'fd-ds-sectionhead' }, h('h2', null, title),
+          hint ? h('p', null, hint) : null) : null);
+      (nodes || []).forEach(function (el) {
+        const oldIcon = el.querySelector('.fd-ctx-check');
+        const iconName = oldIcon && actionIcons[oldIcon.textContent];
+        if (iconName) {
+          oldIcon.textContent = ''; oldIcon.append(goldIcon(iconName));
+          oldIcon.classList.add('fd-ds-action-icon');
+        }
+        if (!el.classList.contains('fd-ctx-sep') && !el.classList.contains('fd-ctx-head')) body.append(el);
+      });
+      sections.push({ body: body, pages: pages, key: key });
+      return body;
+    }
+    const rows = visibleRows();
+    const index = rows.findIndex(function (r) { return r.cat === row.cat && r.idx === row.idx; });
+    function navigate(delta) {
+      const next = rows[index + delta];
+      if (!next) return;
+      const snapshot = root._dossier.snapshot();
+      snapshot.portraitFrame = null; snapshot.draft = null; snapshot.focus = ''; snapshot.scroll = 0; snapshot.query = '';
+      openMemberMenu(next, 0, 0, snapshot);
+      askEquipped(next.m);
+    }
+    const prev = button('‹', () => navigate(-1), 'fd-ds-step', 'Previous character');
+    const next = button('›', () => navigate(1), 'fd-ds-step', 'Next character');
+    prev.disabled = index <= 0; next.disabled = index < 0 || index >= rows.length - 1;
+    const back = button('‹  Followers', () => closeCtx(), 'fd-ds-back', 'Return to your roster (Escape)');
+    let editing = !!(saved && saved.editing);
+    const edit = button('Page size', function () {
+      editing = !editing; sizeTools.hidden = !editing;
+      edit.setAttribute('aria-expanded', String(editing));
+      if (editing) sizeInput.focus();
+    }, 'fd-ds-button', 'Edit page appearance');
+    edit.setAttribute('aria-expanded', String(editing)); edit.setAttribute('aria-controls', 'fd-ds-size-tools');
+    const sizeValue = h('output', { for: 'fd-ds-size', class: 'fd-ds-size-value' });
+    const sizeInput = h('input', { id: 'fd-ds-size', type: 'range', min: '75', max: '130', step: '5',
+      'aria-label': 'Character page size',
+      onInput: function (e) { state.dossierSizePct = clampDossierSize(e.target.value); applySize(); },
+      onChange: function () { saveCfg(); } });
+    const resetSize = button('Reset', function () { state.dossierSizePct = 100; applySize(); saveCfg(); }, 'fd-ds-button');
+    const sizeTools = h('div', { id: 'fd-ds-size-tools', class: 'fd-ds-size-tools' },
+      h('label', { for: 'fd-ds-size' }, 'Page size'), sizeInput, sizeValue, resetSize,
+      h('span', { class: 'fd-ds-size-hint' }, 'Smaller fits more · Larger is easier to read'));
+    sizeTools.hidden = !editing;
+    function applySize() {
+      const pct = clampDossierSize(state.dossierSizePct);
+      root.style.setProperty('--ds-size', String(pct / 100));
+      sizeInput.value = String(pct); sizeInput.setAttribute('aria-valuetext', pct + ' percent');
+      sizeValue.textContent = pct + '%'; resetSize.disabled = pct === 100;
+    }
+    applySize();
+    const search = h('input', { id: 'fd-ds-search', type: 'search', value: query,
+      class: 'fd-ds-search', placeholder: 'Find an action, detail or item…',
+      'aria-label': 'Search this character’s actions, details and equipment', autocomplete: 'off',
+      onInput: function (e) { query = e.target.value; paint(); } });
+    root.append(h('header', { class: 'fd-ds-top' }, back,
+      h('span', { class: 'fd-ds-brand' }, 'SKYMANAGER / PEOPLE'), search,
+      h('div', { class: 'fd-ds-pagination' }, prev,
+        h('span', null, (index + 1) + ' / ' + rows.length), next),
+      edit, button('Close ×', () => closeCtx(), 'fd-ds-close', 'Close character (Escape)')), sizeTools);
+
+    const portrait = h('div', { class: 'fd-ds-portrait' });
+    const portraitWrap = h('div', {class:'fd-ds-portrait-wrap'}, portrait);
+    const defaultShot = portraitFor(m);
+    let shot = defaultShot, frameEdit = null;
+    function paintPortrait(selectedFile) {
+    if (frameEdit) { frameEdit.destroy(); frameEdit = null; }
+    portraitWrap.textContent = ''; portrait.textContent = ''; portraitWrap.append(portrait);
+    shot = selectedFile ? {file:selectedFile.replace(/^portraits\//,''),abs:selectedFile.indexOf('portraits/') !== 0,mtime:0} : defaultShot;
+    if (shot) {
+      const src = portraitSrc(shot);
+      const img = h('img', { src: src + (!shot.abs && shot.mtime ? '?v=' + shot.mtime : ''),
+        alt: m.name, width: '640', height: '800', draggable: 'false' });
+      let retry = false;
+      img.addEventListener('error', function () {
+        if (!portrait.contains(img)) return;
+        if (!retry) { retry = true; img.src = src; return; }
+        if (frameEdit) frameEdit.destroy();
+        portraitWrap.textContent = ''; portraitWrap.append(h('span', { class: 'fd-ds-monogram' }, m.name.charAt(0)),
+          h('span', { class: 'fd-ds-photo-note' }, 'Portrait unavailable'));
+      });
+      portrait.append(img);
+      // A generated head already has transparent framing. Cover would cut its
+      // chin off in this wide panel. Preserve existing hand-framed pages exactly.
+      const pageFrame = state.dossierFrames[shot.file] || (shot.abs ? {z:1,x:.5,y:.5,fit:'contain'} : null);
+      if (window.HDFaceFit) HDFaceFit.applyBrightness(img, shot.file);
+      frameEdit = dossierPortraitFrame(portrait, img, portraitWrap, pageFrame, function (value) {
+        state.dossierFrames[shot.file] = value; saveCfg();
+      });
+      if (saved && saved.portraitFrame && saved.portraitFrame.file === shot.file) frameEdit.restore(saved.portraitFrame);
+    } else {
+      const faceWhy = faceWhyFor(m);
+      portrait.append(h('span', { class: 'fd-ds-monogram' }, m.name.charAt(0)),
+        h('span', { class: 'fd-ds-photo-note', title: faceWhy || '' },
+          faceWhy ? ('No head render possible: ' + faceWhy) : 'No portrait yet / Capture one in Actions'));
+    }
+    }
+    paintPortrait('');
+    const linkedHome = window.DomainsPane && DomainsPane.homeFor ? DomainsPane.homeFor({
+      home: m.fields && m.fields.home, nffHome: m.nffHome, mhHome: m.mhHome }) : null;
+    const facts = h('dl', { class: 'fd-ds-facts' });
+    function fact(label, value) { facts.append(h('div', null, h('dt', null, label), h('dd', null, value))); }
+    fact('Status', m.dead ? 'Deceased' : m.following ? 'Following you' : m.inWorld ? 'In the world' : 'Not located');
+    fact('Location', m.where || 'Not reported');
+    fact('Home', linkedHome ? linkedHome.mark.name : m.homeName || (m.fields && m.fields.home) || 'No assigned home');
+    if (m.fields && m.fields.relationship) fact('Relationship', m.fields.relationship);
+    if (m.tracked) fact('Map', 'Tracking enabled');
+    const identity = h('aside', { class: 'fd-ds-identity' }, portraitWrap,
+      h('div', { class: 'fd-ds-identity-text' },
+        /* The category label is the door: click it and the workspace narrows
+           to the Category control with its finder focused (Rober, 2026-09-23:
+           "no option to change that category in follower organizer they are
+           in while searching?"). */
+        h('button', { type: 'button', class: 'fd-ds-eyebrow fd-ds-eyebrow-btn',
+          title: 'Change category — move ' + m.name + ' to another Follower Organizer group',
+          onClick: function (e) {
+            if (e && e.stopPropagation) e.stopPropagation();
+            query = 'category'; search.value = query; paint();
+            const finder = root.querySelector('.fd-ds-category input');
+            if (finder) { try { finder.focus(); } catch (err) { /* no focus in a harness */ } }
+          } }, (row.catName || 'Follower Organizer') + ' ›'),
+        h('h1', { id: 'fd-dossier-name' }, m.name),
+        m.original && m.original !== m.name ? h('p', { class: 'fd-ds-original' }, m.original) : null,
+        h('p', { class: 'fd-ds-note' }, m.desc || 'Every person has a story. Add yours in Editor.'),
+        h('div', { class: 'fd-ds-statuses' }, spouseChip(m), fertChip(m)),
+        m.fert ? h('p', { class: 'fd-ds-family', title: fertTitle(m.fert) },
+          m.fert.pregnant ? 'Expecting · ' + (typeof m.fert.percent === 'number' ? m.fert.percent + '%' : 'day ' + m.fert.day)
+            : 'Pregnancy: not pregnant') : h('p', { class: 'fd-ds-family' }, 'Pregnancy: not reported'), facts,
+        h('div', { class: 'fd-ds-bond' }, h('h2', null, 'Your relationship'),
+          rankRow({formId: m.liveFormId || m.formId, readFormId:m.formId, name: m.name}, m.name) ||
+            h('p', {class:'fd-ds-empty'}, 'Waiting for the game’s relationship rank…'))));
+    let homeCover = null;
+    if (linkedHome) {
+      const home = linkedHome.mark;
+      const cover = button('', function () { closeCtx(); DomainsPane.openWithFilter(home.name); }, 'fd-ds-home', 'Open ' + home.name + ' in Domains');
+      if (home.image) cover.append(h('img', {src:home.image, alt:'', onError:function(e){e.target.hidden=true;}}));
+      cover.append(h('span', {class:'fd-ds-home-copy'}, h('span', {class:'fd-ds-eyebrow'}, 'HOME · ' + linkedHome.source),
+        h('strong', null, home.name), h('span', null, 'Open domain ›')));
+      homeCover = cover;
+    }
+    const pinsHost = h('div', {class:'fd-ds-pins-host'});
+    identity.querySelector('.fd-ds-identity-text').append(pinsHost);
+    const nav = h('nav', { class: 'fd-ds-tabs', 'aria-label': 'Character sections' });
+    [['overview', 'Overview', 'hm-followers'], ['profile', 'Editor', 'hm-sheet'], ['chim', 'CHIM', 'hk-chim-dialogue'],
+      ['household', 'Household', 'hm-home'], ['family', 'Family tree', 'cat-companions'], ['history', 'History', 'hm-journal'],
+      ['equipment', 'Equipment', 'hm-wardrobe'], ['gallery', 'Gallery', 'hk-portrait'], ['actions', 'Actions', 'cat-utilities']].forEach(function (t) {
+      const tab = button(t[1], function () { if (socialMounted) { socialMounted.destroy(); socialMounted = null; socialPage = ''; } page = t[0]; query = ''; search.value = ''; paint(); scroll.scrollTop = 0; }, 'fd-ds-tab');
+      tab.insertBefore(goldIcon(t[2]), tab.firstChild);
+      tab.dataset.page = t[0]; tabs.push(tab); nav.append(tab);
+    });
+    const scroll = h('div', { class: 'fd-ds-layout fd-ds-scroll', tabindex: '0', 'aria-label': 'Character workspace' });
+    const contentWrap = h('div', { class: 'fd-ds-body' });
+    const content = h('div', { class: 'fd-ds-content' });
+    const socialHost = h('div', {class:'fd-ds-social-host'}), galleryHost = h('div', {class:'fd-ds-gallery-host'}), outfitHost = h('div', {class:'fd-ds-outfit-host'});
+    const controlsHost = h('div', { id: 'fd-dossier-controls', class: 'fd-ds-controls-host' });
+    let controlsMounted = false;
+    // The day owns its heading here; the original menu's label is redundant.
+    const dayNodes = groups.routine.filter(function (el) { return !el.classList.contains('fd-ctx-field'); });
+    if (!dayNodes.length) dayNodes.push(h('p', { class: 'fd-ds-empty' },
+      state.nff.mhiyh ? 'No routine is available for this character. Locate them in the world to assign a home.'
+        : 'Daily routines need My Home is Your Home. No routine data is available.'));
+    const assigned = new Set((m.acts || []).filter(a => a.place && canSetKind(a.k)).map(a => a.k));
+    if (m.mhHome) assigned.add(KIND_HOME);
+    const daySummary = h('div', { class: 'fd-ds-day-summary' },
+      h('span', null, state.nff.mhiyh ? assigned.size + ' / 7 places set · MHiYH' : 'MHiYH unavailable'),
+      button('Saved rhythms…', function () {
+        if (!window.ResidentsPane || !ResidentsPane.openRhythms) { toast('Residents controls are still loading. Try again shortly.'); return; }
+        closeCtx(); ResidentsPane.openRhythms({formId:fidHexOf(m.liveFormId || m.formId),name:m.name,dead:m.dead});
+      }, 'fd-ds-rhythms', 'Save or replace this NPC’s complete daily rhythm'));
+    const dayStatus = h('p', { class: 'fd-ds-day-status', role: 'status', 'aria-live': 'polite' });
+    function paintDayStatus() {
+      const status = state.dayStatus[dayStatusKey(m.liveFormId || m.formId)];
+      dayStatus.textContent = status ? status.msg : state.nff.mhiyh
+        ? 'Set here marks where YOU are standing.'
+        : 'Daily routines require My Home is Your Home.';
+      dayStatus.classList.toggle('pending', !!(status && status.pending));
+      dayStatus.classList.toggle('error', !!(status && !status.ok));
+    }
+    paintDayStatus();
+    content.append(section('routine', 'Daily rhythm', '', [daySummary].concat(dayNodes, [dayStatus], homeCover ? [homeCover] : []), ['overview']));
+    content.append(section('travel', 'Go together', 'Travel, recall and map tracking', groups.travel, ['overview', 'actions']));
+    content.append(section('service', 'In your company', 'Follower service and belongings', groups.service, ['overview', 'actions', 'equipment']));
+    content.append(section('profile', 'Their story', 'Edits save when you leave a field. Clear a field to reset it.', groups.profile, ['profile']));
+    content.append(section('outfit-presets', 'Wardrobe presets', '', [outfitHost], ['equipment']));
+    content.append(section('social', '', '', [socialHost], ['household','family','history']));
+    content.append(section('gallery', '', '', [galleryHost], ['gallery']));
+    content.append(section('equipment', 'Currently equipped', 'Read from the game, including outfit-owned pieces.', groups.equipment, ['equipment']));
+    content.append(section('appearance', 'Portrait & appearance', 'Capture, frame and change their look', groups.appearance, ['profile']));
+    content.append(section('controls', 'All character controls', 'The same live controls as F7, addressed to this character.', [controlsHost], ['actions']));
+
+    const fid = Number(m.liveFormId || m.formId) || 0;
+    const sceneStart = button('Start OStim scene', function () {
+      closeCtx(); OstimTools.startFor({formId:fid,name:m.name});
+    }, 'fd-ctx-item', 'Choose participants, furniture, clothing and scene control');
+    sceneStart.insertBefore(goldIcon('seg-ostim'), sceneStart.firstChild);
+    sceneStart.disabled = !fid || !!m.dead || !window.OstimTools || !OstimTools.startFor;
+    content.querySelector('.fd-ds-service').append(sceneStart);
+    const marriage = (equippedFor(m) || {}).about;
+    const marital = marriage && marriage.maras;
+    let marriageArmed = false;
+    const marry = button(m.spouse ? 'Already married' : 'Force marriage', function () {
+      if (!marriageArmed) {
+        marriageArmed = true; marry.textContent = 'Confirm marriage to ' + m.name;
+        marry.title = 'Registers a marriage through M.A.R.A.S. This changes your save.'; return;
+      }
+      marry.disabled = true; closeCtx();
+      toGame('fdMarriage', JSON.stringify({formId:fid,confirm:true}));
+    }, 'fd-ctx-item', 'Register marriage through M.A.R.A.S, using its own status transition');
+    marry.insertBefore(goldIcon('hd-heart'), marry.firstChild);
+    marry.disabled = !!m.spouse || !!m.dead || !fid || !(marital && marital.on);
+    const marriageHint = m.spouse ? 'Married to you · M.A.R.A.S' : marital && marital.on
+      ? 'Uses M.A.R.A.S to change marriage status. Confirm on a second click.' : 'Waiting for M.A.R.A.S status, or the mod is unavailable.';
+    content.append(section('marriage', 'Marriage', marriageHint, [marry], ['profile']));
+    const chimHost = h('div', {class:'fd-ds-chim-host'});
+    let chimMounted = false;
+    content.append(section('chim', 'CHIM', 'Voice, background and a life that evolves with them', [chimHost], ['chim']));
+    if (!window.ChimBtn || !ChimBtn.mount) chimHost.append(h('p', {class:'fd-ds-empty'}, 'CHIM controls are not available in this view.'));
+
+    function connect(label, detail, available, iconName, fn) {
+      if (!available) return;
+      const action = button(label, function (e) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        closeCtx(); fn({ currentTarget: { getBoundingClientRect: function () { return rect; } } });
+      }, 'fd-ctx-item', detail);
+      action.insertBefore(goldIcon(iconName), action.firstChild);
+      if (label === 'Tune stats & temperament') content.append(section('tuning', 'Stats & temperament', 'Open the dedicated live NPC editor', [action], ['profile']));
+      else groups.connections.push(action);
+    }
+    connect('Quests & stages', 'Inspect this character’s quests and quest aliases', window.HDQuests && fid, 'hm-quests', function (e) {
+      HDQuests.open(e.currentTarget, { who: m.name, formId: fid, hex: hexOf(fid), dead: !!m.dead,
+        portrait: shot ? portraitSrc(shot) : '' });
+    });
+    connect('Tune stats & temperament', 'Open the existing NPC editor for ' + m.name, window.HDNpcTune && fid, 'cat-utilities', function () {
+      HDNpcTune.open({ formId: fid, name: m.name, portrait: shot ? portraitSrc(shot) : '' });
+    });
+    content.append(section('connections', 'A deeper connection', 'Character tools', groups.connections.length ? groups.connections :
+      [h('p', { class: 'fd-ds-empty' }, 'Additional character tools are unavailable in this session.')], ['overview', 'actions']));
+    content.append(section('organize', 'Your roster', 'Categorise this person. Removing an entry leaves the NPC untouched.', groups.organize, ['profile']));
+    const empty = h('p', { class: 'fd-ds-empty fd-ds-noresults', role: 'status' }, 'No matches. Try “home”, “inventory”, “portrait” or “category”.');
+    content.append(empty); contentWrap.append(content);
+    const count = h('span', { class: 'fd-ds-result', role: 'status', 'aria-live': 'polite' });
+    const work = h('main', { class: 'fd-ds-work' }, nav, contentWrap,
+      h('footer', { class: 'fd-ds-footer' }, count, h('span', null, 'Ctrl+K  Search / Esc  Back')));
+    scroll.append(identity, work); root.append(scroll);
+
+    // Semantic labels and stable IDs support keyboard navigation and restore.
+    Array.prototype.forEach.call(root.querySelectorAll('input, select'), function (el, i) {
+      if (!el.id) el.id = 'fd-ds-field-' + i;
+      const parent = el.closest('.fd-ctx-field');
+      const label = parent && parent.querySelector('label');
+      if (label) { label.setAttribute('for', el.id); el.setAttribute('aria-label', label.textContent); }
+    });
+    function allDossierRows() {
+      const list = [], seen = new Set();
+      state.cats.forEach(function(c) { c.members.forEach(function(person,idx) {
+        const key = canonFormId(fidHexOf(person.liveFormId || person.formId));
+        if (!key || seen.has(key)) return; seen.add(key);
+        list.push({cat:c.index,idx:idx,catName:catLabel(c),m:person});
+      }); }); return list;
+    }
+    function personAdapter(person) {
+      const image = portraitFor(person), formId = fidHexOf(person.liveFormId || person.formId);
+      const actor={formId:formId,name:person.original || person.name};
+      const record=window.HDDossierClient&&HDDossierClient.session(actor).person();
+      return Object.assign({name:person.name,formId:formId,actor:actor,image:image ? portraitSrc(image) : '',location:person.where || ''},record||{});
+    }
+    function openConnectedPerson(person) {
+      const generation = ++personNavigation;
+      let id = person.formId || (person.actor && !person.actor.plugin ? person.actor.formId : '');
+      const hit = allDossierRows().find(function(r) {
+        if (id) return canonFormId(fidHexOf(r.m.liveFormId || r.m.formId)) === canonFormId(id);
+        // A durable graph identity must resolve through native lookup, never a name guess.
+        return false;
+      });
+      if (hit) { const nextState=root._dossier.snapshot();nextState.page='family';nextState.query='';nextState.focus='';nextState.portraitFrame=null;nextState.draft=null;openMemberMenu(hit,0,0,nextState);askEquipped(hit.m);return true; }
+      if (person.actor && person.actor.plugin && window.HDDossierClient) {
+        HDDossierClient.request({op:'resolveActor',actor:person.actor}).then(function(reply) {
+          if (dossierClosed || generation !== personNavigation || !reply.ok || !reply.formId) return;
+          const resolved = allDossierRows().find(function(r){return canonFormId(fidHexOf(r.m.liveFormId || r.m.formId))===canonFormId(reply.formId);});
+          if (resolved) {const nextState=root._dossier.snapshot();nextState.page='family';nextState.query='';nextState.focus='';nextState.portraitFrame=null;nextState.draft=null;openMemberMenu(resolved,0,0,nextState);askEquipped(resolved.m);}
+        }).catch(function(){});
+      }
+      return false;
+    }
+    function familyPortrait(person) {
+      if(person.portrait&&person.portrait.file)return person.portrait.file;
+      let member=null;
+      if(person.id&&person.id===dsPerson().id)member=m;
+      else {
+        const runtime=person.formId||familyActorIds[person.id];
+        if(runtime){const row=allDossierRows().find(function(r){return canonFormId(fidHexOf(r.m.liveFormId||r.m.formId))===canonFormId(runtime);});if(row)member=row.m;}
+      }
+      const shot=member&&portraitFor(member);return shot?portraitSrc(shot):person.image||'';
+    }
+    function loadFamilyFaces(){
+      if(!window.HDDossierClient||!dsPerson().id)return;
+      const data=HDDossierClient.snapshot(), connected=new Set([dsPerson().id]), queue=[dsPerson().id];
+      while(queue.length&&connected.size<100){const id=queue.shift();(data.relations||[]).forEach(function(r){if(r.from!==id&&r.to!==id)return;const other=r.from===id?r.to:r.from;if(!connected.has(other)&&connected.size<100){connected.add(other);queue.push(other);}});}
+      const tasks=(data.people||[]).filter(function(p){return connected.has(p.id)&&p.actor&&!familyActorAsked[p.id]&&!familyPortrait(p);}).map(function(p){
+        familyActorAsked[p.id]=true;
+        return HDDossierClient.request({op:'resolveActor',actor:p.actor}).then(function(r){if(r.ok&&r.formId)familyActorIds[p.id]=r.formId;}).catch(function(){});
+      });
+      if(tasks.length)Promise.all(tasks).then(function(){if(!dossierClosed&&socialMounted&&!moduleModal())socialMounted.refreshPortraits();});
+    }
+    function socialOptions() {
+      const roster = allDossierRows(), p = dsPerson();
+      const subject = Object.assign(personAdapter(m),p,{name:m.name,personId:p.id || ''});
+      const residents = linkedHome ? roster.filter(function(r) {
+        const home = window.DomainsPane && DomainsPane.homeFor && DomainsPane.homeFor({home:r.m.fields&&r.m.fields.home,nffHome:r.m.nffHome,mhHome:r.m.mhHome});
+        return home && home.mark && home.mark.id === linkedHome.mark.id;
+      }).map(function(r){return personAdapter(r.m);}) : [];
+      return {page:page,subject:subject,roster:roster.map(function(r){return personAdapter(r.m);}),store:HDDossierClient.snapshot(),request:dsRequest,
+        homeDomain:linkedHome && linkedHome.mark,homeLabel:m.homeName || (m.fields&&m.fields.home) || '',residents:residents,
+        observedLocation:m.where || '',observedMarriage:m.spouse?'Married to the player':'',
+        schedule:{currentLabel:m.nowAct ? (m.nowAct.spec && (m.nowAct.spec.name || m.nowAct.spec.label) || actSpec(m.nowAct.k).label || '') + (m.nowAct.place?' — '+m.nowAct.place:'') : ''},
+        openPerson:openConnectedPerson,onFocusPerson:function(){personNavigation++;},portraitFor:familyPortrait,
+        loadPortraits:function(){return HDDossierClient.request({op:'gallery',all:true}).then(function(r){if(!r.ok)throw new Error(r.msg||'Portrait library unavailable.');return r.photos||[];});},
+        openDomain:function(home){closeCtx();DomainsPane.openWithFilter(home.name);},
+        openRhythms:function(){if(window.ResidentsPane&&ResidentsPane.openRhythms){closeCtx();ResidentsPane.openRhythms({formId:fidHexOf(m.liveFormId||m.formId),name:m.name,dead:m.dead});}}
+      };
+    }
+    async function dsRequest(req) {
+      if (!dsClient) throw new Error('Dossier storage is still loading. Reopen this page.');
+      const reply = await dsClient.request(req);
+      if (!dossierClosed && reply.ok) { if(pinsMounted)pinsMounted.refresh();if(outfitMounted)outfitMounted.refresh(); }
+      return reply;
+    }
+    function pinActions() {
+      const labels={summon:'Summon to me',goto:'Go to them',placeHere:'Place them at me',sendTo:'Send back / send to…',track:'Track on map',capture:'Capture portrait',inventory:'Open inventory',storage:'Open spare inventory',service:m.following?'Dismiss from service':'Recruit as follower'};
+      const nodes = [];
+      root.querySelectorAll('[data-dossier-action]').forEach(function(node){const id=node.getAttribute('data-dossier-action');if(labels[id]&&!nodes.some(a=>a.id===id))nodes.push({id:id,label:labels[id],disabled:!!node.disabled,reason:node.title||'',icon:node.querySelector('.fd-ds-icon')?node.querySelector('.fd-ds-icon').getAttribute('src'):''});});
+      return nodes;
+    }
+    const toolOptions = {
+      getActorId:function(){return fidHexOf(m.liveFormId||m.formId);},getPerson:dsPerson,getActions:pinActions,
+      savePins:function(pins){return dsRequest({op:'setPins',pins:pins});},
+      runAction:function(id){
+        const node=root.querySelector('[data-dossier-action="'+id+'"]');
+        const current=visibleRows().find(function(r){return r.cat===row.cat&&r.idx===row.idx&&r.m.formId===m.formId;});
+        if(!current||!node||node.disabled)return {ok:false,msg:'This action is no longer available. Reopen the character page.'};
+        node.click();return {ok:true,msg:'Action requested.'};
+      },
+      getOutfits:function(){return window.WardrobePane&&WardrobePane.quickOutfits?WardrobePane.quickOutfits():[];},
+      saveEquipment:function(slots){return dsRequest({op:'setEquipment',slots:slots});},
+      getApplyWarning:function(){const about=window.WardrobePane&&WardrobePane.quickAbout&&WardrobePane.quickAbout(fidHexOf(m.liveFormId||m.formId));return about&&about.mode==='nff'?'Wardrobe will take outfit control back from NFF, assign this outfit, then request dressing.':about&&!about.tracked&&about.mode==='off'?'Wardrobe will add the outfit pieces to their inventory and request equip, without assigning outfit management.':'Wardrobe will assign this outfit and request dressing now. This changes outfit management for this NPC.';},
+      applyOutfit:function(id){
+        if(!window.WardrobePane||!WardrobePane.quickWear)return {ok:false,msg:'Wardrobe is not available yet. Open Wardrobe first.'};
+        const about=WardrobePane.quickAbout(fidHexOf(m.liveFormId||m.formId));
+        if(!about)return {ok:false,msg:'Wardrobe has not loaded this NPC. Open their Wardrobe People page first.'};
+        if(m.dead)return {ok:false,msg:'This NPC is deceased.'};
+        const unmanaged=!about.tracked&&about.mode==='off';
+        const result=unmanaged&&WardrobePane.quickGiveWear?WardrobePane.quickGiveWear(about.key,id):WardrobePane.quickWear(about.key,id);
+        if(result&&result.ok){dsRequest({op:'recordAction',action:'outfit-requested',detail:id}).catch(function(){});closeCtx();}
+        return result;
+      },
+      getPortraits:function(){return galleryPhotos;},
+      selectPortrait:async function(file){const reply=await dsRequest({op:'setPortrait',file:file});if(reply.ok&&!dossierClosed)paintPortrait(file);return reply;},
+      capturePortrait:function(){const node=root.querySelector('[data-dossier-action="capture"]');if(!node||node.disabled)return {ok:false,msg:'This NPC must be visible in the world to capture a portrait.'};node.click();return {ok:true,msg:'Portrait capture requested.'};},
+      framePortrait:function(){const adjust=portraitWrap.querySelector('.fd-ds-frame-toggle');if(adjust){adjust.click();scroll.scrollTop=0;return {ok:true,msg:'Drag the portrait or use the arrow controls, then save framing.'};}return {ok:false,msg:'Choose an available portrait first.'};}
+    };
+    function mountModules() {
+      if (!libraryLoaded) {
+        if (['family','history','household'].indexOf(page)!==-1) {socialHost.textContent=libraryError||'Loading shared person records…';}
+        if (page==='gallery') galleryHost.textContent=libraryError||'Loading portrait library…';
+        if (page==='equipment') outfitHost.textContent=libraryError||'Loading Wardrobe shortcuts…';
+        return;
+      }
+      if(window.HDDossierTools){
+        if(!pinsMounted)pinsMounted=HDDossierTools.mountPins(pinsHost,toolOptions);
+        if(page==='equipment'&&!outfitMounted){outfitHost.textContent='';askClothes();outfitMounted=HDDossierTools.mountEquipment(outfitHost,toolOptions);}
+        if(page==='gallery'&&!galleryMounted){galleryHost.textContent='';galleryMounted=HDDossierTools.mountGallery(galleryHost,toolOptions);loadGallery();}
+      }
+      if(['family','history','household'].indexOf(page)!==-1&&window.HDDossierSocial&&socialPage!==page){
+        if(socialMounted)socialMounted.destroy();socialHost.textContent='';socialPage=page;socialMounted=HDDossierSocial.mount(socialHost,socialOptions());loadFamilyFaces();
+      }
+    }
+    function loadGallery(){
+      HDDossierClient.request({op:'gallery',name:m.original||m.name}).then(function(reply){
+        if(dossierClosed)return;if(!reply.ok){galleryHost.append(h('p',{class:'fd-ds-empty',role:'alert'},reply.msg||'Portraits could not be loaded.'));return;}
+        galleryPhotos=reply.photos||[];
+        const currentFile=dsPerson().portrait&&dsPerson().portrait.file;
+        if(currentFile&&!galleryPhotos.some(p=>p.file===currentFile))galleryPhotos.unshift({file:currentFile,src:currentFile,label:'Selected page portrait'});
+        if(galleryMounted)galleryMounted.refresh();
+      }).catch(function(e){if(!dossierClosed)galleryHost.append(h('p',{class:'fd-ds-empty',role:'alert'},e.message));});
+    }
+    function loadLibrary(){
+      if(!dsClient){libraryError='Dossier storage is unavailable. Reopen SkyManager after its modules load.';return;}
+      if(libraryLoading)return;libraryLoading=true;
+      dsClient.read().then(function(reply){
+        if(dossierClosed)return;libraryLoading=false;
+        if(!reply.ok){libraryError=reply.msg||'Shared records could not be loaded. Reopen the page to retry.';paint();return;}
+        libraryLoaded=true;const selected=dsPerson().portrait&&dsPerson().portrait.file;if(selected)paintPortrait(selected);paint();
+      }).catch(function(e){if(!dossierClosed){libraryLoading=false;libraryError=e.message;paint();}});
+    }
+    const candidates = [];
+    function indexCandidates() {
+      candidates.length = 0;
+      sections.forEach(function (s) {
+      Array.prototype.forEach.call(s.body.querySelectorAll('.fd-ctx-item, .fd-ctx-field, .fd-day-row, .fd-eq-row, .fq button, .chim-fly-item, .dso-person, .dso-event, .dso-button, .hddt-slot, .hddt-photo, .hddt-button'), function (node) {
+        if (node.closest('.fq-find')) return;
+        const input = node.querySelector('input, select');
+        candidates.push({ node: node, section: s, text: (node.textContent + ' ' + (node.title || '') + ' ' +
+          (input ? input.value : '')).toLowerCase() });
+      });
+      });
+    }
+    function paint() {
+      // Graph layout must measure a visible host, not the previous tab's hidden section.
+      sections.forEach(function(s){if(s.pages.indexOf(page)!==-1)s.body.hidden=false;});
+      mountModules();
+      const q = query.trim().toLowerCase();
+      if ((page === 'chim' || q) && !chimMounted && root.isConnected && window.ChimBtn && ChimBtn.mount) {
+        chimMounted = true;
+        ChimBtn.mount(chimHost, {original:m.original || m.name, who:m.name, formId:fid, dead:!!m.dead, onNavigate:closeCtx});
+      }
+      if ((page === 'actions' || q) && !controlsMounted && root.isConnected) {
+        controlsMounted = true;
+        mountQuick(controlsHost);
+      }
+      indexCandidates();
+      let matches = 0;
+      /* Every word, in any order: "change follower" must find the Category
+         control whose words are "Change category … Follower Organizer group"
+         (Rober, 2026-09-23). A phrase-only match was the reason it did not. */
+      const toks = q.split(/\s+/).filter(Boolean);
+      candidates.forEach(function (c) {
+        const hit = !toks.length || toks.every(function (t) { return c.text.indexOf(t) !== -1; });
+        c.node.hidden = !hit;
+        if (q && hit) matches++;
+      });
+      sections.forEach(function (s) {
+        s.body.hidden = q ? !candidates.some(c => c.section === s && !c.node.hidden) : s.pages.indexOf(page) === -1;
+      });
+      tabs.forEach(function (tab) { tab.setAttribute('aria-current', !q && tab.dataset.page === page ? 'page' : 'false'); });
+      content.classList.toggle('searching', !!q);
+      content.classList.toggle('overview', !q && page === 'overview');
+      empty.hidden = !q || matches > 0;
+      count.textContent = q ? matches + (matches === 1 ? ' match' : ' matches') : 'Character workspace';
+    }
+    function key(e) {
+      if (e._fdDossierHandled) return true;
+      if (moduleModal()) { if(socialMounted&&socialMounted.hasModal())socialMounted.onKey(e);else HDDossierTools.onKey(e);return true; }
+      if (frameEdit && frameEdit.key(e)) return true;
+      if ((e.ctrlKey || e.metaKey) && String(e.key || '').toLowerCase() === 'k') {
+        e.preventDefault(); search.focus(); e._fdDossierHandled = true; return true;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault(); e._fdDossierHandled = true;
+        if (query) { query = ''; search.value = ''; paint(); search.focus(); }
+        else closeCtx();
+        return true;
+      }
+      if (e.key === 'Enter' && e.target === search) {
+        e.preventDefault(); e._fdDossierHandled = true;
+        const hit = candidates.find(c => !c.node.hidden && !c.section.body.hidden && !c.node.disabled);
+        if (hit) {
+          if (hit.node.tagName === 'BUTTON') hit.node.click();
+          else { const control = hit.node.querySelector('input, select, button'); if (control) control.focus(); }
+        }
+        return true;
+      }
+      if (e.key === 'Tab') {
+        const focusable = Array.prototype.filter.call(root.querySelectorAll('button, input, select, [tabindex]'), function (el) {
+          return !el.disabled && !el.closest('[hidden]') && el.tabIndex !== -1;
+        });
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (e.shiftKey && (document.activeElement === first || !root.contains(document.activeElement))) {
+          e.preventDefault(); if (last) last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); if (first) first.focus(); }
+        e._fdDossierHandled = true; return true;
+      }
+      return false;
+    }
+    root.addEventListener('keydown', key);
+    root._dossier = {
+      key: key,
+      applySize: applySize,
+      subject: function () { return m; },
+      controlsHost: controlsHost,
+      controlsActive: function () { return controlsMounted; },
+      refreshSearch: paint,
+      paintDayStatus: paintDayStatus,
+      keepEditing:function(){const active=document.activeElement;return moduleModal() || ['family','history','household','gallery'].indexOf(page)!==-1 || !!(active&&root.contains(active)&&/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName));},
+      mount: function () {
+        fitPanel();loadLibrary();
+        const panel = $('panel');
+        if (window.addEventListener) window.addEventListener('resize', fitPanel);
+        if (panel) {
+          panel.addEventListener('transitionend', fitPanel);
+          if (window.ResizeObserver) { panelObserver = new window.ResizeObserver(fitPanel); panelObserver.observe(panel); }
+          if (window.MutationObserver) {
+            styleObserver = new window.MutationObserver(fitPanel);
+            [panel, document.documentElement].forEach(el => styleObserver.observe(el, { attributes: true, attributeFilter: ['style', 'class'] }));
+          }
+        }
+      },
+      snapshot: function () {
+        const active = document.activeElement;
+        return { page: page, query: query, scroll: scroll.scrollTop, returnTo: returnTo, editing: editing, portraitFrame: frameEdit ? Object.assign({file:shot.file},frameEdit.snapshot()) : null,
+          focus: root.contains(active) ? active.id : '',
+          draft: root.contains(active) && active.tagName === 'INPUT' && active !== search && typeof active.selectionStart === 'number'
+            ? { value: active.value, start: active.selectionStart, end: active.selectionEnd } : null };
+      },
+      restore: function () {
+        paint(); scroll.scrollTop = saved ? saved.scroll || 0 : 0;
+        const focus = saved && saved.focus ? document.getElementById(saved.focus) : null;
+        if (focus) {
+          if (saved.draft) { focus.value = saved.draft.value; }
+          focus.focus();
+          if (saved.draft && focus.setSelectionRange) focus.setSelectionRange(saved.draft.start, saved.draft.end);
+        } else if (!saved) back.focus();
+      },
+      close: function () {
+        dossierClosed=true;
+        if(socialMounted)socialMounted.destroy();[pinsMounted,galleryMounted,outfitMounted].forEach(function(module){if(module)module.destroy();});
+        if (frameEdit) frameEdit.destroy();
+        if (window.ChimBtn && ChimBtn.unmount) ChimBtn.unmount(chimHost);
+        if (quickHost === controlsHost) { fqFindClose(); quickHost = null; }
+        if (panelObserver) panelObserver.disconnect(); if (styleObserver) styleObserver.disconnect();
+        if (window.removeEventListener) window.removeEventListener('resize', fitPanel);
+        const panel = $('panel'); if (panel) panel.removeEventListener('transitionend', fitPanel);
+        if (returnTo && returnTo.isConnected && returnTo.focus) returnTo.focus();
+      }
+    };
+    return root;
+  }
+
+  function openMemberMenu(row, x, y, restore) {
+    closeCtx();
+    const m = row.m;
+    ui.menuFor = { cat: row.cat, idx: row.idx, formId: m.formId, original: m.original || m.name };
 
     const item = (icon, label, on, opts) => h('button', {
+      'data-dossier-action': ({'⤵':'summon','➜':'goto','✥':'placeHere','⮌':'sendTo','✓':'track','⚑':'track','◉':'capture','☰':'inventory','⛃':'storage','⚔':'service','⊘':'service'})[icon] || '',
       class: 'fd-ctx-item' + ((opts && opts.danger) ? ' danger' : '') + ((opts && opts.active) ? ' active' : ''),
       disabled: (opts && opts.disabled) ? true : null,
       title: (opts && opts.title) || null,
       onClick: (e) => { e.stopPropagation(); on(e); },
     }, h('span', { class: 'fd-ctx-check' }, icon), h('span', { class: 'fd-ctx-lbl' }, label));
 
+    const groups = {};
     const items = [];
     items.push(h('div', { class: 'fd-ctx-head', title: m.name }, m.name,
       m.original && m.original !== m.name ? h('span', { class: 'fd-ctx-orig' }, ' · née ' + m.original) : null));
@@ -11366,6 +13288,8 @@
     });
     items.push(fgrid);
 
+    groups.profile = items.splice(0);
+
     /* ---- Sharmat (CHIM intimacy profile) ----
        Its own popout, not more rows here: it is a long form with a different
        save contract (whole-profile commit, straight into CHIM's database,
@@ -11390,11 +13314,14 @@
       }, { title: 'Kinks, speak style, status — CHIM’s per-NPC intimacy profile.\nEdits here are LIVE.' }));
     }
 
+    groups.connections = items.splice(0);
+
     /* ---- Her day (My Home is Your Home NG) — strictly read-only. Sits after
        the things you can TYPE and before the things you can DO, because it is
        neither: it is what the game already believes. ---- */
     const day = dayBlock(m);
     if (day) day.forEach((el) => items.push(el));
+    groups.routine = items.splice(0);
 
     items.push(h('div', { class: 'fd-ctx-sep' }));
 
@@ -11430,6 +13357,8 @@
       sendApply('setTracked', { cat: row.cat, idx: row.idx, on: !m.tracked });
     }, { active: m.tracked }));
 
+    groups.travel = items.splice(0);
+
     /* Photograph her from here, instead of closing the deck, finding the CHIM
        tab and hoping the crosshair is still on the right person. Names its
        subject explicitly (fdPortrait carries the formId), so it captures the
@@ -11447,7 +13376,7 @@
          what every other actor-keyed feature here sends (nff, mhiyh, fertility,
          equipped). Getting this wrong is silent: C++ parses hex, gets 0, logs
          "no usable formId" and returns, so the menu item just does nothing. */
-      toGame('fdPortrait', JSON.stringify({ formId: m.formId || '' }));
+      openPortraitCapture({formId:m.formId || '',name:m.name});
     }, {
       disabled: worldBlocked || !m.formId,
       title: worldBlocked
@@ -11477,12 +13406,14 @@
       items.push(item('⛶', cropFor(shot.file) ? 'Re-frame photo…' : 'Adjust photo framing…', () => {
         closeCtx();
         openLightbox({ slug: shot.slug, file: shot.file, ext: shot.ext,
-                       mtime: shot.mtime, name: m.name }, true);
+                       mtime: shot.mtime, name: m.name, formId: m.formId || 0 }, true);
       }, {
         title: 'Open the photo large and drag / zoom it. Changes how the deck '
              + 'DRAWS this face everywhere; the file on disk is never rewritten.',
       }));
     }
+
+    groups.appearance = items.splice(0);
 
     /* ---- Recruit / dismiss / inventory (Nether's Follower Framework) ----
        Placed with the other things you DO to a person, after the map toggle.
@@ -11490,16 +13421,27 @@
        thing that is actually available rather than offering both. */
     items.push(h('div', { class: 'fd-ctx-sep' }));
 
-    const npcBlocked = !m.inWorld || m.dead;
+    /* These go through sendNpc -> whoOf, which sends `liveFormId` when FO's
+       stored id is a base record — so "the game can reach her" is the right
+       question here, not FO's inWorld. (The two rows above, Summon and Go to,
+       are FO's OWN ops on the stored form and stay gated on inWorld.) */
+    const npcReachable = m.inWorld || !!m.liveFormId;
+    const npcBlocked = !npcReachable || m.dead;
     const npcTitle = m.dead ? 'They are dead'
-      : (!m.inWorld ? (wTitle || 'Not in the world this session') : null);
+      : (!npcReachable ? (wTitle || 'Not in the world this session') : null);
 
     if (m.following) {
-      items.push(item('⊘', 'Dismiss from service', (e) => {
+      /* Stays open on a quest-held refusal for the same reason the recruit
+         row does: the arm needs this row on screen for its second click. */
+      const dsArmed = !!forceDismiss;
+      items.push(item('⊘', dsArmed ? 'Force dismiss?' : 'Dismiss from service', (e) => {
+        if (dsArmed) { closeCtx(); dismissClick(m); return; }
         arm(e.currentTarget.querySelector('.fd-ctx-lbl') || e.currentTarget,
           'Dismiss ' + m.name + '?', 'Click again to send them home',
-          () => { closeCtx(); sendNpc('dismiss', m); });
-      }, { disabled: npcBlocked, title: npcTitle || 'Send them home through NFF (its own dismissal, not a teleport)' }));
+          () => { dismissClick(m); });
+      }, { disabled: npcBlocked && !dsArmed,
+           title: dsArmed ? forceDismiss.msg
+                : (npcTitle || 'Send them home through NFF (its own dismissal, not a teleport)') }));
     } else {
       /* The menu deliberately STAYS OPEN on recruit. Two reasons: a guarded
          refusal needs this row still on screen to arm it for the second click,
@@ -11528,10 +13470,13 @@
          title: npcTitle || 'NFF\'s extra storage chest for them — not their own pack, '
            + 'and not their outfits (the deck closes)' }));
 
+    groups.service = items.splice(0);
+
     /* The worn set, always shown. Asked for once per menu open; a cached
        answer paints immediately and is refreshed in the background. */
-    items.push(equippedBlock(m));
-    askEquipped(m);
+    items.push(equippedBlock(m, true));
+    if (!restore) askEquipped(m);
+    groups.equipment = items.splice(0);
 
     items.push(h('div', { class: 'fd-ctx-sep' }));
 
@@ -11547,7 +13492,30 @@
       if (c.index === row.cat) o.selected = true;
       sel.append(o);
     });
-    items.push(h('div', { class: 'fd-ctx-field' }, h('label', null, 'Category'), sel));
+    const categoryFilter = h('input', { class: 'fd-ctx-input', type: 'search',
+      placeholder: 'Find a category…', 'aria-label': 'Find a category', autocomplete: 'off',
+      onInput: function (e) {
+        const q = e.target.value.trim().toLowerCase();
+        Array.prototype.forEach.call(sel.options, function (o) {
+          o.hidden = o.textContent.toLowerCase().indexOf(q) === -1;
+        });
+      },
+      onKeydown: function (e) {
+        if (e.key !== 'Enter' || !e.target.value.trim()) return;
+        e.preventDefault();
+        const first = Array.prototype.find.call(sel.options, function (o) { return !o.hidden; });
+        if (first && Number(first.value) !== row.cat) {
+          closeCtx(); sendApply('moveMember', { cat: row.cat, idx: row.idx, to: Number(first.value) });
+        }
+      }
+    });
+    /* Rober, 2026-09-23: "no option to change that category in follower
+       organizer they are in while searching?" — the control was here, but the
+       search indexes a field by its text, and "change follower" is not in
+       "Category". The title is indexed too, so it carries the words a player
+       types for this. */
+    items.push(h('div', { class: 'fd-ctx-field fd-ds-category', title: 'Change category — move them to another Follower Organizer group (file, move, folder, roster)' },
+      h('label', null, 'Category'), categoryFilter, sel));
 
     /* Armed two-click, because PrismaUI has no confirm(). The arming has to
        EXPIRE, though: it used to persist for as long as the menu stayed open,
@@ -11591,50 +13559,14 @@
     const disarmOnOther = (e) => { if (!rmBtn.contains(e.target)) disarm(); };
     items.push(rmBtn);
 
-    ctxEl = h('div', { id: 'fd-ctx-menu', role: 'menu' }, items);
+    groups.organize = items.splice(0);
+    ctxEl = buildMemberDossier(row, groups, restore);
     ctxEl.addEventListener('pointerdown', disarmOnOther, true);
     ctxEl.addEventListener('focusin', disarmOnOther, true);
     $('overlay').append(ctxEl);
+    ctxEl._dossier.mount();
+    ctxEl._dossier.restore();
 
-    /* Every label in THIS menu gets the same width, so the controls form one
-       column instead of a ragged edge — and a label longer than the column
-       ellipsizes rather than wrapping its row to two lines. Written inline
-       (not left to the CSS var) because the value has to be identical across
-       the menu even if a var lands mid-open. */
-    const labW = ctxLabelPx(curAv()) + 'px';
-    const labels = ctxEl.querySelectorAll('.fd-ctx-field label');
-    for (let li = 0; li < labels.length; li++) labels[li].style.width = labW;
-
-    /* Width is explicit rather than content-sized. Left to shrink-to-fit the
-       menu settled wherever the longest button happened to land — 292px at
-       Rober's 72px faces — which put "Steward of the Eastern Reac…" in an
-       input with a 250px box around it. Setting it means every input is as
-       wide as the menu allows, and maxWidth follows so nothing (a very long
-       category name in the <select>, say) can push past it.
-
-       The day allowance is keyed on the STEPPER actually being there, not on
-       dayBlock() having returned something: its other shape is a one-line
-       "no daily routine set" message, which needs no more room than a name. */
-    const wantW = ctxWidthPx(curAv(), !!ctxEl.querySelector('.fd-day'));
-    ctxEl.style.width = wantW + 'px';
-    ctxEl.style.maxWidth = wantW + 'px';
-
-    /* The field rows made this menu materially taller (4 spec rows + any
-       unknown keys), and the day adds up to eight more. Cap it to the viewport
-       and scroll inside, so it can never run off the bottom of a small window
-       or a high menu-scale panel — and do it BEFORE clampCtx, which positions
-       from the measured height. */
-    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
-    ctxEl.style.overflowY = 'auto';
-    ctxEl.style.overflowX = 'hidden';
-
-    /* Centred rather than dropped at the click. A menu this wide anchored at
-       the cursor lands hard against an edge and covers the row you were just
-       reading. Still draggable — this is only where it starts. */
-    centerCtx();
-    reclampCtx();
-    makeCtxDraggable(ctxEl.querySelector('.fd-ctx-head'));
-    setTimeout(() => document.addEventListener('mousedown', ctxOutside, true), 0);
   }
 
   /* File somebody into a Follower Organizer category.
@@ -11649,6 +13581,99 @@
    *  hidden: "she is already in Demons" is the answer to the question you
    *  opened this menu with, and silently omitting it looks like the category
    *  went missing. */
+  /* "Add to follower framework" — and it ASKS WHICH GROUP.
+   *
+   *  Rober, 2026-09-20: "add to follower framework (MAKE SURE IT ASKS WHICH
+   *  GROUP)". There are TWO things called "the framework" on this card and
+   *  they are not the same thing, which is exactly why a bare button was
+   *  wrong:
+   *    · Follower Organizer — the ROSTER, which has categories (groups). This
+   *      is what "which group" means, and it is what the deck itself reads.
+   *    · Nether's Follower Framework — an IMPORT, which has no categories at
+   *      all: it lends her NFF's gear/tweaks/storage while her own follow
+   *      package keeps running.
+   *  So the menu offers both, with the categories spelled out and the ones she
+   *  is already in ticked and disabled. Same chrome as the roster's own + Add
+   *  (fd-ctx-menu), because it is the same question asked from another place.
+   */
+  function openFrameworkMenu(whoTo) {
+    const tgt = whoTo || state.target;
+    if (!tgt || !tgt.name) return;
+    closeCtx();
+
+    /* Which categories she is already filed under — resolved through the
+       roster's own identity match, not by name equality, so an NPC the roster
+       knows by her base name still ticks correctly. */
+    const already = Object.create(null);
+    const hit = rosterEntryFor(tgt.original || tgt.name);
+    state.cats.forEach((c) => {
+      if (c.index === ALL) return;
+      (c.members || []).forEach((m) => {
+        const a1 = String(m.original || m.name || '').toLowerCase();
+        const a2 = String((hit && hit.m.original) || tgt.original || tgt.name || '').toLowerCase();
+        if (a1 && a1 === a2) already[c.index] = true;
+      });
+    });
+    const imported = !!(hit && hit.m && hit.m.imported);
+
+    const items = [h('div', { class: 'fd-ctx-head' }, 'Add “' + tgt.name + '” to…')];
+    const listBox = h('div', { class: 'fd-ctx-scroll' });
+
+    listBox.append(h('div', { class: 'fd-ctx-sub' }, 'Follower Organizer — pick a group'));
+    state.cats.forEach((c) => {
+      if (c.index === ALL) return;     // "All" is a view, not a group you can file into
+      const inIt = !!already[c.index];
+      listBox.append(h('button', {
+        class: 'fd-ctx-item' + (inIt ? ' active' : ''),
+        disabled: inIt ? true : null,
+        title: inIt ? tgt.name + ' is already filed under ' + catLabel(c)
+                    : 'File ' + tgt.name + ' under ' + catLabel(c),
+        onClick: (e) => {
+          e.stopPropagation(); closeCtx();
+          if (inIt) return;
+          sendApply('addMember', { cat: c.index, formId: Number(tgt.formId) >>> 0 });
+        },
+      },
+        h('span', { class: 'fd-ctx-check' }, inIt ? '✓' : ''),
+        h('span', { class: 'fd-ctx-lbl' }, catLabel(c)),
+        h('span', { class: 'fd-ctx-count' }, String((c.members || []).length))));
+    });
+
+    /* NFF's import. Deliberately BELOW the groups and labelled as the
+       different thing it is — it is not filing, and it has no group to pick. */
+    listBox.append(h('div', { class: 'fd-ctx-sub' }, 'Nether\u2019s Follower Framework — no groups'));
+    listBox.append(h('button', {
+      class: 'fd-ctx-item' + (imported ? ' active' : ''),
+      title: imported
+        ? tgt.name + ' is already in NFF \u2014 this takes her back out again'
+        : 'Lend ' + tgt.name + ' NFF\u2019s features (gear, tweaks, storage, sandbox). '
+          + 'Not recruitment: her own follow package keeps running.',
+      onClick: (e) => {
+        e.stopPropagation(); closeCtx();
+        const m = (hit && hit.m) ? hit.m : { formId: Number(tgt.formId) >>> 0, name: tgt.name,
+                                             original: tgt.original || tgt.name };
+        frameworkClick(m, imported);
+      },
+    },
+      h('span', { class: 'fd-ctx-check' }, imported ? '\u2713' : ''),
+      h('span', { class: 'fd-ctx-lbl' }, imported ? 'Remove from NFF' : 'Import into NFF'),
+      h('span', { class: 'fd-ctx-count' }, '')));
+
+    items.push(listBox);
+    ctxEl = h('div', { id: 'fd-ctx-menu', role: 'menu' }, items);
+    $('overlay').append(ctxEl);
+    const addW = ctxWidthPx(curAv(), false);
+    ctxEl.style.width = addW + 'px';
+    ctxEl.style.maxWidth = addW + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(260) + 'px';
+    ctxEl.style.overflowY = 'auto';
+    ctxEl.style.overflowX = 'hidden';
+    centerCtx();
+    reclampCtx();
+    makeCtxDraggable(ctxEl.querySelector('.fd-ctx-head'));
+    setTimeout(() => document.addEventListener('mousedown', ctxOutside, true), 0);
+  }
+
   function openAddMenu(whoTo) {
     const tgt = whoTo || state.target;
     if (!tgt || !tgt.name) return;
@@ -11777,6 +13802,101 @@
     render();
   }
 
+  /* ---- Move to… (2026-09-23) ---------------------------------------------
+     Rober, F7 card, search "follower organizer": "not in f7 menu either".
+     The card could ADD her to a second category (openAddMenu) but not CHANGE
+     the one she is in — that was a dossier-only control. Same menu, filter
+     and keyboard contract as openFileInto: the row she is in now is marked
+     and inert, every other row moves her through FO's own moveMember, and
+     the old "also add" door stays as the last row. */
+  function openMoveTo(anchorEl, known, who, addTarget) {
+    if (!known || !known.cat || !known.m) return;
+    closeCtx();
+    const label = who || known.m.name || 'them';
+    const from = known.cat;
+    const cats = state.cats.filter((c) => c.index !== ALL);
+
+    const items = [h('div', { class: 'fd-ctx-head', title: label }, 'Move ' + label + ' to…')];
+    const listBox = h('div', { class: 'fd-ctx-scroll' });
+    const filter = h('input', {
+      class: 'fd-ctx-input fd-ctx-filter', type: 'text', autocomplete: 'off', spellcheck: 'false',
+      placeholder: 'Type a category — Enter moves her to the top match',
+      'aria-label': 'Find a category',
+      onInput: (e) => paint(e.target.value),
+      onKeyDown: (e) => {
+        if (e.key === 'Escape') { e.stopPropagation(); closeCtx(); return; }
+        if (e.key === 'Enter') {
+          e.preventDefault(); e.stopPropagation();
+          const first = Array.prototype.find.call(listBox.querySelectorAll('.fd-ctx-item'),
+            (b) => !(b.disabled || b.hasAttribute('disabled')));
+          if (first) first.click();
+        }
+      },
+    });
+    items.push(h('div', { class: 'fd-ctx-field' }, filter));
+    items.push(listBox);
+
+    function moveTo(c) {
+      closeCtx();
+      fqStatus = { msg: 'Moving ' + label + ' from ' + catLabel(from) + ' to ' + catLabel(c) + '…', ok: true, pending: true };
+      sendApply('moveMember', { cat: from.index, idx: known.idx, to: c.index });
+      render();
+    }
+
+    function paint(q) {
+      const f = String(q || '').trim().toLowerCase();
+      listBox.textContent = '';
+      let n = 0;
+      cats.forEach((c) => {
+        const name = catLabel(c);
+        if (f && (name + ' ' + (c.original || '')).toLowerCase().indexOf(f) === -1) return;
+        const here = c.index === from.index;
+        listBox.append(h('button', {
+          class: 'fd-ctx-item' + (here ? ' active' : ''),
+          disabled: here ? true : null,
+          title: here ? label + ' is filed here now' : 'Move ' + label + ' to ' + name,
+          onClick: (e) => { e.stopPropagation(); if (!here) moveTo(c); },
+        },
+          h('span', { class: 'fd-ctx-check' }, here ? '\u2713' : '\u203a'),
+          h('span', { class: 'fd-ctx-lbl' }, name + (here ? ' \u2014 now' : '')),
+          h('span', { class: 'fd-ctx-count' }, String(c.members.length))));
+        n++;
+      });
+      if (!n) {
+        listBox.append(h('div', { class: 'fd-ctx-empty' },
+          cats.length ? 'No category matches \u201c' + q + '\u201d.'
+                      : 'Follower Organizer has no categories yet.'));
+      }
+    }
+    paint('');
+
+    /* the old door, kept: file her under a SECOND category without leaving this one */
+    if (addTarget) {
+      items.push(h('div', { class: 'fd-ctx-sep' }));
+      items.push(h('button', {
+        class: 'fd-ctx-item fd-ctx-also',
+        title: 'Keep ' + label + ' in ' + catLabel(from) + ' and add her to another category as well',
+        onClick: (e) => { e.stopPropagation(); closeCtx(); openAddMenu(addTarget); },
+      }, h('span', { class: 'fd-ctx-check' }, '\uff0b'),
+         h('span', { class: 'fd-ctx-lbl' }, 'Also add to another category\u2026')));
+    }
+
+    ctxEl = h('div', { id: 'fd-ctx-menu', role: 'menu' }, items);
+    $('overlay').append(ctxEl);
+    const w = ctxWidthPx(curAv(), false);
+    ctxEl.style.width = w + 'px';
+    ctxEl.style.maxWidth = w + 'px';
+    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
+    ctxEl.style.overflowY = 'auto';
+    ctxEl.style.overflowX = 'hidden';
+    const r = (anchorEl && anchorEl.getBoundingClientRect) ? anchorEl.getBoundingClientRect()
+                                                           : { left: 40, top: 120 };
+    clampCtx(r.left, r.top);
+    reclampCtx();
+    makeCtxDraggable(ctxEl.querySelector('.fd-ctx-head'));
+    try { filter.focus(); } catch (err) { /* no focus in a harness */ }
+  }
+
   /* The category picker the dead <select> should have been. Same menu, filter
      and keyboard contract as openSendTo — FO allows 25 categories, which is
      well past the point where an unfiltered list stops being usable. */
@@ -11847,6 +13967,60 @@
     }, 0);
   }
 
+  /* ---- "Send her to…" — a popout of places, with their pictures ----------
+     2026-09-23, Rober (screenshot of the old list): "this menu should also be
+     reworked to show domain artwork". It was a narrow text list in the ctx-menu
+     shell; it is now a body-anchored popout (the deck's popout rule: anything
+     that reveals more content gets its own spacious modal), and every domain is
+     a card carrying the photo the Domains tab shows for it, painted through
+     DomainsPane.artOf so a re-framed photo is framed the same here.
+
+     Shape: a quick row of the special destinations (equal tiles, one row), then
+     the domains GROUPED by category in the Domains tab's own order, each group
+     an even grid of equal 16:9 cards. A place with no photo shows the same
+     hue-tinted initials banner the Domains card does. Typeable (Enter takes the
+     top hit), Escape / Close / a backdrop click close it.
+
+     It is still `ctxEl`, so every existing guard — the pane swallowing keys
+     while a menu is up, closeCtx() from anywhere — keeps working unchanged.
+     Like .gaw-back it fills the viewport: bare vh/vw, no --ui-scale. */
+  function sdpArt(mk) {
+    let a = { src: '', transform: '', hue: 45, initials: '' };
+    try {
+      if (window.DomainsPane && typeof DomainsPane.artOf === 'function') a = DomainsPane.artOf(mk);
+      else a.src = String(mk.image || '');
+    } catch (_) { a.src = String(mk.image || ''); }
+    const box = h('span', { class: 'sdp-art ' + (mk.interior ? 'interior' : 'exterior'), 'aria-hidden': 'true' });
+    box.style.setProperty('--sdp-hue', String(a.hue == null ? 45 : a.hue));
+    /* The banner is ALWAYS there, under the photo: a photo that fails to load
+       paints nothing and the banner shows through — no probe, no 404 dance. */
+    box.append(h('span', { class: 'sdp-banner' }, a.initials || '⌂'));
+    if (a.src) {
+      const img = h('span', { class: 'sdp-photo' });
+      img.style.backgroundImage = 'url("' + String(a.src).replace(/"/g, '%22') + '")';
+      if (a.transform) { img.style.transformOrigin = '50% 50%'; img.style.transform = a.transform; }
+      box.append(img);
+    }
+    return box;
+  }
+
+  /* Columns for a group of n cards, chosen so its rows come out EVEN (Rober's
+     symmetry rule: flush rows, no dangling card). C = how many ~300px cards
+     fit across the popout. Prefer a count that divides n (C+1 down to C-1, so
+     5 goes five-across and 8 goes 4 + 4); a small group sits in ONE row; only
+     when nothing divides does the last row's cards stretch to fill it. Pure —
+     the harness feeds it widths. */
+  function sdpCols(n, vw) {
+    const w = vw || (typeof innerWidth === 'number' && innerWidth > 0 ? innerWidth : 1600);
+    const min = w <= 720 ? 220 : 300;
+    const cardW = Math.min(1500, w - 48) - 60;
+    const C = Math.max(1, Math.floor((cardW + 16) / (min + 16)));
+    if (C === 1 || n <= 1) return 1;
+    if (n <= C + 1) return Math.min(n, C + 1);
+    for (let k = C + 1; k >= Math.max(2, C - 1); k--) if (n % k === 0) return k;
+    return C;
+  }
+
   function openSendTo(anchorEl, row) {
     const m = row.m;
     closeCtx();
@@ -11855,96 +14029,114 @@
     const nffHome = m.nffHome ? String(m.nffHome) : '';
     const marks = domainMarks();
 
-    const items = [h('div', { class: 'fd-ctx-head', title: m.name }, 'Send ' + m.name + ' to…')];
+    const pick = (on) => (e) => { if (e) e.stopPropagation(); closeCtx(); on(); };
+    const body = h('div', { class: 'sdp-body' });
+    const count = h('span', { class: 'sdp-count' }, '');
 
-    const filterWrap = h('div', { class: 'fd-ctx-field' },
-      h('input', {
-        /* the menu's own input treatment — focus ring, placeholder, radii
-           all come from .fd-ctx-input; the modifier only drops the label gap */
-        class: 'fd-ctx-input fd-ctx-filter', type: 'text', autocomplete: 'off', spellcheck: 'false',
-        placeholder: 'Type to filter destinations…',
-        onInput: (e) => paint(e.target.value),
-        onKeyDown: (e) => {
-          if (e.key === 'Escape') { e.stopPropagation(); closeCtx(); return; }
-          if (e.key === 'Enter') {
-            e.preventDefault(); e.stopPropagation();
-            const first = listBox.querySelector('.fd-ctx-item');
-            if (first) first.click();
-          }
-        },
-      }));
-    items.push(filterWrap);
+    const search = h('input', {
+      /* fd-ctx-filter: the focus-on-open code below looks for it */
+      class: 'sdp-search fd-ctx-filter', type: 'text', autocomplete: 'off', spellcheck: 'false',
+      placeholder: 'Search places — name, category, note…',
+      onInput: (e) => paint(e.target.value),
+      onKeyDown: (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeCtx(); return; }
+        if (e.key === 'Enter') {
+          e.preventDefault(); e.stopPropagation();
+          const first = body.querySelector('.sdp-pick');
+          if (first) first.click();
+        }
+      },
+    });
 
-    const listBox = h('div', { class: 'fd-ctx-scroll' });
-    items.push(listBox);
+    const card = h('div', { class: 'sdp-card', role: 'dialog', 'aria-label': 'Send ' + m.name + ' to' },
+      h('div', { class: 'sdp-head' },
+        h('span', { class: 'sdp-title' }, 'Send ' + m.name + ' to…'),
+        count,
+        h('button', { class: 'sdp-close', type: 'button', title: 'Close (Esc)',
+          onClick: (e) => { e.stopPropagation(); closeCtx(); } }, 'Close')),
+      h('div', { class: 'sdp-field' }, search),
+      body);
 
-    function rowBtn(icon, label, sub, on) {
-      return h('button', { class: 'fd-ctx-item', onClick: (e) => { e.stopPropagation(); closeCtx(); on(); } },
-        h('span', { class: 'fd-ctx-check' }, icon),
-        h('span', { class: 'fd-ctx-lbl' }, label),
-        sub ? h('span', { class: 'fd-ctx-count' }, sub) : null);
+    function quickTile(icon, label, sub, on) {
+      return h('button', { class: 'sdp-quick-tile sdp-pick', type: 'button', onClick: pick(on) },
+        h('span', { class: 'sdp-quick-ic' }, icon),
+        h('span', { class: 'sdp-quick-text' },
+          h('span', { class: 'sdp-quick-lbl' }, label),
+          h('span', { class: 'sdp-quick-sub' }, sub)));
+    }
+
+    function placeCard(mk) {
+      const where = [mk.interior ? 'Interior' : 'Exterior', mk.cellName && mk.cellName !== mk.name ? mk.cellName : '']
+        .filter(Boolean).join(' · ');
+      return h('button', { class: 'sdp-place sdp-pick', type: 'button', title: 'Send ' + m.name + ' to ' + mk.name,
+        onClick: pick(() => sendToDomain(m, mk)) },
+        sdpArt(mk),
+        h('span', { class: 'sdp-place-meta' },
+          h('span', { class: 'sdp-place-name' }, mk.name),
+          h('span', { class: 'sdp-place-sub' }, where)));
     }
 
     function paint(q) {
       const f = String(q || '').trim().toLowerCase();
       const hit = (s) => !f || String(s || '').toLowerCase().indexOf(f) !== -1;
-      listBox.textContent = '';
+      body.textContent = '';
       let n = 0;
 
-      if (hit('where she was back undo summon return')) {
-        listBox.append(rowBtn('⮌', 'Where they were', 'undo a summon',
+      const quick = [];
+      if (hit('where they were she was back undo summon return'))
+        quick.push(quickTile('⮌', 'Where they were', 'Undo the summon',
           () => sendWorld('sendback', row.cat, row.idx, '⮌ ' + m.name + ' returns')));
-        n++;
+      if (mhHome && hit('her home mhiyh my home is your home ' + mhHome))
+        quick.push(quickTile('⌂', 'Her home', mhHome, () => sendNpc('sendHome', m, { dest: 'mhiyh' })));
+      if (nffHome && hit('her nff base nether follower framework home ' + nffHome))
+        quick.push(quickTile('⌂', 'Her NFF base', nffHome, () => sendNpc('sendHome', m, { dest: 'nff' })));
+      if (quick.length) {
+        const qrow = h('div', { class: 'sdp-quick' }, quick);
+        /* one row, equal tiles, whatever the count — never a dangling tile */
+        qrow.style.gridTemplateColumns = 'repeat(' + quick.length + ', minmax(0, 1fr))';
+        body.append(qrow);
+        n += quick.length;
       }
-      if (mhHome && hit('home mhiyh my home is your home ' + mhHome)) {
-        listBox.append(rowBtn('⌂', 'Her home', mhHome,
-          () => sendNpc('sendHome', m, { dest: 'mhiyh' })));
-        n++;
-      }
-      if (nffHome && hit('base nff nether follower framework home ' + nffHome)) {
-        listBox.append(rowBtn('⌂', 'Her NFF base', nffHome,
-          () => sendNpc('sendHome', m, { dest: 'nff' })));
-        n++;
-      }
+
+      /* Group by category in the Domains tab's order (first appearance);
+         the uncategorised go last under their own header. */
+      const order = [], groups = Object.create(null);
       marks.forEach((mk) => {
+        if (!mk || !mk.name) return;
         if (!hit([mk.name, mk.category, mk.note, mk.cellName].join(' '))) return;
-        /* The callback goes THROUGH rowBtn (it closes the menu itself). The old
-           shape appended a callback-less row and bolted sendToDomain on with
-           .onclick — so rowBtn's own listener called undefined and threw
-           "on is not a function" on every domain click (the send still worked,
-           through the second handler, which is why nobody saw it in play). */
-        listBox.append(rowBtn(mk.interior ? '⌂' : '▲', mk.name, mk.category || '',
-          () => sendToDomain(m, mk)));
-        n++;
+        const k = String(mk.category || '').trim();
+        if (!groups[k]) { groups[k] = []; order.push(k); }
+        groups[k].push(mk);
+      });
+      order.sort((x, y) => (x ? 0 : 1) - (y ? 0 : 1));
+      order.forEach((k) => {
+        const list = groups[k];
+        body.append(h('div', { class: 'sdp-group-h' },
+          h('span', { class: 'sdp-group-t' }, k || 'Other domains'),
+          h('span', { class: 'sdp-group-n' }, String(list.length))));
+        const cols = sdpCols(list.length);
+        const grid = h('div', { class: 'sdp-grid sdp-k' + Math.min(cols, 4) }, list.map(placeCard));
+        grid.style.setProperty('--sdp-cols', String(cols));
+        body.append(grid);
+        n += list.length;
       });
 
+      count.textContent = f ? n + (n === 1 ? ' match' : ' matches') : marks.length + (marks.length === 1 ? ' domain' : ' domains');
       if (!n) {
-        listBox.append(h('div', { class: 'fd-ctx-empty' },
+        body.append(h('div', { class: 'sdp-empty' },
           marks.length || mhHome || nffHome ? 'Nothing matches “' + q + '”.'
             : 'No homes set, and no domains marked yet — mark one on the Domains tab.'));
       }
     }
     paint('');
 
-    ctxEl = h('div', { id: 'fd-ctx-menu', role: 'menu' }, items);
-    $('overlay').append(ctxEl);
-    const w = ctxWidthPx(curAv(), false);
-    ctxEl.style.width = w + 'px';
-    ctxEl.style.maxWidth = w + 'px';
-    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
-    ctxEl.style.overflowY = 'auto';
-    ctxEl.style.overflowX = 'hidden';
-    const r = (anchorEl && anchorEl.getBoundingClientRect) ? anchorEl.getBoundingClientRect()
-                                                           : { left: 40, top: 120 };
-    /* The destination list is long and filterable — centre it like the member
-       menu rather than pinning it to the row that opened it. */
-    centerCtx();
-    reclampCtx();
-    makeCtxDraggable(ctxEl.querySelector('.fd-ctx-head'));
+    ctxEl = h('div', { class: 'sdp-back' }, card);
+    /* A press on the dim backdrop closes; a press anywhere on the card does not. */
+    ctxEl.addEventListener('mousedown', (e) => { if (e.target === ctxEl) closeCtx(); });
+    document.body.append(ctxEl);
     setTimeout(() => {
       const inp = ctxEl && ctxEl.querySelector('.fd-ctx-filter');
       if (inp) inp.focus();
-      document.addEventListener('mousedown', ctxOutside, true);
     }, 0);
   }
 
@@ -11968,8 +14160,20 @@
      opening Household asked for every missing face, C++ rendered them, and
      the view never went back for them: the page sat on initials forever and
      only filled in if you happened to visit Followers afterwards. */
+  // portrait-consumers-v2: publish only after the shared store has changed.
+  function portraitsChanged() {
+    if (ctxEl && ctxEl._dossier) refreshOpenMenu();
+    dropRowCache();
+    if (isActive()) renderList();
+    renderQuickCard();
+    if (window.GetAway) GetAway.portraitsChanged();
+    if (window.OstimTools) OstimTools.portraitsChanged();
+    try { if (window.HouseholdPane) HouseholdPane.dataChanged(); } catch (e) {}
+    window.dispatchEvent(new CustomEvent('hd-portraits-changed'));
+  }
+
   function faceConsumerActive() {
-    return isActive() || window.__hdActiveTab === 'household';
+    return isActive() || ['household', 'domains', 'wardrobe'].indexOf(window.__hdActiveTab) !== -1 || !!(window.DomainsPane && DomainsPane.isShown()) || !!(window.HDNpcTune && HDNpcTune.isOpen()) || !!(window.GetAway && GetAway.isOpen()) || !!(window.OstimTools && OstimTools.isOpen()) || !!(ctxEl && ctxEl._dossier);
   }
 
   /* Anything -> { key: "non-empty string" }. Non-object input, array input,
@@ -12074,6 +14278,33 @@
    * the sheet and the HUD hang off small buttons in the search row, and a
    * framework-driven companion is in state.liveParty, which the roster walk
    * below never touches. */
+  function omniOpenMember(original, category, asDossier) {
+    if (typeof window.__omniSetTab === 'function') window.__omniSetTab('followers');
+    // Resolve after the tab transition. Search results may predate a rename,
+    // reorder or move; never dispatch with a captured category/member index.
+    let found = null;
+    state.cats.forEach(c => (c.members || []).forEach((m, idx) => {
+      if ((m.original || m.name) !== original) return;
+      if (!found || c.index === category) found = { cat: c.index, idx: idx, m: m, catName: catLabel(c) };
+    }));
+    if (!found) { toast('“' + original + '” is no longer in the roster'); return; }
+    ui.editing = false; ui.ptOpen = false; ui.nhOpen = false; ui.rrOpen = false; syncRecallChrome();
+    ui.rosterOpen = true; exitFocus();
+    ui.cat = found.cat; ui.filter = found.m.name || original; ui.fqPick = ''; ui.fqPickPinned = false;
+    ui.sel = visibleRows().findIndex(r => r.cat === found.cat && r.idx === found.idx);
+    const search = $('fd-search'); if (search) search.value = ui.filter;
+    render();
+    if (asDossier === 'quick') {
+      ui.fqPickPinned = true; ui.fqPick = original;
+      enterFocus(); pickCrew(found.m);
+    } else if (asDossier) openMemberMenu(found, 0, 0);
+    else {
+      const list = $('fd-list');
+      const selected = list && list.querySelector('.fd-member.sel');
+      if (selected && selected.scrollIntoView) selected.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
   function omniFollowersIndex() {
     const items = [];
     (state.cats || []).forEach((c) => {
@@ -12131,20 +14362,10 @@
         items.push({
           label: m.name || m.original || '(unnamed)',
           marks: nameMarks,
-          /* Enter / click = HER CARD, the F7-on-her behaviour (Rober,
-             2026-09-14: "it should act as if i hit f7 on her directly"). The
-             old default only jumped to the Followers tab with her name in the
-             filter, which reads as "nothing happened" when the roster was
-             already showing her. pickCrew() is the party strip's own path:
-             ui.fqPick names her, the card mounts in #fd-quick. The pick is
-             set BEFORE the tab switch so whatever render the switch runs
-             already paints her card, and syncQuickHere() after it is the
-             belt to that brace. Shift+Enter / ↗ still jumps to the roster. */
-          run: function () {
-            ui.fqPick = original;
-            if (typeof window.__omniSetTab === 'function') window.__omniSetTab('followers');
-            try { renderQuickCard(); syncQuickHere(); } catch (e) {}
-          },
+          /* Explicit identity survives fdTarget's asynchronous crosshair
+             refresh. Click opens her dossier; ↗/Shift+Enter selects her row. */
+          run: function () { omniOpenMember(original, c.index, true); },
+          jump: function () { omniOpenMember(original, c.index, false); },
           detail: marks.concat([rel, cl, m.desc].filter(Boolean)).join(' \u00b7 '),
           /* The marker WINS the chip when there is one — "expecting" says more
              about her than "follower" or whatever you typed, and a pregnancy
@@ -12260,11 +14481,13 @@
       openFromRecents({ id: snap.original, name: snap.label || snap.original }, null);
     },
     setFilter: function (q) {
+      ui.cat = ALL; ui.rosterOpen = true;
+      ui.ptOpen = false; ui.nhOpen = false; ui.rrOpen = false; syncRecallChrome(); exitFocus();
       ui.filter = String(q || '');
       ui.sel = -1;
       const s = $('fd-search');
       if (s) s.value = ui.filter;
-      try { renderList(); } catch (e) {}
+      try { render(); } catch (e) {}
     },
     index: omniFollowersIndex,
   });
@@ -12361,7 +14584,7 @@
         detail: [r.sect, who, why ? '⚠ ' + why : fqFirstClause(r.sub)]
           .filter(Boolean).join(' · '),
         kind: r.disabled ? 'unavailable' : 'action',
-        keywords: [r.sect, r.sub, who, 'card button action'].filter(Boolean).join(' '),
+        keywords: [r.sect, r.sub, r.alias, who, 'card button action'].filter(Boolean).join(' '),
         /* Even an unavailable action jumps to the card, so the greyed control
            and the reason written on it are what you land on — the card's own
            law that a refusal is the useful sentence, carried into search. */
@@ -12371,6 +14594,7 @@
             toast('Look at ' + (who || 'someone') + ' again — her card is not open');
             return;
           }
+          if (typeof r.run === 'function') { fqFindFire(r); return; }
           const el = fqFindResolve(r);
           if (el && el.isConnected) { el.click(); return; }
           toast('“' + r.label + '” is not on the card any more');
@@ -12399,6 +14623,68 @@
     id: 'follower-card', label: 'Follower card', tab: 'followers',
     warm: fqOmniWarm,
     index: fqOmniIndex,
+  });
+
+  /* ====================================================================== *
+   *  Omni: three verbs that existed but had no way into the search bar.
+   *
+   *  Rober, 2026-09-17: "no option to add to follower organizer? Then ask me
+   *  what category???" and "NFF has a players chest should be able to control
+   *  f command k menu that and drop it."
+   *
+   *  All three already worked. Filing someone was the ＋ Add button inside this
+   *  tab; the player chest was two buttons inside the Wardrobe's NFF block.
+   *  Neither was registered with the omni, so from Ctrl+F they did not exist —
+   *  and a verb you cannot find is a verb you do not have. The add menu already
+   *  does exactly what he asked for: it lists every category, ticks the ones she
+   *  is already filed under and disables those so she cannot be double-filed.
+   * ====================================================================== */
+  function rosterOmniItems() {
+    const out = [];
+    const tgt = state.target;
+    const who = (tgt && tgt.name) ? tgt.name : '';
+    /* Filing needs a subject. With nobody in the crosshair the row is published
+       as UNAVAILABLE carrying the reason rather than hidden — the card
+       provider's own law, that a refusal is the useful sentence. */
+    out.push({
+      label: 'Add to Follower Organizer…',
+      detail: who
+        ? 'File ' + who + ' under a category — the menu ticks the ones she is already in'
+        : '⚠ Look at someone first: this files whoever is in your crosshair',
+      kind: who ? 'action' : 'unavailable',
+      keywords: 'add roster follower organizer file category member new list fo organiser',
+      jump: function () { if (window.setTab) setTab('followers'); },
+      run: who ? function () {
+        if (window.setTab) setTab('followers');
+        openAddMenu();
+      } : undefined,
+    });
+    /* NFF's THIRD storage tier, and the one that is easy to forget exists:
+       every cleared outfit set and every dismissed follower's leftovers drain
+       into it. C++ closes the palette for chestOpen itself, because a
+       ContainerMenu cannot be raised under the deck; chestPlace only moves the
+       chest, so the palette stays up and you can open it next. */
+    out.push({
+      label: 'Player chest — open it',
+      detail: "NFF's shared chest: cleared outfits and dismissed followers' leftovers drain here",
+      kind: 'action',
+      keywords: 'nff player chest storage open container shared stash leftovers outfit drain',
+      run: function () { toGame('nfChest', '{"op":"chestOpen"}'); },
+    });
+    out.push({
+      label: 'Player chest — drop it here',
+      detail: 'Move the chest to a spot beside you. NFF polices this itself: it refuses in a dungeon '
+            + 'and charges a cooldown away from a town or one of its home markers',
+      kind: 'action',
+      keywords: 'nff player chest drop place here move bring summon stash relocate',
+      run: function () { toGame('nfChest', '{"op":"chestPlace"}'); },
+    });
+    return out;
+  }
+
+  if (window.HDOmni) HDOmni.register({
+    id: 'roster-storage', label: 'Followers', tab: 'followers',
+    index: rosterOmniItems,
   });
 
   /* Called by the Wardrobe host when NFF/SOES state changes underneath us, so
@@ -12751,6 +15037,8 @@
       /* Leaving NPC focus: the party sheet IS the wide view, and the dedicated
          single-NPC chrome hides the tab bar it needs. */
       if (ui.npcFocus) exitFocus();
+      if (ui.nhOpen) setHereOpen(false, { noFocus: true });   // one wide view at a time
+      if (ui.rrOpen) setRecallOpen(false, { noFocus: true });
       ptAsk(true);
       renderParty();
       if (!(opts && opts.noFocus))
@@ -13355,6 +15643,681 @@
        h('span', { class: 'pt-toggle-lbl' }, 'Party sheet')));
   }
 
+  /* ================================================================ WHO'S HERE ==
+   * Rober, 2026-09-17: "a button that scans the cell looking for any npcs that
+   * are in my follower organizer and are in this cell? Im going around right
+   * now trying to see why npcs in my system arnt showing profile pics in
+   * certain areas". One press asks the DLL (fdCellScan -> fdCellScanData) for
+   * every loaded actor near you who is on the FO roster, with the FACTS a
+   * missing picture turns on. The medallion on each card is drawn by medalEl —
+   * the roster's own painter — so what it shows here IS what the roster shows,
+   * and the chips beside it say why. A sibling of the party sheet: same slot
+   * before #fd-list, same chrome, one wide view open at a time. nh- = here. */
+  function nhMountToggle() {
+    if ($('nh-toggle')) return;
+    const wrap = $('fd-search-wrap');
+    if (!wrap) return;
+    wrap.append(h('button', {
+      id: 'nh-toggle', type: 'button', 'aria-pressed': 'false',
+      title: 'Who’s here — two lists of this cell (outdoors: the loaded area around you): '
+           + 'your Follower Organizer people, with why each does or does not have a picture '
+           + '(portrait file, face render, roster id, following status) — or EVERY NPC here, '
+           + 'strangers included, ready to be filed onto the roster.',
+      onClick: function (e) { e.stopPropagation(); setHereOpen(!ui.nhOpen); },
+    }, h('span', { class: 'nh-toggle-ic', 'aria-hidden': 'true' }, '◎'),
+       h('span', { class: 'nh-toggle-lbl' }, 'Who’s here')));
+  }
+
+  function syncHereChrome() {
+    document.body.classList.toggle('hd-cellscan', !!ui.nhOpen);
+    const t = $('nh-toggle');
+    if (t) { t.classList.toggle('on', !!ui.nhOpen); t.setAttribute('aria-pressed', ui.nhOpen ? 'true' : 'false'); }
+  }
+
+  function setHereOpen(on, opts) {
+    const want = !!on;
+    if (ui.nhOpen === want) return;
+    ui.nhOpen = want;
+    ui.nhSel = -1;
+    syncHereChrome();
+    if (want) {
+      if (ui.npcFocus) exitFocus();
+      if (ui.ptOpen) setPartyOpen(false, { noFocus: true });
+      if (ui.rrOpen) setRecallOpen(false, { noFocus: true });
+      nhAsk();
+      renderHere();
+      if (!(opts && opts.noFocus))
+        setTimeout(function () { const s = $('nh-search'); if (s) s.focus(); }, 30);
+    } else {
+      renderHere();
+      if (!(opts && opts.noFocus))
+        setTimeout(function () { const s = $('fd-search'); if (s) s.focus(); }, 30);
+    }
+  }
+
+  function nhAsk() {
+    state.here.asking = true;
+    /* render:true — a scan that finds a missing face also starts baking it.
+       all:true asks the other question (every actor here, roster or not); the
+       reply says which it answered, so a rescan mid-switch cannot mislabel. */
+    toGame('fdCellScan', JSON.stringify({ render: true, all: ui.nhMode === 'all' }));
+  }
+
+  /* Switching the mode is a new question, so it is a new scan — the rows on
+     screen answered the OTHER one and must not linger under the new heading. */
+  function nhSetMode(mode) {
+    const want = mode === 'all' ? 'all' : 'roster';
+    if (ui.nhMode === want) return;
+    ui.nhMode = want;
+    ui.nhSel = -1;
+    state.here.rows = [];
+    nhAsk();
+    renderHere();
+  }
+
+  window.fdCellScanData = function (env) {
+    const v = coerce(env);
+    state.here.asking = false;
+    state.here.at = Date.now();
+    if (!v || typeof v !== 'object') {
+      state.here.ok = false; state.here.msg = 'The cell scan came back unreadable.'; state.here.rows = [];
+    } else {
+      state.here.ok = v.ok !== false;
+      state.here.msg = v.msg || '';
+      state.here.rows = Array.isArray(v.rows) ? v.rows : [];
+      state.here.cell = v.cell || null;
+      state.here.rosterTotal = v.rosterTotal | 0;
+      state.here.seen = v.seen | 0;
+      state.here.shown = (v.shown | 0) || state.here.rows.length;
+      state.here.queued = v.queued | 0;
+      state.here.mrf = v.mrf !== false;
+      state.here.nearMeters = v.nearMeters | 0;
+      state.here.all = v.all === true;
+      /* A stranger's head render is never asked for by requestFaceIcons' roster
+         sweep, so the path C++ just resolved for her is folded into the same
+         cache medalEl reads. Without this, everyone-mode draws initials for
+         faces that are already on disk. */
+      state.here.rows.forEach(function (r) {
+        const k = String(r.formId || '').toLowerCase();
+        if (k && r.face && state.faceIcons[k] !== r.face) state.faceIcons[k] = r.face;
+      });
+    }
+    if (isActive()) renderHere();
+    /* Anything the DLL just queued lands through the roster's own face poll:
+       re-arm it so the cards here (and the roster) swap initials for heads
+       without waiting for the next tab open. */
+    if (state.here.queued > 0 && typeof requestFaceIcons === 'function') requestFaceIcons(true);
+  };
+
+  function nhMountPane() {
+    let pane = $('nh-pane');
+    if (pane) return pane;
+    const main = $('fd-main');
+    if (!main) return null;
+    pane = h('section', { id: 'nh-pane', 'aria-label': 'Who’s here' },
+      h('div', { class: 'nh-head' }),
+      h('div', { class: 'nh-body' }));
+    const before = $('fd-list');
+    if (before && before.parentNode === main) main.insertBefore(pane, before);
+    else main.append(pane);
+    return pane;
+  }
+
+  /* The facts, as chips. Tone is a JUDGEMENT and lives here on purpose (the
+     DLL ships facts only — same split as the party sheet). */
+  function nhChips(r) {
+    const out = [];
+    /* A stranger with no picture is NORMAL — she was never meant to have one.
+       Saying "no portrait file" in bad tone for half a marketplace would train
+       the eye to ignore the chips that do matter. Declared first: several
+       chips below soften (or vanish) for someone you have never filed. */
+    const stranger = r.roster === false;
+    if (r.roster === false) {
+      out.push({ tone: 'note', glyph: '＋', label: 'Not on the roster',
+        why: 'Nobody in Follower Organizer matches her by id or by name. Click the card to file '
+           + 'her into a category — everything else on this row (portrait, face render) already '
+           + 'works the moment she is on it.' });
+    } else if (r.match === 'name')
+      out.push({ tone: 'warn', glyph: '≈', label: 'Matched by name only',
+        why: 'The roster row’s id (' + (r.rosterFormId || '?') + ') does not resolve to her — a stale id. '
+           + 'Everything keyed on the id (portrait lookups by id, orders) misses her until the roster is repaired.' });
+    else
+      out.push({ tone: 'ok', glyph: '#', label: 'Roster id matches', why: 'Follower Organizer’s runtime id resolves to this actor.' });
+
+    if (r.teammate) out.push({ tone: 'ok', glyph: '⚑', label: 'Teammate', why: 'The engine’s follower flag is set — the HUD strip shows her.' + (stranger ? ' She is FOLLOWING YOU and is on no roster — file her.' : '') });
+    else if (r.faction) out.push({ tone: 'ok', glyph: '⚑', label: 'Follower faction', why: 'In CurrentFollowerFaction without the teammate flag — the HUD strip still shows her.' + (stranger ? ' She is following you and is on no roster — file her.' : '') });
+    /* "Not following" on a roster person is news; on a stranger in a market of
+       forty it is forty chips of noise. Only the FOLLOWING case is worth a chip
+       for someone you have never filed — and that case is worth a lot. */
+    else if (!stranger) out.push({ tone: 'note', glyph: '·', label: 'Not following', why: 'Neither the teammate flag nor the follower faction: the HUD strip only draws people who are following you. The roster and this list still show her.' });
+
+    if (r.portrait && r.portrait.file)
+      out.push({ tone: 'ok', glyph: '▣', label: 'Portrait: ' + r.portrait.file,
+        why: 'Found under the name “' + (r.portrait.via || '') + '”.' });
+    else if (stranger)
+      out.push({ tone: 'note', glyph: '▢', label: 'No portrait',
+        why: 'No captured photo under: ' + ((r.tried || []).join(', ') || 'no usable name')
+           + '. Expected for someone you have never filed — look at her and fire Capture Portrait '
+           + 'if you want one.' });
+    else
+      out.push({ tone: 'warn', glyph: '▢', label: 'No portrait file',
+        why: 'Looked for a captured portrait under: ' + ((r.tried || []).join(', ') || 'no usable name')
+           + '. Look at her and fire Capture Portrait to make one.' });
+
+    const fs = String(r.faceState || '');
+    if (fs === 'ready') out.push({ tone: 'ok', glyph: '☺', label: 'Face render on disk', why: 'The facegen head PNG exists; the roster draws it when there is no portrait.' });
+    else if (fs === 'unrendered') out.push({ tone: 'note', glyph: '⟳', label: 'Face render queued', why: 'Her facegen head exists but has not been rendered yet — this scan queued it. Give it a few seconds and rescan.' });
+    else if (fs === 'body-unrendered') out.push({ tone: 'note', glyph: '⟳', label: 'Body render queued', why: 'No facegen head (a creature) — a body silhouette was queued instead.' });
+    else if (fs === 'mrf-missing') out.push({ tone: 'bad', glyph: '✕', label: 'No renderer', why: 'Mesh Rendering Framework is not loaded, so no face can be rendered this session.' });
+    else out.push({ tone: stranger ? 'note' : 'bad', glyph: '✕', label: 'No facegen head shipped', why: 'No facegeom NIF for her in the load order (templated NPC, or the mod never exported heads). Only a captured portrait can give her a picture.' });
+
+    if (r.dead) out.push({ tone: 'bad', glyph: '†', label: 'Dead', why: 'The actor is dead.' });
+    if (r.disabled) out.push({ tone: 'bad', glyph: '⊘', label: 'Disabled', why: 'The reference is disabled — present in the cell, not in the world.' });
+    if (r.waiting) out.push({ tone: 'note', glyph: '⌛', label: 'Waiting', why: 'Told to wait here.' });
+    return out;
+  }
+
+  function nhRows() {
+    const q = String(ui.nhFilter || '').trim().toLowerCase();
+    const rows = state.here.rows || [];
+    if (!q) return rows;
+    return rows.filter(function (r) {
+      const hay = [r.name, r.base, r.original, r.cat, r.match, r.faceState,
+        r.portrait && r.portrait.file, r.durable].concat(nhChips(r).map(function (c) { return c.label; }))
+        .join(' ').toLowerCase();
+      return hay.indexOf(q) !== -1;
+    });
+  }
+
+  function nhCountLine() {
+    const hr = state.here;
+    if (hr.asking && !hr.rows.length) return 'Scanning…';
+    if (!hr.ok) return hr.msg || 'Nothing read yet.';
+    const withPic = hr.rows.filter(function (r) { return (r.portrait && r.portrait.file) || r.faceState === 'ready'; }).length;
+    const where = hr.cell && hr.cell.name ? hr.cell.name : 'this cell';
+    const bits = [];
+    if (hr.all) {
+      const onRoster = hr.rows.filter(function (r) { return r.roster !== false; }).length;
+      /* seen > rows means the cap trimmed the far end — say so, because a list
+         that silently stops at 96 in a market reads as a bug. */
+      bits.push(hr.rows.length < hr.seen
+        ? ('the ' + hr.rows.length + ' nearest of ' + hr.seen + ' NPCs here in ' + where)
+        : (hr.rows.length + ' NPC' + (hr.rows.length === 1 ? '' : 's') + ' here in ' + where));
+      bits.push(onRoster + ' on the roster');
+    } else {
+      bits.push(hr.rows.length + ' of ' + hr.rosterTotal + ' roster people here in ' + where);
+      bits.push(hr.seen + ' actor' + (hr.seen === 1 ? '' : 's') + ' scanned');
+    }
+    bits.push(withPic + ' with a picture');
+    if (hr.queued) bits.push(hr.queued + ' render' + (hr.queued === 1 ? '' : 's') + ' queued');
+    return bits.join(' · ');
+  }
+
+  function nhOpenRow(r) {
+    /* Same drill-in as the party sheet: her card, exactly as F7-on-her gives it.
+       A STRANGER has no card to open — ptOpenMember would only toast "not on
+       the roster yet", which is a dead end on a list whose whole point is that
+       she is not on it. So she gets the ADD menu instead: the same category
+       picker the ＋ button opens, addressed at her. */
+    if (r.roster === false) {
+      openAddMenu({ formId: Number(r.formId) >>> 0,
+                    name: r.name || r.base || '?',
+                    original: r.base || r.name || '' });
+      return true;
+    }
+    return ptOpenMember({ formId: Number(r.formId) >>> 0, name: r.name, base: r.base || r.original });
+  }
+
+  function renderHere() {
+    if (!ui.nhOpen) return;
+    const pane = nhMountPane();
+    if (!pane) return;
+    const head = pane.querySelector('.nh-head');
+    head.textContent = '';
+    head.append(h('button', {
+      class: 'nh-back', type: 'button', title: 'Back to the follower roster',
+      onClick: function (e) { e.stopPropagation(); setHereOpen(false); },
+    }, h('span', { class: 'nh-back-chev', 'aria-hidden': 'true' }, '◂'), 'Roster'));
+    head.append(h('div', { class: 'nh-title-wrap' },
+      h('div', { class: 'nh-title' }, 'Who’s here'),
+      h('div', { class: 'nh-count', title: (state.here.all
+            ? 'Every actor loaded in this cell, roster or not'
+            : 'Everyone on the Follower Organizer roster who is loaded in this cell')
+          + (state.here.nearMeters ? ' (outdoors: within about ' + state.here.nearMeters + ' m of you)' : '')
+          + '. Read the instant you pressed the button.' },
+        nhCountLine())));
+
+    /* The two questions, as one switch (Rober, 2026-09-20). Same segmented
+       idiom as the party sheet's Cards/Table — it reads as "the same list,
+       asked differently", which is exactly what it is. */
+    const modes = h('div', { class: 'nh-modes', role: 'group', 'aria-label': 'Who to list' });
+    [{ k: 'roster', ic: '◎', lbl: 'My people',
+       t: 'Only Follower Organizer people who are here — and why each one does or does not have a picture.' },
+     /* ≡ not ⁂: only glyphs PROVEN in-game (the party sheet's Table button
+        already draws this one). An asterism is exactly the shape Ultralight
+        renders as a speck. */
+     { k: 'all', ic: '≡', lbl: 'Everyone here',
+       t: 'Every NPC loaded around you, strangers included. A stranger’s card files her onto the roster.' }]
+      .forEach(function (m) {
+        modes.append(h('button', {
+          class: 'nh-mode' + (ui.nhMode === m.k ? ' on' : ''), type: 'button',
+          'aria-pressed': ui.nhMode === m.k ? 'true' : 'false', title: m.t,
+          onClick: function (e) { e.stopPropagation(); nhSetMode(m.k); },
+        }, h('span', { class: 'nh-mode-ic', 'aria-hidden': 'true' }, m.ic),
+           h('span', { class: 'nh-mode-lbl' }, m.lbl)));
+      });
+    head.append(modes);
+
+    const wrap = h('div', { class: 'nh-search-wrap' }, h('span', { class: 'nh-search-ic', 'aria-hidden': 'true' }, '⌕'));
+    const input = h('input', {
+      id: 'nh-search', type: 'text', autocomplete: 'off', spellcheck: 'false',
+      placeholder: state.here.all
+        ? 'Search everyone here — a name, “not on the roster”, “following”, “dead”…'
+        : 'Search names, categories — or “no portrait”, “name only”, “queued”…',
+      title: 'Filters as you type. Enter opens the top match’s card.',
+    });
+    input.value = ui.nhFilter || '';
+    input.addEventListener('input', function (e) { ui.nhFilter = e.target.value; ui.nhSel = -1; nhRenderBody(pane); });
+    input.addEventListener('keydown', function (e) {
+      const rows = nhRows();
+      if (e.key === 'Enter') {
+        const pick = rows[ui.nhSel >= 0 ? ui.nhSel : 0];
+        if (pick) { e.preventDefault(); e.stopPropagation(); nhOpenRow(pick); }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault(); e.stopPropagation(); ui.nhSel = Math.min(rows.length - 1, ui.nhSel + 1); nhRenderBody(pane);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault(); e.stopPropagation(); ui.nhSel = Math.max(0, ui.nhSel < 0 ? 0 : ui.nhSel - 1); nhRenderBody(pane);
+      } else if (e.key === 'Escape' && ui.nhFilter) {
+        e.preventDefault(); e.stopPropagation(); ui.nhFilter = ''; ui.nhSel = -1; input.value = ''; nhRenderBody(pane);
+      }
+    });
+    wrap.append(input);
+    head.append(wrap);
+    head.append(h('button', {
+      class: 'nh-refresh' + (state.here.asking ? ' busy' : ''), type: 'button',
+      title: 'Scan this cell again (also queues any face render still missing).',
+      onClick: function (e) { e.stopPropagation(); nhAsk(); renderHere(); },
+    }, h('span', { 'aria-hidden': 'true' }, '↻'), ' Rescan'));
+
+    nhRenderBody(pane);
+  }
+
+  function nhRenderBody(pane) {
+    const body = pane.querySelector('.nh-body');
+    body.textContent = '';
+    const hr = state.here;
+    const rows = nhRows();
+    if (!rows.length) {
+      const title = hr.asking ? 'Scanning the cell…'
+        : (!hr.ok ? (hr.msg || 'Nothing read yet.')
+        : (hr.rows.length ? 'Nobody matches that search.'
+        : (hr.all ? 'Nobody is loaded around you.' : 'Nobody from the roster is in this cell.')));
+      const reach = (hr.cell && !hr.cell.interior && hr.nearMeters)
+        ? ' Outdoors this covers about ' + hr.nearMeters + ' m around you.' : '';
+      const sub = hr.asking ? '' : (hr.rows.length ? 'Clear the search to see all ' + hr.rows.length + '.'
+        : (hr.all
+           ? ('Not one actor is loaded here — an empty room, or the cell has not finished loading.' + reach)
+           : (hr.seen + ' actor' + (hr.seen === 1 ? '' : 's') + ' scanned against ' + hr.rosterTotal
+              + ' roster people. Switch to “Everyone here” to see who IS around you.' + reach)));
+      body.append(h('div', { class: 'nh-empty' }, h('div', { class: 'nh-empty-title' }, title), h('div', { class: 'nh-empty-sub' }, sub)));
+      return;
+    }
+    rows.forEach(function (r, i) {
+      const hit = ptRosterFor({ formId: Number(r.formId) >>> 0, name: r.name, base: r.base || r.original });
+      /* ⚠ formId stays the HEX STRING C++ sent ("0x1a2b3c"), NOT Number(...) —
+         medalEl → portraitFor looks a face render up as `String(m.formId)`,
+         and a number stringifies to DECIMAL, which matches no key in
+         state.faceIcons. Ever. That is why a roster person with a rendered
+         head but no captured photo drew initials in this list while the same
+         head showed fine on the roster (found by whos-here.checks.js,
+         2026-09-20). ptRosterFor above still wants the number. */
+      const m = { name: r.name || '', original: r.original || r.base || r.name || '',
+                  formId: String(r.formId || '').toLowerCase(),
+                  following: !!(r.teammate || r.faction) && !r.dead, dead: !!r.dead };
+      const card = h('div', {
+        class: 'nh-card' + (i === ui.nhSel ? ' sel' : '') + (r.dead || r.disabled ? ' dim' : ''),
+        role: 'button', tabindex: '0',
+        title: r.roster === false ? 'File her onto the Follower Organizer roster' : 'Open her card',
+        onClick: function (e) { e.stopPropagation(); nhOpenRow(r); },
+        onKeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); nhOpenRow(r); } },
+      });
+      card.append(h('div', { class: 'nh-face' }, medalEl(m, hit ? hit.cat : Math.max(0, r.catIndex | 0))));
+      const where = (r.sameCell ? 'Same cell' : 'Nearby') + ' · ' + (r.dist | 0) + ' m';
+      const ident = r.durable ? ' · ' + r.durable : '';
+      const filed = r.roster === false ? 'Not on the roster' : (r.cat || 'Uncategorised');
+      const text = h('div', { class: 'nh-text' },
+        h('div', { class: 'nh-name' }, r.name || r.original || '?'),
+        h('div', { class: 'nh-sub' }, filed + ' · ' + where + ident
+          + (r.base && r.base !== r.name ? ' · née ' + r.base : '')));
+      const chips = h('div', { class: 'nh-chips' });
+      nhChips(r).forEach(function (c) {
+        chips.append(h('span', { class: 'nh-chip ' + c.tone, title: c.label + ' — ' + c.why },
+          h('span', { class: 'nh-chip-ic', 'aria-hidden': 'true' }, c.glyph),
+          h('span', { class: 'nh-chip-lbl' }, c.label)));
+      });
+      text.append(chips);
+      card.append(text);
+      body.append(card);
+    });
+  }
+
+  /* ============================================================ RECALL ROSTER ==
+   * Rober, 2026-09-26, after F17 summoned Vilja, Windy and Katana (never met):
+   * "with a UI ability to see a page of current follows and register or
+   * deregister". One press asks the DLL (prRoster -> prRosterData) for the
+   * SAME survey the transferred summon key runs — every actor it would bring,
+   * every flagged-but-unrecruited one it leaves alone, and the register — so
+   * what this page shows IS what the key does. Register = "always answer",
+   * for the custom follower whose following the engine cannot read; Never =
+   * a veto. Both are stored as (local id + plugin) in party-recall.json by the
+   * DLL, never by the view. A sibling of the party sheet and Who's here:
+   * same slot before #fd-list, same chrome, one wide view open at a time.
+   * rr- = recall roster (rc- is taken by the deck's scale rules). */
+  function rrMountToggle() {
+    if ($('rr-toggle')) return;
+    const wrap = $('fd-search-wrap');
+    if (!wrap) return;
+    wrap.append(h('button', {
+      id: 'rr-toggle', type: 'button', 'aria-pressed': 'false',
+      title: 'Recall roster — who the follower recall (F17, when SkyManager holds NFF’s summon key) '
+           + 'would bring to you right now, with the evidence for each; who it leaves alone and why; '
+           + 'and a register to force anyone in (Register) or out (Never).',
+      onClick: function (e) { e.stopPropagation(); setRecallOpen(!ui.rrOpen); },
+    }, h('span', { class: 'rr-toggle-ic', 'aria-hidden': 'true' },
+         h('img', { src: 'icons/custom/hk-party-summon.png', alt: '', width: '22', height: '22', draggable: 'false',
+                    onError: function (e) { e.target.style.visibility = 'hidden'; } })),
+       h('span', { class: 'rr-toggle-lbl' }, 'Recall roster')));
+  }
+
+  function syncRecallChrome() {
+    document.body.classList.toggle('hd-recall', !!ui.rrOpen);
+    const t = $('rr-toggle');
+    if (t) { t.classList.toggle('on', !!ui.rrOpen); t.setAttribute('aria-pressed', ui.rrOpen ? 'true' : 'false'); }
+  }
+
+  function setRecallOpen(on, opts) {
+    const want = !!on;
+    if (ui.rrOpen === want) return;
+    ui.rrOpen = want;
+    ui.rrSel = -1;
+    syncRecallChrome();
+    if (want) {
+      if (ui.npcFocus) exitFocus();
+      if (ui.ptOpen) setPartyOpen(false, { noFocus: true });
+      if (ui.nhOpen) setHereOpen(false, { noFocus: true });
+      rrAsk();
+      renderRecall();
+      if (!(opts && opts.noFocus))
+        setTimeout(function () { const s = $('rr-search'); if (s) s.focus(); }, 30);
+    } else {
+      renderRecall();
+      if (!(opts && opts.noFocus))
+        setTimeout(function () { const s = $('fd-search'); if (s) s.focus(); }, 30);
+    }
+  }
+
+  function rrAsk() {
+    state.recall.asking = true;
+    toGame('prRoster', '{}');
+  }
+
+  /* Register / Never / Clear. The DLL resolves the durable pair and answers
+     with the whole page again (prRosterData), so the row moves to its new
+     group on the reply, never on hope. */
+  function rrSet(r, mode) {
+    if (!r) return;
+    state.recall.asking = true;
+    toGame('prSet', JSON.stringify({ formId: String(r.localId || r.formId || ''), plugin: r.plugin || '',
+                                     name: r.name || '', mode: mode }));
+    renderRecall();
+  }
+
+  window.prRosterData = function (env) {
+    const v = coerce(env);
+    const rr = state.recall;
+    rr.asking = false;
+    rr.at = Date.now();
+    if (!v || typeof v !== 'object') {
+      rr.ok = false; rr.msg = 'The recall roster came back unreadable.'; rr.rows = [];
+    } else {
+      rr.ok = v.ok !== false;
+      rr.msg = v.msg || '';
+      rr.rows = Array.isArray(v.rows) ? v.rows : [];
+      rr.answer = v.answer | 0; rr.flagged = v.flagged | 0; rr.registered = v.registered | 0;
+      rr.key = v.key && typeof v.key === 'object' ? v.key : null;
+    }
+    if (ui.rrOpen) renderRecall();
+    if (typeof requestFaceIcons === 'function') requestFaceIcons(true);
+  };
+
+  function rrMountPane() {
+    let pane = $('rr-pane');
+    if (pane) return pane;
+    const main = $('fd-main');
+    if (!main) return null;
+    pane = h('section', { id: 'rr-pane', 'aria-label': 'Recall roster' },
+      h('div', { class: 'rr-head' }),
+      h('div', { class: 'rr-body' }));
+    const before = $('fd-list');
+    if (before && before.parentNode === main) main.insertBefore(pane, before);
+    else main.append(pane);
+    return pane;
+  }
+
+  /* Which group a row lands in. "answer" = the key would act on her (recall,
+     or leave her waiting/busy — still hers); "flagged" = one loose flag, left
+     alone; "register" = a veto, or a registered person the world cannot find. */
+  function rrGroupOf(r) {
+    if (r.missing) return 'register';
+    if (r.basis) return 'answer';
+    if (r.flaggedOnly) return 'flagged';
+    return 'register';
+  }
+
+  /* The evidence, as chips. Tone is a JUDGEMENT and lives here (the DLL ships
+     facts only — same split as Who's here). */
+  function rrChips(r) {
+    const out = [];
+    if (r.missing) {
+      out.push({ tone: 'bad', glyph: '?', label: 'Not in the world right now',
+        why: 'Registered as ' + (r.registered || '?') + ' but no actor with that identity is loaded or known this session. '
+           + 'Her plugin may be off, or she has not been spawned yet. Clear to forget her.' });
+      return out;
+    }
+    const basis = {
+      registered: ['ok', '★', 'Registered: always', 'You registered her. She answers the recall whatever the engine says about her.'],
+      framework:  ['ok', '⚑', 'Her mod says following', 'A verified follower-framework adapter reports her as recruited.'],
+      engine:     ['ok', '⚑', 'Teammate + follower faction', 'Both halves of the vanilla recruit contract are set — vanilla and NFF set and clear them together.'],
+      alias:      ['ok', '≡', 'On NFF’s follower list', 'She fills a follower alias on the DialogueFollower quest, which NFF clears on dismiss.'],
+      package:    ['ok', '➜', 'Running her follow package', 'She is a teammate and the package her AI is running right now is follow / escort / accompany — a custom follower system doing its job.'],
+    }[r.basis];
+    if (basis) out.push({ tone: basis[0], glyph: basis[1], label: basis[2], why: basis[3] });
+    if (r.registered === 'never')
+      out.push({ tone: 'bad', glyph: '⊘', label: 'Never recalled', why: 'You registered her as Never. The recall skips her whatever the engine says.' });
+    if (r.flaggedOnly && r.teammate)
+      out.push({ tone: 'warn', glyph: '⚑', label: 'Teammate flag only',
+        why: 'Her plugin set the engine’s teammate flag but nothing else says she is following (no follower faction rank, no NFF alias, no follow package running). '
+           + 'Vilja’s plugin does this at startup; pet mods do it to a parked pet. Left alone — Register her if she really is yours.' });
+    else if (r.flaggedOnly)
+      out.push({ tone: 'warn', glyph: '⚑', label: 'Follower faction only',
+        why: 'She holds a Current Follower faction rank without the teammate flag — Katana’s ESP lists it statically. Left alone — Register her if she really is yours.' });
+    if (r.decision === 'waiting') out.push({ tone: 'note', glyph: '⌛', label: 'Waiting — stays put', why: 'Told to wait here (WaitingForPlayer, or Serana’s own waiting state). The recall leaves her where she is.' });
+    if (r.decision === 'busy') out.push({ tone: 'note', glyph: '⌛', label: 'Busy — stays put', why: 'Mounted, in a scene, or holding a pose. The recall leaves her where she is.' });
+    if (r.dead) out.push({ tone: 'bad', glyph: '†', label: 'Dead', why: 'The actor is dead.' });
+    if (r.disabled) out.push({ tone: 'bad', glyph: '⊘', label: 'Disabled', why: 'The reference is disabled — present in the cell, not in the world.' });
+    return out;
+  }
+
+  function rrRows() {
+    const q = String(ui.rrFilter || '').trim().toLowerCase();
+    const rows = state.recall.rows || [];
+    const order = { answer: 0, flagged: 1, register: 2 };
+    const sorted = rows.slice().sort(function (a, b) {
+      const d = order[rrGroupOf(a)] - order[rrGroupOf(b)];
+      return d || String(a.name || '').localeCompare(String(b.name || ''));
+    });
+    if (!q) return sorted;
+    return sorted.filter(function (r) {
+      const hay = [r.name, r.base, r.cell, r.durable, r.basis, r.decision, r.registered, rrGroupOf(r)]
+        .concat(rrChips(r).map(function (c) { return c.label; })).join(' ').toLowerCase();
+      return hay.indexOf(q) !== -1;
+    });
+  }
+
+  function rrCountLine() {
+    const rr = state.recall;
+    if (rr.asking && !rr.rows.length) return 'Reading…';
+    if (!rr.ok) return rr.msg || 'Nothing read yet.';
+    return rr.answer + ' answer' + (rr.answer === 1 ? 's' : '') + ' the recall · '
+         + rr.flagged + ' flagged, left alone · ' + rr.registered + ' registered';
+  }
+
+  function rrKeyLine() {
+    const k = state.recall.key;
+    if (!k) return '';
+    if (k.owned) return 'F17 is SkyManager’s: this list is who it brings.';
+    if (k.enabled) return 'SkyManager’s transferred key is off right now (NFF holds a different binding). Recall now still works from here.';
+    return 'NFF still owns its summon key — “Party: Take Over NFF Summon Key” makes F17 use this list. Recall now works from here either way.';
+  }
+
+  /* Card click: her F7 card when she is on the roster, the add menu when she
+     is a stranger — the same drill-in Who's here uses. */
+  function rrOpenRow(r) {
+    if (!r || r.missing) return false;
+    const hit = ptRosterFor({ formId: Number(r.formId) >>> 0, name: r.name, base: r.base });
+    if (!hit) { openAddMenu({ formId: Number(r.formId) >>> 0, name: r.name || r.base || '?', original: r.base || r.name || '' }); return true; }
+    return ptOpenMember({ formId: Number(r.formId) >>> 0, name: r.name, base: r.base });
+  }
+
+  function renderRecall() {
+    if (!ui.rrOpen) return;
+    const pane = rrMountPane();
+    if (!pane) return;
+    const head = pane.querySelector('.rr-head');
+    head.textContent = '';
+    head.append(h('button', {
+      class: 'rr-back', type: 'button', title: 'Back to the follower roster',
+      onClick: function (e) { e.stopPropagation(); setRecallOpen(false); },
+    }, h('span', { class: 'rr-back-chev', 'aria-hidden': 'true' }, '◂'), 'Roster'));
+    head.append(h('div', { class: 'rr-title-wrap' },
+      h('div', { class: 'rr-title' }, 'Recall roster'),
+      h('div', { class: 'rr-count', title: 'Read the instant you opened this page — the same survey the summon key runs.' }, rrCountLine()),
+      h('div', { class: 'rr-key' }, rrKeyLine())));
+
+    const wrap = h('div', { class: 'rr-search-wrap' }, h('span', { class: 'rr-search-ic', 'aria-hidden': 'true' }, '⌕'));
+    const input = h('input', {
+      id: 'rr-search', type: 'text', autocomplete: 'off', spellcheck: 'false',
+      placeholder: 'Search names, places — or “teammate”, “alias”, “never”, “waiting”…',
+      title: 'Filters as you type. Enter registers the top match (or clears her registration); ↑↓ pick a row.',
+    });
+    input.value = ui.rrFilter || '';
+    input.addEventListener('input', function (e) { ui.rrFilter = e.target.value; ui.rrSel = -1; rrRenderBody(pane); });
+    input.addEventListener('keydown', function (e) {
+      const rows = rrRows();
+      if (e.key === 'Enter') {
+        const pick = rows[ui.rrSel >= 0 ? ui.rrSel : 0];
+        if (pick) { e.preventDefault(); e.stopPropagation(); rrSet(pick, pick.registered === 'always' ? 'clear' : 'always'); }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault(); e.stopPropagation(); ui.rrSel = Math.min(rows.length - 1, ui.rrSel + 1); rrRenderBody(pane);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault(); e.stopPropagation(); ui.rrSel = Math.max(0, ui.rrSel < 0 ? 0 : ui.rrSel - 1); rrRenderBody(pane);
+      } else if (e.key === 'Escape' && ui.rrFilter) {
+        e.preventDefault(); e.stopPropagation(); ui.rrFilter = ''; ui.rrSel = -1; input.value = ''; rrRenderBody(pane);
+      }
+    });
+    wrap.append(input);
+    head.append(wrap);
+    head.append(h('button', {
+      class: 'rr-refresh' + (state.recall.asking ? ' busy' : ''), type: 'button',
+      title: 'Read the survey again.',
+      onClick: function (e) { e.stopPropagation(); rrAsk(); renderRecall(); },
+    }, h('span', { 'aria-hidden': 'true' }, '↻'), ' Refresh'));
+    head.append(h('button', {
+      class: 'rr-recall', type: 'button',
+      title: 'Bring everyone in the “answers the recall” group to you now — the same recall the summon key fires. Closes the deck.',
+      onClick: function (e) { e.stopPropagation(); toGame('prRecall', '{}'); },
+    }, 'Recall now'));   // text only: a gold glyph on the gold button is invisible (preview shot, 2026-09-26)
+
+    rrRenderBody(pane);
+  }
+
+  function rrActs(r) {
+    const acts = h('div', { class: 'rr-acts' });
+    const btn = function (lbl, mode, cls, title) {
+      return h('button', { class: 'rr-act ' + cls, type: 'button', title: title,
+        onClick: function (e) { e.stopPropagation(); rrSet(r, mode); },
+        onKeydown: function (e) { e.stopPropagation(); } }, lbl);
+    };
+    const reg = r.registered || '';
+    if (r.missing) { acts.append(btn('Clear', 'clear', 'clear', 'Forget this registration.')); return acts; }
+    if (reg !== 'always') acts.append(btn('Register', 'always', 'always', 'Always answer the recall, whatever the engine reads about her.'));
+    if (reg !== 'never') acts.append(btn('Never', 'never', 'never', 'Never answer the recall, whatever the engine reads about her.'));
+    if (reg) acts.append(btn('Clear', 'clear', 'clear', 'Back to what the engine reads.'));
+    return acts;
+  }
+
+  function rrRenderBody(pane) {
+    const body = pane.querySelector('.rr-body');
+    body.textContent = '';
+    const rr = state.recall;
+    const rows = rrRows();
+    if (!rows.length) {
+      const title = rr.asking ? 'Reading the survey…'
+        : (!rr.ok ? (rr.msg || 'Nothing read yet.')
+        : (rr.rows.length ? 'Nobody matches that search.' : 'Nobody would answer the recall right now.'));
+      const sub = rr.asking ? '' : (rr.rows.length ? 'Clear the search to see all ' + rr.rows.length + '.'
+        : 'No teammate, follower-faction, NFF alias or follow-package evidence on anyone, and nobody registered. '
+          + 'Recruit someone, or open Who’s here and Register her from there.');
+      body.append(h('div', { class: 'rr-empty' }, h('div', { class: 'rr-empty-title' }, title), h('div', { class: 'rr-empty-sub' }, sub)));
+      return;
+    }
+    const heads = {
+      answer:   ['Answers the recall', 'Everyone the summon key would act on — brought to you, or left waiting / busy where she is.'],
+      flagged:  ['Flagged, left alone', 'One loose engine flag and nothing else. Never summoned unless you Register her.'],
+      register: ['Register', 'Vetoes, and registered people the world cannot find right now.'],
+    };
+    let lastGroup = '';
+    rows.forEach(function (r, i) {
+      const g = rrGroupOf(r);
+      if (g !== lastGroup) {
+        lastGroup = g;
+        body.append(h('div', { class: 'rr-group rr-group-' + g },
+          h('div', { class: 'rr-group-title' }, heads[g][0]),
+          h('div', { class: 'rr-group-sub' }, heads[g][1])));
+      }
+      const hit = r.missing ? null : ptRosterFor({ formId: Number(r.formId) >>> 0, name: r.name, base: r.base });
+      /* formId stays the HEX STRING C++ sent — medalEl looks the face up by it
+         (the Who's here lesson, 2026-09-20). */
+      const m = { name: r.name || '', original: r.base || r.name || '',
+                  formId: String(r.formId || '').toLowerCase(),
+                  following: r.decision === 'recall', dead: !!r.dead };
+      const card = h('div', {
+        class: 'rr-card' + (i === ui.rrSel ? ' sel' : '') + (r.dead || r.disabled || r.missing ? ' dim' : ''),
+        role: 'button', tabindex: '0',
+        title: r.missing ? 'Not in the world right now' : (hit ? 'Open her card' : 'File her onto the Follower Organizer roster'),
+        onClick: function (e) { e.stopPropagation(); rrOpenRow(r); },
+        onKeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); rrOpenRow(r); } },
+      });
+      card.append(h('div', { class: 'rr-face' }, r.missing ? initialsMedal(m, '40') : medalEl(m, hit ? hit.cat : 0)));
+      const where = r.missing ? 'Nowhere loaded'
+        : ((r.cell || 'Somewhere unloaded') + (typeof r.dist === 'number' ? ' · ' + r.dist + ' m' : ''));
+      const ident = r.durable ? ' · ' + r.durable : '';
+      const text = h('div', { class: 'rr-text' },
+        h('div', { class: 'rr-name' }, r.name || r.base || '?'),
+        h('div', { class: 'rr-sub' }, where + ident + (r.base && r.base !== r.name ? ' · née ' + r.base : '')));
+      const chips = h('div', { class: 'rr-chips' });
+      rrChips(r).forEach(function (c) {
+        chips.append(h('span', { class: 'rr-chip ' + c.tone, title: c.label + ' — ' + c.why },
+          h('span', { class: 'rr-chip-ic', 'aria-hidden': 'true' }, c.glyph),
+          h('span', { class: 'rr-chip-lbl' }, c.label)));
+      });
+      text.append(chips);
+      card.append(text);
+      card.append(rrActs(r));
+      body.append(card);
+    });
+  }
+
   window.FolPane = {
     clothesChanged: clothesChanged,
     /* The roster's crop popout, reusable by any tab (the Character sheet's
@@ -13380,7 +16343,7 @@
         /* formId 0 would also work (C++ falls back to the crosshair snapshot),
            but naming the subject explicitly means the capture cannot drift to
            whoever the crosshair happens to be on a second later. */
-        toGame('fdPortrait', JSON.stringify({ formId: state.target ? state.target.formId : 0 }));
+        openPortraitCapture({formId:state.target ? state.target.formId : 0,name:state.target && state.target.name});
       });
       $('fd-openkey-btn').addEventListener('click', () => { if (window.startFolCapture) window.startFolCapture(); });
       /* « / » collapse the category rail to an icon strip (Rober, 2026-08-05).
@@ -13413,6 +16376,10 @@
          shows a labelled button instead of a mystery box. */
       ptMountToggle();
       syncPartyChrome();
+      nhMountToggle();
+      syncHereChrome();
+      rrMountToggle();
+      syncRecallChrome();
       $('fd-list').addEventListener('scroll', closeCtx, true);
       chainIcons();
       /* Edit-mode icon slots, DELEGATED: the rail is re-rendered on every
@@ -13447,16 +16414,20 @@
     quickPick: function (original, label) {
       if (!original) return false;
       const hit = rosterEntryFor(original);
-      if (!hit) return false;
-      enterFocus();
-      pickCrew(hit.m);
+      const m = hit ? hit.m : liveMemberFor(original);   // live companions too
+      if (!m) return false;
+      pickCrew(m);
       return true;
     },
     /* Called from hdClosed: the deck closing must not carry NPC-focus into the
        next open. hdClosed strips the body class; this clears the FLAG behind it
        so a re-open with no crosshair target can't re-paint an empty focus. */
     _resetFocus() {
+      rankEdit = { key:null, has:false, rank:0, pending:false };
+      if (rankVerify) { clearTimeout(rankVerify); rankVerify=0; }
+      if (window.NpcScene) NpcScene.reset();
       ui.npcFocus = false; ui.focusRosterOpen = false; ui.focusDismissed = false;
+      ui.fqPickPinned = false;
       /* The palette is closing: the card's ⌕ popout is an #overlay child and
          would otherwise still be sitting there on the next open. */
       fqFindClose();
@@ -13470,6 +16441,11 @@
       // Re-query every show: the roster can change through FO's native flows,
       // and the crosshair add-target is per-open (snapshotted by C++).
       toGame('fdRefresh');
+      /* Which Loadouts group each follower belongs to. Asked once per show and
+         joined by ORIGINAL name: a runtime FormID is not what either side files
+         people under, and `original` is exactly FO's own key. Read-only — this
+         page can show a group, never change one. */
+      toGame('loGroups');
       /* The party sheet survives a tab switch, so coming back must re-read it:
          the numbers are a SNAPSHOT, and a snapshot taken before you went and
          gave an order is exactly the stale reading this page exists to avoid.
@@ -13477,15 +16453,22 @@
          coincide.) */
       ptMountToggle();
       syncPartyChrome();
+      nhMountToggle();
+      syncHereChrome();
+      rrMountToggle();
+      syncRecallChrome();
       if (ui.ptOpen) ptAsk(false);
+      if (ui.rrOpen) rrAsk();   // a recall list is a live reading; re-ask on every show
       render();
       setTimeout(() => {
+        if (ctxEl && ctxEl._dossier) return; // Don't steal focus behind a search-opened character page.
         const s = $(ui.ptOpen ? 'pt-search' : 'fd-search');
         if (s) s.focus();
       }, 30);
     },
 
     onHide() {
+      closePortraitCapture();
       closeLightbox();   // an overlay that survives its tab is an unclickable deck
       closeHudModal();   // the HUD settings modal must not outlive its tab
       closeWornLightbox();
@@ -13512,6 +16495,14 @@
       const ps = $('pt-search'); if (ps) ps.value = '';
       if (typeof document !== 'undefined' && document.body)
         document.body.classList.remove('hd-npcfocus', 'hd-focusroster');
+    },
+
+    /* App-level route, including Tab: never cycle the deck behind the dossier. */
+    dossierKey(e) {
+      if (FQF.open) { fqFindKey(e); return true; }
+      if (!ctxEl || !ctxEl._dossier) return false;
+      ctxEl._dossier.key(e);
+      return true;
     },
 
     /* keydown while our tab is active; true = consumed */
@@ -13563,6 +16554,7 @@
       const t = e.target;
       const inText = t && (t.tagName === 'INPUT' || t.tagName === 'SELECT');
       if (ctxEl) {
+        if (ctxEl._dossier && ctxEl._dossier.key(e)) return true;
         if (e.key === 'Escape') { e.preventDefault(); closeCtx(); return true; }
         return true;  // typing lives inside the menu's inputs
       }
@@ -13574,6 +16566,9 @@
          blur. */
       if (ui.ptOpen && e.key === 'Escape' && !ui.ptFilter) {
         e.preventDefault(); setPartyOpen(false); return true;
+      }
+      if (ui.rrOpen && e.key === 'Escape' && !ui.rrFilter) {
+        e.preventDefault(); setRecallOpen(false); return true;
       }
       if (inText && t.id !== 'fd-search') {
         if (e.key === 'Escape') { e.preventDefault(); t.blur(); return true; }
@@ -13592,7 +16587,7 @@
         if (pick) {
           const rowEl = $('fd-list').querySelector('.fd-member[data-k="' + cssEsc(pick.cat + ':' + pick.idx) + '"]');
           const r = rowEl ? rowEl.getBoundingClientRect() : { left: 200, top: 160 };
-          openMemberMenu(pick, r.left + 60, r.top + 20);
+          openMemberMenu(pick);
         }
         return true;
       }
@@ -13622,6 +16617,8 @@
 
     syncChrome,
     openKeyLabel() { return state.openKey.label || 'F14'; },
+    /* the deck's collision question (app.js bindingSnapshot) reads this */
+    openKeyBinding() { return { device: state.openKey.device, code: state.openKey.code, label: state.openKey.label }; },
     setOpenKey(device, code, label) {
       state.openKey = { device, code: code >>> 0, label };
       saveOpenKey();
@@ -13642,6 +16639,53 @@
        caller draws initials), and the formId for de-duping someone filed in two
        categories. A member may appear once per category it is in; the caller
        de-dupes. */
+    /* ---- link someone to a place, from the Domains tab (Rober, 2026-09-17:
+       "maybe a way on right click to a domain to link an npc") --------------
+
+       The escape hatch for when NFF will not force-add her and My Home Is Your
+       Home therefore never opens its gate. It writes the TYPED
+       Home field, which outranks both mods in homesOf(), so the domain claims
+       her face immediately and no framework has to agree.
+
+       Domains deliberately does not know Follower Organizer's cat/idx: it hands
+       over who and where, this finds the row. `who` is {formId?, name}; formId
+       wins when both are present, because two people can share a name.
+
+       Returns {ok, msg} so the caller can say what happened rather than assume. */
+    linkHomeTo(who, homeName) {
+      const wantId = String((who && who.formId) || '').trim().toLowerCase();
+      const wantNm = String((who && who.name) || '').trim();
+      const home = String(homeName == null ? '' : homeName).trim();
+      if (!wantNm && !wantId) return { ok: false, msg: 'No one to link' };
+
+      let found = null;
+      state.cats.forEach(function (c) {
+        if (found || c.index === ALL) return;
+        (c.members || []).forEach(function (m, i) {
+          if (found) return;
+          const mid = String(m.formId || '').trim().toLowerCase();
+          if (wantId && mid && mid === wantId) { found = { cat: c.index, idx: i, m: m }; return; }
+          if (!wantId) {
+            const n = String(m.name || '').trim().toLowerCase();
+            const o = String(m.original || '').trim().toLowerCase();
+            const w = wantNm.toLowerCase();
+            if (n === w || o === w) found = { cat: c.index, idx: i, m: m };
+          }
+        });
+      });
+      if (!found) {
+        return { ok: false, msg: (wantNm || 'That person') + ' is not on the roster - '
+          + 'file them in Follower Organizer first' };
+      }
+      /* saveField wants a row whose `cat` is the category INDEX (not the
+         object rosterEntryFor hands back) - see the setField sender. */
+      if (!saveField(found, 'home', home)) return { ok: false, msg: 'Could not write the Home field' };
+      found.m.fields = found.m.fields || {};
+      found.m.fields.home = home;   // optimistic, so the Domains face appears now
+      if (isActive()) renderList();   // this is called FROM Domains; only repaint if we are up
+      return { ok: true, msg: (found.m.name || wantNm) + (home ? ' now lives at ' + home : '\u2019s home was cleared') };
+    },
+
     rosterForDomains() {
       const out = [];
       state.cats.forEach(function (c) {
@@ -13744,7 +16788,9 @@
           });
         });
       });
-      return out;
+      /* One card per PERSON: FO files the same woman under two categories as
+         two member objects, and this used to emit a row for each. */
+      return mergeHouseholdRows(out);
     },
     /* Whether Fertility Mode answered at all, so the Household page can tell
        "nobody is pregnant" apart from "the mod is not installed / has not
@@ -13774,19 +16820,27 @@
        or null. */
     portraitInfoFor(who) {
       if (!who) return null;
-      const want = canonFormId(who.formId);
-      if (want) {
+      const want = canonFormId(fidHexOf(who.formId));
+      const name = String(who.original || who.name || "").toLowerCase();
+      if (want || name) {
         for (let ci = 0; ci < state.cats.length; ci++) {
           const ms = state.cats[ci].members || [];
           for (let mi = 0; mi < ms.length; mi++) {
-            if (canonFormId(ms[mi].formId) !== want) continue;
+            if (want ? canonFormId(fidHexOf(ms[mi].formId)) !== want
+              : [ms[mi].original, ms[mi].name].every(function (n) { return String(n || '').toLowerCase() !== name; })) continue;
             const hit = portraitFor(ms[mi]);
             if (hit) return hit;
           }
         }
       }
-      return portraitFor({ original: who.original, name: who.name });
+      /* formId rides along so someone the roster has never held (a MHiYH
+         resident the Residents mode paints) still resolves her facegen head
+         through portraitFor's own last-resort path. */
+      return portraitFor({ original: who.original, name: who.name, formId: who.formId });
     },
+    /* Shared face consumers can enqueue newly visible actors without opening
+       Followers. Their ids also ride the completion poll below. */
+    requestPortraitFaces() { faceIconsPolls = 0; requestFaceIcons(false); },
     /* test hooks */
     _renderHudCard: renderHudCard, _hudCfg: hudCfg, _hudSettingsRow: hudSettingsRow,
     _setHudState: function (s) { hudState = s; renderHudCard(); },
@@ -13795,8 +16849,11 @@
     _crewFace: crewFace,
     _FIELDS: FIELDS, _fieldRows: fieldRows, _fieldValue: fieldValue,
     _normalizeFields: normalizeFields, _normMember: normMember,
-    _saveField: saveField, _openMemberMenu: openMemberMenu, _prettyKey: prettyKey,
-    _openSendTo: openSendTo, _openFileInto: openFileInto, _openWardrobeInto: openWardrobeInto, _openNffBase: openNffBase, _fmtOff: fmtOff, _clearNffOutfit: clearNffOutfit, _fileInto: fileInto, _domainMarks: domainMarks, _whereChip: whereChip,
+    _refreshOpenMenu: refreshOpenMenu,
+    _saveField: saveField, _openMemberMenu: openMemberMenu, _prettyKey: prettyKey, _fidHexOf: fidHexOf, _faceWhyFor: faceWhyFor,
+    _mergeHouseholdRows: mergeHouseholdRows,
+    _sdpCols: sdpCols,
+    _openSendTo: openSendTo, _openFileInto: openFileInto, _openMoveTo: openMoveTo, _fqFindIndex: fqFindIndex, _fqRank: fqRank, _fqCategoryRows: fqCategoryRows, _openWardrobeInto: openWardrobeInto, _openNffBase: openNffBase, _fmtOff: fmtOff, _clearNffOutfit: clearNffOutfit, _fileInto: fileInto, _domainMarks: domainMarks, _whereChip: whereChip,
     _mergeHome: mergeHome, _homeChip: homeChip, _homeTitle: homeTitle, _nffEntry: nffEntry,
     _ACTS: ACTS, _actSpec: actSpec, _nowChip: nowChip, _nowTitle: nowTitle, _dayBlock: dayBlock,
     _SETTABLE_KINDS: SETTABLE_KINDS, _canSetKind: canSetKind, _dayActions: dayActions,
@@ -13843,11 +16900,13 @@
     _applyUiScale: applyUiScale, _syncEditRowWrap: syncEditRowWrap,
     _clampText: clampText, _FIELD_VALUE_MAX: FIELD_VALUE_MAX,
     _slugOf: slugOf, _portraitFor: portraitFor, _medalEl: medalEl, _openLightbox: openLightbox,
+    _badgeEls: badgeEls, _groupsFor: groupsFor,
     _closeLightbox: closeLightbox,
     _closeHudModal: closeHudModal,
     _closeWornLightbox: closeWornLightbox,
     _clampCrop: clampCrop, _cropFor: cropFor, _applyCropTo: applyCropTo,
     _portraitSrc: portraitSrc, _faceFit: faceFit,
+    _f7CropFor:f7CropFor, _saveF7Crop:saveF7Crop,
     _cropPhrase: cropPhrase, _CROP_ZSTEP: CROP_ZSTEP, _CROP_PAN_STEP: CROP_PAN_STEP,
     _CROP_ZMAX: CROP_ZMAX, _CROP_MAX_ENTRIES: CROP_MAX_ENTRIES,
     /* WYSIWYG crop plumbing, for the editor-vs-consumer equality harness. */
@@ -13865,6 +16924,12 @@
     /* app.js mounts the quick-follower card above the hotkey list while the
        Followers CATEGORY is up; unmount when it leaves. */
     mountQuickCard(host) { mountQuick(host); },
+    openEffectsFor(subject, tab, query) {
+      closeFxModal();
+      fxTab = tab || 'fx'; fxSearch = query || '';
+      fxEffMod = 'all'; fxZazCat = 'all'; fxZazWorn = false;
+      openFxModal(subject, subject.name || 'NPC');
+    },
     /* app.js may only unmount the card it mounted. It calls this on every deck
        render, including renders that happen while OUR tab is up — without the
        ownership check it would tear out the card the Followers tab just put on
@@ -13899,6 +16964,7 @@
     },
     _recruitClick: recruitClick, _frameworkClick: frameworkClick,
     _clearForceRecruit: clearForceRecruit,
+    _dismissClick: dismissClick, _clearForceDismiss: clearForceDismiss,
     _equippedBlock: equippedBlock, _equippedFor: equippedFor, _renderAdd: renderAdd,
     _resetEquippedGate: function () {
       equippedAsked = { key: null, at: 0 }; equippedPending = null; forgetEquippedAsks();
@@ -13985,7 +17051,7 @@
      for a reply that never comes at all. */
   const facePending = {};
   function facePendingFor(m) {
-    const k = String((m && m.formId) || '').toLowerCase();
+    const k = fidHexOf(m && m.formId);
     const at = k ? facePending[k] : 0;
     if (!at) return false;
     if (Date.now() - at > 150000) { delete facePending[k]; return false; }  // 24 polls × 5 s + slack
@@ -13998,12 +17064,12 @@
     const ids = {};
     (state.cats || []).forEach(function (c) {
       (c.members || []).forEach(function (m) {
-        const k = String(m.formId || '').toLowerCase();
+        const k = fidHexOf(m.formId);
         if (k && !state.faceIcons[k]) ids[k] = 1;
       });
     });
     (state.liveParty || []).forEach(function (m) {
-      const k = String(m.formId || '').toLowerCase();
+      const k = fidHexOf(m.formId);
       if (k && !state.faceIcons[k]) ids[k] = 1;
     });
     /* …and everyone the party sheet measured. Almost always the same people as
@@ -14012,7 +17078,7 @@
        having been in liveParty, and without this her card is the only face on
        the page still drawing initials. */
     ((state.party && state.party.members) || []).forEach(function (m) {
-      const k = String(m.formId || '').toLowerCase();
+      const k = fidHexOf(m.formId);
       if (k && !state.faceIcons[k]) ids[k] = 1;
     });
     /* The F7 LOOKING-AT card's subject rides along too (folded into the same
@@ -14021,6 +17087,30 @@
        target when the roster re-asks. */
     const tk = fidHexOf(state.target && state.target.formId);
     if (tk && !state.faceIcons[tk]) ids[tk] = 1;
+    /* …and everyone the open Who's here list is drawing. In "Everyone here"
+       mode most of them are on no roster and in no party, so without this the
+       5 s completion poll would never re-ask for the heads the scan queued and
+       they would sit on initials until the next scan (the faceConsumerActive
+       law — any surface that paints icons/npcs renders must be named here). */
+    if (ui.nhOpen) (state.here.rows || []).forEach(function (r) {
+      const k = fidHexOf(r.formId);
+      if (k && !state.faceIcons[k]) ids[k] = 1;
+    });
+    if (ui.rrOpen) (state.recall.rows || []).forEach(function (r) {
+      const k = fidHexOf(r.formId);
+      if (k && !state.faceIcons[k]) ids[k] = 1;
+    });
+    if (window.GetAway && GetAway.isOpen()) GetAway.portraitIds().forEach(function (k) {
+      if (k && !state.faceIcons[k]) ids[k] = 1;
+    });
+    if (window.OstimTools && OstimTools.isOpen()) OstimTools.portraitIds().forEach(function(k){if(k&&!state.faceIcons[k])ids[k]=1;});
+    [window.DomainsPane, window.HDNpcTune].forEach(function (pane) {
+      if (!pane || !pane.portraitIds) return;
+      pane.portraitIds().forEach(function (id) {
+        const k = fidHexOf(id);
+        if (k && !state.faceIcons[k]) ids[k] = 1;
+      });
+    });
     const list = Object.keys(ids);
     if (!list.length) return;
     faceIconsLastAsk = now;
@@ -14049,6 +17139,30 @@
     toGame('fdFaceIcons', JSON.stringify({ ids: [tk] }));
   }
 
+  /* group -> members, keyed by ORIGINAL name (loadouts.cpp
+     GroupsByOriginalJson). Empty until the first reply, and empty forever on a
+     save with no groups — both render as "no group", which is the truth. */
+  window.loGroupsData = function (env) {
+    const v = coerce(env);
+    const by = (v && v.byOriginal && typeof v.byOriginal === 'object') ? v.byOriginal : {};
+    const next = {};
+    Object.keys(by).forEach(function (k) {
+      if (Array.isArray(by[k])) next[String(k).toLowerCase()] = by[k];
+    });
+    state.groupsByOriginal = next;
+    dropRowCache();
+    if (isActive()) render();
+    renderQuickCard();
+  };
+
+  /* Every group this follower is in, with the class she plays there. */
+  function groupsFor(m) {
+    if (!m) return [];
+    const key = String(m.original || m.name || '').toLowerCase();
+    if (!key) return [];
+    return (state.groupsByOriginal && state.groupsByOriginal[key]) || [];
+  }
+
   window.fdFaceIconsData = function (env) {
     dropRowCache();   // a push the row signature cannot see for itself
     const v = coerce(env);
@@ -14057,9 +17171,20 @@
     const icons = (v.icons && typeof v.icons === 'object') ? v.icons : {};
     Object.keys(icons).forEach(function (k) {
       const path = String(icons[k] || '');
-      const key = String(k).toLowerCase();
+      const key = fidHexOf(k);
       if (path && state.faceIcons[key] !== path) { state.faceIcons[key] = path; changed = true; }
+      if (path && state.faceWhy[key]) { delete state.faceWhy[key]; changed = true; }
       if (facePending[key]) { delete facePending[key]; changed = true; }
+    });
+    /* The DLL's reasons for the ids it could NOT resolve to a head (not loaded,
+       no head file shipped for her record, …) - the dossier shows them in
+       place of "No portrait yet", which promised a picture that can't come. */
+    const why = (v.why && typeof v.why === 'object') ? v.why : {};
+    Object.keys(why).forEach(function (k) {
+      const key = fidHexOf(k);
+      const text = String(why[k] || '');
+      if (!key || !text || state.faceIcons[key]) return;
+      if (state.faceWhy[key] !== text) { state.faceWhy[key] = text; changed = true; }
     });
     clearTimeout(faceIconsTimer);
     const queued = Number(v.queued) || 0;
@@ -14070,12 +17195,7 @@
     if (queued === 0) {
       Object.keys(facePending).forEach(function (k) { delete facePending[k]; changed = true; });
     }
-    if (changed) {
-      if (isActive()) render();
-      renderQuickCard();
-      /* The Household tab paints the same faces and cannot see this push. */
-      try { if (window.HouseholdPane) HouseholdPane.dataChanged(); } catch (e) {}
-    }
+    if (changed) portraitsChanged();
     if (queued > 0 && faceIconsPolls < 24) {
       faceIconsPolls++;
       faceIconsTimer = setTimeout(
@@ -14101,7 +17221,7 @@
        clearer statement of intent than a face you clicked earlier, and leaving
        the pick in place would mean the card silently keeps addressing the
        wrong person while you stare at someone else. */
-    ui.fqPick = '';
+    if (!ui.fqPickPinned) ui.fqPick = '';
     t = coerce(t);
     /* BEFORE the reassignment below — read it after and you are comparing the
        new target with itself, so a status line about the previous NPC would
@@ -14169,7 +17289,10 @@
        no-target guard judged the PREVIOUS open's target and let focus stand.
        This arrival is the authoritative "there is no NPC": drop focus and land
        on the main follower view (rail + All Followers), never the empty shell. */
-    if (ui.npcFocus && !(state.target && state.target.name)) {
+    /* …unless the focus is a PINNED PICK (a row's F7 Controls, a party face):
+       that view is about her, not about the crosshair, and a target push must
+       not throw you out of it. */
+    if (ui.npcFocus && !(state.target && state.target.name) && !(ui.fqPickPinned && ui.fqPick)) {
       ui.cat = ALL;
       ui.rosterOpen = true;
       exitFocus();
@@ -14244,7 +17367,7 @@
       };
     });
     state.portraits = map;
-    if (isActive()) renderList();
+    portraitsChanged();
   };
 
   /* fdCrops: the display-crop map, { "<file>": { z, x, y } }. Its own name in
@@ -14283,8 +17406,8 @@
        store was private to this file, which is why fourteen panes centre-cropped
        instead (2026-08-19 sweep). One push here, and they all agree. */
     if (window.HDFaceFit && HDFaceFit.setPortraitCrops) HDFaceFit.setPortraitCrops(map);
-    if (isActive()) renderList();
-    renderQuickCard();
+    window.dispatchEvent(new CustomEvent('hd-portrait-crops-changed'));
+    portraitsChanged();
   };
 
   /* fdNff: the read-only NFF + My Home is Your Home NG snapshot. Listener-free
@@ -14307,6 +17430,7 @@
       defZoom: num(e.defZoom, 0.6), defOffsetX: num(e.defOffsetX, 0),
       defOffsetY: num(e.defOffsetY, -0.06),
     };
+    if (captureSetup && captureSetup.load) captureSetup.load(Object.assign({},framing,{lighting:e.lighting && ['natural','soft','bright'].indexOf(e.lighting.mode)>=0 && typeof e.lighting.strength==='number' && isFinite(e.lighting.strength) && e.lighting.strength>=.25 && e.lighting.strength<=3 ? e.lighting : null}));
     if (isActive() && ui.fqFraming) renderQuickCard();
   };
 
@@ -14405,12 +17529,13 @@
      because a refusal is usually the mod's own rule ("she has to be
      following you") and is the most useful thing on screen. The day itself
      repaints off the fdNff C++ pushes alongside the "done" reply — this
-     handler deliberately changes no state, so a payload from a newer DLL
-     than this view cannot corrupt anything. */
+     handler only remembers per-actor feedback; it never invents routine data
+     before the mod confirms it. */
   window.fdMhiyhResult = function (env) {
     dropRowCache();   // a push the row signature cannot see for itself
     env = coerce(env);
     if (!env || typeof env !== 'object') return;
+    updateDayStatus(env);
     const msg = typeof env.msg === 'string' ? env.msg : '';
     if (!msg) return;
     if (env.phase === 'sent') { toast(msg); return; }
@@ -14463,6 +17588,14 @@
       return;
     }
 
+    /* A quest holds her and NFF does not: the message names the quest, and
+       the next Dismiss click forces it (armForceDismiss). */
+    if (env.held) {
+      armForceDismiss(lastDismissTarget, msg);
+      if (msg) toast('⚠ ' + msg);
+      return;
+    }
+
     if (msg) toast((env.ok ? '' : '⚠ ') + msg);
 
     /* Her sandbox checkbox is WRITE-ONLY without this, and the log proved it:
@@ -14504,6 +17637,19 @@
         (env.op === 'forceFollower' || env.op === 'unforceFollower')) {
       if (typeof env.canFollow === 'boolean') state.target.canFollow = env.canFollow;
       if (typeof env.forced === 'boolean') state.target.forcedFollow = env.forced;
+    }
+
+    /* A recruit now reports what it VERIFIED rather than that the call ran
+       (src/nff_control.cpp FinishRecruit), so the card can stop showing a
+       follower who never followed. Taking these three straight off the reply
+       means a refused recruit immediately offers the thing that would fix it —
+       Repair when she came back half-recruited, "Make recruitable" when she was
+       never in the follower pool — instead of asking the user to guess which
+       condition applies. */
+    if (env.phase === 'done' && env.op === 'recruit' && state.target) {
+      if (typeof env.following === 'boolean') state.target.following = env.following;
+      if (typeof env.wedged === 'boolean') state.target.wedged = env.wedged;
+      if (typeof env.canFollow === 'boolean') state.target.canFollow = env.canFollow;
     }
 
     /* A finished recruit/dismiss changed what they are wearing often enough
@@ -14765,7 +17911,7 @@
        it was covering for has been answered. Dropping it while still `pending`
        would let a read that raced the Papyrus stack snap the slider back to the
        old value for a beat and then forward again. */
-    if (rankEdit.key !== null && !rankEdit.pending) {
+    if (rankEdit.key !== null && !rankEdit.pending && Number(rankEdit.key) === Number(env.formId)) {
       rankEdit = { key: null, has: false, rank: 0, pending: false };
     }
     refreshOpenMenu();
@@ -14784,11 +17930,20 @@
      `wrote:true` means the Papyrus stack was QUEUED, not that it ran, so this
      only clears the pending flag — the verify read scheduled by sendRank is
      what actually settles the number. */
+  window.fdMarriageResult = function (env) {
+    env = coerce(env);
+    if (!env || !Number(env.formId)) return;
+    if (env.msg) toast(env.msg);
+    askEquipped({formId:env.formId}, true);
+    toGame('fdRefresh', ''); // Read the framework's new status; never invent it.
+  };
+
   window.fdRankInfo = function (env) {
     env = coerce(env);
     if (!env || typeof env !== 'object') return;
-    const t = state.target;
-    const key = String((t && t.formId) || '');
+    if (!env.formId) return;
+    const key = hexOf(Number(env.formId)).toLowerCase();
+    if (rankEdit.key !== key) return;
     if (env.ok === false) {
       /* A refusal must not leave the optimistic value on screen pretending to
          be the truth — drop it and let `about` answer again. */
@@ -14808,7 +17963,7 @@
       rankEdit.pending = false;
     }
     if (env.wrote && env.msg) fqStatus = { msg: env.msg, ok: true, pending: false };
-    renderQuickCard();
+    renderQuickCard(); refreshOpenMenu();
   };
 
   /* fdFertility: Fertility Mode pregnancy / cycle, pushed by C++ on the same
@@ -14835,6 +17990,7 @@
       actors: map,
     };
     remergeFert();
+    refreshOpenMenu();
     if (isActive()) renderList();
     /* The Household tab reads this pane's roster (householdRoster), so a
        pregnancy push must repaint it too — it is a different tab and
@@ -14857,6 +18013,15 @@
       label: ok.label || 'F14',
     };
     state.avatarPx = clampAv(cfg.avatarPx);
+    if (cfg.dossierFrames && typeof cfg.dossierFrames === 'object' && !Array.isArray(cfg.dossierFrames)) {
+      state.dossierFrames = {};
+      Object.keys(cfg.dossierFrames).slice(0,400).forEach(function(k){
+        if (k !== '__proto__' && k.length <= 256) state.dossierFrames[k] = dossierFrameValue(cfg.dossierFrames[k]);
+      });
+    }
+    if (cfg.dossierSizePct !== undefined) state.dossierSizePct = clampDossierSize(cfg.dossierSizePct);
+    const dossier = document.getElementById('fd-ctx-menu');
+    if (dossier && dossier._dossier) dossier._dossier.applySize();
     applyAvatarSize();
     state.uiScale = clampUi(cfg.uiScale);
     applyUiScale();

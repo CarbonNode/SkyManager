@@ -62,3 +62,12 @@ Unset, which is the default, the feature is skipped entirely.
 | "cannot reach CHIM" | CHIM is not running. It only runs while the game does. |
 | Ask answers, "Think about it" fails | No LLM connector configured in CHIM, or its key is empty. |
 | A question about spouses returns nobody | SkyManager asks CHIM who your character is; if it cannot tell, it matches any spouse rather than none. Check your player name is set in CHIM. |
+
+## dynprof.php (2026-09-21)
+
+The CHIM flyout's **Refresh dynamic profile** row needs a second file next to
+`ask.php`: `dynprof.php`, a CLI twin of CHIM's own service bootstrap that runs the
+dynamic-profile scheduler for ONE NPC. Copy it to
+`/var/www/html/HerikaServer/ext/deck_ask/dynprof.php` the same way. `ask.php`'s
+`chim_state` / `diary` / `dynprof_set` modes work without it; only
+`dynprof_refresh` shells out to it.

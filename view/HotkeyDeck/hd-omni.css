@@ -461,6 +461,8 @@
 .omni-x:focus-visible,
 .omni-go:focus-visible,
 .omni-jump:focus-visible,
+.omni-run:focus-visible,
+.omni-tp:focus-visible,
 .omni-more:focus-visible,
 .omni-think:focus-visible,
 .omni-cand:focus-visible,
@@ -478,6 +480,8 @@
 .omni-mode:active,
 .omni-x:active,
 .omni-jump:active,
+.omni-run:active,
+.omni-tp:active,
 .omni-more:active,
 .omni-cand:active,
 .omni-prof-x:active,
@@ -515,7 +519,9 @@
   white-space: nowrap;
   padding-right: 4px;
 }
-.omni-run {
+/* the console row's buttons: Run ▸ (the raw line) and, for `coc <name>`, Go ▸ <EditorID>
+   (the resolved cell — hd-places.js bestCell). Same plate, so they read as one pair. */
+.omni-run, .omni-tp {
   flex: none;
   background: linear-gradient(160deg, #3a3324, #241f14);
   border: 1px solid rgba(226,190,110,.55);
@@ -527,4 +533,5 @@
   border-radius: 8px;
   cursor: pointer;
 }
-.omni-run:hover { border-color: #e2be6e; background: linear-gradient(160deg, #4a4130, #2c2618); }
+.omni-run:hover, .omni-tp:hover { border-color: #e2be6e; background: linear-gradient(160deg, #4a4130, #2c2618); }
+.omni-tp { margin-right: 6px; font-family: Consolas, "Cascadia Mono", monospace; letter-spacing: .01em; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

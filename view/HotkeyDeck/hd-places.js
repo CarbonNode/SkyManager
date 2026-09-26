@@ -41,6 +41,44 @@ var HDPlaces = (function () {
   var CACHE_MAX = 400;
   var count = 0;        // places the engine indexed (from the last reply), for the log line
 
+  /* `coc bannermist` typed into the Omni (Rober, 2026-09-21: "can command k be smarter …
+     find actual cell id and run that?"). The verb is stripped before the engine is
+     asked, so the Places rows under the query are the cells the name matches, and
+     bestCell() names the one the console row's Go button will jump to. */
+  var COC_RX = /^coc\s+(.+)$/i;
+  function cocArg(q) {
+    var m = String(q || '').trim().match(COC_RX);
+    return m ? m[1].trim() : '';
+  }
+  function norm(s) { return String(s || '').toLowerCase().replace(/[\s'\-_]/g, ''); }
+  /* the cell in the session cache that best matches a typed name — exact editor ID or
+     name first, then prefix, then substring; null when nothing lands at all */
+  function bestCell(arg) {
+    var a = norm(arg);
+    if (!a) return null;
+    var best = null, bestScore = 0;
+    for (var i = 0; i < cache.length; i++) {
+      var it = cache[i];
+      if (!it || !it.snap || it.snap.kind !== 'cell') continue;
+      var e = norm(it.snap.edid), n = norm(it.label);
+      var sc = 0;
+      if (e === a) sc = 100;
+      else if (n === a) sc = 95;
+      else if (e.indexOf(a) === 0) sc = 80;
+      else if (n.indexOf(a) === 0) sc = 75;
+      else if (e.indexOf(a) !== -1) sc = 50;
+      else if (n.indexOf(a) !== -1) sc = 45;
+      if (sc > bestScore) { bestScore = sc; best = it; }
+    }
+    return best;
+  }
+  /* {arg, item|null} for a `coc …` query, null for anything else */
+  function resolveCoc(q) {
+    var arg = cocArg(q);
+    if (!arg) return null;
+    return { arg: arg, item: bestCell(arg) };
+  }
+
   function toGame(fn, arg) {
     var f = window[fn];
     if (typeof f === 'function') { try { f(String(arg === undefined ? '' : arg)); } catch (e) {} }
@@ -80,7 +118,9 @@ var HDPlaces = (function () {
       label: name,
       detail: detail,
       kind: isMarker ? 'map marker' : 'cell',
-      keywords: [r.e, r.p, r.w, r.t, nospace].filter(Boolean).join(' '),
+      plugin: isMarker ? '' : String(r.p || ''),
+      /* 'coc' on a cell: the query "coc bannermist" still lands every word on the row */
+      keywords: [r.e, r.p, r.w, r.t, nospace, isMarker ? '' : 'coc'].filter(Boolean).join(' '),
       pin: pin,
       snap: snap,
       run: function () { go(snap); },
@@ -130,7 +170,7 @@ var HDPlaces = (function () {
     /* build the engine index as the omni opens, so the first keystroke is answered
        from a warm list (the build is a few hundred ms once per session) */
     warm: function () { ask(''); },
-    lazy: function (q) { ask(q); },
+    lazy: function (q) { ask(cocArg(q) || q); },   // "coc x" asks the engine for x
     index: function () { return cache; },
     /* Favorites Shelf / recents: fire from the stored identity even when the
        live row has not been seen this session */
@@ -143,6 +183,9 @@ var HDPlaces = (function () {
     go: go,
     provider: provider,
     count: function () { return count; },
+    cocArg: cocArg,
+    bestCell: bestCell,
+    resolveCoc: resolveCoc,
     /* test seams */
     _itemOf: itemOf,
     _cache: function () { return cache; },

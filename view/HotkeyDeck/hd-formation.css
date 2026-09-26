@@ -3,21 +3,21 @@
  *  NEVER merge into app.css: sync_view_frags' banner replacement truncates
  *  foreign blocks (the reason hd-omni.css / hd-shelf.css are separate).
  *
- *  Lives INSIDE #panel like #hk-icon-modal, so it inherits --ui-scale and
- *  clips to the deck window. z-index 74: above the icon picker (72) and
- *  omni (73), below #toast (80). Own keyframe — NEVER riseIn (that bakes
- *  the panel scale into the animation).
+ *  A body-anchored popout, independent of #panel and its scale transform.
+ *  Own namespace and entrance animation; keyboard ownership is in the host.
  * ====================================================================== */
 
 #fm-modal {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 74;
+  z-index: 10020;
   display: flex;
   align-items: center;
   justify-content: center;
   background: rgba(5, 5, 8, .68);
   animation: fadeIn 120ms ease;
+  padding: 24px;
+  box-sizing: border-box;
 }
 #fm-modal.hidden { display: none; }
 
@@ -32,6 +32,66 @@
   border-radius: 12px;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   animation: fmIn 160ms ease;
+}
+
+/* Walk With Me: a spacious, body-anchored field guide. No panel transform. */
+.fm-box.fm-modern { width: 1120px; max-width: 100%; max-height: 100%; color: #d6d0c0; }
+.fm-modern .fm-head { padding: 20px 24px; }
+.fm-modern .fm-title { font-family: Georgia, serif; font-size: 28px; font-weight: 400; }
+.fm-modern .fm-body { padding: 20px 24px 24px; gap: 20px; overscroll-behavior: contain; }
+.fm-modern .fm-chip, .fm-modern .fm-help, .fm-modern .fm-order-h { font-size: 16px; line-height: 1.5; }
+.fm-modern .fm-chip { white-space: normal; border-radius: 8px; }
+.fm-modern .fm-btn, .fm-modern .fm-toggle, .fm-modern .fm-order { font-size: 18px; min-height: 46px; }
+.fm-modern .fm-order { padding: 16px; }
+.fm-modern .fm-orders { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.fm-modern .fm-note, .fm-modern .fm-warn { font-size: 17px; }
+.fm-section-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.fm-section-tab { flex: 1 1 auto; min-height: 48px; padding: 10px 16px; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; background: rgba(255,255,255,.04); color: #bfb9aa; font: inherit; font-size: 18px; cursor: pointer; }
+.fm-section-tab:hover { background: rgba(201,162,75,.13); color: #f2e5bc; }
+.fm-section-tab.on { background: #c9a24b; border-color: #c9a24b; color: #17130a; }
+.fm-modern-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.fm-modern-intro h2 { margin: 0 0 8px; font: 26px/1.25 Georgia,serif; color: #e8d9ac; }
+.fm-modern-intro p { margin: 0; font-size: 18px; line-height: 1.5; color: #bfb9aa; max-width: 760px; }
+.fm-modern-intro .fm-chip { flex: 0 0 auto; }
+.fm-choice-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.fm-choice-row .fm-lbl { font-size: 18px; margin-right: 12px; }
+.fm-action-note { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.fm-help { color: #b3ada0; margin: 0; overflow-wrap: anywhere; }
+.fm-party { padding: 20px; border: 1px solid rgba(201,162,75,.25); background: rgba(201,162,75,.035); border-radius: 12px; display: flex; flex-direction: column; gap: 16px; }
+.fm-party .fm-sec-t { font-size: 20px; flex-wrap: wrap; }
+.fm-party-search { box-sizing: border-box; width: 100%; min-height: 48px; padding: 10px 14px; border: 1px solid rgba(255,255,255,.2); border-radius: 8px; background: #141419; color: #e8e1d3; font: inherit; font-size: 18px; }
+.fm-party-search::placeholder { color: #a49e91; }
+.fm-party-list { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; max-height: 330px; overflow-y: auto; grid-auto-rows: max-content; }
+.fm-party-card { min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; background: #202026; }
+.fm-party-card.selected { border-color: #c9a24b; background: #2c291f; }
+.fm-party-name { font-size: 20px; font-weight: 600; overflow-wrap: anywhere; }
+.fm-party-card .fm-btn { margin-top: auto; }
+.fm-clear-partner { align-self: flex-start; }
+.fm-control-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px 20px; }
+.fm-control-grid .fm-toggle { border-radius: 9px; padding: 12px; text-align: left; }
+.fm-control-grid .fm-toggle-lbl { white-space: normal; line-height: 1.4; }
+.fm-number-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 18px; line-height: 1.4; min-width: 0; }
+.fm-number { box-sizing: border-box; width: 112px; min-height: 46px; flex: 0 0 112px; padding: 8px 10px; border: 1px solid rgba(255,255,255,.2); border-radius: 8px; background: #141419; color: #e8d9ac; font-size: 18px; font-variant-numeric: tabular-nums; }
+.fm-modern-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,.14); }
+.fm-draft-status { flex: 1 1 240px; color: #b3ada0; font-size: 17px; }
+#fm-modal button:focus, #fm-modal input:focus { outline: 2px solid #e8cf86; outline-offset: 3px; }
+#fm-modal button:disabled { cursor: default; opacity: .48; }
+#fm-modal button { touch-action: manipulation; }
+.fm-close { min-width: 44px; min-height: 44px; }
+@media (max-width: 760px) {
+  #fm-modal { padding: 12px; }
+  .fm-modern .fm-head, .fm-modern .fm-body { padding: 16px; }
+  .fm-modern-intro, .fm-action-note { flex-direction: column; gap: 12px; }
+  .fm-modern .fm-orders { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .fm-party-list, .fm-control-grid { grid-template-columns: minmax(0,1fr); }
+  .fm-modern-foot .fm-apply { width: 100%; }
+  .fm-party { padding: 14px; }
+  .fm-section-tab { flex-basis: 28%; padding: 8px; font-size: 16px; }
+  .fm-modern .fm-title { font-size: 25px; }
+  .fm-number { width: 92px; flex-basis: 92px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #fm-modal, #fm-modal * { animation: none !important; transition: none !important; }
 }
 @keyframes fmIn {
   from { opacity: 0; transform: translateY(10px); }

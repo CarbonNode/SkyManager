@@ -445,6 +445,27 @@ namespace Hotbar
 	};
 	SmartInfo SmartCount(const std::string& ref);
 
+	// What FireSmart WOULD drink right now, without drinking it - the Potion
+	// Browser's smart row names the pick beside the gap (Rober, 2026-09-23:
+	// "a smart button for like use best potion (to heal my current health
+	// gap)"). Same candidates, same prefs, same "already full" rule as the
+	// press itself, so the row can never promise a bottle the press refuses.
+	// MAIN THREAD ONLY.
+	struct SmartPreview
+	{
+		bool        ok = false;        // a pick exists and the press would drink it
+		bool        full = false;      // no deficit - optimal mode refuses to waste one
+		std::string name;              // the pick
+		float       score = 0.0f;      // what it restores
+		bool        overheal = false;
+		int         total = 0;         // matching potions carried, all tiers
+		std::string why;               // when !ok: the reason, in words
+		float       cur = 0.0f;
+		float       max = 0.0f;
+		float       deficit = 0.0f;
+	};
+	SmartPreview PreviewSmart(const std::string& ref);
+
 	// Every carried AlchemyItem that is a POTION (not food, not poison) —
 	// the widgets' "All" figure. MAIN THREAD ONLY.
 	int CountAllPotions();

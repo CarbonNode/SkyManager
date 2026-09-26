@@ -47,9 +47,10 @@ window.TimePane = (function () {
         window.tmInfo(JSON.stringify({ hour: 21.78, day: 17, month: 7, year: 204, daysPassed: 1093.4 }));
       }
       if (DEV && fn === 'tmWait') {
-        const h = parseFloat(arg) || 0;
+        let h = parseFloat(arg) || 0;
+        try { const r = JSON.parse(arg); if (r && typeof r === 'object') h = r.until != null ? HDTimeControls.until(cur.hour,r.until) : HDTimeControls.hours(cur,r.amount,r.unit); } catch (_) {}
         const next = Object.assign({}, cur || { hour: 8, day: 17, month: 7, year: 204, daysPassed: 0 });
-        next.hour += h; while (next.hour >= 24) { next.hour -= 24; next.day += 1; next.daysPassed += 1; }
+        Object.assign(next, HDTimeControls.advance(next,h));
         window.tmResult(JSON.stringify({ ok: true, hours: h }));
         window.tmInfo(JSON.stringify(next));
       }
@@ -77,6 +78,7 @@ window.TimePane = (function () {
   /* ------------------------------------------------------------ format -- */
 
   function fmtClock(hour) {
+    hour = ((hour % 24) + 24) % 24;
     let h = Math.floor(hour), m = Math.floor((hour - h) * 60);
     const am = h < 12;
     let disp = h % 12; if (disp === 0) disp = 12;
@@ -106,9 +108,7 @@ window.TimePane = (function () {
      already AT means a full day around the dial. */
   function hoursUntil(target) {
     if (!cur) return null;
-    let h = (target - cur.hour + 24) % 24;
-    if (h < 0.02) h = 24;
-    return h;
+    return HDTimeControls.until(cur.hour, target);
   }
 
   /* ------------------------------------------------------------ render -- */
@@ -120,33 +120,11 @@ window.TimePane = (function () {
     /* dial: 0h = dot at bottom (midnight), noon at top */
     const deg = (cur.hour / 24) * 360 + 180;
     $('tm-dial-dot').style.transform = 'rotate(' + deg + 'deg) translateY(-33px)';
-    document.querySelectorAll('#tm-until-chips .tm-chip').forEach((b) => {
-      const t = parseFloat(b.getAttribute('data-until'));
-      const h = hoursUntil(t);
-      const sub = b.querySelector('.tm-chip-sub');
-      if (sub) sub.textContent = h == null ? '…' : ('in ' + (Math.round(h * 10) / 10) + ' h');
-    });
-    renderForecast();
     if (jumped) {
       const card = $('tm-clock-card');
       card.classList.add('tm-jumped');
       setTimeout(() => card.classList.remove('tm-jumped'), 900);
     }
-  }
-
-  function renderForecast() {
-    const h = parseInt($('tm-slider').value, 10) || 0;
-    $('tm-slider-read').textContent = h < 24 ? (h + ' h')
-      : (Math.floor(h / 24) + 'd ' + (h % 24) + 'h');
-    if (!cur) { $('tm-forecast').textContent = 'lands —'; return; }
-    const n = Object.assign({}, cur);
-    n.hour += h; n.daysPassed = (Number(n.daysPassed) || 0) + 0;
-    while (n.hour >= 24) {
-      n.hour -= 24; n.day += 1; n.daysPassed += 1;
-      const len = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][n.month | 0] || 31;
-      if (n.day > len) { n.day = 1; n.month += 1; if (n.month > 11) { n.month = 0; n.year += 1; } }
-    }
-    $('tm-forecast').textContent = 'lands ' + fmtClock(n.hour) + ' — ' + fmtDate(n);
   }
 
   function note(msg, ok) {
@@ -160,9 +138,7 @@ window.TimePane = (function () {
 
   function setBusy(b) {
     busy = b;
-    document.querySelectorAll('#tm-pane .tm-chip, #tm-go').forEach((el) => {
-      if (b) el.setAttribute('disabled', ''); else el.removeAttribute('disabled');
-    });
+
   }
 
   /* ------------------------------------------------------------- jumps -- */
@@ -173,18 +149,24 @@ window.TimePane = (function () {
     setBusy(true);
     toGame('tmWait', hours);
     /* the reply un-busies us; this is the belt for a dropped bridge */
-    setTimeout(() => setBusy(false), 2500);
+    // No automatic retry: a lost acknowledgement must never stack another wait.
   }
 
   /* ----------------------------------------------------- C++ -> view ---- */
 
+  const previousTimeInfo = window.tmInfo;
   window.tmInfo = function (payload) {
+    if (typeof previousTimeInfo === 'function') previousTimeInfo(payload);
     try { cur = JSON.parse(String(payload)); } catch (e) { return; }
+    if (!HDTimeControls.valid(cur)) { cur = null; return; }
+    busy = false;
     renderClock(window.__tmJustJumped === true);
     window.__tmJustJumped = false;
   };
 
+  const previousTimeResult = window.tmResult;
   window.tmResult = function (payload) {
+    if (typeof previousTimeResult === 'function') previousTimeResult(payload);
     let r = null;
     try { r = JSON.parse(String(payload)); } catch (e) {}
     setBusy(false);
@@ -210,17 +192,7 @@ window.TimePane = (function () {
   function init() {
     if (wired) return;   // self-init on load + a host init() call must not double the listeners
     wired = true;
-    $('tm-until-chips').addEventListener('click', (ev) => {
-      const b = ev.target.closest('.tm-chip'); if (!b) return;
-      const h = hoursUntil(parseFloat(b.getAttribute('data-until')));
-      if (h != null) wait(h);
-    });
-    $('tm-for-chips').addEventListener('click', (ev) => {
-      const b = ev.target.closest('.tm-chip'); if (!b) return;
-      wait(parseFloat(b.getAttribute('data-hours')));
-    });
-    $('tm-slider').addEventListener('input', renderForecast);
-    $('tm-go').addEventListener('click', () => wait(parseInt($('tm-slider').value, 10)));
+    HDTimeControls.mount($('tm-wait-controls'), toGame);
     initSky();
   }
 
@@ -336,10 +308,10 @@ window.TimePane = (function () {
       /* pins: the preset target/length IS the identity — static rows, so a
          pinned wait resolves live forever */
       const rows = [
-        { label: 'Wait until Morning', detail: 'jump to 7:00 AM · instant, skips the slow sleep wait menu', kind: 'wait', keywords: 'sleep fast rest until', pin: 't:until:7', run: () => wait(hoursUntil(7) || 24) },
-        { label: 'Wait until Noon', detail: 'jump to 12:00 · instant wait', kind: 'wait', keywords: 'sleep fast rest until', pin: 't:until:12', run: () => wait(hoursUntil(12) || 24) },
-        { label: 'Wait until Evening', detail: 'jump to 6:00 PM · instant wait', kind: 'wait', keywords: 'sleep fast rest until', pin: 't:until:18', run: () => wait(hoursUntil(18) || 24) },
-        { label: 'Wait until Night', detail: 'jump to 10:00 PM · instant wait', kind: 'wait', keywords: 'sleep fast rest until', pin: 't:until:22', run: () => wait(hoursUntil(22) || 24) },
+        { label: 'Wait until Morning', detail: 'jump to 7:00 AM · instant, skips the slow sleep wait menu', kind: 'wait', keywords: 'sleep fast rest until', pin: 't:until:7', run: () => toGame('tmWait', JSON.stringify({until:7})) },
+        { label: 'Wait until Noon', detail: 'jump to 12:00 · instant wait', kind: 'wait', keywords: 'sleep fast rest until', pin: 't:until:12', run: () => toGame('tmWait', JSON.stringify({until:12})) },
+        { label: 'Wait until Evening', detail: 'jump to 6:00 PM · instant wait', kind: 'wait', keywords: 'sleep fast rest until', pin: 't:until:18', run: () => toGame('tmWait', JSON.stringify({until:18})) },
+        { label: 'Wait until Night', detail: 'jump to 10:00 PM · instant wait', kind: 'wait', keywords: 'sleep fast rest until', pin: 't:until:22', run: () => toGame('tmWait', JSON.stringify({until:22})) },
       ];
       [1, 6, 12, 24].forEach((h) => rows.push({
         label: 'Wait ' + h + ' hour' + (h === 1 ? '' : 's'),

@@ -103,7 +103,33 @@ window.OStimPane = (function () {
   /* ============================================================ render == */
 
   // The rows we show: an active search's results if present, else the seed list.
-  function rows() { return (ui.results !== null) ? ui.results : state.scenes; }
+  const expandedGroups = new Set();
+  function favorites() { return window.AnimPane ? AnimPane.sceneFavorites() : {}; }
+  function rows() {
+    let list = ui.favoriteMode ? Object.values(favorites()) : ((ui.results !== null) ? ui.results : state.scenes);
+    if (ui.favoriteMode && ui.query) list = list.filter((s) => (s.name || s.sceneId).toLowerCase().indexOf(ui.query.toLowerCase()) !== -1);
+    const seen = new Set();
+    return list.filter((s) => { if (!s.sceneId || seen.has(s.sceneId)) return false; seen.add(s.sceneId); return true; });
+  }
+  function knownCompatible(s) {
+    return state.inScene && (!ui.favoriteMode || state.scenes.concat(ui.results || []).some((x) => x.sceneId === s.sceneId));
+  }
+  function favoriteMode(on) {
+    ui.favoriteMode = !!on;
+    if (!on && ui.query) { ui.results = []; sendSearch(ui.query); }
+    if (window.AnimPane) AnimPane.ensureSceneFavorites();
+    renderList();
+  }
+  function sceneTools() {
+    if (!els.list || document.getElementById('os-scene-tools')) return;
+    const bar = document.createElement('div'); bar.id = 'os-scene-tools'; bar.className = 'os-scene-tools';
+    [['All scenes', false], ['Favorite scenes', true]].forEach((x) => {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = x[0]; b.dataset.favorites = String(x[1]);
+      b.addEventListener('click', () => favoriteMode(x[1])); bar.append(b);
+    });
+    const library=document.createElement('button');library.type='button';library.textContent='Collections & recent';library.addEventListener('click',()=>{if(window.OstimTools)OstimTools.open('library');});bar.append(library);
+    els.list.parentNode.insertBefore(bar, els.list);
+  }
 
   function renderStatus() {
     if (!els.scene) return;
@@ -154,6 +180,12 @@ window.OStimPane = (function () {
 
   function renderList() {
     if (!els.list) return;
+    sceneTools();
+    document.querySelectorAll('#os-scene-tools button[data-favorites]').forEach((b) => {
+      const active = (b.dataset.favorites === 'true') === !!ui.favoriteMode;
+      b.classList.toggle('active', active); b.setAttribute('aria-pressed', String(active));
+    });
+    const savedScroll=els.list.scrollTop;
     const list = rows();
     const inS = state.inScene;
     els.count.textContent = list.length + (list.length === 1 ? ' scene' : ' scenes');
@@ -164,7 +196,7 @@ window.OStimPane = (function () {
       empty.className = 'os-empty';
       // ostim-absent is tested FIRST: absent implies not-in-scene, so testing
       // !inS first told a user with no OStim installed to start a scene.
-      empty.textContent = (ui.gotOpen && !state.ostim)
+      empty.textContent = ui.favoriteMode ? (ui.query ? 'No favorites match your search.' : 'Star scenes to collect them here. Each variant has its own star.') : (ui.gotOpen && !state.ostim)
         ? 'OStim Standalone isn’t installed or isn’t reporting — nothing to search here.'
         : (!inS
             ? 'Start an OStim scene first — then search here to change it.'
@@ -184,14 +216,46 @@ window.OStimPane = (function () {
       els.list.append(note);
     }
 
-    const shown = Math.min(list.length, RENDER_CAP);
+    // Group by display name, but preserve the actual scene IDs for actions and stars.
+    const groups = new Map();
+    list.forEach((scene) => {
+      const key = (scene.name || scene.sceneId).trim().toLowerCase();
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(scene);
+    });
+    groups.forEach((g) => g.sort((a, b) => a.sceneId.localeCompare(b.sceneId)));
+    const grouped = [];
+    groups.forEach((g) => g.forEach((scene) => grouped.push(scene)));
+    const containers = new Map();
+    const shown = Math.min(grouped.length, RENDER_CAP);
     for (let i = 0; i < shown; i++) {
-      const s = list[i];
+      const s = grouped[i];
+      const groupKey = (s.name || s.sceneId).trim().toLowerCase();
+      const siblings = groups.get(groupKey);
+      let destination = els.list;
+      if (siblings.length > 1) {
+        if (!containers.has(groupKey)) {
+          const group = document.createElement('div'); group.className = 'os-group';
+          const toggle = document.createElement('button'); toggle.className = 'os-group-toggle'; toggle.type = 'button';
+          const body = document.createElement('div'); body.className = 'os-group-body';
+          const update = () => {
+            const open = expandedGroups.has(groupKey);
+            toggle.textContent = (open ? '▾ ' : '▸ ') + (s.name || s.sceneId) + ' (' + siblings.length + ')';
+            toggle.setAttribute('aria-expanded', String(open)); body.hidden = !open;
+          };
+          toggle.addEventListener('click', () => {
+            if (expandedGroups.has(groupKey)) expandedGroups.delete(groupKey); else expandedGroups.add(groupKey);
+            update();
+          });
+          update(); group.append(toggle, body); els.list.append(group); containers.set(groupKey, body);
+        }
+        destination = containers.get(groupKey);
+      }
       // OStim's SearchScenes already returns ONLY scenes that fit the running
       // thread (matching actor count + furniture), so every listed scene is a
       // valid target. Its SceneSearchResult.actorCount is unreliable (often 0),
       // so don't gate on it — being in a scene is the whole test.
-      const compatible = inS;
+      const compatible = knownCompatible(s);
       const acN = s.actorCount || state.actorCount || 0;   // result count is often 0; fall back to the live count
       const row = document.createElement('div');
       row.className = 'os-row' + (compatible ? '' : ' incompat') + (i === 0 && compatible ? ' top' : '');
@@ -200,13 +264,40 @@ window.OStimPane = (function () {
       main.className = 'os-row-main';
       const name = document.createElement('div');
       name.className = 'os-row-name';
-      name.textContent = s.name || s.sceneId;
+      const variant = Number(s.variant) > 0 ? Number(s.variant) : (siblings.length > 1 ? siblings.indexOf(s) + 1 : 0);
+      name.textContent = (s.name || s.sceneId) + (variant ? " " + variant : "");
       name.title = s.sceneId;
       const meta = document.createElement('div');
       meta.className = 'os-row-meta';
-      meta.textContent = (acN ? acN + 'p' : s.sceneId);
+      meta.textContent = [(acN ? acN + ' participants' : 'Scene'),s.pack||'Pack not supplied',s.furniture==='none'?'Floor':s.furniture||'Furniture not supplied'].join(' · ');
       main.append(name, meta);
+      /* The position pictogram (2026-09-21). This is the list you actually
+         PICK a scene from, so it is the one that most wanted the art.
+         Deliberately borrowed from OstimTools rather than re-deriving: one
+         keyword table, not two to drift apart. Feature-detected, because a
+         missing icon here must never be able to break the browser. */
+      const posArt = window.OstimTools && OstimTools.positionArt
+        ? OstimTools.positionArt(s.name, s.sceneId, 'os-pos') : null;
+      /* Matched or not, the slot is reserved — a list where only some scenes
+         match must still line up in a column. */
+      if (window.OstimTools && OstimTools.positionReference) {
+        const pickArt = document.createElement('button'); pickArt.type = 'button'; pickArt.className = 'os-pos-picker';
+        pickArt.setAttribute('aria-label', 'Choose icon for ' + (s.name || s.sceneId));
+        pickArt.title = 'Choose an icon for this scene';
+        pickArt.append(posArt || Object.assign(document.createElement('span'), { className: 'os-pos os-pos-none', textContent: '+' }));
+        pickArt.addEventListener('click', (e) => { e.stopPropagation(); OstimTools.positionReference(s); });
+        row.append(pickArt);
+      } else row.append(posArt || Object.assign(document.createElement('span'), { className: 'os-pos os-pos-none' }));
       row.append(main);
+      const star = document.createElement('button'); star.type = 'button';
+      const saved = !!favorites()[s.sceneId];
+      star.className = 'os-fav' + (saved ? ' on' : ''); star.textContent = saved ? '★' : '☆';
+      star.setAttribute('aria-pressed', String(saved));
+      star.setAttribute('aria-label', (saved ? 'Unfavorite ' : 'Favorite ') + name.textContent);
+      star.title = (saved ? 'Remove from favorites' : 'Save this exact scene variant');
+      star.disabled = !window.AnimPane || !AnimPane.sceneFavoritesReady();
+      star.addEventListener('click', (e) => { e.stopPropagation(); if (window.AnimPane) AnimPane.toggleSceneFavorite(Object.assign({}, s, { variant: variant })); });
+      row.append(star);
 
       const btn = document.createElement('button');
       btn.className = 'os-go';
@@ -216,8 +307,8 @@ window.OStimPane = (function () {
         btn.title = 'Starting a fresh scene is coming soon — for now, change scenes while one is running';
       } else if (!compatible) {
         btn.disabled = true;
-        btn.textContent = s.actorCount + 'p';
-        btn.title = 'This scene needs ' + s.actorCount + ' actors; the current scene has ' + state.actorCount;
+        btn.textContent = 'Unavailable';
+        btn.title = 'Not in OStim’s current compatible results. Search for it in All scenes with the right actors and furniture.';
       } else {
         btn.textContent = 'Change';
         btn.title = 'Change the current scene to “' + (s.name || s.sceneId) + '”';
@@ -226,9 +317,10 @@ window.OStimPane = (function () {
       row.append(btn);
 
       if (inS && compatible) row.addEventListener('click', (ev) => { if (ev.target !== btn) change(s); });
-      els.list.append(row);
+      destination.append(row);
     }
 
+    els.list.scrollTop=savedScroll;
     if (list.length > shown) {
       const more = document.createElement('div');
       more.className = 'os-more';
@@ -258,7 +350,7 @@ window.OStimPane = (function () {
   /* =========================================================== actions == */
 
   function change(s) {
-    if (!s || !state.inScene) return;
+    if (!s || !knownCompatible(s)) return;
     // No compatibility gate: OStim already filtered the list to scenes that fit
     // the running thread. (Its per-result actorCount is unreliable — often 0.)
     toGame('osNav', s.sceneId);
@@ -272,7 +364,8 @@ window.OStimPane = (function () {
      to reach for this segment mid-scene, which is exactly when hunting for a
      button costs the most. */
   function swapRoles() { toGame('osSwap'); toast('swapping…', true); schedulePoll(1000); }
-  function setFurniture(kind) { toGame('osFurn', kind === 'floor' ? 'floor' : 'nearby'); }
+  function setFurniture(kind) {
+    if(kind==='nearby'&&window.OstimTools){OstimTools.open('move');return;} toGame('osFurn', kind === 'floor' ? 'floor' : 'nearby'); }
   function nudgeSpeed(dir) { toGame('osSpeed', dir === '-' ? '-' : '+'); }
   function toggleAuto() { toGame('osAuto'); }
 
@@ -291,6 +384,7 @@ window.OStimPane = (function () {
 
   function doSearch() {
     const q = ui.query.trim();
+    if (ui.favoriteMode) { renderList(); return; }
     ui.synShown = ''; ui.synFor = '';
     if (!q) { ui.results = null; ui.lastSent = ''; renderList(); return; }
     sendSearch(q);
@@ -319,6 +413,7 @@ window.OStimPane = (function () {
     state.furnitureType = esc(j.furnitureType);
     state.canSwap = !!j.canSwap;
     if (Array.isArray(j.scenes)) state.scenes = j.scenes;
+    if(state.inScene&&window.AnimPane)AnimPane.recordScene({sceneId:state.scene,name:state.sceneName,actorCount:state.actorCount});
   }
 
   function receive(key, info) {
@@ -355,10 +450,17 @@ window.OStimPane = (function () {
           return true;
         }
         ui.results = j.results; renderList();
+        /* An external search (the Scene page's quick bar) gets the same
+           results the list just got, once. It plays through play() below,
+           so the compatibility gate in change() sees them as known. */
+        if(ui.externalCb){const cb=ui.externalCb;ui.externalCb=null;try{cb(j.results.slice());}catch(e){}}
+        if(ui.pendingScene){const found=j.results.find(s=>s.sceneId===ui.pendingScene.sceneId);ui.pendingScene=null;if(found)change(found);else toast('That scene does not fit the current actors and furniture.',false);}
       }
       return true;
     }
     if (key === 'result') {
+      if (j) window.dispatchEvent(new CustomEvent('hd-ostim-result', { detail: j }));
+      if (ui.navCb) { const cb = ui.navCb; ui.navCb = null; try { cb(j || {}); } catch (e) {} }
       if (j && typeof j === 'object') {
         if (typeof j.speed === 'number') { state.speed = j.speed; if (typeof j.maxSpeed === 'number') state.maxSpeed = j.maxSpeed; renderStatus(); }
         if (typeof j.auto === 'boolean') { state.auto = j.auto; renderStatus(); }
@@ -394,7 +496,7 @@ window.OStimPane = (function () {
     // take the outgoing segment's toast with us (see hideToast)
     if (ui.mode === 'ostim') { if (window.AnimPane && AnimPane.hideToast) AnimPane.hideToast(); }
     else hideToast();
-    if (ui.mode === 'ostim') { toGame('osGet'); startPoll(); if (els.search) els.search.focus(); }
+    if (ui.mode === 'ostim') { if (window.AnimPane) AnimPane.ensureSceneFavorites(); toGame('osGet'); startPoll(); if (els.search) els.search.focus(); }
     else { stopPoll(); }
   }
 
@@ -482,14 +584,20 @@ window.OStimPane = (function () {
     b('os-furn-floor') && b('os-furn-floor').addEventListener('click', () => setFurniture('floor'));
 
     els.search.addEventListener('input', () => {
-      ui.query = els.search.value || '';
+      ui.pendingScene=null;ui.query = els.search.value || '';
       clearTimeout(ui.searchT);
       ui.searchT = setTimeout(doSearch, SEARCH_DEBOUNCE);
     });
     els.search.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter') {
-        const list = state.inScene ? rows() : [];   // all listed scenes are OStim-filtered = valid
-        if (list.length) change(list[0]);   // Enter = top compatible hit (deck idiom)
+        const first = els.list.firstElementChild;
+        if (first && first.classList.contains('os-group') && first.querySelector('.os-group-body').hidden) {
+          first.querySelector('.os-group-toggle').click(); return;
+        }
+        const top = Array.from(els.list.querySelectorAll('.os-go')).find((b) => {
+          const group = b.closest('.os-group-body'); return !b.disabled && (!group || !group.hidden);
+        });
+        if (top) top.click();
       }
     });
 
@@ -542,7 +650,7 @@ window.OStimPane = (function () {
     if (els.search) els.search.value = ui.query;
     if (!ostimGatedOut() && ui.mode === 'ostim') { toGame('osGet'); startPoll(); }
   }
-  function onAnimHide() { stopPoll(); }
+  function onAnimHide() { ui.pendingScene=null;stopPoll(); }
 
   /* ============================================================ selftest == */
 
@@ -655,11 +763,11 @@ window.OStimPane = (function () {
         run: swapRoles,
       });
       items.push({
-        label: '🛏 Furniture: nearby',
+        label: 'Move scene / furniture',
         detail: 'OStim · move the scene onto the nearest bed or furniture',
         kind: 'ostim',
         keywords: 'ostim furniture bed nearby move scene onto switch',
-        run: function () { setFurniture('nearby'); },
+        jump: function () { setFurniture('nearby'); },
       });
       items.push({
         label: '⌞ Furniture: floor',
@@ -701,8 +809,55 @@ window.OStimPane = (function () {
     },
   });
 
+  window.addEventListener('hd-animation-user-changed', () => { if (ui.inited) renderList(); });
+  window.addEventListener('hd-position-art-changed', () => { if (ui.inited) renderList(); });
+
   return {
     init, onAnimShow, onAnimHide, setMode, smartLand, hideToast,
+    openFavorites() {
+      init(); ui.favoriteMode = true; ui.query = ''; ui.results = null; if (els.search) els.search.value = '';
+      if (window.__omniSetTab) window.__omniSetTab('anim');
+      setMode('ostim'); renderList();
+    },
+    /* Hand a raw query to this browser and land on it. The Scene page's
+       quick scene bar uses it so that page never grows a scene index of its
+       own (Rober, 2026-09-22: "add a quick scene bar as well that you type
+       into and popups up your search for animations"). */
+    /* Search WITHOUT touching this pane's UI or the deck's tabs: the Scene
+       page's quick bar paints the results itself. cb(results) fires once. */
+    search(query, cb) {
+      const q=String(query||'').trim();if(!q){if(cb)cb([]);return;}
+      init();ui.pendingScene=null;ui.favoriteMode=false;ui.query=q;ui.externalCb=cb||null;ui.synShown='';ui.synFor='';
+      sendSearch(q);
+    },
+    /* Play from OUTSIDE this pane (the Scene page's quick bar). change() is
+       gated on this pane's own state.inScene, which is stale whenever the
+       Animations tab has not been opened during the running scene - so a
+       click from the Scene page did nothing at all (Rober, 2026-09-22: "on
+       click of dropdown its also not changing animation at all"). The DLL
+       validates the thread and the fit; cb(result) gets its answer once. */
+    play(s, cb) {
+      if (!s || !s.sceneId) { if (cb) cb({ ok: false, msg: 'No scene' }); return; }
+      ui.navCb = cb || null;
+      toGame('osNav', s.sceneId);
+      glog('play ' + s.sceneId);
+    },
+    searchFor(query) {
+      ui.externalCb = null; ui.navCb = null;   // the quick bar handed over; nothing of its stays pending
+      const q=String(query||'').trim();if(!q)return;
+      init();ui.favoriteMode=false;ui.query=q;ui.pendingScene=null;ui.results=[];
+      if(els.search)els.search.value=q;
+      if(window.__omniSetTab)window.__omniSetTab('anim');
+      setMode('ostim');sendSearch(q);renderList();
+    },
+    findScene(s) {
+      if(!s||!s.sceneId)return;init();ui.favoriteMode=false;ui.query=s.name||s.sceneId;ui.pendingScene=s;ui.results=[];
+      if(els.search)els.search.value=ui.query;if(window.__omniSetTab)window.__omniSetTab('anim');setMode('ostim');sendSearch(ui.query);renderList();
+    },
+    previousScene(currentId) {
+      const recent=window.AnimPane?AnimPane.sceneLibrary().recent:[];const previous=recent.find(s=>s.sceneId!==(currentId||state.scene));
+      if(previous)this.findScene(previous);else toast('No previous scene recorded yet.',false);
+    },
     _state: state, _ui: ui   // test hooks only
   };
 })();

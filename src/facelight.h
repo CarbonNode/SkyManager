@@ -11,6 +11,10 @@
 // the applicator re-runs its OnEffectStart and re-attaches the light.
 namespace Facelight
 {
+	struct Snapshot { std::uint32_t levels = 0; bool applicator = false; };
+	// Runtime-only scene undo, captured natively, never accepted from the wire.
+	bool Capture(std::uint32_t formId, Snapshot& out);
+	bool Restore(std::uint32_t formId, const Snapshot& before);
 	// Is the ESP in the load order (load-order presence, not file existence)?
 	bool Present();
 

@@ -72,6 +72,8 @@ body {
 button, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; }
+.wd-bed-field { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.wd-bed-field .flab { font-size: 16px; color: var(--gold-soft); }
 
 /* ---------------- app frame ---------------- */
 
@@ -1090,6 +1092,19 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
 .sm-kink .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sm-kink-empty { font-size: 11.5px; color: var(--muted-2); font-style: italic; margin-bottom: 9px; }
 .sm-add { display: flex; gap: 7px; margin-bottom: 4px; }
+/* Suggestion chips: CHIM's own roster answering the spouse lookup. Outlined,
+   never filled, so a suggestion can never be mistaken for a name already on
+   her record. The player gets the gold outline — "married to the player" is
+   the case that actually comes up. */
+.sm-sugg { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.sm-sugg-b {
+  padding: 7px 12px; min-height: 36px; border-radius: 999px;
+  border: 1px dashed var(--line); background: transparent; color: var(--muted);
+  font-size: 13px; line-height: 1.2; cursor: pointer;
+}
+.sm-sugg-b:hover { color: #c3aae8; border-color: rgba(157,123,214,.65); background: rgba(157,123,214,.10); }
+.sm-sugg-b.you { border-style: solid; border-color: rgba(201,162,75,.6); color: var(--gold-hi); }
+.sm-sugg-b.you:hover { border-color: rgba(201,162,75,.95); background: rgba(201,162,75,.12); }
 .sm-add input { flex: 1 1 auto; min-width: 0; }
 
 /* Commit bar — sticks to the bottom of the sheet body so Save is always in
@@ -2305,6 +2320,40 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
 .cst-acts { display: grid; gap: 9px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-top: 18px; }
 .cst-acts .btn { min-height: 48px; font-size: 15px; width: 100%; }
 
+/* knows-toggles: one grid, equal cells, state on the left and the verdict
+   flush right — so a column of KNOWS / hidden reads down the card. */
+.cst-knows { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.cst-kn {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  min-height: 48px; padding: 10px 13px; text-align: left; width: 100%;
+  border: 1px solid var(--line-hi); border-radius: 11px; background: transparent;
+  color: var(--text-dim); font-size: 13.5px;
+}
+.cst-kn:hover { border-color: rgba(201,162,75,.5); color: var(--text); }
+.cst-kn .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cst-kn .st { flex: none; font-size: 12px; letter-spacing: .4px; color: var(--muted-2); }
+.cst-kn.on { border-color: rgba(201,162,75,.6); background: rgba(201,162,75,.10); color: var(--gold-hi); }
+.cst-kn.on .st { color: var(--gold-soft); }
+.cst-kn:disabled { opacity: .45; }
+.cst-kn:focus-visible { outline: 2px solid var(--gold-hi); outline-offset: 2px; }
+
+/* the leak queue — an alarm, so it keeps the bad-news palette */
+.cst-leaks { margin: 0 0 14px; }
+.cst-leak {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 12px 14px; margin-bottom: 8px; font-size: 14px; line-height: 1.5;
+  border: 1px solid var(--bad-line); border-radius: 11px; background: var(--bad-bg); color: #e0b0b0;
+}
+.cst-leak.learned { border-color: var(--good-line); background: var(--good-bg); color: var(--good); }
+.cst-leak .b { flex: 1 1 auto; min-width: 0; }
+.cst-leak .who { color: var(--text); font-weight: 600; }
+.cst-leak .said { display: block; margin-top: 4px; color: var(--text-dim); font-style: italic; overflow-wrap: anywhere; }
+.cst-leak .btn { flex: none; min-height: 40px; }
+
+.cst-kids { display: flex; gap: 7px; flex-wrap: wrap; }
+.cst-kids .pill { font-size: 13px; padding: 5px 10px; }
+.cst-kids .pill.gone { color: var(--muted-2); border-style: dashed; }
+
 .cst-block {
   margin: 0; padding: 14px 16px; font-size: 14.5px; line-height: 1.65;
   color: var(--text-dim); background: rgba(0,0,0,.24);
@@ -2317,7 +2366,204 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
   padding: 18px; color: var(--text-dim); font-size: 14.5px; line-height: 1.55;
 }
 .cst-skel { height: 104px; border-radius: 13px; border: 1px solid var(--line); background: var(--card); }
+
+/* Full-screen phone companion to the in-game character dossier. */
+#sheet-wrap.npc-dossier { align-items: stretch; }
+#sheet-wrap.npc-dossier .sheet { width: 100%; max-width: none; height: 100%; max-height: none; border-radius: 0; border: 0; animation: none; background: #131719; }
+.npc-dossier .sheet-head { padding: 20px 28px; gap: 20px; border-bottom: 1px solid #3b4140; }
+.npc-dossier .sheet-head .art { width: 88px; height: 88px; border-radius: 3px; }
+.npc-dossier .sheet-head .t { font: 400 30px/1.2 Georgia,serif; white-space: normal; }
+.npc-dossier .sheet-head .s { font-size: 16px; color: #b8b5aa; }
+.npc-dossier .sheet-x { width: 48px; height: 48px; font-size: 22px; }
+.npc-dossier .npd-icon { width: 28px; height: 28px; object-fit: contain; flex: 0 0 28px; vertical-align: middle; pointer-events: none; }
+.npc-dossier .btn { display: inline-flex; align-items: center; gap: 10px; }
+.npc-dossier .npd-tabs button { display: inline-flex; align-items: center; gap: 8px; }
+.npc-dossier .npd-edit { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:16px 0; font-size:18px; }
+.npc-dossier .npd-size-tools { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.npc-dossier .npd-size-tools[hidden] { display:none; }
+.npc-dossier .npd-size-tools input { width:150px; min-height:44px; padding:0; accent-color:#d5b877; }
+.npc-dossier .npd-content { font-size:clamp(18px,calc(18px * var(--npd-size,1)),24px); }
+.npc-dossier .npd-content .frow label, .npc-dossier .npd-content .txt,
+.npc-dossier .npd-content .mh-label, .npc-dossier .npd-content .mh-place,
+.npc-dossier .npd-content .btn { font-size:inherit; }
+.npc-dossier .npd-content .mh-row { min-height:calc(88px * var(--npd-size,1)); }
+.npc-dossier .npd-content .npd-icon { width:calc(28px * var(--npd-size,1)); height:calc(28px * var(--npd-size,1)); flex-basis:calc(28px * var(--npd-size,1)); }
+@media(max-width:600px){.npc-dossier .npd-tabs button{flex-direction:column;gap:6px;}.npc-dossier .npd-tabs .npd-icon{width:24px;height:24px;flex-basis:24px;}}
+.npc-dossier .sheet-body { padding: 0 28px 32px; padding-bottom: max(32px,env(safe-area-inset-bottom)); font-size: 18px; }
+.npd-tabs { display: flex; gap: 32px; border-bottom: 1px solid #3b4140; margin-bottom: 24px; }
+.npd-tabs button { min-height: 64px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 12px 0; color: #b8b5aa; background: transparent; font: inherit; }
+.npd-tabs button[aria-current="page"] { color: #d5b877; border-bottom-color: #d5b877; }
+.npd-search-label { display: block; font-size: 16px; margin-bottom: 8px; color: #b8b5aa; }
+.npc-dossier .npd-search { width: 100%; min-height: 48px; font-size: 18px; margin-bottom: 28px; background: #1a2022; }
+.npd-content { max-width: 1300px; margin: auto; }
+.npd-section { padding-bottom: 28px; }
+.npd-section h2 { font: 400 30px/1.25 Georgia,serif; margin: 0 0 24px; }
+.npc-dossier .sheet-lbl { font-size: 16px; color: #d5b877; }
+.npc-dossier .frow { display: flex; flex-direction: column; align-items: stretch; margin: 18px 0; }
+.npc-dossier .frow label { width: auto; font-size: 18px; margin-bottom: 8px; }
+.npc-dossier .frow .txt, .npc-dossier textarea, .npc-dossier .chim-row input { min-height: 48px; font-size: 18px; }
+.npc-dossier .fhint, .npc-dossier .mh-empty { font-size: 16px; color: #b8b5aa; line-height: 1.6; }
+.npc-dossier .btn, .npc-dossier .mh-act { min-height: 48px; font-size: 16px; white-space: normal; }
+.npc-dossier .mh-row { min-height: 88px; border-bottom: 1px solid #3b4140; }
+.npc-dossier .mh-row { position:relative; padding-left:0; gap:12px; }
+.npc-dossier .mh-row::before { content:''; position:absolute; left:19px; top:0; bottom:0; width:2px; background:#4d4938; }
+.npc-dossier .mh-row:first-child::before { top:50%; }
+.npc-dossier .mh-row:last-child::before { bottom:50%; }
+.npc-dossier .mh-dot { display:flex; position:relative; z-index:1; align-items:center; justify-content:center; width:40px; height:40px; flex:0 0 40px; border:1px solid #82734d; border-radius:50%; background:#131719; }
+.mh-day-icon { display:none; }
+.npc-dossier .mh-day-icon { display:block; width:28px; height:28px; object-fit:contain; }
+.npc-dossier .mh-day-glyph { display:none; }
+.npc-dossier .mh-row.is-now .mh-dot { background:#20312b; border-color:#a7d6b7; }
+.npc-dossier .mh-row.is-unset .mh-day-icon { opacity:.65; }
+.npc-dossier .mh-day::before { display:none; }
+.npc-dossier .mh-place, .npc-dossier .mh-label { font-size: 18px; }
+.npc-dossier button:focus-visible, .npc-dossier input:focus-visible { outline: 2px solid #d5b877; outline-offset: 3px; }
+@media(min-width:1000px){.npc-dossier .sheet-head,.npc-dossier .sheet-body{padding-left:8%;padding-right:8%;}.npd-section[data-npd-section="profile"] .frow{max-width:900px;}}
+@media(max-width:600px){.npc-dossier .sheet-head{padding:16px;gap:12px;}.npc-dossier .sheet-body{padding-left:20px;padding-right:20px;}.npc-dossier .sheet-head .art{width:64px;height:64px;}.npc-dossier .sheet-head .t{font-size:26px;}.npd-tabs{gap:8px;justify-content:flex-start;overflow-x:auto;}.npd-tabs button{flex-shrink:0;min-width:100px;padding:12px;}.npd-tabs button{font-size:16px;}.npc-dossier .chim-row{display:block;}.npc-dossier .chim-k{width:auto;}}
+
+/* Native Room privacy on the phone: same portrait vocabulary, readable controls. */
+.privacy-panel { padding:28px; font-size:18px; line-height:1.5; }
+.privacy-controls { display:flex; flex-wrap:wrap; gap:12px; margin:20px 0; }
+.privacy-controls button,.privacy-person button { min-height:48px; padding:12px 18px; font:inherit; }
+.privacy-people { display:grid; gap:16px; margin-top:24px; }
+.privacy-person { display:flex; align-items:center; gap:18px; padding:18px 0; border-top:1px solid var(--line); }
+.privacy-person .art { width:80px; height:80px; flex:0 0 80px; }
+.privacy-person>div { flex:1; min-width:0; overflow-wrap:anywhere; }
+.privacy-person p { margin:6px 0; }
+@media(max-width:600px){.privacy-panel{padding:20px}.privacy-person{flex-wrap:wrap}.privacy-person button{width:100%}}
+
+.npd-portrait-wrap { max-width:560px; margin-bottom:24px; }
+#npd-portrait-frame { position:relative; height:300px; overflow:hidden; background:#141a19; border:1px solid #82734d; }
+#npd-portrait-frame img { position:absolute; max-width:none; object-fit:cover; pointer-events:none; user-select:none; }
+#npd-frame-adjust { margin-top:10px; }
+#npd-frame-tools { padding:12px 0; }
+#npd-frame-tools label { display:flex; align-items:center; gap:12px; }
+#npd-frame-tools input { flex:1; min-width:0; min-height:44px; }
+#npd-frame-tools[hidden], #npd-frame-adjust[hidden] { display:none; }
+
+.spell-library-controls { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:20px 0; }
+.spell-details-label { margin-left:auto; color:#ddc58e; font-size:16px; }
+#sheet-wrap.spell-details-sheet .sheet { width:940px; max-width:100%; background:#171b1e; border-color:#706044; }
+#sheet-wrap.spell-details-sheet #sheet-close { min-width:44px; min-height:44px; }
+#sheet-wrap.spell-details-sheet .sheet-head { padding:24px; }
+#sheet-wrap.spell-details-sheet .sheet-head .t { font:400 30px/1.3 Georgia,serif; white-space:normal; overflow-wrap:anywhere; }
+#sheet-wrap.spell-details-sheet .sheet-head .s { font-size:17px; }
+.spell-stats { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin-bottom:20px; }
+.spell-stat { min-width:0; padding:18px; border:1px solid #706044; border-radius:10px; background:#111518; }
+.spell-stat span,.spell-stat small { display:block; font-size:16px; color:#b1bbb9; line-height:1.4; }
+.spell-stat strong { display:block; font:400 32px/1.3 Georgia,serif; color:#ddc58e; margin:8px 0; overflow-wrap:anywhere; }
+.spell-effect-list { margin:22px 0; }
+.spell-effect-row { padding:12px 0; border-bottom:1px solid #384345; }
+.spell-effect-row strong,.spell-effect-row span { display:block; overflow-wrap:anywhere; }
+.spell-effect-row strong { font-size:18px; font-weight:500; margin-bottom:6px; }
+.spell-effect-row span { font-size:17px; color:#b1bbb9; line-height:1.5; }
+.spell-reading { padding:24px; border:1px solid #706044; background:#242621; border-radius:10px; }
+.spell-reading h2 { font-size:18px; font-weight:500; color:#ddc58e; margin:0 0 16px; }
+.spell-effect-copy { color:#f4f0e5; font-size:21px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; margin:0; }
+.spell-detail-facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; margin:24px 0; }
+.spell-detail-facts dt { color:#b1bbb9; font-size:16px; margin-bottom:6px; }
+.spell-detail-facts dd { color:#f4f0e5; font-size:18px; margin:0; overflow-wrap:anywhere; }
+.spell-snapshot-note { color:#b1bbb9; font-size:16px; line-height:1.5; }
+@media(max-width:600px) { .spell-detail-facts { grid-template-columns:minmax(0,1fr); } .spell-reading { padding:18px; } }
+.spell-library-controls label { display:flex; flex-direction:column; gap:8px; font-size:16px; }
+.spell-library-controls select { min-width:0; width:100%; min-height:48px; font-size:16px; }
+#spells-body[data-layout=list] .grid { grid-template-columns:minmax(0,1fr); }
+#spells-body[data-layout=columns] .grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+@media(max-width:600px) { .spell-library-controls { grid-template-columns:repeat(2,minmax(0,1fr)); } #spells-body[data-layout=columns] .grid { grid-template-columns:minmax(0,1fr); } }
+#spells-body .sect-head h2, #spells-body .cat-head h2 { font-family:Georgia,serif; font-weight:400; }
+#spells-body .sect-head h2 { font-size:30px; }
+#spells-body .cat-head h2 { font-size:23px; }
+#spells-body .spell { padding:18px; border-color:#414445; background:#202629; border-radius:8px; }
+#spells-body .spell:hover { border-color:#bba46d; background:#293135; }
+#spells-body .spell .nm { font-size:19px; line-height:1.4; }
+#spells-body .spell .meta { font-size:16px; line-height:1.5; }
+.spell-card-stats { display:flex; flex-direction:column; gap:3px; margin-top:10px; font-size:16px; line-height:1.4; color:var(--text-dim); }
+.spell-card-stat { display:flex; gap:8px; align-items:baseline; min-width:0; }
+.spell-card-stat strong { color:var(--text); font-size:17px; font-weight:600; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+#spells-body .sicon { width:64px; height:64px; border:1px solid #706044; padding:4px; background:#111518; border-radius:7px; }
+#spells-body .sicon img { width:100%; height:100%; object-fit:contain; }
+#spells-body[data-layout=icons] .grid { grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:10px; }
+#spells-body[data-layout=icons] .spell:not(.spell-package-card) { display:flex; flex-direction:column; align-items:center; padding:0; gap:0; border-color:#394246; border-top-color:#706044; background:linear-gradient(145deg,#202629,#111518); text-align:center; overflow:hidden; }
+#spells-body[data-layout=icons] .spell:not(.spell-package-card):hover { border-color:#ddc58e; background:#293135; }
+#spells-body[data-layout=icons] .spell:not(.spell-package-card):focus { outline:2px solid #ddc58e; outline-offset:-3px; }
+#spells-body[data-layout=icons] .spell:not(.spell-package-card) .meta,
+#spells-body[data-layout=icons] .spell-card-stats,
+#spells-body[data-layout=icons] .spell-details-label { display:none; }
+#spells-body[data-layout=icons] .spell:not(.spell-package-card) .body { width:100%; flex:none; padding:10px 8px; border-top:1px solid #394246; background:rgba(17,21,24,.45); }
+#spells-body[data-layout=icons] .spell:not(.spell-package-card) .nm { font-size:18px; line-height:22px; min-height:44px; white-space:normal; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+#spells-body[data-layout=icons][data-density=spacious] .grid { grid-template-columns:repeat(auto-fit,minmax(148px,1fr)); }
+#spells-body[data-layout=icons] .spell:not(.spell-package-card) > .sicon { margin:14px auto; width:68px; height:68px; }
+#spells-body[data-layout=icons][data-density=spacious] .spell:not(.spell-package-card) > .sicon { width:80px; height:80px; }
+#spells-body[data-layout=icons][data-density=compact] .spell:not(.spell-package-card) > .sicon { width:56px; height:56px; }
+#spells-body[data-layout=icons] .spell-package-card { grid-column:1 / -1; }
+.spell-library-controls { padding:18px; background:#171b1e; border:1px solid #394246; border-radius:8px; }
+.spell-library-controls label { color:#c5cbc8; }
+.spell-library-controls select { background-color:#111518; color:#f4f0e5; border-color:#515247; }
+.spell-library-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin:16px 0 8px; }
+.spell-library-toolbar .chip, .spell-library-toolbar select { min-height:44px; font-size:16px; }
+.spell-library-toolbar label { margin-left:auto; display:flex; align-items:center; gap:8px; font-size:16px; }
+#sheet-wrap.spell-categories-sheet #sheet-icon { display:none; }
+#sheet-wrap.spell-categories-sheet .sheet-head { padding:20px; }
+#sheet-wrap.spell-categories-sheet .sheet-head .t { font:400 26px/1.3 Georgia,serif; white-space:normal; }
+#sheet-wrap.spell-categories-sheet .sheet-head .s { font-size:16px; white-space:normal; color:var(--text-dim); margin-top:5px; }
+#sheet-wrap.spell-categories-sheet #sheet-close { min-width:44px; min-height:44px; }
+.spell-category-trigger { display:flex; align-items:center; gap:12px; max-width:100%; min-width:0; }
+.spell-category-trigger > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.spell-category-search.txt { width:100%; min-height:52px; font-size:18px; margin-bottom:20px; }
+.spell-category-choices { display:grid; gap:10px; }
+.spell-category-choices button { display:flex; align-items:center; gap:16px; min-height:64px; padding:14px 16px; text-align:left; font-size:18px; }
+.spell-category-choices button > span:first-child { min-width:0; overflow-wrap:anywhere; }
+.spell-category-choices .n { margin-left:auto; }
+.spell-category-choices small { display:block; font-size:16px; line-height:1.5; color:var(--text-dim); margin-top:4px; }
+.spell-category-choices [aria-pressed=true] { border-color:var(--gold); color:var(--gold); }
+
+.spell-library-controls[hidden] { display:none; }
+#spells-body[data-density=compact] .spell { padding:8px 10px; min-height:64px; }
+#spells-body[data-density=compact] .sicon { width:44px; height:44px; padding:2px; }
+#spells-body[data-density=compact] .spell .nm { font-size:18px; }
+#spells-body[data-density=compact] .grid { gap:8px; }
+#spells-body[data-density=spacious] .spell { padding:18px; min-height:100px; }
+#spells-body[data-density=spacious] .sicon { width:76px; height:76px; }
+.spell-package-art { display:flex; flex-wrap:wrap; width:76px; flex-shrink:0; gap:3px; }
+#spells-body .spell-package-art .sicon { width:35px; height:35px; padding:1px; }
+#spells-body .spell-package-card { background:linear-gradient(110deg,#282921,#191d1d); border-color:#706044; }
+#spells-body .spell-package-card .nm { font-family:Georgia,serif; font-size:22px; }
+#sheet-wrap.spell-package-sheet .sheet { width:940px; max-width:100%; background:#171b1e; border-color:#706044; }
+#sheet-wrap.spell-package-sheet .sheet-head { padding:22px; border-color:#706044; }
+#sheet-wrap.spell-package-sheet .sheet-head .t { font:400 27px/1.3 Georgia,serif; white-space:normal; }
+#sheet-wrap.spell-package-sheet .sheet-head .s { font-size:16px; margin-top:6px; }
+.spell-package-intro { color:#c5cbc8; font-size:17px; line-height:1.6; margin:0 0 22px; }
+.spell-package-sequence { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+.spell-package-member { display:flex; flex-direction:column; align-items:center; padding:20px 14px; text-align:center; position:relative; background:#202629; border:1px solid #414445; border-top-color:#bba46d; border-radius:8px; min-width:0; }
+.spell-package-member .n { position:absolute; top:14px; left:14px; color:#ddc58e; font:400 20px/1 Georgia,serif; }
+.spell-package-member .sicon { width:90px; height:90px; padding:5px; margin:12px 0 16px; border:1px solid #706044; background:#111518; }
+.spell-package-member .nm { font:400 22px/1.3 Georgia,serif; overflow-wrap:anywhere; color:#f4f0e5; }
+.spell-package-member .meta { font-size:16px; color:#c5cbc8; margin-top:7px; text-transform:capitalize; }
+@media(max-width:600px) {
+  .spell-package-sequence { grid-template-columns:minmax(0,1fr); }
+  .spell-package-member { flex-direction:row; gap:14px; text-align:left; padding:18px; }
+  .spell-package-member .n { position:static; }
+  .spell-package-member .sicon { width:68px; height:68px; margin:0; flex-shrink:0; }
+  .spell-package-member .body { min-width:0; }
+}
 </style>
+<link rel="stylesheet" href="/api/wardrobe-assets/wardrobe-flair.css">
+<link rel="stylesheet" href="/api/wardrobe-assets/wardrobe-studio.css">
+<link rel="stylesheet" href="/api/domain-area-assets/domain-areas.css">
+<script src="/api/domain-area-assets/domain-areas.js"></script>
+<link rel="stylesheet" href="/api/domain-area-assets/domain-gallery.css">
+<script src="/api/domain-area-assets/domain-gallery.js"></script>
+<link rel="stylesheet" href="/api/appearance-assets/appearance-presets.css">
+<script src="/api/appearance-assets/appearance-presets.js"></script>
+<script src="/api/wardrobe-assets/wardrobe-nav.js"></script>
+<script src="/api/wardrobe-assets/wardrobe-flair-model.js"></script>
+<script src="/api/wardrobe-assets/wardrobe-flair-ui.js"></script>
+<link rel="stylesheet" href="/api/dossier-assets/hd-dossier-tools.css">
+<link rel="stylesheet" href="/api/dossier-assets/hd-dossier-social.css">
+<script src="/api/dossier-assets/hd-dossier-tools.js"></script>
+<link rel="stylesheet" href="/api/dossier-assets/hd-family-tree.css">
+<script src="/api/dossier-assets/hd-family-tree.js"></script>
+<script src="/api/dossier-assets/hd-dossier-social.js"></script>
 </head>
 <body>
 <div id="app">
@@ -2331,6 +2577,7 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
       <!-- data-tab stays "portraits" (hash, state.tab, TABS key, #n-portraits and
            the sheet wiring all key off it); only the visible label changed. -->
       <button class="tab on" data-tab="portraits" type="button">Followers <span class="n" id="n-portraits"></span></button>
+      <a class="tab" href="/formation" style="text-decoration:none">Formation</a>
       <button class="tab" data-tab="sheet" type="button">Sheet</button>
       <button class="tab" data-tab="icons" type="button">Spells <span class="n" id="n-icons"></span></button>
       <button class="tab" data-tab="hotkeys" type="button">Hotkeys <span class="n" id="n-hotkeys"></span></button>
@@ -2345,8 +2592,9 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
       <button class="tab" data-tab="faces" type="button">Faces <span class="n" id="n-faces"></span></button>
       <button class="tab" data-tab="journal" type="button">Journal <span class="n" id="n-journal"></span></button>
       <button class="tab" data-tab="court" type="button">Standing <span class="n" id="n-court"></span></button>
+      <button class="tab" data-tab="privacy" type="button">Privacy</button>
     </nav>
-    <div class="toolbar">
+    <div class="toolbar" id="portal-global-tools">
       <span class="search-wrap">
         <span class="ic" aria-hidden="true">⌕</span>
         <input id="q" type="search" autocomplete="off" spellcheck="false" placeholder="Search followers, outfits, wardrobes, inventory pieces, notes…">
@@ -2448,6 +2696,8 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
        and the editable role-play profile + profile-picture upload. Meta edits queue into
        portal-sheet-edits.json; the portrait lands in portraits/player-sheet.png.
        Nothing here writes hotkeys.json. -->
+  <main id="pane-privacy" hidden><div id="privacy-body"></div></main>
+
   <main id="pane-sheet" hidden>
     <div id="sheet-tab-body"></div>
   </main>
@@ -2679,7 +2929,7 @@ var state = {
      decides whether the page behind an overlay may scroll, and it runs while a
      picture is open (a queued turntable repaints the queue strip). */
   lb: false,
-  wdSub: 'wardrobes',  // which Wardrobe sub-list is showing
+  wdSub: 'outfits',  // which Wardrobe sub-list is showing
   inventory: null,     // /api/inventory payload — the player's armour
   wdBuild: null,       // { name, picked: {key:item} } while building an outfit
   wdInvSlot: '',       // inventory slot filter, '' = all
@@ -2690,6 +2940,7 @@ var state = {
   wdReorder: false,    // Wardrobes sub-tab: show ↑↓ instead of opening sheets
   wdInvBusy: false,    // an inventory live-refresh is in flight
   wdCatFilter: '',     // Outfits sub-tab: category filter, '' = all
+  wdManageCategories: false, // rename/delete tools are opened explicitly
   wdCatAdd: false,     // the inline "new category" card is open
   wdNewCat: '',        // its name field, preserved across redraws
   wdSheetCatAdd: false, // the outfit sheet's inline "new category" row is open
@@ -3717,7 +3968,9 @@ function mhiyhBlockHtml(m) {
     // here means "wherever Guard is", never "nowhere".
     var noPlace = a.k === 7 ? 'at the guard post' : 'no place set';
     html += '<div class="mh-row' + lit + (place ? '' : ' is-unset') + '">' +
-      '<span class="mh-dot" aria-hidden="true">' + esc(spec.ic) + '</span>' +
+      '<span class="mh-dot" aria-hidden="true"><img class="mh-day-icon" alt="" src="/api/view-icon?view=hotkey&amp;p=icons%2Fcustom%2F' +
+      ({0:'hm-home',1:'ns-moon',2:'cat-utilities',3:'cat-guards',4:'wx-clear',5:'sv-eat',6:'wx-clear-night',7:'cat-guards'}[a.k] || 'hm-time') +
+      '.png"><span class="mh-day-glyph">' + esc(spec.ic) + '</span></span>' +
       '<span class="mh-txt"><span class="mh-label">' + esc(spec.label) + '</span>' +
         '<span class="mh-place' + (place ? '' : ' none') + '">' + esc(place || noPlace) + '</span></span>' +
       (a === headline ? '<span class="mh-now">now</span>' : '') +
@@ -4409,8 +4662,9 @@ function assignCatIcon(idx, icon) { queueIcon('caticon', Number(idx), icon); }
    { kind:'hkicon', id } its icon picker — same dialog as the spell one, reached
                          from the edit sheet, so it gets a back arrow
    { kind:'npc', slug }  the follower detail + field editor. */
-function resetSheetUi() { state.sheetQ = ''; state.keyPick = false; state.keyQ = ''; state.libFocus = false; libReset(); }
+function resetSheetUi() { if(typeof npdDispose==='function')npdDispose(); state.npcDossierPage = 'overview'; state.npcDossierQ = ''; state.sheetQ = ''; state.keyPick = false; state.keyQ = ''; state.libFocus = false; libReset(); }
 function openSheet(id) { state.sheet = { kind: 'spell', id: id }; resetSheetUi(); render(); libFetch('magic', '', '', false); }
+function openSpellDetails(id) { state.sheet = { kind: 'spellinfo', id: id }; resetSheetUi(); render(); }
 function openHotkeySheet(id) { state.sheet = { kind: 'hotkey', id: id }; resetSheetUi(); render(); }
 function openHotkeyIconSheet(id) { state.sheet = { kind: 'hkicon', id: id }; resetSheetUi(); render(); libFetch('hotkey', '', '', false); }
 /* The category glyph picker. Library art is resolved in the DECK's tree — the
@@ -4588,11 +4842,17 @@ function renderCombatArts() {
 }
 
 function openNpcSheet(slug) { state.sheet = { kind: 'npc', slug: slug }; resetSheetUi(); render(); }
-function closeSheet() { state.sheet = null; resetSheetUi(); render(); }
+function closeSheet() {
+  var categoryPicker = sheetIs('spellcategories');
+  if (categoryPicker) clearTimeout(sheetQDebounce);
+  state.sheet = null; resetSheetUi(); render();
+  if (categoryPicker) { var b = document.querySelector('[data-spell-categories]'); if (b) b.focus(); }
+}
 function sheetIs(kind) { return !!state.sheet && state.sheet.kind === kind; }
 /* Where ‹ goes: the icon picker was opened from an edit sheet, everything else
    is a top-level sheet and simply closes. */
 function sheetBack() {
+  if (sheetIs('spell')) { openSpellDetails(state.sheet.id); return; }
   if (sheetIs('hkicon')) { openHotkeySheet(state.sheet.id); return; }
   /* The skin picker and the mate picker were both opened FROM a dragon, so ‹
      returns to it; the dragon sheet and a skin's own sheet are top level and
@@ -5192,17 +5452,105 @@ function spellRow(s, q) {
   var meta = bits.join(' · ');
   var pills = spellPills(s);
   return '<button class="spell' + (busy ? ' busy' : '') + (err ? ' err' : '') +
-      (s.pendingIcon !== null ? ' pending' : '') + '" type="button" data-act="spell" data-id="' + esc(s.id) + '"' +
-      (busy ? ' disabled' : '') + ' title="Change the icon for ' + esc(s.name) + '">' +
+      (s.pendingIcon !== null ? ' pending' : '') + '" type="button" data-act="spell-details" data-id="' + esc(s.id) + '"' +
+      (busy ? ' disabled' : '') + ' aria-haspopup="dialog" title="Details for ' + esc(s.name) + '">' +
     spellIconHtml(s) +
     '<span class="body">' +
       '<span class="nm">' + hi(s.name, q) + '</span>' +
       '<span class="meta">' + (meta ? esc(meta) + (pills ? ' ' : '') : '') + pills + '</span>' +
+      '<span class="spell-card-stats" aria-label="Spell stats">' + spellCardStats(s.description || {ok:false}).map(function (t) {
+        return '<span class="spell-card-stat"><span>' + esc(t.label) + '</span><strong>' + esc(t.value) + '</strong></span>';
+      }).join('') + '</span>' +
       (err ? '<span class="row-msg">' + esc(err) + '</span>' : '') +
     '</span>' +
-    '<span class="go" aria-hidden="true">›</span>' +
+    '<span class="spell-details-label">Details</span>' +
   '</button>';
 }
+
+// Spell Library: mirror the deck's nested organization and action/type browsing.
+var spellLibraryView = { category: '', kind: 'all', mode: 'all', layout: 'cards', density: 'balanced', controlsCollapsed: false };
+try {
+  var spellPrefs = JSON.parse(localStorage.getItem('skymanager.spellLibraryView') || '{}');
+  if (['cards','columns','list','icons'].indexOf(spellPrefs.layout) >= 0) spellLibraryView.layout = spellPrefs.layout;
+  if (['balanced','compact','spacious'].indexOf(spellPrefs.density) >= 0) spellLibraryView.density = spellPrefs.density;
+  spellLibraryView.controlsCollapsed = spellPrefs.controlsCollapsed === true;
+} catch (_) { /* Device storage is optional. */ }
+function persistSpellLibraryView() {
+  try { localStorage.setItem('skymanager.spellLibraryView', JSON.stringify({layout:spellLibraryView.layout,density:spellLibraryView.density,controlsCollapsed:spellLibraryView.controlsCollapsed})); } catch (_) {}
+}
+function spellLibraryParents() { return (state.spells && state.spells.library && state.spells.library.parents) || {}; }
+function spellLibraryPath(cat) {
+  var a = [], seen = [], parents = spellLibraryParents();
+  while (cat && seen.indexOf(cat) < 0) { a.unshift(cat); seen.push(cat); cat = Object.prototype.hasOwnProperty.call(parents, cat) ? parents[cat] : ''; }
+  return a.join(' / ');
+}
+function spellLibraryInside(cat, parent) {
+  var seen = [], parents = spellLibraryParents();
+  if (!parent) return true;
+  while (cat && seen.indexOf(cat) < 0) { if (cat === parent) return true; seen.push(cat); cat = Object.prototype.hasOwnProperty.call(parents, cat) ? parents[cat] : ''; }
+  return false;
+}
+function spellLibraryKind(s) {
+  var t = String(s.type || '').toLowerCase();
+  return t === 'shout' ? 'shout' : (t === 'power' || t === 'lesser' || t === 'voice') ? 'power' : (t === 'spell' || (s.slot === 'hand' && s.school)) ? 'spell' : 'unknown';
+}
+function spellLibraryControls(cats) {
+  function select(key, label, options) {
+    return '<label>' + label + '<select class="fin-in" data-spell-library="' + key + '">' + options.map(function (o) {
+      return '<option value="' + esc(o[0]) + '"' + (spellLibraryView[key] === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
+    }).join('') + '</select></label>';
+  }
+  var active = (spellLibraryView.category ? 1 : 0) + (spellLibraryView.kind !== 'all' ? 1 : 0) + (spellLibraryView.mode !== 'all' ? 1 : 0);
+  return '<div class="spell-library-toolbar"><button type="button" class="chip spell-category-trigger" data-spell-categories aria-haspopup="dialog" title="' + esc(spellLibraryPath(spellLibraryView.category) || 'All categories') + '"><span>' + esc(spellLibraryView.category || 'All categories') + '</span> ⌄</button><button type="button" class="chip" data-spell-controls-toggle aria-controls="spell-library-options" aria-expanded="' + !spellLibraryView.controlsCollapsed + '">' +
+    (spellLibraryView.controlsCollapsed ? '› Show filters' : '‹ Hide filters') + (active ? ' · ' + active : '') + '</button>' +
+    select('density', 'Size', [['balanced','Balanced'],['compact','More rows'],['spacious','Spacious']]) + '</div>' +
+    '<div id="spell-library-options" class="spell-library-controls"' + (spellLibraryView.controlsCollapsed ? ' hidden' : '') + '>' +
+    select('kind', 'Type', [['all','All types'],['spell','Spells'],['power','Powers'],['shout','Shouts'],['unknown','Unclassified']]) +
+    select('mode', 'Action', [['all','Any action'],['equip','Equip'],['cast','Cast now']]) +
+    select('layout', 'View', [['cards','Cards'],['columns','Columns'],['list','List'],['icons','Icons']]) + '</div>';
+}
+function spellCategoryChoices(query) {
+  var cats = (state.spells && state.spells.categories) || [], names = cats.map(function (c) { return c.name; });
+  Object.keys(spellLibraryParents()).forEach(function (c) {
+    [c, spellLibraryParents()[c]].forEach(function (name) { if (name && names.indexOf(name) < 0) names.push(name); });
+  });
+  names.sort(function (a, b) { return spellLibraryPath(a).localeCompare(spellLibraryPath(b)); });
+  var q = String(query || '').trim().toLowerCase();
+  return [''].concat(names).map(function (name) {
+    return { name: name, path: spellLibraryPath(name) || 'All categories', count: cats.reduce(function (n, c) {
+      return n + (spellLibraryInside(c.name, name) ? (c.spells || []).length : 0);
+    }, 0) };
+  }).filter(function (c) { return !q || c.path.toLowerCase().indexOf(q) >= 0; });
+}
+function renderSpellCategoriesSheet() {
+  $('sheet-back').hidden = true; $('sheet-icon').className = 'art'; $('sheet-icon').innerHTML = '';
+  $('sheet-title').textContent = 'Browse categories'; $('sheet-sub').textContent = 'Choose a category to filter your spells';
+  var rows = spellCategoryChoices(state.sheetQ);
+  $('sheet-body').innerHTML = '<input id="sheet-q" class="txt spell-category-search" type="text" aria-label="Find a category" placeholder="Find a category…" value="' + esc(state.sheetQ) + '">' +
+    '<div class="spell-category-choices">' + rows.map(function (c) {
+      return '<button type="button" class="btn" data-spell-category="' + esc(c.name) + '" aria-pressed="' + (spellLibraryView.category === c.name) + '"><span>' + esc(c.name || 'All categories') +
+        (c.name && c.path !== c.name ? '<small>' + esc(c.path) + '</small>' : '') + '</span><span class="n">' + c.count + '</span></button>';
+    }).join('') + (rows.length ? '' : '<p>No matching categories.</p>') + '</div>';
+}
+document.addEventListener('click', function (e) {
+  var button = e.target && e.target.closest && e.target.closest('[data-spell-categories], [data-spell-category]');
+  if (!button) return;
+  if (button.hasAttribute('data-spell-categories')) {
+    state.sheet = { kind: 'spellcategories' }; resetSheetUi(); render(); $('sheet-q').focus();
+  } else {
+    spellLibraryView.category = button.getAttribute('data-spell-category'); closeSheet();
+  }
+});
+document.addEventListener('change', function (e) {
+  var key = e.target && e.target.getAttribute('data-spell-library');
+  if (key && Object.prototype.hasOwnProperty.call(spellLibraryView, key)) { spellLibraryView[key] = e.target.value; persistSpellLibraryView(); renderSpells(); }
+});
+document.addEventListener('click', function (e) {
+  var button = e.target && e.target.closest && e.target.closest('[data-spell-controls-toggle]');
+  if (!button) return;
+  spellLibraryView.controlsCollapsed = !spellLibraryView.controlsCollapsed; persistSpellLibraryView(); renderSpells();
+  var next = document.querySelector('[data-spell-controls-toggle]'); if (next) next.focus();
+});
 
 function renderSpells() {
   var host = $('spells-body');
@@ -5219,9 +5567,7 @@ function renderSpells() {
   var head = function (count, extra) {
     return '<div class="sect-head"><h2>Your Spell Deck</h2>' +
       (count ? '<span class="n">' + count + '</span>' : '') +
-      '<span class="hint">' + (extra || 'Tap a spell to change its icon. Changes are queued — the running game ' +
-        'applies them within a second, a closed one on its next Spell Deck open (F18). The game owns its own ' +
-        'config file, so nothing is written behind its back.') + '</span></div>';
+      '<span class="hint">' + (extra || 'Tap a spell for its effects, damage and Magicka cost.') + '</span></div>';
   };
 
   if (sp && !sp.ok) {
@@ -5234,19 +5580,23 @@ function renderSpells() {
 
   var q = state.q.trim().toLowerCase();
   var cats = (sp && sp.categories) || [];
+  host.setAttribute('data-layout', spellLibraryView.layout);
+  host.setAttribute('data-density', spellLibraryView.density);
+  var libraryControls = spellLibraryControls(cats);
+  var packages = spellPackagesHtml(q);
   var out = [];
   var shown = 0;
   var pend = (sp && sp.pendingAssignments) || 0;
 
   cats.forEach(function (c) {
-    var rows = c.spells.filter(function (s) { return spellMatches(s, q); });
+    var rows = c.spells.filter(function (s) { return spellMatches(s, q) && spellLibraryInside(c.name, spellLibraryView.category) && (spellLibraryView.kind === 'all' || spellLibraryKind(s) === spellLibraryView.kind) && (spellLibraryView.mode === 'all' || s.mode === spellLibraryView.mode); });
     if (!rows.length) return;
     shown += rows.length;
     var sc = spellCatByName(c.name);
     var headInner = sc
       ? '<span class="cat-lead">' + spellCatIconHtml(sc) +
-        '<h2>' + hi(c.name, q) + '</h2><span class="n">' + rows.length + '</span></span>'
-      : '<h2>' + hi(c.name, q) + '</h2><span class="n">' + rows.length + '</span>';
+        '<h2>' + hi(spellLibraryPath(c.name), q) + '</h2><span class="n">' + rows.length + '</span></span>'
+      : '<h2>' + hi(spellLibraryPath(c.name), q) + '</h2><span class="n">' + rows.length + '</span>';
     out.push('<section class="cat">' +
       '<div class="cat-head' + (sc ? ' has-ic' : '') + '">' + headInner + '</div>' +
       '<div class="grid">' + rows.map(function (s) { return spellRow(s, q); }).join('') + '</div>' +
@@ -5268,8 +5618,8 @@ function renderSpells() {
   }
 
   if (!out.length) {
-    host.innerHTML = '<section class="sect">' + head(0) + banner +
-      (q
+    host.innerHTML = '<section class="sect">' + head(0) + libraryControls + packages + banner +
+      (q || spellLibraryView.kind !== 'all' || spellLibraryView.mode !== 'all' || spellLibraryView.category
         ? '<div class="empty"><div class="ic">⌕</div><div class="t">No spell matches</div>' +
           '<div class="s">Nothing in the deck matches “' + esc(state.q.trim()) + '”. Spell names, categories, schools, elements and tiers are all searched.</div></div>'
         : '<div class="empty"><div class="ic">✦</div><div class="t">No spells in the Spell Deck yet</div>' +
@@ -5277,7 +5627,32 @@ function renderSpells() {
       '</section>';
     return;
   }
-  host.innerHTML = '<section class="sect">' + head(shown) + banner + out.join('') + '</section>';
+  host.innerHTML = '<section class="sect">' + head(shown) + libraryControls + packages + banner + out.join('') + '</section>';
+}
+
+function spellPackageName(c) { return c.name || c.spells.slice(0, 2).map(function (s) { return s.name; }).join(' + ') || 'Spell package'; }
+function spellPackagesHtml(q) {
+  var packages = ((state.spells && state.spells.combos) || []).filter(function (c) {
+    return (spellPackageName(c) + ' ' + c.spells.map(function (s) { return s.name; }).join(' ')).toLowerCase().indexOf(q) >= 0;
+  });
+  if (!packages.length) return '';
+  return '<section class="cat"><div class="cat-head"><h2>Spell packages</h2><span class="n">' + packages.length + '</span></div><div class="grid">' + packages.map(function (c) {
+    return '<button class="spell spell-package-card" type="button" data-spell-package="' + esc(c.id) + '">' +
+      '<span class="spell-package-art">' + c.spells.slice(0,4).map(spellIconHtml).join('') + '</span><span class="body"><strong class="nm">' + esc(spellPackageName(c)) + '</strong><span class="meta">' +
+      c.spells.length + ' spells · View cast order</span></span><span class="go">›</span></button>';
+  }).join('') + '</div></section>';
+}
+document.addEventListener('click', function (e) {
+  var button = e.target && e.target.closest && e.target.closest('[data-spell-package]'); if (!button) return;
+  state.sheet = { kind: 'spellpackage', id: button.getAttribute('data-spell-package') }; resetSheetUi(); render();
+});
+function renderSpellPackageSheet(c) {
+  $('sheet-back').hidden = true; $('sheet-icon').className = 'art';
+  $('sheet-icon').innerHTML = c.spells[0] ? spellIconInner(c.spells[0]) : '';
+  $('sheet-title').textContent = spellPackageName(c);
+  $('sheet-sub').textContent = c.spells.length + ' spells · cast together';
+  $('sheet-body').innerHTML = '<p class="spell-package-intro">Your cast sequence. Trigger the whole package from Spell Deck (F18); every member fires in order, 150 ms apart.</p><div class="spell-package-sequence">' +
+    c.spells.map(function (s, i) { return '<div class="spell-package-member"><span class="n">' + String(i + 1).padStart(2,'0') + '</span>' + spellIconHtml(s) + '<span class="body"><strong class="nm">' + esc(s.name) + '</strong><span class="meta">' + esc(s.school || 'Direct cast') + '</span></span></div>'; }).join('') + '</div>';
 }
 
 /* ------------------------- hotkeys render -------------------------- *
@@ -5652,13 +6027,68 @@ function renderIconSheet(row, opt) {
   $('sheet-body').innerHTML = html;
 }
 
+  // BEGIN SPELL DESCRIPTION FORMATTERS — mirrored in portal/index.html, checked by tests.
+  function spellStatNumber(n) { return typeof n === 'number' && isFinite(n) ? String(Math.round(n * 10) / 10) : '—'; }
+  function spellStatTiles(data) {
+    var s = data && data.ok && data.stats;
+    if (!s) return [{label:'Magicka cost',value:data ? '—' : '…',note:'Not returned by the game'}, {label:'Base damage',value:data ? '—' : '…',note:'Not returned by the game'}];
+    var effects = Array.isArray(s.effects) ? s.effects : [];
+    var damage = effects.filter(function (e) { return e.kind === 'damage' && typeof e.magnitude === 'number' && isFinite(e.magnitude); });
+    var healing = effects.filter(function (e) { return e.kind === 'healing' && typeof e.magnitude === 'number' && isFinite(e.magnitude); });
+    var chosen = damage.length ? damage : healing, label = damage.length ? 'Base damage' : healing.length ? 'Base healing' : 'Base damage';
+    var tile = {label:label,value:'—',note:'No direct damage value'};
+    if (chosen.length === 1 && !s.shout) tile = {label:label,value:spellStatNumber(chosen[0].magnitude) + (chosen[0].perSecond ? ' /s' : ''),note:'Before perks and resistance'};
+    else if (chosen.length) tile = {label:label,value:String(chosen.length) + ' effects',note:s.shout ? 'By word below' : 'See each effect below'};
+    return [{label:'Magicka cost',value:spellStatNumber(s.cost) + (s.costPerSecond && typeof s.cost === 'number' ? ' /s' : ''),note:s.shout ? 'Uses voice cooldown' : 'Your normal-cast cost'},tile];
+  }
+  function spellEffectRows(data) {
+    var s = data && data.ok && data.stats;
+    return ((s && Array.isArray(s.effects)) ? s.effects : []).map(function (e) {
+      var parts = [], mag = typeof e.magnitude === 'number' && isFinite(e.magnitude);
+      if (mag) parts.push(spellStatNumber(e.magnitude) + (e.perSecond ? ' /s' : '') + ' ' + (e.kind === 'damage' ? 'base damage' : e.kind === 'healing' ? 'base healing' : 'base magnitude'));
+      if (typeof e.duration === 'number' && e.duration > 0) parts.push(spellStatNumber(e.duration) + ' sec');
+      if (typeof e.area === 'number' && e.area > 0) parts.push(spellStatNumber(e.area) + ' ft area');
+      return {name:(e.words ? e.words + (e.words === 1 ? ' word · ' : ' words · ') : '') + (e.name || 'Effect'),text:parts.join(' · ') || 'No numeric magnitude'};
+    });
+  }
+  function spellCardStats(data) {
+    var s = data && data.ok && data.stats;
+    if (!s) return [{label:'Magicka',value:data ? '—' : '…',note:data ? 'Open Details to retry unavailable stats' : 'Reading from the game'},
+      {label:'Base effect',value:'—',note:'Open Details for spell effects'}];
+    var tiles = spellStatTiles(data), effect = tiles[1];
+    return [s.shout ? {label:'Resource',value:'Voice',note:'Uses voice cooldown'} :
+      {label:'Magicka',value:tiles[0].value,note:'Your normal-cast cost; direct-cast actions may differ'},
+      effect.value === '—' ? {label:'Effects',value:'Details',note:'No direct damage or healing value returned'} :
+      {label:effect.label,value:effect.value,note:effect.value.indexOf('effects') >= 0 ? 'Separate effects; open Details to read each' : effect.note}];
+  }
+  // END SPELL DESCRIPTION FORMATTERS
+function renderSpellDetails(s) {
+  $('sheet-back').hidden = true;
+  $('sheet-icon').className = 'art'; $('sheet-icon').innerHTML = spellIconInner(s);
+  $('sheet-title').textContent = s.name;
+  $('sheet-sub').textContent = spellLibraryPath(s.category);
+  var d = s.description;
+  var text = !d ? 'Open the Spell Deck (F18) in game to refresh this description on your phone.'
+    : !d.ok ? 'The game could not resolve this spell. Reopen F18 to refresh the library.'
+    : d.text || 'This spell has no visible effect description. Its effects may be handled by its mod.';
+  var action = s.mode === 'equip' ? 'Equip' + (s.slot === 'voice' ? ' · Voice' : ' · ' + (s.hand || 'right') + ' hand') : 'Cast now';
+  var tiles = spellStatTiles(d).map(function (t) { return '<div class="spell-stat"><span>' + esc(t.label) + '</span><strong>' + esc(t.value) + '</strong><small>' + esc(t.note) + '</small></div>'; }).join('');
+  var effects = spellEffectRows(d).map(function (e) { return '<div class="spell-effect-row"><strong>' + esc(e.name) + '</strong><span>' + esc(e.text) + '</span></div>'; }).join('');
+  $('sheet-body').innerHTML = '<div class="spell-stats">' + tiles + '</div><section class="spell-reading"><h2>What it does</h2><p class="spell-effect-copy">' + esc(text) + '</p></section>' +
+    (effects ? '<section class="spell-effect-list" aria-label="Base effect values">' + effects + '</section>' : '') +
+    '<dl class="spell-detail-facts"><div><dt>Action in game</dt><dd>' + esc(action) + '</dd></div>' +
+    (s.school ? '<div><dt>School</dt><dd>' + esc(s.school) + '</dd></div>' : '') +
+    (s.plugin ? '<div><dt>Source</dt><dd>' + esc(s.plugin) + '</dd></div>' : '') + '</dl>' +
+    (d && d.at ? '<p class="spell-snapshot-note">Read from the game ' + esc(new Date(d.at).toLocaleString()) + '. Reopen F18 to refresh.</p>' : '') +
+    '<button class="btn" type="button" data-act="spell" data-id="' + esc(s.id) + '">Change spell icon</button>';
+}
 function renderSpellSheet(s) {
   renderIconSheet(s, {
     busyKey: s.id,
     emptyWord: 'Auto',
     sub: s.category + ' · ' + currentLabel(s, 'back to automatic', 'automatic icon'),
     clearLabel: '↺ Back to auto',
-    back: false,
+    back: true,
     view: 'magic',          // spells resolve library art in the MagicDeck tree
   });
 }
@@ -6051,14 +6481,60 @@ var SM_SPOUSAL = ['single', 'married', 'widowed'];
 var SM_ORIENT = ['heterosexual', 'homosexual', 'bisexual', 'asexual'];
 var SM_PREF = ['monogamous', 'polyamorous', 'uncommitted', 'not_interested'];
 
-/* The flags, with the one-liner that says what each actually DOES to the
-   NPC's behaviour — a bare "Slave" checkbox tells you nothing about which
-   prompt it swaps in. */
-var SM_FLAGS = [
-  { k: 'is_slave', t: 'Slave', s: 'Swaps in the servitude prompt and the slave speech styles.' },
-  { k: 'is_prostitute', t: 'Sex worker', s: 'Unlocks pricing and the paid-services negotiation.' },
-  { k: 'is_slut', t: 'Uninhibited', s: 'Drops the usual reluctance gating on advances.' },
-  { k: 'slave_fiction_frame', t: 'Fiction frame', s: 'Prepends the "this is interactive fiction" framing. Leave on.' },
+/* CHIM's own default for an NPC it has never been told about is the legacy
+   spelling "straight", while its generator and its web form both write
+   "heterosexual". Matching raw left every unconfigured NPC with no
+   orientation lit at all, which reads as "not set" when it is in fact set.
+   Folded for the COMPARISON only — the draft keeps what CHIM holds, so an
+   untouched field still diffs clean and is never rewritten behind her back.
+   Mirror of normOrient() in view/HotkeyDeck/sharmat-pane.js. */
+var SM_ORIENT_SYNONYM = { straight: 'heterosexual', gay: 'homosexual', lesbian: 'homosexual' };
+function smNormOrient(v) {
+  var s = String(v == null ? '' : v).trim().toLowerCase();
+  return SM_ORIENT_SYNONYM[s] || s;
+}
+
+/* The three role marks, with the one-liner that says what each actually DOES
+   to her behaviour — a bare "Slave" checkbox tells you nothing about which
+   prompt it swaps in. MUTUALLY EXCLUSIVE, exactly as CHIM's own config page
+   enforces them and as its background generator re-derives them. */
+var SM_ROLES = [
+  { k: 'is_slave', t: 'Enslaved', s: 'Servitude prompt, and her servitude voice below.' },
+  { k: 'is_prostitute', t: 'Sex worker', s: 'Unlocks her trade: pricing and paid-service talk.' },
+  { k: 'is_slut', t: 'Promiscuous', s: 'Available from Acquaintance (+6) up, no relationship gate. Never charges.' },
+];
+
+/* Her trade, stored inside the free-form `pricing` object. Values verified
+   against CHIM's ext/aiagent_nsfw/config_section_npc_settings.php. */
+var SM_PTYPE = [
+  { v: 'streetwalker', t: 'Streetwalker' }, { v: 'tavern_worker', t: 'Tavern worker' },
+  { v: 'courtesan', t: 'Courtesan' }, { v: 'escort', t: 'Escort' },
+  { v: 'temple_prostitute', t: 'Temple' }, { v: 'camp_follower', t: 'Camp follower' },
+];
+var SM_PMOTIVE = [
+  { v: 'professional', t: 'Professional' }, { v: 'survival', t: 'Survival' },
+  { v: 'pleasure', t: 'Pleasure' }, { v: 'forced', t: 'Forced' }, { v: 'sacred', t: 'Sacred' },
+];
+var SM_PPAY = [
+  { v: 'gold', t: 'Gold' }, { v: 'favors', t: 'Favours' },
+  { v: 'goods', t: 'Goods' }, { v: 'mixed', t: 'Mixed' },
+];
+var SM_PPROMPTS = [
+  { k: 'personality_prompt', t: 'Personality override', s: 'How she approaches the work.' },
+  { k: 'during_prompt', t: 'During the service', s: 'Her behaviour while it is happening.' },
+  { k: 'orgasm_prompt', t: 'Her climax', s: 'When SHE finishes during a paid scene.' },
+  { k: 'after_prompt', t: 'Afterwards', s: 'Post-service / pillow talk.' },
+];
+/* Her servitude voice, inside the free-form `slave_speak_styles` object.
+   Every one of these is "blank = CHIM's global default". */
+var SM_SLAVE_FIELDS = [
+  { k: 'speak_style', t: 'Speak style', s: 'How she addresses her owner in a scene.' },
+  { k: 'scene_cues', t: 'Scene cues', s: 'How she behaves while it happens.' },
+  { k: 'slave_climax_positive', t: 'Climax — eager', s: 'High affinity.' },
+  { k: 'slave_climax_neutral', t: 'Climax — neutral', s: 'Goes along with it.' },
+  { k: 'slave_climax_negative', t: 'Climax — reluctant', s: 'Low affinity; dutiful, detached.' },
+  { k: 'owner_climax', t: 'When HE finishes', s: 'Her reaction to her owner’s climax.' },
+  { k: 'aftermath', t: 'Aftermath', s: 'How she reflects once it ends.' },
 ];
 
 function smStyles() {
@@ -6068,6 +6544,22 @@ function smStyles() {
     var d = s[k] || {};
     return { name: k, emoji: d.emoji || '', description: d.description || '' };
   });
+}
+
+/* CHIM's LLM connectors, for the generator. Labels only — the LABEL is what
+   generateSexPrompt takes. Absent (CHIM down, or an older build) means no
+   Generate control at all, which is better than one that cannot work. */
+function smConnectors() {
+  var c = (state.sharmat && state.sharmat.connectors) || null;
+  return Array.isArray(c) ? c : [];
+}
+function smConnector() {
+  var list = smConnectors();
+  if (!list.length) return '';
+  if (state.smConn && list.indexOf(state.smConn) >= 0) return state.smConn;
+  // Same default CHIM's own page pre-selects, so both Generates are comparable.
+  var grok = list.filter(function (l) { return l.toLowerCase().indexOf('grok') >= 0; })[0];
+  return grok || list[0];
 }
 
 /* Does this person have a profile at all? Answered from the ONE roster
@@ -6125,6 +6617,12 @@ function openSharmatSheet(slug) {
   state.smErr = ''; state.smLoadErr = ''; state.smChimDown = false; state.smArmedBack = false;
   state.smBusy = false; state.smLoading = true;
   state.smKink = { normal: '', secret: '' };
+  /* Per-NPC, all of it: an armed Generate left over from the LAST person
+     would fire on THIS one. The connector CHOICE is session-wide and stays. */
+  state.smArmGen = false; state.smArmDel = false;
+  state.smGenBusy = false; state.smDelBusy = false;
+  state.smGenErr = ''; state.smDelErr = '';
+  state.smSpouse = { q: '', busy: false, hits: null };
   render();
 
   api('GET', '/api/sharmat/npc?name=' + encodeURIComponent(smNameOf(m))).then(function (r) {
@@ -6166,6 +6664,36 @@ function smSet(k, v) {
   state.smDraft.data[k] = v;
   render();
 }
+/* A field inside one of the two free-form objects (`pricing`,
+   `slave_speak_styles`). MERGE, never replace: CHIM's own web page and its
+   background generator both write keys this editor does not know about
+   (individual_acts, time_bookings, style_addons, group_premiums …), and
+   replacing the object would delete every one of them on the next save.
+   Mirror of subVal/subSet in view/HotkeyDeck/sharmat-pane.js. */
+function smSubVal(key, sub, dflt) {
+  var o = smVal(key, null);
+  if (!o || typeof o !== 'object') return dflt;
+  return (o[sub] === undefined || o[sub] === null) ? dflt : o[sub];
+}
+function smSubSet(key, sub, v) {
+  var cur = smVal(key, null);
+  var o = (cur && typeof cur === 'object' && !Array.isArray(cur))
+    ? JSON.parse(JSON.stringify(cur)) : {};
+  o[sub] = v;
+  smSet(key, o);
+}
+/* Exactly one role at a time. Turning one ON clears the other two; turning
+   one OFF clears only ITSELF — the symmetric version reads tidier and is
+   wrong, because unticking "sex worker" on a record that also carried
+   is_slave would silently un-enslave her and the save would then drop her
+   whole servitude voice. Mirror of setRole() in sharmat-pane.js. */
+function smSetRole(key, on) {
+  var d = state.smDraft && state.smDraft.data;
+  if (!d) return;
+  if (on) SM_ROLES.forEach(function (r) { d[r.k] = (r.k === key); });
+  else d[key] = false;
+  render();
+}
 /* Only what actually differs from the loaded truth. Deep-compares via JSON
    because two of the fields (kink arrays, the pricing object) are structures
    and === would report every one of them as changed on every render. */
@@ -6201,6 +6729,81 @@ function smDelKink(which, i) {
   var list = (smVal(key, []) || []).slice();
   list.splice(i, 1);
   smSet(key, list);
+}
+
+/* ⛔ CHIM's generator WRITES TO ITS DATABASE before it answers, and its reply
+   is only a subset of what it stored. So: armed, refused while the draft is
+   dirty (those edits would be written over unsent), and on success the
+   server's fresh READ is what re-seats BOTH sides — never the reply. */
+function smGenerate() {
+  var d = state.smDraft;
+  if (!d || state.smGenBusy || smDirty()) return;
+  var conn = smConnector();
+  if (!conn) return;
+  state.smArmGen = false; state.smGenBusy = true; state.smGenErr = ''; render();
+  api('POST', '/api/sharmat/generate', { name: d.name, connector: conn }).then(function (r) {
+    state.smGenBusy = false;
+    if (!r.ok) { state.smGenErr = r.error || 'generate failed'; render(); return; }
+    state.smDraft = { name: d.name, base: r.data || {}, data: JSON.parse(JSON.stringify(r.data || {})), isNew: false };
+    toast('✓ CHIM wrote her profile', 'good');
+    fetchSharmat().then(render);
+  }).catch(function (e) {
+    state.smGenBusy = false; state.smGenErr = (e && e.message) || 'generate failed'; render();
+  });
+}
+
+/* CHIM calls this a delete. It unsets the prompt, the style, the profanity
+   level, both kink lists, sex-worker/promiscuous, the price, the source and
+   the cached race — and LEAVES the unlock tiers, enslaved, the servitude
+   voice, the pricing table and every relationship field. The UI says so. */
+function smClear() {
+  var d = state.smDraft;
+  if (!d || state.smDelBusy) return;
+  state.smArmDel = false; state.smDelBusy = true; state.smDelErr = ''; render();
+  api('POST', '/api/sharmat/clear', { name: d.name }).then(function (r) {
+    state.smDelBusy = false;
+    if (!r.ok) { state.smDelErr = r.error || 'clear failed'; render(); return; }
+    state.smDraft = { name: d.name, base: r.data || {}, data: JSON.parse(JSON.stringify(r.data || {})), isNew: false };
+    toast('✓ Cleared her stored profile', 'good');
+    fetchSharmat().then(render);
+  }).catch(function (e) {
+    state.smDelBusy = false; state.smDelErr = (e && e.message) || 'clear failed'; render();
+  });
+}
+
+/* Spouse names are free text, but they only MEAN anything when they match a
+   name CHIM knows — so the field gets CHIM's own roster search. Debounced:
+   CHIM serialises every request behind one semaphore, so a query per
+   keystroke would queue behind itself and answer late. */
+var smSpouseTimer = null;
+function smSpouseType(q) {
+  state.smSpouse.q = q;
+  clearTimeout(smSpouseTimer);
+  if (String(q || '').trim().length < 2) {
+    state.smSpouse.hits = null; state.smSpouse.busy = false; render(); return;
+  }
+  smSpouseTimer = setTimeout(function () { smSpouseSearch(q); }, 320);
+}
+function smSpouseSearch(q) {
+  state.smSpouse.busy = true; render();
+  api('GET', '/api/sharmat/spouse?q=' + encodeURIComponent(q)).then(function (r) {
+    // A stale reply for a query since changed is dropped — out-of-order
+    // answers are normal against a serialising server.
+    if (state.smSpouse.q !== q) return;
+    state.smSpouse.busy = false;
+    state.smSpouse.hits = (r.ok && r.hits) || [];
+    render();
+  }).catch(function () {
+    if (state.smSpouse.q !== q) return;
+    state.smSpouse.busy = false; state.smSpouse.hits = []; render();
+  });
+}
+function smSpouseAdd(name) {
+  var cur = String(smVal('spouse_names', '') || '');
+  var list = cur.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+  if (!list.some(function (x) { return x.toLowerCase() === name.toLowerCase(); })) list.push(name);
+  state.smSpouse = { q: '', busy: false, hits: null };
+  smSet('spouse_names', list.join(', '));
 }
 
 function smCommit() {
@@ -6250,6 +6853,11 @@ function renderSharmatSheet(m) {
      restore after. */
   var bodyEl = $('sheet-body');
   var keepScroll = bodyEl ? bodyEl.scrollTop : 0;
+  /* The spouse lookup repaints the sheet as results land, which destroys the
+     box the caret is in. Capture it and put it back — the same bargain as the
+     scroll position above. */
+  var spFocus = document.activeElement && document.activeElement.id === 'sm-spouse-q';
+  var spCaret = spFocus ? document.activeElement.selectionStart : 0;
 
   var ic = $('sheet-icon');
   ic.className = 'art';
@@ -6330,6 +6938,30 @@ function renderSharmatSheet(m) {
     esc(smVal('sex_prompt', '')) + '</textarea>' +
     '<div class="fhint">Replaces her normal prompt for the duration of a scene.</div>';
 
+  /* CHIM's generator. ARMED, because it overwrites her whole record
+     server-side with no draft to approve — see smGenerate(). Drawn only when
+     CHIM told us which connectors exist. */
+  var smConns = smConnectors();
+  if (smConns.length) {
+    var genBlocked = smDirty();
+    html += '<div class="sheet-lbl" style="margin-top:13px">CHIM’s generator</div>' +
+      '<select class="txt" id="sm-conn" style="width:100%;margin-bottom:8px">' +
+      smConns.map(function (c) {
+        return '<option value="' + esc(c) + '"' + (c === smConnector() ? ' selected' : '') + '>' + esc(c) + '</option>';
+      }).join('') + '</select>' +
+      '<div class="sheet-acts" style="margin:0 0 6px">' +
+      '<button class="btn danger' + (state.smArmGen ? ' armed' : '') + '" type="button" data-act="sm-gen"' +
+      ((genBlocked || state.smGenBusy) ? ' disabled' : '') + '>' +
+      (state.smGenBusy ? 'Writing her profile…'
+        : state.smArmGen ? 'Overwrite her profile — sure?'
+        : 'Write it with AI') + '</button></div>' +
+      '<div class="fhint">' + (genBlocked
+        ? 'Save or discard your edits first — the generator writes straight to CHIM, so anything unsaved here would be written over before it could be sent.'
+        : 'Writes the WHOLE profile from her bio: this prompt, her style, her profanity level, both kink lists, her role and her relationship fields. It saves to CHIM itself, and can take the better part of a minute.') +
+      '</div>';
+    if (state.smGenErr) html += '<div class="sm-note bad"><b>Generate failed.</b> ' + esc(state.smGenErr) + '</div>';
+  }
+
   /* ---- kinks ---- */
   html += '<div class="sm-sect">Kinks <span class="n">what she’ll ask for</span></div>';
   html += smKinkHtml('normal');
@@ -6356,22 +6988,56 @@ function renderSharmatSheet(m) {
         esc(t.t) + ' (' + (t.v > 0 ? '+' : '') + t.v + ')</option>';
     }).join('') + '</select>';
 
-  /* ---- status ---- */
-  html += '<div class="sm-sect">Status</div>';
-  SM_FLAGS.forEach(function (f) {
-    var on = !!smVal(f.k, f.k === 'slave_fiction_frame');
+  /* ---- role ---- */
+  html += '<div class="sm-sect">Role <span class="n">pick at most one</span></div>';
+  SM_ROLES.forEach(function (f) {
+    var on = !!smVal(f.k, false);
     html += '<div class="sm-flag">' +
       '<div class="b"><div class="t">' + esc(f.t) + '</div><div class="s">' + esc(f.s) + '</div></div>' +
       '<button class="sm-sw' + (on ? ' on' : '') + '" type="button" role="switch" aria-checked="' + (on ? 'true' : 'false') +
-      '" aria-label="' + esc(f.t) + '" data-act="sm-flag" data-k="' + f.k + '"></button>' +
+      '" aria-label="' + esc(f.t) + '" data-act="sm-role" data-k="' + f.k + '"></button>' +
     '</div>';
   });
+  html += '<div class="fhint">CHIM treats these three as exclusive — turning one on here turns the other two off, ' +
+    'which is what the server would have derived anyway. All three off is a perfectly ordinary NPC.</div>';
 
+  /* ---- her trade: the `pricing` object, which used to be carried through
+     every save and never SHOWN. Sex workers only — the server unset()s the
+     whole record for anyone not flagged. ---- */
   if (smVal('is_prostitute', false)) {
+    html += '<div class="sm-sect">Her trade <span class="n">sex workers only</span></div>';
+    html += '<div class="sheet-lbl">Type</div>' +
+      smSegHtml('sm-ptype', SM_PTYPE, smSubVal('pricing', 'prostitute_type', 'streetwalker'));
+    html += '<div class="sheet-lbl" style="margin-top:11px">Motivation</div>' +
+      smSegHtml('sm-pmot', SM_PMOTIVE, smSubVal('pricing', 'motivation', 'professional'));
+    html += '<div class="sheet-lbl" style="margin-top:11px">Payment taken in</div>' +
+      smSegHtml('sm-ppay', SM_PPAY, smSubVal('pricing', 'payment_type', 'gold'));
     html += '<div class="sheet-lbl" style="margin-top:13px">Session price (gold)</div>' +
       '<input class="txt sm-in" id="sm-price" data-k="prostitute_price" data-t="int" type="number" min="0" step="10" style="width:100%" ' +
       'value="' + esc(String(smVal('prostitute_price', 100))) + '">' +
-      '<div class="fhint">The flat rate. CHIM’s finer per-act pricing table, if she has one, is left untouched.</div>';
+      '<div class="fhint">One flat price for the whole scene. CHIM’s finer per-act, per-hour and group tables live in ' +
+      'this same record; they are edited from its web page and carried through a save from here untouched.</div>';
+    SM_PPROMPTS.forEach(function (p) {
+      html += '<div class="sheet-lbl" style="margin-top:11px">' + esc(p.t) + '</div>' +
+        '<textarea class="txt sm-in" data-k="pricing" data-sub="' + p.k + '" data-t="str" rows="2" ' +
+        'style="width:100%;resize:vertical" placeholder="Blank = her ordinary persona">' +
+        esc(String(smSubVal('pricing', p.k, ''))) + '</textarea>' +
+        '<div class="fhint">' + esc(p.s) + '</div>';
+    });
+  }
+
+  /* ---- servitude voice: the `slave_speak_styles` object, same story ---- */
+  if (smVal('is_slave', false)) {
+    html += '<div class="sm-sect">Servitude voice <span class="n">enslaved only</span></div>';
+    html += '<div class="fhint" style="margin-bottom:9px">Every line is optional — left blank she uses the global slave ' +
+      'prompts from CHIM’s Prompts tab. The three climax tiers are picked by her affinity toward her owner.</div>';
+    SM_SLAVE_FIELDS.forEach(function (f) {
+      html += '<div class="sheet-lbl" style="margin-top:11px">' + esc(f.t) + '</div>' +
+        '<textarea class="txt sm-in" data-k="slave_speak_styles" data-sub="' + f.k + '" data-t="str" rows="2" ' +
+        'style="width:100%;resize:vertical" placeholder="Blank = CHIM’s global default">' +
+        esc(String(smSubVal('slave_speak_styles', f.k, ''))) + '</textarea>' +
+        '<div class="fhint">' + esc(f.s) + '</div>';
+    });
   }
 
   /* ---- relationship ---- */
@@ -6380,15 +7046,57 @@ function renderSharmatSheet(m) {
     smSegHtml('sm-spousal', SM_SPOUSAL.map(function (v) { return { v: v, t: v.charAt(0).toUpperCase() + v.slice(1) }; }),
       smVal('spousal_status', 'single'));
   html += '<div class="sheet-lbl" style="margin-top:11px">Spouse name(s)</div>' +
-    '<input class="txt sm-in" id="sm-spouses" data-k="spouse_names" data-t="str" type="text" style="width:100%;margin-bottom:11px" ' +
+    '<input class="txt sm-in" id="sm-spouses" data-k="spouse_names" data-t="str" type="text" style="width:100%;margin-bottom:8px" ' +
     'placeholder="comma-separated" value="' + esc(smVal('spouse_names', '')) + '">';
+  /* A name only MEANS anything to CHIM when it matches one it holds, so the
+     field gets the same roster lookup CHIM's own page uses. Its own box: the
+     stored value is a comma-separated list and typing into it must stay
+     possible. */
+  html += '<input class="txt sm-spousein" id="sm-spouse-q" type="text" style="width:100%;margin-bottom:6px" ' +
+    'placeholder="Look a name up in CHIM…" value="' + esc(state.smSpouse.q || '') + '">';
+  if (state.smSpouse.busy) {
+    html += '<div class="fhint">Asking CHIM…</div>';
+  } else if (state.smSpouse.hits) {
+    html += state.smSpouse.hits.length
+      ? '<div class="sm-sugg">' + state.smSpouse.hits.map(function (r) {
+          return '<button class="sm-sugg-b' + (r.player ? ' you' : '') + '" type="button" data-act="sm-spouse-add" ' +
+            'data-n="' + esc(r.name) + '">+ ' + esc(r.name) + (r.player ? ' (you)' : '') + '</button>';
+        }).join('') + '</div>'
+      : '<div class="fhint">CHIM knows nobody by that name — you can still type it into the field above.</div>';
+  }
+  html += '<div style="height:11px"></div>';
   html += '<div class="sheet-lbl">Orientation</div>' +
     smSegHtml('sm-orient', SM_ORIENT.map(function (v) { return { v: v, t: v.charAt(0).toUpperCase() + v.slice(1) }; }),
-      smVal('sexual_orientation', 'heterosexual'));
+      smNormOrient(smVal('sexual_orientation', 'heterosexual')));
   html += '<div class="sheet-lbl" style="margin-top:11px">Preference</div>' +
     smSegHtml('sm-pref', SM_PREF.map(function (v) {
       return { v: v, t: v === 'not_interested' ? 'Not interested' : v.charAt(0).toUpperCase() + v.slice(1) };
     }), smVal('relationship_preference', 'monogamous'));
+
+  /* ---- advanced: the one field CHIM still STORES per NPC but no longer
+     reads. Shown rather than dropped, because a field you cannot see is a
+     field you cannot lift. ---- */
+  html += '<div class="sm-sect">Advanced <span class="n">rarely touched</span></div>';
+  var smFf = !!smVal('slave_fiction_frame', true);
+  html += '<div class="sm-flag">' +
+    '<div class="b"><div class="t">Fiction frame (legacy, per-NPC)</div>' +
+    '<div class="s">CHIM moved this to a single GLOBAL toggle on its Prompts tab and its own page stopped posting ' +
+    'the per-NPC copy. Nothing reads this value any more; it is here because it is still stored, and still saved, ' +
+    'on her record.</div></div>' +
+    '<button class="sm-sw' + (smFf ? ' on' : '') + '" type="button" role="switch" aria-checked="' + (smFf ? 'true' : 'false') +
+    '" aria-label="Fiction frame" data-act="sm-flag" data-k="slave_fiction_frame"></button>' +
+  '</div>';
+
+  html += '<div class="sheet-lbl" style="margin-top:15px">Clear her stored profile</div>' +
+    '<div class="sheet-acts" style="margin:0 0 6px">' +
+    '<button class="btn danger' + (state.smArmDel ? ' armed' : '') + '" type="button" data-act="sm-clear"' +
+    (state.smDelBusy ? ' disabled' : '') + '>' +
+    (state.smDelBusy ? 'Clearing…' : state.smArmDel ? 'Clear it — sure?' : 'Clear profile') + '</button></div>' +
+    '<div class="fhint">CHIM’s own delete unsets the prompt, the speak style, the profanity level, both kink ' +
+    'lists, sex-worker/promiscuous, the session price, the source stamp and the cached race. It LEAVES the ' +
+    'unlock tiers, enslaved, her servitude voice, the pricing table and every relationship field exactly ' +
+    'where they are — so this is a clear, not a delete, and the row stays.</div>';
+  if (state.smDelErr) html += '<div class="sm-note bad"><b>Clear failed.</b> ' + esc(state.smDelErr) + '</div>';
 
   /* ---- commit ---- */
   var n = Object.keys(smPatch()).length;
@@ -6408,6 +7116,13 @@ function renderSharmatSheet(m) {
 
   bodyEl.innerHTML = html;
   bodyEl.scrollTop = keepScroll;
+  if (spFocus) {
+    var spEl = $('sm-spouse-q');
+    if (spEl) {
+      spEl.focus();
+      try { spEl.setSelectionRange(spCaret, spCaret); } catch (e) { /* not selectable in every host */ }
+    }
+  }
 }
 
 
@@ -6552,7 +7267,75 @@ function chimSection(m) {
 }
 
 
+/* Dossier phone adapters: shared UI, game-owned metadata, explicit queue receipts. */
+var npdCache={},npdControllers=[],npdActiveSlug='',npdPending={};
+try{npdPending=JSON.parse(localStorage.getItem('skymanager.dossierRequests')||'{}')||{};}catch(_){}
+function npdPersistPending(){try{localStorage.setItem('skymanager.dossierRequests',JSON.stringify(npdPending));}catch(_){}}
+function npdDispose(){npdControllers.forEach(function(c){c.destroy();});npdControllers=[];npdActiveSlug='';if(window.HDDossierTools)HDDossierTools.closeOverlays();}
+function npdModalKey(e){if(window.HDDossierTools&&HDDossierTools.isOpen()){HDDossierTools.onKey(e);return true;}return npdControllers.some(function(c){return c.hasModal&&c.hasModal()&&c.onKey(e);});}
+function npdActor(m){if(m.actor&&m.actor.formId)return m.actor;var day=typeof mhiyhRowFor==='function'?mhiyhRowFor(m):null;return day&&day.formId?{formId:String(day.formId),name:m.original||m.name}:null;}
+function npdSameActor(a,b){return !!a&&!!b&&!!a.plugin&&!!b.plugin&&String(a.plugin).toLowerCase()===String(b.plugin).toLowerCase()&&parseInt(String(a.formId),16)===parseInt(String(b.formId),16);}
+function npdRecord(m){var c=npdCache[m.slug];if(!c)return {};return (c.data.people||[]).find(function(p){return p.id===c.personId;})||{};}
+function npdSelectedPortrait(m){return (npdRecord(m).portrait||{}).file||'';}
+function npdStatus(text){var n=$('npd-data-status');if(n)n.textContent=text;}
+async function npdSend(q){
+  var key=JSON.stringify(q),id=npdPending[key],r;
+  if(!id){r=await api('POST','/api/dossier',q);if(!r.ok)throw new Error(r.error||r.msg||'Could not queue this change.');id=r.requestId;npdPending[key]=id;npdPersistPending();}
+  npdStatus('Queued for Skyrim. Waiting for the game to confirm…');
+  for(var attempt=0;attempt<16;attempt++){
+    r=await api('GET','/api/dossier-result/'+encodeURIComponent(id));
+    if(!r.pending){delete npdPending[key];npdPersistPending();if(!r.ok)throw new Error(r.msg||r.error||'The game refused this change.');npdStatus(r.msg||'Confirmed by Skyrim.');return r;}
+    await new Promise(function(resolve){setTimeout(resolve,750);});
+  }
+  throw new Error('Queued, awaiting Skyrim. Open the game and the deck, then retry here to check the same request. Nothing is confirmed yet.');
+}
+function npdDataForSocial(data){return Object.assign({},data,{people:(data.people||[]).map(function(p){var copy=Object.assign({},p);if(p.portrait&&p.portrait.file)copy.portrait='/api/dossier-image?file='+encodeURIComponent(p.portrait.file);return copy;})});}
+function npdRefreshControllers(cache){npdControllers.forEach(function(c){if(c.update)c.update(npdDataForSocial(cache.data));else if(c.refresh)c.refresh();});}
+async function npdRequest(m,q){
+  var r=await npdSend(q),cache=npdCache[m.slug];if(r.data&&cache)Object.keys(npdCache).forEach(function(k){npdCache[k].data=r.data;});
+  if(r.personId&&cache&&(q.op==='read'||(q.op==='ensure'&&q.actor&&JSON.stringify(q.actor)===JSON.stringify(npdActor(m)))))cache.personId=r.personId;
+  if(npdActiveSlug===m.slug&&cache)npdRefreshControllers(cache);
+  return Object.assign({},r,{data:r.data?npdDataForSocial(r.data):r.data});
+}
+async function npdEnsure(m){var p=npdRecord(m);if(p.id)return p.id;var actor=npdActor(m);if(!actor)throw new Error('Open Followers in Skyrim to publish this NPC’s identity, then refresh this page.');var r=await npdRequest(m,{op:'ensure',actor:actor,name:m.name});npdCache[m.slug].personId=r.personId;return r.personId;}
+function npdRoster(){var rows=[],seen={};eachMember(function(m){var actor=npdActor(m);if(seen[m.slug])return;seen[m.slug]=true;rows.push({name:m.name,actor:actor,slug:m.slug,portrait:m.hasPortrait?'/api/portrait-file/'+encodeURIComponent(m.slug)+'?v='+(m.mtime||0):''});});return rows;}
+function npdOpenPerson(p){var found=null;eachMember(function(m){if((p.slug&&p.slug===m.slug)||npdRecord(m).id===p.id&&!!p.id||npdSameActor(npdActor(m),p.actor))found=m;});if(!found)return false;openNpcSheet(found.slug);return true;}
+function npdMount(m,home,live){
+  npdActiveSlug=m.slug;
+  if(!window.HDDossierTools||!window.HDDossierSocial){npdStatus('Dossier modules are unavailable. Refresh after the game UI deploy finishes.');return;}
+  var cache=npdCache[m.slug]||(npdCache[m.slug]={data:{people:[],relations:[],history:[]},portraits:[],personId:'',loaded:false});
+  var selected=m.slug,actor=npdActor(m);
+  var actions=[['summon','Summon to me','hk-party-summon'],['goto','Go to them','hk-teleport'],['placeHere','Place them at me','hk-teleport'],['sendTo','Send back / send to…','hk-home'],['track','Track on map','hm-domains'],['capture','Capture portrait','sn-camera'],['inventory','Open inventory','hm-loot'],['storage','Open spare inventory','hm-wardrobe'],['service','Follower service','hm-followers']].map(function(a){return {id:a[0],label:a[1],icon:'/api/view-icon?view=hotkey&p='+encodeURIComponent('icons/custom/'+a[2]+'.png'),disabled:true,reason:'Run this pinned action in Skyrim.'};});
+  function check(){if(npdActiveSlug!==selected)throw new Error('The selected NPC changed. Reopen their page.');}
+  var options={captureLabel:'Upload portrait',getActorId:function(){return npdActiveSlug;},getPerson:function(){return npdRecord(m);},getActions:function(){return actions;},getPortraits:function(){return cache.portraits;},getOutfits:function(){return ((state.wardrobe&&state.wardrobe.outfitMeta)||[]).map(function(o){return {name:o.name,note:o.note,pending:!!o.provisional};});},
+    savePins:async function(ids){check();return npdRequest(m,{op:'setPins',personId:await npdEnsure(m),pins:ids});},
+    saveEquipment:async function(slots){check();return npdRequest(m,{op:'setEquipment',personId:await npdEnsure(m),slots:slots});},
+    selectPortrait:async function(file){check();var r=await npdRequest(m,{op:'setPortrait',personId:await npdEnsure(m),file:file});if(npdActiveSlug===selected)renderNpcSheet(m);return r;},
+    capturePortrait:function(){check();var b=document.querySelector('[data-act="sheet-npc-up"]');if(b)b.click();return {ok:true,msg:'Choose a photo to add to the gallery.'};},
+    framePortrait:function(){check();state.npcDossierPage='overview';renderNpcSheet(m);var b=$('npd-frame-adjust');if(b)b.click();return {ok:!!b,msg:b?'Adjust the portrait, then Save framing.':'Choose or upload a portrait first.'};},
+    getApplyWarning:function(){return 'Queue this Wardrobe assignment for Skyrim. Open Wardrobe in game to apply it. If NFF owns this NPC’s outfits, switch ownership in the game first.';},
+    applyOutfit:async function(name){check();var r=await api('POST','/api/dossier-outfit',{personId:await npdEnsure(m),outfit:name});return {ok:r.ok,msg:r.msg||r.error};}
+  };
+  npdControllers.push(HDDossierTools.mountPins($('npd-pins'),options),HDDossierTools.mountGallery($('npd-gallery'),options),HDDossierTools.mountEquipment($('npd-equipment'),options));
+  var roster=npdRoster(),day=typeof mhiyhRowFor==='function'?mhiyhRowFor(m):null,homeLabel=home&&home.name||m.fields&&m.fields.home||'',residents=[];
+  if(home){eachMember(function(other){var d=typeof mhiyhRowFor==='function'?mhiyhRowFor(other):null;var label=d&&d.home||other.fields&&other.fields.home||'';if([home.name,home.cellName,home.worldspaceName].some(function(v){return v&&String(label).trim().toLowerCase()===String(v).trim().toLowerCase();})&&!residents.some(function(r){return r.slug===other.slug;}))residents.push({name:other.name,slug:other.slug,actor:npdActor(other),portrait:other.hasPortrait?'/api/portrait-file/'+encodeURIComponent(other.slug):''});});}
+  var now=day&&Array.isArray(day.acts)&&day.acts.filter(function(a){return a.now;}).map(function(a){return mhSpec(a.k).label||mhSpec(a.k).name||a.place;}).filter(Boolean).join(' / ');
+  ['household','family','history'].forEach(function(page){npdControllers.push(HDDossierSocial.mount($('npd-'+page),{page:page,subject:{id:cache.personId,name:m.name,actor:actor},store:npdDataForSocial(cache.data),roster:roster,loadPortraits:async function(){var r=await api('GET','/api/dossier-gallery?all=1');if(!r.ok)throw new Error(r.error||'Could not read portraits.');return r.portraits||[];},portraitFor:function(p){if(p.portrait&&p.portrait.file)return '/api/dossier-image?file='+encodeURIComponent(p.portrait.file);if(typeof p.portrait==='string')return p.portrait;var known=roster.find(function(r){return npdSameActor(r.actor,p.actor);});return known&&known.portrait||'';},homeDomain:home?{id:home.id,name:home.name,image:home.imageUrl}:null,homeLabel:homeLabel,residents:residents,schedule:{currentLabel:now||'Not reported',nextLabel:'Open Daily rhythm in Skyrim for the next scheduled stop'},observedMarriage:live&&live.maras?(live.maras.spouse?'Married · M.A.R.A.S':live.maras.statusText):'',request:function(q){check();return npdRequest(m,q);},openPerson:npdOpenPerson,openDomain:function(){setTab('domains',true);},openRhythms:function(){state.npcDossierPage='overview';renderNpcSheet(m);var r=$('npd-rhythms');if(r){r.open=true;r.scrollIntoView({block:'center'});}},openDiary:function(){state.npcDossierPage='chim';renderNpcSheet(m);}}));});
+  if(cache.loaded&&(!cache.loadedAt||Date.now()-cache.loadedAt<5000)){npdStatus(Object.keys(npdPending).length?'Some changes are waiting for Skyrim. Retry the original action to check confirmation.':'Shared records loaded. Edits are confirmed by Skyrim.');return;}
+  if(cache.loading)return;cache.loading=true;npdStatus('Reading shared family, portraits and history…');
+  Promise.all([api('GET','/api/dossier'),api('GET','/api/dossier-gallery?slug='+encodeURIComponent(m.slug)),api('GET','/api/wardrobe')]).then(async function(replies){
+    if(!replies[0].ok)throw new Error(replies[0].error||'Could not read the shared dossier.');cache.data=replies[0].data;if(replies[1].ok)cache.portraits=replies[1].portraits||[];if(replies[2].ok)state.wardrobe=replies[2];
+    var known=(cache.data.people||[]).find(function(p){return npdSameActor(p.actor,actor);});if(known)cache.personId=known.id;
+    if(actor&&!known){try{var resolved=await npdSend({op:'read',actor:actor});cache.data=resolved.data||cache.data;cache.personId=resolved.personId||'';}catch(e){cache.readWarning=e.message;}}
+    cache.loaded=true;cache.loadedAt=Date.now();cache.loading=false;if(npdActiveSlug===selected){renderNpcSheet(m);if(cache.readWarning)npdStatus(cache.readWarning);}
+  }).catch(function(e){cache.loading=false;if(npdActiveSlug===selected)npdStatus(e.message+' Close and reopen this page to retry.');});
+}
+
 function renderNpcSheet(m) {
+  if(typeof npdDispose==='function')npdDispose();
+  function goldIcon(name) {
+    return '<img class="npd-icon" src="/api/view-icon?view=hotkey&amp;p=icons%2Fcustom%2F' + name + '.png" alt="" aria-hidden="true" width="28" height="28">';
+  }
   var ic = $('sheet-icon');
   ic.className = 'art';
   $('sheet-back').hidden = true;
@@ -6563,19 +7346,32 @@ function renderNpcSheet(m) {
   $('sheet-title').textContent = m.name;
   renderSheetHead();
 
+  var selectedPagePortrait = typeof npdSelectedPortrait==='function' ? npdSelectedPortrait(m) : '';
+  var portraitUrl = selectedPagePortrait ? '/api/dossier-image?file='+encodeURIComponent(selectedPagePortrait) : '/api/portrait-file/'+encodeURIComponent(m.slug)+'?v='+(m.mtime||0);
+  var hasPagePortrait = !!selectedPagePortrait || m.hasPortrait;
+  var portraitHtml = hasPagePortrait ? '<div class="npd-portrait-wrap"><div id="npd-portrait-frame" tabindex="0" aria-label="Portrait framing"><img draggable="false" src="' + esc(portraitUrl) + '" alt="' + esc(m.name) + '"></div>' +
+    '<button type="button" class="btn" id="npd-frame-adjust">Adjust framing</button><div id="npd-frame-tools" hidden>' +
+    '<label>Zoom <input id="npd-frame-zoom" type="range" min="100" max="300" step="5"><output id="npd-frame-value"></output></label>' +
+    '<button type="button" class="btn" id="npd-frame-reset">Reset</button><button type="button" class="btn" id="npd-frame-cancel">Cancel</button><button type="button" class="btn" id="npd-frame-save">Save framing</button>' +
+    '<p class="fhint">Drag or use arrow keys. Framing is saved for this page on this device.</p></div></div>' : '';
+  var previous = document.activeElement;
+  var draft = previous && $('sheet-body').contains(previous) && previous.tagName === 'INPUT' && previous.type !== 'range'
+    ? { id: previous.id, value: previous.value, start: previous.selectionStart, end: previous.selectionEnd } : null;
   var busy = !!state.busy[m.slug];
   var armed = !!state.armed[m.slug];
   var html = '<div class="sheet-acts">' +
     '<button class="btn primary" type="button" data-act="sheet-npc-up"' + (busy ? ' disabled' : '') + '>' +
-      (m.hasPortrait ? '⟳ Replace portrait' : '↑ Upload portrait') + '</button>' +
+      goldIcon('sn-camera') + (m.hasPortrait ? 'Replace portrait' : 'Upload portrait') + '</button>' +
     (m.hasPortrait
-      ? '<button class="btn" data-act="crop" data-slug="' + esc(m.slug) + '">◉ Move / zoom</button>'
+      ? '<button class="btn" data-act="crop" data-slug="' + esc(m.slug) + '">' + goldIcon('hk-portrait') + 'Move / zoom</button>'
       : '') +
     (m.hasPortrait
       ? '<button class="btn' + (armed ? ' armed' : '') + '" type="button" data-act="sheet-npc-rm"' + (busy ? ' disabled' : '') + '>' +
-        (armed ? '! Delete — tap again' : '✕ Remove portrait') + '</button>'
+        goldIcon('sn-stop') + (armed ? '! Delete all photos — tap again' : 'Delete all portraits') + '</button>'
       : '') +
   '</div>';
+
+  var appearanceHtml = html; html = '';
 
   /* The note under her name — FO's own Description field, and until now the
      one thing on this sheet you could read and not change ("be nice if i could
@@ -6601,6 +7397,20 @@ function renderNpcSheet(m) {
       '</div>';
   })();
 
+  var profileHtml = html; html = '';
+  var live = typeof courtLive === 'function' ? courtLive(m.original || m.name) : null;
+  var family = '<p class="fhint">' + (live && live.maras ? esc(live.maras.spouse ? 'Married · M.A.R.A.S' : live.maras.statusText || 'Marriage status not reported') : 'Marriage status not reported') + '</p>';
+  if (live && live.fertility) family += '<p class="fhint">' + esc(live.fertility.pregnant ? 'Expecting · day ' + live.fertility.day + (live.fertility.termDays ? ' of ' + live.fertility.termDays : '') : 'Pregnancy: not pregnant') + '</p>';
+  var homeDay = typeof mhiyhRowFor==='function' ? mhiyhRowFor(m) : null;
+  var homeName = String((homeDay && homeDay.home) || (m.fields && m.fields.home) || m.homeName || '').trim().toLowerCase();
+  var homes = ((state.domains && state.domains.domains) || []).filter(function(d){return homeName && [d.name,d.cellName,d.worldspaceName].some(function(v){return String(v||'').trim().toLowerCase()===homeName;});});
+  var homeHtml = '';
+  if (homes.length === 1) {
+    var home = homes[0];
+    homeHtml = '<div class="npd-home">' + (home.imageUrl ? '<img style="display:block;width:auto;max-width:100%;height:auto;max-height:320px;object-fit:contain" src="' + esc(home.imageUrl) + '" alt="">' : '') + '<h3>Home · ' + esc(home.name) + '</h3></div>';
+  }
+
+
   /* Sharmat lives behind its own sheet rather than inline: it is a long form
      with a different save contract (whole-profile commit, live, off-box), and
      folding it in here would put a destructive Save button one thumb-slip
@@ -6608,18 +7418,25 @@ function renderNpcSheet(m) {
   var smKnown = smHasProfile(smNameOf(m));
   var smDown = state.sharmat && state.sharmat.ok === false;
   html += '<button class="sm-open" type="button" data-act="sm-open" data-slug="' + esc(m.slug) + '">' +
-    '<span class="g">⚭</span>' +
+    '<span class="g">' + goldIcon('hd-heart') + '</span>' +
     '<span class="b"><span class="t">Sharmat profile</span><span class="s">' +
       (smDown ? 'CHIM isn’t running — tap to retry'
         : smKnown ? 'Configured · kinks, speak style, status'
         : 'Not configured yet') +
     '</span></span><span class="arrow">›</span></button>';
 
+  var connectionsHtml = html; html = '';
+  connectionsHtml += '<button class="btn" type="button" id="npd-stay-talk">' +
+    goldIcon('hk-chim-dialogue') + 'Stay and talk to me…</button>' +
+    '<button class="btn" type="button" id="npd-talk-release">' + goldIcon('hk-chim-dialogue') + 'Let them continue</button>' +
+    '<p class="fhint">Hold this nearby NPC here, then review and Send the CHIM request. Lasts up to five minutes; leaving or combat ends it. Let them continue releases the hold. CHIM activation is needed for speech.</p>';
+
   /* Her day, above the typed fields on purpose: it is what the GAME says about
      her (and the only thing here that can change the game), while Details is
      what you wrote down. Renders as nothing at all when MHiYH is absent or the
      deck has never exported a day. */
   html += mhiyhBlockHtml(m);
+  var routineHtml = html; html = '';
 
   html += '<div class="sheet-lbl">Details</div>';
   html += fieldRowsFor(m).map(function (f) { return npcFieldRowHtml(m, f); }).join('');
@@ -6628,10 +7445,136 @@ function renderNpcSheet(m) {
     'the deck\'s Followers tab (F14) — Follower Organizer owns its own file while the game runs, so nothing is ' +
     'written behind its back. They land on every category this person is filed under.</div>';
 
-  $('sheet-body').innerHTML = html + chimSection(m);
+  profileHtml += html;
+  var page = state.npcDossierPage || 'overview';
+  var pages = [ ['overview', 'Overview', 'hm-followers'], ['profile', 'Editor', 'hm-sheet'], ['chim', 'CHIM', 'hk-chim-dialogue'],
+    ['equipment', 'Equipment', 'hm-wardrobe'], ['household','Household','hm-domains'], ['family','Family','hm-followers'], ['gallery','Gallery','hk-portrait'], ['history','History','hm-journal'], ['actions', 'Actions', 'cat-utilities'] ];
+  function section(id, title, content) {
+    return '<section class="npd-section" data-npd-section="' + id + '"><h2>' + title + '</h2>' + content + '</section>';
+  }
+  $('sheet-body').innerHTML = '<div class="npd-edit"><button class="btn" id="npd-edit" aria-controls="npd-size-tools">Page size</button>' +
+    '<div class="npd-size-tools" id="npd-size-tools"><label for="npd-size">Page size</label><input id="npd-size" type="range" min="75" max="130" step="5">' +
+    '<output id="npd-size-value" for="npd-size"></output><button class="btn" id="npd-size-reset">Reset</button></div></div>' +
+    '<nav class="npd-tabs" aria-label="Character sections">' + pages.map(function (t) {
+    return '<button type="button" data-npd-page="' + t[0] + '">' + goldIcon(t[2]) + t[1] + '</button>';
+  }).join('') + '</nav><label class="npd-search-label" for="npd-search">Search this character</label>' +
+    '<input class="txt npd-search" id="npd-search" type="search" placeholder="Find a detail or action…" autocomplete="off">' +
+    '<div class="npd-content">' +
+    section('overview', 'At a glance', '<div id="npd-pins"></div><p id="npd-data-status" class="fhint" role="status"></p>'+ portraitHtml + family + '<h3>Daily rhythm</h3>' + (routineHtml || '<p class="fhint">No routine has been reported by the game yet.</p>') + homeHtml + '<details id="npd-rhythms"><summary>Saved rhythms</summary><p class="fhint">Save and replace full schedules in Skyrim: Daily rhythm → Saved rhythms, or Domains → Residents. Saved destinations include hours and guard mode.</p><input id="npd-rhythm-search" class="txt" type="search" placeholder="Find a saved rhythm…"><div id="npd-rhythm-list">Open to read your saved rhythms.</div></details>') +
+    section('profile', 'Character editor', profileHtml + appearanceHtml) +
+    section('equipment', 'Equipment', '<div id="npd-equipment"></div><p class="fhint">Open Equipment in the in-game character workspace to inspect worn items and access inventories. This phone view does not receive live equipment.</p>') +
+    section('household','', '<div id="npd-household"></div>') +
+    section('family','', '<div id="npd-family"></div>') +
+    section('gallery','', '<div id="npd-gallery"></div>') +
+    section('history','', '<div id="npd-history"></div>') +
+    section('chim', 'CHIM profile', chimSection(m) + connectionsHtml) +
+    section('actions', 'In-game controls', '<p class="fhint">Open the full character page in Skyrim for F7 controls, relationship rank, M.A.R.A.S marriage and scene setup. These require the game’s live NPC state.</p>') +
+    '<p id="npd-empty" role="status" hidden>No matches. Try “home”, “portrait” or “note”.</p></div>';
+  if (hasPagePortrait) {
+    var pf=$('npd-portrait-frame'), pi=pf.querySelector('img'), pe=false, pd=null;
+    var pk='skymanager.dossierFrame.'+m.slug+'.'+(selectedPagePortrait||(m.mtime||0)), pc={z:1,x:.5,y:.3}, ps;
+    function clampFrame(c){function n(v,a,b,d){return typeof v==='number'&&isFinite(v)?Math.max(a,Math.min(b,v)):d;}c=c||{};return {z:n(c.z,1,3,1),x:n(c.x,0,1,.5),y:n(c.y,0,1,.3)};}
+    try {pc=clampFrame(JSON.parse(localStorage.getItem(pk)));}catch(_){}
+    ps=clampFrame(pc);
+    function paintFrame(){
+      pi.style.width=(pc.z*100)+'%';pi.style.height=(pc.z*100)+'%';
+      pi.style.left=(-(pc.z-1)*pc.x*100)+'%';pi.style.top=(-(pc.z-1)*pc.y*100)+'%';
+      pi.style.objectPosition=(pc.x*100)+'% '+(pc.y*100)+'%';
+      pf.style.touchAction=pe?'none':'auto';pf.style.cursor=pe?'grab':'default';
+      $('npd-frame-tools').hidden=!pe;$('npd-frame-adjust').hidden=pe;
+      $('npd-frame-zoom').value=String(Math.round(pc.z*100));$('npd-frame-value').textContent=Math.round(pc.z*100)+'%';
+    }
+    $('npd-frame-adjust').onclick=function(){pe=true;paintFrame();pf.focus();};
+    $('npd-frame-zoom').oninput=function(e){pc.z=Number(e.target.value)/100;pc=clampFrame(pc);paintFrame();};
+    $('npd-frame-reset').onclick=function(){pc=clampFrame(null);paintFrame();};
+    $('npd-frame-cancel').onclick=function(){pc=clampFrame(ps);pe=false;paintFrame();$('npd-frame-adjust').focus();};
+    $('npd-frame-save').onclick=function(){try{localStorage.setItem(pk,JSON.stringify(pc));ps=clampFrame(pc);pe=false;paintFrame();$('npd-frame-adjust').focus();}catch(_){toast('Could not save framing on this device.');}};
+    pf.onpointerdown=function(e){if(!pe||e.button!==0)return;var r=pf.getBoundingClientRect(),iw=pi.naturalWidth||r.width,ih=pi.naturalHeight||r.height,sc=Math.max(r.width/iw,r.height/ih)*pc.z;
+      pd={x:e.clientX,y:e.clientY,vx:pc.x,vy:pc.y,ox:Math.max(0,iw*sc-r.width),oy:Math.max(0,ih*sc-r.height)};pf.setPointerCapture(e.pointerId);e.preventDefault();};
+    pf.onpointermove=function(e){if(!pd)return;pc.x=pd.ox?pd.vx-(e.clientX-pd.x)/pd.ox:pc.x;pc.y=pd.oy?pd.vy-(e.clientY-pd.y)/pd.oy:pc.y;pc=clampFrame(pc);paintFrame();};
+    pf.onpointerup=pf.onpointercancel=pf.onlostpointercapture=function(){pd=null;};
+    pf.onkeydown=function(e){if(!pe)return;var step=e.shiftKey?.1:.025;
+      if(e.key==='ArrowLeft')pc.x+=step;else if(e.key==='ArrowRight')pc.x-=step;else if(e.key==='ArrowUp')pc.y+=step;else if(e.key==='ArrowDown')pc.y-=step;else if(e.key==='Escape'){pc=clampFrame(ps);pe=false;}else return;
+      pc=clampFrame(pc);paintFrame();e.preventDefault();e.stopPropagation();};
+    paintFrame();
+  }
+  var rhythmDetails = $('npd-rhythms'), rhythmList = $('npd-rhythm-list'), rhythmSearch = $('npd-rhythm-search');
+  var rhythmRows = [], rhythmsLoaded = false;
+  function paintRhythmList() {
+    var q = rhythmSearch.value.trim().toLowerCase();
+    var rows = rhythmRows.filter(function(p){return (p.name + ' ' + p.source).toLowerCase().indexOf(q)!==-1;});
+    rhythmList.innerHTML = rows.map(function(p){return '<p><strong>' + esc(p.name) + '</strong><br>' + esc(p.source) + ' · ' + p.destinations + ' destinations</p>';}).join('') || '<p class="fhint">' + (q ? 'No matching rhythms.' : 'No saved rhythms yet.') + '</p>';
+  }
+  rhythmSearch.addEventListener('input', paintRhythmList);
+  rhythmDetails.addEventListener('toggle',function(){
+    if(!rhythmDetails.open || rhythmsLoaded)return;
+    rhythmsLoaded=true; rhythmList.textContent='Reading saved rhythms…';
+    api('GET','/api/rhythm-presets').then(function(r){
+      if(!r || !r.ok){rhythmsLoaded=false;rhythmList.textContent=(r&&r.error)||'Could not read saved rhythms.';return;}
+      rhythmRows=r.presets||[];paintRhythmList();
+    }).catch(function(){rhythmsLoaded=false;rhythmList.textContent='Could not read saved rhythms.';});
+  });
+  $('sheet-wrap').classList.add('npc-dossier');
+  if (!state.npcDossierSize) {
+    try { state.npcDossierSize = Number(localStorage.getItem('skymanager.npcDossierSize')); } catch (_) { /* Device storage optional. */ }
+  }
+  function applyPageSize(persist) {
+    var n = Number(state.npcDossierSize);
+    var pct = Number.isFinite(n) && n > 0 ? Math.max(75,Math.min(130,Math.round(n/5)*5)) : 100;
+    state.npcDossierSize = pct;
+    $('sheet-wrap').style.setProperty('--npd-size', String(pct/100));
+    $('npd-size').value = String(pct); $('npd-size').setAttribute('aria-valuetext',pct+' percent');
+    $('npd-size-value').textContent = pct+'%'; $('npd-size-reset').disabled = pct===100;
+    if (persist) { try { localStorage.setItem('skymanager.npcDossierSize',String(pct)); } catch (_) { /* Keep session preference. */ } }
+  }
+  function paintEdit() {
+    $('npd-size-tools').hidden = !state.npcDossierEditing;
+    $('npd-edit').setAttribute('aria-expanded',String(!!state.npcDossierEditing));
+  }
+  $('npd-edit').addEventListener('click',function(){state.npcDossierEditing=!state.npcDossierEditing;paintEdit();});
+  $('npd-size').addEventListener('input',function(e){state.npcDossierSize=e.target.value;applyPageSize(false);});
+  $('npd-size').addEventListener('change',function(){applyPageSize(true);});
+  $('npd-size-reset').addEventListener('click',function(){state.npcDossierSize=100;applyPageSize(true);});
+  applyPageSize(false); paintEdit();
+  var search = $('npd-search');
+  search.value = state.npcDossierQ || '';
+  function selectPage() {
+    var q = search.value.trim().toLowerCase(); state.npcDossierQ = search.value;
+    var matches = 0;
+    Array.prototype.forEach.call($('sheet-body').querySelectorAll('[data-npd-section]'), function (el) {
+      var hay = el.textContent + ' ' + Array.prototype.map.call(el.querySelectorAll('input,textarea'), function (i) { return i.value; }).join(' ');
+      var visible = q ? hay.toLowerCase().indexOf(q) !== -1 : el.getAttribute('data-npd-section') === page;
+      el.hidden = !visible; if (visible) matches++;
+    });
+    Array.prototype.forEach.call($('sheet-body').querySelectorAll('[data-npd-page]'), function (btn) {
+      btn.setAttribute('aria-current', !q && btn.getAttribute('data-npd-page') === page ? 'page' : 'false');
+      if(!q&&btn.getAttribute('data-npd-page')===page&&btn.scrollIntoView)btn.scrollIntoView({block:'nearest',inline:'nearest'});
+    });
+    $('npd-empty').hidden = matches > 0;
+  }
+  Array.prototype.forEach.call($('sheet-body').querySelectorAll('[data-npd-page]'), function (btn) {
+    btn.addEventListener('click', function () {
+      page = btn.getAttribute('data-npd-page'); state.npcDossierPage = page;
+      search.value = ''; selectPage();
+    });
+  });
+  search.addEventListener('input', selectPage);
+  search.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && search.value) { e.stopPropagation(); search.value = ''; selectPage(); }
+    if (e.key === 'Enter') {
+      var first = Array.prototype.find.call($('sheet-body').querySelectorAll('.npd-section button, .npd-section input'), function (el) { return !el.disabled && !el.closest('[hidden]'); });
+      if (first) { e.preventDefault(); first.tagName === 'BUTTON' ? first.click() : first.focus(); }
+    }
+  });
+  selectPage();
+  if (draft) { var field = $(draft.id); if (field) { field.value = draft.value; field.focus(); if(field.setSelectionRange && field.type !== 'number') field.setSelectionRange(draft.start, draft.end); } }
+
   $('sheet-wrap').classList.add('wide');
   chimFetch(m);
   chimWire(m);
+  $('npd-stay-talk').addEventListener('click', function () { openStayTalk(m); });
+  $('npd-talk-release').addEventListener('click', function () { releaseStayTalk(m); });
+  if(typeof npdMount==='function')npdMount(m,homes.length===1?homes[0]:null,live);
 }
 
 /* One branch per sheet kind, and a default that CLOSES: treating "not npc" as
@@ -7367,6 +8310,10 @@ function renderPackImportSheet() {
 
 function renderSheet() {
   var wrap = $('sheet-wrap');
+  wrap.classList.toggle('spell-details-sheet', !!state.sheet && state.sheet.kind === 'spellinfo');
+  wrap.classList.toggle('spell-categories-sheet', !!state.sheet && state.sheet.kind === 'spellcategories');
+  wrap.classList.toggle('spell-package-sheet', !!state.sheet && state.sheet.kind === 'spellpackage');
+  wrap.classList.toggle('npc-dossier', !!state.sheet && state.sheet.kind === 'npc');
   if (!state.sheet) { wrap.hidden = true; return; }
   if (state.sheet.kind === 'crop') { wrap.hidden = false; renderCropSheet(); return; }
   var row = null, draw = null;
@@ -7374,6 +8321,9 @@ function renderSheet() {
     case 'npc': row = memberBySlug(state.sheet.slug); draw = renderNpcSheet; break;
     case 'sharmat': row = memberBySlug(state.sheet.slug); draw = renderSharmatSheet; break;
     case 'spell': row = spellById(state.sheet.id); draw = renderSpellSheet; break;
+    case 'spellinfo': row = spellById(state.sheet.id); draw = renderSpellDetails; break;
+    case 'spellcategories': row = {}; draw = renderSpellCategoriesSheet; break;
+    case 'spellpackage': row = ((state.spells && state.spells.combos) || []).find(function (c) { return c.id === state.sheet.id; }); draw = renderSpellPackageSheet; break;
     case 'hotkey': row = hotkeyById(state.sheet.id); draw = renderHotkeyEditSheet; break;
     case 'hkicon': row = hotkeyById(state.sheet.id); draw = renderHotkeyIconSheet; break;
     case 'caticon': row = catByIndex(state.sheet.cat); draw = renderCatIconSheet; break;
@@ -7580,15 +8530,60 @@ function finCard(row, target, q) {
  * ==================================================================== */
 
 var WD_SUBS = [
-  { v: 'wardrobes', label: 'Wardrobes' },
   { v: 'outfits', label: 'Outfits' },
-  { v: 'people', label: 'People' },
-  { v: 'inventory', label: 'Inventory' },
-  /* No NFF chip since the People redesign (2026-08-03): the in-game deck folded
-     NFF into one People surface with an explicit per-person mode, and the phone
-     mirrors it — an NFF-managed person renders her three-set card INSIDE People.
-     Two lists answering "what does she wear" was the confusion being fixed. */
+  { v: 'wardrobes', label: 'Wardrobe pools' },
+  { v: 'flair', label: 'Flair sets' },
+  { v: 'inventory', label: 'Outfit builder' },
+  { v: 'people', label: 'Who wears what' },
+  { v: 'dock', label: 'Favorites dock' },
 ];
+function wdSelectSection(id) {
+  if (!WD_SUBS.some(function(t) { return t.v === id; })) return;
+  if (window.WardrobeNav) WardrobeNav.close(false);
+  state.wdSub = id;
+  if (id === 'inventory') wdInvRefresh(true);
+  renderWardrobe();
+}
+function wdRenderNav() {
+  wdSyncToolbar();
+  var host = $('portal-wardrobe-nav');
+  if (!host) return;
+  if (window.WardrobeNav) {
+    WardrobeNav.mount(host, {
+      current: state.wdSub, available: WD_SUBS.map(function(t) { return t.v; }),
+      memory: state.wdNavMemory || (state.wdNavMemory = {}), select: wdSelectSection, image: wdImgUrl,
+      counts: {outfits: wdAllOutfitNames().length, wardrobes: wdArr('wardrobes').length},
+      toolbar: {collapsed: !!state.wdToolbarCollapsed, filtered: !!(state.q || (state.wdSub === 'outfits' && state.wdCatFilter)),
+        controls: 'portal-global-tools portal-wardrobe-controls portal-wardrobe-category-tools', toggle: wdSetToolbarCollapsed},
+    });
+  } else {
+    host.innerHTML = WD_SUBS.map(function(t) { return '<button type="button" class="chip" data-act="wd-sub" data-sub="'+t.v+'">'+t.label+'</button>'; }).join('');
+  }
+}
+
+function wdSyncToolbar() {
+  document.body.classList.toggle('ws-wardrobe-folded', state.tab === 'wardrobe' && !!state.wdToolbarCollapsed && !!(state.wardrobe && state.wardrobe.ok));
+}
+function wdSetToolbarCollapsed(collapsed) {
+  state.wdToolbarCollapsed = !!collapsed;
+  // Only update the header; category names and other unsaved fields stay put.
+  wdRenderNav();
+}
+
+function wdRenderCategoryFilter() {
+  var host = $('portal-wardrobe-filter');
+  if (!host || !window.WardrobeNav) return;
+  WardrobeNav.filter(host, {
+    current: state.wdCatFilter, state: state.wdCategoryPicker || (state.wdCategoryPicker = {}),
+    total: wdAllOutfitNames().length,
+    categories: wdArr('categories').map(function(c) { return {id:c.id,name:c.name,
+      count:wdArr('outfitMeta').filter(function(m) { return (m.categoryIds || []).indexOf(c.id) !== -1; }).length}; }),
+    select: function(id) { state.wdCatFilter = id; renderWardrobe(); },
+    decorate: function(b, item) { b.dataset.act = 'wd-cat-filter'; b.dataset.id = item.id; },
+    manage: {label:'Manage categories',run:function() { state.wdManageCategories = true; renderWardrobe(); }},
+  });
+}
+
 
 /* NFF's own numbering. Its dialogue fragments pass exactly these, so this is
    the mod's public API and must match SETS in view/HotkeyDeck/wardrobe-nff.js
@@ -7811,6 +8806,35 @@ function nffPersonRow(r) {
 
 /* ------------------------------- the list ------------------------------ */
 
+var flairPortalUi={flair:{},dock:{}}, flairPortalInventory=[], flairPortalIcons=[], flairPortalLoading=null;
+function loadPortalFlairAssets(){
+  if(flairPortalLoading)return flairPortalLoading;
+  flairPortalLoading=Promise.all([api('GET','/api/inventory'),api('GET','/api/icons')]).then(function(rs){
+    flairPortalInventory=rs[0].items||[];
+    flairPortalIcons=(rs[1].icons||[]).map(function(i){return {file:'icons/custom/'+i.file,name:i.name};});
+    renderPortalFlair();
+  }).catch(function(e){toast(e.message,'bad');});return flairPortalLoading;
+}
+function renderPortalFlair(){
+  var host=$('portal-flair');if(!host)return;
+  if(!window.WardrobeFlairUI){host.textContent='The matched wardrobe files are not installed yet. Relaunch after the SkyManager update.';return;}
+  if(!flairPortalLoading)loadPortalFlairAssets();
+  WardrobeFlairUI.mount(host,{
+    page:state.wdSub,data:function(){return state.wardrobe;},queued:true,
+    image:wdImgUrl,itemImage:function(p){return p.iconFile?'icons/items/'+p.iconFile:(p.icon||'');},
+    items:function(){return flairPortalInventory.concat((state.wardrobe.outfitMeta||[]).reduce(function(all,o){return all.concat(o.items||[]);},[]));},
+    icons:function(){return flairPortalIcons;},
+    edit:async function(e){var r=await api('POST','/api/wardrobe',{op:'flair-edit',edit:e});if(!r.ok)throw new Error(r.error||'Could not queue this change');WardrobeFlairModel.apply(state.wardrobe,e);},
+    upload:async function(file){
+      if(file.size>8*1024*1024)throw new Error('Choose an image smaller than 8 MB');
+      var data=await new Promise(function(resolve,reject){var r=new FileReader();r.onload=function(){resolve(String(r.result).split(',')[1]);};r.onerror=reject;r.readAsDataURL(file);});
+      var ext=(file.name.split('.').pop()||'png').toLowerCase();
+      var r=await api('POST','/api/icon',{name:'wardrobe-flair-'+Date.now(),ext:ext,dataBase64:data});if(!r.ok)throw new Error(r.error||'Upload failed');
+      var image='icons/custom/'+r.name+'.'+r.ext;flairPortalIcons.unshift({file:image,name:file.name});return image;
+    }
+  },flairPortalUi[state.wdSub]);
+}
+
 function renderWardrobe() {
   var host = $('wardrobe-body');
   if (!host) return;
@@ -7826,14 +8850,12 @@ function renderWardrobe() {
     return;
   }
 
-  var html = '<section class="sect"><div class="sect-head"><h2>Wardrobe</h2>' +
-    '<span class="hint">Photos, notes, outfits and who wears what. Changes are queued — with the game ' +
-    'running they land within a second, otherwise the next time the deck\'s Wardrobe tab opens.</span></div>';
-
-  html += '<div class="chips">' + WD_SUBS.map(function (t) {
-    return '<button type="button" class="chip' + (state.wdSub === t.v ? ' on' : '') +
-      '" data-act="wd-sub" data-sub="' + t.v + '">' + t.label + '</button>';
-  }).join('') + '</div>';
+  var html = '<section class="sect ws-portal"><nav id="portal-wardrobe-nav" aria-label="Wardrobe sections"></nav>';
+  var queueNote = '<p class="ws-portal-note">Changes are queued for Skyrim and applied when the game is ready.</p>';
+  if (state.wdSub === 'flair' || state.wdSub === 'dock') {
+    host.innerHTML = html + '<div id="portal-flair"></div>' + queueNote + '</section>';
+    wdRenderNav(); renderPortalFlair(); return;
+  }
 
   var n = 0;
   if (state.wdSub === 'outfits') {
@@ -7845,25 +8867,17 @@ function renderWardrobe() {
     n = names.length;
     var selNames = wdSelNames();
     var cats = wdArr('categories');
-    html += '<div class="chips"><button type="button" class="chip' + (state.wdSelMode ? ' on' : '') +
-      '" data-act="wd-sel-mode">▣ Select' + (selNames.length ? ' (' + selNames.length + ')' : '') + '</button></div>';
+    html += '<div id="portal-wardrobe-controls" class="ws-portal-tools"><div id="portal-wardrobe-filter"></div>' +
+      '<button type="button" class="chip' + (state.wdSelMode ? ' on' : '') +
+      '" data-act="wd-sel-mode">Select' + (selNames.length ? ' (' + selNames.length + ')' : '') + '</button></div>';
     if (state.wdSelMode && !selNames.length) {
       html += '<div class="hint">Tap outfits to select them, then combine them into a wardrobe or tag them below.</div>';
     }
-    /* Category rail — the deck's own tags. Tap = filter; DRAG an outfit onto a
-       chip to tag it (desktop); ＋ Category makes a new one. */
-    html += '<div class="chips">' +
-      '<button type="button" class="chip' + (!state.wdCatFilter ? ' on' : '') + '" data-act="wd-cat-filter" data-id="">All ' +
-        wdAllOutfitNames().length + '</button>' +
-      cats.map(function (c) {
-        var cn = wdArr('outfitMeta').filter(function (m) { return (m.categoryIds || []).indexOf(c.id) !== -1; }).length;
-        return '<button type="button" class="chip' + (state.wdCatFilter === c.id ? ' on' : '') +
-          '" data-act="wd-cat-filter" data-id="' + esc(c.id) + '" style="--cat-hue:' + (Number(c.hue) || 38) + '">' +
-          '<span class="wd-cat-dot"></span>' + esc(c.name) + (cn ? ' ' + cn : '') +
-          (c.deleting ? ' ✕' : '') + (c.pending ? ' ·' : '') + '</button>';
-      }).join('') +
-      '<button type="button" class="chip" data-act="wd-cat-add">＋ Category</button>' +
-      '</div>';
+    if (state.wdManageCategories) {
+      html += '<div id="portal-wardrobe-category-tools" class="ws-portal-tools"><button type="button" class="btn" data-act="wd-cat-add">New category</button>' +
+        '<button type="button" class="btn" data-act="wd-cat-manage-done">Done managing</button></div>';
+      if (!state.wdCatFilter && !state.wdCatAdd) html += '<p class="hint">Choose a category above to rename or delete it.</p>';
+    }
     if (state.wdCatAdd) {
       html += '<div class="card wd-form">' +
         '<div class="frow"><label class="flab">New category</label>' +
@@ -7875,7 +8889,7 @@ function renderWardrobe() {
         '</div></div>';
     }
     /* The filtered category's own card: rename + armed delete. */
-    if (state.wdCatFilter) {
+    if (state.wdCatFilter && state.wdManageCategories) {
       var fCat = wdCatById(state.wdCatFilter);
       if (fCat) {
         var armedCat = !!state.armed['wdcat:' + fCat.id];
@@ -7930,11 +8944,11 @@ function renderWardrobe() {
         '</div>';
     }
     html += names.length ? '<div class="grid">' + names.map(wdOutfitRow).join('') + '</div>'
-      : '<div class="hint">No outfit matches. Build one from the Inventory tab, or in game — then photograph it here.</div>';
+      : '<div class="hint">No outfit matches. Build one with Outfit builder, or in game — then photograph it here.</div>';
   } else if (state.wdSub === 'wardrobes') {
     var ws = wdArr('wardrobes').filter(function (w) { return wdMatch(w.name) || (w.outfits || []).some(wdMatch); });
     n = ws.length;
-    html += '<div class="chips">' +
+    html += '<div id="portal-wardrobe-controls" class="chips">' +
       '<button type="button" class="chip' + (state.wdPoolAdd ? ' on' : '') + '" data-act="wd-pool-add">＋ New wardrobe</button>' +
       (ws.length > 1 ? '<button type="button" class="chip' + (state.wdReorder ? ' on' : '') +
         '" data-act="wd-reorder-mode">↕ Reorder</button>' : '') + '</div>';
@@ -8013,7 +9027,9 @@ function renderWardrobe() {
         'assign an outfit or hand her to NFF in the deck (Wardrobe ▸ People), and from then on ' +
         'everything about her is manageable right here.</div>';
   }
-  host.innerHTML = html + '</section>';
+  host.innerHTML = html + queueNote + '</section>';
+  wdRenderNav();
+  wdRenderCategoryFilter();
   if (state.wdSub === 'inventory') wdWireBuildName();
   wdWireNameInput('wd-newpool-name');
   wdWireNameInput('wd-sel-name');
@@ -8723,9 +9739,20 @@ function renderWdSheet(row) {
      Same rows the deck's assignment sheet edits, SOES's own priority order. */
   if (row.mode !== 'off') {
     var ovs = Array.isArray(row.locationOverrides) ? row.locationOverrides : [];
+    var bed = ovs.find(function (o) { return Number(o.loc) === 1700; });
+    body += '<div class="frow wd-bed-field"><label class="flab" for="wd-bed-sel">Bed outfit</label>' +
+      comboHtml('wd-bed-sel', {
+        options: [{ v: '', label: 'Off — use usual outfits' }].concat(wdOvOptions()),
+        value: bed ? wdOvValue(bed) : '', placeholder: 'Search outfits and wardrobe pools…',
+        onPick: function (v) { wdQueueLoc(row, 1700, v ? wdOvDecode(v) : null); },
+      }) + '</div>' +
+      '<div class="hint">Wears one outfit or chooses once from a pool when lying in bed. ' +
+      'Usual outfit rules resume after getting up. Dress the usual outfit once in game first. ' +
+      'Open SkyManager in game to apply phone changes.</div>';
     body += '<div class="hint">Location overrides — in these places she draws from a different wardrobe ' +
-      '(town, night, inn, combat, sleeping…).</div>';
+      '(town, night, inn, combat…).</div>';
     ovs.forEach(function (ov) {
+      if (Number(ov.loc) === 1700) return;
       body += '<div class="frow"><label class="flab">' + esc(wdLocName(ov.loc)) + '</label>' +
         '<div style="flex:1;display:flex;gap:8px;min-width:0">' +
         comboHtml('wd-locw-' + Number(ov.loc), {
@@ -8738,7 +9765,7 @@ function renderWdSheet(row) {
     });
     var usedLoc = {};
     ovs.forEach(function (o) { usedLoc[Number(o.loc)] = 1; });
-    var freeLoc = WD_LOCATIONS.filter(function (l) { return !usedLoc[l.v]; });
+    var freeLoc = WD_LOCATIONS.filter(function (l) { return l.v !== 1700 && !usedLoc[l.v]; });
     var haveTargets = wdOvOptions().length > 0;
     if (haveTargets && freeLoc.length) {
       body += '<div class="frow"><label class="flab">＋ Override</label>' +
@@ -9183,7 +10210,7 @@ function finImageRemove(target, id) {
 function domainMatches(d, q) {
   if (!q) return true;
   var hay = (d.name + '\n' + (d.category || '') + '\n' + (d.place || '') + '\n' +
-    (d.interior ? 'interior' : 'exterior')).toLowerCase();
+    (d.note || '') + '\n' + (d.interior ? 'interior' : 'exterior')).toLowerCase();
   return hay.indexOf(q) >= 0;
 }
 
@@ -9207,6 +10234,16 @@ function domainArt(d, hue) {
      opts.expanded — chevron state when hasKids.
    A top-level domain WITHOUT sub-areas gets a disabled spacer chevron so every
    parent row's art stays column-aligned. */
+function openDomainGallery(d) {
+  if(!window.DomainGallery)return;
+  DomainGallery.open({name:d.name,photos:d.photos,cover:d.cover,
+    imageUrl:function(p){return p.imageUrl||'/api/view-icon?view=hotkey&p='+encodeURIComponent(p.image);},
+    onChange:function(photos,cover,op){
+      d.photos=photos;d.cover=cover;
+      api('POST','/api/domain-gallery',Object.assign({id:d.id},op)).then(function(){toast('Gallery edit queued — applies when SkyManager is closed in game.');}).catch(function(e){toast('Gallery edit failed: '+e.message);});
+      return 'Queued for SkyManager; original photo files are kept.';
+    }});
+}
 function domainCard(d, q, hue, opts) {
   opts = opts || {};
   var key = dmKey(d.id);
@@ -9214,7 +10251,7 @@ function domainCard(d, q, hue, opts) {
   var err = state.err[key];
   var armed = !!state.armed[key];
   var chev = '';
-  if (!opts.child) {
+  if (!opts.child && !window.DomainAreas) {
     if (opts.hasKids) {
       var open = !!opts.expanded;
       chev = '<button class="dm-chev" type="button" data-act="dm-toggle" data-id="' + esc(d.id) + '"' +
@@ -9229,19 +10266,21 @@ function domainCard(d, q, hue, opts) {
       (d.place ? ' · ' + hi(d.place, q) : '') +
     '</span>' +
     (!opts.child && d.category ? '<span class="pill" title="Category: ' + esc(d.category) + '">' + hi(d.category, q) + '</span>' : '');
-  return '<div class="card' + (opts.child ? ' dm-child' : '') + (busy ? ' busy' : '') + (err ? ' err' : '') + '" data-id="' + esc(d.id) + '">' +
+  return '<div class="card' + (opts.fullCard ? ' dm-place-card' : opts.child ? ' dm-child' : '') + (busy ? ' busy' : '') + (err ? ' err' : '') + '" data-id="' + esc(d.id) + '">' +
     chev +
     domainArt(d, hue) +
     '<span class="body">' +
+      (opts.parent ? '<span class="dm-parent-name">' + hi(opts.parent.name,q) + '</span>' : '') +
       '<span class="nm" title="' + esc(d.name) + '">' + hi(d.name, q) + '</span>' +
       '<span class="meta">' + meta + '</span>' +
       (err ? '<span class="row-msg">' + esc(err) + '</span>' : '') +
     '</span>' +
     '<div class="acts">' +
-      '<button class="act" type="button" data-act="dm-up" data-id="' + esc(d.id) + '" data-name="' + esc(d.name) + '"' +
-        (busy ? ' disabled' : '') + ' title="' + (d.hasImage ? 'Replace' : 'Upload') + ' image">' +
-        (d.hasImage ? '⟳' : '↑') + '</button>' +
-      (d.hasImage
+      ((d.photos||[]).length ? '<button class="act" type="button" data-act="dm-gallery" data-id="'+esc(d.id)+'">Photos ('+d.photos.length+')</button>' : '') +
+      '<button class="act" type="button" data-act="' + (d.capturedImage ? 'dm-view' : 'dm-up') + '" data-id="' + esc(d.id) + '" data-name="' + esc(d.name) + '"' +
+        (busy ? ' disabled' : '') + ' title="' + (d.capturedImage ? 'View photo — change it in SkyManager' : (d.hasImage ? 'Replace' : 'Upload') + ' image') + '">' +
+        (d.capturedImage ? 'View' : d.hasImage ? '⟳' : '↑') + '</button>' +
+      (d.hasImage && !d.capturedImage
         ? '<button class="act danger' + (armed ? ' armed' : '') + '" type="button" data-act="dm-rm" data-id="' + esc(d.id) + '" data-name="' + esc(d.name) + '"' +
           (busy ? ' disabled' : '') + ' title="' + (armed ? 'Click again to delete' : 'Delete image') + '">' + (armed ? '!' : '✕') + '</button>'
         : '') +
@@ -9729,6 +10768,27 @@ function renderLoadouts() {
   host.innerHTML = html;
 }
 
+var domainDisplayView = window.DomainAreas ? DomainAreas.readView('deckportal.domain-view.v1') : {view:'domains',sort:'order'};
+function domainDisplayControls(host) {
+  if (!window.DomainAreas) return;
+  var controls=DomainAreas.viewControls(domainDisplayView,function(value,key){
+    domainDisplayView=value; DomainAreas.saveView('deckportal.domain-view.v1',value); DomainAreas.closeOwner('portal-domains'); renderDomains();
+    var field=host.querySelector('[data-domain-view="'+key+'"]'); if(field)field.focus();
+  });
+  host.insertBefore(controls,host.firstChild);
+}
+function renderDomainCards(host,all,q) {
+  var rows=DomainAreas.cardRows(all,{view:domainDisplayView.view,sort:domainDisplayView.sort,
+    matches:function(m,p){return domainMatches(m,q) || !!(p && (p.name+'\n'+p.category).toLowerCase().indexOf(q)!==-1);}});
+  var groups=[],byCat=Object.create(null);
+  rows.forEach(function(r){var cat=(r.parent||r.m).category||'Uncategorized';if(!byCat[cat]){byCat[cat]=[];groups.push(cat);}byCat[cat].push(r);});
+  host.innerHTML=groups.map(function(cat,i){return '<section class="cat"><div class="cat-head"><h2>'+hi(cat,q)+'</h2><span class="n">'+byCat[cat].length+'</span></div><div class="grid">'+
+    byCat[cat].map(function(r){return domainCard(r.m,q,hueOf(i),{child:r.child,fullCard:true,parent:r.parent});}).join('')+'</div></section>';}).join('');
+  if(!rows.length)host.innerHTML='<div class="empty"><div class="t">'+(q?'No matching places':domainDisplayView.view==='subdomains'?'No subdomains yet':'No places marked yet')+'</div><div class="s">'+
+    (q?'Try another name or parent domain.':'Mark a sub-area under a domain in SkyManager, then refresh here.')+'</div></div>';
+  $('n-domains').textContent=String(rows.length); domainDisplayControls(host);
+}
+
 function renderDomains() {
   var host = $('domains-body');
   var dstate = state.domains;
@@ -9750,6 +10810,7 @@ function renderDomains() {
 
   var q = state.q.trim().toLowerCase();
   var all = (dstate && dstate.domains) || [];
+  if (domainDisplayView.view !== 'domains' && window.DomainAreas) { renderDomainCards(host,all,q); return; }
 
   // One-level tree: split into top-level domains and children (grouped by
   // parentId). A child whose parentId points at a domain that no longer exists
@@ -9765,6 +10826,7 @@ function renderDomains() {
     if (pid && byId[pid]) { (kidsBy[pid] || (kidsBy[pid] = [])).push(d); }
     else { tops.push(d); }              // top-level OR orphan
   });
+  if (domainDisplayView.sort !== 'order') tops.sort(function(a,b){return a.name.localeCompare(b.name);});
 
   // Group TOP-LEVEL domains by category, first-seen order; blank = Uncategorized.
   var order = [];
@@ -9796,6 +10858,7 @@ function renderDomains() {
       var parentCard = domainCard(d, q, hue, { hasKids: kids.length > 0, expanded: expanded });
       if (kids.length > 0) {
         cards.push('<div class="dm-bundle' + (expanded ? ' open' : '') + '">' + parentCard +
+          (window.DomainAreas ? '<div class="dsa-portal-strip" data-area-parent="'+esc(d.id)+'"></div>' : '') +
           (shownKids.length
             ? '<div class="dm-kids">' + shownKids.map(function (k) { return domainCard(k, q, hue, { child: true }); }).join('') + '</div>'
             : '') +
@@ -9820,9 +10883,22 @@ function renderDomains() {
         '<div class="s">Nothing matches “' + esc(state.q.trim()) + '”. Names, places, categories and interior/exterior are all searched.</div></div>'
       : '<div class="empty"><div class="ic">★</div><div class="t">No domains marked yet</div>' +
         '<div class="s">Open the deck in-game (F7 ▸ Domains) and hit ★ Mark this spot. Marked places show up here, ready for a photo.</div></div>';
-    return;
+    domainDisplayControls(host); return;
   }
   host.innerHTML = out.join('');
+  domainDisplayControls(host);
+  if (window.DomainAreas) {
+    host.querySelectorAll('[data-area-parent]').forEach(function(slot) {
+      var id=slot.dataset.areaParent, parent=byId[id];
+      slot.append(DomainAreas.strip({parent:parent,owner:'portal-domains',
+        items:function(){return ((state.domains && state.domains.domains)||[]).filter(function(d){return d.parentId===id;});},
+        fallback:wdImgUrl('icons/custom/hm-rooms.png'),
+        images:function(d){return d.hasImage && d.imageUrl ? [d.imageUrl] : [];},
+        photos:function(d){return (d.photos||[]).map(function(p){return {src:p.imageUrl||'/api/view-icon?view=hotkey&p='+encodeURIComponent(p.image),label:[p.label].concat(p.tags||[]).filter(Boolean).join(' · ')};});},
+        actions:function(d){return [{label:d.capturedImage?'View photo':d.hasImage?'Replace photo':'Upload photo',run:function(a){if(a.capturedImage)wdOpenLightbox(a.imageUrl,a.name);else pickFile('domain-image',a.id,a.name,dmKey(a.id));}}];}
+      }));
+    });
+  }
 }
 
 /* ===================================================================== *
@@ -11551,6 +12627,36 @@ function drFocusPick() {
  *  local to the pane; nothing here touches the sidecars or hotkeys.json.     */
 var askUi = { mode: 'ask', busy: false, lastNpc: '', reply: null, err: '' };
 
+function openStayTalk(m) {
+  if (askUi.busy) { toast('Wait for the current CHIM request to finish.'); return; }
+  var name = String(m.original || m.name || '').trim();
+  if (!name || m.dead) return;
+  var holdSeq = askUi.holdSeq = (askUi.holdSeq || 0) + 1;
+  return conversationHold(m, 'start').then(function (r) {
+    if (!r || !r.ok || holdSeq !== askUi.holdSeq || askUi.busy) return;
+    askUi.mode = 'direct'; askUi.lastNpc = name; askUi.reply = null; askUi.err = '';
+    state.sheet = null;
+    setTab('ask', true);
+    var input = document.getElementById('ask-q');
+    if (input) {
+      input.value = name + ' stops walking away, stays nearby, faces the player, and talks with the player.';
+      input.focus();
+    }
+  });
+}
+
+function conversationHold(m, op) {
+  var id = Number(m.liveFormId || m.formId), name = String(m.original || m.name || '').trim();
+  if (!Number.isInteger(id) || id <= 0 || id > 0xFFFFFFFF || !name) {
+    toast('Choose a nearby NPC with a live reference first.'); return Promise.resolve(null);
+  }
+  return fetch('/api/conversation-hold', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ op: op, formId: id, name: name }) }).then(function (r) { return r.json(); }).then(function (r) {
+      toast(r.msg || r.error || 'Conversation hold was not confirmed'); return r;
+    }).catch(function () { toast('The game did not confirm the hold. Retry or use Let them continue.'); return null; });
+}
+function releaseStayTalk(m) { return conversationHold(m, 'release'); }
+
 function askFacetLabel(k) {
   var L = { bio: 'Background', personality: 'Personality', relationships: 'Relationships',
     goals: 'Goals', appearance: 'Appearance', skills: 'Skills', occupation: 'Occupation',
@@ -11812,6 +12918,27 @@ function shProfileDetail(label, value) {
   return '<span class="sh-detail"><b>' + esc(label) + '</b><span>' + esc(String(value)) + '</span></span>';
 }
 
+function openAppearanceGallery() {
+  if(!window.AppearanceGallery){toast('Appearances needs the matching SkyManager view files.');return;}
+  AppearanceGallery.open({portal:true,portraitUrl:function(r){return '/api/appearance-portrait?file='+encodeURIComponent(r.portrait);},request:async function(req){
+    if(req.op==='get'){var snapshot=await api('GET','/api/appearances');if(!snapshot.ok)throw new Error(snapshot.error||'The appearance library could not be reached.');return snapshot;}
+    var result=await api('POST','/api/appearances',req);
+    if(!result.pending)return result;
+    var id=result.requestId,started=Date.now(),appearanceSession=result.session||req.session;
+    while(Date.now()-started<30*60*1000){
+      await new Promise(function(resolve){setTimeout(resolve,1200);});
+      result=await api('GET','/api/appearance-result/'+encodeURIComponent(id));
+      if(!result.pending)return result;
+      var live=await api('GET','/api/appearances');
+      if(!live.ok || !live.data)throw new Error(live.error||'Skyrim is not responding. Refresh the gallery before trying again.');
+      if(window.smAppearanceData)window.smAppearanceData(live);
+      if(appearanceSession&&live.data.session&&live.data.session!==appearanceSession)return {ok:false,cancelled:true,session:live.data.session,msg:'The loaded save changed. The previous appearance action was cancelled.'};
+      if(!live.data.online && Date.now()-started>25000)throw new Error('Skyrim stopped responding. Refresh the gallery to check the result before trying again.');
+    }
+    throw new Error('Still waiting for customization to finish. Return to Skyrim, then refresh this gallery.');
+  }});
+}
+
 function renderSheetTab() {
   var host = document.getElementById('sheet-tab-body');
   if (!host) return;
@@ -11843,6 +12970,7 @@ function renderSheetTab() {
   var stale = ageMs > 30000;
 
   var html = '<section class="sect"><div class="sect-head"><h2>Character Sheet</h2>' +
+    '<button type="button" class="btn" data-act="appearances">Appearances</button>' +
     '<span class="hint">Live stats, potion belt and active effects from the deck. Your role-play profile and ' +
     'picture are <b>editable here</b> — edits queue safely and apply on the game’s next tick.</span></div>';
 
@@ -13462,11 +14590,16 @@ function courtRows() {
     return {
       name: r.npc_name, rung: Number(r.rung), kind: r.kind || '', address: r.address || '',
       note: r.note || '', source: r.source || '', locked: courtIsLocked(r),
+      origin: r.origin || '', house: r.house || '', office: r.office || '',
+      answers_to: r.answers_to || '', duty: r.duty || '',
+      voice_lean: r.voice_lean || 'normal', race: r.race || '',
       chim: r.chim_id ? true : false, has: true,
     };
   });
   (d.noRow || []).forEach(function (n) {
-    rows.push({ name: n, rung: 9, kind: '', address: '', note: '', source: '', locked: false, chim: true, has: false });
+    rows.push({ name: n, rung: 9, kind: '', address: '', note: '', source: '', locked: false,
+      origin: '', house: '', office: '', answers_to: '', duty: '', voice_lean: 'normal', race: '',
+      chim: true, has: false });
   });
   return rows;
 }
@@ -13482,17 +14615,24 @@ function courtMatch(r, q) {
   return q.toLowerCase().split(/\s+/).filter(Boolean).every(function (t) { return hay.indexOf(t) !== -1; });
 }
 
+/* The fields one Save commits together. Kept as one list so the draft, the
+   dirty check and the save loop cannot drift apart — three places that each
+   had their own copy of this is how a field ends up editable but unsaveable. */
+var COURT_EDIT_FIELDS = ['kind', 'address', 'note', 'origin', 'house', 'office', 'answers_to', 'duty'];
+
 function courtDraft(r) {
   if (!courtUi.draft[r.name]) {
-    courtUi.draft[r.name] = { rung: r.rung, kind: r.kind, address: r.address, note: r.note };
+    var d = { rung: r.rung };
+    COURT_EDIT_FIELDS.forEach(function (f) { d[f] = r[f] || ''; });
+    courtUi.draft[r.name] = d;
   }
   return courtUi.draft[r.name];
 }
 function courtDirty(r) {
   var d = courtUi.draft[r.name];
   if (!d) return false;
-  return Number(d.rung) !== Number(r.rung) || String(d.kind) !== String(r.kind) ||
-         String(d.address) !== String(r.address) || String(d.note) !== String(r.note) || !r.has;
+  if (Number(d.rung) !== Number(r.rung) || !r.has) return true;
+  return COURT_EDIT_FIELDS.some(function (f) { return String(d[f] || '') !== String(r[f] || ''); });
 }
 
 function refreshCourt() {
@@ -13530,8 +14670,23 @@ function courtSave(r) {
   var d = courtDraft(r);
   courtUi.busy = true;
   renderCourt();
+  /* The rung and the three ledger fields go in one call, then each household
+     field that actually changed. Sequential rather than parallel on purpose:
+     they all end in the same row, and court.php is a process per call — four
+     of them racing would be four WSL spawns fighting over one UPDATE. */
+  var extras = ['origin', 'house', 'office', 'answers_to', 'duty'].filter(function (f) {
+    return String(d[f] || '') !== String(r[f] || '');
+  });
   api('POST', '/api/court-set', {
     name: r.name, rung: Number(d.rung), kind: d.kind, address: d.address, note: d.note,
+  }).then(function (res) {
+    if (!res || !res.ok) return res;
+    return extras.reduce(function (chain, f) {
+      return chain.then(function (prev) {
+        if (prev && !prev.ok) return prev;
+        return api('POST', '/api/court-field', { name: r.name, field: f, value: d[f] || '' });
+      });
+    }, Promise.resolve(res));
   }).then(function (res) {
     courtUi.busy = false;
     if (!res || !res.ok) { toast((res && res.error) || 'That standing change didn’t take', 'bad'); renderCourt(); return; }
@@ -13577,6 +14732,50 @@ var COURT_CHIP_LABEL = {
   0: 'Slaves & thralls', 1: 'Servants', 2: 'Wives & mistresses',
   3: 'Noble wives', 4: 'Companions', 5: 'Peers',
 };
+
+/** One labelled text field bound to the shared draft. */
+function courtFieldInner(r, d, field, label, placeholder, why, writable) {
+  return '<label for="cst-' + field + '">' + esc(label) + '</label>' +
+    '<input id="cst-' + field + '" type="text" autocomplete="off" data-cfield="' + field + '"' +
+    ' data-nm="' + esc(r.name) + '" placeholder="' + esc(placeholder) + '"' +
+    ' value="' + esc(d[field] || '') + '"' + (writable ? '' : ' disabled') + '>' +
+    '<span class="why">' + why + '</span>';
+}
+function courtField(r, d, field, label, placeholder, why, writable) {
+  return '<div class="cst-f">' + courtFieldInner(r, d, field, label, placeholder, why, writable) + '</div>';
+}
+
+function courtKidsOf(name) {
+  var d = courtData();
+  return ((d && d.children) || []).filter(function (c) {
+    return String(c.mother || '').toLowerCase() === String(name).toLowerCase();
+  });
+}
+function courtKidLiving(c) {
+  var v = c.living;
+  return !(v === false || v === 'f' || v === '0' || v === 0);
+}
+/* Mirrors court_knows() in court_lib.php: an explicit per-NPC row wins in both
+   directions, then the house rule, then the secret's own default. */
+function courtKnowsOf(name, sec) {
+  var d = courtData();
+  var rows = (d && d.knows) || [];
+  var lc = String(name).toLowerCase();
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].secret_key === sec.secret_key && String(rows[i].npc_name).toLowerCase() === lc) {
+      var v = rows[i].knows;
+      return v === true || v === 't' || v === '1' || v === 1;
+    }
+  }
+  var houses = String(sec.known_houses || '').trim();
+  if (houses) {
+    var row = courtRows().find(function (x) { return x.name === name; });
+    var hers = (row && row.house) || '';
+    if (hers && houses.split(',').some(function (h) { return h.trim().toLowerCase() === hers.toLowerCase(); })) return true;
+  }
+  var dk = sec.default_known;
+  return dk === true || dk === 't' || dk === '1' || dk === 1;
+}
 
 function courtCard(r, q) {
   var open = courtUi.sel === r.name;
@@ -13653,6 +14852,41 @@ function courtCard(r, q) {
         ((!writable || courtUi.busy) ? ' disabled' : '') + '>' +
         (r.locked ? '🔓 Let the seeder move her' : '🔒 Lock this rung') + '</button>' : '') +
     '</div>';
+
+  /* Where she sits in the HOUSE — as opposed to where she sits under him,
+     which is the rung grid above. */
+  html += '<div class="cst-lab sp">Her place in the household</div>' +
+    '<div class="cst-fields">' +
+      courtField(r, d, 'house', 'Which household', 'Riverwood', 'Scopes her precedence, and lets a secret be known by a whole house at once.', writable) +
+      courtField(r, d, 'office', 'What she holds', 'the keys and the still-room', 'The office, not the affection — this is what a household actually runs on.', writable) +
+      courtField(r, d, 'answers_to', 'She answers to', 'The household steward', 'Who she reports to within the household.', writable) +
+      '<div class="cst-f wide">' + courtFieldInner(r, d, 'duty', 'Her day', 'By day you keep the brew-house and the linens.', 'One clause, in her voice. Makes her someone you interrupted.', writable) + '</div>' +
+      '<div class="cst-f wide">' + courtFieldInner(r, d, 'origin', 'Before you', 'a beggar on the Riverwood road', 'What she was in the WORLD before you. Only you know these.', writable) + '</div>' +
+    '</div>';
+
+  var kids = courtKidsOf(r.name);
+  if (kids.length) {
+    html += '<div class="cst-lab sp">Her children</div><div class="cst-kids">' +
+      kids.map(function (c) {
+        var gone = !courtKidLiving(c);
+        return '<span class="pill' + (gone ? ' gone' : '') + '">' + esc(c.child || '?') +
+          (c.sex ? ' · ' + esc(c.sex) : '') + (gone ? ' · did not live' : '') + '</span>';
+      }).join('') + '</div>';
+  }
+
+  var secrets = (courtData() && courtData().secrets) || [];
+  if (secrets.length) {
+    html += '<div class="cst-lab sp">What she knows</div><div class="cst-knows">' +
+      secrets.map(function (sec) {
+        var k = courtKnowsOf(r.name, sec);
+        return '<button type="button" class="cst-kn' + (k ? ' on' : '') + '"' +
+          ' data-cact="knows" data-nm="' + esc(r.name) + '" data-key="' + esc(sec.secret_key) + '"' +
+          ' data-now="' + (k ? '1' : '0') + '" aria-pressed="' + (k ? 'true' : 'false') + '"' +
+          (writable ? '' : ' disabled') + '>' +
+          '<span class="lbl">' + esc(sec.label || sec.secret_key) + '</span>' +
+          '<span class="st">' + (k ? 'KNOWS' : 'hidden') + '</span></button>';
+      }).join('') + '</div>';
+  }
 
   var pv = courtUi.preview[r.name];
   html += '<div class="cst-lab sp">What she is actually told</div>';
@@ -13733,6 +14967,23 @@ function renderCourt() {
     out.push('<div class="cst-hint">No marriage or pregnancy facts yet — open the deck’s <b>Followers</b> tab once in-game and the DLL writes them, after which they survive the game closing.</div>');
   }
 
+  /* The watcher's findings, at the top where they cannot be missed. A LEAK is
+     an NPC saying a thing she has no way of knowing — the prompt failing to
+     hold — and is the most actionable line on this page when it appears. */
+  var leaks = d.leaks || [];
+  if (leaks.length) {
+    out.push('<div class="cst-leaks">' + leaks.slice(0, 8).map(function (l) {
+      var learned = l.kind !== 'leak';
+      return '<div class="cst-leak' + (learned ? ' learned' : '') + '">' +
+        '<div class="b"><span class="who">' + esc(l.npc_name) + '</span> ' +
+        (learned ? 'learned <b>' + esc(l.secret_key) + '</b> — you spoke of it in front of her'
+                 : 'spoke of <b>' + esc(l.secret_key) + '</b>, which she has no way of knowing') +
+        '<span class="said">“' + esc(String(l.excerpt || '').slice(0, 200)) + '”</span></div>' +
+        '<button type="button" class="btn" data-cact="leak" data-id="' + esc(l.id) + '">Dismiss</button>' +
+      '</div>';
+    }).join('') + '</div>');
+  }
+
   var chip = function (key, label, n) {
     return '<button type="button" class="chip' + (courtUi.filter === key ? ' on' : '') + '"' +
       ' data-cfilter="' + esc(key) + '" aria-pressed="' + (courtUi.filter === key ? 'true' : 'false') + '">' +
@@ -13791,6 +15042,13 @@ function renderCourt() {
     if (back) { try { back.focus(); back.setSelectionRange(keep.s, keep.e); } catch (e) { back.focus(); } }
   }
 
+  host.querySelectorAll('[data-cact="leak"]').forEach(function (el) {
+    el.onclick = function () {
+      api('POST', '/api/court-leak', { id: Number(el.dataset.id) }).then(function (res) {
+        if (res && res.ok && state.court) { state.court.leaks = res.leaks || []; renderCourt(); }
+      });
+    };
+  });
   host.querySelectorAll('[data-cfilter]').forEach(function (el) {
     el.onclick = function () { courtUi.filter = el.dataset.cfilter; renderCourt(); };
   });
@@ -13817,6 +15075,23 @@ function renderCourt() {
       if (a === 'save') { courtSave(row); return; }
       if (a === 'lock') { courtLockToggle(row); return; }
       if (a === 'preview') { courtPreview(nm); renderCourt(); return; }
+      if (a === 'knows') {
+        // A toggle is unambiguous, so it commits immediately rather than
+        // waiting for Save — unlike the text fields, where a half-typed value
+        // must not be written.
+        if (courtUi.busy) return;
+        courtUi.busy = true;
+        var want = el.dataset.now !== '1';
+        api('POST', '/api/court-knows', { name: nm, key: el.dataset.key, knows: want }).then(function (res) {
+          courtUi.busy = false;
+          if (!res || !res.ok) { toast((res && res.error) || 'Could not change that', 'bad'); return; }
+          if (state.court) { state.court.knows = res.knows || state.court.knows; state.court.secrets = res.secrets || state.court.secrets; }
+          toast(nm + (want ? ' now knows ' : ' no longer knows ') + el.dataset.key, '');
+          renderCourt();
+        });
+        renderCourt();
+        return;
+      }
     };
   });
 }
@@ -13837,7 +15112,7 @@ var TABS = {
   icons: {
     // 'spellcaticon' = the category-glyph picker, opened off a category header.
     // 'cbarticon' = a Combat Art's icon picker, opened off its row below.
-    pane: 'pane-icons', sheet: 'spell', sheets: ['spell', 'spellcaticon', 'cbarticon'],
+    pane: 'pane-icons', sheet: 'spell', sheets: ['spell', 'spellinfo', 'spellpackage', 'spellcategories', 'spellcaticon', 'cbarticon'],
     placeholder: 'Search spells, combat arts, schools, icons…',
     render: function () { renderSpells(); renderCombatArts(); renderIcons(); },
   },
@@ -13927,13 +15202,18 @@ var TABS = {
     render: function () { renderCourt(); },
   },
 };
+TABS.privacy = { pane: 'pane-privacy', sheet: null, sheets: [],
+  placeholder: 'Search privacy guests and nearby NPCs…', render: renderPrivacyTab };
 var TAB_NAMES = Object.keys(TABS);
 
 function render() {
   if (!TABS[state.tab]) state.tab = 'portraits';
+  if (state.tab !== 'domains' && window.DomainGallery) DomainGallery.close();
+  if (state.tab !== 'domains' && window.DomainAreas) DomainAreas.closeOwner('portal-domains');
+  wdSyncToolbar();
   var spec = TABS[state.tab];
   TAB_NAMES.forEach(function (t) { $(TABS[t].pane).hidden = t !== state.tab; });
-  document.querySelectorAll('.tab').forEach(function (b) {
+  document.querySelectorAll('.tab[data-tab]').forEach(function (b) {
     b.classList.toggle('on', b.dataset.tab === state.tab);
   });
   $('q').placeholder = spec.placeholder;
@@ -13953,6 +15233,54 @@ function render() {
 /* Clear the sheet WITHOUT recursing back into render(). */
 function closeSheetOnly() { state.sheet = null; resetSheetUi(); $('sheet-wrap').hidden = true; }
 
+/* Scene privacy shares the portrait roster and calls the same native verbs. */
+var privacyState = null, privacyFetching = false, privacyCommand = '', privacyNote = '';
+function privacyFetch() {
+  if(privacyFetching)return;privacyFetching=true;
+  api('GET','/api/scene-privacy').then(function(r){
+    privacyState=r;privacyFetching=false;
+    if(privacyCommand && r.lastCommand && r.lastCommand.id===privacyCommand){
+      privacyCommand='';privacyNote=r.lastCommand.msg || 'Privacy updated';
+    }
+    if(state.tab==='privacy')renderPrivacyTab();
+  }).catch(function(e){privacyFetching=false;privacyNote=e.message;if(state.tab==='privacy')renderPrivacyTab();});
+}
+function privacySend(op,extra) {
+  if(privacyCommand)return;
+  privacyNote='Applying privacy…';privacyCommand='sending';renderPrivacyTab();
+  api('POST','/api/scene-privacy',Object.assign({op:op,epoch:privacyState.epoch},extra||{})).then(function(r){
+    if(!r.ok)throw new Error(r.error||'Privacy action was refused');
+    privacyCommand=r.commandId;var tries=0;
+    var poll=setInterval(function(){privacyFetch();if(!privacyCommand||++tries>=8){clearInterval(poll);if(privacyCommand){privacyCommand='';privacyNote='No game confirmation yet. Refresh before retrying.';renderPrivacyTab();}}},600);
+  }).catch(function(e){privacyCommand='';privacyNote=e.message;renderPrivacyTab();});
+}
+function renderPrivacyTab() {
+  var host=$('privacy-body'),p=privacyState;
+  if(!p){host.innerHTML='<section class="cat"><h2>Room privacy</h2><p>Reading Skyrim…</p></section>';privacyFetch();return;}
+  var disabled=privacyCommand||!p.live?' disabled':'';
+  var rows=[],seen={};
+  function add(a,kind){var key=a.formId?'id:'+a.formId:'key:'+a.key;if(seen[key])return;seen[key]=true;rows.push(Object.assign({},a,{kind:kind}));}
+  (p.held||[]).forEach(function(a){add(a,'outside');});
+  (p.rows||[]).forEach(function(a){add(a,a.participant?'participant':a.invited?'invited':'candidate');});
+  (p.invited||[]).forEach(function(a){add(a,'invited');});
+  var q=(state.q||'').trim().toLowerCase();rows=rows.filter(function(a){return !q||(a.name||'').toLowerCase().indexOf(q)>=0;});
+  host.innerHTML='<section class="cat privacy-panel"><h2>Room privacy</h2><p role="status">'+esc(p.error||((p.active?(!p.canMove?'Privacy needs an exit':p.blocked?p.blocked+' NPCs could not be moved':'Room exclusion active'):p.automatic?'Automatic exclusion armed':'Automatic exclusion off')+' · '+(p.bridge||'CHIM bridge not confirmed')))+(p.live?'':' · Game snapshot is offline')+'</p>'+(privacyNote?'<p>'+esc(privacyNote)+'</p>':'')+
+    '<p>Automatic privacy keeps uninvited NPCs outside during your OStim scenes, then restores their position and previous AI state. CHIM conversations stay private while automatic privacy is armed inside this boundary.</p>'+
+    '<div class="privacy-controls"><button data-privacy-op="automatic" aria-pressed="'+!!p.automatic+'"'+disabled+'>Automatic privacy: '+(p.automatic?'on':'off')+'</button>'+
+    '<button data-privacy-op="manual"'+(disabled||(!p.scopeValid?' disabled':''))+'>'+(p.manual?'End private conversation':'Private conversation now')+'</button>'+
+    '<button data-privacy-op="release"'+disabled+'>Release for this scene</button><button data-privacy-refresh>Refresh</button></div>'+
+    '<div class="privacy-controls"><button data-privacy-scope="claimed" aria-pressed="'+(p.scope==='claimed')+'"'+disabled+'>Claimed room</button>'+
+    '<button data-privacy-scope="cell" aria-pressed="'+(p.scope==='cell')+'"'+disabled+'>Whole interior</button></div>'+
+    '<p>'+esc(p.scope==='cell'?'Whole interior covers every room in this loaded interior cell.':'Claimed room uses the boundary and outside anchor set in SkyManager Rooms.')+' '+esc(p.msg||'')+'</p>'+
+    '<p>Only invited guests actually inside can hear. Scene participants always stay.</p><div class="privacy-people">'+rows.map(function(a,i){return '<article class="privacy-person">'+artHtml(a)+'<div><strong>'+esc(a.name||'NPC')+'</strong><p>'+esc(a.kind==='outside'?'Temporarily outside':a.kind==='participant'?'Scene participant':a.kind==='invited'?'Invited guest':a.status||'Not invited')+'</p></div>'+
+    (a.kind==='participant'?'':'<button data-privacy-person="'+i+'"'+(disabled||(!a.formId&&a.kind!=='invited'?' disabled':''))+'>'+(a.kind==='invited'?'Remove invitation':'Invite inside')+'</button>')+'</article>';}).join('')+(rows.length?'':'<p>No matching guests. Refresh with Skyrim running to see nearby NPCs.</p>')+'</div></section>';
+  host.querySelector('[data-privacy-refresh]').onclick=privacyFetch;
+  host.querySelectorAll('[data-privacy-op]').forEach(function(b){b.onclick=function(){var op=b.dataset.privacyOp;privacySend(op,op==='release'?{}:{value:!p[op]});};});
+  host.querySelectorAll('[data-privacy-scope]').forEach(function(b){b.onclick=function(){privacySend('scope',{value:b.dataset.privacyScope});};});
+  host.querySelectorAll('[data-privacy-person]').forEach(function(b){b.onclick=function(){var a=rows[Number(b.dataset.privacyPerson)];privacySend(a.kind==='invited'?(a.key?'removeInvitation':'uninvite'):'invite',a.kind==='invited'&&a.key?{key:a.key}:{formId:a.formId});};});
+}
+$('q').addEventListener('keydown',function(e){if(state.tab==='privacy'&&e.key==='Enter'){var b=$('privacy-body').querySelector('[data-privacy-person]:not(:disabled)');if(b){e.preventDefault();b.click();}}});
+
 /* ------------------------------- events ------------------------------ */
 
 /* Tab lives in the hash so a phone can be sent straight to one
@@ -13970,6 +15298,7 @@ function setTab(t, push) {
   // The Sheet tab runs a light 1s ticker (age countdowns, refetch vitals) only
   // while it is active — start it on entry, stop it on any exit.
   if (t === 'sheet') shStartTicker(); else shStopTicker();
+  if(t === 'privacy') privacyFetch();
   render();
   scrollTabIntoView(t);
 }
@@ -13985,7 +15314,7 @@ function scrollTabIntoView(t) {
 }
 
 document.getElementById('tabs').addEventListener('click', function (e) {
-  var b = e.target.closest('.tab');
+  var b = e.target.closest('.tab[data-tab]');
   if (!b) return;
   setTab(b.dataset.tab, true);
 });
@@ -14039,6 +15368,7 @@ document.addEventListener('click', function (e) {
   var b = e.target.closest('[data-act]');
   if (b) {
     var act = b.dataset.act;
+    if(act==='appearances'){openAppearanceGallery();return;}
     if (act === 'up') { pickFile('portrait', b.dataset.slug, b.dataset.name); return; }
     if (act === 'rm') { removeItem('portrait', b.dataset.slug, b.dataset.name); return; }
     if (act === 'pack-export-open') { openPackExport(); return; }
@@ -14050,6 +15380,8 @@ document.addEventListener('click', function (e) {
     }
     if (act === 'up-icon') { pickFile('icon', b.dataset.name, b.dataset.name); return; }
     if (act === 'rm-icon') { removeItem('icon', b.dataset.name, b.dataset.name); return; }
+    if (act === 'dm-gallery') { var album=(state.domains.domains||[]).find(function(d){return d.id===b.dataset.id;});if(album)openDomainGallery(album);return; }
+    if (act === 'dm-view') { var dmPhoto=(state.domains.domains||[]).find(function(d){return d.id===b.dataset.id;});if(dmPhoto&&dmPhoto.imageUrl)wdOpenLightbox(dmPhoto.imageUrl,dmPhoto.name);return; }
     if (act === 'dm-up') { pickFile('domain-image', b.dataset.id, b.dataset.name, dmKey(b.dataset.id)); return; }
     if (act === 'dm-rm') { clearDomainImage(b.dataset.id, b.dataset.name); return; }
     if (act === 'dm-toggle') { toggleDomain(b.dataset.id); return; }
@@ -14155,6 +15487,7 @@ document.addEventListener('click', function (e) {
     }
     if (act === 'dr-qclear') { drClearQueued(b.dataset.id); return; }
     if (act === 'dr-qclear-all') { drClearQueued(''); return; }
+    if (act === 'spell-details') { openSpellDetails(b.dataset.id); return; }
     if (act === 'spell') { openSheet(b.dataset.id); return; }
     if (act === 'hotkey') { openHotkeySheet(b.dataset.id); return; }
     if (act === 'npc') { openNpcSheet(b.dataset.slug); return; }
@@ -14178,9 +15511,33 @@ document.addEventListener('click', function (e) {
     if (act === 'sm-orient') { smSet('sexual_orientation', b.dataset.v); return; }
     if (act === 'sm-pref') { smSet('relationship_preference', b.dataset.v); return; }
     if (act === 'sm-flag') { smSet(b.dataset.k, !smVal(b.dataset.k, b.dataset.k === 'slave_fiction_frame')); return; }
+    if (act === 'sm-role') { smSetRole(b.dataset.k, !smVal(b.dataset.k, false)); return; }
+    // The three `pricing` dropdowns. They MERGE into the object — see smSubSet.
+    if (act === 'sm-ptype') { smSubSet('pricing', 'prostitute_type', b.dataset.v); return; }
+    if (act === 'sm-pmot') { smSubSet('pricing', 'motivation', b.dataset.v); return; }
+    if (act === 'sm-ppay') { smSubSet('pricing', 'payment_type', b.dataset.v); return; }
     if (act === 'sm-kink-add') { smAddKink(b.dataset.w); return; }
     if (act === 'sm-kink-del') { smDelKink(b.dataset.w, Number(b.dataset.i)); return; }
     if (act === 'sm-save') { smCommit(); return; }
+    /* Both of these write to CHIM on the SECOND press. The arm is the whole
+       safety mechanism — there is no confirm() worth having on a phone. */
+    if (act === 'sm-gen') {
+      if (!state.smArmGen) {
+        state.smArmGen = true; render();
+        setTimeout(function () { if (state.smArmGen) { state.smArmGen = false; render(); } }, 4000);
+        return;
+      }
+      smGenerate(); return;
+    }
+    if (act === 'sm-clear') {
+      if (!state.smArmDel) {
+        state.smArmDel = true; render();
+        setTimeout(function () { if (state.smArmDel) { state.smArmDel = false; render(); } }, 4000);
+        return;
+      }
+      smClear(); return;
+    }
+    if (act === 'sm-spouse-add') { smSpouseAdd(b.dataset.n); return; }
     /* ---- containers ---- */
     if (act === 'ct-sweep') { ctOp({ op: 'act', act: 'sweep' }, 'Queued — it runs the moment the game sees it'); return; }
     if (act === 'ct-sortnow') { ctOp({ op: 'act', act: 'sortNow' }, 'Queued — sorting the drop-box'); return; }
@@ -14198,11 +15555,7 @@ document.addEventListener('click', function (e) {
     if (act === 'ct-loan-b') { ctOp({ op: 'sort', key: 'loan.' + b.dataset.k, value: b.dataset.v === '1' }); return; }
     /* ---- wardrobe ---- */
     if (act === 'wd-sub') {
-      state.wdSub = b.dataset.sub;
-      /* Opening Inventory quietly asks the game for a fresh export, so the
-         list is live whenever Skyrim is up — no button press needed. */
-      if (state.wdSub === 'inventory') wdInvRefresh(true);
-      renderWardrobe(); return;
+      wdSelectSection(b.dataset.sub); return;
     }
     if (act === 'wd-inv-slot') { state.wdInvSlot = b.dataset.slot || ''; renderWardrobe(); return; }
     if (act === 'wd-inv-pick') {
@@ -14386,7 +15739,8 @@ document.addEventListener('click', function (e) {
     if (act === 'wd-inv-refresh') { wdInvRefresh(false); return; }
     /* ---- outfit categories ---- */
     if (act === 'wd-cat-filter') { state.wdCatFilter = b.dataset.id || ''; renderWardrobe(); return; }
-    if (act === 'wd-cat-add') { state.wdCatAdd = true; renderWardrobe(); var nc = $('wd-newcat-name'); if (nc) nc.focus(); return; }
+    if (act === 'wd-cat-manage-done') { state.wdManageCategories = false; state.wdCatAdd = false; renderWardrobe(); return; }
+    if (act === 'wd-cat-add') { state.wdManageCategories = true; state.wdCatAdd = true; renderWardrobe(); var nc = $('wd-newcat-name'); if (nc) nc.focus(); return; }
     if (act === 'wd-cat-cancel') { state.wdCatAdd = false; state.wdNewCat = ''; renderWardrobe(); return; }
     if (act === 'wd-cat-create') {
       var ncEl2 = $('wd-newcat-name');
@@ -14735,11 +16089,19 @@ document.addEventListener('change', function (e) {
   /* Sharmat controls write into the local DRAFT, not to the server — the
      commit is the Save button. `change` (not `input`) is the right hook: it
      fires after blur, so the repaint that follows can never eat a caret. */
+  // The connector picker chooses which MODEL writes her profile; it is a
+  // session preference, not a field on her record, so it deliberately does
+  // not carry sm-in and never joins the dirty diff.
+  if (t.id === 'sm-conn') { state.smConn = t.value; return; }
   if (t.classList.contains('sm-in')) {
     var v = t.value;
     if (t.dataset.t === 'int') v = Math.trunc(Number(v) || 0);
     else v = String(v);
-    smSet(t.dataset.k, v);
+    // data-sub = a key INSIDE one of the two free-form objects (pricing,
+    // slave_speak_styles). It has to merge, not replace — CHIM keeps price
+    // tables and generator output in those same records.
+    if (t.dataset.sub) smSubSet(t.dataset.k, t.dataset.sub, v);
+    else smSet(t.dataset.k, v);
     return;
   }
 });
@@ -14750,6 +16112,9 @@ document.addEventListener('input', function (e) {
   var t = e.target;
   if (!t || !t.classList) return;
   if (t.classList.contains('sm-kinkin')) { state.smKink[t.dataset.w] = t.value; return; }
+  /* The spouse lookup DOES repaint (it has to — the results are the point);
+     renderSharmatSheet puts the caret back. Debounced inside smSpouseType. */
+  if (t.classList.contains('sm-spousein')) { smSpouseType(t.value); return; }
   /* The "Move to category…" filter. Purely local (all categories are already in
      the payload), so it re-filters on each keystroke with no debounce, and the
      caret is put back after the repaint by restoreFollowerFocus(). */
@@ -14759,10 +16124,18 @@ document.addEventListener('input', function (e) {
 });
 document.addEventListener('keydown', function (e) {
   var t = e.target;
-  if (e.key !== 'Enter' || !t || !t.classList || !t.classList.contains('sm-kinkin')) return;
-  e.preventDefault();
-  state.smKink[t.dataset.w] = t.value;
-  smAddKink(t.dataset.w);
+  if (e.key !== 'Enter' || !t || !t.classList) return;
+  if (t.classList.contains('sm-kinkin')) {
+    e.preventDefault();
+    state.smKink[t.dataset.w] = t.value;
+    smAddKink(t.dataset.w);
+    return;
+  }
+  if (t.classList.contains('sm-spousein')) {
+    e.preventDefault();
+    var top = (state.smSpouse.hits || [])[0];
+    if (top) smSpouseAdd(top.name);
+  }
 });
 document.addEventListener('keydown', function (e) {
   var t = e.target;
@@ -14826,6 +16199,23 @@ document.addEventListener('input', function (e) {
 });
 
 document.addEventListener('keydown', function (e) {
+  if(typeof npdModalKey==='function'&&npdModalKey(e))return;
+  if(window.AppearanceGallery && AppearanceGallery.isOpen())return;
+  if (sheetIs('spellcategories')) {
+    if (e.key === 'Escape') {
+      e.preventDefault(); clearTimeout(sheetQDebounce);
+      if (state.sheetQ) { state.sheetQ = ''; renderSheet(); $('sheet-q').focus(); } else closeSheet();
+    } else if (e.key === 'Enter' && e.target.id === 'sheet-q') {
+      e.preventDefault(); clearTimeout(sheetQDebounce); renderSheet();
+      var topCategory = document.querySelector('[data-spell-category]'); if (topCategory) topCategory.click(); else $('sheet-q').focus();
+    } else if (e.key === 'Tab') {
+      var stops = Array.prototype.filter.call($('sheet-wrap').querySelectorAll('button:not([disabled]), input'), function (n) { return n.getClientRects().length; });
+      var first = stops[0], last = stops[stops.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+    return;
+  }
   if (e.key === 'Escape') {
     // Inside a field: Escape ABANDONS the edit (restore, then blur — restoring
     // first is what stops the blur from firing `change` and saving it anyway)
@@ -14873,6 +16263,7 @@ document.addEventListener('keydown', function (e) {
     return;
   }
   if (e.key === '/' && !(document.activeElement && document.activeElement.tagName === 'INPUT')) {
+    if (state.tab === 'wardrobe' && state.wdToolbarCollapsed) wdSetToolbarCollapsed(false);
     e.preventDefault(); $('q').focus();
   }
 });

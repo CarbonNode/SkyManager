@@ -2374,3 +2374,80 @@ body.hud-editing .hud-loot-chip:hover { border-color: var(--hud-gold-lit); color
 .hud-fw-scard.is-autumn .hud-sn-glyph { color: #dd9a5c; }
 .hud-fw-scard.is-autumn .hud-sn-name { color: #f2d2ad; }
 .hud-fw-scard.is-autumn .hud-sn-art { border-color: rgba(221, 154, 92, .42); }
+
+/* Compact SunHelm strip: same icon, type, padding and single frame as the
+   existing gold/carry/clock readouts. Grouped or individually detachable. */
+.hud-survival { display:flex; flex-direction:row; align-items:center; gap:14px; min-width:0; max-width:none; padding:8px 12px; border-radius:10px; }
+.hud-det > .hud-survival { padding:0; border:1px solid transparent; background:none; }
+.hud-survival .hud-need-readout { padding:0; }
+.hud-survival .hud-need-readout + .hud-need-readout { padding-left:14px; border-left:1px solid rgba(210,185,110,.25); }
+.hud-need-readout { --need-ink:#dfba79; }
+.hud-need-readout[data-need="thirst"] { --need-ink:#89c8e8; }
+.hud-need-readout[data-need="fatigue"] { --need-ink:#d9deee; }
+.hud-need-readout[data-need="cold"] { --need-ink:#a3d9e8; }
+.hud-need-art { width:22px; height:22px; object-fit:contain; flex:0 0 22px; }
+.hud-need-readout[data-need="thirst"] .hud-need-art { filter:grayscale(1) sepia(1) saturate(2) hue-rotate(150deg); }
+.hud-need-readout[data-need="fatigue"] .hud-need-art { filter:grayscale(1) brightness(1.3); }
+.hud-need-readout .hud-ro-v { color:var(--need-ink); }
+.hud-need-readout[data-level="2"] { --need-ink:#e7bd78; }
+.hud-need-readout[data-level="3"] { --need-ink:#efa269; }
+.hud-need-readout[data-level="4"] { --need-ink:#ee827c; }
+.hud-need-readout[data-level="off"], .hud-need-readout[data-level="unknown"] { --need-ink:#a6aaa8; }
+.hud-need-readout[data-level="off"] .hud-need-art { filter:grayscale(1); opacity:.5; }
+.hud-calendar .hud-ro-v { max-width:none; }
+
+/* SunHelm's three-symbol variant: one readout-height rectangle, no captions.
+   Real state remains in the tooltip; warning tint affects the artwork itself. */
+.is-icons-only .hud-need-readout .hud-ro-v { display:none; }
+.hud-survival.is-icons-only { gap:16px; min-height:28px; }
+.hud-survival.is-icons-only .hud-need-readout + .hud-need-readout { padding-left:0; border-left:0; }
+.hud-survival.is-icons-only .hud-need-readout:before { display:none; }
+.hud-need-readout[data-level="2"] .hud-need-art { filter:grayscale(1) sepia(1) saturate(3); }
+.hud-need-readout[data-level="3"] .hud-need-art { filter:grayscale(1) sepia(1) saturate(5) hue-rotate(335deg); }
+.hud-need-readout[data-level="4"] .hud-need-art { filter:grayscale(1) sepia(1) saturate(7) hue-rotate(315deg); }
+.hud-need-readout[data-level="unknown"] .hud-need-art { filter:grayscale(1); opacity:.65; }
+
+/* Fixed weather footprint: long labels move inside the plate, never resize it. */
+.hud-ro[data-ro="weatherOnly"] .hud-ro-v {
+  display:block; width:70px; min-width:70px; max-width:70px; flex:0 0 70px;
+  overflow:hidden; text-overflow:clip;
+}
+.hud-weather-label { display:block; width:max-content; white-space:nowrap; }
+.hud-ro-v.is-scrolling .hud-weather-label {
+  animation:hud-weather-scroll var(--hud-weather-duration, 8s) linear infinite;
+}
+@keyframes hud-weather-scroll {
+  0%, 18% { transform:translateX(0); }
+  68%, 85% { transform:translateX(var(--hud-weather-travel, 0px)); }
+  100% { transform:translateX(0); }
+}
+@media (prefers-reduced-motion:reduce) {
+  .hud-ro-v.is-scrolling .hud-weather-label { animation:none; }
+  .hud-ro[data-ro="weatherOnly"] .hud-ro-v { text-overflow:ellipsis; }
+  .hud-weather-label { display:inline; }
+}
+
+/* Optional rectangle snapping: a quiet gold join cue, only during placement. */
+.hud-det.hud-rect-snapped { outline: 2px solid rgba(219,191,104,.9); outline-offset: 2px; }
+
+/* Aether: open Nordic engraving, parchment numerals and a game-time dial. */
+.hud-det.hud-clock-bare { background: transparent !important; border-color: transparent !important; box-shadow: none !important; }
+.hud-ro.hud-aether-clock { display:block; position:relative; width:320px; height:184px; padding:0; color:#d7ba72; background:transparent; border:0; overflow:visible; text-shadow:0 2px 3px #000,0 0 7px #000; }
+.hud-aether-engraving { position:absolute; top:0; left:0; display:block; color:#c1a268; }
+.hud-aether-engraving svg { width:320px; height:184px; overflow:visible; }
+.hud-aether-clock .hud-ro-ico { position:absolute; top:34px; left:134px; width:52px; height:52px; color:#f0d99d; }
+.hud-aether-clock .hud-ro-ico svg { width:52px; height:52px; }
+.hud-aether-clock.is-night .hud-ro-ico { color:#ded9c5; }
+.hud-aether-clock .hud-ro-v { position:absolute; top:105px; left:10px; width:300px; max-width:none; text-align:center; font:600 32px/38px Georgia,'Times New Roman',serif; letter-spacing:1px; color:#f1e8cf; }
+.hud-aether-phase { position:absolute; top:84px; left:0; width:320px; text-align:center; font:600 14px/18px sans-serif; letter-spacing:2px; text-transform:uppercase; }
+.hud-aether-date { position:absolute; top:144px; left:12px; width:296px; text-align:center; white-space:nowrap; font:16px/20px Georgia,'Times New Roman',serif; color:#e1d4b1; }
+.hud-aether-clock.is-animated .hud-ro-ico { animation:hud-aether-breathe 9s ease-in-out infinite; }
+.hud-aether-clock.is-animated .hud-aether-engraving { animation:hud-aether-glimmer 13s ease-in-out infinite; }
+@keyframes hud-aether-breathe { 0%,100% { opacity:.8; transform:translateY(0); } 50% { opacity:1; transform:translateY(-2px); } }
+@keyframes hud-aether-glimmer { 0%,100% { opacity:.7; } 50% { opacity:1; } }
+@media(prefers-reduced-motion:reduce) { .hud-aether-clock.is-animated .hud-ro-ico,.hud-aether-clock.is-animated .hud-aether-engraving { animation:none; } }
+
+/* Keep the reserved weather width; only short text shifts inside it. Long
+   labels start at the left edge and retain the existing marquee travel. */
+.hud-ro-v.is-centered:not(.is-scrolling) { text-align:center; }
+.hud-ro-v.is-centered:not(.is-scrolling) .hud-weather-label { margin-left:auto; margin-right:auto; }

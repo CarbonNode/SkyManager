@@ -6,6 +6,7 @@
 namespace RE
 {
 	class Actor;
+	class TESQuest;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +82,12 @@ namespace FollowerFrameworks
 	// Read-only. Safe to call on any actor, including one in no aliases at all.
 	Detection Probe(RE::Actor* actor);
 
+	// THE follow-package test, shared so two modules cannot disagree about it.
+	// Checks the procedure as well as the legacy package type: a package built
+	// from a template (NFF's, most modern mods') reports type kPackage, and a
+	// type-only test called those "not a follow" (fix_actions did, 2026-09-23).
+	bool IsFollowPackage(const RE::TESPackage* pkg);
+
 	// Spec index when the actor herself SHIPS in a one-companion mod's plugin
 	// (the matchByActorPlugin specs: Amaniri, Vayne), else -1. This answers
 	// "is she framework-OWNED" where Probe() answers "is she framework-DRIVEN
@@ -88,6 +95,14 @@ namespace FollowerFrameworks
 	// no follow alias, which is exactly when a caller is most tempted to
 	// hand her to NFF. Deliberately no alias or controller-quest requirement.
 	int OwningCompanionSpec(RE::Actor* actor);
+
+	// Verified custom recruitment adapter (currently Melana). Identity and
+	// quest/alias IDs come from the installed ESP, never the current load index.
+	bool HasRecruitmentAdapter(RE::Actor* actor);
+	RE::TESQuest* RecruitmentController(RE::Actor* actor);
+	// -1 unavailable/inconsistent, 0 dismissed, 1 recruited. Checks the owning
+	// quest's active AND dismissed aliases as well as the teammate flag.
+	int RecruitmentState(RE::Actor* actor);
 
 	// Tell the matched framework to hold this companion where she stands.
 	// Returns false when there is no mapping, the controller quest is missing,

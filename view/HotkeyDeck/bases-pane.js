@@ -148,8 +148,8 @@
      belt-and-braces alias in case the pane is ever renamed. */
   function portraitOf(name) {
     const fp = window.FolPane || window.FollowersPane;
-    if (!fp || typeof fp._portraitFor !== 'function') return null;
-    try { return fp._portraitFor({ name: name }) || null; } catch (_) { return null; }
+    if (!fp) return null;
+    try { return (fp.portraitInfoFor || fp._portraitFor).call(fp, { name: name }) || null; } catch (_) { return null; }
   }
 
   /* A round face, or initials when there is no portrait.
@@ -168,13 +168,13 @@
     /* `p.url` is an explicit, already-resolved image. The Followers pane never
        sets it — only the standalone harness does, so the face LAYOUT can be
        looked at without inventing files inside the real portraits/ folder. */
-    const plain = p.url || ('portraits/' + p.file);
+    const plain = p.url || (p.abs ? p.file : 'portraits/' + p.file);
     const img = h('img', {
       class: 'nb-face-img', alt: '', draggable: 'false',
-      src: p.url ? p.url : (plain + '?v=' + (p.mtime || 0)),
+      src: p.url || p.abs ? plain : (plain + '?v=' + (p.mtime || 0)),
     });
     /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
-    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, plain);
+    if (window.HDFaceFit) { if (p.abs) HDFaceFit.ensure(img, plain); else HDFaceFit.paintPortrait(img, plain); }
     let retried = false;
     img.addEventListener('error', function () {
       if (!retried) { retried = true; img.src = plain; return; }
@@ -291,7 +291,14 @@
           class: 'nb-seg', id: 'nb-seg-bases', type: 'button',
           title: "Nether's Follower Framework home bases — where dismissed followers live",
           onclick: () => setMode('bases'),
-        }, '🏰 Bases')),
+        }, '🏰 Bases'),
+        /* Third mode (2026-09-17): My Home is Your Home NG's master list —
+           residents-pane.js owns the body, this bar owns the switch. */
+        h('button', {
+          class: 'nb-seg', id: 'nb-seg-residents', type: 'button',
+          title: 'My Home is Your Home residents — everyone with a home, her whole day, set from anywhere',
+          onclick: () => setMode('residents'),
+        }, '⌂ Residents')),
       statusChip = h('span', { id: 'nb-status', class: 'hidden' }));
 
     body = h('section', { id: 'nb-body', class: 'hidden', 'aria-label': 'Home bases' },
@@ -380,27 +387,33 @@
       const s = document.getElementById('nb-search');
       if (s) setTimeout(() => { try { s.focus(); } catch (_) {} }, 0);
     }
+    if (mode === 'residents' && window.ResidentsPane) ResidentsPane.onEnter();
   }
 
   function applyMode() {
     const dmBody = document.getElementById('dm-body');
     const bases = S.mode === 'bases';
-    if (dmBody) dmBody.classList.toggle('hidden', bases);
+    const residents = S.mode === 'residents';
+    const places = !bases && !residents;
+    if (dmBody) dmBody.classList.toggle('hidden', !places);
     if (body) body.classList.toggle('hidden', !bases);
+    if (window.ResidentsPane) ResidentsPane.setActive(residents);
     const p = document.getElementById('nb-seg-places');
     const b = document.getElementById('nb-seg-bases');
-    if (p) p.classList.toggle('on', !bases);
+    const r = document.getElementById('nb-seg-residents');
+    if (p) p.classList.toggle('on', places);
     if (b) b.classList.toggle('on', bases);
+    if (r) r.classList.toggle('on', residents);
     if (statusChip) statusChip.classList.toggle('hidden', !bases);
     /* The Domains pane's own footer/capture belong to Places only — leaving
        the mark button under the Bases list would fire the wrong feature. */
     const foot = document.getElementById('dm-foot');
-    if (foot) foot.classList.toggle('nb-suppressed', bases);
+    if (foot) foot.classList.toggle('nb-suppressed', !places);
     /* The Places search now lives in this bar, so it hides with Places — the
        Bases list has its own search in #nb-rail-head and two search boxes for
        two different datasets, both on screen, is worse than none. */
     const dmToolbar = document.getElementById('dm-toolbar');
-    if (dmToolbar) dmToolbar.classList.toggle('nb-suppressed', bases);
+    if (dmToolbar) dmToolbar.classList.toggle('nb-suppressed', !places);
     /* applyFit's height compensation belongs to BOTH modes (fixed 2026-08-30).
        It used to be released here on the way back to Places, on the theory that
        "Places manages its own layout" — but Places is a card GRID inside a
@@ -1244,6 +1257,10 @@
      hook: this file loads after domains-pane.js, so wrapping its onShow /
      onHide is the least invasive way in — and if the pane is ever absent,
      the wrap simply never happens and nothing here runs. */
+  window.addEventListener('hd-portraits-changed', function () {
+    if (window.DomainsPane && DomainsPane.isShown() && S.mode === 'bases') render();
+  });
+
   function chainHost() {
     const dp = window.DomainsPane;
     if (!dp || dp.__nbChained) return false;
@@ -1256,12 +1273,14 @@
          change while the deck is closed, and a stale roster is how you file
          someone at a base that no longer exists. */
       if (S.mode === 'bases') refresh();
+      if (S.mode === 'residents' && window.ResidentsPane) ResidentsPane.onEnter();
       render();
       return r;
     };
     dp.onHide = function () {
       disarm();
       S.renaming = '';
+      if (window.ResidentsPane) ResidentsPane.onHide();
       return typeof hide === 'function' ? hide.apply(this, arguments) : undefined;
     };
     dp.__nbChained = true;
@@ -1278,6 +1297,7 @@
   /* Exposed for the harness and for the Omni provider below. */
   window.BasesPane = {
     setMode: setMode,
+    mode: function () { return S.mode; },
     refresh: refresh,
     state: function () { return S; },
     render: render,

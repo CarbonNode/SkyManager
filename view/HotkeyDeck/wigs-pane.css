@@ -831,3 +831,21 @@
   .wv-target { margin-left: 0; }
   .wv-mod-name { max-width: 140px; }
 }
+
+/* the NPC popout (2026-09-23): the tab's own section, hosted over the card */
+#wv-popout { position: fixed; inset: 0; z-index: 9600; background: rgba(6, 6, 9, .62);
+  display: flex; align-items: center; justify-content: center; }
+#wv-popout.hidden { display: none; }
+.wv-pop-card { width: min(92vw, 1500px); height: min(90vh, 1100px); display: flex; flex-direction: column;
+  background: #16161d; border: 1px solid #6d6047; border-radius: 14px; overflow: hidden;
+  transform: scale(var(--ui-scale, 1)); transform-origin: center; }
+.wv-pop-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 18px;
+  padding: 16px 22px; border-bottom: 1px solid #2e2e36; }
+.wv-pop-title { font-size: 26px; color: #e7cf8c; white-space: nowrap; }
+.wv-pop-sub { font-size: 18px; color: #bdb5a6; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wv-pop-x { font-size: 22px; width: 48px; height: 48px; border-radius: 10px; border: 1px solid #4a4638;
+  background: #1d1d25; color: #eee7db; cursor: pointer; }
+.wv-pop-x:hover { border-color: #d0ad53; color: #f0d79d; }
+.wv-pop-body { flex: 1; min-height: 0; display: flex; }
+.wv-pop-body > #wv-pane { flex: 1; min-height: 0; }
+.wv-tgt-lock { cursor: default; }

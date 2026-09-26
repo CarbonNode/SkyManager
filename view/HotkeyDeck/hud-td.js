@@ -150,7 +150,7 @@
   /* hours until a target o'clock; already there = the full day around */
   function hoursUntil(target) {
     if (!cur) return 24;
-    let h = Math.round((target - cur.hour + 24) % 24);
+    let h = Math.round(((target - (cur.hour % 24) + 24) % 24));
     if (h < 1) h = 24;
     return h;
   }

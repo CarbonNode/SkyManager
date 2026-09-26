@@ -183,6 +183,7 @@
 
   /* =============================================================== the stores ================ */
 
+  const renderRevisions = Object.create(null);
   const render = Object.create(null);   // canonical key -> 'icons/items/x.png'   (MRF, all lanes)
   const failed = Object.create(null);   // canonical key -> why it will never render
   const asked = Object.create(null);    // canonical key -> the VERBATIM formId we asked with
@@ -245,7 +246,16 @@
     let j = payload;
     if (typeof j === 'string') { try { j = JSON.parse(j); } catch (e) { return 0; } }
     if (!j || typeof j !== 'object') return 0;
-    const n = ingestRenderMap(j.icons || j.map || (j.failed ? null : j), lane);
+    let n = 0;
+    if (lane === 'items' && j.revisions && typeof j.revisions === 'object') {
+      Object.keys(j.revisions).forEach(function (raw) {
+        const key = normKey(raw), revision = j.revisions[raw];
+        if (renderRevisions[key] === revision) return;
+        renderRevisions[key] = revision;
+        delete render[key]; delete failed[key]; delete asked[key]; n++;
+      });
+    }
+    n += ingestRenderMap(j.icons || j.map || (j.failed ? null : j), lane);
     ingestFailMap(j.fails || j.failed);
     return n;
   }
@@ -423,6 +433,10 @@
     if (type === 'power') { out.push('GREATER_POWER'); return out; }
     if (type === 'lesser') { out.push('LESSER_POWER'); return out; }
     if (!type && slot === 'voice') { out.push('GREATER_POWER'); return out; }
+    // Spell-name heuristics apply only to magic. "Dreadlocks" is a wig,
+    // not a Dread spell: a false stock icon also suppresses its real render.
+    // Keep exact per-form/custom icons above this generic fallback intact.
+    if (RENDERABLE[type] || RENDERABLE[String(spec.kind || '').toLowerCase()]) return out;
     const t = tierKey(spec.tier);
     const school = schoolOf(spec);
     const arch = String(spec.archetype || '').toLowerCase();
@@ -802,6 +816,7 @@
     _stores: { render: render, failed: failed, asked: asked, byForm: byForm,
       generic: generic, overrides: overrides },
     _reset: function () {
+      for (const k in renderRevisions) delete renderRevisions[k];
       for (const k in render) delete render[k];
       for (const k in failed) delete failed[k];
       for (const k in asked) delete asked[k];

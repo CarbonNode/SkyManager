@@ -92,11 +92,32 @@
     'hd-outfit.js',
     'hd-quests.js',
     // ---- the heavy priority panes, first among the big files (DR1) ----
+    'get-away.js',
+    'ostim-tools.js',      // Live scene workspace + library
+    'scene-pane.js',       // the Scene TAB — a thin host for ostim-tools.js's
+                           // card (F7 lands here mid-scene). Must follow it:
+                           // onShow calls OstimTools.mount(). Every reply it
+                           // needs is osToolsResult, which ostim-tools.js
+                           // already owns, so no STUB_FNS entry of its own.
+    'npc-scene.js',        // NPC scene indicator + contextual quick access
+    'hd-dossier-client.js',
+    'hd-family-tree.js',
+    'hd-dossier-social.js',
+    'hd-dossier-tools.js',
     'followers-pane.js',   // F7-with-target deep-opens here; FolPane.init() re-run on land
+    'wardrobe-flair-model.js',
+    'wardrobe-flair-ui.js',
+    'wardrobe-nav.js',
     'wardrobe-pane.js',    // itemIconFor is cross-pane load-bearing (items / npcs / charsheet)
     // ---- the historical order for the remainder (every prev-chain preserved) ----
+    'wardrobe-flair.js',
+    'domain-areas.js',
+    'domain-gallery.js',
     'domains-pane.js',
     'bases-pane.js',       // chains DomainsPane.onShow/onHide; must follow domains-pane
+    'residents-pane.js',   // third Domains mode; mounts into #dm-pane, is switched by
+                           // bases-pane's segment bar, so it must follow BOTH. rs*
+                           // replies are response-style (rsState on enter): no STUB_FNS
     'hd-portal.js',        // chains window.hdOpen (app.js core is already parsed)
     'hd-itempick.js',      // shared load-order item picker — BEFORE the panes that
                            // open it (containers: auto-loot rules + sort pins).
@@ -128,6 +149,12 @@
                            // a racing deep-open parks on __hdPendingQuiver)
     'items-pane.js',
     'npcs-pane.js',
+    'cells-pane.js',      // Cells tab — the Finder's third roster (cx* replies are
+                          // response-style: the pane sends cxState on Show, so no
+                          // STUB_FNS entry)
+    'spells-pane.js',     // Spells tab — the Finder's fourth roster (sf* replies are
+                          // response-style: the pane sends sfState on Show, so no
+                          // STUB_FNS entry)
     'spid-pane.js',        // Distributions tab — SPID/SkyPatcher inspector for the
                            // crosshair NPC (dx* replies are response-style — the
                            // pane always asks first, so no STUB_FNS entry)
@@ -162,6 +189,7 @@
                           // page is a view of FolPane.householdRoster(), and it sends
                           // fdRefresh rather than owning a bridge, so every reply is
                           // response-style and it needs no STUB_FNS entry.
+    'appearance-presets.js',
     'charsheet-pane.js',
     'anim-pane.js',
     'ostim-pane.js',
@@ -177,8 +205,12 @@
                            // historical adjacency to wardrobe-spid below
     'wardrobe-spid.js',
     'sharmat-pane.js',
+    'sharmat-global.js',   // the CHIM-wide half of the Sharmat modal; the pane
+                           // degrades to NPC-only if this one never lands
     'recents-strip.js',
     'chim-flyout.js',
+    'fixes-flyout.js',     // the F7 card's 🔧 — reuses chim-flyout.css, so the
+                           // gate on .chim-fly already covers it
     'hd-textinput.js'
   ];
 
@@ -196,6 +228,8 @@
     'keys-pane.js': ['keys'],
     'items-pane.js': ['items'],
     'npcs-pane.js': ['npcs'],
+    'cells-pane.js': ['cells'],
+    'spells-pane.js': ['spells'],
     'spid-pane.js': ['distr'],
     'journal-pane.js': ['journal'],
     'transmog-pane.js': ['transmog'],
@@ -209,12 +243,14 @@
     'household-pane.js': ['household'],
     'charsheet-pane.js': ['sheet'],
     'anim-pane.js': ['anim'],
+    'scene-pane.js': ['scene'],      // the dedicated OStim page
     'ostim-pane.js': ['anim'],       // OStim body lives inside the Animations tab
     'zaz-pane.js': ['anim'],         // ZaZ body lives there too
     'faces-pane.js': ['faces'],
     'time-pane.js': ['time'],
     'finances-pane.js': ['finances'],
-    'bases-pane.js': ['domains']     // Bases is a mode of the Domains tab
+    'bases-pane.js': ['domains'],    // Bases is a mode of the Domains tab
+    'residents-pane.js': ['domains'] // Residents is the third mode of it
   };
 
   /* Global pane object per tab id — used to re-fire onShow when the pane lands and
@@ -222,11 +258,12 @@
   var PANE_FOR_TAB = {
     followers: 'FolPane', wardrobe: 'WardrobePane', domains: 'DomainsPane',
     containers: 'ContainersPane', rooms: 'RoomsPane', loot: 'LootPane',
-    keys: 'KeysPane', items: 'ItemsPane', npcs: 'NpcsPane', distr: 'DistrPane', mounts: 'MountsPane', loadouts: 'LoadoutsPane',
+    keys: 'KeysPane', items: 'ItemsPane', npcs: 'NpcsPane', cells: 'CellsPane', spells: 'SpellsPane', distr: 'DistrPane', mounts: 'MountsPane', loadouts: 'LoadoutsPane',
     transmog: 'TransmogPane', settle: 'SettlementPane', wigs: 'WigsPane',
     spellcraft: 'SpellCraftPane', survival: 'SurvivalPane', journal: 'JournalPane',
     highking: 'HighKingPane',
     household: 'HouseholdPane',
+    scene: 'ScenePane',
     sheet: 'CharSheetPane', anim: 'AnimPane', faces: 'FacesPane', time: 'TimePane',
     finances: 'FinancesPane'
   };
@@ -262,6 +299,7 @@
    * loaded pane, but stubbing the ack is free and cannot orphan since the pane
    * installs it). */
   var STUB_FNS = [
+    'gaShow',
     // followers-pane.js — pushed unprompted at open (main.cpp ~4142-4198)
     'fdConfig', 'fdTarget', 'fdPortraits', 'fdCrops', 'fdState',
     'fdLiveParty', 'fdNff', 'fdFertility', 'hudCfgState', 'fdSaved',

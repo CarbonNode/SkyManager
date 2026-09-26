@@ -159,6 +159,7 @@ window.DomainsPane = (function () {
     shown: false,
     inited: false,
     expanded: new Set(),   // parent ids whose sub-areas are open (NOT persisted)
+    display: window.DomainAreas ? DomainAreas.readView('skymanager.domain-view.v1') : {view:'domains',sort:'order'},
     /* Click-to-filter by tag. Held FOLDED (lower case) because that is the
        matching form; the chip shows the spelling the matching domain carries.
        Separate from the search box on purpose — typing "inn" should still find
@@ -288,6 +289,7 @@ window.DomainsPane = (function () {
            an older view build), so omitting them here would make removing the
            last tag — or clearing a photo — impossible. */
         tags: (m.tags || []).slice(), image: String(m.image || ''),
+        photos: window.DomainGallery ? DomainGallery.normalize(m.photos, m.image) : (m.photos || []),
         cellName: m.cellName, cellId: m.cellId >>> 0, cellEdid: m.cellEdid,
         worldspaceId: m.worldspaceId >>> 0, worldspaceName: m.worldspaceName,
         interior: !!m.interior, x: m.x, y: m.y, z: m.z, angleZ: m.angleZ,
@@ -318,7 +320,10 @@ window.DomainsPane = (function () {
 
   /* Rail groups by TOP-LEVEL only — a sub-area lives under its parent, never
      as its own rail row, and never inflates a category's count. */
-  function countIn(cat) { return state.marks.filter((m) => !isChildMark(m) && m.category === cat).length; }
+  function countIn(cat) {
+    if (ui.display.view !== 'domains' && window.DomainAreas) return DomainAreas.cardRows(state.marks, {view:ui.display.view,category:cat}).length;
+    return state.marks.filter((m) => !isChildMark(m) && m.category === cat).length;
+  }
 
   /* Break any 2-level nesting / dangling / self parent on load: a child whose
      "parent" is itself a child (or missing, or itself) is promoted to top level
@@ -489,8 +494,14 @@ window.DomainsPane = (function () {
        cancels another. */
     const tf = ui.tagFilter;
     const hit = (m) => (!q || haystack(m).includes(q)) && hasTag(m, tf);
+    if (ui.display.view !== 'domains' && window.DomainAreas) {
+      return DomainAreas.cardRows(state.marks, {view:ui.display.view,sort:ui.display.sort,category:ui.cat === ALL ? '' : ui.cat,
+        matches:(m,p) => (!q || (haystack(m) + '\n' + (p ? p.name + '\n' + p.category : '')).toLowerCase().includes(q)) && hasTag(m,tf)});
+    }
     const out = [];
-    state.marks.forEach((p) => {
+    const ordered = state.marks.slice();
+    if (ui.display.sort !== 'order') ordered.sort((a,b) => a.name.localeCompare(b.name));
+    ordered.forEach((p) => {
       if (isChildMark(p)) return;                          // rendered under its parent, not here
       if (ui.cat !== ALL && p.category !== ui.cat) return; // family filtered by the parent's category
       const kids = childrenOf(p.id);
@@ -520,7 +531,16 @@ window.DomainsPane = (function () {
    * degrades to "no faces" if that pane is absent (the standalone harness) or
    * the roster is empty (Followers never opened), and never throws. */
 
-  const FACE_CAP = 5;              // faces shown before the +N pill
+  /* Faces shown before the +N pill. Was a flat 5, which capped the basement at
+     "+3" with two thirds of the row empty (Rober, 2026-09-17: "this can fit way
+     more faces"). A sub-area row spans the whole panel, so it holds far more
+     than a card does; the card's strip wraps to a second line instead of
+     shrinking the count. Deliberately NOT measured at render time — the LAWS
+     say flex/grid over JS layout reads, and a wrong measurement in Ultralight
+     is worse than a generous constant. */
+  const FACE_CAP_CARD = 10;        // ~34px + 9 x 29px = 295px, inside a card
+  const FACE_CAP_CHILD = 18;       // ~24px + 17 x 20px = 364px on a full-width row
+  function faceCap(isChild) { return isChild ? FACE_CAP_CHILD : FACE_CAP_CARD; }
   let facesRoster = [];            // this render's roster, refreshed once per renderList
 
   /* The homes ONE follower can be claimed by, in the order the face should
@@ -595,8 +615,16 @@ window.DomainsPane = (function () {
     const homeLine = f.hit
       ? '⌂ ' + f.hit.home + (f.hit.src ? ' · ' + f.hit.src : '')
       : '';
+    /* The RING says who claims her (Rober, 2026-09-17: "color around profile
+       picture changes based on NFF, MH or manual"). homesOf already credits the
+       source and the hover already names it; the ring makes a cluster readable
+       without hovering every face — gold for what YOU typed, which also beats
+       both mods in the matching order, then NFF, then MHiYH. */
+    const srcCls = !f.hit ? ''
+      : f.hit.src === 'NFF' ? ' src-nff'
+        : f.hit.src === 'MHiYH' ? ' src-mhiyh' : ' src-manual';
     const face = h('span', {
-      class: 'dm-face' + (f.portraitUrl ? ' zoom' : ''),
+      class: 'dm-face' + (f.portraitUrl ? ' zoom' : '') + srcCls,
       title: name + (homeLine ? ' — ' + homeLine : '') +
              (f.portraitUrl ? ' — click to enlarge' : ''),
       // A face is not the row: never travel, never arm a row-drag from it.
@@ -631,12 +659,13 @@ window.DomainsPane = (function () {
   }
 
   /* The cluster for one top-level row, or null when nobody matches. */
-  function faceCluster(m) {
+  function faceCluster(m, isChild) {
     const people = followersForDomain(m);
     if (!people.length) return null;
+    const cap = faceCap(isChild);
     const wrap = h('div', { class: 'dm-faces' });
-    people.slice(0, FACE_CAP).forEach((f) => wrap.append(faceEl(f)));
-    const extra = people.length - FACE_CAP;
+    people.slice(0, cap).forEach((f) => wrap.append(faceEl(f)));
+    const extra = people.length - cap;
     if (extra > 0) {
       wrap.append(h('span', {
         class: 'dm-face-more',
@@ -683,6 +712,8 @@ window.DomainsPane = (function () {
     const q = s.indexOf('?');
     const path = q === -1 ? s : s.slice(0, q);
     const mt = q === -1 ? null : /(?:^|&)v=(\d+)/.exec(s.slice(q + 1));
+    const abs = /^icons\/(?:npcs|mounts)\/[^/\\:]+\.(?:png|webp)$/i.test(path);
+    if (!abs && !/^(?:portraits\/)?[^/\\:]+\.[a-z0-9]+$/i.test(path)) return null;
     const file = path.slice(path.lastIndexOf('/') + 1);
     /* The lightbox rebuilds the src as 'portraits/' + file, so anything that
        is not a plain sibling file name — a data: URI, an absolute URL — cannot
@@ -695,7 +726,7 @@ window.DomainsPane = (function () {
     const stem = dot === -1 ? file : file.slice(0, dot);
     return {
       slug: stem.split('~')[0] || stem,   // a re-capture lands as <slug>~2.png
-      file: file, ext: ext, mtime: mt ? Number(mt[1]) : 0,
+      file: abs ? path : file, abs: abs, ext: ext, mtime: mt ? Number(mt[1]) : 0,
     };
   }
 
@@ -717,8 +748,9 @@ window.DomainsPane = (function () {
     closeArt();                       // never stack two full-screen overlays
     try {
       fp._openLightbox({
-        slug: info.slug, file: info.file, ext: info.ext, mtime: info.mtime,
+        slug: info.slug, file: info.file, ext: info.ext, mtime: info.mtime, abs: info.abs,
         name: String(who.name || ''),
+        formId: who.formId || '',   // lets the lightbox offer ◉ Retake photo
       });
     } catch (e) { return false; }
     return !!folLbEl();
@@ -791,10 +823,16 @@ window.DomainsPane = (function () {
        to show, and the click would answer with "No photo yet". */
     const place = m.interior ? 'Interior' : 'Exterior';
     let loadedSrc = '';
-    const box = h('span', {
+    /* ⚠ A CARD's hero carries NO tooltip. It used to say "Interior", and the
+       sub-areas button used to sit in its top-left corner: hovering anywhere near that
+       button's edge surfaced the HERO's tip instead of the button's own, which
+       is what made the control feel like it vanished under the pointer (Rober,
+       2026-09-17). The card already states the place as a visible chip in its
+       body, so the tip was duplicating what is written two lines below it. A
+       CHILD row keeps it — its circle is 23px with no chip of its own. */
+    const box = h('span', Object.assign({
       class: 'dm-thumb-box ' + (m.interior ? 'interior' : 'exterior'),
-      title: place,
-    });
+    }, isChild ? { title: place } : {}));
     if (isChild) {
       box.addEventListener('click', (e) => {
         if (!loadedSrc) return;        // nothing drawn yet: the row keeps the click
@@ -843,6 +881,31 @@ window.DomainsPane = (function () {
           // the in-game context menu opens — Ultralight drops `contextmenu`)
           onMousedown: (e) => { if (e.button === 0) e.stopPropagation(); },
         }, '⛶'));
+        /* Photos button, bottom-left of the hero, ALWAYS visible. The gallery
+           existed since 2026-09-25 but its only on-card door was a 10px
+           "2 photos" chip that read as a caption — Rober took an interior
+           shot to go with the exterior and asked for "a little button
+           somewhere on domain to see images" (2026-09-26). It lands here, on
+           the picture it is about, and only once the hero has DRAWN (same
+           rule as the ⛶ above): a domain with photos always has a cover, so
+           an imageless hero never advertises an album it cannot show. The
+           body chip then retires — one door per card, not two. */
+        const shots = window.DomainGallery ? DomainGallery.normalize(m.photos, m.image).length : 0;
+        if (shots) {
+          box.append(h('button', {
+            class: 'dm-gallery-btn', type: 'button',
+            title: 'Open the photo gallery — every shot of this place, tagged Exterior / Interior',
+            'aria-label': 'Photos: ' + shots,
+            onClick: (e) => { e.stopPropagation(); openGallery(m); },
+            onMousedown: (e) => { if (e.button === 0) e.stopPropagation(); },
+          },
+            h('img', { src: 'icons/custom/hk-portrait.png', alt: '', 'aria-hidden': 'true', draggable: 'false' }),
+            h('span', { class: 'dm-gallery-n' }, String(shots)),
+            h('span', { class: 'dm-gallery-w' }, shots === 1 ? 'photo' : 'photos')));
+          const row = box.parentNode && box.parentNode.classList && box.parentNode.classList.contains('dm-row') ? box.parentNode : null;
+          const chip = row && row.querySelector('.dm-gallery-link');
+          if (chip) chip.remove();
+        }
       }
       setArt(art, loadedSrc, m.image || current);
       if (probe.parentNode) probe.parentNode.removeChild(probe);   // its job is done
@@ -987,6 +1050,7 @@ window.DomainsPane = (function () {
       n++;
     });
     state.imageCrops = map;
+    dropRowCache();  // crop values are outside rowSig; cached thumbnails must be rebuilt
   }
 
   /* ---- the large view + editor -----------------------------------------
@@ -1061,11 +1125,11 @@ window.DomainsPane = (function () {
     foot.textContent = '';
     const c = cropFor(url);
     foot.append(h('button', {
-      class: 'dm-art-btn', type: 'button',
+      class: 'dm-art-btn dm-art-crop-btn', type: 'button',
       title: 'Pan and zoom this photo. Nothing is re-saved to disk — the deck '
            + 'remembers the framing and draws it everywhere this picture appears.',
       onClick: function (e) { e.stopPropagation(); beginCrop(m, url, art, frame, foot); },
-    }, '✎ Adjust this photo'));
+    }, 'Crop photo'));
     foot.append(h('span', { class: 'dm-art-val' }, c ? cropPhrase(c) : 'original framing'));
   }
 
@@ -1217,6 +1281,7 @@ window.DomainsPane = (function () {
     toGame('pdCropSave', JSON.stringify(c
       ? { file: key, z: c.z, x: c.x, y: c.y }
       : { file: key, clear: true }));
+    dropRowCache();
     applyArtCrop(art, c);
     renderArtFoot(m, url, art, frame, foot);
     renderList();
@@ -1246,20 +1311,157 @@ window.DomainsPane = (function () {
      redraw, then starts photo mode on THIS domain; the file it writes is
      attached to the mark C++-side, because the palette is gone by then and a
      push to a closed view is dropped. */
-  function photographPlace(m) {
+  let photoFovDialog = null;
+  let photoFovFocus = null;
+  function closePhotoFov() {
+    if (!photoFovDialog) return;
+    photoFovDialog.remove(); photoFovDialog = null;
+    if (photoFovFocus && document.contains(photoFovFocus)) photoFovFocus.focus();
+    photoFovFocus = null;
+  }
+  function openGallery(m) {
+    if (!window.DomainGallery) return;
     closeCtx(); closeArt();
-    /* The staged hour and sky ride WITH the request. C++ applies them just
-       before it hands over the camera and puts them back when photo mode ends
-       — however it ends — so a cancelled shot leaves the world as it found it.
-       Both are omitted when nothing is chosen, which is exactly what every
-       photo taken before this build did. */
-    const req = { id: m.id };
-    if (scene.hour >= 0) req.hour = scene.hour;
-    if (scene.weather) req.weather = scene.weather;
-    toGame('pdPhoto', JSON.stringify(req));
-    toast(scene.hour >= 0 || scene.weather
-      ? 'Setting the scene — E shoots, Esc cancels'
-      : 'Pick your angle — E shoots, Esc cancels');
+    DomainGallery.open({name:m.name,photos:m.photos,cover:m.image,
+      onAdd:function(){photographPlace(m);},
+      onChange:function(photos,cover){m.photos=photos;m.image=cover;noImage.delete(m.id);save();renderList();}});
+  }
+  // domain-photo-lighting: draft all controls; one explicit start dispatches.
+  function photographPlace(m) {
+    closeCtx(); closeArt(); closePhotoFov();
+    photoFovFocus = document.activeElement;
+    const draft = { fov: 'keep', hour: scene.hour, weather: scene.weather,
+      sceneLight: 'natural', lightStrength: 1, photoLabel:'', photoTags:[m.interior?'Interior':'Exterior'], makeCover:!m.image, exposure: sceneExposure(), editedExposure: false };
+    const box = h('div', { class: 'dm-photo-fov-box', role: 'dialog',
+      'aria-modal': 'true', 'aria-labelledby': 'dm-photo-fov-title' });
+    box.appendChild(h('h2', { id: 'dm-photo-fov-title' }, 'Frame & light your photo'));
+    box.appendChild(h('p', {}, m.name + ' — choose your view and lighting, then enter photo mode.'));
+    function choices(parent, key, rows) {
+      const group = h('div', { class: 'dm-photo-options', role: 'group', 'aria-label': key });
+      rows.forEach(function (row) {
+        const btn = h('button', { type: 'button', 'data-choice': key, 'data-value': String(row[0]),
+          onClick: function () {
+            if(key === 'weather' && row[0] !== 0) {
+              const p=scene.info && scene.info.presets && scene.info.presets[row[0]];
+              if(!p)return; draft.weather=p.id;
+            } else draft[key]=row[0];
+            if(key === 'exposure') draft.editedExposure = true; sync();
+          }
+        }, row[1]);
+        if(key === 'fov') btn.dataset.fov = row[0];
+        group.appendChild(btn);
+      }); parent.appendChild(group); return group;
+    }
+    box.appendChild(h('h3', {}, 'Camera view'));
+    choices(box, 'fov', [['keep','Keep FOV'],['out','Wider − zoom out'],['in','Closer − zoom in']]);
+    const columns = h('div', {class:'dm-photo-columns'});
+    const lighting = h('section', {class:'dm-photo-section'});
+    // domain-photo-scene-fill: render-time lights follow the free camera.
+    lighting.appendChild(h('h3', {}, 'Light the scene'));
+    choices(lighting, 'sceneLight', [['natural','Natural'],['soft','Soft fill'],['bright','Bright room']]);
+    const lightStatus = h('p', {class:'dm-photo-help',role:'status'});
+    lighting.appendChild(lightStatus);
+    const lightValue = h('output', {'aria-live':'polite',class:'dm-photo-exp-value'});
+    const lightButtons = h('div', {class:'dm-photo-exp-controls'},
+      h('button', {type:'button','aria-label':'Reduce scene light strength',onClick:function(){adjustLight(-0.25);}}, '−'),
+      lightValue,
+      h('button', {type:'button','aria-label':'Increase scene light strength',onClick:function(){adjustLight(0.25);}}, '+'));
+    lighting.appendChild(lightButtons);
+    lighting.appendChild(h('p', {class:'dm-photo-help'}, 'Tap E to place up to 12 lights where the camera is. A corner widget shows color, brightness and reach, with keys to adjust each light while flying. Backspace undoes the last light. All lights disappear after saving or cancelling.'));
+    lighting.appendChild(h('h3', {}, 'Saved-photo brightness'));
+    choices(lighting, 'exposure', [[0,'As shot'],[0.75,'Gentle lift'],[1.5,'Brighten'],[2.5,'Strong lift']]);
+    const expValue = h('output', {'aria-live':'polite',class:'dm-photo-exp-value'});
+    const expButtons = h('div', {class:'dm-photo-exp-controls'},
+      h('button', {type:'button','aria-label':'Photo a quarter stop darker',onClick:function(){adjust(-0.25);}}, '−'),
+      expValue,
+      h('button', {type:'button','aria-label':'Photo a quarter stop brighter',onClick:function(){adjust(0.25);}}, '+'));
+    lighting.appendChild(expButtons);
+    lighting.appendChild(h('p', {class:'dm-photo-help'}, 'Applied to the saved image only; it does not brighten the live room. Remembered for future domain photos.'));
+    const outdoor = h('section', {class:'dm-photo-section'});
+    outdoor.appendChild(h('h3', {}, 'Outdoor light'));
+    outdoor.appendChild(h('p', {class:'dm-photo-help'}, 'Time and sky change for this shot, then restore. They do not reliably brighten interiors.'));
+    outdoor.appendChild(h('h4', {}, 'Time of day'));
+    choices(outdoor, 'hour', [[-1,'As it is']].concat(HOURS.map(function(t){return [t.h,t.label];})));
+    outdoor.appendChild(h('h4', {}, 'Sky'));
+    choices(outdoor, 'weather', [[0,'As it is']].concat(SKY_KINDS.map(function(k){return [k.key,k.label];})));
+    columns.append(lighting,outdoor);box.appendChild(columns);
+    const album = h('section',{class:'dm-photo-album'});
+    album.appendChild(h('h3',{},'Save to this domain’s gallery'));
+    const labelInput=h('input',{type:'text',maxlength:'80',placeholder:'Photo name (optional)','aria-label':'Photo name'});
+    labelInput.addEventListener('input',function(){draft.photoLabel=labelInput.value;});
+    const tagInput=h('input',{type:'text',maxlength:'420',placeholder:'Interior, Library, Night','aria-label':'Photo tags, separated by commas'});
+    tagInput.value=draft.photoTags.join(', ');
+    tagInput.addEventListener('input',function(){draft.photoTags=mergeTags([],tagInput.value.split(','));});
+    const coverInput=h('input',{type:'checkbox'});coverInput.checked=draft.makeCover;
+    coverInput.addEventListener('change',function(){draft.makeCover=coverInput.checked;});
+    album.append(labelInput,tagInput,h('label',{class:'dm-photo-cover'},coverInput,' Use this shot as the cover'));
+    box.appendChild(album);
+    const actions = h('div', {class:'dm-photo-actions'});
+    actions.appendChild(h('button', {type:'button',class:'dm-photo-start',onClick:function(){
+      const settings = Object.assign({}, draft);
+      if (!scene.info && !draft.editedExposure) delete settings.exposure;
+      closePhotoFov(); startPlacePhoto(m,settings.fov,settings);
+    }}, 'Start photo mode'));
+    actions.appendChild(h('button', {type:'button',class:'dm-photo-fov-cancel',onClick:closePhotoFov}, 'Cancel'));
+    actions.insertBefore(h('p', {class:'dm-photo-fov-note'}, 'Tap E: place light · Backspace: undo · Enter: save & return · SkyManager key: cancel'), actions.firstChild);
+    const content = h('div', {class:'dm-photo-content'});
+    while (box.firstChild) content.appendChild(box.firstChild);
+    box.append(content, actions);
+    function adjust(delta) { draft.exposure = Math.max(-sceneExpMax(),Math.min(sceneExpMax(),Math.round((draft.exposure+delta)*4)/4));draft.editedExposure=true;sync(); }
+    function adjustLight(delta) { draft.lightStrength = Math.max(0.25,Math.min(3,draft.lightStrength+delta));sync(); }
+    function sync() {
+      if (!draft.editedExposure) draft.exposure = sceneExposure();
+      box.querySelectorAll('[data-choice]').forEach(function(btn){
+        const key=btn.dataset.choice;let value=btn.dataset.value;
+        if(key === 'weather' && value !== '0') {
+          const preset=scene.info && scene.info.presets && scene.info.presets[value];
+          btn.disabled=!preset;
+          // Native ids, never invented weather records.
+          value=preset ? String(preset.id) : 'unavailable';
+        }
+        if(key === 'sceneLight' && value !== 'natural') btn.disabled=!(scene.info && scene.info.sceneLightAvailable);
+        if(key === 'exposure') btn.disabled=!scene.info;
+        const selected=String(draft[key])===value;
+        btn.classList.toggle('on',selected);btn.setAttribute('aria-pressed',String(selected));
+      });
+      expButtons.querySelectorAll('button').forEach(function(btn){btn.disabled=!scene.info;});
+      expValue.textContent=scene.info ? expPhrase(draft.exposure) : 'Reading settings…';
+      lightButtons.querySelectorAll('button').forEach(function(btn,i){btn.disabled=!(scene.info && scene.info.sceneLightAvailable) || (i===0 ? draft.lightStrength<=0.25 : draft.lightStrength>=3);});
+      lightValue.textContent=Math.round(draft.lightStrength*100)+'% light strength';
+      lightStatus.textContent=!(scene.info && scene.info.sceneLightAvailable) ? 'Scene lighting needs the matching SkyManager update.' : draft.sceneLight==='natural' ? 'Start with the room’s existing light; tap E to add soft lights.' : draft.sceneLight==='soft' ? 'Gentle fill for nearby faces and details.' : 'Broad fill for a dark room or domain photo.';
+    }
+    photoFovDialog=h('div',{class:'dm-photo-fov',onClick:function(e){if(e.target===photoFovDialog)closePhotoFov();}});
+    photoFovDialog._sync=sync;
+    photoFovDialog.appendChild(box);document.body.appendChild(photoFovDialog);sync();askScene();
+    box.querySelector('[data-fov="keep"]').focus();
+  }
+  function photoFovKey(e) {
+    if (!photoFovDialog) return false;
+    if (e.key === 'Escape') closePhotoFov();
+    else if ((e.key === 'Enter' || e.key === ' ') && document.activeElement && document.activeElement.tagName === 'BUTTON') {
+      const active = document.activeElement;
+      if (active && photoFovDialog.contains(active) && active.tagName === 'BUTTON' && !active.disabled) active.click();
+    } else if (e.key === 'Tab') {
+      const buttons = Array.from(photoFovDialog.querySelectorAll('button,input')).filter(function(b){return !b.disabled;});
+      let i = buttons.indexOf(document.activeElement);
+      i = (i + (e.shiftKey ? buttons.length - 1 : 1)) % buttons.length;
+      buttons[i].focus();
+    }
+    else if (document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return false;
+    return true;
+  }
+  function startPlacePhoto(m, fov, settings) {
+    closeCtx(); closeArt();
+    const chosen=settings || scene;
+    const req={id:m.id,fov:fov};
+    if(chosen.hour>=0)req.hour=chosen.hour;
+    if(chosen.weather)req.weather=chosen.weather;
+    if(typeof chosen.exposure==='number')req.exposure=chosen.exposure;
+    if(chosen.sceneLight) { req.sceneLight=chosen.sceneLight;req.lightStrength=chosen.lightStrength; }
+    req.photoLabel=chosen.photoLabel || '';req.photoTags=chosen.photoTags || [];req.makeCover=!!chosen.makeCover;
+    flushSave();
+    toGame('pdPhoto',JSON.stringify(req));
+    toast('Setting the scene — ENTER saves & returns. Your SkyManager key cancels.');
   }
 
   /* ======================================================= scene staging ==
@@ -1401,8 +1603,8 @@ window.DomainsPane = (function () {
     // ---- exposure
     const v = sceneExposure();
     const expRow = h('div', { class: 'dm-scene-row' },
-      h('span', { class: 'dm-scene-lbl' }, 'Bright'));
-    expRow.append(sceneStep('−', 'Half a stop darker', () => {
+      h('span', { class: 'dm-scene-lbl' }, 'Photo'));
+    expRow.append(sceneStep('−', 'Saved photo a quarter stop darker', () => {
       setExposure(sceneExposure() - EXP_STEP); paintScene(box);
     }));
     expRow.append(h('span', {
@@ -1411,7 +1613,7 @@ window.DomainsPane = (function () {
            + 'stops. This is the one for a place that is dark because it IS '
            + 'dark — a cave will not brighten because you moved the sun.',
     }, expPhrase(v)));
-    expRow.append(sceneStep('+', 'Half a stop brighter', () => {
+    expRow.append(sceneStep('+', 'Saved photo a quarter stop brighter', () => {
       setExposure(sceneExposure() + EXP_STEP); paintScene(box);
     }));
     if (v) {
@@ -1419,6 +1621,7 @@ window.DomainsPane = (function () {
         () => { setExposure(0); paintScene(box); }));
     }
     box.append(expRow);
+    box.append(h('p',{class:'dm-scene-exposure-note'},'Photo brightness affects the saved image, not the live room. For interior lighting and placed lights, open Photograph this place.'));
   }
 
   function sceneChip(label, glyph, on, tip, onPick) {
@@ -1529,7 +1732,7 @@ window.DomainsPane = (function () {
       onKeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ui.cat = cat; ui.sel = -1; render(); } },
       // (mark drops onto this row are hit-scanned by the mark row's PDrag.arm)
     },
-      h('span', { class: 'dm-rail-name' }, isAll ? 'All domains' : label),
+      h('span', { class: 'dm-rail-name' }, isAll ? (ui.display.view === 'subdomains' ? 'All subdomains' : ui.display.view === 'all' ? 'All places' : 'All domains') : label),
       h('span', { class: 'dm-rail-count' }, String(count)),
     );
   }
@@ -1537,7 +1740,7 @@ window.DomainsPane = (function () {
   function renderRail() {
     const rl = els.railList;
     rl.textContent = '';
-    rl.append(railRow(ALL, 'All domains', topLevelMarks().length, -1));
+    rl.append(railRow(ALL, 'All domains', ui.display.view === 'domains' ? topLevelMarks().length : countIn(''), -1));
     state.categories.forEach((c, i) => rl.append(railRow(c, c, countIn(c), i)));
     if (ui.cat !== ALL && state.categories.indexOf(ui.cat) === -1) ui.cat = ALL;
   }
@@ -1587,7 +1790,7 @@ window.DomainsPane = (function () {
      class cleanup, because they remove all three classes on leave/drop. */
   function cardBA(ev) {
     const el = els.list.querySelector('.dm-row.drop-before, .dm-row.drop-after, .dm-row.drop-into');
-    if (!el || el.classList.contains('dm-child')) return;
+    if (!el || isChildMark(markById(el.dataset.id))) return;
     const r = el.getBoundingClientRect();
     const rel = r.width ? (ev.clientX - r.left) / r.width : 0.5;
     const before = rel <= 1 / 3, after = rel >= 2 / 3;
@@ -1630,16 +1833,32 @@ window.DomainsPane = (function () {
   }
 
   function rowSig(m, meta) {
-    return [m.id, meta && meta.child ? 1 : 0, meta && meta.hasKids ? 1 : 0,
+    return [m.id, meta && meta.child ? 1 : 0, meta && meta.hasKids ? 1 : 0, meta && meta.fullCard ? 1 : 0,
+      meta && meta.parent ? meta.parent.name : '',
       meta && meta.expanded ? 1 : 0, m.name, m.note || '', m.category || '',
       m.interior ? 1 : 0, placeOf(m), (m.tags || []).join('\u0001'),
-      ui.tagFilter || '', ui.cat === ALL ? 1 : 0, m.image || '',
-      noImage.has(m.id) ? 1 : 0].join('\u0000');
+      ui.tagFilter || '', ui.cat === ALL ? 1 : 0, m.image || '', JSON.stringify(m.photos || []),
+      noImage.has(m.id) ? 1 : 0,
+      childrenOf(m.id).map(c => [c.id,c.name,c.image || '',c.note || ''].join('\u0001')).join('\u0002')].join('\u0000');
+  }
+
+  function domainAreaOptions(parent) {
+    return {parent, owner:'domains', items:() => childrenOf(parent.id),
+      fallback:'icons/custom/hm-rooms.png',
+      images:m => noImage.has(m.id) && !m.image ? [] : imgCandidates(m),
+      // the sub-area's whole album for the browser's lightbox (‹ › steps through it)
+      photos:m => (window.DomainGallery ? DomainGallery.normalize(m.photos, m.image) : [])
+        .map(p => ({src:p.image, label:[p.label].concat(p.tags || []).filter(Boolean).join(' · ')})),
+      actions:() => [
+        {label:'Go there',run:m => recall(m)},
+        {label:'Edit',run:(m,r) => openChildMenu(m,r.left,r.bottom)},
+      ]};
   }
 
   function markRow(m, i, meta) {
     const q = ui.filter.trim();
     const isChild = !!(meta && meta.child);
+    const fullCard = !!(meta && meta.fullCard);
     const hl = [];
 
     const sub = [];
@@ -1653,19 +1872,22 @@ window.DomainsPane = (function () {
     const pe = h('span', { class: 'dm-chip' + (m.interior ? '' : ' exterior'), title: placeTitle(m) });
     hlInto(hl, pe, placeGlyph(m) + ' ', placeOf(m));
     sub.push(pe);
-    if (ui.cat === ALL && m.category) {
+    const displayCategory = fullCard && meta.parent ? meta.parent.category : m.category;
+    if (ui.cat === ALL && displayCategory) {
       const ce = h('span', { class: 'dm-chip cat', title: 'Category' });
-      hlInto(hl, ce, '', m.category);
+      hlInto(hl, ce, '', displayCategory);
       sub.push(ce);
     }
     const tagWrap = rowTags(m, q, hl);
     if (tagWrap) sub.push(tagWrap);
     // Who is standing there right now, as faces. Nothing when nobody is.
+    const galleryCount=window.DomainGallery ? DomainGallery.normalize(m.photos,m.image).length : 0;
+    if (galleryCount) sub.push(h('button',{type:'button',class:'dm-chip dm-gallery-link',onMousedown:(e)=>e.stopPropagation(),onClick:(e)=>{e.stopPropagation();openGallery(m);}},galleryCount+' '+(galleryCount===1?'photo':'photos')));
     const whoEl = whoStrip(m);
     if (whoEl) sub.push(whoEl);
 
     // uploaded image when domain-images/<id>.<ext> exists, else the initials medal
-    const thumb = thumbFor(m, isChild);
+    const thumb = thumbFor(m, isChild && !fullCard);
 
     // chevron column: a toggle when this top-level row has sub-areas, an
     // invisible spacer when it doesn't (so every parent medal stays aligned).
@@ -1673,13 +1895,18 @@ window.DomainsPane = (function () {
     if (!isChild) {
       if (meta && meta.hasKids) {
         const open = !!meta.expanded;
-        chevron = h('button', {
+        /* A permanent labelled control below the hero: neither the image nor
+           its hover/zoom affordance shares this hit target. */
+        const kids = childrenOf(m.id).length;
+        chevron = window.DomainAreas ? DomainAreas.strip(domainAreaOptions(m)) : h('button', {
           class: 'dm-chev' + (open ? ' open' : ''),
-          title: open ? 'Hide sub-areas' : 'Show sub-areas',
+          title: open ? 'Hide the sub-areas' : 'Show the sub-areas',
           'aria-expanded': open ? 'true' : 'false',
           onClick: (e) => { e.stopPropagation(); toggleExpand(m.id); },
           onMousedown: (e) => e.stopPropagation(),   // don't arm a row-drag from the chevron
-        }, open ? '▾' : '▸');
+        },
+          h('span', { class: 'dm-chev-gl', 'aria-hidden': 'true' }, open ? '▾' : '▸'),
+          h('span', { class: 'dm-chev-n' }, String(kids) + (kids === 1 ? ' sub-area' : ' sub-areas')));
       } else {
         chevron = h('span', { class: 'dm-chev spacer', 'aria-hidden': 'true' });
       }
@@ -1689,7 +1916,7 @@ window.DomainsPane = (function () {
     hlInto(hl, nameEl, '', m.name);
 
     const rowEl = h('div', {
-      class: 'dm-row' + (isChild ? ' dm-child' : '') + (i === ui.sel ? ' sel' : ''),
+      class: 'dm-row' + (isChild ? (fullCard ? ' dm-subdomain-card' : ' dm-child') : '') + (i === ui.sel ? ' sel' : ''),
       role: 'option', data: { id: m.id },
       title: 'Travel to ' + m.name,
       onClick: () => recall(m),
@@ -1727,7 +1954,7 @@ window.DomainsPane = (function () {
         onStart: () => { dragKind = 'mark'; dragMarkId = m.id; closeCtx(); },
         onMove: (ev) => { pdScan(ev, [
           { sel: '.dm-rail-item:not(.all):not(.edit)', mode: 'into', eligible: (el) => !!el.dataset.cat },
-          { sel: '.dm-row:not(.dm-child)', mode: 'ba', eligible: (el) => el.dataset.id !== m.id },
+          { sel: '.dm-row:not(.dm-child)', mode: 'ba', eligible: (el) => el.dataset.id !== m.id && !isChildMark(markById(el.dataset.id)) },
         ]); cardBA(ev); },
         onDrop: (e) => {
           const t = pdTake();
@@ -1759,14 +1986,18 @@ window.DomainsPane = (function () {
         onCancel: () => { dragKind = null; dragMarkId = null; renderList(); },
       }); },
     },
-      chevron,
       thumb,
+      chevron && !chevron.classList.contains('spacer') ? h('div', { class: 'dm-card-controls' }, chevron) : chevron,
       h('div', { class: 'dm-body' },
+        fullCard && meta.parent ? h('div', {class:'dm-parent-name',title:'Subdomain of ' + meta.parent.name}, meta.parent.name) : null,
         nameEl,
         h('div', { class: 'dm-sub' }, sub),
       ),
-      // followers assigned here (Home field match) — top-level rows only
-      isChild ? null : faceCluster(m),
+      // followers assigned here (Home field match). Sub-areas carry it too now
+      // (Rober, 2026-09-17: "sub locations dont show faces either") — a bedroom
+      // is exactly the kind of place you want the residents of, and the cluster
+      // was skipped here AND hidden in CSS, so it could never appear.
+      faceCluster(m, isChild && !fullCard),
       h('span', { class: 'dm-go', 'aria-hidden': 'true' }, '➤'),
     );
     rowEl.__dmHl = hl;
@@ -1778,6 +2009,8 @@ window.DomainsPane = (function () {
     refreshFacesRoster();          // one roster pull for every row's face cluster
     const rows = visibleRows();
     els.count.textContent = String(rows.length);
+    els.count.title = ui.display.view === 'subdomains' ? 'Subdomains in view' : ui.display.view === 'all' ? 'Places in view' : 'Domains in view';
+    els.list.setAttribute('aria-label', els.count.title);
     if (ui.sel >= rows.length) ui.sel = rows.length - 1;
 
     if (!rows.length) {
@@ -1807,6 +2040,7 @@ window.DomainsPane = (function () {
       els.list.insertBefore(node, cur);             // insertBefore MOVES an attached node
     }
     while (cur) { const nx = cur.nextSibling; els.list.removeChild(cur); cur = nx; }
+    if (window.DomainAreas) DomainAreas.fit();
     if (ui.sel >= 0 && els.list.children[ui.sel]) els.list.children[ui.sel].scrollIntoView({ block: 'nearest' });
   }
 
@@ -1815,6 +2049,11 @@ window.DomainsPane = (function () {
     el.classList.remove('hidden');
     el.textContent = '';
     const searching = !!ui.filter.trim();
+    if (ui.display.view === 'subdomains') {
+      el.append(h('div', {class:'empty-title'}, searching || ui.tagFilter ? 'No subdomain matches' : 'No subdomains here yet'),
+        h('div', {class:'empty-sub'}, searching || ui.tagFilter ? 'Try another name, parent domain or category.' : 'Switch to Domains and use a domain’s menu to mark a sub-area, or choose another category.'));
+      return;
+    }
     el.append(h('div', { class: 'empty-icon' }, searching ? '⌕' : '★'));
     if (searching) {
       el.append(h('div', { class: 'empty-title' }, 'No domain matches'));
@@ -2009,8 +2248,16 @@ window.DomainsPane = (function () {
     ctxEl.remove(); ctxEl = null;
     document.removeEventListener('mousedown', ctxOutside, true);
   }
-  function closeAllMenus() { closeCtx(); closeNpc(); }
+  function closeAllMenus(e) {
+    // A queued scroll from the preceding render can arrive AFTER a picker opens.
+    // Close it only if the list has actually moved since it was positioned.
+    const unchanged = el => e && e.type === 'scroll' && el &&
+      el.__dmScrollTop === els.list.scrollTop && el.__dmScrollLeft === els.list.scrollLeft;
+    if (!unchanged(ctxEl)) closeCtx();
+    if (!unchanged(npcEl)) closeNpc();
+  }
   function clampEl(el, x, y) {
+    el.__dmScrollTop = els.list.scrollTop; el.__dmScrollLeft = els.list.scrollLeft;
     const r = el.getBoundingClientRect();
     const vw = window.innerWidth, vh = window.innerHeight;
     let nx = x, ny = y;
@@ -2056,16 +2303,17 @@ window.DomainsPane = (function () {
      drift. A domain with no photo offers only "Photograph", so the menu never
      shows an action that cannot do anything. */
   function photoItems(m) {
-    const out = [ctxItem('\ud83d\udcf7', m.image ? 'Re-photograph this place' : 'Photograph this place',
+    const out = [ctxItem('\ud83d\udcf7', m.image ? 'Take another photo' : 'Photograph this place',
       () => photographPlace(m),
-      { title: 'Closes the deck and hands you a free camera \u2014 E shoots, Esc cancels' })];
+      { title: 'Closes the deck and hands you a free camera \u2014 Enter shoots, Esc cancels' })];
+    out.push(ctxItem('▣', 'Photo gallery', () => openGallery(m), {title:'Browse, tag and choose this domain’s cover'}));
     if (m.image) {
       out.push(ctxItem('\ud83d\uddbc', 'View photo', () => { closeCtx(); openArt(m, false); },
         { title: 'The full picture, big' }));
       out.push(ctxItem('\u26f6', cropFor(m.image) ? 'Re-frame photo\u2026' : 'Adjust photo framing\u2026',
         () => { closeCtx(); openArt(m, true); },
         { title: 'Pan and zoom how the row draws it \u2014 the file on disk is untouched' }));
-      out.push(ctxItem('\ud83d\udeab', 'Remove photo', () => { closeCtx(); removePhoto(m); },
+      out.push(ctxItem('\ud83d\udeab', 'Clear cover photo', () => { closeCtx(); removePhoto(m); },
         { title: 'Back to the initials medallion. The file itself is left alone.' }));
     }
     /* Directly under "Photograph", because it is what you set BEFORE pressing
@@ -2288,6 +2536,12 @@ window.DomainsPane = (function () {
       const r = ctxEl.getBoundingClientRect();
       openNpcPicker(m, r.left, r.top);
     }, { title: 'Move a nearby NPC or follower to this spot' }));
+    items.push(ctxItem('⌂', 'Link someone here…', (e) => {
+      const r = ctxEl.getBoundingClientRect();
+      openLinkPicker(m, r.left, r.top);
+    }, { title: 'Make this someone\u2019s HOME, so their face shows on this card.\n'
+              + 'Writes the typed Home field, which beats what NFF and My Home Is '
+              + 'Your Home claim \u2014 the way round a follower those mods refuse.' }));
     photoItems(m).forEach((it) => items.push(it));
 
     items.push(h('div', { class: 'dm-ctx-sep' }));
@@ -2375,6 +2629,12 @@ window.DomainsPane = (function () {
       const r = ctxEl.getBoundingClientRect();
       openNpcPicker(m, r.left, r.top);
     }, { title: 'Move a nearby NPC or follower to this spot' }));
+    items.push(ctxItem('⌂', 'Link someone here…', () => {
+      const r = ctxEl.getBoundingClientRect();
+      openLinkPicker(m, r.left, r.top);
+    }, { title: 'Make this sub-area someone\u2019s HOME, so their face shows on it.\n'
+              + 'Writes the typed Home field, which beats what NFF and My Home Is '
+              + 'Your Home claim.' }));
     photoItems(m).forEach((it) => items.push(it));
 
     items.push(h('div', { class: 'dm-ctx-sep' }));
@@ -2559,6 +2819,115 @@ window.DomainsPane = (function () {
     }
   }
 
+  /* ---- link someone's HOME to this domain (Rober, 2026-09-17) -------------
+     "sometimes i cant seem to force add an npc so the My home is your home
+      wont add, maybe a way on right click to a domain to link an npc"
+
+     Summon moves a body; this moves an ADDRESS. It writes the typed Home field
+     through FolPane.linkHomeTo, and that field outranks both NFF's base and
+     MHiYH's linked ref in homesOf() — so the domain claims her face without
+     either mod having to agree, which is the whole point for someone NFF
+     refuses to force-add.
+
+     Reuses the summon picker's element and dismiss handling (same shape, same
+     search idiom) rather than growing a second popup that drifts from it. */
+  function linkRoster() {
+    const fp = window.FolPane;
+    if (!fp || typeof fp.rosterForDomains !== 'function') return [];
+    let r = [];
+    try { r = fp.rosterForDomains(); } catch (e) { return []; }
+    return Array.isArray(r) ? r.filter((f) => f && f.name) : [];
+  }
+
+  function linkRows() {
+    const q = (ui.linkFilter || '').trim().toLowerCase();
+    return linkRoster()
+      .filter((f) => !q || String(f.name).toLowerCase().includes(q))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+
+  function firstLink() { return linkRows()[0] || null; }
+
+  function renderLinkList() {
+    if (!npcEl) return;
+    const box = npcEl.querySelector('.dm-npc-list');
+    if (!box) return;
+    box.textContent = '';
+    const rows = linkRows();
+    if (!rows.length) {
+      box.append(h('div', { class: 'dm-npc-empty' },
+        linkRoster().length
+          ? 'Nobody matches “' + (ui.linkFilter || '').trim() + '”'
+          : 'Nobody on the Follower Organizer roster yet'));
+      return;
+    }
+    const q = (ui.linkFilter || '').trim().toLowerCase();
+    const hereName = String((ui.linkMark && ui.linkMark.name) || '').trim().toLowerCase();
+    rows.forEach((f) => {
+      const typed = String(f.home || '').trim();
+      const isHere = typed && typed.toLowerCase() === hereName;
+      box.append(h('button', {
+        class: 'dm-npc-item',
+        title: isHere
+          ? f.name + ' already lives here'
+          : (typed ? 'Move ' + f.name + '\u2019s home from “' + typed + '” to “'
+                     + (ui.linkMark ? ui.linkMark.name : '') + '”'
+                   : 'Make this ' + f.name + '\u2019s home'),
+        onClick: (e) => { e.stopPropagation(); pickLink(f); },
+      },
+        h('span', { class: 'dm-npc-name' }, nameNodes(f.name, q)),
+        h('span', { class: 'dm-npc-tag' + (isHere ? ' follower' : '') },
+          isHere ? 'lives here' : (typed || (f.nffHome || f.mhHome ? 'mod-assigned' : 'no home'))),
+      ));
+    });
+  }
+
+  function openLinkPicker(m, x, y) {
+    closeCtx();
+    closeNpc();
+    ui.linkMark = m;
+    ui.linkFilter = '';
+
+    const list = h('div', { class: 'dm-npc-list' });
+    npcEl = h('div', { id: 'dm-npc', role: 'menu' },
+      h('div', { class: 'dm-ctx-head', title: m.name }, 'Who lives at “' + m.name + '”?',
+        h('span', { class: 'dm-ctx-where' }, placeGlyph(m) + ' ' + placeOf(m))),
+      h('div', { class: 'dm-npc-searchwrap' },
+        h('span', { class: 'dm-search-ic', 'aria-hidden': 'true' }, '⌕'),
+        h('input', {
+          class: 'dm-npc-search', type: 'text', autocomplete: 'off', spellcheck: 'false',
+          placeholder: 'Search the roster…',
+          onClick: (e) => e.stopPropagation(),
+          onInput: (e) => { ui.linkFilter = e.target.value; renderLinkList(); },
+          onKeydown: (e) => {
+            if (e.key === 'Escape') { e.preventDefault(); closeNpc(); }
+            else if (e.key === 'Enter') { e.preventDefault(); const f = firstLink(); if (f) pickLink(f); }
+          },
+        })),
+      list,
+    );
+    ctxHost().append(npcEl);
+    clampEl(npcEl, x, y);
+    setTimeout(() => document.addEventListener('mousedown', npcOutside, true), 0);
+    renderLinkList();
+    setTimeout(() => { const s = npcEl && npcEl.querySelector('.dm-npc-search'); if (s) s.focus(); }, 20);
+  }
+
+  function pickLink(f) {
+    const m = ui.linkMark;
+    if (!m || !f) { closeNpc(); return; }
+    const fp = window.FolPane;
+    if (!fp || typeof fp.linkHomeTo !== 'function') {
+      toast('⚠ The Followers tab has not loaded yet');
+      closeNpc();
+      return;
+    }
+    const r = fp.linkHomeTo({ formId: f.formId, name: f.name }, m.name) || {};
+    toast((r.ok ? '' : '⚠ ') + (r.msg || (f.name + ' → ' + m.name)));
+    closeNpc();
+    if (r.ok) render();   // the face cluster gains her straight away
+  }
+
   /* category chooser for ★ Mark, anchored above the button */
   function openMarkMenuChooser() {
     if (!state.here || !state.here.ok) { toast('No position to mark yet'); return; }
@@ -2619,12 +2988,15 @@ window.DomainsPane = (function () {
 
   function onKey(e) {
     if (!ui.shown) return;
+    if (window.DomainGallery && DomainGallery.isOpen()) return;
+    if (window.DomainAreas && DomainAreas.isOpen()) return;
     const key = e.key;
 
     /* FIRST, ahead of everything: the photo editor claims arrows, ± and
        Enter/Esc while it is up. It has to come before the "any printable key
        jumps to the search box" funnel at the bottom, which would otherwise eat
        '+' and '-'. */
+    if (photoFovDialog) { if (photoFovKey(e)) eat(e); return; }
     if (artKey(e)) { eat(e); return; }
 
     /* A borrowed portrait lightbox (clicking a face on a row) is topmost, and
@@ -2870,6 +3242,7 @@ window.DomainsPane = (function () {
       note: String(m.note || ''),
       tags: mergeTags([], m.tags),      // hand-edited configs land here too
       image: String(m.image || ''),
+      photos: window.DomainGallery ? DomainGallery.normalize(m.photos, m.image) : (m.photos || []),
       cellName: String(m.cellName || ''),
       cellId: (m.cellId >>> 0) || 0,
       cellEdid: String(m.cellEdid || ''),
@@ -2902,6 +3275,8 @@ window.DomainsPane = (function () {
   }
 
   function onClosed() {
+    if (window.DomainGallery) DomainGallery.close();
+    closePhotoFov();
     flushSave();
     closeAllMenus();
     if (ui.capture) endCapture();
@@ -2944,13 +3319,14 @@ window.DomainsPane = (function () {
            Honoured anyway for the case where the deck is somehow already back. */
         const j = coerce(p) || {};
         const m = markById(String(j.id || ''));
-        if (m && j.image) { m.image = String(j.image); noImage.delete(m.id); renderList(); }
+        if (m && j.image) { m.image = String(j.image); if (Array.isArray(j.photos)) m.photos=j.photos; noImage.delete(m.id); renderList(); }
         return true;
       }
       case 'pdNpcDone': onNpcDone(coerce(p)); return true;
       case 'pdSceneInfo': {
         const j = coerce(p);
         scene.info = (j && typeof j === 'object') ? j : null;
+        if(photoFovDialog && photoFovDialog._sync)photoFovDialog._sync();
         /* Repaint the block IN PLACE if a menu is showing one — the reply
            usually lands a beat after the menu opened, and a block that never
            repainted would sit on "reading the sky…" forever. */
@@ -2998,11 +3374,15 @@ window.DomainsPane = (function () {
     ui.sel = -1;
     setFilter('');
     render();
+    if (window.FolPane && FolPane.requestPortraitFaces) FolPane.requestPortraitFaces();
     toGame('pdRefresh');   // the position snapshot is cheap and always fresh
     setTimeout(() => { if (els.search) els.search.focus(); }, 30);
   }
 
   function onHide() {
+    if (window.DomainGallery) DomainGallery.close();
+    if (window.DomainAreas) DomainAreas.closeOwner('domains');
+    closePhotoFov();
     ui.shown = false;
     closeAllMenus();
     /* The overlays live on document.body, so hiding the pane does NOT hide
@@ -3100,7 +3480,15 @@ window.DomainsPane = (function () {
         },
         onMousedown: (e) => e.stopPropagation(),
       }, p ? null : String(x.name || '?').trim().charAt(0).toUpperCase());
-      if (p) face.style.backgroundImage = 'url("portraits/' + p.file + '")';
+      if (p) {
+        const img = h('img', { src: 'portraits/' + p.file, alt: '', draggable: 'false' });
+        face.append(img);
+        if (window.HDFaceFit) HDFaceFit.paintPortrait(img, 'portraits/' + p.file);
+        img.addEventListener('error', function () {
+          img.remove(); face.classList.remove('zoom'); face.classList.add('initials');
+          face.textContent = String(x.name || '?').trim().charAt(0).toUpperCase();
+        });
+      }
       wrap.append(face);
     });
     if (list.length > WHO_MAX)
@@ -3113,8 +3501,9 @@ window.DomainsPane = (function () {
   function borrow(name, take) {
     const prev = window[name];
     window[name] = function (payload) {
+      const result = typeof prev === 'function' ? prev.apply(this, arguments) : undefined;
       try { take(payload); } catch (e) { /* a borrower must never break the owner */ }
-      if (typeof prev === 'function') return prev.apply(this, arguments);
+      return result;
     };
   }
 
@@ -3153,6 +3542,11 @@ window.DomainsPane = (function () {
     arr.forEach((p) => { if (p && p.slug) map[p.slug] = p; });
     who.portraits = map;
     dropRowCache();     // faces gained (or lost) photos
+    if (ui.inited && ui.shown) renderList();
+  });
+
+  window.addEventListener('hd-portraits-changed', function () {
+    dropRowCache();
     if (ui.inited && ui.shown) renderList();
   });
 
@@ -3224,6 +3618,15 @@ window.DomainsPane = (function () {
     els.capture = $('dm-capture');
 
     buildScaleControls();   // inserts #dm-scale after #dm-openkey
+    if (window.DomainAreas) {
+      els.displayControls = DomainAreas.viewControls(ui.display, value => {
+        ui.display = value; ui.sel = -1;
+        DomainAreas.saveView('skymanager.domain-view.v1',value);
+        closeAllMenus(); DomainAreas.closeOwner('domains'); render();
+        els.list.scrollTop = 0;
+      });
+      $('dm-toolbar').insertBefore(els.displayControls,els.count);
+    }
     applyDmUiScale();       // paint the saved scales before the first render
     applyDmThumb();
 
@@ -3412,7 +3815,7 @@ window.DomainsPane = (function () {
     window.__dmScene = {
       hour: 21.78, staged: false,
       weatherId: 0x000302B4, weatherName: 'SkyrimOvercast', weatherKind: 'cloudy',
-      exposure: 0, exposureMax: 3,
+      exposure: 0, exposureMax: 3, sceneLightAvailable: true,
       presets: {
         clear:  { id: 0x00010E1F, name: 'SkyrimClear' },
         cloudy: { id: 0x000302B4, name: 'SkyrimOvercast' },
@@ -4081,7 +4484,15 @@ window.DomainsPane = (function () {
       ui.cat = 'Estates'; setFilter(''); ui.expanded.clear(); render();
       T('a parent with sub-areas renders a chevron', () => {
         const row = els.list.querySelector('.dm-row[data-id="m1"]');
-        return !!row && !!row.querySelector('.dm-chev:not(.spacer)');
+        return !!row && !!row.querySelector(window.DomainAreas ? '.dsa-all' : '.dm-chev:not(.spacer)');
+      });
+      T('sub-area control is below the photo and remains the click target', () => {
+        const row = els.list.querySelector('.dm-row[data-id="m1"]');
+        const btn = row.querySelector(window.DomainAreas ? '.dsa-all' : '.dm-chev');
+        const hero = row.querySelector('.dm-thumb-box, .dm-medal');
+        const b = btn.getBoundingClientRect(), a = hero.getBoundingClientRect();
+        return !!btn.closest('.dm-card-controls') &&
+          b.top >= a.bottom - 0.5 && parseFloat(getComputedStyle(btn).minHeight) >= 44 && /areas/i.test(btn.textContent);
       });
       T('a childless top-level row gets a spacer, not a chevron', () => {
         const row = els.list.querySelector('.dm-row[data-id="m4"]');
@@ -4089,12 +4500,27 @@ window.DomainsPane = (function () {
       });
       T('sub-areas are hidden until the chevron is expanded', () =>
         !els.list.querySelector('.dm-row[data-id="m19"]'));
-      T('toggling the chevron reveals the indented child rows', () => {
-        toggleExpand('m1');
+      T('sub-area control opens the area browser without moving the main cards', () => {
+        if (window.DomainAreas) {
+          els.list.querySelector('.dm-row[data-id="m1"] .dsa-all').click();
+          return !!document.querySelector('.dsa-area[data-id="m19"]') && !els.list.querySelector('.dm-child[data-id="m19"]');
+        }
+        els.list.querySelector('.dm-row[data-id="m1"] .dm-chev').click();
         const c = els.list.querySelector('.dm-row.dm-child[data-id="m19"]');
         return !!c;
       });
-      T('collapsing the chevron hides them again', () => {
+      T('area browser: the row photo is a lightbox tile fed with the sub-area album (2026-09-26)', () => {
+        if (!window.DomainAreas) return true;
+        const shot = document.querySelector('.dsa-area[data-id="m19"] .dsa-shot');
+        if (!shot) return false;
+        const m19 = markById('m19'), keep = m19.photos;
+        m19.photos = [{ image: 'domain-images/pd-m19-a.png', label: 'Landing' }, { image: 'domain-images/pd-m19-b.png' }];
+        const fed = domainAreaOptions(markById('m1')).photos(m19);
+        m19.photos = keep;
+        return shot.disabled && fed.length >= 2 && fed[0].src === 'domain-images/pd-m19-a.png' && fed[0].label === 'Landing';
+      });
+      T('closing sub-areas returns to the same main cards', () => {
+        if (window.DomainAreas) { DomainAreas.close(true); return !document.querySelector('.dsa-overlay') && !els.list.querySelector('.dm-row[data-id="m19"]'); }
         toggleExpand('m1');
         return !els.list.querySelector('.dm-row[data-id="m19"]');
       });
@@ -4339,14 +4765,93 @@ window.DomainsPane = (function () {
         openMarkMenu(markById('m4'), 120, 140);
         const without = ctxEl.textContent;
         closeCtx();
-        return withPhoto.indexOf('Re-photograph') !== -1 && withPhoto.indexOf('View photo') !== -1 &&
-          withPhoto.indexOf('Remove photo') !== -1 &&
+        return withPhoto.indexOf('Take another photo') !== -1 && withPhoto.indexOf('View photo') !== -1 &&
+          withPhoto.indexOf('Clear cover photo') !== -1 &&
           without.indexOf('Photograph this place') !== -1 && without.indexOf('View photo') === -1;
       });
-      T('photo: "Photograph this place" sends pdPhoto with the domain id', () => {
+      T('photo: asks for FOV before sending; Keep preserves the view', () => {
         window.__dmSent.photo = null;
         photographPlace(markById('m4'));
-        return !!window.__dmSent.photo && window.__dmSent.photo.id === 'm4';
+        if (window.__dmSent.photo || !photoFovDialog || document.activeElement.dataset.fov !== 'keep') return false;
+        photoFovKey({key:'Enter'});
+        if(window.__dmSent.photo)return false;
+        photoFovDialog.querySelector('.dm-photo-start').click();
+        return !!window.__dmSent.photo && window.__dmSent.photo.id === 'm4' && window.__dmSent.photo.fov === 'keep';
+      });
+      ['out', 'in'].forEach(function (mode) {
+        T('photo: forwards FOV choice ' + mode, function () {
+          window.__dmSent.photo = null; photographPlace(markById('m4'));
+          photoFovDialog.querySelector('[data-fov="' + mode + '"]').click();
+          photoFovDialog.querySelector('.dm-photo-start').click();
+          return window.__dmSent.photo.fov === mode && !photoFovDialog;
+        });
+      });
+      T('photo: cancel leaves camera alone, and reopening defaults to Keep', function () {
+        window.__dmSent.photo = null; photographPlace(markById('m4'));
+        photoFovKey({key:'Escape'});
+        if (window.__dmSent.photo || photoFovDialog) return false;
+        photographPlace(markById('m4'));
+        const ok = document.activeElement.dataset.fov === 'keep'; closePhotoFov(); return ok;
+      });
+      T('photo: keyboard focus stays inside the FOV chooser', function () {
+        photographPlace(markById('m4'));
+        photoFovKey({key:'Tab',shiftKey:true});
+        const ok = document.activeElement.classList.contains('dm-photo-fov-cancel');
+        photoFovKey({key:'Tab'});
+        const back = document.activeElement.dataset.fov === 'keep'; closePhotoFov(); return ok && back;
+      });
+      T('photo lighting: all edits are drafts until Start', function () {
+        window.__dmSent.photo=null; window.__dmSent.sceneSet=null;
+        photographPlace(markById('m4'));
+        photoFovDialog.querySelector('[data-choice="exposure"][data-value="1.5"]').click();
+        photoFovDialog.querySelector('[data-choice="sceneLight"][data-value="bright"]').click();
+        const untouched=!window.__dmSent.photo && !window.__dmSent.sceneSet;
+        closePhotoFov();return untouched;
+      });
+      T('photo lighting: scene fill and image exposure travel independently with the shot', function () {
+        photographPlace(markById('m4'));
+        photoFovDialog.querySelector('[data-choice="exposure"][data-value="1.5"]').click();
+        photoFovDialog.querySelector('[data-choice="sceneLight"][data-value="bright"]').click();
+        photoFovDialog.querySelector('.dm-photo-start').click();
+        const p=window.__dmSent.photo;return p.exposure===1.5 && p.sceneLight==='bright' && p.lightStrength===1 && !('light' in p);
+      });
+      T('photo lighting: Natural changes neither scene fill nor Quick Light', function () {
+        photographPlace(markById('m4'));photoFovDialog.querySelector('.dm-photo-start').click();
+        return !('light' in window.__dmSent.photo) && window.__dmSent.photo.sceneLight==='natural';
+      });
+      T('photo lighting: strength stays bounded and is sent independently', function () {
+        photographPlace(markById('m4'));
+        photoFovDialog.querySelector('[data-choice="sceneLight"][data-value="soft"]').click();
+        const up=photoFovDialog.querySelector('[aria-label="Increase scene light strength"]');
+        for(let i=0;i<20;i++)up.click();
+        if(!up.disabled){closePhotoFov();return false;}
+        photoFovDialog.querySelector('.dm-photo-start').click();
+        const p=window.__dmSent.photo;return p.sceneLight==='soft' && p.lightStrength===3 && !('light' in p);
+      });
+      T('photo lighting: native fill works without Quick Light', function () {
+        photographPlace(markById('m4'));
+        receive('pdSceneInfo',Object.assign({},window.__dmScene,{quickLight:{installed:false,running:false,on:false}}));
+        const option=photoFovDialog.querySelector('[data-choice="sceneLight"][data-value="soft"]');
+        const ok=!option.disabled;closePhotoFov();return ok;
+      });
+      T('photo lighting: an older DLL cannot silently promise scene lighting', function () {
+        photographPlace(markById('m4'));
+        receive('pdSceneInfo',Object.assign({},window.__dmScene,{sceneLightAvailable:false}));
+        const ok=photoFovDialog.querySelector('[data-choice="sceneLight"][data-value="soft"]').disabled &&
+          !photoFovDialog.querySelector('[data-choice="sceneLight"][data-value="natural"]').disabled;
+        closePhotoFov();receive('pdSceneInfo',window.__dmScene);return ok;
+      });
+      T('photo lighting: late settings cannot overwrite edited exposure', function () {
+        photographPlace(markById('m4'));
+        photoFovDialog.querySelector('[data-choice="exposure"][data-value="2.5"]').click();
+        receive('pdSceneInfo',window.__dmScene);
+        photoFovDialog.querySelector('.dm-photo-start').click();return window.__dmSent.photo.exposure===2.5;
+      });
+      T('photo lighting: sky uses the real weather id and Cancel discards it', function () {
+        window.__dmSent.photo=null;photographPlace(markById('m4'));
+        photoFovDialog.querySelector('[data-choice="weather"][data-value="clear"]').click();
+        const selected=photoFovDialog.querySelector('[data-choice="weather"][data-value="clear"]').classList.contains('on');
+        photoFovKey({key:'Escape'});return selected && !window.__dmSent.photo;
       });
       T('photo: pdPhotoSaved hangs the file on the right domain', () => {
         receive('pdPhotoSaved', { id: 'm4', image: 'domain-images/pd-fresh-m4.png' });
@@ -4356,10 +4861,48 @@ window.DomainsPane = (function () {
         return ok;
       });
 
+      T('gallery: legacy cover migrates and independent shots keep their tags', () => {
+        const p=DomainGallery.normalize([{image:'domain-images/two.png',tags:[' Interior ','interior','Night'],future:42}],'domain-images/one.png');
+        return p.length===2 && p[0].image==='domain-images/one.png' && p[1].tags.length===2 && p[1].future===42;
+      });
+      T('gallery: invalid paths and duplicate photos are rejected', () => {
+        return DomainGallery.normalize([{image:'domain-images/../secret.png'},{image:'domain-images/a.png'},{image:'domain-images/a.png'}]).length===1;
+      });
+      T('gallery: marks preserve photos through normalise and save payload', () => {
+        const m=markById('m4'), old=m.photos;
+        m.photos=[{image:'domain-images/independent.png',label:'Library',tags:['Interior','Night'],future:1}];
+        const sent=payload().marks.find(x=>x.id==='m4');
+        const copy=normalizeMark(sent);m.photos=old;
+        return copy.photos.length===1 && copy.photos[0].tags.length===2 && copy.photos[0].future===1;
+      });
+      T('gallery: saved shot reply carries all photos without changing the chosen cover', () => {
+        const m=markById('m4'),old={image:m.image,photos:m.photos};
+        receive('pdPhotoSaved',{id:'m4',image:'domain-images/cover.png',photos:[{image:'domain-images/cover.png'},{image:'domain-images/new.png',tags:['Interior']}]});
+        const ok=m.image==='domain-images/cover.png' && m.photos.length===2;
+        m.image=old.image;m.photos=old.photos;return ok;
+      });
+      T('gallery: photo setup sends names, multiple tags and explicit cover choice', () => {
+        photographPlace(markById('m4'));
+        const name=photoFovDialog.querySelector('[aria-label="Photo name"]'), tags=photoFovDialog.querySelector('[aria-label="Photo tags, separated by commas"]');
+        name.value='Library at dusk';name.dispatchEvent(new Event('input'));tags.value='Interior, Library, Night';tags.dispatchEvent(new Event('input'));
+        photoFovDialog.querySelector('.dm-photo-start').click();
+        return window.__dmSent.photo.photoLabel==='Library at dusk' && window.__dmSent.photo.photoTags.length===3 && typeof window.__dmSent.photo.makeCover==='boolean';
+      });
+      T('gallery: Natural permits placed-light strength before entering photo mode', () => {
+        photographPlace(markById('m4'));photoFovDialog.querySelector('[aria-label="Increase scene light strength"]').click();photoFovDialog.querySelector('.dm-photo-start').click();
+        return window.__dmSent.photo.sceneLight==='natural' && window.__dmSent.photo.lightStrength===1.25;
+      });
+
       T('crop editor: opens on the photographed domain and shows the current framing', () => {
         openArt(markById('m7'), false);
         const lb = document.querySelector('.dm-art-lb');
         return !!lb && lb.textContent.indexOf('180%') !== -1;
+      });
+      T('crop editor: a labelled Crop photo button sits below the picture', () => {
+        const btn = document.querySelector('.dm-art-crop-btn');
+        const frame = document.querySelector('.dm-art-frame');
+        return !!btn && btn.textContent === 'Crop photo' &&
+          btn.getBoundingClientRect().top >= frame.getBoundingClientRect().bottom;
       });
       T('crop editor: the frame is SQUARE, because the row medallion is', () => {
         const fr = document.querySelector('.dm-art-frame');
@@ -4374,11 +4917,26 @@ window.DomainsPane = (function () {
         const val1 = document.querySelector('.dm-art-val').textContent;
         return !before && now && val0 !== val1;
       });
+      let cropRowBefore = null;
       T('crop editor: Save sends pdCropSave with the FILE as the key', () => {
+        cropRowBefore = els.list.querySelector('.dm-row[data-id="m7"]');
         window.__dmSent.crop = null;
         artKey({ key: 'Enter', preventDefault: function () {}, stopPropagation: function () {} });
         const p = window.__dmSent.crop;
         return !!p && p.file === CROPPED_FILE && p.z > 1.8;
+      });
+      T('crop save refreshes the cached card immediately without a server echo', () => {
+        const row = els.list.querySelector('.dm-row[data-id="m7"]');
+        const probe = row && row.querySelector('.dm-probe');
+        if (probe) probe.dispatchEvent(new Event('load'));
+        const art = row && row.querySelector('.dm-art');
+        return row !== cropRowBefore && !!art &&
+          art.style.transform === document.querySelector('.dm-art-lb .dm-art').style.transform;
+      });
+      T('portrait crop changes rebuild Domains cards while the tab stays open', () => {
+        const before = els.list.querySelector('.dm-row');
+        window.dispatchEvent(new CustomEvent('hd-portrait-crops-changed'));
+        return !!before && before !== els.list.querySelector('.dm-row');
       });
       T('crop editor: Esc closes the overlay and leaves nothing on the body', () => {
         artKey({ key: 'Escape', preventDefault: function () {}, stopPropagation: function () {} });
@@ -4459,6 +5017,66 @@ window.DomainsPane = (function () {
         const before = window.__dmSent.recall;
         clickIt(box);                                  // must bubble to the row
         return window.__dmSent.recall !== before && !document.querySelector('.dm-art-lb');
+      });
+      /* ---- the Photos button on the hero (2026-09-26) ----
+         "maybe a little button somewhere on domain to see images?" — the
+         gallery's on-card door is a real, always-visible button on the hero,
+         not the 10px chip. Same law as the ⛶: it appears only once the hero
+         has drawn, it opens the album, and it never travels. */
+      T('photos button: a card whose domain holds shots grows one on hero load — and the body chip retires', () => {
+        const m7 = markById('m7'), keep = m7.photos;
+        m7.photos = [{ image: 'domain-images/pd-m7-out.png', tags: ['Exterior'] },
+                     { image: 'domain-images/pd-m7-in.png', tags: ['Interior'] }];
+        noImage.clear(); TEST_IMG.m7 = SELFTEST_PX; render();
+        const row = els.list.querySelector('.dm-row[data-id="m7"]');
+        const box = row && row.querySelector('.dm-thumb-box');
+        if (!box) { m7.photos = keep; return false; }
+        const chipBefore = !!row.querySelector('.dm-gallery-link');
+        const btnBefore = !!box.querySelector('.dm-gallery-btn');
+        box.querySelector('img.dm-probe').dispatchEvent(new Event('load'));
+        const b = box.querySelector('.dm-gallery-btn');
+        const chipAfter = !!row.querySelector('.dm-gallery-link');
+        /* the count is the ALBUM's — a cover the two shots do not name is a
+           third photo (normalize prepends it), and the button must say so */
+        const n = DomainGallery.normalize(m7.photos, m7.image).length;
+        m7.photos = keep;
+        // a failing check names WHICH promise broke, not just that one did
+        const why = [];
+        if (!chipBefore) why.push('no body chip before load');
+        if (btnBefore) why.push('button promised before the hero drew');
+        if (!b) why.push('no button after load');
+        else {
+          if (n < 2 || b.textContent.indexOf(String(n)) === -1 || b.textContent.indexOf('photos') === -1) why.push('label is "' + b.textContent + '" for ' + n + ' photos');
+          if (!b.querySelector('img')) why.push('no icon');
+        }
+        if (chipAfter) why.push('body chip still there');
+        if (why.length) throw new Error(why.join('; '));
+        return true;
+      });
+      T('photos button: it opens the gallery and does NOT travel', () => {
+        const m7 = markById('m7'), keep = m7.photos;
+        m7.photos = [{ image: 'domain-images/pd-m7-out.png' }, { image: 'domain-images/pd-m7-in.png' }];
+        noImage.clear(); TEST_IMG.m7 = SELFTEST_PX; render();
+        const box = els.list.querySelector('.dm-row[data-id="m7"] .dm-thumb-box');
+        box.querySelector('img.dm-probe').dispatchEvent(new Event('load'));
+        const b = box.querySelector('.dm-gallery-btn');
+        const before = window.__dmSent.recall;
+        clickIt(b);
+        const ok = !!b && DomainGallery.isOpen() && window.__dmSent.recall === before &&
+          !!document.querySelector('.dgal-dialog');
+        DomainGallery.close(); m7.photos = keep;
+        return ok;
+      });
+      T('photos button: a domain with no shots gets none — the ⛶ alone', () => {
+        const m7 = markById('m7'), keep = m7.photos;
+        m7.photos = []; m7.image = m7.image || '';
+        const hadImage = m7.image; m7.image = '';
+        noImage.clear(); TEST_IMG.m7 = SELFTEST_PX; render();
+        const box = els.list.querySelector('.dm-row[data-id="m7"] .dm-thumb-box');
+        box.querySelector('img.dm-probe').dispatchEvent(new Event('load'));
+        const ok = !!box.querySelector('.dm-zoomer') && !box.querySelector('.dm-gallery-btn');
+        m7.photos = keep; m7.image = hadImage;
+        return ok;
       });
       T('enlarge: a picture the MARK does not name still opens (convention file)', () => {
         // The `domain-images/<id>.<ext>` walk is the thumbnail's private
@@ -4589,12 +5207,12 @@ window.DomainsPane = (function () {
 
         scene.hour = -1; scene.weather = 0; scene.info = null;
         openMarkMenu(pm, 40, 40);
-        T('scene: the block is in the menu, with Time / Sky / Bright rows', () => {
+        T('scene: the block is in the menu, with Time / Sky / Photo rows', () => {
           const box = sceneBox();
           if (!box) return false;
           const labels = Array.prototype.map.call(
             box.querySelectorAll('.dm-scene-lbl'), (l) => l.textContent);
-          return labels.join(',') === 'Time,Sky,Bright';
+          return labels.join(',') === 'Time,Sky,Photo';
         });
         T('scene: opening the menu ASKS the game (the hour must not be stale)', () =>
           window.__dmSent.scene > 0);
@@ -4624,6 +5242,7 @@ window.DomainsPane = (function () {
         T('scene: the photo request carries the staged hour and sky', () => {
           window.__dmSent.photo = null;
           photographPlace(pm);
+          photoFovDialog.querySelector('.dm-photo-start').click();
           const p = window.__dmSent.photo;
           return !!p && p.id === pm.id && p.hour === 12 && p.weather === 0x00010E1F;
         });
@@ -4631,6 +5250,7 @@ window.DomainsPane = (function () {
           scene.hour = -1; scene.weather = 0;
           window.__dmSent.photo = null;
           photographPlace(pm);
+          photoFovDialog.querySelector('.dm-photo-start').click();
           const p = window.__dmSent.photo;
           return !!p && p.hour === undefined && p.weather === undefined;
         });
@@ -4648,11 +5268,11 @@ window.DomainsPane = (function () {
             expVal().indexOf('+0.25 stop') === 0;
         });
         T('scene: a Reset appears once it is non-zero, and clears it', () => {
-          const reset = chipNamed('Bright', 'Reset');
+          const reset = chipNamed('Photo', 'Reset');
           if (!reset) return false;
           reset.click();
           return window.__dmSent.sceneSet.exposure === 0 && expVal() === 'as rendered' &&
-            !chipNamed('Bright', 'Reset');
+            !chipNamed('Photo', 'Reset');
         });
         T('scene: the stepper cannot walk past the limit the game reported', () => {
           for (let i = 0; i < 40; i++) expStep(1).click();
@@ -4843,11 +5463,14 @@ window.DomainsPane = (function () {
   /* =========================================================== exports == */
 
   return {
+    photographPlace: photographPlace,
     init: init,
     onShow: onShow,
     onHide: onHide,
     receive: receive,
     wantsPause: wantsPause,
+    /* the deck's collision question (app.js bindingSnapshot) reads this */
+    openKeyBinding: function () { return { device: state.openKey.device, code: state.openKey.code, label: state.openKey.label }; },
     /* Jump to the Domains tab with a filter pre-filled — the Followers card's
        HOME pill links here so the follower's assigned home is the top hit
        (Rober, 2026-08-05). */
@@ -4863,7 +5486,7 @@ window.DomainsPane = (function () {
        quick-fire, F7 again) and that must not also wipe the tab's filter or
        edit state — but an overlay left behind is invisible and still swallows
        every click on the next open. */
-    closeOverlays: function () { closeArt(); closeFolLb(); },
+    closeOverlays: function () { if (window.DomainGallery) DomainGallery.close(); if (window.DomainAreas) DomainAreas.closeOwner('domains'); closePhotoFov(); closeArt(); closeFolLb(); },
     /* Read-only, for other panes that need somewhere to send someone — the
        Followers tab's "send her to a domain" picker is the first borrower.
        Returns COPIES: a borrower must not be able to reorder or mutate the
@@ -4874,9 +5497,38 @@ window.DomainsPane = (function () {
        on DOMContentLoaded, so window.pdOpen is installed well before the
        first palette-open push and state.marks is already filled. */
     listMarks: function () { return state.marks.map((m) => normalizeMark(m)); },
+    /* How THIS tab paints a mark, for a borrower that draws its own box (the
+       Followers "Send her to…" popout, 2026-09-23): the photo, the saved crop
+       as a ready transform (the same cropTransform setArt applies, so a
+       re-framed photo looks the same in both places), and the hue + initials
+       the fallback banner uses. `src` is empty for a place with no photo. */
+    artOf: function (mark) {
+      const m = mark || {};
+      const src = String(m.image || '');
+      const c = src ? cropFor(src) : null;
+      return { src: src, transform: c ? cropTransform(c) : '',
+               hue: hueOf(m.category), initials: initialsOf(m.name) };
+    },
+    // The dossier resolves a home only when the name identifies one domain.
+    // Exact assignments outrank containing room names; ambiguous matches stay unlinked.
+    homeFor: function (f) {
+      const homes = homesOf(f);
+      for (const home of homes) {
+        const key = home.home.toLowerCase();
+        const exact = state.marks.filter(m => [m.name, placeOf(m)].some(v => String(v || '').trim().toLowerCase() === key));
+        if (exact.length === 1) return { mark: normalizeMark(exact[0]), source: home.src || 'Home field' };
+        if (exact.length > 1) return null;
+        const partial = state.marks.filter(m => [m.name, placeOf(m)].some(v => String(v || '').toLowerCase().indexOf(key) !== -1));
+        if (partial.length === 1) return { mark: normalizeMark(partial[0]), source: home.src || 'Home field' };
+      }
+      return null;
+    },
     show: showTab,
     toggleEdit: toggleEdit,
     isShown: function () { return ui.shown; },
+    portraitIds: function () {
+      return ui.shown ? who.members.map(function (m) { return m.formId; }) : [];
+    },
     isCapturing: function () { return ui.capture; },
     /* Test seams. The crop invariant and the tag normalisation are the two
        things that MUST agree with their C++ twins, so the harness asserts them

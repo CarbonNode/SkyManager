@@ -314,7 +314,7 @@ namespace PlaceActions
 		return Dump(out);
 	}
 
-	std::string MoveNpcTo(const std::string& npcKey, const std::string& markJson)
+	std::string MoveNpcTo(const std::string& npcKey, const std::string& markJson, bool ownedUnloaded)
 	{
 		json out;
 		out["ok"] = false;
@@ -337,7 +337,9 @@ namespace PlaceActions
 		}
 		auto* form = fid ? RE::TESForm::LookupByID(fid) : nullptr;
 		auto* actor = form ? form->As<RE::Actor>() : nullptr;
-		if (!actor || !actor->Is3DLoaded()) {
+		// Only a native owner restoring its own saved hold may move an unloaded
+		// reference. Normal UI moves still require a loaded actor.
+		if (!actor || (!ownedUnloaded && !actor->Is3DLoaded())) {
 			out["msg"] = "NPC not found / not loaded";
 			logger::warn("domains: MoveNpcTo — actor '{}' not found / not loaded", npcKey);
 			return Dump(out);

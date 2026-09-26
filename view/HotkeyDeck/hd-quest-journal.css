@@ -1,0 +1,30 @@
+/* Gilded journal: open rows, objectives first, one scrolling quest list. */
+.qj-journal { display:flex; flex-direction:column; min-height:0; flex:1; color:#e2e3d5; padding:16px 12px 0; }
+.qj-head { display:flex; justify-content:space-between; align-items:center; gap:20px; margin-bottom:18px; flex:none; }
+.qj-head h1 { font:36px Georgia,serif; margin:0 0 5px; color:#ede6ce; }
+.qj-count { margin:0; color:#bcbba8; font-size:18px; }
+.qj-journal button { font:inherit; font-size:18px; min-height:44px; border:1px solid #5e5c48; border-radius:6px; padding:9px 16px; color:#d8c781; background:#292d29; cursor:pointer; }
+.qj-journal button:hover { background:#37392d; border-color:#cbb05b; }
+.qj-journal button:disabled { opacity:.48; cursor:default; }
+.qj-journal :focus-visible { outline:2px solid #dec572; outline-offset:3px; }
+.qj-search { flex:none; box-sizing:border-box; width:100%; min-height:52px; padding:12px 16px; border:1px solid #8a7948; border-radius:7px; background:#1b1f1d; font:inherit; font-size:20px; color:#eee8d5; }
+.qj-filters { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 12px; flex:none; }
+.qj-filters button { border-color:transparent; background:transparent; }
+.qj-filters button[aria-pressed="true"] { border-color:#aa9150; background:#3b392a; }
+.qj-summary,.qj-notice { color:#b6b8a4; font-size:17px; flex:none; }
+.qj-notice:not(:empty) { color:#e3bd76; padding:12px 0; }
+.qj-list { overflow:auto; min-height:0; flex:1; margin-top:8px; padding-right:8px; }
+.qj-row { display:flex; flex-wrap:wrap; align-items:center; gap:20px; padding:24px 4px; border-bottom:1px solid #494d42; }
+.qj-content { flex:1; min-width:240px; }
+.qj-type { font-size:16px; color:#d8ba64; margin-bottom:4px; }
+.qj-journal .qj-title { display:block; border:0; background:none; padding:0; color:#eee8d5; text-align:left; font:28px Georgia,serif; line-height:1.3; }
+.qj-objective { font-size:20px; line-height:1.45; margin:8px 0; color:#d7dac8; }
+.qj-meta { font-size:16px; color:#aeb3a2; margin-top:10px; overflow-wrap:break-word; }
+.qj-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:10px; width:420px; max-width:100%; }
+.qj-journal .qj-travel { color:#211e14; background:#d3b65e; border-color:#d3b65e; font-weight:600; }
+.qj-target-reason { display:block; flex-basis:100%; text-align:right; font-size:16px; color:#b7b6a6; }
+.qj-review { flex-basis:100%; border-left:3px solid #c9ac59; padding:15px 20px; background:#303128; font-size:18px; }
+.qj-review p { margin:8px 0 14px; color:#c9cabb; line-height:1.5; }
+.qj-review button { margin-right:10px; }
+.qj-empty { font-size:22px; margin:22px 8px 8px; color:#c8cbb9; }
+@media(max-width:760px){.qj-journal{padding:12px 4px 0}.qj-head h1{font-size:28px}.qj-row{gap:14px}.qj-actions{width:100%;justify-content:flex-start}.qj-target-reason{text-align:left}.qj-journal .qj-title{font-size:24px}.qj-objective{font-size:18px}.qj-review{padding:12px}}

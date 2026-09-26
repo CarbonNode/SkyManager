@@ -423,6 +423,11 @@ namespace Widgets
 		// and g_any (what AnyEnabled() answers, i.e. "does this view have any
 		// reason to exist") is their OR. The view honours the same split in
 		// hud.js fwGate.
+		bool HudFlag(const char* key, bool fallback = false)
+		{
+			const auto it = g_cfg.hudPrefs.find(key);
+			return it != g_cfg.hudPrefs.end() && it->is_boolean() ? it->get<bool>() : fallback;
+		}
 		void RecountAnyLocked()
 		{
 			// pins/sets count ONLY when they actually hold something: an enabled
@@ -433,7 +438,7 @@ namespace Widgets
 			        g_cfg.enabled &&
 			        (g_cfg.potions.enabled || g_cfg.gold.enabled || g_cfg.lockpicks.enabled ||
 			         g_cfg.carry.enabled || g_cfg.weather.enabled || g_cfg.place.enabled ||
-			         g_cfg.clock.enabled || g_cfg.mount.enabled ||
+			         g_cfg.clock.enabled || HudFlag("calendar") || HudFlag("weatherOnly") || g_cfg.mount.enabled ||
 			         g_cfg.vitals.enabled || g_cfg.effects.enabled || g_cfg.equip.enabled ||
 			         g_cfg.resist.enabled || g_cfg.survival.enabled || g_cfg.allies.enabled ||
 			         g_cfg.handR.enabled || g_cfg.handL.enabled ||
@@ -1346,6 +1351,22 @@ namespace Widgets
 				found, static_cast<int>(std::size(kLocRules)));
 		}
 
+		// The place's KIND, as the icon sets are keyed. Extracted out of the
+		// player's own place readout (2026-09-17) so a FOLLOWER's location can be
+		// classified the same way: the Followers roster draws an icon for where
+		// she is standing, and a second table of keywords would drift from this
+		// one the first time a location type was added. First rule wins — the
+		// order of kLocRules is load-bearing (settlements last, so a shop inside
+		// a city reads as a shop).
+		std::string KindOfLocation(RE::BGSLocation* loc, bool interior)
+		{
+			EnsureLocKeywords();
+			for (std::size_t i = 0; i < std::size(kLocRules); ++i)
+				if (g_locKw[i] && loc && loc->HasKeyword(g_locKw[i]))
+					return kLocRules[i].type;
+			return interior ? "interior" : "wilderness";
+		}
+
 		std::string FullNameOf(RE::TESForm* form)
 		{
 			if (!form)
@@ -1403,12 +1424,7 @@ namespace Widgets
 					name = world;
 			}
 
-			std::string type;
-			for (std::size_t i = 0; i < std::size(kLocRules) && type.empty(); ++i)
-				if (g_locKw[i] && loc && loc->HasKeyword(g_locKw[i]))
-					type = kLocRules[i].type;
-			if (type.empty())
-				type = interior ? "interior" : "wilderness";
+			std::string type = KindOfLocation(loc, interior);
 
 			// The location's OWN LocType/LocSet keywords ride along. They cost a
 			// walk of one small array, they only change when the place does, and
@@ -2639,6 +2655,21 @@ namespace Widgets
 		RE::TESGlobal* g_shFreezing = nullptr;
 		RE::TESGlobal* g_shAmbient = nullptr;
 		bool           g_needsReady = false;
+		// Names verified from the installed SunHelmSurvival.esp, 2026-09-23.
+		// Read the mod's actual ability, not guessed raw-value thresholds.
+		struct NeedStage { const char* need; const char* edid; int urgency; RE::SpellItem* spell = nullptr; };
+		NeedStage g_needStages[] = {
+			{"hunger", "_SHPosHunger", 0}, {"hunger", "_SHHunger00", 0},
+			{"hunger", "_SHHunger01", 1}, {"hunger", "_SHHunger02", 2},
+			{"hunger", "_SHHunger03", 3}, {"hunger", "_SHHunger04", 4},
+			{"thirst", "_SHThirst00", 0}, {"thirst", "_SHThirst01", 0},
+			{"thirst", "_SHThirst02", 1}, {"thirst", "_SHThirst03", 2},
+			{"thirst", "_SHThirst04", 3}, {"thirst", "_SHThirst05", 4},
+			{"fatigue", "_SHFatigue00", 0}, {"fatigue", "_SHFatigue01", 0},
+			{"fatigue", "_SHFatigue02", 1}, {"fatigue", "_SHFatigue03", 2},
+			{"fatigue", "_SHFatigue04", 3}, {"fatigue", "_SHFatigue05", 4}
+		};
+
 
 		RE::TESGlobal* GlobalByEdid(const char* edid)
 		{
@@ -2658,6 +2689,12 @@ namespace Widgets
 				if (g_needs[i].value)
 					++found;
 			}
+			int stages = 0;
+			for (auto& stage : g_needStages) {
+				stage.spell = RE::TESForm::LookupByEditorID<RE::SpellItem>(stage.edid);
+				if (stage.spell) ++stages;
+			}
+			logger::info("widgets: SunHelm condition spells resolved ({})", stages);
 			g_shEnabled = GlobalByEdid("_SHEnabled");
 			g_shHeat = GlobalByEdid("_SHIsNearHeatSource");
 			g_shFreezing = GlobalByEdid("_SHIsInFreezingWater");
@@ -2683,6 +2720,18 @@ namespace Widgets
 					m["max"] = static_cast<int>(std::lround(g_needs[i].cap->value));
 				if (g_needs[i].disabled && g_needs[i].disabled->value != 0.0f)
 					m["off"] = true;   // the player turned this need off in the MCM
+				if (auto* pc = RE::PlayerCharacter::GetSingleton()) {
+					const NeedStage* active = nullptr;
+					for (const auto& stage : g_needStages) {
+						if (std::strcmp(stage.need, kNeeds[i].id) == 0 && stage.spell && pc->HasSpell(stage.spell) &&
+							(!active || stage.urgency > active->urgency)) active = &stage;
+					}
+					if (active) {
+						m["level"] = active->urgency;
+						const char* name = active->spell->GetName();
+						m["state"] = name ? name : "";
+					}
+				}
 				meters.push_back(std::move(m));
 			}
 			if (meters.empty())
@@ -3593,6 +3642,13 @@ namespace Widgets
 		}
 	}
 
+	// Public: classify any location the way the HUD's place readout does.
+	// MAIN THREAD (keyword lookup + HasKeyword). Marker: widgets-loc-kind.
+	std::string PlaceKindOf(RE::BGSLocation* loc, bool interior)
+	{
+		return KindOfLocation(loc, interior);
+	}
+
 	std::string LiveJson()
 	{
 		// One-time marker so the tick path is provably reached in a live log
@@ -3642,9 +3698,9 @@ namespace Widgets
 			wantPicks = g_cfg.lockpicks.enabled;
 			wantPots = g_cfg.potions.enabled;
 			wantCarry = g_cfg.carry.enabled;
-			wantWeather = g_cfg.weather.enabled;
+			wantWeather = g_cfg.weather.enabled || HudFlag("weatherOnly");
 			wantPlace = g_cfg.place.enabled;
-			wantClock = g_cfg.clock.enabled;
+			wantClock = g_cfg.clock.enabled || HudFlag("calendar") || HudFlag("weatherOnly");
 			wantMount = g_cfg.mount.enabled;
 			follow = g_cfg.mountFollow;
 			wantPins = g_cfg.pins.enabled && !g_cfg.pinList.empty();
@@ -3660,7 +3716,7 @@ namespace Widgets
 			wantVoice = g_cfg.voice.enabled;
 			wantQuick = g_cfg.quick.enabled;
 			wantWard = g_cfg.ward.enabled;
-			wantSeason = g_cfg.season.enabled;
+			wantSeason = g_cfg.season.enabled || (HudFlag("calendar") && HudFlag("calendarSeason", true));
 			wantQuick2 = g_cfg.quick2.enabled && !g_cfg.quick2Items.empty();
 			wantLoot = g_cfg.lootStatus.enabled;
 			// Re-resolve the tracker forms only when the generation moved (a
@@ -3719,6 +3775,8 @@ namespace Widgets
 		// Every one of these OMITS its key when it has nothing true to say. An
 		// absent key means "draw nothing"; it never means zero.
 		if (wantWeather) {
+			if (auto* player = RE::PlayerCharacter::GetSingleton())
+				if (auto* cell = player->GetParentCell()) out["interior"] = cell->IsInteriorCell();
 			auto* sky = RE::Sky::GetSingleton();
 			// currentWeather only, deliberately. RE::Sky also carries lastWeather
 			// (the outgoing sky mid-transition) and that would be the marginally
@@ -3919,12 +3977,22 @@ namespace Widgets
 			smart = SmartJson(g_cfg.smart);
 			combos = CombosJsonLocked(g_cfg.combos);
 		}
+		// The smart row (2026-09-23): each pool's gap and the bottle the smart
+		// rules would pick for it right now - the same preview the press uses.
+		json pools = json::object();
+		for (const char* ref : { "heal", "magicka", "stamina" }) {
+			const auto pv = Hotbar::PreviewSmart(ref);
+			pools[ref] = json{ { "cur", static_cast<int>(pv.cur + 0.5f) }, { "max", static_cast<int>(pv.max + 0.5f) },
+				{ "gap", static_cast<int>(pv.deficit + 0.5f) }, { "ok", pv.ok }, { "full", pv.full },
+				{ "name", pv.name }, { "restores", static_cast<int>(pv.score + 0.5f) },
+				{ "overheal", pv.overheal }, { "total", pv.total }, { "why", pv.why } };
+		}
 		// Build marker (hd-markers.json: "potion-browser: list").
 		logger::info("potion-browser: list built ({} potion(s) carried)", rows.size());
 		return Dump(json{ { "rows", std::move(rows) }, { "prefs", std::move(prefs) },
 			{ "waterOk", Hotbar::WaterModPresent() },
 			{ "ai", std::move(ai) }, { "smart", std::move(smart) },
-			{ "combos", std::move(combos) } });
+			{ "combos", std::move(combos) }, { "pools", std::move(pools) } });
 	}
 
 	std::string PbUseJson(const std::string& payload)
@@ -3935,6 +4003,23 @@ namespace Widgets
 		};
 		if (j.is_discarded() || !j.is_object())
 			return refuse("Bad request");
+
+		// The smart row (2026-09-23, Rober: "a smart button for like use best
+		// potion (to heal my current health gap)"): the same picker and the
+		// same drink the hotbar's smart slots and the Potion AI use. The reply
+		// asks the browser to re-list: counts and the gaps both moved.
+		if (j.contains("smart")) {
+			const std::string ref = j.value("smart", std::string());
+			if (ref != "heal" && ref != "magicka" && ref != "stamina" && ref != "cure")
+				return refuse("Unknown pool");
+			auto res = json::parse(Hotbar::FireSmart(ref), nullptr, false);
+			if (!res.is_object())
+				res = json{ { "ok", false }, { "msg", "The smart drink did not answer" } };
+			res["smart"] = ref;
+			res["relist"] = true;
+			logger::info("potion-browser: smart '{}' -> {}", ref, res.value("ok", false) ? "drank" : "refused");  // marker: potion-browser-smart
+			return Dump(res);
+		}
 
 		const std::string plugin = j.value("plugin", std::string());
 		const std::string idHex = j.value("formId", std::string());

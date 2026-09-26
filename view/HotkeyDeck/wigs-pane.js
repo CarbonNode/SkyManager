@@ -59,7 +59,7 @@ window.WigsPane = (function () {
     rows: [],        // current page only — never accumulates
     awaiting: false,
     names: {},       // id -> name, session cache (fav labels for omni / ctx)
-    worn: { me: '', look: '' },   // wvUseResult history this session, per target
+    worn: { me: '', look: '', actor: '' },   // wvUseResult history this session, per target
     user: { favs: [], tabs: [], hidden: [] }, // the view blob's favs + tabs + hidden (schema above)
   };
 
@@ -67,7 +67,9 @@ window.WigsPane = (function () {
     q: '',
     mod: '',         // scope: one registered mod's plugin, or ''
     view: 'all',     // 'all' | 'fav' | 'tab:<name>'
-    target: 'me',    // 'me' | 'look' — persisted in the view blob
+    target: 'me',    // 'me' | 'look' — persisted in the view blob; 'actor' only while the NPC popout is up
+    actor: null,     // { formId, name } — the NPC popout's subject (openFor)
+    pop: null,       // { origParent, origNext, prevTarget, wasHidden } while the popout hosts the pane
     sel: 0,
     pageSize: DEFAULT_PAGE_SIZE,
     page: 0,         // 0-based, session-only
@@ -177,7 +179,10 @@ window.WigsPane = (function () {
       };
     }).filter(function (t) { return t.name; }).slice(0, MAX_TABS) : [];
     if (typeof v.pageSize === 'number' && v.pageSize > 0) ui.pageSize = clampPageSize(v.pageSize);
-    if (v.target === 'me' || v.target === 'look') ui.target = v.target;
+    if (v.target === 'me' || v.target === 'look') {
+      if (ui.target === 'actor' && ui.pop) ui.pop.prevTarget = v.target;   // remembered for the close, not applied now
+      else ui.target = v.target;
+    }
     if (typeof v.lastPill === 'string' && viewResolves(v.lastPill)) ui.view = v.lastPill;
   }
 
@@ -194,7 +199,7 @@ window.WigsPane = (function () {
       hidden: state.user.hidden.slice(),
       tabs: state.user.tabs.map(function (t) { return { name: t.name, ids: t.ids.slice() }; }),
       pageSize: ui.pageSize,
-      target: ui.target,
+      target: ui.target === 'actor' ? ((ui.pop && ui.pop.prevTarget) || 'me') : ui.target,
       lastPill: ui.view,
     };
   }
@@ -311,7 +316,14 @@ window.WigsPane = (function () {
       if (row && row.missing) toast('That wig isn’t in the load order any more', true);
       return;
     }
-    toGame('wvUse', JSON.stringify({ id: row.id, op: op || 'wear', target: ui.target }));
+    /* Rober, 2026-09-23: "oh god i clicked a wig and it forced it equipped on
+       me..... id never want to that to myself just add to my inventory to
+       give". Aimed at HIMSELF, the click only adds the wig to his bag; wearing
+       it himself is the tile menu's explicit "Wear". Anyone else (who he is
+       looking at, a card's subject) is dressed directly — that is the point. */
+    if (!op) op = ui.target === 'me' ? 'take' : 'wear';
+    toGame('wvUse', JSON.stringify({ id: row.id, op: op,
+      target: ui.target === 'actor' ? String((ui.actor && ui.actor.formId) || 0) : ui.target }));
   }
 
   function setView(view) {
@@ -531,6 +543,8 @@ window.WigsPane = (function () {
   function iconFor(id) {
     const p = idParts(id);
     if (!p) return '';
+    const wp = window.WardrobePane;
+    if (wp && wp.itemIconAttempt && wp.itemIconAttempt(p)) return wp.itemIconFor(p);
     try {
       if (window.HDArt && typeof HDArt.for === 'function') {
         const a = HDArt.for(artSpec(id));
@@ -777,6 +791,12 @@ window.WigsPane = (function () {
   function renderTarget() {
     const box = $('wv-target');
     if (!box) return;
+    if (ui.target === 'actor' && ui.actor) {
+      /* the NPC popout: the subject is fixed, said once, not a choice */
+      box.innerHTML = '<button class="wv-tgt wv-tgt-on wv-tgt-lock" type="button" data-tgt="actor" ' +
+        'title="Wigs go on ' + esc(ui.actor.name) + ' — picked from their card">🎯 ' + esc(ui.actor.name) + '</button>';
+      return;
+    }
     box.innerHTML =
       '<button class="wv-tgt' + (ui.target === 'me' ? ' wv-tgt-on' : '') + '" data-tgt="me" ' +
       'title="Wigs go on your own head">👤 Me</button>' +
@@ -942,8 +962,9 @@ window.WigsPane = (function () {
     const fav = isFav(r.id);
     const hid = isHidden(r.id);
     return '<div class="wv-tile' + (idx === ui.sel ? ' wv-sel' : '') + (worn ? ' wv-worn' : '') +
-      '" data-id="' + esc(r.id) + '" title="' + esc(r.name) + ' — click to wear' +
-      (ui.target === 'look' ? ' on who you’re looking at' : '') + '">' +
+      '" data-id="' + esc(r.id) + '" title="' + esc(r.name) +
+      (ui.target === 'me' ? ' — click to add it to your inventory · the tile menu has Wear'
+        : ' — click to wear' + (ui.target === 'look' ? ' on who you’re looking at' : ui.target === 'actor' && ui.actor ? ' on ' + esc(ui.actor.name) : '')) + '">' +
       '<div class="wv-art' + (hasArt ? ' wv-has-art' : '') + (loading ? ' wv-loading' : '') +
       (why ? ' wv-failed' : '') + '">' +
       '<span class="wv-glyph">💇</span>' +
@@ -1081,7 +1102,7 @@ window.WigsPane = (function () {
       tile.addEventListener('click', function (e) {
         if (e.target.closest && (e.target.closest('.wv-fav') || e.target.closest('.wv-zoom'))) return;
         const r = rowById(id);
-        if (r) useWig(r, 'wear');
+        if (r) useWig(r);   // by target: into your bag for Me, worn for anyone else
       });
       tile.addEventListener('contextmenu', function (ev) {
         ev.preventDefault();
@@ -1291,6 +1312,23 @@ window.WigsPane = (function () {
     items.push({ label: '🦲 Take off', hint: 'Unequip it from the current target',
       run: function () { useWig(r, 'strip'); closeCtx(); } });
     items.push({ label: '🎒 Take into inventory', run: function () { useWig(r, 'take'); closeCtx(); } });
+    /* a picture that exists but is wrong (Rober, 2026-09-23: "weird wig
+       image") — throw it away and draw it again; the tile shimmers meanwhile */
+    if (window.WardrobePane && typeof WardrobePane.rerenderItemIcon === 'function') {
+      items.push({ label: '🔁 Re-render picture', hint: 'Delete this picture and draw it again — for a wrong or ugly render',
+        run: function () {
+          const parts = idParts(r.id);
+          closeCtx();
+          if (!parts) return;
+          delete ui.iconReq[parts.formId + '|' + parts.plugin];
+          if (!WardrobePane.rerenderItemIcon({ formId: parts.formId, plugin: parts.plugin, name: r.name || '' })) {
+            toast('Could not start the image. Try again when the current render finishes.'); return;
+          }
+          chipLastLand = Date.now();   // the render window is open again
+          renderBodyPreservingScroll();
+          toast('Re-rendering ' + (r.name || 'it') + '…');
+        } });
+    }
     /* ---- enforce it permanently (2026-08-20) --------------------------
        "Wear" lasts until something in the game undresses her; a SPID grant
        hands it back at every launch, forever. That is the whole reason the
@@ -1528,6 +1566,108 @@ window.WigsPane = (function () {
 
   /* ========================================================== lifecycle == */
 
+  /* ---- the NPC popout (2026-09-23) ------------------------------------------
+     Rober: "we have a pretty indepth wig picker, id like to add that as a
+     popout to a specific npc if i search wig. and the wig i pick immedietly
+     gets forced into inventory and equipped for that npc". One build, two
+     hosts: the tab's own section is MOVED into a body-level overlay for the
+     duration, aimed at that actor, and moved back on close. Nothing is
+     duplicated, so favourites, tabs, renders and the mod registry are the
+     very objects the tab shows. The wear goes by the actor's FormID (C++
+     wigs: target actor), so it lands on her whether or not the crosshair
+     still does. Body-level like the Potion Browser and NPC Tune, because the
+     card lives inside the transform-scaled #panel; the card scales itself. */
+  function openFor(actor) {
+    if (!actor || !actor.formId) return false;
+    /* The Wigs sheet is GATED (hd-css.js): until need('wigs') lifts the gate,
+       #wv-pane is display:none !important and #wv-popout has no styles at
+       all — which is exactly how the first popout opened INVISIBLY (Rober,
+       2026-09-23: "the wig picker in the f7 dropdown clicking does nothing").
+       The tab switch arms the gate for the tab; a popout must do it itself. */
+    if (window.HDCss && typeof HDCss.need === 'function' &&
+        typeof HDCss.ready === 'function' && !HDCss.ready('wigs')) {
+      HDCss.need('wigs', function () { openForNow(actor); });
+      return true;
+    }
+    return openForNow(actor);
+  }
+  function openForNow(actor) {
+    const pane = $('wv-pane');
+    if (!pane) return false;
+    if (ui.pop) closePopout();
+    let ov = $('wv-popout');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'wv-popout';
+      /* the load-bearing overlay geometry inline too, so a late or failed
+         sheet still gives a visible, centred, dismissable overlay */
+      ov.setAttribute('style', 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:9600;display:flex;align-items:center;justify-content:center;background:rgba(6,6,9,.62);');
+      ov.innerHTML =
+        '<div class="wv-pop-card" role="dialog" aria-label="Wigs for someone">' +
+          '<div class="wv-pop-head">' +
+            '<span class="wv-pop-title" id="wv-pop-title"></span>' +
+            '<span class="wv-pop-sub">Click a wig — it goes straight into their inventory and onto their head · Enter wears the top hit</span>' +
+            '<button type="button" class="wv-pop-x" id="wv-pop-x" title="Close (Esc)">✕</button>' +
+          '</div>' +
+          '<div class="wv-pop-body" id="wv-pop-body"></div>' +
+        '</div>';
+      ov.addEventListener('mousedown', function (e) { if (e.target === ov) closePopout(); });
+      ov.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { e.stopPropagation(); closePopout(); }
+      });
+      document.body.appendChild(ov);
+      const x = $('wv-pop-x');
+      if (x) x.addEventListener('click', function () { closePopout(); });
+    }
+    ui.pop = { origParent: pane.parentNode, origNext: pane.nextSibling,
+               prevTarget: ui.target === 'actor' ? 'me' : ui.target,
+               wasHidden: pane.classList.contains('hidden') };
+    ui.actor = { formId: Number(actor.formId) || 0, name: String(actor.name || 'them') };
+    ui.target = 'actor';
+    state.worn.actor = '';
+    const title = $('wv-pop-title');
+    if (title) title.textContent = 'Wigs for ' + ui.actor.name;
+    const body = $('wv-pop-body');
+    if (body) body.appendChild(pane);
+    pane.classList.remove('hidden');
+    pane.classList.add('wv-in-popout');
+    ov.classList.remove('hidden');
+    document.body.classList.add('wv-pop-open');
+    onShow();
+    return true;
+  }
+  function closePopout() {
+    const pop = ui.pop;
+    if (!pop) return;
+    const pane = $('wv-pane');
+    onHide();
+    ui.pop = null;
+    ui.actor = null;
+    ui.target = pop.prevTarget;
+    if (pane) {
+      pane.classList.remove('wv-in-popout');
+      if (pop.wasHidden) pane.classList.add('hidden');
+      if (pop.origParent) {
+        const next = (pop.origNext && pop.origNext.parentNode === pop.origParent) ? pop.origNext : null;
+        pop.origParent.insertBefore(pane, next);
+      }
+    }
+    const ov = $('wv-popout');
+    if (ov) ov.classList.add('hidden');
+    document.body.classList.remove('wv-pop-open');
+    renderTarget();
+  }
+  function popoutOpen() { return !!ui.pop; }
+  /* hdClosed teardown — the overlay hangs off document.body, so the panel
+     hiding does not take it along (the Potion Browser's own lesson). */
+  (function () {
+    const prev = window.hdClosed;
+    window.hdClosed = function () {
+      if (ui.pop) { try { closePopout(); } catch (e) { /* never block the close */ } }
+      if (typeof prev === 'function') return prev.apply(this, arguments);
+    };
+  })();
+
   function onShow() {
     ui.visible = true;
     /* onHide only runs on a TAB SWITCH (app.js closes the deck without one),
@@ -1581,7 +1721,7 @@ window.WigsPane = (function () {
           e.preventDefault();
           e.stopPropagation();
           const r = state.rows[Math.min(ui.sel, state.rows.length - 1)] || state.rows[0];
-          if (r) useWig(r, 'wear');
+          if (r) useWig(r);   // by target: into your bag for Me, worn for anyone else
         } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' ||
                    e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           /* a GRID: ←→ step one tile, ↑↓ jump a visual row (measured columns) */
@@ -1845,6 +1985,7 @@ window.WigsPane = (function () {
 
   return {
     init, onShow, onHide, toggleEdit, wantsPause, setFilter,
+    openFor, closePopout, popoutOpen,   // the NPC card's Wigs… popout
     _flushIcons: flushIconsForTest, _iconPollTick: iconPollTick, _missingArt: missingArt,
     _state: state, _ui: ui,
     _rowLoading: rowLoading, _renderWindowActive: renderWindowActive,

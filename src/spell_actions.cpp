@@ -1,4 +1,5 @@
 #include "spell_actions.h"
+#include "spell_cost.h"
 
 #include "actor_identity.h"
 #include "npc_actions.h"  // reuse the crosshair target snapshotted at menu-open
@@ -8,6 +9,9 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -409,10 +413,23 @@ namespace SpellActions
 		}
 	}
 
+	void IconMeta(RE::SpellItem* s, std::string& school, std::string& element, std::string& archetype,
+		std::string& tier)
+	{
+		FillIconMeta(s, school, element, archetype);
+		tier = TierOf(s);
+	}
+
 	void Init()
 	{
 		g_sequenceActive = false;
 		logger::info("SpellActions: ready");
+		logger::info("spell-cost: guard missing costliest effects before perk evaluation");
+	}
+
+	std::optional<float> MagickaCostForPlayer(RE::SpellItem* spell)
+	{
+		return SpellCost::Read(spell, RE::PlayerCharacter::GetSingleton());
 	}
 
 	std::string KnownSpellsJson()
@@ -811,6 +828,43 @@ namespace SpellActions
 		return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
+	namespace
+	{
+		nlohmann::json DescriptionStats(RE::SpellItem* spell, int words = 0)
+		{
+			using json = nlohmann::json;
+			using Flag = RE::EffectSetting::EffectSettingData::Flag;
+			using Archetype = RE::EffectSetting::Archetype;
+			json out{{"cost", nullptr}, {"costPerSecond", false}, {"effects", json::array()}};
+			if (!spell) return out;
+			const bool concentration = spell->GetCastingType() == RE::MagicSystem::CastingType::kConcentration;
+			out["costPerSecond"] = concentration;
+			if (const auto cost = MagickaCostForPlayer(spell))
+				out["cost"] = *cost;
+			for (auto* effect : spell->effects) {
+				auto* base = effect ? effect->baseEffect : nullptr;
+				if (!base || base->data.flags.any(Flag::kHideInUI)) continue;
+				const auto flags = base->data.flags;
+				// A magnitude is NOT necessarily damage: cloak/script/peak-value
+				// effects may be radii, levels or temporary attributes. Classify only
+				// non-recovering direct health modifiers; never sum conditional effects.
+				const bool health = base->data.primaryAV == RE::ActorValue::kHealth &&
+					(base->GetArchetype() == Archetype::kValueModifier || base->GetArchetype() == Archetype::kDualValueModifier) &&
+					!flags.any(Flag::kRecover);
+				const auto duration = flags.any(Flag::kNoDuration) ? 0u : effect->effectItem.duration;
+				const char* name = base->GetName();
+				json row{{"name", name && *name ? name : "Effect"}, {"magnitude", nullptr},
+					{"kind", health ? (base->IsDetrimental() ? "damage" : "healing") : "magnitude"},
+					{"perSecond", health && (concentration || duration > 0)}, {"duration", duration},
+					{"area", flags.any(Flag::kNoArea) ? 0u : effect->effectItem.area}, {"words", words}};
+				const float magnitude = effect->effectItem.magnitude;
+				if (!flags.any(Flag::kNoMagnitude) && std::isfinite(magnitude)) row["magnitude"] = magnitude;
+				out["effects"].push_back(std::move(row));
+			}
+			return out;
+		}
+	}
+
 	std::string DescriptionJson(const std::string& plugin, std::uint32_t localId, std::uint32_t formId)
 	{
 		nlohmann::json res;
@@ -829,6 +883,12 @@ namespace SpellActions
 		if (!spell) {
 			if (auto* sh = ResolveShout(plugin, localId, formId)) {
 				res["name"] = NameOfShout(sh);
+				res["stats"] = {{"shout", true}, {"cost", 0}, {"costPerSecond", false}, {"effects", nlohmann::json::array()}};
+				for (int i = 0; i < 3; ++i) {
+					const auto wordStats = DescriptionStats(sh->variations[i].spell, i + 1);
+					for (const auto& row : wordStats["effects"])
+						res["stats"]["effects"].push_back(row);
+				}
 				RE::BSString buf;
 				sh->GetDescription(buf, nullptr);
 				if (buf.length() > 0) {
@@ -844,7 +904,11 @@ namespace SpellActions
 			return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
 
-		// Same text the vanilla item card shows: each visible effect's
+		if (!res.contains("stats")) res["stats"] = DescriptionStats(spell);
+
+		// Visible effect descriptions with their base record values. Perks,
+		// target resistance and script-defined damage are not inferred here.
+		// Each visible effect's
 		// magicItemDescription with its magnitude / duration / area filled in.
 		std::string text;
 		for (auto* eff : spell->effects) {
@@ -871,6 +935,39 @@ namespace SpellActions
 			res["name"] = NameOf(spell);
 		res["text"] = text;
 		return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	void ExportLibraryDescriptions(const std::vector<SpellRef>& refs)
+	{
+		using json = nlohmann::json;
+		static std::atomic<std::uint64_t> generation{0};
+		static std::mutex writeMutex;
+		const auto sequence = ++generation;
+		json rows = json::array();
+		for (const auto& ref : refs) {
+			auto row = json::parse(DescriptionJson(ref.plugin, ref.localId, ref.formId), nullptr, false);
+			if (!row.is_object()) continue;
+			row["plugin"] = ref.plugin;
+			row["localId"] = ref.localId;
+			rows.push_back(std::move(row));
+			if (rows.size() >= 2048) break;
+		}
+		const auto at = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+		std::thread([sequence, text = json({{"version", 1}, {"at", at}, {"spells", rows}}).dump(-1, ' ', false, json::error_handler_t::replace)]() {
+			std::lock_guard lock(writeMutex);
+			if (sequence != generation.load()) return;
+			try {
+				const std::filesystem::path path{"Data/SKSE/Plugins/HotkeyDeck/spell-descriptions.json"};
+				std::filesystem::create_directories(path.parent_path());
+				auto temp = path; temp += ".tmp";
+				std::ofstream output(temp, std::ios::binary | std::ios::trunc);
+				output << text; output.close();
+				if (!output || !MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+					logger::warn("spell-descriptions: snapshot write failed"); return;
+				}
+				logger::info("spell-descriptions: exported library snapshot with cost and base effects");
+			} catch (const std::exception& e) { logger::warn("spell-descriptions: snapshot failed: {}", e.what()); }
+		}).detach();
 	}
 
 	std::string HighlightedSpellJson()

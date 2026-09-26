@@ -26,6 +26,7 @@ add_rules("mode.release")
 -- folder names.
 target("SkyManager")
     add_deps("commonlibsse-ng")
+    add_syslinks("bcrypt") -- exact-binary guard for Custom Markers' live combat setting
 
     add_rules("commonlibsse-ng.plugin", {
        name = "SkyManager",

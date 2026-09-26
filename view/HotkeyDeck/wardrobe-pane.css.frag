@@ -292,7 +292,8 @@
 }
 #wd-builder-swatch:hover { transform: scale(1.15); }
 #wd-builder-swatch:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
-#wd-sheet-face { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; border: 1px solid #2e2e36; flex: none; }
+#wd-sheet-face { display: block; width: 100%; height: 100%; object-fit: cover; }
+#wd-sheet-face-frame { position: relative; overflow: hidden; width: 38px; height: 38px; border-radius: 50%; object-fit: cover; border: 1px solid #2e2e36; flex: none; }
 .wd-sheet-id { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 
 #wd-builder-cols { flex: 1; min-height: 0; display: flex; gap: 0; }
@@ -680,6 +681,12 @@
 .wd-cad-next { font-size: 13.5px; color: #8b8678; }
 .wd-cad-next b { color: #d3c191; font-weight: 600; }
 
+/* A dedicated bed choice inside the existing, body-anchored person sheet. */
+#wd-sheet .wd-bed-field { padding: 18px; gap: 12px; border: 1px solid #63533a; border-radius: 10px; background: rgba(187,153,91,.07); }
+#wd-sheet .wd-bed-field .wd-field-k { font-size: 17px; color: #dbc699; }
+#wd-sheet .wd-bed-field .wd-combo-btn { min-height: 44px; font-size: 16px; }
+.wd-bed-hint { font-size: 15px; line-height: 1.5; color: #c1b9a7; }
+
 /* ---------- keyboard roving focus ---------- */
 
 .wd-card.kb, .wd-npc.kb, .wd-pick.kb { border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.13); }
@@ -1063,3 +1070,90 @@
 .wd-warn-fold { color: #e0b0b0; border-color: #6b3a3a; font-size: 14px; text-align: left; }
 .wd-warn-fold:hover { color: #f0c5c5; border-color: #a55565; }
 .wd-warn-detail { margin: 6px 0 0 14px; font-size: 13.5px; color: #d8b8b8; line-height: 1.5; }
+
+/* ---- ＋ New outfit (2026-09-23) ----
+   The toolbar button is the pane's gold, sized with the toolbar's controls.
+   The popout hangs off document.body, OUTSIDE #wd-scale (same reason as
+   .wd-art-lb): its bare vh/vw are correct and it must not wear the tab zoom. */
+#wd-toolbar .wd-newfit { font-size: 15px; padding: 8px 16px; border-radius: 8px; white-space: nowrap; }
+#wd-toolbar .wd-newfit.hidden { display: none; }
+
+.wd-nf-back {
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 9000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .72);
+  animation: wdArtIn 120ms ease-out;
+}
+.wd-nf-card {
+  width: min(1120px, 92vw); max-height: 90vh; overflow: auto; box-sizing: border-box;
+  background: #16161d; border: 1px solid #c9a24b; border-radius: 14px;
+  padding: 30px 34px 34px;
+  /* No drop shadow: the deck is a transparent overlay on the game, and a big
+     dark shadow reads as a black slab (tools/check_shadow_slabs.py). The
+     full-screen dim behind the card already separates it. */
+}
+.wd-nf-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.wd-nf-h { font-size: 30px; letter-spacing: .3px; color: #ecd9a0; }
+.wd-nf-x { font-size: 18px; padding: 8px 14px; }
+.wd-nf-sub { margin: 10px 0 26px; font-size: 18px; line-height: 1.45; color: rgba(236, 230, 214, .78); }
+.wd-nf-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.wd-nf-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 12px;
+  min-height: 250px; box-sizing: border-box; padding: 28px 26px 24px;
+  font-family: inherit; text-align: left; cursor: pointer;
+  color: #ece6d6; background: #1d1d26;
+  border: 1px solid rgba(201, 162, 75, .35); border-radius: 12px;
+  transition: border-color 140ms ease, background 140ms ease, transform 100ms ease;
+}
+.wd-nf-tile:hover { border-color: #c9a24b; background: #23232e; }
+.wd-nf-tile:focus-visible { outline: none; border-color: #ecd9a0; box-shadow: 0 0 0 3px rgba(201, 162, 75, .35); background: #23232e; }
+.wd-nf-tile:active { transform: translateY(1px); }
+.wd-nf-icon { width: 64px; height: 64px; object-fit: contain; }
+.wd-nf-title { font-size: 22px; color: #ecd9a0; }
+.wd-nf-text { font-size: 17px; line-height: 1.45; color: rgba(236, 230, 214, .8); flex: 1 1 auto; }
+.wd-nf-key {
+  font-family: Consolas, "Courier New", monospace; font-size: 14px; color: #c9a24b;
+  border: 1px solid rgba(201, 162, 75, .45); border-radius: 6px; padding: 3px 9px;
+}
+@media (max-width: 760px) {
+  .wd-nf-grid { grid-template-columns: minmax(0, 1fr); }
+  .wd-nf-tile { min-height: 0; }
+}
+
+/* ---- outfit-photo brightness, in the selection bar beside ◉ Photo ---- */
+.wd-bright {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 3px 10px; border: 1px solid rgba(201, 162, 75, .3); border-radius: 8px;
+}
+.wd-bright-k { font-size: 13px; color: rgba(236, 230, 214, .8); white-space: nowrap; }
+.wd-bright-range { width: 170px; cursor: pointer; accent-color: #c9a24b; }
+.wd-bright-val {
+  font-family: Consolas, "Courier New", monospace; font-size: 13px;
+  min-width: 92px; color: rgba(236, 230, 214, .7);
+}
+.wd-bright-val.on { color: #ecd9a0; }
+.wd-bright-reset { font-size: 13px; padding: 4px 9px; }
+.wd-bright-reset.hidden { display: none; }
+
+/* Tailor's studio: shared navigation, calm toolbar and legible secondary tools. */
+#wd-scale { padding:20px 24px 16px; }
+#wd-toolbar { flex-wrap:wrap; gap:12px; margin-bottom:16px; }
+#wd-toolbar #wd-search-wrap { flex:1 1 300px; }
+#wd-toolbar #wd-search { min-height:48px; padding:12px 48px 12px 14px; font-size:17px; }
+#wd-toolbar #wd-search-clear { width:44px; height:44px; right:2px; font-size:16px; }
+#wd-toolbar .ghost-btn,#wd-toolbar .wd-newfit { min-height:44px; font-size:16px; padding:10px 16px; line-height:1.3; }
+#wd-toolbar #wd-count { font-size:16px; }
+#wd-toolbar.wd-toolbar-options { justify-content:flex-end; margin:0 0 8px; }
+#wd-toolbar .hidden,#wd-search-wrap.hidden { display:none; }
+#wd-editrow .wd-ok-label,#wd-editrow .wd-ui-v,#wd-editrow .keychip { font-size:16px; }
+#wd-editrow .keychip { min-height:44px; min-width:44px; }
+#wd-editrow .wd-ok-hint { font-size:16px; white-space:normal; flex-basis:100%; }
+#wd-banner { font-size:16px; }
+#wd-body { padding-right:6px; }
+#wd-list:not(.grid) { gap:14px; }
+@media(max-width:600px) {
+  #wd-scale { padding:12px; }
+  #wd-toolbar #wd-search-wrap { flex-basis:100%; }
+  #wd-toolbar .ghost-btn,#wd-toolbar .wd-newfit { flex:1 1 auto; }
+}
+@media(prefers-reduced-motion:reduce) { #wd-scale { transition:none; } }

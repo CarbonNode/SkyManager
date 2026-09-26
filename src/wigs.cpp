@@ -505,6 +505,17 @@ namespace Wigs
 			actor = RE::TESForm::LookupByID<RE::Actor>(formId);
 			if (!actor)
 				return fail("They aren't loaded any more - look at them and reopen");
+		} else if (target != "me" && !target.empty()) {
+			// A SPECIFIC actor (2026-09-23, Rober: "add that as a popout to a
+			// specific npc ... the wig i pick immedietly gets forced into inventory
+			// and equipped for that npc"): the NPC card's own subject, by runtime
+			// FormID - decimal or 0x-hex, whichever the view holds. Loaded-actor
+			// check as for "look"; the dead check below applies the same.
+			const auto formId = static_cast<std::uint32_t>(std::strtoul(target.c_str(), nullptr, 0));
+			actor = formId ? RE::TESForm::LookupByID<RE::Actor>(formId) : nullptr;
+			if (!actor)
+				return fail("They aren't loaded any more - find them and reopen");
+			logger::info("wigs: target actor {:08X}", formId);  // marker: wigs-target-actor
 		} else {
 			actor = player;
 		}

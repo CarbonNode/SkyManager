@@ -180,6 +180,10 @@
 .fd-lb-btn:disabled { opacity: .38; cursor: default; }
 .fd-lb-btn.ok { color: #8fd19e; border-color: #3d6b4a; }
 .fd-lb-btn.ok:hover:not(:disabled) { background: #1c2a20; border-color: #4f8560; }
+.fd-lb-auto-fit { min-height:36px; padding:8px 14px; font-size:16px; }
+.fd-lb-auto-fit[aria-checked="true"] { color:#e8d493; border-color:#887342; background:#302b20; }
+.fd-lb-foot > div { min-width:0; max-width:100%; }
+.fd-lb-foot .fd-lb-bright { flex-wrap:wrap; }
 
 /* The six nudge keys as one block, so they read as a d-pad rather than as
    six more buttons in the row. */

@@ -116,9 +116,13 @@
     ['HDQuests',    ['open'],                    'npcquests'],
     ['HDSpidGear',  ['open'],                    'followers'],
     ['ChimBtn',     ['open'],                    'chim'],
+    ['FixBtn',      ['open'],                    'chim'],       // the Fixes popout lives in chim-flyout.css
     ['SmPane',      ['open'],                    'followers'],
     ['HDLightbox',  ['open'],                    'lightbox'],
-    ['HDItemPick',  ['open'],                    'itempick']
+    ['HDItemPick',  ['open'],                    'itempick'],
+    ['HDMcm',       ['open'],                    'mcm'],
+    ['AppearanceGallery', ['open'],              'appearances'],
+    ['WigsPane',    ['openFor'],                 'wigs']        // the NPC card's Wigs… popout hosts the gated #wv-pane (2026-09-23)
   ];
 
   /* Backstop map: the id / class of a gated root -> its key. Kept as plain lookups
@@ -126,10 +130,11 @@
   var ROOT_ID = {
     'hd-wheel': 'wheel', 'hd-potions': 'potions', 'hd-quiver': 'quiver',
     'hd-survival': 'survival', 'hd-super': 'super', 'fm-modal': 'formation', 'dr-modal': 'door',
-    'hdo-layer': 'outfit', 'hdq-layer': 'npcquests', 'sg-modal': 'followers'
+    'hdo-layer': 'outfit', 'hdq-layer': 'npcquests', 'sg-modal': 'followers',
+    'mc-modal': 'mcm', 'appearance-gallery': 'appearances'
   };
   var ROOT_CLASS = [
-    ['chim-fly', 'chim'], ['sm-pop', 'followers'],
+    ['chim-fly', 'chim'], ['fx-back', 'chim'], ['sm-pop', 'followers'], ['sdp-back', 'followers'],
     ['hdlb', 'lightbox'], ['ip-wrap', 'itempick']
   ];
 

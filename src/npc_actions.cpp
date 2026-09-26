@@ -1,6 +1,7 @@
 #include "npc_actions.h"
 
 #include "follower_frameworks.h"
+#include "sic_em_feedback.h"
 
 #include <algorithm>
 #include <atomic>
@@ -8,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -455,6 +457,7 @@ namespace NpcActions
 
 		void DoFreeze(RE::Actor* actor)
 		{
+			ReleaseConversation(actor->GetFormID(), "Freeze takes ownership");
 			auto  id = actor->GetFormID();
 			auto& state = g_managed[id];
 			if (state == NPCState::Frozen) {
@@ -495,6 +498,7 @@ namespace NpcActions
 
 		void DoFurniture(RE::Actor* actor, bool wantBed)
 		{
+			ReleaseConversation(actor->GetFormID(), "furniture takes ownership");
 			auto  id = actor->GetFormID();
 			auto& state = g_managed[id];
 			if (state == NPCState::Sitting || state == NPCState::InBed) {
@@ -546,6 +550,7 @@ namespace NpcActions
 
 		void DoReleaseAll()
 		{
+			ReleaseConversation(0, "Release all");
 			int count = 0;
 			for (auto& [id, state] : g_managed) {
 				auto actor = RE::TESForm::LookupByID<RE::Actor>(id);
@@ -653,26 +658,126 @@ namespace NpcActions
 			return best;
 		}
 
-		bool DoSicEm(const std::function<bool(RE::Actor*)>& allow, const std::string& who)
+		// Who a sic 'em goes for AT ONCE, before the bolt lands: the crosshair
+		// snapshot, then the longshot along your aim. Both are on the aim line
+		// the bolt is flying down, so the order and the bolt agree.
+		//
+		// The snapshot is skipped when it is one of your own — a teammate, or
+		// someone `excluded` names. F7 on a follower lands on the Followers
+		// tab with HER as the snapshot, and the Attack buttons live on that
+		// very card (2026-09-23): without this, "Everyone: Attack" sent the
+		// party at the follower you were looking at, and her own Attack told
+		// her to fight herself.
+		RE::Actor* ResolveSicTargetInstant(const std::function<bool(RE::Actor*)>& excluded)
 		{
 			auto* target = TargetActor();
-			if (target && target->IsDead())
-				target = nullptr;  // a corpse can't be rushed — look past it
+			if (target && (target->IsDead() || target->IsPlayerTeammate() ||
+							  (excluded && excluded(target))))
+				target = nullptr;  // a corpse or one of ours — look past it
 			if (!target) {
 				float dist = 0.0f;
 				target = PickDistantHostile(dist);
+				if (target && excluded && excluded(target))
+					target = nullptr;
 				if (target)
 					logger::info("NpcActions: sic-em longshot -> \"{}\" at {:.0f} units",
 						NameOf(target), dist);
 			}
-			if (!target) {
-				Notify("Sic 'em: aim at an enemy — none under the crosshair or along your aim");
-				return false;
-			}
+			return target;
+		}
 
+		// The last resort: the nearest enemy ALREADY fighting you. This is what
+		// makes the per-follower button usable when you are looking at HER
+		// rather than the enemy: no aim needed, she joins the brawl you are
+		// already in. Only actors hostile to you AND in combat qualify — never
+		// a neutral, same rule as the longshot.
+		RE::Actor* FightFallback(const std::function<bool(RE::Actor*)>& excluded)
+		{
+			constexpr float kFightRange = 4000.0f;  // ~57 m around you
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			auto* lists  = RE::ProcessLists::GetSingleton();
-			if (!player || !lists) {
+			RE::Actor* target = nullptr;
+			float best = kFightRange;
+			if (player && lists) {
+				const RE::NiPoint3 pp = player->GetPosition();
+				for (auto& h : lists->highActorHandles) {
+					auto ptr = h.get();
+					auto* a  = ptr ? ptr.get() : nullptr;
+					if (!a || a->IsPlayerRef() || a->IsDead() || a->IsDisabled() || !a->Is3DLoaded())
+						continue;
+					if (a->IsPlayerTeammate() || (excluded && excluded(a)))
+						continue;
+					if (!a->IsInCombat() || !a->IsHostileToActor(player))
+						continue;
+					const float d = (a->GetPosition() - pp).Length();
+					if (d < best) { best = d; target = a; }
+				}
+			}
+			if (target)  // Build marker (hd-markers.json: "npc-sic-em-fight").
+				logger::info("NpcActions: sic-em fight fallback -> \"{}\" at {:.0f} units",
+					NameOf(target), best);
+			return target;
+		}
+
+		// What the bolt landing means. Struck an actor: that is the target —
+		// deliberate aim, the same allowance the crosshair snapshot has, so a
+		// neutral you shot IS designated (EFF's spell did exactly this). One
+		// of ours or someone `excluded`: not a target, look around the impact.
+		// Struck scenery, or a near miss: the nearest actor within a short
+		// radius of the impact who is already hostile or already in combat —
+		// never a neutral by splash, a stray shot into a market must not start
+		// a massacre.
+		RE::Actor* TargetFromImpact(const SicEmFeedback::Impact& hit,
+			const std::function<bool(RE::Actor*)>& excluded)
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!player)
+				return nullptr;
+			if (hit.collidee) {
+				auto* struck = RE::TESForm::LookupByID<RE::Actor>(hit.collidee);
+				if (struck && !struck->IsPlayerRef() && !struck->IsDead() && !struck->IsDisabled() &&
+					!struck->IsPlayerTeammate() && !(excluded && excluded(struck))) {
+					logger::info("NpcActions: sic-em bolt struck \"{}\"{}", NameOf(struck),
+						(struck->IsHostileToActor(player) || struck->IsInCombat()) ? "" : " (a neutral — deliberate aim)");
+					return struck;
+				}
+			}
+			constexpr float kSplash = 700.0f;  // ~10 m — the camp the bolt landed in
+			auto* lists = RE::ProcessLists::GetSingleton();
+			if (!lists)
+				return nullptr;
+			const RE::NiPoint3 at{ hit.x, hit.y, hit.z };
+			RE::Actor* best = nullptr;
+			float bestD = kSplash;
+			auto check = [&](RE::ActorHandle& h) {
+				auto ptr = h.get();
+				auto* a  = ptr ? ptr.get() : nullptr;
+				if (!a || a->IsPlayerRef() || a->IsDead() || a->IsDisabled() || !a->Is3DLoaded())
+					return;
+				if (a->IsPlayerTeammate() || (excluded && excluded(a)))
+					return;
+				if (!a->IsHostileToActor(player) && !a->IsInCombat())
+					return;
+				const float d = (a->GetPosition() - at).Length();
+				if (d < bestD) { bestD = d; best = a; }
+			};
+			for (auto& h : lists->highActorHandles) check(h);
+			for (auto& h : lists->middleHighActorHandles) check(h);
+			if (best)
+				logger::info("NpcActions: sic-em bolt landed {:.0f} units from \"{}\"", bestD, NameOf(best));
+			return best;
+		}
+
+		// The order itself: every loaded follower `allow` admits charges the
+		// target, and the already-hostile actors around the target are woken
+		// so the whole brawl lights up at once. Shared by the instant path and
+		// the bolt's late answer, so both put the same line on screen.
+		bool Engage(RE::Actor* target, const std::function<bool(RE::Actor*)>& allow,
+			const std::string& who, const char* how)
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* lists  = RE::ProcessLists::GetSingleton();
+			if (!player || !lists || !target || target->IsDead()) {
 				Notify("Sic 'em: unavailable right now");
 				return false;
 			}
@@ -728,14 +833,50 @@ namespace NpcActions
 			for (auto* e : nearHostiles)
 				CallStartCombat(e, player);
 
-			logger::info("NpcActions: sic-em — {} follower(s) onto \"{}\" (+{} nearby hostile){}",
-				followers.size(), NameOf(target), nearHostiles.size(),
+			logger::info("NpcActions: sic-em — {} follower(s) onto \"{}\" (+{} nearby hostile) via {}{}",
+				followers.size(), NameOf(target), nearHostiles.size(), how,
 				who.empty() ? std::string() : (" [" + who + "]"));
-			std::string msg = "⚔ " + std::to_string(static_cast<int>(followers.size())) +
+			SicEmFeedback::Ping(target);
+			std::string msg = "Sic 'em: " + std::to_string(static_cast<int>(followers.size())) +
 				" on " + NameOf(target);
 			if (!nearHostiles.empty())
 				msg += " +" + std::to_string(static_cast<int>(nearHostiles.size()));
 			Notify(msg);
+			return true;
+		}
+
+		// The bolt ALWAYS flies, straight down the crosshair, on every press —
+		// Rober, 2026-09-26: it used to fire only once a target had been found,
+		// and then homed on that target like a magic missile instead of going
+		// where he was looking. Order of designation: the crosshair snapshot,
+		// the longshot along your aim (both instant — the followers move NOW),
+		// then whoever the bolt LANDS ON, then the nearest enemy already
+		// fighting you. Returns true when the order was given OR the bolt is in
+		// the air and will give it; the reason for a refusal is on screen.
+		bool DoSicEm(const std::function<bool(RE::Actor*)>& allow, const std::string& who)
+		{
+			const bool bolt = SicEmFeedback::FireAlongAim();
+			if (auto* target = ResolveSicTargetInstant(allow))
+				return Engage(target, allow, who, "aim");
+			if (!bolt) {
+				// No projectile art (or no world yet): the old immediate answer.
+				if (auto* target = FightFallback(allow))
+					return Engage(target, allow, who, "fight");
+				Notify("Sic 'em: aim at an enemy — nobody under the crosshair, along your aim, or fighting you");
+				return false;
+			}
+			// Whoever the bolt lands on is the target — EFF's targeting spell.
+			SicEmFeedback::AwaitImpact([allow, who](std::optional<SicEmFeedback::Impact> hit) {
+				RE::Actor* target = hit ? TargetFromImpact(*hit, allow) : nullptr;
+				const char* how = "bolt";
+				if (!target) { target = FightFallback(allow); how = "fight"; }
+				if (!target) {
+					Notify(hit ? "Sic 'em: the bolt hit nothing worth fighting"
+							   : "Sic 'em: the bolt found no one — nobody along your aim or fighting you");
+					return;
+				}
+				Engage(target, allow, who, how);
+			});
 			return true;
 		}
 
@@ -995,6 +1136,7 @@ namespace NpcActions
 
 	void Init()
 	{
+		SicEmFeedback::InstallHooks();  // the bolt reports what it struck (MissileProjectile::AddImpact)
 		if (auto src = SKSE::GetCrosshairRefEventSource()) {
 			src->AddEventSink(CrosshairSink::GetSingleton());
 			logger::info("NpcActions: crosshair sink registered");
@@ -1051,6 +1193,13 @@ namespace NpcActions
 	{
 		return a == "freeze" || a == "sit" || a == "bed" || a == "release-all" || a == "grab" ||
 			a == "attack-target";
+	}
+
+	bool HasPoseHold(std::uint32_t id)
+	{
+		const auto it = g_managed.find(id);
+		return (it != g_managed.end() && it->second != NPCState::None) ||
+			g_aliasHeld.count(id) || (g_dragActive.load() && g_drag.id == id);
 	}
 
 	bool DragActive()
@@ -1183,6 +1332,89 @@ namespace NpcActions
 		return DoSicEm(allow, who);
 	}
 
+	// One named NPC charges (the F7 card's Order → Attack, Rober 2026-09-23:
+	// "a npc specific attack order as well"). Not limited to teammates: the
+	// card exists for anyone, and StartCombat works on anyone — the TARGET
+	// rules are what keep this from starting a massacre, and they are the
+	// same as every other sic 'em's: the crosshair, the longshot, then
+	// whoever the bolt lands on, then the fight you are already in.
+	namespace
+	{
+		// Her part of the order, once a target is known — instant or when the
+		// bolt lands. Re-resolves her by id: the late answer may arrive after
+		// she has unloaded.
+		bool EngageOne(std::uint32_t id, RE::Actor* target, std::string& outMsg)
+		{
+			auto* who = RE::TESForm::LookupByID<RE::Actor>(id);
+			if (!who || who->IsDead() || who->IsDisabled() || !who->Is3DLoaded() ||
+				!target || target->IsDead()) {
+				outMsg = "Attack: she isn't here to send any more";
+				Notify(outMsg);
+				return false;
+			}
+			// A hold of OURS pins her (restrained / seated / in bed) — she cannot
+			// charge out of it, so the order releases it first, exactly the way
+			// Freeze's second click does.
+			std::string freed;
+			if (auto it = g_managed.find(id); it != g_managed.end()) {
+				const auto st = it->second;
+				if (st == NPCState::Sitting || st == NPCState::InBed)
+					who->NotifyAnimationGraph("IdleForceDefaultState"sv);
+				DropAliasHold(who);
+				ReleaseFramework(who);
+				if (st == NPCState::Frozen)
+					UnlockActor(who);
+				g_managed.erase(it);
+				freed = " (released from the deck's hold)";
+			}
+
+			CallStartCombat(who, target);
+			logger::info("NpcActions: sic-em one — \"{}\" ({:08X}) onto \"{}\"{}",  // marker: npc-sic-em-one
+				NameOf(who), static_cast<std::uint32_t>(id), NameOf(target), freed);
+			SicEmFeedback::Ping(target);
+			outMsg = "Sic 'em: " + NameOf(who) + " on " + NameOf(target) + freed;
+			Notify(outMsg);
+			return true;
+		}
+	}
+
+	bool SicEmOne(std::uint32_t formId, std::string& outMsg)
+	{
+		auto* who = formId ? RE::TESForm::LookupByID<RE::Actor>(formId) : TargetActor();
+		if (!who || who->IsDead() || who->IsDisabled() || !who->Is3DLoaded()) {
+			outMsg = "Attack: she isn't here to send — she has to be loaded near you";
+			Notify(outMsg);
+			return false;
+		}
+		const auto id = static_cast<std::uint32_t>(who->GetFormID());
+		const std::function<bool(RE::Actor*)> notHer = [id](RE::Actor* a) { return a->GetFormID() == id; };
+
+		const bool bolt = SicEmFeedback::FireAlongAim();
+		if (auto* target = ResolveSicTargetInstant(notHer))
+			return EngageOne(id, target, outMsg);
+		if (!bolt) {
+			if (auto* target = FightFallback(notHer))
+				return EngageOne(id, target, outMsg);
+			outMsg = "Attack: aim at an enemy — nobody along your aim or fighting you";
+			Notify(outMsg);
+			return false;
+		}
+		SicEmFeedback::AwaitImpact([id, notHer](std::optional<SicEmFeedback::Impact> hit) {
+			RE::Actor* target = hit ? TargetFromImpact(*hit, notHer) : nullptr;
+			if (!target)
+				target = FightFallback(notHer);
+			if (!target) {
+				Notify(hit ? "Attack: the bolt hit nothing worth fighting"
+						   : "Attack: the bolt found no one — nobody along your aim or fighting you");
+				return;
+			}
+			std::string msg;
+			EngageOne(id, target, msg);
+		});
+		outMsg = "Sic 'em: " + NameOf(who) + " — bolt away, she attacks whoever it lands on";
+		return true;
+	}
+
 	bool Run(const std::string& action)
 	{
 		if (action == "release-all") {
@@ -1190,6 +1422,7 @@ namespace NpcActions
 			return true;
 		}
 		if (action == "grab") {
+			if (TargetFormID()) ReleaseConversation(TargetFormID(), "Grab takes ownership");
 			DoGrab();
 			return true;
 		}
@@ -1226,6 +1459,7 @@ namespace NpcActions
 			outMsg = "She (or the furniture) isn't loaded right now";
 			return false;
 		}
+		ReleaseConversation(actorFormId, "furniture takes ownership");
 		if (!EnsureControlRunning()) {
 			outMsg = "No HD_NPCControl quest — HotkeyDeckWardrobe.esp v2 not loaded?";
 			return false;

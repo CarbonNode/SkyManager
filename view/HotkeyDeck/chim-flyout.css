@@ -10,6 +10,8 @@
   z-index: 60;
   min-width: 268px;
   max-width: 360px;
+  max-height: calc((100vh - 24px) / var(--ui-scale, 1));
+  overflow-y: auto;
   padding: 8px;
   border-radius: 14px;
   background: linear-gradient(180deg, rgba(24, 26, 32, 0.98), rgba(16, 18, 22, 0.98));
@@ -38,6 +40,34 @@
   margin-bottom: 6px;
 }
 .chim-fly-head-ic { font-size: 18px; line-height: 1; }
+/* the model line under the head (2026-09-21): which LLM answers her right now */
+.chim-fly-model {
+  padding: 4px 14px 8px;
+  font-size: 12.5px;
+  letter-spacing: .02em;
+  color: #cdb075;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border-bottom: 1px solid rgba(201,162,75,.16);
+  margin-bottom: 4px;
+}
+.chim-fly-model.is-wait { color: #7a7468; font-family: inherit; font-style: italic; }
+/* the last outcome banner (2026-09-21): what the press did, kept until dismissed */
+.chim-fly-result {
+  margin: 4px 10px 6px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(201,162,75,.35);
+  background: rgba(201,162,75,.08);
+  color: #f2e0b0;
+  font-size: 13px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+.chim-fly-result.is-bad { border-color: rgba(224,120,120,.45); background: rgba(224,120,120,.08); color: #e8c0c0; }
+.chim-fly-result-t { display: block; font-weight: 700; }
+.chim-fly-result-full { margin-top: 6px; color: #d8cdb0; font-size: 12.5px; white-space: pre-wrap; max-height: 9em; overflow: hidden; }
+.chim-fly-result-when { display: block; margin-top: 4px; color: #8a8375; font-size: 11.5px; }
 .chim-fly-head-t {
   font-size: 13px;
   font-weight: 600;
@@ -109,6 +139,10 @@
 }
 
 /* Key-capture state */
+.chim-fly-talk .chim-fly-lbl { font-size: 18px; line-height: 1.3; }
+.chim-fly-talk .chim-fly-sub { font-size: 16px; line-height: 1.4; white-space: normal; }
+.chim-fly-talk:focus-visible { outline: 2px solid #d4af5b; outline-offset: 2px; }
+
 .chim-fly-cap { padding: 10px 10px 12px; }
 .chim-fly-cap-t {
   font-size: 14px;
@@ -125,4 +159,123 @@
 @keyframes chimCapPulse {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.55; }
+}
+
+/* ===================================================================== *
+ *  Fixes POPOUT (fixes-flyout.js) — the 🔧 on the F7 card.
+ *
+ *  Was an anchored flyout reusing .chim-fly; on 2026-09-23 it ran off the
+ *  bottom of the screen and Rober asked for a popout. It is now its own
+ *  body-anchored modal, shaped like .gaw-back / .ost-back: the backdrop
+ *  fills the viewport (so bare vh/vw is right and it wears NO --ui-scale —
+ *  see the 2026-08-14 popup audit), the card centres itself, and the type
+ *  is bigger than the panel allows because the room is the point.
+ *  Namespaced fx-* on purpose: no class shared with the deck skeleton.
+ * ===================================================================== */
+.fx-back {
+  position: fixed; inset: 0; z-index: 9900;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; box-sizing: border-box;
+  background: rgba(0, 0, 0, .72);
+  color: #eee8dd;
+}
+.fx-card {
+  display: flex; flex-direction: column;
+  width: 1000px; max-width: 100%; max-height: 92vh;
+  box-sizing: border-box; overflow: auto;
+  padding: 26px 30px 24px;
+  background: #19191f;
+  border: 1px solid #b69b56; border-radius: 18px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .3);
+  font-size: 19px;
+}
+.fx-head {
+  display: flex; align-items: center; gap: 16px;
+  padding-bottom: 16px; margin-bottom: 16px;
+  border-bottom: 1px solid #4d4540;
+}
+.fx-head-ic { font-size: 30px; line-height: 1; flex-shrink: 0; }
+.fx-head-t {
+  flex: 1; min-width: 0;
+  font-size: 28px; font-weight: 700; color: #e6c979;
+  overflow-wrap: anywhere;
+}
+.fx-close {
+  flex-shrink: 0; min-height: 48px; padding: 10px 20px;
+  font: inherit; font-size: 18px; color: #eee8dd;
+  background: #2a2931; border: 1px solid #615b62; border-radius: 9px; cursor: pointer;
+}
+.fx-close:hover { background: #36313a; }
+.fx-close:focus-visible, .fx-item:focus-visible { outline: 2px solid #d5b65c; outline-offset: 2px; }
+
+.fx-diag:empty { display: none; }
+.fx-note {
+  margin: 0 0 14px;
+  padding: 14px 18px;
+  border: 1px solid #3a3a44; border-radius: 10px;
+  background: rgba(255, 255, 255, .025);
+  color: #c8c1b5;
+  font-size: 18px; line-height: 1.5;
+}
+.fx-note.warn { border-color: rgba(201, 162, 75, .5); background: rgba(201, 162, 75, .07); color: #e0cf9a; }
+.fx-note.bad  { border-color: rgba(214, 106, 106, .5); background: rgba(214, 106, 106, .08); color: #e5a2a2; }
+.fx-note.good { border-color: rgba(127, 191, 127, .45); background: rgba(127, 191, 127, .08); color: #a8d6a8; }
+.fx-note-t { font-weight: 700; font-size: 20px; margin-bottom: 6px; color: #f0e8d4; }
+.fx-why { margin-top: 6px; }
+/* The refusal. It is the most important line in the panel when it is
+   there, so it is separated from the evidence above it rather than
+   being one more bullet. */
+.fx-why.blocked {
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid rgba(201, 162, 75, .3);
+  color: #eab0a8;
+}
+
+/* The verbs: an even two-column grid of equal tiles. Every tile shares the
+   same row structure (icon | label over sub) and the same min-height, so the
+   rows line up edge to edge. .fx-wide (Noclip, the player-only verb) spans
+   both columns, which also keeps an odd count from leaving one dangling. */
+.fx-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(92px, auto);
+  gap: 12px;
+  margin-top: 4px;
+}
+.fx-item {
+  display: flex; align-items: center; gap: 16px;
+  min-height: 92px; height: 100%;
+  padding: 14px 18px; box-sizing: border-box;
+  text-align: left; font: inherit; color: #eee8dd;
+  background: #22222a; border: 1px solid #3d3a44; border-radius: 12px;
+  cursor: pointer;
+}
+.fx-item:hover { background: #2e2b33; border-color: #8b7443; }
+.fx-item:active { transform: translateY(1px); }
+.fx-item.fx-wide { grid-column: 1 / -1; min-height: 76px; }
+.fx-item.fx-lead { border-color: #b69b56; background: rgba(182, 150, 66, .12); }
+.fx-item.is-disabled { opacity: .45; cursor: default; }
+.fx-item.is-disabled:hover { background: #22222a; border-color: #3d3a44; }
+.fx-item-ic { width: 36px; flex-shrink: 0; text-align: center; font-size: 26px; line-height: 1; }
+.fx-item-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.fx-item-lbl { font-size: 21px; font-weight: 600; line-height: 1.25; }
+.fx-item-sub { font-size: 17px; line-height: 1.35; color: #b9b2a4; }
+
+.fx-foot {
+  margin-top: 18px; padding-top: 14px;
+  border-top: 1px solid #37343d;
+  color: #9a9285; font-size: 16px; line-height: 1.5;
+}
+/* An armed override — the second click really will go past a refusal. */
+.fx-item.fx-danger,
+.fx-item.fx-danger:hover {
+  border-color: rgba(214, 106, 106, .8);
+  background: rgba(214, 106, 106, .16);
+  color: #e5a2a2;
+}
+@media (max-width: 720px) {
+  .fx-back { padding: 12px; }
+  .fx-card { padding: 18px; max-height: 96vh; }
+  .fx-grid { grid-template-columns: minmax(0, 1fr); }
+  .fx-head-t { font-size: 24px; }
 }

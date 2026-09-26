@@ -130,10 +130,19 @@ body:not(.open) #overlay { display: none; }
  * min/max are the CSS-side safety net so a stale saved size, a resolution
  * change or a scale change can never push the panel off screen; the floor
  * itself collapses at tiny viewports (min(720px, 96vw/scale)) so it can never
- * out-rank the ceiling. */
+ * out-rank the ceiling.
+ *
+ * 2026-09-24: the auto size is the SCREEN (94vw × 92vh of layout, divided by
+ * the zoom) — the old min(1500px, …) cap is gone. With the cap, zooming out
+ * just shrank a fixed-size window in the middle of the screen and showed no
+ * more cards (Rober: "i dont think the scaling is working anymore"); now zoom
+ * is zoom — out = more, smaller cards; in = fewer, bigger — and the panel
+ * always uses the whole screen. The main deck (HotkeyDeck/app.css) keeps its
+ * cap; the two contracts diverge on purpose. "Auto zoom" (fill-btn) is the
+ * zoom preset that maps the 1500×1000 design size onto this screen. */
 #panel {
-  width:  var(--panel-w, min(1500px, calc(94vw / var(--ui-scale, 1))));
-  height: var(--panel-h, min(1000px, calc(92vh / var(--ui-scale, 1))));
+  width:  var(--panel-w, calc(94vw / var(--ui-scale, 1)));
+  height: var(--panel-h, calc(92vh / var(--ui-scale, 1)));
   min-width:  min(720px, calc(96vw / var(--ui-scale, 1)));
   min-height: min(560px, calc(94vh / var(--ui-scale, 1)));
   max-width:  calc(96vw / var(--ui-scale, 1));
@@ -439,6 +448,9 @@ body.resizing .spell, body.resizing .rail-item, body.resizing .combo-card { poin
 /* live panel-size readout — "Auto" until the grip is dragged, then "1500×1000" */
 #panel-size-val { font: 600 12.5px/1 Consolas, monospace; color: var(--dim); min-width: 76px; text-align: center; }
 #panel-size-val.custom { color: var(--gold-soft); }
+/* card-size readout — "Auto · Balanced" while the ladder chooses, the pinned name otherwise */
+#card-size-val { font: 600 12.5px/1 Consolas, monospace; color: var(--dim); min-width: 108px; text-align: center; white-space: nowrap; }
+#card-size-val.custom { color: var(--gold-soft); }
 .mini-btn {
   font: 600 15px/1 "Segoe UI", sans-serif;
   color: var(--text-2);
@@ -625,26 +637,41 @@ body.editing .spell .glyph.pickable:hover {
 
 /* --------------------------------------------------- add spell button --- */
 
+/* Since 2026-09-24 it sits in the library bar beside Packages (the full-width
+ * band under the list was 62px the four-row fit could not spare). */
 #add-spell-btn {
-  margin-top: 12px;
+  margin: 0; flex-shrink: 0; white-space: nowrap;
   font: 600 15.5px/1 "Segoe UI", sans-serif;
   color: var(--gold-soft);
   background: var(--gold-wash);
-  border: 1px dashed var(--gold-line);
+  border: 1px solid var(--gold-line);
   border-radius: var(--radius-s);
-  padding: 15px; cursor: pointer;
+  padding: 10px 16px; cursor: pointer;
   transition: background .12s var(--ease), color .12s var(--ease);
 }
 #add-spell-btn:hover { background: rgba(201,162,75,.12); color: var(--gold-bright); }
 
 /* --------------------------------------------- removed from spellbook --- *
- * Collapsible drawer under the add-spell button: spells the player pulled
- * OUT of their spellbook (engine RemoveSpell). Non-destructive — every row's
- * ↩ Restore calls AddSpell to bring it straight back. The list is persisted
- * in hotkeys.json (magic.removed), so it survives reloads. Sits last in
- * #main (flex column); #list keeps flex:1 and the body scrolls internally,
- * so a long removed list never grows the panel or overlaps the list.        */
-#removed-section { margin-top: 12px; flex-shrink: 0; display: flex; flex-direction: column; }
+ * Spells the player pulled OUT of their spellbook (engine RemoveSpell).
+ * Non-destructive — every row's ↩ Restore calls AddSpell to bring it straight
+ * back. The list is persisted in hotkeys.json (magic.removed), so it survives
+ * reloads. Since 2026-09-24 it is a header button (Removed · N, beside the
+ * page tabs) that opens a popout; #removed-section is built INSIDE that
+ * dialog (library.css sizes the popout). The count pulses when a removal
+ * lands so the eye goes to where the spell went.                          */
+#removed-btn { display: inline-flex; align-items: center; gap: 8px; }
+#removed-btn:disabled { opacity: .5; cursor: default; }
+#removed-btn:disabled:hover { background: var(--raised); color: var(--text-2); border-color: var(--line-2); }
+#removed-btn .rb-count {
+  font: 700 14px/1 Consolas, monospace;
+  color: var(--danger); background: var(--danger-bg);
+  border: 1px solid var(--danger-line); border-radius: 20px;
+  padding: 4px 9px; min-width: 22px; text-align: center;
+}
+#removed-btn:disabled .rb-count { color: var(--dim-2); background: transparent; border-color: var(--line-2); }
+#removed-btn.pulse .rb-count { animation: rbPulse .6s var(--ease); }
+@keyframes rbPulse { 0% { transform: scale(1.5); } 100% { transform: scale(1); } }
+#removed-section { display: flex; flex-direction: column; }
 
 .removed-head {
   display: flex; align-items: center; gap: 10px; width: 100%;
@@ -749,17 +776,38 @@ body.editing .spell .glyph.pickable:hover {
 
 /* ------------------------------------------------------------ hints --- *
  * padding-right clears #resize-grip's 26px corner so the last hint can
- * never end up underneath the drag handle.                              */
+ * never end up underneath the drag handle.
+ *
+ * 2026-09-24 (Rober: "the bottom bar could be hidden unless hovered"): the
+ * bar is an OVERLAY tucked below the panel's bottom edge — translated down by
+ * its own height, so only its tab (bottom-left corner, above the edge) shows.
+ * Hovering the tab or the bar slides it up over the list; nothing reflows,
+ * and the height it used to take belongs to the spell list. #panel has
+ * overflow:hidden, so the tucked-away part is simply clipped.            */
 
 #hints {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 12;
   display: flex; gap: 20px; flex-wrap: wrap;
   padding: 11px 20px;
   padding-right: 40px;
   border-top: 1px solid var(--line);
   background: rgba(0,0,0,.2);
   font-size: 13px; color: var(--dim-2);
+  transform: translateY(100%);
+  transition: transform .14s var(--ease);
 }
+#hints:hover, #hints:focus-within { transform: none; }
+#hints .hints-row { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
 #hints span { display: inline-flex; align-items: center; }
+.hints-tab {
+  position: absolute; bottom: 100%; left: 18px;
+  font: 600 15px/1 "Segoe UI", sans-serif;
+  color: var(--dim); background: var(--raised);
+  border: 1px solid var(--line-2); border-bottom: 0;
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+  padding: 7px 14px; cursor: default;
+}
+#hints:hover .hints-tab { color: var(--gold-soft); border-color: var(--gold-line); }
 
 /* --------------------------------------------------- add-spell modal --- */
 

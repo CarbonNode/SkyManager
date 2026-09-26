@@ -1,3 +1,6 @@
+#include "scene_privacy.h"
+#include "photo_input_gate.h"
+#include "domain_photos.h"
 #include "PrismaUI_API.h"
 
 #include <algorithm>
@@ -22,7 +25,9 @@
 #include "finance.h"
 #include "icon_bridge.h"
 #include "wardrobe.h"
+#include "wardrobe_flair.h"
 #include "item_icons.h"
+#include "facegen_resolver.h"
 #include "wheel.h"
 #include "quiver.h"
 #include "nff_outfits.h"
@@ -35,21 +40,30 @@
 #include "chim_control.h"
 #include "nff_bridge.h"
 #include "nff_bases.h"
+#include "residents.h"
+#include "rhythm_presets.h"
+#include "dossier_store.h"
 #include "nff_control.h"
+#include "party_recall.h"
 #include "preset_bridge.h"
 #include "gear_bridge.h"
 #include "hotkey_history.h"
 #include "aim_actions.h"
 #include "formation_actions.h"
 #include "menu_actions.h"
+#include "custom_markers.h"
+#include "sos_actions.h"
 #include "vkey_bridge.h"
 #include "anim_resolver_bridge.h"
 #include "controls_fix.h"
 #include "time_actions.h"
 #include "npc_actions.h"
+#include <future>
+#include "npc_clearance.h"
 #include "save_actions.h"
 #include "fix_actions.h"
 #include "book_reader.h"   // Read Every Book: vanilla read of every book in the bag, no Book Menu (2026-09-14)
+#include "broom_cleanup.h" // Sweeping Organizes Stuff: the original broom-use event, bindable.
 #include "trade_actions.h"   // Trade: barter menu / pack on the crosshair NPC (Rober, 2026-08-17)
 #include "console_actions.h"
 #include "place_actions.h"
@@ -59,9 +73,13 @@
 #include "door_actions.h"
 #include "portal_host.h"
 #include "portrait_capture.h"
+#include "appearance_presets.h"
+#include "photo_input.h"
+#include "photo_return.h"
 #include "quest_tools.h"
 #include "high_king.h"  // Become High King of Skyrim TNG — kingdom dashboard + royal verbs (kg* bridge)
 #include "relationship.h"
+#include "maras.h"
 #include "ask.h"
 #include "room_guard.h"
 #include "loot_highlight.h"
@@ -73,6 +91,8 @@
 #include "weather_actions.h" // Time tab Sky card: weather picker (tmWeather*)
 #include "npc_tune.h"        // F7 quick-card Tune modal: NPC editor (nt* bridge)
 #include "npc_finder.h"     // NPCs tab: the fast NPC finder (nx* bridge)
+#include "cell_finder.h"    // Cells tab: the interior-cell finder (cx* bridge)
+#include "cell_travel_handoff.h"
 #include "party_sheet.h"    // Party sheet: live read-only stats for the party (pty* bridge)
 #include "npc_inspect.h"    // Inspect card: the live actor behind the crosshair (ni* bridge)
 #include "spid_inspect.h"   // Distributions tab: SPID/SkyPatcher candidate pool (dx* bridge)
@@ -84,6 +104,9 @@
 #include "transmog.h"       // Transmog tab: restyled-pool instance transmog (tg* bridge)
 #include "wigs.h"           // Wigs tab: wig-mod registry + hair-slot browser (wv* bridge)
 #include "combat_arts.h"    // Combat Arts tab: Ashes of War ash collection (ca* bridge)
+#include "nightside.h"       // Nightside tab: the three curses (ns* bridge)
+#include "mcm_settings.h"    // MCM settings popout (mc* bridge)
+#include "skyui_mcm.h"       // SkyUI (Papyrus) MCM browser (sy* bridge)
 #include "open_diag.h"      // open/close timing + hang watchdogs (Nexus freeze triage)
 #include "no_auto_gear.h"
 #include "spid_gear.h"
@@ -103,6 +126,7 @@
 #include "scene_stage.h"
 #include "sharmat.h"
 #include "spell_actions.h"
+#include "spell_finder.h"
 #include "spellcraft_actions.h"
 #include "journal.h"   // Journal tab: the book you write yourself (jr* bridge, journal.json)
 #include "places.h"    // Places: the searchable teleport (hdPlaces* bridge, Omni `places` provider)
@@ -307,6 +331,9 @@ namespace
 	// A save is loaded (or a new game started): Follower Organizer's roster exists,
 	// so the Deck Portal's NPC-field replay may safely run. Set in SKSEMessageHandler.
 	std::atomic<bool> g_gameReady{ false };
+	std::atomic<std::uint64_t> g_conversationEpoch{ 0 };
+	std::uint64_t g_travelEpoch = 0;  // main thread: saves and either palette opening cancel travel
+	extern std::atomic<bool> g_worldFrozen;
 	// One portal-sidecar apply batch in flight at a time (poller <-> main thread).
 	std::atomic<bool> g_portalPollBusy{ false };
 	// A deck refresh that RefreshDeckIcons() had to skip because a capture modal
@@ -462,6 +489,20 @@ namespace
 		// themselves and must win). Default on: Rober asked for it as the
 		// behaviour, and with no target it changes nothing.
 		bool          targetOpensFollowers = true;
+		// Opened DURING an OStim scene -> land on the Scene tab (Rober,
+		// 2026-09-21: "if im in an ostim scene it should open a dedicated ostim
+		// scene page on f7 of skymanager"). Outranks targetOpensFollowers: in a
+		// scene you are always looking at someone, so the crosshair heuristic
+		// would otherwise win every single time and the page would be
+		// unreachable by the key that is supposed to open it.
+		bool          sceneOpensScene = true;
+		// Opened while LOOKING at someone WHO IS IN A SCENE -> the Scene page
+		// (Rober, 2026-09-21: "change when you hit f7 to open the main new
+		// page"; narrowed 2026-09-22 after it hijacked every F7-on-an-NPC:
+		// "sometimes it shows ostim scene even when im not in one anymore and
+		// im hitting f7 on an npc"). Outranks targetOpensFollowers only for a
+		// target OStim reports as mid-scene; anyone else lands on her card.
+		bool          targetOpensScene = true;
 		double        uiScale = 1.0;         // view-only: menu zoom (0.6-1.6), applied in JS
 		double        scrollSpeed = 1.0;     // view-only: deck scroll-wheel speed multiplier (0.5-3.0)
 		int           panelW = 0;            // drag-to-resize size, PRE-scale layout px (0 = auto)
@@ -555,6 +596,7 @@ namespace
 		// correctly when the spell is no longer in KnownSpellsJson — e.g. after the
 		// capture key's delete-on-add cleared it from the vanilla spellbook.
 		std::string   slot;
+		std::string   type;  // spell / power / lesser / voice / shout, retained when removed from spellbook
 		std::string   school;
 		std::string   element;
 		std::string   archetype;
@@ -607,6 +649,7 @@ namespace
 		int                      iconPx = 0;  // spell-row icon box in px (0 = the view's CSS default)
 		int                      panelW = 0;  // drag-to-resize size, PRE-scale layout px (0 = auto)
 		int                      panelH = 0;
+		json                    library = json::object();  // spell-library-v1: view-owned organization, round-tripped whole
 		std::vector<std::string> categories;  // rail order
 		std::vector<SpellEntry>  spells;
 		std::vector<ComboEntry>  combos;   // cast-all-at-once spell groups
@@ -667,6 +710,8 @@ namespace
 		// so a config written before this field existed keeps today's look and
 		// the default lives in exactly one place — the CSS.
 		int avatarPx = 0;
+		json dossierFrames = json::object(); // Page-only framing, keyed by portrait file.
+		int dossierSizePct = 100;  // Fullscreen character page only; independent of menu/roster scale.
 		// Quick-card action labels: false = icon buttons that expand to a labelled
 		// pill on hover (default), true = every label pinned open. View-only look
 		// preference, round-tripped like avatarPx so the choice survives a restart.
@@ -723,6 +768,7 @@ namespace
 		// 2026-08-02 "took a picture and it shows nowhere" bug). Empty = draw the
 		// initials medallion.
 		std::string   image;
+		json          photos = json::array();
 		std::string   cellName;
 		std::uint32_t cellId = 0;
 		std::string   cellEdid;
@@ -961,12 +1007,15 @@ namespace
 	// fallback would make ambiguous. Main thread only, like every other photo
 	// step, so it needs no lock.
 	std::string g_photoDomainId;
+	json g_photoDomainMeta;
+	bool g_photoDomainCover = false;
 	ContainerConfig g_contConfig;  // guarded by g_configMutex, persisted under "containers"
 	AutoLootConfig g_autoLootConfig;  // guarded by g_configMutex, persisted under "autoLoot"
 	// The container a photo is being taken FOR (Containers tab), same single-slot
 	// contract as g_photoDomainId — photo mode is single-flight.
 	std::string g_photoContainerId;
 	Finance::Config g_finConfig;  // guarded by g_configMutex, persisted under "finances"
+	std::atomic<bool> g_odOpen{ false };
 	Wardrobe::Config g_wardrobeConfig;  // guarded by g_configMutex, persisted under "wardrobe"
 	NffOutfits::Config g_nffConfig;  // guarded by g_configMutex, persisted under "nffOutfits"
 	RoomGuard::Config g_roomConfig;  // guarded by g_configMutex, persisted under "rooms"
@@ -1124,6 +1173,7 @@ namespace
 			{ "followers-teleport", "Followers: Teleport", "Teleports your followers to you via NFF. Unbound - set this to NFF's teleport key from its MCM.", "keyboard", 0, "", {}, "Followers", "", "icons/custom/hk-follower-teleport.png" },
 			{ "follower-organizer", "Follower Organizer", "Opens Follower Organizer's own menu. Unbound - set this to its MCM key.", "keyboard", 0, "", {}, "Followers", "", "icons/custom/hk-follower-organizer.png" },
 			// NPC (native actions)
+			{ "npc-get-away", "Get away from me", "Select nearby NPCs and move them 20-30 feet away (space crowd push clear)", "action", 0, "Space", {}, "NPC", "get-away", "icons/custom/hk-release-all.png" },
 			{ "npc-freeze", "Freeze NPC", "Hold the targeted NPC in place - toggle (ported from CommandNPC)", "action", 0, "Freeze", {}, "NPC", "freeze", "icons/custom/hk-freeze.png" },
 			{ "npc-sit", "Sit NPC", "Send targeted NPC to nearest chair (ground if none); toggle to release", "action", 0, "Sit", {}, "NPC", "sit", "icons/custom/hk-sit.png" },
 			{ "npc-bed", "Bed NPC", "Send targeted NPC to nearest bed (ground if none); toggle to release", "action", 0, "Bed", {}, "NPC", "bed", "icons/custom/hk-bed.png" },
@@ -1134,7 +1184,7 @@ namespace
 			// collides with whatever they already have.
 			{ "npc-trade", "Trade", "Trade with the NPC you're looking at - the vanilla barter menu, or her pack if she's a follower or your spouse (merchant barter buy sell shop quicktrade)", "action", 0, "Trade", {}, "NPC", "trade", "icons/custom/hk-trade.png" },
 			{ "npc-trade-inventory", "Trade: inventory", "Open the pack of the NPC you're looking at instead of the barter menu - the forced-inventory half of Trade (barter merchant bag container quicktrade)", "action", 0, "Pack", {}, "NPC", "trade-inventory", "icons/custom/hk-trade-inventory.png" },
-			{ "npc-attack-target", "Sic 'em (Attack Target)", "Send every follower to attack whoever you're looking at - even a distant enemy along your aim - right now, plus any enemies already fighting near them. Skips the follower detection lag. Bind a key for combat (EFF-style assault command)", "action", 0, "Sic 'em", {}, "NPC", "attack-target", "icons/custom/hk-attack-target.png" },
+			{ "npc-attack-target", "Sic 'em (Attack Target)", "Fires a bolt down your crosshair and sends every follower to attack whoever you're looking at - or whoever the bolt lands on - right now, plus any enemies already fighting near them. Skips the follower detection lag. Bind a key for combat (EFF-style assault command)", "action", 0, "Sic 'em", {}, "NPC", "attack-target", "icons/custom/hk-attack-target.png" },
 			{ "npc-no-auto-gear", "No Auto-Gear", "Toggle: stop SPID/SkyPatcher distributors putting cloaks, hoods or underwear on the NPC you're looking at, and strip what's worn. Bind a key or fire from the palette (no auto gear cloak hood underwear)", "action", 0, "NoGear", {}, "NPC", "no-auto-gear", "icons/custom/hk-no-auto-gear.png" },
 			{ "npc-no-auto-gear-party", "No Auto-Gear: Party", "Protect every follower with you right now from distributor cloaks/hoods/underwear (no auto gear party)", "action", 0, "NoGear+", {}, "NPC", "no-auto-gear-party", "icons/custom/hk-no-auto-gear.png" },
 			// Fixes / Unstuck (native console-backed actions) — for modded-game jank
@@ -1191,6 +1241,8 @@ namespace
 			{ "closeAfterFire", s.closeAfterFire },
 			{ "stickyNpMods", s.stickyNpMods },
 			{ "targetOpensFollowers", s.targetOpensFollowers },
+			{ "sceneOpensScene", s.sceneOpensScene },
+			{ "targetOpensScene", s.targetOpensScene },
 			{ "uiScale", s.uiScale },
 			{ "scrollSpeed", s.scrollSpeed },
 			{ "panelW", s.panelW },
@@ -1324,15 +1376,24 @@ namespace
 			// row whose backing mod is missing should not show at all.
 			{ "mhiyh", plugin("MHiYH.esl") },
 			{ "quicklight", plugin("QuickLight.esp") },
+			{ "custommarkers", CustomMarkers::Present() },
+			{ "custommarkers_toggles", CustomMarkers::HasToggleHotkeys() },
+			{ "custommarkers_combat", CustomMarkers::HasCombatToggle() },
 			// Become High King of Skyrim TNG — backs the High King tab (whole-tab
 			// gate, like soes/zap) and the kingdom seeds below.
 			{ "highking", plugin("BecomeKingofSkyrimTNG.esp") },
+			// Schlongs of Skyrim — gates the bend rows. The CORE plugin is the
+			// honest probe: the SOS addons (Smurf Average, Futanari, the body
+			// patches) can be present on a load order whose core is long gone,
+			// and a bend row that fires PgUp into a game with no SOS listening
+			// is the dead button the mod page promises cannot exist.
+			{ "sos", plugin("Schlongs of Skyrim.esp") },
 		};
 		done = true;
 		// Build marker (hd-markers.json: "deck-mod-detection"): unconditional so it
 		// is reached the first time the deck opens. KEEP the leading literal
 		// "deck: mod-detection omo=" intact (build marker) — new flags append.
-		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={} prisma={} chim={} soes={} presetdirector={} ostim={} zap={} tailor={} mhiyh={} quicklight={} highking={}",
+		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={} prisma={} chim={} soes={} presetdirector={} ostim={} zap={} tailor={} mhiyh={} quicklight={} highking={} sos={}",
 			cached["omo"].get<bool>(), cached["additemmenu"].get<bool>(),
 			cached["followerorganizer"].get<bool>(), cached["nff"].get<bool>(),
 			cached["smf"].get<bool>(), cached["cs"].get<bool>(), cached["virtualkey"].get<bool>(),
@@ -1340,7 +1401,7 @@ namespace
 			cached["soes"].get<bool>(), cached["presetdirector"].get<bool>(),
 			cached["ostim"].get<bool>(), cached["zap"].get<bool>(), cached["tailor"].get<bool>(),
 			cached["mhiyh"].get<bool>(), cached["quicklight"].get<bool>(),
-			cached["highking"].get<bool>());
+			cached["highking"].get<bool>(), cached["sos"].get<bool>());
 		return cached;
 	}
 
@@ -1369,12 +1430,23 @@ namespace
 			{ "open-community-shaders", "cs" }, { "hd-open-community-shaders", "cs" },
 			{ "open-prisma-mcm", "prisma" }, { "hd-open-prisma-mcm", "prisma" },
 			{ "tailor-open", "tailor" },
+			{ "sos-bend-up", "sos" }, { "hd-sos-bend-up", "sos" },
+			{ "sos-bend-down", "sos" }, { "hd-sos-bend-down", "sos" },
+			{ "sos-bend-up-player", "sos" }, { "hd-sos-bend-up-player", "sos" },
+			{ "sos-bend-down-player", "sos" }, { "hd-sos-bend-down-player", "sos" },
+			{ "sos-size-up", "sos" }, { "hd-sos-size-up", "sos" },
+			{ "sos-size-down", "sos" }, { "hd-sos-size-down", "sos" },
 			{ "hd-party-wait", "nff" }, { "hd-party-follow", "nff" },
-			{ "hd-party-summon", "nff" }, { "hd-party-relax", "nff" },
+			{ "hd-party-recall-takeover", "nff" }, { "hd-party-recall-restore", "nff" },
+			{ "hd-party-relax", "nff" },
 			{ "hd-party-regroup", "nff" }, { "npc-nff-recruit", "nff" },
 			{ "hd-lo-deploy", "nff" }, { "hd-lo-follow", "nff" },
 			{ "hd-lo-wait", "nff" }, { "hd-lo-sic", "nff" }, { "hd-lo-disengage", "nff" },
 			{ "npc-mhiyh-home", "mhiyh" }, { "hd-quick-light", "quicklight" },
+			{ "hd-custom-markers-settings", "custommarkers" },
+			{ "hd-custom-markers-loot", "custommarkers_toggles" },
+			{ "hd-custom-markers-radar", "custommarkers_toggles" },
+			{ "hd-custom-markers-combat", "custommarkers_combat" },
 			{ "hd-highking", "highking" }, { "hd-hk-collect-taxes", "highking" },
 			{ "hd-hk-highreach-tp", "highking" },
 		};
@@ -1417,6 +1489,10 @@ namespace
 				// Absent in every config written before v0.14 — default TRUE so the
 				// behaviour is on for an existing hotkeys.json, not just a fresh one.
 				c.settings.targetOpensFollowers = s.value("targetOpensFollowers", true);
+				// Absent in every config written before the Scene tab — default
+				// TRUE, so it is on for an existing hotkeys.json too.
+				c.settings.sceneOpensScene = s.value("sceneOpensScene", true);
+				c.settings.targetOpensScene = s.value("targetOpensScene", true);
 				c.settings.uiScale = s.value("uiScale", 1.0);
 				{
 					const double sp = s.value("scrollSpeed", 1.0);
@@ -1704,6 +1780,7 @@ namespace
 				{ "hand", s.hand },
 				{ "category", s.category },
 				{ "slot", s.slot },
+				{ "type", s.type },
 				{ "school", s.school },
 				{ "element", s.element },
 				{ "archetype", s.archetype },
@@ -1734,6 +1811,7 @@ namespace
 			{ "iconPx", m.iconPx },
 			{ "panelW", m.panelW },
 			{ "panelH", m.panelH },
+			{ "library", m.library },
 			{ "categories", m.categories },
 			{ "spells", spells },
 			{ "combos", combos },
@@ -1770,6 +1848,11 @@ namespace
 			m.iconPx = j.value("iconPx", 0);
 			m.panelW = j.value("panelW", 0);
 			m.panelH = j.value("panelH", 0);
+			// Preserve view-owned keys across saves from an older caller. Parents are
+			// validated against categories (and cycle-checked) by library-model.js.
+			m.library = out.library;
+			if (j.contains("library") && j["library"].is_object() && j["library"].dump().size() <= 65536)
+				m.library = j["library"];
 			if (j.contains("categories") && j["categories"].is_array()) {
 				for (const auto& cat : j["categories"])
 					if (cat.is_string() && !cat.get<std::string>().empty())
@@ -1803,6 +1886,7 @@ namespace
 					s.hand = js.value("hand", std::string("right"));
 					s.category = js.value("category", std::string(""));
 					s.slot = js.value("slot", std::string(""));
+					s.type = js.value("type", std::string(""));
 					s.school = js.value("school", std::string(""));
 					s.element = js.value("element", std::string(""));
 					s.archetype = js.value("archetype", std::string(""));
@@ -1906,6 +1990,8 @@ namespace
 			{ "openKey", json{ { "device", f.openDevice }, { "code", f.openCode }, { "label", f.openLabel } } },
 			{ "uiScale", f.uiScale },
 			{ "avatarPx", f.avatarPx },
+			{ "dossierSizePct", f.dossierSizePct },
+			{ "dossierFrames", f.dossierFrames },
 			{ "fqLabels", f.fqLabels },
 			{ "railCollapsed", f.railCollapsed },
 			{ "railIconPct", f.railIconPct },
@@ -1923,6 +2009,22 @@ namespace
 		FollowerConfig f;
 		f.portraitCrops = out.portraitCrops;
 		f.catIcons = out.catIcons;
+		f.dossierFrames = out.dossierFrames;
+		f.dossierSizePct = out.dossierSizePct;  // Older/partial writers must keep this preference.
+		if (j.is_object() && j.contains("dossierFrames") && j["dossierFrames"].is_object()) {
+			f.dossierFrames = json::object();
+			for (const auto& [key, v] : j["dossierFrames"].items()) {
+				if (f.dossierFrames.size() >= 400) break;
+				if (key.empty() || key.size() > 256 || key == "__proto__" || !v.is_object()) continue;
+				auto bounded = [&](const char* field, double lo, double hi, double fallback) {
+					if (!v.contains(field) || !v[field].is_number()) return fallback;
+					const auto n = v[field].get<double>();
+					return std::isfinite(n) ? std::clamp(n, lo, hi) : fallback;
+				};
+				f.dossierFrames[key] = json{{"z",bounded("z",1.,3.,1.)},{"x",bounded("x",0.,1.,.5)},{"y",bounded("y",0.,1.,.3)}};
+			}
+			logger::info("[followers] dossier-portrait-frames {}", f.dossierFrames.size());
+		}
 		if (j.is_object() && j.contains("catIcons") && j["catIcons"].is_object()) {
 			f.catIcons.clear();
 			for (const auto& [key, v] : j["catIcons"].items()) {
@@ -1993,6 +2095,8 @@ namespace
 			f.uiScale = (sc > 0.0) ? std::clamp(sc, 0.6, 1.6) : 1.0;
 			const int px = j.value("avatarPx", 0);
 			f.avatarPx = (px <= 0) ? 0 : std::clamp(px, 28, 128);
+			f.dossierSizePct = std::clamp(j.value("dossierSizePct", f.dossierSizePct), 75, 130);
+			logger::info("[followers] dossier-page-size {}%", f.dossierSizePct);
 			f.fqLabels = j.value("fqLabels", f.fqLabels);   // quick-card action-labels pref; keep seeded value when omitted
 			f.railCollapsed = j.value("railCollapsed", f.railCollapsed);   // collapsed-rail pref; keep seeded value when omitted
 			// Category-icon scale: keep the seeded/prior value when omitted (an
@@ -2085,6 +2189,7 @@ namespace
 			{ "note", m.note },
 			{ "tags", m.tags },
 			{ "image", m.image },
+			{ "photos", DomainPhotos::Normalize(m.photos, m.image) },
 			{ "cellName", m.cellName },
 			{ "cellId", m.cellId },
 			{ "cellEdid", m.cellEdid },
@@ -2114,6 +2219,7 @@ namespace
 		// removing the last tag and clearing a photo work.
 		m.tags = NormalizeTags(jm.contains("tags") ? jm["tags"] : json::array());
 		m.image = jm.value("image", std::string(""));
+		m.photos = DomainPhotos::Normalize(jm.value("photos", json::array()), m.image);
 		m.cellName = jm.value("cellName", std::string(""));
 		m.cellId = jm.value("cellId", 0u);
 		m.cellEdid = jm.value("cellEdid", std::string(""));
@@ -2125,6 +2231,46 @@ namespace
 		m.z = jm.value("z", 0.0f);
 		m.angleZ = jm.value("angleZ", 0.0f);
 		return !m.id.empty() && (m.cellId != 0 || !m.cellEdid.empty());
+	}
+
+	// A domain mark stores its cell as a runtime FormID, whose HIGH BYTE is the
+	// plugin's LOAD INDEX — so re-indexing the load order silently invalidates it.
+	// It happened here: the 2026-09-15 ESM batch moved White Hearth.esp from F4 to
+	// F3, so the Whitehearth mark still pointed at F40A3357 while the cell had
+	// become F30A3357, and slot F4 now belongs to DPF.esp entirely.
+	//
+	// Recall survived because it goes through PlaceActions::ResolveCell, which
+	// falls back to the EDITOR ID — the one identity no re-index can move. The
+	// VIEW's "who is standing here" strip did not: it compares this number in JS
+	// against each roster member's live parent-cell id, so a stale mark matches
+	// nobody and a domain reads as empty while people stand in it (Rober,
+	// 2026-09-17: Baldr six metres away inside Whitehearth, no face on the card).
+	//
+	// So the PAYLOAD carries the resolved id. Two deliberate choices:
+	//   * the editor id WINS over the stored FormID here, the opposite of
+	//     ResolveCell's order, because a stale id does not merely fail — F4 is a
+	//     real plugin now, and a lookup that happens to hit would hand the view a
+	//     DIFFERENT cell and quietly populate the wrong domain;
+	//   * the stored config is left alone. The editor id is the durable identity
+	//     and re-resolving costs one lookup per mark per open, where rewriting
+	//     hotkeys.json would be a migration of his data nobody asked for.
+	// MAIN THREAD (form lookup). Marker: domain-cell-reindex.
+	DomainsConfig ResolveMarkCells(DomainsConfig d)
+	{
+		for (auto& m : d.marks) {
+			if (m.cellEdid.empty())
+				continue;   // nothing durable to correct with — keep what we have
+			auto* cell = RE::TESForm::LookupByEditorID<RE::TESObjectCELL>(m.cellEdid);
+			if (!cell)
+				continue;   // not loaded in this order at all; the stored id is the best guess
+			const auto live = cell->GetFormID();
+			if (!live || live == m.cellId)
+				continue;
+			logger::info("domains: '{}' cell {:08X} -> {:08X} (plugin re-indexed; editor id {})",
+				m.name, m.cellId, live, m.cellEdid);   // marker: domain-cell-reindex
+			m.cellId = live;
+		}
+		return d;
 	}
 
 	json DomainsConfigToJson(const DomainsConfig& d)
@@ -2187,7 +2333,8 @@ namespace
 						continue;
 					const bool hasTags = jm.is_object() && jm.contains("tags");
 					const bool hasImage = jm.is_object() && jm.contains("image");
-					if (!hasTags || !hasImage) {
+					const bool hasPhotos = jm.is_object() && jm.contains("photos");
+					if (!hasTags || !hasImage || !hasPhotos) {
 						for (const auto& prev : out.marks) {
 							if (prev.id != m.id)
 								continue;
@@ -2195,9 +2342,11 @@ namespace
 								m.tags = prev.tags;
 							if (!hasImage)
 								m.image = prev.image;
+							if (!hasPhotos) m.photos = prev.photos;
 							break;
 						}
 					}
+					m.photos = DomainPhotos::Normalize(m.photos, m.image);
 					d.marks.push_back(std::move(m));
 				}
 			}
@@ -3027,6 +3176,8 @@ namespace
 			// player whose hotkeys.json predates any of them (or who was handed
 			// a config) never saw the listing. Verb-keyed like every seed, so an
 			// existing row (any name, any tab) is recognised and never duplicated.
+			{ "get-away", "npc-get-away", "Get away from me",
+			  "Select nearby NPCs and move them 20-30 feet away (space crowd push clear)", "NPC", "icons/custom/hk-release-all.png" },
 			{ "freeze", "npc-freeze", "Freeze NPC",
 			  "Hold the NPC you are looking at right where they stand - fire again to release (freeze hold statue stay pin)", "NPC", "icons/custom/hk-freeze.png" },
 			{ "sit", "npc-sit", "Sit NPC",
@@ -3036,7 +3187,7 @@ namespace
 			{ "release-all", "npc-release-all", "Release All NPCs",
 			  "Free every NPC held, seated or bedded by these actions (release let go all)", "NPC", "icons/custom/hk-release-all.png" },
 			{ "attack-target", "npc-attack-target", "Sic 'em (Attack Target)",
-			  "Send every follower to attack whoever you're looking at - even a distant enemy along your aim - right now, plus any enemies already fighting near them. Skips the follower detection lag (sic em attack assault command)", "NPC", "icons/custom/hk-attack-target.png" },
+			  "Fires a bolt down your crosshair and sends every follower to attack whoever you're looking at - or whoever the bolt lands on - right now, plus any enemies already fighting near them. Skips the follower detection lag (sic em attack assault command)", "NPC", "icons/custom/hk-attack-target.png" },
 			// Instant waits (2026-08-02): the vanilla Sleep/Wait menu ticks one
 			// hour per REAL frame and this rig's frame generation throttles real
 			// frames, so the menu crawls at any displayed FPS. These jump the
@@ -3052,8 +3203,16 @@ namespace
 			// Time Dial (2026-08-18): the openable circular wait dial on the
 			// HUD view — the wait actions' pretty face, same one-step
 			// GameHour jump underneath.
+			{ "outfit-dock", "hd-outfit-dock", "Favorites Outfit Dock",
+			  "Open your favorite outfit portraits. W/S scroll looks, A/D switch categories, E equips, Escape closes. Choose whether to include attached Flair. Bind a key in Hotkeys. (wardrobe clothing cloak ring accessories quick equip)", "Wardrobe", "icons/custom/hm-wardrobe.png" },
 			{ "time-dial", "hd-time-dial", "Time Dial",
 			  "Open the circular wait dial - drag the ring to choose hours or days, confirm, and the time passes in one step. Scalable, draggable, remembers its spot on screen (time dial wait clock sundial widget)", "Misc", "icons/custom/hk-time-dial.png", nullptr, "icons/custom/hm-time.png" },
+			// Scene Alignment (2026-09-21): the live, NON-PAUSING alignment
+			// overlay on the HUD view. OStim ships its own alignment menu;
+			// this is the one that layers over the scene and leaves it
+			// running while you nudge.
+			{ "ostim-align", "hd-ostim-align", "Scene Alignment",
+			  "Open the live alignment overlay over a running OStim scene - the game keeps running. Up/Down pick the axis, Left/Right nudge it, E or Enter switches participant, Esc closes (ostim align alignment position offset nudge scene sex)", "Misc", "icons/custom/hk-grab.png", nullptr, "icons/custom/seg-ostim.png" },
 			// AddItemMenu (2026-08-03): the deck casts the mod's own lesser
 			// powers, so its Papyrus flow runs exactly as shipped — no
 			// inventory digging for the [AddItemMenuSE] items. Unbound like
@@ -3074,6 +3233,34 @@ namespace
 			  "Toggle: stop distributor mods (SPID/SkyPatcher) putting cloaks, hoods or underwear on the NPC you're looking at, and strip what's there (no auto gear cloak hood underwear distributor)", "NPC", "icons/custom/hk-no-auto-gear.png" },
 			{ "no-auto-gear-party", "npc-no-auto-gear-party", "No Auto-Gear: Party",
 			  "Protect every follower with you right now from distributor cloaks/hoods/underwear (no auto gear party)", "NPC", "icons/custom/hk-no-auto-gear-party.png", nullptr, "icons/custom/hk-no-auto-gear.png" },
+			// Schlongs of Skyrim bend (2026-09-20, Rober). SOS has no bend
+			// function to call — only three keymaps on its own MCM that its
+			// input handler watches (see sos_actions.h), so these rows press
+			// the key SOS is LIVE configured with rather than a guess. Filed
+			// under NPC because that is what plain bend targets: whoever is
+			// under your crosshair. The two "(me)" rows hold SOS's own player
+			// modifier so the bend lands on you instead. requiresMod keeps all
+			// four off a deck with no SOS at all.
+			{ "sos-bend-up", "hd-sos-bend-up", "Bend Up",
+			  "Bend the crosshair NPC's schlong up one step, through Schlongs of Skyrim's own bend key (sos schlong bend up angle)", "NPC", "icons/custom/hk-sos-bend-up.png", "Schlongs of Skyrim.esp" },
+			{ "appearance-quick", "hd-appearance-quick", "Appearance: Quick switch",
+			  "Switch between your pinned Normal and Quick appearances, including saved SOS. Set both in Character > Appearances > Manage; bind a trigger in Hotkeys. Finish combat first. (transform minotaur nord race preset)", "Misc", "icons/custom/hk-transmog.png" },
+			{ "appearance-normal", "hd-appearance-normal", "Appearance: Return to normal",
+			  "Return to your protected Normal appearance and its saved SOS settings. Pin your original look in Character > Appearances > Manage; bind a trigger in Hotkeys. (revert nord race preset)", "Misc", "icons/custom/hk-transmog.png" },
+			{ "sos-bend-down", "hd-sos-bend-down", "Bend Down",
+			  "Bend the crosshair NPC's schlong down one step, through Schlongs of Skyrim's own bend key (sos schlong bend down angle)", "NPC", "icons/custom/hk-sos-bend-down.png", "Schlongs of Skyrim.esp" },
+			{ "sos-bend-up-player", "hd-sos-bend-up-player", "Bend Up (me)",
+			  "Bend your OWN schlong up one step - holds SOS's player modifier for you so the bend lands on you, not your target (sos schlong bend up player self angle)", "NPC", "icons/custom/hk-sos-bend-up-player.png", "Schlongs of Skyrim.esp" },
+			{ "sos-bend-down-player", "hd-sos-bend-down-player", "Bend Down (me)",
+			  "Bend your OWN schlong down one step - holds SOS's player modifier for you so the bend lands on you, not your target (sos schlong bend down player self angle)", "NPC", "icons/custom/hk-sos-bend-down-player.png", "Schlongs of Skyrim.esp" },
+			// Size is the half SOS DOES expose an API for, so these call its own
+			// SetSize rather than pressing a key. They act on whoever is under
+			// your crosshair, falling back to you when there is nobody there —
+			// the notification names which, so a mis-aimed press is obvious.
+			{ "sos-size-up", "hd-sos-size-up", "Grow",
+			  "Grow the SOS schlong one step (1-20) through Schlongs of Skyrim's own SetSize - your crosshair target, or you if there is nobody there (sos schlong size grow bigger increase)", "NPC", "icons/custom/hk-sos-size-up.png", "Schlongs of Skyrim.esp" },
+			{ "sos-size-down", "hd-sos-size-down", "Shrink",
+			  "Shrink the SOS schlong one step (1-20) through Schlongs of Skyrim's own SetSize - your crosshair target, or you if there is nobody there (sos schlong size shrink smaller decrease)", "NPC", "icons/custom/hk-sos-size-down.png", "Schlongs of Skyrim.esp" },
 			// Fixes / Unstuck (2026-08-09): one-click rescues for modded-game jank.
 			// Console-backed, run on the crosshair NPC (or the player for noclip).
 			// "unstuck fix stuck broken jank" omni keywords on purpose.
@@ -3110,6 +3297,14 @@ namespace
 			  "Open the Community Shaders menu - needs Community Shaders installed (default key End) (settings config shaders enb)", "Menus", "icons/custom/hk-community-shaders.png" },
 			{ "open-ied", "hd-open-ied", "Immersive Equipment Displays",
 			  "Open Immersive Equipment Displays' own UI - place and tune your displayed gear (ied gear displays settings config)", "Menus", "icons/custom/hk-ied-menu.png" },
+			{ "custom-markers-settings", "hd-custom-markers-settings", "Loot Beams & Mini Radar Settings",
+			  "Open Custom Markers' own HUD Settings using its saved shortcut. Beacons controls loot indicators; Radar & Inspect controls the minimap. Save changes there (custom markers loot beams pillars radar minimap map settings)", "Menus", "icons/custom/hk-skse-menu.png" },
+			{ "custom-markers-loot", "hd-custom-markers-loot", "Custom Markers: Loot Beams",
+			  "Toggle the mod's loot indicator beams with its saved Loot Beam hotkey. Set and Save that binding in Custom Markers HUD Settings > Hotkeys first. Other mods also receive this key (loot indicators pillars beacons treasure highlight)", "Utilities", "icons/custom/hk-loot-vision.png" },
+			{ "custom-markers-radar", "hd-custom-markers-radar", "Custom Markers: Mini Radar",
+			  "Toggle the mod's minimap with its saved Mini Radar hotkey. Set and Save that binding in Custom Markers HUD Settings > Hotkeys first. Other mods also receive this key (minimap mini map radar navigation compass)", "Utilities", "icons/custom/hm-finder.png" },
+			{ "custom-markers-combat", "hd-custom-markers-combat", "Loot Beams During Combat",
+			  "Toggle whether loot beams stay visible during fights. Applies immediately and saves your preference. The master Loot Beams switch stays as you set it. Bind a Trigger with F2 or add to your hotbar (custom markers combat battle hide show pillars indicators)", "Utilities", "icons/custom/hk-loot-vision.png" },
 			// Rooms privacy (2026-08-11): seal the room you are standing in —
 			// nobody in at all, followers and allowed people included — and fire
 			// it again to go back to that room's normal welcome list. Bindable
@@ -3146,6 +3341,8 @@ namespace
 			// "read all books library tomes" keywords for omni on purpose.
 			{ "read-books", "hd-read-books", "Read Every Book",
 			  "Read every unread book, note and spell tome in your bag at once - skills go up, spells are learned and their tomes consumed, quest books fire their scripts, no book menu popups (read all books auto read library tomes notes journals letters)", "Utilities", "icons/custom/hk-read-books.png" },
+			{ "broom-cleanup", "hd-broom-cleanup", "Clean Up Room",
+			  "Use Sweeping Organizes Stuff to restore scattered objects with its broom animation. Carry a broom; cannot sweep in combat. Bind a hotkey in Edit (clean cleanup broom sweep tidy organize reset clutter physics mess)", "Utilities", "icons/custom/hk-put-away.png", "sweepingOrganizesStuff.esp" },
 			// Party orders (2026-08-14): NFF's own group verbs with a bindable
 			// key on them - every one dispatches through NffControl::Apply, so
 			// the deck never re-implements a follower rule. "party followers
@@ -3169,8 +3366,12 @@ namespace
 			  "Every loaded follower waits where they stand - NFF's own group order, from a key (party followers wait stay group everyone)", "NPC", "icons/custom/hk-party-wait.png", nullptr, "icons/custom/hk-halt-ai.png" },
 			{ "party-follow", "hd-party-follow", "Party: Follow Me",
 			  "Every loaded follower follows again - the other half of Wait Here (party followers follow resume group everyone)", "NPC", "icons/custom/hk-party-follow.png", nullptr, "icons/custom/hk-follower-command.png" },
-			{ "party-summon", "hd-party-summon", "Party: Summon Everyone",
-			  "Teleport every follower to you - NFF's group summon, reaches even unloaded followers (party summon teleport gather everyone lost follower)", "NPC", "icons/custom/hk-party-summon.png", nullptr, "icons/custom/hk-follower-teleport.png" },
+			{ "party-summon", "hd-party-summon", "Party: Summon Active Followers",
+			  "Bring active followers from every framework to you. Waiting, mounted and scene-busy companions stay put; residents and dismissed NPCs are not summoned (party summon teleport recall gather lost follower)", "NPC", "icons/custom/hk-party-summon.png", nullptr, "icons/custom/hk-follower-teleport.png" },
+			{ "party-recall-takeover", "hd-party-recall-takeover", "Party: Take Over NFF Summon Key",
+			  "Give SkyManager NFF's current keyboard summon key, including F17. Recall active followers across frameworks without the waiting prompt. Reversible with Return summon key to NFF (party summon hotkey takeover teleport keybind)", "NPC", "icons/custom/hk-party-summon.png" },
+			{ "party-recall-restore", "hd-party-recall-restore", "Party: Return Summon Key to NFF",
+			  "Turn off SkyManager's transferred summon key and restore its backed-up NFF binding (party summon restore undo keybind hotkey)", "NPC", "icons/custom/hk-party-summon.png" },
 			{ "party-relax", "hd-party-relax", "Party: Relax",
 			  "The whole party starts sandboxing here - sit, eat, wander - until you tell them to stop (party relax sandbox camp rest everyone)", "NPC", "icons/custom/hk-party-relax.png", nullptr, "icons/custom/hk-sandbox.png" },
 			{ "party-regroup", "hd-party-regroup", "Party: Stop Relaxing",
@@ -3487,6 +3688,9 @@ namespace
 				if (e.device != "action" || e.action != s.action)
 					continue;
 				have = true;
+				if (e.action == "party-summon" && e.name == "Party: Summon Everyone") {
+					e.name = s.name; e.desc = s.desc; changed = true;
+				}
 				if (!s.icon || !*s.icon)
 					continue;
 				const bool blank = e.icon.empty();
@@ -3519,6 +3723,8 @@ namespace
 				if (!dh || !dh->LookupModByName(s.requiresMod))
 					continue;
 			}
+			if (CustomMarkers::IsAction(s.action) && !CustomMarkers::SupportsAction(s.action))
+				continue;
 			// Put the tab back too if it was deleted, or the entry would land in
 			// a category the tab bar does not draw.
 			if (std::find(c.categories.begin(), c.categories.end(), s.category) == c.categories.end())
@@ -3987,7 +4193,7 @@ namespace
 		if (!ev)
 			return;
 		RE::InputEvent* head = ev;
-		idm->SendEvent(&head);
+		if (!PhotoInputGate::ConsumeSynthetic(ev)) idm->SendEvent(&head);
 		RE::free(ev);  // Create() allocates on the game heap; sinks don't take ownership
 	}
 
@@ -4011,26 +4217,35 @@ namespace
 
 	// Detached poll thread. GetAsyncKeyState sees VK_F13..F24 regardless of what
 	// DirectInput drops (including iCUE/Parsec software-injected presses).
-	// The Wardrobe cadence tick. Without this the whole "she changes her clothes
-	// every N hours" feature only fires when you OPEN the tab, which is exactly
-	// when you are least likely to notice it. 30 s of real time is far finer than
-	// the shortest cadence (1 in-game hour is ~2.5 min real at the default
-	// timescale of 20), and MaybeRoll returns immediately unless a re-roll is
-	// actually due — so this is close to free.
+	// Observe bed transitions every 500 ms, independently of the open tab.
+	// The ordinary in-game-hour outfit cadence keeps its old 30-second rate.
 	void WardrobeTickLoop()
 	{
 		using namespace std::chrono_literals;
+		static std::atomic<bool> pending{ false };
 		while (true) {
-			std::this_thread::sleep_for(30s);
-			// Everything inside MaybeRoll touches live game state, so it has to
-			// run on the main thread; this thread only does the waiting.
-			// Calendar reads 0 with no save loaded and MaybeRoll bails on that,
-			// so there is no need to track load state here.
+			std::this_thread::sleep_for(500ms);
+			if (pending.exchange(true))
+				continue;  // a busy game must not accumulate wardrobe tasks
+			// Only the queued task touches engine state. Paused menus and save
+			// transitions must not enqueue Papyrus wardrobe changes.
 			SKSE::GetTaskInterface()->AddTask([]() {
+				pending = false;
+				if (!g_gameReady.load() || AnyOpen())
+					return;
+				auto* ui = RE::UI::GetSingleton();
+				if (!ui || ui->GameIsPaused())
+					return;
+				static auto nextCadence = std::chrono::steady_clock::now();
 				bool rolled = false;
 				{
 					std::lock_guard l(g_configMutex);
-					rolled = Wardrobe::MaybeRoll(g_wardrobeConfig);
+					rolled = Wardrobe::PollBedOutfits(g_wardrobeConfig);
+					const auto now = std::chrono::steady_clock::now();
+					if (now >= nextCadence) {
+						rolled = Wardrobe::MaybeRoll(g_wardrobeConfig) || rolled;
+						nextCadence = now + 30s;
+					}
 				}
 				if (rolled)
 					PersistAll();
@@ -4055,10 +4270,14 @@ namespace
 			std::this_thread::sleep_for(500ms);
 			SKSE::GetTaskInterface()->AddTask([]() {
 				OpenDiag::TickTimer diag("room-guard");
+				auto* conversationUI = RE::UI::GetSingleton();
+				NpcActions::TickConversations(g_gameReady.load(), g_worldFrozen.load() || !conversationUI || conversationUI->GameIsPaused());
+				PartyRecall::Tick(g_gameReady.load(), AnyOpen() || g_worldFrozen.load() || !conversationUI || conversationUI->GameIsPaused());
 				bool        dirty = false;
 				std::string open;
 				{
 					std::lock_guard l(g_configMutex);
+					ScenePrivacy::Tick(g_roomConfig, g_gameReady.load());
 					dirty = RoomGuard::Tick(g_roomConfig);
 					if (dirty)
 						open = RoomGuard::OpenJson(g_roomConfig);
@@ -4262,6 +4481,8 @@ namespace
 		// the census always reflects live state, never a stale snapshot.
 		KeysScan::SetOwnKeysProvider([]() {
 			std::vector<KeysScan::OwnBinding> out;
+			if (const auto key = PartyRecall::Hotkey())
+				out.push_back(KeysScan::OwnBinding{ "Summon active followers (transferred from NFF)", key, "" });
 			std::lock_guard                   l(g_configMutex);
 			const auto&                       s = g_config.settings;
 			if (s.openDevice == "keyboard" && s.openCode) {
@@ -4507,17 +4728,76 @@ namespace
 		auto cm = RE::ControlMap::GetSingleton();
 		if (cm && cm->GetRuntimeData().textEntryCount > 0)
 			return false;
-		// A self-portrait capture is IN FLIGHT (E was pressed; the frame grab +
+		// A self-portrait capture is IN FLIGHT (Enter was pressed; the frame grab +
 		// camera/HUD restore is running). The world is mid-transition — free
 		// camera, changed FOV, hidden menus — and reopening the deck now paints a
 		// half-laid-out panel over the transitioning world (the reopen glitch,
 		// Rober 2026-08-13). Block reopen until the restore completes.
-		if (PortraitCapture::SelfCaptureBusy())
+		if (PortraitCapture::SelfCaptureBusy() || PortraitCapture::PhotoModeActive())
 			return false;
 		return true;
 	}
 
 	void OpenPalette();
+	void AppearanceCloseForGame(bool photo);
+	// A photo return is tied to the exact menu/game session that launched it.
+	// Opening either deck or loading a save invalidates it through g_travelEpoch.
+	std::optional<std::uint64_t> g_photoReturnEpoch;
+	bool g_returningFromPhoto = false;
+	std::uint64_t g_photoSetupGeneration = 0;
+	std::uint64_t PreparePhotoReturn()
+	{
+		g_photoReturnEpoch = g_travelEpoch;
+		return ++g_photoSetupGeneration;
+	}
+	bool PhotoSetupCurrent(std::uint64_t generation)
+	{
+		return generation == g_photoSetupGeneration && g_photoReturnEpoch && *g_photoReturnEpoch == g_travelEpoch &&
+			g_gameReady.load() && !AnyOpen();
+	}
+
+	struct PhotoReturnRequest {
+		std::uint64_t epoch;
+		PhotoReturn::Gate gate{ GetTickCount64() };
+	};
+	void PollPhotoReturn(const std::shared_ptr<PhotoReturnRequest>& request)
+	{
+		auto* ui = RE::UI::GetSingleton();
+		auto* camera = RE::PlayerCamera::GetSingleton();
+		const bool same = request->epoch == g_travelEpoch && g_gameReady.load() && !AnyOpen();
+		const bool ready = same && ui && camera &&
+			!ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) && !ui->IsMenuOpen(RE::MainMenu::MENU_NAME) &&
+			!camera->IsInFreeCameraMode() && !PortraitCapture::PhotoModeActive() &&
+			!PortraitCapture::SelfPortraitArmed() && !g_openInFlight.load() && CanOpenNow();
+		const auto result = request->gate.Poll(GetTickCount64(), same, ready);
+		if (result == PhotoReturn::Result::Wait) {
+			std::thread([request]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				SKSE::GetTaskInterface()->AddTask([request]() { PollPhotoReturn(request); });
+			}).detach();
+			return;
+		}
+		if (result == PhotoReturn::Result::Cancel) {
+			logger::info("photo-return: skipped (context changed or another menu owns input)");
+			if (same) RE::DebugNotification("Photo finished - close other menus, then open SkyManager");
+			return;
+		}
+		logger::info("photo-return: restoring SkyManager after camera settled");
+		g_returningFromPhoto = true;
+		struct RestoreFlag { ~RestoreFlag() { g_returningFromPhoto = false; } } restoreFlag;
+		OpenPalette();
+	}
+	void QueuePhotoReturn()
+	{
+		if (!g_photoReturnEpoch) return;
+		const auto epoch = *g_photoReturnEpoch;
+		g_photoReturnEpoch.reset();
+		// Never reopen inline: the saved callback still needs to attach/persist
+		// the image, and the restored camera needs a few unpaused frames.
+		auto request = std::make_shared<PhotoReturnRequest>();
+		request->epoch = epoch;
+		SKSE::GetTaskInterface()->AddTask([request]() { PollPhotoReturn(request); });
+	}
 	void OnJsFire(const char* data);
 	void OnJsFireKey(const char* data);
 	void OnJsSave(const char* data);
@@ -4529,12 +4809,15 @@ namespace
 	void OnJsCapture(const char* data);
 	void OnJsQuestList(const char* data);
 	void OnJsQuestSearch(const char* data);
+	void OnJsQuestActive(const char* data);
+	void OnJsSosSize(const char* data);
 	void OnJsQuestDetail(const char* data);
 	void OnJsQuestSetStage(const char* data);
 	void OnJsQuestAction(const char* data);
 	void OnJsVkCatalog(const char* data);
 	void OnJsVkTest(const char* data);
 	void OnJsConsoleTest(const char* data);
+	void OnJsHudNotify(const char* data);   // hdHudNotify -> RE::DebugNotification (top-left game message)
 	void OnJsPlacesQuery(const char* data);
 	void OnJsPlacesGo(const char* data);
 
@@ -4558,11 +4841,20 @@ namespace
 	void OnJsFolWorld(const char* data);
 	void OnJsFolMhiyh(const char* data);
 	void OnJsFolNpc(const char* data);
+	void OnJsGaNearby(const char* data);
+	void OnJsGaMove(const char* data);
+	void OnJsGaClear(const char* data);    // gaClear -> NpcClearance::ClearRoom (out of the cell + AI off)
+	void OnJsGaRestore(const char* data);  // gaRestore -> NpcClearance::Restore (back + AI on)
 	void OnJsFolDebug(const char* data);  // 🔍 Debug reveal: fdDebug -> fdDebugInfo
+	// F7 card 🔧 Fixes flyout (fix_actions): hdFixProbe -> hdFixProbeResult (a
+	// pure read), hdFixApply -> hdFixResult (the write, which may REFUSE).
+	void OnJsFixProbe(const char* data);
+	void OnJsFixApply(const char* data);
 	// CHIM button (chim_control): activate/deactivate + read agent state.
 	void OnJsChState(const char* data);
 	void OnJsChSet(const char* data);
 	void OnJsChAgents(const char* data);   // chAgents -> chAgentsResult: every CHIM agent (formId + names)
+	void OnJsChConversation(const char* data);
 	void OnJsFmAll(const char* data);      // fmAll -> fmAllResult: everyone Fertility Mode tracks
 	// Formation with Followers modal (formation_actions.cpp does the work).
 	void OnJsFmGet(const char* data);
@@ -4572,6 +4864,14 @@ namespace
 	// Domains tab -> Bases section (nff_bases.cpp does the work).
 	void OnJsNbGet(const char* data);
 	void OnJsNbOp(const char* data);
+	// Domains tab -> Residents (residents.cpp): rsState→rsStateResult,
+	// rsDay→rsDayResult, rsAct→rsActResult (+ a fresh rsStateResult once
+	// MHiYH has landed the change).
+	void OnJsRsState(const char* data);
+	void OnJsRsPresets(const char* data);
+	void OnJsDsRequest(const char* data);
+	void OnJsRsDay(const char* data);
+	void OnJsRsAct(const char* data);
 	// Deck Portal button (portal_host.cpp): ptGet -> ptState, ptOpen -> ptState.
 	void OnJsPtGet(const char* data);
 	void OnJsPtOpen(const char* data);
@@ -4581,15 +4881,26 @@ namespace
 	void OnJsItemSpin(const char* data);     // bake the turntable for one worn piece
 	void OnJsSpin(const char* data);         // hdSpin: bake item/face turntable, reply hdSpinState
 	void OnJsFolTune(const char* data);      // v0.15.1 essential / health / shared spells
+	void OnJsFolMarriage(const char* data);
 	void OnJsFolRank(const char* data);      // the player's RELA rank: read, and set
 	void OnJsFolRefresh(const char* data);
 	void OnJsFolPortrait(const char* data);
 	void OnJsFolFaceIcons(const char* data); // facegen head renders as default roster portraits
+	void OnJsFolCellScan(const char* data);  // Who's here: FO roster members near the player + why their picture is (not) showing
+	// Recall roster (pr* bridge on the deck view — party_recall.cpp): who the
+	// F17 recall would answer for, and the register. prRoster/prSet/prRecall
+	// all reply prRosterData (one name per direction, deck law).
+	void OnJsPrRoster(const char* data);
+	void OnJsPrSet(const char* data);
+	void OnJsPrRecall(const char* data);
 	void OnJsFolPreset(const char* data);   // Preset Director tools (preset_bridge)
 	void OnJsFolGear(const char* data);     // Gear Toggle (gear_bridge)
 	void OnJsWdPortrait(const char* data);
+	void OnJsWdPhotoExp(const char* data);      // outfit-photo brightness: ask
+	void OnJsWdPhotoExpSet(const char* data);   // outfit-photo brightness: write
 	// Both are defined further down but used by OnJsWdPortrait above them.
 	void                  ClosePalette();
+	void QueueTravel(std::string label, std::function<void()> execute);  // main thread only
 	std::filesystem::path DeckViewDir();
 	void OnJsFolSave(const char* data);
 	void OnJsFolLog(const char* data);
@@ -4605,6 +4916,7 @@ namespace
 	// snapshot for every on-screen element, and a per-widget toggle. Requests
 	// hdUiState / hdWidgetToggle, reply hdUiStateData (one name per direction).
 	void        OnJsUiState(const char* data);
+	std::string UiStateJson();
 	void        OnJsWidgetToggle(const char* data);
 	// 2026-08-19: the merged "Equipped widget" row in that drawer — master,
 	// orientation, size, lock and linking, relayed into the HUD view's own
@@ -4736,6 +5048,8 @@ namespace
 	void OnJsSpellEditRevert(const char* data);
 	void OnJsSpellEditList(const char* data);
 	void OnJsPlayerTuneGet(const char* data);
+	void OnJsAppearanceGet(const char* data);
+	void OnJsAppearanceAction(const char* data);
 	void OnJsPlayerTuneSet(const char* data);
 	void OnJsWeatherList(const char* data);
 	void OnJsWeatherSet(const char* data);
@@ -4750,6 +5064,16 @@ namespace
 	void OnJsNpcFinderQuery(const char* data);
 	void OnJsNpcFinderAct(const char* data);
 	void OnJsNpcFinderIcons(const char* data);
+	// Cells tab (cx* bridge on the deck view — cell_finder.cpp).
+	void OnJsCellFinderState(const char* data);
+	void OnJsCellFinderQuery(const char* data);
+	void OnJsCellFinderAct(const char* data);
+	void OnJsCellFinderSave(const char* data);
+	// Spells tab (Spell Finder): sfState/sfQuery/sfAct/sfSave -> sfStateResult/sfResultData/sfActResult/sfSaved
+	void OnJsSpellFinderState(const char* data);
+	void OnJsSpellFinderQuery(const char* data);
+	void OnJsSpellFinderAct(const char* data);
+	void OnJsSpellFinderSave(const char* data);
 	void OnJsPartyScan(const char* data);
 	void OnJsNpcInspect(const char* data);
 	// Distributions tab (dx* bridge on the deck view — spid_inspect.cpp).
@@ -4790,10 +5114,20 @@ namespace
 	void OnJsQvUse(const char* data);
 	void OnJsQvSave(const char* data);
 	// Mounts tab (mt* bridge on the deck view).
+	// Nightside tab (ns* bridge on the deck view).
+	void OnJsNightsideState(const char* data);
+	void OnJsNightsideAct(const char* data);
+	// MCM settings popout (mc* bridge).
+	void OnJsMcmState(const char* data);
+	void OnJsMcmSet(const char* data);
+	void OnJsSkyuiList(const char* data);
+	void OnJsSkyuiScan(const char* data);
+	void OnJsSkyuiSet(const char* data);
 	void OnJsMountsState(const char* data);
 	void OnJsMountsSpells(const char* data);
 	void OnJsMountsAct(const char* data);
 	void OnJsLoadoutsState(const char* data);   // Loadouts tab (loadouts.cpp)
+	void OnJsLoadoutsGroups(const char* data);  // who is in which group, for the Followers tab
 	void OnJsLoadoutsAct(const char* data);
 	void OnJsMountsIcons(const char* data);
 	// Transmog tab (tg* bridge on the deck view). Requests tgState/tgList/
@@ -4901,7 +5235,9 @@ namespace
 	void OnJsAnimLog(const char* data);
 	// OStim segment of the Animations tab (os* bridge on the deck view).
 	void OnJsOstimGet(const char* data);
+	void OnJsOstimTools(const char* data);
 	void OnJsOstimPoll(const char* data);
+	void OnJsOstimActor(const char* data);
 	void OnJsOstimSearch(const char* data);
 	void OnJsOstimNav(const char* data);
 	void OnJsOstimSpeed(const char* data);
@@ -4927,6 +5263,12 @@ namespace
 	void OnJsWdSave(const char* data);
 	void OnJsWdCropSave(const char* data);
 	void OnJsWdDress(const char* data);
+	void OnJsFlairEdit(const char*);
+	void OnJsOdEquip(const char*);
+	void OnJsOdClose(const char*);
+	void OnJsOdOpen(const char*);
+	void OdOpenDock(bool placement = false);
+	void OdCloseDock(bool fromView);
 	void OnJsWdTrack(const char* data);
 	void OnJsWdBuild(const char* data);
 	void OnJsWdWorn(const char* data);
@@ -4939,6 +5281,38 @@ namespace
 	// instantly — the palette has to close, the equip has to run, and the body
 	// has to redraw. Hence the delay before photo mode starts; without it you
 	// would be framing the OLD clothes.
+	// Outfit photos go through photo mode into icons/custom, whose capture.ini
+	// carries its own `photoexposure`. Same pair the Domains tab uses for its
+	// folder (pdScene / pdSceneSet), pointed at the wardrobe's (Rober,
+	// 2026-09-23: "wardrobe gear should have a brightness slider as well").
+	// Always answers with the truth from disk: the setter clamps.
+	void PushWdPhotoExp()
+	{
+		const auto dir = DeckViewDir() / "icons" / "custom";
+		PushToView("wdPhotoExpInfo", json{
+			{ "exposure", PortraitCapture::GetPhotoExposure(dir) },
+			{ "max", PortraitCapture::ExposureMax() } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+	}
+
+	void OnJsWdPhotoExp(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { PushWdPhotoExp(); });
+	}
+
+	void OnJsWdPhotoExpSet(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto j = json::parse(req, nullptr, false);
+			if (!j.is_discarded() && j.is_object() && j.contains("exposure") && j["exposure"].is_number()) {
+				const float stops = j["exposure"].get<float>();
+				PortraitCapture::SetPhotoExposure(DeckViewDir() / "icons" / "custom", stops);
+				logger::info("wardrobe: outfit photo brightness set to {:+.2f} stop(s)", stops);  // marker: wd-photo-brightness
+			}
+			PushWdPhotoExp();
+		});
+	}
+
 	void OnJsWdPortrait(const char* data)
 	{
 		const std::string req = data ? data : "";
@@ -4953,6 +5327,7 @@ namespace
 			return;
 		}
 		SKSE::GetTaskInterface()->AddTask([outfit]() {
+			const auto photoRequest = PreparePhotoReturn();
 			ClosePalette();
 			const auto res = Wardrobe::DressNow(json{ { "outfit", outfit } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 			const auto jr = json::parse(res, nullptr, false);
@@ -4960,13 +5335,15 @@ namespace
 				const auto msg = jr.is_discarded() ? std::string("Could not wear that")
 												   : jr.value("msg", std::string("Could not wear that"));
 				RE::DebugNotification(msg.c_str());
+				QueuePhotoReturn();
 				return;
 			}
 			// Detached wait, same idiom as the portrait: the main thread cannot
 			// block while Papyrus does the equip.
-			std::thread([outfit]() {
+			std::thread([outfit, photoRequest]() {
 				std::this_thread::sleep_for(std::chrono::milliseconds(1400));
-				SKSE::GetTaskInterface()->AddTask([outfit]() {
+				SKSE::GetTaskInterface()->AddTask([outfit, photoRequest]() {
+					if (!PhotoSetupCurrent(photoRequest)) return;
 					PortraitCapture::StartPhotoMode(DeckViewDir() / "icons" / "custom",
 						"wd-" + PortraitCapture::SlugOfName(outfit), outfit);
 				});
@@ -5341,6 +5718,13 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "hdCapture", OnJsCapture);
 		g_prisma->RegisterJSListener(g_view, "hdQuestList", OnJsQuestList);
 		g_prisma->RegisterJSListener(g_view, "hdQuestSearch", OnJsQuestSearch);
+		g_prisma->RegisterJSListener(g_view, "hdQuestActive", OnJsQuestActive);
+		// SOS size, SCENE-FREE. The OStim tools already drive SizeStateJson/
+		// SetActorSize, but only through the scene bridge (osTools + a scene
+		// signature), so the Character tab and the palette could not reach them.
+		// Request hdSosSize, reply hdSosSizeData — disjoint names, one per
+		// direction, per the deck law.
+		g_prisma->RegisterJSListener(g_view, "hdSosSize", OnJsSosSize);
 		g_prisma->RegisterJSListener(g_view, "hdQuestGet", OnJsQuestDetail);
 		g_prisma->RegisterJSListener(g_view, "hdQuestSetStage", OnJsQuestSetStage);
 		g_prisma->RegisterJSListener(g_view, "hdQuestAction", OnJsQuestAction);
@@ -5360,9 +5744,19 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "fdWorld", OnJsFolWorld);
 		g_prisma->RegisterJSListener(g_view, "fdMhiyh", OnJsFolMhiyh);
 		g_prisma->RegisterJSListener(g_view, "fdNpc", OnJsFolNpc);
+		g_prisma->RegisterJSListener(g_view, "gaNearby", OnJsGaNearby);
+		g_prisma->RegisterJSListener(g_view, "gaMove", OnJsGaMove);
+		g_prisma->RegisterJSListener(g_view, "gaClear", OnJsGaClear);
+		g_prisma->RegisterJSListener(g_view, "gaRestore", OnJsGaRestore);
 		// F7 card 🔍 Debug reveal: fdDebug in, fdDebugInfo out (two names, one
 		// per direction — the deck law). Pure read; NpcActions::DebugJson.
 		g_prisma->RegisterJSListener(g_view, "fdDebug", OnJsFolDebug);
+		// F7 card 🔧 Fixes flyout: a probe and an apply, two names per
+		// direction as the deck law says. The probe is read-only; the apply
+		// re-probes server-side and can answer ok:false with the reason,
+		// which is the whole point of it (see fix_actions.h).
+		g_prisma->RegisterJSListener(g_view, "hdFixProbe", OnJsFixProbe);
+		g_prisma->RegisterJSListener(g_view, "hdFixApply", OnJsFixApply);
 		// Formation with Followers modal (formation_actions): fmGet→fmOpen,
 		// mutations→fmResult + a delayed fresh fmOpen once Papyrus has landed.
 		g_prisma->RegisterJSListener(g_view, "fmGet", OnJsFmGet);
@@ -5374,6 +5768,13 @@ namespace
 		// thread and the state only reflects them a beat later.
 		g_prisma->RegisterJSListener(g_view, "nbGet", OnJsNbGet);
 		g_prisma->RegisterJSListener(g_view, "nbOp", OnJsNbOp);
+		// Domains tab -> Residents (residents.cpp): the MHiYH master list and
+		// remote stop assignment. Same reply-name law as the rest.
+		g_prisma->RegisterJSListener(g_view, "rsState", OnJsRsState);
+		g_prisma->RegisterJSListener(g_view, "rsPresets", OnJsRsPresets);
+		g_prisma->RegisterJSListener(g_view, "dsRequest", OnJsDsRequest);
+		g_prisma->RegisterJSListener(g_view, "rsDay", OnJsRsDay);
+		g_prisma->RegisterJSListener(g_view, "rsAct", OnJsRsAct);
 		// Deck Portal: state for the header button, and open-in-browser. Two
 		// names, one per direction (the deck law).
 		g_prisma->RegisterJSListener(g_view, "ptGet", OnJsPtGet);
@@ -5387,6 +5788,7 @@ namespace
 		// (findAllAgentsFormId), so the omni rows' CHIM mark and the F7 card's
 		// lit 💬 cost one Papyrus dispatch, not one per NPC.
 		g_prisma->RegisterJSListener(g_view, "chAgents", OnJsChAgents);
+		g_prisma->RegisterJSListener(g_view, "chConversation", OnJsChConversation);
 		// fmAll -> fmAllResult: everyone Fertility Mode tracks, keyed by ref and
 		// by base record, so the NPC Finder's rows and a non-roster crosshair
 		// card can say "pregnant" without a Follower Organizer row.
@@ -5411,6 +5813,7 @@ namespace
 		/* fdTune in, fdTuneInfo out — disjoint names, per the deck law. */
 		g_prisma->RegisterJSListener(g_view, "fdTune", OnJsFolTune);
 		g_prisma->RegisterJSListener(g_view, "fdRank", OnJsFolRank);
+        g_prisma->RegisterJSListener(g_view, "fdMarriage", OnJsFolMarriage);
 		g_prisma->RegisterJSListener(g_view, "fdRefresh", OnJsFolRefresh);
 		// Portrait FRAMING (zoom / offset), so the knobs in capture.ini are
 		// reachable in game instead of only from a text editor or the portal.
@@ -5423,6 +5826,11 @@ namespace
 		// Same two-names rule: fdCropSave in, fdCrops out.
 		g_prisma->RegisterJSListener(g_view, "fdCropSave", OnJsFolCropSave);
 		g_prisma->RegisterJSListener(g_view, "fdFaceIcons", OnJsFolFaceIcons);
+		// Who's here (2026-09-17): fdCellScan in, fdCellScanData out.
+		g_prisma->RegisterJSListener(g_view, "fdCellScan", OnJsFolCellScan);
+		g_prisma->RegisterJSListener(g_view, "prRoster", OnJsPrRoster);
+		g_prisma->RegisterJSListener(g_view, "prSet", OnJsPrSet);
+		g_prisma->RegisterJSListener(g_view, "prRecall", OnJsPrRecall);
 		g_prisma->RegisterJSListener(g_view, "fdSave", OnJsFolSave);
 		g_prisma->RegisterJSListener(g_view, "fdLog", OnJsFolLog);
 		g_prisma->RegisterJSListener(g_view, "fdPortrait", OnJsFolPortrait);
@@ -5596,6 +6004,19 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "nxAct", OnJsNpcFinderAct);
 		g_prisma->RegisterJSListener(g_view, "nxIcons", OnJsNpcFinderIcons);
 		g_prisma->RegisterJSListener(g_view, "nxSave", OnJsNpcFinderSave);
+		// Cells tab (Cell Finder). Requests cxState/cxQuery/cxAct/cxSave;
+		// replies cxStateResult/cxResultData/cxActResult/cxSaved — disjoint per
+		// the deck law. A successful travel gets NO reply: C++ closes the
+		// palette and runs the coc.
+		g_prisma->RegisterJSListener(g_view, "cxState", OnJsCellFinderState);
+		g_prisma->RegisterJSListener(g_view, "cxQuery", OnJsCellFinderQuery);
+		g_prisma->RegisterJSListener(g_view, "cxAct", OnJsCellFinderAct);
+		g_prisma->RegisterJSListener(g_view, "cxSave", OnJsCellFinderSave);
+		// Spells tab (Spell Finder). Same disjoint request/reply shape as the Cells tab.
+		g_prisma->RegisterJSListener(g_view, "sfState", OnJsSpellFinderState);
+		g_prisma->RegisterJSListener(g_view, "sfQuery", OnJsSpellFinderQuery);
+		g_prisma->RegisterJSListener(g_view, "sfAct", OnJsSpellFinderAct);
+		g_prisma->RegisterJSListener(g_view, "sfSave", OnJsSpellFinderSave);
 		// Party sheet (read-only live stats for the teammates around you).
 		// Request ptyScan; reply ptyData — disjoint per the deck law.
 		g_prisma->RegisterJSListener(g_view, "ptyScan", OnJsPartyScan);
@@ -5633,6 +6054,16 @@ namespace
 		// Mounts tab (the stable). Requests mtState/mtSpells/mtAct/mtIcons;
 		// replies mtStateResult/mtSpellsData/mtActResult/mtIconsData —
 		// disjoint, same law.
+		// Nightside (the three curses): nsState/nsAct -> nsStateResult/nsActResult
+		g_prisma->RegisterJSListener(g_view, "nsState", OnJsNightsideState);
+		g_prisma->RegisterJSListener(g_view, "nsAct", OnJsNightsideAct);
+		// MCM settings: mcState/mcSet -> mcStateResult/mcSetResult
+		g_prisma->RegisterJSListener(g_view, "mcState", OnJsMcmState);
+		g_prisma->RegisterJSListener(g_view, "mcSet", OnJsMcmSet);
+		// SkyUI (Papyrus) MCMs: syList/syScan/sySet -> sy*Result
+		g_prisma->RegisterJSListener(g_view, "syList", OnJsSkyuiList);
+		g_prisma->RegisterJSListener(g_view, "syScan", OnJsSkyuiScan);
+		g_prisma->RegisterJSListener(g_view, "sySet", OnJsSkyuiSet);
 		g_prisma->RegisterJSListener(g_view, "mtState", OnJsMountsState);
 		g_prisma->RegisterJSListener(g_view, "mtSpells", OnJsMountsSpells);
 		g_prisma->RegisterJSListener(g_view, "mtAct", OnJsMountsAct);
@@ -5640,6 +6071,7 @@ namespace
 		// Loadouts tab (follower groups + gear classes). Requests loState/loAct;
 		// replies loStateResult/loActResult - disjoint, same law.
 		g_prisma->RegisterJSListener(g_view, "loState", OnJsLoadoutsState);
+		g_prisma->RegisterJSListener(g_view, "loGroups", OnJsLoadoutsGroups);
 		g_prisma->RegisterJSListener(g_view, "loAct", OnJsLoadoutsAct);
 		// Transmog tab. Requests tgState/tgList/tgDonors/tgApply/tgRevert;
 		// replies tgStateResult/tgListData/tgDonorsData/tgApplyResult/
@@ -5691,6 +6123,8 @@ namespace
 		// Character sheet Tune modal (Player Tune — base-AV editor).
 		// Requests psTuneGet/psTuneSet; replies psTuneData/psTuneResult.
 		g_prisma->RegisterJSListener(g_view, "psTuneGet", OnJsPlayerTuneGet);
+		g_prisma->RegisterJSListener(g_view, "smAppearanceGet", OnJsAppearanceGet);
+		g_prisma->RegisterJSListener(g_view, "smAppearanceAction", OnJsAppearanceAction);
 		g_prisma->RegisterJSListener(g_view, "psTuneSet", OnJsPlayerTuneSet);
 
 		// High King tab. Requests kgState/kgAct/kgTax; replies kgStateResult/
@@ -5739,7 +6173,9 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "anLog", OnJsAnimLog);
 		// OStim segment: requests os*, replies osOpen/osState/osList/osResult.
 		g_prisma->RegisterJSListener(g_view, "osGet", OnJsOstimGet);
+		g_prisma->RegisterJSListener(g_view, "osTools", OnJsOstimTools);
 		g_prisma->RegisterJSListener(g_view, "osPoll", OnJsOstimPoll);
+		g_prisma->RegisterJSListener(g_view, "osActor", OnJsOstimActor);
 		g_prisma->RegisterJSListener(g_view, "osSearch", OnJsOstimSearch);
 		g_prisma->RegisterJSListener(g_view, "osNav", OnJsOstimNav);
 		g_prisma->RegisterJSListener(g_view, "osSpeed", OnJsOstimSpeed);
@@ -5772,6 +6208,11 @@ namespace
 		// Omni (v0.14.0): universal Search + Ask. Requests haAsk / hdSpellsIndex /
 		// hdOmniCast; responses haAnswer / hdSpellsData — disjoint, same law.
 		g_prisma->RegisterJSListener(g_view, "haAsk", OnJsAskCall);
+		// hdHudNotify (2026-09-21): a view-side result that must reach the player
+		// even when the deck is already closed (the CHIM flyout's diary / dynamic-
+		// profile replies land 10-20 s after the press) — the game's own top-left
+		// message, which is what Rober expects to see.
+		g_prisma->RegisterJSListener(g_view, "hdHudNotify", OnJsHudNotify);
 		g_prisma->RegisterJSListener(g_view, "hdSpellsIndex", OnJsSpellsIndex);
 		g_prisma->RegisterJSListener(g_view, "hdOmniCast", OnJsOmniCast);
 		g_prisma->RegisterJSListener(g_view, "hdOmniEquip", OnJsOmniEquip);
@@ -5789,7 +6230,14 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "wdArmorsFor", OnJsWdArmorsFor);
 		g_prisma->RegisterJSListener(g_view, "wdPieces", OnJsWdPieces);
 		g_prisma->RegisterJSListener(g_view, "wdPortrait", OnJsWdPortrait);
+		// Outfit-photo brightness. Requests wdPhotoExp / wdPhotoExpSet, reply
+		// wdPhotoExpInfo: a name in each direction, never shared.
+		g_prisma->RegisterJSListener(g_view, "wdPhotoExp", OnJsWdPhotoExp);
+		g_prisma->RegisterJSListener(g_view, "wdPhotoExpSet", OnJsWdPhotoExpSet);
 		g_prisma->RegisterJSListener(g_view, "wdWear", OnJsWdWear);
+		g_prisma->RegisterJSListener(g_view, "wfEdit", OnJsFlairEdit);
+		g_prisma->RegisterJSListener(g_view, "odEquip", OnJsOdEquip);
+		g_prisma->RegisterJSListener(g_view, "odOpen", OnJsOdOpen);
 		g_prisma->RegisterJSListener(g_view, "wdGiveWear", OnJsWdGiveWear);
 		g_prisma->RegisterJSListener(g_view, "wdEquipPiece", OnJsWdEquipPiece);
 		// Photo mode landed a file: hand the view the outfit slug and the file
@@ -5798,8 +6246,13 @@ namespace
 		// exit, not just a successful one. Registered here so the staging module
 		// never has to know photo mode exists.
 		PortraitCapture::SetPhotoEndedCallback([]() { SceneStage::Restore(); });
+		PortraitCapture::SetCaptureFinishedCallback(QueuePhotoReturn);
 		PortraitCapture::SetPhotoSavedCallback([](const std::string& slug, const std::string& file,
 											      const std::string& label) {
+			if (slug.rfind("ostim-", 0) == 0 || slug.rfind("shot-", 0) == 0) {
+				logger::info("ostim photo: saved {}", file);
+				return; // Scene photos live in the journal pool, never the wardrobe.
+			}
 			// ONE callback, TWO owners: photo mode is shared by the Wardrobe tab
 			// and the Domains tab, and PortraitCapture holds a single slot. The
 			// slug prefix says whose shot this was — without this branch a place
@@ -5831,11 +6284,16 @@ namespace
 				const std::string id = g_photoDomainId;
 				g_photoDomainId.clear();
 				bool attached = false;
+				json saved;
 				{
 					std::lock_guard l(g_configMutex);
 					for (auto& m : g_domConfig.marks)
 						if (m.id == id) {
-							m.image = image;
+							auto shot = g_photoDomainMeta;
+							shot["image"] = image;
+							shot["takenAt"] = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+							DomainPhotos::Append(m.photos, m.image, shot, g_photoDomainCover);
+							saved = {{"id", id}, {"image", m.image}, {"photos", m.photos}};
 							attached = true;
 							break;
 						}
@@ -5848,13 +6306,12 @@ namespace
 					return;
 				}
 				PersistAll();
+				logger::info("domains: gallery retains independent photos");
 				logger::info("domains: photo attached '{}' to '{}' ({})", file, label, id);
 				// Usually dropped — the palette is closed during photo mode —
 				// but harmless, and it makes the row update live in the one case
 				// where the deck is somehow already back up.
-				PushToView("pdPhotoSaved", json{
-					{ "id", id },
-					{ "image", image } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+				PushToView("pdPhotoSaved", saved.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 				return;
 			}
 			// Attach C++-SIDE and persist. The palette is always CLOSED during
@@ -6147,6 +6604,7 @@ namespace
 	{
 		if (!g_prisma || !g_viewReady.load() || g_open.load())
 			return;
+		++g_travelEpoch;  // also catches an open/close between two travel polls
 		// Mark the open in flight so a key press mid-open is dropped, not raced
 		// into a second Show/Hide on the single focus slot (Ank164 "freezes solid").
 		// RAII-cleared at every return path below.
@@ -6185,6 +6643,14 @@ namespace
 			// (that one is also what WriteConfigFile persists) — added here only.
 			json cj = ConfigToJson(g_config);
 			cj["detected"] = DetectedModsJson();
+			// Which curses are held RIGHT NOW. Rebuilt every open on purpose —
+			// DetectedModsJson is cached because a plugin cannot appear
+			// mid-session, but vampirism can (nightside-gate).
+			{
+				auto g = json::parse(Nightside::GateJson(), nullptr, false);
+				if (!g.is_discarded())
+					cj["curses"] = g;
+			}
 			payload = cj.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 			fcfg = FollowerConfigToJson(g_folConfig).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 			// Once per session, before the first domain crop map goes out: drop
@@ -6198,7 +6664,8 @@ namespace
 				cropsPruned = Wardrobe::PruneCropMap(g_domConfig.imageCrops,
 					DeckViewDir() / "domain-images");
 			}
-			domPayload = DomainsConfigToJson(g_domConfig).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			// Resolved copy, never the stored config — see ResolveMarkCells.
+			domPayload = DomainsConfigToJson(ResolveMarkCells(g_domConfig)).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 			contPayload = ContainerConfigToJson(g_contConfig).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 			// Carries the live "where are you standing" snapshot too, so the Rooms
 			// pane can offer Claim with a suggested name the moment it is shown.
@@ -6210,13 +6677,13 @@ namespace
 			PersistAll();   // outside the lock: PersistAll takes it itself
 		// Snapshot the crosshair NPC before the cursor menu / pause takes over,
 		// so action entries (freeze/sit/…) act on who the player was looking at.
-		NpcActions::SnapshotTarget();
+		if (!g_returningFromPhoto) NpcActions::SnapshotTarget();
 		// Same beat: snapshot the crosshair CONTAINER for the Containers tab's
 		// "Mark this container" card (frozen now that the palette pauses the game).
-		ContainerActions::SnapshotTarget();
+		if (!g_returningFromPhoto) ContainerActions::SnapshotTarget();
 		// And the crosshair DOOR for the lock modal. Reads NpcActions' non-actor
 		// snapshot, so it must run after NpcActions::SnapshotTarget() above.
-		DoorActions::SnapshotTarget();
+		if (!g_returningFromPhoto) DoorActions::SnapshotTarget();
 		OpenDiag::LogMs("open prep (portal appliers + icon scan + config serialize)",
 			OpenDiag::NowMs() - diagT0, 800);
 		const auto diagT1 = OpenDiag::NowMs();
@@ -6346,7 +6813,55 @@ namespace
 		//
 		// Reads the SAME snapshot fdTarget was built from a few lines above, so
 		// the tab we land on and the person the card names can never disagree.
-		if (g_pendingTab.empty() && NpcActions::TargetFormID() != 0) {
+		// Opened DURING an OStim scene -> land on the Scene tab, the one page
+		// that gathers every OStim control (Rober, 2026-09-21: "if im in an
+		// ostim scene it should open a dedicated ostim scene page on f7 of
+		// skymanager").
+		//
+		// Deliberately BEFORE the crosshair heuristic and not after it: mid-scene
+		// the crosshair is always full of a participant, so Followers would claim
+		// the tab every time and this landing would never once fire. An explicit
+		// deep-open (F14/F15, a bound action) still wins over both — it is
+		// checked first, exactly as the Followers heuristic checks it.
+		if (!g_returningFromPhoto && g_pendingTab.empty() && OstimDeck::PlayerInScene()) {
+			bool wants = false;
+			{
+				std::lock_guard l(g_configMutex);
+				wants = g_config.settings.sceneOpensScene;
+			}
+			if (wants) {
+				g_pendingTab = "scene";
+				logger::info("open: OStim scene running -> landing on the Scene tab");  // marker: gate-f7-scene
+			}
+		}
+		// Looking at someone -> the Scene page, which now carries everything the
+		// NPC card's "Scene controls" popout used to (appearance, skins,
+		// restraints, effects, body physics) as well as the live scene. Checked
+		// BEFORE the Followers heuristic and gated on OStim actually being
+		// here, because with no OStim the Scene tab is hidden and routing to it
+		// would bounce the view to Home (the gate-f7-followers lesson).
+		if (!g_returningFromPhoto && g_pendingTab.empty() && NpcActions::TargetFormID() != 0) {
+			bool wants = false;
+			{
+				std::lock_guard l(g_configMutex);
+				wants = g_config.settings.targetOpensScene;
+			}
+			const auto& det  = DetectedModsJson();
+			const bool  noOStim = det.contains("ostim") && det["ostim"].is_boolean() &&
+			                      det["ostim"].get<bool>() == false;
+			// Only when THEY are in a scene (a thread you walked up on). This
+			// route used to fire for every NPC in the crosshair, scene or no
+			// scene, so a plain F7-on-someone opened the Scene page instead of
+			// her card (Rober, 2026-09-22: "sometimes it shows ostim scene even
+			// when im not in one anymore and im hitting f7 on an npc"). An
+			// ordinary look-and-open falls through to the Followers landing.
+			const bool theyAreInScene = !noOStim && OstimDeck::ActorInScene(NpcActions::TargetFormID());
+			if (wants && theyAreInScene) {
+				g_pendingTab = "scene";
+				logger::info("open: crosshair target -> landing on the Scene tab (they are in a scene)");  // marker: gate-f7-scene-target
+			}
+		}
+		if (!g_returningFromPhoto && g_pendingTab.empty() && NpcActions::TargetFormID() != 0) {
 			bool wants = false;
 			{
 				std::lock_guard l(g_configMutex);
@@ -6442,6 +6957,13 @@ namespace
 	// down, or "let go of EVERYTHING" would leave a Focused overlay behind.
 	void TdCloseDial(bool fromView);
 	void HudNavStop(const char* why, bool fromView);
+	// The alignment overlay, 4th claimant on the HUD view's Focus.
+	// ⚠ ag*, NOT al* — al* is AUTO-LOOT's bridge prefix (alGet/alSave/alToggle/
+	// alState/alScanNow on g_view). Colliding there would have silently
+	// clobbered Auto-Loot's live state push.
+	void AgCloseAlign(bool fromView);
+	void AgPushState();
+	void AgToggleAlign();   // used by the action dispatch, far above its definition
 	void ForceClosePalettes(const char* why, bool releaseHudEdit = true)
 	{
 		if (!g_prisma)
@@ -6494,6 +7016,8 @@ namespace
 			// file than this function does.
 			TdCloseDial(false);
 			HudNavStop("force-close", false);
+			AgCloseAlign(false);   // the 4th claimant — same orphan risk
+			OdCloseDock(false);
 			if (g_hudEditing.exchange(false))
 				logger::warn("force-close: hud edit force-ended");
 			if (g_hudView && g_hudViewReady.load()) {
@@ -6742,6 +7266,14 @@ namespace
 	// palette-open snapshot, exactly like the NPC actions.
 	void FireConsoleAndClose(HotkeyEntry entry)
 	{
+		if (CellTravelHandoff::IsTravelCommand(entry.command)) {
+			SKSE::GetTaskInterface()->AddTask([entry]() {
+				QueueTravel(entry.name, [entry]() {
+					ConsoleActions::Fire(entry.name, entry.command, entry.action == "crosshair");
+				});
+			});
+			return;
+		}
 		bool reopen;
 		{
 			std::lock_guard l(g_configMutex);
@@ -6773,6 +7305,29 @@ namespace
 			reopen = !g_config.settings.closeAfterFire;
 		}
 		std::string action = entry.action;
+		if (action == "appearance-quick" || action == "appearance-normal") {
+			const std::string op=action=="appearance-normal"?"normal":"quick";
+			SKSE::GetTaskInterface()->AddTask([op]() {
+				AppearancePresets::Handle({{"op",op}},[](const auto& result) {
+					if(!result.value("ok",false))RE::DebugNotification(result.value("msg",std::string("Appearance change could not finish.")).c_str());
+				},AppearanceCloseForGame);
+			});
+			return; // Papyrus owns this guarded switch; never reopen over it.
+		}
+		if (action == "get-away") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				// The toggle (Rober, 2026-09-21): while people are held out of the
+				// room, the same press brings them back — no picker in the way.
+				if (NpcClearance::HeldCount() > 0) {
+					const auto res = json::parse(NpcClearance::Restore(), nullptr, false);
+					if (res.is_object()) RE::DebugNotification(res.value("msg", std::string("Clear the room: brought back")).c_str());
+					return;
+				}
+				OpenPalette();
+				PushToView("gaShow", "{}");
+			});
+			return;
+		}
 
 		// Portrait capture owns its own timing and must NOT be followed by a
 		// reopen: it photographs the screen a few frames from now, and the
@@ -6805,21 +7360,14 @@ namespace
 		// painting itself back over the game would pause it mid-cycle. The
 		// bridged call posts its own task, giving menu-close one extra frame to
 		// hand controls back before the resolver checks who owns the player.
-		// Instant wait: jump the game clock in one step. Close first so the
-		// catch-up hitch happens on the world, not under the palette; reopen
-		// per the user's close-after-fire preference like a normal action.
-		if (TimeActions::IsAction(action)) {
-			SKSE::GetTaskInterface()->AddTask([action, reopen]() {
-				ClosePalette();
-				TimeActions::Fire(action);
-				if (reopen)
-					SKSE::GetTaskInterface()->AddTask([]() {
-						if (CanOpenNow())
-							OpenPalette();
-					});
-			});
-			return;
-		}
+		// Instant waits must stay closed so the engine can settle the calendar.
+        if (TimeActions::IsAction(action)) {
+            SKSE::GetTaskInterface()->AddTask([action]() {
+                ClosePalette();
+                TimeActions::Fire(action);
+            });
+            return;
+        }
 
 		// Fixes / Unstuck: console-backed rescues on the crosshair NPC snapshot
 		// (recycleactor / resetai / resurrect / calm) or the player (tcl). Close
@@ -6834,6 +7382,16 @@ namespace
 						if (CanOpenNow())
 							OpenPalette();
 					});
+			});
+			return;
+		}
+
+		// The broom's original Papyrus event needs an unpaused world throughout
+		// its waits/animation. Never apply the general reopen-after-fire option.
+		if (BroomCleanup::IsAction(action)) {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				ClosePalette();
+				SKSE::GetTaskInterface()->AddTask([]() { BroomCleanup::Fire(); });
 			});
 			return;
 		}
@@ -6888,6 +7446,14 @@ namespace
 				ClosePalette();
 				logger::info("loadouts: keyed group order '{}'", what);  // marker: loadouts-keyed-order
 				Loadouts::FireActiveOrder(what);
+			});
+			return;
+		}
+		if (action == "party-recall-takeover" || action == "party-recall-restore") {
+			SKSE::GetTaskInterface()->AddTask([action]() {
+				ClosePalette();
+				const auto message = action == "party-recall-takeover" ? PartyRecall::TakeOverKey() : PartyRecall::RestoreNffKey();
+				RE::DebugNotification(message.c_str());
 			});
 			return;
 		}
@@ -7130,8 +7696,13 @@ namespace
 					RE::DebugNotification("You haven't been granted the crown's recall yet.");
 					return;
 				}
-				ClosePalette();  // the teleport needs the live world, same as Domains travel
-				SpellActions::Cast(HighKing::kPlugin, 0x05FDF6, 0);
+				QueueTravel("Highreach", []() {
+					auto* data = RE::TESDataHandler::GetSingleton();
+					auto* recall = data ? data->LookupForm<RE::SpellItem>(0x05FDF6, HighKing::kPlugin) : nullptr;
+					auto* pc = RE::PlayerCharacter::GetSingleton();
+					if (recall && pc && pc->HasSpell(recall))
+						SpellActions::Cast(HighKing::kPlugin, 0x05FDF6, 0);
+				});
 			});
 			return;
 		}
@@ -7237,11 +7808,27 @@ namespace
 		// Time Dial — the openable circular wait dial on the HUD view. A
 		// toggle: fired from the palette it closes the deck FIRST and takes
 		// Focus one task later (the deaf-view / Place-freeze discipline).
+		if (action == "outfit-dock") {
+			OnJsOdOpen("");
+			return;
+		}
 		if (action == "time-dial") {
 			SKSE::GetTaskInterface()->AddTask([]() {
 				if (AnyOpen())
 					ClosePalette();
 				SKSE::GetTaskInterface()->AddTask([]() { TdToggleDial(); });
+			});
+			return;
+		}
+
+		// Scene Alignment — the live overlay. Same discipline as the Time
+		// Dial: close the palette FIRST, take Focus one task later, or the
+		// view is deaf to the keys it was just given.
+		if (action == "ostim-align") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (AnyOpen())
+					ClosePalette();
+				SKSE::GetTaskInterface()->AddTask([]() { AgToggleAlign(); });
 			});
 			return;
 		}
@@ -7600,6 +8187,16 @@ namespace
 			return;
 		}
 
+		// Custom Markers owns its settings, scanner and overlays. Only forward
+		// its explicitly configured purpose keys; no private API/memory writes.
+		if (CustomMarkers::IsAction(action)) {
+			SKSE::GetTaskInterface()->AddTask([action]() {
+				ClosePalette();
+				CustomMarkers::Fire(action);
+			});
+			return;
+		}
+
 		// Open another mod's settings menu (Prisma MCM / SKSE Menu Framework /
 		// Community Shaders): close the palette so the game has focus and is
 		// unpaused, then synthesize the key that mod listens for. The menu owns
@@ -7609,6 +8206,19 @@ namespace
 			SKSE::GetTaskInterface()->AddTask([action]() {
 				ClosePalette();
 				MenuActions::Fire(action);
+			});
+			return;
+		}
+
+		// Schlongs of Skyrim bend. Same wire as the menu openers above and for
+		// the same reason: SOS exposes no bend function, only MCM keymaps its
+		// own handler watches for (see sos_actions.h). Close the palette first —
+		// that handler is Papyrus, and Papyrus runs unpaused only — then
+		// synthesize the key SOS is actually configured with.
+		if (SosActions::IsAction(action)) {
+			SKSE::GetTaskInterface()->AddTask([action]() {
+				ClosePalette();
+				SosActions::Fire(action);
 			});
 			return;
 		}
@@ -7774,7 +8384,13 @@ namespace
 			logger::info("trigger {} -> console '{}'", via, entry.name);
 			HotkeyHistory::Record(HotkeyHistory::Source::kEntry, entry.name,
 				entry.label.empty() ? std::string("Console") : entry.label, entry.category);
-			ConsoleActions::Fire(entry.name, entry.command, entry.action == "crosshair");
+			if (CellTravelHandoff::IsTravelCommand(entry.command)) {
+				QueueTravel(entry.name, [entry]() {
+					ConsoleActions::Fire(entry.name, entry.command, entry.action == "crosshair");
+				});
+			} else {
+				ConsoleActions::Fire(entry.name, entry.command, entry.action == "crosshair");
+			}
 			return;
 		}
 		logger::info("trigger {} -> '{}'", via, entry.name);
@@ -8034,7 +8650,14 @@ namespace
 		}).detach();
 	}
 
-	// Raw chord from the numpad tab: {"device":"keyboard","code":181,"mods":[42],"label":"Num /"}
+	// Raw chord from an on-screen key: {"device":"keyboard","code":181,"mods":[42],"label":"Num /"}
+	// Two callers, one flag apart:
+	//   Numpad TAB   — no "close". That tab runs the game LIVE (OnJsTab), so the
+	//                  press lands while the palette stays up.
+	//   Key STRIP    — "close":true (hdFireRawKey). It lives above the hotkey
+	//                  list, and that tab is PAUSED; a key pressed into a paused
+	//                  game is a key that did nothing. So it takes the same
+	//                  close -> unpause -> press path every hotkey row uses.
 	void OnJsFireKey(const char* data)
 	{
 		if (!data)
@@ -8055,6 +8678,14 @@ namespace
 					e.mods.push_back(m.get<std::uint32_t>());
 		if (!ValidDevice(e.device) || e.code == 0)
 			return;
+		if (j.value("close", false)) {
+			logger::info("fire raw '{}' ({} code {}, {} mods) — key strip, closing first",
+				e.name, e.device, e.code, e.mods.size());
+			HotkeyHistory::Record(HotkeyHistory::Source::kNumpad, e.name,
+				ChordLabel(e.mods, e.name), "Keys");
+			FireAndClose(std::move(e));
+			return;
+		}
 		logger::info("fire raw '{}' ({} code {}, {} mods) — palette stays open", e.name, e.device, e.code, e.mods.size());
 		HotkeyHistory::Record(HotkeyHistory::Source::kNumpad, e.name,
 			ChordLabel(e.mods, e.name), "Numpad");
@@ -8291,9 +8922,9 @@ namespace
 
 	// Console editor "Test" button: run command text without saving an entry.
 	// Payload: {"command":"tgm\nplayer.additem f 100","crosshair":false}.
-	// Runs immediately, palette open — the game is paused, but so is it when
-	// you type into the real console, so the semantics match what the player
-	// expects from testing. Crosshair mode uses the palette-open snapshot.
+	// Runs on the main thread. Travel commands close and settle through the
+	// shared handoff; other commands retain the open palette. Crosshair mode
+	// uses the palette-open snapshot.
 	void OnJsConsoleTest(const char* data)
 	{
 		if (!data)
@@ -8306,7 +8937,14 @@ namespace
 			// `name` (2026-09-13): the Omni's "run in the console" row sends
 			// its own label so the HUD/log say what ran, not "Console test".
 			const auto name = j.value("name", std::string("Console test"));
-			ConsoleActions::Fire(name.empty() ? "Console test" : name, cmd, j.value("crosshair", false));
+			const bool crosshair = j.value("crosshair", false);
+			SKSE::GetTaskInterface()->AddTask([name, cmd, crosshair]() {
+				auto fire = [name, cmd, crosshair]() {
+					ConsoleActions::Fire(name.empty() ? "Console test" : name, cmd, crosshair);
+				};
+				if (CellTravelHandoff::IsTravelCommand(cmd)) QueueTravel("Console travel", fire);
+				else fire();
+			});
 		} catch (const std::exception& e) {
 			logger::warn("hdConsoleTest: bad payload ({})", e.what());
 		}
@@ -8331,10 +8969,10 @@ namespace
 	{
 		const std::string req = data ? data : "{}";
 		SKSE::GetTaskInterface()->AddTask([req]() {
-			ClosePalette();
-			const std::string msg = Places::Go(req);
-			if (!msg.empty())
-				RE::DebugNotification(msg.c_str());
+			QueueTravel("Places", [req]() {
+				const std::string msg = Places::Go(req);
+				if (!msg.empty()) RE::DebugNotification(msg.c_str());
+			});
 		});
 	}
 
@@ -8343,6 +8981,104 @@ namespace
 		const std::string query = data ? data : "";
 		SKSE::GetTaskInterface()->AddTask([query]() {
 			PushToView("hdQuests", QuestTools::SearchQuests(query));
+		});
+	}
+
+	// Every running quest — the Quests tab's "Active" scope. Takes no argument:
+	// the question is "what am I in the middle of", not "find me X".
+	void OnJsQuestActive(const char* data)
+    {
+        const auto req = json::parse(data ? data : "{}", nullptr, false);
+        const std::string requestId = req.is_object() && req.contains("requestId") && req["requestId"].is_string() ? req["requestId"].get<std::string>() : "";
+        SKSE::GetTaskInterface()->AddTask([requestId]() {
+            auto payload = json::parse(QuestTools::ActiveQuests(), nullptr, false);
+            if (!requestId.empty()) {
+                payload["requestId"] = requestId;
+                PushToView("hdQuestJournalData", payload.dump(-1, ' ', false, json::error_handler_t::replace));
+            } else PushToView("hdQuests", payload.dump(-1, ' ', false, json::error_handler_t::replace));
+        });
+    }
+
+	// SOS size for ONE actor, with no OStim scene in the picture.
+	//   { "op":"state", "who":"player"|"crosshair"|"0x14" }
+	//   { "op":"set",   "who":…, "size":1..20 }
+	// Reply: hdSosSizeData — SizeStateJson's own envelope (present / available /
+	// size / min / max / msg), echoed with the `who` that was asked for so a
+	// late reply for the player cannot repaint a card about an NPC.
+	void OnJsSosSize(const char* data)
+	{
+		if (!data)
+			return;
+		const auto j = json::parse(data, nullptr, false);
+		if (j.is_discarded() || !j.is_object())
+			return;
+		const std::string op = j.value("op", std::string("state"));
+		const std::string who = j.value("who", std::string("player"));
+		const int         size = j.value("size", 0);
+		SKSE::GetTaskInterface()->AddTask([op, who, size]() {
+			std::uint32_t fid = 0;
+			if (who == "crosshair") {
+				fid = NpcActions::TargetFormID();
+				if (!fid) {
+					PushToView("hdSosSizeData",
+						json{ { "ok", true }, { "who", who }, { "present", true },
+							{ "available", false }, { "size", nullptr },
+							{ "msg", "Nobody under your crosshair — look at someone first" } }
+							.dump(-1, ' ', false, json::error_handler_t::replace));
+					return;
+				}
+			} else if (who == "player") {
+				auto* pc = RE::PlayerCharacter::GetSingleton();
+				fid = pc ? pc->GetFormID() : 0;
+			} else {
+				fid = ParseFormId(who);
+			}
+			// "step": ±N from wherever she is now, clamped, resolved HERE so the
+			// view never has to read-then-write across two round trips (which
+			// would race another caller and could apply a stale base).
+			if (op == "step") {
+				auto st = json::parse(SosActions::SizeStateJson(fid), nullptr, false);
+				const bool avail = st.is_object() && st.value("available", false);
+				if (!avail) {
+					if (st.is_object())
+						st["who"] = who;
+					PushToView("hdSosSizeData", st.is_object()
+							? st.dump(-1, ' ', false, json::error_handler_t::replace)
+							: SosActions::SizeStateJson(fid));
+					return;
+				}
+				const int lo = st.value("min", 1), hi = st.value("max", 20);
+				const int cur = st.value("size", lo);
+				int       want = cur + size;   // `size` carries the delta for this op
+				if (want < lo) want = lo;
+				if (want > hi) want = hi;
+				SosActions::SetActorSize(fid, want, [who](std::string reply) {
+					auto r = json::parse(reply, nullptr, false);
+					if (r.is_object())
+						r["who"] = who;
+					PushToView("hdSosSizeData", r.is_object()
+							? r.dump(-1, ' ', false, json::error_handler_t::replace)
+							: reply);
+				});
+				return;
+			}
+			if (op == "set") {
+				SosActions::SetActorSize(fid, size, [who](std::string reply) {
+					auto r = json::parse(reply, nullptr, false);
+					if (r.is_object())
+						r["who"] = who;
+					PushToView("hdSosSizeData", r.is_object()
+							? r.dump(-1, ' ', false, json::error_handler_t::replace)
+							: reply);
+				});
+				return;
+			}
+			auto st = json::parse(SosActions::SizeStateJson(fid), nullptr, false);
+			if (st.is_object())
+				st["who"] = who;
+			PushToView("hdSosSizeData", st.is_object()
+					? st.dump(-1, ' ', false, json::error_handler_t::replace)
+					: SosActions::SizeStateJson(fid));
 		});
 	}
 
@@ -8356,21 +9092,30 @@ namespace
 
 	// {"formId":"000A2C9E","stage":200}
 	void OnJsQuestSetStage(const char* data)
-	{
-		if (!data)
-			return;
-		const auto j = json::parse(data, nullptr, false);
-		if (j.is_discarded() || !j.is_object()) {
-			logger::warn("hdQuestSetStage: bad payload");
-			return;
-		}
-		const auto id = ParseFormId(j.value("formId", std::string("")));
-		const auto stage = j.value("stage", 0u);
-		SKSE::GetTaskInterface()->AddTask([id, stage]() {
-			PushToView("hdQuestResult", QuestTools::SetStage(id, stage));
-			PushToView("hdQuestInfo", QuestTools::QuestDetail(id));
-		});
-	}
+    {
+        const auto j = json::parse(data ? data : "", nullptr, false);
+        if (!j.is_object() || !j.contains("formId") || !j["formId"].is_string() ||
+            !j.contains("stage") || !j["stage"].is_number_unsigned()) return;
+        const auto id = ParseFormId(j["formId"].get<std::string>());
+        const auto stageValue = j["stage"].get<std::uint64_t>();
+        if (stageValue > 65535) return;
+        const auto stage = static_cast<std::uint32_t>(stageValue);
+        const std::string requestId = j.contains("requestId") && j["requestId"].is_string() ? j["requestId"].get<std::string>() : "";
+        std::int32_t expected = -1;
+        if (j.contains("expectedStage")) {
+            if (!j["expectedStage"].is_number_integer() || j["expectedStage"] < 0 || j["expectedStage"] > 65535) return;
+            expected = j["expectedStage"].get<std::int32_t>();
+        }
+        if (!requestId.empty() && (expected < 0 || expected > 65535)) return;
+        SKSE::GetTaskInterface()->AddTask([id, stage, expected, requestId]() {
+            auto result = json::parse(QuestTools::SetStage(id, stage, expected), nullptr, false);
+            if (!requestId.empty()) result["requestId"] = requestId;
+            PushToView(requestId.empty() ? "hdQuestResult" : "hdQuestJournalResult", result.dump());
+            // Stage fragments execute through Papyrus, which cannot run paused.
+            if (result.value("ok", false)) ClosePalette();
+            else if (requestId.empty()) PushToView("hdQuestInfo", QuestTools::QuestDetail(id));
+        });
+    }
 
 	// {"formId":"000A2C9E","verb":"reset"}
 	void OnJsQuestAction(const char* data)
@@ -8384,20 +9129,29 @@ namespace
 		}
 		const auto id = ParseFormId(j.value("formId", std::string("")));
 		const auto verb = j.value("verb", std::string(""));
+        const std::string requestId = j.contains("requestId") && j["requestId"].is_string() ? j["requestId"].get<std::string>() : "";
 
 		// "Go to target" is physical, not administrative: pre-flight first (movetoqt
 		// fails silently, so surface WHY in the palette), and only on a live target
 		// close the palette — the jump lands in the unpaused world — then fire it.
 		if (verb == "movetoqt") {
-			SKSE::GetTaskInterface()->AddTask([id]() {
+			SKSE::GetTaskInterface()->AddTask([id, requestId]() {
 				const auto check = QuestTools::CheckQuestTarget(id);
-				const auto jc = json::parse(check, nullptr, false);
+				auto jc = json::parse(check, nullptr, false);
 				if (jc.is_discarded() || !jc.value("ok", false)) {
-					PushToView("hdQuestResult", check);
+					if (!jc.is_object()) jc = json{{"ok", false}, {"message", "Could not read this quest target. Refresh and try again."}};
+                    if (!requestId.empty()) jc["requestId"] = requestId;
+                    PushToView(requestId.empty() ? "hdQuestResult" : "hdQuestJournalResult", jc.dump());
 					return;
 				}
-				ClosePalette();
-				QuestTools::MoveToQuestTarget(id);
+				QueueTravel("Quest target", [id]() {
+					const auto check = json::parse(QuestTools::CheckQuestTarget(id), nullptr, false);
+					if (!check.is_object() || !check.value("ok", false)) {
+						RE::DebugNotification("Travel cancelled - quest target is no longer available");
+						return;
+					}
+					QuestTools::MoveToQuestTarget(id);
+				});
 			});
 			return;
 		}
@@ -8697,6 +9451,7 @@ namespace
 	{
 		if (!g_prisma || !g_magicViewReady.load() || g_magicOpen.load())
 			return;
+		++g_travelEpoch;
 		// Apply anything the Deck Portal queued from the phone BEFORE the payload
 		// is snapshotted — mdOpen() below carries the icons the view will draw, so
 		// consuming the sidecar any later would cost an extra open to show up.
@@ -8883,6 +9638,15 @@ namespace
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
 			PushToMagicView("mdSpells", SpellActions::KnownSpellsJson());
+			std::vector<SpellActions::SpellRef> refs;
+			{
+				std::lock_guard lock(g_configMutex);
+				for (const auto& s : g_magicConfig.spells) {
+					refs.push_back({s.plugin, s.localId, s.formId});
+					if (refs.size() >= 2048) break;
+				}
+			}
+			SpellActions::ExportLibraryDescriptions(refs);
 		});
 	}
 
@@ -8916,6 +9680,7 @@ namespace
 		if (!j.is_discarded()) {
 			const std::string before = SpellIconOverrideSig();
 			MagicConfig       m;
+			{ std::lock_guard l(g_configMutex); m.library = g_magicConfig.library; }
 			MagicConfigFromJson(j, m);
 			{
 				std::lock_guard l(g_configMutex);
@@ -8927,8 +9692,10 @@ namespace
 			if (SpellIconOverrideSig() != before)
 				HudRefreshIconIndex("mdSave");
 			ok = PersistAll();  // emits both slices (magic just-updated + deck unchanged)
-			if (ok)
+			if (ok) {
 				logger::info("magic config saved");
+				logger::info("spell-library-v1: organization saved");
+			}
 			else
 				logger::error("mdSave: accepted but failed to write to disk");
 		} else {
@@ -9363,6 +10130,7 @@ namespace
 				e.hand = "right";
 				e.category = category;
 				e.slot = snap.value("slot", std::string(""));
+				e.type = snap.value("type", std::string(""));
 				e.school = snap.value("school", std::string(""));
 				e.element = snap.value("element", std::string(""));
 				e.archetype = snap.value("archetype", std::string(""));
@@ -11140,48 +11908,65 @@ namespace
 			logger::warn("fdPortrait: no usable formId in {}", j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 			return;
 		}
-		const auto dir = DeckViewDir() / "portraits";
-		SKSE::GetTaskInterface()->AddTask([dir, formId]() {
-			ClosePalette();
-			PortraitCapture::Fire(dir, formId);
-		});
+        const auto requestId = j.value("requestId", std::string{});
+        const auto settings = j.contains("framing") ? j["framing"] : json();
+        const auto lighting = j.contains("lighting") ? j["lighting"] : json();
+        const auto dir = DeckViewDir() / "portraits";
+        SKSE::GetTaskInterface()->AddTask([dir, formId, settings, lighting, requestId]() {
+            auto reply = [&requestId](bool ok, const char* message) {
+                if (!requestId.empty()) PushToView("fdCaptureSetupResult",
+                    json{{"requestId",requestId},{"ok",ok},{"message",message}}.dump());
+            };
+            auto* actor = RE::TESForm::LookupByID<RE::Actor>(formId);
+            if (!actor || !actor->Get3D()) { reply(false,"Bring this NPC into view before starting a portrait."); return; }
+            if (PortraitCapture::PhotoModeActive() || PortraitCapture::SelfCaptureBusy()) { reply(false,"Finish the current photograph first."); return; }
+            auto light = PortraitCapture::GetNpcLighting(dir);
+            if (!lighting.is_null() && (!lighting.is_object() || !lighting.contains("mode") ||
+                !lighting["mode"].is_string() || !lighting.contains("strength") || !lighting["strength"].is_number() ||
+                !PhotoLighting::Parse(lighting["mode"].get<std::string>(),lighting["strength"].get<float>(),light))) {
+                reply(false,"Invalid portrait lighting settings."); return;
+            }
+            if (!settings.is_null()) {
+                if (!settings.is_object()) {reply(false,"Invalid capture settings.");return;}
+                for (const char* key : {"zoom","offsetX","offsetY"}) {
+                    if (!settings.contains(key) || !settings[key].is_number()) {reply(false,"Invalid capture settings.");return;}
+                    const double value = settings[key].get<double>();
+                    const bool zoom = std::string_view(key) == "zoom";
+                    if (!std::isfinite(value) || value < (zoom ? 0.15 : -0.5) || value > (zoom ? 1.0 : 0.5)) {
+                        reply(false,"Capture settings are out of range.");return;
+                    }
+                }
+                PortraitCapture::Framing f;
+                f.zoom=settings["zoom"].get<float>();f.offsetX=settings["offsetX"].get<float>();f.offsetY=settings["offsetY"].get<float>();
+                if (!PortraitCapture::SetFraming(dir,f)) {reply(false,"Could not save capture settings. No photograph taken.");return;}
+                logger::info("portrait-retake-setup: confirmed capture settings for {:08X}",formId);
+            }
+            if (!lighting.is_null() && !PortraitCapture::SetNpcLighting(dir,light)) { reply(false,"Could not save face-light settings. No photograph taken."); return; }
+            if (!PortraitCapture::ArmNpcPortrait(dir, formId)) { reply(false,"Could not start portrait lighting. Keep the NPC nearby and try again."); return; }
+            reply(true,"Portrait armed - frame the NPC, then press Enter. Esc or your SkyManager key returns.");
+            // ARM, don't fire (Rober, 2026-09-23: "the retake photo for npcs should
+            // wait for me to press e"). The palette closes, he frames her, and the
+            // next Enter takes it; Esc or the deck key cancels. See ArmNpcPortrait.
+            PreparePhotoReturn();
+            ClosePalette();
+        });
 	}
 
 	void OnJsFolWorld(const char* data)
 	{
-		if (!data)
-			return;
-		const auto j = json::parse(data, nullptr, false);
-		if (j.is_discarded() || !j.is_object()) {
-			logger::warn("fdWorld: bad payload");
-			return;
-		}
-		const std::string cmd = j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-		const std::string label = j.value("label", std::string(""));
-		bool              reopen;
-		{
-			std::lock_guard l(g_configMutex);
-			reopen = !g_config.settings.closeAfterFire;
-		}
-		SKSE::GetTaskInterface()->AddTask([cmd, label, reopen]() {
-			ClosePalette();  // the teleport lands in the live world
-			const auto res = FollowerDeck::Apply(cmd);
-			const auto jr = json::parse(res, nullptr, false);
-			const bool ok = !jr.is_discarded() && jr.value("ok", false);
-			std::string msg = jr.is_discarded() ? std::string("") : jr.value("msg", std::string(""));
-			if (!ok && msg.empty())
-				msg = "Follower action failed — see HotkeyDeck.log";
-			if (!msg.empty())
-				RE::DebugNotification(msg.c_str());
-			else if (!label.empty())
-				RE::DebugNotification(label.c_str());
-			if (reopen)
-				SKSE::GetTaskInterface()->AddTask([]() {
-					if (CanOpenNow()) {
-						g_pendingTab = "followers";  // land back on the tab
-						OpenPalette();
-					}
-				});
+		const std::string cmd = data ? data : "{}";
+		const auto j = json::parse(cmd, nullptr, false);
+		if (!j.is_object()) return;
+		const auto label = j.value("label", std::string());
+		SKSE::GetTaskInterface()->AddTask([cmd, label]() {
+			QueueTravel("Followers", [cmd, label]() {
+				const auto jr = json::parse(FollowerDeck::Apply(cmd), nullptr, false);
+				const bool ok = jr.is_object() && jr.value("ok", false);
+				auto msg = jr.is_object() ? jr.value("msg", std::string()) : std::string();
+				if (!ok && msg.empty()) msg = "Follower action failed - see HotkeyDeck.log";
+				if (msg.empty()) msg = label;
+				if (!msg.empty()) RE::DebugNotification(msg.c_str());
+			});
 		});
 	}
 
@@ -11292,7 +12077,18 @@ namespace
 				const auto fo = FollowerDeck::StateJson();
 				PushFollowerNff(fo);
 			});
-			PushToView("fdMhiyhResult", pre);
+			// Early refusals precede actor resolution and used to omit identity.
+			// Keep feedback attached to the request, never the current crosshair.
+			auto reply = json::parse(pre, nullptr, false);
+			const auto request = json::parse(cmd, nullptr, false);
+			if (reply.is_object() && !reply.contains("formId") &&
+				request.is_object() && request.contains("formId")) {
+				reply["formId"] = request["formId"];
+				logger::debug("[followers] mhiyh-reply-identity");
+				PushToView("fdMhiyhResult", reply.dump(-1, ' ', false, json::error_handler_t::replace));
+			} else {
+				PushToView("fdMhiyhResult", pre);
+			}
 		});
 	}
 
@@ -11318,6 +12114,21 @@ namespace
 	}
 
 	// chState: read whether the NPC is currently a CHIM agent -> chStateResult.
+	void OnJsChConversation(const char* data)
+	{
+		const std::string request = data ? data : "{}";
+		const auto epoch = g_conversationEpoch.load();
+		SKSE::GetTaskInterface()->AddTask([request, epoch]() {
+			if (!g_gameReady.load() || epoch != g_conversationEpoch.load()) {
+				auto j = json::parse(request, nullptr, false);
+				const auto id = j.is_object() && j.contains("requestId") && j["requestId"].is_string() ? j["requestId"].get<std::string>() : "";
+				PushToView("chConversationResult", json{{"ok", false}, {"requestId", id}, {"msg", "Load a game and reopen this NPC's card"}}.dump());
+				return;
+			}
+			PushToView("chConversationResult", NpcActions::ConversationControl(request));
+		});
+	}
+
 	void OnJsChState(const char* data)
 	{
 		const std::string in = data ? data : "";
@@ -12757,11 +13568,37 @@ namespace
 		// answers with. Whichever menu it picks — barter or pack — needs the
 		// focus, so it joins the closing set.
 		const bool        trade   = TradeActions::IsAction(npcOp);
-		const bool        closing = (npcOp == "inventory" || npcOp == "storage" || trade);
+		// Recruitment/dismissal run Papyrus and must release the focus pause.
+		// Keeping F7 open stranded these requests until the player closed it.
+		// Attack (the card's per-person sic 'em, 2026-09-23) is a deck verb, not
+		// an NFF one — NpcActions::SicEmOne. StartCombat is Papyrus, so the
+		// palette closes, and like the bindable Sic 'em it stays closed: the
+		// fight must not sit paused under the deck.
+		const bool        attack  = (npcOp == "attack");
+		std::uint32_t     attackId = 0;
+		if (attack) {
+			const auto s = j.value("formId", std::string(""));
+			if (!s.empty()) {
+				try {
+					attackId = static_cast<std::uint32_t>(std::stoul(s, nullptr, 16));
+				} catch (...) {}
+			}
+		}
+		const bool        recall = (npcOp == "allSummon");
+		const bool        closing = (npcOp == "inventory" || npcOp == "storage" || trade || attack || recall ||
+			npcOp == "recruit" || npcOp == "dismiss" || npcOp == "unwedge");
 
-		SKSE::GetTaskInterface()->AddTask([cmd, closing, trade]() {
+		SKSE::GetTaskInterface()->AddTask([cmd, closing, trade, attack, attackId, recall]() {
 			if (closing)
 				ClosePalette();  // the container menu needs the focus back
+
+			if (attack) {
+				std::string msg;
+				const bool ok = NpcActions::SicEmOne(attackId, msg);  // puts msg on screen itself
+				PushToView("fdNpcResult", json{ { "ok", ok }, { "op", "attack" }, { "phase", "done" },
+					{ "msg", msg } }.dump(-1, ' ', false, json::error_handler_t::replace));
+				return;
+			}
 
 			if (trade) {
 				// One answer, no callback: the barter dispatch is fire-and-forget
@@ -12799,7 +13636,7 @@ namespace
 			// A refusal never reaches the callback above, so say it here or it
 			// is said nowhere — the palette may already be shut.
 			const auto jp = json::parse(pre, nullptr, false);
-			if (!jp.is_discarded() && !jp.value("ok", false)) {
+			if (!jp.is_discarded() && (recall || !jp.value("ok", false))) {
 				const auto msg = jp.value("msg", std::string(""));
 				if (!msg.empty())
 					RE::DebugNotification(msg.c_str());
@@ -12828,12 +13665,67 @@ namespace
 		});
 	}
 
+	// 🔧 Fixes flyout. Both hop to the main thread: everything they touch
+	// (factions, the teammate flag, the package stack, the console) is
+	// main-thread-only, and the console runner in particular will fault on a
+	// worker.
+	void OnJsFixProbe(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() { PushToView("hdFixProbeResult", FixActions::Probe(req)); });
+	}
+	void OnJsFixApply(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto out = FixActions::Apply(req);
+			PushToView("hdFixResult", out);
+			// And a FRESH probe behind it, unasked: the flyout's whole job is
+			// to show what is true now, and after an unstick that is a
+			// different answer. The card would otherwise keep displaying the
+			// diagnosis that has just been fixed.
+			PushToView("hdFixProbeResult", FixActions::Probe(req));
+		});
+	}
+
 	// Formation with Followers — the F7 card's centered modal. fmGet is a pure
 	// read; the three mutations reply on fmResult and then push a FRESH fmOpen
 	// after a beat, because the apply step is a fire-and-forget Papyrus
 	// dispatch (EvaluateAllFormation & co.) and the re-read is what shows the
 	// truth — a failed hop shows up as the control springing back, the same
 	// contract nfSetGear settled on.
+	void OnJsGaNearby(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() { PushToView("gaRoster", NpcClearance::Nearby(req)); });
+	}
+	void OnJsGaMove(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			ClosePalette();
+			const auto res = json::parse(NpcClearance::Apply(req), nullptr, false);
+			if (res.is_object()) RE::DebugNotification(res.value("msg", std::string("Get away from me finished")).c_str());
+		});
+	}
+	void OnJsGaClear(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			ClosePalette();
+			const auto res = json::parse(NpcClearance::ClearRoom(req), nullptr, false);
+			if (res.is_object()) RE::DebugNotification(res.value("msg", std::string("Clear the room finished")).c_str());
+		});
+	}
+	void OnJsGaRestore(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			ClosePalette();
+			const auto res = json::parse(NpcClearance::Restore(), nullptr, false);
+			if (res.is_object()) RE::DebugNotification(res.value("msg", std::string("Clear the room: brought back")).c_str());
+		});
+	}
+
 	void OnJsFmGet(const char* data)
 	{
 		const std::string req = data ? data : "{}";
@@ -12848,7 +13740,10 @@ namespace
 		{
 			const std::string req = data ? data : "{}";
 			SKSE::GetTaskInterface()->AddTask([req, fn]() {
-				PushToView("fmResult", fn(req));
+				const auto result = fn(req);
+				PushToView("fmResult", result);
+				const auto status = json::parse(result, nullptr, false);
+				if (status.is_object() && status.value("ok",false) && status.value("closeGameMenu",false)) ClosePalette();
 				std::thread([req]() {
 					std::this_thread::sleep_for(std::chrono::milliseconds(700));
 					SKSE::GetTaskInterface()->AddTask([req]() {
@@ -12884,9 +13779,8 @@ namespace
 	 *  ("Base removed", or why it was refused) and a second nbOpen follows
 	 *  once Papyrus has actually landed it.
 	 *
-	 *  `visit` is the exception in the view, not here: it closes the palette
-	 *  itself before sending, exactly like the Domains recall does, so the
-	 *  teleport is not fired at a paused game with a menu open.
+	 *  `visit` uses the shared native travel handoff below. A view close
+	 *  request alone does not acknowledge renderer/focus release.
 	 */
 	/* ---- Deck Portal button --------------------------------------------
 	 *  The portal's server is started at kDataLoaded and dies with the game
@@ -12926,31 +13820,14 @@ namespace
 		const auto        j = json::parse(req, nullptr, false);
 		const bool        isVisit = !j.is_discarded() && j.is_object() && j.value("op", std::string()) == "visit";
 
-		// Travel is the one op that must not run under an open palette — the
-		// same rule the Domains recall follows: close first, teleport, then
-		// come back on this tab if the deck is set to stay open. A reply
-		// pushed after ClosePalette would go nowhere (PushToView is gated on
-		// the view being open), so the outcome is an on-screen notification.
+		// Resolve the base again after the shared close/settle handoff.
 		if (isVisit) {
-			bool reopen;
-			{
-				std::lock_guard l(g_configMutex);
-				reopen = !g_config.settings.closeAfterFire;
-			}
-			SKSE::GetTaskInterface()->AddTask([req, reopen]() {
-				ClosePalette();
-				const auto  res = json::parse(NffBases::Apply(req), nullptr, false);
-				std::string msg = res.is_discarded() ? std::string() : res.value("msg", std::string());
-				if (msg.empty())
-					msg = "Bases: travel failed - see HotkeyDeck.log";
-				RE::DebugNotification(msg.c_str());
-				if (reopen)
-					SKSE::GetTaskInterface()->AddTask([]() {
-						if (CanOpenNow()) {
-							g_pendingTab = "domains";  // land back on the tab
-							OpenPalette();
-						}
-					});
+			SKSE::GetTaskInterface()->AddTask([req]() {
+				QueueTravel("NFF base", [req]() {
+					const auto res = json::parse(NffBases::Apply(req), nullptr, false);
+					const auto msg = res.is_object() ? res.value("msg", std::string()) : std::string();
+					if (!msg.empty()) RE::DebugNotification(msg.c_str());
+				});
 			});
 			return;
 		}
@@ -12963,6 +13840,129 @@ namespace
 					PushToView("nbOpen", NffBases::StateJson(req));
 				});
 			}).detach();
+		});
+	}
+
+	/* ---- Domains tab: Residents (My Home is Your Home NG master list) ----
+	 *  rsState asks MHiYH's own registry through HD_MhiyhRemote.Roster (one
+	 *  Papyrus round trip) and answers rsStateResult once the VM has replied —
+	 *  Residents::RequestState hops the reply to the main thread and reads
+	 *  every fact off the engine there. rsDay is the per-resident hours read.
+	 *  rsAct is one verb; its immediate envelope (sent / refused) and its
+	 *  later `done` both land as rsActResult, and `done` is followed by a fresh
+	 *  rsStateResult so the pane repaints from what the mod actually did.
+	 */
+	// Dossier metadata never invokes marriage/gameplay mechanics. Gallery scanning
+	// is on-demand file IO on a worker; identity-backed metadata uses the main task.
+	void OnJsDsRequest(const char* data)
+	{
+		const auto req = json::parse(data ? data : "{}", nullptr, false);
+		if (!req.is_object()) return;
+		const std::string requestId = req.contains("requestId") && req["requestId"].is_string() ? req["requestId"].get<std::string>() : "";
+		const auto reply = [requestId](json result) {
+			result["requestId"] = requestId;
+			SKSE::GetTaskInterface()->AddTask([result]() { PushToView("dsResult", result.dump()); });
+		};
+		if (!req.contains("op") || !req["op"].is_string() || requestId.size() > 64) {
+			reply(json{{"ok",false},{"msg","Invalid dossier request."}}); return;
+		}
+		if (req["op"] == "gallery") {
+			const bool all = req.contains("all") && req["all"].is_boolean() && req["all"].get<bool>();
+			if (!all && (!req.contains("name") || !req["name"].is_string() || req["name"].get_ref<const std::string&>().size() > 256)) {
+				reply(json{{"ok",false},{"msg","A valid character name is required."}}); return;
+			}
+			const auto dir = DeckViewDir() / "portraits";
+			std::thread([req, dir, reply, all]() {
+				try {
+					json photos = json::array();
+					const auto slug = all ? std::string() : PortraitCapture::SlugOfName(req["name"].get<std::string>());
+					std::error_code ec;
+					for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end && photos.size() < 250; it.increment(ec)) {
+						if ((!all && slug.empty()) || !it->is_regular_file(ec)) continue;
+						const auto file = PathU8(it->path().filename());
+						if (!all && PortraitCapture::SlugFromFileStem(PathU8(it->path().stem())) != slug) continue;
+						auto ext = PathU8(it->path().extension());
+						std::transform(ext.begin(),ext.end(),ext.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+						if(ext!=".png" && ext!=".jpg" && ext!=".jpeg" && ext!=".webp") continue;
+						const auto ft=it->last_write_time(ec);
+						const auto secs=ec?0ULL:static_cast<std::uint64_t>(ft.time_since_epoch().count())/10000000ULL;
+						photos.push_back(json{{"file","portraits/"+file},{"label",file},{"src","portraits/"+file},{"mtime",secs>11644473600ULL?secs-11644473600ULL:secs}});
+					}
+					reply(json{{"ok",true},{"op","gallery"},{"photos",photos}});
+				} catch (const std::exception& e) {
+					logger::warn("dossier-gallery: {}", e.what());
+					reply(json{{"ok",false},{"op","gallery"},{"msg","Could not read the portrait gallery."}});
+				}
+			}).detach();
+			return;
+		}
+		SKSE::GetTaskInterface()->AddTask([req]() {PushToView("dsResult",DossierStore::Handle(req).dump());});
+	}
+
+	void OnJsRsPresets(const char* data)
+	{
+		const std::string cmd = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([cmd]() {
+			const auto req = json::parse(cmd, nullptr, false);
+			const auto op = req.is_object() ? req.value("op", std::string("list")) : "list";
+			// Complete save/apply operations require Papyrus to keep running after the UI closes.
+			if (op == "save" || op == "apply") ClosePalette();
+			const auto pre = RhythmPresets::Handle(cmd, [](const std::string& result) {
+				PushToView("rsPresetsResult", result);
+				const auto r = json::parse(result, nullptr, false);
+				if (r.is_object()) RE::DebugNotification(r.value("msg", std::string("Rhythm operation finished")).c_str());
+			});
+			PushToView("rsPresetsResult", pre);
+			const auto p = json::parse(pre, nullptr, false);
+			if ((op == "save" || op == "apply") && p.is_object() && !p.value("ok", false))
+				RE::DebugNotification(p.value("msg", std::string("Rhythm operation refused")).c_str());
+		});
+	}
+
+	void OnJsRsState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			Residents::RequestState(DeckViewDir(), [](const std::string& body) {
+				PushToView("rsStateResult", body);
+			});
+		});
+	}
+
+	void OnJsRsDay(const char* data)
+	{
+		std::string id;
+		if (data) {
+			const auto j = json::parse(data, nullptr, false);
+			if (j.is_object())
+				id = j.value("formId", std::string(""));
+			else if (j.is_string())
+				id = j.get<std::string>();
+		}
+		SKSE::GetTaskInterface()->AddTask([id]() {
+			const auto pre = Residents::RequestDay(id, [](const std::string& body) {
+				PushToView("rsDayResult", body);
+			});
+			const auto j = json::parse(pre, nullptr, false);
+			if (!j.is_discarded() && j.is_object() && !j.value("ok", false))
+				PushToView("rsDayResult", json{ { "ok", false }, { "formId", id },
+					{ "msg", j.value("msg", std::string("refused")) } }.dump(-1, ' ', false, json::error_handler_t::replace));
+		});
+	}
+
+	void OnJsRsAct(const char* data)
+	{
+		const std::string cmd = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([cmd]() {
+			const auto pre = Residents::Apply(cmd, [](const std::string& res) {
+				// Already on the main thread — Residents hops for us.
+				PushToView("rsActResult", res);
+				Residents::RequestState(DeckViewDir(), [](const std::string& body) {
+					PushToView("rsStateResult", body);
+				});
+				// The Followers tab's own MHiYH slice changed too.
+				PushFollowerNff(FollowerDeck::StateJson());
+			});
+			PushToView("rsActResult", pre);
 		});
 	}
 
@@ -13132,11 +14132,32 @@ namespace
 	// The WRITE goes through the Papyrus VM and is therefore asynchronous, so
 	// the reply cannot be the new truth; the view re-asks a beat later. Both
 	// halves need the main thread — the VM dispatch and the engine lookup.
+    void OnJsFolMarriage(const char* data)
+    {
+        const std::string req = data ? data : "{}";
+        SKSE::GetTaskInterface()->AddTask([req]() {
+            const auto j = json::parse(req, nullptr, false);
+            if (!j.is_object() || !j.value("confirm", false)) return;
+            const auto id = j.value("formId", 0u);
+            ClosePalette(); // MARAS dispatch runs through the unpaused VM.
+            Maras::Marry(id, [id](bool ok, std::string msg) {
+                PushToView("fdMarriageResult", json{{"formId",id},{"ok",ok},{"msg",msg}}.dump());
+                RE::DebugNotification(msg.c_str());
+            });
+        });
+    }
+
 	void OnJsFolRank(const char* data)
 	{
 		const std::string req = data ? data : "{}";
 		SKSE::GetTaskInterface()->AddTask([req]() {
-			PushToView("fdRankInfo", Relationship::Handle(req));
+            auto request = json::parse(req, nullptr, false);
+            // SetRelationshipRank is a Papyrus dispatch. Release the pause
+            // before queuing it; the next open reads the engine's new value.
+            if (request.is_object() && request.contains("rank")) ClosePalette();
+            auto answer = json::parse(Relationship::Handle(req), nullptr, false);
+            if (answer.is_object() && request.is_object() && request.contains("formId")) answer["formId"] = request["formId"];
+            PushToView("fdRankInfo", answer.dump());
 		});
 	}
 
@@ -13215,7 +14236,8 @@ namespace
 	// listener (and without posting a second task from inside one).
 	void FramingReply()
 	{
-		const auto f = PortraitCapture::GetFraming(DeckViewDir());
+		const auto f = PortraitCapture::GetFraming(DeckViewDir() / "portraits");
+		const auto light = PortraitCapture::GetNpcLighting(DeckViewDir() / "portraits");
 		const auto d = PortraitCapture::DefaultFraming();
 		// .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) is NOT optional: PushToView takes a std::string, and nlohmann's
 		// implicit conversion operator makes `json{...}` COMPILE here and then
@@ -13226,6 +14248,7 @@ namespace
 		// from PrismaUI API.cpp's callback dispatch).
 		PushToView("fdFramingInfo", json{
 			{ "ok", true },
+			{ "lighting", {{ "mode", light.mode == PhotoLighting::Mode::Natural ? "natural" : light.mode == PhotoLighting::Mode::Soft ? "soft" : "bright" }, { "strength", light.strength }} },
 			{ "zoom", f.zoom }, { "offsetX", f.offsetX }, { "offsetY", f.offsetY },
 			// Shipped defaults travel WITH the values so the view's Reset and the
 			// plugin's idea of "default" cannot drift into two different numbers.
@@ -13249,7 +14272,7 @@ namespace
 		const auto j = json::parse(raw, nullptr, false);
 		if (j.is_discarded() || !j.is_object())
 			return;
-		const auto dir = DeckViewDir();
+		const auto dir = DeckViewDir() / "portraits";
 		auto       f = PortraitCapture::GetFraming(dir);   // partial updates are fine
 		if (j.contains("zoom") && j["zoom"].is_number())
 			f.zoom = j["zoom"].get<float>();
@@ -13625,6 +14648,12 @@ namespace
 	// persists separately, as Widgets::timeDial. g_tdOpenedAt feeds the menus
 	// beat's grace window (see WgApplyHudVisibility).
 	std::atomic<bool>                     g_tdOpen{ false };
+	// The live alignment overlay (2026-09-21) — the FOURTH claimant on this
+	// view's Focus, after the reposition editor, the Time Dial and browse mode.
+	std::atomic<bool>                     g_agOpen{ false };
+	std::atomic<bool>                     g_agFocused{ false };
+	bool g_photoHudActive = false;
+	bool g_photoHudVisible = false;
 	std::chrono::steady_clock::time_point g_tdOpenedAt{};
 
 	// Show/Hide the view per enabled && (visible || editing). Main thread.
@@ -13632,6 +14661,13 @@ namespace
 	{
 		if (!g_prisma || !g_hudView || !g_hudViewReady.load())
 			return;
+		// Photo mode owns visibility only, never Focus. Hide the entire view
+		// at the shutter so unrelated widgets cannot leak into the backbuffer.
+		if (g_photoHudActive) {
+			if (g_photoHudVisible) g_prisma->Show(g_hudView);
+			else g_prisma->Hide(g_hudView);
+			return;
+		}
 		bool enabled, visible;
 		{
 			std::lock_guard l(g_configMutex);
@@ -13645,7 +14681,9 @@ namespace
 		// Show here never over-draws — an all-off page paints nothing.
 		const bool want = (enabled && (visible || g_hudEditing.load())) ||
 		                  Widgets::AnyEnabled() || g_hudEditing.load() ||
+		                  g_odOpen.load() ||        // favorite outfit dock
 		                  g_tdOpen.load() ||        // the Time Dial rides this view too
+		                  g_agOpen.load() ||        // …and the alignment overlay
 		                  g_hudNavActive.load();    // …and so does browse mode, which
 		                                            // holds the keyboard: hiding the
 		                                            // view under it would leave the
@@ -13654,6 +14692,21 @@ namespace
 			g_prisma->Show(g_hudView);
 		else
 			g_prisma->Hide(g_hudView);
+	}
+
+	void HudPhotoLights(bool active, bool visible, const PhotoLighting::Snapshot& state)
+	{
+		g_photoHudActive = active;
+		g_photoHudVisible = visible;
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) return;
+		const auto& color = PhotoLighting::Colors[state.tuning.color];
+		json data = {{"active", active}, {"visible", visible}, {"selected", state.selected},
+			{"count", state.count}, {"limit", PhotoLighting::MaxPlacedLights},
+			{"color", color.name}, {"rgb", {color.r, color.g, color.b}},
+			{"brightness", static_cast<int>(std::lround(state.tuning.strength * 100.0f))},
+			{"spread", PhotoLighting::Spreads[state.tuning.spread]}};
+		g_prisma->Invoke(g_hudView, ("photoLights(" + data.dump() + ")").c_str());
+		HudApplyVisibility();
 	}
 
 	void HudPushConfig()
@@ -13693,6 +14746,93 @@ namespace
 			g_prisma->Invoke(g_hudView, ("hudCfgState(" + js + ")").c_str());
 	}
 
+	void OdCloseDock(bool fromView)
+	{
+		if (!g_odOpen.exchange(false)) return;
+		if (g_prisma && g_hudView && g_hudViewReady.load()) {
+			if (!fromView) g_prisma->Invoke(g_hudView, "odShow(false)");
+			g_prisma->Unfocus(g_hudView);
+		}
+		HudApplyVisibility();
+	}
+	void OdOpenDock(bool placement)
+	{
+		if (g_odOpen.load()) { OdCloseDock(false); return; }
+		if (!CanOpenNow() || !g_prisma || !g_hudView || !g_hudViewReady.load()) {
+			RE::DebugNotification("Open the outfit dock while playing, after other menus close"); return;
+		}
+		bool changed, enabled; std::string data;
+		{
+			std::lock_guard lock(g_configMutex);
+			changed=Wardrobe::ApplyPortalWardrobe(g_wardrobeConfig);
+			enabled=WardrobeFlair::DockEnabled(g_wardrobeConfig);
+			data=WardrobeFlair::DockJson(g_wardrobeConfig);
+		}
+		if(changed) PersistAll();
+		if(!enabled && !placement) {
+			RE::DebugNotification("Favorites Outfit Dock is off. Enable it in Home > UI Elements."); return;
+		}
+		if (g_hudNavActive.load()) HudNavStop("outfit dock", false);
+		if (g_tdOpen.load()) TdCloseDial(false);
+		if (g_agOpen.load()) AgCloseAlign(false);
+		if (g_hudEditing.exchange(false)) g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
+		g_prisma->Show(g_hudView);
+		g_prisma->Invoke(g_hudView, ("odData(" + data + ")").c_str());
+		if (!g_prisma->Focus(g_hudView,true)) { HudApplyVisibility(); RE::DebugNotification("The outfit dock could not take keyboard focus"); return; }
+		g_odOpen=true;
+		g_prisma->Invoke(g_hudView, placement ? "odShow({open:true,placement:true})" : "odShow(true)");
+		if (placement) logger::info("wardrobe-flair-dock: on-screen placement editor");
+		logger::info("wardrobe-flair-dock: focused portrait favorites");
+	}
+	void OnJsOdClose(const char*) { SKSE::GetTaskInterface()->AddTask([]() { OdCloseDock(true); }); }
+	void OnJsOdOpen(const char* data) {
+		const auto request=json::parse(data ? data : "",nullptr,false);
+		const bool placement=request.is_object() && request.contains("placement") &&
+			request["placement"].is_boolean() && request["placement"].get<bool>();
+		SKSE::GetTaskInterface()->AddTask([placement]() {
+			if(AnyOpen()) ClosePalette();
+			SKSE::GetTaskInterface()->AddTask([placement](){OdOpenDock(placement);});
+		});
+	}
+	void OnJsOdEquip(const char* data) {
+		const std::string req=data?data:"";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			OdCloseDock(false);
+			if(AnyOpen()) ClosePalette();
+			SKSE::GetTaskInterface()->AddTask([req]() {
+				{
+					std::lock_guard lock(g_configMutex);
+					WardrobeFlair::Equip(g_wardrobeConfig,req,[](const std::string& result) {
+						const auto j=json::parse(result,nullptr,false);
+						if(j.is_object()) RE::DebugNotification(j.value("msg",std::string()).c_str());
+						PushToView("wfResult",result);
+					});
+				}
+				PersistAll();
+			});
+		});
+	}
+	void OnJsFlairEdit(const char* data) {
+		const std::string req=data?data:"";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			std::string error, state; bool ok=false, enabled=true;
+			const auto edit=json::parse(req,nullptr,false);
+			{
+				std::lock_guard lock(g_configMutex);
+				ok=WardrobeFlair::Edit(g_wardrobeConfig,edit,error);
+				state=WardrobeFlair::DockJson(g_wardrobeConfig);
+				enabled=WardrobeFlair::DockEnabled(g_wardrobeConfig);
+			}
+			if(ok) PersistAll();
+			// Placement remains editable while the summon toggle is off. Only
+			// an explicit disable operation dismisses a currently open dock.
+			if(ok && !enabled && edit.value("type",std::string()) == "dock-enabled") OdCloseDock(false);
+			PushToView("hdUiStateData",UiStateJson());
+			PushToView("wfState",state);
+			PushToView("wfResult",json{{"ok",ok},{"msg",ok?"Saved":error}}.dump());
+		});
+	}
+
 	// ================================================================ Time Dial
 	// The hotkey-openable circular wait dial (Rober, 2026-08-18). View logic in
 	// view/HotkeyDeck/hud-td.js; the clock maths is TimeActions' — the SAME
@@ -13712,12 +14852,16 @@ namespace
 	// the hud-reposition kind — unpaused, cursor owned by the view.
 	void TdOpenDial()
 	{
+		OdCloseDock(false);
 		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
 			RE::DebugNotification("The Time Dial needs the HUD view - reinstall hud.html");
 			return;
 		}
-		// The dial and reposition edit-mode are rivals for this view's Focus —
-		// stand the editor down first (the WgOpenEdit/HbOpenEdit discipline).
+		// The dial, the editor and the alignment overlay are rivals for this
+		// view's Focus — stand them down first (the WgOpenEdit/HbOpenEdit
+		// discipline).
+		if (g_agOpen.load())
+			AgCloseAlign(false);
 		if (g_hudEditing.exchange(false))
 			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		g_tdOpen = true;
@@ -13754,6 +14898,92 @@ namespace
 			TdCloseDial(false);
 		else
 			TdOpenDial();
+	}
+
+	// ==================================== OStim: the live alignment overlay ===
+	// Rober, 2026-09-21: "a dedicated alignment menu ... current one is bad, it
+	// needs to layer over, and not pause the game though if you call it, maybe
+	// use arrow keys plus e or enter to change stuff."
+	//
+	// So it is NOT a page inside the paused palette. It rides the always-on HUD
+	// view and takes real keyboard focus with pauseGame=FALSE — the Followers
+	// browse-mode v2 discipline, and the same reason: this deck's input sink
+	// cannot CONSUME, so forwarding keys without focus would drive the player
+	// as well as the menu.
+	//
+	// That focus is also the whole answer to OStim's own arrow keys. OStim binds
+	// Up/Down/Left/Right for its scene navigation; a FOCUSED view consumes them
+	// before they reach it, so nothing has to be synthesized, suppressed, or
+	// SetExternalUIEnabled'd. We coexist with OStim's menus exactly as before.
+	void AgCloseAlign(bool fromView)
+	{
+		if (!g_agOpen.exchange(false))
+			return;
+		logger::info("align-overlay: closed");   // marker: align-overlay-close
+		const bool hadFocus = g_agFocused.exchange(false);
+		if (g_prisma && g_hudView && g_hudViewReady.load()) {
+			// fromView = the overlay already closed itself (Esc) and only needs
+			// the Focus released — the TdCloseDial contract.
+			if (!fromView)
+				g_prisma->Invoke(g_hudView, "agShow(\"0\")");
+			// Release only what WE took: the editor, the dial and browse mode
+			// are the other claimants and pulling Focus from under any of them
+			// would strand it.
+			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_hudNavActive.load())
+				g_prisma->Unfocus(g_hudView);
+		}
+		HudApplyVisibility();
+	}
+
+	void AgPushState()
+	{
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load() || !g_agOpen.load())
+			return;
+		g_prisma->Invoke(g_hudView, ("agState(" + OstimDeck::AlignStateJson() + ")").c_str());
+	}
+
+	void AgOpenAlign()
+	{
+		OdCloseDock(false);
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
+			RE::DebugNotification("Alignment needs the HUD view - reinstall hud.html");
+			return;
+		}
+		if (!OstimDeck::PlayerInScene()) {
+			// Honest refusal: an alignment overlay with nothing to align is a
+			// dead key, not a feature.
+			RE::DebugNotification("No OStim scene to align");
+			return;
+		}
+		// Stand the rival claimants down first (the TdOpenDial / HudNavStart
+		// discipline).
+		if (g_hudNavActive.load())
+			HudNavStop("alignment overlay", false);
+		if (g_tdOpen.load())
+			TdCloseDial(false);
+		if (g_hudEditing.exchange(false))
+			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
+		g_agOpen = true;
+		logger::info("align-overlay: open");   // marker: align-overlay
+		g_prisma->Show(g_hudView);
+		g_prisma->Invoke(g_hudView, ("agState(" + OstimDeck::AlignStateJson() + ")").c_str());
+		g_prisma->Invoke(g_hudView, "agShow(\"1\")");
+		// pauseGame=false: the scene keeps running while you adjust it, which is
+		// the entire point. The focus menu stays ON — it IS the input capture,
+		// and turning it off is the frozen-screen/dead-mouse bug this codebase
+		// keeps re-learning (marker editor-cursor).
+		const bool ok = g_prisma->Focus(g_hudView, false);
+		g_agFocused = ok;
+		if (!ok)
+			logger::warn("align-overlay: Focus refused - arrows will fall through to OStim");
+	}
+
+	void AgToggleAlign()
+	{
+		if (g_agOpen.load())
+			AgCloseAlign(false);
+		else
+			AgOpenAlign();
 	}
 
 	// ============================================ Followers HUD: browse mode v2
@@ -13801,12 +15031,16 @@ namespace
 
 	void HudNavStart()
 	{
+		OdCloseDock(false);
 		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
 			RE::DebugNotification("Browse needs the HUD view - reinstall hud.html");
 			return;
 		}
-		// The dial and the reposition editor are rivals for this view's Focus —
-		// stand them down first (the TdOpenDial / WgOpenEdit discipline).
+		// The dial, the reposition editor and the alignment overlay are rivals
+		// for this view's Focus — stand them down first (the TdOpenDial /
+		// WgOpenEdit discipline).
+		if (g_agOpen.load())
+			AgCloseAlign(false);
 		if (g_tdOpen.load())
 			TdCloseDial(false);
 		if (g_hudEditing.exchange(false))
@@ -13881,6 +15115,31 @@ namespace
 	void OnJsTdClose(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() { TdCloseDial(true); });
+	}
+
+	// ---- the alignment overlay (2026-09-21) ----
+	// Every one of these hops to the MAIN thread first: they all touch the
+	// OStim thread API and live forms.
+	void OnJsAgGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { AgPushState(); });
+	}
+
+	void OnJsAgAdjust(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			if (!g_agOpen.load())
+				return;   // a keypress that raced the close
+			const std::string reply = OstimDeck::AlignAdjust(payload);
+			if (g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView, ("agState(" + reply + ")").c_str());
+		});
+	}
+
+	void OnJsAgClose(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { AgCloseAlign(true); });
 	}
 
 	// ---- view -> C++ listeners (registered on g_hudView) ----
@@ -13992,6 +15251,7 @@ namespace
 	{
 		HudPushConfig();
 		HudPushData(true);
+		PortraitCapture::RefreshPhotoLights();
 		HudApplyVisibility();
 		/* The widgets live in THIS document (2026-08-17), so its first
 		 * paint needs their config and a live tick too — without this the
@@ -14081,7 +15341,7 @@ namespace
 		// shows the EFFECTIVE state and the row says which flag is holding it
 		// down. (Round 2's law stands — a pill never fakes a state it cannot
 		// read. This state IS readable, so it is read.)
-		bool        hb = false, hud = false, hbVis = false, hudVis = false;
+		bool        hb = false, hud = false, hbVis = false, hudVis = false, outfitDock = true;
 		std::string hbMode = "always";
 		{
 			std::lock_guard l(g_configMutex);
@@ -14090,6 +15350,7 @@ namespace
 			hbMode = g_hbConfig.showMode;
 			hud = g_hudConfig.enabled;
 			hudVis = g_hudConfig.visible;
+			outfitDock = WardrobeFlair::DockEnabled(g_wardrobeConfig);
 		}
 		return json{
 			{ "hotbar", hb },
@@ -14100,6 +15361,7 @@ namespace
 			{ "hotbarEffective", g_hbEffVisible.load() },
 			{ "hud", hud },
 			{ "hudVisible", hudVis },
+			{ "outfitDock", outfitDock },
 			{ "widgets", std::move(w) },
 		}.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
@@ -14468,6 +15730,7 @@ namespace
 		if (!g_prisma || g_hudView)
 			return;
 		if (!ViewFileOnDisk("HotkeyDeck/hud.html")) return;
+		PortraitCapture::SetPhotoLightingCallback(HudPhotoLights);
 		MirrorSpellIconsAsync();
 		g_hudView = g_prisma->CreateView("HotkeyDeck/hud.html", [](PrismaView v) {
 			g_hudViewReady = true;
@@ -14514,9 +15777,15 @@ namespace
 		g_prisma->RegisterJSListener(g_hudView, "wgQuick2Catalog", OnJsWgQuick2Catalog);
 		g_prisma->RegisterJSListener(g_hudView, "wgLootToggle", OnJsWgLootToggle);
 		// Time Dial (td* bridge) — see the Time Dial block above.
+		g_prisma->RegisterJSListener(g_hudView, "wfEdit", OnJsFlairEdit);
+		g_prisma->RegisterJSListener(g_hudView, "odClose", OnJsOdClose);
+		g_prisma->RegisterJSListener(g_hudView, "odEquip", OnJsOdEquip);
 		g_prisma->RegisterJSListener(g_hudView, "tdGet", OnJsTdGet);
 		g_prisma->RegisterJSListener(g_hudView, "tdWait", OnJsTdWait);
 		g_prisma->RegisterJSListener(g_hudView, "tdClose", OnJsTdClose);
+		g_prisma->RegisterJSListener(g_hudView, "agGet", OnJsAgGet);
+		g_prisma->RegisterJSListener(g_hudView, "agAdjust", OnJsAgAdjust);
+		g_prisma->RegisterJSListener(g_hudView, "agClose", OnJsAgClose);
 		logger::info("followers-hud: view created + listeners registered");
 	}
 
@@ -15544,28 +16813,43 @@ namespace
 	// MAIN THREAD (RE::UI), diff-gated — this is asked on a 150 ms beat.
 	void WgPushHudMenus(bool menus)
 	{
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load())
+			return;  // do not cache a state the view never received
 		static int s_last = -1;
 		const int  now = menus ? 1 : 0;
 		if (now == s_last)
 			return;
 		s_last = now;
-		if (g_prisma && g_hudView && g_hudViewReady.load())
-			g_prisma->Invoke(g_hudView, (std::string("wgMenus(") + (menus ? "1" : "0") + ")").c_str());
+		g_prisma->Invoke(g_hudView, (std::string("wgMenus(") + (menus ? "1" : "0") + ")").c_str());
 	}
 
-	// A menu owns the screen, OR no save is loaded at all. GameIsPaused covers
-	// the main menu, loading screens, inventory, map, console and the deck in
-	// one call — the same test the hotbar has used since it shipped. The cell
-	// check is the second half: on the main menu the player singleton exists but
-	// has no world around it, which is exactly the state that produced "0 gold,
-	// 0/300 carry, 8:00 AM" over a loading screen.
+	// A menu owns the screen, OR no save is loaded. Item/application/modal
+	// flags also catch menus made unpaused by mods; dialogue never pauses.
+	// JournalMenu is explicit so its MCM stays covered regardless of pause mods.
+	// Our own unpaused browse mode owns a modal focus menu, so exempt that focus
+	// from the modal-only test. The view separately exempts its placement editor.
 	void WgApplyHudVisibility()
 	{
 		auto*      ui = RE::UI::GetSingleton();
 		const bool paused = ui && ui->GameIsPaused();
 		auto*      pc = RE::PlayerCharacter::GetSingleton();
 		const bool noWorld = !pc || !pc->GetParentCell();
-		WgPushHudMenus(paused || noWorld);
+		const bool hudHasFocus = g_prisma && g_hudView && g_prisma->HasFocus(g_hudView);
+		const bool otherMenu = ui && (ui->IsItemMenuOpen() || ui->IsApplicationMenuOpen() ||
+			ui->IsMenuOpen(RE::JournalMenu::MENU_NAME) || ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) ||
+			(ui->IsModalMenuOpen() && !hudHasFocus));
+		WgPushHudMenus(paused || noWorld || otherMenu);
+		static bool s_said = false;
+		if (!s_said) {
+			s_said = true;
+			logger::info("followers-hud-menu-gate: paused and unpaused menus suppress portraits");
+		}
+		WardrobeFlair::Tick(paused || noWorld || OstimDeck::PlayerInScene());
+		if (g_odOpen.load()) {
+			const bool ours = g_prisma && g_hudView && g_prisma->HasFocus(g_hudView);
+			if (noWorld || !ours || (ui && (ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) || ui->IsMenuOpen(RE::MainMenu::MENU_NAME))))
+				OdCloseDock(false);
+		}
 		// A menu (or the main menu) owning the screen closes the Time Dial —
 		// a Focused overlay underneath the game's own UI is a stranded
 		// cursor. The 600 ms grace covers the open-from-palette hand-off,
@@ -15581,7 +16865,7 @@ namespace
 		if (g_tdOpen.load() &&
 			std::chrono::steady_clock::now() - g_tdOpenedAt > std::chrono::milliseconds(600)) {
 			const bool ours = g_prisma && g_hudView && g_prisma->HasFocus(g_hudView);
-			if (noWorld || (paused && !ours)) {
+			if (noWorld || otherMenu || (paused && !ours)) {
 				// Build marker (hd-markers.json: "time-dial-menu-gate").
 				logger::info("time-dial: menu gate closed it (noWorld {}, paused {}, ours {})",
 					noWorld, paused, ours);
@@ -15593,7 +16877,7 @@ namespace
 		// must still hand the keyboard back. Same test, same reasoning.
 		if (g_hudNavActive.load()) {
 			const bool ours = g_prisma && g_hudView && g_prisma->HasFocus(g_hudView);
-			if (noWorld || (paused && !ours))
+			if (noWorld || otherMenu || (paused && !ours))
 				HudNavStop("a menu took the screen", false);
 		}
 	}
@@ -15711,6 +16995,7 @@ namespace
 	// edit sessions may hold the view, so each stands the other down first.
 	void WgOpenEdit()
 	{
+		OdCloseDock(false);
 		if (g_hbEditing.exchange(false)) {
 			if (g_prisma && g_hbView && g_hbViewReady.load())
 				g_prisma->Invoke(g_hbView, "hbEdit(\"0\")");
@@ -15929,6 +17214,7 @@ namespace
 	// mouse) and tell it to draw the panel.
 	void HbOpenEdit()
 	{
+		OdCloseDock(false);
 		// The widgets share this view — their edit session must fold before
 		// the bar's opens, or two panels fight over one Focus (see WgOpenEdit,
 		// which does the same in the other direction).
@@ -16389,21 +17675,17 @@ namespace
 	// shared by OnJsFolFaceIcons (the view-driven roster/party) and
 	// WarmStartRosterFaces (the boot warm-start), so the two can never resolve a face
 	// differently. MAIN THREAD ONLY (LookupByID + the NPC walk touch game state).
+	// `why` (optional): per-id, in words, WHY no head render can ever land for
+	// it - the view shows that instead of "No portrait yet" (Rober, 2026-09-23,
+	// on a follower whose mod ships no head file for her record: "still hasnt
+	// generated a portrait on restart"). Silence here is what cost the hunt.
 	void ResolveFaceQueuesForIds(const std::vector<std::string>& idStrings,
-		json& icons, json& faceQueue, json& bodyQueue)
+		json& icons, json& faceQueue, json& bodyQueue, json* why = nullptr)
 	{
 		// A creature companion (a summonable atronach, a beast follower) has no
 		// facegen head; when the head file is absent we fall her back to a BODY
 		// silhouette, the same route the Finder uses. The probe here is what tells
 		// face from body — exactly what EnqueueFaceLocked does.
-		const auto faceNifExists = [](const std::string& plugin, std::uint32_t local) -> bool {
-			char hex[16];
-			std::snprintf(hex, sizeof(hex), "%08x", local);
-			const std::string rel = std::string("meshes\\actors\\character\\facegendata\\facegeom\\") +
-				plugin + "\\" + hex + ".nif";
-			RE::BSResourceNiBinaryStream probe(rel.c_str());
-			return probe.good();
-		};
 		for (const auto& ids : idStrings) {
 			const auto rid = static_cast<std::uint32_t>(std::strtoul(ids.c_str(), nullptr, 16));
 			if (!rid)
@@ -16411,10 +17693,19 @@ namespace
 			auto* form = RE::TESForm::LookupByID(rid);
 			auto* actor = form ? form->As<RE::Actor>() : nullptr;
 			auto* base = actor ? actor->GetActorBase() : (form ? form->As<RE::TESNPC>() : nullptr);
-			if (!base)
+			if (!form) {
+				if (why)
+					(*why)[ids] = "not loaded right now - open their page while they are nearby";
 				continue;
+			}
+			if (!base) {
+				if (why)
+					(*why)[ids] = "not an actor";
+				continue;
+			}
 			auto* face = NpcFinder::FaceOwnerOf(base);
 			auto* ffile = face ? face->GetFile(0) : nullptr;
+			std::string headWhere;   // "<plugin> <8hex>" of the head file that was looked for
 			if (ffile) {
 				const std::uint32_t local = face->GetFormID() & (ffile->IsLight() ? 0xFFFu : 0xFFFFFFu);
 				char fidHex[16];
@@ -16425,12 +17716,19 @@ namespace
 					icons[ids] = path;
 					continue;
 				}
-				if (faceNifExists(plugin, local)) {
+				if (!FaceGenResolver::Resolve(fidHex, plugin).empty()) {
 					faceQueue.push_back({ { "formId", std::string(fidHex) }, { "plugin", plugin },
 						{ "name", base->GetName() ? base->GetName() : "" } });
 					continue;
 				}
 				// no head file — fall through to the body route below
+				{
+					char h8[16];
+					std::snprintf(h8, sizeof(h8), "%08x", local);
+					headWhere = plugin + " " + h8;
+				}
+			} else if (why) {
+				(*why)[ids] = "a dynamic actor with no plugin of her own - capture a photo in Actions";
 			}
 			// CREATURE only: try a body silhouette. BodyRenderFor refuses a
 			// FaceGen-Head race, so a humanoid whose facegen was never exported
@@ -16443,6 +17741,14 @@ namespace
 			const std::string bid = NpcFinder::BodyRenderFor(base, bnif);
 			if (bid.empty() || bnif.empty()) {
 				logger::debug("faces: no head and no body for {} — honest glyph", ids);  // marker: face-no-humanoid-body
+				if (!headWhere.empty()) {
+					// A humanoid whose mod ships no head file for her record (renumbered
+					// after the facegen export, ESL-compacted, or never exported): say so
+					// ONCE at info, and hand the words to the view.
+					logger::info("faces: no head file for '{}' ({}) - the view says why", base->GetName() ? base->GetName() : ids, headWhere);  // marker: faces-no-head-reason
+					if (why)
+						(*why)[ids] = "no head file in the load order for her record (" + headWhere + ") - capture a photo in Actions";
+				}
 				continue;   // neither head nor body — honest glyph
 			}
 			const auto bar = bid.find('|');
@@ -16482,7 +17788,8 @@ namespace
 				if (idv.is_string())
 					idStrings.push_back(idv.get<std::string>());
 			}
-			ResolveFaceQueuesForIds(idStrings, icons, queue, bodyQueue);
+			json why = json::object();
+			ResolveFaceQueuesForIds(idStrings, icons, queue, bodyQueue, &why);
 			// queued MUST be what the Ensure* calls ACTUALLY took, not the input
 			// size: an NPC with no facegen file (templated, or the head never
 			// shipped) — or a creature whose body NIF isn't in the load order —
@@ -16499,8 +17806,368 @@ namespace
 						.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 			logger::info("followers: face icons - {} resolved, {} asked", icons.size(), queued);  // marker: fo-face-icons
 			PushToView("fdFaceIconsData",
-				json{ { "icons", std::move(icons) }, { "queued", queued } }
+				json{ { "icons", std::move(icons) }, { "queued", queued }, { "why", std::move(why) } }
 					.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+		});
+	}
+
+	// ================================================================ WHO'S HERE ==
+	// Rober, 2026-09-17: "a button that scans the cell looking for any npcs that
+	// are in my follower organizer and are in this cell? Im going around right
+	// now trying to see why npcs in my system arnt showing profile pics in
+	// certain areas". So: one press, every loaded actor near the player is
+	// matched against the Follower Organizer roster, and each hit reports the
+	// FACTS a missing picture turns on — through the SAME lookups the roster,
+	// the HUD strip and the face renderer use (FolPortraitsJson + SlugOfName,
+	// ResolveFaceQueuesForIds, the teammate/follower-faction net), so the answer
+	// here is the answer they would give. A READER: it changes nothing, except
+	// that with render:true it queues the facegen renders the roster would have
+	// asked for anyway.
+	//
+	// MATCH ORDER. FO's runtime formId first (the reliable key); then the base
+	// (née) or display name against the roster's original/name. A NAME hit is
+	// reported as such, because it means the roster row's id resolves to nobody
+	// (or somebody else) — exactly the drift that makes one face vanish "in
+	// certain areas": the id was captured in one save, and a light plugin's
+	// slot has moved since.
+	//
+	// WHO IS "HERE". Every actor in ProcessLists (all four tiers, so a low-
+	// process bystander in the same interior counts) whose parent cell is the
+	// player's cell, or — outdoors — any exterior cell of the same worldspace
+	// within kHereNearUnits. `sameCell` says which.
+	//
+	// TWO MODES (Rober, 2026-09-20: "it should have 2 options now whos here (in
+	// follower organizer) or all npcs in cell"). `all:false` (the default) keeps
+	// the original question — who HERE is on the roster, and why her picture is
+	// or is not showing. `all:true` answers the other one: every actor loaded
+	// around you, roster or not, each row carrying `roster` so the view can say
+	// which is which and offer to file the strangers. Everything else — the
+	// portrait candidates, the face-render resolution, the chips' facts — is the
+	// same code for both, so the two lists can never disagree about a person.
+	//
+	// Rows are built NEAREST FIRST and capped, so a crowded market gives you the
+	// people you are standing next to rather than whichever tier ProcessLists
+	// happened to walk first.
+	//
+	// Bridge: fdCellScan (request, {render:bool, all:bool}) -> fdCellScanData.
+	// Markers: cell-scan, cell-scan-all.
+	namespace
+	{
+		constexpr float       kHereNearUnits = 8192.0f;   // ~117 m: the loaded grid around you, not the worldspace
+		constexpr std::size_t kHereMaxRows   = 96;
+		constexpr double      kUnitsPerMeter = 70.0284;   // the community-measured constant (HUD dist uses it too)
+
+		std::string LowerAscii(std::string v)
+		{
+			for (auto& c : v)
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			return v;
+		}
+	}
+
+	std::string CellScanJson(bool render, bool all)
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		auto* lists  = RE::ProcessLists::GetSingleton();
+		auto* cell   = player ? player->GetParentCell() : nullptr;
+		if (!player || !lists || !cell) {
+			return json{ { "ok", false },
+				{ "msg", "No game to read yet — load a save first." },
+				{ "rows", json::array() } }.dump(-1, ' ', false, json::error_handler_t::replace);
+		}
+
+		// ---- the roster, both ways round: by runtime id and by lower-cased name.
+		struct RosterHit { std::string original, name, cat, storedId; int catIndex = 0; };
+		std::map<RE::FormID, RosterHit>         byId;
+		std::map<std::string, RosterHit>        byName;
+		int                                     rosterTotal = 0;
+		{
+			auto st = json::parse(FollowerDeck::StateJson(), nullptr, false);
+			const json* cats = nullptr;
+			if (st.is_object()) {
+				if (st.contains("categories") && st["categories"].is_array())
+					cats = &st["categories"];
+				else if (st.contains("state") && st["state"].is_object() &&
+						 st["state"].contains("categories") && st["state"]["categories"].is_array())
+					cats = &st["state"]["categories"];
+			}
+			if (cats) {
+				for (const auto& c : *cats) {
+					if (!c.is_object() || !c.contains("members") || !c["members"].is_array())
+						continue;
+					RosterHit proto;
+					proto.cat = c.value("name", c.value("original", std::string()));
+					proto.catIndex = c.value("index", 0);
+					if (proto.cat.empty())
+						proto.cat = "Category " + std::to_string(proto.catIndex);
+					for (const auto& m : c["members"]) {
+						if (!m.is_object())
+							continue;
+						RosterHit hit = proto;
+						hit.original = m.value("original", std::string());
+						hit.name = m.value("name", std::string());
+						if (hit.original.empty()) hit.original = hit.name;
+						if (hit.name.empty()) hit.name = hit.original;
+						if (hit.original.empty())
+							continue;
+						++rosterTotal;
+						RE::FormID fid = 0;
+						if (m.contains("formId")) {
+							const auto& f = m["formId"];
+							if (f.is_number_unsigned())
+								fid = f.get<RE::FormID>();
+							else if (f.is_number_integer())
+								fid = static_cast<RE::FormID>(f.get<std::int64_t>());
+							else if (f.is_string()) {
+								hit.storedId = f.get<std::string>();
+								try { fid = static_cast<RE::FormID>(std::stoul(hit.storedId, nullptr, 16)); }
+								catch (...) {}
+							}
+						}
+						if (hit.storedId.empty() && fid)
+							hit.storedId = ActorIdentity::HexOf(fid);
+						if (fid)
+							byId.emplace(fid, hit);
+						byName.emplace(LowerAscii(hit.original), hit);
+						if (hit.name != hit.original)
+							byName.emplace(LowerAscii(hit.name), hit);
+					}
+				}
+			}
+		}
+
+		// ---- the portrait index the roster reads: slug -> file (array folded).
+		std::map<std::string, std::string> portraitBySlug;
+		{
+			json parr = json::parse(FolPortraitsJson(), nullptr, false);
+			if (parr.is_array())
+				for (auto& p : parr)
+					if (p.is_object() && p.contains("slug") && p["slug"].is_string())
+						portraitBySlug[p["slug"].get<std::string>()] = p.value("file", std::string());
+		}
+
+		static RE::TESFaction* s_followerFac = nullptr;
+		static bool            s_facTried = false;
+		if (!s_facTried) {
+			s_facTried = true;
+			s_followerFac = RE::TESForm::LookupByID<RE::TESFaction>(0x0005C84E);
+		}
+
+		const bool interior = cell->IsInteriorCell();
+		auto*      ws       = player->GetWorldspace();
+		const auto pp       = player->GetPosition();
+		const bool mrf      = ItemIcons::Available();
+
+		json rows = json::array();
+		json faceQueue = json::array(), bodyQueue = json::array();
+		std::unordered_set<RE::FormID> seen;
+		int nSeen = 0, nMatched = 0, nByName = 0, nPortrait = 0, nFace = 0;
+
+		// Pass 1: who counts as "here" at all. Collected rather than rendered
+		// on the spot so the rows can be built nearest-first (the cap is only
+		// honest if the people it drops are the far ones).
+		struct Cand { RE::Actor* a; double units; bool sameCell; };
+		std::vector<Cand> cands;
+
+		auto consider = [&](RE::Actor* a) {
+			if (!a || a == player || a->IsPlayerRef() || a->IsDeleted())
+				return;
+			const RE::FormID id = a->GetFormID();
+			if (!seen.insert(id).second)
+				return;
+			auto* ac = a->GetParentCell();
+			if (!ac)
+				return;
+			const bool sameCell = (ac == cell);
+			const auto ap = a->GetPosition();
+			const double dx = (double)ap.x - pp.x, dy = (double)ap.y - pp.y, dz = (double)ap.z - pp.z;
+			const double units = std::sqrt(dx * dx + dy * dy + dz * dz);
+			if (!sameCell) {
+				if (interior)
+					return;                                   // another interior: not here
+				if (!ac->IsExteriorCell() || a->GetWorldspace() != ws)
+					return;
+				if (units > kHereNearUnits)
+					return;
+			}
+			++nSeen;
+			cands.push_back(Cand{ a, units, sameCell });
+		};
+
+		// Pass 2: the row itself. Returns without emitting when the person is
+		// not on the roster and the caller asked the roster question.
+		auto build = [&](RE::Actor* a, double units, bool sameCell) {
+			const RE::FormID id = a->GetFormID();
+			auto*       base = a->GetActorBase();
+			const char* dn   = a->GetDisplayFullName();
+			std::string dispName = (dn && dn[0]) ? dn : "";
+			std::string baseName;
+			if (base)
+				if (const char* bn = base->GetName(); bn && bn[0])
+					baseName = bn;
+
+			const RosterHit* hit = nullptr;
+			std::string      match;
+			if (auto it = byId.find(id); it != byId.end()) { hit = &it->second; match = "formId"; }
+			if (!hit && !baseName.empty())
+				if (auto it = byName.find(LowerAscii(baseName)); it != byName.end()) { hit = &it->second; match = "name"; }
+			if (!hit && !dispName.empty())
+				if (auto it = byName.find(LowerAscii(dispName)); it != byName.end()) { hit = &it->second; match = "name"; }
+			if (!hit && !all)
+				return;                                       // roster question: strangers are not an answer
+			if (hit) {
+				++nMatched;
+				if (match == "name") ++nByName;
+			}
+
+			const bool team = a->IsPlayerTeammate();
+			const bool fac  = s_followerFac && a->IsInFaction(s_followerFac);
+			bool waiting = false;
+			if (auto* avo = a->AsActorValueOwner())
+				waiting = avo->GetActorValue(RE::ActorValue::kWaitingForPlayer) >= 0.5f;
+
+			const std::string hex = ActorIdentity::HexOf(id);
+			const std::string fallbackName = baseName.empty() ? hex : baseName;
+			json row{
+				{ "name", dispName.empty() ? (hit ? (baseName.empty() ? hit->name : baseName) : fallbackName) : dispName },
+				{ "base", baseName }, { "original", hit ? hit->original : baseName },
+				{ "formId", hex }, { "rosterFormId", hit ? hit->storedId : std::string() },
+				{ "roster", hit != nullptr },
+				{ "cat", hit ? hit->cat : std::string() }, { "catIndex", hit ? hit->catIndex : -1 },
+				{ "match", match },
+				{ "sameCell", sameCell }, { "dist", (int)std::lround(units / kUnitsPerMeter) },
+				{ "teammate", team }, { "faction", fac }, { "waiting", waiting },
+				{ "dead", a->IsDead() }, { "disabled", a->IsDisabled() }, { "loaded3d", a->Is3DLoaded() },
+			};
+			std::string durFid, durPlugin;
+			if (ActorIdentity::DurableOf(a, durFid, durPlugin))
+				row["durable"] = durFid + "|" + durPlugin;
+
+			// Portrait: the roster's own candidate order (FO original -> base name
+			// -> display name), reported with what was TRIED so "no picture" has a
+			// reason attached instead of a shrug.
+			json tried = json::array();
+			bool gotPortrait = false;
+			for (const std::string& nm : { hit ? hit->original : std::string(), baseName, dispName }) {
+				if (nm.empty())
+					continue;
+				const std::string slug = PortraitCapture::SlugOfName(nm);
+				if (slug.empty())
+					continue;
+				tried.push_back(nm);
+				if (auto it = portraitBySlug.find(slug); it != portraitBySlug.end() && !it->second.empty()) {
+					row["portrait"] = json{ { "file", it->second }, { "via", nm } };
+					gotPortrait = true;
+					break;
+				}
+			}
+			row["tried"] = std::move(tried);
+			if (gotPortrait) ++nPortrait;
+
+			// Facegen head render: the exact resolution fdFaceIcons performs, so
+			// "ready" here means the roster has the PNG too.
+			json icons = json::object(), fq = json::array(), bq = json::array();
+			ResolveFaceQueuesForIds({ hex }, icons, fq, bq);
+			std::string faceState = "no-facegen";
+			if (icons.contains(hex)) { faceState = "ready"; row["face"] = icons[hex]; ++nFace; }
+			else if (!fq.empty())    { faceState = mrf ? "unrendered" : "mrf-missing"; for (auto& q : fq) faceQueue.push_back(q); }
+			else if (!bq.empty())    { faceState = mrf ? "body-unrendered" : "mrf-missing"; for (auto& q : bq) bodyQueue.push_back(q); }
+			row["faceState"] = faceState;
+			row["hud"] = team || fac;
+			rows.push_back(std::move(row));
+		};
+
+		for (auto& h : lists->highActorHandles)       { auto p = h.get(); consider(p ? p.get() : nullptr); }
+		for (auto& h : lists->middleHighActorHandles) { auto p = h.get(); consider(p ? p.get() : nullptr); }
+		for (auto& h : lists->middleLowActorHandles)  { auto p = h.get(); consider(p ? p.get() : nullptr); }
+		for (auto& h : lists->lowActorHandles)        { auto p = h.get(); consider(p ? p.get() : nullptr); }
+
+		std::stable_sort(cands.begin(), cands.end(),
+			[](const Cand& x, const Cand& y) { return x.units < y.units; });
+		for (const auto& c : cands) {
+			if (rows.size() >= kHereMaxRows)
+				break;
+			build(c.a, c.units, c.sameCell);
+		}
+
+		// The renders the roster would ask for next time it opens — ask now, so
+		// a scan that finds a missing face also starts fixing it. The same
+		// dedup EnsureFaceIcons applies everywhere (on-disk / no-facegen / already
+		// asked cost nothing), and the pane's own poll picks the PNGs up.
+		std::size_t queued = 0;
+		if (render && mrf) {
+			if (!faceQueue.empty())
+				queued += ItemIcons::EnsureFaceIcons(json{ { "items", std::move(faceQueue) } }
+						.dump(-1, ' ', false, json::error_handler_t::replace));
+			if (!bodyQueue.empty())
+				queued += ItemIcons::EnsureBodyIcons(json{ { "items", std::move(bodyQueue) } }
+						.dump(-1, ' ', false, json::error_handler_t::replace));
+		}
+
+		std::string cellName;
+		if (const char* cn = cell->GetName(); cn && cn[0])
+			cellName = cn;
+		if (cellName.empty())
+			if (const char* ed = cell->GetFormEditorID(); ed && ed[0])
+				cellName = ed;
+		std::string wsName;
+		if (ws)
+			if (const char* wn = ws->GetName(); wn && wn[0])
+				wsName = wn;
+		if (cellName.empty())
+			cellName = interior ? "this interior" : (wsName.empty() ? "outdoors" : wsName);
+
+		if (all)
+			logger::info("cell-scan-all: everyone here — {} actor(s) in '{}' ({}), {} row(s) shown, {} on the roster ({} by name only), {} with a portrait, {} face(s) rendered, {} render(s) queued",
+				nSeen, cellName, interior ? "interior" : "exterior", rows.size(), nMatched, nByName, nPortrait, nFace, queued);   // marker: cell-scan-all
+		else
+			logger::info("cell-scan: {} roster row(s); {} actor(s) here in '{}' ({}); {} matched ({} by name only), {} with a portrait, {} face(s) rendered, {} render(s) queued",
+				rosterTotal, nSeen, cellName, interior ? "interior" : "exterior", nMatched, nByName, nPortrait, nFace, queued);   // marker: cell-scan
+
+		return json{
+			{ "ok", true },
+			{ "cell", json{ { "name", cellName }, { "interior", interior }, { "worldspace", wsName },
+							{ "id", ActorIdentity::HexOf(cell->GetFormID()) } } },
+			{ "all", all },
+			{ "rosterTotal", rosterTotal }, { "seen", nSeen }, { "matched", nMatched },
+			{ "shown", (int)rows.size() },
+			{ "byName", nByName }, { "withPortrait", nPortrait }, { "withFace", nFace },
+			{ "queued", queued }, { "mrf", mrf },
+			{ "portraitsIndexed", (int)portraitBySlug.size() },
+			{ "nearMeters", (int)std::lround(kHereNearUnits / kUnitsPerMeter) },
+			{ "rows", std::move(rows) },
+		}.dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
+	void OnJsPrRoster(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { PushToView("prRosterData", PartyRecall::Roster()); });
+	}
+	void OnJsPrSet(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() { PushToView("prRosterData", PartyRecall::SetRegistry(req)); });
+	}
+	// The page's own "Recall now": the same Recall() the transferred key runs,
+	// so the list and the key can never disagree about who comes.
+	void OnJsPrRecall(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			ClosePalette();
+			const auto res = json::parse(PartyRecall::Recall(), nullptr, false);
+			const std::string msg = res.is_object() ? res.value("msg", std::string()) : std::string();
+			if (!msg.empty()) RE::DebugNotification(msg.c_str());
+			PushToView("prRosterData", PartyRecall::Roster());
+		});
+	}
+	void OnJsFolCellScan(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			const auto j = json::parse(payload, nullptr, false);
+			const bool render = j.is_object() ? j.value("render", true) : true;
+			const bool all    = j.is_object() ? j.value("all", false) : false;
+			PushToView("fdCellScanData", CellScanJson(render, all));
 		});
 	}
 
@@ -16656,6 +18323,8 @@ namespace
 				f.catIcons = g_folConfig.catIcons;
 				f.fqLabels = g_folConfig.fqLabels;   // partial payload (older view/portal) must not wipe it
 				f.railCollapsed = g_folConfig.railCollapsed;
+				f.dossierSizePct = g_folConfig.dossierSizePct;
+				f.dossierFrames = g_folConfig.dossierFrames;
 			}
 			FollowerConfigFromJson(j, f);
 			std::size_t nIcons = 0;
@@ -16754,38 +18423,18 @@ namespace
 	}
 
 	// pdRecall: physical, not administrative — close the palette first so the jump
-	// lands in the live world, travel, notify, then optionally reopen straight
-	// back onto the Domains tab (closeAfterFire=false).
+	// lands in the live world after confirmed UI release and a two-second wait.
 	void OnJsPlaceRecall(const char* data)
 	{
-		if (!data)
-			return;
-		const std::string mark = data;
-		const auto        j = json::parse(mark, nullptr, false);
-		if (j.is_discarded() || !j.is_object()) {
-			logger::warn("pdRecall: bad payload");
-			return;
-		}
-		const std::string label = j.value("label", std::string(""));
-		bool              reopen;
-		{
-			std::lock_guard l(g_configMutex);
-			reopen = !g_config.settings.closeAfterFire;
-		}
-		SKSE::GetTaskInterface()->AddTask([mark, label, reopen]() {
-			ClosePalette();
-			const auto  res = json::parse(PlaceActions::Recall(mark), nullptr, false);
-			std::string msg = res.is_discarded() ? std::string("") : res.value("msg", std::string(""));
-			if (msg.empty())
-				msg = label.empty() ? std::string("Domains: travel failed — see HotkeyDeck.log") : label;
-			RE::DebugNotification(msg.c_str());
-			if (reopen)
-				SKSE::GetTaskInterface()->AddTask([]() {
-					if (CanOpenNow()) {
-						g_pendingTab = "domains";  // land back on the tab
-						OpenPalette();
-					}
-				});
+		const std::string mark = data ? data : "{}";
+		const auto j = json::parse(mark, nullptr, false);
+		if (!j.is_object()) return;
+		SKSE::GetTaskInterface()->AddTask([mark]() {
+			QueueTravel("Domains", [mark]() {
+				const auto res = json::parse(PlaceActions::Recall(mark), nullptr, false);
+				const auto msg = res.is_object() ? res.value("msg", std::string()) : std::string();
+				if (!msg.empty()) RE::DebugNotification(msg.c_str());
+			});
 		});
 	}
 
@@ -16970,11 +18619,13 @@ namespace
 			const std::string slug = "ct-" + PortraitCapture::SlugOfName(name) + "-" +
 				PortraitCapture::SlugOfName(id);
 			g_photoContainerId = id;
+			const auto photoRequest = PreparePhotoReturn();
 			ClosePalette();
 			logger::info("containers: photo mode for '{}' ({})", name, id);
-			std::thread([slug, name]() {
+			std::thread([slug, name, photoRequest]() {
 				std::this_thread::sleep_for(std::chrono::milliseconds(450));
-				SKSE::GetTaskInterface()->AddTask([slug, name]() {
+				SKSE::GetTaskInterface()->AddTask([slug, name, photoRequest]() {
+					if (!PhotoSetupCurrent(photoRequest)) return;
 					PortraitCapture::StartPhotoMode(DeckViewDir() / "container-images", slug, name);
 				});
 			}).detach();
@@ -17562,8 +19213,23 @@ namespace
 		});
 	}
 
+	// Photo scene fill is native and camera-relative: no Quick Light/Papyrus wait.
+	void ContinueDomainPhoto(std::uint64_t generation, const std::string& id,
+		const std::string& slug, const std::string& name, SceneStage::Request stage,
+		PortraitCapture::PhotoFov fov, PhotoLighting::Settings lighting, json photoMeta, bool makeCover)
+	{
+		if (!PhotoSetupCurrent(generation) || PortraitCapture::PhotoModeActive()) return;
+		std::string err;
+		if (!SceneStage::Apply(stage, err)) { if (!err.empty()) RE::DebugNotification(err.c_str()); QueuePhotoReturn(); return; }
+		g_photoDomainId = id;
+		g_photoDomainMeta = std::move(photoMeta);
+		g_photoDomainCover = makeCover;
+		PortraitCapture::StartPhotoMode(DeckViewDir() / "domain-images", slug, name, fov, true, 0.0f, lighting);
+		if (!PortraitCapture::PhotoModeActive()) { SceneStage::Restore(); g_photoDomainId.clear(); }
+	}
+
 	// pdPhoto: photograph THIS place. Same camera the wardrobe hands you for an
-	// outfit — menus hidden, fov 60, free camera with time frozen, E shoots,
+	// outfit — chosen FOV, free camera with time frozen, Enter shoots,
 	// Esc cancels, 5-minute timeout, everything restored on every exit. The
 	// palette has to be gone before the frame is worth grabbing, so it closes
 	// first and the camera starts a beat later.
@@ -17583,11 +19249,23 @@ namespace
 				return;
 			}
 			const auto id = j.value("id", std::string(""));
+			// Old clients safely keep the current view; only curated choices can change it.
+			auto fov = PortraitCapture::PhotoFov::Keep;
+			if (j.contains("fov")) {
+				if (!j["fov"].is_string()) return;
+				const auto mode = j["fov"].get<std::string>();
+				if (mode == "out") fov = PortraitCapture::PhotoFov::ZoomOut;
+				else if (mode == "in") fov = PortraitCapture::PhotoFov::ZoomIn;
+				else if (mode != "keep") return;
+			}
 			std::string name;
 			{
 				std::lock_guard l(g_configMutex);
 				for (const auto& m : g_domConfig.marks)
 					if (m.id == id) {
+						if (DomainPhotos::Normalize(m.photos, m.image).size() >= DomainPhotos::Limit) {
+							RE::DebugNotification("This gallery has 128 photos. Remove a photo from the gallery before adding another."); return;
+						}
 						name = m.name;
 						break;
 					}
@@ -17600,9 +19278,12 @@ namespace
 			// Name AND id in the stem: the name is what makes the file readable
 			// in a folder listing, the id is what keeps two domains called
 			// "Riverwood" from writing over each other.
-			const std::string slug = "pd-" + PortraitCapture::SlugOfName(name) + "-" +
-				PortraitCapture::SlugOfName(id);
-			g_photoDomainId = id;
+			const std::string slug = "pd-" + PortraitCapture::SlugOfName(name).substr(0,70) + "-" +
+				PortraitCapture::SlugOfName(id).substr(0,50) + "-shot-" + std::to_string(
+					std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+			const json photoMeta = {{"label", DomainPhotos::Text(j.value("photoLabel", json()))},
+				{"tags", DomainPhotos::Tags(j.value("photoTags", json::array()))}};
+			const bool makeCover = j.contains("makeCover") && j["makeCover"].is_boolean() && j["makeCover"].get<bool>();
 
 			// SCENE STAGING (v0.14.6). The picture is of a PLACE, and a place
 			// photographed at 3am in a blizzard is a black rectangle no capture
@@ -17616,21 +19297,38 @@ namespace
 			if (j.contains("weather") && j["weather"].is_number())
 				stage.weather = j["weather"].get<std::uint32_t>();
 
+			PhotoLighting::Settings lighting;
+			std::string lightMode = "natural";
+			float lightStrength = 1.0f;
+			if (j.contains("sceneLight")) {
+				if (!j["sceneLight"].is_string()) return;
+				lightMode = j["sceneLight"].get<std::string>();
+			}
+			if (j.contains("lightStrength")) {
+				if (!j["lightStrength"].is_number()) return;
+				lightStrength = j["lightStrength"].get<float>();
+			}
+			if (!PhotoLighting::Parse(lightMode, lightStrength, lighting)) return;
+			// Legacy `light:on/off` payloads must never change the player's lamp.
+
+			if (j.contains("exposure")) {
+				if (!j["exposure"].is_number()) return;
+				const auto stops = j["exposure"].get<float>();
+				if (!std::isfinite(stops) || std::abs(stops) > PortraitCapture::ExposureMax()) return;
+				if (!PortraitCapture::SetPhotoExposure(DeckViewDir() / "domain-images", stops)) {
+					RE::DebugNotification("Could not save photo brightness; photo mode did not start"); return;
+				}
+			}
+			const auto generation = PreparePhotoReturn();
 			ClosePalette();
+			logger::info("domains: photo lighting setup '{}' sceneLight={} strength={}", id, lightMode, lightStrength);
 			logger::info("domains: photo mode for '{}' ({})", name, id);
 			// Detached, same idiom as the outfit photo: the main thread cannot
 			// block while the palette tears down and the HUD redraws.
-			std::thread([slug, name, stage]() {
+			std::thread([generation, id, slug, name, stage, fov, lighting, photoMeta, makeCover]() {
 				std::this_thread::sleep_for(std::chrono::milliseconds(450));
-				SKSE::GetTaskInterface()->AddTask([slug, name, stage]() {
-					// Stage BEFORE the free camera: `tfc 1` freezes the world,
-					// and the sun and sky read the clock while the world ticks.
-					std::string err;
-					if (!SceneStage::Apply(stage, err) && !err.empty()) {
-						logger::warn("domains: scene staging refused - {}", err);
-						RE::DebugNotification(err.c_str());
-					}
-					PortraitCapture::StartPhotoMode(DeckViewDir() / "domain-images", slug, name);
+				SKSE::GetTaskInterface()->AddTask([generation, id, slug, name, stage, fov, lighting, photoMeta, makeCover]() {
+					ContinueDomainPhoto(generation, id, slug, name, stage, fov, lighting, photoMeta, makeCover);
 				});
 			}).detach();
 		});
@@ -17654,6 +19352,7 @@ namespace
 			const auto dir = DeckViewDir() / "domain-images";
 			info["exposure"] = PortraitCapture::GetPhotoExposure(dir);
 			info["exposureMax"] = PortraitCapture::ExposureMax();
+			info["sceneLightAvailable"] = true;
 			PushToView("pdSceneInfo", info.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 		});
 	}
@@ -17679,6 +19378,7 @@ namespace
 			const auto dir = DeckViewDir() / "domain-images";
 			info["exposure"] = PortraitCapture::GetPhotoExposure(dir);
 			info["exposureMax"] = PortraitCapture::ExposureMax();
+			info["sceneLightAvailable"] = true;
 			PushToView("pdSceneInfo", info.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 		});
 	}
@@ -18042,6 +19742,42 @@ namespace
 		});
 	}
 
+	void OnJsAppearanceGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			// Pending actions keep polling after their palette closes. Deliver a
+			// new load epoch even when the view is hidden, so it can cancel waiters.
+			if (g_prisma && g_viewReady.load()) {
+				const auto js="window.smAppearanceData && smAppearanceData("+AppearancePresets::State().dump(-1,' ',false,nlohmann::json::error_handler_t::replace)+")";
+				g_prisma->Invoke(g_view,js.c_str());
+			}
+		});
+	}
+	void AppearanceCloseForGame(bool photo)
+	{
+		if (g_prisma && g_viewReady.load()) g_prisma->Invoke(g_view, "window.AppearanceGallery && AppearanceGallery.close()");
+		if (photo) PreparePhotoReturn();
+		ClosePalette();
+	}
+	void OnJsAppearanceAction(const char* data)
+	{
+		const std::string request=data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([request]() {
+			try {
+				AppearancePresets::Handle(nlohmann::json::parse(request), [](const auto& result) {
+					// The action intentionally closed the palette so Papyrus could
+					// run. A normal PushToView would drop its completion while closed.
+					if (g_prisma && g_viewReady.load()) {
+						const auto js="window.smAppearanceResult && smAppearanceResult("+result.dump()+")";
+						g_prisma->Invoke(g_view,js.c_str());
+					}
+				}, AppearanceCloseForGame);
+			} catch(const std::exception& e) {
+				PushToView("smAppearanceResult", nlohmann::json{{"ok",false},{"msg",e.what()}}.dump());
+			}
+		});
+	}
+
 	void OnJsPlayerTuneSet(const char* data)
 	{
 		const std::string req = data ? data : "{}";
@@ -18152,11 +19888,13 @@ namespace
 														   .count());
 			if (name.empty())
 				name = "Journal picture";
+			const auto photoRequest = PreparePhotoReturn();
 			ClosePalette();
 			logger::info("journal: photo mode for '{}' ({})", name, stem);
-			std::thread([stem, name]() {
+			std::thread([stem, name, photoRequest]() {
 				std::this_thread::sleep_for(std::chrono::milliseconds(450));
-				SKSE::GetTaskInterface()->AddTask([stem, name]() {
+				SKSE::GetTaskInterface()->AddTask([stem, name, photoRequest]() {
+					if (!PhotoSetupCurrent(photoRequest)) return;
 					PortraitCapture::StartPhotoMode(Journal::ImageDir(), stem, name);
 				});
 			}).detach();
@@ -18330,6 +20068,7 @@ namespace
 					e.hand = "right";
 					e.category = "Crafted";
 					e.slot = "hand";  // crafted spells are hand spells by construction
+					e.type = "spell";
 					e.icon = icon;    // "" = auto; scIcon's sidecar look is view-side
 					g_magicConfig.spells.push_back(std::move(e));
 				}
@@ -18695,6 +20434,206 @@ namespace
 		});
 	}
 
+	// Cells tab (Cell Finder). Same threading contract as its two Finder
+	// siblings: the index walk, the query and the console travel all touch
+	// engine structures, so every handler AddTasks onto the main thread.
+	void OnJsCellFinderState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("cxStateResult", CellFinder::StateJson());
+		});
+	}
+
+	void OnJsCellFinderQuery(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("cxResultData", CellFinder::QueryJson(req));
+		});
+	}
+
+	void OnJsCellFinderSave(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("cxSaved", CellFinder::SaveJson(req));
+		});
+	}
+
+	// PrismaUI queues Unfocus/Hide on its UI thread. ClosePalette returning is
+	// not an acknowledgement, and a nested SKSE task can run in the same frame.
+	// Keep all engine/API observations on the main thread; the sleeper merely
+	// schedules the next observation. No task waits on the renderer or the VM.
+	struct TravelRequest
+	{
+		std::string label;
+		std::function<void()> execute;
+		RE::FormID sourceCell;
+		std::uint64_t epoch;
+		std::uint64_t startedAt = GetTickCount64();
+		CellTravelHandoff::Gate gate{ startedAt };
+	};
+	std::weak_ptr<TravelRequest> g_travelPending;
+
+	void PollTravel(const std::shared_ptr<TravelRequest>& pending)
+	{
+		auto* ui = RE::UI::GetSingleton();
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		auto* cell = player ? player->GetParentCell() : nullptr;
+		const bool sameContext = pending->epoch == g_travelEpoch && g_gameReady.load() &&
+			ui && !ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) &&
+			!ui->IsMenuOpen(RE::MainMenu::MENU_NAME) &&
+			cell && cell->GetFormID() == pending->sourceCell && !AnyOpen() &&
+			!g_openInFlight.load() && g_prisma;
+		const bool released = sameContext &&
+			(!g_view || (g_prisma->IsValid(g_view) && g_prisma->IsHidden(g_view))) &&
+			(!g_magicView || (g_prisma->IsValid(g_magicView) && g_prisma->IsHidden(g_magicView))) &&
+			!ui->IsMenuOpen("PrismaUI_FocusMenu") && !g_worldFrozen.load() && CanOpenNow();
+		const auto now = GetTickCount64();
+		const auto result = pending->gate.Poll(now, sameContext, released);
+		if (result == CellTravelHandoff::Result::Wait) {
+			// One outstanding check per request, even during a stalled game frame.
+			std::thread([pending]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
+				SKSE::GetTaskInterface()->AddTask([pending]() { PollTravel(pending); });
+			}).detach();
+			return;
+		}
+		if (result != CellTravelHandoff::Result::Ready) {
+			logger::warn("travel-handoff: '{}' cancelled after {} ms (context={}, released={})",
+				pending->label, now - pending->startedAt, sameContext, released);
+			RE::DebugNotification(result == CellTravelHandoff::Result::TimedOut ?
+				"Travel cancelled - menu did not finish closing" :
+				"Travel cancelled - game or menu changed");
+			return;
+		}
+		logger::info("travel-handoff: hidden and unfocused for {} ms; '{}' after {} ms",
+			CellTravelHandoff::Gate::SettleMs, pending->label, now - pending->startedAt);
+		if (pending->label == "Cell Finder")
+			logger::info("cell-travel-handoff: hidden and unfocused, travel after {} ms", now - pending->startedAt);
+		// Each callback re-resolves its destination. Capture ids/JSON by value,
+		// never an engine pointer, and never schedule a palette reopen here.
+		pending->execute();
+	}
+
+	void QueueTravel(std::string label, std::function<void()> execute)
+	{
+		if (!g_travelPending.expired()) {
+			logger::info("travel-handoff: duplicate request '{}' ignored", label);
+			return;
+		}
+		auto* ui = RE::UI::GetSingleton();
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		auto* cell = player ? player->GetParentCell() : nullptr;
+		if (!g_gameReady.load() || !cell || !ui || !g_prisma ||
+			ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) || ui->IsMenuOpen(RE::MainMenu::MENU_NAME)) {
+			RE::DebugNotification("Finish loading before traveling");
+			return;
+		}
+		const auto pending = std::make_shared<TravelRequest>(
+			TravelRequest{ std::move(label), std::move(execute), cell->GetFormID(), g_travelEpoch });
+		g_travelPending = pending;
+		logger::info("travel-handoff: queued '{}' from {:08X}; wait {} ms after UI release",
+			pending->label, pending->sourceCell, CellTravelHandoff::Gate::SettleMs);
+		ClosePalette();
+		CloseMagicPalette();
+		RE::DebugNotification("Travel queued - waiting for menus to close, then 2 seconds");
+		PollTravel(pending);
+	}
+
+	void OnJsCellFinderAct(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			if (!g_travelPending.expired()) {
+				logger::info("cell-travel-handoff: duplicate click ignored");
+				return;
+			}
+			auto* ui = RE::UI::GetSingleton();
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* cell = player ? player->GetParentCell() : nullptr;
+			if (!g_gameReady.load() || !cell || !ui ||
+				ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) || ui->IsMenuOpen(RE::MainMenu::MENU_NAME)) {
+				PushToView("cxActResult", R"({"ok":false,"msg":"Finish loading before traveling"})");
+				return;
+			}
+			const std::string res = CellFinder::ActJson(req);
+			const auto        j = json::parse(res, nullptr, false);
+			const bool        ok = !j.is_discarded() && j.value("ok", false);
+			if (ok) {
+				logger::info("cell-travel-handoff: queued {} from {:08X}", req, cell->GetFormID());
+				QueueTravel("Cell Finder", [req]() {
+					const auto msg = CellFinder::ExecuteTravel(req);
+					if (!msg.empty()) RE::DebugNotification(msg.c_str());
+				});
+				return;
+			}
+			PushToView("cxActResult", res);
+		});
+	}
+
+	// Spells tab (Spell Finder) — CellFinder's threading contract: every handler
+	// AddTasks onto the main thread. learn / forget / teach are done inside
+	// ActJson and replied. A CAST only resolves there; it fires here the way the
+	// Spell Deck's mdFire fires: close the palette first (the spell goes into the
+	// live world, not a paused one) and hang the reopen on Cast's onDone, which
+	// for a voice-slot item lands only after the delayed shout-key press.
+	void OnJsSpellFinderState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("sfStateResult", SpellFinder::StateJson());
+		});
+	}
+
+	void OnJsSpellFinderQuery(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("sfResultData", SpellFinder::QueryJson(req));
+		});
+	}
+
+	void OnJsSpellFinderSave(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("sfSaved", SpellFinder::SaveJson(req));
+		});
+	}
+
+	void OnJsSpellFinderAct(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const std::string res = SpellFinder::ActJson(req);
+			const auto        j = json::parse(res, nullptr, false);
+			if (j.is_discarded() || !j.value("ok", false) || !j.contains("cast")) {
+				PushToView("sfActResult", res);
+				return;
+			}
+			const auto&         c = j["cast"];
+			const std::string   plugin = c.value("plugin", std::string(""));
+			const std::uint32_t localId = c.value("localId", 0u);
+			const std::uint32_t formId = c.value("formId", 0u);
+			bool                reopen;
+			{
+				std::lock_guard l(g_configMutex);
+				reopen = !g_config.settings.closeAfterFire;
+			}
+			logger::info("spell-finder: cast '{}' ({})", j.value("msg", std::string("")), req);  // marker: spell-finder-cast
+			ClosePalette();  // unpause first, so the spell fires into the live world
+			std::function<void()> onDone;
+			if (reopen)
+				onDone = []() {
+					SKSE::GetTaskInterface()->AddTask([]() {
+						if (CanOpenNow())
+							OpenPalette();
+					});
+				};
+			SpellActions::Cast(plugin, localId, formId, std::move(onDone));
+		});
+	}
+
 	void OnJsNpcInspect(const char* data)
 	{
 		const std::string req = data ? data : "{}";
@@ -18767,26 +20706,10 @@ namespace
 			const bool        ok = !j.is_discarded() && j.value("ok", false);
 			const std::string act = j.is_discarded() ? std::string("") : j.value("act", std::string(""));
 			if (ok && (act == "goto" || act == "bring")) {
-				// Physical, not administrative — the Domains recall discipline:
-				// close the palette first so the jump lands in the live world,
-				// move, notify, then optionally reopen onto the tab. No reply
-				// is pushed on this path; the view is gone.
-				bool reopen;
-				{
-					std::lock_guard l(g_configMutex);
-					reopen = !g_config.settings.closeAfterFire;
-				}
-				ClosePalette();
-				const std::string msg = NpcFinder::ExecuteMove(req);
-				if (!msg.empty())
-					RE::DebugNotification(msg.c_str());
-				if (reopen)
-					SKSE::GetTaskInterface()->AddTask([]() {
-						if (CanOpenNow()) {
-							g_pendingTab = "npcs";
-							OpenPalette();
-						}
-					});
+				QueueTravel("NPC Finder " + act, [req]() {
+					const std::string msg = NpcFinder::ExecuteMove(req);
+					if (!msg.empty()) RE::DebugNotification(msg.c_str());
+				});
 				return;
 			}
 			PushToView("nxActResult", res);
@@ -18922,6 +20845,14 @@ namespace
 			const auto        j = json::parse(res, nullptr, false);
 			const bool        ok = !j.is_discarded() && j.value("ok", false);
 			const bool        close = !j.is_discarded() && j.value("close", false);
+			const auto request = json::parse(req, nullptr, false);
+			if (ok && close && request.is_object() && request.value("op", std::string()) == "jumpto") {
+				QueueTravel("Settlement", [req]() {
+					const auto msg = Settlement::ExecuteAct(req);
+					if (!msg.empty()) RE::DebugNotification(msg.c_str());
+				});
+				return;
+			}
 			if (ok && close) {
 				// Physical — the Domains/NpcFinder recall discipline: close the
 				// palette so the placement runs in the live world, execute, notify,
@@ -19008,6 +20939,13 @@ namespace
 			const auto        j = json::parse(res, nullptr, false);
 			const bool        ok = !j.is_discarded() && j.value("ok", false);
 			const std::string act = j.is_discarded() ? std::string("") : j.value("act", std::string(""));
+			if (ok && act == "goto") {
+				QueueTravel("Mounts", [req]() {
+					const auto msg = Mounts::ExecuteAction(req);
+					if (!msg.empty()) RE::DebugNotification(msg.c_str());
+				});
+				return;
+			}
 			if (ok && (act == "summon" || act == "call" || act == "ride" || act == "goto")) {
 				bool reopen;
 				{
@@ -19034,6 +20972,141 @@ namespace
 		});
 	}
 
+	// Nightside tab (the three curses). nsState rebuilds the whole triptych
+	// from live state — deliberately never cached, because which curses you
+	// hold is exactly the fact that changes mid-session. nsAct follows the
+	// Mounts shape: a cast is a PHYSICAL verb, so the palette closes first and
+	// the cast lands in the live, unpaused world (a voice-slot power cannot be
+	// fired from behind a paused menu at all). A RULE write is not physical —
+	// it is a settings flip — so it answers inline without closing anything.
+	void OnJsNightsideState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("nsStateResult", Nightside::StateJson());
+		});
+	}
+
+	void OnJsNightsideAct(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const std::string res = Nightside::ActJson(req);
+			const auto        j = json::parse(res, nullptr, false);
+			const bool        ok = !j.is_discarded() && j.value("found", false);
+			if (ok) {
+				bool reopen;
+				{
+					std::lock_guard l(g_configMutex);
+					reopen = !g_config.settings.closeAfterFire;
+				}
+				const std::string actName = j.is_discarded() ? std::string("")
+				                                             : j.value("act", std::string(""));
+				ClosePalette();
+				const std::string msg = Nightside::ExecuteAction(req);
+				if (!msg.empty())
+					RE::DebugNotification(msg.c_str());
+				// Reopening onto the tab is right for a kit spell, but a
+				// TRANSFORMATION is a long animation the palette must not sit
+				// on top of — SpellActions::Cast owns the voice-slot road and
+				// the shape change plays unpaused either way, so honour
+				// closeAfterFire and land back on Nightside.
+				//
+				// A skill TREE never reopens, whatever closeAfterFire says:
+				// CSF opens its perks menu only while the game is unpaused, and
+				// a palette dropped back on top of it would both re-pause the
+				// game and hide the menu the press just asked for.
+				if (reopen && actName != "tree")
+					SKSE::GetTaskInterface()->AddTask([]() {
+						if (CanOpenNow()) {
+							g_pendingTab = "nightside";
+							OpenPalette();
+						}
+					});
+				return;
+			}
+			PushToView("nsActResult", res);
+		});
+	}
+
+	// MCM settings popout. The SCAN is pure filesystem work (~100 config.json +
+	// ini + translation files on a busy load order), so it runs on a worker
+	// thread like the Animations tab's pack scan; only the live value reads and
+	// the write touch engine globals, and those hop back to the main thread.
+	void OnJsMcmState(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		std::thread([req]() {
+			bool force = false;
+			if (const auto j = json::parse(req, nullptr, false); !j.is_discarded())
+				force = j.value("force", false);
+			try {
+				McmSettings::Scan(force);
+			} catch (const std::exception& e) {
+				logger::error("mcm-settings: scan failed: {}", e.what());
+			}
+			SKSE::GetTaskInterface()->AddTask([]() {
+				PushToView("mcStateResult", McmSettings::StateJson(false));
+			});
+		}).detach();
+	}
+
+	void OnJsMcmSet(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("mcSetResult", McmSettings::Set(req));
+		});
+	}
+
+	// SkyUI (Papyrus) MCMs. Unlike MCM Helper there is no config.json to parse:
+	// the menu is built at runtime by the mod's own script, so reading it means
+	// driving SKI_ConfigBase through the Papyrus VM (see skyui_mcm.h).
+	//
+	// ⚠ The listing only reads script variables and is cheap, so it runs on the
+	// main thread. The scan and the write are chains of Papyrus round trips that
+	// BLOCK on the VM answering, and the VM answers on its own thread -- running
+	// either on the main thread would deadlock against it. Worker thread, always.
+	void OnJsSkyuiList(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("syListResult", SkyuiMcm::ListJson());
+		});
+	}
+
+	void OnJsSkyuiScan(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		std::thread([req]() {
+			std::string res;
+			try {
+				res = SkyuiMcm::ScanJson(req);
+			} catch (const std::exception& e) {
+				logger::error("skyui-mcm: scan failed: {}", e.what());
+				res = R"({"ok":false,"why":"that MCM's script raised an error"})";
+			}
+			SKSE::GetTaskInterface()->AddTask([res]() {
+				PushToView("syScanResult", res);
+			});
+		}).detach();
+	}
+
+	void OnJsSkyuiSet(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		std::thread([req]() {
+			std::string res;
+			try {
+				res = SkyuiMcm::SetJson(req);
+			} catch (const std::exception& e) {
+				logger::error("skyui-mcm: set failed: {}", e.what());
+				res = R"({"ok":false,"msg":"that MCM's script raised an error"})";
+			}
+			SKSE::GetTaskInterface()->AddTask([res]() {
+				PushToView("sySetResult", res);
+			});
+		}).detach();
+	}
+
 	void OnJsMountsIcons(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
@@ -19050,6 +21123,16 @@ namespace
 	// (loadouts.h explains why one recruit at a time). The palette is NOT
 	// reopened afterwards: a paused palette would stall the very Papyrus
 	// updates the job is waiting on.
+	// Read-only, and cheap: the whole membership map in one reply, keyed by
+	// ORIGINAL name. The Followers tab asks once per open and joins client-side
+	// — no per-row query, and nothing here can change a group.
+	void OnJsLoadoutsGroups(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("loGroupsData", Loadouts::GroupsByOriginalJson());  // marker: loadouts-groups-for-followers
+		});
+	}
+
 	void OnJsLoadoutsState(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
@@ -19083,19 +21166,19 @@ namespace
 
 	void OnJsTimeWait(const char* data)
 	{
-		const float hours = data ? static_cast<float>(std::atof(data)) : 0.0f;
-		SKSE::GetTaskInterface()->AddTask([hours]() {
-			std::string err;
-			const bool  ok = TimeActions::Jump(hours, err);
-			char reply[192];
-			if (ok)
-				std::snprintf(reply, sizeof(reply), "{\"ok\":true,\"hours\":%.1f}", hours);
-			else
-				std::snprintf(reply, sizeof(reply), "{\"ok\":false,\"msg\":\"%s\"}", err.c_str());
-			PushToView("tmResult", reply);
-			PushToView("tmInfo", TimeActions::InfoJson());
-		});
-	}
+        const std::string payload = data ? data : "";
+        SKSE::GetTaskInterface()->AddTask([payload]() {
+            float hours = 0;
+            std::string err;
+            const bool ok = TimeActions::Request(payload, hours, err);
+            nlohmann::json reply{{"ok",ok},{"hours",hours}};
+            if (!ok) reply["msg"] = err;
+            PushToView("tmResult", reply.dump());
+            // The calendar and mod game-time updates need unpaused frames. Never
+            // publish an unsettled GameHour as a completed wait, or reopen here.
+            if (ok || TimeActions::NeedsResume()) ClosePalette();
+        });
+    }
 
 	void OnJsRoomSave(const char* data)
 	{
@@ -20117,11 +22200,12 @@ namespace
 	void OnJsSheetTakePortrait(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
+			PreparePhotoReturn();
 			ClosePalette();
 			const auto dir = DeckViewDir() / "portraits";
 			// ARM instead of fire (Rober, 2026-08-13): close the palette, tell the
-			// player to line up their shot, and capture on the NEXT E press the
-			// input sink sees. The completion callback is unchanged — on the E the
+			// player to line up their shot, and capture on the NEXT Enter press the
+			// input sink sees. The completion callback is unchanged — on Enter the
 			// same DoPlayerCapture path runs and calls this back with the file.
 			PortraitCapture::ArmPlayerSheet(dir, [](const std::string& file) {
 				// MAIN THREAD (the capture path guarantees it).
@@ -20300,10 +22384,58 @@ namespace
 	// (ostim_deck.cpp). Every entry point touches the OStim thread manager, which
 	// is main-thread state — so, like the ZAP player above, all work is an AddTask.
 
+	void OnJsOstimTools(const char* data) {
+        const std::string req=data?data:"{}";
+        SKSE::GetTaskInterface()->AddTask([req]() {
+            ApplyFocusPause(false); // Live scene controls, including native Papyrus callbacks.
+            OstimDeck::Controls(req, [](std::string response){
+                PushToView("osToolsResult",response);
+                const auto j=json::parse(response,nullptr,false);
+                if(!j.is_discarded()&&j.value("ok",false)&&j.value("started",false)){ClosePalette();return;}
+                if(!j.is_discarded()&&j.value("ok",false)&&j.value("lightingEditor",false)){
+                    ClosePalette();MenuActions::Fire("open-smf");return;
+                }
+                // The live alignment overlay: close the paused palette FIRST,
+                // take Focus one task later, or the view is deaf to the keys
+                // it was just handed (the Time Dial / Place-freeze discipline).
+                if(!j.is_discarded()&&j.value("ok",false)&&j.value("alignOverlay",false)){
+                    ClosePalette();
+                    SKSE::GetTaskInterface()->AddTask([](){ AgToggleAlign(); });
+                    return;
+                }
+                if(j.is_discarded()||!j.value("camera",false)||!j.value("ok",false))return;
+                const auto photoRequest = PreparePhotoReturn();
+                ClosePalette();
+                std::thread([j, photoRequest](){
+                    std::this_thread::sleep_for(std::chrono::milliseconds(450));
+                    SKSE::GetTaskInterface()->AddTask([j, photoRequest](){
+                        if(!PhotoSetupCurrent(photoRequest))return;
+                        if(!OstimDeck::ControlsMatch(j.value("signature",""))){RE::DebugNotification("Scene changed; reopen scene photo controls");QueuePhotoReturn();return;}
+                        const auto choice=j.value("fov","keep");
+                        const auto fov=choice=="exact"?PortraitCapture::PhotoFov::Exact:choice=="out"?PortraitCapture::PhotoFov::ZoomOut:choice=="in"?PortraitCapture::PhotoFov::ZoomIn:PortraitCapture::PhotoFov::Keep;
+                        const auto stamp=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+                        PortraitCapture::StartPhotoMode(Journal::ImageDir(),"ostim-"+std::to_string(stamp),j.value("label","Scene"),fov,j.value("freeze",false),j.value("degrees",0.f));
+                    });
+                }).detach();
+            });
+        });
+    }
 	void OnJsOstimGet(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
 			PushToView("osOpen", OstimDeck::OpenJson());
+		});
+	}
+
+	void OnJsOstimActor(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			try {
+				const auto j = json::parse(payload);
+				const auto fid = j.value("formId", 0u);
+				PushToView("osActorState", OstimDeck::ActorStateJson(fid));
+			} catch (...) { logger::warn("ostim: invalid NPC scene status request"); }
 		});
 	}
 
@@ -20349,6 +22481,7 @@ namespace
 	{
 		const std::string mode = data ? data : "";
 		SKSE::GetTaskInterface()->AddTask([mode]() {
+			ApplyFocusPause(false);
 			PushToView("osResult", OstimDeck::SwitchFurniture(mode));
 		});
 	}
@@ -20570,8 +22703,6 @@ namespace
 				std::lock_guard l(g_configMutex);
 				ok = Wardrobe::MergeViewSlice(payload, g_wardrobeConfig, &nowActive);
 			}
-			if (ok)
-				PersistAll();
 			// AUTO-TRACK anyone this save just gave an outfit/wardrobe to.
 			// Assigning means "SOES manages her" — before this, the assignment
 			// saved fine and she still stood there undressed because tracking
@@ -20590,6 +22721,8 @@ namespace
 				}
 				logger::info("Wardrobe: auto-tracked {}|{} on assignment -> {}", fid, plg, res);
 			}
+			if (ok)
+				PersistAll();  // includes the outfit/bag drawn by atomic enrolment
 			PushToView("wdSaved", ok ? "1" : "0");
 		});
 	}
@@ -20657,6 +22790,7 @@ namespace
 				std::lock_guard l(g_configMutex);
 				res = Wardrobe::SetTracked(g_wardrobeConfig, req);
 			}
+			PersistAll();
 			Wardrobe::RequestCatalogueRefresh();   // SOES's own state changed
 			PushToView("wdResult", res);
 		});
@@ -21268,6 +23402,28 @@ namespace
 	 *  The view sends the FULL pre-encoded querystring; this stays a dumb pipe.
 	 *  No AddTask around the kick — Ask::Call is non-blocking and marshals its
 	 *  own reply back to the main thread, exactly like Sharmat::Call. */
+	/* hdHudNotify: plain text (or {"text": "..."}) -> the game's top-left message.
+	 * Trimmed to one HUD line; anything the view wants to say at length belongs
+	 * in its own UI. Marker: hud-notify-bridge */
+	void OnJsHudNotify(const char* data)
+	{
+		std::string msg = data ? data : "";
+		try {
+			const auto j = nlohmann::json::parse(msg);
+			if (j.is_object()) msg = j.value("text", "");
+			else if (j.is_string()) msg = j.get<std::string>();
+		} catch (...) {}
+		// strip control characters; cap the length (the HUD wraps badly past ~150)
+		std::string clean;
+		clean.reserve(msg.size());
+		for (unsigned char c : msg) { if (c >= 0x20 || c == 0x09) clean += static_cast<char>(c); }
+		if (clean.size() > 160) clean = clean.substr(0, 157) + "...";
+		if (clean.empty())
+			return;
+		logger::info("hud-notify: {}", clean);
+		SKSE::GetTaskInterface()->AddTask([clean]() { RE::DebugNotification(clean.c_str()); });
+	}
+
 	void OnJsAskCall(const char* data)
 	{
 		std::string id, query;
@@ -21670,6 +23826,51 @@ namespace
 	// PrismaUI Invoke inside AddTask on the main thread. So the three config-only
 	// sidecars are applied right here (PersistAll()'s dump + write stays off the
 	// render thread) and only the FO replay and the view pushes are queued.
+	// Immutable per-request files prevent phone edits from replacing game-owned
+	// hotkeys.json or losing a newly captured photo between read and save.
+	void ApplyPortalDomainPhotos()
+	{
+		const auto dir = DeckViewDir() / "domain-photo-requests";
+		std::error_code ec;
+		std::vector<std::filesystem::path> files;
+		for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+			if (it->is_regular_file(ec) && it->path().extension() == ".json") files.push_back(it->path());
+			if (files.size() >= 256) break;
+		}
+		std::sort(files.begin(), files.end());
+		bool changed = false;
+		for (const auto& file : files) {
+			if (std::filesystem::file_size(file, ec) > 8192 || ec) continue;
+			std::ifstream in(file, std::ios::binary);
+			if (!in) continue;
+			const auto j = json::parse(in, nullptr, false);
+			in.close();
+			bool applied = false;
+			json previousPhotos; std::string previousCover;
+			const std::string domainId = j.is_object() && j.contains("id") && j["id"].is_string()
+				? j["id"].get<std::string>() : std::string{};
+			if (!domainId.empty()) {
+				std::lock_guard l(g_configMutex);
+				for (auto& mark : g_domConfig.marks) if (mark.id == domainId) {
+					previousPhotos = mark.photos; previousCover = mark.image;
+					applied = DomainPhotos::Edit(mark.photos, mark.image, j); break;
+				}
+			}
+			if (applied && !PersistAll()) {
+				std::lock_guard l(g_configMutex);
+				for (auto& mark : g_domConfig.marks) if (mark.id == domainId) { mark.photos = previousPhotos; mark.image = previousCover; break; }
+				logger::warn("domains: gallery phone edit could not persist; retrying"); continue;
+			}
+			std::filesystem::remove(file, ec);
+			changed = changed || applied;
+		}
+		if (changed) {
+			logger::info("domains: gallery phone edits applied");
+			// Do not interrupt an in-game edit with a full config refresh.
+			// The next Domains open receives the persisted state.
+		}
+	}
+
 	void PortalPollLoop()
 	{
 		constexpr auto kTick = std::chrono::milliseconds(1000);
@@ -21701,7 +23902,32 @@ namespace
 			// runs whether or not there is any portal work to do, which is exactly
 			// when it is needed. The check itself must happen on the main thread
 			// (it touches PrismaUI), so hop.
-			SKSE::GetTaskInterface()->AddTask([]() { OpenDiag::TickTimer diag("desync-watchdog"); DesyncWatchdogTick(); OpenDiag::FlushTickCensus(); });
+			SKSE::GetTaskInterface()->AddTask([]() { OpenDiag::TickTimer diag("desync-watchdog"); DesyncWatchdogTick(); AppearancePresets::Tick(g_gameReady.load()); OpenDiag::FlushTickCensus(); });
+
+			if (g_gameReady.load()) {
+				static std::atomic<bool> domainPhotoBusy{false};
+				std::error_code photoEc;
+				const auto photoQueue = deckDir / "domain-photo-requests";
+				std::filesystem::create_directories(photoQueue, photoEc);
+				if (!g_open.load() && !domainPhotoBusy.load() && !std::filesystem::is_empty(photoQueue, photoEc) && !photoEc) {
+					domainPhotoBusy.store(true);
+					SKSE::GetTaskInterface()->AddTask([]() {
+						try { if (!g_open.load()) ApplyPortalDomainPhotos(); } catch (const std::exception& ex) { logger::warn("domains: gallery queue {}", ex.what()); }
+						domainPhotoBusy.store(false);
+					});
+				}
+				static std::atomic<bool> dossierBusy{false};
+				std::error_code dsEc;
+				const auto requests = deckDir / "dossier-requests";
+				if (!std::filesystem::exists(requests, dsEc)) std::filesystem::create_directories(requests, dsEc);
+				if (!dossierBusy.load() && std::filesystem::exists(requests, dsEc) && !std::filesystem::is_empty(requests, dsEc)) {
+					dossierBusy=true;
+					SKSE::GetTaskInterface()->AddTask([deckDir]() {
+						try { DossierStore::ProcessPortalQueue(deckDir); } catch(const std::exception& e) {logger::warn("dossier portal: {}",e.what());}
+						dossierBusy=false;
+					});
+				}
+			}
 
 			// Combat Arts phone icon queue: one stat() on this worker thread,
 			// real work hops to the main thread inside PollTick itself.
@@ -21931,6 +24157,85 @@ namespace
 				return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 			}
 			const auto kind = j.value("kind", std::string(""));
+            if (kind == "formation") {
+                // formation-portal-live: engine work stays on the main thread;
+                // the pipe returns cached state or a queue receipt, never waits on it.
+                struct Cache { std::mutex mutex; json state; json results = json::object(); std::string epoch; };
+                static Cache cache;
+                static const auto session = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+                if (!g_gameReady.load()) return R"({"ok":false,"msg":"Load a game to manage formations"})";
+                const auto generation = g_conversationEpoch.load();
+                const auto epoch = session + ":" + std::to_string(generation);
+                const auto op = j.value("op",std::string("state"));
+                if (op == "state") {
+                    SKSE::GetTaskInterface()->AddTask([epoch,generation] {
+                        if (!g_gameReady.load() || generation != g_conversationEpoch.load()) return;
+                        auto state = json::parse(FormationActions::StateJson(R"({"provider":"wwm"})"),nullptr,false);
+                        std::lock_guard lock(cache.mutex);
+                        if (cache.epoch != epoch) { cache.results=json::object(); cache.epoch=epoch; }
+                        cache.state=std::move(state);
+                    });
+                    std::lock_guard lock(cache.mutex);
+                    return json({{"ok",true},{"epoch",epoch},{"warming",cache.epoch!=epoch || cache.state.is_null()},
+                        {"state",cache.epoch==epoch?cache.state:json()},{"results",cache.epoch==epoch?cache.results:json::object()}}).dump();
+                }
+                if ((op != "apply" && op != "party") || body.size()>16384 ||
+                    !j.contains("request") || !j["request"].is_object() ||
+                    !j.contains("epoch") || j["epoch"] != epoch ||
+                    !j.contains("commandId") || !j["commandId"].is_string())
+                    return R"({"ok":false,"msg":"Game changed or invalid request; refresh Formation"})";
+                const auto commandId=j["commandId"].get<std::string>();
+                if (commandId.empty() || commandId.size()>64) return R"({"ok":false,"msg":"Invalid command identity"})";
+                {
+                    std::lock_guard lock(cache.mutex);
+                    if (cache.epoch!=epoch || !cache.state.is_object() || !cache.state.value("modern",false))
+                        return R"({"ok":false,"msg":"Refresh Formation with Walk With Me 0.2.2 loaded first"})";
+                    if (cache.results.contains(commandId)) return R"({"ok":true,"queued":true})";
+                    if (cache.results.size()>=16) cache.results.erase(cache.results.begin());
+                    cache.results[commandId]={{"pending",true}};
+                }
+                auto command=j["request"]; command["provider"]="wwm";
+                SKSE::GetTaskInterface()->AddTask([command,op,epoch,generation,commandId] {
+                    if (!g_gameReady.load() || generation!=g_conversationEpoch.load()) return;
+                    json result;
+                    try { result=json::parse(op=="apply" ? FormationActions::Apply(command.dump()) : FormationActions::Reg(command.dump()),nullptr,false); }
+                    catch (const std::exception&) { result={{"ok",false},{"msg","Invalid formation request; refresh the panel"}}; }
+                    if (result.is_object() && result.value("ok",false) && result.value("closeGameMenu",false)) ClosePalette();
+                    auto state=json::parse(FormationActions::StateJson(R"({"provider":"wwm"})"),nullptr,false);
+                    std::lock_guard lock(cache.mutex);
+                    if (cache.epoch==epoch) { cache.results[commandId]=result; cache.state=std::move(state); }
+                });
+                return R"({"ok":true,"queued":true})";
+            }
+            if (kind == "conversation-hold") {
+                // Live only. Return the native result, never an offline queue
+                // that might hold a different actor after loading another save.
+                if (!g_gameReady.load()) return R"({"ok":false,"msg":"Load a game first"})";
+                const auto epoch = g_conversationEpoch.load();
+                auto cancelled = std::make_shared<std::atomic<bool>>(false);
+                auto result = std::make_shared<std::promise<std::string>>();
+                auto ready = result->get_future();
+                const auto request = j.dump();
+                SKSE::GetTaskInterface()->AddTask([request, epoch, cancelled, result]() {
+                    if (cancelled->load()) return;
+                    if (!g_gameReady.load() || epoch != g_conversationEpoch.load()) {
+                        result->set_value(R"({"ok":false,"msg":"Game changed — reopen the NPC card"})"); return;
+                    }
+                    result->set_value(NpcActions::ConversationControl(request));
+                });
+                if (ready.wait_for(std::chrono::milliseconds(450)) == std::future_status::ready) return ready.get();
+                cancelled->store(true);
+                return R"({"ok":false,"msg":"Game did not confirm the hold; retry or use Let them continue"})";
+            }
+            // Live-only privacy commands: native validation and game-thread work
+            // are identical to Scene > Room. Completion is published to the phone.
+            if (kind == "scene-privacy") {
+                if(!g_gameReady.load() || !j.contains("epoch") || !j.contains("commandId"))
+                    return R"({"ok":false,"msg":"Load a game and refresh privacy first"})";
+                const auto request=j.dump();
+                SKSE::GetTaskInterface()->AddTask([request]() { ScenePrivacy::Control(request); });
+                return R"({"ok":true,"queued":true})";
+            }
 			if (kind == "ping") {  // liveness probe: the portal uses it to pick a transport
 				res["ok"] = true;
 				res["msg"] = "hotkey deck live";
@@ -22377,6 +24682,18 @@ namespace
 							NoteHeld(dev == RE::INPUT_DEVICE::kKeyboard, btn->GetIDCode(), true);
 					}
 				}
+				// --- photo mode suppresses other SkyManager shortcuts -----------
+				// FIRST, deliberately: everything below assumes a palette is open
+				// or that keys should reach the view, and in photo mode no palette
+				// is open and the player is flying a camera. PhotoModeActive()
+				// also enforces the timeout, so a forgotten photo mode cannot
+				// leave the world frozen.
+				if (PortraitCapture::PhotoModeActive()) {
+					// PhotoInputGate already dispatched and removed photo buttons
+					// before ANY sink. This branch only sees the camera's inputs.
+					continue;
+				}
+
 				// Hold-to-release wheel: the UP of the key that opened it ends the
 				// gesture. Checked before the IsDown gate (releases are otherwise
 				// invisible here); the view decides what "release" means — in
@@ -22412,40 +24729,13 @@ namespace
 								kExtNames[i], btn->GetIDCode());
 				}
 
-				// --- photo mode owns the keyboard while it is up -----------------
-				// FIRST, deliberately: everything below assumes a palette is open
-				// or that keys should reach the view, and in photo mode no palette
-				// is open and the player is flying a camera. PhotoModeActive()
-				// also enforces the timeout, so a forgotten photo mode cannot
-				// leave the world frozen.
-				if (PortraitCapture::PhotoModeActive() && device == RE::INPUT_DEVICE::kKeyboard) {
-					const auto pcode = btn->GetIDCode();
-					if (btn->IsDown() && pcode == 0x12) {   // E
-						SKSE::GetTaskInterface()->AddTask([]() { PortraitCapture::PhotoShootNow(); });
-						continue;
-					}
-					if (btn->IsDown() && pcode == 0x01) {   // Esc
-						SKSE::GetTaskInterface()->AddTask([]() { PortraitCapture::PhotoCancel(); });
-						continue;
-					}
-					// Everything else (WASD, mouse look) is left alone on purpose —
-					// that IS the camera you are flying.
-					continue;
-				}
 
-				// --- self-portrait ARMED: waiting for the player's E -------------
-				// After "Portrait armed", the palette is closed and the world is
-				// normal so the player can pose. The NEXT E takes the shot; the deck
-				// open key cancels the arm (and swallows the open, so F7 to bail out
-				// does not also reopen the deck over the capture). Tested before the
-				// slot/trigger keys and the open-key match below so an E or the deck
-				// key here is consumed by the arm, not double-handled. This sink
-				// cannot CONSUME events, so E also does its vanilla activate — the
-				// residual; but the shot is deferred >1 s so the frame is settled
-				// regardless of the activate that fires on the same E.
+				// --- armed portrait: Enter shoots, E remains Quick Light ----------
+				// This sink cannot consume E from the other mod. Use a separate
+				// shutter key for both kinds of capture; key-up never takes a shot.
 				if (PortraitCapture::SelfPortraitArmed()) {
 					const auto acode = btn->GetIDCode();
-					if (device == RE::INPUT_DEVICE::kKeyboard && acode == 0x12) {   // E
+					if (device == RE::INPUT_DEVICE::kKeyboard && PhotoInput::Shoot(acode, btn->IsDown())) {   // Enter
 						SKSE::GetTaskInterface()->AddTask([]() { PortraitCapture::SelfPortraitShootNow(); });
 						continue;
 					}
@@ -22583,6 +24873,10 @@ namespace
 				// During a rebind capture the key belongs to the webview (including the
 				// bridge-injected ext code, e.g. F18->105) — never toggle a palette here.
 				if (g_capturing.load())
+					continue;
+				// The Custom Markers shortcut belongs to its input handler. Do not
+				// echo it into our own opener/entry triggers (including same-key binds).
+				if (CustomMarkers::SendingInput())
 					continue;
 
 				const bool isKb = device == RE::INPUT_DEVICE::kKeyboard;
@@ -22755,6 +25049,17 @@ namespace
 							break;
 						}
 					}
+				}
+
+				// Transferred NFF summon: never run under a menu, photo capture or
+				// focused HUD. NFF's original comparison has been unbound first.
+				if (isKb && !AnyOpen() && g_gameReady.load() && !g_worldFrozen.load() &&
+					!g_hudEditing.load() && !g_hudNavFocused.load() && !g_tdOpen.load() && !g_agOpen.load() &&
+					!PortraitCapture::SelfPortraitArmed() &&
+					!(GetAsyncKeyState(VK_SHIFT) & 0x8000) && !(GetAsyncKeyState(VK_CONTROL) & 0x8000) && !(GetAsyncKeyState(VK_MENU) & 0x8000)) {
+					auto* recallUI = RE::UI::GetSingleton();
+					if (recallUI && !recallUI->GameIsPaused() && !recallUI->IsMenuOpen(RE::Console::MENU_NAME) &&
+						PartyRecall::OnKey(idc)) break;
 				}
 
 				// Global per-entry trigger: palette CLOSED only. With the deck open the
@@ -22989,6 +25294,23 @@ namespace
 		// A load is starting: the roster/actors are about to be torn down, so stop the
 		// poller from replaying NPC fields until the load reports success.
 		if (message->type == SKSE::MessagingInterface::kPreLoadGame) {
+			FormationActions::CancelHandoff();
+			AppearancePresets::ResetForLoad();
+			OdCloseDock(false);
+			WardrobeFlair::OnLoad();
+			BroomCleanup::Reset();
+			Wardrobe::ResetBedOutfits();
+			++g_conversationEpoch;
+			NpcActions::ReleaseConversation(0, "save load");
+			++g_travelEpoch;
+			// End the outgoing photo rig before the old scene graph is torn down.
+			PortraitCapture::PhotoCancel();
+			PortraitCapture::ResetPortraitsForLoad();
+			PhotoLighting::End();
+			ScenePrivacy::Reset();
+			NffControl::CancelPending();
+			PartyRecall::Reset();
+			OstimDeck::ResetControls(); // Discard scene undo before actors from another save can resolve.
 			g_gameReady = false;
 			// A load tears down the session — make sure smooth-pause never carries a
 			// frozen world into it (the deck should already be closed, but be sure).
@@ -23001,7 +25323,12 @@ namespace
 			Faith::Invalidate();
 			return;
 		}
+		if (message->type == SKSE::MessagingInterface::kSaveGame) {
+			FormationActions::OnGameSaved();
+		}
 		if (message->type == SKSE::MessagingInterface::kPostLoadGame) {
+			if (message->data) SKSE::GetTaskInterface()->AddTask([] { FormationActions::OnGameLoaded(); });
+			BroomCleanup::Reset();
 			if (message->data)  // data = "the load succeeded"
 				g_gameReady = true;
 			// Text-input failsafe: a raise held across a save load would strand
@@ -23014,6 +25341,10 @@ namespace
 			// holds may have been remapped, and a tick would fling whatever
 			// they now resolve to.
 			NpcActions::OnPostLoadGame();
+			OdCloseDock(false);
+			WardrobeFlair::OnLoad();
+			NpcActions::RestoreConversationsAfterLoad();
+			NpcClearance::OnPostLoadGame();   // releases anyone still held from the sidecar
 			// Second drop of Wintersun's cached tracker: kPreLoadGame already
 			// cleared it, but anything that re-bound DURING the load would hold a
 			// handle from the outgoing session.
@@ -23022,6 +25353,8 @@ namespace
 			// tracking map does not — sweep them before the scanner repopulates,
 			// and drop the session "opened" set, which described the old save.
 			LootHighlight::OnPostLoadGame();
+			OstimDeck::ResetControls();
+			AgCloseAlign(false);   // the scene it was aligning is gone
 			// Auto-Loot's session sets (taken refs, corpse death-grace counters,
 			// toast dedupe) describe the OLD save's FormIDs — drop them, or the
 			// new session's refs inherit a stranger's looted/toasted state.
@@ -23134,6 +25467,18 @@ namespace
 			return;
 		}
 		if (message->type == SKSE::MessagingInterface::kNewGame) {
+			SKSE::GetTaskInterface()->AddTask([] { FormationActions::OnGameLoaded(); });
+			AppearancePresets::ResetForLoad();
+			PartyRecall::Reset();
+			OdCloseDock(false);
+			WardrobeFlair::OnLoad();
+			BroomCleanup::Reset();
+			Wardrobe::ResetBedOutfits();
+			++g_conversationEpoch;
+			NpcActions::RevertConversations();
+			++g_travelEpoch;
+			ScenePrivacy::Reset();
+			NffControl::CancelPending();
 			g_gameReady = true;
 			FertilityBridge::Invalidate();
 			Faith::Invalidate();
@@ -23143,11 +25488,17 @@ namespace
 			return;
 
 		LoadConfig();
+		AppearancePresets::Init(DeckViewDir(), AppearanceCloseForGame);
 		// After LoadConfig (it owns settings): a smooth-pause hang flagged by a
 		// previous session flips the setting to the classic menu pause and
 		// persists it before the open key can freeze anyone again.
 		ConsumeSmoothWedgeFlag();
 		PortraitCapture::InstallPresentGrab();  // frame grabs run on the present thread (upscaler-safe)
+		PhotoInputGate::Install([]() -> PhotoInputGate::DeckKey {
+			std::lock_guard lock(g_configMutex);
+			return {g_config.settings.openDevice == "keyboard", g_config.settings.openDevice == "mouse",
+				g_config.settings.openCode};
+		});
 		NpcActions::Init();   // crosshair sink for freeze/sit/bed/release-all action entries
 		QuestTools::Init();   // quest inspector; its alias index builds lazily on first use
 		SpellActions::Init();  // Spell Deck backend (known-spell enum, cast, equip-toggle)

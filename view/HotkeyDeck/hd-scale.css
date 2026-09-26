@@ -237,16 +237,19 @@
 #rm-toolbar { flex-wrap: wrap; }
 #rm-search-wrap { min-width: 0; }
 
-/* Sharmat popout. Not a tab — a floating panel that lives OUTSIDE #fd-scale,
-   which is exactly why the Followers tab's scale never reached it. Scaling
-   from the top-left corner keeps the drag maths honest: the panel is placed
-   by left/top and a top-left origin leaves that anchor where it was. */
-.sm-pop {
-  width:      calc(660px / var(--hdts-sharmat, 1));   /* Rober 2026-08-06: was 420 — too skinny */
-  max-width:  calc((100% - 12px) / var(--hdts-sharmat, 1));
-  max-height: calc((100% - 12px) / var(--hdts-sharmat, 1));
+/* Sharmat modal. Not a tab — a full-screen modal that lives OUTSIDE
+   #fd-scale, which is exactly why the Followers tab's scale never reached it.
+   ⚠ The scale goes on .sm-zoom, the sheet's INNER wrapper — never on .sm-pop
+   (the backdrop) or .sm-sheet (the card). Both of those are sized by `inset`
+   against the overlay; scaling either leaves a stripe of un-dimmed deck down
+   two edges at anything but 100%. Same divide-the-layout-box-then-scale idiom
+   as every wrapper above. */
+.sm-zoom {
+  width:  calc(100% / var(--hdts-sharmat, 1));
+  height: calc(100% / var(--hdts-sharmat, 1));
   transform: scale(var(--hdts-sharmat, 1));
   transform-origin: top left;
+  transition: transform 130ms ease;
 }
 /* The open animation used to ride `transform`, which would now stomp the
    scale for its 130ms and snap. Opacity alone reads the same. */
@@ -324,18 +327,17 @@
 #wd-editrow .hds-row { padding: 0; gap: 8px; }
 #wd-editrow .hds-label { font-size: 12px; color: #8d8779; }
 
-/* Sharmat's row lives in the popout header, so it is compact: the label goes
-   (the buttons are self-evident beside a percentage) but RESET stays — hiding
-   it is how a panel ends up with no way back to its default size. */
-/* The header now carries four things in 420px of LAYOUT width — and that width
-   is divided by the scale, so at 160% there are only 263px to share. Left as a
-   single nowrap row the name collapsed to one letter. So: the titles keep a
-   floor and the size control WRAPS to its own line rather than eating them. */
-.sm-head { flex-wrap: wrap; row-gap: 6px; }
-.sm-head .sm-titles { min-width: 120px; }
+/* Sharmat's row lives in the modal header. It used to be squeezed to 10px
+   glyphs because the popout was 420 layout px wide and the scale divided that
+   again; the full-screen modal has the room, so the controls are real targets
+   and nothing here is below the surface's 13px floor. The LABEL still goes —
+   a percentage between −/＋ needs no caption — but RESET stays, because
+   hiding it is how a panel ends up with no way back to its default size. */
+.sm-head { flex-wrap: wrap; row-gap: 8px; }
+.sm-head .sm-titles { min-width: 160px; }
 .sm-scale { display: flex; align-items: center; flex: none; margin-left: auto; }
-.sm-head .hds-row { padding: 0; gap: 6px; flex: none; }
+.sm-head .hds-row { padding: 0; gap: 8px; flex: none; }
 .sm-head .hds-label { display: none; }
-.sm-head .hds-val { min-width: 40px; font-size: 10.5px; }
-.sm-head .hds-btn { width: 20px; height: 20px; font-size: 13px; }
-.sm-head .hds-rst { width: auto; padding: 0 5px; font-size: 9.5px; }
+.sm-head .hds-val { min-width: 58px; font-size: 13px; }
+.sm-head .hds-btn { width: 34px; height: 34px; font-size: 16px; border-radius: 8px; }
+.sm-head .hds-rst { width: auto; padding: 0 10px; height: 34px; font-size: 13px; }

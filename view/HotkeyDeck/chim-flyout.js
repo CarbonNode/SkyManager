@@ -200,6 +200,134 @@ var ChimBtn = (function () {
   var onEsc = null;        // bound Esc handler
   var currentCtx = null;
 
+  /* ---- CHIM-side state (2026-09-21) --------------------------------------
+     Rober: "chim dropdown should have like write diary option as well, or
+     refresh dynamic profile or enable dynamic profile settings … also show the
+     current LLM model its using". All of it lives in CHIM's database, not in
+     the game, so it rides the deck's existing HTTP pipe to deck_ask.php
+     (HDOmni.chimCall → haAsk → C++ ask.cpp): mode=chim_state on open (a DB
+     read — the model, the dynamic flag, the last diary line), then
+     dynprof_set / dynprof_refresh / diary on the rows. Keyed by her original
+     name, like `active` above. busy[name] = which row is mid-flight. */
+  var chim = Object.create(null);   // name -> chim_state reply (json)
+  var busy = Object.create(null);   // name -> 'diary' | 'dynprof' | 'refresh'
+  var note = Object.create(null);   // name -> last outcome line for the sub
+  var since = Object.create(null);  // name -> Date.now() when the busy call left
+  var result = Object.create(null); // name -> { at, kind, ok, text } — the last outcome, shown as a banner
+  var ticker = null;
+  /* "make the UI responsive" (Rober, 2026-09-21): a press must show something at
+     once and keep showing it — a busy row with a live seconds counter (repainted
+     every second while the flyout is open), the result inside the flyout when
+     it lands, and the last outcome as a banner when the flyout is reopened. */
+  function tick() {
+    if (!fly || !currentCtx) { clearInterval(ticker); ticker = null; return; }
+    if (busy[currentCtx.original]) render(currentCtx);
+    else { clearInterval(ticker); ticker = null; }
+  }
+  function startTicker() { if (!ticker) ticker = setInterval(tick, 1000); }
+  function elapsed(name) { return since[name] ? Math.max(0, Math.round((Date.now() - since[name]) / 1000)) : 0; }
+  function spin(name) { return ['◐', '◓', '◑', '◒'][elapsed(name) % 4]; }
+  function chimOf(ctx) { return ctx ? chim[ctx.original] : null; }
+  function canChim() { return !!(window.HDOmni && typeof HDOmni.chimCall === 'function'); }
+  function decode(env) {
+    if (!env || !env.ok) return null;
+    var b = env.json;
+    if (typeof b === 'string') { try { b = JSON.parse(b); } catch (e) { b = null; } }
+    return b;
+  }
+  function askState(ctx) {
+    if (!canChim() || !ctx || !ctx.original) return;
+    HDOmni.chimCall('mode=chim_state&npc=' + encodeURIComponent(ctx.original), function (env) {
+      var b = decode(env);
+      if (b && b.ok) chim[ctx.original] = b;
+      else if (env && env.chimDown) note[ctx.original] = 'CHIM isn’t reachable';
+      else if (b && b.error) note[ctx.original] = b.error;
+      if (fly && currentCtx && currentCtx.original === ctx.original) render(currentCtx);
+    }, false);
+  }
+  function ago(ts) {
+    var d = Date.now() / 1000 - (Number(ts) || 0);
+    if (!(d >= 0)) return '';
+    if (d < 90) return 'just now';
+    if (d < 3600) return Math.floor(d / 60) + ' min ago';
+    if (d < 86400) return Math.floor(d / 3600) + ' h ago';
+    return Math.floor(d / 86400) + ' d ago';
+  }
+  function modelLine(st) {
+    if (!st || !st.profile) return '';
+    var p = st.profile;
+    var m = p.model || p.connector || '';
+    if (!m) return '';
+    return m + (p.badge ? ' · ' + p.badge : (p.provider ? ' · ' + p.provider : ''))
+             + (p.profile_name && !p.is_default ? ' · ' + p.profile_name : '');
+  }
+  function toastSafe(msg) {
+    if (typeof toast === 'function') { try { toast(msg); } catch (e) {} }
+  }
+  /* one round trip per row press; the row shows "…" while it is out, the
+     outcome line replaces its sub afterwards, and the state is re-read so
+     the model / diary / flag lines are truthful again */
+  var ACT_TIMEOUT_MS = 90000;   // past the C++ ask budget (75 s) — never leave a row stuck
+  /* the game's own top-left line (hdHudNotify, C++), because a diary reply lands
+     10-20 s after the press and the deck is usually closed by then — the row and
+     the deck toast both die with it (Rober, 2026-09-21: "i dont get any top left
+     notifications or anything"). An older DLL without the listener ignores it. */
+  function hud(msg) { toG('hdHudNotify', String(msg || '').replace(/\s+/g, ' ').slice(0, 150)); }
+  function chimAct(ctx, kind, qs, llm, onBody) {
+    if (!canChim() || busy[ctx.original]) return;
+    busy[ctx.original] = kind;
+    since[ctx.original] = Date.now();
+    delete result[ctx.original];
+    var started = kind === 'diary' ? 'Writing ' + ctx.who + '’s diary… (10–20 s)'
+                : kind === 'refresh' ? 'Rewriting ' + ctx.who + '’s profile… (10–20 s)'
+                : 'Saving…';
+    toastSafe(started);
+    if (llm) hud('CHIM: ' + started);
+    render(ctx);
+    startTicker();
+    var settled = false;
+    var guard = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      delete busy[ctx.original];
+      note[ctx.original] = 'No answer from CHIM in ' + Math.round(ACT_TIMEOUT_MS / 1000) + ' s — it may still be working; reopen to re-read';
+      result[ctx.original] = { at: Date.now(), kind: kind, ok: false, text: note[ctx.original], full: '' };
+      toastSafe(note[ctx.original]);
+      hud(note[ctx.original]);
+      if (fly && currentCtx && currentCtx.original === ctx.original) render(currentCtx);
+    }, ACT_TIMEOUT_MS);
+    HDOmni.chimCall(qs, function (env) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(guard);
+      delete busy[ctx.original];
+      var b = decode(env);
+      var okNow = !!(b && b.ok);
+      if (okNow) { note[ctx.original] = onBody(b) || b.message || 'done'; if (b.kind) chim[ctx.original] = b; }
+      else note[ctx.original] = (env && env.chimDown) ? 'CHIM isn’t reachable — is the server up?' : ((b && b.error) || (env && env.error) || 'CHIM did not answer');
+      result[ctx.original] = { at: Date.now(), kind: kind, ok: okNow, text: note[ctx.original],
+                               full: (okNow && b.entry && b.entry.excerpt) ? String(b.entry.excerpt) : '' };
+      toastSafe(note[ctx.original]);
+      hud(note[ctx.original]);
+      if (fly && currentCtx && currentCtx.original === ctx.original) render(currentCtx);
+    }, !!llm);
+  }
+  function doDiary(ctx) {
+    chimAct(ctx, 'diary', 'mode=diary&npc=' + encodeURIComponent(ctx.original), true, function (b) {
+      return b.entry && b.entry.excerpt ? ('📓 ' + ctx.who + ' wrote: ' + String(b.entry.excerpt).replace(/\s+/g, ' ').slice(0, 140) + '…') : b.message;
+    });
+  }
+  function doDynToggle(ctx) {
+    var st = chimOf(ctx);
+    var want = !(st && st.dynamic);
+    chimAct(ctx, 'dynprof', 'mode=dynprof_set&npc=' + encodeURIComponent(ctx.original) + '&on=' + (want ? '1' : '0'), false, function (b) { return b.message; });
+  }
+  function doDynRefresh(ctx) {
+    chimAct(ctx, 'refresh', 'mode=dynprof_refresh&npc=' + encodeURIComponent(ctx.original), true, function (b) {
+      return (b.changed && b.changed.length) ? ('✎ rewritten: ' + b.changed.join(', ')) : b.message;
+    });
+  }
+
   /* ---- tiny self-contained DOM helper ----------------------------------- */
   function mk(tag, cls, txt) {
     var e = document.createElement(tag);
@@ -211,7 +339,10 @@ var ChimBtn = (function () {
     if (typeof toGame === 'function') toGame(name, arg === undefined ? '' : arg);
   }
 
+  var inlineHost = null;
   function teardown() {
+    inlineHost = null;
+    if (ticker) { clearInterval(ticker); ticker = null; }
     if (fly) { try { fly.remove(); } catch (e) {} fly = null; }
     document.removeEventListener('mousedown', outside, true);
     if (onEsc) { document.removeEventListener('keydown', onEsc, true); onEsc = null; }
@@ -221,6 +352,7 @@ var ChimBtn = (function () {
 
   /* ---- the three actions ------------------------------------------------ */
   function doBackground(ctx) {
+    if (ctx.onNavigate) ctx.onNavigate();
     close();
     if (window.HDOmni && typeof HDOmni.askAbout === 'function') {
       HDOmni.askAbout(ctx.original, 'Tell me about ' + ctx.who
@@ -228,10 +360,69 @@ var ChimBtn = (function () {
     }
   }
   function doSharmat(ctx) {
+    if (ctx.onNavigate) ctx.onNavigate();
     close();
     if (window.SmPane && typeof SmPane.open === 'function') {
       SmPane.open(ctx.original, ctx.who);
     }
+  }
+  /* chim-stay-talk: start a real, reversible native movement hold before
+     opening the editable Direct draft. Neither search nor opening this menu
+     acts on anybody. Quest/follower packages do not decide whether we hold. */
+  var conversationSeq = 0, conversationPending = Object.create(null);
+  function conversationRequest(ctx, op) {
+    var name = String(ctx.original || ctx.who || '').trim();
+    var requestId = 'conversation-' + (++conversationSeq);
+    var timer = setTimeout(function () {
+      if (!conversationPending[requestId]) return;
+      delete conversationPending[requestId];
+      say('Stay and talk was not confirmed. Reopen SkyManager after installing the current DLL; use Let them continue if needed.');
+    }, 5000);
+    conversationPending[requestId] = { ctx: ctx, op: op, timer: timer };
+    say(op === 'start' ? 'Holding ' + name + ' here…' : 'Releasing ' + name + '…');
+    toG('chConversation', JSON.stringify({ requestId: requestId, op: op, formId: fidOf(ctx.formId), name: name }));
+  }
+  window.chConversationResult = function (value) {
+    var r = value;
+    if (typeof r === 'string') { try { r = JSON.parse(r); } catch (_) { return; } }
+    if (!r) return;
+    var pending = conversationPending[r.requestId];
+    if (!pending) return;
+    delete conversationPending[r.requestId]; clearTimeout(pending.timer);
+    say(r.msg || (r.ok ? 'Conversation hold updated' : 'Could not apply conversation hold'));
+    if (!r.ok || pending.op !== 'start' || r.requestId !== 'conversation-' + conversationSeq) return;
+    var ctx = pending.ctx, name = String(ctx.original || ctx.who || '').trim();
+    if (ctx.onNavigate) ctx.onNavigate();
+    close();
+    HDOmni.open('direct', name + ' stops walking away, stays nearby, faces the player, and talks with the player.');
+  };
+  function conversationAction(ctx) {
+    ctx = Object.assign({}, ctx || {});
+    var name = String(ctx.original || ctx.who || '').trim();
+    var why = !name ? 'Choose an NPC first.'
+      : ctx.dead ? (ctx.who || name) + ' is dead.'
+      : !fidOf(ctx.formId) ? 'Choose a nearby NPC with a live reference.'
+      : !(window.HDOmni && typeof HDOmni.open === 'function') ? 'Direct is not available.' : '';
+    return {
+      key: 'chim-stay-talk', label: 'Stay and talk to me…',
+      sub: 'Hold ' + (ctx.who || name) + ' here for up to five minutes, then review and Send the CHIM request. Let them continue releases the hold; leaving or combat ends it automatically.',
+      alias: 'stay talk speak chat conversation stop walking away come closer direct instruction',
+      iconPath: 'icons/custom/hk-chim-dialogue.png',
+      disabled: !!why, why: why,
+      run: function () {
+        if (why) return;
+        conversationRequest(ctx, 'start');
+      },
+    };
+  }
+  function conversationReleaseAction(ctx) {
+    ctx = Object.assign({}, ctx || {});
+    var why = !fidOf(ctx.formId) ? 'Choose the held NPC first.' : '';
+    return { key: 'chim-talk-release', label: 'Let them continue',
+      sub: 'Release this NPC from Stay and talk so their current quest or routine can continue.',
+      alias: 'release resume continue stop end conversation hold stay talk unfreeze',
+      iconPath: 'icons/custom/hk-chim-dialogue.png', disabled: !!why, why: why,
+      run: function () { if (!why) conversationRequest(ctx, 'release'); } };
   }
   /* Toggle CHIM AI. Optimistic: flip our local view of her state and re-render
      at once so the button feels instant; the C++ reply (chStateResult)
@@ -269,7 +460,15 @@ var ChimBtn = (function () {
                                           + (opts && opts.disabled ? ' is-disabled' : ''));
     b.type = 'button';
     if (opts && opts.title) b.title = opts.title;
-    b.appendChild(mk('span', 'chim-fly-ic', icon));
+    var ic = mk('span', 'chim-fly-ic', opts && opts.iconPath ? '' : icon);
+    ic.setAttribute('aria-hidden', 'true');
+    if (opts && opts.iconPath) {
+      var img = document.createElement('img');
+      img.src = opts.iconPath; img.alt = ''; img.width = 30; img.height = 30;
+      ic.appendChild(img);
+    }
+    if (opts && opts.disabled) b.setAttribute('aria-disabled', 'true');
+    b.appendChild(ic);
     var col = mk('span', 'chim-fly-text');
     col.appendChild(mk('span', 'chim-fly-lbl', label));
     if (sub) col.appendChild(mk('span', 'chim-fly-sub', sub));
@@ -293,6 +492,25 @@ var ChimBtn = (function () {
     head.appendChild(mk('span', 'chim-fly-head-ic', '💬'));
     head.appendChild(mk('span', 'chim-fly-head-t', 'CHIM — ' + ctx.who));
     fly.appendChild(head);
+    /* the model she is answered by — Rober: "show the current LLM model its using" */
+    var st = chimOf(ctx);
+    var ml = modelLine(st);
+    var model = mk('div', 'chim-fly-model' + (ml ? '' : ' is-wait'),
+      ml ? ml : (canChim() ? (note[ctx.original] || 'Reading CHIM…') : 'CHIM state needs the Omni'));
+    model.title = ml ? 'The LLM answering ' + ctx.who + ' right now — her CHIM profile’s primary connector' : '';
+    fly.appendChild(model);
+    /* the last outcome, right where the eye lands — survives closing and reopening
+       the flyout, so a diary that finished while the deck was shut is still shown */
+    var res = result[ctx.original];
+    if (res) {
+      var ban = mk('div', 'chim-fly-result' + (res.ok ? ' is-ok' : ' is-bad'));
+      ban.appendChild(mk('span', 'chim-fly-result-t', (res.ok ? '✓ ' : '✕ ') + res.text));
+      if (res.full) ban.appendChild(mk('div', 'chim-fly-result-full', res.full));
+      ban.appendChild(mk('span', 'chim-fly-result-when', ago(res.at / 1000)));
+      ban.title = 'Click to dismiss';
+      ban.addEventListener('click', function (e) { e.stopPropagation(); delete result[ctx.original]; render(ctx); });
+      fly.appendChild(ban);
+    }
 
     /* 1) CHIM Background */
     fly.appendChild(itemBtn('📖', 'CHIM Background',
@@ -324,6 +542,57 @@ var ChimBtn = (function () {
              + '. Hooks CHIM directly (no key) and tracks her real agent state.' },
       function () { toggleActive(ctx); }));
 
+    var talk = conversationAction(ctx);
+    var talkButton = itemBtn('', talk.label,
+      talk.why || 'Hold here, then review and Send. Five minutes; ends when you leave or combat starts. CHIM activation is still needed for speech.',
+      { iconPath: talk.iconPath, disabled: talk.disabled, title: talk.why || talk.sub }, talk.run);
+    talkButton.classList.add('chim-fly-talk');
+    fly.appendChild(talkButton);
+    var releaseTalk = conversationReleaseAction(ctx);
+    var releaseTalkButton = itemBtn('', releaseTalk.label, releaseTalk.sub,
+      { iconPath: releaseTalk.iconPath, disabled: releaseTalk.disabled, title: releaseTalk.why || releaseTalk.sub }, releaseTalk.run);
+    releaseTalkButton.classList.add('chim-fly-talk');
+    fly.appendChild(releaseTalkButton);
+
+    /* 4–6) the CHIM-database rows (2026-09-21). Disabled until the state
+       read lands (no pipe = never), busy while their call is out. */
+    var can = canChim();
+    var b = busy[ctx.original] || '';
+    var last = note[ctx.original] || '';
+    var dsub = b === 'diary' ? spin(ctx.original) + ' Writing… ' + elapsed(ctx.original) + ' s (CHIM is thinking, usually 10–20 s)'
+             : (last && /wrote|Diary|cooldown/i.test(last)) ? last
+             : st && st.diary_cooldown_left > 0 ? 'Diary on cooldown — ' + st.diary_cooldown_left + ' s'
+             : st && st.diary ? 'Last entry ' + ago(st.diary.at) + ' — write another now'
+             : st ? 'No diary yet — write her first entry now'
+             : 'Reading CHIM…';
+    fly.appendChild(itemBtn('📓', 'Write diary', dsub,
+      { disabled: !can || !st || !!b || (st && st.diary_cooldown_left > 0),
+        title: 'Ask CHIM to write ' + ctx.who + '’s diary entry right now — the same request the game sends when her diary is due. Takes a few seconds.' },
+      function () { doDiary(ctx); }));
+
+    var dyn = !!(st && st.dynamic), locked = !!(st && st.locked);
+    var tsub = b === 'dynprof' ? spin(ctx.original) + ' Saving…'
+             : !st ? 'Reading CHIM…'
+             : locked ? (dyn ? 'On, but her profile is LOCKED in CHIM — nothing will change' : 'Off — and her profile is locked in CHIM')
+             : dyn ? 'On — CHIM rewrites her personality, speech style and goals from what she lives through · click to switch off'
+                   : 'Off — her profile stays as written · click to switch on';
+    fly.appendChild(itemBtn(dyn ? '🧬' : '🧬', dyn ? 'Dynamic profile: on' : 'Dynamic profile: off', tsub,
+      { on: dyn, disabled: !can || !st || !!b,
+        title: 'core_npc_master.dynamic_profile — the switch CHIM’s own NPC editor flips. On: her profile evolves; off: fixed.' },
+      function () { doDynToggle(ctx); }));
+
+    var pend = st && st.dynamic_state ? st.dynamic_state.pending_events : null;
+    var rsub = b === 'refresh' ? spin(ctx.original) + ' Rewriting… ' + elapsed(ctx.original) + ' s (CHIM is thinking)'
+             : (last && /rewritten|did not take|scheduler|cooldown —|events for her/i.test(last)) ? last
+             : !st ? 'Reading CHIM…'
+             : !dyn ? 'Switch the dynamic profile on first'
+             : locked ? 'Her profile is locked in CHIM'
+             : (pend != null ? pend + ' new event' + (pend === 1 ? '' : 's') + ' since her last rewrite — ' : '') + 'rewrite now';
+    fly.appendChild(itemBtn('♻', 'Refresh dynamic profile', rsub,
+      { disabled: !can || !st || !!b || !dyn || locked,
+        title: 'Run CHIM’s dynamic-profile pass for ' + ctx.who + ' now, skipping the day-interval and event-count gates (its own attempt cooldown still applies).' },
+      function () { doDynRefresh(ctx); }));
+
     mountAt(ctx.anchorRect);
   }
 
@@ -339,6 +608,10 @@ var ChimBtn = (function () {
   }
 
   function mountAt(r) {
+    if (inlineHost) {
+      fly.classList.add('chim-inline'); fly.setAttribute('role', 'group');
+      inlineHost.appendChild(fly); return;
+    }
     var host = document.getElementById('overlay') || document.body;
     host.appendChild(fly);
     fly.style.position = 'fixed';
@@ -374,6 +647,10 @@ var ChimBtn = (function () {
     if (!ctx.dead) {
       toG('chState', JSON.stringify({ formId: Number(ctx.formId) || 0, name: ctx.original }));
     }
+    /* …and CHIM's database for the model / diary / dynamic-profile rows. A
+       fresh read every open: the flag or the model may have changed in CHIM. */
+    askState(ctx);
+    if (busy[ctx.original]) startTicker();   // reopened mid-call: keep the counter moving
     onEsc = function (e) { if (e.code === 'Escape') { e.stopPropagation(); close(); } };
     setTimeout(function () {
       document.addEventListener('mousedown', outside, true);
@@ -442,6 +719,12 @@ var ChimBtn = (function () {
   }
 
   return {
+    mount: function (host, ctx) {
+      teardown(); inlineHost = host; render(ctx);
+      if (!ctx.dead) toG('chState', JSON.stringify({formId:Number(ctx.formId)||0,name:ctx.original}));
+      askState(ctx); if (busy[ctx.original]) startTicker();
+    },
+    unmount: function (host) { if (inlineHost === host) teardown(); },
     open: open,
     close: close,
     onStateResult: onStateResult,
@@ -451,9 +734,12 @@ var ChimBtn = (function () {
     isAgent: isAgent,
     markFor: markFor,
     crosshairNpc: crosshairNpc,
+    conversationAction: conversationAction,
+    conversationReleaseAction: conversationReleaseAction,
     agents: function () { return { known: agents.known, list: agents.list.slice() }; },
     /* exposed for the harness */
-    _state: function () { return { active: active, known: known, fly: fly, agents: agents }; },
+    _state: function () { return { active: active, known: known, fly: fly, agents: agents, chim: chim, busy: busy, note: note }; },
+    _modelLine: modelLine,
   };
 })();
 window.ChimBtn = ChimBtn;

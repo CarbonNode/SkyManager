@@ -150,3 +150,38 @@ namespace Maras
 		return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 }
+
+// Installed MARAS.psc / TTM_Debug_ToggleSpouseEffect.psc use this native
+// for the same status transition. MARAS owns its co-save map and events.
+namespace Maras {
+namespace {
+class MarriageReply final : public RE::BSScript::IStackCallbackFunctor {
+    std::uint32_t id;
+    std::function<void(bool,std::string)> reply;
+public:
+    MarriageReply(std::uint32_t actorId, std::function<void(bool,std::string)> cb):id(actorId),reply(std::move(cb)){}
+    void operator()(RE::BSScript::Variable v) override {
+        const bool accepted = v.IsBool() && v.GetBool();
+        auto cb = reply; const auto fid = id;
+        SKSE::GetTaskInterface()->AddTask([accepted,cb,fid]() {
+            const auto st = Of(RE::TESForm::LookupByID<RE::Actor>(fid));
+            cb(accepted && st.spouse, accepted && st.spouse ? "Married through M.A.R.A.S" : "M.A.R.A.S did not confirm the marriage");
+        });
+    }
+    bool CanSave() const override { return false; }
+    void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+};
+}
+void Marry(std::uint32_t id, std::function<void(bool,std::string)> reply) {
+    auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
+    if (!Installed() || !GetModuleHandleW(L"MARAS.dll")) { reply(false,"M.A.R.A.S is not available"); return; }
+    if (!actor || actor->IsPlayerRef() || actor->IsDead() || actor->IsDeleted() || actor->IsDisabled()) { reply(false,"That NPC is unavailable"); return; }
+    if (Of(actor).spouse) { reply(false,"Already married through M.A.R.A.S"); return; }
+    auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+    if (!vm) { reply(false,"The script engine is unavailable"); return; }
+    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> cb(new MarriageReply(id,reply));
+    logger::info("dossier-maras: requesting native marriage for {:08X}",id);
+    if (!vm->DispatchStaticCall("MARAS","PromoteNPCToStatusByEnum",
+        RE::MakeFunctionArguments(std::move(actor),std::int32_t(2)),cb)) reply(false,"M.A.R.A.S marriage native is unavailable");
+}
+}

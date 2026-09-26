@@ -48,5 +48,5 @@ namespace PlaceActions
 	// is the actor reference FormID as "0x…"; `markJson` is one mark object in the
 	// same shape Recall takes. Returns {ok, name, msg}: a missing/unloaded actor
 	// or an unresolvable cell is a friendly {ok:false,…}, never a crash.
-	std::string MoveNpcTo(const std::string& npcKey, const std::string& markJson);
+	std::string MoveNpcTo(const std::string& npcKey, const std::string& markJson, bool ownedUnloaded = false);
 }

@@ -1,0 +1,125 @@
+/* ===================================================================== *
+ *  The live OStim alignment overlay (2026-09-21).
+ *
+ *  Lives on the always-on HUD document and is drawn OVER a running scene
+ *  while the game keeps going, so it is deliberately quiet: a compact
+ *  card at the edge, not a full-screen wall. Rober's standing rules still
+ *  apply inside it — nothing under 17px, and the numbers that carry it
+ *  are 24px+, because he reads this from a couch at 2560x1440.
+ *
+ *  ⚠ This document is NOT inside #panel, so it does not ride the deck's
+ *  --ui-scale transform: it wears the scale itself, exactly like #toast
+ *  and the HUD's own fallback toasts.
+ * ===================================================================== */
+
+#hud-align:empty { display: none; }
+#hud-align {
+  position: fixed;
+  right: 3vw;
+  top: 50%;
+  transform: translateY(-50%) scale(var(--ui-scale, 1));
+  transform-origin: right center;
+  z-index: 40;
+  /* The CONTAINER stays click-through so the rest of the HUD underneath it
+     is unaffected; the card itself takes the mouse. ⚠ This was `none` on
+     the whole thing until 2026-09-22, which is half of why the overlay
+     softlocked: it had no clickable control, and could not have had one. */
+  pointer-events: none;
+}
+.ag-card { pointer-events: auto; }
+
+.ag-card {
+  width: 420px; max-width: 42vw; box-sizing: border-box;
+  padding: 22px 24px;
+  background: rgba(25, 25, 31, 0.93);
+  border: 1px solid #b69b56;
+  border-left: 4px solid #d0ad53;
+  border-radius: 14px;
+  color: #eee7db;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+.ag-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  margin-bottom: 14px;
+}
+.ag-titles { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ag-title { margin: 0; font-size: 24px; color: #f0dda6; overflow-wrap: anywhere; }
+.ag-who { font-size: 19px; color: #dbc17a; overflow-wrap: anywhere; }
+
+.ag-rows { display: flex; flex-direction: column; gap: 8px; }
+.ag-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 11px 14px;
+  border: 1px solid rgba(91, 82, 67, 0.9);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.02);
+}
+/* The armed axis — the one ←→ will move. A left rail plus a lift, so it
+   reads at a glance without colour alone carrying it. */
+.ag-row[data-on="true"] {
+  border-color: #d0ad53;
+  background: rgba(81, 67, 38, 0.55);
+  box-shadow: inset 3px 0 0 #e4c570;
+}
+.ag-name  { font-size: 19px; color: #cfc6b4; }
+.ag-row[data-on="true"] .ag-name { color: #f0dda6; }
+.ag-value {
+  font-size: 25px; color: #dbc17a; width: 104px; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.ag-name { flex: 1 1 auto; min-width: 0; }
+
+/* ------------------------------------------------------------ controls --
+   Every one of these exists because the keyboard is NOT dependable here:
+   keys reach the game as well as this view, so the mouse has to be able to
+   do the whole job on its own. */
+.ag-x, .ag-btn, .ag-step, .ag-tab {
+  font: inherit; color: #eee7db; cursor: pointer;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(146, 129, 92, 0.9);
+  border-radius: 9px;
+}
+.ag-x:hover, .ag-btn:hover, .ag-step:hover, .ag-tab:hover {
+  background: rgba(208, 173, 83, 0.18); border-color: #d0ad53;
+}
+.ag-x:active, .ag-btn:active, .ag-step:active, .ag-tab:active {
+  background: rgba(208, 173, 83, 0.3);
+}
+.ag-x { flex: none; padding: 10px 18px; font-size: 18px; }
+
+/* Equal-width tabs on one flush row — no ragged edge, whatever the names. */
+.ag-tabs:empty { display: none; }
+.ag-tabs {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+  gap: 8px; margin-bottom: 14px;
+}
+.ag-tab { padding: 10px 8px; font-size: 18px; overflow-wrap: anywhere; }
+.ag-tab[data-on="true"] {
+  background: rgba(81, 67, 38, 0.75); border-color: #d0ad53; color: #f0dda6;
+}
+
+/* 44px minimum touch target, and a fixed width so the two columns of
+   steppers line up down the card. */
+.ag-step {
+  flex: none; width: 46px; height: 44px; font-size: 24px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.ag-foot { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.ag-btn { padding: 12px 10px; font-size: 18px; }
+.ag-fine[data-on="true"] {
+  background: rgba(81, 67, 38, 0.75); border-color: #d0ad53; color: #f0dda6;
+}
+
+.ag-help {
+  margin: 16px 0 0; font-size: 17px; line-height: 1.55; color: #bdb5a6;
+  border-top: 1px solid rgba(91, 82, 67, 0.7); padding-top: 14px;
+}
+
+@media (max-width: 900px) {
+  .ag-card { width: 340px; padding: 16px; }
+  .ag-title { font-size: 21px; }
+  .ag-value { font-size: 22px; width: 84px; }
+  .ag-step { width: 42px; height: 42px; }
+}

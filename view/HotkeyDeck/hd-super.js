@@ -249,6 +249,29 @@ var HDSuper = (function () {
     hookInput();
   }
 
+  /* Already up and asked to open AGAIN locked to one source (the Teleport action
+     activated from inside the Super Searcher): swap the lock in place — the box
+     empties, says what it wants typed, and only that source answers. Before this
+     the router's press-again-to-close guard fired and the deck vanished
+     (Rober, 2026-09-21). Returns false when super mode is not active. */
+  function relock(only) {
+    if (!ui.active || !window.HDOmni) return false;
+    ui.only = only ? String(only) : '';
+    if (ui.only) document.body.setAttribute('data-ss-only', ui.only);
+    else document.body.removeAttribute('data-ss-only');
+    if (HDOmni.setBlankNote) {
+      HDOmni.setBlankNote(ui.only === 'places'
+        ? '↑↓ move · Enter teleport · Esc back to the game'
+        : '↑↓ move · Enter fire it · Shift+Enter open its tab · Esc back to the game');
+    }
+    var inp = $('omni-input');
+    if (inp) inp.placeholder = ui.only ? onlyHint(ui.only) : 'Search…';
+    if (typeof HDOmni.setQuery === 'function') HDOmni.setQuery('');
+    else if (typeof HDOmni.rerender === 'function') HDOmni.rerender();
+    if (inp && typeof inp.focus === 'function') { try { inp.focus(); } catch (e) {} }
+    return true;
+  }
+
   /* leave super mode. closeDeck=true also closes the palette when this open
      owned it (standalone) — the potion-browser contract. */
   function exitSuper(closeDeck) {
@@ -593,6 +616,7 @@ var HDSuper = (function () {
     _gate: gate,
     _onOmniClosed: onOmniClosed,
     _sourceRows: sourceRows,
+    relock: relock,
     _toggleSource: toggleSource,
     _requestVisibleInvIcons: requestVisibleInvIcons,
     _setLocalCfg: function (o) { localCfg = o || {}; },

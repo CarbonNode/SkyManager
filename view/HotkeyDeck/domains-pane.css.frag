@@ -220,27 +220,31 @@
   background: rgba(10, 10, 14, .72);
   border: 1px solid rgba(255, 255, 255, .16); border-radius: 7px;
   cursor: pointer; cursor: zoom-in;
-  opacity: 0; transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
+  /* visible at rest since 2026-09-26 — it sits beside the Photos button now,
+     and a control that only exists under the pointer is one nobody finds */
+  opacity: .72; transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
 }
-.dm-row:hover .dm-zoomer, .dm-row.sel .dm-zoomer { opacity: .92; }
+.dm-row:hover .dm-zoomer, .dm-row.sel .dm-zoomer, .dm-zoomer:focus { opacity: 1; }
 .dm-zoomer:hover { background: rgba(201, 162, 75, .30); border-color: #c9a24b88; }
 .dm-zoomer:active { transform: scale(.92); }
 
 /* ---------- sub-area tree (chevron + child rows) ---------- */
 
-/* chevron rides the hero's top-left corner as a glassy chip */
-.dm-chev {
-  position: absolute; top: 8px; left: 8px; z-index: 4;
-  width: 26px; height: 26px;
-  display: inline-flex; align-items: center; justify-content: center;
-  font-size: 12px; line-height: 1;
-  color: #e8e4da; background: rgba(10, 10, 14, .72);
-  border: 1px solid rgba(255, 255, 255, .14); border-radius: 7px;
-  cursor: pointer;
-  transition: background 140ms ease, color 140ms ease, transform 140ms ease;
+/* Keep the sub-area action OUTSIDE the photo. Image hover, crop transforms
+   and image-loading fallbacks cannot cover or replace this control. */
+.dm-card-controls { display: flex; padding: 10px 12px 0; }
+.dm-card-controls .dm-chev {
+  position: static; flex: none; min-height: 44px; min-width: 140px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 0 14px; color: #ecd9a0; background: #111116;
+  border: 1px solid #c9a24b; border-radius: 9px; cursor: pointer;
+  font: 600 16px/1.2 "Segoe UI", sans-serif;
 }
-.dm-chev:hover { background: rgba(201,162,75,.25); color: #ecd9a0; }
-.dm-chev.open { color: #c9a24b; }
+.dm-card-controls .dm-chev:hover { background: #30291a; color: #fff6e0; }
+.dm-card-controls .dm-chev:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.dm-card-controls .dm-chev.open { background: #30291a; }
+.dm-chev-gl { font-size: 16px; }
+.dm-chev-n { font: inherit; }
 .dm-chev.spacer { display: none; }   /* cards need no alignment spacer */
 
 /* a sub-area: the old compact horizontal row, spanning the whole grid width
@@ -944,6 +948,8 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
   color: #cdc7b8; font-size: 11.5px; padding: 4px 9px; cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
+.dm-art-crop-btn { min-height: 44px; min-width: 150px; padding: 10px 18px; font-size: 17px; color: #ecd9a0; border-color: #c9a24b; background: #1a1915; }
+.dm-who-face > img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center top; }
 .dm-art-btn:hover { background: rgba(255,255,255,.09); border-color: #55525d; color: #ecd9a0; }
 .dm-art-btn:focus-visible { outline: 1px solid #c9a24b; outline-offset: 1px; }
 .dm-art-btn:disabled { opacity: .4; cursor: default; }
@@ -958,3 +964,72 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
   .dm-art-hint { display: none; }
   .dm-art-val { min-width: 0; }
 }
+
+/* domains-photo-fov-choice: ask before changing the capture camera. Body-level, unscaled. */
+.dm-photo-fov {position:fixed;inset:0;z-index:10050;background:rgba(0,0,0,.78);display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}
+.dm-photo-fov-box {width:640px;max-width:100%;max-height:90vh;overflow:auto;box-sizing:border-box;padding:30px;background:#19191f;border:1px solid #a88b45;border-radius:18px;box-shadow:0 8px 22px rgba(0,0,0,.3);color:#eee9df;}
+.dm-photo-fov-box h2 {font-size:28px;margin:0 0 14px;}
+.dm-photo-fov-box p {font-size:18px;line-height:1.5;margin:0 0 22px;}
+.dm-photo-fov-choice {display:block;width:100%;text-align:left;padding:20px;margin:12px 0;background:#24242c;color:#eee9df;border:1px solid #55515b;border-radius:12px;cursor:pointer;}
+.dm-photo-fov-choice strong {display:block;font-size:22px;margin-bottom:8px;}
+.dm-photo-fov-choice span {display:block;font-size:18px;line-height:1.4;color:#c7c1b7;}
+.dm-photo-fov-choice:hover,.dm-photo-fov-choice:focus {background:#393324;border-color:#d3af57;outline:2px solid #d3af57;outline-offset:2px;}
+.dm-photo-fov-box .dm-photo-fov-note {margin:22px 0;font-size:17px;color:#c7c1b7;}
+.dm-photo-fov-cancel {padding:12px 24px;min-height:48px;font-size:20px;background:#30303b;color:#eee9df;border:1px solid #77717c;border-radius:8px;cursor:pointer;}
+.dm-photo-fov-cancel:focus,.dm-photo-fov-cancel:hover {outline:2px solid #d3af57;outline-offset:2px;}
+@media(max-width:600px) {.dm-photo-fov {padding:12px;}.dm-photo-fov-box {padding:22px;}}
+
+/* domain-photo-lighting: one setup, separate live light and saved exposure. */
+.dm-photo-fov-box {width:1040px;display:flex;flex-direction:column;overflow:hidden;}
+.dm-photo-content {min-height:0;overflow:auto;flex:1 1 auto;scroll-padding:12px 0;}
+.dm-photo-fov-box h3 {font-size:21px;margin:12px 0;}
+.dm-photo-fov-box h4 {font-size:18px;margin:18px 0 10px;color:#c7c1b7;}
+.dm-photo-columns {display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:28px;margin-top:22px;border-top:1px solid #55515b;padding-top:10px;}
+.dm-photo-section {min-width:0;}
+.dm-photo-section + .dm-photo-section {border-left:1px solid #55515b;padding-left:28px;}
+.dm-photo-options {display:flex;flex-wrap:wrap;gap:8px;}
+.dm-photo-options button,.dm-photo-exp-controls button {font:inherit;font-size:18px;min-height:46px;padding:10px 14px;border:1px solid #55515b;border-radius:7px;background:#24242c;color:#eee9df;cursor:pointer;}
+.dm-photo-options button.on {background:#443d29;border-color:#d3af57;color:#f2d888;}
+.dm-photo-options button:focus,.dm-photo-exp-controls button:focus,.dm-photo-start:focus {outline:2px solid #d3af57;outline-offset:2px;}
+.dm-photo-options button:hover:not(:disabled),.dm-photo-exp-controls button:hover:not(:disabled) {background:#393324;border-color:#d3af57;}
+.dm-photo-options button:disabled,.dm-photo-exp-controls button:disabled {opacity:.45;cursor:default;}
+.dm-photo-fov-box .dm-photo-help {font-size:17px;line-height:1.45;color:#c7c1b7;margin:12px 0 20px;}
+.dm-photo-exp-controls {display:flex;align-items:center;gap:12px;margin:12px 0;}
+.dm-photo-exp-controls button {min-width:48px;}
+.dm-photo-exp-value {font-size:20px;min-width:145px;text-align:center;color:#f2d888;}
+.dm-photo-actions {flex-shrink:0;display:flex;flex-wrap:wrap;gap:12px;border-top:1px solid #55515b;padding:16px 0 6px;background:#19191f;}
+.dm-photo-actions .dm-photo-fov-cancel {padding-left:16px;padding-right:16px;}
+.dm-photo-actions .dm-photo-start {padding-left:16px;padding-right:16px;}
+.dm-photo-actions .dm-photo-fov-note {flex:0 0 100%;margin:0 0 4px;font-size:17px;line-height:1.4;}
+.dm-photo-start {font:inherit;font-size:20px;min-height:48px;padding:12px 24px;color:#19191f;background:#d3af57;border:1px solid #d3af57;border-radius:8px;cursor:pointer;}
+.dm-scene-exposure-note {font-size:16px;line-height:1.4;color:#c7c1b7;margin:10px 0 0;max-width:560px;}
+@media(max-width:700px) {.dm-photo-columns {grid-template-columns:1fr;gap:10px;}.dm-photo-section + .dm-photo-section {border-left:0;border-top:1px solid #55515b;padding-left:0;padding-top:10px;}.dm-photo-fov-box {padding:20px;}.dm-photo-options button {font-size:17px;}}
+
+/* Named, tagged photos without replacing the current cover. */
+.dm-photo-album{display:flex;flex-wrap:wrap;gap:12px;border-top:1px solid var(--line);margin-top:14px;padding-top:10px}
+.dm-photo-album h3{flex:0 0 100%;margin:0}
+.dm-photo-album input[type=text]{flex:1;min-width:220px;background:var(--bg-inset,#191d1c);color:var(--text);font:inherit;font-size:18px;border:1px solid var(--line);border-radius:6px;padding:10px 12px}
+.dm-photo-cover{display:flex;align-items:center;gap:8px;min-height:44px;font-size:17px}.dm-photo-cover input{width:20px;height:20px}
+.dm-photo-album input:focus{outline:2px solid var(--gold);outline-offset:2px}
+.dm-gallery-link{cursor:pointer;min-height:32px;border:1px solid var(--line);background:transparent;color:var(--gold)}
+
+/* Photos button, bottom-left of a hero whose domain holds a gallery. ALWAYS
+   visible — the hover-only ⛶ and the 10px chip were the doors nobody found
+   (Rober, 2026-09-26). Same dark plate and gold hover as the ⛶ so the two
+   corners read as one set. */
+.dm-gallery-btn {
+  position: absolute; left: 8px; bottom: 8px; z-index: 4;
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 34px; padding: 0 12px 0 9px;
+  font-size: 14px; font-weight: 600; letter-spacing: .2px; line-height: 1; color: #efe9d8;
+  background: rgba(10, 10, 14, .78);
+  border: 1px solid rgba(255, 255, 255, .18); border-radius: 9px;
+  cursor: pointer; opacity: .88;
+  transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.dm-gallery-btn img { width: 18px; height: 18px; display: block; }
+.dm-gallery-btn .dm-gallery-w { color: #cdbd93; font-weight: 500; }
+.dm-row:hover .dm-gallery-btn, .dm-row.sel .dm-gallery-btn { opacity: 1; }
+.dm-gallery-btn:focus { opacity: 1; outline: 2px solid #e0bf64; outline-offset: 1px; }
+.dm-gallery-btn:hover { background: rgba(201, 162, 75, .30); border-color: #c9a24b88; }
+.dm-gallery-btn:active { transform: scale(.96); }

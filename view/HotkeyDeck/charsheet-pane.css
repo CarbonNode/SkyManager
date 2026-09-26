@@ -2405,3 +2405,74 @@
 }
 .ps-tune-apply:hover:not(:disabled) { background: rgba(201, 162, 75, .3); }
 .ps-tune-apply:disabled { opacity: .5; cursor: default; }
+
+/* ===================================================== SOS size (2026-09-21) ==
+   The player's own size, on the Character tab. Same card language as the rest
+   of the sheet; the track is a plain div rather than <input type=range>,
+   because Ultralight gives a range input no usable thumb. */
+/* The card's own header row: this pane's .ps-card-h is not laid out for a
+   trailing value, so scope the layout here rather than change every card. */
+.ps-sos .ps-card-h {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+}
+.ps-sos .ps-card-t { font: 700 17px/1.2 "Segoe UI", sans-serif; color: #e9e2d2; }
+.ps-sos .ps-sos-val { flex: none; font: 700 15px/1 "Segoe UI", sans-serif; color: #e8dcbb; }
+.ps-sos .ps-sos-val b { font-size: 18px; color: #f2e7ca; }
+
+.ps-sos-row {
+  display: flex; align-items: center; gap: 12px;
+  margin: 12px 0 10px;
+}
+.ps-sos-step {
+  flex: none;
+  width: 46px; min-height: 44px;          /* touch-target floor */
+  font: 700 20px/1 "Segoe UI", sans-serif;
+  color: #e6dcc2;
+  border: 1px solid rgba(201, 162, 75, .42);
+  border-radius: 10px;
+  background: rgba(201, 162, 75, .09);
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.ps-sos-step:hover:not([disabled]) { background: rgba(201, 162, 75, .2); border-color: rgba(201, 162, 75, .8); }
+.ps-sos-step[disabled] { opacity: .35; cursor: default; }
+
+.ps-sos-track {
+  flex: 1 1 auto;
+  height: 16px;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .05);
+  overflow: hidden;
+  cursor: pointer;
+}
+.ps-sos-fill { height: 100%; background: linear-gradient(90deg, #8a6f2e, #c9a24b); }
+.ps-sos-track:focus-visible { outline: 2px solid rgba(201, 162, 75, .6); outline-offset: 2px; }
+
+.ps-sos-presets { display: flex; gap: 8px; flex-wrap: wrap; }
+.ps-sos-preset {
+  min-width: 46px; min-height: 40px;
+  font: 600 15px/1 "Segoe UI", sans-serif;
+  color: #d8d2c4;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .04);
+  cursor: pointer;
+}
+.ps-sos-preset:hover { background: rgba(201, 162, 75, .18); border-color: rgba(201, 162, 75, .6); color: #f2e7ca; }
+.ps-sos-preset.on { background: rgba(201, 162, 75, .28); border-color: rgba(201, 162, 75, .85); color: #f6ecd2; }
+
+.ps-sos-note { margin-top: 9px; font: 500 13.5px/1.45 "Segoe UI", sans-serif; color: #8d8678; }
+
+/* Why there is no slider: SOS RaceMenu owns the player, SOS is not loaded, and
+   so on. A reason, never an inert control. */
+.ps-sos-off {
+  margin-top: 10px; padding: 10px 12px;
+  font: 500 14px/1.45 "Segoe UI", sans-serif;
+  color: #e3d2b4;
+  border: 1px solid rgba(217, 160, 90, .45);
+  border-radius: 10px;
+  background: rgba(217, 160, 90, .08);
+}
+@media (prefers-reduced-motion: reduce) { .ps-sos-step { transition: none; } }

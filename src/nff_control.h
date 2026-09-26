@@ -78,6 +78,8 @@ namespace NffControl
 	// fire if the VM never runs the stack (no save loaded); callers must treat
 	// the immediate return of Apply() as the only guaranteed reply.
 	using Done = std::function<void(const std::string&)>;
+	// Invalidate delayed recovery/recruit observations before changing saves.
+	void CancelPending();
 
 	// True when NFF's controller quest could be resolved this session. False =
 	// the mod is absent (recruit still works, via the vanilla fallback).
@@ -150,7 +152,7 @@ namespace NffControl
 	// PARTY orders take no formId at all — they are what the quick card offers
 	// when the crosshair is empty:
 	//
-	//   { "op":"allSummon"  }   teleport every follower to you
+	//   { "op":"allSummon"  }   active-only cross-framework recall; waiting stays
 	//   { "op":"allRelax"   }   the group starts sandboxing now
 	//   { "op":"allUnrelax" }   stop sandboxing, everyone back to you
 	//   { "op":"allFollow"  }   every loaded follower follows again
@@ -167,8 +169,8 @@ namespace NffControl
 	// NFF's home markers, saying so on screen — so the deck asks and reports the
 	// ASK, never a success it did not witness.
 	//
-	// The first three go through NFF's own group script (nwsFollowerSandboxScript
-	// — DoTaskAll / StartSandbox / ResetSandboxVars) and therefore reach even
+	// Summon uses PartyRecall, independent of NFF. Relax/regroup use NFF's
+	// own group script (StartSandbox / ResetSandboxVars) and reach even
 	// UNLOADED followers, because that script walks NFF's alias array rather
 	// than the high-process actor list. There is no per-follower sandbox order
 	// in NFF to expose: relaxing is group-wide by design.

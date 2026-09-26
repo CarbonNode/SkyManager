@@ -769,6 +769,13 @@ namespace LootHighlight
 		g_active = std::move(next);
 	}
 
+	bool Ping(std::uint32_t refId)
+	{
+		auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+		auto* shader = ResolveColor("gold");
+		return ref && shader && ref->ApplyEffectShader(shader, 8.0f);
+	}
+
 	void OnPostLoadGame()
 	{
 		{

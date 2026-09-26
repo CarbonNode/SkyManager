@@ -8,6 +8,7 @@
 // best-effort. One unreadable or malformed config must never fail a census.
 
 #include "keys_sources.h"
+#include "custom_markers_bindings.h"
 
 #include "pch.h"
 
@@ -871,6 +872,20 @@ namespace KeysSources
 		{
 			const auto fileName = Lower(PathU8(path.filename()));
 			const auto text = ReadTextCapped(path, kMaxFileBytes);
+			if (fileName == "custommarkers.ini" || fileName == "custommapmarkers.ini") {
+				std::error_code ec;
+				if (fileName == "custommapmarkers.ini" && fs::exists(path.parent_path() / "CustomMarkers.ini", ec)) return;
+				const auto add = [&](const CustomMarkersBindings::Spec& spec) {
+					const auto binding = CustomMarkersBindings::Read(text, spec);
+					if (binding.status != CustomMarkersBindings::Status::ready) return;
+					sink.Add(Row{"plugin", "Custom Markers", spec.label, binding.key,
+						CustomMarkersBindings::Modifiers[binding.modifier].label, false,
+						PathU8(path) + " [" + spec.section + "] " + spec.key + " (verified DIK; modifier enum)"});
+				};
+				for (const auto& spec : CustomMarkersBindings::Actions) add(spec);
+				for (const auto& spec : CustomMarkersBindings::OtherBindings) add(spec);
+				return;
+			}
 			const auto fileLevel = FileLevelSpace(text);
 			for (const auto& a : ParseAssignments(text)) {
 				if (!IsKeyField(a.name)) {

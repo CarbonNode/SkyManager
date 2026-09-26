@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Formation · SkyManager</title>
+  <link rel="stylesheet" href="/api/formation-assets/hd-formation.css">
+  <style>
+    *{box-sizing:border-box}body{margin:0;padding:28px;background:#131419;color:#d6d0c0;font:18px/1.5 system-ui,sans-serif}main{max-width:720px;margin:6vh auto}a{color:#e3c574}h1{font:36px Georgia,serif}button{font:inherit;cursor:pointer}#open{padding:14px 22px;border:1px solid #c9a24b;border-radius:8px;background:#c9a24b;color:#17130a}#message{min-height:3em;overflow-wrap:anywhere}#fm-modal{background:#131419}#fm-modal *{animation:none}button:focus-visible,a:focus-visible{outline:2px solid #f2d58c;outline-offset:3px}
+  </style>
+</head>
+<body>
+  <main>
+    <a href="/">‹ Back to SkyManager</a>
+    <h1>Walk together</h1>
+    <p>Manage your walking party, hand-holding, rest and scouting while Skyrim is running.</p>
+    <p id="message" role="status" aria-live="polite">Connecting to Skyrim…</p>
+    <button id="open" type="button">Open formation controls</button>
+  </main>
+  <script>
+    'use strict';
+    let epoch='', busy=false, connection=0;
+    const message=document.getElementById('message');
+    window.toast=text=>{message.textContent=text;};
+    async function api(method,body) {
+      const response=await fetch('/api/formation',{method,cache:'no-store',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+      if(response.status===401){location.href='/';throw new Error('Sign in to SkyManager first.');}
+      const data=await response.json();
+      if(!response.ok || !data.ok)throw new Error(data.msg || data.error || 'Skyrim is unavailable.');
+      return data;
+    }
+    const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+    async function refresh() {
+      const token=++connection;
+      try {
+        let data;
+        for(let n=0;n<8;n++){data=await api('GET');if(!data.warming)break;await wait(300);}
+        if(token!==connection)return;
+        if(data.warming || !data.state || !data.state.modern)throw new Error('Load a save with Walk With Me 0.2.2 and the updated SkyManager, then open these controls again.');
+        epoch=data.epoch;window.fmOpen(data.state);message.textContent='Connected to your current game.';
+      }catch(error){if(token!==connection)return;window.HDFormation.close();window.toast(error.message);}
+    }
+    window.toGame=async(fn,payload)=>{
+      if(fn==='fmGet'){refresh();return;}
+      if(fn==='hdCapture')return;
+      if(!['fmApply','fmReg'].includes(fn) || busy)return;
+      busy=true;
+      try {
+        const activeEpoch=epoch;
+        const receipt=await api('POST',{op:fn==='fmApply'?'apply':'party',epoch:activeEpoch,request:JSON.parse(payload)});
+        for(let n=0;n<30;n++){
+          await wait(350);const state=await api('GET');
+          if(state.epoch!==activeEpoch)throw new Error('The game changed. Reopen Formation before trying again.');
+          const result=state.results&&state.results[receipt.commandId];
+          if(result&&!result.pending){window.fmResult(result);if(state.state)window.fmOpen(state.state);return;}
+        }
+        throw new Error('Skyrim has not confirmed the change yet. Reopen Formation to check before retrying.');
+      }catch(error){window.fmResult({ok:false,msg:error.message});}
+      finally{busy=false;}
+    };
+  </script>
+  <script src="/api/formation-assets/hd-formation.js"></script>
+  <script>
+    document.getElementById('open').addEventListener('click',()=>HDFormation.open());
+    document.addEventListener('keydown',event=>{if(HDFormation.onKey(event)){event.preventDefault();event.stopPropagation();}},true);
+    HDFormation.open();
+  </script>
+</body>
+</html>

@@ -156,6 +156,10 @@ window.CharSheetPane = (function () {
     state.data = normalize(d);
     state.loaded = true;
     state.recvAt = Date.now();
+    /* Other surfaces borrow the player's portrait from here (the Scene
+       page's cast strip). They cannot know when this lands, so say so —
+       the hd-portrait-crops-changed idiom, one event, no coupling. */
+    try { window.dispatchEvent(new CustomEvent('hd-charsheet-data')); } catch (e) {}
     /* an armed remove that no longer matches a present effect is stale */
     const live = {};
     state.data.effects.forEach(function (e) { live[e.key] = true; });
@@ -545,6 +549,7 @@ window.CharSheetPane = (function () {
     renderVitals(d);
     renderReserved(d);
     renderGear(d);      // 2026-08-17: the real equipment grid
+    renderSos();        // 2026-09-21: SOS size, the player's own slider
     renderBattle(d);    // 2026-08-17: stat block + resistances
     renderFaith(d);
     renderSkills(d);
@@ -761,8 +766,8 @@ window.CharSheetPane = (function () {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'ps-portrait-btn ' + cls;
-    b.title = 'Arm the shot, then press E in-game to capture (switches to third person if needed)';
-    b.textContent = capturePending ? '⌛ press E in-game' : label;
+    b.title = 'Arm the shot, then press Enter in-game to capture (switches to third person if needed)';
+    b.textContent = capturePending ? '⌛ press Enter in-game' : label;
     b.disabled = capturePending;
     b.addEventListener('click', function (e) { e.stopPropagation(); takePortrait(); });
     return b;
@@ -777,7 +782,7 @@ window.CharSheetPane = (function () {
        so the player can pose and frame first. The in-game notification is the
        real instruction; this toast is a fallback for the frame before the deck
        hides. */
-    if (typeof window.toast === 'function') window.toast('Portrait armed — line up your shot, then press E');
+    if (typeof window.toast === 'function') window.toast('Portrait armed — line up your shot, then press Enter');
     toGame('psTakePortrait', '');
   }
 
@@ -1227,6 +1232,142 @@ window.CharSheetPane = (function () {
     else pane.appendChild(el);
     return el;
   }
+
+  /* ---------------------------------------------------------- SOS size ----
+     Rober, 2026-09-21: "add a schlong (SOS) slider to characters tab".
+
+     The engine work already existed — SosActions::SizeStateJson / SetActorSize,
+     built for the OStim scene tools — but only reachable through the SCENE
+     bridge (osTools + a live scene signature), so the Character tab could not
+     ask. It now goes through hdSosSize, which is scene-free.
+
+     ⚠ The card REPORTS rather than assumes. SOS's own setup quest skips PLAYER
+     bone scaling whenever its SOSRaceMenu flag is set — SetSize still returns
+     true and still moves the faction rank, so a slider that just drew itself
+     would appear to work and change nothing. SizeStateJson already decides
+     this; when it says `available:false` the card shows its reason instead of
+     a control that lies. Absent SOS entirely and the card is not drawn at all,
+     rather than sitting there empty on a deck that has no SOS. */
+  var sos = { data: null, asked: false, busy: false };
+
+  function sosAsk(op, extra) {
+    if (typeof window.toGame !== 'function') return;
+    var msg = { op: op, who: 'player' };
+    if (extra) for (var k in extra) msg[k] = extra[k];
+    window.toGame('hdSosSize', JSON.stringify(msg));
+  }
+
+  /* One reply channel for every asker (the card and the palette rows), so the
+     card only claims a payload that is about the PLAYER. */
+  window.hdSosSizeData = function (payload) {
+    var d = payload;
+    if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { return; } }
+    if (!d || d.who !== 'player') {
+      /* A palette row aimed at the crosshair NPC. The card must not repaint
+         from it, but the press still has to say what happened — silence after
+         a button is the failure mode this deck keeps fixing. */
+      if (d && d.msg && typeof window.toast === 'function') window.toast(d.msg);
+      return;
+    }
+    sos.data = d;
+    sos.busy = false;
+    renderSos();
+    try { window.dispatchEvent(new CustomEvent('hd-sos-size', { detail: d })); } catch (e) {}
+  };
+
+  /* Used by the palette rows. `who` is 'player' or 'crosshair'; the DELTA is
+     resolved against the live size in C++ (op:"step"), so two presses in a row
+     cannot both read the same stale base. */
+  function sosStep(who, delta) {
+    if (typeof window.toGame !== 'function') return;
+    window.toGame('hdSosSize', JSON.stringify({ op: 'step', who: who, size: delta }));
+  }
+
+  function sosSet(n) {
+    if (!sos.data || !sos.data.available || sos.busy) return;
+    var lo = Number(sos.data.min) || 1, hi = Number(sos.data.max) || 20;
+    var v = Math.max(lo, Math.min(hi, Math.round(n)));
+    if (v === Number(sos.data.size)) return;
+    sos.busy = true;
+    renderSos();
+    sosAsk('set', { size: v });
+  }
+
+  function renderSos() {
+    if (!sos.asked) { sos.asked = true; sosAsk('state'); }
+    var d = sos.data;
+    /* No answer yet, or no SOS in the load order: draw nothing. A card that
+       says "reading…" forever on a deck without SOS is worse than no card. */
+    if (!d || d.present === false) {
+      var gone = $('ps-sos');
+      if (gone) { gone.classList.add('hidden'); gone.innerHTML = ''; }
+      return;
+    }
+    /* Anchor after the gear card when it exists, else after vitals. provisionCard
+       returns null if its anchor is missing, and .ps-gear is itself provisioned
+       — so a reply that lands before renderGear has run (the palette rows can
+       trigger exactly that) would otherwise silently draw nothing. .ps-vitals is
+       in the static markup and always there. */
+    var card = provisionCard('ps-sos', 'ps-card ps-sos', 'SOS size', '.ps-gear') ||
+               provisionCard('ps-sos', 'ps-card ps-sos', 'SOS size', '.ps-vitals');
+    if (!card) return;
+    card.classList.remove('hidden');
+
+    var lo = Number(d.min) || 1, hi = Number(d.max) || 20;
+    var n = Number(d.size);
+    var have = d.available && Number.isFinite(n);
+    var pct = have ? Math.round(((n - lo) / (hi - lo)) * 100) : 0;
+
+    var head = '<div class="ps-card-h"><span class="ps-card-t">Schlongs of Skyrim</span>' +
+      '<span class="ps-sos-val">' + (have ? ('Size <b>' + n + '</b> / ' + hi) : '—') + '</span></div>';
+
+    if (!have) {
+      card.innerHTML = head + '<div class="ps-sos-off">' + esc(d.msg || 'SOS cannot size you right now') + '</div>';
+      return;
+    }
+
+    var steps = '';
+    for (var i = 0; i < 5; i++) {
+      var v = [1, 5, 10, 15, 20][i];
+      steps += '<button class="ps-sos-preset' + (v === n ? ' on' : '') + '" data-sos="' + v + '">' + v + '</button>';
+    }
+    card.innerHTML = head +
+      '<div class="ps-sos-row">' +
+        '<button class="ps-sos-step" data-sos-step="-1" ' + (n <= lo ? 'disabled' : '') +
+          ' title="One size smaller">−</button>' +
+        '<div class="ps-sos-track" role="slider" tabindex="0" aria-label="SOS size"' +
+          ' aria-valuemin="' + lo + '" aria-valuemax="' + hi + '" aria-valuenow="' + n + '">' +
+          '<div class="ps-sos-fill" style="width:' + pct + '%"></div>' +
+        '</div>' +
+        '<button class="ps-sos-step" data-sos-step="1" ' + (n >= hi ? 'disabled' : '') +
+          ' title="One size larger">+</button>' +
+      '</div>' +
+      '<div class="ps-sos-presets">' + steps + '</div>' +
+      '<div class="ps-sos-note">' + (sos.busy ? 'Applying…' :
+        'Through SOS\u2019s own SetSize, so the change sticks after you close the deck.') + '</div>';
+  }
+
+  /* Delegated, because the card is rebuilt on every reply. */
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !t.closest || !t.closest('#ps-sos')) return;
+    var preset = t.closest('[data-sos]');
+    if (preset) { e.stopPropagation(); sosSet(Number(preset.getAttribute('data-sos'))); return; }
+    var step = t.closest('[data-sos-step]');
+    if (step && !step.disabled) {
+      e.stopPropagation();
+      sosSet((Number(sos.data && sos.data.size) || 0) + Number(step.getAttribute('data-sos-step')));
+      return;
+    }
+    var track = t.closest('.ps-sos-track');
+    if (track && sos.data && sos.data.available) {
+      e.stopPropagation();
+      var r = track.getBoundingClientRect();
+      if (!r.width) return;
+      var lo2 = Number(sos.data.min) || 1, hi2 = Number(sos.data.max) || 20;
+      sosSet(lo2 + ((e.clientX - r.left) / r.width) * (hi2 - lo2));
+    }
+  }, true);
 
   function renderGear(d) {
     const card = provisionCard('ps-gear', 'ps-card ps-gear', 'Worn equipment', '.ps-vitals');
@@ -2810,6 +2951,11 @@ window.CharSheetPane = (function () {
 
     const tuneBtn = $('ps-tune-open');
     if (tuneBtn) tuneBtn.addEventListener('click', function (e) { e.stopPropagation(); openTuneModal(); });
+    const appearances = $('ps-appearances-open');
+    if (appearances) appearances.addEventListener('click', function () {
+      if (window.AppearanceGallery) AppearanceGallery.open();
+      else if (typeof window.toast === 'function') window.toast('Appearances is still loading. Try again in a moment.');
+    });
 
     const cls = $('ps-class-input');
     if (cls) {
@@ -3047,6 +3193,35 @@ window.CharSheetPane = (function () {
           });
         });
       }
+      /* SOS size from the palette (Rober, 2026-09-21: "add options for it in
+         command k … with buttons to size up or down player (or npc
+         highlighted)"). Two scopes, named in the label so neither press is a
+         guess: YOU, and whoever is under your crosshair. The player rows carry
+         the live size in their detail when the card has read it; the crosshair
+         rows cannot know it before you aim, and say so rather than inventing a
+         number. Gated on SOS actually being loaded. */
+      if (!sos.data || sos.data.present !== false) {
+        var cur = (sos.data && sos.data.available && Number.isFinite(Number(sos.data.size)))
+          ? ('now ' + sos.data.size + ' / ' + (sos.data.max || 20))
+          : (sos.data && sos.data.msg ? sos.data.msg : 'Schlongs of Skyrim');
+        [['Bigger', 1], ['Smaller', -1]].forEach(function (pair) {
+          items.push({
+            label: 'SOS size: ' + pair[0].toLowerCase() + ' — you',
+            detail: cur + ' · one step through SOS\u2019s own SetSize',
+            kind: 'sos',
+            keywords: 'sos schlong size grow shrink bigger smaller player me self penis scale',
+            run: function () { sosStep('player', pair[1]); },
+          });
+          items.push({
+            label: 'SOS size: ' + pair[0].toLowerCase() + ' — crosshair NPC',
+            detail: 'Whoever you are looking at — aim first, or it refuses',
+            kind: 'sos',
+            keywords: 'sos schlong size grow shrink bigger smaller npc target crosshair them penis scale',
+            run: function () { sosStep('crosshair', pair[1]); },
+          });
+        });
+      }
+
       items.push({ label: 'Character Sheet', kind: 'tab',
         detail: 'Your stats, effects, class and story',
         keywords: 'character sheet level hp magicka stamina class race background history skills' });
@@ -3055,6 +3230,18 @@ window.CharSheetPane = (function () {
   });
 
   return {
+    /* The PLAYER's portrait, for any other surface that draws him (the OStim
+       Scene page's cast strip is the first — Rober, 2026-09-21: "The player
+       should use the profile image from the characters tab").
+       Returns { file, crop } or null. `file` is already view-relative, and the
+       crop is this pane's own normalised display crop, so a caller that
+       applies it gets exactly the framing shown here. */
+    playerPortrait: function () {
+      const meta = (state.data && state.data.meta) || null;
+      const file = meta && String(meta.portrait || '');
+      if (!file) return null;
+      return { file: file, crop: normCrop(meta.portraitCrop) };
+    },
     init: init, onShow: onShow, onHide: onHide, toggleEdit: toggleEdit,
     wantsPause: wantsPause, setFilter: setFilter, _emptyPortrait: emptyPortrait,
     _state: state, _ui: ui, _visibleEffects: visibleEffects, _normalize: normalize,

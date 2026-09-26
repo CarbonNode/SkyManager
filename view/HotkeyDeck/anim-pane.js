@@ -998,6 +998,7 @@ window.AnimPane = (function () {
       state.scanned = !!j.scanned;
       state.packs = Array.isArray(j.packs) ? j.packs : [];
       state.user = normUser(j.user);
+      window.dispatchEvent(new CustomEvent("hd-animation-user-changed"));
       eventIndex = null;
       ui.scanning = false;
       if (ui.view !== 'poses' && ui.view !== 'fav' && !tabById(ui.view)) ui.view = 'poses';
@@ -1325,6 +1326,60 @@ window.AnimPane = (function () {
 
   return {
     init, onShow, onHide, toggleEdit, wantsPause, segAlwaysOn, hideToast,
+    sceneFavorites() {
+      const src = state.user.ostimFavorites;
+      const out = {};
+      if (!src || typeof src !== 'object' || Array.isArray(src)) return out;
+      Object.keys(src).slice(0, 2000).forEach((id) => {
+        const v = src[id];
+        if (v && typeof v === 'object' && typeof v.sceneId === 'string' && v.sceneId === id) out[id] = v;
+      });
+      return out;
+    },
+    sceneLibrary() {
+      const raw=state.user.ostimLibrary;const v=raw&&typeof raw==='object'&&!Array.isArray(raw)?Object.assign({},raw):{};
+      v.recent=Array.isArray(v.recent)?v.recent.filter(s=>s&&typeof s.sceneId==='string').slice(0,50):[];
+      v.collections=Array.isArray(v.collections)?v.collections.filter(s=>typeof s==='string'&&s.trim()).slice(0,40):[];
+      return v;
+    },
+    recordScene(scene) {
+      if(!ui.gotOpen||!scene||!scene.sceneId)return;
+      const v=this.sceneLibrary();if(v.recent[0]&&v.recent[0].sceneId===scene.sceneId)return;
+      v.recent=[Object.assign({},v.recent.find(s=>s.sceneId===scene.sceneId)||{},this.sceneFavorites()[scene.sceneId]||{},scene,{at:Date.now()})].concat(v.recent.filter(s=>s.sceneId!==scene.sceneId)).slice(0,50);
+      state.user.ostimLibrary=v;saveUser();
+    },
+    addSceneCollection(name) {
+      name=String(name||'').trim().slice(0,60);if(!ui.gotOpen||!name||['Favorites','Recent'].includes(name))return false;
+      const v=this.sceneLibrary();if(!v.collections.includes(name)){if(v.collections.length>=40)return false;v.collections.push(name);}
+      state.user.ostimLibrary=v;saveUser();return true;
+    },
+    assignSceneCollection(id,name) {
+      if(!ui.gotOpen||!this.sceneLibrary().collections.includes(name))return false;
+      const v=state.user.ostimFavorites&&state.user.ostimFavorites[id];if(!v)return false;
+      const c=Array.isArray(v.collections)?v.collections:[];v.collections=c.includes(name)?c.filter(x=>x!==name):c.concat(name);
+      saveUser();return true;
+    },
+    sceneFavoritesReady() { return !!ui.gotOpen; },
+    expressionFavorites() {
+      const src=state.user.ostimExpressionFavorites;
+      return Array.isArray(src)?src.filter(s=>typeof s==='string'&&s.length>0&&s.length<=160):[];
+    },
+    toggleExpressionFavorite(name) {
+      if(!ui.gotOpen||typeof name!=='string'||!name||name.length>160)return false;
+      const src=this.expressionFavorites();state.user.ostimExpressionFavorites=src.includes(name)?src.filter(s=>s!==name):src.concat(name);
+      saveUser();window.dispatchEvent(new CustomEvent('hd-animation-user-changed'));return true;
+    },
+    ensureSceneFavorites() { if (!ui.gotOpen) toGame('anGet'); },
+    toggleSceneFavorite(scene) {
+      if (!ui.gotOpen || !scene || !scene.sceneId) return false;
+      const favs = Object.assign({}, state.user.ostimFavorites || {});
+      if (favs[scene.sceneId]) delete favs[scene.sceneId];
+      else favs[scene.sceneId] = Object.assign({}, scene, { sceneId: scene.sceneId, name: scene.name || scene.sceneId, actorCount: scene.actorCount || 0, variant: Math.max(0, Math.floor(Number(scene.variant) || 0)), collections: Array.isArray(scene.collections)?scene.collections:[] });
+      state.user.ostimFavorites = favs;
+      saveUser();
+      window.dispatchEvent(new CustomEvent('hd-animation-user-changed'));
+      return true;
+    },
     _state: state, _ui: ui, _devUser: () => devState.user   // test hooks only
   };
 })();
