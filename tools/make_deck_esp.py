@@ -38,13 +38,21 @@ action blocks are kept because the template system expects them present.
 Masters: Skyrim.esm (for the template formids). With one master, our own
 records carry mod-index 0x01 in their header formids; runtime ids unchanged.
 
-Usage:  python make_deck_esp.py [out.esp]
+Usage: python make_deck_esp.py [out.esp] --shader-source <local plugin.esp>
+
+Shader bodies are a LOCAL build input, not bundled in the public source.
+Use an existing HotkeyDeckWardrobe.esp or ShiningTreasure.esp containing the
+ten bright ST_* shaders. A private build can still use the adjacent
+st_efsh.json, or an explicit --shader-data JSON. Neither path grants any
+redistribution rights to the donor's records.
 """
+import argparse
 import base64
 import json
 import os
 import struct
 import sys
+import zlib
 
 # Stamped into the plugin's TES4 author field, so it SHIPS inside the .esp and
 # is readable in xEdit by anyone who downloads the mod. It must never be the
@@ -78,17 +86,18 @@ PACK_SLEEP_BASE = 0x830            # 0x830..0x833
 # and the 0x8xx package ids.
 FACT_CRAWL_FID = 0x01000900        # local 0x900
 
-# Loot Highlighter EFFECT SHADERS (2026-08-05). The Loot tab glows the item's mesh
-# with a coloured membrane shader — the look Rober wanted, proven by ShiningTreasure
-# (Nexus 21228). We copy its ten bright ST_ShaderList shaders VERBATIM (self-contained:
-# they fill with the vanilla effects\darkswirls_blurry.dds, no custom assets) into our
-# own esp so our crash-free native scanner can apply them — ShiningTreasure itself
-# crashes because its Papyrus loop reads container inventories every 0.3s; we never do.
-# Bodies (base64) live in st_efsh.json beside this script, keyed by editor id; the
-# record body already carries its EDID subrecord, so we only assign a fresh FormID.
+# Loot Highlighter EFFECT SHADERS. The ten bright ST_ShaderList records from
+# ShiningTreasure (Nexus 21228) are supplied locally, never bundled with this
+# public generator. Their bodies reference the vanilla darkswirls_blurry texture.
+# Preserve bodies verbatim and assign only new header FormIDs. The private
+# st_efsh.json input remains supported; public builds use --shader-source.
 # Local 0x950.., clear of every id above. loot_highlight.cpp resolves them by editor id.
 EFSH_FID_BASE = 0x01000950
 _EFSH_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "st_efsh.json")
+SHADER_NAMES = frozenset('ST_' + color for color in (
+    'Blue', 'Brown', 'Cyan', 'Green', 'Orange', 'Pink', 'Purple', 'Red', 'White', 'Yellow'))
+MAX_PLUGIN_BYTES = 64 * 1024 * 1024
+MAX_SHADER_BYTES = 1024 * 1024
 
 FNAM_OPTIONAL_REUSE = 0x0000000A   # kOptional | kAllowReuse (BGSBaseAlias)
 
@@ -249,20 +258,124 @@ def fact_crawl():
     return rec(b"FACT", body, 0, FACT_CRAWL_FID)
 
 
-def efsh_records():
+def shader_editor_id(body, require_data=True):
+    """Read a bounded EFSH body; never accept a truncated subrecord or duplicate EDID."""
+    offset, name, data_sizes = 0, None, []
+    while offset < len(body):
+        if offset + 6 > len(body):
+            raise ValueError('truncated shader subrecord header')
+        sig, size = struct.unpack_from('<4sH', body, offset)
+        offset += 6
+        if offset + size > len(body):
+            raise ValueError('truncated shader subrecord data')
+        payload = body[offset:offset + size]
+        offset += size
+        if sig == b'EDID':
+            if name is not None or not payload.endswith(b'\0') or b'\0' in payload[:-1]:
+                raise ValueError('invalid or duplicate shader EDID')
+            name = payload[:-1].decode('ascii')
+        elif sig == b'DATA':
+            data_sizes.append(size)
+    if require_data and data_sizes != [400]:
+        raise ValueError('expected one 400-byte Skyrim SE shader DATA subrecord')
+    if require_data and name is None:
+        raise ValueError('shader is missing EDID')
+    return name
+
+
+def shaders_from_plugin(data):
+    """Extract only the named shader records from a user's local SE plugin."""
+    if len(data) > MAX_PLUGIN_BYTES or len(data) < 24 or data[:4] != b'TES4':
+        raise ValueError('expected a Skyrim SE plugin smaller than 64 MiB')
+    bodies = {}
+
+    def walk(start, end, depth=0):
+        if depth > 16:
+            raise ValueError('plugin group nesting is too deep')
+        offset = start
+        while offset < end:
+            if offset + 24 > end:
+                raise ValueError('truncated plugin record header')
+            sig, size = struct.unpack_from('<4sI', data, offset)
+            stop = offset + (size if sig == b'GRUP' else 24 + size)
+            if stop < offset + 24 or stop > end:
+                raise ValueError('invalid plugin record/group size')
+            if sig == b'GRUP':
+                # EFSH records live in their own top-level group. Other groups
+                # may contain millions of unrelated records; skip them whole.
+                if data[offset + 8:offset + 12] == b'EFSH':
+                    walk(offset + 24, stop, depth + 1)
+            elif sig == b'EFSH':
+                flags = struct.unpack_from('<I', data, offset + 8)[0]
+                body = data[offset + 24:stop]
+                if flags & 0x40000:
+                    if len(body) < 4:
+                        raise ValueError('truncated compressed shader')
+                    expected = struct.unpack_from('<I', body)[0]
+                    if expected > MAX_SHADER_BYTES:
+                        raise ValueError('compressed shader exceeds size limit')
+                    inflater = zlib.decompressobj()
+                    body = inflater.decompress(body[4:], expected + 1)
+                    if (len(body) != expected or not inflater.eof or
+                            inflater.unused_data or inflater.unconsumed_tail):
+                        raise ValueError('invalid compressed shader size or stream')
+                if len(body) > MAX_SHADER_BYTES:
+                    raise ValueError('shader exceeds size limit')
+                name = shader_editor_id(body, require_data=False)
+                if name in SHADER_NAMES:
+                    if flags & 0x20:
+                        raise ValueError('required shader is deleted: ' + name)
+                    if name in bodies:
+                        raise ValueError('duplicate shader: ' + name)
+                    shader_editor_id(body)
+                    bodies[name] = body
+            offset = stop
+
+    walk(0, len(data))
+    return bodies
+
+
+def load_shader_bodies(shader_source=None, shader_data=None):
+    if shader_source and shader_data:
+        raise ValueError('choose one shader input')
+    if shader_source:
+        with open(shader_source, 'rb') as f:
+            bodies = shaders_from_plugin(f.read(MAX_PLUGIN_BYTES + 1))
+    else:
+        path = shader_data or _EFSH_JSON
+        if not os.path.isfile(path):
+            raise ValueError('shader data is not included in the public source; use '
+                             '--shader-source <existing HotkeyDeckWardrobe.esp or ShiningTreasure.esp>, '
+                             'or --shader-data <local JSON>')
+        with open(path, encoding='utf-8') as f:
+            encoded = json.load(f)
+        if not isinstance(encoded, dict):
+            raise ValueError('shader JSON must be an object keyed by EditorID')
+        bodies = {name: base64.b64decode(value, validate=True) for name, value in encoded.items()}
+    missing = SHADER_NAMES - bodies.keys()
+    extra = bodies.keys() - SHADER_NAMES
+    if missing or extra:
+        raise ValueError('shader set mismatch; missing=%s unexpected=%s' %
+                         (','.join(sorted(missing)), ','.join(sorted(extra))))
+    for name, body in bodies.items():
+        if len(body) > MAX_SHADER_BYTES or shader_editor_id(body) != name:
+            raise ValueError('invalid shader body for ' + name)
+    return bodies
+
+
+def efsh_records(shader_source=None, shader_data=None):
     # The ten bright ShiningTreasure shaders, copied verbatim. Ordered by editor id
     # so FormIDs are deterministic across rebuilds; the body already holds its own
     # EDID (ST_Red .. ST_White), so we only stamp a new header FormID.
-    with open(_EFSH_JSON, "r") as f:
-        bodies = json.load(f)
+    bodies = load_shader_bodies(shader_source, shader_data)
     out = []
     for i, edid in enumerate(sorted(bodies)):
-        body = base64.b64decode(bodies[edid])
+        body = bodies[edid]
         out.append(rec(b"EFSH", body, 0, EFSH_FID_BASE + i))
     return out
 
 
-def build():
+def build(shader_source=None, shader_data=None):
     packs = []
     for i in range(8):
         packs.append(pack_hold(0x01000000 | (PACK_HOLD_BASE + i),
@@ -276,7 +389,7 @@ def build():
 
     qusts = [qust_wardrobe(), qust_npc_control()]
     facts = [fact_crawl()]
-    efsh = efsh_records()
+    efsh = efsh_records(shader_source, shader_data)
 
     n_records = len(packs) + len(qusts) + len(facts) + len(efsh)
     tes4_body = (sub(b"HEDR", struct.pack("<fiI", 1.71, n_records, 0x901))
@@ -318,10 +431,25 @@ def verify(data):
 
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else "HotkeyDeckWardrobe.esp"
-    data = build()
-    with open(out, "wb") as f:
-        f.write(data)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('out', nargs='?', default='HotkeyDeckWardrobe.esp')
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument('--shader-source', help='local SE plugin containing all ten ST_* shaders')
+    source.add_argument('--shader-data', help='local EditorID-to-base64 JSON shader data')
+    args = parser.parse_args()
+    out = args.out
+    input_path = args.shader_source or args.shader_data or _EFSH_JSON
+    same_path = os.path.normcase(os.path.realpath(out)) == os.path.normcase(os.path.realpath(input_path))
+    if os.path.exists(out) and os.path.exists(input_path):
+        same_path |= os.path.samefile(out, input_path)
+    if same_path:
+        parser.error('output must differ from the shader input')
+    try:
+        data = build(args.shader_source, args.shader_data)
+    except (OSError, ValueError, TypeError, zlib.error) as exc:
+        parser.error(str(exc))
     if not verify(data):
         sys.exit(1)
+    with open(out, "wb") as f:
+        f.write(data)
     print("wrote", out)
