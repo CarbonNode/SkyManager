@@ -13,6 +13,12 @@ are tracked here:
 
 ## Patch history
 
+- **Live actor resolution (2026-09-20)** — members stored as a base NPC form
+  can now expose a session-only `liveFormId` resolved from a matching loaded
+  actor. This lets SkyManager's actor tools address spawned followers without
+  persisting an unstable dynamic reference. `inWorld` retains its older
+  meaning for the organizer's own reference-based actions. Build the current
+  Deck API alongside the current SkyManager sources.
 - **v0.1.x (2026-07-24)** — persistent members (unresolved forms are kept, not dropped) +
   SendBack action + drag-along mitigation (`EvaluatePackage` after MoveTo). Rig-only edits.
 - **v0.2.0 (2026-07-28)** — Follower Deck API (`src/DeckAPI.cpp`), consumed by
@@ -35,6 +41,11 @@ are tracked here:
   the view, which is why the bound has to exist here.
 
 ## Build
+
+The checked-in xmake configuration expects the CommonLibSSE-NG checkout at
+`../HotkeyDeck/lib/commonlibsse-ng` relative to your Follower Organizer build
+checkout. Adjust that include path to your local CommonLib checkout if needed.
+The MSVC path-stripping flag derives its prefix from the build project directory.
 
 ```powershell
 # From a compatible Follower Organizer source checkout, copy these integration
