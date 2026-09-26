@@ -5,23 +5,23 @@ This file lists everything third-party that is **compiled into**, **shipped
 alongside**, or **hooked by** the mod, with the licence for each and exactly
 what we do with it.
 
-**The release rule, in one line: we redistribute nobody else's files.** Every
-integration below is a *soft binding* to a mod the user has already installed —
-resolved at runtime, absent = an honest on-screen message, never a crash. No
-third-party mod's DLL, ESP, script, mesh, texture or icon is inside the Hotkey
-Deck archive.
+This inventory distinguishes the public source tree from packaged downloads.
+The source includes third-party API headers, a PNG encoder and licensed fonts.
+Optional runtime mods are normally resolved from the user's installation;
+separately offered components and local shader build inputs are described below.
+A source sync is not a new binary release or a completed release licence audit.
 
 > **How to read the confidence markers**
 > **VERIFIED** — the claim was checked against a file in this repository, and the
 > file + line is named.
 > **VERIFY** — the component is *not* present in this repository (it is fetched
 > at build time, or lives on the build machine), so its licence could **not** be
-> confirmed from here. The check to run before publishing is spelled out. Do not
-> publish with a **VERIFY** left open.
+> confirmed from here. The check to run before publishing is spelled out.
+> Resolve these entries against the exact dependencies before the next binary release.
 
 ---
 
-## 1 · Compiled into `HotkeyDeck.dll`
+## 1 · Compiled into `SkyManager.dll`
 
 ### nlohmann/json — **MIT** — VERIFIED
 
@@ -94,7 +94,7 @@ do with it. Two things are deliberately **not** claimed here:
 |---|---|
 | Where | **Not in this repo.** `xmake.lua` line 4: `includes("lib/commonlibsse-ng")`, resolved inside the Windows build workspace, and `add_deps("commonlibsse-ng")` on the target. |
 | Upstream | https://github.com/CharmedBaryon/CommonLibSSE-NG (an NG fork of Ryan-rsm-McKenzie's CommonLibSSE) |
-| What we do | **Statically linked** into `HotkeyDeck.dll`. This is the largest third-party component in the shipped binary. |
+| What we do | **Statically linked** into `SkyManager.dll`. This is the largest third-party component in the shipped binary. |
 
 Widely distributed as **MIT**, but that could **not** be verified from this
 repository because the library is not checked in here.
@@ -130,29 +130,42 @@ dir /s /b build\.packages\**\LICENSE*
 
 ---
 
-### Single-header decoder / encoder slots — **UNFILLED**
+### stb_image_write — **MIT** — VERIFIED
 
-The runtime spell-icon bridge (built in a parallel workstream) is expected to
-vendor one or two public-domain single-header libraries so it can read the
-user's own DDS atlases and write PNGs. Those files are **not in this repository
-at the time of writing** (`find . -iname 'stb_image*' -o -iname 'bcdec*'`
-returns nothing).
+`src/vendor/stb_image_write.h` is Sean Barrett's PNG writer. Its header offers
+MIT or public-domain terms; this distribution uses the MIT grant reproduced
+below. No `bcdec.h` is vendored in this source snapshot.
 
-Fill these in the moment the header lands — an unfilled slot is a publishing
-blocker, not a nice-to-have:
+```
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
-| Component | Expected where | Expected licence | Status |
-|---|---|---|---|
-| `stb_image_write.h` (Sean Barrett) | `src/stb_image_write.h` | Public domain (Unlicense) **or** MIT — the header offers a dual grant; quote the one chosen | **VERIFY — not yet vendored** |
-| `bcdec.h` (Sergii Kudlai) | `src/bcdec.h` | MIT (check the header's own block) | **VERIFY — not yet vendored** |
-| *(any other single-header helper)* | — | — | **VERIFY** |
+### Walk With Me interface — **GPL-3.0-or-later** — VERIFIED
 
-For each: paste the header's own copyright + permission block verbatim into
-this section, and confirm it is a permissive licence compatible with GPL-3.0.
+`src/third_party/walk-with-me/WayfarerAPI.h` is the unmodified public interface
+from [fatalCMD/walk-with-me](https://github.com/fatalCMD/walk-with-me), revision
+`45227954342a56bee99ff7c9ddf1648bd148b445` (0.2.2). Its accompanying `LICENSE`
+and `README.md` are included in that directory. SkyManager resolves the loaded
+mod's `Wayfarer_GetInterface(1)`; no Walk With Me binary is bundled.
 
 ---
 
-## 2 · Assets in the archive — all first-party
+## 2 · Generated assets and scripts
 
 > The Spell Hotbar icons are **not in this archive at all** — they ship as a
 > **separate optional-file mod** (`SkyManager-SpellHotbarIcons-v*.zip`), bundled
@@ -161,14 +174,47 @@ this section, and confirm it is a permissive licence compatible with GPL-3.0.
 
 | Asset | Provenance | Licence |
 |---|---|---|
-| `PrismaUI/views/HotkeyDeck/icons/custom/*.png` (~85 gold glyphs: `cat-*`, `hk-*`, `hm-*`, `sc-*`, `hd-*`) | Generated for this mod by the author (image model + `tools/icon_knockout.js` knockout pass; style recipe in `modding/guides/deck_icon_style.md`). Verified original — none is extracted from another mod. | GPL-3.0-or-later, with the mod |
+| `PrismaUI/views/HotkeyDeck/icons/custom/*.png` (gold glyphs such as `cat-*`, `hk-*`, `hm-*`, `sc-*`, `hd-*`) | Generated for this mod by the author (image model + `tools/icon_knockout.js` knockout pass; style recipe in `modding/guides/deck_icon_style.md`). Verified original — none is extracted from another mod. | GPL-3.0-or-later, with the mod |
 | `PrismaUI/views/HotkeyDeck/icons/skymanager.png` | Author-generated brand glyph. VERIFIED from repo history: commit `16aa420` — *"A generated gold dragon-head glyph brand icon top-left … (Forge imagen)"*. | GPL-3.0-or-later, with the mod |
-| `PrismaUI/views/*/*.js`, `*.css`, `index.html`, `hud.*` | Written for this mod. No bundled JS/CSS library — `grep -icE 'jquery\|lodash\|d3\.js'` over `app.js` returns 0, and there is no `@font-face` anywhere in `view/`. All UI type is system/emoji fonts. | GPL-3.0-or-later, with the mod |
-| `HotkeyDeckWardrobe.esp` | Generated byte-for-byte by `tools/make_deck_esp.py`. It **masters** `Skyrim.esm` and models vanilla record layouts, but contains **no Bethesda assets** — only our own quest, aliases and script bindings. | GPL-3.0-or-later, with the mod |
-| `HD_WardrobeExec.psc` / `HD_NPCControl.psc` (+ their `.pex`) | Written for this mod (`modding/OutfitCycler/Scripts/Source/`). | GPL-3.0-or-later, with the mod |
+| `PrismaUI/views/*/*.js`, `*.css`, `index.html`, `hud.*` | Written for this mod. No bundled JS/CSS library — `grep -icE 'jquery\|lodash\|d3\.js'` over `app.js` returns 0. The **only** `@font-face` block is `journal-pane.css`'s, which points at the OFL faces in §2a (added 2026-08-16 with the Journal); every other surface uses system/emoji fonts. | GPL-3.0-or-later, with the mod |
+| `HotkeyDeckWardrobe.esp` | Generated byte-for-byte by `tools/make_deck_esp.py`. It **masters** `Skyrim.esm`; it contains our quests, aliases, packages and faction, plus the ten locally supplied ShiningTreasure shaders described below. | Our generated records: GPL-3.0-or-later. Donor shaders retain their own terms. |
+| `HD_WardrobeExec.psc` / `HD_NPCControl.psc` / `HD_MhiyhRemote.psc` (+ their `.pex`) | Written for this mod (`modding/OutfitCycler/Scripts/Source/`). | GPL-3.0-or-later, with the mod |
 
 `preview-art/*.svg` exists only for the browser harness and is **excluded** from
 the release archive by the packager.
+
+---
+
+## 2a · Typefaces the Journal writes in — **SIL Open Font Licence 1.1** — VERIFIED
+
+Added 2026-08-16 with the Journal tab. These eight font families are published
+under the SIL OFL 1.1, which allows
+redistribution — bundled with software or not — provided the licence travels
+with them and the Reserved Font Names are not used for a modified version. We
+ship them **unmodified**; only the file names were changed (permitted: the OFL
+restricts the FONT NAME, which lives inside the file and is untouched).
+
+| Family | File(s) in the archive | Upstream | Licence file shipped beside them |
+|---|---|---|---|
+| IM Fell English | `fonts/IMFellEnglish-{Regular,Italic}.ttf` | `google/fonts` `ofl/imfellenglish` | `fonts/OFL-imfellenglish.txt` |
+| Cardo | `fonts/Cardo-{Regular,Italic,Bold}.ttf` | `google/fonts` `ofl/cardo` | `fonts/OFL-cardo.txt` |
+| Sorts Mill Goudy | `fonts/SortsMillGoudy-{Regular,Italic}.ttf` | `google/fonts` `ofl/sortsmillgoudy` | `fonts/OFL-sortsmillgoudy.txt` |
+| Tangerine | `fonts/Tangerine-{Regular,Bold}.ttf` | `google/fonts` `ofl/tangerine` | `fonts/OFL-tangerine.txt` |
+| Kalam | `fonts/Kalam-{Regular,Bold}.ttf` | `google/fonts` `ofl/kalam` | `fonts/OFL-kalam.txt` |
+| MedievalSharp | `fonts/MedievalSharp-Regular.ttf` | `google/fonts` `ofl/medievalsharp` | `fonts/OFL-medievalsharp.txt` |
+| Pirata One | `fonts/PirataOne-Regular.ttf` | `google/fonts` `ofl/pirataone` | `fonts/OFL-pirataone.txt` |
+| UnifrakturMaguntia | `fonts/UnifrakturMaguntia-Regular.ttf` | `google/fonts` `ofl/unifrakturmaguntia` | `fonts/OFL-unifrakturmaguntia.txt` |
+
+Everything lives in `PrismaUI/views/HotkeyDeck/fonts/`, and the packager ships
+that folder wholesale (`VIEW_ASSET_DIRS` in `tools/make-release.py`) so a licence
+file can never be separated from the font it covers.
+
+**Not a hard dependency.** `journal-pane.css` declares every family as a stack
+ending in a system face of the same character, because `@font-face` support in
+Ultralight was unproven when the Journal shipped. If a face does not load the
+Journal still renders — in Palatino/Georgia/Segoe Script instead — and the style
+picker shows each name drawn in its own face so the player can see which ones
+took.
 
 ---
 
@@ -199,7 +245,7 @@ says so on screen. Sources for each are named so any claim here can be checked.
 | **My Home is Your Home (MHiYH NG)** | linked-ref/keyword reads + `DispatchStaticCall` into `MHiYHController` (`mhiyh_control.cpp`) | none |
 | **Skyrim Outfit Equipment System NG (SOES-NG)** | never called natively — SKSE **mod event** → our own `HD_WardrobeExec.psc` calls SOES's Papyrus API (`wardrobe.cpp`) | none |
 | **Object Manipulation Overhaul (OMO)** | `StartDraggingObject` via `GetProcAddress`; OMO owns the carry UX (`npc_actions.cpp`) | none |
-| **Mesh Rendering Framework (MRF)** | `IMesh_CreateByNifPath` to render *the user's own* item meshes to icons, on their machine (`item_icons.cpp`) | none |
+| **Mesh Rendering Framework (MRF)** | `IMesh_CreateByNifPath` / `…PathSet` / `…Delete` to render *the user's own* item meshes and NPC faces to icons, on their machine (`item_icons.cpp`) | **`src/mrf_api.h`** — a trimmed copy of MRF's own public API header (see below). No MRF runtime binary is bundled. |
 | **MARAS** | read-only faction-rank mirror (`maras.cpp`) | none |
 | **Fertility Mode v3** | read-only script-property reads (`fertility_bridge.cpp`) | none |
 | **AddItemMenu SE** | self-casts its own lesser powers so its shipped flow runs (`aim_actions.cpp`) | none |
@@ -208,6 +254,72 @@ says so on screen. Sources for each are named so any claim here can be checked.
 | **SPID (Spell Perk Item Distributor)** | writes *new* `.ini` files the user asked for (`spid_gear.cpp`) | none |
 | **Follower Wander Framework**, **Better FaceLight**, **Quick Light**, **Tailor**, **LOTD / TCC** (loot glow gate) | records/keys read at runtime, or the mod's own menu key synthesized | none |
 | **Spell Hotbar 2** | **see below — icon art, redistributed WITH PERMISSION** | **none in THIS archive — separate optional-file mod** |
+
+### Mesh Rendering Framework — `src/mrf_api.h`, their header, GPL to GPL
+
+`src/mrf_api.h` is Mesh Rendering Framework's own public API header
+(`include/MeshRenderingFrameworkAPI.h`, github.com/QTR-Modding/Mesh-Rendering-Framework,
+**GPL-3.0**), mechanically trimmed by `modding/tools/gen_mrf_header.py`: the
+`ENABLE_MENU_FRAMEWORK` / SKSEMenuFramework (ImGui) sections are dropped so it
+compiles in a plugin with no ImGui, and `--core-only` additionally drops MRF's
+NPC-composition helper layer, which we do not call. Every line that remains is
+upstream's, unmodified apart from naming `GetModuleHandleW` explicitly. The file
+carries a generated-by banner saying so.
+
+It is here because it is the CORRECT way to call the framework: it is what
+defines `IMesh` and every `IMesh_*` export signature. Before 2026-08-20 this
+plugin hand-mirrored that struct and hand-typed those signatures, and the mirror
+had silently fallen two fields behind upstream.
+
+SkyManager is GPL-3.0 and MRF is GPL-3.0, so including their header is exactly
+what the licence contemplates. **No MRF binary is redistributed** — the DLL is
+resolved at runtime with `GetProcAddress` and the whole feature hides itself when
+the framework is absent. The trimmed API header is part of the compiled
+SkyManager code.
+
+### Body Change NG — the skin-override technique, GPL to GPL
+
+`src/skin_actions.cpp` calls RaceMenu's public Override interface to write skin
+and node texture overrides. Three things in it are **adopted from Body Change
+NG** (github.com/compilecraftworks/Body-Change-NG, **GPL-3.0**), which solved
+the same problem first and solved it properly:
+
+* the **`IOverrideInterfaceV2` declaration** — the complete virtual surface of
+  RaceMenu's Override interface, in upstream order. It has to be complete:
+  omitting any earlier entry silently shifts `AddSkinOverride` /
+  `AddNodeOverride` onto the wrong vtable slot. (The interface itself originates
+  in skee's own `SKEE.h`.)
+* the **route table** — interface version 0 and 1 have no native vtable and must
+  go through NiOverride's Papyrus natives; version 2 is native; anything else
+  fails closed rather than guessing at an unaudited vtable
+  (their `RaceMenuOverrideRouting.h`).
+* the **ownership rule** — RaceMenu stores no owner beside an override key, so
+  the only durable proof that a value is ours is that the value lives in our own
+  texture namespace; a channel somebody else owns is left alone and logged
+  (their `SkinOverrideOwnership.h`).
+
+Their pack-folder convention (`BodySkin\<pack>\Textures\…`) is also read, so a
+skin pack a user already installed for Body Change NG works here unchanged.
+
+SkyManager is GPL-3.0 and Body Change NG is GPL-3.0, so this is exactly what the
+licence contemplates. **No Body Change NG file is redistributed** — nothing of
+theirs is in the archive, the mod is not required, and it is not called at
+runtime.
+
+### ShiningTreasure — local shader input, not in the public repository
+
+`tools/make_deck_esp.py` needs ten bright `ST_*` EFSH record bodies originally
+from [ShiningTreasure](https://www.nexusmods.com/skyrimspecialedition/mods/21228)
+by Hellbeast (uploaded by smilebuddha). Supply an existing local plugin with
+`--shader-source` or local JSON with `--shader-data`. Neither the extracted
+`st_efsh.json` nor donor plugin bytes are published in this source repository.
+
+The upstream Nexus permissions checked on 2026-09-26 require author permission
+for asset reuse and modification. No permission receipt was established in this
+audit. The generated ESP includes the supplied shader bodies: the repo's GPL
+grant does not relicense them, and the extraction option grants no additional
+rights. Resolve permission or replace these records with independently authored
+shaders before distributing a new ESP containing them.
 
 ### Spell Hotbar 2 — the icon library, redistributed WITH PERMISSION
 
@@ -243,10 +355,10 @@ The Followers tab talks to a **fork** of Follower Organizer
 derivative of somebody else's mod.
 
 **The author, MaskedRPGFan, granted permission to redistribute it, on condition
-that they are credited** (reported by the mod author 2026-08-11). This is the
-only third-party **code** the project redistributes; the only third-party
-**art** it redistributes is the Spell Hotbar icon pack above — both with
-permission, both credited.
+that they are credited** (reported by the mod author 2026-08-11). The fork and
+the Spell Hotbar icon pack above
+are separately offered components, each requiring its own credit and recorded
+permission. Other incorporated source and font licences are listed above.
 
 Obligations that follow, and they are not optional:
 
@@ -263,8 +375,8 @@ Obligations that follow, and they are not optional:
   on the real mod instead — that is strictly better for everyone.
 
 ⚠ **This is the one statement on the mod page that must not overreach.** The
-description must not claim the download redistributes nothing; it must say that
-one component is redistributed, with permission, with credit.
+description must identify the components actually included in that download
+and preserve their applicable notices and credits.
 
 ---
 
@@ -283,7 +395,8 @@ one component is redistributed, with permission, with credit.
 
 - [ ] Every **VERIFY** above resolved, and the marker deleted.
 - [ ] CommonLibSSE-NG licence text pasted in, plus each transitive dependency.
-- [ ] Decoder/encoder header slots (§1) filled or confirmed unused.
+- [ ] PNG encoder and API-header notices included with the binary distribution.
+- [ ] ShiningTreasure shader permission documented, or donor shaders replaced before distributing a generated ESP.
 - [ ] PrismaUI author credited by name on the Nexus page.
 - [ ] **pWn3d1337 (Spell Hotbar 2) credited** on the Nexus page (credits AND
       permissions), for the optional icon pack.

@@ -31,9 +31,10 @@ it — but if you use this code, your thing has to be open source too.
 
 ## Building from source
 
-The release archive contains five kinds of artefact. Every one of them is
-built from this repository plus named public dependencies — nothing is
-obfuscated, and each step is reproducible on a clean Windows machine.
+The release archive contains five kinds of artefact. The source and build
+steps are below. Building requires the named development dependencies;
+the ESP generator also requires local shader records (§ 2). Those records
+are intentionally excluded from this public repository.
 
 | Release artefact | Source | Build step |
 |---|---|---|
@@ -80,12 +81,26 @@ The esp is **generated, byte for byte, by a Python script** — no Creation Kit
 involved, nothing hand-edited:
 
 ```
-python tools/make_deck_esp.py HotkeyDeckWardrobe.esp
+python tools/make_deck_esp.py HotkeyDeckWardrobe.esp --shader-source "C:\path\to\existing\HotkeyDeckWardrobe.esp"
 ```
 
-Pure standard library. It writes the two quests + alias/package records and
-then re-parses its own output, printing a record-level dump so the result can
-be inspected (or diffed against the shipped esp) directly.
+Use an existing local `HotkeyDeckWardrobe.esp`, or a local
+[`ShiningTreasure.esp`](https://www.nexusmods.com/skyrimspecialedition/mods/21228)
+containing the ten bright `ST_*` shader records. The input and output must be
+different files. This reads the input without changing or enabling it; do not
+install ShiningTreasure merely to run this build command. An existing local
+EditorID-to-base64 JSON file can instead be supplied with `--shader-data`.
+
+Pure Python standard library. The generator validates all ten shaders, then
+writes the quests, aliases, packages, crawl faction and shaders and prints a
+record-level dump. Missing or malformed input fails before replacing output.
+The default author stamp is `Hotkey Deck`; set `HD_ESP_AUTHOR` to match an older
+build when comparing complete file hashes.
+
+The shader records are third-party build inputs, not covered by this repo's
+GPL grant. Extraction does not grant redistribution permission. See
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md#shiningtreasure--local-shader-input-not-in-the-public-repository)
+before distributing a generated ESP.
 
 ### 3. The Papyrus scripts (`*.pex`)
 
