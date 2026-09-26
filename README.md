@@ -20,6 +20,13 @@ domain albums and daily schedules, photo lighting and input isolation, HUD
 widgets, quest tools, appearance presets and cross-framework follower recall.
 Optional integrations require their respective mods.
 
+The public source omits personal photographs and third-party position artwork
+whose redistribution permission has not been established. The position catalog
+currently has 120 choices; seven illustrations are bundled here. Missing art
+leaves an empty image slot, with labels and controls still available. Captured
+portraits, domain albums and generated spell/item/face images belong to the
+local installation; this repository is not a backup of those images.
+
 `main` is development source and can be ahead of a packaged Nexus release.
 A source sync does not publish a new DLL or establish that every feature has
 been play-tested on every supported setup.
@@ -43,6 +50,17 @@ are intentionally excluded from this public repository.
 | `HotkeyDeckWardrobe.esp` | `tools/make_deck_esp.py` | § 2 below |
 | `Scripts/*.pex` | `papyrus/*.psc` | § 3 below |
 | `FollowerOrganizer.dll` (optional FOMOD component) | `follower-organizer/` | § 4 below |
+
+**Transmog needs its separate pool plugin.** Keep `SkyManagerTransmog.esp` from
+the installed SkyManager package when rebuilding the DLL/views. The public
+export currently includes neither that ESP nor its generator. Without the
+plugin, the Transmog controls report that it is unavailable; an existing save
+using transmog items still depends on those pool records.
+
+When installing the `view/` tree, copy its `.gitkeep` files too. They preserve
+the runtime folders that must exist before MO2 launches the game, including
+the initially empty portrait, domain-photo, journal-image and item-icon folders.
+Keep existing images when updating an installation.
 
 ### 1. The SKSE plugin (`SkyManager.dll`)
 
