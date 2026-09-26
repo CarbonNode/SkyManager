@@ -1,0 +1,982 @@
+/* ===================================================================== *
+ *  Nightside tab (ns-) — the three curses.
+ *
+ *  Rober, 2026-09-14: "new pages / tabs that appear only if you are a
+ *  werewolf, lich, vampire … visually stunning and maybe the overaching
+ *  page can be called something clever."
+ *
+ *  Direction: a RELIQUARY TRIPTYCH. The deck's own carved gold-on-dark
+ *  Nordic chrome (Georgia display face, #c9a24b gold, sunken wells), with
+ *  one altar niche per curse — each niche driven entirely by a single hue
+ *  custom property `--ns-hue` set on the lane element:
+ *
+ *      Blood  #b3202f   crimson      vampirism
+ *      Moon   #9fb4d4   cold silver  lycanthropy
+ *      Bone   #8b6bd6   soul-violet  lichdom
+ *
+ *  That is the `--dm-hue` / `--ct-hue` / `--shf-hue` idiom this codebase
+ *  already uses: palette values stay literal (app.css defines no custom
+ *  properties, so a var() with no definition is silently dropped — see the
+ *  banner at app.css:3263), and only the per-lane accent is a variable,
+ *  scoped to the element that sets it.
+ *
+ *  A lane is DORMANT (you hold the curse, wearing your own face) or AWAKE
+ *  (you are wearing the shape). Awake is the only state that lights the
+ *  aura, and the aura is the one animated thing on the page — behind
+ *  prefers-reduced-motion, because a breathing glow is exactly what that
+ *  setting exists to turn off.
+ *
+ *  Own file on purpose — the sync_view_frags truncation trap.
+ * ===================================================================== */
+
+#ns-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 20px 26px 16px;
+  gap: 18px;
+  position: relative;
+  overflow: hidden;
+}
+#ns-pane.hidden { display: none; }
+
+/* ----------------------------------------------------------- header -- */
+
+.ns-head {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.ns-title-wrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 0 0 auto; }
+
+.ns-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  color: #d8c48f;
+  line-height: 1.1;
+  text-shadow: 0 2px 10px rgba(0,0,0,.6);
+  white-space: nowrap;
+}
+.ns-sub {
+  font-size: 14.5px;
+  color: #b9b4a8;
+  letter-spacing: .3px;
+}
+.ns-sub b { color: #e8e2d4; font-weight: 600; }
+
+/* the little cluster of three sigils beside the title — a lit one means
+   that curse is awake right now, so the header answers "what am I?" before
+   you read a word. */
+.ns-crest { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.ns-crest-mark {
+  width: 34px; height: 34px;
+  padding: 0; font: inherit;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1px solid #2e2e36;
+  background: #0c0c10;
+  color: #4a4751;
+  overflow: hidden;
+  position: relative;
+  transition: color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+.ns-crest-mark svg { width: 20px; height: 20px; display: block; }
+/* the roundel art, laid over the fallback sigil and filling the whole mark */
+.ns-crest-art {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  display: block; border-radius: 50%;
+  opacity: .30;                      /* not yours */
+  transition: opacity 160ms ease;
+}
+.ns-crest-mark.held  .ns-crest-art { opacity: .78; }
+.ns-crest-mark.awake .ns-crest-art { opacity: 1; }
+.ns-crest-mark.held { color: #7d7869; border-color: #3a3a44; }
+button.ns-crest-mark { cursor: pointer; }
+button.ns-crest-mark:hover { border-color: var(--ns-hue, #c9a24b); }
+button.ns-crest-mark:focus-visible {
+  outline: none; box-shadow: 0 0 0 3px rgba(201,162,75,.3);
+}
+/* the sigil of the page you are on */
+.ns-crest-mark.on {
+  border-color: var(--ns-hue, #c9a24b);
+  box-shadow: 0 0 0 2px var(--ns-hue, #c9a24b);
+}
+.ns-crest-mark.awake {
+  color: var(--ns-hue, #c9a24b);
+  border-color: var(--ns-hue, #c9a24b);
+  box-shadow: 0 0 14px -2px var(--ns-hue, #c9a24b), inset 0 0 10px -4px var(--ns-hue, #c9a24b);
+}
+
+.ns-head-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+
+/* sun / hour readout — vampires care, and it is a real engine fact */
+.ns-sky {
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 14px;
+  border-radius: 10px;
+  border: 1px solid #2e2e36;
+  background: #0c0c10;
+  font-size: 14px;
+  color: #b9b4a8;
+  white-space: nowrap;
+}
+.ns-sky b { color: #e8e2d4; font-weight: 600; }
+.ns-sky.burning {
+  border-color: #6d2027;
+  background: linear-gradient(180deg, rgba(179,32,47,.16), rgba(179,32,47,.05));
+  color: #eab4b0;
+}
+.ns-sky.burning b { color: #ffd9d4; }
+.ns-sky svg { width: 17px; height: 17px; flex: 0 0 auto; }
+
+/* ------------------------------------------------------------- bar --- */
+
+/* The bar rides the HEADER row (Rober, 2026-09-14: "this should probably be
+   one line"). It is allowed to grow into whatever the title and the sky chip
+   leave — an earlier version pinned it beside the chip inside .ns-head-right,
+   which squeezed it to ~240px and clipped its own placeholder. With a real
+   flex basis it takes the slack instead, and .ns-head still wraps it onto its
+   own line at narrow widths where one line genuinely will not fit. */
+.ns-tools {
+  display: flex; align-items: center; gap: 12px;
+  flex: 1 1 320px; min-width: 240px;
+}
+
+.ns-bar {
+  display: flex; align-items: center; gap: 10px;
+  background: #0c0c10;
+  border: 1px solid #2e2e36;
+  border-radius: 12px;
+  padding: 0 14px;
+  height: 48px;
+  flex: 1 1 320px;
+  max-width: 560px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.ns-bar:focus-within {
+  border-color: #c9a24b;
+  box-shadow: 0 0 0 3px rgba(201,162,75,.14);
+}
+.ns-bar-glyph { color: #8b8678; font-size: 17px; flex: 0 0 auto; }
+#ns-search {
+  flex: 1; min-width: 0;
+  background: none; border: none; outline: none;
+  color: #f0ece2;
+  font-family: inherit;
+  font-size: 15.5px;
+  letter-spacing: .2px;
+}
+#ns-search::placeholder { color: #6f6a5e; }
+
+/* ------------------------------------------------------------ lanes -- */
+
+#ns-lanes {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  /* ⚠ max-content, not the `auto` default. These lanes are tall, the grid has
+     a DEFINITE height (it is the flex child that owns the scroll), and auto
+     rows in that situation were sized to the container instead of to their
+     content: the lanes then overflowed their own rows and painted on top of
+     each other (measured + screenshotted 2026-09-14 at a 700px panel). */
+  grid-auto-rows: max-content;
+  gap: 18px;
+  align-content: start;
+  padding-right: 4px;
+}
+/* One curse alone should not be a lonely 340px column in a 1600px panel —
+   it gets the room, and its kit grid simply lays out wider. */
+#ns-lanes.ns-one { grid-template-columns: minmax(0, 860px); justify-content: center; }
+
+.ns-lane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px 22px 20px;
+  border-radius: 16px;
+  border: 1px solid #3a3a44;
+  background: linear-gradient(180deg, #16161d 0%, #0e0e13 78%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.035),
+    0 10px 26px -18px #000;
+  /* ⚠ overflow:hidden is load-bearing (it clips the ::before top edge and the
+     ::after glow to the rounded corners) — but it also makes this grid item's
+     automatic minimum size ZERO, which let the row squash and CLIP the lane's
+     own content at every width (measured 2026-09-14: lane wanted 781px, got
+     207px at a 700px panel). min-height restores the content floor without
+     giving up the clip. */
+  min-height: min-content;
+  overflow: hidden;
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+
+/* the hue only ever enters through this one wash + the top edge, so a lane
+   reads as the same carved plate as every other deck surface, lit from
+   within rather than painted a different colour. */
+.ns-lane::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    var(--ns-hue, #c9a24b) 22%,
+    var(--ns-hue, #c9a24b) 78%,
+    transparent 100%);
+  opacity: .5;
+}
+.ns-lane::after {
+  content: "";
+  position: absolute;
+  inset: -40% -30% auto -30%;
+  height: 70%;
+  background: radial-gradient(ellipse at 50% 0%,
+    var(--ns-hue, #c9a24b) 0%, transparent 68%);
+  opacity: .07;
+  pointer-events: none;
+}
+
+.ns-lane.awake {
+  border-color: var(--ns-edge, #3a3a44);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.05),
+    0 0 0 1px var(--ns-soft, transparent),
+    0 14px 34px -20px var(--ns-hue, #000);
+}
+.ns-lane.awake::before { opacity: 1; }
+.ns-lane.awake::after  { opacity: .2; }
+
+/* ------------------------------------------------------- lane head --- */
+
+.ns-lane-head { display: flex; align-items: center; gap: 16px; }
+
+/* the head doubles as the way in to this curse's own page */
+.ns-lane-open {
+  display: flex; align-items: center; gap: 16px;
+  flex: 1 1 auto; min-width: 0;
+  background: none; border: none; padding: 0; margin: 0;
+  color: inherit; font: inherit; text-align: left;
+  cursor: pointer; border-radius: 12px;
+}
+.ns-lane-open.static { cursor: default; }
+.ns-lane-open:focus-visible {
+  outline: none; box-shadow: 0 0 0 3px rgba(201,162,75,.26);
+}
+.ns-lane-go {
+  margin-left: 4px; color: #5d5a64; display: flex;
+  transition: color 140ms ease, transform 140ms ease;
+}
+.ns-lane-go .ns-chev { width: 18px; height: 18px; color: inherit; }
+button.ns-lane-open:hover .ns-lane-go { color: var(--ns-hue, #c9a24b); transform: translateX(2px); }
+button.ns-lane-open:hover .ns-lane-lane { color: #fff; }
+
+/* ---- a curse's own page ---- */
+#ns-lanes.ns-focused { grid-template-columns: minmax(0, 1100px); justify-content: center; }
+
+.ns-back-bar {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding-bottom: 2px;
+}
+.ns-back {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 15px 9px 11px;
+  border-radius: 10px;
+  border: 1px solid #3a3a44;
+  background: #0e0e13;
+  color: #b9b4a8;
+  font-family: inherit; font-size: 14.5px; font-weight: 600;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+.ns-back .ns-chev { transform: rotate(180deg); width: 16px; height: 16px; color: inherit; }
+.ns-back:hover { color: #e8e2d4; border-color: #c9a24b; }
+.ns-back:focus-visible { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.24); }
+.ns-back-where {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 15px; letter-spacing: 1.2px; color: #7d7869;
+}
+
+/* a focused lane gets more air and a bigger sigil */
+.ns-focused .ns-lane { padding: 26px 26px 24px; }
+.ns-focused .ns-medal { width: 104px; height: 104px; }
+.ns-focused .ns-medal svg { width: 56px; height: 56px; }
+.ns-focused .ns-lane-lane { font-size: 30px; }
+.ns-focused .ns-kit { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); }
+
+.ns-medal {
+  position: relative;
+  width: 86px; height: 86px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 38%, #1c1c24 0%, #08080b 76%);
+  border: 1px solid #2e2e36;
+  box-shadow: inset 0 3px 10px -4px #000, inset 0 -1px 0 rgba(255,255,255,.03);
+  color: #5d5a64;
+  /* ⚠ deliberately NOT overflow:hidden — the awake aura is an ::after at
+     inset:-9px and a clip here would eat it. The art is a circle already
+     (its own border-radius), so it needs no help. */
+  transition: color 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
+}
+.ns-medal svg { width: 46px; height: 46px; display: block; }
+/* The roundel carries its own field and gold rim, so it simply fills the
+   well; the well keeps the hairline border and owns the awake aura. */
+.ns-medal-art {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  display: block; border-radius: 50%;
+  opacity: .86;                      /* dormant — present but asleep */
+  transition: opacity 220ms ease;
+}
+.ns-lane.awake .ns-medal-art { opacity: 1; }
+.ns-lane.held .ns-medal { color: var(--ns-mute, #6f6a5e); }
+.ns-lane.awake .ns-medal {
+  color: var(--ns-hue, #c9a24b);
+  border-color: var(--ns-edge, #2e2e36);
+  box-shadow:
+    inset 0 3px 10px -4px #000,
+    0 0 22px -4px var(--ns-hue, #c9a24b);
+}
+
+/* the breathing aura — awake only, and only when motion is welcome */
+.ns-lane.awake .ns-medal::after {
+  content: "";
+  position: absolute; inset: -9px;
+  border-radius: 50%;
+  border: 1px solid var(--ns-hue, #c9a24b);
+  opacity: .34;
+  animation: nsPulse 2900ms ease-in-out infinite;
+}
+@keyframes nsPulse {
+  0%, 100% { transform: scale(1);    opacity: .30; }
+  50%      { transform: scale(1.07); opacity: .07; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ns-lane.awake .ns-medal::after { animation: none; opacity: .3; }
+}
+
+.ns-lane-id { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+
+.ns-lane-lane {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 25px; font-weight: 600; letter-spacing: 2.2px;
+  color: #e8e2d4;
+  line-height: 1.05;
+}
+.ns-lane-name { font-size: 14.5px; color: #b9b4a8; letter-spacing: .3px; }
+.ns-lane-src  {
+  font-size: 13px; color: #797463;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.ns-state {
+  margin-left: auto;
+  align-self: flex-start;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 8px 13px;
+  border-radius: 999px;
+  border: 1px solid #3a3a44;
+  background: #0c0c10;
+  color: #8b8678;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.ns-lane.awake .ns-state {
+  color: #0d0d11;
+  background: var(--ns-hue, #c9a24b);
+  border-color: var(--ns-hue, #c9a24b);
+  box-shadow: 0 0 16px -3px var(--ns-hue, #c9a24b);
+}
+
+/* ---------------------------------------------------------- vitals --- */
+
+.ns-vitals { display: flex; flex-wrap: wrap; gap: 9px; }
+.ns-vital {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 9px 13px;
+  border-radius: 10px;
+  background: #0c0c10;
+  border: 1px solid #26262d;
+  font-size: 14px;
+  color: #e8e2d4;
+  max-width: 100%;
+  /* Chips GROW into whatever the row has left, so a wrapped row never ends in
+     dead space and a lone chip on the last row spans it instead of stranding
+     two thirds of the lane empty. */
+  flex: 1 1 auto;
+}
+/* a whole-sentence chip takes the row it needs rather than squeezing the
+   short chips beside it into unreadable slivers */
+.ns-vital.wide { flex: 1 1 100%; }
+/* A chip that has grown into spare row width reads like a stat line — the
+   trailing element goes to the right edge while the label and its value stay
+   together on the left. (space-between was tried first and scattered the
+   STAGE chip's four parts across the row.) */
+.ns-vital > :last-child { margin-left: auto; }
+.ns-vital > :only-child { margin-left: 0; }
+.ns-vital i {
+  font-style: normal;
+  font-size: 12.5px;
+  letter-spacing: 1.2px;
+  color: #6f6a5e;
+  text-transform: uppercase;
+  flex: 0 0 auto;
+}
+.ns-vital b { font-weight: 600; }
+.ns-vital.warn {
+  border-color: #6d2027;
+  background: linear-gradient(180deg, rgba(179,32,47,.15), rgba(179,32,47,.05));
+  color: #eab4b0;
+}
+.ns-vital.warn i { color: #b9767a; }
+
+/* the hunger meter — four notches, because vanilla vampirism has exactly
+   four stages and a continuous bar would be a lie about the data. */
+.ns-stage { display: flex; align-items: center; gap: 10px; }
+.ns-stage-pips { display: flex; gap: 5px; }
+.ns-stage-pip {
+  width: 26px; height: 7px; border-radius: 3px;
+  background: #22222a;
+  border: 1px solid #2e2e36;
+}
+.ns-stage-word { font-size: 13px; color: #9a9486; }
+.ns-stage-pip.on {
+  background: var(--ns-hue, #c9a24b);
+  border-color: var(--ns-hue, #c9a24b);
+  box-shadow: 0 0 9px -2px var(--ns-hue, #c9a24b);
+}
+
+/* ---------------------------------------------------------- verbs ---- */
+
+.ns-verbs { display: flex; gap: 12px; flex-wrap: wrap; }
+
+.ns-verb {
+  flex: 1 1 190px;
+  min-height: 56px;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  border: 1px solid #3a3a44;
+  background: linear-gradient(180deg, #1c1c24 0%, #14141a 100%);
+  color: #e8e2d4;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: .4px;
+  cursor: pointer;
+  text-align: center;
+  transition: transform 110ms ease, border-color 140ms ease,
+              box-shadow 140ms ease, background 140ms ease;
+}
+.ns-verb svg { width: 19px; height: 19px; flex: 0 0 auto; }
+.ns-verb:hover {
+  border-color: var(--ns-hue, #c9a24b);
+  background: linear-gradient(180deg, #24242e 0%, #17171e 100%);
+  box-shadow: 0 0 0 1px var(--ns-soft, transparent),
+              0 8px 22px -14px var(--ns-hue, #000);
+  transform: translateY(-1px);
+}
+.ns-verb:active { transform: translateY(0); }
+.ns-verb:focus-visible {
+  outline: none;
+  border-color: #c9a24b;
+  box-shadow: 0 0 0 3px rgba(201,162,75,.24);
+}
+.ns-verb.primary {
+  background:
+    linear-gradient(180deg, var(--ns-wash, transparent) 0%, var(--ns-wash2, transparent) 100%),
+    linear-gradient(180deg, #1c1c24 0%, #101015 100%);
+  border-color: var(--ns-edge, #3a3a44);
+  color: #f6f1e6;
+}
+.ns-verb.primary:hover {
+  background:
+    linear-gradient(180deg, var(--ns-soft, transparent) 0%, var(--ns-wash, transparent) 100%),
+    linear-gradient(180deg, #1c1c24 0%, #101015 100%);
+}
+.ns-verb[disabled] {
+  opacity: .45;
+  cursor: default;
+  transform: none;
+  border-color: #2e2e36;
+  background: #101015;
+  box-shadow: none;
+}
+
+/* ------------------------------------------------- overhaul readouts -- */
+/* Shared by all three curses' overhaul blocks (Sacrosanct, Growl, Undeath).
+   It was briefly called .ns-sac and a test that asserted "no Sacrosanct block
+   on the lich lane" started failing the moment Undeath reused it — the name
+   is generic now so that cannot recur. */
+.ns-overhaul { display: flex; flex-direction: column; gap: 11px; }
+
+/* the blood meter (Wassail) */
+.ns-meter {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 12px 14px; border-radius: 12px;
+  border: 1px solid #2e2e36;
+  background: linear-gradient(180deg, var(--ns-wash2, transparent), transparent), #0e0e13;
+}
+.ns-meter-top {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+}
+.ns-meter-top span {
+  font-size: 12.5px; letter-spacing: 1.4px; text-transform: uppercase; color: #8b8678;
+}
+.ns-meter-top b { font-size: 15.5px; font-weight: 600; color: #e8e2d4; }
+.ns-meter-bar {
+  height: 10px; border-radius: 6px; overflow: hidden;
+  background: #0a0a0e; border: 1px solid #26262d;
+}
+.ns-meter-bar > span {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, var(--ns-hue, #c9a24b), var(--ns-lit, #c9a24b));
+  box-shadow: 0 0 12px -2px var(--ns-hue, #c9a24b);
+}
+
+/* the thin xp sliver that rides inside the Stage chip */
+.ns-xp {
+  display: inline-block; width: 74px; height: 6px; border-radius: 4px;
+  background: #0a0a0e; border: 1px solid #26262d; overflow: hidden;
+  vertical-align: middle;
+}
+.ns-xp-fill { display: block; height: 100%; background: var(--ns-hue, #c9a24b); }
+
+/* your bloodline — the per-race power Sacrosanct gives you */
+.ns-blood-line { display: flex; flex-direction: column; gap: 8px; }
+.ns-bl {
+  display: flex; align-items: center; gap: 11px; flex-wrap: wrap;
+  padding: 11px 14px; border-radius: 12px;
+  border: 1px solid var(--ns-edge, #2e2e36);
+  background: linear-gradient(180deg, var(--ns-wash2, transparent), transparent), #0e0e13;
+}
+.ns-bl.spent { opacity: .68; border-color: #2e2e36; }
+.ns-bl-race {
+  font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase; color: #8b8678;
+}
+.ns-bl-name { font-size: 15.5px; font-weight: 600; color: #e8e2d4; }
+.ns-bl-tag {
+  font-size: 11.5px; letter-spacing: 1.2px; text-transform: uppercase;
+  padding: 4px 9px; border-radius: 999px;
+  border: 1px solid #3a3a44; color: #8b8678;
+}
+.ns-bl-tag.ready {
+  color: #0d0d11; background: var(--ns-hue, #c9a24b); border-color: var(--ns-hue, #c9a24b);
+}
+.ns-bl-name { flex: 1 1 auto; min-width: 0; }
+/* Its own full-width row, on purpose. Sharing the line with the race, the
+   power name and the ready tag left it wrapping to a half-empty second row at
+   lane width — and a full-width button matches the lane's other verbs. */
+.ns-bl-cast {
+  flex: 1 1 100%; margin-left: 0; min-height: 40px; padding: 9px 16px;
+  border-radius: 9px; border: 1px solid var(--ns-edge, #3a3a44);
+  background: linear-gradient(180deg, #1c1c24, #14141a);
+  color: #e8e2d4; font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+  transition: border-color 130ms ease, box-shadow 130ms ease;
+}
+.ns-bl-cast:hover { border-color: var(--ns-hue, #c9a24b); box-shadow: 0 0 0 1px var(--ns-soft, transparent); }
+.ns-bl-cast:focus-visible { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.24); }
+
+/* Advanced — the raw globals list */
+.ns-advs { display: flex; flex-direction: column; gap: 6px; }
+.ns-adv {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 10px 8px 12px; border-radius: 9px;
+  border: 1px solid #22222a; background: #0c0c10;
+}
+.ns-adv-name {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 13.5px; color: #b9b4a8;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ns-adv.changed { border-color: var(--ns-edge, #3a3a44); }
+.ns-adv.changed .ns-adv-name { color: #e8e2d4; }
+.ns-adv .ns-step button { width: 34px; height: 34px; font-size: 15px; }
+.ns-adv .ns-step b { min-width: 72px; font-size: 13.5px; }
+.ns-adv-reset {
+  flex: 0 0 auto; width: 34px; height: 34px;
+  border-radius: 9px; border: 1px solid var(--ns-edge, #3a3a44);
+  background: #14141a; color: var(--ns-lit, #c9a24b);
+  font-family: inherit; font-size: 15px; cursor: pointer;
+}
+.ns-adv-reset:hover { border-color: var(--ns-hue, #c9a24b); }
+.ns-adv-reset:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(201,162,75,.24); }
+
+/* the stepper is shared with the mod-settings popout's shape but scoped here */
+.ns-step { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.ns-step button {
+  width: 38px; height: 38px; border-radius: 9px; border: 1px solid #3a3a44;
+  background: linear-gradient(180deg, #1c1c24, #14141a);
+  color: #e8e2d4; font-family: inherit; font-size: 16px; cursor: pointer;
+}
+.ns-step button:hover { border-color: var(--ns-hue, #c9a24b); }
+.ns-step button:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(201,162,75,.24); }
+.ns-step b { min-width: 84px; text-align: center; font-size: 14px; color: #f0ece2; }
+
+/* the questline — one chip per quest, lit while it is under way */
+.ns-quests { display: flex; flex-direction: column; gap: 6px; }
+.ns-quest {
+  display: flex; align-items: baseline; gap: 12px;
+  font-size: 13.5px; padding: 9px 12px; border-radius: 9px;
+  border: 1px solid #26262d; background: #0c0c10; color: #8b8678;
+}
+.ns-quest b {
+  margin-left: auto; font-size: 12.5px; letter-spacing: .6px; color: #6f6a5e;
+  white-space: nowrap;
+}
+.ns-quest.on {
+  color: #e8e2d4; border-color: var(--ns-edge, #3a3a44);
+  background: linear-gradient(180deg, var(--ns-wash2, transparent), transparent), #0c0c10;
+}
+.ns-quest.on b { color: var(--ns-lit, #c9a24b); }
+
+/* the MCM switches, as a dense on/off grid */
+.ns-rules { display: flex; flex-wrap: wrap; gap: 7px; }
+.ns-mcm-open {
+  align-self: flex-start;
+  min-height: 40px; padding: 9px 16px;
+  border-radius: 10px; border: 1px solid var(--ns-edge, #3a3a44);
+  background: linear-gradient(180deg, #1c1c24, #14141a);
+  color: #e8e2d4; font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+  transition: border-color 130ms ease;
+}
+.ns-mcm-open:hover { border-color: var(--ns-hue, #c9a24b); }
+.ns-mcm-open:focus-visible { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.24); }
+
+.ns-rule-note {
+  font-size: 12.5px; line-height: 1.45; color: #7d7869;
+  padding: 8px 11px; border-radius: 9px;
+  background: rgba(255,255,255,.02); border-left: 2px solid #3a3a44;
+}
+.ns-rule {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 13px; padding: 7px 11px; border-radius: 9px;
+  border: 1px solid #26262d; background: #0c0c10; color: #8b8678;
+  font-family: inherit; text-align: left;
+}
+button.ns-rule { cursor: pointer; transition: border-color 130ms ease, color 130ms ease; }
+button.ns-rule:hover { border-color: var(--ns-hue, #c9a24b); color: #e8e2d4; }
+button.ns-rule:focus-visible {
+  outline: none; border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.22);
+}
+.ns-rule b { font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: #6f6a5e; }
+.ns-rule.on { color: #e8e2d4; border-color: var(--ns-edge, #3a3a44); }
+.ns-rule.on b { color: var(--ns-lit, #c9a24b); }
+
+/* Shared chip list — used by Blue Blood's marks AND the Sacrosanct perk list.
+   Deliberately NOT named after either: they were briefly the same .ns-bb-*
+   classes and a test that queried the lane grabbed whichever came first. */
+.ns-subnote { font-size: 13px; color: #7d7869; }
+.ns-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.ns-chip {
+  font-size: 13px; padding: 6px 11px; border-radius: 999px;
+  border: 1px solid #26262d; background: #0c0c10; color: #8b8678;
+}
+.ns-chip.on {
+  border-color: var(--ns-edge, #3a3a44);
+  background: linear-gradient(180deg, var(--ns-wash, transparent), transparent), #0c0c10;
+  color: #e8e2d4;
+}
+
+/* ------------------------------------------------- custom skill tree -- */
+
+.ns-tree {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 13px 15px;
+  border-radius: 12px;
+  border: 1px solid #2e2e36;
+  background:
+    linear-gradient(180deg, var(--ns-wash2, transparent), transparent),
+    #0e0e13;
+}
+.ns-tree.off { opacity: .62; }
+
+.ns-tree-id { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1 1 210px; }
+.ns-tree-glyph {
+  width: 38px; height: 38px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 9px;
+  background: #0c0c10;
+  border: 1px solid #2e2e36;
+  color: var(--ns-mute, #8b8678);
+}
+.ns-tree-glyph svg { width: 21px; height: 21px; display: block; }
+.ns-tree-names {
+  display: flex; flex-direction: column; gap: 3px;
+  min-width: 0; flex: 1 1 200px;
+}
+.ns-tree-names b { font-size: 15px; font-weight: 600; color: #e8e2d4; }
+/* WRAPS rather than ellipsing: the second line is usually a sentence
+   explaining why a tree cannot be opened, and "enable the mod to…" is the
+   half that matters. */
+.ns-tree-names i {
+  font-style: normal; font-size: 12.5px; line-height: 1.4; color: #7d7869;
+}
+
+.ns-tree-stats { display: flex; gap: 8px; flex-wrap: wrap; }
+.ns-tree-stat {
+  display: flex; align-items: baseline; gap: 7px;
+  padding: 7px 11px; border-radius: 9px;
+  background: #0c0c10; border: 1px solid #26262d;
+  font-size: 13.5px; color: #e8e2d4;
+}
+.ns-tree-stat i {
+  font-style: normal; font-size: 12px; letter-spacing: 1.1px;
+  text-transform: uppercase; color: #6f6a5e;
+}
+/* unspent points are the reason you would open the tree at all */
+.ns-tree-stat.unspent {
+  border-color: var(--ns-edge, #3a3a44);
+  background: linear-gradient(180deg, var(--ns-wash, transparent), transparent), #0c0c10;
+}
+.ns-tree-stat.unspent b { color: var(--ns-lit, #f0ece2); }
+
+.ns-tree-open {
+  margin-left: auto;
+  min-height: 42px;
+  padding: 10px 18px;
+  border-radius: 10px;
+  border: 1px solid var(--ns-edge, #3a3a44);
+  background: linear-gradient(180deg, #1c1c24 0%, #14141a 100%);
+  color: #e8e2d4;
+  font-family: inherit; font-size: 14.5px; font-weight: 600;
+  letter-spacing: .3px; cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 110ms ease;
+}
+.ns-tree-open:hover {
+  border-color: var(--ns-hue, #c9a24b);
+  box-shadow: 0 0 0 1px var(--ns-soft, transparent);
+  transform: translateY(-1px);
+}
+.ns-tree-open:active { transform: translateY(0); }
+.ns-tree-open:focus-visible {
+  outline: none; border-color: #c9a24b;
+  box-shadow: 0 0 0 3px rgba(201,162,75,.24);
+}
+
+/* ----------------------------------------- collapsible section (sec) -- */
+
+.ns-sec {
+  display: flex; flex-direction: column;
+  border-top: 1px solid #22222a;
+  padding-top: 2px;
+}
+.ns-sec-head {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  padding: 13px 2px 11px;
+  background: none; border: none;
+  color: #9a9486;
+  font-family: inherit;
+  font-size: 13px; letter-spacing: 1.8px; text-transform: uppercase;
+  cursor: pointer; text-align: left;
+  border-radius: 8px;
+  transition: color 130ms ease;
+}
+.ns-sec-head:hover { color: #e8e2d4; }
+.ns-sec-head:focus-visible {
+  outline: none; color: #e8e2d4;
+  box-shadow: 0 0 0 2px rgba(201,162,75,.3);
+}
+.ns-chev {
+  width: 16px; height: 16px; flex: 0 0 auto;
+  color: var(--ns-hue, #c9a24b);
+  transition: transform 160ms ease;
+}
+.ns-sec.open .ns-chev { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .ns-chev { transition: none; } }
+.ns-sec-title { flex: 0 1 auto; }
+.ns-sec-count {
+  margin-left: auto; flex: 0 0 auto;
+  font-size: 13px; letter-spacing: .2px; text-transform: none; color: #7d7869;
+}
+.ns-sec-body { display: flex; flex-direction: column; gap: 10px; padding-bottom: 4px; }
+
+.ns-sec-search {
+  display: flex; align-items: center; gap: 9px;
+  height: 40px; padding: 0 12px;
+  border-radius: 10px;
+  background: #0c0c10; border: 1px solid #26262d;
+  transition: border-color 130ms ease, box-shadow 130ms ease;
+}
+.ns-sec-search:focus-within {
+  border-color: var(--ns-edge, #c9a24b);
+  box-shadow: 0 0 0 3px var(--ns-wash2, rgba(201,162,75,.12));
+}
+.ns-sec-search > span { color: #6f6a5e; font-size: 15px; }
+.ns-sec-search input {
+  flex: 1; min-width: 0;
+  background: none; border: none; outline: none;
+  color: #f0ece2; font-family: inherit; font-size: 14px;
+}
+.ns-sec-search input::placeholder { color: #6f6a5e; }
+
+.ns-sec-empty { font-size: 13.5px; color: #7d7869; padding: 6px 2px 4px; }
+
+/* ------------------------------------------------------------ kit ---- */
+
+/* superseded by .ns-sec-head — kept for any pane still emitting the old shape */
+.ns-kit-head {
+  display: flex; align-items: baseline; gap: 10px;
+  padding-top: 2px;
+  border-top: 1px solid #22222a;
+  margin-top: 2px;
+}
+.ns-kit-title {
+  font-size: 13px; letter-spacing: 1.8px; text-transform: uppercase;
+  color: #9a9486; padding-top: 12px;
+}
+.ns-kit-count { font-size: 13px; color: #7d7869; padding-top: 12px; margin-left: auto; }
+
+.ns-kit {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 10px;
+}
+
+.ns-tile {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 13px 8px 11px;
+  border-radius: 12px;
+  border: 1px solid #26262d;
+  background: #0f0f14;
+  color: #ddd8cc;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: center;
+  transition: border-color 130ms ease, background 130ms ease, transform 110ms ease;
+  overflow: hidden;
+}
+.ns-tile:hover {
+  border-color: var(--ns-edge, #3a3a44);
+  background: #16161d;
+  transform: translateY(-1px);
+}
+.ns-tile:focus-visible {
+  outline: none; border-color: #c9a24b;
+  box-shadow: 0 0 0 3px rgba(201,162,75,.2);
+}
+.ns-tile-name {
+  font-size: 13.5px; line-height: 1.3; color: #e0dbcf;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-word;
+}
+.ns-tile-slot {
+  font-size: 12px; letter-spacing: 1.1px; text-transform: uppercase;
+  color: #837e70;
+}
+
+/* the glyph well, and the ring that rides it when the power is running */
+.ns-tile-orb {
+  position: relative;
+  width: 46px; height: 46px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 36%, #1c1c24, #08080b 78%);
+  border: 1px solid #2e2e36;
+  color: var(--ns-mute, #8b8678);
+  flex: 0 0 auto;
+}
+.ns-tile-orb svg { width: 22px; height: 22px; display: block; }
+
+.ns-ring {
+  position: absolute; inset: -4px;
+  border-radius: 50%;
+  /* dark layer GROWS as the effect elapses — the bright remainder is what
+     is left, the hotbar's ring law, so both surfaces read the same way. */
+  background: conic-gradient(
+    rgba(8,8,11,.82) 0turn,
+    rgba(8,8,11,.82) var(--ns-spent, 0turn),
+    var(--ns-hue, #c9a24b) var(--ns-spent, 0turn),
+    var(--ns-hue, #c9a24b) 1turn);
+  -webkit-mask: radial-gradient(circle, transparent 0 60%, #000 62%);
+          mask: radial-gradient(circle, transparent 0 60%, #000 62%);
+  opacity: .9;
+  pointer-events: none;
+}
+.ns-tile-cd {
+  position: absolute; top: 4px; right: 6px;
+  font-size: 11px; font-weight: 700;
+  color: var(--ns-hue, #c9a24b);
+  text-shadow: 0 1px 3px #000;
+}
+
+/* not learned yet — dimmed, never hidden: the grid is also a map of what
+   the curse still has to give. */
+.ns-tile.locked { cursor: default; opacity: .42; }
+.ns-tile.locked:hover { transform: none; border-color: #26262d; background: #0f0f14; }
+.ns-tile.locked .ns-tile-orb { color: #4a4751; }
+.ns-tile-lock {
+  position: absolute; top: 6px; left: 7px;
+  color: #7d7869; display: flex;
+}
+.ns-tile-lock svg { width: 13px; height: 13px; display: block; }
+
+/* ------------------------------------------------------------ misc --- */
+
+.ns-note {
+  font-size: 13px; line-height: 1.45; color: #8b8678;
+  padding: 10px 13px; border-radius: 9px;
+  background: rgba(255,255,255,.02);
+  border-left: 2px solid #3a3a44;
+}
+
+#ns-empty {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; text-align: center; color: #8b8678; padding: 40px 20px;
+}
+#ns-empty.hidden { display: none; }
+#ns-empty .ns-empty-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 22px; letter-spacing: 1.6px; color: #b9b4a8;
+}
+#ns-empty .ns-empty-sub { font-size: 14.5px; max-width: 460px; line-height: 1.5; }
+
+/* no-results state for the search bar */
+.ns-lane.filtered-out { display: none; }
+#ns-noresults {
+  grid-column: 1 / -1;
+  padding: 26px; text-align: center; color: #8b8678; font-size: 15px;
+}
+#ns-noresults.hidden { display: none; }
+
+/* toast — pane-anchored, same idiom as the Finder sheets */
+#ns-toast {
+  position: absolute; left: 50%; bottom: 22px;
+  transform: translateX(-50%);
+  background: #1c1c24; border: 1px solid #3a3a44;
+  border-radius: 10px; padding: 12px 18px;
+  color: #f0ece2; font-size: 14.5px;
+  box-shadow: 0 10px 30px -12px #000;
+  z-index: 8; max-width: 80%;
+}
+#ns-toast.hidden { display: none; }
+
+/* An inline "go to the settings popout" link inside a lane note. It is a real
+   <button> (it does something) but must read as part of the sentence. */
+.ns-inline-mcm {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #d8c391;
+  font: inherit;
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+.ns-inline-mcm:hover { color: #f0e0b8; }

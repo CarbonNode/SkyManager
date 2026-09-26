@@ -87,6 +87,9 @@ window.HomePane = (function () {
     { id: 'wardrobe',  name: 'Wardrobe',   icon: '👗', img: 'icons/custom/hm-wardrobe.png',  hue: '#e58fb0', sub: 'Outfits & who dresses whom',  act: 'tab', prov: 'wardrobe', requires: 'soes' },
     { id: 'faces',     name: 'Faces',      icon: '🙂', img: 'icons/custom/hm-faces.png',     hue: '#8fd8ff', sub: 'Browse & apply RaceMenu presets', act: 'tab', requires: 'presetdirector' },
     { id: 'journal',   name: 'Journal',    icon: '📖', img: 'icons/custom/hm-journal.png',   hue: '#d9b45c', sub: 'Write your own pages, with pictures', act: 'tab', prov: 'journal' },
+    /* gated on LIVE STATE, not on a mod: the card exists only while a curse
+       is actually held (nightside-gate) */
+    { id: 'nightside', name: 'Nightside',  icon: '🌙', img: 'icons/custom/hm-nightside.png', hue: '#b3202f', sub: 'Blood, Moon & Bone — your curses', act: 'tab', requiresState: 'nightside' },
     { id: 'numpad',    name: 'Numpad',     icon: '⌗',  img: 'icons/custom/hm-numpad.png',    hue: '#a49d8c', sub: 'Live on-screen keypad',        act: 'tab' },
     { id: 'ask',       name: 'Ask (CHIM)', icon: '🧠', img: 'icons/custom/hm-ask.png',       hue: '#b79bff', sub: 'Ask anything about anyone',    act: 'ask', requires: 'chim' },
   ];
@@ -102,7 +105,7 @@ window.HomePane = (function () {
 
   var host = { setTab: null, toGame: null, openOmni: null, hotkeyCount: null,
                getNotes: null, setNotes: null, getHomeOrder: null, setHomeOrder: null,
-               sysTabs: null, detected: null,
+               sysTabs: null, detected: null, curses: null,
                /* Open-key discoverability (home-open-key): getOpenKey() -> label
                   string, startOpenKeyPicker() reuses app.js's own rebind flow. */
                getOpenKey: null, startOpenKeyPicker: null };
@@ -128,7 +131,7 @@ window.HomePane = (function () {
      UiStateJson already serialises), so they are read. */
   var uie = { inlineOpen: null, hud: null, hudVisible: null,
               loot: null, hotbar: null, hotbarVisible: null,
-              hotbarMode: 'always', hotbarEff: null, widgets: null,
+              hotbarMode: 'always', hotbarEff: null, widgets: null, outfitDock: null,
               fw: { handR: null, handL: null, voice: null, quick: null,
                     quick2: null, lootStatus: null,
                     /* 2026-08-31: the season widget joined the free layer, so it
@@ -141,7 +144,7 @@ window.HomePane = (function () {
                  shows the shipped defaults rather than inventing values. */
               grp: { orient: 'vert', scale: 1, locked: true, mem: null, keys: null, known: false } };
   var ui = { inited: false, recentOpen: false, notesOpen: false, timeOpen: false,
-             uieOpen: false, tmChained: false, uieChained: false,
+             uieOpen: false, uieQuery: '', tmChained: false, uieChained: false,
              notesT: null, editing: false, dragId: null };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -192,8 +195,25 @@ window.HomePane = (function () {
      than a dead card). Gates: Ask (chim), Followers (followerorganizer),
      Animations (zap), Wardrobe (soes), Faces (presetdirector) — the same
      tabs SYS_TABS/app.js hides from the bar (2026-08-12 gate sweep). */
+  /* Live-state gate, the twin of app.js's stateGateOpen. Same unknown-means-
+     present law: only an explicit false hides the card. */
+  function stateGate(sys) {
+    if (!sys || !sys.requiresState) return true;
+    var c = null;
+    if (typeof host.curses === 'function') {
+      try { c = host.curses(); } catch (e) {}
+    }
+    if (sys.requiresState === 'nightside') {
+      if (!c || typeof c !== 'object') return true;
+      return c.any !== false;
+    }
+    return true;
+  }
+
   function detectedGate(sys) {
-    if (!sys || !sys.requires) return true;
+    if (!sys) return true;
+    if (!stateGate(sys)) return false;
+    if (!sys.requires) return true;
     var det = null;
     if (typeof host.detected === 'function') {
       try { det = host.detected(); } catch (e) {}
@@ -403,6 +423,7 @@ window.HomePane = (function () {
 
   /* -------------------------------------------------------- Time drawer -- */
   function fmtClock(hour) {
+    hour = ((hour % 24) + 24) % 24;
     var h = Math.floor(hour), m = Math.floor((hour - h) * 60);
     var am = h < 12, disp = h % 12; if (disp === 0) disp = 12;
     return disp + ':' + (m < 10 ? '0' : '') + m + ' ' + (am ? 'AM' : 'PM');
@@ -421,24 +442,16 @@ window.HomePane = (function () {
     var mon = MONTHS[((timeCur.month | 0) % 12 + 12) % 12] || '';
     if (dt) dt.textContent = ordinal(timeCur.day | 0) + ' of ' + mon + ' · 4E ' + (timeCur.year | 0);
     if (now) now.textContent = fmtClock(timeCur.hour);
-    /* fill the "wait until" chips with the hours-away subtitle */
-    var untils = $('hm-time-until');
-    if (untils) Array.prototype.forEach.call(untils.querySelectorAll('.hm-time-chip'), function (b) {
-      var target = parseFloat(b.getAttribute('data-until'));
-      var h = target - timeCur.hour; if (h <= 0) h += 24;
-      var sub = b.querySelector('.hm-time-sub');
-      if (!sub) { sub = document.createElement('span'); sub.className = 'hm-time-sub'; b.appendChild(sub); }
-      sub.textContent = 'in ' + h.toFixed(1) + ' h';
-    });
   }
   function receiveTime(payload) {
     var d = payload;
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { return; } }
-    if (!d || typeof d !== 'object') return;
+    if (!window.HDTimeControls.valid(d)) return;
     timeCur = d;
+    window.HDTimeControls.receive(d);
     renderTime();
   }
-  function waitHours(h) { if (host.toGame && h) host.toGame('tmWait', String(h)); }
+
   function toggleTime() {
     ui.timeOpen = !ui.timeOpen;
     setDrawer('time', ui.timeOpen, function () {
@@ -449,30 +462,16 @@ window.HomePane = (function () {
         ui.tmChained = true;
         var pi = window.tmInfo;
         window.tmInfo = function (p) { receiveTime(p); if (typeof pi === 'function') return pi.apply(this, arguments); };
-        var pr = window.tmResult;
-        window.tmResult = function (p) { if (host.toGame) host.toGame('tmGet', ''); if (typeof pr === 'function') return pr.apply(this, arguments); };
+        // HDTimeControls owns wait results; do not request an unsettled clock here.
       }
       if (host.toGame) host.toGame('tmGet', '');   // fresh clock on open
       renderTime();
     });
   }
   function bindTime() {
-    var wire = function (wrapId, attr, fn) {
-      var w = $(wrapId); if (!w) return;
-      w.addEventListener('click', function (e) {
-        var b = e.target.closest ? e.target.closest('.hm-time-chip') : null;
-        if (!b) return;
-        var v = parseFloat(b.getAttribute(attr));
-        if (!isNaN(v)) fn(v);
-      });
-    };
-    /* "wait until" target hour -> hours-from-now; "wait for" is the hours directly */
-    wire('hm-time-until', 'data-until', function (target) {
-      if (!timeCur) return;
-      var h = target - timeCur.hour; if (h <= 0) h += 24;
-      waitHours(h.toFixed(3));
+    window.HDTimeControls.mount($('hm-wait-controls'), function (fn, arg) {
+      if (host.toGame) host.toGame(fn, arg);
     });
-    wire('hm-time-for', 'data-hours', function (h) { waitHours(h); });
   }
 
   /* ------------------------------------------------ UI Elements drawer -- *
@@ -600,8 +599,8 @@ window.HomePane = (function () {
       open: function () { host.toGame && host.toGame('hdFire', 'hd-wheel-open'); },
       openLabel: 'Open' },
     { id: 'widgets', ic: '⌗', img: 'icons/custom/hk-widgets.png', name: 'HUD Widgets',
-      sub: 'Readouts, vitals, pins — the whole widget stack',
-      kw: 'widgets hud overlay readouts meters bars vitals health magicka stamina',
+      sub: 'Readout stack — vitals, gold, carry weight, clock and pins',
+      kw: 'widgets hud overlay readouts meters bars vitals health magicka stamina money gold inventory carry weight clock time weather location pins',
       state: function () { return uie.widgets; },
       toggle: function () { host.toGame && host.toGame('hdFire', 'hd-widgets-toggle'); },
       /* 2026-08-19: "Set up" now opens the HUD's own SHELF — the one place
@@ -609,6 +608,22 @@ window.HomePane = (function () {
          "Place" uses, so the deck closes and the screen goes to the editor. */
       jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf' })); },
       jumpLabel: 'Config →' },
+    { id: 'outfit-dock', ic: '★', img: 'icons/custom/hm-wardrobe.png', name: 'Favorites Outfit Dock',
+      sub: 'Summon favorite outfits and optional Flair',
+      kw: 'outfit wardrobe favorites favourites dock clothing flair accessories widget quick equip drag move position resize size layout',
+      state: function () { return uie.outfitDock; },
+      toggle: function () { host.toGame && host.toGame('wfEdit', JSON.stringify({ type: 'dock-enabled', value: uie.outfitDock !== true })); },
+      note: function () { return uie.outfitDock === false ? 'Your favorites and placement are saved.' : 'Bind a summon key in Hotkeys.'; },
+      extra: [ { label: 'Open', title: 'Open the outfit dock now',
+        disabled: function () { return uie.outfitDock !== true; },
+        run: function () { host.toGame && host.toGame('odOpen'); } },
+        { label: 'Place on screen', title: 'Show the dock to drag, resize and change its layout',
+          run: function () { host.toGame && host.toGame('odOpen', JSON.stringify({ placement: true })); } } ],
+      jumpLabel: 'Config →',
+      jump: function () {
+        host.setTab && host.setTab('wardrobe');
+        if (window.WardrobePane && WardrobePane.openSection) WardrobePane.openSection('dock');
+      } },
     /* ---- ONE row for the merged Equipped widget (2026-08-19) --------------
        The HUD view merged right hand / left hand / shout into a SINGLE widget
        with a derived master and its own orientation, size and membership
@@ -654,6 +669,14 @@ window.HomePane = (function () {
       state: function () { return uie.fw.quick; },
       toggle: function () { host.toGame && host.toGame('hdWidgetToggle', JSON.stringify({ id: 'quick' })); },
       jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'quick' })); },
+      jumpLabel: 'Config →' },
+    { id: 'fw-loot', fw: 'lootStatus', ic: '✧', img: 'icons/custom/hm-loot.png',
+      name: 'Loot Status Widget', sub: 'The Loot panel with Glow and Auto-loot indicators',
+      kw: 'loot lamp status glow auto-loot autoloot automatic pickup panel position move resize scale opacity label',
+      state: function () { return uie.fw.lootStatus; },
+      toggle: function () { host.toGame && host.toGame('hdWidgetToggle', JSON.stringify({ id: 'lootStatus' })); },
+      note: function () { return 'Panel visibility. Glow and Auto-loot have separate switches.'; },
+      jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'lootStatus' })); },
       jumpLabel: 'Config →' },
     { id: 'potions', ic: '◍', img: 'icons/custom/hk-potion-browser.png', name: 'Potion Browser', sub: 'Paused popout — search, sort, quick-drink; bindable in Utilities',
       kw: 'potion browser potions drink healing elixir alchemy flask',
@@ -703,7 +726,7 @@ window.HomePane = (function () {
         if (!window.HDSuper) return '';
         var b = HDSuper.bindLabel();
         return b ? ('Opens from anywhere on ' + b)
-                 : 'No key yet — Config → “Bind a key”, and it opens mid-game';
+                 : 'Bind a key in Config to open during play.';
       },
       extra: [
         { label: 'Open', title: 'Open the Super Searcher now',
@@ -711,7 +734,7 @@ window.HomePane = (function () {
       ],
       jump: function () { if (window.HDSuper) HDSuper.openConfig(); },
       jumpLabel: 'Config →' },
-    { id: 'loot', ic: '✧', img: 'icons/custom/hm-loot.png', name: 'Loot Vision', sub: 'Glow the loot worth walking to',
+    { id: 'loot', ic: '✧', img: 'icons/custom/hm-loot.png', name: 'Loot Vision', sub: 'Turn the loot highlighting effect on or off',
       kw: 'loot vision glow highlight shiny treasure chests corpses valuables',
       state: function () { return uie.loot; },
       toggle: function () { host.toGame && host.toGame('ltToggle'); },
@@ -926,12 +949,117 @@ window.HomePane = (function () {
     return chip;
   }
 
+  function uieStatus(el) {
+    var v = tryCall(el.state, null);
+    return v === true ? (tryCall(el.hidden, false) ? 'hidden' : 'on') : v === false ? 'off' : '';
+  }
+  /* Both search surfaces read the same card, including its real controls and
+     live notes. Punctuation folding makes "auto loot" find "Auto-loot". */
+  function uieSearchText(el) {
+    var parts = [el.name, el.sub, el.kw, el.chord, el.openLabel, el.jumpLabel,
+      el.expandLabel, tryCall(el.note, ''), uieStatus(el)];
+    if (el.jump) parts.push('settings setting configure config options setup');
+    if (el.inline) parts.push('lines orientation horizontal vertical size scale lock ' +
+      grpLineKeys().map(function (k) { return grpLineName(k).name; }).join(' '));
+    (el.extra || []).forEach(function (x) { parts.push(x.label, x.title); });
+    return parts.join(' ');
+  }
+  function uieSearchWords(text) {
+    return String(text || '').toLowerCase().replace(/[-_·/]+/g, ' ').trim();
+  }
+  function filterUie() {
+    var terms = uieSearchWords(ui.uieQuery).split(/\s+/).filter(Boolean);
+    return UIE.filter(function (el) {
+      var text = uieSearchWords(uieSearchText(el));
+      return terms.every(function (term) {
+        if (term === 'on' || term === 'off' || term === 'hidden') return uieStatus(el) === term;
+        return text.indexOf(term) !== -1;
+      });
+    });
+  }
+  function setUieFilter(query) {
+    ui.uieQuery = typeof query === 'string' ? query : '';
+    renderUie();
+  }
+  function openUieFirst() {
+    var el = filterUie()[0];
+    if (!el || tryCall(el.avail, true) === false) return;
+    // Search Enter opens settings/the window; switches remain explicit clicks.
+    if (el.jump) el.jump();
+    else if (el.open) el.open();
+    else if (el.inline) { uie.inlineOpen = el.id; renderUie(); }
+  }
+  function ensureUieSearch() {
+    if ($('hm-uie-search')) return;
+    var body = $('hm-uie-body');
+    if (!body || !body.parentNode) return;
+    var tools = document.createElement('div'); tools.className = 'hm-uie-tools';
+    var line = document.createElement('div'); line.className = 'hm-uie-searchrow';
+    var label = document.createElement('label'); label.className = 'hm-uie-searchlabel';
+    label.setAttribute('for', 'hm-uie-search'); label.textContent = 'Search UI Elements';
+    var input = document.createElement('input'); input.id = 'hm-uie-search';
+    input.type = 'search'; input.autocomplete = 'off'; input.spellcheck = false;
+    input.placeholder = 'Search widgets, settings or controls…';
+    input.setAttribute('aria-controls', 'hm-uie-body');
+    input.addEventListener('input', function () { setUieFilter(input.value); });
+    input.addEventListener('keydown', function (e) {
+      if (e.isComposing) return;
+      if (e.key === 'Enter' || e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        if (e.key === 'Escape') setUieFilter('');
+        else openUieFirst();
+      }
+    });
+    var clear = document.createElement('button'); clear.id = 'hm-uie-clear'; clear.type = 'button';
+    clear.textContent = 'Clear'; clear.setAttribute('aria-label', 'Clear UI Elements search');
+    clear.addEventListener('click', function () { setUieFilter(''); input.focus(); });
+    line.appendChild(input); line.appendChild(clear);
+    var meta = document.createElement('div'); meta.className = 'hm-uie-searchmeta';
+    var count = document.createElement('span'); count.id = 'hm-uie-count';
+    count.setAttribute('role', 'status'); count.setAttribute('aria-live', 'polite');
+    var hint = document.createElement('span'); hint.id = 'hm-uie-searchhint';
+    meta.appendChild(count); meta.appendChild(hint);
+    tools.appendChild(label); tools.appendChild(line); tools.appendChild(meta);
+    // Live replies replace only the results, preserving the input and caret.
+    body.parentNode.insertBefore(tools, body);
+    window.addEventListener('resize', equalizeUieCards);
+  }
+
+  function equalizeUieCards() {
+    if (!ui.uieOpen) return;
+    var body = $('hm-uie-body');
+    if (!body) return;
+    var rows = body.querySelectorAll('.hm-uie-row'), tallest = 0;
+    // Equal outlines across ALL grid rows, without imposing a clipping height
+    // or making an expanded settings panel determine every card's height.
+    Array.prototype.forEach.call(rows, function (row) { row.style.minHeight = ''; });
+    Array.prototype.forEach.call(rows, function (row) { tallest = Math.max(tallest, row.offsetHeight || 0); });
+    if (tallest) Array.prototype.forEach.call(rows, function (row) { row.style.minHeight = tallest + 'px'; });
+  }
+
   function renderUie() {
     var body = $('hm-uie-body');
     if (!body) return;
     if (!ui.uieOpen) return;
+    ensureUieSearch();
+    var matches = filterUie();
+    body.classList.toggle('hm-uie-expanded', matches.some(function (el) { return el.inline && uie.inlineOpen === el.id; }));
+    var input = $('hm-uie-search');
+    if (input.value !== ui.uieQuery) input.value = ui.uieQuery;
+    $('hm-uie-clear').disabled = !ui.uieQuery;
+    $('hm-uie-count').textContent = matches.length + ' of ' + UIE.length + ' elements';
+    var first = matches[0];
+    $('hm-uie-searchhint').textContent = first
+      ? (tryCall(first.avail, true) === false ? 'Controls are loading…' :
+        'Enter: ' + (first.jump || first.inline ? 'configure ' : 'open ') + first.name)
+      : 'Try a widget name, a control, or “on” / “off”.';
     body.innerHTML = '';
-    UIE.forEach(function (el) {
+    if (!matches.length) {
+      var empty = document.createElement('div'); empty.className = 'hm-uie-empty';
+      empty.textContent = 'No UI elements match “' + ui.uieQuery + '”.';
+      body.appendChild(empty);
+    }
+    matches.forEach(function (el) {
       var row = document.createElement('div');
       row.className = 'hm-uie-row';
       row.setAttribute('data-id', el.id);
@@ -964,7 +1092,7 @@ window.HomePane = (function () {
         var wn = document.createElement('span');
         wn.className = 'hm-uie-why';
         wn.textContent = why;
-        wn.title = 'The element is on — this rule decides when it is drawn. Change it in its own config.';
+        wn.title = why;
         t.appendChild(wn);
       }
       row.appendChild(t);
@@ -1014,6 +1142,7 @@ window.HomePane = (function () {
             else if (uie.hotbar !== null) uie.hotbar = !uie.hotbar;
           }
           if (el.id === 'widgets' && uie.widgets !== null) uie.widgets = !uie.widgets;
+          if (el.id === 'outfit-dock' && uie.outfitDock !== null) uie.outfitDock = !uie.outfitDock;
           if (el.fw && uie.fw[el.fw] !== null) uie.fw[el.fw] = !uie.fw[el.fw];
           renderUie();
         });
@@ -1043,6 +1172,7 @@ window.HomePane = (function () {
           var xb = document.createElement('button');
           xb.className = 'hm-uie-btn'; xb.type = 'button';
           xb.textContent = x.label; xb.title = x.title || x.label;
+          if (x.disabled) xb.disabled = x.disabled();
           xb.addEventListener('click', x.run);
           acts.appendChild(xb);
         });
@@ -1109,6 +1239,7 @@ window.HomePane = (function () {
         else uie.inlineOpen = null;
       }
     });
+    requestAnimationFrame(equalizeUieCards);
   }
 
   function receiveHud(env) {
@@ -1137,6 +1268,7 @@ window.HomePane = (function () {
     if (typeof env.hotbarEffective === 'boolean') uie.hotbarEff = env.hotbarEffective;
     if (typeof env.hud === 'boolean') uie.hud = env.hud;
     if (typeof env.hudVisible === 'boolean') uie.hudVisible = env.hudVisible;
+    if (typeof env.outfitDock === 'boolean') uie.outfitDock = env.outfitDock;
     var w = env.widgets;
     if (w && typeof w === 'object') {
       if (typeof w.enabled === 'boolean') uie.widgets = w.enabled;
@@ -1198,9 +1330,16 @@ window.HomePane = (function () {
   /* Where a search result for an on-screen element LANDS (Shift+Enter): the
      Home tab with the drawer already unfolded, because the drawer is the row's
      own home and arriving at a collapsed one reads as arriving nowhere. */
-  function openUieDrawer() {
+  function openUieDrawer(query) {
     if (host.setTab) host.setTab('home');
+    if (typeof query === 'string') ui.uieQuery = query;
     if (!ui.uieOpen) toggleUie();
+    else renderUie();
+    var input = $('hm-uie-search');
+    if (input) {
+      if (input.scrollIntoView) input.scrollIntoView({ block: 'nearest' });
+      input.focus();
+    }
   }
 
   /* C++ pushes hdRecent; app.js owns the primary handler and forwards here so
@@ -1228,6 +1367,7 @@ window.HomePane = (function () {
     host.getHomeOrder = h && h.getHomeOrder;   // home-card-reorder: shelf-blob backed
     host.setHomeOrder = h && h.setHomeOrder;
     host.sysTabs = h && h.sysTabs;
+    host.curses = h && h.curses;
     host.detected = h && h.detected;
     host.getOpenKey = h && h.getOpenKey;             // home-open-key
     host.startOpenKeyPicker = h && h.startOpenKeyPicker;
@@ -1289,6 +1429,7 @@ window.HomePane = (function () {
     renderOpenKey();     // the live bind may have changed via Edit or a rebind
     renderCards();       // counts are live — re-read every show
     renderRecent();
+    if (ui.timeOpen && host.toGame) host.toGame('tmGet', ''); // reopen after a completed wait
     if (host.toGame) host.toGame('hdHistory', '');  // warm the drawer count
   }
   function onHide() {
@@ -1486,7 +1627,8 @@ window.HomePane = (function () {
     receiveTime({ hour: 21.78, day: 17, month: 7, year: 204 });
     ok('time clock renders', $('hm-time-clock').textContent === '9:46 PM');
     ok('time date names Last Seed', /Last Seed/.test($('hm-time-date').textContent));
-    $('hm-time-for').querySelector('[data-hours="6"]').click();
+    $('hm-wait-controls').querySelector('[data-preset="1:weeks"]').click();
+    $('hm-wait-controls').querySelector('.tw-go').click();
     ok('wait chip fires tmWait', nav.some(function (n) { return n.indexOf('game:tmWait') === 0; }));
 
     var fails = out.filter(function (l) { return l.indexOf('FAIL') === 0; });
@@ -1524,7 +1666,10 @@ window.HomePane = (function () {
   }
 
   function uieOmniItems() {
-    var items = [];
+    var items = [{ label: 'UI Elements', kind: 'setting',
+      detail: 'Search on-screen widgets, their controls and settings',
+      keywords: 'ui elements widgets on screen hud overlay interface settings controls',
+      run: function () { openUieDrawer(''); }, jump: function () { openUieDrawer(''); } }];
     UIE.forEach(function (el) {
       if (tryCall(el.avail, true) === false) return;
 
@@ -1536,8 +1681,9 @@ window.HomePane = (function () {
       var word = (v === true || v === false)
         ? (hidden ? 'On, but hidden' : (v ? 'On' : 'Off')) : '';
       var why = tryCall(el.note, '') || '';
-      var kw = (el.kw || '') + ' ' + el.name + ' ' + el.sub +
+      var kw = uieSearchText(el) +
                ' on screen element widget ui hud overlay';
+      var jumpToElement = function () { openUieDrawer(el.name); };
 
       var run = null, verb = '';
       if (!el.chord && typeof el.toggle === 'function') {
@@ -1568,7 +1714,7 @@ window.HomePane = (function () {
         detail: parts.join(' · '),
         kind: 'on-screen',
         keywords: kw + ' turn on turn off toggle switch show hide enable disable',
-        jump: openUieDrawer,
+        jump: jumpToElement,
       };
       if (run) row.run = run;
       items.push(row);
@@ -1577,15 +1723,15 @@ window.HomePane = (function () {
          Open) — the drawer offers them as buttons, so search offers them too */
       if (el.extra && el.extra.length) {
         el.extra.forEach(function (x) {
-          if (typeof x.run !== 'function') return;
+          if (typeof x.run !== 'function' || tryCall(x.disabled, false)) return;
           var lbl = String(x.label || '').replace(/\s*→\s*$/, '');
           items.push({
             label: el.name + ' · ' + lbl,
             detail: x.title || lbl,
             kind: 'on-screen',
             keywords: kw + ' ' + lbl,
-            run: x.run,
-            jump: openUieDrawer,
+            run: function () { if (!tryCall(x.disabled, false)) x.run(); },
+            jump: jumpToElement,
           });
         });
       }
@@ -1598,7 +1744,7 @@ window.HomePane = (function () {
           keywords: kw + ' settings setting configure config options set up setup ' +
                     'customise customize move reposition resize bigger smaller place',
           run: el.jump,
-          jump: openUieDrawer,
+          jump: jumpToElement,
         });
       }
     });
@@ -1612,7 +1758,7 @@ window.HomePane = (function () {
       /* the one place the contract allows a bridge ask — so the rows carry the
          same live ON/OFF the drawer does, instead of guessing from stale flags */
       warm: askUieState,
-      setFilter: function () { /* Home has no filter box — the drawer IS the landing */ },
+      setFilter: openUieDrawer,
       index: uieOmniItems,
     });
     /* Make the open-key rebind FINDABLE by search (home-open-key). A user

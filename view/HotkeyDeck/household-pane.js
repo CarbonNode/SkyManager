@@ -44,7 +44,7 @@
  *  · ULTRALIGHT HAS NO conic-gradient (charsheet-pane.css carries an
  *    @supports fallback for exactly this) — so "how far along" is a linear
  *    bar with trimester ticks, never a progress ring.
- *  · Portraits are painted through HDFacefit.paintPortraitsIn, so a head
+ *  · Portraits are painted through HDFaceFit.paintPortraitsIn, so a head
  *    render is framed on the FACE and a hand crop still wins — one
  *    implementation, shared with the roster medallions and Finder tiles.
  *  · Own CSS file (household-pane.css), not a .frag — sync_view_frags
@@ -635,8 +635,8 @@ window.HouseholdPane = (function () {
        framed on the face and a hand crop still wins — the roster medallions
        and the Finder tiles go through the same door. */
     try {
-      if (window.HDFacefit && HDFacefit.paintPortraitsIn) {
-        HDFacefit.paintPortraitsIn(grid, '.hh-face img');
+      if (window.HDFaceFit && HDFaceFit.paintPortraitsIn) {
+        HDFaceFit.paintPortraitsIn(grid, '.hh-face img');
       }
     } catch (e) {}
   }

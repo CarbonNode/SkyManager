@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <functional>
 
 // ---------------------------------------------------------------------------
 // OStim panel — a scene search / change / control surface INSIDE the deck's
@@ -41,6 +42,15 @@ namespace OstimDeck
 	// Cheap: clears cached state. The API handle is acquired lazily on first use
 	// (OStim.dll may load after us), so nothing here can fail if OStim is absent.
 	void Init();
+	void Controls(const std::string& request, std::function<void(std::string)> reply);
+	void ResetControls();
+	void LoadMetadata();
+	void LoadExpressions();
+	nlohmann::json ExpressionCatalog();
+	bool HasExpressionEvent(const std::string& name);
+	bool ControlsMatch(const std::string& signature);
+	void DecorateScene(nlohmann::json& row);
+	std::string SetAutoMode();
 
 	// osGet -> osOpen: the whole live picture + an initial scene list.
 	// { ok, ostim, inScene, threadID, scene, sceneName, actorCount,
@@ -51,6 +61,26 @@ namespace OstimDeck
 	// osPoll -> osState: the same live block WITHOUT the scene list, for cheap
 	// refreshes after an action.
 	std::string StateJson();
+	std::string ActorStateJson(std::uint32_t formId);
+	bool ActorInScene(std::uint32_t formId);
+
+	// The live alignment overlay's data half (2026-09-21). It draws nothing
+	// and owns no keys — the overlay is on the HUD view, which takes real
+	// keyboard focus WITHOUT pausing (main.cpp). Same ActorAlignmentData the
+	// Scene page's Alignment segment uses: one source, two surfaces.
+	// { ok, inScene, scene, sceneName, signature,
+	//   actors:[{formId,name,ok,x,y,z,rotation,scale,bend}] }
+	std::string AlignStateJson();
+	// { formId, axis:"x"|"y"|"z"|"rotation"|"scale"|"bend"|"reset", delta }
+	// -> the new AlignStateJson, so one round trip both applies and refreshes.
+	std::string AlignAdjust(const std::string& payload);
+
+	// Is the PLAYER in a scene right now? Cheap (one API call, no JSON), main
+	// thread, and safe with OStim absent. Exists for the F7 landing decision in
+	// OpenPalette (Rober, 2026-09-21: "if im in an ostim scene it should open a
+	// dedicated ostim scene page on f7"), which must not pay for StateJson.
+	bool PlayerInScene();
+    std::uint64_t PlayerSceneGeneration();
 
 	// osSearch(query) -> osList: { query, results:[{sceneId,name,actorCount,compatible}] }
 	std::string SearchJson(const std::string& query);

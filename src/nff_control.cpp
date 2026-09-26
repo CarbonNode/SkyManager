@@ -1,9 +1,11 @@
 #include "nff_control.h"
+#include "party_recall.h"
 
 #include "actor_identity.h"
 #include "nff_bridge.h"   // HomeRefFor: where MHiYH / NFF actually think she lives
 #include "npc_actions.h"
 #include "follower_frameworks.h"   // OwningCompanionSpec: whose mod runs her
+#include "fix_actions.h"
 #include "maras.h"          // is she married to you? (M.A.R.A.S)
 #include "relationship.h"   // the player's rank with her, for the card's dossier
 
@@ -12,6 +14,8 @@
 #include <chrono>
 #include <cstdio>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -357,15 +361,10 @@ namespace NffControl
 		 *
 		 *  nwsFollowerSandboxScript is NFF's group brain: it owns the relax
 		 *  state (nwsGroupRelax) and DoTaskAll, the loop it runs over its own
-		 *  alias array. Three of its functions are exactly the party orders
+		 *  alias array. Its relaxation functions implement the party orders
 		 *  Rober asked for, so we call THEM rather than reimplementing a loop:
 		 *
-		 *    DoTaskAll(2, 1)     task 2 is MoveFollower; onDemand 1 skips the
-		 *                        distance test and warps in front of the
-		 *                        player. This is "teleport everyone to me",
-		 *                        and because it walks NFF's ALIASES rather
-		 *                        than the loaded-actor list it reaches the
-		 *                        ones standing in another hold.
+		 *    Summoning now belongs to PartyRecall (active-only, cross-framework).
 		 *    StartSandbox(1)     primes relaxTime to the threshold, so the
 		 *                        next 1s tick relaxes the group. There is no
 		 *                        per-follower sandbox order in NFF at all —
@@ -724,6 +723,16 @@ namespace NffControl
 			return actor->GetFactionRank(fac, false);
 		}
 
+		// Does NFF hold her, by EITHER of its two records: its follower
+		// faction, or a follower/top-package SLOT. They disagree after an
+		// interrupted dismiss (see NffBridge::NffSlotOf) — and a Dismiss that
+		// asked only the faction took the flags-only orphan repair, which
+		// left her in the slot, still following, reporting success.
+		bool NffHolds(RE::Actor* actor)
+		{
+			return NffBridge::IsNffFollower(actor) || NffBridge::NffSlotOf(actor) >= 0;
+		}
+
 		// ------------------------------------------------ make her recruitable --
 		//
 		// NFF's MCM "Force Follower" (Rober, 2026-08-11: "nff also had a force
@@ -887,7 +896,488 @@ namespace NffControl
 
 	bool WasForcedFollower(RE::Actor* actor) { return LooksForceFollowed(actor); }
 
+	// --------------------------------------------------- recruit, verified ----
+	//
+	// WHY THIS EXISTS (Rober, 2026-09-20: "keeps saying an npc joined me ... but
+	// shes not really acting like a follower"). The dispatch callback's `ok` says
+	// only that the Papyrus call COMPLETED — not that she became a follower.
+	// RecruitFollower -> RecruitAction runs its own fourteen-step routine with
+	// its own gates, and when one of those refuses it returns normally and
+	// notifies on screen. The deck read that as success and said "joined you"
+	// about someone who never followed. That is the exact failure mode the rest
+	// of this file is written against ("re-read rather than assume") and recruit
+	// was the one verb still guessing.
+	//
+	// So: dispatch, let NFF's routine settle, then READ THE ACTOR BACK and say
+	// what is actually true — including naming the state when it is one of the
+	// three we can recognise. Everything lands in the log too, because the
+	// on-screen notification NFF writes is gone by the time anyone asks why.
+	namespace
+	{
+		// ONE recruit in flight at a time. The half-recruit this file documents
+		// is caused by exactly this — "two recruits racing, or a recruit and a
+		// dismiss crossing" — and until now nothing stopped a second click from
+		// starting one. The deadline is a dead-man switch: a callback that never
+		// arrives must not wedge the verb forever.
+		std::mutex                            g_recruitMx;
+		RE::FormID                            g_recruitId = 0;
+		std::string                           g_recruitName;
+		std::chrono::steady_clock::time_point g_recruitUntil{};
+		std::uint64_t g_recruitSerial = 0;
+
+		// Returns the name of the recruit already running, or "" if the coast is
+		// clear. Claims the slot when it is.
+		std::string ClaimRecruit(RE::FormID id, const std::string& name, std::uint64_t* serial = nullptr)
+		{
+			const auto                  now = std::chrono::steady_clock::now();
+			std::lock_guard<std::mutex> lk(g_recruitMx);
+			if (g_recruitId && now < g_recruitUntil)
+				return g_recruitName.empty() ? std::string("someone") : g_recruitName;
+			g_recruitId = id;
+			g_recruitName = name;
+			g_recruitUntil = now + std::chrono::seconds(30);
+			++g_recruitSerial;
+			if (serial) *serial = g_recruitSerial;
+			return {};
+		}
+
+		void ReleaseRecruit(std::uint64_t serial)
+		{
+			std::lock_guard<std::mutex> lk(g_recruitMx);
+			if (serial != g_recruitSerial) return;
+			g_recruitId = 0;
+			g_recruitName.clear();
+			g_recruitUntil = {};
+		}
+
+		bool CurrentRecruit(std::uint64_t serial)
+		{
+			std::lock_guard<std::mutex> lk(g_recruitMx);
+			return serial == g_recruitSerial;
+		}
+
+		// How long to let NFF's routine run before believing what we read.
+		// Vanilla SetFollower is a much shorter path, hence the split — the same
+		// 900/60 shape unwedge already uses.
+		void FinishRecruit(RE::FormID id, const std::string& name, const char* via,
+			bool dispatched, Done done, std::uint64_t serial)
+		{
+			if (!CurrentRecruit(serial)) return;
+			const bool viaNff = (std::string(via) == "nff");
+			if (!dispatched) {
+				ReleaseRecruit(serial);
+				logger::warn("NffControl: recruit of {} - the {} call did not complete", name, via);
+				if (done)
+					done(json{ { "ok", false }, { "phase", "done" }, { "op", "recruit" },
+						{ "via", via },
+						{ "msg", "The follower framework never answered for " + name } }
+							 .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+				return;
+			}
+			std::string viaStr(via);
+			std::thread([id, name, viaStr, viaNff, done, serial]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(viaNff ? 900 : 120));
+				SKSE::GetTaskInterface()->AddTask([id, name, viaStr, done, serial]() {
+					if (!CurrentRecruit(serial)) return;
+					ReleaseRecruit(serial);
+					auto* a = RE::TESForm::LookupByID<RE::Actor>(id);
+					if (!a) {
+						logger::warn("NffControl: recruit of {} - she is no longer loaded, "
+									 "so the result cannot be read",
+							name);
+						if (done)
+							done(json{ { "ok", false }, { "phase", "done" }, { "op", "recruit" },
+								{ "via", viaStr },
+								{ "msg", name + " unloaded before the recruit finished" } }
+									 .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+						return;
+					}
+					// The single fact that decides whether she is following.
+					const bool teammate = a->IsPlayerTeammate();
+					const int  curRank = RankIn(a, kCurrentFollowerFac);
+					const bool wedged = !teammate && curRank >= 0;
+					const bool potential = IsPotentialFollower(a);
+
+					std::string msg;
+					if (teammate) {
+						msg = name + " is following you";
+					} else if (wedged) {
+						// The documented half-recruit, named so the fix is obvious.
+						msg = "NFF left " + name + " half-recruited - she is flagged as a "
+							  "current follower but is not actually following. Use Repair.";
+					} else if (!potential) {
+						// NFF refuses because the game will not
+						// let her be asked at all.
+						msg = "NFF refused " + name + " - she is not in the follower pool. "
+							  "Use \"Make recruitable\" first, then recruit her.";
+					} else {
+						msg = "NFF did not recruit " + name + " - she is not following. "
+							  "Her own follower mod, or a full party, is the usual reason.";
+					}
+					// ⚠ The refusal reaches the LOG, not just the screen: NFF's own
+					// notification is gone by the time anyone asks what happened,
+					// which is what made this take two wrong diagnoses to unpick.
+					logger::info("NffControl: recruit of {} via {} -> {} (teammate {}, "
+								 "CurrentFollower rank {}, potential {})",   // marker: recruit-verified
+						name, viaStr, teammate ? "FOLLOWING" : "NOT following",
+						teammate, curRank, potential);
+					if (done)
+						done(json{
+							{ "ok", teammate }, { "phase", "done" }, { "op", "recruit" },
+							{ "via", viaStr }, { "following", teammate },
+							{ "wedged", wedged }, { "canFollow", potential },
+							{ "msg", msg },
+						}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+				});
+			}).detach();
+		}
+	}
+
+	namespace
+	{
+		// One finite recovery request. All engine and VM access stays on the
+		// main thread; timers only enqueue the next observation. A timeout never
+		// triggers a second mutation while the first script may still be running.
+		struct Recovery {
+			RE::FormID id;
+			std::string name, via;
+			bool want = false, preparing = false, completed = false, finished = false;
+			bool refreshed = false, cleaned = false;
+			// A forced dismiss: NFF does not hold her and a quest alias runs a
+			// follow package on her. `holder` names that quest for the result.
+			bool force = false;
+			std::string holder;
+			int ticks = 0, stable = 0;
+			std::uint64_t serial = 0;
+			Done done;
+			json steps = json::array();
+		};
+
+		void RecoveryResult(const std::shared_ptr<Recovery>& r, bool ok, const std::string& msg)
+		{
+			if (r->finished) return;
+			r->finished = true;
+			// Keep an unanswered script's lease until the dead-man deadline.
+			if (r->completed) ReleaseRecruit(r->serial);
+			logger::info("follower-recovery: {} via {} -> {} ({})", r->name, r->via, ok, msg);
+			if (r->done) r->done(json{
+				{ "ok", ok }, { "phase", "done" }, { "op", r->want ? "recruit" : "dismiss" },
+				{ "via", r->via }, { "formId", HexOf(r->id) }, { "steps", r->steps }, { "msg", msg }
+			}.dump(-1, ' ', false, json::error_handler_t::replace));
+		}
+
+		bool CallOwnerRecruitment(RE::Actor* actor, bool want, std::function<void(bool)> done)
+		{
+			auto* q = FollowerFrameworks::RecruitmentController(actor);
+			if (!q) return false;
+			RE::BGSRefAlias* active = nullptr;
+			RE::BGSRefAlias* dismissed = nullptr;
+			for (auto* alias : q->aliases) {
+				if (!alias) continue;
+				if (alias->aliasID == 0) active = skyrim_cast<RE::BGSRefAlias*>(alias);
+				if (alias->aliasID == 4) dismissed = skyrim_cast<RE::BGSRefAlias*>(alias);
+			}
+			if (!active || !dismissed) return false;
+			// Never overwrite another actor, nor bypass her first recruitment's
+			// story gates. A restore requires her active or dismissed binding.
+			if (active->GetReference() && active->GetReference() != actor) return false;
+			if (dismissed->GetReference() && dismissed->GetReference() != actor) return false;
+			if (want ? (active->GetReference() != actor && dismissed->GetReference() != actor)
+			         : active->GetReference() != actor) return false;
+			auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+			auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+			if (!policy) return false;
+			const auto handle = policy->GetHandleForObject(RE::TESQuest::FORMTYPE, q);
+			if (handle == policy->EmptyHandle()) return false;
+			RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> cb(new Callback(std::move(done)));
+			if (want) {
+				auto args = RE::MakeFunctionArguments(std::move(static_cast<RE::TESObjectREFR*>(actor)));
+				return vm->DispatchMethodCall(handle, "DZ08_MelanaController", "SetFollower", args, cb);
+			}
+			auto args = RE::MakeFunctionArguments(std::int32_t(0), std::int32_t(0));
+			return vm->DispatchMethodCall(handle, "DZ08_MelanaController", "DismissFollower", args, cb);
+		}
+
+		bool DispatchRecovery(const std::shared_ptr<Recovery>& r, RE::Actor* actor, bool want)
+		{
+			r->completed = false;
+			r->refreshed = false;
+			r->cleaned = false;
+			r->stable = 0;
+			auto callback = [r](bool ok) {
+				if (!CurrentRecruit(r->serial)) { r->finished = true; return; }
+				if (r->finished) { ReleaseRecruit(r->serial); return; }
+				r->completed = true;
+				if (!ok) RecoveryResult(r, false, "The follower controller refused the request for " + r->name);
+			};
+			bool sent = false;
+			if (r->via == "melana") {
+				sent = CallOwnerRecruitment(actor, want, callback);
+			} else if (r->via == "nff") {
+				auto* q = NffQuest();
+				sent = want ? CallQuestActor(q, kNffScript, "RecruitFollower", actor, callback)
+				            : CallDismiss(q, actor, callback);
+			} else if (r->via == "vanilla" && want) {
+				sent = CallQuestActor(VanillaFollowerQuest(), kVanillaScript, "SetFollower", actor, callback);
+			}
+			r->steps.push_back(want ? "Asked owning controller to recruit" : "Asked owning controller to dismiss");
+			if (!sent) r->completed = true;
+			return sent;
+		}
+
+		void ObserveRecovery(const std::shared_ptr<Recovery>& r)
+		{
+			if (r->finished) return;
+			if (!CurrentRecruit(r->serial)) { r->finished = true; return; }
+			auto* a = RE::TESForm::LookupByID<RE::Actor>(r->id);
+			if (!a || a->IsDead() || a->IsDisabled()) {
+				RecoveryResult(r, false, "The target is no longer available; recovery stopped.");
+				return;
+			}
+			const bool want = r->want && !r->preparing;
+			if (r->completed && !r->refreshed) {
+				a->EvaluatePackage();
+				r->refreshed = true;
+				r->steps.push_back("Refreshed AI packages");
+			}
+			bool matches = false;
+			if (r->via == "melana") {
+				matches = FollowerFrameworks::RecruitmentState(a) == (want ? 1 : 0);
+			} else if (want) {
+				matches = a->IsPlayerTeammate() && (r->via != "nff" || NffBridge::IsNffFollower(a));
+			} else if (r->force) {
+				// Forced past a quest hold (Rober, 2026-09-26: "dismiss needs to
+				// force dismiss ... but i have no active quest for her"). The
+				// flags are cleared underneath the quest ONCE, then the engine is
+				// re-read like any other dismiss: the alias itself is not touched,
+				// so if it really is running a follow package she keeps walking
+				// and the timeout below names it instead of claiming success.
+				const auto req = json{{"formId", HexOf(r->id)}}.dump();
+				const auto probe = json::parse(FixActions::Probe(req), nullptr, false);
+				if (r->completed && !r->cleaned) {
+					r->cleaned = true;
+					const auto result = json::parse(FixActions::Apply(json{
+						{"formId", HexOf(r->id)}, {"fix", "unfollow"}, {"force", true}
+					}.dump()), nullptr, false);
+					const bool ok = result.is_object() && result.value("ok", false);
+					const auto msg = result.is_object() ? result.value("msg", std::string()) : std::string();
+					if (!ok) {
+						RecoveryResult(r, false, msg.empty() ? "The forced clear was refused." : msg);
+						return;
+					}
+					r->steps.push_back("Forced: cleared her follower flags underneath " + r->holder + " and refreshed AI");
+				}
+				matches = probe.is_object() && probe.value("ok", false) &&
+					!probe.value("package", json::object()).value("follow", false) &&
+					!a->IsPlayerTeammate() && RankIn(a, kCurrentFollowerFac) < 0 &&
+					RankIn(a, kPlayerFollowerFac) < 0 && NffBridge::NffSlotOf(a) < 0;
+			} else {
+				const auto req = json{{"formId", HexOf(r->id)}}.dump();
+				const auto probe = json::parse(FixActions::Probe(req), nullptr, false);
+				// "Unowned" is decided on EVIDENCE of a holder: a known framework
+				// (`blocked`), NFF, or a quest alias running a follow package
+				// (`holders`). It used to also require the framework probe's
+				// FrameworkDriven(), whose rule (c) marks every TEAMMATE in ANY
+				// alias as framework-driven - so a teammate filling a CHIM,
+				// scene or deck-hold alias could never be repaired, and the
+				// recovery timed out on "inconsistent state" without naming a
+				// quest (Ambrelie, 2026-09-26). That rule is right for "can the
+				// actor-level hold be trusted", wrong for "is a quest making her
+				// follow"; `holders` answers the second question.
+				const bool unowned = probe.is_object() && probe.value("ok", false) &&
+					probe.value("blocked", std::string()).empty() && !NffHolds(a) &&
+					probe.value("holders", json::array()).empty();
+				// Only after the controller has answered AND the current probe
+				// proves no owner remains may the existing orphan repair run.
+				if (unowned && r->completed && !r->cleaned && r->ticks >= 3) {
+					r->cleaned = true;
+					const auto result = json::parse(FixActions::Apply(json{
+						{"formId", HexOf(r->id)}, {"fix", "unfollow"}, {"force", false}
+					}.dump()), nullptr, false);
+					if (result.is_object() && result.value("ok", false))
+						r->steps.push_back("Cleared unowned follower flags and refreshed AI");
+				}
+				matches = unowned && !probe.value("package", json::object()).value("follow", false) &&
+					!a->IsPlayerTeammate() && RankIn(a, kCurrentFollowerFac) < 0 &&
+					RankIn(a, kPlayerFollowerFac) < 0 && NffBridge::NffSlotOf(a) < 0;
+			}
+			r->stable = r->completed && matches ? r->stable + 1 : 0;
+			if (r->stable >= 3) {
+				if (r->preparing) {
+					r->preparing = false;
+					r->steps.push_back("Verified old follower state released");
+					if (!DispatchRecovery(r, a, true)) {
+						RecoveryResult(r, false, "Old follower state cleared, but recruitment was not accepted.");
+						return;
+					}
+				} else {
+					r->steps.push_back("Verified follower state on three reads");
+					RecoveryResult(r, true, r->name + (r->want ? " is following you (verified)" : " is dismissed (verified)"));
+					return;
+				}
+			}
+			if (++r->ticks >= 24) {
+				if (r->force) {
+					RecoveryResult(r, false, r->name + "'s follower flags were cleared, but " + r->holder +
+						" still runs a follow package on her. That quest has to release her (or be stopped) before she stops following.");
+					return;
+				}
+				RecoveryResult(r, false, r->name + (r->completed
+					? " still has inconsistent follower state. Recovery stopped without overriding her quest."
+					: "'s controller has not answered. No fallback was forced; close menus and let the game run."));
+				return;
+			}
+			std::thread([r]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(500));
+				if (auto* task = SKSE::GetTaskInterface()) task->AddTask([r]() { ObserveRecovery(r); });
+			}).detach();
+		}
+
+		// NFF's RemoveAction opens with: dead, OR (DismissedFollowerFaction AND
+		// not in CurrentFollowerFaction) -> return. An interrupted dismiss
+		// leaves exactly that state while she still fills NFF's follower and
+		// top-package slots, so NFF's own dismiss silently does nothing and she
+		// follows forever (Ambrelie, 2026-09-23 - Teleport All still moved
+		// her). Put her back at CurrentFollowerFaction rank 0 FIRST: RemoveAction
+		// then runs in full and itself sets that rank back to -1 when it is done
+		// (nwsFollowerControllerScript.psc, RemoveAction, decompiled). True when
+		// there was nothing to do or the rank was restored.
+		bool StrandedInNff(const std::shared_ptr<Recovery>& r, RE::Actor* actor)
+		{
+			const int slot = NffBridge::NffSlotOf(actor);
+			if (slot < 0 || RankIn(actor, kCurrentFollowerFac) >= 0)
+				return true;
+			auto* fac = FactionById(kCurrentFollowerFac);
+			if (!fac)
+				return false;
+			actor->AddToFaction(fac, 0);
+			logger::info("nff-stranded-slot: {:08X} held in NFF slot {} while marked dismissed; "
+				"restored CurrentFollowerFaction 0 so NFF's own dismiss runs", actor->GetFormID(), slot);
+			r->steps.push_back("Found her stuck in NFF slot " + std::to_string(slot) +
+				" while marked dismissed; put her back on NFF's books so its own dismiss can release her");
+			return RankIn(actor, kCurrentFollowerFac) >= 0;
+		}
+
+		// Which quest, BY NAME, runs a follow package on her through an alias.
+		// This is the evidence a "held by a quest" refusal has to carry, and it
+		// comes from FixActions::Probe's `holders` so the Fixes flyout and this
+		// refusal can never name different quests. FollowerFrameworks::Probe's
+		// FrameworkDriven() is deliberately NOT used here: its rule (c) marks
+		// every teammate in ANY alias as framework-driven, which on 2026-09-26
+		// refused Ambrelie's Dismiss ("held by a quest") while she had no
+		// active quest at all - and named nothing, so there was nothing to do.
+		struct QuestHold {
+			bool held = false;
+			std::string label;          // "Brothel Routine (RiverwoodKeep.esp)"
+			json holders = json::array();
+		};
+
+		QuestHold QuestHoldOf(RE::Actor* actor)
+		{
+			QuestHold h;
+			const auto probe = json::parse(FixActions::Probe(
+				json{{"formId", HexOf(actor->GetFormID())}}.dump()), nullptr, false);
+			if (!probe.is_object() || !probe.value("ok", false))
+				return h;
+			h.holders = probe.value("holders", json::array());
+			if (!h.holders.is_array() || h.holders.empty()) {
+				h.holders = json::array();
+				return h;
+			}
+			h.held = true;
+			std::vector<std::string> names;
+			for (const auto& q : h.holders) {
+				if (!q.is_object()) continue;
+				std::string n = q.value("questName", std::string());
+				if (n.empty()) n = q.value("quest", std::string());
+				if (n.empty()) n = "an unnamed quest";
+				if (const auto plugin = q.value("plugin", std::string()); !plugin.empty())
+					n += " (" + plugin + ")";
+				names.push_back(n);
+			}
+			for (std::size_t i = 0; i < names.size(); ++i) {
+				if (i) h.label += (i + 1 == names.size()) ? " and " : ", ";
+				h.label += names[i];
+			}
+			if (h.label.empty()) h.label = "a quest";
+			return h;
+		}
+
+		std::string RecoverFollower(RE::Actor* actor, bool want, Done done, bool force = false)
+		{
+			const auto name = NameOf(actor);
+			if (actor->IsDead()) return Refuse(name + " is dead").dump();
+			const bool custom = FollowerFrameworks::HasRecruitmentAdapter(actor);
+			if (!custom && IsGuardedActor(actor, name))
+				return Refuse(name + " needs her own follower dialogue; no verified recovery adapter is installed.").dump();
+			if (!custom && want && !IsPotentialFollower(actor))
+				return Refuse(name + " is not recruitable. Use Make recruitable first, then Restore following.").dump();
+			// A quest alias running a follow package on her, and no NFF slot to
+			// release: the deck cannot ask that quest to let go. A recruit is
+			// refused outright; a DISMISS names the quest and offers the force -
+			// the same second-click idiom as a guarded recruit (`held:true` is
+			// what arms it in followers-pane.js). Forced, the flags are cleared
+			// underneath the quest and the result is still verified, not assumed.
+			QuestHold hold;
+			if (!custom && !NffHolds(actor)) {
+				hold = QuestHoldOf(actor);
+				if (hold.held && (want || !force)) {
+					logger::info("dismiss-quest-held: {} ({:08X}) held by {}; {}", name, actor->GetFormID(),
+						hold.label, want ? "recruit refused" : "click again to force");   // marker: dismiss-quest-held
+					auto refusal = Refuse(want
+						? name + " is held by " + hold.label + ". Recovery will not replace its follower controller."
+						: name + " is held by " + hold.label + " — a quest running a follow package on her, "
+						  "not a follower framework the deck can ask. Click Dismiss again to force it: her teammate "
+						  "flag and follower factions are cleared underneath that quest, and the result is verified.");
+					refusal["held"] = !want;
+					refusal["holders"] = hold.holders;
+					return refusal.dump(-1, ' ', false, json::error_handler_t::replace);
+				}
+			}
+			auto r = std::make_shared<Recovery>();
+			r->id = actor->GetFormID(); r->name = name; r->want = want; r->done = std::move(done);
+			r->force = !custom && !want && hold.held;
+			r->holder = hold.label;
+			if (const auto busy = ClaimRecruit(r->id, name, &r->serial); !busy.empty())
+				return Refuse("A follower change is already running for " + busy + ". Give it time to finish.").dump();
+			r->via = custom ? "melana" : (NffQuest() ? "nff" : "vanilla");
+			r->preparing = !custom && want && !actor->IsPlayerTeammate() && RankIn(actor, kCurrentFollowerFac) >= 0;
+			const bool already = custom ? FollowerFrameworks::RecruitmentState(actor) == (want ? 1 : 0)
+				: (want && actor->IsPlayerTeammate() && NffBridge::IsNffFollower(actor));
+			if (already) {
+				r->completed = true;
+				r->steps.push_back("Requested state already present; checking stability");
+			} else if (!custom && !want && !NffHolds(actor)) {
+				r->via = r->force ? "forced" : "orphan-repair"; r->completed = true;
+				if (r->force)
+					logger::info("dismiss-quest-held: forcing {} out from under {}", name, hold.label);
+			} else if (!custom && !want && !StrandedInNff(r, actor)) {
+				ReleaseRecruit(r->serial);
+				return Refuse(name + " is stuck in NFF's follower slot, and she could not be put back on NFF's "
+					"books for its own dismiss. Nothing was changed.").dump();
+			} else if (!DispatchRecovery(r, actor, want && !r->preparing)) {
+				ReleaseRecruit(r->serial);
+				return Refuse(name + "'s controller did not accept the request. Use her own dialogue; no flags were forced.").dump();
+			}
+			// First observation is delayed so final cannot precede phase:sent.
+			std::thread([r]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(500));
+				if (auto* task = SKSE::GetTaskInterface()) task->AddTask([r]() { ObserveRecovery(r); });
+			}).detach();
+			return json{{"ok", true}, {"phase", "sent"}, {"op", want ? "recruit" : "dismiss"},
+				{"via", r->via}, {"formId", HexOf(r->id)}, {"msg", "Checking and restoring " + name + "'s follower state..."}}.dump();
+		}
+	}
+
 	// ----------------------------------------------------------------- ops ----
+	void CancelPending()
+	{
+		std::lock_guard<std::mutex> lk(g_recruitMx);
+		++g_recruitSerial;
+		g_recruitId = 0;
+		g_recruitName.clear();
+		g_recruitUntil = {};
+	}
 
 	std::string Apply(const std::string& cmdJson, Done done)
 	{
@@ -933,19 +1423,19 @@ namespace NffControl
 				{ "msg", said + "\xE2\x80\xA6" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
 
-		if (op == "allSummon" || op == "allRelax" || op == "allUnrelax") {
+		// Same active-only recall for the quick card, hotkey, and portal.
+		// DoTaskAll(2,1) misses non-NFF followers and prompts for waiters.
+		if (op == "allSummon") return PartyRecall::Recall();
+		if (op == "allRelax" || op == "allUnrelax") {
 			auto* sq = SandboxQuest();
 			if (!sq)
 				return Refuse("Party orders need Nether's Follower Framework").dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
-			const char* fn   = (op == "allSummon") ? "DoTaskAll"
-							 : (op == "allRelax")  ? "StartSandbox" : "ResetSandboxVars";
-			const int   argc = (op == "allSummon") ? 2 : (op == "allRelax" ? 1 : 0);
-			// DoTaskAll(task 2 = MoveFollower, onDemand 1); StartSandbox(1).
-			const std::int32_t a = (op == "allSummon") ? 2 : 1;
+			const char* fn = (op == "allRelax") ? "StartSandbox" : "ResetSandboxVars";
+			const int argc = (op == "allRelax") ? 1 : 0;
+			const std::int32_t a = 1;
 			const std::int32_t b = 1;
-			const std::string  said = (op == "allSummon") ? "Everyone, to me"
-									: (op == "allRelax")  ? "Everyone, at ease"
+			const std::string  said = (op == "allRelax") ? "Everyone, at ease"
 														  : "Everyone, back to me";
 
 			const bool sent = CallGroupInts(sq, fn, a, b, argc,
@@ -1026,6 +1516,11 @@ namespace NffControl
 		const std::string idHex   = HexOf(LocalIdOf(actor));
 		const bool        follows = IsFollowing(actor);
 
+		// Standard Dismiss and recovery controls share the verified owner route.
+		if (op == "dismiss" || (op == "recruit" &&
+			(j.value("recover", false) || FollowerFrameworks::HasRecruitmentAdapter(actor))))
+			return RecoverFollower(actor, op == "recruit", std::move(done), j.value("force", false));
+
 		// ---- repair the half-recruit ----------------------------------------
 		// Give her back to nobody: NFF's own dismiss first (it unwinds the alias
 		// slot, the tweaks and the history entry — things we cannot see, let
@@ -1039,6 +1534,8 @@ namespace NffControl
 		// inverse of what a recruit added, and unlike SetFactionRank(-1) it
 		// leaves her looking like someone who was simply never recruited.
 		if (op == "unwedge") {
+			if (FollowerFrameworks::OwningCompanionSpec(actor) >= 0)
+				return Refuse(name + " has her own controller. Use Restore following or Dismiss and repair.").dump();
 			if (follows)
 				return Refuse(name + " really is following you — use Dismiss, not Repair.",
 					false, true).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
@@ -1453,33 +1950,6 @@ namespace NffControl
 			}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
 
-		// ---- dismiss --------------------------------------------------------
-		if (op == "dismiss") {
-			// Either answer is enough. `follows` is IsPlayerTeammate(); NFF's
-			// own follower faction is the other, and RemoveFollower is exactly
-			// the call that unwinds THAT — refusing on the engine's answer
-			// alone left an NFF-held follower with no way out of the framework
-			// (Rober, 2026-09-10).
-			if (!follows && !NffBridge::IsNffFollower(actor))
-				return Refuse(name + " isn't following you").dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-			auto* q = NffQuest();
-			if (!q)
-				return Refuse("Dismiss needs Nether's Follower Framework — use her dialogue").dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-			const bool sent = CallDismiss(q, actor, [done, name](bool ok) {
-				if (done)
-					done(json{ { "ok", ok }, { "phase", "done" }, { "op", "dismiss" },
-						{ "via", "nff" },
-						{ "msg", ok ? (name + " was dismissed") : ("NFF did not dismiss " + name) } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
-			});
-			if (!sent)
-				return Refuse("NFF did not accept the dismissal").dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-			return json{
-				{ "ok", true }, { "phase", "sent" }, { "op", "dismiss" }, { "via", "nff" },
-				{ "formId", idHex }, { "name", name },
-				{ "msg", "Dismissing " + name + "…" }
-			}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-		}
-
 		// ---- add to / remove from the framework (NFF Import / Export) -------
 		//
 		// NFF's own "[Add to Framework (Import)]" dialogue verb ($FF_SayImport),
@@ -1585,16 +2055,29 @@ namespace NffControl
 					"vanilla follower factions can fight it, and the deck cannot undo the "
 					"relationship change. Click again to do it anyway.", true).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
+			/* The VOICE gate is a WARNING, not a wall (Rober, 2026-09-23). Caraleth
+			 * (Curse of the Hound Amulet) has a custom voice type that is on no
+			 * follower-voice list. The deck refused her outright, yet the same
+			 * two writes done in the console (addfac 5c84d 1 +
+			 * setrelationshiprank player 3) made her a working follower. The
+			 * list only tells us whether VANILLA "follow me" dialogue exists
+			 * for her voice. The deck's own Recruit goes through NFF's API and
+			 * never needs that dialogue. So a first click explains the risk and
+			 * arms the same second-click force the guarded-companion case
+			 * uses; the second click does it. */
 			bool listMissing = false;
-			if (!VoiceCanFollow(actor, &listMissing)) {
+			if (!j.value("force", false) && !VoiceCanFollow(actor, &listMissing)) {
 				if (listMissing)
 					return Refuse("Could not read NFF's follower-voice list, so whether "
-						+ name + " has follower dialogue is unknown — not risking a mute follower.").dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-				// NFF's own refusal ($FF_CantFollower), said in words that
-				// explain it instead of a notification you have to interpret.
-				return Refuse(name + "'s voice type has no follower dialogue, so she cannot "
-					"be a follower — flagging her would leave her recruitable but with "
-					"nothing to say. (NFF refuses this too.)").dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+						+ name + " has follower dialogue is unknown. Click again to make her "
+						"recruitable anyway, then use Recruit.", true).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+				// NFF's own refusal ($FF_CantFollower), said in words, and now
+				// overridable: without vanilla follow dialogue she can still be
+				// taken on through the deck's Recruit (NFF's API, no dialogue).
+				return Refuse(name + "'s voice type has no follower dialogue, so she won't "
+					"offer \"follow me\" herself. Click again to make her recruitable anyway, "
+					"then use Recruit here (it doesn't need her dialogue).", true)
+					.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);   // marker: force-follower-voice-override
 			}
 
 			auto* pot = FactionById(kPotentialFollowerFac);
@@ -1686,15 +2169,21 @@ namespace NffControl
 			return Refuse(name + " has her own follower system — recruiting her into NFF gives her two. Click again to do it anyway.",
 				true).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
+		// ONE AT A TIME. Two recruits racing is a documented way to leave her
+		// half-recruited (see IsWedgedFollower), and nothing used to stop a
+		// second click from starting one while the first was still running.
+		std::uint64_t serial = 0;
+		if (const auto busy = ClaimRecruit(actor->GetFormID(), name, &serial); !busy.empty())
+			return Refuse("A recruit is already running for " + busy
+				+ " - give it a moment before asking again.").dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+
 		// NFF first, always; vanilla only when the framework is not installed.
 		if (auto* q = NffQuest()) {
+			// `ok` here says only that the call COMPLETED. FinishRecruit reads
+			// the actor back before claiming anything about her.
+			const auto rid  = actor->GetFormID();
 			const bool sent = CallQuestActor(q, kNffScript, "RecruitFollower", actor,
-				[done, name](bool ok) {
-					if (done)
-						done(json{ { "ok", ok }, { "phase", "done" }, { "op", "recruit" },
-							{ "via", "nff" },
-							{ "msg", ok ? (name + " joined you") : ("NFF did not recruit " + name) } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
-				});
+				[done, name, rid, serial](bool ok) { FinishRecruit(rid, name, "nff", ok, done, serial); });
 			if (sent) {
 				logger::info("NffControl: recruit \"{}\" ({}) via NFF", name, idHex);
 				return json{
@@ -1705,14 +2194,10 @@ namespace NffControl
 			}
 		}
 
-		if (auto* q = VanillaFollowerQuest()) {
+		if (auto* q = NffQuest() ? nullptr : VanillaFollowerQuest()) {
+			const auto rid  = actor->GetFormID();
 			const bool sent = CallQuestActor(q, kVanillaScript, "SetFollower", actor,
-				[done, name](bool ok) {
-					if (done)
-						done(json{ { "ok", ok }, { "phase", "done" }, { "op", "recruit" },
-							{ "via", "vanilla" },
-							{ "msg", ok ? (name + " joined you") : ("Could not recruit " + name) } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
-				});
+				[done, name, rid, serial](bool ok) { FinishRecruit(rid, name, "vanilla", ok, done, serial); });
 			if (sent) {
 				logger::info("NffControl: recruit \"{}\" ({}) via vanilla DialogueFollower "
 							 "(NFF not installed)", name, idHex);
@@ -1724,6 +2209,8 @@ namespace NffControl
 			}
 		}
 
+		// Nothing was dispatched, so the slot claimed above must not stick.
+		ReleaseRecruit(serial);
 		return Refuse("No follower framework answered — is a save loaded?").dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 

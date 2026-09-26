@@ -1,6 +1,8 @@
 #include "wardrobe.h"
+#include "wardrobe_flair.h"
 
 #include "actor_identity.h"
+#include "wardrobe_bed_state.h"
 
 #include <algorithm>
 #include <cctype>
@@ -11,6 +13,7 @@
 #include <mutex>
 #include <random>
 #include <unordered_set>
+#include <unordered_map>
 
 // pch (force-included) provides RE::/SKSE::, nlohmann json.hpp (as nlohmann::json),
 // `namespace logger = SKSE::log`, and `using namespace std::literals`.
@@ -42,6 +45,19 @@ namespace Wardrobe
 		constexpr auto kEvRename = "HD_Wardrobe_RenOutfit";  // strArg = "old|new"
 		constexpr auto kEvFav    = "HD_Wardrobe_Fav";        // strArg = outfit name, numArg = 1 on / 0 off
 		constexpr auto kEvSys    = "HD_Wardrobe_Sys";        // strArg = "quickslot"|"climate", numArg = 1/0
+		constexpr std::int32_t kSleeping = 1700;  // SOES LocationType::Sleeping
+		struct BedWatch
+		{
+			std::string formId, plugin;
+			BedState state;
+		};
+		std::unordered_map<std::string, BedWatch> g_beds;  // main thread only, no raw actor pointers
+
+		bool InBed(RE::Actor* actor)
+		{
+			const auto state = actor->AsActorState()->GetSitSleepState();
+			return state == RE::SIT_SLEEP_STATE::kIsSleeping || state == RE::SIT_SLEEP_STATE::kWantToWake;
+		}
 
 		std::mutex                       g_catMutex;
 		bool                             g_catOk = false;
@@ -94,6 +110,39 @@ namespace Wardrobe
 		RE::Actor* ResolveActor(const std::string& formId, const std::string& plugin)
 		{
 			return ActorIdentity::ResolveActor(formId, plugin);
+		}
+
+		/* The same lookup for a request that may carry a LIVE reference beside
+		   its stored identity. Follower Organizer cannot persist a 0xFF
+		   reference and files the follower's BASE NPC_ record instead; that
+		   resolves to a form but never to an Actor, so every op below answered
+		   "That person isn't loaded" about someone standing in front of you. FO
+		   now sends the reference it found as `liveFormId` (DeckAPI.cpp,
+		   LoadedActorForBase), NpcsJson passes it to the view, and the view
+		   echoes it back here.
+
+		   A raw LookupByID on purpose: it is a full runtime id with no plugin,
+		   so the (local id + plugin) machinery has nothing to work with — and it
+		   is session-only, which is why it never becomes the assignment's
+		   identity. Empty = the ordinary path, byte for byte. */
+		RE::Actor* ResolveLive(const std::string& formId, const std::string& plugin,
+			const std::string& liveId)
+		{
+			if (!liveId.empty()) {
+				RE::FormID id = 0;
+				try {
+					id = static_cast<RE::FormID>(std::stoul(liveId, nullptr, 16));
+				} catch (...) {
+					id = 0;
+				}
+				if (id) {
+					auto* form = RE::TESForm::LookupByID(id);
+					auto* refr = form ? form->As<RE::TESObjectREFR>() : nullptr;
+					if (auto* a = refr ? refr->As<RE::Actor>() : nullptr)
+						return a;
+				}
+			}
+			return ResolveActor(formId, plugin);
 		}
 
 		// The inverse: the durable identity of a live form.
@@ -337,7 +386,8 @@ namespace Wardrobe
 				{ "mode", a.mode }, { "wardrobeId", a.wardrobeId }, { "outfit", a.outfit },
 				{ "cadenceHours", a.cadenceHours }, { "cadenceInherit", a.cadenceInherit },
 				{ "draw", a.draw }, { "bag", a.bag }, { "locationOverrides", ov },
-				{ "lastRollDay", a.lastRollDay }, { "lastOutfit", a.lastOutfit } };
+				{ "lastRollDay", a.lastRollDay }, { "lastOutfit", a.lastOutfit },
+				{ "lastBedOutfit", a.lastBedOutfit } };
 		}
 		Assignment AssignFrom(const nlohmann::json& j)
 		{
@@ -361,6 +411,7 @@ namespace Wardrobe
 						a.bag.push_back(o.get<std::string>());
 			a.lastRollDay  = j.value("lastRollDay", 0.0);
 			a.lastOutfit   = j.value("lastOutfit", std::string(""));
+			a.lastBedOutfit = j.value("lastBedOutfit", std::string(""));
 			if (j.contains("locationOverrides") && j["locationOverrides"].is_array())
 				for (const auto& o : j["locationOverrides"]) {
 					if (!o.is_object())
@@ -407,6 +458,17 @@ namespace Wardrobe
 			for (const auto& [n, _] : g_catalogue)
 				if (n == name)
 					return true;
+			return false;
+		}
+
+		bool HasUsualOutfit(const Config& cfg, const Assignment& a)
+		{
+			if (a.mode == "outfit")
+				return !a.outfit.empty() && CatalogueHas(a.outfit);
+			if (a.mode == "wardrobe")
+				for (const auto& p : cfg.wardrobes)
+					if (p.id == a.wardrobeId)
+						return std::any_of(p.outfits.begin(), p.outfits.end(), CatalogueHas);
 			return false;
 		}
 
@@ -500,8 +562,14 @@ namespace Wardrobe
 		{
 			if (!actor || pick.empty())
 				return "";
-			SendEvent(kEvDress, pick, 0.0f, actor);
+			// A base assignment is SOES's World fallback. Establish it in the
+			// same event that tracks/dresses, even when the bed rule will be
+			// chosen later. Otherwise SOES's first poll clears the selected look.
+			// One-off DressNow uses numArg=0 and keeps its temporary behavior.
+			SendEvent(kEvDress, pick, 1.0f, actor);
 			for (const auto& ov : a.locationOverrides) {
+				if (ov.loc == kSleeping)
+					continue;  // bed entry owns this draw, never the base cadence
 				// A pinned OUTFIT is the base-SOES behaviour: that one look in
 				// that place, every time. A wardrobe rolls fresh instead.
 				if (!ov.outfit.empty()) {
@@ -567,7 +635,8 @@ namespace Wardrobe
 		RE::Actor*  actor = nullptr;
 		std::string who   = "You";
 		if (!j.is_discarded() && j.is_object() && j.contains("formId")) {
-			actor = ResolveActor(j.value("formId", std::string("")), j.value("plugin", std::string("")));
+			actor = ResolveLive(j.value("formId", std::string("")), j.value("plugin", std::string("")),
+				j.value("liveFormId", std::string("")));
 			if (!actor)
 				return nlohmann::json{ { "ok", false }, { "msg", "That person isn't loaded" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 			const char* nm = actor->GetDisplayFullName();
@@ -855,6 +924,7 @@ namespace Wardrobe
 		SendEvent(kEvDelFit, name, 0.0f, nullptr);
 
 		// Drop everything that pointed at it, or the UI keeps showing a ghost.
+		if (cfg.flair.contains("links") && cfg.flair["links"].is_object()) cfg.flair["links"].erase("outfit:" + name);
 		std::erase_if(cfg.outfitMeta, [&](const OutfitMeta& m) { return m.name == name; });
 		for (auto& p : cfg.wardrobes) {
 			std::erase(p.outfits, name);
@@ -865,6 +935,8 @@ namespace Wardrobe
 				a.outfit.clear();
 			if (a.lastOutfit == name)
 				a.lastOutfit.clear();
+			if (a.lastBedOutfit == name)
+				a.lastBedOutfit.clear();
 			std::erase(a.bag, name);
 			std::erase_if(a.locationOverrides,
 				[&](const LocOverride& o) { return o.outfit == name; });
@@ -932,6 +1004,10 @@ namespace Wardrobe
 		}
 
 		SendEvent(kEvRename, from + "|" + to, 0.0f, nullptr);
+		if (cfg.flair.contains("links") && cfg.flair["links"].is_object()) {
+			auto& links = cfg.flair["links"];
+			if (links.contains("outfit:" + from)) { links["outfit:" + to] = links["outfit:" + from]; links.erase("outfit:" + from); }
+		}
 
 		for (auto& m : cfg.outfitMeta)
 			if (m.name == from)
@@ -949,6 +1025,8 @@ namespace Wardrobe
 				a.outfit = to;
 			if (a.lastOutfit == from)
 				a.lastOutfit = to;
+			if (a.lastBedOutfit == from)
+				a.lastBedOutfit = to;
 			for (auto& n : a.bag)   // her private bag holds names too
 				if (n == from)
 					n = to;
@@ -1175,10 +1253,17 @@ namespace Wardrobe
 		return nlohmann::json{ { "ok", true }, { "msg", "Auto-switch state cleared" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
+	std::string RollForDock(Config& cfg, const std::string& id)
+	{
+		auto* pool = FindPool(cfg, id);
+		return pool ? RollFrom(*pool, "") : "";
+	}
+
 	void Init()
 	{
 		LoadCatalogue();
 		logger::info("Wardrobe: init (catalogue {})", g_catOk ? "loaded" : "not exported yet");
+		logger::info("wardrobe-bed-outfits: bed entry pools and SOES restore ready");
 	}
 
 	// ------------------------------------------------------------- persistence
@@ -1202,7 +1287,7 @@ namespace Wardrobe
 			crops[file] = nlohmann::json{ { "z", x.z }, { "x", x.x }, { "y", x.y } };
 		return nlohmann::json{ { "categories", cats }, { "outfitMeta", metas },
 			{ "wardrobes", pools }, { "assignments", assigns },
-			{ "imageCrops", std::move(crops) },
+			{ "imageCrops", std::move(crops) }, { "flair", c.flair },
 			{ "settings", { { "enabled", c.enabled }, { "notify", c.notify },
 				{ "uiScale", c.uiScale },
 				{ "soesQuickslot", c.soesQuickslot }, { "soesClimate", c.soesClimate } } } };
@@ -1217,6 +1302,7 @@ namespace Wardrobe
 	{
 		Config c;
 		c.imageCrops = out.imageCrops;
+		c.flair = j.is_object() && j.contains("flair") && j["flair"].is_object() ? j["flair"] : out.flair;
 		// Same `out`-preserving contract as imageCrops, for the same reason: the
 		// view's wdSave carries neither, and a payload that omits a C++-owned
 		// field must never be read as "set it back to the default".
@@ -1316,7 +1402,7 @@ namespace Wardrobe
 		std::vector<std::string> wasActive;
 		if (activated)
 			for (const auto& a : cfg.assignments)
-				if (a.mode == "outfit" || a.mode == "wardrobe")
+				if (HasUsualOutfit(cfg, a))
 					wasActive.push_back(Lower(ActorKey(a.formId, a.plugin)));
 
 		// Remember the C++-owned roll bookkeeping — the view echoes it back but
@@ -1325,11 +1411,12 @@ namespace Wardrobe
 		{
 			double                   day;
 			std::string              outfit;
+			std::string              bedOutfit;
 			std::vector<std::string> bag;   // her private bag — state, like the day
 		};
 		std::vector<std::pair<std::string, Roll>> keep;
 		for (const auto& a : cfg.assignments)
-			keep.emplace_back(ActorKey(a.formId, a.plugin), Roll{ a.lastRollDay, a.lastOutfit, a.bag });
+			keep.emplace_back(ActorKey(a.formId, a.plugin), Roll{ a.lastRollDay, a.lastOutfit, a.lastBedOutfit, a.bag });
 
 		Config next;
 		// Seed the C++-owned crop map BEFORE the parse: FromJson preserves what
@@ -1337,11 +1424,18 @@ namespace Wardrobe
 		// view's wdSave always omits it. Without this line every edit to a note,
 		// a category or a cadence would silently wipe every outfit crop.
 		next.imageCrops = cfg.imageCrops;
+		next.flair = cfg.flair; // ordinary view saves must never erase Flair / dock metadata
+		j.erase("flair"); // only the validated per-operation editor owns this slice
 		// Ditto the two SOES mirrors: the view renders them but never owns them,
 		// so a wdSave (which omits them) must not switch the quick-swap power off.
 		next.soesQuickslot = cfg.soesQuickslot;
 		next.soesClimate   = cfg.soesClimate;
 		FromJson(j, next);
+		// A bed-entry draw can happen after the view opened. Never let the
+		// view's older copy rewind the shared shuffle bag on an unrelated save.
+		for (auto& p : next.wardrobes)
+			if (auto* old = FindPool(cfg, p.id); old && old->mode == p.mode)
+				p.bag = old->bag;
 
 		for (auto& a : next.assignments) {
 			// The view sends back the identity it was RENDERED with — FO's runtime
@@ -1353,6 +1447,7 @@ namespace Wardrobe
 				if (k == key) {
 					a.lastRollDay = r.day;
 					a.lastOutfit  = r.outfit;
+					a.lastBedOutfit = r.bedOutfit;
 					a.bag         = r.bag;
 					break;
 				}
@@ -1364,7 +1459,7 @@ namespace Wardrobe
 		cfg = std::move(next);
 		if (activated)
 			for (const auto& a : cfg.assignments) {
-				if (a.mode != "outfit" && a.mode != "wardrobe")
+				if (!HasUsualOutfit(cfg, a))
 					continue;
 				const auto ky = Lower(ActorKey(a.formId, a.plugin));
 				if (std::find(wasActive.begin(), wasActive.end(), ky) == wasActive.end())
@@ -1785,7 +1880,7 @@ namespace Wardrobe
 			std::lock_guard lock(g_catMutex);
 			nlohmann::json  arr = nlohmann::json::array();
 			for (const auto& [name, n] : g_catalogue)
-				arr.push_back(nlohmann::json{ { "name", name }, { "items", n } });
+				if (!name.starts_with("~SkyManager Flair")) arr.push_back(nlohmann::json{ { "name", name }, { "items", n } });
 			return nlohmann::json{ { "available", g_catOk }, { "outfits", arr },
 				{ "tracked", g_tracked }, { "pending", g_catPending.load() } };
 		}
@@ -1855,7 +1950,8 @@ namespace Wardrobe
 			const auto     clash = TailorAssignedKeys();
 
 			auto emit = [&](const std::string& formId, const std::string& plugin,
-							const std::string& name, const std::string& portrait) {
+							const std::string& name, const std::string& portrait,
+							const std::string& liveFormId = "") {
 				const std::string key = ActorKey(formId, plugin);
 				const std::string lk  = Lower(key);
 				// The row's DURABLE identity, beside the runtime one. The view
@@ -1872,6 +1968,15 @@ namespace Wardrobe
 				arr.push_back(nlohmann::json{
 					{ "formId", formId }, { "plugin", plugin }, { "name", name },
 					{ "key", canon },
+					/* Session-only, present only for a row whose stored form is a
+					   BASE record — what Follower Organizer falls back to for a
+					   follower spawned at runtime, a 0xFF reference having no
+					   source file to name (FO DeckAPI.cpp, LoadedActorForBase).
+					   It is the ONLY handle that reaches her actor, so the view
+					   echoes it back on every op; it must never become `key` or
+					   `formId`, which are her identity and have to outlive the
+					   session. */
+					{ "liveFormId", liveFormId },
 					{ "portrait", portrait },
 					{ "tracked", TrackedKey(key) },
 					{ "wearing", WearingKey(key) },
@@ -1879,6 +1984,16 @@ namespace Wardrobe
 			};
 
 			std::vector<std::string> seen;
+			// The player is not a Follower Organizer member. Always offer their
+			// own wardrobe card, including on a fresh config with no assignments.
+			if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+				std::string id, plugin;
+				if (ActorIdentity::DurableOf(player, id, plugin)) {
+					seen.push_back(ActorKey(id, plugin));
+					const auto* name = player->GetName();
+					emit(id, plugin, name && *name ? name : "Player", "");
+				}
+			}
 			const auto env = nlohmann::json::parse(foStateJson, nullptr, false);
 			if (!env.is_discarded() && env.is_object()) {
 				const nlohmann::json& st =
@@ -1907,7 +2022,8 @@ namespace Wardrobe
 							if (std::find(seen.begin(), seen.end(), key) != seen.end())
 								continue;
 							seen.push_back(key);
-							emit(id, plg, m.value("name", std::string("")), m.value("portrait", std::string("")));
+							emit(id, plg, m.value("name", std::string("")), m.value("portrait", std::string("")),
+								m.value("liveFormId", std::string("")));
 						}
 					}
 			}
@@ -2150,7 +2266,7 @@ namespace Wardrobe
 		if (outfit.empty())
 			return nlohmann::json{ { "ok", false }, { "msg", "No outfit named" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
-		auto* actor = ResolveActor(formId, plugin);
+		auto* actor = ResolveLive(formId, plugin, j.value("liveFormId", std::string("")));
 		if (!actor)
 			return nlohmann::json{ { "ok", false }, { "msg", "That person isn't loaded" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		const char*       nmc  = actor->GetDisplayFullName();
@@ -2228,7 +2344,7 @@ namespace Wardrobe
 		if (!a || a->mode == "off")
 			return nlohmann::json{ { "ok", false }, { "msg", "Nothing assigned" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
-		RE::Actor* actor = ResolveActor(formId, plugin);
+		RE::Actor* actor = ResolveLive(formId, plugin, j.value("liveFormId", std::string("")));
 		if (!actor)
 			return nlohmann::json{ { "ok", false },
 				{ "msg", a->name.empty() ? "That person isn't loaded" : a->name + " isn't loaded" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
@@ -2257,7 +2373,7 @@ namespace Wardrobe
 		return nlohmann::json{ { "ok", true }, { "msg", msg }, { "outfit", pick } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
-	std::string SetTracked(const Config& cfg, const std::string& reqJson)
+	std::string SetTracked(Config& cfg, const std::string& reqJson)
 	{
 		auto j = nlohmann::json::parse(reqJson, nullptr, false);
 		if (j.is_discarded() || !j.is_object())
@@ -2266,7 +2382,7 @@ namespace Wardrobe
 		const std::string plugin = j.value("plugin", std::string(""));
 		const bool        track  = j.value("track", false);
 
-		RE::Actor* actor = ResolveActor(formId, plugin);
+		RE::Actor* actor = ResolveLive(formId, plugin, j.value("liveFormId", std::string("")));
 		if (!actor)
 			return nlohmann::json{ { "ok", false }, { "msg", "That person isn't loaded" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
@@ -2278,9 +2394,12 @@ namespace Wardrobe
 			for (const auto& x : cfg.assignments)
 				if (ActorKey(x.formId, x.plugin) == want)
 					a = &x;
-			if (!a || a->mode == "off")
+			if (!a || !HasUsualOutfit(cfg, *a))
 				return nlohmann::json{ { "ok", false },
 					{ "msg", "Give them an outfit first \xE2\x80\x94 SOES strips a tracked actor it can't dress" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			// One existing executor event tracks AND supplies a valid outfit.
+			// Track+Refresh alone would expose an empty outfit to SOES first.
+			return Dress(cfg, reqJson);
 		}
 
 		SendEvent(kEvTrack, "", track ? 1.0f : 0.0f, actor);
@@ -2355,6 +2474,76 @@ namespace Wardrobe
 			.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
+	void ResetBedOutfits()
+	{
+		g_beds.clear();
+	}
+
+	bool PollBedOutfits(Config& cfg)
+	{
+		bool changed = false;
+		std::unordered_set<std::string> seen;
+		for (auto& a : cfg.assignments) {
+			const auto key = ActorKey(a.formId, a.plugin);
+			const auto rule = std::find_if(a.locationOverrides.begin(), a.locationOverrides.end(),
+				[](const LocOverride& o) { return o.loc == kSleeping; });
+			if (rule == a.locationOverrides.end() && !g_beds.contains(key))
+				continue;
+			seen.insert(key);
+			auto& watch = g_beds[key];
+			watch.formId = a.formId;
+			watch.plugin = a.plugin;
+			auto* actor = ResolveActor(a.formId, a.plugin);
+			if (!actor || !actor->Is3DLoaded() || actor->IsDead())
+				continue;  // absence is not a new bed visit
+
+			Pool* pool = nullptr;
+			std::string pinned, revision;
+			if (rule != a.locationOverrides.end()) {
+				pinned = rule->outfit;
+				pool = pinned.empty() ? FindPool(cfg, rule->wardrobeId) : nullptr;
+				// Membership changes invalidate a held pick; drawing from its bag
+				// does not. JSON avoids delimiter collisions in outfit names.
+				revision = nlohmann::json{ pinned, rule->wardrobeId,
+					pool ? pool->outfits : std::vector<std::string>{} }.dump();
+			}
+			const bool usable = !pinned.empty() ? CatalogueHas(pinned) :
+				(pool && std::any_of(pool->outfits.begin(), pool->outfits.end(), CatalogueHas));
+			const bool active = cfg.enabled && HasUsualOutfit(cfg, a) && usable;
+			const auto action = watch.state.Observe(active, InBed(actor), revision);
+			if (action == BedAction::none)
+				continue;
+			std::string pick;
+			if (action == BedAction::apply) {
+				pick = !pinned.empty() ? pinned : RollFrom(*pool, a.lastBedOutfit);
+				if (!pick.empty()) {
+					a.lastBedOutfit = pick;
+					changed = true;
+				}
+			}
+			// The executor verifies live SOES tracking and sleep state again.
+			// This never enrols an untracked actor or competes with NFF.
+			SendEvent(pick.empty() ? kEvClrLoc : kEvSetLoc, pick, static_cast<float>(kSleeping), actor);
+			logger::info("wardrobe-bed-outfits: {} -> {}", a.name, pick.empty() ? "usual outfit" : pick);
+		}
+		for (auto it = g_beds.begin(); it != g_beds.end();) {
+			if (seen.contains(it->first)) {
+				++it;
+				continue;
+			}
+			// An assignment may be removed outright (including a portal edit).
+			// Keep the cleanup until its actor is loaded, without retaining it.
+			auto* actor = ResolveActor(it->second.formId, it->second.plugin);
+			if (!actor || !actor->Is3DLoaded()) {
+				++it;
+				continue;
+			}
+			SendEvent(kEvClrLoc, "", static_cast<float>(kSleeping), actor);
+			it = g_beds.erase(it);
+		}
+		return changed;
+	}
+
 	bool MaybeRoll(Config& cfg)
 	{
 		if (!cfg.enabled)
@@ -2396,6 +2585,8 @@ namespace Wardrobe
 				changed       = true;
 				continue;
 			}
+			if (InBed(actor))
+				continue;  // keep sleepwear steady even if game time advances in bed
 			const std::string pick = RollForAssign(*pool, a);
 			if (pick.empty())
 				continue;
@@ -2442,7 +2633,11 @@ namespace Wardrobe
 							continue;
 						const std::string kind = op.value("op", std::string(""));
 
-						if (kind == "outfit-new") {
+						if (kind == "flair-edit") {
+							std::string error;
+							if (op.contains("edit") && WardrobeFlair::Edit(cfg, op["edit"], error)) changed = true;
+							else logger::warn("wardrobe-flair: portal edit refused: {}", error);
+						} else if (kind == "outfit-new") {
 							// Build a REAL SOES outfit out of inventory pieces. The
 							// executor creates/empties the outfit, then we feed it one
 							// armour at a time (a mod event carries ONE form, on sender).

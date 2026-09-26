@@ -52,6 +52,19 @@ namespace QuestTools
 	// { hasTarget:false }, exactly like no crosshair target.
 	std::string QuestsForActor(std::uint32_t actorFormID);
 
+	// JSON: { quests:[ ... ], total, journalCount } — every quest RUNNING right
+	// now, which is the journal as the engine sees it (mod-added and ESL quests
+	// included). Needs no query: the NPC lookup can only see quests she is
+	// aliased into, and a text search needs you to already know the name, so
+	// neither can answer "what am I in the middle of?".
+	//
+	// Each row adds three fields to the normal summary: `objective` (the
+	// displayed objective line), `hasTarget` (whether a Go-to-marker jump would
+	// actually land — a DISPLAYED objective pointing at a FILLED alias), and
+	// `journal` (an unfinished displayed objective, so background scripts do
+	// not bury the real quests). `currentObjectives` includes every such line.
+	std::string ActiveQuests();
+
 	// JSON: { quests:[ ... ] } — free-text search over every quest by display
 	// name, EditorID, FormID or plugin. This is the fallback that matters when an
 	// alias never filled: the NPC lookup cannot see that quest, but you can still
@@ -63,7 +76,7 @@ namespace QuestTools
 	std::string QuestDetail(std::uint32_t formID);
 
 	// Fire a stage through Papyrus. JSON: { ok, message, detail:{...} }
-	std::string SetStage(std::uint32_t formID, std::uint32_t stage);
+	std::string SetStage(std::uint32_t formID, std::uint32_t stage, std::int32_t expectedStage = -1);
 
 	// verb: "reset" | "start" | "stop" | "complete".
 	// JSON: { ok, message, detail:{...} }

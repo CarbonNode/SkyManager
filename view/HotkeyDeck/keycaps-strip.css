@@ -1,0 +1,141 @@
+/* ====================================================================== *
+ *  Key strip (keycaps-strip.js) — the caps that appear above the hotkey
+ *  list when what you typed is the name of a KEY.
+ *
+ *  Its own sheet, and CORE (a plain <link>): it paints inside #deck-pane,
+ *  the surface the deck opens onto, and at ~3 KB it is not worth a gate.
+ *  The .ks- prefix is its own — nothing else in either view tree uses it
+ *  (the deck's own keypad is .np-, the Keys census is .kc-).
+ *
+ *  Direction: the deck's OWN system, extended, not a second visual
+ *  language — the gold (#c9a24b) on near-black of app.css, and the same
+ *  keycap recipe as .npkey (#202028 → #16161c face, #33333d edge), so a cap
+ *  here and a cap on the Numpad tab are recognisably the same object.
+ *  Ultralight rules obeyed: explicit rgba() (color-mix fails silently), no
+ *  conic-gradient, no colour emoji.
+ *
+ *  Sizes are deliberately large: this is read from a couch at 2560x1440,
+ *  and a keycap you have to aim at is a keycap you stop using. Caps are
+ *  auto-width so "Backspace" and "PrintScreen" fit on ONE line instead of
+ *  being clipped by a fixed square.
+ * ====================================================================== */
+
+#ks-strip {
+  margin: 0 0 14px;
+  padding: 16px 18px 18px;
+  border: 1px solid #33333d;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(201, 162, 75, .05), rgba(255, 255, 255, .012));
+}
+
+.ks-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-bottom: 14px;
+}
+
+.ks-title {
+  font: 700 13px/1 "Segoe UI", sans-serif;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: #c9a24b;
+}
+
+.ks-sub { font-size: 13px; color: #8b8678; flex: 1 1 260px; min-width: 0; }
+
+/* Modifiers + the way out to the full keyboard, pushed to the right edge. */
+.ks-mods { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+
+.ks-mod {
+  background: transparent;
+  border: 1px solid #3a3a44;
+  border-radius: 6px;
+  color: #b9b4a8;
+  font-size: 13px;
+  padding: 9px 16px;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+.ks-mod:hover { border-color: rgba(201, 162, 75, .55); }
+.ks-mod:focus-visible { outline: 2px solid rgba(201, 162, 75, .4); }
+.ks-mod.on { border-color: #c9a24b; color: #c9a24b; background: rgba(201, 162, 75, .12); }
+
+.ks-full {
+  background: transparent;
+  border: 1px solid #3a3a44;
+  border-radius: 6px;
+  color: #8b8678;
+  font-size: 13px;
+  padding: 9px 16px;
+  margin-left: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+.ks-full:hover { border-color: rgba(201, 162, 75, .55); color: #cfcabd; }
+.ks-full:focus-visible { outline: 2px solid rgba(201, 162, 75, .4); }
+
+.ks-caps { display: flex; flex-wrap: wrap; gap: 12px; }
+
+.ks-cap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 80px;
+  min-height: 62px;
+  padding: 0 18px;
+  background: linear-gradient(180deg, #202028, #16161c);
+  border: 1px solid #33333d;
+  border-radius: 8px;
+  /* The cap face: a lit top lip and a hard bottom edge are what make it read
+     as a KEY rather than a button. Explicit rgba() — color-mix() fails
+     silently in Ultralight. */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), 0 2px 0 #101014;
+  color: #d6d1c4;
+  font-family: Consolas, monospace;
+  font-size: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 90ms ease;
+}
+.ks-cap:hover { border-color: rgba(201, 162, 75, .55); background: linear-gradient(180deg, #26262f, #1a1a21); }
+.ks-cap:focus-visible { outline: 2px solid rgba(201, 162, 75, .4); }
+/* Pressed: the cap travels down onto its own bottom edge — the shadow goes
+   with it, or the key would look like it floated instead of being struck. */
+.ks-cap:active { transform: translateY(2px); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04); }
+
+.ks-cap-l { font-size: 18px; line-height: 1.1; }
+
+/* The deck's own open key is MARKED, not hidden — same law as the Numpad
+   tab: firing it really does toggle the deck, and saying so beats a cap
+   that looks broken. */
+.ks-cap.ks-deckkey {
+  border-color: #c9a24b;
+  color: #ecd9a0;
+  background: linear-gradient(180deg, #2a2418, #1d1a12);
+}
+.ks-cap-tag {
+  font: 700 11px/1 "Segoe UI", sans-serif;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: #c9a24b;
+}
+
+.ks-cap.ks-flash { animation: flashFire 260ms ease; }
+
+@media (max-width: 1180px) {
+  .ks-cap { min-width: 72px; min-height: 56px; padding: 0 14px; font-size: 16.5px; }
+  .ks-cap-l { font-size: 16.5px; }
+}
+body.panel-narrow .ks-cap { min-width: 70px; min-height: 54px; padding: 0 12px; }
+body.panel-narrow .ks-cap-l { font-size: 16px; }
+body.panel-narrow .ks-sub { flex-basis: 100%; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ks-cap, .ks-mod, .ks-full { transition: none; }
+  .ks-cap.ks-flash { animation: none; }
+}

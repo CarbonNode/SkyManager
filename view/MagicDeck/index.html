@@ -8,6 +8,7 @@
   <!-- Combat Arts page (moved out of the main deck 2026-08-15): own sheet, per
        the sync_view_frags lesson. -->
   <link rel="stylesheet" href="combat-arts-pane.css">
+  <link rel="stylesheet" href="library.css">
 </head>
 <body>
   <div id="overlay">
@@ -15,47 +16,91 @@
 
       <header id="md-header">
         <div class="title-wrap">
-          <h1>Spell&nbsp;Deck</h1>
+          <div><span class="ml-brand-label">SKYMANAGER</span><h1 id="md-page-title">Spell Deck</h1></div>
           <span id="count-chip" title="Spells in view">0</span>
         </div>
-        <!-- Page switcher (2026-08-15, Rober: "combat arts is meant to be a
-             spell deck tab not a main skymanager tab"). Two pages share this
-             window: the spell list and the Ashes-of-War collection. -->
-        <div id="md-pages" role="tablist" aria-label="Spell Deck pages">
-          <button id="md-page-spells" class="md-page on" role="tab" data-page="spells"
-                  aria-selected="true" title="Your spells, combos and categories">&#10022;&nbsp;Spells</button>
-          <button id="md-page-arts" class="md-page" role="tab" data-page="arts"
-                  aria-selected="false" title="Combat Arts — collect weapon arts, equip one on your blade">&#9876;&nbsp;Combat&nbsp;Arts</button>
-        </div>
+        <button id="md-category-btn" class="ghost-btn" type="button" aria-haspopup="dialog" aria-expanded="false" title="Browse categories">
+          <span class="md-category-caption">Category</span><span id="md-category-name">All spells</span><span aria-hidden="true">⌄</span>
+        </button>
         <div class="header-actions">
           <button id="deck-btn" class="ghost-btn back" title="Back to the main deck (F7)">&#8592;&nbsp;Deck</button>
-          <button id="fill-btn" class="ghost-btn" title="Fill the screen — auto-scale the panel to fit your resolution" aria-pressed="false">&#9974;&nbsp;Fill screen</button>
           <button id="edit-btn" class="ghost-btn" title="Edit categories &amp; spells (F2)">Edit</button>
-          <button id="close-btn" class="ghost-btn close" title="Close (F18 / Esc)">✕</button>
+          <button id="md-more-btn" class="ghost-btn" type="button" aria-haspopup="dialog" aria-expanded="false">More <span aria-hidden="true">⌄</span></button>
+          <button id="close-btn" class="ghost-btn close" aria-label="Close Spell Deck" title="Close (F18 / Esc)">✕</button>
         </div>
       </header>
+
+      <!-- Existing controls move into a body-anchored popout and return here on
+           close. Keep their IDs/listeners and native updates; never clone them. -->
+      <div id="md-control-stash" hidden>
+        <nav id="md-catstrip" aria-label="Categories">
+          <div class="cs-find-wrap">
+            <span class="search-ic" aria-hidden="true">⌕</span>
+            <input id="cs-find" type="search" autocomplete="off" spellcheck="false"
+                   aria-label="Find a category" placeholder="Find a category or spell type…">
+          </div>
+          <div id="cs-scroll"><div id="cs-chips" role="group" aria-label="Categories"></div></div>
+        </nav>
+        <div id="md-more-controls">
+          <p class="md-more-label">BROWSE</p>
+          <div id="md-pages" role="tablist" aria-label="Spell Deck pages">
+            <button id="md-page-spells" class="md-page on" role="tab" data-page="spells" aria-selected="true">Spells</button>
+            <button id="md-page-arts" class="md-page" role="tab" data-page="arts" aria-selected="false">Combat Arts</button>
+          </div>
+          <button id="removed-btn" class="ghost-btn" type="button" disabled
+                  title="Nothing has been removed from your spellbook">Removed from spellbook <span class="rb-count">0</span></button>
+          <p class="md-more-label">DISPLAY</p>
+          <button id="fill-btn" class="ghost-btn" title="Auto zoom — pick the zoom that suits your resolution" aria-pressed="false">&#9974;&nbsp;Auto zoom</button>
+        </div>
+      </div>
 
       <div id="body">
         <!-- LEFT: vertical category rail -->
         <nav id="rail" aria-label="Spell categories">
+          <input id="ml-category-search" type="search" autocomplete="off" aria-label="Search categories" placeholder="Find a category…">
           <div id="rail-list"></div>
-          <button id="add-cat-btn" class="rail-add hidden">＋ Category</button>
+          <button id="add-cat-btn" class="rail-add hidden">+ New category</button>
+          <p class="ml-rail-note">Drag any spell into a category.<br>Use Edit to add subcategories.</p>
         </nav>
 
         <!-- RIGHT: searchable, scrollable spell list -->
         <section id="main">
+          <button id="ml-browse">Browse library &amp; categories</button>
+          <div class="ml-content-heading" id="ml-library-bar">
+            <button id="ml-toggle-rail" class="ml-chrome-toggle ml-rail-toggle" aria-controls="rail" aria-expanded="true" aria-label="Collapse categories" title="Collapse categories">‹</button>
+            <div id="ml-heading-block"><p id="ml-breadcrumb">YOUR ARCANE LIBRARY</p><h2 id="ml-heading">All spells</h2></div>
+            <div id="ml-compact-search"></div>
+            <button id="ml-compact-packages" class="ml-chrome-toggle">Packages</button>
+            <button id="add-spell-btn" class="hidden" title="Add a spell from your spellbook to this deck">＋ Add spell</button>
+            <div id="ml-view-options" role="group" aria-label="Spell layout">
+              <button data-library-view="cards" aria-pressed="true">Cards</button>
+              <button data-library-view="columns" aria-pressed="false">Columns</button>
+              <button data-library-view="list" aria-pressed="false">List</button>
+              <button data-library-view="icons" aria-pressed="false" title="Artwork and names; hover for info, click for Details">Icons</button>
+            </div>
+            <select id="ml-density" aria-label="Card size" title="Card size — Auto tightens the cards until everything fits on screen without scrolling"><option value="auto">Auto fit</option><option value="spacious">Spacious</option><option value="balanced">Balanced</option><option value="compact">Compact</option><option value="dense">Dense</option></select>
+            <button id="ml-toggle-controls" class="ml-chrome-toggle" aria-controls="toolbar ml-filters ml-heading-block combo-strip" aria-expanded="true" title="Collapse heading and filters"><span class="ml-chevron" aria-hidden="true">‹</span><span id="ml-controls-label">Filters</span></button>
+          </div>
           <div id="toolbar">
             <div id="search-wrap">
               <span class="search-ic" aria-hidden="true">⌕</span>
               <input id="search" type="text" autocomplete="off" spellcheck="false"
-                     placeholder="Search spells…">
+                     aria-label="Search spells" placeholder="Search spells, mods, schools, categories…">
             </div>
             <div id="edit-tools" class="hidden">
-              <div class="scale-ctl" title="Menu size — scales everything in the panel">
-                <button id="scale-down" class="mini-btn" aria-label="Smaller">−</button>
+              <div class="scale-ctl" title="Zoom — scales everything. The panel always fills your screen, so zooming out shows more cards">
+                <span class="ctl-tag">Zoom</span>
+                <button id="scale-down" class="mini-btn" aria-label="Zoom out">−</button>
                 <span id="scale-val">100%</span>
-                <button id="scale-up" class="mini-btn" aria-label="Larger">＋</button>
-                <button id="scale-reset" class="mini-btn wide" title="Reset scale to 100%">Reset</button>
+                <button id="scale-up" class="mini-btn" aria-label="Zoom in">＋</button>
+                <button id="scale-reset" class="mini-btn wide" title="Reset zoom to 100%">Reset</button>
+              </div>
+              <div class="scale-ctl" title="Card size — how many spells fit on screen. Auto tightens the cards until everything fits without scrolling">
+                <span class="ctl-tag">Cards</span>
+                <button id="card-size-down" class="mini-btn" aria-label="Smaller cards">−</button>
+                <span id="card-size-val">Auto</span>
+                <button id="card-size-up" class="mini-btn" aria-label="Bigger cards">＋</button>
+                <button id="card-size-auto" class="mini-btn wide" title="Let the deck pick the size that fits everything on screen">Auto</button>
               </div>
               <div class="scale-ctl" title="Icon size — how big the spell art is in the list">
                 <span class="ctl-tag">Icons</span>
@@ -70,6 +115,14 @@
                         title="Back to the default size (fits the screen automatically)">Reset size</button>
               </div>
             </div>
+          </div>
+
+          <div class="ml-filterbar" id="ml-filters">
+            <span id="ml-result-count" role="status">0 spells</span>
+            <label>Type <select id="ml-kind"><option value="all">All types</option><option value="spell">Spells</option><option value="power">Powers</option><option value="shout">Shouts</option><option value="unknown">Unclassified</option></select></label>
+            <label>Action <select id="ml-mode" title="Cast now activates a spell once"><option value="all">Any action</option><option value="equip">Equip</option><option value="cast">Cast now</option></select></label>
+            <label>Sort <select id="ml-sort"><option value="custom">My order</option><option value="name">Name A–Z</option><option value="kind">Spell type</option><option value="mode">Action</option><option value="school">School</option></select></label>
+            <button id="ml-clear" class="hidden">Clear filters</button>
           </div>
 
           <!-- settings card (edit mode only): open key, capture key, delete-on-add -->
@@ -95,10 +148,6 @@
 
           <div id="list" role="listbox" aria-label="Spells"></div>
           <div id="empty-state" class="hidden"></div>
-
-          <button id="add-spell-btn" class="hidden">＋ Add spell from your spellbook</button>
-
-          <div id="removed-section" class="hidden"></div>
         </section>
       </div>
 
@@ -129,11 +178,18 @@
         <div id="ca-picker" class="hidden"></div>
       </section>
 
+      <!-- Hotkey hints (Rober, 2026-09-24: "the bottom bar could be hidden unless
+           hovered"). Out of the flow — an overlay tucked below the panel edge with
+           only its tab showing; hovering the tab (or the bar) slides it up, so the
+           list keeps the height and nothing moves. -->
       <footer id="hints">
-        <span>↑↓ select</span><span>Enter cast/equip</span><span>1–9,0 quick-fire</span>
-        <span>drag spell → spell combos them</span>
-        <span>hover = description</span>
-        <span>F2 edit</span><span>F18 / Esc close</span>
+        <button class="hints-tab" type="button" aria-label="Keyboard hints">✦ Hotkeys</button>
+        <div class="hints-row">
+          <span>↑↓ select</span><span>Enter cast/equip</span><span>1–9,0 quick-fire</span>
+          <span>drag → category to organize</span><span>drag → spell to combine</span>
+          <span>Click card for Details · use its action to equip/cast</span>
+          <span>F2 edit</span><span>F18 / Esc close</span>
+        </div>
       </footer>
 
       <!-- add-spell picker: the player's currently-known spells -->
@@ -146,7 +202,7 @@
           <div class="add-search-wrap">
             <span class="search-ic" aria-hidden="true">⌕</span>
             <input id="add-search" type="text" autocomplete="off" spellcheck="false"
-                   placeholder="Filter your known spells…">
+                   placeholder="Filter your known spells — by name or mod…">
           </div>
           <div id="add-list"></div>
           <div id="add-empty" class="hidden"></div>
@@ -194,7 +250,7 @@
       <div id="resize-grip" role="separator" aria-label="Resize panel" tabindex="-1"
            title="Drag to resize the panel · double-click to reset"></div>
 
-      <div id="toast" class="hidden"></div>
+      <div id="toast" class="hidden" role="status" aria-live="polite"></div>
     </div>
 
     <!-- Hover description tooltip. Lives OUT here in #overlay, NOT in #panel:
@@ -210,7 +266,10 @@
        wiring anything. Byte-identical to ../HotkeyDeck/hd-art.js — a PrismaUI view
        cannot read another view's folder, so the file is copied, not shared. -->
   <script src="hd-art.js"></script>
+  <script src="library-model.js"></script>
   <script src="app.js"></script>
+  <script src="library-ui.js"></script>
+  <script src="package-ui.js"></script>
   <!-- Combat Arts page. After app.js: it takes the custom icon pool from HDArt and
        lets the module resolve which view it is in, so the same file works in either. -->
   <script src="combat-arts-pane.js"></script>

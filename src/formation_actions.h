@@ -9,9 +9,9 @@
 //   "fwf" — Formation with Followers (Nexus 66759), below.
 //   "wwm" — Walk With Me (Nexus 191283), formation_wwm.h.
 //
-// Rober's call (2026-09-10) on Walk With Me landing: "No swap, just support
-// for both." So nothing here is retired — the FWF provider is unchanged and
-// the router only picks which one a request lands on. The router also reports
+// Both providers remain supported. Rober chose WWM to replace FWF on
+// 2026-09-25; an opt-in sidecar authorizes the clean handoff on his rig.
+// The router also reports
 // `conflict` when both mods are live at once, because two systems rewriting
 // the same followers' travel packages is the one way "both installed" hurts.
 //
@@ -63,6 +63,11 @@ namespace FormationActions
 		// loop leaks live update registrations if anything is still registered.
 		std::string Rescue();
 	}
+	// Main-thread lifecycle: cancel stale work on pre-load, perform the opt-in
+	// FWF cleanup on successful load, resume WWM only after the quest stops.
+	void CancelHandoff();
+	void OnGameLoaded();
+	void OnGameSaved();
 
 	// ---- Router -----------------------------------------------------------
 	//

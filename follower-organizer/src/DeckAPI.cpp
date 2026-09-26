@@ -138,11 +138,82 @@ namespace
 		return true;
 	}
 
+	/* ---- the member we could not store a REFERENCE for ---------------------
+	 *
+	 *  Member::to_json writes FormToString(form), and that returns "" for a
+	 *  reference with no source file — i.e. every DYNAMIC (0xFF……) actor, one
+	 *  a mod spawned this session. The serializer then falls back to
+	 *  base_form_string, so the row on disk names her BASE NPC_ record.
+	 *
+	 *  Proven 2026-09-20: Kali is filed as "00_DemonKali" (the NPC_ in
+	 *  Demon Kali.esp) and Saint Adabelle as "CJ03AdabelleBossPriest"
+	 *  (0x5afe91e in CJ03Elroy.esp). A base is a form but never a reference, so
+	 *  `inWorld` below is false and `formId` addresses nobody — and SIX deck
+	 *  modules resolve that id straight to an Actor and give up when it is
+	 *  null: nff_bridge, nff_outfits, court_status, fertility_bridge, wardrobe
+	 *  and loadouts. Her card lost its whole Home group over it.
+	 *
+	 *  So find HER: the loaded actor wearing that base. This is THE place to do
+	 *  it — every one of those six reads this envelope, so one answer here is
+	 *  one answer everywhere, and the alternative was the same three lines
+	 *  pasted into six files that each drift on their own schedule.
+	 *
+	 *  Template-aware: a spawned copy can be a templated child of the stored
+	 *  base. A LIVING match wins outright; a corpse is kept as the fallback,
+	 *  because "she is dead over there" is still a true answer about where she
+	 *  is, and the deck's own controls gate on `dead` separately.
+	 */
+	bool BaseIsOrDescendsFrom(RE::TESNPC* base, RE::TESNPC* want)
+	{
+		for (int guard = 0; base && guard < 8; ++guard) {
+			if (base == want)
+				return true;
+			auto* t = base->baseTemplateForm;
+			base = t ? t->As<RE::TESNPC>() : nullptr;
+		}
+		return false;
+	}
+
+	RE::Actor* LoadedActorForBase(RE::TESNPC* want)
+	{
+		auto* pl = RE::ProcessLists::GetSingleton();
+		if (!pl || !want)
+			return nullptr;
+		const RE::BSTArray<RE::ActorHandle>* arrays[4] = {
+			&pl->highActorHandles, &pl->middleHighActorHandles,
+			&pl->middleLowActorHandles, &pl->lowActorHandles
+		};
+		RE::Actor* corpse = nullptr;
+		for (const auto* arr : arrays) {
+			for (const auto& h : *arr) {
+				auto a = h.get();
+				if (!a)
+					continue;
+				if (!BaseIsOrDescendsFrom(a->GetActorBase(), want))
+					continue;
+				if (a->IsDead()) {
+					if (!corpse)
+						corpse = a.get();
+					continue;
+				}
+				return a.get();
+			}
+		}
+		return corpse;
+	}
+
 	json MemberJson(const organizer::Member& m)
 	{
 		auto* form = m.form;
 		auto* refr = form ? form->As<RE::TESObjectREFR>() : nullptr;
 		auto* actor = refr ? refr->As<RE::Actor>() : nullptr;
+		// Only when the stored form is a BASE. A row that already resolves to a
+		// reference is untouched, and pays nothing.
+		RE::Actor* live = nullptr;
+		if (!actor) {
+			if (auto* npc = form ? form->As<RE::TESNPC>() : nullptr)
+				live = LoadedActorForBase(npc);
+		}
 		json j{
 			{ "name", m.GetName() },          // live display name (override applied)
 			{ "override", m.name },           // stored override ("" = original)
@@ -153,12 +224,26 @@ namespace
 			{ "fields", m.fields },
 			{ "tracked", m.tracked },
 			{ "resolved", form != nullptr },
+			// ⚠ `inWorld` keeps its OLD meaning on purpose: "the form FO stored
+			// is a reference, so FO's own ops can address her". Summon / Go to /
+			// Send back go through the organizer singleton on `m.form` and would
+			// still have nobody to move. Widening this flag would have made those
+			// four buttons look available and then do nothing — a worse lie than
+			// the missing ones we set out to fix.
 			{ "inWorld", refr != nullptr },
-			{ "following", actor ? actor->IsPlayerTeammate() : false },
-			{ "dead", actor ? actor->IsDead() : false },
+			{ "following", actor ? actor->IsPlayerTeammate() : (live ? live->IsPlayerTeammate() : false) },
+			{ "dead", actor ? actor->IsDead() : (live ? live->IsDead() : false) },
 			{ "form", form ? utility::tesform::FormToString(form) : m.base_form_string },
 			{ "formId", form ? std::format("0x{:08X}", form->GetFormID()) : "" }
 		};
+		// …and THIS is "the game can reach her", which is a different question
+		// and the one every actor-keyed op actually asks. Present only when the
+		// repair fired, so `liveFormId` is never a second spelling of a working
+		// `formId` — a consumer may simply prefer it when it is there.
+		// NOT durable: a dynamic actor has no plugin-local identity, so this is
+		// good for THIS session only and must never be persisted as an identity.
+		if (live)
+			j["liveFormId"] = std::format("0x{:08X}", live->GetFormID());
 		return j;
 	}
 

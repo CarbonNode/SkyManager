@@ -104,6 +104,13 @@ namespace Loadouts
 	// "groupWait", "groupSic", "groupDisengage". Main thread only.
 	bool FireActiveOrder(const std::string& what);
 
+	// Who is in which group, keyed by the follower's ORIGINAL name — the join
+	// the Followers tab can actually make, since a runtime FormID is not the
+	// identity Follower Organizer files people under. Shape:
+	//   { "ok":true, "byOriginal": { "Lydia":[{"group":"Dragon Guard",
+	//                                          "id":"l1","cls":"Dragon Warrior"}] } }
+	std::string GroupsByOriginalJson();
+
 	// Re-apply every combat style this module has set, for actors that resolve
 	// now. Call from kPostLoadGame, deferred a beat (actors are still attaching
 	// as it fires). Returns how many were touched.

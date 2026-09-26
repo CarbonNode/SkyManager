@@ -1,10 +1,13 @@
 #include "formation_wwm.h"
+#include "formation_wwm_settings.h"
+#include "third_party/walk-with-me/WayfarerAPI.h"
 
 #include "npc_actions.h"  // TargetFormID(): the palette-open crosshair snapshot
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -16,11 +19,18 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <unordered_set>
 
 // pch (force-included) provides RE::/SKSE::/json and the logger.
 
 #ifdef GetObject
 #	undef GetObject
+#endif
+#ifdef min
+# undef min
+#endif
+#ifdef max
+# undef max
 #endif
 
 using json = nlohmann::json;
@@ -31,6 +41,23 @@ namespace FormationWwm
 	{
 		constexpr const char* kPlugin = "Wayfarer.esp";
 		constexpr const char* kScript = "Wayfarer";  // its global-native script
+
+		bool Modern()
+		{
+			const auto module = GetModuleHandleA("Wayfarer.dll");
+			if (!module) return false;
+			const auto* version = reinterpret_cast<const SKSE::PluginVersionData*>(GetProcAddress(module, "SKSEPlugin_Version"));
+			return version && version->dataVersion == 1 && version->GetPluginVersion() >= REL::Version{0, 2, 2, 0};
+		}
+
+		WayfarerAPI::IWayfarer* Api()
+		{
+			if (!Modern()) return nullptr;
+			using Get = WayfarerAPI::IWayfarer* (*)(std::uint32_t);
+			const auto get = reinterpret_cast<Get>(GetProcAddress(GetModuleHandleA("Wayfarer.dll"), "Wayfarer_GetInterface"));
+			auto* api = get ? get(WayfarerAPI::INTERFACE_VERSION) : nullptr;
+			return api && api->GetVersion() == WayfarerAPI::INTERFACE_VERSION ? api : nullptr;
+		}
 
 		// marker: formation-wwm (Walk With Me provider)
 
@@ -226,7 +253,8 @@ namespace FormationWwm
 					return false;
 				for (const auto& l : lines)
 					out << l << "\r\n";
-				return true;
+				out.flush();
+				return out.good();
 			}
 		};
 
@@ -276,20 +304,20 @@ namespace FormationWwm
 
 		template <class... Args>
 		bool CallStatic(const char* fn, RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> cb,
-			Args&&... args)
+			Args... args)
 		{
 			auto* vm = Vm();
 			if (!vm || !fn)
 				return false;
-			auto a = RE::MakeFunctionArguments(std::forward<Args>(args)...);
+			auto a = RE::MakeFunctionArguments(std::move(args)...);
 			return vm->DispatchStaticCall(kScript, fn, a, cb);
 		}
 
 		template <class... Args>
-		bool Fire(const char* fn, Args&&... args)
+		bool Fire(const char* fn, Args... args)
 		{
 			RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> cb;
-			return CallStatic(fn, cb, std::forward<Args>(args)...);
+			return CallStatic(fn, cb, std::move(args)...);
 		}
 
 		// ------------------------------------------------------- cache ----
@@ -308,6 +336,15 @@ namespace FormationWwm
 
 		void Refresh(RE::Actor* subject)
 		{
+			if (auto* api = Api()) {
+				g_enabled.store(api->IsEnabled() ? 1 : 0);
+				g_mode.store(static_cast<int>(api->GetFormationMode()));
+				g_count.store(static_cast<int>(api->GetManagedCount()));
+				g_managedFor.store(subject ? subject->GetFormID() : 0);
+				g_managed.store(subject ? (api->IsManaged(subject->GetFormID()) ? 1 : 0) : -1);
+				g_answered.store(true);
+				return;
+			}
 			auto boolInto = [](std::atomic<int>* slot) {
 				return RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>(
 					new VarResult([slot](const RE::BSScript::Variable& v) {
@@ -348,10 +385,14 @@ namespace FormationWwm
 
 		RE::Actor* ResolveSubject(const json& j)
 		{
+			if (j.contains("formId") && !j["formId"].is_string()) return nullptr;
 			const auto fid = j.value("formId", std::string(""));
 			if (!fid.empty()) {
-				const auto local =
-					static_cast<std::uint32_t>(std::strtoul(fid.c_str(), nullptr, 16));
+				auto text = std::string_view(fid);
+				if (text.starts_with("0x") || text.starts_with("0X")) text.remove_prefix(2);
+				std::uint32_t local{};
+				const auto parsed = std::from_chars(text.data(), text.data()+text.size(), local, 16);
+				if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data()+text.size()) return nullptr;
 				if (local) {
 					const auto plugin = j.value("plugin", std::string(""));
 					if (!plugin.empty()) {
@@ -362,6 +403,7 @@ namespace FormationWwm
 					if (auto* f = RE::TESForm::LookupByID(local))
 						return f->As<RE::Actor>();
 				}
+				return nullptr; // An explicit stale/invalid id must never target the crosshair.
 			}
 			if (const auto id = NpcActions::TargetFormID())
 				return RE::TESForm::LookupByID<RE::Actor>(id);
@@ -391,7 +433,148 @@ namespace FormationWwm
 		json Ok(const std::string& msg) { return json{ { "ok", true }, { "msg", msg } }; }
 		json Refuse(const std::string& msg) { return json{ { "ok", false }, { "msg", msg } }; }
 
-		int ClampMode(int m) { return std::clamp(m, 0, kModeCount - 1); }
+		int ClampMode(int m) { return std::clamp(m, 0, Modern() ? 5 : kModeCount - 1); }
+
+		// Same durable actor-reference key as upstream HandHolding::ReferenceKey.
+		std::string ReferenceKey(RE::Actor* actor)
+		{
+			if (!actor || (actor->GetFormID() >> 24) == 0xFF) return {};
+			const auto* file = actor->GetFile(0);
+			if (!file) return {};
+			char local[16]{};
+			std::snprintf(local, sizeof(local), "%06X", actor->GetFormID() & (file->IsLight() ? 0xFFF : 0xFFFFFF));
+			std::string key = std::string(file->GetFilename()) + "|" + local;
+			std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return key;
+		}
+
+		std::vector<RE::Actor*> Candidates(RE::Actor* subject)
+		{
+			std::vector<RE::Actor*> actors;
+			std::unordered_set<RE::FormID> seen;
+			auto* api = Api();
+			auto add = [&](RE::Actor* actor, bool targeted = false) {
+				if (!actor || actor->IsPlayerRef() || actor->IsDead() || actor->IsDisabled()) return;
+				if (!targeted && !actor->IsPlayerTeammate() && !(api && api->IsManaged(actor->GetFormID()))) return;
+				if (seen.insert(actor->GetFormID()).second) actors.push_back(actor);
+			};
+			add(subject, true);
+			if (auto* lists = RE::ProcessLists::GetSingleton()) {
+				for (const auto& handle : lists->highActorHandles) { const auto actor = handle.get(); add(actor.get()); }
+				for (const auto& handle : lists->middleHighActorHandles) { const auto actor = handle.get(); add(actor.get()); }
+			}
+			std::sort(actors.begin(), actors.end(), [](auto* a, auto* b) { return NameOf(a) < NameOf(b); });
+			return actors;
+		}
+
+		bool TetherAssets()
+		{
+			if (!GetModuleHandleA("OpenAnimationReplacer.dll")) return false;
+			const std::filesystem::path root("Data/meshes/OpenAnimationReplacer/WWM Clasp");
+			std::error_code ec;
+			for (const char* side : {"Left", "Right"}) {
+				if (!std::filesystem::is_regular_file(root / side / "config.json", ec)) return false;
+				for (const char* gender : {"male", "female"})
+					for (const char* clip : {"mt_idle.hkx", "mt_walkforward.hkx", "mt_runforward.hkx"})
+						if (!std::filesystem::is_regular_file(root / side / "actors/character/animations" / gender / clip, ec)) return false;
+			}
+			return true; // Files + OAR only; never claim the owner has connected a grip.
+		}
+
+		void ModernState(json& out, const Ini& ini, RE::Actor* subject)
+		{
+			using namespace FormationWwmSettings;
+			out["modern"] = true;
+			out["apiReady"] = Api() != nullptr;
+			out["settings"] = json::object();
+			out["controls"] = json::array();
+			for (const auto& f : Fields) {
+				out["settings"][f.key] = f.kind == Kind::toggle ? json(ini.GetBool(f.section, f.iniKey, f.fallback != 0)) : json(ini.GetNum(f.section, f.iniKey, f.fallback));
+				out["controls"].push_back({{"group",f.group},{"key",f.key},{"label",f.label},{"type",f.kind == Kind::toggle ? "toggle" : "number"},{"min",f.low},{"max",f.high},{"step",f.step}});
+			}
+			out["settings"]["mode"] = out["global"]["mode"];
+			out["settings"]["preferredSide"] = ini.GetNum("General", "iPreferredSide", 1) < 0 ? -1 : 1;
+			out["settings"]["method"] = IEquals(ini.Get("HandHolding", "sMethod", "classic"), "tether") ? "tether" : "classic";
+			out["partner"] = {{"key",ini.Get("HandHolding","sPartner")},{"name",ini.Get("HandHolding","sPartnerName")}};
+			out["finder"] = {{"key",ini.Get("Loot","sFinder")},{"name",ini.Get("Loot","sFinderName")}};
+			out["tetherAssets"] = TetherAssets();
+			out["roster"] = json::array();
+			auto* api = Api();
+			for (auto* actor : Candidates(subject)) {
+				out["roster"].push_back({{"formId",HexOf(actor->GetFormID())},{"name",NameOf(actor)},
+					{"key",ReferenceKey(actor)},{"teammate",actor->IsPlayerTeammate()},
+					{"managed",api && api->IsManaged(actor->GetFormID())}});
+			}
+			out.erase("slots");
+			out.erase("slotSection");
+			for (auto& m : out["modes"]) m["slots"] = false;
+			out["modes"].push_back({{"id",5},{"label","Follow normally"},{"hud","Their own follower AI"},{"slots",false}});
+			out["running"] = out["global"].value("enabled",false) && out["global"].value("mode",0) != 5;
+			static bool logged = false;
+			if (!logged) { logged = true; logger::info("formation-wwm-022: public API, persistent companions and hand-holding controls"); }
+		}
+
+		json ApplyModern(const json& j, Ini& ini)
+		{
+			using namespace FormationWwmSettings;
+			if (!Api()) return Refuse("Walk With Me 0.2.2's public API is unavailable. Check the installed DLL.");
+			if (!j.contains("settings") || !j["settings"].is_object()) return Refuse("No formation settings supplied");
+			const auto& changes = j["settings"];
+			for (const auto& [key, value] : changes.items()) {
+				if (const auto* f = Find(key)) {
+					if (f->kind == Kind::toggle) {
+						if (!value.is_boolean()) return Refuse("Invalid switch: " + key);
+						ini.Set(f->section, f->iniKey, value.get<bool>() ? "true" : "false");
+					} else {
+						if (!value.is_number() || !ValidNumber(*f, value.get<double>())) return Refuse("Value outside the supported range: " + key);
+						ini.Set(f->section, f->iniKey, NumStr(value.get<double>()));
+					}
+				} else if (key == "mode") {
+					if (!value.is_number_integer() || value < 0 || value > 5) return Refuse("Unknown travel mode");
+					ini.Set("General", "iFormationMode", IntStr(value.get<int>()));
+				} else if (key == "preferredSide") {
+					if (!value.is_number_integer() || (value != -1 && value != 1)) return Refuse("Choose a left or right walking side");
+					ini.Set("General", "iPreferredSide", IntStr(value.get<int>()));
+				} else if (key == "method") {
+					if (!value.is_string() || (value != "classic" && value != "tether")) return Refuse("Unknown hand-holding method");
+					if (value == "tether" && !TetherAssets()) return Refuse("TETHER needs Open Animation Replacer and the generated clasp animations. Choose Classic for now.");
+					ini.Set("HandHolding", "sMethod", value.get<std::string>());
+				} else return Refuse("Unsupported setting: " + key);
+			}
+			for (const auto& pair : {std::pair{"partnerId", "HandHolding"}, std::pair{"finderId", "Loot"}}) {
+				if (!j.contains(pair.first)) continue;
+				if (!j[pair.first].is_string()) return Refuse("Invalid companion selection");
+				const auto id = j[pair.first].get<std::string>();
+				std::string key, name;
+				if (!id.empty()) {
+					for (auto* actor : Candidates(ResolveSubject(j))) {
+						if (HexOf(actor->GetFormID()) != id) continue;
+						if (!Api()->IsManaged(actor->GetFormID())) return Refuse("Add this companion to the walking party first");
+						key = ReferenceKey(actor); name = NameOf(actor); break;
+					}
+					if (key.empty()) return Refuse("This companion is unavailable or has no persistent reference. Refresh the party.");
+				}
+				const bool hands = std::string_view(pair.first) == "partnerId";
+				ini.Set(pair.second, hands ? "sPartner" : "sFinder", key);
+				name.erase(std::remove(name.begin(),name.end(),'\r'),name.end());
+				name.erase(std::remove(name.begin(),name.end(),'\n'),name.end());
+				ini.Set(pair.second, hands ? "sPartnerName" : "sFinderName", name);
+				if (hands && key.empty()) ini.Set("HandHolding","bEnabled","false");
+			}
+			if (ini.GetBool("HandHolding","bEnabled",false) && ini.Get("HandHolding","sPartner").empty()) return Refuse("Choose a hand-holding companion first");
+			if (ini.GetBool("HandHolding","bEnabled",false) && IEquals(ini.Get("HandHolding","sMethod","classic"),"tether") && !TetherAssets()) return Refuse("TETHER animations are missing. Choose Classic or turn hand-holding off.");
+			if (ini.GetNum("HandHolding","fReleaseDistance",120) < ini.GetNum("HandHolding","fConnectDistance",90) + 10) return Refuse("Hand release distance must be at least 10 greater than connect distance");
+			const auto reach = ini.GetNum("Safety","fReleaseDistance",2500) - 200;
+			const auto start = ini.GetNum("Sandbox","fStartRadius",400);
+			const auto limit = ini.GetNum("Sandbox","fMaxRadius",1600);
+			if (start > reach || limit > reach || limit < start) return Refuse("Rest radii must stay inside the release distance, with maximum radius at least the starting radius");
+			if (!ini.Save()) return Refuse("Could not save Wayfarer.ini");
+			if (!Fire("ReloadSettings")) return Refuse("Settings saved, but the reload could not be queued. Restart Skyrim to apply them.");
+			g_answered.store(false);
+			auto result = Ok("Walk With Me settings saved — applying as the game resumes");
+			result["closeGameMenu"] = true;
+			return result;
+		}
 	}
 
 	bool Installed()
@@ -400,7 +583,15 @@ namespace FormationWwm
 		return dh && dh->LookupModByName(kPlugin) != nullptr;
 	}
 
-	int ModeCount() { return kModeCount; }
+	int ModeCount() { return Modern() ? 6 : kModeCount; }
+	bool SupportsModern() { return Installed() && Api() != nullptr; }
+	bool SetRuntimeEnabled(bool enabled)
+	{
+		auto* api = Api();
+		if (!api) return false;
+		api->SetEnabled(enabled);
+		return api->IsEnabled() == enabled;
+	}
 
 	// ------------------------------------------------------------- state ----
 
@@ -499,7 +690,7 @@ namespace FormationWwm
 		// The ten Side/Forward pairs of the CURRENT order — the thing the mod's
 		// own menu cannot edit yet (its author said so on release day), which
 		// is the whole reason this pane earns its place.
-		const char* section = kModes[mode].section;
+		const char* section = mode < kModeCount ? kModes[mode].section : "";
 		if (section[0] != '\0') {
 			json slots = json::array();
 			for (int s = 0; s < kSlots; ++s) {
@@ -536,6 +727,7 @@ namespace FormationWwm
 			{ "reload", static_cast<int>(ini.GetNum("Hotkeys", "iReloadKey", -1)) },
 		};
 
+		if (Modern()) ModernState(out, ini, subject);
 		lock.unlock();
 
 		if (subject) {
@@ -563,7 +755,7 @@ namespace FormationWwm
 
 		if (!g_logged.exchange(true)) {
 			logger::info("Formation: {} bound (order '{}', ini {})", kPlugin,
-				kModes[mode].hud, haveIni ? "read" : "missing");
+				mode < kModeCount ? kModes[mode].hud : "Their own follower AI", haveIni ? "read" : "missing");
 		}
 		return Dump(out);
 	}
@@ -582,6 +774,7 @@ namespace FormationWwm
 		Ini                         ini;
 		if (!ini.Load())
 			return Dump(Refuse("Couldn’t read Wayfarer.ini"));
+		if (Modern()) return Dump(ApplyModern(j, ini));
 
 		bool touched = false;
 		int  wantMode = -1;
@@ -720,6 +913,21 @@ namespace FormationWwm
 
 		const auto op = j.value("op", std::string(""));
 		const auto who = NameOf(subject);
+		if (Modern()) {
+			auto* api = Api();
+			if (!api) return Dump(Refuse("Walk With Me's public API is unavailable"));
+			bool valid = false;
+			for (auto* actor : Candidates(ResolveSubject(json::object()))) if (actor == subject) valid = true;
+			if (!valid) return Dump(Refuse("That companion is no longer nearby. Refresh the walking party."));
+			if (op == "register" || op == "unregister") {
+				if (!Fire("SetDialogueManagement", subject, op == "register")) return Dump(Refuse("Could not reach Walk With Me's companion controls"));
+				auto result = Ok(who + (op == "register" ? ": joining the walking party" : ": leaving the walking party"));
+				result["closeGameMenu"] = true;
+				return Dump(result);
+			}
+			const bool ok = op == "exclude" ? api->ExcludeFollower(subject->GetFormID()) : op == "include" ? api->IncludeFollower(subject->GetFormID()) : false;
+			return Dump(ok ? Ok(who + ": walking-party preference updated") : Refuse("Walk With Me did not accept that party action"));
+		}
 
 		// marker: formation-wwm-reg
 		if (op == "register") {
@@ -769,6 +977,7 @@ namespace FormationWwm
 	{
 		if (!Installed())
 			return Dump(Refuse("Walk With Me isn’t loaded"));
+		if (Modern()) return Apply(R"({"settings":{"enabled":false}})");
 
 		// Its own stand-down: the wheel's sixth entry, "Return to follower AI".
 		// The quest script clears every alias and calls ClearKeepOffsetFromActor

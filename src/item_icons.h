@@ -93,6 +93,9 @@ namespace ItemIcons
 	// OWNER's identity (8-hex local id) and the NIF is not derived from the
 	// form at all: it IS the baked FaceGen head every non-templated NPC ships,
 	//     meshes/actors/character/facegendata/facegeom/<plugin>/<hex8>.nif
+	// FaceGenResolver also recovers VERIFIED old export paths for renumbered
+	// NPCs. Availability, frame zero and turntables share that lookup; the PNG
+	// identity remains the current face owner, including its wig attachments.
 	// (hair, brows, eyes and the baked tint texture are all inside it — see
 	// the 2026-08-13 strings dump of Lydia's). Renders land in icons/npcs/,
 	// keyed apart from item icons by the "@face" asked-key suffix so

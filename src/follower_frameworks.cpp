@@ -79,6 +79,10 @@ namespace FollowerFrameworks
 			// so alias matching alone is enough to be precise.
 			{ "nwsFollowerFramework.esp", "Nether's Follower Framework", "nwsFollowerControllerScript",
 				"FollowerWaitHere", Args::ActorIntInt, "FollowerFollowMe", Args::ActorInt, false, true },
+			// Append: spec indices are persisted by holds. Verified from the
+			// winning DZ08_Melana.bsa original source, 2026-09-21.
+			{ "DZ08_Melana.esp", "Melana's follower system", "DZ08_MelanaController",
+				"FollowerWait", Args::None, "FollowerFollow", Args::None, true, false },
 		};
 
 		constexpr int kSpecCount = static_cast<int>(std::size(kSpecs));
@@ -270,6 +274,8 @@ namespace FollowerFrameworks
 		}
 	}
 
+	bool IsFollowPackage(const RE::TESPackage* pkg) { return IsFollowish(pkg); }
+
 	// ------------------------------------------------------------- probing --
 
 	Detection Probe(RE::Actor* actor)
@@ -350,8 +356,18 @@ namespace FollowerFrameworks
 		// handed a wait order she has no use for.
 		const bool couldBeFollowing = d.aliasDriven || actor->IsPlayerTeammate();
 
-		for (int i = 0; couldBeFollowing && i < kSpecCount; ++i) {
+		// Companion ownership takes priority even when an adapter was appended
+		// after NFF to preserve persisted spec indices.
+		const int own = OwningCompanionSpec(actor);
+		for (int pass = 0; couldBeFollowing && pass <= kSpecCount; ++pass) {
+			const int i = pass == 0 ? own : pass - 1;
+			if (i < 0 || (pass > 0 && i == own))
+				continue;
 			const Spec&       sp = kSpecs[i];
+			// Melana retains cloak/sandbox aliases while dismissed. Those are
+			// not evidence that her follow controller is active.
+			if (i == 3 && RecruitmentState(actor) == 0)
+				continue;
 			const std::string want = Lower(sp.plugin);
 			bool              hit = false;
 
@@ -414,6 +430,42 @@ namespace FollowerFrameworks
 			if (basePlugin == want || refPlugin == want)
 				return i;
 		}
+		return -1;
+	}
+
+	bool HasRecruitmentAdapter(RE::Actor* actor)
+	{
+		auto* dh = RE::TESDataHandler::GetSingleton();
+		return actor && dh && actor == dh->LookupForm<RE::Actor>(0xB18, "DZ08_Melana.esp") &&
+			actor->GetActorBase() == dh->LookupForm<RE::TESNPC>(0xD61, "DZ08_Melana.esp");
+	}
+
+	RE::TESQuest* RecruitmentController(RE::Actor* actor)
+	{
+		if (!HasRecruitmentAdapter(actor))
+			return nullptr;
+		auto* q = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESQuest>(0x803, "DZ08_Melana.esp");
+		return q && q->IsRunning() && HasScript(q, "DZ08_MelanaController") ? q : nullptr;
+	}
+
+	int RecruitmentState(RE::Actor* actor)
+	{
+		auto* q = RecruitmentController(actor);
+		if (!q)
+			return -1;
+		RE::BGSRefAlias* active = nullptr;
+		RE::BGSRefAlias* dismissed = nullptr;
+		for (auto* alias : q->aliases) {
+			if (!alias) continue;
+			if (alias->aliasID == 0) active = skyrim_cast<RE::BGSRefAlias*>(alias);
+			if (alias->aliasID == 4) dismissed = skyrim_cast<RE::BGSRefAlias*>(alias);
+		}
+		if (!active || !dismissed)
+			return -1;
+		if (active->GetReference() == actor && !dismissed->GetReference() && actor->IsPlayerTeammate())
+			return 1;
+		if (!active->GetReference() && dismissed->GetReference() == actor && !actor->IsPlayerTeammate())
+			return 0;
 		return -1;
 	}
 

@@ -1,6 +1,10 @@
 #include "portrait_capture.h"
+#include "photo_input.h"
+#include "photo_input_gate.h"
+#include "json.hpp"
 
 #include "npc_actions.h"
+#include "photo_camera.h"
 
 #include <algorithm>
 #include <atomic>
@@ -15,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // The game's own device and swap chain are handed to us as REX::W32 opaque
@@ -143,26 +148,34 @@ namespace PortraitCapture
 		// toggled, so the zoom may simply never have applied. Tracked and
 		// restored like the menus — leaving the player in free camera would be
 		// as bad as leaving the menus off.
-		bool g_freeCam = false;   // main thread only
+		PhotoCamera::Lease g_freeCamera;   // main thread only
+		bool* FreezeTimeFlag()
+		{
+			return PhotoCamera::FreezeTimeFlag(RE::Main::GetSingleton(), REL::Module::IsVR());
+		}
 
 		// `freezeTime` is what makes photo mode usable: `tfc 1` stops the world
 		// so your subject holds still while you fly around her. The plain `tfc`
 		// (CHIM's) is right for the fire-and-forget capture, where a frozen world
 		// would be a pointless side effect the player never sees.
-		void EnterFreeCam(bool freezeTime = false)
+		bool EnterFreeCam(bool freezeTime = false)
 		{
-			if (g_freeCam)
-				return;
-			RunConsole(freezeTime ? "tfc 1" : "tfc");
-			g_freeCam = true;
+			auto* camera = RE::PlayerCamera::GetSingleton();
+			auto* frozen = FreezeTimeFlag();
+			const bool entered = g_freeCamera.Enter(camera, frozen, freezeTime);
+			logger::info("photo-camera: native enter verified={} freeze={}", entered, frozen && *frozen);
+			logger::info("photo-camera: runtime freeze flag vr={} state={} requested={} actual={}",
+				REL::Module::IsVR(), camera && camera->currentState ? static_cast<int>(camera->currentState->id) : -1,
+				freezeTime, frozen && *frozen);
+			return entered;
 		}
 
 		void ExitFreeCam()
 		{
-			if (!g_freeCam)
-				return;
-			RunConsole("tfc");
-			g_freeCam = false;
+			if (!g_freeCamera.Exit(RE::PlayerCamera::GetSingleton(), FreezeTimeFlag())) {
+				logger::warn("photo-camera: free camera did not restore");
+				Notify("Camera did not restore - exit free camera before reopening SkyManager");
+			}
 		}
 
 		// Whose face to capture. 0 = "whoever the crosshair snapshot caught at
@@ -374,6 +387,8 @@ namespace PortraitCapture
 		void PruneOtherVersions(const std::filesystem::path& dir, const std::string& slug,
 			const std::filesystem::path& keep)
 		{
+			// Dossier galleries keep original captures; an explicit delete owns removal.
+			if (dir.filename() == "portraits") return;
 			std::error_code ec;
 			std::size_t     gone = 0;
 			for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
@@ -813,8 +828,10 @@ namespace PortraitCapture
 			// Same lock-aware writer the portraits use: capture.ini is not drawn
 			// by the view so it is never memory-mapped, but sharing one path means
 			// one place to fix if that ever stops being true.
-			if (!WriteBytes(file, bytes)) {
-				logger::warn("portrait: could not write capture.ini");
+			// WriteBytes returns a Win32 error, NOT a boolean. Treating zero as
+			// failure stopped Domains photo setup before it could close the deck.
+			if (const auto error = WriteBytes(file, bytes); error != 0) {
+				logger::warn("portrait: capture.ini write failed (win32 {})", error);
 				return false;
 			}
 			logger::info("portrait: framing saved - {}={:.3f} {}={:.3f} {}={:.3f}",
@@ -1541,7 +1558,7 @@ namespace PortraitCapture
 		{
 			if (g_savedWorldFov <= 0.0f)
 				return;
-			RunConsole(("fov " + std::to_string(static_cast<int>(g_savedWorldFov))).c_str());
+			RunConsole(("fov " + std::to_string(g_savedWorldFov)).c_str());
 			// The console sets both world and first-person from one number; put
 			// the fields back individually in case they differed.
 			if (auto* cam = RE::PlayerCamera::GetSingleton()) {
@@ -1655,19 +1672,25 @@ namespace PortraitCapture
 		std::uint64_t         g_photoStartedAt = 0;
 
 		// ---- self-portrait ARM state ---------------------------------------
-		// g_selfArmed: waiting for the player's E after "Portrait armed". The world
+		// g_selfArmed: waiting for the player's Enter after "Portrait armed". The world
 		// is NORMAL during this wait (no camera/menu changes), so the deck may
 		// reopen — which cancels the arm from the sink.
-		// g_selfCaptureBusy: the E fired and the grab + camera/HUD restore is
+		// g_selfCaptureBusy: Enter fired and the grab + camera/HUD restore is
 		// running; the world is mid-transition, so the deck must NOT reopen (the
 		// reopen-glitch fix — CanOpenNow() gates on this).
 		std::atomic<bool>     g_selfArmed{ false };
 		std::atomic<bool>     g_selfCaptureBusy{ false };
+		std::atomic<std::uint64_t> g_portraitGeneration{ 0 };
+		std::atomic<std::uint64_t> g_armGeneration{ 0 };
+		std::atomic<std::uint64_t> g_portraitLightGeneration{ 0 };
 		std::filesystem::path g_selfDir;
 		std::function<void(const std::string&)> g_selfDone;
 		std::function<void()> g_selfOnCancel;   // clears the view's pending state
 		std::uint64_t         g_selfArmedAt = 0;
 		constexpr std::uint64_t kSelfArmTimeoutSec = 60;
+		// Non-zero = the arm is an NPC RETAKE of this runtime form id, not a
+		// self-portrait (ArmNpcPortrait). Cleared whenever the arm is consumed.
+		std::uint32_t         g_selfNpcTarget = 0;
 
 		// ---- backbuffer-size resync gate (BUG B, Rober 2026-08-13) ------------
 		// The reopen-glitch fix that shipped 2026-08-13 blocked the deck from
@@ -1712,9 +1735,11 @@ namespace PortraitCapture
 				return;
 			}
 			const auto startedAt = NowMs();
-			std::thread([preW, preH, startedAt]() {
+			const auto generation = g_portraitGeneration.load();
+			std::thread([preW, preH, startedAt, generation]() {
 				using namespace std::chrono;
 				for (;;) {
+					if (g_portraitGeneration.load() != generation) return;
 					// shared_ptr, NOT stack refs: the posted task may run AFTER this
 					// iteration's spin gives up, so the flags must outlive the loop
 					// body or the task writes freed stack memory. The task holds a
@@ -1722,7 +1747,8 @@ namespace PortraitCapture
 					auto decided  = std::make_shared<std::atomic<bool>>(false);
 					auto restored = std::make_shared<std::atomic<bool>>(false);
 					// The swap-chain read is D3D and must run on the main thread.
-					SKSE::GetTaskInterface()->AddTask([preW, preH, decided, restored]() {
+					SKSE::GetTaskInterface()->AddTask([preW, preH, decided, restored, generation]() {
+						if (g_portraitGeneration.load() != generation) { decided->store(true); return; }
 						int w = 0, h = 0;
 						// Full again when BOTH dimensions have returned to at least
 						// the pre-capture size. A small tolerance absorbs an off-by-one
@@ -1738,7 +1764,8 @@ namespace PortraitCapture
 					const bool timedOut = (NowMs() - startedAt) > kBackBufferResyncTimeoutMs;
 					if (restored->load() || timedOut) {
 						const bool wasRestored = restored->load();
-						SKSE::GetTaskInterface()->AddTask([wasRestored, timedOut]() {
+						SKSE::GetTaskInterface()->AddTask([wasRestored, timedOut, generation]() {
+							if (g_portraitGeneration.load() != generation) return;
 							g_selfCaptureBusy.store(false);
 							if (timedOut && !wasRestored)
 								logger::info("portrait: backbuffer did not report full size within {}ms - releasing the reopen gate anyway",
@@ -1768,19 +1795,86 @@ namespace PortraitCapture
 		// Set by main.cpp so this module never has to know the view exists.
 		std::function<void(const std::string&, const std::string&, const std::string&)> g_onPhotoSaved;
 		std::function<void()>                                                          g_onPhotoEnded;
+		std::function<void()>                                                          g_onCaptureFinished;
+		void CaptureFinished() { if (g_onCaptureFinished) g_onCaptureFinished(); }
+		bool PortraitCurrent(std::uint64_t generation)
+		{
+			return g_portraitGeneration.load() == generation && g_selfCaptureBusy.load();
+		}
+		void StartArmWatchdog()
+		{
+			const auto generation = ++g_armGeneration;
+			std::thread([generation]() {
+				while (g_selfArmed.load() && g_armGeneration.load() == generation) {
+					std::this_thread::sleep_for(std::chrono::seconds(1));
+					SKSE::GetTaskInterface()->AddTask([generation]() {
+						if (g_armGeneration.load() == generation) SelfPortraitArmed();
+					});
+				}
+			}).detach();
+		}
+
+		void RestoreAfterCapture();
+		void EndPortraitLighting()
+		{
+			++g_portraitLightGeneration;
+			PhotoLighting::EndPortrait();
+		}
+		bool BeginPortraitLighting(const std::filesystem::path& dir)
+		{
+			EndPortraitLighting();
+			const auto settings = GetNpcLighting(dir);
+			if (!PhotoLighting::BeginPortrait(settings)) return false;
+			const auto generation = ++g_portraitLightGeneration;
+			logger::info("portrait-light: preview started mode={} strength={}",
+				static_cast<int>(settings.mode), settings.strength);
+			// Follow the normal camera while framing AND through the shutter. A
+			// single queued update prevents a stalled task queue accumulating work.
+			std::thread([generation]() {
+				auto pending = std::make_shared<std::atomic_bool>(false);
+				while (g_portraitLightGeneration.load() == generation) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(50));
+					if (pending->exchange(true)) continue;
+					SKSE::GetTaskInterface()->AddTask([generation, pending]() {
+						pending->store(false);
+						if (g_portraitLightGeneration.load() != generation) return;
+						PhotoLighting::Update();
+						if (!PhotoLighting::PortraitActive()) {
+							if (g_selfArmed.load()) SelfPortraitCancel();
+							else { ++g_portraitGeneration; RestoreAfterCapture(); }
+							Notify("Portrait cancelled - camera changed. Reopen Retake to try again.");
+						}
+					});
+				}
+			}).detach();
+			return true;
+		}
 
 		// A hard ceiling, so a forgotten photo mode cannot strand the player in a
 		// frozen world forever. Five minutes is far longer than framing a shot.
 		constexpr std::uint64_t kPhotoTimeoutSec = 300;
+		std::atomic_bool g_photoShooting{ false };
+		std::atomic_uint64_t g_photoGeneration{ 0 };
+		PhotoInput::LightKeys g_photoLightKeys;
+		bool g_photoLightHud = true;
+		std::function<void(bool, bool, const PhotoLighting::Snapshot&)> g_onPhotoLighting;
 
 		void EndPhotoMode()
 		{
 			if (!g_photoMode.exchange(false))
 				return;
+			++g_photoGeneration;
+			g_photoShooting.store(false);
+			g_photoLightKeys = {};
+			PhotoLighting::End();
 			ExitFreeCam();
 			RestoreFov();
 			RestoreMenus();
-			logger::info("photo: mode ended");
+			RefreshPhotoLights();
+			const auto* camera = RE::PlayerCamera::GetSingleton();
+			const auto* frozen = FreezeTimeFlag();
+			logger::info("photo: mode ended freeCamera={} frozen={}",
+				camera && camera->IsInFreeCameraMode(), frozen && *frozen);
 			// EVERY exit runs through here — shot, cancel, Esc, timeout, the
 			// watchdog. That is the whole reason the scene-staging restore hangs
 			// off this and not off the saved callback: a photo you cancelled
@@ -1789,22 +1883,28 @@ namespace PortraitCapture
 				auto cb = g_onPhotoEnded;
 				cb();
 			}
+			CaptureFinished();
 		}
 
 		void PhotoShoot()
 		{
 			if (!g_photoMode.load())
 				return;
+			if (g_photoShooting.exchange(true)) return;
+			RefreshPhotoLights(); // Hide the whole Prisma HUD view before the redraw delay.
+			const auto generation = g_photoGeneration.load();
+			logger::info("photo: shutter accepted generation={}", generation);
+			PhotoLighting::Update();
 			// The HUD is only hidden for the SHOT now, not the whole session
 			// (see StartPhotoMode) — so hide it, give the game a beat to redraw
 			// without it, then grab and restore everything. Grab BEFORE tearing
 			// down, or we photograph the HUD coming back.
 			HideMenus();
-			std::thread([]() {
+			std::thread([generation]() {
 				std::this_thread::sleep_for(std::chrono::milliseconds(250));
-				SKSE::GetTaskInterface()->AddTask([]() {
-					if (!g_photoMode.load()) {   // ended (timeout/cancel) while we waited
-						RestoreMenus();
+				SKSE::GetTaskInterface()->AddTask([generation]() {
+					if (!g_photoMode.load() || g_photoGeneration.load() != generation) {
+						// The old session restored its HUD already; never touch a newer one.
 						return;
 					}
 					// The grab now completes inside the game's present call, so
@@ -1815,12 +1915,14 @@ namespace PortraitCapture
 					const auto dir = g_photoDir;
 					const auto slug = g_photoSlug;
 					const auto label = g_photoLabel;
-					std::thread([dir, slug, label]() {
+					std::thread([dir, slug, label, generation]() {
 						std::filesystem::path written;
 						const auto            err = CaptureToFile(dir, slug, label, written, kPhotoKeys);
-						SKSE::GetTaskInterface()->AddTask([err, written, label, slug]() {
+						SKSE::GetTaskInterface()->AddTask([err, written, label, slug, generation]() {
+							if (!g_photoMode.load() || g_photoGeneration.load() != generation) return;
 							EndPhotoMode();
 							if (err) {
+								logger::warn("photo: capture failed generation={} win32={}", generation, err);
 								Notify(IsLockedError(err)
 										   ? "Photo failed: that image is locked - restart Skyrim to replace it"
 										   : "Photo failed: could not save the picture");
@@ -1926,6 +2028,7 @@ namespace PortraitCapture
 			// LOCK-shaped error here routes straight into the versioned-write loop
 			// below, so every self-capture lands on a url the view has never seen.
 			// marker: portrait-self-versioned
+			alwaysVersion = alwaysVersion || dir.filename() == "portraits"; // dossier-gallery-retain
 			const auto canonical = dir / (slug + ".png");
 			auto       path = canonical;
 			auto       err = alwaysVersion
@@ -1983,18 +2086,22 @@ namespace PortraitCapture
 		}
 
 		// Restore for the crosshair capture, shared by the early-return paths
-		// and the async completion. Idempotent, so the belt-and-braces task that
-		// Fire() posts 90 ms later stays harmless.
+		// and the async completion. The generation-guarded watchdog only runs
+		// when the asynchronous grab never completed.
 		void RestoreAfterCapture()
 		{
+			EndPortraitLighting();
 			ExitFreeCam();
 			RestoreFov();
 			RestoreMenus();
 			g_targetOverride.store(0);
+			ReleaseBusyWhenBackBufferRestored();
+			CaptureFinished();
 		}
 
 		void DoCapture(const std::filesystem::path& dir)
 		{
+			const auto generation = g_portraitGeneration.load();
 			// EVERY exit path from here restores the camera and the menus — the
 			// early returns inline, the successful path in the completion task.
 			// (This used to be a scope guard around a synchronous capture; the
@@ -2026,10 +2133,11 @@ namespace PortraitCapture
 
 			// Worker blocks on the present-thread grab; the main thread stays
 			// free to keep producing the frames the grab needs.
-			std::thread([dir, slug, name]() {
+			std::thread([dir, slug, name, generation]() {
 				std::filesystem::path written;
 				const auto            err = CaptureToFile(dir, slug, name, written);
-				SKSE::GetTaskInterface()->AddTask([err, name]() {
+				SKSE::GetTaskInterface()->AddTask([err, name, generation]() {
+					if (!PortraitCurrent(generation)) return;
 					RestoreAfterCapture();
 					if (err) {
 						// Two genuinely different failures, so say which one it is: a
@@ -2076,11 +2184,13 @@ namespace PortraitCapture
 			ReleaseBusyWhenBackBufferRestored();
 			if (done)
 				done(result);
+			CaptureFinished();
 		}
 
 		void DoPlayerCapture(const std::filesystem::path& dir,
 			std::function<void(const std::string&)> done)
 		{
+			const auto generation = g_portraitGeneration.load();
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			if (!player || !player->Is3DLoaded()) {
 				FinishPlayerCapture(done, "");
@@ -2100,10 +2210,11 @@ namespace PortraitCapture
 			// Worker blocks on the present-thread grab; the main thread stays free
 			// to keep producing the frames the grab needs. Restore + callback ride
 			// the completion task, so the world is back before the sheet repaints.
-			std::thread([dir, slug, label, done]() {
+			std::thread([dir, slug, label, done, generation]() {
 				std::filesystem::path written;
 				const auto            err = CaptureToFile(dir, slug, label, written, kFaceKeys, /*alwaysVersion=*/true);
-				SKSE::GetTaskInterface()->AddTask([err, written, done]() {
+				SKSE::GetTaskInterface()->AddTask([err, written, done, generation]() {
+					if (!PortraitCurrent(generation)) return;
 					FinishPlayerCapture(done, err ? "" : PathU8(written.filename()));
 					if (err) {
 						Notify(IsLockedError(err)
@@ -2143,7 +2254,7 @@ namespace PortraitCapture
 			return false;
 		const auto canonical = dir / (slug + "." + ext);
 		auto       path = canonical;
-		auto       err = WriteBytes(path, bytes);
+		auto       err = dir.filename() == "portraits" ? static_cast<std::uint32_t>(ERROR_USER_MAPPED_FILE) : WriteBytes(path, bytes);
 		if (IsLockedError(err)) {
 			const auto stamp = NowSeconds();
 			for (int bump = 0; bump < 8; ++bump) {
@@ -2192,6 +2303,27 @@ namespace PortraitCapture
 		g_onPhotoEnded = std::move(cb);
 	}
 
+	void SetCaptureFinishedCallback(std::function<void()> cb)
+	{
+		g_onCaptureFinished = std::move(cb);
+	}
+
+	void SetPhotoLightingCallback(std::function<void(bool, bool, const PhotoLighting::Snapshot&)> cb)
+	{
+		g_onPhotoLighting = std::move(cb);
+	}
+
+	void RefreshPhotoLights()
+	{
+		if (g_onPhotoLighting) g_onPhotoLighting(g_photoMode.load(),
+			g_photoMode.load() && !g_photoShooting.load() && g_photoLightHud, PhotoLighting::State());
+	}
+
+	std::uint64_t PhotoInputSession()
+	{
+		return g_photoMode.load() ? g_photoGeneration.load() : 0;
+	}
+
 	bool PhotoModeActive()
 	{
 		if (!g_photoMode.load())
@@ -2208,10 +2340,33 @@ namespace PortraitCapture
 		return true;
 	}
 
-	void StartPhotoMode(const std::filesystem::path& dir, const std::string& slug, const std::string& label)
+	void StartPhotoMode(const std::filesystem::path& dir, const std::string& slug, const std::string& label, PhotoFov fov, bool freezeTime, float exactFov, PhotoLighting::Settings lighting)
 	{
-		if (g_photoMode.load()) {
+		auto refuse = [](const char* message) {
+			Notify(message);
+			CaptureFinished();
+		};
+		if (!PhotoInputGate::Ready()) {
+			refuse("Photo controls could not be isolated - restart Skyrim and check HotkeyDeck.log");
+			return;
+		}
+		if (fov == PhotoFov::Exact && (!std::isfinite(exactFov) || exactFov < 20.0f || exactFov > 120.0f)) {
+			refuse("Photo FOV must be between 20 and 120 degrees");
+			return;
+		}
+		if (g_photoMode.load() || g_selfArmed.load() || g_selfCaptureBusy.load()) {
 			Notify("Already in photo mode");
+			return;
+		}
+		auto* currentCamera = RE::PlayerCamera::GetSingleton();
+		if (!currentCamera || currentCamera->IsInFreeCameraMode()) {
+			refuse("Exit existing free camera before starting photo mode");
+			return;
+		}
+		const auto& currentFov = currentCamera->GetRuntimeData2();
+		if (!std::isfinite(currentFov.worldFOV) || !std::isfinite(currentFov.firstPersonFOV) ||
+			currentFov.worldFOV <= 1.f || currentFov.worldFOV > 179.f) {
+			refuse("Current camera FOV unavailable; photo mode did not start");
 			return;
 		}
 		g_photoDir = dir;
@@ -2219,9 +2374,13 @@ namespace PortraitCapture
 		g_photoLabel = label;
 		g_photoStartedAt = NowSeconds();
 		g_photoMode.store(true);
+		++g_photoGeneration;
+		g_photoShooting.store(false);
+		g_photoLightKeys = {};
+		g_photoLightHud = true;
 
 		// ⛔ NO HideMenus() HERE any more. Hiding the whole UI for the session
-		// is what stranded Rober (2026-08-02): the "E to shoot" toast was
+		// is what stranded Rober (2026-08-02): the "Enter to shoot" toast was
 		// invisible, and his escape attempts opened an INVISIBLE console that
 		// swallowed E and Esc — from the outside, "stuck in tfc, nothing
 		// works". The HUD now disappears only around the shot itself
@@ -2229,6 +2388,9 @@ namespace PortraitCapture
 		//
 		// Same order as the capture: fov, then the camera toggle that makes the
 		// fov take. `true` freezes time so she holds the pose.
+		g_savedWorldFov = -1.0f;
+		g_savedFirstFov = -1.0f;
+		float requestedFov = currentFov.worldFOV;
 		auto* cam = RE::PlayerCamera::GetSingleton();
 		if (cam) {
 			const auto& rt2 = cam->GetRuntimeData2();
@@ -2238,12 +2400,38 @@ namespace PortraitCapture
 				g_savedWorldFov = -1.0f;
 				g_savedFirstFov = -1.0f;
 			} else {
-				RunConsole(("fov " + std::to_string(static_cast<int>(kCaptureFov))).c_str());
+				// Keep does not issue a FOV command at all. Relative choices
+				// start from the current world view, never the portrait preset.
+				float target = g_savedWorldFov;
+				if (fov == PhotoFov::Portrait) target = kCaptureFov;
+				else if (fov == PhotoFov::ZoomOut) target = (std::min)(179.0f, target + 15.0f);
+				else if (fov == PhotoFov::ZoomIn) target = (std::max)(1.0f, target - 15.0f);
+				else if (fov == PhotoFov::Exact) target = exactFov;
+				requestedFov = target;
+				if (fov != PhotoFov::Keep)
+					RunConsole(("fov " + std::to_string(target)).c_str());
+				logger::info("photo: chosen FOV {} from {}", target, g_savedWorldFov);
+				if (fov == PhotoFov::Exact) logger::info("photo: exact slider FOV {}", target);
 			}
 		}
-		EnterFreeCam(true);
+		if (!EnterFreeCam(freezeTime)) {
+			EndPhotoMode();
+			Notify("Free camera did not start - returning to SkyManager");
+			return;
+		}
+		if (!PhotoLighting::Begin(lighting)) {
+			EndPhotoMode();
+			logger::warn("photo-light: could not create scene fill; photo cancelled");
+			Notify("Scene light did not start - returning to photo setup");
+			return;
+		}
+		if (fov == PhotoFov::Exact && cam)
+			logger::info("photo: slider FOV readback requested {} actual {}", exactFov, cam->GetRuntimeData2().worldFOV);
+		RefreshPhotoLights();
+		if (!freezeTime) logger::info("photo: live scene framing");
 		logger::info("photo: mode started for '{}' -> {}", label, PathU8((dir / (slug + ".png"))));
-		Notify("Photo mode: fly around, E to shoot, Esc to cancel");
+		logger::info("photo: exclusive lighting keys active; movement passes through");
+		Notify("PHOTO: Tap E to place light. BACKSPACE undoes. ENTER saves. SkyManager key cancels.");
 
 		// A REAL watchdog, not just the lazy check in PhotoModeActive(): that
 		// one only runs when an input event asks, so the exact failure that
@@ -2251,22 +2439,90 @@ namespace PortraitCapture
 		// This thread ends the mode from outside after the ceiling, whatever
 		// the input system is doing. Single-shot tasks from our own thread,
 		// never a task that re-posts itself.
-		std::thread([]() {
-			using namespace std::chrono_literals;
-			while (g_photoMode.load()) {
-				std::this_thread::sleep_for(5s);
-				if (g_photoMode.load() && NowSeconds() - g_photoStartedAt > kPhotoTimeoutSec) {
-					logger::info("photo: watchdog fired after {}s - restoring", kPhotoTimeoutSec);
-					SKSE::GetTaskInterface()->AddTask([]() {
-						if (g_photoMode.load()) {
-							Notify("Photo mode timed out");
-							EndPhotoMode();
+		const auto generation = g_photoGeneration.load();
+		// Confirm the camera/FOV after rendered frames, including the relative
+		// Zoom in/out options. Logging only the requested number hid the
+		// immediate startup rollback in the 2026-09-25 report.
+		std::thread([generation, requestedFov]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(500));
+			SKSE::GetTaskInterface()->AddTask([generation, requestedFov]() {
+				if (!g_photoMode.load() || g_photoGeneration.load() != generation) return;
+				auto* camera = RE::PlayerCamera::GetSingleton();
+				if (!camera) return;
+				const auto actual = camera->GetRuntimeData2().worldFOV;
+				logger::info("photo: settled FOV requested={} actual={} freeCamera={} waiting-for-shutter={}",
+					requestedFov, actual, camera->IsInFreeCameraMode(), !g_photoShooting.load());
+				PhotoLighting::LogState();
+				if (!std::isfinite(actual) || std::abs(actual - requestedFov) > 0.5f)
+					Notify("Photo mode is open, but the camera did not keep the chosen FOV");
+			});
+		}).detach();
+		{ // Natural also permits E placement; keep its context guarded.
+			// No Papyrus or game-time wait: TFC 1 freezes both. Keep at most one
+			// update pending, so a stalled main thread cannot accumulate tasks.
+			auto pending = std::make_shared<std::atomic_bool>(false);
+			std::thread([generation, pending]() {
+				while (g_photoMode.load() && g_photoGeneration.load() == generation) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(50));
+					if (pending->exchange(true)) continue;
+					SKSE::GetTaskInterface()->AddTask([generation, pending]() {
+						pending->store(false);
+						if (g_photoMode.load() && g_photoGeneration.load() == generation) {
+							PhotoLighting::Update();
+							if (!PhotoLighting::State().active) PhotoCancel();
 						}
 					});
-					return;
 				}
+			}).detach();
+		}
+		std::thread([generation]() {
+			using namespace std::chrono_literals;
+			while (g_photoMode.load() && g_photoGeneration.load() == generation) {
+				std::this_thread::sleep_for(5s);
+				SKSE::GetTaskInterface()->AddTask([generation]() {
+					if (g_photoMode.load() && g_photoGeneration.load() == generation) {
+						if (NowSeconds() - g_photoStartedAt > kPhotoTimeoutSec)
+							logger::info("photo: watchdog fired after {}s - restoring", kPhotoTimeoutSec);
+						PhotoModeActive(); // all engine reads/restores stay on the main thread
+					}
+				});
 			}
 		}).detach();
+	}
+
+	void PhotoLightKey(std::uint32_t code, bool down, bool up, float heldSeconds)
+	{
+		const auto generation = g_photoGeneration.load();
+		SKSE::GetTaskInterface()->AddTask([generation, code, down, up, heldSeconds]() {
+			if (!g_photoMode.load() || g_photoShooting.load() || g_photoGeneration.load() != generation) return;
+			const auto action = g_photoLightKeys.Event(code, down, up, heldSeconds);
+			if (action == PhotoInput::LightAction::None) return;
+			if (action == PhotoInput::LightAction::Place) {
+				const auto result = PhotoLighting::Place();
+				if (result == PhotoLighting::PlaceResult::Placed)
+					Notify(("Light placed (" + std::to_string(PhotoLighting::PlacedCount()) + "/12). Backspace undoes; Enter takes photo.").c_str());
+				else if (result == PhotoLighting::PlaceResult::Full) Notify("12 lights placed. Backspace removes the last one.");
+				else Notify("Could not place a light. The free camera must be active.");
+			} else if (action == PhotoInput::LightAction::Undo) {
+				if (PhotoLighting::Undo()) Notify(("Light removed. " + std::to_string(PhotoLighting::PlacedCount()) + " placed lights remain.").c_str());
+				else Notify("No placed lights to undo.");
+			}
+			using Action = PhotoInput::LightAction;
+			switch (action) {
+				case Action::Select: PhotoLighting::SelectNext(); break;
+				case Action::Color: PhotoLighting::CycleColor(); break;
+				case Action::Dim: PhotoLighting::Strength(-1); break;
+				case Action::Brighten: PhotoLighting::Strength(1); break;
+				case Action::Narrow: PhotoLighting::Spread(-1); break;
+				case Action::Widen: PhotoLighting::Spread(1); break;
+				case Action::ToggleHud: g_photoLightHud = !g_photoLightHud; break;
+				default: break;
+			}
+			const auto state = PhotoLighting::State();
+			logger::info("photo-light: controls selected={} color={} strength={} spread={} hud={}",
+				state.selected, state.tuning.color, state.tuning.strength, state.tuning.spread, g_photoLightHud);
+			RefreshPhotoLights();
+		});
 	}
 
 	void PhotoShootNow() { PhotoShoot(); }
@@ -2275,12 +2531,23 @@ namespace PortraitCapture
 	{
 		if (!g_photoMode.load())
 			return;
+		logger::info("photo: cancelled generation={} shooting={}", g_photoGeneration.load(), g_photoShooting.load());
 		EndPhotoMode();
 		Notify("Photo cancelled");
 	}
 
 	void Fire(const std::filesystem::path& portraitDir, std::uint32_t targetFormId)
 	{
+		if (g_photoMode.load() || g_selfCaptureBusy.exchange(true)) return;
+		if (!PhotoLighting::PortraitActive() && !BeginPortraitLighting(portraitDir)) {
+			g_selfCaptureBusy.store(false);
+			Notify("Portrait light could not start. Reopen Retake and try again.");
+			CaptureFinished();
+			return;
+		}
+		const auto generation = ++g_portraitGeneration;
+		g_selfPreW.store(0);
+		g_selfPreH.store(0);
 		// Set before the thread starts so the very first task already sees it.
 		// Cleared by DoCapture's restore guard, so a targeted capture can never
 		// leak into the next crosshair one.
@@ -2288,7 +2555,7 @@ namespace PortraitCapture
 
 		// Copied into the thread: the caller's path object must not be relied on
 		// once FireAction's task has returned.
-		std::thread([dir = portraitDir]() {
+		std::thread([dir = portraitDir, generation]() {
 			using namespace std::chrono;
 			// The palette is a full-screen web view and the HUD puts a crosshair
 			// exactly where the face is. Both have to be gone, and the game needs
@@ -2296,8 +2563,9 @@ namespace PortraitCapture
 			// detached-sleep-then-AddTask idiom FireAndClose() uses, for the same
 			// reason: you cannot block the main thread waiting for it to draw.
 			std::this_thread::sleep_for(milliseconds(220));
-			SKSE::GetTaskInterface()->AddTask([]() {
-				// CHIM's order exactly: menus off, then fov, then tfc. The
+			SKSE::GetTaskInterface()->AddTask([generation]() {
+				if (!PortraitCurrent(generation)) return;
+				// Portraits keep the player camera: menus off, then FOV. The
 				// subject is not needed here any more — the zoom is a flat 60
 				// regardless of where they are standing.
 				HideMenus();
@@ -2309,8 +2577,10 @@ namespace PortraitCapture
 			// CHIM's number is the one that is known to produce good frames, so
 			// it is the one we use.
 			std::this_thread::sleep_for(milliseconds(1000));
-			SKSE::GetTaskInterface()->AddTask([dir]() { DoCapture(dir); });
-			std::this_thread::sleep_for(milliseconds(90));
+			SKSE::GetTaskInterface()->AddTask([dir, generation]() {
+				if (PortraitCurrent(generation)) DoCapture(dir);
+			});
+			std::this_thread::sleep_for(std::chrono::seconds(10));
 			// Belt and braces. DoCapture already restored on its way out; this
 			// only does anything if DoCapture never ran at all (e.g. its task was
 			// dropped). All three no-op when there is nothing to undo.
@@ -2319,11 +2589,11 @@ namespace PortraitCapture
 			// guard never cleared it, and the next crosshair capture would
 			// silently photograph the follower selected minutes ago instead of
 			// whoever you are looking at.
-			SKSE::GetTaskInterface()->AddTask([]() {
-				ExitFreeCam();
-				RestoreFov();
-				RestoreMenus();
-				g_targetOverride.store(0);
+			SKSE::GetTaskInterface()->AddTask([generation]() {
+				if (!PortraitCurrent(generation)) return;
+				++g_portraitGeneration;
+				RestoreAfterCapture();
+				Notify("Portrait capture timed out - returning to SkyManager");
 			});
 		}).detach();
 	}
@@ -2332,24 +2602,26 @@ namespace PortraitCapture
 	{
 		// The shared deferred capture sequence for a SELF portrait: HUD off +
 		// third-person flip + zoom, wait for frames to settle, grab, restore. Used
-		// by both the direct FirePlayerSheet and the arm-then-E path. Sets
+		// by both the direct FirePlayerSheet and the arm-then-Enter path. Sets
 		// g_selfCaptureBusy for the whole sequence so the deck cannot reopen and
 		// paint a half-laid-out panel over the transitioning world; DoPlayerCapture's
 		// Restore clears it once the camera/menus are back.
 		void RunPlayerCaptureSequence(const std::filesystem::path& portraitDir,
 			std::function<void(const std::string&)> done)
 		{
-			g_selfCaptureBusy.store(true);
+			if (g_selfCaptureBusy.exchange(true)) return;
+			const auto generation = ++g_portraitGeneration;
 			// Baseline the render-target size BEFORE anything touches the camera or
 			// fov, so the reopen gate can wait for it to come back (BUG B). Read on
 			// the main thread (swap-chain / D3D). 0 disables the wait, so a failed
 			// read simply falls back to the old immediate release.
 			g_selfPreW.store(0);
 			g_selfPreH.store(0);
-			std::thread([dir = portraitDir, done = std::move(done)]() mutable {
+			std::thread([dir = portraitDir, done = std::move(done), generation]() mutable {
 				using namespace std::chrono;
 				std::this_thread::sleep_for(milliseconds(220));
-				SKSE::GetTaskInterface()->AddTask([]() {
+				SKSE::GetTaskInterface()->AddTask([generation]() {
+					if (!PortraitCurrent(generation)) return;
 					int w = 0, h = 0;
 					if (BackBufferSize(w, h) && w > 0 && h > 0) {
 						g_selfPreW.store(w);
@@ -2360,24 +2632,21 @@ namespace PortraitCapture
 					ZoomForCapture();
 				});
 				std::this_thread::sleep_for(milliseconds(1000));
-				SKSE::GetTaskInterface()->AddTask([dir, done]() { DoPlayerCapture(dir, done); });
-				std::this_thread::sleep_for(milliseconds(90));
+				SKSE::GetTaskInterface()->AddTask([dir, done, generation]() {
+					if (PortraitCurrent(generation)) DoPlayerCapture(dir, done);
+				});
+				std::this_thread::sleep_for(std::chrono::seconds(10));
 				// Belt and braces, exactly like Fire(): DoPlayerCapture restored on
 				// its way out; these no-op if it ran, and rescue the world if its
 				// task was dropped. The first-person restore is included so a dropped
 				// capture cannot strand the player looking at their own back. If the
 				// capture task was dropped, clear the busy flag here so the deck is
 				// not blocked from reopening forever.
-				SKSE::GetTaskInterface()->AddTask([]() {
-					ExitFreeCam();
-					RestoreFov();
-					RestoreFirstPerson();
-					RestoreMenus();
-					// Same resync-aware release as DoPlayerCapture. If the capture ran,
-					// its waiter is already active and this no-ops (guarded); if the
-					// capture task was dropped, THIS starts the waiter so the deck is
-					// still ungated once the target is full again (or on timeout).
-					ReleaseBusyWhenBackBufferRestored();
+				SKSE::GetTaskInterface()->AddTask([done, generation]() {
+					if (!PortraitCurrent(generation)) return;
+					++g_portraitGeneration;
+					FinishPlayerCapture(done, "");
+					Notify("Portrait capture timed out - returning to SkyManager");
 				});
 			}).detach();
 		}
@@ -2397,14 +2666,42 @@ namespace PortraitCapture
 		// Re-arming just resets the timer + target; a second press should not
 		// stack two captures. If an old arm carried a cancel notifier, fire it so
 		// the view for the previous request is not left in "taking…".
+		if (g_photoMode.load() || g_selfCaptureBusy.load()) return;
+		EndPortraitLighting();
 		FireSelfCancel();
+		g_selfNpcTarget = 0;   // a self arm replaces a pending NPC retake
 		g_selfDir = portraitDir;
 		g_selfDone = std::move(done);
 		g_selfOnCancel = std::move(onCancel);
 		g_selfArmedAt = NowSeconds();
 		g_selfArmed.store(true);
-		logger::info("portrait: self-portrait ARMED - waiting for E");  // marker: portrait-arm-on-e
-		Notify("Portrait armed - line up your shot, then press E");
+		StartArmWatchdog();
+		logger::info("portrait: self-portrait ARMED - waiting for Enter");  // marker: portrait-arm-on-e
+		Notify("Portrait armed - line up your shot, then press Enter");
+	}
+
+	bool ArmNpcPortrait(const std::filesystem::path& portraitDir, std::uint32_t targetFormId)
+	{
+		if (g_photoMode.load() || g_selfCaptureBusy.load()) return false;
+		auto* form = RE::TESForm::LookupByID(targetFormId);
+		auto* actor = form ? form->As<RE::Actor>() : nullptr;
+		if (!actor || !actor->Get3D()) return false;
+		// Start before acknowledging/closing the menu: a failure keeps the setup
+		// open, rather than silently arming an unlit or unloaded subject.
+		if (!BeginPortraitLighting(portraitDir)) return false;
+		FireSelfCancel();
+		g_selfDir = portraitDir;
+		g_selfDone = nullptr;
+		g_selfOnCancel = nullptr;
+		g_selfNpcTarget = targetFormId;
+		g_selfArmedAt = NowSeconds();
+		g_selfArmed.store(true);
+		StartArmWatchdog();
+		const char* name = actor->GetName();
+		const std::string who = name && *name ? name : "the NPC";
+		logger::info("portrait: NPC retake ARMED - waiting for Enter ({:08X})", targetFormId);
+		Notify(("Retake armed - frame " + who + ", then press Enter (Esc cancels)").c_str());
+		return true;
 	}
 
 	bool SelfPortraitArmed()
@@ -2415,11 +2712,14 @@ namespace PortraitCapture
 		// and CanOpenNow). A forgotten arm disarms itself with a notification so it
 		// can never ambush the player an hour later.
 		if (NowSeconds() - g_selfArmedAt > kSelfArmTimeoutSec) {
+			EndPortraitLighting();
 			g_selfArmed.store(false);
 			g_selfDone = nullptr;
+			g_selfNpcTarget = 0;
 			logger::info("portrait: self-portrait arm timed out after {}s", kSelfArmTimeoutSec);
 			Notify("Portrait disarmed - took too long");
 			FireSelfCancel();
+			CaptureFinished();
 			return false;
 		}
 		return true;
@@ -2429,15 +2729,24 @@ namespace PortraitCapture
 
 	void SelfPortraitShootNow()
 	{
-		// Consume the arm exactly once — a keyboard can deliver E down+up, and the
-		// sink may fire this from either edge; the exchange makes it a single shot.
+		// Consume the arm exactly once — a keyboard can deliver Enter down+up, and the
+		// exchange also protects against duplicate queued presses; the exchange makes it a single shot.
 		if (!g_selfArmed.exchange(false))
 			return;
+		++g_armGeneration;
+		// Enter has no vanilla Activate/Quick Light conflict.
+		if (const auto npc = std::exchange(g_selfNpcTarget, 0u); npc) {
+			const auto dir = g_selfDir;
+			logger::info("portrait: NPC retake Enter pressed - capturing {:08X}", npc);
+			Fire(dir, npc);
+
+			return;
+		}
 		auto done = std::move(g_selfDone);
 		g_selfDone = nullptr;
 		g_selfOnCancel = nullptr;   // the shot's `done` covers the view now
 		const auto dir = g_selfDir;
-		logger::info("portrait: self-portrait E pressed - capturing");
+		logger::info("portrait: self-portrait Enter pressed - capturing");
 		RunPlayerCaptureSequence(dir, std::move(done));
 	}
 
@@ -2445,10 +2754,59 @@ namespace PortraitCapture
 	{
 		if (!g_selfArmed.exchange(false))
 			return;
+		++g_armGeneration;
+		EndPortraitLighting();
 		g_selfDone = nullptr;
+		g_selfNpcTarget = 0;
 		logger::info("portrait: self-portrait arm cancelled");
 		Notify("Portrait disarmed");
 		FireSelfCancel();
+		CaptureFinished();
+	}
+
+	void ResetPortraitsForLoad()
+	{
+		++g_armGeneration;
+		++g_portraitGeneration;
+		g_selfArmed.store(false);
+		g_selfNpcTarget = 0;
+		g_selfDone = nullptr;
+		g_selfOnCancel = nullptr;
+		EndPortraitLighting();
+		if (g_selfCaptureBusy.exchange(false)) {
+			ExitFreeCam(); RestoreFov(); RestoreMenus(); RestoreFirstPerson();
+		}
+		g_targetOverride.store(0);
+		g_selfResyncActive.store(false);
+	}
+
+	PhotoLighting::Settings GetNpcLighting(const std::filesystem::path& dir)
+	{
+		PhotoLighting::Settings settings{PhotoLighting::Mode::Soft, 1.0f};
+		std::ifstream file(dir / "portrait-lighting.json");
+		if (!file) return settings;
+		const auto j = nlohmann::json::parse(file, nullptr, false);
+		if (j.is_object() && j.contains("mode") && j["mode"].is_string() &&
+			j.contains("strength") && j["strength"].is_number())
+			PhotoLighting::Parse(j["mode"].get<std::string>(), j["strength"].get<float>(), settings);
+		return settings;
+	}
+
+	bool SetNpcLighting(const std::filesystem::path& dir, PhotoLighting::Settings settings)
+	{
+		const char* mode = settings.mode == PhotoLighting::Mode::Natural ? "natural" :
+			settings.mode == PhotoLighting::Mode::Soft ? "soft" : "bright";
+		PhotoLighting::Settings validated;
+		if (!PhotoLighting::Parse(mode, settings.strength, validated)) return false;
+		// This sidecar belongs to portrait capture, not hotkeys.json or domain
+		// photographs. Preserve unknown fields written by a newer view/version.
+		nlohmann::json j = nlohmann::json::object();
+		std::ifstream file(dir / "portrait-lighting.json");
+		if (file) { auto old = nlohmann::json::parse(file, nullptr, false); if (old.is_object()) j = std::move(old); }
+		file.close();
+		j["mode"] = mode; j["strength"] = settings.strength;
+		const auto text = j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+		return WriteBytes(dir / "portrait-lighting.json", std::vector<std::uint8_t>(text.begin(), text.end())) == 0;
 	}
 
 	Framing DefaultFraming()
@@ -2497,8 +2855,10 @@ namespace PortraitCapture
 	{
 		Tuning t = ReadTuning(dir, kPhotoKeys);
 		t.exposure = std::clamp(stops, kExpMin, kExpMax);
+		if (!WriteTuning(dir, kPhotoKeys, t))
+			return false;
 		logger::info("photo: exposure set to {:+.2f} stop(s) in {}", t.exposure, PathU8(dir));
-		return WriteTuning(dir, kPhotoKeys, t);
+		return true;
 	}
 
 	// ---- present-thread grab hook (see presentgrab above for the WHY) -------

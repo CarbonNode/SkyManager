@@ -223,9 +223,10 @@ window.WardrobeSpid = (function () {
     var wrap = h('span', { class: 'wdsp-face' });
     /* Plain path, no ?v= cache-buster: Ultralight treats the query as part
        of the filename and 404s (the Favorites Shelf learned this). */
-    var img = h('img', { src: 'portraits/' + shot.file, alt: '' });
+    var plain = shot.abs ? shot.file : 'portraits/' + shot.file;
+    var img = h('img', { src: plain, alt: '' });
     /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
-    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, 'portraits/' + shot.file);
+    if (window.HDFaceFit) { if (shot.abs) HDFaceFit.ensure(img, plain); else HDFaceFit.paintPortrait(img, plain); }
     img.addEventListener('error', function () {
       var g = faceGlyph();
       if (wrap.parentNode) wrap.parentNode.replaceChild(g, wrap);

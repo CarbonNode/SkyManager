@@ -95,12 +95,29 @@ namespace CourtStatus
 					for (const auto& member : cat["members"]) {
 						if (!member.is_object())
 							continue;
+						/* ⚠ TWO ids. `id` is what FO STORED and what gets written
+						   into the entry below — the durable-ish handle. `resolveId`
+						   is `liveFormId` when FO sent one, which it does only for a
+						   row whose stored form is a BASE record: what it falls back
+						   to for a follower spawned at runtime, since a 0xFF
+						   reference has no source file to name (FO DeckAPI.cpp,
+						   LoadedActorForBase). That base resolves to a form but
+						   never to an actor, so the ledger silently skipped her —
+						   no marriage, no pregnancy, nothing on the portal's
+						   Standing tab. Writing the live id into the file instead
+						   would persist a session-only 0xFF handle, which is why
+						   the two stay apart. Absent (or an older FO DLL) reads as
+						   the old behaviour exactly. */
 						const auto id = member.value("formId", std::string(""));
 						if (id.empty())
 							continue;
+						const auto resolveId = [&] {
+							const auto live = member.value("liveFormId", std::string(""));
+							return live.empty() ? id : live;
+						}();
 						RE::FormID formId = 0;
 						try {
-							formId = static_cast<RE::FormID>(std::stoul(id, nullptr, 16));
+							formId = static_cast<RE::FormID>(std::stoul(resolveId, nullptr, 16));
 						} catch (const std::exception&) {
 							continue;
 						}

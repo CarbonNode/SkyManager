@@ -3,10 +3,12 @@
 #include "follower_deck.h"
 #include "maras.h"          // marriage state, when M.A.R.A.S is installed
 #include "relationship.h"   // the engine's RELA rank with the player
+#include "widgets.h"       // PlaceKindOf: the loc-* icon vocabulary, shared
 
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <format>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -530,6 +532,85 @@ namespace NffBridge
 			return mask;
 		}
 
+		// The MHiYH slice for ONE actor — the object StateJson files under
+		// "mhiyh". Every activity's marker is resolved to a human place name with
+		// the SAME chain the Domains pane names a mark with (PlaceNameOfRef ->
+		// cell -> location -> ref -> worldspace). One naming scheme in this
+		// plugin, not two.
+		//
+		// The linked refs ARE the answer, so they are read unconditionally: the
+		// HasHome faction is only carried alongside as corroboration. Gating the
+		// reads on that faction would trade a cheap lookup for a silent total
+		// failure if NG ever stops maintaining it.
+		//
+		// `geometry` adds the marker's cell + coordinates to every stop (and the
+		// home), for the Residents mode, which matches stops to Domains marks by
+		// POSITION rather than by name. Null when NG holds nothing for her.
+		json MhiyhEntry(RE::Actor* actor, const MhiyhCtx& mh, bool geometry)
+		{
+			if (!actor || !mh.homeKw())
+				return json(nullptr);
+			const std::uint32_t nowMask = ActiveKindMask(actor, mh);
+
+			auto describe = [&](RE::TESObjectREFR* ref, json& a) {
+				auto name = PlaceNameOfRef(ref);
+				a["place"] = name.empty() ? "Somewhere" : name;
+				if (!geometry)
+					return;
+				auto*      cell = ref->GetParentCell();
+				auto*      world = ref->GetWorldspace();
+				const auto pos = ref->GetPosition();
+				a["cellId"] = cell ? static_cast<std::uint32_t>(cell->GetFormID()) : 0u;
+				a["cellName"] = cell ? NameOfForm(cell) : std::string();
+				a["worldspaceId"] = world ? static_cast<std::uint32_t>(world->GetFormID()) : 0u;
+				a["worldspaceName"] = world ? NameOfForm(world) : std::string();
+				a["interior"] = cell ? cell->IsInteriorCell() : (world == nullptr);
+				a["x"] = pos.x;
+				a["y"] = pos.y;
+				a["z"] = pos.z;
+				a["markerId"] = static_cast<std::uint32_t>(ref->GetFormID());
+			};
+
+			json acts = json::array();
+			json now = json::array();
+			for (int k = 0; k < kKindCount; ++k) {
+				const bool active = (nowMask & (1u << k)) != 0;
+				if (active)
+					now.push_back(k);
+
+				auto* ref = mh.kw[k] ? actor->GetLinkedRef(mh.kw[k]) : nullptr;
+				if (!ref && !active)
+					continue;  // not configured and not in force — say nothing
+
+				// An activity can be in force with an unreadable marker (its cell
+				// not loaded, its plugin gone). That is still worth showing — the
+				// view renders a nameless place rather than dropping the row and
+				// pretending she is doing nothing.
+				json a{ { "k", k }, { "now", active } };
+				if (ref)
+					describe(ref, a);
+				acts.push_back(std::move(a));
+			}
+
+			auto* homeRef = actor->GetLinkedRef(mh.homeKw());
+			if (!homeRef && acts.empty())
+				return json(nullptr);
+
+			json home(nullptr);
+			if (homeRef) {
+				home = json{ { "name", "" } };
+				describe(homeRef, home);
+				home["name"] = home["place"];
+				home.erase("place");
+			}
+			return json{
+				{ "home", std::move(home) },
+				{ "flagged", mh.hasHomeFac ? actor->IsInFaction(mh.hasHomeFac) : false },
+				{ "acts", std::move(acts) },
+				{ "now", std::move(now) },
+			};
+		}
+
 		// --------------------------------------------------------------- NFF ctx --
 
 		// One snapshot of everything NFF-side that is the same for every member,
@@ -622,9 +703,23 @@ namespace NffBridge
 
 		// Every formId in an FO Deck API envelope, in roster order, de-duplicated
 		// (one person can be filed in several categories).
-		std::vector<std::string> MemberIds(const std::string& foStateJson)
+		//
+		// TWO ids per row, and they are not the same question. `stored` is what
+		// FO holds and the KEY every reader looks this payload up by. `live` is
+		// present only when FO had to store a BASE record — a follower spawned at
+		// runtime, whose 0xFF reference has no source file to name — and is the
+		// reference it went and found for that base (FO DeckAPI.cpp,
+		// LoadedActorForBase). Without it the row resolves to a form and never an
+		// actor, and everything below was skipped for someone standing in front
+		// of you.
+		struct MemberId
 		{
-			std::vector<std::string> ids;
+			std::string stored, live;
+		};
+
+		std::vector<MemberId> MemberIds(const std::string& foStateJson)
+		{
+			std::vector<MemberId> ids;
 			const auto               env = json::parse(foStateJson, nullptr, false);
 			if (env.is_discarded() || !env.is_object())
 				return ids;
@@ -643,10 +738,76 @@ namespace NffBridge
 					if (id.empty() || seen.count(id))
 						continue;
 					seen[id] = true;
-					ids.push_back(id);
+					ids.push_back(MemberId{ id, m.value("liveFormId", std::string("")) });
 				}
 			}
 			return ids;
+		}
+
+		/* ---- the follower Follower Organizer could not store ---------------
+		 *
+		 *  FO persists a member as an EditorID or "localId~Plugin.esp", and a
+		 *  follower SPAWNED at runtime has NEITHER: a 0xFF reference has no
+		 *  source file, so FO's FormToString() returns "" and Member's
+		 *  serializer falls back to her BASE NPC_ record. Her roster row then
+		 *  resolves to a form that is not a reference, FO answers
+		 *  `inWorld:false` about somebody standing in front of you, and every
+		 *  decoration in the loop below used to be skipped for her — no home,
+		 *  no day, no "where she is", no relationship.
+		 *
+		 *  Proven 2026-09-20: Kali, filed as "00_DemonKali" (the NPC_ in
+		 *  Demon Kali.esp, id 0xFEBC8815), her card missing the whole Home
+		 *  group. Rober: "weirdly no home tab options for this f7 on an npc?"
+		 *
+		 *  So when a row hands us a BASE actor, go and find HER — the loaded
+		 *  actor wearing that base. Bounded by the four process arrays, and
+		 *  paid only for rows that failed to resolve as a reference (a handful
+		 *  out of ~70). The reference we find is reported to the view as
+		 *  `liveId`, because that, not the stored id, is what every actor-keyed
+		 *  op has to be addressed at.
+		 *
+		 *  Template-aware, the same way npc_finder's FindLoaded is: a spawned
+		 *  copy can be a templated child of the stored base. A LIVING match
+		 *  wins outright; a corpse is the fallback, because "she is dead over
+		 *  there" is still a true answer about where she is.
+		 */
+		bool BaseIsOrDescendsFrom(RE::TESNPC* base, RE::TESNPC* want)
+		{
+			for (int guard = 0; base && guard < 8; ++guard) {
+				if (base == want)
+					return true;
+				auto* t = base->baseTemplateForm;
+				base = t ? t->As<RE::TESNPC>() : nullptr;
+			}
+			return false;
+		}
+
+		RE::Actor* LoadedActorForBase(RE::TESNPC* want)
+		{
+			auto* pl = RE::ProcessLists::GetSingleton();
+			if (!pl || !want)
+				return nullptr;
+			const RE::BSTArray<RE::ActorHandle>* arrays[4] = {
+				&pl->highActorHandles, &pl->middleHighActorHandles,
+				&pl->middleLowActorHandles, &pl->lowActorHandles
+			};
+			RE::Actor* corpse = nullptr;
+			for (const auto* arr : arrays) {
+				for (const auto& h : *arr) {
+					auto a = h.get();
+					if (!a)
+						continue;
+					if (!BaseIsOrDescendsFrom(a->GetActorBase(), want))
+						continue;
+					if (a->IsDead()) {
+						if (!corpse)
+							corpse = a.get();
+						continue;
+					}
+					return a.get();
+				}
+			}
+			return corpse;
 		}
 	}
 
@@ -659,6 +820,12 @@ namespace NffBridge
 	bool MhiyhAvailable()
 	{
 		return ResolveMhiyh().homeKw() != nullptr;
+	}
+
+	std::string MhiyhActorJson(RE::Actor* actor)
+	{
+		const auto mh = ResolveMhiyh();
+		return Dump(MhiyhEntry(actor, mh, /*geometry=*/ true));
 	}
 
 	RE::BGSKeyword* MhiyhMarkerKeyword(int kind)
@@ -753,6 +920,35 @@ namespace NffBridge
 		if (!actor || !nff.followerFac)
 			return false;
 		return actor->IsInFaction(nff.followerFac);
+	}
+
+	int NffSlotOf(RE::Actor* actor)
+	{
+		// Vanilla's DialogueFollower: NFF extends it rather than shipping its
+		// own follower quest, so the record is Skyrim.esm's. Alias 0/1 are the
+		// vanilla follower + animal; 2.. are NFF's FollowerExtra slots.
+		constexpr RE::FormID kDialogueFollower = 0x000750BA;
+		auto* dh = RE::TESDataHandler::GetSingleton();
+		if (!actor || !dh || !dh->LookupModByName("nwsFollowerFramework.esp"))
+			return -1;
+		auto* arr = actor->extraList.GetByType<RE::ExtraAliasInstanceArray>();
+		if (!arr)
+			return -1;
+		RE::BSReadLockGuard locker(arr->lock);
+		for (auto* inst : arr->aliases) {
+			if (!inst || !inst->quest || !inst->alias)
+				continue;
+			const auto id = static_cast<int>(inst->alias->aliasID);
+			if (inst->quest->GetFormID() == kDialogueFollower) {
+				if (id >= 2)
+					return id;
+				continue;
+			}
+			const char* eid = inst->quest->GetFormEditorID();
+			if (eid && std::string_view(eid).starts_with("nwsFollowerPack"))
+				return id;
+		}
+		return -1;
 	}
 
 	bool SetSandboxAllowedFor(RE::Actor* actor, bool allow)
@@ -904,18 +1100,55 @@ namespace NffBridge
 		// gave us, so the cost of not bailing is one array walk per follower.
 
 		std::size_t withNffHome = 0, withMhHome = 0, withNow = 0, withSpouse = 0;
+		// How many rows were only readable because we went and found the live
+		// actor behind a stored BASE form. Non-zero is normal on this rig (a
+		// spawned follower), but a jump means FO has stopped storing references.
+		std::size_t repaired = 0;
 
-		for (const auto& idStr : MemberIds(foStateJson)) {
+		for (const auto& member : MemberIds(foStateJson)) {
+			const auto& idStr = member.stored;
 			const auto id = ParseFormId(idStr);
 			if (!id)
 				continue;
 			auto* form = RE::TESForm::LookupByID(id);
 			auto* refr = form ? form->As<RE::TESObjectREFR>() : nullptr;
 			auto* actor = refr ? refr->As<RE::Actor>() : nullptr;
+			// A BASE form is not nothing to read any more - it is somebody FO
+			// could not store a reference for. FO itself now names the live
+			// reference (`liveFormId`); the local scan below stays as the
+			// fallback for a mismatched pair of DLLs, since these two ship as a
+			// matched set but nothing physically enforces it.
+			std::string liveId;
+			if (!actor && !member.live.empty()) {
+				if (const auto lid = ParseFormId(member.live)) {
+					auto* lform = RE::TESForm::LookupByID(lid);
+					auto* lrefr = lform ? lform->As<RE::TESObjectREFR>() : nullptr;
+					if (auto* la = lrefr ? lrefr->As<RE::Actor>() : nullptr) {
+						actor = la;
+						liveId = member.live;
+						++repaired;
+					}
+				}
+			}
+			if (!actor) {
+				if (auto* npc = form ? form->As<RE::TESNPC>() : nullptr) {
+					if (auto* live = LoadedActorForBase(npc)) {
+						actor = live;
+						liveId = std::format("0x{:08X}", live->GetFormID());
+						++repaired;
+					}
+				}
+			}
 			if (!actor)
-				continue;  // unresolved member, or a base form: nothing to read
+				continue;  // unresolved member, and not a base anyone is wearing
 
 			json entry = json::object();
+			// FIRST, so it survives even a member with nothing else to say:
+			// without it every actor-keyed op on her row addresses the base and
+			// is refused (MHiYH's Apply resolves formId -> REFR -> Actor).
+			if (!liveId.empty())
+				entry["liveId"] = liveId;
+			json jest;
 
 			// ---- where she actually IS -------------------------------------
 			// Rober asked whether the Followers tab shows the last cell someone
@@ -965,6 +1198,18 @@ namespace NffBridge
 					if (whereId)
 						entry["whereId"] = whereId;
 					entry["loaded"] = actor->Is3DLoaded();
+					/* WHAT KIND of place that is, in the same closed vocabulary the
+					   HUD's place readout uses — so the roster can draw the shipped
+					   loc-* icon for an inn, a shop, a temple, a cave rather than a
+					   bare diamond (Rober, 2026-09-17: "need to show a icon for
+					   house and icon for location currently"). Classified by
+					   Widgets::PlaceKindOf, never by a second keyword table. */
+					if (auto* cell = actor->GetParentCell()) {
+						const auto kind = Widgets::PlaceKindOf(actor->GetCurrentLocation(),
+							cell->IsInteriorCell());
+						if (!kind.empty())
+							entry["whereKind"] = kind;
+					}
 				}
 			}
 
@@ -1005,62 +1250,17 @@ namespace NffBridge
 
 			// ---- My Home is Your Home NG ----
 			if (mh.homeKw()) {
-				// Every activity's marker, resolved to a human place name with the
-				// SAME chain the Domains pane names a mark with (PlaceNameOfRef ->
-				// cell -> location -> ref -> worldspace). One naming scheme in this
-				// plugin, not two.
-				//
-				// The linked refs ARE the answer, so they are read unconditionally:
-				// the HasHome faction is only carried alongside as corroboration.
-				// Gating the reads on that faction would trade a cheap lookup for a
-				// silent total failure if NG ever stops maintaining it.
-				const std::uint32_t nowMask = ActiveKindMask(actor, mh);
-
-				json acts = json::array();
-				json now = json::array();
-				for (int k = 0; k < kKindCount; ++k) {
-					const bool active = (nowMask & (1u << k)) != 0;
-					if (active)
-						now.push_back(k);
-
-					auto* ref = mh.kw[k] ? actor->GetLinkedRef(mh.kw[k]) : nullptr;
-					if (!ref && !active)
-						continue;  // not configured and not in force — say nothing
-
-					// An activity can be in force with an unreadable marker (its
-					// cell not loaded, its plugin gone). That is still worth
-					// showing — the view renders a nameless place rather than
-					// dropping the row and pretending she is doing nothing.
-					json a{ { "k", k }, { "now", active } };
-					if (ref) {
-						auto name = PlaceNameOfRef(ref);
-						a["place"] = name.empty() ? "Somewhere" : name;
-					}
-					acts.push_back(std::move(a));
-				}
-
-				auto* homeRef = actor->GetLinkedRef(mh.homeKw());
-				std::string homeName;
-				if (homeRef) {
-					homeName = PlaceNameOfRef(homeRef);
-					if (homeName.empty())
-						homeName = "Somewhere";
-					++withMhHome;
-				}
-
-				// Emit only when there is something to say. A follower NG has
-				// never heard of contributes nothing to the payload at all, which
-				// is what keeps this small on a ~70-member roster.
-				if (homeRef || !acts.empty()) {
-					json mj{
-						{ "home", homeRef ? json{ { "name", homeName } } : json(nullptr) },
-						{ "flagged", mh.hasHomeFac ? actor->IsInFaction(mh.hasHomeFac) : false },
-						{ "acts", std::move(acts) },
-						{ "now", std::move(now) },
-					};
-					entry["mhiyh"] = std::move(mj);
-					if (nowMask)
+				// One reader for both surfaces (MhiyhEntry): the roster's slice here,
+				// and the Residents mode's geometry-bearing copy. Emit only when there
+				// is something to say, which is what keeps this small on a ~70-member
+				// roster.
+				jest = MhiyhEntry(actor, mh, /*geometry=*/ false);
+				if (!jest.is_null()) {
+					if (!jest["home"].is_null())
+						++withMhHome;
+					if (!jest["now"].empty())
 						++withNow;
+					entry["mhiyh"] = std::move(jest);
 				}
 			}
 
@@ -1093,6 +1293,8 @@ namespace NffBridge
 		// the ones we think they are, and this line says so without a debugger.
 		logger::debug("nff/mhiyh: {} entries ({} NFF homes, {} MHiYH homes, {} doing something now, {} married)",
 			out["members"].size(), withNffHome, withMhHome, withNow, withSpouse);
+		if (repaired)
+			logger::info("nff/mhiyh: base-form repair found a live actor for {} roster row(s) FO could not store a reference for", repaired);
 		return Dump(out);
 	}
 

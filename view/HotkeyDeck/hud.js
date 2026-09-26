@@ -270,7 +270,7 @@
     cloudy: [CLOUD, 'M14.2 7.4a4.4 4.4 0 0 1 5.6 4.2'],
     overcast: [CLOUD, 'M5 20.4h14'],
     rain: [CLOUD, 'M9 19.6l-.8 2.2', 'M13 19.6l-.8 2.2', 'M17 19.6l-.8 2.2'],
-    storm: [CLOUD, 'M13.4 19.2l-3.1 0 2.2 3.2'],
+    storm: [CLOUD, 'M13 14l-4 6h4l-1 3 6-7h-5l1-2'],
     snow: [CLOUD, 'M9 20v2.2', 'M8 20.6l2 1', 'M10 20.6l-2 1',
       'M15.5 20v2.2', 'M14.5 20.6l2 1', 'M16.5 20.6l-2 1'],
     fog: ['M3.5 8h17', 'M6 12h15', 'M3.5 16h13', 'M8 20h11'],
@@ -508,16 +508,18 @@
   /* The shipped icon set has no loc-ruin / loc-wild / loc-shipwreck, so those
      three kinds keep the inline SVG. Everything in the C++ closed list resolves
      through PLACE_ALIAS first, so `barracks` arrives here as `fort` and paints. */
-  /* An icon box: the SVG always, plus the painting on top if one exists. A dead
-     path removes itself, uncovering the SVG — never a broken-image box. */
+  /* Keep the SVG until the painting has loaded, then hide it: transparent art
+     must never reveal a second symbol underneath. A failed image restores it. */
   function glyphBox(cls, art, painted, size) {
-    const box = h('span', { class: cls }, svgIcon(art, size));
+    const fallback = svgIcon(art, size);
+    const box = h('span', { class: cls }, fallback);
     if (!painted) return box;
     const img = document.createElement('img');
     img.className = 'hud-glyph-img';
     img.alt = ''; img.draggable = false;
     img.width = size; img.height = size;
-    img.onerror = function () { if (img.parentNode) img.parentNode.removeChild(img); };
+    img.onload = function () { fallback.style.visibility = 'hidden'; };
+    img.onerror = function () { fallback.style.visibility = ''; if (img.parentNode) img.parentNode.removeChild(img); };
     img.src = 'icons/custom/' + painted + '.png';   // plain path — no ?v= query
     box.appendChild(img);
     return box;
@@ -528,8 +530,10 @@
      ====================================================================== */
   const wcfg = {
     on: true,                       // master switch for the whole widget stack
-    gold: true, carry: true, time: true, context: true, pots: true,
-    clock24: false,
+    gold: true, carry: true, time: true, context: true, pots: true, lockpicks:false, weatherOnly:false, weatherCenter:false,
+    clock24: false, snapRects: false, ornateClock: false, clockFrame: false, clockMotion: true, clockDate: true,
+    calendar: false, calendarDay: true, calendarMonth: true, calendarSeason: true,
+    needsSeparate: false, needsIconsOnly: false, needFood: true, needDrink: true, needSleep: true, needCold: false,
     mount: true, pins: true, sets: true,
     /* round 2 (2026-08-17) — the player's own state */
     vitals: true, resist: false, effects: true, equip: true, survival: true, allies: true,
@@ -545,11 +549,14 @@
     ward: false,
     pinLabels: true, badges: true, barNumbers: true,
   };
-  const LINE_KEYS = ['gold', 'carry', 'time', 'context', 'pots'];
+  const LINE_KEYS = ['gold', 'carry', 'time', 'context', 'pots', 'lockpicks', 'weatherOnly'];
   /* Order here is the order of the switches in the settings card, and it mirrors
      the DOM order in hud.html so the card reads top-to-bottom like the stack. */
   const BLOCK_KEYS = ['vitals', 'resist', 'effects', 'equip', 'survival', 'mount', 'pins', 'sets', 'allies'];
-  const DETAIL_KEYS = ['pinLabels', 'badges', 'barNumbers', 'clock24'];
+  const ALMANAC_KEYS = ['calendar', 'calendarDay', 'calendarMonth', 'calendarSeason'];
+  const NEED_KEYS = ['needsSeparate', 'needsIconsOnly', 'needFood', 'needDrink', 'needSleep', 'needCold'];
+  const CLOCK_KEYS = ['ornateClock', 'clockFrame', 'clockMotion', 'clockDate'];
+  const DETAIL_KEYS = ['pinLabels', 'badges', 'barNumbers', 'clock24', 'weatherOnly', 'weatherCenter', 'snapRects'].concat(ALMANAC_KEYS, NEED_KEYS, CLOCK_KEYS);
   /* ---- EDIT MODE DRAWS EVERY WIDGET, ON OR OFF (2026-08-19, round 3) -------
      Rober, third shelf play-test: "if widgets are off and i hit config, then it
      doesn't show them, just circles."
@@ -754,17 +761,19 @@
      An old config's stored det.readouts is simply never read again (this loop
      is the only reader), and the five new keys seed themselves on first render
      because needsSeed() checks PER KEY, not one global flag. */
-  const DET_KEYS = ['roGold', 'roCarry', 'roTime', 'roContext', 'roPots',
+  const DET_KEYS = ['roLockpicks', 'roWeather', 'calendar', 'needFood', 'needDrink', 'needSleep', 'needCold', 'roGold', 'roCarry', 'roTime', 'roContext', 'roPots',
     'vitals', 'resist', 'effects', 'equip', 'survival',
     'mount', 'pins', 'sets', 'allies'];
   const DET_LABELS = {
+    roLockpicks:'Lockpicks', roWeather:'Weather',
+    calendar: 'Date & season', needFood: 'SunHelm food', needDrink: 'SunHelm drink', needSleep: 'SunHelm sleep', needCold: 'SunHelm cold',
     roGold: 'Gold', roCarry: 'Carry weight', roTime: 'Time',
     roContext: 'Weather / place', roPots: 'Potions',
     vitals: 'Vitals', resist: 'Resists', effects: 'Effects',
     equip: 'Equipped', survival: 'Survival', mount: 'Mount', pins: 'Pins',
     sets: 'Sets', allies: 'Allies',
   };
-  const ST_ORDER = ['roGold', 'roCarry', 'roTime', 'roContext', 'roPots',
+  const ST_ORDER = ['roLockpicks', 'roWeather', 'calendar', 'needFood', 'needDrink', 'needSleep', 'needCold', 'roGold', 'roCarry', 'roTime', 'roContext', 'roPots',
     'vitals', 'resist', 'effects', 'equip', 'survival',
     'mount', 'pins', 'sets'];
   const wdet = {};   // k -> {on,x,y,anchorH,anchorV,scale}
@@ -795,13 +804,14 @@
       if (detOn(k)) {
         const wrap = detWrap(k, true);
         if (node.parentNode !== wrap) wrap.appendChild(node);
+        setClass(wrap, 'hud-clock-bare', k === 'roTime' && wcfg.ornateClock && !wcfg.clockFrame);
         const d = wdet[k];
         placeFree(wrap, { x: d.x, y: d.y, anchorH: d.anchorH, anchorV: d.anchorV,
           scale: num(d.scale, 1), opacity: 1 });
         /* a floated block still obeys the master switch, the menu gate and its
            own is-off (no data / toggled off) — but never disappears mid-edit */
         setClass(wrap, 'is-off',
-          !editing && (gatedOff || node.classList.contains('is-off')));
+          node.classList.contains('hud-layout-inactive') || (!editing && (gatedOff || node.classList.contains('is-off'))));
         /* the wrap wears the ghost dress its BLOCK is wearing — the dim and the
            "off" tag belong on the draggable thing, not doubled on both */
         setClass(wrap, 'is-editoff', editing && node.classList.contains('is-editoff'));
@@ -864,6 +874,106 @@
       scale: num(w.scale, 1), opacity: o.opacity == null ? num(w.opacity, 1) : o.opacity });
   }
 
+  /* Rectangle magnetism uses SCREEN rects (already scaled), never layout sizes.
+     Start-of-drag coordinates stay raw: snapped pixels must not accumulate and
+     trap the cursor at a join. No layout reads in the pointermove path. */
+  const RECT_SNAP_KEYS = ['roGold', 'roCarry', 'roTime', 'roContext', 'roPots',
+    'roLockpicks', 'roWeather', 'calendar', 'survival', 'needFood', 'needDrink', 'needSleep', 'needCold'];
+  function snapRectangle(r, others, vw, vh) {
+    const gap = 8, reach = 12;
+    let best = { dx: 0, dy: 0, key: '' }, score = Infinity;
+    function consider(dx, dy, target) {
+      if (Math.abs(dx) > reach || Math.abs(dy) > reach) return;
+      const x = r.left + dx, y = r.top + dy;
+      if (x < 0 || y < 0 || x + r.width > vw || y + r.height > vh) return;
+      if (others.some(t => x < t.left + t.width - 0.5 && x + r.width > t.left + 0.5 &&
+          y < t.top + t.height - 0.5 && y + r.height > t.top + 0.5)) return;
+      const cost = dx * dx + dy * dy;
+      if (cost < score) { best = { dx: dx, dy: dy, key: target.key }; score = cost; }
+    }
+    for (const t of others) {
+      const alignY = [t.top - r.top, t.top + t.height - r.top - r.height];
+      const alignX = [t.left - r.left, t.left + t.width - r.left - r.width];
+      const nearest = a => a.reduce((x, y) => Math.abs(x) <= Math.abs(y) ? x : y);
+      const ay = nearest(alignY), ax = nearest(alignX);
+      const dy = Math.abs(ay) <= reach ? ay : 0, dx = Math.abs(ax) <= reach ? ax : 0;
+      // Side-by-side or stacked, with overlap on the other axis. Never attract
+      // a distant tile just because it happens to share an x or y coordinate.
+      if (r.top + dy < t.top + t.height && r.top + dy + r.height > t.top) {
+        consider(t.left + t.width + gap - r.left, dy, t);
+        consider(t.left - gap - r.width - r.left, dy, t);
+      }
+      if (r.left + dx < t.left + t.width && r.left + dx + r.width > t.left) {
+        consider(dx, t.top + t.height + gap - r.top, t);
+        consider(dx, t.top - gap - r.height - r.top, t);
+      }
+    }
+    return best;
+  }
+  function rectangleTargets(key) {
+    const out = [];
+    for (const k of RECT_SNAP_KEYS) {
+      if (k === key || !detOn(k) || (k === 'roTime' && wcfg.ornateClock)) continue;
+      const node = detWrap(k, false);
+      if (!node || node.classList.contains('is-off') || node.classList.contains('is-editoff')) continue;
+      const r = node.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) out.push({key:k, left:r.left, top:r.top, width:r.width, height:r.height});
+    }
+    return out;
+  }
+  function connectedRectangles(start, others) {
+    // Reconstruct the visible chain from its eight-pixel joins. No permanent
+    // grouping data: pulling a tile away with a normal drag disconnects it.
+    const found = [start], todo = others.slice();
+    function touches(a, b) {
+      const near = v => Math.abs(v - 8) <= 2;
+      const beside = near(a.left - b.left - b.width) || near(b.left - a.left - a.width);
+      const above = near(a.top - b.top - b.height) || near(b.top - a.top - a.height);
+      return (beside && Math.min(a.top+a.height,b.top+b.height) - Math.max(a.top,b.top) > 2) ||
+        (above && Math.min(a.left+a.width,b.left+b.width) - Math.max(a.left,b.left) > 2);
+    }
+    for (let i = 0; i < found.length; i++) {
+      for (let j = todo.length - 1; j >= 0; j--) {
+        if (touches(found[i], todo[j])) found.push(todo.splice(j, 1)[0]);
+      }
+    }
+    return found;
+  }
+  function moveRectangleCluster(d, x, y) {
+    const members = d.cluster;
+    const left = Math.min.apply(null, members.map(m => m.rect.left));
+    const top = Math.min.apply(null, members.map(m => m.rect.top));
+    const right = Math.max.apply(null, members.map(m => m.rect.left + m.rect.width));
+    const bottom = Math.max.apply(null, members.map(m => m.rect.top + m.rect.height));
+    // One screen delta for the entire chain, including mixed anchors/scales.
+    // Clamp the union once so a screen edge never crushes its spacing.
+    const dx = clamp(x - d.sx, Math.min(0, -left), Math.max(0, (window.innerWidth || 1920) - right));
+    const dy = clamp(y - d.sy, Math.min(0, -top), Math.max(0, (window.innerHeight || 1080) - bottom));
+    for (const m of members) {
+      m.w.x = m.x; m.w.y = m.y;
+      moveWidgetBy(m.node, m.w, dx, dy, {snap:false, opacity:1});
+      m.node.classList.add('hud-rect-snapped');
+    }
+  }
+  function clearRectangleSnap() {
+    for (const n of document.querySelectorAll('.hud-rect-snapped')) n.classList.remove('hud-rect-snapped');
+  }
+  function moveRectangleDrag(d, w, x, y, bypass) {
+    const dx = x - d.sx, dy = y - d.sy;
+    const r = {left:d.rect.left + dx, top:d.rect.top + dy, width:d.rect.width, height:d.rect.height};
+    const hit = wcfg.snapRects && !bypass
+      ? snapRectangle(r, d.targets, window.innerWidth || 1920, window.innerHeight || 1080)
+      : {dx:0, dy:0, key:''};
+    w.x = d.x; w.y = d.y;
+    moveWidgetBy(d.node, w, dx + hit.dx, dy + hit.dy, {snap:!hit.key, opacity:1});
+    clearRectangleSnap();
+    if (hit.key) {
+      d.node.classList.add('hud-rect-snapped');
+      const target = detWrap(hit.key, false);
+      if (target) target.classList.add('hud-rect-snapped');
+    }
+  }
+
   /* drag a floated block or the equipped group (edit mode only).
      Wired EXACTLY like the free widgets' drag below — pointer AND mouse, with
      the same double-fire guard — because this view runs in Ultralight, where
@@ -888,12 +998,35 @@
        row — same key mapping the block's own ⚙ button uses */
     revealInShelf(k === 'fwgrp' ? 'fwgrp' : (KEY_OF_DET[k] || k));
     ddrag = { k: k, node: wrap, sx: e.clientX, sy: e.clientY };
+    if (RECT_SNAP_KEYS.indexOf(k) !== -1 && !(k === 'roTime' && wcfg.ornateClock)) {
+      ddrag.rect = wrap.getBoundingClientRect();
+      ddrag.x = wdet[k].x; ddrag.y = wdet[k].y;
+      ddrag.targets = rectangleTargets(k);
+      if (e.shiftKey && wcfg.snapRects) {
+        const r = ddrag.rect;
+        const chain = connectedRectangles({key:k, left:r.left, top:r.top, width:r.width, height:r.height}, ddrag.targets);
+        if (chain.length > 1) ddrag.cluster = chain.map(function (rect) {
+          const w = wdet[rect.key];
+          return {node:detWrap(rect.key, false), rect:rect, w:w, x:w.x, y:w.y};
+        });
+      }
+    }
     wrap.classList.add('is-drag');
     try { e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); } catch (x) {}
     e.preventDefault(); e.stopPropagation();
   }
   function onDetMove(e) {
     if (!ddrag) return;
+    if (ddrag.cluster) {
+      moveRectangleCluster(ddrag, e.clientX, e.clientY);
+      e.preventDefault();
+      return;
+    }
+    if (ddrag.rect) {
+      moveRectangleDrag(ddrag, wdet[ddrag.k], e.clientX, e.clientY, e.altKey);
+      e.preventDefault();
+      return;
+    }
     /* INCREMENTAL, like the free widgets: the delta since the last move, not
        since the press. A dropped event then costs one frame of travel instead
        of replaying the whole gesture. */
@@ -906,6 +1039,7 @@
     if (!ddrag) return;
     if (ddrag.node) ddrag.node.classList.remove('is-drag');
     ddrag = null;
+    clearRectangleSnap();
     fwGuide().classList.remove('show');
     saveWidgetCfg();
   }
@@ -1308,7 +1442,8 @@
        and the ONE drag path through the same functions the mouse does */
     get keys() { return grpKeys(); }, link: grpLink, master: grpSetMaster,
     anyOn: grpAnyOn, allOn: grpAllOn,
-    tool: grpToolAct, moveBy: moveWidgetBy, dragging: function () { return !!ddrag; } };
+    tool: grpToolAct, moveBy: moveWidgetBy, snapRectangle, rectangleTargets, moveRectangleDrag, connectedRectangles, moveRectangleCluster,
+    beginDrag:onDetDown, dragMove:onDetMove, endDrag:onDetUp, dragging: function () { return !!ddrag; } };
 
   /* Presets, so the whole thing can go minimal in ONE click and never becomes a
      settings maze (Rober's brief). "custom" is not a preset — it is what the
@@ -1429,6 +1564,7 @@
     if (!j || typeof j !== 'object') return {};
     const o = {};
     if (isNum(j.gold)) o.gold = j.gold;
+    if (isNum(j.lockpicks)) o.lockpicks = j.lockpicks;
     if (j.carry && typeof j.carry === 'object') o.carry = { cur: j.carry.cur, max: j.carry.max };
 
     const w = j.weather;
@@ -1452,6 +1588,8 @@
         text: t.txt || t.text || '', h24: t.h24 || '',
         hour: isNum(t.h) ? t.h : t.hour, min: isNum(t.m) ? t.m : t.min,
         night: typeof t.night === 'boolean' ? t.night : undefined,
+        date: typeof t.date === 'string' ? t.date : '',
+        day: t.day, month: t.month, monthName: t.monthName, year: t.year,
       };
     }
     const m = j.mount;
@@ -1569,7 +1707,9 @@
           const v = isNum(m.v) ? m.v : m.value;
           if (!isNum(v)) return null;
           return { id: String(m.id || ('need' + i)), label: String(m.label || m.id || '—'),
-            v: v, max: isNum(m.max) && m.max > 0 ? m.max : null, off: m.off === true };
+            v: v, max: isNum(m.max) && m.max > 0 ? m.max : null, off: m.off === true,
+            state: typeof m.state === 'string' ? m.state : '',
+            level: Number.isInteger(m.level) && m.level >= 0 && m.level <= 4 ? m.level : null };
         }).filter(Boolean),
       };
       if (!o.survival.meters.length) delete o.survival;
@@ -1806,10 +1946,12 @@
      RO_DET maps the config key (which is what ⚙ and C++ speak) onto the el /
      wdet key; RO_ROW maps it onto the `data-ro` dialect the chip builder and
      the volatile pass have always used, which is why neither of them changed. */
-  const RO_DET = { gold: 'roGold', carry: 'roCarry', time: 'roTime', context: 'roContext', pots: 'roPots' };
-  const RO_ROW = { gold: 'gold', carry: 'carry', time: 'time', context: 'ctx', pots: 'pots' };
+  const RO_DET = { lockpicks:'roLockpicks', weatherOnly:'roWeather', gold: 'roGold', carry: 'roCarry', time: 'roTime', context: 'roContext', pots: 'roPots' };
+  const RO_ROW = { lockpicks:'lockpicks', weatherOnly:'weatherOnly', gold: 'gold', carry: 'carry', time: 'time', context: 'ctx', pots: 'pots' };
   const roSigs = {};
   function haveLine(key) {
+    if (key === 'lockpicks') return isNum(live.lockpicks);
+    if (key === 'weatherOnly') return !!live.weather || live.interior === true;
     if (key === 'gold') return haveGold();
     if (key === 'carry') return haveCarry();
     if (key === 'time') return haveTime();
@@ -1822,7 +1964,8 @@
      those are the only reasons a line ever needs rebuilding. The numbers never
      appear here; they are written in place below. */
   function roSigFor(key) {
-    if (key === 'time') return 'time|' + (isNight() ? 'n' : 'd');
+    if (key === 'weatherOnly') return 'weather|' + (live.interior ? 'inside' : (live.weather || {}).kind) + '|' + isNight();
+    if (key === 'time') return 'time|' + (isNight() ? 'n' : 'd') + '|' + !!wcfg.ornateClock;
     if (key === 'context') return 'ctx|' + ctxKind() + '|' + (isNight() ? 'n' : 'd');
     if (key === 'pots') return 'pots|' + potPools().map(function (d) { return d[0]; }).join(',');
     return key;
@@ -1834,15 +1977,21 @@
     if (id === 'gold') { art = READOUT_ART.gold; painted = PAINTED.ro.gold; }
     else if (id === 'carry') { art = READOUT_ART.carry; painted = PAINTED.ro.carry; }
     else if (id === 'time') { art = night ? READOUT_ART.moon : READOUT_ART.sun; }
+    else if (id === 'lockpicks') { painted = 'wg-lockpick'; }
+    else if (id === 'weatherOnly') {
+      const k = weatherKind((live.weather || {}).kind);
+      // One vector symbol, not a transparent moon laid over a sun fallback.
+      // Vector strokes stay crisp when the player scales this compact tile.
+      art = live.interior ? PLACE_ART.house : (k === 'clear' && night ? READOUT_ART.moon : WEATHER_ART[k]);
+      row.setAttribute('data-weather-icon', live.interior ? 'indoors' : k === 'clear' && night ? 'clear-night' : k);
+    }
     else if (ctxKind()[0] === 'p') {
       const k = placeKind((live.place || {}).kind, true);
       art = PLACE_ART[k]; painted = PAINTED.loc[k] || '';
     } else {
       const k = weatherKind((live.weather || {}).kind);
-      art = WEATHER_ART[k];
-      /* A clear sky at 2am is a clear NIGHT sky — the icon set paints both,
-         so the slot should not show a blazing sun over Riverwood at midnight. */
-      painted = (night && PAINTED.wxNight[k]) || PAINTED.wx[k] || '';
+      art = k === 'clear' && night ? READOUT_ART.moon : WEATHER_ART[k];
+      row.setAttribute('data-weather-icon', k === 'clear' && night ? 'clear-night' : k);
     }
     if (id === 'pots') {
       /* Multi-chip row: [mark|png] count, per pool the payload carries.
@@ -1872,9 +2021,59 @@
       }
       return row;
     }
-    row.appendChild(glyphBox('hud-ro-ico', art, painted, 22));
-    row.appendChild(h('b', { class: 'hud-ro-v' }));
+    if (id === 'lockpicks') {
+      // Transparent lockpick art must not sit on top of the gold-coins fallback.
+      const glyph = h('span', { class: 'hud-ro-ico' });
+      const img = document.createElement('img');
+      img.className = 'hud-glyph-img'; img.alt = 'Lockpicks'; img.draggable = false;
+      img.width = 22; img.height = 22;
+      img.onerror = function () { glyph.textContent = '?'; };
+      img.src = 'icons/custom/' + painted + '.png';
+      glyph.appendChild(img); row.appendChild(glyph);
+    } else row.appendChild(glyphBox('hud-ro-ico', art, painted, 22));
+    const value = h('b', { class: 'hud-ro-v' });
+    if (id === 'weatherOnly') value.appendChild(h('span', { class: 'hud-weather-label' }));
+    row.appendChild(value);
+    if (id === 'time' && wcfg.ornateClock) buildOrnateClock(row);
     return row;
+  }
+
+  /* Aether clock: open engraved flourishes, using the existing sun/moon glyphs.
+     The 24-hour pointer is game time, not an invented moon-phase/weather reading.
+     Geometry is vector-native so scaling stays crisp in Ultralight. */
+  function buildOrnateClock(row) {
+    row.classList.add('hud-aether-clock');
+    const ornament = h('span', {class:'hud-aether-engraving', 'aria-hidden':'true'});
+    let ticks = '';
+    for (let i = 0; i < 24; i++) {
+      const angle = (i / 24 * Math.PI * 2) - Math.PI / 2;
+      const a = i % 3 === 0 ? 42 : 46, b = 50;
+      ticks += '<path d="M' + (160 + Math.cos(angle)*a).toFixed(2) + ' ' +
+        (60 + Math.sin(angle)*a).toFixed(2) + 'L' + (160 + Math.cos(angle)*b).toFixed(2) +
+        ' ' + (60 + Math.sin(angle)*b).toFixed(2) + '"/>';
+    }
+    ornament.innerHTML = '<svg viewBox="0 0 320 184" xmlns="http://www.w3.org/2000/svg" fill="none">' +
+      '<g stroke="currentColor" stroke-width="1.2" stroke-linecap="round">' + ticks +
+      '<path d="M119 28 A52 52 0 0 1 201 28 M112 82 A52 52 0 0 0 128 102 M192 102 A52 52 0 0 0 208 82"/>' +
+      '<path d="M8 95 Q34 69 66 87 Q91 102 106 74 M14 99 Q39 82 61 95 Q88 113 104 92 M28 80 Q50 55 77 78 Q93 94 105 64 M63 76 Q51 62 64 60 Q76 61 72 70 M30 96 Q47 113 58 99 M102 52 L110 60 L102 68 L94 60 Z"/>' +
+      '<path d="M312 95 Q286 69 254 87 Q229 102 214 74 M306 99 Q281 82 259 95 Q232 113 216 92 M292 80 Q270 55 243 78 Q227 94 215 64 M257 76 Q269 62 256 60 Q244 61 248 70 M290 96 Q273 113 262 99 M218 52 L226 60 L218 68 L210 60 Z"/>' +
+      '<path d="M66 170 Q100 163 122 170 M198 170 Q220 163 254 170 M148 174 L160 180 L172 174 M160 3 L164 9 L160 15 L156 9 Z"/>' +
+      '</g><g class="hud-aether-pointer"><path d="M160 16 L164 23 L160 21 L156 23 Z" fill="currentColor"/></g></svg>';
+    row.insertBefore(ornament, row.firstChild);
+    row.appendChild(h('span', {class:'hud-aether-phase'}));
+    row.appendChild(h('span', {class:'hud-aether-date'}));
+  }
+  function paintOrnateClock(row) {
+    if (!row.classList.contains('hud-aether-clock')) return;
+    const t = live.time || {}, hour = num(t.hour, 0) + num(t.min, 0) / 60;
+    const phase = !isNum(t.hour) ? 'Awaiting time' : hour < 5 ? 'Deep night' : hour < 8 ? 'Dawn' :
+      hour < 12 ? 'Morning' : hour < 14 ? 'High sun' : hour < 18 ? 'Afternoon' : hour < 21 ? 'Dusk' : 'Night';
+    setText(row.querySelector('.hud-aether-phase'), phase);
+    setText(row.querySelector('.hud-aether-date'), wcfg.clockDate && haveTime() ? String(t.date || '') : '');
+    const needle = row.querySelector('.hud-aether-pointer');
+    if (needle) { needle.style.visibility = isNum(t.hour) ? 'visible' : 'hidden'; needle.setAttribute('transform', 'rotate(' + ((hour % 24) * 15).toFixed(2) + ' 160 60)'); }
+    setClass(row, 'is-night', isNight());
+    setClass(row, 'is-animated', !!wcfg.clockMotion && haveTime());
   }
 
   function renderReadouts() {
@@ -1905,7 +2104,26 @@
     if (!row || !row.getAttribute) return;
       const id = row.getAttribute('data-ro');
       const v = row.querySelector('.hud-ro-v');
-      if (id === 'gold') {
+      if (id === 'lockpicks') {
+        const n = live.lockpicks;
+        setText(v, !isNum(n) || n < 0 ? '?' : comma(n));
+        setClass(row, 'is-unknown', !isNum(n) || n < 0);
+        row.title = 'Lockpicks';
+      } else if (id === 'weatherOnly') {
+        setClass(v, 'is-centered', !!wcfg.weatherCenter);
+        const label = live.interior ? 'Indoors' : (live.weather || {}).name || '—';
+        const text = v.querySelector('.hud-weather-label');
+        setText(text, label); row.title = label;
+        // Measure layout pixels, independent of the user's widget scale. Keep
+        // the same nodes/animation across live ticks; only long labels move.
+        const travel = v.clientWidth > 0 ? Math.max(0, text.scrollWidth - v.clientWidth) : 0;
+        const distance = -travel + 'px';
+        if (text.style.getPropertyValue('--hud-weather-travel') !== distance) {
+          text.style.setProperty('--hud-weather-travel', distance);
+          text.style.setProperty('--hud-weather-duration', Math.max(6, travel / 18 + 4) + 's');
+        }
+        setClass(v, 'is-scrolling', travel > 1);
+      } else if (id === 'gold') {
         const g = live.gold;
         const unknown = !isNum(g) || g < 0;
         setClass(row, 'is-unknown', unknown);
@@ -1938,6 +2156,7 @@
         return;
       } else if (id === 'time') {
         setText(v, timeText() || '—');
+        paintOrnateClock(row);
       } else {
         const txt = ctxText();
         setText(v, txt || (editing ? 'Weather / place' : '—'));
@@ -2706,76 +2925,94 @@
     upgradeArt();
   }
 
-  /* --------------------------------------------------------- survival ---- */
+  /* Compact calendar + SunHelm needs. Existing clock stays its original size.
+     hud-compact-calendar: preferences round-trip in hud, placements use wdet. */
+  const NEED_READOUTS = [
+    { key:'needFood', id:'hunger', label:'Food', art:'ps-food' },
+    { key:'needDrink', id:'thirst', label:'Drink', art:'sv-drink' },
+    { key:'needSleep', id:'fatigue', label:'Sleep', art:'hk-bed' },
+    { key:'needCold', id:'cold', label:'Cold', art:'wx-snow' }
+  ];
+  for (const key of ['roLockpicks', 'roWeather', 'calendar'].concat(NEED_READOUTS.map(d => d.key))) {
+    el[key] = need('hud-' + key);
+    el[key].id = 'hud-' + key;
+    el[key].className = 'hud-ro-one is-off';
+    el.widgets.appendChild(el[key]);
+  }
+  function calendarText() {
+    const t = live.time || {}, parts = [];
+    if (wcfg.calendarDay && isNum(t.day)) parts.push(String(t.day));
+    if (wcfg.calendarMonth && t.monthName) parts.push(String(t.monthName));
+    let text = parts.join(' ');
+    if (wcfg.calendarSeason && live.season && live.season.name)
+      text += (text ? ' · ' : '') + live.season.name;
+    return text;
+  }
+  function renderCalendar() {
+    const host = el.calendar, text = calendarText();
+    setClass(host, 'is-off', !blockWant('calendar', !!text));
+    setClass(host, 'is-editoff', blockGhosted('calendar'));
+    if (!text && !editing) { host.innerHTML = ''; return; }
+    if (!host.firstChild) {
+      const row = h('span', { class:'hud-ro hud-calendar' });
+      row.appendChild(glyphBox('hud-ro-ico', READOUT_ART.sun, '', 22));
+      row.appendChild(h('b', { class:'hud-ro-v' }));
+      host.appendChild(row);
+    }
+    setText(host.querySelector('.hud-ro-v'), text || 'Date & season — choose fields');
+    host.title = (live.time || {}).date || text;
+  }
   function haveSurvival() { return !!(live.survival && live.survival.meters && live.survival.meters.length); }
   let svSig = '';
+  function paintNeed(row, meter, definition, on) {
+    const off = !on || meter.off === true;
+    const level = off ? 'off' : meter.level == null ? 'unknown' : String(meter.level);
+    if (row.getAttribute('data-level') !== level) row.setAttribute('data-level', level);
+    const state = String(meter.state || '').replace(/^[^:]+:\s*/, '');
+    const text = off ? 'Off' : state || (definition.id === 'cold' ?
+      comma(meter.v) + (isNum(meter.max) ? ' / ' + comma(meter.max) : '') : 'Unrated');
+    setText(row.querySelector('.hud-ro-v'), text);
+    const title = 'SunHelm ' + definition.label + ': ' + text + ' · ' + comma(meter.v);
+    if (row.title !== title) row.title = title;
+  }
+  function needRow(d) {
+    const row = h('span', { class:'hud-ro hud-need-readout', 'data-need':d.id });
+    row.appendChild(h('img', { class:'hud-need-art', src:'icons/custom/' + d.art + '.png', alt:d.label, draggable:'false' }));
+    row.appendChild(h('b', { class:'hud-ro-v' }));
+    return row;
+  }
   function renderSurvival() {
-    const s = live.survival;
-    const has = haveSurvival();
-    const want = blockWant('survival', has);
-    setClass(el.survival, 'is-off', !want);
+    const s = live.survival || {}, meters = s.meters || [];
+    const separate = wcfg.needsSeparate;
+    setClass(el.survival, 'is-icons-only', wcfg.needsIconsOnly);
+    const active = NEED_READOUTS.filter(d => wcfg[d.key] && meters.some(m => m.id === d.id));
+    const want = blockWant('survival', active.length > 0);
+    setClass(el.survival, 'hud-layout-inactive', separate);
+    setClass(el.survival, 'is-off', separate || !want);
     setClass(el.survival, 'is-editoff', blockGhosted('survival'));
-    if (!want) { svSig = ''; el.survival.innerHTML = ''; return; }
-
-    const chips = has ? [s.nearHeat ? 'heat' : '', s.freezing ? 'cold' : '',
-      isNum(s.ambient) ? 'temp' : ''].filter(Boolean) : [];
-    const sig = (has ? s.meters.map((m) => m.id + (isNum(m.max) ? ':b' : '')).join(',') : 'ghost') +
-      '|' + chips.join(',') + '|' + (has && !s.on ? 'off' : '');
+    const sig = active.map(d => d.key).join(',') + '|' + separate;
     if (sig !== svSig) {
-      svSig = sig;
-      el.survival.innerHTML = '';
-      if (!has) {
-        el.survival.appendChild(h('div', { class: 'hud-ghost' },
-          'Survival needs — shown when a needs mod is installed'));
-        return;
-      }
-      const head = h('div', { class: 'hud-sv-head' });
-      head.appendChild(h('span', { class: 'hud-sv-mod' }, String(s.mod || 'Survival')));
-      /* An installed mod whose own MCM switch is off draws greyed and SAYS so.
-         Vanishing would read as our bug rather than the player's setting. */
-      if (!s.on) head.appendChild(h('span', { class: 'hud-sv-flag' }, 'turned off'));
-      for (const c of chips) {
-        /* No third argument when there is no text: h(..., '') appends an EMPTY
-           TEXT NODE, and `.hud-sv-chip:empty { display: none }` can then never
-           match — the chip holds space forever. */
-        const label = c === 'heat' ? 'by a fire' : c === 'cold' ? 'freezing water' : '';
-        head.appendChild(label ? h('span', { class: 'hud-sv-chip sv-' + c }, label)
-                               : h('span', { class: 'hud-sv-chip sv-' + c }));
-      }
-      el.survival.appendChild(head);
-      for (const m of s.meters) {
-        const row = h('div', { class: 'hud-sv-row', 'data-need': m.id });
-        row.appendChild(h('span', { class: 'hud-sv-ico' },
-          svgIcon(NEED_ART[m.id] || NEED_ART.default, 18)));
-        const main = h('div', { class: 'hud-sv-main' });
-        main.appendChild(h('div', { class: 'hud-sv-name' }, m.label));
-        /* A BAR only where the mod publishes a scale. Drawing one against a
-           number nobody verified is how a HUD lies quietly — survival.cpp made
-           the same call and it is the right one. */
-        if (isNum(m.max)) {
-          const bar = h('div', { class: 'hud-bar sv' });
-          bar.appendChild(h('i'));
-          main.appendChild(bar);
-        }
-        row.appendChild(main);
-        row.appendChild(h('span', { class: 'hud-bar-num hud-sv-v' }));
-        el.survival.appendChild(row);
-      }
+      svSig = sig; el.survival.innerHTML = '';
+      if (!separate) active.forEach(d => el.survival.appendChild(needRow(d)));
     }
-    if (!has) return;
-    setClass(el.survival, 'is-idle', !s.on);
-    const rows = el.survival.querySelectorAll('.hud-sv-row');
-    s.meters.forEach((m, i) => {
-      const row = rows[i];
-      if (!row) return;
-      setClass(row, 'is-off-need', m.off === true);
-      setText(row.querySelector('.hud-sv-v'),
-        m.off ? 'off' : (comma(m.v) + (isNum(m.max) ? ' / ' + comma(m.max) : '')));
-      const fill = row.querySelector('.hud-bar.sv > i');
-      if (fill) setStyle(fill, 'width', m.off ? '0%' : pctWidth(m.v, m.max));
-    });
-    const t = el.survival.querySelector('.sv-temp');
-    if (t) setText(t, isNum(s.ambient) ? (s.ambient + '°') : '');
+    if (!separate && !active.length && editing && !el.survival.firstChild)
+      el.survival.appendChild(h('span', { class:'hud-ghost' }, haveSurvival() ? 'SunHelm — choose needs below' : 'SunHelm — no live needs'));
+    for (const d of NEED_READOUTS) {
+      const host = el[d.key], m = meters.find(m => m.id === d.id);
+      setClass(host, 'is-icons-only', wcfg.needsIconsOnly);
+      const show = separate && (editing || (wcfg.survival && wcfg[d.key] && !!m));
+      setClass(host, 'hud-layout-inactive', !separate);
+      setClass(host, 'is-off', !show);
+      setClass(host, 'is-editoff', !wcfg.survival || !wcfg[d.key]);
+      if (!show) host.innerHTML = '';
+      else {
+        if (!host.firstChild) host.appendChild(needRow(d));
+        if (m) paintNeed(host.firstChild, m, d, s.on !== false);
+        else setText(host.querySelector('.hud-ro-v'), d.label + ' — no data');
+      }
+      const grouped = el.survival.querySelector('[data-need="' + d.id + '"]');
+      if (grouped && m) paintNeed(grouped, m, d, s.on !== false);
+    }
   }
 
   /* ----------------------------------------------------------- allies ---- */
@@ -2863,6 +3100,7 @@
       el.readouts.innerHTML = ''; el.mount.innerHTML = ''; el.pins.innerHTML = ''; el.sets.innerHTML = '';
       el.vitals.innerHTML = ''; el.resist.innerHTML = ''; el.effects.innerHTML = '';
       el.equip.innerHTML = ''; el.survival.innerHTML = ''; el.allies.innerHTML = '';
+      for (const k of ['calendar', 'needFood', 'needDrink', 'needSleep', 'needCold']) { el[k].innerHTML = ''; setClass(el[k], 'is-off', true); }
       /* ⚠ The mesh-render pipeline is SHARED with the free widgets (artItems()
          reads the equipped and quick lists, which the Equipped group and the
          quick-items widget draw from). Killing it here because the STACK went
@@ -2879,6 +3117,7 @@
     renderEffects();
     renderEquip();
     renderSurvival();
+    renderCalendar();
     renderMount();
     renderPins();
     renderSets();
@@ -2903,7 +3142,7 @@
 
   /* Every block that can hold the panel open. Keep this in step with the DOM —
      a block missing here makes the panel collapse out from under it. */
-  const DRAWN_ELS = ['roGold', 'roCarry', 'roTime', 'roContext', 'roPots',
+  const DRAWN_ELS = ['roLockpicks', 'roWeather', 'calendar', 'needFood', 'needDrink', 'needSleep', 'needCold', 'roGold', 'roCarry', 'roTime', 'roContext', 'roPots',
     'vitals', 'resist', 'effects', 'equip', 'survival',
     'mount', 'pins', 'sets', 'allies'];
   function widgetsDrawn() {
@@ -2955,7 +3194,7 @@
   /* Our per-block switches map onto the C++ widget ids (2026-08-17 contract).
      `context` is ONE switch over the widgets' two — weather outdoors, place
      indoors is a single readout here, so both ids follow it. */
-  const CFG_ID = { gold: 'gold', carry: 'carry', time: 'clock', mount: 'mount', pins: 'pins', sets: 'sets',
+  const CFG_ID = { lockpicks:'lockpicks', gold: 'gold', carry: 'carry', time: 'clock', mount: 'mount', pins: 'pins', sets: 'sets',
     pots: 'potions',
     /* Round 2 — these six are 1:1, so the map is an identity for them. Kept
        explicit rather than derived: the two halves of this table are allowed to
@@ -3832,7 +4071,10 @@
        edit mode to place a WIDGET must not reveal a strip the player has
        switched off. It is still force-shown while the strip itself is the thing
        being configured — you cannot place what you cannot see. */
-    el.body.classList.toggle('hud-strip-off', !cfg.visible && !stripEditing());
+    /* follower-hud-menu-gate: menus temporarily suppress the strip without
+       changing the player's saved toggle. Only its own placement editor can
+       reveal it through that gate (the editor itself pauses the game). */
+    el.body.classList.toggle('hud-strip-off', (!cfg.visible || menusOpen) && !stripEditing());
     /* the panel's own verdict depends on whether the strip is drawn, so it has
        to be re-taken here and not only on the next render() */
     refreshPanelBlank();
@@ -3878,6 +4120,10 @@
      ====================================================================== */
   let cfgOpen = false;
   const OPT_LABELS = {
+    snapRects: 'Snap rectangular widgets',
+    ornateClock: 'Ornate celestial clock', clockFrame: 'Clock background & frame', clockMotion: 'Clock animation', clockDate: 'Date under the clock',
+    lockpicks:'Lockpicks', weatherOnly:'Weather', weatherCenter:'Center text',
+    calendar:'Date & season', calendarDay:'Day of month', calendarMonth:'Month name', calendarSeason:'Season name', needsSeparate:'Place each need separately', needsIconsOnly:'Icons only · hide need text', needFood:'Food · SunHelm', needDrink:'Drink · SunHelm', needSleep:'Sleep · SunHelm', needCold:'Cold · SunHelm',
     gold: 'Gold', carry: 'Carry weight', time: 'Time', context: 'Weather / place',
     /* ⚠ `pots` had NO entry here, so the Potions switch rendered as a nameless
        empty button in the Readout lines row — a control with nothing written on
@@ -4025,6 +4271,8 @@
      never a coloured emoji). Only files that exist in icons/custom are named
      here; an element with no art just wears its mark. */
   const EL_ICON = {
+    lockpicks:'icons/custom/wg-lockpick.png', weatherOnly:'icons/custom/wx-clear.png',
+    calendar:'icons/custom/hm-time.png', needFood:'icons/custom/ps-food.png', needDrink:'icons/custom/sv-drink.png', needSleep:'icons/custom/hk-bed.png', needCold:'icons/custom/wx-snow.png',
     gold: 'icons/custom/hud-gold.png', carry: 'icons/custom/hud-carry.png',
     time: 'icons/custom/hm-time.png', context: 'icons/custom/wx-clear.png',
     pots: 'icons/custom/ps-utility.png',
@@ -4053,6 +4301,9 @@
   };
   /* extra words the filter should match, so a player types what they CALL it */
   const EL_WORDS = {
+    lockpicks:'lock picks lockpicking count inventory', weatherOnly:'weather rain snow sky outdoors indoors alignment center text',
+    calendar:'date day month season calendar', calendarDay:'date day month calendar', calendarMonth:'month name calendar', calendarSeason:'season summer winter autumn spring calendar',
+    needsIconsOnly:'sunhelm icons only compact no text trio grouped', needsSeparate:'sunhelm needs individual separate split group layout move position', needFood:'sunhelm hunger food need', needDrink:'sunhelm thirst water drink need', needSleep:'sunhelm fatigue sleep rest need', needCold:'sunhelm cold warmth need',
     gold: 'septims money purse', carry: 'weight encumbrance burden',
     time: 'clock hour day date', context: 'weather place location cell region',
     pots: 'potions healing magicka stamina drinks',
@@ -4087,7 +4338,7 @@
   }
   /* Which floated key a stack element owns (the five readout lines were split
      out under ro* names; every other block key is its own det key). */
-  const DET_OF = { gold: 'roGold', carry: 'roCarry', time: 'roTime',
+  const DET_OF = { lockpicks:'roLockpicks', weatherOnly:'roWeather', gold: 'roGold', carry: 'roCarry', time: 'roTime',
     context: 'roContext', pots: 'roPots' };
   /* …and back again: a floated block's mini toolbar knows its DET key, the
      shelf files its row under the wcfg key. */
@@ -4132,10 +4383,17 @@
     setText(sw, wcfg[k] ? 'On' : 'Off');
     sw.title = (wcfg[k] ? 'Hide ' : 'Show ') + label +
       (sw.classList.contains('is-absent') ? ' — nothing to show right now' : '');
+    if (k === 'snapRects') { sw.title = 'Toggle snapping while dragging rectangular widgets'; sw.setAttribute('aria-pressed', String(!!wcfg[k])); }
     head.appendChild(sw);
     row.appendChild(head);
 
     const body = h('div', { class: 'hud-el-body' });
+    if (k === 'weatherOnly') {
+      const center = optButton('weatherCenter');
+      center.setAttribute('aria-pressed', String(!!wcfg.weatherCenter));
+      body.appendChild(center);
+    }
+    if (NEED_READOUTS.some(d => d.key === k) && !wcfg.needsSeparate) body.appendChild(h('div', { class:'hud-el-note' }, 'Grouped with Survival needs. Enable separate placement to use its own position and size.'));
     const sid = sizeIdFor(k);
     const det = detKeyOf(k);
     if (sid) body.appendChild(sizeRow(sid, 'Size'));
@@ -4587,7 +4845,7 @@
       setClass(b, 'is-absent', off);
       /* same sentence the row builds, so a cheap tick cannot swap the
          tooltip out from under the shelf's own wording */
-      const t = (wcfg[key] ? 'Hide ' : 'Show ') + OPT_LABELS[key] +
+      const t = key === 'weatherCenter' ? 'Toggle centered weather text' : key === 'snapRects' ? 'Toggle snapping while dragging rectangular widgets' : (wcfg[key] ? 'Hide ' : 'Show ') + OPT_LABELS[key] +
         (off ? ' — nothing to show right now' : '');
       if (b.title !== t) b.title = t;
     }
@@ -4614,6 +4872,8 @@
        Every element carries its own switch, its own size and its own options,
        so nothing has to be hunted for across three lists. */
     el.opts.innerHTML = '';
+    el.opts.appendChild(buildElSection('placement', 'Placement', ['snapRects'],
+      'Drag rectangles close together to align their edges with an even gap. Shift-drag moves the connected row or cluster. Normal drag moves one tile; Alt bypasses snapping.'));
     el.opts.appendChild(buildElSection('readouts', 'Readouts', LINE_KEYS));
     el.opts.appendChild(buildElSection('player', 'Player & world', BLOCK_KEYS));
     /* the linked group — one card, its members nested under it */
@@ -4626,7 +4886,11 @@
     el.opts.appendChild(buildElSection('world', 'World', ['season']));
     /* The ward rides the free layer too; combat-flavoured, so its own card. */
     el.opts.appendChild(buildElSection('ward', 'Ward', ['ward']));
-    el.opts.appendChild(buildElSection('detail', 'Detail', DETAIL_KEYS,
+    el.opts.appendChild(buildElSection('calendar', 'Date & season', ALMANAC_KEYS, 'One rectangle. Choose the day, month name and season independently.'));
+    el.opts.appendChild(buildElSection('sunhelm', 'SunHelm needs', NEED_KEYS, 'Turn on Survival needs, then choose what to show. Icons only fits the trio in one clock-sized rectangle; separate mode gives each need its own position and size.'));
+    el.opts.appendChild(buildElSection('clockstyle', 'Clock appearance', CLOCK_KEYS,
+      'Ornate replaces the compact Time tile. Its size and position stay adjustable under Time. Borderless by default; frame, date and motion are optional.'));
+    el.opts.appendChild(buildElSection('detail', 'Detail', DETAIL_KEYS.filter(k => CLOCK_KEYS.indexOf(k) === -1 && k !== 'snapRects' && k !== 'weatherOnly' && k !== 'weatherCenter' && ALMANAC_KEYS.indexOf(k) === -1 && NEED_KEYS.indexOf(k) === -1),
       'Small print, everywhere at once.'));
     /* the strip's PLACEMENT only — the separation Rober asked for */
     el.opts.appendChild(buildStripSection());
@@ -4899,6 +5163,7 @@
     const key = t.getAttribute('data-opt');
     if (!key) return;
     wcfg[key] = !wcfg[key];
+    if (key === 'snapRects') clearRectangleSnap();
     applyWidgetCfg(); renderWidgets(); buildSettings(); saveWidgetCfg();
     render();
   }
@@ -4917,6 +5182,7 @@
 
   /* ---- edit mode: drag / resize / flip / names ------------------------- */
   function setEditing(on) {
+    if (!on) clearRectangleSnap();
     editing = !!on;
     el.body.classList.toggle('hud-editing', editing);
     /* ⚠ ROUND 3: entering edit mode NEVER arms the strip's scope — that is the
@@ -5445,7 +5711,7 @@
     if (now === menusOpen) return;
     menusOpen = now;
     renderWidgets();
-    el.panel.classList.toggle('is-blank', followers.length === 0 && !widgetsDrawn());
+    applyVisible();
     fitWidgets();
   };
 
@@ -5619,6 +5885,7 @@
     RO_DET, DET_KEYS, needsSeed,
     iconIndex, iconKey, pinIcon, timeText, ctxKind, ctxText, comma,
     /* round 2 surface, for the harness and the Ultralight probe */
+    calendarText, renderCalendar, hudOnlyPrefs,
     renderVitals, renderResist, renderEffects, renderEquip, renderSurvival, renderAllies,
     fmtSecs, artItems, RESIST_ROWS,
     _icons: { request: requestIcons, upgrade: upgradeArt, schedule: scheduleIcons, stop: stopIconPoll },

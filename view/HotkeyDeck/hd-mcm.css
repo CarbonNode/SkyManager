@@ -1,0 +1,240 @@
+/* ===================================================================== *
+ *  Mod settings popout (hd-mcm.js) — every MCM Helper setting in the load
+ *  order, in one searchable overlay.
+ *
+ *  Mounted INSIDE #panel with inset:0, the #hk-icon-modal idiom: the panel
+ *  already carries transform:scale(--ui-scale), so this inherits the menu
+ *  scale and needs no scale maths of its own. Values are literals, matching
+ *  the rest of the deck (app.css defines no custom properties).
+ * ===================================================================== */
+
+#mc-modal {
+  position: absolute; inset: 0; z-index: 74;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(5,5,8,.68);
+  animation: fadeIn 120ms ease;
+}
+#mc-modal.hidden { display: none; }
+
+.mc-box {
+  display: flex; flex-direction: column;
+  width: 94%; height: 90%;
+  background: linear-gradient(180deg, #1a1a21 0%, #101015 100%);
+  border: 1px solid #3a3a44; border-radius: 16px;
+  box-shadow: 0 10px 28px -10px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+/* --------------------------------------------------------------- head -- */
+
+.mc-head {
+  display: flex; align-items: baseline; gap: 16px;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid #26262d;
+}
+.mc-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 22px; letter-spacing: 1.6px; color: #d8c48f; white-space: nowrap;
+}
+.mc-sub { font-size: 13.5px; color: #8b8678; flex: 1 1 auto; min-width: 0; }
+.mc-x {
+  margin-left: auto; flex: 0 0 auto;
+  width: 38px; height: 38px; border-radius: 9px;
+  background: #14141a; border: 1px solid #3a3a44; color: #b9b4a8;
+  font-size: 15px; cursor: pointer;
+}
+.mc-x:hover { color: #f0ece2; border-color: #c9a24b; }
+.mc-x:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(201,162,75,.26); }
+
+/* ---------------------------------------------------------------- bar -- */
+
+.mc-bar {
+  display: flex; align-items: center; gap: 11px;
+  padding: 14px 22px;
+  border-bottom: 1px solid #26262d;
+}
+.mc-bar > span { color: #8b8678; font-size: 17px; }
+#mc-search {
+  flex: 1; min-width: 0; height: 44px;
+  background: #0c0c10; border: 1px solid #2e2e36; border-radius: 11px;
+  padding: 0 14px; color: #f0ece2; font-family: inherit; font-size: 15.5px;
+  outline: none;
+}
+#mc-search:focus { border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.14); }
+#mc-search::placeholder { color: #6f6a5e; }
+.mc-rescan {
+  flex: 0 0 auto; min-height: 44px; padding: 10px 18px;
+  border-radius: 11px; border: 1px solid #3a3a44;
+  background: linear-gradient(180deg, #1c1c24, #14141a);
+  color: #e8e2d4; font-family: inherit; font-size: 14.5px; font-weight: 600; cursor: pointer;
+}
+.mc-rescan:hover { border-color: #c9a24b; }
+.mc-rescan:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(201,162,75,.24); }
+
+/* --------------------------------------------------------------- cols -- */
+
+.mc-cols { flex: 1; min-height: 0; display: flex; }
+
+.mc-mods {
+  flex: 0 0 290px; min-width: 0;
+  border-right: 1px solid #26262d;
+  overflow-y: auto; padding: 12px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.mc-mod {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 11px 13px;
+  border-radius: 10px; border: 1px solid transparent;
+  background: none; color: #b9b4a8;
+  font-family: inherit; font-size: 14.5px; text-align: left; cursor: pointer;
+}
+.mc-mod span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-mod i { font-style: normal; font-size: 12.5px; color: #6f6a5e; }
+.mc-mod:hover { background: #16161d; color: #e8e2d4; }
+.mc-mod.on {
+  background: #16161d; border-color: #c9a24b; color: #f0ece2;
+}
+.mc-mod:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(201,162,75,.22); }
+
+.mc-body { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 20px 22px; }
+
+.mc-page { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+.mc-page-name {
+  font-size: 13px; letter-spacing: 1.8px; text-transform: uppercase;
+  color: #9a9486; padding: 4px 2px 6px;
+  border-bottom: 1px solid #22222a;
+}
+
+/* --------------------------------------------------------------- rows -- */
+
+.mc-row {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 14px; border-radius: 11px;
+  border: 1px solid #26262d; background: #0e0e13;
+}
+.mc-row.ro { opacity: .72; }
+.mc-row-id { display: flex; flex-direction: column; gap: 3px; flex: 1 1 auto; min-width: 0; }
+.mc-row-label { font-size: 15px; color: #e8e2d4; }
+.mc-row-why { font-size: 12.5px; line-height: 1.4; color: #7d7869; }
+.mc-row-val {
+  flex: 0 0 auto; font-size: 14.5px; font-weight: 600; color: #b9b4a8;
+  padding: 8px 12px; border-radius: 9px; background: #0c0c10; border: 1px solid #26262d;
+}
+.mc-row-val.none { color: #6f6a5e; font-weight: 400; font-style: italic; }
+
+/* a toggle the deck can actually write */
+.mc-toggle {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 10px;
+  min-height: 40px; padding: 8px 14px 8px 10px;
+  border-radius: 999px; border: 1px solid #3a3a44;
+  background: #0c0c10; color: #8b8678;
+  font-family: inherit; font-size: 13.5px; font-weight: 600;
+  letter-spacing: 1px; text-transform: uppercase; cursor: pointer;
+  transition: border-color 130ms ease, color 130ms ease;
+}
+.mc-toggle > span {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #3a3a44; transition: background 130ms ease, box-shadow 130ms ease;
+}
+.mc-toggle.on { color: #f0ece2; border-color: #c9a24b; }
+.mc-toggle.on > span { background: #c9a24b; box-shadow: 0 0 10px -1px #c9a24b; }
+.mc-toggle:hover { border-color: #c9a24b; color: #e8e2d4; }
+.mc-toggle:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(201,162,75,.24); }
+
+/* steppers — the deck takes no range inputs */
+.mc-step { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; }
+.mc-step button {
+  width: 40px; height: 40px;
+  border-radius: 9px; border: 1px solid #3a3a44;
+  background: linear-gradient(180deg, #1c1c24, #14141a);
+  color: #e8e2d4; font-family: inherit; font-size: 17px; cursor: pointer;
+}
+.mc-step button:hover { border-color: #c9a24b; }
+.mc-step button:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(201,162,75,.24); }
+.mc-step b {
+  min-width: 96px; text-align: center;
+  font-size: 14.5px; font-weight: 600; color: #f0ece2; padding: 0 8px;
+}
+
+.mc-empty {
+  padding: 34px 20px; text-align: center; color: #8b8678; font-size: 15px;
+}
+
+#mc-toast {
+  position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
+  background: #1c1c24; border: 1px solid #3a3a44; border-radius: 10px;
+  padding: 12px 18px; color: #f0ece2; font-size: 14.5px;
+  box-shadow: 0 10px 30px -12px #000; z-index: 3; max-width: 80%;
+}
+#mc-toast.err { border-color: #6d2027; color: #eab4b0; }
+#mc-toast.hidden { display: none; }
+
+/* ── SkyUI (Papyrus) MCM rows ──────────────────────────────────────────
+   These come from driving the mod's own SKI_ConfigBase script, so they
+   carry things the MCM Helper half has no equivalent for: real section
+   headers, the MCM's own info line, a "press" button for text options
+   that are really buttons, and a per-row reset to the mod's default. */
+.mc-sec {
+  margin: 14px 0 4px;
+  padding: 0 2px 5px;
+  border-bottom: 1px solid rgba(198, 164, 96, 0.28);
+  color: #d8c391;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mc-row-info {
+  display: block;
+  margin-top: 2px;
+  color: #9a9384;
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.mc-press {
+  min-width: 96px;
+  padding: 6px 12px;
+  border: 1px solid rgba(198, 164, 96, 0.4);
+  border-radius: 6px;
+  background: rgba(198, 164, 96, 0.1);
+  color: #e8dcc0;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.mc-press:hover { background: rgba(198, 164, 96, 0.2); border-color: rgba(198, 164, 96, 0.65); }
+.mc-reset {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin-left: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: #8d8778;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.mc-reset:hover { color: #e8dcc0; border-color: rgba(198, 164, 96, 0.5); }
+.mc-mod.sky > span::after {
+  content: 'SkyUI';
+  margin-left: 7px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(120, 150, 200, 0.18);
+  color: #9fb6d8;
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  vertical-align: middle;
+}
+.mc-note {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid rgba(214, 170, 90, 0.34);
+  border-radius: 7px;
+  background: rgba(214, 170, 90, 0.09);
+  color: #e0cfa4;
+  font-size: 13px;
+  line-height: 1.45;
+}

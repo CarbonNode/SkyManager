@@ -1,0 +1,30 @@
+/* Quiet brass photo controls. No focus, mouse capture, animation or saved prefs. */
+body.hp-active > :not(#hud-photo), body.hp-active > :not(#hud-photo) * { visibility: hidden !important; }
+#hud-photo {
+  display: none; position: fixed; right: 28px; bottom: 28px; z-index: 15000;
+  width: 446px; max-width: calc(100vw - 32px); box-sizing: border-box;
+  padding: 20px 22px 16px; border: 1px solid rgba(202,178,104,.7); border-radius: 8px;
+  color: #e9e5d7; background: rgba(22,26,26,.95); font: 20px/1.4 'Segoe UI', sans-serif;
+  pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,.25);
+}
+#hud-photo.hp-visible { display: block; }
+#hud-photo * { box-sizing: border-box; }
+.hp-head { display: flex; justify-content: space-between; gap: 12px; color: #cdb873; font-size: 16px; letter-spacing: .09em; }
+#hp-count { color: #c0c1b5; letter-spacing: 0; }
+.hp-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 16px; }
+#hp-selected { font: 30px/1.2 Georgia, serif; }
+.hp-key { font-size: 17px; color: #cbc7b8; }
+.hp-values { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.hp-label { display: block; font-size: 17px; color: #babeb2; margin-bottom: 3px; }
+.hp-values strong { display: flex; align-items: center; gap: 7px; font-weight: 600; white-space: nowrap; }
+#hp-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.hp-meter { height: 3px; background: rgba(221,214,188,.12); margin: 14px 0 16px; }
+#hp-level { display: block; height: 100%; background: #cdb873; }
+.hp-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; font-size: 17px; }
+.hp-controls b, .hp-foot b { font-weight: 600; color: #e4ce88; }
+.hp-foot { display: flex; justify-content: space-between; gap: 8px; border-top: 1px solid rgba(221,214,188,.16); margin-top: 17px; padding-top: 12px; font-size: 16px; color: #babeb2; }
+@media (max-width: 600px) {
+  #hud-photo { right: 16px; bottom: 16px; padding: 18px; font-size: 18px; }
+  .hp-controls { column-gap: 8px; font-size: 16px; }
+  .hp-foot { flex-wrap: wrap; }
+}

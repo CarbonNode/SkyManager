@@ -370,6 +370,9 @@ var HDOmni = (function () {
     return null;
   }
   function looksLikeConsole(q) { return !!consoleVerb(q); }
+  /* deck actions whose whole job is to re-dress THIS overlay: activate() must not
+     close it first (see item.keepOpen in activate) */
+  var SURFACE_ACTIONS = { places: 1, 'super-search': 1 };
   var CONSOLE_PROV = { id: 'console', label: 'Console', tab: null, index: function () { return []; } };
   function runConsole(cmd) {
     var c = String(cmd || '').trim();
@@ -377,12 +380,37 @@ var HDOmni = (function () {
     toGame('hdConsoleTest', JSON.stringify({ command: c, crosshair: false, name: 'Search: ' + c }));
   }
   function consoleItem(cmd, why) {
-    return {
+    var it = {
       label: cmd, kind: 'console',
       detail: 'Run this in the console' + (why ? ' — ' + why : '') + ' · Enter runs it',
       run: function () { remember(CONSOLE_PROV, { label: cmd, kind: 'console' }, cmd); runConsole(cmd); },
       pin: 'con:' + cmd,
     };
+    /* `coc <name>`: the name is rarely the editor ID (Rober, 2026-09-21: "find actual
+       cell id and run that"). Ask the Places index (hd-places.js) for the best cell and
+       hang it on the row — rowHtml draws a second button, "Go ▸ <EditorID>", that runs
+       the real teleport road (hdPlacesGo: C++ closes the palette, then coc). Enter still
+       runs the raw text, so nothing that worked before changes. */
+    var r = (window.HDPlaces && typeof HDPlaces.resolveCoc === 'function') ? HDPlaces.resolveCoc(cmd) : null;
+    if (r) {
+      if (r.item && r.item.snap) {
+        it.tp = r.item;
+        it.detail += ' · I think you mean coc ' + r.item.snap.edid + (r.item.plugin ? ' (' + r.item.plugin + ')' : '');
+      } else {
+        it.detail += ' · no cell called “' + r.arg + '” yet';
+      }
+    }
+    return it;
+  }
+  /* the Go button: teleport to the matched cell, remembered as a PLACE (so the recents
+     list and the shelf resolve it live), never as a raw console line */
+  function runResolvedCell(it) {
+    if (!it || !it.tp || !window.HDPlaces) return;
+    var prov = HDPlaces.provider || { id: 'places' };
+    rememberQuery(st.q);
+    remember(prov, it.tp, st.q.trim());
+    close('run');
+    try { HDPlaces.go(it.tp.snap); } catch (e) {}
   }
 
   /* ----------------------------------------------------------- recents */
@@ -557,7 +585,13 @@ var HDOmni = (function () {
     if (!viaJump && typeof item.run === 'function') {
       rememberQuery(st.q);
       if (p.id !== 'console') remember(p, item, st.q.trim());   // console rows remember themselves
-      close('run');
+      /* item.keepOpen — the run RE-DRESSES this very overlay (the Teleport action
+         deep-opens the Super Searcher locked to Places, super-search re-opens it).
+         Closing first told hd-super "done — back to the game", which closed the
+         deck under the action's feet (Rober, 2026-09-21: "if i click second option
+         teleport nothing opens it just fully closes"). Run, leave the box up; the
+         router relocks it. */
+      if (!item.keepOpen) close('run');
       try { item.run(); } catch (e) {}
       return;
     }
@@ -702,6 +736,13 @@ var HDOmni = (function () {
 
     var groups = collect();
     var cv = consoleVerb(q);
+    /* `coc x` with the Places source switched off would never ask the engine, so the
+       Go button could not appear — ask once per query here regardless of the gate */
+    if (cv && cv.verb === 'coc' && window.HDPlaces && HDPlaces.provider && st.cocAsked !== q &&
+        typeof HDPlaces.cocArg === 'function' && HDPlaces.cocArg(q)) {
+      st.cocAsked = q;
+      try { HDPlaces.provider.lazy(q); } catch (e) {}
+    }
     if (cv && !providerGated(CONSOLE_PROV)) {
       groups.unshift({ provider: CONSOLE_PROV, hits: [{ item: consoleItem(q, cv.why), provider: CONSOLE_PROV, score: 1000 }],
                        top: 1000, pending: false });
@@ -816,6 +857,10 @@ var HDOmni = (function () {
           '</div>' +
           (row.when ? '<span class="omni-when" title="When you last ran it">' + esc(ago(row.when)) + '</span>' : '') +
           (it.kind ? '<span class="omni-kind">' + esc(it.kind) + '</span>' : '') +
+          (row.provider.id === 'console' && !it.gone && it.tp && it.tp.snap
+            ? '<button class="omni-tp" data-idx="' + idx + '" title="Teleport to the matched cell: coc ' +
+              esc(it.tp.snap.edid) + '">Go ▸ ' + esc(it.tp.snap.edid) + '</button>'
+            : '') +
           (row.provider.id === 'console' && !it.gone
             ? '<button class="omni-run" data-idx="' + idx + '" title="Run it in the console (Enter)">Run ▸</button>'
             : '') +
@@ -849,6 +894,8 @@ var HDOmni = (function () {
     }
     var jump = e.target.closest('.omni-jump');
     if (jump) { e.stopPropagation(); activate(st.flat[Number(jump.dataset.idx)], true); return; }
+    var tpBtn = e.target.closest('.omni-tp');
+    if (tpBtn) { e.stopPropagation(); var trow = st.flat[Number(tpBtn.dataset.idx)]; if (trow) runResolvedCell(trow.item); return; }
     var runBtn = e.target.closest('.omni-run');
     if (runBtn) { e.stopPropagation(); activate(st.flat[Number(runBtn.dataset.idx)], false); return; }
     var row = e.target.closest('.omni-row');
@@ -948,6 +995,19 @@ var HDOmni = (function () {
      `callback(env)` fires once with the raw haAnswer envelope — the caller
      decodes env.json itself (mirrors onAnswer's own string-or-object guard),
      so this stays a thin, opinion-free pipe. */
+  /* chimCall — the generic sibling of askStructured for other modules (the CHIM
+     flyout's diary / dynamic-profile rows, 2026-09-21): `qs` is the FULL
+     pre-encoded querystring for deck_ask.php, `llm` picks the long timeout
+     (C++ gives an LLM call 75 s, a DB read 10 s). callback(env) gets the raw
+     haAnswer envelope, exactly like askStructured. */
+  function chimCall(qs, callback, llm) {
+    extSeq++;
+    var id = 'ext-' + extSeq;
+    extReqs[id] = callback;
+    toGame('haAsk', JSON.stringify({ id: id, query: String(qs || ''), llm: !!llm }));
+    return id;
+  }
+
   function askStructured(npcName, question, callback) {
     extSeq++;
     var id = 'ext-' + extSeq;
@@ -1057,12 +1117,41 @@ var HDOmni = (function () {
        whichever mode is up (the confirmation must not vanish on a chip flip). */
     if (st.mode === 'direct' && !a.busy && !a.err &&
         !(a.reply && a.reply.kind === 'direct')) {
+      /* WHO WILL HEAR THIS (Rober, 2026-09-21: "how do i know im sending it to
+         right person to be direct?"). A direction goes to the director LLM,
+         which acts through the NPCs CHIM is currently driving — so the honest
+         answer is the live agent set, named. Without this the overlay says
+         "nearby NPCs" and you are typing into the dark.
+
+         Three states, because they need three different sentences: agents are
+         listed, none are active (the direction will do NOTHING and that must be
+         said before you send it), or the set has not been read yet. */
+      var reach = '';
+      try {
+        var ag = window.ChimBtn && window.ChimBtn.agents ? window.ChimBtn.agents() : null;
+        if (ag && ag.known) {
+          var names = (ag.list || []).map(function (a) {
+            return String((a && (a.name || a.base)) || '').trim();
+          }).filter(Boolean);
+          if (names.length) {
+            var shown = names.slice(0, 6).join(', ');
+            reach = '<div class="omni-direct-reach"><b>Will reach:</b> ' + esc(shown) +
+              (names.length > 6 ? ' <span class="omni-dim">+' + (names.length - 6) + ' more</span>' : '') +
+              ' <span class="omni-dim">· the director picks who actually speaks</span></div>';
+          } else {
+            reach = '<div class="omni-direct-reach is-none"><b>Nobody is CHIM-active.</b> ' +
+              'A direction needs at least one NPC that CHIM is driving — activate ' +
+              'someone (💬 on their card) or this will do nothing.</div>';
+          }
+        }
+      } catch (e) { reach = ''; }
+
       host.innerHTML = '<div class="omni-blank"><div class="omni-blank-ic">⚡</div>' +
         '<div class="omni-blank-t">Direct the scene</div>' +
         '<div class="omni-blank-s">Whatever you type is handed to the nearby NPCs as a ' +
         'director instruction:<br>“Jenassa storms in, furious about last night” · ' +
         '“a courier arrives with an urgent letter from Solitude” · ' +
-        '“Lydia quietly asks to speak with me alone”</div></div>';
+        '“Lydia quietly asks to speak with me alone”</div>' + reach + '</div>';
       return;
     }
 
@@ -1543,6 +1632,7 @@ var HDOmni = (function () {
             label: en.name || '(unnamed)',
             detail: [en.desc, en.category, en.label].filter(Boolean).join(' · '),
             kind: en.device === 'action' ? 'action' : 'hotkey',
+            keepOpen: en.device === 'action' && !!SURFACE_ACTIONS[en.action],
             keywords: [en.category, en.action, en.label].filter(Boolean).join(' '),
             pin: 'hk:' + en.id,   // entry ids survive rename/rebind/re-file
             icon: en.icon || '',  // the row's own icons/… art, shelf shows it
@@ -1648,6 +1738,7 @@ var HDOmni = (function () {
         return (env.deckActions || []).map(function (a) {
           return {
             label: a.name, detail: a.desc, kind: 'action',
+            keepOpen: !!SURFACE_ACTIONS[a.action],
             pin: 'act:' + a.action, snap: { action: a.action },
             run: function () { env.fireAction(a.action); },
           };
@@ -1928,6 +2019,7 @@ var HDOmni = (function () {
        and its doc comment above. facetCard renders ONE facet the exact way the
        Ask overlay itself does, so a reused card never drifts from the real one. */
     askStructured: askStructured,
+    chimCall: chimCall,
     facetCard: facetCard,
     isOpen: function () { return st.open; },
     onKey: onKey,
@@ -1942,6 +2034,14 @@ var HDOmni = (function () {
        classic overlay never inherits the widget's wording */
     setBlankNote: function (s) { blankNote = s ? String(s) : BLANK_NOTE_DEFAULT; },
     rerender: function () { if (st.open && st.mode === 'search') renderResults(); },
+    /* replace the typed query (hd-super's relock clears it so a locked source starts blank) */
+    setQuery: function (q) {
+      var inp = $('omni-input');
+      st.q = String(q || '');
+      if (inp) inp.value = st.q;
+      st.sel = 0;
+      if (st.open && st.mode === 'search') { runLazy(); renderResults(); }
+    },
     takeQuestReply: takeQuestReply,
     lazyResults: lazyResults,
     /* console detection + recents (2026-09-13) */

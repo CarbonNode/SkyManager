@@ -1,23 +1,16 @@
 /* hd-facefit.js — dynamic face framing for FaceGen head renders.
  *
- * MRF frames the WHOLE bust into the 512px canvas, so a long-haired follower
+ * MRF frames the WHOLE bust into the canvas, so a long-haired follower
  * is mostly hair and the face reads tiny in a 64px tile. This module finds
  * the face dynamically and produces the transform that fills a SQUARE frame
  * with it, letting hair bleed off the edges (Rober, 2026-08-14: "more focused
  * on the face, allowing hair to cut off screen, so more distinct").
  *
- * HOW THE FACE IS FOUND — anatomy, not color. Skin-color detection breaks on
- * orcs (green), dunmer (grey) and argonians (scales); geometry does not: the
- * skull hangs from the TOP of the rendered bust and its size tracks the
- * content WIDTH (hair length only ever grows the box DOWNWARD). So, from the
- * opaque bounding box (alpha > 16):
- *
- *     face centre y = bboxTop + K * bboxWidth     (K = 0.54)
- *     window side   = S * bboxWidth               (S = 1.00)
- *
- * calibrated on real renders (facefit.preview.html re-tunes live). The window
- * is clamped inside the content vertically when the content is SHORTER than
- * the window (a bald head), which degrades exactly to the whole-head fit.
+ * Geometry, not skin colour: measure the opaque silhouette (alpha > 16).
+ * Hair spreading lower down keeps a top-anchored face window; a tall head
+ * widest in its upper half gets a taller window that includes the jaw.
+ * K adjusts vertical placement; S adjusts window size. Padding keeps round
+ * masks off the face. These remain heuristics, so manual crops always win.
  *
  * Measured ONCE per url via canvas readback, cached for the session. Consumers:
  * followers-pane.js (roster medallions, crew strip, quick card) and
@@ -32,11 +25,36 @@
   const K0 = 0.54, S0 = 1.00;   // shipped defaults (facefit.preview.html calibration)
   let K = K0;     // face centre sits this many bbox-WIDTHS below the bbox top
   let S = S0;     // face window side, in bbox-widths
+  let autoEnabled = true; // facefit-auto-toggle: manual crops always take priority
   const ZMAX = 4; // matches the followers pane's CROP_ZMAX — one law for zoom
 
   const fits = {};       // url -> {cx, cy, side} as fractions of the source image
   const busy = {};       // url -> [img, ...] waiting for the measure to finish
   const overrides = {};  // url -> {z,x,y} — a HAND framing; always beats the measure
+  /* Per-face BRIGHTNESS (Rober, 2026-09-23: "the ability to turn up brightnes
+     would be cool too"). Keyed by bare file name (portraitKey), so a head
+     render and a photo answer through one door and a ?v= cache-bust cannot
+     miss. 1 = as rendered; stored only when it differs. Applied as a CSS
+     filter — proven in Ultralight (Wardrobe's .wd-item-render already ships
+     one). followers-pane owns the data (the facefit shelf slice) and pushes it
+     in; every consumer picks it up through ensure()/paintPortrait(). */
+  const brights = Object.create(null);
+  const BRIGHT_MIN = 0.6, BRIGHT_MAX = 2.0;
+  function clampBright(b) {
+    b = Number(b);
+    if (!isFinite(b)) return 1;
+    return Math.round(Math.max(BRIGHT_MIN, Math.min(BRIGHT_MAX, b)) * 100) / 100;
+  }
+  function brightFor(url) {
+    const k = portraitKey(url);
+    return (k && brights[k]) || 1;
+  }
+  function applyBright(img, url) {
+    if (!img || !img.style) return img;
+    const b = brightFor(url);
+    img.style.filter = b !== 1 ? 'brightness(' + b.toFixed(2) + ')' : '';
+    return img;
+  }
 
   function computeFit(img) {
     const w = img.naturalWidth, h = img.naturalHeight;
@@ -83,16 +101,24 @@
        separated ears read as narrow. (Hair only ever grows DOWNWARD, so this
        never mistakes long hair for ears — hair does not sit above the widest
        part of the head.) */
-    let maxCov = 0;
-    for (let y = y0; y <= y1; y++) if (rowCov[y] > maxCov) maxCov = rowCov[y];
+    let maxCov = 0, widestY = y0;
+    for (let y = y0; y <= y1; y++) if (rowCov[y] > maxCov) { maxCov = rowCov[y]; widestY = y; }
     const wideAt = maxCov * 0.55;          // "solid" = >=55% of the fullest row's coverage
     let yWide = y0;
     for (let y = y0; y <= y1; y++) { if (rowCov[y] >= wideAt) { yWide = y; break; } }
     const earsPx = yWide - y0;             // height of the narrow crown above the face mass
 
-    let side = S * bw;
-    if (side > bh) side = bh;             // bald/short content: take it all
-    let cy = y0 + K * bw;
+    /* facefit-whole-chin: a short-haired head is TALLER than it is wide.
+       Adney's actual render is 398px wide and 702px tall: a width-sized
+       window stops at his mouth. When the widest solid mass is in the upper
+       half, keep the head down to the jaw/upper neck (up to 1.6 widths).
+       Long hair fans out lower down; retain its closer, top-anchored fit.
+       No skin-colour rules, NPC identities, or changes to hand-saved crops.
+       Small breathing room also keeps circular masks off the forehead/chin. */
+    const tallHead = bh > bw * 1.3 && widestY - y0 < bh * 0.55;
+    const headHeight = tallHead ? Math.min(bh, bw * 1.6) : Math.min(bh, bw);
+    let side = S * headHeight * 1.10;
+    let cy = tallHead ? y0 + headHeight / 2 + (K - K0) * bw : y0 + K * bw;
 
     /* If there is a meaningful crown above the wide head (ears/horns), grow the
        window UP so its top edge reaches the true content top y0 instead of
@@ -122,11 +148,12 @@
        on meshes MRF framed unusually small. */
     const minWin = 96;
     if (side < minWin) side = Math.min(minWin, Math.max(bh, side));
-    if (side > bh) side = bh;              // never taller than the content itself
-    /* Keep the window on the content vertically — a face window that slides
-       past the chin of a short-haired head would frame empty air. */
+    /* Padding may extend into transparent pixels — clamping to the opaque
+       box removes that breathing room and puts the scalp back on the mask.
+       Keep the window inside the SOURCE instead. */
+    side = Math.min(side, Math.min(w, h));
     const half = side / 2;
-    cy = Math.max(y0 + half, Math.min(cy, y1 + 1 - half));
+    cy = Math.max(half, Math.min(cy, h - half));
     const cx = x0 + bw / 2;
     return { cx: cx / w, cy: cy / h, side: side / Math.min(w, h) };
   }
@@ -188,9 +215,44 @@
     if (!img || !img.style) return img;
     const css = cropCss(crop, baseline);
     img.style.transformOrigin = css.transformOrigin;
-    img.style.transform = css.transform;
-    img.style.objectPosition = css.objectPosition;
+    img.style.objectPosition = String(baseline || '');
+    img.style.transform = '';
+    // Invalidate an older detached-node retry when the portrait is repainted.
+    const ticket = {};
+    img._hdCropTicket = ticket;
+    if (isIdentity(crop)) return img;
+    function commitCrop(attempt) {
+      if (img._hdCropTicket !== ticket) return;
+      if (containDedicatedFrame(img)) {
+        img.style.objectPosition = css.objectPosition;
+        img.style.transform = css.transform;
+      } else if (!img.parentElement && attempt < 30 &&
+                 typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(function () { commitCrop(attempt + 1); });
+      }
+      // A bare image beside text keeps its ordinary cover fit. Never enlarge
+      // it without a clipping frame, even if a future consumer forgets one.
+    }
+    commitCrop(0);
     return img;
+  }
+
+  function containDedicatedFrame(img) {
+    const par = img && img.parentElement;
+    if (!par || !par.style) return false;
+    let computed = null;
+    if (typeof window.getComputedStyle === 'function') computed = window.getComputedStyle(par);
+    // Frames may contain fallback initials or action overlays as well as art.
+    const ox = par.style.overflowX || par.style.overflow || (computed && computed.overflowX);
+    const oy = par.style.overflowY || par.style.overflow || (computed && computed.overflowY);
+    const clips = ox === 'hidden' && oy === 'hidden';
+    const kids = par.children;
+    const dedicated = kids && kids.length === 1 && kids[0] === img && !String(par.textContent || '').trim();
+    if (!clips && !dedicated) return false;
+    par.style.overflow = 'hidden';
+    const pos = par.style.position || (computed && computed.position);
+    if (!pos || pos === 'static') par.style.position = 'relative';
+    return true;
   }
 
   /* The {z,x,y} transform for a SQUARE cover-fit frame — the same shape the
@@ -202,6 +264,7 @@
     /* A hand framing (per-NPC override, saved by the followers pane) always
        beats the measured fit — the human said where the face is. */
     if (overrides[url]) return overrides[url];
+    if (!autoEnabled) return {z:1,x:0,y:0};
     const f = fits[url];
     if (!f) return null;
     let z = 1 / f.side;
@@ -216,8 +279,8 @@
     };
   }
 
-  /* The safe, self-contained state: cover the frame, biased to the top where
-     faces sit, clipped by the frame's overflow. This is what an <img> shows
+  /* The safe, self-contained state: show the complete source, centred inside
+     the frame. This is what an <img> shows
      while its layout crop cannot yet be applied SAFELY (see paint()). It is a
      normal in-flow image — NEVER position:absolute — so it is physically
      incapable of escaping its frame regardless of what ancestor is positioned.
@@ -234,8 +297,8 @@
     img.style.display = 'block';
     img.style.width = '100%';
     img.style.height = '100%';
-    img.style.objectFit = 'cover';
-    img.style.objectPosition = '50% 22%';
+    img.style.objectFit = 'contain';
+    img.style.objectPosition = '50% 50%';
   }
 
   /* Force the frame to actually CONTAIN an absolutely-positioned child: it must
@@ -284,9 +347,8 @@
      PNG is (the pixelated-finder report, 2026-08-14). Laying the image out
      at z-times the frame and shifting it with margins makes Ultralight
      decode at the big size; the frame's overflow:hidden does the cropping,
-     and the picture stays an image. Frames are squares everywhere this is
-     used (percentage margin-top resolves against parent WIDTH — fine for
-     squares, wrong anywhere else; keep the frames square).
+     and the picture stays an image. Crops use square-source coordinates;
+     paintHeadCrop maps those onto the shorter axis of rectangular frames.
 
      Containment is STRUCTURAL, not timing-dependent: the absolute layout is
      applied ONLY when the img is inside a frame that has been forced to
@@ -295,7 +357,9 @@
      cannot escape — and paint retries on the next frame (bounded), so a face
      inserted before its row lays out can NEVER flash huge across the pane. */
   function paint(img, url, _tries) {
-    const c = cssFor(url);
+    if (img && img._hdPreviewOwned) return;
+    // A dedicated surface (F7) can own its crop while still sharing measurement.
+    const c = img && typeof img._hdHeadCrop === 'function' ? img._hdHeadCrop() : cssFor(url);
     if (!c || !img || !img.style) return;
     const z = (isFinite(c.z) ? Math.max(1, Math.min(ZMAX, c.z)) : 1);   // defensive cap
     const par = img.parentElement;
@@ -319,9 +383,24 @@
 
     /* Parent exists and is laid out: MAKE it contain us, then lay the crop out
        absolutely inside it. containFrame is what makes the absolute safe. */
+    paintHeadCrop(img, c);
+  }
+
+  // portrait-preview-parity: editor and F7 use identical layout and contain fit.
+  function paintHeadCrop(img, crop) {
+    if (!img || !img.style || !img.parentElement) return;
+    const par = img.parentElement;
+    const c = crop || {z:1,x:0,y:0};
+    const z = isFinite(c.z) ? Math.max(1, Math.min(ZMAX,c.z)) : 1;
     containFrame(par);
-    const left = ((1 - z) / 2 + (c.x || 0)) * 100;
-    const top = ((1 - z) / 2 + (c.y || 0)) * 100;
+    const rect = typeof par.getBoundingClientRect === 'function' ? par.getBoundingClientRect() : null;
+    const fw = rect && rect.width > 0 ? rect.width : 1;
+    const fh = rect && rect.height > 0 ? rect.height : 1;
+    // The square source fits the shorter axis. Translate in that same unit,
+    // including wide headers and tall tiles, so changing shape cannot move the face.
+    const unit = Math.min(fw, fh);
+    const left = ((1 - z) / 2 + (c.x || 0) * unit / fw) * 100;
+    const top = ((1 - z) / 2 + (c.y || 0) * unit / fh) * 100;
     img.style.transform = '';
     img.style.position = 'absolute';
     img.style.inset = 'auto';
@@ -331,8 +410,11 @@
     img.style.margin = '0';
     img.style.width = (z * 100).toFixed(2) + '%';
     img.style.height = (z * 100).toFixed(2) + '%';
+    img.style.maxWidth = 'none';
+    img.style.maxHeight = 'none';
     img.style.objectFit = 'contain';
     img.style.objectPosition = '50% 50%';
+    img.style.borderRadius = '0';
   }
 
   /* Measure url through img (once), then paint EVERY img that asked. onReady
@@ -340,16 +422,25 @@
   function ensure(img, url, onReady) {
     url = String(url || '');
     if (!img || !url) return;
+    img._hdRenderUrl = url;
+    applyBright(img, url);
+    if (!autoEnabled) { paint(img, url); return; }
     if (fits[url]) { paint(img, url); return; }
     if (busy[url]) { busy[url].push(img); return; }
     busy[url] = [img];
     const done = function () {
-      const f = computeFit(img);
-      const waiters = busy[url] || [];
+      const waiters = (busy[url] || []).filter(function (w) { return w._hdRenderUrl === url; });
       delete busy[url];
+      // A reused element may now show a captured photo. Measure a still-current head.
+      const source = waiters.find(function (w) { return w.complete && w.naturalWidth; });
+      if (!source) {
+        waiters.forEach(function (w) { ensure(w, url, onReady); });
+        return;
+      }
+      const f = computeFit(source);
       if (!f) return;                    // unmeasurable: everyone keeps the full render
       fits[url] = f;
-      waiters.forEach(function (w) { paint(w, url); });
+      waiters.forEach(function (w) { if (w._hdRenderUrl === url) paint(w, url); });
       if (typeof onReady === 'function') onReady(url);
     };
     if (img.complete && img.naturalWidth) done();
@@ -414,13 +505,40 @@
      nothing else. */
   function paintPortrait(img, url, baseline) {
     if (!img) return img;
+    img._hdPortraitUrl = String(url || '');
+    applyBright(img, url);
+    if (/^icons\/npcs\//.test(String(url || ''))) { ensure(img, url); return img; }
+    if (/^icons\/mounts\//.test(String(url || ''))) {
+      if (img._hdRenderUrl) { paintSafe(img); delete img._hdRenderUrl; }
+      img.style.transform = ''; img.style.objectFit = 'contain'; img.style.objectPosition = '50% 50%';
+      return img;
+    }
+    if (img._hdRenderUrl) {
+      paintSafe(img); delete img._hdRenderUrl;
+      img.style.objectFit = 'cover'; img.style.objectPosition = '';
+    }
     return applyCrop(img, portraitCropFor(url), baseline || '');
   }
+
+  // Also refresh mounted image-only consumers (Finder, wheel, quest/outfit plates).
+  // Do not touch the lightbox/editor, whose whole-image preview owns its framing.
+  if (window.addEventListener) window.addEventListener('hd-portraits-changed', function () {
+    if (!document.querySelectorAll) return;
+    const images = document.querySelectorAll('img');
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i], src = img.getAttribute('src') || '';
+      if (!img._hdPortraitUrl && !img._hdRenderUrl) continue;
+      if (img.closest && img.closest('.fd-lb')) continue;
+      if (/^(?:portraits\/|icons\/(?:npcs|mounts)\/)/.test(src)) paintPortrait(img, src);
+    }
+  });
 
   window.HDFaceFit = {
     ensure: ensure,
     cssFor: cssFor,
     paint: paint,
+    setAutoEnabled: function (enabled) { autoEnabled = enabled !== false; },
+    isAutoEnabled: function () { return autoEnabled; },
     /* portrait lane — see the block above */
     setPortraitCrops: function (map) {
       Object.keys(portraitCrops).forEach(function (k) { delete portraitCrops[k]; });
@@ -458,6 +576,7 @@
        call this, so the same {z,x,y} is byte-identical everywhere. */
     cropCss: cropCss,
     applyCrop: applyCrop,
+    paintHeadCrop: paintHeadCrop,
     isIdentityCrop: isIdentity,
     has: function (url) { return !!fits[String(url || '')]; },
     /* Computed fit only — the editor seeds from this when clearing an
@@ -477,6 +596,25 @@
       else delete overrides[url];
     },
     overrideFor: function (url) { return overrides[String(url || '')] || null; },
+    /* brightness lane — see `brights` above */
+    setBrightness: function (file, b) {
+      const k = portraitKey(file);
+      if (!k) return;
+      b = clampBright(b);
+      if (b !== 1) brights[k] = b; else delete brights[k];
+    },
+    setBrightnessMap: function (map) {
+      Object.keys(brights).forEach(function (k) { delete brights[k]; });
+      if (!map || typeof map !== 'object') return;
+      Object.keys(map).forEach(function (k) {
+        const b = clampBright(map[k]);
+        if (b !== 1) brights[portraitKey(k)] = b;
+      });
+    },
+    brightnessFor: brightFor,
+    applyBrightness: applyBright,
+    clampBrightness: clampBright,
+    BRIGHT_MIN: BRIGHT_MIN, BRIGHT_MAX: BRIGHT_MAX,
     /* preview-page + in-game default-framing hooks */
     tune: function (k, s) {
       if (isFinite(k)) K = k;

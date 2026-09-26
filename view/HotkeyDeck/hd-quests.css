@@ -707,3 +707,83 @@
   .hdq-foot { flex-wrap: wrap; }
   .hdq-hint-r { display: none; }        /* the left hint is the load-bearing one */
 }
+
+/* ===================================================== Active-scope rows ===
+   The Active scope puts two verbs ON the row — advance a stage, travel to the
+   marker — so the common case never needs the detail view at all.
+
+   ⚠ The actions are SIBLINGS of the row, not children. `.hdq-row` is a <button>
+   and a button inside a button is invalid; Ultralight resolves it by swallowing
+   the inner click, so the nested version looked right and did nothing. The
+   wrapper carries the layout and the row keeps its own class, which is what
+   leaves keyboard nav and the `.sel` painting untouched. */
+.hdq-rowwrap {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex: none;            /* same no-shrink rule as .hdq-row, and for the same reason */
+}
+.hdq-rowwrap > .hdq-row {
+  flex: 1 1 auto;
+  min-width: 0;          /* a flex item's automatic minimum is its CONTENT, so long
+                            quest names would push the actions off the row without this */
+}
+
+.hdq-row-acts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hdq-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 62px;
+  /* 44px tall: the touch-target floor, and these sit next to a 46px row icon. */
+  min-height: 44px;
+  padding: 10px 14px;
+  font: 600 15.5px/1 inherit;
+  font-family: inherit;
+  border-radius: 10px;
+  border: 1px solid #ffffff1c;
+  background: #ffffff0a;
+  color: #d8d2c4;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.hdq-act:hover { background: #c9a24b22; border-color: #c9a24b77; color: #f2e7ca; }
+.hdq-act:active { transform: translateY(1px); }
+.hdq-act:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+
+/* Disabled says WHY in its title rather than vanishing: a quest with no next
+   stage, or no live target, is a fact worth seeing on the row. */
+.hdq-act.is-off,
+.hdq-act[disabled] {
+  opacity: .42;
+  cursor: default;
+  background: #ffffff05;
+  border-color: #ffffff12;
+}
+.hdq-act.is-off:hover,
+.hdq-act[disabled]:hover { background: #ffffff05; border-color: #ffffff12; color: #d8d2c4; }
+
+/* The journal line — what the game is telling you to do next. */
+.hdq-row-obj {
+  display: block;
+  font-size: 15px;
+  line-height: 1.35;
+  color: #cfc7b6;
+  margin: 2px 0 1px;
+  overflow: hidden;
+}
+.hdq-row-obj.is-none {
+  color: #8d8678;
+  font-style: italic;   /* a running quest displaying nothing IS the diagnosis */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hdq-act { transition: none; }
+  .hdq-act:active { transform: none; }
+}

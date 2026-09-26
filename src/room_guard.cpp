@@ -2,6 +2,8 @@
 
 #include "actor_identity.h"
 #include "follower_frameworks.h"
+#include "ostim_deck.h"
+#include "scene_privacy.h"
 
 #include <algorithm>
 #include <cctype>
@@ -424,6 +426,12 @@ namespace RoomGuard
 		{
 			if (!actor || actor == player || actor->IsPlayerRef())
 				return "you";
+			if (!actor->GetParentCell() || actor->GetParentCell()->GetFormID() != room.cellId)
+				return "outside this cell";
+			if (OstimDeck::ActorInScene(actor->GetFormID()))
+				return "OStim participant";
+			if (ScenePrivacy::KeepsInside(actor->GetFormID()))
+				return "privacy guest";
 			if (actor->IsDead())
 				return "dead";
 			if (!actor->Is3DLoaded())

@@ -510,7 +510,12 @@ namespace MhiyhControl
 		{
 			std::string original;   // FO's OriginalName — the portal's join key
 			std::string name;       // display name (override applied)
-			std::string formId;     // "0x0001A6A1", the runtime ref id
+			std::string formId;     // "0x0001A6A1", the runtime ref id to ACT on
+			// Non-empty when that id came from FO's `liveFormId` rather than the
+			// form it stored — i.e. the row is a follower spawned at runtime,
+			// whose stored form is her BASE record. Kept as a separate fact so
+			// the duplicate merge below can prefer a row that has one.
+			std::string liveId;
 			bool        following = false;
 			bool        inWorld = false;
 			bool        dead = false;
@@ -550,7 +555,15 @@ namespace MhiyhControl
 						r.original = r.name;
 					if (r.original.empty())
 						continue;  // nothing the phone could ever address her by
-					r.formId = m.value("formId", std::string(""));
+					/* `liveFormId` first. Apply() resolves formId -> REFR -> Actor,
+					   and Follower Organizer stores a BASE record for a follower
+					   spawned at runtime (it cannot name a 0xFF reference), which
+					   resolves to a form but never an actor — so every phone-queued
+					   home op for her was refused. The in-game deck already sends
+					   the crosshair's reference; this is the portal's half of the
+					   same fix (FO DeckAPI.cpp, LoadedActorForBase). */
+					r.liveId = m.value("liveFormId", std::string(""));
+					r.formId = r.liveId.empty() ? m.value("formId", std::string("")) : r.liveId;
 					r.following = m.value("following", false);
 					r.inWorld = m.value("inWorld", false);
 					r.dead = m.value("dead", false);
@@ -568,6 +581,13 @@ namespace MhiyhControl
 					auto& have = rows[it->second];
 					if (have.formId.empty())
 						have.formId = r.formId;
+					// A row that found a live reference outranks one that only has
+					// the stored base: same person, and only one of the two spellings
+					// can actually be handed to MHiYH.
+					if (!r.liveId.empty() && have.liveId.empty()) {
+						have.liveId = r.liveId;
+						have.formId = r.formId;
+					}
 					if (have.name.empty())
 						have.name = r.name;
 					have.following = have.following || r.following;

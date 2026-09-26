@@ -59,21 +59,7 @@
       <div id="hm-time-body" class="hm-drawer-body hidden">
         <div class="hm-time-clock" id="hm-time-clock">—:—</div>
         <div class="hm-time-date" id="hm-time-date">reading the sky…</div>
-        <div class="hm-time-group-label">Wait until</div>
-        <div class="hm-time-chips" id="hm-time-until">
-          <button class="hm-time-chip" data-until="7">🌅 Morning</button>
-          <button class="hm-time-chip" data-until="12">☀️ Noon</button>
-          <button class="hm-time-chip" data-until="18">🌆 Evening</button>
-          <button class="hm-time-chip" data-until="22">🌙 Night</button>
-        </div>
-        <div class="hm-time-group-label">Wait for</div>
-        <div class="hm-time-chips" id="hm-time-for">
-          <button class="hm-time-chip" data-hours="1">+1 h</button>
-          <button class="hm-time-chip" data-hours="3">+3 h</button>
-          <button class="hm-time-chip" data-hours="6">+6 h</button>
-          <button class="hm-time-chip" data-hours="12">+12 h</button>
-          <button class="hm-time-chip" data-hours="24">+24 h</button>
-        </div>
+        <div id="hm-wait-controls"></div>
       </div>
     </div>
 

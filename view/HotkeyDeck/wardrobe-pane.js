@@ -175,8 +175,10 @@ window.WardrobePane = (function () {
   const ui = {
     sub: 'outfits',
     editing: false,
+    toolbarCollapsed: false, // presentation only; retained across sections this session
     filter: '',
-    catFilter: '',     // category pill filter (Outfits sub-tab), '' = all
+    catFilter: '',     // Outfits category filter, '' = all
+    categoryPicker: {},
     shown: false,
     inited: false,
     loading: true,     // until the first wdOpen lands
@@ -431,23 +433,30 @@ window.WardrobePane = (function () {
     cls = cls || 'wd-npc-face';
     /* An explicit portrait on the row still wins — it is what C++ sent for this
      * exact actor, and it may be an absolute path we could not resolve. */
-    if (npc.portrait) return h('img', { class: cls, src: npc.portrait, alt: '', title: npc.name || '' });
     const p = portraitFor(npc);
+    if (npc.portrait && !p) {
+      const img = h('img', { src: npc.portrait, alt: '', title: npc.name || '' });
+      const frame = h('span', { class: cls }, img);
+      if (window.HDFaceFit) HDFaceFit.paintPortrait(img, npc.portrait);
+      return frame;
+    }
     if (!p) return faceGlyph(cls + ' ph');
-    const plain = 'portraits/' + p.file;
+    const plain = p.abs ? p.file : 'portraits/' + p.file;
     const img = h('img', {
-      class: cls, src: plain + '?v=' + (p.mtime || 0), alt: '',
+      class: cls, src: plain + (p.abs ? '' : '?v=' + (p.mtime || 0)), alt: '',
       title: npc.name || '', draggable: 'false',
     });
-    /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
-    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, plain);
+    const frame = h('span', { class: cls }, img);
+    img.className = '';
+    /* the user's saved framing, inside its own clipping frame */
+    if (window.HDFaceFit) { if (p && p.abs) HDFaceFit.ensure(img, plain); else HDFaceFit.paintPortrait(img, plain); }
     let retried = false;
     img.addEventListener('error', function () {
       if (!retried) { retried = true; img.src = plain; return; }
       glog('portrait failed to load: ' + plain);
-      if (img.parentNode) img.parentNode.replaceChild(faceGlyph(cls + ' ph'), img);
+      if (frame.parentNode) frame.parentNode.replaceChild(faceGlyph(cls + ' ph'), frame);
     });
-    return img;
+    return frame;
   }
 
   function metaFor(name) {
@@ -977,6 +986,7 @@ window.WardrobePane = (function () {
   function render() {
     if (!ui.inited) return;
     const snap = snapshotUi();
+    $('wd-scale').classList.toggle('ws-controls-collapsed', ui.toolbarCollapsed);
     renderNav();
     renderBanner();
     renderCats();
@@ -986,11 +996,16 @@ window.WardrobePane = (function () {
     renderPieces();
     renderPicker();
     els.edit.classList.toggle('on', ui.editing);
-    els.edit.textContent = ui.editing ? 'Done' : 'Edit';
+    els.edit.textContent = ui.editing ? 'Done' : 'Options';
+    const ownsSearch = !!(plugin() && plugin().ownsSearch);
+    $('wd-search-wrap').classList.toggle('hidden', ownsSearch);
+    els.count.classList.toggle('hidden', ownsSearch || (ui.sub === 'outfits' && !ui.filter && !ui.catFilter));
+    $('wd-toolbar').classList.toggle('wd-toolbar-options', ownsSearch);
     els.edit.setAttribute('aria-pressed', ui.editing ? 'true' : 'false');
     els.clear.classList.toggle('hidden', !ui.filter);
-    els.add.textContent = ui.sub === 'wardrobes' ? '＋ Wardrobe' : '＋ Category';
-    els.add.classList.toggle('hidden', ui.sub === 'npcs' || ui.sub === 'inventory' || !!plugin());
+    els.add.textContent = ui.sub === 'wardrobes' ? '＋ New pool' : '＋ Category';
+    els.add.classList.toggle('hidden', ui.sub === 'npcs' || ui.sub === 'inventory' || !!plugin() || (ui.sub === 'outfits' && !ui.editing));
+    if (els.newfit) els.newfit.classList.toggle('hidden', ui.sub !== 'outfits' || !!plugin());
     /* The tab's own chrome — scale — lives in edit mode, same idiom as the
        Followers tab's open-key/Faces/Tab row. */
     if (els.editRow) els.editRow.classList.toggle('hidden', !ui.editing);
@@ -1010,6 +1025,7 @@ window.WardrobePane = (function () {
    * single render, so a caller that also wants a panel open inside that section
    * (omni's settings rows) does not paint the section twice. */
   function enterSub(s, prep) {
+    if (window.WardrobeNav) WardrobeNav.close(false);
     ui.sub = s;
     ui.filter = '';
     if (els.search) els.search.value = '';
@@ -1022,8 +1038,14 @@ window.WardrobePane = (function () {
     if (els.body) els.body.scrollTop = 0;
   }
 
+  function setToolbarCollapsed(collapsed) {
+    ui.toolbarCollapsed = !!collapsed;
+    $('wd-scale').classList.toggle('ws-controls-collapsed', ui.toolbarCollapsed);
+    // Do not repaint the gallery or editors: a fold must keep drafts and scroll.
+    renderNav();
+  }
+
   function renderNav() {
-    els.nav.textContent = '';
     const counts = {
       outfits: state.soes.outfits.length,
       wardrobes: state.wardrobes.length,
@@ -1033,15 +1055,23 @@ window.WardrobePane = (function () {
     Object.keys(PLUGINS).forEach((id) => {
       try { counts[id] = PLUGINS[id].count(); } catch (e) { counts[id] = 0; }
     });
-    SUBS.forEach((s) => {
-      els.nav.append(h('button', {
-        class: 'wd-subtab' + (ui.sub === s ? ' active' : ''),
-        type: 'button',
-        title: 'Show the ' + (SUB_LABEL[s] || s) + ' section',
-        'aria-current': ui.sub === s ? 'true' : null,
+    if (window.WardrobeNav) {
+      WardrobeNav.mount(els.nav, {
+        current: ui.sub, available: SUBS, labels: SUB_LABEL, counts,
+        memory: ui.navMemory || (ui.navMemory = {}), select: s => enterSub(s),
+        toolbar: {collapsed: ui.toolbarCollapsed, filtered: !!(ui.filter || (ui.sub === 'outfits' && ui.catFilter)),
+          controls: 'wd-toolbar wd-editrow wd-cats', toggle: setToolbarCollapsed},
+      });
+      els.search.placeholder = WardrobeNav.section(ui.sub).search;
+      els.search.setAttribute('aria-label', WardrobeNav.section(ui.sub).search.replace('…', ''));
+    } else {
+      // Older harnesses or an incomplete install still retain every destination.
+      els.nav.textContent = '';
+      SUBS.forEach(s => els.nav.append(h('button', {
+        class: 'wd-subtab' + (ui.sub === s ? ' active' : ''), type: 'button',
         onclick: () => enterSub(s),
-      }, SUB_LABEL[s], h('span', { class: 'wd-subtab-n' }, String(counts[s]))));
-    });
+      }, SUB_LABEL[s], h('span', { class: 'wd-subtab-n' }, String(counts[s])))));
+    }
   }
 
   function renderBanner() {
@@ -1108,11 +1138,22 @@ window.WardrobePane = (function () {
     b.className = 'hidden';
   }
 
-  /** Categories double as filter pills and as the place you rename/delete them. */
+  /** Browse through one filter; reveal rename/delete only through Options. */
   function renderCats() {
     els.cats.textContent = '';
     const show = ui.sub === 'outfits' && (state.categories.length > 0);
-    els.cats.classList.toggle('hidden', !show);
+    const filter = $('wd-category-filter');
+    if (filter) {
+      filter.classList.toggle('hidden', !show);
+      if (show && window.WardrobeNav) WardrobeNav.filter(filter, {
+        current: ui.catFilter, state: ui.categoryPicker, total: state.soes.outfits.length,
+        categories: state.categories.map(c => ({ id:c.id, name:c.name,
+          count:state.outfitMeta.filter(m => (m.categoryIds || []).indexOf(c.id) !== -1).length })),
+        select: id => { ui.catFilter = id; resetPaging(); render(); },
+        manage: { label:'Manage categories', run:() => { ui.editing = true; render(); els.edit.focus(); } },
+      });
+    }
+    els.cats.classList.toggle('hidden', !show || !ui.editing);
     if (!show) return;
 
     els.cats.append(h('button', {
@@ -1173,7 +1214,7 @@ window.WardrobePane = (function () {
     if (p) {
       let n = 0;
       try {
-        p.setFilter(ui.filter);
+        if (!p.ownsSearch) p.setFilter(ui.filter);
         /* `soes` is handed over READ-ONLY so a plug-in can offer the outfit
          * catalogue without opening a second path to SOES. wardrobe-nff.js uses
          * it for "copy this outfit's clothes into an NFF set". */
@@ -1239,15 +1280,14 @@ window.WardrobePane = (function () {
     if (ui.sub === 'outfits') {
       els.empty.append(
         h('span', { class: 'wd-empty-h' }, 'No outfits yet'),
-        'Outfits come from SOES-NG. Build one in its MCM (or ask Claude to make one from your ' +
-        'inventory), then it shows up here to be photographed and pooled.'
+        'Choose New outfit to build one from equipment or copy what you are wearing.'
       );
     } else if (ui.sub === 'wardrobes') {
       els.empty.append(
         h('span', { class: 'wd-empty-h' }, 'No wardrobes yet'),
         'A wardrobe is a pool of outfits someone rotates through. ',
         h('br'), 'Hit ',
-        h('strong', null, '＋ Wardrobe'), ' to make your first one.'
+        h('strong', null, '＋ New pool'), ' to make your first one.'
       );
     } else if (ui.sub === 'inventory') {
       els.empty.append(
@@ -2754,7 +2794,7 @@ window.WardrobePane = (function () {
       from.append(h('button', {
         class: 'ghost-btn', type: 'button', title: 'Fill the basket with what ' + n.name + ' has on',
         onclick: () => {
-          toGame('wdWorn', JSON.stringify({ formId: n.formId, plugin: n.plugin }));
+          toGame('wdWorn', JSON.stringify(whoOf(n)));
           toast('Reading what ' + n.name + ' is wearing…');
         },
       }, n.name.split(' ')[0] + ' is'));
@@ -2807,7 +2847,9 @@ window.WardrobePane = (function () {
   function itemIconFor(item) {
     const key = itemIconKey(item);
     if (!key) return '';
-    return (state.itemIcons && state.itemIcons[key]) || '';
+    const url = (state.itemIcons && state.itemIcons[key]) || '';
+    const attempt = itemIconAttempt(item);
+    return attempt && attempt.phase !== 'ready' && url === attempt.oldUrl ? '' : url;
   }
 
   /* Why this piece will never get a picture, or '' if it still might.
@@ -2819,7 +2861,7 @@ window.WardrobePane = (function () {
   function itemIconFailed(item) {
     const key = itemIconKey(item);
     if (!key) return '';
-    if (state.itemIcons && state.itemIcons[key]) return '';   // it rendered after all
+    if (itemIconFor(item)) return '';   // it rendered after all
     return (state.itemIconFails && state.itemIconFails[key]) || '';
   }
 
@@ -2831,6 +2873,41 @@ window.WardrobePane = (function () {
     toGame('whIconRetry', JSON.stringify({ items: [{ formId: item.formId, plugin: item.plugin,
                                                      name: item.name || item.n || '' }] }));
     return true;
+  }
+
+  /* "Re-render picture" — the render EXISTS but is wrong (Rober, 2026-09-23:
+     a wig tile showing something that was not the wig). C++ deletes the
+     file(s) and bakes it again; the index entry goes now so every consumer
+     shows the honest loading state until the new one lands. */
+  // Shared by Equipped and Wigs. No pane can mistake a cached old URL for a
+  // completed regeneration. The native renderer writes a distinct filename.
+  const itemIconAttempts = Object.create(null);
+  function itemIconAttempt(item) { return itemIconAttempts[itemIconKey(item)] || null; }
+  function rerenderItemIcon(item) {
+    const key = itemIconKey(item);
+    if (!key || typeof window.whIconRetry !== 'function') return false;
+    const before = itemIconAttempts[key];
+    if (before && before.phase === 'pending') return false;
+    const attempt = { phase: 'pending', oldUrl: (state.itemIcons && state.itemIcons[key]) || item.icon || '',
+      name: item.name || item.n || '', why: '' };
+    itemIconAttempts[key] = attempt;
+    if (state.itemIcons) delete state.itemIcons[key];
+    if (state.itemIconFails) delete state.itemIconFails[key];
+    try {
+      window.whIconRetry(JSON.stringify({ force: true, items: [{ formId: item.formId, plugin: item.plugin,
+        name: attempt.name }] }));
+    } catch (e) {
+      attempt.phase = 'failed'; attempt.why = 'Could not send the render request.';
+    }
+    try { document.dispatchEvent(new Event('hd-item-icons')); } catch (e) { /* no DOM */ }
+    // A blocked renderer must not leave a disabled button forever. This never
+    // requeues work automatically, and does not claim the render has failed.
+    setTimeout(function () {
+      if (itemIconAttempts[key] !== attempt || attempt.phase !== 'pending') return;
+      attempt.phase = 'waiting'; attempt.why = 'Still waiting for the renderer. You can try again.';
+      try { document.dispatchEvent(new Event('hd-item-icons')); } catch (e) {}
+    }, 45000);
+    return attempt.phase !== 'failed';
   }
 
   /* A big look at one rendered piece. The rows are 40-some pixels; the render
@@ -3136,11 +3213,12 @@ window.WardrobePane = (function () {
               toast('Changing into “' + one + '”…');
             } }, '👗 Wear'),
           h('button', { class: 'ghost-btn', type: 'button',
-            title: 'Dress up, then E to shoot — the photo becomes this outfit’s card',
+            title: 'Dress up, then Enter to shoot — the photo becomes this outfit’s card',
             onclick: () => {
               toGame('wdPortrait', JSON.stringify({ name: one }));
-              toast('Dressing… then E to shoot, Esc to cancel');
-            } }, '◉ Photo'));
+              toast('Dressing… then Enter to shoot, Esc to cancel');
+            } }, '◉ Photo'),
+          photoBrightness());
       }
       bar.append(
         h('button', { class: many ? 'wd-dress' : 'ghost-btn', type: 'button', title: 'Put ' + (many ? 'these' : 'this') + ' in a wardrobe',
@@ -3688,16 +3766,35 @@ window.WardrobePane = (function () {
         h('span', { class: 'wd-cad-next' }, drawHint)));
     }
 
+    /* Bed outfits use the existing SOES Sleeping slot; one editor owns it. */
+    const bed = (a.locationOverrides || []).find((o) => Number(o.loc) === 1700);
+    const bedValue = bed ? (bed.outfit ? 'o:' + bed.outfit : bed.wardrobeId) : '';
+    const bedHint = bed
+      ? (bed.outfit ? 'Wears this outfit when lying in bed.'
+        : 'Chooses once from this pool each time they lie in bed. Keeps that choice until they get up.') +
+        ' The usual outfit rules resume after getting up. Close SkyManager to apply.'
+      : 'Choose one outfit or a wardrobe pool for lying in bed. Leave off to use the usual outfit rules.';
+    body.append(h('div', { class: 'wd-field wd-bed-field' },
+      h('span', { class: 'wd-field-k' }, 'Bed outfit'),
+      combo('assign-bed', [{ v: '', label: 'Off — use usual outfits' }].concat(overrideOptions(bed || {})),
+        bedValue || '', (v) => { setBedChoice(a, v); touch(); },
+        { placeholder: 'Search outfits and wardrobe pools…', label: 'Bed outfit',
+          blank: 'Off — use usual outfits', empty: 'No matching outfit or pool', clearable: false }),
+      h('span', { class: 'wd-bed-hint' }, bedHint),
+      !npc.tracked || (!npc.wearing && !a.lastOutfit)
+        ? h('span', { class: 'wd-bed-hint' }, 'Choose your usual outfit above and use Dress once to start managing it.') : null));
+
     /* --- location overrides --- */
     if (a.mode !== 'off') {
       const wrap = h('div', { class: 'wd-field' },
         h('span', { class: 'wd-field-k' }, 'Location overrides'));
       (a.locationOverrides || []).forEach((ov, i) => {
+        if (Number(ov.loc) === 1700) return;
         /* 31 location types — the worst offender of the lot for a bare
            dropdown, and it sits in the same row as the wardrobe field, so it
            gets the same widget or the row reads as two different controls. */
         const locKey = 'ov-loc-' + i, wKey = 'ov-w-' + i;
-        const locSel = combo(locKey, LOCATIONS.map((l) => ({ v: String(l.v), label: l.n })),
+        const locSel = combo(locKey, LOCATIONS.filter((l) => l.v !== 1700).map((l) => ({ v: String(l.v), label: l.n })),
           String(Number(ov.loc) || 0), (v) => { ov.loc = Number(v); touch(); },
           { placeholder: 'Type to search places…', label: 'Where',
             empty: 'No place matches',
@@ -3805,26 +3902,31 @@ window.WardrobePane = (function () {
   function setSheetFace(npc) {
     const img = els.sheetFace;
     if (!img) return;
-    const p = npc.portrait ? null : portraitFor(npc);
-    const plain = npc.portrait || (p ? 'portraits/' + p.file : '');
-    const want = plain ? (npc.portrait ? plain : plain + '?v=' + (p.mtime || 0)) : '';
+    const frame = img.parentElement;
+    function hideFace(hidden) {
+      img.classList.toggle('hidden', hidden);
+      if (frame && frame.id === 'wd-sheet-face-frame') frame.classList.toggle('hidden', hidden);
+    }
+    const p = portraitFor(npc);
+    const plain = p ? (p.abs ? p.file : 'portraits/' + p.file) : (npc.portrait || '');
+    const want = plain ? (!p || p.abs ? plain : plain + '?v=' + (p.mtime || 0)) : '';
     if (want === sheetFaceSrc) return;         // already showing this exact face
     sheetFaceSrc = want;
-    if (!want) { img.classList.add('hidden'); img.removeAttribute('src'); return; }
+    if (!want) { hideFace(true); img.removeAttribute('src'); return; }
     let retried = false;
     img.onerror = function () {
       if (!retried && plain !== want) { retried = true; img.src = plain; return; }
       glog('portrait failed to load: ' + plain);
       img.onerror = null;
-      img.classList.add('hidden');
+      hideFace(true);
     };
-    img.onload = function () { img.classList.remove('hidden'); };
+    img.onload = function () { hideFace(false); };
     img.src = want;
     /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
-    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, plain);
+    if (window.HDFaceFit) { if (p && p.abs) HDFaceFit.ensure(img, plain); else HDFaceFit.paintPortrait(img, plain); }
     img.alt = '';
     img.title = npc.name || '';
-    img.classList.remove('hidden');
+    hideFace(false);
   }
 
   /* Effective re-roll cadence for an assignment: hers, unless she inherits the
@@ -3897,6 +3999,14 @@ window.WardrobePane = (function () {
     return opts;
   }
 
+  function setBedChoice(a, value) {
+    a.locationOverrides = (a.locationOverrides || []).filter((o) => Number(o.loc) !== 1700);
+    if (!value) return;
+    a.locationOverrides.push(String(value).indexOf('o:') === 0
+      ? { loc: 1700, outfit: String(value).slice(2), wardrobeId: '' }
+      : { loc: 1700, wardrobeId: value, outfit: '' });
+  }
+
   /* ============================================================ actions = */
 
   /* ---- the two mode switches, as FUNCTIONS ----------------------------
@@ -3937,13 +4047,26 @@ window.WardrobePane = (function () {
       : 'Nobody manages ' + npc.name + '\u2019s clothes now' };
   }
 
+  /* Who an op is ABOUT, on the wire. `liveFormId` rides along whenever C++ put
+     one on the row: Follower Organizer cannot persist a 0xFF reference and files
+     the follower's BASE NPC_ record instead, so her stored id resolves to a form
+     but never to an actor and every op here answered "That person isn't loaded"
+     about somebody standing in front of you. FO sends the reference it found,
+     NpcsJson passes it through, and this echoes it back (src/wardrobe.cpp,
+     ResolveLive). Undefined on an ordinary row, where the payload is unchanged.
+     It is NEVER the row's identity — `key` and `formId` still are, because a
+     0xFF id does not survive the session. */
+  function whoOf(npc) {
+    return { formId: npc.formId, plugin: npc.plugin, liveFormId: npc.liveFormId || '' };
+  }
+
   function setTrackedFor(key, on) {
     const npc = npcByKey(key);
     if (!npc) return { ok: false, msg: 'The Wardrobe hasn\u2019t heard of her yet' };
     const a = assignFor(keyOf(npc));
     if (on && (!a || a.mode === 'off'))
       return { ok: false, msg: 'Give them an outfit first \u2014 SOES strips a tracked actor it can\u2019t dress.' };
-    toGame('wdTrack', JSON.stringify({ formId: npc.formId, plugin: npc.plugin, track: !!on }));
+    toGame('wdTrack', JSON.stringify(Object.assign(whoOf(npc), { track: !!on })));
     return { ok: true, msg: on ? 'Tracking ' + npc.name + ' in SOES\u2026'
                               : 'SOES leaves ' + npc.name + ' alone now' };
   }
@@ -3993,7 +4116,7 @@ window.WardrobePane = (function () {
       return { ok: false, msg: 'Assign an outfit or a wardrobe to her first' };
     if (!state.soes.available)
       return { ok: false, msg: 'SOES-NG isn\u2019t answering \u2014 nothing to dress her with' };
-    toGame('wdDress', JSON.stringify({ formId: npc.formId, plugin: npc.plugin }));
+    toGame('wdDress', JSON.stringify(whoOf(npc)));
     return { ok: true, msg: 'Dressing ' + npc.name + '\u2026' };
   }
   /* ---- ⚡ Quick apply (the F7 card's outfit dock, 2026-08-11) -------------
@@ -4104,7 +4227,7 @@ window.WardrobePane = (function () {
       saveNow();
       render();
       setTimeout(() => {
-        toGame('wdDress', JSON.stringify({ formId: npc.formId, plugin: npc.plugin }));
+        toGame('wdDress', JSON.stringify(whoOf(npc)));
         if (typeof andThen === 'function') andThen();
       }, 160);
     };
@@ -4132,8 +4255,7 @@ window.WardrobePane = (function () {
     if (npc.tracked)
       return { ok: false, msg: 'SOES-NG is managing ' + (npc.name || 'her')
         + ' — it would put its own outfit back within seconds. Switch her to ○ Nobody first.' };
-    toGame('wdGiveWear', JSON.stringify({
-      formId: npc.formId, plugin: npc.plugin, outfit: name }));
+    toGame('wdGiveWear', JSON.stringify(Object.assign(whoOf(npc), { outfit: name })));
     return { ok: true, msg: 'Putting “' + name + '” straight on ' + (npc.name || 'her') + '…' };
   }
 
@@ -4220,7 +4342,7 @@ window.WardrobePane = (function () {
   function dressNow(npc) {
     const a = assignFor(keyOf(npc));
     if (!a || a.mode === 'off') { toast('Assign an outfit or wardrobe first.'); return; }
-    toGame('wdDress', JSON.stringify({ formId: npc.formId, plugin: npc.plugin }));
+    toGame('wdDress', JSON.stringify(whoOf(npc)));
     toast('Dressing ' + npc.name + '…');
   }
 
@@ -4484,7 +4606,7 @@ window.WardrobePane = (function () {
            second later from wherever you were standing. */
         label: '◉ Photo this outfit', go: () => {
           toGame('wdPortrait', JSON.stringify({ name: name }));
-          toast('Dressing… then E to shoot, Esc to cancel');
+          toast('Dressing… then Enter to shoot, Esc to cancel');
         },
       },
       /* Only when there IS a photo — an "adjust framing" that opens on nothing
@@ -4629,6 +4751,7 @@ window.WardrobePane = (function () {
       const c = { id: newId('c'), name: 'New category', hue: HUES[state.categories.length % HUES.length] };
       state.categories.push(c);
       ui.editing = true;                 // the pills are only editable in edit mode
+      ui.toolbarCollapsed = false;      // a newly created category needs its name field
       touch();
       const f = els.pane.querySelector('[data-k="cat:' + cssEsc(c.id) + '"]');
       if (f) { f.focus(); f.select(); }
@@ -4709,6 +4832,8 @@ window.WardrobePane = (function () {
     if (window.HDScale) HDScale.mount($('wd-img-row'), 'wardrobe', 'img');
 
     els.add.addEventListener('click', addForSub);
+    els.newfit = $('wd-newfit');
+    if (els.newfit) els.newfit.addEventListener('click', () => openNewOutfit());
     els.catSearch.addEventListener('input', () => {
       ui.builderFilter = els.catSearch.value.trim();
       renderBuilder();
@@ -4754,12 +4879,18 @@ window.WardrobePane = (function () {
        Escape reaches app.js. Same idiom as finances-pane.js. */
     window.addEventListener('keydown', (e) => {
       if (!ui.shown) return;
+      if (e.defaultPrevented) return;
 
       /* FIRST, ahead of everything: the crop editor claims arrows, ± and
          Enter/Esc while it is up. Below this line "any printable key jumps to
          search" would eat '+' and '-', and the Escape cascade would close a
          dialog behind the overlay instead of the overlay. */
       if (artBox && artKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
+
+      /* The New-outfit popout owns the keyboard while it is up (1/2/3, arrows,
+         Enter, Esc). Ahead of the Escape cascade so Esc shuts IT, not a dialog
+         behind it. */
+      if (nfBox) { nfKey(e); return; }
 
       if (e.key === 'Escape') {
         if (!els.menu.classList.contains('hidden')) { hideMenu(); e.stopPropagation(); return; }
@@ -4802,9 +4933,8 @@ window.WardrobePane = (function () {
       /* [ and ] cycle sub-tabs, matching Finances. Never while typing. */
       if ((e.key === '[' || e.key === ']') && !inField && !ui.builderId && !ui.sheetKey) {
         const i = SUBS.indexOf(ui.sub);
-        ui.sub = SUBS[(i + (e.key === ']' ? 1 : SUBS.length - 1)) % SUBS.length];
-        ui.filter = ''; els.search.value = ''; resetPaging();
-        render(); e.preventDefault();
+        enterSub(SUBS[(i + (e.key === ']' ? 1 : SUBS.length - 1)) % SUBS.length]);
+        e.preventDefault();
         return;
       }
 
@@ -4812,7 +4942,9 @@ window.WardrobePane = (function () {
        * someone in a long roster without reaching for the mouse. */
       if (!inField && !ui.builderId && !ui.sheetKey &&
           e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey && /\S/.test(e.key)) {
-        els.search.focus();
+        if (ui.toolbarCollapsed) setToolbarCollapsed(false);
+        const search = plugin() && plugin().ownsSearch ? els.list.querySelector('.wf-search') : els.search;
+        if (search) search.focus();
       }
     }, true);
 
@@ -4826,6 +4958,7 @@ window.WardrobePane = (function () {
   }
 
   function toggleEdit() {
+    if (ui.toolbarCollapsed) setToolbarCollapsed(false);
     ui.editing = !ui.editing;
     ui.armed = null;
     render();
@@ -4836,14 +4969,21 @@ window.WardrobePane = (function () {
     if (!ui.inited) init();
     els.pane.classList.remove('hidden');
     toGame('wdGet', '');
+    toGame('wdPhotoExp', '');   // the outfit photo's brightness, for the selection bar
     const p = plugin();
     if (p) { try { p.onEnter(); } catch (e) { console.log('[wardrobe] sub enter', ui.sub, e); } }
     render();
-    setTimeout(() => { if (els.search) els.search.focus(); }, 30);
+    setTimeout(() => {
+      const search = ui.toolbarCollapsed ? els.nav.querySelector('.ws-fold')
+        : plugin() && plugin().ownsSearch ? els.list.querySelector('.wf-search') : els.search;
+      if (search) search.focus();
+    }, 30);
   }
   function onHide() {
+    if (window.WardrobeNav) WardrobeNav.close(false);
     ui.shown = false;
     hideMenu();
+    closeNewOutfit();   // body-anchored, so hiding the pane would not hide it
     /* The crop overlay lives on document.body, so hiding the pane does NOT
        hide it — left behind it would sit over the deck swallowing every click,
        and its document-level drag listeners would outlive it. */
@@ -4856,6 +4996,7 @@ window.WardrobePane = (function () {
     try {
       if (fn === 'wdOpen') {
         const j = typeof payload === 'string' ? JSON.parse(payload) : (payload || {});
+        state.flair = j.flair || {};
         state.categories = j.categories || [];
         state.outfitMeta = j.outfitMeta || [];
         state.wardrobes = (j.wardrobes || []).map((w) => (w.outfits ? w : Object.assign({ outfits: [] }, w)));
@@ -4961,6 +5102,12 @@ window.WardrobePane = (function () {
         /* The outfit dock is drawn OVER the deck, so a toast can land behind
            it. Put the same verdict on the surface you are actually looking at. */
         if (window.HDOutfit && HDOutfit.isOpen() && HDOutfit.report) HDOutfit.report(j);
+      } else if (fn === 'wdPhotoExpInfo') {
+        const j = typeof payload === 'string' ? JSON.parse(payload) : (payload || {});
+        if (typeof j.exposure === 'number') photoExp.value = j.exposure;
+        if (typeof j.max === 'number' && j.max > 0) photoExp.max = j.max;
+        photoExp.known = true;
+        syncPhotoBrightness();
       } else if (fn === 'wdSaved') {
         /* nothing to do — the view is already the source of truth for its slice */
       } else if (fn === 'wdShow') {
@@ -4979,6 +5126,9 @@ window.WardrobePane = (function () {
   window.wdState = (p) => receive('wdState', p);
   window.wdResult = (p) => receive('wdResult', p);
   window.wdSaved = (p) => receive('wdSaved', p);
+  /* Reply to wdPhotoExp / wdPhotoExpSet. Its own name in this direction, per
+     the two-names rule. */
+  window.wdPhotoExpInfo = (p) => receive('wdPhotoExpInfo', p);
   window.wdShow = () => receive('wdShow', '');
   window.wdWornList = (p) => receive('wdWornList', p);
   /* The importer's two lists. Request names are wdOutfitMods / wdOutfitsFor;
@@ -5012,6 +5162,16 @@ window.WardrobePane = (function () {
       const nk = Object.keys(next);
       const fails = (j && j.failed) || {};
       const prevFails = state.itemIconFails || {};
+      Object.keys(itemIconAttempts).forEach(function (key) {
+        const attempt = itemIconAttempts[key];
+        if (next[key] && next[key] !== attempt.oldUrl) {
+          attempt.phase = 'ready'; attempt.why = '';
+        } else if (fails[key]) {
+          attempt.phase = 'failed'; attempt.why = fails[key];
+        } else if (attempt.phase !== 'ready' && next[key] === attempt.oldUrl) {
+          delete next[key]; // a queued pre-retry index push still carried the old PNG
+        }
+      });
       const fk = Object.keys(fails);
       changed = nk.length !== Object.keys(prev).length || nk.some((k) => prev[k] !== next[k]) ||
                 fk.length !== Object.keys(prevFails).length || fk.some((k) => prevFails[k] !== fails[k]);
@@ -5042,8 +5202,13 @@ window.WardrobePane = (function () {
    *
    * We keep our own copy rather than reading FolPane's: the standalone harness
    * has no Followers pane at all, and this is the only feed that gives it faces. */
+  window.addEventListener('hd-portraits-changed', function () {
+    sheetFaceSrc = null;
+    if (ui.shown && ui.inited) render();
+  });
   const prevPortraits = window.fdPortraits;
   window.fdPortraits = function (list) {
+    const result = typeof prevPortraits === 'function' ? prevPortraits.apply(this, arguments) : undefined;
     try {
       const raw = typeof list === 'string' ? JSON.parse(list) : list;
       const arr = Array.isArray(raw) ? raw
@@ -5070,8 +5235,7 @@ window.WardrobePane = (function () {
       sheetFaceSrc = null;               // a re-capture must be allowed to repaint
       if (ui.shown && ui.inited) render();
     } catch (e) { /* the Followers pane logs its own parse failures */ }
-    if (typeof prevPortraits === 'function') return prevPortraits.apply(this, arguments);
-    return undefined;
+    return result;
   };
 
   /* Chain the deck's close hook so Esc-out cleans us up too. */
@@ -5197,18 +5361,18 @@ window.WardrobePane = (function () {
        (wardrobe-nff.js adds one). Asserting an exact total made a legitimate
        plug-in look like a regression, so assert OUR four are all there and that
        every tab — ours or a plug-in's — carries a count. */
-    T('the four SOES sub-tabs render', () => q('#wd-nav .wd-subtab').length >= 4 &&
-      ['Outfits', 'Wardrobes', 'People', 'Inventory'].every((label) =>
-        Array.prototype.some.call(q('#wd-nav .wd-subtab'),
-          (b) => b.firstChild && b.firstChild.textContent === label)));
+    T('all Wardrobe destinations remain in the collapsed tool menu', () => window.WardrobeNav
+      ? !!els.nav.querySelector('.ws-menu').hidden &&
+        ['outfits','wardrobes','inventory','npcs'].every(id => !!els.nav.querySelector('.ws-choice[data-section="'+id+'"]'))
+      : q('#wd-nav .wd-subtab').length >= 4);
     /* --- the People redesign (2026-08-03) --- */
     T('a HIDDEN plug-in never becomes a tab', () => {
       /* wardrobe-nff registers hidden:true since its surface folded into
          People — a fifth tab reappearing means the flag was dropped.
          nfftab=1 is the NFF harness deliberately re-showing it to drive its
          tab-based checks, so the assertion inverts there. */
-      const shown = Array.prototype.some.call(q('#wd-nav .wd-subtab'),
-        (b) => b.firstChild && b.firstChild.textContent === 'NFF');
+      const shown = Array.prototype.some.call(q('#wd-nav .ws-choice,#wd-nav .wd-subtab'),
+        (b) => b.dataset.section === 'nff' || (b.firstChild && b.firstChild.textContent === 'NFF'));
       return location.search.indexOf('nfftab=1') !== -1 ? shown : !shown;
     });
     T('one person appears ONCE even when the feed lists her twice', () => {
@@ -5387,8 +5551,9 @@ window.WardrobePane = (function () {
       return ok || 'no lightbox, or the click also picked the item';
     });
 
-    T('every sub-tab shows a count', () =>
-      q('#wd-nav .wd-subtab-n').length === q('#wd-nav .wd-subtab').length);
+    T('every section choice shows a count', () => window.WardrobeNav
+      ? q('#wd-nav .ws-choice .ws-count').length === SUBS.length
+      : q('#wd-nav .wd-subtab-n').length === q('#wd-nav .wd-subtab').length);
 
     /* --- outfits --- */
     setSub('outfits');
@@ -5538,13 +5703,40 @@ window.WardrobePane = (function () {
       const f = document.querySelector('#wd-sheet-body .wd-loc-row .wd-combo');
       return f && f.textContent.indexOf('Player home') !== -1;
     });
-    T('every SOES location type is offered', () => {
+    T('other SOES locations are offered; bed has its dedicated control', () => {
       const btn = document.querySelector('#wd-sheet-body .wd-loc-row .wd-combo-btn');
       btn.click();
       const n = q('#wd-sheet-body .wd-loc-row .wd-combo.open .wd-combo-list .wd-pick').length;
       comboClose(false);
-      return n === LOCATIONS.length;
+      return n === LOCATIONS.length - 1;
     });
+    T('the bed outfit field is searchable and starts off', () => {
+      const field = document.querySelector('.wd-bed-field');
+      return field && field.textContent.indexOf('Off — use usual outfits') !== -1 &&
+        field.querySelector('.wd-combo-btn');
+    });
+    const bedAssign = state.assignments[0];
+    const usualMode = bedAssign.mode, usualPool = bedAssign.wardrobeId;
+    setBedChoice(bedAssign, 'o:Sfancy Blue'); renderSheet();
+    T('bed pins an outfit without changing the usual assignment', () =>
+      bedAssign.mode === usualMode && bedAssign.wardrobeId === usualPool &&
+      bedAssign.locationOverrides.some((o) => o.loc === 1700 && o.outfit === 'Sfancy Blue'));
+    T('the dedicated control shows an existing Sleeping override', () =>
+      document.querySelector('.wd-bed-field').textContent.indexOf('Sfancy Blue') !== -1);
+    setBedChoice(bedAssign, 'w2'); renderSheet();
+    T('bed can choose a pool and replaces the prior bed outfit', () => {
+      const rules = bedAssign.locationOverrides.filter((o) => o.loc === 1700);
+      return rules.length === 1 && rules[0].wardrobeId === 'w2' && !rules[0].outfit;
+    });
+    T('pool help explains one choice per visit and restoration', () => {
+      const help = document.querySelector('.wd-bed-field').textContent;
+      return help.indexOf('Chooses once') !== -1 && help.indexOf('after getting up') !== -1;
+    });
+    T('sleeping is not duplicated in generic override rows', () =>
+      q('#wd-sheet-body .wd-loc-row').length === 1);
+    setBedChoice(bedAssign, ''); renderSheet();
+    T('turning bed off preserves other location rules', () =>
+      bedAssign.locationOverrides.length === 1 && bedAssign.locationOverrides[0].loc === 5600);
     closeSheet();
     T('sheet closes', () => els.sheet.classList.contains('hidden'));
 
@@ -5642,11 +5834,11 @@ window.WardrobePane = (function () {
     ui.editing = false; render();
 
     /* --- category filter pills --- */
-    T('category pills render outside edit mode', () => q('#wd-cats .wd-cat-pill').length === 4);
+    T('category management is hidden outside edit mode', () => els.cats.classList.contains('hidden') && !!$('wd-category-filter').querySelector('.ws-trigger'));
     ui.catFilter = 'c1'; resetPaging(); render();
     T('a category pill filters the grid', () => q('#wd-list .wd-card').length === 2);
-    T('the active pill is marked pressed',
-      () => document.querySelectorAll('#wd-cats .wd-cat-pill.on').length === 1);
+    T('the selected category is labelled on its closed filter',
+      () => $('wd-category-filter').querySelector('.ws-trigger').textContent.includes(catById('c1').name));
     ui.catFilter = ''; render();
     T('clearing the pill restores everything', () => q('#wd-list .wd-card').length === 10);
 
@@ -5869,6 +6061,41 @@ window.WardrobePane = (function () {
       return ok;
     });
     T('the ＋ button is hidden on Inventory', () => els.add.classList.contains('hidden'));
+
+    /* --- ＋ New outfit: the front door to the builder (2026-09-23) --- */
+    T('＋ New outfit is hidden off the Outfits section', () => els.newfit.classList.contains('hidden'));
+    setSub('outfits');
+    T('＋ New outfit shows on Outfits', () => !els.newfit.classList.contains('hidden'));
+    openNewOutfit();
+    T('the popout opens on the body with three equal choices',
+      () => !!nfBox && nfBox.parentNode === document.body && nfBox.querySelectorAll('.wd-nf-tile').length === 3);
+    T('Esc closes the popout and nothing else', () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return !nfBox && ui.sub === 'outfits';
+    });
+    openNewOutfit();
+    T('key 2 lands on every armour in the game with the basket open', () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', bubbles: true }));
+      return !nfBox && ui.sub === 'inventory' && ui.invSource === 'all' && !!ui.build;
+    });
+    ui.build = null;
+    setSub('outfits');
+    openNewOutfit();
+    T('choice 1 lands on what you carry with the basket open', () => {
+      nfBox.querySelector('.wd-nf-tile').click();
+      return !nfBox && ui.sub === 'inventory' && ui.invSource === 'carried' && !!ui.build;
+    });
+    ui.build = null;
+
+    /* --- outfit-photo brightness --- */
+    T('brightness phrase reads in stops', () =>
+      photoExpPhrase(0) === 'as rendered' && photoExpPhrase(0.5) === '+0.5 stops' && photoExpPhrase(-1) === '−1 stop');
+    T('wdPhotoExpInfo updates the control state', () => {
+      receive('wdPhotoExpInfo', JSON.stringify({ exposure: 0.75, max: 2 }));
+      const ok = photoExp.value === 0.75 && photoExp.max === 2;
+      receive('wdPhotoExpInfo', JSON.stringify({ exposure: 0, max: 3 }));
+      return ok;
+    });
 
     /* --- copy what someone is wearing --- */
     setSub('inventory');
@@ -6348,23 +6575,23 @@ window.WardrobePane = (function () {
       q('#wd-list .wd-npc'), (r) => r.textContent.indexOf(nm) !== -1);
 
     T('an npc row renders her real face, not the glyph', () => {
-      const img = rowFor('Camilla').querySelector('img.wd-npc-face');
+      const img = rowFor('Camilla').querySelector('.wd-npc-face img');
       return !!img && img.getAttribute('src').indexOf('portraits/camilla-valerius.png?v=') === 0;
     });
     T('the row face is cache-busted with the file mtime', () =>
-      /\?v=1730000001$/.test(rowFor('Camilla').querySelector('img.wd-npc-face').getAttribute('src')));
+      /\?v=1730000001$/.test(rowFor('Camilla').querySelector('.wd-npc-face img').getAttribute('src')));
     T('a renamed follower still gets her original photo (file, not slug+ext)', () =>
-      rowFor('Lydia').querySelector('img.wd-npc-face').getAttribute('src').indexOf('lydia~1.png') === 0 + 'portraits/'.length);
+      rowFor('Lydia').querySelector('.wd-npc-face img').getAttribute('src').indexOf('lydia~1.png') === 0 + 'portraits/'.length);
     T('someone with no portrait falls back to the person glyph', () => {
       const r = rowFor('Ysolda');
-      return !r.querySelector('img.wd-npc-face') && !!r.querySelector('.wd-npc-face.ph svg');
+      return !r.querySelector('.wd-npc-face img') && !!r.querySelector('.wd-npc-face.ph svg');
     });
 
     /* Ultralight's loader can treat "?v=<mtime>" as part of the FILENAME
        (proven in-game 2026-07-28), so the FIRST error retries the plain path
        and only a second one gives up. Synthetic events: a real 404 is async and
        would land after this synchronous run. */
-    const face = rowFor('Camilla').querySelector('img.wd-npc-face');
+    const face = rowFor('Camilla').querySelector('.wd-npc-face img');
     T('a failed portrait retries the plain path once', () => {
       face.dispatchEvent(new Event('error'));
       return face.getAttribute('src') === 'portraits/camilla-valerius.png';
@@ -6372,7 +6599,7 @@ window.WardrobePane = (function () {
     T('a second failure falls back to the glyph rather than a broken image', () => {
       face.dispatchEvent(new Event('error'));
       return !!rowFor('Camilla').querySelector('.wd-npc-face.ph') &&
-        !rowFor('Camilla').querySelector('img.wd-npc-face');
+        !rowFor('Camilla').querySelector('.wd-npc-face img');
     });
 
     /* the sheet header wears the same face */
@@ -6724,8 +6951,8 @@ window.WardrobePane = (function () {
     /* At 160% in a 640px panel the sub-tab row needs more width than the pane
        has, and #wd-pane CLIPS — the last two tabs became unreachable, not just
        ugly. Wrapping is what makes the scaler safe at the small end. */
-    T('the sub-tab row wraps, so scaling up can never hide a tab',
-      () => getComputedStyle($('wd-nav')).flexWrap === 'wrap');
+    T('navigation cannot grow a second row of visible tabs',
+      () => window.WardrobeNav ? $('wd-nav').querySelectorAll('.ws-trigger').length === 1 && $('wd-nav').querySelector('.ws-menu').hidden : getComputedStyle($('wd-nav')).flexWrap === 'wrap');
     T('the scale control lives in edit mode, not in the way', () => {
       ui.editing = false; render();
       const hidden = $('wd-editrow').classList.contains('hidden');
@@ -7206,10 +7433,10 @@ window.WardrobePane = (function () {
 
     T('every section is findable by its own name', () => {
       const labels = omniRows().map((r) => r.label);
-      return ['Outfits', 'Wardrobes', 'People', 'Inventory'].every((n) => labels.indexOf(n) !== -1);
+      return SUBS.every(id => labels.indexOf(window.WardrobeNav ? WardrobeNav.section(id, SUB_LABEL[id]).label : SUB_LABEL[id]) !== -1);
     });
     T('firing a section row switches to it', () => {
-      omniRow('Inventory').run();
+      omniRow(window.WardrobeNav ? 'Outfit builder' : 'Inventory').run();
       return ui.sub === 'inventory';
     });
     T('the settings panel is a result, and its row OPENS it', () => {
@@ -7467,10 +7694,10 @@ window.WardrobePane = (function () {
       SUBS.forEach((s) => {
         const go = () => omniOpenAt(s);
         items.push({
-          label: SUB_LABEL[s] || s,
+          label: window.WardrobeNav ? WardrobeNav.section(s, SUB_LABEL[s]).label : (SUB_LABEL[s] || s),
           detail: 'Wardrobe section',
           kind: 'section',
-          keywords: 'wardrobe section tab ' + (SUB_TERMS[s] || ''),
+          keywords: 'wardrobe section tab ' + (SUB_TERMS[s] || '') + ' ' + (SUB_LABEL[s] || '') + ' ' + (window.WardrobeNav ? WardrobeNav.section(s).terms : ''),
           run: go, jump: go,
         });
       });
@@ -7620,11 +7847,160 @@ window.WardrobePane = (function () {
     return { ok: true, name: name, count: n };
   }
 
+  /* ============================================ new outfit + photo light = */
+
+  /* ＋ New outfit (Rober, 2026-09-23: "why no option to add new wardrobe? …
+     could do a + gold button … then show me like an option to use finder to
+     search items or pick items from my inventory"). The builder already
+     existed (the Inventory section's basket, both armour sources, and the
+     "copy what I'm wearing" fill) but was reachable only from Omni search.
+     This is its front door: a body-anchored popout with three equal choices,
+     each landing in the Inventory section with the basket open. */
+  let nfBox = null;
+  const NF_CHOICES = [
+    { key: '1', icon: 'icons/custom/hk-trade-inventory.png', title: 'Pick from my inventory',
+      text: 'Tap the pieces you carry to drop them in the basket, name it, Build.',
+      go: () => enterSub('inventory', () => { ui.invSource = 'carried'; ui.invSlot = ''; buildState(); }) },
+    { key: '2', icon: 'icons/custom/hk-additem-search.png', title: 'Search every item in the game',
+      text: 'Browse every armour piece your load order defines, mod by mod, and search it by name.',
+      go: () => enterSub('inventory', () => {
+        ui.invSource = 'all'; ui.invSlot = ''; buildState();
+        if (!state.armorMods.length) toGame('wdArmorMods', '');
+      }) },
+    { key: '3', icon: 'icons/custom/res-armor.png', title: 'Copy what I’m wearing',
+      text: 'Fill the basket with everything you have on right now, then trim it.',
+      go: () => {
+        enterSub('inventory', () => { ui.invSource = 'carried'; ui.invSlot = ''; buildState(); });
+        toGame('wdWorn', '{}');
+        toast('Reading what you’re wearing…');
+      } },
+  ];
+
+  function openNewOutfit() {
+    closeNewOutfit();
+    const tiles = NF_CHOICES.map((c) => h('button', {
+      class: 'wd-nf-tile', type: 'button', data: { key: c.key },
+      onclick: () => pickNewOutfit(c),
+    },
+      /* The deck's own gold line icons, drawn at 2x their box so Ultralight's
+         layout-size raster stays crisp. */
+      h('img', { class: 'wd-nf-icon', src: c.icon, width: '64', height: '64', alt: '', draggable: 'false' }),
+      h('span', { class: 'wd-nf-title' }, c.title),
+      h('span', { class: 'wd-nf-text' }, c.text),
+      h('span', { class: 'wd-nf-key' }, 'Press ' + c.key)));
+    const card = h('div', { class: 'wd-nf-card', role: 'dialog', 'aria-modal': 'true',
+      'aria-label': 'New outfit', onclick: (e) => e.stopPropagation() },
+      h('div', { class: 'wd-nf-head' },
+        h('span', { class: 'wd-nf-h' }, 'New outfit'),
+        h('button', { class: 'ghost-btn wd-nf-x', type: 'button', title: 'Close (Esc)',
+          'aria-label': 'Close', onclick: closeNewOutfit }, '✕')),
+      h('p', { class: 'wd-nf-sub' },
+        'Choose where the pieces come from. You finish in the build basket: name it and press Build.'),
+      h('div', { class: 'wd-nf-grid' }, tiles));
+    nfBox = h('div', { class: 'wd-nf-back', onclick: closeNewOutfit }, card);
+    document.body.appendChild(nfBox);
+    setTimeout(() => { const t = nfBox && nfBox.querySelector('.wd-nf-tile'); if (t) t.focus(); }, 20);
+  }
+
+  function closeNewOutfit() {
+    if (nfBox) { nfBox.remove(); nfBox = null; }
+  }
+
+  function pickNewOutfit(c) {
+    closeNewOutfit();
+    try { c.go(); } catch (e) { console.log('[wardrobe] new outfit', c.key, e); }
+  }
+
+  function nfKey(e) {
+    const tiles = Array.from(nfBox.querySelectorAll('.wd-nf-tile'));
+    const at = tiles.indexOf(document.activeElement);
+    const choice = NF_CHOICES.find((c) => c.key === e.key);
+    if (e.key === 'Escape') {
+      closeNewOutfit();
+    } else if (choice) {
+      pickNewOutfit(choice);
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
+      tiles[(at + 1 + tiles.length) % tiles.length].focus();
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey)) {
+      tiles[(at - 1 + tiles.length) % tiles.length].focus();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      if (at >= 0) pickNewOutfit(NF_CHOICES[at]);
+    } else {
+      return;   // anything else (the deck's own keys) is not ours
+    }
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  /* Outfit-photo BRIGHTNESS (Rober, 2026-09-23: "wardrobe gear should have a
+     brightness slider as well for portrait"). Outfit photos go through photo
+     mode, whose exposure is `photoexposure` in icons/custom/capture.ini — a
+     setting that existed with nothing in the deck to move it. Stops, clamped by
+     C++ to ±max; C++ answers with the truth from disk (wdPhotoExpInfo). Drawn in
+     the selection bar beside ◉ Photo, and updated in place while dragging so a
+     re-render never fights the thumb. */
+  const photoExp = { value: 0, max: 3, known: false };
+  let photoExpTimer = 0;
+  const PHOTO_EXP_STEP = 0.25;
+
+  function photoExpPhrase(v) {
+    if (!v) return 'as rendered';
+    return (v > 0 ? '+' : '−') + String(Number(Math.abs(v).toFixed(2))) +
+      ' stop' + (Math.abs(v) === 1 ? '' : 's');
+  }
+
+  function photoBrightness() {
+    const val = h('span', { class: 'wd-bright-val' + (photoExp.value ? ' on' : '') },
+      photoExpPhrase(photoExp.value));
+    const range = h('input', {
+      class: 'wd-bright-range', type: 'range',
+      min: String(-photoExp.max), max: String(photoExp.max), step: String(PHOTO_EXP_STEP),
+      value: String(photoExp.value), 'aria-label': 'Outfit photo brightness',
+      title: 'Brightness of the next outfit photo, in camera stops. Applied to the picture you take, not to the game.',
+      oninput: (e) => {
+        photoExp.value = Math.round(Number(e.target.value) / PHOTO_EXP_STEP) * PHOTO_EXP_STEP;
+        syncPhotoBrightness();
+        clearTimeout(photoExpTimer);
+        photoExpTimer = setTimeout(() => {
+          toGame('wdPhotoExpSet', JSON.stringify({ exposure: photoExp.value }));
+        }, 180);
+      },
+    });
+    const reset = h('button', {
+      class: 'ghost-btn wd-bright-reset' + (photoExp.value ? '' : ' hidden'), type: 'button',
+      title: 'Back to the frame as rendered',
+      onclick: () => {
+        photoExp.value = 0;
+        syncPhotoBrightness();
+        toGame('wdPhotoExpSet', JSON.stringify({ exposure: 0 }));
+      },
+    }, '↺');
+    return h('span', { class: 'wd-bright' },
+      h('span', { class: 'wd-bright-k' }, 'Photo brightness'), range, val, reset);
+  }
+
+  /* Repaint every brightness control in place (value, label, reset) without a
+     full render, so a drag is never interrupted by the bar being rebuilt. */
+  function syncPhotoBrightness() {
+    document.querySelectorAll('.wd-bright').forEach((b) => {
+      const r = b.querySelector('.wd-bright-range');
+      const v = b.querySelector('.wd-bright-val');
+      const x = b.querySelector('.wd-bright-reset');
+      if (r) {
+        r.min = String(-photoExp.max); r.max = String(photoExp.max);
+        if (document.activeElement !== r) r.value = String(photoExp.value);
+      }
+      if (v) { v.textContent = photoExpPhrase(photoExp.value); v.classList.toggle('on', !!photoExp.value); }
+      if (x) x.classList.toggle('hidden', !photoExp.value);
+    });
+  }
+
   /* ============================================================ exports = */
 
   return {
     init: init, onShow: onShow, onHide: onHide, receive: receive, wantsPause: wantsPause,
-    toggleEdit: toggleEdit, registerSub: registerSub,
+    toggleEdit: toggleEdit, registerSub: registerSub, refresh: render,
+    openSection: function (id) { if (SUBS.indexOf(id) >= 0 || PLUGINS[id]) enterSub(id); },
     /* Shared with the Followers tab's F7 quick card (see quickAbout above) so
        the two surfaces run ONE implementation of every op they both offer. */
     quickAbout: quickAbout, quickSetManaged: quickSetManaged, quickTrack: quickTrack,
@@ -7639,12 +8015,16 @@ window.WardrobePane = (function () {
     itemIconFor: itemIconFor,
     itemIconFailed: itemIconFailed,
     retryItemIcon: retryItemIcon,
+    rerenderItemIcon: rerenderItemIcon,
+    itemIconAttempt: itemIconAttempt,
     createOutfitFromItems: createOutfitFromItems,
     nffDataChanged: nffDataChanged,
     /* exposed for the harness + wiring. `_omni` is the search provider itself:
        the harness has no hd-omni.js, so HDOmni.register() never runs there and
        this is the only handle its checks can index() through. */
     _state: state, _ui: ui, _selftest: selftest, _omni: omniProvider,
+    _newOutfit: { open: openNewOutfit, close: closeNewOutfit, box: () => nfBox, choices: NF_CHOICES },
+    _photoExp: { state: photoExp, phrase: photoExpPhrase },
     _picker: { open: openCtxPicker, close: closeCtxPicker, categories: openCategoryPicker },
     _cadence: { list: CADENCE, label: cadenceLabel, index: cadenceIndex },
     _locations: LOCATIONS,

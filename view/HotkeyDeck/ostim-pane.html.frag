@@ -33,10 +33,10 @@
         <span id="os-speed-val">—</span>
         <button id="os-speed-up" class="os-ctl" title="Faster" disabled>Speed ▸</button>
       </span>
-      <button id="os-auto" class="os-ctl" title="OStim auto-mode (read-only here)" disabled>⟳ Auto: OFF</button>
+      <button id="os-auto" class="os-ctl" title="Toggle OStim auto / manual mode" disabled>⟳ Auto: OFF</button>
       <span class="os-ctl-sep" aria-hidden="true"></span>
       <span class="os-ctl-label">Furniture</span>
-      <button id="os-furn-near" class="os-ctl" title="Move the scene onto the nearest furniture" disabled>🛏 Nearby</button>
+      <button id="os-furn-near" class="os-ctl" title="Choose compatible nearby furniture" disabled>🛏 Nearby</button>
       <button id="os-furn-floor" class="os-ctl" title="Move the scene off furniture, onto the floor" disabled>⌞ Floor</button>
       <span class="os-ctl-sep" aria-hidden="true"></span>
       <button id="os-swap" class="os-ctl" title="Swap DOM / SUB roles" disabled>⇄ Swap roles</button>

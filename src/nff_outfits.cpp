@@ -231,6 +231,41 @@ namespace NffOutfits
 			return ActorIdentity::ResolveActor(formId, plugin);
 		}
 
+		/* The same lookup, for a row or a request that may carry a LIVE reference
+		   beside its stored id.
+
+		   Follower Organizer cannot persist a 0xFF reference (no source file, so
+		   FormToString returns "") and files the follower's BASE NPC_ record
+		   instead — which resolves to a form but never to an Actor, so every op
+		   here refused with "Couldn't find that person in the game right now" and
+		   her row drew as a greyed "not loaded" badge. FO now sends the reference
+		   it found for that base as `liveFormId` (DeckAPI.cpp, LoadedActorForBase)
+		   and this is where we spend it.
+
+		   A raw LookupByID, deliberately: `liveFormId` is a full runtime id with
+		   no plugin, so the (local id + plugin) machinery has nothing to work
+		   with — and it is session-only, which is exactly why it is never allowed
+		   to become the row's identity. Empty = the ordinary path, unchanged. */
+		RE::Actor* ResolveLive(const std::string& formId, const std::string& plugin,
+			const std::string& liveId)
+		{
+			if (!liveId.empty()) {
+				RE::FormID id = 0;
+				try {
+					id = static_cast<RE::FormID>(std::stoul(liveId, nullptr, 16));
+				} catch (...) {
+					id = 0;
+				}
+				if (id) {
+					auto* form = RE::TESForm::LookupByID(id);
+					auto* refr = form ? form->As<RE::TESObjectREFR>() : nullptr;
+					if (auto* a = refr ? refr->As<RE::Actor>() : nullptr)
+						return a;
+				}
+			}
+			return ResolveActor(formId, plugin);
+		}
+
 		// ------------------------------------------------------------ VM ------
 		// Read-only Papyrus PROPERTY access — the same technique nff_bridge.cpp
 		// uses and for the same reason: we bind the quest's script object and
@@ -588,6 +623,9 @@ namespace NffOutfits
 		struct Req
 		{
 			std::string formId, plugin;
+			// Echoed back by the view off the npcs row it was drawn from — see
+			// ResolveLive. Empty for every ordinary person.
+			std::string liveFormId;
 			int         type = -1;
 			bool        on   = false;
 			bool        ok   = false;
@@ -601,6 +639,7 @@ namespace NffOutfits
 				return r;
 			r.formId = Trim(j.value("formId", std::string("")));
 			r.plugin = Trim(j.value("plugin", std::string("")));
+			r.liveFormId = Trim(j.value("liveFormId", std::string("")));
 			if (j.contains("type") && j["type"].is_number())
 				r.type = j["type"].get<int>();
 			if (j.contains("on"))
@@ -756,19 +795,28 @@ namespace NffOutfits
 			// carry one and inventing a second resolution rule is how the two
 			// panes would drift.
 			std::string formId, plugin, name, original;
+			/* The reference to RESOLVE her by when `formId` is a BASE record —
+			   which is what Follower Organizer stores for a follower spawned at
+			   runtime (a 0xFF ref has no source file to name, so FO falls back
+			   to her NPC_; see FO DeckAPI.cpp, LoadedActorForBase). Empty for
+			   every ordinary row. Deliberately NOT folded into `formId`: that
+			   one is the row's identity, matched against portraits, the
+			   crosshair snapshot and the stored sets, and a session-only 0xFF
+			   id must never take its place. */
+			std::string liveFormId;
 		};
 		std::vector<Row>         rows;
 		std::vector<std::string> seen;
 
 		auto push = [&](const std::string& id, const std::string& plg, const std::string& nm,
-						const std::string& original) {
+						const std::string& original, const std::string& liveId = "") {
 			if (id.empty())
 				return;
 			const auto key = Lower(ActorKey(id, plg));
 			if (std::find(seen.begin(), seen.end(), key) != seen.end())
 				return;
 			seen.push_back(key);
-			rows.push_back(Row{ id, plg, nm, original });
+			rows.push_back(Row{ id, plg, nm, original, liveId });
 		};
 
 		const auto env = json::parse(foStateJson, nullptr, false);
@@ -782,7 +830,8 @@ namespace NffOutfits
 						if (!m.is_object())
 							continue;
 						push(m.value("formId", std::string("")), m.value("plugin", std::string("")),
-							m.value("name", std::string("")), m.value("original", std::string("")));
+							m.value("name", std::string("")), m.value("original", std::string("")),
+							m.value("liveFormId", std::string("")));
 					}
 				}
 			}
@@ -804,7 +853,7 @@ namespace NffOutfits
 				if (ActorIdentity::DurableOf(ActorIdentity::Resolve(r.formId, ""), id, plg))
 					r.plugin = plg;
 			}
-			auto* actor = ctx.ok ? ResolveActor(r.formId, r.plugin) : nullptr;
+			auto* actor = ctx.ok ? ResolveLive(r.formId, r.plugin, r.liveFormId) : nullptr;
 			if (!actor && ctx.ok)
 				unresolved.push_back((r.name.empty() ? std::string("?") : r.name) + " " + r.formId);
 
@@ -849,6 +898,9 @@ namespace NffOutfits
 				canon = Lower(ActorKey(dId, dPlg));
 			out["npcs"].push_back(json{
 				{ "formId", r.formId }, { "plugin", r.plugin }, { "name", r.name },
+				// Session-only, and only present for a row FO could store no
+				// reference for. The view echoes it back on every op (ResolveLive).
+				{ "liveFormId", r.liveFormId },
 				{ "key", canon },
 				{ "original", r.original },
 				{ "resolved", actor != nullptr },
@@ -886,7 +938,7 @@ namespace NffOutfits
 		if (!ctx.ok)
 			return Fail("Nether's Follower Framework isn't answering");
 
-		auto* actor = ResolveActor(r.formId, r.plugin);
+		auto* actor = ResolveLive(r.formId, r.plugin, r.liveFormId);
 		if (!actor)
 			return FailFor("Couldn't find that person in the game right now", r.formId, r.plugin, "pieces");
 
@@ -929,7 +981,7 @@ namespace NffOutfits
 		if (!r.ok || r.type < 0 || r.type > kBase)
 			return Fail("Bad request");
 
-		auto* actor = ResolveActor(r.formId, r.plugin);
+		auto* actor = ResolveLive(r.formId, r.plugin, r.liveFormId);
 		if (const auto why = GuardWrite(cfg, wardrobe, r, actor, "changing her clothes"); !why.empty())
 			return FailFor(why, r.formId, r.plugin, "wear");
 
@@ -958,7 +1010,7 @@ namespace NffOutfits
 		if (!r.ok || r.type < 0 || r.type >= kTypeCount)
 			return Fail("Bad request");
 
-		auto* actor = ResolveActor(r.formId, r.plugin);
+		auto* actor = ResolveLive(r.formId, r.plugin, r.liveFormId);
 		if (const auto why = GuardWrite(cfg, wardrobe, r, actor, "giving her an outfit"); !why.empty())
 			return FailFor(why, r.formId, r.plugin, "build");
 
@@ -980,7 +1032,7 @@ namespace NffOutfits
 		if (!cfg.enabled)
 			return Fail("NFF outfits are switched off in the deck");
 
-		auto* actor = ResolveActor(r.formId, r.plugin);
+		auto* actor = ResolveLive(r.formId, r.plugin, r.liveFormId);
 		if (!actor)
 			return FailFor("Couldn't find that person in the game right now", r.formId, r.plugin, "clear");
 		if (!Available())
@@ -1017,7 +1069,7 @@ namespace NffOutfits
 		if (!Available())
 			return Fail("Nether's Follower Framework isn't answering");
 
-		auto* actor = ResolveActor(r.formId, r.plugin);
+		auto* actor = ResolveLive(r.formId, r.plugin, r.liveFormId);
 		if (!actor)
 			return FailFor("Couldn't find that person in the game right now", r.formId, r.plugin, "satchel");
 
@@ -1038,7 +1090,7 @@ namespace NffOutfits
 		if (!r.ok)
 			return Fail("Bad request");
 
-		auto* actor = ResolveActor(r.formId, r.plugin);
+		auto* actor = ResolveLive(r.formId, r.plugin, r.liveFormId);
 		// Guarded like Wear even though nothing is taken OFF her: NFF's
 		// CloneOutfit reads the set NFF believes she is wearing, and on a
 		// SOES-tracked actor that belief is the stale one — the copy would be of
@@ -1148,7 +1200,7 @@ namespace NffOutfits
 			{ "known", false }, { "helm", "off" }, { "shield", false },
 			{ "weapon", false }, { "ammo", false } };
 
-		auto* actor = ResolveActor(r.formId, r.plugin);
+		auto* actor = ResolveLive(r.formId, r.plugin, r.liveFormId);
 		if (!actor)
 			return Dump(out);   // honest: ok, but nothing known
 
@@ -1181,7 +1233,7 @@ namespace NffOutfits
 		if (!g)
 			return Fail("Unknown gear switch");
 
-		auto* actor = ResolveActor(r.formId, r.plugin);
+		auto* actor = ResolveLive(r.formId, r.plugin, r.liveFormId);
 		if (!actor)
 			return FailFor("Couldn't find that person in the game right now",
 				r.formId, r.plugin, op.c_str());
@@ -1243,7 +1295,7 @@ namespace NffOutfits
 		if (outfit.empty())
 			return Fail("No outfit chosen");
 
-		auto* actor = ResolveActor(r.formId, r.plugin);
+		auto* actor = ResolveLive(r.formId, r.plugin, r.liveFormId);
 		if (const auto why = GuardWrite(cfg, wardrobe, r, actor, "changing her clothes"); !why.empty())
 			return Fail(why);
 
@@ -1350,7 +1402,7 @@ namespace NffOutfits
 		if (!r.ok)
 			return Fail("Bad request");
 
-		auto* actor = ResolveActor(r.formId, r.plugin);
+		auto* actor = ResolveLive(r.formId, r.plugin, r.liveFormId);
 		const std::string name = actor && actor->GetDisplayFullName() ? actor->GetDisplayFullName() : "";
 
 		if (!r.on) {

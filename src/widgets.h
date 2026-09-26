@@ -262,6 +262,13 @@ namespace Widgets
 	//            module never learns what looting is. Absent when no provider
 	//            is installed, so an older/partial build draws nothing rather
 	//            than two permanently-off lamps.
+	// The KIND of a location, in the same closed vocabulary the HUD's place
+	// readout and the loc-* icon set use ("inn", "store", "home", "city",
+	// "cave", "fort", …; "interior"/"wilderness" when nothing matched). Shared
+	// so the Followers roster can icon a follower's current location without a
+	// second keyword table to keep in step. MAIN THREAD.
+	std::string PlaceKindOf(RE::BGSLocation* loc, bool interior);
+
 	std::string LiveJson();
 
 	// Flip ONE widget's enabled flag by config key ("handR", "voice", "season",

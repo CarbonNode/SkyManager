@@ -6,6 +6,9 @@
   <title>SkyManager HUD</title>
   <link rel="stylesheet" href="hud.css" />
   <link rel="stylesheet" href="hud-td.css" />
+  <link rel="stylesheet" href="hud-align.css" />
+  <link rel="stylesheet" href="hud-outfit.css" />
+  <link rel="stylesheet" href="hud-photo.css" />
 </head>
 <body class="hud-hidden">
   <!-- The whole movable assembly. C++ pushes placement via window.hudConfig, the
@@ -149,7 +152,16 @@
        root here so a script newer than the skeleton can never null-deref (the
        need() law); hud-td.js builds the dial inside it on first open. -->
   <div id="hud-td"></div>
+  <!-- The live OStim alignment overlay. Empty until C++ calls alShow("1");
+       hud-align.js builds the card inside it. Drawn over a RUNNING scene —
+       the view takes real keyboard focus with pauseGame=false. -->
+  <div id="hud-align"></div>
+  <aside id="hud-photo" aria-hidden="true"></aside>
+  <script src="hud-photo.js"></script>
   <script src="hud.js"></script>
   <script src="hud-td.js"></script>
+  <script src="hud-align.js"></script>
+  <script src="wardrobe-flair-model.js"></script>
+  <script src="hud-outfit.js"></script>
 </body>
 </html>

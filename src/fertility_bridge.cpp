@@ -397,13 +397,27 @@ namespace FertilityBridge
 			for (const auto& member : cat["members"]) {
 				if (!member.is_object())
 					continue;
+				/* ⚠ TWO ids, and they are not interchangeable.
+				   KEY = the id FO stored, because the view looks this map up as
+				   `map[m.formId]` off the roster row. RESOLVE = `liveFormId`
+				   when FO sent one, which it does only for a row whose stored
+				   form is a BASE record — what it falls back to for a follower
+				   spawned at runtime, a 0xFF reference having no source file to
+				   name (FO DeckAPI.cpp, LoadedActorForBase). That base resolves
+				   to a form but never to an actor, so Fertility Mode could not
+				   see her at all. Keying by the live id instead would have
+				   "fixed" the read into a slot nothing ever looks in. */
 				const auto id = member.value("formId", std::string(""));
 				if (id.empty() || out["actors"].contains(id))
 					continue;
+				const auto resolveId = [&] {
+					const auto live = member.value("liveFormId", std::string(""));
+					return live.empty() ? id : live;
+				}();
 
 				RE::FormID formId = 0;
 				try {
-					formId = static_cast<RE::FormID>(std::stoul(id, nullptr, 16));
+					formId = static_cast<RE::FormID>(std::stoul(resolveId, nullptr, 16));
 				} catch (const std::exception&) {
 					continue;   // FO gave us something that is not a form id
 				}
@@ -411,7 +425,7 @@ namespace FertilityBridge
 				auto* refr = form ? form->As<RE::TESObjectREFR>() : nullptr;
 				auto* actor = refr ? refr->As<RE::Actor>() : nullptr;
 				if (!actor)
-					continue;   // unresolved member, or a base form: nothing to read
+					continue;   // unresolved member, and no live actor wearing the base
 
 				const auto status = For(actor);
 				if (!status.tracked)

@@ -9,6 +9,11 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <thread>
 
 // pch (force-included) provides RE::/SKSE::/json and the logger.
 
@@ -631,7 +636,75 @@ namespace FormationActions
 		// a preference, not state the save owns, and every fmGet re-derives it
 		// when the remembered one is no longer installed (a mod switched off
 		// between two palette opens must not strand the modal on a dead tab).
-		std::string g_active = "fwf";
+		std::string g_active = "wwm";
+		std::atomic<unsigned> g_handoffEpoch{0};
+		bool g_handoffPending = false;
+		bool g_handoffComplete = false;
+		std::string g_handoffMessage;
+		std::vector<RE::ActorHandle> g_handoffFollowers;
+		bool WwmPreferred()
+		{
+			std::ifstream input("Data/SKSE/Plugins/HotkeyDeck/formation-provider.json");
+			if (!input) return false;
+			auto value = json::parse(input, nullptr, false);
+			return value.is_object() && value.value("preferred",std::string()) == "wwm";
+		}
+		void HandoffStatus(const char* state, const char* message)
+		{
+			g_handoffMessage = message;
+			std::ofstream out("Data/SKSE/Plugins/HotkeyDeck/formation-migration.json");
+			if (out) out << json({{"state",state},{"message",message},{"fwfStopped",g_handoffComplete},
+				{"at",std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count()}}).dump(2);
+			logger::info("formation-wwm-handoff: {} - {}",state,message);
+		}
+		void HandoffTick(unsigned epoch, int ticks, bool requested, bool resume);
+		void ScheduleHandoff(unsigned epoch, int ticks, bool requested, bool resume)
+		{
+			std::thread([=] {
+				std::this_thread::sleep_for(std::chrono::seconds(1));
+				SKSE::GetTaskInterface()->AddTask([=] { HandoffTick(epoch,ticks,requested,resume); });
+			}).detach();
+		}
+		void HandoffTick(unsigned epoch, int ticks, bool requested, bool resume)
+		{
+			if (epoch != g_handoffEpoch.load()) return;
+			if (!FormationWwm::SupportsModern()) { g_handoffPending=false; HandoffStatus("failed","Walk With Me 0.2.2 is unavailable"); return; }
+			if (auto* ui = RE::UI::GetSingleton(); ui && ui->GameIsPaused()) {
+				// Menus pause the VM. Count only unpaused attempts, bounded by load epoch.
+				ScheduleHandoff(epoch,ticks,requested,resume); return;
+			}
+			auto* quest = CoreQuest();
+			if (!quest || !quest->IsRunning()) {
+				int transferred = 0;
+				for (const auto& handle : g_handoffFollowers) {
+					if (transferred >= 10) break;
+					const auto actor = handle.get();
+					if (!actor) continue;
+					char id[16]{}; std::snprintf(id,sizeof(id),"0x%08X",actor->GetFormID());
+					const auto result = json::parse(FormationWwm::Reg(json({{"formId",id},{"op","register"}}).dump()),nullptr,false);
+					if (result.is_object() && result.value("ok",false)) ++transferred;
+				}
+				g_handoffFollowers.clear();
+				FormationWwm::SetRuntimeEnabled(resume);
+				g_handoffPending=false;
+				g_handoffComplete=true;
+				HandoffStatus("complete","Formation with Followers stopped; Walk With Me owns the formation controls");
+				logger::info("formation-wwm-handoff: {} companion enrollment requests sent",transferred);
+				if (requested) RE::DebugNotification("Walk With Me is ready. Formation with Followers has stood down.");
+				return;
+			}
+			if (ticks >= 90) {
+				g_handoffPending=false;
+				HandoffStatus("failed","Formation with Followers did not finish cleanup; Walk With Me remains paused");
+				RE::DebugNotification("Formation cleanup did not finish. Open SkyManager Formation to review.");
+				return;
+			}
+			if (!requested) {
+				auto result = json::parse(Fwf::Rescue(),nullptr,false);
+				requested = result.is_object() && result.value("ok",false);
+			}
+			ScheduleHandoff(epoch,ticks+1,requested,resume);
+		}
 
 		json ProviderState(const std::string& id, const std::string& req)
 		{
@@ -672,6 +745,7 @@ namespace FormationActions
 		// one used, else the only one installed. Never one that isn't there.
 		std::string PickProvider(const json& j, bool fwfIn, bool wwmIn)
 		{
+			if (wwmIn && WwmPreferred() && (!j.is_object() || !j.contains("provider"))) { g_active="wwm"; return g_active; }
 			auto in = [&](const std::string& id) { return id == "wwm" ? wwmIn : fwfIn; };
 			std::string want = j.is_object() ? j.value("provider", std::string("")) : "";
 			if (want != "fwf" && want != "wwm")
@@ -693,6 +767,29 @@ namespace FormationActions
 			const bool fwfIn = dh && dh->LookupModByName("FormationWithFollowers.esp") != nullptr;
 			return PickProvider(j, fwfIn, FormationWwm::Installed());
 		}
+	}
+
+	void CancelHandoff() { ++g_handoffEpoch; g_handoffPending=false; g_handoffComplete=false; g_handoffMessage.clear(); g_handoffFollowers.clear(); }
+	void OnGameSaved()
+	{
+		// The installer also verifies a new ESS + SKSE pair after process exit.
+		// A completed cleanup without a save must NEVER retire the old plugin.
+		if (g_handoffComplete && WwmPreferred())
+			HandoffStatus("save-requested","Formation cleanup completed in this session; verifying the saved files before retiring FWF");
+	}
+	void OnGameLoaded()
+	{
+		CancelHandoff();
+		if (!WwmPreferred() || !FormationWwm::SupportsModern()) return;
+		const auto state = json::parse(FormationWwm::StateJson("{}"),nullptr,false);
+		const bool resume = state.is_object() && state.value("settings",json::object()).value("enabled",true);
+		if (auto* quest = CoreQuest(); quest && quest->IsRunning()) {
+			for (const auto& slot : FollowerSlots(quest)) if (slot.actor) g_handoffFollowers.push_back(slot.actor->GetHandle());
+		}
+		if (!FormationWwm::SetRuntimeEnabled(false)) return;
+		g_handoffPending=true;
+		HandoffStatus("pending","Waiting for Formation with Followers cleanup");
+		ScheduleHandoff(g_handoffEpoch.load(),0,false,resume);
 	}
 
 	std::string StateJson(const std::string& reqJson)
@@ -724,17 +821,26 @@ namespace FormationActions
 		}
 		out["providers"] = json::array({ Slim(fwf), Slim(wwm) });
 		out["conflict"] = IsLive(fwf) && IsLive(wwm);
+		out["handoffPending"] = g_handoffPending;
+		out["handoffMessage"] = g_handoffMessage;
+		out["wwmPreferred"] = WwmPreferred();
+		if (out["wwmPreferred"] == true && want == "wwm") out["providers"] = json::array({Slim(wwm)});
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
 	std::string Apply(const std::string& reqJson)
 	{
+		if (g_handoffPending) return json({{"ok",false},{"msg","Formation cleanup is still running. Return to the game and wait a moment."}}).dump();
+		if (WwmPreferred() && RouteOf(reqJson) == "wwm") {
+			if (auto* quest = CoreQuest(); quest && quest->IsRunning()) return json({{"ok",false},{"msg","Formation with Followers is still running. Its cleanup must finish before Walk With Me can take over. Reload the save to retry."}}).dump();
+		}
 		return RouteOf(reqJson) == "wwm" ? FormationWwm::Apply(reqJson)
 										 : Fwf::Apply(reqJson);
 	}
 
 	std::string Reg(const std::string& reqJson)
 	{
+		if (g_handoffPending) return json({{"ok",false},{"msg","Return to the game while formation cleanup finishes."}}).dump();
 		return RouteOf(reqJson) == "wwm" ? FormationWwm::Reg(reqJson)
 										 : Fwf::Reg(reqJson);
 	}

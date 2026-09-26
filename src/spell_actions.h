@@ -2,8 +2,14 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
+
+namespace RE
+{
+	class SpellItem;
+}
 
 // Spell Deck backend — the magic-organizer counterpart to npc_actions.
 //
@@ -18,6 +24,10 @@
 namespace SpellActions
 {
 	void Init();
+
+	// Read-only display cost. Internal/mod spells without a usable costliest
+	// effect must not enter Skyrim's perk evaluator; null means unavailable.
+	std::optional<float> MagickaCostForPlayer(RE::SpellItem* spell);
 
 	// JSON array of the player's currently-known, castable spells (spell /
 	// power / lesser-power / voice-power), deduped and name-sorted:
@@ -54,6 +64,10 @@ namespace SpellActions
 		std::uint32_t localId = 0;
 		std::uint32_t formId = 0;
 	};
+
+	// Main-thread descriptions for the organized library only, then atomic
+	// worker-side export for the phone Portal. No gameplay/config writes.
+	void ExportLibraryDescriptions(const std::vector<SpellRef>& refs);
 
 	// Cast a whole combo: refs in order, `staggerMs` apart, one "⚡ name"
 	// notification up front instead of a per-spell spam. Must be entered on the
@@ -108,4 +122,11 @@ namespace SpellActions
 	//    slot, school, element, archetype, tier}
 	// {ok:false, msg} when nothing is highlighted or equipped.
 	std::string HighlightedSpellJson();
+
+	// Icon metadata for ANY SpellItem, known or not — the Spell Finder roster
+	// (spell_finder.cpp) draws the same school / element / archetype / tier keys
+	// the deck draws, from the ONE place they are computed. Empty strings where
+	// a value does not apply (a power has no tier, a shout no school).
+	void IconMeta(RE::SpellItem* s, std::string& school, std::string& element, std::string& archetype,
+		std::string& tier);
 }

@@ -20,20 +20,21 @@
       menu included, because "scale the tab" means the sheet too. -->
  <div id="wd-scale">
 
-  <!-- sub-tabs: Outfits · Wardrobes · NPCs -->
+  <!-- One searchable tool menu, shared with the phone Portal. -->
   <nav id="wd-nav" aria-label="Wardrobe sections"></nav>
 
   <!-- toolbar: search + count + edit + add -->
   <div id="wd-toolbar">
     <div id="wd-search-wrap">
-      <span class="wd-search-ic" aria-hidden="true">&#9109;</span>
-      <input id="wd-search" type="text" autocomplete="off" spellcheck="false"
+      <input id="wd-search" aria-label="Search outfits" type="text" autocomplete="off" spellcheck="false"
              placeholder="Search outfits, wardrobes, people…">
       <button id="wd-search-clear" class="hidden" title="Clear search" aria-label="Clear search">&#10005;</button>
     </div>
+    <div id="wd-category-filter" class="hidden"></div>
     <span id="wd-count" title="Rows in view">0</span>
     <button id="wd-edit" class="ghost-btn" title="Edit mode — reveal delete controls (F2)">Edit</button>
     <button id="wd-add" class="ghost-btn" title="Add to this section">&#65291; New</button>
+    <button id="wd-newfit" class="wd-dress wd-newfit" type="button" title="Make a new outfit: pick pieces from your inventory, search every item in the game, or copy what you are wearing">&#65291; New outfit</button>
   </div>
 
   <!-- edit-mode chrome (F2). Same control shape, range and step as the
@@ -58,8 +59,8 @@
   <!-- SOES availability / conflict banner (hidden unless there is something to say) -->
   <div id="wd-banner" class="hidden" role="status"></div>
 
-  <!-- category filter pills (Outfits sub-tab only); renamed/deleted in edit mode -->
-  <div id="wd-cats" class="hidden" aria-label="Filter by category"></div>
+  <!-- Category management appears only after opening Options. -->
+  <div id="wd-cats" class="hidden" aria-label="Manage categories"></div>
 
   <!-- bulk-action bar; appears only when something is selected -->
   <div id="wd-selbar"></div>
@@ -111,7 +112,7 @@
   <div id="wd-sheet" class="hidden" role="dialog" aria-modal="true" aria-label="Assignment">
     <div id="wd-sheet-card">
       <header id="wd-sheet-head">
-        <img id="wd-sheet-face" alt="" class="hidden">
+        <span id="wd-sheet-face-frame" class="hidden"><img id="wd-sheet-face" alt="" class="hidden"></span>
         <div class="wd-sheet-id">
           <h2 id="wd-sheet-name">NPC</h2>
           <span id="wd-sheet-sub"></span>

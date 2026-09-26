@@ -101,3 +101,12 @@ means the portal is looking at only some of the mods that hold the view trees.
 `viewRootsSwept` the ones it had to go looking for, and `poolWriteDir` where an
 upload would land. The deck itself never notices a split like this, because MO2
 merges every enabled mod into one virtual `Data`.
+
+## Formation controls
+
+The Formation link next to Followers opens `/formation`, sharing the deployed
+`hd-formation.js/css` with the game. Walk With Me 0.2.2 and a loaded game are
+required. Commands are live-only; a receipt means queued, and the page polls for
+the native result before declaring success. Save settings with Apply; SkyManager
+closes its paused palette so the owner's Papyrus reload can execute. These
+controls do not report whether an experimental hand grip physically connected.

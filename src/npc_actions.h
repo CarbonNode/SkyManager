@@ -8,6 +8,7 @@ namespace RE
 {
 	class Actor;
 }
+namespace SKSE { class SerializationInterface; }
 
 // Native NPC-command actions ported from the CommandNPC plugin, exposed to the
 // Hotkey Deck as fireable "action" entries (device == "action"). No keypress is
@@ -57,15 +58,44 @@ namespace NpcActions
 	// Returns false for an unknown action id.
 	bool Run(const std::string& action);
 
+	// Temporary conversation movement guard, independent of quest/follower AI.
+	// Explicit reference + matching name required; never falls back to crosshair.
+	// Main thread only. Repeated start refreshes, release is idempotent.
+	std::string ConversationControl(const std::string& request);
+	bool HasPoseHold(std::uint32_t id); // Freeze, furniture or Grab owns this actor
+	void TickConversations(bool gameReady, bool paused);
+	void ReleaseConversation(std::uint32_t id, const char* reason); // 0 = all
+	void SaveConversations(SKSE::SerializationInterface* s);
+	bool LoadConversations(SKSE::SerializationInterface* s, std::uint32_t type, std::uint32_t version, std::uint32_t length);
+	void RevertConversations();
+	void RestoreConversationsAfterLoad();
+
 	// "Sic 'em" against a SUBSET of the loaded followers. `allow` decides who
 	// joins the charge; a null `allow` means every loaded follower, which is
 	// what the bindable "attack-target" action fires. `who` names the subset in
 	// the refusal when none of them is nearby ("Dragon Guard"), so a group
 	// order cannot report the party's answer. Target designation, the longshot
 	// ray and the nearby-hostile wake-up are identical either way.
-	// Returns false if nothing was ordered (the reason is already on screen).
+	//
+	// Every press fires the bolt down the crosshair (sic_em_feedback.h). If the
+	// crosshair or the longshot already names a target the order goes NOW;
+	// otherwise the order is given when the bolt LANDS — asynchronously, on
+	// the main thread — so `allow` is COPIED and must not capture anything by
+	// reference (loadouts.cpp captures its key set by value for this reason).
+	// Returns true when the order was given or the bolt is in the air and will
+	// give it; false when nothing could be ordered (reason already on screen).
 	// Main thread only.
 	bool SicEm(const std::function<bool(RE::Actor*)>& allow, const std::string& who);
+
+	// ONE actor charges — the F7 card's per-person Attack. formId 0 = the
+	// crosshair snapshot. The target is chosen exactly as SicEm chooses it,
+	// minus her: the crosshair (unless that is her or a teammate), the
+	// longshot along your aim, whoever the bolt lands on, then the nearest
+	// enemy already fighting you.
+	// Releases a deck hold (freeze/sit/bed) on her first. Not limited to
+	// teammates. outMsg is the line already put on screen — or, when the bolt
+	// is still flying, what the caller may show while it decides. Main thread only.
+	bool SicEmOne(std::uint32_t formId, std::string& outMsg);
 
 	// Seat an actor on an EXPLICIT furniture reference through the alias engine
 	// (SitTarget package at the paired chair alias) — the ZaZ segment's

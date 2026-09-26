@@ -75,7 +75,9 @@
     open: false,
     view: 'list',        // 'list' | 'detail'
     ctx: null,           // what the Followers card handed us (see open())
-    scope: 'npc',        // 'npc' (hers) | 'all' (free-text over every quest)
+    scope: 'npc',        // 'npc' (hers) | 'active' (running now) | 'all' (free-text)
+    sys: false,          // Active scope: also show the system quests Skyrim always runs
+    armRow: '',          // formId of the row whose Advance is armed (asks twice)
     q: '',               // the search box
     status: 'all',       // one of FILTERS[].id
     sel: 0,              // keyboard cursor into the FILTERED list
@@ -190,7 +192,12 @@
        string again would only drop rows it matched on a field we do not
        carry. Local text filtering is for HER list, which arrives whole. */
     var out = quests().filter(function (qu) {
-      if (S.scope === 'npc' && !matches(qu, needle)) return false;
+      if (S.scope !== 'all' && !matches(qu, needle)) return false;
+      /* Active scope: Skyrim runs dozens of dialogue hosts and WI* scene
+         drivers. They ARE running, so they are not hidden by default out of
+         tidiness — they are hidden because they would bury the ten rows you
+         opened this for. One toggle brings them back. */
+      if (S.scope === 'active' && !S.sys && qu.journal === false) return false;
       if (S.status === 'broken') return isBroken(qu);
       if (S.status !== 'all' && statusOf(qu) !== S.status) return false;
       return true;
@@ -206,7 +213,8 @@
     var c = { all: 0, running: 0, idle: 0, done: 0, broken: 0 };
     var needle = String(S.q || '').trim().toLowerCase();
     quests().forEach(function (qu) {
-      if (S.scope === 'npc' && !matches(qu, needle)) return;
+      if (S.scope !== 'all' && !matches(qu, needle)) return;
+      if (S.scope === 'active' && !S.sys && qu.journal === false) return;
       c.all++;
       c[statusOf(qu)]++;
       if (isBroken(qu)) c.broken++;
@@ -230,6 +238,12 @@
       }
       S.listFor = '';
       toGameSafe('hdQuestSearch', q);
+      return;
+    }
+    if (S.scope === 'active') {
+      /* No query at all — the question is "what am I in the middle of". */
+      S.listFor = '';
+      toGameSafe('hdQuestActive', '1');
       return;
     }
     var hex = String(ctx().hex || '');
@@ -278,10 +292,19 @@
 
   /* --------------------------------------------------------- fragments ---- */
 
+  if (window.addEventListener) window.addEventListener('hd-portraits-changed', function () {
+    if (!root || !S.ctx) return;
+    const plate = root.querySelector('.hdq-plate');
+    if (plate && plate.parentNode) plate.parentNode.replaceChild(facePlate(plate.getAttribute('data-face-glyph') || ''), plate);
+  });
+
   function facePlate(glyph) {
     var shot = String(ctx().portrait || '');
-    if (!shot) return h('div', { class: 'hdq-plate' }, glyph);
-    var plate = h('div', { class: 'hdq-plate is-face' });
+    var fp = window.FolPane;
+    var shotInfo = fp && fp.portraitInfoFor ? fp.portraitInfoFor({formId: ctx().formId || ctx().hex, name: ctx().who}) : null;
+    if (shotInfo) shot = fp._portraitSrc(shotInfo);
+    if (!shot) return h('div', { 'data-face-glyph': glyph, class: 'hdq-plate' }, glyph);
+    var plate = h('div', { 'data-face-glyph': glyph, class: 'hdq-plate is-face' });
     var img = h('img', { class: 'hdq-face-img', src: shot, alt: '' });
     /* the user's saved framing — one shared lane, or this centre-crops (2026-08-19) */
     if (window.HDFaceFit) HDFaceFit.paintPortrait(img, shot);
@@ -326,7 +349,8 @@
        "Quests" alone made the one thing this modal is about live in the grey
        subline under it. */
     var title = isDetail ? ((d && d.name) || 'Quest')
-              : (S.scope === 'npc' ? (who() + '’s quests') : 'Every quest');
+              : (S.scope === 'npc' ? (who() + '’s quests')
+                 : S.scope === 'active' ? 'Active quests' : 'Every quest');
     var sub;
     if (isDetail) {
       sub = h('div', { class: 'hdq-sub' },
@@ -339,6 +363,7 @@
       sub = h('div', { class: 'hdq-sub' },
         h('span', { class: 'hdq-sub-who' }, S.scope === 'npc'
           ? 'Every quest she is caught up in'
+          : S.scope === 'active' ? 'Running right now'
           : 'Every quest in the load order'),
         S.loading ? chip('reading…', 'dim') : chip(c.all + (c.all === 1 ? ' quest' : ' quests'), 'dim'),
         c.running ? chip(c.running + ' running', 'run') : null,
@@ -377,7 +402,11 @@
       value: S.q,
       placeholder: S.scope === 'npc'
         ? 'Search ' + who() + '’s quests — name, alias, plugin, EditorID, FormID…'
-        : 'Search every quest in the load order — two letters or more…',
+        : S.scope === 'active'
+          /* No minimum here: the whole running list already arrived, so typing
+             narrows it instantly rather than going back to the game. */
+          ? 'Filter your active quests — name, EditorID, plugin, FormID…'
+          : 'Search every quest in the load order — two letters or more…',
       onClick: function (e) { e.stopPropagation(); },
       onInput: function (e) {
         S.q = e.target.value;
@@ -407,6 +436,10 @@
     [
       { id: 'npc', label: 'Hers', ic: '☺',
         title: 'Quests ' + who() + ' is in — live alias holds, plus quests that merely NAME her' },
+      { id: 'active', label: 'Active', ic: '▶',
+        title: 'Every quest RUNNING right now — the journal as the engine sees it, mod-added '
+             + 'and ESL quests included. Needs no search: this is the one question neither the '
+             + 'NPC list nor a text search can answer.' },
       { id: 'all', label: 'Every quest', ic: '🌐',
         title: 'Free-text search over every quest in the load order. Use this when a quest is '
              + 'missing from her list: aliases only resolve while a quest RUNS, so a quest whose '
@@ -422,6 +455,37 @@
     bar.append(scopes);
 
     bar.append(filterRow());
+
+    /* Active scope only: the system quests. Skyrim keeps dozens of dialogue
+       hosts and WI* scene drivers running at all times — real running quests
+       that the journal does not show either. Off by default so the rows you
+       came for are not buried; one click when you are actually debugging the
+       framework layer. The count is stated so the toggle is not a mystery. */
+    if (S.scope === 'active') {
+      var all = quests();
+      var hidden = 0;
+      all.forEach(function (qu) { if (qu.journal === false) hidden++; });
+      var sysRow = h('div', { class: 'hdq-scope' },
+        h('span', { class: 'hdq-lbl' }, 'System'));
+      sysRow.append(h('button', {
+        class: 'hdq-tab' + (S.sys ? ' on' : ''), type: 'button',
+        'aria-pressed': String(!!S.sys),
+        title: hidden
+          ? (S.sys ? 'Hide the ' + hidden + ' system quest(s) again'
+                   : 'Also show ' + hidden + ' running quest(s) with no journal type or name — '
+                     + 'dialogue hosts, scene drivers, framework controllers')
+          : 'Nothing running right now is a system quest',
+        onClick: function (e) {
+          e.stopPropagation();
+          S.sys = !S.sys;
+          S.sel = 0;
+          render();
+        },
+      }, h('span', { class: 'hdq-tab-ic', 'aria-hidden': 'true' }, '⚙'),
+         (S.sys ? 'Shown' : 'Hidden') + (hidden ? ' (' + hidden + ')' : '')));
+      bar.append(sysRow);
+    }
+
     return bar;
   }
 
@@ -459,10 +523,61 @@
     old.parentNode.replaceChild(filterRow(), old);
   }
 
+  /* Advance ONE row straight from the list — the Active scope's reason to exist.
+     Fires the next DEFINED stage (C++ hands it over as nextStage, because stage
+     lists are sparse and currentStage+1 is usually a stage that does not exist).
+     Forward is the safe direction, so it goes on one click, exactly as the detail
+     grid treats a forward stage; it is only a BACKWARD jump that asks twice.
+     Afterwards the list is re-asked so the row's stage number is the engine's
+     answer and not our optimistic guess. */
+  function advanceRow(qu) {
+    var next = Number(qu && qu.nextStage) || 0;
+    if (!next) return;
+    S.want.result = true;
+    S.want.list = true;
+    S.note = 'Firing stage ' + next + ' on ' + (qu.name || qu.editorId || 'quest') + '…';
+    S.noteOk = true;
+    toGameSafe('hdQuestSetStage', JSON.stringify({ formId: qu.formId, stage: next }));
+    setTimeout(function () { if (S.scope === 'active') { askList(); render(); } }, 420);
+    render();
+  }
+
+  /* The row's own actions. Not children of the row <button> — a button inside a
+     button is invalid and Ultralight swallows the inner click — so the row and
+     its actions are siblings inside a wrapper, and the row keeps .hdq-row so
+     keyboard nav and the selection painting are untouched. */
+  function rowActions(qu) {
+    var acts = h('div', { class: 'hdq-row-acts' });
+
+    var next = Number(qu.nextStage) || 0;
+    acts.append(h('button', {
+      class: 'hdq-act' + (next ? '' : ' is-off'), type: 'button',
+      disabled: next ? null : 'disabled',
+      title: next
+        ? ('Advance to stage ' + next + ' — the next stage this quest actually defines.\n'
+           + 'Fires through Papyrus so the stage fragment runs.')
+        : 'No stage defined after ' + qu.currentStage + ' — this quest has nothing further to fire',
+      onClick: function (e) { e.stopPropagation(); advanceRow(qu); },
+    }, next ? ('▸ ' + next) : '▸ —'));
+
+    var live = qu.hasTarget === true;
+    acts.append(h('button', {
+      class: 'hdq-act' + (live ? '' : ' is-off'), type: 'button',
+      disabled: live ? null : 'disabled',
+      title: live
+        ? 'Teleport to this quest’s current objective target (console movetoqt). Closes the deck and jumps.'
+        : 'Nothing to travel to: no displayed objective, or its target alias is EMPTY — '
+          + 'which is usually the broken part. Open the quest to see which.',
+      onClick: function (e) { e.stopPropagation(); runVerb('movetoqt', qu); },
+    }, '◎ Go'));
+
+    return acts;
+  }
+
   function rowEl(qu, i) {
     var st = statusOf(qu);
     var broken = isBroken(qu);
-    var needle = S.scope === 'npc' ? S.q : '';
+    var needle = S.scope !== 'all' ? S.q : '';
     var glyph = st === 'running' ? '▶' : (st === 'done' ? '✓' : '◇');
 
     var meta = h('div', { class: 'hdq-row-s' });
@@ -495,7 +610,7 @@
         'stage ', h('b', null, String(qu.currentStage)),
         h('small', null, '/' + stageN)));
 
-    return h('button', {
+    var row = h('button', {
       class: 'hdq-row st-' + st + (broken ? ' is-broken' : '') + (i === S.sel ? ' sel' : ''),
       type: 'button', 'data-qid': String(qu.formId || ''), 'data-i': String(i),
       title: 'Open ' + (qu.name || 'this quest') + ' — stages, aliases and the repair verbs',
@@ -513,9 +628,19 @@
       h('span', { class: 'hdq-row-ic', 'aria-hidden': 'true' }, glyph),
       h('span', { class: 'hdq-row-txt' },
         h('span', { class: 'hdq-row-t' }, marked(qu.name || '(unnamed quest)', needle)),
+        /* What the journal is telling you to do. Only the Active scope carries
+           it, and a running quest with nothing displayed says so — that blank
+           IS the diagnosis when a quest has stalled. */
+        S.scope === 'active'
+          ? h('span', { class: 'hdq-row-obj' + (qu.objective ? '' : ' is-none') },
+              qu.objective || 'no objective displayed')
+          : null,
         meta,
         pills.childNodes.length ? pills : null),
       right);
+
+    if (S.scope !== 'active') return row;
+    return h('div', { class: 'hdq-rowwrap' + (i === S.sel ? ' sel' : '') }, row, rowActions(qu));
   }
 
   function skeleton() {
@@ -536,6 +661,15 @@
           + 'FormID or plugin — mod-added and ESL quests included. It is how you find a quest '
           + 'that is missing from ' + who() + '’s own list, which happens when its alias never '
           + 'filled.'));
+      return wrap;
+    }
+
+    if (S.scope === 'active' && !c.all && !S.loading) {
+      wrap.append(h('div', { class: 'hdq-empty-ic' }, '▶'),
+        h('div', { class: 'hdq-empty-t' }, 'Nothing is running'),
+        h('div', { class: 'hdq-empty-s' },
+          'No quest is started right now. If that surprises you, turn on System to see the '
+          + 'quests Skyrim always runs — if those are missing too, no save is loaded.'));
       return wrap;
     }
 

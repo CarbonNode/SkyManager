@@ -712,10 +712,30 @@ namespace Loadouts
 					for (const auto& m : c["members"]) {
 						if (!m.is_object())
 							continue;
+						/* `liveFormId` first. Follower Organizer cannot persist a
+						   0xFF reference (no source file to name) and stores the
+						   follower's BASE NPC_ record instead — which LookupByID
+						   happily returns and As<Actor> then rejects, so a
+						   spawned follower never appeared in a loadout AT ALL.
+						   FO now sends the reference it found beside it
+						   (DeckAPI.cpp, LoadedActorForBase).
+						   ⚠ Her key is then a runtime id with no plugin, because
+						   a dynamic actor HAS no durable identity — IdentityOf
+						   falls back to exactly that. So a saved loadout holding
+						   her is good for this session and will simply fail to
+						   resolve in the next one, with the "can't be found"
+						   message the deploy path already has. That is the honest
+						   trade: addressable now beats invisible always. */
 						RE::FormID rid = 0;
-						if (m.contains("formId") && m["formId"].is_string()) {
-							try { rid = static_cast<RE::FormID>(std::stoul(m["formId"].get<std::string>(), nullptr, 16)); }
-							catch (...) {}
+						for (const char* k : { "liveFormId", "formId" }) {
+							if (rid)
+								break;
+							if (m.contains(k) && m[k].is_string()) {
+								try { rid = static_cast<RE::FormID>(std::stoul(m[k].get<std::string>(), nullptr, 16)); }
+								catch (...) { rid = 0; }
+								if (rid && !RE::TESForm::LookupByID<RE::Actor>(rid))
+									rid = 0;   // a base record: keep looking
+							}
 						}
 						auto* a = rid ? RE::TESForm::LookupByID<RE::Actor>(rid) : nullptr;
 						if (!a)
@@ -1083,7 +1103,8 @@ namespace Loadouts
 				std::set<std::string> keys;
 				for (const auto& m : members)
 					keys.insert(KeyOf(m.formId, m.plugin));
-				const bool ok = NpcActions::SicEm([&keys](RE::Actor* a) {
+				// `keys` by VALUE: SicEm keeps this predicate until the bolt lands.
+				const bool ok = NpcActions::SicEm([keys](RE::Actor* a) {
 					std::string f, p;
 					IdentityOf(a, f, p);
 					return !f.empty() && keys.count(KeyOf(f, p)) > 0;
@@ -1538,6 +1559,36 @@ namespace Loadouts
 		}
 
 		return Fail(act, "Unknown loadout action \"" + act + "\"");
+	}
+
+	std::string GroupsByOriginalJson()
+	{
+		// Who is in which group, keyed by the follower's ORIGINAL name. That is
+		// the join the Followers tab (and the portal) can actually make: a
+		// runtime FormID is not stable across the places this is read from, and
+		// `original` is exactly what Follower Organizer files people under.
+		// Small by construction — a handful of groups of a handful of people —
+		// so the whole map goes in one reply rather than a per-row query.
+		std::lock_guard l(g_m);
+		LoadLocked();
+		std::map<std::string, std::string> clsName;
+		for (const auto& c : g_cfg.classes)
+			clsName[c.id] = c.name;
+		json by = json::object();
+		for (const auto& lo : g_cfg.loadouts) {
+			for (const auto& m : lo.members) {
+				const std::string key = m.original.empty() ? m.name : m.original;
+				if (key.empty())
+					continue;
+				if (!by.contains(key))
+					by[key] = json::array();
+				json e{ { "group", lo.name }, { "id", lo.id } };
+				auto it = clsName.find(m.cls);
+				e["cls"] = (it == clsName.end()) ? "" : it->second;
+				by[key].push_back(e);
+			}
+		}
+		return Dump(json{ { "ok", true }, { "byOriginal", by } });
 	}
 
 	bool FireActiveOrder(const std::string& what)

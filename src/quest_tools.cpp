@@ -92,6 +92,16 @@ namespace QuestTools
 			}
 		}
 
+		// Current journal rows require an actually displayed, unfinished objective.
+        // A quest type/name alone also matches many background mod controllers.
+        bool IsJournalQuest(RE::TESQuest* q)
+        {
+            if (!q || q->IsCompleted()) return false;
+            for (auto* o : q->objectives)
+                if (o && o->state.get() == RE::QUEST_OBJECTIVE_STATE::kDisplayed) return true;
+            return false;
+        }
+
 		const char* FillTypeName(RE::BGSBaseAlias::FILL_TYPE t)
 		{
 			using F = RE::BGSBaseAlias::FILL_TYPE;
@@ -234,6 +244,65 @@ namespace QuestTools
 			};
 		}
 
+		// Does this quest have somewhere movetoqt could actually put you?
+		//
+		// movetoqt jumps to a DISPLAYED objective's target, so the answer is a
+		// three-step walk: displayed objectives -> their QSTA targets -> the alias
+		// each target points at -> does that alias hold a reference RIGHT NOW.
+		// The three flags are kept apart because each failure has its own sentence:
+		// no objective, no map target, and an EMPTY target alias are different
+		// faults, and the last one is the classic broken quest this tab exists for.
+		//
+		// One copy, two callers (CheckQuestTarget's per-quest verdict and the
+		// Active list's per-row flag) — the rule for "is there a marker" must not
+		// exist twice and drift.
+		void TargetFlags(RE::TESQuest* q, bool& anyDisplayed, bool& anyTarget, bool& anyFilled)
+		{
+			anyDisplayed = anyTarget = anyFilled = false;
+			if (!q)
+				return;
+			for (auto* o : q->objectives) {
+				if (!o || o->state.get() != RE::QUEST_OBJECTIVE_STATE::kDisplayed)
+					continue;
+				anyDisplayed = true;
+				if (!o->targets)
+					continue;
+				for (std::uint32_t i = 0; i < o->numTargets; ++i) {
+					auto* t = o->targets[i];
+					if (!t)
+						continue;
+					anyTarget = true;
+					for (auto* base : q->aliases) {
+						if (!base || base->aliasID != t->alias)
+							continue;
+						if (auto* ra = skyrim_cast<RE::BGSRefAlias*>(base); ra && ra->GetReference()) {
+							anyFilled = true;
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		// The objective the journal is showing right now — the one line that says
+		// what you are actually meant to be doing. First DISPLAYED objective wins;
+		// a quest can legitimately display several, and the list row has room for
+		// one. Empty when nothing is displayed (which the row states plainly
+		// rather than drawing a blank).
+		std::string CurrentObjective(RE::TESQuest* q)
+		{
+			if (!q)
+				return {};
+			for (auto* o : q->objectives) {
+				if (!o || o->state.get() != RE::QUEST_OBJECTIVE_STATE::kDisplayed)
+					continue;
+				const auto* text = o->displayText.c_str();
+				if (text && text[0])
+					return text;
+			}
+			return {};
+		}
+
 		RE::TESQuest* LookupQuest(std::uint32_t formID)
 		{
 			return RE::TESForm::LookupByID<RE::TESQuest>(static_cast<RE::FormID>(formID));
@@ -353,6 +422,96 @@ namespace QuestTools
 		if (actorBase)
 			addStatic(actorBase->GetFormID());
 
+		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	// Every quest that is RUNNING right now — the journal, basically, but sourced
+	// from the engine so mod-added and ESL quests are in it on equal terms.
+	//
+	// WHY THIS IS NOT SearchQuests(""). Search walks the whole load order looking
+	// for text and is deliberately capped; this answers a different question ("what
+	// am I in the middle of?") and needs no query at all. The tab opened on an NPC
+	// or on a search box could never answer it: an NPC lookup only finds quests she
+	// is aliased into, and a text search needs you to already know the name.
+	//
+	// JOURNAL vs SYSTEM. Skyrim runs a great many quests that are not quests in the
+	// player's sense — dialogue hosts, WI* scene drivers, framework controllers.
+	// They are genuinely running, so hiding them outright would be a lie, but they
+	// would bury the eleven rows you actually care about. Each row therefore
+	// carries `journal`: at least one displayed unfinished objective. The main
+	// journal leads with these; the legacy inspector can still show system quests.
+	std::string ActiveQuests()
+	{
+		json out;
+		out["quests"] = json::array();
+		out["truncated"] = false;
+
+		auto* dh = RE::TESDataHandler::GetSingleton();
+		if (!dh) {
+			out["message"] = "No data handler — is a save loaded?";
+			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
+
+		std::vector<RE::TESQuest*> live;
+		for (auto* quest : dh->GetFormArray<RE::TESQuest>()) {
+			if (quest && quest->IsRunning() && !quest->IsCompleted())
+				live.push_back(quest);
+		}
+
+		// Journal-worthy first, then by type, then by name — so the list reads as
+		// "what I am doing", not as an engine dump in FormID order.
+		std::stable_sort(live.begin(), live.end(), [](RE::TESQuest* a, RE::TESQuest* b) {
+			const bool ja = IsJournalQuest(a), jb = IsJournalQuest(b);
+			if (ja != jb)
+				return ja;
+			const std::string ta = TypeName(a->data.questType.get());
+			const std::string tb = TypeName(b->data.questType.get());
+			if (ta != tb)
+				return ta < tb;
+			return ToLower(DisplayName(a)) < ToLower(DisplayName(b));
+		});
+
+		int journal = 0;
+		for (auto* q : live) {
+			auto row = QuestSummary(q, "active", "");
+			bool disp = false, tgt = false, filled = false;
+			TargetFlags(q, disp, tgt, filled);
+			// `hasTarget` is the honest pre-flight for the row's Go button: it is
+			// true only when a displayed objective points at an alias that holds a
+			// reference. The button is disabled otherwise and says why, rather than
+			// firing movetoqt and failing silently in the console.
+			row["hasTarget"] = filled && !EditorIdOf(q).empty();
+            row["targetReason"] = !disp ? "No displayed objective" : !tgt ? "Objective has no map target" : !filled ? "Quest target is not available" : EditorIdOf(q).empty() ? "Quest has no editor ID" : "";
+            row["currentObjectives"] = json::array();
+            for (auto* o : q->objectives) {
+                if (!o || o->state.get() != RE::QUEST_OBJECTIVE_STATE::kDisplayed) continue;
+                const auto* text = o->displayText.c_str();
+                if (text && text[0]) row["currentObjectives"].push_back(text);
+            }
+			row["objective"] = CurrentObjective(q);
+			// The next DEFINED stage after the current one, so the row's Advance
+			// button has a real number to fire instead of guessing currentStage+1 —
+			// stage lists are sparse (10, 20, 100, 200…) and +1 is almost always a
+			// stage that does not exist. 0 means "nothing after this one", and the
+			// button says so rather than offering a dead press.
+			std::uint32_t next = 0;
+			for (const auto st : StagesOf(q)) {
+				if (st > q->currentStage) { next = st; break; }
+			}
+			row["nextStage"] = next;
+			row["journal"] = IsJournalQuest(q);
+			if (IsJournalQuest(q))
+				++journal;
+			out["quests"].push_back(std::move(row));
+		}
+
+		out["total"] = static_cast<int>(live.size());
+		out["journalCount"] = journal;
+		// ASCII only, and deliberately: the deploy door reads the built binary as
+		// ASCII to fingerprint features, so an em dash in a marker literal can
+		// never match and the deploy aborts with "missing registry feature".
+		logger::info("quest-journal-home: current objective list ready");
+		logger::info("quests: active list - {} running ({} journal)", live.size(), journal);  // marker: quests-active-list
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
@@ -490,7 +649,7 @@ namespace QuestTools
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
-	std::string SetStage(std::uint32_t formID, std::uint32_t stage)
+	std::string SetStage(std::uint32_t formID, std::uint32_t stage, std::int32_t expectedStage)
 	{
 		json  out;
 		auto* q = LookupQuest(formID);
@@ -499,6 +658,18 @@ namespace QuestTools
 			out["message"] = "Quest not found";
 			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
+        const auto stages = StagesOf(q);
+        if (stage > 65535 || std::find(stages.begin(), stages.end(), stage) == stages.end()) {
+            return json{{"ok",false},{"message","This quest does not define that stage."}}.dump();
+        }
+        if (expectedStage >= 0 && (q->currentStage != expectedStage || !q->IsRunning() || q->IsCompleted())) {
+            return json{{"ok",false},{"message","This quest changed. Refresh your journal before advancing."}}.dump();
+        }
+        if (expectedStage >= 0) {
+            auto next = std::find_if(stages.begin(), stages.end(), [q](auto n){return n > q->currentStage;});
+            if (next == stages.end() || *next != stage)
+                return json{{"ok",false},{"message","That is no longer the next defined stage. Refresh first."}}.dump();
+        }
 		const std::int32_t s = static_cast<std::int32_t>(stage);
 		if (!CallQuestPapyrus(q, "SetStage", &s)) {
 			out["ok"] = false;
@@ -507,7 +678,7 @@ namespace QuestTools
 		}
 		logger::info("quests: SetStage {} ({}) -> {}", DisplayName(q), HexId(q->GetFormID()), stage);
 		out["ok"] = true;
-		out["message"] = "Stage " + std::to_string(stage) + " fired";
+		out["message"] = "Stage " + std::to_string(stage) + " requested. Returning to Skyrim to run its scripts.";
 		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
@@ -561,31 +732,8 @@ namespace QuestTools
 			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
 
-		// movetoqt jumps to a DISPLAYED objective's target. Walk them the same way
-		// the compass does: displayed objectives -> QSTA targets -> the alias each
-		// target points at -> does that alias actually hold a reference right now?
 		bool anyDisplayed = false, anyTarget = false, anyFilled = false;
-		for (auto* o : q->objectives) {
-			if (!o || o->state.get() != RE::QUEST_OBJECTIVE_STATE::kDisplayed)
-				continue;
-			anyDisplayed = true;
-			if (!o->targets)
-				continue;
-			for (std::uint32_t i = 0; i < o->numTargets; ++i) {
-				auto* t = o->targets[i];
-				if (!t)
-					continue;
-				anyTarget = true;
-				for (auto* base : q->aliases) {
-					if (!base || base->aliasID != t->alias)
-						continue;
-					if (auto* ra = skyrim_cast<RE::BGSRefAlias*>(base); ra && ra->GetReference()) {
-						anyFilled = true;
-						break;
-					}
-				}
-			}
-		}
+		TargetFlags(q, anyDisplayed, anyTarget, anyFilled);
 
 		if (!anyDisplayed) {
 			out["message"] = "No active objective — the journal shows nothing to travel to";

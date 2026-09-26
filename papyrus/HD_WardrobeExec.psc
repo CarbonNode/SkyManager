@@ -189,12 +189,52 @@ Event OnDress(String eventName, String outfitName, Float numArg, Form sender)
     EndIf
 
     SetSelectedOutfit(target, outfitName)
+    If numArg >= 0.5
+        ; Bed wearers need a normal fallback after the Sleeping override ends.
+        SetLocationOutfit(target, 0, outfitName)
+    EndIf
     RefreshArmorFor(target)
     Log("dressed " + target.GetDisplayName() + " -> " + outfitName)
 EndEvent
 
+; One serialized operation: set/clear the Sleeping slot, then ask SOES to
+; choose by its normal priority. Never dress directly or enrol an actor here.
+Function ApplyBed(Actor target, String outfitName, Bool apply)
+    If target == None || !target.Is3DLoaded() || !HasActor(target)
+        Return
+    EndIf
+    ; Clearing also needs a fallback: never select an empty World outfit.
+    String normal = GetLocationOutfit(target, 0)
+    If normal == "" || !OutfitExists(normal)
+        normal = GetSelectedOutfit(target)
+        ; A temporary Flair composite is not the usual outfit to restore after
+        ; bed. Store its real named base; the layer follows the restored name.
+        If target == Game.GetPlayer() && normal == FlairCompositeName() && FlairActive
+            normal = FlairBaseName
+        EndIf
+        If normal == "" || !OutfitExists(normal)
+            UnsetLocationOutfit(target, 1700)
+            Log("bed ignored -- dress a usual outfit first")
+            Return
+        EndIf
+        SetLocationOutfit(target, 0, normal)
+    EndIf
+    If apply && target.GetSleepState() >= 3 && OutfitExists(outfitName)
+        SetLocationOutfit(target, 1700, outfitName)
+    Else
+        UnsetLocationOutfit(target, 1700)
+    EndIf
+    SetOutfitsUsingLocation(Game.GetPlayer().GetCurrentLocation(), Weather.GetCurrentWeather())
+    RefreshArmorFor(target)
+    Log("bed outfit -> " + outfitName + " for " + target.GetDisplayName())
+EndFunction
+
 Event OnSetLoc(String eventName, String outfitName, Float locType, Form sender)
     Actor target = sender as Actor
+    If (locType as Int) == 1700
+        ApplyBed(target, outfitName, True)
+        Return
+    EndIf
     If target == None || outfitName == ""
         Return
     EndIf
@@ -211,6 +251,10 @@ EndEvent
 
 Event OnClrLoc(String eventName, String strArg, Float locType, Form sender)
     Actor target = sender as Actor
+    If (locType as Int) == 1700
+        ApplyBed(target, "", False)
+        Return
+    EndIf
     If target == None
         Return
     EndIf
@@ -698,3 +742,239 @@ Event OnNffGear(String eventName, String op, Float numArg, Form sender)
 
     Log("gear " + op + " -> " + myAct.GetDisplayName())
 EndEvent
+
+; ---------------- Flair: one ordered call, never a burst of independent events.
+; This state belongs to the SAVE (Papyrus), not hotkeys.json. A different save
+; must never inherit the previous save's active clothes. Definitions stay in
+; SkyManager config; these are real resolved Armor forms serialized by Skyrim.
+Armor[] FlairPieces
+Armor[] FlairBasePieces
+String FlairBaseName = ""
+String FlairLabel = ""
+Bool FlairActive = False
+Bool FlairKeep = True
+Bool FlairHadTracking = False
+Bool FlairBusy = False
+
+String Function FlairCompositeName()
+    Return "~SkyManager Flair Player"
+EndFunction
+
+Armor[] Function FlairSnapshot()
+    Armor[] pieces = new Armor[128]
+    Actor player = Game.GetPlayer()
+    Int slot = 0
+    Int count = 0
+    While slot < 32
+        Armor piece = player.GetWornForm(Math.LeftShift(1, slot)) as Armor
+        If piece != None && pieces.Find(piece) < 0
+            pieces[count] = piece
+            count += 1
+        EndIf
+        slot += 1
+    EndWhile
+    Return pieces
+EndFunction
+
+; Flair wins an overlapping BASE slot; the original outfit is never edited.
+; Conflicts between two accessories are rejected by C++ before this call.
+Bool Function FlairCompose()
+    Armor[] basePieces = FlairBasePieces
+    If FlairBaseName != ""
+        If !OutfitExists(FlairBaseName)
+            Return False
+        EndIf
+        basePieces = GetOutfitContents(FlairBaseName)
+    EndIf
+    Armor[] combined = new Armor[128]
+    Int occupied = 0
+    Int count = 0
+    Int i = 0
+    While i < FlairPieces.Length
+        Armor piece = FlairPieces[i]
+        If piece != None
+            If count >= 128
+                Return False
+            EndIf
+            combined[count] = piece
+            count += 1
+            occupied = Math.LogicalOr(occupied, piece.GetSlotMask())
+        EndIf
+        i += 1
+    EndWhile
+    i = 0
+    While i < basePieces.Length
+        Armor basePiece = basePieces[i]
+        If basePiece != None && Math.LogicalAnd(basePiece.GetSlotMask(), occupied) == 0
+            If count >= 128
+                Return False
+            EndIf
+            combined[count] = basePiece
+            count += 1
+        EndIf
+        i += 1
+    EndWhile
+    If count == 0
+        Return False
+    EndIf
+    String composite = FlairCompositeName()
+    If !OutfitExists(composite)
+        CreateOutfit(composite)
+    EndIf
+    OverwriteOutfit(composite, combined)
+    Actor player = Game.GetPlayer()
+    If !HasActor(player)
+        AddActor(player)
+    EndIf
+    SetSelectedOutfit(player, composite)
+    RefreshArmorFor(player)
+    Return GetSelectedOutfit(player) == composite
+EndFunction
+
+String Function WearFlair(String baseName, String label, Armor[] pieces, Bool keep)
+    If FlairBusy
+        Return "ERR|An outfit change is already running"
+    EndIf
+    If !IsEnabled()
+        Return "ERR|Enable the wardrobe outfit manager before equipping Flair"
+    EndIf
+    If baseName != "" && !OutfitExists(baseName)
+        Return "ERR|That outfit no longer exists in the outfit manager"
+    EndIf
+    Actor player = Game.GetPlayer()
+    Bool tracked = HasActor(player)
+    String current = GetSelectedOutfit(player)
+    If !FlairActive && current == FlairCompositeName() && baseName == ""
+        Return "ERR|The active Flair base is unavailable in this save; choose a saved outfit first"
+    EndIf
+    FlairBusy = True
+    If baseName != "" && pieces.Length == 0
+        If !tracked
+            AddActor(player)
+        EndIf
+        SetSelectedOutfit(player, baseName)
+        RefreshArmorFor(player)
+        FlairActive = False
+        FlairPieces = None
+        FlairBasePieces = None
+        FlairBaseName = ""
+        FlairBusy = False
+        Return "OK|Equipped " + baseName + " without Flair"
+    EndIf
+    If pieces.Length == 0
+        FlairBusy = False
+        Return "ERR|No accessories were supplied"
+    EndIf
+    If !FlairActive || current != FlairCompositeName()
+        FlairHadTracking = tracked
+        FlairBaseName = current
+        If !tracked || current == "" || !OutfitExists(current)
+            FlairBaseName = ""
+            FlairBasePieces = FlairSnapshot()
+        EndIf
+    EndIf
+    If baseName != ""
+        FlairBaseName = baseName
+        ; Explicitly choosing a saved outfit has the normal Wardrobe tracking
+        ; semantics; removing its Flair must keep the saved outfit selected.
+        FlairHadTracking = True
+    EndIf
+    FlairPieces = pieces
+    FlairKeep = keep
+    FlairLabel = label
+    Bool ok = FlairCompose()
+    FlairActive = ok
+    FlairBusy = False
+    If !ok
+        Return "ERR|Could not compose Flair; choose the base outfit again"
+    EndIf
+    ; In immersive inventory mode SOES intentionally will not conjure missing
+    ; items. Report worn readback, not a promise based only on queued requests.
+    Int worn = 0
+    Int i = 0
+    While i < pieces.Length
+        If pieces[i] != None && player.IsEquipped(pieces[i])
+            worn += 1
+        EndIf
+        i += 1
+    EndWhile
+    Return "OK|Flair " + label + ": " + worn + "/" + pieces.Length + " accessories equipped"
+EndFunction
+
+String Function ClearFlair()
+    If FlairBusy
+        Return "ERR|An outfit change is already running"
+    EndIf
+    If !FlairActive
+        Return "OK|No active Flair to remove"
+    EndIf
+    FlairBusy = True
+    Actor player = Game.GetPlayer()
+    ; If another system already changed/untracked the player, do not overwrite
+    ; its newer outfit with our old snapshot.
+    If HasActor(player) && GetSelectedOutfit(player) == FlairCompositeName()
+        If FlairBaseName != "" && !OutfitExists(FlairBaseName)
+            FlairBusy = False
+            Return "ERR|The base outfit was deleted; choose another saved outfit without Flair"
+        EndIf
+        If FlairBaseName != "" && OutfitExists(FlairBaseName)
+            SetSelectedOutfit(player, FlairBaseName)
+            RefreshArmorFor(player)
+        Else
+            RemoveActor(player)
+            Int i = 0
+            While i < FlairPieces.Length
+                If FlairPieces[i] != None && FlairBasePieces.Find(FlairPieces[i]) < 0
+                    player.UnequipItem(FlairPieces[i], False, True)
+                EndIf
+                i += 1
+            EndWhile
+            i = 0
+            While i < FlairBasePieces.Length
+                If FlairBasePieces[i] != None && player.GetItemCount(FlairBasePieces[i]) > 0
+                    player.EquipItem(FlairBasePieces[i], False, True)
+                EndIf
+                i += 1
+            EndWhile
+        EndIf
+        If !FlairHadTracking && HasActor(player)
+            RemoveActor(player)
+        EndIf
+    EndIf
+    FlairActive = False
+    FlairPieces = None
+    FlairBasePieces = None
+    FlairBaseName = ""
+    FlairBusy = False
+    Return "OK|Flair removed; base outfit restored where still active"
+EndFunction
+
+; Called only while the world is running, outside OStim and loading screens.
+; SOES already detects location/weather changes; follow its selected outfit.
+; No equip loop: refresh only when that outfit NAME actually changed.
+Bool Function FlairPulse(Bool resetBusy)
+    If resetBusy
+        FlairBusy = False
+    EndIf
+    If !FlairActive || FlairBusy || !IsEnabled()
+        Return FlairActive
+    EndIf
+    Actor player = Game.GetPlayer()
+    If !HasActor(player)
+        FlairActive = False
+        Return False
+    EndIf
+    String current = GetSelectedOutfit(player)
+    If current != FlairCompositeName()
+        If !FlairKeep || current == "" || !OutfitExists(current)
+            FlairActive = False
+            Return False
+        EndIf
+        FlairBusy = True
+        FlairBaseName = current
+        FlairHadTracking = True
+        FlairActive = FlairCompose()
+        FlairBusy = False
+    EndIf
+    Return FlairActive
+EndFunction

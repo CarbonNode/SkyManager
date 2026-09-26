@@ -1718,6 +1718,45 @@ namespace Hotbar
 		return reply(true, "Drank " + nm);
 	}
 
+	SmartPreview PreviewSmart(const std::string& ref)
+	{
+		SmartPreview out;
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player) {
+			out.why = "No save loaded";
+			return out;
+		}
+		float cur = 0.0f, max = 0.0f;
+		if (PoolLevels(ref, cur, max)) {
+			out.cur = cur;
+			out.max = max;
+			out.deficit = std::max<float>(0.0f, max - cur);
+		}
+		// The press's own "already full" rule, verbatim (FireSmart above).
+		const SmartPrefs prefs   = GetSmartPrefs();
+		const float      deficit = PoolDeficitOf(ref);
+		const float      pct     = PoolPercent(ref);
+		if (prefs.optimal && prefs.blockWhenFull && deficit == 0.0f && pct >= 0.0f) {
+			out.full = true;
+			out.why = std::string("Your ") + PoolNoun(ref) + " is already full";
+		}
+		const auto hit = SmartFind(player, ref);
+		out.total = hit.total;
+		if (!hit.best) {
+			if (!out.full)
+				out.why = hit.refusal ? (std::string("No ") + SmartLabel(ref) + " you can drink - " + hit.refusal)
+				                      : (std::string("No ") + SmartLabel(ref) + " in your bag");
+			return out;
+		}
+		out.name = "potion";
+		if (const char* n = hit.best->GetName(); n && *n)
+			out.name = n;
+		out.score = hit.score;
+		out.overheal = hit.overheal;
+		out.ok = !out.full;
+		return out;
+	}
+
 	float PoolDeficit(const std::string& ref)
 	{
 		return std::max<float>(0.0f, PoolDeficitOf(ref));

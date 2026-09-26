@@ -107,6 +107,7 @@ window.HDNpcTune = (function () {
     nt.formId = fid;
     nt.name = String(opts.name || '');
     nt.portrait = String(opts.portrait || '');
+    if (window.FolPane && FolPane.requestPortraitFaces) FolPane.requestPortraitFaces();
     nt.data = null;
     nt.draft = {};
     nt.pendTemper = {};
@@ -601,13 +602,29 @@ window.HDNpcTune = (function () {
       const fp = window.FolPane;
       if (!fp || typeof fp._portraitFor !== 'function' ||
           typeof fp._portraitSrc !== 'function') return '';
-      const shot = fp._portraitFor({
+      const shot = (fp.portraitInfoFor || fp._portraitFor).call(fp, {
         name: npc.name, original: npc.name,
         formId: '0x' + npc.formId.toString(16), dead: npc.dead,
       });
       return shot ? fp._portraitSrc(shot) : '';
     } catch (e) { return ''; }
   }
+
+  // Repaint only the face: a portrait completion must not interrupt a slider or typed edit.
+  window.addEventListener('hd-portraits-changed', function () {
+    if (!nt.open) return;
+    const ov = $('hd-nt-overlay');
+    const face = ov && ov.querySelector('.nt-face');
+    if (!face) return;
+    nt.portrait = portraitOf(nt);
+    let img = face.querySelector('img');
+    if (!nt.portrait) { if (img) img.remove(); face.classList.add('nt-face-glyph'); return; }
+    if (!img) { img = document.createElement('img'); img.alt = ''; img.draggable = false; face.appendChild(img); }
+    img.onerror = function () { face.classList.add('nt-face-glyph'); img.remove(); };
+    img.src = nt.portrait;
+    face.classList.remove('nt-face-glyph');
+    if (window.HDFaceFit) HDFaceFit.paintPortrait(img, nt.portrait);
+  });
 
   if (window.HDOmni && typeof HDOmni.register === 'function') {
     HDOmni.register({
@@ -647,6 +664,7 @@ window.HDNpcTune = (function () {
 
   return {
     open: open, close: close, isOpen: isOpen,
+    portraitIds: function () { return nt.open ? [nt.formId] : []; },
     _nt: nt, _collect: collect, _render: render, _doApply: doApply,
   };
 })();

@@ -119,6 +119,175 @@ if ($rawMode === 'set_profile') {
   ]);
 }
 
+// ------------------------------------------------ CHIM flyout state (READ) ----
+// Rober, 2026-09-21: "chim dropdown should have like write diary option as well,
+// or refresh dynamic profile or enable dynamic profile settings … also show the
+// current LLM model its using". One cheap read answers the flyout's header and
+// its three new rows: the effective profile (model / connector), the dynamic
+// profile flag + lock, the last diary entry, and the diary cooldown.
+function chim_npc_row($explicit, $npcIdParam = '') {
+  $row = null;
+  if ($npcIdParam !== '' && ctype_digit($npcIdParam))
+    $row = q1('SELECT id, npc_name, profile_id, dynamic_profile, lock_profile FROM core_npc_master WHERE id=$1', [intval($npcIdParam)]);
+  if (!$row && $explicit !== '')
+    $row = q1('SELECT id, npc_name, profile_id, dynamic_profile, lock_profile FROM core_npc_master WHERE npc_name=$1', [$explicit]);
+  if (!$row && $explicit !== '')
+    $row = q1('SELECT id, npc_name, profile_id, dynamic_profile, lock_profile FROM core_npc_master WHERE lower(npc_name)=lower($1) ORDER BY id LIMIT 1', [$explicit]);
+  return $row;
+}
+function chim_flag($v) { return in_array($v, [true, 1, '1', 't', 'true'], true); }
+function chim_diary_cooldown_key($name) { return 'DIARY_LAST_TIMESTAMP_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $name); }
+function chim_diary_cooldown_secs() {
+  // main.php reads $GLOBALS["DIARY_COOLDOWN"] from the loaded profile; every
+  // profile on this rig says 120 and the engine default is 30 — read the
+  // general setting when it exists, else 120.
+  $r = q1("SELECT value FROM general_settings WHERE id='DIARY_COOLDOWN'");
+  if ($r && $r['value'] !== null && $r['value'] !== '') return max(0, intval($r['value']));
+  return 120;
+}
+function chim_state_for($row) {
+  $name = $row['npc_name'];
+  // CHIM files the entry under the name the GAME used (often the short display name),
+  // which may differ from core_npc_master.npc_name — match either way round.
+  $last = q1('SELECT rowid, localts, left(content, 400) AS excerpt FROM diarylog WHERE people=$1 OR people ILIKE $2 OR $1 ILIKE people || \'%\' ORDER BY rowid DESC LIMIT 1', [$name, $name . '%']);
+  $cd = q1('SELECT value FROM conf_opts WHERE id=$1', [chim_diary_cooldown_key($name)]);
+  $cool = chim_diary_cooldown_secs();
+  $left = 0;
+  if ($cd && ctype_digit((string)$cd['value'])) $left = max(0, $cool - (time() - intval($cd['value'])));
+  $dyn = chim_flag($row['dynamic_profile'] ?? null);
+  $lock = chim_flag($row['lock_profile'] ?? null);
+  $st = q1('SELECT value FROM conf_opts WHERE id=$1', ['DYNAMIC_PROFILE_STATE_NPC_' . intval($row['id'])]);
+  $dstate = $st ? json_decode((string)$st['value'], true) : null;
+  return [
+    'ok'      => true,
+    'kind'    => 'chim_state',
+    'npc'     => ['id' => intval($row['id']), 'name' => $name],
+    'profile' => profile_facet_for(intval($row['id']), $dyn ? 1 : 0, $lock ? 1 : 0),
+    'dynamic' => $dyn,
+    'locked'  => $lock,
+    'dynamic_state' => is_array($dstate) ? [
+      'pending_events' => max(0, intval($dstate['total'] ?? 0) - intval($dstate['consumed'] ?? 0)),
+      'last_attempt'   => intval($dstate['attempt'] ?? 0),
+    ] : null,
+    'diary'   => $last ? ['at' => intval($last['localts']), 'excerpt' => $last['excerpt']] : null,
+    'diary_cooldown_left' => $left,
+  ];
+}
+if ($rawMode === 'chim_state') {
+  if (!db()) bad('CHIM database unreachable');
+  $row = chim_npc_row($explicit, trim((string)($_REQUEST['npc_id'] ?? '')));
+  if (!$row) bad('NPC not found — she must be a registered CHIM NPC (talked to once in-game)');
+  reply(chim_state_for($row));
+}
+
+// ------------------------------------------ dynamic profile on/off (WRITE) ----
+// Single-column UPDATE of core_npc_master.dynamic_profile, exactly the switch the
+// CHIM web UI flips. Reports the lock honestly: a locked profile never updates
+// dynamically no matter what the flag says (dps_candidates checks both).
+if ($rawMode === 'dynprof_set') {
+  if (!db()) bad('CHIM database unreachable');
+  $row = chim_npc_row($explicit, trim((string)($_REQUEST['npc_id'] ?? '')));
+  if (!$row) bad('NPC not found — she must be a registered CHIM NPC (talked to once in-game)');
+  $on = in_array((string)($_REQUEST['on'] ?? ''), ['1', 'true', 'on'], true);
+  $upd = @pg_query_params(db(), 'UPDATE core_npc_master SET dynamic_profile=$1 WHERE id=$2', [$on ? 1 : 0, intval($row['id'])]);
+  if (!$upd) bad('the dynamic profile flag could not be saved');
+  $row['dynamic_profile'] = $on ? 1 : 0;
+  $out = chim_state_for($row);
+  $out['kind'] = 'dynprof_set';
+  $out['message'] = $on
+    ? ($row['npc_name'] . '’s profile now updates itself from what she lives through'
+       . (chim_flag($row['lock_profile']) ? ' — but her profile is LOCKED, so nothing will change until it is unlocked in CHIM' : ''))
+    : ($row['npc_name'] . '’s profile is fixed again — CHIM stops rewriting it');
+  reply($out);
+}
+
+// ------------------------------------------- refresh dynamic profile (LLM) ----
+// Runs CHIM's own scheduler for THIS one NPC (lib/dynamic_profile_scheduler.php
+// dps_run($name)) through a CLI twin of service/manager.php's bootstrap, with a
+// manual request stamped first so the interval / min-events gates are bypassed
+// (the attempt cooldown still applies — that is CHIM's own spam guard).
+if ($rawMode === 'dynprof_refresh') {
+  if (!db()) bad('CHIM database unreachable');
+  $row = chim_npc_row($explicit, trim((string)($_REQUEST['npc_id'] ?? '')));
+  if (!$row) bad('NPC not found — she must be a registered CHIM NPC (talked to once in-game)');
+  if (!chim_flag($row['dynamic_profile'])) bad($row['npc_name'] . '’s dynamic profile is off — switch it on first');
+  if (chim_flag($row['lock_profile'])) bad($row['npc_name'] . '’s profile is locked in CHIM — unlock it there first');
+  $clock = q1("SELECT value FROM conf_opts WHERE id='DYNAMIC_PROFILE_CLOCK'");
+  $epoch = $clock ? (json_decode((string)$clock['value'], true)['epoch'] ?? '') : '';
+  $key = 'DYNAMIC_PROFILE_MANUAL_' . intval($row['id']);
+  $val = json_encode(['epoch' => $epoch, 'requested' => time()]);
+  @pg_query_params(db(), 'INSERT INTO conf_opts (id, value) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET value=EXCLUDED.value', [$key, $val]);
+  $before = q1('SELECT personality, speechstyle, goals FROM core_npc_master WHERE id=$1', [intval($row['id'])]);
+  $outp = shell_exec('php ' . escapeshellarg(__DIR__ . '/dynprof.php') . ' ' . escapeshellarg($row['npc_name']) . ' 2>&1');
+  $res = null;
+  if (preg_match('/DYNPROF_RESULT (\{.*\})/', (string)$outp, $m)) $res = json_decode($m[1], true);
+  $after = q1('SELECT personality, speechstyle, goals FROM core_npc_master WHERE id=$1', [intval($row['id'])]);
+  $changed = [];
+  foreach (['personality', 'speechstyle', 'goals'] as $f)
+    if (($before[$f] ?? '') !== ($after[$f] ?? '')) $changed[] = $f;
+  $out = chim_state_for($row);
+  $out['kind'] = 'dynprof_refresh';
+  $out['ok'] = true;
+  $out['changed'] = $changed;
+  $out['result'] = $res;
+  $out['message'] = $changed
+    ? ($row['npc_name'] . '’s profile was rewritten: ' . implode(', ', $changed))
+    : ($res && intval($res['npcs'] ?? 0) === 0
+        ? 'CHIM did not take the request — ' . ($res['why'] ?? 'not due yet (attempt cooldown), no connector, or the game is not talking to CHIM')
+        : 'CHIM ran but found nothing new to say about ' . $row['npc_name'] . ' (no events since the last rewrite)');
+  if (!$res) { $out['message'] .= ' · helper output: ' . trim(substr((string)$outp, 0, 300)); }
+  reply($out);
+}
+
+// ------------------------------------------------- write a diary entry (LLM) ----
+// Exactly the request the game itself sends when a follower's diary is due —
+// "diary|ts|gamets|" to comm.php under her profile — so every rule CHIM applies
+// (connector, cooldown, prompt) applies here too. The cooldown is checked first
+// so the row can say "wait N s" instead of silently doing nothing.
+if ($rawMode === 'diary') {
+  if (!db()) bad('CHIM database unreachable');
+  $row = chim_npc_row($explicit, trim((string)($_REQUEST['npc_id'] ?? '')));
+  if (!$row) bad('NPC not found — she must be a registered CHIM NPC (talked to once in-game)');
+  $name = $row['npc_name'];
+  $cd = q1('SELECT value FROM conf_opts WHERE id=$1', [chim_diary_cooldown_key($name)]);
+  $cool = chim_diary_cooldown_secs();
+  if ($cd && ctype_digit((string)$cd['value'])) {
+    $left = $cool - (time() - intval($cd['value']));
+    if ($left > 0) bad('Diary on cooldown for ' . $name . ' — try again in ' . $left . ' s');
+  }
+  $ts = q1('SELECT max(ts) AS ts, max(gamets) AS gamets FROM eventlog');
+  $tsv = $ts && $ts['ts'] !== null ? (string)(intval($ts['ts']) + 2) : (string)(time() * 1000);
+  $gts = $ts && $ts['gamets'] !== null ? (string)(intval($ts['gamets']) + 1) : '0';
+  $beforeRow = q1('SELECT max(rowid) AS r FROM diarylog');
+  $beforeId = $beforeRow && $beforeRow['r'] !== null ? intval($beforeRow['r']) : 0;
+  $data = base64_encode('diary|' . $tsv . '|' . $gts . '|');
+  $url = 'http://127.0.0.1:8081/HerikaServer/comm.php?DATA=' . $data . '&profile=' . md5($name);
+  // Fire-and-poll (2026-09-21 play-test): the entry lands ~8 s in, but comm.php keeps
+  // the connection open well past the deck's 75 s ask budget, so waiting on the
+  // request itself left the row "Writing…" forever. Kick the request off in the
+  // background and answer the moment her row appears in diarylog (60 s cap).
+  shell_exec('nohup curl -s -m 150 ' . escapeshellarg($url) . ' >/dev/null 2>&1 &');
+  $entry = null;
+  $deadline = time() + 60;
+  while (time() < $deadline) {
+    usleep(1000000);
+    $entry = q1('SELECT rowid, localts, people, left(content, 600) AS excerpt FROM diarylog WHERE rowid > $1 AND (people=$2 OR people ILIKE $3 OR $2 ILIKE people || \'%\') ORDER BY rowid DESC LIMIT 1', [$beforeId, $name, $name . '%']);
+    if ($entry) break;
+  }
+  $body = '';
+  $out = chim_state_for($row);
+  $out['kind'] = 'diary';
+  if ($entry) {
+    $out['ok'] = true;
+    $out['entry'] = ['at' => intval($entry['localts']), 'excerpt' => $entry['excerpt']];
+    $out['message'] = $name . ' wrote in her diary';
+  } else {
+    $out['ok'] = false;
+    $out['error'] = 'No diary entry from ' . $name . ' within 60 s — CHIM may still be writing it; check her diary in a minute';
+  }
+  reply($out);
+}
+
 if ($question === '' && $explicit === '') bad('empty question');
 
 // ------------------------------------------------------------ Direct mode ----

@@ -821,29 +821,113 @@ button.trigchip.unset:hover { color: #9fb4c4; border-color: #46606f; }
 .modkey.on { border-color: #c9a24b; color: #c9a24b; background: rgba(201,162,75,.12); }
 .np-hint { font-size: 11.5px; color: #6f6a5e; margin-left: 6px; }
 
+/* ── The keypad: four CLUSTERS, each its own grid ──────────────────────────
+   ⚠ This block is the styling buildNumpad() has always assumed and never had.
+   The pad was once ONE flat 4-column grid of keys and #numpad-grid described
+   exactly that. When it was refactored into per-group clusters (.np-group >
+   .np-group-title + .np-keys) the CSS was never written, so:
+     · #numpad-grid went on being a `repeat(4, 76px)` grid — whose children are
+       now the four GROUPS, which is why every cluster was crushed into a 76px
+       column;
+     · .np-keys had no `display: grid` at all, so its keys stacked one per line;
+     · and the inline `grid-template-columns: repeat(N, var(--npkey-w))` the JS
+       writes was INVALID, because --npkey-w was defined nowhere — an unresolved
+       var kills the whole declaration, so even a real grid would have collapsed
+       to one column.
+   Rober, 2026-09-20: "this looks terrible". It was three missing rules.
+
+   --npkey-w is declared HERE so the JS's inline `repeat(N, var(--npkey-w))`
+   resolves; changing a key's size is this one number. Caps are 64x56 — far
+   above the 44px floor, and sized for a 2560x1440 screen read from a couch. */
 #numpad-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 76px);
-  grid-auto-rows: 60px;
-  gap: 8px;
+  --npkey-w: 64px;
+  --npkey-h: 56px;
+  display: flex;
+  flex-wrap: wrap;
   justify-content: center;
-  padding-bottom: 8px;
+  align-items: flex-start;
+  gap: 26px 34px;
+  padding: 12px 4px 16px;
 }
+
+.np-group {
+  flex: none;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 16px 16px;
+  border: 1px solid #2a2a33; border-radius: 12px;
+  background: rgba(255, 255, 255, .015);
+}
+
+.np-group-title {
+  font: 700 12.5px/1 "Segoe UI", sans-serif;
+  letter-spacing: .14em; text-transform: uppercase;
+  color: #8b8678;
+  white-space: nowrap;          /* "Function row" wrapped to two lines at 76px */
+}
+
+/* The column COUNT is written inline per group (its own business, per
+   buildNumpad's comment); everything else about the grid lives here. */
+.np-keys {
+  display: grid;
+  grid-auto-rows: var(--npkey-h);
+  gap: 8px;
+  justify-content: start;
+}
+
+/* A hole in the arrow T. It still occupies its cell — that blank is what makes
+   the cluster read as a keyboard — it just draws nothing and takes no input. */
+.npgap { visibility: hidden; pointer-events: none; }
+
 .npkey {
   display: grid; place-items: center;
   background: linear-gradient(180deg, #202028, #16161c);
   border: 1px solid #33333d; border-radius: 8px;
-  color: #d6d1c4; font-size: 16px; font-family: Consolas, monospace;
+  color: #d6d1c4; font-size: 18px; font-family: Consolas, monospace;
+  /* A long word label ("NumLock", "PrtScr") must never spill past the rounded
+     cap. Safe on a grid item here because BOTH tracks are definite — the column
+     from --npkey-w, the row from grid-auto-rows — so the automatic-minimum-size
+     collapse the LAWS warn about cannot bite. */
+  overflow: hidden;
   cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease, transform 90ms ease;
 }
-.npkey small { font-size: 10.5px; letter-spacing: .5px; color: #9a9587; }
+.npkey small { font-size: 12px; letter-spacing: .5px; color: #9a9587; }
+
+/* The deck's own open key is MARKED, not hidden — firing it really does toggle
+   the deck, and saying so beats a button that looks broken. Two stacked rows so
+   the tag sits under the label instead of stretching the cap. */
+.npkey.deckkey {
+  grid-template-rows: auto auto; gap: 2px; align-content: center;
+  border-color: #c9a24b; color: #ecd9a0;
+  background: linear-gradient(180deg, #2a2418, #1d1a12);
+}
+.npkey-tag {
+  font: 700 11px/1 "Segoe UI", sans-serif;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: #c9a24b;
+}
 .npkey:hover { border-color: #c9a24b88; background: linear-gradient(180deg, #26262f, #1a1a21); }
 .npkey:focus-visible { outline: 2px solid #c9a24b66; }
 .npkey:active { transform: translateY(1px) scale(.98); }
 .npkey.flash { animation: flashFire 260ms ease; }
 .npkey.tall { grid-row: span 2; }
 .npkey.wide { grid-column: span 2; }
+
+/* One number shrinks every cluster, because the caps are sized off the var. */
+@media (max-width: 1180px) {
+  #numpad-grid { --npkey-w: 54px; --npkey-h: 48px; gap: 18px 22px; }
+  .npkey { font-size: 16px; }
+  /* The tracking that reads well on a 64px cap clips "NumLock" on a 54px one. */
+  .npkey small { font-size: 11px; letter-spacing: 0; }
+}
+body.panel-narrow #numpad-grid { --npkey-w: 52px; --npkey-h: 46px; gap: 16px 20px; }
+body.panel-narrow .npkey { font-size: 15.5px; }
+body.panel-narrow .npkey small { font-size: 11px; letter-spacing: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .npkey { transition: none; }
+  .npkey.flash { animation: none; }
+}
 
 /* ---------- footer ---------- */
 
@@ -1855,6 +1939,10 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
 .fd-tag.dead      { color: #d98a8a; background: #180f10; border-color: #5a3a3a; }
 .fd-tag.tracked   { color: #c9a24b; background: rgba(201,162,75,.06); border-color: #c9a24b77; padding: 3px 6px; }
 .fd-tag.missing   { color: #8b8678; background: rgba(255,255,255,.03); border-color: #3a3a44; text-transform: none; letter-spacing: 0; }
+/* The Loadouts group she rides with. Lower-case on purpose: it is a NAME
+   someone chose, not a status word, so shouting it would be wrong. */
+.fd-tag.group     { color: #d9c48a; background: rgba(201,162,75,.05); border-color: #6b5628; text-transform: none; letter-spacing: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fq-tag.group     { color: #d9c48a; background: rgba(201,162,75,.05); border-color: #6b5628; text-transform: none; letter-spacing: 0; }
 
 #fd-empty {
   flex: 1; display: flex; flex-direction: column;
@@ -1949,6 +2037,23 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   border-bottom: 1px solid #2e2e36;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* A SECTION heading inside a context menu — "Follower Organizer — pick a
+   group" / "Nether's Follower Framework — no groups". New with the F7 card's
+   Add-to-framework picker (2026-09-20): that menu offers two different things
+   under one question, and without a divider between them the NFF row read as
+   one more category. Not a .fd-ctx-head: that is the menu's TITLE and it is
+   the drag handle. */
+.fd-ctx-sub {
+  padding: 9px 12px 5px;
+  font-size: 11.5px;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  color: #6f6a5e;
+  border-top: 1px solid #2a2a31;
+  margin-top: 4px;
+}
+.fd-ctx-scroll > .fd-ctx-sub:first-child { border-top: 0; margin-top: 0; padding-top: 4px; }
 .fd-ctx-orig { color: #6f6a5e; font-weight: 500; font-size: var(--fd-ctx-lab-fs, 12.5px); }
 .fd-ctx-item {
   display: flex; align-items: center; gap: 10px; width: 100%;
@@ -2116,7 +2221,32 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   color: #a9b6a4; border-color: #38423a;
   max-width: var(--fd-home-max, 170px);
 }
-.fd-chip-where .fd-where-ic { flex: none; color: #7f9a7c; }
+/* The icon box: the glyph sits in it, and the shipped loc-* painting covers
+   the glyph when the place's kind has art. Sized to the chip's text, not to the
+   art — a 256px PNG rasterises at its LAYOUT size in Ultralight, so the box IS
+   the size (the LAWS). `position: relative` is what the painting is absolute
+   against; without it the img escapes to the nearest positioned ancestor. */
+.fd-chip-where .fd-where-ic,
+.fd-chip-home .fd-home-ic {
+  position: relative; flex: none;
+  width: 15px; height: 15px; margin-right: 4px;
+  align-self: center; line-height: 15px; text-align: center;
+}
+.fd-chip-where .fd-where-ic { color: #7f9a7c; }
+.fd-loc-img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  -webkit-user-drag: none; user-select: none; pointer-events: none;
+}
+/* Last-known says so in words, not by a 20% colour shift nobody can see. */
+.fd-chip-where .fd-where-last {
+  flex: none; margin-right: 4px;
+  font-family: Consolas, "Courier New", monospace; font-size: 10.5px;
+  letter-spacing: .04em; text-transform: uppercase;
+  color: #8c8579;
+}
+.fd-chip-where.stale .fd-loc-img { opacity: .55; filter: grayscale(.45); }
 .fd-chip-where .fd-where-name {
   flex: 0 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -2461,27 +2591,31 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   background: rgba(10, 10, 14, .72);
   border: 1px solid rgba(255, 255, 255, .16); border-radius: 7px;
   cursor: pointer; cursor: zoom-in;
-  opacity: 0; transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
+  /* visible at rest since 2026-09-26 — it sits beside the Photos button now,
+     and a control that only exists under the pointer is one nobody finds */
+  opacity: .72; transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
 }
-.dm-row:hover .dm-zoomer, .dm-row.sel .dm-zoomer { opacity: .92; }
+.dm-row:hover .dm-zoomer, .dm-row.sel .dm-zoomer, .dm-zoomer:focus { opacity: 1; }
 .dm-zoomer:hover { background: rgba(201, 162, 75, .30); border-color: #c9a24b88; }
 .dm-zoomer:active { transform: scale(.92); }
 
 /* ---------- sub-area tree (chevron + child rows) ---------- */
 
-/* chevron rides the hero's top-left corner as a glassy chip */
-.dm-chev {
-  position: absolute; top: 8px; left: 8px; z-index: 4;
-  width: 26px; height: 26px;
-  display: inline-flex; align-items: center; justify-content: center;
-  font-size: 12px; line-height: 1;
-  color: #e8e4da; background: rgba(10, 10, 14, .72);
-  border: 1px solid rgba(255, 255, 255, .14); border-radius: 7px;
-  cursor: pointer;
-  transition: background 140ms ease, color 140ms ease, transform 140ms ease;
+/* Keep the sub-area action OUTSIDE the photo. Image hover, crop transforms
+   and image-loading fallbacks cannot cover or replace this control. */
+.dm-card-controls { display: flex; padding: 10px 12px 0; }
+.dm-card-controls .dm-chev {
+  position: static; flex: none; min-height: 44px; min-width: 140px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 0 14px; color: #ecd9a0; background: #111116;
+  border: 1px solid #c9a24b; border-radius: 9px; cursor: pointer;
+  font: 600 16px/1.2 "Segoe UI", sans-serif;
 }
-.dm-chev:hover { background: rgba(201,162,75,.25); color: #ecd9a0; }
-.dm-chev.open { color: #c9a24b; }
+.dm-card-controls .dm-chev:hover { background: #30291a; color: #fff6e0; }
+.dm-card-controls .dm-chev:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.dm-card-controls .dm-chev.open { background: #30291a; }
+.dm-chev-gl { font-size: 16px; }
+.dm-chev-n { font: inherit; }
 .dm-chev.spacer { display: none; }   /* cards need no alignment spacer */
 
 /* a sub-area: the old compact horizontal row, spanning the whole grid width
@@ -2563,7 +2697,18 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
 
 .dm-faces { flex: none; display: flex; align-items: center; margin-left: 2px; }
 /* on a card the cluster is a footer strip under the body text */
-.dm-row:not(.dm-child) > .dm-faces { padding: 0 12px 10px; margin: -3px 0 0; }
+/* On a card the cluster is a footer strip under the body text. It WRAPS now
+   (2026-09-17): a card that holds twelve people should show them on two lines
+   rather than stop at five and say "+7". Wrapping and overlapping fight each
+   other — a wrapped line would start 5px under the line above — so the card
+   strip trades the overlap for a small gap, which also reads better once there
+   are ten faces. The child row keeps the dense overlap: it is one line. */
+.dm-row:not(.dm-child) > .dm-faces {
+  padding: 0 12px 10px; margin: -3px 0 0;
+  flex-wrap: wrap; gap: 3px;
+}
+.dm-row:not(.dm-child) > .dm-faces > .dm-face,
+.dm-row:not(.dm-child) > .dm-faces > .dm-face-more { margin-left: 0; }
 /* 34px, not the 24px this shipped with. A resident face is a PHOTOGRAPH and at
    24px overlapped by 6 it read as a coloured dot -- Rober, 2026-08-17:
    "profile images ... really hard to see". The narrow-panel step below moves
@@ -2572,12 +2717,36 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
   position: relative; flex: none;
   width: 34px; height: 34px; margin-left: -5px;
   border-radius: 50%;
+  /* CLIP. A saved portrait framing is a transform on the <img> (scale up to
+     4x, the .medal-face lane) and only the WRAPPER can crop it — without this
+     the scaled photo drew as a full rectangle spilling out of the circle over
+     the card (Rober's screenshot, 2026-09-17). Same rule .medal.img carries. */
+  overflow: hidden;
   box-shadow: 0 0 0 1.5px #16161d;   /* ring in the row bg so overlaps read cleanly */
   transition: transform 140ms ease, box-shadow 140ms ease;
 }
 .dm-faces > :first-child { margin-left: 0; }
-.dm-child .dm-faces { display: none; }   /* sub-area rows never carry a cluster */
+/* Sub-areas DO carry the cluster now (2026-09-17). On a card it is a footer
+   strip under the body text; on a compact child row it sits inline at the end,
+   before the ➤, at the row's own scale — 24px against the card's 34px, the same
+   step .dm-child takes for its medal (23px) and name (12.5px). */
+.dm-child > .dm-faces { flex: none; margin-left: 0; padding: 0; }
+.dm-child .dm-face, .dm-child .dm-face-more { width: 24px; height: 24px; margin-left: -4px; }
+.dm-child .dm-face-medal, .dm-child .dm-face-more { font-size: 9.5px; }
 .dm-face:hover { transform: translateY(-2px); box-shadow: 0 0 0 1.5px #c9a24b; z-index: 4; }
+
+/* WHO CLAIMS HER, as the ring. The cluster mixes homes you typed with homes
+   the two mods assert, and the hover named the source one face at a time —
+   this makes the whole cluster readable at a glance. Gold is what YOU typed,
+   which is also what wins the match; the two mods get their own inks. A face
+   with no matched home keeps the plain ring. 2px, not 1.5px, so the colour is
+   actually visible against the row. */
+.dm-face.src-manual { box-shadow: 0 0 0 2px #c9a24b; }
+.dm-face.src-nff    { box-shadow: 0 0 0 2px #7c9ec9; }
+.dm-face.src-mhiyh  { box-shadow: 0 0 0 2px #7fb87c; }
+.dm-face.src-manual:hover { box-shadow: 0 0 0 2.5px #ecd9a0; }
+.dm-face.src-nff:hover    { box-shadow: 0 0 0 2.5px #a8c4e8; }
+.dm-face.src-mhiyh:hover  { box-shadow: 0 0 0 2.5px #a6d9a3; }
 
 .dm-face-img, .dm-face-medal {
   width: 100%; height: 100%; border-radius: 50%; display: block;
@@ -3203,6 +3372,8 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
   color: #cdc7b8; font-size: 11.5px; padding: 4px 9px; cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
+.dm-art-crop-btn { min-height: 44px; min-width: 150px; padding: 10px 18px; font-size: 17px; color: #ecd9a0; border-color: #c9a24b; background: #1a1915; }
+.dm-who-face > img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center top; }
 .dm-art-btn:hover { background: rgba(255,255,255,.09); border-color: #55525d; color: #ecd9a0; }
 .dm-art-btn:focus-visible { outline: 1px solid #c9a24b; outline-offset: 1px; }
 .dm-art-btn:disabled { opacity: .4; cursor: default; }
@@ -3322,7 +3493,7 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
      overrides this inline (applyCropTo) — the user has said where the face
      is and the guess must get out of the way. */
   object-position: 50% 22%;
-  border-radius: 50%;
+  border-radius: 0; /* Only the fixed wrapper clips: moving a second circle changes the crop. */
   /* The photo is scenery inside the wrapper: no drag payload, no hit test. */
   -webkit-user-drag: none;
   user-select: none;
@@ -3378,6 +3549,35 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
   pointer-events: none;
 }
 
+/* ---- live "how it will look" column beside the crop editor (2026-09-23) ----
+   Two circles at the deck's real draw sizes; each is a .fd-lb-frame, so the
+   .fd-lb-frame .fd-lb-img cover rule above fits them exactly like the editor. */
+.fd-lb-inner.has-side { max-width: 94vw; }
+.fd-lb-stage { display: flex; align-items: center; gap: 28px; }
+.fd-lb-side {
+  display: flex; flex-direction: column; align-items: center; gap: 18px;
+  padding: 20px 22px;
+  border: 1px solid #2e2e38; border-radius: 12px;
+  background: rgba(12, 12, 16, .94);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
+  cursor: default;
+}
+.fd-lb-side-t { font-size: 16px; font-weight: 600; color: #c9a24b; letter-spacing: .3px; }
+.fd-lb-pv-item { display: flex; flex-direction: column; align-items: center; }
+.fd-lb-frame.fd-lb-pv { border-radius: 50%; border-color: #5a513a; box-shadow: none; }
+.fd-lb-pv-lbl { margin-top: 8px; font-size: 14px; color: #b9b4a8; }
+.fd-lb-side .fd-lb-bright { flex-basis: auto; flex-wrap: wrap; }
+
+/* Per-face brightness row (lightbox foot + preview column). */
+.fd-lb-bright {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  flex-basis: 100%;
+  font-size: 15px; color: #d8d4c8;
+}
+.fd-lb-bright-lbl { font-size: 15px; color: #b9b4a8; margin-right: 4px; }
+.fd-lb-bright-val { min-width: 58px; text-align: center; font-size: 15px; color: #e6c979; }
+.fd-lb-bright .fd-lb-btn { font-size: 15px; padding: 8px 14px; }
+
 /* ---- lightbox footer / editor controls ----
    Its OWN well, not bare text on the backdrop. The overlay is only 74%
    opaque, so an unbacked hint line lands legibly on top of whatever roster
@@ -3409,12 +3609,19 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
   cursor: pointer;
   transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
+.fd-lb-crop-btn { min-height: 44px; min-width: 150px; padding: 10px 18px; font-size: 17px; color: #ecd9a0; border-color: #c9a24b; }
+.fd-lb-retake-btn { min-height: 44px; min-width: 150px; padding: 10px 18px; font-size: 17px; color: #d9c9a0; border-color: #8a7a4b; }
+.fd-lb-retake-btn:hover:not(:disabled) { color: #ecd9a0; border-color: #c9a24b; }
 .fd-lb-btn:hover:not(:disabled) { background: #23232e; border-color: #55555f; color: #f0ece0; }
 .fd-lb-btn:focus-visible { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 2px rgba(201, 162, 75, .25); }
 .fd-lb-btn:active:not(:disabled) { background: #2a2a36; }
 .fd-lb-btn:disabled { opacity: .38; cursor: default; }
 .fd-lb-btn.ok { color: #8fd19e; border-color: #3d6b4a; }
 .fd-lb-btn.ok:hover:not(:disabled) { background: #1c2a20; border-color: #4f8560; }
+.fd-lb-auto-fit { min-height:36px; padding:8px 14px; font-size:16px; }
+.fd-lb-auto-fit[aria-checked="true"] { color:#e8d493; border-color:#887342; background:#302b20; }
+.fd-lb-foot > div { min-width:0; max-width:100%; }
+.fd-lb-foot .fd-lb-bright { flex-wrap:wrap; }
 
 /* The six nudge keys as one block, so they read as a d-pad rather than as
    six more buttons in the row. */
@@ -4296,7 +4503,8 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 }
 #wd-builder-swatch:hover { transform: scale(1.15); }
 #wd-builder-swatch:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
-#wd-sheet-face { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; border: 1px solid #2e2e36; flex: none; }
+#wd-sheet-face { display: block; width: 100%; height: 100%; object-fit: cover; }
+#wd-sheet-face-frame { position: relative; overflow: hidden; width: 38px; height: 38px; border-radius: 50%; object-fit: cover; border: 1px solid #2e2e36; flex: none; }
 .wd-sheet-id { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 
 #wd-builder-cols { flex: 1; min-height: 0; display: flex; gap: 0; }
@@ -4684,6 +4892,12 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 .wd-cad-next { font-size: 13.5px; color: #8b8678; }
 .wd-cad-next b { color: #d3c191; font-weight: 600; }
 
+/* A dedicated bed choice inside the existing, body-anchored person sheet. */
+#wd-sheet .wd-bed-field { padding: 18px; gap: 12px; border: 1px solid #63533a; border-radius: 10px; background: rgba(187,153,91,.07); }
+#wd-sheet .wd-bed-field .wd-field-k { font-size: 17px; color: #dbc699; }
+#wd-sheet .wd-bed-field .wd-combo-btn { min-height: 44px; font-size: 16px; }
+.wd-bed-hint { font-size: 15px; line-height: 1.5; color: #c1b9a7; }
+
 /* ---------- keyboard roving focus ---------- */
 
 .wd-card.kb, .wd-npc.kb, .wd-pick.kb { border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.13); }
@@ -5068,6 +5282,93 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 .wd-warn-fold:hover { color: #f0c5c5; border-color: #a55565; }
 .wd-warn-detail { margin: 6px 0 0 14px; font-size: 13.5px; color: #d8b8b8; line-height: 1.5; }
 
+/* ---- ＋ New outfit (2026-09-23) ----
+   The toolbar button is the pane's gold, sized with the toolbar's controls.
+   The popout hangs off document.body, OUTSIDE #wd-scale (same reason as
+   .wd-art-lb): its bare vh/vw are correct and it must not wear the tab zoom. */
+#wd-toolbar .wd-newfit { font-size: 15px; padding: 8px 16px; border-radius: 8px; white-space: nowrap; }
+#wd-toolbar .wd-newfit.hidden { display: none; }
+
+.wd-nf-back {
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 9000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .72);
+  animation: wdArtIn 120ms ease-out;
+}
+.wd-nf-card {
+  width: min(1120px, 92vw); max-height: 90vh; overflow: auto; box-sizing: border-box;
+  background: #16161d; border: 1px solid #c9a24b; border-radius: 14px;
+  padding: 30px 34px 34px;
+  /* No drop shadow: the deck is a transparent overlay on the game, and a big
+     dark shadow reads as a black slab (tools/check_shadow_slabs.py). The
+     full-screen dim behind the card already separates it. */
+}
+.wd-nf-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.wd-nf-h { font-size: 30px; letter-spacing: .3px; color: #ecd9a0; }
+.wd-nf-x { font-size: 18px; padding: 8px 14px; }
+.wd-nf-sub { margin: 10px 0 26px; font-size: 18px; line-height: 1.45; color: rgba(236, 230, 214, .78); }
+.wd-nf-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.wd-nf-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 12px;
+  min-height: 250px; box-sizing: border-box; padding: 28px 26px 24px;
+  font-family: inherit; text-align: left; cursor: pointer;
+  color: #ece6d6; background: #1d1d26;
+  border: 1px solid rgba(201, 162, 75, .35); border-radius: 12px;
+  transition: border-color 140ms ease, background 140ms ease, transform 100ms ease;
+}
+.wd-nf-tile:hover { border-color: #c9a24b; background: #23232e; }
+.wd-nf-tile:focus-visible { outline: none; border-color: #ecd9a0; box-shadow: 0 0 0 3px rgba(201, 162, 75, .35); background: #23232e; }
+.wd-nf-tile:active { transform: translateY(1px); }
+.wd-nf-icon { width: 64px; height: 64px; object-fit: contain; }
+.wd-nf-title { font-size: 22px; color: #ecd9a0; }
+.wd-nf-text { font-size: 17px; line-height: 1.45; color: rgba(236, 230, 214, .8); flex: 1 1 auto; }
+.wd-nf-key {
+  font-family: Consolas, "Courier New", monospace; font-size: 14px; color: #c9a24b;
+  border: 1px solid rgba(201, 162, 75, .45); border-radius: 6px; padding: 3px 9px;
+}
+@media (max-width: 760px) {
+  .wd-nf-grid { grid-template-columns: minmax(0, 1fr); }
+  .wd-nf-tile { min-height: 0; }
+}
+
+/* ---- outfit-photo brightness, in the selection bar beside ◉ Photo ---- */
+.wd-bright {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 3px 10px; border: 1px solid rgba(201, 162, 75, .3); border-radius: 8px;
+}
+.wd-bright-k { font-size: 13px; color: rgba(236, 230, 214, .8); white-space: nowrap; }
+.wd-bright-range { width: 170px; cursor: pointer; accent-color: #c9a24b; }
+.wd-bright-val {
+  font-family: Consolas, "Courier New", monospace; font-size: 13px;
+  min-width: 92px; color: rgba(236, 230, 214, .7);
+}
+.wd-bright-val.on { color: #ecd9a0; }
+.wd-bright-reset { font-size: 13px; padding: 4px 9px; }
+.wd-bright-reset.hidden { display: none; }
+
+/* Tailor's studio: shared navigation, calm toolbar and legible secondary tools. */
+#wd-scale { padding:20px 24px 16px; }
+#wd-toolbar { flex-wrap:wrap; gap:12px; margin-bottom:16px; }
+#wd-toolbar #wd-search-wrap { flex:1 1 300px; }
+#wd-toolbar #wd-search { min-height:48px; padding:12px 48px 12px 14px; font-size:17px; }
+#wd-toolbar #wd-search-clear { width:44px; height:44px; right:2px; font-size:16px; }
+#wd-toolbar .ghost-btn,#wd-toolbar .wd-newfit { min-height:44px; font-size:16px; padding:10px 16px; line-height:1.3; }
+#wd-toolbar #wd-count { font-size:16px; }
+#wd-toolbar.wd-toolbar-options { justify-content:flex-end; margin:0 0 8px; }
+#wd-toolbar .hidden,#wd-search-wrap.hidden { display:none; }
+#wd-editrow .wd-ok-label,#wd-editrow .wd-ui-v,#wd-editrow .keychip { font-size:16px; }
+#wd-editrow .keychip { min-height:44px; min-width:44px; }
+#wd-editrow .wd-ok-hint { font-size:16px; white-space:normal; flex-basis:100%; }
+#wd-banner { font-size:16px; }
+#wd-body { padding-right:6px; }
+#wd-list:not(.grid) { gap:14px; }
+@media(max-width:600px) {
+  #wd-scale { padding:12px; }
+  #wd-toolbar #wd-search-wrap { flex-basis:100%; }
+  #wd-toolbar .ghost-btn,#wd-toolbar .wd-newfit { flex:1 1 auto; }
+}
+@media(prefers-reduced-motion:reduce) { #wd-scale { transition:none; } }
+
 /* ============================================================ her day: the
    WRITE half — telling My Home is Your Home NG where to put her.
 
@@ -5313,6 +5614,21 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
    overflow that reads as a bug. */
 .fq .fq-party .fq-acts { flex-wrap: wrap; row-gap: 6px; }
 .fq .fq-party .fq-btn { flex: 1 1 132px; min-width: 132px; }
+/* The Everyone orders as an EVEN GRID (2026-09-23, Attack made it six):
+   three equal cells a row — Teleport · Wait · Attack over Sandbox · Stop ·
+   Sandbox: allow — instead of one row of six squeezed labels or a wrapping
+   flex row that strands the sixth button alone. Six tracks, each button spans
+   two; with FIVE (NFF did not report its sandbox style) the second row's two
+   span three each, so no row is ever ragged. The extra `div`/`button` type
+   selectors lift this above `.fq .fq-party .fq-acts { display: flex }` and
+   the per-surface flex rules for this row, whatever order they sit in. */
+.fq-party div.fq-acts.fq-party-acts {
+  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px; flex-wrap: nowrap;
+}
+.fq-party div.fq-party-acts > button.fq-btn { grid-column: span 2; min-width: 0; }
+.fq-party div.fq-party-acts > button.fq-btn:nth-child(4):nth-last-child(2),
+.fq-party div.fq-party-acts > button.fq-btn:nth-child(5):last-child { grid-column: span 3; }
 .fq.empty.party .fq-empty {
   margin-top: 9px; padding-top: 9px;
   border-top: 1px solid rgba(255,255,255,.05);
@@ -5325,6 +5641,19 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 }
 .fq-empty-ic { flex: none; font-size: 15px; color: #4a4740; }
 
+/* WHY a control-group has no controls. A SENTENCE, not a chip — it must wrap,
+   and the .fq-rank-note it was first written against is `white-space: nowrap`
+   inside a group that clips its overflow, so it would have been silently cut
+   off mid-word. Sized like .fq-empty rather than like the 10.5px asides: this
+   is the line that answers "why are the buttons gone", so it is meant to be
+   read, not glanced past. */
+.fq-cgroup .fq-noaddr-note {
+  flex: 1 1 100%; min-width: 0;
+  font: 500 12.5px/1.45 "Segoe UI", sans-serif;
+  color: #8e877a; font-style: italic;
+  white-space: normal; padding: 2px 0 1px;
+}
+
 /* head: face, then who they are, then their state */
 .fq-head { display: flex; align-items: flex-start; gap: 10px; padding-bottom: 9px; }
 /* The card face was a 38px thumbnail — roster-row scale on the one surface
@@ -5335,21 +5664,79 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
    same framing simply paints larger — and Ultralight rasterises the img at
    this LAYOUT size, so bigger here IS sharper, not a scaled-up raster. */
 .fq-medal { flex: none; width: 92px; height: 92px; font-size: 30px; }
-.fq-who   { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.fq-line  { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.fq-who   { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.fq-line  { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
 
-/* what the roster already knows about them — category, relationship, note */
-.fq-sub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+/* ---- the dossier row (Rober, 2026-09-21) --------------------------------
+   "imperial essential, riverfall cottage, at home all hard to read. maybe
+   make that nicer?"
+
+   Two things were wrong and only one of them was size. The row draws chips
+   from TWO families — the card's own .fq-chip (category, level, race,
+   essential) and the roster's .fd-chip (home, where, now, fertility, spouse) —
+   and the roster's are sized by variables tuned for a DENSE 40px-row list:
+   10px body, 9px source tag. On a card with a 92px portrait beside it that is
+   simply too small, and the two families also disagreed about shape, so the
+   row read as a jumble rather than one line of facts.
+
+   The fix is a scope, not a fork: the card RE-DECLARES the roster's own chip
+   variables at a card-appropriate size, so every .fd-chip internal (the home
+   name, the "· MHIYH" source, the max widths) scales through the mechanism it
+   already had, and the roster keeps the values its own slider computes. Then
+   both families are pulled to one shape and one contrast level here. */
+.fq-sub {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0;
+  /* The roster's chip vars, restated for a card. Every value here is chosen to
+     DOMINATE the roster's own ramp at its ceiling (followers-pane.js `ramp`,
+     capped by AV_MAX 128 → chip-fs 12.8, chip-max 192, home-max 272,
+     nowchip-max 304, homesrc-fs 11.5), so the card's chips are never SMALLER
+     than the roster's at a large avatar setting. A CSS max() would say this
+     more directly and is exactly what this pane refuses to trust in Ultralight
+     (see the member-menu geometry note in followers-pane.js). */
+  --fd-chip-fs: 13.5px;
+  --fd-chip-max: 240px;
+  --fd-home-max: 300px;
+  --fd-homesrc-fs: 12px;
+  --fd-nowchip-max: 330px;
+}
 .fq-chip {
   flex: none;
-  font: 600 12px/1 "Segoe UI", sans-serif; letter-spacing: .4px; text-transform: uppercase;
-  color: #8b8678; background: rgba(255,255,255,.04);
-  border: 1px solid #3a3a44; border-radius: 20px; padding: 3px 8px;
+  font: 600 13.5px/1 "Segoe UI", sans-serif; letter-spacing: .5px; text-transform: uppercase;
+  color: #c4bead; background: rgba(255,255,255,.055);
+  border: 1px solid #45454f; border-radius: 20px; padding: 5px 11px;
 }
-.fq-chip.rel  { color: #d9c48a; border-color: #4a4433; background: rgba(201,162,75,.06); }
-.fq-chip.new  { color: #6f6a5e; border-style: dashed; }
-.fq-chip.warn { color: #c9a24b; border-color: #4a4433; background: rgba(201,162,75,.08); }
-.fq-chip.hurt { color: #d98a8a; border-color: #5a3a3a; background: #180f10; }
+.fq-chip.rel  { color: #e6d29a; border-color: #5c5340; background: rgba(201,162,75,.10); }
+.fq-chip.new  { color: #8b8678; border-style: dashed; }
+.fq-chip.warn { color: #e0b765; border-color: #5c5340; background: rgba(201,162,75,.13); }
+.fq-chip.hurt { color: #e39d9d; border-color: #6b4444; background: #1d1113; }
+/* The roster's chips, brought to the card's shape and contrast. Only geometry
+   and lightness — each family's own MEANING colour (home grey-warm, now green,
+   fertility, spouse violet) is left exactly as the roster paints it, so a chip
+   still means the same thing on both surfaces. */
+.fq-sub .fd-chip {
+  border-radius: 20px; padding: 4px 11px;
+  border-color: #45454f; background: rgba(255,255,255,.045);
+}
+.fq-sub .fd-chip-home { color: #cdc7b8; border-color: #4a4a55; }
+.fq-sub .fd-chip-home .fd-home-src { color: #8b8678; letter-spacing: .4px; }
+.fq-sub .fd-chip-now {
+  color: #96d79a; border-color: rgba(134,201,138,.45); background: rgba(134,201,138,.10);
+}
+.fq-sub .fd-chip-now .fd-now-at { color: #7fa481; }
+.fq-sub .fd-chip-where { color: #b8c4b3; border-color: #455046; }
+
+/* The CATEGORY chip is a real <button> (it is the card's door into filing, and
+   the card's own search only indexes buttons). It must look identical to the
+   spans beside it, so the button chrome is reset and only the affordance is
+   added: a pointer, a lift on hover, and a focus ring. 2026-09-20. */
+.fq-chip-cat {
+  font: 600 12px/1 "Segoe UI", sans-serif; letter-spacing: .4px; text-transform: uppercase;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.fq-chip-cat:hover { color: #ecd9a0; border-color: #c9a24b; background: rgba(201,162,75,.12); }
+.fq-chip-cat:active { transform: translateY(1px); }
+.fq-chip-cat:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
 
 /* identity actions, top-right of the head */
 .fq-headacts { flex: none; display: flex; align-items: center; gap: 2px; align-self: flex-start; }
@@ -5479,7 +5866,7 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 .fq-equip-tile {
   position: relative; flex: none;
   width: calc(72px * var(--fq-eqs, 1)); height: calc(72px * var(--fq-eqs, 1));
-  border: 1px solid #3a382f; border-radius: 10px; overflow: hidden;
+  border: 1px solid #3a382f; border-radius: 10px; overflow: visible;
   background: #14141a; display: grid; place-items: center;
   transition: border-color 120ms ease, transform 100ms ease;
 }
@@ -5488,6 +5875,7 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 .fq-equip-tile.skel { background: linear-gradient(100deg,#16161c,#1d1d25,#16161c); }
 .fq-equip-tile.outfit { border-color: #6a5a34; }
 .fq-equip-img {
+  border-radius: inherit;
   position: absolute; inset: 0; background-size: cover; background-position: center;
   background-repeat: no-repeat;
 }
@@ -5505,15 +5893,32 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
 /* Hover FLYOUT on each tile — Hide + Delete, no separate button (Rober,
    2026-08-05). Sits across the bottom of the tile, revealed on hover. */
 .fq-equip-fly {
-  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
-  display: flex; gap: 4px; justify-content: center;
-  padding: 4px; background: linear-gradient(0deg, #000d, #000a 60%, transparent);
-  opacity: 0; transform: translateY(4px);
+  position: absolute; left: 0; bottom: 0; z-index: 3;
+  width: max(100%, 132px); box-sizing: border-box;
+  display: flex; flex-wrap: nowrap; gap: 4px; justify-content: center;
+  padding: 6px; border-radius: 8px; background: rgba(18,18,23,.97);
+  opacity: 0; transform: translateY(4px); pointer-events: none;
   transition: opacity 120ms ease, transform 120ms ease;
 }
-.fq-equip-tile:hover .fq-equip-fly { opacity: 1; transform: none; }
+.fq-equip-tile:hover, .fq-equip-tile:focus-within { z-index: 5; }
+.fq-equip-tile:hover .fq-equip-fly { opacity: 1; transform: none; pointer-events: auto; }
 /* keep it visible while a Delete is armed (so the second click lands) */
-.fq-equip-fly:focus-within { opacity: 1; transform: none; }
+.fq-equip-fly:focus-within { opacity: 1; transform: none; pointer-events: auto; }
+/* Regenerate image is ONE MORE ICON in the flyout row (Rober, 2026-09-26:
+   the full-width text button "takes way too much room" — it covered most of
+   the tile). Same 26x24 act box as Hide/Strip/Remove; the name lives in the
+   title + aria-label. ⟳ is a proven in-game glyph (quests, hud).
+   ⚠ No `@media (hover: none)` here: Ultralight matched it in game (2026-09-26
+   screenshot — every tile wore its flyout with nothing hovered, and the
+   86px column gap that rule added was the "spaced weird"). The deck is
+   mouse-driven; the flyout is hover/focus-revealed, as it has been since
+   2026-08-05. */
+.fq-equip-act.regen { border-color: #8b7138; background: #28251d; color: #eddbac; font-size: 14px; }
+.fq-equip-act.regen:hover { background: #3a3220; border-color: #d0ac54; }
+.fq-equip-act.regen:focus-visible { outline: 2px solid #eddbac; outline-offset: 2px; }
+.fq-equip-act.regen:disabled { opacity: .7; cursor: wait; }
+.fq-equip-render-status { width: 100%; color: #d7c79e; font-size: 16px; line-height: 1.5; padding-top: 12px; overflow-wrap: anywhere; }
+.fq-equip-render-status[hidden] { display: none; }
 .fq-equip-act {
   width: 26px; height: 24px; border-radius: 6px; padding: 0;
   border: 1px solid #3a382f; background: #16161ccc; color: #cfc7b2;
@@ -5677,19 +6082,26 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .fd-tune-x:hover { color: #e0b0b0; background: #1a1216; }
 .fd-tune-none { padding: 4px 0 2px 52px; font-size: 12.5px; color: #6f6a5e; }
 
+/* `flex: 0 1 auto`, NOT `flex: 1` (Rober, 2026-09-21: "following up top is
+   weird, its not in line"). Greedy, the name ate the whole line and shoved the
+   FOLLOWING pill against the far edge of the head — a full portrait's width
+   away from the word it describes, and vertically stranded above the action
+   search box. Shrink-to-fit puts the pill back where it reads: immediately
+   after the name it is about. min-width:0 keeps the ellipsis working, so a
+   very long name still shortens rather than pushing the pill off. */
 .fq-name {
-  flex: 1; min-width: 0;
+  flex: 0 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: 600 14px/1.2 "Segoe UI", sans-serif; color: #ecd9a0;
+  font: 600 17px/1.2 "Segoe UI", sans-serif; color: #ecd9a0; letter-spacing: .2px;
 }
 /* same pill as the roster's badges, so "Following" means one thing everywhere */
 .fq-tag {
   flex: none;
-  font: 600 11.5px/1 "Segoe UI", sans-serif; letter-spacing: .4px; text-transform: uppercase;
-  padding: 3px 7px; border-radius: 20px; border: 1px solid transparent;
+  font: 600 12px/1 "Segoe UI", sans-serif; letter-spacing: .5px; text-transform: uppercase;
+  padding: 4px 9px; border-radius: 20px; border: 1px solid transparent;
 }
-.fq-tag.following { color: #8fd19e; background: #0e150f; border-color: #3d6b4a; }
-.fq-tag.dead      { color: #d98a8a; background: #180f10; border-color: #5a3a3a; }
+.fq-tag.following { color: #9fdcae; background: #0e150f; border-color: #46774f; }
+.fq-tag.dead      { color: #e39d9d; background: #180f10; border-color: #6b4444; }
 
 /* WRAPS. It used to be a single non-wrapping row of `flex: 1 1 0` buttons, and
    the card has grown to eleven of them - at the deck's narrow floor (640px
@@ -6215,8 +6627,8 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
    history of rendering-but-not-working in this webview, and a rank you cannot
    change is worse than an ugly one. */
 .fq-rank {
-  display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
-  padding: 8px 0 2px; min-width: 0;
+  display: flex; align-items: center; gap: 9px; flex-wrap: nowrap;
+  padding: 10px 0 4px; min-width: 0;
   animation: fqSetsIn 140ms ease-out;
 }
 /* The nine-step diverging bar. Segments are ours, not a native range: see the
@@ -6289,14 +6701,39 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .fq-rank-nudge:active:not([disabled]) { background: #24242e; }
 .fq-rank-nudge:focus-visible { outline: 2px solid #c9a24b; outline-offset: 1px; }
 .fq-rank-nudge[disabled] { opacity: .35; cursor: not-allowed; }
+/* The verdict, as a tinted pill (Rober, 2026-09-21: "rank should be color
+   coded below?"). It used to be two shades — warm gold for anything positive,
+   red for anything negative — so Friend and Lover, Rival and Archnemesis, were
+   each one colour. The BAR beside it has carried nine steps of intensity since
+   it was built; the word had not caught up, which is why the readout looked
+   flat next to a graded control.
+   Now each rank owns a colour on the same warm→cold ramp the segments use, so
+   the word and the bar say the same thing at a glance. LOVER is the one that
+   steps off the ramp, to rose: it is not "more gold than Ally", it is a
+   different kind of relationship, and it is the one worth spotting across the
+   room. Explicit rgba/hsl only — color-mix() computes to nothing in
+   Ultralight (the LAWS). */
 .fq-rank-val {
-  flex: none; max-width: 40%;
+  flex: none; max-width: 44%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: 600 11.5px/1 "Segoe UI", sans-serif; letter-spacing: .2px;
+  font: 600 13.5px/1 "Segoe UI", sans-serif; letter-spacing: .3px;
   color: #b9b4a8;
+  padding: 4px 10px; border-radius: 20px;
+  border: 1px solid #3a3a44; background: rgba(255,255,255,.04);
 }
+/* kept: other rules (and the harness) still ask "is this side warm or cold" */
 .fq-rank-val.good { color: #d9c48a; }
 .fq-rank-val.bad  { color: #d98a8a; }
+/* …and then the exact step wins over the side. */
+.fq-rank-val.rkp4 { color: #eca9bd; border-color: #6e4351; background: rgba(230,163,184,.11); }
+.fq-rank-val.rkp3 { color: #f0dda6; border-color: #6b5c33; background: rgba(201,162,75,.15); }
+.fq-rank-val.rkp2 { color: #e0c891; border-color: #5c5133; background: rgba(201,162,75,.11); }
+.fq-rank-val.rkp1 { color: #cdb480; border-color: #4e462e; background: rgba(201,162,75,.08); }
+.fq-rank-val.rkp0 { color: #a29d91; border-color: #3a3a44; background: rgba(255,255,255,.04); }
+.fq-rank-val.rkm1 { color: #cfa0a0; border-color: #4e3636; background: rgba(208,135,135,.08); }
+.fq-rank-val.rkm2 { color: #d98d8d; border-color: #5c3b3b; background: rgba(208,135,135,.11); }
+.fq-rank-val.rkm3 { color: #e37a7a; border-color: #6b4040; background: rgba(224,96,96,.13); }
+.fq-rank-val.rkm4 { color: #ec6a6a; border-color: #7a4444; background: rgba(224,96,96,.16); }
 /* Name carries the meaning, number is the console notation people already know
    — so the number sits back a step rather than competing with the word. */
 .fq-rank-name { font-weight: 700; }
@@ -6306,7 +6743,12 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   flex: none; font: 500 10.5px/1 "Segoe UI", sans-serif;
   color: #6f6a5e; font-style: italic; white-space: nowrap;
 }
-.fq-rank.unset .fq-rank-val { color: #6f6a5e; }
+/* No record at all is not a rank — so the pill drops its tint and says so in
+   grey rather than colour-coding a number the game never reported. */
+.fq-rank.unset .fq-rank-val,
+.fq-rank.unset .fq-rank-val[class] {
+  color: #6f6a5e; border-color: #33333d; background: rgba(255,255,255,.03);
+}
 
 /* Portrait framing panel. Reads as one instrument rather than a run of loose
    buttons, because the six nudges only make sense together. */
@@ -10435,6 +10877,15 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   transition: border-color 140ms ease, background 140ms ease, opacity 140ms ease;
 }
 .os-row:hover { border-color: #3a3a44; background: rgba(255,255,255,.045); }
+
+/* Position pictogram on a browse row (2026-09-21). Matched by keyword from
+   OstimTools.positionIcon — ONE table, not a second copy here. Unmatched
+   scenes reserve the same slot (.os-pos-none) so the names stay in a column
+   instead of stepping left and right down the list. */
+.os-pos { width: 54px; height: 36px; flex: 0 0 54px; object-fit: contain; }
+.os-pos-none { display: block; }
+.os-row.incompat .os-pos { opacity: .7; }
+
 .os-row.top { border-color: rgba(201,162,75,.4); }
 .os-row.incompat { opacity: .5; cursor: default; }
 .os-row.incompat:hover { border-color: #2e2e36; background: rgba(255,255,255,.02); }
@@ -11322,3 +11773,1459 @@ button.ct-rail-rename { min-width: 32px; min-height: 30px; padding: 5px 4px; }
 .capture-gest-lbl { color: #8b8678; font-size: 15px; margin-right: 4px; }
 .gest-chip { min-width: 124px; height: 40px; }
 .gest-chip.is-on { border-color: #c9a24b; color: #f2e0b0; background: rgba(201,162,75,.14); }
+
+/* NPC scene quick access: fixed body modal, outside the deck's scale. */
+/* Block images do not inherit the icon slot's text-align. Center within its
+   46px rail slot, including when the adjacent label expands. */
+.nsc-icon { width: 27px; height: 27px; object-fit: contain; display: block; margin: 0 auto; }
+.nsc-live .nsc-icon { animation: nsc-pulse 1.7s ease-in-out infinite; }
+.nsc-live { border-color: #c9a24b; }
+@keyframes nsc-pulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .nsc-live .nsc-icon { animation: none; } }
+.nsc-back { position: fixed; inset: 0; z-index: 1800; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.nsc-card { width: 1180px; max-width: 100%; max-height: 92vh; overflow-y: auto; padding: 28px; border: 1px solid #c9a24b; border-radius: 14px; background: #17171e; color: #eee8db; box-shadow: 0 12px 40px rgba(0,0,0,.6); }
+.nsc-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.nsc-head h2 { font-size: 28px; margin: 0; }
+.nsc-status,.nsc-empty { font-size: 17px; line-height: 1.5; color: #cec6b4; margin: 18px 0; }
+/* The position pictogram in front of the scene name on an NPC's card
+   (2026-09-21). Inline with the text, so a status line that has one and a
+   status line that does not are still the same height. */
+.nsc-pos { width: 40px; height: 27px; object-fit: contain; vertical-align: -7px; margin-right: 8px; }
+.nsc-search { width: 100%; min-height: 48px; font-size: 18px; margin-bottom: 18px; }
+.nsc-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap: 14px; grid-auto-rows: max-content; }
+.nsc-action { min-height: 52px; padding: 12px 16px; font-size: 18px; text-align: left; color: #ece4d0; background: #25242c; border: 1px solid #5e5440; border-radius: 8px; cursor: pointer; }
+.nsc-action:hover:not(:disabled),.nsc-action:focus-visible { background: #393020; border-color: #c9a24b; outline: 2px solid #c9a24b; outline-offset: 2px; }
+.nsc-action:disabled { opacity: .4; cursor: default; }
+.nsc-action[hidden],.nsc-empty[hidden] { display: none; }
+.os-scene-tools { display: flex; gap: 12px; padding: 10px 0; flex: none; }
+.os-fav,.os-group-toggle,.os-scene-tools button { min-height: 44px; font-size: 18px; padding: 8px 14px; border: 1px solid #72603b; border-radius: 8px; background: #232129; color: #e5d8b9; cursor: pointer; }
+.os-fav.on,.os-scene-tools button.active { color: #f6d981; border-color: #c9a24b; background: #3b3020; }
+.os-group { flex: none; min-height: min-content; }
+.os-group-toggle { display: flex; width: 100%; text-align: left; align-items: center; gap: 12px; }
+.os-group-toggle:hover,.os-fav:hover { background: #393020; }
+.os-group-body { padding: 8px 0 8px 20px; display: flex; flex-direction: column; gap: 8px; }
+.os-group-body[hidden] { display: none; }
+.os-variant-id { font-size: 14px; color: #a9a391; overflow-wrap: anywhere; }
+
+.nsc-result { font-size: 17px; color: #dac17c; margin: 0 0 12px; }
+.nsc-result:empty { display: none; }
+.nsc-result.error { color: #ffb7ad; }
+
+/* Spacious scene console, using the deck's installed custom icon set. */
+.nsc-heading { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.nsc-brand { flex: none; width: 52px; height: 52px; object-fit: contain; }
+.nsc-section { margin-top: 22px; }
+.nsc-section:first-child { margin-top: 0; }
+.nsc-section h3 { margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid #494131; font-size: 19px; color: #d9bd74; font-weight: 600; }
+.nsc-tile { min-height: 94px; display: flex; align-items: center; gap: 18px; padding: 17px 20px; }
+.nsc-tile-icon { width: 46px; height: 46px; object-fit: contain; flex: none; }
+.nsc-tile-text { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.nsc-label { font-size: 20px; font-weight: 600; line-height: 1.2; }
+.nsc-detail { font-size: 17px; line-height: 1.35; color: #bfb7a8; }
+.nsc-section[hidden] { display: none; }
+@media (max-width: 720px) {
+  .nsc-back { padding: 12px; }
+  .nsc-card { padding: 20px; max-height: 94vh; }
+  .nsc-head h2 { font-size: 24px; }
+  .nsc-grid { grid-template-columns: 1fr; }
+  .nsc-tile { min-height: 92px; }
+}
+
+/* domains-photo-fov-choice: ask before changing the capture camera. Body-level, unscaled. */
+.dm-photo-fov {position:fixed;inset:0;z-index:10050;background:rgba(0,0,0,.78);display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}
+.dm-photo-fov-box {width:640px;max-width:100%;max-height:90vh;overflow:auto;box-sizing:border-box;padding:30px;background:#19191f;border:1px solid #a88b45;border-radius:18px;box-shadow:0 8px 22px rgba(0,0,0,.3);color:#eee9df;}
+.dm-photo-fov-box h2 {font-size:28px;margin:0 0 14px;}
+.dm-photo-fov-box p {font-size:18px;line-height:1.5;margin:0 0 22px;}
+.dm-photo-fov-choice {display:block;width:100%;text-align:left;padding:20px;margin:12px 0;background:#24242c;color:#eee9df;border:1px solid #55515b;border-radius:12px;cursor:pointer;}
+.dm-photo-fov-choice strong {display:block;font-size:22px;margin-bottom:8px;}
+.dm-photo-fov-choice span {display:block;font-size:18px;line-height:1.4;color:#c7c1b7;}
+.dm-photo-fov-choice:hover,.dm-photo-fov-choice:focus {background:#393324;border-color:#d3af57;outline:2px solid #d3af57;outline-offset:2px;}
+.dm-photo-fov-box .dm-photo-fov-note {margin:22px 0;font-size:17px;color:#c7c1b7;}
+.dm-photo-fov-cancel {padding:12px 24px;min-height:48px;font-size:20px;background:#30303b;color:#eee9df;border:1px solid #77717c;border-radius:8px;cursor:pointer;}
+.dm-photo-fov-cancel:focus,.dm-photo-fov-cancel:hover {outline:2px solid #d3af57;outline-offset:2px;}
+@media(max-width:600px) {.dm-photo-fov {padding:12px;}.dm-photo-fov-box {padding:22px;}}
+
+/* OStim live workspace; body-level dialog, independent of deck scaling. */
+.ost-back{position:fixed;inset:0;z-index:9950;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.72);color:#eee7db;box-sizing:border-box;}
+.ost-card{width:1240px;max-width:100%;max-height:94vh;display:flex;flex-direction:column;padding:28px;box-sizing:border-box;background:#19191f;border:1px solid #b69b56;border-radius:18px;font-size:20px;overflow:hidden;}
+.ost-head,.ost-tabs,.ost-toolbar,.ost-people,.ost-row,.ost-adjust{display:flex;align-items:center;gap:16px;}.ost-head{justify-content:space-between;}.ost-head h2{margin:0;font-size:30px;}.ost-tabs,.ost-toolbar,.ost-people{flex-wrap:wrap;margin:14px 0;}.ost-tabs{border-bottom:1px solid #61563d;padding-bottom:16px;}
+.ost-button,.ost-person,.ost-option{font-size:19px;color:#eee7db;background:#292830;border:1px solid #6d6047;border-radius:9px;padding:14px 18px;min-height:52px;cursor:pointer;}.ost-button:hover,.ost-person:hover,.ost-option:hover{background:#3b342d;}.ost-button[aria-pressed=true],.ost-person[aria-pressed=true]{background:#514326;border-color:#d0ad53;}.ost-button:disabled{opacity:.4;cursor:default;}.ost-button:focus,.ost-person:focus,.ost-search:focus,.ost-option:focus{outline:2px solid #d0ad53;outline-offset:2px;}.ost-status{font-size:22px;color:#dbc17a;margin:18px 0 0;}.ost-note,.ost-help{font-size:18px;line-height:1.5;color:#bdb5a6;}.ost-note{min-height:28px;margin:0 0 10px;}.ost-body{overflow:auto;min-height:160px;padding:4px;}.ost-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));grid-auto-rows:max-content;gap:18px;margin:18px 0;}.ost-grid>.ost-button{min-height:78px;}.ost-person{display:flex;gap:14px;align-items:center;}.ost-face{position:relative;overflow:hidden;display:flex;justify-content:center;align-items:center;width:64px;height:64px;flex:0 0 64px;border-radius:50%;background:#38313b;}.ost-face img{width:100%;height:100%;object-fit:cover;max-width:none;}.ost-search{font-size:20px;padding:15px;width:100%;min-width:0;box-sizing:border-box;background:#101014;color:#eee7db;border:1px solid #75613c;border-radius:8px;}.ost-toolbar>.ost-search{flex:1 1 250px;}.ost-list{margin-top:18px;}.ost-row{padding:18px;border:1px solid #45404b;border-radius:12px;margin:12px 0;flex-wrap:wrap;}.ost-row-text{flex:1;min-width:200px;display:flex;flex-direction:column;gap:8px;font-size:21px;overflow-wrap:anywhere;}.ost-row-text small{font-size:18px;color:#bdb5a6;}.ost-option{display:flex;flex-direction:column;width:100%;text-align:left;margin:12px 0;gap:8px;}.ost-adjust{justify-content:space-between;padding:14px;border:1px solid #514735;border-radius:10px;}.ost-adjust strong{flex:1;font-size:20px;}.ost-collections{width:100%;font-size:19px;}.ost-collections summary{cursor:pointer;padding:12px;}.ost-collection-list{display:flex;flex-wrap:wrap;gap:10px;padding-top:12px;}
+@media(max-width:720px){.ost-back{padding:12px;}.ost-card{padding:18px;}.ost-head h2{font-size:26px;}.ost-grid{grid-template-columns:1fr;}.ost-row{padding:14px;}.ost-button{padding:12px;}.ost-tabs{gap:10px;}}
+
+.ost-icon{width:30px;height:30px;object-fit:contain;vertical-align:middle;flex:0 0 30px;}.ost-button{display:inline-flex;align-items:center;justify-content:center;gap:12px;}.ost-value{display:block;color:#dbc17a;font-size:19px;margin-top:6px;}.ost-adjust{min-width:0;}.ost-adjust strong{min-width:0;}.ost-collections[open]{padding-bottom:14px;}
+
+/* Scene actor tools: large controls, bounded photo previews. */
+.ost-readout{font-size:24px;color:#dbc17a;margin:24px 0;}.ost-photo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));grid-auto-rows:max-content;gap:20px;margin-top:20px;}.ost-photo{display:flex;flex-direction:column;gap:14px;min-width:0;padding:14px;background:#24232c;border:1px solid #6d6047;border-radius:12px;color:#eee7db;font-size:18px;cursor:pointer;}.ost-photo img{width:100%;height:180px;object-fit:cover;}.ost-photo span{overflow-wrap:anywhere;}.ost-photo:hover{background:#3b342d;}.ost-photo:focus{outline:2px solid #d0ad53;}.ost-photo-full{display:block;width:100%;max-height:60vh;object-fit:contain;margin-top:20px;}.ost-card>header,.ost-card>nav,.ost-card>.ost-status,.ost-card>.ost-note{flex-shrink:0;}
+.ost-expression-status{display:flex;flex-direction:column;gap:4px;margin:12px 0;}
+
+.ost-fov{padding:18px 20px;border:1px solid #61563d;border-radius:12px;background:#202027;margin:18px 0;}.ost-fov-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;}.ost-fov-value{font-size:24px;color:#dbc17a;}.ost-fov-track{position:relative;height:52px;margin:12px 18px;cursor:ew-resize;user-select:none;-webkit-user-select:none;outline:none;}.ost-fov-track:focus{outline:2px solid #d0ad53;outline-offset:5px;border-radius:6px;}.ost-fov-rail,.ost-fov-fill{position:absolute;left:0;top:22px;height:8px;border-radius:4px;pointer-events:none;}.ost-fov-rail{right:0;background:#4c4650;}.ost-fov-fill{background:#c4a44d;width:55%;}.ost-fov-knob{position:absolute;left:55%;top:9px;width:32px;height:32px;border-radius:50%;background:#e4c570;border:2px solid #eee1b6;box-sizing:border-box;transform:translateX(-50%);pointer-events:none;box-shadow:0 2px 5px rgba(0,0,0,.5);}.ost-fov-track:hover .ost-fov-knob{background:#f3da90;}.ost-fov-presets{display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;}.ost-fov-presets .ost-button{padding:10px 12px;min-width:54px;font-size:18px;}.ost-fov .ost-help{margin:14px 0 0;}
+
+/* Scene lighting */
+.ost-light-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));grid-auto-rows:max-content;gap:20px;margin:20px 0;}
+.ost-light-row,.ost-light-section{padding:22px;background:#222129;border:1px solid #514735;border-radius:12px;min-width:0;box-sizing:border-box;}
+.ost-light-person{display:flex;align-items:center;gap:18px;}.ost-light-person strong{font-size:23px;overflow-wrap:anywhere;}.ost-light-person p{margin:8px 0 0;}.ost-light-section{margin-top:24px;}.ost-light-section h3{margin-top:0;font-size:24px;}.ost-light-row .ost-toolbar{margin-bottom:0;}
+@media(max-width:720px){.ost-light-list{grid-template-columns:1fr;}.ost-light-row,.ost-light-section{padding:18px;}}
+
+/* Selected participant SOS size */
+.ost-size{margin-top:30px;padding:24px;border:1px solid #66583b;border-radius:14px;background:#222129;}
+.ost-size-head{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;}.ost-size-head h3{margin:0;font-size:26px;}.ost-size-value{font-size:26px;color:#dbc17a;}
+.ost-size-track{position:relative;height:64px;margin:18px 16px;cursor:pointer;touch-action:none;user-select:none;}.ost-size-track:focus{outline:2px solid #d0ad53;outline-offset:6px;border-radius:8px;}.ost-size-track[aria-disabled=true]{opacity:.4;cursor:default;}
+.ost-size-rail,.ost-size-fill{position:absolute;left:0;top:25px;height:14px;border-radius:7px;background:#48434b;width:100%;pointer-events:none;}.ost-size-fill{width:0;background:#b69b56;}.ost-size-knob{position:absolute;left:0;top:13px;width:36px;height:38px;margin-left:-18px;border-radius:10px;border:2px solid #f1d88f;background:#c8a44d;box-sizing:border-box;pointer-events:none;}
+.ost-size-presets{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;}.ost-size-presets button{min-width:66px;}.ost-size .ost-toolbar{margin:24px 0 8px;}
+@media(max-width:720px){.ost-size{padding:18px;}.ost-size-presets{gap:8px;}.ost-size-presets button{min-width:48px;}}
+
+
+/* ===================================================================== *
+ *  Scene page, visual pass (2026-09-21). Rober, on the first preview:
+ *  "its kinda boring ... visually its all just cards".
+ *
+ *  He was right, and the cause was structural rather than decorative:
+ *  twelve segments each painted their own copy of the cast strip and then
+ *  a toolbar over a list of identical rows, so every segment resolved to
+ *  the same grey rectangle and the SCENE — the thing the page is about —
+ *  appeared only as one line of text.
+ *
+ *  The answer is information design, not ornament (his standing
+ *  direction: professional, modern, sleek, symmetrical — not Skyrim
+ *  fantasy trim). Three moves:
+ *    1. a hero that shows the scene: the cast as portraits, the speed as
+ *       a stepped meter, pacing as a two-state control;
+ *    2. the segment nav as an EVEN grid — twelve cells divide by 2/3/4/6,
+ *       so no row ever wraps ragged or leaves one chip dangling;
+ *    3. state encoded in FORM — a left stripe on a row says "can move" /
+ *       "refused" before you read a word of it.
+ *  Semantic colour is kept separate from the gold accent on purpose.
+ * ===================================================================== */
+
+/* ---- the hero ------------------------------------------------------- */
+.ost-hero{display:flex;flex-direction:column;gap:20px;
+  margin:18px 0 6px;padding:22px 24px;border:1px solid #514735;border-radius:16px;background:#1e1d25;
+  border-top:3px solid rgba(109,96,71,.9);}
+.ost-hero[data-live="true"]{border-top-color:rgba(208,173,83,.95);background:#222129;}
+.ost-hero-cast .ost-people{margin:0;gap:14px;}
+.ost-hero-meta{display:flex;flex-direction:column;gap:12px;min-width:0;}
+.ost-hero-title{margin:0;font-size:30px;line-height:1.15;color:#f0dda6;overflow-wrap:anywhere;}
+.ost-hero[data-live="false"] .ost-hero-title{color:#9c948a;}
+.ost-hero-chips{display:flex;flex-wrap:wrap;gap:10px;}
+.ost-chip{padding:7px 14px;font-size:17px;color:#cfc6b4;background:#2b2a33;
+  border:1px solid #5b5243;border-radius:999px;}
+.ost-chip[data-kind="furn"]{color:#e4cd8d;border-color:#7d6a40;}
+
+/* Speed: one bar per step OStim offers, so "2 of 4" is a shape. */
+.ost-hero-speed{display:flex;align-items:center;gap:18px;flex-wrap:wrap;}
+.ost-speed-bars{display:flex;gap:6px;flex:1 1 200px;min-width:140px;}
+.ost-speed-bar{flex:1 1 0;height:16px;border-radius:4px;background:#3a3742;
+  border:1px solid #4c4650;}
+.ost-speed-bar[data-on="true"]{background:#c8a44d;border-color:#e4c570;}
+.ost-speed-ctl{display:flex;align-items:center;gap:10px;}
+.ost-speed-ctl .ost-button{min-height:48px;min-width:56px;padding:10px 14px;font-size:22px;}
+.ost-speed-read{min-width:66px;text-align:center;font-size:21px;color:#dbc17a;
+  font-variant-numeric:tabular-nums;}
+.ost-mode{min-height:48px;padding:10px 22px;font-size:19px;color:#cfc6b4;background:#2b2a33;
+  border:1px solid #5b5243;border-radius:999px;cursor:pointer;}
+.ost-mode:hover{background:#3b342d;}
+.ost-mode:focus{outline:2px solid #d0ad53;outline-offset:2px;}
+.ost-mode[data-on="true"]{color:#191921;background:#c8a44d;border-color:#e4c570;}
+
+/* Portraits carry the page, so they are portraits and not 64px tokens. */
+.ost-hero .ost-person{flex-direction:column;gap:10px;padding:12px 14px;background:transparent;
+  border-color:transparent;}
+.ost-hero .ost-person:hover{background:#2b2a33;}
+.ost-hero .ost-person[aria-pressed="true"]{background:#2f2a20;border-color:#d0ad53;}
+.ost-hero .ost-face{width:88px;height:88px;flex:0 0 88px;border:2px solid #5b5243;}
+.ost-hero .ost-person[aria-pressed="true"] .ost-face{border-color:#e4c570;}
+.ost-person-name{font-size:18px;max-width:118px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* The status line is now the screen-reader / harness copy of the hero. */
+.ost-status{font-size:16px;color:#8d8578;margin:2px 0 0;}
+
+/* ---- position art ----------------------------------------------------
+   Rober, 2026-09-21: "i think we should try to match keywords of
+   animations and show specific icons for them". A 13-glyph pictogram set
+   he supplied, re-tinted to the deck's accent gold and normalised into one
+   3:2 box so a 0.45-ratio glyph and a 3.19-ratio glyph occupy the same
+   slot — otherwise the rows go ragged, which is the thing we just fixed.
+
+   The matcher returns '' when no keyword hit, and a row then draws
+   .ost-pos-none: an empty reservation of exactly the same size, so a list
+   where only some scenes match still lines up in a column. -------------- */
+.ost-pos{width:72px;height:48px;flex:0 0 72px;object-fit:contain;}
+.ost-pos-none{display:block;}
+.ost-hero-art{display:flex;align-items:center;justify-content:center;}
+.ost-hero-art[data-has="false"]{display:none;}
+.ost-pos-hero{width:168px;height:112px;flex:0 0 168px;opacity:.95;}
+@media(max-width:900px){
+  .ost-hero-top{grid-template-columns:1fr;}
+  .ost-hero-art{justify-content:flex-start;}
+  .ost-pos-hero{width:132px;height:88px;flex:0 0 132px;}
+}
+@media(max-width:720px){
+  .ost-pos{width:56px;height:38px;flex:0 0 56px;}
+}
+
+/* ---- popouts: spacious, body-anchored, and they move NOTHING ---------
+   Rober, 2026-09-21: "anything that pops out should be its own spacious
+   popout modal so nothing moves or gets weird and we have plenty of room
+   to read / font / text / UI."
+
+   Everything that used to be an inline <details> or a long list squeezed
+   under three other panels now opens here. position:fixed is the whole
+   point — the page behind cannot reflow by a pixel.
+
+   ⚠ Body-anchored and viewport-filling, exactly like .ost-back and
+   .gaw-back, so its bare vh/vw is CORRECT and it must NOT wear
+   scale(var(--ui-scale)). That is the 2026-08-14 popup audit; do not
+   "fix" it. ------------------------------------------------------------ */
+.ost-pop{position:fixed;inset:0;z-index:9960;display:flex;align-items:center;justify-content:center;
+  padding:32px;box-sizing:border-box;background:rgba(0,0,0,.76);color:#eee7db;}
+.ost-pop-card{width:960px;max-width:100%;max-height:88vh;display:flex;flex-direction:column;
+  padding:34px 36px;box-sizing:border-box;background:#1e1d25;border:1px solid #b69b56;
+  border-radius:20px;box-shadow:0 10px 28px rgba(0,0,0, 0.45);}
+.ost-pop-head{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-shrink:0;}
+.ost-pop-head h2{margin:0;font-size:32px;color:#f0dda6;overflow-wrap:anywhere;}
+.ost-pop-sub{margin:14px 0 0;font-size:19px;max-width:70ch;flex-shrink:0;}
+.ost-pop-body{margin-top:22px;overflow:auto;min-height:0;padding:2px;}
+/* Roomier than the same controls get inside the card — that is the point. */
+.ost-pop-body .ost-search{font-size:22px;padding:18px;}
+.ost-pop-body .ost-option{margin:14px 0;padding:18px 22px;font-size:22px;}
+.ost-pop-body .ost-list{margin-top:20px;}
+.ost-pop-prose{font-size:21px;line-height:1.65;max-width:68ch;color:#cfc6b4;margin:0 0 18px;}
+@media(max-width:720px){
+  .ost-pop{padding:12px;}
+  .ost-pop-card{padding:20px;max-height:94vh;border-radius:14px;}
+  .ost-pop-head h2{font-size:25px;}
+  .ost-pop-body .ost-option{font-size:19px;padding:15px 16px;}
+}
+
+/* The page at rest is a LAUNCHER: hero + the twelve chips, nothing else.
+   Every segment opens as a popout (Rober, 2026-09-21: "every button should be
+   a popout modal, not below"), so the old in-page body is empty and must not
+   reserve height. */
+.ost-body-idle:empty{display:none;}
+/* As the launcher, the chips carry the page — give them more presence than
+   they had as a tab strip, and drop the rule that separated them from content
+   that is no longer there. */
+.ost-tabs{border-bottom:0;padding-bottom:0;margin-bottom:4px;}
+.ost-tabs .ost-button[aria-pressed="true"]{background:#514326;border-color:#d0ad53;}
+
+/* ---- the segment nav: an even grid, never a ragged pill row ---------- */
+.ost-tabs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  grid-auto-rows:max-content;gap:10px;margin:16px 0;padding-bottom:16px;}
+/* Every chip the same height whether its label wraps to one line or two —
+   `stretch` on the row plus a fixed icon band is what keeps the grid flush.
+   Before this, four chips had art and eight did not, so the rows were
+   visibly ragged (his screenshot, 2026-09-21). */
+.ost-tabs .ost-button{display:flex;flex-direction:column;justify-content:flex-start;align-items:center;
+  gap:10px;height:100%;min-height:96px;padding:14px 10px;font-size:17px;text-align:center;line-height:1.25;}
+.ost-tabs .ost-icon{width:30px;height:30px;flex:0 0 30px;}
+.ost-tabs .ost-button>span{display:block;}
+
+/* ---- Appearance tiles -------------------------------------------------
+   The six controls the NPC card's popout owned (skin, restraints, liquids,
+   oil, effects, body physics), folded into Participants because every one
+   of them describes ONE actor. Tiles, not rows: each carries an icon and a
+   line of explanation, and they are the only things on this page that hand
+   over to another full surface. */
+.ost-appearance{margin-top:26px;padding:24px;border:1px solid #66583b;
+  border-radius:14px;background:#222129;}
+.ost-appearance h3{margin:0 0 14px;font-size:26px;}
+.ost-appearance-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+  grid-auto-rows:max-content;gap:14px;}
+.ost-appearance-tile{display:flex;align-items:flex-start;gap:14px;min-width:0;
+  min-height:min-content;padding:16px 18px;cursor:pointer;text-align:left;color:#eee7db;
+  background:#292830;border:1px solid #6d6047;border-radius:11px;}
+.ost-appearance-tile:hover{background:#3b342d;}
+.ost-appearance-tile:focus{outline:2px solid #d0ad53;outline-offset:2px;}
+.ost-appearance-tile:disabled{opacity:.45;cursor:default;}
+.ost-appearance-tile .ost-icon{width:34px;height:34px;flex:0 0 34px;margin-top:2px;}
+.ost-appearance-text{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.ost-appearance-text strong{font-size:20px;overflow-wrap:anywhere;}
+.ost-appearance-text small{font-size:17px;color:#bdb5a6;line-height:1.45;}
+@media(max-width:720px){.ost-appearance-grid{grid-template-columns:1fr;}
+  .ost-appearance{padding:18px;}}
+
+/* ---- OStim's own MCM switches, as real toggles ------------------------
+   Rober, 2026-09-21: "need toggles for quick (end seen after climax, yes,
+   no, etc, male, female, etc)". Grouped, most-used first, every cell the
+   same height so the grid stays flush. */
+.ost-mcm-group{margin:22px 0 10px;font-size:22px;color:#f0dda6;}
+.ost-mcm-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+  grid-auto-rows:max-content;gap:12px;}
+.ost-mcm{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  min-width:0;min-height:min-content;padding:16px 18px;cursor:pointer;text-align:left;
+  color:#eee7db;background:#292830;border:1px solid #6d6047;border-radius:11px;}
+.ost-mcm:hover{background:#3b342d;}
+.ost-mcm:focus{outline:2px solid #d0ad53;outline-offset:2px;}
+.ost-mcm:disabled{opacity:.45;cursor:default;}
+.ost-mcm[data-on="true"]{background:#514326;border-color:#d0ad53;}
+.ost-mcm-label{font-size:20px;overflow-wrap:anywhere;}
+.ost-mcm-state{flex:0 0 auto;font-size:19px;color:#bdb5a6;}
+.ost-mcm[data-on="true"] .ost-mcm-state{color:#f0dda6;}
+@media(max-width:720px){.ost-mcm-grid{grid-template-columns:1fr;}}
+
+/* ---- rows: state in form, distance as a number that lines up --------- */
+.ost-row{position:relative;padding-left:22px;}
+.ost-row[data-state]::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:4px;
+  border-radius:0 3px 3px 0;background:#5b5243;}
+.ost-row[data-state="ok"]::before{background:rgba(124,166,116,.92);}
+.ost-row[data-state="refused"]::before{background:rgba(154,106,106,.92);}
+.ost-row[data-state="refused"] .ost-row-text strong{color:#c9bdb0;}
+.ost-far{min-width:78px;text-align:right;font-size:19px;color:#bdb5a6;
+  font-variant-numeric:tabular-nums;}
+
+/* Four equal tiles, then the one destructive action alone beneath them. */
+.ost-grid-4{grid-template-columns:repeat(auto-fit,minmax(240px,1fr));}
+.ost-button.ost-danger{display:flex;width:100%;min-height:70px;margin-top:18px;
+  border-color:#7a4f4f;background:#2a2026;}
+.ost-button.ost-danger:hover{background:#3a2a2e;}
+
+/* ---- Participants: one composed subject, not four stacked boxes ----- */
+.ost-subject{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));
+  grid-auto-rows:max-content;gap:20px;margin-top:8px;align-items:start;}
+.ost-subject>section{margin-top:0;min-width:0;min-height:min-content;}
+
+@media(max-width:900px){
+  .ost-hero-top{grid-template-columns:1fr;gap:18px;}
+  .ost-hero-title{font-size:26px;}
+}
+@media(max-width:720px){
+  .ost-hero{padding:16px;}
+  .ost-tabs{grid-template-columns:repeat(auto-fit,minmax(118px,1fr));}
+  .ost-hero .ost-face{width:70px;height:70px;flex:0 0 70px;}
+  .ost-subject{grid-template-columns:1fr;}
+}
+
+/* ===================================================================== *
+ *  The dedicated Scene tab (2026-09-21) — the workspace card, hosted.
+ *
+ *  Same card, two homes. Floating it keeps its 1240px dialog shell; hosted
+ *  in #sc-pane it drops the shell entirely and becomes the page, because a
+ *  bordered box inside a bordered panel reads as a modal that forgot to
+ *  close. The pane is the deck's standard flex column (the #hh-pane
+ *  precedent), so .ost-body keeps its own scroller and nothing nests.
+ * ===================================================================== */
+#sn-pane{display:flex;flex-direction:column;flex:1;min-height:0;padding:20px 24px 16px;}
+#sn-pane.hidden{display:none;}
+#sn-pane .ost-card{width:100%;max-width:none;max-height:none;flex:1;min-height:0;padding:0;background:transparent;border:0;border-radius:0;}
+#sn-pane .ost-status{margin-top:0;}
+.sc-waiting{gap:12px;}
+
+/* ---- "you are here": the piece the scene is actually on --------------
+   Deliberately NOT an .ost-row. It is an answer to a different question
+   than the list below it (what you are ON, versus what you could move
+   TO), and the gold edge is what stops it reading as the first result. */
+.ost-here{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:18px;margin:4px 0 6px;
+  border:1px solid rgba(208,173,83,.62);border-left:5px solid rgba(208,173,83,.92);
+  border-radius:12px;background:rgba(81,67,38,.34);}
+.ost-here .ost-row-text{flex:1;min-width:200px;}
+.ost-here strong{font-size:22px;color:#f0dda6;}
+
+/* ---- who is in the scene, and who is being held out of it ------------ */
+.ost-cast-now,.ost-held-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+  grid-auto-rows:max-content;gap:14px;margin:14px 0;}
+.ost-cast-chip{display:flex;align-items:center;justify-content:space-between;gap:14px;min-width:0;
+  min-height:min-content;padding:16px 18px;font-size:21px;
+  border:1px solid #514735;border-radius:12px;background:#222129;overflow-wrap:anywhere;}
+.ost-held{margin:18px 0;padding:20px;border:1px solid #66583b;border-radius:14px;background:#222129;}
+.ost-held h3{margin:0 0 4px;font-size:24px;}
+.ost-held-chip{display:flex;align-items:center;justify-content:center;min-height:56px;padding:12px 16px;
+  font-size:20px;color:#eee7db;border:1px solid #6d6047;border-radius:10px;background:#292830;
+  text-align:center;overflow-wrap:anywhere;}
+
+/* ---- clothing, voice and the scene's own SOS dials -------------------
+   One shell for the three participant panels so they stack as equal
+   blocks down the page rather than three different-looking boxes. */
+.ost-undress,.ost-voice,.ost-sos{margin-top:26px;padding:24px;border:1px solid #66583b;
+  border-radius:14px;background:#222129;}
+.ost-undress h3,.ost-voice h3,.ost-sos h3{margin:0 0 10px;font-size:26px;}
+
+.ost-slot-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+  grid-auto-rows:max-content;gap:14px;margin:16px 0 6px;}
+.ost-slot{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0;
+  min-height:min-content;padding:16px 18px;cursor:pointer;color:#eee7db;
+  border:1px solid #6d6047;border-radius:11px;background:#292830;text-align:left;}
+.ost-slot:hover{background:#3b342d;}
+.ost-slot:focus{outline:2px solid #d0ad53;outline-offset:2px;}
+.ost-slot:disabled{opacity:.4;cursor:default;}
+.ost-slot[aria-pressed=true]{background:#514326;border-color:#d0ad53;}
+.ost-slot-name{font-size:21px;}
+.ost-slot-state{font-size:18px;color:#bdb5a6;overflow-wrap:anywhere;}
+
+/* The whole cast's voices at a glance — the one thing OStim's own ACTORS
+   page makes you click through one participant at a time. */
+.ost-voice-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+  grid-auto-rows:max-content;gap:14px;margin:16px 0;}
+.ost-voice-card{display:flex;flex-direction:column;gap:8px;min-width:0;min-height:min-content;
+  padding:16px 18px;cursor:pointer;color:#eee7db;text-align:left;
+  border:1px solid #6d6047;border-radius:11px;background:#292830;}
+.ost-voice-card:hover{background:#3b342d;}
+.ost-voice-card:focus{outline:2px solid #d0ad53;outline-offset:2px;}
+.ost-voice-card[aria-pressed=true]{background:#514326;border-color:#d0ad53;}
+.ost-voice-who{font-size:21px;overflow-wrap:anywhere;}
+.ost-voice-set{font-size:18px;color:#dbc17a;overflow-wrap:anywhere;}
+
+.ost-ppa-value{min-width:90px;text-align:right;font-size:22px;color:#dbc17a;}
+
+@media(max-width:720px){
+  #sn-pane{padding:14px 14px 10px;}
+  .ost-cast-now,.ost-held-grid,.ost-slot-grid,.ost-voice-grid{grid-template-columns:1fr;}
+  .ost-undress,.ost-voice,.ost-sos,.ost-held{padding:18px;}
+}
+
+/* The card's "no controls, and here is why" line (2026-09-21). Distinct from
+   the neutral .fq-empty advice above it: this one reports a STATE — Follower
+   Organizer has her cached as dead or unloaded — so it reads as a warning, not
+   as a hint. Wraps, because the sentence names her and the reason. */
+.fq-empty.fq-empty-why {
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-top: 6px;
+  border: 1px solid rgba(201, 162, 75, .34);
+  border-radius: 10px;
+  background: rgba(201, 162, 75, .07);
+  color: #cfc3a6;
+  font-size: 14.5px;
+  line-height: 1.45;
+  white-space: normal;
+}
+.fq-empty.fq-empty-why .fq-empty-ic { color: #d9a05a; font-size: 16px; }
+
+/* The collapsed card's way back (2026-09-21). A folded card is a name and a
+   follow chip — identical to a broken one — so it states its own state and
+   offers the expand as a real control instead of relying on the ▾ in the
+   toolbar corner being spotted. */
+.fq-folded-hint {
+  display: flex; align-items: center; gap: 9px;
+  width: 100%; min-height: 44px;           /* touch-target floor */
+  margin-top: 6px; padding: 10px 12px;
+  font: 600 14.5px/1.4 "Segoe UI", sans-serif;
+  text-align: left;
+  color: #cfc3a6;
+  border: 1px dashed rgba(201, 162, 75, .42);
+  border-radius: 10px;
+  background: rgba(201, 162, 75, .06);
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.fq-folded-hint:hover {
+  background: rgba(201, 162, 75, .13);
+  border-color: rgba(201, 162, 75, .72);
+  color: #f2e7ca;
+}
+.fq-folded-hint:focus-visible { outline: 2px solid rgba(201, 162, 75, .55); outline-offset: 2px; }
+.fq-folded-ic { flex: none; font-size: 15px; color: #d9a05a; }
+@media (prefers-reduced-motion: reduce) { .fq-folded-hint { transition: none; } }
+
+/* Who a ⚡ Direct will actually reach (2026-09-21). The overlay used to say
+   "nearby NPCs" and leave you guessing; this names the live CHIM agent set, or
+   says plainly that nobody is driving and the direction would do nothing. */
+.omni-direct-reach {
+  margin: 14px auto 0;
+  max-width: 760px;
+  padding: 10px 14px;
+  font: 500 14.5px/1.5 "Segoe UI", sans-serif;
+  color: #cfc7b6;
+  text-align: left;
+  border: 1px solid rgba(201, 162, 75, .3);
+  border-radius: 10px;
+  background: rgba(201, 162, 75, .06);
+}
+.omni-direct-reach b { color: #e8dcbb; }
+.omni-direct-reach .omni-dim { color: #8d8678; }
+.omni-direct-reach.is-none {
+  border-color: rgba(217, 160, 90, .5);
+  background: rgba(217, 160, 90, .09);
+  color: #e3d2b4;
+}
+
+/* Row portraits (2026-09-22). The hero cast strip had faces from the start,
+   but Add & remove and The room listed people as bare text — Rober, looking
+   at both: "isnt showing profile pics". Same picture() helper, smaller, and
+   the ids are reported through portraitIds() so the renders are COLLECTED
+   as well as asked for (the faceConsumerActive law). */
+.ost-row .ost-face{width:56px;height:56px;flex:0 0 56px;}
+.ost-cast-chip .ost-face{width:46px;height:46px;flex:0 0 46px;}
+.ost-cast-chip>span:not(.ost-face){flex:1 1 auto;min-width:0;overflow-wrap:anywhere;}
+@media (max-width:900px){
+  .ost-row .ost-face{width:48px;height:48px;flex:0 0 48px;}
+  .ost-cast-chip .ost-face{width:40px;height:40px;flex:0 0 40px;}
+}
+
+/* Hold & resume here (2026-09-22) — the SexLab-style relocate. A section,
+   not another card in the furniture list: it is a different kind of move,
+   and it reads as one. */
+.ost-hold{margin-top:22px;padding:20px;border:1px solid #6d6047;border-left:4px solid #d0ad53;border-radius:12px;background:rgba(255,255,255,.02);}
+.ost-hold h3{margin:0 0 12px;font-size:22px;color:#f0dda6;}
+.ost-hold .ost-status{margin:0 0 14px;}
+.ost-hold .ost-toolbar{margin-top:16px;}
+
+/* The hero's two bands (2026-09-22). Rober: "Free camera and manual buttons
+   kinda ugly ... just visually the UI is bad". The controls used to hang off
+   the bottom of the middle column, leaving dead space beside them and making
+   each one a differently-sized orphan pill. */
+.ost-hero-top{display:grid;grid-template-columns:minmax(0,auto) minmax(0,1fr) minmax(0,auto);gap:28px;align-items:center;}
+/* Equal cells, flush edge to edge, one row — no ragged wrapping and no
+   dangling odd item, whatever the labels say. */
+.ost-hero-dock{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:14px;}
+.ost-dock-cell{display:flex;align-items:center;justify-content:center;gap:16px;min-height:84px;
+  padding:14px 18px;border:1px solid #514735;border-radius:12px;background:rgba(255,255,255,.025);}
+.ost-hero-dock .ost-button,.ost-hero-dock .ost-mode{width:100%;justify-content:center;min-height:56px;}
+.ost-hero-dock .ost-speed-ctl .ost-button{width:auto;min-width:64px;}
+.ost-hero[data-live="false"] .ost-dock-cell{opacity:.55;}
+@media (max-width:1100px){
+  .ost-hero-dock{grid-auto-flow:row;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));grid-auto-columns:auto;}
+}
+
+/* The page's own two search bars (2026-09-22). An equal pair, flush — one
+   searches this page's controls (Ctrl K), one searches OStim's animations. */
+.ost-find{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:4px 0 8px;}
+.ost-find-one{position:relative;min-width:0;}
+.ost-find-input{width:100%;box-sizing:border-box;font-size:20px;padding:15px;min-width:0;
+  background:#101014;color:#eee7db;border:1px solid #75613c;border-radius:8px;}
+.ost-find-input:focus{outline:2px solid #d0ad53;outline-offset:2px;}
+.ost-find-drop{position:absolute;left:0;right:0;top:calc(100% + 8px);z-index:12;
+  max-height:420px;overflow:auto;padding:10px;border:1px solid #75613c;border-radius:12px;background:#15151b;}
+.ost-find-drop[hidden]{display:none;}
+.ost-find-row{display:flex;align-items:center;gap:14px;width:100%;text-align:left;
+  padding:12px 14px;border:1px solid transparent;border-radius:9px;background:none;color:#eee7db;
+  font:inherit;cursor:pointer;}
+.ost-find-row:hover,.ost-find-row[data-on="true"]{background:#514326;border-color:#d0ad53;}
+.ost-find-text{display:flex;flex-direction:column;gap:4px;min-width:0;}
+.ost-find-text strong{font-size:20px;overflow-wrap:anywhere;}
+.ost-find-text small{font-size:17px;color:#bdb5a6;}
+@media (max-width:900px){ .ost-find{grid-template-columns:1fr;} }
+
+/* =====================================================================
+   SCENE PAGE — the design pass (2026-09-22)
+
+   Rober, after three rounds of structural fixes: "spruced up the UI so
+   everything looks thoguht through and not just thrown around ugly
+   buttons?"
+
+   The structure was the part I kept fixing. The LOOK was the actual
+   complaint, and the cause is one thing: every control on the page was
+   the identical grey slab. Twelve launcher tiles, the row actions, the
+   dock, the popout buttons — same fill, same border, same weight. With
+   nothing louder than anything else the eye has nowhere to land, and a
+   page like that reads as thrown together however tidily it is arranged.
+
+   DIRECTION — "lamplit ledger". The deck's existing charcoal and gold,
+   used with a hierarchy instead of uniformly:
+
+     · ONE gold-filled control per surface — the thing you came to press.
+       Everything else is an outline on the page's own charcoal.
+     · Weight comes from a hairline top highlight (inset), not from drop
+       shadows: this engine paints big shadows as slabs, and the repo has
+       a pre-commit check that refuses them.
+     · Icons sit in a tinted well rather than floating loose above a
+       label, which is what makes a tile read as an object.
+     · Section headings are a lettered rule, so a popout has a spine.
+
+   Ultralight rules observed throughout: explicit rgba (never
+   color-mix), no conic-gradient, grid-auto-rows on definite-height
+   grids, and min-height on overflow:hidden grid items.
+   ===================================================================== */
+
+/* ---- 1. the type scale, so headings stop competing with controls ---- */
+.ost-card .ost-head h2{font-size:34px;letter-spacing:.01em;}
+.ost-card h3{
+  font-size:15px;letter-spacing:.14em;text-transform:uppercase;
+  color:#b6a887;margin:26px 0 14px;padding-bottom:10px;
+  border-bottom:1px solid rgba(109,96,71,.55);
+}
+.ost-card h3:first-child{margin-top:0;}
+
+/* ---- 2. button ROLES — the whole point of the pass ------------------ */
+/* Default: quiet. It is an outline on the page, not a filled slab. */
+.ost-button,.ost-person,.ost-option{
+  background:rgba(255,255,255,.028);
+  border-color:rgba(122,107,78,.85);
+  transition:none;                      /* Ultralight: no compositor */
+}
+.ost-button:hover,.ost-person:hover,.ost-option:hover{
+  background:rgba(208,173,83,.14);border-color:#c2a259;
+}
+/* THE action. One per surface — gold fill, dark ink, so it reads first. */
+.ost-button[data-primary="1"]{
+  background:#d0ad53;border-color:#e4c570;color:#17161b;font-weight:600;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.28);
+}
+.ost-button[data-primary="1"]:hover{background:#e0bd63;border-color:#f0dda6;}
+.ost-button[data-primary="1"]:disabled{
+  background:rgba(208,173,83,.22);color:#cbbd9a;box-shadow:none;
+}
+/* Destructive: never filled until it is armed. */
+.ost-button.ost-danger{
+  background:rgba(140,74,66,.14);border-color:rgba(160,88,78,.9);color:#e6b5ab;
+}
+.ost-button.ost-danger:hover{background:rgba(160,88,78,.3);border-color:#c06a5c;}
+
+/* ---- 3. the launcher tiles — objects, not boxes with a glyph -------- */
+.ost-tabs{grid-template-columns:repeat(auto-fit,minmax(164px,1fr));gap:14px;}
+.ost-tabs .ost-button{
+  min-height:126px;padding:20px 12px 18px;gap:14px;font-size:18px;
+  background:rgba(255,255,255,.022);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.05);
+}
+/* The well is what makes it read as a thing rather than a label. */
+.ost-tabs .ost-icon{
+  width:34px;height:34px;flex:0 0 34px;
+  box-sizing:content-box;padding:13px;border-radius:50%;
+  background:rgba(208,173,83,.1);border:1px solid rgba(146,129,92,.55);
+}
+.ost-tabs .ost-button:hover .ost-icon{
+  background:rgba(208,173,83,.22);border-color:#c2a259;
+}
+.ost-tabs .ost-button[aria-pressed="true"]{
+  background:rgba(81,67,38,.72);border-color:#d0ad53;
+}
+.ost-tabs .ost-button[aria-pressed="true"] .ost-icon{
+  background:rgba(208,173,83,.3);border-color:#e4c570;
+}
+
+/* ---- 4. surfaces: raised by a light edge, not by a shadow ----------- */
+.ost-hero,.ost-dock-cell,.ost-hold,.ost-find-drop{
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.055);
+}
+.ost-hero-title{letter-spacing:.005em;}
+.ost-chip{
+  background:rgba(208,173,83,.1);border:1px solid rgba(146,129,92,.6);
+  border-radius:999px;padding:9px 16px;font-size:18px;color:#e6dcc4;
+}
+.ost-chip[data-kind="furn"]{background:rgba(255,255,255,.03);color:#cfc6b4;}
+
+/* ---- 5. rows: the action carries the weight, the row does not ------- */
+.ost-row{
+  border-color:rgba(69,64,75,.9);
+  background:rgba(255,255,255,.015);
+}
+.ost-row[data-state="refused"]{border-left:3px solid rgba(160,88,78,.85);}
+.ost-row[data-state="ok"]{border-left:3px solid rgba(122,150,96,.7);}
+
+/* ---- 6. the dock reads as one instrument, not four buttons ---------- */
+.ost-hero-dock{gap:12px;}
+.ost-dock-cell{background:rgba(255,255,255,.022);border-color:rgba(81,71,53,.95);}
+.ost-speed-bar[data-on="true"]{background:#e4c570;}
+
+@media (max-width:1100px){
+  .ost-tabs{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));}
+  .ost-tabs .ost-button{min-height:112px;font-size:17px;}
+  .ost-card .ost-head h2{font-size:28px;}
+}
+
+/* =====================================================================
+   SCENE PAGE — the composition (2026-09-22, "the best fable can do")
+
+   Rober: "make the UI really nice and fun and better UX please. try to
+   remove blank space, or fill areas with containers or docks, try not to
+   overuse cards, just really spend some time on it for this page."
+
+   What was wrong with the resting page, in order of how much it hurt:
+     1. eleven identical tiles in an auto-fit grid — nine on one row, two
+        dangling on the next, then nothing but blank page underneath;
+     2. two search bars across the top before you had seen the scene;
+     3. a status sentence and a note sentence repeating what the hero shows,
+        each reserving a line whether or not it had anything to say.
+
+   The composition now: the hero (the scene, seen), then FOUR docks in
+   equal columns — People / Place / Look / Library — each a titled
+   container of full-width rows that say what is inside them, then a Quick
+   strip of five direct actions. Nothing dangles, nothing is blank, and the
+   only "card" left is the hero. Everything else is a dock: a bordered
+   region with a title rule, holding rows, not a stack of boxed buttons.
+   ===================================================================== */
+
+/* ---- header: the title, and the control search beside it ------------ */
+.ost-head{display:flex;align-items:center;justify-content:space-between;gap:24px;margin:0 0 16px;}
+.ost-head h2{margin:0;flex:0 1 auto;}
+.ost-head .ost-find{flex:0 1 460px;min-width:260px;margin:0;}
+.ost-head .ost-find-input{font-size:18px;padding:13px 16px;}
+
+/* ---- status + note: captions, and GONE when empty ------------------- */
+.ost-card>.ost-status{font-size:17px;color:#9c948a;margin:10px 4px 0;}
+.ost-card>.ost-note{min-height:0;margin:6px 4px 0;font-size:17px;color:#bdb5a6;}
+.ost-card>.ost-status:empty,.ost-card>.ost-note:empty{display:none;}
+
+/* ---- the hero art gets the room it was leaving empty ------------------ */
+.ost-hero-art .ost-pos-hero{width:216px;height:144px;}
+
+/* ---- the four docks --------------------------------------------------- */
+.ost-tabs.ost-docks{
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:auto;
+  gap:16px;margin:20px 0 0;padding:0;border:0;
+}
+.ost-dock{
+  display:flex;flex-direction:column;gap:10px;min-width:0;
+  padding:16px 16px 18px;border:1px solid rgba(81,71,53,.95);border-radius:14px;
+  background:rgba(255,255,255,.018);box-shadow:inset 0 1px 0 rgba(255,255,255,.05);
+}
+.ost-dock-title{
+  display:flex;flex-direction:column;gap:3px;padding:2px 4px 10px;margin-bottom:4px;
+  border-bottom:1px solid rgba(109,96,71,.55);
+}
+.ost-dock-title strong{font-size:15px;letter-spacing:.14em;text-transform:uppercase;color:#d6c08a;}
+.ost-dock-title small{font-size:17px;color:#9c948a;}
+
+/* rows — these override the free-standing tile rules from the earlier pass */
+.ost-tabs.ost-docks .ost-button{
+  flex-direction:row;justify-content:flex-start;align-items:center;text-align:left;
+  width:100%;box-sizing:border-box;min-height:0;height:auto;padding:11px 14px;gap:14px;
+  font-size:19px;background:rgba(255,255,255,.02);box-shadow:none;
+}
+.ost-tabs.ost-docks .ost-button:hover{background:rgba(208,173,83,.12);}
+.ost-tabs.ost-docks .ost-button[aria-pressed="true"]{background:rgba(81,67,38,.72);border-color:#d0ad53;}
+.ost-seg-well{
+  display:flex;align-items:center;justify-content:center;
+  width:52px;height:52px;flex:0 0 52px;border-radius:50%;
+  background:rgba(208,173,83,.1);border:1px solid rgba(146,129,92,.55);
+}
+.ost-tabs.ost-docks .ost-icon{
+  width:26px;height:26px;flex:0 0 26px;padding:0;border:0;border-radius:0;background:none;box-sizing:border-box;
+}
+.ost-tabs.ost-docks .ost-button:hover .ost-seg-well,
+.ost-tabs.ost-docks .ost-button[aria-pressed="true"] .ost-seg-well{
+  background:rgba(208,173,83,.28);border-color:#d0ad53;
+}
+.ost-seg-text{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.ost-seg-label{font-size:19px;color:#eee7db;line-height:1.2;}
+.ost-seg-text small{font-size:17px;color:#a59d8f;line-height:1.3;overflow-wrap:anywhere;}
+
+/* the Library dock's third row is the animation search, pinned to the bottom */
+.ost-dock-search{margin-top:auto;padding-top:4px;}
+.ost-dock-search .ost-find-input{font-size:18px;padding:13px 14px;}
+
+/* ---- the Quick strip: five direct actions, equal cells --------------- */
+.ost-quick{
+  margin:16px 0 0;padding:16px 16px 18px;border:1px solid rgba(81,71,53,.95);border-radius:14px;
+  background:rgba(255,255,255,.018);box-shadow:inset 0 1px 0 rgba(255,255,255,.05);
+}
+.ost-quick .ost-dock-title{flex-direction:row;align-items:baseline;gap:14px;}
+.ost-quick-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:12px;}
+.ost-quick-strip .ost-button{justify-content:center;min-height:62px;width:100%;box-sizing:border-box;}
+
+@media (max-width:1400px){
+  .ost-tabs.ost-docks{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .ost-quick-strip{grid-template-columns:repeat(3,minmax(0,1fr));}
+  .ost-head .ost-find{flex-basis:380px;}
+}
+@media (max-width:900px){
+  .ost-tabs.ost-docks{grid-template-columns:1fr;}
+  .ost-quick-strip{grid-template-columns:1fr 1fr;}
+  .ost-head{flex-direction:column;align-items:stretch;}
+  .ost-head .ost-find{min-width:0;flex-basis:auto;}
+}
+
+/* The status sentence is what a screen reader announces; on screen the hero
+   already says every word of it, so it takes no room. */
+.ost-card>.ost-status{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);margin:0;padding:0;}
+
+/* =====================================================================
+   SCENE PAGE — best use of the width (2026-09-22)
+   "try to make best use of space, not too much scrolling"
+   The resting page stacked hero / docks / quick and scrolled at 1440p
+   under --ui-scale. It is two columns now: LIVE (hero + Quick) at 5/12,
+   the four docks in a 2x2 at 7/12. Heights match, nothing scrolls.
+   ===================================================================== */
+.ost-page{display:grid;grid-template-columns:minmax(500px,5fr) minmax(0,7fr);gap:16px;align-items:stretch;margin-top:4px;}
+.ost-page-live{display:flex;flex-direction:column;gap:16px;min-width:0;}
+.ost-page-live .ost-hero{margin:0;}
+.ost-page .ost-tabs.ost-docks{grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:1fr;margin:0;}
+
+/* the hero, compacted for a column */
+.ost-page-live .ost-hero{padding:18px 20px;gap:16px;}
+.ost-page-live .ost-hero-top{gap:18px;}
+.ost-page-live .ost-hero .ost-face{width:72px;height:72px;flex:0 0 72px;}
+.ost-page-live .ost-hero-title{font-size:26px;}
+.ost-page-live .ost-hero-art .ost-pos-hero{width:168px;height:112px;}
+/* the live dock is 2x2 in a column: speed | pacing / free camera | stop */
+.ost-page-live .ost-hero-dock{grid-auto-flow:row;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-columns:auto;gap:10px;}
+.ost-page-live .ost-dock-cell{min-height:64px;padding:10px 12px;}
+.ost-page-live .ost-hero-dock .ost-button,.ost-page-live .ost-hero-dock .ost-mode{min-height:46px;}
+.ost-speed-bars{gap:4px;}
+
+/* Quick is a dock of rows, the same anatomy as the other four */
+.ost-quick{margin:0;flex:1 1 auto;display:flex;flex-direction:column;}
+.ost-quick .ost-dock-title{flex-direction:column;align-items:stretch;gap:3px;}
+.ost-quick-strip{display:flex;flex-direction:column;gap:8px;margin-top:8px;}
+.ost-quick-row{
+  display:flex;flex-direction:row;justify-content:flex-start;align-items:center;text-align:left;
+  width:100%;box-sizing:border-box;min-height:0;padding:9px 12px;gap:12px;font-size:19px;
+  background:rgba(255,255,255,.02);
+}
+.ost-quick-row .ost-seg-well{width:44px;height:44px;flex:0 0 44px;}
+.ost-quick-row .ost-icon{width:22px;height:22px;flex:0 0 22px;padding:0;border:0;background:none;border-radius:0;}
+.ost-quick-row:hover .ost-seg-well{background:rgba(208,173,83,.28);border-color:#d0ad53;}
+
+/* dock rows a touch tighter so 3 rows + title match half the live column */
+.ost-tabs.ost-docks .ost-button{padding:9px 12px;gap:12px;}
+.ost-tabs.ost-docks .ost-seg-well{width:46px;height:46px;flex:0 0 46px;}
+.ost-tabs.ost-docks .ost-icon{width:23px;height:23px;flex:0 0 23px;}
+.ost-dock{padding:14px 14px 16px;gap:8px;}
+
+@media (max-width:1500px){
+  .ost-page{grid-template-columns:1fr;}
+  .ost-page .ost-tabs.ost-docks{grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:auto;}
+  .ost-page-live .ost-hero-dock{grid-template-columns:repeat(4,minmax(0,1fr));}
+  .ost-quick-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));}
+}
+@media (max-width:1100px){
+  .ost-page .ost-tabs.ost-docks{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .ost-page-live .ost-hero-dock{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .ost-quick-strip{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+
+/* ---- polish pass 3 (2026-09-22): popout chrome, segmented choosers ------ */
+.ost-pop-card{border:1px solid #b69b56;border-top:3px solid #d0ad53;border-radius:18px;background:#19191f;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06);}
+.ost-pop-titles{display:flex;align-items:center;gap:16px;min-width:0;}
+.ost-pop-well{width:54px;height:54px;flex:0 0 54px;background:rgba(208,173,83,.16);border-color:#c2a259;}
+.ost-pop-well .ost-icon{width:26px;height:26px;flex:0 0 26px;}
+.ost-pop-sub{margin:10px 0 0 70px;color:#a59d8f;}
+.ost-pop-head{padding-bottom:14px;border-bottom:1px solid rgba(109,96,71,.5);}
+.ost-pop-body{margin-top:18px;}
+
+/* a segmented chooser: one control, several positions — not N loose pills */
+.ost-segmented{display:inline-flex;align-items:stretch;border:1px solid rgba(122,107,78,.9);border-radius:10px;overflow:hidden;background:rgba(255,255,255,.02);}
+.ost-segmented .ost-button{border:0;border-radius:0;background:transparent;min-height:50px;padding:12px 18px;}
+.ost-segmented .ost-button+.ost-button{border-left:1px solid rgba(122,107,78,.7);}
+.ost-segmented .ost-button:hover{background:rgba(208,173,83,.12);}
+.ost-segmented .ost-button[aria-pressed="true"]{background:#514326;color:#f0dda6;box-shadow:inset 0 1px 0 rgba(255,255,255,.08);}
+.ost-toolbar{gap:12px;align-items:center;}
+
+/* the furniture chip carries its glyph */
+.ost-chip{display:inline-flex;align-items:center;gap:8px;}
+.ost-chip-icon{width:18px;height:18px;flex:0 0 18px;opacity:.85;}
+
+/* pressed / disabled states everywhere read the same */
+.ost-button:disabled{opacity:.42;}
+.ost-button:focus-visible,.ost-find-input:focus-visible,.ost-tab:focus-visible{outline:2px solid #d0ad53;outline-offset:2px;}
+
+/* =====================================================================
+   SCENE PAGE — the component vocabulary (2026-09-22)
+   Rober: "spend some real time on this, all the buttons, modal popouts,
+   UX improvements". Four instruments every popout is now built from.
+   ===================================================================== */
+
+/* ---- sub-tabs inside a popout: equal cells, full width ---------------- */
+.ost-subtabs{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:0;margin:16px 0 18px;
+  border:1px solid rgba(122,107,78,.9);border-radius:12px;overflow:hidden;background:rgba(255,255,255,.02);}
+.ost-subtab{display:flex;align-items:center;justify-content:center;gap:10px;min-height:56px;padding:10px 12px;
+  font:inherit;font-size:19px;color:#cfc6b4;background:transparent;border:0;cursor:pointer;}
+.ost-subtab+.ost-subtab{border-left:1px solid rgba(122,107,78,.7);}
+.ost-subtab .ost-icon{width:22px;height:22px;flex:0 0 22px;opacity:.85;}
+.ost-subtab:hover{background:rgba(208,173,83,.12);color:#eee7db;}
+.ost-subtab[aria-selected="true"]{background:#514326;color:#f0dda6;box-shadow:inset 0 -3px 0 #d0ad53;}
+.ost-subtab:focus-visible{outline:2px solid #d0ad53;outline-offset:-2px;}
+
+/* one panel at a time */
+.ost-subject{display:block;margin-top:0;}
+.ost-subject>[data-panel][data-on="false"]{display:none;}
+.ost-subject>[data-panel]{margin:0;}
+.ost-panel-body{display:flex;flex-direction:column;gap:16px;}
+
+/* ---- person tabs: the cast, switchable, inside a popout --------------- */
+.ost-persons{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:10px;margin:0 0 14px;}
+.ost-person-tab{display:flex;align-items:center;justify-content:flex-start;gap:12px;min-width:0;
+  padding:8px 12px;min-height:60px;text-align:left;}
+.ost-person-tab .ost-face{width:44px;height:44px;flex:0 0 44px;}
+.ost-person-tab .ost-person-name{font-size:19px;overflow-wrap:anywhere;}
+.ost-person-tab[aria-pressed="true"]{background:rgba(81,67,38,.72);border-color:#d0ad53;}
+
+/* ---- the status strip: readout + the four direct actions --------------- */
+.ost-strip{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:0 0 6px;
+  padding:12px 14px;border:1px solid rgba(81,71,53,.95);border-radius:12px;background:rgba(255,255,255,.018);}
+.ost-strip-readout{margin:0 6px 0 2px;font-size:19px;color:#dbc17a;flex:0 0 auto;}
+.ost-strip .ost-button{min-height:48px;padding:10px 16px;}
+
+/* ---- setting rows: label + line left, instrument right ----------------- */
+.ost-settings{display:flex;flex-direction:column;gap:10px;margin:8px 0 12px;}
+.ost-setting{display:flex;align-items:center;justify-content:space-between;gap:18px;
+  padding:12px 14px;border:1px solid rgba(69,64,75,.9);border-radius:12px;background:rgba(255,255,255,.015);}
+.ost-setting-text{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 auto;}
+.ost-setting-text strong{font-size:20px;color:#eee7db;}
+.ost-setting-text small{font-size:17px;color:#a59d8f;}
+.ost-adjust.ost-setting strong{flex:0 1 auto;}
+
+/* ---- the stepper: − value + as one instrument -------------------------- */
+.ost-stepper{display:inline-flex;align-items:stretch;flex:0 0 auto;
+  border:1px solid rgba(122,107,78,.9);border-radius:10px;overflow:hidden;background:rgba(255,255,255,.02);}
+.ost-stepper .ost-button{border:0;border-radius:0;background:transparent;min-height:50px;min-width:54px;padding:10px 16px;font-size:22px;line-height:1;}
+.ost-stepper .ost-button:hover{background:rgba(208,173,83,.14);}
+.ost-stepper-value{display:flex;align-items:center;justify-content:center;min-width:92px;padding:0 12px;margin:0;
+  font-size:22px;color:#f0dda6;font-variant-numeric:tabular-nums;border-left:1px solid rgba(122,107,78,.7);border-right:1px solid rgba(122,107,78,.7);}
+.ost-stepper .ost-stepper-reset{font-size:17px;border-left:1px solid rgba(122,107,78,.7);min-width:0;padding:10px 14px;}
+.ost-value.ost-stepper-value{display:flex;margin-top:0;}
+
+/* ---- clothing slots: one segmented strip of four ----------------------- */
+.ost-slot-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin:14px 0 6px;
+  border:1px solid rgba(122,107,78,.9);border-radius:12px;overflow:hidden;background:rgba(255,255,255,.02);}
+.ost-slot{border:0;border-radius:0;background:transparent;padding:12px 14px;min-height:0;gap:4px;}
+.ost-slot+.ost-slot{border-left:1px solid rgba(122,107,78,.7);}
+.ost-slot:hover{background:rgba(208,173,83,.12);}
+.ost-slot[aria-pressed="true"]{background:rgba(81,67,38,.55);}
+.ost-slot-name{font-size:17px;letter-spacing:.06em;text-transform:uppercase;color:#b6a887;}
+.ost-slot-state{font-size:18px;color:#eee7db;overflow-wrap:anywhere;}
+
+/* ---- the segmented chooser sits inside toolbars and rows ------------- */
+.ost-toolbar .ost-segmented,.ost-fov-presets,.ost-size-presets{margin:0;}
+.ost-size-presets .ost-button{min-width:56px;}
+.ost-fov-presets{display:inline-flex;margin:12px 0 6px;}
+
+/* ---- MCM quick toggles: a setting row with a switch pill --------------- */
+.ost-mcm-grid{grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:10px;}
+.ost-mcm{padding:12px 14px;border-color:rgba(69,64,75,.9);background:rgba(255,255,255,.015);border-radius:12px;}
+.ost-mcm:hover{background:rgba(208,173,83,.1);}
+.ost-mcm-label{font-size:19px;}
+.ost-mcm-state{flex:0 0 auto;min-width:64px;text-align:center;padding:6px 12px;border-radius:999px;font-size:17px;
+  color:#a59d8f;background:rgba(255,255,255,.04);border:1px solid rgba(122,107,78,.7);}
+.ost-mcm[data-on="true"] .ost-mcm-state{color:#17161b;background:#d0ad53;border-color:#e4c570;font-weight:600;}
+.ost-mcm[data-on="true"]{border-color:rgba(208,173,83,.55);}
+
+/* ---- lighting rows and sections share the row language ---------------- */
+.ost-light-row,.ost-light-section{padding:14px 16px;background:rgba(255,255,255,.015);border-color:rgba(69,64,75,.9);}
+.ost-light-list{display:flex;flex-direction:column;gap:10px;}
+.ost-light-row{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;}
+.ost-light-row .ost-toolbar{margin:0;}
+
+/* the Body panel's two sections, and the appearance tiles */
+.ost-undress,.ost-voice,.ost-sos,.ost-size,.ost-appearance{padding:16px;border:1px solid rgba(69,64,75,.9);border-radius:12px;background:rgba(255,255,255,.012);}
+.ost-appearance-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));grid-auto-rows:max-content;gap:12px;}
+.ost-appearance-tile{display:flex;align-items:center;gap:14px;padding:12px 14px;text-align:left;min-height:min-content;
+  color:#eee7db;background:rgba(255,255,255,.02);border:1px solid rgba(122,107,78,.85);border-radius:12px;cursor:pointer;font:inherit;}
+.ost-appearance-tile:hover{background:rgba(208,173,83,.12);border-color:#c2a259;}
+.ost-appearance-tile .ost-icon{width:28px;height:28px;flex:0 0 28px;}
+.ost-appearance-text{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.ost-appearance-text strong{font-size:19px;}
+.ost-appearance-text small{font-size:17px;color:#a59d8f;}
+
+/* ---- boring-elements pass (2026-09-22) ---------------------------------- */
+/* the hero dock reads as an instrument panel: each cell is captioned */
+.ost-dock-cell{flex-direction:column;align-items:stretch;justify-content:center;gap:8px;}
+.ost-dock-cap{font-size:15px;letter-spacing:.14em;text-transform:uppercase;color:#b6a887;text-align:center;}
+.ost-hero-speed .ost-speed-ctl{display:flex;align-items:center;justify-content:center;gap:10px;}
+.ost-hero-speed .ost-speed-bars{margin:0 4px;}
+.ost-hero-dock .ost-button,.ost-hero-dock .ost-mode{width:100%;}
+
+/* empty states: a face, not a grey sentence */
+.ost-empty{display:flex;align-items:center;gap:16px;padding:18px 16px;margin:6px 0;
+  border:1px dashed rgba(122,107,78,.7);border-radius:12px;background:rgba(255,255,255,.012);}
+.ost-empty-well{width:56px;height:56px;flex:0 0 56px;background:rgba(255,255,255,.03);border-color:rgba(122,107,78,.6);}
+.ost-empty-well .ost-icon{width:26px;height:26px;flex:0 0 26px;opacity:.7;}
+.ost-empty-text{display:flex;flex-direction:column;gap:4px;min-width:0;}
+.ost-empty-text strong{font-size:20px;color:#e6dcc4;}
+.ost-empty-text .ost-help{margin:0;}
+.ost-empty[data-busy="1"]{border-style:solid;border-color:rgba(208,173,83,.45);}
+.ost-empty[data-busy="1"] .ost-empty-well{background:rgba(208,173,83,.12);border-color:#c2a259;}
+
+/* list rows carry a well where there is a natural glyph */
+.ost-row-well{width:48px;height:48px;flex:0 0 48px;}
+.ost-row-well .ost-icon{width:24px;height:24px;flex:0 0 24px;}
+
+/* "you are on": a banner, not a row */
+.ost-here{display:flex;align-items:center;gap:16px;padding:14px 16px;margin:12px 0 14px;
+  border:1px solid rgba(208,173,83,.55);border-left:4px solid #d0ad53;border-radius:12px;background:rgba(81,67,38,.28);}
+.ost-here .ost-row-well{background:rgba(208,173,83,.22);border-color:#c2a259;}
+.ost-here-cap{display:block;font-size:15px;letter-spacing:.14em;text-transform:uppercase;color:#d6c08a;margin-bottom:2px;}
+.ost-here .ost-row-text{gap:2px;}
+
+/* the message line is a banner when it has something to say */
+.ost-card>.ost-note:not(:empty){display:flex;align-items:center;gap:12px;padding:10px 14px;margin:10px 0 0;
+  border:1px solid rgba(208,173,83,.45);border-left:4px solid #d0ad53;border-radius:10px;background:rgba(81,67,38,.22);color:#eee7db;}
+
+/* sliders: a gold rail with a ringed knob */
+.ost-size-rail,.ost-fov-rail{background:#3a3742;border:1px solid #4c4650;box-sizing:border-box;}
+.ost-size-fill,.ost-fov-fill{background:#c8a44d;}
+.ost-size-knob{border-radius:50%;width:38px;height:38px;top:13px;margin-left:-19px;background:#e4c570;border:2px solid #eee1b6;box-shadow:0 0 0 4px rgba(208,173,83,.22);}
+.ost-fov-knob{box-shadow:0 0 0 4px rgba(208,173,83,.22);}
+
+/* native OStim options read as "opens something" */
+.ost-option{position:relative;padding-right:52px;}
+.ost-chevron{position:absolute;right:18px;top:50%;transform:translateY(-50%);font-size:28px;color:#b6a887;line-height:1;}
+
+/* ---- the page's own icon set (2026-09-22): sn-*.png, one weight (sc-* is SpellCraft's prefix) ------- */
+.ost-find,.ost-dock-search{position:relative;}
+.ost-find-mag{position:absolute;left:14px;top:50%;transform:translateY(-50%);width:22px;height:22px;pointer-events:none;opacity:.7;}
+.ost-find-mag .ost-icon{width:22px;height:22px;}
+.ost-find .ost-find-input,.ost-dock-search .ost-find-input{padding-left:46px;}
+.ost-find-drop{top:calc(100% + 8px);}
+.ost-hero-dock .ost-button .ost-icon{width:22px;height:22px;flex:0 0 22px;}
+
+/* ---- the last pass (2026-09-22): nothing left to complain about ------- */
+/* popouts breathe: the old 960 made every list and stepper row elbow each other */
+.ost-pop-card{width:1240px;max-width:min(100%,1240px);}
+/* feedback you can see: the popout's own message line */
+.ost-pop-note{margin:0;font-size:17px;color:#eee7db;}
+.ost-pop-note:empty{display:none;}
+.ost-pop-note:not(:empty){display:flex;align-items:center;gap:12px;padding:10px 14px;margin:14px 0 0;
+  border:1px solid rgba(208,173,83,.45);border-left:4px solid #d0ad53;border-radius:10px;background:rgba(81,67,38,.22);}
+/* help text is a caption, after the control it explains — not a preamble */
+.ost-help{font-size:17px;color:#9c948a;line-height:1.5;}
+.ost-pop-sub{color:#a59d8f;}
+/* grid buttons match the rows around them */
+.ost-grid>.ost-button{min-height:60px;justify-content:center;}
+/* the star as an icon button */
+.ost-star{min-width:52px;padding:10px 14px;font-size:22px;line-height:1;color:#b6a887;}
+.ost-star[aria-pressed="true"]{color:#f0dda6;background:rgba(81,67,38,.6);border-color:#d0ad53;}
+/* a setting row that holds an input + action */
+.ost-setting-control{display:flex;align-items:center;gap:10px;flex:0 1 520px;min-width:280px;}
+.ost-setting-control .ost-search{flex:1 1 auto;min-width:0;}
+/* quiet Close, everywhere it appears */
+.ost-pop-head>.ost-button,.ost-head>.ost-button{background:transparent;border-color:rgba(122,107,78,.7);color:#cfc6b4;min-height:46px;padding:10px 18px;}
+.ost-pop-head>.ost-button:hover,.ost-head>.ost-button:hover{background:rgba(208,173,83,.12);color:#eee7db;}
+/* the hero's hint when nothing is running */
+.ost-chip-hint{background:rgba(255,255,255,.03);color:#bdb5a6;border-style:dashed;}
+/* voice cards read as the person tabs do */
+.ost-voice-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));grid-auto-rows:max-content;gap:10px;margin:10px 0 12px;}
+.ost-voice-card{background:rgba(255,255,255,.02);border-color:rgba(122,107,78,.85);border-radius:12px;padding:12px 14px;}
+.ost-voice-card[aria-pressed="true"]{background:rgba(81,67,38,.72);border-color:#d0ad53;}
+.ost-voice-who{font-size:19px;color:#eee7db;}.ost-voice-set{font-size:17px;color:#a59d8f;}
+/* the cast chips in Add & remove: equal cells, a face, a quiet Remove */
+.ost-cast-now{grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;}
+.ost-cast-chip{padding:10px 12px 10px 10px;font-size:19px;background:rgba(255,255,255,.02);border-color:rgba(122,107,78,.85);}
+
+/* =====================================================================
+   SCENE PAGE — the in-game correction (2026-09-22, from a real screenshot)
+   What the engine showed: the hero title in letter-spaced caps wrapping
+   one letter per line (my section-heading rule had caught the hero's h3),
+   a hero starved to a third of the width, a card that did not scroll,
+   and the message banner squatting at the top. Every rule below is a
+   FINAL say on those; it is appended last so it wins.
+   ===================================================================== */
+/* the page scrolls, as a page */
+#sn-pane{padding:18px 26px 22px;overflow:hidden;}
+#sn-pane .ost-card{overflow:auto;padding-right:6px;}
+
+/* headings: section labels are for POPOUT sections only — never the hero */
+.ost-card h3{font-size:inherit;letter-spacing:0;text-transform:none;color:inherit;margin:0;padding:0;border:0;}
+.ost-pop-body h3,.ost-body h3,.ost-hold h3{font-size:15px;letter-spacing:.14em;text-transform:uppercase;color:#b6a887;margin:24px 0 12px;padding-bottom:10px;border-bottom:1px solid rgba(109,96,71,.55);}
+.ost-pop-body h3:first-child,.ost-body h3:first-child{margin-top:0;}
+.ost-hero-title,h3.ost-hero-title{font-size:32px;line-height:1.15;letter-spacing:0;text-transform:none;color:#f0dda6;margin:0;padding:0;border:0;overflow-wrap:anywhere;}
+.ost-hero[data-live="false"] .ost-hero-title{color:#9c948a;}
+.ost-dock-title strong{font-size:15px;letter-spacing:.14em;text-transform:uppercase;color:#d6c08a;}
+
+/* header: title left, a proper search on the right, same row */
+.ost-head{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,560px);align-items:center;gap:28px;margin:0 0 18px;}
+.ost-head h2{margin:0;font-size:34px;}
+.ost-head .ost-find{width:auto;flex:none;margin:0;}
+.ost-head .ost-find-input{font-size:19px;padding:14px 16px 14px 48px;}
+
+/* one column */
+.ost-page{display:flex;flex-direction:column;gap:18px;}
+.ost-page > *{min-width:0;}
+
+/* the hero: one band across, then the dock across */
+.ost-page .ost-hero{margin:0;padding:22px 26px;gap:18px;}
+.ost-hero-top{display:grid;grid-template-columns:auto minmax(320px,1fr) auto;gap:32px;align-items:center;}
+.ost-hero .ost-face{width:88px;height:88px;flex:0 0 88px;}
+.ost-hero-art .ost-pos-hero{width:216px;height:144px;}
+.ost-hero-meta{gap:14px;}
+.ost-hero-chips{gap:10px;}
+.ost-chip{white-space:nowrap;padding:8px 14px;font-size:18px;}
+.ost-hero-dock{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;grid-template-columns:none;gap:14px;}
+.ost-dock-cell{min-height:96px;padding:12px 16px;gap:8px;flex-direction:column;align-items:stretch;justify-content:center;}
+.ost-hero-speed .ost-speed-ctl{display:flex;align-items:center;justify-content:center;gap:10px;}
+.ost-hero-speed .ost-speed-bars{display:flex;gap:4px;flex:1 1 auto;min-width:0;}
+.ost-hero-dock .ost-button,.ost-hero-dock .ost-mode{width:100%;min-height:52px;justify-content:center;}
+.ost-hero-dock .ost-speed-ctl .ost-button{width:auto;min-width:64px;}
+
+/* four docks across; quick as five cells across */
+.ost-page .ost-tabs.ost-docks{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:auto;gap:16px;margin:0;padding:0;border:0;}
+.ost-quick{margin:0;display:block;}
+.ost-quick-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:10px;}
+.ost-quick-row{min-height:64px;}
+
+/* the message line lives at the bottom, and is quiet */
+.ost-card>.ost-note:not(:empty){margin:14px 0 0;padding:8px 12px;border:0;border-left:3px solid #d0ad53;border-radius:0;background:transparent;color:#cfc6b4;font-size:17px;}
+
+@media (max-width:1500px){
+  .ost-page .ost-tabs.ost-docks{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .ost-quick-strip{grid-template-columns:repeat(3,minmax(0,1fr));}
+  .ost-head{grid-template-columns:minmax(0,1fr) minmax(280px,420px);}
+}
+@media (max-width:1000px){
+  .ost-page .ost-tabs.ost-docks{grid-template-columns:1fr;}
+  .ost-quick-strip{grid-template-columns:1fr 1fr;}
+  .ost-hero-dock{grid-auto-flow:row;grid-template-columns:repeat(2,minmax(0,1fr));}
+  .ost-hero-top{grid-template-columns:1fr;}
+  .ost-head{grid-template-columns:1fr;}
+}
+
+/* =====================================================================
+   FIT TO SCREEN (2026-09-22): the density ladder. JS sets data-density on
+   the hosted card after every render; each step removes what costs height.
+   ===================================================================== */
+/* compact: descriptions go, wells and paddings shrink */
+.ost-card[data-density="compact"] .ost-seg-text small,
+.ost-card[data-density="compact"] .ost-quick-row .ost-seg-text small{display:none;}
+.ost-card[data-density="compact"] .ost-tabs.ost-docks .ost-button{padding:7px 12px;gap:10px;}
+.ost-card[data-density="compact"] .ost-tabs.ost-docks .ost-seg-well{width:40px;height:40px;flex:0 0 40px;}
+.ost-card[data-density="compact"] .ost-tabs.ost-docks .ost-icon{width:20px;height:20px;flex:0 0 20px;}
+.ost-card[data-density="compact"] .ost-dock{padding:12px 12px 12px;gap:6px;}
+.ost-card[data-density="compact"] .ost-dock-title{padding-bottom:8px;margin-bottom:2px;}
+.ost-card[data-density="compact"] .ost-page{gap:14px;}
+.ost-card[data-density="compact"] .ost-page .ost-hero{padding:16px 20px;gap:14px;}
+.ost-card[data-density="compact"] .ost-hero .ost-face{width:72px;height:72px;flex:0 0 72px;}
+.ost-card[data-density="compact"] .ost-hero-art .ost-pos-hero{width:168px;height:112px;}
+.ost-card[data-density="compact"] .ost-dock-cell{min-height:80px;padding:10px 14px;gap:6px;}
+.ost-card[data-density="compact"] .ost-quick{padding:12px 12px 12px;}
+.ost-card[data-density="compact"] .ost-quick-row{min-height:52px;padding:7px 10px;}
+.ost-card[data-density="compact"] .ost-quick-row .ost-seg-well{width:38px;height:38px;flex:0 0 38px;}
+.ost-card[data-density="compact"] .ost-head{margin-bottom:12px;}
+
+/* dense: dock subtitles go, the hero folds, quick rows are a single line */
+.ost-card[data-density="dense"] .ost-seg-text small,
+.ost-card[data-density="dense"] .ost-quick-row .ost-seg-text small,
+.ost-card[data-density="dense"] .ost-dock-title small,
+.ost-card[data-density="dense"] .ost-quick .ost-dock-title{display:none;}
+.ost-card[data-density="dense"] .ost-tabs.ost-docks .ost-button{padding:5px 10px;gap:10px;min-height:0;}
+.ost-card[data-density="dense"] .ost-tabs.ost-docks .ost-seg-well{width:34px;height:34px;flex:0 0 34px;}
+.ost-card[data-density="dense"] .ost-tabs.ost-docks .ost-icon{width:18px;height:18px;flex:0 0 18px;}
+.ost-card[data-density="dense"] .ost-seg-label{font-size:18px;}
+.ost-card[data-density="dense"] .ost-dock{padding:10px;gap:5px;}
+.ost-card[data-density="dense"] .ost-dock-title{padding:0 2px 6px;margin-bottom:2px;}
+.ost-card[data-density="dense"] .ost-page{gap:10px;}
+.ost-card[data-density="dense"] .ost-page .ost-hero{padding:12px 16px;gap:10px;}
+.ost-card[data-density="dense"] .ost-hero .ost-face{width:56px;height:56px;flex:0 0 56px;}
+.ost-card[data-density="dense"] .ost-hero-art .ost-pos-hero{width:126px;height:84px;}
+.ost-card[data-density="dense"] .ost-hero-title{font-size:26px;}
+.ost-card[data-density="dense"] .ost-dock-cell{min-height:64px;padding:8px 12px;gap:4px;}
+.ost-card[data-density="dense"] .ost-dock-cap{font-size:13px;}
+.ost-card[data-density="dense"] .ost-hero-dock .ost-button,.ost-card[data-density="dense"] .ost-hero-dock .ost-mode{min-height:44px;}
+.ost-card[data-density="dense"] .ost-quick{padding:8px 10px;}
+.ost-card[data-density="dense"] .ost-quick-strip{margin-top:0;gap:8px;}
+.ost-card[data-density="dense"] .ost-quick-row{min-height:44px;padding:5px 10px;}
+.ost-card[data-density="dense"] .ost-quick-row .ost-seg-well{width:32px;height:32px;flex:0 0 32px;}
+.ost-card[data-density="dense"] .ost-quick-row .ost-icon{width:18px;height:18px;flex:0 0 18px;}
+.ost-card[data-density="dense"] .ost-head{margin-bottom:8px;}
+.ost-card[data-density="dense"] .ost-head h2{font-size:28px;}
+.ost-card[data-density="dense"] .ost-card>.ost-note:not(:empty){margin-top:6px;}
+
+/* =====================================================================
+   ICON WELLS, FIXED FROM THE IN-GAME RENDER (2026-09-22)
+   The engine drew every glyph top-left in its well: flex-centring a
+   replaced <img> inside a <span> did not take. So the well no longer
+   centres anything -- it is a bordered box whose PADDING is the margin,
+   and the image fills the content box. Nothing to align, nothing to fail.
+   Glyphs are also bigger: 20px of a 96px master lost the detail.
+   ===================================================================== */
+.ost-seg-well,.ost-row-well,.ost-empty-well,.ost-pop-well{
+  display:block;box-sizing:border-box;position:relative;flex:0 0 auto;
+  width:50px;height:50px;padding:11px;border-radius:50%;
+  background:rgba(208,173,83,.1);border:1px solid rgba(146,129,92,.55);line-height:0;
+}
+.ost-seg-well>.ost-icon,.ost-row-well>.ost-icon,.ost-empty-well>.ost-icon,.ost-pop-well>.ost-icon{
+  display:block;width:100%;height:100%;margin:0;padding:0;border:0;float:none;position:static;object-fit:contain;
+}
+/* per-place sizes: the padding sets the glyph, the box sets the well */
+.ost-tabs.ost-docks .ost-seg-well{width:50px;height:50px;padding:11px;}
+.ost-quick-row .ost-seg-well{width:46px;height:46px;padding:10px;}
+.ost-row-well{width:48px;height:48px;padding:11px;}
+.ost-empty-well{width:56px;height:56px;padding:13px;background:rgba(255,255,255,.03);}
+.ost-pop-well{width:54px;height:54px;padding:12px;background:rgba(208,173,83,.16);border-color:#c2a259;}
+.ost-tabs.ost-docks .ost-icon,.ost-quick-row .ost-icon,.ost-row-well .ost-icon,.ost-pop-well .ost-icon{width:100%;height:100%;flex:none;}
+/* the ladder shrinks the well, and the glyph follows through the padding */
+.ost-card[data-density="compact"] .ost-tabs.ost-docks .ost-seg-well{width:44px;height:44px;padding:9px;}
+.ost-card[data-density="compact"] .ost-quick-row .ost-seg-well{width:40px;height:40px;padding:8px;}
+.ost-card[data-density="dense"] .ost-tabs.ost-docks .ost-seg-well{width:38px;height:38px;padding:8px;}
+.ost-card[data-density="dense"] .ost-quick-row .ost-seg-well{width:34px;height:34px;padding:7px;}
+.ost-card[data-density="compact"] .ost-tabs.ost-docks .ost-icon,.ost-card[data-density="dense"] .ost-tabs.ost-docks .ost-icon,
+.ost-card[data-density="compact"] .ost-quick-row .ost-icon,.ost-card[data-density="dense"] .ost-quick-row .ost-icon{width:100%;height:100%;flex:none;}
+/* the sub-tab and chip glyphs are inline and fine as they are; the dock's
+   free camera / stop glyphs sit beside their label, not in a well */
+.ost-hero-dock .ost-button .ost-icon{width:22px;height:22px;}
+
+/* ---- header: title | two stretched bars | End (2026-09-22) ------------- */
+.ost-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:22px;margin:0 0 18px;}
+.ost-head h2{margin:0;font-size:34px;white-space:nowrap;}
+.ost-find-pair{display:grid;grid-template-columns:1fr 1fr;gap:14px;min-width:0;}
+.ost-find,.ost-dock-search{display:block;position:relative;width:auto;min-width:0;margin:0;flex:none;}
+.ost-find-pair .ost-find-input{width:100%;box-sizing:border-box;min-height:58px;font-size:20px;padding:14px 16px 14px 50px;}
+.ost-find-mag{left:16px;}
+.ost-head-end{display:flex;align-items:center;}
+.ost-head-end .ost-button{min-height:58px;padding:12px 22px;font-size:19px;white-space:nowrap;}
+/* build() omits Close in the hosted card; the floating modal keeps its button. */
+.ost-pop-head>.ost-button{display:inline-flex;}
+@media (max-width:1300px){.ost-head{grid-template-columns:1fr auto;} .ost-head .ost-find-pair{grid-column:1 / -1;}}
+@media (max-width:900px){.ost-find-pair{grid-template-columns:1fr;}}
+/* the dock's Hold cell reads like the others */
+.ost-hero-hold .ost-button{width:100%;}
+/* the player's portrait: the Character tab's crop is a transform — give it room, and keep the ring */
+.ost-face img[data-self="1"]{transform-origin:0 0;}
+
+/* a dock row that is not a segment chip (Browse all scenes) wears the same row */
+.ost-tabs.ost-docks .ost-seg-extra{
+  display:flex;flex-direction:row;justify-content:flex-start;align-items:center;text-align:left;
+  width:100%;box-sizing:border-box;min-height:0;padding:9px 12px;gap:12px;font:inherit;font-size:19px;
+  color:#eee7db;background:rgba(255,255,255,.02);border:1px solid rgba(122,107,78,.85);border-radius:9px;cursor:pointer;
+}
+.ost-tabs.ost-docks .ost-seg-extra:hover{background:rgba(208,173,83,.12);border-color:#c2a259;}
+.ost-tabs.ost-docks .ost-seg-extra:hover .ost-seg-well{background:rgba(208,173,83,.28);border-color:#d0ad53;}
+.ost-card[data-density="compact"] .ost-tabs.ost-docks .ost-seg-extra{padding:7px 12px;gap:10px;}
+.ost-card[data-density="dense"] .ost-tabs.ost-docks .ost-seg-extra{padding:5px 10px;gap:10px;}
+.ost-card[data-density="compact"] .ost-tabs.ost-docks .ost-seg-extra .ost-seg-well{width:44px;height:44px;padding:9px;}
+.ost-card[data-density="dense"] .ost-tabs.ost-docks .ost-seg-extra .ost-seg-well{width:38px;height:38px;padding:8px;}
+
+/* the scene bar's results: pictogram rows, on the page */
+.ost-find-scene-drop{max-height:520px;}
+.ost-find-scene-drop .ost-pos-find{width:72px;height:48px;flex:0 0 72px;object-fit:contain;}
+.ost-find-scene-drop .ost-pos-none{display:inline-block;background:rgba(255,255,255,.03);border:1px dashed rgba(122,107,78,.5);border-radius:6px;}
+
+/* scene-privacy: couch-readable controls and linked portrait rows */
+.ost-privacy h3{font-size:22px;letter-spacing:.04em;}
+.ost-privacy .ost-help,.ost-privacy .ost-button{font-size:20px;}
+.ost-privacy .ost-toolbar{margin:20px 0;}
+.ost-held-chip{gap:12px;}
+
+/* NPC scene setup; all choices remain a draft until Start. */
+.ost-start{width:1080px;max-width:94vw;max-height:90vh;display:flex;flex-direction:column;background:#202626;color:#e5dfd1;border:2px solid #a68b50;border-radius:12px;font:20px/1.45 sans-serif;box-shadow:0 10px 24px rgba(0,0,0,.35)}
+.ost-start-head{display:flex;justify-content:space-between;align-items:center;padding:20px 28px;border-bottom:1px solid #44473d}
+.ost-start h2{margin:0;font:32px/1.2 Georgia,serif}.ost-start h3{font:25px/1.3 Georgia,serif;margin:0 0 18px}
+.ost-start-body{overflow:auto;min-height:0;padding:24px 28px}.ost-start-body section{padding:22px 0;border-bottom:1px solid #41463d}
+.ost-start-person{display:flex;align-items:center;gap:12px;margin-bottom:10px}.ost-start-person strong{flex:1}
+.ost-start button{min-height:44px;font-size:18px}.ost-start button[aria-pressed=true]{color:#e3cb86;border-color:#bd9f59;background:#39382e}
+.ost-start .ost-toolbar{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}.ost-start .ost-list{max-height:220px;overflow:auto;display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+.ost-start input{box-sizing:border-box;width:100%;min-height:44px;font-size:18px}.ost-start-note{min-height:28px;padding:12px 28px;margin:0;border-top:1px solid #44473d}
+@media(max-width:600px){.ost-start-person{flex-wrap:wrap}.ost-start-person strong{flex-basis:100%}.ost-start-body{padding:16px}}
+/* the scene bar's grouped results: one animation per row, its phases behind a chevron */
+.ost-find-scene-drop{max-height:600px;}
+.ost-find-group{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:stretch;}
+.ost-find-group .ost-find-row{min-width:0;}
+.ost-find-chev{appearance:none;width:66px;margin:0;padding:0;border:0;border-left:1px solid rgba(122,107,78,.35);background:transparent;color:#dbc17a;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+.ost-find-chev:hover{background:rgba(255,255,255,.05);}
+.ost-find-chev-glyph{display:block;font-size:36px;line-height:1;transition:transform 120ms ease;}
+.ost-find-group[data-open="true"]{background:rgba(255,255,255,.03);}
+.ost-find-group[data-open="true"] .ost-find-chev-glyph{transform:rotate(90deg);}
+.ost-find-phases{padding:0 0 8px 58px;border-bottom:1px solid rgba(122,107,78,.35);}
+.ost-find-phase{padding-top:10px;padding-bottom:10px;}
+.ost-find-phase .ost-pos-find{width:54px;height:36px;flex:0 0 54px;}
+.ost-find-foot{margin:0;padding:12px 18px;font-size:17px;color:#a49b8b;border-top:1px solid rgba(122,107,78,.35);}
+
+/* the cast strip: equal cells, outlined, numbered, room for a crowd */
+.ost-hero .ost-hero-cast .ost-people{display:grid;grid-template-columns:repeat(4,minmax(124px,1fr));gap:12px;margin:0;align-items:stretch;}
+.ost-hero .ost-hero-cast .ost-people[data-count="1"]{grid-template-columns:minmax(132px,1fr);}
+.ost-hero .ost-hero-cast .ost-people[data-count="2"]{grid-template-columns:repeat(2,minmax(132px,1fr));}
+.ost-hero .ost-hero-cast .ost-people[data-count="3"]{grid-template-columns:repeat(3,minmax(124px,1fr));}
+.ost-hero .ost-hero-cast .ost-people[data-count="5"]{grid-template-columns:repeat(5,minmax(116px,1fr));}
+.ost-hero .ost-hero-cast .ost-people[data-count="6"]{grid-template-columns:repeat(6,minmax(112px,1fr));}
+.ost-hero .ost-people .ost-person{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:10px;min-width:0;min-height:0;padding:14px 10px 12px;background:rgba(255,255,255,.025);border:1px solid #4d4636;border-radius:12px;}
+.ost-hero .ost-people .ost-person:hover{background:#2b2a33;border-color:#7c6c4b;}
+.ost-hero .ost-people .ost-person[aria-pressed="true"]{background:#2f2a20;border-color:#d0ad53;box-shadow:inset 0 0 0 1px rgba(208,173,83,.35);}
+.ost-person-pic{position:relative;display:block;width:88px;height:88px;flex:0 0 88px;}
+.ost-hero .ost-person-pic .ost-face{width:88px;height:88px;flex:0 0 88px;border:2px solid #5b5243;}
+.ost-hero .ost-person[aria-pressed="true"] .ost-person-pic .ost-face{border-color:#e4c570;}
+.ost-person-idx{position:absolute;right:-6px;bottom:-4px;min-width:28px;height:28px;padding:0 7px;box-sizing:border-box;border-radius:14px;background:#1b1a20;border:1px solid #8a7648;color:#dbc17a;font-size:17px;line-height:26px;text-align:center;}
+.ost-hero .ost-people .ost-person-name{font-size:18px;line-height:1.3;max-width:100%;max-height:2.6em;overflow:hidden;white-space:normal;overflow-wrap:anywhere;text-align:center;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+.ost-card[data-density="compact"] .ost-person-pic,.ost-card[data-density="compact"] .ost-hero .ost-person-pic .ost-face{width:72px;height:72px;flex:0 0 72px;}
+.ost-card[data-density="dense"] .ost-person-pic,.ost-card[data-density="dense"] .ost-hero .ost-person-pic .ost-face{width:56px;height:56px;flex:0 0 56px;}
+.ost-card[data-density="dense"] .ost-person-idx{min-width:24px;height:24px;line-height:22px;font-size:17px;right:-5px;}
+.ost-card[data-density="dense"] .ost-hero .ost-people .ost-person{padding:10px 8px 8px;gap:8px;}
+
+/* the key-capture collision question (2026-09-23): never a refusal */
+.capture-conflict { margin-top: 12px; text-align: left; }
+.capture-conflict-title { font-size: 26px; color: #e7cf8c; margin: 0 0 12px; text-align: center; }
+.capture-conflict-list { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; }
+.capture-conflict-list li { font-size: 19px; line-height: 1.4; color: #eee7db; padding: 12px 16px; border: 1px solid #6d6047; border-radius: 9px; background: #292830; }
+.capture-conflict-why { font-size: 18px; line-height: 1.45; color: #bdb5a6; margin: 0 0 14px; padding: 0 4px; }
+.capture-conflict .capture-btns { justify-content: center; flex-wrap: wrap; gap: 12px; }
+.capture-conflict .ghost-btn { font-size: 19px; padding: 12px 18px; min-height: 48px; }
+.capture-conflict-primary { border-color: #d0ad53; color: #f0d79d; background: rgba(201,162,75,.12); }
+.capture-conflict-primary:hover { background: rgba(201,162,75,.22); }
+
+/* Portrait retake: charcoal/gold, readable controls, explicit shutter. */
+.fd-capture-setup { position:fixed; inset:0; z-index:30000; background:rgba(0,0,0,.72); display:flex; align-items:center; justify-content:center; padding:20px; }
+.fd-capture-panel { box-sizing:border-box; width:980px; max-width:100%; max-height:94vh; display:flex; flex-direction:column; overflow:hidden; background:#202320; color:#e2dfce; border:1px solid #b59b54; border-radius:12px; padding:28px; font-size:18px; line-height:1.45; box-shadow:0 8px 22px rgba(0,0,0,.4); }
+.fd-capture-panel h2 { flex-shrink:0; margin:0 0 12px; font:28px Georgia,serif; color:#ddc584; }
+.fd-capture-panel h3 { margin:0 0 16px; font:23px Georgia,serif; color:#e2dfce; }
+.fd-capture-body { min-height:0; overflow:auto; }
+.fd-capture-intro { margin:0 0 24px; }
+.fd-capture-columns { display:grid; grid-template-columns:1fr 1.2fr; gap:28px; }
+.fd-capture-lighting { border-left:1px solid #444738; padding-left:28px; }
+.fd-capture-dial { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:16px 0; }
+.fd-capture-dial span { flex-basis:100%; }
+.fd-capture-dial input { flex:1; min-width:100px; height:32px; accent-color:#d1b55d; }
+.fd-capture-dial input:disabled { opacity:.4; }
+.fd-capture-dial output { min-width:55px; text-align:right; color:#e1c477; }
+.fd-capture-note,.fd-capture-status { font-size:17px; color:#bfc1af; }
+.fd-capture-footer { flex-shrink:0; border-top:1px solid #444738; margin-top:16px; padding-top:12px; }
+.fd-capture-status { margin:0; }
+.fd-capture-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; margin-top:16px; }
+.fd-capture-panel button { min-height:44px; padding:10px 16px; font-size:18px; }
+.fd-capture-panel .fd-capture-take { background:#b99f50; color:#16170f; border-color:#d5ba66; }
+.fd-capture-modes { display:flex; gap:8px; }
+.fd-capture-modes button { flex:1; min-width:0; display:flex; flex-direction:column; gap:6px; align-items:flex-start; text-align:left; white-space:normal; }
+.fd-capture-modes strong { font-size:18px; font-weight:600; }
+.fd-capture-modes span { font-size:16px; color:#bfc1af; }
+.fd-capture-modes [aria-pressed=true] { background:#3f3b26; border-color:#d1b55d; color:#f0dc96; }
+.fd-capture-panel :focus-visible { outline:2px solid #e8ce77; outline-offset:3px; }
+@media(max-width:700px){.fd-capture-setup{padding:10px}.fd-capture-panel{padding:20px}.fd-capture-columns{grid-template-columns:1fr;gap:20px}.fd-capture-lighting{border-left:0;border-top:1px solid #444738;padding:20px 0 0}.fd-capture-modes button{padding:10px}.fd-capture-panel h2{font-size:26px}.fd-lb-stage{flex-wrap:wrap;justify-content:center;gap:12px}.fd-lb-side{flex-direction:row;flex-wrap:wrap;justify-content:center;gap:12px;padding:12px}.fd-lb-inner.has-side{overflow:auto;max-height:94vh}.fd-lb-pv-lbl{font-size:16px}}
+
+.fd-lb-inner.has-side { box-sizing:border-box; min-width:0; }
+.fd-lb-inner.has-side .fd-lb-stage,.fd-lb-inner.has-side .fd-lb-side,.fd-lb-inner.has-side .fd-lb-foot { box-sizing:border-box; min-width:0; max-width:100%; }
+.fd-lb-inner.has-side .fd-lb-btn { font-size:17px; min-height:44px; min-width:44px; }
+.fd-lb-inner.has-side .fd-lb-hint,.fd-lb-inner.has-side .fd-lb-val,.fd-lb-pv-lbl { font-size:16px; white-space:normal; }
+@media(max-width:600px){.fd-lb-inner.has-side{width:94vw;background:#141713}.fd-lb-inner.has-side .fd-lb-pad{flex-wrap:wrap;justify-content:center}.fd-lb-inner.has-side .fd-lb-side{width:100%}.fd-lb-inner.has-side .fd-lb-stage{width:100%}}
+@media(prefers-reduced-motion:reduce){.fd-lb{animation:none}}
+
+/* domain-photo-lighting: one setup, separate live light and saved exposure. */
+.dm-photo-fov-box {width:1040px;display:flex;flex-direction:column;overflow:hidden;}
+.dm-photo-content {min-height:0;overflow:auto;flex:1 1 auto;scroll-padding:12px 0;}
+.dm-photo-fov-box h3 {font-size:21px;margin:12px 0;}
+.dm-photo-fov-box h4 {font-size:18px;margin:18px 0 10px;color:#c7c1b7;}
+.dm-photo-columns {display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:28px;margin-top:22px;border-top:1px solid #55515b;padding-top:10px;}
+.dm-photo-section {min-width:0;}
+.dm-photo-section + .dm-photo-section {border-left:1px solid #55515b;padding-left:28px;}
+.dm-photo-options {display:flex;flex-wrap:wrap;gap:8px;}
+.dm-photo-options button,.dm-photo-exp-controls button {font:inherit;font-size:18px;min-height:46px;padding:10px 14px;border:1px solid #55515b;border-radius:7px;background:#24242c;color:#eee9df;cursor:pointer;}
+.dm-photo-options button.on {background:#443d29;border-color:#d3af57;color:#f2d888;}
+.dm-photo-options button:focus,.dm-photo-exp-controls button:focus,.dm-photo-start:focus {outline:2px solid #d3af57;outline-offset:2px;}
+.dm-photo-options button:hover:not(:disabled),.dm-photo-exp-controls button:hover:not(:disabled) {background:#393324;border-color:#d3af57;}
+.dm-photo-options button:disabled,.dm-photo-exp-controls button:disabled {opacity:.45;cursor:default;}
+.dm-photo-fov-box .dm-photo-help {font-size:17px;line-height:1.45;color:#c7c1b7;margin:12px 0 20px;}
+.dm-photo-exp-controls {display:flex;align-items:center;gap:12px;margin:12px 0;}
+.dm-photo-exp-controls button {min-width:48px;}
+.dm-photo-exp-value {font-size:20px;min-width:145px;text-align:center;color:#f2d888;}
+.dm-photo-actions {flex-shrink:0;display:flex;flex-wrap:wrap;gap:12px;border-top:1px solid #55515b;padding:16px 0 6px;background:#19191f;}
+.dm-photo-actions .dm-photo-fov-cancel {padding-left:16px;padding-right:16px;}
+.dm-photo-actions .dm-photo-start {padding-left:16px;padding-right:16px;}
+.dm-photo-actions .dm-photo-fov-note {flex:0 0 100%;margin:0 0 4px;font-size:17px;line-height:1.4;}
+.dm-photo-start {font:inherit;font-size:20px;min-height:48px;padding:12px 24px;color:#19191f;background:#d3af57;border:1px solid #d3af57;border-radius:8px;cursor:pointer;}
+.dm-scene-exposure-note {font-size:16px;line-height:1.4;color:#c7c1b7;margin:10px 0 0;max-width:560px;}
+@media(max-width:700px) {.dm-photo-columns {grid-template-columns:1fr;gap:10px;}.dm-photo-section + .dm-photo-section {border-left:0;border-top:1px solid #55515b;padding-left:0;padding-top:10px;}.dm-photo-fov-box {padding:20px;}.dm-photo-options button {font-size:17px;}}
+
+/* All UI Elements cards share one type scale and one control size. */
+#hm-uie-body { grid-auto-rows:1fr; }
+#hm-uie-body.hm-uie-expanded { grid-auto-rows:max-content; }
+#hm-uie-body .hm-uie-row { box-sizing:border-box; min-height:246px; padding:18px; gap:12px 14px; border-radius:12px; border-width:1px; }
+#hm-uie-body .hm-uie-row .hm-uie-t b { font-size:20px; line-height:1.3; font-weight:700; white-space:normal; }
+#hm-uie-body .hm-uie-row .hm-uie-t span { font-size:16px; line-height:1.5; }
+#hm-uie-body .hm-uie-row .hm-uie-t > span:first-of-type { min-height:48px; }
+#hm-uie-body .hm-uie-row .hm-uie-why { margin-top:8px; }
+#hm-uie-body .hm-uie-row button { box-sizing:border-box; height:44px; min-height:44px; padding:8px 13px; font-family:inherit; font-size:16px; line-height:1.25; }
+#hm-uie-body .hm-uie-row .hm-uie-state { min-width:68px; font-weight:700; }
+#hm-uie-body .hm-uie-row .hm-uie-btn { min-width:84px; }
+#hm-uie-body .hm-uie-row .hm-uie-chord { box-sizing:border-box; display:inline-flex; align-items:center; min-height:44px; font-size:16px; line-height:1.35; white-space:normal; }
+#hm-uie-body .hm-uie-row button:disabled { cursor:default; opacity:.45; }
+#hm-uie-body .hm-uie-acts { width:100%; gap:8px; align-self:end; }
+#hm-uie .hm-drawer-title { font-size:20px; flex:none; }
+#hm-uie .hm-drawer-sub { font-size:16px; line-height:1.45; }
+@media (max-width:600px) {
+  #hm-uie-body { grid-template-columns:minmax(0,1fr); }
+  #hm-uie-toggle { flex-wrap:wrap; }
+  #hm-uie .hm-drawer-sub { flex-basis:100%; margin:0 0 8px 24px; }
+}
+
+/* UI Elements search: persistent above live results, with generous hit targets. */
+#hm-uie .hm-uie-tools { display:none; padding:8px 4px 18px; }
+#hm-uie.open .hm-uie-tools { display:block; }
+.hm-uie-searchlabel { display:block; margin-bottom:10px; color:#ded8c6; font-size:18px; font-weight:600; }
+.hm-uie-searchrow { display:flex; align-items:center; gap:12px; }
+#hm-uie-search {
+  flex:1; min-width:0; width:100%; min-height:52px; box-sizing:border-box;
+  padding:12px 18px; border:1px solid rgba(201,162,75,.35); border-radius:12px;
+  background:rgba(8,10,13,.35); color:#eee9da; font:inherit; font-size:19px;
+  transition:border-color 150ms ease, box-shadow 150ms ease;
+}
+#hm-uie-search::placeholder { color:#a6a18f; opacity:1; }
+#hm-uie-search:focus { outline:none; border-color:#c9a24b; box-shadow:0 0 0 3px rgba(201,162,75,.13); }
+#hm-uie-clear {
+  flex:none; min-height:48px; padding:10px 18px; border-radius:10px;
+  border:1px solid rgba(201,162,75,.3); background:rgba(201,162,75,.08);
+  font:inherit; font-size:17px; color:#e4d9b5; cursor:pointer;
+}
+#hm-uie-clear:hover { border-color:#c9a24b; background:rgba(201,162,75,.15); }
+#hm-uie-clear:focus { outline:2px solid #c9a24b; outline-offset:2px; }
+#hm-uie-clear:disabled { opacity:.4; cursor:default; }
+.hm-uie-searchmeta { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px 20px; padding:12px 2px 0; font-size:16px; line-height:1.45; color:#b8b09d; }
+#hm-uie-count { color:#d6bf81; }
+.hm-uie-empty { grid-column:1 / -1; padding:28px 20px; border:1px dashed rgba(201,162,75,.3); border-radius:12px; color:#d2cbb8; font-size:19px; line-height:1.5; overflow-wrap:break-word; }
+@media (max-width:600px) {
+  .hm-uie-searchrow { gap:8px; }
+  #hm-uie-search { padding:12px; font-size:18px; }
+  #hm-uie-clear { padding:10px 12px; }
+  #hm-uie-searchhint { width:100%; }
+}
+
+/* Named, tagged photos without replacing the current cover. */
+.dm-photo-album{display:flex;flex-wrap:wrap;gap:12px;border-top:1px solid var(--line);margin-top:14px;padding-top:10px}
+.dm-photo-album h3{flex:0 0 100%;margin:0}
+.dm-photo-album input[type=text]{flex:1;min-width:220px;background:var(--bg-inset,#191d1c);color:var(--text);font:inherit;font-size:18px;border:1px solid var(--line);border-radius:6px;padding:10px 12px}
+.dm-photo-cover{display:flex;align-items:center;gap:8px;min-height:44px;font-size:17px}.dm-photo-cover input{width:20px;height:20px}
+.dm-photo-album input:focus{outline:2px solid var(--gold);outline-offset:2px}
+.dm-gallery-link{cursor:pointer;min-height:32px;border:1px solid var(--line);background:transparent;color:var(--gold)}
+
+/* Photos button, bottom-left of a hero whose domain holds a gallery. ALWAYS
+   visible — the hover-only ⛶ and the 10px chip were the doors nobody found
+   (Rober, 2026-09-26). Same dark plate and gold hover as the ⛶ so the two
+   corners read as one set. */
+.dm-gallery-btn {
+  position: absolute; left: 8px; bottom: 8px; z-index: 4;
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 34px; padding: 0 12px 0 9px;
+  font-size: 14px; font-weight: 600; letter-spacing: .2px; line-height: 1; color: #efe9d8;
+  background: rgba(10, 10, 14, .78);
+  border: 1px solid rgba(255, 255, 255, .18); border-radius: 9px;
+  cursor: pointer; opacity: .88;
+  transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.dm-gallery-btn img { width: 18px; height: 18px; display: block; }
+.dm-gallery-btn .dm-gallery-w { color: #cdbd93; font-weight: 500; }
+.dm-row:hover .dm-gallery-btn, .dm-row.sel .dm-gallery-btn { opacity: 1; }
+.dm-gallery-btn:focus { opacity: 1; outline: 2px solid #e0bf64; outline-offset: 1px; }
+.dm-gallery-btn:hover { background: rgba(201, 162, 75, .30); border-color: #c9a24b88; }
+.dm-gallery-btn:active { transform: scale(.96); }
+
+/* Position reference: shared, inspected glyphs; spacious label-first cards. */
+.ost-position-count{font-size:18px;color:#bcb19b;margin:16px 0;}
+.ost-position-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:max-content;gap:14px;}
+.ost-position-card{display:flex;flex-direction:column;align-items:stretch;min-width:0;min-height:244px;padding:20px;text-align:left;
+ border:1px solid #66583b;border-radius:12px;background:#24232a;color:#eee7db;cursor:pointer;font:inherit;}
+.ost-position-card:hover,.ost-position-card:focus{background:#302d2d;border-color:#dbc17a;outline:2px solid rgba(219,193,122,.3);outline-offset:2px;}
+.ost-position-art{display:flex;align-items:center;justify-content:center;min-height:100px;margin-bottom:16px;border-bottom:1px solid rgba(219,193,122,.18);padding-bottom:12px;}
+.ost-position-image{width:144px;height:96px;object-fit:contain;}
+.ost-position-words{display:flex;flex-direction:column;gap:8px;overflow-wrap:anywhere;}
+.ost-position-words strong{font-size:23px;line-height:1.25;}
+.ost-position-kind{font-size:16px;color:#dbc17a;}
+.ost-position-aliases{font-size:17px;line-height:1.5;color:#bbb3a3;}
+@media(max-width:800px){.ost-position-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media(max-width:520px){
+ .ost-pop[data-kind="position-reference"]{padding:12px;}
+ .ost-pop[data-kind="position-reference"] .ost-pop-card{padding:18px;max-height:94vh;}
+ .ost-pop[data-kind="position-reference"] .ost-pop-sub{margin-left:0;font-size:18px;}
+ .ost-pop[data-kind="position-reference"] .ost-pop-head h2{font-size:23px;}
+ .ost-pop[data-kind="position-reference"] .ost-pop-well{display:none;}
+ .ost-position-grid{grid-template-columns:minmax(0,1fr);}
+ .ost-position-card{flex-direction:row;align-items:center;gap:16px;min-height:148px;padding:16px;}
+ .ost-position-art{flex:0 0 96px;min-height:0;margin:0;padding:0;border:0;}
+ .ost-position-image{width:96px;height:64px;}
+ .ost-position-words strong{font-size:21px;}
+}
+
+/* All supplied packs share the deck's brass-and-charcoal reference library. */
+.ost-position-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:18px;}
+.ost-position-filter{display:flex;flex-direction:column;gap:8px;min-width:0;font-size:18px;color:#dbc17a;}
+.ost-position-filter .ost-search{width:100%;min-width:0;box-sizing:border-box;font-size:20px;min-height:52px;color:#eee7db;background:#24232a;}
+.ost-position-target{font-size:20px;line-height:1.5;overflow-wrap:anywhere;color:#eee7db;margin:18px 0;}
+.ost-position-preview{display:flex;align-items:center;justify-content:center;min-height:160px;margin:18px 0;border:1px solid #66583b;background:#24232a;border-radius:12px;}
+.ost-position-preview .ost-position-image{width:216px;height:144px;}
+.ost-position-status{font-size:20px;line-height:1.5;min-height:30px;color:#dbc17a;overflow-wrap:anywhere;}
+.ost-position-actions{display:flex;flex-wrap:wrap;gap:14px;margin-top:20px;}
+.ost-position-actions .ost-button,.ost-pop[data-kind="position-categories"] .ost-button{font-size:20px;min-height:52px;padding:12px 18px;}
+.ost-position-actions .ost-button[hidden]{display:none;}
+.ost-position-actions .ost-button:disabled,.ost-pop[data-kind="position-categories"] .ost-button:disabled{opacity:.55;cursor:default;}
+.ost-position-actions .ost-button:focus,.ost-position-filter .ost-search:focus,.os-pos-picker:focus{outline:2px solid #dbc17a;outline-offset:3px;}
+.ost-position-card:active,.ost-position-actions .ost-button:active{background:#3b352b;}
+.ost-pop[data-kind^="position-"] .ost-pop-body{overscroll-behavior:contain;}
+.os-pos-picker{display:flex;align-items:center;justify-content:center;flex:0 0 62px;min-height:48px;padding:4px;box-sizing:border-box;border:1px solid transparent;border-radius:8px;background:transparent;color:#dbc17a;cursor:pointer;font:24px/1 sans-serif;}
+.os-pos-picker:hover{background:#302d2d;border-color:#dbc17a;}
+.os-pos-picker .os-pos-none{line-height:36px;}
+@media(max-width:520px){
+ .ost-pop[data-kind^="position-"]{padding:12px;}
+ .ost-pop[data-kind^="position-"] .ost-pop-card{padding:18px;max-height:94vh;}
+ .ost-pop[data-kind^="position-"] .ost-pop-sub{margin-left:0;font-size:18px;overflow-wrap:anywhere;}
+ .ost-pop[data-kind^="position-"] .ost-pop-head h2{font-size:23px;overflow-wrap:anywhere;}
+ .ost-pop[data-kind^="position-"] .ost-pop-well{display:none;}
+ .ost-position-filters{gap:12px;}
+ .ost-position-actions{flex-direction:column;}
+ .ost-position-actions .ost-button{width:100%;white-space:normal;text-align:left;}
+}

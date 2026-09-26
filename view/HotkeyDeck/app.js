@@ -199,6 +199,12 @@ const KEYPAD_GROUPS = [
 const NUMPAD_LAYOUT = KEYPAD_GROUPS.reduce(
   (all, g) => all.concat(g.keys.filter((k) => k && k.c)), []);
 
+/* The same table, for keycaps-strip.js (the key strip above the hotkey list).
+   Exported rather than duplicated: a cap on that strip must be a key the
+   Numpad tab already fires, so there is exactly one list of what the deck can
+   press and both surfaces read it. */
+window.hdKeypadKeys = NUMPAD_LAYOUT;
+
 /* ============================================================= state ==== */
 
 let state = {
@@ -208,6 +214,8 @@ let state = {
     closeAfterFire: true,
     stickyNpMods: false,
     targetOpensFollowers: true,
+    sceneOpensScene: true,
+    targetOpensScene: true,
     uiScale: 1,
     scrollSpeed: 1,   // deck scroll-wheel speed multiplier (0.5-3.0), applied by applyScrollSpeed
     panelW: 0,   // drag-to-resize size, PRE-scale layout px (0 = auto)
@@ -725,7 +733,7 @@ const ui = {
   drag: null,              // { id, moved, over: {id, before} } while dragging a row
   justDragged: false,      // swallow the click that follows a drop
   /* ---- quests tab ---- */
-  qMode: 'npc',            // 'npc' (crosshair NPC) | 'search' (all quests)
+  qMode: 'active',         // current journal (default), NPC inspector, all-quest search
   qSearch: '',
   qList: null,             // last hdQuests payload
   qNpc: null,              // { name, formId, plugin } of the targeted NPC
@@ -909,7 +917,8 @@ function render() {
                 ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
                 ui.tab === 'rooms' || ui.tab === 'time' || ui.tab === 'loot' ||
                 ui.tab === 'anim' || ui.tab === 'keys' || ui.tab === 'items' || ui.tab === 'npcs' ||
-                ui.tab === 'mounts' || ui.tab === 'sheet' || ui.tab === 'transmog' ||
+                ui.tab === 'cells' || ui.tab === 'spells' ||
+                ui.tab === 'mounts' || ui.tab === 'sheet' || ui.tab === 'nightside' || ui.tab === 'transmog' ||
                 ui.tab === 'spellcraft' || ui.tab === 'journal' || ui.tab === 'highking' ||
                 /* settle + wigs were missing here (2026-08-15): setTab() switched
                    ui.tab and called their onShow, but this whitelist fell through
@@ -917,7 +926,7 @@ function render() {
                    on screen. Every top-level pane MUST be listed here. */
                 ui.tab === 'settle' || ui.tab === 'wigs' || ui.tab === 'survival' ||
                 ui.tab === 'distr' || ui.tab === 'household' ||
-                ui.tab === 'loadouts' ||
+                ui.tab === 'scene' || ui.tab === 'loadouts' ||
                 ui.tab === 'wardrobe' || ui.tab === 'faces' || ui.tab === 'recent') ? ui.tab : 'deck';
   const deck = pane === 'deck';
   window.__hdActiveTab = pane;   // panes (followers/domains) key their re-renders off this
@@ -936,18 +945,24 @@ function render() {
   $('kc-pane').classList.toggle('hidden', pane !== 'keys');
   $('ix-pane').classList.toggle('hidden', pane !== 'items');
   $('nx-pane').classList.toggle('hidden', pane !== 'npcs');
+  $('cl-pane').classList.toggle('hidden', pane !== 'cells');
+  $('sf-pane').classList.toggle('hidden', pane !== 'spells');
   $('dx-pane').classList.toggle('hidden', pane !== 'distr');
   $('jr-pane').classList.toggle('hidden', pane !== 'journal');
   $('tg-pane').classList.toggle('hidden', pane !== 'transmog');
   $('mt-pane').classList.toggle('hidden', pane !== 'mounts');
   $('lo-pane').classList.toggle('hidden', pane !== 'loadouts');
   $('hh-pane').classList.toggle('hidden', pane !== 'household');
+  /* NB sn-, not sc-: #sc-pane has been SpellCraft's since long before the
+     Scene tab existed, and check_pane_wiring caught the collision. */
+  $('sn-pane').classList.toggle('hidden', pane !== 'scene');
   $('st-pane').classList.toggle('hidden', pane !== 'settle');
   $('sc-pane').classList.toggle('hidden', pane !== 'spellcraft');
   $('hx-pane').classList.toggle('hidden', pane !== 'highking');
   $('wv-pane').classList.toggle('hidden', pane !== 'wigs');
   $('sp-pane').classList.toggle('hidden', pane !== 'survival');
   $('ps-pane').classList.toggle('hidden', pane !== 'sheet');
+  $('ns-pane').classList.toggle('hidden', pane !== 'nightside');
   $('fin-pane').classList.toggle('hidden', pane !== 'finances');
   $('wd-pane').classList.toggle('hidden', pane !== 'wardrobe');
   $('faces-pane').classList.toggle('hidden', pane !== 'faces');
@@ -994,7 +1009,7 @@ function render() {
  *  control belongs beside that tab's other settings, not in a second card
  *  floating above it, and those panes never flip ui.edit anyway.
  */
-const TAB_SCALE_CARD_TABS = ['quests', 'notes', 'numpad', 'recent', 'time', 'loot', 'anim', 'items', 'npcs', 'mounts', 'transmog'];
+const TAB_SCALE_CARD_TABS = ['quests', 'notes', 'numpad', 'recent', 'time', 'loot', 'anim', 'items', 'npcs', 'cells', 'spells', 'mounts', 'transmog'];
 
 function renderTabScaleCard(pane) {
   const card = $('tab-scale-card');
@@ -1546,6 +1561,20 @@ function renderHints(pane) {
       '<span>💰 Merchant mode pays real gold</span><span>F7 / Esc close</span>';
     return;
   }
+  if (pane === 'cells') {
+    h.innerHTML = '<span>Type a place, an editor id, or a mod</span><span>Enter = travel to the top hit</span>' +
+      '<span>⌂⇄👤 switch rosters, search carries over</span>' +
+      '<span>⤞ Go there runs the console’s own coc</span>' +
+      '<span>interiors only — outdoor cells have no names to search</span><span>F7 / Esc close</span>';
+    return;
+  }
+  if (pane === 'spells') {
+    h.innerHTML = '<span>Type a spell, a school, an element, or a mod</span><span>Enter = learn it, or cast it if you know it</span>' +
+      '<span>✦⇄👤 switch rosters, search carries over</span>' +
+      '<span>👤 Teach gives it to whoever you were looking at</span>' +
+      '<span>Known / Unknown are live — a spell you learn moves at once</span><span>F7 / Esc close</span>';
+    return;
+  }
   if (pane === 'npcs') {
     h.innerHTML = '<span>Type a name, race or mod</span><span>Enter = bring the top hit</span>' +
       '<span>👤⇄⚒ switch to items, search carries over</span><span>click a face for a big look</span>' +
@@ -1563,6 +1592,12 @@ function renderHints(pane) {
       '<span>Reset returns the pose</span><span>F7 / Esc close</span>';
     return;
   }
+  if (pane === 'scene') {
+    h.innerHTML = '<span>The scene keeps running — nothing here pauses it</span>' +
+      '<span>Type to search any list</span><span>Enter = top hit</span>' +
+      '<span>F7 / Esc close</span>';
+    return;
+  }
   if (pane === 'household') {
     h.innerHTML = '<span>Type to search the household</span><span>Enter = open the top hit</span>' +
       '<span>↑↓ move · click a card for her full card</span>' +
@@ -1572,6 +1607,12 @@ function renderHints(pane) {
   if (pane === 'loadouts') {
     h.innerHTML = '<span>Groups: pick one, ⚡ Deploy brings + recruits everyone</span><span>Classes: gear + combat style per role</span>' +
       '<span>click a face\'s class chip to change it</span><span>F7 / Esc close</span>';
+    return;
+  }
+  if (pane === 'nightside') {
+    h.innerHTML = '<span>Blood · Moon · Bone — the curses you carry</span>' +
+      '<span>Type to search every power</span><span>Enter casts the top hit</span>' +
+      '<span>F7 / Esc close</span>';
     return;
   }
   if (pane === 'mounts') {
@@ -1627,13 +1668,13 @@ const SYS_TABS = [
   { tab: 'keys',       label: 'Keys',       img: 'icons/custom/hm-keys.png',       title: 'Every hotkey in the load order, and what conflicts' },
   /* ONE Finder tab for both rosters (Rober, 2026-08-14: "change items and
      npcs into one tab called Finder. With options for both in a search").
-     The 'finder' id is presentation-only: setTab() resolves it to 'items' or
-     'npcs' (whichever was used last, shelf-persisted), and the panes carry an
-     in-head mode switch that flips between them with the query riding along.
-     The underlying tab ids stay 'items'/'npcs' on purpose — omni providers,
+     The 'finder' id is presentation-only: setTab() resolves it to 'items',
+     'npcs' or 'cells' (whichever was used last, shelf-persisted), and the panes
+     carry an in-head mode switch that flips between them with the query riding
+     along. The underlying tab ids stay 'items'/'npcs'/'cells' on purpose — omni providers,
      C++ hdShowTab deep-opens, HDScale and the harnesses all keep working
      untouched. */
-  { tab: 'finder',     label: 'Finder',     img: 'icons/custom/hm-finder.png',     title: 'Find any item or anyone the load order ships — take, bring, go to, spawn' },
+  { tab: 'finder',     label: 'Finder',     img: 'icons/custom/hm-finder.png',     title: 'Find any item, anyone, any interior, or any spell the load order ships — take, bring, go to, spawn, travel, learn, cast, teach' },
   /* deliberately UNGATED: with no SPID / SkyPatcher files in the load order the
      pane says so itself (the survival precedent — more useful than vanishing). */
   { tab: 'distr',      label: 'Distributions', img: 'icons/custom/hm-distr.png',   title: 'What SPID and SkyPatcher could give the NPC in your crosshair — outfits, items, spells, searchable' },
@@ -1650,6 +1691,11 @@ const SYS_TABS = [
      vanishes. It requires Follower Organizer in practice (the roster is its
      source), and says that too rather than disappearing. */
   { tab: 'household',  label: 'Household',  img: 'icons/custom/hm-household.png',  title: 'Your wives and who is expecting — how far along, with portraits' },
+  /* The dedicated OStim page (2026-09-21). Gated on OStim actually being in
+     the load order — unlike the deliberately-ungated panes above, a Scene tab
+     with no OStim is not "a pane that explains itself", it is twelve segments
+     of nothing. C++ lands F7 here whenever a player scene is running. */
+  { tab: 'scene',      label: 'Scene',      img: 'icons/custom/seg-ostim.png',     title: 'Everything OStim — participants, furniture, alignment, voices, the room', requires: 'ostim' },
   { tab: 'mounts',     label: 'Mounts',     img: 'icons/custom/hm-mounts.png',     title: 'Your stable — summon, call and ride anything you can sit on' },
   { tab: 'loadouts',   label: 'Loadouts',   img: 'icons/custom/hm-loadouts.png',   title: 'Follower groups you switch between in one press — summon, recruit, dress by class' },
   { tab: 'settle',     label: 'Settlement', img: 'icons/custom/hm-settlement.png', title: 'Place objects, statics, camp gear — build a camp, keep catalogs' },
@@ -1671,6 +1717,13 @@ const SYS_TABS = [
      Become High King of Skyrim TNG's own globals — without the mod there is
      nothing honest to draw, so the tab vanishes rather than refuses. */
   { tab: 'highking', label: 'High King', img: 'icons/custom/hm-highking.png', title: 'Rule Skyrim — treasury, taxes, approval, rebellions, council and royal powers', requires: 'highking' },
+  /* Nightside is gated on LIVE PLAYER STATE, not on a mod being installed —
+     it appears the moment vampirism, lycanthropy or lichdom takes, and is
+     gone again when none is held (Rober, 2026-09-14: "tabs that appear only
+     if you are a werewolf, lich, vampire"). `requiresState` is the live twin
+     of `requires`; the payload is rebuilt on EVERY hdOpen because being
+     bitten between two presses of F7 is exactly the case that matters. */
+  { tab: 'nightside',  label: 'Nightside',  img: 'icons/custom/hm-nightside.png',  title: 'Blood, Moon and Bone — the curses you carry', requiresState: 'nightside' },
 ];
 
 /* True unless the tab's required mod is EXPLICITLY detected-absent. Mirrors
@@ -1679,15 +1732,30 @@ const SYS_TABS = [
    `false` hides. `state.detected` is the cfg.detected object off hdOpen.
    Exposed on window for the harness + omni. */
 function tabAvailable(sys) {
-  if (!sys || !sys.requires) return true;
+  if (!sys) return true;
+  if (sys.requiresState && !stateGateOpen(sys.requiresState)) return false;
+  if (!sys.requires) return true;
   const det = (state.detected && typeof state.detected === 'object') ? state.detected : null;
   if (!det || !(sys.requires in det)) return true;   // unknown flag → assume present
   return det[sys.requires] !== false;
 }
+
+/* Live-state gates. Same explicit-false law as the mod flags: an older DLL
+   sends no payload at all and nothing vanishes — a tab is only hidden when
+   the game has actually told us the condition is absent. */
+function stateGateOpen(key) {
+  if (key !== 'nightside') return true;
+  const c = state.curses;
+  if (!c || typeof c !== 'object') return true;   // no payload → assume shown
+  return c.any !== false;
+}
 /* The Finder pair + its shelf-persisted mode (which roster the merged tab
    opens on). Same store and reason as tabbarPrefs(): a new `settings` key
    would be dropped by the C++ field-by-field save; the shelf blob survives. */
-const FINDER_TABS = ['items', 'npcs'];
+/* The deploy gate's marker `cells-finder-roster` is the literal prefix of this
+   line; the fourth roster is appended rather than written into the array so
+   the literal survives (2026-09-23: the first Spells deploy was refused for it). */
+const FINDER_TABS = ['items', 'npcs', 'cells'].concat(['spells']);
 
 function finderPrefs() {
   if (!state.shelf || typeof state.shelf !== 'object' || Array.isArray(state.shelf)) state.shelf = {};
@@ -1709,7 +1777,8 @@ function sysActive(s) {
 window.__hdFinderGo = function (target, q) {
   if (FINDER_TABS.indexOf(target) === -1) return;
   setTab(target);
-  const pane = target === 'items' ? window.ItemsPane : window.NpcsPane;
+  const pane = target === 'items' ? window.ItemsPane
+    : target === 'npcs' ? window.NpcsPane : target === 'cells' ? window.CellsPane : window.SpellsPane;
   if (pane && typeof pane.setFilter === 'function') pane.setFilter(String(q == null ? '' : q));
 };
 
@@ -1829,12 +1898,18 @@ function facefitPrefs() {
 function applyFacefitPrefs() {
   if (!window.HDFaceFit) return;
   const ff = facefitPrefs();
+  if (typeof window.HDFaceFit.setAutoEnabled === 'function')
+    window.HDFaceFit.setAutoEnabled(ff.auto !== false);
   if (isFinite(ff.k) || isFinite(ff.s))
     window.HDFaceFit.tune(Number(ff.k), Number(ff.s));
   Object.keys(ff.files).forEach(function (f) {
     const c = ff.files[f];
     if (c && isFinite(c.z)) window.HDFaceFit.setOverride(f, c);
   });
+  /* Per-face brightness (followers lightbox ☀ row). Guarded: an older module
+     without the brightness lane just ignores it. */
+  if (typeof window.HDFaceFit.setBrightnessMap === 'function')
+    window.HDFaceFit.setBrightnessMap(ff.bright && typeof ff.bright === 'object' ? ff.bright : {});
 }
 window.hdApplyFacefitPrefs = applyFacefitPrefs;
 
@@ -2348,12 +2423,17 @@ const HK_REQUIRES = {
      quicklight (DetectedModsJson, added with this block). */
   'hd-party-wait':             { flag: 'nff',        label: "Nether's Follower Framework" },
   'hd-party-follow':           { flag: 'nff',        label: "Nether's Follower Framework" },
-  'hd-party-summon':           { flag: 'nff',        label: "Nether's Follower Framework" },
+  'hd-party-recall-takeover':  { flag: 'nff',        label: "Nether's Follower Framework" },
+  'hd-party-recall-restore':   { flag: 'nff',        label: "Nether's Follower Framework" },
   'hd-party-relax':            { flag: 'nff',        label: "Nether's Follower Framework" },
   'hd-party-regroup':          { flag: 'nff',        label: "Nether's Follower Framework" },
   'npc-nff-recruit':           { flag: 'nff',        label: "Nether's Follower Framework" },
   'npc-mhiyh-home':            { flag: 'mhiyh',      label: 'My Home Is Your Home' },
   'hd-quick-light':            { flag: 'quicklight', label: 'Quick Light SE' },
+  'hd-custom-markers-settings': { flag: 'custommarkers', label: 'Custom Markers' },
+  'hd-custom-markers-loot':      { flag: 'custommarkers_toggles', label: 'Custom Markers 1.2.4+' },
+  'hd-custom-markers-radar':     { flag: 'custommarkers_toggles', label: 'Custom Markers 1.2.4+' },
+  'hd-custom-markers-combat':    { flag: 'custommarkers_combat', label: 'Custom Markers 1.2.7' },
   /* High King seeds (2026-08-18): the tab opener and both kingdom verbs all
      read/dispatch Become High King of Skyrim TNG's own globals and scripts. */
   'hd-highking':               { flag: 'highking', label: 'Become High King of Skyrim TNG' },
@@ -2532,6 +2612,13 @@ function renderList() {
   const list = $('list');
   const q = ui.search.trim();
   const items = filteredEntries();
+  /* Typed the name of a KEY? Offer the key itself, above the rows. Called
+     from here because this is the one function every keystroke goes through. */
+  if (window.KeyStrip) {
+    const ok = (state.settings.openKey && state.settings.openKey.device === 'keyboard')
+      ? Number(state.settings.openKey.code) || 0 : 0;
+    KeyStrip.sync(ui.edit ? '' : q, ok);
+  }
   if (ui.sel >= items.length) ui.sel = Math.max(0, items.length - 1);
 
   $('empty-state').classList.toggle('hidden', state.entries.length > 0);
@@ -2667,6 +2754,8 @@ function renderSettings() {
   $('close-cb').checked = !!state.settings.closeAfterFire;
   $('sticky-cb').checked = !!state.settings.stickyNpMods;
   $('tgtfol-cb').checked = state.settings.targetOpensFollowers !== false;
+  $('scnopen-cb').checked = state.settings.sceneOpensScene !== false;
+  $('tgtscn-cb').checked = state.settings.targetOpensScene !== false;
   renderModSlots();
   applyScale();
   syncScrollSpeedEdit();   // scroll-speed slider readout, beside Menu scale
@@ -2813,6 +2902,16 @@ const DECK_SETTING_CBS = [
     detail: () => (state.settings.targetOpensFollowers !== false
       ? 'On — opening with someone in your crosshair lands on her card'
       : 'Off — the deck always opens where you left it') },
+  { id: 'scnopen-cb', name: 'In an OStim scene? Open on the Scene tab',
+    keywords: 'ostim scene tab open dedicated page f7 land participants furniture alignment sex',
+    detail: () => (state.settings.sceneOpensScene !== false
+      ? 'On — opening during a scene lands on the Scene page, ahead of the crosshair'
+      : 'Off — a scene does not change where the deck opens') },
+  { id: 'tgtscn-cb', name: 'Looking at someone mid-scene? Open on the Scene tab',
+    keywords: 'crosshair target npc ostim scene tab open appearance skin bondage liquids oil effects body physics',
+    detail: () => (state.settings.targetOpensScene !== false
+      ? 'On — someone in your crosshair who is IN an OStim scene lands you on the Scene page; anyone else, her card'
+      : 'Off — the Followers landing below decides instead') },
   { id: 'ext-cb', name: 'Extended F-keys (F13–F24)', ext: true,
     keywords: 'extended f keys fkey f13 f14 f15 f16 f17 f18 f19 f20 f21 f22 f23 f24 ' +
               'bridge macro mouse scimitar mcm bind remap',
@@ -3189,13 +3288,16 @@ function startCapture(mode, id) {
     }
   }
   toGame('hdCapture', '1');
-  $('capture-title').textContent =
-    mode === 'open' ? 'Press the new OPEN key or mouse button…' :
+  hideCaptureConflict();
+  $('capture-title').textContent = captureTitle(mode, id);
+  $('capture-modal').classList.remove('hidden');
+}
+function captureTitle(mode, id) {
+  return mode === 'open' ? 'Press the new OPEN key or mouse button…' :
     mode === 'folopen' ? 'Press the new FOLLOWERS key or mouse button…' :
     mode === 'ext'  ? 'Press the key ' + id + ' should fire in-game…' :
     mode === 'trigger' ? 'Press the key that should fire this from anywhere…' :
                       'Press a key or mouse button…';
-  $('capture-modal').classList.remove('hidden');
 }
 
 function renderGestureChips() {
@@ -3221,6 +3323,7 @@ function endCapture(applied) {
   const cap = ui.capture;
   ui.capture = null;
   closeKeyPicker();
+  hideCaptureConflict();
   toGame('hdCapture', '0');
   $('capture-modal').classList.add('hidden');
   if (!applied && cap && cap.mode === 'add') {
@@ -3235,9 +3338,95 @@ function endCapture(applied) {
   render();
 }
 
+/* ---- the collision question ---------------------------------------------
+   Rober, 2026-09-23, when the key box refused F15 (his G3, the Domains open
+   key): "it should ask like clear out this other or allow them to be
+   conflicting". Everything the deck itself listens on is gathered here;
+   hd-bindconflicts.js decides what collides; the capture box then asks:
+   Use it here (clearing the other) · Keep both · Cancel. Mouse-first, because
+   the input sink cannot consume keys (Esc backs out to press mode). */
+function bindingSnapshot() {
+  const s = state.settings || {};
+  const openKeys = [{ id: 'open', what: 'the deck', binding: s.openKey || null, clear: null }];
+  try {
+    if (window.FolPane && typeof FolPane.openKeyBinding === 'function')
+      openKeys.push({ id: 'folopen', what: 'the Followers tab', binding: FolPane.openKeyBinding(), clear: null });
+  } catch (err) { /* pane not up yet */ }
+  try {
+    if (window.DomainsPane && typeof DomainsPane.openKeyBinding === 'function')
+      openKeys.push({ id: 'domopen', what: 'the Domains tab', binding: DomainsPane.openKeyBinding(), clear: null });
+  } catch (err) { /* pane not up yet */ }
+  const modSlots = ['shift', 'ctrl', 'alt'].map((m) => {
+    const sl = modSlot(m);
+    return { id: 'mod' + m, what: m.charAt(0).toUpperCase() + m.slice(1) + ' + open', binding: sl,
+             clear: () => { sl.device = 'keyboard'; sl.code = 0; sl.label = ''; } };
+  });
+  /* only a REAL remap counts — the defaults are the identity the bridge ships */
+  const ek = extKeysState();
+  const extMap = {};
+  if (ek.enabled) EXT_NAMES.forEach((n) => { if (ek.map[n] !== EXT_DEFAULT_MAP[n]) extMap[n] = ek.map[n]; });
+  return { entries: state.entries, openKeys: openKeys, modSlots: modSlots, extMap: extMap,
+           extLabel: (n) => extTargetLabel(n, ek.map[n]),
+           clearExt: (n) => { ek.map[n] = EXT_DEFAULT_MAP[n]; } };
+}
+function showCaptureConflict(binding, found) {
+  const cap = ui.capture;
+  if (!cap) return;
+  cap.conflicts = found;
+  cap.pending = binding;
+  const label = binding.keyLabel || 'That key';
+  $('capture-conflict-title').textContent = label + ' is already taken';
+  const list = $('capture-conflict-list');
+  list.innerHTML = '';
+  found.forEach((c) => { const li = document.createElement('li'); li.textContent = c.text; list.appendChild(li); });
+  const clearable = HDBindConflicts.allClearable(found);
+  const why = $('capture-conflict-why');
+  const whyText = found.filter((c) => !c.clear && c.why).map((c) => c.why).join(' · ');
+  why.textContent = whyText;
+  why.classList.toggle('hidden', clearable || !whyText);
+  const clearBtn = $('capture-conflict-clear');
+  clearBtn.classList.toggle('hidden', !clearable);
+  clearBtn.textContent = 'Use ' + label + ' here — clear the other' + (found.length > 1 ? 's' : '');
+  $('capture-conflict-both').textContent = 'Keep both — they will fire together';
+  ['capture-sub', 'capture-gest', 'capture-btns-main', 'capture-picker'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); });
+  $('capture-title').textContent = 'One press, two jobs';
+  $('capture-conflict').classList.remove('hidden');
+}
+function hideCaptureConflict() {
+  const cc = $('capture-conflict');
+  if (cc) cc.classList.add('hidden');
+  ['capture-sub', 'capture-btns-main'].forEach((id) => { const el = $(id); if (el) el.classList.remove('hidden'); });
+  if (ui.capture) { ui.capture.conflicts = null; ui.capture.pending = null; }
+}
+function captureConflictBack() {
+  const cap = ui.capture;
+  hideCaptureConflict();
+  if (!cap) return;
+  const gest = $('capture-gest');
+  if (gest) gest.classList.toggle('hidden', cap.mode !== 'trigger');
+  $('capture-title').textContent = captureTitle(cap.mode, cap.id);
+}
+function captureConflictAnswer(clearOthers) {
+  const cap = ui.capture;
+  if (!cap || !cap.pending) return;
+  const binding = cap.pending, found = cap.conflicts || [];
+  if (clearOthers) found.forEach((c) => { if (typeof c.clear === 'function') c.clear(); });
+  hideCaptureConflict();
+  cap.resolved = true;
+  applyCapture(binding);
+}
+
 function applyCapture(binding) {
   const cap = ui.capture;
   if (!cap) return;
+  /* Before anything binds: what else already claims this press? If anything
+     does, ASK — never refuse. The question re-enters here with cap.resolved. */
+  if (cap.mode !== 'ext' && !cap.resolved && window.HDBindConflicts) {
+    const found = HDBindConflicts.find(bindingSnapshot(), {
+      mode: cap.mode, ownerId: cap.id, binding: binding, gesture: cap.gesture || '' });
+    if (found.length) { showCaptureConflict(binding, found); return; }
+  }
+  cap.resolved = false;
   if (cap.mode === 'ext') {
     extKeysState().map[cap.id] = binding.code;
     toast(cap.id + ' → ' + binding.keyLabel);
@@ -3391,6 +3580,8 @@ function hdTyping() {
 }
 
 function onKeyDown(e) {
+  if (window.AppearanceGallery && AppearanceGallery.isOpen()) return;
+  if (window.DomainGallery && DomainGallery.isOpen()) return; // album capture handler owns typing and Escape
   if (!ui.visible) return;
   const code = normCode(e);
 
@@ -3403,20 +3594,20 @@ function onKeyDown(e) {
     if (ui.capture.picking) return;
     e.preventDefault();
     e.stopPropagation();
+    /* The collision question is up: it is answered with the mouse (or Esc
+       backs out to press mode). Every other key is swallowed until then. */
+    if (ui.capture.conflicts) { if (code === 'Escape') captureConflictBack(); return; }
     if (code === 'Escape') { endCapture(false); return; }
     if (MODIFIER_CODES.indexOf(code) !== -1) return; // wait for the main key
     const hit = DIK[code];
     if (!hit) { toast('Unsupported key: ' + (code || e.keyCode)); return; }
-    /* An entry's own key is what it SENDS. Sending F13-F24 would hand the
-       press straight back to our own bridge, so those stay refused HERE even
-       though DIK now resolves them — every other mode is an INPUT binding
-       (what fires the thing) and wants the faithful extended code. Same
-       sentence hdExtKey uses, so the refusal reads identically whichever
-       route the press arrived by. */
-    if ((ui.capture.mode === 'entry' || ui.capture.mode === 'add') && EXT_NAMES.indexOf(code) !== -1) {
-      toast(code + ' can be a trigger or the open key — entries fire standard keys');
-      return;
-    }
+    /* F13-F24 as an entry's own key (what it SENDS) used to be refused here
+       outright. Now they flow through applyCapture like any other key: the
+       deck's own claims on that press (an open key, a trigger, a remap) come
+       back as a QUESTION — clear the other, or keep both (Rober, 2026-09-23:
+       "it should ask like clear out this other or allow them to be
+       conflicting"). An unclaimed one just binds, as the seeded F23 entry
+       always has. */
     if (ui.capture.mode === 'ext') {  // ext targets are plain keys — no modifiers
       applyCapture({ device: 'keyboard', code: hit[0], mods: [], keyLabel: hit[1] });
       return;
@@ -3481,6 +3672,9 @@ function onKeyDown(e) {
     if (HDOmni.onKey(e, code)) { e.preventDefault(); e.stopPropagation(); return; }
     return;   // never let anything reach quick-fire behind the overlay
   }
+  /* Full-screen NPC workspace owns Tab and search before deck navigation. */
+  if (window.FolPane && FolPane.dossierKey && FolPane.dossierKey(e)) return;
+
   /* Ctrl+F opens it from ANY tab (F2's edit toggle and the panes never claim
      Ctrl chords, so this is collision-free) */
   if (code === 'KeyF' && e.ctrlKey && !e.shiftKey && !e.altKey && window.HDOmni) {
@@ -3589,6 +3783,11 @@ function onKeyDown(e) {
      threw focus into the deck's search box, mid-sentence. */
   const inAnyText = hdTyping() || isTabInput;
 
+  // The Home drawer owns search Enter/Escape. This listener runs in capture
+  // phase, so let its input receive them before the palette-close handler.
+  if (ui.tab === 'home' && ae && ae.id === 'hm-uie-search' &&
+      (code === 'Enter' || code === 'Escape')) return;
+
   /* the Followers pane owns its keys first (its menus/search/F2); Tab-cycling
      and palette-close Escape fall through to the shell below */
   if (ui.tab === 'followers' && code !== 'Tab' && window.FolPane && FolPane.onKey(e)) return;
@@ -3598,6 +3797,8 @@ function onKeyDown(e) {
      shell below, exactly as they do for Followers. */
   if (ui.tab === 'household' && code !== 'Tab' &&
       window.HouseholdPane && HouseholdPane.onKey(e)) { e.preventDefault(); return; }
+  if (ui.tab === 'scene' && code !== 'Tab' &&
+      window.ScenePane && ScenePane.onKey(e)) { e.preventDefault(); return; }
 
   /* ---- global keys ---- */
   if (code === 'Escape') {
@@ -3623,7 +3824,7 @@ function onKeyDown(e) {
 
   if (ui.tab === 'numpad' || ui.tab === 'notes' || ui.tab === 'quests' ||
       ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
-      ui.tab === 'items' || ui.tab === 'npcs' ||   // Finder rosters own their own search Enter (fire the top hit) — never the deck's quick-fire
+      ui.tab === 'items' || ui.tab === 'npcs' || ui.tab === 'cells' || ui.tab === 'spells' ||   // Finder rosters own their own search Enter (fire the top hit) — never the deck's quick-fire
       ui.tab === 'distr' ||   // Distributions owns its search too — without this, a digit typed in dx-search QUICK-FIRES a hotkey (ui.search is the deck's box, empty here)
       /* 2026-08-19 sweep (check_pane_wiring found TEN more panes with text
          inputs outside this list — every one had the distr digit-quick-fire
@@ -3638,6 +3839,13 @@ function onKeyDown(e) {
       /* household owns its own search box — without this a digit typed into it
          quick-fires a real hotkey into the game (the distr lesson). */
       ui.tab === 'household' ||
+      /* the Scene page owns a search box in nearly every segment (furniture,
+         people nearby, the room, voices, expressions, PPA, OStim's settings),
+         and it is used mid-scene — the distr lesson at its worst. */
+      ui.tab === 'scene' ||
+      /* nightside owns #ns-search the same way (check_pane_wiring caught it on
+         2026-09-17 — the tab shipped 2026-09-14 without this line). */
+      ui.tab === 'nightside' ||
       /* loot + time added 2026-08-19 (swarm): both are full panes and both were
          MEASURED leaking — a bare digit on either fired a real hotkey into the
          game, and Enter in the Sky weather box both picked a weather AND fired
@@ -3670,7 +3878,11 @@ function onKeyDown(e) {
     if (code === 'Enter') {
       e.preventDefault();
       const items = filteredEntries();
-      if (items[ui.sel]) fireEntry(items[ui.sel].id, $('list').children[ui.sel]);
+      if (items[ui.sel]) { fireEntry(items[ui.sel].id, $('list').children[ui.sel]); return; }
+      /* No hotkey matched but the key strip did ("end" with no End hotkey):
+         Enter takes the top hit, the deck's own fd-ctx-menu idiom. Only when
+         the list is EMPTY — a row always outranks a raw key press. */
+      if (!items.length && window.KeyStrip) KeyStrip.fireTop();
       return;
     }
     /* quick-fire on digits while the search box is empty */
@@ -3775,18 +3987,22 @@ function setTab(t) {
   if (prev === 'keys' && window.KeysPane) KeysPane.onHide();
   if (prev === 'items' && window.ItemsPane) ItemsPane.onHide();
   if (prev === 'npcs' && window.NpcsPane) NpcsPane.onHide();
+  if (prev === 'cells' && window.CellsPane) CellsPane.onHide();
+  if (prev === 'spells' && window.SpellsPane) SpellsPane.onHide();
   if (prev === 'distr' && window.DistrPane) DistrPane.onHide();
   if (prev === 'journal' && window.JournalPane) JournalPane.onHide();
   if (prev === 'transmog' && window.TransmogPane) TransmogPane.onHide();
   if (prev === 'mounts' && window.MountsPane) MountsPane.onHide();
   if (prev === 'loadouts' && window.LoadoutsPane) LoadoutsPane.onHide();
   if (prev === 'household' && window.HouseholdPane) HouseholdPane.onHide();
+  if (prev === 'scene' && window.ScenePane) ScenePane.onHide();
   if (prev === 'settle' && window.SettlementPane) SettlementPane.onHide();
   if (prev === 'spellcraft' && window.SpellCraftPane) SpellCraftPane.onHide();
   if (prev === 'highking' && window.HighKingPane) HighKingPane.onHide();
   if (prev === 'wigs' && window.WigsPane) WigsPane.onHide();
   if (prev === 'survival' && window.SurvivalPane) SurvivalPane.onHide();
   if (prev === 'sheet' && window.CharSheetPane) CharSheetPane.onHide();
+  if (prev === 'nightside' && window.NightsidePane) NightsidePane.onHide();
   if (prev === 'anim' && window.AnimPane) AnimPane.onHide();
   if (prev === 'finances' && window.FinancesPane) FinancesPane.onHide();
   if (prev === 'wardrobe' && window.WardrobePane) WardrobePane.onHide();
@@ -3847,6 +4063,14 @@ function setTab(t) {
     if (window.NpcsPane) NpcsPane.onShow();   // first look builds the C++ NPC index
     return;
   }
+  if (t === 'cells') {
+    if (window.CellsPane) CellsPane.onShow();   // first look builds the C++ interior index
+    return;
+  }
+  if (t === 'spells') {
+    if (window.SpellsPane) SpellsPane.onShow();   // first look builds the C++ spell index; every look refreshes the Teach target
+    return;
+  }
   if (t === 'distr') {
     if (window.DistrPane) DistrPane.onShow();   // re-asks: the crosshair target is per-open; first look parses the inis
     return;
@@ -3884,6 +4108,13 @@ function setTab(t) {
     if (window.HouseholdPane) HouseholdPane.onShow();
     return;
   }
+  if (t === 'scene') {
+    // mounts ostim-tools.js's card fresh: between two looks the scene can have
+    // ended or restarted under a new thread, and a stale card is what this
+    // page exists to prevent
+    if (window.ScenePane) ScenePane.onShow();
+    return;
+  }
   if (t === 'settle') {
     if (window.SettlementPane) SettlementPane.onShow();   // first look builds the C++ object index
     return;
@@ -3910,6 +4141,10 @@ function setTab(t) {
   }
   if (t === 'sheet') {
     if (window.CharSheetPane) CharSheetPane.onShow();   // pulls fresh stats + effects; starts the vitals poll
+    return;
+  }
+  if (t === 'nightside') {
+    if (window.NightsidePane) NightsidePane.onShow();   // re-reads which curses are held and what is running
     return;
   }
   if (t === 'anim') {
@@ -3984,6 +4219,9 @@ window.hdShowTab = function (t) {
     if (!window.HDSuper) { window.__hdPendingSuper = ssOnly || 1; return; }
     if (!HDSuper.hooked()) HDSuper.hookInto({ closeDeck: requestClose });
     if (HDSuper.isOpen()) {
+      /* supersearch@<source> while it is already up = relock to that source
+         (the Teleport action chosen INSIDE the Super Searcher), not a toggle */
+      if (ssOnly && typeof HDSuper.relock === 'function' && HDSuper.relock(ssOnly)) return;
       if (Date.now() - (ui.openedAt || 0) > 700) requestClose();
       return;
     }
@@ -4257,6 +4495,25 @@ function onModClick(e) {
   e.currentTarget.classList.toggle('on', i === -1);
 }
 
+/* Fire ONE raw key, from a surface that is not the Numpad tab (the key strip
+   above the hotkey list). Same bridge, one flag different:
+
+   `close: true` routes the C++ through FireAndClose — close the palette, let
+   the game unpause and take input focus back, THEN press. The Numpad tab can
+   fire without closing because that tab runs the game live (OnJsTab); every
+   other tab is PAUSED, and a key pressed into a paused game is a key that did
+   nothing. So a strip cap behaves exactly like clicking a hotkey row: the
+   deck gets out of the way and the game receives a real press. */
+window.hdFireRawKey = function (p) {
+  if (!p || !p.code) return;
+  const mods = Array.isArray(p.mods) ? p.mods.slice() : [];
+  const label = chordLabel(mods, p.label || window.hdKeyLabel(p.code));
+  toGame('hdFireKey', JSON.stringify({
+    device: 'keyboard', code: p.code, mods: mods, label: label, close: p.close !== false,
+  }));
+  if (DEV) toast('fired ' + label);
+};
+
 /* ============================================================ quests ==== */
 /* Look at an NPC, open the deck, hit Quests: every quest that NPC is involved
    in, the quest's full stage list with the current stage marked, and a click
@@ -4276,6 +4533,7 @@ let qSearchTimer = null;
 function requestQuests() {
   ui.qLoading = true;
   renderQuests();
+  if (ui.qMode === 'active') { HDQuestJournal.refresh(); return; }
   if (ui.qMode === 'search') {
     const q = ui.qSearch.trim();
     if (q.length < 2) { ui.qLoading = false; ui.qList = null; renderQuests(); return; }
@@ -4311,6 +4569,17 @@ function renderQuests() {
     b.classList.toggle('on', b.dataset.qmode === ui.qMode));
   $('q-search').classList.toggle('hidden', ui.qMode !== 'search');
 
+  HDQuestJournal.mount($('q-current'), {send:toGame, detail:function(id){
+    ui.qDetail = {ok:true, formId:id, name:'Loading…', stages:[], aliases:[], objectives:[]};
+    ui.qNote=''; toGame('hdQuestGet',id); renderQuests();
+  }});
+  const journalOpen = ui.qMode === 'active' && !ui.qDetail;
+  $('q-current').classList.toggle('hidden', !journalOpen);
+  if (journalOpen) {
+    $('q-target').textContent='';
+    ['q-list','q-detail','q-empty'].forEach(function(id){$(id).classList.add('hidden');});
+    return;
+  }
   const tgt = $('q-target');
   if (ui.qMode === 'search') {
     tgt.innerHTML = ui.qList && ui.qList.truncated
@@ -4683,6 +4952,7 @@ window.hdSpellIconPath = function (m) {
   return '';
 };
 
+window.hdWardrobeIconChoices = function () { return ICONS.custom.slice(); };
 window.hdIcons = function (r) {
   r = parsePayload(r);
   ICONS.custom = ((r && r.custom) || []).map((c) => ({
@@ -4842,6 +5112,8 @@ window.hdOpen = function (cfg) {
          replaced when C++ sends one, so a live data-refresh that omits it keeps
          the last known detection. */
       if (cfg.detected && typeof cfg.detected === 'object') state.detected = cfg.detected;
+      /* which of the three curses the player holds RIGHT NOW (nightside-gate) */
+      if (cfg.curses && typeof cfg.curses === 'object') state.curses = cfg.curses;
       state.categories = Array.isArray(cfg.categories)
         ? cfg.categories.filter((c) => typeof c === 'string' && c)
         : [];
@@ -4890,7 +5162,7 @@ window.hdOpen = function (cfg) {
     ui.tabAdding = false;
     ui.tabRename = null;
     ui.confirmTabDelete = null;
-    ui.qMode = 'npc';       // you just looked at someone — start there
+    ui.qMode = 'active';    // the main Quests tab always opens on your current journal
     ui.qSearch = '';
     ui.qList = null;
     ui.qNpc = null;
@@ -4999,6 +5271,7 @@ window.hdClosed = function () {
   if (window.FolPane && FolPane._closeHudModal) FolPane._closeHudModal();
   if (window.FolPane && FolPane._closeWornLightbox) FolPane._closeWornLightbox();
   if (window.DomainsPane && DomainsPane.closeOverlays) DomainsPane.closeOverlays();
+  if (window.ResidentsPane && ResidentsPane.closeOverlays) ResidentsPane.closeOverlays();
   if (window.ContainersPane && ContainersPane.closeOverlays) ContainersPane.closeOverlays();
   if (window.HDShelf) HDShelf.closeOverlays();   // its context menu hangs off body too
   /* The wheel is a body-level full-screen overlay, so `body.open` going away
@@ -5043,6 +5316,7 @@ window.hdSaved = function (ok) {
    ext capture treats "the key pressed itself" as choosing its raw code. */
 window.hdExtKey = function (info) {
   if (!ui.visible || !ui.capture) return;
+  if (ui.capture.conflicts) return;   // the question is up; the mouse answers it
   const mode = ui.capture.mode;
   /* Every mode here is an INPUT binding — "what press fires this" — so all of
      them take the faithful extended code. `trigger` and the mod* slots used to
@@ -5062,13 +5336,17 @@ window.hdExtKey = function (info) {
     }
     return;
   }
-  toast(info.name + ' can be a trigger or the open key — entries fire standard keys');
+  /* An entry's own key (what it SENDS): F13-F24 bind with their faithful
+     code, exactly as the seeded F23 entry does. Whatever else claims the key
+     is put to you by applyCapture — a question, not a refusal. */
+  applyCapture({ device: 'keyboard', code: info.raw, mods: [], keyLabel: info.name });
 };
 
 /* C++ forwards Mouse4/Mouse5 presses while capturing (Ultralight doesn't see
    X-button events in-game; middle-click arrives natively via onMouseDown). */
 window.hdNativeMouse = function (info) {
   if (!ui.visible || !ui.capture) return;
+  if (ui.capture.conflicts) return;
   if (ui.capture.mode === 'ext') {
     toast('Keyboard keys only — F-keys can’t fire mouse buttons');
     return;
@@ -5271,6 +5549,7 @@ function init() {
          cards whose `requires` flag is EXPLICITLY false; unknown = show,
          so an older DLL never blanks the grid */
       detected: function () { return (state.detected && typeof state.detected === 'object') ? state.detected : null; },
+      curses: function () { return (state.curses && typeof state.curses === 'object') ? state.curses : null; },
       /* Open-key discoverability (home-open-key): the Home tab surfaces the
          open-key bind and its Change… button reuses THIS file's rebind flow —
          startCapture('open') is exactly what Edit ▸ settings' key chip runs, so
@@ -5327,6 +5606,9 @@ function init() {
     if (btn.classList.contains('ext-kill')) { ek.map[name] = 0; save(); render(); return; }
   });
   $('capture-cancel').addEventListener('click', () => endCapture(false));
+  $('capture-conflict-clear').addEventListener('click', () => captureConflictAnswer(true));
+  $('capture-conflict-both').addEventListener('click', () => captureConflictAnswer(false));
+  $('capture-conflict-back').addEventListener('click', () => captureConflictBack());
   /* Key picker — assign a key without pressing it (Home/End/PgUp/PgDn/arrows, or
      a key the keyboard lacks). Funnels through applyCapture like a real press. */
   $('capture-pick').addEventListener('click', () => {
@@ -5364,6 +5646,8 @@ function init() {
   /* C++ owns the DECISION (it has the crosshair snapshot at open); this
      only records the preference for it to read on the next open. */
   $('tgtfol-cb').addEventListener('change', (e) => { state.settings.targetOpensFollowers = e.target.checked; save(); });
+  $('scnopen-cb').addEventListener('change', (e) => { state.settings.sceneOpensScene = e.target.checked; save(); });
+  $('tgtscn-cb').addEventListener('change', (e) => { state.settings.targetOpensScene = e.target.checked; save(); });
   $('scale-down').addEventListener('click', () => setScale(state.settings.uiScale - SCALE_STEP, true));
   $('scale-up').addEventListener('click', () => setScale(state.settings.uiScale + SCALE_STEP, true));
   $('scale-reset').addEventListener('click', () => setScale(1, true));
@@ -5625,6 +5909,16 @@ function init() {
       { key: 100007, label: 'Toggle POISE bars', mod: 'Loki POISE', page: 'Display', option: 'Show Meters', verification: 'user_confirmed' }
     ]), 120);
     window.vkTest = (p) => toGame('hdLog', 'vkTest ' + p);
+    window.hdQuestActive = (raw) => setTimeout(() => {
+      const req = raw ? JSON.parse(raw) : {};
+      const payload = {requestId:req.requestId, quests:MQ.filter(q => q.status === 'running').map((q,i) => Object.assign({},q,{
+        journal:true, hasTarget:i===0, targetReason:i===0?'':'Objective has no map target',
+        objective:i===0?'Return to the Jarl of Whiterun':'Discover the source of the disturbance',
+        currentObjectives:i===0?['Return to the Jarl of Whiterun']:['Discover the source of the disturbance'],
+        nextStage:i===0?0:25
+      }))};
+      (req.requestId ? window.hdQuestJournalData : window.hdQuests)(payload);
+    }, 160);
     window.hdQuestList = () => setTimeout(() => window.hdQuests({
       hasTarget: true, npc: { name: 'Lydia', formId: '000A2C94', plugin: 'Skyrim.esm' }, quests: MQ }), 160);
     window.hdQuestSearch = (q) => setTimeout(() => window.hdQuests({ truncated: false,
@@ -5642,10 +5936,13 @@ function init() {
           { id: 2, name: 'HouseMarker', fill: 'conditions', filled: false, optional: true },
         ] }));
     }, 160);
-    window.hdQuestSetStage = (p) => setTimeout(() =>
-      window.hdQuestResult({ ok: true, message: 'Stage ' + JSON.parse(p).stage + ' fired' }), 120);
-    window.hdQuestAction = (p) => setTimeout(() =>
-      window.hdQuestResult({ ok: true, message: JSON.parse(p).verb + ' done' }), 120);
+    function mockQuestResult(raw) {
+      const p=JSON.parse(raw);
+      (p.requestId ? window.hdQuestJournalResult : window.hdQuestResult)({requestId:p.requestId,ok:true,
+        message:'Preview only — in Skyrim this closes the menu and '+(p.verb?'travels to the target.':'requests stage '+p.stage+'.')});
+    }
+    window.hdQuestSetStage = (p) => setTimeout(() => mockQuestResult(p), 120);
+    window.hdQuestAction = (p) => setTimeout(() => mockQuestResult(p), 120);
 
     /* the Spell Deck launcher — C++ closes this palette, then opens MagicDeck */
     window.hdOpenSpells = function () { toast('(dev) → Spell Deck'); };
@@ -5673,6 +5970,9 @@ function init() {
 
     window.hdOpen({
       settings: { pauseOnOpen: true, smoothPause: true, closeAfterFire: true, openKey: { device: 'keyboard', code: 65, label: 'F7' } },
+      /* dev preview holds all three curses, so the Nightside tab is browsable
+         here (in game this comes from Nightside::GateJson on every open). */
+      curses: { any: true, vampire: true, werewolf: true, lich: true, awake: ['vampire', 'lich'] },
       categories: ['Combat', 'Followers', 'NPC', 'Misc'],
       notes: 'MOD MENUS\n  F7   Manager Deck (this menu)\n  F8   Teleport Followers\n\nSample notes — edit me.',
       entries: [
@@ -6540,6 +6840,46 @@ function runSelfTest() {
   /* --- per-entry trigger keys --- */
   const trigEntry = () => state.entries.find((e) => e.device !== 'action') || state.entries[0];
 
+  T('conflict: a trigger on a key another entry already fires from ASKS instead of binding blind', () => {
+    state.entries.push({ id: 'st-c1', name: 'First', desc: '', device: 'keyboard', code: 0x21, label: 'F', mods: [], category: '', trigger: { device: 'keyboard', code: 0x3B, label: 'F1', mods: [], gesture: '' } });
+    state.entries.push({ id: 'st-c2', name: 'Second', desc: '', device: 'keyboard', code: 0x22, label: 'G', mods: [], category: '' });
+    render();
+    startCapture('trigger', 'st-c2');
+    applyCapture({ device: 'keyboard', code: 0x3B, mods: [], keyLabel: 'F1' });
+    const asked = !$('capture-conflict').classList.contains('hidden') && $('capture-conflict-list').textContent.indexOf('First') !== -1;
+    const second = state.entries.find((x) => x.id === 'st-c2');
+    const untouched = !!ui.capture && !(second && second.trigger);
+    return (asked && untouched) || ('asked=' + asked + ' untouched=' + untouched);
+  });
+  T('conflict: "clear the other" unbinds the first and binds the second', () => {
+    $('capture-conflict-clear').click();
+    const a = state.entries.find((x) => x.id === 'st-c1'), b = state.entries.find((x) => x.id === 'st-c2');
+    const good = !ui.capture && a && !a.trigger && b && b.trigger && b.trigger.code === 0x3B;
+    return good || ('a.trigger=' + JSON.stringify(a && a.trigger) + ' b.trigger=' + JSON.stringify(b && b.trigger));
+  });
+  T('conflict: "keep both" binds without touching the other', () => {
+    const a = state.entries.find((x) => x.id === 'st-c1');
+    a.trigger = { device: 'keyboard', code: 0x3B, label: 'F1', mods: [], gesture: '' };
+    const b = state.entries.find((x) => x.id === 'st-c2'); delete b.trigger;
+    startCapture('trigger', 'st-c2');
+    applyCapture({ device: 'keyboard', code: 0x3B, mods: [], keyLabel: 'F1' });
+    $('capture-conflict-both').click();
+    const good = !ui.capture && a.trigger && a.trigger.code === 0x3B && b.trigger && b.trigger.code === 0x3B;
+    state.entries = state.entries.filter((x) => x.id !== 'st-c1' && x.id !== 'st-c2'); render();
+    return good || 'both did not apply';
+  });
+  T('conflict: an entry key on the deck OPEN key asks (not clearable, keep-both offered) instead of refusing', () => {
+    state.entries.push({ id: 'st-c3', name: 'Third', desc: '', device: 'keyboard', code: 0, label: '', mods: [], category: '' });
+    render();
+    startCapture('entry', 'st-c3');
+    applyCapture({ device: 'keyboard', code: Number(state.settings.openKey.code), mods: [], keyLabel: state.settings.openKey.label });
+    const asked = !$('capture-conflict').classList.contains('hidden');
+    const noClear = $('capture-conflict-clear').classList.contains('hidden');
+    const why = !$('capture-conflict-why').classList.contains('hidden');
+    captureConflictBack(); endCapture(false);
+    state.entries = state.entries.filter((x) => x.id !== 'st-c3'); render();
+    return (asked && noClear && why) || ('asked=' + asked + ' noClear=' + noClear + ' why=' + why);
+  });
   T('trigger: unset entry shows a Set… button in edit and NOTHING in view', () => {
     const e = trigEntry();
     delete e.trigger;
