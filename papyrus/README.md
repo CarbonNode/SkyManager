@@ -1,18 +1,20 @@
 # Papyrus sources
 
-Source for the two compiled scripts (`.pex`) the release archive ships. Both are
+Source for the three compiled scripts (`.pex`) used by SkyManager. They are
 plain Papyrus, compiled with Bethesda's own compiler from the Creation Kit.
 
 | Shipped file | Source here | Hosted by |
 |---|---|---|
 | `Scripts/HD_WardrobeExec.pex` | `HD_WardrobeExec.psc` | quest 0x802 in `HotkeyDeckWardrobe.esp` — receives SKSE mod events from the DLL and calls the Papyrus APIs of SOES-NG / NFF on its behalf |
 | `Scripts/HD_NPCControl.pex` | `HD_NPCControl.psc` | quest 0x803 in the same esp — a dumb ForceRefTo/Clear driver for the freeze/sit/sleep reference aliases |
+| `Scripts/HD_MhiyhRemote.pex` | `HD_MhiyhRemote.psc` | no quest or plugin host — global functions loaded on demand for My Home is Your Home SKSE NG resident schedules and remote home markers |
 
 ## Compiling
 
 ```
 PapyrusCompiler.exe papyrus\HD_NPCControl.psc  -f=TESV_Papyrus_Flags.flg -i=<imports> -o=<out>
 PapyrusCompiler.exe papyrus\HD_WardrobeExec.psc -f=TESV_Papyrus_Flags.flg -i=<imports>;papyrus\stubs -o=<out>
+PapyrusCompiler.exe papyrus\HD_MhiyhRemote.psc -f=TESV_Papyrus_Flags.flg -i=<imports> -o=<out>
 ```
 
 `<imports>` is the usual assembled import path:
@@ -23,8 +25,13 @@ PapyrusCompiler.exe papyrus\HD_WardrobeExec.psc -f=TESV_Papyrus_Flags.flg -i=<im
 3. for `HD_WardrobeExec` only: the Papyrus sources of the mods it integrates
    with — the SkyUI SDK and Skyrim Outfit Equipment System NG both publish
    theirs — plus the `stubs/` folder here.
+4. for `HD_MhiyhRemote`: the matching My Home is Your Home SKSE NG script
+   sources, including `MHiYHController` and `MMTYHNative`, and their imports.
 
 `HD_NPCControl` needs vanilla types only.
+
+`HD_WardrobeExec` also provides the Wardrobe Flair composition functions. Keep
+these script sources and the DLL source from the same revision when building.
 
 ## About `stubs/`
 

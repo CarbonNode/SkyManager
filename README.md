@@ -13,6 +13,17 @@ poses, finances.
 
 **Mod page:** *(add the Nexus link here)*
 
+## Current source
+
+The September 26 source sync includes the follower workspace and family tools,
+domain albums and daily schedules, photo lighting and input isolation, HUD
+widgets, quest tools, appearance presets and cross-framework follower recall.
+Optional integrations require their respective mods.
+
+`main` is development source and can be ahead of a packaged Nexus release.
+A source sync does not publish a new DLL or establish that every feature has
+been play-tested on every supported setup.
+
 ## Licence
 
 GPL-3.0. In plain words: do what you like with it, redistribute it, build on
@@ -115,9 +126,14 @@ Things in the DLL a scan will (correctly) notice, and why they are there:
   portrait feature grabs one frame when the user fires "Capture Portrait" and
   writes it as a local PNG into the mod's own view folder. Nothing leaves the
   machine.
-- **No code patches**: the DLL installs no branch hooks and modifies no engine
-  code — integration is SKSE event sinks, the Papyrus VM, and public plugin
-  APIs throughout.
+- **Native hooks** — `portrait_capture.cpp` hooks the render Present call for
+  requested screenshots; `photo_input_gate.cpp` hooks input dispatch to reserve
+  photo controls while a capture session is active. `container_sort.cpp` hooks
+  container activation and prompt text for configured redirects, and
+  `sic_em_feedback.cpp` hooks missile impacts for its designated command bolt.
+  These use SKSE's trampoline or relocated virtual-function slots and chain to
+  the previous handlers. Other integrations also use SKSE event sinks, the
+  Papyrus VM and public plugin APIs.
 
 ### Freeze diagnostics
 
