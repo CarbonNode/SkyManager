@@ -1,1 +1,3 @@
-Portal queues photo metadata here. Keep this folder installed before Skyrim starts.
+This runtime folder must exist before launching Skyrim through MO2.
+SkyManager fills it with data generated or captured on your machine.
+Keep this placeholder when copying the view tree into an installation.
