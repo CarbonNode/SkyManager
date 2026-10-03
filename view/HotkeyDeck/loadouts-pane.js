@@ -1435,10 +1435,10 @@ window.LoadoutsPane = (function () {
       roster: [
         { formId: '0x1A6A1', plugin: 'Skyrim.esm', key: '0x1a6a1|skyrim.esm', name: 'Lydia', original: 'Lydia', cat: 'Housecarls', fc: '', following: true, inWorld: true, dead: false, guarded: false, unique: true },
         { formId: '0x13BAB', plugin: 'Skyrim.esm', key: '0x13bab|skyrim.esm', name: 'Jenassa', original: 'Jenassa', cat: 'Mercenaries', fc: '', following: false, inWorld: true, dead: false, guarded: false, unique: true },
-        { formId: '0x81A', plugin: 'NWS_Amaniri.esp', key: '0x81a|nws_amaniri.esp', name: 'Amaniri', original: 'Amaniri', cat: 'Companions', fc: '', following: true, inWorld: true, dead: false, guarded: true, unique: true },
+        { formId: '0x800', plugin: 'ExampleCompanion.esp', key: '0x800|examplecompanion.esp', name: 'Example Companion', original: 'Example Companion', cat: 'Companions', fc: '', following: true, inWorld: true, dead: false, guarded: true, unique: true },
         { formId: '0x1348A', plugin: 'Skyrim.esm', key: '0x1348a|skyrim.esm', name: 'Uthgerd the Unbroken', original: 'Uthgerd', cat: 'Warriors', fc: '', following: false, inWorld: false, dead: false, guarded: false, unique: true },
       ],
-      party: ['0x1a6a1|skyrim.esm', '0x81a|nws_amaniri.esp'],
+      party: ['0x1a6a1|skyrim.esm', '0x800|examplecompanion.esp'],
       styles: [
         { plugin: 'nwsFollowerFramework.esp', formId: '0x1000', name: 'Mercenary', nff: 0 },
         { plugin: 'nwsFollowerFramework.esp', formId: '0x1003', name: 'Archer', nff: 3 },
@@ -1455,7 +1455,7 @@ window.LoadoutsPane = (function () {
           members: [
             { formId: '0x1A6A1', plugin: 'Skyrim.esm', key: '0x1a6a1|skyrim.esm', name: 'Lydia', original: 'Lydia', cls: 'c1' },
             { formId: '0x13BAB', plugin: 'Skyrim.esm', key: '0x13bab|skyrim.esm', name: 'Jenassa', original: 'Jenassa', cls: 'c2' },
-            { formId: '0x81A', plugin: 'NWS_Amaniri.esp', key: '0x81a|nws_amaniri.esp', name: 'Amaniri', original: 'Amaniri', cls: '' },
+            { formId: '0x800', plugin: 'ExampleCompanion.esp', key: '0x800|examplecompanion.esp', name: 'Example Companion', original: 'Example Companion', cls: '' },
           ] },
         { id: 'l2', name: 'Night escort', icon: '🌙', note: '', members: [
           { formId: '0x1348A', plugin: 'Skyrim.esm', key: '0x1348a|skyrim.esm', name: 'Uthgerd the Unbroken', original: 'Uthgerd', cls: 'c1' },
