@@ -155,6 +155,13 @@ Things in the DLL a scan will (correctly) notice, and why they are there:
 - **`GetProcAddress` on `FollowerOrganizer.dll`** — the in-process Deck API
   (§ 4); on other mods' plugin DLLs (Object Manipulation Overhaul et al.) for
   the same reason. Fails soft when the mod isn't installed.
+- **Reading another mod's DLL, and calling its own Save** (`osis_runtime.cpp`)
+  — the Scene tab's OSIS settings panel. Only while `OSIS.dll` (Nexus 193551)
+  is loaded: SkyManager SHA-256-hashes that file (BCrypt), checks its code
+  pages with `VirtualQuery`, and only for the one exact verified build does it
+  read and write OSIS's own settings fields and call OSIS's own
+  `Settings::Save`, under OSIS's own settings mutex. Any other OSIS build
+  disables the panel. No code is patched or hooked, and nothing is sent anywhere.
 - **A D3D11 back-buffer read** (`portrait_capture.cpp`) — the follower
   portrait feature grabs one frame when the user fires "Capture Portrait" and
   writes it as a local PNG into the mod's own view folder. Nothing leaves the
