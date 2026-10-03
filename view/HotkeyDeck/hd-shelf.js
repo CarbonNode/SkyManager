@@ -245,7 +245,7 @@ var HDShelf = (function () {
   const PROV_GLYPH = {
     hotkeys: '⌨', 'deck-actions': '⚙', tabs: '▦', notes: '✎', quests: '❖',
     spells: '✦', time: '◔', domains: '◈', rooms: '⌂', finances: 'ᚠ',
-    wardrobe: '⛃', followers: '☺',
+    wardrobe: '⛃', followers: '☺', smf: '⚙',
   };
   /* kind first (it is descriptive prose — 'combo', 'room', 'wife'), provider
      second, star last — so a provider the shelf has never heard of still gets

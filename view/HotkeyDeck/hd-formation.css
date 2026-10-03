@@ -585,3 +585,14 @@
   .fm-fine { width: 100%; }
   .fm-row { grid-template-columns: 120px 1fr 64px; }
 }
+
+/* A setting reached from search: lit for a moment so the eye lands on it.
+   Explicit rgba (Ultralight drops color-mix); outline, not a size change,
+   so nothing reflows under the cursor. */
+.fm-hit {
+  outline: 3px solid rgba(227, 206, 142, 0.95);
+  outline-offset: 4px;
+  border-radius: 10px;
+  background-color: rgba(201, 162, 75, 0.16);
+  transition: background-color 0.4s ease, outline-color 0.4s ease;
+}

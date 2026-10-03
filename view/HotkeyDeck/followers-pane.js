@@ -11708,13 +11708,19 @@
          present like Freeze/Grab — an absent/unfixed mod is said honestly
          INSIDE the modal (with the MO2 way forward) instead of a hidden
          button nobody can discover. */
+      /* 2026-09-27: named after the INSTALLED formation mod (Walk With Me
+         when it is in), and relabelled in place by hd-formation.js once the
+         game answers — `data-fm-open` is that hook. */
+      const fmName = (window.HDFormation && typeof HDFormation.label === 'function')
+        ? HDFormation.label() : 'Formation';
+      if (window.HDFormation && typeof HDFormation.warm === 'function') HDFormation.warm();
       order.append(h('button', {
-        class: 'fq-set', type: 'button',
-        title: 'Where ' + who + ' walks in your group — direction pad, spacing, '
-          + 'and the whole formation’s settings (Formation with Followers)',
+        class: 'fq-set', type: 'button', 'data-fm-open': '1',
+        title: 'How ' + who + ' walks with your group — the installed formation '
+          + 'mod’s order, spacing and settings',
         onClick: (e) => { e.stopPropagation();
           if (window.HDFormation) HDFormation.open(whoOf(subj), who); },
-      }, '⛬ Formation…'));
+      }, '⛬ ' + fmName + '…'));
       if (following) {
         order.append(h('button', { class: 'fq-set', type: 'button',
           title: 'Tell ' + who + ' to wait here — NFF\'s own "wait" order',
@@ -16465,6 +16471,14 @@
         const s = $(ui.ptOpen ? 'pt-search' : 'fd-search');
         if (s) s.focus();
       }, 30);
+    },
+
+    /* Closing the palette keeps the search and edit state, but body-level
+       dialogs and their render watches must stop while the view is hidden. */
+    onDeckClosed() {
+      closePortraitCapture(); closeLightbox(); closeHudModal(); closeWornLightbox();
+      closeCtx(); fqFindClose(); fxZazStopWatch();
+      if (faceIconsTimer) { clearTimeout(faceIconsTimer); faceIconsTimer = 0; }
     },
 
     onHide() {

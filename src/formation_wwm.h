@@ -41,6 +41,12 @@ namespace FormationWwm
 	// Main-thread only; temporary migration interlock, never writes preferences.
 	bool SetRuntimeEnabled(bool enabled);
 
+	// Main-thread only, after a save has loaded. Re-asserts the companions WE
+	// enrolled through the public API — Walk With Me's revert callback clears
+	// them and no save callback writes them, so without this the walking party
+	// empties on every load. Returns how many were re-enrolled.
+	int RestoreParty();
+
 	// Order ids, matching the mod's own FormationMode enum and its order wheel:
 	// 0 "Find your own pace" (Natural) · 1 "Take the road ahead" (Lead)
 	// 2 "Stay by my side" (Companion) · 3 "Watch our backs" (Rear)

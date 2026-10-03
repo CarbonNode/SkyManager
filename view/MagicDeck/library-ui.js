@@ -17,14 +17,15 @@
   }
   function rail() {
     var host = $('rail-list'); if (!host) return;
+    var totals = M.counts(state.spells, state.library.parents, metaFor);
     host.textContent = '';
     host.append(title('LIBRARY'));
     var smart = h('div', { class: 'ml-smart-grid' });
     [['All spells', 'all', 'all', 'cat-scholars'], ['Spells', 'spell', 'all', 'cat-mages'],
       ['Powers', 'power', 'all', 'hk-faith-boon'], ['Shouts', 'shout', 'all', 'sc-shouts'],
       ['Equip', 'all', 'equip', 'hk-grip-switch'], ['Cast now', 'all', 'cast', 'hk-faith-boon']].forEach(function (spec) {
-      var filter = { cat: ALL, kind: spec[1], mode: spec[2], filter: '' };
-      var count = M.visible(state.spells, state.library, filter, metaFor).length;
+      var count = spec[2] !== 'all' ? (totals.modes[spec[2]] || 0)
+        : spec[1] !== 'all' ? (totals.kinds[spec[1]] || 0) : totals.all;
       var selected = ui.cat === ALL && (ui.kind || 'all') === spec[1] && (ui.mode || 'all') === spec[2];
       var b = btn('', function () { choose(ALL, spec[1], spec[2]); }, 'rail-item ml-smart' + (selected ? ' sel' : ''));
       b.setAttribute('aria-pressed', String(selected));
@@ -55,18 +56,19 @@
       if (state.catIcons[cat]) select.append(h('img', { src: state.catIcons[cat], width: 28, height: 28, alt: '' }));
       else select.append(art('cat-scholars'));
       select.append(h('span', { class: 'rail-name' }, cat), h('span', { class: 'rail-count' },
-        state.spells.filter(function (s) { return M.inside(s.category, cat, state.library.parents); }).length));
+        totals.categories[cat] || 0));
       var edit = btn('Edit', function () { categoryDialog(cat); }, 'ml-cat-edit');
       edit.setAttribute('aria-label', 'Edit category ' + cat);
       row.append(fold, select, edit); host.append(row);
     });
     if (q && !host.querySelector('.ml-cat-row')) host.append(h('p', { class: 'ml-rail-note' }, 'No matching categories.'));
-    chips();
+    chips(totals);
   }
   /* The same category tree serves the rail and a searchable popout. Header
      width stays constant as categories grow; selecting one uses choose(). */
-  function chips() {
+  function chips(totals) {
     var host = $('cs-chips'); if (!host) return;
+    totals = totals || M.counts(state.spells, state.library.parents, metaFor);
     host.textContent = '';
     var q = chipQuery.trim().toLowerCase(), lib = state.library;
     function chip(label, icon, count, selected, action, cls) {
@@ -78,7 +80,7 @@
     }
     function smartChip(spec) {
       if (q && spec[0].toLowerCase().indexOf(q) < 0) return;
-      var count = M.visible(state.spells, lib, { cat: ALL, kind: spec[1], mode: 'all', filter: '' }, metaFor).length;
+      var count = spec[1] === 'all' ? totals.all : (totals.kinds[spec[1]] || 0);
       var selected = ui.cat === ALL && (ui.kind || 'all') === spec[1];
       host.append(chip(spec[0], art(spec[2], 24), count, selected, function () { choose(ALL, spec[1], ui.mode); }, 'cs-smart'));
     }
@@ -86,7 +88,7 @@
     M.tree(state.categories, lib.parents).forEach(function (r) {
       var cat = r.name, label = M.path(cat, lib.parents);
       if (q && label.toLowerCase().indexOf(q) < 0) return;
-      var count = state.spells.filter(function (s) { return M.inside(s.category, cat, lib.parents); }).length;
+      var count = totals.categories[cat] || 0;
       var icon = state.catIcons[cat] ? h('img', { src: state.catIcons[cat], width: 24, height: 24, alt: '', draggable: 'false' }) : art('cat-scholars', 24);
       var b = chip(cat, icon, count, ui.cat === cat, function () { choose(cat, ui.kind, ui.mode); }, r.depth ? 'cs-child' : '');
       b.title = label; b.dataset.cat = cat;

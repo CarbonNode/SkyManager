@@ -1,4 +1,5 @@
 #include "scene_privacy.h"
+#include "osis_runtime.h"
 #include "photo_input_gate.h"
 #include "domain_photos.h"
 #include "PrismaUI_API.h"
@@ -57,6 +58,7 @@
 #include "anim_resolver_bridge.h"
 #include "controls_fix.h"
 #include "time_actions.h"
+#include "stance_wheel.h"
 #include "npc_actions.h"
 #include <future>
 #include "npc_clearance.h"
@@ -107,6 +109,7 @@
 #include "nightside.h"       // Nightside tab: the three curses (ns* bridge)
 #include "mcm_settings.h"    // MCM settings popout (mc* bridge)
 #include "skyui_mcm.h"       // SkyUI (Papyrus) MCM browser (sy* bridge)
+#include "smf_index.h"       // SKSE Menu Framework pages in the Omni (hdSmf* bridge)
 #include "open_diag.h"      // open/close timing + hang watchdogs (Nexus freeze triage)
 #include "no_auto_gear.h"
 #include "spid_gear.h"
@@ -1360,6 +1363,7 @@ namespace
 			// OStim SA DLL — backs the OStim scene deck (ostim_deck.cpp / its
 			// vendored Thread API consume it via GetModuleHandle("OStim.dll")).
 			{ "ostim", dll("OStim.dll") },
+			{ "osis", dll("OSIS.dll") },
 			// ZaZ Animation Pack — the Animations tab is a ZAP idle-event player;
 			// its whole baked catalogue fires NotifyAnimationGraph events that
 			// only resolve when ZAP's behaviour files are loaded, so with the ESM
@@ -1390,6 +1394,7 @@ namespace
 			{ "sos", plugin("Schlongs of Skyrim.esp") },
 		};
 		done = true;
+		logger::info("osis-visibility: loaded={}", cached["osis"].get<bool>());
 		// Build marker (hd-markers.json: "deck-mod-detection"): unconditional so it
 		// is reached the first time the deck opens. KEEP the leading literal
 		// "deck: mod-detection omo=" intact (build marker) — new flags append.
@@ -3213,6 +3218,12 @@ namespace
 			// running while you nudge.
 			{ "ostim-align", "hd-ostim-align", "Scene Alignment",
 			  "Open the live alignment overlay over a running OStim scene - the game keeps running. Up/Down pick the axis, Left/Right nudge it, E or Enter switches participant, Esc closes (ostim align alignment position offset nudge scene sex)", "Misc", "icons/custom/hk-grab.png", nullptr, "icons/custom/seg-ostim.png" },
+			// Stance Wheel (2026-10-03): Stances NG's Bear/Wolf/Hawk (and
+			// Neutral, when bound) on a slow-time radial over the live game.
+			// Picking presses Stances NG's OWN key for that stance, read from
+			// StancesNG.toml. Refuses honestly without Stances NG.
+			{ "stance-wheel", "hd-stance-wheel", "Stance Wheel",
+			  "Slow time and pick a combat stance - Bear, Wolf, Hawk or Neutral - from a wheel with their icons; aim and click, it closes and switches. Needs Stances NG (stances stance switch combat expansion bear wolf hawk)", "Misc", "icons/custom/hd-sword.png" },
 			// AddItemMenu (2026-08-03): the deck casts the mod's own lesser
 			// powers, so its Papyrus flow runs exactly as shipped — no
 			// inventory digging for the [AddItemMenuSE] items. Unbound like
@@ -4949,6 +4960,11 @@ namespace
 	// Time Dial — defined in the HUD block far below; FireAction dispatches
 	// the seeded `time-dial` action, so it needs the decl here too.
 	void        TdToggleDial();
+	// Stance Wheel (2026-10-03) — the 5th claimant on the HUD view's Focus,
+	// defined beside the Time Dial; FireAction, OpenPalette and the rescue
+	// verb all reach it from up here.
+	void        SwToggleWheel();
+	void        SwCloseWheel(bool fromView);
 	void        OnJsFolCropSave(const char* data);
 	bool        PrunePortraitCrops();
 	// Same reason: the crosshair snapshot goes out with the open payload, so the
@@ -5257,6 +5273,8 @@ namespace
 	// Omni (universal Search + Ask, v0.14.0) forward decls.
 	void OnJsAskCall(const char* data);
 	void OnJsSpellsIndex(const char* data);
+	void OnJsSmfIndex(const char* data);
+	void OnJsSmfOpen(const char* data);
 	void OnJsOmniCast(const char* data);
 	void OnJsOmniEquip(const char* data);
 	void OnJsWdGet(const char* data);
@@ -6216,6 +6234,10 @@ namespace
 		g_prisma->RegisterJSListener(g_view, "hdSpellsIndex", OnJsSpellsIndex);
 		g_prisma->RegisterJSListener(g_view, "hdOmniCast", OnJsOmniCast);
 		g_prisma->RegisterJSListener(g_view, "hdOmniEquip", OnJsOmniEquip);
+		// SKSE Menu Framework pages (smf_index.h): hdSmfIndex -> hdSmfData,
+		// hdSmfOpen -> hdSmfOpenResult (only on a refusal; success closes the deck).
+		g_prisma->RegisterJSListener(g_view, "hdSmfIndex", OnJsSmfIndex);
+		g_prisma->RegisterJSListener(g_view, "hdSmfOpen", OnJsSmfOpen);
 
 		// Wardrobe. Requests are wd*; responses (wdOpen/wdState/wdResult/wdSaved/
 		// wdShow) stay disjoint — PrismaUI installs each listener as a global of
@@ -6605,6 +6627,9 @@ namespace
 		if (!g_prisma || !g_viewReady.load() || g_open.load())
 			return;
 		++g_travelEpoch;  // also catches an open/close between two travel polls
+		// The Stance Wheel slows the world and holds the HUD view's focus; the
+		// palette is about to own both (smooth pause sets its own sgtm).
+		SwCloseWheel(false);
 		// Mark the open in flight so a key press mid-open is dropped, not raced
 		// into a second Show/Hide on the single focus slot (Ank164 "freezes solid").
 		// RAII-cleared at every return path below.
@@ -7017,6 +7042,7 @@ namespace
 			TdCloseDial(false);
 			HudNavStop("force-close", false);
 			AgCloseAlign(false);   // the 4th claimant — same orphan risk
+			SwCloseWheel(false);   // the 5th — and it also restores world time
 			OdCloseDock(false);
 			if (g_hudEditing.exchange(false))
 				logger::warn("force-close: hud edit force-ended");
@@ -7829,6 +7855,18 @@ namespace
 				if (AnyOpen())
 					ClosePalette();
 				SKSE::GetTaskInterface()->AddTask([]() { AgToggleAlign(); });
+			});
+			return;
+		}
+
+		// Stance Wheel — the same discipline again: close the palette FIRST,
+		// take Focus one task later. Pressed while the wheel is up, the key
+		// CONFIRMS the highlighted stance (SwToggleWheel asks the view).
+		if (action == "stance-wheel") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (AnyOpen())
+					ClosePalette();
+				SKSE::GetTaskInterface()->AddTask([]() { SwToggleWheel(); });
 			});
 			return;
 		}
@@ -13743,12 +13781,27 @@ namespace
 				const auto result = fn(req);
 				PushToView("fmResult", result);
 				const auto status = json::parse(result, nullptr, false);
-				if (status.is_object() && status.value("ok",false) && status.value("closeGameMenu",false)) ClosePalette();
+				if (status.is_object() && status.value("ok",false) && status.value("closeGameMenu",false)) {
+					ClosePalette();
+					// marker: formation-close-notify
+					// The view's own toast lives INSIDE the deck we are closing
+					// this same instant, so it is never read — which is how a
+					// walking-party change looked like a dead button. Say it on
+					// the HUD instead, the way Get-away-from-me already does.
+					const auto msg = status.value("msg", std::string(""));
+					if (!msg.empty()) RE::DebugNotification(msg.c_str());
+				}
+				// Two re-reads, not one: the first catches anything the provider
+				// applied itself, the second is for work its own sweep does on a
+				// timer (Walk With Me assigns a formation slot on the next scan,
+				// so at 700 ms she is enrolled but not yet shown as walking).
 				std::thread([req]() {
-					std::this_thread::sleep_for(std::chrono::milliseconds(700));
-					SKSE::GetTaskInterface()->AddTask([req]() {
-						PushToView("fmOpen", FormationActions::StateJson(req));
-					});
+					for (const int wait : { 700, 2600 }) {
+						std::this_thread::sleep_for(std::chrono::milliseconds(wait));
+						SKSE::GetTaskInterface()->AddTask([req]() {
+							PushToView("fmOpen", FormationActions::StateJson(req));
+						});
+					}
 				}).detach();
 			});
 		}
@@ -14652,6 +14705,13 @@ namespace
 	// view's Focus, after the reposition editor, the Time Dial and browse mode.
 	std::atomic<bool>                     g_agOpen{ false };
 	std::atomic<bool>                     g_agFocused{ false };
+	// The Stance Wheel (2026-10-03) — the FIFTH claimant on this view's Focus.
+	// g_swSlowed records that WE changed the world's time multiplier, so only
+	// we restore it.
+	std::atomic<bool>                     g_swOpen{ false };
+	std::atomic<bool>                     g_swFocused{ false };
+	std::atomic<bool>                     g_swSlowed{ false };
+	std::chrono::steady_clock::time_point g_swOpenedAt{};
 	bool g_photoHudActive = false;
 	bool g_photoHudVisible = false;
 	std::chrono::steady_clock::time_point g_tdOpenedAt{};
@@ -14684,6 +14744,7 @@ namespace
 		                  g_odOpen.load() ||        // favorite outfit dock
 		                  g_tdOpen.load() ||        // the Time Dial rides this view too
 		                  g_agOpen.load() ||        // …and the alignment overlay
+		                  g_swOpen.load() ||        // …and the Stance Wheel
 		                  g_hudNavActive.load();    // …and so does browse mode, which
 		                                            // holds the keyboard: hiding the
 		                                            // view under it would leave the
@@ -14694,7 +14755,7 @@ namespace
 			g_prisma->Hide(g_hudView);
 	}
 
-	void HudPhotoLights(bool active, bool visible, const PhotoLighting::Snapshot& state)
+	void HudPhotoLights(bool active, bool visible, const PhotoLighting::Snapshot& state, const PhotoFrame::Frame& frame)
 	{
 		g_photoHudActive = active;
 		g_photoHudVisible = visible;
@@ -14705,6 +14766,11 @@ namespace
 			{"color", color.name}, {"rgb", {color.r, color.g, color.b}},
 			{"brightness", static_cast<int>(std::lround(state.tuning.strength * 100.0f))},
 			{"spread", PhotoLighting::Spreads[state.tuning.spread]}};
+		if (active && frame.Valid()) data["frame"] = {
+			{"label", PhotoFrame::Label(frame.format)}, {"thirds", frame.thirds},
+			{"left", double(frame.x) / frame.sourceWidth}, {"top", double(frame.y) / frame.sourceHeight},
+			{"width", double(frame.width) / frame.sourceWidth}, {"height", double(frame.height) / frame.sourceHeight},
+			{"outputWidth", frame.outputWidth}, {"outputHeight", frame.outputHeight}};
 		g_prisma->Invoke(g_hudView, ("photoLights(" + data.dump() + ")").c_str());
 		HudApplyVisibility();
 	}
@@ -14775,6 +14841,7 @@ namespace
 		if (g_hudNavActive.load()) HudNavStop("outfit dock", false);
 		if (g_tdOpen.load()) TdCloseDial(false);
 		if (g_agOpen.load()) AgCloseAlign(false);
+		SwCloseWheel(false);
 		if (g_hudEditing.exchange(false)) g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		g_prisma->Show(g_hudView);
 		g_prisma->Invoke(g_hudView, ("odData(" + data + ")").c_str());
@@ -14862,6 +14929,7 @@ namespace
 		// discipline).
 		if (g_agOpen.load())
 			AgCloseAlign(false);
+		SwCloseWheel(false);
 		if (g_hudEditing.exchange(false))
 			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		g_tdOpen = true;
@@ -14886,7 +14954,7 @@ namespace
 		if (g_prisma && g_hudView && g_hudViewReady.load()) {
 			if (!fromView)
 				g_prisma->Invoke(g_hudView, "tdShow(\"0\")");
-			if (!g_hudEditing.load())
+			if (!g_hudEditing.load() && !g_swOpen.load())
 				g_prisma->Unfocus(g_hudView);
 		}
 		HudApplyVisibility();
@@ -14929,7 +14997,7 @@ namespace
 			// Release only what WE took: the editor, the dial and browse mode
 			// are the other claimants and pulling Focus from under any of them
 			// would strand it.
-			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_hudNavActive.load())
+			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_hudNavActive.load() && !g_swOpen.load())
 				g_prisma->Unfocus(g_hudView);
 		}
 		HudApplyVisibility();
@@ -14961,6 +15029,7 @@ namespace
 			HudNavStop("alignment overlay", false);
 		if (g_tdOpen.load())
 			TdCloseDial(false);
+		SwCloseWheel(false);
 		if (g_hudEditing.exchange(false))
 			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		g_agOpen = true;
@@ -14984,6 +15053,153 @@ namespace
 			AgCloseAlign(false);
 		else
 			AgOpenAlign();
+	}
+
+	// ======================================================= Stance Wheel ===
+	// Rober, 2026-10-03, for Stances NG + Stances NG - Combat Expansion: "a
+	// popout ui button that slows time shows the stances with their icons as a
+	// selector wheel then you select and it closes".
+	//
+	// The alignment overlay's shape, plus slow time: it rides the always-on HUD
+	// view with Focus(pauseGame=false) — the world keeps running, slowed by
+	// BSTimer's global time multiplier (what `sgtm` resolves to; FreezeWorld's
+	// direct-call reasoning) — and the focus menu stays ON because it IS the
+	// cursor (marker editor-cursor). View: hud-stance.js. Engine half:
+	// src/stance_wheel.{h,cpp}. A pick closes the wheel and restores time
+	// FIRST, then presses Stances NG's own key on a worker.
+	//
+	// Bridge: requests swGet / swPick(json) / swClose;
+	//         replies swShow("1"|"0") / swState(json) / swKey()
+	//
+	// Slow, never stopped: the smooth-pause lesson (kFrozenMult) — anything
+	// that waits on game time must keep ticking. One fifth speed reads as
+	// "time slowed" without the world freezing behind the wheel.
+	constexpr float kStanceSlowMult = 0.2f;
+
+	void SwRestoreTime()
+	{
+		if (!g_swSlowed.exchange(false))
+			return;
+		// The palette's smooth pause owns the multiplier while it is frozen —
+		// never thaw underneath it.
+		if (g_worldFrozen.load())
+			return;
+		if (auto* timer = RE::BSTimer::GetSingleton())
+			timer->SetGlobalTimeMultiplier(1.0f, true);
+	}
+
+	void SwPushState()
+	{
+		if (g_prisma && g_hudView && g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView, ("swState(" + StanceWheel::StateJson() + ")").c_str());
+	}
+
+	// MAIN THREAD. fromView = the view already closed itself and only needs
+	// Focus released and time restored (the TdCloseDial contract).
+	void SwCloseWheel(bool fromView)
+	{
+		if (!g_swOpen.exchange(false)) {
+			SwRestoreTime();   // belt: a flag desync must never strand slow time
+			return;
+		}
+		logger::info("stance-wheel: closed");   // marker: stance-wheel-close
+		SwRestoreTime();
+		const bool hadFocus = g_swFocused.exchange(false);
+		if (g_prisma && g_hudView && g_hudViewReady.load()) {
+			if (!fromView)
+				g_prisma->Invoke(g_hudView, "swShow(\"0\")");
+			// Release only what WE took — the other four claimants' rule.
+			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_hudNavActive.load() && !g_agOpen.load())
+				g_prisma->Unfocus(g_hudView);
+		}
+		HudApplyVisibility();
+	}
+
+	void SwOpenWheel()
+	{
+		OdCloseDock(false);
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
+			RE::DebugNotification("The Stance Wheel needs the HUD view - reinstall hud.html");
+			return;
+		}
+		std::string why;
+		if (!StanceWheel::Available(why)) {
+			// Honest refusal: a wheel of stances nothing can switch is a dead key.
+			RE::DebugNotification(why.c_str());
+			logger::info("stance-wheel: refused - {}", why);
+			return;
+		}
+		auto* ui = RE::UI::GetSingleton();
+		auto* pc = RE::PlayerCharacter::GetSingleton();
+		if (!pc || !pc->GetParentCell() || (ui && ui->GameIsPaused())) {
+			RE::DebugNotification("Open the Stance Wheel while playing");
+			return;
+		}
+		// Stand the rival claimants down first (the AgOpenAlign discipline).
+		if (g_hudNavActive.load())
+			HudNavStop("stance wheel", false);
+		if (g_tdOpen.load())
+			TdCloseDial(false);
+		if (g_agOpen.load())
+			AgCloseAlign(false);
+		if (g_hudEditing.exchange(false))
+			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
+		g_swOpen = true;
+		g_swOpenedAt = std::chrono::steady_clock::now();
+		if (!g_worldFrozen.load()) {
+			if (auto* timer = RE::BSTimer::GetSingleton()) {
+				timer->SetGlobalTimeMultiplier(kStanceSlowMult, true);
+				g_swSlowed = true;
+			}
+		}
+		logger::info("stance-wheel: open (time x{})", kStanceSlowMult);   // marker: stance-wheel-open
+		g_prisma->Show(g_hudView);
+		SwPushState();                       // state BEFORE show: icons + Neutral shape the wheel
+		g_prisma->Invoke(g_hudView, "swShow(\"1\")");
+		const bool ok = g_prisma->Focus(g_hudView, false);
+		g_swFocused = ok;
+		if (!ok)
+			logger::warn("stance-wheel: Focus refused - the cursor will not reach the wheel");
+	}
+
+	// The action key: opens the wheel, and while it is up CONFIRMS the
+	// highlighted stance (the view decides: highlighted -> pick, none -> close).
+	void SwToggleWheel()
+	{
+		if (g_swOpen.load()) {
+			if (g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView, "swKey()");
+			else
+				SwCloseWheel(false);
+		} else {
+			SwOpenWheel();
+		}
+	}
+
+	void OnJsSwGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			if (g_swOpen.load())
+				SwPushState();
+		});
+	}
+
+	// The view has ALREADY closed itself; release + restore first, then press.
+	void OnJsSwPick(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			SwCloseWheel(true);
+			const auto j = nlohmann::json::parse(payload, nullptr, false);
+			if (j.is_discarded() || !j.contains("stance") || !j["stance"].is_number_integer())
+				return;
+			logger::info("{}", StanceWheel::Pick(j["stance"].get<int>()));
+		});
+	}
+
+	void OnJsSwClose(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { SwCloseWheel(true); });
 	}
 
 	// ============================================ Followers HUD: browse mode v2
@@ -15023,7 +15239,7 @@ namespace
 			// Only release what browse mode itself took: the reposition editor
 			// and the Time Dial are the other two claimants on this view's
 			// Focus, and pulling it out from under either would strand them.
-			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load())
+			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_swOpen.load())
 				g_prisma->Unfocus(g_hudView);
 		}
 		HudApplyVisibility();
@@ -15043,6 +15259,7 @@ namespace
 			AgCloseAlign(false);
 		if (g_tdOpen.load())
 			TdCloseDial(false);
+		SwCloseWheel(false);
 		if (g_hudEditing.exchange(false))
 			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		// Browsing an invisible strip reads as a dead key, so the browse key
@@ -15563,6 +15780,7 @@ namespace
 				// that as "reposition has no mouse control").
 				if (AnyOpen())
 					ClosePalette();
+				SwCloseWheel(false);
 				g_hudEditing = true;
 				// DEFERRED one task: ClosePalette queues its own teardown
 				// (unfocus, cursor release) — focusing the HUD in the SAME
@@ -15786,6 +16004,9 @@ namespace
 		g_prisma->RegisterJSListener(g_hudView, "agGet", OnJsAgGet);
 		g_prisma->RegisterJSListener(g_hudView, "agAdjust", OnJsAgAdjust);
 		g_prisma->RegisterJSListener(g_hudView, "agClose", OnJsAgClose);
+		g_prisma->RegisterJSListener(g_hudView, "swGet", OnJsSwGet);
+		g_prisma->RegisterJSListener(g_hudView, "swPick", OnJsSwPick);
+		g_prisma->RegisterJSListener(g_hudView, "swClose", OnJsSwClose);
 		logger::info("followers-hud: view created + listeners registered");
 	}
 
@@ -16872,6 +17093,16 @@ namespace
 				TdCloseDial(false);
 			}
 		}
+		// The Stance Wheel holds an UNPAUSED focus, so a pause can never be its
+		// own — any pause, a real menu, or no world closes it (and restores
+		// time). Same 600 ms grace for the open-from-palette hand-off.
+		if (g_swOpen.load() &&
+			std::chrono::steady_clock::now() - g_swOpenedAt > std::chrono::milliseconds(600)) {
+			if (noWorld || otherMenu || paused) {
+				logger::info("stance-wheel: menu gate closed it (noWorld {}, paused {})", noWorld, paused);   // marker: stance-wheel-menu-gate
+				SwCloseWheel(false);
+			}
+		}
 		// Compact-browse holds the same view with an UNPAUSED focus, so it
 		// cannot be shot by its own pause — but a real menu, or no save at all,
 		// must still hand the keyboard back. Same test, same reasoning.
@@ -17011,6 +17242,7 @@ namespace
 		// the stack and the free widgets are actually draggable.
 		// Marker: widgets-edit-hud-view.
 		logger::info("widgets-edit: opening the hud view editor");
+		SwCloseWheel(false);
 		g_hudEditing = true;
 		SKSE::GetTaskInterface()->AddTask([]() {
 			if (!g_hudEditing.load())
@@ -23465,6 +23697,36 @@ namespace
 		});
 	}
 
+	// hdSmfIndex: Omni asked for every SKSE Menu Framework page. The walk reads
+	// SMF's live menu tree (cheap, read-only), so it runs on the main thread.
+	void OnJsSmfIndex(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("hdSmfData", SmfIndex::ListJson());
+		});
+	}
+
+	// hdSmfOpen: open one SMF page (payload = its path, "ReLight/Settings") in
+	// SkyManager's own SMF window. SmfIndex::Open validates the path against the
+	// freshly walked tree. On success the deck closes so SMF's window owns the
+	// cursor and the pause; on a refusal the deck stays open and says why.
+	void OnJsSmfOpen(const char* data)
+	{
+		std::string path = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([path = std::move(path)]() {
+			const auto res = SmfIndex::Open(path);
+			const auto j = json::parse(res, nullptr, false);
+			if (!j.is_discarded() && j.value("ok", false)) {
+				ClosePalette();
+				return;
+			}
+			PushToView("hdSmfOpenResult", res);
+			const auto msg = j.is_discarded() ? std::string("") : j.value("msg", std::string(""));
+			if (!msg.empty())
+				RE::DebugNotification(msg.c_str());
+		});
+	}
+
 	/* hdOmniEquip: EQUIP a spell into a named hand, from the deck view — the
 	 * sibling of hdOmniCast and the deck-view twin of the Spell Deck's own
 	 * equip branch in OnJsMagicFire. Payload:
@@ -24227,6 +24489,11 @@ namespace
                 cancelled->store(true);
                 return R"({"ok":false,"msg":"Game did not confirm the hold; retry or use Let them continue"})";
             }
+            // OSIS is configuration-only, serialized by its own owner mutex.
+            if (kind == "osis") {
+                if (!g_gameReady.load()) return R"({"ok":false,"msg":"Load a game with OSIS enabled first."})";
+                return OsisRuntime::Control(j.dump());
+            }
             // Live-only privacy commands: native validation and game-thread work
             // are identical to Scene > Room. Completion is published to the phone.
             if (kind == "scene-privacy") {
@@ -24238,6 +24505,8 @@ namespace
             }
 			if (kind == "ping") {  // liveness probe: the portal uses it to pick a transport
 				res["ok"] = true;
+				// Module presence only: no settings lock, engine read or file writes.
+				res["osisLoaded"] = GetModuleHandleW(L"OSIS.dll") != nullptr;
 				res["msg"] = "hotkey deck live";
 				return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 			}
@@ -25055,7 +25324,7 @@ namespace
 				// focused HUD. NFF's original comparison has been unbound first.
 				if (isKb && !AnyOpen() && g_gameReady.load() && !g_worldFrozen.load() &&
 					!g_hudEditing.load() && !g_hudNavFocused.load() && !g_tdOpen.load() && !g_agOpen.load() &&
-					!PortraitCapture::SelfPortraitArmed() &&
+					!g_swOpen.load() && !PortraitCapture::SelfPortraitArmed() &&
 					!(GetAsyncKeyState(VK_SHIFT) & 0x8000) && !(GetAsyncKeyState(VK_CONTROL) & 0x8000) && !(GetAsyncKeyState(VK_MENU) & 0x8000)) {
 					auto* recallUI = RE::UI::GetSingleton();
 					if (recallUI && !recallUI->GameIsPaused() && !recallUI->IsMenuOpen(RE::Console::MENU_NAME) &&
@@ -25297,6 +25566,7 @@ namespace
 			FormationActions::CancelHandoff();
 			AppearancePresets::ResetForLoad();
 			OdCloseDock(false);
+			SwCloseWheel(false);   // never carry slow time into the next save
 			WardrobeFlair::OnLoad();
 			BroomCleanup::Reset();
 			Wardrobe::ResetBedOutfits();
@@ -25506,6 +25776,7 @@ namespace
 		ContainerActions::Init();  // Containers tab backend (crosshair snapshot + remote open)
 		ContainerSort::Init();     // drop-box sort-on-close + crafting-loan sinks
 		RoomGuard::Init();     // Rooms tab backend (claim volumes + eviction marker)
+		SmfIndex::Init();      // SKSE Menu Framework host window (Omni "Mod menus")
 		// Deck Portal: start its node server with the game and let the Job
 		// Object take it down with us. Safe to do unattended because the portal
 		// binds 127.0.0.1 unless a password is set (portal/server.js). A
@@ -25559,6 +25830,9 @@ namespace
 			g_iconIndexPushed = false;
 			g_deckIconIndexPushed = false;
 		});
+		// Stance Wheel art: Combat Expansion's own stance PNGs, copied into the
+		// excluded icons/sh folder — inert without Combat Expansion.
+		StanceWheel::MirrorIconsAsync();
 		AnimActions::Init();   // Animations tab: load zap-catalog.json + resolve crawl faction
 		// Combat Arts (Ashes of War): build the 74-art index, arm the pickup
 		// intercept sink, seed the portal icon bridge file. Stands down

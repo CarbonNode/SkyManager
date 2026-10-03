@@ -22,6 +22,7 @@
 #include "keys_pex.h"
 #include "keys_sources.h"
 #include "pch.h"
+#include <SKSE/InputMap.h>
 
 #include <algorithm>
 #include <atomic>
@@ -63,7 +64,7 @@ namespace KeysScan
 			std::string src;      // vanilla | deck | chord | helper | mcm | plugin | enb | reshade | shaders
 			std::string mod;      // display name of the owner
 			std::string control;  // display name of the function on the key
-			std::uint32_t code;   // DXScanCode (keyboard 1..255, mouse 256..263)
+			std::uint32_t code;   // SKSE macro: keyboard 1..255, mouse 256..265, pad 266..281
 			std::string modsText; // "" or "Shift+Alt" (deck triggers / chords)
 			// Set only by the generic plugin-config source, where the file states
 			// no code space and DIK is an assumption (keys_sources.h). The pane
@@ -325,6 +326,20 @@ namespace KeysScan
 			for (const auto& m : ctx->deviceMappings[RE::INPUT_DEVICE::kMouse]) {
 				add(m, 256);  // SkyUI/MCM convention: mouse = 256 + button
 			}
+			// HotkeyAtlas's visual controller map consumes the SAME census as the
+			// keyboard. Convert engine masks to SKSE macro codes, never mix raw
+			// XInput bits with keyboard DIKs. Analog axes and unbound masks are
+			// not buttons; CommonLib returns kMaxMacros for unsupported masks.
+			std::size_t padCount = 0;
+			for (const auto& m : ctx->deviceMappings[RE::INPUT_DEVICE::kGamepad]) {
+				if (m.inputKey == 0xFF || m.inputKey == 0xFFFF || m.eventID.empty()) continue;
+				const auto code = SKSE::InputMap::GamepadMaskToKeycode(m.inputKey);
+				if (code < SKSE::InputMap::kMacro_GamepadOffset || code >= SKSE::InputMap::kMaxMacros) continue;
+				out.push_back(Binding{ "vanilla", "Skyrim", m.eventID.c_str(), code, "", false,
+					"Live ControlMap / Gameplay / Controller" });
+				++padCount;
+			}
+			logger::info("keys-atlas-gamepad: {} gameplay button bindings", padCount);
 		}
 
 		// ---------------------------------------------------------- chords ---
@@ -987,6 +1002,7 @@ namespace KeysScan
 			{ "modsTotal", g_modsTotal },
 			{ "count", g_bindings.size() },
 			{ "seq", g_scanSeq },
+			{ "gamepad", true },
 		};
 		if (includeBindings) {
 			json arr = json::array();

@@ -929,7 +929,7 @@ function render() {
                 ui.tab === 'scene' || ui.tab === 'loadouts' ||
                 ui.tab === 'wardrobe' || ui.tab === 'faces' || ui.tab === 'recent') ? ui.tab : 'deck';
   const deck = pane === 'deck';
-  window.__hdActiveTab = pane;   // panes (followers/domains) key their re-renders off this
+  window.__hdActiveTab = ui.visible ? pane : 'closed'; // late replies must not reactivate a closed pane
   $('deck-pane').classList.toggle('hidden', !deck);
   $('numpad-pane').classList.toggle('hidden', pane !== 'numpad');
   $('hm-pane').classList.toggle('hidden', pane !== 'home');
@@ -1067,7 +1067,7 @@ function isUtilityCategory(cat) {
 function syncQuickLightCard(deck) {
   const host = $('ql-card');
   if (!host) return;
-  const show = !!deck && !ui.edit && isUtilityCategory(activeCategory());
+  const show = ui.visible && !!deck && !ui.edit && isUtilityCategory(activeCategory());
   host.classList.toggle('hidden', !show);
   if (!window.LightPane) return;
   if (show) { LightPane.mountCard(host); return; }
@@ -2158,7 +2158,12 @@ function paintTabsRow(n, compactMore) {
     '" title="' + (activeMore ? esc(activeMore.label) + ' — ' + moreTitle : moreTitle) + '">' +
     moreFace +
     ' <span class="tab-launch tab-more-chev" aria-hidden="true">▾</span></button>';
-  $('tabs').innerHTML = html;
+  const bar = $('tabs');
+  // ui-response-tabs: keep the existing buttons/images on an unchanged refresh.
+  if (bar._hdTabMarkup !== html) {
+    bar.innerHTML = html;
+    bar._hdTabMarkup = html;
+  }
 }
 
 /* Memoized tab-fit. The shed-until-it-fits loop below writes #tabs.innerHTML and
@@ -2207,7 +2212,21 @@ function renderTabs() {
   } else {
     paintTabsRow(n);
     if (cw) {
-      while (n > 0 && el.scrollWidth > el.clientWidth + 1) { n--; paintTabsRow(n); }
+      if (el.scrollWidth > cw + 1) {
+        /* The fixed-size buttons form an ordered prefix. Find the longest
+           fitting prefix in logarithmic layout passes instead of rebuilding
+           and measuring the whole bar once for EACH hidden tab. The active
+           overflow label is painted on every probe, so it is priced in too. */
+        let low = 0, high = n - 1, best = 0;
+        while (low <= high) {
+          const mid = Math.floor((low + high) / 2);
+          paintTabsRow(mid);
+          if (el.scrollWidth <= cw + 1) { best = mid; low = mid + 1; }
+          else high = mid - 1;
+        }
+        n = best;
+        paintTabsRow(n);
+      }
       // even the minimum row can pinch at the 640px floor — compact More to ⋯
       if (n === 0 && el.scrollWidth > el.clientWidth + 1) { compact = true; paintTabsRow(0, true); }
       tabFitCache = { sig: sig, n: n, compact: compact };   // remember only a real measurement
@@ -2248,7 +2267,10 @@ function renderTabs() {
      active with no categories left, the row must still be there to escape it. */
   const showSub = onHk && (ui.edit || state.categories.length > 0 || ui.tab !== 'all');
   if (subRow) {
-    subRow.innerHTML = sub;
+    if (subRow._hdTabMarkup !== sub) {
+      subRow.innerHTML = sub;
+      subRow._hdTabMarkup = sub;
+    }
     subRow.classList.toggle('hidden', !showSub);
   }
   document.body.classList.toggle('hk-sub', showSub);
@@ -2588,7 +2610,11 @@ function reconcileList(listEl, rows) {
     let node;
     if (found) {
       existing.delete(row.id);
-      const fresh = parseRowNode(row.html);
+      // ui-response-rows: identical markup needs no scratch DOM or tree walk.
+      // Root-class comparison also notices selection/drag/flash changes made
+      // by interaction handlers outside this renderer.
+      const unchanged = found._hdRowMarkup === row.html && found._hdRowClass === found.className;
+      const fresh = unchanged ? null : parseRowNode(row.html);
       // Morph the reused node toward the new markup — keeps its <img> untouched
       // when the src is unchanged (no re-decode). A row root is always a <div>,
       // so morphNode returns the SAME node; the `!== found` guard is only for
@@ -2598,6 +2624,10 @@ function reconcileList(listEl, rows) {
       node = parseRowNode(row.html);
       if (!node) continue;
     }
+    // A focused editor intentionally keeps its live value in syncAttrs. Do
+    // not cache that partial morph: the next refresh after blur must finish it.
+    node._hdRowMarkup = node.contains(document.activeElement) ? null : row.html;
+    node._hdRowClass = node.className;
     if (node === cursor) {
       cursor = cursor.nextSibling;   // already in place — step over it
     } else {
@@ -2606,6 +2636,23 @@ function reconcileList(listEl, rows) {
   }
   // anything still in `existing` departed this render — remove it
   existing.forEach((n) => { if (n.parentNode === listEl) listEl.removeChild(n); });
+}
+
+/* ui-response-selection: arrows change two classes, never reparse the list.
+   The mounted children are the rendered/filter-ordered list; filter/config
+   updates still go through renderList and clamp ui.sel before any input. */
+function moveHotkeySelection(delta) {
+  const list = $('list');
+  const before = list.children[ui.sel];
+  const next = Math.max(0, Math.min(Math.max(0, list.children.length - 1), ui.sel + delta));
+  if (next === ui.sel) return;
+  ui.sel = next;
+  if (before) before.classList.remove('selected');
+  const after = list.children[ui.sel];
+  if (after) {
+    after.classList.add('selected');
+    after.scrollIntoView({ block: 'nearest' });
+  }
 }
 
 function renderList() {
@@ -3652,6 +3699,12 @@ function onKeyDown(e) {
     return;
   }
 
+  // Device map owns focus; typing a digit must never fire a deck action.
+  if (window.KeysAtlas && KeysAtlas.isOpen()) {
+    if (KeysAtlas.onKey(e)) { e.preventDefault(); e.stopPropagation(); }
+    return;
+  }
+
   /* ---- the Wheel Menu is modal ---- *
    * FIRST among the overlays: it is full-screen, it hides the panel entirely,
    * and its digits FIRE a wedge — so an unguarded 1-9 reaching the quick-fire
@@ -3873,8 +3926,8 @@ function onKeyDown(e) {
      element owns the keyboard, whatever tab is up. The whitelist stays as
      defense in depth (and for the BARE-key case, where nothing is focused). */
   if (!ui.edit && !inTextInput) {
-    if (code === 'ArrowDown') { e.preventDefault(); ui.sel++; renderList(); return; }
-    if (code === 'ArrowUp') { e.preventDefault(); ui.sel = Math.max(0, ui.sel - 1); renderList(); return; }
+    if (code === 'ArrowDown') { e.preventDefault(); moveHotkeySelection(1); return; }
+    if (code === 'ArrowUp') { e.preventDefault(); moveHotkeySelection(-1); return; }
     if (code === 'Enter') {
       e.preventDefault();
       const items = filteredEntries();
@@ -3955,6 +4008,45 @@ function requestClose() {
   if (DEV) hdClosed();
 }
 
+/* ui-surface-lifecycle: tab changes and deck close share the same teardown.
+   Polls, pending image requests and sidecar edits belong to a visible pane.
+   Followers keeps its close-specific search/edit behavior via onDeckClosed. */
+function hidePane(t, closing) {
+  if (t === 'followers' && window.FolPane) {
+    if (closing && FolPane.onDeckClosed) FolPane.onDeckClosed();
+    else FolPane.onHide();
+  }
+  if (t === 'domains' && window.DomainsPane) DomainsPane.onHide();
+  if (t === 'containers' && window.ContainersPane) ContainersPane.onHide();
+  if (t === 'home' && window.HomePane) HomePane.onHide();
+  if (t === 'rooms' && window.RoomsPane) RoomsPane.onHide();
+  if (t === 'loot' && window.LootPane) LootPane.onHide();
+  if (t === 'keys' && window.KeysPane) KeysPane.onHide();
+  if (t === 'items' && window.ItemsPane) ItemsPane.onHide();
+  if (t === 'npcs' && window.NpcsPane) NpcsPane.onHide();
+  if (t === 'cells' && window.CellsPane) CellsPane.onHide();
+  if (t === 'spells' && window.SpellsPane) SpellsPane.onHide();
+  if (t === 'distr' && window.DistrPane) DistrPane.onHide();
+  if (t === 'journal' && window.JournalPane) JournalPane.onHide();
+  if (t === 'transmog' && window.TransmogPane) TransmogPane.onHide();
+  if (t === 'mounts' && window.MountsPane) MountsPane.onHide();
+  if (t === 'loadouts' && window.LoadoutsPane) LoadoutsPane.onHide();
+  if (t === 'household' && window.HouseholdPane) HouseholdPane.onHide();
+  if (t === 'scene' && window.ScenePane) ScenePane.onHide();
+  if (t === 'settle' && window.SettlementPane) SettlementPane.onHide();
+  if (t === 'spellcraft' && window.SpellCraftPane) SpellCraftPane.onHide();
+  if (t === 'highking' && window.HighKingPane) HighKingPane.onHide();
+  if (t === 'wigs' && window.WigsPane) WigsPane.onHide();
+  if (t === 'survival' && window.SurvivalPane) SurvivalPane.onHide();
+  if (t === 'sheet' && window.CharSheetPane) CharSheetPane.onHide();
+  if (t === 'nightside' && window.NightsidePane) NightsidePane.onHide();
+  if (t === 'anim' && window.AnimPane) AnimPane.onHide();
+  if (t === 'finances' && window.FinancesPane) FinancesPane.onHide();
+  if (t === 'wardrobe' && window.WardrobePane) WardrobePane.onHide();
+  if (t === 'time' && window.TimePane) TimePane.onHide();
+  if (t === 'faces' && window.FacesPane) FacesPane.onHide();
+}
+
 function setTab(t) {
   closeMoreMenu();   // any tab switch dismisses the overflow menu
   /* The bar's merged Finder entry: resolve to whichever roster was used last.
@@ -3978,36 +4070,7 @@ function setTab(t) {
   bumpTabUse(t);   // usage ranks the bar: most-used systems earn the visible slots
   if (isHotkeyTab(t)) ui.hkTab = t;   // Hotkeys returns to the last category
   ui.sel = 0;
-  if (prev === 'followers' && window.FolPane) FolPane.onHide();
-  if (prev === 'domains' && window.DomainsPane) DomainsPane.onHide();
-  if (prev === 'containers' && window.ContainersPane) ContainersPane.onHide();
-  if (prev === 'home' && window.HomePane) HomePane.onHide();
-  if (prev === 'rooms' && window.RoomsPane) RoomsPane.onHide();
-  if (prev === 'loot' && window.LootPane) LootPane.onHide();
-  if (prev === 'keys' && window.KeysPane) KeysPane.onHide();
-  if (prev === 'items' && window.ItemsPane) ItemsPane.onHide();
-  if (prev === 'npcs' && window.NpcsPane) NpcsPane.onHide();
-  if (prev === 'cells' && window.CellsPane) CellsPane.onHide();
-  if (prev === 'spells' && window.SpellsPane) SpellsPane.onHide();
-  if (prev === 'distr' && window.DistrPane) DistrPane.onHide();
-  if (prev === 'journal' && window.JournalPane) JournalPane.onHide();
-  if (prev === 'transmog' && window.TransmogPane) TransmogPane.onHide();
-  if (prev === 'mounts' && window.MountsPane) MountsPane.onHide();
-  if (prev === 'loadouts' && window.LoadoutsPane) LoadoutsPane.onHide();
-  if (prev === 'household' && window.HouseholdPane) HouseholdPane.onHide();
-  if (prev === 'scene' && window.ScenePane) ScenePane.onHide();
-  if (prev === 'settle' && window.SettlementPane) SettlementPane.onHide();
-  if (prev === 'spellcraft' && window.SpellCraftPane) SpellCraftPane.onHide();
-  if (prev === 'highking' && window.HighKingPane) HighKingPane.onHide();
-  if (prev === 'wigs' && window.WigsPane) WigsPane.onHide();
-  if (prev === 'survival' && window.SurvivalPane) SurvivalPane.onHide();
-  if (prev === 'sheet' && window.CharSheetPane) CharSheetPane.onHide();
-  if (prev === 'nightside' && window.NightsidePane) NightsidePane.onHide();
-  if (prev === 'anim' && window.AnimPane) AnimPane.onHide();
-  if (prev === 'finances' && window.FinancesPane) FinancesPane.onHide();
-  if (prev === 'wardrobe' && window.WardrobePane) WardrobePane.onHide();
-  if (prev === 'time' && window.TimePane) TimePane.onHide();
-  if (prev === 'faces' && window.FacesPane) FacesPane.onHide();
+  hidePane(prev, false);
   render();
   /* semantic pause signal: any hotkey/notes tab = paused (if configured), numpad = live */
   toGame('hdTab', t === 'numpad' ? 'numpad' : 'deck');
@@ -5098,6 +5161,7 @@ window.hdOpen = function (cfg) {
   // half-typed rename, selection and open icon picker — and would bypass setTab(),
   // leaving a pane's context menu painted over a different pane.
   const wasVisible = ui.visible;
+  let restoreTab = '';
   /* HDPerf: this call IS the open signal (it sets body.open) — C++'s open-diag
      stops one beat earlier at "show + focus", so everything from here on is the
      unmeasured blind spot where "slow to load" actually lives on weak hardware.
@@ -5184,11 +5248,8 @@ window.hdOpen = function (cfg) {
     if (back) {
       const isCat = back.indexOf('cat:') === 0;
       if (!isCat || state.categories.indexOf(back.slice(4)) !== -1)
-        setTab(back);
+        restoreTab = back;
     }
-    /* Default-home open (nothing remembered, or you closed on Home): setTab is a
-       no-op when ui.tab is already 'home', so fire its onShow directly. */
-    if (ui.tab === 'home' && window.HomePane) HomePane.onShow();
   }
   document.body.classList.add('open');
   /* applyPanelSize runs HERE (once), not earlier: the panel is display:none until
@@ -5199,7 +5260,13 @@ window.hdOpen = function (cfg) {
      This removed the second, redundant syncNarrow() that used to sit here (two
      forced offsetWidth reflows per open, doubled on every live hdOpen re-push). */
   applyPanelSize();
-  render();
+  /* ui-response-open: restore AFTER the panel has real dimensions. setTab
+     renders the destination itself; do not immediately rebuild it a second
+     time. An unavailable/deleted remembered tab still falls back to Home. */
+  const beforeRestore = ui.tab;
+  if (restoreTab) setTab(restoreTab);
+  if (ui.tab === beforeRestore) render();
+  if (!wasVisible && ui.tab === 'home' && window.HomePane) HomePane.onShow();
   /* after body.open lands — the shelf is display:none until then, and its
      onOpen warms the providers its pins need (the spells slice is on-demand) */
   if (window.HDShelf) HDShelf.onOpen(!wasVisible);
@@ -5258,7 +5325,10 @@ window.hdClosed = function () {
      (F14/F15…) still land on their own tab because they arrive as an
      hdShowTab AFTER the open and setTab overrides. */
   ui.lastClosedTab = ui.tab;
+  if (ui.visible) hidePane(ui.tab, true);
   ui.visible = false;
+  window.__hdActiveTab = 'closed'; // late replies may update data, never repaint a hidden pane
+  syncQuickLightCard(false);
   ui.capture = null;
   ui.itemSource = null;      // open-time fact; a stale one must not greet the next open
   renderItemSource();
@@ -5266,7 +5336,7 @@ window.hdClosed = function () {
   /* Pane lightboxes hang off document.body, so `body.open` going away does NOT
      take them with it: the next open would greet you with a full-screen
      overlay from last time, eating every click. Narrow teardown calls, never
-     onHide() — closing the deck must not also wipe a pane's filter or edits. */
+     content resets — pane teardown above flushes pending edits before hiding. */
   if (window.FolPane && FolPane._closeLightbox) FolPane._closeLightbox();
   if (window.FolPane && FolPane._closeHudModal) FolPane._closeHudModal();
   if (window.FolPane && FolPane._closeWornLightbox) FolPane._closeWornLightbox();
@@ -5282,6 +5352,7 @@ window.hdClosed = function () {
      same teardown obligation. */
   if (window.HDPotions) HDPotions.onDeckClosed();
   if (window.HDQuiver) HDQuiver.onDeckClosed();
+  if (window.KeysAtlas) KeysAtlas.close();
   /* Super Searcher: body.ss-open hides #panel, so a leaked super mode would
      greet the next F7 with an invisible deck — tear it down with the close. */
   if (window.HDSuper) HDSuper.onDeckClosed();

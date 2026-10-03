@@ -2577,7 +2577,8 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
       <!-- data-tab stays "portraits" (hash, state.tab, TABS key, #n-portraits and
            the sheet wiring all key off it); only the visible label changed. -->
       <button class="tab on" data-tab="portraits" type="button">Followers <span class="n" id="n-portraits"></span></button>
-      <a class="tab" href="/formation" style="text-decoration:none">Formation</a>
+      <a class="tab" href="/formation" style="text-decoration:none">Walk With Me</a>
+      <a class="tab" id="osis-nav" href="/osis" style="text-decoration:none" hidden>OSIS</a>
       <button class="tab" data-tab="sheet" type="button">Sheet</button>
       <button class="tab" data-tab="icons" type="button">Spells <span class="n" id="n-icons"></span></button>
       <button class="tab" data-tab="hotkeys" type="button">Hotkeys <span class="n" id="n-hotkeys"></span></button>
@@ -3074,7 +3075,41 @@ function setStatus(ok, text) {
   $('sub').textContent = text;
 }
 
+// osis-installed-only: default hidden; use current module presence, never a
+// remembered profile or a mod folder. Reuses the existing refresh/focus watch.
+var osisPresencePending = null;
+function refreshOsisVisibility() {
+  if (osisPresencePending || document.hidden) return osisPresencePending;
+  var link = $('osis-nav');
+  if (!link) return;
+  var request = api('GET', '/api/osis/presence').then(function (r) {
+    link.hidden = !(r && r.ok === true && r.loaded === true);
+  }).catch(function () { link.hidden = true; });
+  osisPresencePending = request;
+  request.then(function () { if (osisPresencePending === request) osisPresencePending = null; });
+  return request;
+}
+
+/* ui-surface-refresh: at most one snapshot batch in flight. Requests during a
+   batch share ONE trailing fresh read, so a refresh after a write cannot adopt
+   a snapshot that started before that write. Each caller still awaits its data. */
+var refreshPending = null, refreshQueued = null;
 function fetchAll() {
+  if (refreshPending) {
+    if (!refreshQueued) {
+      var next = function () { refreshQueued = null; return fetchAll(); };
+      refreshQueued = refreshPending.then(next, next);
+    }
+    return refreshQueued;
+  }
+  var current = fetchAllNow();
+  refreshPending = current;
+  var clear = function () { if (refreshPending === current) refreshPending = null; };
+  current.then(clear, clear);
+  return current;
+}
+function fetchAllNow() {
+  refreshOsisVisibility();
   return Promise.all([
     api('GET', '/api/roster'), api('GET', '/api/icons'),
     api('GET', '/api/spells'), api('GET', '/api/hotkeys'),
@@ -3117,7 +3152,9 @@ function fetchAll() {
        in the Promise.all above would make every page load wait out its
        connect timeout before anything rendered. It lands late, flips the
        badge on the follower cards, and nothing else depends on it. */
-    fetchSharmat().then(render);
+    fetchSharmat().then(function () {
+      if (!busyEditing() && !state.jr.dirty && !document.hidden) render();
+    });
   });
 }
 
@@ -3227,17 +3264,24 @@ function stopPoll() { if (state.poll) { clearTimeout(state.poll); state.poll = n
    capture the page sat stale until it was manually refreshed.
    Watch the listing instead. It is one cheap directory read; only the slug+mtime
    signature is compared, so nothing re-renders unless something really changed. */
-var portraitSig = null;
+var portraitSig = null, portraitWatchPending = false, portraitNeedsPaint = false;
 function watchPortraits() {
-  if (document.hidden || busyEditing()) return;
-  api('GET', '/api/portraits').then(function (r) {
+  if (!document.hidden) refreshOsisVisibility();
+  if (document.hidden || busyEditing() || state.jr.dirty || portraitWatchPending) return;
+  if (portraitNeedsPaint) { portraitNeedsPaint = false; paintStatus(); render(); }
+  portraitWatchPending = true;
+  return api('GET', '/api/portraits').then(function (r) {
     if (!r || !r.ok || !Array.isArray(r.portraits)) return;
     var sig = r.portraits.map(function (x) { return x.slug + ':' + x.mtime; }).join('|');
     if (portraitSig === null) { portraitSig = sig; return; }   // first read = baseline
     if (sig === portraitSig) return;
     portraitSig = sig;
-    fetchAll().then(function () { paintStatus(); render(); toast('New portrait picked up', 'good'); });
-  });
+    return fetchAll().then(function () {
+      if (document.hidden || busyEditing() || state.jr.dirty) { portraitNeedsPaint = true; return; }
+      paintStatus(); render(); toast('New portrait picked up', 'good');
+    });
+  }).catch(function () { /* Offline: try again on the next watch tick. */ })
+    .then(function () { portraitWatchPending = false; });
 }
 setInterval(watchPortraits, 4000);
 
@@ -3285,6 +3329,7 @@ window.addEventListener('focus', function () { if (totalPending()) restartPoll()
  * compare and reload ourselves — never mid-edit, never with a basket going. */
 var pageV = 0;
 function checkPageVersion() {
+  refreshOsisVisibility();
   api('GET', '/api/page-version').then(function (r) {
     if (!r || !r.v) return;
     if (!pageV) { pageV = r.v; return; }

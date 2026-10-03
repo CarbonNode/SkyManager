@@ -7,6 +7,7 @@
 #include "photo_camera.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -57,12 +58,12 @@ namespace PortraitCapture
 		// 1024, not 512. At zoom 1.00 the crop is the FULL buffer height (960 on
 		// this rig) and squeezing that into 512 threw away nearly half the detail —
 		// so cropping to a face in the portal editor came out pixelated. With the
-		// cap above the buffer, `min(kOutSize, box.size)` keeps the capture at its
+		// cap above the buffer, PhotoFrame::Make keeps the capture at its
 		// native 960 and there is real detail to crop INTO.
 		//
 		// Costs ~2.7 MB per raw capture (uncompressed PNG). That is disk only, and
 		// the portal re-encodes to JPEG the moment you crop one.
-		constexpr int kOutSize = 1024;
+		// PhotoFrame::Make caps the long edge at 1024 without enlarging the crop.
 		constexpr int kMinBox  = 96;
 		constexpr int kMaxBox  = 900;
 
@@ -225,17 +226,18 @@ namespace PortraitCapture
 
 		std::uint32_t Crc32(const std::uint8_t* data, std::size_t len, std::uint32_t crc = 0xFFFFFFFFu)
 		{
-			static std::uint32_t table[256];
-			static bool          built = false;
-			if (!built) {
+			// Immutable, compiled once: interrupted capture workers can overlap.
+			// The old mutable table/built flag had an unsynchronised first-use race.
+			static constexpr auto table = [] {
+				std::array<std::uint32_t, 256> values{};
 				for (std::uint32_t n = 0; n < 256; ++n) {
 					std::uint32_t c = n;
 					for (int k = 0; k < 8; ++k)
 						c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-					table[n] = c;
+					values[n] = c;
 				}
-				built = true;
-			}
+				return values;
+			}();
 			for (std::size_t i = 0; i < len; ++i)
 				crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
 			return crc;
@@ -369,8 +371,8 @@ namespace PortraitCapture
 				duration_cast<seconds>(system_clock::now().time_since_epoch()).count());
 		}
 
-		// Milliseconds off a monotonic clock — for the backbuffer-resync deadline,
-		// which is a duration, not a wall-clock stamp (system_clock could jump).
+		// Milliseconds off a monotonic clock — capture deadlines and polling are
+		// durations, not wall-clock stamps (system_clock could jump).
 		std::uint64_t NowMs()
 		{
 			using namespace std::chrono;
@@ -646,6 +648,8 @@ namespace PortraitCapture
 			// tried and reverted (see the note above EncodePng). +1 doubles the
 			// light, -1 halves it, like a camera.
 			float exposure = 0.0f;
+			PhotoFrame::Format format = PhotoFrame::Format::Square;
+			bool thirds = false;
 		};
 
 		// A FACE and a whole OUTFIT want opposite framing, and they were sharing
@@ -665,9 +669,10 @@ namespace PortraitCapture
 			float       defX;
 			float       defY;
 			const char* expo;
+			bool photo = false;
 		};
 		constexpr TuneKeys kFaceKeys{ "zoom", "offsetx", "offsety", 0.60f, 0.0f, -0.06f, "exposure" };
-		constexpr TuneKeys kPhotoKeys{ "photozoom", "photooffsetx", "photooffsety", 1.00f, 0.0f, 0.0f, "photoexposure" };
+		constexpr TuneKeys kPhotoKeys{ "photozoom", "photooffsetx", "photooffsety", 1.00f, 0.0f, 0.0f, "photoexposure", true };
 
 		Tuning ReadTuning(const std::filesystem::path& dir, const TuneKeys& keys = kFaceKeys)
 		{
@@ -737,7 +742,10 @@ namespace PortraitCapture
 					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 				if (val.empty())
 					continue;
+				if (keys.photo && key == "photoformat") { t.format = PhotoFrame::Parse(val); continue; }
+				if (keys.photo && key == "photogrid") { t.thirds = val == "1"; continue; }
 				const float f = std::strtof(val.c_str(), nullptr);
+				if (!std::isfinite(f)) continue;
 				// Clamped, so a typo cannot produce a zero-size or off-screen crop.
 				if (key == keys.zoom)
 					t.zoom = std::clamp(f, 0.15f, 1.0f);
@@ -807,9 +815,12 @@ namespace PortraitCapture
 			};
 
 			bool wroteZoom = false, wroteX = false, wroteY = false, wroteExp = false;
+			bool wroteFormat = false, wroteGrid = false;
 			for (auto& line : lines) {
 				const auto k = keyOf(line);
-				if (k == keys.zoom)      { line = fmt(keys.zoom, t.zoom);    wroteZoom = true; }
+				if (keys.photo && k == "photoformat") { line = std::string("photoformat=") + PhotoFrame::Key(t.format); wroteFormat = true; }
+				else if (keys.photo && k == "photogrid") { line = t.thirds ? "photogrid=1" : "photogrid=0"; wroteGrid = true; }
+				else if (k == keys.zoom)      { line = fmt(keys.zoom, t.zoom);    wroteZoom = true; }
 				else if (k == keys.offX) { line = fmt(keys.offX, t.offsetX); wroteX = true; }
 				else if (k == keys.offY) { line = fmt(keys.offY, t.offsetY); wroteY = true; }
 				else if (keys.expo && k == keys.expo) { line = fmt(keys.expo, t.exposure); wroteExp = true; }
@@ -819,6 +830,8 @@ namespace PortraitCapture
 			if (!wroteY)    lines.push_back(fmt(keys.offY, t.offsetY));
 			if (keys.expo && !wroteExp) lines.push_back(fmt(keys.expo, t.exposure));
 
+			if (keys.photo && !wroteFormat) lines.push_back(std::string("photoformat=") + PhotoFrame::Key(t.format));
+			if (keys.photo && !wroteGrid) lines.push_back(t.thirds ? "photogrid=1" : "photogrid=0");
 			std::string out;
 			for (const auto& line : lines) {
 				out += line;
@@ -1134,9 +1147,10 @@ namespace PortraitCapture
 			{
 				ID3D11Texture2D*          staging = nullptr;  // owned; released in dtor
 				D3D11_BOX                 region{};
-				int                       size = 0;      // crop edge, px
+				int                       width = 0, height = 0; // crop dimensions, px
 				int                       stride = 0;    // bytes per pixel
-				std::vector<std::uint8_t> bytes;         // tight rows: size * stride
+				D3D11_TEXTURE2D_DESC source{};
+				std::vector<std::uint8_t> bytes;         // tight rows: width * stride
 				std::atomic<int>          state{ 0 };    // 0 queued, 2 done, <0 failed
 
 				~Job()
@@ -1195,22 +1209,28 @@ namespace PortraitCapture
 					ctx->Release();
 					return;
 				}
+				D3D11_TEXTURE2D_DESC current{};
+				back->GetDesc(&current);
+				if (current.Width != job->source.Width || current.Height != job->source.Height ||
+					current.Format != job->source.Format || current.SampleDesc.Count != 1) {
+					back->Release(); ctx->Release(); job->state.store(-1); return;
+				}
 				ctx->CopySubresourceRegion(job->staging, 0, 0, 0, 0, back, 0, &job->region);
 				back->Release();
 
 				D3D11_MAPPED_SUBRESOURCE mapped{};
 				const HRESULT            hr = ctx->Map(job->staging, 0, D3D11_MAP_READ, 0, &mapped);
-				if (FAILED(hr) || !mapped.pData || mapped.RowPitch == 0) {
+				if (FAILED(hr) || !mapped.pData || mapped.RowPitch < static_cast<UINT>(job->width * job->stride)) {
 					if (mapped.pData)
 						ctx->Unmap(job->staging, 0);
 					job->state.store(-1);
 					ctx->Release();
 					return;
 				}
-				const std::size_t rowBytes = static_cast<std::size_t>(job->size) * job->stride;
-				job->bytes.resize(rowBytes * job->size);
+				const std::size_t rowBytes = static_cast<std::size_t>(job->width) * job->stride;
+				job->bytes.resize(rowBytes * job->height);
 				const auto* src = static_cast<const std::uint8_t*>(mapped.pData);
-				for (int y = 0; y < job->size; ++y)
+				for (int y = 0; y < job->height; ++y)
 					std::memcpy(job->bytes.data() + rowBytes * y, src + static_cast<std::size_t>(y) * mapped.RowPitch, rowBytes);
 				ctx->Unmap(job->staging, 0);
 				ctx->Release();
@@ -1229,7 +1249,7 @@ namespace PortraitCapture
 
 			// Submit a copy job and block (SKSE/worker thread) until the present
 			// thread finishes it. Returns the pixel rows (tight pitch) or empty.
-			bool RunJob(const D3D11_BOX& region, int size, int stride, const D3D11_TEXTURE2D_DESC& backDesc,
+			bool RunJob(const D3D11_BOX& region, int width, int height, int stride, const D3D11_TEXTURE2D_DESC& backDesc,
 				std::vector<std::uint8_t>& out)
 			{
 				if (!g_hookInstalled.load()) {
@@ -1241,8 +1261,8 @@ namespace PortraitCapture
 					return false;
 
 				D3D11_TEXTURE2D_DESC sd = backDesc;
-				sd.Width = static_cast<UINT>(size);
-				sd.Height = static_cast<UINT>(size);
+				sd.Width = static_cast<UINT>(width);
+				sd.Height = static_cast<UINT>(height);
 				sd.MipLevels = 1;
 				sd.ArraySize = 1;
 				sd.SampleDesc.Count = 1;
@@ -1262,8 +1282,10 @@ namespace PortraitCapture
 				auto job = std::make_shared<Job>();
 				job->staging = staging;   // ownership moves to the job
 				job->region = region;
-				job->size = size;
+				job->width = width;
+				job->height = height;
 				job->stride = stride;
+				job->source = backDesc;
 				{
 					std::lock_guard l(g_jobMutex);
 					if (g_job && g_job->state.load() < 2) {
@@ -1307,7 +1329,7 @@ namespace PortraitCapture
 			}
 		}
 
-		bool GrabRegion(const Box& box, std::vector<std::uint8_t>& rgbOut, int outSize)
+		bool GrabRegion(const PhotoFrame::Frame& box, std::vector<std::uint8_t>& rgbOut)
 		{
 			auto* window = RE::BSGraphics::Renderer::GetCurrentRenderWindow();
 			if (!window || !window->swapChain)
@@ -1336,9 +1358,9 @@ namespace PortraitCapture
 			// pixels as 4-byte ones produces exactly the striped garbage a real
 			// capture produced on 2026-07-31. Log it so the next capture says what
 			// this rig actually uses instead of leaving us to guess.
-			logger::info("portrait: backbuffer {}x{} fmt={} samples={} | crop {}px at {},{}",
+			logger::info("portrait: backbuffer {}x{} fmt={} samples={} | crop {}x{} at {},{}",
 				desc.Width, desc.Height, static_cast<int>(desc.Format), desc.SampleDesc.Count,
-				box.size, box.x, box.y);
+				box.width, box.height, box.x, box.y);
 
 			// MSAA cannot be CopySubresourceRegion'd into a non-MSAA staging
 			// texture; it needs ResolveSubresource first. Rather than silently
@@ -1357,41 +1379,39 @@ namespace PortraitCapture
 				return false;
 			}
 
-			// Clamp once more against the ACTUAL buffer: the render window's
-			// reported size and the buffer can disagree (borderless, DSR, an
-			// upscaler), and a box past the edge makes CopySubresourceRegion a
-			// silent no-op that would hand back a black square.
-			Box b = box;
-			b.size = std::min<int>(b.size, static_cast<int>(std::min(desc.Width, desc.Height)));
-			b.x = std::clamp(b.x, 0, static_cast<int>(desc.Width) - b.size);
-			b.y = std::clamp(b.y, 0, static_cast<int>(desc.Height) - b.size);
+			// Refuse a resolution change instead of silently saving a different crop
+			// from the guide the player saw. All GPU copying still occurs on Present.
+			if (!box.Valid() || box.sourceWidth != static_cast<int>(desc.Width) ||
+				box.sourceHeight != static_cast<int>(desc.Height)) return false;
+			const auto& b = box;
+			const int outWidth = b.outputWidth, outHeight = b.outputHeight;
 
 			D3D11_BOX region{};
 			region.left = static_cast<UINT>(b.x);
 			region.top = static_cast<UINT>(b.y);
 			region.front = 0;
-			region.right = static_cast<UINT>(b.x + b.size);
-			region.bottom = static_cast<UINT>(b.y + b.size);
+			region.right = static_cast<UINT>(b.x + b.width);
+			region.bottom = static_cast<UINT>(b.y + b.height);
 			region.back = 1;
 
 			// The copy + map now run on the PRESENT THREAD (see presentgrab above)
 			// — the thread that owns the immediate context — instead of being
 			// injected from this one mid-frame under ID3D11Multithread protection.
 			std::vector<std::uint8_t> raw;
-			if (!presentgrab::RunJob(region, b.size, pf.stride, desc, raw))
+			if (!presentgrab::RunJob(region, b.width, b.height, pf.stride, desc, raw))
 				return false;
 			logger::info("portrait: present-thread grab ok");  // marker: portrait-present-grab
 
 			// The pixels arrived as tight rows from the present thread; the
 			// decode below is pure CPU work and stays on THIS thread.
-			bool ok = raw.size() == static_cast<std::size_t>(b.size) * b.size * pf.stride;
+			bool ok = raw.size() == static_cast<std::size_t>(b.width) * b.height * pf.stride;
 			if (!ok)
 				logger::warn("portrait: grab returned {} bytes, expected {} - refusing the frame",
-					raw.size(), static_cast<std::size_t>(b.size) * b.size * pf.stride);
-			const std::size_t rowPitch = static_cast<std::size_t>(b.size) * pf.stride;
+					raw.size(), static_cast<std::size_t>(b.width) * b.height * pf.stride);
+			const std::size_t rowPitch = static_cast<std::size_t>(b.width) * pf.stride;
 			if (ok) {
 				logger::info("portrait: reading {} bytes/px, RowPitch {}", pf.stride, rowPitch);
-				rgbOut.assign(static_cast<std::size_t>(outSize) * outSize * 3, 0);
+				rgbOut.assign(static_cast<std::size_t>(outWidth) * outHeight * 3, 0);
 				const auto* base = raw.data();
 				// BOX-AVERAGE downscale. This started as nearest-neighbour, which
 				// is the wrong filter for the job: a face crop is routinely 700-900
@@ -1405,16 +1425,16 @@ namespace PortraitCapture
 				// When the crop is SMALLER than the output (a face far away), each
 				// cell covers one source pixel and this degrades to nearest, which
 				// is correct — there is no detail to invent.
-				for (int oy = 0; oy < outSize; ++oy) {
-					const int sy0 = oy * b.size / outSize;
-					const int sy1 = std::max(sy0 + 1, (oy + 1) * b.size / outSize);
-					for (int ox = 0; ox < outSize; ++ox) {
-						const int sx0 = ox * b.size / outSize;
-						const int sx1 = std::max(sx0 + 1, (ox + 1) * b.size / outSize);
+				for (int oy = 0; oy < outHeight; ++oy) {
+					const int sy0 = oy * b.height / outHeight;
+					const int sy1 = std::max(sy0 + 1, (oy + 1) * b.height / outHeight);
+					for (int ox = 0; ox < outWidth; ++ox) {
+						const int sx0 = ox * b.width / outWidth;
+						const int sx1 = std::max(sx0 + 1, (ox + 1) * b.width / outWidth);
 						std::uint32_t r = 0, g = 0, bl = 0, n = 0;
-						for (int sy = sy0; sy < sy1 && sy < b.size; ++sy) {
+						for (int sy = sy0; sy < sy1 && sy < b.height; ++sy) {
 							const auto* row = base + static_cast<std::size_t>(sy) * rowPitch;
-							for (int sx = sx0; sx < sx1 && sx < b.size; ++sx) {
+							for (int sx = sx0; sx < sx1 && sx < b.width; ++sx) {
 								const auto*  px = row + static_cast<std::size_t>(sx) * pf.stride;
 								std::uint8_t pr, pg, pb;
 								ReadPixel(px, desc.Format, pr, pg, pb);
@@ -1426,7 +1446,7 @@ namespace PortraitCapture
 						}
 						if (!n)
 							n = 1;
-						auto* dst = &rgbOut[(static_cast<std::size_t>(oy) * outSize + ox) * 3];
+						auto* dst = &rgbOut[(static_cast<std::size_t>(oy) * outWidth + ox) * 3];
 						dst[0] = static_cast<std::uint8_t>(r / n);
 						dst[1] = static_cast<std::uint8_t>(g / n);
 						dst[2] = static_cast<std::uint8_t>(bl / n);
@@ -1454,27 +1474,29 @@ namespace PortraitCapture
 				// harmless while still catching a whole image that is flat.
 				constexpr int kLines = 16;
 				const auto lineSd = [&](bool vertical) {
+					const int across = vertical ? outWidth : outHeight;
+					const int along = vertical ? outHeight : outWidth;
 					std::vector<double> sds;
 					sds.reserve(kLines);
 					for (int i = 1; i <= kLines; ++i) {
-						const int at = outSize * i / (kLines + 1);
+						const int at = across * i / (kLines + 1);
 						double    mean = 0.0;
-						for (int j = 0; j < outSize; ++j) {
+						for (int j = 0; j < along; ++j) {
 							const std::size_t idx = vertical
-								? (static_cast<std::size_t>(j) * outSize + at)
-								: (static_cast<std::size_t>(at) * outSize + j);
+								? (static_cast<std::size_t>(j) * outWidth + at)
+								: (static_cast<std::size_t>(at) * outWidth + j);
 							mean += rgbOut[idx * 3];
 						}
-						mean /= outSize;
+						mean /= along;
 						double var = 0.0;
-						for (int j = 0; j < outSize; ++j) {
+						for (int j = 0; j < along; ++j) {
 							const std::size_t idx = vertical
-								? (static_cast<std::size_t>(j) * outSize + at)
-								: (static_cast<std::size_t>(at) * outSize + j);
+								? (static_cast<std::size_t>(j) * outWidth + at)
+								: (static_cast<std::size_t>(at) * outWidth + j);
 							const double d = rgbOut[idx * 3] - mean;
 							var += d * d;
 						}
-						sds.push_back(std::sqrt(var / outSize));
+						sds.push_back(std::sqrt(var / along));
 					}
 					std::nth_element(sds.begin(), sds.begin() + sds.size() / 2, sds.end());
 					return sds[sds.size() / 2];
@@ -1650,7 +1672,8 @@ namespace PortraitCapture
 		// re-capture (already-mapped) falls back to a version.
 		std::uint32_t CaptureToFile(const std::filesystem::path& dir, const std::string& slug,
 			const std::string& label, std::filesystem::path& written, const TuneKeys& keys = kFaceKeys,
-			bool alwaysVersion = false);
+			bool alwaysVersion = false, const Tuning* photoTune = nullptr, const PhotoFrame::Frame* photoFrame = nullptr,
+			std::uint64_t captureSession = 0, bool portraitSession = false);
 
 		// ============================== photo mode =============================
 		//  Dress-and-frame-it-yourself, for wardrobe outfits.
@@ -1669,7 +1692,7 @@ namespace PortraitCapture
 		std::filesystem::path g_photoDir;
 		std::string           g_photoSlug;
 		std::string           g_photoLabel;
-		std::uint64_t         g_photoStartedAt = 0;
+		std::uint64_t         g_photoStartedAt = 0; // monotonic milliseconds, not the filename clock
 
 		// ---- self-portrait ARM state ---------------------------------------
 		// g_selfArmed: waiting for the player's Enter after "Portrait armed". The world
@@ -1686,7 +1709,7 @@ namespace PortraitCapture
 		std::filesystem::path g_selfDir;
 		std::function<void(const std::string&)> g_selfDone;
 		std::function<void()> g_selfOnCancel;   // clears the view's pending state
-		std::uint64_t         g_selfArmedAt = 0;
+		std::uint64_t         g_selfArmedAt = 0; // monotonic milliseconds
 		constexpr std::uint64_t kSelfArmTimeoutSec = 60;
 		// Non-zero = the arm is an NPC RETAKE of this runtime form id, not a
 		// self-portrait (ArmNpcPortrait). Cleared whenever the arm is consumed.
@@ -1857,7 +1880,10 @@ namespace PortraitCapture
 		std::atomic_uint64_t g_photoGeneration{ 0 };
 		PhotoInput::LightKeys g_photoLightKeys;
 		bool g_photoLightHud = true;
-		std::function<void(bool, bool, const PhotoLighting::Snapshot&)> g_onPhotoLighting;
+		Tuning g_photoTuning;
+		PhotoFrame::Frame g_photoFrame;
+		std::uint64_t g_photoFrameCheckedAt = 0;
+		std::function<void(bool, bool, const PhotoLighting::Snapshot&, const PhotoFrame::Frame&)> g_onPhotoLighting;
 
 		void EndPhotoMode()
 		{
@@ -1888,13 +1914,26 @@ namespace PortraitCapture
 
 		void PhotoShoot()
 		{
-			if (!g_photoMode.load())
+			if (!g_photoMode.load() || g_photoShooting.load())
 				return;
+			PhotoLighting::Update();
+			if (!PhotoLighting::State().active) { PhotoCancel(); return; }
+			int sw = 0, sh = 0;
+			if (!BackBufferSize(sw, sh)) {
+				Notify("Photo frame is unavailable - wait a moment, then press Enter again");
+				return;
+			}
+			if (!g_photoFrame.Valid() || sw != g_photoFrame.sourceWidth || sh != g_photoFrame.sourceHeight) {
+				// Show the new frame before accepting a shot. Preserve placed lights
+				// and the camera while the player checks it and retries.
+				RefreshPhotoLights();
+				Notify("Photo frame updated after resolution changed - check it and press Enter again");
+				return;
+			}
 			if (g_photoShooting.exchange(true)) return;
 			RefreshPhotoLights(); // Hide the whole Prisma HUD view before the redraw delay.
 			const auto generation = g_photoGeneration.load();
 			logger::info("photo: shutter accepted generation={}", generation);
-			PhotoLighting::Update();
 			// The HUD is only hidden for the SHOT now, not the whole session
 			// (see StartPhotoMode) — so hide it, give the game a beat to redraw
 			// without it, then grab and restore everything. Grab BEFORE tearing
@@ -1915,11 +1954,21 @@ namespace PortraitCapture
 					const auto dir = g_photoDir;
 					const auto slug = g_photoSlug;
 					const auto label = g_photoLabel;
-					std::thread([dir, slug, label, generation]() {
+					const auto tune = g_photoTuning;
+					const auto frame = g_photoFrame;
+					std::thread([dir, slug, label, generation, tune, frame]() {
 						std::filesystem::path written;
-						const auto            err = CaptureToFile(dir, slug, label, written, kPhotoKeys);
-						SKSE::GetTaskInterface()->AddTask([err, written, label, slug, generation]() {
+						const auto            err = CaptureToFile(dir, slug, label, written, kPhotoKeys, false, &tune, &frame, generation);
+						SKSE::GetTaskInterface()->AddTask([err, written, label, slug, generation, dir, tune]() {
 							if (!g_photoMode.load() || g_photoGeneration.load() != generation) return;
+							if (!err) {
+								// Commit preferences on the main thread after checking the session.
+								// A cancelled worker must not overwrite a newer session's format.
+								// Preserve exposure/unknown fields written elsewhere.
+								auto saved = ReadTuning(dir, kPhotoKeys);
+								saved.format = tune.format; saved.thirds = tune.thirds;
+								if (!WriteTuning(dir, kPhotoKeys, saved)) logger::warn("photo: framing preferences could not be saved");
+							}
 							EndPhotoMode();
 							if (err) {
 								logger::warn("photo: capture failed generation={} win32={}", generation, err);
@@ -1939,8 +1988,22 @@ namespace PortraitCapture
 
 		std::uint32_t CaptureToFile(const std::filesystem::path& dir, const std::string& slug,
 			const std::string& label, std::filesystem::path& written, const TuneKeys& keys,
-			bool alwaysVersion)
+			bool alwaysVersion, const Tuning* photoTune, const PhotoFrame::Frame* photoFrame,
+			std::uint64_t captureSession, bool portraitSession)
 		{
+			// Cancel can restore the camera and remove the lights while this worker
+			// is queued or waiting for a render-thread readback. Check ownership at
+			// each asynchronous/expensive boundary; never save that later scene.
+			const auto cancelled = [captureSession, portraitSession]() {
+				const bool stale = captureSession && (portraitSession ? !PortraitCurrent(captureSession) :
+					(!g_photoMode.load() || g_photoGeneration.load() != captureSession));
+				if (stale) {
+					if (portraitSession) logger::info("portrait: stale capture stopped generation={}", captureSession);
+					else logger::info("photo: stale capture stopped generation={}", captureSession);
+				}
+				return stale;
+			};
+			if (cancelled()) return static_cast<std::uint32_t>(ERROR_CANCELLED);
 			// THE BACK BUFFER's size, not the screen's. These are NOT the same
 			// number and assuming they were is what broke the framing:
 			// GetScreenSize() reports the DISPLAY (2560x1440 here) while the
@@ -1974,29 +2037,18 @@ namespace PortraitCapture
 			// which does none of it — is the one that produces usable pictures.
 			// ...taken from the CENTRE, zoomed and nudged by capture.ini so the
 			// framing is yours to dial in rather than mine to guess at.
-			const Tuning tune = ReadTuning(dir, keys);
-			const int    shortSide = std::min(sw, sh);
-
-			Box box;
-			box.size = std::clamp(static_cast<int>(shortSide * tune.zoom), 64, shortSide);
-			const int cx = sw / 2 + static_cast<int>(tune.offsetX * shortSide);
-			const int cy = sh / 2 + static_cast<int>(tune.offsetY * shortSide);
-			box.x = std::clamp(cx - box.size / 2, 0, sw - box.size);
-			box.y = std::clamp(cy - box.size / 2, 0, sh - box.size);
-			box.ok = true;
-
-			logger::info("portrait: framing zoom {:.2f} offset {:+.2f},{:+.2f} -> {}px at {},{}",
-				tune.zoom, tune.offsetX, tune.offsetY, box.size, box.x, box.y);
-
-			// Never upscale: if a tight zoom on a small window gives less than
-			// 512, write it at its own size rather than stretching it.
-			const int outSize = std::min(kOutSize, box.size);
+			const Tuning tune = photoTune ? *photoTune : ReadTuning(dir, keys);
+			const auto box = photoFrame ? *photoFrame : PhotoFrame::Make(sw, sh,
+				PhotoFrame::Format::Square, tune.zoom, tune.offsetX, tune.offsetY);
+			logger::info("portrait: framing zoom {:.2f} offset {:+.2f},{:+.2f} -> {}x{} at {},{} -> {}x{}",
+				tune.zoom, tune.offsetX, tune.offsetY, box.width, box.height, box.x, box.y, box.outputWidth, box.outputHeight);
 
 			std::vector<std::uint8_t> rgb;
-			if (!GrabRegion(box, rgb, outSize)) {
+			if (!GrabRegion(box, rgb)) {
 				logger::warn("portrait: back-buffer grab failed for '{}'", label);
 				return static_cast<std::uint32_t>(ERROR_READ_FAULT);
 			}
+			if (cancelled()) return static_cast<std::uint32_t>(ERROR_CANCELLED);
 
 			// The ONE optional pixel op, and only when asked for: exposure. It
 			// defaults to 0 stops, so the paragraph below still describes what
@@ -2016,7 +2068,8 @@ namespace PortraitCapture
 
 			// Encoded ONCE. A retry under a different name re-uses these bytes
 			// rather than paying for the whole PNG again.
-			const auto png = EncodePng(rgb, outSize, outSize);
+			const auto png = EncodePng(rgb, box.outputWidth, box.outputHeight);
+			if (cancelled()) return static_cast<std::uint32_t>(ERROR_CANCELLED);
 
 			// The tidy name first. It succeeds whenever the deck has not already
 			// DRAWN this person's portrait — a first capture, or any session where
@@ -2051,6 +2104,7 @@ namespace PortraitCapture
 				// Bump past a same-second collision; 8 is far more headroom than
 				// a human pressing a hotkey can ever need.
 				for (int bump = 0; bump < 8; ++bump) {
+					if (cancelled()) return static_cast<std::uint32_t>(ERROR_CANCELLED);
 					std::error_code fec;
 					auto            candidate = dir / (slug + "~" + std::to_string(stamp + static_cast<std::uint64_t>(bump)) + ".png");
 					if (std::filesystem::exists(candidate, fec))
@@ -2077,10 +2131,8 @@ namespace PortraitCapture
 			// having to reproduce it: how big the grab was, what it was written
 			// at, and whether that was a downscale (good) or a stretch (the
 			// subject was too far away even after the zoom).
-			logger::info("portrait: captured '{}' -> {} ({}px crop at {},{} -> {}px out, {})",
-				label, PathU8(path.filename()), box.size, box.x, box.y, outSize,
-				box.size > outSize ? "downscaled + sharpened" :
-									 (box.size == outSize ? "1:1" : "UPSCALED - subject was too far for a sharp portrait"));
+			logger::info("portrait: captured '{}' -> {} ({}x{} crop at {},{} -> {}x{} out)",
+				label, PathU8(path.filename()), box.width, box.height, box.x, box.y, box.outputWidth, box.outputHeight);
 			written = path;
 			return 0;
 		}
@@ -2135,7 +2187,7 @@ namespace PortraitCapture
 			// free to keep producing the frames the grab needs.
 			std::thread([dir, slug, name, generation]() {
 				std::filesystem::path written;
-				const auto            err = CaptureToFile(dir, slug, name, written);
+				const auto            err = CaptureToFile(dir, slug, name, written, kFaceKeys, false, nullptr, nullptr, generation, true);
 				SKSE::GetTaskInterface()->AddTask([err, name, generation]() {
 					if (!PortraitCurrent(generation)) return;
 					RestoreAfterCapture();
@@ -2212,7 +2264,8 @@ namespace PortraitCapture
 			// the completion task, so the world is back before the sheet repaints.
 			std::thread([dir, slug, label, done, generation]() {
 				std::filesystem::path written;
-				const auto            err = CaptureToFile(dir, slug, label, written, kFaceKeys, /*alwaysVersion=*/true);
+				const auto            err = CaptureToFile(dir, slug, label, written, kFaceKeys, /*alwaysVersion=*/true,
+					nullptr, nullptr, generation, true);
 				SKSE::GetTaskInterface()->AddTask([err, written, done, generation]() {
 					if (!PortraitCurrent(generation)) return;
 					FinishPlayerCapture(done, err ? "" : PathU8(written.filename()));
@@ -2308,15 +2361,35 @@ namespace PortraitCapture
 		g_onCaptureFinished = std::move(cb);
 	}
 
-	void SetPhotoLightingCallback(std::function<void(bool, bool, const PhotoLighting::Snapshot&)> cb)
+	void SetPhotoLightingCallback(std::function<void(bool, bool, const PhotoLighting::Snapshot&, const PhotoFrame::Frame&)> cb)
 	{
 		g_onPhotoLighting = std::move(cb);
 	}
 
 	void RefreshPhotoLights()
 	{
+		if (g_photoMode.load() && !g_photoShooting.load()) {
+			int sw = 0, sh = 0;
+			BackBufferSize(sw, sh);
+			g_photoFrameCheckedAt = NowMs();
+			g_photoFrame = PhotoFrame::Make(sw, sh, g_photoTuning.format, g_photoTuning.zoom,
+				g_photoTuning.offsetX, g_photoTuning.offsetY, g_photoTuning.thirds);
+		}
 		if (g_onPhotoLighting) g_onPhotoLighting(g_photoMode.load(),
-			g_photoMode.load() && !g_photoShooting.load() && g_photoLightHud, PhotoLighting::State());
+			g_photoMode.load() && !g_photoShooting.load() && g_photoLightHud, PhotoLighting::State(), g_photoFrame);
+	}
+
+	// Shares the existing bounded light-update task. Query only the descriptor,
+	// at most four times a second; unchanged frames cause no Prisma invocation.
+	void RefreshPhotoFrame()
+	{
+		if (!g_photoMode.load() || g_photoShooting.load() || NowMs() - g_photoFrameCheckedAt < 250) return;
+		g_photoFrameCheckedAt = NowMs();
+		int sw = 0, sh = 0;
+		BackBufferSize(sw, sh);
+		if (sw == g_photoFrame.sourceWidth && sh == g_photoFrame.sourceHeight) return;
+		logger::info("photo-frame: render size changed {}x{} -> {}x{}", g_photoFrame.sourceWidth, g_photoFrame.sourceHeight, sw, sh);
+		RefreshPhotoLights();
 	}
 
 	std::uint64_t PhotoInputSession()
@@ -2331,7 +2404,7 @@ namespace PortraitCapture
 		// Lazy timeout — checked wherever anyone asks, which is every input
 		// event, so no timer of our own and no way to be stranded in a frozen
 		// world because a tick stopped running.
-		if (NowSeconds() - g_photoStartedAt > kPhotoTimeoutSec) {
+		if (NowMs() - g_photoStartedAt > kPhotoTimeoutSec * 1000) {
 			logger::info("photo: timed out after {}s - restoring", kPhotoTimeoutSec);
 			Notify("Photo mode timed out");
 			EndPhotoMode();
@@ -2369,10 +2442,11 @@ namespace PortraitCapture
 			refuse("Current camera FOV unavailable; photo mode did not start");
 			return;
 		}
+		g_photoTuning = ReadTuning(dir, kPhotoKeys);
 		g_photoDir = dir;
 		g_photoSlug = slug;
 		g_photoLabel = label;
-		g_photoStartedAt = NowSeconds();
+		g_photoStartedAt = NowMs();
 		g_photoMode.store(true);
 		++g_photoGeneration;
 		g_photoShooting.store(false);
@@ -2431,6 +2505,7 @@ namespace PortraitCapture
 		if (!freezeTime) logger::info("photo: live scene framing");
 		logger::info("photo: mode started for '{}' -> {}", label, PathU8((dir / (slug + ".png"))));
 		logger::info("photo: exclusive lighting keys active; movement passes through");
+		logger::info("photo-frame: matched crop guide and rectangular capture ready");
 		Notify("PHOTO: Tap E to place light. BACKSPACE undoes. ENTER saves. SkyManager key cancels.");
 
 		// A REAL watchdog, not just the lazy check in PhotoModeActive(): that
@@ -2470,6 +2545,7 @@ namespace PortraitCapture
 						if (g_photoMode.load() && g_photoGeneration.load() == generation) {
 							PhotoLighting::Update();
 							if (!PhotoLighting::State().active) PhotoCancel();
+							else RefreshPhotoFrame();
 						}
 					});
 				}
@@ -2481,7 +2557,7 @@ namespace PortraitCapture
 				std::this_thread::sleep_for(5s);
 				SKSE::GetTaskInterface()->AddTask([generation]() {
 					if (g_photoMode.load() && g_photoGeneration.load() == generation) {
-						if (NowSeconds() - g_photoStartedAt > kPhotoTimeoutSec)
+						if (NowMs() - g_photoStartedAt > kPhotoTimeoutSec * 1000)
 							logger::info("photo: watchdog fired after {}s - restoring", kPhotoTimeoutSec);
 						PhotoModeActive(); // all engine reads/restores stay on the main thread
 					}
@@ -2516,6 +2592,8 @@ namespace PortraitCapture
 				case Action::Narrow: PhotoLighting::Spread(-1); break;
 				case Action::Widen: PhotoLighting::Spread(1); break;
 				case Action::ToggleHud: g_photoLightHud = !g_photoLightHud; break;
+				case Action::Format: g_photoTuning.format = PhotoFrame::Next(g_photoTuning.format); break;
+				case Action::Grid: g_photoTuning.thirds = !g_photoTuning.thirds; break;
 				default: break;
 			}
 			const auto state = PhotoLighting::State();
@@ -2673,7 +2751,7 @@ namespace PortraitCapture
 		g_selfDir = portraitDir;
 		g_selfDone = std::move(done);
 		g_selfOnCancel = std::move(onCancel);
-		g_selfArmedAt = NowSeconds();
+		g_selfArmedAt = NowMs();
 		g_selfArmed.store(true);
 		StartArmWatchdog();
 		logger::info("portrait: self-portrait ARMED - waiting for Enter");  // marker: portrait-arm-on-e
@@ -2694,7 +2772,7 @@ namespace PortraitCapture
 		g_selfDone = nullptr;
 		g_selfOnCancel = nullptr;
 		g_selfNpcTarget = targetFormId;
-		g_selfArmedAt = NowSeconds();
+		g_selfArmedAt = NowMs();
 		g_selfArmed.store(true);
 		StartArmWatchdog();
 		const char* name = actor->GetName();
@@ -2711,7 +2789,7 @@ namespace PortraitCapture
 		// Lazy timeout, checked wherever anyone asks (the sink on every keypress,
 		// and CanOpenNow). A forgotten arm disarms itself with a notification so it
 		// can never ambush the player an hour later.
-		if (NowSeconds() - g_selfArmedAt > kSelfArmTimeoutSec) {
+		if (NowMs() - g_selfArmedAt > kSelfArmTimeoutSec * 1000) {
 			EndPortraitLighting();
 			g_selfArmed.store(false);
 			g_selfDone = nullptr;

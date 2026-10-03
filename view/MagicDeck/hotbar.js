@@ -1335,9 +1335,18 @@
      the shift page without holding shift, which you could not do otherwise —
      holding shift while clicking in the panel is not a workflow. */
   let selectedPage = 0;
+  let editorLiveSig = '';
 
-  function renderSlotList() {
+  function renderSlotList(liveTick) {
     const box = el['hb-slotlist'];
+    const rows = (live && live.page === selectedPage && Array.isArray(live.slots)) ? live.slots : [];
+    // ui-surface-hotbar: countdowns do not appear in this editor. Keep its
+    // buttons/focus on live ticks; explicit edits still always rebuild it.
+    const sig = JSON.stringify(rows, function (key, value) {
+      return key === 'cd' || key === 'fxRem' || key === 'fxDur' ? undefined : value;
+    });
+    if (liveTick && sig === editorLiveSig) return;
+    editorLiveSig = sig;
     clear(box);
 
     /* page tabs for the editor */
@@ -1371,7 +1380,6 @@
           : 'This page is empty — hold ' + pageHoldText(selectedPage)
             + ' in game and the bar shows these buttons instead. The keys stay the same.' }));
     }
-    const rows = (live && live.page === selectedPage && Array.isArray(live.slots)) ? live.slots : [];
     for (let i = 0; i < n; i++) {
       const s = slotAt(selectedPage, i);
       const L = rows[i] || {};
@@ -2345,7 +2353,7 @@
     /* PERF: a tick that only moved a countdown patches the numbers in place;
        anything structural still goes through the full render. */
     if (livePage !== wasPage || !patchLive()) render();
-    if (editing && live.page === selectedPage) renderSlotList();
+    if (editing && live.page === selectedPage) renderSlotList(true);
   };
 
   window.hbPage = function (j) {

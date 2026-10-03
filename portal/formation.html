@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Formation · SkyManager</title>
+  <title>Walk With Me · SkyManager</title>
   <link rel="stylesheet" href="/api/formation-assets/hd-formation.css">
   <style>
     *{box-sizing:border-box}body{margin:0;padding:28px;background:#131419;color:#d6d0c0;font:18px/1.5 system-ui,sans-serif}main{max-width:720px;margin:6vh auto}a{color:#e3c574}h1{font:36px Georgia,serif}button{font:inherit;cursor:pointer}#open{padding:14px 22px;border:1px solid #c9a24b;border-radius:8px;background:#c9a24b;color:#17130a}#message{min-height:3em;overflow-wrap:anywhere}#fm-modal{background:#131419}#fm-modal *{animation:none}button:focus-visible,a:focus-visible{outline:2px solid #f2d58c;outline-offset:3px}
@@ -16,7 +16,7 @@
     <h1>Walk together</h1>
     <p>Manage your walking party, hand-holding, rest and scouting while Skyrim is running.</p>
     <p id="message" role="status" aria-live="polite">Connecting to Skyrim…</p>
-    <button id="open" type="button">Open formation controls</button>
+    <button id="open" type="button">Open Walk With Me</button>
   </main>
   <script>
     'use strict';
@@ -51,11 +51,11 @@
         const receipt=await api('POST',{op:fn==='fmApply'?'apply':'party',epoch:activeEpoch,request:JSON.parse(payload)});
         for(let n=0;n<30;n++){
           await wait(350);const state=await api('GET');
-          if(state.epoch!==activeEpoch)throw new Error('The game changed. Reopen Formation before trying again.');
+          if(state.epoch!==activeEpoch)throw new Error('The game changed. Reopen Walk With Me before trying again.');
           const result=state.results&&state.results[receipt.commandId];
           if(result&&!result.pending){window.fmResult(result);if(state.state)window.fmOpen(state.state);return;}
         }
-        throw new Error('Skyrim has not confirmed the change yet. Reopen Formation to check before retrying.');
+        throw new Error('Skyrim has not confirmed the change yet. Reopen Walk With Me to check before retrying.');
       }catch(error){window.fmResult({ok:false,msg:error.message});}
       finally{busy=false;}
     };

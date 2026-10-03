@@ -13,6 +13,7 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  min-width: 0;
   padding: 18px 22px 14px;
   gap: 14px;
 }
@@ -458,4 +459,13 @@
   .kc-key { min-width: 64px; font-size: 13.5px; padding: 7px 9px; }
   .kc-owner b { max-width: 22ch; }
   .kc-owner i { max-width: 18ch; }
+}
+
+/* Device-map previews also run at phone width; keep the underlying list from
+   forcing a horizontal document scrollbar beneath the body-level modal. */
+@media (max-width: 700px) {
+  .kc-title { flex-wrap: wrap; white-space: normal; }
+  .kc-row { flex-wrap: wrap; }
+  .kc-owners { flex-basis: 100%; }
+  .kc-owner { max-width: 100%; }
 }

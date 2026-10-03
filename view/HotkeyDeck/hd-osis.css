@@ -1,0 +1,16 @@
+/* osis-settings-panel: existing SkyManager brass, shared with the phone. */
+.osis-panel{--osis-ink:#eae4d5;--osis-muted:#bdb8ab;--osis-gold:#dec68a;--osis-line:rgba(213,190,130,.25);color:var(--osis-ink);font:20px/1.5 system-ui,sans-serif;min-width:0}
+.osis-panel *{box-sizing:border-box}.osis-panel button,.osis-panel input,.osis-panel select{font:inherit;min-height:48px;border-radius:8px}
+.osis-top{display:flex;align-items:flex-start;gap:24px;justify-content:space-between}.osis-intro{min-width:0;flex:1}.osis-eyebrow{color:var(--osis-gold);margin:0 0 8px;letter-spacing:.06em}.osis-panel .osis-title{font:30px/1.25 Georgia,serif;margin:0 0 14px}.osis-prose{color:var(--osis-muted);margin:0;max-width:76ch}
+.osis-status{padding:16px 0;margin:14px 0;border-top:1px solid var(--osis-line);border-bottom:1px solid var(--osis-line);color:var(--osis-gold);min-height:64px;overflow-wrap:anywhere}.osis-status[data-error="1"],.osis-reason{color:#efc79f}
+.osis-filters{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,250px);gap:16px}.osis-search,.osis-number,.osis-group{min-width:0;background:#161920;color:var(--osis-ink);border:1px solid var(--osis-line);padding:10px 14px}.osis-search::placeholder{color:var(--osis-muted);opacity:1}.osis-count{color:var(--osis-muted);margin:12px 0}
+.osis-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px;align-items:center;padding:22px 0;border-bottom:1px solid var(--osis-line)}.osis-row-text{min-width:0}.osis-panel .osis-row-title{font:600 23px/1.35 system-ui,sans-serif;margin:0 0 5px}.osis-meta,.osis-detail,.osis-reason,.osis-range{margin:6px 0 0;overflow-wrap:anywhere}.osis-meta,.osis-range{color:var(--osis-muted)}.osis-control{display:flex;align-items:center;gap:10px}.osis-number{width:126px}
+.osis-button,.osis-switch{background:#292722;color:var(--osis-ink);border:1px solid var(--osis-line);padding:10px 20px;cursor:pointer}.osis-switch{min-width:104px;font-weight:600}.osis-switch[aria-checked="true"]{background:#dfc88f;color:#211b10;border-color:#dfc88f}.osis-button:hover,.osis-switch:hover{border-color:var(--osis-gold);filter:brightness(1.12)}.osis-button:active,.osis-switch:active{filter:brightness(.95)}.osis-panel :focus-visible{outline:3px solid #f2d899;outline-offset:3px}.osis-panel :disabled{opacity:.55;cursor:default;filter:none}
+.osis-footer{display:flex;align-items:center;gap:24px;justify-content:space-between;padding:24px 0 8px}.osis-footer .osis-prose{max-width:66ch}.osis-footer button{flex-shrink:0}.osis-empty{padding:28px 0;color:var(--osis-muted)}
+@media(max-width:700px){.osis-panel{font-size:18px}.osis-top{gap:12px}.osis-panel .osis-title{font-size:27px}.osis-panel .osis-row-title{font-size:21px}.osis-filters{grid-template-columns:minmax(0,1fr)}.osis-row{grid-template-columns:minmax(0,1fr);gap:14px}.osis-control{justify-content:flex-end}.osis-footer{display:block}.osis-footer button{width:100%;margin-top:20px}.osis-button{padding:10px 14px}}
+@media(prefers-reduced-motion:reduce){.osis-panel *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+.osis-panel button{touch-action:manipulation}.osis-number{font-variant-numeric:tabular-nums}.osis-list{overscroll-behavior:contain}
+
+/* Native WebKit select widgets ignore min-height on this renderer. */
+.osis-panel .osis-group{height:52px}
