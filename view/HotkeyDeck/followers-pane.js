@@ -10591,8 +10591,9 @@
        resolves comes back dead AND not-in-world even while she is walking
        beside you. Every control group is gated on those two (Order on !dead,
        Move and Home on inWorld), so a stale pair rendered a card with a name, a
-       green FOLLOWING chip and NOTHING ELSE. That is what Rober hit on Vayne:
-       "i clicked vayne in current party and its just opening a blank area".
+       green FOLLOWING chip and NOTHING ELSE. That is what got reported, for a
+       follower from her own follower mod: "clicked her in current party and
+       it's just opening a blank area".
 
        So when the engine is talking about the SAME person, the engine wins.
        state.target is a live read; the roster row is a cache. Matched on form
@@ -10955,8 +10956,8 @@
     if (ui.fqFold) {
       /* A folded card is a name, a follow chip and nothing else — which is
          exactly what a BROKEN card looks like, and it got reported as one
-         (Rober, 2026-09-21: "i clicked vayne in current party and its just
-         opening a blank area….."). The fold is session state, so it survives
+         (2026-09-21: "clicked her in current party and it's just opening a
+         blank area"). The fold is session state, so it survives
          switching subject: you collapse it once and every follower you click
          afterwards looks dead. Say it, and offer the way out as a real button
          rather than leaving the ▾ in the corner to be noticed. A button is also
