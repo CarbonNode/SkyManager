@@ -467,6 +467,96 @@ namespace FormationWwm
 			return actors;
 		}
 
+		// ------------------------------------------- who WE put in the party ----
+		//
+		// marker: formation-wwm-party-sidecar
+		//
+		// Walk With Me saves the companions IT enrolled (`dialogueRegistrations`
+		// go into its co-save) but deliberately NOT the ones enrolled through its
+		// public API: `manualRegistrations` is cleared by its revert callback and
+		// written by no save callback. Since the API is the only door that takes a
+		// follower WWM's own gate refuses (see formation-wwm-enroll-api), the
+		// persistence has to be ours, or every load quietly empties the party.
+		//
+		// Own sidecar, not a hotkeys.json slice — OnJsSave replaces that wholesale.
+		// Stored by DURABLE reference key (plugin + local id), never by runtime
+		// FormID: the high byte is a load index and ESM-flagging anything
+		// re-indexes it. A dynamic reference (0xFF…) has no such key and is
+		// therefore session-only by nature; it is registered but not remembered.
+		const char* kPartyFile = "Data/SKSE/Plugins/HotkeyDeck/formation-party.json";
+
+		std::mutex g_partyLock;
+
+		json PartyLoad()
+		{
+			std::ifstream in(kPartyFile, std::ios::binary);
+			auto doc = in ? json::parse(in, nullptr, false) : json::object();
+			if (!doc.is_object()) doc = json::object();
+			if (!doc.contains("wwm") || !doc["wwm"].is_array()) doc["wwm"] = json::array();
+			return doc;
+		}
+
+		bool PartyStore(const json& doc)
+		{
+			try {
+				const std::filesystem::path path(kPartyFile);
+				std::error_code ec;
+				std::filesystem::create_directories(path.parent_path(), ec);
+				auto temp = path; temp += ".tmp";
+				{
+					std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+					out << doc.dump(2);
+					out.flush();
+					if (!out) return false;
+				}
+				return MoveFileExW(temp.c_str(), path.c_str(),
+					MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+			} catch (const std::exception& e) {
+				logger::warn("formation-wwm: cannot save the walking party: {}", e.what());
+				return false;
+			}
+		}
+
+		void PartyRemember(RE::Actor* actor)
+		{
+			const auto key = ReferenceKey(actor);
+			if (key.empty()) return;  // dynamic ref — nothing durable to write
+			std::lock_guard<std::mutex> lock(g_partyLock);
+			auto doc = PartyLoad();
+			for (const auto& row : doc["wwm"])
+				if (row.is_object() && row.value("key", std::string("")) == key) return;
+			doc["wwm"].push_back({ { "key", key }, { "name", NameOf(actor) } });
+			PartyStore(doc);
+		}
+
+		void PartyForget(RE::Actor* actor)
+		{
+			const auto key = ReferenceKey(actor);
+			if (key.empty()) return;
+			std::lock_guard<std::mutex> lock(g_partyLock);
+			auto doc = PartyLoad();
+			auto kept = json::array();
+			for (const auto& row : doc["wwm"])
+				if (row.is_object() && row.value("key", std::string("")) != key) kept.push_back(row);
+			if (kept.size() == doc["wwm"].size()) return;
+			doc["wwm"] = std::move(kept);
+			PartyStore(doc);
+		}
+
+		RE::Actor* ActorForKey(const std::string& key)
+		{
+			const auto bar = key.find('|');
+			if (bar == std::string::npos || bar + 1 >= key.size()) return nullptr;
+			const auto plugin = key.substr(0, bar);
+			const auto localText = key.substr(bar + 1);
+			std::uint32_t local{};
+			const auto parsed = std::from_chars(localText.data(), localText.data() + localText.size(), local, 16);
+			if (parsed.ec != std::errc{} || parsed.ptr != localText.data() + localText.size()) return nullptr;
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			auto* form = dh ? dh->LookupForm(local, plugin) : nullptr;
+			return form ? form->As<RE::Actor>() : nullptr;
+		}
+
 		bool TetherAssets()
 		{
 			if (!GetModuleHandleA("OpenAnimationReplacer.dll")) return false;
@@ -591,6 +681,39 @@ namespace FormationWwm
 		if (!api) return false;
 		api->SetEnabled(enabled);
 		return api->IsEnabled() == enabled;
+	}
+
+	// marker: formation-wwm-party-restore
+	//
+	// MAIN THREAD, after a save has loaded. Walk With Me's revert callback wipes
+	// the API registrations, so the party we put together has to be re-asserted
+	// from our own sidecar or it silently empties on every load. A companion the
+	// key no longer resolves to (her mod removed) is dropped from the file rather
+	// than retried forever.
+	int RestoreParty()
+	{
+		auto* api = Api();
+		if (!api) return 0;
+		std::lock_guard<std::mutex> lock(g_partyLock);
+		auto doc = PartyLoad();
+		auto kept = json::array();
+		int restored = 0;
+		for (const auto& row : doc["wwm"]) {
+			if (!row.is_object()) continue;
+			const auto key = row.value("key", std::string(""));
+			auto* actor = ActorForKey(key);
+			if (!actor) {
+				logger::info("formation-wwm: walking-party member '{}' no longer resolves — dropped", key);
+				continue;
+			}
+			kept.push_back(row);
+			if (api->IsManaged(actor->GetFormID())) continue;  // WWM already has her
+			if (api->RegisterFollower(actor->GetFormID(), -1)) ++restored;
+		}
+		if (kept.size() != doc["wwm"].size()) { doc["wwm"] = kept; PartyStore(doc); }
+		if (restored)
+			logger::info("formation-wwm: re-enrolled {} walking-party companion(s) after the load", restored);
+		return restored;
 	}
 
 	// ------------------------------------------------------------- state ----
@@ -916,15 +1039,53 @@ namespace FormationWwm
 		if (Modern()) {
 			auto* api = Api();
 			if (!api) return Dump(Refuse("Walk With Me's public API is unavailable"));
-			bool valid = false;
-			for (auto* actor : Candidates(ResolveSubject(json::object()))) if (actor == subject) valid = true;
-			if (!valid) return Dump(Refuse("That companion is no longer nearby. Refresh the walking party."));
+			// The subject of THIS request, not whoever the crosshair happens to
+			// hold now: the modal is routinely opened from search or from a
+			// roster row, and re-resolving the crosshair refused the very
+			// person the button named. Liveness is asked of her directly.
+			if (subject->IsDead() || subject->IsDisabled() || !subject->Is3DLoaded())
+				return Dump(Refuse((who.empty() ? std::string("That companion") : who) +
+					" isn’t here any more. Reopen the party list."));
 			if (op == "register" || op == "unregister") {
-				if (!Fire("SetDialogueManagement", subject, op == "register")) return Dump(Refuse("Could not reach Walk With Me's companion controls"));
-				auto result = Ok(who + (op == "register" ? ": joining the walking party" : ": leaving the walking party"));
+				// marker: formation-wwm-enroll-api
+				//
+				// ⛔ NOT SetDialogueManagement. That native runs Walk With Me's
+				// OWN recruitment gate first, and with NFF installed that gate
+				// is `RecruitmentRejection`: anyone outside NFF's active roster
+				// is refused outright — before the teammate check — unless her
+				// plugin is in WWM's hardcoded seven-name independent list.
+				// Vayne (CSV_Vayne.esp) is neither, so every press was refused,
+				// and the refusal's HUD message was emitted while the deck still
+				// owned the screen, so it read as a dead button (2026-09-28).
+				//
+				// The public API's RegisterFollower takes no such gate: it fills
+				// `manualRegistrations`, and WWM's own scan treats a registered
+				// follower as exempt (`IsRegisteredFollower(id) ? nullptr :
+				// CandidateRejection(actor)`), so she gets a real formation slot.
+				// It is synchronous, main-thread, and returns a real bool — no
+				// queued Papyrus dispatch to mistake for success.
+				const bool on = op == "register";
+				const bool ok = on ? api->RegisterFollower(subject->GetFormID(), -1)
+				                   : api->UnregisterFollower(subject->GetFormID());
+				// Unregister answers false for someone WWM enrolled by itself
+				// (she was never a manual registration) — it still dropped her,
+				// so that is not a failure. Only a refused register is.
+				if (on && !ok)
+					return Dump(Refuse("Walk With Me would not take " +
+						(who.empty() ? std::string("that companion") : who) + "."));
+				if (on) PartyRemember(subject); else PartyForget(subject);
+				logger::info("formation-wwm-enroll: {} {} ({:08X}) via the public API",
+					on ? "enrolled" : "released", who.empty() ? "companion" : who,
+					subject->GetFormID());
+				// Her slot is assigned by WWM's next sweep, not by this call, so
+				// the card must not claim she is already walking — the modal's
+				// own re-read is what turns the badge on.
+				auto result = Ok(who + (on ? " joins the walking party — she falls in on the next sweep"
+				                           : " leaves the walking party"));
 				result["closeGameMenu"] = true;
 				return Dump(result);
 			}
+			if (op == "exclude" || op == "include") PartyForget(subject);
 			const bool ok = op == "exclude" ? api->ExcludeFollower(subject->GetFormID()) : op == "include" ? api->IncludeFollower(subject->GetFormID()) : false;
 			return Dump(ok ? Ok(who + ": walking-party preference updated") : Refuse("Walk With Me did not accept that party action"));
 		}

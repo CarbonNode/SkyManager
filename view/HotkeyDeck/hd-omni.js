@@ -313,7 +313,7 @@ var HDOmni = (function () {
     inventory: 'thing',        // refined by kind below — it carries every type
     spells: 'magic', followers: 'person', wardrobe: 'wear',
     quests: 'lore', notes: 'lore', hotkeys: 'deck', 'deck-actions': 'deck',
-    tabs: 'deck', domains: 'thing', rooms: 'thing',
+    tabs: 'deck', domains: 'thing', rooms: 'thing', smf: 'deck',
     console: 'console',
   };
 
@@ -1828,7 +1828,71 @@ var HDOmni = (function () {
         return items;
       },
     });
+
+    /* 7) SKSE Menu Framework pages (Rober, 2026-10-03: "auto parse any mod
+       that adds a menu in [SMF] and make them searchable in our command k").
+       C++ (smf_index.cpp) walks SMF's own menu tree on demand: warm() asks
+       once per omni open, hdSmfData below stores it. Running a page draws the
+       mod's REAL page in a SkyManager-owned SMF window and closes the deck;
+       SMF's hotkey is never fired. The label is the whole trail
+       ("ReLight › Settings") because half of all pages are called Settings. */
+    register({
+      id: 'smf', label: 'Mod menus', tab: '',
+      warm: function () { toGame('hdSmfIndex', ''); },
+      pinRun: function (snap) { if (snap && snap.path) toGame('hdSmfOpen', snap.path); },
+      index: function () {
+        if (!smfIndex.ok) {
+          /* SMF is installed but its tree did not read: say so, once, on a
+             search that is plainly looking for it. Never silent. */
+          if (!smfIndex.present || !smfIndex.msg) return [];
+          return [{
+            label: 'SKSE Menu Framework pages unavailable',
+            detail: smfIndex.msg,
+            kind: 'mod menu',
+            keywords: 'smf skse menu framework mod menus mod control panel mcm',
+            keepOpen: true,
+            run: function () {},
+          }];
+        }
+        return smfIndex.pages.map(function (pg) {
+          var path = String(pg.path || '');
+          var segs = path.split('/');
+          return {
+            label: segs.join(' \u203a '),
+            detail: 'SKSE Menu Framework' + (pg.dll ? ' · ' + pg.dll : ''),
+            kind: 'mod menu',
+            keywords: [pg.section, pg.label, String(pg.dll || '').replace(/\.dll$/i, ''),
+                       'smf mod menu settings mcm'].filter(Boolean).join(' '),
+            pin: 'smf:' + path,
+            snap: { path: path },
+            run: function () { toGame('hdSmfOpen', path); },
+          };
+        });
+      },
+    });
   }
+
+  /* SMF pages, as last pushed by C++ (hdSmfData). `present` = SMF loaded;
+     `ok` = its tree read cleanly; `msg` says why not. */
+  var smfIndex = { ok: false, present: false, msg: '', pages: [] };
+  window.hdSmfData = function (payload) {
+    var p = payload;
+    if (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { return; } }
+    if (!p || typeof p !== 'object') return;
+    smfIndex.ok = !!p.ok;
+    smfIndex.present = !!p.present;
+    smfIndex.msg = String(p.msg || '');
+    smfIndex.pages = Array.isArray(p.pages) ? p.pages : [];
+    if (st.open && st.mode === 'search' && st.q.trim()) renderResults();
+  };
+  /* A refused open (the page went away, SMF's window never registered). C++
+     also puts the reason on the HUD; this keeps the list honest by asking
+     for a fresh one. */
+  window.hdSmfOpenResult = function (payload) {
+    var p = payload;
+    if (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { p = null; } }
+    if (p && !p.ok) toGame('hdSmfIndex', '');
+  };
 
   /* the magic slice, as last pushed by C++ (hdSpellsData) */
   var spellIndex = { spells: [], combos: [] };
@@ -1975,6 +2039,16 @@ var HDOmni = (function () {
         }
         window.haAnswer({ id: payload.id, ok: true, status: 200, json: body });
       }, payload.llm ? 600 : 150);
+    };
+    /* mocked SMF tree: hdSmfIndex → hdSmfData */
+    if (typeof window.hdSmfIndex !== 'function') window.hdSmfIndex = function () {
+      setTimeout(function () {
+        window.hdSmfData({ ok: true, present: true, version: 3.7, msg: '', pages: [
+          { path: 'ReLight/Settings', section: 'ReLight', label: 'Settings', dll: 'ReLight.dll' },
+          { path: 'ReLight/Excluded Lights', section: 'ReLight', label: 'Excluded Lights', dll: 'ReLight.dll' },
+          { path: 'CommandNPC/Commands', section: 'CommandNPC', label: 'Commands', dll: 'CommandNPC.dll' },
+        ] });
+      }, 60);
     };
     /* mocked spell slice: hdSpellsIndex → hdSpellsData */
     window.hdSpellsIndex = function () {

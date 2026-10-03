@@ -110,3 +110,10 @@ required. Commands are live-only; a receipt means queued, and the page polls for
 the native result before declaring success. Save settings with Apply; SkyManager
 closes its paused palette so the owner's Papyrus reload can execute. These
 controls do not report whether an experimental hand grip physically connected.
+
+## OSIS controls
+
+`/osis` shares `hd-osis.js` and `hd-osis.css` with the Scene popout. Its `/api/osis`
+requests go straight to the native owner adapter while Skyrim is loaded. No
+offline queue or INI editing is allowed. Deploy `osis.html` with server/index and
+the matched deck assets; `portal-deploy.ps1` checks and verifies it.

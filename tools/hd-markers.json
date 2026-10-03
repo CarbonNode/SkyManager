@@ -26,6 +26,11 @@
     "the config_manager.php path in sharmat.cpp would be a useless marker."
   ],
   "dll": {
+    "photo-frame": "photo-frame: matched crop guide and rectangular capture ready",
+    "photo-cancelled-worker": "photo: stale capture stopped generation={}",
+    "portrait-cancelled-worker": "portrait: stale capture stopped generation={}",
+    "photo-frame-resize": "photo-frame: render size changed {}x{} -> {}x{}",
+    "keys-atlas-gamepad": "keys-atlas-gamepad: {} gameplay button bindings",
     "photo-input-isolation": "photo-input: exclusive controls installed callBytes={} previous={:X}",
     "appearance-presets": "appearance-presets: portrait gallery and progress checkpoint ready",
     "appearance-sos": "appearance-sos: per-look addon and size recovery ready",
@@ -311,6 +316,9 @@
     "formation-portal-live": "Load a game to manage formations",
     "formation-wwm-apply": "Walk With Me updated",
     "formation-wwm-reg": "is left to her own follower AI, for good",
+    "formation-wwm-enroll-api": "formation-wwm-enroll: {} {} ({:08X}) via the public API",
+    "formation-wwm-party-restore": "formation-wwm: re-enrolled {} walking-party companion(s) after the load",
+    "formation-wwm-party-sweep": "she falls in on the next sweep",
     "formation-wwm-rescue": "your followers have their own AI back",
     "nff-follower-flag": "nffFollower",
     "finance-properties": "[finances] property buy/sell",
@@ -578,6 +586,10 @@
     "widgets-edit-hud-view": "widgets-edit: opening the hud view editor",
     "widgets-hud-blob": "widgets: hud view prefs stored",
     "time-dial-menu-gate": "time-dial: menu gate closed it",
+    "stance-wheel-open": "stance-wheel: open (time x{})",
+    "stance-wheel-close": "stance-wheel: closed",
+    "stance-wheel-switched": "stance-wheel: switched to {}",
+    "stance-wheel-menu-gate": "stance-wheel: menu gate closed it",
     "hud-nav-focus": "hud-nav-focus: browse ",
     "widgets-quick2-live": "widgets: custom quick items live",
     "widgets-quick2-use": "widgets: quick2 used",
@@ -706,7 +718,10 @@
     "domain-photo-galleries": "domains: gallery retains independent photos",
     "domain-photo-phone-edits": "domains: gallery phone edits applied",
     "photo-light-controls": "photo-light: controls selected={} color={} strength={} spread={} hud={}",
-    "portrait-face-light": "portrait-light: preview started mode={} strength={}"
+    "portrait-face-light": "portrait-light: preview started mode={} strength={}",
+    "osis-settings": "osis-settings: op={}",
+    "osis-visibility": "osis-visibility: loaded={}",
+    "smf-index": "smf-index: host window registered with SMF {:.1f} ({})"
   },
   "view": {
     "hud-outfit.js": {
@@ -948,7 +963,8 @@
       "npc-direct-views": "fd-row-views",
       "npc-dossier-chim": "fd-ds-chim-host",
       "npc-dossier-choice": "fd-row-views",
-      "equipped-regenerate": "fq-equip-regenerate"
+      "equipped-regenerate": "fq-equip-regenerate",
+      "formation-door-relabel": "'data-fm-open': '1'"
     },
     "hud.js": {
       "hud-weather-center-text": "weatherCenter",
@@ -1197,7 +1213,8 @@
       "omni-overflow-tabs": "env.overflowTabs",
       "omni-people-first": "function groupRank",
       "omni-name-marks": "function marksHtml",
-      "direct-reach": "omni-direct-reach"
+      "direct-reach": "omni-direct-reach",
+      "omni-smf-pages": "window.hdSmfData ="
     },
     "hd-super.js": {
       "super-module": "window.HDSuper =",
@@ -1215,6 +1232,11 @@
       "bind-conflicts": "window.HDBindConflicts = "
     },
     "app.js": {
+      "ui-surface-lifecycle": "function hidePane(t, closing)",
+      "ui-response-selection": "function moveHotkeySelection(delta)",
+      "ui-response-rows": "ui-response-rows:",
+      "ui-response-tabs": "ui-response-tabs:",
+      "ui-response-open": "ui-response-open:",
       "facefit-auto-pref": "setAutoEnabled(ff.auto !== false)",
       "home-ui-search-keys": "ae.id === 'hm-uie-search'",
       "capture-conflicts": "function showCaptureConflict(",
@@ -1337,7 +1359,9 @@
       "formation-wwm-body": "function renderWwm",
       "formation-wwm-modern": "function renderWwmModern",
       "formation-wwm-map": "fm-map-dot",
-      "formation-omni": "id: 'formation'"
+      "formation-omni": "id: 'formation'",
+      "formation-setting-search": "function openSetting(provider, section, key",
+      "formation-installed-name": "function displayName()"
     },
     "hd-formation.css": {
       "formation-sheet": "#fm-modal {",
@@ -1388,6 +1412,7 @@
       "wheel-dim-flat": "wheel-dim-flat"
     },
     "hotbar.js": {
+      "ui-surface-hotbar": "ui-surface-hotbar:",
       "hotbar-center-offset": "s.left = 'calc(50% + '",
       "hotbar-page-aware-flash": "const k = page + ':' + i",
       "hotbar-editor-overlap": "function editPreviewLayout()",
@@ -1602,6 +1627,16 @@
       "time-dial-sheet": "#hud-td {",
       "time-dial-cards": ".td-card {"
     },
+    "hud-stance.js": {
+      "stance-wheel-view": "window.swShow",
+      "stance-wheel-steer": "function steer(x, y)",
+      "stance-wheel-pick": "toGame('swPick'",
+      "stance-wheel-badge": "function paintGlyph(id)"
+    },
+    "hud-stance.css": {
+      "stance-wheel-sheet": "#hud-stance {",
+      "stance-wheel-scale": "calc(120px * var(--sw-k))"
+    },
     "highking-pane.js": {
       "hk-supporters-denominator": "king.supportersNeeded",
       "hk-begin-screen": "hx-begin-btn"
@@ -1617,7 +1652,17 @@
       "facefit-surface-crop": "img._hdHeadCrop()"
     },
     "keys-pane.js": {
+      "keys-atlas-entry": "hotkey-atlas-map",
       "keys-omni-findkey": "label: '⌨ Find a key'"
+    },
+    "keys-atlas.js": {
+      "keys-atlas-map": "hotkey-atlas-map"
+    },
+    "keys-atlas-layouts.js": {
+      "keys-atlas-layouts": "window.KeysAtlasLayouts"
+    },
+    "keys-atlas.css": {
+      "keys-atlas-css": ".kca-back {"
     },
     "wigs-pane.js": {
       "wigs-npc-popout": "function openFor(actor)",
@@ -1714,6 +1759,7 @@
       "get-away-layout": ".gaw-card{"
     },
     "ostim-tools.js": {
+      "osis-visibility": "function osisAvailable()",
       "position-reference": "function positionReference(",
       "position-variants": "const POSITION_VARIANTS=[",
       "position-choice-set": "request('sceneIconSet'",
@@ -1820,6 +1866,7 @@
     "library-model.js": {
       "spell-icons-layout": "out.layout = ['cards', 'columns', 'list', 'icons']",
       "spell-card-stats": "function spellCardStats(data)",
+      "ui-surface-counts": "function counts(spells, parents, meta)",
       "spell-deck-density-ladder": "function fitDensity(fits, start)",
       "spell-deck-size-auto": "out.sizeAuto = raw.sizeAuto !== false;",
       "spell-description-stats": "function spellStatTiles(data)"
@@ -1828,7 +1875,7 @@
       "spell-card-stats-resume": "scheduleCardStats();",
       "spell-deck-fit-measured": "function fitNow()",
       "spell-deck-row-balance": "function balance(list)",
-      "spell-deck-category-strip": "function chips()",
+      "spell-deck-category-strip": "function chips(",
       "spell-deck-category-popout": "function openCategories()",
       "spell-deck-more-popout": "function openMore()",
       "spell-deck-card-stepper": "function setCardSize(v)",
@@ -1865,7 +1912,14 @@
       "domain-photo-gallery": "domain-photo-gallery"
     },
     "hud-photo.js": {
-      "photo-light-controls": "photo-light-controls"
+      "photo-light-controls": "photo-light-controls",
+      "photo-hud-clarity": "photo-hud-clarity"
+    },
+    "hd-osis.js": {
+      "osis-panel": "window.HDOsis ="
+    },
+    "hd-osis.css": {
+      "osis-panel-css": "osis-settings-panel"
     }
   }
 }

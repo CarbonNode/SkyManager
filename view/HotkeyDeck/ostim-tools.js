@@ -511,7 +511,7 @@ window.OstimTools=(function(){
     ⚠ Body-anchored, like .ost-back and .gaw-back: it fills the viewport, so
     its bare vh/vw is CORRECT and it must NOT wear scale(var(--ui-scale))
     (the 2026-08-14 popup audit — do not "fix" this).                   */
- let pop=null,popReturn=null,popBack='';
+ let pop=null,popReturn=null,popBack='',osisPanel=null;
  /* A popout opened FROM a segment (a voice picker, a photo, a collection
     list) replaces it, because there is only ever one popout. Closing that
     child would otherwise dump you on the bare launcher having lost the panel
@@ -519,6 +519,7 @@ window.OstimTools=(function(){
     child records which segment to come back to, and closing it reopens that
     segment exactly as it was. */
  function closePop(){
+  if(osisPanel){osisPanel.destroy();osisPanel=null;}
   const back=popBack;popBack='';
   if(pop)pop.remove();
   pop=null;
@@ -575,6 +576,7 @@ window.OstimTools=(function(){
  }
  window.addEventListener('keydown',function(e){
   if(!pop)return;
+  if(e.key==='Escape'&&pop.dataset.kind==='osis'&&e.target&&e.target._ostKey&&e.target._ostKey(e)){e.preventDefault();e.stopImmediatePropagation();e.__ostHandled=true;return;}
   if(e.key==='Escape'){
    e.preventDefault();e.stopImmediatePropagation();
    // Belt AND braces: stopImmediatePropagation should be enough, but this
@@ -614,7 +616,7 @@ window.OstimTools=(function(){
   const fk=(j.actors||[]).map(a=>a.formId).join(',');
   if(fk!==faceKey){faceKey=fk;if(window.FolPane&&FolPane.requestPortraitFaces)FolPane.requestPortraitFaces();}
   // Poll status without replacing a focused control or an input being edited.
-  paintStatus();if(hosted&&!pop)scheduleFit();if(old!==j.signature||(!tab&&liveChanged))render();else if(tab==='align')paintAlignment();if(after)after();else if(tab==='room')getPrivacy(true);else if(tab==='lighting')getLighting();else if(tab==='expr'||tab==='people'){getActor();if(tab==='expr'&&!expressionsReady)getExpressions();}
+  paintStatus();if(pop&&pop.dataset.kind==='osis'){if(after)after();return;}if(hosted&&!pop)scheduleFit();if(old!==j.signature||(!tab&&liveChanged))render();else if(tab==='align')paintAlignment();if(after)after();else if(tab==='room')getPrivacy(true);else if(tab==='lighting')getLighting();else if(tab==='expr'||tab==='people'){getActor();if(tab==='expr'&&!expressionsReady)getExpressions();}
  });}
  function poll(){clearTimeout(timer);if(!modal)return;if(!document.body.classList.contains('open')){close();return;}if(window.hdCapture)hdCapture('1');refresh();timer=setTimeout(poll,1800);}
  function close(){popBack='';closePop();sizeDrag=null;photoDrag=null;photoRepaint=false;clearTimeout(timer);for(const [id,p] of pending){if(!p.detached){clearTimeout(p.timer);pending.delete(id);}}pendingFavorite=false;
@@ -920,13 +922,15 @@ window.OstimTools=(function(){
  /* Open a segment. It is a POPOUT, so the page behind it never reflows and
     the segment gets far more room than the panel could give it. */
  function openSegment(t){
+  if(t==='osis'){openOsis('');return;}
   const seg=SEGMENTS.filter(a=>a[0]===t)[0];
   popout(seg?seg[1]:'Scene',seg?(seg[3]||''):'',host=>{
    body=host;            // render() writes here until the popout closes
    render();
   },'',seg?seg[2]:'');
  }
- function switchTab(t){tab=t;search='';
+ function switchTab(t){if(t==='osis'&&!osisAvailable())return;tab=t;search='';
+  if(t==='osis'){openOsis('');return;}
   if(pop&&body&&body.className==='ost-pop-body'){
    // Already in a popout: swap its contents rather than stacking a second one.
    const head=pop.querySelector('.ost-pop-head h2');
@@ -1379,7 +1383,7 @@ window.OstimTools=(function(){
   const q=String(input.value||'').trim().toLowerCase();
   findSel=0;
   if(!q){findRows=[];drop.hidden=true;drop.textContent='';return;}
-  findRows=ACTIONS.map(a=>[a,scoreAction(a,q)]).filter(r=>r[1]>=0)
+  findRows=visibleActions().map(a=>[a,scoreAction(a,q)]).filter(r=>r[1]>=0)
    .sort((x,y)=>x[1]-y[1]).slice(0,8).map(r=>r[0]);
   drop.textContent='';
   if(!findRows.length){drop.append(el('p','ost-help','Nothing on this page matches “'+input.value+'”.'));drop.hidden=false;return;}
@@ -1454,6 +1458,7 @@ window.OstimTools=(function(){
       the running scene and never pauses it. */
    body.append(el('p','ost-help','Uses OStim’s actor alignment. Reset leaves scale and other actor settings unchanged. “Adjust live” closes the deck and puts the overlay on top of the running scene. Every control there is clickable; the keys are W/S to pick an axis, A/D to nudge it, Q/E for the next person, F for fine steps, Esc to close. Not the arrows — those are OStim’s own scene navigation.'));
   }else if(tab==='options'){
+   if(osisAvailable())body.append(btn('OSIS controls & settings',()=>openOsis('options')));
    body.append(el('h3','','Quick toggles'),
      el('p','ost-help','OStim’s own MCM switches. Changes apply straight away and persist — this is the same setting you would flip in its menu.'));
    renderMcm(body);
@@ -1773,7 +1778,23 @@ window.OstimTools=(function(){
  }
  function actorHeader(){const a=(snapshot.actors||[]).find(x=>x.formId===selected);body.append(el('h3','',a?'Selected: '+a.name:'Pick someone in the strip above.'));}
  function getExpressions(){request('expressions',{},j=>{expressionRows=j.expressions||[];expressionsReady=!!j.ready;if(tab==='expr')render();});}
+ // A folder on disk or an unknown/older host is not a loaded integration.
+ // Read the current hdOpen detection each time; never persist this flag.
+ function osisAvailable(){
+  const d=typeof window.__hdDetected==='function'?window.__hdDetected():null;
+  return !!(d&&d.osis===true);
+ }
+ function visibleActions(){return ACTIONS.filter(a=>a[1]!=='osis'||osisAvailable());}
+ function openOsis(back){
+  if(!osisAvailable())return;
+  popout('OSIS controls & settings','OStim Standalone Immersive Sex',host=>{
+   if(!window.HDOsis){host.append(el('p','ost-help','The OSIS panel has not loaded. Close and reopen Scene.'));return;}
+   osisPanel=HDOsis.mount(host,payload=>new Promise(resolve=>request('osis',payload,resolve)));
+  },back||'','sn-expr');
+  if(pop)pop.dataset.kind='osis';
+ }
  function renderExpressions(){
+  if(osisAvailable())body.append(btn('OSIS controls & settings',()=>openOsis('expr')));
   const status=el('span','ost-help');status.dataset.expressionOverride='1';const last=el('span','ost-help');last.dataset.expressionLast='1';const readout=el('div','ost-expression-status');readout.append(status,last);body.append(readout);
   body.append(personTabs());
   const tools=el('div','ost-toolbar');tools.append(segmented([['All expressions',!expressionOnlyFav,()=>{expressionOnlyFav=false;render();}],['Favorite expressions',expressionOnlyFav,()=>{expressionOnlyFav=true;render();}]],'Which expressions'),actorButton('Return to OStim','expressionClear'));body.append(tools);
@@ -2511,6 +2532,10 @@ window.OstimTools=(function(){
   ['Clear the room','room','get away from me empty privacy move them out alone bystanders kick'],
   ['Bring everyone back','room','restore return undo cleared room bring back'],
 
+  ['OSIS controls & settings','osis','osis osed reborn expression face body response arousal lip sync settings modules'],
+  ['OSIS module switches','osis','osis enable disable pause faces hands feet living skin lip sync arousal'],
+  ['OSIS expression tuning','osis','osis mode profile style strength gaze emotion personality cinematic anime'],
+  ['OSIS body blush','osis','osis blush overlays racemenu slots skin saliva'],
   ['Scene expressions','expr','face expression preview favorites automatic emotion'],
   ['Give OStim back the expressions','expr','clear reset return expression automatic'],
 
@@ -2546,7 +2571,8 @@ window.OstimTools=(function(){
   ['OStim settings','options','ostim auto manual options settings menu mcm']
  
  ];
- if(window.HDOmni)HDOmni.register({id:'ostim-tools',label:'OStim controls',index:()=>ACTIONS.map(a=>({label:a[0],detail:'OStim · '+a[2],keywords:'ostim scene '+a[2],kind:'action',icon:'icons/custom/seg-ostim.png',jump:()=>{
+ if(window.HDOmni)HDOmni.register({id:'ostim-tools',label:'OStim controls',index:()=>visibleActions().map(a=>({label:a[0],detail:'OStim · '+a[2],keywords:'ostim scene '+a[2],kind:'action',icon:'icons/custom/seg-ostim.png',jump:()=>{
+   if(a[1]==='osis'&&!osisAvailable())return;
    // Prefer the dedicated tab when the deck has it (OStim present); fall
    // back to the floating modal so this still works with the tab gated off.
    // __hdFlagAbsent is the cross-file gate accessor (app.js's `state` is not

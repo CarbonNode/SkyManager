@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="hud.css" />
   <link rel="stylesheet" href="hud-td.css" />
   <link rel="stylesheet" href="hud-align.css" />
+  <link rel="stylesheet" href="hud-stance.css" />
   <link rel="stylesheet" href="hud-outfit.css" />
   <link rel="stylesheet" href="hud-photo.css" />
 </head>
@@ -156,11 +157,16 @@
        hud-align.js builds the card inside it. Drawn over a RUNNING scene —
        the view takes real keyboard focus with pauseGame=false. -->
   <div id="hud-align"></div>
+  <!-- The Stance Wheel (2026-10-03): the slow-time Stances NG picker. Empty
+       until C++ calls swShow("1"); hud-stance.js builds the wheel inside it.
+       Unpaused focus, world slowed by BSTimer's time multiplier. -->
+  <div id="hud-stance"></div>
   <aside id="hud-photo" aria-hidden="true"></aside>
   <script src="hud-photo.js"></script>
   <script src="hud.js"></script>
   <script src="hud-td.js"></script>
   <script src="hud-align.js"></script>
+  <script src="hud-stance.js"></script>
   <script src="wardrobe-flair-model.js"></script>
   <script src="hud-outfit.js"></script>
 </body>

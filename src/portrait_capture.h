@@ -1,6 +1,7 @@
 #pragma once
 
 #include "photo_lighting.h"
+#include "photo_frame.h"
 
 #include <cstdint>
 #include <functional>
@@ -228,7 +229,7 @@ namespace PortraitCapture
 	void PhotoCancel();
 	// Read-only HUD: main-thread delivery, never takes keyboard/mouse focus.
 	// active remains true while shooting, but visible becomes false BEFORE capture.
-	void SetPhotoLightingCallback(std::function<void(bool, bool, const PhotoLighting::Snapshot&)> cb);
+	void SetPhotoLightingCallback(std::function<void(bool, bool, const PhotoLighting::Snapshot&, const PhotoFrame::Frame&)> cb);
 	void RefreshPhotoLights();
 
 	// Called after a successful photo with (slug, filename) so the caller can

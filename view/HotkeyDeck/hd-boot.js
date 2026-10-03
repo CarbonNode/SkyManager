@@ -93,6 +93,7 @@
     'hd-quests.js',
     // ---- the heavy priority panes, first among the big files (DR1) ----
     'get-away.js',
+    'hd-osis.js',         // shared OSIS owner-settings panel
     'ostim-tools.js',      // Live scene workspace + library
     'scene-pane.js',       // the Scene TAB — a thin host for ostim-tools.js's
                            // card (F7 lands here mid-scene). Must follow it:
@@ -126,6 +127,8 @@
     'containers-pane.js',
     'rooms-pane.js',
     'loot-pane.js',
+    'keys-atlas-layouts.js',
+    'keys-atlas.js',
     'keys-pane.js',
     'hd-lightbox.js',
     'hd-facefit.js',       // before the panes that use it (npcs tiles, followers medallions)

@@ -11,6 +11,7 @@
 #include "ppa_config.h"
 #include "skyui_mcm.h"
 #include "relight_config.h"
+#include "osis_runtime.h"
 #include "scene_tags.h"
 #include <thread>
 #include <chrono>
@@ -1021,6 +1022,7 @@ void Controls(const std::string& payload, Reply reply){
   // the CELL, and PPA's config is a file on disk. Below the gate they would
   // be refused for the whole of every scene transition, which is exactly
   // when you reach for them.
+  if(act=="osis"){logger::info("osis-settings: op={}",req.value("op","state"));done(json::parse(OsisRuntime::Control(payload)));return;}
   if(act=="privacy"){done(json::parse(ScenePrivacy::Control(payload)));return;}
   if(act=="room"){RoomControl(req,done);return;}
   // The live overlay is opened by C++ (it owns the HUD view and its Focus);

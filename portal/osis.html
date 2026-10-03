@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
+<title>OSIS · SkyManager</title><link rel="stylesheet" href="/api/osis-assets/hd-osis.css">
+<style>body{margin:0;background:#17191e;color:#eae4d5;font:18px/1.5 system-ui,sans-serif}main{max-width:1100px;margin:0 auto;padding:30px}a{color:#dec68a;display:inline-block;padding:12px 0;margin-bottom:20px}a:focus-visible{outline:3px solid #f2d899;outline-offset:3px}@media(max-width:700px){main{padding:20px}}</style>
+</head><body><main><a href="/">‹ SkyManager</a><h1>OSIS controls</h1><div id="osis"></div></main>
+<script src="/api/osis-assets/hd-osis.js"></script><script>
+HDOsis.mount(document.getElementById('osis'),async function(body){
+ const response=await fetch('/api/osis',{method:body.op==='state'?'GET':'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:body.op==='state'?undefined:JSON.stringify(body)});
+ if(response.status===401){location.href='/';throw new Error('Sign in to SkyManager first.');}
+ const result=await response.json();if(result.error&&!result.msg)result.msg=result.error;return result;
+},{heading:2});
+</script></body></html>

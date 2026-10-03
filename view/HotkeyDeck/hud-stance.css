@@ -1,0 +1,207 @@
+/* ==========================================================================
+   Stance Wheel — the slow-time Stances NG picker (hud-stance.js).
+
+   Lives in the HUD view (hud.html) as a sibling of #hud-td / #hud-align, so
+   body.hud-hidden / body.hud-strip-off never touch it — its ONE visibility
+   input is body.sw-open, set by hud-stance.js when C++ says swShow("1").
+
+   The whole layer takes the pointer while it is up: the cursor steers the
+   highlight by ANGLE from the centre, even outside the wheel.
+
+   Palette = the deck's gold-on-dark HUD (hud-td.css) plus Stances NG Combat
+   Expansion's own stance colours, passed in as --sw-rgb per face.
+
+   ⚠ Ultralight, compositor off: no looping animations — every transition is
+   a one-shot class flip; explicit rgba(), never color-mix(); no CSS
+   transforms on SVG children (the wedges are SVG attributes).
+   The layer is body-anchored and outside #panel's --ui-scale transform, so
+   its bare vh/vw are correct (the 2026-08-14 popup audit).
+   ========================================================================== */
+
+#hud-stance { position: fixed; left: 0; top: 0; right: 0; bottom: 0; display: none; z-index: 45; }
+body.sw-open #hud-stance {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* a soft vignette: the world is slowed, not gone, so it stays visible */
+  background: radial-gradient(ellipse at center, rgba(6, 7, 9, .30) 0%, rgba(6, 7, 9, .62) 70%, rgba(6, 7, 9, .78) 100%);
+  cursor: default;
+}
+
+.sw-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  user-select: none;
+  -webkit-user-select: none;
+  color: #e9e2cf;
+  font-family: inherit;
+  /* one-shot entrance */
+  opacity: 0;
+  transform: scale(.94);
+  transition: opacity 150ms ease, transform 180ms ease;
+}
+.sw-frame.sw-in { opacity: 1; transform: scale(1); }
+
+/* ---- title -------------------------------------------------------------- */
+.sw-title {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 14px;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .9);
+}
+.sw-title-k { font-size: 30px; letter-spacing: 6px; text-transform: uppercase; color: #f3ecd9; }
+.sw-title-s { font-size: 17px; letter-spacing: 2px; text-transform: uppercase; color: #b9a978; }
+
+/* ---- the wheel ---------------------------------------------------------- */
+/* Sized to the screen: 860 at 1440p (Rober plays 2560x1440 from a couch).
+   Faces and hub are sized as calc(base × --sw-k), which hud-stance.js
+   measures (wheel px / 640) — so the text always fits its wedge, whatever
+   the screen. */
+.sw-wrap {
+  position: relative;
+  width: 64vh;
+  height: 64vh;
+  max-width: 860px;
+  max-height: 860px;
+  min-width: 420px;
+  min-height: 420px;
+  --sw-k: 1;
+}
+.sw-svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; overflow: visible; }
+
+.sw-svg .sw-halo    { fill: none; stroke: rgba(214, 195, 148, .14); stroke-width: 10; }
+.sw-svg .sw-rim     { fill: none; stroke: rgba(214, 195, 148, .70); stroke-width: 2; }
+.sw-svg .sw-hubdisc { fill: rgba(9, 10, 12, .92); }
+.sw-svg .sw-hubring { fill: none; stroke: rgba(214, 195, 148, .55); stroke-width: 2; }
+
+.sw-svg .sw-fill { stroke: none; transition: fill 120ms ease; }
+.sw-svg .sw-edge { fill: rgba(12, 13, 16, .80); stroke: rgba(214, 195, 148, .38); stroke-width: 1.5; }
+.sw-svg .sw-wedge.is-hi .sw-edge  { stroke: rgba(240, 214, 140, .95); stroke-width: 2.5; fill: rgba(22, 21, 18, .86); }
+.sw-svg .sw-wedge.is-cur .sw-edge { stroke: rgba(240, 214, 140, .70); stroke-width: 2; }
+
+/* ---- faces: badge + name + key, centred on each wedge ------------------
+   Every size is calc(base × --sw-k) — real layout sizes, never a scale()
+   transform: Ultralight rasterises at LAYOUT size, so a scaled badge would
+   only magnify a small raster. */
+.sw-face {
+  position: absolute;
+  width: calc(200px * var(--sw-k));
+  margin-left: calc(-100px * var(--sw-k));
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  pointer-events: none;   /* the layer steers; faces are just paint */
+}
+/* Combat Expansion's badge: frame geometry here, its glyph on a canvas */
+.sw-icon {
+  position: relative;
+  width: calc(120px * var(--sw-k));
+  height: calc(120px * var(--sw-k));
+  opacity: .8;
+  transition: opacity 120ms ease;
+}
+.sw-badge { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
+.sw-badge .sw-b-out  { fill: rgba(22, 24, 27, .96); stroke-width: 4.5; stroke-linejoin: miter; }
+.sw-badge .sw-b-in   { fill: none; stroke-width: 1.4; }
+.sw-badge .sw-b-mark { fill: none; stroke-width: 3.6; }
+.sw-glyph { position: absolute; left: 22%; top: 22%; width: 56%; height: 56%; display: block; }
+.sw-name {
+  margin-top: calc(6px * var(--sw-k));
+  font-size: calc(24px * var(--sw-k));
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #e6dcc2;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .9);
+}
+.sw-key {
+  margin-top: calc(3px * var(--sw-k));
+  min-height: calc(20px * var(--sw-k));
+  font-size: calc(16px * var(--sw-k));
+  letter-spacing: 1px;
+  color: #a39a83;
+}
+.sw-face.is-hi .sw-icon { opacity: 1; }
+.sw-face.is-hi .sw-name { color: rgb(var(--sw-rgb)); }
+.sw-face.is-cur .sw-key { color: #d9c58f; }
+
+/* ---- the hub ------------------------------------------------------------ */
+.sw-hub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(200px * var(--sw-k));
+  margin-left: calc(-100px * var(--sw-k));
+  transform: translateY(-50%);
+  text-align: center;
+  pointer-events: none;
+}
+.sw-hub-name {
+  font-size: calc(28px * var(--sw-k));
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #f3ecd9;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .9);
+}
+.sw-hub-trait {
+  margin-top: calc(8px * var(--sw-k));
+  font-size: calc(17px * var(--sw-k));
+  line-height: 1.35;
+  color: #d8d0bb;
+}
+.sw-hub-cur {
+  margin-top: calc(10px * var(--sw-k));
+  font-size: calc(16px * var(--sw-k));
+  letter-spacing: 1px;
+  color: #b9a978;
+}
+
+/* ---- note + footer ------------------------------------------------------ */
+.sw-note {
+  min-height: 24px;
+  margin-top: 10px;
+  font-size: 18px;
+  color: #e79a9a;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .9);
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+.sw-note.show { opacity: 1; }
+
+.sw-foot {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-top: 8px;
+}
+.sw-hint {
+  font-size: 17px;
+  letter-spacing: .5px;
+  color: #b3ab96;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .9);
+}
+.sw-x {
+  font: inherit;
+  font-size: 18px;
+  letter-spacing: 1px;
+  color: #f0e8d2;
+  background: rgba(20, 22, 26, .92);
+  border: 1px solid rgba(214, 195, 148, .55);
+  border-radius: 999px;
+  padding: 10px 26px;
+  min-height: 44px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.sw-x:hover { background: rgba(46, 41, 27, .95); border-color: #f0d68c; box-shadow: 0 0 12px rgba(240, 214, 140, .25); }
+.sw-x:active { background: rgba(60, 52, 32, .95); }
+.sw-x:focus-visible { outline: 2px solid #f0d68c; outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sw-frame, .sw-svg .sw-fill, .sw-icon, .sw-note, .sw-x { transition: none; }
+  .sw-frame { transform: none; }
+}

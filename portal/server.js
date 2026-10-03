@@ -6070,6 +6070,33 @@ async function route(req, res, url) {
   const p = url.pathname;
   const m = req.method;
 
+  // osis-portal-live: same component and owner adapter as the Scene popout.
+  if (m==='GET' && p==='/api/osis/presence') {
+    const r=await liveSend({kind:'ping'});
+    sendJson(res,200,{ok:true,loaded:!!(r&&r.ok===true&&r.osisLoaded===true)});return;
+  }
+  if (m==='GET' && p==='/osis') {
+    try { const bytes=fs.readFileSync(path.join(__dirname,'osis.html'));res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(bytes); }
+    catch(_){sendErr(res,404,'OSIS controls are not installed yet.');}return;
+  }
+  if (m==='GET' && p.startsWith('/api/osis-assets/')) {
+    const name=p.slice('/api/osis-assets/'.length);
+    if(!['hd-osis.js','hd-osis.css'].includes(name)){sendErr(res,404,'Unknown OSIS asset');return;}
+    try { const bytes=fs.readFileSync(path.join(DECK_VIEW_DIR,name));res.writeHead(200,{'Content-Type':name.endsWith('.css')?'text/css; charset=utf-8':'application/javascript; charset=utf-8','Cache-Control':'no-cache'});res.end(bytes); }
+    catch(_){sendErr(res,404,'Install the matched SkyManager OSIS files first.');}return;
+  }
+  if ((m==='GET'||m==='POST') && p==='/api/osis') {
+    const body=m==='GET'?{op:'state'}:await readJsonBody(req);
+    if(!body||!['state','set','save'].includes(body.op)||JSON.stringify(body).length>2048||
+       (body.op!=='state'&&(typeof body.revision!=='string'||body.revision.length>160))||
+       (body.op==='set'&&(typeof body.id!=='string'||body.id.length>80||!['boolean','number'].includes(typeof body.value)))) {
+      sendErr(res,400,'Invalid OSIS request. Refresh the controls.');return;
+    }
+    const r=await liveSend({kind:'osis',op:body.op,revision:body.revision,id:body.id,value:body.value});
+    if(!r){sendErr(res,503,'Skyrim did not confirm the request. Refresh OSIS before retrying.');return;}
+    sendJson(res,r.ok?200:409,r);return;
+  }
+
   // formation-portal-live: the exact in-game panel, backed by live owner calls.
   if (m==='GET' && p==='/formation') {
     try {const bytes=fs.readFileSync(path.join(__dirname,'formation.html'));res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-cache'});res.end(bytes);}

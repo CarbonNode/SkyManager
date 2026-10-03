@@ -72,6 +72,7 @@
       if (filter.cat !== '__all__' && !inside(s.category, filter.cat, library.parents)) return false;
       if (filter.kind && filter.kind !== 'all' && kind(m) !== filter.kind) return false;
       if (filter.mode && filter.mode !== 'all' && s.mode !== filter.mode) return false;
+      if (!terms.length) return true;
       var hay = [s.name, path(s.category, library.parents), s.plugin, m.school, m.element, m.type].join(' ').toLowerCase();
       return terms.every(function (term) { return hay.indexOf(term) >= 0; });
     });
@@ -82,6 +83,22 @@
       return String(av || '').localeCompare(String(bv || '')) || String(a.name).localeCompare(String(b.name));
     });
     return rows;
+  }
+  /* ui-surface-counts: one unsorted pass for all category and smart-filter
+     badges. Fresh on every paint, so edits/live metadata never stale a cache. */
+  function counts(spells, parents, meta) {
+    var out = { all: spells.length, kinds: Object.create(null), modes: Object.create(null), categories: Object.create(null) };
+    spells.forEach(function (s) {
+      var k = kind(meta(s));
+      out.kinds[k] = (out.kinds[k] || 0) + 1;
+      out.modes[s.mode] = (out.modes[s.mode] || 0) + 1;
+      var cat = s.category, seen = [];
+      while (cat && seen.indexOf(cat) < 0) {
+        out.categories[cat] = (out.categories[cat] || 0) + 1;
+        seen.push(cat); cat = own(parents, cat) ? parents[cat] : '';
+      }
+    });
+    return out;
   }
   /* The ladder itself, kept pure so the harness can feed it heights: `fits(d)`
      answers whether the list stops scrolling at density d (the view measures
@@ -132,7 +149,7 @@
       {label:effect.label,value:effect.value,note:effect.value.indexOf('effects') >= 0 ? 'Separate effects; open Details to read each' : effect.note}];
   }
   // END SPELL DESCRIPTION FORMATTERS
-  var api = { normalize: normalize, inside: inside, tree: tree, path: path, kind: kind, visible: visible,
+  var api = { normalize: normalize, inside: inside, tree: tree, path: path, kind: kind, visible: visible, counts: counts,
     stats: spellStatTiles, effectRows: spellEffectRows, cardStats: spellCardStats, densities: DENSITIES.slice(), fitDensity: fitDensity, stepDensity: stepDensity };
   root.SpellLibrary = api;
   if (typeof module !== 'undefined') module.exports = api;

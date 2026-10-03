@@ -687,7 +687,7 @@ var HDWheel = (function () {
   var PROV_GLYPH = {
     hotkeys: '⌨', 'deck-actions': '⚙', tabs: '▦', notes: '✎', quests: '❖',
     spells: '✦', time: '◔', domains: '◈', rooms: '⌂', finances: 'ᚠ',
-    wardrobe: '⛃', followers: '☺', inventory: '⚔', bases: '🏰', anim: '🕺',
+    wardrobe: '⛃', followers: '☺', smf: '⚙', inventory: '⚔', bases: '🏰', anim: '🕺',
     loot: '◆', ostim: '❥',
   };
   var KIND_GLYPH = {

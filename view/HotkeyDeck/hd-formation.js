@@ -41,6 +41,9 @@
        Cleared by the render that finally draws that button — the first paint
        after open() is the loading state, which has no footer to scroll to. */
     focusRescue: false,
+    /* A setting to bring into view once the modal has painted it (opened
+       from a search row). Consumed by the render that finds its node. */
+    focusKey: '',
     provider: '',      // '' = let C++ pick (last used / only installed)
     wSlot: 0,          // Walk With Me: which party slot the grid edits
     section: 'travel',
@@ -57,6 +60,12 @@
   let renderedSection = '';
   /* Set by openRescue() and consumed by the open() it triggers — see there. */
   let rescuePending = false;
+  /* Set by openSetting() and consumed by the open() it triggers — the same
+     deferral reason as rescuePending: openVia may call open() a beat later. */
+  let settingPending = null;
+  /* One quiet fmGet per session so labels outside the modal (quick card
+     button, search group) can name the installed mod before anyone opens it. */
+  let warmed = false;
 
   /* Cast-key rebind maps. app.js owns the canonical DIK tables and exposes
      window.hdKeyScan / hdKeyLabel; we PREFER those. This compact fallback only
@@ -179,6 +188,7 @@
     S.data = d;
     if (d.provider) S.provider = d.provider;
     S.loading = false;
+    relabelDoors();
     if (S.open) render();
   };
 
@@ -272,6 +282,9 @@
 
   function num(v) { return typeof v === 'number' ? v : parseFloat(v) || 0; }
 
+  /* Tag a control with the setting it edits, so a search row can land on it. */
+  function mark(node, key) { if (node && key) node.setAttribute('data-fm-key', key); return node; }
+
   /* How the formation stands right now, in one line, for the search rows.
      Reads the last fmOpen payload — which the omni provider's warm() asks
      for — and returns '' when the game has never answered, so the caller can
@@ -281,6 +294,18 @@
   function summary() {
     const d = S.data;
     if (!d) return '';
+    if (Array.isArray(d.providers) && !d.providers.some((p) => p && p.installed))
+      return 'No formation mod is installed';
+    if (provOf(d) === 'wwm') {
+      if (!d.installed) return 'Walk With Me isn’t in the load order';
+      if (!d.present) return 'Walk With Me is installed, but its plugin isn’t enabled';
+      const st = d.settings || {};
+      const n = (d.count == null || d.count < 0) ? null : d.count;
+      const party = n == null ? '' : String(n) + ' of ' + String(d.max || 10) + ' companions';
+      if (st.enabled === false) return 'Walk With Me is switched OFF' + (party ? ' · ' + party : '');
+      const mode = (Array.isArray(d.modes) ? d.modes : []).find((m) => Number(m.id) === Number(st.mode));
+      return [party, mode ? mode.label : ''].filter(Boolean).join(' · ');
+    }
     if (!d.installed) return 'Formation with Followers isn’t in the load order';
     if (!d.present) return 'Installed, but its plugin isn’t enabled';
     if (d.bound === false) return 'Loaded but never initialized — open its MCM once';
@@ -290,6 +315,40 @@
     if (g.enabled === false) return 'Formation is turned OFF · ' + formed;
     return formed + ' · spacing ' + Math.round(num(g.defaultX)) + ' ⇄ ' +
       Math.round(num(g.defaultY)) + ' ⇅';
+  }
+
+  /* Which formation mods the game says are installed: ['wwm'], ['fwf'],
+     both, [] — or null when the game has not answered yet this session. */
+  function installedProviders() {
+    const d = S.data;
+    if (!d) return null;
+    /* A payload from before the provider router carries only its own mod. */
+    if (!Array.isArray(d.providers)) return d.installed ? [provOf(d)] : [];
+    return d.providers.filter((p) => p && p.installed).map((p) => p.id);
+  }
+
+  /* The name every surface outside the modal should use for "the formation
+     mod": the one that is installed, Walk With Me when it is. */
+  function displayName() {
+    const ids = installedProviders();
+    if (ids && ids.indexOf('wwm') !== -1) return 'Walk With Me';
+    if (ids && ids.indexOf('fwf') !== -1) return 'Formation';
+    return 'Formation';
+  }
+
+  /* Relabel the doors that are already on screen (the quick card's button)
+     once the game has said which mod is installed. */
+  function relabelDoors() {
+    const name = displayName();
+    document.querySelectorAll('[data-fm-open]').forEach((b) => {
+      b.textContent = '⛬ ' + name + '…';
+    });
+  }
+
+  function warm() {
+    if (warmed || S.data) return;
+    warmed = true;
+    toGameSafe('fmGet', JSON.stringify(crosshair()));
   }
 
   /* ------------------------------------------------------------ render -- */
@@ -483,6 +542,10 @@
             Object.assign(subjPayload(), { op: 'unregister' }))),
         }, '⊘ Leave the party'));
       } else {
+        /* Legacy 0.15 only — renderWwm hands 0.2.2 to renderWwmModern above,
+           whose roster row is the enrolment surface and carries no gate (the
+           public API it calls has none). This mirrors the legacy mod's own
+           bRequirePlayerTeammate so a refusal is a sentence, not a dead button. */
         const can = sub.teammate !== false || g.requireTeammate === false;
         btns.append(h('button', {
           class: 'fm-btn primary', type: 'button', disabled: can ? null : '',
@@ -685,6 +748,7 @@
         'aria-pressed':String(Number(settings.mode) === Number(m.id)),
         onClick:()=>modernChange('mode',Number(m.id))
       },h('span',{class:'fm-order-l'},m.label),h('span',{class:'fm-order-h'},m.hud))));
+      mark(modes,'mode');
       if (S.section === 'travel') body.append(modes);
       else if (Number(settings.mode) !== 2 || settings.enabled === false) {
         body.append(h('div',{class:'fm-note fm-action-note'},
@@ -693,7 +757,7 @@
             S.draft.mode=2; modernChange('enabled',true);
           }},'Use Companion mode')));
       }
-      const side = h('div',{class:'fm-choice-row'},h('span',{class:'fm-lbl'},'Companion side'));
+      const side = mark(h('div',{class:'fm-choice-row'},h('span',{class:'fm-lbl'},'Companion side')),'preferredSide');
       [[-1,'Left'],[1,'Right']].forEach(([value,label])=>side.append(h('button',{
         type:'button',class:'fm-btn'+(Number(settings.preferredSide)===value?' primary':''),
         'aria-pressed':String(Number(settings.preferredSide)===value),onClick:()=>modernChange('preferredSide',value)
@@ -701,7 +765,7 @@
       body.append(side);
     }
     if (S.section === 'hands') {
-      const row = h('div',{class:'fm-choice-row'},h('span',{class:'fm-lbl'},'Method'));
+      const row = mark(h('div',{class:'fm-choice-row'},h('span',{class:'fm-lbl'},'Method')),'method');
       [['classic','Classic'],['tether','TETHER']].forEach(([value,label])=>row.append(h('button',{
         type:'button',class:'fm-btn'+(settings.method===value?' primary':''),
         disabled:value==='tether'&&!d.tetherAssets?'':null,
@@ -717,7 +781,7 @@
     (d.controls || []).filter(c=>c.group===S.section).forEach(c=>{
       if (S.section==='hands' && /^palm|^gripGap$/.test(c.key) && settings.method!=='tether') return;
       if (c.type==='toggle') {
-        fields.append(toggle(c.label,c.label,settings[c.key]===true,v=>modernChange(c.key,v)));
+        fields.append(mark(toggle(c.label,c.label,settings[c.key]===true,v=>modernChange(c.key,v)),c.key));
       } else {
         const input=h('input',{type:'number',class:'fm-number',name:c.key,
           min:c.min,max:c.max,step:c.step,value:settings[c.key],inputmode:'decimal',
@@ -725,7 +789,7 @@
             const value=Number(e.target.value);
             if (e.target.value!=='' && Number.isFinite(value)) modernChange(c.key,value,false);
           }});
-        fields.append(h('label',{class:'fm-number-row'},h('span',{},c.label),input));
+        fields.append(mark(h('label',{class:'fm-number-row'},h('span',{},c.label),input),c.key));
       }
     });
     body.append(fields);
@@ -755,7 +819,8 @@
       ? roster.find(r=>r.formId===S.picks[choice]) : roster.find(r=>r.key && r.key===selected.key);
     const pickedName = Object.prototype.hasOwnProperty.call(S.picks,choice)
       ? selectedRow && selectedRow.name : selected.name;
-    const card=h('section',{class:'fm-party'},h('div',{class:'fm-sec-t'},
+    const card=mark(h('section',{class:'fm-party'}),'party');
+    card.append(h('div',{class:'fm-sec-t'},
       selecting ? (hands?'Hand-holding companion':'Loot scout') : 'Your nearby companions',
       selecting ? h('span',{class:'fm-chip'},pickedName || (hands?'Choose a partner':'Nearest companion')) : null));
     body.append(card);
@@ -816,6 +881,20 @@
       if(next) next.focus();
     }
     const body=el.querySelector('.fm-body');if(body)body.scrollTop=scroll;
+    focusSetting();
+  }
+
+  /* Opened from a search row for one setting: once the modal has painted the
+     node that edits it, scroll it into view and light it briefly. Scroll and
+     highlight only — no focus(), so Enter never fires a toggle by surprise. */
+  function focusSetting() {
+    if (!S.focusKey || !el || S.loading || !S.data) return;
+    const node = el.querySelector('[data-fm-key="' + S.focusKey + '"]');
+    if (!node) return;   // not painted in this provider/section; try next render
+    S.focusKey = '';
+    try { node.scrollIntoView({ block: 'center' }); } catch (e) {}
+    node.classList.add('fm-hit');
+    setTimeout(() => { if (node.isConnected) node.classList.remove('fm-hit'); }, 2400);
   }
 
   function renderContent() {
@@ -862,9 +941,9 @@
     if (!d || !d.present || d.bound === false) {
       /* Honest absence, with the way forward. Three flavours. */
       const why = !d || !d.installed
-        ? 'Formation with Followers isn’t in the load order. The FIXED fork is '
-          + 'staged in MO2 as “Formation with Followers - Fixed” — tick it '
-          + '(and its plugin) and relaunch.'
+        ? 'No formation mod is in the load order. Walk With Me (Nexus 191283) '
+          + 'is the one the deck drives — install it, tick its plugin '
+          + '(Wayfarer.esp) and relaunch.'
         : (!d.present
           ? 'The plugin is installed but not enabled — tick '
             + 'FormationWithFollowers.esp in MO2’s right pane and relaunch.'
@@ -926,7 +1005,7 @@
 
     /* ---- her place (the F7 subject) ---- */
     const sub = d.subject;
-    const her = h('div', { class: 'fm-sec' });
+    const her = mark(h('div', { class: 'fm-sec' }), 'place');
     body.append(her);
     if (sub && sub.registered) {
       her.append(h('div', { class: 'fm-sec-t' },
@@ -983,46 +1062,46 @@
     all.append(h('div', { class: 'fm-sec-t' },
       h('span', {}, 'The whole formation'),
       h('span', { class: 'fm-chip' }, String(d.count || 0) + ' / ' + String(d.max || 64)),
-      toggle('Formation', 'Master switch — off releases everyone to walk normally',
+      mark(toggle('Formation', 'Master switch — off releases everyone to walk normally',
         g.enabled !== false,
-        (v) => { apply({ global: { enabled: v } }); g.enabled = v; render(); })));
+        (v) => { apply({ global: { enabled: v } }); g.enabled = v; render(); }), 'formation')));
 
     all.append(
-      slider('Spacing ⇄', 'How far apart the direction slots sit, side-to-side '
+      mark(slider('Spacing ⇄', 'How far apart the direction slots sit, side-to-side '
         + '(the pad above uses this)', 0, 1024, 8, num(g.defaultX), '',
-        (v) => { apply({ global: { defaultX: v } }); g.defaultX = v; }),
-      slider('Spacing ⇅', 'How far apart the direction slots sit, front-to-back',
+        (v) => { apply({ global: { defaultX: v } }); g.defaultX = v; }), 'defaultX'),
+      mark(slider('Spacing ⇅', 'How far apart the direction slots sit, front-to-back',
         0, 1024, 8, num(g.defaultY), '',
-        (v) => { apply({ global: { defaultY: v } }); g.defaultY = v; }),
-      slider('Walk-to reach', 'She walks to her slot when she is this far from it',
+        (v) => { apply({ global: { defaultY: v } }); g.defaultY = v; }), 'defaultY'),
+      mark(slider('Walk-to reach', 'She walks to her slot when she is this far from it',
         0, 256, 1, num(g.walkingArea), '',
-        (v) => { apply({ global: { walkingArea: v } }); g.walkingArea = v; }),
-      slider('Settle zone', 'Close enough — she stands still inside this radius',
+        (v) => { apply({ global: { walkingArea: v } }); g.walkingArea = v; }), 'walkingArea'),
+      mark(slider('Settle zone', 'Close enough — she stands still inside this radius',
         0, 256, 1, num(g.stopArea), '',
-        (v) => { apply({ global: { stopArea: v } }); g.stopArea = v; }),
-      slider('Re-form every', 'How often positions re-assert. Lower = tighter '
+        (v) => { apply({ global: { stopArea: v } }); g.stopArea = v; }), 'stopArea'),
+      mark(slider('Re-form every', 'How often positions re-assert. Lower = tighter '
         + 'formation but more script load — the original mod’s save-killer was '
         + 'exactly this loop running hot', 1, 60, 0.5, num(g.interval) || 5, 's',
-        (v) => { apply({ global: { interval: v } }); g.interval = v; }));
+        (v) => { apply({ global: { interval: v } }); g.interval = v; }), 'interval'));
 
     all.append(h('div', { class: 'fm-toggles' },
-      toggle('In towns', 'Keep formation inside villages and city grounds',
+      mark(toggle('In towns', 'Keep formation inside villages and city grounds',
         g.habitation !== false,
-        (v) => { apply({ global: { habitation: v } }); g.habitation = v; render(); }),
-      toggle('Indoors', 'Keep formation in interiors and dungeons (off is the '
+        (v) => { apply({ global: { habitation: v } }); g.habitation = v; render(); }), 'habitation'),
+      mark(toggle('Indoors', 'Keep formation in interiors and dungeons (off is the '
         + 'mod’s default — corridors fight formations)',
         g.dungeon === true,
-        (v) => { apply({ global: { dungeon: v } }); g.dungeon = v; render(); }),
-      toggle('Cast opens menu', 'When you cast the Formation power AT a follower, '
+        (v) => { apply({ global: { dungeon: v } }); g.dungeon = v; render(); }), 'dungeon'),
+      mark(toggle('Cast opens menu', 'When you cast the Formation power AT a follower, '
         + 'open her direction quick-menu. Off = the cast just toggles her in/out '
         + 'of formation with no menu.',
         g.useQuickMenu !== false,
-        (v) => { apply({ global: { useQuickMenu: v } }); g.useQuickMenu = v; render(); })));
+        (v) => { apply({ global: { useQuickMenu: v } }); g.useQuickMenu = v; render(); }), 'useQuickMenu')));
 
     /* Cast key — the mod's own hotkey that casts the Formation power. Press-to-
        rebind reusing the deck's DIK map (app.js). While capturing, the modal's
        onKey eats every key so nothing quick-fires behind it. */
-    all.append(h('div', { class: 'fm-row fm-key-row', title:
+    all.append(mark(h('div', { class: 'fm-row fm-key-row', title:
       'The keyboard key that casts the Formation power in-game. You mostly '
       + 'drive formation from this deck now, but this is the mod’s own cast key.' },
       h('span', { class: 'fm-lbl' }, 'Cast key'),
@@ -1034,7 +1113,7 @@
         : h('button', { class: 'fm-btn fm-key-btn', type: 'button',
             title: 'Click, then press the new key',
             onClick: () => { S.capturing = true; render(); } },
-            keyLabel(g.hotkey == null ? -1 : g.hotkey))));
+            keyLabel(g.hotkey == null ? -1 : g.hotkey))), 'hotkey'));
 
     rescueFoot(body);
   }
@@ -1087,6 +1166,13 @@
     S.rescueArmed = 0;
     S.focusRescue = rescuePending;
     rescuePending = false;
+    S.focusKey = '';
+    if (settingPending) {
+      if (settingPending.provider) S.provider = settingPending.provider;
+      if (settingPending.section) S.section = settingPending.section;
+      S.focusKey = settingPending.key || '';
+      settingPending = null;
+    }
     S.data = null;
     S.draft = {}; S.picks = {}; S.error = ''; S.filter = ''; S.busy=false;
     ensureDom().classList.remove('hidden');
@@ -1118,6 +1204,13 @@
      open would have that open clear it a few ms later. */
   function openRescue(subj, who) {
     rescuePending = true;
+    openVia(subj, who);
+  }
+
+  /* One setting, reached by typing its name. `provider` picks the mod's tab,
+     `section` the Walk With Me section it lives in, `key` the control. */
+  function openSetting(provider, section, key, subj, who) {
+    settingPending = { provider: provider || '', section: section || '', key: key || '' };
     openVia(subj, who);
   }
 
@@ -1163,6 +1256,9 @@
     openRescue: openRescue,
     close: close,
     isOpen: function () { return S.open; },
+    openSetting: openSetting,
+    label: displayName,
+    warm: warm,
     onKey: onKey,
     _state: S,        // harness introspection only
     _render: render,  // harness
@@ -1178,36 +1274,197 @@
    * alternative — 'followers' — is gated on Follower Organizer being
    * installed, which would take the whole Formation feature out of search on
    * a rig that never had FO. */
+  /* Rober, 2026-09-27: "what about the searching for them and their
+     settings" — with Walk With Me in, typing "walk" found 18 quests and not
+     the mod, and none of its 62 settings were findable at all. So the rows
+     follow what is INSTALLED: each formation mod by its own name, each of its
+     sections, and every setting, each landing on that control (scrolled into
+     view and lit, never clicked). Formation with Followers' rows exist only
+     while it is installed; before the game has answered, one neutral row.
+
+     WWM_CATALOG mirrors src/formation_wwm_settings.h (the 0.2.2 contract).
+     It is only the fallback — once fmOpen has answered, the live `controls`
+     list from C++ is what gets indexed, so a new field shows up without a
+     view change. */
+  const WWM_SECTIONS = [['travel', 'Travel'], ['hands', 'Hand-holding'], ['rest', 'Rest'],
+    ['scout', 'Scouting'], ['safety', 'Compatibility'], ['display', 'Display']];
+  const WWM_CATALOG = [
+    ['travel', 'enabled', 'Walk With Me (master switch)'], ['travel', 'autoDiscover', 'Automatically enroll followers'],
+    ['travel', 'requireTeammate', 'Require a recruited follower'], ['travel', 'maxFollowers', 'Companion limit'],
+    ['travel', 'spacing', 'Formation spacing'], ['travel', 'catchUpBonus', 'Catch-up speed bonus'],
+    ['travel', 'arrivalRadius', 'Arrival distance'], ['travel', 'individuality', 'Individual movement'],
+    ['travel', 'teleportCatchup', 'Recall distant companions'], ['travel', 'teleportDistance', 'Recall beyond this distance'],
+    ['travel', 'forwardCollision', 'Avoid nearby obstacles'],
+    ['hands', 'handsEnabled', 'Hand-holding'], ['hands', 'leadIn', 'Approach delay (seconds)'],
+    ['hands', 'connectDistance', 'Connect within'], ['hands', 'handReleaseDistance', 'Release beyond'],
+    ['hands', 'palmX', 'TETHER palm offset X'], ['hands', 'palmY', 'TETHER palm offset Y'],
+    ['hands', 'palmZ', 'TETHER palm offset Z'], ['hands', 'gripGap', 'TETHER wrist gap'],
+    ['rest', 'automaticRest', 'Rest when you stop'], ['rest', 'restRadius', 'Starting rest radius'],
+    ['rest', 'maxRestRadius', 'Maximum rest radius'], ['rest', 'resumeDistance', 'Resume travel after'],
+    ['rest', 'fullRestAfter', 'Settle after (seconds)'], ['rest', 'groundSitting', 'Sit on the ground'],
+    ['rest', 'meals', 'Eat together'], ['rest', 'reading', 'Read while resting'],
+    ['rest', 'stretching', 'Stretch while resting'], ['rest', 'areaActivities', 'Activities suited to the location'],
+    ['rest', 'socialIdles', 'Companion conversations'], ['rest', 'walkingBanter', 'Conversations while walking'],
+    ['rest', 'conversationAwareness', 'Give conversations room'], ['rest', 'personalities', 'Individual personalities'],
+    ['rest', 'lookouts', 'Keep watch while resting'], ['rest', 'extraRestPoses', 'Extra rest poses'],
+    ['scout', 'lootEnabled', 'Scout for loot'], ['scout', 'containers', 'Search containers'],
+    ['scout', 'bodies', 'Search bodies'], ['scout', 'looseItems', 'Find valuable loose items'],
+    ['scout', 'lootIcons', 'Show discovery icons'], ['scout', 'inhabitedInteriors', 'Scout in homes and settlements'],
+    ['scout', 'searchRadius', 'Search radius'], ['scout', 'valuableGold', 'Valuable item threshold (gold)'],
+    ['scout', 'searchSeconds', 'Search time (seconds)'], ['scout', 'areaDistance', 'Distance before another search'],
+    ['safety', 'combat', 'Release in combat'], ['safety', 'sneaking', 'Release while sneaking'],
+    ['safety', 'weaponDrawn', 'Release with weapons drawn'], ['safety', 'controlsDisabled', 'Release during scenes'],
+    ['safety', 'requireTravelPackage', 'Respect non-travel AI packages'], ['safety', 'indoors', 'Disable formations indoors'],
+    ['safety', 'releaseDistance', 'Release beyond this distance'], ['safety', 'enforceNff', 'Allow travel control with NFF'],
+    ['safety', 'enforceCustom', 'Allow travel control with custom followers'],
+    ['display', 'showHud', 'Show current order'], ['display', 'hudPanel', 'Order panel background'],
+    ['display', 'hudScale', 'Order emblem size'], ['display', 'hudVertical', 'Order emblem vertical position'],
+    ['display', 'restDialogueIcons', 'Show conversation icons'], ['display', 'animateChatIcons', 'Animate conversation icons'],
+  ];
+  /* Controls the modern body draws itself rather than from `controls`. */
+  const WWM_EXTRA = [
+    ['travel', 'mode', 'Travel order', 'order march companion relax follow normally'],
+    ['travel', 'preferredSide', 'Companion side', 'left right side'],
+    ['travel', 'party', 'Walking party', 'add remove enroll leave companions who walks'],
+    ['hands', 'method', 'Hand-holding method', 'classic tether'],
+    ['hands', 'party', 'Hand-holding partner', 'partner choose hold hands'],
+    ['scout', 'party', 'Loot scout', 'finder choose scout who loots'],
+  ];
+  const FWF_ROWS = [
+    ['place', 'Her place in the formation', 'direction pad walking sneaking combat offset side ahead behind flank position'],
+    ['formation', 'Formation (master switch)', 'on off enable release everyone'],
+    ['defaultX', 'Spacing ⇄ side-to-side', 'spacing width'],
+    ['defaultY', 'Spacing ⇅ front-to-back', 'spacing depth'],
+    ['walkingArea', 'Walk-to reach', 'distance slot'],
+    ['stopArea', 'Settle zone', 'radius stand still'],
+    ['interval', 'Re-form every', 'interval update seconds'],
+    ['habitation', 'In towns', 'villages cities habitation'],
+    ['dungeon', 'Indoors', 'interiors dungeons'],
+    ['useQuickMenu', 'Cast opens menu', 'power quick menu'],
+    ['hotkey', 'Cast key', 'hotkey key bind'],
+  ];
+
+  function wwmControls() {
+    const d = S.data;
+    const live = d && provOf(d) === 'wwm' && Array.isArray(d.controls) && d.controls.length
+      ? d.controls.map((c) => [c.group, c.key, c.key === 'enabled' ? 'Walk With Me (master switch)' : c.label])
+      : WWM_CATALOG;
+    return live;
+  }
+
+  function wwmValue(key) {
+    const d = S.data;
+    if (!d || provOf(d) !== 'wwm' || !d.settings || !(key in d.settings)) return '';
+    const v = d.settings[key];
+    return typeof v === 'boolean' ? (v ? 'on' : 'off') : String(v);
+  }
+
   if (window.HDOmni && typeof HDOmni.register === 'function') {
+    const secName = {};
+    WWM_SECTIONS.forEach(([id, label]) => { secName[id] = label; });
     HDOmni.register({
-      id: 'formation', label: 'Formation', tab: '',
+      id: 'formation',
+      /* The group header names the installed mod. */
+      get label() { return displayName(); },
+      /* Ahead of the default 50 so "walk" shows the mod above the quests
+         that merely have the word in their names. */
+      get rank() { const ids = installedProviders(); return ids && ids.length ? 45 : 50; },
+      tab: '',
       /* One read when the overlay opens, so the rows can say how the
          formation actually stands instead of describing it in the abstract.
          Deliberately NOT request(): that one commits S.subj and the loading
          flag, which belong to a modal that is not open. */
       warm: function () { toGameSafe('fmGet', JSON.stringify(crosshair())); },
       index: function () {
+        const ids = installedProviders();
         const live = summary();
-        return [{
-          label: 'Formation — where your followers walk',
-          detail: live || 'Walking companions, travel orders, hand-holding, rest and scouting',
-          kind: 'formation',
-          keywords: 'formation spacing marching order walk position walking ' +
-            'sneaking sneak combat offsets side ahead behind flank front ' +
-            'follower followers group party line reform re-form interval ' +
-            'towns habitation indoors dungeon cast key quick menu register ' +
-            'walk with me hand holding hand-holding companion rest scout loot',
-          run: function () { const c = crosshair(); openVia(c, c.name || ''); },
-        }, {
-          label: 'Formation: Rescue — stand it all down',
-          detail: 'Unregister everyone, kill the updates the mod has running ' +
-            'and stop its quest — the clean stand-down before a save',
-          kind: 'formation',
-          keywords: 'rescue stand down stand-down emergency panic stop off ' +
-            'disable unregister release save corruption corrupt poisoned ' +
-            'infinite loading screen wedged broken formation',
-          run: function () { const c = crosshair(); openRescue(c, c.name || ''); },
-        }];
+        const go = (prov, section, key) => function () {
+          const c = crosshair(); openSetting(prov, section, key, c, c.name || '');
+        };
+        const rows = [];
+        if (!ids || !ids.length) {
+          /* Unknown (the game has not answered) or nothing installed: one
+             neutral door, whose modal says honestly which is the case. */
+          rows.push({
+            label: 'Formation — where your followers walk',
+            detail: live || (ids ? 'No formation mod is installed'
+              : 'Walking companions, travel orders, hand-holding, rest and scouting'),
+            kind: 'formation',
+            keywords: 'formation walk with me wayfarer followers companions travel spacing ' +
+              'hand holding rest scout loot marching order party',
+            run: function () { const c = crosshair(); openVia(c, c.name || ''); },
+          });
+          if (!ids) rows.push({
+            label: 'Formation: Rescue — stand it all down',
+            detail: 'Unregister everyone, kill the updates the mod has running ' +
+              'and stop its quest — the clean stand-down before a save',
+            kind: 'formation',
+            keywords: 'rescue stand down stand-down emergency panic stop off ' +
+              'disable unregister release save corruption corrupt poisoned ' +
+              'infinite loading screen wedged broken formation',
+            run: function () { const c = crosshair(); openRescue(c, c.name || ''); },
+          });
+          return rows;
+        }
+        if (ids.indexOf('wwm') !== -1) {
+          rows.push({
+            label: 'Walk With Me — travel, hand-holding, rest and scouting',
+            detail: (provOf(S.data) === 'wwm' && live) || 'How your companions walk, rest and scout with you',
+            kind: 'formation',
+            keywords: 'walk with me wayfarer formation followers companions travel order spacing ' +
+              'hand holding rest scout loot party settings mcm',
+            run: go('wwm', 'travel', ''),
+          });
+          WWM_SECTIONS.forEach(([id, label]) => rows.push({
+            label: 'Walk With Me: ' + label,
+            detail: 'Every ' + label.toLowerCase() + ' setting',
+            kind: 'formation',
+            keywords: 'walk with me wayfarer section settings ' + id,
+            run: go('wwm', id, ''),
+          }));
+          const seen = {};
+          WWM_EXTRA.concat(wwmControls().map((c) => [c[0], c[1], c[2], ''])).forEach(([sec, key, label, kw]) => {
+            if (seen[sec + '/' + key]) return;
+            seen[sec + '/' + key] = true;
+            const val = wwmValue(key);
+            rows.push({
+              label: label,
+              detail: 'Walk With Me · ' + (secName[sec] || sec) + (val ? ' · now ' + val : ''),
+              kind: 'formation',
+              keywords: 'walk with me wayfarer setting ' + (secName[sec] || sec) + ' ' + key + ' ' + (kw || '') +
+                (key === 'enabled' ? ' on off disable stand down rescue master switch' : ''),
+              run: go('wwm', sec, key),
+            });
+          });
+        }
+        if (ids.indexOf('fwf') !== -1) {
+          rows.push({
+            label: 'Formation with Followers — where your followers walk',
+            detail: (provOf(S.data) === 'fwf' && live) || 'Direction pad, spacing and the formation’s own settings',
+            kind: 'formation',
+            keywords: 'formation with followers fwf spacing marching order walk position ' +
+              'sneaking combat offsets towns indoors cast key quick menu',
+            run: go('fwf', '', ''),
+          });
+          FWF_ROWS.forEach(([key, label, kw]) => rows.push({
+            label: label,
+            detail: 'Formation with Followers',
+            kind: 'formation',
+            keywords: 'formation with followers fwf setting ' + key + ' ' + kw,
+            run: go('fwf', '', key),
+          }));
+          rows.push({
+            label: 'Formation with Followers: Rescue — stand it all down',
+            detail: 'Unregister everyone, kill the updates the mod has running ' +
+              'and stop its quest — the clean stand-down before a save',
+            kind: 'formation',
+            keywords: 'rescue stand down stand-down emergency panic stop off ' +
+              'disable unregister release save corruption corrupt poisoned ' +
+              'infinite loading screen wedged broken formation',
+            run: function () { const c = crosshair(); settingPending = { provider: 'fwf', section: '', key: '' }; openRescue(c, c.name || ''); },
+          });
+        }
+        return rows;
       },
     });
   }

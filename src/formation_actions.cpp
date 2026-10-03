@@ -780,6 +780,17 @@ namespace FormationActions
 	void OnGameLoaded()
 	{
 		CancelHandoff();
+		// Ours first, and unconditionally: Walk With Me's revert callback has
+		// just cleared every API registration, so the walking party we built is
+		// gone until this puts it back. Deferred a beat because actors are still
+		// attaching as the load message fires, and IsManaged/LookupForm want them
+		// present. Runs whether or not the FWF handoff below has anything to do.
+		if (FormationWwm::SupportsModern()) {
+			std::thread([] {
+				std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+				SKSE::GetTaskInterface()->AddTask([] { FormationWwm::RestoreParty(); });
+			}).detach();
+		}
 		if (!WwmPreferred() || !FormationWwm::SupportsModern()) return;
 		const auto state = json::parse(FormationWwm::StateJson("{}"),nullptr,false);
 		const bool resume = state.is_object() && state.value("settings",json::object()).value("enabled",true);

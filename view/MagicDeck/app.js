@@ -982,7 +982,8 @@ function spellRow(spell, i) {
       type: 'button', class: 'ml-icon-inspect', 'aria-label': 'Details for ' + spell.name, 'aria-haspopup': 'dialog',
       onClick: () => MagicLibraryUI.spellDetails(spell),
       onFocus: (e) => {
-        ui.sel = visibleSpells().findIndex(s => s.id === spell.id); renderList();
+        const rows = $('list').querySelectorAll('.spell');
+        selectSpellRow(Array.prototype.indexOf.call(rows, e.currentTarget.parentNode), rows);
         requestDesc(meta, e.currentTarget);
       }, onBlur: cancelDesc,
     }, glyph, h('span', { class: 'body' }, h('span', { class: 'name' }, nameNodes(spell.name, q))));
@@ -1176,13 +1177,14 @@ const mdRowCache = new Map();
 function rowSig(spell) {
   const slot = slotOf(spell);
   const hx = liveHex(spell);   // same live-id rule as spellRow's badges
+  const meta = metaFor(spell);
   const eqL = ui.equip.left === hx, eqR = ui.equip.right === hx, eqV = ui.equip.voice.has(hx);
   /* The RESOLVED icon path is part of the signature, not just spell.icon: the
      icon index lands asynchronously (mdIconIndex / mdIcons), and a row whose
      art just became available has to redraw. */
   return [spell.name, spell.plugin, spell.category, spell.mode, spell.hand, spell.icon,
-    resolveIconPath(metaFor(spell)) || '', SpellLibrary.kind(metaFor(spell)), metaFor(spell).school, SpellLibrary.path(spell.category, state.library.parents),
-    slot, liveHex(spell), deliveryOf(spell), state.library.layout === 'icons' ? 1 : 0, ui.editing ? 1 : 0, ui.cat === ALL ? 1 : 0,
+    resolveIconPath(meta) || '', SpellLibrary.kind(meta), meta.school, SpellLibrary.path(spell.category, state.library.parents),
+    slot, hx, deliveryOf(spell), state.library.layout === 'icons' ? 1 : 0, ui.editing ? 1 : 0, ui.cat === ALL ? 1 : 0,
     eqL ? 1 : 0, eqR ? 1 : 0, eqV ? 1 : 0,
     ui.editing ? state.categories.join('\u0001') : ''].join('\u0000');
 }
@@ -1241,6 +1243,26 @@ function reconcileList(host, items, q) {
     host.insertBefore(node, cur);       // insertBefore MOVES an attached node
   }
   while (cur) { const nx = cur.nextSibling; host.removeChild(cur); cur = nx; }
+}
+
+/* ui-surface-spell-selection: arrows change selection, not the spell data.
+   Keep rows, art and layout intact; only the old/new option changes. */
+function selectSpellRow(index, rows) {
+  rows = rows || $('list').querySelectorAll('.spell');
+  const next = rows.length ? Math.max(0, Math.min(rows.length - 1, index)) : -1;
+  if (next === ui.sel) return;
+  const old = rows[ui.sel];
+  if (old) { old.classList.remove('sel'); old.setAttribute('aria-selected', 'false'); }
+  ui.sel = next;
+  const row = rows[next];
+  if (!row) return;
+  row.classList.add('sel'); row.setAttribute('aria-selected', 'true');
+  row.scrollIntoView({ block: 'nearest' });
+  if (state.library.layout === 'icons' && document.activeElement.closest('.ml-icon-inspect')) {
+    const inspect = row.querySelector('.ml-icon-inspect');
+    if (inspect && inspect !== document.activeElement) inspect.focus();
+  }
+  scheduleCardStats();
 }
 
 function showEmpty(el) {
@@ -2429,18 +2451,23 @@ function onKeyDown(e) {
     return;
   }
 
-  const vis = visibleSpells();
-  const rowNodes = $('list').querySelectorAll('.spell');
-  let stride = 1;
-  if (state.library.layout !== 'list' && rowNodes.length > 1) {
-    const firstTop = rowNodes[0].offsetTop;
-    while (stride < rowNodes.length && rowNodes[stride].offsetTop === firstTop) stride++;
+  const vertical = e.key === 'ArrowDown' || e.key === 'ArrowUp';
+  const horizontal = !isTextTarget(e.target) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight');
+  if (vertical || horizontal) {
+    e.preventDefault();
+    const rows = $('list').querySelectorAll('.spell');
+    let stride = 1;
+    if (vertical && state.library.layout !== 'list' && rows.length > 1) {
+      const top = rows[0].offsetTop;
+      while (stride < rows.length && rows[stride].offsetTop === top) stride++;
+    }
+    const delta = e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -stride : stride;
+    selectSpellRow(ui.sel < 0 && vertical ? 0 : ui.sel + delta, rows);
+    return;
   }
-  if (!isTextTarget(e.target) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); ui.sel = Math.max(0, Math.min(vis.length - 1, ui.sel + (e.key === 'ArrowLeft' ? -1 : 1))); renderList(); return; }
-  if (e.key === 'ArrowDown') { e.preventDefault(); ui.sel = Math.min(vis.length - 1, ui.sel < 0 ? 0 : ui.sel + stride); renderList(); return; }
-  if (e.key === 'ArrowUp') { e.preventDefault(); ui.sel = Math.max(0, (ui.sel < 0 ? 0 : ui.sel - stride)); renderList(); return; }
   if (e.key === 'Enter') {
     e.preventDefault();
+    const vis = visibleSpells();
     const pick = ui.sel >= 0 ? vis[ui.sel] : vis[0];
     if (pick) fireEntry(pick.id);
     return;
@@ -2448,6 +2475,7 @@ function onKeyDown(e) {
   // quick-fire digits: 1..9 -> 0..8, 0 -> 10th. Intercept even inside search
   // (spell names practically never need a typed digit to be found).
   if (!isTextTarget(e.target) && /^[0-9]$/.test(e.key)) {
+    const vis = visibleSpells();
     const idx = e.key === '0' ? 9 : (parseInt(e.key, 10) - 1);
     if (vis[idx]) { e.preventDefault(); fireEntry(vis[idx].id); }
     return;

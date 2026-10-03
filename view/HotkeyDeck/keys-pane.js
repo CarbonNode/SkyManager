@@ -65,7 +65,8 @@ window.KeysPane = (function () {
   })();
 
   function keyName(code) {
-    return KC_NAMES[code] || ('Key 0x' + Number(code).toString(16).toUpperCase());
+    return KC_NAMES[code] || (window.KeysAtlas && KeysAtlas.keyName(code)) ||
+      ('Key 0x' + Number(code).toString(16).toUpperCase());
   }
 
   /* Browser KeyboardEvent.code -> DXScanCode, for the press-to-find
@@ -119,6 +120,7 @@ window.KeysPane = (function () {
     seq: 0,
     lastLoadedSeq: -1,  // which seq's bindings we hold
     bindings: [],
+    gamepad: false,     // capability from the DLL, never inferred from an empty map
     scannedOnce: false,
   };
 
@@ -178,6 +180,7 @@ window.KeysPane = (function () {
     state.phase = d.phase || state.phase;
     state.bindings = Array.isArray(d.bindings) ? d.bindings : [];
     state.count = state.bindings.length;
+    state.gamepad = !!d.gamepad;
     state.seq = d.seq | 0;
     state.lastLoadedSeq = state.seq;
     dropGroupMemo();          // new bindings: the grouping and the count chip restate
@@ -491,6 +494,7 @@ window.KeysPane = (function () {
 
   function render() {
     renderStatus();
+    if (window.KeysAtlas) KeysAtlas.refresh();
     const body = $('kc-body');
     const empty = $('kc-empty');
     if (!body || !empty) return;
@@ -736,6 +740,7 @@ window.KeysPane = (function () {
   }
 
   function onHide() {
+    if (window.KeysAtlas) KeysAtlas.close();
     ui.visible = false;
     disarmSpotlight();
     stopPoll();
@@ -754,6 +759,21 @@ window.KeysPane = (function () {
   }
 
   function init() {
+    // hotkey-atlas-map: additive, body-anchored popout over this same census.
+    const head = document.querySelector('#kc-pane .kc-head');
+    if (head && !$('kc-atlas-open') && window.KeysAtlas) {
+      const atlas = document.createElement('button');
+      atlas.id = 'kc-atlas-open'; atlas.className = 'kc-btn'; atlas.type = 'button';
+      atlas.textContent = 'Device map';
+      atlas.addEventListener('click', () => {
+        disarmSpotlight();
+        KeysAtlas.open({ filter: ui.filter, conflicts: ui.conflictsOnly, keyName: keyName,
+          sourceName: (s) => (SRC_META[s] || [s])[0],
+          getData: () => ({ groups: groupedNow(), all: allGroups(), phase: state.phase,
+            note: state.note, gamepad: state.gamepad, incomplete: deadConfigs().length > 0 }) });
+      });
+      head.appendChild(atlas);
+    }
     const filter = $('kc-filter');
     if (filter) {
       filter.addEventListener('input', () => { ui.filter = filter.value.trim(); render(); });
