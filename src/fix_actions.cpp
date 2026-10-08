@@ -269,6 +269,7 @@ namespace FixActions
 			return Dump(json{ { "ok", true }, { "msg", who + "'s AI was reset and her packages re-evaluated." } });
 		}
 		if (fix == "calm") {
+			NpcActions::CancelOrder(a->GetFormID());  // a standing Sic 'em would re-issue the fight
 			RunConsole("stopcombat", a);
 			RunConsole("setav aggression 0", a);
 			logger::info("fixes: calm on {:08X}", a->GetFormID());
@@ -397,6 +398,7 @@ namespace FixActions
 			RunConsole("resurrect 1", t);             // 1 = keep inventory
 			done = "resurrected";
 		} else if (a == "fix-calm") {
+			NpcActions::CancelOrder(t->GetFormID());
 			RunConsole("stopcombat", t);
 			RunConsole("setav aggression 0", t);
 			done = "combat stopped";

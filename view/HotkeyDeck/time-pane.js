@@ -326,8 +326,11 @@ window.TimePane = (function () {
       });
       rows.push({
         label: 'Change the weather',
-        detail: 'force any weather the load order ships — Time tab, Sky card',
+        detail: 'every weather the load order ships, the lock and your weather mods — the Weather tab',
         kind: 'wait', keywords: 'weather sky rain snow storm clear fog sun force fw',
+        /* the Weather tab (2026-10-08) is the home for this now; the Sky card
+           here stays as the quick picker beside the clock */
+        jump: () => { if (typeof window.__omniSetTab === 'function') window.__omniSetTab('weather'); else if (typeof setTab === 'function') setTab('weather'); },
       });
       rows.push({
         label: 'Let the sky decide',

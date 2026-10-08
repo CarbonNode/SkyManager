@@ -142,7 +142,12 @@ window.HomePane = (function () {
                  HUD view's `hud.grp` blob inside hdUiStateData (2026-08-19).
                  `known:false` = never heard from the game, so the expander
                  shows the shipped defaults rather than inventing values. */
-              grp: { orient: 'vert', scale: 1, locked: true, mem: null, keys: null, known: false } };
+              grp: { orient: 'vert', scale: 1, locked: true, mem: null, keys: null, known: false },
+              /* the Stance Wheel's settings, as swCfgState last reported them
+                 (2026-10-08). `known:false` = not heard from the game yet: the
+                 expander then shows the shipped defaults and says so. */
+              sw: { known: false, ok: null, msg: '', key: '', slow: 0.2, size: 64,
+                    defSlow: 0.2, defSize: 64 } };
   var ui = { inited: false, recentOpen: false, notesOpen: false, timeOpen: false,
              uieOpen: false, uieQuery: '', tmChained: false, uieChained: false,
              notesT: null, editing: false, dragId: null };
@@ -598,6 +603,33 @@ window.HomePane = (function () {
       chord: 'Ctrl + your deck key',
       open: function () { host.toGame && host.toGame('hdFire', 'hd-wheel-open'); },
       openLabel: 'Open' },
+    /* Stance Wheel (2026-10-08, Rober mid-play: "in UI elements, no stance bar
+       options? configuration?"). It had no settings surface at all: the slow
+       motion was a C++ constant and the size a CSS number. Now both live in
+       the wheel's own sidecar (stance-wheel.json) behind ONE bridge pair —
+       request swCfg, reply swCfgState — and this row is where they are set.
+       No on/off to chip (it is a window you open, like the Wheel Menu); the
+       line under the name says how it opens, or why it will not: without
+       Stances NG the wheel refuses, and the row says so instead of offering a
+       dead button. `hd-stance-wheel` is the seeded ENTRY id. */
+    { id: 'stance', ic: '†', img: 'icons/custom/hk-stance-2.png', name: 'Stance Wheel',
+      sub: 'Slow-time ring of your stances — aim, click, it switches',
+      kw: 'stance wheel stances ng bear wolf hawk tarnished neutral combat stance bar radial slow time slow motion wheel size bigger smaller',
+      state: function () { return null; },
+      note: function () {
+        if (!uie.sw.known) return '';
+        if (uie.sw.ok === false) return uie.sw.msg || 'Needs Stances NG.';
+        return uie.sw.key ? ('Opens during play on ' + uie.sw.key)
+                          : 'No key yet — give “Stance Wheel” a trigger key in Hotkeys.';
+      },
+      /* An openable window like the Quiver and the Time Dial, so it wears
+         their shape: how it opens, an Open button, and (its own addition) a
+         Config door. `open` is also what a search result's Enter runs. */
+      chord: 'Bindable — Misc tab',
+      open: function () { host.toGame && host.toGame('hdFire', 'hd-stance-wheel'); },
+      openLabel: 'Open',
+      openDisabled: function () { return uie.sw.ok === false; },
+      inline: buildStanceInline },
     { id: 'widgets', ic: '⌗', img: 'icons/custom/hk-widgets.png', name: 'HUD Widgets',
       sub: 'Readout stack — vitals, gold, carry weight, clock and pins',
       kw: 'widgets hud overlay readouts meters bars vitals health magicka stamina money gold inventory carry weight clock time weather location pins',
@@ -807,6 +839,117 @@ window.HomePane = (function () {
     g.row = r;
     return g;
   }
+  /* ---- Stance Wheel settings (2026-10-08) --------------------------------
+     Preset buttons, not sliders: two values with four or five sensible stops
+     each, every stop readable at couch distance, and no held-mouse drag for
+     Ultralight to drop (the MouseEvent.buttons === 0 law). The labels say what
+     the number MEANS; the number rides in the tooltip and the caption. */
+  var SW_SLOW = [
+    { v: 0.1, name: 'Crawl', hint: 'One second of the world takes ten' },
+    { v: 0.2, name: 'Slow', hint: 'One second of the world takes five' },
+    { v: 0.35, name: 'Eased', hint: 'One second of the world takes about three' },
+    { v: 0.5, name: 'Half', hint: 'One second of the world takes two' },
+    { v: 1, name: 'Normal', hint: 'Time is not slowed at all while you choose' },
+  ];
+  var SW_SIZE = [
+    { v: 48, name: 'Small' }, { v: 56, name: 'Medium' }, { v: 64, name: 'Large' }, { v: 74, name: 'Huge' },
+  ];
+  function swSend(patch) {
+    host.toGame && host.toGame('swCfg', JSON.stringify(Object.assign({ op: 'set' }, patch)));
+  }
+  function swNearest(list, v) {
+    var best = 0, d = Infinity;
+    for (var i = 0; i < list.length; i++) {
+      var di = Math.abs(list[i].v - v);
+      if (di < d) { d = di; best = i; }
+    }
+    return best;
+  }
+  function swPct(v) { return Math.round(v * 100) + '%'; }
+  function buildStanceInline(mount) {
+    mount.innerHTML = '';
+    var wrap = document.createElement('div');
+    wrap.className = 'hm-eq hm-sw';
+    var sw = uie.sw;
+
+    var cap = function (text) {
+      var c = document.createElement('div');
+      c.className = 'hm-eq-lab hm-sw-cap';
+      c.textContent = text;
+      return c;
+    };
+    /* a line about the whole panel, not one group: its own full-width row */
+    var wide = function (text) { var c = cap(text); c.className += ' hm-sw-wide'; return c; };
+
+    /* --- time --- */
+    var ti = swNearest(SW_SLOW, sw.slow);
+    var tg = eqGroup('World speed while the wheel is up');
+    SW_SLOW.forEach(function (o, i) {
+      tg.row.appendChild(eqBtn(o.name, o.hint + ' (' + swPct(o.v) + ')', i === ti, function () {
+        uie.sw.slow = o.v;                 /* optimistic; swCfgState confirms */
+        swSend({ slow: o.v });
+        renderUie();
+      }));
+    });
+    tg.appendChild(cap(SW_SLOW[ti].hint + ' · ' + swPct(sw.slow) + ' speed'));
+    wrap.appendChild(tg);
+
+    /* --- size --- */
+    var si = swNearest(SW_SIZE, sw.size);
+    var sg = eqGroup('Wheel size');
+    SW_SIZE.forEach(function (o, i) {
+      sg.row.appendChild(eqBtn(o.name, o.name + ' — ' + o.v + '% of the screen height', i === si, function () {
+        uie.sw.size = o.v;
+        swSend({ size: o.v });
+        renderUie();
+      }));
+    });
+    wrap.appendChild(sg);
+
+    /* --- the key, and the way back --- */
+    var kg = eqGroup('Opens with');
+    var kc = document.createElement('span');
+    kc.className = 'hm-uie-chord';
+    kc.textContent = sw.key || 'no key yet';
+    kc.title = sw.key ? 'The trigger key on the “Stance Wheel” action' : 'The “Stance Wheel” action has no trigger key';
+    kg.row.appendChild(kc);
+    kg.row.appendChild(eqBtn(sw.key ? 'Hotkeys →' : 'Bind in Hotkeys →',
+      (sw.key ? 'Change the key: ' : 'Give it a key: ') + 'go to the Hotkeys tab — the action is called “Stance Wheel”', false, function () {
+        host.setTab && host.setTab('all');
+      }));
+    var isDef = Math.abs(sw.slow - sw.defSlow) < 0.001 && sw.size === sw.defSize;
+    var rb = eqBtn('Reset both', 'Back to ' + swPct(sw.defSlow) + ' speed and the Large wheel', false, function () {
+      uie.sw.slow = uie.sw.defSlow; uie.sw.size = uie.sw.defSize;
+      swSend({ reset: true });
+      renderUie();
+    }, 'hm-eq-wide');
+    rb.disabled = isDef;
+    kg.row.appendChild(rb);
+    wrap.appendChild(kg);
+
+    if (!sw.known) wrap.appendChild(wide('Showing the defaults — the game has not answered yet.'));
+    else if (sw.ok === false) wrap.appendChild(wide(sw.msg || 'The wheel needs Stances NG to open.'));
+
+    mount.appendChild(wrap);
+    return true;
+  }
+  /* swCfgState: {slow,size,defSlow,defSize,ok,msg,key}. Numbers are re-checked
+     here — the sidecar is hand-editable and this is what the buttons mark. */
+  function receiveStance(env) {
+    env = coerce(env);
+    if (!env || typeof env !== 'object') return;
+    var num = function (v, d) { return (typeof v === 'number' && isFinite(v)) ? v : d; };
+    uie.sw.known = true;
+    uie.sw.ok = env.ok === false ? false : (env.ok === true ? true : null);
+    uie.sw.msg = typeof env.msg === 'string' ? env.msg : '';
+    uie.sw.key = typeof env.key === 'string' ? env.key : '';
+    uie.sw.defSlow = num(env.defSlow, 0.2);
+    uie.sw.defSize = Math.round(num(env.defSize, 64));
+    uie.sw.slow = Math.max(0.05, Math.min(1, num(env.slow, uie.sw.defSlow)));
+    uie.sw.size = Math.max(40, Math.min(80, Math.round(num(env.size, uie.sw.defSize))));
+    if (ui.uieOpen) renderUie();
+  }
+
   /* The expander under the Equipped row: per-line switches, orientation, size,
      and the door to the HUD's own shelf. Rebuilt on every render (the drawer
      wipes itself on every state reply), so it always paints from what just
@@ -1159,6 +1302,7 @@ window.HomePane = (function () {
           ob.className = 'hm-uie-btn'; ob.type = 'button';
           ob.textContent = el.openLabel || 'Open';
           ob.title = 'Open ' + el.name;
+          if (el.openDisabled) ob.disabled = !!el.openDisabled();
           ob.addEventListener('click', el.open);
           acts.appendChild(ob);
         }
@@ -1311,11 +1455,13 @@ window.HomePane = (function () {
       chainReceiver('ltOpen', receiveLoot);    // carries `enabled`
       chainReceiver('ltResult', receiveLoot);  // toggle reply, also `enabled`
       chainReceiver('hdUiStateData', receiveUiState);  // round 3: real chips
+      chainReceiver('swCfgState', receiveStance);      // Stance Wheel settings
     }
     if (host.toGame) {
       host.toGame('hudCfg', JSON.stringify({ op: 'state' }));  // HUD -> hudCfgState
       host.toGame('ltGet', '');                                // Loot -> ltOpen
       host.toGame('hdUiState', '');                            // -> hdUiStateData
+      host.toGame('swCfg', JSON.stringify({ op: 'get' }));     // Stance Wheel -> swCfgState
     }
   }
 
@@ -1602,6 +1748,51 @@ window.HomePane = (function () {
     hbRow.querySelector('.hm-uie-jump').click();
     ok('Action Bar Set up -> hdFire hotbar-edit',
       nav.indexOf('game:hdFire:hotbar-edit') !== -1);
+    /* Stance Wheel (2026-10-08): the row asks for its settings on drawer open,
+       says how the wheel opens (or why it will not), and its expander sends
+       the wheel's OWN request (swCfg), never the reply name. */
+    var swRow = function () { return $('hm-uie-body').querySelector('.hm-uie-row[data-id="stance"]'); };
+    ok('Stance Wheel row present', !!swRow());
+    ok('drawer open asked swCfg get', nav.indexOf('game:swCfg:{"op":"get"}') !== -1);
+    ok('Stance Wheel shows NO state chip', !swRow().querySelector('.hm-uie-state'));
+    ok('Stance Wheel says nothing about a key before the game answers',
+      !swRow().querySelector('.hm-uie-why'));
+    window.swCfgState({ slow: 0.2, size: 64, defSlow: 0.2, defSize: 64, ok: true, msg: '', key: 'F21' });
+    ok('Stance Wheel names its key after swCfgState', /Opens during play on F21/.test(swRow().textContent));
+    swRow().querySelector('.hm-uie-jump').click();
+    var swPanel = function () { return $('hm-uie-body').querySelector('.hm-uie-inline'); };
+    ok('Stance Config opens in place', !!swPanel() && /World speed while the wheel is up/i.test(swPanel().textContent));
+    var swBtn = function (label) {
+      return Array.prototype.filter.call(swPanel().querySelectorAll('.hm-eq-btn'),
+        function (b) { return b.textContent === label; })[0];
+    };
+    ok('the default stops are marked (Slow, Large)',
+      swBtn('Slow').classList.contains('on') && swBtn('Large').classList.contains('on') &&
+      !swBtn('Crawl').classList.contains('on') && !swBtn('Huge').classList.contains('on'));
+    ok('Reset both is disabled at the defaults', swBtn('Reset both').disabled === true);
+    swBtn('Half').click();
+    ok('a speed stop sends swCfg set slow', nav.indexOf('game:swCfg:{"op":"set","slow":0.5}') !== -1);
+    ok('…and marks itself at once (optimistic)', swBtn('Half').classList.contains('on') && !swBtn('Slow').classList.contains('on'));
+    swBtn('Huge').click();
+    ok('a size stop sends swCfg set size', nav.indexOf('game:swCfg:{"op":"set","size":74}') !== -1);
+    ok('Reset both is live once something moved', swBtn('Reset both').disabled === false);
+    swBtn('Reset both').click();
+    ok('Reset both sends swCfg set reset', nav.indexOf('game:swCfg:{"op":"set","reset":true}') !== -1);
+    ok('…and the defaults are marked again', swBtn('Slow').classList.contains('on') && swBtn('Large').classList.contains('on'));
+    swRow().querySelector('.hm-uie-btn').click();
+    ok('Stance Open fires the seeded ENTRY id', nav.indexOf('game:hdFire:hd-stance-wheel') !== -1);
+    window.swCfgState({ slow: 9, size: 5, defSlow: 0.2, defSize: 64, ok: true, msg: '', key: '' });
+    ok('an out-of-range sidecar is clamped, not marked nowhere',
+      swBtn('Normal').classList.contains('on') && swBtn('Small').classList.contains('on'));
+    ok('no key -> the row says where to bind one', /No key yet/.test(swRow().textContent));
+    swBtn('Bind in Hotkeys →').click();
+    ok('Bind in Hotkeys -> setTab(all)', nav.lastIndexOf('tab:all') > nav.indexOf('game:swCfg:{"op":"set","reset":true}'));
+    window.swCfgState({ slow: 0.2, size: 64, defSlow: 0.2, defSize: 64, ok: false, msg: 'Stances NG is not installed', key: 'F21' });
+    ok('without Stances NG the row says why and Open is disabled',
+      /Stances NG is not installed/.test(swRow().textContent) && swRow().querySelector('.hm-uie-btn').disabled === true);
+    window.swCfgState({ slow: 0.2, size: 64, defSlow: 0.2, defSize: 64, ok: true, msg: '', key: 'F21' });
+    swRow().querySelector('.hm-uie-jump').click();
+    ok('Stance Config folds again', !swPanel());
     toggleUie();
 
     ok('recent drawer starts closed', !$('hm-recent').classList.contains('open'));

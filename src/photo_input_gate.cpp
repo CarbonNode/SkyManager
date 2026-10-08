@@ -1,6 +1,7 @@
 #include "photo_input_gate.h"
 #include "photo_input_capture.h"
 #include "portrait_capture.h"
+#include "photo_studio.h"
 #include <Windows.h>
 #include <cstring>
 
@@ -17,7 +18,9 @@ bool CaptureButton(RE::ButtonEvent* button, std::uint64_t session, const DeckKey
     const bool keyboard = device == RE::INPUT_DEVICE::kKeyboard;
     const bool mouse = device == RE::INPUT_DEVICE::kMouse;
     const bool deckKey = ((keyboard && deck.keyboard) || (mouse && deck.mouse)) && code == deck.code;
-    const auto decision = captured.Event(session, keyboard, mouse, code,
+    // Focused studio needs real text input (E, brackets, Backspace and Enter
+    // included). Finish any earlier captured release, then let Prisma consume.
+    const auto decision = captured.Event(PhotoStudio::Editing()?0:session, keyboard, mouse, code,
         button->IsDown(), button->IsUp(), deckKey);
     using Command = PhotoInput::Command;
     if (decision.command == Command::Light) {

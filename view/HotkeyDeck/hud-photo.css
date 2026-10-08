@@ -1,6 +1,6 @@
 /* Quiet brass camera HUD. Native keyboard input owns interaction; this view
    never captures focus or mouse-look. No animation, timer or image readback. */
-body.hp-active > :not(#hud-photo):not(#hp-frame), body.hp-active > :not(#hud-photo):not(#hp-frame) * { visibility: hidden !important; }
+body.hp-active > :not(#hud-photo):not(#hp-frame):not(#photo-studio):not(#pst-preview), body.hp-active > :not(#hud-photo):not(#hp-frame):not(#photo-studio):not(#pst-preview) * { visibility: hidden !important; }
 #hud-photo, #hp-frame {
   --hp-ink: #f0ebdb; --hp-muted: #c4c8bd; --hp-brass: #e4ce88;
   --hp-rule: rgba(219,207,169,.24); --hp-surface: rgba(20,25,24,.96);
@@ -108,3 +108,5 @@ body.hp-active > :not(#hud-photo):not(#hp-frame), body.hp-active > :not(#hud-pho
   .hp-preview-note { margin-top: 12px; }
   .hp-frame-label { position: fixed; top: 12px; left: 12px; right: 12px; padding: 8px 12px; max-width: none; font-size: 18px; }
 }
+
+body.pst-preview-active #hp-frame { display:none; }

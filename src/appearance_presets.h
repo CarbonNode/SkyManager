@@ -14,6 +14,11 @@ namespace AppearancePresets
     void Init(const std::filesystem::path& viewDir, std::function<void(bool photo)> closeForGame);
     json State();
     void Handle(const json& request, Done done, std::function<void(bool photo)> closeForGame);
-    void Tick(bool gameReady);
+    // requestsPending = RequestsPending() taken on the caller's worker thread;
+    // false skips the phone-queue directory walk on the game thread.
+    void Tick(bool gameReady, bool requestsPending = true);
+    // ANY THREAD (filesystem only): does appearance-requests/ hold a .json?
+    // False until Init has run.
+    bool RequestsPending();
     void ResetForLoad();
 }

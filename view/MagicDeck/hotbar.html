@@ -33,6 +33,11 @@
 
     <div id="hb-grid" class="hb-grid"></div>
 
+    <!-- Oblivion style (2026-10-04): the ready spell and the ready potion,
+         fired by their own keys. Out of the flow (absolute, beside the bar)
+         so the bar's anchor and size are exactly what they were. -->
+    <div id="hb-ready" class="hb-ready" hidden></div>
+
     <!-- Edit-mode furniture. Outside #hb-grid so a grid re-render never has to
          rebuild it (and never steals focus from the field you are typing in). -->
     <div id="hb-grip" class="hb-grip" hidden title="Drag to move the bar">✥</div>
@@ -228,6 +233,38 @@
       </section>
 
       <section class="hb-sect">
+        <h2>Casting</h2>
+        <p class="hb-note">
+          How a spell on the bar goes off. Powers and shouts always use the game’s own Shout key.
+        </p>
+        <div class="hb-row hb-checks">
+          <label class="hb-check" title="On: a spell costs its magicka (perks count), takes its own charge time, and a concentration spell keeps going while you HOLD its key. Off: the old instant cast - free and immediate."><input id="hb-realCast" type="checkbox"><span>Real casting — costs magicka, charges up, hold to channel</span></label>
+          <label class="hb-check" title="Aimed spells, runes and summons go where your crosshair points when they leave your hand. Off: at the enemy you are fighting, else straight ahead."><input id="hb-aimCrosshair" type="checkbox"><span>Aim at the crosshair</span></label>
+        </div>
+        <p class="hb-note" id="hb-cast-note"></p>
+        <div class="hb-row hb-checks">
+          <label class="hb-check" title="The game has one shout cooldown for everything. On: every shout and voice power keeps its own, so using one never locks out another. Works however you equip the shout - bar, favourites or magic menu - and is kept in your save."><input id="hb-ownShoutCd" type="checkbox"><span>Each shout has its own cooldown</span></label>
+        </div>
+        <div class="hb-row hb-checks">
+          <label class="hb-check" title="When Spell Hotbar 2 is installed, a spell cast from the bar plays its casting animation with your weapon still in hand (that mod's Open Animation Replacer clips). Nothing is required: without it the spell simply goes off without the motion."><input id="hb-castAnim" type="checkbox"><span>Casting animation — uses Spell Hotbar 2’s clips when it is installed</span></label>
+        </div>
+        <p class="hb-note" id="hb-anim-note"></p>
+        <div class="hb-row hb-checks">
+          <label class="hb-check" title="Oblivion style. A bar key on a spell or scroll makes it your READY spell and the cast key casts it; on a potion it becomes your READY potion for the potion key; on a power or shout it goes into your voice slot. Everything else on the bar works as usual."><input id="hb-pickMode" type="checkbox"><span>Oblivion style — bar keys pick, one key casts</span></label>
+        </div>
+        <div class="hb-row hb-keyrow" id="hb-pick-keys">
+          <div class="hb-field">
+            <span>Cast key</span>
+            <button id="hb-castkey" class="hb-keybtn" type="button" title="Press to bind the key that casts your ready spell">V</button>
+          </div>
+          <div class="hb-field">
+            <span>Potion key</span>
+            <button id="hb-potionkey" class="hb-keybtn" type="button" title="Press to bind the key that drinks your ready potion">B</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="hb-sect">
         <h2>Modifier pages</h2>
         <p class="hb-note">
           Hold a modifier to swap the whole bar — same keys, different actions and icons.
@@ -236,6 +273,15 @@
         <div class="hb-row hb-checks">
           <label class="hb-check" title="Hold shift/ctrl/alt to see that page (like WoW), or turn this off to TAP once and stay there"><input id="hb-modHold" type="checkbox"><span>Hold the modifier (off = tap to latch)</span></label>
         </div>
+      </section>
+
+      <section class="hb-sect">
+        <h2>Bars by weapon</h2>
+        <p class="hb-note">
+          Give a weapon its own bar: the moment you hold a greatsword, a bow or a spell, the buttons change — same keys, same pages. An empty button on a weapon bar shows what the Default bar has there, so you only fill in what differs. A sneaking bar does the same over its weapon bar.
+        </p>
+        <div id="hb-bars" class="hb-bars"></div>
+        <p class="hb-note" id="hb-bars-note"></p>
       </section>
 
       <section class="hb-sect">
@@ -360,6 +406,26 @@
         <button id="hb-icons-auto" class="hb-btn" type="button"
                 title="Go back to the icon picked from the spell's school, element and tier">Use the automatic icon</button>
         <span class="hb-hint">Drop PNGs into <code>icons/custom</code> — or send them from your phone.</span>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ══ add a bar for a weapon ═════════════════════════════════════════ -->
+  <!-- Every weapon class, standing and sneaking, filter-as-you-type. Enter
+       takes the top hit; a class that already has a bar opens it instead. -->
+  <div id="hb-baradd" class="hb-modal" hidden>
+    <div class="hb-modal-card">
+      <header class="hb-modal-head">
+        <h2>Add a bar for a weapon</h2>
+        <button id="hb-baradd-close" class="hb-btn" type="button" title="Close without adding a bar">Close</button>
+      </header>
+      <input id="hb-baradd-q" class="hb-search" type="text" autocomplete="off"
+             placeholder="Type to filter — bow, two-handed, sneaking…">
+      <div class="hb-pick-wrap">
+        <div id="hb-baradd-list" class="hb-pick-list" role="listbox"></div>
+      </div>
+      <footer class="hb-modal-foot">
+        <span class="hb-hint">Enter = top hit · Esc = close</span>
       </footer>
     </div>
   </div>

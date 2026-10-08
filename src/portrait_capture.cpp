@@ -5,6 +5,8 @@
 
 #include "npc_actions.h"
 #include "photo_camera.h"
+#include "photo_studio.h"
+#include "photo_preview.h"
 
 #include <algorithm>
 #include <array>
@@ -1244,6 +1246,7 @@ namespace PortraitCapture
 				// drawn this frame's overlay into it yet — so a photo can never
 				// contain the deck's own HUD views.
 				StepOnPresentThread();
+				PhotoPreview::Render();
 				g_origPresent(a_p1);
 			}
 
@@ -1884,6 +1887,7 @@ namespace PortraitCapture
 		PhotoFrame::Frame g_photoFrame;
 		std::uint64_t g_photoFrameCheckedAt = 0;
 		std::function<void(bool, bool, const PhotoLighting::Snapshot&, const PhotoFrame::Frame&)> g_onPhotoLighting;
+		std::function<void()> g_onPhotoStudioToggle;
 
 		void EndPhotoMode()
 		{
@@ -1892,6 +1896,7 @@ namespace PortraitCapture
 			++g_photoGeneration;
 			g_photoShooting.store(false);
 			g_photoLightKeys = {};
+			PhotoStudio::End();
 			PhotoLighting::End();
 			ExitFreeCam();
 			RestoreFov();
@@ -1931,6 +1936,7 @@ namespace PortraitCapture
 				return;
 			}
 			if (g_photoShooting.exchange(true)) return;
+			PhotoStudio::SetEditing(false);
 			RefreshPhotoLights(); // Hide the whole Prisma HUD view before the redraw delay.
 			const auto generation = g_photoGeneration.load();
 			logger::info("photo: shutter accepted generation={}", generation);
@@ -2375,6 +2381,8 @@ namespace PortraitCapture
 			g_photoFrame = PhotoFrame::Make(sw, sh, g_photoTuning.format, g_photoTuning.zoom,
 				g_photoTuning.offsetX, g_photoTuning.offsetY, g_photoTuning.thirds);
 		}
+		PhotoPreview::Publish(g_photoMode.load() && !g_photoShooting.load() && g_photoLightHud && PhotoStudio::PreviewEnabled(),
+			g_photoFrame, PhotoStudio::PreviewBounds(), g_photoTuning.exposure);
 		if (g_onPhotoLighting) g_onPhotoLighting(g_photoMode.load(),
 			g_photoMode.load() && !g_photoShooting.load() && g_photoLightHud, PhotoLighting::State(), g_photoFrame);
 	}
@@ -2385,6 +2393,7 @@ namespace PortraitCapture
 	{
 		if (!g_photoMode.load() || g_photoShooting.load() || NowMs() - g_photoFrameCheckedAt < 250) return;
 		g_photoFrameCheckedAt = NowMs();
+		PhotoStudio::Tick();
 		int sw = 0, sh = 0;
 		BackBufferSize(sw, sh);
 		if (sw == g_photoFrame.sourceWidth && sh == g_photoFrame.sourceHeight) return;
@@ -2499,6 +2508,7 @@ namespace PortraitCapture
 			Notify("Scene light did not start - returning to photo setup");
 			return;
 		}
+		PhotoStudio::Begin(g_photoGeneration.load());
 		if (fov == PhotoFov::Exact && cam)
 			logger::info("photo: slider FOV readback requested {} actual {}", exactFov, cam->GetRuntimeData2().worldFOV);
 		RefreshPhotoLights();
@@ -2594,6 +2604,8 @@ namespace PortraitCapture
 				case Action::ToggleHud: g_photoLightHud = !g_photoLightHud; break;
 				case Action::Format: g_photoTuning.format = PhotoFrame::Next(g_photoTuning.format); break;
 				case Action::Grid: g_photoTuning.thirds = !g_photoTuning.thirds; break;
+				case Action::Studio: if(g_onPhotoStudioToggle)g_onPhotoStudioToggle(); break;
+				case Action::Preview: PhotoStudio::TogglePreview(); break;
 				default: break;
 			}
 			const auto state = PhotoLighting::State();
@@ -2604,6 +2616,13 @@ namespace PortraitCapture
 	}
 
 	void PhotoShootNow() { PhotoShoot(); }
+	void SetPhotoStudioToggle(std::function<void()> cb) {g_onPhotoStudioToggle=std::move(cb);}
+	Composition GetPhotoComposition() {return {g_photoTuning.zoom,g_photoTuning.offsetX,g_photoTuning.offsetY,g_photoTuning.format,g_photoTuning.thirds};}
+	bool SetPhotoComposition(const Composition& c) {
+		if(!g_photoMode.load()||g_photoShooting.load()||!std::isfinite(c.zoom)||c.zoom<.15f||c.zoom>1||!std::isfinite(c.x)||std::abs(c.x)>.5f||!std::isfinite(c.y)||std::abs(c.y)>.5f)return false;
+		g_photoTuning.zoom=c.zoom;g_photoTuning.offsetX=c.x;g_photoTuning.offsetY=c.y;g_photoTuning.format=c.format;g_photoTuning.thirds=c.thirds;
+		RefreshPhotoLights();return true;
+	}
 
 	void PhotoCancel()
 	{

@@ -1083,6 +1083,7 @@ namespace Loadouts
 					auto* a = ActorIdentity::ResolveActor(m.formId, m.plugin);
 					if (!a || a->IsDead() || !a->Is3DLoaded())
 						continue;
+					NpcActions::CancelOrder(a->GetFormID());  // or the standing order sends her straight back
 					a->StopCombat();
 					a->DrawWeaponMagicHands(false);
 					++broke;

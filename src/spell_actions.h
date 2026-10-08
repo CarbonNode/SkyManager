@@ -81,6 +81,13 @@ namespace SpellActions
 	void CastSequence(const std::string& name, std::vector<SpellRef> refs,
 		std::uint32_t staggerMs, std::function<void()> onDone);
 
+	// Put a power or shout into the voice slot and leave it there — the SELECT
+	// half of Cast's voice road (EquipShout / Papyrus EquipSpell source 2), with
+	// no key press. Idempotent: already selected = ok. The action bar's
+	// Oblivion-style pick mode uses it (2026-10-04). Hand spells are refused.
+	// Returns {"ok":bool, "msg":"..."}. MAIN THREAD ONLY.
+	std::string SelectVoice(const std::string& plugin, std::uint32_t localId, std::uint32_t formId);
+
 	// Toggle-equip the spell. Hand spells honour `hand` ("left"|"right"|"both")
 	// with true engine equip state; powers ignore `hand` and use the voice
 	// slot. Returns the spell's NEW intended state so the view can update its

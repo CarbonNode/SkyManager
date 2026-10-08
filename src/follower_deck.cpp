@@ -1,5 +1,8 @@
 #include "follower_deck.h"
 
+#include <chrono>
+#include <mutex>
+
 // pch (force-included) provides RE::/SKSE::/json, logger and Windows.h via SKSE.
 
 namespace
@@ -10,6 +13,25 @@ namespace
 	GetStateFn g_getState = nullptr;
 	ApplyFn    g_apply = nullptr;
 	bool       g_resolveTried = false;
+
+	// CachedState()'s slot. Filled by every StateJson(), emptied by Apply().
+	std::mutex                         g_cacheMtx;
+	std::shared_ptr<const std::string> g_cache;
+	std::chrono::steady_clock::time_point g_cacheAt{};
+
+	void Remember(const std::string& state)
+	{
+		auto fresh = std::make_shared<const std::string>(state);
+		std::lock_guard l(g_cacheMtx);
+		g_cache = std::move(fresh);
+		g_cacheAt = std::chrono::steady_clock::now();
+	}
+
+	void Forget()
+	{
+		std::lock_guard l(g_cacheMtx);
+		g_cache.reset();
+	}
 
 	// FO's DLL is a fellow SKSE plugin in this same process; one resolve
 	// attempt is enough (plugins never load after kPostLoad).
@@ -56,7 +78,11 @@ namespace FollowerDeck
 		if (!g_getState)
 			return Unavailable();
 		const char* r = g_getState();
-		return r ? std::string(r) : Unavailable();
+		if (!r)
+			return Unavailable();
+		std::string state(r);
+		Remember(state);
+		return state;
 	}
 
 	std::string Apply(const std::string& cmdJson)
@@ -64,7 +90,22 @@ namespace FollowerDeck
 		Resolve();
 		if (!g_apply)
 			return Unavailable();
+		// Whatever the op did, a cached roster from before it is now a lie.
+		Forget();
 		const char* r = g_apply(cmdJson.c_str());
 		return r ? std::string(r) : Unavailable();
+	}
+
+	std::shared_ptr<const std::string> CachedState(std::int64_t maxAgeMs)
+	{
+		{
+			std::lock_guard l(g_cacheMtx);
+			if (g_cache && std::chrono::steady_clock::now() - g_cacheAt <
+							   std::chrono::milliseconds(maxAgeMs))
+				return g_cache;
+		}
+		StateJson();   // refills the slot (or leaves the Unavailable() answer uncached)
+		std::lock_guard l(g_cacheMtx);
+		return g_cache ? g_cache : std::make_shared<const std::string>(Unavailable());
 	}
 }

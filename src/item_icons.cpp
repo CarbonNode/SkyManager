@@ -1,6 +1,7 @@
 #include "item_icons.h"
 #include "item_icon_paths.h"
 #include "facegen_resolver.h"
+#include "npc_finder.h"
 
 // pch (force-included) provides RE::/SKSE::, nlohmann json.hpp, logger and
 // Windows.h (via PrismaUI_API.h). SEH (__try) needs no extra include.
@@ -79,6 +80,26 @@ namespace ItemIcons
 		constexpr std::uint32_t kSize = 512;
 		// NPC face renders only — see Request::px.
 		constexpr std::uint32_t kFaceSize = 1024;
+
+		// THE MIRROR (2026-10-03) — the person page's full-body figure. Square on
+		// purpose: MRF fits a bounding SPHERE into the canvas, and a standing body's
+		// sphere is as wide as it is tall, so a square canvas is the one aspect we
+		// know the framework draws undistorted. The view crops the empty sides by
+		// LAYOUT (Ultralight rasterises an <img> at its layout size). 24 frames, 15°
+		// apart, so a drag reads as a turn rather than a slideshow.
+		constexpr std::uint32_t kMirrorSize  = 1024;   // ~1:1 with a ~950px stage; 24 frames stay cheap
+		constexpr std::uint32_t kMirrorStep  = 15;
+		// Bump to re-bake every mirror figure after a look-affecting change here.
+		constexpr std::uint32_t kMirrorEpoch = 1;
+
+		/* THE ITEM INSPECTOR (2026-10-04, Rober on SeverActions' Catalog: "also
+		 * interesting.... (toggable maybe)"). The lightbox's own turntable is 4
+		 * frames at 512px, kept cheap on purpose; "Turn in 3D" is the opt-in big
+		 * one: the Mirror's 24 frames 15° apart, at the Mirror's 1024px, through
+		 * the SAME item route frame 0 takes (look, texture swaps, box fit). Its
+		 * frames live in their own folder so the two lanes never share a name. */
+		constexpr std::uint32_t kInspectSize = 1024;
+		constexpr std::uint32_t kInspectStep = 15;
 
 		// Each in-flight mesh costs a full offscreen scene render per frame.
 		// A 41-piece inventory is a background trickle, not a burst.
@@ -356,6 +377,10 @@ namespace ItemIcons
 		DeleteFn          g_delete          = nullptr;
 		SetShapeTexFn     g_setShapeTex     = nullptr;
 		CreateBySetFn     g_createBySet     = nullptr;
+		// The mirror's skin-texture overrides (upstream export, CreateWholeNpc's
+		// own call). Optional: without it a body renders in its NIF's textures.
+		using SetTexSetFn       = decltype(&MRF::Internal::IMesh_SetTextureSet);
+		SetTexSetFn       g_setTexSet       = nullptr;
 
 		bool g_resolved = false;
 		bool g_abiOk    = true;   // cleared for the session if the layout probe fails
@@ -411,6 +436,17 @@ namespace ItemIcons
 			return t == Tier::User ? "user" : (t == Tier::Bulk ? "bulk" : "idle");
 		}
 
+		/* One texture-set override for a whole-body render: the skin texture set
+		 * an exposed body/hands/feet piece must wear (a follower's custom skin), the
+		 * exact shape upstream's CreateWholeNpc hands IMesh_SetTextureSet. */
+		struct WholeTex
+		{
+			std::string              nifPath;
+			std::vector<std::string> paths;   // one per BSTextureSet slot, "" = keep the NIF's own
+			bool                     modelSpaceNormals{ false };
+			bool                     includeBodyShape{ false };
+		};
+
 		struct Request
 		{
 			std::string         outPath;   // where the framework writes (game-root-relative)
@@ -450,6 +486,17 @@ namespace ItemIcons
 			// to fall back to the bare mesh must not jump the user queue) and so
 			// the watcher can tell whether anyone is waiting on the render.
 			Tier                tier{ Tier::User };
+			// THE MIRROR: a whole dressed body (worn gear + skin + facegen head)
+			// composed from nifPath + extraNifs. Never retried as the bare base nif
+			// on a refusal — the base is one armour piece, not a picture of anyone.
+			bool                  whole{ false };
+			// The surface that asked ("finder"), or "" for everyone else. A tagged
+			// ask may REPLACE its own earlier asks still waiting in the user queue:
+			// see the supersede step in EnsureIconsForList.
+			std::string           owner;
+			std::vector<WholeTex> tex;
+			float                 tint[3]{ 1.0f, 1.0f, 1.0f };
+			bool                  useTint{ false };
 		};
 
 		struct InFlight
@@ -594,6 +641,15 @@ namespace ItemIcons
 		// has let go.
 		std::size_t g_landed = 0;
 
+		// Landing pushes and index-file writes are coalesced (see the watcher).
+		// Main thread only: read and written inside the watcher's SKSE tasks.
+		constexpr auto kNotifyGap    = std::chrono::milliseconds(750);
+		constexpr auto kIndexFileGap = std::chrono::seconds(10);
+		bool                                  g_notifyPending    = false;
+		bool                                  g_indexFilePending = false;
+		std::chrono::steady_clock::time_point g_lastNotify{};
+		std::chrono::steady_clock::time_point g_lastIndexFile{};
+
 		// Last time Pump() looked. Used to advance every in-flight job's clock
 		// by exactly the interval the framework spent refusing to draw.
 		std::chrono::steady_clock::time_point g_lastPump{};
@@ -636,6 +692,10 @@ namespace ItemIcons
 		std::deque<std::string> g_savePaths;
 
 		std::function<void()> g_onBatchDone;
+
+		// The render-folder listings the index builders read (defined beside
+		// FileExists). Declared here so the purge helpers above them can drop them.
+		void InvalidateListings();
 
 		/* ── SEH-guarded calls (POD-only wrappers, C2712) ──────────────────── */
 
@@ -713,6 +773,45 @@ namespace ItemIcons
 			}
 		}
 
+		bool CallSetTexSet(SetTexSetFn a_fn, void* a_mesh, const char* a_nif, const char* const* a_paths,
+			std::uint32_t a_count, bool a_msn, bool a_body) noexcept
+		{
+			__try {
+				return a_fn(static_cast<MrfMesh*>(a_mesh), a_nif, a_paths, a_count, a_msn, a_body);
+			} __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+																		 : EXCEPTION_CONTINUE_SEARCH) {
+				return false;
+			}
+		}
+
+		// Dress a freshly composed mirror mesh: skin texture sets + body tint, the
+		// two things upstream's CreateWholeNpc does after its create call. Every
+		// step is best-effort — a body in its NIF's own textures is still a body.
+		void ApplyWholeLook(void* mesh, const Request& r)
+		{
+			std::size_t applied = 0;
+			if (g_setTexSet) {
+				for (const auto& t : r.tex) {
+					std::vector<const char*> paths;
+					paths.reserve(t.paths.size());
+					for (const auto& p : t.paths)
+						paths.push_back(p.c_str());
+					if (CallSetTexSet(g_setTexSet, mesh, t.nifPath.c_str(), paths.data(),
+							static_cast<std::uint32_t>(paths.size()), t.modelSpaceNormals, t.includeBodyShape))
+						++applied;
+				}
+			}
+			if (r.useTint) {
+				auto* m = static_cast<MrfMesh*>(mesh);
+				m->bodyTintColor[0] = r.tint[0];
+				m->bodyTintColor[1] = r.tint[1];
+				m->bodyTintColor[2] = r.tint[2];
+				m->useBodyTint      = true;
+			}
+			logger::info("mirror: '{}' composed - {} skin texture set(s) of {}, tint {}",
+				r.label, applied, r.tex.size(), r.useTint ? "on" : "off");   // marker: mirror-compose
+		}
+
 		void SafeDelete(void* mesh)
 		{
 			if (!g_delete || !mesh)
@@ -765,6 +864,12 @@ namespace ItemIcons
 		std::filesystem::path IconDir()
 		{
 			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "items";
+		}
+
+		// The item inspector's frames (kInspectSize renders, -aNNN at kInspectStep).
+		std::filesystem::path InspectDir()
+		{
+			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "inspect";
 		}
 
 		/* ── the facegen render GENERATION ──────────────────────────────────
@@ -875,8 +980,10 @@ namespace ItemIcons
 				if (!del)
 					++n;
 			}
-			if (n)
+			if (n) {
+				InvalidateListings();
 				logger::info("item icons: purged {} stale render(s) from {}", n, PathU8(dir));
+			}
 		}
 
 		/* Compare the on-disk facegen render generation to the current token;
@@ -901,6 +1008,7 @@ namespace ItemIcons
 
 			DeletePngsIn(FaceGeomDir());
 			DeletePngsIn(MountGeomDir());
+			DeletePngsIn(FaceGeomDir().parent_path() / "bodies");   // the mirror's figures
 
 			// The PNGs are gone; the persisted face/body index must forget them too,
 			// or the first FaceIndexJson() would name renders that no longer exist.
@@ -1155,7 +1263,22 @@ namespace ItemIcons
 						++purged;
 				}
 			}
+			// The inspector's frames come off the same framing and the same swap
+			// route, so either generation going stale spoils them too. They are
+			// never indexed, so the whole folder simply goes and re-bakes on ask.
+			std::size_t inspectPurged = 0;
+			if (std::filesystem::exists(InspectDir(), ec)) {
+				for (std::filesystem::directory_iterator it(InspectDir(), ec), end; !ec && it != end; it.increment(ec)) {
+					std::error_code del;
+					if (it->is_regular_file(del) && std::filesystem::remove(it->path(), del) && !del)
+						++inspectPurged;
+				}
+			}
+			if (inspectPurged)
+				logger::info("item icons: purged {} item-inspector frame(s) with the item render generation", inspectPurged);
+
 			g_diskIndex.clear();
+			InvalidateListings();
 			LoadDiskIndex();   // re-seed from whatever survived (the -s2 keys)
 
 			std::filesystem::create_directories(IconDir(), ec);
@@ -1264,6 +1387,70 @@ namespace ItemIcons
 		{
 			std::error_code ec;
 			return std::filesystem::exists(p, ec);
+		}
+
+		/* ── one directory read instead of a thousand probes (2026-10-07) ────
+		 * Rober, picking a mod in the Finder: "it started generating visuals but
+		 * lagged super hard". The renders were not the cost. Every landing ran
+		 * IndexJson() twice (the index file + the view push), the NPC index twice
+		 * and the body index once, and each of those re-proved EVERY known key
+		 * with FileExists — two probes per item (swap name, then plain), through
+		 * MO2's usvfs hook, on the main thread: ~2,000 probes per landed picture
+		 * with ~500 renders on disk, landing three or four times a second. The
+		 * Finder's 2.5 s poll paid the same again.
+		 *
+		 * So an index build now asks a per-folder listing: ONE enumeration of
+		 * icons/items (or npcs/, mounts/), then a hash lookup per key. The listing
+		 * is dropped the moment a render lands (Pump marks it stale) or a purge
+		 * deletes files, and it never outlives kListingMaxAge, so a PNG removed by
+		 * hand drops out of the index within seconds. Names are compared
+		 * lower-case: Windows names are case-blind and FileExists was too.
+		 * Only the INDEX builders use it. The render-once gate in EnqueueLocked
+		 * keeps its direct probe, because a stale "missing" there would bake a
+		 * duplicate render. g_mutex held by every caller.
+		 * Build marker (hd-markers.json: "item-icons-dir-listing"). */
+		constexpr auto kListingMaxAge = std::chrono::seconds(10);
+
+		struct DirListing
+		{
+			std::unordered_set<std::string>       names;   // lower-case file names
+			std::chrono::steady_clock::time_point at{};
+			bool                                  valid{ false };
+		};
+		DirListing g_listItems, g_listFaces, g_listBodies;
+
+		void InvalidateListings()
+		{
+			g_listItems.valid = g_listFaces.valid = g_listBodies.valid = false;
+		}
+
+		std::string LowerName(std::string s)
+		{
+			for (auto& c : s)
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			return s;
+		}
+
+		bool Listed(DirListing& list, const std::filesystem::path& dir, const std::string& file)
+		{
+			const auto now = std::chrono::steady_clock::now();
+			if (!list.valid || now - list.at > kListingMaxAge) {
+				list.names.clear();
+				std::error_code ec;
+				for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+					list.names.insert(LowerName(PathU8(it->path().filename())));
+				list.at    = now;
+				list.valid = true;
+				static bool logged = false;
+				if (!logged) {
+					logged = true;
+					const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+						std::chrono::steady_clock::now() - now).count();
+					logger::info("item-icons-dir-listing: {} file(s) in {} listed in {} us",
+						list.names.size(), PathU8(dir), us);
+				}
+			}
+			return list.names.count(LowerName(file)) > 0;
 		}
 
 		/* ── the renderer's refusal channel ──────────────────────────────────
@@ -2261,15 +2448,17 @@ namespace ItemIcons
 			bool composed = false;
 			if (!mesh && !r.extraNifs.empty()) {
 				mesh     = SafeCreateByNifSet(r.nifPath, r.extraNifs, r.px);
-				composed = mesh != nullptr;
-				if (mesh)
+				composed = mesh != nullptr && !r.whole;
+				if (mesh && r.whole)
+					ApplyWholeLook(mesh, r);
+				else if (mesh)
 					logger::info("item icons: '{}' — head composed with {} wig nif(s)",
 						r.label, r.extraNifs.size());   // marker: face-wig-compose
 				else
 					logger::warn("item icons: '{}' — wig composition did not build a mesh; bare head",
 						r.label);
 			}
-			if (!mesh)
+			if (!mesh && !r.whole)
 				mesh = SafeCreateByNif(r.nifPath, r.px);
 			if (!mesh) {
 				++g_failed;
@@ -2560,6 +2749,7 @@ namespace ItemIcons
 				} else if (done) {
 					++g_done;
 					++g_landed;   // the view is told after the lock is released
+					InvalidateListings();   // the new PNG must be in the next index
 					// Remember this render as on-disk truth so it is named in every
 					// later IndexJson() even after g_asked is a fresh session's set
 					// (the vanishing-icon fix). Frame-0 item keys go to g_diskIndex;
@@ -2831,6 +3021,10 @@ namespace ItemIcons
 		// only by the public entry points that reset it before their walk.
 		std::size_t g_promotedThisAsk = 0;
 
+		// The owner tag the current public entry point stamps on what it queues
+		// (EnsureIconsForList only). Same idiom and the same lock as above.
+		std::string g_ownerThisAsk;
+
 		// Queue one item if it needs rendering. g_mutex held. Returns true if queued.
 		// `tier` parks it on the user, bulk or idle deque — same dedup, same
 		// derivation, same file; only WHICH deque and WHICH ceiling differ.
@@ -2847,6 +3041,12 @@ namespace ItemIcons
 				// behind work nobody is waiting on.
 				if (tier == Tier::User && PromoteToUser(key))
 					++g_promotedThisAsk;
+				// Waiting under ANOTHER surface's tag: two surfaces want it now, so
+				// it is nobody's to take back (see the supersede step).
+				if (tier == Tier::User)
+					for (auto& r : g_queue)
+						if (r.key == key && !r.owner.empty() && r.owner != g_ownerThisAsk)
+							r.owner.clear();
 				return false;
 			}
 			if (g_failedWhy.count(key)) return false;  // only an explicit Retry clears a dead end
@@ -2896,6 +3096,8 @@ namespace ItemIcons
 			r.label   = name.empty() ? key : name;
 			r.refit   = true;   // frame-0 item render: box-fit so clutter fills the frame
 			r.tier    = tier;
+			if (tier == Tier::User)
+				r.owner = g_ownerThisAsk;
 			QueueFor(tier).push_back(std::move(r));
 			g_asked.insert(key);
 			BacklogAdd(key, fid, plugin, name, "item");
@@ -2959,14 +3161,41 @@ namespace ItemIcons
 							landed   = g_landed > 0;
 							g_landed = 0;
 						}
-						// Each icon that lands is pushed as it lands, so the tab
-						// fills in under the player instead of waiting for the
-						// whole batch (or a reopen) to reveal any of it.
+						// Landings are pushed WHILE the batch runs, so the tab fills
+						// in under the player instead of waiting for the whole batch
+						// (or a reopen) to reveal any of it. But not one push per
+						// landing: each push re-serialises three whole indexes into
+						// the view, and the Finder lands three or four pictures a
+						// second (2026-10-07, "lagged super hard"). Landings are
+						// gathered and pushed at most every kNotifyGap; the two index
+						// FILES (for the portal and the next launch) are written at
+						// most every kIndexFileGap. The batch-end task below always
+						// does both, so nothing is ever left unsaid or unsaved.
+						// Build marker (hd-markers.json: "item-icons-notify-coalesced").
 						if (landed) {
-							WriteIndexFile();
-							WriteNpcIndexFile();   // persist any face/body that just landed
+							g_notifyPending = true;
+							g_indexFilePending = true;
+							static bool said = false;
+							if (!said) {
+								said = true;
+								logger::info("item-icons-notify-coalesced: landings pushed to the views at most every {} ms, "
+								             "index files saved at most every {} s",
+									kNotifyGap.count(),
+									std::chrono::duration_cast<std::chrono::seconds>(kIndexFileGap).count());
+							}
+						}
+						const auto now = std::chrono::steady_clock::now();
+						if (g_notifyPending && now - g_lastNotify >= kNotifyGap) {
+							g_notifyPending = false;
+							g_lastNotify    = now;
 							if (g_onBatchDone)
 								g_onBatchDone();
+						}
+						if (g_indexFilePending && now - g_lastIndexFile >= kIndexFileGap) {
+							g_indexFilePending = false;
+							g_lastIndexFile    = now;
+							WriteIndexFile();
+							WriteNpcIndexFile();   // persist any face/body that just landed
 						}
 						// Keep the unfinished-render backlog current while work is
 						// pending, so a crash or quit mid-batch forgets nothing.
@@ -2996,6 +3225,8 @@ namespace ItemIcons
 				}
 				g_watching = false;
 				SKSE::GetTaskInterface()->AddTask([]() {
+					g_notifyPending = g_indexFilePending = false;
+					g_lastNotify = g_lastIndexFile = std::chrono::steady_clock::now();
 					WriteIndexFile();
 					WriteNpcIndexFile();
 					if (g_onBatchDone)
@@ -3039,6 +3270,7 @@ namespace ItemIcons
 		// an old framework, in which case faces render bare-facegen (bald wig NPCs)
 		// exactly as they did before 2026-08-16 — never an error.
 		g_createBySet     = reinterpret_cast<CreateBySetFn>(GetProcAddress(mod, "IMesh_CreateByNifPathSet"));
+		g_setTexSet       = reinterpret_cast<SetTexSetFn>(GetProcAddress(mod, "IMesh_SetTextureSet"));
 		if (!g_createByNif || !g_delete) {
 			logger::warn("item icons: MeshRenderingFramework.dll loaded but exports did not resolve — "
 						 "a newer or different API; item icons stay off");
@@ -3166,9 +3398,41 @@ namespace ItemIcons
 		auto j = nlohmann::json::parse(wornReplyJson, nullptr, false);
 		if (j.is_discarded() || !j.is_object() || !j.contains("items") || !j["items"].is_array())
 			return;
-		std::size_t queued = 0, promoted = 0;
+		/* SUPERSEDE (2026-10-07). A tagged ask with "replace":true takes back that
+		 * owner's earlier asks still WAITING in the user queue that this list no
+		 * longer names. The Finder asks one page at a time, and flipping through
+		 * a mod's weapons queued every page behind the next: 67 renders in seven
+		 * seconds, still landing half a minute after the deck closed, each one a
+		 * stall the player felt. Now the queue holds the page on screen and
+		 * nothing else; leaving the tab sends an empty replace that clears it.
+		 * Renders already in flight finish (they are a frame or two from done).
+		 * A dropped key leaves g_asked and the backlog, so asking for it again
+		 * later queues it afresh. Build marker (hd-markers.json:
+		 * "item-icons-supersede"). */
+		const std::string owner   = j.value("owner", std::string());
+		const bool        replace = !owner.empty() && j.value("replace", false);
+		std::size_t queued = 0, promoted = 0, dropped = 0;
 		{
 			std::lock_guard l(g_mutex);
+			if (replace) {
+				std::unordered_set<std::string> keep;
+				for (const auto& it : j["items"])
+					if (it.is_object())
+						keep.insert(KeyOf(it.value("formId", std::string()), it.value("plugin", std::string())));
+				for (auto r = g_queue.begin(); r != g_queue.end();) {
+					if (r->owner == owner && !keep.count(r->key)) {
+						g_asked.erase(r->key);
+						BacklogDrop(r->key);
+						r = g_queue.erase(r);
+						++dropped;
+					} else {
+						++r;
+					}
+				}
+				if (dropped)
+					logger::info("item-icons-supersede: {} waiting '{}' render(s) dropped for the newer ask "
+					             "({} in the user queue now)", dropped, owner, g_queue.size());
+			}
 			// Everything appended (or promoted out of bulk/idle) by this walk is
 			// rotated to the FRONT of the user queue: this list is a surface the
 			// player is looking at RIGHT NOW — the F7 quick card's worn tiles, a
@@ -3177,6 +3441,7 @@ namespace ItemIcons
 			// user batch. See FrontLoadUserBatch.
 			const std::size_t before = g_queue.size();
 			g_promotedThisAsk        = 0;
+			g_ownerThisAsk           = owner;
 			for (const auto& it : j["items"]) {
 				if (!it.is_object())
 					continue;
@@ -3185,6 +3450,7 @@ namespace ItemIcons
 						it.value("name", std::string())))
 					++queued;
 			}
+			g_ownerThisAsk.clear();
 			promoted = g_promotedThisAsk;
 			FrontLoadUserBatch(before);
 			if (queued || promoted) {
@@ -3196,7 +3462,11 @@ namespace ItemIcons
 		// keys — the index now names every piece that already has a PNG, which
 		// is what the quick card needs on a session where the Wardrobe tab
 		// never opened (IndexJson only reports keys asked THIS session).
-		WriteIndexFile();
+		// An EMPTY list is a view's poll ("anything new on disk?") and registered
+		// nothing, so it does not rewrite the file — the panes poll every few
+		// seconds and the watcher already saves what lands.
+		if (!j["items"].empty() || dropped)
+			WriteIndexFile();
 		BacklogSaveIfDirty();
 		if (!queued && !promoted)
 			return;
@@ -3777,7 +4047,7 @@ namespace ItemIcons
 			if (bar == std::string::npos)
 				return;
 			const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
-			if (FileExists(BodyDir() / file))
+			if (Listed(g_listBodies, BodyDir(), file))
 				icons[base] = "icons/mounts/" + file;
 		};
 		for (const auto& key : g_asked)
@@ -3885,7 +4155,7 @@ namespace ItemIcons
 			if (bar == std::string::npos)
 				return;
 			const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
-			if (FileExists(FaceDir() / file))
+			if (Listed(g_listFaces, FaceDir(), file))
 				icons[base] = "icons/npcs/" + file;
 		};
 		for (const auto& key : g_asked)
@@ -4092,9 +4362,9 @@ namespace ItemIcons
 				return {};
 			const auto swapped = ItemFileFor(key.substr(0, bar), key.substr(bar + 1), true);
 			const auto plain   = ItemFileFor(key.substr(0, bar), key.substr(bar + 1), false);
-			if (FileExists(IconDir() / swapped))
+			if (Listed(g_listItems, IconDir(), swapped))
 				return "icons/items/" + swapped;
-			if (FileExists(IconDir() / plain))
+			if (Listed(g_listItems, IconDir(), plain))
 				return "icons/items/" + plain;
 			return {};
 		};
@@ -4245,8 +4515,7 @@ namespace ItemIcons
 					if (bar == std::string::npos)
 						return;
 					const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
-					const auto dir = face ? FaceDir() : BodyDir();
-					if (FileExists(dir / file))
+					if (face ? Listed(g_listFaces, FaceDir(), file) : Listed(g_listBodies, BodyDir(), file))
 						icons[key] = (face ? "icons/npcs/" : "icons/mounts/") + file;
 				};
 				for (const auto& key : g_faceDiskIndex)
@@ -4262,5 +4531,468 @@ namespace ItemIcons
 				out << nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) } }
 						.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
+	}
+
+	/* ── THE MIRROR (2026-10-03) — a full-body figure of a LIVE actor ──────────
+	 * Rober saw SeverActions' live mannequin and asked for it in SkyManager. The
+	 * pieces were already here: MRF composes several NIFs into one mesh (the face
+	 * lane's wig composition), takes skin texture sets, and the turntable spins a
+	 * mesh about Z. So a figure is a COMPOSED render of exactly what the actor is
+	 * wearing right now — every worn ARMO's addon for her race, the skin parts
+	 * the gear leaves bare, her baked FaceGen head (the proven face route, not
+	 * raw head parts) and, when no hair-slot gear is worn, her hair — baked at
+	 * kMirrorStep angles into icons/bodies/<slug>-<hex>-<sig>[-aNNN].png.
+	 *
+	 * <sig> hashes the whole composition, so a change of clothes is a new set of
+	 * files (Ultralight maps every PNG it has drawn, so a shown file can never be
+	 * overwritten — new names are the only way to replace a picture). Older sigs
+	 * of the same actor are deleted best-effort; a still-mapped one is simply
+	 * left for the generation purge.
+	 *
+	 * Honest limits, said in the reply rather than hidden: NIFs come off disk, so
+	 * runtime body morphs (OBody / RaceMenu sliders) do not apply — the figure has
+	 * the BodySlide-built shape; RaceMenu overlays are not composited; the pose is
+	 * the meshes' bind pose. */
+	namespace
+	{
+		std::filesystem::path MirrorDir()
+		{
+			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "bodies";
+		}
+
+		struct WholeSet
+		{
+			std::vector<std::string> nifs;   // [0] is the base, the rest attach
+			std::vector<WholeTex>    tex;
+			float                    tint[3]{ 1.0f, 1.0f, 1.0f };
+			bool                     useTint{ false };
+			std::string              fid;    // durable identity: the BASE npc, "0x<local>"
+			std::string              plugin;
+			std::size_t              pieces{ 0 };   // distinct worn armour forms
+			std::string              head;   // "facegen" | "headparts" | ""
+		};
+
+		void AddUniqueNif(std::vector<std::string>& v, const char* path)
+		{
+			if (!path || !*path)
+				return;
+			std::string p{ path };
+			if (std::find(v.begin(), v.end(), p) == v.end())
+				v.push_back(std::move(p));
+		}
+
+		void AddTex(std::vector<WholeTex>& out, const char* nif, RE::BGSTextureSet* set, bool includeBodyShape)
+		{
+			if (!nif || !*nif || !set)
+				return;
+			WholeTex t;
+			t.nifPath           = nif;
+			t.modelSpaceNormals = set->flags.any(RE::BGSTextureSet::Flag::kHasModelSpaceNormalMap);
+			t.includeBodyShape  = includeBodyShape;
+			const auto n = static_cast<std::size_t>(RE::BSTextureSet::Textures::kUsedTotal);
+			t.paths.resize(n);
+			for (std::size_t i = 0; i < n; ++i)
+				if (const char* tp = set->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(i)))
+					t.paths[i] = tp;
+			out.push_back(std::move(t));
+		}
+
+		// Upstream's GetNpcSkinTextureSet: the skin texture set an exposed piece
+		// of this slot wears (the NPC's own skin first, then the race's).
+		RE::BGSTextureSet* SkinTexFor(RE::TESNPC* npc, RE::TESRace* race, RE::SEX sex, std::uint32_t slots)
+		{
+			auto fromArmor = [&](RE::TESObjectARMO* skin) -> RE::BGSTextureSet* {
+				if (!skin)
+					return nullptr;
+				for (auto* arma : skin->armorAddons) {
+					if (!arma || !arma->IsValidRace(race))
+						continue;
+					const auto a = static_cast<std::uint32_t>(*arma->bipedModelData.bipedObjectSlots);
+					if ((a & slots) != 0 && arma->skinTextures[sex])
+						return arma->skinTextures[sex];
+				}
+				return nullptr;
+			};
+			RE::BGSTextureSet* t = npc ? fromArmor(npc->skin) : nullptr;
+			if (!t && race)
+				t = fromArmor(race->skin);
+			if (!t && npc)
+				t = fromArmor(npc->farSkin);
+			return t;
+		}
+
+		std::uint32_t SkinCoverage(std::uint32_t addonSlots)
+		{
+			using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
+			for (auto s : { Slot::kBody, Slot::kHands, Slot::kFeet, Slot::kTail }) {
+				const auto m = static_cast<std::uint32_t>(s);
+				if ((addonSlots & m) != 0)
+					return m;
+			}
+			return addonSlots;
+		}
+
+		// Upstream's AppendArmorModelPaths, ported: the addons of `armor` valid for
+		// the race, minus slots already covered. Returns the slots it added.
+		std::uint32_t AddArmor(WholeSet& w, RE::TESObjectARMO* armor, RE::TESRace* race, RE::SEX sex,
+			std::uint32_t excluded, bool excludeOnAnyOverlap, bool isSkin, RE::TESNPC* skinNpc)
+		{
+			if (!armor || !race)
+				return 0;
+			std::uint32_t added = 0;
+			for (auto* arma : armor->armorAddons) {
+				if (!arma || !arma->IsValidRace(race))
+					continue;
+				const auto slots    = static_cast<std::uint32_t>(*arma->bipedModelData.bipedObjectSlots);
+				const auto coverage = isSkin ? SkinCoverage(slots) : slots;
+				const auto overlap  = coverage & excluded;
+				if ((excludeOnAnyOverlap && overlap != 0) || (!excludeOnAnyOverlap && (coverage & ~excluded) == 0))
+					continue;
+				const char* model = arma->bipedModels[sex].GetModel();
+				if (!model || !*model)
+					continue;
+				RE::BSResourceNiBinaryStream probe((std::string("meshes\\") + model).c_str());
+				if (!probe.good())
+					continue;   // a missing NIF must not cost the whole figure
+				AddUniqueNif(w.nifs, model);
+				RE::BGSTextureSet* tex = arma->skinTextures[sex];
+				if (skinNpc)
+					if (auto* own = SkinTexFor(skinNpc, race, sex, slots))
+						tex = own;   // exposed skin inside an outfit wears HER skin
+				AddTex(w.tex, model, tex, isSkin);
+				added |= slots;
+			}
+			return added;
+		}
+
+		// MAIN THREAD ONLY (worn-armour reads, form lookups, BSResource probes).
+		bool BuildWhole(RE::Actor* actor, WholeSet& w, std::string& why)
+		{
+			auto* npc  = actor ? actor->GetActorBase() : nullptr;
+			auto* race = actor ? actor->GetRace() : nullptr;
+			if (!npc || !race) {
+				why = "not an actor with a race";
+				return false;
+			}
+			auto* file = npc->GetFile(0);
+			if (!file) {
+				why = "a dynamic actor with no plugin of her own";
+				return false;
+			}
+			{
+				const std::uint32_t local = npc->GetFormID() & (file->IsLight() ? 0xFFFu : 0xFFFFFFu);
+				char hex[16];
+				std::snprintf(hex, sizeof(hex), "0x%x", local);
+				w.fid    = hex;
+				w.plugin = std::string(file->GetFilename());
+			}
+			const auto sex = npc->GetSex();
+
+			// 1. Everything she is WEARING, one entry per distinct ARMO.
+			std::vector<RE::TESObjectARMO*> worn;
+			std::uint32_t                    outfitSlots = 0;
+			for (std::uint32_t i = 0; i < 32; ++i) {
+				const auto slot = static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(std::uint32_t{ 1 } << i);
+				auto*      armo = actor->GetWornArmor(slot);
+				if (!armo || std::find(worn.begin(), worn.end(), armo) != worn.end())
+					continue;
+				worn.push_back(armo);
+				outfitSlots |= AddArmor(w, armo, race, sex, 0, false, false, npc);
+			}
+			w.pieces = worn.size();
+
+			// 2. Skin for whatever the gear leaves bare (her own skin, then the race's).
+			std::uint32_t covered = outfitSlots;
+			covered |= AddArmor(w, npc->skin, race, sex, covered, true, true, nullptr);
+			covered |= AddArmor(w, race->skin, race, sex, covered, true, true, nullptr);
+			covered |= AddArmor(w, npc->farSkin, race, sex, covered, true, true, nullptr);
+
+			// 3. The head: the baked FaceGen NIF of her face owner (the route every
+			// deck portrait already proves), hair added only when no worn piece
+			// claims the hair slots (a worn wig or helmet already IS her head).
+			using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
+			const std::uint32_t hairMask = static_cast<std::uint32_t>(Slot::kHair) |
+			                               static_cast<std::uint32_t>(Slot::kLongHair);
+			if (auto* owner = NpcFinder::FaceOwnerOf(npc); owner && owner->GetFile(0)) {
+				auto*               of    = owner->GetFile(0);
+				const std::uint32_t local = owner->GetFormID() & (of->IsLight() ? 0xFFFu : 0xFFFFFFu);
+				char                hex[16];
+				std::snprintf(hex, sizeof(hex), "0x%x", local);
+				const std::string oplugin{ of->GetFilename() };
+				if (const auto rel = FaceGenResolver::Resolve(hex, oplugin); !rel.empty()) {
+					AddUniqueNif(w.nifs, rel.c_str());
+					w.head = "facegen";
+					if ((outfitSlots & hairMask) == 0)
+						for (const auto& h : HairNifsForFace(hex, oplugin))
+							AddUniqueNif(w.nifs, h.c_str());
+				}
+			}
+			if (w.head.empty() && npc->headParts) {
+				for (std::int8_t i = 0; i < npc->numHeadParts; ++i)
+					if (auto* hp = npc->headParts[i])
+						AddUniqueNif(w.nifs, hp->GetModel());
+				if (npc->numHeadParts > 0)
+					w.head = "headparts";
+			}
+
+			// 4. Body tint (upstream: fall back to the face root when unset).
+			RE::TESNPC* tintNpc = npc;
+			if (!tintNpc->bodyTintColor.red && !tintNpc->bodyTintColor.green && !tintNpc->bodyTintColor.blue)
+				if (auto* root = npc->GetRootFaceNPC())
+					tintNpc = root;
+			const auto& bt = tintNpc->bodyTintColor;
+			if (bt.red || bt.green || bt.blue) {
+				w.tint[0] = bt.red / 255.0f;
+				w.tint[1] = bt.green / 255.0f;
+				w.tint[2] = bt.blue / 255.0f;
+				w.useTint = true;
+			}
+
+			if (w.nifs.size() < 2) {
+				why = w.nifs.empty() ? "no body, gear or head mesh found for her race"
+				                     : "only one mesh found - nothing to compose a figure from";
+				return false;
+			}
+			return true;
+		}
+
+		std::string SigOf(const WholeSet& w)
+		{
+			std::uint32_t h = 2166136261u;
+			auto mix = [&](const std::string& s) {
+				for (const unsigned char c : s) {
+					h ^= c;
+					h *= 16777619u;
+				}
+				h ^= 0x1Fu;
+				h *= 16777619u;
+			};
+			mix(std::to_string(kMirrorEpoch) + "/" + std::to_string(kMirrorSize));
+			for (const auto& n : w.nifs)
+				mix(n);
+			for (const auto& t : w.tex) {
+				mix(t.nifPath);
+				for (const auto& p : t.paths)
+					mix(p);
+			}
+			if (w.useTint)
+				mix(std::to_string(w.tint[0]) + "," + std::to_string(w.tint[1]) + "," + std::to_string(w.tint[2]));
+			char buf[16];
+			std::snprintf(buf, sizeof(buf), "%08x", h);
+			return buf;
+		}
+
+		// Mirror frame order: front, back, the two profiles, then fill in — so a
+		// drag that starts while the set is still baking already turns.
+		std::vector<std::uint32_t> MirrorOrder()
+		{
+			std::vector<std::uint32_t> out{ 0, 180, 90, 270 };
+			for (std::uint32_t a = 0; a < 360; a += kMirrorStep)
+				if (std::find(out.begin(), out.end(), a) == out.end())
+					out.push_back(a);
+			return out;
+		}
+	}
+
+	std::string MirrorJson(RE::Actor* actor, bool queue)
+	{
+		nlohmann::json out = { { "ok", false }, { "step", kMirrorStep }, { "size", kMirrorSize } };
+		if (!actor) {
+			out["why"] = "not loaded right now - open her page while she is nearby";
+			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
+		out["name"] = actor->GetName() ? actor->GetName() : "";
+		if (!Ready() || !g_createBySet) {
+			out["why"] = "Mesh Rendering Framework is not installed (or too old to compose a figure)";
+			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
+		WholeSet    w;
+		std::string why;
+		if (!BuildWhole(actor, w, why)) {
+			out["why"] = why;
+			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
+		const std::string sig  = SigOf(w);
+		std::string       stem = FileFor(w.fid, w.plugin, false);
+		stem                   = stem.substr(0, stem.size() - 4) + "-" + sig;
+		const std::string file = stem + ".png";
+		const auto        dir  = MirrorDir();
+
+		nlohmann::json frames = nlohmann::json::object();
+		std::size_t    queued = 0;
+		std::string    failed;
+		{
+			std::lock_guard l(g_mutex);
+			const std::size_t before = g_queue.size();
+			for (const auto a : MirrorOrder()) {
+				const auto name = AngleFile(file, a);
+				if (FileExists(dir / name)) {
+					frames[std::to_string(a)] = "icons/bodies/" + name;
+					continue;
+				}
+				char ak[8];
+				std::snprintf(ak, sizeof(ak), "a%03u", a);
+				const auto key = KeyOf(w.fid, w.plugin) + "@w" + sig + ak;
+				if (auto f = g_failedWhy.find(key); f != g_failedWhy.end()) {
+					if (a == 0)
+						failed = f->second;
+					continue;
+				}
+				if (!queue || g_asked.count(key) || g_queue.size() >= kMaxQueued)
+					continue;
+				Request r;
+				r.outPath   = PathU8(dir / name);
+				r.key       = key;
+				r.nifPath   = w.nifs.front();
+				r.extraNifs.assign(w.nifs.begin() + 1, w.nifs.end());
+				r.label     = std::string(actor->GetName() ? actor->GetName() : "figure") + " (mirror " + std::to_string(a) + ")";
+				r.px        = kMirrorSize;
+				r.angle     = a;
+				r.whole     = true;
+				r.tex       = w.tex;
+				r.useTint   = w.useTint;
+				std::copy(std::begin(w.tint), std::end(w.tint), std::begin(r.tint));
+				r.tier      = Tier::User;
+				g_queue.push_back(std::move(r));
+				g_asked.insert(key);
+				++queued;
+			}
+			if (queued) {
+				FrontLoadUserBatch(before);
+				LogUserAskDepth("mirror", queued, 0);
+				Pump();
+			}
+		}
+		if (queued) {
+			std::error_code ec;
+			std::filesystem::create_directories(dir, ec);
+			// A change of clothes made every older figure of hers stale. Best
+			// effort: a file the view still has mapped refuses, and is left.
+			const std::string prefix = stem.substr(0, stem.size() - sig.size());
+			std::size_t       gone   = 0;
+			for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+				const auto n = PathU8(it->path().filename());
+				if (n.rfind(prefix, 0) == 0 && n.rfind(stem, 0) != 0) {
+					std::error_code del;
+					if (std::filesystem::remove(it->path(), del) && !del)
+						++gone;
+				}
+			}
+			logger::info("mirror: '{}' - {} frame(s) queued at {}px (sig {}, {} nif(s), {} worn piece(s), head {}, {} stale removed)",
+				actor->GetName() ? actor->GetName() : "", queued, kMirrorSize, sig, w.nifs.size(), w.pieces,
+				w.head.empty() ? "none" : w.head, gone);   // marker: mirror-queue
+			StartWatcher();
+		}
+		out["ok"]     = true;
+		out["sig"]    = sig;
+		out["frames"] = std::move(frames);
+		out["total"]  = 360 / kMirrorStep;
+		out["queued"] = queued;
+		out["pieces"] = w.pieces;
+		out["head"]   = w.head;
+		out["meshes"] = w.nifs.size();
+		if (!failed.empty())
+			out["failed"] = failed;
+		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	/* ── THE ITEM INSPECTOR ─────────────────────────────────────────────────
+	 * One piece as a 24-frame turntable, the Mirror's lane for an item. Every
+	 * frame — frame 0 included, at the big size — goes through the ordinary
+	 * item route (LookOf's mesh + texture swaps, the swept-cylinder box fit that
+	 * holds the scale still across angles), so the turn is one piece in a fixed
+	 * frame, never a slideshow of differently framed pictures. Frames land in
+	 * icons/inspect/<item file>[-aNNN].png, the item's own (revisioned) name,
+	 * so a retried icon generation never mixes with an older set. Front, back
+	 * and the two profiles bake first, so a drag works while the rest arrive.
+	 * Re-asking is free: on-disk frames are listed, queued ones are not
+	 * re-queued (g_asked), and a refused one is reported, never retried. */
+	std::string InspectJson(const std::string& fid, const std::string& plugin, bool queue)
+	{
+		nlohmann::json out = { { "ok", false }, { "formId", fid }, { "plugin", plugin },
+			{ "step", kInspectStep }, { "size", kInspectSize }, { "total", 360 / kInspectStep } };
+		if (fid.empty() || plugin.empty()) {
+			out["why"] = "this piece has no plugin identity to render";
+			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
+		if (!Ready()) {
+			out["why"] = "Mesh Rendering Framework is not installed";
+			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
+		nlohmann::json frames = nlohmann::json::object();
+		std::size_t    queued = 0;
+		std::size_t    refused = 0;
+		std::string    failed;
+		std::string    baseFile;
+		{
+			std::lock_guard l(g_mutex);
+			auto look = LookOf(fid, plugin);
+			if (look.nif.empty()) {
+				out["why"] = look.missing.empty() ? std::string("this piece has no world model to turn")
+				                                  : "its model is missing from the load order: " + look.missing;
+				return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			}
+			// The swap route is all-or-nothing per SET: with swaps switched off
+			// for this session every frame is the bare mesh, which is still one
+			// consistent piece.
+			const bool swapped = !look.swaps.empty() && !g_swapDisabled;
+			baseFile           = ItemFileFor(fid, plugin, swapped);
+			const auto dir     = InspectDir();
+			const std::size_t before = g_queue.size();
+			std::vector<std::uint32_t> order{ 0, 180, 90, 270 };
+			for (std::uint32_t a = 0; a < 360; a += kInspectStep)
+				if (std::find(order.begin(), order.end(), a) == order.end())
+					order.push_back(a);
+			for (const auto a : order) {
+				const auto name = AngleFile(baseFile, a);
+				if (FileExists(dir / name)) {
+					frames[std::to_string(a)] = "icons/inspect/" + name;
+					continue;
+				}
+				char ak[8];
+				std::snprintf(ak, sizeof(ak), "i%03u", a);
+				const std::string key = KeyOf(fid, plugin) + "@" + ak;
+				if (auto f = g_failedWhy.find(key); f != g_failedWhy.end()) {
+					++refused;
+					if (failed.empty())
+						failed = f->second;
+					continue;
+				}
+				if (!queue || g_asked.count(key) || g_queue.size() >= kMaxQueued)
+					continue;
+				Request r;
+				r.outPath = PathU8(dir / name);
+				r.key     = key;
+				r.nifPath = look.nif;
+				r.swaps   = swapped ? look.swaps : std::vector<AltTex>{};
+				r.label   = fid + "|" + plugin + " (inspect " + std::to_string(a) + ")";
+				r.px      = kInspectSize;
+				r.refit   = true;   // the same box fit as frame 0, so the piece holds still
+				r.angle   = a;
+				r.tier    = Tier::User;
+				g_queue.push_back(std::move(r));
+				g_asked.insert(key);
+				++queued;
+			}
+			if (queued) {
+				FrontLoadUserBatch(before);
+				LogUserAskDepth("inspect", queued, 0);
+				Pump();
+			}
+		}
+		if (queued) {
+			std::error_code ec;
+			std::filesystem::create_directories(InspectDir(), ec);
+			logger::info("item inspect: '{}|{}' - {} frame(s) queued at {}px ({} on disk, {} refused)",
+				fid, plugin, queued, kInspectSize, frames.size(), refused);   // marker: item-inspect
+			StartWatcher();
+		}
+		out["ok"]      = true;
+		out["frames"]  = std::move(frames);
+		out["queued"]  = queued;
+		out["refused"] = refused;
+		if (!failed.empty())
+			out["failed"] = failed;
+		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 }

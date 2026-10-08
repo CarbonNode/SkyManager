@@ -116,6 +116,38 @@ body.hud-hidden #hud { display: none; }
   --hud-steel: #9fb4c8;
   /* One shadow recipe for every piece of text that floats over the game. */
   --hud-tshadow: 0 1px 2px rgba(0, 0, 0, .95), 0 0 3px rgba(0, 0, 0, .85);
+
+  /* ---- READOUT METRICS v2 (2026-10-06) ---------------------------------
+     Rober, with a screenshot of the gold / carry / clock / lockpick chips on
+     his 2560x1440 screen: "low res, glitchy, hard to read". Measured: 17px
+     numerals, a 256px fine-line painting crushed into a 22px box, and a plate
+     the frame showed straight through. The standing rule is NO SMALL TEXT, and
+     a number you glance at from a couch is the last place to break it.
+
+     Every size in the readout family hangs off these tokens, for one reason
+     beyond tidiness: `body.hud-metrics-v1` (below) swaps the OLD numbers back
+     in, which is how hud.js measures what a saved layout used to occupy before
+     it re-flows that layout once (see "READOUT METRICS v2" there). Change a
+     size here and the v1 block stays what it is — it is a record, not a theme. */
+  --ro-fs: 22px;            /* the number */
+  --ro-sub: 18px;           /* the quieter "/ max" half */
+  --ro-ico: 32px;           /* glyph box — the -hud art is cut at exactly 2x this */
+  --ro-gap: 10px;           /* glyph <-> number */
+  --ro-pad: 8px 16px 8px 12px;   /* a floated readout's plate */
+  --ro-radius: 14px;
+  --ro-wx-w: 92px;          /* the weather-only label's fixed lane */
+  --ro-ctx-w: 340px;        /* cap on a place name before it ellipsizes */
+  --pot-fs: 18px;
+  --pot-ico: 24px;
+  --ro-plate: linear-gradient(180deg, rgba(22, 23, 29, .93), rgba(9, 10, 14, .95));
+  --ro-plate-line: rgba(214, 178, 92, .58);
+}
+/* THE OLD NUMBERS, verbatim. On only while a pre-v2 layout waits to be
+   re-flowed; hud.js takes it off the moment it has measured. Do not restyle. */
+body.hud-metrics-v1 {
+  --ro-fs: 17px; --ro-sub: 15px; --ro-ico: 22px; --ro-gap: 8px;
+  --ro-pad: 10px 12px; --ro-radius: 12px; --ro-wx-w: 70px; --ro-ctx-w: 260px;
+  --pot-fs: 13px; --pot-ico: 18px;
 }
 
 /* Positioned by whichever corner it is anchored to (left/right + top/bottom set
@@ -261,7 +293,7 @@ body.a-right .hud-sv-name, body.a-right .hud-ally-name { text-align: right; }
   gap: 0 2px;
   padding: 7px 12px;
   border-radius: 13px 5px 13px 5px;      /* forged chamfer — ours, and static */
-  background: rgba(10, 12, 16, .46);
+  background: rgba(10, 12, 16, .88);
   border: 1px solid var(--hud-line);
   box-shadow: inset 0 1px 0 rgba(255, 245, 210, .05);
   max-width: 640px;
@@ -276,13 +308,35 @@ body.a-right .hud-sv-name, body.a-right .hud-ally-name { text-align: right; }
   display: inline-flex; align-items: center; flex-wrap: wrap;
   padding: 7px 12px;
   border-radius: 13px 5px 13px 5px;      /* forged chamfer — ours, and static */
-  background: rgba(10, 12, 16, .46);
+  /* .46 let a bright frame (snow, daylight rock) straight through the plate,
+     and gold numerals on mid-grey are not a readout. Near-opaque since v2. */
+  background: rgba(10, 12, 16, .88);
   border: 1px solid var(--hud-line);
   box-shadow: inset 0 1px 0 rgba(255, 245, 210, .05);
   max-width: 640px;
 }
 .hud-det > .hud-ro-one {
   background: none; border-color: transparent; box-shadow: none; padding: 0;
+  /* block-level flex, not inline: an inline-flex box sits on a text baseline,
+     so the wrap grew ~5px of descender space UNDER the row and every chip read
+     as padded heavier at the bottom than the top. */
+  display: flex;
+}
+body.hud-metrics-v1 .hud-det > .hud-ro-one { display: inline-flex; }
+/* A floated readout's own plate. The generic .hud-det plate was sized for the
+   big blocks (10px 12px, .8 alpha); one number wants a tighter, darker one —
+   and a brighter rule, because the edge is what separates it from the frame. */
+.hud-det.hud-det-ro {
+  padding: var(--ro-pad);
+  border-radius: var(--ro-radius);
+  background: var(--ro-plate);
+  border-color: var(--ro-plate-line);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 245, 210, .08);
+}
+body.hud-metrics-v1 .hud-det.hud-det-ro {
+  background: linear-gradient(180deg, rgba(16, 17, 22, .78), rgba(10, 11, 15, .82));
+  border-color: var(--hud-line-lit);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 245, 210, .05);
 }
 /* A single-line widget has no neighbour to be divided from, and its own chip
    already sits inside the plate's padding — so drop the row's inner inset. */
@@ -290,7 +344,7 @@ body.a-right .hud-sv-name, body.a-right .hud-ally-name { text-align: right; }
 body.a-right .hud-ro-one { justify-content: flex-end; }
 .hud-ro {
   position: relative;
-  display: inline-flex; align-items: center; gap: 8px;
+  display: inline-flex; align-items: center; gap: var(--ro-gap);
   padding: 2px 13px;
   min-width: 0;                           /* so a long place name can ellipsize */
 }
@@ -302,23 +356,33 @@ body.a-right .hud-ro-one { justify-content: flex-end; }
 }
 .hud-ro-ico {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; flex: 0 0 auto;
-  color: var(--hud-gold);
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .9));
+  width: var(--ro-ico); height: var(--ro-ico); flex: 0 0 auto;
+  color: var(--hud-gold-lit);
+  /* NO filter here since v2. drop-shadow() sent every glyph through an
+     offscreen pass at its 22px layout size on a view that repaints for ever,
+     and on the near-opaque plate there is nothing left for it to separate the
+     glyph from. The one place a glyph still floats bare is the frameless
+     clock, which keeps it (below). */
 }
-.hud-ro-ico svg { display: block; }
+.hud-det.hud-clock-bare .hud-ro-ico,
+body.hud-metrics-v1 .hud-ro-ico { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .9)); }
+/* the vector glyph fills the box, whatever size its attributes were seeded at */
+.hud-ro-ico svg { display: block; width: 100%; height: 100%; }
 /* The painted glyph, laid over its vector fallback. Laid out at its final size
    (an <img> rasterises at LAYOUT size in Ultralight — never transform-scaled),
    and it simply removes itself if the file is not there, uncovering the SVG. */
 .hud-glyph-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .hud-ro-ico, .hud-mount-ico, .hud-set-ico { position: relative; }
 .hud-ro-v {
-  font-size: 17px; line-height: 1.1; font-weight: 700; letter-spacing: .01em;
+  font-size: var(--ro-fs); line-height: 1.15; font-weight: 700; letter-spacing: .01em;
   color: var(--hud-ink); text-shadow: var(--hud-tshadow);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* fixed-width digits: a clock that ticks 12:37 -> 12:38 must not change the
+     width of its chip (and nudge whatever is snapped against it) every minute */
+  font-variant-numeric: tabular-nums;
 }
 /* The "/ max" half of a pair reads quieter than the live number. */
-.hud-ro-v i { font-style: normal; font-weight: 600; color: var(--hud-dim); font-size: 15px; }
+.hud-ro-v i { font-style: normal; font-weight: 600; color: var(--hud-dim); font-size: var(--ro-sub); }
 .hud-ro[data-ro="gold"] .hud-ro-v { color: var(--hud-gold-lit); }
 /* Over-encumbered is the one readout that must shout. */
 .hud-ro.is-over .hud-ro-v { color: var(--hud-warn); }
@@ -326,7 +390,7 @@ body.a-right .hud-ro-one { justify-content: flex-end; }
 /* Unknown value (C++ sentinel) — an honest "?" beats a fake 0. */
 .hud-ro.is-unknown .hud-ro-v { color: var(--hud-dim); }
 /* The context slot carries a name that can be 40 characters of Nordic barrow. */
-.hud-ro.hud-ctx .hud-ro-v { max-width: 260px; }
+.hud-ro.hud-ctx .hud-ro-v { max-width: var(--ro-ctx-w); }
 
 /* ------------------------------------------------------------ mount widget */
 /* Drawn ONLY when the game says you have a mount. Name over two bars; the
@@ -1813,16 +1877,16 @@ body.hud-editing .hud-fw.is-drag .hud-fw-card {
   border: 1px solid rgba(240, 214, 140, .18);
 }
 .hud-pot-m {
-  font-style: normal; font-size: 13px; line-height: 1; min-width: 1.2em;
+  font-style: normal; font-size: var(--pot-fs); line-height: 1; min-width: 1.2em;
   text-align: center; text-shadow: var(--hud-tshadow);
 }
-.hud-pot-img { display: block; }
+.hud-pot-img { display: block; width: var(--pot-ico); height: var(--pot-ico); }
 .hud-pot-n {
-  font: 700 13px/1 "Segoe UI", sans-serif; color: #efe7d2;
+  font: 700 13px/1 "Segoe UI", sans-serif; font-size: var(--pot-fs); color: #efe7d2;
   font-variant-numeric: tabular-nums; text-shadow: var(--hud-tshadow);
 }
 .hud-pot.is-zero { opacity: .45; }
-.hud-pot-ghost { font: 500 12px/1 "Segoe UI", sans-serif; font-style: normal; color: #8d8471; }
+.hud-pot-ghost { font: 500 12px/1 "Segoe UI", sans-serif; font-size: var(--pot-fs); font-style: normal; color: #8d8471; }
 
 /* ============ compact mode + activator browse (2026-08-18) =============== *
    Compact: the strip is FACES ONLY — level badge, bars, chevron and names
@@ -2385,7 +2449,7 @@ body.hud-editing .hud-loot-chip:hover { border-color: var(--hud-gold-lit); color
 .hud-need-readout[data-need="thirst"] { --need-ink:#89c8e8; }
 .hud-need-readout[data-need="fatigue"] { --need-ink:#d9deee; }
 .hud-need-readout[data-need="cold"] { --need-ink:#a3d9e8; }
-.hud-need-art { width:22px; height:22px; object-fit:contain; flex:0 0 22px; }
+.hud-need-art { width:var(--ro-ico); height:var(--ro-ico); object-fit:contain; flex:0 0 var(--ro-ico); }
 .hud-need-readout[data-need="thirst"] .hud-need-art { filter:grayscale(1) sepia(1) saturate(2) hue-rotate(150deg); }
 .hud-need-readout[data-need="fatigue"] .hud-need-art { filter:grayscale(1) brightness(1.3); }
 .hud-need-readout .hud-ro-v { color:var(--need-ink); }
@@ -2409,7 +2473,7 @@ body.hud-editing .hud-loot-chip:hover { border-color: var(--hud-gold-lit); color
 
 /* Fixed weather footprint: long labels move inside the plate, never resize it. */
 .hud-ro[data-ro="weatherOnly"] .hud-ro-v {
-  display:block; width:70px; min-width:70px; max-width:70px; flex:0 0 70px;
+  display:block; width:var(--ro-wx-w); min-width:var(--ro-wx-w); max-width:var(--ro-wx-w); flex:0 0 var(--ro-wx-w);
   overflow:hidden; text-overflow:clip;
 }
 .hud-weather-label { display:block; width:max-content; white-space:nowrap; }
@@ -2451,3 +2515,163 @@ body.hud-editing .hud-loot-chip:hover { border-color: var(--hud-gold-lit); color
    labels start at the left edge and retain the existing marquee travel. */
 .hud-ro-v.is-centered:not(.is-scrolling) { text-align:center; }
 .hud-ro-v.is-centered:not(.is-scrolling) .hud-weather-label { margin-left:auto; margin-right:auto; }
+
+
+/* ============================================================================
+   BLOCK METRICS v3 (2026-10-06) — the rest of the HUD catches up with the
+   readouts. Rober, after the readout chips: "thats better check all widgets".
+   Checked on an all-widgets sheet at 2560x1440 (hud-asplayed.preview.html
+   ?all=1): every other block was 12-14px text on a .46-.55 plate — the same
+   two faults, on vitals, resistances, effects, equipment, pins, collections,
+   allies, the mount card, the slot cards, the loot lamp and the season card.
+
+   ONE scope, `body.hud-m3`, on purpose. hud.js puts that class on <body>
+   whenever the config is on metrics 3, and leaves it OFF while an older layout
+   waits for its one-time re-flow — so with the class off, every rule above
+   this banner is exactly what a v1 / v2 layout was authored against, and the
+   re-flow can measure it. Nothing below may be moved out of the scope, and no
+   size above may be edited to "match": the old numbers are a record.
+
+   Sizes are ~1.3x: body text 17px, secondary 15-16px, the number you act on
+   18-19px. Boxes grow with their text; bars get a pixel or two so a 13px fill
+   is still a bar and not a hairline. Plain px, nothing this engine has not
+   drawn before. The follower strip is NOT in here: it has its own resize
+   handle, and its faces are sized by the player.
+   ========================================================================== */
+
+/* ---- plates: near-opaque, like the readouts ------------------------------ */
+body.hud-m3 .hud-det:not(.hud-det-ro) {
+  background: linear-gradient(180deg, rgba(20, 21, 27, .90), rgba(9, 10, 14, .93));
+  border-color: rgba(214, 178, 92, .50);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 245, 210, .07);
+}
+body.hud-m3 .hud-mount, body.hud-m3 .hud-sets, body.hud-m3 .hud-vitals,
+body.hud-m3 .hud-survival { background: rgba(10, 12, 16, .86); }
+body.hud-m3 .hud-det > .hud-survival { background: none; }
+body.hud-m3 .hud-res, body.hud-m3 .hud-fx, body.hud-m3 .hud-ally { background: rgba(12, 14, 18, .90); }
+body.hud-m3 .hud-fx.is-soon { background: rgba(34, 27, 12, .92); }
+body.hud-m3 .hud-eq-art { background: rgba(10, 12, 16, .88); }
+body.hud-m3 .hud-pot { background: rgba(14, 15, 20, .85); }
+
+/* ---- bars ---------------------------------------------------------------- */
+body.hud-m3 .hud-bar { height: 13px; border-radius: 6px; }
+body.hud-m3 .hud-bar-line { gap: 11px; }
+body.hud-m3 .hud-bar-num { font-size: 16px; min-width: 98px; color: #cfc6ae; }
+
+/* ---- mount --------------------------------------------------------------- */
+body.hud-m3 .hud-mount { gap: 15px; padding: 12px 17px 13px; }
+body.hud-m3 .hud-mount-ico { width: 52px; height: 52px; }
+body.hud-m3 .hud-mount-ico svg { width: 34px; height: 34px; }
+body.hud-m3 .hud-mount-main { gap: 8px; min-width: 250px; }
+body.hud-m3 .hud-mount-name { font-size: 18px; }
+
+/* ---- pinned items -------------------------------------------------------- */
+body.hud-m3 .hud-pins { gap: 13px 15px; max-width: 830px; }
+body.hud-m3 .hud-pin { width: 120px; gap: 6px; }
+body.hud-m3 .hud-pin-art { width: 98px; height: 98px; }
+body.hud-m3 .hud-pin-glyph svg { width: 40px; height: 40px; }
+body.hud-m3 .hud-pin-name { font-size: 15.5px; }
+body.hud-m3 .hud-pin .hud-pin-name { height: 37px; }
+body.hud-m3 .hud-pin-goal { width: 98px; height: 6px; }
+body.hud-m3 .hud-badge { font-size: 15px; min-width: 25px; height: 25px; padding: 0 6px; }
+body.hud-m3 .hud-pin-count { height: 26px; padding: 0 7px; }
+
+/* ---- collections --------------------------------------------------------- */
+body.hud-m3 .hud-sets { gap: 10px; padding: 12px 17px; max-width: 830px; }
+body.hud-m3 .hud-set-row { gap: 14px; }
+body.hud-m3 .hud-set-ico { width: 38px; height: 38px; }
+body.hud-m3 .hud-set-ico svg { width: 26px; height: 26px; }
+body.hud-m3 .hud-set-main { gap: 7px; min-width: 250px; }
+body.hud-m3 .hud-set-name { font-size: 17px; }
+body.hud-m3 .hud-set-count { font-size: 16px; min-width: 86px; }
+
+/* ---- vitals -------------------------------------------------------------- */
+body.hud-m3 .hud-vitals { gap: 15px; padding: 11px 16px; }
+body.hud-m3 .hud-vit-lvl { width: 80px; height: 80px; }
+body.hud-m3 .hud-vit-lvl-n { font-size: 28px; }
+body.hud-m3 .hud-vit-lvl-c { font-size: 14px; margin-top: 3px; }
+body.hud-m3 .hud-vit-main { gap: 8px; min-width: 272px; }
+body.hud-m3 .hud-vit-xp { gap: 10px; }
+body.hud-m3 .hud-vit-xp-ico svg { width: 18px; height: 18px; }
+body.hud-m3 .hud-vit-xp .hud-bar { height: 7px; }
+body.hud-m3 .hud-vit-xp-n { font-size: 15px; min-width: 46px; }
+body.hud-m3 .hud-vit-shout { gap: 5px; padding: 9px 13px; }
+body.hud-m3 .hud-vit-shout-ico svg { width: 24px; height: 24px; }
+body.hud-m3 .hud-vit-shout-n { font-size: 18px; }
+body.hud-m3 .hud-vit-shout .hud-bar { width: 80px; height: 7px; }
+
+/* ---- resistances --------------------------------------------------------- */
+body.hud-m3 .hud-resist { gap: 10px; max-width: 840px; }
+body.hud-m3 .hud-res { gap: 5px; min-width: 86px; padding: 9px 12px; }
+body.hud-m3 .hud-res-ico svg { width: 24px; height: 24px; }
+body.hud-m3 .hud-res-v { font-size: 19px; font-variant-numeric: tabular-nums; }
+body.hud-m3 .hud-res .hud-bar { height: 5px; }
+body.hud-m3 .hud-res-armor { min-width: 110px; }
+
+/* ---- active effects ------------------------------------------------------ */
+body.hud-m3 .hud-effects { gap: 9px; max-width: 870px; }
+body.hud-m3 .hud-fx { gap: 10px; padding: 8px 13px 8px 10px; max-width: 304px; }
+body.hud-m3 .hud-fx-ico svg { width: 21px; height: 21px; }
+body.hud-m3 .hud-fx-main { gap: 5px; }
+body.hud-m3 .hud-fx-head { gap: 8px; }
+body.hud-m3 .hud-fx-name { font-size: 17px; }
+body.hud-m3 .hud-fx-mag { font-size: 15px; }
+body.hud-m3 .hud-fx-t { font-size: 16px; min-width: 46px; }
+body.hud-m3 .hud-fx .hud-bar { height: 4px; }
+
+/* ---- equipped ------------------------------------------------------------ */
+body.hud-m3 .hud-equip { gap: 13px 15px; max-width: 730px; }
+body.hud-m3 .hud-eq { width: 120px; gap: 6px; }
+body.hud-m3 .hud-eq-art { width: 88px; height: 88px; }
+body.hud-m3 .hud-eq-glyph svg { width: 34px; height: 34px; }
+body.hud-m3 .hud-eq-badges { max-width: 120px; gap: 4px; }
+body.hud-m3 .hud-eq-name { font-size: 15.5px; max-width: 120px; }
+
+/* ---- the long-form survival rows (the compact need readouts already ride
+        the --ro-* tokens) --------------------------------------------------- */
+body.hud-m3 .hud-sv-mod { font-size: 14px; }
+body.hud-m3 .hud-sv-flag, body.hud-m3 .hud-sv-chip { font-size: 15px; padding: 5px 11px; }
+body.hud-m3 .hud-sv-name { font-size: 17px; }
+body.hud-m3 .hud-sv-v { min-width: 80px; }
+
+/* ---- quest allies -------------------------------------------------------- */
+body.hud-m3 .hud-allies { gap: 10px; max-width: 810px; }
+body.hud-m3 .hud-ally { gap: 10px; padding: 8px 14px 8px 11px; max-width: 274px; }
+body.hud-m3 .hud-ally-ico svg { width: 21px; height: 21px; }
+body.hud-m3 .hud-ally-main { gap: 5px; }
+body.hud-m3 .hud-ally-name { font-size: 17px; }
+body.hud-m3 .hud-ally .hud-bar { height: 5px; }
+
+/* ---- potions readout: the chips, to match their 18px counts -------------- */
+body.hud-m3 .hud-ro-pots { gap: 10px; }
+body.hud-m3 .hud-pot { gap: 6px; padding: 4px 10px; border-radius: 10px; }
+
+/* ---- slot cards: hands, voice, quick items, ward ------------------------- */
+body.hud-m3 .hud-fw-card { gap: 6px; padding: 10px 12px 9px; max-width: 190px; }
+body.hud-m3 .hud-fw-grp .hud-fw-card { width: 190px; max-width: 190px; min-height: 208px; }
+body.hud-m3 .hud-fw-art { width: 128px; height: 128px; }
+body.hud-m3 .hud-fw-glyph svg { width: 44px; height: 44px; }
+body.hud-m3 .hud-fw-slot { font-size: 15px; min-width: 26px; height: 26px; padding: 0 6px; }
+body.hud-m3 .hud-fw-name { font-size: 17px; max-width: 166px; }
+body.hud-m3 .hud-fw-badges { max-width: 166px; gap: 5px; }
+body.hud-m3 .hud-fw-cdt { font-size: 18px; }
+body.hud-m3 .hud-fw-wardst { font-size: 14px; height: 22px; padding: 0 6px; }
+body.hud-m3 .hud-fw-qrow { gap: 8px; max-width: 540px; }
+body.hud-m3 .hud-fw-qart { width: 82px; height: 82px; }
+body.hud-m3 .hud-fw-qart .hud-fw-glyph svg { width: 30px; height: 30px; }
+body.hud-m3 .hud-fw-qart .hud-pin-count { font-size: 15px; }
+body.hud-m3 .hud-fw-hk { font-size: 15px; top: 3px; left: 6px; }
+body.hud-m3 .hud-fw-ghost { font-size: 16px; min-width: 120px; }
+
+/* ---- loot lamp ----------------------------------------------------------- */
+body.hud-m3 .hud-loot-card { max-width: 400px; }
+body.hud-m3 .hud-loot-row { gap: 10px; }
+body.hud-m3 .hud-loot-chip { font-size: 16px; gap: 8px; padding: 9px 14px; }
+body.hud-m3 .hud-loot-m { font-size: 17px; }
+
+/* ---- season card --------------------------------------------------------- */
+body.hud-m3 .hud-fw-scard { max-width: 220px; padding: 11px 15px 10px; }
+body.hud-m3 .hud-sn-art { width: 104px; height: 104px; }
+body.hud-m3 .hud-sn-name { font-size: 21px; max-width: 190px; }
+body.hud-m3 .hud-sn-sub { font-size: 16px; max-width: 190px; }
+body.hud-m3 .hud-sn-foot { font-size: 15.5px; }

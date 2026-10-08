@@ -96,11 +96,36 @@
        the defaults would be dropped from every push C++ makes. */
     side: 'right',
     skin: 'plain', modHold: true,
+    /* ⚠ Same rule as `side` above: hbConfig copies only keys present in this
+       literal. menuBind was missing, so a view reload showed it ticked and the
+       next save sent `true` — an "off" never survived a reload. */
+    menuBind: true,
+    /* 2026-10-04, the real cast (src/hotbar_cast.h): "real" | "instant". */
+    castMode: 'real', aimCrosshair: true,
+    /* 2026-10-08: the optional casting clip (src/cast_anim.h): "auto" | "off".
+       `animStatus` and `liveBar` are RUNTIME facts C++ adds to every push —
+       they sit in this literal so hbConfig copies them, and saveCfg never
+       sends them back. */
+    castAnim: 'auto', animStatus: null, liveBar: -1,
+    /* bars by weapon (2026-10-08, Spell Hotbar 2's "bars that follow your
+       weapon") — [{cls, sneak, enabled, name, pages:[{slots}]}], see
+       WEAPON_CLASSES below. The Default bar is `pages`. */
+    weaponBars: [],
+    /* 2026-10-04: per-shout cooldowns + Oblivion style (keyMode "pick").
+       The ready picks themselves are NOT here — C++ owns them and they reach
+       the view only as live rows (live.ready), so a save can never undo one. */
+    ownShoutCooldowns: true, keyMode: 'cast',
+    castKey: { device: 'keyboard', code: 47, label: 'V' },
+    potionKey: { device: 'keyboard', code: 48, label: 'B' },
     pages: [], slotKeys: [],
     key: { device: 'keyboard', code: 0, label: '' },
   };
 
   let livePage = 0;               // which page the modifiers currently select
+  let liveBar = -1;               // which weapon bar what you hold selects (-1 = Default)
+  let liveBarName = 'Default';
+  let selectedBar = -1;           // the bar the EDIT panel is showing (-1 = Default)
+  let peek = null;                // {bar, page, slots}: live rows for a bar/page that is not live
   let live = { page: 0, slots: [] };
   let editing = false;
   let selected = 0;               // the button the edit panel is talking about
@@ -147,6 +172,8 @@
    'hb-uiscale', 'hb-uiscale-val', 'hb-opacity', 'hb-opacity-val', 'hb-reset-pos',
    'hb-pick', 'hb-pick-title', 'hb-pick-q', 'hb-pick-tabs', 'hb-pick-list', 'hb-pick-wrap',
    'hb-pick-close', 'hb-pick-clear', 'hb-pick-fly', 'hb-pick-set', 'hb-pick-newcc', 'hb-menuBind',
+   'hb-realCast', 'hb-aimCrosshair', 'hb-cast-note',
+   'hb-ownShoutCd', 'hb-pickMode', 'hb-pick-keys', 'hb-castkey', 'hb-potionkey', 'hb-ready',
    'hb-import-vanilla', 'hb-import-note',
    'hb-newcc', 'hb-newcc-name', 'hb-newcc-cmd', 'hb-newcc-tgt',
    'hb-newcc-add', 'hb-newcc-close', 'hb-newcc-hint',
@@ -154,6 +181,8 @@
    'hb-flyed-add', 'hb-flyed-close', 'hb-flyed-dissolve', 'hb-flyed-clear',
    'hb-icons', 'hb-icons-q', 'hb-icons-grid', 'hb-icons-close', 'hb-icons-auto',
    'hb-cap', 'hb-cap-title', 'hb-cap-key', 'hb-cap-clear', 'hb-cap-cancel',
+   'hb-bars', 'hb-bars-note', 'hb-baradd', 'hb-baradd-q', 'hb-baradd-list', 'hb-baradd-close',
+   'hb-castAnim', 'hb-anim-note',
   ].forEach((id) => { el[id] = document.getElementById(id); });
 
   /* Add the injected controls, then bind the ids they created into `el`. Done
@@ -293,6 +322,113 @@
     return p;
   }
   function slotAt(page, i) { return pageAt(page).slots[clamp(i, 0, MAX_SLOTS - 1)] || {}; }
+
+  /* ── bars by weapon (2026-10-08) ─────────────────────────────────────────
+     A weapon bar is a second set of the seven pages that is live while what
+     you HOLD matches its class (and, for the sneak variant, while you sneak).
+     Keys, modifier rules and page switches stay the Default bar's. An EMPTY
+     button on a weapon bar shows the Default bar's button there; a sneak
+     bar's empty button looks at its class bar first. C++ owns the rule
+     (hotbar.h EffectiveSlot) — effSlot below mirrors it for drawing, and the
+     live rows carry `from` so the editor can say where a button came from.
+     The ids are a CONTRACT with hotbar.h's kWeaponClasses. */
+  const WEAPON_CLASSES = [
+    { id: 'unarmed',    label: 'Unarmed',        hint: 'Nothing in either hand' },
+    { id: '1h',         label: 'One-handed',     hint: 'A sword, axe, mace or dagger, left hand empty (or a torch)' },
+    { id: 'shield',     label: 'Sword & shield', hint: 'A one-handed weapon with a shield' },
+    { id: 'dual',       label: 'Dual wield',     hint: 'A one-handed weapon in each hand' },
+    { id: '2h',         label: 'Two-handed',     hint: 'Greatsword, battleaxe or warhammer' },
+    { id: 'bow',        label: 'Bow',            hint: 'A bow' },
+    { id: 'crossbow',   label: 'Crossbow',       hint: 'A crossbow' },
+    { id: 'staff',      label: 'Staff',          hint: 'A staff in either hand' },
+    { id: 'spellsword', label: 'Weapon & spell', hint: 'A one-handed weapon in one hand, a spell in the other' },
+    { id: 'magic',      label: 'Spells in hand', hint: 'A spell in one or both hands, no weapon' },
+  ];
+  function classLabel(id) { const c = WEAPON_CLASSES.find((w) => w.id === id); return c ? c.label : 'Default'; }
+  function barAt(b) {
+    if (!Array.isArray(cfg.weaponBars)) cfg.weaponBars = [];
+    return (b >= 0 && b < cfg.weaponBars.length) ? cfg.weaponBars[b] : null;
+  }
+  function normBar(bar) {
+    if (!bar || typeof bar !== 'object') return bar;
+    if (!Array.isArray(bar.pages)) bar.pages = [];
+    while (bar.pages.length < PAGE_COUNT) bar.pages.push({ slots: [] });
+    bar.pages.forEach((p) => {
+      if (!Array.isArray(p.slots)) p.slots = [];
+      while (p.slots.length < MAX_SLOTS) p.slots.push({});
+    });
+    if (bar.enabled === undefined) bar.enabled = true;
+    bar.sneak = !!bar.sneak;
+    if (typeof bar.name !== 'string') bar.name = '';
+    return bar;
+  }
+  function barLabel(b) {
+    const bar = barAt(b);
+    if (!bar) return 'Default';
+    return (bar.name || classLabel(bar.cls)) + (bar.sneak ? ' · sneaking' : '');
+  }
+  /* page `i` of bar `b` (-1 = the Default bar, which is cfg.pages) */
+  function pageOf(b, i) {
+    const bar = barAt(b);
+    if (!bar) return pageAt(i);
+    normBar(bar);
+    return bar.pages[clamp(i, 0, PAGE_MAX)];
+  }
+  function ownSlot(b, page, i) { return pageOf(b, page).slots[clamp(i, 0, MAX_SLOTS - 1)] || {}; }
+  /* what the button DOES while bar b is live: its own slot, else (a sneak
+     bar) the class bar's, else the Default bar's — {slot, from} */
+  function effSlot(b, page, i) {
+    const bar = barAt(b);
+    if (bar) {
+      const own = ownSlot(b, page, i);
+      if (!isEmptySlot(own)) return { slot: own, from: b };
+      if (bar.sneak) {
+        const k = cfg.weaponBars.findIndex((o, idx) => idx !== b && o && !o.sneak && o.enabled !== false && o.cls === bar.cls);
+        if (k >= 0) {
+          const cs = ownSlot(k, page, i);
+          if (!isEmptySlot(cs)) return { slot: cs, from: k };
+        }
+      }
+    }
+    return { slot: slotAt(page, i), from: -1 };
+  }
+  function liveSlot(i) { return effSlot(liveBar, livePage, i).slot; }
+  function findBar(cls, sneak) {
+    return (cfg.weaponBars || []).findIndex((b) => b && b.cls === cls && !!b.sneak === !!sneak);
+  }
+  /* add (or find) the bar for a class; answers its index */
+  function addBar(cls, sneak) {
+    if (!WEAPON_CLASSES.some((w) => w.id === cls)) return -1;
+    const have = findBar(cls, sneak);
+    if (have >= 0) return have;
+    if (!Array.isArray(cfg.weaponBars)) cfg.weaponBars = [];
+    cfg.weaponBars.push(normBar({ cls: cls, sneak: !!sneak, enabled: true, name: '', pages: [] }));
+    return cfg.weaponBars.length - 1;
+  }
+  function removeBar(b) {
+    if (!barAt(b)) return;
+    cfg.weaponBars.splice(b, 1);
+    if (selectedBar === b) selectedBar = -1;
+    else if (selectedBar > b) selectedBar--;
+    if (liveBar === b) liveBar = -1;
+    else if (liveBar > b) liveBar--;
+  }
+  /* the live rows the EDITOR should draw for (selectedBar, selectedPage):
+     the real live rows when that is what is on screen, else the last peek
+     C++ answered for it (hbPeek -> hbLivePeek), else nothing yet */
+  function editRows() {
+    if (live && live.page === selectedPage && liveBarIndex(live) === selectedBar && Array.isArray(live.slots)) return live.slots;
+    if (peek && peek.page === selectedPage && peek.bar === selectedBar && Array.isArray(peek.slots)) return peek.slots;
+    return null;
+  }
+  function liveBarIndex(d) { return d && d.bar && typeof d.bar === 'object' ? (d.bar.i | 0) : -1; }
+  let peekAskedAt = 0;
+  function askPeek() {
+    const now = Date.now();
+    if (now - peekAskedAt < 600) return;   // one ask per editor beat, never a storm
+    peekAskedAt = now;
+    toGame('hbPeek', JSON.stringify({ bar: selectedBar, page: selectedPage }));
+  }
   function keyAt(i) {
     if (!Array.isArray(cfg.slotKeys)) cfg.slotKeys = [];
     while (cfg.slotKeys.length < MAX_SLOTS) cfg.slotKeys.push({ device: 'keyboard', code: 0, label: '' });
@@ -370,8 +506,17 @@
       key: cfg.key,
       skin: cfg.skin, modHold: cfg.modHold,
       menuBind: cfg.menuBind !== false,
+      castMode: cfg.castMode === 'instant' ? 'instant' : 'real',
+      castAnim: cfg.castAnim === 'off' ? 'off' : 'auto',
+      aimCrosshair: cfg.aimCrosshair !== false,
+      ownShoutCooldowns: cfg.ownShoutCooldowns !== false,
+      keyMode: cfg.keyMode === 'pick' ? 'pick' : 'cast',
+      castKey: cfg.castKey, potionKey: cfg.potionKey,
       pages: cfg.pages.map((p) => ({ enabled: !!p.enabled, name: p.name || '', slots: p.slots,
         mod: { device: (p.mod && p.mod.device) || 'keyboard', code: (p.mod && p.mod.code) | 0, label: (p.mod && p.mod.label) || '' } })),
+      weaponBars: (cfg.weaponBars || []).map((b) => ({
+        cls: b.cls, sneak: !!b.sneak, enabled: b.enabled !== false, name: b.name || '',
+        pages: (b.pages || []).map((p) => ({ slots: p.slots || [] })) })),
       slotKeys: cfg.slotKeys,
     }));
   }
@@ -688,6 +833,7 @@
       liveSigs.push(slotSig(i, L));
       grid.appendChild(slotEl(i, L));
     }
+    renderReady();
     renderPips();
     applyPlacement();
     applyIdle();
@@ -716,19 +862,19 @@
      and count booleans are in here because they decide whether the element
      EXISTS; their values are patched. */
   function slotSig(i, L) {
-    const s = slotAt(livePage, i);
+    const s = liveSlot(i);
     const k = keyAt(i);
     const fly = isFlySlot(s);
     const empty = fly ? false : (isEmptySlot(s) || !L.kind);
     const flyLive = fly ? ((L.items && L.items.length) ? L.items : flyItems(s)) : [];
     const cd = Number(L.cd) || 0, fxRem = Number(L.fxRem) || 0, fxDur = Number(L.fxDur) || 0;
     return [
-      i, livePage, empty ? 1 : 0, fly ? 1 : 0,
+      i, livePage, liveBar, empty ? 1 : 0, fly ? 1 : 0,
       s.kind || '', s.refId || '', s.localId || '', s.formId || '', s.icon || '', s.label || '',
       fly ? flyLive.length : 0, fly ? ((s.items && s.items[0] && s.items[0].icon) || '') : '',
       L.kind || '', L.label || '', L.name || '', L.icon || '', L.msg || '',
       L.school || '', L.element || '', L.tier || '',
-      L.ok === false ? 1 : 0, L.equipped ? 1 : 0, L.voice ? 1 : 0,
+      L.ok === false ? 1 : 0, L.equipped ? 1 : 0, L.voice ? 1 : 0, L.poor ? 1 : 0, L.cost | 0,
       (fly && flyState.open && flyState.page === livePage && flyState.i === i) ? 1 : 0,
       editing ? 1 : 0, (editing && i === selected) ? 1 : 0,
       cfg.showKeys ? 1 : 0, cfg.showCounts ? 1 : 0, cfg.showLabels ? 1 : 0,
@@ -749,6 +895,7 @@
     if (!grid || editing) return false;        // edit mode re-renders anyway
     const n = visibleSlots();
     if (liveSigs.length !== n) return false;
+    if (readySig() !== readySigDrawn) return false;   // the ready sockets redraw whole
     const rows = (live && Array.isArray(live.slots)) ? live.slots : [];
     const sigs = new Array(n);
     for (let i = 0; i < n; i++) {
@@ -765,7 +912,7 @@
       if (cd > 0 && ov) {
         // coolMax is the remembered 100% for a shout — same self-correcting
         // rule ringEls applies, kept here so the fast path can't drift from it.
-        const mx = Math.max(cd, coolMax[livePage + ':' + i] || 0);
+        const mx = Number(L.cdMax) > 0 ? Math.max(cd, Number(L.cdMax)) : Math.max(cd, coolMax[livePage + ':' + i] || 0);
         coolMax[livePage + ':' + i] = mx;
         const pct = Math.round(clamp(cd / mx, 0, 1) * 100) + '%';
         if (ov.style.height !== pct) ov.style.height = pct;
@@ -790,7 +937,7 @@
   }
 
   function slotEl(i, L) {
-    const s = slotAt(livePage, i);
+    const s = liveSlot(i);
     const k = keyAt(i);
     /* The stored slot is authoritative for BUNDLES: a freshly made flyout's
        live row is a tick behind (kind '') and must not paint the + socket
@@ -816,6 +963,9 @@
     if (fly && flyState.open && flyState.page === livePage && flyState.i === i) cls.push('is-fly-open');
     if (!empty && L.equipped) cls.push('is-equipped');
     if (!empty && L.voice) cls.push('is-voice');
+    /* real cast mode: a hand spell you cannot pay for right now (C++ sends
+       `poor` only in that mode) — the WoW red, never on a dead button */
+    if (!empty && !dead && L.poor) cls.push('is-poor');
     if (editing && i === selected) cls.push('is-selected');
 
     const flyName = fly ? (s.label || 'Flyout') : set ? (s.label || 'Gear set') : '';
@@ -830,6 +980,7 @@
                     + (L.equipped ? '. All on — its key puts it away.' : '. Its key puts it all on.')
                     + (dead && L.msg ? ' ' + L.msg : ''))
                  : (name + (dead && L.msg ? ' — ' + L.msg : '')
+                    + (!dead && L.cost > 0 ? ' · ' + L.cost + ' magicka' + (L.poor ? ' (not enough)' : '') : '')
                     + (s.hand ? ' · ' + HAND_LABEL[s.hand].toLowerCase() : '')
                     + (s.uniqueId ? ' · bound to this exact copy' : '')),
     });
@@ -874,6 +1025,9 @@
       btn.appendChild(artFor(Object.assign({}, L, { icon: s.icon || L.icon }), name));
     }
     if (!empty && !fly) ringEls(L, livePage + ':' + i).forEach((n) => btn.appendChild(n));
+    /* a wind-up or channel survives a full re-render (a live tick can land
+       mid-charge): the button is rebuilt wearing it */
+    if (!empty && !fly) decorateCast(btn, i);
     /* hand memory on a single item/spell: a small R / L in the top-left, so
        a bar with the same blade bound twice (one per hand) reads at a glance */
     if (!empty && !fly && !set && s.hand)
@@ -896,10 +1050,16 @@
     if (!box) return;
     /* showPages === false kills the Main/Shift/… strip outright — the pages
        still swap under the modifiers, the bar just carries no text about it. */
-    const any = cfg.showPages !== false && [1, 2, 3, 4, 5, 6].some((i) => pageAt(i).enabled);
+    const any = cfg.showPages !== false && (liveBar >= 0 || [1, 2, 3, 4, 5, 6].some((i) => pageAt(i).enabled));
     box.hidden = !any;
     if (!any) return;
     clear(box);
+    /* bars by weapon: the live bar's name leads the strip ("Two-handed ·
+       Main · Shift"), so a bar that just swapped under your hands says so */
+    if (liveBar >= 0) {
+      box.appendChild(h('span', { class: 'hb-pip is-bar', text: liveBarName || barLabel(liveBar),
+        title: 'The bar for what you are holding. Its empty buttons show the Default bar’s.' }));
+    }
     for (let i = 0; i < PAGE_COUNT; i++) {
       const p = pageAt(i);
       if (i > 0 && !p.enabled) continue;
@@ -945,7 +1105,9 @@
     const fxRem = Number(L.fxRem) || 0;
     const fxDur = Number(L.fxDur) || 0;
     if (cd > 0) {
-      const mx = Math.max(cd, coolMax[key] || 0);
+      /* cdMax (2026-10-04) is the shout's REAL total from C++; the remembered
+         first-seen value is only the fallback for an older DLL */
+      const mx = Number(L.cdMax) > 0 ? Math.max(cd, Number(L.cdMax)) : Math.max(cd, coolMax[key] || 0);
       coolMax[key] = mx;
       const ov = h('span', { class: 'hb-cool is-cd' });
       ov.style.height = Math.round(clamp(cd / mx, 0, 1) * 100) + '%';
@@ -966,15 +1128,125 @@
     return out;
   }
 
+  /* ---- Oblivion style: the ready sockets (2026-10-04) --------------------- */
+  /* Two sockets beside the bar: the READY spell (cast key) and the READY
+     potion (potion key). Drawn only in keyMode "pick", from the live rows C++
+     sends as live.ready (the picks are C++'s, never the view's). Same button
+     anatomy as the bar: art, key cap, count, the red "can't afford" wash, the
+     cooldown ring and the wind-up / channel marks of the real cast. */
+  /* `var`, not const/let: render() can run before this line has executed
+     (a config push during boot), and a TDZ ReferenceError in this renderer
+     takes the whole view down, not just the bar. */
+  var READY_SPELL = -2, READY_POTION = -3;
+  var readySigDrawn = '';
+  function readyRows() {
+    if (cfg.keyMode !== 'pick' || !live || !Array.isArray(live.ready)) return null;
+    const by = {};
+    live.ready.forEach((r) => { if (r && typeof r.i === 'number') by[r.i] = r; });
+    return [by[READY_SPELL] || { i: READY_SPELL, kind: '' }, by[READY_POTION] || { i: READY_POTION, kind: '' }];
+  }
+  function readySig() {
+    const rows = readyRows();
+    if (!rows) return '';
+    return JSON.stringify([rows, cfg.castKey, cfg.potionKey, cfg.showKeys, cfg.showCounts, cfg.orient]);
+  }
+  function readyEl(idx, L) {
+    const empty = !L.kind;
+    const dead = !empty && L.ok === false;
+    const k = (idx === READY_SPELL ? cfg.castKey : cfg.potionKey) || {};
+    const what = idx === READY_SPELL ? 'spell' : 'potion';
+    const name = L.label || L.name || '';
+    const cls = ['hb-slot', 'hb-ready-slot', 'ready-' + what];
+    if (empty) cls.push('is-empty');
+    if (dead) cls.push('is-dead');
+    if (!empty && !dead && L.poor) cls.push('is-poor');
+    const btn = h('div', {
+      class: cls.join(' '), 'data-i': String(idx), 'data-page': 'r',
+      title: empty
+        ? ('Ready ' + what + ' — none yet. Press a ' + what + '’s bar key to pick it' +
+           (k.code ? ', then ' + (k.label || 'its key') + ' uses it.' : '.'))
+        : ('Ready ' + what + ': ' + name + (dead && L.msg ? ' — ' + L.msg : '') +
+           (!dead && L.cost > 0 ? ' · ' + L.cost + ' magicka' + (L.poor ? ' (not enough)' : '') : '') +
+           (k.code ? ' · press ' + (k.label || 'its key') : '')),
+    });
+    if (empty) btn.appendChild(h('span', { class: 'hb-glyph', text: idx === READY_SPELL ? '✦' : '⚗' }));
+    else if (L.kind === 'smart' && !L.icon) btn.appendChild(h('span', { class: 'hb-glyph hb-smart-g', text: '⚗' }));
+    else btn.appendChild(artFor(L, name));
+    if (!empty) ringEls(L, 'r:' + idx).forEach((n) => btn.appendChild(n));
+    if (cfg.showKeys && k.code) btn.appendChild(h('span', { class: 'hb-key', text: k.label || '' }));
+    if (!empty && cfg.showCounts && L.count > 1) btn.appendChild(h('span', { class: 'hb-count', text: 'x' + L.count }));
+    decorateCast(btn, idx);
+    return btn;
+  }
+  function renderReady() {
+    const box = el['hb-ready'];
+    if (!box) return;
+    const rows = readyRows();
+    readySigDrawn = readySig();
+    box.hidden = !rows;
+    clear(box);
+    if (!rows) return;
+    box.classList.toggle('is-vert', cfg.orient === 'vert');
+    rows.forEach((L) => box.appendChild(readyEl(L.i, L)));
+  }
+
+  /* ---- the real cast's beats (src/hotbar_cast.h) ------------------------ */
+  /* C++ pushes hbCast {page,i,phase,dur?}: "charge" (a wind-up of dur
+     seconds), "channel" (a concentration spell is flowing), "end". The wind-up
+     is ONE linear transition of a bar along the button's foot — a one-shot,
+     not a loop (the Ultralight re-raster rule) — and a channel is a static
+     glow. State lives here so a re-render mid-cast keeps it. */
+  let castState = null;   // { page, i, phase, t0, dur }
+  function castBtn(st) {
+    if (!st) return null;
+    if (st.i < 0) return el['hb-ready'] && el['hb-ready'].querySelector('.hb-slot[data-i="' + st.i + '"]');
+    if (st.page !== livePage) return null;
+    return el['hb-grid'] && el['hb-grid'].querySelector(
+      '.hb-slot[data-page="' + st.page + '"][data-i="' + st.i + '"]');
+  }
+  function undecorate(n) {
+    if (!n) return;
+    n.classList.remove('is-charging', 'is-channel');
+    const bar = n.querySelector('.hb-castbar');
+    if (bar) bar.remove();
+  }
+  function decorateCast(n, i) {
+    const st = castState;
+    if (!n || !st || st.i !== i || (i >= 0 && st.page !== livePage)) return;
+    if (st.phase === 'channel') { n.classList.add('is-channel'); return; }
+    if (st.phase !== 'charge' || !(st.dur > 0)) return;
+    const done = clamp((Date.now() - st.t0) / (st.dur * 1000), 0, 1);
+    if (done >= 1) return;
+    n.classList.add('is-charging');
+    const fill = h('i', { class: 'hb-castfill' });
+    const bar = h('span', { class: 'hb-castbar' }, fill);
+    fill.style.width = Math.round(done * 100) + '%';
+    n.appendChild(bar);
+    void fill.offsetWidth;   // commit the start width before the transition
+    fill.style.transition = 'width ' + ((1 - done) * st.dur).toFixed(2) + 's linear';
+    fill.style.width = '100%';
+  }
+  window.hbCast = function (j) {
+    const d = coerce(j);
+    if (!d || typeof d !== 'object') return;
+    undecorate(castBtn(castState));
+    const phase = String(d.phase || 'end');
+    castState = phase === 'end' ? null
+      : { page: d.page | 0, i: d.i | 0, phase: phase, t0: Date.now(), dur: Number(d.dur) || 0 };
+    if (castState) decorateCast(castBtn(castState), castState.i);
+  };
+
   const flashTimers = {};
   function flash(page, i) {
     lastFireAt = Date.now();
     applyIdle();
     /* A modifier release can repaint Base between the native key match and
        this JS call. Never pulse the same index on the wrong page. */
-    if (page !== livePage) return;
-    const n = el['hb-grid'] && el['hb-grid'].querySelector(
-      '.hb-slot[data-page="' + page + '"][data-i="' + i + '"]');
+    if (i >= 0 && page !== livePage) return;
+    const n = i < 0
+      ? (el['hb-ready'] && el['hb-ready'].querySelector('.hb-slot[data-i="' + i + '"]'))
+      : (el['hb-grid'] && el['hb-grid'].querySelector(
+          '.hb-slot[data-page="' + page + '"][data-i="' + i + '"]'));
     if (!n) return;
     const k = page + ':' + i;
     if (flashTimers[k]) clearTimeout(flashTimers[k]);
@@ -994,7 +1266,7 @@
      pause fires whatever is highlighted. C++ pushes hbFlyKey for every press
      on a flyout slot; only the final pick goes back as hbFire {child}. */
 
-  function flySlotCfg() { return slotAt(flyState.page, flyState.i); }
+  function flySlotCfg() { return effSlot(liveBar, flyState.page, flyState.i).slot; }
   function flyLiveRows() {
     const L = (live && live.page === flyState.page && Array.isArray(live.slots))
       ? live.slots[flyState.i] : null;
@@ -1038,7 +1310,7 @@
     lastFireAt = Date.now();
     applyIdle();
     if (editing) return;                          // the editor owns flyouts there
-    const n = flyItems(slotAt(page, i)).length;
+    const n = flyItems(effSlot(liveBar, page, i).slot).length;
     if (!n) return;                               // C++ already said so on screen
     if (!flyState.open || flyState.page !== page || flyState.i !== i) {
       openFlyPop(page, i);
@@ -1240,6 +1512,7 @@
     setVal('hb-gripPos', cfg.gripPos || 'auto');
     el['hb-modHold'].checked = !!cfg.modHold;
     if (el['hb-menuBind']) el['hb-menuBind'].checked = cfg.menuBind !== false;
+    renderCastControls();
     setVal('hb-idle', String(Math.round((cfg.idleMs || 0) / 1000)));
     el['hb-idle-val'].textContent = cfg.idleMs ? (Math.round(cfg.idleMs / 1000) + 's') : 'Never';
 
@@ -1324,12 +1597,147 @@
           keyBtn));
     });
 
+    renderBars();
     renderSlotList();
     /* Re-assert the settings search over the freshly rebuilt rows — the poller
        re-runs renderEdit every ~700ms and must not resurrect filtered rows.
        (Function declaration below in this closure; hoisting makes it callable.) */
     applyPanelFilter();
   }
+
+  /* ── bars by weapon: the editor's section ─────────────────────────────── */
+  function renderBars() {
+    const box = el['hb-bars'];
+    if (!box) return;
+    clear(box);
+    const bars = cfg.weaponBars || [];
+    const chips = h('div', { class: 'hb-chips hb-barchips' });
+    const chip = (b, label, title) => {
+      const c = h('button', { class: 'hb-chip' + (b === selectedBar ? ' is-on' : '') + (b === liveBar ? ' is-live' : ''),
+        type: 'button', title: title, text: label });
+      c.addEventListener('click', () => { selectedBar = b; renderBars(); renderSlotList(); });
+      return c;
+    };
+    chips.appendChild(chip(-1, 'Default', 'The bar you get with anything not listed here. Weapon bars fall back to it button by button.'));
+    bars.forEach((b, i) => {
+      if (!b) return;
+      chips.appendChild(chip(i, barLabel(i) + (b.enabled === false ? ' (off)' : ''),
+        'Edit the buttons that are live while you hold this' + (b.sneak ? ' and sneak' : '')));
+    });
+    const add = h('button', { class: 'hb-chip hb-chip-add', type: 'button', text: '+ Add a bar',
+      title: 'Give a weapon class (or its sneaking version) a bar of its own' });
+    add.addEventListener('click', openBarAdd);
+    chips.appendChild(add);
+    box.appendChild(chips);
+
+    const bar = barAt(selectedBar);
+    if (bar) {
+      const on = h('input', { type: 'checkbox' });
+      on.checked = bar.enabled !== false;
+      on.addEventListener('change', () => { bar.enabled = on.checked; saveCfg(); renderBars(); render(); });
+      const name = h('input', { class: 'hb-search hb-barname', type: 'text', maxlength: '40', autocomplete: 'off',
+        placeholder: classLabel(bar.cls) + (bar.sneak ? ' · sneaking' : ''),
+        title: 'What this bar is called on the strip above the buttons. Blank = its weapon class.' });
+      name.value = bar.name || '';
+      name.addEventListener('input', () => { bar.name = name.value; });
+      name.addEventListener('change', () => { saveCfg(); renderBars(); render(); });
+      const rm = h('button', { class: 'hb-btn hb-btn-danger', type: 'button', text: 'Remove this bar',
+        title: 'Delete this bar and everything on it. The Default bar is untouched.' });
+      rm.addEventListener('click', () => { removeBar(selectedBar); saveCfg(); renderBars(); renderSlotList(); render(); });
+      box.appendChild(h('div', { class: 'hb-barrow' },
+        h('label', { class: 'hb-check', title: 'Off = this bar is never live; its buttons are kept.' }, on,
+          h('span', { text: 'Live while you hold ' + classLabel(bar.cls).toLowerCase() + (bar.sneak ? ' and sneak' : '') })),
+        name, rm));
+    }
+    if (el['hb-bars-note']) {
+      el['hb-bars-note'].textContent = !bars.length
+        ? 'One bar for everything so far. Add a bar for a weapon and only the buttons you change there differ from the Default bar.'
+        : bar
+          ? 'Editing the ' + barLabel(selectedBar) + ' bar below. Buttons you leave empty show the Default bar’s' +
+            (bar.sneak ? ' (or the ' + classLabel(bar.cls) + ' bar’s)' : '') + '. Right now the game is on the ' + (liveBar >= 0 ? barLabel(liveBar) : 'Default') + ' bar.'
+          : 'Editing the Default bar below. Pick a weapon bar above to change what differs there. Right now the game is on the ' + (liveBar >= 0 ? barLabel(liveBar) : 'Default') + ' bar.';
+    }
+  }
+
+  /* the add-a-bar popout: every class × standing/sneaking, filter-as-you-type,
+     Enter = top hit, Esc = close (the picker's own idiom) */
+  const barAdd = { open: false, q: '', cursor: 0, rows: [] };
+  function barAddRows() {
+    const q = barAdd.q.trim().toLowerCase();
+    const rows = [];
+    WEAPON_CLASSES.forEach((w) => {
+      [false, true].forEach((sneak) => {
+        const label = w.label + (sneak ? ' · sneaking' : '');
+        const hay = (label + ' ' + w.hint + ' ' + w.id).toLowerCase();
+        if (q && hay.indexOf(q) < 0) return;
+        rows.push({ cls: w.id, sneak: sneak, label: label, hint: w.hint, have: findBar(w.id, sneak) >= 0 });
+      });
+    });
+    return rows;
+  }
+  function openBarAdd() {
+    if (!el['hb-baradd']) return;
+    barAdd.open = true; barAdd.q = ''; barAdd.cursor = 0;
+    el['hb-baradd-q'].value = '';
+    el['hb-baradd'].hidden = false;
+    renderBarAdd();
+    setTimeout(() => el['hb-baradd-q'] && el['hb-baradd-q'].focus(), 30);
+  }
+  function closeBarAdd() {
+    barAdd.open = false;
+    if (el['hb-baradd']) el['hb-baradd'].hidden = true;
+  }
+  function pickBarAdd(r) {
+    if (!r) return;
+    const b = addBar(r.cls, r.sneak);
+    if (b < 0) return;
+    selectedBar = b;
+    saveCfg();
+    closeBarAdd();
+    renderBars();
+    renderSlotList();
+    render();
+  }
+  function renderBarAdd() {
+    const box = el['hb-baradd-list'];
+    if (!box) return;
+    clear(box);
+    barAdd.rows = barAddRows();
+    if (!barAdd.rows.length) {
+      box.appendChild(h('div', { class: 'hb-pick-empty', text: 'Nothing matches “' + barAdd.q + '”.' }));
+      return;
+    }
+    barAdd.cursor = clamp(barAdd.cursor, 0, barAdd.rows.length - 1);
+    barAdd.rows.forEach((r, i) => {
+      const row = h('div', { class: 'hb-pick-row hb-baradd-row' + (i === barAdd.cursor ? ' is-cursor' : '') + (r.have ? ' is-have' : ''),
+        role: 'option', title: r.have ? 'This bar already exists — click to edit it' : r.hint });
+      const txt = h('div', { class: 'txt' },
+        h('div', { class: 'n', text: r.label }),
+        h('div', { class: 'd', text: r.have ? 'Already has a bar — click to edit it' : r.hint }));
+      row.appendChild(txt);
+      row.addEventListener('click', () => pickBarAdd(r));
+      row.addEventListener('mouseenter', () => {
+        barAdd.cursor = i;
+        const cur = box.querySelector('.is-cursor');
+        if (cur) cur.classList.remove('is-cursor');
+        row.classList.add('is-cursor');
+      });
+      box.appendChild(row);
+    });
+  }
+  if (el['hb-baradd-q']) {
+    el['hb-baradd-q'].addEventListener('input', () => { barAdd.q = el['hb-baradd-q'].value; barAdd.cursor = 0; renderBarAdd(); });
+    el['hb-baradd-q'].addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); closeBarAdd(); return; }
+      if (e.key === 'Enter') { e.preventDefault(); pickBarAdd(barAdd.rows[barAdd.cursor]); return; }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        barAdd.cursor = clamp(barAdd.cursor + (e.key === 'ArrowDown' ? 1 : -1), 0, Math.max(0, barAdd.rows.length - 1));
+        renderBarAdd();
+      }
+    });
+  }
+  if (el['hb-baradd-close']) el['hb-baradd-close'].addEventListener('click', closeBarAdd);
 
   /* Which page the EDIT panel is showing. Independent of livePage: you edit
      the shift page without holding shift, which you could not do otherwise —
@@ -1339,7 +1747,11 @@
 
   function renderSlotList(liveTick) {
     const box = el['hb-slotlist'];
-    const rows = (live && live.page === selectedPage && Array.isArray(live.slots)) ? live.slots : [];
+    /* bars by weapon: the rows for the bar + page being EDITED — live when
+       that is what is on screen, else C++'s peek, asked for here */
+    const got = editRows();
+    const rows = got || [];
+    if (!got) askPeek();
     // ui-surface-hotbar: countdowns do not appear in this editor. Keep its
     // buttons/focus on live ticks; explicit edits still always rebuild it.
     const sig = JSON.stringify(rows, function (key, value) {
@@ -1363,25 +1775,38 @@
       tabs.appendChild(c);
     }
     box.appendChild(tabs);
-    el['hb-page-name'].textContent = selectedPage === 0 ? '' : '· ' + PAGE_NAMES[selectedPage] + ' page';
+    el['hb-page-name'].textContent =
+      (selectedBar >= 0 ? '· ' + barLabel(selectedBar) + ' bar ' : '') +
+      (selectedPage === 0 ? '' : '· ' + PAGE_NAMES[selectedPage] + ' page');
 
     const n = visibleSlots();
+    const onBar = selectedBar >= 0;
 
     /* A page of nothing needs telling what to do about it, once, at the top —
        eight identical "Click to choose an action" rows say it eight times and
        none of them says WHERE the things come from. */
     let anyFilled = false;
-    for (let i = 0; i < n; i++) if (!isEmptySlot(slotAt(selectedPage, i))) { anyFilled = true; break; }
+    for (let i = 0; i < n; i++) if (!isEmptySlot(ownSlot(selectedBar, selectedPage, i))) { anyFilled = true; break; }
     if (!anyFilled) {
       box.appendChild(h('p', { class: 'hb-emptyhint',
-        text: selectedPage === 0
+        text: onBar
+          ? 'Nothing of its own on this bar yet — every button shows what the Default bar has there. '
+            + 'Click one to put something else on it for when you hold ' + classLabel(barAt(selectedBar).cls).toLowerCase()
+            + (barAt(selectedBar).sneak ? ' and sneak' : '') + '.'
+          : selectedPage === 0
           ? 'Nothing on the bar yet. Click a button below and pick a spell, a shout, '
             + 'something from your bag, or any deck action.'
           : 'This page is empty — hold ' + pageHoldText(selectedPage)
             + ' in game and the bar shows these buttons instead. The keys stay the same.' }));
     }
     for (let i = 0; i < n; i++) {
-      const s = slotAt(selectedPage, i);
+      const own = ownSlot(selectedBar, selectedPage, i);
+      const eff = effSlot(selectedBar, selectedPage, i);
+      /* an inherited button: nothing of its own here, but Default (or the
+         class bar) has something — drawn dimmed, named for where it comes
+         from, and a click REPLACES it for this bar only */
+      const inherited = onBar && isEmptySlot(own) && !isEmptySlot(eff.slot);
+      const s = inherited ? eff.slot : own;
       const L = rows[i] || {};
       const k = keyAt(i);
       const empty = isEmptySlot(s);
@@ -1390,21 +1815,24 @@
       const name = fly ? (s.label || 'Flyout')
                  : set ? (s.label || 'Gear set')
                        : (s.label || L.name || (empty ? 'Empty' : (s.refId || 'Unknown')));
+      const fromName = inherited ? (eff.from < 0 ? 'Default' : barLabel(eff.from)) : '';
 
-      const thumb = h('div', { class: 'thumb', title: fly ? 'Change the flyout’s icon' : set ? 'Change the set’s icon' : 'Change this icon' },
+      const thumb = h('div', { class: 'thumb', title: inherited ? ('Shown from the ' + fromName + ' bar — click to put something else here')
+                                                     : fly ? 'Change the flyout’s icon' : set ? 'Change the set’s icon' : 'Change this icon' },
         empty ? h('span', { class: 'g', text: '+' })
               : fly ? (s.icon ? artFor({ icon: s.icon }, name) : h('span', { class: 'g', text: '⧉' }))
               : set ? (s.icon ? artFor({ icon: s.icon }, name) : h('span', { class: 'g', text: '⛨' }))
                     : artFor(Object.assign({}, L, { icon: s.icon }), name));
       thumb.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (empty) { openPicker(i); return; }
+        if (empty || inherited) { openPicker(i); return; }
         openIconPicker(i);
       });
 
       const what = h('div', { class: 'what' },
         h('div', { class: 'nm' + (empty ? ' is-blank' : ''), title: name, text: name }),
-        h('div', { class: 'sub', text: empty ? 'Click to choose an action'
+        h('div', { class: 'sub', text: empty ? (onBar ? 'Empty here and on the Default bar — click to choose an action' : 'Click to choose an action')
+          : inherited ? ('From the ' + fromName + ' bar — click to use something else here')
           : fly ? ('Flyout · ' + flyItems(s).length + ' of ' + MAX_FLY + ' — click to edit what’s inside')
           : set ? ('Gear set · ' + bundleItems(s).length + ' of ' + MAX_FLY
                    + (typeof L.count === 'number' && L.count < bundleItems(s).length ? ' · ' + L.count + ' in your bag' : '')
@@ -1413,7 +1841,7 @@
                    + (s.hand ? ' · ' + HAND_LABEL[s.hand].toLowerCase() : '')
                    + (s.uniqueId ? ' · this exact copy' : '')
                    + (L.ok === false && L.msg ? ' · ' + L.msg : '')) }));
-      what.addEventListener('click', () => { if (fly || set) openFlyEd(i); else openPicker(i); });
+      what.addEventListener('click', () => { if (!inherited && (fly || set)) openFlyEd(i); else openPicker(i); });
 
       const keyBtn = h('button', {
         class: 'hb-keybtn' + (k.code ? '' : ' is-unbound'), type: 'button',
@@ -1422,8 +1850,21 @@
       });
       keyBtn.addEventListener('click', () => openCapture(i));
 
-      const row = h('div', { class: 'hb-slotrow' },
-        h('div', { class: 'idx', text: String(i + 1) }), thumb, what, keyBtn);
+      const row = h('div', { class: 'hb-slotrow' + (inherited ? ' is-inherited' : '') },
+        h('div', { class: 'idx', text: String(i + 1) }), thumb, what);
+      /* a button this bar overrides can go back to inheriting with one click */
+      if (onBar && !empty && !inherited) {
+        const back = h('button', { class: 'hb-btn hb-back-btn', type: 'button', text: '⟲',
+          title: 'Back to what the Default bar has on this button' });
+        back.addEventListener('click', (e) => {
+          e.stopPropagation();
+          pageOf(selectedBar, selectedPage).slots[i] = {};
+          toGame('hbAssign', JSON.stringify({ bar: selectedBar, page: selectedPage, i: i, slot: null }));
+          saveCfg(); renderSlotList(); render();
+        });
+        row.appendChild(back);
+      }
+      row.appendChild(keyBtn);
       box.appendChild(row);
     }
 
@@ -1497,6 +1938,71 @@
     if (!el[id]) return;
     el[id].addEventListener('change', () => { cfg[key] = el[id].checked; saveCfg(); render(); });
   });
+
+  /* Casting (2026-10-04). The checkbox is the friendly face of castMode; the
+     aim toggle only means something in real mode, so it dims with it. */
+  function renderCastControls() {
+    const real = cfg.castMode !== 'instant';
+    if (el['hb-realCast']) el['hb-realCast'].checked = real;
+    if (el['hb-aimCrosshair']) {
+      el['hb-aimCrosshair'].checked = cfg.aimCrosshair !== false;
+      el['hb-aimCrosshair'].disabled = !real;
+      const lab = el['hb-aimCrosshair'].closest('label');
+      if (lab) lab.classList.toggle('is-off', !real);
+    }
+    if (el['hb-cast-note']) el['hb-cast-note'].textContent = real
+      ? 'A button you can’t afford turns red. Press a channel’s button again to stop it early.'
+      : 'Instant mode: every spell is free and goes off at once.';
+    if (el['hb-ownShoutCd']) el['hb-ownShoutCd'].checked = cfg.ownShoutCooldowns !== false;
+    /* the optional casting clip: the switch, and C++'s probe in words */
+    const animOn = cfg.castAnim !== 'off';
+    if (el['hb-castAnim']) { el['hb-castAnim'].checked = animOn; el['hb-castAnim'].disabled = !real; }
+    if (el['hb-anim-note']) {
+      const st = cfg.animStatus && typeof cfg.animStatus === 'object' ? cfg.animStatus : null;
+      el['hb-anim-note'].textContent = !real
+        ? 'Instant mode has no casting animation.'
+        : !animOn
+        ? 'Off: spells go off from the bar without a casting motion.'
+        : !st || !st.probed
+        ? 'Looks for Spell Hotbar 2 once a save is loaded.'
+        : st.available
+        ? 'Spell Hotbar 2’s casting clips found — a spell from the bar plays its cast with your weapon still in hand.'
+        : 'No casting animation: ' + (st.why || 'not available') + '. Casting still works, just without the motion.';
+      el['hb-anim-note'].className = 'hb-note' + (real && animOn && st && st.probed && !st.available ? ' is-warn' : '');
+    }
+    const pickOn = cfg.keyMode === 'pick';
+    if (el['hb-pickMode']) el['hb-pickMode'].checked = pickOn;
+    if (el['hb-pick-keys']) el['hb-pick-keys'].classList.toggle('is-off', !pickOn);
+    [['hb-castkey', cfg.castKey], ['hb-potionkey', cfg.potionKey]].forEach(([id, k]) => {
+      const b = el[id];
+      if (!b) return;
+      b.textContent = k && k.code ? (k.label || ('#' + k.code)) : 'No key';
+      b.className = 'hb-keybtn' + (k && k.code ? '' : ' is-unbound');
+      b.disabled = !pickOn;
+    });
+  }
+  if (el['hb-realCast']) el['hb-realCast'].addEventListener('change', () => {
+    cfg.castMode = el['hb-realCast'].checked ? 'real' : 'instant';
+    renderCastControls(); saveCfg(); render();
+  });
+  if (el['hb-aimCrosshair']) el['hb-aimCrosshair'].addEventListener('change', () => {
+    cfg.aimCrosshair = el['hb-aimCrosshair'].checked;
+    saveCfg();
+  });
+  if (el['hb-ownShoutCd']) el['hb-ownShoutCd'].addEventListener('change', () => {
+    cfg.ownShoutCooldowns = el['hb-ownShoutCd'].checked;
+    saveCfg();
+  });
+  if (el['hb-castAnim']) el['hb-castAnim'].addEventListener('change', () => {
+    cfg.castAnim = el['hb-castAnim'].checked ? 'auto' : 'off';
+    renderCastControls(); saveCfg();
+  });
+  if (el['hb-pickMode']) el['hb-pickMode'].addEventListener('change', () => {
+    cfg.keyMode = el['hb-pickMode'].checked ? 'pick' : 'cast';
+    renderCastControls(); saveCfg(); render();
+  });
+  if (el['hb-castkey']) el['hb-castkey'].addEventListener('click', () => openCapture(READY_SPELL));
+  if (el['hb-potionkey']) el['hb-potionkey'].addEventListener('click', () => openCapture(READY_POTION));
 
   /* Skyrim's own 1-8 favourites hotkeys -> Main page (2026-09-13). C++ reads
      MagicFavorites + the ExtraHotkey on carried items, fills EMPTY buttons only,
@@ -1634,12 +2140,13 @@
     pick.forFly = !!forFly;
     /* adding into a GEAR SET narrows the picker to gear and spells — the
        tabs that cannot go in a set are not offered rather than refused */
-    pick.forSet = pick.forFly && isSetSlot(slotAt(selectedPage, i));
+    pick.forSet = pick.forFly && isSetSlot(ownSlot(selectedBar, selectedPage, i));
     if (pick.forSet && pick.tab !== 'spells' && pick.tab !== 'items') pick.tab = 'all';
     el['hb-pick-title'].textContent = (pick.forFly
         ? (pick.forSet ? 'Add a piece to the gear set on button ' : 'Add to the flyout on button ') + (i + 1)
         : 'Put something on button ' + (i + 1)) +
-      (selectedPage ? ' (' + PAGE_NAMES[selectedPage] + ' page)' : '');
+      (selectedPage ? ' (' + PAGE_NAMES[selectedPage] + ' page)' : '') +
+      (selectedBar >= 0 ? ' — ' + barLabel(selectedBar) + ' bar' : '');
     el['hb-pick'].hidden = false;
     el['hb-pick-q'].value = '';
     /* the footer swaps meaning with the mode: assigning offers "make this a
@@ -1813,7 +2320,7 @@
        list them without waiting for a live tick. */
     if (pick.forFly) {
       if (!r) return;
-      const fs = pageAt(selectedPage).slots[pick.slot];
+      const fs = pageOf(selectedBar, selectedPage).slots[pick.slot];
       if (!isBundle(fs)) { closePicker(); return; }
       /* a set takes gear and spells only — the picker never offers anything
          else, but a stale row or a harness can still try */
@@ -1847,8 +2354,8 @@
       label: '',
       icon: '',
     } : null;
-    pageAt(selectedPage).slots[pick.slot] = s || {};
-    toGame('hbAssign', JSON.stringify({ page: selectedPage, i: pick.slot, slot: s }));
+    pageOf(selectedBar, selectedPage).slots[pick.slot] = s || {};
+    toGame('hbAssign', JSON.stringify({ bar: selectedBar, page: selectedPage, i: pick.slot, slot: s }));
     saveCfg();
     closePicker();
     renderSlotList();
@@ -1861,7 +2368,7 @@
      The other way to build one is in-game: bind from the inventory onto a set
      and the row is ADDED, not replaced (C++ HbBindFromMenu). */
   function makeSetSlot(i) {
-    const page = pageAt(selectedPage);
+    const page = pageOf(selectedBar, selectedPage);
     const old = page.slots[i];
     const seed = (old && !isEmptySlot(old) && !isBundle(old) && SET_KINDS.indexOf(old.kind) >= 0) ? old : null;
     page.slots[i] = {
@@ -1880,7 +2387,7 @@
   /* "Make this button a flyout" — whatever is on it becomes child 1, and the
      bundle editor opens so the next click is already "add the second thing". */
   function makeFlySlot(i) {
-    const page = pageAt(selectedPage);
+    const page = pageOf(selectedBar, selectedPage);
     const old = page.slots[i];
     const seed = (old && !isEmptySlot(old) && !isFlySlot(old)) ? old : null;
     page.slots[i] = {
@@ -2033,15 +2540,16 @@
 
   function renderFlyEd() {
     if (!flyEd.open) return;
-    const s = slotAt(selectedPage, flyEd.slot);
+    const s = ownSlot(selectedBar, selectedPage, flyEd.slot);
     if (!isBundle(s)) { closeFlyEd(); return; }
     const set = isSetSlot(s);
     const items = bundleItems(s);
-    const rows = (live && live.page === selectedPage && Array.isArray(live.slots))
-      ? ((live.slots[flyEd.slot] || {}).items || []) : [];
+    const erows = editRows() || [];
+    const rows = (erows[flyEd.slot] || {}).items || [];
 
     el['hb-flyed-title'].textContent = (set ? 'Gear set on button ' : 'Flyout on button ') + (flyEd.slot + 1) +
-      (selectedPage ? ' (' + PAGE_NAMES[selectedPage] + ' page)' : '');
+      (selectedPage ? ' (' + PAGE_NAMES[selectedPage] + ' page)' : '') +
+      (selectedBar >= 0 ? ' — ' + barLabel(selectedBar) + ' bar' : '');
     if (document.activeElement !== el['hb-flyed-name'])
       el['hb-flyed-name'].value = s.label || '';
     el['hb-flyed-name'].placeholder = set ? 'Gear set' : 'Flyout';
@@ -2116,7 +2624,7 @@
     openPicker(flyEd.slot, true);
   });
   if (el['hb-flyed-name']) el['hb-flyed-name'].addEventListener('input', () => {
-    const s = slotAt(selectedPage, flyEd.slot);
+    const s = ownSlot(selectedBar, selectedPage, flyEd.slot);
     if (!isBundle(s)) return;
     s.label = String(el['hb-flyed-name'].value || '').slice(0, 40);
     saveCfg();
@@ -2138,9 +2646,9 @@
       return;
     }
     b.setAttribute('data-armed', '0');
-    b.textContent = isSetSlot(slotAt(selectedPage, flyEd.slot)) ? 'Remove the gear set' : 'Remove the flyout';
-    pageAt(selectedPage).slots[flyEd.slot] = {};
-    toGame('hbAssign', JSON.stringify({ page: selectedPage, i: flyEd.slot, slot: null }));
+    b.textContent = isSetSlot(ownSlot(selectedBar, selectedPage, flyEd.slot)) ? 'Remove the gear set' : 'Remove the flyout';
+    pageOf(selectedBar, selectedPage).slots[flyEd.slot] = {};
+    toGame('hbAssign', JSON.stringify({ bar: selectedBar, page: selectedPage, i: flyEd.slot, slot: null }));
     saveCfg();
     closeFlyEd();
   });
@@ -2254,6 +2762,8 @@
   function capTarget() {
     const pg = capPage();
     if (pg > 0) return pageMod(pageAt(pg));
+    if (cap.slot === READY_SPELL) return (cfg.castKey = cfg.castKey || {});
+    if (cap.slot === READY_POTION) return (cfg.potionKey = cfg.potionKey || {});
     return cap.slot < 0 ? (cfg.key = cfg.key || {}) : keyAt(cap.slot);
   }
   function openCapture(i) {
@@ -2261,6 +2771,10 @@
     const pg = capPage();
     el['hb-cap-title'].textContent = pg > 0
       ? ('Press the key that should also show the ' + PAGE_NAMES[pg] + ' page')
+      : i === READY_SPELL
+      ? 'Press the key that casts your ready spell'
+      : i === READY_POTION
+      ? 'Press the key that drinks your ready potion'
       : i < 0
       ? 'Press a key to show / hide the bar'
       : ('Press a key for button ' + (i + 1));
@@ -2313,7 +2827,9 @@
       if (flyEd.open) closeFlyEd();
       el['hb-root'].classList.remove('grip-above', 'grip-below');
     } else {
-      selectedPage = clamp(selectedPage, 0, 3); applyPanelSide(); applyUiScale(); renderEdit();
+      selectedPage = clamp(selectedPage, 0, 3);
+      if (!barAt(selectedBar)) selectedBar = -1;
+      applyPanelSide(); applyUiScale(); renderEdit();
     }
     render();
     /* Rescue a bar that drifted off screen so its grip is reachable. Runs after
@@ -2330,6 +2846,17 @@
     Object.keys(cfg).forEach((k) => { if (c[k] !== undefined) cfg[k] = c[k]; });
     if (!Array.isArray(cfg.pages)) cfg.pages = [];
     if (!Array.isArray(cfg.slotKeys)) cfg.slotKeys = [];
+    /* bars by weapon: normalise every bar's pages, and take C++'s word for
+       which one is live (the push carries it) */
+    if (!Array.isArray(cfg.weaponBars)) cfg.weaponBars = [];
+    /* mirror C++'s read: an unknown class is dropped, never drawn as a bar
+       nothing can select */
+    cfg.weaponBars = cfg.weaponBars
+      .filter((b) => b && typeof b === 'object' && WEAPON_CLASSES.some((w) => w.id === b.cls))
+      .map(normBar);
+    if (typeof cfg.liveBar === 'number') liveBar = barAt(cfg.liveBar) ? cfg.liveBar : -1;
+    liveBarName = barLabel(liveBar);
+    if (!barAt(selectedBar)) selectedBar = -1;
     /* the setup panel's dock: anything unrecognised means the shipped right
        edge, and the class is re-applied because C++ may have just told us it
        moved */
@@ -2348,18 +2875,45 @@
     const d = coerce(j);
     if (!d || typeof d !== 'object') return;
     const wasPage = livePage;
-    live = { page: d.page || 0, slots: Array.isArray(d.slots) ? d.slots : [] };
+    const wasBar = liveBar;
+    live = { page: d.page || 0, slots: Array.isArray(d.slots) ? d.slots : [],
+             ready: Array.isArray(d.ready) ? d.ready : null,
+             bar: (d.bar && typeof d.bar === 'object') ? d.bar : null };
     if (live.page !== livePage) livePage = live.page;
+    if (live.bar) {
+      liveBar = barAt(live.bar.i | 0) ? (live.bar.i | 0) : -1;
+      liveBarName = live.bar.name || barLabel(liveBar);
+    }
     /* PERF: a tick that only moved a countdown patches the numbers in place;
        anything structural still goes through the full render. */
-    if (livePage !== wasPage || !patchLive()) render();
-    if (editing && live.page === selectedPage) renderSlotList(true);
+    if (livePage !== wasPage || liveBar !== wasBar || !patchLive()) render();
+    if (editing && live.page === selectedPage && liveBar === selectedBar) renderSlotList(true);
+    if (editing && liveBar !== wasBar) renderBars();
+  };
+
+  /* the editor's peek at a bar/page that is not on screen (bars by weapon) */
+  window.hbLivePeek = function (j) {
+    const d = coerce(j);
+    if (!d || typeof d !== 'object') return;
+    peek = { bar: liveBarIndex(d), page: d.page | 0, slots: Array.isArray(d.slots) ? d.slots : [] };
+    if (editing && peek.page === selectedPage && peek.bar === selectedBar) {
+      renderSlotList();
+      if (flyEd.open) renderFlyEd();
+    }
   };
 
   window.hbPage = function (j) {
     const d = coerce(j);
     const p = d && typeof d === 'object' ? (d.page | 0) : (parseInt(j, 10) || 0);
-    if (p === livePage) return;
+    let barChanged = false;
+    if (d && typeof d === 'object' && d.bar !== undefined) {
+      const b = barAt(d.bar | 0) ? (d.bar | 0) : -1;
+      if (b !== liveBar) { liveBar = b; barChanged = true; }
+      if (typeof d.barName === 'string' && d.barName) liveBarName = d.barName;
+      else liveBarName = barLabel(liveBar);
+      if (barChanged && editing) renderBars();
+    }
+    if (p === livePage && !barChanged) return;
     livePage = clamp(p, 0, PAGE_MAX);
     /* a modifier swap under an open fan: the fan belongs to the old page's
        button, so it folds up rather than firing across pages */
@@ -2468,6 +3022,13 @@
     set placed(v) { placed = v; },
     get selectedPage() { return selectedPage; },
     set selectedPage(v) { selectedPage = v; },
+    get selectedBar() { return selectedBar; },
+    set selectedBar(v) { selectedBar = v; },
+    get liveBar() { return liveBar; },
+    get peek() { return peek; },
+    WEAPON_CLASSES, classLabel, barAt, barLabel, pageOf, ownSlot, effSlot, liveSlot,
+    findBar, addBar, removeBar, renderBars, openBarAdd, closeBarAdd, renderBarAdd, barAddRows, pickBarAdd,
+    get barAdd() { return barAdd; },
     get pick() { return pick; },
     pageAt, keyAt, slotAt, visibleSlots, isEmptySlot,
     resolveIconPath, shKeyFor, genericKeyFor, filterRows, prettyKey, DIK,

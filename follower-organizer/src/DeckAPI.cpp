@@ -4,6 +4,8 @@
 #include "Utility/Script.hpp"
 #include "Utility/TESForm.hpp"
 
+#include <unordered_map>
+
 // ============================================================================
 //  Follower Deck API — two C exports consumed in-process by the Hotkey Deck
 //  plugin (its "Follower Deck" PrismaUI view resolves them via
@@ -162,47 +164,63 @@ namespace
 	 *  base. A LIVING match wins outright; a corpse is kept as the fallback,
 	 *  because "she is dead over there" is still a true answer about where she
 	 *  is, and the deck's own controls gate on `dead` separately.
+	 *
+	 *  How: one pass over the loaded actors answers every base at once.
+	 *  BuildState used to walk the actors once PER base-form member — all four
+	 *  process lists, with a template-chain climb per actor — so a
+	 *  ~50-member roster in a city cost a frame-sized stall on the game thread,
+	 *  and SkyManager's Followers HUD asked for it about once a second (its perf
+	 *  census: "hud-roster 50x worst 15.9ms", 2026-10-07). Same answer as the
+	 *  per-member walk: the FIRST living actor in list order whose base is or
+	 *  descends from the wanted one, else the first corpse. Built lazily, only
+	 *  when a member actually needs it.
 	 */
-	bool BaseIsOrDescendsFrom(RE::TESNPC* base, RE::TESNPC* want)
+	struct LoadedIndex
 	{
-		for (int guard = 0; base && guard < 8; ++guard) {
-			if (base == want)
-				return true;
-			auto* t = base->baseTemplateForm;
-			base = t ? t->As<RE::TESNPC>() : nullptr;
-		}
-		return false;
-	}
+		std::unordered_map<RE::TESNPC*, RE::Actor*> living, corpse;
+		bool built = false;
 
-	RE::Actor* LoadedActorForBase(RE::TESNPC* want)
-	{
-		auto* pl = RE::ProcessLists::GetSingleton();
-		if (!pl || !want)
-			return nullptr;
-		const RE::BSTArray<RE::ActorHandle>* arrays[4] = {
-			&pl->highActorHandles, &pl->middleHighActorHandles,
-			&pl->middleLowActorHandles, &pl->lowActorHandles
-		};
-		RE::Actor* corpse = nullptr;
-		for (const auto* arr : arrays) {
-			for (const auto& h : *arr) {
-				auto a = h.get();
-				if (!a)
-					continue;
-				if (!BaseIsOrDescendsFrom(a->GetActorBase(), want))
-					continue;
-				if (a->IsDead()) {
-					if (!corpse)
-						corpse = a.get();
-					continue;
+		void Build()
+		{
+			built = true;
+			auto* pl = RE::ProcessLists::GetSingleton();
+			if (!pl)
+				return;
+			const RE::BSTArray<RE::ActorHandle>* arrays[4] = {
+				&pl->highActorHandles, &pl->middleHighActorHandles,
+				&pl->middleLowActorHandles, &pl->lowActorHandles
+			};
+			for (const auto* arr : arrays) {
+				for (const auto& h : *arr) {
+					auto a = h.get();
+					if (!a)
+						continue;
+					auto& into = a->IsDead() ? corpse : living;
+					auto* base = a->GetActorBase();
+					for (int guard = 0; base && guard < 8; ++guard) {
+						into.emplace(base, a.get());   // first in list order wins
+						auto* t = base->baseTemplateForm;
+						base = t ? t->As<RE::TESNPC>() : nullptr;
+					}
 				}
-				return a.get();
 			}
 		}
-		return corpse;
-	}
 
-	json MemberJson(const organizer::Member& m)
+		RE::Actor* For(RE::TESNPC* want)
+		{
+			if (!want)
+				return nullptr;
+			if (!built)
+				Build();
+			if (auto it = living.find(want); it != living.end())
+				return it->second;
+			if (auto it = corpse.find(want); it != corpse.end())
+				return it->second;
+			return nullptr;
+		}
+	};
+
+	json MemberJson(const organizer::Member& m, LoadedIndex& loaded)
 	{
 		auto* form = m.form;
 		auto* refr = form ? form->As<RE::TESObjectREFR>() : nullptr;
@@ -212,7 +230,7 @@ namespace
 		RE::Actor* live = nullptr;
 		if (!actor) {
 			if (auto* npc = form ? form->As<RE::TESNPC>() : nullptr)
-				live = LoadedActorForBase(npc);
+				live = loaded.For(npc);
 		}
 		json j{
 			{ "name", m.GetName() },          // live display name (override applied)
@@ -252,11 +270,12 @@ namespace
 		auto* o = FollowerOrganizer::GetSingleton();
 		json cats = json::array();
 		std::size_t total = 0;
+		LoadedIndex loaded;   // one actor pass for the whole build, on first need
 		for (std::size_t i = 1; i < o->categories.size(); ++i) {
 			const auto& c = o->categories[i];
 			json members = json::array();
 			for (const auto& m : c.members)
-				members.push_back(MemberJson(m));
+				members.push_back(MemberJson(m, loaded));
 			total += c.members.size();
 			cats.push_back(json{
 				{ "index", static_cast<int>(i) },

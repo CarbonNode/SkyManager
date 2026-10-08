@@ -61,6 +61,7 @@ window.HouseholdPane = (function () {
   const ui = {
     filter: '',
     scope: 'household',
+    touched: false,   // the player picked a scope; Today stops being the default
     sel: -1,          // keyboard selection into the CURRENT visible list
     toastT: 0,
   };
@@ -81,6 +82,15 @@ window.HouseholdPane = (function () {
     { key: 'all', label: 'Everyone',
       title: 'The whole Follower Organizer roster' },
   ];
+
+  /* "Today" — the dashboard (hd-person.js mountDashboard, 2026-10-03): her
+     letters, off-screen happenings and how each feels about you, from CHIM,
+     plus who is near her term. It exists only where hd-person.js loaded, and it
+     is the page's first view there; every other scope is untouched. */
+  const TODAY = { key: 'today', label: 'Today',
+    title: 'The house today: letters, what happened while you were away, who needs you' };
+  function scopes() { return window.HDPerson && HDPerson.mountDashboard ? [TODAY].concat(SCOPES) : SCOPES; }
+  function todayOn() { return ui.scope === 'today' && !!(window.HDPerson && HDPerson.mountDashboard); }
 
   /* ------------------------------------------------------------- DOM ---- */
 
@@ -589,7 +599,7 @@ window.HouseholdPane = (function () {
     const seg = $('hh-seg');
     if (seg) {
       seg.textContent = '';
-      SCOPES.forEach(function (s) {
+      scopes().forEach(function (s) {
         const n = s.key === 'all' ? c.all
                 : s.key === 'wives' ? c.wives
                 : s.key === 'expecting' ? c.preg : c.household;
@@ -604,6 +614,7 @@ window.HouseholdPane = (function () {
         ]);
         b.addEventListener('click', function () {
           ui.scope = s.key;
+          ui.touched = true;
           ui.sel = -1;
           render();
         });
@@ -619,9 +630,14 @@ window.HouseholdPane = (function () {
       if (msg) noteHost.appendChild(h('div', { class: 'hh-note', text: msg }));
     }
 
-    /* ---- the grid */
+    /* ---- the grid (or Today's dashboard) */
     const body = $('hh-body');
     if (!body) return;
+    if (todayOn()) {
+      lastRows = [];
+      HDPerson.mountDashboard(body, { rows: roster().filter(inHousehold), query: ui.filter.trim(), openPerson: openPerson });
+      return;
+    }
     body.textContent = '';
     if (!rows.length) {
       body.appendChild(emptyState(c, fs));
@@ -797,6 +813,7 @@ window.HouseholdPane = (function () {
     onShow() {
       ensureSkeleton();
       ui.sel = -1;
+      if (!ui.touched && window.HDPerson && HDPerson.mountDashboard) ui.scope = 'today';
       /* Re-query every show: someone can marry, conceive or be filed into the
          roster between two looks at this page, and a stale household is
          exactly what it exists to prevent. */
@@ -824,7 +841,7 @@ window.HouseholdPane = (function () {
     /* Omni / deep-open entry: land on the page with a scope and query
        already set (used by the search provider's jump). */
     show(scope, q) {
-      if (scope && SCOPES.some(function (s) { return s.key === scope; })) ui.scope = scope;
+      if (scope && scopes().some(function (s) { return s.key === scope; })) { ui.scope = scope; ui.touched = true; }
       if (typeof q === 'string') {
         ui.filter = q;
         const box = $('hh-search');
@@ -882,12 +899,12 @@ window.HouseholdPane = (function () {
        questions ("who is pregnant"), so each gets a row rather than one row
        that lands on whatever scope was last used. The Finder's own provider
        makes the same call. */
-    SCOPES.forEach(function (s) {
+    scopes().forEach(function (s) {
       const n = s.key === 'all' ? c.all
               : s.key === 'wives' ? c.wives
               : s.key === 'expecting' ? c.preg : c.household;
       items.push({
-        label: s.key === 'household' ? 'Household' : ('Household: ' + s.label.toLowerCase()),
+        label: s.key === 'household' ? 'Household' : s.key === 'today' ? 'Household: today (dashboard)' : ('Household: ' + s.label.toLowerCase()),
         detail: s.title + ' — ' + n,
         kind: 'page',
         keywords: 'household wives wife pregnant expecting harem family '

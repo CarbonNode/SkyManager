@@ -388,7 +388,16 @@ window.FacesPane = (function () {
      face, hair cuts at the edges" framing Rober picked for face-fit v2.
      Layout-crop, never transform: Ultralight rasterises an <img> at LAYOUT
      size (the face-fit v4 lesson). */
-  const bodyFits = {};   // url -> {w, h, win:{x,y,side}} | 'fail' (session cache)
+  const bodyFits = {};   // url -> {w, h, win:{x,y,side}} | 'fail' | 'framed' (session cache)
+  /* A live-head portrait (Preset Director's default engine since 2026-10-06)
+     is already a framed, square, OPAQUE head shot — the renderer paints its
+     own background. The MRF fallback is a transparent full-body figure. So
+     opaque corners mean "show it whole": the stylesheet's cover fill is the
+     right paint, and bodyFit's figure-height crop would zoom into a forehead. */
+  function isFramedPortrait(px, cw, ch) {
+    const a = (x, y) => px[(y * cw + x) * 4 + 3];
+    return a(0, 0) > 250 && a(cw - 1, 0) > 250 && a(0, ch - 1) > 250 && a(cw - 1, ch - 1) > 250;
+  }
   function bodyFitWindow(w, hgt, bbox) {
     const bh = bbox.y1 - bbox.y0, bw = bbox.x1 - bbox.x0;
     if (bh < 8 || bw < 4) return null;
@@ -419,7 +428,7 @@ window.FacesPane = (function () {
   }
   function bodyFitEnsure(im, url, frame) {
     const hit = bodyFits[url];
-    if (hit === 'fail') return;                       // cover fallback stands
+    if (hit === 'fail' || hit === 'framed') return;   // cover fill stands
     if (hit) { bodyFitPaint(im, frame, hit); return; }
     const probe = new Image();
     probe.onload = () => {
@@ -433,6 +442,7 @@ window.FacesPane = (function () {
         if (!ctx) throw new Error('no 2d context');
         ctx.drawImage(probe, 0, 0, cw, ch);
         const px = ctx.getImageData(0, 0, cw, ch).data;
+        if (isFramedPortrait(px, cw, ch)) { bodyFits[url] = 'framed'; return; }
         let x0 = cw, y0 = ch, x1 = 0, y1 = 0, any = false;
         for (let yy = 0; yy < ch; yy++)
           for (let xx = 0; xx < cw; xx++)
@@ -1125,7 +1135,8 @@ window.FacesPane = (function () {
           } }, '🔍'));
       const face = h('div', { class: 'pd-face' });
       if (icon && icon.slice(0, 5) === 'auto-') {
-        // Auto-rendered stand-in PNG (whole transparent-bg figure). NOT
+        // Auto-rendered stand-in PNG: a framed opaque head (live engine,
+        // shown whole) or a whole transparent-bg figure (MRF fallback). NOT
         // hd-facefit: its formula is calibrated for HEAD renders (face =
         // top + K*bboxWidth) and frames the torso on a full body. bodyFit
         // below derives the head window from figure HEIGHT instead.
@@ -1686,6 +1697,7 @@ window.FacesPane = (function () {
     _setHost: (el) => { host = el; },
     _aimAt: aimAt,
     _bodyFitWindow: bodyFitWindow,
+    _isFramedPortrait: isFramedPortrait,
     // 2026-08-16 seams: the counting truth, the filename adoption and the
     // in-flight map, so the harness can assert them without a live game.
     _counts: computeCounts,

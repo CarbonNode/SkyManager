@@ -744,6 +744,12 @@ const ui = {
 };
 
 let saveTimer = null;
+/* tab-switch-no-save (2026-10-08): a tab switch bumps the tab bar's usage
+   counter, and that bump used to saveSoon() -> C++ OnJsSave re-parses the whole
+   config and rewrites hotkeys.json 350 ms after EVERY switch ("config saved"
+   three times in twelve seconds in the 2026-10-08 log). A usage count is not an
+   edit the player can lose: it is flushed on close instead (flushSave). */
+let saveDeferred = false;
 let toastTimer = null;
 
 /* $ helpers */
@@ -915,7 +921,7 @@ function highlight(text, q) {
 function render() {
   const pane = (ui.tab === 'home' || ui.tab === 'numpad' || ui.tab === 'notes' || ui.tab === 'quests' ||
                 ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
-                ui.tab === 'rooms' || ui.tab === 'time' || ui.tab === 'loot' ||
+                ui.tab === 'rooms' || ui.tab === 'time' || ui.tab === 'weather' || ui.tab === 'loot' ||
                 ui.tab === 'anim' || ui.tab === 'keys' || ui.tab === 'items' || ui.tab === 'npcs' ||
                 ui.tab === 'cells' || ui.tab === 'spells' ||
                 ui.tab === 'mounts' || ui.tab === 'sheet' || ui.tab === 'nightside' || ui.tab === 'transmog' ||
@@ -967,6 +973,7 @@ function render() {
   $('wd-pane').classList.toggle('hidden', pane !== 'wardrobe');
   $('faces-pane').classList.toggle('hidden', pane !== 'faces');
   $('tm-pane').classList.toggle('hidden', pane !== 'time');
+  $('wth-pane').classList.toggle('hidden', pane !== 'weather');
   renderTabs();
 
   $('count-chip').textContent = state.entries.length + ' hotkeys';
@@ -1609,6 +1616,12 @@ function renderHints(pane) {
       '<span>click a face\'s class chip to change it</span><span>F7 / Esc close</span>';
     return;
   }
+  if (pane === 'weather') {
+    h.innerHTML = '<span>Click a weather to bring it in · ★ stars it</span>' +
+      '<span>Type to search every sky · Enter = top hit</span>' +
+      '<span>Lightning changes apply as you close the deck</span><span>F7 / Esc close</span>';
+    return;
+  }
   if (pane === 'nightside') {
     h.innerHTML = '<span>Blood · Moon · Bone — the curses you carry</span>' +
       '<span>Type to search every power</span><span>Enter casts the top hit</span>' +
@@ -1723,6 +1736,10 @@ const SYS_TABS = [
      if you are a werewolf, lich, vampire"). `requiresState` is the live twin
      of `requires`; the payload is rebuilt on EVERY hdOpen because being
      bitten between two presses of F7 is exactly the case that matters. */
+  /* Weather (2026-10-08). Deliberately UNGATED: every load order has
+     weathers, and each weather mod's card draws itself only when that mod
+     is installed (src/weather_hub.cpp). */
+  { tab: 'weather',    label: 'Weather',    img: 'icons/custom/wx-storm.png',      title: 'Every weather in your load order — bring one in, lock it, and tune your weather mods (lightning, seasons)' },
   { tab: 'nightside',  label: 'Nightside',  img: 'icons/custom/hm-nightside.png',  title: 'Blood, Moon and Bone — the curses you carry', requiresState: 'nightside' },
 ];
 
@@ -1922,7 +1939,7 @@ function bumpTabUse(t) {
      favourite still outranks a new tab without counts growing forever */
   if (tb.use[t] > 900)
     Object.keys(tb.use).forEach((k) => { tb.use[k] = Math.max(1, Math.floor((Number(tb.use[k]) || 0) / 2)); });
-  saveSoon();
+  saveOnClose();   // tab-switch-no-save: flushed when the deck closes, not 350 ms after every switch
 }
 
 /* usage order, canonical order breaking ties — an untouched deck reads
@@ -2359,6 +2376,93 @@ function onTabsClick(e) {
   if (tab) setTab(tab.dataset.tab);
 }
 
+/* css-prefetch (2026-10-08): a tab's FIRST visit of the session paid for its
+   lazily staged stylesheets right on the click — "HDCss: followers +7 sheets in
+   373 ms", "domains +2 in 331 ms", "potions +1 in 364 ms" in the 2026-10-08 log,
+   each followed by a re-render. Loading them stays lazy (hd-css.js explains
+   why the 33 sheets are not parsed before first paint), but the moment moves:
+   the pointer over a tab button starts its load, and the most-used tabs are
+   fetched in the idle seconds after an open. HDCss.need() is idempotent and
+   its gates still decide visibility, so this changes WHEN, never WHETHER. */
+function cssKeyForTab(t) {
+  try {
+    if (!window.HDCss || !HDCss._tabKey) return '';
+    var tab = String(t || '');
+    if (tab === 'finder') tab = finderPrefs().mode;
+    var key = HDCss._tabKey[tab] || (HDCss._reg && HDCss._reg[tab] ? tab : '');
+    return (key && typeof HDCss.ready === 'function' && !HDCss.ready(key)) ? key : '';
+  } catch (e) { return ''; }
+}
+var cssPrefetched = {};
+function prefetchTabCss(t, why) {
+  var key = cssKeyForTab(t);
+  if (!key || cssPrefetched[key]) return false;
+  cssPrefetched[key] = true;
+  try { HDCss.need(key); } catch (e) { return false; }
+  if (window.HDPerf) HDPerf.log('HDCss: prefetch "' + key + '" (' + why + ')');
+  return true;
+}
+function onTabsHover(e) {
+  var tab = e.target && e.target.closest ? e.target.closest('.tab[data-tab]') : null;
+  if (tab) prefetchTabCss(tab.dataset.tab, 'hover');
+}
+var idlePrefetchDone = false;
+function prefetchMostUsedTabCss() {
+  if (idlePrefetchDone || !ui.visible) return;
+  idlePrefetchDone = true;
+  var use = tabbarPrefs().use || {};
+  var ranked = Object.keys(use).sort(function (a, b) { return (Number(use[b]) || 0) - (Number(use[a]) || 0); });
+  var picked = [];
+  for (var i = 0; i < ranked.length && picked.length < 4; i++) {
+    var key = cssKeyForTab(ranked[i]);
+    if (key && picked.indexOf(key) === -1 && !cssPrefetched[key]) picked.push(key);
+  }
+  if (!picked.length) return;
+  /* one at a time, a frame or two apart — never a burst that competes with a click */
+  var k = 0;
+  var step = function () {
+    if (k >= picked.length || !ui.visible) return;
+    var key = picked[k++];
+    cssPrefetched[key] = true;
+    try { HDCss.need(key); } catch (e) {}
+    setTimeout(step, 250);
+  };
+  if (window.HDPerf) HDPerf.log('HDCss: idle prefetch of ' + picked.length + ' most-used tab sheet-set(s): ' + picked.join(', '));
+  step();
+}
+
+/* frame-diag (2026-10-08): the engine's frame interval with NOTHING to draw.
+   Sampled once per open, 1.2 s after the first paint, 24 rAF ticks; mouse
+   moves during the sample are counted so a hover-driven repaint cannot pass
+   for idle. In-game opens showed frame2 +46..+73 ms (14-22 fps) on a 4090 while
+   the offline raster of the same page is ~3 ms — the question this answers is
+   whether that cadence is the deck's or the paused game's. */
+var HDFrameDiag = (function () {
+  var now = (window.performance && typeof performance.now === 'function')
+    ? function () { return performance.now(); } : function () { return Date.now(); };
+  var moves = 0, counting = false;
+  try { document.addEventListener('mousemove', function () { if (counting) moves++; }, true); } catch (e) {}
+  function sample(why) {
+    if (!window.HDPerf || !ui.visible) return;
+    var N = 24, ts = [], last = 0;
+    moves = 0; counting = true;
+    var tick = function () {
+      var t = now();
+      if (last) ts.push(t - last);
+      last = t;
+      if (ts.length < N && ui.visible) { requestAnimationFrame(tick); return; }
+      counting = false;
+      if (ts.length < 4) return;
+      var s = ts.slice().sort(function (a, b) { return a - b; });
+      var med = s[Math.floor(s.length / 2)], p90 = s[Math.floor(s.length * 0.9)], max = s[s.length - 1];
+      HDPerf.log('frame-diag(view): ' + why + ' | rAF interval median ' + HDPerf.fmt(med) + ' ms (' + Math.round(1000 / Math.max(1, med))
+        + ' fps) | p90 ' + HDPerf.fmt(p90) + ' | max ' + HDPerf.fmt(max) + ' | n=' + ts.length + ' | mousemoves ' + moves + ' | tab=' + ui.tab);
+    };
+    requestAnimationFrame(tick);
+  }
+  return { sample: sample };
+})();
+
 function onTabsKey(e) {
   const inp = e.target;
   if (!inp.classList || !inp.classList.contains('tab-input')) return;
@@ -2461,6 +2565,13 @@ const HK_REQUIRES = {
   'hd-highking':               { flag: 'highking', label: 'Become High King of Skyrim TNG' },
   'hd-hk-collect-taxes':       { flag: 'highking', label: 'Become High King of Skyrim TNG' },
   'hd-hk-highreach-tp':        { flag: 'highking', label: 'Become High King of Skyrim TNG' },
+  /* NPA - NPC Preset Applier opener (2026-10-04): presses NPA's own key, so
+     without NPA.dll it would fire a stray Shift+N. C++ flag: npa. */
+  'hd-open-npa':               { flag: 'npa',      label: 'NPA - NPC Preset Applier' },
+  /* The Manipulator 9001 opener (2026-10-08): presses its Home key, so
+     without ObjectManipulator.dll it would fire a stray Home. C++ flag:
+     manipulator. */
+  'hd-open-manipulator':       { flag: 'manipulator', label: 'The Manipulator 9001' },
 };
 /* The missing-mod label if this entry's required mod is NOT detected, else ''.
    device:"vkey" requires VirtualKey. A DLL that predates cfg.detected sends no
@@ -3286,14 +3397,19 @@ function renderItemSource() {
 function save() {
   clearTimeout(saveTimer);
   saveTimer = null;
+  saveDeferred = false;
   toGame('hdSave', JSON.stringify(state));
 }
 
 /* Write NOW if a debounced save is still pending, else do nothing.
    Called on every route out of the palette — see requestClose/hdClosed. */
 function flushSave() {
-  if (saveTimer) save();          // save() clears the timer itself
+  if (saveTimer || saveDeferred) save();          // save() clears both
 }
+
+/* Persist with the NEXT flush (close / route out), never on its own timer —
+   for state that is bookkeeping, not an edit (tab usage ranks). */
+function saveOnClose() { saveDeferred = true; }
 
 function saveSoon() {
   clearTimeout(saveTimer);
@@ -3852,6 +3968,10 @@ function onKeyDown(e) {
       window.HouseholdPane && HouseholdPane.onKey(e)) { e.preventDefault(); return; }
   if (ui.tab === 'scene' && code !== 'Tab' &&
       window.ScenePane && ScenePane.onKey(e)) { e.preventDefault(); return; }
+  /* Weather: its "Every setting" popout and its search box own Escape while
+     they are up (the popout law); the palette-close Escape falls through. */
+  if (ui.tab === 'weather' && code !== 'Tab' &&
+      window.WeatherPane && WeatherPane.onKey(e)) { e.preventDefault(); return; }
 
   /* ---- global keys ---- */
   if (code === 'Escape') {
@@ -3904,6 +4024,8 @@ function onKeyDown(e) {
          game, and Enter in the Sky weather box both picked a weather AND fired
          the hidden list's selection (one press, two game actions). */
       ui.tab === 'loot' || ui.tab === 'time' ||
+      /* weather owns #wth-search (2026-10-08) */
+      ui.tab === 'weather' ||
       ui.tab === 'wardrobe' || ui.tab === 'faces') return;  // hotkey-list keys below apply to deck tabs only
 
   const inSearch = document.activeElement === $('search');
@@ -4044,10 +4166,71 @@ function hidePane(t, closing) {
   if (t === 'finances' && window.FinancesPane) FinancesPane.onHide();
   if (t === 'wardrobe' && window.WardrobePane) WardrobePane.onHide();
   if (t === 'time' && window.TimePane) TimePane.onHide();
+  if (t === 'weather' && window.WeatherPane) WeatherPane.onHide();
   if (t === 'faces' && window.FacesPane) FacesPane.onHide();
 }
 
+/* tab-diag (2026-10-08, Rober: "its def laggy when swapping between tabs as
+   well"). setTab is the single choke point for every tab switch, so the switch
+   is bracketed here the way hdOpen brackets an open: the synchronous cost
+   (render + the pane's onShow), then a double rAF for the engine's frames, then
+   1.5 s of handler self-times for the pushes the switch provokes (fdState,
+   pdOpen ... — the same census the open uses), all on ONE log line:
+     tab-diag(view): followers <- domains | switch 14 ms | ->paint 160 ms
+       [frame1 +90 frame2 +70] | sheets ready | handlers 38.0 ms (3) [fdState 30.0, ...]
+   "sheets loading" means this is the tab's first visit of the session and HDCss
+   is fetching its stylesheets (that costs ~350 ms on its own line); the prefetch
+   below exists to make that word rare. */
 function setTab(t) {
+  var _td = null;
+  try { if (window.HDPerf && ui.visible && t !== ui.tab) _td = HDTabDiag.begin(t, ui.tab); } catch (e) { _td = null; }
+  try { return setTabImpl(t); }
+  finally { if (_td) { try { _td.done(ui.tab); } catch (e) {} } }
+}
+
+var HDTabDiag = (function () {
+  var now = (window.performance && typeof performance.now === 'function')
+    ? function () { return performance.now(); } : function () { return Date.now(); };
+  var fmt = function (ms) { return (window.HDPerf && HDPerf.fmt) ? HDPerf.fmt(ms) : String(Math.round(ms)); };
+  var sheetsWord = function (tab) {
+    try {
+      if (!window.HDCss || !HDCss._tabKey) return 'sheets n/a';
+      var key = HDCss._tabKey[tab] || (HDCss._reg && HDCss._reg[tab] ? tab : '');
+      if (!key) return 'sheets core';
+      var r = HDCss._reg && HDCss._reg[key];
+      return 'sheets ' + (r ? r.state : 'core');
+    } catch (e) { return 'sheets n/a'; }
+  };
+  function begin(to, from) {
+    var t0 = now(), census = false;
+    try { if (!HDOpenCensus.active() && !HDBurstCensus.active()) { HDTabCensus.start(); census = true; } } catch (e) { census = false; }
+    var before = sheetsWord(to);
+    return {
+      done: function (landed) {
+        var t1 = now();
+        requestAnimationFrame(function () {
+          var f1 = now();
+          requestAnimationFrame(function () {
+            var f2 = now();
+            setTimeout(function () {
+              var cen = census ? '' : 'handlers n/a (open census active)';
+              if (census) { try { cen = HDTabCensus.report(); } catch (e) { cen = 'handlers n/a'; } }
+              try {
+                HDPerf.log('tab-diag(view): ' + landed + ' <- ' + (from || '?')
+                  + ' | switch ' + fmt(t1 - t0) + ' ms | \u2192paint ' + fmt(f2 - t0)
+                  + ' ms [frame1 +' + fmt(f1 - t1) + ' frame2 +' + fmt(f2 - f1) + '] | ' + before
+                  + ' | ' + cen);
+              } catch (e) {}
+            }, 1500);
+          });
+        });
+      }
+    };
+  }
+  return { begin: begin };
+})();
+
+function setTabImpl(t) {
   closeMoreMenu();   // any tab switch dismisses the overflow menu
   /* The bar's merged Finder entry: resolve to whichever roster was used last.
      The reverse also holds — landing on either roster records it, so the tab
@@ -4224,6 +4407,10 @@ function setTab(t) {
   }
   if (t === 'time') {
     if (window.TimePane) TimePane.onShow();   // re-reads the game clock on every open
+    return;
+  }
+  if (t === 'weather') {
+    if (window.WeatherPane) WeatherPane.onShow();   // re-walks the load order's weathers + reads every weather mod
     return;
   }
   if (t === 'faces') {
@@ -5154,6 +5341,148 @@ function appendMoreHkIcons() {
 
 /* ================================================== game -> view API ==== */
 
+/* ---- open-entry-census (2026-10-08, marker open-entry-census) ----------
+   C++ follows hdOpen with ~20 more pushes (fdState, fdPortraits, pdOpen,
+   ctOpen, csOpen, alOpen, hdIcons …), and the UI thread runs every one of
+   them BEFORE the first frame can paint. The in-game gap between "rendered"
+   and "painted" was 126-233 ms while the offline engine put layout + raster
+   at a few ms, so this times each handler's own work for ONE open and the
+   paint line reports the top ones by name. Wrappers exist only until that
+   report (or 3 s), then restore themselves; a handler re-assigned meanwhile
+   is left alone. Nothing here may throw into a handler (an uncaught error
+   takes the whole Ultralight renderer down), so every edge is guarded. */
+var HDCensusFactory = function () {
+  var NAMES = ['fdConfig', 'fdTarget', 'hdItemSource', 'hdRecent', 'fdPortraits', 'fdCrops',
+    'hudCfgState', 'fdState', 'fdLiveParty', 'fdNff', 'fdFertility', 'pdOpen', 'rgOpen',
+    'pdHere', 'ctOpen', 'ctTarget', 'csOpen', 'alOpen', 'drTarget', 'hdIconIndex', 'hdIcons',
+    'hdShowTab', 'fdMhiyh', 'hudData', 'wdOpen', 'ltOpen', 'nsOpen', 'loOpen', 'hhOpen'];
+  var now = (window.performance && typeof performance.now === 'function')
+    ? function () { return performance.now(); } : function () { return Date.now(); };
+  var wrapped = null, t = null, timer = 0;
+  function stop() {
+    if (!wrapped) return;
+    try { clearTimeout(timer); } catch (e) {}
+    for (var n in wrapped) { try { if (window[n] === wrapped[n]) window[n] = wrapped[n].__hdCensusOrig; } catch (e) {} }
+    wrapped = null;
+  }
+  function wrapOne(n) {
+    var orig = window[n];
+    if (typeof orig !== 'function' || orig.__hdCensusOrig) return;
+    var w = function () {
+      var t0 = now();
+      try { return orig.apply(this, arguments); }
+      finally {
+        if (t) { var d = now() - t0; var e = t[n] || (t[n] = { ms: 0, n: 0 }); e.ms += d; e.n++; }
+      }
+    };
+    w.__hdCensusOrig = orig;
+    wrapped[n] = w;
+    window[n] = w;
+  }
+  function start() {
+    stop();
+    wrapped = {}; t = {};
+    for (var i = 0; i < NAMES.length; i++) { try { wrapOne(NAMES[i]); } catch (e) {} }
+    timer = setTimeout(stop, 3000);
+  }
+  function report() {
+    var rows = [], total = 0;
+    if (t) for (var n in t) { rows.push([n, t[n].ms, t[n].n]); total += t[n].ms; }
+    rows.sort(function (a, b) { return b[1] - a[1]; });
+    var top = rows.slice(0, 8).map(function (r) {
+      return r[0] + ' ' + r[1].toFixed(1) + (r[2] > 1 ? 'x' + r[2] : '');
+    }).join(', ');
+    stop(); t = null;
+    return 'handlers ' + total.toFixed(1) + ' ms (' + rows.length + ') [' + top + ']';
+  }
+  return { start: start, report: report, stop: stop, active: function () { return !!wrapped; } };
+};
+var HDOpenCensus = HDCensusFactory();
+/* tab-diag: the same wrappers, armed per tab switch. Both instances wrap the same
+   globals and wrapOne() skips an already-wrapped function, so only ONE may be
+   live at a time — HDTabDiag.begin checks HDOpenCensus.active() first, and
+   hdClosed stops this one so the next open's census is never pre-empted. */
+var HDTabCensus = HDCensusFactory();
+
+/* ---- push-burst (2026-10-08, marker push-burst) -------------------------
+   C++ sends a pane its data as a RUN of pushes (the open's parked slices; the
+   six of a Followers refresh), and every one of them used to redraw the pane
+   on its own: fdCrops 63 ms, fdNff 55 ms x2, fdLiveParty 50 ms, fdPortraits
+   38 ms, fdState 31 ms = 291 ms of handlers for ONE Followers open in the
+   10:49 log, the same 60-portrait roster drawn six times.
+
+   C++ now brackets a run with hdBurst(1,tag) / hdBurst(0,tag). Between the
+   marks a pane hands its redraw to HDBurst.defer(key, fn): the first call
+   under a key queues it, later ones replace the function, and the end mark
+   runs each key ONCE, in first-queued order. Outside a burst defer() returns
+   false and the caller draws synchronously, exactly as before, so a single
+   push (a reply, a poll, every harness) is unchanged.
+
+   A burst that never gets its end mark is closed by a 600 ms timer; a job
+   that throws is logged and the rest still run (an uncaught error would take
+   the whole Ultralight renderer down). One `push-burst(view)` line per burst
+   says what it cost: the handlers between the marks, then the flush. */
+var HDBurstCensus = HDCensusFactory();
+var HDBurst = (function () {
+  var now = (window.performance && typeof performance.now === 'function')
+    ? function () { return performance.now(); } : function () { return Date.now(); };
+  var depth = 0, order = [], jobs = {}, timer = 0, t0 = 0, tag = '', census = false;
+  function flush(why) {
+    var keys = order, run = jobs;
+    order = []; jobs = {};
+    try { clearTimeout(timer); } catch (e) {}
+    var tEnd = now(), parts = [];
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i], j0 = now();
+      try { run[k](); }
+      catch (e) { try { if (window.HDPerf) HDPerf.log('push-burst(view): job "' + k + '" threw: ' + (e && e.message)); } catch (e2) {} }
+      parts.push(k + ' ' + (now() - j0).toFixed(1));
+    }
+    var cen = '';
+    if (census) { census = false; try { cen = ' | ' + HDBurstCensus.report(); } catch (e) {} }
+    try {
+      if (window.HDPerf) HDPerf.log('push-burst(view): ' + (tag || '?') + (why ? ' (' + why + ')' : '')
+        + ' | pushes ' + (tEnd - t0).toFixed(1) + ' ms' + cen
+        + ' | flush ' + (now() - tEnd).toFixed(1) + ' ms (' + keys.length + ') [' + parts.join(', ') + ']');
+    } catch (e) {}
+  }
+  function begin(why) {
+    if (depth === 0) {
+      t0 = now(); tag = String(why || '');
+      /* Per-handler times for this burst, unless the open or tab census holds
+         the wrappers (only one instance may be live — see HDTabCensus). */
+      try {
+        if (window.HDPerf && !HDOpenCensus.active() && !HDTabCensus.active()) { HDBurstCensus.start(); census = true; }
+      } catch (e) {}
+      try { clearTimeout(timer); } catch (e) {}
+      timer = setTimeout(function () { if (depth > 0) { depth = 0; flush('no end mark, closed after 600 ms'); } }, 600);
+    }
+    depth++;
+  }
+  function end() {
+    if (depth === 0) return;
+    if (--depth > 0) return;
+    flush('');
+  }
+  function defer(key, fn) {
+    if (depth === 0 || typeof fn !== 'function') return false;
+    if (!jobs[key]) order.push(key);
+    jobs[key] = fn;
+    return true;
+  }
+  /* The deck closed mid-burst: nothing may redraw into a hidden deck later. */
+  function reset() {
+    depth = 0; order = []; jobs = {};
+    try { clearTimeout(timer); } catch (e) {}
+    if (census) { census = false; try { HDBurstCensus.stop(); } catch (e) {} }
+  }
+  return { begin: begin, end: end, defer: defer, reset: reset, active: function () { return depth > 0; } };
+})();
+window.HDBurst = HDBurst;
+window.hdBurst = function (on, why) {
+  try { if (on) HDBurst.begin(why); else HDBurst.end(); } catch (e) {}
+};
+
 window.hdOpen = function (cfg) {
   // C++ re-pushes this same payload for LIVE updates (a phone icon assignment via
   // the portal poller). When the deck is already up, treat it as a data refresh:
@@ -5168,6 +5497,7 @@ window.hdOpen = function (cfg) {
      Mark the phase boundaries; the full timeline is flushed once, after first
      paint, and only for a real open (not a live data-refresh). */
   if (window.HDPerf) HDPerf.mark('open:enter');
+  if (window.HDPerf && !wasVisible) { try { HDOpenCensus.start(); } catch (e) {} }
   try {
     if (typeof cfg === 'string') cfg = JSON.parse(cfg);
     if (cfg && typeof cfg === 'object') {
@@ -5279,9 +5609,24 @@ window.hdOpen = function (cfg) {
     if (window.HDPerf) {
       var _tab = ui.tab;
       requestAnimationFrame(function () {
+        /* open-frame-split (2026-10-08): the rendered->painted gap was 126-233 ms
+           in-game while an offline Ultralight bench put style+layout of the open
+           toggle at 1-2 ms and a full repaint at ~3 ms. So the first rAF is
+           marked on its own: frame1 ~= style/layout/decode of THIS frame,
+           frame2-frame1 ~= the engine's frame cadence. Image counts ride along
+           because decoded bitmaps of a display:none subtree can be purged. */
+        if (window.HDPerf) HDPerf.mark('open:frame1');
         requestAnimationFrame(function () {
           try {
             HDPerf.mark('open:painted');
+            /* open-deferred-slices: tell C++ the first frame is up, so the parked
+               tab slices (roster, portraits, domains, containers …) can follow. */
+            toGame('hdPainted', '');
+            var _ov = document.getElementById('overlay');
+            var _imgs = _ov ? _ov.querySelectorAll('img') : [];
+            var _undec = 0;
+            for (var _k = 0; _k < _imgs.length; _k++) if (!_imgs[_k].complete) _undec++;
+            var _cen = ''; try { _cen = HDOpenCensus.report(); } catch (e) { _cen = 'handlers n/a'; }
             /* Mirror C++'s open-diag format so a pasted log is one timeline.
                parse   = config JSON.parse + state ingest
                render  = active-tab render + tab-fit + shelf (the synchronous
@@ -5293,8 +5638,18 @@ window.hdOpen = function (cfg) {
               + ' ms | render ' + HDPerf.fmt(HDPerf.between('open:parsed', 'open:rendered'))
               + ' ms | interactive ' + HDPerf.fmt(HDPerf.between('open:enter', 'open:rendered'))
               + ' ms | →paint ' + HDPerf.fmt(HDPerf.between('open:enter', 'open:painted'))
-              + ' ms | tab=' + _tab + ' entries=' + (state.entries ? state.entries.length : 0));
+              + ' ms [frame1 +' + HDPerf.fmt(HDPerf.between('open:rendered', 'open:frame1'))
+              + ' frame2 +' + HDPerf.fmt(HDPerf.between('open:frame1', 'open:painted'))
+              + ' imgs ' + _imgs.length + '/' + _undec + ' undecoded] ' + _cen
+              + ' | tab=' + _tab + ' entries=' + (state.entries ? state.entries.length : 0));
           } catch (e) {}
+          /* frame-diag + css-prefetch (2026-10-08): once the open has settled,
+             measure the engine's IDLE frame cadence (the floaty-mouse question:
+             a 70 ms rAF interval with nothing to draw is the game's frame rate
+             in a paused menu, not the deck's work), then prefetch the sheets of
+             the most-used tabs while nobody is waiting. */
+          setTimeout(function () { try { HDFrameDiag.sample('idle after open'); } catch (e) {} }, 1200);
+          setTimeout(function () { try { prefetchMostUsedTabCss(); } catch (e) {} }, 2600);
         });
       });
     }
@@ -5312,6 +5667,8 @@ window.hdClosed = function () {
      deep-open key — none of which come through requestClose. A pending edit
      must not depend on WHICH route closed the deck. */
   flushSave();
+  try { HDTabCensus.stop(); } catch (e) {}   // tab-diag: never pre-empt the next open's census
+  try { HDBurst.reset(); } catch (e) {}       // push-burst: same, and no redraw into a closed deck
   /* the ⤢ menu-size popover is body-level and fixed — without this it would
      outlive the panel and float over the game */
   var usp = $('uiscale-pop');
@@ -5758,6 +6115,7 @@ function init() {
     const n = $(id);
     if (!n) return;
     n.addEventListener('click', onTabsClick);
+    n.addEventListener('mouseover', onTabsHover);   // css-prefetch: the sheet starts loading on hover, lands before the click
     n.addEventListener('keydown', onTabsKey);
     n.addEventListener('focusout', onTabsFocusOut);
   });

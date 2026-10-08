@@ -16,7 +16,7 @@
       '<i class="hp-grid hp-grid-v hp-grid-a"></i><i class="hp-grid hp-grid-v hp-grid-b"></i>' +
       '<i class="hp-grid hp-grid-h hp-grid-a"></i><i class="hp-grid hp-grid-h hp-grid-b"></i>';
     document.body.appendChild(guide);
-    root.innerHTML = '<div class="hp-head"><span>PHOTO MODE</span><span id="hp-count"></span></div>' +
+    root.innerHTML = '<div class="hp-head"><span>PHOTO · F11 Studio</span><span id="hp-count"></span></div>' +
       '<div class="hp-framing"><div><span class="hp-label"><kbd>F6</kbd> Format</span><strong id="hp-format-value"></strong></div>' +
       '<div><span class="hp-label"><kbd>F10</kbd> Grid</span><strong id="hp-grid-value"></strong></div></div>' +
       '<div class="hp-title"><div><span class="hp-label">Editing light</span><strong id="hp-selected"></strong></div>' +
@@ -33,7 +33,7 @@
       '<span><kbd>Backspace</kbd><span id="hp-undo-label">Undo last</span></span></div>' +
       '<p id="hp-capacity-note" role="status" aria-live="polite"></p>' +
       '<div class="hp-foot"><span class="hp-shutter"><kbd>Enter</kbd> Take photo</span><span><kbd>Esc</kbd> Cancel</span></div>' +
-      '<div class="hp-preview-note"><kbd>F8</kbd><span>Hide controls &amp; guide. Lights stay on.</span></div>';
+      '<div class="hp-preview-note"><kbd>F8</kbd><span>Hide UI. Lights stay on. P toggles preview.</span></div>';
     return root;
   }
   function text(id, value) {
@@ -63,6 +63,7 @@
     var s;
     try { s = typeof payload === 'string' ? JSON.parse(payload) : payload; } catch (_) { return; }
     if (!s || typeof s !== 'object') return;
+    if(window.photoStudioFrame)window.photoStudioFrame(s);
     var el = need(), active = s.active === true;
     toggle(document.body, 'hp-active', active);
     toggle(el, 'hp-visible', active && s.visible === true);

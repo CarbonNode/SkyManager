@@ -95,7 +95,17 @@ option { background: #16161c; color: #e8e4da; }
 
 /* ---------- overlay & panel ---------- */
 
-body:not(.open) #overlay { display: none; }
+/* Closed = laid out but INVISIBLE, never display:none (open-warm-overlay, 2026-10-08).
+   With display:none every F7 open re-laid the whole document out from scratch
+   against ~2 MB of CSS, and HotkeyDeck.log showed exactly that: open-diag(view)
+   render ~40 ms but ->paint 169-276 ms on a 14900K at 1440p (the Nexus
+   "300 ms to 2 s to open" report scales that with CPU and screen). visibility
+   keeps the layout tree warm between opens, so an open is a style flip plus one
+   raster. The entrance animations are RESET here and restart when .open lands
+   (animation-name none -> fadeIn / riseIn), so the fade and rise are unchanged.
+   pointer-events:none because a hidden fixed overlay still covers the page. */
+body:not(.open) #overlay { visibility: hidden; pointer-events: none; animation: none; }
+body:not(.open) #panel   { animation: none; }
 
 #overlay {
   position: fixed; inset: 0;
@@ -106,7 +116,9 @@ body:not(.open) #overlay { display: none; }
      (Rober's widget-setup screenshot, 2026-08-18; same collapse as the wheel
      vignette). Big gradient surfaces are not safe in this engine. */
   background: rgba(8, 8, 11, 0.6);
-  animation: fadeIn 140ms ease;
+  /* 140 -> 90 ms (2026-10-08): the entrance plays AFTER the first paint, so it
+     is pure added latency on open; keep the fade, make it quick. */
+  animation: fadeIn 90ms ease;
 }
 
 #panel {
@@ -132,7 +144,7 @@ body:not(.open) #overlay { display: none; }
   transform: scale(var(--ui-scale, 1));
   transform-origin: center center;
   transition: transform 130ms ease;
-  animation: riseIn 160ms ease;
+  animation: riseIn 100ms ease;   /* 160 -> 100 ms, same reason as fadeIn above */
 }
 
 /* ---------- menu scale control (settings) ---------- */
@@ -11739,6 +11751,38 @@ button.ct-rail-rename { min-width: 32px; min-height: 30px; padding: 5px 4px; }
    inconsistency, not the separation. It sits in the flow now, with the group's
    own gap; the note under the panel already says what it opens. */
 .hm-eq-btn.hm-eq-wide { margin-left: 0; }
+/* Stance Wheel settings (2026-10-08, home-pane.js buildStanceInline). A stop
+   that would change nothing reads as unavailable, and the line under a group
+   says in a sentence what the marked stop MEANS — sentence case, body size,
+   so it is read as an explanation and not as another eyebrow label. */
+.hm-eq-btn:disabled { opacity: .45; cursor: default; }
+.hm-eq-btn:disabled:hover { border-color: #3a3a44; background: rgba(255, 255, 255, .03); }
+.hm-eq-lab.hm-sw-cap {
+  font-size: 16px; font-weight: 500; letter-spacing: 0; text-transform: none;
+  line-height: 1.4; color: #b9b2a2;
+}
+/* The panel spans the whole drawer, so its three groups sit SIDE BY SIDE and
+   fill it (a column of three left-aligned groups left two thirds of the panel
+   empty at 2560). Flex, not grid: no definite height, wraps to a column by
+   itself on a narrow deck. Couch-distance type and 44px controls throughout. */
+.hm-eq.hm-sw { flex-direction: row; flex-wrap: wrap; gap: 20px 28px; padding: 4px 2px; }
+.hm-sw > .hm-eq-grp { flex: 1 1 330px; min-width: 0; gap: 10px; }
+/* five stops in the speed group: the room to keep them on one line */
+.hm-sw > .hm-eq-grp:first-child { flex: 1.3 1 440px; }
+/* An open Config panel spans the whole row, and a card that is FIRST in its
+   row was left alone with two empty cells beside it (the Stance Wheel, 4th of
+   3 columns). Dense flow lets the next cards fill those cells; the panel still
+   lands directly under the row its card is in. */
+#hm-uie-body.hm-uie-expanded { grid-auto-flow: row dense; }
+.hm-sw > .hm-sw-wide { flex: 1 1 100%; }
+.hm-sw .hm-eq-lab { font-size: 14px; }
+.hm-sw .hm-eq-lab.hm-sw-cap { font-size: 16px; }
+.hm-sw .hm-eq-row { gap: 10px; }
+.hm-sw .hm-eq-btn { font-size: 16px; min-height: 44px; padding: 0 18px; box-sizing: border-box; white-space: nowrap; }
+.hm-sw .hm-uie-chord {
+  font-size: 16px; height: auto; min-height: 44px; padding: 0 16px;
+  color: #e5c877; border-color: rgba(201, 162, 75, .45);
+}
 .hm-eq-ic {
   width: 22px; height: 22px; flex: none; display: flex; align-items: center; justify-content: center;
   font-size: 14px; color: #c9a24b;

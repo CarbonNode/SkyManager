@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <string>
 
 // Bridge to the Follower Organizer fork's in-process Deck API.
@@ -28,4 +30,21 @@ namespace FollowerDeck
 
 	// Apply one mutation command; returns the envelope with fresh state.
 	std::string Apply(const std::string& cmdJson);
+
+	// The most recent StateJson() envelope, if it is younger than maxAgeMs and
+	// no Apply() has run since; otherwise a fresh StateJson() (which refills the
+	// cache). For PERIODIC readers only — the HUD roster tick and the court
+	// writer — that need roster identity (names, form ids), not this second's
+	// teammate flags.
+	//
+	// Why it exists (2026-10-07 smoothness pass): FO's state builder walks
+	// every loaded actor for every member stored as a base form, then the whole
+	// envelope is serialised and parsed back. The HUD ticker paid that ~50x a
+	// minute on the game thread: the perf census read "hud-roster 50x worst
+	// 15.9ms total 221ms", i.e. a frame-sized hitch about once a second.
+	//
+	// The pointer is stable until the next refresh, so a caller can compare it
+	// to the one it saw last time and skip re-deriving anything from it.
+	// Any thread; the fresh build itself still needs the main thread, like StateJson.
+	std::shared_ptr<const std::string> CachedState(std::int64_t maxAgeMs);
 }

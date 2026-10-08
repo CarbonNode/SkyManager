@@ -4,7 +4,7 @@ set_xmakever("2.8.2")
 includes("lib/commonlibsse-ng")
 
 set_project("HotkeyDeck")
-set_version("2.0.0")
+set_version("2.1.0")
 set_license("GPL-3.0")
 
 set_languages("c++23")
@@ -27,6 +27,7 @@ add_rules("mode.release")
 target("SkyManager")
     add_deps("commonlibsse-ng")
     add_syslinks("bcrypt") -- exact-binary guard for Custom Markers' live combat setting
+    add_syslinks("d3dcompiler") -- optional photo viewfinder shaders, compiled only when enabled
 
     add_rules("commonlibsse-ng.plugin", {
        name = "SkyManager",

@@ -16,6 +16,7 @@ namespace SKSE { class SerializationInterface; }
 //
 // Actions: "freeze" (toggle hold-in-place), "sit" (nearest chair/ground),
 //          "bed" (nearest bed/ground), "release-all",
+//          "attack-target" (Sic 'em), "hunt" / "hunt-minions",
 //          "grab" (Groovatron-style carry: the NPC rides the camera's look
 //          vector until dropped — toggle; sitting/sleeping NPCs are stood up
 //          first, and a frozen NPC stays frozen at the new spot).
@@ -96,6 +97,21 @@ namespace NpcActions
 	// teammates. outMsg is the line already put on screen — or, when the bolt
 	// is still flying, what the caller may show while it decides. Main thread only.
 	bool SicEmOne(std::uint32_t formId, std::string& outMsg);
+
+	// Standing orders (2026-10-05): a Sic 'em / Hunt outlives its first
+	// StartCombat. TickOrders re-issues it while the ally is not fighting,
+	// moves a Hunt on to the next enemy and forgets it on a timeout
+	// (sic_em_orders.h is the policy). Call from the main-thread tick with the
+	// same gameReady/paused pair TickConversations gets.
+	// CancelOrder: anything that tells her to STOP fighting (Disengage, Calm)
+	// must call it, or the tick sends her straight back in. 0 = every order.
+	// RevertOrders: load / new game.
+	//
+	// Run("hunt") / Run("hunt-minions"): no aiming - every follower and summon
+	// (or the summons alone) goes for the hostile nearest to them.
+	void TickOrders(bool gameReady, bool paused);
+	void CancelOrder(std::uint32_t formId);
+	void RevertOrders();
 
 	// Seat an actor on an EXPLICIT furniture reference through the alias engine
 	// (SitTarget package at the paired chair alias) — the ZaZ segment's

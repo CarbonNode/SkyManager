@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -42,6 +43,23 @@ namespace StanceWheel
 		constexpr const char*   kTomlCustom = "Data/SKSE/Plugins/StancesNG_custom.toml";
 		constexpr const char*   kExpansionPlugin = "Stances NG - Combat Expansion.esp";
 		constexpr const char*   kExpansionIcons = "Data/SKSE/Plugins/StancesNGCombatExpansion/Icons/";
+		// Stances NG's stance ABILITIES (mod-data.h BEAR/WOLF/HAWK_STANCE_ID) and
+		// its previous-stance global — the forms its UpdateStance(kNeutral) touches.
+		constexpr std::array<RE::FormID, 3> kStanceSpells{ 0x800, 0x801, 0x802 };
+		constexpr RE::FormID    kPreviousGlobal = 0x916;
+
+		// The FOURTH stance, Tarnished (Rober, 2026-10-07: "what about a new stance?
+		// With elden ring as an icon"). Stances NG has three stances baked into its
+		// DLL, so Tarnished is its own ESL in the same shape a Stances NG stance is
+		// (stance-manager.cpp: ApplyStance = RemoveAllStances + an ABILITY on the
+		// player): TarnishedStance.esp 0x801 is the ability, 0x800 its effect,
+		// which the "Stances NG - Tarnished" OAR submods test together with "no
+		// Stances NG stance effect". Being IN Tarnished = Stances NG at Neutral AND
+		// the player holding that ability. modding/tarnished-stance/plugin writes it.
+		constexpr int           kTarnished = 4;
+		constexpr const char*   kTarnishedPlugin = "TarnishedStance.esp";
+		constexpr RE::FormID    kTarnishedAbility = 0x801;
+		constexpr const char*   kTarnishedIcon = "Data/SKSE/Plugins/TarnishedStance/tarnished.png";
 
 		struct StanceDef
 		{
@@ -51,11 +69,12 @@ namespace StanceWheel
 			const char* tomlKey;
 			const char* shippedDefault;   // Settings.h — used only when no toml says otherwise
 		};
-		constexpr std::array<StanceDef, 4> kStances{ {
+		constexpr std::array<StanceDef, 5> kStances{ {
 			{ 0, "Neutral", "neutral", "sNeutralStanceKey", "alt+v" },
 			{ 1, "Bear", "bear", "sBearStanceKey", "shift+x" },
 			{ 2, "Wolf", "wolf", "sWolfStanceKey", "x" },
 			{ 3, "Hawk", "hawk", "sHawkStanceKey", "control+x" },
+			{ kTarnished, "Tarnished", "tarnished", nullptr, nullptr },   // no Stances NG key: the wheel IS its switch
 		} };
 
 		const StanceDef* Def(int id)
@@ -125,6 +144,8 @@ namespace StanceWheel
 
 		std::string Pattern(const Toml& t, const StanceDef& d)
 		{
+			if (!d.tomlKey)
+				return {};
 			const auto it = t.kv.find(d.tomlKey);
 			return it != t.kv.end() ? it->second : (t.found ? std::string() : std::string(d.shippedDefault));
 		}
@@ -332,6 +353,77 @@ namespace StanceWheel
 			return (v >= 0 && v <= 3) ? v : -1;
 		}
 
+		RE::TESGlobal* PreviousGlobal()
+		{
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			return dh ? dh->LookupForm<RE::TESGlobal>(kPreviousGlobal, kPlugin) : nullptr;
+		}
+
+		// ---------------------------------------------------- Tarnished --
+		RE::SpellItem* TarnishedAbility()
+		{
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			return dh ? dh->LookupForm<RE::SpellItem>(kTarnishedAbility, kTarnishedPlugin) : nullptr;
+		}
+
+		bool TarnishedOn()
+		{
+			auto* pc = RE::PlayerCharacter::GetSingleton();
+			auto* sp = TarnishedAbility();
+			return pc && sp && pc->HasSpell(sp);
+		}
+
+		void SetTarnished(bool on)
+		{
+			auto* pc = RE::PlayerCharacter::GetSingleton();
+			auto* sp = TarnishedAbility();
+			if (!pc || !sp || pc->HasSpell(sp) == on)
+				return;
+			if (on)
+				pc->AddSpell(sp);
+			else
+				pc->RemoveSpell(sp);
+		}
+
+		// The stance the player is actually IN, Tarnished included: 0-3 from
+		// Stances NG's global, 4 when it sits at Neutral under the Tarnished
+		// ability. A Stances NG stance pressed by its own key while Tarnished was
+		// up wins (the OAR submods require "no Stances NG stance effect"), and the
+		// leftover ability is dropped here so it cannot resurface on a later
+		// Neutral. MAIN THREAD.
+		int EffectiveStance()
+		{
+			const int cur = CurrentStance();
+			if (!TarnishedOn())
+				return cur;
+			if (cur == 0)
+				return kTarnished;
+			if (cur > 0) {
+				SetTarnished(false);
+				logger::info("stance-wheel: Tarnished dropped - Stances NG switched to {}", Def(cur)->name);   // marker: stance-wheel-tarnished-yield
+			}
+			return cur;
+		}
+
+		// Stances NG's own UpdateStance(kNeutral), step for step (stance-manager
+		// .cpp): remember the stance, remove its three stance abilities, set the
+		// current global to 0. Used only when its Neutral key is unbound; when it
+		// is bound the wheel presses that key instead, like every other pick.
+		void MirrorNeutral()
+		{
+			auto* pc = RE::PlayerCharacter::GetSingleton();
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			auto* cur = CurrentGlobal();
+			if (!pc || !dh || !cur)
+				return;
+			if (auto* prev = PreviousGlobal())
+				prev->value = cur->value;
+			for (auto id : kStanceSpells)
+				if (auto* sp = dh->LookupForm<RE::SpellItem>(id, kPlugin); sp && pc->HasSpell(sp))
+					pc->RemoveSpell(sp);
+			cur->value = 0.f;
+		}
+
 		bool ExpansionLoaded()
 		{
 			auto* dh = RE::TESDataHandler::GetSingleton();
@@ -372,13 +464,27 @@ namespace StanceWheel
 		}
 
 		// ------------------------------------------------------- icons ---
+		// Combat Expansion's glyphs mirror as stance-ngce-<slug>.png; Tarnished's
+		// own glyph (shipped inside its mod) as stance-tarnished.png.
+		std::string IconName(const char* slug)
+		{
+			return std::string(slug) == "tarnished" ? std::string("stance-tarnished.png")
+			                                         : std::string("stance-ngce-") + slug + ".png";
+		}
+
+		fs::path IconSource(const char* slug)
+		{
+			if (std::string(slug) == "tarnished")
+				return fs::path(kTarnishedIcon);
+			return fs::path(kExpansionIcons) / (std::string(slug) + ".png");
+		}
+
 		fs::path IconDest(const char* slug)
 		{
 			const auto root = IconBridge::ModFolderRoot();
 			if (root.empty())
 				return {};
-			return root / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "sh" /
-			       (std::string("stance-ngce-") + slug + ".png");
+			return root / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "sh" / IconName(slug);
 		}
 	}
 
@@ -398,6 +504,65 @@ namespace StanceWheel
 		return true;
 	}
 
+	bool TarnishedAvailable()
+	{
+		return TarnishedAbility() != nullptr;
+	}
+
+	namespace
+	{
+		void EnterTarnishedNow(int from)
+		{
+			SetTarnished(true);
+			if (TarnishedOn()) {
+				logger::info("stance-wheel: switched to Tarnished (from {})", from);   // marker: stance-wheel-tarnished
+			} else {
+				logger::warn("stance-wheel: Tarnished ability did not stick");
+				RE::DebugNotification("Stance Wheel: the Tarnished stance did not take");
+			}
+		}
+
+		// MAIN THREAD. Into the fourth stance: Stances NG to Neutral first (its own
+		// Neutral key when bound — the same press-and-verify every other pick uses;
+		// its own three Neutral steps mirrored when unbound), then the ability.
+		std::string PickTarnished(int cur)
+		{
+			if (!TarnishedAvailable()) {
+				RE::DebugNotification("Stance Wheel: TarnishedStance.esp is not loaded");
+				return "stance-wheel: refused - TarnishedStance.esp is not loaded";
+			}
+			if (cur <= 0) {
+				EnterTarnishedNow(cur);
+				return "stance-wheel: pick Tarnished (already Neutral)";
+			}
+			const Toml        t = LoadToml();
+			const std::string pat = Pattern(t, *Def(0));
+			std::vector<std::uint32_t> mods;
+			std::uint32_t     key = 0;
+			std::string       w;
+			if (pat.empty() || !ParseChord(pat, mods, key, w)) {
+				MirrorNeutral();
+				EnterTarnishedNow(cur);
+				return "stance-wheel: pick Tarnished (Neutral mirrored - " + (pat.empty() ? std::string("no Neutral key") : w) + ")";
+			}
+			std::thread([mods, key, cur]() {
+				using namespace std::chrono;
+				std::this_thread::sleep_for(milliseconds(60));
+				TapChord(mods, key);
+				std::this_thread::sleep_for(milliseconds(400));
+				SKSE::GetTaskInterface()->AddTask([cur]() {
+					if (CurrentStance() != 0) {
+						logger::info("stance-wheel: no switch to Tarnished - Stances NG stayed at {}", CurrentStance());
+						RE::DebugNotification("Stances NG did not drop to Neutral, so Tarnished was not applied");
+						return;
+					}
+					EnterTarnishedNow(cur);
+				});
+			}).detach();
+			return "stance-wheel: pick Tarnished (Neutral key, then the ability)";
+		}
+	}
+
 	std::string StateJson()
 	{
 		json        j;
@@ -408,22 +573,29 @@ namespace StanceWheel
 			return j.dump();
 		}
 		const Toml t = LoadToml();
-		j["current"] = CurrentStance();
+		const bool tarnished = TarnishedAvailable();
+		const Options opt = GetOptions();   // stance-wheel.json
+		j["size"] = opt.sizeVh;             // the wheel's diameter, vh
+		j["slow"] = opt.slow;               // the time multiplier while it is up (1 = not slowed)
+		j["current"] = EffectiveStance();
+		j["tarnished"] = tarnished;
 		j["cycling"] = Cycling(t);
 		j["expansion"] = ExpansionLoaded();
 		j["hand"] = HandKind();
 		json list = json::array();
 		for (const auto& d : kStances) {
+			if (d.id == kTarnished && !tarnished)
+				continue;
 			const std::string p = Pattern(t, d);
 			list.push_back({ { "id", d.id }, { "name", d.name }, { "key", p.empty() ? "" : Pretty(p) } });
 		}
 		j["stances"] = list;
 		json icons = json::object();
-		for (const char* slug : { "bear", "wolf", "hawk" }) {
+		for (const char* slug : { "bear", "wolf", "hawk", "tarnished" }) {
 			std::error_code ec;
 			const auto      dest = IconDest(slug);
 			if (!dest.empty() && fs::exists(dest, ec))
-				icons[slug] = std::string("icons/sh/stance-ngce-") + slug + ".png";
+				icons[slug] = "icons/sh/" + IconName(slug);
 		}
 		j["icons"] = icons;
 		std::string msg;
@@ -432,8 +604,101 @@ namespace StanceWheel
 		else if (j["expansion"].get<bool>() && std::string(j["hand"].get<std::string>()) != "melee" &&
 				 j["current"].get<int>() == 0)
 			msg = "Bow or spells in hand: Combat Expansion holds Neutral until a melee weapon is out";
+		else if (j["current"].get<int>() == kTarnished && std::string(j["hand"].get<std::string>()) != "melee")
+			msg = "Tarnished has no Elden Ring set for a bow or spells - your usual animations play";
 		j["msg"] = msg;
 		return j.dump();
+	}
+
+	// ---- settings sidecar ----------------------------------------------------
+	namespace
+	{
+		constexpr float kDefSlow = 0.2f, kMinSlow = 0.05f, kMaxSlow = 1.0f;
+		constexpr int   kDefSize = 64, kMinSize = 40, kMaxSize = 80;
+
+		std::mutex g_optMutex;
+		Options    g_opt;
+		bool       g_optLoaded = false;
+
+		fs::path OptionsPath()
+		{
+			return fs::path("Data") / "SKSE" / "Plugins" / "HotkeyDeck" / "stance-wheel.json";
+		}
+
+		Options Clamped(Options o)
+		{
+			if (!(o.slow >= kMinSlow))   // also catches NaN
+				o.slow = kMinSlow;
+			if (o.slow > kMaxSlow)
+				o.slow = kMaxSlow;
+			o.sizeVh = (std::max)(kMinSize, (std::min)(kMaxSize, o.sizeVh));
+			return o;
+		}
+
+		// Caller holds g_optMutex.
+		void LoadOptionsLocked()
+		{
+			if (g_optLoaded)
+				return;
+			g_optLoaded = true;
+			std::ifstream in(OptionsPath(), std::ios::binary);
+			if (!in)
+				return;
+			const auto j = json::parse(in, nullptr, false);
+			if (j.is_discarded() || !j.is_object())
+				return;
+			Options o;
+			if (j.contains("slow") && j["slow"].is_number())
+				o.slow = j["slow"].get<float>();
+			if (j.contains("size") && j["size"].is_number())
+				o.sizeVh = static_cast<int>(j["size"].get<double>() + 0.5);
+			g_opt = Clamped(o);
+			logger::info("stance-wheel: options loaded (time x{}, size {}vh)", g_opt.slow, g_opt.sizeVh);   // marker: stance-wheel-options
+		}
+	}
+
+	Options GetOptions()
+	{
+		std::lock_guard l(g_optMutex);
+		LoadOptionsLocked();
+		return g_opt;
+	}
+
+	std::string OptionsJson()
+	{
+		const Options o = GetOptions();
+		return json{
+			{ "slow", o.slow }, { "size", o.sizeVh },
+			{ "defSlow", kDefSlow }, { "defSize", kDefSize },
+			{ "minSlow", kMinSlow }, { "maxSlow", kMaxSlow },
+			{ "minSize", kMinSize }, { "maxSize", kMaxSize },
+		}.dump();
+	}
+
+	std::string SetOptions(const std::string& requestJson)
+	{
+		const auto j = json::parse(requestJson, nullptr, false);
+		if (!j.is_discarded() && j.is_object()) {
+			std::lock_guard l(g_optMutex);
+			LoadOptionsLocked();
+			Options o = g_opt;
+			if (j.value("reset", false))
+				o = Options{};
+			if (j.contains("slow") && j["slow"].is_number())
+				o.slow = j["slow"].get<float>();
+			if (j.contains("size") && j["size"].is_number())
+				o.sizeVh = static_cast<int>(j["size"].get<double>() + 0.5);
+			g_opt = Clamped(o);
+			std::error_code ec;
+			fs::create_directories(OptionsPath().parent_path(), ec);
+			std::ofstream out(OptionsPath(), std::ios::binary | std::ios::trunc);
+			if (out)
+				out << json{ { "slow", g_opt.slow }, { "size", g_opt.sizeVh } }.dump(2);
+			else
+				logger::warn("stance-wheel: could not write stance-wheel.json");
+			logger::info("stance-wheel: options saved (time x{}, size {}vh)", g_opt.slow, g_opt.sizeVh);
+		}
+		return OptionsJson();
 	}
 
 	std::string Pick(int stance)
@@ -447,8 +712,22 @@ namespace StanceWheel
 			return "stance-wheel: " + why;
 		}
 		const int cur = CurrentStance();
-		if (cur == stance)
+		const int eff = EffectiveStance();
+		if (eff == stance)
 			return std::string("stance-wheel: already in ") + target->name;
+
+		if (stance == kTarnished)
+			return PickTarnished(cur);
+
+		// Leaving Tarnished: drop its ability first, so the Stances NG stance the
+		// key brings is the only one on. Tarnished -> Neutral needs no key at all.
+		if (eff == kTarnished) {
+			SetTarnished(false);
+			if (stance == 0 && cur == 0) {
+				logger::info("stance-wheel: switched to Neutral (left Tarnished)");   // marker: stance-wheel-tarnished-off
+				return "stance-wheel: left Tarnished for Neutral";
+			}
+		}
 
 		const Toml t = LoadToml();
 
@@ -538,11 +817,11 @@ namespace StanceWheel
 	{
 		std::thread([]() {
 			std::size_t copied = 0, have = 0;
-			for (const char* slug : { "bear", "wolf", "hawk" }) {
+			for (const char* slug : { "bear", "wolf", "hawk", "tarnished" }) {
 				std::error_code ec;
-				const fs::path  src = fs::path(kExpansionIcons) / (std::string(slug) + ".png");
+				const fs::path  src = IconSource(slug);
 				if (!fs::exists(src, ec))
-					continue;   // Combat Expansion not installed: the wheel draws emblems
+					continue;   // its mod not installed: the wheel draws the stance's initial
 				const fs::path dest = IconDest(slug);
 				if (dest.empty() || !fs::exists(dest.parent_path(), ec))
 					continue;   // never CREATE the folder mid-session (the MO2 VFS law)

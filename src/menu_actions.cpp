@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <iterator>
 #include <string>
 #include <thread>
@@ -352,12 +353,151 @@ namespace MenuActions
 				TapChord(keys);
 			}).detach();
 		}
+
+		// NPA - NPC Preset Applier: its window opens on its own hotkey, which
+		// NPA.ini [UI] Hotkey states as "Shift+N" / "Ctrl+F7" / "Alt+Home" (a
+		// letter, a number, F1-F12, Home/End/Insert/Delete/PageUp/PageDown, with
+		// Shift/Ctrl/Alt in front, joined by +). Read it live so a rebind there is
+		// honored; refuse rather than guess when NPA is absent or the key is one
+		// we cannot name. NPA picks the NPC under the crosshair at the press, so
+		// whoever you were aiming at when the deck opened is preselected.
+		void OpenNpa()
+		{
+			if (!NpaLoaded()) {
+				logger::info("menu-open: npa refused - NPA.dll is not loaded");
+				Notify("NPA (NPC Preset Applier) isn't installed in this profile.");
+				return;
+			}
+			std::string chord = "Shift+N";   // NPA's shipped default
+			const std::string ini = ReadText("Data/SKSE/Plugins/NPA.ini");
+			std::string v;
+			if (!ini.empty() && IniGet(ini, "Hotkey", v) && !v.empty())
+				chord = v;
+			std::vector<std::uint32_t> keys;   // modifiers first, main key last
+			std::uint32_t main = 0;
+			std::size_t pos = 0;
+			while (pos <= chord.size()) {
+				const std::size_t plus = chord.find('+', pos);
+				std::string tok = Trim(chord.substr(pos, plus == std::string::npos ? std::string::npos : plus - pos));
+				std::transform(tok.begin(), tok.end(), tok.begin(),
+					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+				if (tok == "shift")
+					keys.push_back(0x2A);
+				else if (tok == "ctrl" || tok == "control")
+					keys.push_back(0x1D);
+				else if (tok == "alt")
+					keys.push_back(0x38);
+				else if (!tok.empty()) {
+					const std::uint32_t dik = KeyNameToDik(tok);
+					if (!dik || main) {
+						logger::warn("menu-open: npa Hotkey '{}' unmapped - refusing", chord);
+						Notify("NPA's key (" + chord + ") isn't one the deck can press - use NPA's own key.");
+						return;
+					}
+					main = dik;
+				}
+				if (plus == std::string::npos)
+					break;
+				pos = plus + 1;
+			}
+			if (!main) {
+				logger::warn("menu-open: npa Hotkey '{}' has no main key - refusing", chord);
+				Notify("NPA's key (" + chord + ") isn't one the deck can press - use NPA's own key.");
+				return;
+			}
+			keys.push_back(main);
+			logger::info("menu-open: npa scan {} ({})", chord, ini.empty() ? "NPA.ini not found, shipped default" : "from NPA.ini");
+			std::thread([keys]() {
+				using namespace std::chrono;
+				// The deck's close must land and the game unpause before NPA's
+				// listener sees a gameplay key (the FireAndClose settle).
+				std::this_thread::sleep_for(milliseconds(250));
+				// Modifiers held a beat longer than one frame (frame generation
+				// halves real frames), then the key held long enough to be seen
+				// - the Stance Wheel's proven chord timing.
+				for (std::size_t i = 0; i + 1 < keys.size(); ++i)
+					SendScan(keys[i], true);
+				if (keys.size() > 1)
+					std::this_thread::sleep_for(milliseconds(45));
+				SendScan(keys.back(), true);
+				std::this_thread::sleep_for(milliseconds(70));
+				SendScan(keys.back(), false);
+				if (keys.size() > 1)
+					std::this_thread::sleep_for(milliseconds(25));
+				for (std::size_t i = keys.size() - 1; i-- > 0;)
+					SendScan(keys[i], false);
+			}).detach();
+		}
+
+		// The Manipulator 9001 (ObjectManipulator.dll): Home toggles its edit
+		// mode. In v.2 that key is `Settings::kKeyToggleEditMode = kHome`, a
+		// constexpr with no file behind it, so there is nothing to read live
+		// yet; when the author ships the JSON settings file he announces in
+		// Settings.h, read the key from there and keep Home as the fallback.
+		// Its handler ignores Home while a game menu is up (ui->GameIsPaused()),
+		// which is why this waits for the deck's close to land and the game to
+		// unpause before pressing, and why it is a TOGGLE: pressed in edit mode
+		// it leaves edit mode (its own Esc does too).
+		void OpenManipulator()
+		{
+			if (!ManipulatorLoaded()) {
+				logger::info("menu-open: manipulator refused - ObjectManipulator.dll is not loaded");
+				Notify("The Manipulator 9001 isn't installed in this profile.");
+				return;
+			}
+			const std::uint32_t key = 0xC7;  // DIK_HOME, extended set
+			logger::info("menu-open: manipulator scan {:#x} (Home, hardcoded in its v.2 Settings.h - no config file)", key);
+			std::thread([key]() {
+				using namespace std::chrono;
+				// FireAndClose settle: the deck closed, the game unpaused.
+				std::this_thread::sleep_for(milliseconds(250));
+				// Held long enough to survive frame generation's halved real
+				// frames (the Stance Wheel / NPA timing).
+				SendScan(key, true);
+				std::this_thread::sleep_for(milliseconds(70));
+				SendScan(key, false);
+			}).detach();
+		}
+	}
+
+	bool NpaLoaded()
+	{
+		return GetModuleHandleW(L"NPA.dll") != nullptr;
+	}
+
+	bool ManipulatorLoaded()
+	{
+		return GetModuleHandleW(L"ObjectManipulator.dll") != nullptr;
+	}
+
+	// Same file and same keys OpenSmf reads, so the words match what it presses.
+	std::string SmfToggleHint()
+	{
+		std::string       key = "F1", mode = "doublepress";
+		const std::string ini = ReadText("Data/SKSE/Plugins/SKSEMenuFramework.ini");
+		std::string       v;
+		if (!ini.empty()) {
+			if (IniGet(ini, "ToggleKey", v) && !v.empty())
+				key = v;
+			if (IniGet(ini, "ToggleMode", v) && !v.empty())
+				mode = v;
+		}
+		std::transform(key.begin(), key.end(), key.begin(),
+			[](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+		std::transform(mode.begin(), mode.end(), mode.begin(),
+			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		if (mode == "off")
+			return {};
+		if (mode == "hold")
+			return "hold " + key;
+		return mode == "singlepress" ? key : key + " twice";
 	}
 
 	bool IsAction(const std::string& a)
 	{
 		return a == "open-prisma-mcm" || a == "open-smf" ||
-		       a == "open-community-shaders" || a == "open-ied";
+		       a == "open-community-shaders" || a == "open-ied" || a == "open-npa" ||
+		       a == "open-manipulator";
 	}
 
 	void Fire(const std::string& a)
@@ -370,5 +510,9 @@ namespace MenuActions
 			OpenCommunityShaders();
 		else if (a == "open-ied")
 			OpenIed();
+		else if (a == "open-npa")
+			OpenNpa();
+		else if (a == "open-manipulator")
+			OpenManipulator();
 	}
 }

@@ -513,17 +513,46 @@
   function glyphBox(cls, art, painted, size) {
     const fallback = svgIcon(art, size);
     const box = h('span', { class: cls }, fallback);
-    if (!painted) return box;
+    const img = paintedImg(painted, size,
+      function () { fallback.style.visibility = 'hidden'; },
+      function () { fallback.style.visibility = ''; });
+    if (img) box.appendChild(img);
+    return box;
+  }
+  /* One painted glyph, tried down a CHAIN of file names: `painted` is a name or
+     a list of them, first that loads wins. The readout chips ask for the
+     small-size cut first (hudCut) and fall through to the full-size art, so a
+     view deployed ahead of its icons still draws exactly what it drew before.
+     A chain that runs dry removes the <img> and reports it — the caller decides
+     what stands in (an inline vector, a "?"). */
+  function paintedImg(painted, size, onLoad, onFail) {
+    const names = (Array.isArray(painted) ? painted : [painted]).filter(Boolean);
+    if (!names.length) return null;
     const img = document.createElement('img');
     img.className = 'hud-glyph-img';
     img.alt = ''; img.draggable = false;
     img.width = size; img.height = size;
-    img.onload = function () { fallback.style.visibility = 'hidden'; };
-    img.onerror = function () { fallback.style.visibility = ''; if (img.parentNode) img.parentNode.removeChild(img); };
-    img.src = 'icons/custom/' + painted + '.png';   // plain path — no ?v= query
-    box.appendChild(img);
-    return box;
+    let at = 0;
+    img.onload = function () { if (onLoad) onLoad(img); };
+    img.onerror = function () {
+      at++;
+      if (at < names.length) { img.src = 'icons/custom/' + names[at] + '.png'; return; }
+      if (img.parentNode) img.parentNode.removeChild(img);
+      if (onFail) onFail(img);
+    };
+    img.src = 'icons/custom/' + names[0] + '.png';   // plain path — no ?v= query
+    return img;
   }
+  /* READOUT GLYPH METRICS (2026-10-06). The painted set is fine-line art on a
+     256px canvas; a readout chip draws it at ~30px, where a 5px source stroke
+     is 0.6 of a pixel — Rober, with a screenshot: "low res, glitchy, hard to
+     read". Two halves to the fix: the box is 32px (hud.css --ro-ico owns the
+     real size; this number only seeds the attributes), and the chips ask for
+     `<name>-hud.png`, a second cut of the same art with the ink cropped to
+     fill the box, the strokes thickened, and resampled to exactly 2x the box
+     (tools/make_hud_glyphs.py). */
+  const RO_ICO = 32;
+  function hudCut(name) { return name ? [name + '-hud', name] : ''; }
 
   /* ======================================================================
      WIDGET CONFIG — what shows. Defensive defaults; C++ owns the durable copy.
@@ -804,6 +833,9 @@
       if (detOn(k)) {
         const wrap = detWrap(k, true);
         if (node.parentNode !== wrap) wrap.appendChild(node);
+        /* a wrap that holds ONE READOUT LINE wears the readout plate (hud.css
+           .hud-det-ro) — tighter, more opaque, sized for the 22px numerals */
+        setClass(wrap, 'hud-det-ro', node.classList.contains('hud-ro-one'));
         setClass(wrap, 'hud-clock-bare', k === 'roTime' && wcfg.ornateClock && !wcfg.clockFrame);
         const d = wdet[k];
         placeFree(wrap, { x: d.x, y: d.y, anchorH: d.anchorH, anchorV: d.anchorV,
@@ -1433,9 +1465,183 @@
     }
   }
 
+  /* ======================================================================
+     READOUT METRICS v2 — and the one-time re-flow that goes with it
+     (2026-10-06). Rober, with a screenshot of the gold / carry / clock /
+     lockpick chips: "widgets on screen need improvement, low res, glitchy,
+     hard to read". The readout family grew: 17px numerals -> 22px, a 22px
+     glyph -> 32px, a see-through plate -> a near-opaque one (hud.css, the
+     --ro-* tokens).
+
+     Bigger chips at the SAME saved x/y would overlap: he had packed four of
+     them into a row with ~8px between them. A dragged position is sacred
+     (declumpFresh's law) — so this does not re-pack anything. It preserves
+     what he authored, which is the GAPS: every pair of floated widgets that
+     sat next to each other (same lane, <= METRICS_NEAR px apart) keeps exactly
+     the gap it had, the later one sliding right / down by however much its
+     neighbour grew. Widgets that were not neighbours do not move at all.
+
+     How the old size is known: `body.hud-metrics-v1` restores the old tokens,
+     so a config that has not been migrated (hud.metrics != 2) is DRAWN in the
+     old metrics — exactly as it looked the day before — until the measurement
+     is taken. Then the class comes off, the new rects are read, the shifts are
+     applied and saved, and hud.metrics = 2 rides the `hud` blob (C++ stores it
+     verbatim; no DLL change). It runs once per config, never in edit mode and
+     never while a menu hides the widgets.
+
+     The measurement is split across two beats ON PURPOSE (old rects, class
+     off, then new rects on a timer / the next live tick): the ultralight-probe
+     README records this engine serving stale style after a same-turn class
+     change, and a re-flow computed from two identical rect sets would mark
+     itself done having moved nothing. */
+  /* v3, the same evening: "thats better check all widgets" — every OTHER block
+     (vitals, resistances, effects, equipment, pins, collections, allies, mount,
+     the slot cards, loot, season) grew by ~1.3x too, in hud.css under
+     `body.hud-m3`. So there are three authored-in states, and metricsDress()
+     draws whichever one a layout was made in:
+        1  the original numbers            body.hud-metrics-v1
+        2  new readouts, original blocks   (neither class)
+        3  current                         body.hud-m3
+     A layout stamped 1 or 2 is re-flowed straight to 3 in one pass. */
+  const METRICS_V = 3;
+  const METRICS_NEAR = 48;
+  let metricsV = METRICS_V;       // a config with no floated widgets has nothing to migrate
+  let metricsLatched = false;     // this session already migrated: a stale push must not re-arm it
+  let metricsSig = '', metricsStable = 0, metricsOld = null, metricsT = 0;
+  function metricsDress(v) {
+    setClass(document.body, 'hud-metrics-v1', v < 2);
+    setClass(document.body, 'hud-m3', v >= 3);
+  }
+  metricsDress(metricsV);
+  function takeMetrics(hudPrefs) {
+    if (metricsLatched || metricsOld) return;
+    /* Only a blob that SAYS something moves the verdict: a seeded layout with
+       no v2 stamp is an old one; a blob with neither key (a partial push)
+       leaves it alone. A layout that was never seeded has nothing to re-flow —
+       it seeds straight into the new metrics and stamps itself v2 on save. */
+    if (hudPrefs.metrics === METRICS_V) metricsV = METRICS_V;
+    else if (hudPrefs.metrics === 2) metricsV = 2;
+    else if (hudPrefs.detSeeded) metricsV = 1;
+    metricsDress(metricsV);
+  }
+  /* Everything that owns a screen position and can grow: the floated stack
+     blocks, the linked slot group, and each free widget outside that group.
+     (Not the follower strip: its sizes did not change, and it has its own
+     resize handle.) */
+  function metricsUnits() {
+    const out = [];
+    for (const k of DET_KEYS) if (detOn(k)) out.push({ k: k, node: detWrap(k, false), w: wdet[k] });
+    if (wgrp.locked) out.push({ k: 'fwgrp', node: document.getElementById('hud-fw-grp'), w: wgrp, grp: true });
+    for (const k of FREE_KEYS) {
+      if (wgrp.locked && grpHas(k)) continue;            // rides the group
+      out.push({ k: 'fw:' + k, node: elFree[k], w: wfree[k], free: true });
+    }
+    return out.filter(function (u) { return u.node && u.w; });
+  }
+  function metricsRect(wrap) {
+    if (!wrap || wrap.classList.contains('is-off') || !wrap.getBoundingClientRect) return null;
+    const r = wrap.getBoundingClientRect();
+    return (r.width > 0 && r.height > 0) ? { l: r.left, t: r.top, r: r.right, b: r.bottom } : null;
+  }
+  /* PURE. items: [{old:{l,t,r,b}, now:{l,t,r,b}}] -> writes dx/dy on each.
+     Neighbours keep their old gap; a group pushed past a screen edge slides
+     back as one, as far as its own leading edge allows. */
+  function metricsShifts(items, vw, vh) {
+    const n = items.length;
+    const parent = items.map(function (_, i) { return i; });
+    const find = function (i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+    items.forEach(function (it, i) { it.dx = 0; it.dy = 0; it.i = i; });
+    const lane = function (a0, a1, b0, b1) { return Math.min(a1, b1) - Math.max(a0, b0) > 4; };
+    const pass = function (lo, hi, lo2, hi2, key) {
+      const order = items.slice().sort(function (a, b) { return a.old[lo] - b.old[lo]; });
+      for (let j = 0; j < n; j++) for (let i = 0; i < j; i++) {
+        const a = order[i], b = order[j];
+        if (!lane(a.old[lo2], a.old[hi2], b.old[lo2], b.old[hi2])) continue;
+        const gap = b.old[lo] - a.old[hi];
+        if (gap < -4 || gap > METRICS_NEAR) continue;   // stacked on purpose, or not neighbours
+        parent[find(a.i)] = find(b.i);
+        const want = a[key] + (a.now[hi] - b.now[lo]) + gap;
+        if (want > b[key]) b[key] = want;
+      }
+    };
+    pass('l', 'r', 't', 'b', 'dx');
+    pass('t', 'b', 'l', 'r', 'dy');
+    const groups = {};
+    items.forEach(function (it) { const g = find(it.i); (groups[g] = groups[g] || []).push(it); });
+    for (const g in groups) {
+      const mem = groups[g];
+      const grew = mem.some(function (it) {
+        return Math.abs((it.now.r - it.now.l) - (it.old.r - it.old.l)) > 0.5 ||
+               Math.abs((it.now.b - it.now.t) - (it.old.b - it.old.t)) > 0.5;
+      });
+      if (!grew) continue;                               // untouched: where he put it is where it stays
+      const edge = function (lo, hi, key, max) {
+        let far = -1e9, near = 1e9;
+        for (const it of mem) { far = Math.max(far, it.now[hi] + it[key]); near = Math.min(near, it.now[lo] + it[key]); }
+        const over = far - (max - 4);
+        if (over <= 0) return;
+        const back = Math.min(over, Math.max(0, near - 4));
+        for (const it of mem) it[key] -= back;
+      };
+      edge('l', 'r', 'dx', vw);
+      edge('t', 'b', 'dy', vh);
+    }
+    return items;
+  }
+  function metricsFinish() {
+    if (metricsT) { clearTimeout(metricsT); metricsT = 0; }
+    const before = metricsOld;
+    if (!before) return;
+    metricsOld = null;
+    const items = [];
+    for (const u of metricsUnits()) {
+      const now = before[u.k] ? metricsRect(u.node) : null;
+      if (now) items.push({ k: u.k, u: u, old: before[u.k], now: now });
+    }
+    metricsShifts(items, window.innerWidth || 1920, window.innerHeight || 1080);
+    let moved = 0;
+    for (const it of items) {
+      const dx = Math.round(it.dx), dy = Math.round(it.dy);
+      if (!dx && !dy) continue;
+      const w = it.u.w;
+      w.x = Math.round(num(w.x, 0) + (w.anchorH === 'right' ? -dx : dx));
+      w.y = Math.round(num(w.y, 0) + (w.anchorV === 'bottom' ? -dy : dy));
+      /* each kind is placed the way its own code places it: a stack block and
+         the group are opaque plates, a free widget carries its own opacity */
+      if (it.u.free || it.u.grp) placeFree(it.u.node, w);
+      else placeFree(it.u.node, { x: w.x, y: w.y, anchorH: w.anchorH, anchorV: w.anchorV,
+        scale: num(w.scale, 1), opacity: 1 });
+      moved++;
+    }
+    const from = metricsV;
+    metricsV = METRICS_V; metricsLatched = true;
+    saveWidgetCfg();
+    try { toGame('hudLog', 'hud-metrics: v' + from + ' -> v' + METRICS_V + ', re-flowed ' + moved + ' of ' + items.length + ' placed widgets'); } catch (e) {}
+  }
+  /* Called on every live tick; a no-op the moment the config is on v2. */
+  function metricsTick() {
+    if (metricsV >= METRICS_V) return;
+    if (metricsOld) { metricsFinish(); return; }         // the timer did not fire: finish on this beat
+    if (editing || menusOpen) return;
+    if (!haveTime() && !haveGold()) return;              // no save loaded — nothing is drawn yet
+    const old = {}, keys = [];
+    for (const u of metricsUnits()) {
+      const r = metricsRect(u.node);
+      if (r) { old[u.k] = r; keys.push(u.k); }
+    }
+    const sig = keys.join(',');
+    if (sig !== metricsSig) { metricsSig = sig; metricsStable = 0; return; }
+    if (++metricsStable < 3) return;                     // let the drawn set settle first
+    metricsOld = old;
+    metricsDress(METRICS_V);
+    metricsT = setTimeout(metricsFinish, 80);
+  }
+
   /* harness hook — the float chips live behind edit mode + the ⚙ card, which
      a headless run cannot click through reliably */
-  window.__hudDet = { float: floatBlock, on: detOn, seed: seedDetach, grp: wgrp, applyGroup: applyGroup,
+  window.__hudDet = {
+    metricsShifts: metricsShifts, metricsTick: metricsTick, metricsFinish: metricsFinish,
+    get metrics() { return metricsV; }, float: floatBlock, on: detOn, seed: seedDetach, grp: wgrp, applyGroup: applyGroup,
     /* harness only: drop a stored placement so the seed path can be re-run */
     forget: function (k) { delete wdet[k]; }, needsSeed: needsSeed,
     /* the merged equipped widget — the harness drives master/orientation/size
@@ -1974,8 +2180,8 @@
     const night = isNight();
     const row = h('span', { class: 'hud-ro' + (id === 'ctx' ? ' hud-ctx' : ''), 'data-ro': id });
     let art, painted = '';
-    if (id === 'gold') { art = READOUT_ART.gold; painted = PAINTED.ro.gold; }
-    else if (id === 'carry') { art = READOUT_ART.carry; painted = PAINTED.ro.carry; }
+    if (id === 'gold') { art = READOUT_ART.gold; painted = hudCut(PAINTED.ro.gold); }
+    else if (id === 'carry') { art = READOUT_ART.carry; painted = hudCut(PAINTED.ro.carry); }
     else if (id === 'time') { art = night ? READOUT_ART.moon : READOUT_ART.sun; }
     else if (id === 'lockpicks') { painted = 'wg-lockpick'; }
     else if (id === 'weatherOnly') {
@@ -1987,7 +2193,7 @@
     }
     else if (ctxKind()[0] === 'p') {
       const k = placeKind((live.place || {}).kind, true);
-      art = PLACE_ART[k]; painted = PAINTED.loc[k] || '';
+      art = PLACE_ART[k]; painted = hudCut(PAINTED.loc[k] || '');
     } else {
       const k = weatherKind((live.weather || {}).kind);
       art = k === 'clear' && night ? READOUT_ART.moon : WEATHER_ART[k];
@@ -2010,7 +2216,7 @@
           const img = document.createElement('img');
           img.className = 'hud-pot-img';
           img.alt = ''; img.draggable = false;
-          img.width = 18; img.height = 18;
+          img.width = 24; img.height = 24;       // hud.css --pot-ico owns the drawn size
           img.onerror = function () { if (img.parentNode) img.parentNode.removeChild(img); mark.style.display = ''; };
           img.src = 'icons/custom/' + d[4] + '.png';
           mark.style.display = 'none';
@@ -2024,13 +2230,10 @@
     if (id === 'lockpicks') {
       // Transparent lockpick art must not sit on top of the gold-coins fallback.
       const glyph = h('span', { class: 'hud-ro-ico' });
-      const img = document.createElement('img');
-      img.className = 'hud-glyph-img'; img.alt = 'Lockpicks'; img.draggable = false;
-      img.width = 22; img.height = 22;
-      img.onerror = function () { glyph.textContent = '?'; };
-      img.src = 'icons/custom/' + painted + '.png';
+      const img = paintedImg(hudCut(painted), RO_ICO, null, function () { glyph.textContent = '?'; });
+      img.alt = 'Lockpicks';
       glyph.appendChild(img); row.appendChild(glyph);
-    } else row.appendChild(glyphBox('hud-ro-ico', art, painted, 22));
+    } else row.appendChild(glyphBox('hud-ro-ico', art, painted, RO_ICO));
     const value = h('b', { class: 'hud-ro-v' });
     if (id === 'weatherOnly') value.appendChild(h('span', { class: 'hud-weather-label' }));
     row.appendChild(value);
@@ -2137,9 +2340,21 @@
         const max = isNum(c.max) && c.max >= 0 ? c.max : null;
         setClass(row, 'is-unknown', !isNum(cur));
         setClass(row, 'is-over', isNum(cur) && isNum(max) && cur > max);
-        v.innerHTML = '';
-        v.appendChild(document.createTextNode(isNum(cur) ? comma(cur) : '?'));
-        if (isNum(max)) v.appendChild(h('i', null, ' / ' + comma(max)));
+        /* Written IN PLACE. This used to empty the value and rebuild both
+           nodes on every live tick — a layout + repaint of the chip several
+           times a second for a number that had not changed, on a view that is
+           never off screen (part of the 2026-10-06 "glitchy" report). */
+        let curNode = v.firstChild, maxNode = v.lastChild;
+        if (!curNode || curNode.nodeType !== 3 || !maxNode || maxNode === curNode) {
+          v.textContent = '';
+          curNode = document.createTextNode('');
+          maxNode = h('i', null, '');
+          v.appendChild(curNode); v.appendChild(maxNode);
+        }
+        const curText = isNum(cur) ? comma(cur) : '?';
+        const maxText = isNum(max) ? ' / ' + comma(max) : '';
+        if (curNode.nodeValue !== curText) curNode.nodeValue = curText;
+        setText(maxNode, maxText);
       } else if (id === 'pots') {
         for (const chip of row.children) {
           const k = chip.getAttribute && chip.getAttribute('data-pot');
@@ -2955,7 +3170,7 @@
     if (!text && !editing) { host.innerHTML = ''; return; }
     if (!host.firstChild) {
       const row = h('span', { class:'hud-ro hud-calendar' });
-      row.appendChild(glyphBox('hud-ro-ico', READOUT_ART.sun, '', 22));
+      row.appendChild(glyphBox('hud-ro-ico', READOUT_ART.sun, '', RO_ICO));
       row.appendChild(h('b', { class:'hud-ro-v' }));
       host.appendChild(row);
     }
@@ -2977,7 +3192,9 @@
   }
   function needRow(d) {
     const row = h('span', { class:'hud-ro hud-need-readout', 'data-need':d.id });
-    row.appendChild(h('img', { class:'hud-need-art', src:'icons/custom/' + d.art + '.png', alt:d.label, draggable:'false' }));
+    const art = paintedImg(hudCut(d.art), RO_ICO, null, null);
+    art.className = 'hud-need-art'; art.alt = d.label;
+    row.appendChild(art);
     row.appendChild(h('b', { class:'hud-ro-v' }));
     return row;
   }
@@ -3562,6 +3779,7 @@
     }
     o.det = det;
     o.detSeeded = !!detSeeded;
+    o.metrics = metricsV;
     o.grp = { locked: !!wgrp.locked, x: Math.round(num(wgrp.x, 0)), y: Math.round(num(wgrp.y, 0)),
       anchorH: wgrp.anchorH === 'right' ? 'right' : wgrp.anchorH === 'center' ? 'center' : 'left',
       anchorV: wgrp.anchorV === 'bottom' ? 'bottom' : 'top',
@@ -5647,6 +5865,7 @@
     const hudPrefs = j.hud && typeof j.hud === 'object' ? j.hud : null;
     if (hudPrefs) for (const k of DETAIL_KEYS) { const v = flag(hudPrefs[k]); if (v !== undefined) wcfg[k] = v; }
     if (hudPrefs && hudPrefs.detSeeded) detSeeded = true;
+    if (hudPrefs) takeMetrics(hudPrefs);
     /* (An old blob's `cfgPos` is ignored — the shelf is docked.) */
     /* which edge the shelf hangs on; anything unrecognised (or an older config
        with no `shelf` key at all) means the shipped right edge */
@@ -5774,6 +5993,7 @@
        the stack it just rebuilt is exactly what can outgrow the screen, so the
        fit still has to be checked here. */
     fitWidgets();
+    metricsTick();
     /* `true` = the cheap path: rebuild only if the card's own content moved */
     if (cfgOpen) buildSettings(true);
   };

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 /*
  * MCM Settings browser — every MCM Helper setting in the load order, read, and
@@ -67,4 +68,26 @@ namespace McmSettings
 	// {"act":"set","mod":"<id>","i":N,"value":num} -> {ok,msg,value}
 	// Refuses anything that is not a GlobalValue, with the reason.
 	std::string Set(const std::string& req);
+
+	// ---- one mod, as plain records (weather_hub.cpp, 2026-10-08) ----------
+	//
+	// The Weather tab drives a few weather mods' MCM Helper settings itself
+	// (Storm Lightning has a live native setter MCM Helper knows nothing
+	// about), so it needs the menu's own definition — labels, ranges,
+	// defaults — and the value on disk, without the 100-mod scan.
+	// Filesystem only: safe on any thread.
+	struct ModControl
+	{
+		std::string              id;      // MCM Helper's "fForkFrequency:Settings"
+		std::string              key;     // "fForkFrequency"
+		std::string              section; // "Settings"
+		std::string              label, type, source, page;
+		double                   vmin{ 0 }, vmax{ 0 }, vstep{ 0 }, def{ 0 };
+		bool                     hasDef{ false };
+		bool                     hasValue{ false };
+		double                   value{ 0 };   // the ini overlay (Settings/ wins over Config/)
+		std::vector<std::string> options;
+	};
+	// Empty when Data/MCM/Config/<modName>/config.json is absent.
+	std::vector<ModControl> ReadModControls(const std::string& modName);
 }

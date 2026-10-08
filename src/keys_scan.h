@@ -49,6 +49,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 
 namespace KeysScan
 {
@@ -75,4 +76,10 @@ namespace KeysScan
 	// Progress + (when done) the full registry, as the JS payload for kcState.
 	// includeBindings=false while polling keeps the packet small.
 	[[nodiscard]] std::string StateJson(bool includeBindings);
+
+	// Text from a file or a Papyrus string, made safe for JSON: valid UTF-8 is
+	// returned unchanged, ANSI-code-page text (GBK on a Chinese system) is
+	// converted, anything else gets U+FFFD. Never throws. The Keys sources use
+	// it before text reaches a cache or the view (2026-10-06 Nexus CTD).
+	[[nodiscard]] std::string Utf8Text(std::string_view s);
 }

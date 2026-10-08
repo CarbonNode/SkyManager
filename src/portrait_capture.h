@@ -231,6 +231,14 @@ namespace PortraitCapture
 	// active remains true while shooting, but visible becomes false BEFORE capture.
 	void SetPhotoLightingCallback(std::function<void(bool, bool, const PhotoLighting::Snapshot&, const PhotoFrame::Frame&)> cb);
 	void RefreshPhotoLights();
+	struct Composition {
+		float zoom=1, x=0, y=0;
+		PhotoFrame::Format format=PhotoFrame::Format::Square;
+		bool thirds=false;
+	};
+	Composition GetPhotoComposition();
+	bool SetPhotoComposition(const Composition&);
+	void SetPhotoStudioToggle(std::function<void()> cb);
 
 	// Called after a successful photo with (slug, filename) so the caller can
 	// tell the view which image to hang on the outfit. Keeps this module free of

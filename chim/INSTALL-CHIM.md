@@ -29,6 +29,26 @@ wsl -d DwemerAI4Skyrim3 -- mkdir -p /var/www/html/HerikaServer/ext/deck_ask
 wsl -d DwemerAI4Skyrim3 -- cp /mnt/c/path/to/deck_ask.php /var/www/html/HerikaServer/ext/deck_ask/ask.php
 ```
 
+**The person page (Memories, Bonds & Life) needs a second file beside it** —
+`person.php`, a CLI helper `ask.php` calls (same pattern as `dynprof.php`):
+
+```
+wsl -d DwemerAI4Skyrim3 -- cp /mnt/c/path/to/person.php /var/www/html/HerikaServer/ext/deck_ask/person.php
+```
+
+It runs CHIM's OWN relationship system and Background Life — the deck shows
+and drives what CHIM already tracks, it does not keep a parallel copy.
+
+**Bio Blocks (the dossier's CHIM page) is its own CHIM ext** — three files in
+`ext/bioblocks/` (source: `roleplay/chim-prompts/ext/bioblocks/`). `ask.php`
+reaches `bio.php` there; `context_pre.php` is what puts the blocks into an
+NPC's prompt. Without the folder the section says Bio Blocks is not installed.
+
+```
+wsl -d DwemerAI4Skyrim3 -- mkdir -p /var/www/html/HerikaServer/ext/bioblocks
+wsl -d DwemerAI4Skyrim3 -- cp /mnt/c/path/to/bioblocks/bio_lib.php /mnt/c/path/to/bioblocks/bio.php /mnt/c/path/to/bioblocks/context_pre.php /var/www/html/HerikaServer/ext/bioblocks/
+```
+
 Replace the distro name if yours differs. That is the whole install — no
 service to restart, no configuration required.
 

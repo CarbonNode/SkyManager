@@ -58,6 +58,68 @@ $explicit = trim((string)($_REQUEST['npc'] ?? ''));
 $mode     = ($_REQUEST['mode'] ?? 'structured') === 'llm' ? 'llm' : 'structured';
 $rawMode  = (string)($_REQUEST['mode'] ?? '');
 
+// ------------------------------------------------------ the person page ----
+// SkyManager's person page (2026-10-03): Memories, Bonds and Life Away, all
+// CHIM's own — person.php (beside this file) boots CHIM's runtime and calls the
+// relationship system and Background Life the way CHIM's own UI does. One mode
+// per op so the deck can give the LLM ones (analyze, life_now) the long timeout.
+if (strpos($rawMode, 'person') === 0) {
+  $ops = ['person' => 'read', 'person_bond' => 'bond', 'person_analyze' => 'analyze',
+          'person_life' => 'life', 'person_life_now' => 'life_now', 'person_household' => 'household'];
+  if (!isset($ops[$rawMode])) bad('unknown person mode');
+  if ($rawMode === 'person_household') $explicit = '-';
+  if ($explicit === '') bad('no npc named');
+  $args = [];
+  foreach (['aff', 'type', 'enabled', 'letters', 'kind', 'auto'] as $k)
+    if (isset($_REQUEST[$k]) && preg_match('/^[A-Za-z0-9_-]{1,24}$/', (string)$_REQUEST[$k])) $args[] = $k . '=' . $_REQUEST[$k];
+  $cmd = 'php ' . escapeshellarg(__DIR__ . '/person.php') . ' ' . escapeshellarg($ops[$rawMode]) . ' ' . escapeshellarg($explicit);
+  // The household roster rides as a JSON list (names carry spaces and quotes);
+  // escapeshellarg keeps it one argv entry, person.php json_decodes it.
+  if ($rawMode === 'person_household') {
+    $names = (string)($_REQUEST['names'] ?? '[]');
+    if (strlen($names) > 6000) bad('household list too long');
+    $args[] = 'names=' . $names;
+  }
+  foreach ($args as $a) $cmd .= ' ' . escapeshellarg($a);
+  $outp = shell_exec($cmd . ' 2>&1');
+  if (preg_match('/PERSON_RESULT (\{.*\})/', (string)$outp, $m)) {
+    $r = json_decode($m[1], true);
+    if (is_array($r)) { $r['kind'] = 'person'; $r['op'] = $ops[$rawMode]; reply($r); }
+  }
+  bad('person helper failed: ' . trim(substr((string)$outp, 0, 300)));
+}
+
+// ------------------------------------------------------------ bio blocks ----
+// The person page's Bio tab (2026-10-04): a library of reusable traits that CHIM
+// renders into an NPC's <character> section — roleplay/chim-prompts/ext/bioblocks,
+// installed at ext/bioblocks/ beside this ext. Free text (title, content, tab)
+// travels as one escapeshellarg'd argv entry each; bio.php validates the lengths.
+if (strpos($rawMode, 'bio_') === 0) {
+  $ops = ['bio_library' => 'library', 'bio_npc' => 'npc', 'bio_save' => 'save', 'bio_delete' => 'delete',
+          'bio_apply' => 'apply', 'bio_unapply' => 'unapply', 'bio_rule' => 'rule'];
+  if (!isset($ops[$rawMode])) bad('unknown bio mode');
+  $helper = __DIR__ . '/../bioblocks/bio.php';
+  if (!is_file($helper)) bad('Bio Blocks is not installed in CHIM (ext/bioblocks)');
+  $who = in_array($ops[$rawMode], ['npc', 'apply', 'unapply'], true) ? $explicit : '-';
+  if ($who === '') bad('no npc named');
+  $cmd = 'php ' . escapeshellarg($helper) . ' ' . escapeshellarg($ops[$rawMode]) . ' ' . escapeshellarg($who);
+  $limits = ['key' => '/^[a-z0-9-]{1,64}$/', 'kind' => '/^(race|all)$/', 'on' => '/^[01]$/', 'target' => '/^[A-Za-z \'-]{1,40}$/', 'race' => '/^[A-Za-z \'-]{1,40}$/'];
+  foreach ($limits as $k => $re)
+    if (isset($_REQUEST[$k]) && preg_match($re, (string)$_REQUEST[$k])) $cmd .= ' ' . escapeshellarg($k . '=' . $_REQUEST[$k]);
+  foreach (['title' => 200, 'tab' => 100, 'content' => 4000] as $k => $max)
+    if (isset($_REQUEST[$k])) {
+      $v = str_replace("\0", '', (string)$_REQUEST[$k]);
+      if (strlen($v) > $max) bad($k . ' is too long');
+      $cmd .= ' ' . escapeshellarg($k . '=' . $v);
+    }
+  $outp = shell_exec($cmd . ' 2>&1');
+  if (preg_match('/BIO_RESULT (\{.*\})/', (string)$outp, $m)) {
+    $r = json_decode($m[1], true);
+    if (is_array($r)) { $r['kind'] = 'bio'; $r['op'] = $ops[$rawMode]; reply($r); }
+  }
+  bad('bio helper failed: ' . trim(substr((string)$outp, 0, 300)));
+}
+
 // ----------------------------------------------------- profile list mode ----
 // The quick-changer asks for the pickable profile roster. No question needed.
 if ($rawMode === 'profiles') {
