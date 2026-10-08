@@ -109,6 +109,7 @@
 <link data-hdcss="hd-family-tree.css" data-hdcss-key="followers" data-hdcss-gate=".fd-dossier">
 <link data-hdcss="hd-dossier-social.css" data-hdcss-key="followers" data-hdcss-gate=".fd-dossier">
 <link data-hdcss="hd-dossier-tools.css" data-hdcss-key="followers" data-hdcss-gate=".fd-dossier">
+<link data-hdcss="hd-person.css" data-hdcss-key="followers" data-hdcss-gate=".fd-dossier">
 <!-- Recents strip. Own sheet for the same reason as the two above.
      CORE, and it has to be: besides the Followers tab's #fd-recents strip it also
      OVERRIDES app.css for .rc-name / .rc-verb, and app.js renders those same
@@ -185,6 +186,7 @@
 <!-- Loadouts tab: follower groups + gear classes. Own sheet, same reason. -->
 <link data-hdcss="loadouts-pane.css" data-hdcss-key="loadouts" data-hdcss-gate="#lo-pane">
 <link data-hdcss="household-pane.css" data-hdcss-key="household" data-hdcss-gate="#hh-pane">
+<link data-hdcss="hd-person.css" data-hdcss-key="household">
 <!-- ZaZ segment of the Animations tab. Own sheet, same reason. The gate is
      #zz-body rather than the whole tab: the rest of the Animations pane is
      styled by app.css and must keep painting. NOTE this sheet is also what
@@ -194,6 +196,10 @@
 <!-- Nightside tab: the three curses. Own sheet, same reason. Key == tab id,
      so needForTab finds it with no TAB_KEY entry (hd-css.js contract). -->
 <link data-hdcss="nightside-pane.css" data-hdcss-key="nightside" data-hdcss-gate="#ns-pane">
+<!-- Weather tab: every weather + the weather mods. Own sheet, same reason.
+     Key == tab id (hd-css.js contract). The gate also covers the
+     "Every setting" popout, which mounts on <body>. -->
+<link data-hdcss="weather-pane.css" data-hdcss-key="weather" data-hdcss-gate="#wth-pane, .wth-pop-back">
 <!-- Mod settings popout. A POPOUT mounts into #panel at open time, so it also
      needs its MODULE_KEY trigger in hd-css.js (HDMcm/open -> mcm). -->
 <link data-hdcss="hd-mcm.css" data-hdcss-key="mcm" data-hdcss-gate="#mc-modal">
@@ -1189,6 +1195,7 @@
     </div>
     <div class="ix-head-right">
       <span id="ix-gold" class="ix-gold" title="Your gold — live, straight from your inventory">🜚 …</span>
+      <button id="ix-3d-toggle" class="ix-btn hidden" aria-pressed="true" title="The 3D item inspector — click a picture, then Turn in 3D">3D inspector: on</button>
       <button id="ix-pay-toggle" class="ix-btn" title="Merchant mode — taking an item costs gold">💰 Merchant mode</button>
       <select id="ix-mult" class="hidden" title="Suggested price = item value × this">
         <option value="0.5">×0.5 value</option>
@@ -1770,6 +1777,50 @@
       Choose a duration, review the arrival date, then confirm. Waiting is unavailable in combat.
     </div>
   </div>
+</section>
+
+<!-- ===== Weather (wth-) — every weather in the load order, and the weather
+     mods' own controls (2026-10-08, Rober: "the list to be dynamic, and hook
+     to a lot of the weather systems we have"). Static skeleton only; every
+     row and card is built by weather-pane.js from the wxStateData payload
+     (src/weather_hub.cpp). A SIBLING of the other panes, per the tm-pane
+     lesson above. Keep this markup in step with weather-pane.test.html. ===== -->
+<section id="wth-pane" class="hidden" aria-label="Weather">
+  <div class="wth-head">
+    <img class="wth-crest" src="icons/custom/wx-storm.png" alt="" aria-hidden="true">
+    <div class="wth-title-wrap">
+      <div class="wth-title">WEATHER</div>
+      <div class="wth-sub" id="wth-sub">Every sky your load order ships</div>
+    </div>
+    <div class="wth-head-right">
+      <span class="wth-how-label">New weather</span>
+      <div class="wth-seg" id="wth-how" role="group" aria-label="How a new weather arrives">
+        <button type="button" data-act="how" data-how="blend" title="The sky rolls over to it at its own pace">Rolls in</button>
+        <button type="button" data-act="how" data-how="now" title="Snap straight to it, like the console's fw">Instant</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="wth-body">
+    <div class="wth-col wth-col-sky">
+      <div id="wth-now" class="wth-now"></div>
+      <div class="wth-listcard">
+        <div class="wth-bar">
+          <span class="wth-bar-glyph" aria-hidden="true">&#8981;</span>
+          <input id="wth-search" type="text"
+                 placeholder="Search every weather — name, storm, snow, a mod&rsquo;s name (Enter = top hit)"
+                 autocomplete="off" spellcheck="false" aria-label="Search every weather">
+        </div>
+        <div id="wth-chips" class="wth-chips" role="group" aria-label="Show"></div>
+        <div id="wth-srcs" class="wth-srcs" role="group" aria-label="From"></div>
+        <div id="wth-count" class="wth-count"></div>
+        <div id="wth-list" class="wth-list"></div>
+      </div>
+    </div>
+    <div class="wth-col wth-col-mods" id="wth-sys" aria-label="Weather mods"></div>
+  </div>
+
+  <div id="wth-toast" class="wth-toast hidden" role="status"></div>
 </section>
 
       <div id="numpad-pane" class="hidden">

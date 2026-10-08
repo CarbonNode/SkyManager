@@ -1,6 +1,8 @@
 #include "hotbar.h"
 
 #include "actor_identity.h"
+#include "hotbar_cast.h"
+#include "shout_cooldowns.h"
 #include "spell_actions.h"
 #include "wheel.h"
 
@@ -716,6 +718,8 @@ namespace Hotbar
 		}
 	}
 
+	RE::TESForm* ResolveSlotForm(const Slot& s) { return ResolveForm(s); }
+
 	bool IsSetChildKind(const std::string& kind)
 	{
 		return kind == "item" || kind == "spell";
@@ -791,12 +795,12 @@ namespace Hotbar
 		}
 	}
 
-	json ToJson(const Config& c)
+	namespace
 	{
-		json pages = json::array();
-		for (const auto& p : c.pages) {
+		json SlotsToJson(const std::vector<Slot>& in)
+		{
 			json slots = json::array();
-			for (const auto& s : p.slots) {
+			for (const auto& s : in) {
 				// An empty slot is written as an empty object, not omitted: the
 				// array index IS the button number, so a compacted array would
 				// silently shift every action left of a hole.
@@ -809,6 +813,15 @@ namespace Hotbar
 				}
 				slots.push_back(SlotToJson(s));
 			}
+			return slots;
+		}
+	}
+
+	json ToJson(const Config& c)
+	{
+		json pages = json::array();
+		for (const auto& p : c.pages) {
+			json slots = SlotsToJson(p.slots);
 			pages.push_back(json{
 				{ "enabled", p.enabled },
 				{ "name", p.name },
@@ -824,6 +837,22 @@ namespace Hotbar
 		json keys = json::array();
 		for (const auto& k : c.slotKeys)
 			keys.push_back(json{ { "device", k.device }, { "code", k.code }, { "label", k.label } });
+
+		// Bars by weapon: only the slots per page travel — the page switches,
+		// names and modifier keys are the Default bar's.
+		json bars = json::array();
+		for (const auto& b : c.weaponBars) {
+			json bp = json::array();
+			for (const auto& p : b.pages)
+				bp.push_back(json{ { "slots", SlotsToJson(p.slots) } });
+			bars.push_back(json{
+				{ "cls", b.cls },
+				{ "sneak", b.sneak },
+				{ "enabled", b.enabled },
+				{ "name", b.name },
+				{ "pages", std::move(bp) },
+			});
+		}
 
 		return json{
 			{ "enabled", c.enabled },
@@ -851,8 +880,18 @@ namespace Hotbar
 			{ "skin", ClampSkin(c.skin) },
 			{ "modHold", c.modHold },
 			{ "menuBind", c.menuBind },
+			{ "castMode", c.castMode == "instant" ? "instant" : "real" },
+			{ "castAnim", c.castAnim == "off" ? "off" : "auto" },
+			{ "aimCrosshair", c.aimCrosshair },
+			{ "ownShoutCooldowns", c.ownShoutCooldowns },
+			{ "keyMode", c.keyMode == "pick" ? "pick" : "cast" },
+			{ "castKey", json{ { "device", c.castKey.device }, { "code", c.castKey.code }, { "label", c.castKey.label } } },
+			{ "potionKey", json{ { "device", c.potionKey.device }, { "code", c.potionKey.code }, { "label", c.potionKey.label } } },
+			{ "readySpell", SlotToJson(c.readySpell) },
+			{ "readyPotion", SlotToJson(c.readyPotion) },
 			{ "tickMs", c.tickMs },
 			{ "pages", std::move(pages) },
+			{ "weaponBars", std::move(bars) },
 			{ "slotKeys", std::move(keys) },
 			{ "key", json{
 				{ "device", c.keyDevice },
@@ -910,6 +949,41 @@ namespace Hotbar
 		out.skin = ClampSkin(j.value("skin", out.skin));
 		out.modHold = j.value("modHold", out.modHold);
 		out.menuBind = j.value("menuBind", out.menuBind);
+		// An unknown value reads as the default, never as "instant": only an
+		// explicit choice turns the free cast back on.
+		out.castMode = j.value("castMode", out.castMode) == "instant" ? "instant" : "real";
+		// Same shape: only an explicit "off" switches the clip off.
+		out.castAnim = j.value("castAnim", out.castAnim) == "off" ? "off" : "auto";
+		out.aimCrosshair = j.value("aimCrosshair", out.aimCrosshair);
+		out.ownShoutCooldowns = j.value("ownShoutCooldowns", out.ownShoutCooldowns);
+		out.keyMode = j.value("keyMode", out.keyMode) == "pick" ? "pick" : "cast";
+		const auto readKey = [&j](const char* name, SlotKey& k) {
+			if (!j.contains(name) || !j[name].is_object())
+				return;
+			const auto& o = j[name];
+			const std::string dev = o.value("device", k.device);
+			k.device = dev == "mouse" ? "mouse" : "keyboard";
+			k.code = o.value("code", k.code);
+			k.label = o.value("label", k.label);
+		};
+		readKey("castKey", out.castKey);
+		readKey("potionKey", out.potionKey);
+		// The ready picks: present only in C++'s own file (the view never sends
+		// them), and only the kinds each one can hold survive the read.
+		const auto readReady = [&j](const char* name, Slot& s, std::initializer_list<const char*> kinds) {
+			if (!j.contains(name) || !j[name].is_object())
+				return;
+			Slot r;
+			const std::string kind = ClampKind(j[name].value("kind", std::string()));
+			for (const char* k : kinds)
+				if (kind == k)
+					r.kind = kind;
+			if (!r.kind.empty())
+				ReadSlotFields(j[name], r);
+			s = r.Empty() ? Slot{} : r;
+		};
+		readReady("readySpell", out.readySpell, { "spell", "item" });
+		readReady("readyPotion", out.readyPotion, { "item", "smart" });
 		out.tickMs = std::max<std::uint32_t>(200, j.value("tickMs", out.tickMs));
 
 		if (j.contains("key") && j["key"].is_object()) {
@@ -925,6 +999,40 @@ namespace Hotbar
 		// sink, LiveJson) indexes positionally, so a short array read from a
 		// hand-edited or older file must be GROWN here rather than guarded
 		// against in four places.
+		const auto readSlot = [](const json& js) {
+			Slot s;
+			if (js.is_object()) {
+				s.kind = ClampKind(js.value("kind", std::string()));
+				ReadSlotFields(js, s);
+				if ((s.kind == "flyout" || s.kind == "set") &&
+					js.contains("items") && js["items"].is_array()) {
+					for (const auto& jc : js["items"]) {
+						if (!jc.is_object())
+							continue;
+						Slot c;
+						c.kind = ClampChildKind(jc.value("kind", std::string()), s.kind);
+						ReadSlotFields(jc, c);
+						// a child that clamped to nothing (it was a
+						// nested bundle, a deck action in a gear set,
+						// or garbage) is dropped, not kept as a dead
+						// fan tile
+						if (c.Empty())
+							continue;
+						if (static_cast<int>(s.items.size()) < kMaxFlyItems)
+							s.items.push_back(std::move(c));
+					}
+				}
+			}
+			return s;
+		};
+		const auto readSlots = [&readSlot](const json& jp, Page& p) {
+			if (jp.contains("slots") && jp["slots"].is_array()) {
+				for (const auto& js : jp["slots"]) {
+					if (static_cast<int>(p.slots.size()) < kMaxSlots)
+						p.slots.push_back(readSlot(js));
+				}
+			}
+		};
 		std::vector<Page> pages;
 		if (j.contains("pages") && j["pages"].is_array()) {
 			for (const auto& jp : j["pages"]) {
@@ -938,35 +1046,7 @@ namespace Hotbar
 						p.modCode   = m.value("code", 0u);
 						p.modLabel  = m.value("label", std::string());
 					}
-					if (jp.contains("slots") && jp["slots"].is_array()) {
-						for (const auto& js : jp["slots"]) {
-							Slot s;
-							if (js.is_object()) {
-								s.kind = ClampKind(js.value("kind", std::string()));
-								ReadSlotFields(js, s);
-								if ((s.kind == "flyout" || s.kind == "set") &&
-									js.contains("items") && js["items"].is_array()) {
-									for (const auto& jc : js["items"]) {
-										if (!jc.is_object())
-											continue;
-										Slot c;
-										c.kind = ClampChildKind(jc.value("kind", std::string()), s.kind);
-										ReadSlotFields(jc, c);
-										// a child that clamped to nothing (it was a
-										// nested bundle, a deck action in a gear set,
-										// or garbage) is dropped, not kept as a dead
-										// fan tile
-										if (c.Empty())
-											continue;
-										if (static_cast<int>(s.items.size()) < kMaxFlyItems)
-											s.items.push_back(std::move(c));
-									}
-								}
-							}
-							if (static_cast<int>(p.slots.size()) < kMaxSlots)
-								p.slots.push_back(std::move(s));
-						}
-					}
+					readSlots(jp, p);
 				}
 				if (static_cast<int>(pages.size()) < kPageCount)
 					pages.push_back(std::move(p));
@@ -978,6 +1058,48 @@ namespace Hotbar
 			p.slots.resize(kMaxSlots);
 		// The base page is not optional — nothing would draw.
 		pages[kPageBase].enabled = true;
+
+		// ---- bars by weapon --------------------------------------------------
+		// Same normalisation per bar; an unknown class or a duplicate
+		// (cls, sneak) pair is dropped rather than kept as a bar nothing can
+		// ever select.
+		std::vector<WeaponBar> bars;
+		if (j.contains("weaponBars") && j["weaponBars"].is_array()) {
+			for (const auto& jb : j["weaponBars"]) {
+				if (!jb.is_object())
+					continue;
+				WeaponBar b;
+				b.cls = jb.value("cls", std::string());
+				if (!IsWeaponClass(b.cls))
+					continue;
+				b.sneak = jb.value("sneak", false);
+				b.enabled = jb.value("enabled", true);
+				b.name = jb.value("name", std::string());
+				bool dup = false;
+				for (const auto& o : bars)
+					if (o.cls == b.cls && o.sneak == b.sneak) { dup = true; break; }
+				if (dup)
+					continue;
+				if (jb.contains("pages") && jb["pages"].is_array()) {
+					for (const auto& jp : jb["pages"]) {
+						Page p;
+						if (jp.is_object())
+							readSlots(jp, p);
+						if (static_cast<int>(b.pages.size()) < kPageCount)
+							b.pages.push_back(std::move(p));
+					}
+				}
+				while (static_cast<int>(b.pages.size()) < kPageCount)
+					b.pages.push_back(Page{});
+				for (auto& p : b.pages)
+					p.slots.resize(kMaxSlots);
+				bars.push_back(std::move(b));
+			}
+		}
+		// Build marker (hd-markers.json: "hotbar-weapon-bars"). Debug level;
+		// the literal is what the deploy check greps for.
+		logger::debug("hotbar-weapon-bars: {} bar(s) by weapon", bars.size());
+		out.weaponBars = std::move(bars);
 		// Build marker (hd-markers.json: "hotbar-pages-7"). Debug level; the
 		// literal is what the deploy check greps for.
 		{
@@ -1005,6 +1127,193 @@ namespace Hotbar
 		}
 		keys.resize(kMaxSlots);
 		out.slotKeys = std::move(keys);
+	}
+
+	// ---- bars by weapon ---------------------------------------------------
+
+	bool IsWeaponClass(const std::string& cls)
+	{
+		for (const char* k : kWeaponClasses)
+			if (cls == k)
+				return true;
+		return false;
+	}
+
+	const char* WeaponClassLabel(const std::string& cls)
+	{
+		if (cls == "unarmed")    return "Unarmed";
+		if (cls == "1h")         return "One-handed";
+		if (cls == "shield")     return "Sword & shield";
+		if (cls == "dual")       return "Dual wield";
+		if (cls == "2h")         return "Two-handed";
+		if (cls == "bow")        return "Bow";
+		if (cls == "crossbow")   return "Crossbow";
+		if (cls == "staff")      return "Staff";
+		if (cls == "spellsword") return "Weapon & spell";
+		if (cls == "magic")      return "Spells in hand";
+		return "Default";
+	}
+
+	Wielded ClassifyWielded()
+	{
+		Wielded w;
+		auto*   player = RE::PlayerCharacter::GetSingleton();
+		if (!player)
+			return w;
+		if (auto* st = player->AsActorState())
+			w.sneak = st->IsSneaking();
+
+		RE::TESForm* right = player->GetEquippedObject(false);
+		RE::TESForm* left  = player->GetEquippedObject(true);
+		auto* rw = right ? right->As<RE::TESObjectWEAP>() : nullptr;
+		auto* lw = left ? left->As<RE::TESObjectWEAP>() : nullptr;
+		// Fists are a "weapon" to the engine; to a bar they are no weapon.
+		if (rw && rw->GetWeaponType() == RE::WEAPON_TYPE::kHandToHandMelee) rw = nullptr;
+		if (lw && lw->GetWeaponType() == RE::WEAPON_TYPE::kHandToHandMelee) lw = nullptr;
+		const bool rs = right && right->As<RE::SpellItem>() != nullptr;
+		const bool ls = left && left->As<RE::SpellItem>() != nullptr;
+		const auto* la = left ? left->As<RE::TESObjectARMO>() : nullptr;
+		const bool shield = la && la->IsShield();
+		const auto oneHanded = [](RE::TESObjectWEAP* wp) {
+			if (!wp)
+				return false;
+			switch (wp->GetWeaponType()) {
+			case RE::WEAPON_TYPE::kOneHandSword:
+			case RE::WEAPON_TYPE::kOneHandDagger:
+			case RE::WEAPON_TYPE::kOneHandAxe:
+			case RE::WEAPON_TYPE::kOneHandMace:
+				return true;
+			default:
+				return false;
+			}
+		};
+		const auto isStaff = [](RE::TESObjectWEAP* wp) {
+			return wp && wp->GetWeaponType() == RE::WEAPON_TYPE::kStaff;
+		};
+
+		if (rw) {
+			switch (rw->GetWeaponType()) {
+			case RE::WEAPON_TYPE::kTwoHandSword:
+			case RE::WEAPON_TYPE::kTwoHandAxe:
+				w.cls = "2h";
+				return w;
+			case RE::WEAPON_TYPE::kBow:
+				w.cls = "bow";
+				return w;
+			case RE::WEAPON_TYPE::kCrossbow:
+				w.cls = "crossbow";
+				return w;
+			case RE::WEAPON_TYPE::kStaff:
+				w.cls = "staff";
+				return w;
+			default:
+				break;
+			}
+			// a one-handed weapon in the right hand: what is in the left decides
+			if (shield)
+				w.cls = "shield";
+			else if (oneHanded(lw))
+				w.cls = "dual";
+			else if (isStaff(lw))
+				w.cls = "staff";
+			else if (ls)
+				w.cls = "spellsword";
+			else
+				w.cls = "1h";
+			return w;
+		}
+		if (lw) {
+			// only the left hand holds a weapon
+			if (isStaff(lw))
+				w.cls = "staff";
+			else if (rs)
+				w.cls = "spellsword";
+			else
+				w.cls = "1h";
+			return w;
+		}
+		if (rs || ls)
+			w.cls = "magic";
+		else
+			w.cls = "unarmed";
+		return w;
+	}
+
+	int BarForWielded(const Config& c, const Wielded& w)
+	{
+		int cls = -1;
+		for (int i = 0; i < static_cast<int>(c.weaponBars.size()); ++i) {
+			const auto& b = c.weaponBars[i];
+			if (!b.enabled || b.cls != w.cls)
+				continue;
+			if (b.sneak == w.sneak)
+				return i;
+			if (!b.sneak)
+				cls = i;
+		}
+		// sneaking with no sneak bar for this class: the class bar; standing
+		// with only a sneak bar: Default (a sneak bar is never live standing)
+		return w.sneak ? cls : -1;
+	}
+
+	namespace
+	{
+		const Slot& EmptySlot()
+		{
+			static const Slot s_empty;
+			return s_empty;
+		}
+		const Slot* OwnSlot(const std::vector<Page>& pages, int page, int i)
+		{
+			if (page < 0 || page >= static_cast<int>(pages.size()))
+				return nullptr;
+			const auto& slots = pages[page].slots;
+			if (i < 0 || i >= static_cast<int>(slots.size()))
+				return nullptr;
+			return &slots[i];
+		}
+	}
+
+	const Slot& EffectiveSlot(const Config& c, int bar, int page, int i, int* origin)
+	{
+		if (origin)
+			*origin = -1;
+		if (bar >= 0 && bar < static_cast<int>(c.weaponBars.size())) {
+			const auto& b = c.weaponBars[bar];
+			if (const Slot* s = OwnSlot(b.pages, page, i); s && !s->Empty()) {
+				if (origin)
+					*origin = bar;
+				return *s;
+			}
+			// a sneak bar's empty button looks at its class bar before Default
+			if (b.sneak) {
+				for (int k = 0; k < static_cast<int>(c.weaponBars.size()); ++k) {
+					const auto& o = c.weaponBars[k];
+					if (k == bar || o.sneak || !o.enabled || o.cls != b.cls)
+						continue;
+					if (const Slot* s = OwnSlot(o.pages, page, i); s && !s->Empty()) {
+						if (origin)
+							*origin = k;
+						return *s;
+					}
+					break;
+				}
+			}
+		}
+		if (const Slot* s = OwnSlot(c.pages, page, i))
+			return *s;
+		return EmptySlot();
+	}
+
+	std::string BarLabel(const Config& c, int bar)
+	{
+		if (bar < 0 || bar >= static_cast<int>(c.weaponBars.size()))
+			return "Default";
+		const auto& b = c.weaponBars[bar];
+		std::string s = b.name.empty() ? WeaponClassLabel(b.cls) : b.name;
+		if (b.sneak)
+			s += " · sneaking";
+		return s;
 	}
 
 	void SeedDefaults(Config& out)
@@ -1142,8 +1451,11 @@ namespace Hotbar
 		// One slot's live row. Shared between the bar's buttons and a flyout's
 		// CHILDREN — the fan draws the same icons, counts and grey-outs as the
 		// bar itself, from the same code, so the two can never disagree.
+		// `magicka` < 0 = the bar is in "instant" cast mode, where nothing costs
+		// anything and the poor-tint must not appear.
 		void FillLiveRow(json& row, const Slot& s, RE::PlayerCharacter* player,
-			const FxMap& fx, float voiceCd, const InvMap& inv, const FormCache& forms)
+			const FxMap& fx, float voiceCd, const InvMap& inv, const FormCache& forms,
+			float magicka)
 		{
 			row["kind"] = s.kind;
 			if (!s.icon.empty())
@@ -1231,16 +1543,40 @@ namespace Hotbar
 					// road the cast actually takes.
 					row["voice"] = sp->GetSpellType() != RE::MagicSystem::SpellType::kSpell;
 					AttachFx(row, fx, sp);
+					// hotbar-cast-poor: the real cast mode charges magicka, so a
+					// hand spell you cannot pay for right now reads as such (the
+					// WoW red tint) before the press, not after it. Concentration
+					// spells price per second and only need SOME magicka, exactly
+					// the rule HotbarCast's own refusal uses.
+					if (known && magicka >= 0.0f && !row.value("voice", false)) {
+						if (const auto cost = HotbarCast::PressCost(sp, s.hand)) {
+							const bool conc = sp->GetCastingType() == RE::MagicSystem::CastingType::kConcentration;
+							row["cost"] = static_cast<int>(std::lround(*cost));
+							if (conc ? magicka <= 0.0f : magicka < *cost)
+								row["poor"] = true;
+						}
+					}
 				} else if (form->As<RE::TESShout>()) {
 					row["voice"] = true;
 				}
-				// One shared voice recovery — the engine has exactly one shout
-				// timer, so every voice button shows the same countdown. A shout
-				// buff's remaining time can't be matched by form (the active
-				// effect belongs to the WORD's spell, not the shout), so the
-				// cooldown is the honest thing voice buttons get.
-				if (row.value("voice", false) && voiceCd > 0.0f)
-					row["cd"] = static_cast<double>(static_cast<int>(voiceCd * 10)) / 10.0;
+				// The shout's OWN cooldown (shout_cooldowns.h, 2026-10-04): with
+				// per-shout cooldowns on, each voice button counts down its own
+				// time; off, every one answers the engine's single timer, as
+				// before. Greater/lesser powers do not use the shout timer and
+				// get no countdown at all (they used to borrow the shout's). A
+				// shout buff's remaining time can't be matched by form (the
+				// active effect belongs to the WORD's spell), so the cooldown is
+				// the honest thing voice buttons get. `cdMax` is the real total,
+				// so the ring no longer has to guess its 100%.
+				if (row.value("voice", false)) {
+					const auto [rem, total] = ShoutCooldowns::Get(form);
+					(void)voiceCd;
+					if (rem > 0.0f) {
+						const float q = QuantiseCountdown(rem, total);
+						row["cd"] = static_cast<double>(static_cast<int>(q * 10)) / 10.0;
+						row["cdMax"] = static_cast<double>(static_cast<int>(total * 10)) / 10.0;
+					}
+				}
 			} else if (s.kind == "item") {
 				auto* obj = form->As<RE::TESBoundObject>();
 				std::int32_t count = 0;
@@ -1293,6 +1629,8 @@ namespace Hotbar
 		const auto& slots = c.pages[p].slots;
 
 		const FxMap fx = ReadActiveFx(player);
+		const float magicka = (player && c.castMode != "instant")
+			? player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka) : -1.0f;
 		float voiceCd = 0.0f;
 		if (player) {
 			if (auto* proc = player->GetActorRuntimeData().currentProcess) {
@@ -1359,6 +1697,13 @@ namespace Hotbar
 					note(slots[i]);
 				}
 			}
+			// Oblivion-style ready picks ride the same resolve + inventory pass.
+			if (c.keyMode == "pick") {
+				if (!c.readySpell.Empty())
+					note(c.readySpell);
+				if (!c.readyPotion.Empty())
+					note(c.readyPotion);
+			}
 		}
 		const InvMap inv = [&]() -> InvMap {
 			if (!player || (!needAlch && wantObjs.empty()))
@@ -1397,7 +1742,7 @@ namespace Hotbar
 				int  carried = 0, worn = 0;
 				for (int k = 0; k < static_cast<int>(s.items.size()); ++k) {
 					json kid{ { "i", k } };
-					FillLiveRow(kid, s.items[k], player, fx, voiceCd, inv, forms);
+					FillLiveRow(kid, s.items[k], player, fx, voiceCd, inv, forms, magicka);
 					if (kid.value("ok", false)) {
 						++carried;
 						if (kid.value("equipped", false))
@@ -1442,19 +1787,35 @@ namespace Hotbar
 				json kids = json::array();
 				for (int k = 0; k < static_cast<int>(s.items.size()); ++k) {
 					json kid{ { "i", k } };
-					FillLiveRow(kid, s.items[k], player, fx, voiceCd, inv, forms);
+					FillLiveRow(kid, s.items[k], player, fx, voiceCd, inv, forms, magicka);
 					kids.push_back(std::move(kid));
 				}
 				row["items"] = std::move(kids);
 				arr.push_back(std::move(row));
 				continue;
 			}
-			FillLiveRow(row, s, player, fx, voiceCd, inv, forms);
+			FillLiveRow(row, s, player, fx, voiceCd, inv, forms, magicka);
 			arr.push_back(std::move(row));
 		}
 
-		return json{ { "page", p }, { "slots", std::move(arr) } }
-			.dump(-1, ' ', false, json::error_handler_t::replace);
+		json out{ { "page", p }, { "slots", std::move(arr) } };
+		// hotbar-ready-live: the two ready sockets, in "pick" mode only. Same
+		// row shape as a button (the view draws them with the same slotEl), at
+		// the pseudo indices the fire path and hbCast use.
+		if (c.keyMode == "pick") {
+			json ready = json::array();
+			const std::pair<int, const Slot*> picks[] = { { kReadySpell, &c.readySpell }, { kReadyPotion, &c.readyPotion } };
+			for (const auto& [idx, sl] : picks) {
+				json row{ { "i", idx } };
+				if (sl->Empty())
+					row["kind"] = "";
+				else
+					FillLiveRow(row, *sl, player, fx, voiceCd, inv, forms, magicka);
+				ready.push_back(std::move(row));
+			}
+			out["ready"] = std::move(ready);
+		}
+		return out.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
 
 	bool PoolMatch(const std::string& ref, const RE::AlchemyItem* alch, float& outScore)

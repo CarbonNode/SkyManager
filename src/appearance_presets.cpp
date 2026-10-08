@@ -6,7 +6,11 @@
 #include "spell_actions.h"
 #include "sos_actions.h"
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <fstream>
 #include <optional>
 #include <set>
@@ -32,6 +36,7 @@ namespace AppearancePresets
         const fs::path kLibrary="Data/SKSE/Plugins/HotkeyDeck/appearances.json";
         const fs::path kSlots="Data/SKSE/Plugins/CharGen/Presets";
         fs::path view;
+        std::atomic<bool> viewSet{false};   // `view` is final; other threads may read it
         json library=AppearanceModel::Empty(), undo, sosCatalog;
         std::string loadError, selected, message;
         std::string sosCatalogError;
@@ -412,14 +417,51 @@ namespace AppearancePresets
                 catch(const std::exception& e){Finish(false,e.what());}
             },[generation,saved](){if(generation==serial && job)Finish(saved,saved?"Look saved. Portrait skipped; you can take it later.":"Portrait cancelled. Your previous portrait is unchanged.");});
         }
+        // SMOOTHNESS (2026-10-07, marker "appearance-status-async"): Publish runs
+        // on the game thread every 5 s, and used to serialise the whole library
+        // AND write it through to disk (MOVEFILE_WRITE_THROUGH, on the MO2 VFS)
+        // right there -- part of the 4-9 ms "desync-watchdog" spikes in the perf
+        // census. State() needs the player, so it is still built here; the dump
+        // and the disk work go to one writer thread. Latest wins: a newer status
+        // replaces an unwritten older one, so the file can never go backwards.
+        // No write-through: the file is rewritten every 5 s and the phone treats
+        // anything older than 15 s as offline, so a lost write costs nothing.
+        std::mutex statusMtx;
+        std::condition_variable statusCv;
+        std::optional<json> statusPending;
+        bool statusWriter=false;
+        void StatusWriterLoop(fs::path path) {
+            for(;;) {
+                json next;
+                {
+                    std::unique_lock l(statusMtx);
+                    statusCv.wait(l,[]{return statusPending.has_value();});
+                    next=std::move(*statusPending); statusPending.reset();
+                }
+                try {
+                    const auto tmp=fs::path(path.wstring()+L".tmp");
+                    {std::ofstream f(tmp,std::ios::binary|std::ios::trunc); f<<Dump(next); if(!f.good()) throw std::runtime_error("could not write the status file");}
+                    if(!MoveFileExW(tmp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING)) throw std::runtime_error("could not replace the status file");
+                } catch(const std::exception& e){logger::warn("appearance-presets: status {}",e.what());}
+            }
+        }
         void Publish() {
             if(view.empty()) return;
-            try {Write(view/"appearances-status.json",State());} catch(const std::exception& e){logger::warn("appearance-presets: status {}",e.what());}
+            json state;
+            try {state=State();} catch(const std::exception& e){logger::warn("appearance-presets: status {}",e.what());return;}
+            std::lock_guard l(statusMtx);
+            statusPending=std::move(state);
+            if(!statusWriter) {
+                statusWriter=true;
+                std::thread(StatusWriterLoop,view/"appearances-status.json").detach();
+                logger::info("appearance-status-async: status writer off the game thread");
+            }
+            statusCv.notify_one();
         }
     }
 
     void Init(const fs::path& dir,std::function<void(bool)> close) {
-        view=dir; portalClose=std::move(close); session=Stamp(); Load();
+        view=dir; viewSet.store(true,std::memory_order_release); portalClose=std::move(close); session=Stamp(); Load();
         if(auto* events=RE::ScriptEventSourceHolder::GetSingleton()) events->AddEventSink(&raceSink);
         if(auto* ui=RE::UI::GetSingleton()) ui->AddEventSink(&menuSink);
         fs::create_directories(view/"appearance-requests"); fs::create_directories(view/"appearance-results");
@@ -556,7 +598,14 @@ namespace AppearancePresets
             else done({{"ok",false},{"msg",e.what()},{"data",State()}});
         }
     }
-    void Tick(bool gameReady) {
+    bool RequestsPending() {
+        if(!viewSet.load(std::memory_order_acquire)) return false;
+        std::error_code ec;
+        for(fs::directory_iterator it(view/"appearance-requests",ec),end; !ec && it!=end; it.increment(ec))
+            if(it->path().extension()==L".json") return true;
+        return false;
+    }
+    void Tick(bool gameReady, bool requestsPending) {
         ready=gameReady;
         if(!ready) return;
         // Papyrus reads cannot finish behind the paused gallery. Warm only the
@@ -594,6 +643,9 @@ namespace AppearancePresets
         if(++tickCount%5==0) Publish();
         // One-use, short-lived phone commands. Claim by rename before dispatch;
         // a restart cannot silently replay a character transformation later.
+        // The worker thread that posted this tick already looked (RequestsPending),
+        // so the common empty case walks no directory on the game thread.
+        if(!requestsPending) return;
         try {
             if(!view.empty()) for(const auto& entry:fs::directory_iterator(view/"appearance-requests")) {
                 if(entry.path().extension()!=L".json") continue;

@@ -216,9 +216,25 @@ var HDOmni = (function () {
 
   /* ------------------------------------------------------------- scoring */
   /* Plain, predictable ranking: exact label > label prefix > word prefix >
-     substring > subsequence; keywords/detail count at a discount. */
+     substring > subsequence; keywords/detail count at a discount.
 
-  function scoreText(text, q) {
+     omni-label-first (2026-10-08, Rober's screenshot: "stance" → FOLLOWERS 14,
+     Roisin … Ysolda, then WALK WITH ME "Arrival distance", and the Stance Wheel
+     action nowhere in sight; "not searchable"). Two causes, both here:
+       1. the subsequence branch ran over DETAIL and KEYWORDS too, and a
+          sentence of prose contains s-t-a-n-c-e as scattered letters far more
+          often than not ("Slave · Breton, ex-Forsworn, moon sugar addict,
+          pregnant" matches). Subsequence is for NAMES ("frb" → Firebolt); it
+          now runs on the label only. Detail and keywords still match as
+          substrings and word prefixes, as before.
+       2. a provider's `rank` (Followers = 0, "people first") pulled its group
+          to the top on ANY hit, including those. Rank now orders only the
+          groups whose best hit is a real LABEL match (substring or better);
+          a group that matched only in detail/keywords sorts after every
+          label-matching group, by rank then score. So "stance" leads with the
+          thing NAMED Stance, and "elana" still leads with Elana. */
+
+  function scoreText(text, q, subseq) {
     if (!text) return 0;
     var t = String(text).toLowerCase();
     if (t === q) return 100;
@@ -226,8 +242,9 @@ var HDOmni = (function () {
     var words = t.split(/[\s\/\-_·.,:]+/);
     for (var i = 0; i < words.length; i++) if (words[i].indexOf(q) === 0) return 40;
     if (t.indexOf(q) !== -1) return 25;
-    /* subsequence — "frb" finds "Firebolt", but only for queries 3+ chars */
-    if (q.length >= 3) {
+    /* subsequence — "frb" finds "Firebolt", but only for queries 3+ chars,
+       and only on a LABEL (omni-label-first) */
+    if (subseq !== false && q.length >= 3) {
       var ti = 0;
       for (var qi = 0; qi < q.length; qi++) {
         ti = t.indexOf(q[qi], ti);
@@ -240,10 +257,18 @@ var HDOmni = (function () {
   }
 
   function scoreItem(item, q) {
-    var s = scoreText(item.label, q);
-    var s2 = Math.max(scoreText(item.detail, q), scoreText(item.keywords, q),
-                      scoreText(item.kind, q)) * 0.6;
+    var s = scoreText(item.label, q, true);
+    var s2 = Math.max(scoreText(item.detail, q, false), scoreText(item.keywords, q, false),
+                      scoreText(item.kind, q, false)) * 0.6;
     return Math.max(s, s2);
+  }
+
+  /* omni-label-first: did every query word land on the item's LABEL as a real
+     match (substring or better — the 25+ tiers of scoreText)? */
+  function labelHit(item, words) {
+    for (var i = 0; i < words.length; i++)
+      if (scoreText(item.label, words[i], false) < 25) return false;
+    return true;
   }
 
   /* Multi-word queries: every word must land somewhere on the item. */
@@ -510,18 +535,25 @@ var HDOmni = (function () {
       var items = [];
       try { items = p.index() || []; } catch (e) { items = []; }
       if (st.lazy[p.id]) items = items.concat(st.lazy[p.id]);
-      var hits = [];
+      var hits = [], strong = false;
       for (var j = 0; j < items.length; j++) {
         var s = scoreItemMulti(items[j], words);
-        if (s > 0) hits.push({ item: items[j], score: s, provider: p });
+        if (s > 0) {
+          hits.push({ item: items[j], score: s, provider: p });
+          if (!strong && labelHit(items[j], words)) strong = true;
+        }
       }
       if (!hits.length && !st.lazyPending[p.id]) continue;
       hits.sort(function (a, b) { return b.score - a.score; });
       groups.push({ provider: p, hits: hits,
                     top: hits.length ? hits[0].score : 0,
+                    strong: strong,   // omni-label-first: some hit is a real LABEL match
                     pending: !!st.lazyPending[p.id] });
     }
     groups.sort(function (a, b) {
+      /* omni-label-first: groups that matched by NAME before groups that only
+         matched in their small print, whatever their rank says */
+      if (a.strong !== b.strong) return a.strong ? -1 : 1;
       var ra = groupRank(a.provider), rb = groupRank(b.provider);
       if (ra !== rb) return ra - rb;
       return b.top - a.top;

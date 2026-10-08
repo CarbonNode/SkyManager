@@ -25,6 +25,14 @@
  *          glyph  — fallback glyph if the image fails to load
  *          frames — optional candidate sibling urls to probe for a spin
  *        HDLightbox.close()  ·  HDLightbox.isOpen()
+ *
+ *  Turn in 3D (2026-10-04, Rober on SeverActions' Catalog: "also
+ *  interesting.... (toggable maybe)"): an ITEM subject whose hdSpinState says
+ *  inspect:true gets a "Turn in 3D" button. It swaps the 4-frame turntable for
+ *  the inspector — 24 frames, 15° apart, rendered at 1024px (hdInspect in,
+ *  hdInspectData out, C++ ItemIcons::InspectJson) — with drag / wheel / arrow
+ *  keys to turn and the Mirror's angle dial. The switch is Finder > Items'
+ *  "3D inspector" (item-explorer.json inspect3d); off, nothing renders.
  * ====================================================================== */
 
 window.HDLightbox = (function () {
@@ -56,6 +64,12 @@ window.HDLightbox = (function () {
 
   const DRAG_PX_PER_STEP = 55;   // a full 4-frame turn in ~220px of drag
 
+  /* The 3D inspector, while it is up: {reply, angle, polls, timer, drag}.
+     inspectOn is the C++ answer to "is the switch on" for THIS subject. */
+  let insp = null;
+  let inspectOn = false;
+  const INSP_STEP_PX = 22, INSP_POLL_MS = 1500, INSP_POLL_MAX = 200;
+
   function toGame(fn, arg) {
     const f = window[fn];
     if (typeof f === 'function') { try { f(String(arg === undefined ? '' : arg)); } catch (e) {} }
@@ -82,6 +96,9 @@ window.HDLightbox = (function () {
     spin = null;
     spinTries = 0;
     if (spinPollT) { clearTimeout(spinPollT); spinPollT = null; }
+    if (insp && insp.timer) clearTimeout(insp.timer);
+    insp = null;
+    inspectOn = false;
   }
 
   function showFrame(i) {
@@ -148,7 +165,7 @@ window.HDLightbox = (function () {
     img.addEventListener('mousedown', function (e) {
       /* zoomed in, a drag PANS (see wireZoom) — spinning the turntable at the
          same time would fight it for the same gesture */
-      if (zoom > 1.001) return;
+      if (zoom > 1.001 || insp) return;
       dragX = e.clientX;
       dragBase = ringAt;
       e.preventDefault();
@@ -209,6 +226,7 @@ window.HDLightbox = (function () {
     if (String(d.kind || 'item') !== spin.kind) return;
     if (String(d.formId || '').toUpperCase() !== spin.formId.toUpperCase()) return;
     if (String(d.plugin || '').toLowerCase() !== spin.plugin.toLowerCase()) return;
+    if (spin.kind === 'item' && typeof d.inspect === 'boolean') setInspectOffered(d.inspect);
     if (d.count) spin.count = d.count | 0;
     /* rebuild the ring in ANGLE order so a turn is coherent: frame 0 is the
        reply's own frame 0 when it names one (the "-s2" base can differ from
@@ -247,6 +265,202 @@ window.HDLightbox = (function () {
     applySpinState(d);
     try { document.dispatchEvent(new Event('hd-spin-state')); } catch (e) {}
   };
+
+  /* ---- Turn in 3D: the item inspector ------------------------------------ */
+
+  function setInspectOffered(on) {
+    inspectOn = !!on;
+    const b = el && el.querySelector('.hdlb-3d');
+    if (b) b.classList.toggle('hidden', !inspectOn);
+    if (!inspectOn && insp) exitInspect();
+  }
+
+  function inspNorm(a) { return ((a % 360) + 360) % 360; }
+  function inspStep() { return (insp && insp.reply && Number(insp.reply.step)) || 15; }
+  function inspTotal() { return (insp && insp.reply && Number(insp.reply.total)) || 24; }
+  function inspAngles() {
+    const f = insp && insp.reply && insp.reply.frames;
+    if (!f) return [];
+    return Object.keys(f).map(function (a) { return parseInt(a, 10); })
+      .filter(function (a) { return !isNaN(a); }).sort(function (a, b) { return a - b; });
+  }
+  /* the baked frame nearest the angle the player turned to — front, back and
+     the profiles bake first, so a drag mid-bake still turns */
+  function inspNearest(angles, want) {
+    let best = null, bestD = 999;
+    angles.forEach(function (a) {
+      let d = Math.abs(a - want); d = Math.min(d, 360 - d);
+      if (d < bestD) { bestD = d; best = a; }
+    });
+    return best;
+  }
+
+  function inspAsk() {
+    if (!spin || !insp) return;
+    toGame('hdInspect', JSON.stringify({ formId: spin.formId, plugin: spin.plugin, queue: true }));
+  }
+
+  function enterInspect() {
+    if (!el || !spin || spin.kind !== 'item' || insp) return;
+    setZoom(1);
+    dragX = null;
+    insp = { reply: null, angle: 0, polls: 0, timer: 0, drag: null };
+    el.classList.add('hdlb-inspect');
+    const stage = el.querySelector('.hdlb-stage');
+    if (stage) stage.style.height = '';   // the 3D stage owns its own size
+    baseW = 0; baseH = 0;
+    const hint = el.querySelector('.hdlb-hint');
+    if (hint) hint.textContent = 'drag, scroll or ← → to turn · Home faces the front · Esc goes back to the picture';
+    paintInspect();
+    inspAsk();
+  }
+
+  function exitInspect() {
+    if (!insp) return;
+    if (insp.timer) clearTimeout(insp.timer);
+    insp = null;
+    if (!el) return;
+    el.classList.remove('hdlb-inspect');
+    const img = el.querySelector('.hdlb-img');
+    if (img && ring.length && img.getAttribute('src') !== ring[ringAt]) img.setAttribute('src', ring[ringAt]);
+    const hint = el.querySelector('.hdlb-hint');
+    if (hint) hint.textContent = 'hold + drag to turn it · scroll to zoom · double-click to fill';
+    setTimeout(lockStage, 0);
+  }
+
+  function inspTurn(dir) {
+    if (!insp) return;
+    insp.angle = inspNorm(insp.angle + dir * inspStep());
+    paintInspect();
+  }
+
+  function inspStatus(text) {
+    const s = el && el.querySelector('.hdlb-insp-status');
+    if (s) s.textContent = text || '';
+  }
+
+  function paintInspect() {
+    if (!el || !insp) return;
+    const r = insp.reply;
+    const step = inspStep(), total = inspTotal();
+    const angles = inspAngles();
+    const shown = inspNearest(angles, insp.angle);
+    const img = el.querySelector('.hdlb-img');
+    if (img && shown !== null) {
+      const path = r.frames[String(shown)];
+      if (img.getAttribute('src') !== path) img.setAttribute('src', path);
+    }
+    const deg = el.querySelector('.hdlb-insp-deg');
+    if (deg) deg.textContent = (shown === null ? insp.angle : shown) + '°';
+    const bar = el.querySelector('.hdlb-insp-progress');
+    if (bar) {
+      bar.classList.toggle('hidden', !(r && r.ok && angles.length < total && !(r.refused >= total)));
+      const fill = bar.firstChild;
+      if (fill) fill.style.width = Math.round(angles.length / Math.max(1, total) * 100) + '%';
+    }
+    const dial = el.querySelector('.hdlb-insp-dial');
+    if (dial) {
+      dial.textContent = '';
+      for (let a = 0; a < 360; a += step) {
+        const baked = angles.indexOf(a) !== -1;
+        const t = document.createElement('button');
+        t.type = 'button';
+        t.className = 'hdlb-insp-tick' + (baked ? ' hdlb-insp-baked' : '') + (a === shown ? ' hdlb-insp-on' : '');
+        t.title = a + '°' + (baked ? '' : ' (still rendering)');
+        t.setAttribute('aria-label', 'Turn to ' + a + ' degrees');
+        if (!baked) t.disabled = true;
+        t.setAttribute('data-angle', String(a));
+        t.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (!insp) return;
+          insp.angle = parseInt(this.getAttribute('data-angle'), 10) || 0;
+          paintInspect();
+        });
+        dial.appendChild(t);
+      }
+    }
+    if (!r) inspStatus('Reading the piece…');
+    else if (r.ok === false) inspStatus(r.why || 'This piece cannot be turned in 3D.');
+    else if (r.failed && !angles.length) inspStatus('The renderer refused this piece: ' + r.failed);
+    else if (angles.length < total) inspStatus(angles.length + ' of ' + total + ' angles ready · the rest render while you look' +
+      (r.refused ? ' (' + r.refused + ' refused)' : ''));
+    else inspStatus('All ' + total + ' angles ready · rendered once, kept for next time');
+  }
+
+  function inspSchedulePoll() {
+    if (!insp) return;
+    if (insp.timer) { clearTimeout(insp.timer); insp.timer = 0; }
+    const r = insp.reply;
+    if (!r || r.ok === false) return;
+    const have = inspAngles().length;
+    if (have + (Number(r.refused) || 0) >= inspTotal()) return;
+    if (insp.polls >= INSP_POLL_MAX) { inspStatus('Still rendering — close and reopen to check again.'); return; }
+    insp.timer = setTimeout(function () {
+      if (!insp || !el) return;
+      insp.timer = 0;
+      insp.polls++;
+      inspAsk();
+    }, INSP_POLL_MS);
+  }
+
+  function applyInspect(d) {
+    if (!el || !spin || !insp || !d || typeof d !== 'object') return;
+    if (String(d.formId || '').toUpperCase() !== spin.formId.toUpperCase()) return;
+    if (String(d.plugin || '').toLowerCase() !== spin.plugin.toLowerCase()) return;
+    if (d.off) { setInspectOffered(false); return; }
+    insp.reply = d;
+    paintInspect();
+    inspSchedulePoll();
+  }
+
+  window.hdInspectData = function (j) {
+    let d = j;
+    if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
+    applyInspect(d);
+  };
+
+  let inspDocWired = false;
+  function onInspMove(e) {
+    if (!insp || !insp.drag) return;
+    const steps = Math.round((e.clientX - insp.drag.x) / INSP_STEP_PX);
+    const next = inspNorm(insp.drag.angle - steps * inspStep());
+    if (next !== insp.angle) { insp.angle = next; paintInspect(); }
+  }
+  /* mouse-down to mouse-up, never MouseEvent.buttons (Ultralight reports 0
+     while a button is held) */
+  function onInspUp() {
+    if (!insp || !insp.drag) return;
+    insp.drag = null;
+    const stage = el && el.querySelector('.hdlb-stage');
+    if (stage) stage.classList.remove('hdlb-dragging');
+  }
+  function wireInspect() {
+    const stage = el.querySelector('.hdlb-stage');
+    if (stage) stage.addEventListener('mousedown', function (e) {
+      if (!insp || e.button !== 0) return;
+      e.preventDefault();
+      insp.drag = { x: e.clientX, angle: insp.angle };
+      stage.classList.add('hdlb-dragging');
+    });
+    const go = el.querySelector('.hdlb-3d');
+    if (go) go.addEventListener('click', function (e) { e.stopPropagation(); enterInspect(); });
+    el.querySelectorAll('.hdlb-insp-btn').forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        const act = b.getAttribute('data-act');
+        if (act === 'left') inspTurn(-1);
+        else if (act === 'right') inspTurn(1);
+        else if (act === 'front') { if (insp) { insp.angle = 0; paintInspect(); } }
+        else if (act === 'back') exitInspect();
+      });
+    });
+    if (!inspDocWired) {
+      inspDocWired = true;
+      document.addEventListener('mousemove', onInspMove);
+      document.addEventListener('mouseup', onInspUp);
+      window.addEventListener('blur', onInspUp);
+    }
+  }
 
   function probeFrames(candidates) {
     const gen = ++probeGen;
@@ -313,7 +527,7 @@ window.HDLightbox = (function () {
    * SCREEN px and writing it back as a layout height would be wrong by the
    * deck scale. offset* is layout px and immune to ancestor transforms. */
   function lockStage() {
-    if (!el || zoom > 1.001) return;   // only meaningful while un-zoomed
+    if (!el || zoom > 1.001 || insp) return;   // only meaningful while un-zoomed, and never in 3D
     const img = el.querySelector('.hdlb-img');
     const stage = el.querySelector('.hdlb-stage');
     if (!img || !stage) return;
@@ -398,6 +612,7 @@ window.HDLightbox = (function () {
     if (!stage) return;
     stage.addEventListener('wheel', function (e) {
       e.preventDefault(); e.stopPropagation();
+      if (insp) { if (e.deltaY) inspTurn(e.deltaY > 0 ? 1 : -1); return; }
       const r = stage.getBoundingClientRect();
       const ax = r.width ? (e.clientX - r.left) / r.width : 0.5;
       const ay = r.height ? (e.clientY - r.top) / r.height : 0.5;
@@ -405,6 +620,7 @@ window.HDLightbox = (function () {
     }, { passive: false });
     stage.addEventListener('dblclick', function (e) {
       e.preventDefault(); e.stopPropagation();
+      if (insp) return;
       const r = stage.getBoundingClientRect();
       const ax = r.width ? (e.clientX - r.left) / r.width : 0.5;
       const ay = r.height ? (e.clientY - r.top) / r.height : 0.5;
@@ -475,6 +691,23 @@ window.HDLightbox = (function () {
       '<div class="hdlb-hint">' + (spin
         ? 'hold + drag to turn it · scroll to zoom · double-click to fill'
         : 'scroll to zoom · drag to move · double-click to fill') + '</div>' +
+      (spin && spin.kind === 'item'
+        ? '<button type="button" class="hdlb-3d hidden" title="Render this piece from every side, big, and turn it freely">' +
+          '<span class="hdlb-3d-title">Turn in 3D</span>' +
+          '<span class="hdlb-3d-sub">24 angles at full size · rendered once, kept</span></button>' +
+          '<div class="hdlb-insp" role="group" aria-label="3D inspector">' +
+          '<div class="hdlb-insp-progress hidden"><i></i></div>' +
+          '<div class="hdlb-insp-row"><span class="hdlb-insp-deg">0°</span>' +
+          '<div class="hdlb-insp-dial" role="group" aria-label="Angles"></div></div>' +
+          '<div class="hdlb-insp-ctl">' +
+          '<button type="button" class="hdlb-insp-btn" data-act="left" title="Turn left (←)">‹ Turn</button>' +
+          '<button type="button" class="hdlb-insp-btn" data-act="front" title="Face the front (Home)">Front</button>' +
+          '<button type="button" class="hdlb-insp-btn" data-act="right" title="Turn right (→)">Turn ›</button>' +
+          '<button type="button" class="hdlb-insp-btn" data-act="back" title="Back to the picture (Esc)">Back to picture</button>' +
+          '</div>' +
+          '<p class="hdlb-insp-status" role="status" aria-live="polite"></p>' +
+          '</div>'
+        : '') +
       '</div>' +
       '</div>';
     host.appendChild(el);
@@ -499,6 +732,15 @@ window.HDLightbox = (function () {
 
     keyFn = function (e) {
       if (!el) return;
+      if (insp) {
+        /* the 3D inspector owns the keys while it is up; Esc steps back to the
+           picture first, a second Esc closes */
+        if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); exitInspect(); }
+        else if (e.key === 'ArrowLeft') { e.stopPropagation(); e.preventDefault(); inspTurn(-1); }
+        else if (e.key === 'ArrowRight') { e.stopPropagation(); e.preventDefault(); inspTurn(1); }
+        else if (e.key === 'Home') { e.stopPropagation(); e.preventDefault(); insp.angle = 0; paintInspect(); }
+        return;
+      }
       if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); close(); }
       else if (e.key === '+' || e.key === '=') { e.stopPropagation(); setZoom(zoom * ZSTEP); }
       else if (e.key === '-' || e.key === '_') { e.stopPropagation(); setZoom(zoom / ZSTEP); }
@@ -519,6 +761,7 @@ window.HDLightbox = (function () {
       const stage = el.querySelector('.hdlb-stage');
       if (stage) stage.classList.add('hdlb-spinnable');
       wireSpinMouse();
+      if (spin.kind === 'item') wireInspect();
       toGame('hdSpin', spinPayload(false));
     }
   }
@@ -528,5 +771,8 @@ window.HDLightbox = (function () {
            _pan: function () { return { x: panX, y: panY }; },
            _base: function () { return { w: baseW, h: baseH }; },
            _spinState: function () { return lastSpinState; },
-           _spin: function () { return spin; } };
+           _spin: function () { return spin; },
+           _insp: function () { return insp ? { angle: insp.angle, frames: inspAngles().length, polls: insp.polls } : null; },
+           _inspectOffered: function () { return inspectOn; },
+           _enterInspect: enterInspect, _exitInspect: exitInspect };
 })();

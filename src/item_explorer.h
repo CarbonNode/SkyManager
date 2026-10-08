@@ -51,10 +51,15 @@ namespace ItemExplorer
 	// price; the deduction and the add are one task, so no half-bought item.
 	[[nodiscard]] std::string Add(const std::string& req);
 
-	// {pay?, mult?, pageSize?} -> {ok, pay, mult, pageSize} — each field optional,
+	// {pay?, mult?, pageSize?, inspect3d?} -> {ok, pay, mult, pageSize, inspect3d} — each field optional,
 	// only the present ones change. Persisted to the module's own sidecar
 	// (Data/SKSE/Plugins/HotkeyDeck/item-explorer.json) — deliberately NOT a
 	// hotkeys.json slice, so no shared save path is touched (keys-cache.json
 	// precedent). Unknown keys already in the sidecar survive (read-only parse).
 	[[nodiscard]] std::string Save(const std::string& req);
+
+	// The "Turn in 3D" inspector switch (sidecar key "inspect3d", default on).
+	// Off = the lightbox shows no 3D control and hdInspect refuses to queue a
+	// single frame. Main thread (first call reads the sidecar).
+	[[nodiscard]] bool Inspect3D();
 }

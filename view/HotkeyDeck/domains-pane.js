@@ -3179,6 +3179,13 @@ window.DomainsPane = (function () {
     ui.sel = -1;
     renderList();
   }
+  /* setFilter('') without its renderList(): for a caller whose next statement
+     is render(), which draws the list itself (onCfg, onShow). */
+  function resetFilter() {
+    ui.filter = '';
+    if (els.search && els.search.value !== '') els.search.value = '';
+    ui.sel = -1;
+  }
 
   function toggleEdit() {
     closeAllMenus();
@@ -3225,9 +3232,15 @@ window.DomainsPane = (function () {
     ui.editing = false;
     ui.armDelCat = null;
     ui.expanded = new Set();
-    ui.sel = -1;
-    setFilter('');
-    render();
+    resetFilter();
+    /* domains-hidden-no-render (2026-10-08): the config arrives at EVERY deck
+       open, on every tab, and this built the whole Domains list into a hidden
+       pane each time, twice over (setFilter('') drew the list, render() drew
+       it again): `pdOpen` was the single biggest handler of the open in the
+       2026-10-08 log, 47-147 ms with the deck on Home. The state above is all
+       the rest of the deck reads; onShow() renders when the tab is actually
+       shown, so a hidden pane only drops its row cache. */
+    if (ui.shown) render(); else dropRowCache();
   }
 
   function normalizeMark(m) {
@@ -3371,8 +3384,7 @@ window.DomainsPane = (function () {
     const pane = $('dm-pane');
     if (pane) pane.classList.remove('hidden');
     noImage.clear();   // re-probe images each open — a file may have been added
-    ui.sel = -1;
-    setFilter('');
+    resetFilter();     // render() below draws the list; setFilter('') drew it twice
     render();
     if (window.FolPane && FolPane.requestPortraitFaces) FolPane.requestPortraitFaces();
     toGame('pdRefresh');   // the position snapshot is cheap and always fresh

@@ -105,6 +105,8 @@
     'hd-family-tree.js',
     'hd-dossier-social.js',
     'hd-dossier-tools.js',
+    'hd-person.js',        // person-page look: hero, How-X-sees-you, the Mirror (pnMirrorData is response-style)
+    'hd-bio.js',           // Bio Blocks: CHIM library traits on the dossier's CHIM page (+ library popout, Omni rows)
     'followers-pane.js',   // F7-with-target deep-opens here; FolPane.init() re-run on land
     'wardrobe-flair-model.js',
     'wardrobe-flair-ui.js',
@@ -202,6 +204,8 @@
     'light-pane.js',
     'faces-pane.js',
     'time-pane.js',
+    'weather-pane.js',     // wx* replies are response-style (the pane always asks
+                           // first), so no STUB_FNS entry
     'finances-pane.js',
     'wardrobe-nff.js',     // chains fdPortraits/fdTarget/hdIconIndex/hdIcons off
                            // wardrobe-pane (pos 7) -> must load after it; keeps its
@@ -251,6 +255,7 @@
     'zaz-pane.js': ['anim'],         // ZaZ body lives there too
     'faces-pane.js': ['faces'],
     'time-pane.js': ['time'],
+    'weather-pane.js': ['weather'],
     'finances-pane.js': ['finances'],
     'bases-pane.js': ['domains'],    // Bases is a mode of the Domains tab
     'residents-pane.js': ['domains'] // Residents is the third mode of it
@@ -267,7 +272,7 @@
     highking: 'HighKingPane',
     household: 'HouseholdPane',
     scene: 'ScenePane',
-    sheet: 'CharSheetPane', anim: 'AnimPane', faces: 'FacesPane', time: 'TimePane',
+    sheet: 'CharSheetPane', anim: 'AnimPane', faces: 'FacesPane', time: 'TimePane', weather: 'WeatherPane',
     finances: 'FinancesPane'
   };
 

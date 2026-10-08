@@ -60,6 +60,13 @@ namespace Hotbar
 	// of firing, and the view's cycle-then-pause picks the child. One level
 	// only — a flyout child is never itself a flyout (FromJson drops it).
 	inline constexpr int kMaxFlyItems = 9;
+	// Oblivion-style "ready" slots (2026-10-04). Not bar buttons: the picked
+	// spell and the picked potion, fired by castKey / potionKey. These pseudo
+	// indices travel wherever a button index does (HbFireSlot, hbCast, the
+	// view's data-i), and every slot-indexed array must be guarded against
+	// them (they are negative on purpose: no array accepts them by accident).
+	inline constexpr int kReadySpell  = -2;
+	inline constexpr int kReadyPotion = -3;
 
 	// One thing you can put on a button. `kind` picks which existing verb runs
 	// it — every one of these already exists and is already play-proven, which is
@@ -160,6 +167,49 @@ namespace Hotbar
 		std::uint32_t modCode   = 0;
 		std::string   modLabel;
 	};
+
+	// ---- bars by weapon (2026-10-08, Spell Hotbar 2's "bars that follow your
+	// weapon"; Rober: "per weapon would be a good feature") -------------------
+	// A WeaponBar is a second set of the seven modifier pages that is live
+	// whenever what you HOLD matches its class (and, for the sneak variant,
+	// whenever you are also sneaking). The keys, the modifier rules and the
+	// page switches stay the Default bar's — a weapon bar only supplies what
+	// the buttons DO. An EMPTY button on a weapon bar shows the Default bar's
+	// button in that place (SH2's "empty slots inherit from the parent bar"),
+	// and a sneak bar's empty button looks at its class bar first, then at
+	// Default — so one Default bar plus a few overrides is the whole setup.
+	//
+	// The class is read off the equipped forms on the main thread every
+	// visibility beat (ClassifyWielded) and resolved to a bar index
+	// (BarForWielded); the sink, the live tick and the menu bind all go
+	// through EffectiveSlot with that index, so the picture and the press can
+	// never disagree about which bar is live.
+	//
+	// The ids are a CONTRACT with the view and the file. Labels live in
+	// WeaponClassLabel.
+	inline constexpr const char* kWeaponClasses[] = {
+		"unarmed", "1h", "shield", "dual", "2h", "bow", "crossbow", "staff", "spellsword", "magic"
+	};
+	inline constexpr int kWeaponClassCount = 10;
+	bool        IsWeaponClass(const std::string& cls);
+	const char* WeaponClassLabel(const std::string& cls);
+
+	struct WeaponBar
+	{
+		std::string       cls;              // one of kWeaponClasses
+		bool              sneak = false;    // the sneaking variant of that class
+		bool              enabled = true;   // off = never live (kept, not deleted)
+		std::string       name;             // optional display name ("" = the class label)
+		std::vector<Page> pages;            // kPageCount pages of kMaxSlots; only `slots` matter here
+	};
+
+	// What the player holds, as a class id + the sneak flag. MAIN THREAD ONLY.
+	struct Wielded
+	{
+		std::string cls = "unarmed";
+		bool        sneak = false;
+	};
+	Wielded ClassifyWielded();
 
 	// A per-slot key binding. `code` 0 = unbound, in which case the button is
 	// click-only (it still works — you just have to open the bar's edit mode or
@@ -301,8 +351,47 @@ namespace Hotbar
 		// for anyone who would rather not hold a key during a fight.
 		bool modHold = true;
 
+		// How a hand SPELL on the bar is cast (2026-10-04, the Spell Hotbar NG
+		// batch — see hotbar_cast.h). "real" (default): it costs magicka, takes
+		// its charge time, channels while the key is held and goes where the
+		// crosshair points. "instant": the pre-2026-10 behaviour — free,
+		// immediate, the Spell Deck's verb. Powers and shouts are unaffected
+		// (they always use the game's own Shout key).
+		std::string castMode = "real";
+		// Real mode: aimed and target-location spells go to the crosshair at
+		// release. Off = the combat target, else straight ahead.
+		bool aimCrosshair = true;
+		// Every shout keeps its own cooldown (shout_cooldowns.h). Applies to
+		// the whole game, not only the bar — the engine's one timer is swapped
+		// whenever the equipped shout changes, however it changed.
+		bool ownShoutCooldowns = true;
+		// What a bar key does with a SPELL (2026-10-04, Spell Hotbar NG's
+		// Oblivion style). "cast" (default): it casts. "pick": a hand spell or
+		// scroll becomes the READY spell and a potion (or a smart potion
+		// button) the READY potion — castKey casts the ready spell, potionKey
+		// drinks the ready potion; a power or shout is equipped into the
+		// voice slot (use it with the game's Shout key). Everything else on
+		// the bar fires exactly as in "cast".
+		std::string keyMode = "cast";
+		SlotKey     castKey{ "keyboard", 0x2F, "V" };
+		SlotKey     potionKey{ "keyboard", 0x30, "B" };
+		// The picks themselves. Owned by C++ (a key press or a menu bind sets
+		// them) — the view never sends them back, so an editor save can never
+		// overwrite a pick made since the editor opened.
+		Slot readySpell;
+		Slot readyPotion;
+
+		// The optional casting ANIMATION (cast_anim.h): "auto" (default) =
+		// play Spell Hotbar 2's clips when that mod is installed, else cast
+		// silently; "off" = never. Nothing is required either way.
+		std::string castAnim = "auto";
+
 		// The pages themselves — always exactly kPageCount after FromJson.
 		std::vector<Page> pages;
+
+		// Bars by weapon (see WeaponBar above). Only the bars the player made
+		// are stored; the Default bar is `pages`. At most one per (cls, sneak).
+		std::vector<WeaponBar> weaponBars;
 
 		// Per-slot keys, index-aligned with the slots and SHARED across pages:
 		// key #1 fires slot 1 of whichever page the modifiers select. That is the
@@ -336,6 +425,21 @@ namespace Hotbar
 	// whether page p's custom key is down right now; null = none held.
 	int PageForMods(const Config& c, bool shift, bool ctrl, bool alt,
 		const bool* customHeld = nullptr);
+
+	// Which weapon bar is live for what the player holds: the exact (cls,
+	// sneak) bar when it exists and is enabled, else the class bar for a
+	// sneaking player, else -1 (the Default bar).
+	int BarForWielded(const Config& c, const Wielded& w);
+
+	// The slot that button `i` of page `page` DOES while bar `bar` (-1 =
+	// Default) is live, with the inheritance above applied. `origin` (when
+	// asked for) receives where it came from: the bar index, or -1 for the
+	// Default bar. A bar/page/slot out of range answers an empty slot.
+	const Slot& EffectiveSlot(const Config& c, int bar, int page, int i, int* origin = nullptr);
+
+	// "Two-handed", "Bow · sneaking", "Default" — what the pips strip and the
+	// editor print for a bar index.
+	std::string BarLabel(const Config& c, int bar);
 
 	// Config <-> json for the "hotbar" slice.
 	nlohmann::json ToJson(const Config& c);
@@ -560,4 +664,8 @@ namespace Hotbar
 	// A slot whose thing is gone comes back ok=false WITH a reason, because a
 	// button that greys out and says why beats one that silently does nothing.
 	std::string LiveJson(const Config& c, int page);
+
+	// The slot's form through the plugin's durable resolve (ActorIdentity,
+	// raw formId fallback) — the one the live tick uses. MAIN THREAD ONLY.
+	RE::TESForm* ResolveSlotForm(const Slot& s);
 }

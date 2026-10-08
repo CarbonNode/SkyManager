@@ -5178,7 +5178,14 @@ window.WardrobePane = (function () {
       state.itemIcons = next;
       state.itemIconFails = fails;
     } catch (e) { state.itemIcons = state.itemIcons || {}; }
-    try { render(); } catch (e) { /* pushed before first init — the open render shows them */ }
+    /* Only a Wardrobe on screen repaints. This push arrives for EVERY render
+       batch anywhere in the deck — the Finder lands several a second — and it
+       used to rebuild the whole hidden Wardrobe tab each time (body, builder,
+       pieces, picker), which was a large share of the Finder's stutter
+       (2026-10-07). onShow() renders from state.itemIcons, so nothing is lost. */
+    if (ui.shown && ui.inited) {
+      try { render(); } catch (e) { /* pushed before first init — the open render shows them */ }
+    }
     /* The Followers quick card draws worn gear from this same index (C++ now
      * pushes it on every fdEquipped reply, not only at Wardrobe-tab open).
      * Tell that pane — but only when the index actually CHANGED, so the

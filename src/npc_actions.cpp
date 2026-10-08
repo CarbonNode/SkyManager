@@ -2,6 +2,7 @@
 
 #include "follower_frameworks.h"
 #include "sic_em_feedback.h"
+#include "sic_em_orders.h"
 
 #include <algorithm>
 #include <atomic>
@@ -13,6 +14,8 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 // pch (force-included) provides RE::/SKSE:: and `using namespace std::literals`.
 
@@ -599,6 +602,111 @@ namespace NpcActions
 		// in a neutral — only actors already hostile to the player or already in
 		// combat — so this is "attack that group", never "start a massacre".
 
+		// ---- who answers an order, and who is never a target ----------------
+		//
+		// 2026-10-05, from reading Hunt Them Down (Nexus 194054, zfroggyman,
+		// GPL-3): an order used to reach teammates only, so a conjurer's
+		// atronachs and a necromancer's thralls stood behind him while the
+		// followers charged. A summon or reanimated thrall is "ours" through
+		// its COMMANDER, not through the teammate flag.
+
+		bool IsMinion(RE::Actor* a) { return a->IsSummoned() || a->IsCommandedActor(); }
+
+		// The player, a teammate, or a summon/thrall commanded by either. Every
+		// target filter below refuses these — your own atronach is "in combat"
+		// during a fight and must never be what the party is sent at.
+		bool IsOurs(RE::Actor* a)
+		{
+			if (a->IsPlayerRef() || a->IsPlayerTeammate())
+				return true;
+			if (!IsMinion(a))
+				return false;
+			auto commander = a->GetCommandingActor();
+			return commander && (commander->IsPlayerRef() || commander->IsPlayerTeammate());
+		}
+
+		struct Party
+		{
+			std::vector<RE::Actor*> followers;  // the teammates `allow` admits
+			std::vector<RE::Actor*> minions;    // their summons and thralls — and yours, on a party-wide order
+			std::size_t size() const { return followers.size() + minions.size(); }
+		};
+
+		// Followers come off the high process list with the same predicate the
+		// order has always used. Minions are found by commander link: a null
+		// `allow` (the whole party) includes the player's own; a group order
+		// takes only the summons of the members it admits.
+		Party GatherParty(const std::function<bool(RE::Actor*)>& allow)
+		{
+			Party p;
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* lists  = RE::ProcessLists::GetSingleton();
+			if (!player || !lists)
+				return p;
+			std::unordered_set<RE::FormID> owners, seen;
+			if (!allow)
+				owners.insert(player->GetFormID());
+			for (auto& h : lists->highActorHandles) {
+				auto ptr = h.get();
+				auto* a  = ptr ? ptr.get() : nullptr;
+				if (!a || a->IsDisabled() || a->IsDead() || a->IsPlayerRef())
+					continue;
+				if (!a->IsPlayerTeammate())
+					continue;
+				if (allow ? !allow(a) : IsMinion(a))
+					continue;  // a group order: only ITS members charge. Party-wide,
+							   // a teammate-flagged summon is counted below, as a minion.
+				p.followers.push_back(a);
+				owners.insert(a->GetFormID());
+				seen.insert(a->GetFormID());
+			}
+			auto consider = [&](RE::ActorHandle& h) {
+				auto ptr = h.get();
+				auto* a  = ptr ? ptr.get() : nullptr;
+				if (!a || a->IsDisabled() || a->IsDead() || a->IsPlayerRef() || !a->Is3DLoaded())
+					return;
+				if (!IsMinion(a))
+					return;
+				auto commander = a->GetCommandingActor();
+				if (commander ? !owners.contains(commander->GetFormID())
+							  : (allow || !a->IsPlayerTeammate()))
+					return;  // someone else's — or an enemy conjurer's
+				if (seen.insert(a->GetFormID()).second)
+					p.minions.push_back(a);
+			};
+			for (auto& h : lists->highActorHandles) consider(h);
+			for (auto& h : lists->middleHighActorHandles) consider(h);
+			return p;
+		}
+
+		// ---- standing orders -------------------------------------------------
+		//
+		// An order outlives its first StartCombat: TickOrders (below, ~2 Hz off
+		// the room-guard tick) re-issues it while she is not fighting, moves a
+		// Hunt on to the next enemy, and forgets it on a timeout — the policy
+		// is sic_em_orders.h. Timers count UNPAUSED seconds, so a long menu
+		// neither expires an order nor burns its re-issue budget. Handles, not
+		// FormIDs: a summon's FFxxxxxx id is recycled within a fight.
+		struct Order
+		{
+			RE::ActorHandle ally;
+			RE::ActorHandle target;
+			float           sinceIssued = 0.0f;
+			float           sincePush = 0.0f;
+			int             pushes = 0;
+			bool            hunt = false;
+		};
+		std::unordered_map<RE::FormID, Order> g_orders;  // by ally; main thread only
+
+		void Remember(RE::Actor* ally, RE::Actor* target, bool hunt)
+		{
+			Order o;
+			o.ally   = RE::ActorHandle(ally);
+			o.target = RE::ActorHandle(target);
+			o.hunt   = hunt;
+			g_orders[ally->GetFormID()] = o;  // a newer order replaces the older one
+		}
+
 		// Long-range designation ("longshot"). The crosshair ref is the vanilla
 		// activate pick and ResolveCrosshairActor's ray fallback stops at 600
 		// units — right for freeze/sit, useless for "attack that archer on the
@@ -629,7 +737,7 @@ namespace NpcActions
 				auto* a  = ptr ? ptr.get() : nullptr;
 				if (!a || a->IsPlayerRef() || a->IsDead() || a->IsDisabled() || !a->Is3DLoaded())
 					return;
-				if (a->IsPlayerTeammate())
+				if (IsOurs(a))
 					return;
 				if (!a->IsHostileToActor(player) && !a->IsInCombat())
 					return;
@@ -671,7 +779,7 @@ namespace NpcActions
 		RE::Actor* ResolveSicTargetInstant(const std::function<bool(RE::Actor*)>& excluded)
 		{
 			auto* target = TargetActor();
-			if (target && (target->IsDead() || target->IsPlayerTeammate() ||
+			if (target && (target->IsDead() || IsOurs(target) ||
 							  (excluded && excluded(target))))
 				target = nullptr;  // a corpse or one of ours — look past it
 			if (!target) {
@@ -705,7 +813,7 @@ namespace NpcActions
 					auto* a  = ptr ? ptr.get() : nullptr;
 					if (!a || a->IsPlayerRef() || a->IsDead() || a->IsDisabled() || !a->Is3DLoaded())
 						continue;
-					if (a->IsPlayerTeammate() || (excluded && excluded(a)))
+					if (IsOurs(a) || (excluded && excluded(a)))
 						continue;
 					if (!a->IsInCombat() || !a->IsHostileToActor(player))
 						continue;
@@ -736,7 +844,7 @@ namespace NpcActions
 			if (hit.collidee) {
 				auto* struck = RE::TESForm::LookupByID<RE::Actor>(hit.collidee);
 				if (struck && !struck->IsPlayerRef() && !struck->IsDead() && !struck->IsDisabled() &&
-					!struck->IsPlayerTeammate() && !(excluded && excluded(struck))) {
+					!IsOurs(struck) && !(excluded && excluded(struck))) {
 					logger::info("NpcActions: sic-em bolt struck \"{}\"{}", NameOf(struck),
 						(struck->IsHostileToActor(player) || struck->IsInCombat()) ? "" : " (a neutral — deliberate aim)");
 					return struck;
@@ -754,7 +862,7 @@ namespace NpcActions
 				auto* a  = ptr ? ptr.get() : nullptr;
 				if (!a || a->IsPlayerRef() || a->IsDead() || a->IsDisabled() || !a->Is3DLoaded())
 					return;
-				if (a->IsPlayerTeammate() || (excluded && excluded(a)))
+				if (IsOurs(a) || (excluded && excluded(a)))
 					return;
 				if (!a->IsHostileToActor(player) && !a->IsInCombat())
 					return;
@@ -782,22 +890,11 @@ namespace NpcActions
 				return false;
 			}
 
-			// Loaded followers (teammates), same predicate the rest of the deck
-			// uses for "is this person following me".
-			std::vector<RE::Actor*> followers;
-			for (auto& h : lists->highActorHandles) {
-				auto ptr = h.get();
-				auto* a  = ptr ? ptr.get() : nullptr;
-				if (!a || a->IsDisabled() || a->IsDead() || a->IsPlayerRef())
-					continue;
-				if (!a->IsPlayerTeammate())
-					continue;
-				if (allow && !allow(a))
-					continue;          // a group order: only ITS members charge
-				followers.push_back(a);
-			}
-			if (followers.empty()) {
-				Notify(who.empty() ? "Sic 'em: no followers nearby to command"
+			// Loaded followers `allow` admits, plus the summons and thralls that
+			// answer to them (and to you, on a party-wide order).
+			const Party party = GatherParty(allow);
+			if (party.size() == 0) {
+				Notify(who.empty() ? "Sic 'em: no followers or summons nearby to command"
 									: ("Sic 'em: nobody from " + who + " is nearby to command"));
 				return false;
 			}
@@ -811,7 +908,7 @@ namespace NpcActions
 				auto* a  = ptr ? ptr.get() : nullptr;
 				if (!a || a == target || a->IsDisabled() || a->IsDead() || a->IsPlayerRef())
 					continue;
-				if (a->IsPlayerTeammate())
+				if (IsOurs(a))
 					continue;
 				if ((a->GetPosition() - tp).Length() > kNearRadius)
 					continue;
@@ -823,9 +920,13 @@ namespace NpcActions
 			}
 
 			// Everyone rushes the one you pointed at first (kill order = focus
-			// fire on the designated target)...
-			for (auto* f : followers)
-				CallStartCombat(f, target);
+			// fire on the designated target) — and the order STANDS until the
+			// target is down (TickOrders), so one who loses it is sent back.
+			for (auto* list : { &party.followers, &party.minions })
+				for (auto* f : *list) {
+					CallStartCombat(f, target);
+					Remember(f, target, false);
+				}
 
 			// ...and the near hostiles get pulled active so the group is a real
 			// fight by the time the followers arrive. Aggro toward the player,
@@ -834,11 +935,17 @@ namespace NpcActions
 				CallStartCombat(e, player);
 
 			logger::info("NpcActions: sic-em — {} follower(s) onto \"{}\" (+{} nearby hostile) via {}{}",
-				followers.size(), NameOf(target), nearHostiles.size(), how,
+				party.followers.size(), NameOf(target), nearHostiles.size(), how,
 				who.empty() ? std::string() : (" [" + who + "]"));
+			if (!party.minions.empty())  // Build marker (hd-markers.json: "npc-sic-em-minions").
+				logger::info("NpcActions: sic-em minions — {} summon(s)/thrall(s) sent with them",
+					party.minions.size());
 			SicEmFeedback::Ping(target);
-			std::string msg = "Sic 'em: " + std::to_string(static_cast<int>(followers.size())) +
+			std::string msg = "Sic 'em: " + std::to_string(static_cast<int>(party.size())) +
 				" on " + NameOf(target);
+			if (!party.minions.empty())
+				msg += " (" + std::to_string(static_cast<int>(party.minions.size())) +
+					(party.minions.size() == 1 ? " summon)" : " summons)");
 			if (!nearHostiles.empty())
 				msg += " +" + std::to_string(static_cast<int>(nearHostiles.size()));
 			Notify(msg);
@@ -853,6 +960,13 @@ namespace NpcActions
 		// then whoever the bolt LANDS ON, then the nearest enemy already
 		// fighting you. Returns true when the order was given OR the bolt is in
 		// the air and will give it; the reason for a refusal is on screen.
+		bool DoHunt(bool minionsOnly, const std::function<bool(RE::Actor*)>& allow = nullptr);
+
+		// ONE KEY, both verbs (Rober, 2026-10-05: "how can we combine it?"):
+		// aim at someone and it is the direct order it always was - the bolt,
+		// focus fire on that target. Find NO target - nothing under the
+		// crosshair, along the aim, where the bolt landed, or fighting you -
+		// and it becomes a Hunt instead of a refusal.
 		bool DoSicEm(const std::function<bool(RE::Actor*)>& allow, const std::string& who)
 		{
 			const bool bolt = SicEmFeedback::FireAlongAim();
@@ -862,8 +976,8 @@ namespace NpcActions
 				// No projectile art (or no world yet): the old immediate answer.
 				if (auto* target = FightFallback(allow))
 					return Engage(target, allow, who, "fight");
-				Notify("Sic 'em: aim at an enemy — nobody under the crosshair, along your aim, or fighting you");
-				return false;
+				logger::info("NpcActions: sic-em found no target - hunting instead");  // marker: npc-sic-em-hunt
+				return DoHunt(false, allow);
 			}
 			// Whoever the bolt lands on is the target — EFF's targeting spell.
 			SicEmFeedback::AwaitImpact([allow, who](std::optional<SicEmFeedback::Impact> hit) {
@@ -871,12 +985,109 @@ namespace NpcActions
 				const char* how = "bolt";
 				if (!target) { target = FightFallback(allow); how = "fight"; }
 				if (!target) {
-					Notify(hit ? "Sic 'em: the bolt hit nothing worth fighting"
-							   : "Sic 'em: the bolt found no one — nobody along your aim or fighting you");
+					logger::info("NpcActions: sic-em found no target - hunting instead");
+					DoHunt(false, allow);
 					return;
 				}
 				Engage(target, allow, who, how);
 			});
+			return true;
+		}
+
+		// ---- "hunt" -----------------------------------------------------------
+		//
+		// Hunt Them Down's verb (Nexus 194054): no aiming. Every follower and
+		// summon goes for the enemy nearest to THEM — including ones that have
+		// not noticed you yet — so the glass cannon stops having to lead the
+		// charge. Interior: anyone in the cell. Exterior: within kHuntRange.
+		//
+		// Only actors already hostile to you qualify, never a neutral, and a
+		// guard or anyone with a crime faction only when the fight with them is
+		// real (in combat, or you are hostile to them too) — that mod's lawful
+		// rule, so a bounty in another hold does not turn "hunt" into "attack
+		// the town watch". That mod walks its allies in through Harbinger's
+		// travel claims; Harbinger is not a dependency here, so this is our
+		// StartCombat plus the standing order, which moves each ally on to the
+		// next enemy as the last one drops.
+		bool Huntable(RE::Actor* a, RE::Actor* player)
+		{
+			if (!a || a->IsDead() || a->IsDisabled() || !a->Is3DLoaded() || IsOurs(a))
+				return false;
+			if (!a->IsHostileToActor(player))
+				return false;
+			const bool lawful = a->IsGuard() || a->GetCrimeFaction() != nullptr;
+			if (lawful && !a->IsInCombat() && !player->IsHostileToActor(a))
+				return false;
+			return true;
+		}
+
+		RE::Actor* NearestHuntable(RE::Actor* from)
+		{
+			constexpr float kHuntRange = 4000.0f;  // ~57 m outdoors (that mod's default)
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* lists  = RE::ProcessLists::GetSingleton();
+			if (!player || !lists || !from)
+				return nullptr;
+			auto* cell = from->GetParentCell();
+			const bool interior = cell && cell->IsInteriorCell();
+			const RE::NiPoint3 fp = from->GetPosition();
+			RE::Actor* best = nullptr;
+			float bestD = interior ? 1.0e9f : kHuntRange;
+			auto check = [&](RE::ActorHandle& h) {
+				auto ptr = h.get();
+				auto* a  = ptr ? ptr.get() : nullptr;
+				if (a == from || !Huntable(a, player))
+					return;
+				if (interior && a->GetParentCell() != cell)
+					return;
+				const float d = (a->GetPosition() - fp).Length();
+				if (d < bestD) { bestD = d; best = a; }
+			};
+			for (auto& h : lists->highActorHandles) check(h);
+			for (auto& h : lists->middleHighActorHandles) check(h);
+			return best;
+		}
+
+		bool DoHunt(bool minionsOnly, const std::function<bool(RE::Actor*)>& allow)
+		{
+			const Party party = GatherParty(allow);
+			std::vector<RE::Actor*> allies;
+			if (!minionsOnly)
+				allies = party.followers;
+			allies.insert(allies.end(), party.minions.begin(), party.minions.end());
+			if (allies.empty()) {
+				Notify(minionsOnly ? "Hunt: no summons or thralls nearby to send"
+								   : "Hunt: no followers or summons nearby to send");
+				return false;
+			}
+
+			int sent = 0;
+			RE::Actor* first = nullptr;
+			std::unordered_set<RE::FormID> targets;
+			for (auto* ally : allies) {
+				if (!ally->Is3DLoaded())
+					continue;
+				auto* target = NearestHuntable(ally);
+				if (!target)
+					continue;
+				CallStartCombat(ally, target);
+				Remember(ally, target, true);
+				++sent;
+				if (!first)
+					first = target;
+				if (targets.insert(target->GetFormID()).second && targets.size() <= 4)
+					SicEmFeedback::Ping(target);
+			}
+			if (!sent) {
+				Notify("Hunt: nothing hostile in reach - no enemy in this cell or within ~57 m outdoors");
+				return false;
+			}
+			// Build marker (hd-markers.json: "npc-hunt").
+			logger::info("NpcActions: hunt — {} of {} sent after {} enemy(ies), first \"{}\"{}",
+				sent, allies.size(), targets.size(), NameOf(first), minionsOnly ? " [minions only]" : "");
+			Notify("Hunt: " + std::to_string(sent) + " sent after " +
+				(targets.size() == 1 ? NameOf(first)
+									 : std::to_string(static_cast<int>(targets.size())) + " enemies"));
 			return true;
 		}
 
@@ -1192,7 +1403,7 @@ namespace NpcActions
 	bool IsAction(const std::string& a)
 	{
 		return a == "freeze" || a == "sit" || a == "bed" || a == "release-all" || a == "grab" ||
-			a == "attack-target";
+			a == "attack-target" || a == "hunt" || a == "hunt-minions";
 	}
 
 	bool HasPoseHold(std::uint32_t id)
@@ -1327,6 +1538,101 @@ namespace NpcActions
 		return true;
 	}
 
+	// ---- standing orders: the tick, and the ways one ends early --------------
+
+	void TickOrders(bool gameReady, bool paused)
+	{
+		static auto last = std::chrono::steady_clock::now();
+		const auto  now = std::chrono::steady_clock::now();
+		// Unpaused seconds only, and never more than one tick's worth: a menu,
+		// a load screen or a stalled frame must not age an order.
+		const float dt = (std::min)(std::chrono::duration<float>(now - last).count(), 1.0f);
+		last = now;
+		if (g_orders.empty() || !gameReady || paused)
+			return;
+
+		int  stranded = 0;      // would not engage — say so once, not per ally
+		bool huntCleared = false;
+		for (auto it = g_orders.begin(); it != g_orders.end();) {
+			auto& o = it->second;
+			o.sinceIssued += dt;
+			o.sincePush += dt;
+			auto allyPtr   = o.ally.get();
+			auto targetPtr = o.target.get();
+			auto* ally   = allyPtr ? allyPtr.get() : nullptr;
+			auto* target = targetPtr ? targetPtr.get() : nullptr;
+
+			SicEmOrders::Sample s;
+			s.allyPresent  = ally && !ally->IsDead() && !ally->IsDisabled() && ally->Is3DLoaded();
+			s.allyHeld     = ally && (g_managed.contains(ally->GetFormID()) ||
+				(g_dragActive.load() && g_drag.id == ally->GetFormID()));
+			s.targetAlive  = target && !target->IsDead() && !target->IsDisabled();
+			s.allyInCombat = s.allyPresent && ally->IsInCombat();
+			s.hunt         = o.hunt;
+			s.sinceIssued  = o.sinceIssued;
+			s.sincePush    = o.sincePush;
+			s.pushes       = o.pushes;
+
+			const auto d = SicEmOrders::Decide(s);
+			bool drop = false;
+			switch (d.step) {
+			case SicEmOrders::Step::Keep:
+				break;
+			case SicEmOrders::Step::Push:
+				CallStartCombat(ally, target);
+				++o.pushes;
+				o.sincePush = 0.0f;
+				// Build marker (hd-markers.json: "npc-sic-em-standing").
+				logger::info("NpcActions: sic-em standing order — \"{}\" sent back at \"{}\" (re-issue {})",
+					NameOf(ally), NameOf(target), o.pushes);
+				break;
+			case SicEmOrders::Step::Retarget:
+				if (auto* next = NearestHuntable(ally)) {
+					o.target = RE::ActorHandle(next);
+					o.sinceIssued = o.sincePush = 0.0f;
+					o.pushes = 0;
+					CallStartCombat(ally, next);
+					logger::info("NpcActions: hunt retarget — \"{}\" moves on to \"{}\"",
+						NameOf(ally), NameOf(next));
+				} else {
+					drop = true;
+					huntCleared = true;
+				}
+				break;
+			case SicEmOrders::Step::Drop:
+				drop = true;
+				if (d.reason == std::string_view("would not engage"))
+					++stranded;
+				break;
+			}
+			if (drop) {
+				logger::info("NpcActions: standing order ended for {:08X} ({})",
+					static_cast<std::uint32_t>(it->first), d.reason);
+				it = g_orders.erase(it);
+			} else {
+				++it;
+			}
+		}
+
+		if (stranded)
+			Notify("Sic 'em: " + std::to_string(stranded) +
+				(stranded == 1 ? " couldn't get to the target - order dropped"
+							   : " couldn't get to their targets - orders dropped"));
+		if (huntCleared && std::none_of(g_orders.begin(), g_orders.end(),
+				[](const auto& e) { return e.second.hunt; }))
+			Notify("Hunt: nothing left in reach");
+	}
+
+	void CancelOrder(std::uint32_t formId)
+	{
+		if (!formId)
+			g_orders.clear();
+		else
+			g_orders.erase(static_cast<RE::FormID>(formId));
+	}
+
+	void RevertOrders() { g_orders.clear(); }
+
 	bool SicEm(const std::function<bool(RE::Actor*)>& allow, const std::string& who)
 	{
 		return DoSicEm(allow, who);
@@ -1369,6 +1675,7 @@ namespace NpcActions
 			}
 
 			CallStartCombat(who, target);
+			Remember(who, target, false);
 			logger::info("NpcActions: sic-em one — \"{}\" ({:08X}) onto \"{}\"{}",  // marker: npc-sic-em-one
 				NameOf(who), static_cast<std::uint32_t>(id), NameOf(target), freed);
 			SicEmFeedback::Ping(target);
@@ -1428,6 +1735,10 @@ namespace NpcActions
 		}
 		if (action == "attack-target") {
 			DoSicEm(nullptr, {});
+			return true;
+		}
+		if (action == "hunt" || action == "hunt-minions") {
+			DoHunt(action == "hunt-minions");
 			return true;
 		}
 		if (action != "freeze" && action != "sit" && action != "bed")

@@ -76,6 +76,7 @@ window.ItemsPane = (function () {
     gold: -1,        // -1 = unknown (SEH sentinel) — shown as "?"
     pay: false,
     mult: 1,
+    inspect3d: true, // the lightbox's "Turn in 3D" switch (item-explorer.json inspect3d)
     plugins: [],     // [{n,c,k,l}] — matched locally for the Mods section
     seq: 0,          // last query seq we SENT; stale replies are dropped
     total: 0,
@@ -100,7 +101,7 @@ window.ItemsPane = (function () {
     debT: null,
     sheet: null,     // {item, qty} while the price sheet is up
     toastT: null,
-    iconReq: {},     // formId|plugin -> 1 : renders already asked this session
+    iconAskSig: '',  // the missing-art keys of the last render ask ('' = none open)
     iconT: null,     // the settle timer before icons are requested for a query
     iconPollT: null, // on-disk index poll while drawn rows still lack art
     iconPollN: 0,
@@ -147,6 +148,8 @@ window.ItemsPane = (function () {
     state.gold = (typeof d.gold === 'number') ? d.gold : -1;
     state.pay = !!d.pay;
     state.mult = Number(d.mult) || 1;
+    /* An old DLL sends no inspect3d and has no inspector: the toggle hides. */
+    state.inspect3d = typeof d.inspect3d === 'boolean' ? d.inspect3d : null;
     /* Persisted page size from the DLL. Absent (an old DLL) => keep our default,
        so the pane still paginates — old-DLL tolerance in the read direction. */
     if (typeof d.pageSize === 'number' && d.pageSize > 0) ui.pageSize = clampPageSize(d.pageSize);
@@ -266,6 +269,7 @@ window.ItemsPane = (function () {
     if (!d || typeof d !== 'object') return;
     state.pay = !!d.pay;
     state.mult = Number(d.mult) || 1;
+    if (typeof d.inspect3d === 'boolean') state.inspect3d = d.inspect3d;
     /* pageSize round-trips through the same save reply (item-explorer.json). If
        the DLL snapped it to a different legal value, follow — and re-query so
        the page matches the confirmed size. */
@@ -345,6 +349,15 @@ window.ItemsPane = (function () {
     ui.page = 0;
     toGame('ixSave', JSON.stringify({ pageSize: ui.pageSize }));
     runQuery(false);
+  }
+
+  /* The 3D inspector switch — the same sidecar as pay/mult/pageSize. Optimistic;
+     ixSaved confirms. An open lightbox learns it from its next hdSpinState. */
+  function setInspect3d(on) {
+    if (state.inspect3d === null) return;   // an old DLL has no inspector
+    state.inspect3d = !!on;
+    renderHeader();
+    toGame('ixSave', JSON.stringify({ inspect3d: state.inspect3d }));
   }
 
   function queryDebounced() {
@@ -1014,9 +1027,18 @@ window.ItemsPane = (function () {
   }
 
   /* After a render, ask C++ for the meshes of the VISIBLE item rows that have
-     no picture yet — bounded to what state.items holds (one page or the pages
-     paged in), never the whole index. Deduped across the whole session, so a
-     row that scrolls back never re-queues a render. */
+     no picture yet — bounded to what state.items holds (one page), never the
+     whole index.
+
+     The ask REPLACES the Finder's previous one (owner 'finder', replace:true):
+     C++ drops whatever it was still waiting to render for an older page and
+     keeps only this one. Asks used to pile up, so paging through a mod's
+     weapons queued every page behind the next — 67 renders in seven seconds,
+     still landing (and stalling the game) half a minute after the deck closed
+     (Rober, 2026-10-07: "i selected a mod and it started generating visuals
+     but lagged super hard"). Because C++ forgets what it dropped, paging BACK
+     re-asks that page's rows; the same set twice in a row is not re-sent. */
+  const ICON_OWNER = 'finder';
   function requestIcons() {
     if (!state.items.length) return;
     const items = [], seen = {};
@@ -1025,13 +1047,24 @@ window.ItemsPane = (function () {
       const p = idParts(it.id);
       if (!p) continue;
       const key = p.formId + '|' + p.plugin;
-      if (ui.iconReq[key] || seen[key]) continue;   // already asked, or dup this batch
+      if (seen[key]) continue;                      // dup this batch
       if (iconFor(it.id)) continue;                 // already rendered
       seen[key] = 1;
-      ui.iconReq[key] = 1;
       items.push({ formId: p.formId, plugin: p.plugin, name: it.n || '' });
     }
-    if (items.length) toGame('whIcons', JSON.stringify({ items: items }));
+    const sig = Object.keys(seen).sort().join(',');
+    if (!items.length || sig === ui.iconAskSig) return;
+    ui.iconAskSig = sig;
+    toGame('whIcons', JSON.stringify({ owner: ICON_OWNER, replace: true, items: items }));
+  }
+
+  /* Leaving the tab (or closing the deck) takes the Finder's waiting renders
+     back: nobody is looking at them, and each one would stall the game it
+     lands over. Renders already in flight finish; coming back re-asks. */
+  function cancelIcons() {
+    if (!ui.iconAskSig) return;
+    ui.iconAskSig = '';
+    toGame('whIcons', JSON.stringify({ owner: ICON_OWNER, replace: true, items: [] }));
   }
 
   /* The settle gate (2026-08-13 play-test): requesting renders on EVERY render
@@ -1330,6 +1363,16 @@ window.ItemsPane = (function () {
       payBtn.title = state.pay
         ? 'Taking an item asks a price and pays REAL gold — click for free-take mode'
         : 'Free take — click to make items cost gold (asks a price each time)';
+    }
+    const insp = $('ix-3d-toggle');
+    if (insp) {
+      insp.classList.toggle('hidden', state.inspect3d === null);
+      insp.classList.toggle('ix-toggle-on', state.inspect3d === true);
+      insp.textContent = state.inspect3d ? '3D inspector: on' : '3D inspector: off';
+      insp.setAttribute('aria-pressed', state.inspect3d ? 'true' : 'false');
+      insp.title = state.inspect3d
+        ? 'Click a picture, then "Turn in 3D": 24 angles rendered big. Click to switch the inspector off.'
+        : 'Off: pictures open with the small 4-angle turn only, and nothing extra renders. Click to switch on.';
     }
     const mult = $('ix-mult');
     if (mult) {
@@ -1889,6 +1932,7 @@ window.ItemsPane = (function () {
     if (chipT) { clearTimeout(chipT); chipT = null; }
     if (renderChip) renderChip.classList.remove('ix-on');
     stopIconPoll();
+    cancelIcons();
   }
 
   function toggleEdit() { /* no edit chrome */ }
@@ -1970,6 +2014,13 @@ window.ItemsPane = (function () {
       renderHeader(); renderBody();
       toGame('ixSave', JSON.stringify({ pay: state.pay }));
     });
+    const inspBtn = $('ix-3d-toggle');
+    /* once per button even if init runs twice (a harness calls it on top of
+       the module's own self-init) — a toggle wired twice flips back */
+    if (inspBtn && !inspBtn.getAttribute('data-wired')) {
+      inspBtn.setAttribute('data-wired', '1');
+      inspBtn.addEventListener('click', function () { setInspect3d(!state.inspect3d); });
+    }
     const mult = $('ix-mult');
     if (mult) mult.addEventListener('change', function () {
       state.mult = Number(mult.value) || 1;
@@ -2015,6 +2066,7 @@ window.ItemsPane = (function () {
   function devState() {
     window.ixStateResult({
       phase: 'ready', count: 412391, gold: 12345, pay: state.pay, mult: state.mult || 1,
+      inspect3d: state.inspect3d !== false,
       plugins: [
         { n: 'Skyrim.esm', c: 12842, k: 'esm', l: false },
         { n: 'Ordinator - Perks of Skyrim.esp', c: 214, k: 'esp', l: false },
@@ -2077,7 +2129,8 @@ window.ItemsPane = (function () {
     try { req = JSON.parse(arg); } catch (e) {}
     if ('pay' in req) state.pay = !!req.pay;
     if ('mult' in req) state.mult = Number(req.mult) || 1;
-    window.ixSaved({ ok: true, pay: state.pay, mult: state.mult });
+    if ('inspect3d' in req) state.inspect3d = !!req.inspect3d;
+    window.ixSaved({ ok: true, pay: state.pay, mult: state.mult, inspect3d: state.inspect3d });
   }
 
   /* ---- Modify dev fixtures — mirror item_edit.cpp's store semantics so the
@@ -2382,6 +2435,18 @@ window.ItemsPane = (function () {
         },
       });
 
+      /* Only once the DLL has said it HAS an inspector (inspect3d in ixState):
+         an old build would take the flip and do nothing. */
+      if (state.inspect3d !== null) rows.push({
+        label: '3D item inspector',
+        detail: state.inspect3d
+          ? 'ON — click any item picture, then Turn in 3D: 24 angles rendered big. Run to switch it off.'
+          : 'OFF — pictures open with the small 4-angle turn only. Run to switch the 3D inspector on.',
+        kind: 'items',
+        keywords: '3d inspector turntable turn spin rotate orbit model view catalog inspect item picture big',
+        run: function () { omniLand(); setInspect3d(!state.inspect3d); },
+      });
+
       rows.push({
         label: 'Modify an item',
         detail: 'Edit any item\'s record — damage, armor, value, weight, name, enchantment. ' +
@@ -2438,7 +2503,7 @@ window.ItemsPane = (function () {
     _flushIcons: flushIconsForTest, _iconPollTick: iconPollTick, _missingArt: missingArt,
     _state: state, _ui: ui, _flatRows: flatRows, _modMatches: modMatches,
     _suggestedPrice: suggestedPrice, _openSheet: openSheet, _closeSheet: closeSheet,
-    _openLightbox: openLightbox,
+    _openLightbox: openLightbox, _setInspect3d: setInspect3d,
     _rowLoading: rowLoading, _renderWindowActive: renderWindowActive,
     _armWindow: function () { chipLastLand = Date.now(); },
     _closeWindow: function () { chipLastLand = 1; },   // far past => window shut

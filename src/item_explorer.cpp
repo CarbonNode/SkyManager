@@ -120,6 +120,8 @@ namespace ItemExplorer
 		                        // per page — persisted so the choice survives a
 		                        // session. Items are cheaper 512px renders than
 		                        // NPC faces, so this pane defaults to 25.
+		bool   g_inspect3d = true;  // the lightbox's "Turn in 3D" inspector (2026-10-04):
+		                        // 24 frames at 1024px per piece, so it is a choice
 		bool   g_settingsLoaded = false;
 
 		// Legal page sizes the selector offers; a persisted value outside this set
@@ -150,6 +152,7 @@ namespace ItemExplorer
 					// unknown keys in the sidecar survive untouched — j is only READ
 					// here, and SaveSettingsFile writes back only the fields we own.
 					g_pageSize = ClampPageSize(j.value("pageSize", g_pageSize));
+					g_inspect3d = j.value("inspect3d", g_inspect3d);
 				}
 			} catch (...) {
 				logger::warn("item-explorer: settings sidecar unreadable — defaults kept");
@@ -169,7 +172,8 @@ namespace ItemExplorer
 					logger::warn("item-explorer: could not write {}", PathU8(tmp));
 					return;
 				}
-				out << Dump(json{ { "pay", g_pay }, { "mult", g_mult }, { "pageSize", g_pageSize } });
+				out << Dump(json{ { "pay", g_pay }, { "mult", g_mult }, { "pageSize", g_pageSize },
+					{ "inspect3d", g_inspect3d } });
 			}
 			std::filesystem::rename(tmp, path, ec);
 			if (ec)
@@ -541,6 +545,7 @@ namespace ItemExplorer
 			{ "pay", g_pay },
 			{ "mult", g_mult },
 			{ "pageSize", g_pageSize },   // persisted Finder page size; an old view ignores it
+			{ "inspect3d", g_inspect3d },
 			{ "plugins", std::move(plugs) },
 		});
 	}
@@ -746,7 +751,16 @@ namespace ItemExplorer
 			g_mult = std::clamp(in.value("mult", g_mult), 0.0, 100.0);
 		if (in.contains("pageSize"))
 			g_pageSize = ClampPageSize(in.value("pageSize", g_pageSize));
+		if (in.contains("inspect3d") && in["inspect3d"].is_boolean())
+			g_inspect3d = in["inspect3d"].get<bool>();
 		SaveSettingsFile();
-		return Dump(json{ { "ok", true }, { "pay", g_pay }, { "mult", g_mult }, { "pageSize", g_pageSize } });
+		return Dump(json{ { "ok", true }, { "pay", g_pay }, { "mult", g_mult }, { "pageSize", g_pageSize },
+			{ "inspect3d", g_inspect3d } });
+	}
+
+	bool Inspect3D()
+	{
+		LoadSettings();
+		return g_inspect3d;
 	}
 }

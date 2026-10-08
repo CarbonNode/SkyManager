@@ -655,6 +655,38 @@ namespace SpellActions
 		}).detach();
 	}
 
+	std::string SelectVoice(const std::string& plugin, std::uint32_t localId, std::uint32_t formId)
+	{
+		nlohmann::json res;
+		auto*          player = RE::PlayerCharacter::GetSingleton();
+		auto*          spell  = ResolveSpell(plugin, localId, formId);
+		auto*          shout  = spell ? nullptr : ResolveShout(plugin, localId, formId);
+		if (!player || (!spell && !shout) || (spell && IsHandSpell(spell))) {
+			res["ok"] = false;
+			res["msg"] = (spell && IsHandSpell(spell)) ? "That is a hand spell, not a power or shout" : "Spell not found - re-add it";
+			return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
+		if (shout && !player->HasShout(shout)) {
+			res["ok"] = false;
+			res["msg"] = "You don't know " + NameOfShout(shout);
+			return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
+		RE::TESForm*      self = shout ? static_cast<RE::TESForm*>(shout) : spell;
+		const std::string name = shout ? NameOfShout(shout) : NameOf(spell);
+		if (SelectedPower() != self) {
+			if (shout) {
+				if (auto* eqm = RE::ActorEquipManager::GetSingleton())
+					eqm->EquipShout(player, shout);
+			} else {
+				EquipSpellPapyrus(player, spell, 2);
+			}
+		}
+		logger::info("voice-select: '{}'", name);
+		res["ok"] = true;
+		res["msg"] = name;
+		return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
 	std::string EquipToggle(const std::string& plugin, std::uint32_t localId, std::uint32_t formId,
 		const std::string& hand)
 	{

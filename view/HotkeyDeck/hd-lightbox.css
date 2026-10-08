@@ -100,6 +100,8 @@
   font-size: 12px;
   color: #8d8571;
 }
+/* an empty readout is not a black pill in the corner */
+.hdlb-zoomlvl:empty { display: none; }
 /* turntable bake progress ("turning… 2 of 4 angles") — the zoom badge's twin,
    opposite corner so the two never collide */
 .hdlb-spinstat {
@@ -179,3 +181,109 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---- Turn in 3D: the item inspector (2026-10-04) ------------------------ *
+   The opt-in big turntable: 24 frames at 1024px. The card grows to give the
+   piece room; the 4-frame chrome steps aside while the inspector is up.
+   The lightbox lives inside the scale-transformed #panel, so every vh here is
+   divided by --ui-scale (the popup audit rule). */
+.hdlb-3d {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  margin-top: 14px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  border: 1px solid #6b5a33;
+  background: linear-gradient(180deg, #2a2418, #1b1811);
+  color: #f1e3b8;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.hdlb-3d:hover { background: linear-gradient(180deg, #3a311d, #251f14); border-color: #d9b45a; color: #ffeec2; }
+.hdlb-3d:focus-visible { outline: 2px solid #ffd36a; outline-offset: 2px; }
+.hdlb-3d.hidden { display: none; }
+.hdlb-3d-title { font-size: 18px; font-weight: 700; letter-spacing: .06em; }
+.hdlb-3d-sub { font-size: 14px; color: #a99b78; }
+
+.hdlb-insp { display: none; }
+.hdlb-inspect .hdlb-insp {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 14px;
+  text-align: left;
+}
+.hdlb-inspect .hdlb-3d,
+.hdlb-inspect .hdlb-nav,
+.hdlb-inspect .hdlb-dots,
+.hdlb-inspect .hdlb-spinstat,
+.hdlb-inspect .hdlb-zoomlvl { display: none; }
+
+.hdlb-inspect .hdlb-card { width: min(900px, 94%); padding: 22px 26px; }
+.hdlb-inspect .hdlb-stage {
+  height: min(calc(56vh / var(--ui-scale, 1)), 660px);
+  min-height: 320px;
+  border-radius: 12px;
+  background: radial-gradient(ellipse at 50% 85%, rgba(217, 180, 90, .10), rgba(0, 0, 0, 0) 60%), #0c0c10;
+  cursor: grab;
+}
+.hdlb-inspect .hdlb-stage.hdlb-dragging { cursor: grabbing; }
+.hdlb-inspect .hdlb-img {
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  pointer-events: none;   /* the stage takes the drag */
+}
+
+.hdlb-insp-progress { height: 4px; background: #2a2219; overflow: hidden; border-radius: 2px; }
+.hdlb-insp-progress i { display: block; height: 4px; width: 0; background: #d9b45a; transition: width .3s ease; }
+.hdlb-insp-progress.hidden { display: none; }
+
+.hdlb-insp-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 16px; align-items: end; }
+.hdlb-insp-deg {
+  font: 700 20px/1 Consolas, monospace;
+  color: #ffd36a;
+  text-align: right;
+}
+.hdlb-insp-dial {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  gap: 5px;
+  align-items: end;
+  height: 28px;
+}
+.hdlb-insp-tick {
+  height: 12px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: rgba(201, 164, 92, .14);
+  cursor: pointer;
+}
+.hdlb-insp-tick:nth-child(6n+1) { height: 22px; }
+.hdlb-insp-tick.hdlb-insp-baked { background: rgba(201, 164, 92, .40); }
+.hdlb-insp-tick.hdlb-insp-on { height: 28px; background: #ffd36a; }
+.hdlb-insp-tick:hover:not(:disabled) { background: #e8c46c; }
+.hdlb-insp-tick:disabled { cursor: default; }
+
+.hdlb-insp-ctl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.hdlb-insp-btn {
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid #3a3a46;
+  background: #18181f;
+  color: #d9d2bd;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.hdlb-insp-btn:hover { background: #2a2a34; color: #ffe9b0; border-color: #6b5a33; }
+.hdlb-insp-btn:focus-visible { outline: 2px solid #ffd36a; outline-offset: 2px; }
+.hdlb-inspect .hdlb-hint { font-size: 14px; }
+.hdlb-insp-status { margin: 0; font-size: 15px; line-height: 1.45; color: #a69f8b; }

@@ -34,9 +34,12 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "json.hpp"
+
+#include <Windows.h>
 
 // Something in this TU's include graph pulls <Windows.h> without NOMINMAX:
 // `min` breaks std::min and `GetObject` renames Variable::GetObject to
@@ -106,6 +109,77 @@ namespace KeysScan
 		};
 		std::unordered_map<std::string, CacheEntry> g_cache;  // mod name -> entry
 		bool                                        g_cacheLoaded = false;
+
+		// ---------------------------------------------------------- text -----
+		// Every string in the census goes to the view as JSON, and nlohmann's
+		// dump() THROWS (type_error 316) on a byte that is not UTF-8. That is a
+		// CTD, not an error: the dump runs inside a PrismaUI listener and nothing
+		// above it catches (Nexus report, 2026-10-06, Chinese-localized order:
+		// "invalid UTF-8 byte at index 1: 0x07"). The labels come from places we
+		// do not control -- Papyrus strings (MCM names, GetCustomControl answers,
+		// .pex string tables) and plugin ini files, which a localized order often
+		// writes in the ANSI code page (GBK on a Chinese system) -- so every one
+		// is repaired here before it reaches JSON:
+		//   valid UTF-8      -> unchanged (the ASCII fast path is nearly all rows)
+		//   valid in CP_ACP  -> converted, so a GBK label shows as real Chinese
+		//   neither          -> bad bytes become U+FFFD, never a throw
+		std::string Utf8Of(std::string_view s, bool& repaired)
+		{
+			repaired = false;
+			if (std::all_of(s.begin(), s.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80; })) {
+				return std::string(s);
+			}
+			const int len = static_cast<int>(s.size());
+			if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), len, nullptr, 0) > 0) {
+				return std::string(s);
+			}
+			repaired = true;
+			// ACP first; failing that, CP_UTF8 without MB_ERR_INVALID_CHARS
+			// substitutes U+FFFD for each bad sequence.
+			UINT cp = CP_ACP;
+			int  wn = MultiByteToWideChar(cp, MB_ERR_INVALID_CHARS, s.data(), len, nullptr, 0);
+			if (wn <= 0) {
+				cp = CP_UTF8;
+				wn = MultiByteToWideChar(cp, 0, s.data(), len, nullptr, 0);
+			}
+			if (wn <= 0) {
+				return std::string(s.size(), '?');
+			}
+			std::wstring w(static_cast<std::size_t>(wn), L'\0');
+			MultiByteToWideChar(cp, cp == CP_UTF8 ? 0 : MB_ERR_INVALID_CHARS, s.data(), len, w.data(), wn);
+			const int un = WideCharToMultiByte(CP_UTF8, 0, w.data(), wn, nullptr, 0, nullptr, nullptr);
+			std::string out(static_cast<std::size_t>((std::max)(un, 0)), '\0');
+			if (un > 0) {
+				WideCharToMultiByte(CP_UTF8, 0, w.data(), wn, out.data(), un, nullptr, nullptr);
+			}
+			return out;
+		}
+
+		std::string Utf8Of(std::string_view s)
+		{
+			bool repaired = false;
+			return Utf8Of(s, repaired);
+		}
+
+		// UTF-16LE (no BOM) -> UTF-8. Lone surrogates come out as U+FFFD.
+		std::string Utf8OfWide(std::wstring_view w)
+		{
+			if (w.empty()) {
+				return {};
+			}
+			const int wn = static_cast<int>(w.size());
+			const int un = WideCharToMultiByte(CP_UTF8, 0, w.data(), wn, nullptr, 0, nullptr, nullptr);
+			if (un <= 0) {
+				return {};
+			}
+			std::string out(static_cast<std::size_t>(un), '\0');
+			WideCharToMultiByte(CP_UTF8, 0, w.data(), wn, out.data(), un, nullptr, nullptr);
+			return out;
+		}
+
+		// Each repaired row is logged ONCE per session (StateJson runs on every
+		// poll), naming the row and its raw bytes, so the source can be found.
+		std::unordered_set<std::string> g_repairLogged;  // guarded by g_mutex
 
 		void SetPhase(const std::string& phase, const std::string& note = "")
 		{
@@ -184,9 +258,9 @@ namespace KeysScan
 					for (const auto& [name, ce] : g_cache) {
 						json codes = json::array();
 						for (const auto& [code, label] : ce.codes) {
-							codes.push_back(json::array({ code, label }));
+							codes.push_back(json::array({ code, Utf8Of(label) }));
 						}
-						configs[name] = json{
+						configs[Utf8Of(name)] = json{
 							{ "ident", ce.ident },
 							{ "dead", ce.dead },
 							{ "codes", std::move(codes) },
@@ -194,7 +268,7 @@ namespace KeysScan
 					}
 				}
 				json j{ { "version", 1 }, { "configs", std::move(configs) } };
-				const std::string text = j.dump();
+				const std::string text = j.dump(-1, ' ', false, json::error_handler_t::replace);
 
 				const auto path = CachePath();
 				std::error_code ec;
@@ -396,15 +470,21 @@ namespace KeysScan
 			if (raw.size() < 2 || static_cast<unsigned char>(raw[0]) != 0xFF || static_cast<unsigned char>(raw[1]) != 0xFE) {
 				return t;  // not UTF-16LE -- unexpected, skip rather than mis-parse
 			}
-			// Narrow by dropping high bytes: translation keys/labels are ASCII
-			// in practice, and a lossy label beats no label.
-			std::string text;
+			// Decode the UTF-16 properly. This used to narrow by dropping each
+			// unit's high byte ("labels are ASCII in practice") -- but localized
+			// orders ship translated text in the _ENGLISH file (the game reads no
+			// other one on an English install), and 切 (U+5207) narrowed that way
+			// is a raw 0x07: the byte in the 2026-10-06 Nexus CTD.
+			std::wstring wide;
+			wide.reserve((raw.size() - 2) / 2);
 			for (std::size_t i = 2; i + 1 < raw.size(); i += 2) {
-				const char lo = raw[i];
-				if (lo != '\r') {
-					text += lo;
+				const auto unit = static_cast<wchar_t>(
+					static_cast<unsigned char>(raw[i]) | (static_cast<unsigned char>(raw[i + 1]) << 8));
+				if (unit != L'\r') {
+					wide += unit;
 				}
 			}
+			const std::string text = Utf8OfWide(wide);
 			std::size_t pos = 0;
 			while (pos < text.size()) {
 				auto eol = text.find('\n', pos);
@@ -633,7 +713,7 @@ namespace KeysScan
 				std::string nm;
 				auto& nameVar = (*nameArr)[i];
 				if (nameVar.IsString()) {
-					nm = std::string(nameVar.GetString());
+					nm = Utf8Of(nameVar.GetString());  // Papyrus text may be ANSI (see Utf8Of)
 				}
 				if (nm.empty()) {
 					nm = "MCM #" + std::to_string(i);
@@ -688,7 +768,7 @@ namespace KeysScan
 					new StringResult([shared, k](std::string s) {
 						std::lock_guard l(shared->m);
 						if (!s.empty()) {
-							shared->found.emplace_back(k, std::move(s));
+							shared->found.emplace_back(k, Utf8Of(s));
 						}
 						--shared->pending;
 						shared->cv.notify_one();
@@ -992,12 +1072,17 @@ namespace KeysScan
 		return true;
 	}
 
+	std::string Utf8Text(std::string_view s)
+	{
+		return Utf8Of(s);
+	}
+
 	std::string StateJson(bool includeBindings)
 	{
 		std::lock_guard l(g_mutex);
 		json j{
 			{ "phase", g_phase },
-			{ "note", g_note },
+			{ "note", Utf8Of(g_note) },
 			{ "modsDone", g_modsDone },
 			{ "modsTotal", g_modsTotal },
 			{ "count", g_bindings.size() },
@@ -1007,25 +1092,43 @@ namespace KeysScan
 		if (includeBindings) {
 			json arr = json::array();
 			for (const auto& b : g_bindings) {
+				// Repair each text field (Utf8Of) and name the row once in the
+				// log, raw bytes in hex, so a localized label can be traced
+				// back to the file or script that produced it.
+				const auto clean = [&b](const char* field, const std::string& text) {
+					bool repaired = false;
+					auto out = Utf8Of(text, repaired);
+					if (repaired && g_repairLogged.insert(b.src + '\x1f' + b.mod + '\x1f' + field + '\x1f' + text).second) {
+						std::string hex;
+						for (std::size_t i = 0; i < text.size() && i < 48; ++i) {
+							hex += std::format("{:02X} ", static_cast<unsigned char>(text[i]));
+						}
+						logger::warn("keys-scan: {} row '{}' (code {}) {} was not UTF-8 -- shown as '{}'; raw bytes: {}",
+							b.src, Utf8Of(b.mod), b.code, field, out, hex);
+					}
+					return out;
+				};
 				json e{
-					{ "src", b.src },
-					{ "mod", b.mod },
-					{ "control", b.control },
+					{ "src", clean("src", b.src) },
+					{ "mod", clean("mod", b.mod) },
+					{ "control", clean("control", b.control) },
 					{ "code", b.code },
 				};
 				if (!b.modsText.empty()) {
-					e["mods"] = b.modsText;
+					e["mods"] = clean("mods", b.modsText);
 				}
 				if (b.guessed) {
 					e["guess"] = true;
 				}
 				if (!b.detail.empty()) {
-					e["detail"] = b.detail;
+					e["detail"] = clean("detail", b.detail);
 				}
 				arr.push_back(std::move(e));
 			}
 			j["bindings"] = std::move(arr);
 		}
-		return j.dump();
+		// replace, never strict: Utf8Of already repaired every field, and a
+		// strict dump that throws here is a CTD (it runs inside a JS listener).
+		return j.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
 }

@@ -395,4 +395,12 @@ namespace Widgets
 	// A capture-less lambda converts to this; pass nullptr to uninstall.
 	using LootStateFn = void (*)(bool& glow, bool& autoLoot);
 	void SetLootStateProvider(LootStateFn fn);
+
+	// Weather tab (weather_hub.cpp): the season latch the HUD widget already
+	// keeps, as JSON ("null" when nothing can say), and Seasons of Skyrim's
+	// own SetSeasonOverride / ClearSeasonOverride (n = 0 clears). Papyrus,
+	// fire-and-forget: it runs once the game is unpaused, and the mod applies
+	// it at the next interior -> exterior transition. MAIN THREAD.
+	std::string SeasonStateJson();
+	bool        SetSeasonOverride(int n);
 }

@@ -4,6 +4,11 @@
 #include <functional>
 #include <string>
 
+namespace RE
+{
+	class Actor;
+}
+
 /*
  * ItemIcons — real pictures of armour pieces, rendered by the GAME.
  *
@@ -220,6 +225,26 @@ namespace ItemIcons
 	// 2026-08-15: "having trouble loading meshes loaded only 2"). With a palette
 	// up there is no world draw to protect, so renders run at full speed.
 	void SetPaletteOpenProbe(std::function<bool()> probe);
+
+	// THE MIRROR (2026-10-03) — the person page's full-body figure of a LIVE
+	// actor in exactly what she is wearing now (worn gear + bare skin + baked
+	// FaceGen head), baked as a 24-frame turntable (15° apart) at 1024px into
+	// icons/bodies/<slug>-<hex>-<sig>[-aNNN].png. <sig> hashes the composition,
+	// so a change of clothes is a new set of files. Reply:
+	//   {ok, why?, name, sig, step, size, total, queued, pieces, head, meshes,
+	//    failed?, frames:{"0":"icons/bodies/…png", "15":…}}
+	// `frames` lists ONLY files on disk right now — the view sets an <img> src
+	// to nothing else. queue=false reads without asking for renders.
+	// MAIN THREAD ONLY (worn-armour reads + the render queue).
+	std::string MirrorJson(RE::Actor* actor, bool queue);
+
+	// THE ITEM INSPECTOR (2026-10-04): the lightbox's "Turn in 3D" — one piece
+	// as 24 frames, 15° apart, at 1024px, through the ordinary item route (same
+	// look, swaps and box fit as its icon), in icons/inspect/. Returns
+	// {ok, why?, formId, plugin, step, size, total, frames:{"0":path,…},
+	// queued, refused, failed?}; queue=false only lists what is on disk.
+	// Idempotent — the view polls by re-asking. MAIN THREAD ONLY.
+	std::string InspectJson(const std::string& fid, const std::string& plugin, bool queue);
 
 	// {items:[{formId,plugin}]} — forget those keys in both the asked set and
 	// the failure ledger, so the next request renders them from scratch. This is

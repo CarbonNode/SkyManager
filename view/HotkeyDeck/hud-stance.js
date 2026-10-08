@@ -17,13 +17,14 @@
    ---------------------------------------------------------------- bridge ----
    view -> C++ (listeners on the HUD view):
      swGet()            — "push me the state" (once on open)
-     swPick(json)       — {stance: 0|1|2|3}; the view has ALREADY closed itself
+     swPick(json)       — {stance: 0|1|2|3|4}; the view has ALREADY closed itself
      swClose()          — the view closed itself without a pick (Esc, right-
                           click, ✕); C++ restores time and releases Focus
    C++ -> view:
      window.swShow("1"|"0")  — open / close
-     window.swState(json)    — {ok, current, stances:[{id,name,key}], cycling,
-                                expansion, icons:{bear,wolf,hawk}, hand, msg}
+     window.swState(json)    — {ok, current, stances:[{id,name,key}], tarnished,
+                                cycling, expansion,
+                                icons:{bear,wolf,hawk,tarnished}, hand, msg}
      window.swKey()          — the wheel's own key was pressed again while it
                                 is up: choose the highlighted stance, or close
 
@@ -82,11 +83,26 @@
     3: { slug: 'hawk',    name: 'Hawk',    rgb: '230, 179, 77',
          trait: 'Light and quick: faster swings and steps, cheaper power attacks, weaker blows.' },
     0: { slug: 'neutral', name: 'Neutral', rgb: '161, 161, 170',
-         trait: 'No bonuses, no drawbacks.' }
+         trait: 'No bonuses, no drawbacks.' },
+    /* The fourth stance (Rober, 2026-10-07): not one of Stances NG's three but
+       its own plugin, TarnishedStance.esp, carrying the Elden Ring movesets.
+       Ash-gold, so it never reads as Hawk's amber. It has no stat changes, so
+       its trait is shown with or without Combat Expansion. */
+    4: { slug: 'tarnished', name: 'Tarnished', rgb: '236, 222, 182',
+         trait: 'Elden Ring movesets for every weapon that has one. No stat changes.',
+         always: true, keyless: 'Wheel only' }
   };
   /* Clockwise from the top. Neutral only appears when Stances NG has a key
-     for it — a wedge the mod cannot act on would be a dead button. */
-  const ORDER = [1, 2, 3, 0];
+     for it — a wedge the mod cannot act on would be a dead button — and
+     Tarnished only when its plugin is loaded (state.tarnished). */
+  const ORDER = [1, 2, 3, 4, 0];
+  function wheelIds(s) {
+    return ORDER.filter(function (id) {
+      if (id === 4) return !!(s && s.tarnished);
+      if (id !== 0) return true;
+      return !!(s && s.stances && s.stances.some(function (x) { return x.id === 0 && x.key; }));
+    });
+  }
 
   /* ---- geometry ---------------------------------------------------------- */
   const SIZE = 640, C = SIZE / 2;
@@ -132,9 +148,24 @@
     frame.setAttribute('aria-label', 'Choose a stance');
 
     const title = el('div', 'sw-title');
-    title.append(el('span', 'sw-title-k', 'Stance'), el('span', 'sw-title-s', 'time slowed'));
+    /* stance-wheel-options (2026-10-08): the player's own time multiplier and
+       wheel size ride the state (stance-wheel.json, set from Home -> UI
+       Elements). At 1 the world is not slowed, and the title must not claim
+       it is. */
+    const slow = Number(st && st.slow);
+    title.append(el('span', 'sw-title-k', 'Stance'),
+      el('span', 'sw-title-s', (isFinite(slow) && slow >= 0.999) ? 'time running' : 'time slowed'));
 
     const wrap = el('div', 'sw-wrap');
+    /* The sheet's 64vh / 860px pair is the default. Another size keeps the
+       same proportion between the two, so "Huge" is bigger at 1440p too
+       (64vh alone is already past the 860px cap there). */
+    const vh = Number(st && st.size);
+    if (isFinite(vh) && vh >= 40 && vh <= 80 && Math.round(vh) !== 64) {
+      const cap = Math.round(860 * vh / 64) + 'px';
+      wrap.style.width = wrap.style.height = vh + 'vh';
+      wrap.style.maxWidth = wrap.style.maxHeight = cap;
+    }
     svgEl = svg('svg', { class: 'sw-svg', viewBox: '0 0 ' + SIZE + ' ' + SIZE, width: SIZE, height: SIZE });
     svgEl.append(
       svg('circle', { class: 'sw-halo', cx: C, cy: C, r: R_OUT + 14 }),
@@ -321,6 +352,10 @@
     for (let i = 0; i < list.length; i++) if (list[i].id === id) return list[i].key || '';
     return '';
   }
+  function keyLabel(id) {
+    const k = keyFor(id);
+    return k || (DEF[id] && DEF[id].keyless) || '';
+  }
   function paint() {
     if (!frame) return;
     const cur = st && typeof st.current === 'number' ? st.current : -1;
@@ -339,14 +374,14 @@
       if (f) {
         f.className = 'sw-face' + (on ? ' is-hi' : '') + (isCur ? ' is-cur' : '');
         const k = f.querySelector('.sw-key');
-        if (k) k.textContent = isCur ? 'Current' : keyFor(id);
+        if (k) k.textContent = isCur ? 'Current' : keyLabel(id);
       }
     });
     const show = hi >= 0 ? hi : cur;
     const d = DEF[show];
     hubName.textContent = d ? d.name : 'Stance';
     hubName.style.color = d ? 'rgb(' + d.rgb + ')' : '';
-    hubTrait.textContent = !d ? '' : (st && st.expansion) ? d.trait
+    hubTrait.textContent = !d ? '' : (d.always || (st && st.expansion)) ? d.trait
       : (show === 0 ? 'Your normal animations.' : 'Its own animation set.');
     hubCur.textContent = cur < 0 ? 'No stance yet'
       : hi >= 0 && hi !== cur ? 'Now: ' + DEF[cur].name
@@ -379,10 +414,7 @@
   function doOpen() {
     if (open) return;
     open = true; busy = false; hi = -1;
-    ids = ORDER.filter(function (id) {
-      if (id !== 0) return true;
-      return !!(st && st.stances && st.stances.some(function (s) { return s.id === 0 && s.key; }));
-    });
+    ids = wheelIds(st);
     /* Visible BEFORE build: build() measures the wheel's layout width to size
        the faces and glyph canvases, and a display:none layer measures 0. */
     document.body.classList.add('sw-open');
@@ -413,15 +445,14 @@
     try {
       const j = parse(raw);
       if (!j || typeof j !== 'object') return;
-      const hadNeutral = ids.indexOf(0) !== -1;
       st = j;
       if (!open) return;
-      const wantNeutral = !!(j.stances && j.stances.some(function (s) { return s.id === 0 && s.key; }));
-      /* icons and the Neutral wedge depend on state: rebuild once if the shape
-         changed, otherwise just repaint */
-      if (wantNeutral !== hadNeutral || JSON.stringify(j.icons || {}) !== builtIcons) {
+      const want = wheelIds(j);
+      /* icons and the Neutral / Tarnished wedges depend on state: rebuild once
+         if the shape changed, otherwise just repaint */
+      if (want.join(',') !== ids.join(',') || JSON.stringify(j.icons || {}) !== builtIcons) {
         const keepHi = hi;
-        ids = ORDER.filter(function (id) { return id !== 0 || wantNeutral; });
+        ids = want;
         build();
         document.body.classList.add('sw-open');
         if (frame) frame.classList.add('sw-in');

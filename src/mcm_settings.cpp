@@ -398,4 +398,68 @@ namespace McmSettings
 		}
 		return json{ { "ok", false }, { "msg", "unknown setting" } }.dump();
 	}
+
+	std::vector<ModControl> ReadModControls(const std::string& modName)
+	{
+		std::vector<ModControl> out;
+		const fs::path dir = fs::path("Data/MCM/Config") / modName;
+		std::ifstream  in(dir / "config.json");
+		if (!in)
+			return out;
+		const auto doc = json::parse(in, nullptr, false);
+		if (doc.is_discarded() || !doc.is_object())
+			return out;
+		const auto trans = LoadTranslations(doc.value("modName", modName));
+		IniMap ini;
+		LoadIni(dir / "settings.ini", ini);
+		LoadIni("Data/MCM/Settings/" + doc.value("modName", modName) + ".ini", ini);
+
+		if (!doc.contains("pages") || !doc["pages"].is_array())
+			return out;
+		for (const auto& pg : doc["pages"]) {
+			if (!pg.is_object() || !pg.contains("content") || !pg["content"].is_array())
+				continue;
+			const auto pageName = Translate(trans, pg.value("pageDisplayName", ""));
+			for (const auto& c : pg["content"]) {
+				if (!c.is_object())
+					continue;
+				const auto& vo = c.contains("valueOptions") && c["valueOptions"].is_object()
+					? c["valueOptions"] : json::object();
+				ModControl m;
+				m.source = vo.value("sourceType", "");
+				// MCM Helper keys an ini-backed control by its `id`
+				// ("key:Section"); `sourceSetting` is the older spelling.
+				m.id = c.value("id", vo.value("sourceSetting", ""));
+				if (m.id.empty() || Lower(m.source).rfind("modsetting", 0) != 0)
+					continue;
+				const auto colon = m.id.find(':');
+				m.key = colon == std::string::npos ? m.id : m.id.substr(0, colon);
+				m.section = colon == std::string::npos ? "Main" : m.id.substr(colon + 1);
+				m.label = Translate(trans, c.value("text", ""));
+				m.type = c.value("type", "");
+				m.page = pageName;
+				if (vo.contains("min"))  m.vmin = vo.value("min", 0.0);
+				if (vo.contains("max"))  m.vmax = vo.value("max", 0.0);
+				if (vo.contains("step")) m.vstep = vo.value("step", 0.0);
+				if (vo.contains("defaultValue")) {
+					const auto& d = vo["defaultValue"];
+					if (d.is_boolean()) { m.def = d.get<bool>() ? 1.0 : 0.0; m.hasDef = true; }
+					else if (d.is_number()) { m.def = d.get<double>(); m.hasDef = true; }
+				}
+				if (vo.contains("options") && vo["options"].is_array())
+					for (const auto& o : vo["options"])
+						if (o.is_string())
+							m.options.push_back(Translate(trans, o.get<std::string>()));
+				if (const auto it = ini.find(Lower(m.section) + ":" + Lower(m.key)); it != ini.end()) {
+					try {
+						m.value = std::stod(it->second);
+						m.hasValue = true;
+					} catch (...) {
+					}
+				}
+				out.push_back(std::move(m));
+			}
+		}
+		return out;
+	}
 }

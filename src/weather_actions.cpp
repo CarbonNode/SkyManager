@@ -13,6 +13,12 @@
 //    + ResetWeather so natural weather resumes instead of sticking forever.
 //  - The classification chip comes from data.flags (pleasant/cloudy/rainy/
 //    snow) — the one piece of semantics a WTHR record actually carries.
+//  - The LOCK (Weather tab, 2026-10-08) is the Community Shaders editor's
+//    idea rebuilt without its hooks: ForceWeather(override) holds until a
+//    region change, a load screen or a quest script changes the sky, so the
+//    500 ms tick puts the locked weather back whenever it is not current and
+//    the player is under an open sky. Interiors are left alone — they show no
+//    weather, and forcing one there is what makes the next exit flash.
 
 #include "weather_actions.h"
 
@@ -44,53 +50,60 @@ namespace WeatherActions
 			return out;
 		}
 
-		std::string IdOf(const RE::TESForm* form)
-		{
-			if (!form)
-				return {};
-			auto* file = form->GetFile(0);
-			if (!file)
-				return {};
-			const std::uint32_t local =
-				form->GetFormID() & (file->IsLight() ? 0xFFFu : 0xFFFFFFu);
-			char buf[16];
-			std::snprintf(buf, sizeof(buf), "%06X", local);
-			return std::string(file->GetFilename()) + "|" + buf;
-		}
+	}
 
-		const char* KindOf(RE::TESWeather* w)
-		{
-			using F = RE::TESWeather::WeatherDataFlag;
-			const auto flags = w->data.flags;
-			if (flags.any(F::kSnow))
-				return "snow";
-			if (flags.any(F::kRainy))
-				return "rain";
-			if (flags.any(F::kCloudy))
-				return "cloudy";
-			if (flags.any(F::kPleasant))
-				return "clear";
+	// =========================================================== helpers ==
+
+	std::string IdOf(const RE::TESForm* form)
+	{
+		if (!form)
+			return {};
+		auto* file = form->GetFile(0);
+		if (!file)
+			return {};
+		const std::uint32_t local =
+			form->GetFormID() & (file->IsLight() ? 0xFFFu : 0xFFFFFFu);
+		char buf[16];
+		std::snprintf(buf, sizeof(buf), "%06X", local);
+		return std::string(file->GetFilename()) + "|" + buf;
+	}
+
+	const char* KindOf(RE::TESWeather* w)
+	{
+		if (!w)
 			return "other";
-		}
+		using F = RE::TESWeather::WeatherDataFlag;
+		const auto flags = w->data.flags;
+		if (flags.any(F::kSnow))
+			return "snow";
+		if (flags.any(F::kRainy))
+			return "rain";
+		if (flags.any(F::kCloudy))
+			return "cloudy";
+		if (flags.any(F::kPleasant))
+			return "clear";
+		return "other";
+	}
 
-		// Editor id via po3 Tweaks' hook; "" without it. Turned into a human
-		// label by splitting the CamelCase ("SkyrimStormRain" -> "Skyrim Storm
-		// Rain") so the list reads like a menu, not a code dump.
-		std::string LabelOf(RE::TESWeather* w)
-		{
-			const char* eid = w->GetFormEditorID();
-			if (!eid || !*eid)
-				return {};
-			std::string out;
-			const char* p = eid;
-			for (; *p; ++p) {
-				if (std::isupper(static_cast<unsigned char>(*p)) && !out.empty() &&
-					!std::isupper(static_cast<unsigned char>(out.back())) && out.back() != ' ')
-					out += ' ';
-				out += *p;
-			}
-			return out;
+	// Editor id via po3 Tweaks' hook; "" without it. Turned into a human
+	// label by splitting the CamelCase ("SkyrimStormRain" -> "Skyrim Storm
+	// Rain") so the list reads like a menu, not a code dump.
+	std::string LabelOf(RE::TESWeather* w)
+	{
+		if (!w)
+			return {};
+		const char* eid = w->GetFormEditorID();
+		if (!eid || !*eid)
+			return {};
+		std::string out;
+		const char* p = eid;
+		for (; *p; ++p) {
+			if (std::isupper(static_cast<unsigned char>(*p)) && !out.empty() &&
+				!std::isupper(static_cast<unsigned char>(out.back())) && out.back() != ' ')
+				out += ' ';
+			out += *p;
 		}
+		return out;
 	}
 
 	// ================================================================ API ==
@@ -172,33 +185,125 @@ namespace WeatherActions
 		} catch (...) {}
 		const std::string id = in.value("id", std::string(""));
 
-		auto* sky = RE::Sky::GetSingleton();
-		if (!sky)
+		if (!RE::Sky::GetSingleton())
 			return Dump(json{ { "ok", false }, { "msg", "The sky is unreachable" } });
 
 		if (id == "release") {
-			sky->ReleaseWeatherOverride();
-			sky->ResetWeather();
-			logger::info("weather: override released - the sky decides again");
+			Release();
 			return Dump(json{ { "ok", true }, { "msg", "The sky decides again" } });
 		}
 
-		const auto bar = id.find('|');
-		if (bar == std::string::npos || bar == 0)
+		if (id.find('|') == std::string::npos || id.front() == '|')
 			return Dump(json{ { "ok", false }, { "msg", "Malformed weather id" } });
-		auto* dh = RE::TESDataHandler::GetSingleton();
-		auto* w = dh ? dh->LookupForm<RE::TESWeather>(
-			static_cast<std::uint32_t>(std::strtoul(id.c_str() + bar + 1, nullptr, 16)),
-			id.substr(0, bar)) : nullptr;
+		auto* w = Resolve(id);
 		if (!w)
 			return Dump(json{ { "ok", false }, { "msg", "That weather is gone from the load order" } });
 
-		sky->ForceWeather(w, true);
+		Force(w, false);
 		std::string label = LabelOf(w);
 		if (label.empty())
 			label = "the chosen weather";
-		logger::info("weather: forced '{}'", id);
 		return Dump(json{ { "ok", true }, { "msg", "The sky turns to " + label },
 			{ "id", id } });
+	}
+
+	// ====================================================== shared verbs ==
+
+	RE::TESWeather* Resolve(const std::string& id)
+	{
+		const auto bar = id.find('|');
+		if (bar == std::string::npos || bar == 0 || bar + 1 >= id.size())
+			return nullptr;
+		auto* dh = RE::TESDataHandler::GetSingleton();
+		if (!dh)
+			return nullptr;
+		return dh->LookupForm<RE::TESWeather>(
+			static_cast<std::uint32_t>(std::strtoul(id.c_str() + bar + 1, nullptr, 16)),
+			id.substr(0, bar));
+	}
+
+	namespace
+	{
+		// Main-thread only (every caller is an AddTask'd lambda or the tick),
+		// so no lock: the same law as the rest of this file.
+		std::string     g_lockId;
+		RE::TESWeather* g_lockW = nullptr;
+		int             g_reapplied = 0;
+	}
+
+	void Force(RE::TESWeather* w, bool blend)
+	{
+		auto* sky = RE::Sky::GetSingleton();
+		if (!sky || !w)
+			return;
+		if (blend) {
+			// The sky's own transition (CS's "gradual" path): override on,
+			// no acceleration, so it rolls in at the record's trans delta.
+			sky->SetWeather(w, true, false);
+			logger::info("weather: blending to '{}'", IdOf(w));
+		} else {
+			sky->ForceWeather(w, true);
+			logger::info("weather: forced '{}'", IdOf(w));
+		}
+		// Forcing something else while locked moves the lock with it —
+		// otherwise the very next tick would undo what was just asked for.
+		if (g_lockW && g_lockW != w) {
+			g_lockW = w;
+			g_lockId = IdOf(w);
+		}
+	}
+
+	void Release()
+	{
+		auto* sky = RE::Sky::GetSingleton();
+		Unlock();
+		if (!sky)
+			return;
+		sky->ReleaseWeatherOverride();
+		sky->ResetWeather();
+		logger::info("weather: override released - the sky decides again");
+	}
+
+	void Lock(RE::TESWeather* w)
+	{
+		if (!w)
+			return;
+		g_lockW = w;
+		g_lockId = IdOf(w);
+		g_reapplied = 0;
+		logger::info("weather: locked '{}'", g_lockId);
+	}
+
+	void Unlock()
+	{
+		if (!g_lockW && g_lockId.empty())
+			return;
+		logger::info("weather: unlocked '{}' after {} re-apply(s)", g_lockId, g_reapplied);
+		g_lockW = nullptr;
+		g_lockId.clear();
+		g_reapplied = 0;
+	}
+
+	RE::TESWeather* Locked()
+	{
+		return g_lockW;
+	}
+
+	void Tick(bool gameReady, bool paused)
+	{
+		if (!g_lockW || !gameReady || paused)
+			return;
+		auto* sky = RE::Sky::GetSingleton();
+		if (!sky || sky->mode.get() != RE::Sky::Mode::kFull)
+			return;   // interior / no sky: nothing to hold, nothing to flash
+		if (sky->currentWeather == g_lockW)
+			return;
+		sky->ForceWeather(g_lockW, true);
+		++g_reapplied;
+		// First few, then every 50th: a region that fights the lock all
+		// session must not fill the log.
+		if (g_reapplied <= 3 || g_reapplied % 50 == 0)
+			logger::info("weather-lock: re-applied '{}' (#{}, the sky had moved to '{}')", g_lockId,
+				g_reapplied, IdOf(sky->currentWeather));
 	}
 }

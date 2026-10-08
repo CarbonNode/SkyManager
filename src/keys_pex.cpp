@@ -41,6 +41,7 @@
 // integer VALUE holding the argument count, then that many VALUEs.
 
 #include "keys_pex.h"
+#include "keys_scan.h"
 
 #include "pch.h"
 
@@ -513,8 +514,9 @@ namespace KeysPex
 				for (const auto& [path, ce] : cache) {
 					json rows = json::array();
 					for (const auto& r : ce.rows) {
-						rows.push_back(json{ { "script", r.script }, { "control", r.control },
-							{ "code", r.code }, { "detail", r.detail } });
+						rows.push_back(json{ { "script", KeysScan::Utf8Text(r.script) },
+							{ "control", KeysScan::Utf8Text(r.control) },
+							{ "code", r.code }, { "detail", KeysScan::Utf8Text(r.detail) } });
 					}
 					scripts[path] = json{ { "size", ce.size }, { "mtime", ce.mtime },
 						{ "rows", std::move(rows) } };
@@ -531,7 +533,7 @@ namespace KeysPex
 					if (!out.is_open()) {
 						return;
 					}
-					out << j.dump();
+					out << j.dump(-1, ' ', false, json::error_handler_t::replace);
 					out.flush();
 					if (!out.good()) {
 						return;

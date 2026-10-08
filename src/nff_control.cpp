@@ -2331,6 +2331,15 @@ namespace NffControl
 			const float max = avo->GetPermanentActorValue(RE::ActorValue::kHealth);
 			who["health"]    = static_cast<int>(cur < 0.0f ? 0.0f : cur);
 			who["healthMax"] = static_cast<int>(max < 0.0f ? 0.0f : max);
+			// The person page's vitals row (2026-10-03) reads all three pools.
+			const float mk  = avo->GetActorValue(RE::ActorValue::kMagicka);
+			const float mkM = avo->GetPermanentActorValue(RE::ActorValue::kMagicka);
+			const float st  = avo->GetActorValue(RE::ActorValue::kStamina);
+			const float stM = avo->GetPermanentActorValue(RE::ActorValue::kStamina);
+			who["magicka"]    = static_cast<int>(mk < 0.0f ? 0.0f : mk);
+			who["magickaMax"] = static_cast<int>(mkM < 0.0f ? 0.0f : mkM);
+			who["stamina"]    = static_cast<int>(st < 0.0f ? 0.0f : st);
+			who["staminaMax"] = static_cast<int>(stM < 0.0f ? 0.0f : stM);
 		}
 
 		/* What she is to the PLAYER, engine-side: the RELA rank the whole game

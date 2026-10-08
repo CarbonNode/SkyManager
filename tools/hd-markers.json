@@ -179,6 +179,10 @@
     "npc-sic-em-bolt": "NpcActions: sic-em bolt fired",
     "npc-sic-em-bolt-answer": "sic-em bolt answer",
     "npc-sic-em-bolt-hook": "sic-em AddImpact hook installed",
+    "npc-sic-em-minions": "NpcActions: sic-em minions",
+    "npc-sic-em-standing": "NpcActions: sic-em standing order",
+    "npc-hunt": "NpcActions: hunt",
+    "npc-sic-em-hunt": "sic-em found no target - hunting instead",
     "omo-pick-seed": "Object Manipulation Overhaul picks up the item",
     "nff-home-ref": "has no My Home is Your Home home yet",
     "portal-portraits-live": "portal portraits: applied live",
@@ -274,6 +278,8 @@
     "menu-open-smf": "menu-open: smf scan",
     "menu-open-cs": "menu-open: community-shaders scan",
     "menu-open-ied": "menu-open: ied scan",
+    "menu-open-npa": "menu-open: npa scan",
+    "menu-open-manipulator": "menu-open: manipulator scan",
     "faces-meta": "cat-rename",
     "anim-catalogue": "anim: catalogue loaded",
     "anim-play": "anim: play '",
@@ -381,6 +387,9 @@
     "spell-edit-reapply": "spell-edit: reapplied {} value(s) on {} spell(s)",
     "player-tune": "player-tune: applied {} field(s)",
     "weather-force": "weather: forced '{}'",
+    "weather-hub-list": "weather-hub: listed {} weather(s)",
+    "weather-lock": "weather-lock: re-applied '{}' (#{}, the sky had moved to '{}')",
+    "weather-hub-storm-lightning": "weather-hub: storm lightning {} = {}",
     "npc-tune-apply": "npc-tune: applied {} field(s) to '{}'",
     "npc-tune-reapply": "npc-tune: reapplied {} field(s) on {} npc(s)",
     "anim-lo-scan": "anim: load-order scan",
@@ -415,6 +424,18 @@
     "hotbar-pages-7": "hotbar-pages: ",
     "hotbar-set-fire": "hotbar-set: '",
     "hotbar-item-instance": "hotbar-item: instance ",
+    "hotbar-cast-release": "hotbar-cast: released '{}'",
+    "hotbar-cast-route": "hotbar-cast: page {} button {} -> {} ({})",
+    "hotbar-cast-tick": "hotbar-cast-tick",
+    "shout-cooldowns-swap": "shout-cooldowns: '{}' -> '{}'",
+    "shout-cooldowns-cosave": "shout-cooldowns: loaded {} stored cooldown(s)",
+    "hotbar-weapon-bars": "hotbar-weapon-bars: {} bar(s) by weapon",
+    "hotbar-bar-switch": "hotbar-bars: holding {}{} -> bar {}",
+    "cast-anim-probe": "cast-anim: {} ({})",
+    "cast-anim-start": "cast-anim: start '{}' anim {} source {}{}",
+    "hotbar-pick": "hotbar-pick: page {} button {} -> {} '{}'",
+    "hotbar-pick-menu": "hotbar-pick: menu -> {} '{}'",
+    "voice-select": "voice-select: '{}'",
     "hotbar-smart": "hotbar-smart: drank '",
     "party-actions": "party-action: '{}' dispatched via NFF",
     "mhiyh-home-action": "mhiyh-home action: setHome for",
@@ -439,6 +460,9 @@
     "open-inflight-guard": "an open/close is already in flight",
     "warm-up-queued-open": "perceived warm-up wait",
     "open-press-to-shown": "press -> shown (end to end",
+    "open-deferred-slices": "open-deferred-slices: {} slice(s) pushed after the first paint",
+    "open-warm-icon-index": "open-warm-icon-index: deck icon library pushed during warm-up",
+    "push-burst": "push-burst: view redraws are coalesced per burst (first burst: {})",
     "warm-up-cancel": "cancelled the queued open (toggle intent)",
     "effects-modal": "effects: state",
     "3ba-body-physics": "3ba-body-physics: state",
@@ -549,6 +573,8 @@
     "face-wig-not-helmet": "is head gear, not a wig",
     "faces-race-list": "playable race(s) offered for the render-as override",
     "perf-census": "perf-census ({}s, main thread): ",
+    "hud-roster-cache": "hud-roster-cache: FO roster re-derived (",
+    "appearance-status-async": "appearance-status-async: status writer off the game thread",
     "render-load-hold": "load screen up - renders held",
     "preset-probe": "preset probe: '",
     "preset-standin": "preset stand-in: cleared",
@@ -588,8 +614,11 @@
     "time-dial-menu-gate": "time-dial: menu gate closed it",
     "stance-wheel-open": "stance-wheel: open (time x{})",
     "stance-wheel-close": "stance-wheel: closed",
+    "stance-wheel-options": "stance-wheel: options saved (time x{}, size {}vh)",
     "stance-wheel-switched": "stance-wheel: switched to {}",
     "stance-wheel-menu-gate": "stance-wheel: menu gate closed it",
+    "stance-wheel-tarnished": "stance-wheel: switched to Tarnished (from {})",
+    "stance-wheel-tarnished-icon": "Data/SKSE/Plugins/TarnishedStance/tarnished.png",
     "hud-nav-focus": "hud-nav-focus: browse ",
     "widgets-quick2-live": "widgets: custom quick items live",
     "widgets-quick2-use": "widgets: quick2 used",
@@ -613,6 +642,9 @@
     "render-priority-user-first": "is now FIRST; waiting: user",
     "render-priority-wait": "render-priority hold",
     "render-priority-bulk-sweep": "queued at bulk priority",
+    "item-icons-dir-listing": "item-icons-dir-listing: ",
+    "item-icons-supersede": "item-icons-supersede: ",
+    "item-icons-notify-coalesced": "item-icons-notify-coalesced: ",
     "face-no-humanoid-body": "no head and no body for",
     "super-search-deep-open": "super searcher: deep-open",
     "spid-skypatcher-cat": "non-npc SkyPatcher file(s)",
@@ -721,7 +753,18 @@
     "portrait-face-light": "portrait-light: preview started mode={} strength={}",
     "osis-settings": "osis-settings: op={}",
     "osis-visibility": "osis-visibility: loaded={}",
-    "smf-index": "smf-index: host window registered with SMF {:.1f} ({})"
+    "smf-index": "smf-index: host window registered with SMF {:.1f} ({})",
+    "smf-widget": "smf-widget: Esc-menu Mod Menus button armed",
+    "mirror-compose": "mirror: '{}' composed - {} skin texture set(s) of {}, tint {}",
+    "mirror-queue": "mirror: '{}' - {} frame(s) queued at {}px (sig {}, {} nif(s), {} worn piece(s), head {}, {} stale removed)",
+    "item-inspect": "item inspect: '{}|{}' - {} frame(s) queued at {}px ({} on disk, {} refused)",
+    "person-live-start": "person-live: started on {:08X} '{}' (lights {})",
+    "person-live-stop": "person-live: stopped ({})",
+    "photo-studio-presets": "photo-studio: named presets and GPU viewfinder ready",
+    "photo-studio-focus": "photo-studio: editor focused without pausing",
+    "photo-preview": "photo-preview: disabled for this activation: {}",
+    "js-listener-guard": "JS listener '{}' threw out of its handler: {} -- request dropped, game kept running",
+    "keys-utf8-repair": "was not UTF-8 -- shown as '{}'; raw bytes: {}"
   },
   "view": {
     "hud-outfit.js": {
@@ -762,6 +805,7 @@
       "distributions-omni": "id: 'distr'"
     },
     "hd-lightbox.js": {
+      "item-inspect-view": "window.hdInspectData",
       "lightbox-module": "window.HDLightbox = (function"
     },
     "hd-art.js": {
@@ -807,6 +851,7 @@
     "items-pane.js": {
       "items-pane": "window.ItemsPane",
       "items-art-in-place": "function patchRowsArt()",
+      "items-icon-supersede": "function cancelIcons()",
       "items-price-sheet": "function openSheet",
       "items-merchant-toggle": "Merchant mode: ON",
       "items-real-renders": "hd-item-icons",
@@ -842,6 +887,11 @@
       "shelf-panel-push": "body.open.shf-open",
       "shelf-icon-css": ".shf-ico {"
     },
+    "weather-pane.js": {
+      "weather-tab": "window.WeatherPane",
+      "weather-storm-lightning-card": "function stormCard(s)",
+      "weather-sources": "function renderSources()"
+    },
     "time-pane.js": {
       "time-pane-core": "window.TimePane = (function () {",
       "time-pane-omni": "Wait until Morning",
@@ -849,6 +899,7 @@
       "time-sky-picker": "function renderSkyList"
     },
     "followers-pane.js": {
+      "push-burst-followers": "function burstDefer(a, b, c, d)",
       "facefit-auto-control": "function facefitAutoToggle(",
       "face-why": "function faceWhyFor(m)",
       "dossier-category-search": "fd-ds-eyebrow-btn",
@@ -964,7 +1015,8 @@
       "npc-dossier-chim": "fd-ds-chim-host",
       "npc-dossier-choice": "fd-row-views",
       "equipped-regenerate": "fq-equip-regenerate",
-      "formation-door-relabel": "'data-fm-open': '1'"
+      "formation-door-relabel": "'data-fm-open': '1'",
+      "person-skin-hook": "person.mountMirror(mirrorHost"
     },
     "hud.js": {
       "hud-weather-center-text": "weatherCenter",
@@ -1038,6 +1090,7 @@
       "sharmat-post-save-reread": "Saved, but could not re-read the profile"
     },
     "domains-pane.js": {
+      "domains-hidden-no-render": "if (ui.shown) render(); else dropRowCache();",
       "domain-photo-lighting": "domain-photo-lighting",
       "domain-photo-scene-fill": "domain-photo-scene-fill",
       "domain-subareas-below-photo": "dm-card-controls",
@@ -1105,6 +1158,7 @@
       "effects-modal-styles": ".fx-row",
       "console-editor-css": "#console-picker {",
       "overlay-dim-flat": "overlay-dim-flat",
+      "open-warm-overlay": "body:not(.open) #overlay { visibility: hidden",
       "medal-spin-css": "medal-spin",
       "uie-hidden-pill-css": ".hm-uie-state.hidden",
       "widget-base-reset": "native widget net (widget-base-reset",
@@ -1198,6 +1252,7 @@
     },
     "hd-omni.js": {
       "omni-registry": "takeQuestReply",
+      "omni-label-first": "function labelHit(item, words)",
       "omni-ask-mode": "Think about it",
       "omni-pin-contract": "function resolvePin",
       "omni-pin-star": "omni-pin",
@@ -1232,6 +1287,13 @@
       "bind-conflicts": "window.HDBindConflicts = "
     },
     "app.js": {
+      "open-frame-split": "open-frame-split",
+      "open-entry-census": "open-entry-census",
+      "tab-diag-view": "tab-diag(view): ",
+      "frame-diag-view": "frame-diag(view): ",
+      "css-prefetch": "function prefetchTabCss(t, why)",
+      "tab-switch-no-save": "function saveOnClose()",
+      "push-burst": "window.hdBurst = function (on, why)",
       "ui-surface-lifecycle": "function hidePane(t, closing)",
       "ui-response-selection": "function moveHotkeySelection(delta)",
       "ui-response-rows": "ui-response-rows:",
@@ -1328,6 +1390,7 @@
       "faces-omni": "id: 'faces'"
     },
     "home-pane.js": {
+      "stance-wheel-options-row": "function buildStanceInline(mount)",
       "home-core": "function renderCards",
       "home-cards": "act: 'spells'",
       "home-recent-drawer": "function toggleRecent",
@@ -1429,10 +1492,19 @@
       "hotbar-grip-pos": "cfg.gripPos === 'top'",
       "hb-newcc": "function openNewCc",
       "legacy-widgets-retired": "RETIRED (2026-08-18)",
-      "hotbar-ready-retry": "function announceReady"
+      "hotbar-ready-retry": "function announceReady",
+      "hotbar-cast-beats": "window.hbCast = function",
+      "hotbar-cast-settings": "function renderCastControls",
+      "hotbar-ready-sockets": "function renderReady()",
+      "hotbar-shout-cdmax": "Number(L.cdMax) > 0"
     },
     "hotbar.css": {
       "hotbar-press-feedback": ".hb-slot.is-fired {",
+      "hotbar-cast-poor": ".hb-slot.is-poor {",
+      "hotbar-cast-channel": ".hb-slot.is-channel {",
+      "hotbar-ready-css": ".hb-ready.is-vert {",
+      "hotbar-weapon-bars-view": "bars by weapon (2026-10-08)",
+      "hotbar-weapon-bars-css": ".hb-pip.is-bar {",
       "hotbar-modal-preview": ".hb-root.is-edit-preview-hidden {",
       "hotbar-no-outline": ".hb-root.hb-no-outline",
       "hotbar-panel-search-css": ".hb-filtered",
@@ -1628,10 +1700,12 @@
       "time-dial-cards": ".td-card {"
     },
     "hud-stance.js": {
+      "stance-wheel-options-view": "stance-wheel-options (2026-10-08)",
       "stance-wheel-view": "window.swShow",
       "stance-wheel-steer": "function steer(x, y)",
       "stance-wheel-pick": "toGame('swPick'",
-      "stance-wheel-badge": "function paintGlyph(id)"
+      "stance-wheel-badge": "function paintGlyph(id)",
+      "stance-wheel-tarnished-view": "slug: 'tarnished'"
     },
     "hud-stance.css": {
       "stance-wheel-sheet": "#hud-stance {",
@@ -1920,6 +1994,26 @@
     },
     "hd-osis.css": {
       "osis-panel-css": "osis-settings-panel"
+    },
+    "hd-person.js": {
+      "person-mirror-view": "window.pnMirrorData",
+      "person-sees-chim": "function mountSees",
+      "person-live-view": "window.pnLiveData",
+      "person-inner-chim": "function mountInner",
+      "person-dashboard": "function mountDashboard",
+      "letter-parchment": "class: 'pn-letter'"
+    },
+    "hd-person.css": {
+      "person-mirror-stage": ".pn-mir-stage"
+    },
+    "household-pane.js": {
+      "household-today": "key: 'today', label: 'Today'"
+    },
+    "hd-bio.js": {
+      "bio-blocks-section": "window.HDBio ="
+    },
+    "hud-photo-studio.js": {
+      "photo-studio-controls": "photo-studio-controls"
     }
   }
 }

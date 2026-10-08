@@ -12654,8 +12654,17 @@
     const returnTo = saved ? saved.returnTo : document.activeElement;
     let page = saved ? saved.page : 'overview';
     let query = saved ? saved.query : '';
-    const root = h('div', { id: 'fd-ctx-menu', class: 'fd-dossier', role: 'dialog',
+    const root = h('div', { id: 'fd-ctx-menu', class: 'fd-dossier' + (window.HDPerson ? ' pn-skin' : ''), role: 'dialog',
       'aria-modal': 'true', 'aria-labelledby': 'fd-dossier-name' });
+    /* The person-page look (hd-person.js, 2026-10-03): hero strip, "How X sees
+       you", the full-body Mirror. Additive — every control below is untouched. */
+    const person = window.HDPerson || null;
+    const nowLabel = m.nowAct ? ((m.nowAct.spec && (m.nowAct.spec.name || m.nowAct.spec.label)) || actSpec(m.nowAct.k).label || '') +
+      (m.nowAct.place ? ' — ' + m.nowAct.place : '') : '';
+    const statusLabel = m.dead ? 'Deceased' : m.following ? 'Following you' : m.inWorld ? 'In the world' : 'Not located';
+    let mirrorMounted = null, seesMounted = null, memoriesMounted = null, bondsMounted = null, bioMounted = null;
+    const heroCtx = { about: (equippedFor(m) || {}).about || null, now: nowLabel, status: statusLabel,
+      where: m.where || '', dead: !!m.dead };
     let panelObserver = null, styleObserver = null;
     function fitPanel() {
       const panel = $('panel'), overlay = $('overlay');
@@ -12818,6 +12827,7 @@
           } }, (row.catName || 'Follower Organizer') + ' ›'),
         h('h1', { id: 'fd-dossier-name' }, m.name),
         m.original && m.original !== m.name ? h('p', { class: 'fd-ds-original' }, m.original) : null,
+        person ? person.hero(heroCtx) : null,
         h('p', { class: 'fd-ds-note' }, m.desc || 'Every person has a story. Add yours in Editor.'),
         h('div', { class: 'fd-ds-statuses' }, spouseChip(m), fertChip(m)),
         m.fert ? h('p', { class: 'fd-ds-family', title: fertTitle(m.fert) },
@@ -12839,8 +12849,12 @@
     identity.querySelector('.fd-ds-identity-text').append(pinsHost);
     const nav = h('nav', { class: 'fd-ds-tabs', 'aria-label': 'Character sections' });
     [['overview', 'Overview', 'hm-followers'], ['profile', 'Editor', 'hm-sheet'], ['chim', 'CHIM', 'hk-chim-dialogue'],
+      ['memories', 'Memories', 'hm-journal'], ['bonds', 'Bonds & Life', 'hd-heart'],
       ['household', 'Household', 'hm-home'], ['family', 'Family tree', 'cat-companions'], ['history', 'History', 'hm-journal'],
-      ['equipment', 'Equipment', 'hm-wardrobe'], ['gallery', 'Gallery', 'hk-portrait'], ['actions', 'Actions', 'cat-utilities']].forEach(function (t) {
+      ['equipment', 'Equipment', 'hm-wardrobe'], ['gallery', 'Gallery', 'hk-portrait'], ['actions', 'Actions', 'cat-utilities']].filter(function (t) {
+      // The two CHIM-backed pages exist only where hd-person.js is loaded.
+      return (t[0] !== 'memories' && t[0] !== 'bonds') || !!person;
+    }).forEach(function (t) {
       const tab = button(t[1], function () { if (socialMounted) { socialMounted.destroy(); socialMounted = null; socialPage = ''; } page = t[0]; query = ''; search.value = ''; paint(); scroll.scrollTop = 0; }, 'fd-ds-tab');
       tab.insertBefore(goldIcon(t[2]), tab.firstChild);
       tab.dataset.page = t[0]; tabs.push(tab); nav.append(tab);
@@ -12874,6 +12888,11 @@
       dayStatus.classList.toggle('error', !!(status && !status.ok));
     }
     paintDayStatus();
+    const mirrorHost = h('div', { class: 'fd-ds-mirror-host' });
+    if (person) {
+      content.classList.add('pn-has-mirror');
+      content.append(section('mirror', '', '', [mirrorHost], ['overview', 'equipment']));
+    }
     content.append(section('routine', 'Daily rhythm', '', [daySummary].concat(dayNodes, [dayStatus], homeCover ? [homeCover] : []), ['overview']));
     content.append(section('travel', 'Go together', 'Travel, recall and map tracking', groups.travel, ['overview', 'actions']));
     content.append(section('service', 'In your company', 'Follower service and belongings', groups.service, ['overview', 'actions', 'equipment']));
@@ -12911,6 +12930,14 @@
     const chimHost = h('div', {class:'fd-ds-chim-host'});
     let chimMounted = false;
     content.append(section('chim', 'CHIM', 'Voice, background and a life that evolves with them', [chimHost], ['chim']));
+    // Bio Blocks (hd-bio.js): library traits CHIM reads as part of her — CHIM data, so it lives on the CHIM page.
+    const bioHost = h('div', { class: 'fd-ds-bio-host' });
+    if (window.HDBio) content.append(section('bio', 'Bio blocks', 'Traits from your library that CHIM reads as part of them', [bioHost], ['chim']));
+    const memoriesHost = h('div', { class: 'fd-ds-memories-host' }), bondsHost = h('div', { class: 'fd-ds-bonds-host' });
+    if (person) {
+      content.append(section('memories', 'Memories', 'Letters, diary and memories — CHIM’s own, in Tamrielic dates', [memoriesHost], ['memories']));
+      content.append(section('bonds', 'Bonds & Life', 'How they feel, and the life they live while you are apart — CHIM’s relationship system and Background Life', [bondsHost], ['bonds']));
+    }
     if (!window.ChimBtn || !ChimBtn.mount) chimHost.append(h('p', {class:'fd-ds-empty'}, 'CHIM controls are not available in this view.'));
 
     function connect(label, detail, available, iconName, fn) {
@@ -12936,7 +12963,8 @@
     const empty = h('p', { class: 'fd-ds-empty fd-ds-noresults', role: 'status' }, 'No matches. Try “home”, “inventory”, “portrait” or “category”.');
     content.append(empty); contentWrap.append(content);
     const count = h('span', { class: 'fd-ds-result', role: 'status', 'aria-live': 'polite' });
-    const work = h('main', { class: 'fd-ds-work' }, nav, contentWrap,
+    const seesHost = person ? h('div', { class: 'pn-sees-host' }) : null;
+    const work = h('main', { class: 'fd-ds-work' }, seesHost, nav, contentWrap,
       h('footer', { class: 'fd-ds-footer' }, count, h('span', null, 'Ctrl+K  Search / Esc  Back')));
     scroll.append(identity, work); root.append(scroll);
 
@@ -13110,6 +13138,18 @@
         chimMounted = true;
         ChimBtn.mount(chimHost, {original:m.original || m.name, who:m.name, formId:fid, dead:!!m.dead, onNavigate:closeCtx});
       }
+      if (page === 'chim' && !bioMounted && root.isConnected && window.HDBio)
+        bioMounted = HDBio.mount(bioHost, { name: m.name, original: m.original || m.name,
+          race: function () { const eq = equippedFor(m); return eq && eq.about ? eq.about.race || '' : ''; } });
+      content.setAttribute('data-page', q ? 'search' : page);
+      if (person && root.isConnected) {
+        if (!seesMounted && seesHost) seesMounted = person.mountSees(seesHost, { name: m.name, original: m.original || m.name, dead: !!m.dead });
+        const innerCtx = { name: m.name, original: m.original || m.name, dead: !!m.dead };
+        if (!memoriesMounted && page === 'memories') memoriesMounted = person.mountInner(memoriesHost, innerCtx, 'memories');
+        if (!bondsMounted && page === 'bonds') bondsMounted = person.mountInner(bondsHost, innerCtx, 'bonds');
+        if (!mirrorMounted && !q && (page === 'overview' || page === 'equipment'))
+          mirrorMounted = person.mountMirror(mirrorHost, { formId: fidHexOf(m.liveFormId || m.formId), name: m.name, dead: !!m.dead, hero: heroCtx });
+      }
       if ((page === 'actions' || q) && !controlsMounted && root.isConnected) {
         controlsMounted = true;
         mountQuick(controlsHost);
@@ -13177,7 +13217,7 @@
       controlsActive: function () { return controlsMounted; },
       refreshSearch: paint,
       paintDayStatus: paintDayStatus,
-      keepEditing:function(){const active=document.activeElement;return moduleModal() || ['family','history','household','gallery'].indexOf(page)!==-1 || !!(active&&root.contains(active)&&/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName));},
+      keepEditing:function(){const active=document.activeElement;return moduleModal() || ['family','history','household','gallery','memories','bonds'].indexOf(page)!==-1 || !!(active&&root.contains(active)&&/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName));},
       mount: function () {
         fitPanel();loadLibrary();
         const panel = $('panel');
@@ -13212,6 +13252,8 @@
         if(socialMounted)socialMounted.destroy();[pinsMounted,galleryMounted,outfitMounted].forEach(function(module){if(module)module.destroy();});
         if (frameEdit) frameEdit.destroy();
         if (window.ChimBtn && ChimBtn.unmount) ChimBtn.unmount(chimHost);
+        if (person) person.unmount(root);
+        if (window.HDBio) HDBio.unmount(root);
         if (quickHost === controlsHost) { fqFindClose(); quickHost = null; }
         if (panelObserver) panelObserver.disconnect(); if (styleObserver) styleObserver.disconnect();
         if (window.removeEventListener) window.removeEventListener('resize', fitPanel);
@@ -14168,7 +14210,57 @@
      the view never went back for them: the page sat on initials forever and
      only filled in if you happened to visit Followers afterwards. */
   // portrait-consumers-v2: publish only after the shared store has changed.
+  /* ---- push-burst (2026-10-08, marker push-burst) ------------------------
+     C++ sends this pane its data as a run of pushes (fdState, fdPortraits,
+     fdCrops, fdLiveParty, fdNff, fdFertility), at every deck open and again
+     with every fdRefresh, and each handler used to redraw on its own: the
+     60-portrait roster drawn six times, 291 ms of handlers for one Followers
+     open in the 2026-10-08 log. While app.js's HDBurst is open (C++ brackets
+     the run with hdBurst(1)/hdBurst(0)) a handler states WHAT is stale and
+     burstFlush() repaints each surface once at the end mark. Outside a burst
+     burstDefer() returns false and the handler draws synchronously, exactly
+     as before — a lone push, a reply, a poll and every harness are unchanged.
+
+       full       render()            (implies list + syncQuickHere)
+       list       renderList()
+       menu       refreshOpenMenu()
+       quick      renderQuickCard()
+       here       syncQuickHere()
+       portraits  the whole of portraitsChanged()
+       household  HouseholdPane.dataChanged()                              */
+  const burstWant = { full: false, list: false, menu: false, quick: false, here: false, portraits: false, household: false };
+  function burstFlush() {
+    const w = Object.assign({}, burstWant);
+    Object.keys(burstWant).forEach(function (k) { burstWant[k] = false; });
+    if (w.menu || (w.portraits && ctxEl && ctxEl._dossier)) refreshOpenMenu();
+    dropRowCache();
+    if (isActive()) {
+      if (w.full) render();
+      else if (w.list || w.portraits) renderList();
+    }
+    if (w.quick || w.portraits) renderQuickCard();
+    if (w.here && !(w.full && isActive())) syncQuickHere();
+    if (w.portraits) {
+      if (window.GetAway) GetAway.portraitsChanged();
+      if (window.OstimTools) OstimTools.portraitsChanged();
+    }
+    if (w.household || w.portraits) {
+      try { if (window.HouseholdPane) HouseholdPane.dataChanged(); } catch (e) {}
+    }
+    if (w.portraits) window.dispatchEvent(new CustomEvent('hd-portraits-changed'));
+  }
+  /* true = parked; the caller must NOT draw. */
+  function burstDefer(a, b, c, d) {
+    if (!(window.HDBurst && HDBurst.defer('followers', burstFlush))) return false;
+    if (a) burstWant[a] = true;
+    if (b) burstWant[b] = true;
+    if (c) burstWant[c] = true;
+    if (d) burstWant[d] = true;
+    return true;
+  }
+
   function portraitsChanged() {
+    if (burstDefer('portraits')) { dropRowCache(); return; }
     if (ctxEl && ctxEl._dossier) refreshOpenMenu();
     dropRowCache();
     if (isActive()) renderList();
@@ -17040,6 +17132,7 @@
     state.loaded = true;
     state.foMissing = (env.ok === false && !state.cats.length)
       ? (env.msg || 'Follower Organizer is not available') : '';
+    if (burstDefer('full', 'household')) { requestFaceIcons(true); return; }
     if (isActive()) render();
     requestFaceIcons(true);
     /* Same reason as fdFertility's: the Household tab is drawn from this
@@ -17227,7 +17320,7 @@
     dropRowCache();   // a push the row signature cannot see for itself
     const v = coerce(env);
     state.liveParty = Array.isArray(v) ? v : (v && Array.isArray(v.list) ? v.list : []);
-    if (isActive()) render();
+    if (!burstDefer('full') && isActive()) render();
     requestFaceIcons(true);
   };
 
@@ -17508,6 +17601,7 @@
     // fdState may have landed first (it usually does) — refold onto the roster
     // already in memory rather than waiting for the next state push.
     remergeHomes();
+    if (burstDefer('list', 'menu', 'quick', 'here')) return;   // push-burst: one repaint at the end mark
     if (isActive()) renderList();
     // An fdMhiyh round-trip lands here: the open member menu is showing the
     // day from BEFORE the change, so redraw it where it stands.
@@ -18005,6 +18099,7 @@
       actors: map,
     };
     remergeFert();
+    if (burstDefer('list', 'menu', 'household')) return;   // push-burst: one repaint at the end mark
     refreshOpenMenu();
     if (isActive()) renderList();
     /* The Household tab reads this pane's roster (householdRoster), so a

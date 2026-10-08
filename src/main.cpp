@@ -19,6 +19,8 @@
 #include <optional>
 #include <set>
 #include <thread>
+#include <utility>
+#include <vector>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -28,6 +30,7 @@
 #include "wardrobe.h"
 #include "wardrobe_flair.h"
 #include "item_icons.h"
+#include "person_live.h"
 #include "facegen_resolver.h"
 #include "wheel.h"
 #include "quiver.h"
@@ -75,6 +78,7 @@
 #include "door_actions.h"
 #include "portal_host.h"
 #include "portrait_capture.h"
+#include "photo_studio.h"
 #include "appearance_presets.h"
 #include "photo_input.h"
 #include "photo_return.h"
@@ -91,6 +95,7 @@
 #include "spell_edit.h"     // Spellcraft Modify sub-tab: per-effect spell editor (sx* bridge)
 #include "player_tune.h"    // Character sheet Tune modal: player AV editor (psTune*)
 #include "weather_actions.h" // Time tab Sky card: weather picker (tmWeather*)
+#include "weather_hub.h"     // Weather tab: every weather + the weather mods' controls (wx*)
 #include "npc_tune.h"        // F7 quick-card Tune modal: NPC editor (nt* bridge)
 #include "npc_finder.h"     // NPCs tab: the fast NPC finder (nx* bridge)
 #include "cell_finder.h"    // Cells tab: the interior-cell finder (cx* bridge)
@@ -110,6 +115,7 @@
 #include "mcm_settings.h"    // MCM settings popout (mc* bridge)
 #include "skyui_mcm.h"       // SkyUI (Papyrus) MCM browser (sy* bridge)
 #include "smf_index.h"       // SKSE Menu Framework pages in the Omni (hdSmf* bridge)
+#include "smf_widget.h"      // "Mod Menus" button on the Esc menu (opens SMF's panel)
 #include "open_diag.h"      // open/close timing + hang watchdogs (Nexus freeze triage)
 #include "no_auto_gear.h"
 #include "spid_gear.h"
@@ -120,6 +126,9 @@
 #include "effects_actions.h"   // ✨ Effects modal on the quick card (fx* bridge)
 #include "followers_hud.h"
 #include "hotbar.h"
+#include "cast_anim.h"
+#include "hotbar_cast.h"
+#include "shout_cooldowns.h"
 #include "widgets.h"   // HUD widgets (wg* on the hotbar view) + potion browser (pb* on the deck view)
 #include "ward_actions.h"   // ward-toggle: maintain your best ward, WardAnytime-style
 #include "anim_actions.h"
@@ -139,6 +148,44 @@ using json = nlohmann::json;
 namespace
 {
 	PRISMA_UI_API::IVPrismaUI1* g_prisma = nullptr;
+
+	/* ⛔ Every JS listener is registered through HD_LISTEN, never bare.
+	 *
+	 * PrismaUI runs a listener inside its own SKSE task on the main thread, and
+	 * nothing between that task and the game's top frame catches a C++
+	 * exception: one escaping a handler is an instant CTD. That shipped
+	 * (Nexus, 2026-10-06): the Keys tab's kcResult dumped a non-UTF-8 binding
+	 * label, nlohmann threw type_error 316, and the game died three minutes
+	 * after the deck was opened. The label is fixed at its source
+	 * (keys_scan.cpp Utf8Of); this is the backstop for the next one, in any of
+	 * ~430 handlers: the throw is logged with the listener's name and the deck
+	 * carries on with that one request dropped.
+	 *
+	 * Covers the handler body only. A handler that AddTask()s its work runs that
+	 * lambda in a later task, outside this guard. */
+	template <std::size_t N>
+	struct ListenerName
+	{
+		char s[N]{};
+		constexpr ListenerName(const char (&v)[N]) { std::copy_n(v, N, s); }
+	};
+
+	template <ListenerName Name, PRISMA_UI_API::JSListenerCallback Fn>
+	void GuardedJsListener(const char* argument) noexcept
+	{
+		try {
+			Fn(argument);
+		} catch (const std::exception& e) {
+			logger::error("JS listener '{}' threw out of its handler: {} -- request dropped, game kept running",
+				Name.s, e.what());
+		} catch (...) {
+			logger::error("JS listener '{}' threw out of its handler: unknown exception -- request dropped, game kept running",
+				Name.s);
+		}
+	}
+
+#define HD_LISTEN(view, name, fn) g_prisma->RegisterJSListener(view, name, &GuardedJsListener<name, fn>)
+
 	PrismaView                  g_view = 0;
 	std::atomic<bool>           g_viewReady{ false };
 	std::atomic<bool>           g_viewRequested{ false };
@@ -234,6 +281,8 @@ namespace
 	// never Focused during play (input passes through). Focused only to reposition.
 	PrismaView                  g_hudView = 0;
 	std::atomic<bool>           g_hudViewReady{ false };
+	std::atomic<bool>           g_photoStudioFocused{ false };
+	void PhotoStudioClose();
 	std::atomic<bool>           g_hudEditing{ false };
 	// The next real key press is captured as the HUD toggle key while this is set
 	// (armed from the deck's "Set show/hide key" control).
@@ -267,6 +316,11 @@ namespace
 	// fires — so the picture on screen and the action that runs can never
 	// disagree, which is the one bug a mod-key bar must not have.
 	std::atomic<int>            g_hbLivePage{ 0 };
+	// The weapon bar that is live (index into g_hbConfig.weaponBars, -1 = the
+	// Default bar). Written on the main thread by HbUpdateWielded every
+	// visibility beat, read by the sink's fire path and the live tick, so the
+	// buttons on screen and the press always come from the same bar.
+	std::atomic<int>            g_hbLiveBar{ -1 };
 
 	// Hold-to-release wheel (openStyle "hold", v0.17): the key that OPENED the
 	// wheel is remembered here, and its UP event hands the gesture back to the
@@ -315,6 +369,21 @@ namespace
 	// sh_index.json is pushed once per session PER VIEW — this is the deck's flag,
 	// g_iconIndexPushed is the Spell Deck's.
 	std::atomic<bool> g_deckIconIndexPushed{ false };
+	// open-deferred-slices (2026-10-08): the tab slices the FIRST painted frame
+	// does not need are parked here at open and pushed when the view reports
+	// hdPainted (its double-rAF after hdOpen), or after a 400 ms fallback.
+	// Before this ~20 Invokes followed hdOpen and Ultralight's UI thread ran
+	// every one of them before it could paint: open-diag(view) ->paint sat at
+	// 169-276 ms in-game while the engine's own layout + raster measured a few
+	// ms offline. A pane that is shown before its slice lands paints last open's
+	// data for a frame, then re-renders on receipt (every handler does).
+	struct DeferredOpen {
+		std::uint64_t                                     epoch = 0;
+		std::vector<std::pair<const char*, std::string>>  pushes;
+	};
+	std::mutex                 g_deferredOpenMutex;
+	DeferredOpen               g_deferredOpen;
+	std::atomic<std::uint64_t> g_openEpoch{ 0 };
 	// Round 3 (2026-08-17): the HUD view's copy — its slot widgets resolve
 	// spell/shout art through the same sh_index maps.
 	// ⚠ LATCH-ON-SUCCESS ONLY (2026-08-18): MirrorSpellIconsAsync() is a detached
@@ -1188,6 +1257,9 @@ namespace
 			{ "npc-trade", "Trade", "Trade with the NPC you're looking at - the vanilla barter menu, or her pack if she's a follower or your spouse (merchant barter buy sell shop quicktrade)", "action", 0, "Trade", {}, "NPC", "trade", "icons/custom/hk-trade.png" },
 			{ "npc-trade-inventory", "Trade: inventory", "Open the pack of the NPC you're looking at instead of the barter menu - the forced-inventory half of Trade (barter merchant bag container quicktrade)", "action", 0, "Pack", {}, "NPC", "trade-inventory", "icons/custom/hk-trade-inventory.png" },
 			{ "npc-attack-target", "Sic 'em (Attack Target)", "Fires a bolt down your crosshair and sends every follower to attack whoever you're looking at - or whoever the bolt lands on - right now, plus any enemies already fighting near them. Skips the follower detection lag. Bind a key for combat (EFF-style assault command)", "action", 0, "Sic 'em", {}, "NPC", "attack-target", "icons/custom/hk-attack-target.png" },
+			// Hunt (2026-10-05) - Hunt Them Down's verb on our own StartCombat.
+			{ "npc-hunt", "Hunt Them Down", "No aiming: every follower and summon goes for the enemy nearest to them, even ones that have not noticed you yet, and moves on to the next as each one drops. Whole cell indoors, about 57 m outdoors. Only actors already hostile to you (hunt them down charge send in aggro tank minions)", "action", 0, "Hunt", {}, "NPC", "hunt", "icons/custom/hk-attack-target.png" },
+			{ "npc-hunt-minions", "Hunt: Summons Only", "Send only your summons and thralls - atronachs, raised dead, your followers' conjurations - after the nearest enemies while your followers stay with you (hunt minions summons conjure necromancer skeleton army)", "action", 0, "Minions", {}, "NPC", "hunt-minions", "icons/custom/hk-attack-target.png" },
 			{ "npc-no-auto-gear", "No Auto-Gear", "Toggle: stop SPID/SkyPatcher distributors putting cloaks, hoods or underwear on the NPC you're looking at, and strip what's worn. Bind a key or fire from the palette (no auto gear cloak hood underwear)", "action", 0, "NoGear", {}, "NPC", "no-auto-gear", "icons/custom/hk-no-auto-gear.png" },
 			{ "npc-no-auto-gear-party", "No Auto-Gear: Party", "Protect every follower with you right now from distributor cloaks/hoods/underwear (no auto gear party)", "action", 0, "NoGear+", {}, "NPC", "no-auto-gear-party", "icons/custom/hk-no-auto-gear.png" },
 			// Fixes / Unstuck (native console-backed actions) — for modded-game jank
@@ -1360,6 +1432,12 @@ namespace
 			// Preset Director DLL — backs the Faces tab (preset_bridge.cpp
 			// already probes this exact module for its C API).
 			{ "presetdirector", dll("PresetDirector.dll") },
+			// NPA - NPC Preset Applier (Nexus 193575) — a pure SKSE DLL; backs the
+			// "NPA: NPC Preset Applier" opener row (MenuActions "open-npa").
+			{ "npa", dll("NPA.dll") },
+			// The Manipulator 9001 (Nexus 194259) — a pure SKSE DLL; backs the
+			// "The Manipulator: edit mode" opener row (MenuActions "open-manipulator").
+			{ "manipulator", dll("ObjectManipulator.dll") },
 			// OStim SA DLL — backs the OStim scene deck (ostim_deck.cpp / its
 			// vendored Thread API consume it via GetModuleHandle("OStim.dll")).
 			{ "ostim", dll("OStim.dll") },
@@ -1454,6 +1532,8 @@ namespace
 			{ "hd-custom-markers-combat", "custommarkers_combat" },
 			{ "hd-highking", "highking" }, { "hd-hk-collect-taxes", "highking" },
 			{ "hd-hk-highreach-tp", "highking" },
+			{ "hd-open-npa", "npa" },
+			{ "hd-open-manipulator", "manipulator" },
 		};
 		for (const auto& r : kReq)
 			if (e.id == r.id)
@@ -3193,6 +3273,10 @@ namespace
 			  "Free every NPC held, seated or bedded by these actions (release let go all)", "NPC", "icons/custom/hk-release-all.png" },
 			{ "attack-target", "npc-attack-target", "Sic 'em (Attack Target)",
 			  "Fires a bolt down your crosshair and sends every follower to attack whoever you're looking at - or whoever the bolt lands on - right now, plus any enemies already fighting near them. Skips the follower detection lag (sic em attack assault command)", "NPC", "icons/custom/hk-attack-target.png" },
+			{ "hunt", "npc-hunt", "Hunt Them Down",
+			  "No aiming: every follower and summon goes for the enemy nearest to them, even ones that have not noticed you yet, and moves on to the next as each one drops. Whole cell indoors, about 57 m outdoors. Only actors already hostile to you (hunt them down charge send in aggro tank minions)", "NPC", "icons/custom/hk-attack-target.png" },
+			{ "hunt-minions", "npc-hunt-minions", "Hunt: Summons Only",
+			  "Send only your summons and thralls - atronachs, raised dead, your followers' conjurations - after the nearest enemies while your followers stay with you (hunt minions summons conjure necromancer skeleton army)", "NPC", "icons/custom/hk-attack-target.png" },
 			// Instant waits (2026-08-02): the vanilla Sleep/Wait menu ticks one
 			// hour per REAL frame and this rig's frame generation throttles real
 			// frames, so the menu crawls at any displayed FPS. These jump the
@@ -3308,6 +3392,20 @@ namespace
 			  "Open the Community Shaders menu - needs Community Shaders installed (default key End) (settings config shaders enb)", "Menus", "icons/custom/hk-community-shaders.png" },
 			{ "open-ied", "hd-open-ied", "Immersive Equipment Displays",
 			  "Open Immersive Equipment Displays' own UI - place and tune your displayed gear (ied gear displays settings config)", "Menus", "icons/custom/hk-ied-menu.png" },
+			// NPA - NPC Preset Applier (2026-10-04): its window is a standalone SMF
+			// window the Omni's "Mod menus" walk cannot see, so it gets a row of
+			// its own. Seeded only when NPA.dll is loaded (MenuActions::NpaLoaded,
+			// gate below); the opener reads NPA.ini's Hotkey live.
+			{ "open-npa", "hd-open-npa", "NPA: NPC Preset Applier",
+			  "Open NPA's window on the NPC under your crosshair - pick one of your RaceMenu presets and Apply, Revert to undo. Presses NPA's own key from NPA.ini (default Shift+N) (npa npc preset applier racemenu face look appearance makeover change face preset)", "Menus", "icons/custom/hm-faces.png" },
+			// The Manipulator 9001 (2026-10-08): its edit mode (free camera, frozen
+			// time, click-to-select, move/rotate/scale gizmos, per-cell JSON saves)
+			// is reached only by its Home key; its SMF page is a section item the
+			// Omni "Mod menus" walk lists by itself. Seeded only when
+			// ObjectManipulator.dll is loaded (MenuActions::ManipulatorLoaded, gate
+			// below). v.2 has no config file: the key is Home, hardcoded upstream.
+			{ "open-manipulator", "hd-open-manipulator", "The Manipulator: edit mode",
+			  "Toggle The Manipulator 9001's edit mode - time freezes, you fly a free camera and click any object to move, rotate or scale it, see which plugins and MO2 mods own it, Ctrl+S saves per-cell JSON into overwrite\\manipulator\\output. Presses its Home key for you; Home or Esc leaves (manipulator object placement creation kit ck move rotate scale clipping floating furniture idle markers draw calls conflict winner mesh texture source tfc)", "Menus", "icons/custom/sn-move.png" },
 			{ "custom-markers-settings", "hd-custom-markers-settings", "Loot Beams & Mini Radar Settings",
 			  "Open Custom Markers' own HUD Settings using its saved shortcut. Beacons controls loot indicators; Radar & Inspect controls the minimap. Save changes there (custom markers loot beams pillars radar minimap map settings)", "Menus", "icons/custom/hk-skse-menu.png" },
 			{ "custom-markers-loot", "hd-custom-markers-loot", "Custom Markers: Loot Beams",
@@ -3736,6 +3834,10 @@ namespace
 			}
 			if (CustomMarkers::IsAction(s.action) && !CustomMarkers::SupportsAction(s.action))
 				continue;
+			if (std::string(s.action) == "open-npa" && !MenuActions::NpaLoaded())
+				continue;
+			if (std::string(s.action) == "open-manipulator" && !MenuActions::ManipulatorLoaded())
+				continue;
 			// Put the tab back too if it was deleted, or the entry would land in
 			// a category the tab bar does not draw.
 			if (std::find(c.categories.begin(), c.categories.end(), s.category) == c.categories.end())
@@ -3981,6 +4083,8 @@ namespace
 				g_ngConfig = std::move(ng);
 				g_spidConfig = std::move(sg);
 				g_hbConfig = std::move(hb);
+				CastAnim::SetEnabled(g_hbConfig.castAnim != "off");
+				g_hbLiveBar = -2;   // re-resolve the live weapon bar against the new list
 				// Build marker (hd-markers.json: "hotbar-config"). Unconditional so
 				// it is REACHED on every successful load — a marker inside an `if`
 				// that never fires is one the deploy check can never see.
@@ -4283,7 +4387,11 @@ namespace
 				OpenDiag::TickTimer diag("room-guard");
 				auto* conversationUI = RE::UI::GetSingleton();
 				NpcActions::TickConversations(g_gameReady.load(), g_worldFrozen.load() || !conversationUI || conversationUI->GameIsPaused());
+				NpcActions::TickOrders(g_gameReady.load(), g_worldFrozen.load() || !conversationUI || conversationUI->GameIsPaused());
 				PartyRecall::Tick(g_gameReady.load(), AnyOpen() || g_worldFrozen.load() || !conversationUI || conversationUI->GameIsPaused());
+				// Weather lock: put the locked weather back when the region,
+				// a load screen or a script moved the sky (weather_actions.cpp).
+				WeatherActions::Tick(g_gameReady.load(), !conversationUI || conversationUI->GameIsPaused());
 				bool        dirty = false;
 				std::string open;
 				{
@@ -4471,8 +4579,11 @@ namespace
 		using namespace std::chrono_literals;
 		while (true) {
 			std::this_thread::sleep_for(60s);
+			// The roster is shared with the HUD ticker's cache (it refreshes it
+			// every 30 s while the HUD is on), so this tick normally builds
+			// nothing; FO's state build is a game-thread hitch, not free.
 			SKSE::GetTaskInterface()->AddTask([]() {
-				CourtStatus::Write(FollowerDeck::StateJson());
+				CourtStatus::Write(*FollowerDeck::CachedState(60000));
 			});
 		}
 	}
@@ -4526,6 +4637,13 @@ namespace
 			if (g_hbConfig.enabled) {
 				if (g_hbConfig.keyDevice == "keyboard" && g_hbConfig.keyCode)
 					out.push_back(KeysScan::OwnBinding{ "Action Bar show/hide", g_hbConfig.keyCode, "" });
+				// Oblivion style: the cast key and the potion key are claims too.
+				if (g_hbConfig.keyMode == "pick") {
+					if (g_hbConfig.castKey.device == "keyboard" && g_hbConfig.castKey.code)
+						out.push_back(KeysScan::OwnBinding{ "Action Bar cast key (ready spell)", g_hbConfig.castKey.code, "" });
+					if (g_hbConfig.potionKey.device == "keyboard" && g_hbConfig.potionKey.code)
+						out.push_back(KeysScan::OwnBinding{ "Action Bar potion key (ready potion)", g_hbConfig.potionKey.code, "" });
+				}
 				static const char* kPageMods[Hotbar::kPageCount] = { "", "Shift", "Ctrl", "Alt", "Shift+Ctrl", "Shift+Alt", "Ctrl+Alt" };
 				const int n = g_hbConfig.VisibleSlots();
 				for (int p = 0; p < Hotbar::kPageCount && p < static_cast<int>(g_hbConfig.pages.size()); ++p) {
@@ -4815,6 +4933,8 @@ namespace
 	void OnJsClose(const char* data);
 	void OnJsTextInput(const char* data);
 	void OnJsLog(const char* data);
+	void OnJsPainted(const char* data);
+	std::string DeckIconIndexJson();
 	void OnJsPerfReport(const char* data);
 	void OnJsTab(const char* data);
 	void OnJsCapture(const char* data);
@@ -4891,12 +5011,15 @@ namespace
 	void OnJsFolEquipped(const char* data);  // v0.15.0 the worn set, read off the engine
 	void OnJsItemSpin(const char* data);     // bake the turntable for one worn piece
 	void OnJsSpin(const char* data);         // hdSpin: bake item/face turntable, reply hdSpinState
+	void OnJsInspect(const char* data);      // hdInspect: the item inspector's 24-frame turntable, reply hdInspectData
 	void OnJsFolTune(const char* data);      // v0.15.1 essential / health / shared spells
 	void OnJsFolMarriage(const char* data);
 	void OnJsFolRank(const char* data);      // the player's RELA rank: read, and set
 	void OnJsFolRefresh(const char* data);
 	void OnJsFolPortrait(const char* data);
 	void OnJsFolFaceIcons(const char* data); // facegen head renders as default roster portraits
+	void OnJsMirror(const char* data);       // the person page full-body figure (ItemIcons::MirrorJson)
+	void OnJsLive(const char* data);         // the person page LIVE view (PersonLive): start / orbit / stop
 	void OnJsFolCellScan(const char* data);  // Who's here: FO roster members near the player + why their picture is (not) showing
 	// Recall roster (pr* bridge on the deck view — party_recall.cpp): who the
 	// F17 recall would answer for, and the register. prRoster/prSet/prRecall
@@ -4927,6 +5050,7 @@ namespace
 	// snapshot for every on-screen element, and a per-widget toggle. Requests
 	// hdUiState / hdWidgetToggle, reply hdUiStateData (one name per direction).
 	void        OnJsUiState(const char* data);
+	void        OnJsSwCfg(const char* data);   // Stance Wheel settings: swCfg in, swCfgState out
 	std::string UiStateJson();
 	void        OnJsWidgetToggle(const char* data);
 	// 2026-08-19: the merged "Equipped widget" row in that drawer — master,
@@ -4990,6 +5114,7 @@ namespace
 	void OnJsWheelInv(const char* data);
 	void OnJsWheelAct(const char* data);
 	void OnJsWheelIcons(const char* data);
+	void OnJsHudIcons(const char* data);
 	void OnJsIconRetry(const char* data);
 	// Domains tab (pd* bridge on the deck view) forward decls.
 	void OnJsPlaceMark(const char* data);
@@ -5069,6 +5194,8 @@ namespace
 	void OnJsPlayerTuneSet(const char* data);
 	void OnJsWeatherList(const char* data);
 	void OnJsWeatherSet(const char* data);
+	void OnJsWxState(const char* data);
+	void OnJsWxSet(const char* data);
 	void OnJsNpcTuneGet(const char* data);
 	void OnJsNpcTuneApply(const char* data);
 	void OnJsNpcTuneRevert(const char* data);
@@ -5699,6 +5826,14 @@ namespace
 						OpenDiag::NowMs() - pressT, 2000);
 			}
 			SKSE::GetTaskInterface()->AddTask([v]() {
+				// open-warm-icon-index (2026-10-08): the ~485 KB icon library used to
+				// ride the FIRST open of the session (110 ms press->shown vs 41-47 ms
+				// for every later one). Push it now, during the warm-up nobody waits
+				// on; IconBridge's rebuild latch still re-pushes a fresh index later.
+				if (g_prisma && !g_deckIconIndexPushed.exchange(true)) {
+					g_prisma->Invoke(v, ("hdIconIndex(" + DeckIconIndexJson() + ")").c_str());
+					logger::info("open-warm-icon-index: deck icon library pushed during warm-up");
+				}
 				// Consume the want-flag: open only if the press still wants it (a
 				// second press during the warm-up cancels — see the sink) AND the
 				// world will accept it right now.
@@ -5723,103 +5858,105 @@ namespace
 		});
 		wdCreate.Done();
 		OpenDiag::LogMs("CreateView (synchronous)", OpenDiag::NowMs() - g_diagViewT0.load(), 1000);
-		g_prisma->RegisterJSListener(g_view, "hdFire", OnJsFire);
-		g_prisma->RegisterJSListener(g_view, "hdFireKey", OnJsFireKey);
-		g_prisma->RegisterJSListener(g_view, "hdSave", OnJsSave);
-		g_prisma->RegisterJSListener(g_view, "hdClose", OnJsClose);
-		g_prisma->RegisterJSListener(g_view, "hdTextInput", OnJsTextInput);
-		g_prisma->RegisterJSListener(g_view, "hdLog", OnJsLog);
+		HD_LISTEN(g_view, "hdFire", OnJsFire);
+		HD_LISTEN(g_view, "hdFireKey", OnJsFireKey);
+		HD_LISTEN(g_view, "hdSave", OnJsSave);
+		HD_LISTEN(g_view, "hdClose", OnJsClose);
+		HD_LISTEN(g_view, "hdTextInput", OnJsTextInput);
+		HD_LISTEN(g_view, "hdLog", OnJsLog);
 		// hdPerfReport: the view posts its post-Show timing here (feature-detected
 		// on the view side). Logged verbatim under "open-diag(view): ...".
-		g_prisma->RegisterJSListener(g_view, "hdPerfReport", OnJsPerfReport);
-		g_prisma->RegisterJSListener(g_view, "hdTab", OnJsTab);
-		g_prisma->RegisterJSListener(g_view, "hdCapture", OnJsCapture);
-		g_prisma->RegisterJSListener(g_view, "hdQuestList", OnJsQuestList);
-		g_prisma->RegisterJSListener(g_view, "hdQuestSearch", OnJsQuestSearch);
-		g_prisma->RegisterJSListener(g_view, "hdQuestActive", OnJsQuestActive);
+		HD_LISTEN(g_view, "hdPerfReport", OnJsPerfReport);
+		// open-deferred-slices: the view says "first frame painted" here.
+		HD_LISTEN(g_view, "hdPainted", OnJsPainted);
+		HD_LISTEN(g_view, "hdTab", OnJsTab);
+		HD_LISTEN(g_view, "hdCapture", OnJsCapture);
+		HD_LISTEN(g_view, "hdQuestList", OnJsQuestList);
+		HD_LISTEN(g_view, "hdQuestSearch", OnJsQuestSearch);
+		HD_LISTEN(g_view, "hdQuestActive", OnJsQuestActive);
 		// SOS size, SCENE-FREE. The OStim tools already drive SizeStateJson/
 		// SetActorSize, but only through the scene bridge (osTools + a scene
 		// signature), so the Character tab and the palette could not reach them.
 		// Request hdSosSize, reply hdSosSizeData — disjoint names, one per
 		// direction, per the deck law.
-		g_prisma->RegisterJSListener(g_view, "hdSosSize", OnJsSosSize);
-		g_prisma->RegisterJSListener(g_view, "hdQuestGet", OnJsQuestDetail);
-		g_prisma->RegisterJSListener(g_view, "hdQuestSetStage", OnJsQuestSetStage);
-		g_prisma->RegisterJSListener(g_view, "hdQuestAction", OnJsQuestAction);
+		HD_LISTEN(g_view, "hdSosSize", OnJsSosSize);
+		HD_LISTEN(g_view, "hdQuestGet", OnJsQuestDetail);
+		HD_LISTEN(g_view, "hdQuestSetStage", OnJsQuestSetStage);
+		HD_LISTEN(g_view, "hdQuestAction", OnJsQuestAction);
 		// VirtualKey (Nexus 187350): catalog for the picker + a raw test-fire.
-		g_prisma->RegisterJSListener(g_view, "vkCatalog", OnJsVkCatalog);
-		g_prisma->RegisterJSListener(g_view, "vkTest", OnJsVkTest);
+		HD_LISTEN(g_view, "vkCatalog", OnJsVkCatalog);
+		HD_LISTEN(g_view, "vkTest", OnJsVkTest);
 		// Console-command entries: the editor's ▶ Test (fires without saving).
-		g_prisma->RegisterJSListener(g_view, "hdConsoleTest", OnJsConsoleTest);
+		HD_LISTEN(g_view, "hdConsoleTest", OnJsConsoleTest);
 		// Places: the searchable teleport (places.cpp) — the Omni `places`
 		// provider queries per keystroke, Enter runs hdPlacesGo.
-		g_prisma->RegisterJSListener(g_view, "hdPlacesQuery", OnJsPlacesQuery);
-		g_prisma->RegisterJSListener(g_view, "hdPlacesGo", OnJsPlacesGo);
+		HD_LISTEN(g_view, "hdPlacesQuery", OnJsPlacesQuery);
+		HD_LISTEN(g_view, "hdPlacesGo", OnJsPlacesGo);
 		logger::info("console-cmd entries: Script runner ready");  // marker: console-cmd-entries
 		logger::info("virtualkey device: native InputEvent dispatch ready");
 		// Followers tab (v0.9.0): the fd* bridge lives on the deck view now.
-		g_prisma->RegisterJSListener(g_view, "fdApply", OnJsFolApply);
-		g_prisma->RegisterJSListener(g_view, "fdWorld", OnJsFolWorld);
-		g_prisma->RegisterJSListener(g_view, "fdMhiyh", OnJsFolMhiyh);
-		g_prisma->RegisterJSListener(g_view, "fdNpc", OnJsFolNpc);
-		g_prisma->RegisterJSListener(g_view, "gaNearby", OnJsGaNearby);
-		g_prisma->RegisterJSListener(g_view, "gaMove", OnJsGaMove);
-		g_prisma->RegisterJSListener(g_view, "gaClear", OnJsGaClear);
-		g_prisma->RegisterJSListener(g_view, "gaRestore", OnJsGaRestore);
+		HD_LISTEN(g_view, "fdApply", OnJsFolApply);
+		HD_LISTEN(g_view, "fdWorld", OnJsFolWorld);
+		HD_LISTEN(g_view, "fdMhiyh", OnJsFolMhiyh);
+		HD_LISTEN(g_view, "fdNpc", OnJsFolNpc);
+		HD_LISTEN(g_view, "gaNearby", OnJsGaNearby);
+		HD_LISTEN(g_view, "gaMove", OnJsGaMove);
+		HD_LISTEN(g_view, "gaClear", OnJsGaClear);
+		HD_LISTEN(g_view, "gaRestore", OnJsGaRestore);
 		// F7 card 🔍 Debug reveal: fdDebug in, fdDebugInfo out (two names, one
 		// per direction — the deck law). Pure read; NpcActions::DebugJson.
-		g_prisma->RegisterJSListener(g_view, "fdDebug", OnJsFolDebug);
+		HD_LISTEN(g_view, "fdDebug", OnJsFolDebug);
 		// F7 card 🔧 Fixes flyout: a probe and an apply, two names per
 		// direction as the deck law says. The probe is read-only; the apply
 		// re-probes server-side and can answer ok:false with the reason,
 		// which is the whole point of it (see fix_actions.h).
-		g_prisma->RegisterJSListener(g_view, "hdFixProbe", OnJsFixProbe);
-		g_prisma->RegisterJSListener(g_view, "hdFixApply", OnJsFixApply);
+		HD_LISTEN(g_view, "hdFixProbe", OnJsFixProbe);
+		HD_LISTEN(g_view, "hdFixApply", OnJsFixApply);
 		// Formation with Followers modal (formation_actions): fmGet→fmOpen,
 		// mutations→fmResult + a delayed fresh fmOpen once Papyrus has landed.
-		g_prisma->RegisterJSListener(g_view, "fmGet", OnJsFmGet);
-		g_prisma->RegisterJSListener(g_view, "fmApply", OnJsFmApply);
-		g_prisma->RegisterJSListener(g_view, "fmReg", OnJsFmReg);
-		g_prisma->RegisterJSListener(g_view, "fmRescue", OnJsFmRescue);
+		HD_LISTEN(g_view, "fmGet", OnJsFmGet);
+		HD_LISTEN(g_view, "fmApply", OnJsFmApply);
+		HD_LISTEN(g_view, "fmReg", OnJsFmReg);
+		HD_LISTEN(g_view, "fmRescue", OnJsFmRescue);
 		// Domains tab -> Bases (nff_bases): nbGet→nbOpen, nbOp→nbResult plus a
 		// delayed fresh nbOpen, because NFF's own functions run on the VM's
 		// thread and the state only reflects them a beat later.
-		g_prisma->RegisterJSListener(g_view, "nbGet", OnJsNbGet);
-		g_prisma->RegisterJSListener(g_view, "nbOp", OnJsNbOp);
+		HD_LISTEN(g_view, "nbGet", OnJsNbGet);
+		HD_LISTEN(g_view, "nbOp", OnJsNbOp);
 		// Domains tab -> Residents (residents.cpp): the MHiYH master list and
 		// remote stop assignment. Same reply-name law as the rest.
-		g_prisma->RegisterJSListener(g_view, "rsState", OnJsRsState);
-		g_prisma->RegisterJSListener(g_view, "rsPresets", OnJsRsPresets);
-		g_prisma->RegisterJSListener(g_view, "dsRequest", OnJsDsRequest);
-		g_prisma->RegisterJSListener(g_view, "rsDay", OnJsRsDay);
-		g_prisma->RegisterJSListener(g_view, "rsAct", OnJsRsAct);
+		HD_LISTEN(g_view, "rsState", OnJsRsState);
+		HD_LISTEN(g_view, "rsPresets", OnJsRsPresets);
+		HD_LISTEN(g_view, "dsRequest", OnJsDsRequest);
+		HD_LISTEN(g_view, "rsDay", OnJsRsDay);
+		HD_LISTEN(g_view, "rsAct", OnJsRsAct);
 		// Deck Portal: state for the header button, and open-in-browser. Two
 		// names, one per direction (the deck law).
-		g_prisma->RegisterJSListener(g_view, "ptGet", OnJsPtGet);
-		g_prisma->RegisterJSListener(g_view, "ptOpen", OnJsPtOpen);
+		HD_LISTEN(g_view, "ptGet", OnJsPtGet);
+		HD_LISTEN(g_view, "ptOpen", OnJsPtOpen);
 		// CHIM button (chim_control): chState asks whether the NPC is a CHIM
 		// agent -> chStateResult; chSet activates/deactivates -> chStateResult
 		// (optimistic first, then reconciled from the mod's own agent set).
-		g_prisma->RegisterJSListener(g_view, "chState", OnJsChState);
-		g_prisma->RegisterJSListener(g_view, "chSet", OnJsChSet);
+		HD_LISTEN(g_view, "chState", OnJsChState);
+		HD_LISTEN(g_view, "chSet", OnJsChSet);
 		// chAgents -> chAgentsResult: the WHOLE agent set in one call
 		// (findAllAgentsFormId), so the omni rows' CHIM mark and the F7 card's
 		// lit 💬 cost one Papyrus dispatch, not one per NPC.
-		g_prisma->RegisterJSListener(g_view, "chAgents", OnJsChAgents);
-		g_prisma->RegisterJSListener(g_view, "chConversation", OnJsChConversation);
+		HD_LISTEN(g_view, "chAgents", OnJsChAgents);
+		HD_LISTEN(g_view, "chConversation", OnJsChConversation);
 		// fmAll -> fmAllResult: everyone Fertility Mode tracks, keyed by ref and
 		// by base record, so the NPC Finder's rows and a non-roster crosshair
 		// card can say "pregnant" without a Follower Organizer row.
-		g_prisma->RegisterJSListener(g_view, "fmAll", OnJsFmAll);
+		HD_LISTEN(g_view, "fmAll", OnJsFmAll);
 		// Recent tab. Request names hdHistory/hdHistoryClear, reply pushed as
 		// hdRecent — disjoint, or toGame() would call the view's own receiver.
-		g_prisma->RegisterJSListener(g_view, "hdHistory", OnJsHistory);
-		g_prisma->RegisterJSListener(g_view, "hdHistoryClear", OnJsHistoryClear);
-		g_prisma->RegisterJSListener(g_view, "fdEquipped", OnJsFolEquipped);
+		HD_LISTEN(g_view, "hdHistory", OnJsHistory);
+		HD_LISTEN(g_view, "hdHistoryClear", OnJsHistoryClear);
+		HD_LISTEN(g_view, "fdEquipped", OnJsFolEquipped);
 		/* fdItemSpin: bake the turntable for one worn piece on demand (the
 		 * lightbox was dragged). No reply — the view derives and probes the
 		 * angle-frame URLs itself, exactly like Dragon Roost's drSpin. */
-		g_prisma->RegisterJSListener(g_view, "fdItemSpin", OnJsItemSpin);
+		HD_LISTEN(g_view, "fdItemSpin", OnJsItemSpin);
 		/* hdSpin in, hdSpinState out — the shared lightbox's turntable
 		 * (items AND faces). Unlike fdItemSpin this one ANSWERS, with the
 		 * frames that exist on disk, because Ultralight cannot be trusted to
@@ -5827,441 +5964,452 @@ namespace
 		 * cache-bust does not load at all) — the view only ever shows a frame
 		 * this reply named. Polling = re-sending hdSpin; every path is
 		 * dedup-safe. */
-		g_prisma->RegisterJSListener(g_view, "hdSpin", OnJsSpin);
+		HD_LISTEN(g_view, "hdSpin", OnJsSpin);
+		// hdInspect in, hdInspectData out — the lightbox's opt-in "Turn in 3D"
+		// (ItemIcons::InspectJson), gated on the Finder's inspect3d switch.
+		HD_LISTEN(g_view, "hdInspect", OnJsInspect);
 		/* fdTune in, fdTuneInfo out — disjoint names, per the deck law. */
-		g_prisma->RegisterJSListener(g_view, "fdTune", OnJsFolTune);
-		g_prisma->RegisterJSListener(g_view, "fdRank", OnJsFolRank);
-        g_prisma->RegisterJSListener(g_view, "fdMarriage", OnJsFolMarriage);
-		g_prisma->RegisterJSListener(g_view, "fdRefresh", OnJsFolRefresh);
+		HD_LISTEN(g_view, "fdTune", OnJsFolTune);
+		HD_LISTEN(g_view, "fdRank", OnJsFolRank);
+        HD_LISTEN(g_view, "fdMarriage", OnJsFolMarriage);
+		HD_LISTEN(g_view, "fdRefresh", OnJsFolRefresh);
 		// Portrait FRAMING (zoom / offset), so the knobs in capture.ini are
 		// reachable in game instead of only from a text editor or the portal.
 		// Two names, one per direction — a name used for both silently unplugs
 		// the control (see the one-name-per-direction rule).
-		g_prisma->RegisterJSListener(g_view, "fdFraming", OnJsFolFraming);
-		g_prisma->RegisterJSListener(g_view, "fdSetFraming", OnJsFolSetFraming);
+		HD_LISTEN(g_view, "fdFraming", OnJsFolFraming);
+		HD_LISTEN(g_view, "fdSetFraming", OnJsFolSetFraming);
 		// Portrait display CROP (v0.14.3) — pan/zoom on a photo that already
 		// exists, as opposed to the framing above which aims the NEXT capture.
 		// Same two-names rule: fdCropSave in, fdCrops out.
-		g_prisma->RegisterJSListener(g_view, "fdCropSave", OnJsFolCropSave);
-		g_prisma->RegisterJSListener(g_view, "fdFaceIcons", OnJsFolFaceIcons);
+		HD_LISTEN(g_view, "fdCropSave", OnJsFolCropSave);
+		HD_LISTEN(g_view, "fdFaceIcons", OnJsFolFaceIcons);
+		// The Mirror (person page full-body figure): pnMirror in, pnMirrorData out.
+		HD_LISTEN(g_view, "pnMirror", OnJsMirror);
+		HD_LISTEN(g_view, "pnLive", OnJsLive);
 		// Who's here (2026-09-17): fdCellScan in, fdCellScanData out.
-		g_prisma->RegisterJSListener(g_view, "fdCellScan", OnJsFolCellScan);
-		g_prisma->RegisterJSListener(g_view, "prRoster", OnJsPrRoster);
-		g_prisma->RegisterJSListener(g_view, "prSet", OnJsPrSet);
-		g_prisma->RegisterJSListener(g_view, "prRecall", OnJsPrRecall);
-		g_prisma->RegisterJSListener(g_view, "fdSave", OnJsFolSave);
-		g_prisma->RegisterJSListener(g_view, "fdLog", OnJsFolLog);
-		g_prisma->RegisterJSListener(g_view, "fdPortrait", OnJsFolPortrait);
-		g_prisma->RegisterJSListener(g_view, "fdPreset", OnJsFolPreset);
-		g_prisma->RegisterJSListener(g_view, "fdGear", OnJsFolGear);
+		HD_LISTEN(g_view, "fdCellScan", OnJsFolCellScan);
+		HD_LISTEN(g_view, "prRoster", OnJsPrRoster);
+		HD_LISTEN(g_view, "prSet", OnJsPrSet);
+		HD_LISTEN(g_view, "prRecall", OnJsPrRecall);
+		HD_LISTEN(g_view, "fdSave", OnJsFolSave);
+		HD_LISTEN(g_view, "fdLog", OnJsFolLog);
+		HD_LISTEN(g_view, "fdPortrait", OnJsFolPortrait);
+		HD_LISTEN(g_view, "fdPreset", OnJsFolPreset);
+		HD_LISTEN(g_view, "fdGear", OnJsFolGear);
 		// Followers HUD control (the card in the Followers tab). hudCfg in,
 		// hudCfgState out — the two-names-per-direction deck law.
-		g_prisma->RegisterJSListener(g_view, "hudCfg", OnJsHudCfg);
-		g_prisma->RegisterJSListener(g_view, "hdUiState", OnJsUiState);
-		g_prisma->RegisterJSListener(g_view, "hdWidgetToggle", OnJsWidgetToggle);
-		g_prisma->RegisterJSListener(g_view, "hdWidgetGrp", OnJsWidgetGrp);
+		HD_LISTEN(g_view, "hudCfg", OnJsHudCfg);
+		HD_LISTEN(g_view, "hdUiState", OnJsUiState);
+		HD_LISTEN(g_view, "swCfg", OnJsSwCfg);   // Stance Wheel settings (Home drawer)
+		HD_LISTEN(g_view, "hdWidgetToggle", OnJsWidgetToggle);
+		HD_LISTEN(g_view, "hdWidgetGrp", OnJsWidgetGrp);
 		// Wheel Menu (v0.16): the player's carryables, and using one.
-		g_prisma->RegisterJSListener(g_view, "whInv", OnJsWheelInv);
-		g_prisma->RegisterJSListener(g_view, "whAct", OnJsWheelAct);
-		g_prisma->RegisterJSListener(g_view, "whIcons", OnJsWheelIcons);
+		HD_LISTEN(g_view, "whInv", OnJsWheelInv);
+		HD_LISTEN(g_view, "whAct", OnJsWheelAct);
+		HD_LISTEN(g_view, "whIcons", OnJsWheelIcons);
 		// whIconRetry: the same payload, but it first forgets the failure verdict
 		// so a dead-end tile can be asked again (2026-08-15: a wig and a face sat
 		// on their placeholders forever because nothing recorded the failure).
-		g_prisma->RegisterJSListener(g_view, "whIconRetry", OnJsIconRetry);
+		HD_LISTEN(g_view, "whIconRetry", OnJsIconRetry);
 		// Domains tab (v0.9.0): mark & recall, same deck view.
-		g_prisma->RegisterJSListener(g_view, "pdMark", OnJsPlaceMark);
-		g_prisma->RegisterJSListener(g_view, "pdRecall", OnJsPlaceRecall);
-		g_prisma->RegisterJSListener(g_view, "pdSave", OnJsPlaceSave);
+		HD_LISTEN(g_view, "pdMark", OnJsPlaceMark);
+		HD_LISTEN(g_view, "pdRecall", OnJsPlaceRecall);
+		HD_LISTEN(g_view, "pdSave", OnJsPlaceSave);
 		// Place photos (v0.14.5): pdPhoto hands the player the camera; the
 		// display crop is its OWN pair — pdCropSave in, pdCrops out — never the
 		// wardrobe's or the portrait's, because PrismaUI installs each listener
 		// as a global of that name and a shared name clobbers the handler.
-		g_prisma->RegisterJSListener(g_view, "pdPhoto", OnJsPlacePhoto);
+		HD_LISTEN(g_view, "pdPhoto", OnJsPlacePhoto);
 		// Scene staging (v0.14.6): TWO request names, ONE reply name. pdScene
 		// asks, pdSceneSet writes the exposure, and both answer on pdSceneInfo —
 		// a reply that shared a request's name would silently unplug the control
 		// (the deck law, learned five times).
-		g_prisma->RegisterJSListener(g_view, "pdScene", OnJsPlaceScene);
-		g_prisma->RegisterJSListener(g_view, "pdSceneSet", OnJsPlaceSceneSet);
-		g_prisma->RegisterJSListener(g_view, "pdCropSave", OnJsPlaceCropSave);
-		g_prisma->RegisterJSListener(g_view, "pdRefresh", OnJsPlaceRefresh);
-		g_prisma->RegisterJSListener(g_view, "pdClose", OnJsClose);      // alias of hdClose
-		g_prisma->RegisterJSListener(g_view, "pdLog", OnJsPlaceLog);
+		HD_LISTEN(g_view, "pdScene", OnJsPlaceScene);
+		HD_LISTEN(g_view, "pdSceneSet", OnJsPlaceSceneSet);
+		HD_LISTEN(g_view, "pdCropSave", OnJsPlaceCropSave);
+		HD_LISTEN(g_view, "pdRefresh", OnJsPlaceRefresh);
+		HD_LISTEN(g_view, "pdClose", OnJsClose);      // alias of hdClose
+		HD_LISTEN(g_view, "pdLog", OnJsPlaceLog);
 		// Containers tab (v0.16.0): mark a container, remote-open it from anywhere.
-		g_prisma->RegisterJSListener(g_view, "ctMark", OnJsContMark);
-		g_prisma->RegisterJSListener(g_view, "ctGo", OnJsContGo);
-		g_prisma->RegisterJSListener(g_view, "ctSave", OnJsContSave);
-		g_prisma->RegisterJSListener(g_view, "ctPhoto", OnJsContPhoto);
-		g_prisma->RegisterJSListener(g_view, "ctRefresh", OnJsContRefresh);
-		g_prisma->RegisterJSListener(g_view, "ctLog", OnJsContLog);
+		HD_LISTEN(g_view, "ctMark", OnJsContMark);
+		HD_LISTEN(g_view, "ctGo", OnJsContGo);
+		HD_LISTEN(g_view, "ctSave", OnJsContSave);
+		HD_LISTEN(g_view, "ctPhoto", OnJsContPhoto);
+		HD_LISTEN(g_view, "ctRefresh", OnJsContRefresh);
+		HD_LISTEN(g_view, "ctLog", OnJsContLog);
 		// Container Auto-Sort (2026-08-15): cs* — disjoint from ct*. JS→C++ request
 		// names only; C++→JS replies (csStateResult / csResult / csSaved / csOpen)
 		// are never registered (a shared name clobbers the handler — the deck law).
-		g_prisma->RegisterJSListener(g_view, "csSaveRule", OnJsCsSaveRule);
-		g_prisma->RegisterJSListener(g_view, "csSetInbox", OnJsCsSetInbox);
-		g_prisma->RegisterJSListener(g_view, "csPin", OnJsCsPin);
-		g_prisma->RegisterJSListener(g_view, "csSaveOpts", OnJsCsSaveOpts);
-		g_prisma->RegisterJSListener(g_view, "csUnload", OnJsCsUnload);
-		g_prisma->RegisterJSListener(g_view, "csRetrieve", OnJsCsRetrieve);
-		g_prisma->RegisterJSListener(g_view, "csSweepAll", OnJsCsSweepAll);
-		g_prisma->RegisterJSListener(g_view, "csGather", OnJsCsGather);
-		g_prisma->RegisterJSListener(g_view, "csOverride", OnJsCsOverride);
-		g_prisma->RegisterJSListener(g_view, "csSortNow", OnJsCsSortNow);
-		g_prisma->RegisterJSListener(g_view, "csState", OnJsCsState);
-		g_prisma->RegisterJSListener(g_view, "csRevalidate", OnJsCsRevalidate);
+		HD_LISTEN(g_view, "csSaveRule", OnJsCsSaveRule);
+		HD_LISTEN(g_view, "csSetInbox", OnJsCsSetInbox);
+		HD_LISTEN(g_view, "csPin", OnJsCsPin);
+		HD_LISTEN(g_view, "csSaveOpts", OnJsCsSaveOpts);
+		HD_LISTEN(g_view, "csUnload", OnJsCsUnload);
+		HD_LISTEN(g_view, "csRetrieve", OnJsCsRetrieve);
+		HD_LISTEN(g_view, "csSweepAll", OnJsCsSweepAll);
+		HD_LISTEN(g_view, "csGather", OnJsCsGather);
+		HD_LISTEN(g_view, "csOverride", OnJsCsOverride);
+		HD_LISTEN(g_view, "csSortNow", OnJsCsSortNow);
+		HD_LISTEN(g_view, "csState", OnJsCsState);
+		HD_LISTEN(g_view, "csRevalidate", OnJsCsRevalidate);
 		// Auto-Loot: JS→C++ request names only; the C++→JS replies (alStateData /
 		// alResult / alSaved / alOpen) are disjoint per the bridge law and never
 		// registered. NOTE: alState is a JS→C++ REQUEST here; its reply is the
 		// separately-named alStateData push (a shared name would clobber the handler).
-		g_prisma->RegisterJSListener(g_view, "alGet", OnJsAlGet);
-		g_prisma->RegisterJSListener(g_view, "alSave", OnJsAlSave);
-		g_prisma->RegisterJSListener(g_view, "alHere", OnJsAlHere);
-		g_prisma->RegisterJSListener(g_view, "alToggle", OnJsAlToggle);
-		g_prisma->RegisterJSListener(g_view, "alState", OnJsAlState);
-		g_prisma->RegisterJSListener(g_view, "alScanNow", OnJsAlScanNow);
+		HD_LISTEN(g_view, "alGet", OnJsAlGet);
+		HD_LISTEN(g_view, "alSave", OnJsAlSave);
+		HD_LISTEN(g_view, "alHere", OnJsAlHere);
+		HD_LISTEN(g_view, "alToggle", OnJsAlToggle);
+		HD_LISTEN(g_view, "alState", OnJsAlState);
+		HD_LISTEN(g_view, "alScanNow", OnJsAlScanNow);
 		// Door lock modal: F7 on a door -> lock / unlock at a chosen level.
-		g_prisma->RegisterJSListener(g_view, "drSet", OnJsDoorSet);
-		g_prisma->RegisterJSListener(g_view, "drRefresh", OnJsDoorRefresh);
+		HD_LISTEN(g_view, "drSet", OnJsDoorSet);
+		HD_LISTEN(g_view, "drRefresh", OnJsDoorRefresh);
 
-		g_prisma->RegisterJSListener(g_view, "rgClaim", OnJsRoomClaim);
-		g_prisma->RegisterJSListener(g_view, "rgAnchor", OnJsRoomAnchor);
-		g_prisma->RegisterJSListener(g_view, "rgEvict", OnJsRoomEvict);
-		g_prisma->RegisterJSListener(g_view, "rgRelease", OnJsRoomRelease);
-		g_prisma->RegisterJSListener(g_view, "rgIgnore", OnJsRoomIgnore);
-		g_prisma->RegisterJSListener(g_view, "rgLock", OnJsRoomLock);
-		g_prisma->RegisterJSListener(g_view, "rgState", OnJsRoomState);
-		g_prisma->RegisterJSListener(g_view, "rgNpcs", OnJsRoomNpcs);
-		g_prisma->RegisterJSListener(g_view, "tmGet", OnJsTimeGet);
-		g_prisma->RegisterJSListener(g_view, "tmWait", OnJsTimeWait);
+		HD_LISTEN(g_view, "rgClaim", OnJsRoomClaim);
+		HD_LISTEN(g_view, "rgAnchor", OnJsRoomAnchor);
+		HD_LISTEN(g_view, "rgEvict", OnJsRoomEvict);
+		HD_LISTEN(g_view, "rgRelease", OnJsRoomRelease);
+		HD_LISTEN(g_view, "rgIgnore", OnJsRoomIgnore);
+		HD_LISTEN(g_view, "rgLock", OnJsRoomLock);
+		HD_LISTEN(g_view, "rgState", OnJsRoomState);
+		HD_LISTEN(g_view, "rgNpcs", OnJsRoomNpcs);
+		HD_LISTEN(g_view, "tmGet", OnJsTimeGet);
+		HD_LISTEN(g_view, "tmWait", OnJsTimeWait);
 		// Keys tab. Requests kcScan/kcState/kcResult; replies kcStateResult/
 		// kcResultData — names disjoint per the deck law.
-		g_prisma->RegisterJSListener(g_view, "kcScan", OnJsKeysScan);
-		g_prisma->RegisterJSListener(g_view, "kcState", OnJsKeysState);
-		g_prisma->RegisterJSListener(g_view, "kcResult", OnJsKeysResult);
+		HD_LISTEN(g_view, "kcScan", OnJsKeysScan);
+		HD_LISTEN(g_view, "kcState", OnJsKeysState);
+		HD_LISTEN(g_view, "kcResult", OnJsKeysResult);
 		// Items tab (Item Explorer). Requests ixState/ixQuery/ixAdd/ixSave;
 		// replies ixStateResult/ixResultData/ixAddResult/ixSaved — disjoint
 		// per the deck law.
-		g_prisma->RegisterJSListener(g_view, "ixState", OnJsItemsState);
-		g_prisma->RegisterJSListener(g_view, "ixQuery", OnJsItemsQuery);
+		HD_LISTEN(g_view, "ixState", OnJsItemsState);
+		HD_LISTEN(g_view, "ixQuery", OnJsItemsQuery);
 		// The SHARED item picker (auto-loot rule lists, auto-sort pin routes) runs
 		// the Item Explorer's own index and query — but it must answer on its OWN
 		// reply name. `ixResultData` already has an owner (items-pane.js), and the
 		// bridge law is one listener per name: a second consumer would clobber the
 		// Items tab's results the moment a picker was open behind it.
-		g_prisma->RegisterJSListener(g_view, "ixPick", OnJsItemsPick);
-		g_prisma->RegisterJSListener(g_view, "ixAdd", OnJsItemsAdd);
-		g_prisma->RegisterJSListener(g_view, "ixSave", OnJsItemsSave);
+		HD_LISTEN(g_view, "ixPick", OnJsItemsPick);
+		HD_LISTEN(g_view, "ixAdd", OnJsItemsAdd);
+		HD_LISTEN(g_view, "ixSave", OnJsItemsSave);
 		// Finder Modify sheet (Item Edit — PROTEUS-class base-record editing).
 		// Requests ieGet/ieApply/ieRevert/ieList/ieEnch; replies ieGetResult/
 		// ieApplyResult/ieRevertResult/ieListResult/ieEnchResult — disjoint
 		// per the deck law.
-		g_prisma->RegisterJSListener(g_view, "ieGet", OnJsItemEditGet);
-		g_prisma->RegisterJSListener(g_view, "ieApply", OnJsItemEditApply);
-		g_prisma->RegisterJSListener(g_view, "ieRevert", OnJsItemEditRevert);
-		g_prisma->RegisterJSListener(g_view, "ieList", OnJsItemEditList);
-		g_prisma->RegisterJSListener(g_view, "ieEnch", OnJsItemEditEnch);
+		HD_LISTEN(g_view, "ieGet", OnJsItemEditGet);
+		HD_LISTEN(g_view, "ieApply", OnJsItemEditApply);
+		HD_LISTEN(g_view, "ieRevert", OnJsItemEditRevert);
+		HD_LISTEN(g_view, "ieList", OnJsItemEditList);
+		HD_LISTEN(g_view, "ieEnch", OnJsItemEditEnch);
 		// Spellcraft Modify sub-tab (Spell Edit — item_edit's twin for spells).
 		// Requests sxQuery/sxGet/sxApply/sxRevert/sxList; replies sxResultData/
 		// sxGetResult/sxApplyResult/sxRevertResult/sxListResult.
-		g_prisma->RegisterJSListener(g_view, "sxQuery", OnJsSpellEditQuery);
-		g_prisma->RegisterJSListener(g_view, "sxGet", OnJsSpellEditGet);
-		g_prisma->RegisterJSListener(g_view, "sxApply", OnJsSpellEditApply);
-		g_prisma->RegisterJSListener(g_view, "sxRevert", OnJsSpellEditRevert);
-		g_prisma->RegisterJSListener(g_view, "sxList", OnJsSpellEditList);
+		HD_LISTEN(g_view, "sxQuery", OnJsSpellEditQuery);
+		HD_LISTEN(g_view, "sxGet", OnJsSpellEditGet);
+		HD_LISTEN(g_view, "sxApply", OnJsSpellEditApply);
+		HD_LISTEN(g_view, "sxRevert", OnJsSpellEditRevert);
+		HD_LISTEN(g_view, "sxList", OnJsSpellEditList);
 		// Time tab's Sky card (weather picker). Requests tmWeatherList/
 		// tmWeatherSet; replies tmWeatherListData/tmWeatherResult.
-		g_prisma->RegisterJSListener(g_view, "tmWeatherList", OnJsWeatherList);
-		g_prisma->RegisterJSListener(g_view, "tmWeatherSet", OnJsWeatherSet);
+		HD_LISTEN(g_view, "tmWeatherList", OnJsWeatherList);
+		HD_LISTEN(g_view, "tmWeatherSet", OnJsWeatherSet);
+		// Weather tab (weather_hub.cpp). Requests wxState/wxSet; replies
+		// wxStateData/wxResult.
+		HD_LISTEN(g_view, "wxState", OnJsWxState);
+		HD_LISTEN(g_view, "wxSet", OnJsWxSet);
 		// NPC Tune modal (F7 quick card). Requests ntGet/ntApply/ntRevert;
 		// replies ntGetResult/ntApplyResult/ntRevertResult.
-		g_prisma->RegisterJSListener(g_view, "ntGet", OnJsNpcTuneGet);
-		g_prisma->RegisterJSListener(g_view, "ntApply", OnJsNpcTuneApply);
-		g_prisma->RegisterJSListener(g_view, "ntRevert", OnJsNpcTuneRevert);
+		HD_LISTEN(g_view, "ntGet", OnJsNpcTuneGet);
+		HD_LISTEN(g_view, "ntApply", OnJsNpcTuneApply);
+		HD_LISTEN(g_view, "ntRevert", OnJsNpcTuneRevert);
 		// Journal tab. Requests jrOpen/jrSave/jrImages/jrDropImage/jrPhoto;
 		// replies jrData/jrSaved/jrImagesData/jrDropped — disjoint per the deck
 		// law (jrPhoto answers through the picture pool, not a reply of its own:
 		// the shot lands as a file the next jrImages poll reports).
-		g_prisma->RegisterJSListener(g_view, "jrOpen", OnJsJournalOpen);
-		g_prisma->RegisterJSListener(g_view, "jrSave", OnJsJournalSave);
-		g_prisma->RegisterJSListener(g_view, "jrImages", OnJsJournalImages);
-		g_prisma->RegisterJSListener(g_view, "jrDropImage", OnJsJournalDropImage);
-		g_prisma->RegisterJSListener(g_view, "jrPhoto", OnJsJournalPhoto);
+		HD_LISTEN(g_view, "jrOpen", OnJsJournalOpen);
+		HD_LISTEN(g_view, "jrSave", OnJsJournalSave);
+		HD_LISTEN(g_view, "jrImages", OnJsJournalImages);
+		HD_LISTEN(g_view, "jrDropImage", OnJsJournalDropImage);
+		HD_LISTEN(g_view, "jrPhoto", OnJsJournalPhoto);
 		// Spell Crafting tab (FESC). Requests scState/scOpen/scCraft/scErase/
 		// scLearn/scSettings/scTome/scIcon/scDeck; replies scStateResult/
 		// scOpenData/scCraftResult/scEraseResult/scLearnResult/scSettingsResult/
 		// scTomeResult/scIconResult/scDeckResult — disjoint per the deck law.
-		g_prisma->RegisterJSListener(g_view, "scState", OnJsScState);
-		g_prisma->RegisterJSListener(g_view, "scOpen", OnJsScOpen);
-		g_prisma->RegisterJSListener(g_view, "scCraft", OnJsScCraft);
-		g_prisma->RegisterJSListener(g_view, "scErase", OnJsScErase);
-		g_prisma->RegisterJSListener(g_view, "scLearn", OnJsScLearn);
-		g_prisma->RegisterJSListener(g_view, "scSettings", OnJsScSettings);
-		g_prisma->RegisterJSListener(g_view, "scTome", OnJsScTome);
-		g_prisma->RegisterJSListener(g_view, "scIcon", OnJsScIcon);
-		g_prisma->RegisterJSListener(g_view, "scDeck", OnJsScDeck);
+		HD_LISTEN(g_view, "scState", OnJsScState);
+		HD_LISTEN(g_view, "scOpen", OnJsScOpen);
+		HD_LISTEN(g_view, "scCraft", OnJsScCraft);
+		HD_LISTEN(g_view, "scErase", OnJsScErase);
+		HD_LISTEN(g_view, "scLearn", OnJsScLearn);
+		HD_LISTEN(g_view, "scSettings", OnJsScSettings);
+		HD_LISTEN(g_view, "scTome", OnJsScTome);
+		HD_LISTEN(g_view, "scIcon", OnJsScIcon);
+		HD_LISTEN(g_view, "scDeck", OnJsScDeck);
 		// Combat Arts moved to the SPELL DECK view on 2026-08-15 — its ca*
 		// listeners are registered on g_magicView (EnsureMagicView below), not
 		// here, because a listener is per-view and the deck no longer hosts
 		// that pane.
 		// Potion Browser (the paused popout). Requests pbList/pbUse/pbSave;
 		// replies pbListData/pbUseResult/pbSaved — disjoint per the deck law.
-		g_prisma->RegisterJSListener(g_view, "pbList", OnJsPbList);
-		g_prisma->RegisterJSListener(g_view, "pbUse", OnJsPbUse);
-		g_prisma->RegisterJSListener(g_view, "pbSave", OnJsPbSave);
-		g_prisma->RegisterJSListener(g_view, "pbCombo", OnJsPbCombo);
+		HD_LISTEN(g_view, "pbList", OnJsPbList);
+		HD_LISTEN(g_view, "pbUse", OnJsPbUse);
+		HD_LISTEN(g_view, "pbSave", OnJsPbSave);
+		HD_LISTEN(g_view, "pbCombo", OnJsPbCombo);
 		// Quiver (the ammo radial). Requests qvList/qvUse/qvSave; replies
 		// qvListData/qvUseResult/qvSaved — disjoint per the deck law.
-		g_prisma->RegisterJSListener(g_view, "qvList", OnJsQvList);
-		g_prisma->RegisterJSListener(g_view, "qvUse", OnJsQvUse);
-		g_prisma->RegisterJSListener(g_view, "qvSave", OnJsQvSave);
+		HD_LISTEN(g_view, "qvList", OnJsQvList);
+		HD_LISTEN(g_view, "qvUse", OnJsQvUse);
+		HD_LISTEN(g_view, "qvSave", OnJsQvSave);
 		// NPCs tab (NPC Finder). Requests nxState/nxQuery/nxAct/nxIcons;
 		// replies nxStateResult/nxResultData/nxActResult/nxIconsData —
 		// disjoint per the deck law.
-		g_prisma->RegisterJSListener(g_view, "nxState", OnJsNpcFinderState);
-		g_prisma->RegisterJSListener(g_view, "nxQuery", OnJsNpcFinderQuery);
-		g_prisma->RegisterJSListener(g_view, "nxAct", OnJsNpcFinderAct);
-		g_prisma->RegisterJSListener(g_view, "nxIcons", OnJsNpcFinderIcons);
-		g_prisma->RegisterJSListener(g_view, "nxSave", OnJsNpcFinderSave);
+		HD_LISTEN(g_view, "nxState", OnJsNpcFinderState);
+		HD_LISTEN(g_view, "nxQuery", OnJsNpcFinderQuery);
+		HD_LISTEN(g_view, "nxAct", OnJsNpcFinderAct);
+		HD_LISTEN(g_view, "nxIcons", OnJsNpcFinderIcons);
+		HD_LISTEN(g_view, "nxSave", OnJsNpcFinderSave);
 		// Cells tab (Cell Finder). Requests cxState/cxQuery/cxAct/cxSave;
 		// replies cxStateResult/cxResultData/cxActResult/cxSaved — disjoint per
 		// the deck law. A successful travel gets NO reply: C++ closes the
 		// palette and runs the coc.
-		g_prisma->RegisterJSListener(g_view, "cxState", OnJsCellFinderState);
-		g_prisma->RegisterJSListener(g_view, "cxQuery", OnJsCellFinderQuery);
-		g_prisma->RegisterJSListener(g_view, "cxAct", OnJsCellFinderAct);
-		g_prisma->RegisterJSListener(g_view, "cxSave", OnJsCellFinderSave);
+		HD_LISTEN(g_view, "cxState", OnJsCellFinderState);
+		HD_LISTEN(g_view, "cxQuery", OnJsCellFinderQuery);
+		HD_LISTEN(g_view, "cxAct", OnJsCellFinderAct);
+		HD_LISTEN(g_view, "cxSave", OnJsCellFinderSave);
 		// Spells tab (Spell Finder). Same disjoint request/reply shape as the Cells tab.
-		g_prisma->RegisterJSListener(g_view, "sfState", OnJsSpellFinderState);
-		g_prisma->RegisterJSListener(g_view, "sfQuery", OnJsSpellFinderQuery);
-		g_prisma->RegisterJSListener(g_view, "sfAct", OnJsSpellFinderAct);
-		g_prisma->RegisterJSListener(g_view, "sfSave", OnJsSpellFinderSave);
+		HD_LISTEN(g_view, "sfState", OnJsSpellFinderState);
+		HD_LISTEN(g_view, "sfQuery", OnJsSpellFinderQuery);
+		HD_LISTEN(g_view, "sfAct", OnJsSpellFinderAct);
+		HD_LISTEN(g_view, "sfSave", OnJsSpellFinderSave);
 		// Party sheet (read-only live stats for the teammates around you).
 		// Request ptyScan; reply ptyData — disjoint per the deck law.
-		g_prisma->RegisterJSListener(g_view, "ptyScan", OnJsPartyScan);
+		HD_LISTEN(g_view, "ptyScan", OnJsPartyScan);
 		// Inspect card (the LIVE actor, unlike the Finder's record-level detail).
 		// Request niInspect; reply niInspectData — disjoint per the deck law.
-		g_prisma->RegisterJSListener(g_view, "niInspect", OnJsNpcInspect);
+		HD_LISTEN(g_view, "niInspect", OnJsNpcInspect);
 		// Distributions tab (SPID / SkyPatcher candidate pool for the crosshair
 		// NPC). Requests dxState/dxQuery; replies dxStateResult/dxResultData —
 		// disjoint per the deck law. Both response-style: the pane always asks
 		// first, so no boot stub is needed.
-		g_prisma->RegisterJSListener(g_view, "dxState", OnJsDistrState);
-		g_prisma->RegisterJSListener(g_view, "dxQuery", OnJsDistrQuery);
-		g_prisma->RegisterJSListener(g_view, "dxLeveled", OnJsDistrLeveled);
-		g_prisma->RegisterJSListener(g_view, "dxBlock", OnJsDistrBlock);
-		g_prisma->RegisterJSListener(g_view, "dxBlocks", OnJsDistrBlocks);
-		g_prisma->RegisterJSListener(g_view, "dxOpenFile", OnJsDistrOpenFile);
-		g_prisma->RegisterJSListener(g_view, "dxReport", OnJsDistrReport);
+		HD_LISTEN(g_view, "dxState", OnJsDistrState);
+		HD_LISTEN(g_view, "dxQuery", OnJsDistrQuery);
+		HD_LISTEN(g_view, "dxLeveled", OnJsDistrLeveled);
+		HD_LISTEN(g_view, "dxBlock", OnJsDistrBlock);
+		HD_LISTEN(g_view, "dxBlocks", OnJsDistrBlocks);
+		HD_LISTEN(g_view, "dxOpenFile", OnJsDistrOpenFile);
+		HD_LISTEN(g_view, "dxReport", OnJsDistrReport);
 		// Settlement tab (the world-object placer). Requests stState/stQuery/
 		// stAct/stSpin/stSave/stCat/stPlaced; replies stStateResult/stResultData/
 		// stActResult/stSaved/stCatResult/stPlacedResult (stSpin pushes no reply).
 		// Icon requests reuse whIcons (icons/items/) — no st-icon bridge.
 		// Survival popout. Requests svState/svAct; replies svStateResult/
 		// svActResult — disjoint per the deck law. Renders reuse whIcons.
-		g_prisma->RegisterJSListener(g_view, "svState", OnJsSurvivalState);
-		g_prisma->RegisterJSListener(g_view, "svAct", OnJsSurvivalAct);
-		g_prisma->RegisterJSListener(g_view, "svLayoutGet", OnJsSurvivalLayoutGet);
-		g_prisma->RegisterJSListener(g_view, "svLayout", OnJsSurvivalLayout);
-		g_prisma->RegisterJSListener(g_view, "stState", OnJsSettlementState);
-		g_prisma->RegisterJSListener(g_view, "stQuery", OnJsSettlementQuery);
-		g_prisma->RegisterJSListener(g_view, "stAct", OnJsSettlementAct);
-		g_prisma->RegisterJSListener(g_view, "stSpin", OnJsSettlementSpin);
-		g_prisma->RegisterJSListener(g_view, "stSave", OnJsSettlementSave);
-		g_prisma->RegisterJSListener(g_view, "stCat", OnJsSettlementCat);
-		g_prisma->RegisterJSListener(g_view, "stPlaced", OnJsSettlementPlaced);
+		HD_LISTEN(g_view, "svState", OnJsSurvivalState);
+		HD_LISTEN(g_view, "svAct", OnJsSurvivalAct);
+		HD_LISTEN(g_view, "svLayoutGet", OnJsSurvivalLayoutGet);
+		HD_LISTEN(g_view, "svLayout", OnJsSurvivalLayout);
+		HD_LISTEN(g_view, "stState", OnJsSettlementState);
+		HD_LISTEN(g_view, "stQuery", OnJsSettlementQuery);
+		HD_LISTEN(g_view, "stAct", OnJsSettlementAct);
+		HD_LISTEN(g_view, "stSpin", OnJsSettlementSpin);
+		HD_LISTEN(g_view, "stSave", OnJsSettlementSave);
+		HD_LISTEN(g_view, "stCat", OnJsSettlementCat);
+		HD_LISTEN(g_view, "stPlaced", OnJsSettlementPlaced);
 		// Mounts tab (the stable). Requests mtState/mtSpells/mtAct/mtIcons;
 		// replies mtStateResult/mtSpellsData/mtActResult/mtIconsData —
 		// disjoint, same law.
 		// Nightside (the three curses): nsState/nsAct -> nsStateResult/nsActResult
-		g_prisma->RegisterJSListener(g_view, "nsState", OnJsNightsideState);
-		g_prisma->RegisterJSListener(g_view, "nsAct", OnJsNightsideAct);
+		HD_LISTEN(g_view, "nsState", OnJsNightsideState);
+		HD_LISTEN(g_view, "nsAct", OnJsNightsideAct);
 		// MCM settings: mcState/mcSet -> mcStateResult/mcSetResult
-		g_prisma->RegisterJSListener(g_view, "mcState", OnJsMcmState);
-		g_prisma->RegisterJSListener(g_view, "mcSet", OnJsMcmSet);
+		HD_LISTEN(g_view, "mcState", OnJsMcmState);
+		HD_LISTEN(g_view, "mcSet", OnJsMcmSet);
 		// SkyUI (Papyrus) MCMs: syList/syScan/sySet -> sy*Result
-		g_prisma->RegisterJSListener(g_view, "syList", OnJsSkyuiList);
-		g_prisma->RegisterJSListener(g_view, "syScan", OnJsSkyuiScan);
-		g_prisma->RegisterJSListener(g_view, "sySet", OnJsSkyuiSet);
-		g_prisma->RegisterJSListener(g_view, "mtState", OnJsMountsState);
-		g_prisma->RegisterJSListener(g_view, "mtSpells", OnJsMountsSpells);
-		g_prisma->RegisterJSListener(g_view, "mtAct", OnJsMountsAct);
-		g_prisma->RegisterJSListener(g_view, "mtIcons", OnJsMountsIcons);
+		HD_LISTEN(g_view, "syList", OnJsSkyuiList);
+		HD_LISTEN(g_view, "syScan", OnJsSkyuiScan);
+		HD_LISTEN(g_view, "sySet", OnJsSkyuiSet);
+		HD_LISTEN(g_view, "mtState", OnJsMountsState);
+		HD_LISTEN(g_view, "mtSpells", OnJsMountsSpells);
+		HD_LISTEN(g_view, "mtAct", OnJsMountsAct);
+		HD_LISTEN(g_view, "mtIcons", OnJsMountsIcons);
 		// Loadouts tab (follower groups + gear classes). Requests loState/loAct;
 		// replies loStateResult/loActResult - disjoint, same law.
-		g_prisma->RegisterJSListener(g_view, "loState", OnJsLoadoutsState);
-		g_prisma->RegisterJSListener(g_view, "loGroups", OnJsLoadoutsGroups);
-		g_prisma->RegisterJSListener(g_view, "loAct", OnJsLoadoutsAct);
+		HD_LISTEN(g_view, "loState", OnJsLoadoutsState);
+		HD_LISTEN(g_view, "loGroups", OnJsLoadoutsGroups);
+		HD_LISTEN(g_view, "loAct", OnJsLoadoutsAct);
 		// Transmog tab. Requests tgState/tgList/tgDonors/tgApply/tgRevert;
 		// replies tgStateResult/tgListData/tgDonorsData/tgApplyResult/
 		// tgRevertResult — disjoint per the deck law.
-		g_prisma->RegisterJSListener(g_view, "tgState", OnJsTgState);
-		g_prisma->RegisterJSListener(g_view, "tgList", OnJsTgList);
-		g_prisma->RegisterJSListener(g_view, "tgDonors", OnJsTgDonors);
-		g_prisma->RegisterJSListener(g_view, "tgApply", OnJsTgApply);
-		g_prisma->RegisterJSListener(g_view, "tgRevert", OnJsTgRevert);
-		g_prisma->RegisterJSListener(g_view, "tgStats", OnJsTgStats);
+		HD_LISTEN(g_view, "tgState", OnJsTgState);
+		HD_LISTEN(g_view, "tgList", OnJsTgList);
+		HD_LISTEN(g_view, "tgDonors", OnJsTgDonors);
+		HD_LISTEN(g_view, "tgApply", OnJsTgApply);
+		HD_LISTEN(g_view, "tgRevert", OnJsTgRevert);
+		HD_LISTEN(g_view, "tgStats", OnJsTgStats);
 		// Wigs tab. Requests wvState/wvMods/wvQuery/wvUse/wvSave; replies
 		// wvStateResult/wvModsData/wvResultData/wvUseResult/wvSaved —
 		// disjoint per the deck law.
-		g_prisma->RegisterJSListener(g_view, "wvState", OnJsWigsState);
-		g_prisma->RegisterJSListener(g_view, "wvMods", OnJsWigsMods);
-		g_prisma->RegisterJSListener(g_view, "wvQuery", OnJsWigsQuery);
-		g_prisma->RegisterJSListener(g_view, "wvUse", OnJsWigsUse);
-		g_prisma->RegisterJSListener(g_view, "wvSave", OnJsWigsSave);
-		g_prisma->RegisterJSListener(g_view, "rgSave", OnJsRoomSave);
-		g_prisma->RegisterJSListener(g_view, "rgLog", OnJsRoomLog);
-		g_prisma->RegisterJSListener(g_view, "rgRing", OnJsRoomRing);
+		HD_LISTEN(g_view, "wvState", OnJsWigsState);
+		HD_LISTEN(g_view, "wvMods", OnJsWigsMods);
+		HD_LISTEN(g_view, "wvQuery", OnJsWigsQuery);
+		HD_LISTEN(g_view, "wvUse", OnJsWigsUse);
+		HD_LISTEN(g_view, "wvSave", OnJsWigsSave);
+		HD_LISTEN(g_view, "rgSave", OnJsRoomSave);
+		HD_LISTEN(g_view, "rgLog", OnJsRoomLog);
+		HD_LISTEN(g_view, "rgRing", OnJsRoomRing);
 		// Loot tab. Requests ltGet/ltSave/ltToggle/ltState/ltLog; replies
 		// ltOpen/ltSaved/ltResult/ltStateResult — disjoint per the deck law
 		// (PrismaUI installs each listener as a JS global of that name).
 		// Light tab. Requests qlGet/qlOn/qlOff/qlToggle; replies qlState/qlResult
 		// (names disjoint per the deck law — one name per direction).
-		g_prisma->RegisterJSListener(g_view, "qlGet", OnJsQuickLightGet);
-		g_prisma->RegisterJSListener(g_view, "qlOn", OnJsQuickLightOn);
-		g_prisma->RegisterJSListener(g_view, "qlOff", OnJsQuickLightOff);
-		g_prisma->RegisterJSListener(g_view, "qlToggle", OnJsQuickLightToggle);
+		HD_LISTEN(g_view, "qlGet", OnJsQuickLightGet);
+		HD_LISTEN(g_view, "qlOn", OnJsQuickLightOn);
+		HD_LISTEN(g_view, "qlOff", OnJsQuickLightOff);
+		HD_LISTEN(g_view, "qlToggle", OnJsQuickLightToggle);
 		// Better FaceLight Redux state on the F7 quick card. Requests
 		// bflGet/bflSet; replies bflState/bflResult (one name per direction).
-		g_prisma->RegisterJSListener(g_view, "bflGet", OnJsBflGet);
-		g_prisma->RegisterJSListener(g_view, "bflSet", OnJsBflSet);
+		HD_LISTEN(g_view, "bflGet", OnJsBflGet);
+		HD_LISTEN(g_view, "bflSet", OnJsBflSet);
 		// ✨ Effects modal on the F7 quick card (other mods' looks — first
 		// tenant: Oily Skin). Requests fxGet/fxSet; replies fxState/fxResult.
-		g_prisma->RegisterJSListener(g_view, "fxGet", OnJsFxGet);
-		g_prisma->RegisterJSListener(g_view, "fxSet", OnJsFxSet);
+		HD_LISTEN(g_view, "fxGet", OnJsFxGet);
+		HD_LISTEN(g_view, "fxSet", OnJsFxSet);
 		// Character Sheet tab. Requests psGet/psRemoveEffect/psSetMeta; replies
 		// psData/psResult (names disjoint per the deck law - one name per
 		// direction; PrismaUI installs each listener as a JS global of that name).
-		g_prisma->RegisterJSListener(g_view, "psGet", OnJsSheetGet);
-		g_prisma->RegisterJSListener(g_view, "psRemoveEffect", OnJsSheetRemoveEffect);
-		g_prisma->RegisterJSListener(g_view, "psSetMeta", OnJsSheetSetMeta);
-		g_prisma->RegisterJSListener(g_view, "psTakePortrait", OnJsSheetTakePortrait);
+		HD_LISTEN(g_view, "psGet", OnJsSheetGet);
+		HD_LISTEN(g_view, "psRemoveEffect", OnJsSheetRemoveEffect);
+		HD_LISTEN(g_view, "psSetMeta", OnJsSheetSetMeta);
+		HD_LISTEN(g_view, "psTakePortrait", OnJsSheetTakePortrait);
 		// Pack Check chip -> per-category potion modal. Request psPackList(cat),
 		// reply psPackListData(payload) — disjoint names, one per direction.
-		g_prisma->RegisterJSListener(g_view, "psPackList", OnJsSheetPackList);
+		HD_LISTEN(g_view, "psPackList", OnJsSheetPackList);
 		// Character sheet Tune modal (Player Tune — base-AV editor).
 		// Requests psTuneGet/psTuneSet; replies psTuneData/psTuneResult.
-		g_prisma->RegisterJSListener(g_view, "psTuneGet", OnJsPlayerTuneGet);
-		g_prisma->RegisterJSListener(g_view, "smAppearanceGet", OnJsAppearanceGet);
-		g_prisma->RegisterJSListener(g_view, "smAppearanceAction", OnJsAppearanceAction);
-		g_prisma->RegisterJSListener(g_view, "psTuneSet", OnJsPlayerTuneSet);
+		HD_LISTEN(g_view, "psTuneGet", OnJsPlayerTuneGet);
+		HD_LISTEN(g_view, "smAppearanceGet", OnJsAppearanceGet);
+		HD_LISTEN(g_view, "smAppearanceAction", OnJsAppearanceAction);
+		HD_LISTEN(g_view, "psTuneSet", OnJsPlayerTuneSet);
 
 		// High King tab. Requests kgState/kgAct/kgTax; replies kgStateResult/
 		// kgActResult — disjoint per the deck law (one name per direction).
-		g_prisma->RegisterJSListener(g_view, "kgState", OnJsHighKingState);
-		g_prisma->RegisterJSListener(g_view, "kgAct", OnJsHighKingAct);
-		g_prisma->RegisterJSListener(g_view, "kgTax", OnJsHighKingTax);
+		HD_LISTEN(g_view, "kgState", OnJsHighKingState);
+		HD_LISTEN(g_view, "kgAct", OnJsHighKingAct);
+		HD_LISTEN(g_view, "kgTax", OnJsHighKingTax);
 
-		g_prisma->RegisterJSListener(g_view, "ltGet", OnJsLootGet);
-		g_prisma->RegisterJSListener(g_view, "ltSave", OnJsLootSave);
-		g_prisma->RegisterJSListener(g_view, "ltToggle", OnJsLootToggle);
-		g_prisma->RegisterJSListener(g_view, "ltState", OnJsLootState);
+		HD_LISTEN(g_view, "ltGet", OnJsLootGet);
+		HD_LISTEN(g_view, "ltSave", OnJsLootSave);
+		HD_LISTEN(g_view, "ltToggle", OnJsLootToggle);
+		HD_LISTEN(g_view, "ltState", OnJsLootState);
 		// No Auto-Gear tab / F7 card. Requests ngGet/ngSave/ngToggle/ngParty/
 		// ngSweep/ngState/ngLog; replies ngOpen/ngSaved/ngResult/ngStateResult
 		// (names disjoint per the deck law — one name per direction).
-		g_prisma->RegisterJSListener(g_view, "ngGet", OnJsNgGet);
-		g_prisma->RegisterJSListener(g_view, "ngSave", OnJsNgSave);
-		g_prisma->RegisterJSListener(g_view, "ngToggle", OnJsNgToggle);
-		g_prisma->RegisterJSListener(g_view, "ngParty", OnJsNgParty);
-		g_prisma->RegisterJSListener(g_view, "ngSweep", OnJsNgSweep);
-		g_prisma->RegisterJSListener(g_view, "ngState", OnJsNgState);
-		g_prisma->RegisterJSListener(g_view, "ngLog", OnJsNgLog);
+		HD_LISTEN(g_view, "ngGet", OnJsNgGet);
+		HD_LISTEN(g_view, "ngSave", OnJsNgSave);
+		HD_LISTEN(g_view, "ngToggle", OnJsNgToggle);
+		HD_LISTEN(g_view, "ngParty", OnJsNgParty);
+		HD_LISTEN(g_view, "ngSweep", OnJsNgSweep);
+		HD_LISTEN(g_view, "ngState", OnJsNgState);
+		HD_LISTEN(g_view, "ngLog", OnJsNgLog);
 		// SPID Gear (F7 card). Requests sgGet/sgInbox/sgRemove/sgChance/sgLog;
 		// replies sgState/sgResult.
-		g_prisma->RegisterJSListener(g_view, "sgGet", OnJsSgGet);
-		g_prisma->RegisterJSListener(g_view, "sgInbox", OnJsSgInbox);
-		g_prisma->RegisterJSListener(g_view, "sgAdd", OnJsSgAdd);
-		g_prisma->RegisterJSListener(g_view, "sgFaces", OnJsSgFaces);
-		g_prisma->RegisterJSListener(g_view, "sgRemove", OnJsSgRemove);
-		g_prisma->RegisterJSListener(g_view, "sgChance", OnJsSgChance);
-		g_prisma->RegisterJSListener(g_view, "sgAll", OnJsSgAll);
-		g_prisma->RegisterJSListener(g_view, "sgEnable", OnJsSgEnable);
-		g_prisma->RegisterJSListener(g_view, "sgNpcOp", OnJsSgNpcOp);
-		g_prisma->RegisterJSListener(g_view, "sgLog", OnJsSgLog);
-		g_prisma->RegisterJSListener(g_view, "ltLog", OnJsLootLog);
+		HD_LISTEN(g_view, "sgGet", OnJsSgGet);
+		HD_LISTEN(g_view, "sgInbox", OnJsSgInbox);
+		HD_LISTEN(g_view, "sgAdd", OnJsSgAdd);
+		HD_LISTEN(g_view, "sgFaces", OnJsSgFaces);
+		HD_LISTEN(g_view, "sgRemove", OnJsSgRemove);
+		HD_LISTEN(g_view, "sgChance", OnJsSgChance);
+		HD_LISTEN(g_view, "sgAll", OnJsSgAll);
+		HD_LISTEN(g_view, "sgEnable", OnJsSgEnable);
+		HD_LISTEN(g_view, "sgNpcOp", OnJsSgNpcOp);
+		HD_LISTEN(g_view, "sgLog", OnJsSgLog);
+		HD_LISTEN(g_view, "ltLog", OnJsLootLog);
 		// Animations tab. Requests anGet/anPlay/anReset/anState/anCrawl/anLog;
 		// replies anOpen/anResult/anTargetResult — disjoint per the deck law.
-		g_prisma->RegisterJSListener(g_view, "anGet", OnJsAnimGet);
-		g_prisma->RegisterJSListener(g_view, "anPlay", OnJsAnimPlay);
-		g_prisma->RegisterJSListener(g_view, "anReset", OnJsAnimReset);
-		g_prisma->RegisterJSListener(g_view, "anState", OnJsAnimState);
-		g_prisma->RegisterJSListener(g_view, "anCrawl", OnJsAnimCrawl);
-		g_prisma->RegisterJSListener(g_view, "anScan", OnJsAnimScan);
-		g_prisma->RegisterJSListener(g_view, "anPack", OnJsAnimPack);
-		g_prisma->RegisterJSListener(g_view, "anUser", OnJsAnimUser);
-		g_prisma->RegisterJSListener(g_view, "anLog", OnJsAnimLog);
+		HD_LISTEN(g_view, "anGet", OnJsAnimGet);
+		HD_LISTEN(g_view, "anPlay", OnJsAnimPlay);
+		HD_LISTEN(g_view, "anReset", OnJsAnimReset);
+		HD_LISTEN(g_view, "anState", OnJsAnimState);
+		HD_LISTEN(g_view, "anCrawl", OnJsAnimCrawl);
+		HD_LISTEN(g_view, "anScan", OnJsAnimScan);
+		HD_LISTEN(g_view, "anPack", OnJsAnimPack);
+		HD_LISTEN(g_view, "anUser", OnJsAnimUser);
+		HD_LISTEN(g_view, "anLog", OnJsAnimLog);
 		// OStim segment: requests os*, replies osOpen/osState/osList/osResult.
-		g_prisma->RegisterJSListener(g_view, "osGet", OnJsOstimGet);
-		g_prisma->RegisterJSListener(g_view, "osTools", OnJsOstimTools);
-		g_prisma->RegisterJSListener(g_view, "osPoll", OnJsOstimPoll);
-		g_prisma->RegisterJSListener(g_view, "osActor", OnJsOstimActor);
-		g_prisma->RegisterJSListener(g_view, "osSearch", OnJsOstimSearch);
-		g_prisma->RegisterJSListener(g_view, "osNav", OnJsOstimNav);
-		g_prisma->RegisterJSListener(g_view, "osSpeed", OnJsOstimSpeed);
-		g_prisma->RegisterJSListener(g_view, "osAuto", OnJsOstimAuto);
-		g_prisma->RegisterJSListener(g_view, "osFurn", OnJsOstimFurn);
-		g_prisma->RegisterJSListener(g_view, "osSwap", OnJsOstimSwap);
-		g_prisma->RegisterJSListener(g_view, "osLog", OnJsOstimLog);
+		HD_LISTEN(g_view, "osGet", OnJsOstimGet);
+		HD_LISTEN(g_view, "osTools", OnJsOstimTools);
+		HD_LISTEN(g_view, "osPoll", OnJsOstimPoll);
+		HD_LISTEN(g_view, "osActor", OnJsOstimActor);
+		HD_LISTEN(g_view, "osSearch", OnJsOstimSearch);
+		HD_LISTEN(g_view, "osNav", OnJsOstimNav);
+		HD_LISTEN(g_view, "osSpeed", OnJsOstimSpeed);
+		HD_LISTEN(g_view, "osAuto", OnJsOstimAuto);
+		HD_LISTEN(g_view, "osFurn", OnJsOstimFurn);
+		HD_LISTEN(g_view, "osSwap", OnJsOstimSwap);
+		HD_LISTEN(g_view, "osLog", OnJsOstimLog);
 		// ZaZ segment: requests zz*, replies zzOpen/zzState/zzResult.
-		g_prisma->RegisterJSListener(g_view, "zzGet", OnJsZazGet);
-		g_prisma->RegisterJSListener(g_view, "zzPoll", OnJsZazPoll);
-		g_prisma->RegisterJSListener(g_view, "zzAct", OnJsZazAct);
-		g_prisma->RegisterJSListener(g_view, "zzUse", OnJsZazUse);
-		g_prisma->RegisterJSListener(g_view, "zzLog", OnJsZazLog);
-		g_prisma->RegisterJSListener(g_view, "pdCapture", OnJsCapture);  // shares g_capturing
-		g_prisma->RegisterJSListener(g_view, "pdNpcList", OnJsPlaceNpcList);  // Summon NPC here: roster
-		g_prisma->RegisterJSListener(g_view, "pdNpcTo", OnJsPlaceNpcTo);      // Summon NPC here: move
+		HD_LISTEN(g_view, "zzGet", OnJsZazGet);
+		HD_LISTEN(g_view, "zzPoll", OnJsZazPoll);
+		HD_LISTEN(g_view, "zzAct", OnJsZazAct);
+		HD_LISTEN(g_view, "zzUse", OnJsZazUse);
+		HD_LISTEN(g_view, "zzLog", OnJsZazLog);
+		HD_LISTEN(g_view, "pdCapture", OnJsCapture);  // shares g_capturing
+		HD_LISTEN(g_view, "pdNpcList", OnJsPlaceNpcList);  // Summon NPC here: roster
+		HD_LISTEN(g_view, "pdNpcTo", OnJsPlaceNpcTo);      // Summon NPC here: move
 		// v0.11.0: per-hotkey icons + "open the Spell Deck from here". Request names
 		// (hdIconList) and response names (hdIcons / hdIconIndex) stay disjoint —
 		// PrismaUI installs each listener as a JS global of that name.
-		g_prisma->RegisterJSListener(g_view, "hdOpenSpells", OnJsOpenSpells);
-		g_prisma->RegisterJSListener(g_view, "hdIconList", OnJsIconList);
+		HD_LISTEN(g_view, "hdOpenSpells", OnJsOpenSpells);
+		HD_LISTEN(g_view, "hdIconList", OnJsIconList);
 		// Finances tab (v0.13.0): recurring lines / market buy-sell / monthly settle.
 		// Request names (finGet/finSave/finSettle/finBuy/finSell/finIcons) stay disjoint
 		// from response names (finOpen/finState/finResult/finSaved/finIconList).
-		g_prisma->RegisterJSListener(g_view, "finGet", OnJsFinGet);
+		HD_LISTEN(g_view, "finGet", OnJsFinGet);
 		// Sharmat (CHIM intimacy profiles) — the deck's ONE outbound HTTP call.
 		// Request name smCall, response name smReply: disjoint, like every other
 		// pair here, because PrismaUI installs each listener as a JS global.
-		g_prisma->RegisterJSListener(g_view, "smCall", OnJsSharmatCall);
+		HD_LISTEN(g_view, "smCall", OnJsSharmatCall);
 		// Omni (v0.14.0): universal Search + Ask. Requests haAsk / hdSpellsIndex /
 		// hdOmniCast; responses haAnswer / hdSpellsData — disjoint, same law.
-		g_prisma->RegisterJSListener(g_view, "haAsk", OnJsAskCall);
+		HD_LISTEN(g_view, "haAsk", OnJsAskCall);
 		// hdHudNotify (2026-09-21): a view-side result that must reach the player
 		// even when the deck is already closed (the CHIM flyout's diary / dynamic-
 		// profile replies land 10-20 s after the press) — the game's own top-left
 		// message, which is what Rober expects to see.
-		g_prisma->RegisterJSListener(g_view, "hdHudNotify", OnJsHudNotify);
-		g_prisma->RegisterJSListener(g_view, "hdSpellsIndex", OnJsSpellsIndex);
-		g_prisma->RegisterJSListener(g_view, "hdOmniCast", OnJsOmniCast);
-		g_prisma->RegisterJSListener(g_view, "hdOmniEquip", OnJsOmniEquip);
+		HD_LISTEN(g_view, "hdHudNotify", OnJsHudNotify);
+		HD_LISTEN(g_view, "hdSpellsIndex", OnJsSpellsIndex);
+		HD_LISTEN(g_view, "hdOmniCast", OnJsOmniCast);
+		HD_LISTEN(g_view, "hdOmniEquip", OnJsOmniEquip);
 		// SKSE Menu Framework pages (smf_index.h): hdSmfIndex -> hdSmfData,
 		// hdSmfOpen -> hdSmfOpenResult (only on a refusal; success closes the deck).
-		g_prisma->RegisterJSListener(g_view, "hdSmfIndex", OnJsSmfIndex);
-		g_prisma->RegisterJSListener(g_view, "hdSmfOpen", OnJsSmfOpen);
+		HD_LISTEN(g_view, "hdSmfIndex", OnJsSmfIndex);
+		HD_LISTEN(g_view, "hdSmfOpen", OnJsSmfOpen);
 
 		// Wardrobe. Requests are wd*; responses (wdOpen/wdState/wdResult/wdSaved/
 		// wdShow) stay disjoint — PrismaUI installs each listener as a global of
 		// that name, so a shared name clobbers the handler.
-		g_prisma->RegisterJSListener(g_view, "wdGet", OnJsWdGet);
-		g_prisma->RegisterJSListener(g_view, "wdSave", OnJsWdSave);
-		g_prisma->RegisterJSListener(g_view, "wdDress", OnJsWdDress);
-		g_prisma->RegisterJSListener(g_view, "wdTrack", OnJsWdTrack);
-		g_prisma->RegisterJSListener(g_view, "wdBuild", OnJsWdBuild);
-		g_prisma->RegisterJSListener(g_view, "wdWorn", OnJsWdWorn);
-		g_prisma->RegisterJSListener(g_view, "wdArmorMods", OnJsWdArmorMods);
-		g_prisma->RegisterJSListener(g_view, "wdArmorsFor", OnJsWdArmorsFor);
-		g_prisma->RegisterJSListener(g_view, "wdPieces", OnJsWdPieces);
-		g_prisma->RegisterJSListener(g_view, "wdPortrait", OnJsWdPortrait);
+		HD_LISTEN(g_view, "wdGet", OnJsWdGet);
+		HD_LISTEN(g_view, "wdSave", OnJsWdSave);
+		HD_LISTEN(g_view, "wdDress", OnJsWdDress);
+		HD_LISTEN(g_view, "wdTrack", OnJsWdTrack);
+		HD_LISTEN(g_view, "wdBuild", OnJsWdBuild);
+		HD_LISTEN(g_view, "wdWorn", OnJsWdWorn);
+		HD_LISTEN(g_view, "wdArmorMods", OnJsWdArmorMods);
+		HD_LISTEN(g_view, "wdArmorsFor", OnJsWdArmorsFor);
+		HD_LISTEN(g_view, "wdPieces", OnJsWdPieces);
+		HD_LISTEN(g_view, "wdPortrait", OnJsWdPortrait);
 		// Outfit-photo brightness. Requests wdPhotoExp / wdPhotoExpSet, reply
 		// wdPhotoExpInfo: a name in each direction, never shared.
-		g_prisma->RegisterJSListener(g_view, "wdPhotoExp", OnJsWdPhotoExp);
-		g_prisma->RegisterJSListener(g_view, "wdPhotoExpSet", OnJsWdPhotoExpSet);
-		g_prisma->RegisterJSListener(g_view, "wdWear", OnJsWdWear);
-		g_prisma->RegisterJSListener(g_view, "wfEdit", OnJsFlairEdit);
-		g_prisma->RegisterJSListener(g_view, "odEquip", OnJsOdEquip);
-		g_prisma->RegisterJSListener(g_view, "odOpen", OnJsOdOpen);
-		g_prisma->RegisterJSListener(g_view, "wdGiveWear", OnJsWdGiveWear);
-		g_prisma->RegisterJSListener(g_view, "wdEquipPiece", OnJsWdEquipPiece);
+		HD_LISTEN(g_view, "wdPhotoExp", OnJsWdPhotoExp);
+		HD_LISTEN(g_view, "wdPhotoExpSet", OnJsWdPhotoExpSet);
+		HD_LISTEN(g_view, "wdWear", OnJsWdWear);
+		HD_LISTEN(g_view, "wfEdit", OnJsFlairEdit);
+		HD_LISTEN(g_view, "odEquip", OnJsOdEquip);
+		HD_LISTEN(g_view, "odOpen", OnJsOdOpen);
+		HD_LISTEN(g_view, "wdGiveWear", OnJsWdGiveWear);
+		HD_LISTEN(g_view, "wdEquipPiece", OnJsWdEquipPiece);
 		// Photo mode landed a file: hand the view the outfit slug and the file
 		// name so it can hang the image on the card without a refresh.
 		// Whatever the shot did to the clock and the sky, put it back — on EVERY
@@ -6364,55 +6512,55 @@ namespace
 
 		// Outfit-photo display CROP (v0.14.4) — pan/zoom on a picture that
 		// already exists. Same two-names rule: wdCropSave in, wdCrops out.
-		g_prisma->RegisterJSListener(g_view, "wdCropSave", OnJsWdCropSave);
+		HD_LISTEN(g_view, "wdCropSave", OnJsWdCropSave);
 
-		g_prisma->RegisterJSListener(g_view, "wdRemovePiece", OnJsWdRemovePiece);
-		g_prisma->RegisterJSListener(g_view, "wdOutfitDel", OnJsWdOutfitDel);
-		g_prisma->RegisterJSListener(g_view, "wdImport", OnJsWdImport);
+		HD_LISTEN(g_view, "wdRemovePiece", OnJsWdRemovePiece);
+		HD_LISTEN(g_view, "wdOutfitDel", OnJsWdOutfitDel);
+		HD_LISTEN(g_view, "wdImport", OnJsWdImport);
 		// The importer's browser + the three SOES calls that had no route out of
 		// its MCM. One name per DIRECTION throughout: wdOutfitMods asks,
 		// wdOutfitModList answers; wdOutfitsFor asks, wdOutfitList answers.
-		g_prisma->RegisterJSListener(g_view, "wdOutfitMods", OnJsWdOutfitMods);
-		g_prisma->RegisterJSListener(g_view, "wdOutfitsFor", OnJsWdOutfitsFor);
-		g_prisma->RegisterJSListener(g_view, "wdRename", OnJsWdRename);
-		g_prisma->RegisterJSListener(g_view, "wdFav", OnJsWdFav);
-		g_prisma->RegisterJSListener(g_view, "wdSoesOpt", OnJsWdSoesOpt);
-		g_prisma->RegisterJSListener(g_view, "wdInvMode", OnJsWdInvMode);
-		g_prisma->RegisterJSListener(g_view, "wdEnable", OnJsWdEnable);
-		g_prisma->RegisterJSListener(g_view, "wdRefreshAll", OnJsWdRefreshAll);
-		g_prisma->RegisterJSListener(g_view, "wdResetAuto", OnJsWdResetAuto);
-		g_prisma->RegisterJSListener(g_view, "wdLog", OnJsWdLog);
+		HD_LISTEN(g_view, "wdOutfitMods", OnJsWdOutfitMods);
+		HD_LISTEN(g_view, "wdOutfitsFor", OnJsWdOutfitsFor);
+		HD_LISTEN(g_view, "wdRename", OnJsWdRename);
+		HD_LISTEN(g_view, "wdFav", OnJsWdFav);
+		HD_LISTEN(g_view, "wdSoesOpt", OnJsWdSoesOpt);
+		HD_LISTEN(g_view, "wdInvMode", OnJsWdInvMode);
+		HD_LISTEN(g_view, "wdEnable", OnJsWdEnable);
+		HD_LISTEN(g_view, "wdRefreshAll", OnJsWdRefreshAll);
+		HD_LISTEN(g_view, "wdResetAuto", OnJsWdResetAuto);
+		HD_LISTEN(g_view, "wdLog", OnJsWdLog);
 
 		// NFF outfits. Requests are nf*; responses (nfOpen/nfResult/nfPieceList)
 		// stay disjoint — PrismaUI installs each listener as a global of that
 		// name, so a shared name clobbers the handler.
-		g_prisma->RegisterJSListener(g_view, "nfGet", OnJsNfGet);
-		g_prisma->RegisterJSListener(g_view, "nfSave", OnJsNfSave);
-		g_prisma->RegisterJSListener(g_view, "nfWear", OnJsNfWear);
-		g_prisma->RegisterJSListener(g_view, "nfBuild", OnJsNfBuild);
-		g_prisma->RegisterJSListener(g_view, "nfClear", OnJsNfClear);
-		g_prisma->RegisterJSListener(g_view, "nfSatchel", OnJsNfSatchel);
-		g_prisma->RegisterJSListener(g_view, "nfClaim", OnJsNfClaim);
-		g_prisma->RegisterJSListener(g_view, "nfPieces", OnJsNfPieces);
-		g_prisma->RegisterJSListener(g_view, "nfCopy", OnJsNfCopy);
+		HD_LISTEN(g_view, "nfGet", OnJsNfGet);
+		HD_LISTEN(g_view, "nfSave", OnJsNfSave);
+		HD_LISTEN(g_view, "nfWear", OnJsNfWear);
+		HD_LISTEN(g_view, "nfBuild", OnJsNfBuild);
+		HD_LISTEN(g_view, "nfClear", OnJsNfClear);
+		HD_LISTEN(g_view, "nfSatchel", OnJsNfSatchel);
+		HD_LISTEN(g_view, "nfClaim", OnJsNfClaim);
+		HD_LISTEN(g_view, "nfPieces", OnJsNfPieces);
+		HD_LISTEN(g_view, "nfCopy", OnJsNfCopy);
 		// NFF's own outfit calls the deck could not reach: Copy Outfit, Outfit
 		// Preview Mode, its outfit-switch hotkey, and the shared player chest.
-		g_prisma->RegisterJSListener(g_view, "nfClone", OnJsNfClone);
-		g_prisma->RegisterJSListener(g_view, "nfPreview", OnJsNfPreview);
-		g_prisma->RegisterJSListener(g_view, "nfSwitch", OnJsNfSwitch);
-		g_prisma->RegisterJSListener(g_view, "nfChest", OnJsNfChest);
+		HD_LISTEN(g_view, "nfClone", OnJsNfClone);
+		HD_LISTEN(g_view, "nfPreview", OnJsNfPreview);
+		HD_LISTEN(g_view, "nfSwitch", OnJsNfSwitch);
+		HD_LISTEN(g_view, "nfChest", OnJsNfChest);
 		// One name per direction: nfGear/nfSetGear in, nfGearState out.
-		g_prisma->RegisterJSListener(g_view, "nfGear", OnJsNfGear);
-		g_prisma->RegisterJSListener(g_view, "nfSetGear", OnJsNfSetGear);
-		g_prisma->RegisterJSListener(g_view, "nfLog", OnJsNfLog);
-		g_prisma->RegisterJSListener(g_view, "finSave", OnJsFinSave);
-		g_prisma->RegisterJSListener(g_view, "finSettle", OnJsFinSettle);
-		g_prisma->RegisterJSListener(g_view, "finBuy", OnJsFinBuy);
-		g_prisma->RegisterJSListener(g_view, "finSell", OnJsFinSell);
-		g_prisma->RegisterJSListener(g_view, "finBuyProp", OnJsFinBuyProp);
-		g_prisma->RegisterJSListener(g_view, "finSellProp", OnJsFinSellProp);
-		g_prisma->RegisterJSListener(g_view, "finIcons", OnJsFinIcons);
-		g_prisma->RegisterJSListener(g_view, "finLog", OnJsFinLog);
+		HD_LISTEN(g_view, "nfGear", OnJsNfGear);
+		HD_LISTEN(g_view, "nfSetGear", OnJsNfSetGear);
+		HD_LISTEN(g_view, "nfLog", OnJsNfLog);
+		HD_LISTEN(g_view, "finSave", OnJsFinSave);
+		HD_LISTEN(g_view, "finSettle", OnJsFinSettle);
+		HD_LISTEN(g_view, "finBuy", OnJsFinBuy);
+		HD_LISTEN(g_view, "finSell", OnJsFinSell);
+		HD_LISTEN(g_view, "finBuyProp", OnJsFinBuyProp);
+		HD_LISTEN(g_view, "finSellProp", OnJsFinSellProp);
+		HD_LISTEN(g_view, "finIcons", OnJsFinIcons);
+		HD_LISTEN(g_view, "finLog", OnJsFinLog);
 	}
 
 	// A press wants the deck open. If the view is already warm, open now. Otherwise
@@ -6621,6 +6769,58 @@ namespace
 		FocusDeck(pause);
 	}
 
+	// push-burst (2026-10-08): bracket a run of consecutive view pushes. The view
+	// (app.js HDBurst) parks pane redraws while a burst is open and flushes each
+	// once at the end mark; `window.hdBurst&&` keeps an older view (no HDBurst) a
+	// silent no-op, and the view ends a burst by itself after 600 ms if the end
+	// mark never lands. Same guards as PushToView. MAIN THREAD ONLY.
+	void PushBurstMark(bool begin, const char* tag)
+	{
+		if (!g_prisma || !g_view || !g_viewReady.load() || !g_open.load())
+			return;
+		static bool logged = false;
+		if (!logged) {
+			logged = true;
+			logger::info("push-burst: view redraws are coalesced per burst (first burst: {})", tag);
+		}
+		const std::string js = std::string("window.hdBurst&&hdBurst(") + (begin ? "1" : "0") + ",'" + tag + "')";
+		g_prisma->Invoke(g_view, js.c_str());
+	}
+
+	// open-deferred-slices: push the parked slices of the open `epoch`. MAIN
+	// THREAD ONLY. A stale epoch (a newer open, or a close) or an already-drained
+	// set is a no-op, so the hdPainted path and the 400 ms fallback cannot
+	// double-push and a close before the first paint drops them.
+	void PushDeferredOpenSlices(std::uint64_t epoch, const char* why)
+	{
+		DeferredOpen d;
+		{
+			std::lock_guard l(g_deferredOpenMutex);
+			if (g_deferredOpen.epoch != epoch || g_deferredOpen.pushes.empty())
+				return;
+			d = std::move(g_deferredOpen);
+			g_deferredOpen = DeferredOpen{};
+		}
+		if (!g_prisma || !g_view || !g_viewReady.load() || !g_open.load()) {
+			logger::info("open-deferred-slices: {} slice(s) dropped ({}; deck closed before the first paint)", d.pushes.size(), why);
+			return;
+		}
+		// push-burst: the view parks every pane redraw between the two marks and
+		// runs each ONCE at the end (six roster pushes used to be six full roster
+		// renders, 291 ms on the Followers tab in the 2026-10-08 log).
+		PushBurstMark(true, "open");
+		for (auto& [fn, payload] : d.pushes)
+			g_prisma->Invoke(g_view, (std::string(fn) + "(" + payload + ")").c_str());
+		PushBurstMark(false, "open");
+		logger::info("open-deferred-slices: {} slice(s) pushed after the first paint ({})", d.pushes.size(), why);
+	}
+
+	void OnJsPainted(const char*)
+	{
+		const auto epoch = g_openEpoch.load();
+		SKSE::GetTaskInterface()->AddTask([epoch]() { PushDeferredOpenSlices(epoch, "hdPainted"); });
+	}
+
 	// Main thread only.
 	void OpenPalette()
 	{
@@ -6745,10 +6945,15 @@ namespace
 		// hold their hotkeys while we own the keyboard. Guarded so it cannot leak.
 		SetTextInputGuard(true);
 		g_prisma->Invoke(g_view, ("hdOpen(" + payload + ")").c_str());
+		// open-deferred-slices: everything below that the first painted frame does
+		// not need is PARKED in `deferred` and pushed by PushDeferredOpenSlices once
+		// the view reports hdPainted (or 400 ms later). Same order as before.
+		DeferredOpen deferred;
+		deferred.epoch = ++g_openEpoch;
 		// Tab-pane payloads after hdOpen (it resets the view): the Followers
 		// chrome config, the Domains slice + a fresh location snapshot, then any
 		// pending deep-open target (F14/F15 pressed while the palette was closed).
-		g_prisma->Invoke(g_view, ("fdConfig(" + fcfg + ")").c_str());
+		deferred.pushes.emplace_back("fdConfig", fcfg);
 		// The crosshair snapshot taken a few lines above. Pushed HERE, at open,
 		// because it is an open-time fact — and because the quick-follower card
 		// on the Hotkeys tab needs it too. It used to be sent only from
@@ -6762,7 +6967,7 @@ namespace
 		// (or held an actor), and the banner stays hidden.
 		g_prisma->Invoke(g_view, ("hdItemSource(" + ItemSourceJson() + ")").c_str());
 		g_prisma->Invoke(g_view, ("hdRecent(" + HotkeyHistory::Json() + ")").c_str());
-		g_prisma->Invoke(g_view, ("fdPortraits(" + FolPortraitsJson() + ")").c_str());
+		deferred.pushes.emplace_back("fdPortraits", FolPortraitsJson());
 		// Once per session, before the first crop map goes out: drop crops whose
 		// photo has been deleted since the last run. Saving a crop prunes too, so
 		// this only covers the player who deletes files and never re-crops — but
@@ -6775,9 +6980,9 @@ namespace
 			if (PrunePortraitCrops())
 				PersistAll();
 		}
-		g_prisma->Invoke(g_view, ("fdCrops(" + FolCropsJson() + ")").c_str());
+		deferred.pushes.emplace_back("fdCrops", FolCropsJson());
 		// Followers HUD control state (the card in the Followers tab).
-		g_prisma->Invoke(g_view, ("hudCfgState(" + HudDeckStateJson() + ")").c_str());
+		deferred.pushes.emplace_back("hudCfgState", HudDeckStateJson());
 		// The ROSTER, at open. It used to arrive only from OnJsFolRefresh — the
 		// Followers pane's onShow — so on any other tab the view's category list
 		// was empty. The quick-follower card on the Hotkeys tab reads it to say
@@ -6790,33 +6995,33 @@ namespace
 		// builds the FO state itself, so this open was already paying for one.
 		// Build it ONCE and feed both, which is exactly what OnJsFolRefresh does.
 		const auto foAtOpen = FollowerDeck::StateJson();
-		g_prisma->Invoke(g_view, ("fdState(" + foAtOpen + ")").c_str());
+		deferred.pushes.emplace_back("fdState", foAtOpen);
 		// LIVE party — the same teammate/faction scan the HUD uses, so the
 		// Followers tab's "Current party" shows framework-driven companions the FO
 		// roster never lists (Amaniri's Nether's Niri, Vayne's CSV, CHIM soft-
 		// follow). The view merges these into partyList() de-duped by formId, so
 		// an FO member is never doubled and a non-FO follower is no longer dropped.
-		g_prisma->Invoke(g_view, ("fdLiveParty(" + HudFollowersJson() + ")").c_str());
+		deferred.pushes.emplace_back("fdLiveParty", HudFollowersJson());
 		logger::info("[followers] live-party pushed on open");  // marker: followers-live-party
 		// NFF home base + My Home is Your Home NG home, read-only, keyed by the
 		// same formIds the FO envelope uses. Both mods are soft: with neither
 		// installed this is an empty members map and the roster is unchanged.
-		g_prisma->Invoke(g_view, ("fdNff(" + NffBridge::StateJson(foAtOpen) + ")").c_str());
+		deferred.pushes.emplace_back("fdNff", NffBridge::StateJson(foAtOpen));
 		// Fertility Mode pregnancy / cycle, same rail and the same soft posture:
 		// with FM absent this is an empty actors map and the roster is unchanged.
-		g_prisma->Invoke(g_view, ("fdFertility(" + FertilityBridge::StateJson(foAtOpen) + ")").c_str());
-		g_prisma->Invoke(g_view, ("pdOpen(" + domPayload + ")").c_str());
-		g_prisma->Invoke(g_view, ("rgOpen(" + roomPayload + ")").c_str());
-		g_prisma->Invoke(g_view, ("pdHere(" + PlaceActions::CurrentLocationJson() + ")").c_str());
+		deferred.pushes.emplace_back("fdFertility", FertilityBridge::StateJson(foAtOpen));
+		deferred.pushes.emplace_back("pdOpen", domPayload);
+		deferred.pushes.emplace_back("rgOpen", roomPayload);
+		deferred.pushes.emplace_back("pdHere", PlaceActions::CurrentLocationJson());
 		// Containers tab: its slice + the crosshair-container snapshot taken above.
-		g_prisma->Invoke(g_view, ("ctOpen(" + contPayload + ")").c_str());
-		g_prisma->Invoke(g_view, ("ctTarget(" + ContainerActions::TargetJson() + ")").c_str());
+		deferred.pushes.emplace_back("ctOpen", contPayload);
+		deferred.pushes.emplace_back("ctTarget", ContainerActions::TargetJson());
 		// Container Auto-Sort state, pushed UNPROMPTED at open (needs an hd-boot
 		// STUB): rules + pins + inbox + opts + live respawn-safety verdicts.
-		g_prisma->Invoke(g_view, ("csOpen(" + ContainerSort::StateJson() + ")").c_str());
+		deferred.pushes.emplace_back("csOpen", ContainerSort::StateJson());
 		// Auto-Loot config + live runtime state, pushed UNPROMPTED at open (needs an
 		// hd-boot STUB): full slice + destName/destResolvable + last-tick picked.
-		g_prisma->Invoke(g_view, ("alOpen(" + AutoLoot::StateJson() + ")").c_str());
+		deferred.pushes.emplace_back("alOpen", AutoLoot::StateJson());
 		// Opened while looking at a DOOR -> the lock modal raises itself over
 		// whatever tab loads (hd-door.js auto-opens on a fresh non-null push;
 		// a null push closes any stale modal from the previous open).
@@ -6829,6 +7034,19 @@ namespace
 		if (!g_deckIconIndexPushed.exchange(true))
 			g_prisma->Invoke(g_view, ("hdIconIndex(" + DeckIconIndexJson() + ")").c_str());
 		g_prisma->Invoke(g_view, ("hdIcons(" + iconList + ")").c_str());
+		// open-deferred-slices: park the rest; hdPainted (or the fallback) pushes it.
+		{
+			const auto epoch = deferred.epoch;
+			logger::info("open-deferred-slices: {} slice(s) parked until the first paint", deferred.pushes.size());
+			{
+				std::lock_guard l(g_deferredOpenMutex);
+				g_deferredOpen = std::move(deferred);
+			}
+			std::thread([epoch]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(400));
+				SKSE::GetTaskInterface()->AddTask([epoch]() { PushDeferredOpenSlices(epoch, "fallback 400 ms"); });
+			}).detach();
+		}
 		// Opened while looking at someone -> land on Followers, where that
 		// person's dismiss / inventory / outfit / wait buttons are (Rober,
 		// 2026-08-02). Deliberately last, and deliberately only when nothing
@@ -6924,8 +7142,15 @@ namespace
 	// Main thread only.
 	void ClosePalette()
 	{
+		// The person page's live view owns the camera and the focus mode; it must
+		// hand both back BEFORE the palette's own close runs.
+		PersonLive::Stop("palette close");
 		if (!g_prisma || !g_open.exchange(false))
 			return;
+		{	// open-deferred-slices: a close before the first paint drops the parked pushes
+			std::lock_guard l(g_deferredOpenMutex);
+			g_deferredOpen = DeferredOpen{};
+		}
 		// Mark the close in flight (same reason as OpenPalette): a press landing
 		// mid-close must not race a re-open into the focus slot before Hide lands.
 		g_openInFlight = true;
@@ -6991,6 +7216,7 @@ namespace
 	void AgToggleAlign();   // used by the action dispatch, far above its definition
 	void ForceClosePalettes(const char* why, bool releaseHudEdit = true)
 	{
+		PersonLive::Stop("force-close");
 		if (!g_prisma)
 			return;
 		logger::warn("force-close ({}): open={} magicOpen={} capturing={} anyFocus={}",
@@ -7044,6 +7270,8 @@ namespace
 			AgCloseAlign(false);   // the 4th claimant — same orphan risk
 			SwCloseWheel(false);   // the 5th — and it also restores world time
 			OdCloseDock(false);
+			PortraitCapture::PhotoCancel();
+			PhotoStudioClose();
 			if (g_hudEditing.exchange(false))
 				logger::warn("force-close: hud edit force-ended");
 			if (g_hudView && g_hudViewReady.load()) {
@@ -8264,10 +8492,10 @@ namespace
 		// Sic 'em is a combat command: close the palette, send the followers in,
 		// and stay closed even with close-after-fire off — the last thing you
 		// want mid-swing is the paused menu painting itself back over the fight.
-		if (action == "attack-target") {
-			SKSE::GetTaskInterface()->AddTask([]() {
+		if (action == "attack-target" || action == "hunt" || action == "hunt-minions") {
+			SKSE::GetTaskInterface()->AddTask([action]() {
 				ClosePalette();
-				NpcActions::Run("attack-target");
+				NpcActions::Run(action);
 			});
 			return;
 		}
@@ -9460,28 +9688,28 @@ namespace
 					OpenMagicPalette();
 			});
 		});
-		g_prisma->RegisterJSListener(g_magicView, "mdFire", OnJsMagicFire);
-		g_prisma->RegisterJSListener(g_magicView, "mdCastCombo", OnJsMagicCastCombo);
-		g_prisma->RegisterJSListener(g_magicView, "mdKnown", OnJsMagicKnown);
-		g_prisma->RegisterJSListener(g_magicView, "mdSave", OnJsMagicSave);
-		g_prisma->RegisterJSListener(g_magicView, "mdClose", OnJsMagicClose);
+		HD_LISTEN(g_magicView, "mdFire", OnJsMagicFire);
+		HD_LISTEN(g_magicView, "mdCastCombo", OnJsMagicCastCombo);
+		HD_LISTEN(g_magicView, "mdKnown", OnJsMagicKnown);
+		HD_LISTEN(g_magicView, "mdSave", OnJsMagicSave);
+		HD_LISTEN(g_magicView, "mdClose", OnJsMagicClose);
 		// Same global text-entry refcount as the deck view -- one handler, one
 		// balance counter. The Spell Deck's search box would otherwise leak
 		// keystrokes as mod hotkeys exactly like the deck's did.
-		g_prisma->RegisterJSListener(g_magicView, "hdTextInput", OnJsTextInput);
-		g_prisma->RegisterJSListener(g_magicView, "mdOpenDeck", OnJsOpenDeck);
-		g_prisma->RegisterJSListener(g_magicView, "mdLog", OnJsMagicLog);
-		g_prisma->RegisterJSListener(g_magicView, "mdCapture", OnJsMagicCapture);
-		g_prisma->RegisterJSListener(g_magicView, "mdRemoveSpell", OnJsMagicRemoveSpell);
-		g_prisma->RegisterJSListener(g_magicView, "mdRestoreSpell", OnJsMagicRestoreSpell);
-		g_prisma->RegisterJSListener(g_magicView, "mdGetDesc", OnJsMagicGetDesc);
-		g_prisma->RegisterJSListener(g_magicView, "mdIconList", OnJsMagicIconList);
+		HD_LISTEN(g_magicView, "hdTextInput", OnJsTextInput);
+		HD_LISTEN(g_magicView, "mdOpenDeck", OnJsOpenDeck);
+		HD_LISTEN(g_magicView, "mdLog", OnJsMagicLog);
+		HD_LISTEN(g_magicView, "mdCapture", OnJsMagicCapture);
+		HD_LISTEN(g_magicView, "mdRemoveSpell", OnJsMagicRemoveSpell);
+		HD_LISTEN(g_magicView, "mdRestoreSpell", OnJsMagicRestoreSpell);
+		HD_LISTEN(g_magicView, "mdGetDesc", OnJsMagicGetDesc);
+		HD_LISTEN(g_magicView, "mdIconList", OnJsMagicIconList);
 		// Combat Arts (Ashes of War) is this window's second page since
 		// 2026-08-15. Requests caState/caAct/caSave; replies caStateResult/
 		// caActResult/caSaved — disjoint per the deck law.
-		g_prisma->RegisterJSListener(g_magicView, "caState", OnJsCombatArtsState);
-		g_prisma->RegisterJSListener(g_magicView, "caAct", OnJsCombatArtsAct);
-		g_prisma->RegisterJSListener(g_magicView, "caSave", OnJsCombatArtsSave);
+		HD_LISTEN(g_magicView, "caState", OnJsCombatArtsState);
+		HD_LISTEN(g_magicView, "caAct", OnJsCombatArtsAct);
+		HD_LISTEN(g_magicView, "caSave", OnJsCombatArtsSave);
 	}
 
 	// Main thread only.
@@ -14117,7 +14345,38 @@ namespace
 				ItemIcons::CaptureAngles(fid, plugin);
 			// "body" never bakes from here — mounts own that (the bake needs
 			// the resolved race-skin NIF); the state reply still answers.
-			PushToView("hdSpinState", ItemIcons::SpinStateJson(fid, plugin, kind));
+			// An item's reply also says whether the 3D inspector is switched on,
+			// so the lightbox offers "Turn in 3D" only when it will do something.
+			auto spinState = json::parse(ItemIcons::SpinStateJson(fid, plugin, kind), nullptr, false);
+			if (spinState.is_discarded() || !spinState.is_object()) {
+				PushToView("hdSpinState", ItemIcons::SpinStateJson(fid, plugin, kind));
+				return;
+			}
+			if (kind == "item")
+				spinState["inspect"] = ItemExplorer::Inspect3D();
+			PushToView("hdSpinState", spinState.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+		});
+	}
+
+	// hdInspect: the lightbox's "Turn in 3D" (2026-10-04). {formId, plugin,
+	// queue} -> hdInspectData, identity echoed by InspectJson so the view drops
+	// a reply for a piece it has since closed. Switched off in the Finder, it
+	// queues nothing and says so (off:true) — the view then hides the control.
+	void OnJsInspect(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto j = json::parse(req, nullptr, false);
+			if (j.is_discarded() || !j.is_object())
+				return;
+			const std::string fid    = j.value("formId", std::string());
+			const std::string plugin = j.value("plugin", std::string());
+			if (!ItemExplorer::Inspect3D()) {
+				PushToView("hdInspectData", json{ { "ok", false }, { "off", true }, { "formId", fid }, { "plugin", plugin },
+					{ "why", "The 3D inspector is switched off (Finder > Items)" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+				return;
+			}
+			PushToView("hdInspectData", ItemIcons::InspectJson(fid, plugin, j.value("queue", true)));
 		});
 	}
 
@@ -14260,6 +14519,8 @@ namespace
 			// below still show the PRE-change day; PortalMhiyhDone() repaints
 			// when MHiYH answers, exactly as an in-deck click does.
 			MhiyhControl::ApplyPortal(DeckViewDir(), fo, PortalMhiyhDone);
+			// push-burst: six pushes, ONE roster redraw in the view (see PushBurstMark).
+			PushBurstMark(true, "followers");
 			PushToView("fdState", fo);
 			PushToView("fdTarget", FolTargetJson());
 			PushToView("fdPortraits", FolPortraitsJson());
@@ -14269,6 +14530,7 @@ namespace
 			PushToView("fdCrops", FolCropsJson());
 			PushFollowerNff(fo);
 			PushToView("fdFertility", FertilityBridge::StateJson(fo));
+			PushBurstMark(false, "followers");
 		// court-status.json for CHIM: marriage (MARAS) + pregnancy (FM) per follower.
 		// Same roster, same read-only posture; skips the disk when nothing changed.
 		CourtStatus::Write(fo);
@@ -14479,9 +14741,32 @@ namespace
 			exMk = g_hudConfig.showMk;
 		}
 
+		// SMOOTHNESS (2026-10-07, marker "hud-roster-cache"). This runs on the
+		// game thread every tick (~1.2 s), and it used to rebuild all three of
+		// its lookup tables from scratch each time: a full Follower Organizer
+		// state build (FO walks every loaded actor for each member stored as a
+		// base form), serialised and parsed back, plus a re-parse of the portrait
+		// and crop listings. The census measured it at "hud-roster 50x worst
+		// 15.9ms total 221ms" a minute -- a frame-sized hitch about once a second
+		// while just walking around. None of the three changes on that scale, so
+		// each is now re-derived only when its SOURCE changed: the portrait and
+		// crop strings by content (both are cheap to produce -- the portrait walk
+		// has its own mtime cache), the FO roster by the identity of
+		// FollowerDeck::CachedState's envelope, refreshed at most every
+		// kHudRosterMaxAgeMs or at once after any deck-side FO op. What the
+		// roster contributes is names for portrait matching, not who is
+		// following -- that is read live from the actors below on every tick.
+		constexpr std::int64_t kHudRosterMaxAgeMs = 30000;
+
 		// file -> {z,x,y}, parsed from the same helper the roster uses (a bad parse
 		// just means no crops this pass).
-		json crops     = json::parse(FolCropsJson(), nullptr, false);
+		static std::string s_cropsSrc;
+		static json        s_crops = json::object();
+		if (std::string src = FolCropsJson(); src != s_cropsSrc) {
+			s_crops = json::parse(src, nullptr, false);
+			s_cropsSrc = std::move(src);
+		}
+		const json& crops = s_crops;
 
 		// slug -> {file,ext,mtime}. FolPortraitsJson() returns an ARRAY of
 		// {slug,file,ext,mtime} — the shape the roster's JS iterates — so fold it
@@ -14489,16 +14774,21 @@ namespace
 		// value AS an object: `portraits.is_object()` was false for an array, so
 		// attachPortrait matched ZERO faces and every HUD chip fell back to
 		// initials — the "with-portrait=0" bug, marker: hud-portrait-index-fix.)
-		json portraits = json::object();
-		{
-			json parr = json::parse(FolPortraitsJson(), nullptr, false);
+		static std::string s_portraitsSrc;
+		static json        s_portraits = json::object();
+		if (std::string src = FolPortraitsJson(); src != s_portraitsSrc) {
+			json folded = json::object();
+			json parr = json::parse(src, nullptr, false);
 			if (parr.is_array()) {
 				for (auto& p : parr) {
 					if (p.is_object() && p.contains("slug") && p["slug"].is_string())
-						portraits[p["slug"].get<std::string>()] = p;
+						folded[p["slug"].get<std::string>()] = p;
 				}
 			}
+			s_portraits = std::move(folded);
+			s_portraitsSrc = std::move(src);
 		}
+		const json& portraits = s_portraits;
 
 		// formId -> ORIGINAL name from the FO roster. The deck roster keys portraits
 		// on m.original (portraitFor -> slugOf(m.original)), so a follower renamed in
@@ -14506,9 +14796,16 @@ namespace
 		// GetDisplayFullName() is the RENAMED name and therefore misses — this is why
 		// the roster showed faces but the widget did not. Match the roster: prefer the
 		// FO original, then the base (née) name, then the display name.
-		std::map<RE::FormID, std::string> foOriginal;
-		{
-			auto st = json::parse(FollowerDeck::StateJson(), nullptr, false);
+		//
+		// Keyed by the stored formId AND by liveFormId: a member FO holds as a BASE
+		// form has a formId no loaded actor carries, so before this the HUD could
+		// only find her through the base/display-name fallbacks.
+		static std::shared_ptr<const std::string> s_foSrc;
+		static std::map<RE::FormID, std::string>  s_foOriginal;
+		if (auto src = FollowerDeck::CachedState(kHudRosterMaxAgeMs); src != s_foSrc) {
+			s_foSrc = src;
+			s_foOriginal.clear();
+			auto st = json::parse(src ? *src : std::string(), nullptr, false);
 			const json* cats = nullptr;
 			if (st.is_object()) {
 				if (st.contains("categories") && st["categories"].is_array())
@@ -14517,6 +14814,17 @@ namespace
 						 st["state"].contains("categories") && st["state"]["categories"].is_array())
 					cats = &st["state"]["categories"];
 			}
+			const auto fidOf = [](const json& f) -> RE::FormID {
+				if (f.is_number_unsigned())
+					return f.get<RE::FormID>();
+				if (f.is_number_integer())
+					return static_cast<RE::FormID>(f.get<std::int64_t>());
+				if (f.is_string()) {
+					try { return static_cast<RE::FormID>(std::stoul(f.get<std::string>(), nullptr, 16)); }
+					catch (...) {}
+				}
+				return 0;
+			};
 			if (cats) {
 				for (const auto& c : *cats) {
 					if (!c.is_object() || !c.contains("members") || !c["members"].is_array())
@@ -14527,24 +14835,27 @@ namespace
 						std::string orig = m.value("original", m.value("name", std::string()));
 						if (orig.empty())
 							continue;
-						RE::FormID fid = 0;
-						if (m.contains("formId")) {
-							const auto& f = m["formId"];
-							if (f.is_number_unsigned())
-								fid = f.get<RE::FormID>();
-							else if (f.is_number_integer())
-								fid = static_cast<RE::FormID>(f.get<std::int64_t>());
-							else if (f.is_string()) {
-								try { fid = static_cast<RE::FormID>(std::stoul(f.get<std::string>(), nullptr, 16)); }
-								catch (...) {}
-							}
+						for (const char* key : { "formId", "liveFormId" }) {
+							if (!m.contains(key))
+								continue;
+							if (const RE::FormID fid = fidOf(m[key]))
+								s_foOriginal.emplace(fid, orig);
 						}
-						if (fid)
-							foOriginal.emplace(fid, orig);
 					}
 				}
 			}
+			// INFO once so the marker is in a fresh log, then debug -- this
+			// fires every ~30 s for as long as the HUD is on.
+			static bool s_saidRoster = false;
+			if (!s_saidRoster) {
+				s_saidRoster = true;
+				logger::info("hud-roster-cache: FO roster re-derived ({} ids); next refresh in {} s or after a deck FO op",
+					s_foOriginal.size(), kHudRosterMaxAgeMs / 1000);
+			} else {
+				logger::debug("hud-roster-cache: FO roster re-derived ({} ids)", s_foOriginal.size());
+			}
 		}
+		const auto& foOriginal = s_foOriginal;
 
 		// Resolve a portrait row from the first candidate name that has a file.
 		auto attachPortrait = [&](json& row, const std::vector<std::string>& names) -> bool {
@@ -14771,6 +15082,8 @@ namespace
 			{"left", double(frame.x) / frame.sourceWidth}, {"top", double(frame.y) / frame.sourceHeight},
 			{"width", double(frame.width) / frame.sourceWidth}, {"height", double(frame.height) / frame.sourceHeight},
 			{"outputWidth", frame.outputWidth}, {"outputHeight", frame.outputHeight}};
+		if(active&&frame.Valid()) {data["frame"]["pixelWidth"]=frame.width;data["frame"]["pixelHeight"]=frame.height;}
+		data["studio"]=json::parse(PhotoStudio::State(),nullptr,false);
 		g_prisma->Invoke(g_hudView, ("photoLights(" + data.dump() + ")").c_str());
 		HudApplyVisibility();
 	}
@@ -14823,6 +15136,7 @@ namespace
 	}
 	void OdOpenDock(bool placement)
 	{
+		if(PhotoStudio::Editing())PortraitCapture::PhotoCancel();
 		if (g_odOpen.load()) { OdCloseDock(false); return; }
 		if (!CanOpenNow() || !g_prisma || !g_hudView || !g_hudViewReady.load()) {
 			RE::DebugNotification("Open the outfit dock while playing, after other menus close"); return;
@@ -14919,6 +15233,7 @@ namespace
 	// the hud-reposition kind — unpaused, cursor owned by the view.
 	void TdOpenDial()
 	{
+		if(PhotoStudio::Editing())PortraitCapture::PhotoCancel();
 		OdCloseDock(false);
 		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
 			RE::DebugNotification("The Time Dial needs the HUD view - reinstall hud.html");
@@ -15012,6 +15327,7 @@ namespace
 
 	void AgOpenAlign()
 	{
+		if(PhotoStudio::Editing())PortraitCapture::PhotoCancel();
 		OdCloseDock(false);
 		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
 			RE::DebugNotification("Alignment needs the HUD view - reinstall hud.html");
@@ -15073,8 +15389,9 @@ namespace
 	//
 	// Slow, never stopped: the smooth-pause lesson (kFrozenMult) — anything
 	// that waits on game time must keep ticking. One fifth speed reads as
-	// "time slowed" without the world freezing behind the wheel.
-	constexpr float kStanceSlowMult = 0.2f;
+	// "time slowed" without the world freezing behind the wheel. The amount is
+	// the player's since 2026-10-08 (StanceWheel::GetOptions().slow, clamped to
+	// 0.05 .. 1.0 in stance_wheel.cpp; 0.2 is the default).
 
 	void SwRestoreTime()
 	{
@@ -15117,6 +15434,7 @@ namespace
 
 	void SwOpenWheel()
 	{
+		if(PhotoStudio::Editing())PortraitCapture::PhotoCancel();
 		OdCloseDock(false);
 		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
 			RE::DebugNotification("The Stance Wheel needs the HUD view - reinstall hud.html");
@@ -15146,13 +15464,16 @@ namespace
 			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		g_swOpen = true;
 		g_swOpenedAt = std::chrono::steady_clock::now();
-		if (!g_worldFrozen.load()) {
+		const float slowMult = StanceWheel::GetOptions().slow;
+		// 1.0 = "do not slow time": leave the multiplier alone, so nothing has
+		// to be restored and a mod running its own slow motion keeps it.
+		if (!g_worldFrozen.load() && slowMult < 0.999f) {
 			if (auto* timer = RE::BSTimer::GetSingleton()) {
-				timer->SetGlobalTimeMultiplier(kStanceSlowMult, true);
+				timer->SetGlobalTimeMultiplier(slowMult, true);
 				g_swSlowed = true;
 			}
 		}
-		logger::info("stance-wheel: open (time x{})", kStanceSlowMult);   // marker: stance-wheel-open
+		logger::info("stance-wheel: open (time x{})", slowMult);   // marker: stance-wheel-open
 		g_prisma->Show(g_hudView);
 		SwPushState();                       // state BEFORE show: icons + Neutral shape the wheel
 		g_prisma->Invoke(g_hudView, "swShow(\"1\")");
@@ -15202,6 +15523,40 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([]() { SwCloseWheel(true); });
 	}
 
+	// ---- Stance Wheel settings (the Home drawer's row; DECK view) ------------
+	// Request swCfg {op:"get"} | {op:"set", slow?, size?} | {op:"set", reset:true},
+	// reply swCfgState {slow, size, def*, min*, max*, ok, msg, key}. `ok`/`msg`
+	// are StanceWheel::Available (the row says WHY the wheel will not open
+	// rather than offering a dead button) and `key` is the trigger bound to the
+	// seeded hd-stance-wheel entry, "" when it has none.
+	void OnJsSwCfg(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			const auto req = nlohmann::json::parse(payload, nullptr, false);
+			const bool set = !req.is_discarded() && req.is_object() && req.value("op", std::string()) == "set";
+			auto j = nlohmann::json::parse(set ? StanceWheel::SetOptions(payload) : StanceWheel::OptionsJson(), nullptr, false);
+			if (j.is_discarded() || !j.is_object())
+				j = nlohmann::json::object();
+			std::string why;
+			j["ok"] = StanceWheel::Available(why);
+			j["msg"] = why;
+			std::string key;
+			{
+				std::lock_guard l(g_configMutex);
+				for (const auto& e : g_config.entries) {
+					if (e.id == "hd-stance-wheel") {
+						if (!e.trigDevice.empty())
+							key = e.trigLabel;
+						break;
+					}
+				}
+			}
+			j["key"] = key;
+			PushToView("swCfgState", j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+		});
+	}
+
 	// ============================================ Followers HUD: browse mode v2
 	// (Rober, 2026-08-18: browsing the strip made the player WALK.) v1 forwarded
 	// WASD to the view through the input sink with no focus at all — and this
@@ -15247,6 +15602,7 @@ namespace
 
 	void HudNavStart()
 	{
+		if(PhotoStudio::Editing())PortraitCapture::PhotoCancel();
 		OdCloseDock(false);
 		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
 			RE::DebugNotification("Browse needs the HUD view - reinstall hud.html");
@@ -15359,6 +15715,45 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([]() { AgCloseAlign(true); });
 	}
 
+	void PhotoStudioClose()
+	{
+		const bool held=g_photoStudioFocused.exchange(false);
+		if(PhotoStudio::Editing())PhotoStudio::SetEditing(false);
+		if(held&&g_prisma&&g_hudView&&!g_hudEditing.load()&&!g_hudNavActive.load()&&!g_tdOpen.load()&&!g_agOpen.load()&&!g_swOpen.load()&&!g_odOpen.load())
+			g_prisma->Unfocus(g_hudView);
+	}
+	void PhotoStudioPush()
+	{
+		if(!PhotoStudio::Editing())PhotoStudioClose();
+		if(g_prisma&&g_hudView&&g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView,("photoStudio("+PhotoStudio::State()+")").c_str());
+	}
+	void PhotoStudioToggle()
+	{
+		if(PhotoStudio::Editing()){PhotoStudioClose();return;}
+		if(!PortraitCapture::PhotoModeActive()||!g_prisma||!g_hudView||!g_hudViewReady.load())return;
+		OdCloseDock(false);TdCloseDial(false);AgCloseAlign(false);SwCloseWheel(false);HudNavStop("photo studio",false);
+		if(g_hudEditing.exchange(false))g_prisma->Invoke(g_hudView,"hudEdit(\"0\")");
+		g_prisma->Show(g_hudView);
+		if(!g_prisma->Focus(g_hudView,false)) {RE::DebugNotification("Photo studio could not take focus. Keep framing or press Esc to cancel.");return;}
+		g_photoStudioFocused=true;
+		PhotoStudio::SetEditing(true);
+		logger::info("photo-studio: editor focused without pausing");
+	}
+	void OnJsPhotoStudio(const char* value)
+	{
+		const std::string request=value?value:"";
+		if(request.size()>8192)return;
+		SKSE::GetTaskInterface()->AddTask([request]() {
+			const auto j=json::parse(request,nullptr,false);
+			if(!j.is_object()||!j.contains("session")||!j["session"].is_string()||
+				j["session"].get<std::string>()!=std::to_string(PortraitCapture::PhotoInputSession())||!PortraitCapture::PhotoInputSession())return;
+			if(!j.contains("op")||!j["op"].is_string())return;
+			if(j.contains("op")&&j["op"].is_string()&&j["op"].get<std::string>()=="close") {PhotoStudioClose();return;}
+			if(!PhotoStudio::Editing()&&j.value("op",std::string())!="bounds")return;
+			PhotoStudio::Request(request);PhotoStudioPush();
+		});
+	}
 	// ---- view -> C++ listeners (registered on g_hudView) ----
 	/* Declared here because the widgets now live in the HUD document and its
 	 * ready handler sits ABOVE their definitions in this file — a forward
@@ -15527,7 +15922,7 @@ namespace
 	{
 		g_hudEditing = false;
 		SKSE::GetTaskInterface()->AddTask([]() {
-			if (g_prisma && g_hudView)
+			if (g_prisma && g_hudView && !g_photoStudioFocused.load())
 				g_prisma->Unfocus(g_hudView);
 			HudApplyVisibility();
 		});
@@ -15774,6 +16169,7 @@ namespace
 			if (doCfg) HudPushConfig();
 			if (doData) HudPushData(true);
 			if (doRepos) {
+				if(PhotoStudio::Editing())PortraitCapture::PhotoCancel();
 				// The deck palette initiated this and is still OPEN — close it
 				// NOW, or its fullscreen surface keeps the mouse for the ~2s
 				// until the desync watchdog shoots it (and the player reads
@@ -15949,6 +16345,8 @@ namespace
 			return;
 		if (!ViewFileOnDisk("HotkeyDeck/hud.html")) return;
 		PortraitCapture::SetPhotoLightingCallback(HudPhotoLights);
+		PortraitCapture::SetPhotoStudioToggle(PhotoStudioToggle);
+		PhotoStudio::SetChangedCallback(PhotoStudioPush);
 		MirrorSpellIconsAsync();
 		g_hudView = g_prisma->CreateView("HotkeyDeck/hud.html", [](PrismaView v) {
 			g_hudViewReady = true;
@@ -15961,14 +16359,15 @@ namespace
 			 * lost; hudReady stays as the second chance. */
 			SKSE::GetTaskInterface()->AddTask([]() { HudPushBoot("domReady"); });
 		});
-		g_prisma->RegisterJSListener(g_hudView, "hudReady", OnJsHudReady);
+		HD_LISTEN(g_hudView, "hudReady", OnJsHudReady);
+		HD_LISTEN(g_hudView, "photoStudioRequest", OnJsPhotoStudio);
 		/* The HUD's equipment and pinned-item tiles want the SAME rendered art
 		 * the deck's own grids use, so the widget view has to be able to ASK.
 		 * Registering the existing handler here rather than writing a second
 		 * request path is what keeps one render queue and one on-disk index —
 		 * the alternative is two features rendering the same form twice. */
-		g_prisma->RegisterJSListener(g_hudView, "whIcons", OnJsWheelIcons);
-		g_prisma->RegisterJSListener(g_hudView, "hudSave", OnJsHudSave);
+		HD_LISTEN(g_hudView, "whIcons", OnJsHudIcons);
+		HD_LISTEN(g_hudView, "hudSave", OnJsHudSave);
 		// ---- the Followers-HUD shelf section (2026-08-19, shelf round 3) ----
 		// Rober: "the Followers HUD needs the same shelf treatment — its own
 		// config button opening a popout right panel, not whatever the hell
@@ -15979,34 +16378,34 @@ namespace
 		// part / shape / compact / bindnav / bindkey / clear*. Registering a
 		// second handler here would be a second place for the ops to drift.
 		// Build marker (hd-markers.json: "hud-strip-cfg-bridge").
-		g_prisma->RegisterJSListener(g_hudView, "hudCfg", OnJsHudCfg);
+		HD_LISTEN(g_hudView, "hudCfg", OnJsHudCfg);
 		logger::info("hud-strip-cfg-bridge: hudCfg listening on the HUD view too");
-		g_prisma->RegisterJSListener(g_hudView, "hudEditDone", OnJsHudEditDone);
+		HD_LISTEN(g_hudView, "hudEditDone", OnJsHudEditDone);
 		// Browse mode v2: the view ends browsing itself (Enter opened a card,
 		// Esc, a click away) and C++ answers by releasing the keyboard.
-		g_prisma->RegisterJSListener(g_hudView, "hudNavDone", OnJsHudNavDone);
-		g_prisma->RegisterJSListener(g_hudView, "hudLog", OnJsHudLog);
+		HD_LISTEN(g_hudView, "hudNavDone", OnJsHudNavDone);
+		HD_LISTEN(g_hudView, "hudLog", OnJsHudLog);
 		// Widgets round 4: the custom quick strip's own bridge (its picker and
 		// its row presses) and the loot lamp's toggle. Registered here rather
 		// than in CreateHotbarView with the other wg* names because they are
 		// HUD-view-only by construction — the retired hotbar widget DOM has no
 		// custom strip to press.
-		g_prisma->RegisterJSListener(g_hudView, "wgQuick2Use", OnJsWgQuick2Use);
-		g_prisma->RegisterJSListener(g_hudView, "wgQuick2Catalog", OnJsWgQuick2Catalog);
-		g_prisma->RegisterJSListener(g_hudView, "wgLootToggle", OnJsWgLootToggle);
+		HD_LISTEN(g_hudView, "wgQuick2Use", OnJsWgQuick2Use);
+		HD_LISTEN(g_hudView, "wgQuick2Catalog", OnJsWgQuick2Catalog);
+		HD_LISTEN(g_hudView, "wgLootToggle", OnJsWgLootToggle);
 		// Time Dial (td* bridge) — see the Time Dial block above.
-		g_prisma->RegisterJSListener(g_hudView, "wfEdit", OnJsFlairEdit);
-		g_prisma->RegisterJSListener(g_hudView, "odClose", OnJsOdClose);
-		g_prisma->RegisterJSListener(g_hudView, "odEquip", OnJsOdEquip);
-		g_prisma->RegisterJSListener(g_hudView, "tdGet", OnJsTdGet);
-		g_prisma->RegisterJSListener(g_hudView, "tdWait", OnJsTdWait);
-		g_prisma->RegisterJSListener(g_hudView, "tdClose", OnJsTdClose);
-		g_prisma->RegisterJSListener(g_hudView, "agGet", OnJsAgGet);
-		g_prisma->RegisterJSListener(g_hudView, "agAdjust", OnJsAgAdjust);
-		g_prisma->RegisterJSListener(g_hudView, "agClose", OnJsAgClose);
-		g_prisma->RegisterJSListener(g_hudView, "swGet", OnJsSwGet);
-		g_prisma->RegisterJSListener(g_hudView, "swPick", OnJsSwPick);
-		g_prisma->RegisterJSListener(g_hudView, "swClose", OnJsSwClose);
+		HD_LISTEN(g_hudView, "wfEdit", OnJsFlairEdit);
+		HD_LISTEN(g_hudView, "odClose", OnJsOdClose);
+		HD_LISTEN(g_hudView, "odEquip", OnJsOdEquip);
+		HD_LISTEN(g_hudView, "tdGet", OnJsTdGet);
+		HD_LISTEN(g_hudView, "tdWait", OnJsTdWait);
+		HD_LISTEN(g_hudView, "tdClose", OnJsTdClose);
+		HD_LISTEN(g_hudView, "agGet", OnJsAgGet);
+		HD_LISTEN(g_hudView, "agAdjust", OnJsAgAdjust);
+		HD_LISTEN(g_hudView, "agClose", OnJsAgClose);
+		HD_LISTEN(g_hudView, "swGet", OnJsSwGet);
+		HD_LISTEN(g_hudView, "swPick", OnJsSwPick);
+		HD_LISTEN(g_hudView, "swClose", OnJsSwClose);
 		logger::info("followers-hud: view created + listeners registered");
 	}
 
@@ -16061,8 +16460,47 @@ namespace
 
 	std::string HbConfigJson()
 	{
-		std::lock_guard l(g_configMutex);
-		return Hotbar::ToJson(g_hbConfig).dump(-1, ' ', false, json::error_handler_t::replace);
+		json j;
+		{
+			std::lock_guard l(g_configMutex);
+			j = Hotbar::ToJson(g_hbConfig);
+		}
+		// Runtime facts the editor prints beside its settings: whether the
+		// optional casting clip is available and why not (cast_anim.h), and
+		// which bar is live right now. Neither is persisted — the view never
+		// sends them back.
+		j["animStatus"] = json::parse(CastAnim::StatusJson(), nullptr, false);
+		j["liveBar"] = g_hbLiveBar.load();
+		return j.dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
+	// Which weapon bar is live, re-read from what the player holds. MAIN
+	// THREAD ONLY (equipped forms). Called from the 150 ms visibility beat
+	// and after any config change; a change repaints the bar at once.
+	void HbPushPage();
+	void HbPushLive(bool force);
+	void HbUpdateWielded()
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player || !player->GetParentCell())
+			return;
+		const auto w = Hotbar::ClassifyWielded();
+		int        bar;
+		{
+			std::lock_guard l(g_configMutex);
+			if (!g_hbConfig.enabled || g_hbConfig.weaponBars.empty()) {
+				bar = -1;
+			} else {
+				bar = Hotbar::BarForWielded(g_hbConfig, w);
+			}
+		}
+		if (bar == g_hbLiveBar.load())
+			return;
+		g_hbLiveBar = bar;
+		// Build marker (hd-markers.json: "hotbar-bar-switch").
+		logger::info("hotbar-bars: holding {}{} -> bar {}", w.cls, w.sneak ? " (sneaking)" : "", bar);
+		HbPushPage();
+		HbPushLive(true);
 	}
 
 	// Live slot state for the page currently on screen. MAIN THREAD ONLY.
@@ -16077,7 +16515,17 @@ namespace
 	// `label` at assign time: this way renaming the deck entry renames the
 	// button, and a deleted one can be reported honestly instead of showing a
 	// name for something that is gone.
+	std::string HbLiveJsonFor(int bar, int page);
 	std::string HbLiveJson()
+	{
+		return HbLiveJsonFor(g_hbLiveBar.load(), g_hbLivePage.load());
+	}
+
+	// The same live rows for ANY (bar, page) — the editor's peek at a bar or
+	// page that is not live right now (hbPeek -> hbLivePeek), so a weapon
+	// bar can be edited with real names and grey-outs while you hold
+	// something else. MAIN THREAD ONLY.
+	std::string HbLiveJsonFor(int barIn, int pageIn)
 	{
 		// PERF (2026-08-16, round two): a LIGHT read, for the same reason the
 		// ticker thread already gives one line above its own copy. This used to
@@ -16097,29 +16545,58 @@ namespace
 		// The page index is clamped HERE with LiveJson's own rule, so the page we
 		// FILL is always the page it READS — a light copy must never be able to
 		// hand it a page it left empty.
-		const int      page = std::clamp(g_hbLivePage.load(), 0, Hotbar::kPageCount - 1);
+		const int      page = std::clamp(pageIn, 0, Hotbar::kPageCount - 1);
+		const int      bar  = barIn;
 		Hotbar::Config c;
+		// Bars by weapon: the slots handed to LiveJson are the EFFECTIVE ones
+		// for the live bar (a weapon bar's own button, else what it inherits),
+		// and `from` remembers where each came from so the view can say
+		// "from the Default bar" on an inherited button.
+		std::vector<int> from;
+		json             barInfo;
 		{
 			std::lock_guard l(g_configMutex);
 			c.cols = g_hbConfig.cols;
 			c.rows = g_hbConfig.rows;
+			c.keyMode = g_hbConfig.keyMode;
+			c.castMode = g_hbConfig.castMode;
+			c.readySpell = g_hbConfig.readySpell;
+			c.readyPotion = g_hbConfig.readyPotion;
 			c.pages.assign(g_hbConfig.pages.size(), Hotbar::Page{});
 			if (page >= 0 && page < static_cast<int>(g_hbConfig.pages.size())) {
-				const auto& src = g_hbConfig.pages[page].slots;
-				const auto  keep = std::min<std::size_t>(
-					static_cast<std::size_t>(std::max<int>(0, c.VisibleSlots())), src.size());
-				c.pages[page].slots.assign(src.begin(),
-					src.begin() + static_cast<std::ptrdiff_t>(keep));
+				const int n = std::max<int>(0, c.VisibleSlots());
+				auto& dst = c.pages[page].slots;
+				dst.reserve(static_cast<std::size_t>(n));
+				from.reserve(static_cast<std::size_t>(n));
+				for (int i = 0; i < n; ++i) {
+					int origin = -1;
+					dst.push_back(Hotbar::EffectiveSlot(g_hbConfig, bar, page, i, &origin));
+					from.push_back(origin);
+				}
+			}
+			if (bar >= 0 && bar < static_cast<int>(g_hbConfig.weaponBars.size())) {
+				const auto& b = g_hbConfig.weaponBars[bar];
+				barInfo = json{ { "i", bar }, { "cls", b.cls }, { "sneak", b.sneak },
+					{ "name", Hotbar::BarLabel(g_hbConfig, bar) } };
+			} else {
+				barInfo = json{ { "i", -1 }, { "cls", "default" }, { "sneak", false }, { "name", "Default" } };
 			}
 		}
 		auto j = json::parse(Hotbar::LiveJson(c, page), nullptr, false);
 		if (!j.is_object() || !j.contains("slots") || !j["slots"].is_array())
 			return j.is_discarded() ? std::string(R"({"page":0,"slots":[]})") : j.dump(-1, ' ', false, json::error_handler_t::replace);
+		j["bar"] = std::move(barInfo);
 
 		std::lock_guard l(g_configMutex);
 		for (auto& row : j["slots"]) {
 			if (!row.is_object())
 				continue;
+			if (bar >= 0) {
+				const int i = row.value("i", -1);
+				if (i >= 0 && i < static_cast<int>(from.size()) && from[static_cast<std::size_t>(i)] != bar &&
+					!row.value("kind", std::string()).empty())
+					row["from"] = from[static_cast<std::size_t>(i)] < 0 ? "default" : "class";
+			}
 			const std::string kind = row.value("kind", std::string());
 			const std::string ref  = row.value("refId", std::string());
 			if (ref.empty())
@@ -16301,6 +16778,7 @@ namespace
 	{
 		if (!g_prisma || !g_hbView || !g_hbViewReady.load())
 			return;
+		HbUpdateWielded();   // bars by weapon: cheap (two equipped-form reads)
 		const bool barWant = HbWantVisible();
 		// The keys follow the PICTURE, deliberately. "Show only in combat" that
 		// still cast Fireball while the bar was hidden would be a trap, and a
@@ -16332,6 +16810,10 @@ namespace
 
 	void HbPushConfig()
 	{
+		// The optional casting clip's availability is part of what the editor
+		// shows; probe lazily so a push before any save is loaded is honest.
+		if (!CastAnim::Probed())
+			CastAnim::Probe();
 		if (g_prisma && g_hbView && g_hbViewReady.load())
 			g_prisma->Invoke(g_hbView, ("hbConfig(" + HbConfigJson() + ")").c_str());
 	}
@@ -16356,10 +16838,16 @@ namespace
 	// frame; the live rebuild that follows only corrects counts and greying.
 	void HbPushPage()
 	{
-		if (g_prisma && g_hbView && g_hbViewReady.load())
-			g_prisma->Invoke(g_hbView,
-				("hbPage(" + json{ { "page", g_hbLivePage.load() } }
-					.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
+		if (!(g_prisma && g_hbView && g_hbViewReady.load()))
+			return;
+		std::string barName;
+		{
+			std::lock_guard l(g_configMutex);
+			barName = Hotbar::BarLabel(g_hbConfig, g_hbLiveBar.load());
+		}
+		g_prisma->Invoke(g_hbView,
+			("hbPage(" + json{ { "page", g_hbLivePage.load() }, { "bar", g_hbLiveBar.load() }, { "barName", barName } }
+				.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
 	}
 
 	// Everything the player can put on a button, in the shape the picker wants:
@@ -16584,20 +17072,166 @@ namespace
 	// member chosen by the view's cycle. For a flyout slot the press OPENS the
 	// fan (the view owns the cycle-then-pause state machine, because the timing
 	// is a UI feel, not game logic) and only the child fire touches the engine.
-	void HbFireSlot(int page, int i, int child = -1)
+	// The bar's press flash for one button (or, at a negative index, one of the
+	// Oblivion-style ready sockets — the view ignores `page` for those).
+	void HbFlashSlot(int page, int i)
 	{
-		Hotbar::Slot s;
-		int          p = 0;
+		if (g_prisma && g_hbView && g_hbViewReady.load())
+			g_prisma->Invoke(g_hbView,
+				("hbFlash(" + json{ { "page", page }, { "i", i } }
+					.dump(-1, ' ', false, json::error_handler_t::replace) + ")").c_str());
+	}
+
+	// Oblivion-style pick (2026-10-04, Spell Hotbar NG's "Oblivion style"): in
+	// keyMode "pick" a bar key on a hand spell or scroll makes it the READY
+	// spell (castKey casts it), on a potion or a smart-potion button the READY
+	// potion (potionKey drinks it), and on a power or shout puts it into the
+	// voice slot for the game's own Shout key. true = the press was a pick and
+	// nothing else fires; false = not a pickable thing, fire it as usual.
+	// MAIN THREAD ONLY.
+	bool HbPickReady(const Hotbar::Slot& s, int page, int i)
+	{
+		RE::TESForm* form = nullptr;
+		int          target = 0;   // kReadySpell | kReadyPotion | 0 = voice slot
+		if (s.kind == "smart") {
+			target = Hotbar::kReadyPotion;
+		} else if (s.kind == "spell" || s.kind == "item") {
+			form = Hotbar::ResolveSlotForm(s);
+			if (!form)
+				return false;
+			if (auto* sp = form->As<RE::SpellItem>(); sp && s.kind == "spell")
+				target = sp->GetSpellType() == RE::MagicSystem::SpellType::kSpell ? Hotbar::kReadySpell : 0;
+			else if (form->As<RE::TESShout>() && s.kind == "spell")
+				target = 0;
+			else if (form->As<RE::ScrollItem>())
+				target = Hotbar::kReadySpell;
+			else if (auto* al = form->As<RE::AlchemyItem>(); al && !al->IsPoison())
+				target = Hotbar::kReadyPotion;
+			else
+				return false;
+		} else {
+			return false;
+		}
+
+		std::string name = s.label;
+		if (name.empty() && form && form->GetName() && *form->GetName())
+			name = form->GetName();
+		if (name.empty())
+			name = s.kind == "smart" ? ("best " + s.refId + " potion") : std::string("that");
+
+		if (target == 0) {
+			const auto res = json::parse(SpellActions::SelectVoice(s.plugin, s.localId, s.formId), nullptr, false);
+			const bool ok = res.is_object() && res.value("ok", false);
+			HbFlashSlot(page, i);
+			const std::string note = ok ? ("Voice: " + name + " - use your Shout key")
+			                            : (res.is_object() ? res.value("msg", std::string("Could not equip that")) : std::string("Could not equip that"));
+			RE::DebugNotification(note.c_str());
+			logger::info("hotbar-pick: page {} button {} -> voice '{}' ({})", page, i + 1, name, ok ? "ok" : "refused");
+			return true;
+		}
+
+		Hotbar::Slot r = s;
+		r.items.clear();
+		std::string keyLabel;
 		{
 			std::lock_guard l(g_configMutex);
-			p = std::clamp(page, 0, Hotbar::kPageCount - 1);
-			if (p >= static_cast<int>(g_hbConfig.pages.size()))
-				return;
-			const auto& slots = g_hbConfig.pages[p].slots;
-			if (i < 0 || i >= static_cast<int>(slots.size()))
-				return;
-			s = slots[i];
+			if (target == Hotbar::kReadySpell) {
+				g_hbConfig.readySpell = r;
+				keyLabel = g_hbConfig.castKey.label;
+			} else {
+				g_hbConfig.readyPotion = r;
+				keyLabel = g_hbConfig.potionKey.label;
+			}
 		}
+		// Build marker (hd-markers.json: "hotbar-pick").
+		logger::info("hotbar-pick: page {} button {} -> {} '{}'", page, i + 1,
+			target == Hotbar::kReadySpell ? "ready spell" : "ready potion", name);
+		PersistAll();
+		HbPushLive(true);
+		HbFlashSlot(page, i);
+		HbFlashSlot(0, target);
+		const std::string note = "Ready: " + name + (keyLabel.empty() ? std::string() : (" - press " + keyLabel));
+		RE::DebugNotification(note.c_str());
+		return true;
+	}
+
+	// `fromKey`: the press came from the slot's own key (the sink), so that
+	// key can be HELD — a concentration spell channels for as long as it is.
+	// Clicks and flyout picks have nothing to hold and toggle instead.
+	void HbFireSlot(int page, int i, int child = -1, bool fromKey = false)
+	{
+		Hotbar::Slot    s;
+		int             p = 0;
+		bool            realCast = true;
+		bool            aimCrosshair = true;
+		Hotbar::SlotKey key;
+		bool            pickMode = false;
+		const bool      ready = i == Hotbar::kReadySpell || i == Hotbar::kReadyPotion;
+		{
+			std::lock_guard l(g_configMutex);
+			realCast = g_hbConfig.castMode != "instant";
+			aimCrosshair = g_hbConfig.aimCrosshair;
+			pickMode = g_hbConfig.keyMode == "pick";
+			if (ready) {
+				// An Oblivion-style ready socket: the pick, fired by its own key.
+				s   = i == Hotbar::kReadySpell ? g_hbConfig.readySpell : g_hbConfig.readyPotion;
+				key = i == Hotbar::kReadySpell ? g_hbConfig.castKey : g_hbConfig.potionKey;
+			} else {
+				p = std::clamp(page, 0, Hotbar::kPageCount - 1);
+				if (p >= static_cast<int>(g_hbConfig.pages.size()))
+					return;
+				if (i < 0 || i >= Hotbar::kMaxSlots)
+					return;
+				// Bars by weapon: the button the player SEES — the live bar's
+				// own, or what it inherits (hotbar.h, EffectiveSlot).
+				s = Hotbar::EffectiveSlot(g_hbConfig, g_hbLiveBar.load(), p, i);
+				if (i < static_cast<int>(g_hbConfig.slotKeys.size()))
+					key = g_hbConfig.slotKeys[i];
+			}
+		}
+		if (ready && s.Empty()) {
+			RE::DebugNotification(i == Hotbar::kReadySpell
+				? "No spell is ready - press a spell's bar key to pick one"
+				: "No potion is ready - press a potion's bar key to pick one");
+			return;
+		}
+		// The real cast (hotbar_cast.h) for a hand spell or a carried scroll.
+		// Returns true when it took the press — powers, shouts and everything
+		// else fall through to the verbs below, unchanged.
+		const auto tryRealCast = [&](const Hotbar::Slot& sl) -> bool {
+			if (!realCast || (sl.kind != "spell" && sl.kind != "item"))
+				return false;
+			auto* form = Hotbar::ResolveSlotForm(sl);
+			if (!form)
+				return false;
+			HotbarCast::Request req;
+			if (auto* sp = form->As<RE::SpellItem>(); sp && sl.kind == "spell" &&
+				sp->GetSpellType() == RE::MagicSystem::SpellType::kSpell) {
+				req.item = sp;
+			} else if (auto* sc = form->As<RE::ScrollItem>(); sc && sl.kind == "item") {
+				req.item = sc;
+				req.scroll = sc;
+			} else {
+				return false;
+			}
+			req.hand = sl.hand;
+			req.page = p;
+			req.slot = i;
+			req.aimCrosshair = aimCrosshair;
+			if (fromKey && child < 0 && key.code) {
+				const bool kb = key.device != "mouse";
+				const std::uint32_t code = key.code;
+				req.held = [kb, code]() { return DikHeld(kb, code); };
+			}
+			std::string msg;
+			const auto r = HotbarCast::Start(std::move(req), msg);
+			logger::info("hotbar-cast: page {} button {} -> {} ({})", p, i + 1,
+				r == HotbarCast::Result::kStarted ? "cast" :
+				r == HotbarCast::Result::kQueued  ? "queued" :
+				r == HotbarCast::Result::kStopped ? "channel stopped" : "refused",
+				msg.empty() ? form->GetName() : msg);
+			return true;
+		};
 		if (s.Empty() && !(s.kind == "flyout" && child < 0))
 			return;
 
@@ -16624,6 +17258,11 @@ namespace
 				return;
 		}
 
+		// Oblivion style: a bar button's press PICKS (never on a ready socket —
+		// that is where a pick gets used).
+		if (pickMode && !ready && HbPickReady(s, p, i))
+			return;
+
 		// Flash first: the bar never has focus, so this is the ONLY feedback
 		// that the key landed, and it must not wait on the action.
 		if (g_prisma && g_hbView && g_hbViewReady.load()) {
@@ -16644,6 +17283,8 @@ namespace
 			}
 			return;
 		}
+		if (tryRealCast(s))
+			return;
 		if (s.kind == "spell") {
 			logger::info("hotbar-fire: page {} button {} -> spell {}|{:X}", p, i + 1, s.plugin, s.localId);
 			SpellActions::Cast(s.plugin, s.localId, s.formId);
@@ -16808,9 +17449,30 @@ namespace
 			Hotbar::FromJson(j, g_hbConfig);
 			g_hbConfig.enabled = wasEnabled;
 			g_hbConfig.visible = wasVisible;
+			CastAnim::SetEnabled(g_hbConfig.castAnim != "off");
 		}
 		PersistAll();
-		SKSE::GetTaskInterface()->AddTask([]() { HbPushLive(true); });
+		// A bar added or removed can change which one is live; the index must
+		// be re-resolved before the next live push, or it could point past
+		// the end of the new list.
+		g_hbLiveBar = -2;   // "unknown" — HbUpdateWielded always re-pushes from here
+		SKSE::GetTaskInterface()->AddTask([]() { HbUpdateWielded(); HbPushLive(true); });
+	}
+
+	// The editor asks for the live rows of a bar/page that is not on screen
+	// (bars by weapon): {bar, page} -> hbLivePeek({bar, page, slots}).
+	void OnJsHbPeek(const char* data)
+	{
+		const auto j = json::parse(data ? data : "", nullptr, false);
+		if (j.is_discarded() || !j.is_object())
+			return;
+		const int bar  = j.value("bar", -1);
+		const int page = j.value("page", 0);
+		SKSE::GetTaskInterface()->AddTask([bar, page]() {
+			if (!(g_prisma && g_hbView && g_hbViewReady.load()))
+				return;
+			g_prisma->Invoke(g_hbView, ("hbLivePeek(" + HbLiveJsonFor(bar, page) + ")").c_str());
+		});
 	}
 
 	void OnJsHbEditDone(const char*)
@@ -17306,28 +17968,35 @@ namespace
 		// issue the authoritative first Show/Hide once the view is ready.
 		g_prisma->Hide(g_hbView);
 		logger::info("hotbar: created hidden-until-eval (views start visible)");
-		g_prisma->RegisterJSListener(g_hbView, "hbReady", OnJsHbReady);
-		g_prisma->RegisterJSListener(g_hbView, "hbSave", OnJsHbSave);
-		g_prisma->RegisterJSListener(g_hbView, "hbEditDone", OnJsHbEditDone);
-		g_prisma->RegisterJSListener(g_hbView, "hbFire", OnJsHbFire);
-		g_prisma->RegisterJSListener(g_hbView, "hbAssign", OnJsHbAssign);
-		g_prisma->RegisterJSListener(g_hbView, "hbCatalog", OnJsHbCatalog);
-		g_prisma->RegisterJSListener(g_hbView, "hbNewConsole", OnJsHbNewConsole);
-		g_prisma->RegisterJSListener(g_hbView, "hbOutfits", OnJsHbOutfits);
-		g_prisma->RegisterJSListener(g_hbView, "hbImportVanilla", OnJsHbImportVanilla);
-		g_prisma->RegisterJSListener(g_hbView, "hbLog", OnJsHbLog);
+		HD_LISTEN(g_hbView, "hbReady", OnJsHbReady);
+		HD_LISTEN(g_hbView, "hbSave", OnJsHbSave);
+		HD_LISTEN(g_hbView, "hbPeek", OnJsHbPeek);
+		HD_LISTEN(g_hbView, "hbEditDone", OnJsHbEditDone);
+		HD_LISTEN(g_hbView, "hbFire", OnJsHbFire);
+		// The cast engine's wind-up / channel beats paint on the bar. Invoked
+		// from HotbarCast on the main thread, like every other bar push.
+		HotbarCast::SetViewSink([](const std::string& payload) {
+			if (g_prisma && g_hbView && g_hbViewReady.load())
+				g_prisma->Invoke(g_hbView, ("hbCast(" + payload + ")").c_str());
+		});
+		HD_LISTEN(g_hbView, "hbAssign", OnJsHbAssign);
+		HD_LISTEN(g_hbView, "hbCatalog", OnJsHbCatalog);
+		HD_LISTEN(g_hbView, "hbNewConsole", OnJsHbNewConsole);
+		HD_LISTEN(g_hbView, "hbOutfits", OnJsHbOutfits);
+		HD_LISTEN(g_hbView, "hbImportVanilla", OnJsHbImportVanilla);
+		HD_LISTEN(g_hbView, "hbLog", OnJsHbLog);
 		// HUD widgets share this view (see the Wg block above).
-		g_prisma->RegisterJSListener(g_hbView, "wgReady", OnJsWgReady);
-		g_prisma->RegisterJSListener(g_hbView, "wgSave", OnJsWgSave);
-		g_prisma->RegisterJSListener(g_hbView, "wgEditDone", OnJsWgEditDone);
+		HD_LISTEN(g_hbView, "wgReady", OnJsWgReady);
+		HD_LISTEN(g_hbView, "wgSave", OnJsWgSave);
+		HD_LISTEN(g_hbView, "wgEditDone", OnJsWgEditDone);
 		/* …and on the HUD view, which is where the rebuilt widgets actually
 		 * live since 2026-08-17. Registering on both costs nothing and means a
 		 * save from either document reaches the same handler — the alternative
 		 * is a view whose switches silently do not persist. */
 		if (g_hudView) {
-			g_prisma->RegisterJSListener(g_hudView, "wgReady", OnJsWgReady);
-			g_prisma->RegisterJSListener(g_hudView, "wgSave", OnJsWgSave);
-			g_prisma->RegisterJSListener(g_hudView, "wgEditDone", OnJsWgEditDone);
+			HD_LISTEN(g_hudView, "wgReady", OnJsWgReady);
+			HD_LISTEN(g_hudView, "wgSave", OnJsWgSave);
+			HD_LISTEN(g_hudView, "wgEditDone", OnJsWgEditDone);
 		}
 		logger::info("hotbar: view created + listeners registered");
 	}
@@ -17355,7 +18024,7 @@ namespace
 			g_prisma->Hide(v);
 			logger::info("crt-alert view DOM ready (handle {})", v);
 		});
-		g_prisma->RegisterJSListener(g_alertView, "caDismiss", OnJsCaDismiss);
+		HD_LISTEN(g_alertView, "caDismiss", OnJsCaDismiss);
 		logger::info("crt-alert: view created + listener registered");
 	}
 
@@ -17531,6 +18200,27 @@ namespace
 				// action, independent of the bar and the widgets exactly like
 				// the potion AI above. Enabled() is an atomic snapshot; the
 				// pass itself is AddTask'd (it reads actor values and casts).
+				// The bar's real cast (hotbar_cast.h): charge, channel and the
+				// queued press advance on this beat while one is in flight.
+				// Every tick is AddTask'd — the engine work is main-thread only,
+				// and Tick() measures its own real dt, so the 50 ms period is a
+				// resolution, not a clock. Build marker: "hotbar-cast-tick".
+				if (HotbarCast::Active() && g_gameReady.load()) {
+					SKSE::GetTaskInterface()->AddTask([]() {
+						OpenDiag::TickTimer diag("hotbar-cast-tick");
+						HotbarCast::Tick();
+					});
+				}
+				// Per-shout cooldowns (shout_cooldowns.h): one cheap main-thread
+				// look at the voice slot per beat (50-150 ms). The bar's own
+				// voice road waits 250-750 ms before pressing the Shout key, so
+				// the timer swap always lands before the shout does. The beat
+				// also runs while OFF, once, so turning it off folds the stored
+				// timers back into the one engine timer.
+				if (g_gameReady.load()) {
+					SKSE::GetTaskInterface()->AddTask([]() { ShoutCooldowns::Update(); });
+				}
+
 				if (WardActions::Enabled() && g_gameReady.load()) {
 					sinceWard += periodMs;
 					if (sinceWard >= 150) {
@@ -17556,6 +18246,7 @@ namespace
 					c.enabled = g_hbConfig.enabled;
 					c.modHold = g_hbConfig.modHold;
 					c.tickMs  = g_hbConfig.tickMs;
+					ShoutCooldowns::SetEnabled(g_hbConfig.enabled && g_hbConfig.ownShoutCooldowns);
 					for (int p = 0; p < Hotbar::kPageCount &&
 						 p < static_cast<int>(g_hbConfig.pages.size()); ++p) {
 						c.pages[p].enabled   = g_hbConfig.pages[p].enabled;
@@ -17568,7 +18259,7 @@ namespace
 				// agree. Only the page-swap branch needs 50 ms, and it lives past
 				// the early-out — so a bar that is off, or whose view is not up
 				// yet, drops this thread to the 150 ms visibility beat.
-				periodMs = (c.enabled && g_hbViewReady.load()) ? 50u : 150u;
+				periodMs = ((c.enabled && g_hbViewReady.load()) || HotbarCast::Active()) ? 50u : 150u;
 				// The WIDGETS ride this same thread at their own ~900 ms beat,
 				// independent of the bar's master switch — that independence is
 				// the whole point of the visibility decoupling. AnyEnabled() is
@@ -17802,6 +18493,32 @@ namespace
 		return -1;
 	}
 
+	// Oblivion style: which ready socket (if any) this key fires — castKey ->
+	// kReadySpell, potionKey -> kReadyPotion, else -1. Same gates as the slot
+	// keys: the bar's EFFECTIVE visibility, its master switch, and the chord
+	// ownership rule. `inMenu` = the bind-from-menu variant (no visibility
+	// gate, needs menuBind instead).
+	int HbReadyForKey(bool isKb, bool isMs, std::uint32_t idc, bool inMenu)
+	{
+		if (!inMenu && !g_hbEffVisible.load())
+			return -1;
+		std::lock_guard l(g_configMutex);
+		if (!g_hbConfig.enabled || g_hbConfig.keyMode != "pick")
+			return -1;
+		if (inMenu ? !g_hbConfig.menuBind : !g_hbConfig.visible)
+			return -1;
+		if (HbChordIsSomeoneElses())
+			return -1;
+		const auto match = [&](const Hotbar::SlotKey& k) {
+			return k.code && k.code == idc && ((isKb && k.device == "keyboard") || (isMs && k.device == "mouse"));
+		};
+		if (match(g_hbConfig.castKey))
+			return Hotbar::kReadySpell;
+		if (match(g_hbConfig.potionKey))
+			return Hotbar::kReadyPotion;
+		return -1;
+	}
+
 	// Bind from the menu (2026-09-13, the STB Hotkey System idea): the row
 	// highlighted in the open inventory / magic / favourites menu lands on
 	// button `slotIdx` of page `page`. A single button is REPLACED (and the
@@ -17830,18 +18547,56 @@ namespace
 			return;
 		}
 
+		// The cast key / potion key in a menu: the highlighted row becomes the
+		// ready pick directly (hotbar-pick-menu) — but only what that socket
+		// can hold, said plainly otherwise.
+		if (slotIdx == Hotbar::kReadySpell || slotIdx == Hotbar::kReadyPotion) {
+			auto*      form = Hotbar::ResolveSlotForm(ns);
+			const bool spellOk = form && ((form->As<RE::SpellItem>() && ns.kind == "spell" &&
+				form->As<RE::SpellItem>()->GetSpellType() == RE::MagicSystem::SpellType::kSpell) ||
+				form->As<RE::ScrollItem>());
+			const auto* al = form ? form->As<RE::AlchemyItem>() : nullptr;
+			const bool potionOk = al && !al->IsPoison();
+			if (slotIdx == Hotbar::kReadySpell ? !spellOk : !potionOk) {
+				RE::DebugNotification(slotIdx == Hotbar::kReadySpell
+					? "The cast key takes a hand spell or a scroll"
+					: "The potion key takes a potion or food");
+				return;
+			}
+			std::string keyLabel;
+			{
+				std::lock_guard l(g_configMutex);
+				ns.label = name;
+				(slotIdx == Hotbar::kReadySpell ? g_hbConfig.readySpell : g_hbConfig.readyPotion) = ns;
+				keyLabel = (slotIdx == Hotbar::kReadySpell ? g_hbConfig.castKey : g_hbConfig.potionKey).label;
+			}
+			logger::info("hotbar-pick: menu -> {} '{}'", slotIdx == Hotbar::kReadySpell ? "ready spell" : "ready potion", name);
+			PersistAll();
+			HbPushLive(true);
+			const std::string note = "Ready: " + name + (keyLabel.empty() ? std::string() : (" - press " + keyLabel));
+			RE::DebugNotification(note.c_str());
+			return;
+		}
+
 		std::string note;
 		{
 			std::lock_guard l(g_configMutex);
 			const int p = std::clamp(page, 0, Hotbar::kPageCount - 1);
 			if (p >= static_cast<int>(g_hbConfig.pages.size()))
 				return;
-			auto& slots = g_hbConfig.pages[p].slots;
+			// Bars by weapon: the bind lands on the bar that is LIVE — the one
+			// the player is looking at — so a 2H bar fills itself from the
+			// inventory while a greatsword is in hand. The note names it.
+			const int bar = g_hbLiveBar.load();
+			const bool onBar = bar >= 0 && bar < static_cast<int>(g_hbConfig.weaponBars.size()) &&
+			                   p < static_cast<int>(g_hbConfig.weaponBars[bar].pages.size());
+			auto& slots = onBar ? g_hbConfig.weaponBars[bar].pages[p].slots : g_hbConfig.pages[p].slots;
 			if (slotIdx < 0 || slotIdx >= static_cast<int>(slots.size()))
 				return;
 			auto&             cur    = slots[slotIdx];
 			const std::string button = "button " + std::to_string(slotIdx + 1) +
-				(p ? (" (" + (g_hbConfig.pages[p].name.empty() ? std::string("page ") + std::to_string(p + 1) : g_hbConfig.pages[p].name) + ")") : std::string());
+				(p ? (" (" + (g_hbConfig.pages[p].name.empty() ? std::string("page ") + std::to_string(p + 1) : g_hbConfig.pages[p].name) + ")") : std::string()) +
+				(onBar ? (" on the " + Hotbar::BarLabel(g_hbConfig, bar) + " bar") : std::string());
 			if (cur.kind == "set" || cur.kind == "flyout") {
 				const bool set = cur.kind == "set";
 				if (set && !Hotbar::IsSetChildKind(ns.kind)) {
@@ -18040,6 +18795,86 @@ namespace
 			PushToView("fdFaceIconsData",
 				json{ { "icons", std::move(icons) }, { "queued", queued }, { "why", std::move(why) } }
 					.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+		});
+	}
+
+	// ================================================================ THE MIRROR ==
+	// The person page's full-body figure (2026-10-03, Rober after seeing
+	// SeverActions' mannequin: "lets get it all in"). pnMirror in, pnMirrorData
+	// out, the id echoed so a reply for a page that has since moved on to
+	// someone else is dropped by the view. All the work — composition, turntable
+	// queue, on-disk frame list — is ItemIcons::MirrorJson; this only resolves
+	// the RUNTIME ref the view holds (a follower page is a loaded person).
+	void OnJsMirror(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			const auto j = json::parse(payload, nullptr, false);
+			if (j.is_discarded() || !j.is_object())
+				return;
+			const std::string id    = j.value("id", std::string());
+			const bool        queue = j.value("queue", true);
+			const auto        rid   = static_cast<std::uint32_t>(std::strtoul(id.c_str(), nullptr, 16));
+			auto*             form  = rid ? RE::TESForm::LookupByID(rid) : nullptr;
+			auto*             actor = form ? form->As<RE::Actor>() : nullptr;
+			auto              reply = json::parse(ItemIcons::MirrorJson(actor, queue), nullptr, false);
+			if (reply.is_discarded())
+				reply = json{ { "ok", false }, { "why", "the figure reply could not be read" } };
+			reply["id"] = id;
+			PushToView("pnMirrorData", reply.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+		});
+	}
+
+	// ============================================================== THE LIVE VIEW ==
+	// The person page's live view (2026-10-03, Rober: "it was a cooler full body …
+	// not a side view"): the game itself draws her, the free camera framed on her
+	// full height. One listener, three ops, so the view cannot half-wire it:
+	//   pnLive {op:"start", id}  /  {op:"orbit", dyaw, dzoom, reset}  /  {op:"stop"}
+	// -> pnLiveData {ok, why?, name, yaw, zoom, op}. All PersonLive work is
+	// main-thread, so every op runs as an SKSE task.
+	void OnJsLive(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			const auto j = json::parse(payload, nullptr, false);
+			if (j.is_discarded() || !j.is_object())
+				return;
+			const std::string op = j.value("op", std::string());
+			std::string       reply;
+			if (op == "start") {
+				// A menu pause stops the camera update loop, so the live view runs
+				// under the deck's non-pausing focus with the world frozen (the
+				// smooth-pause mechanism) and gives the palette its own mode back.
+				PersonLive::SetFocusHooks(
+					[]() {
+						g_prisma->Unfocus(g_view);
+						if (!g_prisma->Focus(g_view, false))
+							logger::warn("person-live: unpaused Focus() returned false");
+						FreezeWorld(true);
+					},
+					[]() {
+						if (g_open.load())
+							FocusDeck(g_focusPaused.load());
+						else
+							FreezeWorld(false);
+					});
+				const std::string id  = j.value("id", std::string());
+				const auto        rid = static_cast<std::uint32_t>(std::strtoul(id.c_str(), nullptr, 16));
+				auto*             form = rid ? RE::TESForm::LookupByID(rid) : nullptr;
+				reply = PersonLive::Start(form ? form->As<RE::Actor>() : nullptr);
+			} else if (op == "orbit") {
+				reply = PersonLive::Orbit(j.value("dyaw", 0.0f), j.value("dzoom", 1.0f), j.value("reset", false));
+			} else if (op == "stop") {
+				PersonLive::Stop("view");
+				reply = json{ { "ok", false }, { "stopped", true } }.dump();
+			} else {
+				return;
+			}
+			auto out = json::parse(reply, nullptr, false);
+			if (out.is_discarded())
+				out = json{ { "ok", false }, { "why", "the live view reply could not be read" } };
+			out["op"] = op;
+			PushToView("pnLiveData", out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 		});
 	}
 
@@ -20062,6 +20897,24 @@ namespace
 		});
 	}
 
+	// Weather tab (wx*). AddTask'd — the weather walk, the Sky, globals and
+	// the Papyrus dispatches are all main-thread engine state.
+	void OnJsWxState(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("wxStateData", WeatherHub::StateJson(req));
+		});
+	}
+
+	void OnJsWxSet(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("wxResult", WeatherHub::SetJson(req));
+		});
+	}
+
 	// ------------------------------------------------------ Journal (jr* bridge)
 	// Pure file work (journal.h explains why none of it touches the engine), but
 	// still AddTask'd so its replies stay ordered with every other push to the
@@ -21526,16 +22379,27 @@ namespace
 			// asking on every wheel open costs a directory read once the
 			// pictures exist.
 			ItemIcons::EnsureIconsForList(payload);
-			const std::string idx = ItemIcons::IndexJson();
-			PushToView("wdItemIcons", idx);
-			// The HUD view asks through this same listener — and used to never
-			// hear back (PushToView is the DECK view), which is why every
-			// pin/equip/slot-card plate kept its glyph in-game even after the
-			// key-dialect fix (Rober, 2026-08-18: "items dont render at all").
-			// Build marker (hd-markers.json: "hud-icons-reply").
+			// The DECK asked, so only the deck hears. This used to answer the HUD
+			// as well, so the Finder's 2.5 s poll repainted the HUD's free widgets
+			// over live gameplay too; the HUD asks (and polls) on its own listener
+			// below (2026-10-07, the Finder lag).
+			PushToView("wdItemIcons", ItemIcons::IndexJson());
+		});
+	}
+
+	// The HUD view's twin of the listener above: same queue, same index, but the
+	// answer goes back to the view that asked. The HUD used to never hear back
+	// (PushToView is the DECK view), which is why every pin/equip/slot-card plate
+	// kept its glyph in-game even after the key-dialect fix (Rober, 2026-08-18:
+	// "items dont render at all"). Build marker (hd-markers.json: "hud-icons-reply").
+	void OnJsHudIcons(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			ItemIcons::EnsureIconsForList(payload);
 			if (g_prisma && g_hudView && g_hudViewReady.load())
 				g_prisma->Invoke(g_hudView,
-					("hudIconsData(" + idx + ")").c_str());
+					("hudIconsData(" + ItemIcons::IndexJson() + ")").c_str());
 		});
 	}
 
@@ -24164,7 +25028,11 @@ namespace
 			// runs whether or not there is any portal work to do, which is exactly
 			// when it is needed. The check itself must happen on the main thread
 			// (it touches PrismaUI), so hop.
-			SKSE::GetTaskInterface()->AddTask([]() { OpenDiag::TickTimer diag("desync-watchdog"); DesyncWatchdogTick(); AppearancePresets::Tick(g_gameReady.load()); OpenDiag::FlushTickCensus(); });
+			// The appearance phone queue is probed HERE, on this worker: a
+			// directory walk on the MO2 VFS is not something the game thread
+			// should pay every second for a queue that is almost always empty.
+			const bool apPending = AppearancePresets::RequestsPending();
+			SKSE::GetTaskInterface()->AddTask([apPending]() { OpenDiag::TickTimer diag("desync-watchdog"); DesyncWatchdogTick(); AppearancePresets::Tick(g_gameReady.load(), apPending); OpenDiag::FlushTickCensus(); });
 
 			if (g_gameReady.load()) {
 				static std::atomic<bool> domainPhotoBusy{false};
@@ -25283,6 +26151,10 @@ namespace
 							SKSE::GetTaskInterface()->AddTask([pg, slot]() { HbBindFromMenu(pg, slot); });
 							break;
 						}
+						if (const int rdy = HbReadyForKey(isKb, isMs, idc, true); rdy != -1) {
+							SKSE::GetTaskInterface()->AddTask([rdy]() { HbBindFromMenu(0, rdy); });
+							break;
+						}
 					}
 				}
 
@@ -25298,10 +26170,17 @@ namespace
 				if (!AnyOpen()) {
 					auto* pui = RE::UI::GetSingleton();
 					if (!pui || !pui->GameIsPaused()) {
+						// Oblivion style: the cast key / potion key fire the ready
+						// picks. Tested BEFORE the buttons so a cast key that is
+						// also some button's key casts rather than re-picking.
+						if (const int rdy = HbReadyForKey(isKb, isMs, idc, false); rdy != -1) {
+							SKSE::GetTaskInterface()->AddTask([rdy]() { HbFireSlot(0, rdy, -1, true); });
+							break;
+						}
 						const int slot = HbSlotForKey(isKb, isMs, idc);
 						if (slot >= 0) {
 							const int pg = g_hbLivePage.load();
-							SKSE::GetTaskInterface()->AddTask([pg, slot]() { HbFireSlot(pg, slot); });
+							SKSE::GetTaskInterface()->AddTask([pg, slot]() { HbFireSlot(pg, slot, -1, true); });
 							break;
 						}
 						// Custom quick-item binds (widgets round 4): same two
@@ -25563,6 +26442,7 @@ namespace
 		// A load is starting: the roster/actors are about to be torn down, so stop the
 		// poller from replaying NPC fields until the load reports success.
 		if (message->type == SKSE::MessagingInterface::kPreLoadGame) {
+			PersonLive::Stop("load");   // never carry the free camera into the next save
 			FormationActions::CancelHandoff();
 			AppearancePresets::ResetForLoad();
 			OdCloseDock(false);
@@ -25651,6 +26531,9 @@ namespace
 			// magicka drain. Silent stand-down, no dispel (the incoming
 			// save's effects are its own).
 			WardActions::Reset();
+			HotbarCast::Reset();   // a charge or channel from the outgoing save must not carry over
+			CastAnim::Probe();     // the optional clip's plugin/globals resolve per load order
+			ShoutCooldowns::Reset();   // what was equipped before the load is not a "switch"
 			// Places index: map-marker discovered/enabled flags are SAVE state,
 			// and a different save may carry different mods' markers. Drop it;
 			// the next teleport search rebuilds (a few hundred ms, logged).
@@ -25746,6 +26629,7 @@ namespace
 			Wardrobe::ResetBedOutfits();
 			++g_conversationEpoch;
 			NpcActions::RevertConversations();
+			NpcActions::RevertOrders();
 			++g_travelEpoch;
 			ScenePrivacy::Reset();
 			NffControl::CancelPending();
@@ -25776,7 +26660,9 @@ namespace
 		ContainerActions::Init();  // Containers tab backend (crosshair snapshot + remote open)
 		ContainerSort::Init();     // drop-box sort-on-close + crafting-loan sinks
 		RoomGuard::Init();     // Rooms tab backend (claim volumes + eviction marker)
+		WeatherHub::Init();    // Weather tab: favourites + a saved weather lock
 		SmfIndex::Init();      // SKSE Menu Framework host window (Omni "Mod menus")
+		SmfWidget::Init();     // draggable "Mod Menus" button on the Esc menu
 		// Deck Portal: start its node server with the game and let the Job
 		// Object take it down with us. Safe to do unattended because the portal
 		// binds 127.0.0.1 unless a password is set (portal/server.js). A

@@ -145,6 +145,33 @@ body.hb-edit { pointer-events: auto; }
   gap: var(--hb-gap);
 }
 
+/* Oblivion style (2026-10-04): the ready spell + ready potion sockets. Out of
+   the flow, beside the bar — to its left on a horizontal bar, above it on a
+   vertical one — so the bar's own size and anchor never change. A gold rule
+   and a wider gap say "these are different from the buttons". */
+.hb-ready {
+  position: absolute;
+  right: calc(100% + var(--hb-gap) * 4);
+  bottom: 0;
+  display: flex;
+  gap: var(--hb-gap);
+  padding-right: calc(var(--hb-gap) * 3);
+  border-right: 2px solid var(--gold-line);
+}
+.hb-ready[hidden] { display: none; }
+.hb-ready.is-vert {
+  right: auto;
+  left: 50%;
+  bottom: calc(100% + var(--hb-gap) * 4);
+  transform: translateX(-50%);
+  padding-right: 0;
+  padding-bottom: calc(var(--hb-gap) * 3);
+  border-right: 0;
+  border-bottom: 2px solid var(--gold-line);
+}
+.hb-ready-slot { border-color: var(--gold-line); }
+.hb-ready-slot.is-empty .hb-glyph { color: #5a5446; font-size: calc(var(--hb-cell) * .34); }
+
 /* ─────────────────────────────────────────────── one button ──────────── */
 
 .hb-slot {
@@ -189,6 +216,8 @@ body.hb-edit { pointer-events: auto; }
 }
 .hb-slot.is-empty .hb-glyph { color: #3d3d47; font-size: calc(var(--hb-cell) * .30); }
 .hb-root.hide-empty .hb-slot.is-empty { visibility: hidden; }
+/* the ready sockets say where a pick will land — never hidden as "empty" */
+.hb-root.hide-empty .hb-ready-slot.is-empty { visibility: visible; }
 
 /* Unavailable — the spell is unlearned, the potion is gone, the mod is off.
    Greyed AND desaturated AND cornered with a mark, because colour alone is
@@ -215,6 +244,54 @@ body.hb-edit { pointer-events: auto; }
 /* A voice-slot power/shout reads differently because it BEHAVES differently
    (cooldown, animation, the real Shout key). */
 .hb-slot.is-voice { border-color: var(--voice-line); }
+
+/* Real cast mode (2026-10-04, src/hotbar_cast.h). Can't afford it: a red
+   wash and edge, but the icon stays readable — unlike a dead button, it will
+   be castable again in a moment. */
+.hb-slot.is-poor { border-color: #a0484c; }
+.hb-slot.is-poor::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(150, 30, 36, 0.42);
+  pointer-events: none;
+}
+/* the key legend and count stay readable over the wash */
+.hb-slot.is-poor .hb-key,
+.hb-slot.is-poor .hb-count { z-index: 2; }
+/* Winding up: a bright edge and a fill along the foot of the button whose
+   width is driven by ONE linear transition (set from JS to the spell's own
+   charge time). */
+.hb-slot.is-charging {
+  border-color: var(--gold-bright);
+  box-shadow: 0 0 0 2px rgba(236, 217, 160, 0.70);
+}
+.hb-castbar {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 4px;
+  height: max(6px, calc(var(--hb-cell) * .09));
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.62);
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 3;
+}
+.hb-castfill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, rgba(201, 162, 75, 0.95), rgba(236, 217, 160, 1));
+}
+/* Channelling a concentration spell: a steady blue-white glow, held as long
+   as the spell flows. Static on purpose — no pulse loop. */
+.hb-slot.is-channel {
+  border-color: #a8c8ff;
+  box-shadow: 0 0 0 3px rgba(168, 200, 255, 0.85), 0 0 18px 4px rgba(120, 170, 255, 0.40),
+              inset 0 0 14px rgba(168, 200, 255, 0.28);
+}
+.hb-check.is-off { opacity: .45; }
 
 /* The press flash — the only feedback the player gets that the key landed,
    since the bar never has focus. Driven by a class the JS strips on a timer. */
@@ -1425,3 +1502,44 @@ body.wg-edit .wg.wg-disabled .wg-off-badge { display: inline-block; }
 .wg-step button:active { background: #232330; }
 .wg-step button:disabled { opacity: .4; cursor: default; }
 .wg-sect-note { font-size: 14px; color: var(--dim); margin: 6px 0 0; line-height: 1.5; }
+
+/* ── bars by weapon (2026-10-08) ─────────────────────────────────────────
+   The live bar's name leads the pips strip; the editor's bar chips mark the
+   live one with a dot; an inherited button in the editor is dimmed and
+   italic so "from the Default bar" reads before the words do. */
+.hb-pip.is-bar {
+  color: var(--gold-bright);
+  font-weight: 700;
+  padding-right: 10px;
+  margin-right: 4px;
+  border-right: 1px solid var(--gold-line);
+}
+.hb-bars { display: flex; flex-direction: column; gap: 14px; }
+.hb-barchips .hb-chip.is-live::before {
+  content: '';
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--gold-bright);
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.hb-chip-add { border-style: dashed; }
+.hb-barrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 18px;
+  padding: 14px 16px;
+  background: var(--sunk);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.hb-barrow .hb-barname { flex: 1 1 200px; min-width: 160px; }
+.hb-slotrow.is-inherited .thumb { opacity: .55; }
+.hb-slotrow.is-inherited .what .nm { color: var(--dim); font-style: italic; }
+.hb-slotrow.is-inherited .what .sub { color: var(--gold-soft); }
+.hb-back-btn { flex: none; padding: 8px 12px; font-size: 18px; line-height: 1; }
+.hb-baradd-row .txt .n { font-size: 17px; }
+.hb-baradd-row.is-have .txt .n { color: var(--dim); }
+.hb-baradd-row.is-have .txt .d { color: var(--gold-soft); }

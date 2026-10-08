@@ -4439,4 +4439,38 @@ namespace Widgets
 		}
 		return {};
 	}
+
+	// ---- the Weather tab's season card (weather_hub.cpp, 2026-10-08) -------
+	// The SAME latch the HUD widget reads — one asker, one answer — so the
+	// tab and the widget can never disagree about which season it is.
+
+	std::string SeasonStateJson()
+	{
+		const json s = SeasonJson();
+		return s.is_null() ? std::string("null") : Dump(s);
+	}
+
+	bool SetSeasonOverride(int n)
+	{
+		if (g_seasonApi.load() < 0)
+			return false;   // proven absent this session
+		auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+		if (!vm)
+			return false;
+		RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> cb;
+		bool ok = false;
+		if (n >= 1 && n <= 4) {
+			auto args = RE::MakeFunctionArguments(static_cast<std::int32_t>(n));
+			ok = vm->DispatchStaticCall("SeasonsOfSkyrim", "SetSeasonOverride", args, cb);
+		} else {
+			auto args = RE::MakeFunctionArguments();
+			ok = vm->DispatchStaticCall("SeasonsOfSkyrim", "ClearSeasonOverride", args, cb);
+		}
+		// Re-ask on the next read instead of waiting out kSeasonPollMs, so the
+		// card shows the override as soon as the VM has run it.
+		g_seasonAsked.store(0);
+		logger::info("weather: season override {} ({})", n >= 1 && n <= 4 ? kSeasonNames[n] : "cleared",
+			ok ? "dispatched" : "refused");
+		return ok;
+	}
 }
