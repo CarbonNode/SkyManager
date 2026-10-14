@@ -797,7 +797,8 @@ window.RoomsPane = (function () {
    * ======================================================================= */
 
   const pick = {
-    el: null,          // the open popover, or null
+    el: null,          // the open popout card, or null
+    back: null,        // its .rm-pick-back backdrop (holds el)
     mode: '',          // 'npc' | 'ban'
     input: null,
     listEl: null,
@@ -807,8 +808,6 @@ window.RoomsPane = (function () {
     subj: null,        // ban-menu subject { formId, name }
     subjRef: null,     // resolved durable identity for subj
     subjPending: null, // action queued while identity resolves
-    scale: 1,          // zoom the anchor is painted at (see anchorScale)
-    anchorRect: null   // viewport rect of the button that opened us
   };
 
   /* Roster extras for rgNpcs: FO members as runtime formIds. FO formats them
@@ -892,95 +891,60 @@ window.RoomsPane = (function () {
     }
   }
 
+  /* the in-game Escape contract lives in app.js (popout-modal-escape) */
+  function pickClaim() { if (typeof window.hdPopoutCapture === 'function') window.hdPopoutCapture(); }
   function closePicker() {
+    const was = !!pick.el;
     if (pick.el) {
-      try { pick.el.remove(); } catch (e) {}
+      try { (pick.back || pick.el).remove(); } catch (e) {}
       document.removeEventListener('mousedown', onPickOutside, true);
     }
-    pick.el = null; pick.mode = ''; pick.input = null; pick.listEl = null;
+    pick.el = null; pick.back = null; pick.mode = ''; pick.input = null; pick.listEl = null;
     pick.onPick = null; pick.except = [];
     pick.subj = null; pick.subjRef = null; pick.subjPending = null;
-    pick.scale = 1; pick.anchorRect = null;
+    if (was) pickClaim();
+  }
+  function pickerOpen() { return !!pick.el; }
+  /* app.js onKeyDown asks this BEFORE its palette-close Escape: its capture
+     listener runs ahead of the search box's own keydown, so Esc in the box
+     used to close the whole deck. Escape closes the popout; every other key
+     is left to the search box (typing, Enter) and goes no further. */
+  function pickerKey(e) {
+    if (!pick.el) return false;
+    if (e && (e.key === 'Escape' || e.code === 'Escape')) { closePicker(); return true; }
+    return false;
   }
 
   function onPickOutside(e) {
     if (pick.el && !pick.el.contains(e.target)) closePicker();
   }
 
-  /* How much is the thing that opened us actually zoomed?
-   *
-   *  The deck is a stack of transform: scale() surfaces — #panel wears
-   *  --ui-scale, and the Followers tab wears --fd-ui-scale on top of it. This
-   *  popover is appended to <body>, OUTSIDE both, so it used to paint at raw
-   *  px beside a card drawn half again as big: the ban dropdown read as tiny
-   *  while everything around it was comfortable (Rober, 2026-08-11: "dropdown
-   *  text too hard to read (too small) … searching is nice, but still too
-   *  small"). Rather than guess which vars apply, MEASURE: the ratio of the
-   *  anchor's painted width to its layout width is exactly the product of
-   *  every transform above it. So the menu ends up the same size as the button
-   *  it hangs off, whatever nests it. Falls back to --ui-scale, then 1. */
-  function anchorScale(anchor) {
-    try {
-      if (anchor && anchor.offsetWidth > 0 && anchor.getBoundingClientRect) {
-        const k = anchor.getBoundingClientRect().width / anchor.offsetWidth;
-        if (isFinite(k) && k > 0.2 && k < 6) return k;
-      }
-    } catch (e) {}
-    try {
-      const v = parseFloat(getComputedStyle(document.documentElement)
-        .getPropertyValue('--ui-scale'));
-      if (isFinite(v) && v > 0) return v;
-    } catch (e) {}
-    return 1;
-  }
+  /* Both pickers are a centred, body-anchored POPOUT (2026-10-12), not a
+     dropdown hung off the button. Rober, about the CHIM menu beside the Room
+     ban button on the F7 card: "pop outs need to be better … centered,
+     horizontal and vertical". .rm-pick-back fills the viewport and centres the
+     card, so there is no anchor maths and no --ui-scale to wear (the
+     2026-08-14 popup audit); the card is sized big in its own CSS instead —
+     the 2026-08-11 "too small" complaint is answered by type, not a transform.
+     placePicker() stays as the hook every list render calls; there is nothing
+     left for it to place. */
+  function placePicker() {}
 
-  /* Position (and size) the open popover against its anchor. Split out of
-     popShell because the shell is measured BEFORE the caller appends the
-     filter row and the list — placing once, with only the title in the box,
-     is what used to flip a full-height menu 40px above the button and let it
-     run off the bottom. Re-run on every list render, so filtering can't push
-     the last row off-screen either. */
-  function placePicker() {
-    const el = pick.el;
-    if (!el) return;
-    const r = pick.anchorRect || { left: 40, top: 40, bottom: 40 };
-    el.style.transform = 'none';                     // measure the layout box
-    const w0 = el.offsetWidth || 420, h0 = el.offsetHeight || 240;
-    /* Wear the deck's zoom — but never so much that the menu no longer fits
-       (a 640px deck window, or the browser harness, is a real viewport). */
-    let k = Math.min(pick.scale || 1,
-      (window.innerWidth - 16) / Math.max(1, w0),
-      (window.innerHeight - 16) / Math.max(1, h0));
-    if (!isFinite(k) || k < 0.6) k = 0.6;
-    const w = w0 * k, hh = h0 * k;
-    let x = r.left, y = r.bottom + 6;
-    if (y + hh > window.innerHeight - 8) y = r.top - 6 - hh;          // prefer above
-    /* Then clamp both axes unconditionally. The anchor is not always on
-       screen — a tall pane can leave the button that opened us scrolled past
-       the bottom edge, and hanging the menu off THAT put it out of the
-       window entirely. Fit beats faithful. */
-    x = Math.max(8, Math.min(x, window.innerWidth - 8 - w));
-    y = Math.max(8, Math.min(y, window.innerHeight - 8 - hh));
-    el.style.transform = 'scale(' + k.toFixed(3) + ')';
-    el.style.left = Math.round(x) + 'px';
-    el.style.top = Math.round(y) + 'px';
-  }
-
-  /* Fixed-position shell shared by both popovers. Appended to <body>, so it
+  /* Fixed-position shell shared by both popouts. Appended to <body>, so it
      rides above every pane the caller may sit on (the F7 card included). */
   function popShell(anchor, headText) {
     closePicker();
-    const el = h('div', { class: 'rm-pick' },
-      h('div', { class: 'rm-pick-head' }, headText));
-    document.body.append(el);
-    el.style.left = '0px'; el.style.top = '0px';
+    const el = h('div', { class: 'rm-pick', role: 'dialog', 'aria-label': headText },
+      h('div', { class: 'rm-pick-top' },
+        h('div', { class: 'rm-pick-head' }, headText),
+        h('button', { class: 'rm-pick-close', type: 'button', title: 'Close (Esc)',
+          onclick: (e) => { e.stopPropagation(); closePicker(); } }, 'Close')));
+    const back = h('div', { class: 'rm-pick-back' }, el);
+    document.body.append(back);
     pick.el = el;
-    pick.scale = anchorScale(anchor);
-    pick.anchorRect = anchor && anchor.getBoundingClientRect
-      ? anchor.getBoundingClientRect()
-      : { left: 40, bottom: 40, top: 40, width: 0 };
-    placePicker();
+    pick.back = back;
     document.addEventListener('mousedown', onPickOutside, true);
+    pickClaim();
     return el;
   }
 
@@ -1959,7 +1923,9 @@ window.RoomsPane = (function () {
     ok('ban panel offers the picker', !!addBtn);
     addBtn.click();
     const pop = document.querySelector('.rm-pick');
-    ok('picker popover opens on body', !!pop && pop.parentNode === document.body);
+    ok('picker popout opens on body, inside its backdrop',
+      !!pop && pop.parentNode && pop.parentNode.classList.contains('rm-pick-back') &&
+      pop.parentNode.parentNode === document.body);
     ok('picker lists known refs before any reply',
       /Sylgja/.test(pop.textContent));
     receive('npcs', { npcs: [
@@ -2023,35 +1989,38 @@ window.RoomsPane = (function () {
       ok('clicking again removes the protection',
         !state.ignore.some((n) => n.localId === 0x801));
 
-      /* --- readable at couch distance (Rober, 2026-08-11) ---------------
-         Nothing in this menu may be footnote-sized, and it must wear the
-         same zoom as the anchor: it lives on <body>, outside #panel's
-         --ui-scale, so without the transform it stays 100% while the deck
-         around it grows. */
+      /* --- readable at couch distance (Rober, 2026-08-11), and since
+         2026-10-12 a centred popout rather than a dropdown on the button --- */
       const px = (el, prop) => parseFloat(getComputedStyle(el)[prop || 'fontSize']) || 0;
-      ok('menu title is readable (>=15px)', px(menu.querySelector('.rm-pick-head')) >= 15);
-      ok('search box text is readable (>=15px)', px(pick.input) >= 15);
-      ok('room rows are readable (>=15px)', px(menu.querySelector('.rm-pick-item')) >= 15);
-      ok('the room badge is not a footnote (>=12px)',
-        px(menu.querySelector('.rm-pick-badge')) >= 12);
+      ok('menu title is readable (>=20px)', px(menu.querySelector('.rm-pick-head')) >= 20);
+      ok('search box text is readable (>=17px)', px(pick.input) >= 17);
+      ok('room rows are readable (>=17px)', px(menu.querySelector('.rm-pick-item')) >= 17);
+      ok('the room badge is not a footnote (>=15px)',
+        px(menu.querySelector('.rm-pick-badge')) >= 15);
       ok('menu is wide enough for a name plus its cell (>=400px)',
         menu.offsetWidth >= 400);
-      ok('menu scales with its anchor, not with the raw viewport',
-        /scale\(/.test(menu.style.transform || ''));
+      const back = document.querySelector('.rm-pick-back');
+      ok('the popout has a body-level backdrop holding the card',
+        !!back && back.parentNode === document.body && back.contains(menu));
+      ok('no transform: a body-level popout does not wear the deck zoom',
+        !menu.style.transform);
       (function () {
-        const before = menu.style.transform;
-        pick.scale = 1.5;
-        placePicker();
-        const k = parseFloat((menu.style.transform.match(/scale\(([\d.]+)\)/) || [])[1]);
-        // a small harness window may clamp it; either it took the zoom, or it
-        // took as much as fits — never silently 1 when there IS room.
-        ok('a zoomed deck zooms the menu too',
-          k > 1 || menu.offsetWidth * 1.5 > window.innerWidth - 16);
-        ok('the zoomed menu still fits on screen',
-          menu.getBoundingClientRect().right <= window.innerWidth + 1 &&
-          menu.getBoundingClientRect().bottom <= window.innerHeight + 1);
-        pick.scale = 1; menu.style.transform = before;
+        const r = menu.getBoundingClientRect(), br = back.getBoundingClientRect();
+        ok('the popout is centred horizontally',
+          Math.abs((r.left + r.width / 2) - (br.left + br.width / 2)) <= 2);
+        ok('the popout is centred vertically',
+          Math.abs((r.top + r.height / 2) - (br.top + br.height / 2)) <= 2);
+        ok('the popout fits on screen', r.top >= 0 && r.left >= 0 &&
+          r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1);
       })();
+      ok('pickerOpen() while up', pickerOpen() === true);
+      ok('pickerKey leaves typing to the search box', pickerKey({ key: 'a', code: 'KeyA' }) === false && pickerOpen());
+      ok('pickerKey Escape closes the popout and its backdrop',
+        pickerKey({ key: 'Escape', code: 'Escape' }) === true && !pickerOpen() &&
+        !document.querySelector('.rm-pick-back'));
+      banMenu(anchor, { formId: 0xFF0007, name: 'Annekke' });
+      document.querySelector('.rm-pick-back').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      ok('a press on the backdrop closes it', !pickerOpen());
 
       closePicker();
       roomById('d1').deny = [];
@@ -2391,7 +2360,7 @@ window.RoomsPane = (function () {
        been visited. */
     banMenu, openNpcPicker,
     _state: state, _ui: ui, _pick: pick,          // test hooks only
-    _anchorScale: anchorScale, _placePicker: placePicker
+    pickerOpen, pickerKey, closePicker,
   };
 })();
 

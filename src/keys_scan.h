@@ -46,10 +46,13 @@
 // Configs that don't answer are remembered as dead and skipped until a forced
 // rescan, with an honest "didn't answer" row so they never silently vanish.
 
+#include "keys_sources.h"
+
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace KeysScan
 {
@@ -71,7 +74,15 @@ namespace KeysScan
 	//                 refreshes each config in place.
 	//   force=true  : "Rescan all" -- ignore the cache, full blocking sweep, and
 	//                 re-try dead configs.
+	// MAIN THREAD (the kcScan listener): it snapshots SKSE Menu Framework's
+	// page owners for the file sources' naming before the scan thread starts.
 	bool Start(bool force = false);
+
+	// After keys_write.cpp rewrote one config: swap that file's plugin rows for
+	// `rows` (a fresh KeysSources::ScanFile of it) and bump the seq so the view
+	// pulls them. Held until the next Start(), so a background refresh that
+	// read the file BEFORE the write cannot put the old key back. Any thread.
+	void ReplaceFileRows(const std::string& file, std::vector<KeysSources::Row> rows);
 
 	// Progress + (when done) the full registry, as the JS payload for kcState.
 	// includeBindings=false while polling keeps the packet small.

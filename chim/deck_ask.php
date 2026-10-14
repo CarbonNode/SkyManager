@@ -89,6 +89,65 @@ if (strpos($rawMode, 'person') === 0) {
   bad('person helper failed: ' . trim(substr((string)$outp, 0, 300)));
 }
 
+// --------------------------------------------------------------- renown ----
+// The Character tab's Renown page (2026-10-12): the player's deeds, how far each has
+// spread, and who in CHIM therefore knows it — the `court` ext's ledger
+// (roleplay/chim-prompts/ext/court/renown_lib.php), installed at ext/court/ beside
+// this ext. Every op answers with the whole fresh document, so the page never
+// guesses at what a write did. No court plugin = {absent:true}: the page hides.
+if (strpos($rawMode, 'renown') === 0) {
+  $court = realpath(__DIR__ . '/../court/court.php');
+  if (!$court || !is_file($court)) reply(['ok' => false, 'absent' => true, 'kind' => 'renown', 'why' => 'The court plugin is not installed in this CHIM.']);
+  $run = function (array $args) use ($court) {
+    $cmd = 'php ' . escapeshellarg($court);
+    foreach ($args as $a) $cmd .= ' ' . escapeshellarg((string)$a);
+    $out = []; $code = 0;
+    exec($cmd . ' 2>&1', $out, $code);
+    return [$code, implode("\n", $out)];
+  };
+  $doc = function () use ($run) {
+    [$c, $o] = $run(['renown']);
+    $j = json_decode($o, true);
+    if ($c !== 0 || !is_array($j)) bad('renown failed: ' . trim(substr($o, 0, 300)));
+    $j['kind'] = 'renown';
+    reply($j);
+  };
+  $key = (string)($_REQUEST['key'] ?? '');
+  $okKey = preg_match('/^[a-z0-9][a-z0-9-]{0,47}$/', $key);
+  $npc = trim((string)($_REQUEST['npc'] ?? ''));
+  $okNpc = $npc !== '' && strlen($npc) <= 80 && substr($npc, 0, 2) !== '--';
+  switch ($rawMode) {
+    case 'renown': $doc();
+    case 'renown_set':
+      // The deck's pipe is a GET: the fields ride base64'd (fields_b64) so a long
+      // tale survives the querystring; `fields` (raw JSON) is accepted too.
+      $fields = isset($_REQUEST['fields_b64']) ? (string)base64_decode((string)$_REQUEST['fields_b64'], true) : (string)($_REQUEST['fields'] ?? '');
+      if (!$okKey || strlen($fields) > 8000 || !is_array(json_decode($fields, true))) bad('renown_set needs key and a JSON fields object');
+      [$c, $o] = $run(['deed', 'set', $key, '--fields-json', $fields]);
+      if ($c !== 0) bad(trim(preg_replace('/^court:\s*/', '', $o)));
+      $doc();
+    case 'renown_knows':
+      $v = (string)($_REQUEST['v'] ?? '');
+      if (!$okKey || !$okNpc || !in_array($v, ['yes', 'no', 'clear'], true)) bad('renown_knows needs key, npc and v=yes|no|clear');
+      [$c, $o] = $run(['deed', 'knows', $key, $npc, $v]);
+      if ($c !== 0) bad(trim(preg_replace('/^court:\s*/', '', $o)));
+      $doc();
+    case 'renown_drop':
+      if (!$okKey) bad('renown_drop needs key');
+      [$c, $o] = $run(['deed', 'drop', $key]);
+      if ($c !== 0) bad(trim(preg_replace('/^court:\s*/', '', $o)));
+      $doc();
+    case 'renown_preview':
+      if (!$okNpc) bad('renown_preview needs npc');
+      [$c, $o] = $run(['renown', 'preview', $npc]);
+      $j = json_decode($o, true);
+      if ($c !== 0 || !is_array($j)) bad('preview failed: ' . trim(substr($o, 0, 300)));
+      $j['kind'] = 'renown_preview';
+      reply($j);
+  }
+  bad('unknown renown mode');
+}
+
 // ------------------------------------------------------------ bio blocks ----
 // The person page's Bio tab (2026-10-04): a library of reusable traits that CHIM
 // renders into an NPC's <character> section — roleplay/chim-prompts/ext/bioblocks,

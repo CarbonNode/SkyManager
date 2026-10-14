@@ -995,7 +995,7 @@ body.editing .spell .glyph.pickable:hover {
 }
 .combo-card:hover .cc-name { color: var(--text); }
 .cc-count {
-  flex-shrink: 0; font-size: 11.5px; font-weight: 600;
+  flex-shrink: 0; font-size: 12.5px; font-weight: 600;
   color: var(--voice); background: var(--voice-bg);
   border: 1px solid var(--voice-line); border-radius: 9px; padding: 2px 8px;
 }

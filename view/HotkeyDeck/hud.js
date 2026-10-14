@@ -79,9 +79,20 @@
        row field while its toggle is on, so these mirror C++ mostly for the
        settings modal; the chips draw whatever fields actually arrive. */
     showLevel: true, showDir: true, showHp: true, showSt: false, showMk: false,
+    /* AWAY faces (2026-10-11): a teammate-flagged roster member who is not
+       loaded near you arrives as a row with `away:true` and no extras; drawn
+       dimmed after the people at your back. The DLL omits those rows when this
+       is off, so the strip draws whatever arrives. */
+    showAway: true,
     /* Portrait shape — circle | rounded | square | diamond (Party Sheet's
        "portrait shapes"). A pure strip-level CSS class; see SHAPES. */
-    faceShape: 'circle', compact: true };
+    faceShape: 'circle', compact: true,
+    /* Frames (2026-10-13): person | gold | none, and the strip's opacity 0.2-1.
+       Both C++ state, mirrored here (hudConfig frameMode / stripOpacity). */
+    frameMode: 'person', frameColor: 'gold', stripOpacity: 1,
+    /* Sideways squeeze 0-100 (2026-10-13, C++ squeezePct): Shift + corner drag,
+       or the strip row's Width stepper. See applySqueeze. */
+    squeezePct: 0 };
   const SHAPES = ['circle', 'rounded', 'square', 'diamond'];
   let followers = [];
   let editing = false;
@@ -194,6 +205,110 @@
     return (a + b).toUpperCase();
   }
   function hueOf(i) { return (i * 47) % 360; }
+
+  /* ---- FRAMES (Rober, 2026-10-13, marker hud-frame-palette) ----------------
+     "are these widget frames customizable? ... as well as dynamic if i change a
+     face? also, maybe ability to change opacity?" The rim used to be the SLOT's
+     colour (hueOf(i): slot 1 red, 2 gold, 3 green), so a follower leaving
+     recoloured everyone below her. Now each follower has HER colour: the one
+     picked for her in the shelf's Frames row (row field `frame`), else an
+     automatic one derived from her key (`fkey`, the durable id C++ files picks
+     under), so it holds while the party changes around her.
+     src/followers_hud.cpp kFramePalette carries the same twelve keys: a key not
+     in both is refused there. Opaque colours on purpose: the old 85% rim let the
+     scene through and read as broken over a busy background. `h` is the hue the
+     initials medal's fill is drawn from. */
+  const FRAME_PALETTE = [
+    { k: 'gold',    label: 'Gold',    c: '#d9b25b', h: 44 },
+    { k: 'ember',   label: 'Ember',   c: '#e2803c', h: 25 },
+    { k: 'crimson', label: 'Crimson', c: '#cf4a3e', h: 5 },
+    { k: 'rose',    label: 'Rose',    c: '#e0709c', h: 335 },
+    { k: 'violet',  label: 'Violet',  c: '#a07ae2', h: 265 },
+    { k: 'azure',   label: 'Azure',   c: '#4f8fe8', h: 215 },
+    { k: 'frost',   label: 'Frost',   c: '#8fd0ec', h: 198 },
+    { k: 'teal',    label: 'Teal',    c: '#3db7a4', h: 170 },
+    { k: 'jade',    label: 'Jade',    c: '#5cbd6c', h: 130 },
+    { k: 'moss',    label: 'Moss',    c: '#a3c04c', h: 75 },
+    { k: 'ivory',   label: 'Ivory',   c: '#ece3cc', h: 42 },
+    { k: 'steel',   label: 'Steel',   c: '#9aa5b3', h: 215 },
+  ];
+  const FRAME_GOLD = FRAME_PALETTE[0];
+  /* Crimson is never handed out automatically: it would read as the red hurt
+     ring. It can still be picked. */
+  const FRAME_AUTO = FRAME_PALETTE.filter(function (p) { return p.k !== 'crimson'; });
+  /* 'gold' is "One colour" (the key predates the colour choice); 'group' is
+     ONE frame around the whole strip (Rober, 2026-10-13: "or just like one
+     universal frame or color that expands as more appear or go away nicely?") */
+  const FRAME_MODES = ['person', 'gold', 'group', 'none'];
+  function framePal(k) {
+    for (let i = 0; i < FRAME_PALETTE.length; i++) if (FRAME_PALETTE[i].k === k) return FRAME_PALETTE[i];
+    return null;
+  }
+  function frameKeyOf(m) { return (m && typeof m.fkey === 'string') ? m.fkey : ''; }
+  /* FNV-1a: a small, stable string hash (the same key always lands on the same
+     colour, on every launch). */
+  function frameHash(str) {
+    let x = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) { x ^= str.charCodeAt(i); x = Math.imul(x, 0x01000193) >>> 0; }
+    return x >>> 0;
+  }
+  /* One colour per row. Picks first; then anyone already given an automatic
+     colour this session KEEPS it (frameAutoMemo) unless a pick took it; then
+     newcomers take the palette entry their key hashes to, stepping past
+     colours already on the strip. So an arrival never recolours someone
+     already there (Lydia went teal -> green when Aela joined, caught in the
+     hud-frame scenario), and who sits above whom never matters. A row with no
+     key at all (an older DLL) keeps the old slot hue. */
+  const frameAutoMemo = {};
+  function assignFrames(list) {
+    const out = new Array(list.length);
+    const used = {};
+    for (let i = 0; i < list.length; i++) {
+      const p = framePal(list[i] && list[i].frame);
+      if (p) { out[i] = { k: p.k, c: p.c, h: p.h, picked: true }; used[p.k] = 1; }
+    }
+    const rest = [];
+    for (let i = 0; i < list.length; i++) if (!out[i]) rest.push(i);
+    rest.sort(function (a, b) {
+      const ka = frameKeyOf(list[a]), kb = frameKeyOf(list[b]);
+      return ka < kb ? -1 : ka > kb ? 1 : a - b;
+    });
+    /* those who already have an automatic colour keep it */
+    for (let r = 0; r < rest.length; r++) {
+      const i = rest[r], key = frameKeyOf(list[i]);
+      const p = key ? framePal(frameAutoMemo[key]) : null;
+      if (p && !used[p.k]) { out[i] = { k: p.k, c: p.c, h: p.h, picked: false }; used[p.k] = 1; }
+    }
+    for (let r = 0; r < rest.length; r++) {
+      const i = rest[r], key = frameKeyOf(list[i]);
+      if (out[i]) continue;
+      if (!key) {
+        const hue = (typeof list[i].hue === 'number') ? list[i].hue : hueOf(i);
+        out[i] = { k: '', c: 'hsl(' + hue + ', 55%, 62%)', h: hue, picked: false };
+        continue;
+      }
+      const n = FRAME_AUTO.length, start = frameHash(key) % n;
+      let p = FRAME_AUTO[start];
+      for (let step = 0; step < n; step++) {
+        const q = FRAME_AUTO[(start + step) % n];
+        if (!used[q.k]) { p = q; break; }
+      }
+      used[p.k] = 1;
+      out[i] = { k: p.k, c: p.c, h: p.h, picked: false };
+    }
+    for (let i = 0; i < list.length; i++) {
+      const key = frameKeyOf(list[i]);
+      if (key && out[i] && out[i].k && !out[i].picked) frameAutoMemo[key] = out[i].k;
+    }
+    return out;
+  }
+  let framesNow = [];
+  /* The frame's two custom properties, on a face or an initials medal. */
+  function paintFrame(node, fr) {
+    if (!node || !fr) return;
+    node.style.setProperty('--hud-frame', fr.c);
+    node.style.setProperty('--hud-hue', String(fr.h));
+  }
 
   function h(tag, attrs, ...kids) {
     const node = document.createElement(tag);
@@ -576,6 +691,10 @@
     season: false,
     /* 2026-09-01 — the ward widget (WardAnytime). OFF, same law. */
     ward: false,
+    /* 2026-10-12 — the Quick Light status lantern. OFF, same law. */
+    qlight: false,
+    /* 2026-10-12 — the loot feed (hud-lootfeed.js). OFF, same law. */
+    lootFeed: false,
     pinLabels: true, badges: true, barNumbers: true,
   };
   const LINE_KEYS = ['gold', 'carry', 'time', 'context', 'pots', 'lockpicks', 'weatherOnly'];
@@ -629,7 +748,12 @@
      "not apart of other widgets" — this list is what grants that. */
   /* `ward` joins 2026-09-01: same free-layer mechanics, its own builder (wardRow
      through the slot-card path). */
-  const FREE_KEYS = ['handR', 'handL', 'voice', 'quick', 'quick2', 'lootStatus', 'season', 'ward'];
+  /* `qlight` joins 2026-10-12: the Quick Light lantern, its own builder
+     (buildQl). It is the one free widget sized by LAYOUT, not by transform —
+     see qlSize. */
+  /* `lootFeed` joins 2026-10-12: what you just picked up, one row per item
+     (HDLootFeed). Its rows outlive every rebuild — see lfEnsure. */
+  const FREE_KEYS = ['handR', 'handL', 'voice', 'quick', 'quick2', 'lootStatus', 'season', 'ward', 'qlight', 'lootFeed'];
   /* The slot widgets that carry a per-key ⚙ switch. Since 2026-08-18 the card
      no longer draws them as one flat row — handR/handL/voice are nested inside
      the merged "Equipped slots" widget and quick/quick2 have their own group —
@@ -661,7 +785,17 @@
     /* Left of the equipped row, clear of the 158px cards. Mirrors the C++
        Config() default exactly — the two must agree or a fresh install jumps. */
     ward: { x: -520, y: 96, anchorH: 'center', anchorV: 'bottom', scale: 1, opacity: 1, bare: false, showLabel: true, hideInMenus: true },
+    /* A lone lantern, so bare and nameless by default ("a draggable icon on
+       screen"); left of the ward on the same shelf. Mirrors C++ Config(). */
+    qlight: { x: -680, y: 110, anchorH: 'center', anchorV: 'bottom', scale: 1, opacity: 1, bare: true, showLabel: false, hideInMenus: true },
+    /* Top-left, where the game's own pickup lines sit (hidden while the feed
+       is on). A list, not a card — the rows carry their own plates. Mirrors
+       C++ Config(). */
+    lootFeed: { x: 40, y: 120, anchorH: 'left', anchorV: 'top', scale: 1, opacity: 1, bare: true, showLabel: false, hideInMenus: true },
   };
+  /* ---- the loot feed's own options (2026-10-12) — see LOOT FEED below.
+     `dirty` = this view changed them, so the next save sends them. */
+  const lf = { max: 5, lifeMs: 4500, value: true, hideVanilla: true, dirty: false };
   /* ---- the custom quick items' own config (round 4) ----------------------
      `max` (1..16) is how many rows are DRAWN; `items` is what is STORED, up to
      16 — shrinking max hides rows, it never eats them (the hotbar's
@@ -1884,6 +2018,13 @@
       };
       if (isNum(wa.power)) o.ward.power = wa.power;
     }
+
+    /* ---- Quick Light (2026-10-12): {running, on}. ABSENT when QuickLight.esp
+       is not in the load order; running:false when its MCM has the mod off.
+       Either way the lantern has nothing honest to say (qlData). */
+    const ql = j.qlight;
+    if (ql && typeof ql === 'object')
+      o.qlight = { running: ql.running === true, on: ql.on === true };
 
     const rs = j.resist;
     if (rs && typeof rs === 'object') {
@@ -3462,6 +3603,15 @@
       });
       q2.dirty = false;
     }
+    /* the loot feed's options: sent only when the card changed them (the same
+       contains()-guarded partial write as quick2's list) */
+    if (lf.dirty) {
+      widgets.lootFeed.max = lf.max;
+      widgets.lootFeed.lifeMs = lf.lifeMs;
+      widgets.lootFeed.value = lf.value;
+      widgets.lootFeed.hideVanilla = lf.hideVanilla;
+      lf.dirty = false;
+    }
     toGameAny(['hudWidgetSave', 'wgSave'],
       JSON.stringify({ enabled: !!wcfg.on, on: !!wcfg.on, widgets: widgets, hud: hudOnlyPrefs() }));
   }
@@ -3841,7 +3991,8 @@
   function medalOf(m, hue) {
     const medal = h('span', { class: 'hud-medal' },
       h('span', { class: 'hud-face-in' }, initialsOf(m.name)));
-    medal.style.setProperty('--hud-hue', String(hue));
+    if (hue && typeof hue === 'object') paintFrame(medal, hue);
+    else medal.style.setProperty('--hud-hue', String(hue));
     return medal;
   }
 
@@ -3849,8 +4000,12 @@
     const file = m.file;
     if (!file) return medalOf(m, hue);
     const wrap = h('span', { class: 'hud-face' });
-    wrap.style.setProperty('--hud-hue', String(hue));
-    const raw = srcFor(file);
+    if (hue && typeof hue === 'object') paintFrame(wrap, hue);
+    else wrap.style.setProperty('--hud-hue', String(hue));
+    /* `abs` (2026-10-12, hud-render-fallback): no photo, so C++ sent the head
+       render the Followers tab draws (icons/npcs/…, or a creature body under
+       icons/mounts/) as a view-relative path — never under portraits/. */
+    const raw = m.abs ? String(file) : srcFor(file);
     const bust = m.mtime && !/^(data:|blob:)/i.test(raw) ? raw + '?v=' + m.mtime : raw;
     const img = h('img', { class: 'hud-face-img', src: bust, alt: '', draggable: false });
     // Crop transform — same math the deck applies so a framed face frames here.
@@ -3861,15 +4016,42 @@
         ((c.y || 0) * 100).toFixed(3) + '%) scale(' + Number(c.z).toFixed(4) + ')';
       img.style.objectPosition = '50% 50%';
     }
+    /* A render with no hand crop gets the deck's own face framing (the head
+       floats small in MRF's canvas; a body shows whole). The wrapper below is
+       the clipping frame paintPortrait needs; it retries until laid out. */
+    const fit = m.abs && !(c && typeof c.z === 'number') && window.HDFaceFit;
     // Query-hostile Ultralight loader: retry the raw path once, then initials.
     let retried = false;
     img.addEventListener('error', function () {
       if (!retried && bust !== raw) { retried = true; img.src = raw; return; }
       toGame('hudLog', 'HUD portrait failed: ' + raw);
       if (wrap.parentNode) wrap.parentNode.replaceChild(medalOf(m, hue), wrap);
+      paintFrames();
     });
     wrap.appendChild(h('span', { class: 'hud-face-in' }, img));
+    if (fit) window.HDFaceFit.paintPortrait(img, raw);
     return wrap;
+  }
+
+  /* A face built while the strip is display:none (a loading screen or a menu
+     hides it, the menu gate) has a 0x0 frame, so the face framing retries for
+     ~30 frames and then leaves the WHOLE render showing, shrunk into the tile.
+     Chips are reused while the roster stands still, so nothing framed it again:
+     Sol's tiny face after a door (Rober, 2026-10-12, marker hud-face-refit).
+     Re-ask once the strip is drawn. Only an unframed head render qualifies
+     (paintHeadCrop makes a framed one position:absolute), and each face gets
+     a few tries so a render that cannot be measured is not re-read forever. */
+  function refitFaces() {
+    const ff = window.HDFaceFit;
+    if (!ff || !el.strip || !el.strip.querySelectorAll) return;
+    if (!el.strip.offsetWidth) return;          // still hidden: the next show re-asks
+    const imgs = el.strip.querySelectorAll('img.hud-face-img');
+    for (let i = 0; i < imgs.length; i++) {
+      const img = imgs[i], url = img._hdRenderUrl;
+      if (!url || !/^icons\/npcs\//.test(url) || img.style.position === 'absolute') continue;
+      if ((img._hdRefits = (img._hdRefits | 0) + 1) > 4) continue;
+      ff.paintPortrait(img, url);
+    }
   }
 
   /* Hurt ring (Rober, 2026-08-17): a STATIC red ring around anyone under a
@@ -3960,9 +4142,11 @@
   }
 
   function chipEl(m, i) {
-    const hue = (typeof m.hue === 'number') ? m.hue : hueOf(i);
+    const hue = framesNow[i] || ((typeof m.hue === 'number') ? m.hue : hueOf(i));
     const chip = h('div', { class: 'hud-chip' + (m.dead ? ' hud-dead' : '')
+                                              + (m.away ? ' hud-away' : '')
                                               + (isHurt(m) ? ' hud-hurt' : '') });
+    if (m.away) chip.title = (m.name || '') + ' — away: flagged as following, not near you';
     const box = h('span', { class: 'hud-facebox' });
     box.appendChild(faceEl(m, hue));
     if (m.lvl != null) box.appendChild(h('b', { class: 'hud-lvl', title: 'Level ' + m.lvl }, String(m.lvl)));
@@ -3989,23 +4173,89 @@
        chevron this row carries) — toggling one in settings must rebuild the
        chip, while the values moving (health falling, someone walking away)
        stay on the cheap patch path below. */
-    return [m.file || '', m.mtime || '', (typeof m.hue === 'number') ? m.hue : hueOf(i),
+    /* No colour in here: the rim is a custom property patched in place
+       (paintFrames), so a pick or a mode change never re-decodes a face. */
+    return [m.file || '', m.mtime || '',
       (typeof c.z === 'number') ? [c.z, c.x || 0, c.y || 0].join(',') : '',
       'x' + [m.lvl != null ? 1 : 0, m.hp ? 1 : 0, m.mk ? 1 : 0, m.st ? 1 : 0,
-        m.dir != null ? 1 : 0].join('')].join('|');
+        m.dir != null ? 1 : 0, m.away ? 1 : 0].join('')].join('|');
+  }
+
+  /* ---- arrivals, departures and the One frame's glide (2026-10-13) --------
+     marker hud-frame-glide. Who a chip is: her frame key, else her name. */
+  function whoOf(m) { return frameKeyOf(m) || ('n:' + String((m && m.name) || '')); }
+  function stripDrawn() { return !!(el.strip && el.strip.offsetWidth); }
+  /* A face whose follower left fades out (180 ms, one-shot) BEFORE the strip
+     rebuilds, so the One frame shrinks after she is gone instead of the faces
+     jumping. Returns true while that is under way; the timer re-renders with
+     whatever the roster is by then. */
+  let leaveT = 0, leaveDone = false;
+  function stripLeaving() {
+    if (leaveT) return true;
+    if (leaveDone) { leaveDone = false; return false; }
+    if (!stripDrawn()) return false;
+    const next = {};
+    followers.forEach(function (m) { next[whoOf(m)] = 1; });
+    let any = false;
+    for (let i = 0; i < el.strip.children.length; i++) {
+      const c = el.strip.children[i], who = c.getAttribute('data-who');
+      if (who && !next[who]) { c.classList.add('is-leaving'); any = true; }
+    }
+    if (!any) return false;
+    leaveT = setTimeout(function () { leaveT = 0; leaveDone = true; render(); }, 190);
+    return true;
+  }
+  /* FLIP for the One frame: measured before the rebuild, then the strip is
+     pinned at its old size and eased to its new one (240 ms, one-shot — no
+     looping work behind the game), and released back to auto. */
+  let glideT = 0;
+  function plateSize() {
+    if (cfg.frameMode !== 'group' || !stripDrawn()) return null;
+    return { w: el.strip.offsetWidth, h: el.strip.offsetHeight };
+  }
+  function glidePlate(before) {
+    const st = el.strip.style;
+    if (glideT) { clearTimeout(glideT); glideT = 0; }
+    st.transition = ''; st.width = ''; st.height = '';
+    if (!before || cfg.frameMode !== 'group' || !stripDrawn()) return;
+    const after = { w: el.strip.offsetWidth, h: el.strip.offsetHeight };
+    if (Math.abs(after.w - before.w) < 1 && Math.abs(after.h - before.h) < 1) return;
+    st.width = before.w + 'px'; st.height = before.h + 'px';
+    void el.strip.offsetWidth;   // commit the old size before easing away from it
+    st.transition = 'width 240ms ease, height 240ms ease';
+    st.width = after.w + 'px'; st.height = after.h + 'px';
+    glideT = setTimeout(function () {
+      glideT = 0; st.transition = ''; st.width = ''; st.height = '';
+      keepOnScreen();
+    }, 300);
+  }
+
+  /* Re-colour every chip's rim from framesNow — both render paths end here. */
+  function paintFrames() {
+    const kids = el.strip.children;
+    for (let i = 0; i < kids.length; i++) {
+      const f = kids[i].querySelector('.hud-face, .hud-medal');
+      if (f && framesNow[i]) paintFrame(f, framesNow[i]);
+      if (framesNow[i]) kids[i].setAttribute('data-frame', framesNow[i].k || '');
+    }
   }
 
   function render() {
+    framesNow = assignFrames(followers);
     const sigs = followers.map(faceSig);
     const same = sigs.length === lastFaceSigs.length &&
                  sigs.every((s, i) => s === lastFaceSigs[i]) &&
                  el.strip.children.length === sigs.length;
     if (same) {
+      /* (she left and came straight back inside the fade: un-fade her) */
+      leaveDone = false;
       // Faces are untouched — write only what actually moved.
       followers.forEach((m, i) => {
         const chip = el.strip.children[i];
         if (!chip) return;
+        chip.classList.remove('is-leaving');
         chip.classList.toggle('hud-dead', !!m.dead);
+        chip.classList.toggle('hud-away', !!m.away);
         chip.classList.toggle('hud-hurt', isHurt(m));
         const nm = chip.querySelector('.hud-name');
         const txt = m.name || '—';
@@ -4042,11 +4292,28 @@
           }
         }
       });
+    } else if (stripLeaving()) {
+      /* someone left: her face is fading out; the rebuild (and the frame's
+         glide) runs when it is gone — see stripLeaving */
     } else {
+      const prevKeys = {};
+      for (let i = 0; i < el.strip.children.length; i++) prevKeys[el.strip.children[i].getAttribute('data-who') || ''] = 1;
+      /* measured BEFORE the strip is emptied: an empty strip is display:none */
+      const hadAny = el.strip.children.length > 0 && stripDrawn();
+      const before = plateSize();
       el.strip.innerHTML = '';
-      followers.forEach((m, i) => el.strip.appendChild(chipEl(m, i)));
+      followers.forEach((m, i) => {
+        const chip = chipEl(m, i);
+        chip.setAttribute('data-who', whoOf(m));
+        /* arrivals fade and grow in, once; a chip rebuilt for any other
+           reason (a new photo, a toggled extra) just appears */
+        if (hadAny && !prevKeys[whoOf(m)]) chip.classList.add('is-new');
+        el.strip.appendChild(chip);
+      });
       lastFaceSigs = sigs;
+      glidePlate(before);
     }
+    paintFrames();
     renderWidgets();
     /* `is-empty` = no followers (the place-me hint keys off it, unchanged).
        `is-blank` = nothing at all to draw, which is what hides the panel. */
@@ -4055,6 +4322,8 @@
     refreshPanelBlank();
     applyOrient();
     fitWidgets();
+    keepOnScreen();
+    refitFaces();
   }
 
   /* Keep the assembly on the screen. With every block switched on the stack is
@@ -4214,6 +4483,93 @@
       const hintEl = document.querySelector('.hud-hint');
       if (hintEl) hintEl.style.marginTop = stepPx ? stepPx + 'px' : '';
     }
+    keepOnScreen();
+    placeStripHandles();
+  }
+
+  /* The corner handle and the hint line take the side that HAS room (Rober,
+     2026-10-13, a shot of his strip parked flush right: "i also cant quite drag
+     it right to edge since it cuts off my mouse ability"). The handle hung
+     32px OUTSIDE the panel's right edge, so at the right edge of the monitor
+     it was off-screen: no resize, no squeeze, and the cursor stops at the
+     edge. It now sits on the side away from the anchor (right for a strip
+     hanging off the left, left for one hanging off the right) unless that
+     side is off-screen, then on the other. The hint line, nowrap and long,
+     right-aligns when the panel is on the right half. Measured AFTER
+     keepOnScreen, on the drawn spot; skipped mid-drag (applyPlacement fast),
+     so a handle never jumps out from under the hand. Marker hud-handle-side. */
+  function placeStripHandles() {
+    if (!el.panel || !el.panel.getBoundingClientRect) return;
+    const r = el.panel.getBoundingClientRect(), vw = window.innerWidth || 1920;
+    const roomR = r.right + 36 <= vw, roomL = r.left - 36 >= 0;
+    const left = cfg.anchorH === 'right' ? (roomL || !roomR) : (!roomR && roomL);
+    el.body.classList.toggle('hud-handle-left', left);
+    el.body.classList.toggle('hud-hint-right', (r.left + r.right) / 2 > vw / 2);
+  }
+
+  /* ---- keep the strip ON the screen (play-test report, 2026-10-12) ------
+     "its only showing one of my followers" ... "and now its just showing
+     one of them". The strip was saved at x=2432 of a 2560 screen, anchored LEFT, at
+     1.54x: one face fits, the second is drawn past the monitor's edge. The
+     engine lists nearby actors in no fixed order, so the two took turns being
+     the one on screen. Placement is the player's, so the SAVED cfg.x/y never
+     change here: only the drawn offset slides in by however far the faces
+     spill past an edge, and it slides back the moment they fit again.
+     `shown` holds the drawn offset while it differs, so a drag starts from
+     where the strip IS, not from where it was saved. Measured on the chips,
+     not #hud: #hud is absolutely placed, so its shrink-to-fit width stops at
+     the screen edge and never reports the spill. Marker: hud-strip-onscreen. */
+  let shown = null;
+  function stripBounds() {
+    const kids = el.strip ? el.strip.children : null;
+    if (!kids || !kids.length) return null;
+    let b = null;
+    /* One frame: its plate reaches past the faces, and it must stay on screen too */
+    if (cfg.frameMode === 'group' && el.strip.getBoundingClientRect) {
+      const r = el.strip.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) b = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    }
+    for (let i = 0; i < kids.length; i++) {
+      const r = kids[i].getBoundingClientRect ? kids[i].getBoundingClientRect() : null;
+      if (!r || !(r.width > 0 && r.height > 0)) continue;   // hidden strip: nothing to keep
+      if (!b) b = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+      else {
+        b.left = Math.min(b.left, r.left); b.top = Math.min(b.top, r.top);
+        b.right = Math.max(b.right, r.right); b.bottom = Math.max(b.bottom, r.bottom);
+      }
+    }
+    return b;
+  }
+  function keepOnScreen() {
+    if (drag || !el.hud) return;
+    const vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+    if (!vw || !vh) return;
+    const s = el.hud.style;
+    const right = cfg.anchorH === 'right', bottom = cfg.anchorV === 'bottom';
+    // Write only real changes: this runs on every roster push.
+    const put = (prop, v) => { const t = v + 'px'; if (s[prop] !== t) s[prop] = t; };
+    let x = cfg.x, y = cfg.y;
+    /* Up to three passes: sliding in widens the room #hud has, which can
+       re-flow it, so measure again until nothing spills. */
+    for (let pass = 0; pass < 3; pass++) {
+      put(right ? 'right' : 'left', x);
+      put(bottom ? 'bottom' : 'top', y);
+      const b = stripBounds();
+      if (!b) break;
+      let dx = 0, dy = 0;
+      if (b.right > vw) dx = vw - b.right;     // spills right: slide left
+      if (b.left + dx < 0) dx = -b.left;       // wider than the screen: keep the start
+      if (b.bottom > vh) dy = vh - b.bottom;
+      if (b.top + dy < 0) dy = -b.top;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) break;
+      x = Math.max(0, Math.round(x + (right ? -dx : dx)));
+      y = Math.max(0, Math.round(y + (bottom ? -dy : dy)));
+    }
+    const moved = x !== cfg.x || y !== cfg.y;
+    if (moved && (!shown || shown.x !== x || shown.y !== y))
+      toGame('hudLog', 'hud-strip-onscreen: drawn at ' + x + ',' + y +
+        ' (saved ' + Math.round(cfg.x) + ',' + Math.round(cfg.y) + ') so every face fits');
+    shown = moved ? { x: x, y: y } : null;
   }
 
   /* ---- the retired panel shell (Rober, 2026-08-18) -----------------------
@@ -4237,7 +4593,7 @@
   /* ---- the strip's edit SCOPE (round 3) ---------------------------------- */
   const HINT_WIDGETS = 'Drag any widget to move it · the mouse wheel over one resizes it · ' +
     '⚙ Widgets opens the shelf — every element, its size and its options · Done to lock';
-  const HINT_STRIP = 'Follower strip: drag the bar to move · corner to resize · Flip for row/column · ' +
+  const HINT_STRIP = 'Follower strip: drag the bar to move · corner to resize · Shift + corner to squeeze sideways · Flip for row/column · ' +
     'Grow to change which corner it grows from · Done to lock';
   function stripEditing() { return editing && stripEdit; }
   function applyStripEdit() {
@@ -4301,6 +4657,7 @@
        strip-only rewrite blanked the ENTIRE view (caught by the ul-probe,
        2026-08-18: hudDrawn:false, bodyClasses "hud-hidden"). */
     el.body.classList.remove('hud-hidden');
+    refitFaces();
   }
   function applyNames() { el.body.classList.toggle('hud-names-off', !cfg.showNames); }
   /* Shape is a strip-level class flip — chips never rebuild for it (the
@@ -4311,7 +4668,46 @@
     el.strip.classList.add('face-' + (SHAPES.indexOf(cfg.faceShape) !== -1 ? cfg.faceShape : 'circle'));
   }
 
-  function applyConfig() { applyPlacement(); applyOrient(); applyVisible(); applyNames(); applyShape(); applyCompact(); applyShell(); applyWidgetCfg(); }
+  /* Frames: a strip-level class for the mode (no chip rebuild), the opacity on
+     the strip element itself — the faces only, never the widgets beside it. */
+  function applyFrames() {
+    for (let i = 0; i < FRAME_MODES.length; i++) el.strip.classList.remove('frame-' + FRAME_MODES[i]);
+    el.strip.classList.add('frame-' + (FRAME_MODES.indexOf(cfg.frameMode) !== -1 ? cfg.frameMode : 'person'));
+    const one = framePal(cfg.frameColor) || FRAME_GOLD;
+    el.strip.style.setProperty('--hud-frame-all', one.c);
+    const op = clamp(Number(cfg.stripOpacity) || 1, 0.2, 1);
+    el.strip.style.opacity = op >= 0.999 ? '' : String(op);
+  }
+
+  /* SQUEEZE (Rober, 2026-10-13: "in one frame mode for follower faces its a
+     bit wide ... horizontally ... resizing resizes the entire thing, i want to
+     squish it horizontally, maybe add if i hold shift it does"; marker
+     hud-strip-squeeze). The corner handle scales everything uniformly; this
+     narrows only the SIDEWAYS room: each face's column (84px in a column,
+     76px in a row) toward the face's own 60px, the gap between faces in a
+     row, and the One frame plate's side padding. A transform would stretch
+     the portraits into ovals, so it is layout, written as px literals (no
+     calc over a var — the engine's calc is only probed for plain lengths).
+     At 0 every property is removed and the stock CSS widths stand. */
+  const SQ_CHIP_MIN = 60, SQ_CHIP_H = 76, SQ_CHIP_V = 84, SQ_GAP = 12, SQ_GAP_MIN = 4, SQ_PAD = 12, SQ_PAD_MIN = 6;
+  function squeezeT() { return clamp(Math.round(num(cfg.squeezePct, 0)), 0, 100) / 100; }
+  function lerpPx(a, b, t) { return Math.round(a + (b - a) * t) + 'px'; }
+  function applySqueeze() {
+    const t = squeezeT(), st = el.strip.style;
+    const names = ['--hud-chip-wh', '--hud-chip-wv', '--hud-gap-h', '--hud-plate-padx'];
+    if (t <= 0) { for (const n of names) st.removeProperty(n); return; }
+    st.setProperty('--hud-chip-wh', lerpPx(SQ_CHIP_H, SQ_CHIP_MIN, t));
+    st.setProperty('--hud-chip-wv', lerpPx(SQ_CHIP_V, SQ_CHIP_MIN, t));
+    st.setProperty('--hud-gap-h', lerpPx(SQ_GAP, SQ_GAP_MIN, t));
+    st.setProperty('--hud-plate-padx', lerpPx(SQ_PAD, SQ_PAD_MIN, t));
+  }
+  /* the Width stepper's number: this orientation's column width against stock */
+  function stripWidthPct() {
+    const stock = cfg.orient === 'vert' ? SQ_CHIP_V : SQ_CHIP_H;
+    return Math.round((stock + (SQ_CHIP_MIN - stock) * squeezeT()) / stock * 100);
+  }
+
+  function applyConfig() { applyPlacement(); applyOrient(); applyVisible(); applyNames(); applyShape(); applyFrames(); applySqueeze(); applyCompact(); applyShell(); applyWidgetCfg(); }
 
   // x/y are distances from the anchored edges, so keep them non-negative and
   // short of the far edge — a corner of the assembly always stays on-screen.
@@ -4327,6 +4723,7 @@
       x: Math.round(cfg.x), y: Math.round(cfg.y),
       scale: Number(cfg.scale.toFixed(3)), orient: cfg.orient,
       anchorH: cfg.anchorH, anchorV: cfg.anchorV, showNames: !!cfg.showNames,
+      squeezePct: clamp(Math.round(num(cfg.squeezePct, 0)), 0, 100),
     }));
   }
 
@@ -4356,6 +4753,8 @@
     quick2: 'My items — pick your own', lootStatus: 'Loot lamp — glow · auto-loot',
     season: 'Season',
     ward: 'Ward — up or down',
+    qlight: 'Quick Light — lit or dim',
+    lootFeed: 'Loot feed — what you just picked up',
     pinLabels: 'Item names', badges: 'Badges', barNumbers: 'Bar numbers', clock24: '24-hour clock',
   };
   const OPT_ABSENT = {
@@ -4376,6 +4775,8 @@
     /* Absent while the player knows no ward and none is active — the widget
        then has nothing honest to say. */
     ward: () => !live.ward,
+    /* Absent without Quick Light SE, or with it switched off in its MCM. */
+    qlight: () => !qlData(),
   };
 
   function optButton(key) {
@@ -4443,6 +4844,25 @@
     if (note) row.appendChild(h('span', { class: 'hud-sz-note' }, note));
     return row;
   }
+  /* The strip's Width stepper — the shelf twin of Shift + corner drag, in the
+     size stepper's own shape. − narrows, ＋ widens, ⟲ is back to stock. */
+  const SQ_STEP = 10;
+  function squeezeRow() {
+    const sq = clamp(Math.round(num(cfg.squeezePct, 0)), 0, 100);
+    const row = h('div', { class: 'hud-sz-row', 'data-szname': 'Width' });
+    row.appendChild(h('span', { class: 'hud-sz-name',
+      title: 'How wide each face’s column is — narrows the strip sideways without stretching the faces (Shift + corner drag does the same)' }, 'Width'));
+    const mk = (dir, txt, title, off) => {
+      const b = h('button', { class: 'hud-sz-btn', type: 'button', 'data-stripact': 'squeeze', 'data-dir': String(dir), title: title }, txt);
+      if (off) b.disabled = true;
+      return b;
+    };
+    row.appendChild(mk(1, '−', 'Narrower — squeeze the strip sideways', sq >= 100));
+    row.appendChild(h('span', { class: 'hud-sz-val', title: 'Column width against the stock width' }, stripWidthPct() + '%'));
+    row.appendChild(mk(-1, '＋', 'Wider', sq <= 0));
+    row.appendChild(mk(0, '⟲', 'Back to the stock width', sq <= 0));
+    return row;
+  }
   /* ⚠ The old "Size — every widget scales on its own" section is retired
      (2026-08-19): a second list of the same widgets, in a different order,
      is exactly the sibling-surface drift this shelf exists to end. Every
@@ -4503,6 +4923,7 @@
     voice: 'icons/custom/sc-shouts.png', quick: 'icons/custom/hk-quick-light.png',
     quick2: 'icons/custom/hm-items.png', lootStatus: 'icons/custom/hm-loot.png',
     season: 'icons/custom/sn-autumn.png',
+    ward: 'icons/custom/sc-restoration.png', qlight: 'icons/custom/ql-lit.png', lootFeed: 'icons/custom/hm-loot.png',
     strip: 'icons/custom/hm-followers.png', fwgrp: 'icons/custom/hk-widgets.png',
     /* the Followers-HUD section's own rows (round 3) — no art of their own,
        so they wear their typographic marks below */
@@ -4512,10 +4933,10 @@
     vitals: '❤', resist: '◈', effects: '✦', equip: '†', survival: '△',
     mount: '⌁', pins: '⚑', sets: '❈', allies: '⁂',
     handR: '†', handL: '◈', voice: '≋', quick: '★', quick2: '★', lootStatus: '✧',
-    season: '❉',
+    season: '❉', ward: '◈', qlight: '✦', lootFeed: '✧',
     pinLabels: 'Aa', badges: '●', barNumbers: '№', clock24: '◷',
     strip: '⁂', fwgrp: '⌗',
-    'strip-shape': '◇', 'strip-face': '☉', 'strip-compact': '▣', 'strip-keys': '⌨',
+    'strip-shape': '◇', 'strip-frame': '▢', 'strip-face': '☉', 'strip-compact': '▣', 'strip-keys': '⌨',
   };
   /* extra words the filter should match, so a player types what they CALL it */
   const EL_WORDS = {
@@ -4534,11 +4955,15 @@
     quick: 'favourites favorites quick items', quick2: 'my items custom strip',
     lootStatus: 'loot lamp glow auto-loot',
     season: 'season winter spring summer autumn fall year month calendar seasons of skyrim',
+    ward: 'ward shield barrier spell up down',
+    qlight: 'quick light lantern lamp torch glow carried light lit dim on off status',
+    lootFeed: 'loot feed pickup picked up notifications items added harvest iharvest gold list',
     pinLabels: 'names labels',
     badges: 'badges', barNumbers: 'numbers bars', clock24: '24 hour clock',
-    strip: 'followers hud strip party faces portraits roster place position size enable shown hidden row column corner names',
+    strip: 'followers hud strip party faces portraits roster place position size width squeeze narrow wide enable shown hidden row column corner names',
     fwgrp: 'equipped group linked hands shout',
     'strip-shape': 'shape circle rounded square diamond portrait cut',
+    'strip-frame': 'frame frames rim ring border outline colour color each gold none opacity transparent fade see through',
     'strip-face': 'level badge direction distance health magicka stamina bars per face',
     'strip-compact': 'compact faces only browse',
     'strip-keys': 'key keys bind browse hotkey show hide toggle',
@@ -4705,12 +5130,15 @@
     /* connect another widget in — the "ability to connect up widgets" ask */
     const spare = FREE_KEYS.filter(function (k) { return !grpHas(k); });
     if (spare.length) {
-      const add = h('div', { class: 'hud-el-chips hud-el-add' },
-        h('span', { class: 'hud-el-addlab' }, 'Connect a widget:'));
+      /* The label sits above the chips so hd-balance can lay the chips out as an
+         even block (they wrapped 2 + 3 under a label that was itself a chip-row cell). */
+      sec.appendChild(h('div', { class: 'hud-el-addlab' }, 'Connect a widget:'));
+      const add = h('div', { class: 'hud-el-chips hud-el-add hd-balance' });
       for (const k of spare)
         add.appendChild(elChip('data-grplink', k, '＋ ' + (OPT_LABELS[k] || k),
           'Weld ' + (OPT_LABELS[k] || k) + ' into this group — it then moves, scales and hides with it', false));
       sec.appendChild(add);
+      if (window.hdBalance) window.hdBalance.watch(add);
     }
     sec.appendChild(h('div', { class: 'hud-el-note' }, wgrp.locked
       ? 'Welded: one drag, one size, one place. Turn a member off on its own row; the switch at the top hides all of them.'
@@ -4739,7 +5167,7 @@
      and behaviour — exactly the chip list above. */
   /* Which shelf rows belong to the strip. Landing on any of them is what arms
      the strip's edit dress (setStripEdit) — see the stripEdit note up top. */
-  const STRIP_SECTION_KEYS = ['strip', 'strip-shape', 'strip-face', 'strip-compact', 'strip-keys'];
+  const STRIP_SECTION_KEYS = ['strip', 'strip-shape', 'strip-frame', 'strip-face', 'strip-compact', 'strip-keys'];
   /* ONE door to C++, and it is the deck card's own: `hudCfg`. Registered on
      THIS view too since round 3 (main.cpp, marker hud-strip-cfg-bridge), so a
      shelf row and a deck chip run literally the same handler. */
@@ -4764,6 +5192,7 @@
     ['hp', '♥ Health', 'A live health bar under each face', function () { return cfg.showHp !== false; }],
     ['mk', '✦ Magicka', 'A live magicka bar under each face', function () { return cfg.showMk === true; }],
     ['st', '➶ Stamina', 'A live stamina bar under each face', function () { return cfg.showSt === true; }],
+    ['away', 'Away faces', 'Dimmed faces for followers flagged as following but not near you', function () { return cfg.showAway !== false; }],
   ];
   const SHAPE_LABELS = { circle: '◯ Circle', rounded: '▢ Rounded', square: '■ Square', diamond: '◆ Diamond' };
   const SHAPE_TITLES = {
@@ -4809,6 +5238,123 @@
       pair.appendChild(elChip('data-stripact', clearOp, '✕', 'Clear the ' + label.toLowerCase() + ' key', false));
     chips.appendChild(pair);
   }
+  /* FRAMES (Rober, 2026-10-13, marker hud-frame-row). Three things, in the
+     order he asked for them: what the rim is (each follower's own colour, one
+     gold for all, or none), how see-through the whole strip is, and — in "each
+     their own" — which colour each follower on the strip wears. A colour is
+     filed under her key, so it follows HER, not the slot she happens to sit in.
+     Only people on the strip right now are listed: the key comes from the live
+     row, and C++ refuses a key the strip is not showing. */
+  const FRAME_MODE_LABELS = { person: 'Each their own', gold: 'One colour', group: 'One frame', none: 'No frame' };
+  const FRAME_MODE_TITLES = {
+    person: 'Every follower wears her own rim colour — pick it below, or let it be chosen for her',
+    gold: 'The same rim colour on every face — pick it below',
+    group: 'One frame around the whole strip, growing and shrinking as followers come and go',
+    none: 'No rim at all — just the faces (the red hurt ring still shows)',
+  };
+  function stripOpacityPct() { return Math.round(clamp(Number(cfg.stripOpacity) || 1, 0.2, 1) * 100); }
+  function buildFrameRow() {
+    const mode = FRAME_MODES.indexOf(cfg.frameMode) !== -1 ? cfg.frameMode : 'person';
+    const people = followers.filter(function (m) { return !!frameKeyOf(m); });
+    const row = stripRow('strip-frame', 'Frames', people.map(function (m) { return m.name || ''; }).join(' '));
+    const seg = h('div', { class: 'hud-el-chips hud-el-seg' });
+    for (const md of FRAME_MODES) {
+      const b = elChip('data-stripact', 'frame-mode', FRAME_MODE_LABELS[md],
+        FRAME_MODE_TITLES[md] + (mode === md ? ' — current' : ''), mode === md);
+      b.setAttribute('data-mode', md);
+      seg.appendChild(b);
+    }
+    row.body.appendChild(seg);
+
+    /* opacity: the size stepper's own shape, in steps of 10% */
+    const pct = stripOpacityPct();
+    const op = h('div', { class: 'hud-sz-row', 'data-szname': 'Opacity' });
+    op.appendChild(h('span', { class: 'hud-sz-name', title: 'How see-through the whole strip is' }, 'Opacity'));
+    const ob = function (dir, txt, title, off) {
+      const b = h('button', { class: 'hud-sz-btn', type: 'button', 'data-stripact': 'opac', 'data-dir': String(dir), title: title }, txt);
+      if (off) b.disabled = true;
+      return b;
+    };
+    op.appendChild(ob(-1, '−', 'More see-through', pct <= 20));
+    op.appendChild(h('span', { class: 'hud-sz-val', title: 'Strip opacity' }, pct + '%'));
+    op.appendChild(ob(1, '＋', 'More solid', pct >= 100));
+    op.appendChild(ob(0, '⟲', 'Back to fully solid', pct >= 100));
+    row.body.appendChild(op);
+
+    if (!people.length) {
+      row.body.appendChild(h('div', { class: 'hud-el-note' }, followers.length
+        ? 'This game build does not send follower keys yet, so colours cannot be picked per follower.'
+        : 'Nobody is on the strip right now. Each follower’s colour is picked here while she is with you.'));
+      return row;
+    }
+    if (mode === 'gold' || mode === 'group') {
+      /* one colour for everyone: one swatch line, the per-follower picks are
+         kept for "Each their own" */
+      const cur = framePal(cfg.frameColor) || FRAME_GOLD;
+      const line = h('div', { class: 'hud-frl', 'data-frameline': '*' });
+      const head = h('div', { class: 'hud-frl-head' });
+      const now = h('span', { class: 'hud-frl-now', title: cur.label });
+      now.style.background = cur.c;
+      head.appendChild(now);
+      head.appendChild(h('span', { class: 'hud-frl-name' }, mode === 'group' ? 'Frame colour' : 'Rim colour'));
+      head.appendChild(h('span', { class: 'hud-frl-state' }, cur.label));
+      line.appendChild(head);
+      const grid = h('div', { class: 'hud-frl-grid' });
+      for (const p of FRAME_PALETTE) {
+        const on = cur.k === p.k;
+        const sw = h('button', { class: 'hud-frs' + (on ? ' on' : ''), type: 'button',
+          'data-stripact': 'frame-all', 'data-color': p.k,
+          title: p.label + (on ? ' (current)' : '') });
+        sw.style.setProperty('--sw', p.c);
+        sw.setAttribute('aria-pressed', on ? 'true' : 'false');
+        grid.appendChild(sw);
+      }
+      line.appendChild(grid);
+      row.body.appendChild(line);
+      row.body.appendChild(h('div', { class: 'hud-el-note' },
+        'Each follower’s own colours are kept for “Each their own”.'));
+      return row;
+    }
+    if (mode !== 'person') row.body.appendChild(h('div', { class: 'hud-el-note' },
+      'Colours below are kept, and show again in “Each their own”.'));
+    const list = h('div', { class: 'hud-frl-list' + (mode !== 'person' ? ' is-idle' : '') });
+    const frames = assignFrames(followers);
+    followers.forEach(function (m, i) {
+      const key = frameKeyOf(m);
+      if (!key) return;
+      const fr = frames[i];
+      const line = h('div', { class: 'hud-frl', 'data-frameline': key });
+      const head = h('div', { class: 'hud-frl-head' });
+      const now = h('span', { class: 'hud-frl-now', title: (framePal(fr.k) || { label: 'Auto' }).label });
+      now.style.background = fr.c;
+      head.appendChild(now);
+      head.appendChild(h('span', { class: 'hud-frl-name', title: m.name || '' }, m.name || '—'));
+      /* the colour's name; the lit Auto chip beside it already says whether
+         it was picked or chosen for her */
+      head.appendChild(h('span', { class: 'hud-frl-state' }, (framePal(fr.k) || {}).label || ''));
+      const auto = elChip('data-stripact', 'frame', 'Auto',
+        fr.picked ? 'Let ' + (m.name || 'her') + '’s colour be chosen for her again'
+                  : (m.name || 'Her') + '’s colour is chosen for her', !fr.picked);
+      auto.setAttribute('data-fkey', key);
+      auto.setAttribute('data-color', '');
+      head.appendChild(auto);
+      line.appendChild(head);
+      const grid = h('div', { class: 'hud-frl-grid' });
+      for (const p of FRAME_PALETTE) {
+        const on = fr.picked && fr.k === p.k;
+        const sw = h('button', { class: 'hud-frs' + (on ? ' on' : ''), type: 'button',
+          'data-stripact': 'frame', 'data-fkey': key, 'data-color': p.k,
+          title: p.label + ' — ' + (m.name || 'her') + (on ? ' (current)' : '') });
+        sw.style.setProperty('--sw', p.c);
+        sw.setAttribute('aria-pressed', on ? 'true' : 'false');
+        grid.appendChild(sw);
+      }
+      line.appendChild(grid);
+      list.appendChild(line);
+    });
+    row.body.appendChild(list);
+    return row;
+  }
   function buildStripSection() {
     const sec = shelfSection('strip', 'Followers HUD',
       'The on-screen portrait strip — where it sits, what each face shows, and the keys that drive it. ' +
@@ -4830,6 +5376,7 @@
     row.appendChild(head);
     const body = h('div', { class: 'hud-el-body' });
     body.appendChild(sizeRow('panel', 'Size'));
+    body.appendChild(squeezeRow());
     body.appendChild(bgChipRow('strip'));
     const chips = h('div', { class: 'hud-el-chips' });
     /* ✥ Place: the ONE control that puts the strip into edit dress. It is a
@@ -4870,6 +5417,9 @@
     }
     shRow.body.appendChild(shChips);
     sec.appendChild(shRow);
+
+    /* ---- 2b. frames: mode, opacity, a colour per follower (2026-10-13) --- */
+    sec.appendChild(buildFrameRow());
 
     /* ---- 3. what each face carries --------------------------------------- */
     const fRow = stripRow('strip-face', 'On each face', 'level badge direction distance health magicka stamina bars');
@@ -5044,6 +5594,12 @@
       (cfg.showSt === true ? 'S' : '') +
       (strip.arming ? 'a' : '') + (strip.navArming ? 'A' : '') +
       keyLabelOf(strip.key) + '/' + keyLabelOf(strip.navKey));
+    /* frames: the mode, the opacity and who wears what (the Frames row lists
+       the people on the strip, so the roster is structural for it too) */
+    p.push('sq' + Math.round(num(cfg.squeezePct, 0)) + cfg.orient);
+    p.push('f' + cfg.frameMode + cfg.frameColor + stripOpacityPct() + followers.map(function (m) {
+      return frameKeyOf(m) + '=' + (m.frame || '') + ':' + (m.name || '');
+    }).join(','));
     /* 2026-08-19: the ⬒ Background row's own state. Without it a pick / scale
        / opacity / fit / clear applied to the WIDGET but left the shelf row
        showing the old text (and, after a clear, dead knobs that did nothing),
@@ -5104,6 +5660,13 @@
     el.opts.appendChild(buildElSection('world', 'World', ['season']));
     /* The ward rides the free layer too; combat-flavoured, so its own card. */
     el.opts.appendChild(buildElSection('ward', 'Ward', ['ward']));
+    /* Quick Light: a status lamp for another mod, like the loot lamp — its
+       own card so a search for "light" lands on one row, not inside Ward's. */
+    el.opts.appendChild(buildElSection('qlight', 'Quick Light', ['qlight']));
+    /* The loot feed: its rows, time and the game-line switch are edited on the
+       widget's own card in edit mode (lfCard), like My items' Rows stepper. */
+    el.opts.appendChild(buildElSection('lootFeed', 'Loot feed', ['lootFeed'],
+      'Turn it on, then set rows, how long each stays and whether the game’s own “added” lines still show — on the feed itself.'));
     el.opts.appendChild(buildElSection('calendar', 'Date & season', ALMANAC_KEYS, 'One rectangle. Choose the day, month name and season independently.'));
     el.opts.appendChild(buildElSection('sunhelm', 'SunHelm needs', NEED_KEYS, 'Turn on Survival needs, then choose what to show. Icons only fits the trio in one clock-sized rectangle; separate mode gives each need its own position and size.'));
     el.opts.appendChild(buildElSection('clockstyle', 'Clock appearance', CLOCK_KEYS,
@@ -5112,6 +5675,13 @@
       'Small print, everywhere at once.'));
     /* the strip's PLACEMENT only — the separation Rober asked for */
     el.opts.appendChild(buildStripSection());
+    /* Detailed MiniMap (2026-10-09, hud-minimap.js): its section is built
+       there, from mmCfgState. Guarded — a throw in it must cost the section,
+       never the shelf (an uncaught error takes the whole renderer down). */
+    if (window.HudMinimap && typeof window.HudMinimap.section === 'function') {
+      try { el.opts.appendChild(window.HudMinimap.section()); }
+      catch (err) { toGame('hudLog', 'minimap section threw: ' + err.message); }
+    }
     el.opts.appendChild(h('div', { class: 'hud-opt-note' },
       'Every element is its own row — switch it on, set its size, float it out of the panel, ' +
       'or link it into a group that moves as one. The presets above set every switch at once. ' +
@@ -5250,6 +5820,15 @@
   /* Opened from OUTSIDE the view: C++ relays the deck's "configure this on
      screen" here after it has armed edit mode (main.cpp hudCfg op:'shelf').
      Marker: hud-shelf-open. */
+  /* What hud-minimap.js may ask of the shelf — three verbs, nothing else of
+     this file's state leaks out. `rebuild` forces past the signature check:
+     the minimap's state is not part of settingsSig (it arrives on its own
+     bridge), so a reply has to say "redraw" out loud. */
+  window.HudShelfApi = {
+    rebuild: function () { if (cfgOpen) { cfgSig = ''; buildSettings(); } },
+    reveal: function (key) { revealInShelf(key); },
+    isOpen: function () { return !!cfgOpen; },
+  };
   window.hudShelf = function (s) {
     const j = (typeof s === 'string' && s.charAt(0) === '{') ? parse(s) : s;
     const key = (j && typeof j === 'object') ? String(j.key || '') : String(s || '');
@@ -5317,9 +5896,47 @@
         stripCfg('shape', { shape: s });
         buildSettings();
         return;
+      } else if (st === 'frame-mode') {
+        const md = t.getAttribute('data-mode');
+        if (FRAME_MODES.indexOf(md) === -1) return;
+        cfg.frameMode = md; applyFrames(); glidePlate(null);
+        stripCfg('frameMode', { mode: md });
+        buildSettings();
+        return;
+      } else if (st === 'frame-all') {
+        const color = t.getAttribute('data-color') || '';
+        if (!framePal(color)) return;
+        cfg.frameColor = color; applyFrames();
+        stripCfg('frameColor', { color: color });
+        buildSettings();
+        return;
+      } else if (st === 'squeeze') {
+        const dir = Number(t.getAttribute('data-dir')) || 0;
+        cfg.squeezePct = dir === 0 ? 0 : clamp(Math.round(num(cfg.squeezePct, 0)) + dir * SQ_STEP, 0, 100);
+        applySqueeze(); applyPlacement(); saveCfg();
+        buildSettings();
+        return;
+      } else if (st === 'opac') {
+        const dir = Number(t.getAttribute('data-dir')) || 0;
+        const next = dir === 0 ? 100 : clamp(stripOpacityPct() + dir * 10, 20, 100);
+        cfg.stripOpacity = next / 100; applyFrames();
+        stripCfg('opacity', { pct: next });
+        buildSettings();
+        return;
+      } else if (st === 'frame') {
+        const key = t.getAttribute('data-fkey') || '';
+        const color = t.getAttribute('data-color') || '';
+        if (!key || (color && !framePal(color))) return;
+        /* optimistic: the strip answers the click at once; C++ re-pushes the
+           roster with the same `frame` a moment later */
+        for (const m of followers) if (frameKeyOf(m) === key) { if (color) m.frame = color; else delete m.frame; }
+        render();
+        stripCfg('frame', { key: key, color: color });
+        buildSettings();
+        return;
       } else if (st === 'part') {
         const k = t.getAttribute('data-part');
-        const F = { level: 'showLevel', dir: 'showDir', hp: 'showHp', mk: 'showMk', st: 'showSt' };
+        const F = { level: 'showLevel', dir: 'showDir', hp: 'showHp', mk: 'showMk', st: 'showSt', away: 'showAway' };
         if (!F[k]) return;
         const dflt = (k === 'mk' || k === 'st') ? false : true;
         const cur = (typeof cfg[F[k]] === 'boolean') ? cfg[F[k]] : dflt;
@@ -5442,11 +6059,28 @@
       if (guide) guide.classList.remove('show');   // never strand the snap guide in play
       applyVisible(); setCfgOpen(false);
     }
+    /* the minimap's ghost box rides edit mode (hud-minimap.js) */
+    if (window.HudMinimap && typeof window.HudMinimap.onEdit === 'function') {
+      try { window.HudMinimap.onEdit(editing); } catch (err) { toGame('hudLog', 'minimap onEdit threw: ' + err.message); }
+    }
     // Edit mode reveals the ghost placeholders, so the stack must be re-rendered.
     render();
   }
 
-  let drag = null;   // {mode:'move'|'resize', sx,sy, ox,oy, oscale}
+  let drag = null;   // {mode:'move'|'resize'|'squeeze', sx,sy, ox,oy, oscale, osq}
+  /* Shift for the squeeze, tracked from the KEYBOARD. Ultralight's mouse event
+     has no modifier field at all (ulCreateMouseEvent takes type, x, y, button),
+     so e.shiftKey on the corner's mousedown cannot be trusted in game; key
+     events do arrive while the strip is being edited, because edit mode holds
+     focus. Both are read — whichever says Shift wins. A native key can come
+     as "Unidentified" with only keyCode (the probe README law), hence 16.
+     Cleared only by Shift's own keyup (or blur): a keyup of another key with
+     shiftKey false may just be an engine that never fills the modifiers. */
+  let shiftHeld = false;
+  function isShiftKey(e) { return e.key === 'Shift' || e.keyCode === 16 || e.code === 'ShiftLeft' || e.code === 'ShiftRight'; }
+  window.addEventListener('keydown', function (e) { if (isShiftKey(e)) shiftHeld = true; }, true);
+  window.addEventListener('keyup', function (e) { if (isShiftKey(e)) shiftHeld = false; }, true);
+  window.addEventListener('blur', function () { shiftHeld = false; });
   function onPointerDown(e) {
     if (!editing) return;
     // Clicks inside the settings card belong to the card, never to the drag.
@@ -5468,8 +6102,20 @@
       }
       return;
     }
-    if (role === 'resize') {
-      drag = { mode: 'resize', sx: e.clientX, sy: e.clientY, oscale: cfg.scale };
+    /* The strip may be drawn slid in from its saved spot (keepOnScreen):
+       grabbing it adopts the drawn spot, so it never jumps under the hand. */
+    if (shown) { cfg.x = shown.x; cfg.y = shown.y; shown = null; }
+    if (role === 'resize' && (e.shiftKey || shiftHeld)) {
+      /* Shift held when the corner is grabbed: squeeze sideways instead of
+         scaling (Rober, 2026-10-13). Decided once, at the grab, like the
+         widget rectangles' Shift-drag — letting go of Shift mid-drag does not
+         switch the gesture under the hand. */
+      drag = { mode: 'squeeze', sx: e.clientX, sy: e.clientY, osq: clamp(num(cfg.squeezePct, 0), 0, 100),
+        flip: el.body.classList.contains('hud-handle-left') };
+    } else if (role === 'resize') {
+      /* flip: the handle is on the LEFT side (placeStripHandles), so outward is leftward */
+      drag = { mode: 'resize', sx: e.clientX, sy: e.clientY, oscale: cfg.scale,
+        flip: el.body.classList.contains('hud-handle-left') };
     } else {
       // Anywhere on the panel or the grip moves it.
       drag = { mode: 'move', sx: e.clientX, sy: e.clientY, ox: cfg.x, oy: cfg.y,
@@ -5498,9 +6144,18 @@
       cfg.y = drag.oy + (cfg.anchorV === 'bottom' ? -dy : dy);
       clampToView();
       applyPlacement(true);
+    } else if (drag.mode === 'squeeze') {
+      /* Toward the strip = narrower: leftward for the right-side handle,
+         rightward when it sits on the left (drag.flip). The column and the
+         plate's sides are measured in UNSCALED px under #hud's transform, so
+         the hand's travel is divided by the scale: ~110 screen px at 1x takes
+         it from stock to tightest. */
+      const dx = (drag.flip ? drag.sx - e.clientX : e.clientX - drag.sx) / (num(cfg.scale, 1) || 1);
+      const next = clamp(Math.round(drag.osq - dx / 1.1), 0, 100);
+      if (next !== cfg.squeezePct) { cfg.squeezePct = next; applySqueeze(); }
     } else {
       // Drag the corner out to grow. Diagonal delta / a reference span -> scale.
-      const d = ((e.clientX - drag.sx) + (e.clientY - drag.sy)) / 2;
+      const d = ((drag.flip ? drag.sx - e.clientX : e.clientX - drag.sx) + (e.clientY - drag.sy)) / 2;
       cfg.scale = clamp(drag.oscale + d / 220, SCALE_MIN, SCALE_MAX);
       applyPlacement(true);
     }
@@ -5510,8 +6165,11 @@
   function onPointerUp() {
     if (!drag) return;
     const gearClick = drag.mode === 'move' && drag.gear && !drag.moved;
+    const squeezed = drag.mode === 'squeeze';
     drag = null;
     applyPlacement(); saveCfg();
+    /* the shelf's Width row follows the hand (its signature carries the squeeze) */
+    if (squeezed && cfgOpen) buildSettings(true);
     /* Build marker (hd-markers.json: "hud-strip-gear-shelf"). */
     if (gearClick) {
       toGame('hudLog', 'strip gear: opening the widget shelf');
@@ -5559,7 +6217,12 @@
     if (typeof j.showHp === 'boolean') cfg.showHp = j.showHp;
     if (typeof j.showSt === 'boolean') cfg.showSt = j.showSt;
     if (typeof j.showMk === 'boolean') cfg.showMk = j.showMk;
+    if (typeof j.showAway === 'boolean') cfg.showAway = j.showAway;
     if (SHAPES.indexOf(j.faceShape) !== -1) cfg.faceShape = j.faceShape;
+    if (FRAME_MODES.indexOf(j.frameMode) !== -1) cfg.frameMode = j.frameMode;
+    if (framePal(j.frameColor)) cfg.frameColor = j.frameColor;
+    if (typeof j.stripOpacity === 'number' && isFinite(j.stripOpacity)) cfg.stripOpacity = clamp(j.stripOpacity, 0.2, 1);
+    if (typeof j.squeezePct === 'number' && isFinite(j.squeezePct)) cfg.squeezePct = clamp(Math.round(j.squeezePct), 0, 100);
     if (typeof j.compact === 'boolean') cfg.compact = j.compact;
     // A combined push is accepted so C++ can send one blob if it prefers.
     if (j.widgets && typeof j.widgets === 'object') takeWidgetCfg(j.widgets);
@@ -5699,13 +6362,14 @@
     const top = h('div', { class: 'hud-nc-top' });
     /* faceEl, not a second portrait builder: same crop math, same query-hostile
        retry, same initials fallback the strip already proves in game. */
-    const hue = (typeof m.hue === 'number') ? m.hue : hueOf(nav.sel);
+    const hue = framesNow[nav.sel] || ((typeof m.hue === 'number') ? m.hue : hueOf(nav.sel));
     top.appendChild(h('div', { class: 'hud-nc-face' }, faceEl(m, hue)));
     const id = h('div', { class: 'hud-nc-id' });
     id.appendChild(h('div', { class: 'hud-nc-name', title: m.name || '' }, m.name || '—'));
     const chips = h('div', { class: 'hud-nc-chips' });
     if (m.lvl != null) chips.appendChild(h('span', { class: 'hud-nc-chip is-lvl' }, 'Level ' + m.lvl));
     if (m.dead) chips.appendChild(h('span', { class: 'hud-nc-chip is-dead' }, 'Dead'));
+    else if (m.away) chips.appendChild(h('span', { class: 'hud-nc-chip is-away' }, 'Away — not near you'));
     else if (typeof m.following === 'boolean')
       chips.appendChild(h('span', { class: 'hud-nc-chip' }, m.following ? 'Following' : 'Waiting'));
     if (m.dir != null || m.dist != null)
@@ -5779,6 +6443,18 @@
   window.hudData = function (s) {
     const j = (typeof s === 'string') ? parse(s) : s;
     followers = Array.isArray(j) ? j : (j && Array.isArray(j.followers) ? j.followers : []);
+    /* A FIXED order (2026-10-12, marker hud-strip-stable-order). The game
+       sends actors in the engine's process-list order, which reshuffles as
+       they move: two followers swapped every few seconds, every swap rebuilt
+       both faces, and their colours traded places. People here first, away
+       last, then by name. */
+    followers = followers.slice().sort(function (a, b) {
+      const aw = (a && a.away) ? 1 : 0, bw = (b && b.away) ? 1 : 0;
+      if (aw !== bw) return aw - bw;
+      const an = String((a && a.name) || '').toLowerCase(), bn = String((b && b.name) || '').toLowerCase();
+      if (an !== bn) return an < bn ? -1 : 1;
+      return (Number(a && a.formId) || 0) - (Number(b && b.formId) || 0);
+    });
     render();
     applyStripBg();   // the strip's box may have grown/shrunk with the roster
   };
@@ -5827,6 +6503,16 @@
       /* round 4: quick2 carries a list as well as a placement. Read it under
          the same vocabulary clamps — a hand-edited sidecar must not be able to
          put a widget into a shape this view cannot draw. */
+      /* the loot feed's options ride its placement object (C++ clamps them
+         too; these are the same bounds, so a hand edit cannot break a row) */
+      const lfcfg = W.lootFeed;
+      if (lfcfg && typeof lfcfg === 'object' && !lf.dirty) {
+        if (isNum(lfcfg.max)) lf.max = clamp(Math.round(lfcfg.max), 1, 12);
+        if (isNum(lfcfg.lifeMs)) lf.lifeMs = clamp(Math.round(lfcfg.lifeMs), 1500, 15000);
+        if (typeof lfcfg.value === 'boolean') lf.value = lfcfg.value;
+        if (typeof lfcfg.hideVanilla === 'boolean') lf.hideVanilla = lfcfg.hideVanilla;
+        lfApplyCfg();
+      }
       const q2cfg = W.quick2;
       if (q2cfg && typeof q2cfg === 'object') {
         if (isNum(q2cfg.max)) q2.max = clamp(Math.round(q2cfg.max), 1, Q2_MAX_ITEMS);
@@ -6090,6 +6776,10 @@
     get cfgOpen() { return cfgOpen; },
     render, renderWidgets, setEditing, saveCfg,
     setCfgOpen, buildSettings, applyPreset, activePreset,
+    /* frames (2026-10-13): the palette the shelf and the scenario read */
+    FRAME_PALETTE, assignFrames,
+    /* squeeze (2026-10-13): the scenario arms the strip's edit dress to reach the corner */
+    setStripEdit, applySqueeze,
     /* the ⚙ card's filter-as-you-type (2026-08-18) */
     setOptFilter: function (s) { cfgFilter = String(s || ''); const i = document.getElementById('hud-cfg-filter'); if (i) i.value = cfgFilter; applyOptFilter(); },
     applyOptFilter, applyPlacement,
@@ -6145,6 +6835,8 @@
     lootStatus: need('hud-fw-lootStatus'),
     season: need('hud-fw-season'),
     ward: need('hud-fw-ward'),
+    qlight: need('hud-fw-qlight'),
+    lootFeed: need('hud-fw-lootFeed'),
   };
 
   function eqBySlot(slot) {
@@ -6292,7 +6984,11 @@
     else { s.left = Math.round(num(w.x, 0)) + 'px'; }
     if (w.anchorV === 'bottom') { s.bottom = Math.round(num(w.y, 0)) + 'px'; s.top = 'auto'; }
     else { s.top = Math.round(num(w.y, 0)) + 'px'; s.bottom = 'auto'; }
-    s.transform = tx + 'scale(' + num(w.scale, 1) + ')';
+    /* The lantern is the one free widget sized by LAYOUT (qlSize), so the cut
+       it picks matches the size actually drawn. Everything else keeps the
+       transform. */
+    if (root.id === 'hud-fw-qlight') { s.transform = tx; qlSize(root, num(w.scale, 1)); }
+    else s.transform = tx + 'scale(' + num(w.scale, 1) + ')';
     s.transformOrigin = (w.anchorV === 'bottom' ? 'bottom' : 'top') + ' ' +
       (w.anchorH === 'right' ? 'right' : w.anchorH === 'center' ? 'center' : 'left');
     s.opacity = String(editing ? 1 : num(w.opacity, 1));
@@ -6326,6 +7022,7 @@
        something the player can act on. */
     season: 'Season — needs Seasons of Skyrim',
     ward: 'Ward — learn a ward spell to light this up',
+    qlight: 'Quick Light — needs Quick Light SE',
   };
 
   /* The ward widget's row: the live.ward document reshaped into the slot-card
@@ -6366,7 +7063,7 @@
   }
 
   /* ---- render ------------------------------------------------------------ */
-  const fwSigs = { handR: '', handL: '', voice: '', quick: '', quick2: '', lootStatus: '', season: '', ward: '' };
+  const fwSigs = { handR: '', handL: '', voice: '', quick: '', quick2: '', lootStatus: '', season: '', ward: '', qlight: '', lootFeed: '' };
   let fwSelected = '';
 
   function fwArtFor(row) {
@@ -6792,16 +7489,268 @@
     return nx.name + ' in ' + d + ' days';
   }
 
+  /* ======================================================================
+     QUICK LIGHT STATUS (`qlight`, 2026-10-12).
+     Rober: "quick light status, when its on shows a draggable icon on screen
+     that shows lit up or dim, make sure its very high quality and not an
+     issue of quality when small on screen".
+
+     One lantern: lit (warm glass, flame, halo) while Quick Light SE's light is
+     on, dim pewter with dark glass while it is off. The state is the mod's own
+     test (QuickLight::ReadState in C++), so a light toggled by Quick Light's
+     own key lights this too.
+
+     QUALITY AT SMALL SIZES is the part that needed engineering. Ultralight
+     samples an <img> at its drawn size with NO mipmaps (ultralight-probe,
+     2026-10-10), so one big painting shrunk to ~30px turns its strokes to
+     sub-pixel mush (the 2026-10-06 readout-glyph complaint, the 10-10 icon
+     mips). So the art is a LADDER of cuts drawn natively at each size with
+     size-tuned strokes (tools/make_ql_lantern.py, icons/custom/ql/), and the
+     widget is SIZED BY LAYOUT (--ql-h, set in qlSize from the widget's own
+     scale; placeFree leaves its transform scale-free) so the box qlCut reads
+     IS the drawn size. qlCut picks the largest cut not taller than the box:
+     every file is 1.67-2x what it is drawn at. The ladder is this widget's
+     own mip set, so its <img>s carry data-no-mip (hd-icon-mip.js).
+
+     Motion is one-shot, the HUD's standing law (no idle loops): the lit and
+     dim cuts are stacked and cross-fade, and lighting it fires one flare.
+     ====================================================================== */
+  const QL_BASE = 64;                       // lantern height at scale 1, px
+  const QL_LADDER = [30, 36, 44, 52, 60, 72, 88, 104, 124, 150];
+  function qlCut(px) {
+    let d = QL_LADDER[0];
+    for (const c of QL_LADDER) if (c <= px) d = c;
+    return d;
+  }
+  /* live.qlight only when Quick Light can actually be on: installed AND its
+     MCM master up. Anything else is the ghost's business, not a dim lantern. */
+  function qlData() {
+    const q = live.qlight;
+    return (q && q.running) ? q : null;
+  }
+  function qlSig() {
+    const w = wfree.qlight;
+    if (!qlData()) {
+      const q = live.qlight;
+      return ['ghost', editing ? 'e' : '', wcfg.qlight ? '1' : '', q ? 'mcm' : 'none'].join('|');
+    }
+    /* deliberately WITHOUT q.on: lit/dim is applied in place (qlApply), so a
+       flip cross-fades instead of rebuilding the card */
+    return ['ql', editing ? 'e' : '', w.bare ? 'b' : '', w.showLabel === false ? 'nl' : ''].join('|');
+  }
+  /* Layout size + cut for the current scale. Called from placeFree on every
+     placement (drag, wheel, ＋/−, a config push), so the art is re-chosen the
+     moment the size moves; the <img> sources change only when the CUT does. */
+  function qlSize(root, scale) {
+    const hgt = Math.round(QL_BASE * clamp(num(scale, 1), 0.5, 2.5));
+    const wid = Math.round(hgt * 0.625);   // the art is 5:8 (make_ql_lantern ql_w)
+    root.style.setProperty('--ql-h', hgt + 'px');
+    root.style.setProperty('--ql-w', wid + 'px');
+    root.style.setProperty('--ql-s', String(hgt / QL_BASE));
+    const d = qlCut(hgt);
+    for (const st of ['lit', 'dim']) {
+      const im = root.querySelector('.hud-ql-' + st);
+      if (!im) continue;
+      im.width = wid; im.height = hgt;
+      if (im.getAttribute('data-cut') !== String(d)) {
+        im.setAttribute('data-cut', String(d));
+        im.src = 'icons/custom/ql/ql-' + st + '-' + d + '.png';
+      }
+    }
+  }
+  function buildQl() {
+    const root = elFree.qlight;
+    root.innerHTML = '';
+    const card = h('div', { class: 'hud-fw-card hud-ql-card fw-in' });
+    if (!qlData()) {
+      card.classList.add('is-ghost');
+      /* name the one thing the player can act on: the mod is missing, or its
+         own MCM has it switched off */
+      card.appendChild(h('div', { class: 'hud-fw-ghost' },
+        live.qlight ? 'Quick Light — switched off\nin its MCM' : FW_GHOST.qlight));
+      root.appendChild(card);
+      return;
+    }
+    const art = h('div', { class: 'hud-ql-art' });
+    /* the light it throws: a smooth gradient, so magnifying it costs nothing */
+    /* data-no-mip: the ladder IS this widget's mip set (icons/custom/ql/),
+       so hd-icon-mip.js must not retarget or re-shrink it */
+    art.appendChild(h('img', { class: 'hud-ql-halo', src: 'icons/custom/ql/ql-halo.png', alt: '', draggable: false, 'data-no-mip': '1' }));
+    art.appendChild(h('img', { class: 'hud-ql-img hud-ql-dim', alt: '', draggable: false, 'data-no-mip': '1' }));
+    art.appendChild(h('img', { class: 'hud-ql-img hud-ql-lit', alt: '', draggable: false, 'data-no-mip': '1' }));
+    card.appendChild(art);
+    if (wfree.qlight.showLabel !== false) {
+      card.appendChild(h('div', { class: 'hud-fw-name hud-ql-name' }, 'Quick Light'));
+      card.appendChild(h('div', { class: 'hud-ql-st' }, ''));
+    }
+    root.appendChild(card);
+    qlSize(root, wfree.qlight.scale);
+    qlApply(root, true);
+  }
+  /* Lit or dim, in place. The flare fires only on a real OFF -> ON change
+     seen by this card — never on a build, so opening a menu and coming back
+     does not relight it. */
+  function qlApply(root, first) {
+    const q = qlData();
+    const card = root.querySelector('.hud-ql-card');
+    if (!q || !card || card.classList.contains('is-ghost')) return;
+    const on = q.on === true;
+    if (card.getAttribute('data-on') === (on ? '1' : '0')) return;
+    card.setAttribute('data-on', on ? '1' : '0');
+    setClass(card, 'is-lit', on);
+    setClass(card, 'is-dim', !on);
+    if (on && !first) {
+      card.classList.remove('ql-ignite');
+      void card.offsetWidth;               // restart the one-shot
+      card.classList.add('ql-ignite');
+    }
+    setText(card.querySelector('.hud-ql-st'), on ? 'Lit' : 'Out');
+    const art = card.querySelector('.hud-ql-art');
+    if (art) art.title = 'Quick Light — ' + (on ? 'lit' : 'out');
+  }
+
+  /* ======================================================================
+     LOOT FEED (`lootFeed`, 2026-10-12).
+     Rober: "loot notifications maybe top left, where they sort of animation
+     slide in as iharvest picks stuff up? and others fade away (limit
+     configurable)" … "use actual item icons? like hook to inventory".
+
+     The rows are HDLootFeed's (hud-lootfeed.js): one per item, repeats merge
+     into a count, the oldest leaves past `max`. C++ (LootFeed, loot_feed.cpp)
+     pushes `lfPush([...])` once per frame that had pickups, each row carrying
+     the item's real render when the deck has one.
+
+     The rows must OUTLIVE this widget's rebuilds — a rebuild or a hidden-in-
+     menus pass wipes the free root, and a row mid-slide would vanish. So the
+     feed lives in ONE host element made once (lfEnsure) and re-attached after
+     any wipe; buildLootFeed only ever adds or removes the edit-mode card.
+     In edit mode that card is the widget: a dashed area the size of `max`
+     rows with three sample rows in it (so placement shows the real footprint)
+     and the options, edited in place like My items' Rows stepper.
+     ====================================================================== */
+  let lfHostEl = null;
+  function lfModCfg() { return { max: lf.max, lifeMs: lf.lifeMs, value: lf.value, grow: 'down', scale: 1 }; }
+  function lfApplyCfg() { if (window.HDLootFeed && lfHostEl) HDLootFeed.setCfg(lfModCfg()); }
+  function lfEnsure() {
+    if (!window.HDLootFeed) return null;
+    if (!lfHostEl) {
+      lfHostEl = h('div', { class: 'hud-lf-host' });
+      HDLootFeed.mount(lfHostEl);
+      HDLootFeed.setCfg(lfModCfg());
+    }
+    const root = elFree.lootFeed;
+    if (root && lfHostEl.parentNode !== root) root.appendChild(lfHostEl);
+    return lfHostEl;
+  }
+  function lfSig() {
+    return ['lf', editing ? 'e' : '', lf.max, lf.lifeMs, lf.value ? 'v' : '', lf.hideVanilla ? 'h' : ''].join('|');
+  }
+  const LF_LIFE = [2000, 3000, 4500, 6000, 8000, 10000, 15000];
+  function lfSecs(ms) { const v = ms / 1000; return (v % 1 ? v.toFixed(1) : String(v)) + ' s'; }
+  function lfBtn(act, label, title, extra) {
+    return h('button', { class: 'hud-lfx-btn' + (extra ? ' ' + extra : ''), 'data-lfact': act, title: title }, label);
+  }
+  /* What a row looks like, for the edit card only — the same classes the live
+     rows wear, drawn in flow instead of slid in. */
+  const LF_SAMPLES = [
+    { name: 'Wheat', n: '×3', art: 'gl-herb', val: 15 },
+    { name: 'Gold', n: '+25', art: 'gl-coins', gold: true },
+    { name: 'Flawless Garnet', n: '', art: 'gl-gem', val: 400, rich: true },
+  ];
+  function lfSampleRow(sm) {
+    const row = h('div', { class: 'hud-lf-row lf-in lfx-sample' + (sm.gold ? ' lf-k-gold' : '') + (sm.rich ? ' lf-rich' : '') });
+    const art = h('span', { class: 'hud-lf-art' });
+    art.appendChild(h('img', { src: 'icons/custom/' + sm.art + '.png', alt: '', draggable: false }));
+    row.appendChild(art);
+    row.appendChild(h('span', { class: 'hud-lf-name' }, sm.name));
+    row.appendChild(h('span', { class: 'hud-lf-count' }, sm.n));
+    if (lf.value && sm.val) {
+      const v = h('span', { class: 'hud-lf-val' });
+      v.appendChild(h('img', { src: 'icons/custom/gl-coins.png', alt: '', draggable: false }));
+      v.appendChild(document.createTextNode(String(sm.val)));
+      row.appendChild(v);
+    }
+    return row;
+  }
+  function buildLootFeed() {
+    const root = elFree.lootFeed;
+    for (const c of Array.prototype.slice.call(root.children)) if (c !== lfHostEl) root.removeChild(c);
+    lfEnsure();
+    if (!editing) return;
+    /* The dashed area comes FIRST and sits on the widget's own corner, because
+       that corner is where live rows hang from (the host is the root's last
+       child, at its origin): what you place here is exactly where they land.
+       Title and options follow underneath. */
+    const card = h('div', { class: 'hud-fw-card hud-lfx-card fw-in' });
+    const area = h('div', { class: 'hud-lfx-area' });
+    area.style.height = (lf.max * 58 - 6) + 'px';
+    for (let i = 0; i < Math.min(LF_SAMPLES.length, lf.max); i++) area.appendChild(lfSampleRow(LF_SAMPLES[i]));
+    card.appendChild(area);
+    const ed = h('div', { class: 'hud-lfx-edit' });
+    ed.appendChild(h('div', { class: 'hud-lfx-title' }, 'Loot feed'));
+    const r1 = h('div', { class: 'hud-lfx-edrow' });
+    const rows = h('div', { class: 'hud-lfx-step' });
+    rows.appendChild(h('span', { class: 'hud-lfx-lab' }, 'Rows'));
+    rows.appendChild(lfBtn('rows-', '−', 'Show one row fewer — past it, the oldest fades early'));
+    rows.appendChild(h('b', { class: 'hud-lfx-n' }, String(lf.max)));
+    rows.appendChild(lfBtn('rows+', '＋', 'Show one row more'));
+    r1.appendChild(rows);
+    const life = h('div', { class: 'hud-lfx-step' });
+    life.appendChild(h('span', { class: 'hud-lfx-lab' }, 'Stays'));
+    life.appendChild(lfBtn('life-', '−', 'Each row leaves sooner'));
+    life.appendChild(h('b', { class: 'hud-lfx-n' }, lfSecs(lf.lifeMs)));
+    life.appendChild(lfBtn('life+', '＋', 'Each row stays longer'));
+    r1.appendChild(life);
+    ed.appendChild(r1);
+    const r2 = h('div', { class: 'hud-lfx-edrow' });
+    r2.appendChild(lfBtn('value', (lf.value ? '✓ ' : '') + 'Show value',
+      'The coin and what the stack is worth, on each row', lf.value ? 'is-on' : ''));
+    r2.appendChild(lfBtn('vanilla', (lf.hideVanilla ? '✓ ' : '') + 'Hide the game’s “added” lines',
+      'While the feed is on, the game’s own top-left “Wheat added” messages are not shown (only those — every other message still shows)',
+      lf.hideVanilla ? 'is-on' : ''));
+    ed.appendChild(r2);
+    ed.appendChild(h('div', { class: 'hud-lfx-note' },
+      'Pictures are the items’ own renders. A new item shows its type until the game is next paused in a menu, then keeps its picture.'));
+    card.appendChild(ed);
+    root.insertBefore(card, lfHostEl || null);
+  }
+  function lfAct(act) {
+    if (act === 'rows-') lf.max = clamp(lf.max - 1, 1, 12);
+    else if (act === 'rows+') lf.max = clamp(lf.max + 1, 1, 12);
+    else if (act === 'life-' || act === 'life+') {
+      let i = 0;
+      for (let k = 0; k < LF_LIFE.length; k++) if (Math.abs(LF_LIFE[k] - lf.lifeMs) < Math.abs(LF_LIFE[i] - lf.lifeMs)) i = k;
+      lf.lifeMs = LF_LIFE[clamp(i + (act === 'life+' ? 1 : -1), 0, LF_LIFE.length - 1)];
+    }
+    else if (act === 'value') lf.value = !lf.value;
+    else if (act === 'vanilla') lf.hideVanilla = !lf.hideVanilla;
+    else return;
+    lf.dirty = true;
+    lfApplyCfg();
+    renderFree();
+    saveWidgetCfg();
+  }
+  /* C++ LootFeed's push: one array per frame that had pickups. */
+  window.lfPush = function (rows) {
+    if (!wcfg.lootFeed) return;
+    if (!lfEnsure()) return;
+    try { HDLootFeed.push(rows); } catch (e) {}
+  };
+
   function renderFree() {
     for (const k of FREE_KEYS) {
       const root = elFree[k];
       const on = fwGate(k);
-      const row = (k === 'quick' || k === 'quick2' || k === 'lootStatus' || k === 'season')
+      const row = (k === 'quick' || k === 'quick2' || k === 'lootStatus' || k === 'season' || k === 'qlight' || k === 'lootFeed')
         ? null : k === 'ward' ? wardRow() : freeRow(k);
       const has = k === 'quick' ? quickList().length > 0
         : k === 'quick2' ? q2Rows().length > 0
         : k === 'lootStatus' ? !!lootState()
         : k === 'season' ? !!seasonData()
+        : k === 'qlight' ? !!qlData()
+        /* the feed is on screen whenever it is on: an empty feed draws nothing,
+           and its rows must survive the moments between pickups */
+        : k === 'lootFeed' ? true
         : !!(row && row.kind !== 'empty');
       /* ROUND 3: edit mode draws it whether its switch is on or off. An off
          widget used to be display:none, which left nothing to place — see the
@@ -6825,6 +7774,8 @@
         : k === 'quick2' ? quick2Sig()
         : k === 'lootStatus' ? lootSig()
         : k === 'season' ? seasonSig()
+        : k === 'qlight' ? qlSig()
+        : k === 'lootFeed' ? lfSig()
         : slotCardSig(k, row)) + (ghosted ? '|editoff' : '');
       if (sig !== fwSigs[k]) {
         fwSigs[k] = sig;
@@ -6832,6 +7783,8 @@
         else if (k === 'quick2') buildQuick2();
         else if (k === 'lootStatus') buildLoot();
         else if (k === 'season') buildSeasonCard();
+        else if (k === 'qlight') buildQl();
+        else if (k === 'lootFeed') buildLootFeed();
         else buildSlotCard(k, row);
         scheduleIcons();
       }
@@ -6857,6 +7810,8 @@
           const c = art.querySelector('.hud-pin-count');
           if (c && !r.missing && isNum(r.count)) setBump(c, comma(r.count));
         });
+      } else if (k === 'qlight') {
+        qlApply(root);
       } else if (k === 'season') {
         /* Volatile: the day of the month and the countdown. Both move once a
            game day, so they are written in place instead of rebuilding the card
@@ -6939,6 +7894,8 @@
     if (qb) { q2Act(qb.getAttribute('data-q2act'), qb); e.preventDefault(); e.stopPropagation(); return; }
     const lb = e.target.closest ? e.target.closest('[data-lootact]') : null;
     if (lb) { lootAct(lb.getAttribute('data-lootact')); e.preventDefault(); e.stopPropagation(); return; }
+    const fb = e.target.closest ? e.target.closest('[data-lfact]') : null;
+    if (fb) { lfAct(fb.getAttribute('data-lfact')); e.preventDefault(); e.stopPropagation(); return; }
     if (fwSelected !== k) fwSelected = k;
     renderFree();
     revealInShelf(shelfKeyForFree(k));
@@ -7374,6 +8331,10 @@
   window.__hud.freeRow = freeRow;
   window.__hud.FREE_KEYS = FREE_KEYS;
   window.__hud.seasonData = seasonData;
+  window.__hud.qlCut = qlCut;
+  window.__hud.qlData = qlData;
+  window.__hud.lf = lf;
+  window.__hud.lfAct = lfAct;
   window.__hud.seasonNextText = seasonNextText;
   window.__hud.SEASON_ART = SEASON_ART;
   window.__hud.SICON = SICON;

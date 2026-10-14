@@ -107,7 +107,7 @@
 }
 .fd-catic-tile .fd-catic-lbl {
   max-width: 100%;
-  font-size: 11px; line-height: 1.25;
+  font-size: 12px; line-height: 1.25;
   color: #6f6a5e;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

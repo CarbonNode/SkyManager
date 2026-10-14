@@ -18,6 +18,14 @@
  *  A row the deck cannot write is drawn dimmed with its reason on the row —
  *  never hidden, and never given a control that would lie about working.
  *
+ *  A THIRD source (2026-10-12, Rober: IHarvest NG, "skymanager detects add a
+ *  customization menu"): SKSE mods whose whole configuration is one ini
+ *  (src/ini_mods.cpp, mcIni* bridge). They are listed only when their DLL is
+ *  loaded, sit at the top of the list, and every row is writable, but a
+ *  write applies on the NEXT LAUNCH (the mod reads its ini once). A row
+ *  whose file value differs from what the game started with says so on the
+ *  row, and the mod's own live menu is one button away.
+ *
  *  Mounted INSIDE #panel (inset:0), the same idiom as #hk-icon-modal, so it
  *  inherits --ui-scale instead of needing its own scale maths.
  *  No range inputs anywhere — the deck's standing law; sliders are steppers.
@@ -33,8 +41,9 @@ window.HDMcm = (function () {
   }
 
   var st = { mods: [], count: 0, writable: 0, loaded: false, loading: false,
-             syLoaded: false, syWhy: '' };
-  var ui = { open: false, q: '', mod: '', toastT: null, err: '', scanning: '' };
+             syLoaded: false, syWhy: '', iniLoaded: false };
+  /* want: a mod open() was asked to show that has not arrived yet */
+  var ui = { open: false, q: '', mod: '', want: '', toastT: null, err: '', scanning: '' };
 
   var CHEV = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
     'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
@@ -44,7 +53,12 @@ window.HDMcm = (function () {
   window.mcStateResult = function (d) {
     st.loading = false;
     if (!d || typeof d !== 'object') { st.loaded = true; render(); return; }
-    st.mods = Array.isArray(d.mods) ? d.mods : [];
+    /* Only the MCM Helper rows are replaced. The SkyUI list and the ini mods
+       arrive on their own bridges, often FIRST (this scan is the slow one),
+       and must survive it. Order: ini mods, MCM Helper, SkyUI. */
+    var ini = st.mods.filter(function (m) { return m.src === 'ini'; });
+    var sky = st.mods.filter(function (m) { return m.src === 'skyui'; });
+    st.mods = ini.concat(Array.isArray(d.mods) ? d.mods : [], sky);
     st.count = d.count || 0;
     st.writable = d.writable || 0;
     st.loaded = true;
@@ -71,6 +85,58 @@ window.HDMcm = (function () {
       render();
     }
   };
+
+  /* ---- INI-configured SKSE mods (ini_mods.cpp) -------------------------
+     One small file read per mod, so the whole list arrives at once with its
+     rows. They go to the TOP: there are few of them, and each is here
+     because its DLL is loaded right now. */
+  window.mcIniResult = function (d) {
+    st.iniLoaded = true;
+    var mods = (d && Array.isArray(d.mods)) ? d.mods : [];
+    for (var i = 0; i < mods.length; i++) {
+      mods[i].src = 'ini';
+      var pg = mods[i].pages || [];
+      for (var p = 0; p < pg.length; p++) {
+        var rows = pg[p].rows || [];
+        for (var r = 0; r < rows.length; r++) rows[r].__ini = true;
+      }
+    }
+    st.mods = mods.concat(st.mods.filter(function (m) { return m.src !== 'ini'; }));
+    if (ui.want) {
+      for (var w = 0; w < mods.length; w++) if (mods[w].id === ui.want) ui.mod = ui.want;
+      ui.want = '';
+    }
+    if (!ui.mod && st.mods.length) ui.mod = st.mods[0].id;
+    render();
+    /* the Omni's warm() asked for this; a search typed before it landed must redraw */
+    if (window.HDOmni && typeof HDOmni.refresh === 'function') HDOmni.refresh();
+  };
+
+  window.mcIniSetResult = function (d) {
+    if (!d || typeof d !== 'object') return;
+    if (d.msg) toast(d.msg, !d.ok);
+    if (!d.ok) return;
+    /* C++ read the file back after writing: this is what it now says. */
+    var row = iniRow(d.mod, d.i);
+    if (row) {
+      row.value = d.value;
+      if (d.launch != null) row.launch = d.launch;
+      delete row.why;   /* a missing key is in the file now */
+    }
+    render();
+  };
+
+  function iniRow(modId, i) {
+    for (var m = 0; m < st.mods.length; m++) {
+      if (st.mods[m].src !== 'ini' || st.mods[m].id !== modId) continue;
+      var pg = st.mods[m].pages || [];
+      for (var p = 0; p < pg.length; p++) {
+        var rows = pg[p].rows || [];
+        for (var r = 0; r < rows.length; r++) if (rows[r].i === i) return rows[r];
+      }
+    }
+    return null;
+  }
 
   /* ---- SkyUI (Papyrus) MCMs -------------------------------------------
      These arrive as a LIST first (cheap) and are scanned one at a time, on
@@ -181,13 +247,22 @@ window.HDMcm = (function () {
     return el;
   }
 
-  function open(filter) {
+  /* open(filter, modId): modId (optional) opens on that mod -- the Omni's
+     "IHarvest NG settings" row. It may not have arrived yet; mcIniResult
+     honours it when it does. */
+  function open(filter, modId) {
     ensureEl();
     ui.open = true;
     ui.q = filter || '';
+    if (modId) {
+      ui.want = modId;
+      for (var i = 0; i < st.mods.length; i++) if (st.mods[i].id === modId) { ui.mod = modId; ui.want = ''; }
+    }
     $('mc-modal').classList.remove('hidden');
     if (!st.loaded && !st.loading) { st.loading = true; toGame('mcState', '{}'); }
     if (!st.syLoaded) toGame('syList', '{}');
+    /* re-read every open: the file may have changed under us (its own menu) */
+    toGame('mcIni', '{}');
     render();
     var s = $('mc-search');
     if (s) { s.value = ui.q; setTimeout(function () { s.focus(); }, 30); }
@@ -287,8 +362,67 @@ window.HDMcm = (function () {
     return h;
   }
 
+  /* An ini value as the reader sees it: on/off, the enum's word, a number. */
+  function iniShow(r, v) {
+    var t = String(r.type || '').toLowerCase();
+    if (t === 'toggle') return Number(v) >= 1 ? 'on' : 'off';
+    if (t === 'enum' && r.options && r.options[Math.round(Number(v))] != null)
+      return String(r.options[Math.round(Number(v))]);
+    return String(Math.round(Number(v) * 1000) / 1000);
+  }
+  function r4(x) { return Math.round(x * 10000) / 10000; }
+
+  /* An ini row: always writable, written to the file, live NEXT launch.
+     Same controls as an MCM Helper row, plus the info line, a chip when the
+     file no longer matches what this game started with, and a reset to the
+     mod's own default. */
+  function iniRowHtml(modId, r) {
+    var t = String(r.type || '').toLowerCase();
+    var v = Number(r.value);
+    var base = ' data-ini="' + esc(modId) + '" data-i="' + r.i + '"';
+    var changed = r.launch != null && Math.abs(Number(r.launch) - v) > 1e-6;
+    var h = '<div class="mc-row' + (changed ? ' pend' : '') + '">';
+    h += '<div class="mc-row-id"><span class="mc-row-label">' + esc(r.label || r.setting || '\u2014') + '</span>';
+    if (r.info) h += '<span class="mc-row-info">' + esc(r.info) + '</span>';
+    if (changed) {
+      h += '<span class="mc-chip" title="Saved to the file. This game started with ' +
+        esc(iniShow(r, r.launch)) + '.">Next launch \u00b7 started at ' + esc(iniShow(r, r.launch)) + '</span>';
+    }
+    if (r.why) h += '<span class="mc-row-why">' + esc(r.why) + '</span>';
+    h += '</div>';
+
+    if (t === 'toggle') {
+      var on = v >= 1;
+      h += '<button type="button" class="mc-toggle' + (on ? ' on' : '') + '"' + base +
+        ' data-to="' + (on ? 0 : 1) + '" title="Turn ' + (on ? 'off' : 'on') + '"><span></span>' +
+        (on ? 'on' : 'off') + '</button>';
+    } else if (t === 'enum') {
+      var opts = r.options || [];
+      var idx = Math.max(0, Math.min(opts.length - 1, Math.round(v) || 0));
+      h += '<span class="mc-step"><button type="button"' + base +
+        ' data-to="' + (idx > 0 ? idx - 1 : opts.length - 1) + '" title="Previous">&#8722;</button>' +
+        '<b>' + esc(opts[idx] != null ? opts[idx] : v) + '</b><button type="button"' + base +
+        ' data-to="' + ((idx + 1) % Math.max(1, opts.length)) + '" title="Next">&#43;</button></span>';
+    } else {
+      var step = Number(r.step) || 1;
+      var lo = Number(r.min), hi = Number(r.max);
+      var down = r4(Math.max(lo, v - step)), up = r4(Math.min(hi, v + step));
+      h += '<span class="mc-step"><button type="button"' + base + ' data-to="' + down + '"' +
+        (v <= lo ? ' disabled' : '') + ' title="Down">&#8722;</button>' +
+        '<b>' + esc(iniShow(r, v)) + '</b><button type="button"' + base + ' data-to="' + up + '"' +
+        (v >= hi ? ' disabled' : '') + ' title="Up">&#43;</button></span>';
+    }
+    var atDef = r.def != null && Math.abs(Number(r.def) - v) < 1e-6;
+    h += '<button type="button" class="mc-reset' + (atDef ? ' idle' : '') + '"' + base +
+      ' data-to="' + r.def + '"' + (atDef ? ' disabled' : '') +
+      ' title="Back to the mod\u2019s default (' + esc(iniShow(r, r.def)) + ')">\u21ba</button>';
+    h += '</div>';
+    return h;
+  }
+
   function rowHtml(modId, r) {
     if (r.__sy) return syRowHtml(modId, r);
+    if (r.__ini) return iniRowHtml(modId, r);
     var t = String(r.type || '').toLowerCase();
     var ro = !r.writable;
     var h = '<div class="mc-row' + (ro ? ' ro' : '') + '">';
@@ -341,13 +475,17 @@ window.HDMcm = (function () {
 
     var sub = $('mc-sub');
     if (sub) {
-      var nSy = 0;
-      for (var si = 0; si < st.mods.length; si++) if (st.mods[si].src === 'skyui') nSy++;
+      var nSy = 0, nIni = 0;
+      for (var si = 0; si < st.mods.length; si++) {
+        if (st.mods[si].src === 'skyui') nSy++;
+        else if (st.mods[si].src === 'ini') nIni++;
+      }
       sub.textContent = !st.loaded
         ? (st.loading ? 'reading every MCM config…' : '')
-        : st.count + ' settings across ' + (st.mods.length - nSy) + ' MCM Helper mods · ' +
+        : st.count + ' settings across ' + (st.mods.length - nSy - nIni) + ' MCM Helper mods · ' +
           st.writable + ' the deck can change' +
-          (nSy ? ' · ' + nSy + ' SkyUI mods, opened one at a time' : '');
+          (nSy ? ' · ' + nSy + ' SkyUI mods, opened one at a time' : '') +
+          (nIni ? ' · ' + nIni + ' SKSE ' + (nIni === 1 ? 'mod' : 'mods') + ' by settings file' : '');
     }
 
     var mods = st.mods.filter(function (m) { return modMatches(m, q); });
@@ -355,27 +493,34 @@ window.HDMcm = (function () {
 
     var list = $('mc-mods');
     if (list) {
-      if (!st.loaded) {
+      /* the ini mods and the SkyUI list arrive on their own bridges, long
+         before the MCM Helper scan, so they are listed while it still runs */
+      var early = st.loaded ? mods : mods.filter(function (m) { return m.src === 'ini' || m.src === 'skyui'; });
+      if (!st.loaded && !early.length) {
         list.innerHTML = '<div class="mc-empty">' + (st.loading ? 'Scanning…' : '') + '</div>';
-      } else if (!mods.length) {
+      } else if (!early.length) {
         list.innerHTML = '<div class="mc-empty">No mod matches.</div>';
       } else {
         var lh = '';
-        for (var i = 0; i < mods.length; i++) {
-          var m = mods[i];
+        for (var i = 0; i < early.length; i++) {
+          var m = early[i];
           var tally = (m.src === 'skyui' && !m.scanned) ? '\u00b7' : countRows(m, q);
           lh += '<button type="button" class="mc-mod' + (m.id === ui.mod ? ' on' : '') +
-            (m.src === 'skyui' ? ' sky' : '') +
+            (m.src === 'skyui' ? ' sky' : '') + (m.src === 'ini' ? ' ini' : '') +
             '" data-mod="' + esc(m.id) + '"><span>' + esc(m.name) + '</span>' +
             '<i>' + tally + '</i></button>';
         }
+        if (!st.loaded && st.loading) lh += '<div class="mc-empty">Scanning MCMs…</div>';
         list.innerHTML = lh;
       }
     }
 
     var body = $('mc-body');
     if (!body) return;
-    if (!st.loaded) {
+    var curIni = null;
+    for (var ci = 0; ci < st.mods.length; ci++)
+      if (st.mods[ci].id === ui.mod && st.mods[ci].src === 'ini') curIni = st.mods[ci];
+    if (!st.loaded && !curIni) {
       body.innerHTML = '<div class="mc-empty">' +
         (st.loading ? 'Reading every MCM config from disk…' : '') + '</div>';
       return;
@@ -406,6 +551,19 @@ window.HDMcm = (function () {
     }
 
     var bh = '';
+    if (cur.src === 'ini') {
+      bh += '<div class="mc-inihead"><div class="mc-inihead-txt"><span>Settings file</span><b>' +
+        esc(cur.path || '') + '</b></div>' +
+        /* the loaded build decides this, not us: ini_mods.cpp checks the DLL's own export */
+        '<span class="mc-when' + (cur.live ? ' live' : '') + '">' +
+        (cur.live ? 'Applies live' : 'Applies next launch') + '</span>';
+      if (cur.smf && cur.smfPage) {
+        bh += '<button type="button" class="mc-own" data-smf="' + esc(cur.smfPage) + '" title="Opens ' +
+          esc(cur.name) + '\u2019s own SKSE Menu Framework page, where changes apply live">Open ' +
+          esc(cur.name) + '\u2019s live menu</button>';
+      }
+      bh += '</div>';
+    }
     if (cur.note) bh += '<div class="mc-note">' + esc(cur.note) + '</div>';
     var shown = 0;
     for (var p = 0; p < (cur.pages || []).length; p++) {
@@ -436,6 +594,19 @@ window.HDMcm = (function () {
       render();
       toGame('mcState', JSON.stringify({ force: true }));
       toGame('syList', '{}');
+      toGame('mcIni', '{}');
+      return;
+    }
+    var own = t.closest('[data-smf]');
+    if (own) { toGame('hdSmfOpen', own.getAttribute('data-smf')); return; }
+    var ini = t.closest('[data-ini]');
+    if (ini) {
+      if (ini.hasAttribute('disabled')) return;
+      toGame('mcIniSet', JSON.stringify({
+        mod: ini.getAttribute('data-ini'),
+        i: parseInt(ini.getAttribute('data-i'), 10),
+        value: parseFloat(ini.getAttribute('data-to'))
+      }));
       return;
     }
     var mod = t.closest('[data-mod]');
@@ -507,6 +678,75 @@ window.HDMcm = (function () {
     render();
   }
 
-  return { open: open, close: close, isOpen: isOpen, demo: demo,
+  /* The ini half, as the C++ side sends it (a trimmed IHarvest NG). */
+  function demoIni(payload) {
+    ensureEl();
+    window.mcIniResult(payload || { ok: true, mods: [ {
+      id: 'ini:IHarvestNG', name: 'IHarvest NG', path: 'Data/SKSE/Plugins/IHarvestNG.ini',
+      file: true, smf: true, smfPage: 'IHarvest NG/Settings',
+      note: 'IHarvest NG reads this file when the game starts, so a change here applies on your next launch.',
+      pages: [
+        { name: 'Casting', rows: [
+          { i: 0, setting: 'Casting.fMagickaCostPerWisp', label: 'Magicka per wisp (spell)',
+            info: 'Magicka drained for every wisp sent.', type: 'slider', value: 9, launch: 8, def: 8,
+            min: 0, max: 100, step: 1, writable: true },
+          { i: 3, setting: 'Casting.iMaxWisps', label: 'Max wisps at once', info: '',
+            type: 'slider', value: 128, launch: 128, def: 64, min: 1, max: 128, step: 4, writable: true } ] },
+        { name: 'What to harvest', rows: [
+          { i: 10, setting: 'Harvest.bArrows', label: 'Arrows & bolts', info: 'Loose ammo.',
+            type: 'toggle', value: 0, launch: 0, def: 0, writable: true,
+            why: 'not in the file yet, so the mod uses its default; a change here adds it' } ] },
+        { name: 'Diagnostics', rows: [
+          { i: 17, setting: 'General.iLogLevel', label: 'Log level', info: '', type: 'enum',
+            value: 2, launch: 2, def: 2, options: ['trace', 'debug', 'info', 'warn', 'error', 'critical', 'off'],
+            writable: true } ] }
+      ] } ] });
+  }
+
+  /* ---------------------------------------------------------- omni ----- */
+  /* Each detected ini mod is findable by name AND by any of its settings
+     ("arrows" finds IHarvest NG), and Enter opens the popout on it. warm()
+     asks once per omni open; until the answer lands the provider is empty. */
+  if (window.HDOmni) {
+    HDOmni.register({
+      id: 'ini-mods',
+      label: 'Mod settings',
+      tab: '',
+      /* Rober, 2026-10-12, searching "harvest": the row sat under 3 hotkeys and 12 items because
+         "harvest" is only a mid-word hit on "IHarvest NG settings" (25) against their exact
+         "Harvest" (100). Rank orders only groups whose hit is ON THE LABEL (omni-label-first), and
+         this label is the mod's name: typing the mod's name means its settings, so it leads.
+         A hit on one of its setting names (keywords) still sorts after every label match. */
+      rank: 10,
+      warm: function () { toGame('mcIni', '{}'); },
+      index: function () {
+        var out = [];
+        for (var i = 0; i < st.mods.length; i++) {
+          var m = st.mods[i];
+          if (m.src !== 'ini') continue;
+          var labels = [], n = 0;
+          var pg = m.pages || [];
+          for (var p = 0; p < pg.length; p++) {
+            var rows = pg[p].rows || [];
+            for (var r = 0; r < rows.length; r++) { labels.push(rows[r].label); n++; }
+          }
+          (function (id) {
+            out.push({
+              label: m.name + ' settings',
+              detail: n + ' settings from its settings file \u00b7 changes apply ' +
+                (m.live ? 'live' : 'next launch'),
+              kind: 'settings',
+              keywords: 'mod settings config ini ' + labels.join(' '),
+              pin: 'ini:' + id,
+              run: function () { open('', id); }
+            });
+          })(m.id);
+        }
+        return out;
+      }
+    });
+  }
+
+  return { open: open, close: close, isOpen: isOpen, demo: demo, demoIni: demoIni,
            _state: function () { return st; } };
 })();

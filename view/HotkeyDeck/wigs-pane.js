@@ -846,6 +846,7 @@ window.WigsPane = (function () {
     html += '<button class="wv-pill wv-pill-add" id="wv-tab-add" ' +
       'title="New tab — a collection you fill from any wig’s right-click menu">＋ New tab</button>';
     box.innerHTML = html;
+    if (window.hdBalance) { box.classList.add('hd-balance'); window.hdBalance.watch(box); }   // an even block, not a ragged wrap
     box.querySelectorAll('.wv-pill[data-view]').forEach(function (b) {
       b.addEventListener('click', function () { setView(b.getAttribute('data-view')); });
       const tabName = b.getAttribute('data-tab');

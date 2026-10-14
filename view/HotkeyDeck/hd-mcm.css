@@ -224,7 +224,7 @@
   border-radius: 4px;
   background: rgba(120, 150, 200, 0.18);
   color: #9fb6d8;
-  font-size: 10.5px;
+  font-size: 12px;
   letter-spacing: 0.05em;
   vertical-align: middle;
 }
@@ -238,3 +238,73 @@
   font-size: 13px;
   line-height: 1.45;
 }
+
+/* ── INI-configured SKSE mods (src/ini_mods.cpp, 2026-10-12) ──────────────
+   Every row is writable, but the write lands in the mod's settings file and
+   applies on the NEXT LAUNCH. A row whose file value no longer matches what
+   this game started with wears a gold edge and a chip that says so. */
+.mc-mod.ini > span::after {
+  content: 'INI';
+  margin-left: 7px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(201, 162, 75, 0.16);
+  color: #d8c48f;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  vertical-align: middle;
+}
+.mc-inihead {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 14px 16px;
+  border: 1px solid #26262d; border-radius: 11px;
+  background: #0e0e13;
+}
+.mc-inihead-txt {
+  display: flex; flex-direction: column; gap: 4px;
+  flex: 1 1 260px; min-width: 0;
+}
+.mc-inihead-txt > span {
+  font-size: 13px; letter-spacing: 1.4px; text-transform: uppercase; color: #8b8678;
+}
+.mc-inihead-txt > b {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 14px; font-weight: 400; color: #d9d3c4;
+  overflow-wrap: anywhere;
+}
+.mc-when {
+  flex: 0 0 auto; white-space: nowrap;
+  padding: 6px 12px; border-radius: 999px;
+  border: 1px solid #3a3a44; background: #0c0c10;
+  color: #b9b4a8; font-size: 13.5px; font-weight: 600; letter-spacing: 0.3px;
+}
+.mc-when.live { border-color: rgba(201, 162, 75, 0.55); background: rgba(201, 162, 75, 0.12); color: #f0e4c4; }
+.mc-own {
+  flex: 0 0 auto; min-height: 44px; padding: 10px 18px;
+  border-radius: 11px; border: 1px solid rgba(201, 162, 75, 0.55);
+  background: linear-gradient(180deg, rgba(201, 162, 75, 0.2), rgba(201, 162, 75, 0.08));
+  color: #f0e4c4; font-family: inherit; font-size: 14.5px; font-weight: 600; cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 130ms ease, background 130ms ease;
+}
+.mc-own:hover { border-color: #c9a24b; background: rgba(201, 162, 75, 0.26); }
+.mc-own:active { transform: translateY(1px); }
+.mc-own:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(201, 162, 75, 0.26); }
+
+.mc-row.pend { border-color: rgba(201, 162, 75, 0.5); background: #121016; }
+.mc-chip {
+  align-self: flex-start;
+  margin-top: 3px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(201, 162, 75, 0.45);
+  background: rgba(201, 162, 75, 0.12);
+  color: #e6cf94;
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+.mc-step button:disabled { opacity: .35; cursor: default; border-color: #3a3a44; }
+.mc-reset:disabled, .mc-reset.idle { opacity: .3; cursor: default; }
+.mc-reset:disabled:hover { color: #8d8778; border-color: rgba(255, 255, 255, 0.14); }
+.mc-row .mc-reset { width: 36px; height: 36px; font-size: 17px; }

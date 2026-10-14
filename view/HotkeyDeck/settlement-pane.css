@@ -220,7 +220,7 @@
   box-shadow: 0 0 0 2px rgba(201, 162, 75, .3);
 }
 .st-cat-n {
-  font-size: 11px;
+  font-size: 12px;
   min-width: 16px;
   text-align: center;
   background: rgba(255, 255, 255, .08);
@@ -421,7 +421,7 @@
 .st-name mark { background: rgba(201, 162, 75, .35); color: #fff; border-radius: 3px; padding: 0 1px; }
 
 .st-chip {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   border-radius: 6px;
   padding: 2px 7px;
@@ -738,7 +738,7 @@
 .st-plug-row:hover { background: #1e1e26; border-color: #3d3a33; }
 .st-plug-row.st-sel { border-color: rgba(201, 162, 75, .6); box-shadow: 0 0 0 2px rgba(201, 162, 75, .16); }
 .st-kindbadge {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   border-radius: 6px;
   padding: 3px 8px;

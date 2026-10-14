@@ -12,12 +12,13 @@
   var SMART = [['All spells', 'all', 'cat-scholars'], ['Spells', 'spell', 'cat-mages'], ['Powers', 'power', 'hk-faith-boon'], ['Shouts', 'shout', 'sc-shouts']];
   function title(text) { return h('div', { class: 'ml-rail-heading' }, text); }
   function choose(cat, kind, mode) {
+    ui.workbenchFilter = null;
     ui.cat = cat; ui.kind = kind || 'all'; ui.mode = mode || 'all'; ui.sel = -1;
     ui.armDelCat = null; ui.armBookCat = null; if (railInDialog || categoryPickerOpen) closeModal(); render(); $('list').scrollTop = 0;
   }
   function rail() {
     var host = $('rail-list'); if (!host) return;
-    var totals = M.counts(state.spells, state.library.parents, metaFor);
+    var totals = M.counts(librarySpells(), state.library.parents, metaFor);
     host.textContent = '';
     host.append(title('LIBRARY'));
     var smart = h('div', { class: 'ml-smart-grid' });
@@ -59,16 +60,18 @@
         totals.categories[cat] || 0));
       var edit = btn('Edit', function () { categoryDialog(cat); }, 'ml-cat-edit');
       edit.setAttribute('aria-label', 'Edit category ' + cat);
+      if (window.MagicWorkbench) row.append(MagicWorkbench.categoryArrow(cat));
       row.append(fold, select, edit); host.append(row);
     });
     if (q && !host.querySelector('.ml-cat-row')) host.append(h('p', { class: 'ml-rail-note' }, 'No matching categories.'));
+    if (window.MagicWorkbench) MagicWorkbench.rail(host, q);
     chips(totals);
   }
   /* The same category tree serves the rail and a searchable popout. Header
      width stays constant as categories grow; selecting one uses choose(). */
   function chips(totals) {
     var host = $('cs-chips'); if (!host) return;
-    totals = totals || M.counts(state.spells, state.library.parents, metaFor);
+    totals = totals || M.counts(librarySpells(), state.library.parents, metaFor);
     host.textContent = '';
     var q = chipQuery.trim().toLowerCase(), lib = state.library;
     function chip(label, icon, count, selected, action, cls) {
@@ -152,6 +155,7 @@
   function fitNow() {
     var lib = state.library, panel = $('panel'), list = $('list');
     if (!panel || !list) return;
+    tableChrome();
     list.style.removeProperty('grid-template-columns');   // measure with the sheet's auto-fill first
     if (!lib.sizeAuto) { panel.setAttribute('data-density', lib.density); ui.densityApplied = lib.density; syncSizeControls(); balance(list); return; }
     if (typeof isArtsPage === 'function' && isArtsPage()) return;
@@ -170,7 +174,7 @@
      4·4·4·4 (the "four rows" Rober described). Never fewer rows, never
      narrower cards, so the height fit above still holds. */
   function balance(list) {
-    if (state.library.layout === 'list' || $('panel').classList.contains('ml-phone')) return;
+    if (state.library.layout === 'list' || state.library.layout === 'table' || $('panel').classList.contains('ml-phone')) return;
     var cards = Array.prototype.slice.call(list.querySelectorAll('.spell'));
     var n = cards.length; if (n < 2) return;
     var top = cards[0].offsetTop, cols = 0;
@@ -181,7 +185,9 @@
   }
   function sync() {
     var lib = state.library || M.normalize({}, state.categories);
-    $('panel').setAttribute('data-layout', ui.editing && lib.layout === 'icons' ? 'columns' : lib.layout);
+    // Edit mode has its own row markup: Icons borrows Columns, Table borrows List.
+    $('panel').setAttribute('data-layout', !ui.editing ? lib.layout : lib.layout === 'icons' ? 'columns' : lib.layout === 'table' ? 'list' : lib.layout);
+    tableChrome();
     $('panel').setAttribute('data-density', appliedDensity());
     $('panel').setAttribute('data-size-auto', lib.sizeAuto ? 'true' : 'false');
     /* Art size rides the density rules in library.css; the Icons stepper, when
@@ -206,10 +212,11 @@
     $('ml-compact-packages').textContent = 'Packages · ' + state.combos.length;
     // Move the SAME input, keeping its listeners and value. Search stays
     // typeable when the large header is folded; no duplicate hidden field.
-    var searchHost = folded ? $('ml-compact-search') : $('toolbar');
+    var searchHost = $('mw-top') || (folded ? $('ml-compact-search') : $('toolbar'));
     if ($('search-wrap').parentNode !== searchHost) {
       var focused = document.activeElement === $('search');
-      searchHost.insertBefore($('search-wrap'), searchHost.firstChild);
+      if (searchHost.id === 'mw-top') searchHost.append($('search-wrap'));
+      else searchHost.insertBefore($('search-wrap'), searchHost.firstChild);
       if (focused) $('search').focus();
     }
     syncSizeControls();
@@ -230,13 +237,70 @@
     // Measure pre-transform width; window media queries alone miss a manually resized panel.
     $('panel').classList.toggle('ml-narrow', $('panel').clientWidth < 920);
     $('panel').classList.toggle('ml-phone', $('panel').clientWidth < 580);
+    if (window.MagicWorkbench) MagicWorkbench.sync();
+  }
+  /* ---- Table view: sortable column header, the Fields popout, and which
+     columns the list has room for. The model owns the sort (tableSort). ---- */
+  var TABLE_COLS = [['name', 'Name'], ['school', 'School'], ['tier', 'Level'], ['magnitude', 'Magnitude'], ['duration', 'Duration'], ['cost', 'Cost']];
+  function tablePrefs() {
+    if (!state.library.table) state.library.table = M.normalizeTable({});
+    return state.library.table;
+  }
+  function tableHeadSig() { var t = tablePrefs(); return ['thead', t.sort, t.dir].join('|'); }
+  function tableHead() {
+    var t = tablePrefs(), row = h('div', { class: 'ml-table-head', role: 'group', 'aria-label': 'Sort spells by column' });
+    function cell(c) {
+      var on = t.sort === c[0], down = on && t.dir < 0;
+      var b = btn('', function () { tableSortBy(c[0]); }, 'ml-th ml-tc-' + c[0] + (on ? ' on' : ''));
+      b.dataset.field = c[0];
+      b.append(h('span', null, c[1]), h('span', { class: 'ml-th-arrow' + (on ? (down ? ' desc' : ' asc') : ''), 'aria-hidden': 'true' }));
+      b.setAttribute('aria-pressed', String(on));
+      b.title = !on ? 'Sort by ' + c[1].toLowerCase()
+        : (down ? (c[0] === 'name' || c[0] === 'school' ? 'Sorted Z to A' : 'Sorted high to low') : (c[0] === 'name' || c[0] === 'school' ? 'Sorted A to Z' : 'Sorted low to high')) +
+          '. Click again to ' + (t.dir === (M.tableNumeric.indexOf(c[0]) >= 0 ? -1 : 1) ? 'reverse' : 'return to your own order');
+      return b;
+    }
+    var stats = h('div', { class: 'ml-th-stats' }); TABLE_COLS.slice(3).forEach(function (c) { stats.append(cell(c)); });
+    row.append(h('span', { class: 'ml-th-art', 'aria-hidden': 'true' }), cell(TABLE_COLS[0]), cell(TABLE_COLS[1]), cell(TABLE_COLS[2]), stats,
+      h('span', { class: 'ml-th-tools' }, btn('Fields', tableFields, 'ml-th-fields')));
+    row.querySelector('.ml-th-fields').title = 'Choose which columns the table shows';
+    return row;
+  }
+  function tableSortBy(field) {
+    M.tableCycle(tablePrefs(), field);
+    ui.sel = -1; saveSoon(); renderList(); $('list').scrollTop = 0;
+    var b = $('list').querySelector('.ml-th[data-field="' + field + '"]'); if (b) b.focus();   // the header was rebuilt
+  }
+  function tableFields() {
+    var t = tablePrefs(), box = openModal('Table fields'); box.classList.add('mw-customize');
+    box.append(h('p', null, 'Choose the columns the Table view shows. Name and the action buttons always stay.'));
+    TABLE_COLS.slice(1).forEach(function (c) {
+      var input = h('input', { type: 'checkbox' }); input.checked = t.hidden.indexOf(c[0]) < 0;
+      input.addEventListener('change', function () {
+        t.hidden = t.hidden.filter(function (f) { return f !== c[0]; });
+        if (!input.checked) { t.hidden.push(c[0]); if (t.sort === c[0]) { t.sort = 'custom'; t.dir = 1; } }
+        saveSoon(); renderList();
+      });
+      box.append(h('label', null, input, c[1]));
+    });
+    box.querySelector('input').focus();
+  }
+  /* Columns the player switched off, plus the ones a narrow list cannot hold:
+     measured, because the side panes are draggable and no breakpoint knows them. */
+  function tableChrome() {
+    if (!state.library) return;
+    var panel = $('panel'), t = tablePrefs(), on = !ui.editing && state.library.layout === 'table';
+    M.tableFields.slice(1).forEach(function (f) { panel.classList.toggle('ml-tc-off-' + f, t.hidden.indexOf(f) >= 0); });
+    var width = on ? ($('list').clientWidth || $('main').clientWidth) : 0;
+    panel.setAttribute('data-table-fit', !on || width >= 1240 ? 'full' : width >= 900 ? 'tight' : 'narrow');
+    var sort = $('ml-sort'); if (sort) sort.parentNode.classList.toggle('hidden', on);   // the header is the sort here
   }
   function closeModal() {
     if (!modal) return;
     details = null; categoryPickerOpen = false;
     parked.forEach(function (item) { item.marker.parentNode.replaceChild(item.node, item.marker); }); parked = [];
     $('md-category-btn').setAttribute('aria-expanded', 'false'); $('md-more-btn').setAttribute('aria-expanded', 'false');
-    if (railInDialog) { $('body').insertBefore($('rail'), $('main')); railInDialog = false; }
+    if (railInDialog) { $('body').insertBefore($('rail'), $('mw-split-rail') || $('main')); railInDialog = false; }
     modal.remove(); modal = null;
     if (previousFocus && previousFocus.isConnected) previousFocus.focus();
     else if ($('search')) $('search').focus();
@@ -274,10 +338,13 @@
     var effects = h('section', { class: 'ml-detail-effect-list', 'aria-label': 'Base effect values' });
     var content = h('div', { class: 'ml-detail-scroll' }, hero, stats,
       h('section', { class: 'ml-detail-effects', 'aria-label': 'Spell effects' }, h('h3', null, 'What it does'), text, retry), effects, facts);
-    var action = spell.mode === 'equip' ? (slotOf(spell) === 'voice' ? 'Equip voice slot' : 'Equip ' + (spell.hand === 'both' ? 'both hands' : (spell.hand || 'right') + ' hand')) : 'Cast spell';
-    box.append(content, h('div', { class: 'ml-detail-actions' },
-      btn('Organize spell', function () { openCtxMenu(spell, 0, 0, true); }),
-      btn(action, function () { closeModal(); fireEntry(spell.id); }, 'ml-button ml-primary')));
+    var actions = h('div', { class: 'ml-detail-actions' },
+      btn('Organize spell', function () { openCtxMenu(spell, 0, 0, true); }));
+    if (spell.mode === 'equip') actions.append(btn(slotOf(spell) === 'voice' ? 'Equip voice slot' : 'Equip ' + (spell.hand === 'both' ? 'both hands' : (spell.hand || 'right') + ' hand'),
+      function () { closeModal(); fireEntry(spell.id); }));
+    // Cast now, whatever the spell's mode: closes the menu and casts.
+    actions.append(btn('Cast now', function () { closeModal(); castNow(spell); }, 'ml-button ml-primary ml-cast-now'));
+    box.append(content, actions);
     details = { key: hexId(meta.formId), text: text, retry: retry, box: box, stats: stats, effects: effects };
     descriptionData(details.key, meta.formId ? desc.cache.get(details.key) || null : { ok: false });
     if (meta.formId) ensureDesc(meta);
@@ -434,5 +501,6 @@
   }
   window.MagicLibraryUI = { init: init, rail: rail, chips: chips, sync: sync, fit: fit, fitNow: fitNow, setCardSize: setCardSize,
     openCategories: openCategories, openMore: openMore, categoryDialog: categoryDialog, moveDialog: moveDialog, onKey: onKey, close: closeModal, openModal: openModal,
-    spellDetails: spellDetails, descriptionData: descriptionData, isOpen: function () { return !!modal; } };
+    spellDetails: spellDetails, descriptionData: descriptionData, isOpen: function () { return !!modal; },
+    tableHead: tableHead, tableHeadSig: tableHeadSig, tableSortBy: tableSortBy, tableFields: tableFields };
 })();

@@ -98,6 +98,16 @@ namespace ActorIdentity
 	// or no source file), and the caller must keep whatever it already had.
 	bool DurableOf(const RE::TESForm* form, std::string& outFormId, std::string& outPlugin);
 
+	// True when `form` is still the form the game registers under its own id.
+	// A pointer the engine handed us earlier (an ActiveEffect's source spell, a
+	// cached actor) can outlive the form it named: temporary potions, scrolls and
+	// enchantments are freed while their effects are still listed. Reading such a
+	// form's plugin list is the 2.1.0 crash (Nexus, 2026-10-10: read at -1 inside
+	// DurableOf, from the character-sheet export). DurableOf checks this itself;
+	// call it before any other read of an engine-owned pointer you did not just
+	// look up. Main thread or any thread: LookupByID takes its own lock.
+	bool IsLive(const RE::TESForm* form);
+
 	// Rewrite a stored pair into its durable spelling. True = it changed, so the
 	// caller knows to persist. A pair that does not resolve is left ALONE — a
 	// stale id is still the only clue to who she was, and the name-repair pass

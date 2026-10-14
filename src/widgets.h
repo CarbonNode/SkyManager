@@ -256,6 +256,11 @@ namespace Widgets
 	//            plugin is off / the form is gone; the row says so instead of
 	//            reading as "you have none". Counts ride the SAME event-driven
 	//            inventory walk as the pins (the walk law — no second walk).
+	//   qlight  { running:bool, on:bool }
+	//            Quick Light SE's carried light (2026-10-12): `on` = the
+	//            player carries one of its light effects (the mod's own test),
+	//            `running` = its quest is up (MCM "Activate Mod"). Absent when
+	//            QuickLight.esp is not loaded.
 	//   lootstate { glow:bool, auto:bool }
 	//            the Loot Vision master and the Auto-Loot master, read through
 	//            a provider main.cpp installs (SetLootStateProvider) — this
@@ -395,6 +400,13 @@ namespace Widgets
 	// A capture-less lambda converts to this; pass nullptr to uninstall.
 	using LootStateFn = void (*)(bool& glow, bool& autoLoot);
 	void SetLootStateProvider(LootStateFn fn);
+
+	// Loot feed (2026-10-12): is the free widget `lootFeed` switched on, and
+	// should the game's own "X added" lines be swallowed while it is? Both
+	// take the widgets lock; safe from any thread. LootFeed (loot_feed.cpp)
+	// asks before queueing a pickup and inside its HUD message filter.
+	bool LootFeedOn();
+	bool LootFeedHidesVanilla();
 
 	// Weather tab (weather_hub.cpp): the season latch the HUD widget already
 	// keeps, as JSON ("null" when nothing can say), and Seasons of Skyrim's

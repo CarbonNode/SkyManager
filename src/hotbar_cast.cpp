@@ -1,4 +1,5 @@
 #include "hotbar_cast.h"
+#include "camera_axes.h"
 
 #include "cast_anim.h"
 #include "spell_cost.h"
@@ -343,7 +344,7 @@ namespace HotbarCast
 				return std::nullopt;
 			const auto&        wt = cam->cameraRoot->world;
 			const RE::NiPoint3 from = wt.translate;
-			const RE::NiPoint3 fwd{ -wt.rotate.entry[0][2], -wt.rotate.entry[1][2], -wt.rotate.entry[2][2] };
+			const RE::NiPoint3 fwd = CameraAxes::Forward(wt);
 			RE::NiPoint3       point = from + fwd * kAimRange;
 
 			auto* cell = player->GetParentCell();

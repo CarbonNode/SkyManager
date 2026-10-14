@@ -1,0 +1,230 @@
+/* Hotkey Pad settings (hd-padcfg.js) — a spacious body-level popout, no
+   inherited deck transform (the 2026-08-14 popup audit: it fills the
+   viewport, so its bare vh/vw is right and it never wears --ui-scale).
+   Same palette and type ladder as get-away.css: smoked panel, antique-gold
+   edges, 20px body text, nothing under 16px. */
+
+.hpc-back {
+  position: fixed; inset: 0; z-index: 9900;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.72);
+  color: #eee8dd;
+}
+.hpc-card {
+  display: flex; flex-direction: column;
+  width: 1840px; max-width: 100%; height: 90vh; max-height: 100%;
+  box-sizing: border-box; padding: 28px 30px 18px;
+  background: #19191f; border: 1px solid #b69b56; border-radius: 18px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  font-size: 20px;
+}
+
+/* ---- header ---------------------------------------------------------- */
+.hpc-head { display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap; padding-bottom: 20px; border-bottom: 1px solid #3d3830; }
+.hpc-heading { display: flex; align-items: center; gap: 18px; min-width: 0; flex: 1 1 420px; }
+.hpc-heading-t { min-width: 0; }
+.hpc-head h2 { margin: 0; font-size: 32px; font-weight: 600; color: #f1e3bb; letter-spacing: 0.5px; }
+.hpc-how { margin: 6px 0 0; font-size: 19px; line-height: 1.45; color: #c8c0b1; }
+.hpc-head-acts { display: flex; gap: 12px; flex-wrap: wrap; }
+
+/* ---- shared controls --------------------------------------------------- */
+.hpc-btn {
+  font: inherit; font-size: 19px; line-height: 1.25;
+  min-height: 48px; padding: 10px 18px;
+  color: #eee8dd; background: #2a2931;
+  border: 1px solid #615b62; border-radius: 10px;
+  cursor: pointer; white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.hpc-btn:hover { background: #36313a; border-color: #8d7d58; }
+.hpc-btn:active { background: #403a33; }
+.hpc-btn:focus-visible, .hpc-search-in:focus, .hpc-label-in:focus { outline: 2px solid #d5b65c; outline-offset: 2px; }
+.hpc-btn:disabled { opacity: 0.42; cursor: default; }
+.hpc-close { min-width: 110px; }
+.hpc-quiet { background: transparent; }
+.hpc-danger:hover { background: #4a2724; border-color: #c27a62; color: #ffd9cc; }
+
+.hpc-seg[aria-pressed="true"], .hpc-seg.on { background: #5a4a26; border-color: #d5b65c; color: #fff5d8; }
+.hpc-step { min-width: 52px; padding: 0; font-size: 24px; }
+.hpc-val { min-width: 48px; text-align: center; font-size: 22px; color: #f3e6c2; }
+.hpc-val-note { min-width: 0; font-size: 18px; color: #d7c38c; }
+
+.hpc-ic {
+  width: 44px; height: 44px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.hpc-ic img { width: 100%; height: 100%; object-fit: contain; }
+.hpc-ic.is-mono {
+  border-radius: 50%;
+  border: 1px solid rgba(201, 162, 75, 0.55);
+  background: rgba(201, 162, 75, 0.1);
+  color: #e6cf8e; font-size: 17px; letter-spacing: 1px;
+}
+.hpc-head-ic { width: 60px; height: 60px; }
+.hpc-ic.is-missing { border-color: rgba(200, 110, 90, 0.7); color: #e2b0a0; background: rgba(200, 110, 90, 0.1); }
+.hpc-kcap {
+  display: inline-block; padding: 2px 9px;
+  font-size: 16px; line-height: 1.35; color: #e1cd92;
+  background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(201, 162, 75, 0.45); border-radius: 7px;
+  white-space: nowrap;
+}
+
+/* ---- the three columns -------------------------------------------------- */
+.hpc-body {
+  flex: 1 1 auto; min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.05fr);
+  gap: 26px;
+  padding-top: 22px;
+}
+.hpc-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
+.hpc-col-t { margin: 0 0 14px; font-size: 22px; font-weight: 600; color: #e3cf96; letter-spacing: 0.4px; }
+.hpc-col-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.hpc-col-pad { overflow-y: auto; padding-right: 6px; }
+
+/* preview: the pad's own grid rules at a size that fits the column */
+.hpc-preview {
+  padding: 16px; margin-bottom: 18px;
+  background: rgba(17, 16, 20, 0.94);
+  border: 1px solid rgba(201, 162, 75, 0.45); border-radius: 14px;
+}
+.hpc-pv-grid { display: grid; grid-auto-flow: row dense; justify-content: start; }
+.hpc-pv-btn {
+  min-width: 0; min-height: 0; box-sizing: border-box; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  padding: 4px;
+  background: linear-gradient(180deg, rgba(48, 44, 52, 0.98) 0%, rgba(30, 28, 34, 0.98) 100%);
+  border: 1px solid rgba(201, 162, 75, 0.34); border-radius: 9px;
+}
+.hpc-pv-btn.is-wide { flex-direction: row; gap: 8px; }
+.hpc-pv-btn.is-missing { border-style: dashed; border-color: rgba(200, 110, 90, 0.7); }
+.hpc-pv-btn .hpc-ic { width: calc(var(--pv-u, 60px) * 0.42); height: calc(var(--pv-u, 60px) * 0.42); }
+.hpc-pv-btn .hpc-ic.is-mono { font-size: calc(var(--pv-u, 60px) * 0.17); }
+.hpc-pv-lab {
+  max-width: 100%; min-width: 0;
+  font-size: 15px; line-height: 1.1; max-height: 2.2em; overflow: hidden;
+  text-align: center; overflow-wrap: anywhere; color: #ece4cf;
+}
+.hpc-pv-empty { padding: 18px; font-size: 18px; color: #bcb39e; border: 1px dashed rgba(201, 162, 75, 0.45); border-radius: 10px; }
+.hpc-pv-cap { margin: 12px 0 0; font-size: 17px; color: #bfb49b; }
+
+.hpc-group { padding: 14px 0 16px; border-top: 1px solid #34302b; }
+.hpc-group:first-child { border-top: 0; padding-top: 0; }
+.hpc-group-t { font-size: 19px; color: #efe2bf; margin-bottom: 4px; }
+.hpc-group-s { font-size: 17px; line-height: 1.45; color: #b5ac9b; margin-bottom: 10px; max-width: 60ch; }
+.hpc-segs { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.hpc-reset { padding-top: 6px; }
+
+/* ---- lists -------------------------------------------------------------- */
+.hpc-search { display: flex; gap: 10px; margin-bottom: 12px; }
+.hpc-search-in {
+  flex: 1 1 auto; min-width: 0;
+  font: inherit; font-size: 20px; padding: 13px 16px; box-sizing: border-box;
+  color: #eee8dd; background: #101014; border: 1px solid #6e6350; border-radius: 10px;
+}
+.hpc-search-clear { flex-shrink: 0; }
+/* one clear control, ours: the engine's own search × would be a second */
+.hpc-search-in::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; display: none; }
+.hpc-hint { margin: 0 0 10px; min-height: 1.4em; font-size: 17px; color: #c7bea8; overflow-wrap: anywhere; }
+.hpc-list {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  border: 1px solid #403c45; border-radius: 12px;
+}
+.hpc-empty {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 26px 22px; font-size: 19px; line-height: 1.5; color: #c4bba8;
+}
+.hpc-empty b { font-size: 21px; color: #ecdcb0; font-weight: 600; }
+.hpc-more { padding: 16px 20px; font-size: 17px; color: #b8ae98; }
+
+/* a button on the pad */
+.hpc-brow {
+  display: flex; align-items: flex-start; gap: 16px;
+  padding: 16px 18px; border-bottom: 1px solid #36323b;
+}
+.hpc-brow:last-child { border-bottom: 0; }
+.hpc-brow:hover { background: rgba(201, 162, 75, 0.05); }
+.hpc-brow.is-missing .hpc-brow-name { color: #e2b0a0; }
+.hpc-brow-mid { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.hpc-label-in {
+  width: 100%; box-sizing: border-box;
+  font: inherit; font-size: 20px; padding: 9px 12px;
+  color: #f2ead6; background: #121116; border: 1px solid #4f493f; border-radius: 9px;
+}
+.hpc-label-in::placeholder { color: #9e9584; }
+.hpc-brow-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.hpc-brow-name { font-size: 17px; color: #bdb39f; min-width: 0; overflow-wrap: anywhere; }
+.hpc-shapes { display: flex; flex-wrap: wrap; gap: 8px; }
+.hpc-shape { min-height: 40px; padding: 6px 12px; font-size: 17px; }
+.hpc-shape-custom { display: inline-flex; align-items: center; border: 1px solid #d5b65c; border-radius: 10px; }
+.hpc-brow-acts { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+.hpc-mini { min-height: 40px; padding: 6px 14px; font-size: 17px; }
+
+/* a hotkey to add */
+.hpc-arow {
+  display: flex; align-items: center; gap: 16px; width: 100%;
+  min-height: 72px; padding: 12px 18px; box-sizing: border-box;
+  font: inherit; text-align: left; color: #eee8dd;
+  background: transparent; border: 0; border-bottom: 1px solid #36323b;
+  cursor: pointer;
+}
+.hpc-arow:last-child { border-bottom: 0; }
+.hpc-arow:hover { background: rgba(201, 162, 75, 0.08); }
+.hpc-arow:focus-visible { outline: 2px solid #d5b65c; outline-offset: -2px; }
+.hpc-arow-mid { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.hpc-arow-name { font-size: 20px; line-height: 1.25; overflow-wrap: anywhere; }
+.hpc-arow-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.hpc-arow-cat { font-size: 16px; color: #aea38d; text-transform: uppercase; letter-spacing: 1px; }
+.hpc-arow-add {
+  flex-shrink: 0; padding: 7px 14px;
+  font-size: 17px; color: #1a150c; background: #c9a24b; border-radius: 9px; white-space: nowrap;
+}
+.hpc-arow-add.is-on { color: #e8d9ad; background: transparent; border: 1px solid #8b7443; }
+.hpc-arow:hover .hpc-arow-add { background: #e0bb62; }
+.hpc-arow:hover .hpc-arow-add.is-on { background: rgba(201, 162, 75, 0.15); }
+
+.hpc-keys { margin: 0 0 14px; padding: 14px 16px; border: 1px solid #4a4334; border-radius: 12px; background: rgba(201, 162, 75, 0.05); }
+.hpc-keys[hidden] { display: none; }
+.hpc-keys-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.hpc-keys-t { font-size: 18px; color: #e8d7a6; }
+.hpc-keys-mods { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hpc-keys-with { font-size: 17px; color: #b5ac9b; }
+.hpc-keys-mods .hpc-seg { min-height: 40px; padding: 6px 12px; font-size: 17px; }
+.hpc-keys-caps { display: flex; flex-wrap: wrap; gap: 10px; }
+/* a cap you click, drawn like a key */
+.hpc-keycap {
+  min-width: 64px; min-height: 52px; padding: 8px 14px;
+  font-size: 19px; font-weight: 600; color: #f4e6bd;
+  background: linear-gradient(180deg, #34303a 0%, #23212a 100%);
+  border: 1px solid rgba(201, 162, 75, 0.5); border-radius: 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 240, 205, 0.1), 0 2px 0 rgba(0, 0, 0, 0.5);
+}
+.hpc-keycap:hover { border-color: #e0bb62; background: linear-gradient(180deg, #463d33 0%, #2b2724 100%); }
+.hpc-keyic {
+  width: auto; min-width: 44px; height: 44px; padding: 0 8px; box-sizing: border-box;
+  font-size: 16px; font-weight: 600; color: #f4e6bd; white-space: nowrap;
+  background: linear-gradient(180deg, #34303a 0%, #23212a 100%);
+  border: 1px solid rgba(201, 162, 75, 0.5); border-radius: 9px;
+}
+.hpc-pv-btn.is-keycap { justify-content: center; }
+.hpc-pv-cap { max-width: 100%; overflow: hidden; white-space: nowrap; font-size: 16px; font-weight: 600; color: #f4e6bd; }
+.hpc-status { min-height: 1.5em; margin: 12px 0 0; font-size: 18px; color: #e8d39a; }
+
+/* narrower decks: the three sections stack in one scrolling column, each
+   list keeping its own scroll so neither can push the other off screen */
+@media (max-width: 1280px) {
+  .hpc-body { display: block; overflow-y: auto; padding-right: 6px; }
+  .hpc-col { height: auto; margin-bottom: 28px; }
+  .hpc-col-pad { overflow: visible; padding-right: 0; }
+  .hpc-list { flex: none; max-height: 58vh; min-height: 220px; }
+}
+@media (max-width: 760px) {
+  .hpc-back { padding: 10px; }
+  .hpc-card { padding: 18px; height: 96vh; }
+  .hpc-brow { flex-wrap: wrap; }
+  .hpc-brow-acts { flex-direction: row; width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hpc-btn { transition: none; }
+}

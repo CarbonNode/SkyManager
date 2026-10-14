@@ -24,7 +24,7 @@
   min-width: 92px; padding: 8px 12px;
   background: #16161d; border: 1px solid #2e2e36; border-radius: 8px;
 }
-.fin-stat-k { font-size: 11.5px; letter-spacing: .4px; text-transform: uppercase; color: #7c776a; }
+.fin-stat-k { font-size: 12.5px; letter-spacing: .4px; text-transform: uppercase; color: #7c776a; }
 .fin-stat-v {
   font-family: Consolas, "Courier New", monospace; font-size: 18px; color: #e8e4da; white-space: nowrap;
 }
@@ -64,7 +64,7 @@
 .fin-subtab.active { color: #ecd9a0; border-bottom-color: #c9a24b; }
 .fin-subtab:focus-visible { outline: 2px solid #c9a24b66; outline-offset: -2px; }
 .fin-subcount {
-  font-family: Consolas, "Courier New", monospace; font-size: 11.5px;
+  font-family: Consolas, "Courier New", monospace; font-size: 12.5px;
   color: #7c776a; background: rgba(255,255,255,.04); border-radius: 9px; padding: 1px 7px;
 }
 .fin-subtab.active .fin-subcount { color: #d9c48a; background: rgba(201,162,75,.10); }
@@ -118,7 +118,7 @@
 .fin-group-head:hover .fin-group-chev { color: #d3c191; }
 .fin-group-label { font-size: 12.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: #d3c191; }
 .fin-group-head.inc .fin-group-label { color: #86c98a; }
-.fin-group-count { flex: none; font-family: Consolas, "Courier New", monospace; font-size: 11px; color: #7c776a; background: rgba(255,255,255,.04); border-radius: 9px; padding: 1px 7px; }
+.fin-group-count { flex: none; font-family: Consolas, "Courier New", monospace; font-size: 12px; color: #7c776a; background: rgba(255,255,255,.04); border-radius: 9px; padding: 1px 7px; }
 .fin-group-sum { margin-left: auto; font-family: Consolas, "Courier New", monospace; font-size: 14px; font-weight: 600; }
 .fin-group-sum.pos { color: #86c98a; }
 .fin-group-sum.neg { color: #d98a8a; }
@@ -202,7 +202,7 @@
 .fin-icon-btn {
   flex: none; width: 22px; height: 22px;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 11px; line-height: 1; color: #6f6a5e;
+  font-size: 12px; line-height: 1; color: #6f6a5e;
   background: transparent; border: 1px solid transparent; border-radius: 5px; cursor: pointer;
   transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
 }
@@ -217,7 +217,7 @@
 }
 .fin-led-kind {
   flex: none; width: 58px; text-align: center;
-  font-size: 11px; letter-spacing: .4px; text-transform: uppercase;
+  font-size: 12px; letter-spacing: .4px; text-transform: uppercase;
   border-radius: 5px; padding: 4px 0; color: #9b968a; background: rgba(255,255,255,.03);
 }
 .fin-led-kind.k-settle { color: #d9c48a; }

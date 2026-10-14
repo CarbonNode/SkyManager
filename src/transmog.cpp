@@ -1,6 +1,7 @@
 #include "npc_clearance.h"
 #include "npc_actions.h"
 #include "shout_cooldowns.h"
+#include "command_ring.h"
 // Transmog tab — runtime-restyled placeholder-ARMO pool. See transmog.h for
 // the contract and the mechanism rationale.
 //
@@ -829,6 +830,7 @@ namespace Transmog
 			NpcClearance::SaveCosave(intfc);
 			NpcActions::SaveConversations(intfc);
 			ShoutCooldowns::SaveCosave(intfc);
+			CommandRing::SaveCosave(intfc);
 			if (!intfc->OpenRecord(kCosaveRec, kCosaveVersion)) {
 				logger::warn("transmog: cosave OpenRecord failed");
 				return;
@@ -891,6 +893,7 @@ namespace Transmog
 				if (NpcClearance::LoadCosave(intfc, type, version, length)) continue;
 				if (NpcActions::LoadConversations(intfc, type, version, length)) continue;
 				if (ShoutCooldowns::LoadCosave(intfc, type, version, length)) continue;
+				if (CommandRing::LoadCosave(intfc, type, version, length)) continue;
 				if (type != kCosaveRec) {
 					logger::warn("transmog: unknown cosave record {:08X} skipped", type);
 					continue;
@@ -963,6 +966,7 @@ namespace Transmog
 			NpcActions::RevertConversations();
 			NpcActions::RevertOrders();
 			ShoutCooldowns::RevertCosave();
+			CommandRing::RevertCosave();
 			// New game / different save incoming — the table describes the OLD
 			// session. Clear it; the load callback repopulates when the new
 			// save carries our record.

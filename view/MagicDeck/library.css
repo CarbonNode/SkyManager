@@ -1,18 +1,21 @@
-/* Arcane Library — slate, warm brass and ivory. Existing deck tokens stay authoritative.
+/* Arcane Library — obsidian and gilt (2026-10-11): the main deck's own family. Neutral
+   charcoal surfaces, one gold accent, green only for what is equipped. The tokens sit on
+   :root so the body-anchored popouts wear the same palette as the panel.
    No renderer-dependent color functions, backdrop filters, or animated layout. */
 :root {
-  --ml-canvas: #171b1e;
-  --ml-rail: #111518;
-  --ml-card: #202629;
-  --ml-hover: #293135;
-  --ml-line: #394246;
-  --ml-gold: #ddc58e;
-  --ml-brass-line: #706044;
-  --ml-folio: #242621;
-  --ml-folio-dark: #191d1d;
-  --ml-ink: #f4f0e5;
-  --ml-muted: #b1bbb9;
-  --ml-wash: rgba(216,188,122,.10);
+  --ml-canvas: #16161c;
+  --ml-rail: #0f0f14;
+  --ml-card: #1c1c24;
+  --ml-hover: #282832;
+  --ml-line: #32323d;
+  --ml-line-2: #4a4a58;
+  --ml-gold: #d8b25e;
+  --ml-brass-line: #66552f;
+  --ml-folio: #201d17;
+  --ml-folio-dark: #15130f;
+  --ml-ink: #eeeae0;
+  --ml-muted: #aeaa9f;
+  --ml-wash: rgba(216,178,94,.10);
   --ml-radius: 10px;
 }
 html { color-scheme: dark; }
@@ -33,7 +36,7 @@ html { color-scheme: dark; }
 .ml-rail-heading { font-size: 14px; font-weight: 600; letter-spacing: 2px; color: var(--ml-muted); padding: 14px 12px 10px; }
 .rail-item { min-height: 49px; width: 100%; color: var(--ml-muted); background: transparent; border: 1px solid transparent; border-radius: 7px; padding: 8px 10px; margin-bottom: 4px; gap: 10px; text-align: left; }
 .rail-item:hover { background: var(--ml-hover); color: var(--ml-ink); }
-.rail-item.sel { background: var(--ml-wash); border-color: rgba(216,188,122,.28); color: var(--ml-gold); }
+.rail-item.sel { background: var(--ml-wash); border-color: rgba(216,178,94,.28); color: var(--ml-gold); }
 .rail-item img { object-fit: contain; flex-shrink: 0; }
 .rail-item .rail-name { font-size: 17px; font-weight: 500; line-height: 1.3; min-width: 0; overflow-wrap: anywhere; white-space: normal; overflow: visible; text-overflow: clip; }
 .rail-count { background: transparent; font-size: 14px; font-variant-numeric: tabular-nums; color: inherit; margin-left: auto; padding: 0 3px; }
@@ -57,7 +60,7 @@ html { color-scheme: dark; }
 #ml-view-options button[aria-pressed=true] { background: var(--ml-gold); color: var(--ml-rail); }
 #toolbar { gap: 12px; flex-shrink: 0; margin-bottom: 0; }
 #search-wrap { background: var(--ml-rail); border: 1px solid var(--ml-line); min-height: 52px; box-shadow: none; }
-#search-wrap:focus-within { border-color: var(--ml-gold); box-shadow: 0 0 0 2px rgba(216,188,122,.12); }
+#search-wrap:focus-within { border-color: var(--ml-gold); box-shadow: 0 0 0 2px rgba(216,178,94,.12); }
 #search { font-size: 18px; color: var(--ml-ink); }
 input::placeholder { color: var(--ml-muted); opacity: .85; }
 .ml-filterbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; padding-bottom: 10px; border-bottom: 1px solid var(--ml-line); flex-shrink: 0; }
@@ -155,7 +158,7 @@ input::placeholder { color: var(--ml-muted); opacity: .85; }
 #panel[data-layout=list] #list { display: block; }
 #panel[data-layout=list] .spell { flex-direction: row; align-items: center; min-height: var(--card-h, 106px); height: auto; margin-bottom: var(--card-gap, 10px); padding: var(--card-pad, 18px); gap: var(--card-inner-gap, 20px); }
 #panel[data-layout=list] .spell > .glyph { width: var(--ml-art-size, 64px); height: var(--ml-art-size, 64px); }
-#panel[data-layout=list] .spell .row-right { border: 0; padding-top: 0; max-width: 300px; }
+#panel[data-layout=list] .spell .row-right { border: 0; padding-top: 0; max-width: 400px; }
 #panel[data-layout=list] .spell .sub { flex-direction: row; flex-wrap: wrap; gap: 10px; }
 .list-bulk { grid-column: 1 / -1; }
 .spell.edit { min-height: calc(var(--card-h, 284px) + 26px); }
@@ -163,10 +166,10 @@ input::placeholder { color: var(--ml-muted); opacity: .85; }
 .spell.edit .drag-h { align-self: flex-start; }
 #panel[data-layout=list] .spell.edit { flex-wrap: wrap; }
 .cat-select { width: 100%; max-width: 100%; min-height: 44px; }
-#add-spell-btn { min-height: 50px; padding: 10px 18px; font-size: 17px; background: var(--ml-wash); border: 1px solid rgba(216,188,122,.32); color: var(--ml-gold); border-radius: 8px; }
-#add-spell-btn:hover { background: rgba(216,188,122,.18); }
+#add-spell-btn { min-height: 50px; padding: 10px 18px; font-size: 17px; background: var(--ml-wash); border: 1px solid rgba(216,178,94,.32); color: var(--ml-gold); border-radius: 8px; }
+#add-spell-btn:hover { background: rgba(216,178,94,.18); }
 #hints { background: var(--ml-rail); color: var(--ml-muted); font-size: 15px; padding: 10px 28px; gap: 20px; border-color: var(--ml-line); }
-.rail-item.drop-into { background: rgba(216,188,122,.22); border: 2px solid var(--ml-gold); box-shadow: inset 0 0 0 2px var(--ml-rail); }
+.rail-item.drop-into { background: rgba(216,178,94,.22); border: 2px solid var(--ml-gold); box-shadow: inset 0 0 0 2px var(--ml-rail); }
 .ml-backdrop { position: fixed; inset: 0; z-index: 150; background: rgba(0,0,0,.72); display: flex; align-items: center; justify-content: center; padding: 24px; }
 .ml-dialog { width: 640px; max-width: 100%; max-height: 90vh; overflow: auto; padding: 30px; background: var(--ml-canvas); color: var(--ml-ink); border: 1px solid var(--ml-line); border-radius: 14px; box-shadow: none; font-size: 18px; }
 .ml-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
@@ -254,7 +257,7 @@ button:active { filter: brightness(.9); }
 .mp-montage { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; width: 80px; flex-shrink: 0; align-content: center; }
 .mp-montage .glyph { width: 38px; height: 38px; padding: 0; border: 0; background: transparent; }
 .mp-montage .glyph img { width: 100%; height: 100%; object-fit: contain; border-radius: 5px; }
-.mp-cast { color: var(--ml-gold); background: rgba(216,188,122,.10); font-size: 15px; padding: 10px 12px; white-space: nowrap; }
+.mp-cast { color: var(--ml-gold); background: rgba(216,178,94,.10); font-size: 15px; padding: 10px 12px; white-space: nowrap; }
 .mp-dialog { width: 1280px; padding: 32px; }
 .mp-hero { display: flex; align-items: center; gap: 28px; padding: 24px; background: var(--ml-folio); border: 1px solid var(--ml-brass-line); border-radius: 10px; margin-bottom: 22px; }
 .mp-hero .mp-montage { width: 144px; gap: 6px; }
@@ -325,7 +328,7 @@ button:active { filter: brightness(.9); }
 .ml-filterbar label { font-size: 16px; }
 .ml-filterbar select { border-radius: 6px; padding-left: 12px; }
 #ml-result-count { font-size: 17px; }
-.spell, .mp-sequence-spell { --ml-school-ink: var(--ml-gold); --ml-school-wash: rgba(216,188,122,.07); }
+.spell, .mp-sequence-spell { --ml-school-ink: var(--ml-gold); --ml-school-wash: rgba(216,178,94,.07); }
 [data-school=destruction] { --ml-school-ink: #e5ac86; --ml-school-wash: rgba(201,121,74,.09); }
 [data-school=restoration] { --ml-school-ink: #dfd296; --ml-school-wash: rgba(215,194,99,.09); }
 [data-school=alteration] { --ml-school-ink: #a2cbd3; --ml-school-wash: rgba(111,173,187,.09); }
@@ -540,7 +543,7 @@ button:active { filter: brightness(.9); }
 #panel[data-layout=icons][data-density=compact] { --ml-icon-cell: 124px; --ml-icon-art: 68px; }
 #panel[data-layout=icons][data-density=dense] { --ml-icon-cell: 110px; --ml-icon-art: 56px; }
 #panel[data-layout=icons] #list { grid-template-columns: repeat(auto-fit,minmax(var(--ml-icon-cell),1fr)); gap: 10px; padding-top: 6px; }
-#panel[data-layout=icons] .spell.ml-icon-card { min-height: 0; padding: 0; gap: 0; border: 1px solid var(--ml-line); border-top-color: var(--ml-brass-line); border-radius: 8px; background: linear-gradient(145deg,var(--ml-card),var(--ml-rail)); box-shadow: inset 0 1px 0 rgba(221,197,142,.08); }
+#panel[data-layout=icons] .spell.ml-icon-card { min-height: 0; padding: 0; gap: 0; border: 1px solid var(--ml-line); border-top-color: var(--ml-brass-line); border-radius: 8px; background: linear-gradient(145deg,var(--ml-card),var(--ml-rail)); box-shadow: inset 0 1px 0 rgba(216,178,94,.08); }
 #panel[data-layout=icons] .spell.ml-icon-card:hover, #panel[data-layout=icons] .spell.ml-icon-card.sel { border-color: var(--ml-gold); background: var(--ml-hover); }
 #panel[data-layout=icons] .spell.ml-icon-card.sel { box-shadow: inset 0 0 0 1px var(--ml-gold); }
 #panel[data-layout=icons] .spell.ml-icon-card.equipped { border-color: var(--equip-line); }
@@ -550,7 +553,7 @@ button:active { filter: brightness(.9); }
 .ml-icon-inspect:active { background: var(--ml-hover); }
 .ml-icon-inspect > .glyph { width: var(--ml-icon-art); height: var(--ml-icon-art); flex-shrink: 0; margin: 14px auto; padding: 3px; border: 1px solid var(--ml-brass-line); border-radius: 7px; background: var(--ml-rail); }
 .ml-icon-inspect > .glyph img { width: 100%; height: 100%; object-fit: contain; border-radius: 4px; }
-.ml-icon-inspect > .body { width: 100%; flex: none; padding: 10px 8px; border-top: 1px solid var(--ml-line); background: rgba(17,21,24,.45); text-align: center; }
+.ml-icon-inspect > .body { width: 100%; flex: none; padding: 10px 8px; border-top: 1px solid var(--ml-line); background: rgba(15,15,20,.45); text-align: center; }
 #panel[data-layout=icons] .spell.ml-icon-card .name { min-height: 44px; font-size: 18px; line-height: 22px; font-weight: 500; -webkit-line-clamp: 2; }
 #panel.ml-phone[data-layout=icons] #list { grid-template-columns: repeat(auto-fit,minmax(110px,1fr)); }
 

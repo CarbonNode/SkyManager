@@ -21,6 +21,7 @@
 
 #include "keys_pex.h"
 #include "keys_sources.h"
+#include "smf_index.h"
 #include "pch.h"
 #include <SKSE/InputMap.h>
 
@@ -76,7 +77,33 @@ namespace KeysScan
 			// honestly called a collision.
 			bool        guessed = false;
 			std::string detail;   // provenance (file + setting), shown as a title
+			// File sources only (keys_sources.h): the searchable second name, a
+			// verified-spec action with nothing bound (code 0), and the
+			// writer's handle or the reason the row may not be written.
+			std::string         alias;
+			bool                unbound = false;
+			KeysSources::Write  write;
+			// Plugin rows only: where the bind lives (KeysSources::Row::file etc.),
+			// so the pane can turn the row into a mod-key deck entry.
+			std::string cfgFile = {};
+			std::string cfgSection = {};
+			std::string cfgField = {};
+			std::string cfgSpace = {};
 		};
+
+		Binding FromRow(KeysSources::Row&& r)
+		{
+			Binding b{ std::move(r.src), std::move(r.mod), std::move(r.control), r.code,
+				std::move(r.modsText), r.guessed, std::move(r.detail) };
+			b.alias = std::move(r.alias);
+			b.unbound = r.unbound;
+			b.write = std::move(r.write);
+			b.cfgFile = std::move(r.file);
+			b.cfgSection = std::move(r.section);
+			b.cfgField = std::move(r.field);
+			b.cfgSpace = std::move(r.space);
+			return b;
+		}
 
 		std::mutex               g_mutex;
 		// idle | scanning | refreshing | done | error.
@@ -188,11 +215,33 @@ namespace KeysScan
 			g_note = note;
 		}
 
+		// Files the writer re-read after rewriting them (ReplaceFileRows): file
+		// as the scan spelled it -> its fresh rows. Every publish lays these over
+		// whatever the scan thread read, because a background refresh may hold
+		// rows it read BEFORE the write. Cleared by Start(). Guarded by g_mutex.
+		std::unordered_map<std::string, std::vector<Binding>> g_fileRows;
+
+		// Caller holds g_mutex.
+		void ApplyFileRows(std::vector<Binding>& v)
+		{
+			if (g_fileRows.empty()) {
+				return;
+			}
+			std::erase_if(v, [](const Binding& b) {
+				return b.src == "plugin" && !b.write.file.empty() && g_fileRows.count(b.write.file) != 0;
+			});
+			for (const auto& [file, rows] : g_fileRows) {
+				(void)file;
+				v.insert(v.end(), rows.begin(), rows.end());
+			}
+		}
+
 		// Publish a new binding set and bump the seq so the view knows to pull it.
 		// Caller must NOT hold g_mutex.
 		void PublishBindings(std::vector<Binding> v)
 		{
 			std::lock_guard l(g_mutex);
+			ApplyFileRows(v);
 			g_bindings = std::move(v);
 			++g_scanSeq;
 		}
@@ -826,8 +875,7 @@ namespace KeysScan
 			// Shaders, then every hotkey setting under Data/SKSE/Plugins.
 			const auto take = [&acc](std::vector<KeysSources::Row> rows) {
 				for (auto& r : rows) {
-					acc.push_back(Binding{ std::move(r.src), std::move(r.mod), std::move(r.control),
-						r.code, std::move(r.modsText), r.guessed, std::move(r.detail) });
+					acc.push_back(FromRow(std::move(r)));
 				}
 			};
 			take(KeysSources::ScanOverlays());
@@ -860,6 +908,7 @@ namespace KeysScan
 			for (const auto& [name, ce] : g_cache) {
 				EmitConfigRows(name, ce, acc);
 			}
+			ApplyFileRows(acc);
 			g_bindings = std::move(acc);
 			++g_scanSeq;
 		}
@@ -1065,7 +1114,12 @@ namespace KeysScan
 			g_note = "starting";
 			g_modsDone = 0;
 			g_modsTotal = 0;
+			g_fileRows.clear();  // this scan re-reads every file anyway
 		}
+		// SMF's menu tree is read on the main thread only (smf_index.h), and the
+		// file sources run on the scan thread -- so the page owners are taken
+		// HERE and handed over as a snapshot.
+		KeysSources::SetSmfOwners(SmfIndex::SectionsByDll());
 		std::thread(ScanThread).detach();
 		logger::info("keys-scan started ({}, cache-backed mcm sweep + helper + controlmap)",
 			force ? "forced rescan" : "cache-first");
@@ -1075,6 +1129,19 @@ namespace KeysScan
 	std::string Utf8Text(std::string_view s)
 	{
 		return Utf8Of(s);
+	}
+
+	void ReplaceFileRows(const std::string& file, std::vector<KeysSources::Row> rows)
+	{
+		std::vector<Binding> fresh;
+		fresh.reserve(rows.size());
+		for (auto& r : rows) {
+			fresh.push_back(FromRow(std::move(r)));
+		}
+		std::lock_guard l(g_mutex);
+		g_fileRows[file] = std::move(fresh);
+		ApplyFileRows(g_bindings);
+		++g_scanSeq;
 	}
 
 	std::string StateJson(bool includeBindings)
@@ -1122,6 +1189,32 @@ namespace KeysScan
 				}
 				if (!b.detail.empty()) {
 					e["detail"] = clean("detail", b.detail);
+				}
+				if (!b.alias.empty()) {
+					e["alias"] = clean("alias", b.alias);
+				}
+				if (b.unbound) {
+					e["unbound"] = true;
+				}
+				// The writer's handle (keys_write.cpp re-derives everything else
+				// from a fresh read of the file), or why the row is read-only.
+				if (b.write.ok) {
+					e["w"] = json{
+						{ "file", clean("file", b.write.file) },
+						{ "field", clean("field", b.write.field) },
+						{ "stamp", b.write.stamp },
+						{ "modKind", b.write.modKind },
+						{ "clear", !b.write.clearValue.empty() },
+						{ "apply", b.write.apply },
+					};
+				} else if (!b.write.why.empty()) {
+					e["ro"] = clean("ro", b.write.why);
+				}
+				if (!b.cfgFile.empty() && !b.cfgField.empty()) {
+					e["cfg"] = json{ { "file", clean("cfg.file", b.cfgFile) },
+						{ "section", clean("cfg.section", b.cfgSection) },
+						{ "field", clean("cfg.field", b.cfgField) },
+						{ "space", b.cfgSpace } };
 				}
 				arr.push_back(std::move(e));
 			}

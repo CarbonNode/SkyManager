@@ -1,6 +1,8 @@
 #pragma once
 
+#include <map>
 #include <string>
+#include <vector>
 
 /*
  * StanceWheel — the engine half of the Stance Wheel (Rober, 2026-10-03: "a
@@ -33,6 +35,20 @@
  * (modding/tarnished-stance/, scripts/rig/elden-stance/build_tarnished.py).
  * A Stances NG key pressed while in Tarnished wins, and the leftover ability is
  * dropped the next time the wheel reads state.
+ *
+ * Every stance has its own deck action too (stance-neutral/-bear/-wolf/-hawk/
+ * -tarnished, Rober 2026-10-10: "each one should be key bindable as well,
+ * remove all default keybinds it ships with for each stance"). They call
+ * Pick(), so the press-and-verify path is the same. Stances NG's OWN keys are
+ * therefore moved to chords nobody types — Right Ctrl + Numpad 0/1/2/3 in the
+ * rig's StancesNG_custom.toml — and the player binds the deck entries in F2.
+ * The wheel prints the deck binding, not Stances NG's (main.cpp SwPushState).
+ * Stances NG matches with Process(event, true), which ignores W/A/S/D, so a
+ * chord still lands while the player is moving.
+ *
+ * Neutral is offered as "Default": no stance effect, so no stance OAR folder
+ * matches and the installed animations play. Unbound, Pick(0) mirrors Stances
+ * NG's own Neutral steps instead of refusing.
  *
  * Stance state is never persisted. The wheel's own two settings (how much
  * time slows while it is up, and how big it draws) live in the module's own
@@ -79,18 +95,37 @@ namespace StanceWheel
 	// slow   = the world time multiplier while the wheel is up. Clamped to
 	//          0.05 .. 1.0 and NEVER zero: anything waiting on game time must
 	//          keep ticking (the smooth-pause lesson, main.cpp kFrozenMult).
-	// sizeVh = the wheel's diameter in vh, 40 .. 80. The view caps it in px.
+	// sizeVh = the wheel's diameter in vh, 30 .. 90 (40 .. 80 before the 2026-10-12
+	//          size slider). The view caps it in px.
 	struct Options
 	{
 		float slow = 0.2f;
 		int   sizeVh = 64;
+		// The hint lines under the wheel (2026-10-12, Rober: "ability to hide
+		// text below bar"). The Cancel button stays either way.
+		bool  hints = true;
+		// Combat Wheel wedges the player switched on/off (2026-10-11, Rober:
+		// "you can toggle any on or off?"). Only explicit choices are stored;
+		// anything absent falls back to WedgeDefault().
+		std::map<std::string, bool> wedges;
 	};
+	// Every wedge the Combat Wheel can carry, in wheel order: the five stance
+	// slugs, then the menus/commands (CombatTools ids).
+	const std::vector<std::string>& WedgeIds();
+	// Stances, Battle Plan and Walk With Me start ON; NFF's menu and Sic 'em
+	// start OFF ("as options you can toggle on").
+	bool WedgeDefault(const std::string& id);
+	// The player's choice for `id`, else its default. Any thread.
+	bool WedgeOn(const std::string& id);
+	// {id: bool} for every WedgeIds() entry, resolved.
+	std::string WedgesJson();
 	// Cached; reads the sidecar on first use. Any thread.
 	Options GetOptions();
-	// Merge {"slow":number,"size":number} (either may be absent; {"reset":true}
-	// restores both defaults), clamp, persist, and return OptionsJson().
+	// Merge {"slow":number,"size":number,"wedges":{id:bool}} (any may be
+	// absent; {"reset":true} restores slow + size, never the wedge choices),
+	// clamp, persist, and return OptionsJson().
 	std::string SetOptions(const std::string& requestJson);
 	// {"slow":0.2,"size":64,"defSlow":0.2,"defSize":64,"minSlow":0.05,
-	//  "maxSlow":1.0,"minSize":40,"maxSize":80}
+	//  "maxSlow":1.0,"minSize":40,"maxSize":80,"wedges":{id:bool}}
 	std::string OptionsJson();
 }

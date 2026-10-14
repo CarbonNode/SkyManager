@@ -17,7 +17,9 @@
 #include <cstring>
 #include <filesystem>
 #include <map>
+#include <cctype>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // pch (force-included) provides RE::/SKSE:: and nlohmann json.hpp.
@@ -480,6 +482,57 @@ namespace SmfIndex
 				json{ { "path", p.path }, { "section", p.section }, { "label", p.label }, { "dll", p.dll } });
 		res["ok"] = true;
 		return res.dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
+	bool HasPage(const std::string& path)
+	{
+		if (!GetModuleHandleW(L"SKSEMenuFramework.dll"))
+			return false;
+		std::vector<Page> pages;
+		std::string       why;
+		if (!Pages(pages, why))
+			return false;
+		for (const auto& p : pages)
+			if (p.path == path)
+				return true;
+		return false;
+	}
+
+	std::unordered_map<std::string, std::string> SectionsByDll()
+	{
+		std::unordered_map<std::string, std::string> out;
+		if (!GetModuleHandleW(L"SKSEMenuFramework.dll"))
+			return out;
+		std::vector<Page> pages;
+		std::string       why;
+		if (!Pages(pages, why))
+			return out;
+		// dll stem -> section -> page count; the busiest section names the DLL.
+		std::map<std::string, std::map<std::string, int>> counts;
+		for (const auto& p : pages) {
+			auto stem = p.dll;
+			if (const auto dot = stem.rfind('.'); dot != std::string::npos)
+				stem.resize(dot);
+			for (auto& c : stem)
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			if (stem.empty() || stem == "?" || p.section.empty())
+				continue;
+			++counts[stem][p.section];
+		}
+		for (const auto& [stem, sections] : counts) {
+			const std::string* best = nullptr;
+			int                most = 0;
+			for (const auto& [section, n] : sections) {
+				if (n > most) {
+					most = n;
+					best = &section;
+				}
+			}
+			if (best)
+				out.emplace(stem, *best);
+		}
+		logger::info("smf-index: {} DLL(s) own SKSE Menu Framework pages (Keys tab naming)", out.size());
+		return out;
 	}
 
 	std::string Open(const std::string& path)

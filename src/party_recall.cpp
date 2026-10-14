@@ -428,6 +428,23 @@ namespace PartyRecall
 		return out.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
 
+	std::vector<Member> Members()
+	{
+		std::vector<Member> out;
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player || !player->GetParentCell()) return out;
+		Load();
+		for (const auto& row : Survey(player).rows) {
+			if (row.flaggedOnly || row.decision == Policy::Decision::Ignore) continue;
+			auto actorPtr = row.handle.get();
+			auto* actor = actorPtr.get();
+			if (!actor) continue;
+			out.push_back({ actor->GetFormID(), row.decision == Policy::Decision::Waiting,
+				row.decision == Policy::Decision::Busy, actor->Is3DLoaded() });
+		}
+		return out;
+	}
+
 	std::string Roster()
 	{
 		json out{{"ok", false}, {"rows", json::array()}};

@@ -1,0 +1,157 @@
+/* ============================================================================
+   SkyManager HUD — the Minimap section of the shelf, and its on-screen ghost.
+   hud-minimap.js. Namespace: .hud-mm-* / #hud-mm-*. The rows themselves wear
+   the shelf's own .hud-el / .hud-el-chip / .hud-el-seg idioms (hud.css), so
+   this sheet only adds what the section has that no other row does: the frame
+   tiles, the empty-state card, the labelled sub-rows and the ghost box.
+   Ultralight: rgba() only, no color-mix, no conic-gradient, no looping motion.
+   ============================================================================ */
+
+/* ---- sub-row labels: the shelf's group label, a touch tighter ---- */
+.hud-mm-lab {
+  font-size: 12.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--hud-dim); margin-top: 6px;
+}
+.hud-mm-lab:first-child { margin-top: 0; }
+.hud-mm-warn { color: var(--hud-gold-pale); }
+.hud-mm-keys { margin-top: 2px; }
+
+/* four corners / three extras share one width each, so the rows read as grids
+   with no ragged right edge (congruent sets) */
+.hud-mm-grid4 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.hud-mm-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.hud-mm-grid4 > .hud-el-chip, .hud-mm-grid3 > .hud-el-chip {
+  min-width: 0; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hud-mm-icons { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.hud-mm-icons > .hud-el-chip {
+  min-width: 0; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding-left: 6px; padding-right: 6px;
+}
+.hud-mm-size > .hud-el-chip { min-width: 44px; text-align: center; }
+
+/* the size segment: five shapes in one welded control */
+.hud-mm-seg > .hud-el-chip { font-size: 13px; }
+
+/* ---- frame tiles --------------------------------------------------------- */
+.hud-mm-frames {
+  /* six tracks: a tile takes two (three across); a short last row's tiles take three or
+     all six, laid out sideways so the row fills without a giant thumbnail */
+  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 9px;
+}
+.hud-mm-frames > .hud-mm-frame { grid-column: span 2; }
+.hud-mm-frames > .hud-mm-frame.is-wide2 { grid-column: span 3; }
+.hud-mm-frames > .hud-mm-frame.is-wide3 { grid-column: span 6; }
+.hud-mm-frames > .hud-mm-nomatch { grid-column: 1 / -1; }
+.hud-mm-frame.is-wide2, .hud-mm-frame.is-wide3 { flex-direction: row; align-items: center; gap: 14px; }
+.hud-mm-frame.is-wide2 .hud-mm-fart { width: 52%; padding-bottom: 52%; flex: none; }
+.hud-mm-frame.is-wide3 .hud-mm-fart { width: 30%; padding-bottom: 30%; flex: none; }
+.hud-mm-frame.is-wide2 > :last-child, .hud-mm-frame.is-wide3 > :last-child { flex: 1; min-width: 0; text-align: left; }
+.hud-mm-frame {
+  font: inherit; cursor: pointer; min-width: 0;
+  display: flex; flex-direction: column; align-items: stretch; gap: 7px;
+  padding: 8px; border-radius: 11px;
+  color: var(--hud-dim); background: rgba(255, 255, 255, .03);
+  border: 1px solid var(--hud-line);
+  transition: color .12s ease, background .12s ease, border-color .12s ease, transform .09s ease;
+}
+.hud-mm-frame:hover { color: var(--hud-ink); border-color: var(--hud-line-lit); background: rgba(201, 162, 75, .08); }
+.hud-mm-frame:active { transform: translateY(1px); }
+.hud-mm-frame:focus-visible { outline: 2px solid rgba(201, 162, 75, .5); outline-offset: 1px; }
+.hud-mm-frame.on {
+  color: var(--hud-gold-lit); border-color: var(--hud-gold);
+  background: rgba(201, 162, 75, .14); box-shadow: inset 0 0 0 1px rgba(201, 162, 75, .35);
+}
+.hud-mm-frame:disabled { opacity: .45; cursor: default; }
+.hud-mm-frame.is-hid, .hud-mm-nomatch.is-hid { display: none; }
+.hud-mm-fart {
+  display: block; position: relative; width: 100%; height: 0; padding-bottom: 100%;
+  border-radius: 8px; overflow: hidden;
+  /* a dark "map" plate under the frame art, so a see-through middle reads as
+     the map it will hold rather than as a hole */
+  background:
+    linear-gradient(135deg, rgba(64, 86, 52, .55), rgba(30, 40, 30, .55)),
+    #0b0d10;
+}
+.hud-mm-fart img {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  object-fit: contain; display: block;
+}
+/* the two tiles with no picture: a drawn line, or nothing at all */
+.hud-mm-fmark {
+  position: absolute; left: 14%; top: 14%; right: 14%; bottom: 14%;
+  border: 2px solid rgba(201, 162, 75, .8); border-radius: 6px;
+}
+.hud-mm-fmark.is-none { border: 1px dashed rgba(185, 176, 154, .45); }
+.hud-mm-fname {
+  font-size: 13px; line-height: 1.25; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hud-mm-nomatch { font-size: 13px; color: var(--hud-dim); }
+.hud-mm-ffilter {
+  /* the shelf filter's LOOK, not its class: .hud-set-filter carries the
+     head's `order` and a 100% flex-basis that, inside this column, stacked
+     the box over the rows under it (caught in the 2560 shot, 2026-10-09) */
+  display: block; width: 100%; cursor: text;
+  font: inherit; font-size: 15px; padding: 11px 14px;
+  border-radius: 10px; color: var(--hud-ink);
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid var(--hud-line-lit); outline: none;
+}
+.hud-mm-ffilter::placeholder { color: var(--hud-dim); opacity: .85; }
+.hud-mm-ffilter:focus { border-color: var(--hud-gold); background: rgba(255, 255, 255, .07); }
+
+/* ---- empty states: honest, never a dead control without a reason ---- */
+.hud-mm-empty {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 14px; border-radius: 10px;
+  border: 1px dashed var(--hud-line-lit); background: rgba(201, 162, 75, .05);
+}
+.hud-mm-empty b { font-size: 15px; color: var(--hud-ink); font-weight: 600; }
+.hud-mm-empty span { font-size: 13px; color: var(--hud-dim); line-height: 1.5; }
+
+/* ---- the ghost: the minimap's box while the editor is up -----------------
+   position:fixed on <body>, OUTSIDE #hud (its transform would become the
+   containing block). Above #hud (6 while editing) and #hud-free (4), below
+   the shelf (8), so a ghost parked under the shelf never eats its clicks.
+   No fill: DMM keeps drawing the real map underneath, and it outlines its own
+   true edge in preview, so this is a handle, not a picture. */
+#hud-mm-ghost {
+  position: fixed; z-index: 7; display: none;
+  border: 2px dashed rgba(230, 196, 99, .85); border-radius: 6px;
+  background: rgba(201, 162, 75, .06);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), inset 0 0 0 1px rgba(0, 0, 0, .35);
+  cursor: grab; pointer-events: auto;
+  transition: background .14s ease, border-color .14s ease, box-shadow .14s ease;
+}
+#hud-mm-ghost.show { display: block; }
+#hud-mm-ghost.is-round { border-radius: 50%; }
+#hud-mm-ghost:hover { background: rgba(201, 162, 75, .11); border-color: var(--hud-gold-lit); }
+#hud-mm-ghost.is-drag {
+  cursor: grabbing; background: rgba(201, 162, 75, .14); border-style: solid;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 10px 26px rgba(0, 0, 0, .5);
+}
+.hud-mm-glab {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 10px 16px; border-radius: 10px;
+  background: rgba(10, 12, 16, .82); border: 1px solid var(--hud-line-lit);
+  pointer-events: none; white-space: nowrap;
+}
+.hud-mm-glab b { font-size: 16px; font-weight: 600; color: var(--hud-gold-lit); letter-spacing: .04em; }
+.hud-mm-glab span { font-size: 13px; color: var(--hud-dim); }
+#hud-mm-ghost.is-small .hud-mm-glab span { display: none; }
+/* corner handles: big enough to grab from a couch (20px), drawn as the
+   editor's own gold squares */
+.hud-mm-handle {
+  position: absolute; width: 20px; height: 20px;
+  background: var(--hud-gold-lit); border: 2px solid #17110a; border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .6);
+}
+.hud-mm-handle.is-nw { left: -11px; top: -11px; cursor: nwse-resize; }
+.hud-mm-handle.is-ne { right: -11px; top: -11px; cursor: nesw-resize; }
+.hud-mm-handle.is-sw { left: -11px; bottom: -11px; cursor: nesw-resize; }
+.hud-mm-handle.is-se { right: -11px; bottom: -11px; cursor: nwse-resize; }
+/* a round map's handles sit on its bounding box corners, outside the circle —
+   still the box the resize is about */
+#hud-mm-ghost.is-round .hud-mm-handle { border-radius: 50%; }

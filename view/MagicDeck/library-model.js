@@ -11,12 +11,13 @@
   function normalize(raw, categories) {
     raw = raw && typeof raw === 'object' ? raw : {};
     var out = Object.assign({}, raw, { parents: Object.create(null) });
-    out.layout = ['cards', 'columns', 'list', 'icons'].indexOf(raw.layout) >= 0 ? raw.layout : 'cards';
+    out.layout = ['cards', 'columns', 'list', 'table', 'icons'].indexOf(raw.layout) >= 0 ? raw.layout : 'columns';
+    out.table = normalizeTable(raw.table);
     out.sort = ['custom', 'name', 'kind', 'mode', 'school'].indexOf(raw.sort) >= 0 ? raw.sort : 'custom';
     out.density = DENSITIES.indexOf(raw.density) >= 0 ? raw.density : 'balanced';
     out.sizeAuto = raw.sizeAuto !== false;
     out.sidebarCollapsed = raw.sidebarCollapsed === true;
-    out.controlsCollapsed = raw.controlsCollapsed === true;
+    out.controlsCollapsed = raw.controlsCollapsed !== false;
     var p = raw.parents || {};
     categories.forEach(function (c) {
       if (own(p, c) && categories.indexOf(p[c]) >= 0 && p[c] !== c) out.parents[c] = p[c];
@@ -31,6 +32,68 @@
       }
     });
     return out;
+  }
+  /* Table view (2026-10-11): one row per spell under sortable column headers,
+     the way the game's own magic list reads. Its sort is its own (a header
+     click), kept apart from library.sort so the other views and the Portal,
+     which only know the five legacy sorts, are untouched. 'custom' = my order.
+     `hidden` lists the columns the player switched off; Name cannot be hidden. */
+  var TABLE_FIELDS = ['name', 'school', 'tier', 'magnitude', 'duration', 'cost'];
+  var TABLE_NUMERIC = ['tier', 'magnitude', 'duration', 'cost'];
+  var TIERS = ['novice', 'apprentice', 'adept', 'expert', 'master'];
+  function normalizeTable(raw) {
+    raw = raw && typeof raw === 'object' ? raw : {};
+    return Object.assign({}, raw, {
+      sort: TABLE_FIELDS.indexOf(raw.sort) >= 0 ? raw.sort : 'custom', dir: raw.dir === -1 ? -1 : 1,
+      hidden: (Array.isArray(raw.hidden) ? raw.hidden : []).filter(function (f, i, a) { return TABLE_FIELDS.indexOf(f) > 0 && a.indexOf(f) === i; }),
+    });
+  }
+  /* A header click: a new column starts in its natural direction (numbers
+     high to low, text A to Z), a second click reverses, a third returns to
+     the player's own order. */
+  function tableCycle(table, field) {
+    var first = TABLE_NUMERIC.indexOf(field) >= 0 ? -1 : 1;
+    if (TABLE_FIELDS.indexOf(field) < 0) return table;
+    if (table.sort !== field) { table.sort = field; table.dir = first; }
+    else if (table.dir === first) table.dir = -first;
+    else { table.sort = 'custom'; table.dir = 1; }
+    return table;
+  }
+  /* The three numbers a row shows, from the same description reply the cards
+     and Details use. Magnitude and duration are the main effect's: direct
+     damage first, then healing, then the first effect that has a number. */
+  function tableStats(data) {
+    var s = data && data.ok && data.stats, wait = data ? '—' : '…';
+    if (!s) return { magnitude: null, duration: null, cost: null, text: { magnitude: wait, duration: wait, cost: wait } };
+    function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+    var effects = (Array.isArray(s.effects) ? s.effects : []).filter(function (e) { return e && typeof e === 'object'; });
+    var sized = effects.filter(function (e) { return num(e.magnitude) > 0; });
+    var main = sized.filter(function (e) { return e.kind === 'damage'; })[0] || sized.filter(function (e) { return e.kind === 'healing'; })[0] || sized[0] || null;
+    var dur = main && num(main.duration) > 0 ? main.duration : effects.reduce(function (m, e) { return Math.max(m, num(e.duration) || 0); }, 0);
+    var cost = s.shout ? null : num(s.cost);
+    return { magnitude: main ? main.magnitude : null, duration: dur > 0 ? dur : null, cost: cost, text: {
+      magnitude: main ? spellStatNumber(main.magnitude) + (main.perSecond ? ' /s' : '') : '—',
+      duration: dur > 0 ? spellStatNumber(dur) + ' sec' : '—',
+      cost: s.shout ? 'Voice' : cost === null ? '—' : spellStatNumber(cost) + (s.costPerSecond ? ' /s' : '') } };
+  }
+  /* Stable; a row with nothing to compare (no tier, numbers not read yet) goes
+     last whichever way the column runs. `stat(spell)` answers tableStats(). */
+  function tableSort(rows, table, meta, stat) {
+    var f = table && table.sort, dir = table && table.dir === -1 ? -1 : 1;
+    if (TABLE_FIELDS.indexOf(f) < 0) return rows;
+    function value(s) {
+      var m = meta(s) || {};
+      if (f === 'name') return String(s.name || '').toLowerCase();
+      if (f === 'school') return String(m.school || (kind(m) === 'unknown' ? '' : kind(m))).toLowerCase();
+      if (f === 'tier') { var t = TIERS.indexOf(String(m.tier || '').toLowerCase()); return t < 0 ? null : t; }
+      var v = stat(s); return v && typeof v[f] === 'number' ? v[f] : null;
+    }
+    return rows.map(function (s, i) { return { s: s, v: value(s), i: i }; }).sort(function (a, b) {
+      var an = a.v === null || a.v === '', bn = b.v === null || b.v === '';
+      if (an !== bn) return an ? 1 : -1;
+      var c = an ? 0 : typeof a.v === 'number' ? a.v - b.v : a.v.localeCompare(b.v);
+      return c * dir || String(a.s.name || '').localeCompare(String(b.s.name || '')) || a.i - b.i;
+    }).map(function (x) { return x.s; });
   }
   function inside(cat, parent, parents) {
     var seen = [];
@@ -150,7 +213,8 @@
   }
   // END SPELL DESCRIPTION FORMATTERS
   var api = { normalize: normalize, inside: inside, tree: tree, path: path, kind: kind, visible: visible, counts: counts,
-    stats: spellStatTiles, effectRows: spellEffectRows, cardStats: spellCardStats, densities: DENSITIES.slice(), fitDensity: fitDensity, stepDensity: stepDensity };
+    stats: spellStatTiles, effectRows: spellEffectRows, cardStats: spellCardStats, densities: DENSITIES.slice(), fitDensity: fitDensity, stepDensity: stepDensity,
+    tableFields: TABLE_FIELDS.slice(), tableNumeric: TABLE_NUMERIC.slice(), normalizeTable: normalizeTable, tableCycle: tableCycle, tableStats: tableStats, tableSort: tableSort };
   root.SpellLibrary = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

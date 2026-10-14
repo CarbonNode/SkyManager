@@ -27,7 +27,9 @@
      wheel ("wheel menu is still fucked", Rober 2026-08-18, screenshot). A
      huge gradient surface is exactly the class of paint this engine bands;
      a flat translucent fill is the honest, safe version of the same idea. */
-  background: rgba(6, 8, 11, 0.55);
+  /* .38, not .55 (2026-10-11): the Combat Wheel at .55 read as "weirdly dim"
+     over live play; the tiles are solid, so the world can show more */
+  background: rgba(6, 8, 11, 0.38);
   animation: whl-fade-in 140ms ease-out;
   cursor: default;
   user-select: none;

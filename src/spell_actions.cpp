@@ -478,6 +478,12 @@ namespace SpellActions
 				}
 			}
 		}
+		// Castable race powers also belong in the complete spellbook.
+		if (auto* race = player->GetRace()) {
+			if (auto* data = race->actorEffects; data && data->spells) {
+				for (std::uint32_t i = 0; i < data->numSpells; ++i) add(data->spells[i]);
+			}
+		}
 		// ...plus every spell learned at runtime.
 		for (auto* s : player->GetActorRuntimeData().addedSpells)
 			add(s);
@@ -521,6 +527,43 @@ namespace SpellActions
 		for (auto& r : rows)
 			arr.push_back(std::move(r));
 		return arr.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	bool IsKnown(const std::string& plugin, std::uint32_t localId, std::uint32_t formId)
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player) return false;
+		const auto fallback = plugin.empty() ? formId : 0;
+		if (auto* spell = ResolveSpell(plugin, localId, fallback))
+			return IsCastableType(spell->GetSpellType()) && player->HasSpell(spell);
+		if (auto* shout = ResolveShout(plugin, localId, fallback)) return player->HasShout(shout);
+		return false;
+	}
+
+	void ExportSpellbook(std::string knownJson)
+	{
+		static std::atomic<std::uint64_t> generation{0};
+		static std::mutex writeMutex;
+		const auto sequence = ++generation;
+		const auto at = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+		std::thread([sequence, at, knownJson = std::move(knownJson)]() {
+			std::lock_guard lock(writeMutex);
+			if (sequence != generation.load()) return;
+			try {
+				auto spells = nlohmann::json::parse(knownJson, nullptr, false);
+				if (!spells.is_array()) return;
+				const std::filesystem::path path{"Data/SKSE/Plugins/HotkeyDeck/spellbook.json"};
+				std::filesystem::create_directories(path.parent_path());
+				auto temp = path; temp += ".tmp";
+				std::ofstream output(temp, std::ios::binary | std::ios::trunc);
+				output << nlohmann::json({{"version", 1}, {"at", at}, {"spells", spells}}).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+				output.close();
+				if (!output || !MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+					logger::warn("magic-workbench: spellbook export failed"); return;
+				}
+				logger::info("magic-workbench: learned spellbook exported");
+			} catch (const std::exception& e) { logger::warn("magic-workbench: export failed {}", e.what()); }
+		}).detach();
 	}
 
 	std::string EquipStateJson()

@@ -10,10 +10,23 @@
   const imageOK = v => v === '' || (typeof v === 'string' && v.length < 260 && /^icons\/(custom|items)\/[a-zA-Z0-9 _~().@+-]+\.(png|jpg|jpeg|webp)$/i.test(v));
   function flair(doc) {
     const f = doc.flair || {};
-    return Object.assign({ sets: [], links: {}, categoryIcons: {}, pools: {}, keep: true, dock: {} }, f);
+    return Object.assign({ sets: [], links: {}, categoryIcons: {}, pools: {}, keep: true, dock: {}, wheel: {} }, f);
+  }
+  // wardrobe-wheel: up to 8 looks on a slow-time radial, each with a flyout
+  // of up to 8 things to wear over it — a Flair set or one single piece.
+  const WHEEL_SLOTS = 8, WHEEL_FLYOUT = 8;
+  function wheel(doc) {
+    const w = flair(doc).wheel;
+    const v = Object.assign({ slots: [], slow: 0.25, size: 64 }, w && typeof w === 'object' ? w : {});
+    if (!Array.isArray(v.slots)) v.slots = [];
+    return v;
   }
   const key = (kind,id) => kind + ':' + id;
   function need(ok, msg) { if (!ok) throw new Error(msg); }
+  function piece(p) {
+    need(p && typeof p === 'object' && /^0x[0-9a-f]{1,6}$/i.test(p.formId) && parseInt(p.formId,16)>0 && /^.{1,120}\.(esm|esp|esl)$/i.test(p.plugin) && !/[\\/|]/.test(p.plugin), 'An accessory needs its plugin and local FormID');
+    return {formId:'0x'+parseInt(p.formId,16).toString(16).toUpperCase(),plugin:p.plugin,name:text(p.name,160),slot:text(p.slot,40)};
+  }
   function validate(edit) {
     need(edit && typeof edit === 'object', 'Missing edit');
     const e = clone(edit), k = e.type;
@@ -24,10 +37,29 @@
       need(Array.isArray(e.items) && e.items.length > 0 && e.items.length <= 32, 'Choose 1 to 32 accessories');
       const seen = new Set();
       e.items = e.items.map(p => {
-        need(p && typeof p === 'object' && /^0x[0-9a-f]{1,6}$/i.test(p.formId) && parseInt(p.formId,16)>0 && /^.{1,120}\.(esm|esp|esl)$/i.test(p.plugin) && !/[\\/|]/.test(p.plugin), 'An accessory needs its plugin and local FormID');
-        const q = {formId:'0x'+parseInt(p.formId,16).toString(16).toUpperCase(),plugin:p.plugin,name:text(p.name,160),slot:text(p.slot,40)};
+        const q = piece(p);
         const token = (q.formId+'|'+q.plugin).toLowerCase(); need(!seen.has(token),'The same accessory was selected twice'); seen.add(token); return q;
       });
+    } else if (k === 'wheel') {
+      need(Array.isArray(e.slots) && e.slots.length <= WHEEL_SLOTS, 'The wheel holds up to 8 looks');
+      const seen = new Set();
+      e.slots = e.slots.map(s => {
+        need(s && typeof s === 'object' && ['outfit','wardrobe'].includes(s.kind) && text(s.id,160), 'Choose an outfit or wardrobe');
+        const token = s.kind + ':' + s.id; need(!seen.has(token), 'That look is already on the wheel'); seen.add(token);
+        const raw = s.flyout === undefined ? [] : s.flyout;
+        need(Array.isArray(raw) && raw.length <= WHEEL_FLYOUT, 'A flyout holds up to 8 choices');
+        const taken = new Set();
+        const flyout = raw.map(x => {
+          need(x && typeof x === 'object' && (('set' in x) !== ('item' in x)), 'A flyout choice is a Flair set or one piece');
+          const v = 'set' in x ? (need(idOK(x.set), 'Choose a Flair set'), {set:x.set}) : {item:piece(x.item)};
+          const t = v.set ? 'set:' + v.set : ('item:' + v.item.formId + '|' + v.item.plugin).toLowerCase();
+          need(!taken.has(t), 'That choice is already in this flyout'); taken.add(t); return v;
+        });
+        return {kind:s.kind, id:s.id, flyout};
+      });
+    } else if (k === 'wheel-options') {
+      need(typeof e.slow === 'number' && isFinite(e.slow) && typeof e.size === 'number' && isFinite(e.size), 'Invalid wheel settings');
+      e.slow = Math.round(Math.max(.05, Math.min(1, e.slow)) * 100) / 100; e.size = Math.round(Math.max(40, Math.min(80, e.size)));
     } else if (k === 'link') {
       need(['outfit','wardrobe'].includes(e.kind) && text(e.id,160), 'Choose an outfit or wardrobe');
       need(e.flairId === '' || idOK(e.flairId), 'Choose a Flair set');
@@ -58,7 +90,9 @@
     const meta = name => { let m = doc.outfitMeta.find(m=>m.name===name); if(!m){m={name:name};doc.outfitMeta.push(m);} return m; };
     const pool = id => { need(doc.wardrobes.some(p=>p.id===id),'That wardrobe no longer exists'); return f.pools[id] || (f.pools[id]={}); };
     if(e.type === 'set') { const i=f.sets.findIndex(s=>s.id===e.id); const v={id:e.id,name:e.name,icon:e.icon,items:e.items}; if(i<0){need(f.sets.length<100,'Maximum 100 Flair sets');f.sets.push(v);}else f.sets[i]=v; }
-    if(e.type === 'delete') {f.sets=f.sets.filter(s=>s.id!==e.id);Object.keys(f.links).forEach(k=>{if(f.links[k]===e.id)delete f.links[k];});}
+    if(e.type === 'delete') {f.sets=f.sets.filter(s=>s.id!==e.id);Object.keys(f.links).forEach(k=>{if(f.links[k]===e.id)delete f.links[k];});if(f.wheel&&Array.isArray(f.wheel.slots))f.wheel.slots.forEach(s=>{if(Array.isArray(s.flyout))s.flyout=s.flyout.filter(x=>x.set!==e.id);});}
+    if(e.type === 'wheel') {e.slots.forEach(s=>{if(s.kind==='wardrobe')need(doc.wardrobes.some(p=>p.id===s.id),'That wardrobe no longer exists');s.flyout.forEach(x=>{if(x.set)need(f.sets.some(v=>v.id===x.set),'That Flair set no longer exists');});});f.wheel=Object.assign({},f.wheel,{slots:e.slots});}
+    if(e.type === 'wheel-options') f.wheel=Object.assign({},f.wheel,{slow:e.slow,size:e.size});
     if(e.type === 'link') {need(!e.flairId||f.sets.some(s=>s.id===e.flairId),'That Flair set no longer exists');if(e.kind==='wardrobe')pool(e.id);if(e.flairId)f.links[key(e.kind,e.id)]=e.flairId;else delete f.links[key(e.kind,e.id)];}
     if(e.type === 'favorite') meta(e.name).fav=e.value;
     if(e.type === 'categories') {need(e.ids.every(id=>doc.categories.some(c=>c.id===id)),'A category no longer exists');(e.kind==='outfit'?meta(e.id):pool(e.id)).categoryIds=e.ids;}
@@ -78,6 +112,21 @@
     (doc.wardrobes||[]).forEach(p=>{const m=f.pools[p.id]||{};if(onlyFavorites&&!m.fav)return;const lead=(p.outfits||[]).map(n=>(doc.outfitMeta||[]).find(o=>o.name===n)).find(o=>o&&o.image);result.push({kind:'wardrobe',id:p.id,name:p.name,image:m.image||(lead&&lead.image)||'',categoryIds:m.categoryIds||[],fav:!!m.fav,flairId:f.links[key('wardrobe',p.id)]||'',count:(p.outfits||[]).length});});
     return result.sort((a,b)=>a.name.localeCompare(b.name));
   }
+  // The wheel's looks, resolved against what still exists. A slot whose look
+  // was deleted is dropped; a flyout set that vanished is dropped. Each choice
+  // carries the pieces it would put on, so a view can draw their renders.
+  function wheelRows(doc) {
+    const f=flair(doc), all=rows(doc,false);
+    return wheel(doc).slots.map(s=>{
+      const r=all.find(x=>x.kind===s.kind&&x.id===s.id);if(!r)return null;
+      const flyout=(Array.isArray(s.flyout)?s.flyout:[]).map(x=>{
+        if(x.set){const v=f.sets.find(z=>z.id===x.set);return v?{key:'set:'+v.id,set:v.id,name:v.name,icon:v.icon||'',items:v.items||[]}:null;}
+        if(x.item)return {key:('item:'+x.item.formId+'|'+x.item.plugin).toLowerCase(),item:x.item,name:x.item.name||x.item.formId,icon:'',items:[x.item]};
+        return null;
+      }).filter(Boolean);
+      return Object.assign({},r,{flyout});
+    }).filter(Boolean);
+  }
   function categories(doc) {const f=flair(doc);return [{id:'',name:'Favorites',icon:''}].concat((doc.categories||[]).map(c=>({id:c.id,name:c.name,icon:f.categoryIcons[c.id]||''})));}
   function visible(doc, category, query) {const q=String(query||'').toLowerCase().trim();return rows(doc,true).filter(r=>(!category||r.categoryIds.includes(category))&&(!q||r.name.toLowerCase().includes(q)));}
   // Fit the WHOLE measured surface, including the selected portrait's reserved
@@ -94,5 +143,5 @@
     if(snap){edgeX=x-minX<=24?'left':maxX-x<=24?'right':'';edgeY=y-minY<=24?'top':maxY-y<=24?'bottom':'';if(edgeX)x=edgeX==='left'?minX:maxX;if(edgeY)y=edgeY==='top'?minY:maxY;}
     return {x,y,scale,edgeX,edgeY,left:x-halfW,right:x+halfW,top:y-halfH,bottom:y+halfH};
   }
-  return {flair,key,validate,apply,rows,categories,visible,imageOK,fitDock};
+  return {flair,key,validate,apply,rows,categories,visible,imageOK,fitDock,wheel,wheelRows,piece};
 });

@@ -162,6 +162,8 @@
   white-space: nowrap;
   transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
 }
+/* Balanced (hd-balance.js): the built-in / category divider would be a cell of its own. */
+#mt-pills.hd-balance > .mt-pill-div { display: none; }
 .mt-pill:hover { background: #26262f; border-color: #55503f; color: #efe9da; }
 .mt-pill-on { background: #2c2a20; border-color: #7a6f4d; color: #f0e6c8; }
 

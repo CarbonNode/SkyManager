@@ -24,6 +24,49 @@ namespace FollowersHud
 		return (s == "rounded" || s == "square" || s == "diamond") ? s : "circle";
 	}
 
+	std::string ClampFrameMode(const std::string& s)
+	{
+		return (s == "gold" || s == "group" || s == "none") ? s : "person";
+	}
+
+	int ClampOpacity(int pct)
+	{
+		return std::clamp(pct, 20, 100);
+	}
+
+	int ClampSqueeze(int pct)
+	{
+		return std::clamp(pct, 0, 100);
+	}
+
+	// The frame palette. hud.js FRAME_PALETTE holds the same keys with their
+	// colours; a key that is not here is refused (never stored, never sent).
+	static constexpr const char* kFramePalette[] = {
+		"gold", "ember", "crimson", "rose", "violet", "azure",
+		"frost", "teal", "jade", "moss", "ivory", "steel",
+	};
+
+	bool IsFrameColor(const std::string& s)
+	{
+		for (const char* k : kFramePalette)
+			if (s == k)
+				return true;
+		return false;
+	}
+
+	bool IsFrameKey(const std::string& s)
+	{
+		if (s.empty() || s.size() > 160)
+			return false;
+		for (unsigned char ch : s)
+			if (ch < 0x20)
+				return false;
+		if (s.rfind("name:", 0) == 0)
+			return s.size() > 5;
+		const auto bar = s.rfind('|');
+		return bar != std::string::npos && bar > 0 && s.compare(bar + 1, 2, "0x") == 0 && s.size() > bar + 3;
+	}
+
 	json ToJson(const Config& c)
 	{
 		return json{
@@ -44,7 +87,13 @@ namespace FollowersHud
 			{ "showHp", c.showHp },
 			{ "showSt", c.showSt },
 			{ "showMk", c.showMk },
+			{ "showAway", c.showAway },
 			{ "faceShape", ClampShape(c.faceShape) },
+			{ "frameMode", ClampFrameMode(c.frameMode) },
+			{ "frameColor", IsFrameColor(c.frameColor) ? c.frameColor : std::string("gold") },
+			{ "opacityPct", ClampOpacity(c.opacityPct) },
+			{ "squeezePct", ClampSqueeze(c.squeezePct) },
+			{ "frameColors", c.frameColors },
 			{ "compact", c.compact },
 			{ "compactSeeded", c.compactSeeded },
 			{ "navKey", json{
@@ -81,7 +130,30 @@ namespace FollowersHud
 		out.showHp = j.value("showHp", out.showHp);
 		out.showSt = j.value("showSt", out.showSt);
 		out.showMk = j.value("showMk", out.showMk);
+		out.showAway = j.value("showAway", out.showAway);
 		out.faceShape = ClampShape(j.value("faceShape", out.faceShape));
+		out.frameMode = ClampFrameMode(j.value("frameMode", out.frameMode));
+		if (const auto fc = j.value("frameColor", out.frameColor); IsFrameColor(fc))
+			out.frameColor = fc;
+		{
+			const auto& op = j.contains("opacityPct") ? j["opacityPct"] : json();
+			if (op.is_number())
+				out.opacityPct = ClampOpacity(op.get<int>());
+		}
+		{
+			const auto& sq = j.contains("squeezePct") ? j["squeezePct"] : json();
+			if (sq.is_number())
+				out.squeezePct = ClampSqueeze(sq.get<int>());
+		}
+		if (j.contains("frameColors") && j["frameColors"].is_object()) {
+			out.frameColors.clear();
+			for (const auto& [k, v] : j["frameColors"].items()) {
+				if (out.frameColors.size() >= kMaxFrameColors)
+					break;
+				if (v.is_string() && IsFrameKey(k) && IsFrameColor(v.get<std::string>()))
+					out.frameColors[k] = v.get<std::string>();
+			}
+		}
 		// One-shot migration (2026-08-18): faces-only is the SPEC default, but
 		// the first compact build persisted compact:false into every existing
 		// hotkeys.json before the default flipped — so a plain j.value() read

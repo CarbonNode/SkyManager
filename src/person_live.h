@@ -45,6 +45,16 @@ namespace PersonLive
 	// to the full-body front view. Returns the same shape as Start.
 	std::string Orbit(float dyawDeg, float dzoom, bool reset);
 
+	// AUTO PORTRAITS (2026-10-12). The same lease, lights and focus hooks, framed
+	// on the FACE instead: head and shoulders, centred, so the centre square of
+	// the frame IS the portrait. Head gear (helmets, hoods — ArmorHelmet or
+	// ClothingHead) is culled for the shot and put back by Stop() or the next
+	// FaceRetarget(). Same refusals as Start.
+	std::string StartFace(RE::Actor* actor);
+	// Move the face framing to the next subject without dropping the lease.
+	// False when the actor or the free camera is gone (the caller then Stops).
+	bool FaceRetarget(RE::Actor* actor);
+
 	// Idempotent. `why` is for the log.
 	void Stop(const char* why);
 

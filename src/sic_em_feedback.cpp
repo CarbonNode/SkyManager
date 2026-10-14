@@ -1,4 +1,5 @@
 #include "sic_em_feedback.h"
+#include "camera_axes.h"
 
 #include "loot_highlight.h"
 #include "sic_em_trajectory.h"
@@ -75,18 +76,34 @@ namespace SicEmFeedback
 		// Where the crosshair ray meets the world (scenery only — the pathing
 		// pick layer tests geometry without selecting bodies, same as
 		// npc_clearance.cpp). Falls back to the far end of the ray.
-		RE::NiPoint3 CrosshairPoint(const RE::NiPoint3& camPos, const RE::NiPoint3& fwd, float& outDist)
+		//
+		// 2026-10-12 (Rober, from the Combat Wheel: "shooting spell visual out
+		// from back of character"): the ray used to start AT the camera, and in
+		// third person it stopped on his own body — the log said "crosshair at
+		// 92-157 units", the camera-to-player distance — so the bolt converged
+		// on a point BEHIND his head and flew backwards. Now the ray (a) carries
+		// the player's collision group, so his own capsule and ragdoll are not
+		// hit, and (b) starts where the aim line passes his head, so nothing
+		// between the camera and him can be the aim point either.
+		RE::NiPoint3 CrosshairPoint(const RE::NiPoint3& camPos, const RE::NiPoint3& fwd,
+			const RE::NiPoint3& head, float& outDist)
 		{
+			const RE::NiPoint3 rel = head - camPos;
+			const float start = (std::max)(0.0f, rel.x * fwd.x + rel.y * fwd.y + rel.z * fwd.z);
 			outDist = kAimRange;
+			const RE::NiPoint3 from = camPos + fwd * start;
 			const RE::NiPoint3 farPoint = camPos + fwd * kAimRange;  // not `far`: a windows.h macro
 			auto* tes = RE::TES::GetSingleton();
-			if (!tes)
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!tes || !player || start >= kAimRange)
 				return farPoint;
 			RE::bhkPickData pick{};
 			const float s = RE::bhkWorld::GetWorldScale();
-			pick.rayInput.from = RE::hkVector4(camPos.x * s, camPos.y * s, camPos.z * s, 0.0f);
+			pick.rayInput.from = RE::hkVector4(from.x * s, from.y * s, from.z * s, 0.0f);
 			pick.rayInput.to   = RE::hkVector4(farPoint.x * s, farPoint.y * s, farPoint.z * s, 0.0f);
-			pick.rayInput.filterInfo = static_cast<std::uint32_t>(RE::COL_LAYER::kPathingPick);
+			std::uint32_t info = 0;
+			player->GetCollisionFilterInfo(info);  // hotbar_cast.cpp's idiom: same group = not hit
+			pick.rayInput.filterInfo = (info & 0xFFFF0000u) | static_cast<std::uint32_t>(RE::COL_LAYER::kPathingPick);
 			pick.rayInput.enableShapeCollectionFilter = true;
 			pick.ray = pick.rayInput.to - pick.rayInput.from;
 			pick.rayOutput.Reset();
@@ -96,7 +113,7 @@ namespace SicEmFeedback
 			const float f = pick.rayOutput.hitFraction;
 			if (!std::isfinite(f) || f <= 0.0f || f > 1.0f)
 				return farPoint;
-			outDist = kAimRange * f;
+			outDist = start + (kAimRange - start) * f;
 			return camPos + fwd * outDist;
 		}
 
@@ -167,15 +184,19 @@ namespace SicEmFeedback
 
 		auto&              wt     = camera->cameraRoot->world;
 		const RE::NiPoint3 camPos = wt.translate;
-		const RE::NiPoint3 fwd    = { -wt.rotate.entry[0][2], -wt.rotate.entry[1][2], -wt.rotate.entry[2][2] };
+		const RE::NiPoint3 fwd    = CameraAxes::Forward(wt);
+		const auto         head   = player->GetLookingAtLocation();
 		float              aimDist = 0.0f;
-		const RE::NiPoint3 aimAt  = CrosshairPoint(camPos, fwd, aimDist);
+		RE::NiPoint3       aimAt  = CrosshairPoint(camPos, fwd, head, aimDist);
 
 		// The bolt leaves the player's head (follows the real body, first or
 		// third person) and CONVERGES on the crosshair point — the camera's
 		// offset would otherwise put a head-parallel bolt a body-width off a
-		// close target.
-		const auto head = player->GetLookingAtLocation();
+		// close target. A point that is not clearly AHEAD of the head (a wall
+		// he is pressed against) gets a bolt straight down the camera aim
+		// instead: it must never leave backwards or sideways.
+		if (!AheadOf({ head.x, head.y, head.z }, { aimAt.x, aimAt.y, aimAt.z }, { fwd.x, fwd.y, fwd.z }))
+			aimAt = head + fwd * kAimRange;
 		const auto aim  = Aim({ head.x, head.y, head.z }, { aimAt.x, aimAt.y, aimAt.z });
 		if (!aim)
 			return false;
@@ -218,6 +239,9 @@ namespace SicEmFeedback
 		// Build marker (hd-markers.json: "npc-sic-em-bolt").
 		logger::info("NpcActions: sic-em bolt fired {:08X} speed={:.0f} range={:.0f} crosshair at {:.0f} units",
 			projectile->GetFormID(), speed, range, aimDist);
+		// Build marker (hd-markers.json: "npc-sic-em-bolt-forward").
+		logger::info("NpcActions: sic-em bolt aim {:.0f} units ahead of the head (yaw {:.2f}, camera yaw {:.2f})",
+			(aimAt - head).Length(), aim->yaw, std::atan2(fwd.x, fwd.y));
 		return true;
 	}
 

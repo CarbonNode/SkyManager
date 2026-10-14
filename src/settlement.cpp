@@ -22,6 +22,7 @@
 #include "settlement.h"
 
 #include "pch.h"
+#include "camera_axes.h"
 
 #include <algorithm>
 #include <cctype>
@@ -872,7 +873,7 @@ namespace Settlement
 				return false;
 			auto& wt = camera->cameraRoot->world;
 			pos = wt.translate;
-			fwd = { -wt.rotate.entry[0][2], -wt.rotate.entry[1][2], -wt.rotate.entry[2][2] };
+			fwd = CameraAxes::Forward(wt);
 			return true;
 		}
 

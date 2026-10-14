@@ -2739,7 +2739,12 @@ var HDWheel = (function () {
 
   if (window.HDOmni && typeof HDOmni.register === 'function') {
     HDOmni.register({
-      id: 'inventory', label: 'What you are carrying', tab: '',
+      /* tab: the Inventory page (2026-10-10) — Shift+Enter on anything you
+         carry opens it there, its search pre-filled with what you typed. */
+      id: 'inventory', label: 'What you are carrying', tab: 'inventory',
+      setFilter: function (q) {
+        if (window.InventoryPane && typeof InventoryPane.setFilter === 'function') InventoryPane.setFilter(q);
+      },
       warm: function () { toGame('whInv'); },
       /* Fired from a snapshot when the live read has not landed yet (or the
          item genuinely left the bag — C++ answers honestly either way, which

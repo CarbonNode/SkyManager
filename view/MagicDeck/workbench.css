@@ -1,0 +1,388 @@
+/* Arcane Workbench — compact desktop browsing with readable type. Loaded last. */
+@font-face{font-family:MWGaramond;src:url('fonts/mw-garamond.woff2') format('woff2');font-display:swap}
+/* Palette: library.css :root owns it. Accent themes sit on :root too (workbench.js
+   mirrors data-mw-theme there), so a popout outside #panel follows the theme. */
+:root[data-mw-theme=frost]{--ml-gold:#a9d8e6;--ml-brass-line:#3f6470;--ml-wash:rgba(150,208,226,.10)}
+:root[data-mw-theme=contrast]{--ml-ink:#fff;--ml-muted:#dedcd6;--ml-gold:#ffd97a;--ml-brass-line:#a08a4e;--ml-line:#80808c;--ml-line-2:#a4a4b0;--ml-canvas:#0d0d11;--ml-rail:#08080b;--ml-card:#08080b}
+#panel{--ml-radius:3px;--mw-font:20px;--mw-name:23px;--mw-dock-pad:10px;--mw-dock-slot:70px;background:var(--ml-canvas);border-color:var(--ml-brass-line);box-shadow:0 24px 100px rgba(0,0,0,.4)}
+#panel[data-mw-text="115"]{--mw-font:23px;--mw-name:26px}
+#panel[data-mw-text="130"]{--mw-font:26px;--mw-name:30px}
+#md-header{min-height:72px;padding:10px 24px;background:var(--ml-rail);gap:18px}
+#md-header h1{font:600 32px/1.1 MWGaramond,Georgia,serif;color:var(--ml-gold)}
+.ml-brand-label{font-size:15px;letter-spacing:2px}
+#md-header .ghost-btn{font-size:18px;min-height:44px;border-radius:2px}
+#body{min-height:0;flex:1;overflow:hidden}
+#rail{width:var(--mw-rail-w,var(--mw-rail-auto,240px));flex:0 0 var(--mw-rail-w,var(--mw-rail-auto,240px));padding:14px 12px;background:var(--ml-rail)}
+#ml-category-search{font-size:18px;min-height:44px}
+.rail-item .rail-name,.rail-item,.mw-scope{font-size:18px;line-height:1.3}
+.ml-rail-heading{font-size:15px;letter-spacing:1.3px;padding:16px 4px 8px}
+.rail-count{font-size:16px}
+.ml-smart-grid{display:block}
+.ml-smart{min-height:46px;padding:5px 9px}
+.ml-cat-row{border-radius:3px}
+.ml-cat-edit{display:none}
+.editing .ml-cat-edit{display:block}
+.ml-fold{width:20px}
+.ml-cat-select{gap:8px}
+.mw-group-nav{display:flex;align-items:stretch;gap:2px}
+.mw-group-filter{display:flex;align-items:center;gap:9px;flex:1;min-width:0;margin:0;min-height:46px}
+.mw-flyout-open{flex:0 0 36px;background:transparent;border:1px solid transparent;border-radius:3px;color:var(--ml-gold);font-size:28px;padding:2px;min-height:44px}
+.mw-flyout-open:hover{border-color:var(--ml-gold);background:var(--ml-hover)}
+.mw-create-group{font-size:18px;min-height:44px;background:transparent;color:var(--ml-gold);border:0;text-align:left}
+.mw-scope{padding-left:12px;color:var(--ml-muted)}
+.mw-scope[aria-pressed=true]{color:var(--ml-gold);border-color:var(--ml-gold)}
+#main{padding:16px 22px 10px;gap:10px;min-width:0}
+#mw-top{display:flex;align-items:center;gap:28px;flex:none;min-height:64px}
+#mw-top #ml-heading-block{display:block!important;flex:0 1 360px;min-width:180px}
+#ml-heading{font:600 32px/1.08 MWGaramond,Georgia,serif;margin:0;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+#ml-breadcrumb{font-size:13px;line-height:1.3;letter-spacing:1px;margin:0 0 6px}
+#mw-top #search-wrap{flex:1;min-width:160px;min-height:48px;border-radius:3px;margin:0}
+#search{font-size:var(--mw-font);padding-right:8px}
+.mw-search-key{font:15px/1.3 'Segoe UI',sans-serif;color:var(--ml-muted);border:1px solid var(--ml-line);margin:0 10px;white-space:nowrap;padding:2px 5px}
+#mw-pins{display:flex;align-items:center;gap:8px;overflow:auto;flex:none;min-height:42px;padding-bottom:3px}
+.mw-pin-label{font-size:14px;letter-spacing:1.5px;color:var(--ml-muted);white-space:nowrap;margin-right:6px}
+.mw-pin{display:flex;align-items:center;gap:8px;white-space:nowrap;min-height:40px;padding:5px 12px;background:var(--ml-rail);border:1px solid var(--ml-line);border-radius:3px;font-size:18px;color:var(--ml-ink)}
+.mw-pin img{width:26px;height:26px;object-fit:contain}
+.mw-pin:hover{border-color:var(--ml-gold);color:var(--ml-gold)}
+#ml-library-bar{gap:8px;min-height:44px}
+#ml-view-options{margin:0;order:1;padding:2px;border-radius:3px}
+#ml-view-options button{font-size:18px;min-height:40px;padding:6px 12px;border-radius:2px}
+#ml-density{font-size:18px;min-height:44px;order:2;margin-left:auto}
+#ml-toggle-controls{order:3;font-size:18px;min-height:44px}
+#ml-toggle-rail{order:0;font-size:26px}
+#ml-compact-packages{display:none}
+#toolbar{margin:0;min-height:0}
+#toolbar:empty{display:none}
+#ml-filters{padding-bottom:7px;gap:10px;font-size:18px}
+#ml-result-count,.ml-filterbar label,#ml-clear{font-size:18px}
+.ml-filterbar select{font-size:18px;min-height:40px}
+#mw-status{flex:none;font-size:16px;color:var(--ml-muted);padding-top:3px}
+#list{border-top:1px solid var(--ml-line);padding-top:10px}
+#panel #list{gap:10px}
+#panel .spell:not(.edit){border-radius:3px;padding:10px;gap:9px;min-height:0;transition:background-color .12s,border-color .12s}
+#panel .spell .name{font:600 var(--mw-name)/1.16 MWGaramond,Georgia,serif;min-height:0;display:-webkit-box;-webkit-line-clamp:2;white-space:normal}
+#panel .spell .ml-spell-kind{font-size:15px;line-height:1.2;letter-spacing:.5px;margin-bottom:4px;text-transform:capitalize}
+#panel .spell .sub{font-size:16px;margin-top:4px}
+#panel .spell:not(.edit) .plugin,#panel .spell:not(.edit) .ml-spell-category{display:none}
+#panel .spell:not(.edit) .row-right{border:0;padding:0;min-height:36px;gap:6px!important}
+#panel .ml-spell-activate{font-size:17px;min-height:36px;padding:6px 9px;border-radius:2px}
+#panel .ml-spell-details{font-size:17px;min-height:36px;padding:5px}
+#panel .spell .qkey{font-size:16px;min-width:28px;width:28px;height:32px}
+#panel .spell.equipped:before{top:4px;right:8px;font-size:13px;letter-spacing:.6px;z-index:1}
+#panel .spell:not(.edit) .ml-card-stats{font-size:16px}
+.mw-banner{display:none;pointer-events:none}
+#panel[data-layout=cards] #list{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
+#panel[data-layout=cards] .spell:not(.edit){min-height:196px;position:relative;overflow:hidden;padding-top:12px}
+#panel[data-layout=cards] .mw-banner{display:block;position:absolute;left:0;top:0;right:0;height:76px;background-size:cover;background-position:center;opacity:.85}
+#panel[data-layout=cards] .mw-banner:after{content:'';position:absolute;inset:0;background:linear-gradient(0deg,var(--ml-card),rgba(15,15,20,0))}
+#panel[data-layout=cards] .spell>.glyph{position:relative;width:48px;height:48px;max-width:none;max-height:none;margin-bottom:3px;z-index:1}
+#panel[data-layout=cards] .spell .body{position:relative;z-index:1}
+#panel[data-layout=cards] .spell .name{min-height:52px}
+#panel[data-layout=cards][data-density=spacious] #list{grid-template-columns:repeat(auto-fill,minmax(310px,1fr))}
+#panel[data-layout=cards][data-density=spacious] .spell:not(.edit){min-height:242px}
+#panel[data-layout=cards][data-density=dense] #list{grid-template-columns:repeat(auto-fill,minmax(212px,1fr))}
+#panel[data-layout=cards][data-density=dense] .spell:not(.edit){min-height:176px}
+#panel[data-layout=columns] #list{grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+#panel[data-layout=columns] .spell:not(.edit){display:grid;grid-template-columns:52px minmax(0,1fr);align-items:center;min-height:108px}
+#panel[data-layout=columns] .spell>.glyph{width:48px;height:48px;padding:0!important}
+#panel[data-layout=columns] .spell .body{min-width:0;flex:none}
+#panel[data-layout=columns] .spell .row-right{grid-column:2;width:100%}
+/* Cast + a long Equip slot ("Unequip | Voice") can outgrow a narrow column. The
+   row still never grows: whatever does not fit wraps onto a second line that the
+   clip hides whole, so Details goes away cleanly instead of reading "Deta"
+   (clicking the card opens Details anyway). */
+#panel[data-layout=columns] .spell:not(.edit) .row-right{flex-wrap:wrap;row-gap:30px;max-height:44px}
+#panel[data-layout=columns] .spell .ml-card-stats{display:none}
+#panel[data-layout=columns][data-density=spacious] #list{grid-template-columns:repeat(auto-fill,minmax(410px,1fr))}
+#panel[data-layout=columns][data-density=spacious] .spell:not(.edit){min-height:132px;padding:16px}
+#panel[data-layout=columns][data-density=dense] #list{grid-template-columns:repeat(auto-fill,minmax(305px,1fr))}
+#panel[data-layout=columns][data-density=dense] .spell:not(.edit){min-height:96px}
+#panel[data-layout=list] .spell:not(.edit){min-height:64px;margin-bottom:7px;gap:14px}
+#panel[data-layout=list] .spell>.glyph{width:42px;height:42px}
+#panel[data-layout=list] .spell .name{-webkit-line-clamp:1}
+#panel[data-layout=list] .spell .ml-spell-kind{display:none}
+#panel[data-layout=list] .spell .ml-card-stats{display:flex;gap:20px}
+#panel[data-layout=list][data-density=spacious] .spell:not(.edit){min-height:90px}
+#panel[data-layout=icons] #list{grid-template-columns:repeat(auto-fill,minmax(128px,1fr))}
+#panel[data-layout=icons] .spell.ml-icon-card{padding:0}
+#panel[data-layout=icons] .ml-icon-inspect{padding:10px 7px;gap:6px}
+#panel[data-layout=icons] .ml-icon-inspect .glyph{width:60px;height:60px}
+#panel[data-layout=icons] .spell.ml-icon-card .name{font-size:20px;line-height:23px;min-height:46px}
+#panel[data-layout=icons][data-density=spacious] #list{grid-template-columns:repeat(auto-fill,minmax(170px,1fr))}
+#mw-inspector{flex:0 0 var(--mw-inspector-w,var(--mw-inspector-auto,340px));min-width:0;border-left:1px solid var(--ml-line);background:var(--ml-rail);display:flex;flex-direction:column;position:relative;overflow:hidden}
+#mw-inspector[hidden]{display:none}
+.mw-inspector-art{position:absolute;top:0;left:0;right:0;height:210px;background-size:cover;background-position:center;pointer-events:none}
+.mw-inspector-art:after{content:'';position:absolute;inset:0;background:linear-gradient(0deg,var(--ml-rail),rgba(15,15,20,0))}
+.mw-inspector-scroll{min-height:0;flex:1;overflow:auto;padding:26px 24px;position:relative}
+.mw-inspector-art+.mw-inspector-scroll{padding-top:132px}
+.mw-inspector-scroll>.glyph{width:62px;height:62px;margin-bottom:14px}
+.mw-eyebrow{font-size:15px;letter-spacing:1.5px;text-transform:uppercase;color:var(--ml-gold);margin:0 0 10px}
+.mw-inspector-scroll h2{font:600 38px/1.06 MWGaramond,Georgia,serif;color:var(--ml-ink);margin:0 0 18px;overflow-wrap:anywhere}
+.mw-description{font-size:var(--mw-font);line-height:1.5;color:var(--ml-muted)}
+.mw-stats{display:flex;border-top:1px solid var(--ml-line);border-bottom:1px solid var(--ml-line);margin:22px 0;padding:14px 0}
+.mw-stats>div{flex:1;min-width:0;text-align:center}
+.mw-stats strong{display:block;font:600 38px/1.2 MWGaramond,Georgia,serif;color:var(--ml-gold)}
+.mw-stats span{font-size:16px;color:var(--ml-muted)}
+#mw-effects p{padding:10px 0;border-bottom:1px solid var(--ml-line);margin:0}
+#mw-effects strong,#mw-effects span{display:block;font-size:17px;line-height:1.5}
+#mw-effects span,.mw-source{color:var(--ml-muted)}
+.mw-source{font-size:16px;overflow-wrap:anywhere;line-height:1.5}
+.mw-actions{display:flex;flex-wrap:wrap;gap:8px}
+.mw-actions>.ml-button{flex:1;min-height:42px;white-space:nowrap;font-size:18px;padding:8px}
+/* Cast now owns a full-width row above the equip buttons: the one gold action. */
+.mw-actions>.mw-cast-now{flex:1 0 100%;min-height:48px;font-size:20px}
+#mw-inspector>.mw-actions{padding:16px;border-top:1px solid var(--ml-line);position:relative;background:var(--ml-rail)}
+.mw-no-selection{font-size:22px;line-height:1.5;padding:24px;color:var(--ml-muted)}
+#mw-equipped{display:flex;flex:none;gap:12px;padding:10px 24px;background:var(--ml-rail);border-top:1px solid var(--ml-line)}
+.mw-equipped-slot{display:flex;align-items:center;gap:14px;flex:1;min-width:0;padding:8px 16px;background:transparent;border:1px solid var(--ml-line);border-radius:3px;text-align:left;color:var(--ml-ink)}
+.mw-equipped-slot>.glyph{width:44px;height:44px;flex:none}
+.mw-equipped-slot>span{min-width:0}
+.mw-equipped-slot small{display:block;font-size:14px;color:var(--ml-gold);letter-spacing:1px;line-height:1.4}
+.mw-equipped-slot strong{display:block;font:600 24px/1.3 MWGaramond,Georgia,serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mw-equipped-slot:disabled{opacity:.7}
+.ml-dialog.mw-group-flyout,.ml-dialog.mw-group-editor{display:flex;flex-direction:column;max-height:90vh;padding:24px;gap:12px;width:740px}
+.ml-dialog.mw-group-editor{width:920px}
+.mw-flyout-backdrop{align-items:center;justify-content:flex-start;padding-left:calc(3vw + 230px)}
+.mw-group-copy{margin:0;color:var(--ml-muted);font-size:18px;line-height:1.4}
+.mw-group-toolbar{display:flex;align-items:center;gap:8px;flex:none;flex-wrap:wrap}
+.mw-group-toolbar>span{font-size:18px;color:var(--ml-muted);margin-left:auto}
+.mw-group-toolbar button[aria-pressed=true]{border-color:var(--ml-gold);background:var(--ml-wash);color:var(--ml-gold)}
+.mw-group-list{overflow:auto;min-height:120px;display:block;border-top:1px solid var(--ml-line);padding-top:10px}
+.mw-flyout-row{display:flex;align-items:center;border-bottom:1px solid var(--ml-line);gap:12px;padding:8px 0}
+.mw-flyout-spell{display:flex;align-items:center;gap:12px;flex:1;min-width:0;background:transparent;color:var(--ml-ink);border:0;padding:4px;text-align:left}
+.mw-flyout-spell>.glyph{width:42px;height:42px;flex:none}
+.mw-flyout-spell strong{display:block;font:600 25px/1.2 MWGaramond,Georgia,serif;overflow-wrap:anywhere}
+.mw-flyout-spell small{display:block;font-size:16px;color:var(--ml-muted);margin-top:4px}
+.mw-flyout-row .mw-actions{flex:none;max-width:240px}
+.mw-flyout-row .mw-actions button{font-size:16px}
+.mw-group-list[data-view=icons]{display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:10px;grid-auto-rows:max-content;align-content:start}
+.mw-group-list[data-view=icons] .mw-flyout-row{flex-direction:column;border:1px solid var(--ml-line);padding:10px;justify-content:space-between}
+.mw-group-list[data-view=icons] .mw-flyout-spell{flex-direction:column;text-align:center}
+.mw-group-list[data-view=icons] .glyph{width:64px;height:64px}
+.mw-group-list[data-view=icons] .mw-actions{justify-content:center}
+.mw-group-list[data-view=icons] .mw-flyout-spell strong{font-size:22px}
+.mw-group-editor label{font-size:18px;color:var(--ml-muted);display:flex;flex-direction:column;gap:8px}
+.mw-group-settings{display:flex;align-items:center;gap:24px}
+.mw-group-settings label{display:flex;flex-direction:row;align-items:center}
+.mw-group-icons{display:flex;gap:6px;overflow:auto;flex:none;max-height:64px}
+.mw-icon-choice{flex:none;width:54px;height:54px;padding:6px;border:1px solid var(--ml-line);background:var(--ml-rail);border-radius:3px}
+.mw-icon-choice img{object-fit:contain}
+.mw-icon-choice[aria-pressed=true]{border-color:var(--ml-gold);box-shadow:inset 0 0 0 1px var(--ml-gold)}
+.mw-member-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));min-height:100px;overflow:auto;gap:6px;grid-auto-rows:max-content;align-content:start}
+.mw-member{display:flex;align-items:center;gap:10px;padding:8px;min-height:52px;background:var(--ml-rail);border:1px solid var(--ml-line);color:var(--ml-ink);text-align:left;font-size:20px;border-radius:3px}
+.mw-member>.glyph{width:36px;height:36px;flex:none}
+.mw-member[aria-pressed=true]{border-color:var(--ml-gold);background:var(--ml-wash)}
+.mw-member-check{margin-left:auto;color:var(--ml-gold)}
+.mw-validation{color:var(--ml-gold);font-size:18px;line-height:1.4;margin:0}
+.mw-validation:empty{display:none}
+.mw-editor-actions{display:flex;justify-content:flex-end;gap:10px;border-top:1px solid var(--ml-line);padding-top:14px;flex:none}
+.mw-empty{font-size:20px;line-height:1.5;color:var(--ml-muted);padding:16px}
+.mw-customize{display:flex;flex-direction:column;gap:22px}
+.mw-customize>label{display:flex;align-items:center;gap:14px;font-size:20px;line-height:1.4}
+.mw-customize>label select{margin-left:auto}
+.mw-customize p{font-size:18px;line-height:1.5;color:var(--ml-muted)}
+.mw-group-editor input,.mw-group-flyout input{flex:none;min-height:46px;font-size:20px;border:1px solid var(--ml-line);background:var(--ml-rail);color:var(--ml-ink);padding:8px 12px;border-radius:3px}
+.mw-group-editor input[type=checkbox],.mw-customize input[type=checkbox]{width:24px;height:24px;min-height:24px;flex:none;padding:0}
+.mw-group-settings select{font-size:18px;min-height:44px}
+.mw-no-motion .spell{transition:none!important}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--ml-gold);outline-offset:2px}
+@media(prefers-reduced-motion:reduce){#panel .spell{transition:none!important}}
+@media(min-width:2200px){#panel{--mw-inspector-auto:390px;--mw-rail-auto:258px}.mw-description{font-size:22px}}
+#panel.ml-narrow #mw-top{flex-wrap:wrap;gap:10px}
+#panel.ml-narrow #mw-top #ml-heading-block{flex:1}
+#panel.ml-narrow #mw-top #search-wrap{flex-basis:100%}
+#panel.ml-narrow #mw-equipped{padding:8px;gap:6px}
+#panel.ml-narrow .mw-equipped-slot{padding:8px;gap:8px}
+#panel.ml-narrow .mw-equipped-slot>.glyph{width:32px;height:32px}
+#panel.ml-narrow .mw-equipped-slot strong{font-size:20px}
+#panel.ml-phone #main{padding:12px}
+#panel.ml-phone #ml-library-bar{flex-wrap:wrap}
+#panel.ml-phone #ml-view-options{flex:1;justify-content:space-between}
+#panel.ml-phone #ml-view-options button{font-size:16px;padding:6px 8px}
+#panel.ml-phone #mw-pins .mw-pin-label{display:none}
+#panel.ml-phone #mw-equipped{display:none}
+#panel.ml-phone #ml-breadcrumb{display:none}
+#panel.ml-phone #mw-top #ml-heading{font-size:30px}
+#panel.ml-phone #ml-filters{display:none}
+@media(max-width:900px){.mw-flyout-backdrop{padding:12px;justify-content:center}.ml-dialog.mw-group-editor,.ml-dialog.mw-group-flyout{padding:18px;max-height:94vh}.mw-member-list{grid-template-columns:minmax(0,1fr)}.mw-flyout-row{flex-wrap:wrap}.mw-flyout-row .mw-actions{max-width:none}.mw-group-settings{flex-wrap:wrap;gap:10px}}
+
+/* Match the older density selectors explicitly: minimum heights must not win
+   from an earlier sheet, and the smart filters are rows rather than tiles. */
+#panel .ml-smart-grid .ml-smart{display:flex;align-items:center;gap:10px;padding:6px 8px;min-height:44px;border-color:transparent;background:transparent;margin-bottom:3px}
+#panel .ml-smart-grid .ml-smart.sel{background:var(--ml-wash);border-color:var(--ml-gold);box-shadow:none}
+#panel .ml-smart-grid .rail-name{font-size:18px;flex:1}
+#panel .ml-smart-grid .rail-count{margin-left:auto}
+#panel[data-layout=cards][data-density] .spell:not(.edit){min-height:190px;padding:10px;gap:8px}
+#panel[data-layout=cards][data-density=spacious] .spell:not(.edit){min-height:236px;padding:14px}
+#panel[data-layout=cards][data-density=dense] .spell:not(.edit){min-height:174px}
+#panel[data-layout=columns][data-density] .spell:not(.edit){min-height:100px;padding:10px;gap:6px 10px}
+#panel[data-layout=columns][data-density=spacious] .spell:not(.edit){min-height:126px;padding:16px}
+#panel[data-layout=columns][data-density=dense] .spell:not(.edit){min-height:92px;padding:8px}
+#panel[data-layout=list][data-density] .spell:not(.edit){min-height:64px;padding:8px 12px;gap:12px}
+#panel[data-layout=list][data-density=spacious] .spell:not(.edit){min-height:84px;padding:14px}
+#panel[data-layout=icons][data-density] .spell:not(.edit){min-height:0;padding:0;gap:0}
+#panel[data-layout=icons][data-density] .spell .name{font-size:20px;line-height:23px}
+#panel[data-density] .spell:not(.edit) .name{font-size:var(--mw-name);line-height:1.16}
+#search::placeholder{color:var(--ml-muted);opacity:1}
+#panel .spell .ml-card-stat{font-size:16px}
+#panel .spell .ml-card-stats{margin-top:5px;min-height:0}
+#panel[data-layout=cards] .ml-card-stats{flex-direction:row;gap:12px}
+#panel[data-layout=cards] .ml-card-stat{display:block;min-width:0;flex:1}
+#panel[data-layout=cards] .ml-card-stat-label{display:block;font-size:14px}
+#panel[data-layout=cards] .ml-card-stat strong{font-size:18px}
+#panel.ml-phone{border-radius:0}
+#panel.ml-phone #main{flex:1;min-height:0}
+#panel.ml-phone #body{min-height:0;overflow:hidden;flex:1}
+#panel.ml-phone #list{flex:1;min-height:0;overflow:auto}
+#panel.ml-phone #mw-top{flex-wrap:wrap;gap:8px}
+#panel.ml-phone #mw-top #ml-heading-block{flex:1 1 100%;min-width:0}
+#panel.ml-phone #mw-top #search-wrap{flex:1 1 100%;min-width:0}
+#panel.ml-phone #mw-status{font-size:14px}
+
+#panel[data-layout=cards][data-density] #list{grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
+#panel[data-layout=cards][data-density] .spell:not(.edit){display:grid;grid-template-columns:44px minmax(0,1fr);align-items:start;gap:8px;min-height:186px}
+#panel[data-layout=cards][data-density] .spell:not(.edit)>.glyph{width:44px;height:44px;margin:0;grid-column:1;grid-row:1}
+#panel[data-layout=cards][data-density] .spell:not(.edit)>.body{grid-column:2;grid-row:1;min-width:0;align-self:stretch}
+#panel[data-layout=cards][data-density] .spell:not(.edit)>.row-right{grid-column:1 / -1;align-self:end}
+#panel[data-layout=cards][data-density=spacious] #list{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+#panel[data-layout=cards][data-density=spacious] .spell:not(.edit){min-height:226px}
+#main{gap:8px}
+#panel[data-layout=cards] .spell .name{min-height:50px}
+#panel[data-layout=cards] .ml-card-stats{flex-direction:column;gap:2px}
+#panel[data-layout=cards] .ml-card-stat{display:flex;align-items:center;gap:8px;font-size:15px}
+#panel[data-layout=cards] .ml-card-stat-label{display:inline;font-size:14px}
+#panel[data-layout=cards] .ml-card-stat strong{margin-left:auto;font-size:17px}
+@media(max-height:850px){#panel{--mw-dock-pad:6px;--mw-dock-slot:56px}#mw-equipped{padding:6px 16px}.mw-equipped-slot{padding:4px 10px}.mw-equipped-slot>.glyph{height:32px;width:32px}.mw-equipped-slot strong{font-size:20px}#mw-top{min-height:52px}#ml-heading{font-size:28px}#mw-pins{min-height:36px}.mw-pin{min-height:36px;font-size:16px}#main{gap:6px;padding-top:10px}}
+
+/* Compact rows keep the icon across both text/action rows. */
+#panel[data-layout=columns][data-density] .spell:not(.edit)>.glyph{grid-row:1 / 3;width:48px;height:48px;align-self:center}
+#panel[data-layout=columns][data-density] .spell:not(.edit) .name{-webkit-line-clamp:1}
+#panel[data-layout=columns][data-density=spacious] .spell:not(.edit) .name{-webkit-line-clamp:2}
+#panel[data-layout=list][data-density] .spell:not(.edit)>.glyph{width:42px;height:42px;padding:0!important}
+#panel[data-layout=list] .spell:not(.edit)>.body{display:flex;align-items:center;gap:20px}
+#panel[data-layout=list] .spell:not(.edit) .name{flex:1;min-width:0}
+#panel[data-layout=list] .spell:not(.edit) .ml-card-stats{margin:0;flex:none;min-width:200px}
+#panel.ml-narrow[data-layout=list] .spell:not(.edit) .ml-card-stats{display:none}
+
+#panel #mw-top #ml-heading-block{display:block!important}
+#panel[data-layout=list] .spell:not(.edit)>.body{flex-direction:row;text-align:left}
+#panel[data-layout=list] .spell:not(.edit) .ml-card-stats{flex-direction:row;align-items:center}
+#panel[data-layout=list] .spell:not(.edit) .ml-card-stat{white-space:nowrap}
+#panel[data-layout=cards] .spell:not(.edit)>.body{text-align:left}
+
+/* Icon wrappers outside spell rows need an explicit box too. */
+.mw-inspector-scroll>.glyph,.mw-equipped-slot>.glyph,.mw-flyout-spell>.glyph,.mw-member>.glyph{display:inline-flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0}
+.mw-inspector-scroll>.glyph img,.mw-equipped-slot>.glyph img,.mw-flyout-spell>.glyph img,.mw-member>.glyph img{display:block;width:100%;height:100%;object-fit:contain}
+
+/* ---- 2026-10-11: side panes you can size and fold; Details never clipped --------------
+   Rober, with two screenshots: "details is cut off... color of UI kinda ugly" and "ability
+   to resize left and right side areas of ui and close right chevron to get more room". */
+
+/* Dividers. Zero layout width (the negative margins), a 12px grab strip over the pane's own
+   border line; workbench.js sets --mw-rail-w / --mw-inspector-w on #panel from the drag. */
+.mw-splitter{flex:0 0 12px;margin:0 -6px;position:relative;z-index:4;align-self:stretch;cursor:col-resize;outline:0}
+.mw-splitter:before{content:'';position:absolute;top:0;bottom:0;left:5px;width:2px;background:transparent;transition:background-color .12s}
+.mw-splitter:after{content:'';position:absolute;top:50%;left:4px;width:4px;height:48px;margin-top:-24px;border-radius:2px;background:var(--ml-line-2);transition:background-color .12s}
+.mw-splitter:hover:before,.mw-splitter:focus:before,.mw-splitter.dragging:before,
+.mw-splitter:hover:after,.mw-splitter:focus:after,.mw-splitter.dragging:after{background:var(--ml-gold)}
+#panel.ml-rail-collapsed #mw-split-rail,#panel:not(.mw-with-inspector) #mw-split-inspector,
+#panel.ml-narrow .mw-splitter,#panel.ml-phone .mw-splitter{display:none}
+body.mw-splitting{cursor:col-resize}
+body.mw-splitting #panel{user-select:none;-webkit-user-select:none}
+body.mw-splitting .spell,body.mw-splitting .rail-item,body.mw-splitting #mw-inspector{pointer-events:none}
+.mw-no-motion .mw-splitter:before,.mw-no-motion .mw-splitter:after{transition:none}
+@media(prefers-reduced-motion:reduce){.mw-splitter:before,.mw-splitter:after{transition:none}}
+
+/* A narrow rail never splits a section heading over two lines. */
+.ml-rail-heading{white-space:nowrap}
+
+/* The right-hand twin of the categories chevron: last in the bar, folds the inspector. */
+#mw-toggle-inspector{order:4}
+#mw-toggle-inspector[hidden]{display:none}
+
+/* Details: its own box, never squeezed, and a focus ring drawn INSIDE it. The action row
+   clips its overflow on purpose (a wrapped row is a taller card), so an outside ring lost
+   its right and bottom edge. */
+#panel .ml-spell-details{flex:none;white-space:nowrap;margin-left:auto;padding:5px 10px;border:1px solid transparent;border-radius:2px;color:var(--ml-gold)}
+#panel .ml-spell-details:hover{border-color:var(--ml-brass-line);background:var(--ml-wash)}
+#panel .spell .row-right button:focus{outline-offset:-2px}
+
+/* Colour carries state, not decoration: Equip is quiet until the spell is in a hand. */
+#panel .ml-spell-activate.equip{color:var(--ml-ink);border-color:var(--ml-line-2);background:var(--ml-rail)}
+#panel .spell.equipped .ml-spell-activate.equip{color:var(--equip);border-color:var(--equip-line)}
+#panel .ml-spell-activate:hover{color:var(--ml-gold);border-color:var(--ml-gold);background:var(--ml-wash)}
+#panel .ml-action-slot{border-left-color:var(--ml-line-2)}
+
+/* Hotkeys tab: a fourth cell of the equipped dock, where it used to lie across the
+   left-hand slot's name. Same height as the slots; the strip under it keeps the pointer on
+   the tab while the hints bar slides up. */
+#mw-equipped{padding-left:150px}
+.mw-equipped-slot{height:var(--mw-dock-slot);padding-top:0;padding-bottom:0}
+#panel:not(.ml-narrow) .hints-tab{display:flex;align-items:center;justify-content:center;left:24px;bottom:calc(100% + var(--mw-dock-pad));width:114px;height:var(--mw-dock-slot);padding:0 8px;border:1px solid var(--ml-line);border-radius:3px;background:transparent;font-size:16px;white-space:nowrap}
+#panel:not(.ml-narrow) .hints-tab:after{content:'';position:absolute;left:0;right:0;top:100%;height:calc(var(--mw-dock-pad) + 2px)}
+#panel:not(.ml-narrow) #hints:hover .hints-tab{border-color:var(--ml-gold);background:var(--ml-rail)}
+@media(max-height:850px){#mw-equipped{padding-left:142px}#panel:not(.ml-narrow) .hints-tab{left:16px}}
+
+/* ---- Table view (2026-10-11) ---------------------------------------------------------
+   Rober: "Toggleble multi column list view like vanilla would be nice". One row per spell
+   under sortable column headers. The header rides inside #list (sticky), so it always lines
+   up with the rows whatever the scrollbar does. Column widths are tokens shared by both;
+   library-ui.js tableChrome() sets data-table-fit from the list's measured width and the
+   ml-tc-off-* classes from the Fields popout. Row height walks the same density ladder. */
+#panel{--tc-school:150px;--tc-tier:120px;--tc-mag:124px;--tc-dur:110px;--tc-cost:88px;--tc-act:350px;--tc-gap:14px;--tr-h:50px;--tr-art:32px}
+#panel[data-density=spacious]{--tr-h:58px;--tr-art:38px}
+#panel[data-density=compact]{--tr-h:44px;--tr-art:28px}
+#panel[data-density=dense]{--tr-h:38px;--tr-art:24px}
+#panel[data-layout=table] #list{display:block;padding:0 6px 8px 0}
+.ml-table-head,#panel[data-layout=table][data-density] .spell:not(.edit){display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;gap:0 var(--tc-gap);padding:0 12px;margin:0}
+.ml-table-head{position:sticky;top:0;z-index:3;min-height:50px;background:var(--ml-canvas);border-bottom:1px solid var(--ml-brass-line)}
+#panel[data-layout=table][data-density] .spell:not(.edit){height:var(--tr-h);min-height:var(--tr-h);border:0;border-bottom:1px solid var(--ml-line);border-radius:0;background:transparent;box-shadow:none;overflow:hidden}
+#panel[data-layout=table][data-density] .spell:not(.edit):nth-child(even){background:rgba(255,255,255,.02)}
+#panel[data-layout=table][data-density] .spell:not(.edit):hover{background:var(--ml-hover)}
+#panel[data-layout=table][data-density] .spell.sel:not(.edit){background:var(--ml-wash);box-shadow:inset 3px 0 0 var(--ml-gold)}
+#panel[data-layout=table][data-density] .spell.equipped:not(.edit){box-shadow:inset 3px 0 0 var(--equip)}
+#panel[data-layout=table][data-density] .spell.equipped:not(.edit):before{display:none}
+.ml-th-art,#panel[data-layout=table][data-density] .spell:not(.edit)>.glyph{flex:0 0 var(--tr-art);width:var(--tr-art);height:var(--tr-art)}
+#panel[data-layout=table][data-density] .spell:not(.edit)>.glyph{padding:2px!important;max-width:none;max-height:none;align-self:center;box-shadow:none;border-radius:4px}
+.ml-th.ml-tc-name,#panel[data-layout=table][data-density] .spell:not(.edit)>.body{flex:1 1 0;min-width:0;width:auto}
+#panel[data-layout=table][data-density] .spell:not(.edit) .name{font-size:21px;line-height:1.2;min-height:0;-webkit-line-clamp:1}
+#panel[data-layout=table][data-density=dense] .spell:not(.edit) .name{font-size:19px}
+.ml-tc{flex:none;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:18px;line-height:1.3;color:var(--ml-ink)}
+.ml-tc-school{width:var(--tc-school)}
+.ml-tc-tier{width:var(--tc-tier)}
+.ml-tc-magnitude{width:var(--tc-mag)}
+.ml-tc-duration{width:var(--tc-dur)}
+.ml-tc-cost{width:var(--tc-cost)}
+.spell .ml-tc-school{color:var(--ml-school-ink);text-transform:capitalize}
+.spell .ml-tc-tier{color:var(--ml-muted)}
+.spell .ml-tc-magnitude,.spell .ml-tc-duration,.spell .ml-tc-cost{text-align:right;font-variant-numeric:tabular-nums}
+.spell .ml-tc-cost{color:var(--ml-gold);font-weight:600}
+.ml-th-stats,#panel[data-layout=table][data-density] .spell:not(.edit) .ml-table-stats{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;flex:none;gap:0 var(--tc-gap);margin:0;min-height:0;font-size:18px}
+.ml-th-tools,#panel[data-layout=table][data-density] .spell:not(.edit) .row-right{flex:0 0 var(--tc-act);width:var(--tc-act);min-height:0;padding:0}
+.ml-th-tools{display:flex;justify-content:flex-end}
+#panel[data-layout=table][data-density] .spell:not(.edit) .ml-spell-activate,
+#panel[data-layout=table][data-density] .spell:not(.edit) .ml-spell-details{min-height:32px;padding:3px 9px;font-size:16px}
+#panel[data-layout=table][data-density] .spell:not(.edit) .qkey{width:26px;min-width:26px;height:28px;font-size:15px}
+#panel[data-layout=table][data-density=dense] .spell:not(.edit) .ml-spell-activate,
+#panel[data-layout=table][data-density=dense] .spell:not(.edit) .ml-spell-details{min-height:28px;padding:2px 8px}
+#panel[data-layout=table][data-density=dense] .spell:not(.edit) .qkey{height:26px}
+.ml-th{display:flex;align-items:center;gap:8px;min-height:44px;padding:0;border:0;background:transparent;color:var(--ml-muted);font:600 14px/1.2 'Segoe UI',sans-serif;letter-spacing:1.3px;text-transform:uppercase;white-space:nowrap;text-align:left}
+.ml-th-stats .ml-th{flex-direction:row-reverse;justify-content:flex-start}
+.ml-th:hover,.ml-th.on{color:var(--ml-gold)}
+.ml-th:focus{outline-offset:0}
+.ml-th-arrow{flex:none;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent}
+.ml-th-arrow.asc{border-bottom:7px solid var(--ml-gold)}
+.ml-th-arrow.desc{border-top:7px solid var(--ml-gold)}
+.ml-th-fields{min-height:34px;padding:4px 12px;border:1px solid var(--ml-line);border-radius:2px;background:transparent;color:var(--ml-muted);font-size:16px}
+.ml-th-fields:hover{color:var(--ml-gold);border-color:var(--ml-brass-line);background:var(--ml-wash)}
+.ml-th-fields:focus{outline-offset:-2px}
+#panel.ml-tc-off-school .ml-tc-school,#panel.ml-tc-off-tier .ml-tc-tier,#panel.ml-tc-off-magnitude .ml-tc-magnitude,
+#panel.ml-tc-off-duration .ml-tc-duration,#panel.ml-tc-off-cost .ml-tc-cost,
+#panel[data-table-fit=tight] .ml-tc-tier,#panel[data-table-fit=tight] .ml-tc-duration,
+#panel[data-table-fit=narrow] .ml-tc-tier,#panel[data-table-fit=narrow] .ml-tc-duration,
+#panel[data-table-fit=narrow] .ml-tc-school,#panel[data-table-fit=narrow] .ml-tc-magnitude{display:none}
+#panel[data-table-fit=narrow]{--tc-act:290px}
+#panel[data-table-fit=narrow][data-layout=table] .spell:not(.edit) .ml-spell-details{display:none}
+.mw-customize input[type=checkbox]{accent-color:var(--ml-gold)}
+#panel.ml-phone .ml-tc-cost,#panel.ml-phone .ml-th-tools,#panel.ml-phone[data-layout=table] .spell:not(.edit) .qkey{display:none}
+#panel.ml-phone[data-layout=table] .spell:not(.edit) .row-right{flex:0 0 auto;width:auto}

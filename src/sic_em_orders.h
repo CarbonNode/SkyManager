@@ -13,11 +13,38 @@
 //
 // Pure policy, no engine types: npc_actions.cpp samples the actors and does
 // what Decide() says, tests/sic_em_orders.cpp proves the table.
+//
+// 2026-10-12 (Rober, after Vayne was sent back at a Cave Bear eight times over
+// ninety seconds and never arrived: "'couldn't get to target' make sure this
+// is configurable and a time if it doesnt get to target npcs teleport next to
+// it"). "Couldn't get there" is now a TIME, set in Settings (reachSeconds),
+// not a count of re-issues; when it runs out she is moved next to the target
+// (teleport, on by default) and gets one more window before the order drops.
 namespace SicEmOrders
 {
 	inline constexpr float kPushIntervalSeconds = 3.0f;    // re-issue cadence while she is not fighting
 	inline constexpr float kOrderTimeoutSeconds = 120.0f;  // an order nobody finished is forgotten
-	inline constexpr int   kMaxPushes = 8;                 // ~24 s of refusing to engage = she cannot get there
+	inline constexpr int   kMaxPushes = 8;                 // reached her target, then 8 refusals = she will not fight it
+
+	// Settings → Combat. The clamp is shared by main.cpp's config reader and
+	// the view's control, so the three agree.
+	inline constexpr float kDefaultReachSeconds = 15.0f;
+	inline constexpr float kMinReachSeconds = 5.0f;
+	inline constexpr float kMaxReachSeconds = 60.0f;
+	constexpr float ClampReachSeconds(double v)
+	{
+		if (!(v == v))  // NaN
+			return kDefaultReachSeconds;
+		return v < kMinReachSeconds ? kMinReachSeconds
+			 : v > kMaxReachSeconds ? kMaxReachSeconds
+			 : static_cast<float>(v);
+	}
+
+	struct Options
+	{
+		float reachSeconds = kDefaultReachSeconds;  // how long she gets to reach the target
+		bool  teleport = true;                      // then move her next to it (off: drop the order)
+	};
 
 	struct Sample
 	{
@@ -29,9 +56,13 @@ namespace SicEmOrders
 		float sinceIssued = 0.0f;    // seconds since the order (or its last retarget)
 		float sincePush = 0.0f;      // seconds since StartCombat was last sent
 		int   pushes = 0;            // re-issues sent so far
+		bool  reached = false;       // she got to this target (in reach, or hurting it from range)
+		float unreached = 0.0f;      // seconds she has spent NOT having reached it (since issue / teleport)
+		bool  teleported = false;    // already moved next to this target once
+		Options options{};
 	};
 
-	enum class Step { Keep, Push, Retarget, Drop };
+	enum class Step { Keep, Push, Retarget, Teleport, Drop };
 
 	struct Decision
 	{
@@ -49,13 +80,19 @@ namespace SicEmOrders
 			return s.hunt ? Decision{ Step::Retarget, "target down" } : Decision{ Step::Drop, "target down" };
 		if (s.sinceIssued >= kOrderTimeoutSeconds)
 			return { Step::Drop, "timed out" };
+		// Out of time to get there — checked BEFORE "fighting": a StartCombat
+		// she cannot path on still flags her in combat (Vayne and the bear).
+		if (!s.reached && s.unreached >= s.options.reachSeconds)
+			return (s.options.teleport && !s.teleported)
+				? Decision{ Step::Teleport, "could not reach" }
+				: Decision{ Step::Drop, "could not reach" };
 		// Fighting — even someone else. Who she swings at inside a brawl is the
 		// engine's call; re-pinning her every tick fights the combat AI.
 		if (s.allyInCombat)
 			return { Step::Keep, "fighting" };
 		if (s.sincePush < kPushIntervalSeconds)
 			return { Step::Keep, "waiting" };
-		if (s.pushes >= kMaxPushes)
+		if (s.reached && s.pushes >= kMaxPushes)
 			return { Step::Drop, "would not engage" };
 		return { Step::Push, "not fighting" };
 	}

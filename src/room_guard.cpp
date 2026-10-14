@@ -1,4 +1,5 @@
 #include "room_guard.h"
+#include "camera_axes.h"
 
 #include "actor_identity.h"
 #include "follower_frameworks.h"
@@ -221,7 +222,7 @@ namespace RoomGuard
 				return true;  // unknown -> assume seen, i.e. be polite
 
 			auto&        wt = camera->cameraRoot->world;
-			RE::NiPoint3 fwd = { -wt.rotate.entry[0][2], -wt.rotate.entry[1][2], -wt.rotate.entry[2][2] };
+			RE::NiPoint3 fwd = CameraAxes::Forward(wt);
 
 			const auto   apos = actor->GetPosition();
 			RE::NiPoint3 to = { apos.x - wt.translate.x, apos.y - wt.translate.y,
@@ -850,7 +851,7 @@ namespace RoomGuard
 				return nullptr;
 
 			auto&        wt = camera->cameraRoot->world;
-			RE::NiPoint3 fwd = { -wt.rotate.entry[0][2], -wt.rotate.entry[1][2], -wt.rotate.entry[2][2] };
+			RE::NiPoint3 fwd = CameraAxes::Forward(wt);
 
 			RE::Actor* best = nullptr;
 			float      bestScore = 0.0f;

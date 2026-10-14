@@ -93,6 +93,11 @@
  *             render in Ultralight), `cls` a hue key ('wife' | 'expecting'
  *             | free text → .omni-mark-<cls>), `title` the tooltip. They are
  *             identity, not search text — put the words in `keywords`.
+ *    lead     optional true — wins a SCORE TIE inside its own group. A
+ *             parent row whose label is the head of its children's labels
+ *             ("Walk With Me" over "Walk With Me › Party") scores exactly
+ *             what they do on any query naming the parent, so without this
+ *             its place would hang on sort stability.
  * ====================================================================== */
 
 var HDOmni = (function () {
@@ -159,6 +164,88 @@ var HDOmni = (function () {
     },
   };
   var inputTimer = null;
+  var typeRaf = 0;
+  var slowLoggedAt = 0;
+
+  /* omni-owns-keys (2026-10-10, Rober: "i cant search everytime i try to type it
+     just highlights somewhere else - thats an issue if you have domains page open
+     in background"). Two dozen panes listen for keys on WINDOW in the capture
+     phase, and window-capture runs BEFORE app.js's document-capture router, the
+     one place that knows the Omni is modal. Domains' "any printable key jumps to
+     my own search box" funnel therefore took the letters typed into the Omni.
+     Guarding each pane would be 23 edits that the next pane forgets, so every
+     key listener registered on window AFTER this script (all the deferred panes)
+     is wrapped once: while the Omni is open it does not run. Listeners added
+     before this file, and the Omni's own element listeners, are untouched;
+     removeEventListener finds the wrapper, so a pane can still detach. */
+  /* HDKeyOwner (2026-10-10): the Bestiary is a body-level book over whatever
+     tab was up, and it never switches panes, so Domains' ui.shown stays true
+     and its window-capture funnel took the letters typed into the book's
+     search (and ate its arrows and Enter). One owner test for both modal
+     surfaces: the Omni, or the book while it is open. */
+  window.HDKeyOwner = function () {
+    if (st.open) return true;
+    try { var b = window.HDBestiary; return !!(b && typeof b.isOpen === 'function' && b.isOpen()); } catch (e) { return false; }
+  };
+  /* hdModalEscape (2026-10-11, marker capture-modal-escape). The Omni and the
+     book hold the keys as a MODAL capture ("1M"), and under any capture C++
+     stands its own Esc-close down, so if Ultralight never delivered Escape to
+     the view nothing closed them (Rober: "stuck now too i dont think esc is
+     closing it"). C++ now hands every Esc over a modal to this function; it
+     runs the modal's own Esc unless a native keydown already did (both orders
+     are covered: the forward waits a beat and checks the native stamp). After
+     either path, a modal still open re-sends "1M", which zeroes C++'s
+     double-tap clock: two quick Escs force the palette shut ONLY when the view
+     has stopped answering. */
+  (function () {
+    var nativeAt = -1e9, fwdT = 0;
+    function bookOpen() { try { var b = window.HDBestiary; return !!(b && typeof b.isOpen === 'function' && b.isOpen()); } catch (e) { return false; } }
+    function modalOpen() { return st.open || bookOpen(); }
+    function rearm() { setTimeout(function () { if (modalOpen()) toGame('hdCapture', '1M'); }, 0); }
+    document.addEventListener('keydown', function (e) {
+      if (e && e.key === 'Escape' && modalOpen()) { nativeAt = Date.now(); rearm(); }
+    }, true);
+    window.hdModalEscape = function () {
+      var asked = Date.now();
+      if (fwdT) clearTimeout(fwdT);
+      fwdT = setTimeout(function () {
+        fwdT = 0;
+        if (Math.abs(nativeAt - asked) < 300) return;   // the view had this one itself
+        var fake = { key: 'Escape', code: 'Escape', ctrlKey: false, altKey: false, metaKey: false, shiftKey: false,
+          preventDefault: function () {}, stopPropagation: function () {} };
+        try {
+          var b = window.HDBestiary;
+          if (bookOpen() && typeof b.escape === 'function') b.escape();
+          else if (st.open) onKey(fake, 'Escape');
+        } catch (x) { /* never strand the player over a throw: the hatch is still armed */ }
+        rearm();
+      }, 90);
+    };
+  })();
+  (function () {
+    try {
+      var KEYS = { keydown: 1, keyup: 1, keypress: 1 };
+      var add = window.addEventListener, remove = window.removeEventListener;
+      if (typeof add !== 'function' || typeof remove !== 'function' || typeof WeakMap !== 'function') return;
+      var wrapped = new WeakMap();
+      window.addEventListener = function (type, fn, opts) {
+        if (KEYS[type] && typeof fn === 'function') {
+          var w = wrapped.get(fn);
+          if (!w) {
+            w = function (e) { if (window.HDKeyOwner()) return; return fn.call(this, e); };
+            wrapped.set(fn, w);
+          }
+          return add.call(this, type, w, opts);
+        }
+        return add.call(this, type, fn, opts);
+      };
+      window.removeEventListener = function (type, fn, opts) {
+        if (KEYS[type] && typeof fn === 'function' && wrapped.has(fn))
+          return remove.call(this, type, wrapped.get(fn), opts);
+        return remove.call(this, type, fn, opts);
+      };
+    } catch (e) { /* never cost the deck its keys over a guard */ }
+  })();
 
   /* External callers (e.g. npcs-pane.js's inspect sheet) can ride the SAME
      haAsk/haAnswer pipe without touching st.ask's own request tracking — each
@@ -201,6 +288,15 @@ var HDOmni = (function () {
      `indexed` distinguishes "the provider answered and the item is gone"
      from "the provider's data has not arrived yet" (warm/lazy providers
      return [] until their bridge replies) — the shelf greys only the first. */
+  /* recent-label-match (2026-10-10, Rober's screenshot: Walk With Me and HUD
+     Widgets "not here any more"). remember() keys an item WITHOUT a pin as
+     'lbl:' + label, but this lookup only ever compared pins, so every such
+     recent read as gone the moment its provider had data. And the stored
+     label can come back mangled (an em-dash saved as U+FFFD through
+     hotkeys.json), so labels are compared on letters and digits only. */
+  function labelKey(s) {
+    return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  }
   function resolvePin(provId, key) {
     var p = providerById(provId);
     if (!p) return { provider: null, item: null, indexed: false };
@@ -210,6 +306,12 @@ var HDOmni = (function () {
     for (var i = 0; i < items.length; i++)
       if (items[i] && items[i].pin === key)
         return { provider: p, item: items[i], indexed: true };
+    if (String(key).indexOf('lbl:') === 0) {
+      var want = labelKey(String(key).slice(4));
+      if (want) for (var j = 0; j < items.length; j++)
+        if (items[j] && !items[j].pin && labelKey(items[j].label) === want)
+          return { provider: p, item: items[j], indexed: true };
+    }
     var indexed = items.length > 0 || !(p.warm || p.lazy);
     return { provider: p, item: null, indexed: indexed };
   }
@@ -544,7 +646,10 @@ var HDOmni = (function () {
         }
       }
       if (!hits.length && !st.lazyPending[p.id]) continue;
-      hits.sort(function (a, b) { return b.score - a.score; });
+      hits.sort(function (a, b) {
+        /* a `lead` row (a mod-menu parent) wins a tie; anything else ties as before */
+        return (b.score - a.score) || ((b.item.lead ? 1 : 0) - (a.item.lead ? 1 : 0));
+      });
       groups.push({ provider: p, hits: hits,
                     top: hits.length ? hits[0].score : 0,
                     strong: strong,   // omni-label-first: some hit is a real LABEL match
@@ -676,7 +781,18 @@ var HDOmni = (function () {
       expanded = {};
       clearTimeout(inputTimer);
       inputTimer = setTimeout(function () { runLazy(); renderResults(); }, 120);
-      renderResults();   // local providers are instant; lazy merges later
+      /* omni-type-coalesce (2026-10-10, Rober: "searching is VERY laggy"):
+         every keystroke used to run the whole search and rebuild the list
+         synchronously, then again 120 ms later, so fast typing paid for every
+         letter twice and the input stalled behind it. Now the first pass waits
+         for the next frame, and a burst of keys inside one frame costs one
+         render. The text itself still lands in the box at once. */
+      if (!typeRaf) {
+        typeRaf = (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
+          typeRaf = 0;
+          renderResults();
+        });
+      }
     });
     $('omni-results').addEventListener('click', onResultsClick);
   }
@@ -709,6 +825,18 @@ var HDOmni = (function () {
   }
 
   function renderResults() {
+    var t0 = (window.performance && performance.now) ? performance.now() : Date.now();
+    try { renderResultsInner(); } finally {
+      var ms = ((window.performance && performance.now) ? performance.now() : Date.now()) - t0;
+      /* one line at most every 3 s, only when a render costs a frame or more */
+      if (ms >= 30 && window.HDPerf && HDPerf.log && (t0 - slowLoggedAt) > 3000) {
+        slowLoggedAt = t0;
+        HDPerf.log('omni-search(view): render ' + Math.round(ms) + ' ms | q "' + String(st.q || '').slice(0, 24) +
+          '" | rows ' + (st.flat ? st.flat.length : 0));
+      }
+    }
+  }
+  function renderResultsInner() {
     if (st.mode !== 'search') return;
     var host = $('omni-results');
     if (!host) return;
@@ -1546,8 +1674,10 @@ var HDOmni = (function () {
     $('omni-modal').classList.remove('hidden');
     /* claim the "a modal owns this view" channel — digits must not quick-fire
        behind us, and a live portal push must not yank the overlay shut
-       (same contract as the icon picker). */
-    toGame('hdCapture', '1');
+       (same contract as the icon picker). "1M" = a MODAL: it may stay up as
+       long as you read, so C++'s 20 s wedged-capture watchdog and its
+       double-Esc hatch leave it alone (an older DLL reads plain "1"). */
+    toGame('hdCapture', '1M');
     /* The crosshair NPC becomes Ask's implicit subject: look at someone, open,
        type just "what are her kinks?". The palette snapshots the target at
        open (fdTarget → FolPane state), and the physical act of looking at her
@@ -1693,11 +1823,12 @@ var HDOmni = (function () {
         var items = [];
         var seen = {};
         var i;
-        function addTab(tok, label, detail) {
+        function addTab(tok, label, detail, aliases) {
           if (!tok || !label || seen[tok]) return;
           seen[tok] = true;
           items.push({
             label: label, kind: 'tab', detail: detail || ('open the ' + label + ' tab'),
+            keywords: aliases || '',   // a system's SYS_TABS aliases (Bestiary: "beast")
             pin: 'tab:' + tok, snap: { tok: tok },
             run: function () { env.setTab(tok); },
           });
@@ -1711,7 +1842,7 @@ var HDOmni = (function () {
           var over = env.overflowTabs() || [];
           for (i = 0; i < over.length; i++) {
             addTab(over[i].tab, over[i].label,
-              over[i].title || ('open the ' + over[i].label + ' tab'));
+              over[i].title || ('open the ' + over[i].label + ' tab'), over[i].aliases);
           }
         }
         var tabsEl = document.getElementById('tabs');
@@ -1871,7 +2002,12 @@ var HDOmni = (function () {
     register({
       id: 'smf', label: 'Mod menus', tab: '',
       warm: function () { toGame('hdSmfIndex', ''); },
-      pinRun: function (snap) { if (snap && snap.path) toGame('hdSmfOpen', snap.path); },
+      pinRun: function (snap) {
+        if (!snap) return;
+        /* a mod's parent row: resolve its first page from a FRESH tree */
+        if (snap.section) { smfPinSection(String(snap.section)); return; }
+        if (snap.path) toGame('hdSmfOpen', snap.path);
+      },
       index: function () {
         if (!smfIndex.ok) {
           /* SMF is installed but its tree did not read: say so, once, on a
@@ -1886,20 +2022,21 @@ var HDOmni = (function () {
             run: function () {},
           }];
         }
-        return smfIndex.pages.map(function (pg) {
-          var path = String(pg.path || '');
-          var segs = path.split('/');
-          return {
-            label: segs.join(' \u203a '),
-            detail: 'SKSE Menu Framework' + (pg.dll ? ' · ' + pg.dll : ''),
-            kind: 'mod menu',
-            keywords: [pg.section, pg.label, String(pg.dll || '').replace(/\.dll$/i, ''),
-                       'smf mod menu settings mcm'].filter(Boolean).join(' '),
-            pin: 'smf:' + path,
-            snap: { path: path },
-            run: function () { toGame('hdSmfOpen', path); },
-          };
-        });
+        /* smf-section-parent (2026-10-11, Rober: "how in the finder do i find
+           the main top most menu of a mod?"). SMF sections are folders with
+           no page of their own, so "walk me" listed Walk With Me › Party,
+           › Travel … and never "Walk With Me". Each section with pages now
+           gets ONE parent row, emitted right above its pages and marked
+           `lead` so it wins the score tie it always has with them. Running
+           it opens the section's FIRST page in SMF's own order (the detail
+           line names that page), through the same hdSmfOpen as a page row.
+           A section that IS a page already has its row; no duplicate. */
+        var secs = smfSections(), items = [];
+        for (var s = 0; s < secs.length; s++) {
+          if (!secs[s].ownPage) items.push(smfSectionRow(secs[s]));
+          for (var k = 0; k < secs[s].pages.length; k++) items.push(smfPageRow(secs[s].pages[k]));
+        }
+        return items;
       },
     });
   }
@@ -1915,8 +2052,109 @@ var HDOmni = (function () {
     smfIndex.present = !!p.present;
     smfIndex.msg = String(p.msg || '');
     smfIndex.pages = Array.isArray(p.pages) ? p.pages : [];
+    smfSettlePin();
     if (st.open && st.mode === 'search' && st.q.trim()) renderResults();
   };
+  /* The SMF tree grouped by section, in the order C++ walked it (SMF's own
+     sorted order, depth first, so a section's pages are contiguous and its
+     first entry is the page SMF lists first). ownPage = the section node
+     draws a page itself (its path is just the section name). */
+  function smfSectionOf(pg) {
+    var sec = String(pg.section || '');
+    return sec || String(pg.path || '').split('/')[0];
+  }
+  function smfSections() {
+    /* keyed '$' + name: a section is any string a mod chose, and a bare
+       at[name] lookup let one called "hasOwnProperty" (or "__proto__") break
+       the lookup itself, which threw out of index() and emptied EVERY mod
+       menu row, not just that mod's */
+    var out = [], at = {};
+    for (var i = 0; i < smfIndex.pages.length; i++) {
+      var pg = smfIndex.pages[i];
+      if (!pg || !pg.path) continue;
+      var name = smfSectionOf(pg);
+      if (!name) continue;
+      var sec = Object.prototype.hasOwnProperty.call(at, '$' + name) ? at['$' + name] : null;
+      if (!sec) { sec = at['$' + name] = { name: name, pages: [], dlls: [], ownPage: false }; out.push(sec); }
+      sec.pages.push(pg);
+      if (String(pg.path) === name) sec.ownPage = true;
+      var dll = String(pg.dll || '');
+      if (dll && sec.dlls.indexOf(dll) === -1) sec.dlls.push(dll);
+    }
+    return out;
+  }
+  function smfFirstPage(name) {
+    var secs = smfSections();
+    for (var i = 0; i < secs.length; i++)
+      if (secs[i].name === name) return secs[i].pages[0] || null;
+    return null;
+  }
+  /* "Party" for "Walk With Me/Party", "Advanced › Debug" for a nested one */
+  function smfTrailInSection(pg) {
+    var segs = String(pg.path || '').split('/');
+    return segs.length > 1 ? segs.slice(1).join(' › ') : String(pg.label || segs[0]);
+  }
+  function smfPageRow(pg) {
+    var path = String(pg.path || '');
+    return {
+      label: path.split('/').join(' › '),
+      detail: 'SKSE Menu Framework' + (pg.dll ? ' · ' + pg.dll : ''),
+      kind: 'mod menu',
+      keywords: [pg.section, pg.label, String(pg.dll || '').replace(/\.dll$/i, ''),
+                 'smf mod menu settings mcm'].filter(Boolean).join(' '),
+      pin: 'smf:' + path,
+      snap: { path: path },
+      run: function () { toGame('hdSmfOpen', path); },
+    };
+  }
+  function smfSectionRow(sec) {
+    var name = sec.name, n = sec.pages.length;
+    return {
+      label: name,
+      detail: 'SKSE Menu Framework · ' + n + (n === 1 ? ' page' : ' pages') +
+              (sec.dlls.length ? ' · ' + sec.dlls.join(', ') : '') +
+              ' · opens ' + smfTrailInSection(sec.pages[0]),
+      kind: 'mod menu',
+      keywords: [name, sec.dlls.join(' ').replace(/\.dll\b/ig, ''),
+                 'smf mod menu main menu mcm'].filter(Boolean).join(' '),
+      pin: 'smfsec:' + name,
+      snap: { section: name },
+      lead: true,
+      /* resolved when pressed, from the tree as it is NOW */
+      run: function () { if (!smfOpenSection(name)) smfRefuse(name); },
+    };
+  }
+  function smfOpenSection(name) {
+    var first = smfFirstPage(name);
+    if (!first) return false;
+    toGame('hdSmfOpen', String(first.path));
+    return true;
+  }
+  function smfRefuse(name) {
+    var why = !smfIndex.present ? 'SKSE Menu Framework is not installed'
+            : !smfIndex.ok ? (smfIndex.msg || 'SKSE Menu Framework’s menu tree did not read')
+            : '“' + name + '” has no SKSE Menu Framework pages right now';
+    if (typeof window.toast === 'function') { try { window.toast(why); } catch (e) {} }
+    else if (DEV) console.log('[omni smf]', why);
+  }
+  /* A pinned parent fired from the shelf or a wheel with no live item (the
+     tree had not arrived, or the section is gone): ask C++ for the tree as
+     it is now and open the first page when it lands, or say why not. A
+     reply older than SMF_PIN_TTL ms is not acted on (no surprise window
+     opening long after the press). */
+  var SMF_PIN_TTL = 10000;
+  var smfPendingPin = null;
+  function smfPinSection(name) {
+    smfPendingPin = { section: name, at: Date.now() };
+    toGame('hdSmfIndex', '');
+  }
+  function smfSettlePin() {
+    var pend = smfPendingPin;
+    if (!pend) return;
+    smfPendingPin = null;
+    if (Date.now() - pend.at > SMF_PIN_TTL) return;
+    if (!smfOpenSection(pend.section)) smfRefuse(pend.section);
+  }
   /* A refused open (the page went away, SMF's window never registered). C++
      also puts the reason on the HUD; this keeps the list honest by asking
      for a fresh one. */
@@ -2079,6 +2317,9 @@ var HDOmni = (function () {
           { path: 'ReLight/Settings', section: 'ReLight', label: 'Settings', dll: 'ReLight.dll' },
           { path: 'ReLight/Excluded Lights', section: 'ReLight', label: 'Excluded Lights', dll: 'ReLight.dll' },
           { path: 'CommandNPC/Commands', section: 'CommandNPC', label: 'Commands', dll: 'CommandNPC.dll' },
+          { path: 'Walk With Me/Party', section: 'Walk With Me', label: 'Party', dll: 'Wayfarer.dll' },
+          { path: 'Walk With Me/Travel', section: 'Walk With Me', label: 'Travel', dll: 'Wayfarer.dll' },
+          { path: 'Walk With Me/Controls', section: 'Walk With Me', label: 'Controls', dll: 'Wayfarer.dll' },
         ] });
       }, 60);
     };
@@ -2128,6 +2369,12 @@ var HDOmni = (function () {
     chimCall: chimCall,
     facetCard: facetCard,
     isOpen: function () { return st.open; },
+    /* harness + any caller that must read results right after typing: run the
+       frame-coalesced render now (omni-type-coalesce) */
+    flushTyping: function () {
+      if (typeRaf) { (window.cancelAnimationFrame || clearTimeout)(typeRaf); typeRaf = 0; }
+      renderResults();
+    },
     onKey: onKey,
     hookInto: hookInto,
     /* Super Searcher plumbing (hd-super.js): a temporary provider gate for the
@@ -2150,11 +2397,16 @@ var HDOmni = (function () {
     },
     takeQuestReply: takeQuestReply,
     lazyResults: lazyResults,
+    /* omni-refresh (2026-10-12): a provider registered from ANOTHER file whose warm() data lands
+       after the last keystroke (hd-mcm.js's INI mods) asks for the same redraw the built-in
+       warm providers do (hdSmfData, hdSpellsData). No-op unless a search is on screen. */
+    refresh: function () { if (st.open && st.mode === 'search' && st.q.trim()) renderResults(); },
     /* console detection + recents (2026-09-13) */
     looksLikeConsole: looksLikeConsole,
     consoleVerb: consoleVerb,
     recents: recents,
     forgetRecents: forgetRecents,
+    recentSliceForTest: function () { return recents(); },
     /* exposed for the test harness */
     _state: st,
     _collect: collect,

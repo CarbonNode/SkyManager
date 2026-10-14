@@ -464,6 +464,7 @@ window.MountsPane = (function () {
     html += '<button class="mt-pill mt-pill-new" data-new="1" ' +
       'title="Create a category">＋ Category</button>';
     box.innerHTML = html;
+    if (window.hdBalance) { box.classList.add('hd-balance'); window.hdBalance.watch(box); }   // an even block, not a ragged wrap
 
     box.querySelectorAll('.mt-pill').forEach(function (b) {
       const cat = b.getAttribute('data-cat');

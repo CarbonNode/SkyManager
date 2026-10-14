@@ -11,10 +11,14 @@
  *  its "already used by X" prompt. This pane owns grouping, conflict math,
  *  search and presentation.
  *
- *  Bridge — requests: kcScan() · kcState() · kcResult()
+ *  Bridge — requests: kcScan() · kcState() · kcResult() · kcRebind(json)
  *  Replies (disjoint, per the deck law): kcStateResult({phase,note,modsDone,
  *  modsTotal,count,seq}) · kcResultData(same + bindings:[{src,mod,control,
- *  code,mods?}])
+ *  code,mods?,alias?,unbound?,w?|ro?}]) · kcRebindResult({ok,msg,...})
+ *
+ *  2026-10-11: file rows carry `w` (the handle keys_write.cpp needs to rewrite
+ *  that key in the mod's own config) or `ro` (why not). The Rebind popout
+ *  (#kcr-back) writes through kcRebind; see keys_write.h.
  *
  *  Host contract (mirrors LootPane): KeysPane.init() · onShow() · onHide() ·
  *  toggleEdit() (no edit chrome) · wantsPause() -> true
@@ -92,8 +96,61 @@ window.KeysPane = (function () {
     '1234567890'.split('').forEach((c, i) => { m['Digit' + c] = 2 + i; });
     for (let i = 1; i <= 12; i++) m['F' + i] = i <= 10 ? 58 + i : 76 + i;   // F11=87 F12=88
     m.F11 = 87; m.F12 = 88;
+    /* The rest of the keyboard the rebind popout can bind: F13-F23 are the
+       extended codes 100-110 and F24 is 118 (KC_NAMES above), plus the keys
+       DirectInput names that a full-size board carries. */
+    for (let i = 13; i <= 23; i++) m['F' + i] = 87 + i;
+    m.F24 = 118;
+    m.Pause = 197; m.PrintScreen = 183; m.IntlBackslash = 86;
+    m.MetaLeft = 219; m.MetaRight = 220; m.ContextMenu = 221;
     return m;
   })();
+
+  /* Modifier keys never bind on their own from the popout: they ride along. */
+  const MODIFIER_CODES = ['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
+    'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'];
+
+  /* Ultralight (in game) may deliver a key event WITHOUT e.code (app.js
+     normCode, domains-pane codeFromEvent): fall back to the legacy keyCode, or
+     the popout would read every key as "cannot be bound" and Esc as nothing.
+     Pane-local on purpose: app.js's normCode is not this file's to borrow. */
+  const VK_TO_CODE = {
+    8: 'Backspace', 9: 'Tab', 20: 'CapsLock', 27: 'Escape', 32: 'Space',
+    33: 'PageUp', 34: 'PageDown', 35: 'End', 36: 'Home',
+    37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown',
+    45: 'Insert', 46: 'Delete', 91: 'MetaLeft', 92: 'MetaRight', 93: 'ContextMenu',
+    106: 'NumpadMultiply', 107: 'NumpadAdd', 109: 'NumpadSubtract',
+    110: 'NumpadDecimal', 111: 'NumpadDivide', 144: 'NumLock', 145: 'ScrollLock',
+    186: 'Semicolon', 187: 'Equal', 188: 'Comma', 189: 'Minus', 190: 'Period',
+    191: 'Slash', 192: 'Backquote', 219: 'BracketLeft', 220: 'Backslash',
+    221: 'BracketRight', 222: 'Quote',
+  };
+  function codeFromEvent(e) {
+    if (!e) return '';
+    if (e.code) return e.code;
+    const k = e.keyCode || e.which || 0;
+    if (k === 13) return e.location === 3 ? 'NumpadEnter' : 'Enter';
+    if (k === 16) return e.location === 2 ? 'ShiftRight' : 'ShiftLeft';
+    if (k === 17) return e.location === 2 ? 'ControlRight' : 'ControlLeft';
+    if (k === 18) return e.location === 2 ? 'AltRight' : 'AltLeft';
+    if (k >= 65 && k <= 90) return 'Key' + String.fromCharCode(k);
+    if (k >= 48 && k <= 57) return 'Digit' + String.fromCharCode(k);
+    if (k >= 96 && k <= 105) return 'Numpad' + (k - 96);
+    if (k >= 112 && k <= 135) return 'F' + (k - 111);   // VK_F1..VK_F24
+    if (VK_TO_CODE[k]) return VK_TO_CODE[k];
+    return (e.key && e.key.length > 1 && e.key !== 'Unidentified') ? e.key : '';
+  }
+
+  /* Why a row cannot be rebound from here, by source, when C++ sent no reason
+     of its own (it does for every file row). Shown dimmed, never hidden. */
+  const RO_BY_SRC = {
+    vanilla: 'A game control. Rebind it in Skyrim’s own Controls menu.',
+    deck: 'SkyManager’s own key. Change it where it is set (the Hotkeys tab or Settings).',
+    chord: 'A Chord Keys chord. Edit it in Chord Keys.',
+    helper: 'An MCM Helper setting. The game has already cached its file, so only the mod’s MCM can change it.',
+    mcm: 'A classic MCM key. It lives in your save, so only the mod’s MCM can change it.',
+    papyrus: 'Compiled into a Papyrus script. There is no file to change.',
+  };
 
   /* Source -> chip label + hue class. Unknown sources still render. */
   const SRC_META = {
@@ -150,6 +207,7 @@ window.KeysPane = (function () {
       console.log('[dev->game]', fn, arg);
       if (DEV && (fn === 'kcScan' || fn === 'kcState')) setTimeout(devState, 30);
       if (DEV && fn === 'kcResult') setTimeout(devResult, 30);
+      if (DEV && fn === 'kcRebind') setTimeout(() => devRebind(arg), 30);
     }
   }
 
@@ -242,7 +300,9 @@ window.KeysPane = (function () {
      a dead config is never silently missing. It isn't a real key bind, so it's
      kept out of the key grid and surfaced as an honest note instead. */
   function isDeadRow(b) { return b && b.src === 'mcm' && !b.code; }
-  function realBindings() { return state.bindings.filter((b) => !isDeadRow(b)); }
+  /* A verified-spec action with nothing bound (code 0, `unbound`) is listed so
+     it can be bound, but it claims no key: it is not a binding to count. */
+  function realBindings() { return state.bindings.filter((b) => !isDeadRow(b) && !b.unbound); }
   function deadConfigs() {
     return state.bindings.filter(isDeadRow).map((b) => b.mod || '?');
   }
@@ -259,6 +319,10 @@ window.KeysPane = (function () {
         h += '\u0000' + String(o.mod || '').toLowerCase() +
              '\u0000' + String(o.control || '').toLowerCase() +
              '\u0000' + String(o.mods || '').toLowerCase();
+        /* A row named after the mod's SKSE Menu Framework section ("Walk With
+           Me") keeps its config's own name ("Wayfarer") as an alias, so a
+           search for either lands. */
+        if (o.alias) h += '\u0000' + String(o.alias).toLowerCase();
       }
       g.__hay = h;
     }
@@ -284,7 +348,10 @@ window.KeysPane = (function () {
       for (let i = 0; i < g.owners.length; i++) {
         const o = g.owners[i];
         s += '\u0001' + String(o.src || '') + '\u0002' + String(o.mod || '') +
-             '\u0002' + String(o.control || '') + '\u0002' + String(o.mods || '');
+             '\u0002' + String(o.control || '') + '\u0002' + String(o.mods || '') +
+             /* the write handle's stamp changes when the file is re-read, so a
+                rebind's own row redraws with the fresh handle */
+             '\u0002' + (o.w ? String(o.w.stamp || '') : (o.ro ? 'ro' : ''));
       }
       g.__osig = s;
     }
@@ -319,7 +386,7 @@ window.KeysPane = (function () {
     return allGroupMemo;
   }
   let omniMemo = null;
-  function dropGroupMemo() { groupMemo = null; allGroupMemo = null; omniMemo = null; }
+  function dropGroupMemo() { groupMemo = null; allGroupMemo = null; omniMemo = null; freeMemoKey = null; }
 
   function visibleGroups() {
     let groups = groupedNow();
@@ -334,7 +401,32 @@ window.KeysPane = (function () {
       (rank[a.kind] - rank[b.kind]) ||
       (b.owners.length - a.owners.length) ||
       (a.code - b.code));
+    const free = unboundGroup(ui.filter);
+    if (free && !ui.conflictsOnly) groups.push(free);
     return groups;
+  }
+
+  /* The actions a verified spec knows about but nothing is bound to (Walk With
+     Me's Scout, Rear guard, Roam ...). They hold no key, so they cannot sit in
+     a key's row: they gather in one last row of their own, code 0, which opens
+     like any other and offers "Bind a key" on each. Narrowed by the filter
+     owner by owner ("scout" shows Scout, not every unbound action). Memoised
+     beside the groups and dropped with them. */
+  let freeMemo = null, freeMemoKey = null;
+  function unboundGroup(filter) {
+    const key = (filter || '') + '|' + Object.keys(ui.srcOff).filter((k) => ui.srcOff[k]).sort().join(',');
+    if (freeMemoKey !== key) {
+      freeMemoKey = key;
+      const needle = String(filter || '').toLowerCase();
+      const owners = state.bindings.filter((b) => {
+        if (!b || !b.unbound || b.code || ui.srcOff[b.src]) return false;
+        if (!needle) return true;
+        return ('unbound\u0000' + [b.mod, b.control, b.alias, b.mods].map((x) => String(x || '')).join('\u0000'))
+          .toLowerCase().indexOf(needle) !== -1;
+      });
+      freeMemo = owners.length ? { code: 0, name: 'Unbound', owners: owners, kind: '', unbound: true } : null;
+    }
+    return freeMemo;
   }
 
   /* ============================================================ render == */
@@ -569,8 +661,10 @@ window.KeysPane = (function () {
               : g.kind === 'soft'
                 ? '<span class="kc-badge kc-badge-soft">over game key</span>' : '';
           return '<div class="kc-row' + (g.kind === 'hard' ? ' kc-row-hard' : '') +
+            (g.unbound ? ' kc-row-free' : '') +
             (open ? ' kc-row-open' : '') + '" data-code="' + g.code + '" tabindex="0" ' +
-            'title="Click for the full breakdown">' +
+            'title="' + (g.unbound ? 'Actions with no key yet — open to bind one'
+              : 'Click for the full breakdown') + '">' +
             '<div class="kc-key' + (g.kind === 'hard' ? ' kc-key-hard' : '') + '">' + esc(g.name) + '</div>' +
             '<div class="kc-owners">' + g.owners.map(ownerChip).join('') + '</div>' +
             badge + '</div>';
@@ -583,7 +677,9 @@ window.KeysPane = (function () {
               return '<div class="kc-detail-row"' +
                 (o.detail ? ' title="' + esc(o.detail) + '"' : '') + '>' +
                 '<span class="kc-owner ' + meta[1] + '"><b>' + esc(meta[0]) + '</b></span>' +
-                '<span class="kc-detail-mod">' + esc(o.mod || '?') + '</span>' +
+                '<span class="kc-detail-mod">' + esc(o.mod || '?') +
+                (o.alias ? ' <span class="kc-detail-alias">(' + esc(o.alias) + ')</span>' : '') +
+                '</span>' +
                 '<span class="kc-detail-ctl">' + (o.mods ? esc(o.mods) + ' + ' : '') +
                 esc(o.control || '') + '</span>' +
                 (o.guess
@@ -591,6 +687,7 @@ window.KeysPane = (function () {
                     'not which code space it is in; the census assumed DirectInput.">' +
                     'assumed code</span>'
                   : '') +
+                ownerActions(o) +
                 (o.detail ? '<span class="kc-detail-src">' + esc(o.detail) + '</span>' : '') +
                 '</div>';
             }).join('') + '</div>';
@@ -651,6 +748,12 @@ window.KeysPane = (function () {
     if (bodyWired) return;
     bodyWired = true;
     body.addEventListener('click', (e) => {
+      const act = e.target && e.target.closest ? e.target.closest('[data-kc-act]') : null;
+      if (act && body.contains(act)) {
+        e.stopPropagation();
+        runAction(act.getAttribute('data-kc-act'), act.getAttribute('data-kc-key'));
+        return;
+      }
       const row = rowOf(e, body);
       if (row) toggleRow(row, false);
     });
@@ -659,12 +762,328 @@ window.KeysPane = (function () {
        them or the affordance is a lie. Space would otherwise scroll the list. */
     body.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+      if (e.target && e.target.closest && e.target.closest('[data-kc-act]')) return;  // a button's own Enter
       const row = rowOf(e, body);
       if (!row) return;
       e.preventDefault();
       e.stopPropagation();
       toggleRow(row, true);
     });
+  }
+
+  /* =========================================================== actions == */
+
+  /* A binding's identity for an action button: stable across republishes of
+     the same file (the write handle names file + field), URI-encoded so it can
+     ride an attribute whatever the field holds. */
+  function actKey(o) {
+    return encodeURIComponent(String(o.src || '') + '|' + (o.w
+      ? String(o.w.file || '') + '|' + String(o.w.field || '')
+      : String(o.mod || '') + '|' + String(o.control || '') + '|' + String(o.code || 0)));
+  }
+  function bindingByKey(key) {
+    for (let i = 0; i < state.bindings.length; i++) {
+      if (actKey(state.bindings[i]) === key) return state.bindings[i];
+    }
+    return null;
+  }
+
+  /* EVERY action on one binding renders through here, so a new one (an "Add to
+     Hotkeys" button, say) is one more entry in `acts` and one more case in
+     runAction — never a second layout. */
+  function ownerActions(o) {
+    /* mod-key (2026-10-11): "＋ Add to Hotkeys" on a plugin bind whose code
+       space was stated — app.js draws and wires it. It rides in the same
+       group as Rebind so the row's buttons line up at its right edge. */
+    const acts = [rebindAction(o), window.hdModKeyBtnHtml ? window.hdModKeyBtnHtml(o) : ''];
+    const html = acts.filter(Boolean).join('');
+    /* A row whose only content is the read-only reason takes a full line. */
+    return html ? '<span class="kc-acts' + (o.w ? '' : ' kc-acts-ro') + '">' + html + '</span>' : '';
+  }
+
+  function rebindAction(o) {
+    if (o.w) {
+      return '<button type="button" class="kc-act-btn" data-kc-act="rebind" data-kc-key="' +
+        esc(actKey(o)) + '" title="Change this key in ' + esc(fileOf(o)) + '">' +
+        (o.unbound ? 'Bind a key' : 'Rebind') + '</button>';
+    }
+    const why = o.ro || RO_BY_SRC[o.src] || '';
+    return why ? '<span class="kc-ro">Read-only here: ' + esc(why) + '</span>' : '';
+  }
+
+  function runAction(act, key) {
+    const o = bindingByKey(key);
+    if (!o) return;
+    if (act === 'rebind' && o.w) rebindOpen(o);
+  }
+
+  function fileOf(o) {
+    const f = o && o.w ? String(o.w.file || '') : '';
+    const cut = Math.max(f.lastIndexOf('/'), f.lastIndexOf('\\'));
+    return cut >= 0 ? f.slice(cut + 1) : f;
+  }
+
+  function comboText(mods, code) {
+    return (mods && mods.length ? mods.join(' + ') + ' + ' : '') + keyName(code);
+  }
+
+  function modSet(text) {
+    return String(text || '').split('+').map((s) => s.trim().replace(/^[LR](?=Shift|Ctrl|Alt)/, ''))
+      .filter(Boolean).sort().join('+');
+  }
+
+  /* ====================================================== rebind popout == *
+   * Body-anchored and viewport-filling, per the popout law: it never reflows
+   * the list under the cursor, it does NOT wear the panel's --ui-scale, and it
+   * OWNS the keyboard while it is up — a window CAPTURE listener (it runs
+   * before app.js's document router) swallows every key, and hdCapture '1M'
+   * tells C++ to hand Escape to the view instead of closing the deck. The
+   * Keys tab's own search box keeps working the moment it closes.
+   *
+   * Stages: listen -> confirm (conflicts from the census shown BEFORE anything
+   * is written) -> saving -> done | error. */
+  const rb = { open: false, o: null, stage: '', pending: null, note: '', result: null, root: null };
+
+  function rebindIsOpen() { return rb.open; }
+
+  function rebindOpen(o) {
+    disarmSpotlight();
+    rb.open = true;
+    rb.o = o;
+    rb.stage = 'listen';
+    rb.pending = null;
+    rb.note = '';
+    rb.result = null;
+    toGame('hdCapture', '1M');
+    rebindRender();
+  }
+
+  function rebindClose() {
+    if (!rb.open) return;
+    rb.open = false;
+    rb.o = null;
+    rb.pending = null;
+    if (rb.root) { rb.root.classList.add('hidden'); rb.root.innerHTML = ''; }
+    toGame('hdCapture', '0');
+  }
+
+  /* The popout holds the binding it was opened on, but every write (and every
+     refused one: C++ re-reads the file either way) republishes that row with a
+     NEW stamp. Re-take the row from the live census before another attempt, or
+     "Try again" after "changed on disk" would resend the stale stamp forever.
+     actKey names file + field, so the same setting is found again. */
+  function rebindFresh() {
+    if (!rb.o) return false;
+    const was = rb.o;
+    /* by its handle; a row that lost its handle is found by what it is */
+    const live = bindingByKey(actKey(was)) || state.bindings.find((b) => b && !b.w &&
+      b.src === was.src && b.mod === was.mod && b.control === was.control);
+    if (live) rb.o = live;
+    if (rb.o.w) return true;
+    /* The fresh reading made it read-only (e.g. the setting now appears
+       twice): say so instead of writing with a handle C++ would refuse. */
+    rb.stage = 'error';
+    rb.pending = null;
+    rb.result = 'SkyManager may no longer write this key: ' +
+      String(rb.o.ro || 'the file changed since it was read.');
+    return false;
+  }
+
+  function modHint(o) {
+    const k = o.w && o.w.modKind;
+    if (k === 'mask') return 'Hold Shift, Ctrl or Alt with it for a combination.';
+    if (k === 'cm-enum') return 'One of Shift, Ctrl or Alt may ride along with it.';
+    return 'Press the key on its own: this file has no modifier setting.';
+  }
+
+  function applyHint(o) {
+    const a = o.w && o.w.apply;
+    if (a === 'wwm-reload') return 'After saving, Walk With Me is asked to re-read its file.';
+    if (a === 'ppa-reload') return 'After saving, PPA’s own reload key is pressed so it re-reads its file.';
+    if (a === 'cm-next-launch') return 'Custom Markers takes the new key next launch; until then SkyManager’s ' +
+      'own Custom Markers buttons press the new key, which it is not listening for yet.';
+    if (a === 'ppa-self') return 'This is PPA’s reload key itself: the new one takes effect next launch, ' +
+      'or after one press of the old one.';
+    return 'This mod has no reload SkyManager can trigger: the new key takes effect next launch.';
+  }
+
+  function conflictsFor(code, mods) {
+    if (!code) return [];
+    const me = actKey(rb.o);
+    const want = modSet((mods || []).join('+'));
+    return state.bindings.filter((b) => b && b.code === code && actKey(b) !== me)
+      .map((b) => ({ b: b, same: modSet(b.mods) === want }));
+  }
+
+  function rebindRender() {
+    if (!rb.root) {
+      rb.root = document.createElement('div');
+      rb.root.id = 'kcr-back';
+      rb.root.className = 'kcr-back hidden';
+      rb.root.setAttribute('role', 'dialog');
+      rb.root.setAttribute('aria-modal', 'true');
+      rb.root.addEventListener('click', (e) => {
+        if (e.target === rb.root) { if (rb.stage !== 'saving') rebindClose(); return; }
+        const btn = e.target && e.target.closest ? e.target.closest('[data-kcr]') : null;
+        if (btn) rebindButton(btn.getAttribute('data-kcr'));
+      });
+      document.body.appendChild(rb.root);
+    }
+    const o = rb.o;
+    if (!rb.open || !o) return;
+    rb.root.classList.remove('hidden');
+    const now = o.unbound ? 'Nothing bound' : comboText(o.mods ? String(o.mods).split('+') : [], o.code);
+    let stage = '';
+    let foot = '';
+    if (rb.stage === 'listen') {
+      stage = '<div class="kcr-listen"><div class="kcr-cap kcr-cap-wait">Press a key…</div>' +
+        '<div class="kcr-keys"><b>Esc</b> cancels' +
+        (o.w.clear ? ' · <b>Delete</b> clears it' : ' · this file has no “no key” value, so it cannot be cleared') +
+        '</div></div>';
+      foot = '<button type="button" class="kcr-btn" data-kcr="cancel">Cancel</button>';
+    } else if (rb.stage === 'confirm') {
+      const p = rb.pending;
+      const label = p.clear ? 'No key' : comboText(p.mods, p.code);
+      const hits = p.clear ? [] : conflictsFor(p.code, p.mods);
+      let list;
+      if (p.clear) {
+        list = '<div class="kcr-clear">' + esc(o.control || 'This action') + ' will have no key.</div>';
+      } else if (!hits.length) {
+        list = '<div class="kcr-free">Nothing else in the census uses ' + esc(keyName(p.code)) + '.</div>';
+      } else {
+        list = '<div class="kcr-hits-head">' + hits.length + ' other binding' + (hits.length > 1 ? 's use ' : ' uses ') +
+          esc(keyName(p.code)) + ':</div><div class="kcr-hits">' + hits.map((h) => {
+            const meta = SRC_META[h.b.src] || [h.b.src || '?', 'kc-src-mcm'];
+            return '<div class="kcr-hit' + (h.same ? ' kcr-hit-same' : '') + '">' +
+              '<span class="kc-owner ' + meta[1] + '"><b>' + esc(meta[0]) + '</b></span>' +
+              '<span class="kcr-hit-mod">' + esc(h.b.mod || '?') + '</span>' +
+              '<span class="kcr-hit-ctl">' + (h.b.mods ? esc(h.b.mods) + ' + ' : '') + esc(h.b.control || '') + '</span>' +
+              '<span class="kcr-hit-tag">' + (h.same ? 'same combination' : 'different modifiers') +
+              (h.b.guess ? ' · assumed code' : '') + '</span></div>';
+          }).join('') + '</div>';
+      }
+      stage = '<div class="kcr-confirm"><div class="kcr-row"><span class="kcr-lbl">New</span>' +
+        '<span class="kcr-cap">' + esc(label) + '</span></div>' + list + '</div>';
+      foot = '<button type="button" class="kcr-btn kcr-btn-go" data-kcr="save">Save to ' + esc(fileOf(o)) + '</button>' +
+        '<button type="button" class="kcr-btn" data-kcr="again">Press another</button>' +
+        '<button type="button" class="kcr-btn" data-kcr="cancel">Cancel</button>';
+    } else if (rb.stage === 'saving') {
+      stage = '<div class="kcr-msg">Saving to ' + esc(fileOf(o)) + '…</div>';
+    } else {
+      const ok = rb.stage === 'done';
+      stage = '<div class="kcr-msg ' + (ok ? 'kcr-msg-ok' : 'kcr-msg-bad') + '">' + esc(rb.result || '') + '</div>';
+      foot = (ok ? '' : '<button type="button" class="kcr-btn" data-kcr="again">Try again</button>') +
+        '<button type="button" class="kcr-btn kcr-btn-go" data-kcr="cancel">Close</button>';
+    }
+    rb.root.innerHTML = '<div class="kcr-card">' +
+      '<div class="kcr-head"><div class="kcr-title">' + (o.unbound ? 'Bind a key' : 'Rebind') +
+      ' · ' + esc(o.control || '') + '</div>' +
+      '<button type="button" class="kcr-x" data-kcr="cancel" title="Close (Esc)">✕</button></div>' +
+      '<div class="kcr-sub">' + esc(o.mod || '?') + (o.alias ? ' (' + esc(o.alias) + ')' : '') +
+      ' · ' + esc(fileOf(o)) + '</div>' +
+      '<div class="kcr-row"><span class="kcr-lbl">Now</span><span class="kcr-cap kcr-cap-now">' + esc(now) + '</span></div>' +
+      stage +
+      (rb.note ? '<div class="kcr-note kcr-note-warn">' + esc(rb.note) + '</div>' : '') +
+      (rb.stage === 'listen' || rb.stage === 'confirm'
+        ? '<div class="kcr-note">' + esc(modHint(o)) + ' ' + esc(applyHint(o)) + '</div>' : '') +
+      (foot ? '<div class="kcr-foot">' + foot + '</div>' : '') +
+      '</div>';
+  }
+
+  function rebindButton(which) {
+    if (which === 'cancel') { rebindClose(); return; }
+    if (which === 'again') {
+      rb.stage = 'listen'; rb.pending = null; rb.note = '';
+      rebindFresh();
+      rebindRender();
+      return;
+    }
+    if (which === 'save') rebindSave();
+  }
+
+  function rebindSave() {
+    if (!rb.o || !rb.pending || rb.stage !== 'confirm') return;
+    if (!rebindFresh()) { rebindRender(); return; }
+    const o = rb.o, p = rb.pending;
+    const req = { file: o.w.file, field: o.w.field, stamp: o.w.stamp };
+    if (p.clear) req.clear = true;
+    else { req.code = p.code; req.mods = p.mods; }
+    rb.stage = 'saving';
+    rb.note = '';
+    rebindRender();
+    toGame('kcRebind', JSON.stringify(req));
+  }
+
+  /* Reply to kcRebind. C++ re-read the file either way, so the census is
+     pulled again: a refused write may have found the file changed. */
+  window.kcRebindResult = function (d) {
+    if (!d || typeof d !== 'object') return;
+    toGame('kcResult', '');
+    if (!rb.open || rb.stage !== 'saving') return;
+    const p = rb.pending, o = rb.o;
+    if (d.ok) {
+      rb.stage = 'done';
+      const what = p && p.clear ? 'now has no key' : 'is now ' + comboText(p ? p.mods : [], p ? p.code : 0);
+      rb.result = (o && o.control ? o.control : 'The action') + ' ' + what + '. ' + String(d.msg || '');
+    } else {
+      rb.stage = 'error';
+      rb.result = String(d.msg || 'The key was not saved.');
+    }
+    rebindRender();
+  };
+
+  /* The popout's keyboard. Returns true when the key was its business (every
+     key is, while it is up). */
+  function rebindKey(e) {
+    if (!rb.open) return false;
+    const code = codeFromEvent(e);
+    /* Escape closes in EVERY stage, saving included: the write runs on in C++
+       and the census is re-pulled when it answers (kcRebindResult), while a
+       popout that swallowed Esc until a reply that never came would hold the
+       keyboard with no way out but the deck's double-Esc hatch. */
+    if (code === 'Escape') { rebindClose(); return true; }
+    if (rb.stage === 'saving') return true;
+    if (rb.stage === 'done' || rb.stage === 'error') {
+      if (code === 'Enter' || code === 'NumpadEnter') rebindClose();
+      return true;
+    }
+    if (rb.stage === 'confirm') {
+      if (code === 'Enter' || code === 'NumpadEnter') rebindSave();
+      return true;
+    }
+    // listen
+    if (e.repeat || MODIFIER_CODES.indexOf(code) !== -1) return true;   // wait for the main key
+    const o = rb.o;
+    if (!o || !o.w) return true;   // never a TypeError in a key handler (it kills the renderer)
+    if (code === 'Delete') {
+      if (o.w.clear) { rb.pending = { clear: true }; rb.stage = 'confirm'; rb.note = ''; }
+      else rb.note = 'This file never says how it spells “no key”, so it cannot be cleared. Bind another key instead.';
+      rebindRender();
+      return true;
+    }
+    const dik = BROWSER_TO_DIK[code];
+    if (!dik) { rb.note = 'That key cannot be bound from here.'; rebindRender(); return true; }
+    const mods = [];
+    if (e.shiftKey) mods.push('Shift');
+    if (e.ctrlKey) mods.push('Ctrl');
+    if (e.altKey) mods.push('Alt');
+    const kind = o.w.modKind || '';
+    if (mods.length && !kind) {
+      rb.note = (o.mod || 'This mod') + ' keeps no modifier for this key. Let go of ' + mods.join(' + ') +
+        ' and press the key on its own.';
+      rebindRender();
+      return true;
+    }
+    if (kind === 'cm-enum' && mods.length > 1) {
+      rb.note = 'Custom Markers takes one modifier at most.';
+      rebindRender();
+      return true;
+    }
+    rb.pending = { code: dik, mods: mods };
+    rb.stage = 'confirm';
+    rb.note = '';
+    rebindRender();
+    return true;
   }
 
   /* ========================================================= lifecycle == */
@@ -741,6 +1160,7 @@ window.KeysPane = (function () {
 
   function onHide() {
     if (window.KeysAtlas) KeysAtlas.close();
+    rebindClose();
     ui.visible = false;
     disarmSpotlight();
     stopPoll();
@@ -758,7 +1178,59 @@ window.KeysPane = (function () {
     render();
   }
 
+  /* The deck closing (hdClosed) must take the rebind popout with it: it hangs
+     off <body>, which stays visible over the game when the deck hides. */
+  function closeOverlays() { rebindClose(); }
+
+  /* The C++ half of a MODAL capture ("1M", capture-modal-escape in main.cpp):
+     while one is up the input sink stands its own Esc-close down and HANDS the
+     Esc to the view through window.hdModalEscape, because Ultralight may never
+     deliver Escape natively. hd-omni.js owns that hook for the Omni and the
+     Bestiary; the popout chains in front of it. Same contract as theirs: the
+     forward waits a beat and stands down when a native Esc already did the
+     job, and a popout still up afterwards re-sends "1M", which zeroes the
+     sink's double-tap clock (two quick Escs force the deck shut only when the
+     view has stopped answering). */
+  let escNativeAt = -1e9, escFwdT = 0;
+  function rebindRearm() { setTimeout(() => { if (rb.open) toGame('hdCapture', '1M'); }, 0); }
+  function rebindEscapeForward() {
+    const asked = Date.now();
+    if (escFwdT) clearTimeout(escFwdT);
+    escFwdT = setTimeout(() => {
+      escFwdT = 0;
+      if (Math.abs(escNativeAt - asked) < 300) return;   // the view had this one itself
+      try {
+        if (rb.open) rebindKey({ code: 'Escape', key: 'Escape', keyCode: 27, repeat: false,
+          shiftKey: false, ctrlKey: false, altKey: false, metaKey: false });
+      } catch (x) { /* never strand the player over a throw: the hatch is still armed */ }
+      rebindRearm();
+    }, 90);
+  }
+
+  let rebindKeysWired = false;
   function init() {
+    /* The rebind popout owns the keyboard while it is up: this WINDOW capture
+       listener runs before app.js's document-capture router and before any
+       pane's own key handling, and swallows every key. */
+    if (!rebindKeysWired) {
+      rebindKeysWired = true;
+      window.addEventListener('keydown', (e) => {
+        if (!rb.open) return;
+        const isEsc = codeFromEvent(e) === 'Escape';
+        if (isEsc) escNativeAt = Date.now();
+        if (rebindKey(e)) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+        }
+        if (isEsc) rebindRearm();
+      }, true);
+      const prevModalEscape = window.hdModalEscape;
+      window.hdModalEscape = function () {
+        if (rb.open || Date.now() - escNativeAt < 300) { rebindEscapeForward(); return; }
+        if (typeof prevModalEscape === 'function') return prevModalEscape.apply(this, arguments);
+      };
+    }
     // hotkey-atlas-map: additive, body-anchored popout over this same census.
     const head = document.querySelector('#kc-pane .kc-head');
     if (head && !$('kc-atlas-open') && window.KeysAtlas) {
@@ -847,6 +1319,15 @@ window.KeysPane = (function () {
       { src: 'mcm', mod: 'TrueHUD', control: 'Widget toggle', code: 87 },
       { src: 'vanilla', mod: 'Skyrim', control: 'Shout', code: 44 },
     ] });
+  }
+
+  /* A stand-in for C++ keys_write in the browser harness: echoes success. */
+  function devRebind(arg) {
+    let req = {};
+    try { req = JSON.parse(arg); } catch (e) { /* stays empty */ }
+    window.kcRebindResult({ ok: true, file: req.file, field: req.field, code: req.code || 0,
+      mods: req.mods || [], cleared: !!req.clear, apply: 'next-launch', applied: false,
+      msg: 'Saved (dev mock).' });
   }
 
   /* ========================================================== selftest == */
@@ -1005,9 +1486,10 @@ window.KeysPane = (function () {
   });
 
   return {
-    init, onShow, onHide, toggleEdit, wantsPause, setFilter,
+    init, onShow, onHide, toggleEdit, wantsPause, setFilter, closeOverlays,
+    rebindIsOpen,
     _state: state, _ui: ui, _groupKeys: groupKeys, _visibleGroups: visibleGroups,
-    _keyName: keyName
+    _keyName: keyName, _rb: rb, _rebindOpen: rebindOpen, _actKey: actKey
   };
 })();
 

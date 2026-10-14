@@ -443,13 +443,8 @@
 
 /* ---------- the header button that opens it ---------- */
 
-#omni-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-}
-#omni-btn .omni-btn-k {
-  color: #6b675e; font-size: 12px; border: 1px solid #2e2e36;
-  border-radius: 4px; padding: 0 4px;
-}
+/* #omni-btn is the header's search FIELD since the two-bar header
+   (2026-10-11, marker hd-two-bars); it is styled in app.css as .hd-search. */
 
 /* ---------- keyboard focus + press feedback (states pass) ----------
    Every omni control is a real <button>; keyboard users had no visible

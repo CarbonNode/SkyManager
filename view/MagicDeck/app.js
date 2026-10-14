@@ -163,6 +163,8 @@ const ui = {
   sel: -1,                        // keyboard selection in the visible list
   equip: { left: '', right: '', voice: new Set() },  // hex strings from engine
   known: [],                      // last mdSpells payload
+  learnedEntries: [],
+  workbenchFilter: null,
   knownById: new Map(),           // hex -> {slot,type,delivery,casting,formId} — FALLBACK
   knownByPid: new Map(),          // "plugin|localidhex" -> same — the DURABLE key
   knownLoading: false,
@@ -275,6 +277,7 @@ function applyScale() {
   const el = $('scale-val'); if (el) el.textContent = Math.round(v * 100) + '%';
   applyPanelSize();   // the size ceiling is a function of the scale — re-clamp
   if (typeof syncFillBtn === 'function') syncFillBtn();
+  if (window.hdIconMip) window.hdIconMip.rescan();   // icons re-pick their mip tier for the new size
 }
 
 /* ---- icon size: one variable drives the box, the art and the glyph ---- *
@@ -558,6 +561,14 @@ function gripUp() {
   // the last gripMove already queued the debounced save — nothing else to do
 }
 
+function librarySpells() { return MagicWorkbenchModel.merge(state.spells, ui.learnedEntries); }
+function findSpellEntry(id) { return librarySpells().find((s) => s.id === id); }
+function retainSpell(spell) {
+  if (!spell || !spell._learned) return spell;
+  spell._learned = false;
+  state.spells.push(spell);
+  return spell;
+}
 function countIn(cat) { return state.spells.filter((s) => s.category === cat).length; }
 
 /* The ONE place a saved entry is matched against the live spellbook: durable
@@ -962,7 +973,47 @@ function spellMatches(s, q) {
 }
 
 function visibleSpells() {
-  return SpellLibrary.visible(state.spells, state.library, ui, metaFor);
+  // Table view sorts by its own column headers; every caller (rows, quick-fire
+  // digits, Enter, arrows) reads the order from here, so they cannot disagree.
+  const table = tableView();
+  const lib = table ? Object.assign({}, state.library, { sort: 'custom' }) : state.library;
+  let rows = SpellLibrary.visible(librarySpells(), lib, ui, metaFor);
+  if (window.MagicWorkbench) rows = MagicWorkbench.filter(rows);
+  return table ? SpellLibrary.tableSort(rows, state.library.table, metaFor, tableStatsFor) : rows;
+}
+
+/* ---- Table view (library-ui.js builds the header; the model owns the sort) ---- */
+function tableView() { return !ui.editing && state.library.layout === 'table'; }
+function tableStatsFor(spell) {
+  const key = hexId(metaFor(spell).formId);
+  return SpellLibrary.tableStats(desc.cache.get(key) || desc.failures.get(key) || null);
+}
+/* Sorting by a number needs every row's number, not only the rows on screen. */
+function tableStatSort() {
+  const t = state.library.table;
+  return tableView() && !!t && ['magnitude', 'duration', 'cost'].indexOf(t.sort) >= 0;
+}
+let tableResortT = null;
+function scheduleTableResort() {
+  if (tableResortT) return;
+  tableResortT = setTimeout(() => {
+    tableResortT = null;
+    if (!tableStatSort()) return;
+    // Rows move as their numbers arrive; the selection stays on its spell.
+    const sel = $('list').querySelector('.spell.sel');
+    const id = sel ? sel.dataset.id : null;
+    if (id) ui.sel = visibleSpells().findIndex((s) => s.id === id);
+    renderList();
+  }, 250);
+}
+function tableCells(meta, kindLabel) {
+  const stats = h('div', { class: 'ml-card-stats ml-table-stats', 'aria-label': 'Spell numbers' });
+  stats.__spellMeta = meta;
+  const key = hexId(meta.formId);
+  paintCardStats(stats, desc.cache.get(key) || desc.failures.get(key) || (meta.formId ? null : { ok: false }));
+  const tier = String(meta.tier || '');
+  return [h('span', { class: 'ml-tc ml-tc-school' }, kindLabel),
+    h('span', { class: 'ml-tc ml-tc-tier' }, tier ? tier.charAt(0).toUpperCase() + tier.slice(1) : '—'), stats];
 }
 
 function spellRow(spell, i) {
@@ -1000,7 +1051,9 @@ function spellRow(spell, i) {
     glyph.addEventListener('click', (e) => { e.stopPropagation(); openIconPicker(spell); });
   }
 
-  const body = h('div', { class: 'body' },
+  const table = tableView();
+  const kindOf = SpellLibrary.kind(meta);
+  const body = table ? h('div', { class: 'body' }, h('div', { class: 'name' }, nameNodes(spell.name, q))) : h('div', { class: 'body' },
     h('div', { class: 'ml-spell-kind' }, SpellLibrary.kind(meta) === 'unknown' ? 'Type unavailable' : SpellLibrary.kind(meta) === 'power' ? 'Power' : SpellLibrary.kind(meta) === 'shout' ? 'Shout' : (meta.school || 'Spell')),
     h('div', { class: 'name' }, nameNodes(spell.name, q)),
     ui.editing ? null : cardStatsEl(meta),
@@ -1034,7 +1087,7 @@ function spellRow(spell, i) {
     const sel = h('select', { class: 'cat-select', title: 'Move to category', onClick: (e) => e.stopPropagation(), onChange: (e) => setCategory(spell, e.target.value) });
     state.categories.forEach((c) => { const o = h('option', { value: c }, c); if (c === spell.category) o.selected = true; sel.append(o); });
     right.append(sel);
-    right.append(h('button', { class: 'icon-btn danger', title: 'Remove spell', onClick: (e) => { e.stopPropagation(); removeSpell(spell); } }, '🗑'));
+    right.append(h('button', { class: 'icon-btn danger', disabled: spell._learned ? true : null, title: spell._learned ? 'Automatic learned spell; customize it to save a deck entry' : 'Remove saved deck entry', onClick: (e) => { e.stopPropagation(); removeSpell(spell); } }, '🗑'));
 
     const row = h('div', {
       class: 'spell edit' + (i === ui.sel ? ' sel' : '') + (equipped ? ' equipped' : ''),
@@ -1050,14 +1103,18 @@ function spellRow(spell, i) {
   // spell-card-actions: inspection and activation are separate, as on packages.
   const handLabel = slot === 'voice' ? 'voice slot' : spell.hand === 'both' ? 'both hands' : (spell.hand || 'right') + ' hand';
   const clearsSlot = isEquip && (slot === 'voice' ? eqV && !isShout(spell) : spell.hand === 'both' ? eqL && eqR : spell.hand === 'left' ? eqL : eqR);
-  const actionLabel = isEquip ? (clearsSlot ? 'Unequip' : 'Equip') : 'Cast now';
-  right.append(h('button', {
-    type: 'button', class: 'ml-spell-activate ' + (isEquip ? 'equip' : 'cast'),
-    'aria-label': actionLabel + ' ' + spell.name + (isEquip ? ' in ' + handLabel : ''),
-    title: isEquip ? actionLabel + ' ' + handLabel : 'Cast once using the configured spell action',
-    onClick: (e) => { e.stopPropagation(); fireEntry(spell.id); },
-  }, actionLabel, isEquip ? h('span', { class: 'ml-action-slot', 'aria-hidden': 'true' },
-    slot === 'voice' ? 'Voice' : spell.hand === 'both' ? 'L+R' : spell.hand === 'left' ? 'L' : 'R') : null));
+  // Cast now sits first on EVERY card, Equip mode or not: close the deck, cast.
+  right.append(castNowButton(spell, 'ml-spell-activate cast ml-cast-now', 'Cast'));
+  if (isEquip) {
+    const actionLabel = clearsSlot ? 'Unequip' : 'Equip';
+    right.append(h('button', {
+      type: 'button', class: 'ml-spell-activate equip',
+      'aria-label': actionLabel + ' ' + spell.name + ' in ' + handLabel,
+      title: actionLabel + ' ' + handLabel,
+      onClick: (e) => { e.stopPropagation(); fireEntry(spell.id); },
+    }, actionLabel, h('span', { class: 'ml-action-slot', 'aria-hidden': 'true' },
+      slot === 'voice' ? 'Voice' : spell.hand === 'both' ? 'L+R' : spell.hand === 'left' ? 'L' : 'R')));
+  }
 
   // quick-fire keycap — the digit that fires this row RIGHT NOW. Positional
   // (1..9,0 map to the first ten VISIBLE rows), so it re-numbers live with
@@ -1090,7 +1147,9 @@ function spellRow(spell, i) {
     onMousedown: (e) => pdArm(e, { kind: 'spell-view', spellId: spell.id }),
     onMouseenter: (e) => requestDesc(meta, e.currentTarget),
     onMouseleave: leaveDesc,
-  }, glyph, body, right);
+  }, window.MagicWorkbench && state.library.layout === 'cards' && MagicWorkbench.artwork(spell)
+    ? h('div', {class:'mw-banner',style:'background-image:url("'+MagicWorkbench.artwork(spell)+'")','aria-hidden':'true'}) : null, glyph, body,
+    table ? tableCells(meta, kindOf === 'unknown' ? '—' : kindOf === 'power' ? 'Power' : kindOf === 'shout' ? 'Shout' : (meta.school || 'Spell')) : null, right);
 }
 
 function renderList() {
@@ -1136,6 +1195,7 @@ function renderList() {
     empty.classList.add('hidden');
     list.classList.remove('hidden');
     const q = ui.filter.trim();
+    if (tableView() && window.MagicLibraryUI) want.push({ k: 'thead', sig: MagicLibraryUI.tableHeadSig(), build: () => MagicLibraryUI.tableHead() });
     vis.forEach((s, i) => want.push({ k: 'r' + s.id, spell: s, idx: i, sig: rowSig(s), build: () => spellRow(s, i) }));
     reconcileList(list, want, q);
     if (ui.sel >= 0) {
@@ -1182,9 +1242,9 @@ function rowSig(spell) {
   /* The RESOLVED icon path is part of the signature, not just spell.icon: the
      icon index lands asynchronously (mdIconIndex / mdIcons), and a row whose
      art just became available has to redraw. */
-  return [spell.name, spell.plugin, spell.category, spell.mode, spell.hand, spell.icon,
+  return [state.library.workbench && state.library.workbench.artwork, spell.name, spell.plugin, spell.category, spell.mode, spell.hand, spell.icon,
     resolveIconPath(meta) || '', SpellLibrary.kind(meta), meta.school, SpellLibrary.path(spell.category, state.library.parents),
-    slot, hx, deliveryOf(spell), state.library.layout === 'icons' ? 1 : 0, ui.editing ? 1 : 0, ui.cat === ALL ? 1 : 0,
+    slot, hx, deliveryOf(spell), state.library.layout, meta.tier, ui.editing ? 1 : 0, ui.cat === ALL ? 1 : 0,
     eqL ? 1 : 0, eqR ? 1 : 0, eqV ? 1 : 0,
     ui.editing ? state.categories.join('\u0001') : ''].join('\u0000');
 }
@@ -1213,7 +1273,7 @@ function refreshRow(row, spell, i, q) {
     if (!qk && right) {
       qk = h('button', { class: 'qkey', title: 'Quick-fire — press ' + digit + ' (or click)',
         onClick: (e) => { e.stopPropagation(); fireEntry(spell.id); } }, digit);
-      right.append(qk);
+      right.insertBefore(qk, right.querySelector('.ml-spell-details'));   // where spellRow puts it: before Details
     } else if (qk && qk.textContent !== digit) {
       qk.textContent = digit;
       qk.title = 'Quick-fire — press ' + digit + ' (or click)';
@@ -1321,7 +1381,7 @@ function createCombo(targetSpell, draggedSpell) {
 }
 
 function addSpellToCombo(combo, spellId) {
-  const spell = state.spells.find((s) => s.id === spellId);
+  const spell = findSpellEntry(spellId);
   if (!spell) return;
   if (combo.spells.some((m) => sameSpell(m, spell))) { toast(spell.name + ' is already in this combo'); return; }
   if (combo.spells.length >= COMBO_MAX) { toast('Combo is full (' + COMBO_MAX + ' spells max)'); return; }
@@ -1520,18 +1580,18 @@ function pdFinish() {
 
   if (!t) { renderList(); return; }   // released over nothing
   if (t.drop === 'spell-category') {
-    const spell = state.spells.find((s) => s.id === sid);
+    const spell = findSpellEntry(sid);
     if (spell) { setCategory(spell, t.cat); toast('Moved to ' + t.cat); }
   } else if (t.drop === 'combo-create') {
-    const target = state.spells.find((s) => s.id === t.id);
-    const dragged = state.spells.find((s) => s.id === sid);
+    const target = findSpellEntry(t.id);
+    const dragged = findSpellEntry(sid);
     if (target && dragged && target !== dragged) createCombo(target, dragged);
     else renderList();
   } else if (t.drop === 'combo-add') {
     const combo = state.combos.find((c) => c.id === t.cid);
     if (combo) addSpellToCombo(combo, sid);
   } else if (t.drop === 'combo-new') {
-    const spell = state.spells.find((s) => s.id === sid);
+    const spell = findSpellEntry(sid);
     if (spell) {
       const c = { id: newComboId(), name: '', spells: [comboMemberFrom(spell)] };
       state.combos.push(c);
@@ -1625,24 +1685,52 @@ function openComboMenu(c, x, y) {
 function fireEntry(id) {
   if (ui.editing) return;
   cancelDesc();
-  const spell = state.spells.find((s) => s.id === id);
+  const spell = findSpellEntry(id);
   if (!spell) return;
   const row = $('list').querySelector('.spell[data-id="' + cssEsc(id) + '"]');
   if (row) { row.classList.add('flash'); setTimeout(() => row.classList.remove('flash'), 400); }
-  toGame('mdFire', id);
+  if (spell._learned) {
+    toGame('mdLibraryFire', JSON.stringify({plugin:spell.plugin || '',localId:spell.localId >>> 0,formId:spell.formId >>> 0,mode:spell.mode,hand:spell.hand}));
+  } else toGame('mdFire', id);
 }
 function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }
 
-function setMode(spell, mode) { if (spell.mode === mode) return; spell.mode = mode; saveSoon(); render(); }
-function setHand(spell, hand) { if (spell.hand === hand) return; spell.hand = hand; saveSoon(); renderList(); }
+/* Cast now — cast this spell whatever its Equip/Cast setting and leave the deck
+ * CLOSED (closeAfterFire is ignored: closing is the button's promise). C++
+ * mdCastNow checks the spell is still learned, closes the palette so the world
+ * runs, then casts through the existing SpellActions::Cast (powers and shouts
+ * go through the voice slot + shout key, as everywhere else). */
+function castNow(spellOrId) {
+  if (ui.editing) return;
+  const spell = typeof spellOrId === 'string' ? findSpellEntry(spellOrId) : spellOrId;
+  if (!spell) return;
+  cancelDesc();
+  const row = $('list').querySelector('.spell[data-id="' + cssEsc(spell.id) + '"]');
+  if (row) { row.classList.add('flash'); setTimeout(() => row.classList.remove('flash'), 400); }
+  toGame('mdCastNow', JSON.stringify({
+    plugin: spell.plugin || '', localId: spell.localId >>> 0, formId: spell.formId >>> 0, name: spell.name || '',
+  }));
+}
+function castNowButton(spell, cls, label) {
+  return h('button', {
+    type: 'button', class: cls,
+    'aria-label': 'Cast ' + spell.name + ' now and close the menu',
+    title: 'Close the menu and cast it',
+    onClick: (e) => { e.stopPropagation(); castNow(spell); },
+  }, label || 'Cast now');
+}
+
+function setMode(spell, mode) { if (spell.mode === mode) return; retainSpell(spell); spell.mode = mode; saveSoon(); render(); }
+function setHand(spell, hand) { if (spell.hand === hand) return; retainSpell(spell); spell.hand = hand; saveSoon(); renderList(); }
 function setCategory(spell, cat) {
   if (!state.categories.includes(cat) || spell.category === cat) return;
-  spell.category = cat; saveSoon(); render();
+  retainSpell(spell); spell.category = cat; saveSoon(); render();
 }
 function removeSpell(spell) {
   const i = state.spells.indexOf(spell);
   if (i < 0) return;
   state.spells.splice(i, 1);
+  ui.learnedEntries = MagicWorkbenchModel.entries(ui.known);
   saveSoon(); render();
   toast('Removed ' + spell.name);
 }
@@ -1772,6 +1860,7 @@ function setModeHand(spell, mode, hand) {
   if (spell.mode !== mode) { spell.mode = mode; changed = true; }
   if (hand && spell.hand !== hand) { spell.hand = hand; changed = true; }
   if (!changed) return;
+  retainSpell(spell);
   saveSoon(); renderList();
   renderRail();
   toast((mode === 'equip' ? 'Equip' : 'Cast now') + ' · ' + spell.name);
@@ -1823,7 +1912,9 @@ function openCtxMenu(spell, x, y, inDialog) {
   }, h('span', { class: 'ctx-check' }, active ? '✓' : ''), h('span', { class: 'ctx-lbl' }, label));
 
   const items = [h('div', { class: 'ctx-head', title: spell.name }, spell.name || 'Spell')];
-  items.push(item('Cast now · single activation', !isEquip, false, () => setModeHand(spell, 'cast', null)));
+  items.push(item('Cast it now (closes the menu)', false, false, () => castNow(spell)));
+  items.push(h('div', { class: 'ctx-sep' }));
+  items.push(item('Mode · Cast on click', !isEquip, false, () => setModeHand(spell, 'cast', null)));
   if (slot === 'voice') {
     items.push(item('Equip · Voice slot', isEquip, false, () => setModeHand(spell, 'equip', null)));
   } else {
@@ -1836,7 +1927,7 @@ function openCtxMenu(spell, x, y, inDialog) {
   items.push(item('Create package with this spell…', false, false, () => MagicPackageUI.edit(null, spell)));
   items.push(item('Change icon…', false, false, () => openIconPicker(spell)));
   items.push(h('div', { class: 'ctx-sep' }));
-  items.push(item('Remove from deck', false, true, () => removeSpell(spell)));
+  if (!spell._learned) items.push(item('Remove from deck', false, true, () => removeSpell(spell)));
 
   // Clear it from the spellbook entirely (engine RemoveSpell) — spells and powers
   // alike; only shouts are excluded (no spellbook entry to pull). Two-click armed so
@@ -1903,6 +1994,7 @@ function deleteCategory(cat) {
   const removed = countIn(cat);
   state.categories.splice(idx, 1);
   state.spells = state.spells.filter((s) => s.category !== cat);
+  ui.learnedEntries = MagicWorkbenchModel.entries(ui.known);
   delete state.catIcons[cat];
   if (ui.cat === cat) ui.cat = state.categories[0] || ALL;
   saveSoon(); render();
@@ -2043,7 +2135,7 @@ function addKnown(k, mode) {
 const iconPicker = { open: false, spellId: null, cat: null, filter: '', shown: 0 };
 const ICON_PAGE = 96;
 
-function pickerSpell() { return state.spells.find((s) => s.id === iconPicker.spellId) || null; }
+function pickerSpell() { return findSpellEntry(iconPicker.spellId) || null; }
 
 function openIconPicker(spell) {
   closeCtx();
@@ -2095,6 +2187,7 @@ function pickIcon(file) {
   const s = pickerSpell();
   closeIconPicker();
   if (!s) return;
+  retainSpell(s);
   s.icon = file || '';
   saveSoon();
   render();
@@ -2198,6 +2291,11 @@ const desc = { cache: new Map(), pending: new Map(), failures: new Map(), cardTi
 // rows, and request only visible cards (at most two descriptions in flight).
 function paintCardStats(node, data) {
   node.textContent = '';
+  if (node.classList.contains('ml-table-stats')) {
+    const text = SpellLibrary.tableStats(data).text;
+    ['magnitude', 'duration', 'cost'].forEach((f) => node.append(h('span', { class: 'ml-tc ml-tc-' + f }, text[f])));
+    return;
+  }
   SpellLibrary.cardStats(data).forEach(s => node.append(h('span', { class: 'ml-card-stat', title: s.note },
     h('span', { class: 'ml-card-stat-label' }, s.label), h('strong', null, s.value))));
 }
@@ -2212,6 +2310,7 @@ function updateCardStats(key, data) {
   $('list').querySelectorAll('.ml-card-stats').forEach(node => {
     if (hexId(node.__spellMeta.formId) === key) paintCardStats(node, data);
   });
+  if (data && tableStatSort()) scheduleTableResort();
 }
 function scheduleCardStats() {
   if (desc.cardTimer) clearTimeout(desc.cardTimer);
@@ -2227,12 +2326,13 @@ function loadVisibleCardStats() {
   const bounds = list.getBoundingClientRect(), top = Math.max(0, bounds.top), bottom = Math.min(innerHeight, bounds.bottom);
   if (bottom <= top) return;
   const nodes = list.querySelectorAll('.ml-card-stats');
+  const everyRow = tableStatSort();   // a number sort reads the whole list, two at a time
   let requested = 0;
   for (let i = 0; i < nodes.length && desc.pending.size < 2 && requested < 2; i++) {
     const node = nodes[i], m = node.__spellMeta, key = hexId(m.formId);
-    if (!m.formId || desc.cache.has(key) || desc.failures.has(key) || desc.pending.has(key)) continue;
+    if (!node.getClientRects().length || !m.formId || desc.cache.has(key) || desc.failures.has(key) || desc.pending.has(key)) continue;
     const rect = node.closest('.spell').getBoundingClientRect();
-    if (rect.bottom <= top || rect.top >= bottom || rect.right <= 0 || rect.left >= innerWidth) continue;
+    if (!everyRow && (rect.bottom <= top || rect.top >= bottom || rect.right <= 0 || rect.left >= innerWidth)) continue;
     requested++; ensureDesc(m);
   }
 }
@@ -2351,6 +2451,7 @@ window.mdDesc = function (r) {
   updateCardStats(key, data); scheduleCardStats();
   if (desc.key === key && desc.anchor) showDescTip(data);
   if (window.MagicLibraryUI) MagicLibraryUI.descriptionData(key, data);
+  if (window.MagicWorkbench) MagicWorkbench.descriptionData(key, data);
 };
 
 /* ===================================================== open-key capture == */
@@ -2394,6 +2495,7 @@ function isTextTarget(t) {
 }
 
 function onKeyDown(e) {
+  if (window.MagicWorkbench && MagicWorkbench.onKey(e)) return;
   if (window.MagicLibraryUI && MagicLibraryUI.onKey(e)) return;
   if (e.key === 'Escape' && !$('desc-tip').classList.contains('hidden')) {
     e.preventDefault(); cancelDesc(); return;
@@ -2496,7 +2598,7 @@ function onMouseDown(e) {
   if (e.button === 2 && !ui.editing && !ui.capture && !ui.addOpen) {
     const row = e.target && e.target.closest ? e.target.closest('.spell') : null;
     const id = row && row.dataset ? row.dataset.id : '';
-    const spell = id ? state.spells.find((s) => s.id === id) : null;
+    const spell = id ? findSpellEntry(id) : null;
     if (spell) { e.preventDefault(); openCtxMenu(spell, e.clientX, e.clientY); }
   }
 }
@@ -2683,6 +2785,9 @@ function normalizeConfig(cfg) {
   state.categories = Array.isArray(cfg.categories) ? cfg.categories.filter((c) => typeof c === 'string' && c) : [];
   if (!state.categories.length) state.categories = ['Destruction', 'Restoration', 'Alteration', 'Conjuration', 'Illusion'];
   state.library = SpellLibrary.normalize(cfg.library, state.categories);
+  state.library.workbench = MagicWorkbenchModel.normalize(state.library.workbench);
+  ui.learnedEntries = []; ui.known = []; ui.knownById.clear(); ui.knownByPid.clear();
+  ui.workbenchFilter = null;
   state.catIcons = {};
   if (cfg.catIcons && typeof cfg.catIcons === 'object') {
     for (const k in cfg.catIcons) {
@@ -2754,7 +2859,7 @@ window.mdOpen = function (cfg) {
   syncFillBtn();        // now measurable — paint the Fill toggle's true state
   render();
   // enrich slot/type so equip hand/voice controls are correct without opening the picker
-  ui.knownLoading = false;
+  ui.knownLoading = true;
   toGame('mdKnown');
   if (!wasOpen) setTimeout(() => { const s = $('search'); if (s) s.focus(); }, 40);
 };
@@ -2773,6 +2878,7 @@ window.mdSpells = function (rows) {
   if (!Array.isArray(rows)) rows = [];
   dropRowCache();          // knownById feeds metaFor, which feeds every row's art
   ui.known = rows;
+  ui.learnedEntries = MagicWorkbenchModel.entries(rows);
   ui.knownLoading = false;
   ui.knownById = new Map();
   ui.knownByPid = new Map();
@@ -2789,7 +2895,7 @@ window.mdSpells = function (rows) {
   });
   enrichFromKnown();
   if (ui.addOpen) renderAddList();
-  renderList();   // equip controls now know hand vs voice
+  render();   // complete spellbook and category counts now have live metadata
 };
 
 /* Write the live engine metadata BACK into the saved entries. metaFor() merges
@@ -2932,6 +3038,7 @@ window.hdNativeMouse = function (info) {
 
 function init() {
   if (window.MagicLibraryUI) MagicLibraryUI.init();
+  if (window.MagicWorkbench) MagicWorkbench.init();
   wire();
   applyScale();
   render();
@@ -3003,6 +3110,11 @@ function devBoot() {
       toast('Cast ' + s.name + ' (dev)');
     }
   };
+  window.mdCastNow = function (j) {
+    const p = JSON.parse(j);
+    window.__lastCastNow = p;
+    toast('Cast ' + (p.name || 'spell') + ' (dev, menu closes in game)');
+  };
   window.mdCastCombo = function (j) {
     const p = JSON.parse(j);
     window.__lastComboCast = p;
@@ -3048,6 +3160,7 @@ function devBoot() {
 /* ---------------------------------------------------------- self-test --- */
 
 function runSelfTest() {
+  state.library.workbench.inspector = false; render();
   const results = [];
   const ok = (name, cond) => { results.push({ name, pass: !!cond }); };
 
@@ -3061,7 +3174,7 @@ function runSelfTest() {
 
   ui.cat = ALL; ui.filter = ''; renderList();
   const totalRows = $('list').children.length;
-  ok('All shows every spell', totalRows === state.spells.length);
+  ok('All shows every spell', totalRows === librarySpells().length);
 
   ui.filter = 'fire'; renderList();
   ok('search filters live', $('list').children.length >= 1 && $('list').children.length < totalRows);

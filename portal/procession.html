@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#131419">
+  <title>Procession · SkyManager</title>
+  <link rel="stylesheet" href="/api/procession-assets/hd-procession.css">
+  <style>
+    *{box-sizing:border-box}html,body{height:100%}body{margin:0;background:#131419;color:#d6d0c0;font:18px/1.5 system-ui,sans-serif}
+    #rpx-modal{background:#131419}
+  </style>
+</head>
+<body>
+  <script>
+    'use strict';
+    /* The in-game Procession modal (hd-procession.js), served by the Portal.
+       Live: rpxGet/rpxAct go over /api/procession (the deck's live pipe, same
+       epoch + receipt contract as Walk With Me). ?demo=1: the harness mock
+       (hd-procession.fixture.js), so the whole UI can be tried with no game. */
+    window.RPX_ASSET_BASE='/api/procession-assets/';
+    window.RPX_LIVE_POLL=!/[?&]demo=1/.test(location.search);
+    window.toast=function(){};
+    let epoch='', busy=false, connection=0;
+    async function api(method,body) {
+      const response=await fetch('/api/procession',{method,cache:'no-store',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+      if(response.status===401){location.href='/';throw new Error('Sign in to SkyManager first.');}
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok || !data.ok)throw new Error(data.msg || data.error || 'Skyrim is unavailable.');
+      return data;
+    }
+    const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+    async function refresh() {
+      const token=++connection;
+      try {
+        let data;
+        for(let n=0;n<8;n++){data=await api('GET');if(!data.warming)break;await wait(300);}
+        if(token!==connection)return;
+        if(data.warming || !data.state)throw new Error('Load a save with the current SkyManager build, then try again.');
+        epoch=data.epoch;window.rpxOpen(data.state);
+      }catch(error){if(token!==connection)return;window.rpxOffline(error.message);}
+    }
+    function liveToGame(fn,payload){
+      if(fn==='rpxGet'){refresh();return;}
+      if(fn!=='rpxAct' || busy)return;
+      busy=true;
+      (async()=>{
+        try {
+          const activeEpoch=epoch;
+          const receipt=await api('POST',{op:'act',epoch:activeEpoch,request:JSON.parse(payload)});
+          for(let n=0;n<30;n++){
+            await wait(350);const state=await api('GET');
+            if(state.epoch!==activeEpoch)throw new Error('The game changed. Reopen Procession before trying again.');
+            const result=state.results&&state.results[receipt.commandId];
+            if(result&&!result.pending){window.rpxResult(result);if(state.state)window.rpxOpen(state.state);return;}
+          }
+          throw new Error('Skyrim has not confirmed it yet. Reopen Procession to check before retrying.');
+        }catch(error){window.rpxResult({ok:false,msg:error.message});}
+        finally{busy=false;}
+      })();
+    }
+    if(window.RPX_LIVE_POLL) window.toGame=liveToGame;
+  </script>
+  <script>
+    if(!window.RPX_LIVE_POLL) document.write('<script src="/api/procession-assets/hd-procession.fixture.js"><\/script>');
+  </script>
+  <script>
+    if(!window.RPX_LIVE_POLL && window.RpxMock) RpxMock.install((new URLSearchParams(location.search)).get('s')||'full');
+  </script>
+  <script src="/api/procession-assets/hd-procession.js"></script>
+  <script>
+    /* On the phone the modal IS the page: closing it goes home. */
+    window.RPX_ON_CLOSE=function(){location.href='/';};
+    window.RPX_ON_TAB=function(tab){const u=new URL(location.href);u.searchParams.set('tab',tab);history.replaceState(null,'',u);};
+    document.addEventListener('keydown',event=>{if(HDProcession.onKey(event)){event.preventDefault();event.stopPropagation();}},true);
+    HDProcession.open((new URLSearchParams(location.search)).get('tab')||'palanquin');
+  </script>
+</body>
+</html>

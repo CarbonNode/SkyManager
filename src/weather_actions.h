@@ -53,5 +53,7 @@ namespace WeatherActions
 	void Unlock();
 	RE::TESWeather* Locked();
 	// Called from main.cpp's 500 ms tick. Cheap when nothing is locked.
+	// Also runs the interior precipitation guard: no rain or snow draws in
+	// an interior without Show Sky, whatever state the sky was left in.
 	void Tick(bool gameReady, bool paused);
 }

@@ -380,6 +380,21 @@ namespace PpaConfig
 			{ "msg", installed ? "" : "Reading PPA's config, but AccuratePenetration.dll is not loaded — nothing will act on these" } });
 	}
 
+	std::string ReloadNow()
+	{
+		if (!GetModuleHandleW(L"AccuratePenetration.dll"))
+			return "";
+		std::vector<std::string> lines;
+		if (!ReadLines(lines))
+			return "";
+		const auto reload = ReadReload(Parse(lines));
+		if (!reload.dik)
+			return "";
+		TapReload(reload);
+		logger::info("ppa: reload tapped for a Keys-tab rebind (dik {})", reload.dik);
+		return std::string(reload.shiftOnly ? "Shift + " : "") + DikName(reload.dik);
+	}
+
 	std::string Set(const std::string& request)
 	{
 		json req = json::parse(request, nullptr, false);

@@ -839,10 +839,13 @@ namespace CharSheet
 				name = "Effect";
 
 			// Source spell/item + its defining plugin, both best-effort.
+			// The source can be a temporary potion, scroll or enchantment the game
+			// has already freed while the effect is still listed: check it is still
+			// registered before reading anything off it (the 2.1.0 crash).
 			RE::MagicItem* src = ae->spell;
 			std::string    source;
 			std::string    plugin;
-			if (src) {
+			if (src && ActorIdentity::IsLive(src)) {
 				if (const char* sn = src->GetFullName(); sn && *sn)
 					source = sn;
 				std::string fid;  // unused — DurableOf gives us the plugin name

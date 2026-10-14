@@ -108,6 +108,9 @@
     'hd-person.js',        // person-page look: hero, How-X-sees-you, the Mirror (pnMirrorData is response-style)
     'hd-bio.js',           // Bio Blocks: CHIM library traits on the dossier's CHIM page (+ library popout, Omni rows)
     'followers-pane.js',   // F7-with-target deep-opens here; FolPane.init() re-run on land
+    'auto-photo.js',       // auto in-game face photos; chains fdPortraits/hdOpen/hdClosed,
+                           // needs FolPane. fdAutoPhoto* replies are response-style (the
+                           // view asks first), so no STUB_FNS entry.
     'wardrobe-flair-model.js',
     'wardrobe-flair-ui.js',
     'wardrobe-nav.js',
@@ -172,6 +175,10 @@
        Spell Deck view on 2026-08-15 (view/MagicDeck), which loads it directly
        from its own index.html — this deck no longer hosts that pane. */
     'mounts-pane.js',
+    'hd-procession.js',   // Procession modal (Royal Procession + Royal Retinue). rpxOpen /
+                          // rpxResult are response-style (the modal always asks first), so
+                          // no STUB_FNS entry; an Omni-provider module like hd-places.
+    'hd-bestiary.js',      // the Bestiary popout (bx* bridge; hdBestiaryOpen is pushed unprompted)
     'loadouts-pane.js',    // Follower Loadouts; owns tab 'loadouts'. Depends on
                            // hd-face.js + hd-itempick.js above; lo* replies are
                            // response-style (loState on Show), so no STUB_FNS entry
@@ -195,6 +202,9 @@
                           // fdRefresh rather than owning a bridge, so every reply is
                           // response-style and it needs no STUB_FNS entry.
     'appearance-presets.js',
+    'hd-renown.js',        // Renown (the Character tab's deeds page, shared with the
+                           // portal). Response-style (it always asks first), no
+                           // STUB_FNS entry; must load before charsheet-pane mounts it.
     'charsheet-pane.js',
     'anim-pane.js',
     'ostim-pane.js',
@@ -206,6 +216,10 @@
     'time-pane.js',
     'weather-pane.js',     // wx* replies are response-style (the pane always asks
                            // first), so no STUB_FNS entry
+    'inventory-pane.js',   // Inventory tab (2026-10-10). iv* replies are response-
+                           // style (ivList on Show), so no STUB_FNS entry. Uses
+                           // HDArt + HDLightbox (both earlier), registers nothing
+                           // with HDOmni (hd-wheel's `inventory` provider jumps here).
     'finances-pane.js',
     'wardrobe-nff.js',     // chains fdPortraits/fdTarget/hdIconIndex/hdIcons off
                            // wardrobe-pane (pos 7) -> must load after it; keeps its
@@ -256,6 +270,7 @@
     'faces-pane.js': ['faces'],
     'time-pane.js': ['time'],
     'weather-pane.js': ['weather'],
+    'inventory-pane.js': ['inventory'],
     'finances-pane.js': ['finances'],
     'bases-pane.js': ['domains'],    // Bases is a mode of the Domains tab
     'residents-pane.js': ['domains'] // Residents is the third mode of it
@@ -272,7 +287,7 @@
     highking: 'HighKingPane',
     household: 'HouseholdPane',
     scene: 'ScenePane',
-    sheet: 'CharSheetPane', anim: 'AnimPane', faces: 'FacesPane', time: 'TimePane', weather: 'WeatherPane',
+    sheet: 'CharSheetPane', anim: 'AnimPane', faces: 'FacesPane', time: 'TimePane', weather: 'WeatherPane', inventory: 'InventoryPane',
     finances: 'FinancesPane'
   };
 
@@ -325,7 +340,11 @@
     //   which cannot run before the pane is loaded, so ltOpen needs no stub)
     'ltSaved',
     // finances-pane.js — finSaved ack (finOpen/finState arrive from FinancesPane.onShow)
-    'finSaved'
+    'finSaved',
+    // hd-bestiary.js — hdBestiaryOpen is pushed unprompted by the Bestiary deck actions
+    //   (Study / The Bestiary), possibly on the very open that loads the module;
+    //   bxEntry arrives unprompted when a kill lands while the deck is up
+    'hdBestiaryOpen', 'bxEntry'
   ];
 
   /* Buffers of calls that arrived before the real fn landed. buf[fn] = [[args,t]…] */

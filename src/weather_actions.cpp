@@ -229,6 +229,72 @@ namespace WeatherActions
 		std::string     g_lockId;
 		RE::TESWeather* g_lockW = nullptr;
 		int             g_reapplied = 0;
+
+		// Interior precipitation guard (2026-10-13). Rober saw snow falling
+		// inside Breezehome, then inside the Riverwood Trader: an override
+		// weather had come in with the save (nothing was forced that launch)
+		// and its snow drew in every interior until "Let the sky decide"
+		// released it. Whatever leaves the sky in that state, the rule the
+		// engine itself keeps is that a cell with no sky shows no
+		// precipitation, so the guard enforces exactly that and nothing
+		// more: it hides the precipitation geometry while the player stands
+		// in an interior without Show Sky, and un-hides only what it hid
+		// once they leave. The weather, the override and the lock are never
+		// touched. The NiPointers keep the geometry alive until it is handed
+		// back, so a weather change indoors cannot leave a dangling pointer.
+		std::vector<RE::NiPointer<RE::BSGeometry>> g_hiddenPrecip;
+		int                                        g_precipHides = 0;
+
+		bool InNoSkyInterior()
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* cell = player ? player->GetParentCell() : nullptr;
+			return cell && cell->IsInteriorCell() &&
+			       !cell->cellFlags.any(RE::TESObjectCELL::Flag::kShowSky);
+		}
+
+		void GuardInteriorPrecip(bool gameReady)
+		{
+			auto* sky = RE::Sky::GetSingleton();
+			auto* precip = sky ? sky->precip : nullptr;
+
+			if (gameReady && precip && InNoSkyInterior()) {
+				bool hid = false;
+				for (RE::BSGeometry* geo : { precip->currentPrecip.get(), precip->lastPrecip.get() }) {
+					if (!geo || geo->GetAppCulled())
+						continue;
+					geo->SetAppCulled(true);
+					g_hiddenPrecip.emplace_back(geo);
+					hid = true;
+				}
+				if (hid) {
+					++g_precipHides;
+					// First few, then every 50th: a sky stuck in this state
+					// all session must not fill the log.
+					if (g_precipHides <= 3 || g_precipHides % 50 == 0) {
+						auto* cell = RE::PlayerCharacter::GetSingleton()->GetParentCell();
+						const char* cellId = cell ? cell->GetFormEditorID() : nullptr;
+						logger::info(
+							"weather-guard: hid precipitation in no-sky interior '{}' (#{}; sky mode {}, weather '{}', override '{}', density {:.2f})",
+							cellId && *cellId ? cellId : "?", g_precipHides,
+							static_cast<int>(sky->mode.get()), IdOf(sky->currentWeather),
+							IdOf(sky->overrideWeather), precip->currentParticleDensity);
+					}
+				}
+				return;
+			}
+
+			if (g_hiddenPrecip.empty())
+				return;
+			// Outdoors, a sky-showing interior, or a load screen: hand back
+			// exactly what the guard hid. Geometry the engine has since
+			// replaced is simply released with its last reference.
+			for (auto& geo : g_hiddenPrecip)
+				geo->SetAppCulled(false);
+			if (g_precipHides <= 3 || g_precipHides % 50 == 0)
+				logger::info("weather-guard: precipitation shown again ({} piece(s))", g_hiddenPrecip.size());
+			g_hiddenPrecip.clear();
+		}
 	}
 
 	void Force(RE::TESWeather* w, bool blend)
@@ -291,6 +357,7 @@ namespace WeatherActions
 
 	void Tick(bool gameReady, bool paused)
 	{
+		GuardInteriorPrecip(gameReady);
 		if (!g_lockW || !gameReady || paused)
 			return;
 		auto* sky = RE::Sky::GetSingleton();

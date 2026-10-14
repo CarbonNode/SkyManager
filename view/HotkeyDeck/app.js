@@ -211,13 +211,18 @@ let state = {
   settings: {
     pauseOnOpen: true,
     smoothPause: true,   // freeze time (sgtm 0) instead of a menu pause — snappy cursor
+    freezeBackdrop: false,  // freeze-backdrop: OFF and not in Settings — it hung the game (2026-10-09); SkyManager.ini only
+    uiHost: 'prisma',       // ui-host-setting: 'prisma' | 'magelight' — which UI host draws the deck, read at game start
     closeAfterFire: true,
     stickyNpMods: false,
+    sicReachSeconds: 15,   // Sic 'em: seconds a follower gets to reach the target (5-60)
+    sicTeleport: true,     // ...then moved next to it; off = the order is dropped
     targetOpensFollowers: true,
     sceneOpensScene: true,
     targetOpensScene: true,
     uiScale: 1,
     scrollSpeed: 1,   // deck scroll-wheel speed multiplier (0.5-3.0), applied by applyScrollSpeed
+    fgSmoothScroll: true,   // cap the wheel glide's per-frame step (FG_STEP_PX) so frame generation can track it
     panelW: 0,   // drag-to-resize size, PRE-scale layout px (0 = auto)
     panelH: 0,
     /* Per-TAB size overrides, on top of uiScale above — { tab: {ui, img} },
@@ -276,6 +281,27 @@ var SCROLL_BASE = 2.8;   // native notch -> comfortable default at scrollSpeed=1
                          // (bumped 2.3->2.8 2026-08-13: Rober "still finds scrolling
                          //  slow" even after the ease pass; the whole curve is a notch
                          //  faster now, and the Edit slider tunes either side of it)
+/* Frame-generation-friendly glide step (2026-10-13, Rober: SkyManager "streaks like grey
+   watercolour as it moves" under 4-6x frame generation). PrismaUI paints the deck onto the
+   finished frame, so frame generation INVENTS the frames between two real ones by matching
+   what moved. The Home grid is a repeating pattern of near-identical cards: when one real
+   frame moved it about a card height (a 3-notch flick moved ~200 screen px in its first
+   frame), the interpolator matched the wrong card and drew rows on top of each other
+   (frames pulled from his clip: Quests drawn over Hotkeys, ghost icons, titles sliced).
+   Capping how far ONE animation frame (= one real game frame) may move keeps the
+   displacement well under half a card, which frame generation tracks cleanly. The ease and
+   the accumulating target are untouched; a long flick takes a few more frames instead of
+   jumping. FG_STEP_PX is SCREEN px, converted per notch through deckPaintScale(), so the cap
+   means the same thing at every --ui-scale. Off: Deck settings > Frame-gen friendly
+   scrolling (settings.fgSmoothScroll). ul-scenario `scroll-fg` is the proof. */
+var FG_STEP_PX = 48;
+function glideStep(diff, ease, capLayout) {
+  var s = diff * ease;
+  if (capLayout > 0 && Math.abs(s) > capLayout) s = s > 0 ? capLayout : -capLayout;
+  return s;
+}
+window.hdGlideStep = glideStep;   // ul-scenario scroll-fg + the self-tests read it
+
 function installScrollSpeed() {
   if (window.__hdScrollInstalled) return;
   window.__hdScrollInstalled = true;
@@ -284,6 +310,7 @@ function installScrollSpeed() {
   var active = [];               // els currently gliding
   var raf = 0;
   var EASE = 0.24;
+  var capLayout = 0;   // per-frame step cap in LAYOUT px (0 = uncapped), set on every notch
 
   function tick() {
     raf = 0;
@@ -294,8 +321,13 @@ function installScrollSpeed() {
       if (tgt == null) continue;
       var cur = el.scrollTop;
       var diff = tgt - cur;
-      if (Math.abs(diff) <= 1) { el.scrollTop = tgt; targets.delete(el); continue; }
-      el.scrollTop = cur + diff * EASE;
+      var step = glideStep(diff, EASE, capLayout);
+      /* A step under 1 px never moves an integer scrollTop: the old glide parked 1-4 px short
+         of its target and re-armed requestAnimationFrame EVERY frame until the next notch
+         (ul-scenario scroll-fg control on ea49d96: 1004 of 1008, for good) - UI-thread time
+         is game-frame time. Land on the target instead. */
+      if (Math.abs(diff) <= 1 || Math.abs(step) < 1) { el.scrollTop = tgt; targets.delete(el); continue; }
+      el.scrollTop = cur + step;
       still.push(el);
     }
     active = still;
@@ -313,6 +345,7 @@ function installScrollSpeed() {
   document.addEventListener('wheel', function (e) {
     if (!e.deltaY) return;
     var mult = clampScroll(state.settings.scrollSpeed) * SCROLL_BASE;
+    capLayout = state.settings.fgSmoothScroll === false ? 0 : FG_STEP_PX / deckPaintScale();
     var el = null;
     if (e.target === lastWheelTarget && lastWheelScroller &&
         lastWheelScroller.isConnected &&
@@ -373,6 +406,7 @@ function applyScale() {
   if (dn) dn.disabled = s <= SCALE_MIN + 1e-6;
   if (up) up.disabled = s >= SCALE_MAX - 1e-6;
   if (typeof window.hdSyncScalePop === 'function') window.hdSyncScalePop();   // header ⤤ popover readout
+  if (window.hdIconMip) window.hdIconMip.rescan();   // icons re-pick their mip tier for the new size
 }
 
 function setScale(v, persist) {
@@ -385,6 +419,30 @@ function setScale(v, persist) {
 /* Keep the Edit-card Scroll-speed slider + its readout in step with the live
    setting (renderSettings on card open, and after any change). The wheel handler
    itself reads state.settings.scrollSpeed directly, so this is display only. */
+/* Sic 'em orders (Deck settings). Same clamp as sic_em_orders.h. */
+function clampSicReach(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return 15;
+  return Math.min(60, Math.max(5, Math.round(n)));
+}
+function sicNoteText() {
+  const s = clampSicReach(state.settings.sicReachSeconds);
+  return state.settings.sicTeleport !== false
+    ? 'A follower who has not reached the target after ' + s + ' s is moved next to it and sent in again.'
+    : 'A follower who has not reached the target after ' + s + ' s gives up ("couldn\'t get to the target").';
+}
+function syncSicOrders() {
+  const s = clampSicReach(state.settings.sicReachSeconds);
+  const range = $('sicreach-range');
+  const val = $('sicreach-val');
+  const cb = $('sictele-cb');
+  const note = $('sic-note');
+  if (range && Number(range.value) !== s) range.value = String(s);
+  if (val) val.textContent = s + ' s';
+  if (cb) cb.checked = state.settings.sicTeleport !== false;
+  if (note) note.textContent = sicNoteText();
+}
+
 function syncScrollSpeedEdit() {
   const sp = clampScroll(state.settings.scrollSpeed);
   const range = $('scrollspeed-edit-range');
@@ -822,8 +880,18 @@ function trigOf(e) {
 
 /* gesture prefix (2026-09-13): one key, three actions */
 const GESTURE_LABEL = { '': '', double: '2× ', hold: 'Hold ' };
+/* A trigger's `label` is stored as the WHOLE chord by every capture path
+   ("Shift + F7", built with chordLabel) — and C++ shows it as-is ("Opens
+   during play on Shift + F7") — while `mods` holds the same Shift again. So
+   compose only when the label does not already carry its modifiers; composing
+   blindly read "Shift + Shift + F7" (Rober, 2026-10-11, binding Shift+F7 to a
+   stance). A bare label (older binds, the picker) still gets them prefixed. */
 function trigChipLabel(t) {
-  return (GESTURE_LABEL[t.gesture] || '') + chordLabel(t.mods || [], t.label || ('#' + t.code));
+  const mods = t.mods || [];
+  const label = t.label || ('#' + t.code);
+  const prefix = mods.length ? chordLabel(mods, '') : '';
+  const full = prefix && label.indexOf(prefix) === 0 ? label : chordLabel(mods, label);   // marker: trig-label-no-double-mods
+  return (GESTURE_LABEL[t.gesture] || '') + full;
 }
 
 function trigChipHtml(e, edit) {
@@ -919,9 +987,13 @@ function highlight(text, q) {
 }
 
 function render() {
+  /* bx-book-hold: the deck under the open Bestiary is not redrawn; the hold
+     runs this once the book closes (HDBookHold above). */
+  if (ui.visible && window.HDBookHold && HDBookHold.job('app-render', render)) return;
   const pane = (ui.tab === 'home' || ui.tab === 'numpad' || ui.tab === 'notes' || ui.tab === 'quests' ||
                 ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
                 ui.tab === 'rooms' || ui.tab === 'time' || ui.tab === 'weather' || ui.tab === 'loot' ||
+                ui.tab === 'inventory' ||
                 ui.tab === 'anim' || ui.tab === 'keys' || ui.tab === 'items' || ui.tab === 'npcs' ||
                 ui.tab === 'cells' || ui.tab === 'spells' ||
                 ui.tab === 'mounts' || ui.tab === 'sheet' || ui.tab === 'nightside' || ui.tab === 'transmog' ||
@@ -974,6 +1046,7 @@ function render() {
   $('faces-pane').classList.toggle('hidden', pane !== 'faces');
   $('tm-pane').classList.toggle('hidden', pane !== 'time');
   $('wth-pane').classList.toggle('hidden', pane !== 'weather');
+  $('iv-pane').classList.toggle('hidden', pane !== 'inventory');
   renderTabs();
 
   $('count-chip').textContent = state.entries.length + ' hotkeys';
@@ -983,7 +1056,7 @@ function render() {
   const homeEditing = pane === 'home' && window.HomePane && HomePane.isEditing && HomePane.isEditing();
   $('edit-btn').classList.toggle('on', ui.edit || !!homeEditing);
   document.body.classList.toggle('hd-editing', !!ui.edit);   // the #hints legend shows only in edit mode now
-  $('edit-btn').textContent = 'Edit';
+  hdSetToolLabel('edit-btn', 'Edit');
   $('settings-card').classList.toggle('hidden', !(deck && ui.edit));
   renderSettingsFold();
   $('add-row').classList.toggle('hidden', !(deck && ui.edit));
@@ -1530,6 +1603,103 @@ function openConsoleEditor(anchor, editEntry, opts) {
   document.addEventListener('keydown', ccEditorKeydown, true);
 }
 
+/* ============================== mod-key rows (2026-10-11) =================== *
+ * Another mod's OWN hotkey as a Hotkeys row (device:"action", action:"mod-key").
+ * The row stores WHERE the key lives — { file, section, key, space, … } under
+ * Data/SKSE/Plugins — and C++ reads the binding live from that file every time
+ * it fires (src/mod_keys.h), so a rebind in the mod's own menu is honoured and
+ * an unbound key is refused on the HUD by name. Walk With Me's rows are seeded
+ * by C++; any other plugin-config bind comes from the Keys tab's "Add to
+ * Hotkeys" button (drawn by hdModKeyBtnHtml, wired by one delegated listener). */
+const MK_TAB = 'Mod keys';
+
+function mkSame(a, b) { return String(a || '').toLowerCase() === String(b || '').toLowerCase(); }
+
+/* The deck row that already presses this exact setting, or null. */
+function hdModKeyFind(spec) {
+  if (!spec) return null;
+  return state.entries.find((e) => e && e.device === 'action' && e.action === 'mod-key' && e.modKey &&
+    mkSame(String(e.modKey.file || '').replace(/\\/g, '/'), String(spec.file || '').replace(/\\/g, '/')) &&
+    mkSame(e.modKey.section, spec.section) && mkSame(e.modKey.key, spec.key)) || null;
+}
+
+/* Keys-tab detail rows call this for the button. Only a plugin-config bind
+   whose code space the census was TOLD (never o.guess — pressing an assumed
+   alphabet is pressing a guess) and which is a keyboard key (mouse = 256+). */
+function hdModKeyBtnHtml(o) {
+  if (!o || o.src !== 'plugin' || o.guess || !o.cfg || !o.cfg.file || !o.cfg.field) return '';
+  if (!(o.code > 0 && o.code < 256)) return '';
+  if (o.cfg.space !== 'dik' && o.cfg.space !== 'vk') return '';
+  const spec = { file: String(o.cfg.file), section: String(o.cfg.section || ''), key: String(o.cfg.field),
+    space: o.cfg.space, mod: String(o.mod || '') };
+  const have = hdModKeyFind(spec);
+  return '<button class="hd-mk-add' + (have ? ' hd-mk-have' : '') + '" data-mk="' + esc(JSON.stringify(spec)) +
+    '" data-mk-ctl="' + esc(o.control || '') + '" title="' +
+    (have ? 'Already a row in Hotkeys: ' + esc(have.name)
+      : 'Make this a Hotkeys row. It presses whatever key ' + esc(o.mod || 'the mod') +
+        ' has here at the moment you fire it — read live from its own config.') + '">' +
+    (have ? '✓ In Hotkeys' : '＋ Add to Hotkeys') + '</button>';
+}
+
+function hdAddModKeyEntry(spec, control) {
+  if (!spec || !spec.file || !spec.key) return null;
+  const have = hdModKeyFind(spec);
+  if (have) { toast('Already in Hotkeys: ' + have.name); return have; }
+  const mod = String(spec.mod || '').slice(0, 60) || 'Mod';
+  const ctl = String(control || spec.key).slice(0, 60);
+  const name = (mod + ': ' + ctl).slice(0, 120);
+  if (state.categories.indexOf(MK_TAB) === -1) state.categories.push(MK_TAB);
+  const made = {
+    id: newId(), name: name,
+    desc: 'Presses ' + mod + '’s own key for this, read live from ' + spec.file + ' each time (' +
+      mod.toLowerCase() + ' ' + String(spec.key).toLowerCase() + ' mod key)',
+    device: 'action', code: 0, label: mod.slice(0, 18) + ' key', mods: [], action: 'mod-key',
+    icon: '', category: MK_TAB,
+    modKey: { file: spec.file, section: spec.section || '', key: spec.key,
+      space: spec.space === 'vk' ? 'vk' : 'dik', mod: mod,
+      where: mod + '’s own settings (Data\\SKSE\\Plugins\\' + String(spec.file).replace(/\//g, '\\') + ')' },
+  };
+  state.entries.push(made);
+  save();
+  render();
+  toast('Added to Hotkeys › ' + MK_TAB + ': ' + name);
+  return made;
+}
+
+function onModKeyBtnClick(e) {
+  const b = e.target && e.target.closest ? e.target.closest('.hd-mk-add') : null;
+  if (!b) return;
+  e.preventDefault();
+  e.stopPropagation();
+  let spec = null;
+  try { spec = JSON.parse(b.getAttribute('data-mk') || 'null'); } catch (err) { spec = null; }
+  const made = hdAddModKeyEntry(spec, b.getAttribute('data-mk-ctl') || '');
+  if (made) {
+    b.classList.add('hd-mk-have');
+    b.textContent = '✓ In Hotkeys';
+    b.title = 'Already a row in Hotkeys: ' + made.name;
+  }
+}
+/* The Keys pane redraws a detail row only when its OWNERS change, so a button
+   drawn "✓ In Hotkeys" would keep saying so after that row was deleted from
+   Hotkeys. Re-read every drawn button against the live entries instead. */
+function hdModKeyRefreshButtons() {
+  document.querySelectorAll('.hd-mk-add').forEach((b) => {
+    let spec = null;
+    try { spec = JSON.parse(b.getAttribute('data-mk') || 'null'); } catch (err) { spec = null; }
+    const have = hdModKeyFind(spec);
+    b.classList.toggle('hd-mk-have', !!have);
+    b.textContent = have ? '✓ In Hotkeys' : '＋ Add to Hotkeys';
+    b.title = have ? 'Already a row in Hotkeys: ' + have.name
+      : 'Make this a Hotkeys row. It presses whatever key ' + ((spec && spec.mod) || 'the mod') +
+        ' has here at the moment you fire it — read live from its own config.';
+  });
+}
+document.addEventListener('click', onModKeyBtnClick);
+window.hdModKeyBtnHtml = hdModKeyBtnHtml;
+window.hdAddModKeyEntry = hdAddModKeyEntry;
+window.hdModKeyFind = hdModKeyFind;
+
 /* The footer legend is per-pane — "Enter fire / 1–9,0 quick-fire" is a lie on
    the Quests tab, where nothing is bound to those keys. */
 let defaultHints = null;
@@ -1614,6 +1784,12 @@ function renderHints(pane) {
   if (pane === 'loadouts') {
     h.innerHTML = '<span>Groups: pick one, ⚡ Deploy brings + recruits everyone</span><span>Classes: gear + combat style per role</span>' +
       '<span>click a face\'s class chip to change it</span><span>F7 / Esc close</span>';
+    return;
+  }
+  if (pane === 'inventory') {
+    h.innerHTML = '<span>Type to search · click a column to sort</span>' +
+      '<span>Enter = use · Shift+Enter = left hand · double-click = use</span>' +
+      '<span>drag the big picture to turn it</span><span>F7 / Esc close</span>';
     return;
   }
   if (pane === 'weather') {
@@ -1709,6 +1885,12 @@ const SYS_TABS = [
      with no OStim is not "a pane that explains itself", it is twelve segments
      of nothing. C++ lands F7 here whenever a player scene is running. */
   { tab: 'scene',      label: 'Scene',      img: 'icons/custom/seg-ostim.png',     title: 'Everything OStim — participants, furniture, alignment, voices, the room', requires: 'ostim' },
+  /* The Bestiary (2026-10-10, Rober searched the systems list for it and got
+     "No match"). A LAUNCHER, not a pane: setTab('bestiary') opens the
+     HDBestiary book popout over whatever tab is up and never switches panes,
+     so it has no render()/toggle registration (pane-wiring-waivers.json). */
+  { tab: 'bestiary',   label: 'Bestiary',   img: 'icons/custom/bx-all.png',        title: 'The monster log — every creature you have killed or studied: threat, resistances, what works on it, lore',
+    aliases: 'beast beasts monster monsters creature creatures kills slain hunt hunting log codex' },
   { tab: 'mounts',     label: 'Mounts',     img: 'icons/custom/hm-mounts.png',     title: 'Your stable — summon, call and ride anything you can sit on' },
   { tab: 'loadouts',   label: 'Loadouts',   img: 'icons/custom/hm-loadouts.png',   title: 'Follower groups you switch between in one press — summon, recruit, dress by class' },
   { tab: 'settle',     label: 'Settlement', img: 'icons/custom/hm-settlement.png', title: 'Place objects, statics, camp gear — build a camp, keep catalogs' },
@@ -1852,6 +2034,12 @@ function tabbarPrefs() {
   if (!tb || typeof tb !== 'object' || Array.isArray(tb)) tb = state.shelf.tabbar = {};
   if (tb.style !== 'icons') tb.style = 'text';
   if (!tb.use || typeof tb.use !== 'object' || Array.isArray(tb.use)) tb.use = {};
+  /* tab-customize (2026-10-11): `pin` = system ids always on the bar, in
+     this order; `hide` = ids never on the bar (systems AND the core three —
+     Hotkeys, Spells, Inventory; Home cannot be hidden). Same shelf blob, same
+     reason as `style`. */
+  if (!Array.isArray(tb.pin)) tb.pin = [];
+  if (!Array.isArray(tb.hide)) tb.hide = [];
   return tb;
 }
 
@@ -1948,23 +2136,75 @@ function bumpTabUse(t) {
    promoted a tab to the front of the bar, so the row reshuffled under the
    cursor on every click into the More menu. */
 function sysOrder() {
-  const use = tabbarPrefs().use;
+  const tb = tabbarPrefs();
+  const use = tb.use;
   const eff = (t) => Math.floor((Number(use[t]) || 0) / 3);
+  /* tab-customize: hidden systems leave the bar entirely (they live in More's
+     "Hidden" section); PINNED ones lead, in the order you set, so the fit loop
+     sheds them last; the rest keep competing by usage. */
+  const avail = SYS_TABS.filter(tabAvailable).filter((s) => tb.hide.indexOf(s.tab) === -1);
+  const pinned = tb.pin.map((id) => avail.filter((s) => s.tab === id)[0]).filter(Boolean);
+  if (pinned.length) {
+    const rest = avail.filter((s) => pinned.indexOf(s) === -1).sort((a, b) =>
+      eff(b.tab) - eff(a.tab) || SYS_TABS.indexOf(a) - SYS_TABS.indexOf(b));
+    return pinned.concat(rest);
+  }
   /* Drop tabs whose backing mod is detected-absent BEFORE ordering, so they
      leave the bar AND the More menu (tabOverflow rides this same list) — the
      one place the tab gate needs to live for the visible surface. */
-  return SYS_TABS.filter(tabAvailable).sort((a, b) =>
+  return avail.sort((a, b) =>
     eff(b.tab) - eff(a.tab) ||
     SYS_TABS.indexOf(a) - SYS_TABS.indexOf(b));
+}
+
+/* The four fixed slots ahead of the systems. Home can never be hidden (it is
+   the way back to everything); the other three can, and then wait in More's
+   "Hidden" section like any system. tab-customize */
+const CORE_TABS = [
+  { tab: 'home',      label: 'Home',      img: 'icons/custom/hm-home.png',    title: 'Home — every system as a card + universal search', lock: true },
+  { tab: 'hotkeys',   label: 'Hotkeys',   img: 'icons/custom/hm-hotkeys.png', title: 'Your hotkey categories' },
+  { tab: 'spells',    label: 'Spells',    img: 'icons/custom/hm-spells.png',  title: 'Spell Deck — opens in its own window (F18)', launcher: true },
+  { tab: 'inventory', label: 'Inventory', img: 'icons/custom/inv-bag.png',    title: 'Inventory — everything you carry: sort, search, preview in 3D, equip, drop' },
+];
+function coreShown(c) { return !!c.lock || tabbarPrefs().hide.indexOf(c.tab) === -1; }
+/* Hidden tabs, core first then systems — More's second section. */
+function hiddenTabs() {
+  const tb = tabbarPrefs();
+  return CORE_TABS.filter((c) => !coreShown(c))
+    .concat(SYS_TABS.filter(tabAvailable).filter((s) => tb.hide.indexOf(s.tab) !== -1));
+}
+/* Active test that also understands the core slots. */
+function anyTabActive(t) {
+  if (!t) return false;
+  if (t.tab === 'hotkeys') return isHotkeyTab();
+  if (t.tab === 'spells') return false;   // a launcher, never a pane
+  return sysActive(t);
+}
+/* Go to a tab by its bar id — the one door More and Customize both use. */
+function openTabEntry(id) {
+  if (id === 'hotkeys') { setTab(hkTabToken()); return; }
+  if (id === 'spells') { toGame('hdOpenSpells'); return; }
+  setTab(id);
 }
 
 /* the systems that did NOT fit on the bar this paint — the More menu's list */
 let tabOverflow = [];
 
+/* What More holds: the systems that did not fit, then the ones you hid. */
+function moreSource() { return tabOverflow.concat(hiddenTabs()); }
 function moreMenuMatches() {
   const f = (ui.moreFilter || '').trim().toLowerCase();
-  if (!f) return tabOverflow.slice();
-  return tabOverflow.filter((t) => t.label.toLowerCase().indexOf(f) !== -1);
+  const src = moreSource();
+  if (!f) return src;
+  /* Label hits first, then a system whose description or `aliases` carry the
+     words (Rober, 2026-10-10: typed "beast" for the Bestiary and got nothing —
+     "beast" is not inside "bestiary"). Every word must land somewhere. */
+  const words = f.split(/\s+/).filter(Boolean);
+  const hay = (t) => (t.label + ' ' + (t.title || '') + ' ' + (t.aliases || '')).toLowerCase();
+  const all = (s) => words.every((w) => s.indexOf(w) !== -1);
+  const byLabel = src.filter((t) => all(t.label.toLowerCase()));
+  const byText = src.filter((t) => byLabel.indexOf(t) === -1 && all(hay(t)));
+  return byLabel.concat(byText);
 }
 
 function closeMoreMenu() {
@@ -1997,12 +2237,18 @@ function onMoreMenuClick(e) {
     }
     return;
   }
+  if (e.target.closest('[data-act="tabcfg"]')) {
+    e.stopPropagation();
+    closeMoreMenu();
+    openTabCfg();
+    return;
+  }
   const it = e.target.closest('.more-item[data-tab]');
   if (!it) return;
   e.stopPropagation();
   const t = it.dataset.tab;
   closeMoreMenu();
-  setTab(t);
+  openTabEntry(t);
 }
 function onMoreMenuInput(e) {
   if (!e.target.classList || !e.target.classList.contains('more-search')) return;
@@ -2017,16 +2263,28 @@ function renderMoreList() {
   if (!menu) return;
   const list = menu.querySelector('.more-list');
   if (!list) return;
+  list.innerHTML = moreListHtml();
+}
+/* The list body, sectioned while unfiltered ("Didn't fit" / "Hidden from the
+   bar"); filtered, one ranked list whose first row is the Enter target. */
+function moreListHtml() {
   const items = moreMenuMatches();
   const filtering = !!(ui.moreFilter || '').trim();
+  const hid = hiddenTabs();
+  const row = (t, top) => '<button class="more-item' + (anyTabActive(t) ? ' active' : '') +
+    (top ? ' top' : '') + '" data-tab="' + t.tab + '" title="' + esc(t.title) + '">' +
+    '<img class="more-item-ic" src="' + t.img + '" alt="" draggable="false">' +
+    '<span class="more-item-label">' + esc(t.label) + '</span>' +
+    (hid.indexOf(t) !== -1 ? '<span class="more-item-tag">hidden</span>' : '') + '</button>';
+  if (!items.length) return '<div class="more-empty">No tab matches that</div>';
+  if (filtering) return items.map((t, i) => row(t, i === 0)).join('');
   let h = '';
-  if (!items.length) h += '<div class="more-empty">No match</div>';
-  items.forEach((t, i) => {
-    h += '<button class="more-item' + (sysActive(t) ? ' active' : '') +
-      (filtering && i === 0 ? ' top' : '') + '" data-tab="' + t.tab + '" title="' + esc(t.title) + '">' +
-      '<span class="more-item-label">' + esc(t.label) + '</span></button>';
-  });
-  list.innerHTML = h;
+  const over = items.filter((t) => hid.indexOf(t) === -1);
+  const gone = items.filter((t) => hid.indexOf(t) !== -1);
+  if (over.length && gone.length) h += '<div class="more-sec">Didn’t fit</div>';
+  h += over.map((t) => row(t, false)).join('');
+  if (gone.length) h += '<div class="more-sec">Hidden from the bar</div>' + gone.map((t) => row(t, false)).join('');
+  return h;
 }
 function onMoreMenuKey(e) {
   const code = normCode(e);
@@ -2038,7 +2296,7 @@ function onMoreMenuKey(e) {
   } else if (code === 'Enter') {
     e.preventDefault(); e.stopPropagation();
     const items = moreMenuMatches();
-    if (items.length) { const t = items[0].tab; closeMoreMenu(); setTab(t); }
+    if (items.length) { const t = items[0].tab; closeMoreMenu(); openTabEntry(t); }
   }
 }
 
@@ -2056,41 +2314,16 @@ function renderMoreMenu(keepFocus) {
     menu.addEventListener('input', onMoreMenuInput);
     menu.addEventListener('keydown', onMoreMenuKey);
   }
-  const items = moreMenuMatches();
-  const filtering = !!(ui.moreFilter || '').trim();
-  const tb = tabbarPrefs();
   let h = '';
-  if (tabOverflow.length) {
-    h += '<input class="more-search" type="text" placeholder="Filter systems…" value="' + esc(ui.moreFilter || '') + '">';
-    h += '<div class="more-list">';
-    if (!items.length) h += '<div class="more-empty">No match</div>';
-    items.forEach((t, i) => {
-      h += '<button class="more-item' + (sysActive(t) ? ' active' : '') +
-        (filtering && i === 0 ? ' top' : '') + '" data-tab="' + t.tab + '" title="' + esc(t.title) + '">' +
-        '<span class="more-item-label">' + esc(t.label) + '</span></button>';
-    });
-    h += '</div>';
+  if (moreSource().length) {
+    h += '<input class="more-search" type="text" placeholder="Filter tabs…" value="' + esc(ui.moreFilter || '') + '">';
+    h += '<div class="more-list">' + moreListHtml() + '</div>';
   } else {
-    h += '<div class="more-empty more-allfit">Everything fits — every system is on the bar.</div>';
+    h += '<div class="more-empty more-allfit">Everything fits — every tab is on the bar.</div>';
   }
-  /* tab style — collapsed behind a chevron by default; always reachable here
-     even when nothing overflows. Click the header to reveal Names / Icons. */
-  const curStyle = tb.style === 'icons' ? 'Icons' : 'Names';
-  h += '<div class="more-style-wrap' + (ui.moreStyleOpen ? ' open' : '') + '">' +
-    '<button class="more-style-toggle" data-act="style-toggle" ' +
-      'title="Choose how the tab bar shows systems" aria-expanded="' + (ui.moreStyleOpen ? 'true' : 'false') + '">' +
-      '<span class="more-style-toggle-lbl">Tab style</span>' +
-      '<span class="more-style-cur">' + curStyle + '</span>' +
-      '<span class="more-style-chev">▾</span>' +
-    '</button>' +
-    '<div class="more-style-body">' +
-      '<div class="more-style-btns">' +
-        '<button class="more-style-btn' + (tb.style !== 'icons' ? ' on' : '') + '" data-style="text" title="Full names — the most-used systems keep their words">Aa Names</button>' +
-        '<button class="more-style-btn' + (tb.style === 'icons' ? ' on' : '') + '" data-style="icons" title="Icons only — hover shows the name; many more fit">▦ Icons</button>' +
-      '</div>' +
-      '<div class="more-style-hint">Most-used systems earn the bar; the rest live here.</div>' +
-    '</div>' +
-  '</div>';
+  /* Tab style moved into Customize tabs (2026-10-11); its door is the foot. */
+  h += '<div class="more-foot"><button class="more-cfg" data-act="tabcfg" title="Pin, hide and order tabs; icons or names">' +
+    '<img src="icons/custom/gl-gear.png" alt="" draggable="false">Customize tabs…</button></div>';
   menu.innerHTML = h;
   menu.classList.remove('hidden');
   /* Anchor under the More button; clamp so a wide menu never leaves the panel. */
@@ -2098,7 +2331,7 @@ function renderMoreMenu(keepFocus) {
   if (btn) {
     const r = btn.getBoundingClientRect();
     const sc = deckPaintScale();   // the menu self-scales; clamp the PAINTED size
-    const w = 240 * sc;
+    const w = 320 * sc;
     menu.style.top = Math.round(r.bottom + 5) + 'px';
     menu.style.left = Math.round(Math.max(6, Math.min(r.left, window.innerWidth - w - 6))) + 'px';
     const hPainted = menu.offsetHeight * sc;
@@ -2107,6 +2340,207 @@ function renderMoreMenu(keepFocus) {
   }
   const s = menu.querySelector('.more-search');
   if (s && !keepFocus) setTimeout(() => { s.focus(); }, 10);
+}
+
+/* ===================== Customize tabs (marker: tab-customize) ==========
+ * Rober, 2026-10-11: "ability to edit which show on the list and which dont".
+ * Every tab gets one of three modes — PINNED (always on the bar, in the order
+ * set here, shed last), AUTO (fills the room that is left, most-used first:
+ * the bar's old behaviour) or HIDDEN (never on the bar; still in More, on Home
+ * and in Ctrl+F). Home is locked on; Hotkeys, Spells and Inventory are
+ * Shown/Hidden. Stored in tabbarPrefs() (pin / hide), so no DLL change.
+ *
+ * A body-anchored popout per the popout law: fills the viewport, no
+ * --ui-scale, owns the keyboard while up (onKeyDown routes to tabCfgKey ahead
+ * of quick-fire), takes hdCapture '1M' like Omni. Omni entry: "Customize
+ * tabs" in Deck settings. */
+const tabCfg = { el: null, q: '' };
+function tabCfgIsOpen() { return !!(tabCfg.el && !tabCfg.el.classList.contains('hidden')); }
+function hdSetToolLabel(id, txt) {
+  const b = $(id);
+  if (!b) return;
+  const l = b.querySelector('.hd-tool-lbl');
+  if (l) l.textContent = txt; else b.textContent = txt;
+}
+window.hdSetToolLabel = hdSetToolLabel;
+
+function setTabMode(id, mode) {
+  const tb = tabbarPrefs();
+  tb.pin = tb.pin.filter((x) => x !== id);
+  tb.hide = tb.hide.filter((x) => x !== id);
+  if (mode === 'pin') tb.pin.push(id);
+  if (mode === 'hide') tb.hide.push(id);
+  saveSoon();
+}
+function tabModeOf(id) {
+  const tb = tabbarPrefs();
+  if (tb.hide.indexOf(id) !== -1) return 'hide';
+  if (tb.pin.indexOf(id) !== -1) return 'pin';
+  return 'auto';
+}
+
+function buildTabCfg() {
+  if (tabCfg.el) return tabCfg.el;
+  const el = document.createElement('div');
+  el.id = 'tabcfg-back';
+  el.className = 'hidden';
+  el.innerHTML =
+    '<div class="tabcfg" role="dialog" aria-modal="true" aria-labelledby="tabcfg-h">' +
+      '<div class="tabcfg-head">' +
+        '<div class="tabcfg-title"><img src="icons/custom/gl-gear.png" alt="" draggable="false">' +
+          '<h2 id="tabcfg-h">Customize tabs</h2>' +
+          '<button class="hd-close" data-tc="close" title="Close (Esc)" aria-label="Close">✕</button></div>' +
+        '<p class="tabcfg-sub">Choose which tabs sit on the bar. Hidden tabs stay one press away in More, on Home and in Ctrl F.</p>' +
+        '<div class="tabcfg-tools">' +
+          '<div class="tabcfg-search"><img src="icons/custom/gl-magnifier.png" alt="" draggable="false">' +
+            '<input id="tabcfg-q" type="text" placeholder="Filter tabs…" autocomplete="off" spellcheck="false" aria-label="Filter tabs"></div>' +
+          '<div class="tabcfg-counts" id="tabcfg-counts"></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="tabcfg-body" id="tabcfg-body"></div>' +
+      '<div class="tabcfg-foot">' +
+        '<span class="lbl">Tab style</span><div class="tabcfg-style" id="tabcfg-style"></div>' +
+        '<span class="grow"></span>' +
+        '<button class="tabcfg-btn" data-tc="reset" title="Unpin and unhide everything">Reset</button>' +
+        '<button class="tabcfg-btn gold" data-tc="done">Done</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(el);
+  el.addEventListener('mousedown', (e) => { if (e.target === el) { e.preventDefault(); closeTabCfg(); } });
+  el.addEventListener('click', onTabCfgClick);
+  el.querySelector('#tabcfg-q').addEventListener('input', (e) => { tabCfg.q = e.target.value; renderTabCfgBody(); });
+  tabCfg.el = el;
+  return el;
+}
+
+function openTabCfg() {
+  if (ui.moreOpen) closeMoreMenu();
+  const el = buildTabCfg();
+  if (tabCfgIsOpen()) return;
+  tabCfg.q = '';
+  el.querySelector('#tabcfg-q').value = '';
+  el.classList.remove('hidden');
+  toGame('hdCapture', '1M');   // a modal owns the view (the Omni contract)
+  renderTabCfg();
+  setTimeout(() => { const q = $('tabcfg-q'); if (q && tabCfgIsOpen()) q.focus(); }, 30);
+}
+/* `quiet` = the deck itself is closing: C++ already dropped the capture. */
+function closeTabCfg(quiet) {
+  if (!tabCfgIsOpen()) return;
+  tabCfg.el.classList.add('hidden');
+  if (!quiet) toGame('hdCapture', '0');
+  saveSoon();
+  if (!quiet) render();
+}
+
+function tabCfgKey(e, code) {
+  if (code === 'Escape') {
+    e.preventDefault(); e.stopPropagation();
+    if (tabCfg.q) { tabCfg.q = ''; const q = $('tabcfg-q'); if (q) q.value = ''; renderTabCfgBody(); return; }
+    closeTabCfg();
+    return;
+  }
+  /* everything else belongs to the popout: the filter keeps its letters
+     (no preventDefault), and nothing reaches quick-fire or Tab-cycling */
+  e.stopPropagation();
+}
+
+function renderTabCfg() {
+  const tb = tabbarPrefs();
+  $('tabcfg-style').innerHTML = '<div class="tabcfg-seg">' +
+    '<button data-style="text" class="' + (tb.style !== 'icons' ? 'on-pin' : '') + '">Icon + name</button>' +
+    '<button data-style="icons" class="' + (tb.style === 'icons' ? 'on-pin' : '') + '">Icons only</button></div>';
+  renderTabCfgBody();
+}
+
+function renderTabCfgBody() {
+  const tb = tabbarPrefs();
+  const q = (tabCfg.q || '').trim().toLowerCase();
+  const words = q.split(/\s+/).filter(Boolean);
+  const match = (t) => !words.length || words.every((w) =>
+    (t.label + ' ' + (t.title || '') + ' ' + (t.aliases || '')).toLowerCase().indexOf(w) !== -1);
+  const avail = SYS_TABS.filter(tabAvailable);
+  const pinned = tb.pin.map((id) => avail.filter((s) => s.tab === id)[0]).filter(Boolean);
+  const auto = sysOrder().filter((s) => pinned.indexOf(s) === -1);
+  const hidden = avail.filter((s) => tb.hide.indexOf(s.tab) !== -1);
+
+  const seg = (t) => {
+    if (t.lock) return '<div class="tabcfg-seg"><button class="on-pin off">Always on</button></div>';
+    const m = tabModeOf(t.tab);
+    const core = CORE_TABS.indexOf(t) !== -1;
+    const b = (mode, cls, inner) => '<button data-set="' + mode + '" data-id="' + t.tab + '" class="' + (m === mode ? cls : '') + '">' + inner + '</button>';
+    return '<div class="tabcfg-seg" role="radiogroup" aria-label="' + esc(t.label) + '">' + (core
+      ? b('auto', 'on-pin', 'Shown') + b('hide', 'on-hide', 'Hidden')
+      : b('pin', 'on-pin', '<img src="icons/custom/gl-pin.png" alt="" draggable="false">Pinned') +
+        b('auto', 'on-auto', 'Auto') + b('hide', 'on-hide', 'Hidden')) + '</div>';
+  };
+  const row = (t, order) => {
+    const m = t.lock ? 'auto' : tabModeOf(t.tab);
+    let ord = '<div></div>';
+    if (order) ord = '<div class="tabcfg-order">' +
+      '<button data-mv="-1" data-id="' + t.tab + '" class="' + (order.first ? 'off' : '') + '" title="Move left on the bar" aria-label="Move left">‹</button>' +
+      '<button data-mv="1" data-id="' + t.tab + '" class="' + (order.last ? 'off' : '') + '" title="Move right on the bar" aria-label="Move right">›</button></div>';
+    return '<div class="tabcfg-row' + (m === 'pin' ? ' pinned' : '') + (m === 'hide' ? ' is-hidden' : '') + '">' + ord +
+      '<img class="tabcfg-ic" src="' + t.img + '" alt="" draggable="false">' +
+      '<div class="tabcfg-name">' + esc(t.label) + (t.lock ? '<span class="tabcfg-lock">your way back to everything</span>' : '') +
+        '<small>' + esc(t.title || '') + '</small></div>' + seg(t) + '</div>';
+  };
+  const group = (title, note, rows) => rows ? '<div class="tabcfg-group"><b>' + title + '</b><span>' + note + '</span></div>' + rows : '';
+
+  let h = '';
+  h += group('Always first', 'the fixed slots at the start of the bar',
+    CORE_TABS.filter(match).map((t) => row(t, null)).join(''));
+  const pin = pinned.filter(match);
+  h += group('Pinned', 'always on the bar, left to right in this order',
+    pin.map((t, i) => row(t, q ? null : { first: i === 0, last: i === pin.length - 1 })).join(''));
+  h += group('Auto', 'fill the room that is left, most-used first',
+    auto.filter(match).map((t) => row(t, null)).join(''));
+  h += group('Hidden', 'never on the bar — still in More, on Home and in Ctrl F',
+    hidden.filter(match).map((t) => row(t, null)).join(''));
+  if (!h) h = '<div class="tabcfg-empty">No tab matches “' + esc(tabCfg.q) + '”.</div>';
+  $('tabcfg-body').innerHTML = h;
+  const nHid = hidden.length + CORE_TABS.filter((c) => !coreShown(c)).length;
+  $('tabcfg-counts').innerHTML = '<span><b>' + pinned.length + '</b> pinned</span>' +
+    '<span><b>' + auto.length + '</b> auto</span><span><b>' + nHid + '</b> hidden</span>';
+}
+
+function onTabCfgClick(e) {
+  const tc = e.target.closest('[data-tc]');
+  if (tc) {
+    const a = tc.dataset.tc;
+    if (a === 'close' || a === 'done') { closeTabCfg(); return; }
+    if (a === 'reset') {
+      const tb = tabbarPrefs();
+      tb.pin = []; tb.hide = [];
+      saveSoon(); renderTabCfgBody(); renderTabs();
+      toast('Tabs reset — nothing pinned, nothing hidden');
+      return;
+    }
+  }
+  const st = e.target.closest('[data-style]');
+  if (st) {
+    const tb = tabbarPrefs();
+    if (tb.style !== st.dataset.style) { tb.style = st.dataset.style; saveSoon(); renderTabCfg(); renderTabs(); }
+    return;
+  }
+  const set = e.target.closest('[data-set]');
+  if (set) {
+    setTabMode(set.dataset.id, set.dataset.set);
+    renderTabCfgBody(); renderTabs();
+    return;
+  }
+  const mv = e.target.closest('[data-mv]');
+  if (mv) {
+    const tb = tabbarPrefs();
+    /* move among the pins that are actually listed (a pin for a tab this
+       install gates out keeps its slot but is skipped over) */
+    const listed = tb.pin.filter((id) => SYS_TABS.some((s) => s.tab === id && tabAvailable(s)));
+    const i = listed.indexOf(mv.dataset.id), j = i + Number(mv.dataset.mv);
+    if (i === -1 || j < 0 || j >= listed.length) return;
+    const a = tb.pin.indexOf(listed[i]), b = tb.pin.indexOf(listed[j]);
+    tb.pin[a] = listed[j]; tb.pin[b] = listed[i];
+    saveSoon(); renderTabCfgBody(); renderTabs();
+  }
 }
 
 /* One system button, in the current tab style. Icons mode shows the Home
@@ -2119,7 +2553,8 @@ function sysBtnHtml(t, icons) {
       '<img class="tab-icon" src="' + t.img + '" alt="' + esc(t.label) + '" draggable="false"></button>';
   }
   return '<button class="tab' + (active ? ' active' : '') + '" data-tab="' + t.tab +
-    '" title="' + esc(t.title) + '">' + esc(t.label) + '</button>';
+    '" title="' + esc(t.title) + '">' +
+    '<img class="tab-icon" src="' + t.img + '" alt="" draggable="false">' + esc(t.label) + '</button>';
 }
 
 /* Paint the bar with the first `n` systems (usage order); the rest become
@@ -2137,27 +2572,37 @@ function paintTabsRow(n, compactMore) {
       ' title="' + esc(label) + ' — ' + esc(title) + '">' +
       '<img class="tab-icon" src="' + img + '" alt="' + esc(label) + '" draggable="false">' + (extra || '') + '</button>'
     : '<button class="tab' + (active ? ' active' : '') + '" ' + dataAttr +
-      ' title="' + esc(title) + '">' + esc(label) + (extra || '') + '</button>';
+      ' title="' + esc(title) + '">' +
+      '<img class="tab-icon" src="' + img + '" alt="" draggable="false">' + esc(label) + (extra || '') + '</button>';
 
-  let html = fixed('data-tab="home"', 'Home', 'Home — every system as a card + universal search',
-    'icons/skymanager.png', ui.tab === 'home');
-  html += fixed('data-tab="' + esc(hkTabToken()) + '"', 'Hotkeys', 'Your hotkey categories',
-    'icons/custom/hm-hotkeys.png', onHk);
-  html += icons
-    ? '<button class="tab tab-ic launcher" data-act="spells" title="Spell Deck — opens in its own window (F18)">' +
-      '<img class="tab-icon" src="icons/custom/hm-spells.png" alt="Spells" draggable="false"></button>'
-    : '<button class="tab launcher" data-act="spells" title="Open the Spell Deck (F18)">Spells ' +
-      '<span class="tab-launch" aria-hidden="true">↗</span></button>';
+  /* The core slots, each unless you hid it (tab-customize). Inventory
+     (2026-10-10, Rober: "can show after spells") is fixed like Hotkeys and
+     never shed to More: it is the page you open most. */
+  let html = '';
+  CORE_TABS.forEach((c) => {
+    if (!coreShown(c)) return;
+    if (c.tab === 'home') html += fixed('data-tab="home"', c.label, c.title, c.img, ui.tab === 'home');
+    else if (c.tab === 'hotkeys') html += fixed('data-tab="' + esc(hkTabToken()) + '"', c.label, c.title, c.img, onHk);
+    else if (c.tab === 'spells') html += icons
+      ? '<button class="tab tab-ic launcher" data-act="spells" title="Spell Deck — opens in its own window (F18)">' +
+        '<img class="tab-icon" src="' + c.img + '" alt="Spells" draggable="false"></button>'
+      : '<button class="tab launcher" data-act="spells" title="Open the Spell Deck (F18)">' +
+        '<img class="tab-icon" src="' + c.img + '" alt="" draggable="false">Spells ' +
+        '<span class="tab-launch" aria-hidden="true">↗</span></button>';
+    else html += fixed('data-tab="' + c.tab + '"', c.label, c.title, c.img, ui.tab === c.tab);
+  });
   html += '<span class="tab-sep" aria-hidden="true"></span>';
   shown.forEach((t) => { html += sysBtnHtml(t, icons); });
 
   /* The More button stays even when everything fits: it holds the tab-style
      toggle, and it is where an overflowed ACTIVE tab hoists its label so you
      always see where you are. */
-  const activeMore = tabOverflow.filter(sysActive)[0];
-  const moreTitle = tabOverflow.length
-    ? 'More systems — ' + esc(tabOverflow.map((t) => t.label).join(', '))
-    : 'Tab style & options';
+  const inMore = tabOverflow.concat(hiddenTabs());
+  const activeMore = inMore.filter(anyTabActive)[0];
+  const moreTitle = inMore.length
+    ? 'More tabs — ' + esc(inMore.map((t) => t.label).join(', '))
+    : 'Every tab fits — Customize tabs is here';
+  const moreN = inMore.length ? ' <span class="tab-more-n">' + inMore.length + '</span>' : '';
   /* icons mode keeps the More button icon-sized too: the hoisted active tab
      shows as its glyph, plain overflow as ⋯ — every px goes to real tabs */
   const moreFace = icons
@@ -2168,13 +2613,17 @@ function paintTabsRow(n, compactMore) {
         /* the hoisted label rides its own span so CSS can ellipsize it rather
            than let a long system name ("Spell Crafting") clip mid-word against
            the header chrome — belt and braces behind the fit loop's re-measure */
-        : (activeMore ? '<span class="tab-more-lbl">' + esc(activeMore.label) + '</span>'
-            : (tabOverflow.length ? 'More' : '⋯')));
+        : (activeMore ? '<img class="tab-icon" src="' + activeMore.img + '" alt="" draggable="false">' +
+                        '<span class="tab-more-lbl">' + esc(activeMore.label) + '</span>'
+            : (inMore.length ? 'More' + moreN : '⋯')));
   html += '<button class="tab tab-more' + (icons ? ' tab-ic' : '') + (activeMore ? ' active' : '') + (ui.moreOpen ? ' open' : '') +
     '" data-act="more" aria-haspopup="true" aria-expanded="' + (!!ui.moreOpen) +
     '" title="' + (activeMore ? esc(activeMore.label) + ' — ' + moreTitle : moreTitle) + '">' +
     moreFace +
     ' <span class="tab-launch tab-more-chev" aria-hidden="true">▾</span></button>';
+  /* the gear that opens Customize tabs — always last on the rail */
+  html += '<button class="tab tab-cfg" data-act="tabcfg" title="Customize tabs — pin, hide and order them">' +
+    '<img class="tab-icon" src="icons/custom/gl-gear.png" alt="Customize tabs" draggable="false"></button>';
   const bar = $('tabs');
   // ui-response-tabs: keep the existing buttons/images on an unchanged refresh.
   if (bar._hdTabMarkup !== html) {
@@ -2219,7 +2668,8 @@ function renderTabs() {
      row grew a scrollbar (Rober's screenshot, Spell Crafting). */
   const sig = cw + '|' + (tabbarPrefs().style === 'icons' ? 'i' : 'l') + '|'
     + (state.settings.uiScale || 1) + '|' + order.map((t) => t.tab).join(',')
-    + '|' + (order.filter(sysActive).map((t) => t.tab)[0] || '-');
+    + '|' + (order.filter(sysActive).map((t) => t.tab)[0] || '-')
+    + '|' + tabbarPrefs().hide.join(',') + '|' + (hiddenTabs().filter(anyTabActive).map((t) => t.tab)[0] || '-');
 
   if (cw && tabFitCache.sig === sig && tabFitCache.n >= 0) {
     /* Unchanged fit — reuse the count, paint once, no reflow loop. */
@@ -2343,6 +2793,7 @@ function onTabsClick(e) {
        PrismaUI focus is single-view, so it must close this palette before the
        magic view can take focus (CanOpenNow() refuses otherwise). */
     if (a === 'spells') { toGame('hdOpenSpells'); return; }
+    if (a === 'tabcfg') { openTabCfg(); return; }
     if (a === 'more') {
       ui.moreOpen = !ui.moreOpen;
       ui.moreFilter = '';
@@ -2463,6 +2914,72 @@ var HDFrameDiag = (function () {
   return { sample: sample };
 })();
 
+/* act-diag (2026-10-12, marker act-diag): Rober, after the open fix: "finder,
+   searching is very laggy still … you click it then it opens something and
+   that open has a bit of a delay". No line said which click or which keystroke
+   was slow, so every click and every typed character in the deck is timed:
+   handlers = the event's own synchronous work (capture on document -> bubble
+   on window), paint = event -> the second frame after it, and the worst frame
+   gap in the 1.5 s after it with WHEN it fell (a C++ reply that blocks the
+   game thread, or an MRF render, shows up there — match the time against the
+   C++ lines around it). Logged only when something felt slow (paint >= 100 ms
+   or a frame >= 150 ms), at most one line per 700 ms. */
+var HDActDiag = (function () {
+  var now = (window.performance && typeof performance.now === 'function')
+    ? function () { return performance.now(); } : function () { return Date.now(); };
+  var cur = null, lastLog = -1e9;
+  function describe(el) {
+    try {
+      var hit = el && el.closest ? el.closest('[id],[data-tab],[data-act],[data-id],button,.ix-row,.omni-row') : null;
+      var n = hit || el;
+      if (!n || !n.tagName) return '?';
+      var d = n.tagName.toLowerCase();
+      if (n.id) d += '#' + n.id;
+      else if (n.className && typeof n.className === 'string') d += '.' + n.className.trim().split(/\s+/)[0];
+      /* the CLICKED element's own text, and only a small one: textContent of a
+         big container would cost the very time this is measuring */
+      var src = (el && (el.value != null || (el.childElementCount | 0) <= 8)) ? el : null;
+      var tx = src ? String(src.value != null && src.value !== '' ? src.value : (src.textContent || '')).slice(0, 200)
+        .replace(/\s+/g, ' ').trim().slice(0, 28) : '';
+      return d + (tx ? ' "' + tx + '"' : '');
+    } catch (e) { return '?'; }
+  }
+  function begin(kind, e) {
+    if (!window.HDPerf || !ui.visible || cur) return;
+    var a = { kind: kind, what: describe(e.target), tab: ui.tab, t0: now(), hDone: 0, paint: 0, worst: 0, worstAt: 0 };
+    cur = a;
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        a.paint = now() - a.t0;
+        var last = now();
+        var tick = function () {
+          var t = now(), gap = t - last;
+          last = t;
+          if (gap > a.worst) { a.worst = gap; a.worstAt = t - a.t0; }
+          if (t - a.t0 < 1500 && ui.visible) { requestAnimationFrame(tick); return; }
+          if (cur === a) cur = null;
+          if ((a.paint < 100 && a.worst < 150) || a.t0 - lastLog < 700) return;
+          lastLog = a.t0;
+          try {
+            HDPerf.log('act-diag(view): ' + a.kind + ' ' + a.what + ' | tab=' + a.tab
+              + ' | handlers ' + (a.hDone ? HDPerf.fmt(a.hDone) + ' ms' : 'n/a (propagation stopped)') + ' | paint ' + HDPerf.fmt(a.paint)
+              + ' ms | worst frame ' + HDPerf.fmt(a.worst) + ' ms at +' + HDPerf.fmt(a.worstAt) + ' ms');
+          } catch (e2) {}
+        };
+        requestAnimationFrame(tick);
+      });
+    });
+  }
+  function done() { if (cur && !cur.hDone) cur.hDone = now() - cur.t0; }
+  try {
+    document.addEventListener('click', function (e) { begin('click', e); }, true);
+    document.addEventListener('input', function (e) { begin('type', e); }, true);
+    window.addEventListener('click', done, false);
+    window.addEventListener('input', done, false);
+  } catch (e) {}
+  return { active: function () { return !!cur; } };
+})();
+
 function onTabsKey(e) {
   const inp = e.target;
   if (!inp.classList || !inp.classList.contains('tab-input')) return;
@@ -2572,6 +3089,15 @@ const HK_REQUIRES = {
      without ObjectManipulator.dll it would fire a stray Home. C++ flag:
      manipulator. */
   'hd-open-manipulator':       { flag: 'manipulator', label: 'The Manipulator 9001' },
+  /* Change Grip (2026-10-10): runs Dynamic Grip's own switch with no key, so
+     without dynamicGrip.dll it does nothing. C++ flag: dynamicgrip. */
+  'hd-grip-dg':                { flag: 'dynamicgrip', label: 'Dynamic Grip' },
+  /* Walk With Me rows (2026-10-11): three mod-key rows that press its own
+     keys (read live from Wayfarer.ini) + its own On/Off switch. C++ flag: wwm. */
+  'hd-wwm-order-wheel':        { flag: 'wwm', label: 'Walk With Me' },
+  'hd-wwm-companion':          { flag: 'wwm', label: 'Walk With Me' },
+  'hd-wwm-reload':             { flag: 'wwm', label: 'Walk With Me' },
+  'hd-wwm-toggle':             { flag: 'wwm', label: 'Walk With Me' },
 };
 /* The missing-mod label if this entry's required mod is NOT detected, else ''.
    device:"vkey" requires VirtualKey. A DLL that predates cfg.detected sends no
@@ -2901,6 +3427,85 @@ function renderModSlots() {
   });
 }
 
+/* ---- UI renderer (2026-10-10, marker ui-host-setting) ------------------------
+   PrismaUI or Magelight UI draws the main deck. C++ reads the pick once at game
+   start (UiHostRouter), so a change here applies on the NEXT launch, and the
+   note says so in words. hdUiHost (pushed at DOM ready) is the honest half: what
+   is drawing the deck now, whether Magelight is installed and new enough, and a
+   SkyManager.ini line that outranks this row. Nothing here can switch the live
+   deck — rebuilding the view mid-session is the crash this design avoids. */
+let uiHostInfo = null;
+window.hdUiHost = function (j) {
+  try { uiHostInfo = typeof j === 'string' ? JSON.parse(j) : (j || null); }
+  catch (e) { uiHostInfo = null; }
+  syncUiHostRow();
+};
+function uiHostName(h) { return h === 'magelight' ? 'Magelight' : 'PrismaUI'; }
+/* The pick the row should show: an ini line wins, then the saved setting. */
+function uiHostChosen() {
+  if (uiHostInfo && uiHostInfo.ini) return uiHostInfo.ini;
+  return state.settings.uiHost === 'magelight' ? 'magelight' : 'prisma';
+}
+/* Why Magelight cannot be picked right now, or '' when it can. */
+function uiHostMagelightBlock() {
+  const m = uiHostInfo && uiHostInfo.magelight;
+  if (!uiHostInfo) return '';   // no report yet (dev harness): do not guess
+  if (!m || !m.found) return 'Magelight UI is not installed. Install it from Nexus (mod 193303) and enable it to use it here.';
+  if (!m.ok) return 'Magelight UI ' + (m.version || '') + ' is too old. SkyManager needs ' + (m.min || '0.31.1') + ' or newer.';
+  return '';
+}
+function syncUiHostRow() {
+  const note = $('uihost-note');
+  if (!note) return;
+  const chosen = uiHostChosen();
+  const iniLocked = !!(uiHostInfo && uiHostInfo.ini);
+  const mgBlock = uiHostMagelightBlock();
+  ['prisma', 'magelight'].forEach(function (h) {
+    const b = $('uihost-' + h);
+    if (!b) return;
+    const on = chosen === h;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+    b.disabled = iniLocked || (h === 'magelight' && !!mgBlock && chosen !== 'magelight');
+    b.title = h === 'magelight'
+      ? (mgBlock || 'Magelight UI draws the deck on the GPU with its own cursor')
+      : 'PrismaUI draws the deck (the default)';
+  });
+  note.textContent = '';
+  const add = function (text, cls) {
+    const span = document.createElement('span');
+    if (cls) span.className = cls;
+    span.textContent = text;
+    note.appendChild(span);
+    note.appendChild(document.createTextNode(' '));
+  };
+  if (!uiHostInfo) { add('Applies the next time you start the game.'); return; }
+  const active = uiHostInfo.active === 'magelight' ? 'magelight' : 'prisma';
+  add('Drawing the deck now: ' + uiHostName(active) + '.', 'uihost-now');
+  if (iniLocked) add('Set by SkyManager.ini (' + (uiHostInfo.iniLine || 'UiHost') + '). Delete that line to choose here.', 'uihost-warn');
+  else if (chosen !== active) add('Switches to ' + uiHostName(chosen) + ' the next time you start the game.');
+  if (uiHostInfo.note) add(uiHostInfo.note, 'uihost-warn');
+  else if (mgBlock) add(mgBlock);
+  else if (uiHostInfo.magelight && uiHostInfo.magelight.version && active !== 'magelight' && chosen !== 'magelight')
+    add('Magelight UI ' + uiHostInfo.magelight.version + ' is installed: pick it for a GPU-drawn deck and cursor.');
+}
+/* The one implementation of a pick, shared by the buttons and Omni. Returns a
+   sentence for a toast; refuses honestly instead of doing nothing. */
+function pickUiHost(h) {
+  h = h === 'magelight' ? 'magelight' : 'prisma';
+  if (uiHostInfo && uiHostInfo.ini) return 'Set by SkyManager.ini — delete that line to choose here';
+  if (h === 'magelight' && uiHostMagelightBlock()) return uiHostMagelightBlock();
+  if (state.settings.uiHost === h) {
+    syncUiHostRow();
+    return 'UI renderer: ' + uiHostName(h) + ' (already chosen)';
+  }
+  state.settings.uiHost = h;
+  save();
+  syncUiHostRow();
+  const live = uiHostInfo && uiHostInfo.active === h;
+  return 'UI renderer: ' + uiHostName(h) + (live ? ' (already drawing the deck)' : ' — applies the next time you start the game');
+}
+
 function renderSettings() {
   const ok = state.settings.openKey || {};
   $('openkey-btn').textContent = ok.label || (ok.device + ' ' + ok.code);
@@ -2909,14 +3514,17 @@ function renderSettings() {
     $('smoothpause-cb').checked = state.settings.smoothPause !== false;   // default on
     $('smoothpause-cb').disabled = !state.settings.pauseOnOpen;           // only meaningful when pausing
   }
+  syncUiHostRow();
   $('close-cb').checked = !!state.settings.closeAfterFire;
   $('sticky-cb').checked = !!state.settings.stickyNpMods;
   $('tgtfol-cb').checked = state.settings.targetOpensFollowers !== false;
   $('scnopen-cb').checked = state.settings.sceneOpensScene !== false;
+  if ($('fgscroll-cb')) $('fgscroll-cb').checked = state.settings.fgSmoothScroll !== false;
   $('tgtscn-cb').checked = state.settings.targetOpensScene !== false;
   renderModSlots();
   applyScale();
   syncScrollSpeedEdit();   // scroll-speed slider readout, beside Menu scale
+  syncSicOrders();         // Sic 'em reach time + teleport
   if (window.HDScale) HDScale.sync('deck');   // row-icon readout, beside Menu scale
   renderExt();
 }
@@ -3050,11 +3658,19 @@ const DECK_SETTING_CBS = [
     detail: () => (state.settings.closeAfterFire
       ? 'On — the deck closes when you fire something'
       : 'Off — the deck stays open after firing') },
+  { id: 'sictele-cb', name: "Sic 'em: teleport followers who can't reach the target",
+    keywords: "sic em attack target order follower teleport move next to stuck could not reach couldn't get to target",
+    detail: () => sicNoteText() },
   { id: 'sticky-cb', name: 'Sticky numpad modifiers',
     keywords: 'sticky numpad modifiers shift ctrl alt latch hold toggle',
     detail: () => (state.settings.stickyNpMods
       ? 'On — Shift/Ctrl/Alt stay on until you toggle them off'
       : 'Off — a modifier lasts for one numpad press') },
+  { id: 'fgscroll-cb', name: 'Frame-gen friendly scrolling',
+    keywords: 'frame generation fg dlss mfg smooth scroll scrolling wheel ghost ghosting smear streak watercolor watercolour jitter',
+    detail: () => (state.settings.fgSmoothScroll !== false
+      ? 'On — lists glide in small steps frame generation can follow, so rows do not ghost'
+      : 'Off — the original glide; a fast flick can ghost rows under frame generation') },
   { id: 'tgtfol-cb', name: 'Looking at someone? Open on the Followers tab',
     keywords: 'crosshair target npc person followers tab open on quick card dismiss inventory outfit wait',
     detail: () => (state.settings.targetOpensFollowers !== false
@@ -3106,6 +3722,25 @@ function registerDeckSettingsOmni() {
           keywords: row.keywords,
           run: function () { toggleDeckSetting(row); },
           jump: function () { openDeckSettings('#' + row.id, !!row.ext); },
+        });
+      });
+
+      /* UI renderer: one row per choice, Enter picks it (the same pickUiHost the
+         buttons use), Shift+Enter lands on the row to read the note first. */
+      ['prisma', 'magelight'].forEach(function (h) {
+        const chosen = uiHostChosen();
+        const block = h === 'magelight' ? uiHostMagelightBlock() : '';
+        items.push({
+          label: 'UI renderer: ' + uiHostName(h),
+          detail: chosen === h
+            ? 'Chosen' + (uiHostInfo && uiHostInfo.active === h ? ' and drawing the deck now' : ' — applies at the next game start')
+            : (block || (h === 'magelight'
+              ? 'GPU-drawn deck and cursor (Magelight UI) — applies at the next game start'
+              : 'The default renderer — applies at the next game start')),
+          kind: 'setting',
+          keywords: 'ui renderer host prisma prismaui magelight gpu cpu cursor floaty smooth lag performance fps engine switch',
+          run: function () { openDeckSettings('#uihost-row'); toast(pickUiHost(h)); },
+          jump: function () { openDeckSettings('#uihost-row'); },
         });
       });
 
@@ -3166,6 +3801,14 @@ function registerDeckSettingsOmni() {
          100% while the pictures grow, which is what "bigger images" means on a
          list of named keys. It only exists inside the card. */
       items.push({
+        label: "Sic 'em: time to reach the target", kind: 'setting',
+        detail: 'Currently ' + clampSicReach(state.settings.sicReachSeconds) +
+                ' s, then ' + (state.settings.sicTeleport !== false ? 'moved next to it' : 'the order drops'),
+        keywords: "sic em attack target order follower reach time seconds timeout stuck could not reach couldn't get to target teleport",
+        run: function () { openDeckSettings('#sicreach-range'); },
+        jump: function () { openDeckSettings('#sicreach-range'); },
+      });
+      items.push({
         label: 'Row icon size', kind: 'setting',
         detail: 'How big the pictures on the hotkey rows are',
         keywords: 'row icon size image bigger pictures art thumbnails hotkey rows',
@@ -3196,12 +3839,13 @@ function registerDeckSettingsOmni() {
       /* Tab style lives behind a chevron inside the More ▾ dropdown — a real
          display setting for the whole bar, two levels down from anything. */
       items.push({
-        label: 'Tab style — names or icons', kind: 'setting',
-        detail: (tabbarPrefs().style === 'icons' ? 'Icons' : 'Names') +
-                ' — how the tab bar shows each system',
-        keywords: 'tab style icons names bar labels compact glyphs more menu overflow',
-        run: function () { ui.moreOpen = true; ui.moreStyleOpen = true; renderTabs(); },
-        jump: function () { ui.moreOpen = true; ui.moreStyleOpen = true; renderTabs(); },
+        label: 'Customize tabs', kind: 'setting',
+        detail: 'Pin, hide and order the tab bar — ' +
+                (tabbarPrefs().style === 'icons' ? 'icons only' : 'icon and name'),
+        keywords: 'customize tabs tab bar pin unpin hide show order reorder style icons names ' +
+                  'labels compact more menu overflow nav navigation',
+        run: function () { openTabCfg(); },
+        jump: function () { openTabCfg(); },
       });
 
       /* The Deck Portal button carries no text label and hides itself when
@@ -3742,9 +4386,71 @@ function hdTyping() {
   return !!ae.isContentEditable;
 }
 
+/* ---- popout-modal-escape (2026-10-12) -------------------------------------
+ * The F7 card's CHIM, Fixes and Room-ban popouts own Escape in the VIEW via
+ * the onKeyDown branch below — but in game C++'s input sink sees every Esc
+ * too, and its "guaranteed Esc-close" shuts the deck unless a capture is up.
+ * So, the Omni / Bestiary / Keys-rebind contract (capture-modal-escape in
+ * main.cpp): while one of these popouts is open the view holds a MODAL
+ * capture ("1M"), C++ stands its Esc-close down and HANDS the Esc to
+ * window.hdModalEscape, chained here in front of hd-omni.js's hook. The
+ * forward waits a beat and stands down when the native keydown already did
+ * the job. A popout calls hdPopoutCapture() after it opens AND after it
+ * closes; we release only a claim we made, and never under the Omni or the
+ * book (HDKeyOwner), which hold their own. */
+function popoutOpen() {
+  try { if (window.ChimBtn && ChimBtn.isOpen && ChimBtn.isOpen()) return 'chim'; } catch (e) {}
+  try { if (window.FixBtn && FixBtn.isOpen && FixBtn.isOpen()) return 'fixes'; } catch (e) {}
+  try { if (window.RoomsPane && RoomsPane.pickerOpen && RoomsPane.pickerOpen()) return 'rooms'; } catch (e) {}
+  try { if (window.HDRenown && HDRenown.isOpen()) return 'renown'; } catch (e) {}
+  return '';
+}
+function popoutEscape() {
+  const w = popoutOpen();
+  if (w === 'chim') ChimBtn.close();
+  else if (w === 'fixes') FixBtn.close();
+  else if (w === 'rooms') RoomsPane.closePicker();
+  else if (w === 'renown') HDRenown.close();
+}
+/* Renown's popouts take a native Esc in their own window-capture listener
+   (before this file's document listener), so they stamp it through here. */
+window.hdPopoutNativeEsc = function () { popEscNativeAt = Date.now(); };
+let popEscNativeAt = -1e9, popEscFwdT = 0, popClaimed = false, popChained = false;
+function popEscapeForward() {
+  const asked = Date.now();
+  if (popEscFwdT) clearTimeout(popEscFwdT);
+  popEscFwdT = setTimeout(() => {
+    popEscFwdT = 0;
+    if (Math.abs(popEscNativeAt - asked) < 300) return;   // the view had this one itself
+    try { popoutEscape(); } catch (x) { /* never strand the player: C++'s double-tap hatch is still armed */ }
+    window.hdPopoutCapture();
+  }, 90);
+}
+window.hdPopoutCapture = function () {
+  if (!popChained) {
+    popChained = true;
+    const prev = window.hdModalEscape;
+    window.hdModalEscape = function () {
+      if (popoutOpen() || Date.now() - popEscNativeAt < 300) { popEscapeForward(); return; }
+      if (typeof prev === 'function') return prev.apply(this, arguments);
+    };
+  }
+  if (popoutOpen()) {
+    popClaimed = true;
+    setTimeout(() => { if (popoutOpen()) toGame('hdCapture', '1M'); }, 0);
+  } else if (popClaimed) {
+    popClaimed = false;
+    let owned = false;
+    try { owned = !!(window.HDKeyOwner && window.HDKeyOwner()); } catch (e) {}
+    if (!owned && !ui.capture) toGame('hdCapture', '0');
+  }
+};
+
 function onKeyDown(e) {
   if (window.AppearanceGallery && AppearanceGallery.isOpen()) return;
   if (window.DomainGallery && DomainGallery.isOpen()) return; // album capture handler owns typing and Escape
+  if (window.HDBestiary && HDBestiary.isOpen()) return;       // the Bestiary book owns its keys while it is up
+  if (window.HDRenown && HDRenown.isOpen()) return;           // a Renown folio/lens owns typing and Escape
   if (!ui.visible) return;
   const code = normCode(e);
 
@@ -3821,6 +4527,14 @@ function onKeyDown(e) {
     return;
   }
 
+  /* The Hotkeys row menu owns every key while it is up (hk-row-menu): its
+     filter takes the letters, and a digit must never quick-fire behind it. */
+  if (hkMenuIsOpen()) { hkRowMenuKey(e, code); return; }
+
+  /* Customize tabs owns every key while it is up: its filter takes the
+     letters, a digit must never quick-fire behind it, Esc is its own. */
+  if (tabCfgIsOpen()) { tabCfgKey(e, code); return; }
+
   /* ---- the Wheel Menu is modal ---- *
    * FIRST among the overlays: it is full-screen, it hides the panel entirely,
    * and its digits FIRE a wedge — so an unguarded 1-9 reaching the quick-fire
@@ -3841,6 +4555,28 @@ function onKeyDown(e) {
     if (HDOmni.onKey(e, code)) { e.preventDefault(); e.stopPropagation(); return; }
     return;   // never let anything reach quick-fire behind the overlay
   }
+  /* ---- the F7 card's CHIM, Fixes and Room ban popouts are modal (2026-10-12) ---- *
+   * Their own Escape listeners are document captures registered at open,
+   * i.e. AFTER this one, so they used to see Escape only once the global
+   * branch below had already called requestClose(): one Esc closed the
+   * popout AND the whole deck. They own every key while up. In game the
+   * same Esc is also seen by C++, which is why they claim "1M" too
+   * (hdPopoutCapture, below). */
+  if (code === 'Escape' && popoutOpen()) popEscNativeAt = Date.now();
+  if (window.ChimBtn && ChimBtn.isOpen && ChimBtn.isOpen()) {
+    if (ChimBtn.onKey(e)) { e.preventDefault(); e.stopPropagation(); }
+    return;
+  }
+  if (window.FixBtn && FixBtn.isOpen && FixBtn.isOpen()) {
+    if (FixBtn.onKey(e)) { e.preventDefault(); e.stopPropagation(); }
+    return;
+  }
+  /* The Room ban / NPC picker popout (rooms-pane.js): Escape closes it; every
+     other key belongs to its search box (typing, Enter = top hit). */
+  if (window.RoomsPane && RoomsPane.pickerOpen && RoomsPane.pickerOpen()) {
+    if (RoomsPane.pickerKey(e)) { e.preventDefault(); e.stopPropagation(); }
+    return;
+  }
   /* Full-screen NPC workspace owns Tab and search before deck navigation. */
   if (window.FolPane && FolPane.dossierKey && FolPane.dossierKey(e)) return;
 
@@ -3859,6 +4595,12 @@ function onKeyDown(e) {
    * It owns Esc (close me, not the palette); plain characters stop here. */
   if (window.HDFormation && HDFormation.isOpen()) {
     if (HDFormation.onKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
+    return;   // never quick-fire behind the modal
+  }
+  /* ---- the Procession modal is modal ---- * same slot and reason: it has
+     search boxes and a name field, and owns Esc (editor -> list -> closed). */
+  if (window.HDProcession && HDProcession.isOpen()) {
+    if (HDProcession.onKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
     return;   // never quick-fire behind the modal
   }
 
@@ -3972,6 +4714,10 @@ function onKeyDown(e) {
      they are up (the popout law); the palette-close Escape falls through. */
   if (ui.tab === 'weather' && code !== 'Tab' &&
       window.WeatherPane && WeatherPane.onKey(e)) { e.preventDefault(); return; }
+  /* Inventory: arrows / Enter / its letter verbs / popouts; the palette-close
+     Escape falls through once the search and filters are clear. */
+  if (ui.tab === 'inventory' && code !== 'Tab' &&
+      window.InventoryPane && InventoryPane.onKey(e)) { e.preventDefault(); return; }
 
   /* ---- global keys ---- */
   if (code === 'Escape') {
@@ -4026,6 +4772,8 @@ function onKeyDown(e) {
       ui.tab === 'loot' || ui.tab === 'time' ||
       /* weather owns #wth-search (2026-10-08) */
       ui.tab === 'weather' ||
+      /* inventory owns #iv-search (2026-10-10) */
+      ui.tab === 'inventory' ||
       ui.tab === 'wardrobe' || ui.tab === 'faces') return;  // hotkey-list keys below apply to deck tabs only
 
   const inSearch = document.activeElement === $('search');
@@ -4048,6 +4796,14 @@ function onKeyDown(e) {
      element owns the keyboard, whatever tab is up. The whitelist stays as
      defense in depth (and for the BARE-key case, where nothing is focused). */
   if (!ui.edit && !inTextInput) {
+    /* the Menu key / Shift+F10 opens the selected row's menu (hk-row-menu) */
+    if (code === 'ContextMenu' || (code === 'F10' && e.shiftKey)) {
+      e.preventDefault();
+      const it = filteredEntries()[ui.sel];
+      const r = it && hkRowEl(it.id);
+      if (it && r) { const b = r.getBoundingClientRect(); openHkRowMenu(it.id, b.left + 48, b.bottom - 4); }
+      return;
+    }
     if (code === 'ArrowDown') { e.preventDefault(); moveHotkeySelection(1); return; }
     if (code === 'ArrowUp') { e.preventDefault(); moveHotkeySelection(-1); return; }
     if (code === 'Enter') {
@@ -4061,7 +4817,7 @@ function onKeyDown(e) {
       return;
     }
     /* quick-fire on digits while the search box is empty */
-    if (ui.search === '' && /^Digit\d$/.test(code)) {
+    if ((ui.search === '' || ui.searchRestored) && /^Digit\d$/.test(code)) {
       e.preventDefault();
       quickFire(Number(code.slice(5)));
       return;
@@ -4167,6 +4923,7 @@ function hidePane(t, closing) {
   if (t === 'wardrobe' && window.WardrobePane) WardrobePane.onHide();
   if (t === 'time' && window.TimePane) TimePane.onHide();
   if (t === 'weather' && window.WeatherPane) WeatherPane.onHide();
+  if (t === 'inventory' && window.InventoryPane) InventoryPane.onHide();
   if (t === 'faces' && window.FacesPane) FacesPane.onHide();
 }
 
@@ -4232,10 +4989,32 @@ var HDTabDiag = (function () {
 
 function setTabImpl(t) {
   closeMoreMenu();   // any tab switch dismisses the overflow menu
+  closeHkRowMenu();  // and the Hotkeys row menu
   /* The bar's merged Finder entry: resolve to whichever roster was used last.
      The reverse also holds — landing on either roster records it, so the tab
      re-opens where you left it. */
   if (t === 'finder') t = finderPrefs().mode;
+  /* The Bestiary is a launcher (see SYS_TABS): open the book, stay on this tab. */
+  if (t === 'bestiary') {
+    bumpTabUse('bestiary');
+    if (window.HDBestiary && typeof HDBestiary.open === 'function') { HDBestiary.open({}); return; }
+    /* hd-bestiary.js is in hd-boot's deferred set: on the first open of a
+       session the click can beat it. Wait for it (and warm its sheet) rather
+       than ask for a second click; one waiter, ~6 s, then say so. */
+    if (setTabImpl.bxWait) return;
+    try { if (window.HDCss && HDCss.need) HDCss.need('bestiary'); } catch (e) {}
+    toast('Opening the Bestiary…');
+    let n = 0;
+    setTabImpl.bxWait = setInterval(function () {
+      const B = window.HDBestiary;
+      const ready = B && typeof B.open === 'function';
+      if (!ready && ++n < 60) return;
+      clearInterval(setTabImpl.bxWait); setTabImpl.bxWait = 0;
+      if (ready && ui.visible) B.open({});
+      else if (!ready) toast('The Bestiary has not loaded — try again in a moment');
+    }, 100);
+    return;
+  }
   /* A gated-off tab is not reachable — deep-open keys (F14 Followers etc.) and
      the F7-with-target route land here, so a hidden pane must no-op to Home
      with a small toast rather than open a broken surface. Hotkey cats / numpad
@@ -4413,6 +5192,10 @@ function setTabImpl(t) {
     if (window.WeatherPane) WeatherPane.onShow();   // re-walks the load order's weathers + reads every weather mod
     return;
   }
+  if (t === 'inventory') {
+    if (window.InventoryPane) InventoryPane.onShow();   // re-reads the bag every look: it changes between presses of F7
+    return;
+  }
   if (t === 'faces') {
     if (window.FacesPane) FacesPane.onShow();   // re-asks the preset index + repaints
     return;
@@ -4545,6 +5328,7 @@ function toggleEdit() {
      left, not always All. Written directly (not via setTab), so keep hkTab
      authoritative here too. */
   if (ui.tab === 'numpad' || ui.tab === 'notes') { ui.tab = hkTabToken(); ui.hkTab = ui.tab; toGame('hdTab', 'deck'); }
+  closeHkRowMenu();
   ui.edit = !ui.edit;
   ui.confirmDelete = null;
   ui.tabAdding = false;
@@ -4556,7 +5340,10 @@ function toggleEdit() {
 
 function focusSearch() {
   const s = $('search');
-  if (s) s.focus();
+  if (!s) return;
+  s.focus();
+  /* a remembered search is replaced by the first letter typed, not appended to */
+  if (ui.searchRestored && s.value) { try { s.select(); } catch (x) {} }
 }
 
 /* ---- list interactions (event delegation) ---- */
@@ -4619,6 +5406,446 @@ function onDragEnd() {
   }
 }
 
+/* ==================== the Hotkeys row menu (2026-10-11) ===================
+ * Right-click a row on the Hotkeys tab (or press the Menu key / Shift+F10 on
+ * the selected row) and get that row's own options, without going into Edit:
+ * fire it, give it a trigger key, rebind it, pin it to the shelf, put it on the
+ * Hotkey Pad, move it to another tab, change its icon, rename it, remove it.
+ * Rober, 2026-10-11 play-test: right-click a row for its options.
+ *
+ * Every item calls a verb the deck already ships (fireEntry, startCapture,
+ * HDShelf.togglePin, hpCfg add/remove, openHkIconPicker, removeEntry), so the
+ * menu adds no mechanics of its own. It lives on #overlay beside #fd-ctx-menu
+ * and wears --ui-scale the same way (the 2026-08-14 popup audit).
+ * Opens from the right MOUSEDOWN: Ultralight does not reliably fire the DOM
+ * `contextmenu` event in-game (domains-pane.js says why).
+ * Keys while it is up (routed from onKeyDown, ahead of quick-fire): type to
+ * filter, ↑ ↓ move, Enter runs the highlighted (or top) item, Esc steps back:
+ * sub-page → main page, then clears the filter, then closes.
+ * marker: hk-row-menu. No Omni entry: the Omni already lists every hotkey and
+ * pins it; this menu is a per-row surface with nothing new to search for.
+ * ======================================================================== */
+const hkMenu = { el: null, id: null, page: 'main', q: '', hi: 0, confirm: false, x: 0, y: 0, before: null };
+
+function hkMenuIsOpen() { return !!hkMenu.el; }
+
+function closeHkRowMenu() {
+  if (hkMenu.el) { try { hkMenu.el.remove(); } catch (e) {} }
+  hkMenu.el = null; hkMenu.id = null; hkMenu.page = 'main'; hkMenu.q = ''; hkMenu.hi = 0; hkMenu.confirm = false;
+  const back = hkMenu.before; hkMenu.before = null;
+  if (back && back.isConnected) { try { back.focus(); } catch (e) {} }
+}
+
+/* Is entry `id` on the Hotkey Pad? Only as HDPadCfg last heard it (Home asks
+   for hpCfgState when it is shown); null = not known yet. */
+function hkPadButtonFor(id) {
+  try {
+    const s = window.HDPadCfg && HDPadCfg.state && HDPadCfg.state();
+    if (!s || !Array.isArray(s.buttons)) return null;
+    return s.buttons.filter((b) => b && b.entry === id)[0] || false;
+  } catch (e) { return null; }
+}
+
+function hkMenuItems(e) {
+  const out = [];
+  const sec = (label) => out.push({ sec: label });
+  const add = (o) => out.push(o);
+  const t = trigOf(e);
+  const isAction = e.device === 'action';
+  if (hkMenu.page === 'tabs') {
+    const cur = e.category || '';
+    add({ ico: cur === '' ? '✓' : '', label: 'All only', sub: 'Shown on the All tab, no other', active: cur === '',
+      run: () => hkMenuMove(e, '') });
+    state.categories.forEach((c) => add({ ico: cur === c ? '✓' : '', label: c, active: cur === c, run: () => hkMenuMove(e, c) }));
+    return out;
+  }
+  if (hkMenu.page === 'rename') return out;   // the rename page is a form, built in renderHkRowMenu
+
+  sec('Use');
+  add({ ico: '🔥', label: 'Fire now', sub: isAction || e.code ? '' : 'Needs a key first',
+    disabled: !isAction && !e.code, run: () => { const row = hkRowEl(e.id); closeHkRowMenu(); fireEntry(e.id, row); } });
+  add({ ico: '⚡', label: t ? 'Change trigger key' : 'Set a trigger key…',
+    sub: t ? trigChipLabel(t) + ' fires this with the deck closed' : 'Fire this from anywhere with the deck closed',
+    run: () => { closeHkRowMenu(); startCapture('trigger', e.id); } });
+  if (t) add({ ico: '✕', label: 'Remove trigger key', sub: trigChipLabel(t),
+    run: () => { delete e.trigger; closeHkRowMenu(); render(); save(); toast('Trigger removed'); } });
+  if (e.device === 'vkey') {
+    add({ ico: '🗝', label: 'Change MCM binding…', sub: 'VK' + e.code,
+      run: () => { const a = hkRowEl(e.id); closeHkRowMenu(); openVKeyPicker(a, e); } });
+  } else if (e.device === 'console') {
+    add({ ico: '🗝', label: 'Edit command…', sub: 'The console command this row runs',
+      run: () => { const a = hkRowEl(e.id); closeHkRowMenu(); openConsoleEditor(a, e); } });
+  } else if (!isAction) {
+    add({ ico: '🗝', label: e.code ? 'Rebind its key…' : 'Set its key…',
+      sub: e.code ? 'Sends ' + chordLabel(e.mods, e.label || '?') : 'The key this row presses in game',
+      run: () => { closeHkRowMenu(); startCapture('entry', e.id); } });
+  }
+
+  sec('Place');
+  const pinned = !!(window.HDShelf && HDShelf.isPinned && HDShelf.isPinned('hotkeys', 'hk:' + e.id));
+  if (window.HDShelf && HDShelf.togglePin) add({ ico: pinned ? '★' : '☆', label: pinned ? 'Unpin from the shelf' : 'Pin to the shelf',
+    active: pinned, sub: pinned ? 'On your Favorites shelf' : 'One click from any tab',
+    run: () => {
+      HDShelf.togglePin({ id: 'hotkeys' }, { pin: 'hk:' + e.id, label: e.name,
+        detail: [e.desc, e.category, e.label].filter(Boolean).join(' · '),
+        kind: isAction ? 'action' : 'hotkey', icon: e.icon || '', snap: null });
+      closeHkRowMenu();
+    } });
+  const padBtn = hkPadButtonFor(e.id);
+  add({ img: 'icons/custom/hk-hotkey-pad.png', label: padBtn ? 'Remove from the Hotkey Pad' : 'Add to the Hotkey Pad',
+    active: !!padBtn, sub: padBtn ? 'It has a button on the pad' : 'A button on your on-screen pad',
+    run: () => {
+      if (padBtn) { toGame('hpCfg', JSON.stringify({ op: 'remove', id: padBtn.id })); toast('Removed “' + e.name + '” from the Hotkey Pad'); }
+      else { toGame('hpCfg', JSON.stringify({ op: 'add', entry: e.id })); toast('Added “' + e.name + '” to the Hotkey Pad'); }
+      closeHkRowMenu();
+    } });
+  add({ ico: '🗂', label: 'Move to tab…', sub: e.category ? 'Now on ' + e.category : 'Now on All only', more: true,
+    run: () => hkMenuPage('tabs') });
+
+  sec('Look');
+  add({ ico: '🏷', label: 'Rename…', sub: 'Its name and description', more: true, run: () => hkMenuPage('rename') });
+  add({ ico: '🖼', label: e.icon ? 'Change icon…' : 'Set an icon…', sub: 'Any icon in your library',
+    run: () => { closeHkRowMenu(); openHkIconPicker(e); } });
+
+  add({ sep: true });
+  add({ ico: '🗑', label: hkMenu.confirm ? 'Sure? Click again to remove' : 'Remove this hotkey', danger: true, confirm: hkMenu.confirm,
+    sub: hkMenu.confirm ? '' : (hkIsShipped(e) ? 'Built-in: it stays gone' : ''),
+    keepOpen: true,
+    run: () => {
+      if (!hkMenu.confirm) { hkMenu.confirm = true; renderHkRowMenu(); return; }
+      closeHkRowMenu(); removeEntry(e);
+    } });
+  return out;
+}
+
+function hkRowEl(id) {
+  const rows = document.querySelectorAll('#list .row');
+  for (let i = 0; i < rows.length; i++) if (rows[i].dataset.id === id) return rows[i];
+  return null;
+}
+
+function hkMenuMove(e, cat) {
+  e.category = cat;
+  save();
+  closeHkRowMenu();
+  if (activeCategory() !== null) render(); else renderList();   // it may have left the visible tab
+  toast(cat ? 'Moved “' + e.name + '” to ' + cat : '“' + e.name + '” is on All only now');
+}
+
+function hkMenuPage(p) {
+  hkMenu.page = p; hkMenu.q = ''; hkMenu.hi = 0; hkMenu.confirm = false;
+  renderHkRowMenu();
+}
+
+/* What the filter keeps: section headings and separators go when anything is
+   typed, so the list is a flat run of hits with the top one highlighted. */
+function hkMenuVisible(e) {
+  const all = hkMenuItems(e);
+  const q = hkMenu.q.trim().toLowerCase();
+  if (!q) return all;
+  return all.filter((it) => !it.sec && !it.sep &&
+    ((it.label + ' ' + (it.sub || '')).toLowerCase().indexOf(q) !== -1));
+}
+
+function openHkRowMenu(id, x, y) {
+  const e = state.entries.find((z) => z.id === id);
+  if (!e) return;
+  closeHkRowMenu();
+  if (window.FolPane && FolPane.closeMenus) FolPane.closeMenus();
+  hkMenu.before = document.activeElement;
+  hkMenu.id = id; hkMenu.page = 'main'; hkMenu.q = ''; hkMenu.hi = 0; hkMenu.confirm = false;
+  hkMenu.x = x; hkMenu.y = y;
+  const m = document.createElement('div');
+  m.id = 'hk-row-menu';
+  m.setAttribute('role', 'menu');
+  /* Clicks inside never reach the row (a left click there FIRES it) */
+  m.addEventListener('mousedown', (ev) => ev.stopPropagation());
+  m.addEventListener('click', (ev) => ev.stopPropagation());
+  ($('overlay') || document.body).appendChild(m);
+  hkMenu.el = m;
+  renderHkRowMenu();
+  /* the row the menu belongs to wears the selection while it is up */
+  const vis = filteredEntries();
+  const vi = vis.indexOf(e);
+  if (vi >= 0 && vi !== ui.sel) { ui.sel = vi; renderList(); }
+}
+
+function renderHkRowMenu() {
+  const m = hkMenu.el;
+  if (!m) return;
+  const e = state.entries.find((z) => z.id === hkMenu.id);
+  if (!e) { closeHkRowMenu(); return; }
+  try {
+    m.textContent = '';
+    /* head: the row's own icon, name and key — what you right-clicked */
+    const head = document.createElement('div');
+    head.className = 'hkm-head';
+    if (hkMenu.page !== 'main') {
+      const back = document.createElement('button');
+      back.type = 'button'; back.className = 'hkm-back'; back.textContent = '‹';
+      back.title = 'Back';
+      back.addEventListener('click', () => hkMenuPage('main'));
+      head.appendChild(back);
+    }
+    const src = hkIconSrc(e.icon);
+    if (src) {   // an icon-less row gets no empty box: the name leads
+      const ico = document.createElement('span');
+      ico.className = 'hkm-ico';
+      const im = document.createElement('img'); im.src = src; im.alt = '';
+      im.onerror = () => { ico.remove(); };
+      ico.appendChild(im);
+      head.appendChild(ico);
+    }
+    const tt = document.createElement('div');
+    tt.className = 'hkm-title';
+    const nm = document.createElement('div'); nm.className = 'hkm-name';
+    nm.textContent = hkMenu.page === 'tabs' ? 'Move to tab' : hkMenu.page === 'rename' ? 'Rename' : (e.name || 'Hotkey');
+    const sb = document.createElement('div'); sb.className = 'hkm-sub';
+    const keyTxt = e.device === 'action' ? 'Built-in action' : e.device === 'vkey' ? 'VirtualKey VK' + e.code
+      : e.device === 'console' ? 'Console command' : (e.code ? 'Presses ' + chordLabel(e.mods, e.label || '?') : 'No key yet');
+    const tg = trigOf(e);
+    sb.textContent = (hkMenu.page === 'main' ? '' : (e.name || 'Hotkey') + ' · ') + keyTxt + (tg ? ' · ⚡ ' + trigChipLabel(tg) : '');
+    tt.appendChild(nm); tt.appendChild(sb);
+    head.appendChild(tt);
+    const x = document.createElement('button');
+    x.type = 'button'; x.className = 'hkm-x'; x.textContent = '✕'; x.title = 'Close (Esc)';
+    x.addEventListener('click', () => closeHkRowMenu());
+    head.appendChild(x);
+    m.appendChild(head);
+
+    if (hkMenu.page === 'rename') { renderHkRenameForm(m, e); placeHkRowMenu(); return; }
+
+    /* filter-as-you-type, Enter takes the top hit (the fd-ctx-menu idiom) */
+    const sw = document.createElement('div');
+    sw.className = 'hkm-search';
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.className = 'hkm-q';
+    inp.placeholder = hkMenu.page === 'tabs' ? 'Find a tab…' : 'Type to find an option…';
+    inp.setAttribute('aria-label', inp.placeholder);
+    inp.value = hkMenu.q;
+    inp.addEventListener('input', () => { hkMenu.q = inp.value; hkMenu.hi = 0; renderHkRowMenuList(); });
+    sw.appendChild(inp);
+    const clr = document.createElement('button');
+    clr.type = 'button'; clr.className = 'hkm-clear'; clr.textContent = '✕'; clr.title = 'Clear';
+    clr.hidden = !hkMenu.q;
+    clr.addEventListener('click', () => { hkMenu.q = ''; inp.value = ''; hkMenu.hi = 0; renderHkRowMenuList(); inp.focus(); });
+    sw.appendChild(clr);
+    m.appendChild(sw);
+
+    const list = document.createElement('div');
+    list.className = 'hkm-list';
+    m.appendChild(list);
+    renderHkRowMenuList();
+    placeHkRowMenu();
+    setTimeout(() => { try { if (hkMenu.el === m) inp.focus(); } catch (er) {} }, 0);
+  } catch (err) {
+    toGame('hdLog', 'hk-row-menu render failed: ' + (err && err.message));
+    closeHkRowMenu();
+  }
+}
+
+function renderHkRowMenuList() {
+  const m = hkMenu.el;
+  if (!m) return;
+  const list = m.querySelector('.hkm-list');
+  const e = state.entries.find((z) => z.id === hkMenu.id);
+  if (!list || !e) return;
+  const clr = m.querySelector('.hkm-clear');
+  if (clr) clr.hidden = !hkMenu.q;
+  const items = hkMenuVisible(e);
+  const runnable = items.filter((it) => it.run && !it.disabled);
+  if (hkMenu.hi >= runnable.length) hkMenu.hi = Math.max(0, runnable.length - 1);
+  list.textContent = '';
+  if (!runnable.length) {
+    const none = document.createElement('div');
+    none.className = 'hkm-none';
+    none.textContent = hkMenu.q ? 'Nothing matches “' + hkMenu.q + '”' : 'Nothing here yet';
+    list.appendChild(none);
+    return;
+  }
+  let ri = 0;
+  items.forEach((it) => {
+    if (it.sec) { const h = document.createElement('div'); h.className = 'hkm-sec'; h.textContent = it.sec; list.appendChild(h); return; }
+    if (it.sep) { const s = document.createElement('div'); s.className = 'hkm-sep'; list.appendChild(s); return; }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'menuitem');
+    const myIdx = it.disabled ? -1 : ri++;
+    b.className = 'hkm-item' + (it.danger ? ' danger' : '') + (it.confirm ? ' confirm' : '') +
+      (it.active ? ' active' : '') + (myIdx === hkMenu.hi ? ' hi' : '');
+    if (it.disabled) b.disabled = true;
+    const g = document.createElement('span');
+    g.className = 'hkm-glyph';
+    if (it.img) { const im = document.createElement('img'); im.src = it.img; im.alt = ''; g.appendChild(im); }
+    else g.textContent = it.ico || '';
+    b.appendChild(g);
+    const tx = document.createElement('span');
+    tx.className = 'hkm-text';
+    const l = document.createElement('span'); l.className = 'hkm-label'; l.textContent = it.label;
+    tx.appendChild(l);
+    if (it.sub) { const s = document.createElement('span'); s.className = 'hkm-desc'; s.textContent = it.sub; tx.appendChild(s); }
+    b.appendChild(tx);
+    if (it.more) { const c = document.createElement('span'); c.className = 'hkm-more'; c.textContent = '›'; b.appendChild(c); }
+    b.addEventListener('click', () => { try { it.run(); } catch (er) { toGame('hdLog', 'hk-row-menu action failed: ' + (er && er.message)); } });
+    b.addEventListener('mousemove', () => {
+      if (myIdx < 0 || myIdx === hkMenu.hi) return;
+      hkMenu.hi = myIdx;
+      list.querySelectorAll('.hkm-item.hi').forEach((n) => n.classList.remove('hi'));
+      b.classList.add('hi');
+    });
+    list.appendChild(b);
+  });
+  const hiEl = list.querySelector('.hkm-item.hi');
+  if (hiEl && hiEl.scrollIntoView) hiEl.scrollIntoView({ block: 'nearest' });
+}
+
+function renderHkRenameForm(m, e) {
+  const f = document.createElement('div');
+  f.className = 'hkm-form';
+  const mk = (label, val, ph) => {
+    const lab = document.createElement('label'); lab.className = 'hkm-field';
+    const s = document.createElement('span'); s.textContent = label; lab.appendChild(s);
+    const i = document.createElement('input'); i.type = 'text'; i.value = val || ''; i.placeholder = ph;
+    lab.appendChild(i); f.appendChild(lab);
+    return i;
+  };
+  const nIn = mk('Name', e.name, 'Name…');
+  const dIn = mk('Description', e.desc, 'What it does (searchable)…');
+  const acts = document.createElement('div'); acts.className = 'hkm-actions';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'hkm-btn'; cancel.textContent = 'Back';
+  cancel.addEventListener('click', () => hkMenuPage('main'));
+  const ok = document.createElement('button'); ok.type = 'button'; ok.className = 'hkm-btn primary'; ok.textContent = 'Save';
+  const commit = () => {
+    const nv = nIn.value.trim();
+    if (!nv) { nIn.focus(); toast('A hotkey needs a name'); return; }
+    e.name = nv; e.desc = dIn.value.trim();
+    save(); closeHkRowMenu(); renderList(); toast('Renamed to “' + nv + '”');
+  };
+  ok.addEventListener('click', commit);
+  [nIn, dIn].forEach((i) => i.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit(); } }));
+  acts.appendChild(cancel); acts.appendChild(ok); f.appendChild(acts);
+  m.appendChild(f);
+  setTimeout(() => { try { nIn.focus(); nIn.select(); } catch (er) {} }, 0);
+}
+
+/* Place the PAINTED box (layout × --ui-scale, origin top left) under the
+   pointer, kept on screen — the #fd-ctx-menu clampCtx rules. */
+function placeHkRowMenu() {
+  const m = hkMenu.el;
+  if (!m) return;
+  const sc = deckPaintScale();
+  const host = $('overlay');
+  const r = host ? host.getBoundingClientRect() : null;
+  const vw = r && r.width > 0 ? r.width : window.innerWidth;
+  const vh = r && r.height > 0 ? r.height : window.innerHeight;
+  const w = m.offsetWidth * sc, h = m.offsetHeight * sc;
+  let x = hkMenu.x, y = hkMenu.y;
+  if (x + w > vw - 8) x = vw - w - 8;
+  if (y + h > vh - 8) y = vh - h - 8;
+  m.style.left = Math.max(8, x) + 'px';
+  m.style.top = Math.max(8, y) + 'px';
+}
+
+/* onKeyDown's slot. Returns nothing: while the menu is up, nothing behind it
+   may see a key (an unguarded digit would quick-fire a row into the game). */
+function hkRowMenuKey(e, code) {
+  const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
+  if (code === 'Escape') {
+    e.preventDefault(); e.stopPropagation();
+    if (hkMenu.page !== 'main') { hkMenuPage('main'); return; }
+    if (hkMenu.q) { hkMenu.q = ''; const i = hkMenu.el && hkMenu.el.querySelector('.hkm-q'); if (i) i.value = ''; hkMenu.hi = 0; renderHkRowMenuList(); return; }
+    closeHkRowMenu();
+    return;
+  }
+  if (hkMenu.page === 'rename') return;   // the form's inputs own their keys (Enter saves)
+  const ent = state.entries.find((z) => z.id === hkMenu.id);
+  const runnable = ent ? hkMenuVisible(ent).filter((it) => it.run && !it.disabled) : [];
+  if (code === 'ArrowDown' || code === 'ArrowUp') {
+    e.preventDefault(); e.stopPropagation();
+    if (!runnable.length) return;
+    hkMenu.hi = (hkMenu.hi + (code === 'ArrowDown' ? 1 : -1) + runnable.length) % runnable.length;
+    renderHkRowMenuList();
+    return;
+  }
+  if (code === 'Enter' || code === 'NumpadEnter') {
+    e.preventDefault(); e.stopPropagation();
+    const it = runnable[hkMenu.hi] || runnable[0];
+    if (it) { try { it.run(); } catch (er) {} }
+    return;
+  }
+  /* anything else: let the filter box have the character, nothing further */
+  e.stopPropagation();
+  if (!typing && e.key && e.key.length === 1 && hkMenu.el) {
+    const i = hkMenu.el.querySelector('.hkm-q');
+    if (i) i.focus();
+  }
+}
+
+/* Right MOUSEDOWN on a row (see the header for why not `contextmenu`); a left
+   or right click anywhere outside the open menu closes it. */
+function onHkMenuMouseDown(e) {
+  if (hkMenu.el && !(e.target && e.target.closest && e.target.closest('#hk-row-menu'))) {
+    const onRow = e.button === 2 && e.target.closest && e.target.closest('#list .row');
+    closeHkRowMenu();
+    /* a left click that only dismisses the menu must not ALSO fire the row
+       under it (onListClick stands down while justDragged is up) */
+    if (e.button === 0 && e.target.closest && e.target.closest('#list')) {
+      ui.justDragged = true;
+      setTimeout(() => { ui.justDragged = false; }, 250);
+    }
+    if (!onRow) { if (e.button === 2) e.preventDefault(); return; }
+  }
+  if (e.button !== 2 || ui.capture || !ui.visible) return;
+  const row = e.target && e.target.closest ? e.target.closest('#list .row') : null;
+  if (!row) return;
+  if (e.target.closest('input, select, textarea')) return;   // edit mode's fields keep their own menu-less right click
+  e.preventDefault();
+  openHkRowMenu(row.dataset.id, e.clientX, e.clientY);
+}
+
+/* Delete one entry for good: records a seeded row as deliberately removed so
+   it does not re-seed next launch. Shared by the edit-mode ✕ and the row
+   menu's Remove (2026-10-11), so the two can never disagree. */
+function removeEntry(entry) {
+  /* A built-in action row is re-seeded on launch unless its verb is
+     recorded as deliberately removed — without this, "delete" silently
+     un-deleted itself next session and read as a bug (2026-08-12 audit). */
+  if (entry.device === 'action' && entry.action === 'mod-key') {
+    /* Every mod-key row shares one verb, so its seeds are keyed by ID
+       (C++ kWwmKeySeeds): record "key:<id>", never the shared verb, or
+       deleting one Walk With Me row would suppress the other two. Only
+       seeded ids (hd-…) are recorded: a row made from the Keys tab
+       (newId, hk-…) never re-seeds, and the list is capped at 64. */
+    if (String(entry.id).indexOf('hd-') === 0) {
+      if (!Array.isArray(state.suppressedSeeds)) state.suppressedSeeds = [];
+      const mk = 'key:' + entry.id;
+      if (state.suppressedSeeds.indexOf(mk) === -1) state.suppressedSeeds.push(mk);
+    }
+  } else if (entry.device === 'action' && entry.action) {
+    if (!Array.isArray(state.suppressedSeeds)) state.suppressedSeeds = [];
+    if (state.suppressedSeeds.indexOf(entry.action) === -1) state.suppressedSeeds.push(entry.action);
+  } else if (entry.device === 'keyboard' || entry.device === 'mouse') {
+    /* Key seeds re-seed by ID (kKeySeeds), so a deleted Tailor / OMO Pick /
+       Grip Switch / Kick row resurrected every launch — the same bug the
+       2026-08-12 audit fixed for actions. Record "key:<id>"; the prefix
+       keeps ids out of the action-verb namespace, and recording EVERY
+       keystroke delete costs a string but covers future key seeds with no
+       view edit. C++ ignores strings it has no seed for. */
+    if (!Array.isArray(state.suppressedSeeds)) state.suppressedSeeds = [];
+    const kk = 'key:' + entry.id;
+    if (state.suppressedSeeds.indexOf(kk) === -1) state.suppressedSeeds.push(kk);
+  }
+  state.entries = state.entries.filter((x) => x.id !== entry.id);
+  ui.confirmDelete = null;
+  render();
+  save();
+  const userModKey = entry.device === 'action' && entry.action === 'mod-key' &&
+    String(entry.id).indexOf('hd-') !== 0;
+  if (entry.action === 'mod-key') hdModKeyRefreshButtons();
+  toast(entry.device === 'action' && !userModKey ? 'Built-in removed — it stays gone' : 'Removed');
+}
+
 function onListClick(e) {
   if (ui.justDragged) return;
   const row = e.target.closest('.row');
@@ -4664,28 +5891,7 @@ function onListClick(e) {
   }
   if (e.target.classList.contains('del')) {
     if (ui.confirmDelete === id) {
-      /* A built-in action row is re-seeded on launch unless its verb is
-         recorded as deliberately removed — without this, "delete" silently
-         un-deleted itself next session and read as a bug (2026-08-12 audit). */
-      if (entry.device === 'action' && entry.action) {
-        if (!Array.isArray(state.suppressedSeeds)) state.suppressedSeeds = [];
-        if (state.suppressedSeeds.indexOf(entry.action) === -1) state.suppressedSeeds.push(entry.action);
-      } else if (entry.device === 'keyboard' || entry.device === 'mouse') {
-        /* Key seeds re-seed by ID (kKeySeeds), so a deleted Tailor / OMO Pick /
-           Grip Switch / Kick row resurrected every launch — the same bug the
-           2026-08-12 audit fixed for actions. Record "key:<id>"; the prefix
-           keeps ids out of the action-verb namespace, and recording EVERY
-           keystroke delete costs a string but covers future key seeds with no
-           view edit. C++ ignores strings it has no seed for. */
-        if (!Array.isArray(state.suppressedSeeds)) state.suppressedSeeds = [];
-        const kk = 'key:' + entry.id;
-        if (state.suppressedSeeds.indexOf(kk) === -1) state.suppressedSeeds.push(kk);
-      }
-      state.entries = state.entries.filter((x) => x.id !== id);
-      ui.confirmDelete = null;
-      render();
-      save();
-      toast(entry.device === 'action' ? 'Built-in removed — it stays gone' : 'Removed');
+      removeEntry(entry);
     } else {
       ui.confirmDelete = id;
       render();
@@ -5203,6 +6409,8 @@ window.hdSpellIconPath = function (m) {
 };
 
 window.hdWardrobeIconChoices = function () { return ICONS.custom.slice(); };
+/* the game-icon library (sh_index catalog) for other surfaces' pickers: the Bestiary's chapters and pictures */
+window.hdIconCatalog = function () { return ICONS.catalog.slice(); };
 window.hdIcons = function (r) {
   r = parsePayload(r);
   ICONS.custom = ((r && r.custom) || []).map((c) => ({
@@ -5366,6 +6574,14 @@ var HDCensusFactory = function () {
     wrapped = null;
   }
   function wrapOne(n) {
+    /* census-skip-taps (2026-10-10): hd-art installs hdIcons / hdIconIndex as
+       ACCESSORS whose setter appends to its chain and never lets go. A census
+       wrapper assigned there could never be restored, so every open stacked one
+       more layer (the log read "hdIcons 17.0x17" by the 17th open: nested
+       timings summed). Those calls are timed by their own consumers instead. */
+    var desc = null;
+    try { desc = Object.getOwnPropertyDescriptor(window, n); } catch (e) {}
+    if (desc && typeof desc.get === 'function') return;
     var orig = window[n];
     if (typeof orig !== 'function' || orig.__hdCensusOrig) return;
     var w = function () {
@@ -5404,6 +6620,125 @@ var HDOpenCensus = HDCensusFactory();
    hdClosed stops this one so the next open's census is never pre-empted. */
 var HDTabCensus = HDCensusFactory();
 
+/* ---- book-hold (2026-10-10, marker bx-book-hold) ------------------------
+   NOTHING DRAWS UNDER THE BOOK. The Bestiary is an opaque body-level popout
+   over whatever tab was up, and it never switches panes — so the hidden tab
+   still counted as "shown", and every push that landed while the book was open
+   redrew it: the open's fifteen parked slices (the Study key opens the deck
+   AND the book on one press, so they all land under the book), a Followers
+   roster draw, a Domains render. A push handler's work is game-frame time, and
+   none of it could be seen.
+
+   While HDBestiary.isOpen():
+     - the open's slice handlers (SLICES) are HELD: each wrapped once on window
+       and, while the book is up, its call is queued instead of run (one per
+       name, the latest payload wins — every one of them is a whole snapshot);
+     - HDBurst.defer jobs (the panes' coalesced redraws) and app.js's own
+       render() are queued by key the same way.
+   The book's close() fires 'hd-bestiary-close'; the queue replays a beat
+   later (after the book's own close frames), inside one push-burst so a pane
+   still redraws ONCE. Self-healing for a book that never says so: the first
+   push after the book is gone replays the queue BEFORE itself (oldest first,
+   so a stale snapshot can never land after a fresh one), and hdClosed replays
+   whatever is left.
+
+   Never wrapped: an hd-boot stub (its loader replays into whatever replaced
+   it — a wrapper around the stub would swallow the buffer), a census wrapper
+   (re-armed on the next open, before the census starts) and an hd-art ACCESSOR
+   (census-skip-taps). A real open of a hidden deck always renders (bypass):
+   only redraws of a deck already on screen wait for the book. */
+var HDBookHold = (function () {
+  var SLICES = ['fdConfig', 'fdTarget', 'fdPortraits', 'fdCrops', 'hudCfgState', 'fdState',
+    'fdLiveParty', 'fdNff', 'fdFertility', 'pdOpen', 'rgOpen', 'pdHere', 'ctOpen', 'ctTarget',
+    'csOpen', 'alOpen'];
+  var calls = [], callAt = {}, order = [], jobs = {}, bypass = 0, flushing = false, timer = 0, heldAt = 0;
+  var now = (window.performance && typeof performance.now === 'function')
+    ? function () { return performance.now(); } : function () { return Date.now(); };
+  function bookOpen() {
+    try { var b = window.HDBestiary; return !!(b && typeof b.isOpen === 'function' && b.isOpen()); } catch (e) { return false; }
+  }
+  function held() { return !flushing && bypass === 0 && bookOpen(); }
+  function pending() { return calls.length + order.length; }
+  function mark() { if (!heldAt) heldAt = now(); }
+  function arm() {
+    for (var i = 0; i < SLICES.length; i++) {
+      var n = SLICES[i];
+      try {
+        var d = Object.getOwnPropertyDescriptor(window, n);
+        if (d && (typeof d.get === 'function' || typeof d.set === 'function')) continue;
+        var f = window[n];
+        if (typeof f !== 'function' || f.__hdBookHold || f.__hdStub || f.__hdCensusOrig) continue;
+        window[n] = wrap(n, f);
+      } catch (e) { /* a slice we cannot wrap simply draws as before */ }
+    }
+  }
+  function wrap(name, inner) {
+    var w = function () {
+      if (held()) {
+        mark();
+        var c = { inner: inner, self: this, args: Array.prototype.slice.call(arguments) };
+        if (callAt[name] != null) calls[callAt[name]] = c;
+        else { callAt[name] = calls.length; calls.push(c); }
+        return;
+      }
+      if (!flushing && pending()) flush('late: the book closed without saying so');
+      return inner.apply(this, arguments);
+    };
+    w.__hdBookHold = true;
+    return w;
+  }
+  /* A redraw to run once the book is gone. True = queued (the caller must not
+     draw now), false = draw as usual. */
+  function job(key, fn) {
+    if (typeof fn !== 'function') return false;
+    if (!held()) {
+      if (!flushing && pending()) flush('late: the book closed without saying so');
+      return false;
+    }
+    mark();
+    if (!jobs[key]) order.push(key);
+    jobs[key] = fn;
+    return true;
+  }
+  function flush(why) {
+    if (timer) { try { clearTimeout(timer); } catch (e) {} timer = 0; }
+    if (flushing || bookOpen() || !pending()) return;
+    var c = calls, o = order, j = jobs, t0 = now(), waited = heldAt ? t0 - heldAt : 0;
+    calls = []; callAt = {}; order = []; jobs = {}; heldAt = 0;
+    flushing = true;
+    var burst = false;
+    try { if (window.HDBurst) { HDBurst.begin('book-close'); burst = true; } } catch (e) {}
+    try {
+      for (var i = 0; i < c.length; i++) {
+        try { c[i].inner.apply(c[i].self, c[i].args); }
+        catch (e) { try { if (window.HDPerf) HDPerf.log('book-hold(view): a held push threw: ' + (e && e.message)); } catch (e2) {} }
+      }
+      for (var k = 0; k < o.length; k++) {
+        try { j[o[k]](); }
+        catch (e) { try { if (window.HDPerf) HDPerf.log('book-hold(view): job "' + o[k] + '" threw: ' + (e && e.message)); } catch (e2) {} }
+      }
+    } finally {
+      flushing = false;
+      try { if (burst) HDBurst.end(); } catch (e) {}
+    }
+    try {
+      if (window.HDPerf) HDPerf.log('book-hold(view): ' + c.length + ' push(es) + ' + o.length + ' redraw(s) held '
+        + waited.toFixed(0) + ' ms under the book, replayed in ' + (now() - t0).toFixed(1) + ' ms (' + (why || '') + ')');
+    } catch (e) {}
+  }
+  /* run fn with the hold lifted (the real open of a hidden deck) */
+  function unheld(fn) { bypass++; try { fn(); } finally { bypass--; } }
+  function soon(why) {
+    if (timer) { try { clearTimeout(timer); } catch (e) {} }
+    /* after the book's own close frames, so its fade-out is not stalled by
+       the redraws it held back */
+    timer = setTimeout(function () { timer = 0; flush(why); }, 200);
+  }
+  try { window.addEventListener('hd-bestiary-close', function () { soon('the book closed'); }); } catch (e) {}
+  return { arm: arm, held: held, job: job, flush: flush, unheld: unheld, pending: pending };
+})();
+window.HDBookHold = HDBookHold;
+
 /* ---- push-burst (2026-10-08, marker push-burst) -------------------------
    C++ sends a pane its data as a RUN of pushes (the open's parked slices; the
    six of a Followers refresh), and every one of them used to redraw the pane
@@ -5434,6 +6769,9 @@ var HDBurst = (function () {
     var tEnd = now(), parts = [];
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i], j0 = now();
+      /* bx-book-hold: a burst that ends under the open book hands its redraws
+         to the hold instead of drawing a pane nobody can see */
+      if (HDBookHold.job(k, run[k])) { parts.push(k + ' held'); continue; }
       try { run[k](); }
       catch (e) { try { if (window.HDPerf) HDPerf.log('push-burst(view): job "' + k + '" threw: ' + (e && e.message)); } catch (e2) {} }
       parts.push(k + ' ' + (now() - j0).toFixed(1));
@@ -5465,7 +6803,9 @@ var HDBurst = (function () {
     flush('');
   }
   function defer(key, fn) {
-    if (depth === 0 || typeof fn !== 'function') return false;
+    if (typeof fn !== 'function') return false;
+    if (HDBookHold.job(key, fn)) return true;   // bx-book-hold: nothing draws under the book
+    if (depth === 0) return false;
     if (!jobs[key]) order.push(key);
     jobs[key] = fn;
     return true;
@@ -5480,7 +6820,17 @@ var HDBurst = (function () {
 })();
 window.HDBurst = HDBurst;
 window.hdBurst = function (on, why) {
+  /* bx-book-hold: wrap the slice handlers before this burst's pushes land
+     (a pane that loaded since the last open has replaced its stub by now) */
+  if (on) { try { HDBookHold.arm(); } catch (e) {} }
   try { if (on) HDBurst.begin(why); else HDBurst.end(); } catch (e) {}
+};
+/* view-batch (2026-10-12, marker view-batch): C++ sends an ordered run of
+   pushes as ONE script with every call fenced in try/catch, because PrismaUI
+   1.4.1 runs separate Invokes in no fixed order (main.cpp ViewBatch). A
+   handler that throws lands here instead of skipping the rest of the batch. */
+window.hdPushThrew = function (fn, e) {
+  try { toGame('hdLog', 'view-batch: ' + fn + ' threw: ' + (e && e.message ? e.message : String(e))); } catch (e2) {}
 };
 
 window.hdOpen = function (cfg) {
@@ -5497,6 +6847,9 @@ window.hdOpen = function (cfg) {
      Mark the phase boundaries; the full timeline is flushed once, after first
      paint, and only for a real open (not a live data-refresh). */
   if (window.HDPerf) HDPerf.mark('open:enter');
+  /* bx-book-hold: BEFORE the census, which wraps the same globals and would
+     otherwise be what the hold finds (and skips) this open */
+  try { HDBookHold.arm(); } catch (e) {}
   if (window.HDPerf && !wasVisible) { try { HDOpenCensus.start(); } catch (e) {} }
   try {
     if (typeof cfg === 'string') cfg = JSON.parse(cfg);
@@ -5548,7 +6901,11 @@ window.hdOpen = function (cfg) {
     ui.tab = 'home';      // Home (the card launcher) is the default landing tab…
     ui.hkTab = 'all';
     ui.edit = false;
-    ui.search = '';
+    /* The hotkey search is REMEMBERED across closes (Rober, 2026-10-11: "on
+       finder remember last search on reopen please"). It comes back selected,
+       so typing replaces it at once, and while it is untouched the digits still
+       quick-fire the rows it shows (ui.searchRestored). Escape / Clear empty it. */
+    ui.searchRestored = !!ui.search;   // marker: hk-search-remembered
     ui.sel = 0;
     ui.capture = null;
     closeHkIconPicker();
@@ -5566,7 +6923,10 @@ window.hdOpen = function (cfg) {
     ui.qLoading = false;
     const qs = $('q-search');
     if (qs) qs.value = '';
-    $('search').value = '';
+    $('search').value = ui.search;
+    if (ui.searchRestored) {
+      try { $('search').select(); } catch (x) {}
+    }
 
     /* …then land on the tab you CLOSED on — Home is only the DEFAULT, the
        last-tab memory still wins (Rober, 2026-08-05). Through setTab, so a pane
@@ -5594,8 +6954,14 @@ window.hdOpen = function (cfg) {
      renders the destination itself; do not immediately rebuild it a second
      time. An unavailable/deleted remembered tab still falls back to Home. */
   const beforeRestore = ui.tab;
-  if (restoreTab) setTab(restoreTab);
-  if (ui.tab === beforeRestore) render();
+  /* bx-book-hold: the real open of a HIDDEN deck lays its tab out even under
+     the book (a pane that never rendered has nothing to show when the book
+     closes); a live refresh of a deck already up waits for the book. */
+  const restore = function () {
+    if (restoreTab) setTab(restoreTab);
+    if (ui.tab === beforeRestore) render();
+  };
+  if (wasVisible) restore(); else HDBookHold.unheld(restore);
   if (!wasVisible && ui.tab === 'home' && window.HomePane) HomePane.onShow();
   /* after body.open lands — the shelf is display:none until then, and its
      onOpen warms the providers its pins need (the spells slice is on-demand) */
@@ -5650,6 +7016,13 @@ window.hdOpen = function (cfg) {
              the most-used tabs while nobody is waiting. */
           setTimeout(function () { try { HDFrameDiag.sample('idle after open'); } catch (e) {} }, 1200);
           setTimeout(function () { try { prefetchMostUsedTabCss(); } catch (e) {} }, 2600);
+          /* css-warm (2026-10-09): then the REST of the staged sheets, one every
+             250 ms while the deck stays open and the player is idle, so no tab's
+             first visit of the session pays ~350 ms on the click. Never from the
+             closed deck: applying a sheet is ~30 ms of UI thread, which is a game
+             frame during play and nothing while the menu is paused. hdClosed
+             pauses it; the next open resumes where it stopped (HDCss.warm). */
+          setTimeout(function () { try { if (ui.visible && window.HDCss && HDCss.warm) HDCss.warm.start('idle after open'); } catch (e) {} }, 3400);
         });
       });
     }
@@ -5669,6 +7042,17 @@ window.hdClosed = function () {
   flushSave();
   try { HDTabCensus.stop(); } catch (e) {}   // tab-diag: never pre-empt the next open's census
   try { HDBurst.reset(); } catch (e) {}       // push-burst: same, and no redraw into a closed deck
+  /* The Bestiary book closes with the deck. C++ closed the palette (quick-fire,
+     deep-open key, the capture watchdog, ClosePalette) and already dropped its
+     key capture; a book left up would greet the next F7 holding the keyboard in
+     JS (HDKeyOwner, HDBookHold) while digits typed into its search reach the
+     input sink. Closed BEFORE the hold flush below, so its queue replays now. */
+  try { if (window.HDBestiary && typeof HDBestiary.isOpen === 'function' && HDBestiary.isOpen()) HDBestiary.close(); } catch (e) {}
+  /* bx-book-hold: a book that closed without its event still owes the deck
+     its held pushes; replay them now (the data must land), never later than
+     the next open's fresh ones. A book still open keeps its queue. */
+  try { if (HDBookHold.pending()) HDBookHold.flush('deck closed'); } catch (e) {}
+  try { if (window.HDCss && HDCss.warm) HDCss.warm.pause(); } catch (e) {}   // css-warm: never a sheet parse during play
   /* the ⤢ menu-size popover is body-level and fixed — without this it would
      outlive the panel and float over the game */
   var usp = $('uiscale-pop');
@@ -5677,6 +7061,14 @@ window.hdClosed = function () {
      floats over the game after close (fill-hint) */
   var fh = $('fill-hint');
   if (fh) fh.classList.add('hidden');
+  /* Customize tabs is body-level too (tab-customize) */
+  try { closeTabCfg(true); } catch (e) {}
+  /* …and so are the F7 card's CHIM, Fixes and Room ban popouts (2026-10-12): a
+     body-level backdrop left up would greet the next open dimming the deck. */
+  try { if (window.ChimBtn && ChimBtn.isOpen && ChimBtn.isOpen()) ChimBtn.close(); } catch (e) {}
+  try { if (window.FixBtn && FixBtn.isOpen && FixBtn.isOpen()) FixBtn.close(); } catch (e) {}
+  try { if (window.RoomsPane && RoomsPane.pickerOpen && RoomsPane.pickerOpen()) RoomsPane.closePicker(); } catch (e) {}
+  try { if (window.HDRenown && HDRenown.isOpen()) HDRenown.close(); } catch (e) {}   // a Renown folio/lens must not outlive the deck
   /* F7 reopens where you LEFT — the tab you closed on is the one you were
      working in. Recorded here, restored in hdOpen; the deep-open keys
      (F14/F15…) still land on their own tab because they arrive as an
@@ -5701,6 +7093,7 @@ window.hdClosed = function () {
   if (window.ResidentsPane && ResidentsPane.closeOverlays) ResidentsPane.closeOverlays();
   if (window.ContainersPane && ContainersPane.closeOverlays) ContainersPane.closeOverlays();
   if (window.HDShelf) HDShelf.closeOverlays();   // its context menu hangs off body too
+  closeHkRowMenu();                              // the Hotkeys row menu lives on #overlay
   /* The wheel is a body-level full-screen overlay, so `body.open` going away
      does NOT hide it — without this the next open would greet you with last
      session's ring floating over the deck, eating every click. */
@@ -5710,6 +7103,8 @@ window.hdClosed = function () {
   if (window.HDPotions) HDPotions.onDeckClosed();
   if (window.HDQuiver) HDQuiver.onDeckClosed();
   if (window.KeysAtlas) KeysAtlas.close();
+  /* The Keys tab's rebind popout hangs off <body> and holds hdCapture. */
+  if (window.KeysPane && KeysPane.closeOverlays) KeysPane.closeOverlays();
   /* Super Searcher: body.ss-open hides #panel, so a leaked super mode would
      greet the next F7 with an invisible deck — tear it down with the close. */
   if (window.HDSuper) HDSuper.onDeckClosed();
@@ -5871,7 +7266,7 @@ function init() {
          of them there were. sysOrder() has already dropped detection-absent
          systems, so nothing here needs gating again. */
       overflowTabs: function () {
-        return tabOverflow.map((t) => ({ tab: t.tab, label: t.label, title: t.title }));
+        return tabOverflow.map((t) => ({ tab: t.tab, label: t.label, title: t.title, aliases: t.aliases || '' }));
       },
       setSearch: function (q) {
         ui.search = String(q || '');
@@ -5912,8 +7307,19 @@ function init() {
       toGame('hdQuestGet', qu.formId);
       renderQuests();
     };
+    /* The header search FIELD (hd-two-bars): it takes focus and hands the
+       typing to Omni at once, so there is one search with one result list.
+       Mousedown, not click — click arrives after the focus-open and Omni's
+       open() is a TOGGLE, which would shut it again. */
     const ob = $('omni-btn');
-    if (ob) ob.addEventListener('click', function () { HDOmni.open('search'); });
+    const openOmniFromField = function () { if (!HDOmni.isOpen()) HDOmni.open('search'); };
+    if (ob) ob.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      openOmniFromField();
+    });
+    const sf = $('hd-search-field');
+    if (sf) sf.addEventListener('focus', function () { sf.blur(); openOmniFromField(); });
   }
 
   /* ---- Favorites Shelf ---- *
@@ -6069,12 +7475,17 @@ function init() {
   if ($('smoothpause-cb')) $('smoothpause-cb').addEventListener('change', (e) => {
     state.settings.smoothPause = e.target.checked; save();
   });
+  ['prisma', 'magelight'].forEach(function (h) {
+    const b = $('uihost-' + h);
+    if (b) b.addEventListener('click', function () { toast(pickUiHost(h)); });
+  });
   $('close-cb').addEventListener('change', (e) => { state.settings.closeAfterFire = e.target.checked; save(); });
   $('sticky-cb').addEventListener('change', (e) => { state.settings.stickyNpMods = e.target.checked; save(); });
   /* C++ owns the DECISION (it has the crosshair snapshot at open); this
      only records the preference for it to read on the next open. */
   $('tgtfol-cb').addEventListener('change', (e) => { state.settings.targetOpensFollowers = e.target.checked; save(); });
   $('scnopen-cb').addEventListener('change', (e) => { state.settings.sceneOpensScene = e.target.checked; save(); });
+  if ($('fgscroll-cb')) $('fgscroll-cb').addEventListener('change', (e) => { state.settings.fgSmoothScroll = e.target.checked; save(); });
   $('tgtscn-cb').addEventListener('change', (e) => { state.settings.targetOpensScene = e.target.checked; save(); });
   $('scale-down').addEventListener('click', () => setScale(state.settings.uiScale - SCALE_STEP, true));
   $('scale-up').addEventListener('click', () => setScale(state.settings.uiScale + SCALE_STEP, true));
@@ -6099,6 +7510,27 @@ function init() {
     range.addEventListener('input', () => applyScroll(Number(range.value)));
     const rst = $('scrollspeed-edit-reset');
     if (rst) rst.addEventListener('click', () => applyScroll(1));
+  })();
+  /* Sic 'em orders: the reach-time slider saves as it settles (saveSoon), the
+     teleport box at once; the order tick reads both from settings. */
+  (function () {
+    const range = $('sicreach-range');
+    if (!range) return;
+    if (typeof window.hdSmoothRange === 'function') window.hdSmoothRange(range);
+    function applyReach(v) {
+      state.settings.sicReachSeconds = clampSicReach(v);
+      syncSicOrders();
+      saveSoon();
+    }
+    range.addEventListener('input', () => applyReach(range.value));
+    const rst = $('sicreach-reset');
+    if (rst) rst.addEventListener('click', () => applyReach(15));
+    const cb = $('sictele-cb');
+    if (cb) cb.addEventListener('change', (e) => {
+      state.settings.sicTeleport = e.target.checked;
+      syncSicOrders();
+      save();
+    });
   })();
   $('resize-grip').addEventListener('mousedown', gripDown);
   $('resize-grip').addEventListener('dblclick', resetPanelSize);
@@ -6151,7 +7583,7 @@ function init() {
   $('numpad-grid').addEventListener('click', onNumpadClick);
   $('quests-pane').addEventListener('click', onQuestsClick);
   $('q-search').addEventListener('input', (e) => { ui.qSearch = e.target.value; requestQuestsSoon(); });
-  $('search').addEventListener('input', (e) => { ui.search = e.target.value; ui.sel = 0; renderList(); });
+  $('search').addEventListener('input', (e) => { ui.search = e.target.value; ui.searchRestored = false; ui.sel = 0; renderList(); });
   $('notes-ta').addEventListener('input', (e) => { state.notes = e.target.value; saveSoon(); });
 
   document.addEventListener('keydown', onKeyDown, true);
@@ -6164,6 +7596,7 @@ function init() {
     setCaptureGesture(b.getAttribute('data-gesture') || '');
   });
   document.addEventListener('mousedown', onMouseDown, true);
+  document.addEventListener('mousedown', onHkMenuMouseDown, true);   // Hotkeys row menu (right mousedown)
   document.addEventListener('contextmenu', (e) => e.preventDefault());
 
   toGame('hdLog', 'HotkeyDeck view booted');
@@ -6867,20 +8300,83 @@ function runSelfTest() {
   T('nav: fixed trio in order, systems by usage, the More button last', () => {
     /* The bar is DYNAMIC now (Rober, 2026-08-07): systems fill the row in
        usage order until the width runs out; the rest live behind More. What
-       must always hold: Home · Hotkeys · Spells lead, the untouched default
+       must always hold: Home · Hotkeys · Spells · Inventory lead, the untouched default
        order starts Quests · Followers, the More/⋯ button is last. */
     ui.tab = 'all'; ui.edit = false; render();
     const got = topLabels();
-    const want = ['Home', 'Hotkeys', 'Spells'];
+    const want = ['Home', 'Hotkeys', 'Spells', 'Inventory'];
     for (let i = 0; i < want.length; i++)
       if (got[i] !== want[i]) return 'fixed trio wrong — got ' + JSON.stringify(got);
     const shown = sysOrder().slice(0, got.length);   // usage order prefix
     if (got.indexOf('Quests') !== -1 && got.indexOf('Followers') !== -1 &&
         got.indexOf('Quests') > got.indexOf('Followers'))
       return 'default order broken — got ' + JSON.stringify(got);
+    /* two-bar header: More, then the Customize gear, close the rail */
     const btns = $('tabs').querySelectorAll('.tab');
-    return !!btns[btns.length - 1].dataset && btns[btns.length - 1].dataset.act === 'more' ||
-      'More is not last — got ' + JSON.stringify(got);
+    const last = btns[btns.length - 1], prev = btns[btns.length - 2];
+    return (last.dataset.act === 'tabcfg' && prev.dataset.act === 'more') ||
+      'More + Customize are not last — got ' + JSON.stringify(got);
+  });
+  /* tab-customize (2026-10-11) */
+  T('tabs: a hidden system leaves the bar and waits in More under "Hidden"', () => {
+    const tb = tabbarPrefs(), keepP = tb.pin.slice(), keepH = tb.hide.slice();
+    try {
+      tb.pin = []; tb.hide = ['quests'];
+      ui.tab = 'all'; ui.moreOpen = false; tabFitCache.sig = null; render();
+      if ($('tabs').querySelector('[data-tab="quests"]')) return 'Quests still on the bar';
+      $('tabs').querySelector('[data-act="more"]').click();
+      const menu = $('tab-more-menu');
+      const item = menu.querySelector('.more-item[data-tab="quests"]');
+      const tagged = !!(item && item.querySelector('.more-item-tag'));
+      closeMoreMenu();
+      return (item && tagged) || 'Quests missing from More, or not tagged hidden';
+    } finally { tb.pin = keepP; tb.hide = keepH; tabFitCache.sig = null; render(); }
+  });
+  T('tabs: hiding a core tab (Inventory) drops it from the bar; Home cannot be hidden', () => {
+    const tb = tabbarPrefs(), keepH = tb.hide.slice();
+    try {
+      tb.hide = ['inventory', 'home']; tabFitCache.sig = null; render();
+      const inv = $('tabs').querySelector('[data-tab="inventory"]');
+      const home = $('tabs').querySelector('[data-tab="home"]');
+      return (!inv && !!home && hiddenTabs().some((t) => t.tab === 'inventory')) ||
+        ('inventory on bar=' + !!inv + ' home on bar=' + !!home);
+    } finally { tb.hide = keepH; tabFitCache.sig = null; render(); }
+  });
+  T('tabs: pinned systems lead in pin order and are the last to shed', () => {
+    const tb = tabbarPrefs(), keepP = tb.pin.slice(), keepH = tb.hide.slice();
+    const tabs = $('tabs');
+    try {
+      tb.hide = []; tb.pin = ['wigs', 'rooms'];
+      const order = sysOrder().map((s) => s.tab);
+      if (order[0] !== 'wigs' || order[1] !== 'rooms') return 'order=' + order.slice(0, 4).join(',');
+      tabs.style.maxWidth = '1300px'; tabFitCache.sig = null; render();
+      const onBar = !!tabs.querySelector('[data-tab="wigs"]') && !!tabs.querySelector('[data-tab="rooms"]');
+      return onBar || 'a pinned tab was shed at 1300px';
+    } finally { tabs.style.maxWidth = ''; tb.pin = keepP; tb.hide = keepH; tabFitCache.sig = null; render(); }
+  });
+  T('tabs: Customize opens from the gear, filters as you type, sets a mode, Esc steps back then closes', () => {
+    const tb = tabbarPrefs(), keepP = tb.pin.slice(), keepH = tb.hide.slice();
+    try {
+      tb.pin = []; tb.hide = []; render();
+      $('tabs').querySelector('[data-act="tabcfg"]').click();
+      if (!tabCfgIsOpen()) return 'did not open';
+      const q = $('tabcfg-q');
+      q.value = 'wig'; q.dispatchEvent(new Event('input', { bubbles: true }));
+      const rows = tabCfg.el.querySelectorAll('.tabcfg-row');
+      if (rows.length !== 1) return 'filter left ' + rows.length + ' rows';
+      rows[0].querySelector('[data-set="pin"]').click();
+      if (tb.pin.indexOf('wigs') === -1) return 'Pinned did not stick';
+      onKeyDown(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+      if (!tabCfgIsOpen() || q.value) return 'first Esc should clear the filter, not close';
+      onKeyDown(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+      return !tabCfgIsOpen() || 'second Esc did not close';
+    } finally { closeTabCfg(); tb.pin = keepP; tb.hide = keepH; tabFitCache.sig = null; render(); }
+  });
+  T('header: Edit keeps its icon when its label changes', () => {
+    hdSetToolLabel('edit-btn', 'Done');
+    const ok = !!$('edit-btn').querySelector('img.hd-tool-ic') && $('edit-btn').textContent.trim() === 'Done';
+    hdSetToolLabel('edit-btn', 'Edit');
+    return ok || 'icon lost or label wrong';
   });
   T('nav: a narrow bar sheds least-used systems into More; filter + Enter works', () => {
     ui.tab = 'all'; ui.edit = false; ui.moreOpen = false;
@@ -6908,7 +8404,10 @@ function runSelfTest() {
   });
   T('nav: the active overflow tab is hoisted onto the More button', () => {
     const tabs = $('tabs');
-    tabs.style.maxWidth = '430px';   // rooms (1 visit < 3-use hysteresis) stays overflowed
+    /* 1100px: the core four + a few systems fit with icon AND name (the
+       two-bar rail, 2026-10-11) — at the old 430px even the core four
+       overflowed and More collapsed to ⋯ */
+    tabs.style.maxWidth = '1100px';   // rooms (1 visit < 3-use hysteresis) stays overflowed
     setTab('rooms');
     const btn = tabs.querySelector('[data-act="more"]');
     const good = !!btn && btn.classList.contains('active') && btn.textContent.indexOf('Rooms') !== -1;
@@ -6922,7 +8421,7 @@ function runSelfTest() {
      #tabs grows a scrollbar (Rober, 2026-08-15, on Spell Crafting). */
   T('nav: hoisting an overflowed tab onto More never overflows the row', () => {
     const tabs = $('tabs');
-    tabs.style.maxWidth = '430px';
+    tabs.style.maxWidth = '1100px';
     setTab('all'); render();                       // fit measured with a short More face
     setTab('spellcraft'); render();                // now More wears "Spell Crafting"
     const over = tabs.scrollWidth > tabs.clientWidth + 1;
@@ -7332,6 +8831,146 @@ function runSelfTest() {
     const good = inCapture && t && t.code === 88 && t.device === 'keyboard' &&
       t.mods.length === 1 && chip && /X/.test(chip.textContent);
     return good || ('cap=' + inCapture + ' t=' + JSON.stringify(t) + ' chip=' + (chip && chip.textContent));
+  });
+
+  T('search: the hotkey search is remembered across a close, selected, and still quick-fires', () => {
+    ui.search = 'stance'; $('search').value = 'stance';
+    const wasVis = ui.visible, wasTab = ui.tab, wasEdit = ui.edit;
+    ui.visible = false;
+    window.hdOpen(JSON.stringify({}));
+    const kept = $('search').value === 'stance' && ui.search === 'stance' && ui.searchRestored === true;
+    const s = $('search');
+    const selected = s.selectionStart === 0 && s.selectionEnd === s.value.length;
+    s.value = 'bear'; s.dispatchEvent(new Event('input'));
+    const cleared = ui.searchRestored === false && ui.search === 'bear';
+    ui.search = ''; s.value = ''; ui.searchRestored = false; ui.visible = wasVis;
+    setTab(wasTab); ui.edit = wasEdit; render();   // hdOpen lands on Home: put the deck back for the checks after this one
+    return (kept && selected && cleared) || ('kept=' + kept + ' selected=' + selected + ' cleared=' + cleared);
+  });
+
+  /* ---- the Hotkeys row menu (hk-row-menu, 2026-10-11) ---- */
+  const hkmSetup = () => {
+    state.entries.push({ id: 'st-hkm', name: 'ST Row Menu', desc: 'row menu fixture', device: 'keyboard',
+                         code: 0x21, label: 'F', mods: [], category: '' });
+    ui.edit = false; ui.search = ''; $('search').value = ''; setTab('all'); render();
+    return $('list').querySelector('.row[data-id="st-hkm"]');
+  };
+  const hkmTeardown = () => {
+    closeHkRowMenu();
+    state.entries = state.entries.filter((x) => x.id !== 'st-hkm');
+    ui.edit = true; render();
+  };
+  const rdown = (el) => el.dispatchEvent(new MouseEvent('mousedown', { button: 2, clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+  T('row menu: a right mousedown on a row opens its own menu and fires nothing', () => {
+    const wasVis = ui.visible; ui.visible = true;
+    const fired = []; const prevFire = window.hdFire; window.hdFire = (id) => fired.push(id);
+    try {
+      const row = hkmSetup();
+      rdown(row.querySelector('.row-name'));
+      const m = document.getElementById('hk-row-menu');
+      const head = m && m.querySelector('.hkm-name').textContent;
+      const items = m ? m.querySelectorAll('.hkm-item').length : 0;
+      const q = m && m.querySelector('.hkm-q');
+      return (!!m && head === 'ST Row Menu' && items >= 8 && fired.length === 0 && !!q) ||
+        ('menu=' + !!m + ' head=' + head + ' items=' + items + ' fired=' + fired.length);
+    } finally { window.hdFire = prevFire; hkmTeardown(); ui.visible = wasVis; }
+  });
+  T('row menu: typing filters, Enter runs the top hit (Pin to the shelf), digits never quick-fire', () => {
+    const wasVis = ui.visible; ui.visible = true;
+    const fired = []; const prevFire = window.hdFire; window.hdFire = (id) => fired.push(id);
+    try {
+      const row = hkmSetup();
+      rdown(row);
+      const m = document.getElementById('hk-row-menu');
+      key('Digit1');
+      const noFire = fired.length === 0 && !!document.getElementById('hk-row-menu');
+      const q = m.querySelector('.hkm-q');
+      q.value = 'pin to'; q.dispatchEvent(new Event('input'));
+      const hits = Array.prototype.map.call(m.querySelectorAll('.hkm-item'), (b) => b.querySelector('.hkm-label').textContent);
+      const top = hits[0];
+      if (!window.HDShelf) return 'no HDShelf in this preview';
+      const was = HDShelf.isPinned('hotkeys', 'hk:st-hkm');
+      key('Enter');
+      const pinned = HDShelf.isPinned('hotkeys', 'hk:st-hkm');
+      const closed = !document.getElementById('hk-row-menu');
+      if (pinned) HDShelf.togglePin({ id: 'hotkeys' }, { pin: 'hk:st-hkm', label: 'ST Row Menu' });
+      return (noFire && hits.length === 1 && top === 'Pin to the shelf' && !was && pinned && closed) ||
+        ('noFire=' + noFire + ' hits=' + JSON.stringify(hits) + ' pinned=' + pinned + ' closed=' + closed);
+    } finally { window.hdFire = prevFire; hkmTeardown(); ui.visible = wasVis; }
+  });
+  T('row menu: Move to tab lists the tabs, a pick moves the row; Esc steps back, then closes', () => {
+    const wasVis = ui.visible; ui.visible = true;
+    const hadCats = state.categories.slice();
+    try {
+      if (state.categories.indexOf('Combat') === -1) state.categories.push('Combat');
+      const row = hkmSetup();
+      rdown(row);
+      let m = document.getElementById('hk-row-menu');
+      const mv = Array.prototype.find.call(m.querySelectorAll('.hkm-item'), (b) => /Move to tab/.test(b.textContent));
+      mv.click();
+      m = document.getElementById('hk-row-menu');
+      const labels = Array.prototype.map.call(m.querySelectorAll('.hkm-item .hkm-label'), (n) => n.textContent);
+      const paged = labels[0] === 'All only' && labels.indexOf('Combat') !== -1 && !!m.querySelector('.hkm-back');
+      key('Escape');
+      m = document.getElementById('hk-row-menu');
+      const backToMain = !!m && /Fire now/.test(m.textContent);
+      key('Escape');
+      const closed = !document.getElementById('hk-row-menu');
+      rdown($('list').querySelector('.row[data-id="st-hkm"]'));
+      m = document.getElementById('hk-row-menu');
+      Array.prototype.find.call(m.querySelectorAll('.hkm-item'), (b) => /Move to tab/.test(b.textContent)).click();
+      m = document.getElementById('hk-row-menu');
+      Array.prototype.find.call(m.querySelectorAll('.hkm-item'), (b) => b.querySelector('.hkm-label').textContent === 'Combat').click();
+      const ent = state.entries.find((x) => x.id === 'st-hkm');
+      return (paged && backToMain && closed && ent.category === 'Combat' && !document.getElementById('hk-row-menu')) ||
+        ('paged=' + paged + ' ' + JSON.stringify(labels) + ' back=' + backToMain + ' closed=' + closed + ' cat=' + ent.category);
+    } finally { hkmTeardown(); state.categories = hadCats; ui.visible = wasVis; }
+  });
+  T('row menu: a left click outside only closes it, the row under it does not fire', () => {
+    const wasVis = ui.visible; ui.visible = true;
+    const fired = []; const prevFire = window.hdFire; window.hdFire = (id) => fired.push(id);
+    try {
+      const row = hkmSetup();
+      rdown(row);
+      const other = $('list').querySelector('.row:not([data-id="st-hkm"])') || row;
+      other.dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true, cancelable: true }));
+      other.click();
+      const closed = !document.getElementById('hk-row-menu');
+      return (closed && fired.length === 0) || ('closed=' + closed + ' fired=' + JSON.stringify(fired));
+    } finally { window.hdFire = prevFire; ui.justDragged = false; hkmTeardown(); ui.visible = wasVis; }
+  });
+  T('row menu: Remove asks first, Rename saves name + description', () => {
+    const wasVis = ui.visible; ui.visible = true;
+    try {
+      const row = hkmSetup();
+      rdown(row);
+      let m = document.getElementById('hk-row-menu');
+      const rm = () => m.querySelector('.hkm-item.danger');
+      rm().click();
+      m = document.getElementById('hk-row-menu');
+      const armed = !!m && rm().classList.contains('confirm') && !!state.entries.find((x) => x.id === 'st-hkm');
+      Array.prototype.find.call(m.querySelectorAll('.hkm-item'), (b) => /Rename/.test(b.textContent)).click();
+      m = document.getElementById('hk-row-menu');
+      const ins = m.querySelectorAll('.hkm-field input');
+      ins[0].value = 'ST Renamed'; ins[1].value = 'new words';
+      m.querySelector('.hkm-btn.primary').click();
+      const ent = state.entries.find((x) => x.id === 'st-hkm');
+      const renamed = ent && ent.name === 'ST Renamed' && ent.desc === 'new words' && !document.getElementById('hk-row-menu');
+      rdown($('list').querySelector('.row[data-id="st-hkm"]'));
+      m = document.getElementById('hk-row-menu');
+      m.querySelector('.hkm-item.danger').click();
+      document.getElementById('hk-row-menu').querySelector('.hkm-item.danger').click();
+      const gone = !state.entries.find((x) => x.id === 'st-hkm') && !document.getElementById('hk-row-menu');
+      if (Array.isArray(state.suppressedSeeds)) state.suppressedSeeds = state.suppressedSeeds.filter((k) => k !== 'key:st-hkm');
+      return (armed && renamed && gone) || ('armed=' + armed + ' renamed=' + renamed + ' gone=' + gone);
+    } finally { hkmTeardown(); ui.visible = wasVis; }
+  });
+
+  T('trigger: a chord label is not doubled ("Shift + F7", not "Shift + Shift + F7")', () => {
+    const full = trigChipLabel({ device: 'keyboard', code: 0x41, label: 'Shift + F7', mods: [42], gesture: '' });
+    const bare = trigChipLabel({ device: 'keyboard', code: 0x41, label: 'F7', mods: [42], gesture: '' });
+    const held = trigChipLabel({ device: 'keyboard', code: 0x41, label: 'Shift + F7', mods: [42], gesture: 'hold' });
+    return (full === 'Shift + F7' && bare === 'Shift + F7' && held === 'Hold Shift + F7') || [full, bare, held].join(' | ');
   });
 
   T('trigger: a MOUSE trigger keeps its chord modifiers (the matcher honours them now)', () => {
@@ -7942,6 +9581,15 @@ function runSelfTest() {
   /* ---- Smooth scroll: the shared handler is installed with a fast base ---- */
   T('scroll: installScrollSpeed installed once with a >1 base multiplier',
     () => (window.__hdScrollInstalled === true && SCROLL_BASE > 1) || ('base=' + SCROLL_BASE));
+  T('scroll: frame-gen cap bounds one frame of the glide, both directions',
+    () => (glideStep(1000, 0.24, 32) === 32 && glideStep(-1000, 0.24, 32) === -32) ||
+          ('got ' + glideStep(1000, 0.24, 32) + ' / ' + glideStep(-1000, 0.24, 32)));
+  T('scroll: under the cap, and with the cap off, the ease is unchanged',
+    () => (glideStep(100, 0.24, 32) === 24 && glideStep(1000, 0.24, 0) === 240) ||
+          ('got ' + glideStep(100, 0.24, 32) + ' / ' + glideStep(1000, 0.24, 0)));
+  T('scroll: frame-gen friendly scrolling defaults ON and has its checkbox',
+    () => (state.settings.fgSmoothScroll !== false && !!$('fgscroll-cb')) ||
+          ('setting=' + state.settings.fgSmoothScroll + ' cb=' + !!$('fgscroll-cb')));
   T('scroll: the user scroll-speed setting still round-trips through clampScroll',
     () => clampScroll(2) === 2 && clampScroll(99) === SCROLL_MAX && clampScroll(0.1) === SCROLL_MIN);
   T('scroll: Edit-mode slider exists with the 0.5-3.0 range',
@@ -7999,7 +9647,7 @@ function runSelfTest() {
       const want = ['Pause game while open', 'Smooth pause', 'Close after firing',
                     'Sticky numpad modifiers', 'Looking at someone? Open on the Followers tab',
                     'Extended F-keys (F13–F24)', 'Menu size', 'Fill screen', 'Scroll speed',
-                    'Row icon size', 'Tab style — names or icons'];
+                    'Row icon size', 'Customize tabs'];
       const missing = want.filter((w) => labels.indexOf(w) === -1);
       /* the generated families: one quick-fire row per modifier, one per F-key */
       const quick = labels.filter((l) => l.indexOf('Quick-fire:') === 0).length;
@@ -8101,6 +9749,104 @@ function runSelfTest() {
   ui.edit = false; ui.extOpen = false; ui.capture = null;
   ui.search = ''; $('search').value = '';
   closeHkIconPicker();   // else every later geometry check measures a covered panel
+  /* ---- mod-key rows (2026-10-11) ---- */
+  const mkSeed = () => ({ id: 'hd-wwm-order-wheel', name: 'Walk With Me: Order wheel',
+    desc: 'Opens Walk With Me’s order wheel (walk with me wwm wayfarer formation orders command wheel)',
+    device: 'action', code: 0, label: 'WWM key', mods: [], category: '', action: 'mod-key', icon: '',
+    modKey: { file: 'Wayfarer.ini', section: 'Hotkeys', key: 'iCommandKey', modsKey: 'iCommandModifiers',
+      modsKind: 'mask', space: 'dik', mod: 'Walk With Me', where: 'Walk With Me’s own menu' } });
+
+  T('mod-key: the row is gold with a ⚙ chip, and modKey survives the hdSave payload', () => {
+    state.entries.push(mkSeed());
+    ui.edit = false; setTab('all'); render();
+    const row = document.querySelector('.row.hk-native[data-id="hd-wwm-order-wheel"]');
+    const chip = row && row.querySelector('.keychip.action');
+    const back = JSON.parse(JSON.stringify(state)).entries.find((x) => x.id === 'hd-wwm-order-wheel');
+    state.entries = state.entries.filter((x) => x.id !== 'hd-wwm-order-wheel');
+    render();
+    const good = !!row && !!chip && chip.textContent.indexOf('WWM key') !== -1 &&
+      !!back && back.modKey && back.modKey.key === 'iCommandKey' && back.modKey.modsKind === 'mask';
+    return good || ('row=' + !!row + ' chip=' + (chip ? chip.textContent : 'none') + ' back=' + JSON.stringify(back && back.modKey));
+  });
+
+  T('mod-key: Hotkeys search "walk with me" (and "wwm") finds the Walk With Me row', () => {
+    state.entries.push(mkSeed());
+    ui.edit = false; setTab('all');
+    const saved = ui.search;
+    ui.search = 'walk with me';
+    const a = filteredEntries().some((x) => x.id === 'hd-wwm-order-wheel');
+    ui.search = 'wwm';
+    const b = filteredEntries().some((x) => x.id === 'hd-wwm-order-wheel');
+    ui.search = saved;
+    state.entries = state.entries.filter((x) => x.id !== 'hd-wwm-order-wheel');
+    render();
+    return (a && b) || ('walk with me=' + a + ' wwm=' + b);
+  });
+
+  T('mod-key: deleting a seeded row records key:<id>, never the shared "mod-key" verb', () => {
+    state.entries.push(mkSeed());
+    const savedSup = state.suppressedSeeds;
+    state.suppressedSeeds = [];
+    ui.edit = true; setTab('all'); render();
+    const del = document.querySelector('.row[data-id="hd-wwm-order-wheel"] .tool-btn.del');
+    if (del) { del.click(); const again = document.querySelector('.row[data-id="hd-wwm-order-wheel"] .tool-btn.del'); if (again) again.click(); }
+    const rec = state.suppressedSeeds.slice();
+    const gone = !state.entries.some((x) => x.id === 'hd-wwm-order-wheel');
+    state.entries = state.entries.filter((x) => x.id !== 'hd-wwm-order-wheel');
+    state.suppressedSeeds = savedSup; ui.edit = false; render();
+    return (gone && rec.indexOf('key:hd-wwm-order-wheel') !== -1 && rec.indexOf('mod-key') === -1) ||
+      ('gone=' + gone + ' recorded=' + JSON.stringify(rec));
+  });
+
+  T('mod-key: Keys-tab button only on a STATED plugin bind; adding is idempotent', () => {
+    const row = { src: 'plugin', mod: 'SomeMod', control: 'Open menu', code: 35, guess: false,
+      cfg: { file: 'SomeMod/settings.ini', section: 'keys', field: 'iMenuKey', space: 'dik' } };
+    const guessed = Object.assign({}, row, { guess: true });
+    const mouse = Object.assign({}, row, { code: 259 });
+    const html = hdModKeyBtnHtml(row);
+    const noGuess = hdModKeyBtnHtml(guessed) === '' && hdModKeyBtnHtml(mouse) === '' &&
+      hdModKeyBtnHtml({ src: 'mcm', code: 35 }) === '';
+    const before = state.entries.length;
+    const made = hdAddModKeyEntry({ file: row.cfg.file, section: row.cfg.section, key: row.cfg.field,
+      space: 'dik', mod: row.mod }, row.control);
+    const twice = hdAddModKeyEntry({ file: row.cfg.file, section: 'KEYS', key: 'imenukey', space: 'dik', mod: row.mod }, row.control);
+    const added = state.entries.length - before;
+    const good = html.indexOf('hd-mk-add') !== -1 && noGuess && !!made && made === twice && added === 1 &&
+      made.action === 'mod-key' && made.device === 'action' && made.modKey.key === 'iMenuKey' &&
+      made.category === MK_TAB && hdModKeyBtnHtml(row).indexOf('hd-mk-have') !== -1;
+    if (made) state.entries = state.entries.filter((x) => x.id !== made.id);
+    render();
+    return good || ('html=' + !!html + ' noGuess=' + noGuess + ' added=' + added + ' made=' + JSON.stringify(made && made.modKey));
+  });
+
+  T('mod-key: a drawn Keys button flips back to "Add" once its Hotkeys row is deleted', () => {
+    const o = { src: 'plugin', mod: 'OtherMod', control: 'Open', code: 36, guess: false,
+      cfg: { file: 'OtherMod.ini', section: 'keys', field: 'iOpenKey', space: 'dik' } };
+    const host = document.createElement('div');
+    host.innerHTML = hdModKeyBtnHtml(o);
+    document.body.appendChild(host);
+    const made = hdAddModKeyEntry({ file: 'OtherMod.ini', section: 'keys', key: 'iOpenKey', space: 'dik', mod: 'OtherMod' }, 'Open');
+    hdModKeyRefreshButtons();
+    const b = host.querySelector('.hd-mk-add');
+    const haveAfterAdd = !!b && b.classList.contains('hd-mk-have');
+    if (made) state.entries = state.entries.filter((x) => x.id !== made.id);
+    hdModKeyRefreshButtons();
+    const backToAdd = !!b && !b.classList.contains('hd-mk-have') && b.textContent.indexOf('Add to Hotkeys') !== -1;
+    host.remove();
+    render();
+    return (haveAfterAdd && backToAdd) || ('afterAdd=' + haveAfterAdd + ' afterDelete=' + backToAdd);
+  });
+
+  T('mod-key: Walk With Me rows hide when the deck reports wwm:false', () => {
+    const savedDet = state.detected;
+    state.detected = { wwm: false };
+    const hidden = hkNeeds(mkSeed()) === 'Walk With Me';
+    state.detected = { wwm: true };
+    const shown = hkNeeds(mkSeed()) === '';
+    state.detected = savedDet;
+    return (hidden && shown) || ('hidden=' + hidden + ' shown=' + shown);
+  });
+
   ui.visible = true; document.body.classList.add('open');   // the hdShowTab-close check "closed" the dev page
   $('capture-modal').classList.add('hidden');
   render();
@@ -8120,6 +9866,35 @@ if (document.readyState === 'loading') {
 
 if (DEV && location.search.indexOf('selftest=1') !== -1) {
   setTimeout(runSelfTest, 150);  // after the mocked hdOpen settles
+}
+/* ?dev=1&demo=rowmenu[&page=tabs|rename] — the Hotkeys row menu open on the
+   first row, for a screenshot (dev preview only). */
+if (DEV && /[?&]demo=rowmenu/.test(location.search)) {
+  setTimeout(() => {
+    try {
+      setTab('all');
+      const r = $('list').querySelector('.row');
+      if (!r) return;
+      const b = r.getBoundingClientRect();
+      openHkRowMenu(r.dataset.id, b.left + 260, b.top + b.height / 2);
+      const pg = (location.search.match(/[?&]page=(\w+)/) || [])[1];
+      if (pg === 'tabs' || pg === 'rename') hkMenuPage(pg);
+    } catch (e) {}
+  }, 1500);
+}
+
+/* ?dev=1&demo=tabcfg | demo=tabmore — Customize tabs, or the More menu with a
+   hidden tab in it, open for a screenshot (dev preview only). tab-customize */
+if (DEV && /[?&]demo=tab(cfg|more)/.test(location.search)) {
+  setTimeout(() => {
+    try {
+      const tb = tabbarPrefs();
+      tb.pin = ['domains', 'followers']; tb.hide = ['distr', 'highking'];
+      tabFitCache.sig = null; setTab('domains'); render();
+      if (/demo=tabcfg/.test(location.search)) openTabCfg();
+      else { ui.moreOpen = true; renderTabs(); }
+    } catch (e) {}
+  }, 1500);
 }
 
 /* ===================================================================== *

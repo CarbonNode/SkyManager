@@ -1,0 +1,890 @@
+/* ===================================================================== *
+ *  Inventory tab (iv-) — the full inventory replacement.
+ *
+ *  Direction: the quartermaster's ledger. The deck's own carved
+ *  gold-on-dark chrome (Georgia display face, #c9a24b gold, sunken #0c0c10
+ *  wells), three columns that end together: a category rail, a ledger of
+ *  every line you carry (virtual — only the rows on screen exist), and a
+ *  lit pedestal where the item's own model turns.
+ *
+ *  Prefix: `iv-` (free: checked against every view sheet, 2026-10-10).
+ *
+ *  Ultralight rules honoured here: literal rgba() only (no color-mix), no
+ *  conic-gradient, no hover/pointer media queries, a grid item that clips
+ *  gets min-height:min-content, and no text under 14px (Rober's "no small
+ *  text" rule — he reads this from a couch at 2560x1440).
+ *
+ *  Own file on purpose; loaded by hd-css.js when the tab is first shown
+ *  (index.html placeholder, gate "#iv-pane, .iv-pop-back").
+ *  Marker: #iv-pane { (inventory-pane-css)
+ * ===================================================================== */
+
+#iv-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 24px 14px;
+  gap: 14px;
+  position: relative;
+  overflow: hidden;
+  color: #e8e2d4;
+}
+#iv-pane.hidden { display: none; }
+
+/* ----------------------------------------------------------- header -- */
+
+.iv-head {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+.iv-crest { width: 50px; height: 50px; flex: none; }
+.iv-title-wrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 260px; }
+.iv-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  color: #d8c48f;
+  line-height: 1.1;
+  text-shadow: 0 2px 10px rgba(0,0,0,.6);
+  white-space: nowrap;
+}
+.iv-sub { font-size: 16px; color: #b9b4a8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iv-sub b { color: #e8e2d4; font-weight: 600; }
+.iv-sub-new { color: #9fd59a; font-weight: 600; }
+
+.iv-purse, .iv-carry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  padding: 10px 18px 10px 12px;
+  border: 1px solid #2c2a22;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #14131a 0%, #0d0d12 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+}
+.iv-purse img, .iv-carry img { width: 34px; height: 34px; flex: none; }
+.iv-purse-v { font-family: Georgia, serif; font-size: 24px; color: #f0d68a; letter-spacing: .5px; white-space: nowrap; }
+.iv-purse-l, .iv-carry-l { font-size: 14px; color: #8f8a7e; letter-spacing: 1.5px; text-transform: uppercase; }
+.iv-carry-col { display: flex; flex-direction: column; gap: 6px; min-width: 210px; }
+.iv-carry-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.iv-carry-t { font-family: Georgia, serif; font-size: 20px; color: #e8e2d4; white-space: nowrap; }
+.iv-carry-bar { height: 8px; border-radius: 4px; background: #08080b; border: 1px solid #26241d; overflow: hidden; }
+.iv-carry-fill { height: 100%; width: 0; border-radius: 4px; background: linear-gradient(90deg, #8a6f2c, #d8b45a); transition: width 260ms ease; }
+.iv-carry.iv-near .iv-carry-fill { background: linear-gradient(90deg, #a0662a, #e8a24a); }
+.iv-carry.iv-over { border-color: rgba(214,92,72,.6); }
+.iv-carry.iv-over .iv-carry-fill { background: linear-gradient(90deg, #8e2f25, #e0604a); }
+.iv-carry.iv-over .iv-carry-t { color: #ff9a86; }
+
+/* ------------------------------------------------------------- body -- */
+
+.iv-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 18px;
+  align-items: stretch;
+}
+
+/* the rail */
+.iv-rail {
+  flex: 0 0 236px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid #24221c;
+  border-radius: 14px;
+  background: #0c0c10;
+}
+.iv-cat {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 6px 12px 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #cbc5b6;
+  font: inherit;
+  font-size: 17px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.iv-cat:hover { background: rgba(201,162,75,.07); color: #efe2bc; }
+.iv-cat.iv-on {
+  background: linear-gradient(90deg, rgba(201,162,75,.22), rgba(201,162,75,.06));
+  border-color: rgba(201,162,75,.45);
+  color: #f6e7bb;
+}
+.iv-cat.iv-zero { opacity: .45; }
+.iv-cat-img { width: 38px; height: 38px; flex: none; }
+.iv-cat-l { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iv-cat-n {
+  flex: none;
+  min-width: 34px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.05);
+  color: #a8a294;
+  font-size: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.iv-cat.iv-on .iv-cat-n { background: rgba(201,162,75,.25); color: #f6e7bb; }
+
+/* the ledger */
+.iv-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid #24221c;
+  border-radius: 14px;
+  background: #0c0c10;
+  padding: 12px 12px 8px;
+}
+.iv-bar { display: flex; align-items: center; gap: 12px; flex: none; }
+.iv-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 50px;
+  padding: 0 10px 0 16px;
+  border: 1px solid #34302a;
+  border-radius: 12px;
+  background: #08080b;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.iv-search:focus-within { border-color: rgba(201,162,75,.7); box-shadow: 0 0 0 3px rgba(201,162,75,.12); }
+.iv-search-glyph { font-size: 22px; color: #8f8a7e; flex: none; }
+#iv-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 46px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: #efe9da;
+  font: inherit;
+  font-size: 18px;
+}
+.iv-search-x {
+  flex: none;
+  width: 36px; height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255,255,255,.06);
+  color: #cfc8b6;
+  font-size: 16px;
+  cursor: pointer;
+}
+.iv-search-x:hover { background: rgba(255,255,255,.12); }
+
+.iv-seg {
+  display: flex;
+  flex: none;
+  border: 1px solid #34302a;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #08080b;
+}
+.iv-seg button {
+  font: inherit;
+  font-size: 16px;
+  min-width: 78px;
+  height: 48px;
+  padding: 0 16px;
+  border: 0;
+  background: transparent;
+  color: #b9b4a8;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+.iv-seg button + button { border-left: 1px solid #34302a; }
+
+/* The fold chevrons at either end of the bar: the left one folds the rail
+   to its icons, the right one puts the preview away. They sit in the bar so
+   they never scroll off and never leave a strip of their own behind. */
+.iv-fold {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  padding: 0 0 4px;
+  border: 1px solid #34302a;
+  border-radius: 12px;
+  background: #08080b;
+  color: #b9b4a8;
+  font: inherit;
+  font-size: 34px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.iv-fold:hover { color: #ecd9a0; background: rgba(201,162,75,.08); border-color: rgba(201,162,75,.45); }
+.iv-fold.iv-on { color: #f1e2b4; background: rgba(201,162,75,.16); border-color: rgba(201,162,75,.55); }
+.iv-seg button:hover { color: #ecd9a0; background: rgba(201,162,75,.08); }
+.iv-seg button.iv-on { background: rgba(201,162,75,.20); color: #f1e2b4; }
+
+.iv-subs, .iv-sortbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: none; }
+.iv-sortbar-l { font-size: 14px; color: #8f8a7e; letter-spacing: 1.5px; text-transform: uppercase; margin-right: 4px; }
+.iv-chip {
+  font: inherit;
+  font-size: 15px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid #34302a;
+  border-radius: 999px;
+  background: transparent;
+  color: #c3bdae;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.iv-chip:hover { border-color: rgba(201,162,75,.5); color: #efe2bc; }
+.iv-chip.iv-on { background: rgba(201,162,75,.20); border-color: rgba(201,162,75,.65); color: #f6e7bb; }
+.iv-chip-sep { width: 1px; height: 24px; background: #34302a; margin: 0 4px; }
+
+/* columns (the header row and every list row share this template). The four
+   number columns read --iv-cw-<id> when you have dragged one (inline on
+   #iv-pane, saved in prefs.cols); Name takes whatever they leave. */
+.iv-cols, .iv-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) var(--iv-cw-pow, 128px) var(--iv-cw-w, 82px) var(--iv-cw-v, 92px) var(--iv-cw-vw, 104px);
+  column-gap: 14px;
+  align-items: center;
+}
+.iv-cols { flex: none; padding: 0 14px 0 10px; border-bottom: 1px solid #24221c; min-height: 40px; position: relative; }
+.iv-col {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #9a9486;
+  font: inherit;
+  font-size: 14px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.iv-col-art { cursor: default; }
+/* a number label wider than its column spills left into the gap (it is
+   right-aligned), as it always has; its full name is in the title */
+
+/* Column grips: one per number column, centred on the gap to its left
+   (placed from the RIGHT edge by positionGrips — the number columns are
+   fixed widths, so that distance holds while the pane resizes). Dragging
+   trades width with the column on the other side; Name absorbs the rest. */
+.iv-grip {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 14px;
+  cursor: col-resize;
+  z-index: 2;
+  outline: none;
+}
+.iv-grip::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 120ms ease, top 120ms ease, bottom 120ms ease;
+}
+/* at rest the header is just labels; pointing at it shows where it splits */
+.iv-cols:hover .iv-grip::after { background: rgba(201,162,75,.30); }
+.iv-grip:hover::after, .iv-grip:focus::after { background: rgba(201,162,75,.75); top: 0; bottom: 0; }
+.iv-grip.iv-dragging::after { background: #f0d68a; top: 0; bottom: 0; }
+.iv-grip.iv-gone { display: none; }
+#iv-pane.iv-col-drag, #iv-pane.iv-col-drag * { cursor: col-resize !important; }
+.iv-col.iv-col-num { justify-content: flex-end; }
+.iv-col:hover { color: #e4d39f; }
+.iv-col.iv-on { color: #f0d68a; }
+.iv-sortglyph { display: inline-block; font-size: 14px; transition: transform 160ms ease; }
+.iv-sortglyph.iv-asc { transform: rotate(180deg); }
+.iv-sortglyph.iv-ghost { opacity: 0; }
+.iv-col:hover .iv-sortglyph.iv-ghost { opacity: .45; }
+
+/* the virtual list */
+.iv-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.iv-spacer { width: 1px; }
+.iv-rows { position: absolute; left: 0; right: 0; top: 0; }
+.iv-list.iv-grid .iv-rows {
+  display: grid;
+  grid-auto-rows: 268px;
+  padding: 0 4px;
+}
+
+.iv-row {
+  height: 72px;
+  padding: 0 14px 0 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  position: relative;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.iv-row:hover { background: rgba(255,255,255,.035); }
+.iv-row.iv-sel {
+  background: linear-gradient(90deg, rgba(201,162,75,.16), rgba(201,162,75,.04));
+  border-color: rgba(201,162,75,.55);
+}
+.iv-row.iv-worn::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 12px; bottom: 12px;
+  width: 3px;
+  border-radius: 2px;
+  background: #d8b45a;
+}
+
+.iv-thumb, .iv-tile-art, .iv-stage-art { position: relative; }
+.iv-thumb {
+  width: 60px; height: 60px;
+  border-radius: 10px;
+  background: radial-gradient(circle at 50% 42%, #1c1b22 0%, #101015 70%);
+  border: 1px solid #23211b;
+  overflow: hidden;
+}
+.iv-cat-ic, .iv-art { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: contain; }
+.iv-cat-ic { padding: 12px; opacity: .55; }
+.iv-art { padding: 3px; }
+.iv-has-art > .iv-cat-ic { display: none; }
+
+.iv-namecell { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.iv-name { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 18px; color: #efe9da; }
+.iv-name-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iv-row.iv-worn .iv-name { color: #f3dfa2; }
+.iv-star { width: 20px; height: 20px; flex: none; }
+.iv-qty { flex: none; font-size: 16px; color: #b9b4a8; font-variant-numeric: tabular-nums; }
+.iv-meta { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.iv-sub { font-size: 15px; color: #9a9486; flex: none; }
+
+.iv-tag {
+  flex: none;
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255,255,255,.06);
+  color: #c3bdae;
+  white-space: nowrap;
+}
+.iv-tag-eq { background: rgba(216,180,90,.18); color: #f0d68a; }
+.iv-tag-nw { background: rgba(124,196,120,.16); color: #a8e0a2; }
+.iv-tag-en { background: rgba(126,150,240,.18); color: #b6c6ff; }
+.iv-tag-po { background: rgba(120,200,120,.14); color: #9fd59a; }
+.iv-tag-st { background: rgba(214,92,72,.18); color: #ff9a86; }
+.iv-tag-qi { background: rgba(201,162,75,.12); color: #d8c48f; }
+
+.iv-num { text-align: right; font-size: 17px; color: #ddd7c8; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.iv-pow { color: #efe9da; font-weight: 600; }
+.iv-gold { color: #f0d68a; }
+.iv-dim { color: #5f5b52; font-weight: 400; }
+.iv-delta { display: inline-block; margin-left: 6px; font-size: 14px; font-weight: 600; padding: 2px 6px; border-radius: 6px; }
+.iv-pow { display: flex; align-items: center; justify-content: flex-end; }
+.iv-delta-slot { flex: none; width: 50px; display: flex; justify-content: flex-end; }
+.iv-cols > .iv-col:nth-child(3) { padding-right: 50px; }
+.iv-up { color: #a8e0a2; background: rgba(124,196,120,.12); }
+.iv-down { color: #ff9a86; background: rgba(214,92,72,.12); }
+b.iv-up, b.iv-down { background: transparent; padding: 0; }
+
+/* grid tiles */
+.iv-tile {
+  position: relative;
+  margin: 6px;
+  height: 256px;
+  padding: 12px 12px 10px;
+  border: 1px solid #23211b;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #14131a 0%, #0f0f14 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+  min-width: 0;
+  min-height: min-content;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+.iv-tile:hover { border-color: rgba(201,162,75,.35); }
+.iv-tile.iv-sel { border-color: rgba(201,162,75,.75); background: linear-gradient(180deg, rgba(201,162,75,.14), rgba(201,162,75,.03)); }
+.iv-tile.iv-worn { box-shadow: inset 0 3px 0 #d8b45a; }
+.iv-tile-art {
+  flex: 1 1 auto;
+  min-height: 0;
+  border-radius: 10px;
+  background: radial-gradient(circle at 50% 45%, #1e1d25 0%, #0c0c10 75%);
+  overflow: hidden;
+}
+.iv-tile-art .iv-cat-ic { padding: 30px; }
+.iv-tile-name {
+  flex: none;
+  font-size: 16px;
+  line-height: 1.25;
+  color: #efe9da;
+  height: 40px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.iv-tile-stats { flex: none; display: flex; align-items: baseline; gap: 10px; font-size: 15px; color: #a8a294; white-space: nowrap; overflow: hidden; }
+.iv-tile-pow { color: #efe9da; font-weight: 600; font-size: 16px; }
+.iv-tile-v { margin-left: auto; color: #f0d68a; }
+.iv-tile-q, .iv-tile-eq {
+  position: absolute; top: 16px;
+  font-size: 14px; padding: 3px 8px; border-radius: 6px;
+}
+.iv-tile-q { right: 16px; background: rgba(0,0,0,.6); color: #e8e2d4; }
+.iv-tile-eq { left: 16px; background: rgba(216,180,90,.85); color: #1a160c; font-weight: 700; }
+.iv-tile-star { position: absolute; top: 16px; left: 16px; width: 22px; height: 22px; }
+.iv-tile.iv-worn .iv-tile-star { left: 46px; }
+
+.iv-empty {
+  position: absolute;
+  left: 0; right: 0; top: 40px;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  padding: 40px 24px;
+  text-align: center;
+  pointer-events: none;
+}
+.iv-empty > * { pointer-events: auto; }
+.iv-empty-ic { width: 96px; height: 96px; opacity: .5; }
+.iv-empty-t { font-size: 18px; color: #b9b4a8; max-width: 46ch; text-wrap: balance; }
+
+.iv-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 36px;
+  padding: 6px 6px 0;
+  border-top: 1px solid #1d1c17;
+  font-size: 15px;
+  color: #9a9486;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.iv-foot-n { color: #cbc5b6; }
+.iv-keys { margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
+.iv-keys kbd, .iv-pop kbd {
+  white-space: nowrap;
+  font: inherit;
+  font-size: 14px;
+  padding: 1px 7px;
+  border: 1px solid #3a3528;
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  color: #e4d39f;
+  background: #121117;
+}
+
+/* ------------------------------------------------------------ stage -- */
+
+.iv-stage {
+  /* a share of the screen, not a fixed strip: at 2560 the ledger's name
+     column would otherwise be a long empty run */
+  flex: 0 0 31%;
+  min-width: 400px;
+  max-width: 780px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #2c2a22;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #121118 0%, #0b0b0f 100%);
+  overflow: hidden;
+}
+.iv-stage-art {
+  /* the model takes whatever the card leaves free and yields it back as the
+     item card grows (the body below is capped and scrolls) */
+  flex: 1 1 300px;
+  min-height: 240px;
+  border-radius: 12px;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 60% 45% at 50% 88%, rgba(201,162,75,.16) 0%, rgba(201,162,75,0) 70%),
+    radial-gradient(circle at 50% 40%, #22212a 0%, #0d0d12 72%);
+  border: 1px solid #23211b;
+  animation: iv-rise 220ms ease-out;
+}
+.iv-stage-art.iv-turnable { cursor: grab; }
+.iv-stage-art.iv-dragging { cursor: grabbing; }
+.iv-stage-art .iv-cat-ic { padding: 22%; opacity: .35; }
+.iv-stage-art .iv-art { padding: 14px 14px 40px; }
+/* zoomed: applyZoom sizes and places the picture's layout box (never a
+   transform); the padding stays, so 1.0x and 1.2x frame the piece alike */
+.iv-stage-art.iv-panning { cursor: move; }
+.iv-turn-hint {
+  position: absolute;
+  left: 0; right: 0; bottom: 10px;
+  text-align: center;
+  font-size: 14px;
+  color: #a8a294;
+  letter-spacing: .5px;
+  pointer-events: none;
+}
+.iv-turn-hint .iv-link { pointer-events: auto; }
+.iv-link {
+  font: inherit;
+  font-size: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #f0d68a;
+  text-decoration: underline;
+  cursor: pointer;
+}
+@keyframes iv-rise { from { opacity: .4; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.iv-st-head { flex: none; display: flex; flex-direction: column; gap: 6px; }
+.iv-st-name {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 25px;
+  line-height: 1.2;
+  color: #f3e4b8;
+  text-wrap: balance;
+}
+.iv-st-sub { font-size: 16px; color: #a8a294; }
+.iv-st-pl { color: #8f8a7e; }
+.iv-st-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.iv-st-tags:empty { display: none; }
+
+.iv-st-stats {
+  flex: none;
+  display: grid;
+  gap: 1px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #23211b;
+  border: 1px solid #23211b;
+}
+.iv-st-cell { background: #0e0e13; padding: 10px 12px; min-width: 0; }
+.iv-st-l { font-size: 14px; color: #8f8a7e; letter-spacing: 1px; text-transform: uppercase; white-space: nowrap; }
+.iv-st-v { font-family: Georgia, serif; font-size: 23px; color: #efe9da; margin-top: 2px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.iv-st-v .iv-delta { font-family: "Segoe UI", Roboto, Arial, sans-serif; vertical-align: middle; }
+
+.iv-cmp { flex: none; padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,.03); border: 1px solid #23211b; }
+.iv-cmp-h { font-size: 14px; color: #8f8a7e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iv-cmp-h span { color: #cbc5b6; }
+.iv-cmp-row { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 6px; font-size: 16px; color: #b9b4a8; }
+.iv-cmp-p b { font-weight: 700; color: #e8e2d4; }
+
+.iv-st-body {
+  flex: 0 1 auto;
+  min-height: 60px;
+  max-height: 42%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+.iv-st-sec-h { font-family: Georgia, serif; font-size: 18px; color: #b6c6ff; }
+.iv-fx { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.iv-fx li { display: flex; flex-direction: column; gap: 2px; padding-left: 12px; border-left: 2px solid rgba(126,150,240,.4); }
+.iv-fx-n { font-size: 16px; color: #e8e2d4; font-weight: 600; }
+.iv-fx-d { font-size: 16px; color: #b9b4a8; line-height: 1.4; text-wrap: pretty; }
+.iv-fx li.iv-fx-unk { border-left-color: #3a3528; }
+.iv-fx li.iv-fx-unk .iv-fx-n { color: #8f8a7e; font-style: italic; }
+.iv-st-desc { font-size: 16px; line-height: 1.5; color: #c9c3b4; font-style: italic; text-wrap: pretty; }
+.iv-st-note { font-size: 16px; color: #c9c3b4; line-height: 1.4; }
+.iv-st-note b { color: #f0d68a; font-weight: 600; }
+.iv-st-warn { color: #ff9a86; }
+.iv-st-loading, .iv-st-quiet { font-size: 15px; color: #6f6a5e; }
+
+.iv-st-acts { flex: none; display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid #1d1c17; }
+.iv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 46px;
+  padding: 0 18px;
+  border: 1px solid #3a3528;
+  border-radius: 10px;
+  background: #15141b;
+  color: #e4dccb;
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 80ms ease;
+}
+.iv-btn:hover { border-color: rgba(201,162,75,.6); background: #1c1a22; color: #f6e7bb; }
+.iv-btn:active { transform: translateY(1px); }
+.iv-btn:disabled { opacity: .4; cursor: default; }
+.iv-btn-primary {
+  flex-basis: 100%;
+  background: linear-gradient(180deg, #c9a24b 0%, #a8832f 100%);
+  border-color: #d8b45a;
+  color: #1a150a;
+  font-weight: 700;
+  font-size: 17px;
+}
+.iv-btn-primary:hover { background: linear-gradient(180deg, #dbb45a 0%, #b8913a 100%); color: #120e05; }
+.iv-btn-danger { color: #ff9a86; }
+.iv-btn-danger:hover { border-color: rgba(214,92,72,.7); color: #ffb3a4; }
+.iv-btn-primary.iv-btn-danger { background: linear-gradient(180deg, #b6493a 0%, #8e2f25 100%); border-color: #d0604c; color: #fff1ec; flex-basis: auto; }
+.iv-btn-ic { width: 22px; height: 22px; }
+
+.iv-stage-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+.iv-stage-empty-ic { width: 140px; height: 140px; opacity: .55; }
+.iv-stage-empty-t { font-size: 18px; color: #8f8a7e; }
+
+/* busy: an action is in flight — the ledger dims a touch so a double press
+   reads as "already working" */
+#iv-pane.iv-busy .iv-rows { opacity: .7; transition: opacity 120ms ease; }
+
+/* ------------------------------------------------------------ toast -- */
+
+.iv-toast {
+  position: absolute;
+  left: 50%; bottom: 64px;
+  transform: translateX(-50%);
+  padding: 12px 22px;
+  border-radius: 12px;
+  background: rgba(16,15,20,.96);
+  border: 1px solid rgba(201,162,75,.55);
+  color: #f3e4b8;
+  font-size: 17px;
+  box-shadow: 0 8px 22px rgba(0,0,0,.4);
+  white-space: nowrap;
+  z-index: 5;
+}
+.iv-toast.iv-toast-bad { border-color: rgba(214,92,72,.7); color: #ffb3a4; }
+
+/* ---------------------------------------------------------- popouts -- */
+/* Body-anchored: fills the viewport, so bare vw/vh are right and it does NOT
+   wear the deck's ui-scale (the 2026-08-14 popup audit). */
+
+.iv-pop-back {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4,4,7,.72);
+}
+.iv-pop {
+  width: min(560px, 92vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px;
+  border: 1px solid rgba(201,162,75,.45);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #16151c 0%, #0d0d12 100%);
+  box-shadow: 0 12px 30px rgba(0,0,0,.42);
+  color: #e8e2d4;
+  font-family: "Segoe UI", Roboto, Arial, sans-serif;
+  animation: iv-rise 200ms ease-out;
+}
+.iv-pop-book { width: min(880px, 92vw); height: 86vh; }
+.iv-pop-h { display: flex; align-items: center; gap: 16px; flex: none; }
+.iv-pop-ic { width: 52px; height: 52px; flex: none; }
+.iv-pop-h > div { flex: 1 1 auto; min-width: 0; }
+.iv-pop-t { font-family: Georgia, serif; font-size: 26px; color: #f3e4b8; line-height: 1.2; text-wrap: balance; }
+.iv-pop-s { font-size: 16px; color: #a8a294; margin-top: 4px; }
+.iv-pop-x {
+  flex: none;
+  width: 44px; height: 44px;
+  border: 1px solid #3a3528;
+  border-radius: 10px;
+  background: #15141b;
+  color: #cfc8b6;
+  font-size: 18px;
+  cursor: pointer;
+}
+.iv-pop-x:hover { border-color: rgba(201,162,75,.6); color: #f6e7bb; }
+
+.iv-drop-row { display: flex; align-items: center; justify-content: center; gap: 14px; }
+.iv-step {
+  width: 60px; height: 60px;
+  border: 1px solid #3a3528;
+  border-radius: 12px;
+  background: #15141b;
+  color: #f0d68a;
+  font-size: 28px;
+  cursor: pointer;
+}
+.iv-step:hover { border-color: rgba(201,162,75,.6); }
+.iv-drop-n {
+  width: 150px; height: 60px;
+  border: 1px solid #4a4434;
+  border-radius: 12px;
+  background: #08080b;
+  color: #f3e4b8;
+  font-family: Georgia, serif;
+  font-size: 30px;
+  text-align: center;
+  outline: none;
+}
+.iv-drop-n:focus { border-color: rgba(201,162,75,.8); box-shadow: 0 0 0 3px rgba(201,162,75,.15); }
+.iv-drop-quick { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+.iv-pop-foot { display: flex; align-items: center; gap: 10px; flex: none; }
+.iv-pop-foot .iv-btn { flex: 0 0 auto; min-width: 120px; }
+.iv-pop-foot .iv-btn-primary { flex-basis: auto; }
+.iv-pop-sum { flex: 1 1 auto; min-width: 0; font-size: 15px; color: #a8a294; }
+
+.iv-book {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 18px 8px 4px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 19px;
+  line-height: 1.65;
+  color: #e6dcc4;
+}
+.iv-book p { margin: 0 auto 1em; max-width: 64ch; text-wrap: pretty; }
+.iv-book-none { color: #8f8a7e; font-style: italic; }
+
+
+/* ------------------------------------------------------- game icons -- */
+/* A white glyph baked from the SkyUI / I4 icon SWF, tinted with the I4 colour
+   by a CSS mask (Ultralight paints -webkit-mask-image; filters it ignores).
+   The background-color and mask-image are set inline per row. */
+.iv-gi {
+  position: absolute;
+  left: 12%; top: 12%;
+  width: 76%; height: 76%;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+}
+.iv-thumb-gi { background: radial-gradient(circle at 50% 45%, #18171e 0%, #0d0d12 75%); }
+.iv-tile-art.iv-thumb-gi .iv-gi { left: 22%; top: 18%; width: 56%; height: 64%; }
+.iv-seg button.iv-unready { color: #6f6a5e; }
+
+/* --------------------------------------------------- armor readout -- */
+.iv-armor .iv-purse-v { color: #cdd6e6; }
+
+/* ---------------------------------------------- stage: item / on you -- */
+.iv-stage-top { flex: none; display: flex; align-items: center; gap: 10px; }
+.iv-stage-seg { flex: 0 0 auto; }
+.iv-stage-seg button { min-width: 96px; height: 42px; }
+.iv-btn.iv-try { flex: 1 1 auto; min-height: 42px; }
+.iv-btn.iv-try.iv-on { border-color: rgba(201,162,75,.75); color: #f6e7bb; background: rgba(201,162,75,.16); }
+.iv-stage-art.iv-fig {
+  background:
+    radial-gradient(ellipse 45% 30% at 50% 94%, rgba(201,162,75,.20) 0%, rgba(201,162,75,0) 70%),
+    radial-gradient(ellipse 60% 70% at 50% 45%, #24232c 0%, #0c0c11 75%);
+}
+.iv-stage-art.iv-fig .iv-art { padding: 8px 8px 46px; }
+.iv-stage-art.iv-fig .iv-cat-ic { padding: 26%; opacity: .28; }
+.iv-fig-cap {
+  position: absolute;
+  left: 12px; top: 10px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(8,8,11,.72);
+  font-size: 14px;
+  color: #b9b4a8;
+  pointer-events: none;
+}
+.iv-fig-cap b { color: #f0d68a; font-weight: 600; }
+
+/* ------------------------------------------------------------ facts -- */
+.iv-st-sec-facts { color: #d8c48f; margin-top: 4px; }
+.iv-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #1d1c17;
+  border: 1px solid #1d1c17;
+}
+.iv-fact { background: #0e0e13; padding: 8px 12px; min-width: 0; }
+.iv-fact dt { font-size: 14px; color: #8f8a7e; letter-spacing: .5px; }
+.iv-fact dd { margin: 2px 0 0; font-size: 16px; color: #e8e2d4; overflow-wrap: anywhere; }
+.iv-fact dd.iv-fact-gold { color: #f0d68a; }
+.iv-fact dd.iv-fact-poison { color: #9fd59a; }
+.iv-fact dd.iv-fact-warn { color: #ff9a86; }
+/* an odd count: the last fact spans the row, so the grid never ends on a gap */
+.iv-fact:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.iv-st-figure-note { font-size: 14px; color: #8f8a7e; }
+
+/* ---------------------------------------------------- keyboard focus -- */
+.iv-cat:focus-visible, .iv-chip:focus-visible, .iv-col:focus-visible, .iv-btn:focus-visible,
+.iv-seg button:focus-visible, .iv-search-x:focus-visible, .iv-step:focus-visible,
+.iv-pop-x:focus-visible, .iv-link:focus-visible {
+  outline: 2px solid #f0d68a;
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------- folding -- */
+/* Rail folded: the icons stay (a kind is still one click away, its name
+   and count in the tooltip). Preview put away: the ledger takes the room. */
+#iv-pane.iv-rail-mini .iv-rail { flex-basis: 76px; padding: 6px; }
+#iv-pane.iv-rail-mini .iv-cat { justify-content: center; padding: 6px; }
+#iv-pane.iv-rail-mini .iv-cat-l, #iv-pane.iv-rail-mini .iv-cat-n { display: none; }
+#iv-pane.iv-side-shut .iv-stage { display: none; }
+#iv-pane.iv-unfold-rail .iv-cat-l, #iv-pane.iv-unfold-rail .iv-cat-n { animation: iv-unfold-in 200ms ease-out both; }
+#iv-pane.iv-unfold-stage .iv-stage { animation: iv-stage-in 220ms ease-out both; }
+@keyframes iv-unfold-in { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+@keyframes iv-stage-in { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+
+/* ------------------------------------------------------- narrow deck -- */
+/* The deck can be resized and scaled down; the ledger is the column that
+   must survive, so the stage narrows first and the rail goes icon-only. */
+@media (max-width: 1500px) {
+  .iv-stage { flex-basis: 380px; min-width: 0; }
+  .iv-cols, .iv-row { grid-template-columns: 60px minmax(0, 1fr) var(--iv-cw-pow, 118px) var(--iv-cw-w, 74px) var(--iv-cw-v, 84px) 0; }
+  /* by name: the header's last child is a grip, not Value / wt */
+  .iv-cols > [data-sort="vw"], .iv-row > :last-child { visibility: hidden; }
+}
+@media (max-width: 1180px) {
+  .iv-rail { flex-basis: 70px; padding: 6px; }
+  .iv-cat { justify-content: center; padding: 6px; }
+  .iv-cat-l, .iv-cat-n { display: none; }
+  .iv-stage { flex-basis: 330px; min-width: 0; }
+  .iv-keys { display: none; }
+}
+@media (max-width: 860px) {
+  .iv-body { flex-direction: column; }
+  .iv-rail { flex: none; flex-direction: row; overflow-x: auto; overflow-y: hidden; }
+  .iv-stage { flex: none; height: 46vh; max-width: none; }
+  .iv-carry-col { min-width: 150px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .iv-stage-art, .iv-pop { animation: none; }
+  .iv-stage-seg button { transition: none; }
+  .iv-carry-fill, .iv-row, .iv-tile, .iv-btn, .iv-sortglyph, .iv-fold, .iv-grip::after { transition: none; }
+  #iv-pane.iv-unfold-rail .iv-cat-l, #iv-pane.iv-unfold-rail .iv-cat-n, #iv-pane.iv-unfold-stage .iv-stage { animation: none; }
+}

@@ -1679,6 +1679,10 @@
   /* auto-fill, so the row spends whatever width the deck has instead of
      leaving a gutter — the "use the screen space" rule. */
   grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  /* ...until fitGearGrid (charsheet-pane.js) measures the card and CHOOSES a
+     column count that divides the slots evenly — its inline style wins over
+     this and over the breakpoint rules below. auto-fill alone left nine
+     slots as 8 + 1 with the ammo tile stranded on a row of its own. */
   gap: 12px;
 }
 .ps-gear-tile {
@@ -1698,6 +1702,11 @@
   border-color: rgba(201,162,75,.48);
   transform: translateY(-1px);
 }
+/* a worn piece opens the big view (2026-10-10) */
+.ps-gear-open { cursor: pointer; }
+.ps-gear-open:active { transform: translateY(0); background: #202029; }
+.ps-gear-open:focus-visible { outline: 2px solid rgba(201,162,75,.7); outline-offset: 2px; }
+.ps-gear-open:hover .ps-gear-plate { border-color: rgba(201,162,75,.6); }
 /* An empty slot recedes but keeps its footprint, so nothing shifts when you
    put a ring on. */
 .ps-gear-none {
@@ -2410,60 +2419,157 @@
    The player's own size, on the Character tab. Same card language as the rest
    of the sheet; the track is a plain div rather than <input type=range>,
    because Ultralight gives a range input no usable thumb. */
+/* 2026-10-10 flair pass (Rober: "this needs more flair / icons etc"): a
+   gold medallion with the deck's own measure art, a tier word beside the
+   number, a ticked track with a knob, steppers wearing the SOS size glyphs,
+   and the presets standing ON the scale at their own sizes. Explicit rgba()
+   throughout and no conic/color-mix (Ultralight). */
+.ps-sos {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(201, 162, 75, .11), rgba(201, 162, 75, 0) 340px),
+    #15151b;
+}
 /* The card's own header row: this pane's .ps-card-h is not laid out for a
    trailing value, so scope the layout here rather than change every card. */
 .ps-sos .ps-card-h {
-  display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+  display: flex; align-items: center; gap: 16px;
 }
-.ps-sos .ps-card-t { font: 700 17px/1.2 "Segoe UI", sans-serif; color: #e9e2d2; }
-.ps-sos .ps-sos-val { flex: none; font: 700 15px/1 "Segoe UI", sans-serif; color: #e8dcbb; }
-.ps-sos .ps-sos-val b { font-size: 18px; color: #f2e7ca; }
+.ps-sos-medal {
+  flex: none;
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(201, 162, 75, .55);
+  background: radial-gradient(circle at 50% 38%, rgba(201, 162, 75, .22), rgba(201, 162, 75, .04) 70%), #121217;
+  box-shadow: 0 0 0 4px rgba(201, 162, 75, .06), 0 0 18px rgba(201, 162, 75, .14);
+}
+.ps-sos-medal img { width: 48px; height: 48px; display: block; }
+.ps-sos-medal.ps-sos-noart { display: none; }
+.ps-sos-headtx { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.ps-sos .ps-card-t { font: 700 19px/1.2 "Segoe UI", sans-serif; color: #efe6cf; letter-spacing: .3px; }
+.ps-sos-kicker {
+  font: 500 14px/1.35 "Segoe UI", sans-serif; color: #8d8678;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ps-sos .ps-sos-val {
+  flex: none;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+  padding: 8px 14px 9px;
+  border-radius: 12px;
+  border: 1px solid rgba(201, 162, 75, .42);
+  background: linear-gradient(180deg, rgba(201, 162, 75, .16), rgba(201, 162, 75, .05));
+}
+.ps-sos-tier {
+  font: 700 12px/1 "Segoe UI", sans-serif; letter-spacing: 1.4px; text-transform: uppercase;
+  color: #c9a24b; white-space: nowrap;
+}
+.ps-sos-num { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+.ps-sos-num b { font: 800 28px/1 "Segoe UI", sans-serif; color: #f6ecd2; font-variant-numeric: tabular-nums; }
+.ps-sos-num i { font: 600 15px/1 "Segoe UI", sans-serif; font-style: normal; color: #a99c7c; }
 
 .ps-sos-row {
-  display: flex; align-items: center; gap: 12px;
-  margin: 12px 0 10px;
+  display: flex; align-items: flex-start; gap: 16px;
+  margin: 6px 0 2px;
 }
 .ps-sos-step {
   flex: none;
-  width: 46px; min-height: 44px;          /* touch-target floor */
-  font: 700 20px/1 "Segoe UI", sans-serif;
+  width: 54px; height: 54px;            /* over the 44px touch floor */
+  display: flex; align-items: center; justify-content: center;
+  font: 700 22px/1 "Segoe UI", sans-serif;
   color: #e6dcc2;
-  border: 1px solid rgba(201, 162, 75, .42);
-  border-radius: 10px;
+  border: 1px solid rgba(201, 162, 75, .45);
+  border-radius: 12px;
   background: rgba(201, 162, 75, .09);
   cursor: pointer;
-  transition: background .12s ease, border-color .12s ease;
+  transition: background .12s ease, border-color .12s ease, transform .12s ease;
 }
-.ps-sos-step:hover:not([disabled]) { background: rgba(201, 162, 75, .2); border-color: rgba(201, 162, 75, .8); }
+.ps-sos-step img { width: 46px; height: 46px; display: block; }
+.ps-sos-step:hover:not([disabled]) { background: rgba(201, 162, 75, .22); border-color: rgba(201, 162, 75, .85); }
+.ps-sos-step:active:not([disabled]) { transform: scale(.95); }
 .ps-sos-step[disabled] { opacity: .35; cursor: default; }
 
-.ps-sos-track {
+/* The rail holds the track, the knob that rides it and the scale under it.
+   The knob sits outside the track so the track can keep clipping its fill. */
+.ps-sos-rail {
+  position: relative;
   flex: 1 1 auto;
-  height: 16px;
+  min-width: 0;
+  padding-top: 18px;                    /* centres the 18px track on the 54px steppers */
+  height: 90px;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+.ps-sos-track {
+  position: relative;
+  height: 18px;
   min-width: 0;
   border: 1px solid rgba(255, 255, 255, .16);
   border-radius: 999px;
-  background: rgba(255, 255, 255, .05);
+  background: linear-gradient(180deg, rgba(0, 0, 0, .35), rgba(255, 255, 255, .04));
   overflow: hidden;
   cursor: pointer;
 }
-.ps-sos-fill { height: 100%; background: linear-gradient(90deg, #8a6f2e, #c9a24b); }
-.ps-sos-track:focus-visible { outline: 2px solid rgba(201, 162, 75, .6); outline-offset: 2px; }
+.ps-sos-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: linear-gradient(180deg, #e3c26e 0%, #c9a24b 45%, #8a6f2e 100%);
+  box-shadow: 0 0 12px rgba(201, 162, 75, .45);
+}
+.ps-sos-tick {
+  position: absolute; top: 5px; bottom: 5px;
+  width: 1px; margin-left: -.5px;
+  background: rgba(255, 255, 255, .10);
+}
+.ps-sos-tick-major { top: 2px; bottom: 2px; background: rgba(255, 255, 255, .22); }
+.ps-sos-tick-lit { background: rgba(40, 28, 6, .35); }
+.ps-sos-tick-major.ps-sos-tick-lit { background: rgba(40, 28, 6, .55); }
+.ps-sos-track:focus-visible { outline: 2px solid rgba(201, 162, 75, .7); outline-offset: 3px; }
 
-.ps-sos-presets { display: flex; gap: 8px; flex-wrap: wrap; }
+.ps-sos-knob {
+  position: absolute;
+  top: 27px;                            /* rail padding 18 + half the track */
+  width: 28px; height: 28px;
+  margin-left: -14px; margin-top: -14px;
+  border-radius: 50%;
+  border: 2px solid #f6ecd2;
+  background: radial-gradient(circle at 40% 35%, #f3dc9a, #c9a24b 55%, #7a6128);
+  box-shadow: 0 0 0 4px rgba(201, 162, 75, .18), 0 2px 8px rgba(0, 0, 0, .55);
+  pointer-events: none;
+}
+.ps-sos-busy .ps-sos-knob { opacity: .6; }
+
+/* The scale: each preset stands at its own size under the track, joined to it
+   by a short gold notch, so the row spends the whole width instead of
+   bunching in the corner. The end presets anchor to the edges. */
+.ps-sos-presets { position: absolute; left: 0; right: 0; top: 46px; height: 44px; }
 .ps-sos-preset {
-  min-width: 46px; min-height: 40px;
-  font: 600 15px/1 "Segoe UI", sans-serif;
+  position: absolute; top: 0;
+  min-width: 48px; height: 40px;
+  margin-left: -24px;
+  padding: 0 10px;
+  font: 700 15px/1 "Segoe UI", sans-serif;
   color: #d8d2c4;
   border: 1px solid rgba(255, 255, 255, .16);
-  border-radius: 9px;
+  border-radius: 10px;
   background: rgba(255, 255, 255, .04);
   cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
 }
+.ps-sos-preset::before {
+  content: '';
+  position: absolute; left: 50%; top: -7px;
+  width: 1px; height: 6px; margin-left: -.5px;
+  background: rgba(201, 162, 75, .55);
+}
+.ps-sos-preset-lo { margin-left: 0; }
+.ps-sos-preset-lo::before { left: 0; margin-left: 0; }
+.ps-sos-preset-hi { margin-left: -48px; }
+.ps-sos-preset-hi::before { left: auto; right: 0; margin-left: 0; }
 .ps-sos-preset:hover { background: rgba(201, 162, 75, .18); border-color: rgba(201, 162, 75, .6); color: #f2e7ca; }
-.ps-sos-preset.on { background: rgba(201, 162, 75, .28); border-color: rgba(201, 162, 75, .85); color: #f6ecd2; }
-
-.ps-sos-note { margin-top: 9px; font: 500 13.5px/1.45 "Segoe UI", sans-serif; color: #8d8678; }
+.ps-sos-preset.on {
+  background: linear-gradient(180deg, rgba(201, 162, 75, .38), rgba(201, 162, 75, .18));
+  border-color: rgba(201, 162, 75, .9); color: #fff6dc;
+  box-shadow: 0 0 10px rgba(201, 162, 75, .25);
+}
 
 /* Why there is no slider: SOS RaceMenu owns the player, SOS is not loaded, and
    so on. A reason, never an inert control. */
@@ -2475,4 +2581,7 @@
   border-radius: 10px;
   background: rgba(217, 160, 90, .08);
 }
-@media (prefers-reduced-motion: reduce) { .ps-sos-step { transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .ps-sos-step, .ps-sos-preset { transition: none; }
+  .ps-sos-step:active:not([disabled]) { transform: none; }
+}

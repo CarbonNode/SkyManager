@@ -24,6 +24,11 @@
  *          sub    — smaller meta line under it ('' hides)
  *          glyph  — fallback glyph if the image fails to load
  *          frames — optional candidate sibling urls to probe for a spin
+ *          facts  — optional [{label, value, tone}] stat strip under the
+ *                   title (tone 'dmg' | 'arm' | 'gold'; the Character tab's
+ *                   worn gear, 2026-10-10)
+ *        src may be '' when glyph is given: a piece with no world model
+ *        still opens, on its glyph, so the facts have somewhere to live.
  *        HDLightbox.close()  ·  HDLightbox.isOpen()
  *
  *  Turn in 3D (2026-10-04, Rober on SeverActions' Catalog: "also
@@ -82,6 +87,18 @@ window.HDLightbox = (function () {
   }
 
   function isOpen() { return !!el; }
+
+  /* The stat strip: one cell per fact, value big, label under it. Wraps as a
+     centred row, so two facts and nine facts both sit balanced. */
+  function factsHtml(facts) {
+    if (!facts || !facts.length) return '';
+    return '<div class="hdlb-facts">' + facts.map(function (f) {
+      const tone = /^(dmg|arm|gold)$/.test(f && f.tone) ? ' hdlb-fact-' + f.tone : '';
+      return '<div class="hdlb-fact' + tone + '">' +
+        '<span class="hdlb-fact-v">' + esc(f.value) + '</span>' +
+        '<span class="hdlb-fact-l">' + esc(f.label) + '</span></div>';
+    }).join('') + '</div>';
+  }
 
   function close() {
     probeGen++;
@@ -413,10 +430,17 @@ window.HDLightbox = (function () {
     inspSchedulePoll();
   }
 
+  /* The one receiver for hdInspectData. Other surfaces that turn an item
+     (the Inventory tab's preview stage) listen for the plain 'hd-inspect-data'
+     document event and read the payload back via HDLightbox._inspectState() —
+     the hd-spin-state idiom above, for the same Ultralight reason. */
+  let lastInspect = null;
   window.hdInspectData = function (j) {
     let d = j;
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
+    if (d && typeof d === 'object') lastInspect = d;
     applyInspect(d);
+    try { document.dispatchEvent(new Event('hd-inspect-data')); } catch (e) {}
   };
 
   let inspDocWired = false;
@@ -661,14 +685,15 @@ window.HDLightbox = (function () {
   function open(opts) {
     opts = opts || {};
     const host = opts.host;
-    if (!host || !opts.src) return;
+    if (!host || (!opts.src && !opts.glyph)) return;
     close();
+    const hasSrc = !!opts.src;
 
-    ring = [opts.src];
+    ring = hasSrc ? [opts.src] : [];
     ringAt = 0;
     zoom = 1; panX = 0; panY = 0; dragging = false;
     baseW = 0; baseH = 0;
-    spin = (opts.spin && opts.spin.formId && opts.spin.plugin && opts.spin.formId !== '0x0')
+    spin = (hasSrc && opts.spin && opts.spin.formId && opts.spin.plugin && opts.spin.formId !== '0x0')
       ? { kind: String(opts.spin.kind || 'item'), formId: String(opts.spin.formId),
           plugin: String(opts.spin.plugin), count: 4, asked: false }
       : null;
@@ -680,17 +705,18 @@ window.HDLightbox = (function () {
       '<div class="hdlb-card">' +
       '<button class="hdlb-close" title="Close (Esc)">✕</button>' +
       '<div class="hdlb-stage">' +
-      '<img class="hdlb-img" src="' + esc(opts.src) + '" alt="" draggable="false">' +
-      '<div class="hdlb-fallback hidden">' + esc(opts.glyph || '❖') + '</div>' +
+      (hasSrc ? '<img class="hdlb-img" src="' + esc(opts.src) + '" alt="" draggable="false">' : '') +
+      '<div class="hdlb-fallback' + (hasSrc ? ' hidden' : '') + '">' + esc(opts.glyph || '❖') + '</div>' +
       '<span class="hdlb-zoomlvl" aria-hidden="true"></span>' +
       '<span class="hdlb-spinstat" aria-hidden="true"></span>' +
       '</div>' +
       '<div class="hdlb-caption">' +
       '<div class="hdlb-title">' + esc(opts.title || '') + '</div>' +
       (opts.sub ? '<div class="hdlb-sub">' + esc(opts.sub) + '</div>' : '') +
-      '<div class="hdlb-hint">' + (spin
+      factsHtml(opts.facts) +
+      (hasSrc ? '<div class="hdlb-hint">' + (spin
         ? 'hold + drag to turn it · scroll to zoom · double-click to fill'
-        : 'scroll to zoom · drag to move · double-click to fill') + '</div>' +
+        : 'scroll to zoom · drag to move · double-click to fill') + '</div>' : '') +
       (spin && spin.kind === 'item'
         ? '<button type="button" class="hdlb-3d hidden" title="Render this piece from every side, big, and turn it freely">' +
           '<span class="hdlb-3d-title">Turn in 3D</span>' +
@@ -714,21 +740,23 @@ window.HDLightbox = (function () {
 
     /* a dead url shows the glyph, never a broken-image box */
     const img = el.querySelector('.hdlb-img');
-    /* Pin the stage to the picture's own height as soon as there IS one, so
-       zooming (which takes the image out of the flow) cannot resize the card.
-       Runs per src, so a turntable frame of a different size re-pins — but only
-       while un-zoomed, so a frame landing mid-zoom never moves the box. */
-    img.addEventListener('load', lockStage);
-    if (img.complete) setTimeout(lockStage, 0);
-    img.onerror = function () {
-      const fb = el && el.querySelector('.hdlb-fallback');
-      if (fb) fb.classList.remove('hidden');
-      if (img.parentNode) img.parentNode.removeChild(img);
-    };
+    if (img) {
+      /* Pin the stage to the picture's own height as soon as there IS one, so
+         zooming (which takes the image out of the flow) cannot resize the card.
+         Runs per src, so a turntable frame of a different size re-pins — but only
+         while un-zoomed, so a frame landing mid-zoom never moves the box. */
+      img.addEventListener('load', lockStage);
+      if (img.complete) setTimeout(lockStage, 0);
+      img.onerror = function () {
+        const fb = el && el.querySelector('.hdlb-fallback');
+        if (fb) fb.classList.remove('hidden');
+        if (img.parentNode) img.parentNode.removeChild(img);
+      };
+    }
 
     el.addEventListener('click', function (e) { if (e.target === el) close(); });
     el.querySelector('.hdlb-close').addEventListener('click', close);
-    wireZoom();
+    if (img) wireZoom();   // a glyph-only view has nothing to zoom
 
     keyFn = function (e) {
       if (!el) return;
@@ -771,6 +799,7 @@ window.HDLightbox = (function () {
            _pan: function () { return { x: panX, y: panY }; },
            _base: function () { return { w: baseW, h: baseH }; },
            _spinState: function () { return lastSpinState; },
+           _inspectState: function () { return lastInspect; },
            _spin: function () { return spin; },
            _insp: function () { return insp ? { angle: insp.angle, frames: inspAngles().length, polls: insp.polls } : null; },
            _inspectOffered: function () { return inspectOn; },

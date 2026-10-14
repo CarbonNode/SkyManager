@@ -7,7 +7,8 @@
 
 namespace CellTravelHandoff
 {
-	// Shared by ALL deck travel, including Cell Finder and NPC Finder.
+	// Shared by all deck travel that moves the PLAYER (Cell Finder, NPC Finder
+	// goto, Places, Domains...). NPC-only moves skip it: main.cpp RunNpcMove.
 	// Main-thread observations, with time supplied by the caller so the actual
 	// close/timeout policy can be exercised without Skyrim or a renderer.
 	enum class Result { Wait, Ready, Cancelled, TimedOut };
@@ -50,10 +51,22 @@ namespace CellTravelHandoff
 		bool finished_ = false;
 	};
 
-	// Console entries, Omni's console runner, and its Test button must take
-	// the same handoff as native travel. Inspect command verbs (not substrings
-	// in arguments/comments); Bethesda batches have one command per line.
-	inline bool IsTravelCommand(std::string_view commands)
+	// Console entries, Omni's console runner, and its Test button take the
+	// same handoff as native travel WHEN THE PLAYER MOVES. Inspect command
+	// verbs (not substrings in arguments/comments); Bethesda batches have one
+	// command per line. An NPC moved to the player (`<npc>.moveto player`, or
+	// a bare moveto aimed at the crosshair NPC) loads no cell of the player's
+	// and runs at once (Rober, 2026-10-11).
+	inline bool IsPlayerRef(std::string_view ref)
+	{
+		if (ref == "player")
+			return true;
+		// The player's FormID, 14, in any zero-padded spelling.
+		const auto first = ref.find_first_not_of('0');
+		return first != std::string_view::npos && ref.substr(first) == "14";
+	}
+
+	inline bool IsTravelCommand(std::string_view commands, bool crosshairTarget = false)
 	{
 		while (!commands.empty()) {
 			const auto end = commands.find('\n');
@@ -66,14 +79,22 @@ namespace CellTravelHandoff
 			std::string verb(line.substr(0, line.find_first_of(" \t\r;")));
 			for (auto& c : verb)
 				if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-			// Ref-qualified MoveTo can move the player (player / numeric id),
-			// and delaying NPC moves too is safer than missing a spelling.
-			if (const auto dot = verb.rfind('.'); dot != std::string::npos)
+			std::string ref;
+			if (const auto dot = verb.rfind('.'); dot != std::string::npos) {
+				ref = verb.substr(0, dot);
 				verb.erase(0, dot + 1);
+			}
+			// These only ever move the player, whatever ref is named.
 			if (verb == "coc" || verb == "centeroncell" || verb == "cow" ||
-				verb == "centeronworld" || verb == "moveto" || verb == "movetoqt" ||
-				verb == "movetoquesttarget" || verb == "movetomarker" || verb == "positioncell")
+				verb == "centeronworld" || verb == "movetoqt" || verb == "movetoquesttarget")
 				return true;
+			// These move their reference: the named one, else the console's
+			// selection. A bare one with no crosshair NPC behind it could be
+			// the player, and delaying an NPC is safer than missing the player.
+			if (verb == "moveto" || verb == "movetomarker" || verb == "positioncell") {
+				if (ref.empty() ? !crosshairTarget : IsPlayerRef(ref))
+					return true;
+			}
 		}
 		return false;
 	}

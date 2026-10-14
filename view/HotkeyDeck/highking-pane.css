@@ -255,7 +255,7 @@
 .hx-hold-name { flex: 1 1 150px; min-width: 130px; font-size: 14.5px; font-weight: 600; color: #e0d9c6; }
 
 .hx-hold-cell { flex: 0 0 auto; display: flex; align-items: baseline; gap: 7px; min-width: 108px; }
-.hx-cell-label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .6px; color: #7c7565; }
+.hx-cell-label { font-size: 12.5px; text-transform: uppercase; letter-spacing: .6px; color: #7c7565; }
 .hx-hold-cell b { font-size: 16px; color: #d9d2bd; }
 .hx-delta { font-size: 12px; font-weight: 700; }
 
@@ -305,7 +305,7 @@
 .hx-power-cost { font-size: 12px; color: #8d8672; }
 .hx-power-go { font-size: 12.5px; font-weight: 700; color: #e5c877; }
 .hx-power-lock {
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .6px;

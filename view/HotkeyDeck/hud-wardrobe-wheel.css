@@ -1,0 +1,318 @@
+/* ==========================================================================
+   Wardrobe Wheel — looks on a slow-time radial, Flair fanning out past the
+   rim (hud-wardrobe-wheel.js). The Combat Wheel's language (hud-stance.css):
+   charcoal glass, aged-gold rim and hairlines, one flat dim behind it.
+
+   Visibility input: body.ww-open. The open layer turns pointer-events back
+   on (hud.css sets the HUD body to none). Body-anchored, outside #panel's
+   --ui-scale transform, so its bare vh/vw are correct (2026-08-14 audit).
+
+   ⚠ Ultralight: one-shot transitions only, explicit rgba(), no color-mix /
+   conic-gradient, no CSS transforms on SVG children. Every size that holds a
+   picture is calc(base × --ww-k) — a real LAYOUT size — so a render is
+   rasterised at the size it is drawn, never magnified by scale().
+   ========================================================================== */
+
+#hud-wwheel { position: fixed; left: 0; top: 0; right: 0; bottom: 0; display: none; z-index: 46; }
+body.ww-open #hud-wwheel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 7, 9, .38);   /* flat, never a screen-sized gradient (stance-wheel-dim-flat) */
+  cursor: default;
+  pointer-events: auto;
+}
+
+.ww-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  user-select: none;
+  -webkit-user-select: none;
+  color: #e9e2cf;
+  opacity: 0;
+  transform: scale(.95);
+  transition: opacity 160ms ease, transform 200ms ease;
+}
+.ww-frame.ww-in { opacity: 1; transform: scale(1); }
+
+.ww-title { display: flex; align-items: baseline; gap: 16px; margin-bottom: 8px; text-shadow: 0 1px 4px rgba(0, 0, 0, .9); }
+.ww-title-k { font-size: 30px; letter-spacing: 6px; text-transform: uppercase; color: #f3ecd9; }
+.ww-title-s { font-size: 17px; letter-spacing: 2px; text-transform: uppercase; color: #b9a978; }
+
+.ww-body { display: flex; align-items: center; gap: 48px; }
+
+/* ---- the wheel ----------------------------------------------------------- */
+.ww-wrap { position: relative; flex: none; --ww-k: 1; --ww-tk: 1; }
+.ww-svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; overflow: visible; }
+.ww-svg .ww-flyband { fill: none; stroke: rgba(214, 195, 148, .05); stroke-width: 132; }
+.ww-svg .ww-halo    { fill: none; stroke: rgba(214, 195, 148, .14); stroke-width: 10; }
+.ww-svg .ww-rim     { fill: none; stroke: rgba(214, 195, 148, .70); stroke-width: 2; }
+.ww-svg .ww-hubdisc { fill: rgba(9, 10, 12, .93); }
+.ww-svg .ww-hubring { fill: none; stroke: rgba(214, 195, 148, .55); stroke-width: 2; }
+.ww-svg .ww-edge    { fill: rgba(12, 13, 16, .93); stroke: rgba(214, 195, 148, .34); stroke-width: 1.5; }
+.ww-svg .ww-fill    { fill: rgba(212, 182, 102, 0); stroke: none; transition: fill 120ms ease; }
+.ww-svg .ww-accent  { fill: none; stroke: rgba(240, 214, 140, 0); stroke-width: 7; transition: stroke 120ms ease; }
+.ww-svg .ww-wedge.is-hi .ww-edge   { stroke: rgba(240, 214, 140, .95); stroke-width: 2.5; fill: rgba(24, 22, 17, .96); }
+.ww-svg .ww-wedge.is-hi .ww-fill   { fill: rgba(212, 182, 102, .16); }
+.ww-svg .ww-wedge.is-hi .ww-accent { stroke: rgba(240, 214, 140, .95); }
+/* aiming into the flyout: the look stays lit, quieter, under its layer */
+.ww-svg .ww-wedge.is-under .ww-fill   { fill: rgba(212, 182, 102, .08); }
+.ww-svg .ww-wedge.is-under .ww-accent { stroke: rgba(240, 214, 140, .55); }
+
+/* a look's face: its portrait (the dock's crop), name, and what fans out */
+.ww-face {
+  position: absolute;
+  width: calc(240px * var(--ww-k));
+  margin-left: calc(-120px * var(--ww-k));
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+.ww-pic {
+  position: relative;
+  overflow: hidden;
+  width: calc(100px * var(--ww-k));
+  height: calc(124px * var(--ww-k));
+  border-radius: calc(10px * var(--ww-k));
+  border: 1px solid rgba(214, 195, 148, .45);
+  background: rgba(22, 24, 27, .96);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .55);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.ww-pic img { position: absolute; display: block; max-width: none; }
+.ww-pic.is-empty, .ww-side-pic.is-empty { display: flex; align-items: center; justify-content: center; background: rgba(26, 25, 21, .97); }
+.ww-mono { font-family: Georgia, 'Times New Roman', serif; font-size: calc(58px * var(--ww-k)); line-height: 1; color: rgba(222, 196, 130, .88); text-shadow: 0 2px 6px rgba(0, 0, 0, .7); }
+.ww-side-pic .ww-mono { font-size: 96px; }
+.ww-side-pic.is-empty .ww-mono { font-size: 96px; }
+.ww-side.is-compact .ww-side-pic .ww-mono { font-size: 64px; }
+.ww-name {
+  margin-top: calc(9px * var(--ww-k));
+  font-size: calc(21px * var(--ww-tk));
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #e6dcc2;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .9);
+  transition: color 120ms ease;
+}
+.ww-more-n {
+  margin-top: calc(3px * var(--ww-k));
+  min-height: calc(20px * var(--ww-k));
+  font-size: calc(16px * var(--ww-tk));
+  letter-spacing: 1px;
+  white-space: nowrap;
+  color: #a99d7c;
+}
+.ww-wrap.has-hi .ww-face:not(.is-hi) { opacity: .62; }
+.ww-face.is-hi .ww-pic  { border-color: rgba(240, 214, 140, .95); box-shadow: 0 0 0 2px rgba(240, 214, 140, .35), 0 6px 18px rgba(0, 0, 0, .6); }
+.ww-face.is-hi .ww-name { color: #f0d68c; }
+.ww-face.is-hi .ww-more-n { color: #e3d4a6; }
+
+/* ---- the hub ------------------------------------------------------------- */
+.ww-hub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(250px * var(--ww-k));
+  margin-left: calc(-125px * var(--ww-k));
+  transform: translateY(-50%);
+  text-align: center;
+  pointer-events: none;
+}
+.ww-hub-name {
+  font-size: calc(30px * var(--ww-tk));
+  white-space: nowrap;      /* one line; fitHub shrinks a long name */
+  overflow: hidden;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: #f3ecd9;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .9);
+}
+.ww-hub-sub {
+  margin-top: calc(10px * var(--ww-k));
+  font-size: calc(19px * var(--ww-tk));
+  line-height: 1.3;
+  color: #d4c493;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- the flyout ------------------------------------------------------------
+   Petals fan out past the aimed look's rim: each one a Flair set or a single
+   piece, drawn with its pieces' renders. One-shot fan-out (.is-out). */
+.ww-fly { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+.ww-petal {
+  position: absolute;
+  width: calc(120px * var(--ww-k));
+  margin-left: calc(-60px * var(--ww-k));
+  margin-top: calc(-60px * var(--ww-k));
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 150ms ease, transform 170ms ease;
+}
+.ww-fly.is-out .ww-petal { opacity: 1; transform: translateY(0); }
+.ww-art {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  overflow: hidden;
+  box-sizing: border-box;
+  /* the name band sits under the pictures, never over them */
+  padding-bottom: calc(24px * var(--ww-tk));
+  width: calc(120px * var(--ww-k));
+  height: calc(120px * var(--ww-k));
+  border-radius: calc(14px * var(--ww-k));
+  border: 1px solid rgba(214, 195, 148, .5);
+  background: rgba(16, 17, 20, .95);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .55);
+  transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+}
+.ww-tile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
+.ww-art.n2 .ww-tile { width: 50%; }
+.ww-art.n3 .ww-tile, .ww-art.n4 .ww-tile { width: 50%; height: 50%; }
+.ww-art.n3 .ww-tile:first-child { width: 100%; }
+.ww-tile img { display: block; width: 92%; height: 92%; object-fit: contain; }
+.ww-tile.is-pending { background: rgba(28, 29, 33, .9); }
+.ww-initial { font-size: calc(30px * var(--ww-k)); color: rgba(212, 182, 102, .75); font-family: Georgia, serif; }
+.ww-more { font-size: calc(22px * var(--ww-k)); color: #e3d4a6; background: rgba(28, 29, 33, .9); }
+.ww-petal-name {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  padding: calc(3px * var(--ww-k)) calc(6px * var(--ww-k));
+  line-height: 1.2;
+  background: rgba(8, 9, 11, .8);
+  font-size: calc(15px * var(--ww-tk));
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #ddd2b4;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .95);
+}
+.ww-petal.is-hi .ww-art {
+  border-color: rgba(240, 214, 140, 1);
+  background: rgba(30, 28, 22, .97);
+  box-shadow: 0 0 0 3px rgba(240, 214, 140, .38), 0 8px 22px rgba(0, 0, 0, .65);
+}
+.ww-petal.is-hi .ww-petal-name { color: #f0d68c; }
+.ww-petal.is-piece .ww-art { border-style: dashed; }
+
+/* ---- the side panel: what the aimed choice puts on ------------------------- */
+.ww-side {
+  flex: none;
+  align-self: center;
+  box-sizing: border-box;
+  padding: 28px 30px 30px;
+  border: 1px solid rgba(214, 195, 148, .32);
+  border-radius: 16px;
+  background: rgba(11, 12, 15, .9);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .42);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* a short screen (720p): tighter panel, smaller portrait, same type sizes */
+.ww-side.is-compact { padding: 18px 20px 20px; }
+.ww-side.is-compact .ww-side-name { font-size: 28px; }
+.ww-side.is-compact .ww-side-pic { width: 128px; height: 158px; margin-top: 14px; }
+.ww-side.is-compact .ww-side-p { margin-top: 12px; font-size: 18px; }
+.ww-side.is-compact .ww-piece { min-height: 72px; }
+.ww-side.is-compact .ww-piece-art { width: 72px; height: 72px; }
+.ww-eyebrow { font-size: 16px; letter-spacing: 2.5px; text-transform: uppercase; color: #b9a978; }
+.ww-eyebrow.ww-gap { margin-top: 26px; }
+.ww-side-name { margin: 8px 0 0; font-size: 34px; font-weight: 600; line-height: 1.15; color: #f3ecd9; overflow-wrap: anywhere; }
+.ww-side-p { margin: 18px 0 0; font-size: 19px; line-height: 1.5; color: #d8d0bb; }
+.ww-side-dim { color: #a99d7c; }
+.ww-side-pic {
+  position: relative;
+  overflow: hidden;
+  margin-top: 20px;
+  --ww-k: 1;
+  width: 200px;
+  height: 248px;
+  border-radius: 14px;
+  border: 1px solid rgba(214, 195, 148, .45);
+  background: rgba(22, 24, 27, .96);
+}
+.ww-side-pic img { position: absolute; display: block; max-width: none; }
+.ww-chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.ww-chip {
+  padding: 7px 14px;
+  border: 1px solid rgba(214, 195, 148, .35);
+  border-radius: 999px;
+  font-size: 17px;
+  color: #e6dcc2;
+  white-space: nowrap;
+}
+.ww-plus { margin-top: 10px; font-size: 21px; color: #f0d68c; line-height: 1.35; }
+.ww-pieces { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
+.ww-piece { display: flex; align-items: center; gap: 16px; min-height: 96px; }
+.ww-piece-art {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  width: 96px;
+  height: 96px;
+  border-radius: 12px;
+  border: 1px solid rgba(214, 195, 148, .4);
+  background: rgba(20, 21, 25, .95);
+  --ww-k: 1;
+}
+.ww-piece-art img { display: block; width: 92%; height: 92%; object-fit: contain; }
+.ww-piece-txt { min-width: 0; }
+.ww-piece-name { font-size: 20px; color: #efe6cc; line-height: 1.3; overflow-wrap: anywhere; }
+.ww-piece-slot { margin-top: 3px; font-size: 16px; color: #a99d7c; }
+.ww-piece-more { min-height: 0; font-size: 18px; color: #b9a978; padding-left: 112px; }
+/* a single piece, large */
+.ww-hero { margin-top: 22px; }
+.ww-hero-art {
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  width: 100%; height: 280px; max-height: 46vh;
+  border-radius: 14px; border: 1px solid rgba(214, 195, 148, .4); background: rgba(20, 21, 25, .95);
+  --ww-k: 1;
+}
+.ww-hero-art img { display: block; width: auto; height: 90%; max-width: 90%; object-fit: contain; }
+.ww-hero-art .ww-initial { font-size: 96px; }
+.ww-hero-txt { margin-top: 14px; }
+.ww-side.is-compact .ww-hero-art { height: 170px; }
+
+/* ---- footer --------------------------------------------------------------- */
+.ww-foot { display: flex; align-items: center; gap: 28px; margin-top: 10px; }
+.ww-hint { display: flex; flex-direction: column; align-items: center; gap: 4px; text-shadow: 0 1px 3px rgba(0, 0, 0, .9); }
+.ww-hint-l { font-size: 18px; color: #d8d0bb; }
+.ww-hint-s { font-size: 16px; color: #a99d7c; }
+.ww-x {
+  min-height: 44px;
+  padding: 8px 22px;
+  border: 1px solid rgba(214, 195, 148, .5);
+  border-radius: 10px;
+  background: rgba(14, 15, 18, .9);
+  color: #e6dcc2;
+  font: inherit;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.ww-x:hover { background: rgba(48, 44, 34, .95); border-color: rgba(240, 214, 140, .9); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ww-frame, .ww-petal, .ww-face, .ww-art { transition: none; }
+}

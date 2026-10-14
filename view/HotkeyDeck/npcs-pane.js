@@ -244,12 +244,18 @@ window.NpcsPane = (function () {
       if (existing) {
         /* Already showing SOMETHING — only swap the src if it actually differs,
            and never rebuild the element (that is the re-decode we are avoiding). */
-        if (existing.getAttribute('src') !== art.url) existing.setAttribute('src', art.url);
+        if (existing.getAttribute('src') !== art.url) {
+          existing.setAttribute('src', art.url);
+          /* render -> photo: a photo is never face-fitted, so it drops the
+             fit class and the fit's inline transform with it. */
+          existing.className = 'nx-art' + (art.body ? ' nx-art-body' : '') + (art.photo ? ' nx-art-photo' : '');
+          if (art.photo) existing.removeAttribute('style');
+        }
         return;
       }
       /* No image yet: mount one over the glyph, mirroring plateInner()/npcRowHtml. */
       const img = document.createElement('img');
-      img.className = 'nx-art' + (art.body ? ' nx-art-body' : '');
+      img.className = 'nx-art' + (art.body ? ' nx-art-body' : '') + (art.photo ? ' nx-art-photo' : '');
       img.setAttribute('alt', '');
       img.setAttribute('draggable', 'false');
       img.onerror = function () {
@@ -265,7 +271,7 @@ window.NpcsPane = (function () {
       const tchip = row.querySelector('.nx-chip-tmpl');
       if (tchip) tchip.parentNode.removeChild(tchip);
       /* face-fit the new face tile (bodies show whole — nx-art-body excluded) */
-      if (!art.body && window.HDFaceFit) window.HDFaceFit.ensure(img, art.url);
+      if (!art.body && !art.photo && window.HDFaceFit) window.HDFaceFit.ensure(img, art.url);
       /* the plate wasn't zoomable before, so its lightbox click isn't wired —
          wire it now for the newly-mounted art. */
       plate.addEventListener('click', function (e) {
@@ -525,6 +531,17 @@ window.NpcsPane = (function () {
     return safePath(state.icons[key] || '');
   }
 
+  /* A captured / uploaded portrait, looked up through the Followers pane's
+     photo store under every name she answers to. '' when there is none. */
+  function photoFor(it) {
+    const F = window.FolPane;
+    if (!it || !F || typeof F.userPortraitFor !== 'function') return '';
+    try {
+      const p = F.userPortraitFor({ name: it.n, formId: it.id });
+      return p && p.file ? safePath('portraits/' + p.file) : '';
+    } catch (e) { return ''; }
+  }
+
   /* Creature body render. `bd` is "SkinPlugin.esp|HEX6" (C++ blanks `fc` and
      fills `bd` when the facegen head can't render — atronachs, spiders,
      draugr, rieklings). Same icon map, same KeyOf normalisation; body keys
@@ -540,6 +557,11 @@ window.NpcsPane = (function () {
      `body` flag matters downstream — a body render must NOT be face-fitted
      (there is no skull to zoom onto; it shows whole, contain-fit). */
   function artFor(it) {
+    /* The player's own photo of this person ALWAYS wins over a generated head
+       (Rober, 2026-10-12: generated faces "stand down to user uploaded
+       faces"). It is shown as it was taken — never face-fitted, never spun. */
+    const photo = photoFor(it);
+    if (photo) return { url: photo, body: false, photo: true };
     const f = iconFor(it && it.fc);
     if (f) return { url: f, body: false };
     const b = bodyIconFor(it && it.bd);
@@ -707,7 +729,7 @@ window.NpcsPane = (function () {
     if (!art) return glyph;
     /* A body render carries nx-art-body so the face-fit pass skips it (a
        creature has no skull to zoom onto) — it shows whole, contain-fit. */
-    const cls = 'nx-art' + (art.body ? ' nx-art-body' : '');
+    const cls = 'nx-art' + (art.body ? ' nx-art-body' : '') + (art.photo ? ' nx-art-photo' : '');
     return glyph + '<img class="' + cls + '" src="' + esc(art.url) + '" alt="" draggable="false"' + ICO_ERR + '>';
   }
 
@@ -721,7 +743,7 @@ window.NpcsPane = (function () {
     const art = artFor(it);
     const url = art ? art.url : '';
     if (!url || !window.HDLightbox) return;
-    const fp = !art.body ? faceParts(it.fc) : null;
+    const fp = !art.body && !art.photo ? faceParts(it.fc) : null;
     HDLightbox.open({
       host: $('nx-pane'),
       src: url,
@@ -2031,6 +2053,9 @@ window.NpcsPane = (function () {
   function onStatusMaps() { if (ui.visible && state.ready) { try { renderBodyPreservingScroll(); } catch (e) {} } }
   window.addEventListener('hd-fert-all', onStatusMaps);
   window.addEventListener('hd-chim-agents', onStatusMaps);
+  /* A photo taken, uploaded or replaced mid-session must take over the tile at
+     once (the photo-wins rule), not on the next scroll. */
+  window.addEventListener('hd-portraits-changed', onStatusMaps);
 
   function npcRowHtml(it, selIdx, idx) {
     const art = artFor(it);
@@ -2271,7 +2296,7 @@ window.NpcsPane = (function () {
        whole render — this is a tile treatment, not a re-crop of the art.
        Absent module (standalone harness) = untouched tiles. */
     if (window.HDFaceFit)
-      body.querySelectorAll('.nx-plate .nx-art:not(.nx-art-body)').forEach(function (img) {
+      body.querySelectorAll('.nx-plate .nx-art:not(.nx-art-body):not(.nx-art-photo)').forEach(function (img) {
         window.HDFaceFit.ensure(img, img.getAttribute('src'));
       });
 

@@ -4,7 +4,7 @@
   const GROUPS = [
     { id: 'collection', label: 'Collection', icon: 'hm-wardrobe.png' },
     { id: 'people', label: 'People', icon: 'hm-followers.png' },
-    { id: 'dock', label: 'Favorites dock', icon: 'hm-loadouts.png' },
+    { id: 'dock', label: 'Quick change', icon: 'hm-loadouts.png' },
   ];
   const SECTIONS = {
     outfits: { group: 'collection', label: 'Outfits', hint: 'Your saved looks. Wear one, photograph it, or add it to a wardrobe pool.', search: 'Search outfits, categories and notes…', terms: 'clothes looks saved sets what to wear' },
@@ -13,6 +13,7 @@
     inventory: { group: 'collection', label: 'Outfit builder', hint: 'Pick equipment from your inventory to create a saved outfit.', search: 'Search equipment by name, slot or mod…', terms: 'inventory armour armor pieces items build new outfit basket' },
     npcs: { group: 'people', label: 'Who wears what', hint: 'Choose a person to set their usual look, outfit rotation and bed outfit.', search: 'Search people and what they wear…', terms: 'people npcs followers dress assign sleeping bed' },
     spid: { group: 'people', label: 'Always-equipped gear', hint: 'Give someone pieces they should keep wearing. Managed by SPID.', search: 'Search people and enforced gear…', terms: 'spid distribution rules grants enforce permanent gear' },
+    wheel: { group: 'dock', label: 'Wardrobe wheel', hint: 'Looks on a slow-time wheel, each with Flair or single pieces fanning out to wear over it.', search: 'Search looks on the wheel…', terms: 'wheel radial quick change outfits flyout flair pieces layer hotkey slow time' },
     dock: { group: 'dock', label: 'Favorites dock', hint: 'Keep your favorite looks close at hand. The dock appears when you summon it.', search: 'Search outfits and wardrobe pools…', terms: 'favorites favourites quick equip widget hotkey categories placement' },
   };
   function canonical(id) { return id === 'people' ? 'npcs' : id; }
@@ -77,13 +78,27 @@
       const manage = node('button', 'ws-manage', options.manage.label); manage.type = 'button';
       manage.addEventListener('click', () => { controller.close(false); options.manage.run(); }); panel.append(manage);
     }
+    // wardrobe-menu-fit: a menu opened while its pane is not laid out yet (a
+    // remembered-open menu re-mounted on a hidden tab, the first paint) measures
+    // ZERO, and clamping from that pinned it at 44px — one search box, cut off
+    // (Rober's 2026-10-12 screenshot). Never clamp from an empty measurement:
+    // clear the limits and fit again on the next frame; and never go below the
+    // search box plus one full row.
+    let refit = 0;
+    const MIN_MENU = 140;
     function fit() {
       if (!panel.getBoundingClientRect) return;
       const bounds = host.closest('#wd-pane'), rect = panel.getBoundingClientRect();
-      const box = bounds ? bounds.getBoundingClientRect() : {left:0,right:window.innerWidth,bottom:window.innerHeight};
+      const box = bounds ? bounds.getBoundingClientRect() : {left:0,right:window.innerWidth,top:0,bottom:window.innerHeight};
+      if (!rect.height || !panel.offsetWidth || !(box.bottom > (box.top || 0))) {
+        panel.style.maxHeight = ''; panel.style.maxWidth = '';
+        if (!refit && typeof requestAnimationFrame === 'function')
+          refit = requestAnimationFrame(() => { refit = 0; if (state.open && !panel.hidden && panel.isConnected) fit(); });
+        return;
+      }
       const bottom = box.bottom;
       const scale = panel.offsetWidth ? rect.width / panel.offsetWidth : 1;
-      panel.style.maxHeight = Math.max(44, Math.min(430, (bottom - rect.top - 14) / (scale || 1))) + 'px';
+      panel.style.maxHeight = Math.max(MIN_MENU, Math.min(430, (bottom - rect.top - 14) / (scale || 1))) + 'px';
       panel.style.minWidth = '0';
       panel.style.maxWidth = Math.max(44, (box.right - box.left - 28) / (scale || 1)) + 'px';
       const placed = panel.getBoundingClientRect(), anchor = host.getBoundingClientRect();
@@ -96,6 +111,7 @@
       if (active && active !== controller) active.close(false);
       state.open = true; panel.hidden = false; trigger.setAttribute('aria-expanded', 'true'); active = controller;
       paint(); fit(); if (focus) search.focus();
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => { if (state.open && !panel.hidden && panel.isConnected) fit(); });
     }
     trigger.addEventListener('click', () => state.open ? controller.close(false) : open(true));
     // Portal category rows remain drop targets even when their menu starts closed.

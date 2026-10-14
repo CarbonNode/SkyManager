@@ -50,4 +50,10 @@ namespace PpaConfig
 	// { ok, msg } replaced. Rewrites the file, then taps PPA's Reload key on a
 	// detached worker. Main thread.
 	std::string Set(const std::string& request);
+
+	// Taps PPA's own Reload key, read live from the file, so PPA re-reads it
+	// (the Keys tab calls this after rewriting one of PPA's [Hotkeys] keys,
+	// keys_write.cpp). Returns the key as words ("Shift + F5"), or "" when PPA
+	// is not loaded, the file is unreadable, or its reload key is unbound.
+	std::string ReloadNow();
 }

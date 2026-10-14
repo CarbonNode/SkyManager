@@ -252,21 +252,75 @@ namespace ActorIdentity
 		return f ? f->As<RE::Actor>() : nullptr;
 	}
 
+	namespace
+	{
+		// Raw reads of a form's id and of its defining file, behind SEH: a stale
+		// pointer must cost "no identity", never the game. Nothing here owns a
+		// destructor (MSVC refuses __try around unwinding objects), and no lock is
+		// taken inside the guarded region.
+		bool ReadFormId(const RE::TESForm* form, RE::FormID& out) noexcept
+		{
+			__try {
+				out = form->GetFormID();
+				return true;
+			} __except (1) {
+				return false;
+			}
+		}
+
+		struct FileFacts
+		{
+			char name[260];
+			bool light;
+		};
+
+		bool ReadFile0(const RE::TESForm* form, FileFacts& out) noexcept
+		{
+			__try {
+				// GetFile(0) is sourceFiles[0] — the file that DEFINES the form,
+				// not the last one to override it, which is what makes the pair
+				// durable.
+				const auto* file = form->GetFile(0);
+				if (!file)
+					return false;   // dynamic form: no durable identity exists
+				const auto   view = file->GetFilename();
+				const size_t len = view.size() < sizeof(out.name) - 1 ? view.size() : sizeof(out.name) - 1;
+				for (size_t i = 0; i < len; ++i)
+					out.name[i] = view[i];
+				out.name[len] = '\0';
+				out.light = file->IsLight();
+				return len > 0;
+			} __except (1) {
+				return false;
+			}
+		}
+
+		std::atomic<bool> g_staleLogged{ false };
+	}
+
+	bool IsLive(const RE::TESForm* form)
+	{
+		RE::FormID id = 0;
+		if (!form || !ReadFormId(form, id) || id == 0)
+			return false;
+		if (RE::TESForm::LookupByID(id) == form)
+			return true;
+		if (!g_staleLogged.exchange(true))   // marker: identity-stale-form
+			logger::warn("actor-identity: skipped a stale form pointer (id {:08X} no longer names it) - "
+			             "an engine-owned pointer outlived its form; reported once per session", id);
+		return false;
+	}
+
 	bool DurableOf(const RE::TESForm* form, std::string& outFormId, std::string& outPlugin)
 	{
-		if (!form)
+		if (!IsLive(form))
 			return false;
-		// GetFile(0) is sourceFiles[0] — the file that DEFINES the form, not the
-		// last one to override it, which is what makes the pair durable.
-		auto* file = form->GetFile(0);
-		if (!file)
-			return false;   // dynamic form: no durable identity exists
-		const auto name = file->GetFilename();
-		if (name.empty())
+		FileFacts facts{};
+		if (!ReadFile0(form, facts))
 			return false;
-		const std::uint32_t mask = file->IsLight() ? 0xFFFu : 0xFFFFFFu;
+		const std::uint32_t mask = facts.light ? 0xFFFu : 0xFFFFFFu;
 		outFormId                = HexOf(form->GetFormID() & mask);
-		outPlugin                = std::string(name);
+		outPlugin                = std::string(facts.name);
 		return true;
 	}
 

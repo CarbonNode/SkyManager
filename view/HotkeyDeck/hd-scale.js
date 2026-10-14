@@ -184,6 +184,7 @@ window.HDScale = (function () {
       else root.removeProperty('--hdti-' + tab);
     }
     sync(tab);
+    if (window.hdIconMip) window.hdIconMip.rescanSoon();   // a tab's zoom moves icons across mip tiers
   }
 
   function applyAll() { Object.keys(SPEC).forEach(apply); }

@@ -3,6 +3,7 @@
 #include "photo_input_gate.h"
 #include "domain_photos.h"
 #include "PrismaUI_API.h"
+#include "ui_host_router.h"
 
 #include <algorithm>
 #include <tuple>
@@ -29,8 +30,11 @@
 #include "icon_bridge.h"
 #include "wardrobe.h"
 #include "wardrobe_flair.h"
+#include "wardrobe_flair_model.h"   // the Wardrobe Wheel reads flair.wheel
 #include "item_icons.h"
 #include "person_live.h"
+#include "auto_portrait.h"
+#include "freeze_backdrop.h"   // freeze-backdrop: stop drawing the world behind a paused deck
 #include "facegen_resolver.h"
 #include "wheel.h"
 #include "quiver.h"
@@ -54,15 +58,24 @@
 #include "hotkey_history.h"
 #include "aim_actions.h"
 #include "formation_actions.h"
+#include "formation_wwm.h"   // Walk With Me: seed gate + its own on/off switch (wwm-toggle)
+#include "mod_keys.h"        // mod-key entries: another mod's own hotkey, read live at fire time
 #include "menu_actions.h"
 #include "custom_markers.h"
 #include "sos_actions.h"
 #include "vkey_bridge.h"
 #include "anim_resolver_bridge.h"
+#include "procession_bridge.h"
 #include "controls_fix.h"
 #include "time_actions.h"
 #include "stance_wheel.h"
+#include "command_ring.h"     // Command Ring: Warband-style orders / camp / homes / battle radial (NFF, MHiYH, FWM)
+#include "grip_switch.h"      // Change Grip: runs Dynamic Grip's own switch, no key
+#include "minimap_bridge.h"
+#include "combat_tools.h"     // Fight With Me battle plan + Walk With Me menu (Combat Wheel, seeded actions)
+#include "hotkey_pad.h"       // Hotkey Pad: the on-screen button pad's own sidecar (hud-pad.js)
 #include "npc_actions.h"
+#include "sic_em_orders.h"
 #include <future>
 #include "npc_clearance.h"
 #include "save_actions.h"
@@ -90,12 +103,14 @@
 #include "room_guard.h"
 #include "loot_highlight.h"
 #include "keys_scan.h"   // Keys tab: the load-order hotkey census (kc* bridge)
+#include "keys_write.h"  // Keys tab: rebind another mod's key in its own config (kcRebind)
 #include "item_explorer.h"  // Items tab: the inline item explorer (ix* bridge)
 #include "item_edit.h"      // Finder Modify sheet: base-record editor (ie* bridge)
 #include "spell_edit.h"     // Spellcraft Modify sub-tab: per-effect spell editor (sx* bridge)
 #include "player_tune.h"    // Character sheet Tune modal: player AV editor (psTune*)
 #include "weather_actions.h" // Time tab Sky card: weather picker (tmWeather*)
 #include "weather_hub.h"     // Weather tab: every weather + the weather mods' controls (wx*)
+#include "inventory_pane.h"  // Inventory tab: the full inventory replacement (iv*)
 #include "npc_tune.h"        // F7 quick-card Tune modal: NPC editor (nt* bridge)
 #include "npc_finder.h"     // NPCs tab: the fast NPC finder (nx* bridge)
 #include "cell_finder.h"    // Cells tab: the interior-cell finder (cx* bridge)
@@ -107,6 +122,7 @@
 #include "settlement.h"     // Settlement tab: the world-object placer (st* bridge)
 #include "camp_actions.h"   // camp-*/hb-* self-cast seeds (Campfire + Hunterborn)
 #include "mounts.h"         // Mounts tab: the stable (mt* bridge, mounts.json)
+#include "bestiary.h"       // Bestiary: the monster log (bx* bridge, bestiary.json)
 #include "loadouts.h"       // Loadouts tab: follower groups + gear classes (lo* bridge, loadouts.json)
 #include "transmog.h"       // Transmog tab: restyled-pool instance transmog (tg* bridge)
 #include "wigs.h"           // Wigs tab: wig-mod registry + hair-slot browser (wv* bridge)
@@ -114,6 +130,7 @@
 #include "nightside.h"       // Nightside tab: the three curses (ns* bridge)
 #include "mcm_settings.h"    // MCM settings popout (mc* bridge)
 #include "skyui_mcm.h"       // SkyUI (Papyrus) MCM browser (sy* bridge)
+#include "ini_mods.h"        // INI-configured SKSE mods in the same popout (mcIni* bridge)
 #include "smf_index.h"       // SKSE Menu Framework pages in the Omni (hdSmf* bridge)
 #include "smf_widget.h"      // "Mod Menus" button on the Esc menu (opens SMF's panel)
 #include "open_diag.h"      // open/close timing + hang watchdogs (Nexus freeze triage)
@@ -130,6 +147,7 @@
 #include "hotbar_cast.h"
 #include "shout_cooldowns.h"
 #include "widgets.h"   // HUD widgets (wg* on the hotbar view) + potion browser (pb* on the deck view)
+#include "loot_feed.h"  // the HUD loot feed's pickup source (lfPush on the HUD view)
 #include "ward_actions.h"   // ward-toggle: maintain your best ward, WardAnytime-style
 #include "anim_actions.h"
 #include "ostim_deck.h"
@@ -257,6 +275,11 @@ namespace
 	//      coming back, so the next key press force-closes.
 	std::atomic<long long>      g_captureStartMs{ 0 };  // when g_capturing went true
 	std::atomic<long long>      g_lastEscMs{ 0 };       // last Escape seen while capturing
+	// A MODAL holds the capture for as long as it is open ("1M": the Bestiary
+	// book, the Omni). Reading a page for a minute is normal use, not a wedge,
+	// so neither hatch below applies to it (marker capture-modal-no-watchdog);
+	// holding Escape still closes everything. An older view sends plain "1".
+	std::atomic<bool>           g_captureModal{ false };
 	constexpr long long         kCaptureEscWindowMs = 1500;   // double-tap window
 	constexpr long long         kCaptureWedgedMs    = 20000;  // a capture this old is dead
 	// Hold Escape this long and every palette closes, whatever our flags believe.
@@ -469,6 +492,10 @@ namespace
 		// command per line, `action` == "crosshair" scopes it to the crosshair
 		// target (see console_actions.h). Empty for every other device.
 		std::string                command;
+		// device=="action" && action=="mod-key" (2026-10-11): WHERE another mod
+		// keeps the key this row presses (mod_keys.h). Never the key itself —
+		// it is read live from that mod's config at fire time. Unset elsewhere.
+		ModKeys::Spec              modKey;
 
 		// OPTIONAL global trigger: press this with the palette CLOSED and the entry
 		// fires where it stands. Orthogonal to `device`/`code`, which describe what
@@ -552,8 +579,30 @@ namespace
 		// dangerous mode opt-IN rather than opt-out. Settings → Smooth pause
 		// turns it back on for anyone whose install is fine with it.
 		bool          smoothPause = false;
+		// Freeze the world behind a PAUSED deck the way the inventory does
+		// (FreezeBackdrop, 2026-10-09). ⛔ OFF, and not in Settings: its first
+		// in-game open HUNG THE MAIN THREAD (Rober, 2026-10-09 17:50 — the
+		// deck never painted, the 1 s tick and a live-api close-view task never
+		// ran, the game had to be killed). Root cause unknown. Only a hand
+		// edit (SkyManager.ini FreezeBackdrop=1) turns it on, for a debugging
+		// session with a dump ready — never for play.
+		bool          freezeBackdrop = false;
+		// Which UI host draws the MAIN deck (2026-10-10, marker ui-host-setting):
+		// "prisma" (default) or "magelight" (Magelight UI, Nexus 193303, when it is
+		// installed). Read once at startup by UiHostRouter, so a change applies on
+		// the next game start. SkyManager.ini UiHost= / MagelightDeck= outrank it
+		// WITHOUT being written back here (g_uiHostIni), so deleting the ini line
+		// hands the choice back to Settings.
+		std::string   uiHost = "prisma";
 		bool          closeAfterFire = true;
 		bool          stickyNpMods = false;  // numpad Shift/Ctrl/Alt stay on across presses
+		// Sic 'em standing orders (2026-10-12, Rober: "'couldn't get to target'
+		// make sure this is configurable and a time if it doesnt get to target
+		// npcs teleport next to it"). Seconds an ally gets to reach the target
+		// (clamped 5-60, sic_em_orders.h), then moved next to it — or, with
+		// the teleport off, the order drops. Handed to NpcActions each tick.
+		double        sicReachSeconds = 15.0;
+		bool          sicTeleport = true;
 		// Open the palette while looking at an NPC and land on the Followers tab
 		// instead of Hotkeys, where that person's dismiss / inventory / outfit /
 		// wait buttons are. Only when the crosshair actually held someone at
@@ -577,6 +626,7 @@ namespace
 		bool          targetOpensScene = true;
 		double        uiScale = 1.0;         // view-only: menu zoom (0.6-1.6), applied in JS
 		double        scrollSpeed = 1.0;     // view-only: deck scroll-wheel speed multiplier (0.5-3.0)
+		bool          fgSmoothScroll = true; // view-only: cap the wheel glide's per-frame step so frame generation can track it
 		int           panelW = 0;            // drag-to-resize size, PRE-scale layout px (0 = auto)
 		int           panelH = 0;
 		std::string   openDevice = "keyboard";
@@ -1134,8 +1184,24 @@ namespace
 	// Overlays SkyManager.ini's [Settings] onto an already-parsed Settings block.
 	// Returns the number of keys actually overridden (0 when the file is absent) so
 	// the caller can log it unconditionally as a build marker.
+	// SkyManager.ini's renderer pick, kept OUT of g_config (see Settings::uiHost).
+	// "" = the ini says nothing; else "prisma"/"magelight". g_uiHostIniKey is the
+	// line as the player wrote it, for the Settings row to quote.
+	std::string g_uiHostIni;
+	std::string g_uiHostIniKey;
+
+	std::string NormalizeUiHost(std::string v)
+	{
+		for (auto& ch : v)
+			if (ch >= 'A' && ch <= 'Z')
+				ch = static_cast<char>(ch + 32);
+		return v == "magelight" ? "magelight" : "prisma";
+	}
+
 	int ApplyIniOverrides(Settings& s)
 	{
+		g_uiHostIni.clear();
+		g_uiHostIniKey.clear();
 		std::ifstream in(IniPath());
 		if (!in.is_open())
 			return 0;
@@ -1184,6 +1250,23 @@ namespace
 			if (key == "smoothpause") {
 				bool b;
 				if (toBool(val, b)) { s.smoothPause = b; ++applied; }
+			} else if (key == "freezebackdrop") {
+				bool b;
+				if (toBool(val, b)) { s.freezeBackdrop = b; ++applied; }
+			} else if (key == "uihost") {
+				const std::string l = lower(val);
+				if (l == "prisma" || l == "prismaui" || l == "magelight") {
+					g_uiHostIni = l == "magelight" ? "magelight" : "prisma";
+					g_uiHostIniKey = "UiHost=" + val;
+					++applied;
+				}
+			} else if (key == "magelightdeck") {
+				bool b;
+				if (toBool(val, b)) {
+					g_uiHostIni = b ? "magelight" : "prisma";
+					g_uiHostIniKey = "MagelightDeck=" + val;
+					++applied;
+				}
 			} else if (key == "pauseonopen") {
 				bool b;
 				if (toBool(val, b)) { s.pauseOnOpen = b; ++applied; }
@@ -1313,13 +1396,18 @@ namespace
 		return json{
 			{ "pauseOnOpen", s.pauseOnOpen },
 			{ "smoothPause", s.smoothPause },
+			{ "freezeBackdrop", s.freezeBackdrop },
+			{ "uiHost", s.uiHost },
 			{ "closeAfterFire", s.closeAfterFire },
 			{ "stickyNpMods", s.stickyNpMods },
+			{ "sicReachSeconds", s.sicReachSeconds },
+			{ "sicTeleport", s.sicTeleport },
 			{ "targetOpensFollowers", s.targetOpensFollowers },
 			{ "sceneOpensScene", s.sceneOpensScene },
 			{ "targetOpensScene", s.targetOpensScene },
 			{ "uiScale", s.uiScale },
 			{ "scrollSpeed", s.scrollSpeed },
+			{ "fgSmoothScroll", s.fgSmoothScroll },
 			{ "panelW", s.panelW },
 			{ "panelH", s.panelH },
 			{ "openKey", json{ { "device", s.openDevice }, { "code", s.openCode }, { "label", s.openLabel } } },
@@ -1336,7 +1424,7 @@ namespace
 	{
 		json entries = json::array();
 		for (const auto& e : c.entries) {
-			entries.push_back(json{
+			json je = json{
 				{ "id", e.id },
 				{ "name", e.name },
 				{ "desc", e.desc },
@@ -1357,7 +1445,15 @@ namespace
 					{ "code", e.trigCode },
 					{ "label", e.trigLabel },
 					{ "mods", e.trigMods },
-					{ "gesture", e.trigGesture } } } });
+					{ "gesture", e.trigGesture } } } };
+			// mod-key rows only, and only when set — every other entry's json is
+			// byte-unchanged, and an older DLL simply ignores the key.
+			if (e.modKey.Set()) {
+				const auto mk = json::parse(ModKeys::ToJsonText(e.modKey), nullptr, false);
+				if (mk.is_object())
+					je["modKey"] = mk;
+			}
+			entries.push_back(std::move(je));
 		}
 		return json{ { "settings", SettingsToJson(c.settings) },
 			{ "categories", c.categories },
@@ -1438,6 +1534,8 @@ namespace
 			// The Manipulator 9001 (Nexus 194259) — a pure SKSE DLL; backs the
 			// "The Manipulator: edit mode" opener row (MenuActions "open-manipulator").
 			{ "manipulator", dll("ObjectManipulator.dll") },
+			// Dynamic Grip (Nexus 110031) — backs "Change Grip" (grip_switch.cpp).
+			{ "dynamicgrip", dll("dynamicGrip.dll") },
 			// OStim SA DLL — backs the OStim scene deck (ostim_deck.cpp / its
 			// vendored Thread API consume it via GetModuleHandle("OStim.dll")).
 			{ "ostim", dll("OStim.dll") },
@@ -1470,6 +1568,10 @@ namespace
 			// and a bend row that fires PgUp into a game with no SOS listening
 			// is the dead button the mod page promises cannot exist.
 			{ "sos", plugin("Schlongs of Skyrim.esp") },
+			// Walk With Me (Wayfarer.esp, Nexus 191283) — gates its four Hotkeys
+			// rows (three mod-key rows + its own On/Off). Same probe as
+			// FormationWwm::Installed().
+			{ "wwm", plugin("Wayfarer.esp") },
 		};
 		done = true;
 		logger::info("osis-visibility: loaded={}", cached["osis"].get<bool>());
@@ -1534,6 +1636,9 @@ namespace
 			{ "hd-hk-highreach-tp", "highking" },
 			{ "hd-open-npa", "npa" },
 			{ "hd-open-manipulator", "manipulator" },
+			{ "hd-grip-dg", "dynamicgrip" },
+			{ "hd-wwm-order-wheel", "wwm" }, { "hd-wwm-companion", "wwm" },
+			{ "hd-wwm-reload", "wwm" }, { "hd-wwm-toggle", "wwm" },
 		};
 		for (const auto& r : kReq)
 			if (e.id == r.id)
@@ -1569,8 +1674,17 @@ namespace
 				c.settings.pauseOnOpen = s.value("pauseOnOpen", true);
 				// Missing key => the safe mode, matching the struct default above.
 				c.settings.smoothPause = s.value("smoothPause", false);
+				// Default OFF: it hung the game on its first open (see Settings).
+				c.settings.freezeBackdrop = s.value("freezeBackdrop", false);
+				c.settings.uiHost = NormalizeUiHost(s.value("uiHost", std::string("prisma")));
 				c.settings.closeAfterFire = s.value("closeAfterFire", true);
 				c.settings.stickyNpMods = s.value("stickyNpMods", false);
+				{
+					const auto& rs = s.contains("sicReachSeconds") ? s["sicReachSeconds"] : json();
+					c.settings.sicReachSeconds = SicEmOrders::ClampReachSeconds(
+						rs.is_number() ? rs.get<double>() : static_cast<double>(SicEmOrders::kDefaultReachSeconds));
+				}
+				c.settings.sicTeleport = s.value("sicTeleport", true);
 				// Absent in every config written before v0.14 — default TRUE so the
 				// behaviour is on for an existing hotkeys.json, not just a fresh one.
 				c.settings.targetOpensFollowers = s.value("targetOpensFollowers", true);
@@ -1583,6 +1697,8 @@ namespace
 					const double sp = s.value("scrollSpeed", 1.0);
 					c.settings.scrollSpeed = (sp <= 0.0) ? 1.0 : std::clamp(sp, 0.5, 3.0);
 				}
+				// default ON for an existing hotkeys.json too (2026-10-13, frame-gen scroll ghosting)
+				c.settings.fgSmoothScroll = s.value("fgSmoothScroll", true);
 				c.settings.panelW = s.value("panelW", 0);
 				c.settings.panelH = s.value("panelH", 0);
 				if (s.contains("openKey") && s["openKey"].is_object()) {
@@ -1691,6 +1807,14 @@ namespace
 						logger::warn("entry '{}': console command over {} bytes — entry dropped",
 							e.name, ConsoleActions::kCommandMax);
 						e.command.clear();
+					}
+					// mod-key source (mod_keys.h). Validated here, so a bad path or an
+					// unknown code space never reaches the reader. A refused source
+					// keeps the ROW (its name, tab and trigger are the user's) and the
+					// fire refuses with a sentence instead of pressing a guess.
+					if (je.contains("modKey") && je["modKey"].is_object()) {
+						if (!ModKeys::FromJsonText(je["modKey"].dump(-1, ' ', false, json::error_handler_t::replace), e.modKey))
+							logger::warn("entry '{}': mod-key source refused (bad path, field or code space) - the row stays, unarmed", e.name);
 					}
 					if (je.contains("trigger") && je["trigger"].is_object()) {
 						const auto& t = je["trigger"];
@@ -3294,6 +3418,11 @@ namespace
 			// GameHour jump underneath.
 			{ "outfit-dock", "hd-outfit-dock", "Favorites Outfit Dock",
 			  "Open your favorite outfit portraits. W/S scroll looks, A/D switch categories, E equips, Escape closes. Choose whether to include attached Flair. Bind a key in Hotkeys. (wardrobe clothing cloak ring accessories quick equip)", "Wardrobe", "icons/custom/hm-wardrobe.png" },
+			// Wardrobe Wheel (2026-10-12): looks on a slow-time radial, each with
+			// a flyout of Flair sets / single pieces to wear over it. Set up in
+			// Wardrobe > Wardrobe wheel; refuses honestly while empty.
+			{ "wardrobe-wheel", "hd-wardrobe-wheel", "Wardrobe Wheel",
+			  "Slow time and pick an outfit from a wheel - aim past a look to its flyout and add a Flair set or a single piece over it. Click, it closes and dresses you. Set it up in Wardrobe > Wardrobe wheel (wardrobe outfit wheel clothes flair accessories radial quick change dress)", "Wardrobe", "icons/custom/hm-wardrobe.png" },
 			{ "time-dial", "hd-time-dial", "Time Dial",
 			  "Open the circular wait dial - drag the ring to choose hours or days, confirm, and the time passes in one step. Scalable, draggable, remembers its spot on screen (time dial wait clock sundial widget)", "Misc", "icons/custom/hk-time-dial.png", nullptr, "icons/custom/hm-time.png" },
 			// Scene Alignment (2026-09-21): the live, NON-PAUSING alignment
@@ -3306,8 +3435,56 @@ namespace
 			// Neutral, when bound) on a slow-time radial over the live game.
 			// Picking presses Stances NG's OWN key for that stance, read from
 			// StancesNG.toml. Refuses honestly without Stances NG.
-			{ "stance-wheel", "hd-stance-wheel", "Stance Wheel",
-			  "Slow time and pick a combat stance - Bear, Wolf, Hawk or Neutral - from a wheel with their icons; aim and click, it closes and switches. Needs Stances NG (stances stance switch combat expansion bear wolf hawk)", "Misc", "icons/custom/hd-sword.png" },
+			// Renamed Combat Wheel 2026-10-11 (Rober: "rename it combat wheel or
+			// something") when Fight With Me's Battle Plan and Walk With Me's menu
+			// joined the stances; the verb stays `stance-wheel` (identity).
+			{ "stance-wheel", "hd-stance-wheel", "Combat Wheel",
+			  "Slow time and pick from a wheel: a combat stance (Bear, Wolf, Hawk, Neutral - Stances NG), Fight With Me's Battle Plan or Walk With Me's party menu. Aim and click, it closes and acts (stances stance switch combat expansion bear wolf hawk battle plan party)", "Misc", "icons/custom/hd-sword.png" },
+			// Hotkey Pad (2026-10-11, Rober: "a configurable resizable calculator
+			// like popup - that lets you define buttons that fire that hotkey on
+			// press ... useful for like short keyboards or when im not using my
+			// macro mouse"). A toggle; the buttons and layout are set in
+			// Home > UI Elements > Hotkey Pad (hd-padcfg.js), the pad itself is
+			// hud-pad.js on the HUD view.
+			{ "hotkey-pad", "hd-hotkey-pad", "Hotkey Pad",
+			  "Open your on-screen Hotkey Pad - a resizable grid of buttons that each fire one of your hotkeys or deck actions with a click. For short keyboards, or playing without the macro mouse (hotkey pad keypad calculator buttons on screen click mouse touch short keyboard numpad macro)", "Misc", "icons/custom/hk-hotkey-pad.png" },
+			// Fight With Me (Nexus 194766, 2026-10-11): its battle plan through the
+			// DLL's own FightWithMe_OpenBattlePlan export, so Numpad 7 can be
+			// unbound. Seeded only when FightWithMe.dll is loaded (the open-npa
+			// gate below); favorite it, pin it, or bind a trigger key.
+			{ "battle-plan", "hd-battle-plan", "Battle Plan",
+			  "Open Fight With Me's battle plan - roles, focus and positions for every follower; time slows in a fight, outside one it is the party screen. No hotkey needed (fight with me tactics orders tank healer archer roles)", "NPC", "icons/custom/hk-battle-plan.png" },
+			// Walk With Me's main page, drawn in SkyManager's own SMF window.
+			{ "wwm-menu", "hd-wwm-menu", "Walk With Me",
+			  "Open Walk With Me's party menu - who travels with you, formation, rest and orders - without its hotkey (walk with me wayfarer party formation travel menu)", "NPC", "icons/custom/hk-wwm-menu.png", "Wayfarer.esp" },
+			// NFF's main "Command" menu (Rober, 2026-10-11: "Maybe we add NFF's
+			// main hotkey as well?"): runs NFF's own OnKeyDown branch for its
+			// command key (combat_tools.h), so the key can be cleared in its MCM.
+			{ "nff-menu", "hd-nff-menu", "NFF Command Menu",
+			  "Open Nether's Follower Framework's command menu - the one its main key opens - without the key (nff nether follower command menu orders all followers)", "NPC", "icons/custom/hk-nff-control.png", "nwsFollowerFramework.esp" },
+			// One action per stance (Rober, 2026-10-10: "each one should be key
+			// bindable as well, remove all default keybinds it ships with for
+			// each stance"). Unbound like every seed — bind them in F2. Each runs
+			// StanceWheel::Pick, the same verified switch the wheel uses, so
+			// Stances NG's own keys can be hidden chords nobody presses by hand
+			// (StancesNG_custom.toml, see stance_wheel.h). Seeded only when the
+			// plugin that stance needs is loaded.
+			{ "stance-neutral", "hd-stance-neutral", "Stance: Neutral (default animations)",
+			  "Drop to Neutral - your normal installed animations, no stance bonuses (stances default vanilla neutral)", "Misc", "icons/custom/hd-sword.png", "StancesNG.esp" },
+			{ "stance-bear", "hd-stance-bear", "Stance: Bear",
+			  "Switch to the Bear stance (Stances NG) (stances bear heavy)", "Misc", "icons/custom/hd-sword.png", "StancesNG.esp" },
+			{ "stance-wolf", "hd-stance-wolf", "Stance: Wolf",
+			  "Switch to the Wolf stance (Stances NG) (stances wolf defensive)", "Misc", "icons/custom/hd-sword.png", "StancesNG.esp" },
+			{ "stance-hawk", "hd-stance-hawk", "Stance: Hawk",
+			  "Switch to the Hawk stance (Stances NG) (stances hawk light quick)", "Misc", "icons/custom/hd-sword.png", "StancesNG.esp" },
+			{ "stance-tarnished", "hd-stance-tarnished", "Stance: Tarnished",
+			  "Switch to the Tarnished stance - Elden Ring movesets (stances tarnished elden ring)", "Misc", "icons/custom/hd-sword.png", "TarnishedStance.esp" },
+			// Change Grip (Rober, 2026-10-10: "doesnt have to hook to hotkey but
+			// innately changes grip so i can free the hotkey"). Runs Dynamic
+			// Grip's OWN switch with no key pressed (src/grip_switch.h), so its
+			// ini key can be cleared. Seeded only when Dynamic Grip is loaded.
+			{ "grip-dg", "hd-grip-dg", "Change Grip",
+			  "Switch your weapon between one-handed and two-handed grip with Dynamic Grip - no hotkey needed, so you can clear its own key. Weapon must be drawn (grip switch change 1h 2h one handed two handed dynamic grip)", "Combat", "icons/custom/hk-grip-dg.png", "DynamicGrip.esp" },
 			// AddItemMenu (2026-08-03): the deck casts the mod's own lesser
 			// powers, so its Papyrus flow runs exactly as shipped — no
 			// inventory digging for the [AddItemMenuSE] items. Unbound like
@@ -3450,6 +3627,12 @@ namespace
 			// "read all books library tomes" keywords for omni on purpose.
 			{ "read-books", "hd-read-books", "Read Every Book",
 			  "Read every unread book, note and spell tome in your bag at once - skills go up, spells are learned and their tomes consumed, quest books fire their scripts, no book menu popups (read all books auto read library tomes notes journals letters)", "Utilities", "icons/custom/hk-read-books.png" },
+			// Bestiary (2026-10-08): the monster log, and Study - look at a
+			// creature, dead or alive, press, and it is measured into the book.
+			{ "bestiary-open", "hd-bestiary", "The Bestiary",
+			  "Open the monster log: every creature you have killed or studied, its threat, resistances, what works on it, where you met it and its lore (bestiary monster log creatures beasts kills slain resist weakness codex)", "Utilities", "icons/custom/bx-all.png" },
+			{ "bestiary-study", "hd-bestiary-study", "Study Creature",
+			  "Look at a creature, dead or alive, and press: it is measured into the Bestiary and the book opens on its page. Bind a key in Edit (study examine inspect creature monster bestiary)", "Utilities", "icons/custom/bx-quill.png" },
 			{ "broom-cleanup", "hd-broom-cleanup", "Clean Up Room",
 			  "Use Sweeping Organizes Stuff to restore scattered objects with its broom animation. Carry a broom; cannot sweep in combat. Bind a hotkey in Edit (clean cleanup broom sweep tidy organize reset clutter physics mess)", "Utilities", "icons/custom/hk-put-away.png", "sweepingOrganizesStuff.esp" },
 			// Party orders (2026-08-14): NFF's own group verbs with a bindable
@@ -3461,6 +3644,42 @@ namespace
 			// command the group the player starred in the Loadouts tab, from a
 			// key, with the deck closed. Icons are shared with the party-wide
 			// actions on purpose — same verb, narrower target.
+			// Command Ring (2026-10-12, Rober: Warband's commands and camp "but
+			// with skymanager type UI ... hooks to ... NFF and My home is your
+			// home ... Fight With Me"). The ring itself, and every command it has
+			// that the deck did not already ship as an action, so Omni finds them,
+			// the Hotbar takes them and F2 binds them. Each runs CrRun, the verb
+			// the ring's own pick runs.
+			{ "command-ring", "hd-command-ring", "Command Ring",
+			  "Slow time and give your band an order from a ring - Orders, Camp, Homes and Battle pages: follow, wait, regroup, make camp, wait at camp, break camp, home is here, all go home, Fight With Me's Attack! To me! Hold back (warband command ring orders camp homes battle party followers radial)", "NPC", "icons/custom/hk-follower-command.png" },
+			{ "cr-regroup", "hd-cr-regroup", "Party: Regroup",
+			  "Everyone to you now - relaxing ones stop, waiting ones and stragglers too - then NFF has each follow again (party regroup rally gather to me everyone)", "NPC", "icons/custom/hk-party-regroup.png", "nwsFollowerFramework.esp" },
+			{ "cr-camp-make", "hd-cr-camp-make", "Camp: Make Camp Here",
+			  "Pitch camp where you stand - the Command Ring remembers the spot for this save, and Campfire's own Build Campfire comes up to light the fire (camp pitch make tent fire rest)", "Camping", "icons/custom/gl-tent.png" },
+			{ "cr-camp-settle", "hd-cr-camp-settle", "Camp: Settle In",
+			  "Everyone rests around the camp - NFF's own group relax: sit, eat, sleep, wander nearby (camp settle rest relax sandbox)", "Camping", "icons/custom/hk-party-relax.png", "nwsFollowerFramework.esp" },
+			{ "cr-camp-wait", "hd-cr-camp-wait", "Camp: Everyone Wait at Camp",
+			  "Your band waits at the camp - from anywhere: each is told to wait by NFF and moved to their own spot round the camp (camp wait stay leave behind)", "Camping", "icons/custom/loc-camp.png", "nwsFollowerFramework.esp" },
+			{ "cr-camp-break", "hd-cr-camp-break", "Camp: Break Camp",
+			  "Strike camp: the spot is forgotten, relaxing stops, and everyone - waiting at camp or not - comes back to you and follows (camp break strike pack up leave move on)", "Camping", "icons/custom/hk-party-follow.png" },
+			{ "cr-camp-return", "hd-cr-camp-return", "Camp: Travel Back to Camp",
+			  "Travel back to your camp from anywhere (camp return travel teleport go back)", "Camping", "icons/custom/loc-camp.png" },
+			{ "cr-camp-chest", "hd-cr-camp-chest", "Camp: Chest by the Fire",
+			  "Set the band's shared NFF chest down beside you (camp chest stash storage party)", "Camping", "icons/custom/hk-camp-createitem.png", "nwsFollowerFramework.esp" },
+			{ "cr-home-here", "hd-cr-home-here", "Homes: Home Is Here (Everyone)",
+			  "Make where you stand EVERY follower's home through My Home is Your Home - press twice; followers away from you keep theirs (home house live here everyone band mhiyh)", "NPC", "icons/custom/hm-home.png", "MHiYH.esl" },
+			{ "cr-home-go", "hd-cr-home-go", "Homes: All Go Home",
+			  "Everyone goes home and waits there - their My Home is Your Home home, or their NFF base; anyone without a home stays with you (home go dismiss send everyone)", "NPC", "icons/custom/loc-home.png", "nwsFollowerFramework.esp" },
+			{ "cr-home-back", "hd-cr-home-back", "Homes: All Come Back",
+			  "Everyone comes back to you - from home, from camp, from wherever they were told to wait - and follows again (home come back return recall everyone)", "NPC", "icons/custom/hk-party-summon.png", "nwsFollowerFramework.esp" },
+			{ "cr-fwm-attack", "hd-cr-fwm-attack", "Fight With Me: Attack!",
+			  "Fight With Me's party order: everyone goes all out for your target - presses its own key from FightWithMe.ini (fight with me attack charge order battle)", "Combat", "icons/custom/hk-attack-target.png" },
+			{ "cr-fwm-tome", "hd-cr-fwm-tome", "Fight With Me: To Me!",
+			  "Fight With Me's party order: everyone comes back to your side and fights there (fight with me to me rally protect order battle)", "Combat", "icons/custom/hk-party-follow.png" },
+			{ "cr-fwm-hold", "hd-cr-fwm-hold", "Fight With Me: Hold Back",
+			  "Fight With Me's party order: everyone stays back and meets only what comes for the party (fight with me hold back defend order battle)", "Combat", "icons/custom/hk-party-wait.png" },
+			{ "cr-fwm-asyouwere", "hd-cr-fwm-asyouwere", "Fight With Me: As You Were",
+			  "Fight With Me's party order: everyone back to their own battle-plan orders (fight with me as you were reset order battle)", "Combat", "icons/custom/hk-party-regroup.png" },
 			{ "lo-deploy", "hd-lo-deploy", "Group: Deploy",
 			  "Bring and recruit your starred group - the Loadouts tab's Deploy, from a key (group loadout deploy squad gather star)", "NPC", "icons/custom/hk-party-summon.png" },
 			{ "lo-follow", "hd-lo-follow", "Group: Follow",
@@ -3568,6 +3787,11 @@ namespace
 			// skills" in the desc are omni keywords on purpose.
 			{ "combat-arts", "hd-combat-arts", "Combat Arts",
 			  "Your collected weapon arts - Ashes of War found in loot land here instead of your bag; equip or swap one with a click (ashes of war weapon art elden ring skills moveset additional attack)", "Utilities", "icons/custom/hk-combat-arts.png" },
+			// Inventory (2026-10-10): deep-open the deck on the Inventory tab —
+			// the full inventory replacement. Bind it to I (or a mouse button)
+			// to make it THE inventory. Omni keywords on purpose.
+			{ "inventory", "hd-inventory", "Inventory",
+			  "Open your inventory in SkyManager - sortable by damage, armor, value, weight and value per weight, filter as you type, real 3D item previews, compare against what you wear, equip, drop, favorite and read (inventory bag items gear backpack equip drop sort)", "Utilities", "icons/custom/inv-bag.png" },
 			// Transmog (2026-08-15): deep-open the deck on the Transmog tab.
 			{ "transmog", "hd-transmog", "Transmog",
 			  "Restyle a specific piece of your gear to look like any armor any mod ships - stats, name and enchantment stay, only the look changes (transmog glamour appearance cosmetic outfit skin restyle)", "Utilities", "icons/custom/hk-transmog.png" },
@@ -3688,6 +3912,13 @@ namespace
 			  "Hunterborn: primitive cooking over a fire without a cookpot (hunterborn primitive cooking campfire cook)", "Camping", "icons/custom/hk-hb-primcook.png", "Hunterborn.esp" },
 			{ "hb-options", "hd-hb-options", "Options: Hunterborn",
 			  "Open Hunterborn's own configuration menu (hunterborn options settings config)", "Camping", "icons/custom/hk-hb-options.png", "Hunterborn.esp" },
+			// Walk With Me's master switch (2026-10-11). Through the mod's OWN
+			// setting (FormationWwm: General.bEnabled + its ReloadSettings /
+			// SetEnabled natives), not its toggle key, so the deck and its menu
+			// can never disagree about which way the switch is. Gated on
+			// Wayfarer.esp below (FormationWwm::Installed).
+			{ "wwm-toggle", "hd-wwm-toggle", "Walk With Me: On/Off",
+			  "Switch Walk With Me's formation travel on or off - the same switch as its own menu (walk with me wwm wayfarer formation toggle enable disable party travel)", "Followers", "icons/custom/hk-party-regroup.png" },
 		};
 
 		// Plain key entries added in a new build. Keyed by ID rather than by a
@@ -3800,6 +4031,14 @@ namespace
 				if (e.action == "party-summon" && e.name == "Party: Summon Everyone") {
 					e.name = s.name; e.desc = s.desc; changed = true;
 				}
+				// Stance Wheel -> Combat Wheel (2026-10-11). Only a row still
+				// carrying the old seeded name; a name the user typed is theirs.
+				if (e.action == "stance-wheel" && e.name == "Stance Wheel") {
+					if (e.label == e.name)
+						e.label = s.name;
+					e.name = s.name; e.desc = s.desc; changed = true;
+					logger::info("seed-rename: Stance Wheel -> Combat Wheel");   // marker: combat-wheel-rename
+				}
 				if (!s.icon || !*s.icon)
 					continue;
 				const bool blank = e.icon.empty();
@@ -3838,6 +4077,17 @@ namespace
 				continue;
 			if (std::string(s.action) == "open-manipulator" && !MenuActions::ManipulatorLoaded())
 				continue;
+			if (std::string(s.action) == "grip-dg" && !GripSwitch::Loaded())
+				continue;
+			if (std::string(s.action) == CombatTools::kBattlePlan) {
+				std::string why;
+				if (!CombatTools::BattlePlanAvailable(why))
+					continue;
+			}
+			if (std::string(s.action) == "wwm-toggle" && !FormationWwm::Installed())
+				continue;
+			if (std::string(s.action).rfind("cr-fwm-", 0) == 0 && !CommandRing::FwmLoaded())
+				continue;
 			// Put the tab back too if it was deleted, or the entry would land in
 			// a category the tab bar does not draw.
 			if (std::find(c.categories.begin(), c.categories.end(), s.category) == c.categories.end())
@@ -3869,6 +4119,75 @@ namespace
 			c.entries.push_back(std::move(e));
 			logger::info("seeded new action entry '{}' into tab '{}' (icon '{}')", s.name, s.category, e.icon);
 			changed = true;
+		}
+
+		// Walk With Me's own keys as Hotkeys rows (2026-10-11, Rober searched the
+		// Hotkeys tab for "walk with me" and got nothing). Each is a mod-key row
+		// (mod_keys.h): it stores WHERE the key lives in Wayfarer.ini [Hotkeys]
+		// and reads it live at fire time — the mod ships these keys for exactly
+		// these purposes, which is the law's allowed exception. Codes are DIK and
+		// modifiers a 1 Shift / 2 Ctrl / 4 Alt mask, both from the mod's shipped
+		// docs/hotkeys.md ("For Ctrl+G, use iCommandKey=34 and
+		// iCommandModifiers=2"). Keyed by ID like kKeySeeds — every row shares the
+		// "mod-key" verb — and a delete is recorded as "key:<id>" by the view.
+		struct ModKeySeed
+		{
+			const char* id;
+			const char* name;
+			const char* desc;
+			const char* key;
+			const char* modsKey;
+			const char* icon;
+		};
+		static constexpr ModKeySeed kWwmKeySeeds[] = {
+			{ "hd-wwm-order-wheel", "Walk With Me: Order wheel",
+			  "Opens Walk With Me's order wheel - presses the key set on its own Controls page, read the moment you press this (walk with me wwm wayfarer formation orders command wheel)",
+			  "iCommandKey", "iCommandModifiers", "icons/custom/hk-wheel.png" },
+			{ "hd-wwm-companion", "Walk With Me: Companion control",
+			  "Opens Walk With Me's companion control for the NPC under your crosshair - presses its own key, read live (walk with me wwm wayfarer formation companion unstick travel)",
+			  "iCompanionKey", "iCompanionModifiers", "icons/custom/hk-party-follow.png" },
+			{ "hd-wwm-reload", "Walk With Me: Reload settings",
+			  "Makes Walk With Me re-read Wayfarer.ini - presses its own reload key, read live (walk with me wwm wayfarer formation reload settings ini)",
+			  "iReloadKey", "iReloadModifiers", "icons/custom/hk-fix-resetai.png" },
+		};
+		if (FormationWwm::Installed()) {
+			for (const auto& k : kWwmKeySeeds) {
+				bool have = false;
+				for (const auto& e : c.entries)
+					if (e.id == k.id) { have = true; break; }
+				if (have)
+					continue;
+				if (std::find(c.suppressedSeeds.begin(), c.suppressedSeeds.end(),
+						std::string("key:") + k.id) != c.suppressedSeeds.end()) {
+					logger::info("seed-suppress: mod-key '{}' stays deleted by user choice", k.id);
+					continue;
+				}
+				if (std::find(c.categories.begin(), c.categories.end(), "Followers") == c.categories.end())
+					c.categories.emplace_back("Followers");
+				HotkeyEntry e;
+				e.id = k.id;
+				e.name = k.name;
+				e.desc = k.desc;
+				e.device = "action";
+				e.code = 0;
+				e.label = "WWM key";
+				e.category = "Followers";
+				e.action = ModKeys::kAction;
+				e.modKey.file = "Wayfarer.ini";
+				e.modKey.section = "Hotkeys";
+				e.modKey.key = k.key;
+				e.modKey.modsKey = k.modsKey;
+				e.modKey.modsKind = "mask";
+				e.modKey.space = "dik";
+				e.modKey.mod = "Walk With Me";
+				e.modKey.where = "Walk With Me's own menu (SKSE Menu Framework > Walk With Me > Controls)";
+				std::string ic = k.icon;
+				if (ValidViewIconPath(ic))
+					e.icon = ic;
+				c.entries.push_back(std::move(e));
+				logger::info("mod-key: seeded '{}' (Wayfarer.ini [Hotkeys] {})", k.name, k.key);
+				changed = true;
+			}
 		}
 
 		// One-time re-file: the two pre-existing fix actions were seeded into
@@ -4105,6 +4424,8 @@ namespace
 					g_hudConfig.showHp, g_hudConfig.showSt, g_hudConfig.showMk);
 				// Build marker (hd-markers.json: "hud-face-shape"). Unconditional.
 				logger::info("followers HUD face shape: {}", g_hudConfig.faceShape);
+				// Build marker (hd-markers.json: "hud-away-faces"). Unconditional.
+				logger::info("followers HUD away faces: {}", g_hudConfig.showAway);
 				logger::info("loaded {} hotkeys + {} spells from {}",
 					g_config.entries.size(), g_magicConfig.spells.size(), PathU8(path));
 				// Build marker (hd-markers.json: "tab-scales"). Unconditional, so it is
@@ -4387,11 +4708,24 @@ namespace
 				OpenDiag::TickTimer diag("room-guard");
 				auto* conversationUI = RE::UI::GetSingleton();
 				NpcActions::TickConversations(g_gameReady.load(), g_worldFrozen.load() || !conversationUI || conversationUI->GameIsPaused());
+				{
+					double reach = 15.0;
+					bool   teleport = true;
+					{
+						std::lock_guard l(g_configMutex);
+						reach = g_config.settings.sicReachSeconds;
+						teleport = g_config.settings.sicTeleport;
+					}
+					NpcActions::SetOrderOptions(static_cast<float>(reach), teleport);
+				}
 				NpcActions::TickOrders(g_gameReady.load(), g_worldFrozen.load() || !conversationUI || conversationUI->GameIsPaused());
 				PartyRecall::Tick(g_gameReady.load(), AnyOpen() || g_worldFrozen.load() || !conversationUI || conversationUI->GameIsPaused());
 				// Weather lock: put the locked weather back when the region,
 				// a load screen or a script moved the sky (weather_actions.cpp).
 				WeatherActions::Tick(g_gameReady.load(), !conversationUI || conversationUI->GameIsPaused());
+				// Detailed MiniMap shown (and outlined) for as long as the HUD
+				// editor is up, whichever of its many exits ended it.
+				MinimapBridge::SyncPreview(g_hudEditing.load());
 				bool        dirty = false;
 				std::string open;
 				{
@@ -4935,6 +5269,7 @@ namespace
 	void OnJsLog(const char* data);
 	void OnJsPainted(const char* data);
 	std::string DeckIconIndexJson();
+	std::string UiHostJson();
 	void OnJsPerfReport(const char* data);
 	void OnJsTab(const char* data);
 	void OnJsCapture(const char* data);
@@ -4957,6 +5292,9 @@ namespace
 	void CloseMagicPalette();
 	void EnsureMagicViewAndOpen();
 	void OnJsMagicFire(const char* data);
+	void OnJsMagicLibraryFire(const char* data);
+	void OnJsMagicCastNow(const char* data);
+	void FireMagicEntry(SpellEntry entry, bool knownOnly = false);
 	void OnJsMagicCastCombo(const char* data);
 	void OnJsMagicKnown(const char* data);
 	void OnJsMagicSave(const char* data);
@@ -4992,6 +5330,9 @@ namespace
 	void OnJsFmApply(const char* data);
 	void OnJsFmReg(const char* data);
 	void OnJsFmRescue(const char* data);
+	// Procession modal (procession_bridge.cpp): rpxGet -> rpxOpen, rpxAct -> rpxResult.
+	void OnJsRpxGet(const char* data);
+	void OnJsRpxAct(const char* data);
 	// Domains tab -> Bases section (nff_bases.cpp does the work).
 	void OnJsNbGet(const char* data);
 	void OnJsNbOp(const char* data);
@@ -5018,8 +5359,13 @@ namespace
 	void OnJsFolRefresh(const char* data);
 	void OnJsFolPortrait(const char* data);
 	void OnJsFolFaceIcons(const char* data); // facegen head renders as default roster portraits
+	void OnJsFolFaceRerender(const char* data); // "Regenerate face": re-bake one head render
 	void OnJsMirror(const char* data);       // the person page full-body figure (ItemIcons::MirrorJson)
 	void OnJsLive(const char* data);         // the person page LIVE view (PersonLive): start / orbit / stop
+	void OnJsAutoPhoto(const char* data);    // auto portraits (AutoPortrait): consider / go / set / state
+	void LiveFocusEnter();                   // the live view's non-pausing focus, world frozen and drawn
+	void LiveFocusRestore();                 // ...and the palette's own mode back
+	void AutoPortraitHudHidden(bool hidden); // hide the whole HUD view for the shot (photo mode's switch)
 	void OnJsFolCellScan(const char* data);  // Who's here: FO roster members near the player + why their picture is (not) showing
 	// Recall roster (pr* bridge on the deck view — party_recall.cpp): who the
 	// F17 recall would answer for, and the register. prRoster/prSet/prRecall
@@ -5035,6 +5381,7 @@ namespace
 	// Both are defined further down but used by OnJsWdPortrait above them.
 	void                  ClosePalette();
 	void QueueTravel(std::string label, std::function<void()> execute);  // main thread only
+	void RunNpcMove(const std::string& label, const std::function<void()>& execute);  // main thread only
 	std::filesystem::path DeckViewDir();
 	void OnJsFolSave(const char* data);
 	void OnJsFolLog(const char* data);
@@ -5051,6 +5398,7 @@ namespace
 	// hdUiState / hdWidgetToggle, reply hdUiStateData (one name per direction).
 	void        OnJsUiState(const char* data);
 	void        OnJsSwCfg(const char* data);   // Stance Wheel settings: swCfg in, swCfgState out
+	void        OnJsMmCfg(const char* data);   // Detailed MiniMap (minimap_bridge): mmCfg in, mmCfgState out
 	std::string UiStateJson();
 	void        OnJsWidgetToggle(const char* data);
 	// 2026-08-19: the merged "Equipped widget" row in that drawer — master,
@@ -5089,6 +5437,29 @@ namespace
 	// verb all reach it from up here.
 	void        SwToggleWheel();
 	void        SwCloseWheel(bool fromView);
+	// Hotkey Pad (2026-10-11) — the 6th claimant on the HUD view's Focus,
+	// defined after the Stance Wheel; FireAction, OpenPalette, the rescue verb
+	// and every rival claimant's open reach it from up here.
+	void        HpTogglePad();
+	void        HpClosePad(bool fromView);
+	// Command Ring (2026-10-12) — the 7th claimant, defined after the Combat
+	// Wheel; FireAction, OpenPalette, the rescue verb and every rival's open
+	// reach it from up here.
+	void        CrToggleRing();
+	void        CrCloseRing(bool fromView);
+	// Wardrobe Wheel (2026-10-12) — the 8th claimant on the HUD view's Focus,
+	// defined after the Command Ring; same reach as the wheels above.
+	void        WwToggleWheel();
+	void        WwCloseWheel(bool fromView);
+	void        WwPushIcons();
+	void        OnJsWwGet(const char*);
+	void        OnJsWwPick(const char*);
+	void        OnJsWwClose(const char*);
+	void        OnJsWwIcons(const char*);
+	void        OnJsWwOpen(const char*);
+	void        CrRun(const std::string& id);
+	void        OnJsCrCfg(const char* data);   // the deck's Home row registers it long before
+	void        OnJsHpCfg(const char* data);   // registered on the deck view long before its definition
 	void        OnJsFolCropSave(const char* data);
 	bool        PrunePortraitCrops();
 	// Same reason: the crosshair snapshot goes out with the open payload, so the
@@ -5173,6 +5544,7 @@ namespace
 	void OnJsKeysScan(const char* data);
 	void OnJsKeysState(const char* data);
 	void OnJsKeysResult(const char* data);
+	void OnJsKeysRebind(const char* data);
 	void OnJsItemsState(const char* data);
 	void OnJsItemsQuery(const char* data);
 	void OnJsItemsPick(const char* data);
@@ -5196,6 +5568,11 @@ namespace
 	void OnJsWeatherSet(const char* data);
 	void OnJsWxState(const char* data);
 	void OnJsWxSet(const char* data);
+	void OnJsIvList(const char* data);
+	void OnJsIvDetail(const char* data);
+	void OnJsIvAct(const char* data);
+	void OnJsIvSave(const char* data);
+	void OnJsIvMirror(const char* data);
 	void OnJsNpcTuneGet(const char* data);
 	void OnJsNpcTuneApply(const char* data);
 	void OnJsNpcTuneRevert(const char* data);
@@ -5266,6 +5643,8 @@ namespace
 	void OnJsSkyuiList(const char* data);
 	void OnJsSkyuiScan(const char* data);
 	void OnJsSkyuiSet(const char* data);
+	void OnJsIniModsState(const char* data);
+	void OnJsIniModsSet(const char* data);
 	void OnJsMountsState(const char* data);
 	void OnJsMountsSpells(const char* data);
 	void OnJsMountsAct(const char* data);
@@ -5273,6 +5652,16 @@ namespace
 	void OnJsLoadoutsGroups(const char* data);  // who is in which group, for the Followers tab
 	void OnJsLoadoutsAct(const char* data);
 	void OnJsMountsIcons(const char* data);
+	void OnJsBestiaryOpen(const char* data);     // Bestiary (bestiary.cpp, hd-bestiary.js)
+	void OnJsBestiaryRender(const char* data);
+	void OnJsBestiaryLore(const char* data);
+	void OnJsBestiaryScribe(const char* data);
+	void OnJsBestiaryEdit(const char* data);
+	void OnJsBestiaryLesson(const char* data);
+	void OnJsBestiaryShelf(const char* data);
+	void OnJsBestiaryStudy(const char* data);
+	void OnJsBestiarySound(const char* data);
+	void OnJsBestiarySpin(const char* data);
 	// Transmog tab (tg* bridge on the deck view). Requests tgState/tgList/
 	// tgDonors/tgApply/tgRevert; replies tgStateResult/tgListData/
 	// tgDonorsData/tgApplyResult/tgRevertResult — disjoint per the deck law.
@@ -5830,6 +6219,8 @@ namespace
 				// ride the FIRST open of the session (110 ms press->shown vs 41-47 ms
 				// for every later one). Push it now, during the warm-up nobody waits
 				// on; IconBridge's rebuild latch still re-pushes a fresh index later.
+				if (g_prisma)
+					g_prisma->Invoke(v, ("hdUiHost(" + UiHostJson() + ")").c_str());
 				if (g_prisma && !g_deckIconIndexPushed.exchange(true)) {
 					g_prisma->Invoke(v, ("hdIconIndex(" + DeckIconIndexJson() + ")").c_str());
 					logger::info("open-warm-icon-index: deck icon library pushed during warm-up");
@@ -5918,6 +6309,9 @@ namespace
 		HD_LISTEN(g_view, "fmApply", OnJsFmApply);
 		HD_LISTEN(g_view, "fmReg", OnJsFmReg);
 		HD_LISTEN(g_view, "fmRescue", OnJsFmRescue);
+		// Procession modal (Royal Procession + Royal Retinue bridge).
+		HD_LISTEN(g_view, "rpxGet", OnJsRpxGet);
+		HD_LISTEN(g_view, "rpxAct", OnJsRpxAct);
 		// Domains tab -> Bases (nff_bases): nbGet→nbOpen, nbOp→nbResult plus a
 		// delayed fresh nbOpen, because NFF's own functions run on the VM's
 		// thread and the state only reflects them a beat later.
@@ -5984,9 +6378,14 @@ namespace
 		// Same two-names rule: fdCropSave in, fdCrops out.
 		HD_LISTEN(g_view, "fdCropSave", OnJsFolCropSave);
 		HD_LISTEN(g_view, "fdFaceIcons", OnJsFolFaceIcons);
+		HD_LISTEN(g_view, "fdFaceRerender", OnJsFolFaceRerender);
 		// The Mirror (person page full-body figure): pnMirror in, pnMirrorData out.
 		HD_LISTEN(g_view, "pnMirror", OnJsMirror);
 		HD_LISTEN(g_view, "pnLive", OnJsLive);
+		HD_LISTEN(g_view, "fdAutoPhoto", OnJsAutoPhoto);
+		AutoPortrait::Init({ [](const char* fn, const std::string& payload) { PushToView(fn, payload); },
+			[]() { return FolPortraitsJson(); }, LiveFocusEnter, LiveFocusRestore, AutoPortraitHudHidden,
+			DeckViewDir() / "portraits" });
 		// Who's here (2026-09-17): fdCellScan in, fdCellScanData out.
 		HD_LISTEN(g_view, "fdCellScan", OnJsFolCellScan);
 		HD_LISTEN(g_view, "prRoster", OnJsPrRoster);
@@ -6002,6 +6401,9 @@ namespace
 		HD_LISTEN(g_view, "hudCfg", OnJsHudCfg);
 		HD_LISTEN(g_view, "hdUiState", OnJsUiState);
 		HD_LISTEN(g_view, "swCfg", OnJsSwCfg);   // Stance Wheel settings (Home drawer)
+		HD_LISTEN(g_view, "crCfg", OnJsCrCfg);   // Command Ring settings (Home drawer)
+		HD_LISTEN(g_view, "hpCfg", OnJsHpCfg);   // Hotkey Pad settings window (Home > UI Elements)
+		HD_LISTEN(g_view, "mmCfg", OnJsMmCfg);   // Detailed MiniMap (Home drawer row)
 		HD_LISTEN(g_view, "hdWidgetToggle", OnJsWidgetToggle);
 		HD_LISTEN(g_view, "hdWidgetGrp", OnJsWidgetGrp);
 		// Wheel Menu (v0.16): the player's carryables, and using one.
@@ -6082,6 +6484,7 @@ namespace
 		HD_LISTEN(g_view, "kcScan", OnJsKeysScan);
 		HD_LISTEN(g_view, "kcState", OnJsKeysState);
 		HD_LISTEN(g_view, "kcResult", OnJsKeysResult);
+		HD_LISTEN(g_view, "kcRebind", OnJsKeysRebind);
 		// Items tab (Item Explorer). Requests ixState/ixQuery/ixAdd/ixSave;
 		// replies ixStateResult/ixResultData/ixAddResult/ixSaved — disjoint
 		// per the deck law.
@@ -6120,6 +6523,13 @@ namespace
 		// wxStateData/wxResult.
 		HD_LISTEN(g_view, "wxState", OnJsWxState);
 		HD_LISTEN(g_view, "wxSet", OnJsWxSet);
+		// Inventory tab (inventory_pane.cpp). Requests ivList/ivDetail/ivAct/
+		// ivSave; replies ivListData/ivDetailData/ivResult.
+		HD_LISTEN(g_view, "ivList", OnJsIvList);
+		HD_LISTEN(g_view, "ivDetail", OnJsIvDetail);
+		HD_LISTEN(g_view, "ivAct", OnJsIvAct);
+		HD_LISTEN(g_view, "ivSave", OnJsIvSave);
+		HD_LISTEN(g_view, "ivMirror", OnJsIvMirror);
 		// NPC Tune modal (F7 quick card). Requests ntGet/ntApply/ntRevert;
 		// replies ntGetResult/ntApplyResult/ntRevertResult.
 		HD_LISTEN(g_view, "ntGet", OnJsNpcTuneGet);
@@ -6230,7 +6640,19 @@ namespace
 		HD_LISTEN(g_view, "syList", OnJsSkyuiList);
 		HD_LISTEN(g_view, "syScan", OnJsSkyuiScan);
 		HD_LISTEN(g_view, "sySet", OnJsSkyuiSet);
+		HD_LISTEN(g_view, "mcIni", OnJsIniModsState);
+		HD_LISTEN(g_view, "mcIniSet", OnJsIniModsSet);
 		HD_LISTEN(g_view, "mtState", OnJsMountsState);
+		HD_LISTEN(g_view, "bxOpen", OnJsBestiaryOpen);
+		HD_LISTEN(g_view, "bxRender", OnJsBestiaryRender);
+		HD_LISTEN(g_view, "bxLore", OnJsBestiaryLore);
+		HD_LISTEN(g_view, "bxScribe", OnJsBestiaryScribe);
+		HD_LISTEN(g_view, "bxEdit", OnJsBestiaryEdit);
+		HD_LISTEN(g_view, "bxLesson", OnJsBestiaryLesson);
+		HD_LISTEN(g_view, "bxShelf", OnJsBestiaryShelf);
+		HD_LISTEN(g_view, "bxStudy", OnJsBestiaryStudy);
+		HD_LISTEN(g_view, "bxSound", OnJsBestiarySound);
+		HD_LISTEN(g_view, "bxSpin", OnJsBestiarySpin);
 		HD_LISTEN(g_view, "mtSpells", OnJsMountsSpells);
 		HD_LISTEN(g_view, "mtAct", OnJsMountsAct);
 		HD_LISTEN(g_view, "mtIcons", OnJsMountsIcons);
@@ -6408,6 +6830,7 @@ namespace
 		HD_LISTEN(g_view, "wfEdit", OnJsFlairEdit);
 		HD_LISTEN(g_view, "odEquip", OnJsOdEquip);
 		HD_LISTEN(g_view, "odOpen", OnJsOdOpen);
+		HD_LISTEN(g_view, "wwOpen", OnJsWwOpen);        // Wardrobe > Wardrobe wheel: Open
 		HD_LISTEN(g_view, "wdGiveWear", OnJsWdGiveWear);
 		HD_LISTEN(g_view, "wdEquipPiece", OnJsWdEquipPiece);
 		// Photo mode landed a file: hand the view the outfit slug and the file
@@ -6751,14 +7174,53 @@ namespace
 	// "paused" open focuses the view UN-paused and freezes the world; classic mode
 	// uses the engine menu pause and never freezes. `wantPaused` is the LOGICAL
 	// state (g_focusPaused), independent of the mechanism.
+	bool FreezeBackdropSetting()
+	{
+		std::lock_guard l(g_configMutex);
+		return g_config.settings.freezeBackdrop;
+	}
+
+	// hdUiHost: what the Settings "UI renderer" row needs to be honest about —
+	// the saved pick, an ini line that outranks it, what is drawing the deck NOW,
+	// and whether Magelight UI is installed and new enough. Pushed at DOM ready;
+	// none of it changes during a session.
+	std::string UiHostJson()
+	{
+		const auto st = UiHostRouter::GetStatus();
+		std::string chosen;
+		{
+			std::lock_guard l(g_configMutex);
+			chosen = g_config.settings.uiHost;
+		}
+		const json j{
+			{ "chosen", chosen },
+			{ "ini", g_uiHostIni },
+			{ "iniLine", g_uiHostIniKey },
+			{ "active", UiHostRouter::DeckOnMagelight() ? "magelight" : "prisma" },
+			{ "magelight", json{
+				{ "found", st.magelightFound },
+				{ "version", st.magelightVersion },
+				{ "ok", st.magelightUsable },
+				{ "min", "0.31.1" } } },
+			{ "note", st.note },
+		};
+		return j.dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
 	void FocusDeck(bool wantPaused)
 	{
 		const bool smooth = SmoothPauseOn();
+		// freeze-backdrop: let go BEFORE the focus menu closes, take it again
+		// once a classic (menu) pause is back up. Smooth pause and a live deck
+		// need the world drawn, so they never ask for it.
+		FreezeBackdrop::Want(FreezeBackdrop::kDeck, false);
 		g_prisma->Unfocus(g_view);
 		if (!g_prisma->Focus(g_view, wantPaused && !smooth))
 			logger::warn("Focus() returned false");
 		g_focusPaused = wantPaused;
 		FreezeWorld(wantPaused && smooth);
+		FreezeBackdrop::SetEnabled(FreezeBackdropSetting());
+		FreezeBackdrop::Want(FreezeBackdrop::kDeck, wantPaused && !smooth);
 	}
 
 	// Re-focus the view with/without the game pause. Main thread only.
@@ -6773,19 +7235,52 @@ namespace
 	// (app.js HDBurst) parks pane redraws while a burst is open and flushes each
 	// once at the end mark; `window.hdBurst&&` keeps an older view (no HDBurst) a
 	// silent no-op, and the view ends a burst by itself after 600 ms if the end
-	// mark never lands. Same guards as PushToView. MAIN THREAD ONLY.
-	void PushBurstMark(bool begin, const char* tag)
+	// mark never lands. The marks travel INSIDE a ViewBatch (below), never as
+	// Invokes of their own — on PrismaUI 1.4.1 a lone mark can run out of order.
+
+	// view-batch (2026-10-12): a run of pushes that must land IN ORDER goes to the
+	// view as ONE Invoke. PrismaUI queues every Invoke as its own task on the
+	// Ultralight thread, and the 1.4.1 build on the rig (2026-03-27) keeps that
+	// queue in a heap ordered by priority ALONE — upstream only made equal
+	// priorities first-in-first-out on 2026-04-27. So separate Invokes ran in no
+	// fixed order: an hdBurst end mark landed before its begin (the "no end mark,
+	// closed after 600 ms" lines in Rober's F7-on-an-NPC log), a roster push fell
+	// outside its burst and drew the 60-portrait list on its own (fdState 218 ms
+	// x2), and hdShowTab could beat hdOpen. One script runs start to finish in
+	// one task. Each call is fenced: a throw in one handler must not skip the rest
+	// or escape to the renderer; the view logs it (app.js hdPushThrew).
+	// Same guards as PushToView. MAIN THREAD ONLY.
+	class ViewBatch
 	{
-		if (!g_prisma || !g_view || !g_viewReady.load() || !g_open.load())
-			return;
-		static bool logged = false;
-		if (!logged) {
-			logged = true;
-			logger::info("push-burst: view redraws are coalesced per burst (first burst: {})", tag);
+	public:
+		void Call(std::string_view fn, std::string_view payload)
+		{
+			js_.append("try{").append(fn).append("(").append(payload)
+				.append(")}catch(e){window.hdPushThrew&&hdPushThrew('").append(fn).append("',e)}\n");
+			++calls_;
 		}
-		const std::string js = std::string("window.hdBurst&&hdBurst(") + (begin ? "1" : "0") + ",'" + tag + "')";
-		g_prisma->Invoke(g_view, js.c_str());
-	}
+		void Burst(bool begin, const char* tag)
+		{
+			static bool logged = false;
+			if (begin && !logged) {
+				logged = true;
+				logger::info("push-burst: view redraws are coalesced per burst (first burst: {})", tag);
+			}
+			js_.append("window.hdBurst&&hdBurst(").append(begin ? "1" : "0").append(",'").append(tag).append("');\n");
+		}
+		std::size_t Calls() const { return calls_; }
+		void Send()
+		{
+			if (!js_.empty() && g_prisma && g_view && g_viewReady.load() && g_open.load())
+				g_prisma->Invoke(g_view, js_.c_str());
+			js_.clear();
+			calls_ = 0;
+		}
+
+	private:
+		std::string js_;
+		std::size_t calls_ = 0;
+	};
 
 	// open-deferred-slices: push the parked slices of the open `epoch`. MAIN
 	// THREAD ONLY. A stale epoch (a newer open, or a close) or an already-drained
@@ -6808,10 +7303,13 @@ namespace
 		// push-burst: the view parks every pane redraw between the two marks and
 		// runs each ONCE at the end (six roster pushes used to be six full roster
 		// renders, 291 ms on the Followers tab in the 2026-10-08 log).
-		PushBurstMark(true, "open");
+		// view-batch: marks and slices in ONE script, so the marks bracket them.
+		ViewBatch b;
+		b.Burst(true, "open");
 		for (auto& [fn, payload] : d.pushes)
-			g_prisma->Invoke(g_view, (std::string(fn) + "(" + payload + ")").c_str());
-		PushBurstMark(false, "open");
+			b.Call(fn, payload);
+		b.Burst(false, "open");
+		b.Send();
 		logger::info("open-deferred-slices: {} slice(s) pushed after the first paint ({})", d.pushes.size(), why);
 	}
 
@@ -6830,6 +7328,9 @@ namespace
 		// The Stance Wheel slows the world and holds the HUD view's focus; the
 		// palette is about to own both (smooth pause sets its own sgtm).
 		SwCloseWheel(false);
+		CrCloseRing(false);   // the 7th claimant, the Command Ring
+		WwCloseWheel(false);   // the 8th claimant, the Wardrobe Wheel
+		HpClosePad(false);   // the pad's Focus too — the deck owns the screen now
 		// Mark the open in flight so a key press mid-open is dropped, not raced
 		// into a second Show/Hide on the single focus slot (Ank164 "freezes solid").
 		// RAII-cleared at every return path below.
@@ -6944,16 +7445,13 @@ namespace
 		// Cooperative half of the search-box fix: mods that check textEntryCount
 		// hold their hotkeys while we own the keyboard. Guarded so it cannot leak.
 		SetTextInputGuard(true);
-		g_prisma->Invoke(g_view, ("hdOpen(" + payload + ")").c_str());
-		// open-deferred-slices: everything below that the first painted frame does
-		// not need is PARKED in `deferred` and pushed by PushDeferredOpenSlices once
-		// the view reports hdPainted (or 400 ms later). Same order as before.
-		DeferredOpen deferred;
-		deferred.epoch = ++g_openEpoch;
-		// Tab-pane payloads after hdOpen (it resets the view): the Followers
-		// chrome config, the Domains slice + a fresh location snapshot, then any
-		// pending deep-open target (F14/F15 pressed while the palette was closed).
-		deferred.pushes.emplace_back("fdConfig", fcfg);
+		// view-batch: every open-time push goes out as ONE script, in this order —
+		// hdOpen first (it resets the view), hdShowTab last (it can close it). The
+		// tab slices that the first frame does not need are built AFTER the send
+		// (open-deferred-slices below), so the view starts on hdOpen while C++
+		// builds them.
+		ViewBatch open;
+		open.Call("hdOpen", payload);
 		// The crosshair snapshot taken a few lines above. Pushed HERE, at open,
 		// because it is an open-time fact — and because the quick-follower card
 		// on the Hotkeys tab needs it too. It used to be sent only from
@@ -6961,12 +7459,125 @@ namespace
 		// deck on any other tab and the card never learned who you were looking
 		// at, so it sat on its "look at an NPC first" empty state while you were
 		// staring right at one.
-		g_prisma->Invoke(g_view, ("fdTarget(" + FolTargetJson() + ")").c_str());
+		open.Call("fdTarget", FolTargetJson());
 		// The non-actor twin: opened while looking at a ground item -> the view
 		// shows which mod it comes from. Null when the crosshair held nothing
 		// (or held an actor), and the banner stays hidden.
-		g_prisma->Invoke(g_view, ("hdItemSource(" + ItemSourceJson() + ")").c_str());
-		g_prisma->Invoke(g_view, ("hdRecent(" + HotkeyHistory::Json() + ")").c_str());
+		open.Call("hdItemSource", ItemSourceJson());
+		open.Call("hdRecent", HotkeyHistory::Json());
+		// Opened while looking at a DOOR -> the lock modal raises itself over
+		// whatever tab loads (hd-door.js auto-opens on a fresh non-null push;
+		// a null push closes any stale modal from the previous open).
+		open.Call("drTarget", DoorActions::TargetJson());
+		// Icon library, same two-step as the Spell Deck: the heavy index once per
+		// session (each view resolves "icons/..." against its OWN folder, so the deck
+		// needs its own push), the live custom listing (scanned above) on every open.
+		// Before the g_pendingTab block, which must stay last — hdShowTab can close
+		// the view.
+		if (!g_deckIconIndexPushed.exchange(true))
+			open.Call("hdIconIndex", DeckIconIndexJson());
+		open.Call("hdIcons", iconList);
+		// Opened while looking at someone -> land on Followers, where that
+		// person's dismiss / inventory / outfit / wait buttons are (Rober,
+		// 2026-08-02). Deliberately last, and deliberately only when nothing
+		// else claimed the tab: F14/F15 are explicit deep-opens and must win
+		// over a heuristic. With an empty crosshair this is a no-op, so the
+		// plain "F7 to reach my hotkeys" habit is untouched.
+		//
+		// Reads the SAME snapshot fdTarget was built from a few lines above, so
+		// the tab we land on and the person the card names can never disagree.
+		// Opened DURING an OStim scene -> land on the Scene tab, the one page
+		// that gathers every OStim control (Rober, 2026-09-21: "if im in an
+		// ostim scene it should open a dedicated ostim scene page on f7 of
+		// skymanager").
+		//
+		// Deliberately BEFORE the crosshair heuristic and not after it: mid-scene
+		// the crosshair is always full of a participant, so Followers would claim
+		// the tab every time and this landing would never once fire. An explicit
+		// deep-open (F14/F15, a bound action) still wins over both — it is
+		// checked first, exactly as the Followers heuristic checks it.
+		if (!g_returningFromPhoto && g_pendingTab.empty() && OstimDeck::PlayerInScene()) {
+			bool wants = false;
+			{
+				std::lock_guard l(g_configMutex);
+				wants = g_config.settings.sceneOpensScene;
+			}
+			if (wants) {
+				g_pendingTab = "scene";
+				logger::info("open: OStim scene running -> landing on the Scene tab");  // marker: gate-f7-scene
+			}
+		}
+		// Looking at someone -> the Scene page, which now carries everything the
+		// NPC card's "Scene controls" popout used to (appearance, skins,
+		// restraints, effects, body physics) as well as the live scene. Checked
+		// BEFORE the Followers heuristic and gated on OStim actually being
+		// here, because with no OStim the Scene tab is hidden and routing to it
+		// would bounce the view to Home (the gate-f7-followers lesson).
+		// Both tab landings below need the game's OWN crosshair pick
+		// (TargetUnderCrosshair), not the camera-cone fallback the card uses: a
+		// follower near screen centre passed the cone on almost every open and
+		// pulled the deck onto Followers (Nexus, aqua87yh, 2026-10-09).
+		if (!g_returningFromPhoto && g_pendingTab.empty() && NpcActions::TargetUnderCrosshair()) {
+			bool wants = false;
+			{
+				std::lock_guard l(g_configMutex);
+				wants = g_config.settings.targetOpensScene;
+			}
+			const auto& det  = DetectedModsJson();
+			const bool  noOStim = det.contains("ostim") && det["ostim"].is_boolean() &&
+			                      det["ostim"].get<bool>() == false;
+			// Only when THEY are in a scene (a thread you walked up on). This
+			// route used to fire for every NPC in the crosshair, scene or no
+			// scene, so a plain F7-on-someone opened the Scene page instead of
+			// her card (Rober, 2026-09-22: "sometimes it shows ostim scene even
+			// when im not in one anymore and im hitting f7 on an npc"). An
+			// ordinary look-and-open falls through to the Followers landing.
+			const bool theyAreInScene = !noOStim && OstimDeck::ActorInScene(NpcActions::TargetFormID());
+			if (wants && theyAreInScene) {
+				g_pendingTab = "scene";
+				logger::info("open: crosshair target -> landing on the Scene tab (they are in a scene)");  // marker: gate-f7-scene-target
+			}
+		}
+		if (!g_returningFromPhoto && g_pendingTab.empty() && NpcActions::TargetFormID() != 0 &&
+			!NpcActions::TargetUnderCrosshair()) {
+			// marker: open-target-cone-only
+			logger::info("open: someone near the aim but not under the crosshair -> no tab landing");
+		}
+		if (!g_returningFromPhoto && g_pendingTab.empty() && NpcActions::TargetUnderCrosshair()) {
+			bool wants = false;
+			{
+				std::lock_guard l(g_configMutex);
+				wants = g_config.settings.targetOpensFollowers;
+			}
+			// The Followers tab rides Follower Organizer; with FO absent the tab is
+			// HIDDEN in the view (SYS_TABS requires:'followerorganizer'). Routing a
+			// plain F7-with-target onto it would bounce the view to Home with a
+			// toast on every look-and-open — so degrade here: don't route to a tab
+			// that isn't there (2026-08-12 gate sweep). The explicit-false gate
+			// mirrors the view's tabAvailable.
+			const auto& det = DetectedModsJson();
+			const bool  foGone = det.contains("followerorganizer") && det["followerorganizer"].is_boolean() && det["followerorganizer"].get<bool>() == false;
+			if (wants && !foGone) {
+				g_pendingTab = "followers";
+				logger::info("open: crosshair target -> landing on the Followers tab");
+			} else if (wants && foGone) {
+				logger::info("open: crosshair target, but Follower Organizer absent -> Followers tab hidden, staying put");  // marker: gate-f7-followers
+			}
+		}
+		if (!g_pendingTab.empty()) {
+			open.Call("hdShowTab", "\"" + g_pendingTab + "\"");
+			g_pendingTab.clear();
+		}
+		open.Send();
+		// open-deferred-slices: everything the first painted frame does not need is
+		// PARKED in `deferred` and pushed by PushDeferredOpenSlices once
+		// the view reports hdPainted (or 400 ms later). Same order as before.
+		DeferredOpen deferred;
+		deferred.epoch = ++g_openEpoch;
+		// Tab-pane payloads after hdOpen (it resets the view): the Followers
+		// chrome config, the Domains slice + a fresh location snapshot, then any
+		// pending deep-open target (F14/F15 pressed while the palette was closed).
+		deferred.pushes.emplace_back("fdConfig", fcfg);
 		deferred.pushes.emplace_back("fdPortraits", FolPortraitsJson());
 		// Once per session, before the first crop map goes out: drop crops whose
 		// photo has been deleted since the last run. Saving a crop prunes too, so
@@ -7022,18 +7633,6 @@ namespace
 		// Auto-Loot config + live runtime state, pushed UNPROMPTED at open (needs an
 		// hd-boot STUB): full slice + destName/destResolvable + last-tick picked.
 		deferred.pushes.emplace_back("alOpen", AutoLoot::StateJson());
-		// Opened while looking at a DOOR -> the lock modal raises itself over
-		// whatever tab loads (hd-door.js auto-opens on a fresh non-null push;
-		// a null push closes any stale modal from the previous open).
-		g_prisma->Invoke(g_view, ("drTarget(" + DoorActions::TargetJson() + ")").c_str());
-		// Icon library, same two-step as the Spell Deck: the heavy index once per
-		// session (each view resolves "icons/..." against its OWN folder, so the deck
-		// needs its own push), the live custom listing (scanned above) on every open.
-		// Before the g_pendingTab block, which must stay last — hdShowTab can close
-		// the view.
-		if (!g_deckIconIndexPushed.exchange(true))
-			g_prisma->Invoke(g_view, ("hdIconIndex(" + DeckIconIndexJson() + ")").c_str());
-		g_prisma->Invoke(g_view, ("hdIcons(" + iconList + ")").c_str());
 		// open-deferred-slices: park the rest; hdPainted (or the fallback) pushes it.
 		{
 			const auto epoch = deferred.epoch;
@@ -7046,88 +7645,6 @@ namespace
 				std::this_thread::sleep_for(std::chrono::milliseconds(400));
 				SKSE::GetTaskInterface()->AddTask([epoch]() { PushDeferredOpenSlices(epoch, "fallback 400 ms"); });
 			}).detach();
-		}
-		// Opened while looking at someone -> land on Followers, where that
-		// person's dismiss / inventory / outfit / wait buttons are (Rober,
-		// 2026-08-02). Deliberately last, and deliberately only when nothing
-		// else claimed the tab: F14/F15 are explicit deep-opens and must win
-		// over a heuristic. With an empty crosshair this is a no-op, so the
-		// plain "F7 to reach my hotkeys" habit is untouched.
-		//
-		// Reads the SAME snapshot fdTarget was built from a few lines above, so
-		// the tab we land on and the person the card names can never disagree.
-		// Opened DURING an OStim scene -> land on the Scene tab, the one page
-		// that gathers every OStim control (Rober, 2026-09-21: "if im in an
-		// ostim scene it should open a dedicated ostim scene page on f7 of
-		// skymanager").
-		//
-		// Deliberately BEFORE the crosshair heuristic and not after it: mid-scene
-		// the crosshair is always full of a participant, so Followers would claim
-		// the tab every time and this landing would never once fire. An explicit
-		// deep-open (F14/F15, a bound action) still wins over both — it is
-		// checked first, exactly as the Followers heuristic checks it.
-		if (!g_returningFromPhoto && g_pendingTab.empty() && OstimDeck::PlayerInScene()) {
-			bool wants = false;
-			{
-				std::lock_guard l(g_configMutex);
-				wants = g_config.settings.sceneOpensScene;
-			}
-			if (wants) {
-				g_pendingTab = "scene";
-				logger::info("open: OStim scene running -> landing on the Scene tab");  // marker: gate-f7-scene
-			}
-		}
-		// Looking at someone -> the Scene page, which now carries everything the
-		// NPC card's "Scene controls" popout used to (appearance, skins,
-		// restraints, effects, body physics) as well as the live scene. Checked
-		// BEFORE the Followers heuristic and gated on OStim actually being
-		// here, because with no OStim the Scene tab is hidden and routing to it
-		// would bounce the view to Home (the gate-f7-followers lesson).
-		if (!g_returningFromPhoto && g_pendingTab.empty() && NpcActions::TargetFormID() != 0) {
-			bool wants = false;
-			{
-				std::lock_guard l(g_configMutex);
-				wants = g_config.settings.targetOpensScene;
-			}
-			const auto& det  = DetectedModsJson();
-			const bool  noOStim = det.contains("ostim") && det["ostim"].is_boolean() &&
-			                      det["ostim"].get<bool>() == false;
-			// Only when THEY are in a scene (a thread you walked up on). This
-			// route used to fire for every NPC in the crosshair, scene or no
-			// scene, so a plain F7-on-someone opened the Scene page instead of
-			// her card (Rober, 2026-09-22: "sometimes it shows ostim scene even
-			// when im not in one anymore and im hitting f7 on an npc"). An
-			// ordinary look-and-open falls through to the Followers landing.
-			const bool theyAreInScene = !noOStim && OstimDeck::ActorInScene(NpcActions::TargetFormID());
-			if (wants && theyAreInScene) {
-				g_pendingTab = "scene";
-				logger::info("open: crosshair target -> landing on the Scene tab (they are in a scene)");  // marker: gate-f7-scene-target
-			}
-		}
-		if (!g_returningFromPhoto && g_pendingTab.empty() && NpcActions::TargetFormID() != 0) {
-			bool wants = false;
-			{
-				std::lock_guard l(g_configMutex);
-				wants = g_config.settings.targetOpensFollowers;
-			}
-			// The Followers tab rides Follower Organizer; with FO absent the tab is
-			// HIDDEN in the view (SYS_TABS requires:'followerorganizer'). Routing a
-			// plain F7-with-target onto it would bounce the view to Home with a
-			// toast on every look-and-open — so degrade here: don't route to a tab
-			// that isn't there (2026-08-12 gate sweep). The explicit-false gate
-			// mirrors the view's tabAvailable.
-			const auto& det = DetectedModsJson();
-			const bool  foGone = det.contains("followerorganizer") && det["followerorganizer"].is_boolean() && det["followerorganizer"].get<bool>() == false;
-			if (wants && !foGone) {
-				g_pendingTab = "followers";
-				logger::info("open: crosshair target -> landing on the Followers tab");
-			} else if (wants && foGone) {
-				logger::info("open: crosshair target, but Follower Organizer absent -> Followers tab hidden, staying put");  // marker: gate-f7-followers
-			}
-		}
-		if (!g_pendingTab.empty()) {
-			g_prisma->Invoke(g_view, ("hdShowTab(\"" + g_pendingTab + "\")").c_str());
-			g_pendingTab.clear();
 		}
 		// open-diag: the ONE line that answers "how slow was the open the player
 		// felt?" — from key press to on-screen, INCLUDING the first press's
@@ -7144,9 +7661,13 @@ namespace
 	{
 		// The person page's live view owns the camera and the focus mode; it must
 		// hand both back BEFORE the palette's own close runs.
+		AutoPortrait::Abort("palette close");
 		PersonLive::Stop("palette close");
 		if (!g_prisma || !g_open.exchange(false))
 			return;
+		// the Bestiary's debounced write lands now, a frame after the close
+		// (serialised on the main thread, written on a worker)
+		SKSE::GetTaskInterface()->AddTask([]() { Bestiary::Flush(); });
 		{	// open-deferred-slices: a close before the first paint drops the parked pushes
 			std::lock_guard l(g_deferredOpenMutex);
 			g_deferredOpen = DeferredOpen{};
@@ -7169,7 +7690,9 @@ namespace
 			onCloseBlocked = []() { WriteSmoothWedgeFlag("palette close (Unfocus/Hide)"); };
 		OpenDiag::Watchdog wdClose("palette close (Unfocus/Hide)", 2000, std::move(onCloseBlocked));
 		g_capturing = false;  // hdClosed() clears the JS capture without notifying us
+		g_captureModal = false;
 		g_prisma->Invoke(g_view, "hdClosed()");
+		FreezeBackdrop::Want(FreezeBackdrop::kDeck, false);   // before the focus menu goes
 		g_prisma->Unfocus(g_view);
 		g_prisma->Hide(g_view);
 		g_focusPaused = false;
@@ -7216,6 +7739,7 @@ namespace
 	void AgToggleAlign();   // used by the action dispatch, far above its definition
 	void ForceClosePalettes(const char* why, bool releaseHudEdit = true)
 	{
+		AutoPortrait::Abort("force-close");
 		PersonLive::Stop("force-close");
 		if (!g_prisma)
 			return;
@@ -7223,8 +7747,10 @@ namespace
 			why, g_open.load(), g_magicOpen.load(), g_capturing.load(),
 			g_prisma->HasAnyActiveFocus());
 		g_capturing      = false;
+		g_captureModal   = false;
 		g_captureStartMs = 0;
 		g_lastEscMs      = 0;
+		FreezeBackdrop::ReleaseAll("force-close");   // the rescue lets go of EVERYTHING, the frozen world first
 		if (g_view) {
 			g_prisma->Invoke(g_view, "hdClosed()");
 			g_prisma->Unfocus(g_view);
@@ -7269,6 +7795,9 @@ namespace
 			HudNavStop("force-close", false);
 			AgCloseAlign(false);   // the 4th claimant — same orphan risk
 			SwCloseWheel(false);   // the 5th — and it also restores world time
+			CrCloseRing(false);   // the 7th claimant, the Command Ring
+			WwCloseWheel(false);   // the 8th claimant, the Wardrobe Wheel
+			HpClosePad(false);     // the 6th, the Hotkey Pad
 			OdCloseDock(false);
 			PortraitCapture::PhotoCancel();
 			PhotoStudioClose();
@@ -7300,12 +7829,26 @@ namespace
 		// (an unforeseen close, a mod force-hiding our view) within a second.
 		if (g_worldFrozen.load() && !g_open.load() && !g_magicOpen.load())
 			FreezeWorld(false);
+		// freeze-backdrop: same net for the frozen backdrop, and the setting's live value.
+		// watchdog-split (2026-10-10): "desync-watchdog" had a 148-179 ms worst case on
+		// the MAIN thread in minutes the deck was used, and one bucket could not say
+		// which part. Each part now has its own census bucket.
+		{
+			OpenDiag::TickTimer t("watchdog-backdrop");
+			FreezeBackdrop::SetEnabled(FreezeBackdropSetting());
+			FreezeBackdrop::Tick(g_open.load() || g_magicOpen.load());
+		}
 		// Deliver the smooth-wedge fallback notice once a save is loaded — at
 		// kDataLoaded (where the flag is consumed) the player is on the main menu
 		// and a DebugNotification evaporates unseen.
 		if (g_smoothWedgeNotify.load() && g_gameReady.load() && g_smoothWedgeNotify.exchange(false))
 			RE::DebugNotification("SkyManager: smooth pause froze the last session - switched to the classic menu pause (re-enable it in Settings to retry).");
-		if (!PalettesDesynced()) {
+		bool desynced = false;
+		{
+			OpenDiag::TickTimer t("watchdog-view-state");   // PrismaUI IsValid/IsHidden/HasFocus
+			desynced = PalettesDesynced();
+		}
+		if (!desynced) {
 			g_desyncTicks = 0;
 			return;
 		}
@@ -7520,7 +8063,7 @@ namespace
 	// palette-open snapshot, exactly like the NPC actions.
 	void FireConsoleAndClose(HotkeyEntry entry)
 	{
-		if (CellTravelHandoff::IsTravelCommand(entry.command)) {
+		if (CellTravelHandoff::IsTravelCommand(entry.command, entry.action == "crosshair")) {
 			SKSE::GetTaskInterface()->AddTask([entry]() {
 				QueueTravel(entry.name, [entry]() {
 					ConsoleActions::Fire(entry.name, entry.command, entry.action == "crosshair");
@@ -7549,6 +8092,182 @@ namespace
 		}).detach();
 	}
 
+	// ---- mod-key entries (2026-10-11, mod_keys.h) -----------------------------
+	// Another mod's own hotkey as a deck row. The press waits for the game to be
+	// UNPAUSED (the palette has closed and nothing else holds a pause): a mod's
+	// input handler, and any Papyrus it starts, runs unpaused only. Main thread.
+	// `after` (optional) runs on the main thread once the press has been sent.
+	void PressModKeyWhenUnpaused(ModKeys::Press press, std::string name, ModKeys::Spec spec, int tries,
+		std::function<void()> after = {})
+	{
+		if (auto* ui = RE::UI::GetSingleton(); ui && ui->GameIsPaused()) {
+			if (tries < 8) {
+				std::thread([press = std::move(press), name = std::move(name), spec = std::move(spec), tries, after = std::move(after)]() mutable {
+					std::this_thread::sleep_for(std::chrono::milliseconds(150));
+					SKSE::GetTaskInterface()->AddTask([press = std::move(press), name = std::move(name), spec = std::move(spec), tries, after = std::move(after)]() mutable {
+						PressModKeyWhenUnpaused(std::move(press), std::move(name), std::move(spec), tries + 1, std::move(after));
+					});
+				}).detach();
+				return;
+			}
+			const std::string msg = name + ": a menu is still open, so the key was not pressed. Close it and try again.";
+			logger::info("mod-key: refused '{}' - game still paused after {} tries", name, tries);
+			RE::DebugNotification(msg.c_str());
+			return;
+		}
+		// Build marker (hd-markers.json "mod-key-press"): the one line that says a
+		// mod-key row reached the key path, with the value it read live.
+		logger::info("mod-key: pressed '{}' -> scan {} with {} modifier(s), read live from {} [{}] {} = {}",
+			name, press.dik, press.mods.size(), spec.file, spec.section, spec.key, press.raw);
+		std::thread([dik = press.dik, mods = press.mods, after = std::move(after)]() mutable {
+			FireChord("keyboard", dik, mods);
+			if (after)
+				SKSE::GetTaskInterface()->AddTask([after = std::move(after)]() { after(); });
+		}).detach();
+	}
+
+	// ---- Walk With Me's own party menu, from the Combat Wheel (2026-10-12) ----
+	// Rober: "can we add a walk with me button that toggles their wheel? ... and
+	// the party actions one too". The WWM wedge opens a flyout; two of its three
+	// choices land here. Walk With Me 0.3 publishes no call that opens its party
+	// menu (WayfarerAPI.h is formation state only), so this presses the mod's OWN
+	// Command key, read live from Wayfarer.ini [Hotkeys] iCommandKey +
+	// iCommandModifiers (mod_keys.h: the law's allowed exception). The same key
+	// closes the menu when it is already up, so the wedge toggles it.
+	//
+	// Party actions: the menu always opens on its wheel page (menu_ui.cpp resets
+	// gridPage on open), and Down / Tab / D-pad down is its own "to Party
+	// actions" step (docs/hotkeys.md). Once SMF reports a blocking window — the
+	// party menu is AddWindow(..., pauseGame = true) — the deck taps Down. Down,
+	// not Tab: if anything goes wrong, a stray Down in play does nothing, while
+	// a stray Tab opens the Tween menu. No window within ~1.5 s -> no tap, and
+	// the HUD says so.
+	ModKeys::Spec WwmCommandSpec()
+	{
+		ModKeys::Spec s;
+		s.file = "Wayfarer.ini";
+		s.section = "Hotkeys";
+		s.key = "iCommandKey";
+		s.modsKey = "iCommandModifiers";
+		s.modsKind = "mask";
+		s.space = "dik";
+		s.mod = "Walk With Me";
+		s.where = "Walk With Me's own menu (SKSE Menu Framework > Walk With Me > Controls)";
+		return s;
+	}
+
+	bool SmfBlockingWindowOpen()
+	{
+		using BlockingFn = bool (*)();
+		static BlockingFn fn = []() -> BlockingFn {
+			const HMODULE m = GetModuleHandleW(L"SKSEMenuFramework.dll");
+			return m ? reinterpret_cast<BlockingFn>(GetProcAddress(m, "IsAnyBlockingWindowOpened")) : nullptr;
+		}();
+		return fn && fn();
+	}
+
+	// Main thread. Polls for the party menu, then steps it to Party actions.
+	void WwmStepToPartyActions(int tries)
+	{
+		if (SmfBlockingWindowOpen()) {
+			// a beat for the menu's first frame (it resets to the wheel page there)
+			std::thread([]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(140));
+				FireChord("keyboard", 0xD0, {});   // DIK_DOWN
+				logger::info("combat-wheel: Walk With Me party menu -> Party actions (Down)");   // marker: combat-wheel-wwm-party
+			}).detach();
+			return;
+		}
+		if (tries < 15) {
+			std::thread([tries]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				SKSE::GetTaskInterface()->AddTask([tries]() { WwmStepToPartyActions(tries + 1); });
+			}).detach();
+			return;
+		}
+		logger::info("combat-wheel: Walk With Me party menu did not open - Party actions not stepped to");
+		RE::DebugNotification("Walk With Me's party menu did not open, so Party actions was not opened");
+	}
+
+	// Main thread (the Combat Wheel has already closed and given Focus back).
+	void FireWwmCommand(bool party)
+	{
+		// The key route needs only the mod; whether its menu can draw (SMF 3) is
+		// Walk With Me's own check, and it says so on screen itself.
+		if (!GetModuleHandleW(L"Wayfarer.dll")) {
+			RE::DebugNotification("Walk With Me is not installed (Wayfarer.dll is not loaded)");
+			logger::info("combat-wheel: Walk With Me {} refused - Wayfarer.dll not loaded", party ? "party actions" : "order wheel");
+			return;
+		}
+		const std::string name = party ? "Walk With Me: Party actions" : "Walk With Me: Order wheel";
+		std::thread([name, party]() {
+			auto spec = WwmCommandSpec();
+			auto press = ModKeys::Resolve(spec, name);   // file IO: worker
+			SKSE::GetTaskInterface()->AddTask([press = std::move(press), name, spec = std::move(spec), party]() mutable {
+				if (!press.ok) {
+					logger::info("mod-key: refused '{}' - {}", name, press.msg);
+					RE::DebugNotification(press.msg.c_str());
+					return;
+				}
+				logger::info("combat-wheel: Walk With Me {} via its Command key", party ? "party actions" : "order wheel");   // marker: combat-wheel-wwm-wheel
+				std::function<void()> after;
+				if (party)
+					after = []() { WwmStepToPartyActions(0); };
+				PressModKeyWhenUnpaused(std::move(press), name, std::move(spec), 0, std::move(after));
+			});
+		}).detach();
+	}
+
+	// Close the palette, read the binding off disk on a worker (file IO law),
+	// then press it through FireChord — the same play-proven SendInput path as
+	// every keystroke entry. Never reopens: the keys these rows press open the
+	// mod's own UI (Walk With Me's order wheel, its companion panel), which owns
+	// the screen next. A refusal is said on the HUD, because the deck that would
+	// have shown a toast is the thing that just closed.
+	void FireModKey(HotkeyEntry entry)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { ClosePalette(); });
+		std::thread([name = entry.name, spec = entry.modKey]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			auto press = ModKeys::Resolve(spec, name);
+			SKSE::GetTaskInterface()->AddTask([press = std::move(press), name, spec]() mutable {
+				if (!press.ok) {
+					logger::info("mod-key: refused '{}' - {}", name, press.msg);
+					RE::DebugNotification(press.msg.c_str());
+					return;
+				}
+				PressModKeyWhenUnpaused(std::move(press), std::move(name), std::move(spec), 0);
+			});
+		}).detach();
+	}
+
+	// Walk With Me On/Off through its OWN switch (FormationWwm), never its toggle
+	// key: the write lands in Wayfarer.ini and the mod re-reads it, so the deck
+	// and the mod's menu always agree on which way it is set. Main thread, after
+	// ClosePalette — the ReloadSettings / SetEnabled natives run unpaused only.
+	void FireWwmToggle()
+	{
+		const int on = FormationWwm::EnabledNow();
+		if (on < 0) {
+			const char* msg = "Walk With Me: its switch can't be read yet (is Wayfarer.ini there?). Nothing was changed.";
+			logger::info("wwm-toggle: refused - state unknown");
+			RE::DebugNotification(msg);
+			return;
+		}
+		const bool want = on == 0;
+		const auto res = json::parse(FormationActions::Apply(FormationWwm::EnabledRequest(want)), nullptr, false);
+		const bool ok = res.is_object() && res.value("ok", false);
+		std::string msg;
+		if (ok)
+			msg = want ? "Walk With Me: switching ON - companions fall into formation as the game resumes"
+			           : "Walk With Me: switching OFF - companions go back to their own follower AI";
+		else
+			msg = res.is_object() ? res.value("msg", std::string("Walk With Me did not accept the switch"))
+			                      : std::string("Walk With Me did not accept the switch");
+		logger::info("wwm-toggle: {} -> {} ({})", on == 1 ? "on" : "off", want ? "on" : "off", ok ? "applied" : "refused");
+		RE::DebugNotification(msg.c_str());
+	}
+
 	// Native action entry (device == "action"): close the palette, then run the
 	// C++ action against the snapshotted target. No keystroke is synthesized.
 	void FireAction(HotkeyEntry entry)
@@ -7559,6 +8278,19 @@ namespace
 			reopen = !g_config.settings.closeAfterFire;
 		}
 		std::string action = entry.action;
+		// Another mod's own key, read live (mod_keys.h), and Walk With Me's own
+		// switch. Neither reopens the palette — see FireModKey / FireWwmToggle.
+		if (action == ModKeys::kAction) {
+			FireModKey(std::move(entry));
+			return;
+		}
+		if (action == "wwm-toggle") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				ClosePalette();
+				FireWwmToggle();
+			});
+			return;
+		}
 		if (action == "appearance-quick" || action == "appearance-normal") {
 			const std::string op=action=="appearance-normal"?"normal":"quick";
 			SKSE::GetTaskInterface()->AddTask([op]() {
@@ -7655,6 +8387,36 @@ namespace
 		// inside one task with the palette closed - the HUD lines the engine
 		// prints for skill-ups and learned spells belong on the world, not
 		// under the deck. Reopen per preference like the other one-shots.
+		// Bestiary: open the book, or Study the creature under the crosshair
+		// (measured into the book, no kill counted) and open on its page. From a
+		// hotkey with the palette closed the palette opens first; the open request
+		// is buffered by hd-boot's STUB_FNS until hd-bestiary.js has loaded.
+		if (Bestiary::IsAction(action)) {
+			SKSE::GetTaskInterface()->AddTask([action]() {
+				/* Study: take the AIM first (opening the palette re-snapshots), then
+				   open the deck at once with the book's "Studying…" emblem up, and
+				   let the view ask for the measuring (bxStudy) - the press answers in
+				   a frame instead of after the measure + state build (Rober,
+				   2026-10-10: "just lagged, maybe do a cool animated icon then open
+				   bestiary"). */
+				nlohmann::json j = nlohmann::json::object();
+				if (action == "bestiary-study") {
+					std::string name, why;
+					const auto fid = Bestiary::AimedActor(name, why);
+					if (!fid) {
+						RE::DebugNotification(why.c_str());
+						return;
+					}
+					j["study"] = nlohmann::json{ { "formId", fid }, { "name", name } };
+				}
+				if (!g_open.load() && CanOpenNow())
+					OpenPalette();
+				const auto payload = j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+				SKSE::GetTaskInterface()->AddTask([payload]() { PushToView("hdBestiaryOpen", payload); });
+			});
+			return;
+		}
+
 		if (BookReader::IsAction(action)) {
 			SKSE::GetTaskInterface()->AddTask([action, reopen]() {
 				ClosePalette();
@@ -8009,6 +8771,22 @@ namespace
 			return;
 		}
 
+		// Inventory: same shape, the Inventory tab (2026-10-10).
+		if (action == "inventory") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"inventory\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "inventory";
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
 		// Transmog: same shape, the Transmog tab.
 		if (action == "transmog") {
 			SKSE::GetTaskInterface()->AddTask([]() {
@@ -8066,6 +8844,16 @@ namespace
 			OnJsOdOpen("");
 			return;
 		}
+		// Wardrobe Wheel — the Combat Wheel's discipline: close the palette
+		// FIRST, take Focus one task later; pressed while up it CONFIRMS.
+		if (action == "wardrobe-wheel") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (AnyOpen())
+					ClosePalette();
+				SKSE::GetTaskInterface()->AddTask([]() { WwToggleWheel(); });
+			});
+			return;
+		}
 		if (action == "time-dial") {
 			SKSE::GetTaskInterface()->AddTask([]() {
 				if (AnyOpen())
@@ -8095,6 +8883,140 @@ namespace
 				if (AnyOpen())
 					ClosePalette();
 				SKSE::GetTaskInterface()->AddTask([]() { SwToggleWheel(); });
+			});
+			return;
+		}
+
+		// Command Ring (2026-10-12) — the same discipline: close the palette
+		// FIRST, take Focus one task later. Pressed while the ring is up, the
+		// key picks the highlighted command (CrToggleRing asks the view).
+		if (action == "command-ring") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (AnyOpen())
+					ClosePalette();
+				SKSE::GetTaskInterface()->AddTask([]() { CrToggleRing(); });
+			});
+			return;
+		}
+		// One Command Ring command as its own deck action (Omni, the Hotbar, an
+		// F2 trigger): close the palette and the ring, then run it a task later
+		// through the SAME CrRun the ring uses. Papyrus and Fight With Me's keys
+		// need a running world, so nothing reopens.
+		if (CommandRing::IsCommand(action)) {
+			// Home is here moves every follower's home: from a key it asks for a
+			// second press within four seconds, as the ring asks for a second pick.
+			if (CommandRing::NeedsConfirm(action)) {
+				static std::chrono::steady_clock::time_point armedAt{};
+				static std::string armedFor;
+				const auto now = std::chrono::steady_clock::now();
+				if (armedFor != action || now - armedAt > std::chrono::seconds(4)) {
+					armedFor = action;
+					armedAt = now;
+					SKSE::GetTaskInterface()->AddTask([]() {
+						if (AnyOpen())
+							ClosePalette();
+						RE::DebugNotification("Press again to make this everyone's home");
+					});
+					return;
+				}
+				armedFor.clear();
+			}
+			const std::string id = action;
+			SKSE::GetTaskInterface()->AddTask([id]() {
+				if (AnyOpen())
+					ClosePalette();
+				CrCloseRing(false);
+				SKSE::GetTaskInterface()->AddTask([id]() { CrRun(id); });
+			});
+			return;
+		}
+
+		// Hotkey Pad — same discipline: close the palette FIRST, take Focus one
+		// task later. Pressed while the pad is up it closes it (HpTogglePad).
+		if (action == "hotkey-pad") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (AnyOpen())
+					ClosePalette();
+				SKSE::GetTaskInterface()->AddTask([]() { HpTogglePad(); });
+			});
+			return;
+		}
+
+		// Change Grip: Dynamic Grip's own switch, called with no key (see
+		// grip_switch.h). Like a stance key it needs a RUNNING world: close the
+		// palette first and let its pause lift before the switch.
+		if (action == "grip-dg") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				const bool fromPalette = AnyOpen();
+				if (fromPalette)
+					ClosePalette();
+				std::thread([fromPalette]() {
+					std::this_thread::sleep_for(std::chrono::milliseconds(fromPalette ? 300 : 0));
+					SKSE::GetTaskInterface()->AddTask([]() {
+						bool ok = false;
+						const std::string r = GripSwitch::Toggle(ok);
+						logger::info("{}", r);
+						if (!ok)
+							RE::DebugNotification(r.c_str());
+					});
+				}).detach();
+			});
+			return;
+		}
+
+		// One stance per key (stance-neutral/-bear/-wolf/-hawk/-tarnished).
+		// Pick presses Stances NG's key, which only lands in a RUNNING world
+		// with no menu up: close the wheel or the palette first, and from the
+		// palette give its pause a beat to lift before the press.
+		if (action.rfind("stance-", 0) == 0 && action != "stance-wheel") {
+			static const std::pair<const char*, int> kStanceActions[] = {
+				{ "stance-neutral", 0 }, { "stance-bear", 1 }, { "stance-wolf", 2 },
+				{ "stance-hawk", 3 }, { "stance-tarnished", 4 },
+			};
+			int id = -1;
+			for (const auto& [verb, sid] : kStanceActions)
+				if (action == verb)
+					id = sid;
+			if (id < 0)
+				return;
+			SKSE::GetTaskInterface()->AddTask([id]() {
+				SwCloseWheel(false);   // a no-op unless the wheel is up
+				const bool fromPalette = AnyOpen();
+				if (fromPalette)
+					ClosePalette();
+				std::thread([id, fromPalette]() {
+					std::this_thread::sleep_for(std::chrono::milliseconds(fromPalette ? 300 : 0));
+					SKSE::GetTaskInterface()->AddTask([id]() {
+						logger::info("stance-key: {}", StanceWheel::Pick(id));   // marker: stance-key-pick
+					});
+				}).detach();
+			});
+			return;
+		}
+
+		// Fight With Me's battle plan / Walk With Me's party menu (2026-10-11):
+		// the same two the Combat Wheel carries. Both draw an SMF window, so
+		// the palette (and the wheel, if up) closes FIRST and the open lands a
+		// task later, once the deck has let go of the pause and the cursor.
+		if (action == CombatTools::kBattlePlan || action == CombatTools::kWwmMenu ||
+			action == CombatTools::kNffMenu) {
+			const std::string tool = action;
+			SKSE::GetTaskInterface()->AddTask([tool]() {
+				const bool fromPalette = AnyOpen();
+				if (fromPalette)
+					ClosePalette();
+				SwCloseWheel(false);   // a no-op unless the wheel is up
+				// NFF's menu is Papyrus, which runs unpaused only (and NFF's own
+				// handler refuses in menu mode): give the palette's pause a beat
+				// to lift first, the grip/stance-key discipline.
+				if (tool == CombatTools::kNffMenu) {
+					std::thread([tool, fromPalette]() {
+						std::this_thread::sleep_for(std::chrono::milliseconds(fromPalette ? 300 : 120));
+						SKSE::GetTaskInterface()->AddTask([tool]() { logger::info("{}", CombatTools::Open(tool)); });
+					}).detach();
+					return;
+				}
+				SKSE::GetTaskInterface()->AddTask([tool]() { logger::info("{}", CombatTools::Open(tool)); });
 			});
 			return;
 		}
@@ -8650,7 +9572,7 @@ namespace
 			logger::info("trigger {} -> console '{}'", via, entry.name);
 			HotkeyHistory::Record(HotkeyHistory::Source::kEntry, entry.name,
 				entry.label.empty() ? std::string("Console") : entry.label, entry.category);
-			if (CellTravelHandoff::IsTravelCommand(entry.command)) {
+			if (CellTravelHandoff::IsTravelCommand(entry.command, entry.action == "crosshair")) {
 				QueueTravel(entry.name, [entry]() {
 					ConsoleActions::Fire(entry.name, entry.command, entry.action == "crosshair");
 				});
@@ -8966,12 +9888,16 @@ namespace
 	// Capture modal opened/closed in the view ("1"/"0").
 	void OnJsCapture(const char* data)
 	{
-		const bool on = data && data[0] == '1';
-		g_capturing = on;
+		const bool on    = data && data[0] == '1';
+		const bool modal = on && data[1] == 'M';
+		g_capturing    = on;
+		g_captureModal = modal;
 		// Stamp the start so the watchdog can tell a live capture from a dead
-		// one; clear it on close so a later stale timestamp can't fire.
-		g_captureStartMs = on ? NowMs() : 0;
+		// one; clear it on close so a later stale timestamp can't fire. A modal
+		// ("1M") is never stamped: it is open on purpose, for as long as it likes.
+		g_captureStartMs = (on && !modal) ? NowMs() : 0;
 		g_lastEscMs      = 0;
+		if (modal) logger::info("capture-modal-no-watchdog: a modal holds the keys");
 	}
 
 	// Force the capture flag down and shut whichever palette is open. Safe to
@@ -8981,6 +9907,7 @@ namespace
 	{
 		logger::warn("capture escape hatch fired ({}) -- forcing the palette shut", why);
 		g_capturing      = false;
+		g_captureModal   = false;
 		g_captureStartMs = 0;
 		g_lastEscMs      = 0;
 		SKSE::GetTaskInterface()->AddTask([]() { ClosePalette(); CloseMagicPalette(); });
@@ -9208,7 +10135,7 @@ namespace
 				auto fire = [name, cmd, crosshair]() {
 					ConsoleActions::Fire(name.empty() ? "Console test" : name, cmd, crosshair);
 				};
-				if (CellTravelHandoff::IsTravelCommand(cmd)) QueueTravel("Console travel", fire);
+				if (CellTravelHandoff::IsTravelCommand(cmd, crosshair)) QueueTravel("Console travel", fire);
 				else fire();
 			});
 		} catch (const std::exception& e) {
@@ -9689,6 +10616,8 @@ namespace
 			});
 		});
 		HD_LISTEN(g_magicView, "mdFire", OnJsMagicFire);
+		HD_LISTEN(g_magicView, "mdLibraryFire", OnJsMagicLibraryFire);
+		HD_LISTEN(g_magicView, "mdCastNow", OnJsMagicCastNow);
 		HD_LISTEN(g_magicView, "mdCastCombo", OnJsMagicCastCombo);
 		HD_LISTEN(g_magicView, "mdKnown", OnJsMagicKnown);
 		HD_LISTEN(g_magicView, "mdSave", OnJsMagicSave);
@@ -9744,6 +10673,9 @@ namespace
 		if (!g_prisma->Focus(g_magicView, pause))
 			logger::warn("magic Focus() returned false");
 		g_magicFocusPaused = pause;
+		// freeze-backdrop: the Spell Deck's pause is always the classic menu pause.
+		FreezeBackdrop::SetEnabled(FreezeBackdropSetting());
+		FreezeBackdrop::Want(FreezeBackdrop::kMagic, pause);
 		g_prisma->Invoke(g_magicView, ("mdOpen(" + payload + ")").c_str());
 		// Reconcile the equip badges against true engine state right away.
 		g_prisma->Invoke(g_magicView, ("mdEquipState(" + SpellActions::EquipStateJson() + ")").c_str());
@@ -9767,6 +10699,7 @@ namespace
 			return;
 		g_capturing = false;  // mdClosed() clears the JS capture without notifying us
 		g_prisma->Invoke(g_magicView, "mdClosed()");
+		FreezeBackdrop::Want(FreezeBackdrop::kMagic, false);   // before the focus menu goes
 		g_prisma->Unfocus(g_magicView);
 		g_prisma->Hide(g_magicView);
 		g_magicFocusPaused = false;
@@ -9809,9 +10742,71 @@ namespace
 			return;
 		}
 
+		FireMagicEntry(entry);
+	}
+
+	// Automatic learned rows never enter the saved deck until organized. Validate
+	// their durable identity on the game thread, then use the same cast/equip verbs.
+	void OnJsMagicLibraryFire(const char* data)
+	{
+		if (!data) return;
+		const auto j = json::parse(data, nullptr, false);
+		if (!j.is_object() || !j.contains("mode") || !j["mode"].is_string() ||
+			!j.contains("plugin") || !j["plugin"].is_string() ||
+			!j.contains("localId") || !j["localId"].is_number_unsigned() ||
+			!j.contains("formId") || !j["formId"].is_number_unsigned()) return;
+		SpellEntry entry;
+		entry.plugin = j["plugin"].get<std::string>(); entry.localId = j["localId"].get<std::uint32_t>();
+		entry.formId = entry.plugin.empty() ? j["formId"].get<std::uint32_t>() : 0;
+		entry.mode = j["mode"].get<std::string>();
+		entry.hand = j.contains("hand") && j["hand"].is_string() ? j["hand"].get<std::string>() : "right";
+		if ((entry.mode != "equip" && entry.mode != "cast") ||
+			(entry.hand != "left" && entry.hand != "right" && entry.hand != "both")) return;
+		logger::info("magic-workbench: learned spell action {}", entry.mode);
+		FireMagicEntry(entry, true);
+	}
+
+	// mdCastNow: the Spell Deck's "Cast now" button (cards, Details, the pinned
+	// inspector, the right-click menu). Casts the spell WHATEVER its Equip/Cast
+	// setting and leaves the deck CLOSED: closing is the button's whole promise,
+	// so closeAfterFire is ignored here (quick-fire digits still honour it).
+	// Identity comes off the wire, so it is checked against the spellbook first,
+	// exactly like learned rows; plugin+localId wins over a raw runtime FormID.
+	void OnJsMagicCastNow(const char* data)
+	{
+		if (!data) return;
+		const auto j = json::parse(data, nullptr, false);
+		if (!j.is_object() || !j.contains("plugin") || !j["plugin"].is_string() ||
+			!j.contains("localId") || !j["localId"].is_number_unsigned() ||
+			!j.contains("formId") || !j["formId"].is_number_unsigned()) {
+			logger::warn("mdCastNow: bad payload");
+			return;
+		}
+		const std::string   plugin = j["plugin"].get<std::string>();
+		const std::uint32_t localId = j["localId"].get<std::uint32_t>();
+		const std::uint32_t formId = plugin.empty() ? j["formId"].get<std::uint32_t>() : 0;
+		const std::string   name = j.contains("name") && j["name"].is_string() ? j["name"].get<std::string>() : std::string();
+		logger::info("cast-now '{}' (closes the deck)", name);
+		SKSE::GetTaskInterface()->AddTask([plugin, localId, formId]() {
+			if (!SpellActions::IsKnown(plugin, localId, formId)) {
+				PushToMagicView("mdToggled", R"({"ok":false,"msg":"That spell is no longer learned. Reopen Magic to refresh."})");
+				return;
+			}
+			CloseMagicPalette();  // unpause first, so the spell fires into the live world
+			const auto r = SpellActions::Cast(plugin, localId, formId);
+			logger::info("cast-now result {}", r);
+		});
+	}
+
+	void FireMagicEntry(SpellEntry entry, bool knownOnly)
+	{
 		if (entry.mode == "equip") {
 			logger::info("equip-toggle '{}' ({} hand)", entry.name, entry.hand);
-			SKSE::GetTaskInterface()->AddTask([entry]() {
+			SKSE::GetTaskInterface()->AddTask([entry, knownOnly]() {
+				if (knownOnly && !SpellActions::IsKnown(entry.plugin, entry.localId, entry.formId)) {
+					PushToMagicView("mdToggled", R"({"ok":false,"msg":"That spell is no longer learned. Reopen Magic to refresh."})");
+					return;
+				}
 				PushToMagicView("mdToggled",
 					SpellActions::EquipToggle(entry.plugin, entry.localId, entry.formId, entry.hand));
 			});
@@ -9824,7 +10819,11 @@ namespace
 			reopen = !g_config.settings.closeAfterFire;
 		}
 		logger::info("cast '{}'", entry.name);
-		SKSE::GetTaskInterface()->AddTask([entry, reopen]() {
+		SKSE::GetTaskInterface()->AddTask([entry, reopen, knownOnly]() {
+				if (knownOnly && !SpellActions::IsKnown(entry.plugin, entry.localId, entry.formId)) {
+					PushToMagicView("mdToggled", R"({"ok":false,"msg":"That spell is no longer learned. Reopen Magic to refresh."})");
+					return;
+				}
 			CloseMagicPalette();  // unpause first, so the spell fires into the live world
 			// reopen rides Cast's onDone: immediate for hand spells, but a
 			// voice-slot item (power/shout) fires via a DELAYED shout-key press
@@ -9903,7 +10902,9 @@ namespace
 	void OnJsMagicKnown(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
-			PushToMagicView("mdSpells", SpellActions::KnownSpellsJson());
+			const auto known = SpellActions::KnownSpellsJson();
+			PushToMagicView("mdSpells", known);
+			SpellActions::ExportSpellbook(known);
 			std::vector<SpellActions::SpellRef> refs;
 			{
 				std::lock_guard lock(g_configMutex);
@@ -10019,7 +11020,8 @@ namespace
 
 	void OnJsMagicCapture(const char* data)
 	{
-		g_capturing = data && data[0] == '1';
+		g_capturing    = data && data[0] == '1';
+		g_captureModal = false;   // the Spell Deck's captures are the short, stamped kind
 	}
 
 	// mdRemoveSpell: clear a spell from the player's spellbook (engine RemoveSpell).
@@ -10474,7 +11476,7 @@ namespace
 		// imported without being a teammate (the normal case: her own follower
 		// mod moves her). The card needs it to label one button truthfully as
 		// Add or Remove instead of offering both.
-		return json{ { "formId", id },
+		json t = json{ { "formId", id },
 			{ "name", actor->GetDisplayFullName() },
 			{ "following", actor->IsPlayerTeammate() },
 			{ "wedged", NffControl::IsWedgedFollower(actor) },
@@ -10494,8 +11496,18 @@ namespace
 			// …and whether that eligibility is one WE granted, which is the
 			// only case where offering to take it away is safe.
 			{ "forcedFollow", NffControl::WasForcedFollower(actor) },
-			{ "dead", actor->IsDead() } }
-			.dump(-1, ' ', false, json::error_handler_t::replace);
+			{ "dead", actor->IsDead() },
+			// a creature, not a person (no ActorTypeNPC): the card swaps its
+			// person-page door for the Bestiary's (fq-bx-door)
+			{ "creature", !actor->HasKeywordString("ActorTypeNPC") } };
+		// `bestiary`: this kind's page summary {id,name,slain,studied,tier,img?},
+		// present only when the book already has a page for it
+		if (const auto bx = Bestiary::PeekJson(id); !bx.empty()) {
+			auto bj = json::parse(bx, nullptr, false);
+			if (!bj.is_discarded() && bj.is_object())
+				t["bestiary"] = std::move(bj);
+		}
+		return t.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
 
 	// The ground item under the crosshair at open, resolved to the mod that
@@ -10631,8 +11643,10 @@ namespace
 			std::string   fold;    // lowercased, for the tie-break only
 			std::string   ext;
 			std::uint64_t mtime = 0;
+			bool          isAuto = false;   // written by auto photos (AutoPortrait::AutoFiles)
 		};
 		std::map<std::string, Shot> best;
+		const auto autoFiles = AutoPortrait::AutoFiles(dir);
 
 		const auto LowerCopy = [](std::string s) {
 			std::transform(s.begin(), s.end(), s.begin(),
@@ -10683,16 +11697,20 @@ namespace
 
 			// THE WINNER RULE, and portal/server.js betterPortrait() must match it
 			// exactly or the phone shows one face and the deck draws another:
-			// newest mtime wins; on a tie the greater FILENAME wins. The tie-break
+			// a file the player supplied beats an AUTO photo whatever the dates
+			// (Rober, 2026-10-12: "user supplied images over auto generation");
+			// otherwise newest mtime wins; on a tie the greater FILENAME wins. The tie-break
 			// earns its keep — these stamps are whole seconds, so a re-capture
 			// landing in the same second as the file it supersedes is entirely
 			// possible. '~' (0x7E) sorts above '.' (0x2E), so `x~1753900000.png`
 			// beats `x.png`, and between two versions the later stamp beats the
 			// earlier.
 			auto&      cur = best[slug];
+			const bool isAuto = autoFiles.contains(fold);
 			const bool wins = cur.file.empty() ||
-							  stamp > cur.mtime ||
-							  (stamp == cur.mtime && fold > cur.fold);
+							  (cur.isAuto && !isAuto) ||
+							  (cur.isAuto == isAuto &&
+								  (stamp > cur.mtime || (stamp == cur.mtime && fold > cur.fold)));
 			if (!cur.file.empty())
 				++superseded;
 			if (wins) {
@@ -10700,6 +11718,7 @@ namespace
 				cur.fold = fold;
 				cur.ext = ext.substr(1);   // "png", not ".png"
 				cur.mtime = stamp;
+				cur.isAuto = isAuto;
 			}
 		}
 
@@ -12224,15 +13243,20 @@ namespace
 		const auto j = json::parse(cmd, nullptr, false);
 		if (!j.is_object()) return;
 		const auto label = j.value("label", std::string());
-		SKSE::GetTaskInterface()->AddTask([cmd, label]() {
-			QueueTravel("Followers", [cmd, label]() {
+		// Only `goto` moves the PLAYER; summon and sendback move the follower,
+		// load no cell, and skip the two-second travel settle.
+		const bool playerMoves = j.value("op", std::string()) == "goto";
+		SKSE::GetTaskInterface()->AddTask([cmd, label, playerMoves]() {
+			auto run = [cmd, label]() {
 				const auto jr = json::parse(FollowerDeck::Apply(cmd), nullptr, false);
 				const bool ok = jr.is_object() && jr.value("ok", false);
 				auto msg = jr.is_object() ? jr.value("msg", std::string()) : std::string();
 				if (!ok && msg.empty()) msg = "Follower action failed - see HotkeyDeck.log";
 				if (msg.empty()) msg = label;
 				if (!msg.empty()) RE::DebugNotification(msg.c_str());
-			});
+			};
+			if (playerMoves) QueueTravel("Followers goto", run);
+			else RunNpcMove("Followers", run);
 		});
 	}
 
@@ -12292,12 +13316,18 @@ namespace
 		}
 	}
 
-	void PushFollowerNff(const std::string& fo)
+	// The fdNff payload, plus the two side files written from the same read.
+	std::string FollowerNffJson(const std::string& fo)
 	{
-		const auto nff = NffBridge::StateJson(fo);
-		PushToView("fdNff", nff);
+		auto nff = NffBridge::StateJson(fo);
 		MhiyhControl::WriteStatusJson(DeckViewDir(), fo, nff);
 		WriteRosterExport(fo);
+		return nff;
+	}
+
+	void PushFollowerNff(const std::string& fo)
+	{
+		PushToView("fdNff", FollowerNffJson(fo));
 	}
 
 	// What a PHONE-queued day change does when MHiYH finally answers. Byte for
@@ -14052,6 +15082,41 @@ namespace
 		FmMutate(data, [](const std::string& r) { return FormationActions::Rescue(r); });
 	}
 
+	/* ---- Procession modal (hd-procession.js) ---------------------------
+	 *  Royal Procession + Royal Retinue are separate SKSE plugins whose writes
+	 *  are POSTED to the main thread and answer "queued"; so, like Formation,
+	 *  every verb replies on rpxResult at once and two fresh rpxOpen reads
+	 *  follow (700 ms: the post has run; 2600 ms: a summon's spawn and the
+	 *  squad's first formation tick have landed). A verb that hands control to
+	 *  the game (open a bearer's inventory, a squad's attack) closes the deck
+	 *  and says it on the HUD, because the modal's toast closes with it.
+	 */
+	void OnJsRpxGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { PushToView("rpxOpen", ProcessionBridge::StateJson()); });
+	}
+
+	void OnJsRpxAct(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			const auto result = ProcessionBridge::Act(req);
+			PushToView("rpxResult", result);
+			const auto status = json::parse(result, nullptr, false);
+			if (status.is_object() && status.value("ok", false) && status.value("closeGameMenu", false)) {
+				ClosePalette();
+				const auto msg = status.value("msg", std::string(""));
+				if (!msg.empty()) RE::DebugNotification(msg.c_str());
+			}
+			std::thread([]() {
+				for (const int wait : { 700, 2600 }) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(wait));
+					SKSE::GetTaskInterface()->AddTask([]() { PushToView("rpxOpen", ProcessionBridge::StateJson()); });
+				}
+			}).detach();
+		});
+	}
+
 	/* ---- Domains tab: NFF home bases -----------------------------------
 	 *  Same shape as the Formation modal above, and for the same reason: the
 	 *  mutations are NFF's OWN Papyrus functions, dispatched onto the VM's
@@ -14519,18 +15584,48 @@ namespace
 			// below still show the PRE-change day; PortalMhiyhDone() repaints
 			// when MHiYH answers, exactly as an in-deck click does.
 			MhiyhControl::ApplyPortal(DeckViewDir(), fo, PortalMhiyhDone);
-			// push-burst: six pushes, ONE roster redraw in the view (see PushBurstMark).
-			PushBurstMark(true, "followers");
-			PushToView("fdState", fo);
-			PushToView("fdTarget", FolTargetJson());
-			PushToView("fdPortraits", FolPortraitsJson());
+			std::vector<std::pair<const char*, std::string>> pushes;
+			pushes.emplace_back("fdState", fo);
+			pushes.emplace_back("fdTarget", FolTargetJson());
+			pushes.emplace_back("fdPortraits", FolPortraitsJson());
 			// The crop map rides the same rail as the portrait listing: a face drawn
 			// before its crop lands would pop to the new framing a frame later, which
 			// reads as a glitch rather than as a setting.
-			PushToView("fdCrops", FolCropsJson());
-			PushFollowerNff(fo);
-			PushToView("fdFertility", FertilityBridge::StateJson(fo));
-			PushBurstMark(false, "followers");
+			pushes.emplace_back("fdCrops", FolCropsJson());
+			pushes.emplace_back("fdNff", FollowerNffJson(fo));
+			pushes.emplace_back("fdFertility", FertilityBridge::StateJson(fo));
+			// open-refresh-fold (2026-10-12): F7 on an NPC lands on Followers, and its
+			// onShow asks for this refresh while the open's own copies of the same
+			// slices are still PARKED for the first paint. Pushing both drew the
+			// 60-portrait roster twice per open. While the open's set is parked,
+			// these fresher payloads REPLACE their parked twins (new ones join the
+			// end), so the roster arrives once, after the first frame.
+			bool folded = false;
+			{
+				std::lock_guard l(g_deferredOpenMutex);
+				if (g_open.load() && g_deferredOpen.epoch == g_openEpoch.load() && !g_deferredOpen.pushes.empty()) {
+					for (auto& [fn, payload] : pushes) {
+						auto it = std::find_if(g_deferredOpen.pushes.begin(), g_deferredOpen.pushes.end(),
+							[fn = std::string_view(fn)](const auto& p) { return fn == p.first; });
+						if (it != g_deferredOpen.pushes.end())
+							it->second = std::move(payload);
+						else
+							g_deferredOpen.pushes.emplace_back(fn, std::move(payload));
+					}
+					folded = true;
+				}
+			}
+			if (folded) {
+				logger::info("open-refresh-fold: Followers refresh folded into the parked open slices");
+			} else {
+				// push-burst + view-batch: six pushes, ONE script, ONE roster redraw.
+				ViewBatch b;
+				b.Burst(true, "followers");
+				for (auto& [fn, payload] : pushes)
+					b.Call(fn, payload);
+				b.Burst(false, "followers");
+				b.Send();
+			}
 		// court-status.json for CHIM: marriage (MARAS) + pregnancy (FM) per follower.
 		// Same roster, same read-only posture; skips the disk when nothing changed.
 		CourtStatus::Write(fo);
@@ -14693,7 +15788,12 @@ namespace
 			{ "showHp", c.showHp },
 			{ "showSt", c.showSt },
 			{ "showMk", c.showMk },
+			{ "showAway", c.showAway },
 			{ "faceShape", FollowersHud::ClampShape(c.faceShape) },
+			{ "frameMode", FollowersHud::ClampFrameMode(c.frameMode) },
+			{ "frameColor", FollowersHud::IsFrameColor(c.frameColor) ? c.frameColor : std::string("gold") },
+			{ "stripOpacity", FollowersHud::ClampOpacity(c.opacityPct) / 100.0 },
+			{ "squeezePct", FollowersHud::ClampSqueeze(c.squeezePct) },
 			{ "compact", c.compact },
 		}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
@@ -14715,6 +15815,7 @@ namespace
 			{ "showHp", c.showHp },
 			{ "showSt", c.showSt },
 			{ "showMk", c.showMk },
+			{ "showAway", c.showAway },
 			{ "faceShape", FollowersHud::ClampShape(c.faceShape) },
 			{ "compact", c.compact },
 			{ "arming", g_hudKeyArming.load() },
@@ -14724,15 +15825,63 @@ namespace
 		}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
+	// Defined with the Followers tab's face handler below; the HUD strip falls a
+	// photo-less follower back to the same head render through it.
+	void ResolveFaceQueuesForIds(const std::vector<std::string>& idStrings,
+		json& icons, json& faceQueue, json& bodyQueue, json* why = nullptr);
+
+	// Frames (2026-10-13, marker hud-frame-key): the key a per-follower rim
+	// colour is filed under. Her NPC record's durable id first, so the same key
+	// comes out whether the row is a loaded reference or a Follower Organizer
+	// member stored as a base form; then the reference's own (a leveled
+	// follower's base is a temporary 0xFF form); then her name. Durable ids
+	// survive a load-order re-index, unlike a runtime FormID. Memoised: a form's
+	// file never changes once data has loaded.
+	std::mutex                      g_hudFrameMtx;
+	std::unordered_set<std::string> g_hudFrameKeys;   // keys on the strip right now
+	std::string HudFrameKeyOf(RE::FormID id, const std::string& name)
+	{
+		static std::unordered_map<RE::FormID, std::string> s_memo;
+		if (id) {
+			if (auto it = s_memo.find(id); it != s_memo.end())
+				return it->second;
+			std::string fid, plugin;
+			auto*       form = RE::TESForm::LookupByID(id);
+			const RE::TESForm* base = nullptr;
+			if (auto* a = form ? form->As<RE::Actor>() : nullptr)
+				base = a->GetActorBase();
+			else if (form && form->Is(RE::FormType::NPC))
+				base = form;
+			std::string key;
+			if (base && ActorIdentity::DurableOf(base, fid, plugin))
+				key = plugin + "|" + fid;
+			else if (form && ActorIdentity::DurableOf(form, fid, plugin))
+				key = plugin + "|" + fid;
+			if (!key.empty() && FollowersHud::IsFrameKey(key)) {
+				if (s_memo.size() > 512)
+					s_memo.clear();
+				s_memo.emplace(id, key);
+				return key;
+			}
+		}
+		std::string n = name.substr(0, 150);
+		std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+		return n.empty() ? std::string() : "name:" + n;
+	}
+
 	// Build the live follower list. MAIN THREAD ONLY (touches loaded actors).
 	std::string HudFollowersJson()
 	{
 		int  maxFaces = 12;
 		bool includeDead = true;
 		bool exLevel = true, exDir = true, exHp = true, exSt = false, exMk = false;
+		bool showAway = true;
+		std::map<std::string, std::string> frameColors;
 		{
 			std::lock_guard l(g_configMutex);
+			frameColors = g_hudConfig.frameColors;
 			maxFaces = g_hudConfig.maxFaces;
+			showAway = g_hudConfig.showAway;
 			includeDead = g_hudConfig.includeDead;
 			exLevel = g_hudConfig.showLevel;
 			exDir = g_hudConfig.showDir;
@@ -14802,9 +15951,17 @@ namespace
 		// only find her through the base/display-name fallbacks.
 		static std::shared_ptr<const std::string> s_foSrc;
 		static std::map<RE::FormID, std::string>  s_foOriginal;
+		// The FO members the game flags as teammates (FO's own `following`, which
+		// is IsPlayerTeammate on her actor). Any of them the loaded-actor scan
+		// below does NOT find is AWAY — see FollowersHud::Config::showAway.
+		// Re-derived on the same cadence as s_foOriginal; who is near you is
+		// still decided live on every tick.
+		struct FoFollowing { std::vector<RE::FormID> ids; std::string name, original; };
+		static std::vector<FoFollowing> s_foFollowing;
 		if (auto src = FollowerDeck::CachedState(kHudRosterMaxAgeMs); src != s_foSrc) {
 			s_foSrc = src;
 			s_foOriginal.clear();
+			s_foFollowing.clear();
 			auto st = json::parse(src ? *src : std::string(), nullptr, false);
 			const json* cats = nullptr;
 			if (st.is_object()) {
@@ -14832,14 +15989,36 @@ namespace
 					for (const auto& m : c["members"]) {
 						if (!m.is_object())
 							continue;
-						std::string orig = m.value("original", m.value("name", std::string()));
+						// FO sends "original" EMPTY for a member it stores as a world
+						// reference (TESObjectREFR has no full name of its own, so its
+						// load-time fill reads ""): 69 of Rober's 97 members, Flare among
+						// them. value("original", fallback) returns that "" because the key
+						// IS present, so every one of them was skipped here: never drawn
+						// away, never matched by roster name (2026-10-13, "Flare ... showed
+						// in ui but not in hud"). Fall back to her live name, the way the
+						// Followers tab's partyList keys `m.original || m.name`.
+						std::string orig = m.value("original", std::string());
+						if (orig.empty())
+							orig = m.value("name", std::string());
 						if (orig.empty())
 							continue;
+						const bool following = m.value("following", false) && !m.value("dead", false);
+						FoFollowing f;
 						for (const char* key : { "formId", "liveFormId" }) {
 							if (!m.contains(key))
 								continue;
-							if (const RE::FormID fid = fidOf(m[key]))
+							if (const RE::FormID fid = fidOf(m[key])) {
 								s_foOriginal.emplace(fid, orig);
+								f.ids.push_back(fid);
+							}
+						}
+						// Filed in two categories = one entry (same ids).
+						if (following && !f.ids.empty() &&
+							std::none_of(s_foFollowing.begin(), s_foFollowing.end(),
+								[&](const FoFollowing& o) { return o.ids.front() == f.ids.front(); })) {
+							f.name = m.value("name", orig);
+							f.original = orig;
+							s_foFollowing.push_back(std::move(f));
 						}
 					}
 				}
@@ -14879,6 +16058,53 @@ namespace
 			return false;
 		};
 
+		// No photo: the SAME head render the Followers tab falls back to (or a
+		// creature's body render), resolved through ResolveFaceQueuesForIds so
+		// the two surfaces can never pick different faces (Rober, 2026-10-12:
+		// "needs to show all followers, with faces" - Sol, filed nowhere, sat on
+		// an initials tile). `abs` tells the view the path is view-relative, not
+		// under portraits/. A missing render is queued once (EnsureFaceIcons is
+		// session-deduped) and re-checked every few seconds until it lands; a
+		// found one is re-checked rarely, in case a render-gen purge removed it.
+		// Marker: hud-render-fallback.
+		// `pending`: a render was queued and may land any second. Nothing to
+		// queue (no head file in the load order, MRF absent) waits two minutes:
+		// the resolver logs that case at info, and this runs every tick.
+		struct FaceMemo { std::string path; std::chrono::steady_clock::time_point at{}; bool pending = false; };
+		static std::unordered_map<RE::FormID, FaceMemo> s_faceMemo;
+		const auto now = std::chrono::steady_clock::now();
+		const bool mrf = ItemIcons::Available();
+		auto attachRender = [&](json& row, RE::FormID id) -> bool {
+			if (!id)
+				return false;
+			auto& memo = s_faceMemo[id];
+			const auto wait = !memo.path.empty() ? std::chrono::seconds(60)
+				: memo.pending ? std::chrono::seconds(5) : std::chrono::seconds(120);
+			if (memo.at == std::chrono::steady_clock::time_point{} || now - memo.at > wait) {
+				memo.at = now;
+				const std::string hex = ActorIdentity::HexOf(id);
+				json icons = json::object(), fq = json::array(), bq = json::array();
+				ResolveFaceQueuesForIds({ hex }, icons, fq, bq);
+				memo.path = icons.contains(hex) && icons[hex].is_string() ? icons[hex].get<std::string>() : std::string();
+				memo.pending = memo.path.empty() && mrf && (!fq.empty() || !bq.empty());
+				if (memo.pending) {
+					if (!fq.empty())
+						ItemIcons::EnsureFaceIcons(json{ { "items", std::move(fq) } }
+								.dump(-1, ' ', false, json::error_handler_t::replace));
+					else if (!bq.empty())
+						ItemIcons::EnsureBodyIcons(json{ { "items", std::move(bq) } }
+								.dump(-1, ' ', false, json::error_handler_t::replace));
+				}
+			}
+			if (memo.path.empty())
+				return false;
+			row["file"] = memo.path;
+			row["abs"] = true;
+			if (crops.is_object() && crops.contains(memo.path) && crops[memo.path].is_object())
+				row["crop"] = crops[memo.path];
+			return true;
+		};
+
 		// The vanilla "CurrentFollowerFaction" (Skyrim.esm 0x0005C84E). Custom
 		// follower mods (Amaniri's Nether's Niri, Vayne's CSV, CHIM's soft-follow)
 		// often drive following through alias PACKAGES and never set the vanilla
@@ -14892,16 +16118,51 @@ namespace
 			s_followerFac = RE::TESForm::LookupByID<RE::TESFaction>(0x0005C84E);
 		}
 
-		int nTeam = 0, nFac = 0, nMatched = 0;
+		int nTeam = 0, nFac = 0, nMatched = 0, nAway = 0, nRender = 0;
+		// Who the strip drew, for the diagnostic line: "Name[p]" photo,
+		// "[r]" head render, "[-]" initials, ",away" when not near you.
+		std::string drawn;
+		const auto note = [&](const json& row, const char* how) {
+			if (!drawn.empty())
+				drawn += ", ";
+			drawn += row.value("name", std::string("?"));
+			drawn += '[';
+			drawn += how;
+			if (row.value("away", false))
+				drawn += ",away";
+			drawn += ']';
+		};
 
 		json arr = json::array();
 		auto* lists = RE::ProcessLists::GetSingleton();
 		auto* player = RE::PlayerCharacter::GetSingleton();
+		// Everyone the loaded scan drew, by id and by every name she answers to —
+		// the away pass below must never draw a present follower twice.
+		std::unordered_set<RE::FormID> seen;
+		std::unordered_set<std::string> seenNames;
+		const auto lower = [](std::string v) {
+			std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+			return v;
+		};
+		// High AND middle-high process: a follower trailing far behind in a big
+		// exterior drops out of the high list while still loaded and following,
+		// and the strip used to lose her (the deck's "Who's here" already walks
+		// both). Low-process actors are not followers in any useful sense.
+		std::vector<RE::Actor*> loaded;
+		// Everyone this session has seen loaded AND following, by id; the
+		// session-seen away pass below reads it (hud-away-session-seen).
+		struct SeenFollower { std::string name, baseName; };
+		static std::unordered_map<RE::FormID, SeenFollower> s_seenFollowing;
 		if (lists) {
-			std::unordered_set<RE::FormID> seen;
-			for (auto& h : lists->highActorHandles) {
-				auto ptr = h.get();
-				RE::Actor* a = ptr ? ptr.get() : nullptr;
+			for (auto* hs : { &lists->highActorHandles, &lists->middleHighActorHandles })
+				for (auto& h : *hs) {
+					auto ptr = h.get();
+					if (RE::Actor* a = ptr ? ptr.get() : nullptr)
+						loaded.push_back(a);
+				}
+		}
+		{
+			for (RE::Actor* a : loaded) {
 				if (!a || a == player || a->IsPlayerRef())
 					continue;
 				const bool team = a->IsPlayerTeammate();
@@ -14926,8 +16187,17 @@ namespace
 					if (const char* bn = base->GetName(); bn && bn[0])
 						baseName = bn;
 				}
+				if (!dead)
+					s_seenFollowing[id] = SeenFollower{ name, baseName };
 
 				json row{ { "name", name }, { "formId", id }, { "following", true }, { "dead", dead } };
+				// Fight With Me's role for her (2026-10-12, the Command Ring's
+				// "fully integrated"): read through its own interface, absent
+				// when FWM is not loaded or holds no orders for her.
+				if (CommandRing::FwmLoaded()) {
+					if (auto role = CommandRing::FwmRole(id); !role.empty())
+						row["fwm"] = role;
+				}
 
 				// Per-face extras (Party Sheet catch-up, 2026-08-17). Each field
 				// exists only while its toggle is on: the view draws what is
@@ -14978,11 +16248,98 @@ namespace
 					cand.push_back(it->second);
 				cand.push_back(baseName);
 				cand.push_back(name);
-				if (attachPortrait(row, cand))
+				for (const auto& c : cand)
+					if (!c.empty())
+						seenNames.insert(lower(c));
+				if (attachPortrait(row, cand)) {
 					++nMatched;
+					note(row, "p");
+				} else if (attachRender(row, id)) {
+					++nRender;
+					note(row, "r");
+				} else {
+					note(row, "-");
+				}
 				arr.push_back(std::move(row));
 				if ((int)arr.size() >= maxFaces)
 					break;
+			}
+		}
+
+		// AWAY: FO members flagged as teammates whom the scan above did not find
+		// loaded. After everyone present, so the cap trims the away ones first.
+		// No bars, level or bearing — none of it can be read honestly from an
+		// actor that is not loaded, and a frozen number would read as live.
+		if (showAway) {
+			for (const auto& f : s_foFollowing) {
+				if ((int)arr.size() >= maxFaces)
+					break;
+				if (std::any_of(f.ids.begin(), f.ids.end(), [&](RE::FormID x) { return seen.contains(x); }) ||
+					seenNames.contains(lower(f.original)) || seenNames.contains(lower(f.name)))
+					continue;
+				json row{ { "name", f.name.empty() ? f.original : f.name }, { "formId", f.ids.front() },
+					{ "following", true }, { "dead", false }, { "away", true } };
+				if (attachPortrait(row, { f.original, f.name })) {
+					++nMatched;
+					note(row, "p");
+				} else if (attachRender(row, f.ids.front())) {
+					++nRender;
+					note(row, "r");
+				} else {
+					note(row, "-");
+				}
+				arr.push_back(std::move(row));
+				++nAway;
+				for (const RE::FormID x : f.ids)
+					seen.insert(x);
+				seenNames.insert(lower(f.original));
+				seenNames.insert(lower(f.name));
+			}
+		}
+
+		// AWAY, part two (2026-10-12, marker hud-away-session-seen): a follower
+		// the FO roster does not hold vanished from the strip the moment she was
+		// not loaded. Vayne runs her own follower system and is never filed in
+		// FO, so after a door she was simply gone while Sol stayed (Rober: "only
+		// one"). Anyone this session has seen loaded AND following is remembered
+		// by id; while she is not loaded, the engine's own flags on her actor
+		// still say whether she follows. Dismissed = flags cleared = not drawn.
+		if (showAway) {
+			for (const auto& [sid, sf] : s_seenFollowing) {
+				if ((int)arr.size() >= maxFaces)
+					break;
+				if (seen.contains(sid) || seenNames.contains(lower(sf.name)) ||
+					(!sf.baseName.empty() && seenNames.contains(lower(sf.baseName))))
+					continue;
+				auto* a = RE::TESForm::LookupByID<RE::Actor>(sid);
+				if (!a || a->IsDeleted() || a->IsDisabled() || a->IsDead())
+					continue;
+				const bool team = a->IsPlayerTeammate();
+				const bool fac = s_followerFac && a->IsInFaction(s_followerFac);
+				if (!team && !fac)
+					continue;
+				static std::unordered_set<RE::FormID> s_saidAway;
+				if (s_saidAway.insert(sid).second)
+					logger::info("hud-away-session-seen: {} ({:08X}) is not loaded but still follows - drawn as away",
+						sf.name, sid);
+				json row{ { "name", sf.name }, { "formId", sid },
+					{ "following", true }, { "dead", false }, { "away", true } };
+				std::vector<std::string> cand;
+				if (auto it = foOriginal.find(sid); it != foOriginal.end())
+					cand.push_back(it->second);
+				cand.push_back(sf.baseName);
+				cand.push_back(sf.name);
+				if (attachPortrait(row, cand)) {
+					++nMatched;
+					note(row, "p");
+				} else if (attachRender(row, sid)) {
+					++nRender;
+					note(row, "r");
+				} else {
+					note(row, "-");
+				}
+				arr.push_back(std::move(row));
+				++nAway;
 			}
 		}
 
@@ -14996,11 +16353,35 @@ namespace
 		std::string diag = "[hud] scan teammates=" + std::to_string(nTeam) +
 			" follower-faction=" + std::to_string(nFac) +
 			" shown=" + std::to_string((int)arr.size()) +
+			" away=" + std::to_string(nAway) +
 			" with-portrait=" + std::to_string(nMatched) +
-			" portraits-indexed=" + std::to_string((int)portraits.size());
+			" with-render=" + std::to_string(nRender) +
+			" portraits-indexed=" + std::to_string((int)portraits.size()) +
+			" | " + (drawn.empty() ? std::string("nobody") : drawn);
 		if (diag != s_lastDiag) {
 			s_lastDiag = diag;
 			logger::info("{}", diag);
+		}
+
+		// Frames: every row carries the key its rim colour is filed under
+		// (`fkey`), and the colour picked for her (`frame`) when there is one.
+		// The view colours a row without a pick from the same key, so it holds.
+		{
+			std::unordered_set<std::string> keys;
+			for (auto& row : arr) {
+				RE::FormID id = 0;
+				if (row.contains("formId") && row["formId"].is_number())
+					id = row["formId"].get<RE::FormID>();
+				const std::string key = HudFrameKeyOf(id, row.value("name", std::string()));
+				if (key.empty())
+					continue;
+				row["fkey"] = key;
+				if (auto it = frameColors.find(key); it != frameColors.end())
+					row["frame"] = it->second;
+				keys.insert(key);
+			}
+			std::lock_guard l(g_hudFrameMtx);
+			g_hudFrameKeys = std::move(keys);
 		}
 
 		return arr.dump(-1, ' ', false, json::error_handler_t::replace);
@@ -15020,9 +16401,29 @@ namespace
 	// g_swSlowed records that WE changed the world's time multiplier, so only
 	// we restore it.
 	std::atomic<bool>                     g_swOpen{ false };
+	// The Command Ring (2026-10-12) — the SEVENTH claimant; its runtime (Cr*)
+	// sits after the Combat Wheel's. Declared up here because every rival's
+	// Unfocus guard and HudApplyVisibility read it.
+	std::atomic<bool>                     g_crOpen{ false };
 	std::atomic<bool>                     g_swFocused{ false };
 	std::atomic<bool>                     g_swSlowed{ false };
 	std::chrono::steady_clock::time_point g_swOpenedAt{};
+	// The Wardrobe Wheel (2026-10-12) — g_wwSlowed is the same "we changed the
+	// time multiplier" record as g_swSlowed.
+	std::atomic<bool>                     g_wwOpen{ false };
+	std::atomic<bool>                     g_wwFocused{ false };
+	std::atomic<bool>                     g_wwSlowed{ false };
+	std::chrono::steady_clock::time_point g_wwOpenedAt{};
+	// The Hotkey Pad (2026-10-11) — the SIXTH claimant. g_hpFiring covers the
+	// beat between a button press (Focus released so the hotkey lands in a
+	// running game) and the refocus that hands the cursor back; g_hpGen stamps
+	// each open so a refocus timer from an older open, or one that outlived a
+	// close, does nothing.
+	std::atomic<bool>                     g_hpOpen{ false };
+	std::atomic<bool>                     g_hpFocused{ false };
+	std::atomic<bool>                     g_hpFiring{ false };
+	std::atomic<std::uint32_t>            g_hpGen{ 0 };
+	std::chrono::steady_clock::time_point g_hpOpenedAt{};
 	bool g_photoHudActive = false;
 	bool g_photoHudVisible = false;
 	std::chrono::steady_clock::time_point g_tdOpenedAt{};
@@ -15056,6 +16457,9 @@ namespace
 		                  g_tdOpen.load() ||        // the Time Dial rides this view too
 		                  g_agOpen.load() ||        // …and the alignment overlay
 		                  g_swOpen.load() ||        // …and the Stance Wheel
+		                  g_crOpen.load() ||        // …and the Command Ring
+		                  g_wwOpen.load() ||        // …and the Wardrobe Wheel
+		                  g_hpOpen.load() ||        // …and the Hotkey Pad
 		                  g_hudNavActive.load();    // …and so does browse mode, which
 		                                            // holds the keyboard: hiding the
 		                                            // view under it would leave the
@@ -15064,6 +16468,16 @@ namespace
 			g_prisma->Show(g_hudView);
 		else
 			g_prisma->Hide(g_hudView);
+	}
+
+	// Auto portraits borrow photo mode's own switch: the WHOLE HUD view (strip,
+	// widgets, lantern) is hidden for the shot so nothing leaks into the frame,
+	// then HudApplyVisibility puts back exactly what the config wants.
+	void AutoPortraitHudHidden(bool hidden)
+	{
+		g_photoHudActive = hidden;
+		g_photoHudVisible = false;
+		HudApplyVisibility();
 	}
 
 	void HudPhotoLights(bool active, bool visible, const PhotoLighting::Snapshot& state, const PhotoFrame::Frame& frame)
@@ -15156,6 +16570,9 @@ namespace
 		if (g_tdOpen.load()) TdCloseDial(false);
 		if (g_agOpen.load()) AgCloseAlign(false);
 		SwCloseWheel(false);
+		CrCloseRing(false);   // the 7th claimant, the Command Ring
+		WwCloseWheel(false);   // the 8th claimant, the Wardrobe Wheel
+		HpClosePad(false);
 		if (g_hudEditing.exchange(false)) g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		g_prisma->Show(g_hudView);
 		g_prisma->Invoke(g_hudView, ("odData(" + data + ")").c_str());
@@ -15245,6 +16662,9 @@ namespace
 		if (g_agOpen.load())
 			AgCloseAlign(false);
 		SwCloseWheel(false);
+		CrCloseRing(false);   // the 7th claimant, the Command Ring
+		WwCloseWheel(false);   // the 8th claimant, the Wardrobe Wheel
+		HpClosePad(false);
 		if (g_hudEditing.exchange(false))
 			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		g_tdOpen = true;
@@ -15269,7 +16689,7 @@ namespace
 		if (g_prisma && g_hudView && g_hudViewReady.load()) {
 			if (!fromView)
 				g_prisma->Invoke(g_hudView, "tdShow(\"0\")");
-			if (!g_hudEditing.load() && !g_swOpen.load())
+			if (!g_hudEditing.load() && !g_swOpen.load() && !g_crOpen.load() && !g_wwOpen.load())
 				g_prisma->Unfocus(g_hudView);
 		}
 		HudApplyVisibility();
@@ -15312,7 +16732,7 @@ namespace
 			// Release only what WE took: the editor, the dial and browse mode
 			// are the other claimants and pulling Focus from under any of them
 			// would strand it.
-			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_hudNavActive.load() && !g_swOpen.load())
+			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_hudNavActive.load() && !g_swOpen.load() && !g_crOpen.load() && !g_wwOpen.load())
 				g_prisma->Unfocus(g_hudView);
 		}
 		HudApplyVisibility();
@@ -15346,6 +16766,9 @@ namespace
 		if (g_tdOpen.load())
 			TdCloseDial(false);
 		SwCloseWheel(false);
+		CrCloseRing(false);   // the 7th claimant, the Command Ring
+		WwCloseWheel(false);   // the 8th claimant, the Wardrobe Wheel
+		HpClosePad(false);
 		if (g_hudEditing.exchange(false))
 			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		g_agOpen = true;
@@ -15405,10 +16828,74 @@ namespace
 			timer->SetGlobalTimeMultiplier(1.0f, true);
 	}
 
+	// MAIN THREAD. Stances NG's state plus the Combat Wheel's two menus
+	// (2026-10-11): "tools" = CombatTools::ListJson(), each with ok/why, and
+	// "stancesOk" = Stances NG can switch. The wheel draws the stance wedges
+	// only when stancesOk and a menu wedge only when its ok is true.
+	//
+	// The wheel prints the key that switches each stance. Since 2026-10-10 that
+	// is the deck's own binding on the stance-<name> entry (Stances NG's keys
+	// are hidden chords only the deck presses); "" when unbound.
+	std::string SwStateJson()
+	{
+		auto j = nlohmann::json::parse(StanceWheel::StateJson(), nullptr, false);
+		if (j.is_discarded() || !j.is_object())
+			j = nlohmann::json::object();
+		if (j.contains("stances") && j["stances"].is_array()) {
+			static const char* kVerbs[] = { "stance-neutral", "stance-bear", "stance-wolf", "stance-hawk", "stance-tarnished" };
+			std::array<std::string, 5> keys;
+			{
+				std::lock_guard l(g_configMutex);
+				for (const auto& e : g_config.entries) {
+					if (e.device != "action" || e.trigDevice.empty())
+						continue;
+					for (int i = 0; i < 5; ++i)
+						if (e.action == kVerbs[i] && keys[i].empty())
+							keys[i] = e.trigLabel;
+				}
+			}
+			for (auto& st : j["stances"]) {
+				const int id = st.value("id", -1);
+				if (id >= 0 && id < 5)
+					st["key"] = keys[id];
+			}
+		}
+		const bool stancesOk = j.value("ok", false);
+		auto       tools = nlohmann::json::parse(CombatTools::ListJson(), nullptr, false);
+		if (tools.is_discarded() || !tools.is_array())
+			tools = nlohmann::json::array();
+		bool anyTool = false;
+		for (auto& t : tools) {
+			if (!t.is_object())
+				continue;
+			anyTool = anyTool || t.value("ok", false);
+			// the deck's own trigger key on the battle-plan / wwm-menu entry
+			const std::string verb = t.value("id", std::string());
+			std::string       key;
+			{
+				std::lock_guard l(g_configMutex);
+				for (const auto& e : g_config.entries)
+					if (e.device == "action" && e.action == verb && !e.trigDevice.empty()) {
+						key = e.trigLabel;
+						break;
+					}
+			}
+			t["key"] = key;
+		}
+		j["stancesOk"] = stancesOk;
+		j["tools"] = tools;
+		j["ok"] = stancesOk || anyTool;
+		// which wedges the player switched on (Home > UI Elements > Combat Wheel)
+		j["wedges"] = nlohmann::json::parse(StanceWheel::WedgesJson(), nullptr, false);
+		if (!stancesOk && anyTool)
+			j["msg"] = "";   // no Stances NG: a menus-only wheel, nothing to warn about
+		return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
 	void SwPushState()
 	{
 		if (g_prisma && g_hudView && g_hudViewReady.load())
-			g_prisma->Invoke(g_hudView, ("swState(" + StanceWheel::StateJson() + ")").c_str());
+			g_prisma->Invoke(g_hudView, ("swState(" + SwStateJson() + ")").c_str());
 	}
 
 	// MAIN THREAD. fromView = the view already closed itself and only needs
@@ -15426,7 +16913,7 @@ namespace
 			if (!fromView)
 				g_prisma->Invoke(g_hudView, "swShow(\"0\")");
 			// Release only what WE took — the other four claimants' rule.
-			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_hudNavActive.load() && !g_agOpen.load())
+			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_hudNavActive.load() && !g_agOpen.load() && !g_crOpen.load() && !g_wwOpen.load())
 				g_prisma->Unfocus(g_hudView);
 		}
 		HudApplyVisibility();
@@ -15436,21 +16923,45 @@ namespace
 	{
 		if(PhotoStudio::Editing())PortraitCapture::PhotoCancel();
 		OdCloseDock(false);
+		WwCloseWheel(false);
 		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
-			RE::DebugNotification("The Stance Wheel needs the HUD view - reinstall hud.html");
+			RE::DebugNotification("The Combat Wheel needs the HUD view - reinstall hud.html");
 			return;
 		}
-		std::string why;
-		if (!StanceWheel::Available(why)) {
-			// Honest refusal: a wheel of stances nothing can switch is a dead key.
-			RE::DebugNotification(why.c_str());
-			logger::info("stance-wheel: refused - {}", why);
-			return;
+		std::string why, toolWhy;
+		{
+			// What the wheel would draw: an AVAILABLE wedge the player left ON.
+			// Sic 'em is always available; the rest need their mod.
+			const bool stances = StanceWheel::Available(why);
+			bool       any = false, anyAvail = stances;
+			if (stances)
+				for (const char* id : { "bear", "wolf", "hawk", "neutral" })
+					any = any || StanceWheel::WedgeOn(id);
+			if (stances && StanceWheel::TarnishedAvailable())
+				any = any || StanceWheel::WedgeOn("tarnished");
+			const std::pair<const char*, bool> tools[] = {
+				{ CombatTools::kBattlePlan, CombatTools::BattlePlanAvailable(toolWhy) },
+				{ CombatTools::kWwmMenu, CombatTools::WwmMenuAvailable(toolWhy) },
+				{ CombatTools::kNffMenu, CombatTools::NffMenuAvailable(toolWhy) },
+				{ CombatTools::kSicEm, true },
+				{ CombatTools::kCommandRing, true },
+			};
+			for (const auto& [id, avail] : tools)
+				any = any || (avail && StanceWheel::WedgeOn(id));
+			anyAvail = anyAvail || tools[0].second || tools[1].second || tools[2].second;
+			if (!any) {
+				// Honest refusal: a wheel with nothing on it is a dead key.
+				RE::DebugNotification(anyAvail
+						? "Every Combat Wheel wedge is switched off - turn some on in Home > UI Elements"
+						: "The Combat Wheel needs Stances NG, Fight With Me, Walk With Me or NFF - or switch Sic 'em on in Home > UI Elements");
+				logger::info("stance-wheel: refused - nothing to show ({})", why);
+				return;
+			}
 		}
 		auto* ui = RE::UI::GetSingleton();
 		auto* pc = RE::PlayerCharacter::GetSingleton();
 		if (!pc || !pc->GetParentCell() || (ui && ui->GameIsPaused())) {
-			RE::DebugNotification("Open the Stance Wheel while playing");
+			RE::DebugNotification("Open the Combat Wheel while playing");
 			return;
 		}
 		// Stand the rival claimants down first (the AgOpenAlign discipline).
@@ -15460,6 +16971,7 @@ namespace
 			TdCloseDial(false);
 		if (g_agOpen.load())
 			AgCloseAlign(false);
+		HpClosePad(false);
 		if (g_hudEditing.exchange(false))
 			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		g_swOpen = true;
@@ -15512,7 +17024,51 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([payload]() {
 			SwCloseWheel(true);
 			const auto j = nlohmann::json::parse(payload, nullptr, false);
-			if (j.is_discarded() || !j.contains("stance") || !j["stance"].is_number_integer())
+			if (j.is_discarded() || !j.is_object())
+				return;
+			// A menu wedge (Battle Plan / Walk With Me): open it a task later,
+			// once the HUD view has let go of Focus and time runs again.
+			// CombatTools::Open refuses any id that is not one of its two.
+			if (j.contains("tool") && j["tool"].is_string()) {
+				const std::string tool = j["tool"].get<std::string>();
+				// Sic 'em: the deck's own attack-target verb at the LIVE crosshair
+				// (FireEntryById's re-aim), time already restored.
+				if (tool == CombatTools::kSicEm) {
+					NpcActions::SnapshotTarget();
+					logger::info("stance-wheel: sic 'em from the Combat Wheel");   // marker: combat-wheel-sic-em
+					NpcActions::Run("attack-target");
+					return;
+				}
+				// The Command Ring wedge: the wheel has closed and given time back;
+				// the ring takes the HUD view's Focus a task later (the claimants'
+				// hand-over, never two in one task).
+				if (tool == CombatTools::kCommandRing) {
+					logger::info("stance-wheel: command ring from the Combat Wheel");   // marker: combat-wheel-command-ring
+					SKSE::GetTaskInterface()->AddTask([]() { CrToggleRing(); });
+					return;
+				}
+				// Walk With Me's own party menu (the WWM flyout): its Command key,
+				// and for Party actions a step down once the menu is up.
+				if (tool == CombatTools::kWwmWheel || tool == CombatTools::kWwmParty) {
+					const bool party = tool == CombatTools::kWwmParty;
+					std::thread([party]() {
+						std::this_thread::sleep_for(std::chrono::milliseconds(120));
+						SKSE::GetTaskInterface()->AddTask([party]() { FireWwmCommand(party); });
+					}).detach();
+					return;
+				}
+				// NFF's menu is Papyrus: let the HUD view's Focus release settle.
+				if (tool == CombatTools::kNffMenu) {
+					std::thread([tool]() {
+						std::this_thread::sleep_for(std::chrono::milliseconds(120));
+						SKSE::GetTaskInterface()->AddTask([tool]() { logger::info("{}", CombatTools::Open(tool)); });
+					}).detach();
+					return;
+				}
+				SKSE::GetTaskInterface()->AddTask([tool]() { logger::info("{}", CombatTools::Open(tool)); });
+				return;
+			}
+			if (!j.contains("stance") || !j["stance"].is_number_integer())
 				return;
 			logger::info("{}", StanceWheel::Pick(j["stance"].get<int>()));
 		});
@@ -15524,23 +17080,66 @@ namespace
 	}
 
 	// ---- Stance Wheel settings (the Home drawer's row; DECK view) ------------
-	// Request swCfg {op:"get"} | {op:"set", slow?, size?} | {op:"set", reset:true},
+	// Request swCfg {op:"get"} | {op:"set", slow?, size?, wedges?} | {op:"set", reset:true},
 	// reply swCfgState {slow, size, def*, min*, max*, ok, msg, key}. `ok`/`msg`
 	// are StanceWheel::Available (the row says WHY the wheel will not open
 	// rather than offering a dead button) and `key` is the trigger bound to the
 	// seeded hd-stance-wheel entry, "" when it has none.
+	//
+	// Since 2026-10-11 the HUD view sends it too: right-click on the open
+	// Combat Wheel raises a settings card (hud-stance.js, marker
+	// combat-wheel-cfg-card). So the reply goes to BOTH views, and a set while
+	// the wheel is up re-pushes swState (the wheel redraws under the card) and
+	// applies a changed world speed at once.
+
+	// MAIN THREAD. The open wheel owns the time multiplier (g_swSlowed); a new
+	// `slow` from the card takes over from here, exactly as SwOpenWheel would
+	// have set it. The palette's smooth pause outranks us, as at open.
+	void SwApplySlowLive()
+	{
+		if (!g_swOpen.load() || g_worldFrozen.load())
+			return;
+		auto* timer = RE::BSTimer::GetSingleton();
+		if (!timer)
+			return;
+		const float slowMult = StanceWheel::GetOptions().slow;
+		if (slowMult < 0.999f) {
+			timer->SetGlobalTimeMultiplier(slowMult, true);
+			g_swSlowed = true;
+		} else if (g_swSlowed.exchange(false)) {
+			timer->SetGlobalTimeMultiplier(1.0f, true);
+		}
+		logger::info("combat-wheel-cfg: world speed x{} while the wheel is up", slowMult);
+	}
+
 	void OnJsSwCfg(const char* data)
 	{
 		const std::string payload = data ? data : "";
 		SKSE::GetTaskInterface()->AddTask([payload]() {
+		  try {
 			const auto req = nlohmann::json::parse(payload, nullptr, false);
-			const bool set = !req.is_discarded() && req.is_object() && req.value("op", std::string()) == "set";
+			const bool isObj = !req.is_discarded() && req.is_object();
+			const bool set = isObj && req.contains("op") && req["op"].is_string() && req["op"].get<std::string>() == "set";
 			auto j = nlohmann::json::parse(set ? StanceWheel::SetOptions(payload) : StanceWheel::OptionsJson(), nullptr, false);
 			if (j.is_discarded() || !j.is_object())
 				j = nlohmann::json::object();
 			std::string why;
-			j["ok"] = StanceWheel::Available(why);
-			j["msg"] = why;
+			const bool  stancesOk = StanceWheel::Available(why);
+			// The Combat Wheel's wedge switches (2026-10-11): what each wedge
+			// needs, so the row can say why one would not show even when on.
+			auto tools = nlohmann::json::parse(CombatTools::ListJson(), nullptr, false);
+			if (tools.is_discarded() || !tools.is_array())
+				tools = nlohmann::json::array();
+			j["tools"] = tools;
+			j["stancesOk"] = stancesOk;
+			j["stancesWhy"] = why;
+			j["tarnished"] = stancesOk && StanceWheel::TarnishedAvailable();
+			{
+				const auto st = nlohmann::json::parse(StanceWheel::StateJson(), nullptr, false);
+				j["icons"] = (!st.is_discarded() && st.is_object() && st.contains("icons")) ? st["icons"] : nlohmann::json::object();
+			}
+			j["ok"] = true;   // Sic 'em needs no mod: the wheel can always be given a wedge
+			j["msg"] = "";
 			std::string key;
 			{
 				std::lock_guard l(g_configMutex);
@@ -15553,7 +17152,1329 @@ namespace
 				}
 			}
 			j["key"] = key;
-			PushToView("swCfgState", j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+			const std::string state = j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			PushToView("swCfgState", state);   // the deck's Home row (only while the deck is open)
+			// the Combat Wheel's own settings card (hud-stance.js)
+			if (g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView, ("swCfgState(" + state + ")").c_str());
+			if (set && g_swOpen.load()) {
+				if (req.contains("slow") || req.value("reset", false))
+					SwApplySlowLive();
+				SwPushState();   // new wedges / size / title: the open wheel redraws
+			}
+		  } catch (const std::exception& e) {
+			logger::error("combat-wheel-cfg: swCfg dropped: {}", e.what());
+		  }
+		});
+	}
+
+	// The HUD view's door to the same handler (the settings card on the open
+	// Combat Wheel). Logged so a play-test shows the card reached C++.
+	void OnJsSwCfgHud(const char* data)
+	{
+		std::string p = data ? data : "";
+		if (p.size() > 200)
+			p.resize(200);
+		logger::info("combat-wheel-cfg-hud: {}", p);   // marker: combat-wheel-cfg-hud
+		OnJsSwCfg(data);
+	}
+
+	// ======================================================= Command Ring ===
+	// Rober, 2026-10-12, with Warband's ring on screen: "integrate the commands
+	// system and camp system but with skymanager type UI ... hooks to our
+	// skymanager supported mods NFF and My home is your home - we also use this
+	// now Fight With Me". The SEVENTH claimant on the HUD view's Focus, the
+	// Combat Wheel's shape exactly: Focus(pauseGame=false), the world slowed
+	// (never stopped) while it is up, and a pick closes the ring and restores
+	// time FIRST, then runs the command a task later in a running world.
+	//
+	// View: hud-command.js (Warband's eight-slot text ring, four pages).
+	// Engine half: src/command_ring.{h,cpp} (table, camp spot, FWM reads).
+	// Every command below calls a verb the deck already ships; the ones that
+	// loop over the band use PartyRecall::Members(), the one place "who is
+	// following" is decided.
+	//
+	// Bridge: HUD -> crGet / crPick({id}|{page}) / crClose / crCfg
+	//         C++ -> crShow("1"|"0") / crState(json) / crKey() / crCfgState(json)
+	std::atomic<bool>                     g_crFocused{ false };
+	std::atomic<bool>                     g_crSlowed{ false };
+	std::chrono::steady_clock::time_point g_crOpenedAt{};
+	std::string                           g_crPage = "orders";   // the page the ring opens on (last used)
+
+	void CrRestoreTime()
+	{
+		if (!g_crSlowed.exchange(false))
+			return;
+		if (g_worldFrozen.load())   // the palette's smooth pause owns it now
+			return;
+		if (auto* timer = RE::BSTimer::GetSingleton())
+			timer->SetGlobalTimeMultiplier(1.0f, true);
+	}
+
+	// A ring command's key, as the deck shows it: the trigger bound to its
+	// seeded entry. Commands the deck already shipped as their own actions
+	// before the ring (party-follow, attack-target, battle-plan …) answer to
+	// THAT entry's trigger, so one key is never shown as two.
+	std::string CrKeyVerb(const std::string& id)
+	{
+		static const std::pair<const char*, const char*> kAlias[] = {
+			{ "cr-follow", "party-follow" }, { "cr-wait", "party-wait" }, { "cr-relax", "party-relax" },
+			{ "cr-attack", "attack-target" }, { "cr-nff-menu", "nff-menu" }, { "cr-wwm-menu", "wwm-menu" },
+			{ "cr-battle-plan", "battle-plan" }, { "cr-camp-wood", "camp-harvestwood" },
+			{ "cr-camp-craft", "camp-createitem" },
+		};
+		for (const auto& [cr, verb] : kAlias)
+			if (id == cr)
+				return verb;
+		return id;
+	}
+
+	std::string CrStateJson()
+	{
+		// Every bound action trigger, verb -> label (first wins).
+		std::map<std::string, std::string> trig;
+		{
+			std::lock_guard l(g_configMutex);
+			for (const auto& e : g_config.entries)
+				if (e.device == "action" && !e.trigDevice.empty())
+					trig.emplace(e.action, e.trigLabel);
+		}
+		std::vector<std::pair<std::string, std::string>> byCmd;
+		static const char* kIds[] = { "cr-follow", "cr-wait", "cr-regroup", "cr-relax", "cr-attack", "cr-chest",
+			"cr-nff-menu", "cr-wwm-menu", "cr-camp-make", "cr-camp-settle", "cr-camp-wait", "cr-camp-break",
+			"cr-camp-chest", "cr-camp-return", "cr-camp-wood", "cr-camp-craft", "cr-home-here", "cr-home-go",
+			"cr-home-back", "cr-fwm-attack", "cr-fwm-tome", "cr-fwm-hold", "cr-fwm-asyouwere", "cr-battle-plan" };
+		for (const char* id : kIds) {
+			const std::string verb = CrKeyVerb(id);
+			if (const auto it = trig.find(verb); it != trig.end())
+				byCmd.emplace_back(id, it->second);
+		}
+		auto j = nlohmann::json::parse(CommandRing::StateJson(byCmd), nullptr, false);
+		if (j.is_discarded() || !j.is_object())
+			j = nlohmann::json::object();
+		j["page"] = g_crPage;
+		const auto ok = trig.find("command-ring");
+		j["openKey"] = ok != trig.end() ? ok->second : std::string();
+		return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	void CrPushState()
+	{
+		if (g_prisma && g_hudView && g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView, ("crState(" + CrStateJson() + ")").c_str());
+	}
+
+	// MAIN THREAD. fromView = the view already closed itself (the TdCloseDial
+	// contract): only Focus and time are ours to give back.
+	void CrCloseRing(bool fromView)
+	{
+		if (!g_crOpen.exchange(false)) {
+			CrRestoreTime();   // belt: a flag desync must never strand slow time
+			return;
+		}
+		logger::info("command-ring: closed");   // marker: command-ring-close
+		CrRestoreTime();
+		const bool hadFocus = g_crFocused.exchange(false);
+		if (g_prisma && g_hudView && g_hudViewReady.load()) {
+			if (!fromView)
+				g_prisma->Invoke(g_hudView, "crShow(\"0\")");
+			// Release only what WE took — the other claimants' rule.
+			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_hudNavActive.load() && !g_agOpen.load() &&
+				!g_swOpen.load() && !g_wwOpen.load() && !g_hpOpen.load() && !g_odOpen.load() && !g_photoStudioFocused.load())
+				g_prisma->Unfocus(g_hudView);
+		}
+		HudApplyVisibility();
+	}
+
+	void CrOpenRing()
+	{
+		if (PhotoStudio::Editing())
+			PortraitCapture::PhotoCancel();
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
+			RE::DebugNotification("The Command Ring needs the HUD view - reinstall hud.html");
+			return;
+		}
+		auto* pc = RE::PlayerCharacter::GetSingleton();
+		if (!pc || !pc->GetParentCell()) {
+			RE::DebugNotification("Open the Command Ring while playing");
+			return;
+		}
+		// No GameIsPaused() refusal (the Hotkey Pad's lesson): opened from the
+		// deck, the palette's pause can outlive ClosePalette by a beat. A pause
+		// still there after the 600 ms grace closes it through the menu gate.
+		// Stand the rival claimants down first (the SwOpenWheel discipline).
+		OdCloseDock(false);
+		if (g_hudNavActive.load())
+			HudNavStop("command ring", false);
+		if (g_tdOpen.load())
+			TdCloseDial(false);
+		if (g_agOpen.load())
+			AgCloseAlign(false);
+		SwCloseWheel(false);
+		WwCloseWheel(false);   // the 8th claimant, the Wardrobe Wheel
+		HpClosePad(false);
+		if (g_hudEditing.exchange(false))
+			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
+		g_crOpen = true;
+		g_crOpenedAt = std::chrono::steady_clock::now();
+		const float slowMult = CommandRing::GetOptions().slow;
+		if (!g_worldFrozen.load() && slowMult < 0.999f) {
+			if (auto* timer = RE::BSTimer::GetSingleton()) {
+				timer->SetGlobalTimeMultiplier(slowMult, true);
+				g_crSlowed = true;
+			}
+		}
+		logger::info("command-ring: open on '{}' (time x{})", g_crPage, slowMult);   // marker: command-ring-open
+		g_prisma->Show(g_hudView);
+		CrPushState();   // state BEFORE show: the pages shape the ring
+		g_prisma->Invoke(g_hudView, "crShow(\"1\")");
+		const bool ok = g_prisma->Focus(g_hudView, false);
+		g_crFocused = ok;
+		if (!ok)
+			logger::warn("command-ring: Focus refused - the cursor will not reach the ring");
+		// Fight With Me's keys are file IO: read them on a worker, then redraw
+		// so the Battle page prints them (and dims an order with no key).
+		std::thread([]() {
+			CommandRing::RefreshFwmKeys();
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_crOpen.load())
+					CrPushState();
+			});
+		}).detach();
+	}
+
+	// The action key: opens the ring; while it is up, picks the highlighted
+	// command (the view decides: highlighted -> pick, none -> close).
+	void CrToggleRing()
+	{
+		if (g_crOpen.load()) {
+			if (g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView, "crKey()");
+			else
+				CrCloseRing(false);
+		} else {
+			CrOpenRing();
+		}
+	}
+
+	// ---- the commands --------------------------------------------------------
+	void CrSay(const std::string& env)
+	{
+		const auto d = json::parse(env, nullptr, false);
+		if (!d.is_object())
+			return;
+		const std::string msg = d.value("msg", std::string());
+		if (!msg.empty())
+			RE::DebugNotification(msg.c_str());
+	}
+
+	// One NFF party op, its result on screen (the party-* action's shape).
+	void CrNff(const std::string& op)
+	{
+		logger::info("command-ring: NFF {}", op);
+		CrSay(NffControl::Apply(json{ { "op", op } }.dump(-1, ' ', false, json::error_handler_t::replace),
+			[](const std::string& env) { CrSay(env); }));
+	}
+
+	std::string CrHex(std::uint32_t id)
+	{
+		char buf[16];
+		std::snprintf(buf, sizeof(buf), "0x%08X", id);
+		return buf;
+	}
+
+	std::string CrName(std::uint32_t id)
+	{
+		auto* a = RE::TESForm::LookupByID<RE::Actor>(id);
+		const char* n = a ? a->GetDisplayFullName() : nullptr;
+		return n && *n ? n : "?";
+	}
+
+	// Per-follower results arrive one by one; say ONE line when the last is in
+	// (or after 6 s, for a VM that never answers) instead of six toasts.
+	struct CrTally
+	{
+		std::string       what;   // "homes set here"
+		int               expect = 0;
+		std::atomic<int>  done{ 0 }, ok{ 0 };
+		std::atomic<bool> said{ false };
+		std::string       extra;  // appended once ("2 without a home stay with you")
+		void Say()
+		{
+			if (said.exchange(true))
+				return;
+			std::string line = std::to_string(ok.load()) + " of " + std::to_string(expect) + " " + what;
+			if (!extra.empty())
+				line += " - " + extra;
+			RE::DebugNotification(line.c_str());
+			logger::info("command-ring: {}", line);
+		}
+		void One(bool success)
+		{
+			if (success)
+				++ok;
+			if (++done >= expect)
+				Say();
+		}
+	};
+
+	void CrTallyTimeout(std::shared_ptr<CrTally> t)
+	{
+		std::thread([t]() {
+			std::this_thread::sleep_for(std::chrono::seconds(6));
+			SKSE::GetTaskInterface()->AddTask([t]() { t->Say(); });
+		}).detach();
+	}
+
+	// Home is here: MHiYH's own MarkHome / MoveHome for every follower, at the
+	// player's feet (MhiyhControl::Apply setHome, the Followers tab's verb).
+	void CrHomeHere()
+	{
+		auto t = std::make_shared<CrTally>();
+		t->what = "homes set here";
+		std::vector<std::uint32_t> ids;
+		int away = 0;
+		for (const auto& m : PartyRecall::Members()) {
+			if (!m.loaded) {   // MHiYH can only be told about someone in memory here
+				++away;
+				continue;
+			}
+			ids.push_back(m.formId);
+		}
+		t->expect = static_cast<int>(ids.size());
+		if (away)
+			t->extra = std::to_string(away) + " away from you kept their homes";
+		if (ids.empty()) {
+			RE::DebugNotification("Home is here: nobody with you to give a home");
+			return;
+		}
+		logger::info("command-ring: home is here for {} follower(s)", ids.size());   // marker: command-ring-home-here
+		for (auto id : ids) {
+			const auto env = MhiyhControl::Apply(json{ { "op", "setHome" }, { "formId", CrHex(id) }, { "name", CrName(id) } }
+					.dump(-1, ' ', false, json::error_handler_t::replace),
+				[t](const std::string& done) {
+					const auto d = json::parse(done, nullptr, false);
+					t->One(d.is_object() && d.value("ok", false));
+				});
+			const auto d = json::parse(env, nullptr, false);
+			if (!d.is_object() || !d.value("ok", false)) {
+				logger::info("command-ring: setHome refused for {} - {}", CrName(id),
+					d.is_object() ? d.value("msg", std::string()) : std::string());
+				t->One(false);
+			}
+		}
+		CrTallyTimeout(t);
+	}
+
+	// All go home: NFF's own wait FIRST (so a follow package cannot walk them
+	// straight back), then NFF's send-home move to their My Home is Your Home
+	// home, or their NFF base when MHiYH gave them none.
+	void CrHomeGo()
+	{
+		auto t = std::make_shared<CrTally>();
+		t->what = "sent home";
+		std::vector<std::pair<std::uint32_t, std::string>> go;
+		int homeless = 0;
+		for (const auto& m : PartyRecall::Members()) {
+			if (!m.loaded || m.busy)
+				continue;
+			auto* a = RE::TESForm::LookupByID<RE::Actor>(m.formId);
+			if (!a)
+				continue;
+			const char* dest = NffBridge::HomeRefFor(a, "mhiyh") ? "mhiyh" : NffBridge::HomeRefFor(a, "nff") ? "nff" : nullptr;
+			if (!dest) {
+				++homeless;
+				continue;
+			}
+			go.emplace_back(m.formId, dest);
+		}
+		t->expect = static_cast<int>(go.size());
+		if (homeless)
+			t->extra = std::to_string(homeless) + (homeless == 1 ? " without a home stays" : " without a home stay") + " with you";
+		if (go.empty()) {
+			RE::DebugNotification(homeless ? "Nobody with you has a home yet - use Home is here" : "Nobody with you to send home");
+			return;
+		}
+		logger::info("command-ring: all go home ({} going, {} homeless)", go.size(), homeless);   // marker: command-ring-home-go
+		for (const auto& [id, dest] : go) {
+			const std::string hex = CrHex(id), name = CrName(id), d = dest;
+			auto send = [t, hex, name, d]() {
+				const auto env = NffControl::Apply(json{ { "op", "sendHome" }, { "formId", hex }, { "name", name }, { "dest", d } }
+						.dump(-1, ' ', false, json::error_handler_t::replace), nullptr);
+				const auto r = json::parse(env, nullptr, false);
+				t->One(r.is_object() && r.value("ok", false));
+			};
+			const auto env = NffControl::Apply(json{ { "op", "wait" }, { "formId", hex }, { "name", name } }
+					.dump(-1, ' ', false, json::error_handler_t::replace),
+				[send](const std::string&) { send(); });
+			const auto r = json::parse(env, nullptr, false);
+			if (!r.is_object() || !r.value("ok", false))
+				send();   // NFF would not wait her (her own framework): move her anyway
+		}
+		CrTallyTimeout(t);
+	}
+
+	// All come back / regroup / break camp: everyone the band counts, waiting
+	// ones too. The far and the unloaded are moved to you (MoveTo, PartyRecall's
+	// summon); then NFF tells each to follow once they are in the loaded world.
+	void CrComeBack(const char* what)
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player)
+			return;
+		std::vector<std::uint32_t> ids;
+		for (const auto& m : PartyRecall::Members()) {
+			if (m.busy)
+				continue;
+			auto* a = RE::TESForm::LookupByID<RE::Actor>(m.formId);
+			if (!a)
+				continue;
+			// `near` is a <windows.h> macro: never a variable name here.
+			const bool closeBy = m.loaded && a->GetParentCell() == player->GetParentCell() &&
+			                     a->GetPosition().GetDistance(player->GetPosition()) < 2500.0f;
+			if (!closeBy)
+				a->MoveTo(player);
+			ids.push_back(m.formId);
+		}
+		if (ids.empty()) {
+			RE::DebugNotification("Nobody to call back");
+			return;
+		}
+		logger::info("command-ring: {} - {} follower(s) called back", what, ids.size());   // marker: command-ring-come-back
+		auto t = std::make_shared<CrTally>();
+		t->what = what;
+		t->expect = static_cast<int>(ids.size());
+		// A moved actor needs a beat to attach before NFF can order her.
+		std::thread([ids, t]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(900));
+			SKSE::GetTaskInterface()->AddTask([ids, t]() {
+				for (auto id : ids) {
+					const auto env = NffControl::Apply(json{ { "op", "follow" }, { "formId", CrHex(id) }, { "name", CrName(id) } }
+							.dump(-1, ' ', false, json::error_handler_t::replace),
+						[t](const std::string& done) {
+							const auto d = json::parse(done, nullptr, false);
+							t->One(d.is_object() && d.value("ok", false));
+						});
+					const auto d = json::parse(env, nullptr, false);
+					// Refused (her own framework follows her): she is with you anyway.
+					if (!d.is_object() || !d.value("ok", false))
+						t->One(true);
+				}
+				CrTallyTimeout(t);
+			});
+		}).detach();
+	}
+
+	// Wait at camp. At the camp already: NFF's group wait, where they stand.
+	// Away from it: NFF's wait for each, then Domains' marker moves her to her
+	// own spot round the camp (MoveNpcTo, ownedUnloaded so it lands across
+	// cells), facing the middle.
+	void CrCampWait()
+	{
+		const float d = CommandRing::CampDistance();
+		if (d >= 0.0f && d < 2500.0f) {
+			CrNff("allWait");
+			return;
+		}
+		std::vector<std::uint32_t> ids;
+		for (const auto& m : PartyRecall::Members())
+			if (!m.busy && (m.loaded || m.waiting))
+				ids.push_back(m.formId);
+		if (ids.empty()) {
+			RE::DebugNotification("Nobody to send to camp");
+			return;
+		}
+		logger::info("command-ring: {} follower(s) to wait at camp", ids.size());   // marker: command-ring-camp-wait
+		auto t = std::make_shared<CrTally>();
+		t->what = "waiting at camp";
+		t->expect = static_cast<int>(ids.size());
+		const float step = 360.0f / static_cast<float>(ids.size());
+		int         i = 0;
+		for (auto id : ids) {
+			const std::string mark = CommandRing::CampMarkAround(step * static_cast<float>(i++) + 20.0f, 280.0f);
+			const std::string hex = CrHex(id);
+			auto move = [t, hex, mark]() {
+				const auto r = json::parse(PlaceActions::MoveNpcTo(hex, mark, true), nullptr, false);
+				t->One(r.is_object() && r.value("ok", false));
+			};
+			auto* a = RE::TESForm::LookupByID<RE::Actor>(id);
+			if (!a || !a->Is3DLoaded()) {   // already waiting somewhere unloaded: just move her
+				move();
+				continue;
+			}
+			const auto env = NffControl::Apply(json{ { "op", "wait" }, { "formId", hex }, { "name", CrName(id) } }
+					.dump(-1, ' ', false, json::error_handler_t::replace),
+				[move](const std::string&) { move(); });
+			const auto r = json::parse(env, nullptr, false);
+			if (!r.is_object() || !r.value("ok", false))
+				move();
+		}
+		CrTallyTimeout(t);
+	}
+
+	// Fight With Me's party orders: ITS OWN key from FightWithMe.ini [Orders],
+	// read live at the press (ModKeys, the mod-key law), pressed through
+	// FireChord on a worker once the ring has let go of the keyboard.
+	void CrFwmOrder(const std::string& id)
+	{
+		ModKeys::Spec spec;
+		spec.file = "FightWithMe.ini";
+		spec.section = "Orders";
+		spec.key = CommandRing::FwmOrderKey(id);
+		spec.space = "dik";
+		spec.mod = "Fight With Me";
+		spec.where = "FightWithMe.ini [Orders]";
+		const std::string label = std::string("Fight With Me: ") +
+			(id == "cr-fwm-attack" ? "Attack!" : id == "cr-fwm-tome" ? "To me!" : id == "cr-fwm-hold" ? "Hold back" : "As you were");
+		std::thread([spec, label]() {
+			// The key must land in a running world: let the ring's Focus release
+			// settle, and when fired from the deck wait out the palette's pause.
+			std::this_thread::sleep_for(std::chrono::milliseconds(150));
+			for (int i = 0; i < 60; ++i) {
+				auto* ui = RE::UI::GetSingleton();
+				if (!g_open.load() && !(ui && ui->GameIsPaused()))
+					break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			}
+			const auto p = ModKeys::Resolve(spec, label);
+			if (!p.ok) {
+				const std::string msg = p.msg;
+				SKSE::GetTaskInterface()->AddTask([msg]() { RE::DebugNotification(msg.c_str()); });
+				logger::info("command-ring: {} refused - {}", label, msg);
+				return;
+			}
+			logger::info("command-ring: {} -> FWM key {}", label, p.dik);   // marker: command-ring-fwm-order
+			FireChord("keyboard", p.dik, p.mods);
+		}).detach();
+	}
+
+	// MAIN THREAD, ring already closed and time running. Asks CanRun again:
+	// a ring drawn a second ago is not proof the command can run now.
+	void CrRun(const std::string& id)
+	{
+		std::string why;
+		if (!CommandRing::CanRun(id, why)) {
+			RE::DebugNotification(why.c_str());
+			logger::info("command-ring: '{}' refused - {}", id, why);
+			return;
+		}
+		logger::info("command-ring: run '{}'", id);   // marker: command-ring-run
+		if (id == "cr-follow") return CrNff("allFollow");
+		if (id == "cr-wait") return CrNff("allWait");
+		if (id == "cr-relax" || id == "cr-camp-settle") return CrNff("allRelax");
+		if (id == "cr-chest") return CrNff("chestOpen");
+		if (id == "cr-camp-chest") return CrNff("chestPlace");
+		if (id == "cr-regroup") {
+			CrNff("allUnrelax");
+			CrComeBack("regrouped");
+			return;
+		}
+		if (id == "cr-home-back") return CrComeBack("coming back");
+		if (id == "cr-home-here") return CrHomeHere();
+		if (id == "cr-home-go") return CrHomeGo();
+		if (id == "cr-attack") {
+			NpcActions::SnapshotTarget();
+			NpcActions::Run("attack-target");
+			return;
+		}
+		if (id == "cr-nff-menu" || id == "cr-wwm-menu" || id == "cr-battle-plan") {
+			const std::string tool = id == "cr-nff-menu" ? CombatTools::kNffMenu :
+			                         id == "cr-wwm-menu" ? CombatTools::kWwmMenu : CombatTools::kBattlePlan;
+			std::thread([tool]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(120));   // NFF's menu is Papyrus
+				SKSE::GetTaskInterface()->AddTask([tool]() { logger::info("{}", CombatTools::Open(tool)); });
+			}).detach();
+			return;
+		}
+		if (id == "cr-camp-make") {
+			const bool moved = CommandRing::CampUp();
+			if (!CommandRing::MakeCampHere(why)) {
+				RE::DebugNotification(why.c_str());
+				return;
+			}
+			RE::DebugNotification(moved ? "Camp moved here" : "Camp made here");
+			// Campfire builds the fire with its own placement preview (its
+			// materials, its rules); without Campfire the camp is the spot alone.
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			if (dh && dh->LookupModByName("Campfire.esm"))
+				CampActions::Fire("camp-build");
+			return;
+		}
+		if (id == "cr-camp-wait") return CrCampWait();
+		if (id == "cr-camp-break") {
+			CommandRing::BreakCamp();
+			CrNff("allUnrelax");
+			CrComeBack("breaking camp with you");
+			return;
+		}
+		if (id == "cr-camp-return") {
+			const std::string mark = CommandRing::CampMark();
+			QueueTravel("Camp", [mark]() {
+				const auto res = json::parse(PlaceActions::Recall(mark), nullptr, false);
+				const auto msg = res.is_object() ? res.value("msg", std::string()) : std::string();
+				if (!msg.empty())
+					RE::DebugNotification(msg.c_str());
+			});
+			return;
+		}
+		if (id == "cr-camp-wood") return CampActions::Fire("camp-harvestwood");
+		if (id == "cr-camp-craft") return CampActions::Fire("camp-createitem");
+		if (!CommandRing::FwmOrderKey(id).empty()) return CrFwmOrder(id);
+		logger::warn("command-ring: '{}' has no dispatch", id);
+	}
+
+	void OnJsCrGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			if (g_crOpen.load())
+				CrPushState();
+		});
+	}
+
+	// {page} alone only remembers which page to open on next time. {id}: the
+	// view has ALREADY closed itself; release + restore first, then run the
+	// command a task later in a running world. The id is validated against
+	// the table, never run raw off the wire.
+	void OnJsCrPick(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			const auto j = json::parse(payload, nullptr, false);
+			if (j.is_discarded() || !j.is_object())
+				return;
+			if (j.contains("page") && j["page"].is_string()) {
+				const auto  p = j["page"].get<std::string>();
+				const auto& ids = CommandRing::PageIds();
+				if (std::find(ids.begin(), ids.end(), p) != ids.end())
+					g_crPage = p;
+			}
+			if (!j.contains("id") || !j["id"].is_string())
+				return;
+			const std::string id = j["id"].get<std::string>();
+			CrCloseRing(true);
+			if (!CommandRing::IsCommand(id)) {
+				logger::warn("command-ring: unknown command '{}' refused", id);
+				return;
+			}
+			SKSE::GetTaskInterface()->AddTask([id]() { CrRun(id); });
+		});
+	}
+
+	void OnJsCrClose(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { CrCloseRing(true); });
+	}
+
+	// crCfg {op:"get"} | {op:"set", slow?, size?} | {op:"set", reset:true}
+	// from either view; crCfgState goes to both. A set while the ring is up
+	// redraws it and applies a changed world speed at once.
+	void OnJsCrCfg(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			try {
+				const auto req = json::parse(payload, nullptr, false);
+				const bool set = !req.is_discarded() && req.is_object() && req.value("op", std::string()) == "set";
+				auto       j = json::parse(set ? CommandRing::SetOptions(payload) : CommandRing::OptionsJson(), nullptr, false);
+				if (!j.is_object())
+					j = json::object();
+				j["key"] = "";
+				{
+					std::lock_guard l(g_configMutex);
+					for (const auto& e : g_config.entries)
+						if (e.device == "action" && e.action == "command-ring" && !e.trigDevice.empty()) {
+							j["key"] = e.trigLabel;
+							break;
+						}
+				}
+				const std::string out = "crCfgState(" + j.dump(-1, ' ', false, json::error_handler_t::replace) + ")";
+				if (g_prisma && g_viewReady.load())
+					g_prisma->Invoke(g_view, out.c_str());
+				if (g_prisma && g_hudView && g_hudViewReady.load())
+					g_prisma->Invoke(g_hudView, out.c_str());
+				if (set && g_crOpen.load()) {
+					auto* timer = RE::BSTimer::GetSingleton();
+					if (timer && !g_worldFrozen.load()) {
+						const float slowMult = CommandRing::GetOptions().slow;
+						if (slowMult < 0.999f) {
+							timer->SetGlobalTimeMultiplier(slowMult, true);
+							g_crSlowed = true;
+						} else if (g_crSlowed.exchange(false)) {
+							timer->SetGlobalTimeMultiplier(1.0f, true);
+						}
+					}
+					CrPushState();
+				}
+			} catch (const std::exception& e) {
+				logger::warn("command-ring: crCfg failed - {}", e.what());
+			}
+		});
+	}
+
+	// ===================================================== Wardrobe Wheel ===
+	// Rober, 2026-10-12: "dedicated wardrobe wheel like the stance wheel, where
+	// you can assign outfits to a wheel, and add flyouts to each outfit that
+	// show 3d rendering of gear. so you have outfit, then a configurable
+	// flyout menu of any piece or combination of gear to equip over that
+	// outfit."
+	//
+	// The Combat Wheel's shape exactly: the HUD view with Focus(pauseGame=
+	// false), the world slowed by BSTimer's multiplier (never stopped), the
+	// focus menu left ON because it IS the cursor. The EIGHTH claimant on
+	// g_hudView's Focus: stands the others down on open and is stood down by
+	// every one of them, by the palette, the force-close rescue, any menu or
+	// pause (600 ms grace) and kPreLoadGame. Every close restores time.
+	//
+	// The wheel's looks and flyouts are wardrobe Flair metadata
+	// (flair.wheel, WardrobeFlairModel "wheel" / "wheel-options"), so the deck,
+	// the HUD and the phone portal edit one thing. A pick runs
+	// WardrobeFlair::Equip — the dock's verb, the one HD_WardrobeExec call —
+	// with {wheel:true, choice}, resolved against the SAVED wheel.
+	//
+	// Bridge (HUD view): wwGet / wwPick(json) / wwClose / wwIcons(json)
+	//   -> wwShow("1"|"0") · wwState(json) · wwKey() · wwIconsData(index)
+	// Deck view: wwOpen() (the editor's Open button).
+
+	void WwRestoreTime()
+	{
+		if (!g_wwSlowed.exchange(false))
+			return;
+		if (g_worldFrozen.load())   // the palette's smooth pause owns it
+			return;
+		if (auto* timer = RE::BSTimer::GetSingleton())
+			timer->SetGlobalTimeMultiplier(1.0f, true);
+	}
+
+	// flair.wheel.slow, 0.05 .. 1 (1 = do not slow); 0.25 when unset.
+	float WwSlow(const nlohmann::json& doc)
+	{
+		const auto  f = WardrobeFlairModel::Flair(doc);
+		const auto& w = f["wheel"];
+		if (w.is_object() && w.contains("slow") && w["slow"].is_number())
+			return std::clamp(w["slow"].get<float>(), 0.05f, 1.0f);
+		return 0.25f;
+	}
+
+	// Every piece any flyout could put on, for the render queue: the view
+	// draws icons/items renders of them (MRF), render-once-keep-forever.
+	std::string WwPiecesJson(const nlohmann::json& doc)
+	{
+		const auto f = WardrobeFlairModel::Flair(doc);
+		auto       items = nlohmann::json::array();
+		if (!f["wheel"].contains("slots") || !f["wheel"]["slots"].is_array())
+			return nlohmann::json{ { "items", items } }.dump();
+		auto add = [&](const nlohmann::json& p) {
+			if (p.is_object() && p.contains("formId") && p.contains("plugin") && items.size() < 256)
+				items.push_back({ { "formId", p["formId"] }, { "plugin", p["plugin"] }, { "name", p.value("name", std::string()) } });
+		};
+		for (const auto& s : f["wheel"]["slots"]) {
+			if (!s.is_object() || !s.contains("flyout") || !s["flyout"].is_array())
+				continue;
+			for (const auto& x : s["flyout"]) {
+				if (!x.is_object())
+					continue;
+				if (x.contains("item"))
+					add(x["item"]);
+				else if (x.contains("set") && x["set"].is_string())
+					for (const auto& set : f["sets"])
+						if (set.value("id", std::string()) == x["set"].get<std::string>() && set.contains("items") && set["items"].is_array())
+							for (const auto& p : set["items"])
+								add(p);
+			}
+		}
+		return nlohmann::json{ { "items", items } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	// MAIN THREAD. The wardrobe document (outfits, pools, Flair sets, the
+	// wheel), plus the render index and the deck binding on hd-wardrobe-wheel.
+	std::string WwStateJson(bool queueRenders)
+	{
+		nlohmann::json doc;
+		bool           changed = false;
+		{
+			std::lock_guard lock(g_configMutex);
+			changed = Wardrobe::ApplyPortalWardrobe(g_wardrobeConfig);
+			doc = Wardrobe::ToJson(g_wardrobeConfig);
+		}
+		if (changed)
+			PersistAll();
+		if (queueRenders)
+			ItemIcons::EnsureIconsForList(WwPiecesJson(doc));
+		std::string key;
+		{
+			std::lock_guard l(g_configMutex);
+			for (const auto& e : g_config.entries)
+				if (e.device == "action" && e.action == "wardrobe-wheel" && !e.trigDevice.empty()) {
+					key = e.trigLabel;
+					break;
+				}
+		}
+		const float    slow = WwSlow(doc);
+		auto           idx = nlohmann::json::parse(ItemIcons::IndexJson(), nullptr, false);
+		nlohmann::json st{ { "doc", std::move(doc) }, { "key", key }, { "slow", slow },
+			{ "renders", (!idx.is_discarded() && idx.is_object() && idx.contains("icons")) ? idx["icons"] : nlohmann::json::object() } };
+		return st.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	void WwPushIcons()
+	{
+		if (g_wwOpen.load() && g_prisma && g_hudView && g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView, ("wwIconsData(" + ItemIcons::IndexJson() + ")").c_str());
+	}
+
+	// MAIN THREAD. fromView = the view already closed itself.
+	void WwCloseWheel(bool fromView)
+	{
+		if (!g_wwOpen.exchange(false)) {
+			WwRestoreTime();   // belt: a flag desync must never strand slow time
+			return;
+		}
+		logger::info("wardrobe-wheel: closed");   // marker: wardrobe-wheel-close
+		WwRestoreTime();
+		const bool hadFocus = g_wwFocused.exchange(false);
+		if (g_prisma && g_hudView && g_hudViewReady.load()) {
+			if (!fromView)
+				g_prisma->Invoke(g_hudView, "wwShow(\"0\")");
+			// Release only what WE took — the other claimants' rule.
+			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_hudNavActive.load() && !g_agOpen.load() &&
+				!g_swOpen.load() && !g_crOpen.load() && !g_hpOpen.load() && !g_odOpen.load() && !g_photoStudioFocused.load())
+				g_prisma->Unfocus(g_hudView);
+		}
+		HudApplyVisibility();
+	}
+
+	void WwOpenWheel()
+	{
+		if (PhotoStudio::Editing())
+			PortraitCapture::PhotoCancel();
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
+			RE::DebugNotification("The Wardrobe Wheel needs the HUD view - reinstall hud.html");
+			return;
+		}
+		auto* ui = RE::UI::GetSingleton();
+		auto* pc = RE::PlayerCharacter::GetSingleton();
+		if (!pc || !pc->GetParentCell() || (ui && ui->GameIsPaused())) {
+			RE::DebugNotification("Open the Wardrobe Wheel while playing");
+			return;
+		}
+		const std::string state = WwStateJson(true);
+		const auto        st = nlohmann::json::parse(state, nullptr, false);
+		{
+			// Honest refusal: a wheel with nothing on it is a dead key.
+			const auto f = WardrobeFlairModel::Flair(st.is_object() && st.contains("doc") ? st["doc"] : nlohmann::json::object());
+			if (!f["wheel"].contains("slots") || !f["wheel"]["slots"].is_array() || f["wheel"]["slots"].empty()) {
+				RE::DebugNotification("Your Wardrobe Wheel is empty - add looks in Wardrobe > Wardrobe wheel");
+				logger::info("wardrobe-wheel: refused - no looks on it");
+				return;
+			}
+		}
+		// Stand the rival claimants down first (the SwOpenWheel discipline).
+		OdCloseDock(false);
+		SwCloseWheel(false);
+		CrCloseRing(false);
+		HpClosePad(false);
+		if (g_hudNavActive.load())
+			HudNavStop("wardrobe wheel", false);
+		if (g_tdOpen.load())
+			TdCloseDial(false);
+		if (g_agOpen.load())
+			AgCloseAlign(false);
+		if (g_hudEditing.exchange(false))
+			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
+		g_wwOpen = true;
+		g_wwOpenedAt = std::chrono::steady_clock::now();
+		const float slowMult = st.is_object() ? st.value("slow", 0.25f) : 0.25f;
+		// 1.0 = "do not slow time": leave the multiplier alone.
+		if (!g_worldFrozen.load() && slowMult < 0.999f) {
+			if (auto* timer = RE::BSTimer::GetSingleton()) {
+				timer->SetGlobalTimeMultiplier(slowMult, true);
+				g_wwSlowed = true;
+			}
+		}
+		logger::info("wardrobe-wheel: open (time x{})", slowMult);   // marker: wardrobe-wheel-open
+		g_prisma->Show(g_hudView);
+		g_prisma->Invoke(g_hudView, ("wwState(" + state + ")").c_str());   // state BEFORE show: it shapes the wheel
+		g_prisma->Invoke(g_hudView, "wwShow(\"1\")");
+		const bool ok = g_prisma->Focus(g_hudView, false);
+		g_wwFocused = ok;
+		if (!ok)
+			logger::warn("wardrobe-wheel: Focus refused - the cursor will not reach the wheel");
+	}
+
+	// The action key: opens the wheel; while it is up it CONFIRMS the
+	// highlighted look or flyout choice (the view decides).
+	void WwToggleWheel()
+	{
+		if (g_wwOpen.load()) {
+			if (g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView, "wwKey()");
+			else
+				WwCloseWheel(false);
+		} else {
+			WwOpenWheel();
+		}
+	}
+
+	void OnJsWwGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			if (g_wwOpen.load() && g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView, ("wwState(" + WwStateJson(false) + ")").c_str());
+		});
+	}
+
+	// The view has ALREADY closed itself: release + restore time first, then
+	// equip on the next task with the world running at full speed.
+	// {kind:"outfit"|"wardrobe", id, choice:""|"set:<id>"|"item:<0xid>|<plugin>"}
+	void OnJsWwPick(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			WwCloseWheel(true);
+			auto j = nlohmann::json::parse(payload, nullptr, false);
+			if (j.is_discarded() || !j.is_object())
+				return;
+			j["wheel"] = true;
+			logger::info("wardrobe-wheel: pick {} '{}' choice '{}'", j.value("kind", std::string()),
+				j.value("id", std::string()), j.value("choice", std::string()));   // marker: wardrobe-wheel-pick
+			const std::string req = j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			SKSE::GetTaskInterface()->AddTask([req]() {
+				{
+					std::lock_guard lock(g_configMutex);
+					WardrobeFlair::Equip(g_wardrobeConfig, req, [](const std::string& result) {
+						const auto r = nlohmann::json::parse(result, nullptr, false);
+						if (r.is_object())
+							RE::DebugNotification(r.value("msg", std::string()).c_str());
+						PushToView("wfResult", result);
+					});
+				}
+				PersistAll();
+			});
+		});
+	}
+
+	void OnJsWwClose(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { WwCloseWheel(true); });
+	}
+
+	// The open wheel asks again while pictures are still missing: re-queue
+	// (idempotent) and answer with the index, to the HUD view only.
+	void OnJsWwIcons(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			if (!g_wwOpen.load())
+				return;
+			ItemIcons::EnsureIconsForList(payload);
+			WwPushIcons();
+		});
+	}
+
+	// The editor's Open button (deck view): close the palette FIRST, take
+	// Focus one task later (the Combat Wheel's discipline).
+	void OnJsWwOpen(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			if (AnyOpen())
+				ClosePalette();
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (!g_wwOpen.load())
+					WwOpenWheel();
+			});
+		});
+	}
+
+	// ================================================================ Hotkey Pad
+	// The on-screen button pad (Rober, 2026-10-11: "a configurable resizable
+	// calculator like popup - that lets you define buttons that fire that
+	// hotkey on press ... useful for like short keyboards or when im not using
+	// my macro mouse"). View: hud-pad.js on the HUD view. Settings window:
+	// hd-padcfg.js in the deck, opened from Home > UI Elements. Storage:
+	// HotkeyPad (hotkey-pad.json). A press fires the button's deck ENTRY
+	// through FireEntryById — the trigger-key verb — so the pad implements no
+	// mechanics of its own.
+	//
+	// Bridge (one name per direction):
+	//   HUD view  -> C++   hpGet() · hpFire({id}) · hpClose() · hpCfg(json)
+	//   deck view -> C++   hpCfg(json)
+	//   C++ -> HUD view    hpShow({open,edit}|false) · hpState(json) · hpFiring(bool)
+	//   C++ -> deck view   hpCfgState(json) · hpCfgOpen()
+	//
+	// THE PRESS. A focused view takes the cursor, and a hotkey must land in a
+	// running game with no menu in its way (the Stance Wheel's pick rule), so a
+	// press RELEASES Focus first and fires a beat later. With "stay open" on the
+	// pad stays drawn, and ~0.45 s later takes Focus back — unless the hotkey
+	// opened something (a menu, the deck, another PrismaUI view), in which case
+	// the pad closes instead of fighting it for the screen.
+
+	inline constexpr int kHpFireDelayMs = 80;
+	inline constexpr int kHpRefocusMs = 450;
+
+	// The key an entry answers to, for the button's hint: a keystroke entry
+	// shows what it SENDS; anything else shows its own trigger, if bound.
+	std::string HpKeyHint(const HotkeyEntry& e)
+	{
+		if (e.device == "keyboard" || e.device == "mouse")
+			return e.label.empty() ? std::string() : ChordLabel(e.mods, e.label);
+		return e.trigDevice.empty() ? std::string() : e.trigLabel;
+	}
+
+	// The pad document with every button resolved against the deck's entries
+	// RIGHT NOW (name, icon, key, missing) — the views never resolve an id
+	// themselves. `catalog` adds the picker list the settings window needs.
+	std::string HpStateJson(bool catalog, const std::string& msg = std::string())
+	{
+		auto j = json::parse(HotkeyPad::OptionsJson(), nullptr, false);
+		if (j.is_discarded() || !j.is_object())
+			j = json::object();
+		std::lock_guard l(g_configMutex);
+		std::unordered_map<std::string, const HotkeyEntry*> byId;
+		for (const auto& e : g_config.entries)
+			byId[e.id] = &e;
+		if (j.contains("buttons") && j["buttons"].is_array()) {
+			for (auto& b : j["buttons"]) {
+				// a key button: the cap's own name, and its chord as the hint
+				if (b.contains("press") && b["press"].is_object()) {
+					std::vector<std::uint32_t> mods;
+					for (const auto& m : b["press"].value("mods", json::array()))
+						if (m.is_number_integer()) mods.push_back(m.get<std::uint32_t>());
+					const std::string cap = b["press"].value("name", std::string());
+					b["isKey"] = true;
+					b["missing"] = false;
+					b["name"] = cap;
+					b["icon"] = "";
+					b["key"] = ChordLabel(mods, cap);
+					b["cat"] = "Key";
+					continue;
+				}
+				const auto it = byId.find(b.value("entry", std::string()));
+				if (it == byId.end()) {
+					b["missing"] = true;
+					b["name"] = "";
+					b["icon"] = "";
+					b["key"] = "";
+					continue;
+				}
+				const auto& e = *it->second;
+				b["missing"] = false;
+				b["name"] = e.name;
+				b["icon"] = e.icon;
+				b["key"] = HpKeyHint(e);
+				b["cat"] = e.category;
+			}
+		}
+		std::string padKey;
+		if (const auto it = byId.find("hd-hotkey-pad"); it != byId.end() && !it->second->trigDevice.empty())
+			padKey = it->second->trigLabel;
+		j["padKey"] = padKey;
+		j["open"] = g_hpOpen.load();
+		j["msg"] = msg;
+		if (catalog) {
+			json arr = json::array();
+			for (const auto& e : g_config.entries) {
+				if (e.id == "hd-hotkey-pad")
+					continue;   // a pad button that closes the pad is a trap, not a hotkey
+				std::string desc = e.desc;
+				if (desc.size() > 220)
+					desc.resize(220);
+				arr.push_back({ { "id", e.id }, { "name", e.name }, { "icon", e.icon }, { "key", HpKeyHint(e) },
+					{ "cat", e.category }, { "dev", e.device }, { "desc", desc } });
+			}
+			j["catalog"] = std::move(arr);
+		}
+		return j.dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
+	// Both surfaces, one document: the pad repaints on the HUD view and an open
+	// settings window repaints in the deck (PushToView only reaches an open deck).
+	void HpPushState(const std::string& msg = std::string())
+	{
+		const std::string js = HpStateJson(false, msg);
+		if (g_prisma && g_hudView && g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView, ("hpState(" + js + ")").c_str());
+		PushToView("hpCfgState", js);
+	}
+
+	// MAIN THREAD. fromView = the pad already closed itself (Esc / ✕) and only
+	// needs Focus released (the TdCloseDial contract).
+	void HpClosePad(bool fromView)
+	{
+		if (!g_hpOpen.exchange(false))
+			return;
+		++g_hpGen;   // any refocus timer still in flight is now stale
+		g_hpFiring = false;
+		// Build marker (hd-markers.json: "hotkey-pad-close").
+		logger::info("hotkey-pad: closed");
+		const bool hadFocus = g_hpFocused.exchange(false);
+		if (g_prisma && g_hudView && g_hudViewReady.load()) {
+			if (!fromView)
+				g_prisma->Invoke(g_hudView, "hpShow(false)");
+			// Release only what WE took — the other claimants' rule.
+			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_hudNavActive.load() &&
+				!g_agOpen.load() && !g_swOpen.load() && !g_crOpen.load() && !g_wwOpen.load() && !g_odOpen.load() && !g_photoStudioFocused.load())
+				g_prisma->Unfocus(g_hudView);
+		}
+		HudApplyVisibility();
+	}
+
+	// MAIN THREAD. edit = open straight into on-screen arranging (the settings
+	// window's "Arrange on screen").
+	void HpOpenPad(bool edit)
+	{
+		if (PhotoStudio::Editing())
+			PortraitCapture::PhotoCancel();
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load()) {
+			RE::DebugNotification("The Hotkey Pad needs the HUD view - reinstall hud.html");
+			return;
+		}
+		if (g_hpOpen.load()) {
+			if (edit)
+				g_prisma->Invoke(g_hudView, "hpShow({open:true,edit:true})");
+			return;
+		}
+		// No GameIsPaused() refusal: opened from the deck, the palette's own
+		// pause can outlive ClosePalette by a beat (the Time Dial's lesson).
+		// A pause that is still there after the 600 ms grace closes the pad
+		// through the menu gate instead.
+		auto* pc = RE::PlayerCharacter::GetSingleton();
+		if (!pc || !pc->GetParentCell()) {
+			RE::DebugNotification("Open the Hotkey Pad while playing");
+			return;
+		}
+		// Stand the rival claimants down first (the SwOpenWheel discipline).
+		OdCloseDock(false);
+		if (g_hudNavActive.load())
+			HudNavStop("hotkey pad", false);
+		if (g_tdOpen.load())
+			TdCloseDial(false);
+		if (g_agOpen.load())
+			AgCloseAlign(false);
+		SwCloseWheel(false);
+		CrCloseRing(false);   // the 7th claimant, the Command Ring
+		WwCloseWheel(false);   // the 8th claimant, the Wardrobe Wheel
+		if (g_hudEditing.exchange(false))
+			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
+		const auto opt = HotkeyPad::GetOptions();
+		g_hpOpen = true;
+		g_hpFiring = false;
+		++g_hpGen;
+		g_hpOpenedAt = std::chrono::steady_clock::now();
+		// Build marker (hd-markers.json: "hotkey-pad-open").
+		logger::info("hotkey-pad: open ({} buttons, pause {}, edit {})", opt.buttons.size(), opt.pause, edit);
+		g_prisma->Show(g_hudView);
+		HpPushState();   // state BEFORE show: the grid is laid out from it
+		g_prisma->Invoke(g_hudView, edit ? "hpShow({open:true,edit:true})" : "hpShow({open:true,edit:false})");
+		// The focus menu stays ON — it IS the cursor (marker editor-cursor).
+		const bool ok = g_prisma->Focus(g_hudView, opt.pause);
+		g_hpFocused = ok;
+		if (!ok)
+			logger::warn("hotkey-pad: Focus refused - the cursor will not reach the pad");
+	}
+
+	void HpTogglePad()
+	{
+		if (g_hpOpen.load())
+			HpClosePad(false);
+		else
+			HpOpenPad(false);
+	}
+
+	// MAIN THREAD. Hand the game back for one press: the pad stays drawn
+	// (dimmed, deaf to clicks) while the hotkey lands.
+	void HpReleaseForFire()
+	{
+		g_hpFiring = true;
+		if (g_prisma && g_hudView && g_hudViewReady.load()) {
+			g_prisma->Invoke(g_hudView, "hpFiring(true)");
+			if (g_hpFocused.exchange(false))
+				g_prisma->Unfocus(g_hudView);
+		}
+	}
+
+	// MAIN THREAD. The press has landed: take the cursor back — or, when the
+	// hotkey opened something that now owns the screen, close instead.
+	void HpRefocus(std::uint32_t gen)
+	{
+		if (!g_hpOpen.load() || g_hpGen.load() != gen)
+			return;
+		auto* ui = RE::UI::GetSingleton();
+		auto* pc = RE::PlayerCharacter::GetSingleton();
+		const bool menu = !ui || ui->GameIsPaused() || ui->IsItemMenuOpen() || ui->IsApplicationMenuOpen() ||
+		                  ui->IsMenuOpen(RE::JournalMenu::MENU_NAME) || ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) ||
+		                  ui->IsModalMenuOpen();
+		const bool taken = !pc || !pc->GetParentCell() || menu || AnyOpen() ||
+		                   (g_prisma && g_prisma->HasAnyActiveFocus());
+		if (taken) {
+			// Build marker (hd-markers.json: "hotkey-pad-handoff").
+			logger::info("hotkey-pad: the hotkey opened something - closing the pad instead of refocusing");
+			HpClosePad(false);
+			return;
+		}
+		g_hpFiring = false;
+		g_hpOpenedAt = std::chrono::steady_clock::now();   // the menu gate's grace restarts
+		const bool ok = g_prisma && g_hudView && g_prisma->Focus(g_hudView, HotkeyPad::GetOptions().pause);
+		g_hpFocused = ok;
+		if (g_prisma && g_hudView && g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView, "hpFiring(false)");
+		if (!ok)
+			logger::warn("hotkey-pad: refocus refused");
+	}
+
+	void OnJsHpGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			if (g_hpOpen.load())
+				HpPushState();
+		});
+	}
+
+	void OnJsHpClose(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { HpClosePad(true); });
+	}
+
+	// {id} — a PAD BUTTON id, validated against the pad's own table
+	// (HotkeyPad::TargetFor); an entry it names is then checked against the
+	// deck's entries. Never a raw entry id or scancode off the wire.
+	void OnJsHpFire(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			if (!g_hpOpen.load() || g_hpFiring.load())
+				return;   // a click that raced a close, or a second press mid-fire
+			const auto  j = json::parse(payload, nullptr, false);
+			std::string id = (!j.is_discarded() && j.is_object()) ? j.value("id", std::string()) : std::string();
+			std::string      entry;
+			HotkeyPad::Press press;
+			if (!HotkeyPad::TargetFor(id, entry, press) || (entry.empty() && !press.dik)) {
+				logger::warn("hotkey-pad: no button '{}'", id);
+				HpPushState();
+				return;
+			}
+			const bool stayKey = HotkeyPad::GetOptions().stayOpen;
+			if (press.dik) {
+				// A plain key (Home, Page Up, Insert …): a real keypress through
+				// FireChord, the same SendInput path a keystroke hotkey row uses.
+				// Build marker (hd-markers.json: "hotkey-pad-key").
+				logger::info("hotkey-pad: press key button '{}' -> DIK {} ({} mods)", id, press.dik, press.mods.size());
+				if (stayKey)
+					HpReleaseForFire();
+				else
+					HpClosePad(false);
+				const std::uint32_t gen = g_hpGen.load();
+				std::thread([press, gen, stayKey]() {
+					std::this_thread::sleep_for(std::chrono::milliseconds(kHpFireDelayMs));
+					FireChord("keyboard", press.dik, press.mods);
+					if (!stayKey)
+						return;
+					std::this_thread::sleep_for(std::chrono::milliseconds(kHpRefocusMs));
+					SKSE::GetTaskInterface()->AddTask([gen]() { HpRefocus(gen); });
+				}).detach();
+				return;
+			}
+			bool exists = false;
+			{
+				std::lock_guard l(g_configMutex);
+				for (const auto& e : g_config.entries)
+					if (e.id == entry) { exists = true; break; }
+			}
+			if (!exists) {
+				RE::DebugNotification("That pad button's hotkey is gone - pick a new one in Home > UI Elements > Hotkey Pad");
+				HpPushState();
+				return;
+			}
+			const bool stay = HotkeyPad::GetOptions().stayOpen;
+			// Build marker (hd-markers.json: "hotkey-pad-fire").
+			logger::info("hotkey-pad: fire button '{}' -> entry '{}' ({})", id, entry, stay ? "stays open" : "closes");
+			if (stay)
+				HpReleaseForFire();
+			else
+				HpClosePad(false);
+			const std::uint32_t gen = g_hpGen.load();
+			std::thread([entry, gen, stay]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(kHpFireDelayMs));
+				SKSE::GetTaskInterface()->AddTask([entry]() { FireEntryById(entry, "pad"); });
+				if (!stay)
+					return;
+				std::this_thread::sleep_for(std::chrono::milliseconds(kHpRefocusMs));
+				SKSE::GetTaskInterface()->AddTask([gen]() { HpRefocus(gen); });
+			}).detach();
+		});
+	}
+
+	// Both views. {op:"get", catalog?} · {op:"open", edit?} (deck: close the
+	// palette, then open the pad) · {op:"config"} (pad: close, open the deck on
+	// the settings window) · anything else is a HotkeyPad::Apply edit.
+	void OnJsHpCfg(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			const auto req = json::parse(payload, nullptr, false);
+			const std::string op = (!req.is_discarded() && req.is_object()) ? req.value("op", std::string()) : std::string();
+			if (op.empty() || op == "get") {
+				const bool cat = !req.is_discarded() && req.is_object() && req.value("catalog", false);
+				PushToView("hpCfgState", HpStateJson(cat));
+				return;
+			}
+			if (op == "open") {
+				const bool edit = req.value("edit", false);
+				if (AnyOpen())
+					ClosePalette();
+				SKSE::GetTaskInterface()->AddTask([edit]() { HpOpenPad(edit); });
+				return;
+			}
+			if (op == "config") {
+				HpClosePad(false);
+				SKSE::GetTaskInterface()->AddTask([]() {
+					if (!AnyOpen())
+						OpenPalette();
+					// one more beat: the deck's own open push has to land first
+					SKSE::GetTaskInterface()->AddTask([]() { PushToView("hpCfgOpen", "1"); });
+				});
+				return;
+			}
+			std::set<std::string> known;
+			{
+				std::lock_guard l(g_configMutex);
+				for (const auto& e : g_config.entries)
+					known.insert(e.id);
+			}
+			known.erase("hd-hotkey-pad");
+			std::string error;
+			const bool ok = HotkeyPad::Apply(payload, [&known](const std::string& id) { return known.count(id) > 0; }, error);
+			HpPushState(ok ? std::string() : error);
+		});
+	}
+
+	// ---- Detailed MiniMap (deck Home drawer row + the HUD editor's Minimap
+	// section). Request mmCfg, reply mmCfgState to BOTH views: the drawer row
+	// and the HUD shelf read the same state. {op:"shelf"} is the drawer's
+	// Config door: the HUD editor opened on the 'minimap' section through the
+	// existing hudCfg shelf path. Everything else is minimap_bridge.cpp.
+	// Marker: "minimap-bridge: mmCfg".
+	void PushMmState()
+	{
+		const std::string js = MinimapBridge::StateJson();
+		PushToView("mmCfgState", js);
+		if (g_prisma && g_hudView && g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView, ("mmCfgState(" + js + ")").c_str());
+	}
+
+	void OnJsMmCfg(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		const auto        req = nlohmann::json::parse(payload, nullptr, false);
+		if (!req.is_discarded() && req.is_object() && req.value("op", std::string()) == "shelf") {
+			logger::info("minimap-bridge: mmCfg shelf -> HUD editor");
+			OnJsHudCfg(R"({"op":"shelf","key":"minimap"})");
+			return;
+		}
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			bool push = true;
+			MinimapBridge::Handle(payload, push);
+			if (push)
+				PushMmState();
 		});
 	}
 
@@ -15594,7 +18515,7 @@ namespace
 			// Only release what browse mode itself took: the reposition editor
 			// and the Time Dial are the other two claimants on this view's
 			// Focus, and pulling it out from under either would strand them.
-			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_swOpen.load())
+			if (hadFocus && !g_hudEditing.load() && !g_tdOpen.load() && !g_swOpen.load() && !g_crOpen.load() && !g_wwOpen.load())
 				g_prisma->Unfocus(g_hudView);
 		}
 		HudApplyVisibility();
@@ -15616,6 +18537,9 @@ namespace
 		if (g_tdOpen.load())
 			TdCloseDial(false);
 		SwCloseWheel(false);
+		CrCloseRing(false);   // the 7th claimant, the Command Ring
+		WwCloseWheel(false);   // the 8th claimant, the Wardrobe Wheel
+		HpClosePad(false);
 		if (g_hudEditing.exchange(false))
 			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		// Browsing an invisible strip reads as a dead key, so the browse key
@@ -15719,7 +18643,7 @@ namespace
 	{
 		const bool held=g_photoStudioFocused.exchange(false);
 		if(PhotoStudio::Editing())PhotoStudio::SetEditing(false);
-		if(held&&g_prisma&&g_hudView&&!g_hudEditing.load()&&!g_hudNavActive.load()&&!g_tdOpen.load()&&!g_agOpen.load()&&!g_swOpen.load()&&!g_odOpen.load())
+		if(held&&g_prisma&&g_hudView&&!g_hudEditing.load()&&!g_hudNavActive.load()&&!g_tdOpen.load()&&!g_agOpen.load()&&!g_swOpen.load()&&!g_crOpen.load()&&!g_wwOpen.load()&&!g_odOpen.load()&&!g_hpOpen.load())
 			g_prisma->Unfocus(g_hudView);
 	}
 	void PhotoStudioPush()
@@ -15732,7 +18656,7 @@ namespace
 	{
 		if(PhotoStudio::Editing()){PhotoStudioClose();return;}
 		if(!PortraitCapture::PhotoModeActive()||!g_prisma||!g_hudView||!g_hudViewReady.load())return;
-		OdCloseDock(false);TdCloseDial(false);AgCloseAlign(false);SwCloseWheel(false);HudNavStop("photo studio",false);
+		OdCloseDock(false);TdCloseDial(false);AgCloseAlign(false);SwCloseWheel(false);HpClosePad(false);CrCloseRing(false);WwCloseWheel(false);HudNavStop("photo studio",false);
 		if(g_hudEditing.exchange(false))g_prisma->Invoke(g_hudView,"hudEdit(\"0\")");
 		g_prisma->Show(g_hudView);
 		if(!g_prisma->Focus(g_hudView,false)) {RE::DebugNotification("Photo studio could not take focus. Keep framing or press Esc to cancel.");return;}
@@ -15913,6 +18837,9 @@ namespace
 				g_hudConfig.anchorV = (j["anchorV"].get<std::string>() == "bottom") ? "bottom" : "top";
 			if (j.contains("showNames") && j["showNames"].is_boolean())
 				g_hudConfig.showNames = j["showNames"].get<bool>();
+			// Shift + corner drag (2026-10-13): the sideways squeeze.
+			if (j.contains("squeezePct") && j["squeezePct"].is_number())
+				g_hudConfig.squeezePct = FollowersHud::ClampSqueeze(j["squeezePct"].get<int>());
 		}
 		PersistAll();
 		SKSE::GetTaskInterface()->AddTask([]() { HudPushDeckState(); });
@@ -15964,6 +18891,46 @@ namespace
 			hudVis = g_hudConfig.visible;
 			outfitDock = WardrobeFlair::DockEnabled(g_wardrobeConfig);
 		}
+		// The Wardrobe Wheel's Home > UI Elements row (Rober, 2026-10-12: "make
+		// sure its on home - ui elements as well configurable there"): how many
+		// looks are on it, its world speed and size, the deck key that opens it
+		// and the looks by name. Edits go back through wfEdit.
+		json ww = json::object();
+		{
+			json doc;
+			{
+				std::lock_guard l(g_configMutex);
+				doc = Wardrobe::ToJson(g_wardrobeConfig);
+				for (const auto& e : g_config.entries)
+					if (e.device == "action" && e.action == "wardrobe-wheel" && !e.trigDevice.empty()) {
+						ww["key"] = e.trigLabel;
+						break;
+					}
+			}
+			const auto  f = WardrobeFlairModel::Flair(doc);
+			const auto& wh = f["wheel"];
+			const bool  hasSlots = wh.contains("slots") && wh["slots"].is_array();
+			ww["looks"] = hasSlots ? static_cast<int>(wh["slots"].size()) : 0;
+			ww["slow"] = WwSlow(doc);
+			ww["size"] = (wh.contains("size") && wh["size"].is_number()) ? std::clamp(wh["size"].get<int>(), 40, 80) : 64;
+			if (!ww.contains("key"))
+				ww["key"] = "";
+			// the looks by NAME, wheel order (a pool shows its own name)
+			ww["names"] = json::array();
+			if (hasSlots)
+				for (const auto& sl : wh["slots"]) {
+					if (!sl.is_object())
+						continue;
+					std::string name = sl.value("id", std::string());
+					if (sl.value("kind", std::string()) == "wardrobe" && doc.contains("wardrobes") && doc["wardrobes"].is_array())
+						for (const auto& pl : doc["wardrobes"])
+							if (pl.is_object() && pl.value("id", std::string()) == name) {
+								name = pl.value("name", name);
+								break;
+							}
+					ww["names"].push_back(name);
+				}
+		}
 		return json{
 			{ "hotbar", hb },
 			{ "hotbarVisible", hbVis },
@@ -15974,6 +18941,7 @@ namespace
 			{ "hud", hud },
 			{ "hudVisible", hudVis },
 			{ "outfitDock", outfitDock },
+			{ "wardrobeWheel", std::move(ww) },   // marker: wardrobe-wheel-uie-state
 			{ "widgets", std::move(w) },
 		}.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
@@ -16081,7 +19049,7 @@ namespace
 			g_hudConfig.showNames = j.value("on", !g_hudConfig.showNames);
 			pushCfg = true;
 		} else if (op == "part") {
-			// The per-face extras: { op:'part', key:'level'|'dir'|'hp'|'st'|'mk', on }.
+			// The per-face extras: { op:'part', key:'level'|'dir'|'hp'|'st'|'mk'|'away', on }.
 			// One op, five keys — the settings modal is five identical toggle
 			// buttons and five op spellings would be four chances to typo one.
 			// pushData rides along because the toggles decide which FIELDS the
@@ -16092,7 +19060,8 @@ namespace
 			          key == "dir"   ? &g_hudConfig.showDir :
 			          key == "hp"    ? &g_hudConfig.showHp :
 			          key == "st"    ? &g_hudConfig.showSt :
-			          key == "mk"    ? &g_hudConfig.showMk : nullptr;
+			          key == "mk"    ? &g_hudConfig.showMk :
+			          key == "away"  ? &g_hudConfig.showAway : nullptr;
 			if (!f)
 				return;
 			*f = j.value("on", !*f);
@@ -16105,6 +19074,56 @@ namespace
 			std::lock_guard l(g_configMutex);
 			g_hudConfig.faceShape = FollowersHud::ClampShape(j.value("shape", g_hudConfig.faceShape));
 			pushCfg = true;
+		} else if (op == "frameMode") {
+			// { op:'frameMode', mode:'person'|'gold'|'group'|'none' } (2026-10-13) — clamped.
+			std::lock_guard l(g_configMutex);
+			g_hudConfig.frameMode = FollowersHud::ClampFrameMode(j.value("mode", g_hudConfig.frameMode));
+			pushCfg = true;
+		} else if (op == "frameColor") {
+			// { op:'frameColor', color:'<palette key>' } — the one colour "gold"
+			// (One colour) and "group" (One frame) draw in. Refused unless a
+			// palette key.
+			const std::string color = j.value("color", std::string());
+			if (!FollowersHud::IsFrameColor(color))
+				return;
+			std::lock_guard l(g_configMutex);
+			g_hudConfig.frameColor = color;
+			pushCfg = true;
+		} else if (op == "opacity") {
+			// { op:'opacity', pct:20..100 } — the whole strip's opacity.
+			const auto& pv = j.contains("pct") ? j["pct"] : json();
+			if (!pv.is_number())
+				return;
+			std::lock_guard l(g_configMutex);
+			g_hudConfig.opacityPct = FollowersHud::ClampOpacity(pv.get<int>());
+			pushCfg = true;
+		} else if (op == "frame") {
+			// { op:'frame', key:'<fkey>', color:'<palette key>'|'' } — one
+			// follower's rim colour; '' hands her back to the automatic colour.
+			// The key must be one the strip is showing RIGHT NOW (a verb that
+			// takes an id off the wire validates it against what it wrote), and
+			// the colour must be a palette key. Marker: hud-frame-pick.
+			const std::string key = j.value("key", std::string());
+			const std::string color = j.value("color", std::string());
+			{
+				std::lock_guard fl(g_hudFrameMtx);
+				if (!g_hudFrameKeys.contains(key))
+					return;
+			}
+			if (!color.empty() && !FollowersHud::IsFrameColor(color))
+				return;
+			{
+				std::lock_guard l(g_configMutex);
+				auto& m = g_hudConfig.frameColors;
+				if (color.empty())
+					m.erase(key);
+				else if (m.contains(key) || m.size() < FollowersHud::kMaxFrameColors)
+					m[key] = color;
+				else
+					return;
+			}
+			logger::info("hud-frame-pick: {} -> {}", key, color.empty() ? std::string("auto") : color);
+			pushData = true;
 		} else if (op == "grow") {
 			// Cycle the anchor corner: TL -> TR -> BR -> BL -> TL. The stored x/y
 			// keep their magnitudes; only which edge they measure from changes, so
@@ -16177,7 +19196,11 @@ namespace
 				if (AnyOpen())
 					ClosePalette();
 				SwCloseWheel(false);
+				CrCloseRing(false);   // the 7th claimant, the Command Ring
+				WwCloseWheel(false);   // the 8th claimant, the Wardrobe Wheel
+				HpClosePad(false);
 				g_hudEditing = true;
+				MinimapBridge::SyncPreview(true);
 				// DEFERRED one task: ClosePalette queues its own teardown
 				// (unfocus, cursor release) — focusing the HUD in the SAME
 				// task let that teardown land AFTER our Focus and eat the
@@ -16381,6 +19404,8 @@ namespace
 		HD_LISTEN(g_hudView, "hudCfg", OnJsHudCfg);
 		logger::info("hud-strip-cfg-bridge: hudCfg listening on the HUD view too");
 		HD_LISTEN(g_hudView, "hudEditDone", OnJsHudEditDone);
+		// Detailed MiniMap: the HUD editor's Minimap section and its drag ghost.
+		HD_LISTEN(g_hudView, "mmCfg", OnJsMmCfg);
 		// Browse mode v2: the view ends browsing itself (Enter opened a card,
 		// Esc, a click away) and C++ answers by releasing the keyboard.
 		HD_LISTEN(g_hudView, "hudNavDone", OnJsHudNavDone);
@@ -16406,6 +19431,19 @@ namespace
 		HD_LISTEN(g_hudView, "swGet", OnJsSwGet);
 		HD_LISTEN(g_hudView, "swPick", OnJsSwPick);
 		HD_LISTEN(g_hudView, "swClose", OnJsSwClose);
+		HD_LISTEN(g_hudView, "swCfg", OnJsSwCfgHud);   // the wheel's right-click settings card
+		HD_LISTEN(g_hudView, "wwGet", OnJsWwGet);       // Wardrobe Wheel (hud-wardrobe-wheel.js)
+		HD_LISTEN(g_hudView, "wwPick", OnJsWwPick);
+		HD_LISTEN(g_hudView, "wwClose", OnJsWwClose);
+		HD_LISTEN(g_hudView, "wwIcons", OnJsWwIcons);
+		HD_LISTEN(g_hudView, "crGet", OnJsCrGet);      // Command Ring (2026-10-12)
+		HD_LISTEN(g_hudView, "crPick", OnJsCrPick);
+		HD_LISTEN(g_hudView, "crClose", OnJsCrClose);
+		HD_LISTEN(g_hudView, "crCfg", OnJsCrCfg);
+		HD_LISTEN(g_hudView, "hpGet", OnJsHpGet);     // Hotkey Pad (hud-pad.js)
+		HD_LISTEN(g_hudView, "hpFire", OnJsHpFire);
+		HD_LISTEN(g_hudView, "hpClose", OnJsHpClose);
+		HD_LISTEN(g_hudView, "hpCfg", OnJsHpCfg);
 		logger::info("followers-hud: view created + listeners registered");
 	}
 
@@ -17765,6 +20803,36 @@ namespace
 				SwCloseWheel(false);
 			}
 		}
+		// The Command Ring: an UNPAUSED focus like the Combat Wheel's, so any
+		// pause, a real menu, or no world closes it (and restores time).
+		if (g_crOpen.load() &&
+			std::chrono::steady_clock::now() - g_crOpenedAt > std::chrono::milliseconds(600)) {
+			if (noWorld || otherMenu || paused) {
+				logger::info("command-ring: menu gate closed it (noWorld {}, paused {})", noWorld, paused);   // marker: command-ring-menu-gate
+				CrCloseRing(false);
+			}
+		}
+		// The Wardrobe Wheel: the same unpaused-focus rule and grace.
+		if (g_wwOpen.load() &&
+			std::chrono::steady_clock::now() - g_wwOpenedAt > std::chrono::milliseconds(600)) {
+			if (noWorld || otherMenu || paused) {
+				logger::info("wardrobe-wheel: menu gate closed it (noWorld {}, paused {})", noWorld, paused);   // marker: wardrobe-wheel-menu-gate
+				WwCloseWheel(false);
+			}
+		}
+		// The Hotkey Pad: its pause (when the player chose one) is OUR focus-
+		// pause, the Time Dial's rule; any other pause, a real menu, or no world
+		// closes it. Skipped mid-press: the pad has let go of Focus on purpose
+		// and HpRefocus makes the same call itself when the press has landed.
+		if (g_hpOpen.load() && !g_hpFiring.load() &&
+			std::chrono::steady_clock::now() - g_hpOpenedAt > std::chrono::milliseconds(600)) {
+			const bool ours = g_prisma && g_hudView && g_prisma->HasFocus(g_hudView);
+			if (noWorld || otherMenu || (paused && !ours)) {
+				// Build marker (hd-markers.json: "hotkey-pad-menu-gate").
+				logger::info("hotkey-pad: menu gate closed it (noWorld {}, paused {}, ours {})", noWorld, paused, ours);
+				HpClosePad(false);
+			}
+		}
 		// Compact-browse holds the same view with an UNPAUSED focus, so it
 		// cannot be shot by its own pause — but a real menu, or no save at all,
 		// must still hand the keyboard back. Same test, same reasoning.
@@ -17905,7 +20973,11 @@ namespace
 		// Marker: widgets-edit-hud-view.
 		logger::info("widgets-edit: opening the hud view editor");
 		SwCloseWheel(false);
+		CrCloseRing(false);   // the 7th claimant, the Command Ring
+		WwCloseWheel(false);   // the 8th claimant, the Wardrobe Wheel
+		HpClosePad(false);
 		g_hudEditing = true;
+		MinimapBridge::SyncPreview(true);
 		SKSE::GetTaskInterface()->AddTask([]() {
 			if (!g_hudEditing.load())
 				return;
@@ -18274,7 +21346,11 @@ namespace
 					sinceWg += periodMs;
 					if (sinceWg >= 900) {
 						sinceWg = 0;
-						SKSE::GetTaskInterface()->AddTask([]() { OpenDiag::TickTimer diag("widgets-live"); WgPushLive(false); });
+						SKSE::GetTaskInterface()->AddTask([]() {
+							OpenDiag::TickTimer diag("widgets-live");
+							WgPushLive(false);
+							LootFeed::Tick();   // loot-feed pictures, only while a game menu pauses
+						});
 					}
 				} else {
 					sinceWg = 0;
@@ -18667,7 +21743,7 @@ namespace
 	// on a follower whose mod ships no head file for her record: "still hasnt
 	// generated a portrait on restart"). Silence here is what cost the hunt.
 	void ResolveFaceQueuesForIds(const std::vector<std::string>& idStrings,
-		json& icons, json& faceQueue, json& bodyQueue, json* why = nullptr)
+		json& icons, json& faceQueue, json& bodyQueue, json* why)
 	{
 		// A creature companion (a summonable atronach, a beast follower) has no
 		// facegen head; when the head file is absent we fall her back to a BODY
@@ -18798,6 +21874,67 @@ namespace
 		});
 	}
 
+	// "Regenerate face" (Rober, 2026-10-13: "no right click or popout modal
+	// option to tell it to regenerate face (the automated way)"). In: {id} — the
+	// runtime formId string the view keys its faces by. Resolves the FACE OWNER
+	// the same way ResolveFaceQueuesForIds does, has ItemIcons forget the old
+	// render (fresh revision, so the new PNG gets a new name), then runs the
+	// ordinary fdFaceIcons path so the new bake is queued at user priority and
+	// the view's completion poll collects it. Out: fdFaceRerenderData
+	// {id, ok, queued, why} for the toast, plus the usual fdFaceIconsData.
+	void OnJsFolFaceRerender(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			const auto j = json::parse(payload, nullptr, false);
+			// is_string() before get(): a task lambda is outside HD_LISTEN's catch,
+			// so a type_error thrown here would be a CTD, not a log line.
+			const std::string ids = (!j.is_discarded() && j.is_object() && j.contains("id") && j["id"].is_string())
+				? j["id"].get<std::string>() : std::string();
+			json reply = { { "id", ids }, { "ok", false }, { "queued", 0 }, { "why", "" } };
+			const auto send = [&reply]() {
+				PushToView("fdFaceRerenderData",
+					reply.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+			};
+			const auto rid = static_cast<std::uint32_t>(std::strtoul(ids.c_str(), nullptr, 16));
+			auto* form = rid ? RE::TESForm::LookupByID(rid) : nullptr;
+			auto* actor = form ? form->As<RE::Actor>() : nullptr;
+			auto* base = actor ? actor->GetActorBase() : (form ? form->As<RE::TESNPC>() : nullptr);
+			auto* face = base ? NpcFinder::FaceOwnerOf(base) : nullptr;
+			auto* ffile = face ? face->GetFile(0) : nullptr;
+			if (!ffile) {
+				reply["why"] = !form ? "not loaded right now - stand near them and try again"
+				                     : "no face of their own to render (a dynamic or non-actor form)";
+				send();
+				return;
+			}
+			const std::uint32_t local = face->GetFormID() & (ffile->IsLight() ? 0xFFFu : 0xFFFFFFu);
+			char fidHex[16];
+			std::snprintf(fidHex, sizeof(fidHex), "0x%x", local);
+			const std::string plugin{ ffile->GetFilename() };
+			if (!ItemIcons::RerenderFace(fidHex, plugin)) {
+				reply["why"] = "no head file in the load order for their record - capture a photo instead";
+				send();
+				return;
+			}
+			json icons = json::object(), queue = json::array(), bodyQueue = json::array(), why = json::object();
+			ResolveFaceQueuesForIds({ ids }, icons, queue, bodyQueue, &why);
+			std::size_t queued = 0;
+			if (!queue.empty())
+				queued = ItemIcons::EnsureFaceIcons(json{ { "items", std::move(queue) } }
+						.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+			logger::info("followers: face re-render for {} ({}|{}) - {} queued", ids, fidHex, plugin, queued);  // marker: fo-face-rerender
+			reply["ok"] = queued > 0;
+			reply["queued"] = queued;
+			if (!queued)
+				reply["why"] = "the renderer did not take it - is Mesh Rendering Framework loaded?";
+			send();
+			PushToView("fdFaceIconsData",
+				json{ { "icons", std::move(icons) }, { "queued", queued }, { "why", std::move(why) } }
+					.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+		});
+	}
+
 	// ================================================================ THE MIRROR ==
 	// The person page's full-body figure (2026-10-03, Rober after seeing
 	// SeverActions' mannequin: "lets get it all in"). pnMirror in, pnMirrorData
@@ -18832,6 +21969,35 @@ namespace
 	//   pnLive {op:"start", id}  /  {op:"orbit", dyaw, dzoom, reset}  /  {op:"stop"}
 	// -> pnLiveData {ok, why?, name, yaw, zoom, op}. All PersonLive work is
 	// main-thread, so every op runs as an SKSE task.
+	// The live view's focus swap, shared with auto portraits: a menu pause stops
+	// the camera update loop, so both run under the deck's NON-pausing focus with
+	// the world frozen (smooth pause) and DRAWN (no frozen backdrop), then give
+	// the palette its own mode back.
+	void LiveFocusEnter()
+	{
+		FreezeBackdrop::Want(FreezeBackdrop::kDeck, false);
+		g_prisma->Unfocus(g_view);
+		if (!g_prisma->Focus(g_view, false))
+			logger::warn("person-live: unpaused Focus() returned false");
+		FreezeWorld(true);
+	}
+
+	void LiveFocusRestore()
+	{
+		if (g_open.load())
+			FocusDeck(g_focusPaused.load());
+		else
+			FreezeWorld(false);
+	}
+
+	// Auto portraits (2026-10-12): fdAutoPhoto {op:"consider"|"go"|"set"|"state"}.
+	// All AutoPortrait entry points are main-thread.
+	void OnJsAutoPhoto(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() { AutoPortrait::OnMessage(payload); });
+	}
+
 	void OnJsLive(const char* data)
 	{
 		const std::string payload = data ? data : "";
@@ -18845,19 +22011,7 @@ namespace
 				// A menu pause stops the camera update loop, so the live view runs
 				// under the deck's non-pausing focus with the world frozen (the
 				// smooth-pause mechanism) and gives the palette its own mode back.
-				PersonLive::SetFocusHooks(
-					[]() {
-						g_prisma->Unfocus(g_view);
-						if (!g_prisma->Focus(g_view, false))
-							logger::warn("person-live: unpaused Focus() returned false");
-						FreezeWorld(true);
-					},
-					[]() {
-						if (g_open.load())
-							FocusDeck(g_focusPaused.load());
-						else
-							FreezeWorld(false);
-					});
+				PersonLive::SetFocusHooks(LiveFocusEnter, LiveFocusRestore);
 				const std::string id  = j.value("id", std::string());
 				const auto        rid = static_cast<std::uint32_t>(std::strtoul(id.c_str(), nullptr, 16));
 				auto*             form = rid ? RE::TESForm::LookupByID(rid) : nullptr;
@@ -20672,6 +23826,16 @@ namespace
 		PushToView("kcResultData", KeysScan::StateJson(true));
 	}
 
+	// kcRebind: rewrite one key in another mod's own config (keys_write.h).
+	// The file work runs on KeysWrite's worker; the reply comes back on the
+	// main thread as kcRebindResult, after the mod's own re-read was asked for.
+	void OnJsKeysRebind(const char* data)
+	{
+		KeysWrite::Rebind(data ? data : "", [](std::string res) {
+			PushToView("kcRebindResult", std::move(res));
+		});
+	}
+
 	// Items tab (Item Explorer). Every handler AddTasks: the index walk, the
 	// query against it and the add all touch engine structures (form arrays,
 	// names, the player's inventory), and ItemExplorer's threading contract is
@@ -20913,6 +24077,65 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([req]() {
 			PushToView("wxResult", WeatherHub::SetJson(req));
 		});
+	}
+
+	// Inventory tab (iv*). AddTask'd — every one walks the player's inventory
+	// or touches the equip manager, which is main-thread engine state. A verb
+	// answers ivResult and then a fresh ivListData, so the page never shows a
+	// sword in your hand that you just put away.
+	// The last ivList request, so the re-read after a verb keeps the view's
+	// mode (game icons on or off). Main thread only (written and read in tasks).
+	std::string g_ivListReq = "{}";
+
+	void OnJsIvList(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			g_ivListReq = req;
+			PushToView("ivListData", InventoryPane::ListJson(req));
+		});
+	}
+
+	// ivMirror: the player's full-body turntable for the Inventory stage, or a
+	// try-on of one armour piece. Polled by re-asking (frames are listed from
+	// disk each time; nothing renders twice).
+	void OnJsIvMirror(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ivMirrorData", InventoryPane::MirrorJson(req));
+		});
+	}
+
+	void OnJsIvDetail(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ivDetailData", InventoryPane::DetailJson(req));
+		});
+	}
+
+	void OnJsIvAct(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("ivResult", InventoryPane::ActJson(req));
+			// The equip manager QUEUES (applyNow only shortens the wait), so
+			// the re-read waits a beat on its own task rather than reading the
+			// old worn flags back.
+			std::thread([]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(180));
+				SKSE::GetTaskInterface()->AddTask([]() {
+					PushToView("ivListData", InventoryPane::ListJson(g_ivListReq));
+				});
+			}).detach();
+		});
+	}
+
+	void OnJsIvSave(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() { InventoryPane::SaveJson(req); });
 	}
 
 	// ------------------------------------------------------ Journal (jr* bridge)
@@ -21601,6 +24824,23 @@ namespace
 		pending->execute();
 	}
 
+	// The two-second settle exists for the PLAYER's loading screen (the
+	// 2026-09-23 NPC Finder crash). Moving an NPC to you or away loads no cell
+	// of yours, so Summon / Send back / Bring close the palettes and run at
+	// once (Rober, 2026-10-11: "only add delay to teleportation that effects
+	// player not summoning or sending npcs") — the Mounts summon shape.
+	void RunNpcMove(const std::string& label, const std::function<void()>& execute)
+	{
+		if (!g_travelPending.expired()) {
+			logger::info("travel-handoff: '{}' ignored - a player travel is pending", label);
+			return;
+		}
+		ClosePalette();
+		CloseMagicPalette();
+		logger::info("travel-handoff: '{}' moves an NPC, not the player - no settle", label);
+		execute();
+	}
+
 	void QueueTravel(std::string label, std::function<void()> execute)
 	{
 		if (!g_travelPending.expired()) {
@@ -21791,10 +25031,13 @@ namespace
 			const bool        ok = !j.is_discarded() && j.value("ok", false);
 			const std::string act = j.is_discarded() ? std::string("") : j.value("act", std::string(""));
 			if (ok && (act == "goto" || act == "bring")) {
-				QueueTravel("NPC Finder " + act, [req]() {
+				auto run = [req]() {
 					const std::string msg = NpcFinder::ExecuteMove(req);
 					if (!msg.empty()) RE::DebugNotification(msg.c_str());
-				});
+				};
+				// Bring moves the NPC to you — no load, no settle.
+				if (act == "goto") QueueTravel("NPC Finder goto", run);
+				else RunNpcMove("NPC Finder bring", run);
 				return;
 			}
 			PushToView("nxActResult", res);
@@ -22009,6 +25252,80 @@ namespace
 		});
 	}
 
+	// Bestiary (bx* bridge, hd-bestiary.js). bxOpen -> bxState (the whole book);
+	// bxRender only queues missing portraits (Bestiary::EnsureRenders, no state build);
+	// bxLore -> bxEntry now ("writing"), the finished page follows from the worker;
+	// bxScribe -> bxScribeResult (a key test answers later through the same fn).
+	void OnJsBestiaryOpen(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { PushToView("bxState", Bestiary::StateJson()); });
+	}
+	void OnJsBestiaryRender(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { Bestiary::EnsureRenders(); });
+	}
+	void OnJsBestiaryLore(const char* data)
+	{
+		std::string p = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([p]() {
+			if (auto e = Bestiary::Lore(p); !e.empty())
+				PushToView("bxEntry", e);
+		});
+	}
+	void OnJsBestiaryScribe(const char* data)
+	{
+		std::string p = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([p]() {
+			if (auto r = Bestiary::ScribeOp(p); !r.empty())
+				PushToView("bxScribeResult", r);
+		});
+	}
+	// bxEdit -> bxEntry (the page with the reader's edits applied);
+	// bxLesson -> bxScribeResult (the Scribe page's lesson list).
+	void OnJsBestiaryEdit(const char* data)
+	{
+		std::string p = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([p]() {
+			if (auto e = Bestiary::Edit(p); !e.empty())
+				PushToView("bxEntry", e);
+		});
+	}
+	// bxStudy -> bxStudied {ok,id,fresh,writing,why} (the F7 card's "Add to the
+	// Bestiary"); the lore, when it lands, follows as bxEntry. bxSound plays one
+	// of the book's whitelisted vanilla sounds.
+	void OnJsBestiaryStudy(const char* data)
+	{
+		std::string p = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([p]() { PushToView("bxStudied", Bestiary::Study(p)); });
+	}
+	void OnJsBestiarySound(const char* data)
+	{
+		std::string p = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([p]() { Bestiary::Sound(p); });
+	}
+	void OnJsBestiarySpin(const char* data)
+	{
+		std::string p = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([p]() { Bestiary::Spin(p); });
+	}
+	void OnJsBestiaryLesson(const char* data)
+	{
+		std::string p = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([p]() {
+			if (auto r = Bestiary::Lesson(p); !r.empty())
+				PushToView("bxScribeResult", r);
+		});
+	}
+	// bxShelf -> bxState (the reader's own chapters changed: the whole book again)
+	void OnJsBestiaryShelf(const char* data)
+	{
+		std::string p = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([p]() {
+			if (auto r = Bestiary::Shelf(p); !r.empty())
+				PushToView("bxState", r);
+		});
+	}
+
 	void OnJsMountsSpells(const char*)
 	{
 		SKSE::GetTaskInterface()->AddTask([]() {
@@ -22189,6 +25506,39 @@ namespace
 			SKSE::GetTaskInterface()->AddTask([res]() {
 				PushToView("sySetResult", res);
 			});
+		}).detach();
+	}
+
+	// INI-configured SKSE mods (ini_mods.h): IHarvest NG and any mod added to
+	// that table. Listed only when the mod's DLL is loaded. Each is one small
+	// ini read or rewrite with no engine calls, so it runs on a worker thread
+	// (the file-IO law) and only the push hops back to the main thread.
+	void OnJsIniModsState(const char*)
+	{
+		std::thread([]() {
+			std::string res;
+			try {
+				res = IniMods::StateJson();
+			} catch (const std::exception& e) {
+				logger::error("ini-mods: state failed: {}", e.what());
+				res = R"({"ok":false,"mods":[]})";
+			}
+			SKSE::GetTaskInterface()->AddTask([res]() { PushToView("mcIniResult", res); });
+		}).detach();
+	}
+
+	void OnJsIniModsSet(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		std::thread([req]() {
+			std::string res;
+			try {
+				res = IniMods::Set(req);
+			} catch (const std::exception& e) {
+				logger::error("ini-mods: set failed: {}", e.what());
+				res = R"({"ok":false,"msg":"that setting could not be saved"})";
+			}
+			SKSE::GetTaskInterface()->AddTask([res]() { PushToView("mcIniSetResult", res); });
 		}).detach();
 	}
 
@@ -25032,7 +28382,12 @@ namespace
 			// directory walk on the MO2 VFS is not something the game thread
 			// should pay every second for a queue that is almost always empty.
 			const bool apPending = AppearancePresets::RequestsPending();
-			SKSE::GetTaskInterface()->AddTask([apPending]() { OpenDiag::TickTimer diag("desync-watchdog"); DesyncWatchdogTick(); AppearancePresets::Tick(g_gameReady.load(), apPending); OpenDiag::FlushTickCensus(); });
+			SKSE::GetTaskInterface()->AddTask([apPending]() {
+				OpenDiag::TickTimer diag("desync-watchdog");   // the whole task; parts below
+				DesyncWatchdogTick();
+				{ OpenDiag::TickTimer t("appearance-tick"); AppearancePresets::Tick(g_gameReady.load(), apPending); }
+				OpenDiag::FlushTickCensus();
+			});
 
 			if (g_gameReady.load()) {
 				static std::atomic<bool> domainPhotoBusy{false};
@@ -25287,6 +28642,60 @@ namespace
 				return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 			}
 			const auto kind = j.value("kind", std::string(""));
+            if (kind == "procession") {
+                // procession-portal-live: same epoch/receipt contract as formation below;
+                // engine work stays on the main thread, the pipe never waits on it.
+                struct Cache { std::mutex mutex; json state; json results = json::object(); std::string epoch; };
+                static Cache cache;
+                static const auto session = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+                if (!g_gameReady.load()) return R"({"ok":false,"msg":"Load a game to manage your procession"})";
+                const auto generation = g_conversationEpoch.load();
+                const auto epoch = session + ":" + std::to_string(generation);
+                const auto op = j.value("op", std::string("state"));
+                auto refresh = [epoch, generation]() {
+                    if (!g_gameReady.load() || generation != g_conversationEpoch.load()) return;
+                    auto state = json::parse(ProcessionBridge::StateJson(), nullptr, false);
+                    std::lock_guard lock(cache.mutex);
+                    if (cache.epoch != epoch) { cache.results = json::object(); cache.epoch = epoch; }
+                    cache.state = std::move(state);
+                };
+                if (op == "state") {
+                    SKSE::GetTaskInterface()->AddTask(refresh);
+                    std::lock_guard lock(cache.mutex);
+                    return json({{"ok",true},{"epoch",epoch},{"warming",cache.epoch!=epoch || cache.state.is_null()},
+                        {"state",cache.epoch==epoch?cache.state:json()},{"results",cache.epoch==epoch?cache.results:json::object()}}).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+                }
+                if (op != "act" || body.size() > 16384 || !j.contains("request") || !j["request"].is_object() ||
+                    !j.contains("epoch") || j["epoch"] != epoch || !j.contains("commandId") || !j["commandId"].is_string())
+                    return R"({"ok":false,"msg":"Game changed or invalid request; refresh Procession"})";
+                const auto commandId = j["commandId"].get<std::string>();
+                if (commandId.empty() || commandId.size() > 64) return R"({"ok":false,"msg":"Invalid command identity"})";
+                {
+                    std::lock_guard lock(cache.mutex);
+                    if (cache.epoch != epoch) return R"({"ok":false,"msg":"Refresh Procession first"})";
+                    if (cache.results.contains(commandId)) return R"({"ok":true,"queued":true})";
+                    if (cache.results.size() >= 16) cache.results.erase(cache.results.begin());
+                    cache.results[commandId] = {{"pending", true}};
+                }
+                const auto command = j["request"].dump();
+                SKSE::GetTaskInterface()->AddTask([command, epoch, generation, commandId]() {
+                    if (!g_gameReady.load() || generation != g_conversationEpoch.load()) return;
+                    auto result = json::parse(ProcessionBridge::Act(command), nullptr, false);
+                    if (!result.is_object()) result = {{"ok",false},{"msg","Invalid procession request; refresh the panel"}};
+                    if (result.value("ok", false) && result.value("closeGameMenu", false)) ClosePalette();
+                    auto state = json::parse(ProcessionBridge::StateJson(), nullptr, false);
+                    std::lock_guard lock(cache.mutex);
+                    if (cache.epoch == epoch) { cache.results[commandId] = result; cache.state = std::move(state); }
+                });
+                // The mods post their own writes: re-read once they have landed.
+                std::thread([refresh]() {
+                    for (const int wait : { 700, 2600 }) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(wait));
+                        SKSE::GetTaskInterface()->AddTask(refresh);
+                    }
+                }).detach();
+                return R"({"ok":true,"queued":true})";
+            }
             if (kind == "formation") {
                 // formation-portal-live: engine work stays on the main thread;
                 // the pipe returns cached state or a queue receipt, never waits on it.
@@ -25985,24 +29394,42 @@ namespace
 				// Everything below hands the key to the view, so these must come
 				// first or they are unreachable. See the note on g_captureStartMs.
 				if (g_capturing.load() && AnyOpen()) {
+					const bool      modal = g_captureModal.load();
 					const long long now   = NowMs();
 					const long long began = g_captureStartMs.load();
 
 					// (2) Watchdog: a real "press a key" capture is over in a second
 					// or two. This one is not coming back — any key gets you out.
-					if (began != 0 && now - began > kCaptureWedgedMs) {
+					// A modal ("1M": the Bestiary, the Omni) is open on purpose and
+					// is never stamped, so this never fires for one.
+					if (!modal && began != 0 && now - began > kCaptureWedgedMs) {
 						ForceCloseWedgedCapture("capture stuck > 20 s");
 						break;
 					}
 
 					// (1) Double-tap Escape. The first Esc still falls through to the
 					// view so a healthy capture cancels normally; only a second one
-					// inside the window overrides it.
+					// inside the window overrides it. A modal re-sends "1M" after it
+					// handles an Esc (which zeroes g_lastEscMs), so the hatch fires
+					// only when the view has stopped answering (Rober, 2026-10-11:
+					// "stuck now too i dont think esc is closing it").
 					if (device == RE::INPUT_DEVICE::kKeyboard && btn->GetIDCode() == 0x01) {
 						const long long prev = g_lastEscMs.exchange(now);
 						if (prev != 0 && now - prev <= kCaptureEscWindowMs) {
-							ForceCloseWedgedCapture("Escape pressed twice");
+							ForceCloseWedgedCapture(modal ? "Escape pressed twice over a modal" : "Escape pressed twice");
 							break;
+						}
+						// The webview may never receive Escape (see the Esc-close
+						// above), so a modal is HANDED it: hdModalEscape() runs the
+						// modal's own Esc, deduplicated against a native keydown.
+						if (modal) {
+							const PrismaView view = ActiveView();
+							SKSE::GetTaskInterface()->AddTask([view]() {
+								if (g_prisma && ActiveViewReady() && AnyOpen())
+									g_prisma->Invoke(view, "window.hdModalEscape&&window.hdModalEscape()");
+							});
+							logger::info("capture-modal-escape: Escape handed to the modal");
+							continue;
 						}
 					}
 				}
@@ -26203,7 +29630,7 @@ namespace
 				// focused HUD. NFF's original comparison has been unbound first.
 				if (isKb && !AnyOpen() && g_gameReady.load() && !g_worldFrozen.load() &&
 					!g_hudEditing.load() && !g_hudNavFocused.load() && !g_tdOpen.load() && !g_agOpen.load() &&
-					!g_swOpen.load() && !PortraitCapture::SelfPortraitArmed() &&
+					!g_swOpen.load() && !g_crOpen.load() && !g_wwOpen.load() && !g_hpOpen.load() && !PortraitCapture::SelfPortraitArmed() &&
 					!(GetAsyncKeyState(VK_SHIFT) & 0x8000) && !(GetAsyncKeyState(VK_CONTROL) & 0x8000) && !(GetAsyncKeyState(VK_MENU) & 0x8000)) {
 					auto* recallUI = RE::UI::GetSingleton();
 					if (recallUI && !recallUI->GameIsPaused() && !recallUI->IsMenuOpen(RE::Console::MENU_NAME) &&
@@ -26442,11 +29869,15 @@ namespace
 		// A load is starting: the roster/actors are about to be torn down, so stop the
 		// poller from replaying NPC fields until the load reports success.
 		if (message->type == SKSE::MessagingInterface::kPreLoadGame) {
+			AutoPortrait::Abort("load");
 			PersonLive::Stop("load");   // never carry the free camera into the next save
 			FormationActions::CancelHandoff();
 			AppearancePresets::ResetForLoad();
 			OdCloseDock(false);
 			SwCloseWheel(false);   // never carry slow time into the next save
+			CrCloseRing(false);   // the 7th claimant, the Command Ring
+			WwCloseWheel(false);   // the 8th claimant, the Wardrobe Wheel
+			HpClosePad(false);     // nor a focused pad
 			WardrobeFlair::OnLoad();
 			BroomCleanup::Reset();
 			Wardrobe::ResetBedOutfits();
@@ -26471,10 +29902,14 @@ namespace
 			// Wintersun's tracker quest is cached the same way, and WorshipID is
 			// save data — the next session may follow a different god entirely.
 			Faith::Invalidate();
+			// Bestiary: what-works answers were read against the outgoing
+			// player's perks, and open fights belong to the outgoing world.
+			Bestiary::OnPreLoad();
 			return;
 		}
 		if (message->type == SKSE::MessagingInterface::kSaveGame) {
 			FormationActions::OnGameSaved();
+			Bestiary::Flush();   // a debounced bestiary.json write lands with the save
 		}
 		if (message->type == SKSE::MessagingInterface::kPostLoadGame) {
 			if (message->data) SKSE::GetTaskInterface()->AddTask([] { FormationActions::OnGameLoaded(); });
@@ -26526,6 +29961,7 @@ namespace
 			// actor, and the place cache holds a cell id that may now be a
 			// different cell. Drop all three and force one rebuild.
 			Widgets::OnPostLoadGame();
+			LootFeed::Reset();   // pickups queued in the outgoing world are not news
 			// The maintained ward is runtime-only state about the OUTGOING
 			// session — a save that never armed it must not load into a
 			// magicka drain. Silent stand-down, no dispel (the incoming
@@ -26647,6 +30083,8 @@ namespace
 		// previous session flips the setting to the classic menu pause and
 		// persists it before the open key can freeze anyone again.
 		ConsumeSmoothWedgeFlag();
+		FreezeBackdrop::Install();   // the inventory's frozen background, for a paused deck
+		FreezeBackdrop::SetEnabled(FreezeBackdropSetting());
 		PortraitCapture::InstallPresentGrab();  // frame grabs run on the present thread (upscaler-safe)
 		PhotoInputGate::Install([]() -> PhotoInputGate::DeckKey {
 			std::lock_guard lock(g_configMutex);
@@ -26658,11 +30096,13 @@ namespace
 		SpellActions::Init();  // Spell Deck backend (known-spell enum, cast, equip-toggle)
 		PlaceActions::Init();  // Domains tab backend (location snapshot + recall marker)
 		ContainerActions::Init();  // Containers tab backend (crosshair snapshot + remote open)
+		ProcessionBridge::Init();  // Sic 'em order-end hook -> Royal Retinue rejoin
 		ContainerSort::Init();     // drop-box sort-on-close + crafting-loan sinks
 		RoomGuard::Init();     // Rooms tab backend (claim volumes + eviction marker)
 		WeatherHub::Init();    // Weather tab: favourites + a saved weather lock
 		SmfIndex::Init();      // SKSE Menu Framework host window (Omni "Mod menus")
 		SmfWidget::Init();     // draggable "Mod Menus" button on the Esc menu
+		IniMods::SnapshotAtLaunch();  // what IHarvest NG & co. read at startup (Mod settings popout)
 		// Deck Portal: start its node server with the game and let the Job
 		// Object take it down with us. Safe to do unattended because the portal
 		// binds 127.0.0.1 unless a password is set (portal/server.js). A
@@ -26719,6 +30159,7 @@ namespace
 		// Stance Wheel art: Combat Expansion's own stance PNGs, copied into the
 		// excluded icons/sh folder — inert without Combat Expansion.
 		StanceWheel::MirrorIconsAsync();
+		std::thread([]() { CommandRing::RefreshFwmKeys(); }).detach();   // Fight With Me's order keys (file IO)
 		AnimActions::Init();   // Animations tab: load zap-catalog.json + resolve crawl faction
 		// Combat Arts (Ashes of War): build the 74-art index, arm the pickup
 		// intercept sink, seed the portal icon bridge file. Stands down
@@ -26728,6 +30169,8 @@ namespace
 		// up) lands in the Spell Deck view too — same move, same reason.
 		CombatArts::SetStatePush([](const std::string& s) { PushToMagicView("caStateResult", s); });
 		CombatArts::InstallSink();
+		Bestiary::SetPush([](const char* fn, const std::string& s) { PushToView(fn, s); });
+		Bestiary::Install();   // the death sink: kills are measured into bestiary.json
 		OstimDeck::Init();     // OStim segment: reset cache (Thread API acquired lazily on first open)
 		ZazDeck::Init();       // ZaZ segment: reset device catalogue (built lazily on first open)
 		Finance::Init();       // Finances tab backend (gold move + settle/buy/sell)
@@ -26746,6 +30189,10 @@ namespace
 			PushToView("nxIconsData", ItemIcons::NpcIconsJson());
 			// ...and mount bodies, for the Mounts pane's previews.
 			PushToView("mtIconsData", ItemIcons::BodyIndexJson());
+			// ...and the Bestiary: a page's picture, or a turntable frame, landed.
+			Bestiary::OnRendersLanded();
+			// ...and the open Wardrobe Wheel's gear renders.
+			WwPushIcons();
 		});
 
 		g_prisma = static_cast<PRISMA_UI_API::IVPrismaUI1*>(
@@ -26753,6 +30200,17 @@ namespace
 		if (!g_prisma) {
 			logger::error("PrismaUI.dll not found — is the PrismaUI framework installed and enabled?");
 			return;
+		}
+		// Optional Magelight host for the main deck (SkyManager.ini MagelightDeck=1).
+		// Returns g_prisma itself unless switched on AND Magelight 0.31.1+ is loaded.
+		{
+			std::string chosen;
+			{
+				std::lock_guard l(g_configMutex);
+				chosen = g_uiHostIni.empty() ? g_config.settings.uiHost : g_uiHostIni;
+			}
+			g_prisma = UiHostRouter::Wrap(g_prisma, chosen == "magelight",
+				g_uiHostIni.empty() ? "Settings" : "SkyManager.ini " + g_uiHostIniKey);
 		}
 
 		// The heavy deck view (HotkeyDeck/index.html) is normally created EAGERLY at
@@ -26795,6 +30253,16 @@ namespace
 		// than on the live tick's clock — that is what keeps the new trackers
 		// from re-adding the per-second inventory walk 2026-08-16 removed.
 		Widgets::InstallSink();
+		// The loot feed (2026-10-12): pickups -> one lfPush per frame to the HUD
+		// view; item pictures rendered only while a GAME menu pauses (never the
+		// deck, never mid-sweep); the game's own "X added" lines filtered while
+		// the feed is on. Gates are Widgets' lootFeed switches.
+		LootFeed::SetPusher([](const std::string& rows) {
+			if (g_prisma && g_hudView && g_hudViewReady.load())
+				g_prisma->Invoke(g_hudView, ("window.lfPush&&lfPush(" + rows + ")").c_str());
+		});
+		LootFeed::SetPaletteOpenProbe([]() { return g_open.load(); });
+		LootFeed::Install();
 		// Round 4: the loot lamp reads two OTHER modules' master switches.
 		// Loot Vision's lives in THIS file's hotkeys.json slice (under
 		// g_configMutex) and Auto-Loot's behind its own provider, so widgets.cpp

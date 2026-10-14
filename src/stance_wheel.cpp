@@ -577,6 +577,7 @@ namespace StanceWheel
 		const Options opt = GetOptions();   // stance-wheel.json
 		j["size"] = opt.sizeVh;             // the wheel's diameter, vh
 		j["slow"] = opt.slow;               // the time multiplier while it is up (1 = not slowed)
+		j["hints"] = opt.hints;             // the hint lines under the wheel
 		j["current"] = EffectiveStance();
 		j["tarnished"] = tarnished;
 		j["cycling"] = Cycling(t);
@@ -614,7 +615,9 @@ namespace StanceWheel
 	namespace
 	{
 		constexpr float kDefSlow = 0.2f, kMinSlow = 0.05f, kMaxSlow = 1.0f;
-		constexpr int   kDefSize = 64, kMinSize = 40, kMaxSize = 80;
+		// 30 .. 90 since 2026-10-12 (the size slider, Rober: "combat wheel needs
+		// scaling slider"); was 40 .. 80 behind four preset buttons.
+		constexpr int   kDefSize = 64, kMinSize = 30, kMaxSize = 90;
 
 		std::mutex g_optMutex;
 		Options    g_opt;
@@ -635,6 +638,21 @@ namespace StanceWheel
 			return o;
 		}
 
+		// {"wedges":{id:bool}} -> known ids only; a hand-edited file cannot add
+		// an id the wheel does not have.
+		std::map<std::string, bool> ParseWedges(const json& j)
+		{
+			std::map<std::string, bool> out;
+			if (!j.contains("wedges") || !j["wedges"].is_object())
+				return out;
+			for (const auto& id : WedgeIds()) {
+				const auto it = j["wedges"].find(id);
+				if (it != j["wedges"].end() && it->is_boolean())
+					out[id] = it->get<bool>();
+			}
+			return out;
+		}
+
 		// Caller holds g_optMutex.
 		void LoadOptionsLocked()
 		{
@@ -652,9 +670,44 @@ namespace StanceWheel
 				o.slow = j["slow"].get<float>();
 			if (j.contains("size") && j["size"].is_number())
 				o.sizeVh = static_cast<int>(j["size"].get<double>() + 0.5);
+			if (j.contains("hints") && j["hints"].is_boolean())
+				o.hints = j["hints"].get<bool>();
+			o.wedges = ParseWedges(j);
 			g_opt = Clamped(o);
 			logger::info("stance-wheel: options loaded (time x{}, size {}vh)", g_opt.slow, g_opt.sizeVh);   // marker: stance-wheel-options
 		}
+	}
+
+	const std::vector<std::string>& WedgeIds()
+	{
+		static const std::vector<std::string> ids{
+			"bear", "wolf", "hawk", "tarnished", "neutral",
+			"battle-plan", "wwm-menu", "nff-menu", "sic-em", "command-ring"
+		};
+		return ids;
+	}
+
+	bool WedgeDefault(const std::string& id)
+	{
+		return id != "nff-menu" && id != "sic-em";
+	}
+
+	bool WedgeOn(const std::string& id)
+	{
+		const Options o = GetOptions();
+		const auto    it = o.wedges.find(id);
+		return it != o.wedges.end() ? it->second : WedgeDefault(id);
+	}
+
+	std::string WedgesJson()
+	{
+		const Options o = GetOptions();
+		json          w = json::object();
+		for (const auto& id : WedgeIds()) {
+			const auto it = o.wedges.find(id);
+			w[id] = it != o.wedges.end() ? it->second : WedgeDefault(id);
+		}
+		return w.dump();
 	}
 
 	Options GetOptions()
@@ -668,10 +721,11 @@ namespace StanceWheel
 	{
 		const Options o = GetOptions();
 		return json{
-			{ "slow", o.slow }, { "size", o.sizeVh },
+			{ "slow", o.slow }, { "size", o.sizeVh }, { "hints", o.hints },
 			{ "defSlow", kDefSlow }, { "defSize", kDefSize },
 			{ "minSlow", kMinSlow }, { "maxSlow", kMaxSlow },
 			{ "minSize", kMinSize }, { "maxSize", kMaxSize },
+			{ "wedges", json::parse(WedgesJson()) },
 		}.dump();
 	}
 
@@ -682,18 +736,27 @@ namespace StanceWheel
 			std::lock_guard l(g_optMutex);
 			LoadOptionsLocked();
 			Options o = g_opt;
-			if (j.value("reset", false))
+			if (j.value("reset", false)) {
+				const auto keep = o.wedges;   // reset is speed + size only
+				const bool hints = o.hints;   // …the hint switch is kept too
 				o = Options{};
+				o.wedges = keep;
+				o.hints = hints;
+			}
+			for (const auto& [id, on] : ParseWedges(j))
+				o.wedges[id] = on;
 			if (j.contains("slow") && j["slow"].is_number())
 				o.slow = j["slow"].get<float>();
 			if (j.contains("size") && j["size"].is_number())
 				o.sizeVh = static_cast<int>(j["size"].get<double>() + 0.5);
+			if (j.contains("hints") && j["hints"].is_boolean())
+				o.hints = j["hints"].get<bool>();
 			g_opt = Clamped(o);
 			std::error_code ec;
 			fs::create_directories(OptionsPath().parent_path(), ec);
 			std::ofstream out(OptionsPath(), std::ios::binary | std::ios::trunc);
 			if (out)
-				out << json{ { "slow", g_opt.slow }, { "size", g_opt.sizeVh } }.dump(2);
+				out << json{ { "slow", g_opt.slow }, { "size", g_opt.sizeVh }, { "hints", g_opt.hints }, { "wedges", g_opt.wedges } }.dump(2);
 			else
 				logger::warn("stance-wheel: could not write stance-wheel.json");
 			logger::info("stance-wheel: options saved (time x{}, size {}vh)", g_opt.slow, g_opt.sizeVh);
@@ -730,6 +793,15 @@ namespace StanceWheel
 		}
 
 		const Toml t = LoadToml();
+
+		// Neutral is the wheel's "Default" (Rober, 2026-10-10) and is always
+		// offered. With no Stances NG key to press for it, do Stances NG's own
+		// three Neutral steps — the same mirror PickTarnished uses.
+		if (stance == 0 && Pattern(t, *target).empty()) {
+			MirrorNeutral();
+			logger::info("stance-wheel: switched to Neutral (no Neutral key - mirrored)");   // marker: stance-wheel-neutral-mirror
+			return "stance-wheel: pick Neutral (mirrored, no key)";
+		}
 
 		// The presses, in order. Direct keys for everything Stances NG binds
 		// directly; with bUseCycling on, its Wolf key CYCLES 1->2->3->1 instead

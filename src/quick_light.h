@@ -50,6 +50,13 @@ namespace QuickLight
 	std::string TurnOff();  // no-op if already off; else RemoveLight()
 	std::string Toggle();   // always CastLight()
 
+	// The HUD status lantern's read (2026-10-12): the same three facts as
+	// StateJson, without its log line — the live tick asks at 1.1 Hz. Forms
+	// are resolved once per session (the load order cannot change under a
+	// running game), so a missing QuickLight.esp costs one lookup, not one
+	// per tick. MAIN THREAD (HasMagicEffect).
+	void ReadState(bool& installed, bool& running, bool& on);
+
 	// Seeded native action "quick-light" (bindable in F2, e.g. to a Scimitar
 	// button) — toggles, same as the pill.
 	bool IsAction(const std::string& a);

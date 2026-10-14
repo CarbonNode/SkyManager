@@ -109,6 +109,7 @@
     /* Live-detected followers (teammate/faction), from the C++ HUD scan via
        fdLiveParty. Merged into the party bar so non-FO-roster followers show. */
     liveParty: [],
+    livePartyAt: 0,          // when fdLiveParty last landed (0 = not yet: nobody is judged away)
     /* The icon library, chained off app.js's own hdIconIndex / hdIcons globals
        (see chainIcons below) rather than asked for a second time: C++ pushes
        both at every palette open, and a second request name would be a second
@@ -542,6 +543,7 @@
        ['hp', '♥ Health', 'A live health bar under each face', s.showHp !== false],
        ['mk', '✦ Magicka', 'A live magicka bar under each face', s.showMk === true],
        ['st', '➶ Stamina', 'A live stamina bar under each face', s.showSt === true],
+       ['away', 'Away faces', 'Dimmed faces for followers flagged as following but not near you', s.showAway !== false],
       ].forEach(function (d) {
         row.append(h('button', {
           class: 'fd-hud-btn' + (d[3] ? ' on' : ''), type: 'button',
@@ -1484,6 +1486,7 @@
         d._startCrop = f7CropFor(file); paintF7Crop(img,file,true);
         renderLbFoot(d,file,img,frame,foot);
       }));
+      appendRegenerateFace(d,foot);
       appendRetakePhoto(d,foot);
       foot.append(h('span',{class:'fd-lb-val'},'F7 circle only · separate from roster and fullscreen crops'));
       return;
@@ -1499,6 +1502,7 @@
       renderFaceFitFoot(d, file, img, frame, foot);
       const br = brightRow(file);
       if (br) foot.append(br);
+      appendRegenerateFace(d, foot);
       appendRetakePhoto(d, foot);
       return;
     }
@@ -1670,6 +1674,29 @@
   window.fdCaptureSetupResult=function(raw){const r=coerce(raw);if(!r||!captureSetup||r.requestId!==captureSetup.id)return;
     if(r.ok)closePortraitCapture();else captureSetup.result(r);
   };
+
+  /* ⟳ Regenerate face — the AUTOMATED portrait: a fresh Mesh Rendering
+     Framework bake of her facegen head, for when the render came out wrong or
+     her face mod changed. Only on a head RENDER (d.abs): a photo the player
+     took always outranks a render, so re-baking under a photo would change
+     nothing on screen. Needs her formId, like Retake. */
+  function appendRegenerateFace(d, foot) {
+    if (!d || !d.abs || isBodyRender(d.file)) return;
+    const k = fidHexOf(d.formId);
+    if (!k) return;
+    const busy = !!faceRegen[k];
+    foot.append(h('button', {
+      class: 'fd-lb-btn fd-lb-regen-btn', type: 'button',
+      disabled: busy ? true : null,
+      title: busy ? 'A new face for ' + (d.name || 'them') + ' is rendering…'
+        : 'Render ' + (d.name || 'their') + '’s face again from their face data — the current picture stays until the new one is ready.',
+      onClick: function (e) {
+        e.stopPropagation();
+        closeLightbox();
+        regenerateFace(k, d.name || '');
+      },
+    }, busy ? '⟳ Rendering…' : '⟳ Regenerate face'));
+  }
 
   function appendRetakePhoto(d, foot) {
     /* Retake (Rober, 2026-09-21: "a button would be nice to (retake image)"):
@@ -4382,10 +4409,10 @@
          always-on surface, and a spinning glyph in a paused menu is exactly the
          kind of forever-animation that keeps Ultralight repainting. */
       '.fxp-spin{font-size:14px;color:#c9a24b;}' +
-      '.fxp-slots{font-size:11px;color:#6f6a5d;white-space:nowrap;' +
+      '.fxp-slots{font-size:12px;color:#6f6a5d;white-space:nowrap;' +
         'padding:1px 6px;border-radius:999px;border:1px solid #34322b;}' +
       '.fxp-tile:hover .fxp-slots{color:#a79a72;border-color:#4a4638;}' +
-      '.fxp-on{font-size:11px;font-weight:800;margin-left:auto;' +
+      '.fxp-on{font-size:12px;font-weight:800;margin-left:auto;' +
         'letter-spacing:.06em;padding:2px 8px;border-radius:999px;color:#1a1a12;' +
         'background:#f0d68c;}' +
       /* Zoom sits bottom-right of the picture, opposite the ON chip so the two
@@ -7155,6 +7182,13 @@
     return (k && state.faceWhy[k]) || '';
   }
 
+  /* "Regenerate face" in flight — see regenerateFace(). Declared up here, not
+     beside its functions: medalEl and the FolPane export object read it while
+     the pane is still initialising, and a const read before its line is a
+     ReferenceError, which in Ultralight takes the whole renderer down. */
+  const faceRegen = {};
+  const FACE_REGEN_POLL_MS = 3000, FACE_REGEN_TTL_MS = 90000;
+
   function fidHexOf(v) {
     if (v == null || v === '') return '';
     /* A NUMBER (the common case: state.target.formId) must be rendered in base
@@ -7224,18 +7258,83 @@
        was added to be: a follower whose portrait is filed under a base/original
        name the view's slug can't reach (C++ matched her via the FO original)
        draws her real face instead of initials. */
+    if (!m) return null;
     const slug = slugOf(m.original || m.name);
-    const p = slug ? state.portraits[slug] : null;
-    if (p) return { slug: slug, file: p.file, ext: p.ext, mtime: p.mtime };
-    if (m && m.file) return { slug: slug || (m.name || ''), file: m.file, ext: m.ext, mtime: m.mtime };
+    /* THE RULE (Rober, 2026-10-12: generated faces must "stand down to user
+       uploaded faces"): a photo the player took, uploaded through the Deck
+       Portal or dropped into portraits/ ALWAYS wins over a generated head.
+       A capture is filed under the name on screen while FO keys people by
+       their original, so try EVERY name the person answers to before any
+       render may show. */
+    const own = userPortraitOf(m);
+    if (own) return own;
+    /* A live row's file may be a head RENDER (abs, under icons/npcs/) since the
+       HUD strip learned that fallback (2026-10-12); carry the flag or
+       portraitSrc files it under portraits/ and the face breaks. */
+    if (m.file) return { slug: slug || (m.name || ''), file: m.file, ext: m.ext, mtime: m.mtime, abs: !!m.abs };
     /* No captured photo anywhere: fall back to the facegen head render, keyed
        by formId (the one identity every roster row carries). `abs` routes the
        URL through portraitSrc; mtime 0 keeps the cache-bust query off a path
        Ultralight has never seen change. A later real capture outranks this on
        the next repaint because the store checks run first. */
-    const fk = fidHexOf(m && m.formId);
-    const fi = fk ? state.faceIcons[fk] : null;
+    const fk = fidHexOf(m.formId), lk = fidHexOf(m.liveFormId);
+    const fi = (fk && state.faceIcons[fk]) || (lk && state.faceIcons[lk]) || null;
     if (fi) return { slug: slug || (m.name || ''), file: fi, ext: 'png', mtime: 0, abs: true };
+    return null;
+  }
+
+  /* Every roster row that is this person: by stored OR live formId, or by any
+     of the caller's names against the row's names. */
+  function rosterRowsFor(who) {
+    const want = canonFormId(fidHexOf(who.formId));
+    const callerNames = [who.original, who.name, who.base, who.display]
+      .map(function (n) { return String(n || '').toLowerCase(); }).filter(Boolean);
+    const rows = [];
+    for (let ci = 0; ci < state.cats.length; ci++) {
+      const ms = state.cats[ci].members || [];
+      for (let mi = 0; mi < ms.length; mi++) {
+        const r = ms[mi];
+        const byId = want && (canonFormId(fidHexOf(r.formId)) === want || canonFormId(fidHexOf(r.liveFormId)) === want);
+        const byName = !byId && callerNames.length && [r.original, r.name].some(function (n) {
+          return callerNames.indexOf(String(n || '').toLowerCase()) !== -1;
+        });
+        if (byId || byName) rows.push(r);
+      }
+    }
+    return rows;
+  }
+
+  /* The player's own photo under the caller's names, then under any matching
+     roster row's names. */
+  function userPortraitAmong(who, rows) {
+    const own = userPortraitOf(who);
+    if (own) return own;
+    for (let i = 0; i < rows.length; i++) {
+      const hit = userPortraitOf(rows[i]);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  /* The player's OWN portrait for a person, or null: the portrait store under
+     every name she answers to (FO original, the name shown, the NPC record's
+     name, any extra `names`), then a photo C++ already resolved for the row
+     (`file` without `abs` is a portraits/ file; Who's here sends it as
+     `photo`). Never a generated head. Shared by portraitFor and
+     portraitInfoFor so the two cannot disagree about what "her photo" is. */
+  function userPortraitOf(m) {
+    if (!m) return null;
+    const names = [m.original, m.name, m.base, m.display].concat(Array.isArray(m.names) ? m.names : []);
+    for (let i = 0; i < names.length; i++) {
+      const sl = slugOf(names[i]);
+      const p = sl ? state.portraits[sl] : null;
+      if (p) return { slug: sl, file: p.file, ext: p.ext, mtime: p.mtime };
+    }
+    const slug = slugOf(m.original || m.name);
+    if (m.photo && m.photo.file)
+      return { slug: slug || (m.name || ''), file: m.photo.file, ext: m.photo.ext || 'png', mtime: m.photo.mtime || 0 };
+    if (m.file && !m.abs)
+      return { slug: slug || (m.name || ''), file: m.file, ext: m.ext, mtime: m.mtime };
     return null;
   }
 
@@ -7288,6 +7387,12 @@
     const wrap = h('span', {
       class: 'medal img' + (m.following ? ' following' : '') + (m.dead ? ' dead' : ''),
     }, face);
+    /* A new head is being rendered for her ("Regenerate face"): the old one
+       stays up, wearing the same loading rim the initials medallion uses. */
+    if (faceRegenFor(m)) {
+      wrap.classList.add('wait');
+      wrap.appendChild(h('span', { class: 'medal-spin' }));
+    }
     /* Fit the head render AFTER the face is inside its frame — hd-facefit.js's
        layout crop positions the image ABSOLUTELY and must be able to force the
        frame (.medal.img, static + overflow:hidden in CSS) to contain it. Fit a
@@ -7341,6 +7446,22 @@
       if (wrap.parentNode) wrap.parentNode.replaceChild(initialsMedal(m, hue), wrap);
     });
     return wrap;
+  }
+
+  /* KEEP THE PAINTED FACE across a rebuild (Rober, 2026-10-13: "face is
+     flashing at me periodically"). renderQuickCard wipes and rebuilds the
+     whole card on every bridge push, and a fresh <img> paints UNCROPPED for a
+     frame before the head crop lands on the next one (HDFaceFit.paint waits
+     for layout) — so every push read as a blink. When the rebuilt medal is
+     the same face built the same way, put the old, already-painted node back.
+     The signature is the fresh node's markup BEFORE layout touches it, so a
+     new file, crop, state class or ring all count as different. */
+  function keepSameMedal(old, fresh, key) {
+    if (!fresh) return;
+    const sig = String(key || '') + '\n' + fresh.outerHTML;
+    fresh._hdSig = sig;
+    if (!old || old === fresh || old._hdSig !== sig || !fresh.parentNode) return;
+    fresh.parentNode.replaceChild(old, fresh);
   }
 
   function visibleRows() {
@@ -7552,7 +7673,49 @@
   /* A full render is the tab's "something structural changed" path — the row
      cache is dropped there, so only the keystroke path (which calls renderList
      directly) reuses nodes. */
-  function render() { dropRowCache(); renderHudCard(); renderRail(); renderList(); renderAdd(); syncQuickHere(); syncChrome(); applyFocusChrome(); renderEveryoneBar(); renderParty(); renderHere(); }
+  /* fol-show-diag (2026-10-10, marker fol-show-diag): a Followers tab switch cost
+     140-180 ms of UI thread in game (tab-diag), and UI-thread time is game-frame
+     time under PrismaUI. Each piece of a full render is timed so the log names
+     the expensive one instead of the whole; the line is written by onShow (and
+     by a slow fresh-data render) at most once every 4 s, only when >= 40 ms. */
+  const fsNow = (window.performance && typeof performance.now === 'function')
+    ? function () { return performance.now(); } : function () { return Date.now(); };
+  let fsLastLog = 0;
+  let fsTimes = null;
+  function fsStep(name, fn) {
+    const t0 = fsNow();
+    try { fn(); }
+    finally { if (fsTimes) fsTimes[name] = (fsTimes[name] || 0) + (fsNow() - t0); }
+  }
+  function fsReport(label, total) {
+    const times = fsTimes; fsTimes = null;
+    if (!times || total < 40) return;
+    const now = Date.now();
+    if (now - fsLastLog < 4000) return;
+    fsLastLog = now;
+    const parts = Object.keys(times).sort(function (a, b) { return times[b] - times[a]; })
+      .map(function (k) { return k + ' ' + times[k].toFixed(1); }).join(', ');
+    try { if (typeof toGame === 'function') toGame('hdLog', 'fol-show(view): ' + label + ' ' + total.toFixed(0) + ' ms [' + parts + '] | rows ' + (state.rows ? state.rows.length : 0)); } catch (e) {}
+  }
+
+  /* show-render-skip (2026-10-10, marker fol-show-skip): onShow used to draw the
+     whole pane from the PREVIOUS open's data and then ask C++ (fdRefresh), whose
+     answer drew it all again 100-300 ms later: two full roster rebuilds per entry.
+     When nothing transient changed since the pane was last drawn, the rows still
+     in the DOM are shown as they are and the fresh answer draws once. A timer
+     draws anyway if no answer comes. */
+  let fsShowTimer = 0;
+  let fsEverRendered = false;
+  let fsNeedShowRender = true;
+
+  function render() {
+    if (fsShowTimer) { clearTimeout(fsShowTimer); fsShowTimer = 0; }
+    fsEverRendered = true;
+    fsStep('cache', dropRowCache); fsStep('hud', renderHudCard); fsStep('rail', renderRail);
+    fsStep('list', renderList); fsStep('add', renderAdd); fsStep('quick', syncQuickHere);
+    fsStep('chrome', syncChrome); fsStep('focus', applyFocusChrome); fsStep('everyone', renderEveryoneBar);
+    fsStep('party', renderParty); fsStep('here', renderHere);
+  }
 
   /* The quick-action card, on OUR tab.
    *
@@ -7621,7 +7784,9 @@
     const eb = $('edit-btn');
     if (eb) {
       eb.classList.toggle('on', ui.editing);
-      eb.textContent = ui.editing ? 'Done' : 'Edit';
+      /* the two-bar header's Edit carries an icon + label (hd-two-bars) */
+      if (typeof window.hdSetToolLabel === 'function') window.hdSetToolLabel('edit-btn', ui.editing ? 'Done' : 'Edit');
+      else eb.textContent = ui.editing ? 'Done' : 'Edit';
     }
     $('fd-rail-note').classList.toggle('hidden', !ui.editing);
     $('fd-openkey-row').classList.toggle('hidden', !ui.editing);
@@ -8078,6 +8243,7 @@
   function renderRailTarget() {
     const host = $('fd-rail-target');
     if (!host) return;
+    const oldMedal = host.querySelector('.fd-railtgt-medal');
     host.textContent = '';
     const tgt = quickSubject() || (state.targetKnown ? state.target : null);
     if (!tgt || !tgt.name) { host.classList.add('hidden'); return; }
@@ -8097,6 +8263,7 @@
       h('span', { class: 'fd-railtgt-txt' },
         /* Just the name — no "Looking at" eyebrow (Rober, 2026-08-05). */
         h('span', { class: 'fd-railtgt-name', title: who }, who))));
+    keepSameMedal(oldMedal, medal, fidHexOf(tgt.formId) + '|' + who);
   }
 
   function renderRail() {
@@ -8998,6 +9165,29 @@
        then by name as a fallback. Synthesised as a normal member so crewPair /
        portraitFor treat it exactly like a roster face; `live:true` marks it for
        anything that wants to know it has no FO row to act on. */
+    /* AWAY (Rober, 2026-10-11: "sure a dimmed away would be good QOL"). FO's
+       `following` is the game's teammate flag and nothing more, so a follower
+       parked three holds away — or one whose dismiss never cleared the flag —
+       sat in this strip at full strength while the HUD (which only sees who is
+       loaded near you) drew one face. The live scan IS "near you": a flagged
+       roster member it did not find is away. Only judged once the scan has
+       actually arrived this session, so a slow push never dims the whole party. */
+    if (state.livePartyAt) {
+      const nearIds = new Set(), nearNames = new Set();
+      (state.liveParty || []).forEach((r) => {
+        if (!r || r.away) return;
+        if (r.formId) nearIds.add(norm(r.formId));
+        if (r.name) nearNames.add(String(r.name).trim().toLowerCase());
+      });
+      out.forEach((m, i) => {
+        if (m.waiting) return;   // told to wait is its own, better-known group
+        const near = (m.formId && nearIds.has(norm(m.formId)))
+          || (m.liveFormId && nearIds.has(norm(m.liveFormId)))
+          || nearNames.has(String(m.name || '').trim().toLowerCase())
+          || nearNames.has(String(m.original || '').trim().toLowerCase());
+        if (!near) out[i] = Object.assign({}, m, { away: true });
+      });
+    }
     (state.liveParty || []).forEach((r) => {
       if (!r || r.dead || r.following === false) return;
       const fid = r.formId ? norm(r.formId) : 0;
@@ -9008,8 +9198,8 @@
       if (fid) fids.add(fid);
       out.push({
         name: nm, original: nm, formId: r.formId,
-        following: true, dead: !!r.dead, waiting: false, live: true,
-        file: r.file, ext: r.ext, mtime: r.mtime,
+        following: true, dead: !!r.dead, waiting: false, live: true, away: !!r.away,
+        file: r.file, ext: r.ext, mtime: r.mtime, abs: !!r.abs,
       });
     });
     return out;
@@ -9039,14 +9229,20 @@
      background can't take it — the strip was the one surface still showing
      everyone's uncropped framing after an Adjust. The button owns the circle
      and clips (same wrapper-vs-face split as .medal.img / .medal-face). */
+  /* `dim` is false, 'away', or (any other truthy value) waiting. */
+  function crewTitle(m, dim) {
+    if (dim === 'away') return m.name + ' — away: flagged as following, but not anywhere near you'
+      + ' (parked elsewhere, or a dismiss that left the flag behind). Click to act on her.';
+    return m.name + (dim ? ' — waiting' + (m.where ? ' at ' + m.where : '') +
+                           '. Click to act on her anyway.'
+                         : ' — act on her without looking at her');
+  }
   function crewFace(m, dim) {
     const p = portraitFor(m);
     const btn = h('button', {
-      class: 'fq-crew-face' + (p ? '' : ' initials') + (dim ? ' waiting' : ''),
+      class: 'fq-crew-face' + (p ? '' : ' initials') + (dim ? (dim === 'away' ? ' away' : ' waiting') : ''),
       type: 'button',
-      title: m.name + (dim ? ' — waiting' + (m.where ? ' at ' + m.where : '') +
-                             '. Click to act on her anyway.'
-                           : ' — act on her without looking at her'),
+      title: crewTitle(m, dim),
       onClick: (e) => pickCrew(m, e),
     }, p ? null : String(m.name || '?').trim().charAt(0).toUpperCase());
     if (p) {
@@ -9077,20 +9273,35 @@
     return btn;
   }
 
+  /* Fight With Me's role for a party member (2026-10-12): the live scan
+     carries it as `fwm` (C++ reads FightWithMe_GetInterface); roster members
+     are matched to their live row by formId, then by name. '' when FWM is not
+     loaded or has no orders for her. */
+  function fwmRoleOf(m) {
+    if (!m) return '';
+    if (typeof m.fwm === 'string') return m.fwm;
+    const norm = (v) => Number(v) >>> 0;
+    const ids = [m.formId, m.liveFormId].filter(Boolean).map(norm);
+    const nm = String(m.name || '').trim().toLowerCase();
+    const r = (state.liveParty || []).find((x) => x && (ids.indexOf(norm(x.formId)) !== -1 ||
+      (nm && String(x.name || '').trim().toLowerCase() === nm)));
+    return r && typeof r.fwm === 'string' ? r.fwm : '';
+  }
+
   function crewPair(m, dim) {
-    const pair = h('span', { class: 'fq-crew-pair' + (dim ? ' waiting' : '') });
+    const pair = h('span', { class: 'fq-crew-pair' + (dim ? (dim === 'away' ? ' away' : ' waiting') : '') });
     pair.append(crewFace(m, dim));
     /* The NAME is a second hit-target for the same pick — Rober, 2026-08-06:
        "make the name / text also trigger this." A button, so it carries the
        keyboard focus/Enter path and hover for free; styled flat so the strip
        still reads as face + label, not two buttons. */
+    const role = fwmRoleOf(m);
     const name = h('button', {
-      class: 'fq-crew-name',
+      class: 'fq-crew-name' + (role ? ' has-role' : ''),
       type: 'button',
-      title: m.name + (dim ? ' — waiting. Click to act on her anyway.'
-                           : ' — act on her without looking at her'),
+      title: crewTitle(m, dim) + (role ? ' \u00b7 Fight With Me: ' + role : ''),
       onClick: (e) => pickCrew(m, e),
-    }, m.name);
+    }, role ? h('span', { class: 'fq-crew-nm' }, m.name) : m.name, role ? h('span', { class: 'fq-crew-role' }, role) : null);
     pair.append(name);
     return pair;
   }
@@ -9137,8 +9348,12 @@
        the game is concerned, so an undivided strip put the follower at your
        back and the one parked in an inn three holds away side by side, looking
        equally available. They are not the same thing. */
-    const here = list.filter((m) => !m.waiting);
+    const here = list.filter((m) => !m.waiting && !m.away);
     const away = list.filter((m) => m.waiting);
+    /* GONE OFF somewhere: flagged as following but not near you (partyList's
+       live-scan check). Dimmed, after the people at your back, in the same
+       row — still one click from her card, never counted as with you. */
+    const afar = list.filter((m) => !m.waiting && m.away);
 
     const wrap = h('div', { class: 'fq-party fq-crew' });
     /* Count-responsive sizing (Rober, 2026-08-06): a small party gets big,
@@ -9151,14 +9366,16 @@
                      : nHere <= 7 ? 'crew-md' : 'crew-sm');
     const crewExtra = h('span', null,
       h('span', { class: 'fq-crew-n' }, ' ' + here.length),
+      afar.length ? h('span', { class: 'fq-crew-n dim' }, ' \u00b7 ' + afar.length + ' away') : null,
       away.length ? h('span', { class: 'fq-crew-n dim' }, ' \u00b7 ' + away.length + ' waiting') : null);
     wrap.append(ebNoFold ? sectionLabel('Current party', crewExtra)
                          : foldEyebrow('fqCrewFold', 'Current party', crewExtra));
     if (!ebNoFold && ui.fqCrewFold) return wrap;   // folded: the eyebrow IS the section
 
-    if (here.length) {
+    if (here.length || afar.length) {
       const row = h('div', { class: 'fq-crew-row' });
       here.forEach((m) => row.append(crewPair(m, false)));
+      afar.forEach((m) => row.append(crewPair(m, 'away')));
       wrap.append(row);
     } else {
       wrap.append(h('div', { class: 'fq-crew-none' },
@@ -10223,6 +10440,215 @@
 
   /* ---- the bar, in the card head ---------------------------------------- */
 
+  /* ⟶ OPEN PROFILE — the door from the F7 card to the person page (Rober,
+     2026-10-10: "we recently added like a follower home page, that showed a
+     full 3d body shot … we should have a pretty big button here somewhere
+     that takes you to that view"). The page is the Followers dossier
+     (openMemberMenu): the Mirror, "How X sees you", bio, equipment and every
+     tab. Until now it was reachable only from a ROSTER row, which the F7 card
+     hides, so from the card there was no way in at all.
+
+     It sits in the head's empty middle, between the ⌕ bar and the icon
+     group, and shows her front figure once one is on disk (HDPerson
+     .posterFor; peekPoster only LISTS files, it never renders). The page
+     needs a Follower Organizer row, so an unfiled NPC gets the same door
+     saying so, and it opens the filing menu (the one that asks which group).
+     Not drawn inside the dossier itself: the card is mounted there as "All
+     character controls", and a door to the page you are on is noise.
+     fq-profile-door */
+  function fqProfileDoor(who, known, pseudo, dead) {
+    if (ctxEl && ctxEl._dossier && quickHost === ctxEl._dossier.controlsHost) return null;
+    const first = fqTidy(String(who || '').split(' ')[0]) || who;
+    const person = window.HDPerson || null;
+    const m = known ? known.m : pseudo;
+    const fid = fidHexOf((m && (m.liveFormId || m.formId)) || 0);
+    let poster = '';
+    if (known && person && fid && fid !== '0x0' && !dead) {
+      if (person.peekPoster) person.peekPoster(fid);
+      if (person.posterFor) poster = person.posterFor(fid);
+    }
+    const figure = h('span', { class: 'fq-profile-fig' + (poster ? ' has-poster' : ''), 'aria-hidden': 'true' },
+      h('img', { class: 'fq-profile-poster', alt: '', draggable: 'false',
+        'data-pn-poster': known && fid ? fid : null, src: poster || null }),
+      h('img', { class: 'fq-profile-ic', alt: '', draggable: 'false', src: 'icons/custom/hk-portrait.png' }));
+    const filed = !!known;
+    return h('button', {
+      class: 'fq-profile' + (filed ? '' : ' is-unfiled'), type: 'button',
+      'aria-label': filed ? 'Open ' + who + '’s profile page' : 'File ' + who + ' to open a profile page',
+      title: filed
+        ? 'Open ' + who + '’s profile: the full-body figure, how they see you, bio,'
+          + 'household, equipment and every control — the whole person page.'
+        : who + ' has no profile page yet: the page lives on a Follower Organizer entry. '
+          + 'Click to file them (it asks which group), then this opens it.',
+      onClick: (e) => {
+        e.stopPropagation();
+        if (!filed) { openFrameworkMenu(pseudo); return; }
+        fqFindClose();
+        openMemberMenu({ cat: known.cat.index, idx: known.idx, m: known.m, catName: catLabel(known.cat) }, 0, 0);
+        askEquipped(known.m);
+      },
+    }, figure,
+      h('span', { class: 'fq-profile-txt' },
+        h('span', { class: 'fq-profile-lbl' }, filed ? 'Open profile' : 'No profile yet'),
+        h('span', { class: 'fq-profile-sub' }, filed ? 'Body · bio · gear · CHIM' : 'File ' + first + ' first')),
+      h('span', { class: 'fq-profile-go', 'aria-hidden': 'true' }, '›'));
+  }
+
+  /* ⟶ THE BESTIARY DOOR — the creature's half of the head (2026-10-10,
+     fq-bestiary-door). A wolf, a troll or a draugr under the crosshair has no
+     Follower Organizer row and never will, so the person door above could
+     only say "No profile yet / File X first" — a filing menu for a frost
+     troll. For a creature (FolTargetJson "creature": no ActorTypeNPC keyword)
+     the same slot opens the BOOK instead.
+
+     Two faces. Already in the book: its render (or the book's emblem) in a
+     gold medallion, "In the Bestiary", its name and how many you have slain,
+     and the page's five-skull threat. Not yet: the quill, and what pressing it
+     does. Either way the click is HDBestiary.study — measured fresh, the book
+     opens on its page (and with a Scribe key the page is written while you
+     watch).
+
+     `info` is the C++ summary on the target (FolTargetJson "bestiary": {id,
+     name, slain, studied, tier, img?}, present only when the kind has a page)
+     or, from an older DLL, what the book itself last saw (HDBestiary.peek).
+     hd-bestiary.js is in hd-boot's deferred set, so the door is drawn even
+     before it lands; the click waits for it (bxWhenReady). */
+  function bxInfoFor(t, who) {
+    let b = t && t.bestiary;
+    if (!(b && typeof b === 'object' && b.id)) b = null;
+    let p = null;
+    const B = window.HDBestiary;
+    if (B && typeof B.peek === 'function') {
+      try { p = B.peek((b && b.id) || who); } catch (e) { /* a book bug must not cost the card */ }
+      if (!(p && typeof p === 'object' && p.id)) p = null;
+    }
+    /* Two readings of one page: C++'s from when the deck opened, the book's
+       from its last state. The counts only ever grow, so the bigger one is
+       the newer (a Study made with the book open is in the book's, not in the
+       target's); a tie keeps the engine's. */
+    if (b && p) {
+      const n = (x) => (Number(x.slain) || 0) + (Number(x.studied) || 0);
+      return n(p) > n(b) ? Object.assign({}, b, p) : b;
+    }
+    return b || p;
+  }
+
+  /* The book comes back with more in it (a Study, a kill counted): redraw the
+     card so its door says so. After the book-hold's own replay (app.js, 200
+     ms), and only when the card is about a creature and on screen. */
+  try {
+    window.addEventListener('hd-bestiary-close', () => {
+      setTimeout(() => {
+        try {
+          if (state.target && state.target.creature && quickHost && quickHost.isConnected) renderQuickCard();
+        } catch (e) { /* the next show redraws it */ }
+      }, 240);
+    });
+  } catch (e) { /* no window events: the card refreshes on its next draw */ }
+
+  /* A creature on the F7 card means the book is likely the next click, so its
+     sheet (and the fonts it pulls) is warmed now rather than paid on the click
+     — but never on the open's own frames and never from the closed deck: a
+     staged sheet is ~30 ms of UI thread (hd-css.js need()), which is game-frame
+     time during play. 900 ms after the target lands, the deck still open, and
+     only if nobody has loaded it yet. */
+  let bxWarmT = 0;
+  function bxWarmSheet() {
+    const C = window.HDCss;
+    if (!C || typeof C.need !== 'function' || bxWarmT) return;
+    if (typeof C.ready === 'function' && C.ready('bestiary')) return;
+    bxWarmT = setTimeout(() => {
+      bxWarmT = 0;
+      try {
+        const open = document.body && document.body.classList && document.body.classList.contains('open');
+        if (open && !(typeof C.ready === 'function' && C.ready('bestiary'))) C.need('bestiary');
+      } catch (e) { /* warming is a nicety; the click still loads it */ }
+    }, 900);
+  }
+
+  /* Run fn(HDBestiary) now, or as soon as the deferred module lands. One
+     waiter at a time: a second click while it loads replaces the first ask
+     rather than queueing a second Study. */
+  let bxWait = { iv: 0, fn: null };
+  function bxWhenReady(fn) {
+    const ready = () => { const B = window.HDBestiary; return (B && typeof B.study === 'function') ? B : null; };
+    const now = ready();
+    if (now) { if (bxWait.iv) { clearInterval(bxWait.iv); bxWait.iv = 0; } fn(now); return; }
+    bxWait.fn = fn;
+    if (bxWait.iv) return;
+    /* the sheet too, so the book is styled the moment its script lands */
+    try { if (window.HDCss && typeof HDCss.need === 'function') HDCss.need('bestiary'); } catch (e) { /* styles are the gate's job */ }
+    if (typeof toast === 'function') toast('Opening the Bestiary…');
+    let n = 0;
+    bxWait.iv = setInterval(() => {
+      const B = ready();
+      if (!B && ++n < 60) return;   // ~6 s: hd-boot lands the whole deferred set well inside that
+      clearInterval(bxWait.iv); bxWait.iv = 0;
+      const f = bxWait.fn; bxWait.fn = null;
+      if (B && f) { try { f(B); } catch (e) { /* the book reports its own failures */ } }
+      else if (typeof toast === 'function') toast('The Bestiary has not loaded — try again in a moment');
+    }, 100);
+  }
+
+  /* The five-skull threat of the book's own pages: an engraved empty track,
+     the first `tier` lit. rt-danger-off is the unlit asset; until it ships the
+     lit skull stands in, dimmed, so a missing file is never a broken box. */
+  function bxSkulls(tier) {
+    const n = Math.max(0, Math.min(5, Math.round(Number(tier) || 0)));
+    const row = h('span', { class: 'fq-bx-skulls', title: n ? 'Threat ' + n + ' of 5, at your level when the book last measured it' : 'Threat not measured yet' });
+    for (let i = 1; i <= 5; i++) {
+      const lit = i <= n;
+      const im = h('img', {
+        class: lit ? 'is-lit' : 'is-off', alt: '', draggable: 'false',
+        src: 'icons/custom/' + (lit ? 'rt-danger' : 'rt-danger-off') + '.png',
+      });
+      if (!lit) im.addEventListener('error', () => {
+        if (im.dataset.fb) return;
+        im.dataset.fb = '1'; im.classList.add('is-fb'); im.setAttribute('src', 'icons/custom/rt-danger.png');
+      });
+      row.append(im);
+    }
+    return row;
+  }
+
+  function fqBestiaryDoor(who, fid, info) {
+    if (ctxEl && ctxEl._dossier && quickHost === ctxEl._dossier.controlsHost) return null;
+    const inBook = !!(info && info.id);
+    const slain = inBook ? Math.max(0, Number(info.slain) || 0) : 0;
+    const name = (inBook && info.name) ? String(info.name) : who;
+    const glyph = h('img', { class: 'fq-bx-glyph', alt: '', draggable: 'false',
+      src: 'icons/custom/' + (inBook ? 'bx-all' : 'bx-quill') + '.png' });
+    const art = (inBook && info.img)
+      ? h('img', { class: 'fq-bx-art', alt: '', draggable: 'false', src: String(info.img) }) : null;
+    const medal = h('span', { class: 'fq-bx-medal' + (art ? ' has-art' : ''), 'aria-hidden': 'true' }, art, glyph);
+    /* a render the book named but the disk lost: the emblem, never a broken box */
+    if (art) art.addEventListener('error', () => { art.remove(); medal.classList.remove('has-art'); });
+    const study = (e) => {
+      e.stopPropagation();
+      bxWhenReady((B) => B.study({ formId: Number(fid) >>> 0, name: who }));
+    };
+    return h('button', {
+      class: 'fq-bx' + (inBook ? '' : ' is-new'), type: 'button',
+      'aria-label': inBook ? 'Open ' + name + ' in the Bestiary' : 'Study ' + who + ' for the Bestiary',
+      title: inBook
+        ? name + ' has a page in the Bestiary. Click to measure it again and open its page: '
+          + 'threat, what works on it, where you met it, its lore.'
+        : 'Study ' + who + ': it is measured into the Bestiary, the book opens on its new '
+          + 'page, and with a Scribe key the page is written while you watch.',
+      onClick: study,
+    }, medal,
+      h('span', { class: 'fq-bx-txt' },
+        h('span', { class: 'fq-bx-lbl' }, inBook ? 'In the Bestiary' : 'Study it for the Bestiary'),
+        /* the name gives way to a long title, the count never does */
+        inBook
+          ? h('span', { class: 'fq-bx-name', title: name + ' · ' + slain + ' slain' },
+              h('span', { class: 'fq-bx-nm' }, name),
+              h('span', { class: 'fq-bx-ct' }, '\u00A0\u00B7\u00A0' + slain + ' slain'))
+          : h('span', { class: 'fq-bx-name' }, 'Opens the book and writes the page')),
+      inBook ? bxSkulls(info.tier) : null,
+      h('span', { class: 'fq-bx-chev', 'aria-hidden': 'true' }, '›'));
+  }
+
   function fqFindBar(who) {
     const first = fqTidy(String(who || '').split(' ')[0]) || 'her';
     const wrap = h('div', {
@@ -10608,6 +11034,9 @@
       ? { name: subj.name, formId: subj.formId,
           following: liveSame ? !!state.target.following : !!subj.following,
           dead: liveSame ? !!state.target.dead : !!subj.dead,
+          /* the engine's beast-or-person answer, when it is about her too */
+          creature: liveSame ? !!state.target.creature : false,
+          bestiary: liveSame ? (state.target.bestiary || null) : null,
           picked: true }
       : state.target;
     const card = h('div', { class: 'fq' + (subj ? ' picked' : '') });
@@ -10661,6 +11090,11 @@
     const who = t.name;
     const following = !!t.following;
     const dead = !!t.dead;
+    /* Beast or person (FolTargetJson "creature"; absent from an older DLL and
+       from a roster pick, which reads as a person — the old card exactly).
+       bxInfo: the Bestiary page this kind already has, or null. */
+    const creature = !!t.creature;
+    const bxInfo = bxInfoFor(t, who);
 
     /* Portrait if the deck has one, initials if not — the same medallion the
        roster draws, so a face means the same thing on both surfaces.
@@ -10684,6 +11118,16 @@
     if (medal.dataset && medal.dataset.act === 'portrait') {
       medal.addEventListener('click', function (e) {
         e.stopPropagation();
+        openLightbox(medal.dataset);
+      });
+      /* RIGHT-CLICK opens the same popout — that is where ⟳ Regenerate face
+         and ◉ Retake photo live (Rober, 2026-10-13: "no right click or popout
+         modal option to tell it to regenerate face"). Read from mousedown:
+         Ultralight does not reliably fire contextmenu in game (the roster's law). */
+      medal.title = who + ' — click to enlarge · right-click for Regenerate face / Retake photo';
+      medal.addEventListener('mousedown', function (e) {
+        if (e.button !== 2) return;
+        e.preventDefault(); e.stopPropagation();
         openLightbox(medal.dataset);
       });
     } else if (!dead) {
@@ -10834,7 +11278,13 @@
       sub.append(h('span', { class: 'fq-note', title: known.m.desc }, known.m.desc));
 
     card.append(h('div', { class: 'fq-head' },
-      medal,
+      /* The identity block wears the same frame as the ⌕ bar and the Open
+         profile door beside it (Rober, 2026-10-10: "can we make this area feel
+         nice and framed too?" then "dont remove it just remove from framing
+         but keep it there"). .fq-ident is the flex SLOT; the round portrait
+         stays OUTSIDE the frame, and .fq-ident-frame frames only the words.
+         fq-ident-frame */
+      h('div', { class: 'fq-ident' }, medal, h('div', { class: 'fq-ident-frame' },
       h('div', { class: 'fq-who' },
         h('div', { class: 'fq-line' },
           h('span', { class: 'fq-eyebrow' }, 'Looking at'),
@@ -10850,12 +11300,19 @@
                 (g.cls ? ' — plays ' + g.cls + ' there' : ' — no class set in that group'),
             }, g.group + (g.cls ? ' · ' + g.cls : ''));
           })),
-        ui.fqFold ? null : sub),
+        ui.fqFold ? null : sub))),
       /* ⌕ FIND AN ACTION — the empty space beside the name, spent (Rober,
          2026-08-19). Not drawn while the card is FOLDED: folding builds no
          action rows at all, so a search box there would be a control with
          nothing to find. See the fq-find block above for how it indexes. */
       ui.fqFold ? null : fqFindBar(who),
+      /* A creature gets the Bestiary door in this slot (fq-bestiary-door). A
+         FILED creature (a dog, an atronach companion) keeps the person door:
+         it has a real profile page, and the toolbar's Bestiary button still
+         reaches the book. */
+      (creature && !known)
+        ? fqBestiaryDoor(who, (t && Number(t.formId)) || 0, bxInfo)
+        : fqProfileDoor(who, known, pseudo, dead),
       /* Identity actions live in the HEAD, beside who they are, rather than as
          more rows: they are all "about this person" rather than things you do
          to them, and the card has enough rows. */
@@ -11340,6 +11797,26 @@
           renderQuickCard();
         },
         { active: HDQuests.isOpen(), pressed: HDQuests.isOpen() }) : null,
+      /* BESTIARY (Rober, 2026-10-10: "f7 on an npc … add a button for monsters
+         … opens bestiary and does like a add to list … and then does a cool
+         writing animation and sound"). Measures the CARD's subject into the
+         book (alive or a corpse, person or beast), opens it on that page and,
+         with a Scribe key saved, has the page written while you watch.
+         Absent for a PERSON when hd-bestiary.js did not load; always there
+         for a creature (the click waits for the deferred module). Its face
+         says what it will do: "Study" for a kind the book has no page for,
+         "Bestiary" once it has one (fq-bestiary-door). */
+      ((window.HDBestiary && HDBestiary.study) || creature) ? quickBtn(
+        h('img', { src: 'icons/custom/' + (bxInfo ? 'bx-all' : 'bx-quill') + '.png', alt: '', width: '22', height: '22', style: 'width:22px;height:22px;display:block' }),
+        bxInfo ? 'Bestiary' : 'Study',
+        bxInfo
+          ? (bxInfo.name || who) + ' is in the Bestiary — measure it again and open its page'
+          : 'Study ' + who + ' for the Bestiary: measure it, open its new page, and let the Scribe write it up',
+        () => {
+          const fid = subj ? (Number(subj.formId) || 0)
+                           : (t ? (Number(t.formId) || 0) : 0);
+          bxWhenReady((B) => B.study({ formId: fid >>> 0, name: who }));
+        }, { aria: bxInfo ? 'Open in the Bestiary' : 'Study for the Bestiary' }) : null,
       /* 🐴 ADD AS MOUNT (Rober, 2026-08-14: "if i hit f7 on an npc (add as
          mount) should be a quick button as well in the f7 npc menu"). Fires the
          Mounts module's OWN add-crosshair verb (MountsPane.addLookingAt →
@@ -12393,8 +12870,11 @@
     const subj = quickSubject();
     syncQuickStatus(subj);
     syncQuickEquipped(subj);
+    const oldMedal = quickHost.querySelector('.fq-medal');
     quickHost.textContent = '';
     quickHost.append(buildQuickCard());
+    keepSameMedal(oldMedal, quickHost.querySelector('.fq-medal'),
+      fidHexOf((subj && subj.formId) || (state.target && state.target.formId)) + '|' + (ui.fqPick || ''));
     renderEveryoneBar();   // the framed party bar ABOVE the card (Followers tab)
     /* The rank slider is the one control here whose element is DESTROYED by its
        own commit — you let go, the card redraws, and the thing under your
@@ -12652,6 +13132,13 @@
   function buildMemberDossier(row, groups, saved) {
     const m = row.m;
     const returnTo = saved ? saved.returnTo : document.activeElement;
+    /* Where the F7 card lived before this page borrowed it for "All character
+       controls" (#fd-quick, or app.js's #fq-card). Closing the page hands it
+       back, or the card left behind is a dead copy that no push repaints —
+       which became reachable once the card itself grew a door to this page
+       (fq-profile-door). Carried through rebuilds in the snapshot. */
+    const cardHostBefore = saved ? saved.cardHostBefore || null
+      : (quickHost && quickHost.id !== 'fd-dossier-controls' ? quickHost : null);
     let page = saved ? saved.page : 'overview';
     let query = saved ? saved.query : '';
     const root = h('div', { id: 'fd-ctx-menu', class: 'fd-dossier' + (window.HDPerson ? ' pn-skin' : ''), role: 'dialog',
@@ -13233,7 +13720,7 @@
       },
       snapshot: function () {
         const active = document.activeElement;
-        return { page: page, query: query, scroll: scroll.scrollTop, returnTo: returnTo, editing: editing, portraitFrame: frameEdit ? Object.assign({file:shot.file},frameEdit.snapshot()) : null,
+        return { page: page, query: query, scroll: scroll.scrollTop, returnTo: returnTo, cardHostBefore: cardHostBefore, editing: editing, portraitFrame: frameEdit ? Object.assign({file:shot.file},frameEdit.snapshot()) : null,
           focus: root.contains(active) ? active.id : '',
           draft: root.contains(active) && active.tagName === 'INPUT' && active !== search && typeof active.selectionStart === 'number'
             ? { value: active.value, start: active.selectionStart, end: active.selectionEnd } : null };
@@ -13254,7 +13741,15 @@
         if (window.ChimBtn && ChimBtn.unmount) ChimBtn.unmount(chimHost);
         if (person) person.unmount(root);
         if (window.HDBio) HDBio.unmount(root);
-        if (quickHost === controlsHost) { fqFindClose(); quickHost = null; }
+        if (quickHost === controlsHost) {
+          fqFindClose(); quickHost = null;
+          /* Next tick, so a live rebuild (close, then open at once) does not
+             repaint the card twice: by then ctxEl is the new page again. */
+          if (cardHostBefore) setTimeout(function () {
+            if (ctxEl || quickHost || !cardHostBefore.isConnected) return;
+            if (cardHostBefore.id === 'fd-quick') syncQuickHere(); else mountQuick(cardHostBefore);
+          }, 0);
+        }
         if (panelObserver) panelObserver.disconnect(); if (styleObserver) styleObserver.disconnect();
         if (window.removeEventListener) window.removeEventListener('resize', fitPanel);
         const panel = $('panel'); if (panel) panel.removeEventListener('transitionend', fitPanel);
@@ -14235,7 +14730,9 @@
     if (w.menu || (w.portraits && ctxEl && ctxEl._dossier)) refreshOpenMenu();
     dropRowCache();
     if (isActive()) {
-      if (w.full) render();
+      const fresh = w.full || !!fsShowTimer;   // a skipped show-render is owed in full
+      const t0 = fsNow();
+      if (fresh) { fsTimes = {}; render(); fsReport('fresh-data render', fsNow() - t0); }
       else if (w.list || w.portraits) renderList();
     }
     if (w.quick || w.portraits) renderQuickCard();
@@ -14272,7 +14769,7 @@
   }
 
   function faceConsumerActive() {
-    return isActive() || ['household', 'domains', 'wardrobe'].indexOf(window.__hdActiveTab) !== -1 || !!(window.DomainsPane && DomainsPane.isShown()) || !!(window.HDNpcTune && HDNpcTune.isOpen()) || !!(window.GetAway && GetAway.isOpen()) || !!(window.OstimTools && OstimTools.isOpen()) || !!(ctxEl && ctxEl._dossier);
+    return isActive() || ['household', 'domains', 'wardrobe'].indexOf(window.__hdActiveTab) !== -1 || !!(window.DomainsPane && DomainsPane.isShown()) || !!(window.HDNpcTune && HDNpcTune.isOpen()) || !!(window.GetAway && GetAway.isOpen()) || !!(window.OstimTools && OstimTools.isOpen()) || !!(window.HDProcession && HDProcession.isOpen() && typeof HDProcession.portraitIds === 'function' && HDProcession.portraitIds().length) || !!(ctxEl && ctxEl._dossier);
   }
 
   /* Anything -> { key: "non-empty string" }. Non-object input, array input,
@@ -15228,7 +15725,9 @@
     const m = {
       name: r.name || '',
       original: hit ? (hit.m.original || hit.m.name) : (r.base || r.name || ''),
+      base: r.base || '',
       formId: r.formId,
+      file: r.file, ext: r.ext, mtime: r.mtime, abs: !!r.abs,
       following: !r.waiting && !r.dead,
       dead: !!r.dead,
     };
@@ -16070,8 +16569,11 @@
          head but no captured photo drew initials in this list while the same
          head showed fine on the roster (found by whos-here.checks.js,
          2026-09-20). ptRosterFor above still wants the number. */
-      const m = { name: r.name || '', original: r.original || r.base || r.name || '',
+      const m = { name: r.name || '', original: r.original || r.base || r.name || '', base: r.base || '',
                   formId: String(r.formId || '').toLowerCase(),
+                  /* the photo C++ already found under three names (main.cpp
+                     row["portrait"]): it must beat the generated head. */
+                  photo: r.portrait && r.portrait.file ? { file: r.portrait.file } : null,
                   following: !!(r.teammate || r.faction) && !r.dead, dead: !!r.dead };
       const card = h('div', {
         class: 'nh-card' + (i === ui.nhSel ? ' sel' : '') + (r.dead || r.disabled ? ' dim' : ''),
@@ -16387,8 +16889,8 @@
       const hit = r.missing ? null : ptRosterFor({ formId: Number(r.formId) >>> 0, name: r.name, base: r.base });
       /* formId stays the HEX STRING C++ sent — medalEl looks the face up by it
          (the Who's here lesson, 2026-09-20). */
-      const m = { name: r.name || '', original: r.base || r.name || '',
-                  formId: String(r.formId || '').toLowerCase(),
+      const m = { name: r.name || '', original: hit ? (hit.m.original || hit.m.name) : (r.base || r.name || ''),
+                  base: r.base || '', formId: String(r.formId || '').toLowerCase(),
                   following: r.decision === 'recall', dead: !!r.dead };
       const card = h('div', {
         class: 'rr-card' + (i === ui.rrSel ? ' sel' : '') + (r.dead || r.disabled || r.missing ? ' dim' : ''),
@@ -16533,6 +17035,8 @@
     },
 
     onShow() {
+      // The resets below change what the DOM should show: draw at once if they bite.
+      if (ui.sel >= 0 || ui.rosterOpen) fsNeedShowRender = true;
       ui.sel = -1;
       /* Fresh entry to the Followers tab starts DEDICATED to the crosshair NPC
          (roster hidden) — you open a category yourself to browse. */
@@ -16558,7 +17062,16 @@
       syncRecallChrome();
       if (ui.ptOpen) ptAsk(false);
       if (ui.rrOpen) rrAsk();   // a recall list is a live reading; re-ask on every show
-      render();
+      const fsT0 = fsNow();
+      if (fsEverRendered && state.loaded && !fsNeedShowRender) {
+        if (fsShowTimer) clearTimeout(fsShowTimer);
+        fsShowTimer = setTimeout(function () { fsShowTimer = 0; if (isActive()) render(); }, 450);
+      } else {
+        fsTimes = {};
+        render();
+        fsReport('show render', fsNow() - fsT0);
+      }
+      fsNeedShowRender = false;
       setTimeout(() => {
         if (ctxEl && ctxEl._dossier) return; // Don't steal focus behind a search-opened character page.
         const s = $(ui.ptOpen ? 'pt-search' : 'fd-search');
@@ -16575,6 +17088,12 @@
     },
 
     onHide() {
+      /* Anything transient this hide resets (search, focus mode, edit mode, a
+         selection, an opened category) leaves the DOM showing the old state, so
+         the next show must draw at once instead of waiting for fresh data. */
+      fsNeedShowRender = !!(String(ui.filter || '').trim() || ui.npcFocus || ui.editing ||
+        String(ui.ptFilter || '').trim() || ui.sel >= 0 || ui.ptSel >= 0 || ui.rosterOpen);
+      if (fsShowTimer) { clearTimeout(fsShowTimer); fsShowTimer = 0; }
       closePortraitCapture();
       closeLightbox();   // an overlay that survives its tab is an unclickable deck
       closeHudModal();   // the HUD settings modal must not outlive its tab
@@ -16927,27 +17446,51 @@
        or null. */
     portraitInfoFor(who) {
       if (!who) return null;
-      const want = canonFormId(fidHexOf(who.formId));
-      const name = String(who.original || who.name || "").toLowerCase();
-      if (want || name) {
-        for (let ci = 0; ci < state.cats.length; ci++) {
-          const ms = state.cats[ci].members || [];
-          for (let mi = 0; mi < ms.length; mi++) {
-            if (want ? canonFormId(fidHexOf(ms[mi].formId)) !== want
-              : [ms[mi].original, ms[mi].name].every(function (n) { return String(n || '').toLowerCase() !== name; })) continue;
-            const hit = portraitFor(ms[mi]);
-            if (hit) return hit;
-          }
-        }
+      const rows = rosterRowsFor(who);
+      /* 1. The player's own photo — before ANY generated head is considered. */
+      const own = userPortraitAmong(who, rows);
+      if (own) return own;
+      /* 2. Only then a generated head. */
+      for (let i = 0; i < rows.length; i++) {
+        const hit = portraitFor(rows[i]);
+        if (hit) return hit;
       }
       /* formId rides along so someone the roster has never held (a MHiYH
          resident the Residents mode paints) still resolves her facegen head
          through portraitFor's own last-resort path. */
       return portraitFor({ original: who.original, name: who.name, formId: who.formId });
     },
+    /* ONLY the player's own photo for someone (captured, uploaded, dropped in),
+       never a generated head; null when there is none. For panes that draw
+       their own renders (the NPC browser) and must let a photo win first. */
+    userPortraitFor(who) {
+      if (!who) return null;
+      return userPortraitAmong(who, rosterRowsFor(who));
+    },
     /* Shared face consumers can enqueue newly visible actors without opening
        Followers. Their ids also ride the completion poll below. */
     requestPortraitFaces() { faceIconsPolls = 0; requestFaceIcons(false); },
+    /* Auto portraits (auto-photo.js): everyone the deck draws a face for, as
+       {id, slug, name} — the live party first (its ids are live refs), then the
+       roster. C++ decides who is actually photographed (loaded, near, no photo
+       of the player's own); this only names them. */
+    autoPhotoPeople() {
+      const out = [], seen = {};
+      function add(m) {
+        if (!m || m.dead) return;
+        const slug = slugOf(m.original || m.name), id = fidHexOf(m.liveFormId) || fidHexOf(m.formId);
+        if (!slug || !id || seen[slug]) return;
+        seen[slug] = 1;
+        out.push({ id: id, slug: slug, name: String(m.name || m.original || '') });
+      }
+      ((state.party && state.party.members) || []).forEach(add);
+      /* The live party too: a follower no FO category lists (Sol, 2026-10-12)
+         is drawn on the crew strip and the HUD, so she is owed a photo as much
+         as anyone filed. Away rows are skipped by C++ (not loaded). */
+      (state.liveParty || []).forEach(function (r) { if (r && !r.away) add(r); });
+      (state.cats || []).forEach(function (c) { (c.members || []).forEach(add); });
+      return out;
+    },
     /* test hooks */
     _renderHudCard: renderHudCard, _hudCfg: hudCfg, _hudSettingsRow: hudSettingsRow,
     _setHudState: function (s) { hudState = s; renderHudCard(); },
@@ -17007,6 +17550,7 @@
     _applyUiScale: applyUiScale, _syncEditRowWrap: syncEditRowWrap,
     _clampText: clampText, _FIELD_VALUE_MAX: FIELD_VALUE_MAX,
     _slugOf: slugOf, _portraitFor: portraitFor, _medalEl: medalEl, _openLightbox: openLightbox,
+    _keepSameMedal: keepSameMedal, _regenerateFace: regenerateFace, _faceRegen: faceRegen,
     _badgeEls: badgeEls, _groupsFor: groupsFor,
     _closeLightbox: closeLightbox,
     _closeHudModal: closeHudModal,
@@ -17052,7 +17596,7 @@
     },
     quickHostIs(host) { return quickHost === host; },
     _whoOf: whoOf, _sendNpc: sendNpc, _askEquipped: askEquipped,
-    _buildQuickCard: buildQuickCard, _renderQuickCard: renderQuickCard,
+    _buildQuickCard: buildQuickCard, _renderQuickCard: renderQuickCard, _closeCtx: closeCtx,
     _NFF_SETS: NFF_SETS, _fillNffOutfit: fillNffOutfit,
     _rosterEntryFor: rosterEntryFor, _capturePortrait: capturePortrait,
     /* Fertility Mode for ANYONE (fmAllResult) — the NPC Finder's rows and the
@@ -17165,6 +17709,62 @@
     if (Date.now() - at > 150000) { delete facePending[k]; return false; }  // 24 polls × 5 s + slack
     return true;
   }
+  /* "Regenerate face" in flight (faceRegen: fid hex -> {name, old, at, t}). Its own
+     clock on purpose: the shared 5 s poll only re-asks for heads it does NOT
+     have, and a second ask for a head already baking answers queued:0, which
+     would stop that poll before the new picture lands. Delivered when
+     fdFaceIconsData names a path different from `old` (the DLL gives the new
+     render a new filename and answers nothing until it exists). */
+  function faceRegenFor(m) {
+    const k = fidHexOf(m && m.formId);
+    return !!(k && faceRegen[k]);
+  }
+  function regenerateFace(formId, name) {
+    const k = fidHexOf(formId);
+    const who = name || 'this NPC';
+    if (!k) { toast('No NPC to render a face for'); return false; }
+    if (faceRegen[k]) { toast('Already rendering a new face for ' + who + '…'); return false; }
+    faceRegen[k] = { name: who, old: state.faceIcons[k] || '', at: Date.now(), t: 0 };
+    toGame('fdFaceRerender', JSON.stringify({ id: k }));
+    toast('⟳ Rendering a new face for ' + who + '…');
+    portraitsChanged();   // the rim goes on now, not when the DLL answers
+    return true;
+  }
+  function faceRegenDone(k, msg) {
+    const r = faceRegen[k];
+    if (!r) return;
+    clearTimeout(r.t);
+    delete faceRegen[k];
+    if (msg) toast(msg);
+    portraitsChanged();
+  }
+  function faceRegenPoll(k) {
+    const r = faceRegen[k];
+    if (!r) return;
+    clearTimeout(r.t);
+    if (Date.now() - r.at > FACE_REGEN_TTL_MS) {
+      faceRegenDone(k, 'The new face for ' + r.name + ' has not arrived — try Regenerate again');
+      return;
+    }
+    r.t = setTimeout(function () {
+      if (faceRegen[k] !== r) return;
+      toGame('fdFaceIcons', JSON.stringify({ ids: [k] }));
+      faceRegenPoll(k);
+    }, FACE_REGEN_POLL_MS);
+  }
+  window.fdFaceRerenderData = function (env) {
+    const v = coerce(env);
+    if (!v || typeof v !== 'object') return;
+    const k = fidHexOf(v.id);
+    const r = k && faceRegen[k];
+    if (!r) return;
+    if (!v.ok) {
+      faceRegenDone(k, 'Could not render a new face for ' + r.name + (v.why ? ' — ' + v.why : ''));
+      return;
+    }
+    faceRegenPoll(k);
+  };
+
   function requestFaceIcons(reset) {
     if (reset) faceIconsPolls = 0;
     const now = Date.now();
@@ -17212,7 +17812,8 @@
       if (k && !state.faceIcons[k]) ids[k] = 1;
     });
     if (window.OstimTools && OstimTools.isOpen()) OstimTools.portraitIds().forEach(function(k){if(k&&!state.faceIcons[k])ids[k]=1;});
-    [window.DomainsPane, window.HDNpcTune].forEach(function (pane) {
+    /* …and the Procession modal's wagon seats + seat picker (empty unless that tab is up). */
+    [window.DomainsPane, window.HDNpcTune, window.HDProcession].forEach(function (pane) {
       if (!pane || !pane.portraitIds) return;
       pane.portraitIds().forEach(function (id) {
         const k = fidHexOf(id);
@@ -17281,6 +17882,13 @@
       const path = String(icons[k] || '');
       const key = fidHexOf(k);
       if (path && state.faceIcons[key] !== path) { state.faceIcons[key] = path; changed = true; }
+      if (path && faceRegen[key] && faceRegen[key].old !== path) {
+        const rr = faceRegen[key];
+        clearTimeout(rr.t);
+        delete faceRegen[key];
+        toast('⟳ New face for ' + rr.name + ' is in');
+        changed = true;
+      }
       if (path && state.faceWhy[key]) { delete state.faceWhy[key]; changed = true; }
       if (facePending[key]) { delete facePending[key]; changed = true; }
     });
@@ -17320,6 +17928,7 @@
     dropRowCache();   // a push the row signature cannot see for itself
     const v = coerce(env);
     state.liveParty = Array.isArray(v) ? v : (v && Array.isArray(v.list) ? v.list : []);
+    state.livePartyAt = Date.now();   // partyList's AWAY check waits for a real scan
     if (!burstDefer('full') && isActive()) render();
     requestFaceIcons(true);
   };
@@ -17373,8 +17982,17 @@
          simply not being offered. */
       forcedFollow: !!t.forcedFollow,
       dead: !!t.dead,
+      /* A creature, not a person: no ActorTypeNPC keyword. Absent (an older
+         DLL) reads as a person, which is the old card exactly. It swaps the
+         head's profile door for the Bestiary door (fq-bestiary-door). */
+      creature: !!t.creature,
+      /* The Bestiary page this kind already has, {id, name, slain, studied,
+         tier, img?} — present only when there is one. Anything without an id
+         is treated as absent rather than drawn half-filled. */
+      bestiary: (t.bestiary && typeof t.bestiary === 'object' && t.bestiary.id) ? t.bestiary : null,
     } : null;
     state.targetKnown = true;
+    if (state.target && state.target.creature) bxWarmSheet();
     if (targetWait) { clearTimeout(targetWait); targetWait = 0; }
     /* A verdict about the last person is noise once you look at someone else. */
     const nowId = state.target ? state.target.formId : -1;

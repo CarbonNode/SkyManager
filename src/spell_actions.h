@@ -38,6 +38,12 @@ namespace SpellActions
 	// "" for powers/shouts — the view uses it to pick the right generic icon.
 	std::string KnownSpellsJson();
 
+	// Workbench actions only accept forms the player still knows. A supplied
+	// plugin identity never falls back to a recycled runtime FormID.
+	bool IsKnown(const std::string& plugin, std::uint32_t localId, std::uint32_t formId);
+	// Metadata-only Portal mirror; serialization and atomic file I/O run on a worker.
+	void ExportSpellbook(std::string knownJson);
+
 	// Ground-truth equip state, read fresh from the engine. Used on menu-open
 	// to reconcile the badges the view drew optimistically:
 	//   {"left":"0xID"|"", "right":"0xID"|"", "voice":["0xID", ...]}
