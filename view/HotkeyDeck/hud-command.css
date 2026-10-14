@@ -1,0 +1,325 @@
+/* ==========================================================================
+   Command Ring — Warband's eight-slot order ring, SkyManager's backends
+   (hud-command.js). Rober, 2026-10-12, with Warband's HOMES ring on screen:
+   "build something similar to this, but hooks to our skymanager supported
+   mods NFF and My home is your home ... Fight With Me".
+
+   Direction: Skyrim's own menu language as Warband draws it — monochrome
+   white on a flat dim, condensed capitals with wide tracking, hollow diamond
+   markers that fill when chosen; the deck's gold line-art glyph is the one
+   warm accent, in the hub.
+
+   Lives in the HUD view as #hud-cmd, a sibling of #hud-stance. Its ONE
+   visibility input is body.cr-open (set by hud-command.js on crShow("1")).
+
+   SIZE: every length is calc(N * var(--cr-k)) px. --cr-k is written by the
+   script from the viewport (Warband's 1600x900 stage) times the player's
+   size setting. Never transform: scale() the ring — Ultralight rasterises at
+   LAYOUT size, so a scaled ring is a magnified blur (the Hotkey Pad law).
+
+   ⚠ Ultralight, compositor off: one-shot transitions only (class flips), no
+   looping animation; explicit rgba(), never color-mix(); no conic gradients;
+   no screen-sized radial gradient (it bands into a hard oval — the Combat
+   Wheel's "weird oval", marker stance-wheel-dim-flat), so the dim is FLAT.
+   Body-anchored and outside #panel's --ui-scale, so bare vh/vw are right.
+   ========================================================================== */
+
+@font-face { font-family: 'CRBarlow'; font-style: normal; font-weight: 300;
+  src: url('fonts/BarlowCondensed-Light.ttf') format('truetype'); }
+@font-face { font-family: 'CRBarlow'; font-style: normal; font-weight: 400;
+  src: url('fonts/BarlowCondensed-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'CRBarlow'; font-style: normal; font-weight: 500;
+  src: url('fonts/BarlowCondensed-Medium.ttf') format('truetype'); }
+@font-face { font-family: 'CRBarlow'; font-style: normal; font-weight: 600;
+  src: url('fonts/BarlowCondensed-SemiBold.ttf') format('truetype'); }
+
+#hud-cmd {
+  /* tokens */
+  --cr-k: 1;
+  --cr-text: rgba(255, 255, 255, 1);
+  --cr-soft: rgba(214, 214, 214, 1);
+  --cr-muted: rgba(160, 160, 160, 1);
+  --cr-dim: rgba(104, 104, 104, 1);
+  --cr-bad: rgba(222, 128, 112, 1);
+  --cr-warn: rgba(236, 196, 120, 1);
+  --cr-gold: rgba(214, 178, 110, 1);
+  --cr-line: rgba(255, 255, 255, .24);
+  --cr-shadow: 0 0 4px rgba(0, 0, 0, .95), 0 0 12px rgba(0, 0, 0, .55);
+
+  position: fixed; left: 0; top: 0; right: 0; bottom: 0;
+  display: none;
+  z-index: 46;
+  font-family: 'CRBarlow', 'Futura', 'Century Gothic', 'Segoe UI', sans-serif;
+  color: var(--cr-text);
+  text-shadow: var(--cr-shadow);
+  user-select: none; -webkit-user-select: none;
+}
+body.cr-open #hud-cmd {
+  display: block;
+  /* FLAT dim (see the header): the world is slowed, not gone */
+  background: rgba(6, 7, 9, .40); /* marker: command-ring-dim-flat */
+  pointer-events: auto;
+  cursor: default;
+}
+
+/* The zero-size anchor at the centre of the screen; everything is placed
+   relative to it, like Warband's #wring. */
+.cr-anchor {
+  position: absolute; left: 50%; top: 50%;
+  width: 0; height: 0;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.cr-anchor.cr-in { opacity: 1; }
+
+/* ---- the hub --------------------------------------------------------------- */
+.cr-hub {
+  position: absolute;
+  left: calc(-150px * var(--cr-k)); top: calc(-150px * var(--cr-k));
+  width: calc(300px * var(--cr-k)); height: calc(300px * var(--cr-k));
+  border-radius: 50%;
+  border: 1px solid var(--cr-line);
+  background: rgba(0, 0, 0, .52);
+  box-shadow: 0 0 0 calc(7px * var(--cr-k)) rgba(0, 0, 0, .34), inset 0 0 calc(60px * var(--cr-k)) rgba(0, 0, 0, .72);
+  transform: scale(.94);
+  transition: transform 200ms cubic-bezier(.2, .8, .2, 1);
+}
+.cr-anchor.cr-in .cr-hub { transform: scale(1); }
+
+.cr-hub-icon {
+  position: absolute;
+  left: calc(-38px * var(--cr-k)); top: calc(-122px * var(--cr-k));
+  width: calc(76px * var(--cr-k)); height: calc(76px * var(--cr-k));
+  opacity: .95;
+}
+.cr-hub-icon.cr-swap { opacity: 0; }
+
+.cr-title {
+  position: absolute;
+  left: calc(-135px * var(--cr-k)); width: calc(270px * var(--cr-k));
+  top: calc(-42px * var(--cr-k));
+  text-align: center;
+  font-weight: 600;
+  font-size: calc(30px * var(--cr-k));
+  line-height: 1;
+  letter-spacing: calc(7px * var(--cr-k));
+  text-transform: uppercase;
+  white-space: nowrap;
+  /* letter-spacing trails the last letter: pull it back so the word centres */
+  text-indent: calc(7px * var(--cr-k));
+}
+
+.cr-rule {
+  position: absolute;
+  left: calc(-112px * var(--cr-k)); width: calc(224px * var(--cr-k));
+  top: calc(-4px * var(--cr-k)); height: 1px;
+  display: flex;
+}
+.cr-rule i { flex: 1; height: 1px; }
+.cr-rule i:first-child { background: linear-gradient(to right, rgba(255, 255, 255, 0), rgba(255, 255, 255, .72)); }
+.cr-rule i:last-child { background: linear-gradient(to left, rgba(255, 255, 255, 0), rgba(255, 255, 255, .72)); }
+.cr-rule b {
+  width: calc(7px * var(--cr-k)); height: calc(7px * var(--cr-k));
+  margin: calc(-3px * var(--cr-k)) calc(6px * var(--cr-k)) 0;
+  transform: rotate(45deg);
+  background: rgba(255, 255, 255, .85);
+}
+
+.cr-full {
+  position: absolute;
+  left: calc(-128px * var(--cr-k)); width: calc(256px * var(--cr-k));
+  top: calc(16px * var(--cr-k));
+  text-align: center;
+  font-weight: 300;
+  font-size: calc(25px * var(--cr-k));
+  line-height: 1.16;
+  color: var(--cr-text);
+  /* three lines at most; a longer line is the table's mistake, not the hub's */
+  max-height: calc(88px * var(--cr-k));
+  overflow: hidden;
+  white-space: pre-line;   /* balance() breaks a long role list in two */
+}
+.cr-full.cr-why { color: var(--cr-bad); }
+.cr-full.cr-armed { color: var(--cr-warn); }
+
+/* the quiet status line at the bottom of the hub: who is with you / the camp */
+.cr-status {
+  position: absolute;
+  /* below the hub line's three lines; at this height the circle is ~180
+     units wide, so stay inside it */
+  left: calc(-95px * var(--cr-k)); width: calc(190px * var(--cr-k));
+  top: calc(112px * var(--cr-k));
+  text-align: center;
+  /* sentence case, light tracking: "4 following · 2 waiting" in spaced
+     capitals is a fifth wider than the circle allows at this height */
+  font-weight: 400;
+  font-size: calc(19px * var(--cr-k));
+  letter-spacing: calc(.4px * var(--cr-k));
+  color: var(--cr-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- the slots ------------------------------------------------------------- */
+.cr-slot {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: calc(12px * var(--cr-k));
+  height: calc(46px * var(--cr-k));
+  margin-top: calc(-23px * var(--cr-k));
+  white-space: nowrap;
+  font-weight: 400;
+  font-size: calc(29px * var(--cr-k));
+  letter-spacing: calc(2.2px * var(--cr-k));
+  text-transform: uppercase;
+  color: var(--cr-muted);
+  opacity: 0;
+  transition: opacity 160ms ease, transform 200ms cubic-bezier(.2, .8, .2, 1), color 90ms linear;
+}
+/* left column: anchored by its RIGHT edge, text grows outward (Warband) */
+.cr-slot.cr-left { flex-direction: row-reverse; transform: translateX(calc(14px * var(--cr-k))); }
+.cr-slot.cr-right { transform: translateX(calc(-14px * var(--cr-k))); }
+.cr-anchor.cr-in .cr-slot { opacity: 1; transform: translateX(0); }
+
+.cr-label { line-height: 1; }
+
+/* the diamond */
+.cr-tick {
+  flex: none;
+  width: calc(10px * var(--cr-k)); height: calc(10px * var(--cr-k));
+  transform: rotate(45deg);
+  border: 1px solid rgba(255, 255, 255, .5);
+  background: rgba(0, 0, 0, .25);
+  transition: background-color 90ms linear, border-color 90ms linear, box-shadow 90ms linear;
+}
+/* the chevron that points at the hub from the chosen slot — glyphs proven
+   in game only (‹ ›, the deck's own law) */
+.cr-chev {
+  flex: none;
+  width: calc(16px * var(--cr-k));
+  font-size: calc(30px * var(--cr-k));
+  line-height: 1;
+  text-align: center;
+  color: var(--cr-soft);
+  visibility: hidden;
+}
+.cr-slot.cr-hi .cr-chev { visibility: visible; }
+
+/* the key that runs it, as a keycap after the label */
+.cr-key {
+  flex: none;
+  padding: calc(3px * var(--cr-k)) calc(8px * var(--cr-k)) calc(2px * var(--cr-k));
+  border: 1px solid rgba(255, 255, 255, .28);
+  border-radius: calc(4px * var(--cr-k));
+  font-weight: 500;
+  font-size: calc(16px * var(--cr-k));
+  letter-spacing: calc(1px * var(--cr-k));
+  color: var(--cr-muted);
+  background: rgba(0, 0, 0, .35);
+  text-shadow: none;
+}
+
+.cr-slot.cr-hi { color: var(--cr-text); }
+.cr-slot.cr-hi .cr-label { text-shadow: 0 0 calc(10px * var(--cr-k)) rgba(255, 255, 255, .5), 0 0 4px rgba(0, 0, 0, 1); }
+.cr-slot.cr-hi .cr-tick {
+  background: rgba(255, 255, 255, 1);
+  border-color: rgba(255, 255, 255, 1);
+  box-shadow: 0 0 calc(9px * var(--cr-k)) rgba(255, 255, 255, .8);
+}
+.cr-slot.cr-hi .cr-key { color: var(--cr-text); border-color: rgba(255, 255, 255, .55); }
+
+/* can't run right now: drawn, dimmed, its reason in the hub — never hidden */
+.cr-slot.cr-off { color: var(--cr-dim); }
+.cr-slot.cr-off .cr-tick { border-style: dashed; border-color: rgba(255, 255, 255, .26); background: transparent; }
+.cr-slot.cr-off.cr-hi { color: rgba(176, 150, 146, 1); }
+.cr-slot.cr-off.cr-hi .cr-tick { background: transparent; border-color: var(--cr-bad); box-shadow: none; }
+
+/* armed for its second pick (Home is here) */
+.cr-slot.cr-armed { color: var(--cr-warn); }
+.cr-slot.cr-armed .cr-tick { background: var(--cr-warn); border-color: var(--cr-warn); box-shadow: 0 0 calc(10px * var(--cr-k)) rgba(236, 196, 120, .8); }
+
+/* a refused pick: one short nudge, then still */
+.cr-slot.cr-nope.cr-left { transform: translateX(calc(-8px * var(--cr-k))); transition-duration: 60ms; }
+.cr-slot.cr-nope.cr-right { transform: translateX(calc(8px * var(--cr-k))); transition-duration: 60ms; }
+
+/* ---- the page strip (top) ------------------------------------------------- */
+.cr-pages {
+  position: absolute;
+  left: calc(-400px * var(--cr-k)); width: calc(800px * var(--cr-k));
+  top: calc(-372px * var(--cr-k));
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: calc(10px * var(--cr-k));
+}
+.cr-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(8px * var(--cr-k));
+  min-width: calc(132px * var(--cr-k));
+  padding: calc(8px * var(--cr-k)) calc(14px * var(--cr-k));
+  font-weight: 500;
+  font-size: calc(22px * var(--cr-k));
+  letter-spacing: calc(4px * var(--cr-k));
+  text-transform: uppercase;
+  color: var(--cr-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 90ms linear;
+}
+.cr-page i {
+  width: calc(7px * var(--cr-k)); height: calc(7px * var(--cr-k));
+  transform: rotate(45deg);
+  border: 1px solid rgba(255, 255, 255, .35);
+}
+.cr-page:hover { color: var(--cr-soft); }
+.cr-page.cr-on { color: var(--cr-text); }
+.cr-page.cr-on i { background: rgba(255, 255, 255, 1); border-color: rgba(255, 255, 255, 1); box-shadow: 0 0 calc(7px * var(--cr-k)) rgba(255, 255, 255, .7); }
+.cr-page-sep {
+  width: 1px; height: calc(22px * var(--cr-k));
+  background: rgba(255, 255, 255, .2);
+  margin-top: calc(-14px * var(--cr-k));
+}
+
+/* ---- key hints (bottom) ------------------------------------------------------ */
+.cr-keys {
+  position: absolute;
+  left: calc(-460px * var(--cr-k)); width: calc(920px * var(--cr-k));
+  top: calc(350px * var(--cr-k));
+  display: flex;
+  justify-content: center;
+  gap: calc(36px * var(--cr-k));
+  font-weight: 400;
+  font-size: calc(19px * var(--cr-k));
+  letter-spacing: calc(1.6px * var(--cr-k));
+  text-transform: uppercase;
+  color: var(--cr-soft);
+}
+.cr-hint { display: flex; align-items: center; gap: calc(10px * var(--cr-k)); white-space: nowrap; cursor: pointer; }
+.cr-cap {
+  min-width: calc(34px * var(--cr-k)); height: calc(32px * var(--cr-k));
+  padding: 0 calc(8px * var(--cr-k));
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(255, 255, 255, .55);
+  border-radius: calc(5px * var(--cr-k));
+  background: rgba(0, 0, 0, .45);
+  font-weight: 500;
+  font-size: calc(16px * var(--cr-k));
+  letter-spacing: 0;
+  color: var(--cr-text);
+  text-shadow: none;
+}
+
+/* an on-screen line from C++ (refusal, nothing to show) */
+.cr-note {
+  position: absolute;
+  left: calc(-400px * var(--cr-k)); width: calc(800px * var(--cr-k));
+  top: calc(300px * var(--cr-k));
+  text-align: center;
+  font-size: calc(21px * var(--cr-k));
+  color: var(--cr-warn);
+  min-height: 1px;
+}

@@ -1,164 +1,146 @@
 /* ====================================================================== *
- *  CHIM flyout — anchored popover opened from the quick card's CHIM button.
- *  Standalone sheet (linked in index.html like hd-shelf.css). Tokens mirror
- *  the deck: dark glass panel, gold accents, generous padding, nothing under
- *  12px (Rober's standing UI rules).
+ *  CHIM POPOUT — opened from the quick card's 💬 CHIM button.
+ *
+ *  Was a dropdown hung under the button (.chim-fly at position:fixed, its
+ *  own --ui-scale, "flip above if no room"). On 2026-10-12 Rober sent a
+ *  screenshot of it jammed against the top of the screen with two rows in
+ *  a bigger font than the rest: "pop outs need to be better … centered,
+ *  horizontal and vertical". It is now the Fixes popout's sibling:
+ *  .chim-back fills the viewport (bare vh/vw are right, so it wears NO
+ *  --ui-scale — the 2026-08-14 popup audit), .chim-pop centres itself, and
+ *  every row is the same tile in an even two-column grid.
+ *
+ *  .chim-fly stays the CARD class (the harness and the dossier's inline copy
+ *  find it by that name); followers-pane.css restyles the inline copy under
+ *  .fd-ds-chim-host. Nothing here is under 15px (Rober's standing UI rules).
  * ====================================================================== */
 
-.chim-fly {
-  position: fixed;
-  z-index: 60;
-  min-width: 268px;
-  max-width: 360px;
-  max-height: calc((100vh - 24px) / var(--ui-scale, 1));
-  overflow-y: auto;
-  padding: 8px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, rgba(24, 26, 32, 0.98), rgba(16, 18, 22, 0.98));
-  border: 1px solid rgba(212, 175, 91, 0.35);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.4);
-  color: #e9e6df;
-  animation: chimFlyIn 130ms ease;
-  transform: scale(var(--ui-scale, 1)); transform-origin: top left;
+/* --cp: the popout's size step. 1 at the deck's usual window; on a big
+   screen (Rober plays at 2560x1440 from a couch) the card, its gaps and its
+   type all step up together, so it uses the room instead of sitting at 38%
+   of the width. A plain multiplier, not a transform: the popup audit keeps
+   --ui-scale's transform off body-level popouts. */
+.chim-back { --cp: 1; }
+@media (min-width: 1900px) and (min-height: 1000px) { .chim-back { --cp: 1.3; } }
+.chim-back {
+  position: fixed; inset: 0; z-index: 9900;
+  display: flex; align-items: center; justify-content: center;
+  padding: calc(24px * var(--cp, 1)); box-sizing: border-box;
+  background: rgba(0, 0, 0, .72);
+  color: #eee8dd;
+  animation: chimBackIn 140ms ease-out;
 }
-/* Bake --ui-scale into the settle state: .chim-fly is an #overlay child, OUTSIDE
-   #panel's transform: scale(--ui-scale), so it must wear the deck scale or it
-   paints 1x at ⛶ Fill. Both keyframes carry the scale so it doesn't snap on the
-   last frame; translateY is layout px, applied before the scale (origin
-   top-left). mountAt() clamps offsetWidth/Height × the scale. */
-@keyframes chimFlyIn {
-  from { opacity: 0; transform: translateY(-4px) scale(var(--ui-scale, 1)); }
-  to   { opacity: 1; transform: translateY(0) scale(var(--ui-scale, 1)); }
+.chim-back.is-repaint, .chim-back.is-repaint .chim-pop { animation: none; }
+@keyframes chimBackIn { from { opacity: 0; } to { opacity: 1; } }
+
+.chim-fly { box-sizing: border-box; color: #eee8dd; }
+.chim-pop {
+  display: flex; flex-direction: column;
+  width: calc(980px * var(--cp, 1)); max-width: 100%; max-height: 92vh;
+  overflow: auto;
+  padding: calc(26px * var(--cp, 1)) calc(30px * var(--cp, 1)) calc(28px * var(--cp, 1));
+  background: linear-gradient(180deg, #1c1c23, #16161b);
+  border: 1px solid #b69b56; border-radius: calc(18px * var(--cp, 1));
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .3);   /* light: the view is a transparent overlay (shadow-slab leash) */
+  font-size: calc(19px * var(--cp, 1));
+  animation: chimPopIn 160ms ease-out;
+}
+@keyframes chimPopIn {
+  from { opacity: 0; transform: translateY(calc(10px * var(--cp, 1))); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
+/* ---- head: icon · name over model · Close ---------------------------- */
 .chim-fly-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  margin-bottom: 6px;
+  display: flex; align-items: center; gap: calc(16px * var(--cp, 1));
+  padding-bottom: calc(16px * var(--cp, 1)); margin-bottom: calc(18px * var(--cp, 1));
+  border-bottom: 1px solid #4d4540;
 }
-.chim-fly-head-ic { font-size: 18px; line-height: 1; }
-/* the model line under the head (2026-09-21): which LLM answers her right now */
+.chim-fly-head-ic { font-size: calc(30px * var(--cp, 1)); line-height: 1; flex-shrink: 0; }
+.chim-fly-head-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: calc(6px * var(--cp, 1)); }
+.chim-fly-head-t {
+  font-size: calc(28px * var(--cp, 1)); font-weight: 700; line-height: 1.2; color: #e6c979;
+  overflow-wrap: anywhere;
+}
+/* the model line (2026-09-21): which LLM answers her right now */
 .chim-fly-model {
-  padding: 4px 14px 8px;
-  font-size: 12.5px;
-  letter-spacing: .02em;
+  font-size: calc(16px * var(--cp, 1)); letter-spacing: .02em; line-height: 1.35;
   color: #cdb075;
   font-family: Consolas, "Cascadia Mono", monospace;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  border-bottom: 1px solid rgba(201,162,75,.16);
-  margin-bottom: 4px;
+  overflow-wrap: anywhere;
 }
-.chim-fly-model.is-wait { color: #7a7468; font-family: inherit; font-style: italic; }
-/* the last outcome banner (2026-09-21): what the press did, kept until dismissed */
+.chim-fly-model.is-wait { color: #8a8375; font-family: inherit; font-style: italic; }
+.chim-pop-close {
+  flex-shrink: 0; min-height: calc(48px * var(--cp, 1)); padding: calc(10px * var(--cp, 1)) calc(22px * var(--cp, 1));
+  font: inherit; font-size: calc(18px * var(--cp, 1)); color: #eee8dd;
+  background: #2a2931; border: 1px solid #615b62; border-radius: calc(9px * var(--cp, 1)); cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.chim-pop-close:hover { background: #36313a; border-color: #8b7443; }
+.chim-pop-close:focus-visible, .chim-fly-item:focus-visible { outline: 2px solid #d5b65c; outline-offset: 2px; }
+
+/* ---- the last outcome banner (2026-09-21): what the press did --------- */
 .chim-fly-result {
-  margin: 4px 10px 6px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid rgba(201,162,75,.35);
-  background: rgba(201,162,75,.08);
+  margin: 0 0 calc(18px * var(--cp, 1));
+  padding: calc(14px * var(--cp, 1)) calc(18px * var(--cp, 1));
+  border-radius: calc(10px * var(--cp, 1));
+  border: 1px solid rgba(201, 162, 75, .45);
+  background: rgba(201, 162, 75, .08);
   color: #f2e0b0;
-  font-size: 13px;
-  line-height: 1.35;
+  font-size: calc(18px * var(--cp, 1)); line-height: 1.45;
   cursor: pointer;
 }
-.chim-fly-result.is-bad { border-color: rgba(224,120,120,.45); background: rgba(224,120,120,.08); color: #e8c0c0; }
+.chim-fly-result.is-bad { border-color: rgba(224, 120, 120, .5); background: rgba(224, 120, 120, .08); color: #e8c0c0; }
 .chim-fly-result-t { display: block; font-weight: 700; }
-.chim-fly-result-full { margin-top: 6px; color: #d8cdb0; font-size: 12.5px; white-space: pre-wrap; max-height: 9em; overflow: hidden; }
-.chim-fly-result-when { display: block; margin-top: 4px; color: #8a8375; font-size: 11.5px; }
-.chim-fly-head-t {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  color: #d4af5b;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.chim-fly-result-full { margin-top: calc(8px * var(--cp, 1)); color: #d8cdb0; font-size: calc(17px * var(--cp, 1)); white-space: pre-wrap; max-height: 9em; overflow: hidden; }
+.chim-fly-result-when { display: block; margin-top: calc(6px * var(--cp, 1)); color: #9a9285; font-size: calc(15px * var(--cp, 1)); }
 
+/* ---- groups: a heading over an even two-column grid of equal tiles ---- */
+.chim-pop-sec + .chim-pop-sec { margin-top: calc(22px * var(--cp, 1)); }
+.chim-pop-sec-t {
+  margin: 0 2px calc(10px * var(--cp, 1));
+  font-size: calc(15px * var(--cp, 1)); font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  color: #b69b56;
+}
+.chim-pop-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(calc(92px * var(--cp, 1)), auto);
+  gap: calc(12px * var(--cp, 1));
+}
 .chim-fly-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 11px 12px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
+  display: flex; align-items: center; gap: calc(16px * var(--cp, 1));
+  width: 100%; min-height: calc(92px * var(--cp, 1)); height: 100%;
+  padding: calc(14px * var(--cp, 1)) calc(18px * var(--cp, 1)); box-sizing: border-box;
+  font: inherit; color: #eee8dd; text-align: left;
+  background: #22222a; border: 1px solid #3d3a44; border-radius: calc(12px * var(--cp, 1));
   cursor: pointer;
   transition: background 140ms ease, border-color 140ms ease, transform 90ms ease;
 }
-.chim-fly-item + .chim-fly-item { margin-top: 3px; }
-.chim-fly-item:hover {
-  background: rgba(212, 175, 91, 0.12);
-  border-color: rgba(212, 175, 91, 0.30);
-}
+.chim-fly-item:hover { background: #2e2b33; border-color: #8b7443; }
 .chim-fly-item:active { transform: translateY(1px); }
-.chim-fly-item.on {
-  background: rgba(212, 175, 91, 0.16);
-  border-color: rgba(212, 175, 91, 0.45);
-}
-.chim-fly-item.is-disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-.chim-fly-item.is-disabled:hover {
-  background: transparent;
-  border-color: transparent;
-}
+.chim-fly-item.chim-wide { grid-column: 1 / -1; min-height: calc(80px * var(--cp, 1)); }
+.chim-fly-item.on { background: rgba(182, 150, 66, .14); border-color: #b69b56; }
+.chim-fly-item.on:hover { background: rgba(182, 150, 66, .2); }
+.chim-fly-item.is-disabled { opacity: .45; cursor: default; }
+.chim-fly-item.is-disabled:hover { background: #22222a; border-color: #3d3a44; }
+.chim-fly-item.is-disabled:active { transform: none; }
 
 .chim-fly-ic {
-  flex: 0 0 auto;
-  width: 26px;
-  text-align: center;
-  font-size: 18px;
-  line-height: 1;
+  flex: 0 0 auto; width: calc(36px * var(--cp, 1));
+  display: flex; align-items: center; justify-content: center;
+  font-size: calc(26px * var(--cp, 1)); line-height: 1;
 }
-.chim-fly-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.chim-fly-lbl {
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.2;
-}
-.chim-fly-sub {
-  font-size: 12px;
-  line-height: 1.25;
-  color: #a7a29a;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.chim-fly-ic img { width: calc(30px * var(--cp, 1)); height: calc(30px * var(--cp, 1)); display: block; }
+.chim-fly-text { display: flex; flex-direction: column; gap: calc(4px * var(--cp, 1)); min-width: 0; }
+.chim-fly-lbl { font-size: calc(21px * var(--cp, 1)); font-weight: 600; line-height: 1.25; }
+.chim-fly-sub { font-size: calc(17px * var(--cp, 1)); line-height: 1.4; color: #b9b2a4; }
 
-/* Key-capture state */
-.chim-fly-talk .chim-fly-lbl { font-size: 18px; line-height: 1.3; }
-.chim-fly-talk .chim-fly-sub { font-size: 16px; line-height: 1.4; white-space: normal; }
-.chim-fly-talk:focus-visible { outline: 2px solid #d4af5b; outline-offset: 2px; }
-
-.chim-fly-cap { padding: 10px 10px 12px; }
-.chim-fly-cap-t {
-  font-size: 14px;
-  font-weight: 600;
-  color: #d4af5b;
-  margin-bottom: 6px;
-  animation: chimCapPulse 1.1s ease-in-out infinite;
-}
-.chim-fly-cap-h {
-  font-size: 12px;
-  line-height: 1.35;
-  color: #a7a29a;
-}
-@keyframes chimCapPulse {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.55; }
+@media (max-width: 720px) {
+  .chim-back { padding: calc(12px * var(--cp, 1)); }
+  .chim-pop { padding: calc(18px * var(--cp, 1)); max-height: 96vh; }
+  .chim-pop-grid { grid-template-columns: minmax(0, 1fr); }
+  .chim-fly-head-t { font-size: calc(24px * var(--cp, 1)); }
 }
 
 /* ===================================================================== *

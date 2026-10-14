@@ -1,0 +1,177 @@
+/* ============================================================================
+   Loot feed — what you just picked up, as it happens (2026-10-12).
+
+   Rober: "loot notifications maybe top left, where they sort of animation slide
+   in as iharvest picks stuff up? and others fade away (limit configurable)".
+
+   One row per ITEM, not per pickup: a second Wheat while the first row is still
+   up bumps its count instead of adding a row, so an iHarvest sweep through a
+   field reads as "Wheat x9", not nine lines.
+
+   ⚠ The HUD laws (hud.css header) hold here too:
+     - motion is ONE-SHOT and only on an event (a row arriving, a count bumping,
+       a row leaving); nothing loops, nothing animates while the feed is idle.
+     - only `transform` and `opacity` move. Rows are absolutely placed and
+       stacked with translateY, so a row leaving slides the others up without
+       a single layout pass (no height/top/margin transitions).
+   Sizes are for a couch at 2560x1440: 20px names, 46px art tiles. The whole
+   feed scales with --lf-scale (the widget's size control), applied as a
+   transform on the host so the row maths stays in layout pixels.
+   ============================================================================ */
+
+.hud-lf {
+  --lf-row: 58px;          /* row pitch: height + gap, mirrored in hud-lootfeed.js */
+  --lf-w: 430px;
+  --lf-scale: 1;
+  position: absolute;
+  width: var(--lf-w);
+  height: 0;               /* rows are absolutely placed; the host takes no room */
+  transform: scale(var(--lf-scale));
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+.hud-lf.lf-up { transform-origin: 0 100%; }
+
+.hud-lf-row {
+  position: absolute; left: 0; top: 0;
+  display: flex; align-items: center; gap: 12px;
+  height: 52px; max-width: var(--lf-w);
+  padding: 0 16px 0 5px;
+  border-radius: 11px 26px 26px 11px;
+  /* firm to the right edge: a fade to .5 went grey over snow and the value
+     number lost its contrast (preview, bright scene) */
+  background: linear-gradient(90deg, rgba(12, 13, 18, .88) 0%, rgba(12, 13, 18, .82) 70%, rgba(12, 13, 18, .74) 100%);
+  border: 1px solid rgba(201, 162, 75, .30);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 245, 210, .05);
+  color: #f2ecdc;
+  font-family: "Futura", "Century Gothic", "Segoe UI", system-ui, sans-serif;
+  /* arriving: off to the left and clear. JS sets the translateY part. */
+  opacity: 0;
+  /* ONE motion curve for every row, arriving, staying or leaving, and no
+     overshoot: rows that move on different curves pass through each other
+     mid-flight (the first cut's springy arrival swung live rows into the ones
+     fading out below them). Leavers differ only in their fade. */
+  transition: transform 280ms cubic-bezier(.22, 1, .36, 1), opacity 200ms ease-out;
+  will-change: transform, opacity;
+}
+.hud-lf-row.lf-in  { opacity: 1; }
+.hud-lf-row.lf-out  { opacity: 0; transition: transform 280ms cubic-bezier(.22, 1, .36, 1), opacity 380ms ease-in; }
+.hud-lf-row.lf-drop { opacity: 0; transition: transform 280ms cubic-bezier(.22, 1, .36, 1), opacity 200ms ease-in; }
+
+/* the art tile: a 3D render when the deck has one, else the family glyph */
+.hud-lf-art {
+  position: relative; flex: 0 0 auto;
+  width: 46px; height: 46px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 9px 4px 9px 4px;
+  background: rgba(10, 12, 16, .72);
+  border: 1px solid rgba(201, 162, 75, .34);
+  overflow: hidden;
+}
+.hud-lf-art img { width: 36px; height: 36px; object-fit: contain; display: block; }
+.hud-lf-art img.lf-render { width: 44px; height: 44px; }
+
+.hud-lf-name {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 20px; font-weight: 600; letter-spacing: .2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .9);
+}
+.hud-lf-count {
+  flex: 0 0 auto;
+  font-size: 20px; font-weight: 700; color: #e6c463;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .9);
+  display: inline-block;
+}
+.hud-lf-count:empty { display: none; }
+.hud-lf-val {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 4px;
+  font-size: 17px; font-weight: 600; color: #b9b09a;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .9);
+}
+.hud-lf-val img { width: 18px; height: 18px; opacity: .9; }
+.hud-lf.lf-noval .hud-lf-val { display: none; }
+
+/* a count that just went up: one quick swell, then rest */
+.hud-lf-count.lf-bump { animation: hudLfBump 280ms ease-out; }
+@keyframes hudLfBump {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.32); color: #fff3cf; }
+  100% { transform: scale(1); }
+}
+
+/* gold reads as money, not as an item */
+.hud-lf-row.lf-k-gold .hud-lf-name { color: #e6c463; }
+.hud-lf-row.lf-k-gold .hud-lf-count { color: #fff3cf; }
+
+/* worth a second look: the edge lights up (value is per stack, set by JS) */
+.hud-lf-row.lf-rich { border-color: rgba(230, 196, 99, .78); box-shadow: 0 3px 14px rgba(0, 0, 0, .45), 0 0 14px rgba(230, 196, 99, .22), inset 0 1px 0 rgba(255, 245, 210, .08); }
+.hud-lf-row.lf-rich .hud-lf-art { border-color: rgba(230, 196, 99, .7); }
+
+/* edit mode: show where the feed sits even when nothing has been picked up */
+.hud-lf-ghost {
+  position: absolute; left: 0; top: 0;
+  display: none; align-items: center; gap: 12px;
+  height: 52px; width: 340px; padding: 0 16px 0 5px;
+  border-radius: 11px 26px 26px 11px;
+  border: 1px dashed rgba(201, 162, 75, .6);
+  background: rgba(12, 13, 18, .5);
+  color: #b9b09a; font-size: 18px;
+}
+body.hud-editing .hud-lf.lf-empty .hud-lf-ghost { display: flex; }
+
+/* ---- inside the HUD view (hud.html) -------------------------------------
+   The free root is placed by hud.js placeFree; the feed host takes no room,
+   so rows hang from the root's top-left corner. */
+.hud-lf-host { position: relative; width: 0; height: 0; }
+
+/* Edit mode: the card IS the widget while placing it — a dashed area the
+   size of `max` rows (the real footprint), three sample rows, the options.
+   Bare is the feed's default, so the plate is restated for the bare case too
+   (hud.css strips .hud-fw-card plates on .is-bare). */
+.hud-fw .hud-lfx-card,
+.hud-fw.is-bare .hud-lfx-card {
+  display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+  width: 470px; max-width: none;
+  padding: 0;                       /* the area must start on the widget's corner */
+  border: none; background: none; box-shadow: none; border-radius: 0;
+}
+.hud-lfx-title { font-size: 18px; font-weight: 700; color: #e6c463; letter-spacing: .4px; }
+.hud-lfx-area {
+  /* the real footprint of `max` rows: never let the card's column shrink it
+     (it did, by 14 px — the harness measures it) */
+  flex: 0 0 auto;
+  position: relative;
+  display: flex; flex-direction: column; gap: 6px;
+  outline: 1px dashed rgba(201, 162, 75, .6);   /* outline: takes no room, rows stay on the corner */
+  outline-offset: 3px;
+  border-radius: 12px;
+  background: rgba(12, 13, 18, .28);
+  padding: 0;
+}
+.hud-lfx-area .hud-lf-row.lfx-sample { position: relative; transform: none; opacity: 1; transition: none; align-self: flex-start; }
+.hud-lfx-edit {
+  display: flex; flex-direction: column; gap: 10px;
+  margin-top: 6px;
+  padding: 14px 16px 16px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(16, 17, 22, .92), rgba(10, 11, 15, .94));
+  border: 1px solid rgba(201, 162, 75, .42);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .5);
+}
+.hud-lfx-edrow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.hud-lfx-step { display: flex; align-items: center; gap: 8px; }
+.hud-lfx-lab { font-size: 16px; color: #b9b09a; }
+.hud-lfx-n { min-width: 52px; text-align: center; font-size: 18px; color: #f2ecdc; }
+.hud-lfx-btn {
+  font-size: 16px; padding: 6px 12px; border-radius: 8px;
+  color: #e8e4da; background: #1b1b22; border: 1px solid #3a3a44;
+}
+.hud-lfx-btn:hover { border-color: #c9a24b; color: #f2ecdc; background: rgba(201, 162, 75, .12); }
+.hud-lfx-btn:active { background: rgba(201, 162, 75, .22); }
+.hud-lfx-btn.is-on { border-color: rgba(201, 162, 75, .7); color: #e6c463; background: rgba(201, 162, 75, .1); }
+.hud-lfx-note { font-size: 15px; line-height: 1.4; color: #b9b09a; }
+/* the module's own empty-state ghost is for its standalone preview; in the
+   HUD the edit card above takes that job */
+.hud-lf-host .hud-lf-ghost { display: none !important; }

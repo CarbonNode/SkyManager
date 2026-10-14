@@ -77,7 +77,7 @@
 .pd-hide.on { color: #8fd18f; border-color: rgba(143,209,143,.5); }
 
 .pd-tile-cat {
-  font-size: 11px; color: #a9c7e0; opacity: .85; margin-top: 2px;
+  font-size: 12px; color: #a9c7e0; opacity: .85; margin-top: 2px;
   max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .fc-catfilter { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 2px 0 4px; }

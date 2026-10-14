@@ -1,0 +1,351 @@
+/* ==========================================================================
+   Hotkey Pad — the on-screen button pad (hud-pad.js).
+
+   Direction: a smoked-iron plate with antique-gold edging, keycaps that read
+   as pressable at couch distance — the deck's gold-glyph language, not a new
+   one. Every size is a CSS variable hud-pad.js computes from the cell size
+   (--hp-u) so dragging the pad's corner grows cells, icons and type together:
+     --hp-u  one cell        --hp-g  the gap between cells
+     --hp-fl button label    --hp-fk key hint     --hp-fh title bar
+     --hp-ic icon size
+
+   Lives in the HUD view as a sibling of #hud / #hud-td, so body.hud-hidden
+   never touches it; its ONE visibility input is body.hp-open.
+
+   ⚠ Ultralight, compositor off: one-shot transitions/animations only, no
+   color-mix(), explicit rgba(); the document is body{pointer-events:none}
+   (hud.css), so the frame turns the mouse back on for itself.
+   ========================================================================== */
+
+#hud-pad { position: fixed; left: 0; top: 0; display: none; z-index: 42; pointer-events: none; }
+body.hp-open #hud-pad { display: block; }
+body.hp-open #hud-pad .hp-frame { pointer-events: auto; }
+
+.hp-frame {
+  position: fixed;
+  box-sizing: border-box;
+  padding: var(--hp-g, 10px);
+  padding-bottom: calc(var(--hp-g, 10px) + 6px);
+  background: rgba(17, 16, 20, 0.94);
+  border: 1px solid rgba(201, 162, 75, 0.55);
+  border-radius: 16px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 236, 190, 0.06);
+  color: #ece4cf;
+  font-family: "Futura", "Century Gothic", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  opacity: 0;
+  transition: opacity 140ms ease, filter 140ms ease;
+}
+.hp-frame.hp-in { opacity: 1; }
+/* a press is landing: the game has the input for a beat */
+.hp-frame.is-firing { filter: brightness(0.72); }
+.hp-frame.is-firing .hp-grid { pointer-events: none; }
+
+/* ---- title bar ---------------------------------------------------------- */
+.hp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  min-height: 44px;
+}
+.hp-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: var(--hp-g, 10px);
+}
+.hp-bar > .hp-hb { flex: 1 1 0; min-width: 0; padding: 0 10px; }
+.hp-grip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  cursor: move;
+  padding-right: 8px;
+}
+.hp-grip-ic { width: calc(var(--hp-fh, 20px) * 1.5); height: calc(var(--hp-fh, 20px) * 1.5); object-fit: contain; flex-shrink: 0; }
+.hp-title {
+  font-size: var(--hp-fh, 20px);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #e3cf96;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+.hp-hb {
+  flex-shrink: 0;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 14px;
+  font: inherit;
+  font-size: calc(var(--hp-fh, 20px) * 0.82);
+  color: #e6dcc3;
+  background: rgba(44, 41, 48, 0.95);
+  border: 1px solid rgba(150, 132, 92, 0.6);
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.hp-hb:hover { background: rgba(66, 58, 44, 0.98); border-color: rgba(222, 186, 98, 0.95); color: #fff4d6; }
+.hp-hb:active { background: rgba(84, 72, 46, 1); }
+.hp-hb:focus-visible { outline: 2px solid rgba(232, 196, 104, 0.95); outline-offset: 2px; }
+.hp-hb.on { background: rgba(120, 96, 44, 0.95); border-color: rgba(236, 200, 110, 1); color: #1a150c; }
+.hp-close { padding: 0; }
+
+.hp-cols { display: none; align-items: center; justify-content: center; gap: 6px; flex: 1 1 100%; }
+.hp-frame.is-edit .hp-cols { display: flex; }
+.hp-cols-lab { font-size: calc(var(--hp-fh, 20px) * 0.75); color: #bfb39a; margin-right: 2px; }
+.hp-cols-val { min-width: 28px; text-align: center; font-size: var(--hp-fh, 20px); color: #f3e6c2; }
+.hp-step { padding: 0; font-size: var(--hp-fh, 20px); }
+
+/* ---- the grid ----------------------------------------------------------- */
+.hp-grid {
+  display: grid;
+  gap: var(--hp-g, 10px);
+  grid-auto-flow: row dense;
+  justify-content: start;
+}
+
+/* the keycap */
+.hp-btn {
+  position: relative;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: calc(var(--hp-u, 90px) * 0.09);
+  /* a TILE: icon top-left, key cap top-right, label along the bottom — so
+     the three never sit on top of each other however long the key name is */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: calc(var(--hp-u, 90px) * 0.05);
+  text-align: left;
+  font: inherit;
+  color: #efe6cf;
+  background: linear-gradient(180deg, rgba(48, 44, 52, 0.98) 0%, rgba(30, 28, 34, 0.98) 100%);
+  border: 1px solid rgba(201, 162, 75, 0.34);
+  border-radius: calc(var(--hp-u, 90px) * 0.13);
+  box-shadow: inset 0 1px 0 rgba(255, 240, 205, 0.09), 0 2px 0 rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 110ms ease, background 110ms ease, box-shadow 110ms ease, transform 70ms ease;
+}
+.hp-btn:hover {
+  border-color: rgba(226, 190, 100, 0.95);
+  background: linear-gradient(180deg, rgba(64, 56, 46, 0.99) 0%, rgba(38, 34, 32, 0.99) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 240, 205, 0.14), 0 2px 0 rgba(0, 0, 0, 0.45), 0 0 14px rgba(214, 176, 84, 0.22);
+}
+.hp-btn.is-down,
+.hp-btn:active {
+  transform: translateY(2px);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.55), 0 0 0 rgba(0, 0, 0, 0);
+}
+.hp-btn:focus-visible { outline: 2px solid rgba(232, 196, 104, 0.95); outline-offset: 2px; }
+/* one-shot "it fired" flash, re-armed by a class flip in press() */
+.hp-btn.is-fired { animation: hp-fired 380ms ease-out 1; }
+@keyframes hp-fired {
+  0%   { border-color: rgba(255, 222, 130, 1); box-shadow: inset 0 0 18px rgba(255, 208, 110, 0.55), 0 0 22px rgba(255, 200, 90, 0.45); }
+  100% { border-color: rgba(201, 162, 75, 0.34); box-shadow: inset 0 1px 0 rgba(255, 240, 205, 0.09), 0 2px 0 rgba(0, 0, 0, 0.45); }
+}
+
+.hp-ic {
+  width: var(--hp-ic, 36px);
+  height: var(--hp-ic, 36px);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hp-ic img { width: 100%; height: 100%; object-fit: contain; }
+/* no art for this entry: its initials, engraved, never a dot */
+.hp-ic.is-mono {
+  border-radius: 50%;
+  border: 1px solid rgba(201, 162, 75, 0.55);
+  background: rgba(201, 162, 75, 0.1);
+  color: #e6cf8e;
+  font-size: calc(var(--hp-ic, 36px) * 0.42);
+  letter-spacing: 1px;
+}
+.hp-lab {
+  max-width: 100%;
+  min-width: 0;
+  font-size: var(--hp-fl, 17px);
+  line-height: 1.15;
+  max-height: 2.3em;
+  overflow: hidden;
+  text-align: left;
+  /* words never break in the middle; hud-pad.js steps a label that will not
+     fit down a size or two, and the clamp ellipsises what still overflows */
+  overflow-wrap: normal;
+  word-break: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+.hp-lab.fit-1 { font-size: calc(var(--hp-fl, 17px) * 0.88); }
+.hp-lab.fit-2 { font-size: max(13px, calc(var(--hp-fl, 17px) * 0.78)); }
+/* last resort, after two steps down: a word that STILL cannot fit wraps
+   rather than being clipped out of sight */
+.hp-lab.fit-2 { overflow-wrap: anywhere; }
+/* the key it answers to, as a small cap in the corner */
+.hp-key {
+  position: absolute;
+  top: calc(var(--hp-u, 90px) * 0.05);
+  right: calc(var(--hp-u, 90px) * 0.06);
+  /* a badge: opaque, so on a one-cell key a long chord may sit over the
+     icon's corner and still read cleanly, rather than being cut to "Shi…" */
+  max-width: calc(100% - 8px);
+  padding: 1px 6px;
+  font-size: var(--hp-fk, 14px);
+  line-height: 1.3;
+  color: #e3cf96;
+  background: rgba(14, 13, 16, 0.96);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(201, 162, 75, 0.35);
+  border-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hp-btn.is-wide { flex-direction: row; align-items: center; justify-content: flex-start; padding-left: calc(var(--hp-u, 90px) * 0.16); gap: calc(var(--hp-u, 90px) * 0.12); }
+.hp-btn.is-wide .hp-ic { width: calc(var(--hp-ic, 36px) * 1.15); height: calc(var(--hp-ic, 36px) * 1.15); }
+.hp-btn.is-wide .hp-lab { text-align: left; font-size: calc(var(--hp-fl, 17px) * 1.08); }
+.hp-btn.is-tall .hp-ic { width: calc(var(--hp-ic, 36px) * 1.5); height: calc(var(--hp-ic, 36px) * 1.5); }
+.hp-btn.is-tall .hp-lab { font-size: calc(var(--hp-fl, 17px) * 1.12); max-height: 3.5em; -webkit-line-clamp: 3; }
+.hp-btn.is-tall .hp-lab.fit-1 { font-size: var(--hp-fl, 17px); }
+.hp-btn.is-tall .hp-lab.fit-2 { font-size: calc(var(--hp-fl, 17px) * 0.88); }
+
+.hp-btn.is-keycap { flex-direction: column; align-items: center; justify-content: center; text-align: center; padding-left: calc(var(--hp-u, 90px) * 0.09); }
+/* the key itself, the way it is printed on a keyboard */
+.hp-cap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  color: #f4e6bd;
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+.hp-cap-key, .hp-cap-mod { display: block; max-width: 100%; white-space: nowrap; overflow: hidden; }
+.hp-cap-key { font-size: calc(var(--hp-fl, 17px) * 1.25); line-height: 1.1; font-weight: 600; letter-spacing: 0.5px; }
+.hp-cap-mod { font-size: var(--hp-fs, 14px); line-height: 1.2; color: #d9c58f; }
+.hp-cap-key.fit-1 { font-size: var(--hp-fl, 17px); }
+.hp-cap-key.fit-2 { font-size: var(--hp-fs, 14px); }
+.hp-cap-mod.fit-1, .hp-cap-mod.fit-2 { font-size: 13px; }
+.hp-btn.is-keycap .hp-lab { text-align: center; font-size: var(--hp-fs, 14px); color: #cfc3a4; }
+.hp-btn.is-tall.is-keycap .hp-cap-key, .hp-btn.is-wide.is-keycap .hp-cap-key { font-size: calc(var(--hp-fl, 17px) * 1.5); }
+.hp-btn.is-missing { border-style: dashed; border-color: rgba(200, 110, 90, 0.7); }
+.hp-btn.is-missing .hp-lab { color: #e2b0a0; }
+.hp-btn.is-missing .hp-ic.is-mono { border-color: rgba(200, 110, 90, 0.7); color: #e2b0a0; background: rgba(200, 110, 90, 0.1); }
+
+/* ---- arranging ---------------------------------------------------------- */
+.hp-frame.is-edit { border-color: rgba(236, 200, 110, 0.9); }
+.hp-frame.is-edit .hp-btn { cursor: grab; border-style: dashed; border-color: rgba(214, 180, 96, 0.6); }
+.hp-frame.is-edit .hp-btn:active { transform: none; }
+.hp-btn.is-lifted { opacity: 0.45; }
+.hp-btn.is-drop-before { box-shadow: inset 4px 0 0 rgba(255, 214, 120, 1); }
+.hp-btn.is-drop-after { box-shadow: inset -4px 0 0 rgba(255, 214, 120, 1); }
+.hp-frame.is-edit .hp-key { display: none; }
+.hp-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: #ffe1d6;
+  background: rgba(130, 44, 32, 0.92);
+  border: 1px solid rgba(240, 150, 120, 0.8);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.hp-x:hover { background: rgba(170, 58, 40, 1); }
+.hp-rs {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 30px;
+  height: 30px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, rgba(0, 0, 0, 0) 50%, rgba(236, 200, 110, 0.9) 50%);
+  border-bottom-right-radius: calc(var(--hp-u, 90px) * 0.13);
+}
+.hp-rs:hover { background: linear-gradient(135deg, rgba(0, 0, 0, 0) 50%, rgba(255, 226, 150, 1) 50%); }
+.hp-add { border-style: dashed; border-color: rgba(201, 162, 75, 0.55); background: rgba(201, 162, 75, 0.06); }
+.hp-add { align-items: center; justify-content: center; }
+.hp-add .hp-lab { text-align: center; }
+.hp-add-plus { font-size: calc(var(--hp-u, 90px) * 0.38); line-height: 1; color: #e3cf96; }
+
+.hp-hint {
+  display: none;
+  margin: var(--hp-g, 10px) 0 0;
+  max-width: calc(var(--hp-u, 90px) * 5);
+  font-size: calc(var(--hp-fk, 14px) * 1.05);
+  line-height: 1.4;
+  color: #c9bd9f;
+}
+.hp-frame.is-edit .hp-hint { display: block; }
+
+/* ---- empty pad ---------------------------------------------------------- */
+.hp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  min-width: 300px;
+  padding: 14px 16px;
+  grid-row: span 2;
+  box-sizing: border-box;
+  border: 1px dashed rgba(201, 162, 75, 0.5);
+  border-radius: 12px;
+}
+.hp-empty b { font-size: var(--hp-fh, 20px); color: #f0e2bb; font-weight: 600; }
+.hp-empty span { font-size: var(--hp-fl, 17px); color: #cbbf9f; }
+.hp-empty-add {
+  margin-top: 4px;
+  min-height: 44px;
+  padding: 0 18px;
+  font: inherit;
+  font-size: var(--hp-fl, 17px);
+  color: #1a150c;
+  background: rgba(214, 178, 88, 0.96);
+  border: 1px solid rgba(250, 220, 140, 1);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.hp-empty-add:hover { background: rgba(236, 200, 110, 1); }
+
+/* ---- the whole pad's corner -------------------------------------------- */
+.hp-resize {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 26px;
+  height: 26px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, rgba(0, 0, 0, 0) 55%, rgba(201, 162, 75, 0.55) 55%, rgba(201, 162, 75, 0.55) 62%, rgba(0, 0, 0, 0) 62%, rgba(0, 0, 0, 0) 72%, rgba(201, 162, 75, 0.55) 72%, rgba(201, 162, 75, 0.55) 79%, rgba(0, 0, 0, 0) 79%);
+  border-bottom-right-radius: 14px;
+}
+.hp-resize:hover { background: linear-gradient(135deg, rgba(0, 0, 0, 0) 55%, rgba(255, 220, 140, 0.95) 55%, rgba(255, 220, 140, 0.95) 62%, rgba(0, 0, 0, 0) 62%, rgba(0, 0, 0, 0) 72%, rgba(255, 220, 140, 0.95) 72%, rgba(255, 220, 140, 0.95) 79%, rgba(0, 0, 0, 0) 79%); }
+.hp-frame.is-dragging, .hp-frame.is-dragging * { cursor: grabbing; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hp-frame, .hp-btn, .hp-hb { transition: none; }
+  .hp-btn.is-fired { animation: none; border-color: rgba(255, 222, 130, 1); }
+}

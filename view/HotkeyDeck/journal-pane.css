@@ -494,6 +494,8 @@
   color: #8d8368; font-size: 13.5px; line-height: 1.55; margin-top: 8px;
 }
 .jr-note code {
+  white-space: nowrap;   /* "- bullet" broke between its two halves */
+  display: inline-block; margin: 2px 0;
   font-family: Consolas, monospace; color: #d9c48a; background: #241f16;
   padding: 1px 5px; border-radius: 4px; font-size: 12.5px;
 }

@@ -41,7 +41,7 @@
 .ct-rail-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ct-rail-count {
   flex: none;
-  font-family: Consolas, "Courier New", monospace; font-size: 10.5px;
+  font-family: Consolas, "Courier New", monospace; font-size: 12px;
   color: #6f6a5e; background: rgba(255,255,255,.04);
   border-radius: 9px; padding: 2px 6px;
 }
@@ -69,7 +69,7 @@
 .ct-icon-btn {
   flex: none; width: 22px; height: 22px;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 11px; line-height: 1;
+  font-size: 12px; line-height: 1;
   color: #6f6a5e; background: transparent;
   border: 1px solid transparent; border-radius: 5px;
   cursor: pointer;
@@ -79,7 +79,7 @@
 .ct-icon-btn.confirm { color: #e0b0b0; background: #1a1216; border-color: #a55565; }
 
 .ct-railadd {
-  font-family: inherit; font-size: 11.5px; color: #6f6a5e;
+  font-family: inherit; font-size: 12.5px; color: #6f6a5e;
   background: transparent; border: 1px dashed #33333d; border-radius: 6px;
   padding: 7px 6px; cursor: pointer;
   transition: border-color 140ms ease, color 140ms ease;
@@ -105,7 +105,7 @@
 #ct-search:focus { outline: none; border-color: #c9a24b77; box-shadow: 0 0 0 3px rgba(201,162,75,.08); }
 #ct-count {
   flex: none;
-  font-family: Consolas, "Courier New", monospace; font-size: 11px;
+  font-family: Consolas, "Courier New", monospace; font-size: 12px;
   color: #d9c48a; background: rgba(201,162,75,.06);
   border: 1px solid #c9a24b77; border-radius: 20px;
   padding: 4px 9px; min-width: 24px; text-align: center;
@@ -119,7 +119,7 @@
   animation: fadeIn 140ms ease;
 }
 .ct-ok-label { font-size: 12px; color: #b9b4a8; letter-spacing: .3px; }
-.ct-ok-hint { flex: 1; min-width: 140px; font-size: 11px; color: #6f6a5e; line-height: 1.45; }
+.ct-ok-hint { flex: 1; min-width: 140px; font-size: 12px; color: #6f6a5e; line-height: 1.45; }
 #ct-openkey-btn.capturing { animation: capturePulse 1s ease-in-out infinite; }
 
 /* ---------- list ---------- */
@@ -201,7 +201,7 @@
 .ct-name mark { background: transparent; color: #c9a24b; font-weight: 600; }
 .ct-sub {
   display: flex; align-items: baseline; gap: 7px; min-width: 0;
-  font-size: 11px; color: #6f6a5e;
+  font-size: 12px; color: #6f6a5e;
 }
 .ct-note {
   flex-shrink: 1; min-width: 0;
@@ -215,7 +215,7 @@
   flex: none;
   color: #8b8678; background: rgba(255,255,255,.03);
   border: 1px solid #26262d; border-radius: 9px;
-  padding: 1px 7px; font-size: 10px; font-style: normal;
+  padding: 1px 7px; font-size: 12px; font-style: normal;
   white-space: nowrap; max-width: 190px; overflow: hidden; text-overflow: ellipsis;
 }
 .ct-chip mark { background: transparent; color: #c9a24b; font-weight: 600; }
@@ -309,7 +309,7 @@
 #ct-mark-btn:active:not(:disabled) { transform: translateY(1px); }
 #ct-mark-btn:focus-visible { outline: 2px solid #c9a24b66; outline-offset: 1px; }
 #ct-mark-btn:disabled { color: #6f6a5e; border-color: #33333d; background: transparent; cursor: not-allowed; }
-#ct-here { margin-top: 6px; font-size: 11px; color: #6f6a5e; line-height: 1.45; text-align: center; }
+#ct-here { margin-top: 6px; font-size: 12px; color: #6f6a5e; line-height: 1.45; text-align: center; }
 
 /* ---------- context menu (appended to #overlay, so it sits outside the
      panel's transform: scale and lands on the real cursor position) ---- */
@@ -328,7 +328,7 @@
   border-bottom: 1px solid #2e2e36;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.ct-ctx-where { display: block; font-size: 10.5px; color: #6f6a5e; margin-top: 3px; }
+.ct-ctx-where { display: block; font-size: 12px; color: #6f6a5e; margin-top: 3px; }
 .ct-ctx-item {
   display: flex; align-items: center; gap: 8px; width: 100%;
   font-family: inherit; font-size: 12.5px; text-align: left;
@@ -346,7 +346,7 @@
 .ct-ctx-check { flex: none; width: 15px; text-align: center; font-size: 12px; color: #c9a24b; }
 .ct-ctx-lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ct-ctx-count {
-  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 10px;
+  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 12px;
   color: #6f6a5e; background: rgba(255,255,255,.04); border-radius: 9px; padding: 2px 6px;
 }
 .ct-ctx-sep { height: 1px; background: #2e2e36; margin: 4px 6px; }
@@ -354,7 +354,7 @@
 .ct-ctx-field { display: flex; align-items: center; gap: 8px; padding: 4px 6px; }
 .ct-ctx-field label {
   flex: none; width: 54px;
-  font-size: 10.5px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
+  font-size: 12px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
 }
 .ct-ctx-input, .ct-ctx-select {
   flex: 1; min-width: 0;
@@ -378,13 +378,13 @@
    viewport and push the menu off the edge. */
 #ct-ctx.wide { width: 520px; min-width: 0; max-width: calc((100vw - 24px) / var(--ui-scale, 1)); padding: 8px; }
 #ct-ctx .ct-ctx-head { font-size: 13.5px; }
-#ct-ctx .ct-ctx-where { font-size: 11.5px; }
+#ct-ctx .ct-ctx-where { font-size: 12.5px; }
 #ct-ctx .ct-ctx-item { font-size: 13.5px; padding: 9px 10px; }
 #ct-ctx .ct-ctx-field { padding: 5px 6px; }
-#ct-ctx .ct-ctx-field label { font-size: 11.5px; }
+#ct-ctx .ct-ctx-field label { font-size: 12.5px; }
 #ct-ctx.wide .ct-ctx-field label { width: 84px; }
 #ct-ctx .ct-ctx-input, #ct-ctx .ct-ctx-select { font-size: 13.5px; padding: 8px 9px; }
-#ct-ctx .ct-ctx-hint { font-size: 11.5px; }
+#ct-ctx .ct-ctx-hint { font-size: 12.5px; }
 
 /* The combobox that replaced the dead <select>s. The list is absolute so
    opening it lays OVER the rows below rather than resizing a centred menu. */
@@ -428,7 +428,7 @@
 .ct-pick-lbl mark { background: transparent; color: #c9a24b; font-weight: 600; }
 .ct-pick-hint {
   flex: none; max-width: 140px;
-  font-size: 10.5px; color: #6f6a5e;
+  font-size: 12px; color: #6f6a5e;
   background: rgba(255,255,255,.04); border: 1px solid #26262d; border-radius: 9px;
   padding: 1px 7px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -450,7 +450,7 @@
 }
 .ct-scene-title { font-size: 12px; letter-spacing: .3px; color: #c9a24b; }
 .ct-scene-now {
-  font-size: 11.5px; color: #6f6a5e; min-width: 0;
+  font-size: 12.5px; color: #6f6a5e; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ct-scene-row {
@@ -459,7 +459,7 @@
 }
 .ct-scene-lbl {
   flex: none; width: 46px;
-  font-size: 11px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
+  font-size: 12px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
 }
 .ct-scene-chip {
   display: inline-flex; align-items: center; gap: 5px; flex: none;
@@ -532,16 +532,16 @@
 .ct-npc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ct-npc-name mark { background: transparent; color: #c9a24b; font-weight: 600; }
 .ct-npc-tag {
-  flex: none; font-size: 9.5px; letter-spacing: .3px; text-transform: uppercase;
+  flex: none; font-size: 12px; letter-spacing: .3px; text-transform: uppercase;
   color: #8b8678; background: rgba(255,255,255,.04);
   border: 1px solid #26262d; border-radius: 9px; padding: 1px 6px;
 }
 .ct-npc-tag.follower { color: #d9c48a; background: rgba(201,162,75,.08); border-color: #c9a24b55; }
 .ct-npc-dist {
-  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 10px;
+  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 12px;
   color: #6f6a5e; min-width: 30px; text-align: right;
 }
-.ct-npc-empty { padding: 16px 10px; text-align: center; font-size: 11.5px; color: #6f6a5e; }
+.ct-npc-empty { padding: 16px 10px; text-align: center; font-size: 12.5px; color: #6f6a5e; }
 
 /* ---------- open-key capture (own modal: the deck's #capture-modal
      belongs to app.js's own rebind flow and must not be borrowed) ------ */
@@ -594,7 +594,7 @@
 .ct-npc-searchwrap .ct-search-ic { left: 10px; font-size: 18px; }
 .ct-npc-list { max-height: 344px; }
 .ct-npc-item { font-size: 15.5px; gap: 10px; padding: 10px 11px; }
-.ct-npc-tag { font-size: 11.5px; padding: 2px 8px; }
+.ct-npc-tag { font-size: 12.5px; padding: 2px 8px; }
 .ct-npc-dist { font-size: 12.5px; min-width: 40px; }
 .ct-npc-empty { font-size: 14px; padding: 20px 12px; }
 
@@ -638,7 +638,7 @@
 }
 .ct-scale-reset {
   flex: none;
-  font-family: inherit; font-size: 11px; color: #6f6a5e; letter-spacing: .3px;
+  font-family: inherit; font-size: 12px; color: #6f6a5e; letter-spacing: .3px;
   background: transparent; border: 1px solid transparent; border-radius: 5px;
   padding: 4px 7px; cursor: pointer;
   transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
@@ -695,8 +695,8 @@
   #ct-ctx { min-width: 260px; }
   #ct-npc { width: min(330px, 90vw); }
   .ct-scale-row { gap: 7px; }
-  .ct-scale-lbl { width: 58px; font-size: 11.5px; }
-  .ct-scale-val { min-width: 34px; font-size: 11px; }
+  .ct-scale-lbl { width: 58px; font-size: 12.5px; }
+  .ct-scale-val { min-width: 34px; font-size: 12px; }
   .ct-scale-reset { padding: 4px 5px; }
 }
 
@@ -761,7 +761,7 @@
   flex: none; display: inline-flex; align-items: center; gap: 3px;
   color: #b9a06a; background: rgba(201,162,75,.09);
   border: 1px solid rgba(201,162,75,.28); border-radius: 9px;
-  padding: 1px 7px; font-size: 10px; font-style: normal; line-height: 1.5;
+  padding: 1px 7px; font-size: 12px; font-style: normal; line-height: 1.5;
   white-space: nowrap; max-width: 128px; overflow: hidden; text-overflow: ellipsis;
   cursor: pointer; transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
@@ -774,19 +774,19 @@
 .ct-tag.edit { cursor: default; max-width: 160px; }
 .ct-tag-x {
   border: 0; background: transparent; color: inherit; opacity: .65;
-  font-size: 10px; line-height: 1; padding: 0 0 0 1px; cursor: pointer;
+  font-size: 12px; line-height: 1; padding: 0 0 0 1px; cursor: pointer;
 }
 .ct-tag-x:hover { opacity: 1; color: #e0b0b0; }
 
 /* the "showing only tagged X" bar above the list */
 #ct-tagbar { display: flex; align-items: center; gap: 8px; padding: 4px 10px 0; }
 #ct-tagbar.hidden { display: none; }
-.ct-tagbar-lbl { font-size: 10.5px; color: #6f6a5e; letter-spacing: .06em; text-transform: uppercase; }
+.ct-tagbar-lbl { font-size: 12px; color: #6f6a5e; letter-spacing: .06em; text-transform: uppercase; }
 
 /* the tag editor inside the right-click menu */
 .ct-ctx-field.tags { flex-direction: column; align-items: stretch; gap: 5px; }
 .ct-ctx-tags { display: flex; flex-wrap: wrap; gap: 4px; max-height: 66px; overflow-y: auto; }
-.ct-ctx-hint { font-size: 10.5px; color: #6f6a5e; font-style: italic; }
+.ct-ctx-hint { font-size: 12px; color: #6f6a5e; font-style: italic; }
 
 /* ---- the big view + crop editor ---- */
 .ct-art-lb {
@@ -818,7 +818,7 @@
 }
 .ct-art-btn {
   border: 1px solid #3a3a44; border-radius: 7px; background: rgba(255,255,255,.04);
-  color: #cdc7b8; font-size: 11.5px; padding: 4px 9px; cursor: pointer;
+  color: #cdc7b8; font-size: 12.5px; padding: 4px 9px; cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 .ct-art-btn:hover { background: rgba(255,255,255,.09); border-color: #55525d; color: #ecd9a0; }
@@ -827,8 +827,8 @@
 .ct-art-btn.ok { border-color: #c9a24b; color: #f2e2b4; }
 .ct-art-pad { display: flex; gap: 4px; }
 .ct-art-pad .ct-art-btn { min-width: 28px; padding: 4px 6px; }
-.ct-art-val { font-size: 11px; color: #8b8678; min-width: 92px; }
-.ct-art-hint { flex-basis: 100%; text-align: center; font-size: 10.5px; color: #6f6a5e; }
+.ct-art-val { font-size: 12px; color: #8b8678; min-width: 92px; }
+.ct-art-hint { flex-basis: 100%; text-align: center; font-size: 12px; color: #6f6a5e; }
 
 @media (max-width: 620px) {
   .ct-tag { max-width: 84px; }
@@ -878,7 +878,7 @@
 .cs-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .cs-chip-grp { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .cs-grp-lbl {
-  flex: none; font-size: 11.5px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
+  flex: none; font-size: 12.5px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
   margin-right: 2px;
 }
 
@@ -908,7 +908,7 @@
 .cs-safe.warn.ack { color: #c99a4b; opacity: .9; }
 .cs-safe-why { color: inherit; opacity: .8; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 .cs-tag-anyway {
-  font-family: inherit; font-size: 11.5px; color: #1a1a20; background: #e0b060;
+  font-family: inherit; font-size: 12.5px; color: #1a1a20; background: #e0b060;
   border: 0; border-radius: 999px; padding: 3px 9px; cursor: pointer; margin-left: 2px;
   transition: background 120ms ease;
 }
@@ -949,7 +949,7 @@
   font-size: 12px; color: #b9a06a; background: rgba(201,162,75,.09);
   border: 1px solid rgba(201,162,75,.28); border-radius: 999px; padding: 3px 9px;
 }
-.cs-kw-x { border: 0; background: transparent; color: inherit; opacity: .7; font-size: 11px; cursor: pointer; padding: 0 0 0 2px; }
+.cs-kw-x { border: 0; background: transparent; color: inherit; opacity: .7; font-size: 12px; cursor: pointer; padding: 0 0 0 2px; }
 .cs-kw-x:hover { opacity: 1; color: #e0b0b0; }
 
 .cs-rule-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -975,7 +975,7 @@
   padding: 10px 12px; margin-bottom: 9px;
 }
 .cs-mini {
-  flex: none; font-family: inherit; font-size: 11.5px; color: #8b8678;
+  flex: none; font-family: inherit; font-size: 12.5px; color: #8b8678;
   background: transparent; border: 1px solid #33333d; border-radius: 5px; padding: 4px 9px; cursor: pointer;
   transition: color 120ms ease, border-color 120ms ease, background 120ms ease; margin-left: 6px;
 }
@@ -1057,7 +1057,7 @@
 .cs-cand.cur { color: #d9c48a; }
 .cs-cand-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cs-cand-name mark { background: transparent; color: #c9a24b; font-weight: 600; }
-.cs-cand-plug { flex: none; font-size: 11px; color: #6f6a5e; }
+.cs-cand-plug { flex: none; font-size: 12px; color: #6f6a5e; }
 .cs-cand-plug.warn { color: #e0b060; }
 .cs-cand-empty { padding: 10px; font-size: 12px; color: #6f6a5e; text-align: center; }
 
@@ -1163,7 +1163,7 @@
 }
 .al-rule-src {
   flex: 0 1 auto; max-width: 42%;
-  font-size: 11.5px; color: #6f6a5e;
+  font-size: 12.5px; color: #6f6a5e;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .al-rule-x {

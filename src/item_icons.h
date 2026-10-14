@@ -1,12 +1,15 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace RE
 {
 	class Actor;
+	class TESObjectARMO;
 }
 
 /*
@@ -169,9 +172,35 @@ namespace ItemIcons
 	void CaptureBodyAngles(const std::string& fid, const std::string& plugin,
 		const std::string& nif);
 
+	// The body turntable frames already on disk for this identity, as angles
+	// (0 = the ordinary render, then 45, 90 … 315 that exist). Cheap file
+	// checks, no queueing; the Bestiary answers bxSpin with it (bxSpinState).
+	std::vector<std::uint32_t> BodyAnglesOnDisk(const std::string& fid, const std::string& plugin);
+	constexpr std::uint32_t kBodySpinFrames = 8;   // 360 / the 45-degree body step
+
+	// THE BESTIARY'S OWN BODIES: the same skin mesh as EnsureBodyIcons, at the
+	// Mirror's 1024 canvas, in icons/bestiary/ (the Mounts 512s stay as they
+	// are). True if a render was queued. MAIN THREAD ONLY.
+	bool EnsureBeastBody(const std::string& fid, const std::string& plugin,
+		const std::string& name, const std::string& nif);
+	// "icons/bestiary/<file>.png" once that render exists, else "".
+	std::string BeastPathFor(const std::string& fid, const std::string& plugin);
+	// Its 45-degree turntable, same -aNNN contract, 1024px. MAIN THREAD ONLY.
+	void CaptureBeastAngles(const std::string& fid, const std::string& plugin,
+		const std::string& nif);
+	std::vector<std::uint32_t> BeastAnglesOnDisk(const std::string& fid, const std::string& plugin);
+
 	// "icons/npcs/<file>.png" if this face's render already exists, else "".
 	// fid/plugin are the FACE OWNER's local id + origin plugin (FaceOwnerOf).
 	std::string FacePathFor(const std::string& fid, const std::string& plugin);
+
+	// "Regenerate face" (Rober, 2026-10-13): forget this head's render and its
+	// turntable frames and give it a fresh revision, so the next face ask bakes
+	// a NEW file ("<slug>-<hex>-r<rev>.png") instead of answering with the old
+	// one. The old PNG is left on disk (Ultralight may have it mapped) and keeps
+	// showing until the new one lands. False when there is no facegen head to
+	// render from. Same face-owner identity as FacePathFor. MAIN THREAD ONLY.
+	bool RerenderFace(const std::string& fid, const std::string& plugin);
 
 	// The FACE turntable (2026-08-19, Rober: "make anything scrollable? any
 	// item or face... left click and hold to spin it around"). 90°-step frames
@@ -236,7 +265,13 @@ namespace ItemIcons
 	// `frames` lists ONLY files on disk right now — the view sets an <img> src
 	// to nothing else. queue=false reads without asking for renders.
 	// MAIN THREAD ONLY (worn-armour reads + the render queue).
-	std::string MirrorJson(RE::Actor* actor, bool queue);
+	//
+	// TRY-ON (2026-10-10, the Inventory tab's "On you"): with `tryOn` set, the
+	// figure wears that piece INSTEAD of whatever worn armour shares any of its
+	// biped slots - the rest of the outfit, skin and head as usual. Its files
+	// carry a "-try-<sig>" stem, so a try-on never replaces the real-outfit
+	// figure's frames (and a later try-on replaces only the previous try-on).
+	std::string MirrorJson(RE::Actor* actor, bool queue, RE::TESObjectARMO* tryOn = nullptr);
 
 	// THE ITEM INSPECTOR (2026-10-04): the lightbox's "Turn in 3D" — one piece
 	// as 24 frames, 15° apart, at 1024px, through the ordinary item route (same

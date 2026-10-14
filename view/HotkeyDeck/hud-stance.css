@@ -6,7 +6,9 @@
    input is body.sw-open, set by hud-stance.js when C++ says swShow("1").
 
    The whole layer takes the pointer while it is up: the cursor steers the
-   highlight by ANGLE from the centre, even outside the wheel.
+   highlight by ANGLE from the centre, even outside the wheel. hud.css makes
+   the HUD body pointer-events:none, so the open layer must say auto itself
+   (it did not until 2026-10-10 and every click fell through to the game).
 
    Palette = the deck's gold-on-dark HUD (hud-td.css) plus Stances NG Combat
    Expansion's own stance colours, passed in as --sw-rgb per face.
@@ -23,9 +25,15 @@ body.sw-open #hud-stance {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* a soft vignette: the world is slowed, not gone, so it stays visible */
-  background: radial-gradient(ellipse at center, rgba(6, 7, 9, .30) 0%, rgba(6, 7, 9, .62) 70%, rgba(6, 7, 9, .78) 100%);
+  /* a FLAT dim, never a gradient: the world is slowed, not gone, so it stays
+     visible. Ultralight bands a screen-sized radial into a hard-edged oval
+     (Rober, 2026-10-11: "whats with the weird oval around" — the same bug the
+     Wheel Menu shed in August, markers wheel-dim-flat / overlay-dim-flat). */
+  /* .34, not .55: the old vignette was .30 at the centre, where the wheel
+     sits, and .55 read as "weirdly dim" in game (Rober, 2026-10-11) */
+  background: rgba(6, 7, 9, .34); /* marker: stance-wheel-dim-flat */
   cursor: default;
+  pointer-events: auto;
 }
 
 .sw-frame {
@@ -69,6 +77,9 @@ body.sw-open #hud-stance {
   min-width: 420px;
   min-height: 420px;
   --sw-k: 1;
+  /* the faces' own factor: --sw-k times how much a crowded wheel (seven or
+     nine wedges) must shrink a face to fit its arc. hud-stance.js build(). */
+  --sw-fk: 1;
 }
 .sw-svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; overflow: visible; }
 
@@ -78,8 +89,9 @@ body.sw-open #hud-stance {
 .sw-svg .sw-hubring { fill: none; stroke: rgba(214, 195, 148, .55); stroke-width: 2; }
 
 .sw-svg .sw-fill { stroke: none; transition: fill 120ms ease; }
-.sw-svg .sw-edge { fill: rgba(12, 13, 16, .80); stroke: rgba(214, 195, 148, .38); stroke-width: 1.5; }
-.sw-svg .sw-wedge.is-hi .sw-edge  { stroke: rgba(240, 214, 140, .95); stroke-width: 2.5; fill: rgba(22, 21, 18, .86); }
+.sw-svg .sw-accent { fill: none; stroke-width: 7; stroke-linecap: butt; transition: stroke 120ms ease; }
+.sw-svg .sw-edge { fill: rgba(12, 13, 16, .93); stroke: rgba(214, 195, 148, .38); stroke-width: 1.5; }
+.sw-svg .sw-wedge.is-hi .sw-edge  { stroke: rgba(240, 214, 140, .95); stroke-width: 2.5; fill: rgba(22, 21, 18, .95); }
 .sw-svg .sw-wedge.is-cur .sw-edge { stroke: rgba(240, 214, 140, .70); stroke-width: 2; }
 
 /* ---- faces: badge + name + key, centred on each wedge ------------------
@@ -88,8 +100,8 @@ body.sw-open #hud-stance {
    only magnify a small raster. */
 .sw-face {
   position: absolute;
-  width: calc(200px * var(--sw-k));
-  margin-left: calc(-100px * var(--sw-k));
+  width: calc(200px * var(--sw-fk));
+  margin-left: calc(-100px * var(--sw-fk));
   transform: translateY(-50%);
   display: flex;
   flex-direction: column;
@@ -100,33 +112,50 @@ body.sw-open #hud-stance {
 /* Combat Expansion's badge: frame geometry here, its glyph on a canvas */
 .sw-icon {
   position: relative;
-  width: calc(120px * var(--sw-k));
-  height: calc(120px * var(--sw-k));
-  opacity: .8;
+  width: calc(120px * var(--sw-fk));
+  height: calc(120px * var(--sw-fk));
+  opacity: .92;
   transition: opacity 120ms ease;
 }
 .sw-badge { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
+/* hover glow: a soft disc of the stance colour behind the diamond */
+.sw-glow {
+  position: absolute;
+  left: -22%; top: -22%; width: 144%; height: 144%;
+  border-radius: 50%;
+  background: radial-gradient(circle at center, rgba(var(--sw-rgb), .42) 0%, rgba(var(--sw-rgb), .14) 42%, rgba(var(--sw-rgb), 0) 70%);
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
 .sw-badge .sw-b-out  { fill: rgba(22, 24, 27, .96); stroke-width: 4.5; stroke-linejoin: miter; }
 .sw-badge .sw-b-in   { fill: none; stroke-width: 1.4; }
 .sw-badge .sw-b-mark { fill: none; stroke-width: 3.6; }
 .sw-glyph { position: absolute; left: 22%; top: 22%; width: 56%; height: 56%; display: block; }
 .sw-name {
-  margin-top: calc(6px * var(--sw-k));
-  font-size: calc(24px * var(--sw-k));
+  transition: color 120ms ease, letter-spacing 120ms ease;
+  margin-top: calc(6px * var(--sw-fk));
+  font-size: calc(24px * var(--sw-fk));
   letter-spacing: 2px;
   text-transform: uppercase;
+  white-space: nowrap;    /* one unit: "Walk With Me" must not stack onto the hub */
   color: #e6dcc2;
   text-shadow: 0 1px 4px rgba(0, 0, 0, .9);
 }
 .sw-key {
-  margin-top: calc(3px * var(--sw-k));
-  min-height: calc(20px * var(--sw-k));
-  font-size: calc(16px * var(--sw-k));
+  margin-top: calc(3px * var(--sw-fk));
+  min-height: calc(20px * var(--sw-fk));
+  font-size: calc(16px * var(--sw-fk));
   letter-spacing: 1px;
+  white-space: nowrap;
   color: #a39a83;
 }
+.sw-face { transition: opacity 140ms ease; }
 .sw-face.is-hi .sw-icon { opacity: 1; }
-.sw-face.is-hi .sw-name { color: rgb(var(--sw-rgb)); }
+.sw-face.is-hi .sw-glow { opacity: 1; }
+.sw-face.is-hi .sw-name { color: rgb(var(--sw-rgb)); letter-spacing: 3px; }
+.sw-face.is-hi .sw-key  { color: #efe6cc; }
+/* the rest step back while one stance is aimed at */
+.sw-wrap.has-hi .sw-face:not(.is-hi) { opacity: .78; }
 .sw-face.is-cur .sw-key { color: #d9c58f; }
 
 /* ---- the hub ------------------------------------------------------------ */
@@ -134,14 +163,15 @@ body.sw-open #hud-stance {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: calc(200px * var(--sw-k));
-  margin-left: calc(-100px * var(--sw-k));
+  width: calc(184px * var(--sw-k));
+  margin-left: calc(-92px * var(--sw-k));
   transform: translateY(-50%);
   text-align: center;
   pointer-events: none;
 }
 .sw-hub-name {
   font-size: calc(28px * var(--sw-k));
+  white-space: nowrap;   /* one line; hud-stance.js fitHubName shrinks a long name to fit */
   letter-spacing: 3px;
   text-transform: uppercase;
   color: #f3ecd9;
@@ -179,11 +209,16 @@ body.sw-open #hud-stance {
   margin-top: 8px;
 }
 .sw-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   font-size: 17px;
   letter-spacing: .5px;
   color: #b3ab96;
   text-shadow: 0 1px 3px rgba(0, 0, 0, .9);
 }
+.sw-hint-l, .sw-hint-s { white-space: nowrap; }
+.sw-hint-s { font-size: 15px; color: #8f8775; }
 .sw-x {
   font: inherit;
   font-size: 18px;
@@ -201,7 +236,377 @@ body.sw-open #hud-stance {
 .sw-x:active { background: rgba(60, 52, 32, .95); }
 .sw-x:focus-visible { outline: 2px solid #f0d68c; outline-offset: 2px; }
 
-@media (prefers-reduced-motion: reduce) {
-  .sw-frame, .sw-svg .sw-fill, .sw-icon, .sw-note, .sw-x { transition: none; }
-  .sw-frame { transform: none; }
+/* ---- the settings card (right-click, 2026-10-11) ------------------------
+   hud-stance.js paintCfg. A floating card over the wheel: the wheel steps
+   back (flat opacity, no gradient anywhere near screen size) and stops
+   taking the pointer, so a click outside the card lands on the layer and
+   closes the card. Couch type: body 20px, headings 24-34px, every target at
+   least 48px tall. marker: combat-wheel-cfg-card */
+.sw-frame.sw-under { opacity: .22; pointer-events: none; }
+
+.sw-cfg {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  box-sizing: border-box;
+  width: 1240px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding: 36px 44px 34px;
+  background: rgba(13, 14, 17, .97);
+  border: 1px solid rgba(214, 195, 148, .55);
+  border-radius: 20px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .4), 0 0 0 1px rgba(0, 0, 0, .5);
+  color: #ece4cf;
+  font-size: 20px;
+  line-height: 1.35;
+  pointer-events: auto;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
 }
+
+.sw-cfg-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 22px;
+  margin-bottom: 26px;
+  border-bottom: 1px solid rgba(214, 195, 148, .22);
+}
+.sw-cfg-title { font-size: 34px; letter-spacing: 5px; text-transform: uppercase; color: #f3ecd9; }
+.sw-cfg-sub { margin-top: 6px; font-size: 19px; color: #b9a978; }
+
+.sw-cfg-sec { margin-bottom: 30px; min-width: 0; }
+.sw-cfg-h {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 16px;
+  font-size: 24px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #e9dcb6;
+}
+.sw-cfg-hs { font-size: 18px; letter-spacing: .5px; text-transform: none; color: #a39a83; }
+.sw-cfg-cap { margin-top: 14px; font-size: 18px; color: #a9a08a; }
+
+/* wedge switches: three across on a six-track grid, so a short last row
+   STRETCHES instead of leaving empty cells (ten wedges since the Command Ring,
+   2026-10-12): one left over spans the row, two left over take half each. */
+.sw-cfg-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-auto-rows: auto;
+  gap: 14px;
+}
+.sw-cfg-grid > .sw-cfg-w { grid-column: span 2; }
+.sw-cfg-grid > .sw-cfg-w:nth-child(3n+1):last-child { grid-column: span 6; }
+.sw-cfg-grid > .sw-cfg-w:nth-child(3n+1):nth-last-child(2),
+.sw-cfg-grid > .sw-cfg-w:nth-child(3n+1):nth-last-child(2) + .sw-cfg-w { grid-column: span 3; }
+.sw-cfg-w {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+  min-height: 92px;
+  box-sizing: border-box;
+  padding: 14px 20px 14px 16px;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  background: rgba(22, 23, 27, .95);
+  border: 1px solid rgba(214, 195, 148, .24);
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, opacity 140ms ease;
+}
+.sw-cfg-w.is-on { background: rgba(31, 29, 23, .96); border-color: rgba(214, 195, 148, .62); }
+.sw-cfg-w:hover { background: rgba(44, 39, 27, .97); border-color: #f0d68c; }
+.sw-cfg-w:active { background: rgba(58, 51, 33, .97); }
+.sw-cfg-w:focus-visible { outline: 2px solid #f0d68c; outline-offset: 2px; }
+.sw-cfg-w.is-na { opacity: .55; }
+.sw-cfg-w.is-na:hover { opacity: .8; }
+.sw-cfg-w:disabled { cursor: default; opacity: .45; }
+
+/* the wheel's own diamond badge, at tile size */
+.sw-cfg .sw-icon { flex: none; width: 60px; height: 60px; opacity: 1; }
+.sw-cfg .sw-glow { display: none; }
+.sw-cfg-w:not(.is-on) .sw-icon { opacity: .5; }
+
+.sw-cfg-wtx { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 auto; }
+.sw-cfg-wn { font-size: 22px; letter-spacing: 1px; color: #f0e8d2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sw-cfg-w.is-on .sw-cfg-wn { color: rgb(var(--sw-rgb)); }
+.sw-cfg-ws { font-size: 17px; color: #a39a83; }
+.sw-cfg-w.is-na .sw-cfg-ws { color: #e0a878; }
+
+.sw-cfg-pill {
+  flex: none;
+  min-width: 72px;
+  box-sizing: border-box;
+  padding: 7px 14px;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 17px;
+  letter-spacing: 2px;
+  color: #a39a83;
+  border: 1px solid rgba(214, 195, 148, .32);
+}
+.sw-cfg-pill.on { color: #17140d; background: rgba(240, 214, 140, .94); border-color: rgba(240, 214, 140, .94); }
+
+/* speed + size side by side; they wrap below on a narrow screen */
+.sw-cfg-two { display: flex; flex-wrap: wrap; gap: 0 56px; }
+.sw-cfg-two > .sw-cfg-sec { flex: 1 1 420px; }
+.sw-cfg-stops { display: flex; flex-wrap: wrap; gap: 10px; }
+.sw-cfg-stop {
+  min-width: 100px;
+  min-height: 54px;
+  padding: 10px 20px;
+  font: inherit;
+  font-size: 20px;
+  color: #e6dcc2;
+  background: rgba(22, 23, 27, .95);
+  border: 1px solid rgba(214, 195, 148, .32);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.sw-cfg-stop:hover { background: rgba(44, 39, 27, .97); border-color: #f0d68c; }
+.sw-cfg-stop:active { background: rgba(58, 51, 33, .97); }
+.sw-cfg-stop:focus-visible { outline: 2px solid #f0d68c; outline-offset: 2px; }
+.sw-cfg-stop.is-on { color: #17140d; background: rgba(240, 214, 140, .94); border-color: rgba(240, 214, 140, .94); }
+.sw-cfg-stop:disabled { cursor: default; opacity: .45; }
+
+.sw-cfg-foot {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding-top: 22px;
+  border-top: 1px solid rgba(214, 195, 148, .22);
+}
+.sw-cfg-note { flex: 1 1 auto; min-width: 0; font-size: 19px; color: #e79a9a; }
+.sw-cfg-keys { flex: none; font-size: 18px; color: #8f8775; }
+
+.sw-cfg-btn {
+  flex: none;
+  font: inherit;
+  font-size: 19px;
+  letter-spacing: 1px;
+  color: #f0e8d2;
+  background: rgba(20, 22, 26, .92);
+  border: 1px solid rgba(214, 195, 148, .55);
+  border-radius: 999px;
+  padding: 10px 28px;
+  min-height: 50px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.sw-cfg-btn:hover { background: rgba(46, 41, 27, .95); border-color: #f0d68c; box-shadow: 0 0 12px rgba(240, 214, 140, .25); }
+.sw-cfg-btn:active { background: rgba(60, 52, 32, .95); }
+.sw-cfg-btn:focus-visible { outline: 2px solid #f0d68c; outline-offset: 2px; }
+.sw-cfg-btn:disabled { cursor: default; opacity: .4; box-shadow: none; background: rgba(20, 22, 26, .92); border-color: rgba(214, 195, 148, .3); }
+
+/* ---- the Walk With Me flyout (2026-10-12) ------------------------------
+   hud-stance.js openFly / placeFly. A card BESIDE the wheel on the wedge's
+   side, level with its face; the wedge stays lit and the rest of the wheel
+   steps back (flat opacity, no gradient). Three rows, one shape: glyph,
+   name, one line of what it opens, a chevron. Couch type: names 26px,
+   lines 19px, rows 108px tall. --sw-rgb is the wedge's own colour.
+   marker: combat-wheel-wwm-flyout */
+.sw-frame.sw-flying .sw-face:not(.is-hi) { opacity: .4; }
+.sw-frame.sw-flying .sw-hub { opacity: .55; }
+
+.sw-fly {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  /* 540: beside a Large wheel at 1920x1080 too (64vh = 691px leaves 614px
+     a side); narrower screens put it over the wheel instead */
+  width: 540px;
+  max-width: calc(100vw - 40px);
+  padding: 26px 26px 22px;
+  background: rgba(13, 14, 17, .97);
+  border: 1px solid rgba(214, 195, 148, .55);
+  border-radius: 20px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .4), 0 0 0 1px rgba(0, 0, 0, .5);
+  color: #ece4cf;
+  pointer-events: auto;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+  /* one-shot entrance: slides in from the wheel's side */
+  opacity: 0;
+  transition: opacity 140ms ease, transform 160ms ease;
+}
+.sw-fly.sw-fly-r { transform: translateX(-14px); }
+.sw-fly.sw-fly-l { transform: translateX(14px); }
+.sw-fly.sw-fly-c { transform: scale(.96); }
+.sw-fly.sw-in { opacity: 1; transform: none; }
+/* the wedge's colour along the edge that faces the wheel */
+.sw-fly.sw-fly-r { border-left: 4px solid rgba(var(--sw-rgb), .85); }
+.sw-fly.sw-fly-l { border-right: 4px solid rgba(var(--sw-rgb), .85); }
+
+.sw-fly-head {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 6px 18px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid rgba(214, 195, 148, .22);
+}
+.sw-fly .sw-icon { flex: none; width: 64px; height: 64px; opacity: 1; }
+.sw-fly .sw-glow { display: none; }
+.sw-fly-tt { min-width: 0; }
+.sw-fly-title {
+  font-size: 30px;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: rgb(var(--sw-rgb));
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .9);
+}
+.sw-fly-sub { margin-top: 4px; font-size: 19px; color: #b9a978; }
+
+.sw-fly-list { display: flex; flex-direction: column; gap: 10px; }
+.sw-fly-o {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  min-height: 108px;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 16px 22px 16px 18px;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  background: rgba(22, 23, 27, .95);
+  border: 1px solid rgba(214, 195, 148, .24);
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.sw-fly-o.is-hi { background: rgba(var(--sw-rgb), .16); border-color: rgba(var(--sw-rgb), .9); }
+.sw-fly-o:active { background: rgba(var(--sw-rgb), .26); }
+.sw-fly-o:focus-visible { outline: 2px solid #f0d68c; outline-offset: 2px; }
+
+.sw-fly-ic {
+  flex: none;
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
+  background: rgba(9, 10, 12, .9);
+  border: 1px solid rgba(214, 195, 148, .28);
+  transition: border-color 120ms ease;
+}
+.sw-fly-o.is-hi .sw-fly-ic { border-color: rgba(var(--sw-rgb), .75); }
+.sw-fly-glyph {
+  position: absolute; left: 10px; top: 10px; width: 44px; height: 44px; display: block;
+  opacity: .78;
+  transition: opacity 120ms ease;
+}
+.sw-fly-o.is-hi .sw-fly-glyph { opacity: 1; }
+
+.sw-fly-tx { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1 1 auto; }
+.sw-fly-n {
+  font-size: 26px;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #f0e8d2;
+  transition: color 120ms ease;
+}
+.sw-fly-o.is-hi .sw-fly-n { color: rgb(var(--sw-rgb)); }
+.sw-fly-d { font-size: 19px; line-height: 1.3; color: #a9a08a; }
+.sw-fly-o.is-hi .sw-fly-d { color: #d8d0bb; }
+.sw-fly-go {
+  flex: none;
+  font-size: 34px;
+  line-height: 1;
+  color: rgba(214, 195, 148, .35);
+  transition: color 120ms ease;
+}
+.sw-fly-o.is-hi .sw-fly-go { color: rgb(var(--sw-rgb)); }
+
+.sw-fly-keys { margin-top: 16px; padding: 0 6px; font-size: 17px; color: #8f8775; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sw-frame, .sw-svg .sw-fill, .sw-svg .sw-accent, .sw-icon, .sw-glow, .sw-face, .sw-name, .sw-note, .sw-x,
+  .sw-cfg-w, .sw-cfg-stop, .sw-cfg-btn,
+  .sw-fly, .sw-fly-o, .sw-fly-ic, .sw-fly-glyph, .sw-fly-n, .sw-fly-go { transition: none; }
+  .sw-frame, .sw-fly { transform: none; }
+}
+
+/* ---- the size slider (2026-10-12, marker combat-wheel-size-slider) --------
+   A drawn track (hud-stance.js szStart says why it is not a native range). Couch-sized: a 64px hit row, a 34px thumb, the value in large type. */
+.sw-cfg-slide {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.sw-cfg-slide .sw-cfg-nudge {
+  flex: none;
+  width: 58px;
+  min-width: 58px;
+  padding: 0;
+  font-size: 30px;
+  line-height: 1;
+}
+.sw-cfg-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 180px;
+  height: 64px;
+  cursor: pointer;
+  outline: none;
+}
+.sw-cfg-rail {
+  position: absolute;
+  left: 0; right: 0; top: 50%;
+  height: 10px;
+  margin-top: -5px;
+  border-radius: 5px;
+  background: rgba(58, 54, 44, .95);
+  border: 1px solid rgba(214, 195, 148, .28);
+  overflow: hidden;
+}
+.sw-cfg-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  background: rgba(240, 214, 140, .88);
+}
+.sw-cfg-thumb {
+  position: absolute;
+  top: 50%;
+  width: 34px; height: 34px;
+  margin: -17px 0 0 -17px;
+  border-radius: 50%;
+  background: rgba(244, 228, 182, 1);
+  border: 3px solid rgba(23, 20, 13, .95);
+  box-shadow: 0 0 0 2px rgba(240, 214, 140, .55), 0 2px 8px rgba(0, 0, 0, .55);
+  transition: box-shadow 120ms ease;
+}
+.sw-cfg-track:hover .sw-cfg-thumb { box-shadow: 0 0 0 4px rgba(240, 214, 140, .45), 0 2px 8px rgba(0, 0, 0, .55); }
+.sw-cfg-track:focus-visible .sw-cfg-thumb { box-shadow: 0 0 0 4px rgba(240, 214, 140, .9), 0 2px 8px rgba(0, 0, 0, .55); }
+.sw-cfg-val {
+  flex: none;
+  min-width: 84px;
+  text-align: right;
+  font-size: 28px;
+  color: #f3ecd9;
+  font-variant-numeric: tabular-nums;
+}
+.sw-cfg-slide.is-off { opacity: .45; }
+.sw-cfg-slide.is-off .sw-cfg-track { cursor: default; }
+
+/* hints switched off (2026-10-12, marker combat-wheel-hints-off): only Cancel, centred */
+.sw-foot.sw-foot-bare { justify-content: center; }
+/* the Show / Hide pair sits under World speed on the card, so the two columns end together */
+.sw-cfg-hints { margin-top: 30px; }

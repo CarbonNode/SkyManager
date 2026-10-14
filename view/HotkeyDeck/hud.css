@@ -859,15 +859,27 @@ body.hud-pinlabels-off .hud-eq-name { display: none; }
    ========================================================================== */
 .hud-strip { display: flex; gap: 12px; align-items: flex-start; }
 .hud-strip.vert { flex-direction: column; align-items: center; }
-.hud-strip.horiz { flex-direction: row; }
+.hud-strip.horiz { flex-direction: row; column-gap: var(--hud-gap-h, 12px); }
 body.a-right .hud-strip.horiz { flex-direction: row-reverse; }
 body.a-bottom .hud-strip.vert { flex-direction: column-reverse; }
 .hud-strip:empty { display: none; }
 
 /* One follower. Face on top, name under — same shape in both orientations so
    there is a single layout to reason about. */
-.hud-chip { display: flex; flex-direction: column; align-items: center; gap: 5px; width: 76px; }
-.hud-strip.vert .hud-chip { width: 84px; }
+/* flex 0 0 auto (2026-10-12): a chip never shrinks. #hud is absolutely placed,
+   so near the right edge its room ends at the screen edge and the chips were
+   squeezed into it instead of spilling where keepOnScreen can see them. */
+/* SQUEEZE (Rober, 2026-10-13: "a bit wide horizontally ... i want to squish
+   it horizontally", Shift + corner drag; marker hud-strip-squeeze). hud.js
+   applySqueeze writes --hud-chip-wh / --hud-chip-wv / --hud-gap-h /
+   --hud-plate-padx as plain px literals, and only while the squeeze is above
+   0, so the stock widths below stay the fallbacks. The column narrows toward
+   the face's own width; the face itself never stretches. */
+.hud-chip { display: flex; flex-direction: column; align-items: center; gap: 5px; width: var(--hud-chip-wh, 76px); flex: 0 0 auto; }
+.hud-strip.vert .hud-chip { width: var(--hud-chip-wv, 84px); }
+/* the browsed face grows to 78px (+ rim): a squeezed column widens for it
+   instead of letting the One frame plate clip it */
+#hud-strip .hud-chip.nav-open { min-width: 84px; }
 
 /* Portrait medallion: a WRAPPER owns the circle + ring, the inner <img> owns the
    cover-fit and the crop transform (a transform on the image alone would scale
@@ -886,7 +898,10 @@ body.a-bottom .hud-strip.vert { flex-direction: column-reverse; }
   width: 56px; height: 56px; border-radius: 50%;
   overflow: hidden;
   background: rgba(0, 0, 0, .35);
-  border: 2px solid hsla(var(--hud-hue, 45), 55%, 62%, .85);
+  /* FRAMES (2026-10-13): an OPAQUE 3px rim in the follower's own colour
+     (--hud-frame, set per chip by hud.js paintFrame). The old 2px rim at 85%
+     let the scene through; over a busy background it read as broken. */
+  border: 3px solid var(--hud-frame, #d9b25b);
   box-shadow: 0 2px 6px rgba(0, 0, 0, .5);
   flex: 0 0 auto;
 }
@@ -902,11 +917,62 @@ body.a-bottom .hud-strip.vert { flex-direction: column-reverse; }
   color: #f4eeda;
   background: radial-gradient(circle at 50% 35%,
       hsla(var(--hud-hue, 45), 45%, 40%, .95), hsla(var(--hud-hue, 45), 45%, 22%, .95));
-  border: 2px solid hsla(var(--hud-hue, 45), 55%, 62%, .85);
+  /* FRAMES (2026-10-13): an OPAQUE 3px rim in the follower's own colour
+     (--hud-frame, set per chip by hud.js paintFrame). The old 2px rim at 85%
+     let the scene through; over a busy background it read as broken. */
+  border: 3px solid var(--hud-frame, #d9b25b);
   box-shadow: 0 2px 6px rgba(0, 0, 0, .5);
   flex: 0 0 auto;
 }
-.hud-dead .hud-face, .hud-dead .hud-medal { filter: grayscale(1) brightness(.6); border-color: rgba(200, 90, 90, .7); }
+/* id-scoped so the dead and hurt looks win over every frame mode below */
+#hud-strip .hud-chip.hud-dead .hud-face, #hud-strip .hud-chip.hud-dead .hud-medal { filter: grayscale(1) brightness(.6); border-color: rgba(200, 90, 90, .7); }
+/* AWAY — flagged as following, not loaded near you. Dimmed, face greyed, and
+   no bars or bearing ride on it. ⚠ NOT dashed any more (2026-10-13): Rober
+   saw three dashed rims after a door and read them as a broken frame ("are
+   these widget frames customizable?"). The rim stays solid and keeps her own
+   colour (the grey goes on the picture inside, not the frame), so who is
+   away is still readable at a glance. */
+.hud-chip.hud-away { opacity: .7; }
+.hud-away .hud-face-in { filter: grayscale(.8); }
+
+/* Frame modes (hud.js applyFrames): one gold rim for all, or none at all. In
+   "none" the rim stays laid out (the face framing measured that box) but
+   paints nothing, and neither does the shadow ring around it. */
+#hud-strip.frame-gold .hud-face, #hud-strip.frame-gold .hud-medal { border-color: var(--hud-frame-all, #d9b25b); }
+#hud-strip.frame-none .hud-face, #hud-strip.frame-none .hud-medal,
+#hud-strip.frame-group .hud-face, #hud-strip.frame-group .hud-medal {
+  border-color: transparent; background-clip: padding-box; box-shadow: none;
+}
+/* ONE FRAME (Rober, 2026-10-13: "one universal frame or color that expands as
+   more appear or go away nicely"). The strip itself becomes the plate: one
+   rim in the chosen colour around every face, its corners following the
+   portrait shape. hud.js glidePlate eases its size when someone joins or
+   leaves (marker hud-frame-glide); nothing animates while it stands still. */
+#hud-strip.frame-group {
+  box-sizing: border-box;
+  padding: 12px var(--hud-plate-padx, 12px);
+  border: 3px solid var(--hud-frame-all, #d9b25b);
+  border-radius: 22px;
+  background: rgba(10, 12, 16, .42);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+  overflow: hidden;
+}
+#hud-strip.frame-group.face-circle { border-radius: 52px; }
+#hud-strip.frame-group.face-square { border-radius: 9px; }
+#hud-strip.frame-group.face-diamond { border-radius: 16px; }
+
+/* Arrivals and departures, every mode: a face fades and grows in once when a
+   follower joins, and fades out before the strip closes the gap. One-shot
+   (the no-looping-animation law). */
+/* from-only: it eases to the chip's own value, so an away face lands on its .7 */
+@keyframes hudChipIn {
+  from { opacity: 0; transform: scale(.82); }
+}
+#hud-strip .hud-chip.is-new { animation: hudChipIn 240ms ease-out; }
+#hud-strip .hud-chip.is-leaving {
+  opacity: 0; transform: scale(.82);
+  transition: opacity 180ms ease-in, transform 180ms ease-in;
+}
 
 /* Name caption. Not tiny — Rober reads from a couch; legible over the scene via
    a text shadow rather than shrinking. Ellipsizes on overflow. */
@@ -1129,6 +1195,11 @@ body.hud-editing .hud-tools.below { top: 100%; bottom: auto; margin-bottom: 0; m
 /* The corner resize handle scales the STRIP assembly — same scope law as the
    four strip tools above; the shelf's own size stepper covers it otherwise. */
 body.hud-editing.hud-strip-edit .hud-resize { display: flex; }
+/* At the right edge of the monitor the right-side handle is off-screen and out
+   of the cursor's reach: hud.js placeStripHandles moves it to the left side
+   (marker hud-handle-side), and right-aligns the hint line on the right half. */
+body.hud-handle-left .hud-resize { right: auto; left: -32px; cursor: nesw-resize; }
+body.hud-hint-right .hud-hint { left: auto; right: 0; text-align: right; }
 
 /* The reposition hint line, shown under the panel while editing. */
 .hud-hint {
@@ -1379,7 +1450,7 @@ body.hud-cfg-left .hud-set-side:active { transform: scaleX(-1) translateY(1px); 
    a shelf whose whole point is one rhythm (measured on the Equipped group at
    2560, where "＋ Loot lamp — glow · auto-loot" wrapped). Same fix the header
    presets took the same day: a row that cannot fit gets a row. */
-.hud-el-addlab { font-size: 12.5px; color: var(--hud-dim); flex: 1 1 100%; }
+.hud-el-addlab { font-size: 12.5px; color: var(--hud-dim); flex: 1 1 100%; margin: 4px 0 6px; }
 
 /* A key capture and its ✕, welded so the pair reads as one control (see
    hud.js stripKeyRow). Seams exactly like `.hud-el-seg`: the clear button
@@ -1545,6 +1616,46 @@ body.hud-cfg-left .hud-set-side:active { transform: scaleX(-1) translateY(1px); 
   font-size: 13px; color: var(--hud-gold-pale); font-variant-numeric: tabular-nums;
 }
 .hud-sz-note { flex: 0 0 100%; font-size: 12px; color: var(--hud-dim); }
+.hud-sz-btn:disabled { opacity: .4; cursor: default; }
+.hud-sz-btn:disabled:hover { color: var(--hud-gold-pale); border-color: rgba(255, 255, 255, .09); background: rgba(255, 255, 255, .04); }
+
+/* ---- Frames row (2026-10-13): one line per follower on the strip --------
+   Her current rim, her name, Auto, then the twelve palette swatches as ONE
+   even block (6 x 2 on a narrow shelf, 12 x 1 where it is wide — never a
+   ragged last row). A swatch is a square of the colour itself, lit with a
+   gold-and-ink double ring when it is hers. */
+.hud-frl-list { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
+.hud-frl-list.is-idle .hud-frl { opacity: .55; }
+.hud-frl {
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 11px 12px; border-radius: 10px;
+  background: rgba(255, 255, 255, .03); border: 1px solid rgba(255, 255, 255, .06);
+}
+.hud-frl-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.hud-frl-now {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 7px;
+  border: 2px solid rgba(10, 12, 16, .9); box-shadow: 0 0 0 1px rgba(255, 255, 255, .18);
+}
+.hud-frl-name {
+  flex: 1 1 auto; min-width: 0; font-size: 15px; color: var(--hud-ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hud-frl-state { flex: 0 0 auto; font-size: 13px; color: var(--hud-dim); white-space: nowrap; }
+.hud-frl-head > .hud-el-chip { flex: 0 0 auto; }
+.hud-frl-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+@media (min-width: 1700px) { .hud-frl-grid { grid-template-columns: repeat(12, 1fr); gap: 5px; } }
+.hud-frs {
+  font: inherit; cursor: pointer; padding: 0; min-width: 0;
+  height: 36px; border-radius: 8px;
+  background: var(--sw, #d9b25b);
+  border: 2px solid rgba(10, 12, 16, .85);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .10);
+  transition: transform .09s ease, box-shadow .12s ease, border-color .12s ease;
+}
+.hud-frs:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px var(--hud-gold-lit), 0 3px 8px rgba(0, 0, 0, .45); }
+.hud-frs:focus-visible { outline: 2px solid var(--hud-gold-lit); outline-offset: 2px; }
+.hud-frs:active { transform: translateY(1px); }
+.hud-frs.on { border-color: #0a0c10; box-shadow: 0 0 0 2px var(--hud-gold-lit), 0 0 10px rgba(230, 196, 99, .45); }
 
 /* ========================================================================
    ROUND 3 (2026-08-17) — the four FREE slot widgets (hud-free layer).
@@ -1704,6 +1815,89 @@ body.hud-editing .hud-fw:active { cursor: grabbing; }
   filter: grayscale(1) brightness(.62);
 }
 .hud-fw-card.is-ward-down .hud-fw-name { color: var(--hud-dim); }
+
+/* ---- Quick Light status lantern (2026-10-12) ------------------------------
+   Sized by LAYOUT from --ql-h / --ql-w / --ql-s, which hud.js qlSize writes on
+   every placement; the widget wears no transform scale (placeFree), so the box
+   is the drawn size. The <img> sources are a ladder of natively drawn cuts
+   (tools/make_ql_lantern.py, icons/custom/ql/) picked to be 1.67-2x the box,
+   because Ultralight samples an <img> with no mipmaps.
+
+   Lit/dim: the DIM cut is always drawn and the LIT cut fades over it. Both
+   share one silhouette, so mid-flip the lantern never turns see-through the
+   way two cross-fading images would. One-shot motion only (the HUD law): a
+   fade, and a single flare of the halo when the light comes on. */
+#hud-fw-qlight { --ql-h: 64px; --ql-w: 40px; --ql-s: 1; }
+#hud-fw-qlight .hud-ql-card {
+  max-width: none;
+  gap: calc(var(--ql-s) * 6px);
+  padding: calc(var(--ql-s) * 12px) calc(var(--ql-s) * 16px) calc(var(--ql-s) * 10px);
+  border-radius: calc(var(--ql-s) * 14px);
+  transition: border-color 320ms ease, box-shadow 320ms ease;
+}
+/* bare: the lantern IS the widget — just enough padding to grab it by */
+#hud-fw-qlight.is-bare .hud-ql-card { padding: calc(var(--ql-s) * 5px); }
+#hud-fw-qlight:not(.is-bare) .hud-ql-card.is-lit {
+  border-color: rgba(255, 196, 92, .55);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .5), 0 0 22px rgba(255, 168, 64, .28);
+}
+.hud-ql-art {
+  position: relative;
+  width: var(--ql-w); height: var(--ql-h);
+  flex: none;
+}
+.hud-ql-img {
+  position: absolute; left: 0; top: 0; z-index: 2;
+  width: var(--ql-w); height: var(--ql-h);
+  display: block; pointer-events: none;
+}
+.hud-ql-lit { z-index: 3; opacity: 0; transition: opacity 340ms ease-out; }
+.hud-ql-card.is-lit .hud-ql-lit { opacity: 1; }
+/* The light the lantern throws, centred on the glass (56% down the art). A
+   smooth gradient, so a transform on it costs no sharpness. */
+.hud-ql-halo {
+  position: absolute; z-index: 1;
+  left: 50%; top: 56%;
+  width: calc(var(--ql-h) * 2.2); height: calc(var(--ql-h) * 2.2);
+  transform: translate(-50%, -50%);
+  opacity: 0; pointer-events: none;
+  transition: opacity 420ms ease-out;
+}
+.hud-ql-card.is-lit .hud-ql-halo { opacity: .9; }
+@keyframes hudQlIgnite {
+  0%   { opacity: 0;   transform: translate(-50%, -50%) scale(.5); }
+  35%  { opacity: 1;   transform: translate(-50%, -50%) scale(1.2); }
+  100% { opacity: .9;  transform: translate(-50%, -50%) scale(1); }
+}
+.hud-ql-card.ql-ignite .hud-ql-halo { animation: hudQlIgnite 560ms ease-out; }
+#hud-fw-qlight .hud-ql-name {
+  max-width: calc(var(--ql-s) * 170px);
+  font-size: calc(var(--ql-s) * 17px);
+  transition: color 320ms ease;
+}
+.hud-ql-card.is-dim .hud-ql-name { color: var(--hud-dim); }
+.hud-ql-st {
+  display: flex; align-items: center; justify-content: center;
+  height: calc(var(--ql-s) * 24px);
+  min-width: calc(var(--ql-s) * 52px);
+  padding: 0 calc(var(--ql-s) * 9px);
+  box-sizing: border-box;
+  border-radius: calc(var(--ql-s) * 7px);
+  font-size: calc(var(--ql-s) * 15px); font-weight: 800;
+  letter-spacing: .08em; text-transform: uppercase; white-space: nowrap;
+  color: var(--hud-dim);
+  background: rgba(255, 255, 255, .06);
+  border: 1px solid var(--hud-line-lit);
+  transition: color 320ms ease, background-color 320ms ease, border-color 320ms ease;
+}
+.hud-ql-card.is-lit .hud-ql-st {
+  color: #2a1606;
+  background: rgba(255, 198, 96, .94);
+  border-color: rgba(255, 226, 160, .9);
+}
+@media (prefers-reduced-motion: reduce) {
+  #hud-fw-qlight .hud-ql-card, #hud-fw-qlight .hud-ql-card * { transition: none; animation: none; }
+}
 .hud-fw-wardst {
   position: absolute; top: 4px; right: 4px; z-index: 3;
   height: 18px; padding: 0 5px; box-sizing: border-box;
@@ -1836,6 +2030,14 @@ body.hud-editing .hud-fw.is-drag .hud-fw-card {
   overflow: hidden; border-radius: inherit;
 }
 .hud-face-in > .hud-face-img { width: 100%; height: 100%; }
+/* Initials medal (a follower with no portrait): centre the letters in the
+   wrapper. As a plain block it put them top-left, and the facebox's
+   line-height:0 pushed half of each glyph above the frame, so the rounded
+   clip left only a white sliver in the corner of an empty tile (Rober's
+   screenshot, 2026-10-12, marker hud-medal-centred). */
+#hud-strip .hud-medal .hud-face-in {
+  display: flex; align-items: center; justify-content: center; line-height: 1;
+}
 
 #hud-strip.face-rounded .hud-face, #hud-strip.face-rounded .hud-medal { border-radius: 14px; }
 #hud-strip.face-square .hud-face, #hud-strip.face-square .hud-medal { border-radius: 5px; }
@@ -1848,10 +2050,10 @@ body.hud-editing .hud-fw.is-drag .hud-fw-card {
   width: 40px; height: 40px; margin: 8px; border-radius: 7px;
   transform: rotate(45deg);
 }
-/* 1.6, not 1.45: the 40px frame has a 36px CONTENT box (2px borders,
-   border-box), and the diamond's tips span 40x sqrt(2) = 56.6px — 1.45 left a
-   ~2px bare notch at each point. 40*sqrt(2)/36 = 1.571; 1.6 adds margin. */
-#hud-strip.face-diamond .hud-face .hud-face-in { transform: rotate(-45deg) scale(1.6); }
+/* 1.72: the 40px frame has a 34px CONTENT box (3px rims since 2026-10-13,
+   border-box), and the diamond's tips span 40x sqrt(2) = 56.6px. 56.6/34 =
+   1.664; 1.72 adds margin (1.45 once left a bare notch at each point). */
+#hud-strip.face-diamond .hud-face .hud-face-in { transform: rotate(-45deg) scale(1.72); }
 #hud-strip.face-diamond .hud-medal .hud-face-in {
   transform: rotate(-45deg);
   display: flex; align-items: center; justify-content: center;
@@ -1859,7 +2061,7 @@ body.hud-editing .hud-fw.is-drag .hud-fw-card {
 
 /* Hurt ring: STATIC (the no-looping-animation law) — a red ring + soft glow
    on anyone under a quarter health, never on the dead (they grey out). */
-.hud-chip.hud-hurt .hud-face, .hud-chip.hud-hurt .hud-medal {
+#hud-strip .hud-chip.hud-hurt .hud-face, #hud-strip .hud-chip.hud-hurt .hud-medal {
   border-color: rgba(224, 72, 56, .95);
   box-shadow: 0 0 0 2px rgba(202, 52, 40, .38), 0 0 14px rgba(224, 72, 56, .55);
 }
@@ -2029,7 +2231,7 @@ body.hud-editing .hud-fw-grp .hud-fw { pointer-events: none; }  /* the GROUP dra
 .hud-navhint.is-bottom { top: auto; bottom: 28px; }
 .hud-nc-back {
   position: absolute; inset: 0;
-  background: rgba(6, 7, 10, .58);          /* flat — never a gradient */
+  background: rgba(6, 7, 10, .42);          /* flat — never a gradient; .42 not .58 (too dim over live play, 2026-10-11) */
   pointer-events: auto;
 }
 .hud-nc-card {
@@ -2051,8 +2253,8 @@ body.hud-editing .hud-fw-grp .hud-fw { pointer-events: none; }  /* the GROUP dra
 .hud-nc-face .hud-face, .hud-nc-face .hud-medal { width: 168px; height: 168px; }
 .hud-nc-face .hud-medal { font-size: 46px; }
 /* .hud-face-in is a plain block (it exists to CLIP a scaled photo), so initials
-   inside it sit top-left — invisible at 56px in the strip, unmissable at 168.
-   Centring is scoped to the card so the strip's geometry is untouched. */
+   inside it sit top-left. The strip centres them under #hud-strip; the card
+   is outside the strip and needs its own rule. */
 .hud-nc-face .hud-medal .hud-face-in { display: flex; align-items: center; justify-content: center; }
 .hud-nc-id { min-width: 0; flex: 1 1 auto; }
 .hud-nc-name {
@@ -2067,6 +2269,7 @@ body.hud-editing .hud-fw-grp .hud-fw { pointer-events: none; }  /* the GROUP dra
   border: 1px solid rgba(255, 255, 255, .09);
 }
 .hud-nc-chip.is-lvl { color: var(--hud-gold-lit); border-color: var(--hud-line-lit); background: rgba(201, 162, 75, .13); }
+.hud-nc-chip.is-away { color: #b9b4a6; border-style: dashed; }
 .hud-nc-chip.is-dead { color: #e79a9a; border-color: rgba(202, 52, 40, .5); background: rgba(202, 52, 40, .14); }
 .hud-nc-chip.is-dir { color: var(--hud-steel); font-variant-numeric: tabular-nums; }
 .hud-nc-bars { display: flex; flex-direction: column; gap: 9px; margin-top: 18px; }
@@ -2353,7 +2556,7 @@ body.hud-editing .hud-loot-chip:hover { border-color: var(--hud-gold-lit); color
 .hud-bgpick-lbl {
   position: absolute;
   left: 0; right: 0; bottom: 0;
-  font-size: 11px;
+  font-size: 12px;
   color: #d9d2bd;
   background: rgba(10, 10, 14, .78);
   padding: 3px 6px;

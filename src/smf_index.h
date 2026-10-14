@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 
 // ---------------------------------------------------------------------------
 // SKSE Menu Framework pages in the Omni (Cmd-K).
@@ -53,8 +54,19 @@ namespace SmfIndex
 	// Re-walks the tree on every call (pages can register late). MAIN THREAD.
 	std::string ListJson();
 
+	// { lowercased DLL file stem -> SMF section } for every DLL that registers
+	// at least one page ("wayfarer" -> "Walk With Me"). A DLL with pages in
+	// several sections maps to the section holding most of them. The Keys tab
+	// names a config file after the mod's own menu with it (keys_sources.cpp).
+	// Empty when SMF is absent or its tree does not read cleanly. MAIN THREAD.
+	std::unordered_map<std::string, std::string> SectionsByDll();
+
 	// Opens one page in the host window. `path` must name a page in the
 	// freshly walked tree; anything else is refused. -> { ok, msg }.
 	// MAIN THREAD. The caller closes the deck palette when ok is true.
 	std::string Open(const std::string& path);
+
+	// True when `path` names a page in the freshly walked tree. MAIN THREAD.
+	// The Combat Wheel uses it to show a page's wedge only while it exists.
+	bool HasPage(const std::string& path);
 }

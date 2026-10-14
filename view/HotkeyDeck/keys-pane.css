@@ -412,8 +412,8 @@
    on the row's hover title when it ellipsises. */
 .kc-detail-src {
   flex: 1 0 100%;
-  color: #7f7768;
-  font-size: 12px;
+  color: #8d8471;
+  font-size: 14px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -469,3 +469,186 @@
   .kc-owners { flex-basis: 100%; }
   .kc-owner { max-width: 100%; }
 }
+
+/* --------------------------------------------- per-binding actions (2026-10-11) --
+   ownerActions() in keys-pane.js renders every action a binding offers; the
+   Rebind button sits at the end of its detail row, and a row SkyManager may not
+   write says why on its own dimmed line, never hidden. */
+
+.kc-detail-alias { color: #8d8471; font-weight: 500; }
+
+.kc-acts {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.kc-act-btn {
+  background: rgba(201, 162, 75, .12);
+  border: 1px solid rgba(201, 162, 75, .5);
+  border-radius: 8px;
+  color: #ecd9a8;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 7px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.kc-act-btn:hover { background: rgba(201, 162, 75, .24); border-color: rgba(236, 217, 168, .8); color: #fff3d6; }
+.kc-act-btn:active { background: rgba(201, 162, 75, .34); }
+.kc-act-btn:focus-visible { outline: 2px solid rgba(236, 217, 168, .8); outline-offset: 2px; }
+
+/* The reason a row is read-only: its own full-width line, quiet but legible. */
+.kc-acts-ro { margin-left: 0; flex: 1 0 100%; }
+/* Inside the group the buttons sit together; only a read-only line pushes
+   its "Add to Hotkeys" to the far edge. */
+.kc-acts:not(.kc-acts-ro) .hd-mk-add { margin-left: 0; }
+.kc-ro {
+  display: block;
+  color: #8d8471;
+  font-size: 15px;
+  font-style: italic;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+/* The "Unbound" row: actions a verified spec knows with no key yet. */
+.kc-row-free { border-style: dashed; }
+.kc-row-free .kc-key { color: #9a917d; font-style: italic; }
+
+/* ------------------------------------------------------- rebind popout -- *
+   Body-anchored and viewport-filling (the popout law): bare vh/vw are right
+   here and it must NOT wear scale(var(--ui-scale)). Bigger type than the panel,
+   because it exists to have room. Namespaced kcr- (checked free 2026-10-11). */
+
+.kcr-back {
+  position: fixed;
+  top: 0; right: 0; bottom: 0; left: 0;
+  z-index: 24000;
+  background: rgba(0, 0, 0, .78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: #eee8dc;
+  font: 18px/1.5 'Segoe UI', sans-serif;
+}
+.kcr-back.hidden { display: none; }
+.kcr-back * { box-sizing: border-box; }
+
+.kcr-card {
+  width: 100%;
+  max-width: 920px;
+  max-height: 92vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 30px 34px;
+  border: 1px solid #5c5443;
+  border-radius: 16px;
+  background: linear-gradient(160deg, #242128 0%, #14141b 55%);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .45);
+}
+
+.kcr-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.kcr-title { font-size: 28px; font-weight: 700; color: #ecd9a8; letter-spacing: .3px; min-width: 0; }
+.kcr-x {
+  background: #1d1d25;
+  border: 1px solid #5c5443;
+  border-radius: 10px;
+  color: #cfc8b8;
+  font-size: 20px;
+  min-width: 48px;
+  min-height: 48px;
+  cursor: pointer;
+}
+.kcr-x:hover { background: #363128; border-color: #ecd9a8; color: #fff3d6; }
+.kcr-sub { font-size: 17px; color: #bcb3a1; margin-top: -10px; }
+
+.kcr-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.kcr-lbl { font-size: 16px; color: #9a917d; min-width: 56px; text-transform: uppercase; letter-spacing: .8px; }
+.kcr-cap {
+  display: inline-block;
+  font-size: 24px;
+  font-weight: 700;
+  color: #fff3d6;
+  background: #1a1a22;
+  border: 1px solid #6b6150;
+  border-bottom-width: 3px;
+  border-radius: 10px;
+  padding: 8px 20px;
+  min-width: 96px;
+  text-align: center;
+}
+.kcr-cap-now { color: #cfc8b8; font-weight: 600; }
+
+.kcr-listen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 26px 0 10px;
+}
+.kcr-cap-wait {
+  font-size: 30px;
+  padding: 18px 44px;
+  border-color: rgba(201, 162, 75, .7);
+  box-shadow: 0 0 0 4px rgba(201, 162, 75, .12);
+  animation: kcr-pulse 1.4s ease-in-out infinite;
+}
+@keyframes kcr-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(201, 162, 75, .10); }
+  50% { box-shadow: 0 0 0 8px rgba(201, 162, 75, .22); }
+}
+.kcr-keys { font-size: 17px; color: #bcb3a1; text-align: center; }
+.kcr-keys b { color: #ecd9a8; }
+
+.kcr-confirm { display: flex; flex-direction: column; gap: 14px; }
+.kcr-free, .kcr-clear { font-size: 17px; color: #a9d39a; }
+.kcr-clear { color: #e3c98b; }
+.kcr-hits-head { font-size: 17px; color: #f2d2a0; font-weight: 600; }
+.kcr-hits { display: flex; flex-direction: column; gap: 8px; }
+.kcr-hit {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid #3d3a33;
+  border-radius: 10px;
+  background: #111117;
+  font-size: 16px;
+}
+.kcr-hit-same { border-color: rgba(227, 137, 128, .7); background: rgba(200, 80, 70, .10); }
+.kcr-hit-mod { color: #d9d2c2; font-weight: 600; }
+.kcr-hit-ctl { color: #bcb3a1; }
+.kcr-hit-tag { margin-left: auto; font-size: 15px; color: #9a917d; }
+.kcr-hit-same .kcr-hit-tag { color: #ffc0b8; font-weight: 600; }
+
+.kcr-msg { font-size: 18px; line-height: 1.55; padding: 8px 0; color: #e8e2d4; }
+.kcr-msg-ok { color: #cfe8c4; }
+.kcr-msg-bad { color: #ffc0b8; }
+
+.kcr-note { font-size: 16px; color: #9a917d; line-height: 1.5; }
+.kcr-note-warn { color: #f2d2a0; font-size: 16px; }
+
+.kcr-foot { display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; padding-top: 4px; }
+.kcr-btn {
+  background: #1d1d25;
+  border: 1px solid #5c5443;
+  border-radius: 10px;
+  color: #eee8dc;
+  font-size: 17px;
+  padding: 11px 22px;
+  min-height: 48px;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.kcr-btn:hover { background: #363128; border-color: #ecd9a8; }
+.kcr-btn:active { background: #453921; }
+.kcr-btn:focus-visible, .kcr-x:focus-visible { outline: 3px solid #ecd9a8; outline-offset: 3px; }
+.kcr-btn-go { background: rgba(201, 162, 75, .2); border-color: rgba(201, 162, 75, .75); color: #fff3d6; font-weight: 600; }
+.kcr-btn-go:hover { background: rgba(201, 162, 75, .32); }

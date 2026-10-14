@@ -2546,6 +2546,18 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
   .spell-package-member .sicon { width:68px; height:68px; margin:0; flex-shrink:0; }
   .spell-package-member .body { min-width:0; }
 }
+
+.spell-workbench-groups,.spell-group-views{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0;font-size:18px}
+.spell-group-sheet .sheet{width:860px;max-width:100%;background:#142026}
+.spell-group-sheet #sheet-body{overflow:auto}
+.spell-group-rows{display:flex;flex-direction:column;gap:8px}
+.spell-group-rows .spell{min-width:0;padding:12px;min-height:72px;background:#10191e;border:1px solid #3d494e;color:#eeeadf}
+.spell-group-rows .nm{font-size:20px}
+.spell-group-rows[data-layout=icons]{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.spell-group-rows[data-layout=icons] .spell{display:flex;flex-direction:column;align-items:center;text-align:center;gap:8px}
+.spell-group-rows[data-layout=icons] .sicon{width:60px;height:60px}
+.spell-group-rows .spell-card-stats,.spell-group-rows[data-layout=icons] .meta,.spell-group-rows[data-layout=icons] .spell-details-label{display:none}
+.spell-group-views button[aria-pressed=true]{border-color:#dfc184;color:#dfc184}
 </style>
 <link rel="stylesheet" href="/api/wardrobe-assets/wardrobe-flair.css">
 <link rel="stylesheet" href="/api/wardrobe-assets/wardrobe-studio.css">
@@ -2558,6 +2570,8 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
 <script src="/api/wardrobe-assets/wardrobe-nav.js"></script>
 <script src="/api/wardrobe-assets/wardrobe-flair-model.js"></script>
 <script src="/api/wardrobe-assets/wardrobe-flair-ui.js"></script>
+<link rel="stylesheet" href="/api/renown-assets/hd-renown.css">
+<script src="/api/renown-assets/hd-renown.js"></script>
 <link rel="stylesheet" href="/api/dossier-assets/hd-dossier-tools.css">
 <link rel="stylesheet" href="/api/dossier-assets/hd-dossier-social.css">
 <script src="/api/dossier-assets/hd-dossier-tools.js"></script>
@@ -2578,6 +2592,7 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
            the sheet wiring all key off it); only the visible label changed. -->
       <button class="tab on" data-tab="portraits" type="button">Followers <span class="n" id="n-portraits"></span></button>
       <a class="tab" href="/formation" style="text-decoration:none">Walk With Me</a>
+      <a class="tab" href="/procession" style="text-decoration:none">Procession</a>
       <a class="tab" id="osis-nav" href="/osis" style="text-decoration:none" hidden>OSIS</a>
       <button class="tab" data-tab="sheet" type="button">Sheet</button>
       <button class="tab" data-tab="icons" type="button">Spells <span class="n" id="n-icons"></span></button>
@@ -2701,6 +2716,11 @@ footer#foot code { font-family: Consolas, ui-monospace, monospace; color: var(--
 
   <main id="pane-sheet" hidden>
     <div id="sheet-tab-body"></div>
+    <!-- Renown — his deeds, how far each has spread, who in CHIM knows it. The
+         deck's own hd-renown.js (served by /api/renown-assets/), so the phone and
+         the in-game Character tab are one page. Its own host OUTSIDE
+         #sheet-tab-body, which the sheet's 1 s ticker rewrites wholesale. -->
+    <div id="renown-sect" style="margin-top:18px"><div id="renown-host"></div></div>
   </main>
 
   <!-- Faces — RaceMenu presets (via Preset Director). Browse, set a preset's
@@ -4859,8 +4879,9 @@ function renderCombatArts() {
   var rows = arts.filter(function (a) { return caMatches(a, q); });
   var pend = state.caPending || 0;
   var banner = '';
+  if (sp && sp.spellbookAt) banner = '<p class="spell-snapshot-note">Spellbook snapshot · ' + esc(new Date(sp.spellbookAt).toLocaleString()) + ' · Open F18 in game to refresh.</p>';
   if (pend) {
-    banner = '<div class="banner warn"><b>' + pend + ' combat-art icon change' + (pend === 1 ? '' : 's') + ' waiting</b>' +
+    banner += '<div class="banner warn"><b>' + pend + ' combat-art icon change' + (pend === 1 ? '' : 's') + ' waiting</b>' +
       'With Skyrim running ' + (pend === 1 ? 'it lands' : 'they land') + ' within a second — no restart, no save reload. ' +
       'If the game is closed, the deck picks ' + (pend === 1 ? 'it' : 'them') + ' up on its next Combat Arts open.</div>';
   }
@@ -5513,7 +5534,7 @@ function spellRow(s, q) {
 }
 
 // Spell Library: mirror the deck's nested organization and action/type browsing.
-var spellLibraryView = { category: '', kind: 'all', mode: 'all', layout: 'cards', density: 'balanced', controlsCollapsed: false };
+var spellLibraryView = { category: '', kind: 'all', mode: 'all', layout: 'columns', density: 'balanced', controlsCollapsed: true };
 try {
   var spellPrefs = JSON.parse(localStorage.getItem('skymanager.spellLibraryView') || '{}');
   if (['cards','columns','list','icons'].indexOf(spellPrefs.layout) >= 0) spellLibraryView.layout = spellPrefs.layout;
@@ -5552,7 +5573,7 @@ function spellLibraryControls(cats) {
     '<div id="spell-library-options" class="spell-library-controls"' + (spellLibraryView.controlsCollapsed ? ' hidden' : '') + '>' +
     select('kind', 'Type', [['all','All types'],['spell','Spells'],['power','Powers'],['shout','Shouts'],['unknown','Unclassified']]) +
     select('mode', 'Action', [['all','Any action'],['equip','Equip'],['cast','Cast now']]) +
-    select('layout', 'View', [['cards','Cards'],['columns','Columns'],['list','List'],['icons','Icons']]) + '</div>';
+    select('layout', 'View', [['cards','Gallery'],['columns','Columns'],['list','List'],['icons','Icons']]) + '</div>';
 }
 function spellCategoryChoices(query) {
   var cats = (state.spells && state.spells.categories) || [], names = cats.map(function (c) { return c.name; });
@@ -5597,12 +5618,41 @@ document.addEventListener('click', function (e) {
   var next = document.querySelector('[data-spell-controls-toggle]'); if (next) next.focus();
 });
 
+function spellWorkbenchGroups() { return (((state.spells || {}).library || {}).workbench || {}).groups || []; }
+function spellWorkbenchKey(s) { return s.plugin && s.localId ? s.plugin.toLowerCase() + '|' + (s.localId >>> 0).toString(16) : ''; }
+function spellWorkbenchGroupsHtml() {
+  var groups = spellWorkbenchGroups();
+  if (!groups.length) return '';
+  return '<div class="spell-workbench-groups"><span>Spell groups</span>' + groups.map(function(g) {
+    return '<button type="button" class="chip" data-spell-group="' + esc(g.id) + '">' + esc(g.name) + ' ›</button>';
+  }).join('') + '</div>';
+}
+function renderSpellGroupSheet() {
+  var g = spellWorkbenchGroups().find(function(g){return g.id === state.sheet.id;});
+  if (!g) { closeSheet(); return; }
+  $('sheet-back').hidden = true; $('sheet-icon').className='art'; $('sheet-icon').innerHTML='';
+  $('sheet-title').textContent = g.name; $('sheet-sub').textContent='Spell group · edit members, icon and pins in Magic (F18)';
+  var seen = {}, rows=[];
+  ((state.spells || {}).categories || []).forEach(function(c){(c.spells || []).forEach(function(s){var k=spellWorkbenchKey(s);if(k&&!seen[k]&&(g.members || []).indexOf(k)>=0){seen[k]=true;rows.push(s);}});});
+  var q=String(state.sheetQ || '').toLowerCase();rows=rows.filter(function(s){return spellMatches(s,q);});
+  var layout=state.sheet.groupLayout || g.layout || 'list';
+  $('sheet-body').innerHTML='<input id="sheet-q" class="txt" type="search" aria-label="Search this spell group" placeholder="Search this group…" value="'+esc(state.sheetQ || '')+'">' +
+    '<div class="spell-group-views"><button type="button" class="chip" data-spell-group-view="list" aria-pressed="'+(layout==='list')+'">List</button><button type="button" class="chip" data-spell-group-view="icons" aria-pressed="'+(layout==='icons')+'">Icons</button><span>'+rows.length+' spells</span></div>' +
+    '<div class="spell-group-rows" data-layout="'+esc(layout)+'">'+rows.map(function(s){return spellRow(s,q);}).join('')+'</div>' +
+    (rows.length ? '' : '<p class="empty">No matching available spells.</p>');
+}
+document.addEventListener('click',function(e){
+  var b=e.target && e.target.closest && e.target.closest('[data-spell-group], [data-spell-group-view]');if(!b)return;
+  if(b.hasAttribute('data-spell-group')){state.sheet={kind:'spellgroup',id:b.getAttribute('data-spell-group')};resetSheetUi();render();$('sheet-q').focus();}
+  else {state.sheet.groupLayout=b.getAttribute('data-spell-group-view');renderSheet();}
+});
+
 function renderSpells() {
   var host = $('spells-body');
   var sp = state.spells;
 
   if (state.loading && !sp) {
-    host.innerHTML = '<section class="sect"><div class="sect-head"><h2>Your Spell Deck</h2></div>' +
+    host.innerHTML = '<section class="sect"><div class="sect-head"><h2>Your spellbook</h2></div>' +
       '<div class="grid">' +
       new Array(7).join('x').split('x').map(function () { return '<div class="sk"></div>'; }).join('') +
       '</div></section>';
@@ -5610,9 +5660,9 @@ function renderSpells() {
   }
 
   var head = function (count, extra) {
-    return '<div class="sect-head"><h2>Your Spell Deck</h2>' +
+    return '<div class="sect-head"><h2>Your spellbook</h2>' +
       (count ? '<span class="n">' + count + '</span>' : '') +
-      '<span class="hint">' + (extra || 'Tap a spell for its effects, damage and Magicka cost.') + '</span></div>';
+      '<span class="hint">' + (extra || 'Tap a spell to inspect it. Group flyouts keep your place.') + '</span></div>';
   };
 
   if (sp && !sp.ok) {
@@ -5628,7 +5678,7 @@ function renderSpells() {
   host.setAttribute('data-layout', spellLibraryView.layout);
   host.setAttribute('data-density', spellLibraryView.density);
   var libraryControls = spellLibraryControls(cats);
-  var packages = spellPackagesHtml(q);
+  var packages = spellWorkbenchGroupsHtml() + spellPackagesHtml(q);
   var out = [];
   var shown = 0;
   var pend = (sp && sp.pendingAssignments) || 0;
@@ -6113,7 +6163,7 @@ function renderSpellDetails(s) {
   $('sheet-title').textContent = s.name;
   $('sheet-sub').textContent = spellLibraryPath(s.category);
   var d = s.description;
-  var text = !d ? 'Open the Spell Deck (F18) in game to refresh this description on your phone.'
+  var text = !d ? (s.learned ? 'Read this spell’s effects in Magic (F18). Saved deck descriptions are available here after reopening Magic.' : 'Open Magic (F18) in game to refresh this description on your phone.')
     : !d.ok ? 'The game could not resolve this spell. Reopen F18 to refresh the library.'
     : d.text || 'This spell has no visible effect description. Its effects may be handled by its mod.';
   var action = s.mode === 'equip' ? 'Equip' + (s.slot === 'voice' ? ' · Voice' : ' · ' + (s.hand || 'right') + ' hand') : 'Cast now';
@@ -6125,7 +6175,7 @@ function renderSpellDetails(s) {
     (s.school ? '<div><dt>School</dt><dd>' + esc(s.school) + '</dd></div>' : '') +
     (s.plugin ? '<div><dt>Source</dt><dd>' + esc(s.plugin) + '</dd></div>' : '') + '</dl>' +
     (d && d.at ? '<p class="spell-snapshot-note">Read from the game ' + esc(new Date(d.at).toLocaleString()) + '. Reopen F18 to refresh.</p>' : '') +
-    '<button class="btn" type="button" data-act="spell" data-id="' + esc(s.id) + '">Change spell icon</button>';
+    (s.learned ? '<p class="spell-snapshot-note">Customize this spell in Magic (F18) first to make it part of your saved deck.</p>' : '<button class="btn" type="button" data-act="spell" data-id="' + esc(s.id) + '">Change spell icon</button>');
 }
 function renderSpellSheet(s) {
   renderIconSheet(s, {
@@ -6327,6 +6377,19 @@ function hkKeyHtml(e, busy) {
   var html = '<div class="sheet-lbl">Key' +
     (pendKey ? '<span class="fstate pend" title="' + esc(QUEUED_TIP) + '">queued</span>' : '') + '</div>';
 
+  if (hkIsAction(e) && e.modKey) {
+    // mod-key (2026-10-11): presses ANOTHER mod's own key, read live from its
+    // config each time the deck fires it — so the key is set in that mod.
+    var mk = e.modKey;
+    html += '<div class="krow">' +
+      '<span class="pill key" title="Another mod’s own key">' + esc(hkKeyLabel(e) || 'Mod key') + '</span>' +
+      '<span class="grow"></span></div>' +
+      '<div class="fhint">This one presses ' + esc(mk.mod || 'another mod') + '’s own key for it, read live from ' +
+      '<code>' + esc(mk.file || '?') + '</code>' + (mk.key ? ' (<code>' + esc(mk.key) + '</code>)' : '') +
+      ' every time it fires. Change the key in ' + esc(mk.where || ((mk.mod || 'that mod') + '’s own settings')) +
+      ', not here. Its name, description, tab and icon are still yours to change.</div>';
+    return html;
+  }
   if (hkIsAction(e)) {
     // device:"action" — the verb is C++-owned (freeze / sit / bed / release).
     html += '<div class="krow">' +
@@ -8357,6 +8420,7 @@ function renderSheet() {
   var wrap = $('sheet-wrap');
   wrap.classList.toggle('spell-details-sheet', !!state.sheet && state.sheet.kind === 'spellinfo');
   wrap.classList.toggle('spell-categories-sheet', !!state.sheet && state.sheet.kind === 'spellcategories');
+  wrap.classList.toggle('spell-group-sheet', !!state.sheet && state.sheet.kind === 'spellgroup');
   wrap.classList.toggle('spell-package-sheet', !!state.sheet && state.sheet.kind === 'spellpackage');
   wrap.classList.toggle('npc-dossier', !!state.sheet && state.sheet.kind === 'npc');
   if (!state.sheet) { wrap.hidden = true; return; }
@@ -8368,6 +8432,7 @@ function renderSheet() {
     case 'spell': row = spellById(state.sheet.id); draw = renderSpellSheet; break;
     case 'spellinfo': row = spellById(state.sheet.id); draw = renderSpellDetails; break;
     case 'spellcategories': row = {}; draw = renderSpellCategoriesSheet; break;
+    case 'spellgroup': row = {}; draw = renderSpellGroupSheet; break;
     case 'spellpackage': row = ((state.spells && state.spells.combos) || []).find(function (c) { return c.id === state.sheet.id; }); draw = renderSpellPackageSheet; break;
     case 'hotkey': row = hotkeyById(state.sheet.id); draw = renderHotkeyEditSheet; break;
     case 'hkicon': row = hotkeyById(state.sheet.id); draw = renderHotkeyIconSheet; break;
@@ -8580,6 +8645,7 @@ var WD_SUBS = [
   { v: 'flair', label: 'Flair sets' },
   { v: 'inventory', label: 'Outfit builder' },
   { v: 'people', label: 'Who wears what' },
+  { v: 'wheel', label: 'Wardrobe wheel' },
   { v: 'dock', label: 'Favorites dock' },
 ];
 function wdSelectSection(id) {
@@ -8851,7 +8917,7 @@ function nffPersonRow(r) {
 
 /* ------------------------------- the list ------------------------------ */
 
-var flairPortalUi={flair:{},dock:{}}, flairPortalInventory=[], flairPortalIcons=[], flairPortalLoading=null;
+var flairPortalUi={flair:{},dock:{},wheel:{}}, flairPortalInventory=[], flairPortalIcons=[], flairPortalLoading=null;
 function loadPortalFlairAssets(){
   if(flairPortalLoading)return flairPortalLoading;
   flairPortalLoading=Promise.all([api('GET','/api/inventory'),api('GET','/api/icons')]).then(function(rs){
@@ -8869,6 +8935,8 @@ function renderPortalFlair(){
     image:wdImgUrl,itemImage:function(p){return p.iconFile?'icons/items/'+p.iconFile:(p.icon||'');},
     items:function(){return flairPortalInventory.concat((state.wardrobe.outfitMeta||[]).reduce(function(all,o){return all.concat(o.items||[]);},[]));},
     icons:function(){return flairPortalIcons;},
+    keyHint:'Open it in game with the key you bind to “Wardrobe Wheel” in Hotkeys. Changes here are queued and reach the wheel the next time the game reads the wardrobe.',
+    goFlair:function(){flairPortalUi.flair=flairPortalUi.flair||{};flairPortalUi.flair.draft={id:'f'+Date.now().toString(36),name:'',icon:'',items:[]};wdSelectSection('flair');},
     edit:async function(e){var r=await api('POST','/api/wardrobe',{op:'flair-edit',edit:e});if(!r.ok)throw new Error(r.error||'Could not queue this change');WardrobeFlairModel.apply(state.wardrobe,e);},
     upload:async function(file){
       if(file.size>8*1024*1024)throw new Error('Choose an image smaller than 8 MB');
@@ -8897,7 +8965,7 @@ function renderWardrobe() {
 
   var html = '<section class="sect ws-portal"><nav id="portal-wardrobe-nav" aria-label="Wardrobe sections"></nav>';
   var queueNote = '<p class="ws-portal-note">Changes are queued for Skyrim and applied when the game is ready.</p>';
-  if (state.wdSub === 'flair' || state.wdSub === 'dock') {
+  if (state.wdSub === 'flair' || state.wdSub === 'dock' || state.wdSub === 'wheel') {
     host.innerHTML = html + '<div id="portal-flair"></div>' + queueNote + '</section>';
     wdRenderNav(); renderPortalFlair(); return;
   }
@@ -12984,6 +13052,40 @@ function openAppearanceGallery() {
   }});
 }
 
+/* ---- Renown (the shared deck module) ----------------------------------- */
+var RENOWN_ADAPTER = {
+  surface: 'portal',
+  load: function (cb) {
+    api('GET', '/api/renown').then(function (j) {
+      if (!j || j.ok === false) cb((j && j.error) || 'The Renown ledger did not answer.');
+      else { if (j.cached) j.msg = 'Showing the last copy — ' + (j.error || 'CHIM is not running') + '. Edits need the game up.'; cb(null, j); }
+    }).catch(function (e) { cb(String(e && e.message || e)); });
+  },
+  op: function (name, payload, cb) {
+    var body = { op: name };
+    for (var k in payload) body[k] = payload[k];
+    api('POST', '/api/renown-op', body).then(function (j) {
+      if (!j || j.ok === false) cb((j && j.error) || 'That did not take.'); else cb(null, j);
+    }).catch(function (e) { cb(String(e && e.message || e)); });
+  },
+  icon: function (stem) { return '/api/icon-file/' + encodeURIComponent(stem); },
+  face: function (name) {
+    var hit = null, want = String(name || '').toLowerCase();
+    eachMember(function (m) {
+      if (!hit && m.hasPortrait && String(m.name || '').toLowerCase() === want) hit = '/api/portrait-file/' + encodeURIComponent(m.slug) + '?v=' + (m.mtime || 0);
+    });
+    return hit;
+  },
+  capture: function () {}
+};
+function mountRenown() {
+  var el = document.getElementById('renown-host');
+  if (!el || !window.HDRenown) return;
+  if (el.getAttribute('data-mounted')) { HDRenown.refresh(); return; }
+  el.setAttribute('data-mounted', '1');
+  HDRenown.mount(el, RENOWN_ADAPTER);
+}
+
 function renderSheetTab() {
   var host = document.getElementById('sheet-tab-body');
   if (!host) return;
@@ -15157,7 +15259,7 @@ var TABS = {
   icons: {
     // 'spellcaticon' = the category-glyph picker, opened off a category header.
     // 'cbarticon' = a Combat Art's icon picker, opened off its row below.
-    pane: 'pane-icons', sheet: 'spell', sheets: ['spell', 'spellinfo', 'spellpackage', 'spellcategories', 'spellcaticon', 'cbarticon'],
+    pane: 'pane-icons', sheet: 'spell', sheets: ['spell', 'spellinfo', 'spellpackage', 'spellcategories', 'spellgroup', 'spellcaticon', 'cbarticon'],
     placeholder: 'Search spells, combat arts, schools, icons…',
     render: function () { renderSpells(); renderCombatArts(); renderIcons(); },
   },
@@ -15342,7 +15444,7 @@ function setTab(t, push) {
   if (push && tabFromHash() !== t) location.hash = t;
   // The Sheet tab runs a light 1s ticker (age countdowns, refetch vitals) only
   // while it is active — start it on entry, stop it on any exit.
-  if (t === 'sheet') shStartTicker(); else shStopTicker();
+  if (t === 'sheet') { shStartTicker(); mountRenown(); } else shStopTicker();
   if(t === 'privacy') privacyFetch();
   render();
   scrollTabIntoView(t);
@@ -16246,13 +16348,14 @@ document.addEventListener('input', function (e) {
 document.addEventListener('keydown', function (e) {
   if(typeof npdModalKey==='function'&&npdModalKey(e))return;
   if(window.AppearanceGallery && AppearanceGallery.isOpen())return;
-  if (sheetIs('spellcategories')) {
-    if (e.key === 'Escape') {
+  if (sheetIs('spellcategories') || sheetIs('spellgroup')) {
+    if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === 'k') { e.preventDefault(); $('sheet-q').focus(); }
+    else if (e.key === 'Escape') {
       e.preventDefault(); clearTimeout(sheetQDebounce);
       if (state.sheetQ) { state.sheetQ = ''; renderSheet(); $('sheet-q').focus(); } else closeSheet();
     } else if (e.key === 'Enter' && e.target.id === 'sheet-q') {
       e.preventDefault(); clearTimeout(sheetQDebounce); renderSheet();
-      var topCategory = document.querySelector('[data-spell-category]'); if (topCategory) topCategory.click(); else $('sheet-q').focus();
+      var topCategory = $('sheet-body').querySelector(sheetIs('spellgroup') ? '[data-act="spell-details"]' : '[data-spell-category]'); if (topCategory) topCategory.click(); else $('sheet-q').focus();
     } else if (e.key === 'Tab') {
       var stops = Array.prototype.filter.call($('sheet-wrap').querySelectorAll('button:not([disabled]), input'), function (n) { return n.getClientRects().length; });
       var first = stops[0], last = stops[stops.length - 1];
@@ -16314,7 +16417,7 @@ document.addEventListener('keydown', function (e) {
 });
 
 state.tab = tabFromHash() || 'portraits';
-if (state.tab === 'sheet') shStartTicker();   // a deep link straight to #sheet
+if (state.tab === 'sheet') { shStartTicker(); mountRenown(); }   // a deep link straight to #sheet
 /* A deep link (#dragons) can name a tab that sits off the right-hand end of the
    scrolling tab row on a phone. Bring it into view once the first paint has
    given the row a width to scroll. */

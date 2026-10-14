@@ -5,6 +5,7 @@
 #include "hotbar.h"
 #include "item_icons.h"
 #include "ward_actions.h"
+#include "quick_light.h"
 
 #include <algorithm>
 #include <atomic>
@@ -230,6 +231,13 @@ namespace Widgets
 			// WardActions' maintained flag; pairs with the "ward-toggle" deck
 			// action. Same silent-arrival law as the other four.
 			Widget  ward;      // ward up/down, strength, best known ward
+			// ---- Quick Light status (2026-10-12) ----------------------------
+			// Rober: "quick light status, when its on shows a draggable icon on
+			// screen that shows lit up or dim". A FREE widget: one lantern,
+			// lit while Quick Light SE's light is on, dim while it is off, read
+			// through QuickLight::ReadState (the mod's own magic-effect test).
+			// Same silent-arrival law as every widget added after the first four.
+			Widget  qlight;
 			// ---- 2026-08-31: the season readout -----------------------------
 			// A FREE widget too (Rober: "not apart of other widgets … drag,
 			// move around, toggle on or off"), fed by Seasons of Skyrim's own
@@ -249,6 +257,19 @@ namespace Widgets
 			// read through the provider main.cpp installs. This module never
 			// learns what looting is — see SetLootStateProvider.
 			Widget                  lootStatus;
+			// ---- Loot feed (2026-10-12) -------------------------------------
+			// Rober: "loot notifications maybe top left, where they sort of
+			// animation slide in as iharvest picks stuff up? and others fade
+			// away (limit configurable)". A FREE widget: what just entered the
+			// bag, one row per item (hud-lootfeed.js). Rows come from LootFeed
+			// (loot_feed.cpp), pushed as they happen; only the placement and
+			// the options below live here. Silent arrival like every widget
+			// added after the first four.
+			Widget  lootFeed;
+			int     lootFeedMax = 5;          // rows on screen, 1..12
+			int     lootFeedLifeMs = 4500;    // how long a row stays, 1500..15000
+			bool    lootFeedValue = true;     // the coin + value on each row
+			bool    lootFeedHideVanilla = true;  // swallow the game's own "X added" lines
 			// ---- Time Dial (2026-08-18) ------------------------------------
 			// The hotkey-openable circular wait dial (hud-td.js). Only its
 			// PLACEMENT lives here — x/y/anchor/scale, so "remembers where it
@@ -349,6 +370,19 @@ namespace Widgets
 				// clears the 158px cards' handR at -352.
 				ward.anchorH = "center"; ward.anchorV = "bottom"; ward.x = -520; ward.y = 96;
 				ward.enabled = false;
+				// Quick Light: a lone lantern, so it ships BARE with no name —
+				// "an icon on screen" was the ask, not a card. Parked left of
+				// the ward on the same shelf; hud.js's wfree.qlight mirrors it.
+				qlight.anchorH = "center"; qlight.anchorV = "bottom"; qlight.x = -680; qlight.y = 110;
+				qlight.bare = true; qlight.showLabel = false;
+				qlight.enabled = false;
+				// Loot feed: top-left, where the game's own pickup lines sit
+				// (they are hidden while the feed is on — LootFeed's HUD filter).
+				// A list, not a card: no plate of its own, the rows carry theirs.
+				// hud.js's wfree.lootFeed mirrors this.
+				lootFeed.anchorH = "left"; lootFeed.anchorV = "top"; lootFeed.x = 40; lootFeed.y = 120;
+				lootFeed.bare = true; lootFeed.showLabel = false;
+				lootFeed.enabled = false;
 				// Season (2026-08-31): a FREE widget like the four above, so it
 				// gets its own spot rather than a line in someone else's stack
 				// (Rober: "not apart of other widgets"). Parked top-right and
@@ -383,6 +417,8 @@ namespace Widgets
 		// system (see RecountAnyLocked's note on the visibility split).
 		std::atomic<bool> g_anyStack{ false };   // in-panel readouts, behind the stack master
 		std::atomic<bool> g_anyFree{ false };    // free widgets, behind their own switches
+		std::atomic<bool> g_lootFeedOn{ false };    // LootFeed's lock-free gates (RecountAnyLocked)
+		std::atomic<bool> g_lootFeedHide{ false };
 		bool              g_loaded = false;
 
 		std::string ClampAnchorH(const std::string& s)
@@ -451,6 +487,8 @@ namespace Widgets
 			        g_cfg.handR.enabled || g_cfg.handL.enabled ||
 			        g_cfg.voice.enabled || g_cfg.quick.enabled ||
 			        g_cfg.ward.enabled ||
+			        g_cfg.qlight.enabled ||
+			        g_cfg.lootFeed.enabled ||
 			        g_cfg.season.enabled ||
 			        g_cfg.lootStatus.enabled ||
 			        // Same rule as the trackers: an enabled custom strip with
@@ -460,6 +498,12 @@ namespace Widgets
 			g_anyStack = stack;
 			g_anyFree  = free;
 			g_any      = stack || free;
+			// Lock-free mirrors for LootFeed: its container sink and HUD filter
+			// run inside the game's own event dispatch, which a widgets path
+			// holding g_mtx can trigger (an item added under the lock), so they
+			// must never take g_mtx themselves.
+			g_lootFeedOn   = g_cfg.lootFeed.enabled;
+			g_lootFeedHide = g_cfg.lootFeed.enabled && g_cfg.lootFeedHideVanilla;
 		}
 
 		json WidgetJson(const Widget& w)
@@ -879,6 +923,12 @@ namespace Widgets
 			json q2 = WidgetJson(g_cfg.quick2);
 			q2["max"] = g_cfg.quick2Max;
 			q2["items"] = Quick2Json(g_cfg.quick2Items);
+			// The loot feed's options ride its placement object, like quick2's.
+			json lf = WidgetJson(g_cfg.lootFeed);
+			lf["max"] = g_cfg.lootFeedMax;
+			lf["lifeMs"] = g_cfg.lootFeedLifeMs;
+			lf["value"] = g_cfg.lootFeedValue;
+			lf["hideVanilla"] = g_cfg.lootFeedHideVanilla;
 			return json{
 				{ "enabled", g_cfg.enabled },
 				{ "widgets", json{
@@ -904,6 +954,8 @@ namespace Widgets
 					{ "voice", WidgetJson(g_cfg.voice) },
 					{ "quick", WidgetJson(g_cfg.quick) },
 					{ "ward", WidgetJson(g_cfg.ward) },
+					{ "qlight", WidgetJson(g_cfg.qlight) },
+					{ "lootFeed", std::move(lf) },
 					{ "season", WidgetJson(g_cfg.season) },
 					{ "quick2", std::move(q2) },
 					{ "lootStatus", WidgetJson(g_cfg.lootStatus) },
@@ -1017,6 +1069,22 @@ namespace Widgets
 					WidgetFrom(w["quick"], g_cfg.quick);
 				if (w.contains("ward"))
 					WidgetFrom(w["ward"], g_cfg.ward);
+				if (w.contains("qlight"))
+					WidgetFrom(w["qlight"], g_cfg.qlight);
+				// Options land only when PRESENT (the quick2 partial-write rule):
+				// a view that saves just the dragged placement keeps them.
+				if (w.contains("lootFeed") && w["lootFeed"].is_object()) {
+					const auto& lf = w["lootFeed"];
+					WidgetFrom(lf, g_cfg.lootFeed);
+					if (lf.contains("max") && lf["max"].is_number())
+						g_cfg.lootFeedMax = std::clamp(lf["max"].get<int>(), 1, 12);
+					if (lf.contains("lifeMs") && lf["lifeMs"].is_number())
+						g_cfg.lootFeedLifeMs = std::clamp(lf["lifeMs"].get<int>(), 1500, 15000);
+					if (lf.contains("value") && lf["value"].is_boolean())
+						g_cfg.lootFeedValue = lf["value"].get<bool>();
+					if (lf.contains("hideVanilla") && lf["hideVanilla"].is_boolean())
+						g_cfg.lootFeedHideVanilla = lf["hideVanilla"].get<bool>();
+				}
 				if (w.contains("season"))
 					WidgetFrom(w["season"], g_cfg.season);
 				// Round 4. `max` and `items` land only when PRESENT — the same
@@ -3488,6 +3556,8 @@ namespace Widgets
 			            id == "voice" ? &g_cfg.voice :
 			            id == "quick" ? &g_cfg.quick :
 			            id == "ward" ? &g_cfg.ward :
+			            id == "qlight" ? &g_cfg.qlight :
+			            id == "lootFeed" ? &g_cfg.lootFeed :
 			            id == "season" ? &g_cfg.season :
 			            id == "quick2" ? &g_cfg.quick2 :
 			            id == "lootStatus" ? &g_cfg.lootStatus :
@@ -3565,6 +3635,16 @@ namespace Widgets
 	bool FreeWidgetsEnabled()
 	{
 		return g_anyFree.load();
+	}
+
+	bool LootFeedOn()
+	{
+		return g_lootFeedOn.load();
+	}
+
+	bool LootFeedHidesVanilla()
+	{
+		return g_lootFeedHide.load();
 	}
 
 	std::string ConfigJson()
@@ -3685,6 +3765,7 @@ namespace Widgets
 		bool                   wantVitals, wantFx, wantEquip, wantResist, wantSurv, wantAllies;
 		bool                   wantHandR, wantHandL, wantVoice, wantQuick;
 		bool                   wantWard;
+		bool                   wantQl;
 		bool                   wantSeason;
 		bool                   wantQuick2, wantLoot;
 		std::string            follow;
@@ -3716,6 +3797,7 @@ namespace Widgets
 			wantVoice = g_cfg.voice.enabled;
 			wantQuick = g_cfg.quick.enabled;
 			wantWard = g_cfg.ward.enabled;
+			wantQl = g_cfg.qlight.enabled;
 			wantSeason = g_cfg.season.enabled || (HudFlag("calendar") && HudFlag("calendarSeason", true));
 			wantQuick2 = g_cfg.quick2.enabled && !g_cfg.quick2Items.empty();
 			wantLoot = g_cfg.lootStatus.enabled;
@@ -3851,6 +3933,23 @@ namespace Widgets
 			json wd = WardJson();
 			if (wd.is_object())
 				out["ward"] = std::move(wd);
+		}
+		// Quick Light status. Absent when QuickLight.esp is not in the load
+		// order (nothing to say, so the lantern never pretends to be dim);
+		// present with running:false when its MCM has the mod switched off,
+		// so the edit ghost can say which of the two it is.
+		if (wantQl) {
+			bool installed = false, running = false, on = false;
+			QuickLight::ReadState(installed, running, on);
+			if (installed) {
+				out["qlight"] = json{ { "running", running }, { "on", on } };
+				static bool s_ql = false;
+				if (!s_ql) {
+					s_ql = true;
+					// Build marker (hd-markers.json: "widgets: quick light live").
+					logger::info("widgets: quick light live (running {}, on {})", running, on);
+				}
+			}
 		}
 		// Round 4: the player's OWN strip. Emitted even when every row is
 		// missing — "your mod is off" is the useful sentence, and the rows

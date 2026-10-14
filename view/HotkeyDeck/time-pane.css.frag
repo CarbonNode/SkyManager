@@ -80,7 +80,7 @@
 /* ---------- groups & chips ---------- */
 .tm-group { display: flex; flex-direction: column; gap: 8px; }
 .tm-group-label {
-  font-size: 11px; letter-spacing: 2.2px; text-transform: uppercase;
+  font-size: 12px; letter-spacing: 2.2px; text-transform: uppercase;
   color: #8a8471;
 }
 .tm-chips { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -96,7 +96,7 @@
 .tm-chip:focus-visible { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 2px rgba(201,162,75,.25); }
 .tm-chip:active { transform: scale(.96); }
 .tm-chip[disabled] { opacity: .45; cursor: default; transform: none; }
-.tm-chip-sub { font-size: 11px; color: #8a8471; }
+.tm-chip-sub { font-size: 12px; color: #8a8471; }
 
 /* ---------- custom slider ---------- */
 #tm-slider-row { display: flex; align-items: center; gap: 14px; }

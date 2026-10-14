@@ -110,7 +110,129 @@
       }
       paintRows();
     }
-    function render(){root.textContent='';if(a.page==='dock')renderDock();else renderFlair();}
+    /* wardrobe-wheel-editor: the looks on the Wardrobe Wheel and what fans out
+       from each. Every change sends the WHOLE slot list ({type:'wheel'}), so
+       the deck, the phone and the HUD can never disagree about order. */
+    const SPEEDS=[{v:.1,name:'Crawl'},{v:.25,name:'Slow'},{v:.35,name:'Eased'},{v:.5,name:'Half'},{v:1,name:'Normal'}];
+    const SIZES=[{v:48,name:'Small'},{v:56,name:'Medium'},{v:64,name:'Large'},{v:74,name:'Huge'}];
+    function clock(i,n){const h=Math.round(i*12/Math.max(1,n))%12;return (h===0?12:h)+' o’clock';}
+    function slotsNow(){return JSON.parse(JSON.stringify(M.wheel(doc()).slots||[]));}
+    function saveSlots(slots,msg){edit({type:'wheel',slots},()=>{if(msg)setTimeout(()=>say(msg),0);});}
+    function choiceArt(x){
+      if(x.set){const set=f().sets.find(v=>v.id===x.set);if(!set)return '';if(set.icon)return set.icon;const p=(set.items||[])[0];return p?a.itemImage(p):'';}
+      return x.item?a.itemImage(x.item):'';
+    }
+    function choiceName(x){if(x.set){const set=f().sets.find(v=>v.id===x.set);return set?set.name:'Missing Flair set';}return (x.item&&(x.item.name||x.item.formId))||'Piece';}
+    function choiceSub(x){if(x.set){const set=f().sets.find(v=>v.id===x.set);const n=set?(set.items||[]).length:0;return 'Flair set · '+n+(n===1?' piece':' pieces');}return 'Single piece'+(x.item&&x.item.slot?' · '+x.item.slot:'');}
+    function renderWheel(){
+      const w=M.wheel(doc()), slots=M.wheelRows(doc()), raw=slotsNow();
+      const intro=node('div','wf-wheel-intro');
+      const text=node('div','wf-wheel-text');
+      text.append(node('h3','','Wardrobe wheel'),node('p','wf-hint','Up to 8 looks on a slow-time wheel. Aim at a look to wear it on its own; aim past its edge to layer one of its choices over it — a Flair set or a single piece.'));
+      const tools=node('div','wf-tools');
+      const add=button('Add a look',()=>pickLook(),'wf-primary');add.disabled=raw.length>=8;if(add.disabled)add.title='The wheel holds 8 looks';
+      tools.append(add);
+      if(a.openWheel){const o=button('Open wheel',a.openWheel);o.disabled=!raw.length;tools.append(o);}
+      intro.append(text,tools);root.append(intro);
+      const prefs=node('div','wf-wheel-prefs');
+      function seg(label,list,cur,on){const g=node('div','wf-seg');g.setAttribute('role','group');g.setAttribute('aria-label',label);g.append(node('span','wf-seg-label',label));list.forEach(o=>{const b=button(o.name,()=>on(o.v));const near=list.reduce((m,x)=>Math.abs(x.v-cur)<Math.abs(m.v-cur)?x:m,list[0]);b.setAttribute('aria-pressed',String(near===o));if(near===o)b.classList.add('wf-primary');g.append(b);});return g;}
+      prefs.append(seg('World speed while it is up',SPEEDS,Number(w.slow)||.25,v=>edit({type:'wheel-options',slow:v,size:Number(w.size)||64})),
+        seg('Wheel size',SIZES,Number(w.size)||64,v=>edit({type:'wheel-options',slow:Number(w.slow)||.25,size:v})));
+      root.append(prefs);
+      if(a.keyHint)root.append(node('p','wf-hint wf-wheel-key',a.keyHint));
+      if(!slots.length){
+        const empty=node('div','wf-wheel-empty');
+        empty.append(node('h3','','No looks on the wheel yet'),node('p','wf-hint','Add your first look — a saved outfit or a wardrobe pool. Then give it a flyout of things to wear over it.'),button('Add a look',()=>pickLook(),'wf-primary'));
+        root.append(empty);return;
+      }
+      const list=node('ol','wf-wheel-list');
+      slots.forEach((r,i)=>{
+        const card=node('li','wf-wheel-slot'), head=node('div','wf-wheel-head');
+        const title=node('div','wf-row-title');
+        title.append(node('span','wf-wheel-pos',clock(i,slots.length)),node('h3','',r.name),node('span','wf-row-meta',r.kind==='wardrobe'?'Wardrobe pool · '+(r.count||0)+' looks':'Outfit'));
+        head.append(image(r.image,r.name),title);
+        const moves=node('div','wf-tools wf-wheel-moves');
+        const left=button('‹ Earlier',()=>{const s=slotsNow();const j=s.findIndex(x=>x.kind===r.kind&&x.id===r.id);if(j>0){s.splice(j-1,0,s.splice(j,1)[0]);saveSlots(s);}});left.disabled=i===0;left.setAttribute('aria-label','Move '+r.name+' earlier on the wheel');
+        const right=button('Later ›',()=>{const s=slotsNow();const j=s.findIndex(x=>x.kind===r.kind&&x.id===r.id);if(j>=0&&j<s.length-1){s.splice(j+1,0,s.splice(j,1)[0]);saveSlots(s);}});right.disabled=i===slots.length-1;right.setAttribute('aria-label','Move '+r.name+' later on the wheel');
+        const key=M.key(r.kind,r.id);
+        const del=button(s.wheelDelete===key?'Confirm remove':'Remove',()=>{if(s.wheelDelete!==key){s.wheelDelete=key;render();return;}s.wheelDelete='';saveSlots(slotsNow().filter(x=>!(x.kind===r.kind&&x.id===r.id)));},'wf-danger');
+        moves.append(left,right,del);head.append(moves);card.append(head);
+        const fly=node('div','wf-wheel-fly');
+        const rawSlot=raw.find(x=>x.kind===r.kind&&x.id===r.id)||{flyout:[]};
+        fly.append(node('div','wf-wheel-fly-label','Layer over it'+(rawSlot.flyout.length?' · '+rawSlot.flyout.length+' of 8':'')));
+        const chips=node('div','wf-wheel-chips');
+        rawSlot.flyout.forEach((x,j)=>{
+          const chip=node('div','wf-wheel-choice'+(x.item?' is-piece':''));
+          chip.append(image(choiceArt(x),'','wf-mini'));
+          const t=node('div','wf-wheel-choice-text');t.append(node('span','wf-wheel-choice-name',choiceName(x)),node('small','',choiceSub(x)));chip.title=choiceName(x)+' — '+choiceSub(x);chip.append(t);
+          const ctl=node('div','wf-wheel-choice-ctl');
+          const up=button('‹',()=>{const sl=slotsNow(),z=sl.find(v=>v.kind===r.kind&&v.id===r.id);if(z&&j>0){z.flyout.splice(j-1,0,z.flyout.splice(j,1)[0]);saveSlots(sl);}});up.disabled=j===0;up.setAttribute('aria-label','Move '+choiceName(x)+' earlier');
+          const dn=button('›',()=>{const sl=slotsNow(),z=sl.find(v=>v.kind===r.kind&&v.id===r.id);if(z&&j<z.flyout.length-1){z.flyout.splice(j+1,0,z.flyout.splice(j,1)[0]);saveSlots(sl);}});dn.disabled=j===rawSlot.flyout.length-1;dn.setAttribute('aria-label','Move '+choiceName(x)+' later');
+          const rm=button('×',()=>{const sl=slotsNow(),z=sl.find(v=>v.kind===r.kind&&v.id===r.id);if(z){z.flyout.splice(j,1);saveSlots(sl);}},'wf-wheel-x');rm.setAttribute('aria-label','Remove '+choiceName(x)+' from this flyout');rm.title='Remove';
+          ctl.append(up,dn,rm);chip.append(ctl);chips.append(chip);
+        });
+        if(rawSlot.flyout.length<8){const plus=button('+ Add a Flair set or piece',()=>pickChoice(r),'wf-wheel-add');chips.append(plus);}
+        if(!rawSlot.flyout.length)fly.append(node('p','wf-hint','Nothing fans out yet — this look is worn on its own.'));
+        fly.append(chips);card.append(fly);list.append(card);
+      });
+      root.append(list);
+    }
+    function pickLook(){
+      const taken=new Set(slotsNow().map(x=>M.key(x.kind,x.id)));
+      const looks=M.rows(doc(),false).filter(r=>!taken.has(M.key(r.kind,r.id)));
+      chooser({title:'Add a look to the wheel',hint:'A saved outfit, or a wardrobe pool that picks one of its looks each time.',
+        groups:[{label:'Outfits',items:looks.filter(r=>r.kind==='outfit').map(r=>({id:M.key(r.kind,r.id),name:r.name,sub:r.fav?'Favorite':'Outfit',img:r.image,row:r}))},
+                {label:'Wardrobe pools',items:looks.filter(r=>r.kind==='wardrobe').map(r=>({id:M.key(r.kind,r.id),name:r.name,sub:(r.count||0)+' looks',img:r.image,row:r}))}],
+        empty:'Every look is already on the wheel, or none are saved yet. Create looks under Collection → Outfits.',
+        pick:it=>{const sl=slotsNow();if(sl.length>=8){say('The wheel holds 8 looks.',true);return;}sl.push({kind:it.row.kind,id:it.row.id,flyout:[]});saveSlots(sl,'Added '+it.row.name+' — now give it a flyout.');}});
+    }
+    function pickChoice(r){
+      const sl=slotsNow(), z=sl.find(v=>v.kind===r.kind&&v.id===r.id); if(!z)return;
+      const has=new Set(z.flyout.map(x=>x.set?'set:'+x.set:('item:'+x.item.formId+'|'+x.item.plugin).toLowerCase()));
+      const seen=new Set(), pieces=(a.items()||[]).filter(p=>{if(!p||!p.formId||!p.plugin)return false;const k=(p.formId+'|'+p.plugin).toLowerCase();if(seen.has(k))return false;seen.add(k);return true;});
+      function addChoice(x){const sl2=slotsNow(),z2=sl2.find(v=>v.kind===r.kind&&v.id===r.id);if(!z2)return;if(z2.flyout.length>=8){say('A flyout holds 8 choices.',true);return;}z2.flyout.push(x);saveSlots(sl2,'Added to '+r.name+'’s flyout.');}
+      const extra=[];
+      if(a.pickItem)extra.push({label:'Find a piece in the whole load order…',run:()=>a.pickItem(p=>addChoice({item:{formId:p.formId,plugin:p.plugin,name:p.name||'',slot:p.slot||''}}),{title:'Choose a piece to layer over '+r.name,multi:false})});
+      extra.push({label:'Make a new Flair set…',run:()=>{if(a.goFlair)a.goFlair();}});
+      chooser({title:'Layer over '+r.name,hint:'A Flair set puts on its whole combination; a single piece puts on just that piece. Either replaces whatever the outfit wears in the same slot.',
+        groups:[{label:'Flair sets',items:f().sets.filter(v=>!has.has('set:'+v.id)).map(v=>({id:'set:'+v.id,name:v.name,sub:(v.items||[]).length+((v.items||[]).length===1?' piece':' pieces'),img:v.icon||((v.items||[])[0]?a.itemImage(v.items[0]):''),choice:{set:v.id}}))},
+                {label:'Single pieces',items:pieces.filter(p=>!has.has(('item:0x'+parseInt(p.formId,16).toString(16).toUpperCase()+'|'+p.plugin).toLowerCase())).map(p=>({id:(p.formId+'|'+p.plugin).toLowerCase(),name:p.name||p.formId,sub:p.slot||p.plugin,img:a.itemImage(p),choice:{item:{formId:p.formId,plugin:p.plugin,name:p.name||'',slot:p.slot||''}}}))}],
+        empty:'No Flair sets or equipment to choose yet. Make a Flair set, or open Collection → Outfit builder so your equipment is listed.',
+        extra,pick:it=>addChoice(it.choice)});
+    }
+    /* wardrobe-wheel-chooser: a body-anchored popout, never an inline expander
+       (it grows with the load order). It OWNS the keyboard while up: a window
+       capture listener runs before the deck's document-level handler, so a
+       typed letter can never fire a real hotkey; Enter takes the top hit. */
+    function chooser(o){
+      if(window.__wfChooserClose)window.__wfChooserClose();
+      const back=node('div','wf-pop-back'), pop=node('section','wf-pop');pop.setAttribute('role','dialog');pop.setAttribute('aria-modal','true');pop.setAttribute('aria-label',o.title);
+      const head=node('header','wf-pop-head'), h=node('div');h.append(node('h2','',o.title),node('p','wf-hint',o.hint||''));
+      const x=button('×',()=>close(),'wf-pop-x');x.setAttribute('aria-label','Close');head.append(h,x);
+      const q=node('input','wf-search wf-pop-search');q.type='search';q.autocomplete='off';q.spellcheck=false;q.placeholder='Search by name, slot or mod…';q.setAttribute('aria-label','Search choices');
+      const results=node('div','wf-pop-results');pop.append(head,q,results);
+      if(o.extra&&o.extra.length){const foot=node('footer','wf-pop-foot');o.extra.forEach(e=>foot.append(button(e.label,()=>{close();e.run();})));pop.append(foot);}
+      back.append(pop);document.body.append(back);
+      let hits=[];
+      function paint(){results.textContent='';hits=[];const t=q.value.trim().toLowerCase();
+        o.groups.forEach(g=>{const m=g.items.filter(it=>!t||(it.name+' '+(it.sub||'')).toLowerCase().includes(t));if(!m.length)return;results.append(node('h3','wf-pop-group',g.label+' · '+m.length));const grid=node('div','wf-pop-grid');
+          m.slice(0,120).forEach(it=>{hits.push(it);const b=button('',()=>{close();o.pick(it);},'wf-pop-choice');b.append(image(it.img,'','wf-pop-img'));const tx=node('span','wf-pop-text');tx.append(node('span','wf-pop-name',it.name),node('small','',it.sub||''));b.append(tx);grid.append(b);});
+          if(m.length>120)grid.append(node('p','wf-hint','Showing 120 of '+m.length+'. Type to narrow it down.'));results.append(grid);});
+        if(!hits.length)results.append(node('p','wf-empty',t?'No matches. Try another name, slot or mod.':o.empty));}
+      function key(e){
+        if(!back.isConnected){window.removeEventListener('keydown',key,true);return;}
+        if(e.key==='Escape'){e.preventDefault();close();}
+        else if(e.key==='Enter'&&e.target===q){e.preventDefault();if(hits[0]){close();o.pick(hits[0]);}}
+        else if(e.key==='ArrowDown'&&e.target===q){e.preventDefault();const b=results.querySelector('.wf-pop-choice');if(b)b.focus();}
+        else if(e.key==='Enter'&&e.target&&e.target.classList&&e.target.classList.contains('wf-pop-choice')){e.preventDefault();e.target.click();}
+        e.stopImmediatePropagation();
+      }
+      function close(){window.removeEventListener('keydown',key,true);if(back.isConnected)back.remove();if(window.__wfChooserClose===close)window.__wfChooserClose=null;}
+      window.__wfChooserClose=close;
+      back.addEventListener('mousedown',e=>{if(e.target===back)close();});
+      q.addEventListener('input',paint);window.addEventListener('keydown',key,true);paint();setTimeout(()=>q.focus(),0);
+    }
+    function render(){root.textContent='';if(a.page==='dock')renderDock();else if(a.page==='wheel')renderWheel();else renderFlair();}
     render();return {render,say,state:s};
   }
   window.WardrobeFlairUI={mount};

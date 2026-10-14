@@ -82,7 +82,7 @@
 
 .nf-badges { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .nf-badge {
-  font-family: Consolas, "Courier New", monospace; font-size: 11px; line-height: 1.6;
+  font-family: Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.6;
   color: #8b8678; background: #101017; border: 1px solid #2e2e36;
   border-radius: 999px; padding: 0 7px; white-space: nowrap;
 }
@@ -121,9 +121,9 @@
 .nf-chip-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; margin-left: 4px; }
 .nf-chip-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 15ch; }
 .nf-chip-c {
-  font-family: Consolas, "Courier New", monospace; font-size: 11px; color: #7c776a; flex: none;
+  font-family: Consolas, "Courier New", monospace; font-size: 12px; color: #7c776a; flex: none;
 }
-.nf-chip-w { font-size: 8px; color: #c9a24b; flex: none; }
+.nf-chip-w { font-size: 12px; color: #c9a24b; flex: none; }
 
 /* ---------- the crosshair quick-action bar ---------- */
 
@@ -177,7 +177,7 @@
 .nf-combo-opt:focus-visible { outline: 2px solid #c9a24b; outline-offset: -2px; }
 .nf-combo-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nf-combo-n mark { background: rgba(201,162,75,.28); color: #ffe9b0; border-radius: 2px; padding: 0 1px; }
-.nf-combo-c { flex: none; font-size: 11.5px; color: #7c776a; }
+.nf-combo-c { flex: none; font-size: 12.5px; color: #7c776a; }
 .nf-combo > .ghost-btn { align-self: flex-start; font-size: 12.5px; padding: 4px 10px; }
 
 /* ---------- empty state ---------- */

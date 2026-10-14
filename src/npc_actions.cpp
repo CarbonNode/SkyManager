@@ -1,4 +1,5 @@
 #include "npc_actions.h"
+#include "camera_axes.h"
 
 #include "follower_frameworks.h"
 #include "sic_em_feedback.h"
@@ -35,6 +36,13 @@ namespace NpcActions
 
 		RE::TESObjectREFR* g_crosshairRef = nullptr;  // live crosshair target (main thread)
 		RE::FormID         g_target = 0;               // snapshotted at palette-open
+		// TRUE only when g_target came from the game's own crosshair pick, not
+		// the camera-cone fallback. The cone (600 units, ~14 deg) is right for
+		// "who did you mean" on the card and its actions, and wrong for deciding
+		// which TAB to open on: a follower standing near screen centre in third
+		// person passes it on almost every open (aqua87yh, Nexus 2026-10-09:
+		// "always go to tab follower instead first/home tab").
+		bool               g_targetFromCrosshair = false;
 		RE::FormID         g_itemRef = 0;              // non-actor crosshair ref at palette-open
 
 		// ---- crosshair tracking (SKSE CrosshairRefEvent, like CommandNPC) ----
@@ -69,7 +77,7 @@ namespace NpcActions
 				return nullptr;
 
 			auto& wt = camera->cameraRoot->world;
-			RE::NiPoint3 fwd = { -wt.rotate.entry[0][2], -wt.rotate.entry[1][2], -wt.rotate.entry[2][2] };
+			RE::NiPoint3 fwd = CameraAxes::Forward(wt);
 
 			RE::Actor* best = nullptr;
 			float      bestScore = 0.0f;
@@ -615,9 +623,20 @@ namespace NpcActions
 		// The player, a teammate, or a summon/thrall commanded by either. Every
 		// target filter below refuses these — your own atronach is "in combat"
 		// during a fight and must never be what the party is sent at.
+		// Honorary allies (SicEmActors): Royal Retinue soldiers ordered by group.
+		// Main thread only, like g_orders.
+		std::unordered_set<RE::FormID>        g_honorary;
+		std::function<void(std::uint32_t)>   g_honoraryEnd;
+
+		void EndHonorary(RE::FormID id)
+		{
+			if (g_honorary.erase(id) && g_honoraryEnd)
+				g_honoraryEnd(static_cast<std::uint32_t>(id));
+		}
+
 		bool IsOurs(RE::Actor* a)
 		{
-			if (a->IsPlayerRef() || a->IsPlayerTeammate())
+			if (a->IsPlayerRef() || a->IsPlayerTeammate() || g_honorary.contains(a->GetFormID()))
 				return true;
 			if (!IsMinion(a))
 				return false;
@@ -651,8 +670,8 @@ namespace NpcActions
 				auto* a  = ptr ? ptr.get() : nullptr;
 				if (!a || a->IsDisabled() || a->IsDead() || a->IsPlayerRef())
 					continue;
-				if (!a->IsPlayerTeammate())
-					continue;
+				if (!a->IsPlayerTeammate() && !(allow && g_honorary.contains(a->GetFormID())))
+					continue;  // honorary allies join only an explicit group order
 				if (allow ? !allow(a) : IsMinion(a))
 					continue;  // a group order: only ITS members charge. Party-wide,
 							   // a teammate-flagged summon is counted below, as a minion.
@@ -695,8 +714,21 @@ namespace NpcActions
 			float           sincePush = 0.0f;
 			int             pushes = 0;
 			bool            hunt = false;
+			// Could-not-reach (2026-10-12): has she got to THIS target yet, how
+			// long has she not, has she already been moved next to it, and the
+			// target's health last tick (it dropping while she fights it from
+			// range counts as reached — an archer is not "stuck").
+			bool            reached = false;
+			float           unreached = 0.0f;
+			bool            teleported = false;
+			float           targetHealth = -1.0f;
 		};
 		std::unordered_map<RE::FormID, Order> g_orders;  // by ally; main thread only
+		SicEmOrders::Options                  g_orderOptions;  // Settings → Sic 'em; main thread only
+
+		// Close enough to swing at it: she has "got there". Generous on
+		// purpose (a big target's capsule, a spear's reach, a ledge a step up).
+		constexpr float kReachUnits = 768.0f;  // ~11 m
 
 		void Remember(RE::Actor* ally, RE::Actor* target, bool hunt)
 		{
@@ -706,6 +738,57 @@ namespace NpcActions
 			o.hunt   = hunt;
 			g_orders[ally->GetFormID()] = o;  // a newer order replaces the older one
 		}
+
+		// True Directional Movement's target lock (Nexus 51614, ersh1). Rober,
+		// 2026-10-12: "it seems to try to lock on to npcs near me? dont do that
+		// unless i use [TDM]". With TDM's lock on, the locked actor IS the
+		// designation — instant, ahead of the crosshair. Interface V1's first
+		// four slots, as published in TDM's TrueDirectionalMovementAPI.h ("copy
+		// this file into your own project"); V1 is enough for the lock and is
+		// served by every TDM 2.x. Main thread.
+		namespace TdmApi
+		{
+			class IVTDM1
+			{
+			public:
+				[[nodiscard]] virtual unsigned long   GetTDMThreadId() const noexcept = 0;
+				[[nodiscard]] virtual bool            GetDirectionalMovementState() const noexcept = 0;
+				[[nodiscard]] virtual bool            GetTargetLockState() const noexcept = 0;
+				[[nodiscard]] virtual RE::ActorHandle GetCurrentTarget() const noexcept = 0;
+			};
+			using RequestFn = void* (*)(std::uint8_t interfaceVersion);
+
+			IVTDM1* Get()
+			{
+				static IVTDM1* api = nullptr;
+				static bool    asked = false;
+				if (!asked) {
+					asked = true;
+					if (const HMODULE m = GetModuleHandleW(L"TrueDirectionalMovement.dll"))
+						if (auto fn = reinterpret_cast<RequestFn>(GetProcAddress(m, "RequestPluginAPI")))
+							api = static_cast<IVTDM1*>(fn(0));  // InterfaceVersion::V1
+					// Build marker (hd-markers.json: "npc-sic-em-tdm").
+					logger::info("NpcActions: sic-em TDM target lock {}", api ? "available" : "not installed");
+				}
+				return api;
+			}
+		}
+
+		RE::Actor* TdmLockedTarget()
+		{
+			auto* api = TdmApi::Get();
+			if (!api || !api->GetTargetLockState())
+				return nullptr;
+			auto ptr = api->GetCurrentTarget().get();
+			auto* a  = ptr ? ptr.get() : nullptr;
+			if (!a || a->IsDead() || a->IsDisabled() || IsOurs(a))
+				return nullptr;
+			return a;
+		}
+
+		// Aim assist never designates anyone this close to the player — only a
+		// direct hit (crosshair snapshot, the bolt striking them) or TDM's lock.
+		constexpr float kNearPlayer = 500.0f;
 
 		// Long-range designation ("longshot"). The crosshair ref is the vanilla
 		// activate pick and ResolveCrosshairActor's ray fallback stops at 600
@@ -727,7 +810,14 @@ namespace NpcActions
 				return nullptr;
 
 			auto&        wt  = camera->cameraRoot->world;
-			RE::NiPoint3 fwd = { -wt.rotate.entry[0][2], -wt.rotate.entry[1][2], -wt.rotate.entry[2][2] };
+			RE::NiPoint3 fwd = CameraAxes::Forward(wt);
+			// The cone starts PAST the player (2026-10-12): it used to start
+			// 100 units from the camera — beside him in third person — so an
+			// enemy at his elbow, a body-width off the line, was "designated".
+			// Up close the crosshair snapshot and the bolt's own hit decide.
+			const RE::NiPoint3 rel = player->GetPosition() - wt.translate;
+			const float        tMin = (std::max)(100.0f, rel.x * fwd.x + rel.y * fwd.y + rel.z * fwd.z) + kNearPlayer;
+			const RE::NiPoint3 pp = player->GetPosition();
 
 			RE::Actor* best = nullptr;
 			float      bestOff = 1.0e9f;
@@ -747,8 +837,10 @@ namespace NpcActions
 					(a->GetPositionZ() + 80.0f) - wt.translate.z
 				};
 				const float t = to.x * fwd.x + to.y * fwd.y + to.z * fwd.z;  // along the ray
-				if (t < 100.0f || t > kSicRange)
+				if (t < tMin || t > kSicRange)
 					return;
+				if ((a->GetPosition() - pp).Length() < kNearPlayer)
+					return;  // beside you is not "where you are aiming"
 				const float d2   = to.x * to.x + to.y * to.y + to.z * to.z;
 				// (std::max) — parenthesised so windows.h's max macro (this TU sees
 				// it without NOMINMAX) can't eat the call; C2589 on the rig build.
@@ -778,6 +870,10 @@ namespace NpcActions
 		// her to fight herself.
 		RE::Actor* ResolveSicTargetInstant(const std::function<bool(RE::Actor*)>& excluded)
 		{
+			if (auto* locked = TdmLockedTarget(); locked && !(excluded && excluded(locked))) {
+				logger::info("NpcActions: sic-em TDM lock -> \"{}\"", NameOf(locked));
+				return locked;
+			}
 			auto* target = TargetActor();
 			if (target && (target->IsDead() || IsOurs(target) ||
 							  (excluded && excluded(target))))
@@ -850,7 +946,9 @@ namespace NpcActions
 					return struck;
 				}
 			}
-			constexpr float kSplash = 700.0f;  // ~10 m — the camp the bolt landed in
+			// A near miss on a body, not "the camp" (was 700): 2026-10-12, Rober
+			// saw the order grab NPCs near him. Never anyone beside the player.
+			constexpr float kSplash = 250.0f;
 			auto* lists = RE::ProcessLists::GetSingleton();
 			if (!lists)
 				return nullptr;
@@ -865,6 +963,8 @@ namespace NpcActions
 				if (IsOurs(a) || (excluded && excluded(a)))
 					return;
 				if (!a->IsHostileToActor(player) && !a->IsInCombat())
+					return;
+				if ((a->GetPosition() - player->GetPosition()).Length() < kNearPlayer)
 					return;
 				const float d = (a->GetPosition() - at).Length();
 				if (d < bestD) { bestD = d; best = a; }
@@ -955,41 +1055,39 @@ namespace NpcActions
 		// The bolt ALWAYS flies, straight down the crosshair, on every press —
 		// Rober, 2026-09-26: it used to fire only once a target had been found,
 		// and then homed on that target like a magic missile instead of going
-		// where he was looking. Order of designation: the crosshair snapshot,
-		// the longshot along your aim (both instant — the followers move NOW),
-		// then whoever the bolt LANDS ON, then the nearest enemy already
-		// fighting you. Returns true when the order was given OR the bolt is in
-		// the air and will give it; the reason for a refusal is on screen.
-		bool DoHunt(bool minionsOnly, const std::function<bool(RE::Actor*)>& allow = nullptr);
-
-		// ONE KEY, both verbs (Rober, 2026-10-05: "how can we combine it?"):
-		// aim at someone and it is the direct order it always was - the bolt,
-		// focus fire on that target. Find NO target - nothing under the
-		// crosshair, along the aim, where the bolt landed, or fighting you -
-		// and it becomes a Hunt instead of a refusal.
+		// where he was looking. Order of designation: TDM's target lock, the
+		// crosshair snapshot, the longshot along your aim (all instant — the
+		// followers move NOW), then whoever the bolt LANDS ON. Returns true when
+		// the order was given OR the bolt is in the air and will give it; the
+		// reason for a refusal is on screen.
+		// Rober, 2026-10-12: "it seems to try to lock on to npcs near me? dont
+		// do that unless i use [TDM]". The aimed order designates ONLY what
+		// you aimed at: TDM's lock, the crosshair, the longshot down the aim
+		// (never beside you), or whoever the bolt strikes. Nothing there and
+		// it says so. Gone: the fall-through to the nearest enemy fighting
+		// you, and the 2026-10-05 fall-through to a Hunt (nearest hostile to
+		// each follower) — both picked people near him he had not aimed at.
+		// Hunt is still its own bindable action.
 		bool DoSicEm(const std::function<bool(RE::Actor*)>& allow, const std::string& who)
 		{
 			const bool bolt = SicEmFeedback::FireAlongAim();
 			if (auto* target = ResolveSicTargetInstant(allow))
 				return Engage(target, allow, who, "aim");
 			if (!bolt) {
-				// No projectile art (or no world yet): the old immediate answer.
-				if (auto* target = FightFallback(allow))
-					return Engage(target, allow, who, "fight");
-				logger::info("NpcActions: sic-em found no target - hunting instead");  // marker: npc-sic-em-hunt
-				return DoHunt(false, allow);
+				// No projectile art (or no world yet): nothing more to wait for.
+				logger::info("NpcActions: sic-em found no target under the aim");  // marker: npc-sic-em-aimed-only
+				Notify("Sic 'em: nobody under your crosshair");
+				return false;
 			}
 			// Whoever the bolt lands on is the target — EFF's targeting spell.
 			SicEmFeedback::AwaitImpact([allow, who](std::optional<SicEmFeedback::Impact> hit) {
 				RE::Actor* target = hit ? TargetFromImpact(*hit, allow) : nullptr;
-				const char* how = "bolt";
-				if (!target) { target = FightFallback(allow); how = "fight"; }
 				if (!target) {
-					logger::info("NpcActions: sic-em found no target - hunting instead");
-					DoHunt(false, allow);
+					logger::info("NpcActions: sic-em found no target under the aim");
+					Notify(hit ? "Sic 'em: the bolt hit no one" : "Sic 'em: the bolt found no one");
 					return;
 				}
-				Engage(target, allow, who, how);
+				Engage(target, allow, who, "bolt");
 			});
 			return true;
 		}
@@ -1048,7 +1146,7 @@ namespace NpcActions
 			return best;
 		}
 
-		bool DoHunt(bool minionsOnly, const std::function<bool(RE::Actor*)>& allow)
+		bool DoHunt(bool minionsOnly, const std::function<bool(RE::Actor*)>& allow = nullptr)
 		{
 			const Party party = GatherParty(allow);
 			std::vector<RE::Actor*> allies;
@@ -1124,7 +1222,7 @@ namespace NpcActions
 				return false;
 			auto& wt = camera->cameraRoot->world;
 			pos = wt.translate;
-			fwd = { -wt.rotate.entry[0][2], -wt.rotate.entry[1][2], -wt.rotate.entry[2][2] };
+			fwd = CameraAxes::Forward(wt);
 			return true;
 		}
 
@@ -1379,6 +1477,8 @@ namespace NpcActions
 	{
 		auto actor = ResolveCrosshairActor();
 		g_target = (actor && !actor->IsPlayerRef()) ? actor->GetFormID() : 0;
+		g_targetFromCrosshair = g_target != 0 && g_crosshairRef &&
+			g_crosshairRef->GetFormID() == g_target;
 
 		// The item-source banner's snapshot: the crosshair ref verbatim, only
 		// when it is NOT an actor (actors have their own flow above). No
@@ -1393,6 +1493,11 @@ namespace NpcActions
 	std::uint32_t TargetFormID()
 	{
 		return static_cast<std::uint32_t>(g_target);
+	}
+
+	bool TargetUnderCrosshair()
+	{
+		return g_target != 0 && g_targetFromCrosshair;
 	}
 
 	std::uint32_t ItemRefFormID()
@@ -1552,6 +1657,8 @@ namespace NpcActions
 			return;
 
 		int  stranded = 0;      // would not engage — say so once, not per ally
+		int  moved = 0;         // teleported next to their target this tick
+		std::string movedName, movedTarget;
 		bool huntCleared = false;
 		for (auto it = g_orders.begin(); it != g_orders.end();) {
 			auto& o = it->second;
@@ -1573,6 +1680,32 @@ namespace NpcActions
 			s.sincePush    = o.sincePush;
 			s.pushes       = o.pushes;
 
+			// Has she got to it? In reach, or hurting it while it is her combat
+			// target (an archer at range is fighting, not stuck). Until then
+			// the reach clock runs — it is what "couldn't get to the target"
+			// and the teleport are measured against (Settings → Sic 'em).
+			if (s.allyPresent && s.targetAlive && !o.reached) {
+				const float hp = target->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
+				bool hurting = false;
+				if (s.allyInCombat && o.targetHealth >= 0.0f && hp < o.targetHealth - 0.5f) {
+					auto ct = ally->GetActorRuntimeData().currentCombatTarget.get();
+					hurting = ct && ct.get() == target;
+				}
+				o.targetHealth = hp;
+				const float dist = ally->GetPosition().GetDistance(target->GetPosition());
+				if (dist <= kReachUnits || hurting) {
+					o.reached = true;
+					logger::info("NpcActions: sic-em standing order - \"{}\" reached \"{}\" ({}, after {:.1f}s)",
+						NameOf(ally), NameOf(target), hurting ? "hurting it" : "in reach", o.unreached);
+				} else {
+					o.unreached += dt;
+				}
+			}
+			s.reached      = o.reached;
+			s.unreached    = o.unreached;
+			s.teleported   = o.teleported;
+			s.options      = g_orderOptions;
+
 			const auto d = SicEmOrders::Decide(s);
 			bool drop = false;
 			switch (d.step) {
@@ -1591,6 +1724,9 @@ namespace NpcActions
 					o.target = RE::ActorHandle(next);
 					o.sinceIssued = o.sincePush = 0.0f;
 					o.pushes = 0;
+					o.reached = o.teleported = false;
+					o.unreached = 0.0f;
+					o.targetHealth = -1.0f;
 					CallStartCombat(ally, next);
 					logger::info("NpcActions: hunt retarget — \"{}\" moves on to \"{}\"",
 						NameOf(ally), NameOf(next));
@@ -1599,21 +1735,45 @@ namespace NpcActions
 					huntCleared = true;
 				}
 				break;
+			case SicEmOrders::Step::Teleport:
+				// Out of time to get there: put her next to it and send her in
+				// again, with a fresh window to engage before the order drops.
+				ally->MoveTo(target);
+				CallStartCombat(ally, target);
+				o.teleported = true;
+				o.unreached = 0.0f;
+				o.sinceIssued = o.sincePush = 0.0f;
+				o.pushes = 0;
+				o.targetHealth = -1.0f;
+				++moved;
+				movedName = NameOf(ally);
+				movedTarget = NameOf(target);
+				// Build marker (hd-markers.json: "npc-sic-em-teleport").
+				logger::info("NpcActions: sic-em standing order - \"{}\" could not reach \"{}\" in {:.0f}s - moved next to it",
+					NameOf(ally), NameOf(target), g_orderOptions.reachSeconds);
+				break;
 			case SicEmOrders::Step::Drop:
 				drop = true;
-				if (d.reason == std::string_view("would not engage"))
+				if (d.reason == std::string_view("would not engage") ||
+					d.reason == std::string_view("could not reach"))
 					++stranded;
 				break;
 			}
 			if (drop) {
 				logger::info("NpcActions: standing order ended for {:08X} ({})",
 					static_cast<std::uint32_t>(it->first), d.reason);
+				const RE::FormID ended = it->first;
 				it = g_orders.erase(it);
+				EndHonorary(ended);
 			} else {
 				++it;
 			}
 		}
 
+		if (moved)
+			Notify(moved == 1
+				? "Sic 'em: " + movedName + " couldn't reach " + movedTarget + " - moved beside it"
+				: "Sic 'em: " + std::to_string(moved) + " couldn't reach their targets - moved beside them");
 		if (stranded)
 			Notify("Sic 'em: " + std::to_string(stranded) +
 				(stranded == 1 ? " couldn't get to the target - order dropped"
@@ -1623,15 +1783,55 @@ namespace NpcActions
 			Notify("Hunt: nothing left in reach");
 	}
 
-	void CancelOrder(std::uint32_t formId)
+	void SetOrderOptions(float reachSeconds, bool teleport)
 	{
-		if (!formId)
-			g_orders.clear();
-		else
-			g_orders.erase(static_cast<RE::FormID>(formId));
+		g_orderOptions.reachSeconds = SicEmOrders::ClampReachSeconds(reachSeconds);
+		g_orderOptions.teleport = teleport;
 	}
 
-	void RevertOrders() { g_orders.clear(); }
+	void CancelOrder(std::uint32_t formId)
+	{
+		if (!formId) {
+			g_orders.clear();
+			const auto all = g_honorary;
+			for (const auto id : all)
+				EndHonorary(id);
+		} else {
+			g_orders.erase(static_cast<RE::FormID>(formId));
+			EndHonorary(static_cast<RE::FormID>(formId));
+		}
+	}
+
+	void RevertOrders()
+	{
+		g_orders.clear();
+		g_honorary.clear();  // a load: the squads' own revert handles their side
+	}
+
+	bool SicEmActors(const std::vector<std::uint32_t>& ids, const std::string& who)
+	{
+		std::unordered_set<RE::FormID> group;
+		for (const auto id : ids) {
+			if (id) {
+				group.insert(static_cast<RE::FormID>(id));
+				g_honorary.insert(static_cast<RE::FormID>(id));
+			}
+		}
+		if (group.empty())
+			return false;
+		// Copied into the order (SicEm may give it when the bolt lands).
+		const bool ok = DoSicEm([group](RE::Actor* a) { return group.contains(a->GetFormID()); }, who);
+		if (!ok) {
+			for (const auto id : group)
+				g_honorary.erase(id);  // nothing was ordered: no end to report
+		}
+		return ok;
+	}
+
+	void SetHonoraryOrderEndHook(std::function<void(std::uint32_t)> hook)
+	{
+		g_honoraryEnd = std::move(hook);
+	}
 
 	bool SicEm(const std::function<bool(RE::Actor*)>& allow, const std::string& who)
 	{

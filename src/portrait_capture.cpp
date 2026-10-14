@@ -2299,6 +2299,45 @@ namespace PortraitCapture
 	// copy of it.
 	std::string SlugOfName(std::string_view name) { return SlugOf(name); }
 
+	// ---- auto portraits (2026-10-12) ---------------------------------------
+	bool ProbeCenter(int px, std::vector<std::uint8_t>& rgb)
+	{
+		int sw = 0, sh = 0;
+		if (!BackBufferSize(sw, sh) || sw <= 0 || sh <= 0)
+			return false;
+		// The middle third of the frame, where the face is: small enough that a
+		// probe every few frames costs nothing, big enough to see a smear.
+		auto box = PhotoFrame::Make(sw, sh, PhotoFrame::Format::Square, 0.34f, 0.0f, 0.0f);
+		box.outputWidth = std::clamp(px, 8, 128);
+		box.outputHeight = box.outputWidth;
+		return box.Valid() && GrabRegion(box, rgb);
+	}
+
+	std::uint32_t CaptureAutoPortrait(const std::filesystem::path& dir, const std::string& slug,
+		const std::string& label, std::filesystem::path& written)
+	{
+		// The camera was AIMED at her face (PersonLive::StartFace), so the crop
+		// is simply the centre square at full height — capture.ini's hand-aim
+		// zoom/offsets belong to the player-aimed shot and do not apply.
+		Tuning tune;
+		tune.zoom = 1.0f;
+		tune.offsetX = 0.0f;
+		tune.offsetY = 0.0f;
+		tune.exposure = 0.0f;
+		const auto err = CaptureToFile(dir, slug, label, written, kFaceKeys, true, &tune, nullptr, 0, false);
+		if (!err)
+			logger::info("portrait: auto portrait '{}' -> {}", label, PathU8(written.filename()));   // marker: auto-portrait-saved
+		return err;
+	}
+
+	void HideHud(bool hide)
+	{
+		if (hide)
+			HideMenus();
+		else
+			RestoreMenus();
+	}
+
 	// Write already-encoded image bytes as `<slug>.<ext>`, with the SAME lock
 	// fallback the capture uses: a portrait the deck has already drawn is
 	// memory-mapped and cannot be overwritten, so it lands as

@@ -182,6 +182,57 @@
   white-space: nowrap;
 }
 
+/* ---- facts: the stat strip under the title (2026-10-10, worn gear) ----- *
+   Centred and wrapping, every cell one shape, so two facts or nine sit as a
+   balanced row instead of a ragged list. Value big, label small-caps under. */
+.hdlb-facts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+.hdlb-fact {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: 0 0 148px;             /* one shape for every cell; a long label wraps */
+  box-sizing: border-box;
+  padding: 11px 12px 10px;
+  border-radius: 10px;
+  border: 1px solid #3a3a46;
+  background: rgba(255, 255, 255, .035);
+}
+.hdlb-fact-v {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  color: #efe9da;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.hdlb-fact-l {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .8px;
+  line-height: 1.3;
+  text-transform: uppercase;
+  text-align: center;
+  color: #8d8571;
+  text-wrap: balance;
+}
+.hdlb-fact-dmg { border-color: rgba(200, 80, 70, .5); background: rgba(200, 80, 70, .08); }
+.hdlb-fact-dmg .hdlb-fact-v { color: #ef8069; }
+.hdlb-fact-arm { border-color: rgba(120, 160, 200, .45); background: rgba(120, 160, 200, .07); }
+.hdlb-fact-arm .hdlb-fact-v { color: #a9c4dd; }
+.hdlb-fact-gold { border-color: rgba(201, 162, 75, .5); background: rgba(201, 162, 75, .09); }
+.hdlb-fact-gold .hdlb-fact-v { color: #ecd9a8; }
+/* a glyph-only subject (a piece with no world model): the glyph is the
+   picture, so give it the gold the deck's glyphs wear */
+.hdlb-stage > .hdlb-fallback:first-child { color: #c9a24b; opacity: .7; }
+
 /* ---- Turn in 3D: the item inspector (2026-10-04) ------------------------ *
    The opt-in big turntable: 24 frames at 1024px. The card grows to give the
    piece room; the 4-frame chrome steps aside while the inspector is up.

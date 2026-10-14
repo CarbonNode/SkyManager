@@ -89,7 +89,7 @@ namespace CustomMarkers
 		if(action == CustomMarkersContract::CombatAction) {
 			using Status = CustomMarkersRuntime::Status;
 			const auto result = CustomMarkersRuntime::ToggleCombat();
-			if(result.status == Status::unsupported) return Notify("Combat toggle needs the verified Custom Markers 1.2.7 build");
+			if(result.status == Status::unsupported) return Notify("Combat toggle needs a verified Custom Markers build (1.2.7 or 1.3.0)");
 			if(result.status == Status::notReady) return Notify("Load your game before toggling loot beams during combat");
 			const auto ini = ReadIni();
 			const auto value = Value(ini, "NavigationOverlay", "LootBeamHideInCombat");

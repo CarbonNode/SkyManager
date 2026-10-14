@@ -239,6 +239,18 @@ window.WardrobeSpid = (function () {
 
   function request() { toGame('sgAll', '{}'); }
 
+  /* A photo taken, uploaded or replaced mid-session must replace the drawn
+     face at once (generated faces stand down to the player's own, 2026-10-12);
+     this pane keeps its own render map, so it listens rather than waiting for
+     an unrelated redraw. */
+  if (window.addEventListener) window.addEventListener('hd-portraits-changed', function () {
+    /* only while the list is on screen: a push handler never draws a hidden
+       pane (the deck's frame-time law); a hidden list redraws on its next show. */
+    var l = ctx && ctx.list;
+    if (!l || !document.body.contains(l) || l.offsetParent === null) return;
+    try { redraw(); } catch (e) { /* a portrait must never break the list */ }
+  });
+
   function receive(payload) {
     var d = payload;
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch (_) { d = null; } }

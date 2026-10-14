@@ -37,9 +37,25 @@ namespace FormationWwm
 {
 	// `Wayfarer.esp` present in the load order.
 	bool Installed();
+
+	// Main thread. Queues the mod's own `Wayfarer.ReloadSettings()` so it
+	// re-reads Wayfarer.ini -- the Keys tab calls it after rewriting a
+	// [Hotkeys] entry (keys_write.cpp). Papyrus runs it once the game is
+	// unpaused. False when Walk With Me is absent or the call could not queue.
+	bool ReloadSettings();
 	bool SupportsModern();
 	// Main-thread only; temporary migration interlock, never writes preferences.
 	bool SetRuntimeEnabled(bool enabled);
+
+	// The mod's master switch as it stands: 1 on, 0 off, -1 unknown (not
+	// installed, or no Wayfarer.ini yet). 0.2.2+ answers through its public
+	// API; older builds through the VM cache, else the ini. Main thread.
+	int EnabledNow();
+	// The Apply() request that sets that switch the way the mod's own menu
+	// does (0.2.2+: settings.enabled; older: global.enabled), routed to this
+	// provider. The deck's "Walk With Me: On/Off" row (wwm-toggle) sends it
+	// through FormationActions::Apply so the handoff guards still apply.
+	std::string EnabledRequest(bool on);
 
 	// Main-thread only, after a save has loaded. Re-asserts the companions WE
 	// enrolled through the public API — Walk With Me's revert callback clears

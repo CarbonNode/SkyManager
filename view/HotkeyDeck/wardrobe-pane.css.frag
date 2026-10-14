@@ -54,7 +54,7 @@
 /* prose next to controls, so it is the designated shrinker: one ellipsized
    line rather than three wrapped ones that triple the row */
 .wd-ok-hint {
-  font-size: 11px; color: #6f6a5e;
+  font-size: 12px; color: #6f6a5e;
   flex: 1 1 0; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -110,7 +110,7 @@
 #wd-search:focus { outline: none; border-color: #c9a24b; box-shadow: 0 0 0 3px rgba(201,162,75,.13); }
 #wd-search-clear {
   position: absolute; right: 6px; width: 20px; height: 20px; line-height: 1;
-  font-family: inherit; font-size: 11px; color: #8b8678;
+  font-family: inherit; font-size: 12px; color: #8b8678;
   background: transparent; border: none; border-radius: 4px; cursor: pointer;
   transition: color 140ms ease, background 140ms ease;
 }
@@ -182,7 +182,7 @@
 .wd-card-name mark { background: rgba(201,162,75,.28); color: #ecd9a0; border-radius: 2px; padding: 0 1px; }
 .wd-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .wd-chip {
-  font-size: 11px; letter-spacing: .2px; color: #b9b4a8;
+  font-size: 12px; letter-spacing: .2px; color: #b9b4a8;
   background: #1f1f27; border: 1px solid #2e2e36; border-radius: 999px; padding: 1px 7px;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -198,7 +198,7 @@
   width: 26px; height: 34px; border-radius: 4px; flex: none;
   background: #0c0c10 center/cover no-repeat; border: 1px solid #2e2e36;
 }
-.wd-strip-more { font-family: Consolas, "Courier New", monospace; font-size: 11px; color: #6f6a5e; align-self: center; }
+.wd-strip-more { font-family: Consolas, "Courier New", monospace; font-size: 12px; color: #6f6a5e; align-self: center; }
 
 /* ---------- NPC row ---------- */
 

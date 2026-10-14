@@ -117,11 +117,18 @@ namespace FormationWwm
 		{
 			std::vector<std::string> lines;
 			bool                     loaded = false;
+			// Walk With Me's own SMF Controls page saves Wayfarer.ini as UTF-8
+			// WITH a BOM (read on the rig 2026-10-11: EF BB BF 5B). Left on the
+			// first line, "[General]" never parses as a header, every General key
+			// reads as its fallback, and Set("General", ...) appends a SECOND
+			// [General] section. Strip it on load, put it back on save.
+			bool                     bom = false;
 
 			bool Load()
 			{
 				lines.clear();
 				loaded = false;
+				bom = false;
 				std::ifstream in(IniPath(), std::ios::binary);
 				if (!in)
 					return false;
@@ -129,6 +136,10 @@ namespace FormationWwm
 				while (std::getline(in, l)) {
 					if (!l.empty() && l.back() == '\r')
 						l.pop_back();
+					if (lines.empty() && l.size() >= 3 && l.compare(0, 3, "\xEF\xBB\xBF") == 0) {
+						l.erase(0, 3);
+						bom = true;
+					}
 					lines.push_back(std::move(l));
 				}
 				loaded = true;
@@ -251,6 +262,8 @@ namespace FormationWwm
 				std::ofstream out(IniPath(), std::ios::trunc | std::ios::binary);
 				if (!out.is_open())
 					return false;
+				if (bom)
+					out << "\xEF\xBB\xBF";
 				for (const auto& l : lines)
 					out << l << "\r\n";
 				out.flush();
@@ -673,6 +686,15 @@ namespace FormationWwm
 		return dh && dh->LookupModByName(kPlugin) != nullptr;
 	}
 
+	bool ReloadSettings()
+	{
+		if (!Installed())
+			return false;
+		const bool queued = Fire("ReloadSettings");
+		logger::info("Formation: Wayfarer.ReloadSettings queued for a Keys-tab rebind ({})", queued ? "ok" : "failed");
+		return queued;
+	}
+
 	int ModeCount() { return Modern() ? 6 : kModeCount; }
 	bool SupportsModern() { return Installed() && Api() != nullptr; }
 	bool SetRuntimeEnabled(bool enabled)
@@ -681,6 +703,31 @@ namespace FormationWwm
 		if (!api) return false;
 		api->SetEnabled(enabled);
 		return api->IsEnabled() == enabled;
+	}
+
+	int EnabledNow()
+	{
+		if (!Installed())
+			return -1;
+		if (auto* api = Api())
+			return api->IsEnabled() ? 1 : 0;
+		if (const int cached = g_enabled.load(); cached >= 0)
+			return cached;
+		std::lock_guard<std::mutex> lock(g_iniLock);
+		Ini                         ini;
+		if (!ini.Load())
+			return -1;
+		return ini.GetBool("General", "bEnabled", true) ? 1 : 0;
+	}
+
+	std::string EnabledRequest(bool on)
+	{
+		json req{ { "provider", "wwm" } };
+		if (Modern())
+			req["settings"] = json{ { "enabled", on } };
+		else
+			req["global"] = json{ { "enabled", on } };
+		return Dump(req);
 	}
 
 	// marker: formation-wwm-party-restore

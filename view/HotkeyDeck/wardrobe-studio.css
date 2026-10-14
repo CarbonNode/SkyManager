@@ -35,7 +35,7 @@ body.ws-wardrobe-folded #portal-wardrobe-category-tools { display:none !importan
 .ws-picker button:active { background:#49422e; }
 .ws-picker .ws-menu {
   position:absolute; z-index:80; top:calc(100% + 6px); left:0;
-  width:340px; max-width:100%; max-height:430px; min-height:0;
+  width:340px; max-width:100%; max-height:430px; min-height:0; overflow:hidden;
   display:flex; flex-direction:column; padding:10px; gap:8px;
   background:var(--ws-surface); border:1px solid #75643b; border-radius:12px;
   box-shadow:0 12px 28px rgba(0,0,0,.4);

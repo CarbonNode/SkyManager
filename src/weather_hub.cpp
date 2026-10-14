@@ -7,6 +7,7 @@
 #include "widgets.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -100,6 +101,96 @@ namespace WeatherHub
 			return n;
 		}
 
+		// ---- the record's own sky ------------------------------------------
+		// Upper sky over horizon, at sunrise / day / sunset / night — the
+		// TESWeather colour table the engine draws the sky from. Sent as hex
+		// pairs so the view can paint a row's preview without guessing.
+		std::string Hex(const RE::Color& c)
+		{
+			char buf[8];
+			std::snprintf(buf, sizeof(buf), "#%02X%02X%02X", c.red, c.green, c.blue);
+			return buf;
+		}
+
+		json SkyJson(RE::TESWeather* w)
+		{
+			using T = RE::TESWeather::ColorTypes;
+			using C = RE::TESWeather::ColorTime;
+			json out = json::array();
+			const int times[4] = { C::kSunrise, C::kDay, C::kSunset, C::kNight };
+			for (int t : times)
+				out.push_back(json::array({ Hex(w->colorData[T::kSkyUpper][t]), Hex(w->colorData[T::kHorizon][t]) }));
+			return out;
+		}
+
+		// Which of the four the clock is in, from the Sky's OWN sunrise /
+		// sunset times (climate-driven), never a hardcoded hour.
+		int TimeOfDay(RE::Sky* sky)
+		{
+			if (!sky)
+				return -1;
+			const float h = sky->currentGameHour;
+			if (h < sky->GetSunriseBegin() || h >= sky->GetSunsetEnd())
+				return 3;
+			if (h < sky->GetSunriseEnd())
+				return 0;
+			if (h < sky->GetSunsetBegin())
+				return 1;
+			return 2;
+		}
+
+		// ---- the region's weather list -------------------------------------
+		// The TESRegion the sky is rolling from carries its own weather list,
+		// each with a chance — or a GLOBAL standing in for one (that is how
+		// Seasonal Weathers Framework changes the odds by month). Effective
+		// chance = the global's value when there is one, else the record's.
+		struct HereOdds
+		{
+			std::string                                   name;
+			std::vector<std::pair<RE::TESWeather*, float>> list;   // weather, percent
+		};
+
+		HereOdds RegionOdds(RE::Sky* sky)
+		{
+			HereOdds out;
+			auto* region = sky ? sky->region : nullptr;
+			if (!region || !region->dataList)
+				return out;
+			if (const char* eid = region->GetFormEditorID(); eid && *eid) {
+				std::string n;
+				for (const char* c = eid; *c; ++c) {
+					if (std::isupper(static_cast<unsigned char>(*c)) && !n.empty() && n.back() != ' ' &&
+						!std::isupper(static_cast<unsigned char>(n.back())))
+						n += ' ';
+					n += (*c == '_') ? ' ' : *c;
+				}
+				out.name = n;
+			}
+			float total = 0.f;
+			std::vector<std::pair<RE::TESWeather*, float>> raw;
+			for (auto* data : region->dataList->regionDataList) {
+				if (!data || data->GetType() != RE::TESRegionData::Type::kWeather)
+					continue;
+				auto* wd = static_cast<RE::TESRegionDataWeather*>(data);
+				for (auto* wt : wd->weatherTypes) {
+					if (!wt || !wt->weather)
+						continue;
+					float c = static_cast<float>(wt->chance);
+					if (wt->global)
+						c = wt->global->value;
+					if (c <= 0.f)
+						continue;
+					raw.emplace_back(wt->weather, c);
+					total += c;
+				}
+			}
+			if (total <= 0.f)
+				return out;
+			for (auto& [w, c] : raw)
+				out.list.emplace_back(w, c * 100.f / total);
+			return out;
+		}
+
 		json WeatherRow(RE::TESWeather* w, RE::TESWeather* cur)
 		{
 			using F = RE::TESWeather::WeatherDataFlag;
@@ -116,6 +207,7 @@ namespace WeatherHub
 			if (w->data.flags.any(F::kPermAurora, F::kAuroraFollowsSun))
 				r["au"] = true;
 			r["ws"] = static_cast<int>(w->data.windSpeed);
+			r["sky"] = SkyJson(w);
 			if (g_favs.count(id))
 				r["fav"] = true;
 			if (w == cur)
@@ -148,6 +240,18 @@ namespace WeatherHub
 				now["pr"] = w->precipitationData != nullptr;
 				now["au"] = w->data.flags.any(F::kPermAurora, F::kAuroraFollowsSun);
 				now["ws"] = static_cast<int>(w->data.windSpeed);
+				now["sky"] = SkyJson(w);
+			}
+			now["tod"] = TimeOfDay(sky);
+			{
+				const auto odds = RegionOdds(sky);
+				if (!odds.list.empty()) {
+					json list = json::array();
+					for (const auto& [w, pct] : odds.list)
+						list.push_back(json{ { "id", WeatherActions::IdOf(w) },
+							{ "pct", std::round(pct * 10.f) / 10.f } });
+					now["region"] = json{ { "n", odds.name }, { "list", std::move(list) } };
+				}
 			}
 			// Mid-transition: the sky blends from lastWeather into current.
 			const float pct = sky->currentWeatherPct;
@@ -692,15 +796,41 @@ namespace WeatherHub
 						favPool.push_back(w);
 				}
 			}
-			auto& from = favPool.empty() ? pool : favPool;
-			if (from.empty())
-				return Dump(Result(false, "No thunderstorm weather in the load order"));
+			// A storm that belongs HERE first (the region's own list, weighted
+			// by its odds), so an ash storm cannot roll over Whiterun; then a
+			// starred storm; then any storm in the load order.
 			static std::mt19937 rng{ std::random_device{}() };
-			auto* w = from[std::uniform_int_distribution<std::size_t>(0, from.size() - 1)(rng)];
+			RE::TESWeather* w = nullptr;
+			const char* why = "";
+			{
+				const auto odds = RegionOdds(RE::Sky::GetSingleton());
+				std::vector<std::pair<RE::TESWeather*, float>> local;
+				float sum = 0.f;
+				for (const auto& [rw, pct] : odds.list) {
+					if (HasLightning(rw) && std::string(WeatherActions::KindOf(rw)) == "rain") {
+						local.emplace_back(rw, pct);
+						sum += pct;
+					}
+				}
+				if (sum > 0.f) {
+					float pick = std::uniform_real_distribution<float>(0.f, sum)(rng);
+					for (const auto& [rw, pct] : local) {
+						w = rw;
+						if ((pick -= pct) <= 0.f)
+							break;
+					}
+					why = " — a storm this region rolls";
+				}
+			}
+			auto& from = favPool.empty() ? pool : favPool;
+			if (!w && from.empty())
+				return Dump(Result(false, "No thunderstorm weather in the load order"));
+			if (!w)
+				w = from[std::uniform_int_distribution<std::size_t>(0, from.size() - 1)(rng)];
 			WeatherActions::Force(w, true);
 			if (WeatherActions::Locked())
 				SaveSidecar();
-			return Dump(Result(true, "A storm rolls in — " + Label(w)));
+			return Dump(Result(true, "A storm rolls in: " + Label(w) + why));
 		}
 		if (act == "release") {
 			WeatherActions::Release();

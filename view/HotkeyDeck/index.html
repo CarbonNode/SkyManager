@@ -144,7 +144,11 @@
 <link data-hdcss="hd-super.css" data-hdcss-key="super" data-hdcss-gate="#hd-super">
 <!-- Formation modal (Formation with Followers). Own sheet, same reason. -->
 <link data-hdcss="get-away.css" data-hdcss-key="get-away" data-hdcss-gate="#get-away-modal">
+<!-- Hotkey Pad settings window (hd-padcfg.js). Own sheet, same reason. -->
+<link data-hdcss="hd-padcfg.css" data-hdcss-key="padcfg" data-hdcss-gate="#hp-cfg">
 <link data-hdcss="hd-formation.css" data-hdcss-key="formation" data-hdcss-gate="#fm-modal">
+<!-- Procession modal (Royal Procession + Royal Retinue). Own sheet, same reason. -->
+<link data-hdcss="hd-procession.css" data-hdcss-key="procession" data-hdcss-gate="#rpx-modal">
 <!-- Keys tab: the load-order hotkey census. Own sheet, same reason. -->
 <link data-hdcss="keys-pane.css" data-hdcss-key="keys" data-hdcss-gate="#kc-pane">
 <link data-hdcss="keys-atlas.css" data-hdcss-key="keys" data-hdcss-gate="#kc-pane">
@@ -183,6 +187,7 @@
 <link data-hdcss="transmog-pane.css" data-hdcss-key="transmog" data-hdcss-gate="#tg-pane">
 <!-- Mounts tab: the stable. Own sheet, same reason. -->
 <link data-hdcss="mounts-pane.css" data-hdcss-key="mounts" data-hdcss-gate="#mt-pane">
+<link data-hdcss="hd-bestiary.css" data-hdcss-key="bestiary">
 <!-- Loadouts tab: follower groups + gear classes. Own sheet, same reason. -->
 <link data-hdcss="loadouts-pane.css" data-hdcss-key="loadouts" data-hdcss-gate="#lo-pane">
 <link data-hdcss="household-pane.css" data-hdcss-key="household" data-hdcss-gate="#hh-pane">
@@ -200,11 +205,15 @@
      Key == tab id (hd-css.js contract). The gate also covers the
      "Every setting" popout, which mounts on <body>. -->
 <link data-hdcss="weather-pane.css" data-hdcss-key="weather" data-hdcss-gate="#wth-pane, .wth-pop-back">
+<!-- Inventory tab: the full inventory replacement. Own sheet, same reason. The
+     gate covers its drop / book popouts, which mount on <body>. -->
+<link data-hdcss="inventory-pane.css" data-hdcss-key="inventory" data-hdcss-gate="#iv-pane, .iv-pop-back">
 <!-- Mod settings popout. A POPOUT mounts into #panel at open time, so it also
      needs its MODULE_KEY trigger in hd-css.js (HDMcm/open -> mcm). -->
 <link data-hdcss="hd-mcm.css" data-hdcss-key="mcm" data-hdcss-gate="#mc-modal">
 <!-- Character tab: your personal character sheet. Own sheet, same reason. -->
 <link data-hdcss="charsheet-pane.css" data-hdcss-key="sheet" data-hdcss-gate="#ps-pane">
+<link data-hdcss="hd-renown.css" data-hdcss-key="sheet" data-hdcss-gate="#ps-pane">
 <link data-hdcss="appearance-presets.css" data-hdcss-key="appearances" data-hdcss-gate="#appearance-gallery">
 <!-- Door lock modal (F7 on a door). Own sheet, same reason. -->
 <link data-hdcss="hd-door.css" data-hdcss-key="door" data-hdcss-gate="#dr-modal">
@@ -218,7 +227,7 @@
 <!-- NPC Quests modal: the F7 card's 📜 button (hd-quests.js). Same reason. -->
 <link data-hdcss="hd-quests.css" data-hdcss-key="npcquests" data-hdcss-gate="#hdq-layer">
 <!-- CHIM flyout (quick card's CHIM button). Own sheet, same reason. -->
-<link data-hdcss="chim-flyout.css" data-hdcss-key="chim" data-hdcss-gate=".chim-fly, .fx-back">
+<link data-hdcss="chim-flyout.css" data-hdcss-key="chim" data-hdcss-gate=".chim-back, .chim-fly, .fx-back">
 <!-- Bases mode of the Domains tab (bases-pane.js). Own sheet, same reason. The
      gate is #nb-body, the Bases body, so the Domains tab itself keeps painting. -->
 <link data-hdcss="bases-pane.css" data-hdcss-key="domains" data-hdcss-gate="#nb-body">
@@ -265,28 +274,38 @@
 <body>
   <div id="overlay">
     <div id="panel">
-      <!-- Header now carries the top-level nav inline: [SkyManager] [tabs…]
-           [Search | Edit | ✕] — the tabs are folded into the top bar (Rober,
-           2026-08-05) instead of a row of their own. ROW 2 (#hk-tabs) still
-           carries the hotkey CATEGORIES under the Hotkeys tab. -->
+      <!-- TWO BARS (Rober, 2026-10-11: "its better as two bars ... do it").
+           ROW 1 #hd-header is the command bar: brand, a real search field
+           (it hands off to Omni the moment it takes focus), the live count,
+           the tool group (Portal / Size / Edit) and Close.
+           ROW 2 #hd-rail holds the tab bar alone, full width, so many more
+           systems fit with icon AND name. ROW 3 (#hk-tabs) still carries the
+           hotkey CATEGORIES under the Hotkeys tab. marker: hd-two-bars -->
       <header id="hd-header">
         <div class="title-wrap">
           <img id="hd-brand-icon" src="icons/skymanager.png" alt="" draggable="false">
           <h1>SkyManager</h1>
         </div>
-        <nav id="tabs"></nav>
+        <div id="omni-btn" class="hd-search" title="Search everything, or ask about an NPC (Ctrl+F)">
+          <img class="hd-search-ic" src="icons/custom/gl-magnifier.png" alt="" draggable="false">
+          <input id="hd-search-field" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Search everything, or ask about an NPC" aria-label="Search everything">
+          <span class="omni-btn-k">Ctrl F</span>
+        </div>
         <span id="count-chip"></span>
-        <div class="header-actions">
-          <button id="omni-btn" class="ghost-btn" title="Search everything, or ask about an NPC (Ctrl+F)">⌕<span class="omni-btn-k">Ctrl F</span></button>
-          <button id="uiscale-btn" class="ghost-btn" title="Menu size — scale the whole deck window (60–160%)">⤢</button>
+        <div class="header-actions hd-tools" role="group" aria-label="Deck tools">
           <!-- Deck Portal: opens the web UI in this PC's browser. Hidden until
                ptState says it can work, so it is never a button that does
                nothing (hd-portal.js). -->
-          <button id="portal-btn" class="ghost-btn hidden" title="Open the Deck Portal in your browser">🖥</button>
-          <button id="edit-btn" class="ghost-btn" title="Edit hotkeys (F2)">Edit</button>
-          <button id="close-btn" class="ghost-btn" title="Close (Esc)">✕</button>
+          <button id="portal-btn" class="hd-tool hidden" title="Open the Deck Portal in your browser"><img class="hd-tool-ic" src="icons/custom/gl-screen.png" alt="" draggable="false"><span class="hd-tool-lbl">Portal</span></button>
+          <button id="uiscale-btn" class="hd-tool" title="Menu size — scale the whole deck window (60–160%)"><img class="hd-tool-ic" src="icons/custom/gl-square.png" alt="" draggable="false"><span class="hd-tool-lbl">Size</span></button>
+          <button id="edit-btn" class="hd-tool" title="Edit hotkeys (F2)"><img class="hd-tool-ic" src="icons/custom/bx-quill.png" alt="" draggable="false"><span class="hd-tool-lbl">Edit</span></button>
         </div>
+        <button id="close-btn" class="hd-close" title="Close (Esc)" aria-label="Close">✕</button>
       </header>
+      <div id="hd-rail">
+        <nav id="tabs" aria-label="Systems"></nav>
+      </div>
       <nav id="hk-tabs" class="hidden" aria-label="Hotkey categories"></nav>
 
       <!-- Edit-mode size controls for the tabs app.js owns outright — Quests,
@@ -357,6 +376,17 @@
           <div class="set-row set-sub">
             <label class="set-label cb-label" title="Freeze time with sgtm instead of a menu pause, so the cursor stays buttery-smooth at full framerate while the world is frozen. Uncheck for the classic menu pause."><input type="checkbox" id="smoothpause-cb"> &nbsp;↳ Smooth pause (freeze time, snappy cursor)</label>
           </div>
+          <!-- UI renderer (2026-10-10, marker ui-host-setting): PrismaUI or Magelight UI
+               draws the main deck. Read once at game start, so a pick applies next
+               launch; uihost-note says what is drawing it NOW and why. -->
+          <div class="set-row uihost-row" id="uihost-row">
+            <span class="set-label uihost-label">UI renderer</span>
+            <span class="uihost-seg" role="radiogroup" aria-label="UI renderer">
+              <button type="button" class="uihost-btn" id="uihost-prisma" data-host="prisma" role="radio" aria-checked="true">PrismaUI</button>
+              <button type="button" class="uihost-btn" id="uihost-magelight" data-host="magelight" role="radio" aria-checked="false">Magelight</button>
+            </span>
+          </div>
+          <div class="uihost-note" id="uihost-note" aria-live="polite"></div>
           <div class="set-row">
             <label class="set-label cb-label"><input type="checkbox" id="close-cb"> Close after firing</label>
           </div>
@@ -401,6 +431,33 @@
               <span id="scrollspeed-edit-val">100%</span>
               <button id="scrollspeed-edit-reset" title="Reset to 100%">reset</button>
             </span>
+          </div>
+          <!-- Frame-gen friendly scrolling (2026-10-13, Rober: SkyManager "streaks like grey
+               watercolor ... as it moves" under frame generation). settings.fgSmoothScroll,
+               default ON (main.cpp): the shared wheel glide moves at most FG_STEP_PX screen px per
+               frame, so frame generation can follow the card grid instead of ghosting rows. -->
+          <div class="set-row">
+            <label class="set-label cb-label"><input type="checkbox" id="fgscroll-cb"> Frame-gen friendly scrolling — lists glide in small steps so frame generation doesn't ghost the rows</label>
+          </div>
+          <!-- Sic 'em standing orders (2026-10-12, Rober: "'couldn't get to target'
+               make sure this is configurable and a time if it doesnt get to target
+               npcs teleport next to it"). settings.sicReachSeconds (clamped 5-60 in
+               sic_em_orders.h) + settings.sicTeleport, read by the order tick. -->
+          <div class="sic-group" id="sic-group">
+            <div class="sic-head">Sic 'em orders</div>
+            <div class="set-row sic-row">
+              <span class="set-label sic-label">Time to reach the target</span>
+              <span class="scale-ctl sic-ctl">
+                <input id="sicreach-range" type="range" min="5" max="60" step="1"
+                       aria-label="Seconds a follower gets to reach a Sic 'em target">
+                <span id="sicreach-val">15 s</span>
+                <button id="sicreach-reset" title="Reset to 15 seconds">reset</button>
+              </span>
+            </div>
+            <div class="set-row sic-row">
+              <label class="set-label cb-label sic-label"><input type="checkbox" id="sictele-cb"> Then move them next to it (teleport)</label>
+            </div>
+            <div class="sic-note" id="sic-note" aria-live="polite"></div>
           </div>
           <!-- Row-icon size. Separate from Menu scale on purpose: the menu can
                stay at 100% while the pictures get big, which is what "bigger
@@ -1673,6 +1730,10 @@
     </div>
   </div>
 
+  <!-- Renown: his deeds, how far each has spread, who in CHIM knows it
+       (hd-renown.js, shared with the Deck Portal; charsheet-pane.js mounts it). -->
+  <div id="ps-renown" aria-label="Renown"></div>
+
   <!-- Vitals: three big bars + stat chips -->
   <div class="ps-vitals">
     <div class="ps-bars">
@@ -1821,6 +1882,71 @@
   </div>
 
   <div id="wth-toast" class="wth-toast hidden" role="status"></div>
+</section>
+
+<!-- ===== Inventory (iv-) — the full inventory replacement (2026-10-10, Rober:
+     "a full inventory replacement - focused on high UX / UI for modern game
+     requirements, with sortability, speed, model previewing"). Static skeleton
+     only; the rail, the virtual ledger and the preview stage are built by
+     inventory-pane.js from the ivListData payload (src/inventory_pane.cpp).
+     A SIBLING of the other panes. Keep this markup in step with
+     inventory-pane.test.html. ===== -->
+<section id="iv-pane" class="hidden" aria-label="Inventory">
+  <div class="iv-head">
+    <img class="iv-crest" src="icons/custom/inv-bag.png" alt="" aria-hidden="true">
+    <div class="iv-title-wrap">
+      <div class="iv-title">INVENTORY</div>
+      <div class="iv-sub" id="iv-sub">Reading your pack…</div>
+    </div>
+    <div class="iv-purse" title="Gold in your purse">
+      <img src="icons/custom/hud-gold.png" alt="" aria-hidden="true">
+      <div><div class="iv-purse-l">Gold</div><div class="iv-purse-v" id="iv-gold">0</div></div>
+    </div>
+    <div class="iv-purse iv-armor" title="Your armor rating, as the game counts it (perks and effects included)">
+      <img src="icons/custom/hm-transmog.png" alt="" aria-hidden="true">
+      <div><div class="iv-purse-l">Armor</div><div class="iv-purse-v" id="iv-armor">—</div></div>
+    </div>
+    <div class="iv-carry" id="iv-carry">
+      <img src="icons/custom/hud-carry.png" alt="" aria-hidden="true">
+      <div class="iv-carry-col">
+        <div class="iv-carry-top"><span class="iv-carry-l">Carry weight</span><span class="iv-carry-t" id="iv-carry-t">0 / 0</span></div>
+        <div class="iv-carry-bar"><div class="iv-carry-fill" id="iv-carry-fill"></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="iv-body">
+    <nav class="iv-rail" id="iv-rail" aria-label="Kinds of things"></nav>
+    <div class="iv-main">
+      <div class="iv-bar">
+        <button type="button" class="iv-fold" id="iv-fold-rail" aria-controls="iv-rail">&#8249;</button>
+        <label class="iv-search">
+          <span class="iv-search-glyph" aria-hidden="true">&#8981;</span>
+          <input id="iv-search" type="text" placeholder="Search what you carry — name, type, enchanted, stolen…" autocomplete="off" spellcheck="false" aria-label="Search your inventory">
+          <button type="button" id="iv-search-x" class="iv-search-x hidden" aria-label="Clear search">✕</button>
+        </label>
+        <div class="iv-seg" id="iv-icons" role="group" aria-label="Pictures">
+          <button type="button" data-icons="art">Renders</button>
+          <button type="button" data-icons="game">Game icons</button>
+        </div>
+        <div class="iv-seg" id="iv-mode" role="group" aria-label="Layout">
+          <button type="button" data-mode="list">List</button>
+          <button type="button" data-mode="grid">Grid</button>
+        </div>
+        <button type="button" class="iv-fold" id="iv-fold-stage" aria-controls="iv-stage">&#8250;</button>
+      </div>
+      <div class="iv-subs" id="iv-subs"></div>
+      <div class="iv-sortbar hidden" id="iv-sortbar"></div>
+      <div class="iv-cols" id="iv-cols"></div>
+      <div class="iv-list" id="iv-list">
+        <div class="iv-spacer" id="iv-spacer"></div>
+        <div class="iv-rows" id="iv-rows"></div>
+        <div class="iv-empty hidden" id="iv-empty"></div>
+      </div>
+      <div class="iv-foot" id="iv-foot"></div>
+    </div>
+    <aside class="iv-stage" id="iv-stage" aria-label="The selected item"></aside>
+  </div>
+  <div id="iv-toast" class="iv-toast hidden" role="status"></div>
 </section>
 
       <div id="numpad-pane" class="hidden">
@@ -2165,6 +2291,18 @@
        open-time pushes that land before the panes parse. Identical bytes to
        ../MagicDeck/hd-art.js — the two view roots cannot see each other, so the file
        is copied, not shared. -->
+  <!-- hd-icon-mip: small icons are drawn from pre-shrunk copies (icons/custom/mip/), because
+       Ultralight samples an <img> with no mipmaps and a 256px icon at 20px breaks into dots.
+       The list is generated by tools/make_icon_mips.py; see hd-icon-mip.js. -->
+  <script src="hd-icon-mip-list.js"></script>
+  <script src="hd-icon-mip.js"></script>
+  <!-- hd-rails: every native scrollbar hidden, the deck draws its own rail from the scroller's
+       measured rect (Ultralight painted native bars off their boxes in game). See hd-rails.js. -->
+  <script src="hd-rails.js"></script>
+  <!-- hd-glyph-icons: pictograph glyphs in text (🔒 📦 ⚔ …) drawn as the deck's own gold icons (icons/custom/gl-*). -->
+  <script src="hd-glyph-icons.js"></script>
+  <!-- hd-balance: wrapping chip rows laid out as an even block (class hd-balance). -->
+  <script src="hd-balance.js"></script>
   <script src="hd-art.js"></script>
   <script src="hd-scale.js"></script>
   <!-- the key-capture collision finder; app.js asks it before any bind -->
@@ -2180,6 +2318,9 @@
   <!-- Home (the default landing tab) paints on first open, so it is CORE. -->
   <script src="hd-time-controls.js"></script>
   <script src="hd-quest-journal.js"></script>
+  <!-- Hotkey Pad settings window: before home-pane, whose UI Elements row
+       chains its hpCfgState receiver and opens it. Small, parse-only. -->
+  <script src="hd-padcfg.js"></script>
   <script src="home-pane.js"></script>
   <!-- HDPerf boot tick: the CORE infra above is parsed. -->
   <script>window.HDPerf&&HDPerf.tick('core-infra');</script>

@@ -119,6 +119,12 @@
       'Answer as a short portrait of that view of them.';
   }
 
+  // A reply that describes the model's INPUT rather than the person: "the
+  // provided data", "no information about", "as an AI", "the context does not".
+  function seesRefusal(t) {
+    return /\b(provided (data|context|information|text)|no (information|data|details) (about|on|regarding)|(the|this) context (does not|doesn't|contains)|as an ai|i (do not|don't) have (enough )?(information|data))\b/i.test(t);
+  }
+
   function askSees(name, original) {
     var s = sees[name] || (sees[name] = { state: 'idle', text: '', msg: '', at: 0 });
     if (!window.HDOmni || typeof HDOmni.chimCall !== 'function') {
@@ -132,6 +138,13 @@
       if (env.ok === false || (!j.answer && !j.ok && j.error)) {
         s.state = 'error';
         s.msg = j.error || env.error || 'CHIM did not answer. Is CHIM running?';
+      } else if (j.answer && seesRefusal(String(j.answer))) {
+        // The model talking ABOUT its context instead of as her (Daedric Pei,
+        // 2026-10-10: "The provided data contains no information about…").
+        // Never print that as her view. sees-refusal-guard
+        s.state = 'error';   // an earlier real passage stays, like any other failure
+        s.msg = 'CHIM knows too little about ' + name + ' to say how they see you yet. '
+          + 'Talk to ' + name + ' in game, then press ↻.';
       } else if (j.answer) {
         s.state = 'ok'; s.text = String(j.answer).trim(); s.at = Date.now();
       } else if (j.llm_error) {
@@ -215,6 +228,14 @@
     if (!env || typeof env !== 'object' || !env.id) return;
     var st = mirrorState(String(env.id));
     st.reply = env;
+    // A door showing her figure (posterFor) fills in as soon as the answer lands.
+    var poster = posterFor(env.id);
+    if (poster && document.querySelectorAll)
+      Array.prototype.forEach.call(document.querySelectorAll('img[data-pn-poster]'), function (img) {
+        if (img.getAttribute('data-pn-poster') !== String(env.id) || img.getAttribute('src') === poster) return;
+        img.setAttribute('src', poster);
+        if (img.parentNode && img.parentNode.classList) img.parentNode.classList.add('has-poster');
+      });
     live.forEach(function (c) { if (c.kind === 'mirror' && c.id === String(env.id)) c.onReply(); });
   };
 
@@ -369,7 +390,10 @@
     function move(e) {
       if (!drag) return;
       var steps = Math.round((e.clientX - drag.x) / STEP_PX);
-      var next = norm(drag.angle - steps * step);
+      /* The figure follows the hand (Rober, 2026-10-10: "the mouse drag
+         direction over the 3d model feels like it needs to be reversed").
+         It used to subtract. mirror-drag-follows */
+      var next = norm(drag.angle + steps * step);
       if (next !== st.angle) { st.angle = next; paint(); }
     }
     function up() { if (drag) { drag = null; stage.classList.remove('pn-mir-dragging'); } }
@@ -969,7 +993,30 @@
     });
   }
 
+  /* The front frame of someone's figure, if one is already on disk — for a
+     door elsewhere (the F7 card's Open profile) to show her body instead of a
+     glyph. Never asks for a render: opening the page does that. */
+  // Ask once per session which frames are already on disk — queue:false, so
+  // it lists files and renders nothing.
+  function peekPoster(id) {
+    id = String(id || '');
+    if (!id) return;
+    var st = mirrorState(id);
+    if (st.asked || st.reply) return;
+    askMirror(id, false);
+  }
+  function posterFor(id) {
+    var st = mirrors[String(id || '')];
+    var r = st && st.reply;
+    if (!r || r.ok === false) return '';
+    var shown = nearest(framesOf(r), 0);
+    return shown === null ? '' : r.frames[String(shown)] || '';
+  }
+
   window.HDPerson = {
+    posterFor: posterFor,
+    peekPoster: peekPoster,
+    _seesRefusal: seesRefusal,
     hero: hero,
     mountSees: mountSees,
     mountMirror: mountMirror,

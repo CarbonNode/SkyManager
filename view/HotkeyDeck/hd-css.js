@@ -71,6 +71,9 @@
 (function () {
   var LOAD_LEASH = 3000;   // ms before a stuck sheet's gate is lifted regardless
 
+  function now() { return (window.HDPerf && HDPerf.now) ? HDPerf.now() : Date.now(); }
+  function fmt(ms) { return window.HDPerf ? HDPerf.fmt(ms) : Math.round(ms); }
+
   function log(line) {
     if (window.HDPerf && typeof HDPerf.log === 'function') { HDPerf.log(line); return; }
     var f = window.hdLog;
@@ -111,6 +114,7 @@
     ['HDSurvival',  ['open'],                    'survival'],   // shares the tab's key: see index.html
     ['HDSuper',     ['open', 'openConfig'],      'super'],      // Super Searcher: widget skin + config popup
     ['HDFormation', ['open'],                    'formation'],
+    ['HDProcession', ['open'],                   'procession'],
     ['HDDoor',      ['open'],                    'door'],
     ['HDOutfit',    ['open', 'show'],            'outfit'],
     ['HDQuests',    ['open'],                    'npcquests'],
@@ -122,19 +126,20 @@
     ['HDItemPick',  ['open'],                    'itempick'],
     ['HDMcm',       ['open'],                    'mcm'],
     ['AppearanceGallery', ['open'],              'appearances'],
-    ['WigsPane',    ['openFor'],                 'wigs']        // the NPC card's Wigs… popout hosts the gated #wv-pane (2026-09-23)
+    ['WigsPane',    ['openFor'],                 'wigs'],       // the NPC card's Wigs… popout hosts the gated #wv-pane (2026-09-23)
+    ['HDBestiary',  ['open', 'study'],           'bestiary']    // the Bestiary book (2026-10-08); study = the F7 card / Study Creature
   ];
 
   /* Backstop map: the id / class of a gated root -> its key. Kept as plain lookups
    * (no querySelector) so the observer callback stays O(1) per inserted node. */
   var ROOT_ID = {
     'hd-wheel': 'wheel', 'hd-potions': 'potions', 'hd-quiver': 'quiver',
-    'hd-survival': 'survival', 'hd-super': 'super', 'fm-modal': 'formation', 'dr-modal': 'door',
+    'hd-survival': 'survival', 'hd-super': 'super', 'fm-modal': 'formation', 'rpx-modal': 'procession', 'dr-modal': 'door',
     'hdo-layer': 'outfit', 'hdq-layer': 'npcquests', 'sg-modal': 'followers',
-    'mc-modal': 'mcm', 'appearance-gallery': 'appearances'
+    'mc-modal': 'mcm', 'appearance-gallery': 'appearances', 'bx-root': 'bestiary'
   };
   var ROOT_CLASS = [
-    ['chim-fly', 'chim'], ['fx-back', 'chim'], ['sm-pop', 'followers'], ['sdp-back', 'followers'],
+    ['chim-back', 'chim'], ['chim-fly', 'chim'], ['fx-back', 'chim'], ['sm-pop', 'followers'], ['sdp-back', 'followers'],
     ['hdlb', 'lightbox'], ['ip-wrap', 'itempick']
   ];
 
@@ -198,6 +203,7 @@
     r.state = 'ready';
     if (r.leash) { clearTimeout(r.leash); r.leash = 0; }
     if (r.poll) { clearInterval(r.poll); r.poll = 0; }
+    if (r.gapIv) { clearInterval(r.gapIv); r.gapIv = 0; }
     lift(key);
     if (how !== 'ok') {
       log('HDCss: ERROR — "' + key + '" ' + how + '; showing it UNSTYLED rather than hiding it');
@@ -221,14 +227,23 @@
     r.state = 'loading';
     r.pending = r.nodes.length;
     r.links = [];
-    r.t0 = (window.HDPerf && HDPerf.now) ? HDPerf.now() : Date.now();
+    r.t0 = now();
+    /* css-warm (2026-10-09): how long the UI THREAD was busy while this key loaded.
+     * A 4 ms timer's longest silence is the longest stretch nothing else could run
+     * — the parse + style recalc of the sheet, which PrismaUI's present hook turns
+     * into game-frame time. Offline (Ultralight probe, followers-pane.css): live in
+     * 35 ms, busiest 28 ms. The in-game number on this line is what decides whether
+     * sheets may ever be warmed while the game is RUNNING; today they are not. */
+    r.gapMax = 0; r.gapLast = now();
+    r.gapIv = setInterval(function () { var n = now(); if (n - r.gapLast > r.gapMax) r.gapMax = n - r.gapLast; r.gapLast = n; }, 4);
     var done = function (link) {
       if (link) { if (link.__hdDone) return; link.__hdDone = true; }
       if (--r.pending > 0) return;
       loadedCount++;
-      var ms = ((window.HDPerf && HDPerf.now) ? HDPerf.now() : Date.now()) - r.t0;
+      var ms = now() - r.t0;
+      if (r.gapIv) { clearInterval(r.gapIv); r.gapIv = 0; }
       log('HDCss: "' + key + '" +' + r.nodes.length + ' sheet' + (r.nodes.length === 1 ? '' : 's')
-        + ' in ' + (window.HDPerf ? HDPerf.fmt(ms) : Math.round(ms)) + ' ms');
+        + ' in ' + fmt(ms) + ' ms (ui-thread busiest ' + fmt(r.gapMax) + ' ms)');
       settle(key, 'ok');
     };
     for (var i = 0; i < r.nodes.length; i++) {
@@ -269,6 +284,94 @@
     for (var i = 0; i < keys.length; i++) need(keys[i]);
     if (why) log('HDCss: loaded every lazy sheet eagerly (' + why + ')');
   }
+
+  /* ------------------------------------------------------------------ background warm ----
+   * css-warm (2026-10-09). The FIRST visit of a tab in a game session paid for its
+   * staged sheets on the click — "followers" +7 sheets in 373 ms, "potions" +1 in
+   * 364 ms in the 2026-10-08 log — and the hover/idle prefetch of 2026-10-08 only
+   * covers the four most-used tabs. This drains the REST, one key at a time, under
+   * two conditions that together make it invisible:
+   *
+   *   1. only while the deck is OPEN. Applying a sheet costs ~30 ms of UI thread
+   *      (measured offline, see need()), and PrismaUI's present hook makes UI-thread
+   *      time game-frame time. With the deck up the game is paused, so a 30 ms
+   *      stall costs nothing — during play it would be a visible hitch, which is
+   *      why this never runs from the closed deck and app.js pauses it on hdClosed.
+   *   2. only while the player is IDLE: no mouse move, press, key or wheel in the
+   *      last IDLE_MS. A hover transition or a drag mid-stall would stutter.
+   *
+   * Order: the tabs people switch to first (PRIORITY), then everything else in
+   * placeholder order. Keys already loading (a hover prefetch, a tab visit) are
+   * skipped, not waited on. One line when it starts, one when the last sheet is
+   * live. start() is idempotent and doubles as resume; pause() parks the timer and
+   * keeps the queue, so a close mid-warm costs nothing and the next open continues. */
+  var warm = (function () {
+    var STEP_MS = 250, IDLE_MS = 350;
+    /* 'bestiary' sits right after 'journal' (2026-10-10): the book is a body-level
+       popout reached from the F7 card, the Study key and the systems list, not a
+       tab people warm by hovering, so the idle drain is what pays for it. */
+    var PRIORITY = ['followers', 'domains', 'items', 'npcs', 'wardrobe', 'journal', 'bestiary', 'keys',
+      'household', 'sheet', 'spells', 'cells', 'wheel', 'potions', 'quiver', 'weather',
+      'settle', 'loadouts', 'survival', 'anim', 'mounts', 'wigs', 'transmog', 'spellcraft',
+      'highking', 'distr', 'nightside', 'mcm', 'appearances'];
+    var queue = null, active = false, paused = true, timer = 0, lastInput = 0;
+    var t0 = 0, loaded = 0, longest = 0, longestKey = '', inputArmed = false, startedWith = 0;
+    function armInput() {
+      if (inputArmed) return;
+      inputArmed = true;
+      var mark = function () { lastInput = now(); };
+      var evs = ['mousemove', 'mousedown', 'keydown', 'wheel'];
+      for (var i = 0; i < evs.length; i++) { try { document.addEventListener(evs[i], mark, true); } catch (e) {} }
+    }
+    function build() {
+      var q = [], i;
+      for (i = 0; i < PRIORITY.length; i++) if (reg[PRIORITY[i]] && reg[PRIORITY[i]].state === 'idle') q.push(PRIORITY[i]);
+      for (i = 0; i < keys.length; i++) if (reg[keys[i]].state === 'idle' && q.indexOf(keys[i]) === -1) q.push(keys[i]);
+      return q;
+    }
+    function cold() { var n = 0; for (var i = 0; i < keys.length; i++) if (reg[keys[i]].state === 'idle') n++; return n; }
+    function schedule(ms) { if (timer) clearTimeout(timer); timer = setTimeout(step, ms); }
+    function step() {
+      timer = 0;
+      if (paused) return;
+      if (!queue) queue = build();
+      while (queue.length && reg[queue[0]].state !== 'idle') queue.shift();
+      if (!queue.length) { finish(); return; }
+      /* the player is doing something — stay out of the way and look again later */
+      if (now() - lastInput < IDLE_MS) { schedule(IDLE_MS); return; }
+      var key = queue.shift(), s0 = now();
+      need(key, function () {
+        var ms = now() - s0;
+        loaded++;
+        if (ms > longest) { longest = ms; longestKey = key; }
+        if (!paused) schedule(STEP_MS);
+      });
+    }
+    function finish() {
+      active = false; queue = null;
+      var left = cold();
+      log('HDCss: warm — ' + loaded + ' of ' + startedWith + ' cold sheet-set(s) loaded in the background, '
+        + fmt(now() - t0) + ' ms since start, longest ' + fmt(longest) + ' ms "' + longestKey + '"'
+        + (left ? ' | ' + left + ' still cold' : ' | every staged sheet is live'));
+    }
+    function start(why) {
+      armInput();
+      paused = false;
+      if (!active) {
+        var n = cold();
+        if (!n) return false;
+        active = true; t0 = now(); loaded = 0; longest = 0; longestKey = ''; queue = null; startedWith = n;
+        log('HDCss: warm — ' + n + ' staged sheet-set(s) still cold; loading them in the background (' + String(why || '') + ')');
+      }
+      schedule(STEP_MS);
+      return true;
+    }
+    function pause() { paused = true; if (timer) { clearTimeout(timer); timer = 0; } }
+    function status() { return { active: active, paused: paused, cold: cold(), loaded: loaded }; }
+    /* harness only: a quicker pace so a test does not wait seconds per step */
+    function setPace(stepMs, idleMs) { STEP_MS = stepMs; IDLE_MS = idleMs; }
+    return { start: start, pause: pause, status: status, _setPace: setPace, _priority: PRIORITY };
+  })();
 
   /* ------------------------------------------------------------------ tab arming ----
    * Wraps setTab (pre-need, so the load starts before render paints) and render
@@ -312,10 +415,15 @@
     if (!key) return;
     var r = reg[key];
     if (!r || r.state === 'ready') return;
-    /* Already in flight: its rehydrate callback is registered. Re-registering on
-     * every render() during the load window would re-fire the pane's onShow once
-     * per repaint, which is a bridge-request storm, not a hydration. */
-    if (r.state === 'loading') return;
+    /* Already in flight FOR THIS TAB: its rehydrate callback is registered.
+     * Re-registering on every render() during the load window would re-fire the
+     * pane's onShow once per repaint, which is a bridge-request storm, not a
+     * hydration. But a load that a prefetch or the background warm started
+     * (css-warm, 2026-10-09) carries no rehydrate at all — so the FIRST tab
+     * visit during such a load still registers one, or the pane would render
+     * under the gate, never re-measure, and show zeroed layout once it lifted. */
+    if (r.state === 'loading' && r.hydrateTab === t) return;
+    r.hydrateTab = t;
     need(key, function () { rehydrate(tab); });
   }
 
@@ -462,7 +570,7 @@
     if (document.addEventListener) document.addEventListener('DOMContentLoaded', armObserver, false);
     window.HDCss = {
       need: need, needAll: needAll, armTabs: armTabs, armModule: armModule,
-      armAll: armAll, audit: audit,
+      armAll: armAll, audit: audit, warm: warm,
       ready: function (k) { return !reg[k] || reg[k].state === 'ready'; },
       keys: function () { return keys.slice(); },
       /* introspection for the harness */
@@ -486,6 +594,7 @@
       need: function (k, cb) { if (cb) try { cb(); } catch (x) {} return true; },
       needAll: function () {}, armTabs: function () {}, armModule: function () {},
       armAll: function () {}, audit: function () {}, ready: function () { return true; },
+      warm: { start: function () { return false; }, pause: function () {}, status: function () { return { active: false, paused: true, cold: 0, loaded: 0 }; } },
       keys: function () { return []; }, _reg: {}, _loaded: function () { return 0; }
     };
     log('HDCss: install threw (' + e + ') — every stylesheet loaded eagerly, gates cleared');

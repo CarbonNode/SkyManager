@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace RE
 {
@@ -45,6 +46,11 @@ namespace NpcActions
 	// FormID of the actor snapshotted by the last SnapshotTarget() (0 = none).
 	// Shared with the Quests tab, which reports on whoever you were looking at.
 	std::uint32_t TargetFormID();
+
+	// True when that snapshot is the game's OWN crosshair pick, not the
+	// camera-cone fallback. Routing the open to a tab (Followers, Scene) uses
+	// this: a follower merely near screen centre must not hijack the open.
+	bool TargetUnderCrosshair();
 
 	// FormID of the NON-actor reference under the crosshair at the last
 	// SnapshotTarget() (0 = none) — the dropped sword / book / clutter the
@@ -98,6 +104,18 @@ namespace NpcActions
 	// is still flying, what the caller may show while it decides. Main thread only.
 	bool SicEmOne(std::uint32_t formId, std::string& outMsg);
 
+	// Sic 'em for an EXPLICIT list of actors that are neither teammates nor
+	// Loadouts members — Royal Retinue's escort squads ("Group 1 attack!",
+	// procession_bridge.cpp). Each id becomes an "honorary" ally for this
+	// order: GatherParty admits it past the teammate check and IsOurs treats
+	// it as ours (so the crosshair cannot designate one of them as the
+	// target). Target choice, the bolt and standing orders are SicEm's.
+	// When an honorary ally's order ends (CancelOrder, a standing order
+	// dropping, revert) the hook below is called with its id once and the
+	// honorary mark is cleared. Main thread only.
+	bool SicEmActors(const std::vector<std::uint32_t>& ids, const std::string& who);
+	void SetHonoraryOrderEndHook(std::function<void(std::uint32_t)> hook);
+
 	// Standing orders (2026-10-05): a Sic 'em / Hunt outlives its first
 	// StartCombat. TickOrders re-issues it while the ally is not fighting,
 	// moves a Hunt on to the next enemy and forgets it on a timeout
@@ -110,6 +128,11 @@ namespace NpcActions
 	// Run("hunt") / Run("hunt-minions"): no aiming - every follower and summon
 	// (or the summons alone) goes for the hostile nearest to them.
 	void TickOrders(bool gameReady, bool paused);
+	// Settings → Sic 'em (2026-10-12): how long an ally gets to REACH her
+	// target (clamped 5-60 s), and whether she is then moved next to it
+	// (teleport) or the order drops ("couldn't get to the target"). Main
+	// thread; main.cpp hands the saved values over on each order tick.
+	void SetOrderOptions(float reachSeconds, bool teleport);
 	void CancelOrder(std::uint32_t formId);
 	void RevertOrders();
 

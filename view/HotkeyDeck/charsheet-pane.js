@@ -1203,8 +1203,10 @@ window.CharSheetPane = (function () {
        pass). A class, not :has() — Ultralight's support for that is unproven. */
     const fig = gearFigure(s);
     return '<div class="ps-gear-tile ps-gear-' + esc(s.slot) +
-      (empty ? ' ps-gear-none' : '') + ' ps-gear-k-' + esc(s.kind) +
-      '" title="' + esc(bits.join(' · ')) + '">' +
+      (empty ? ' ps-gear-none' : ' ps-gear-open') + ' ps-gear-k-' + esc(s.kind) +
+      '" data-slot="' + esc(s.slot) + '"' +
+      (empty ? '' : ' role="button" tabindex="0"') +
+      ' title="' + esc(bits.join(' · ') + (empty ? '' : ' — click for the big view')) + '">' +
       '<div class="ps-gear-plate' + (fig ? ' ps-plate-fig' : '') + '"' +
         (ikey ? ' data-ikey="' + esc(ikey) + '"' : '') + '>' +
         '<span class="ps-gear-glyph" aria-hidden="true">' + glyph + '</span>' + fig +
@@ -1316,36 +1318,93 @@ window.CharSheetPane = (function () {
     var lo = Number(d.min) || 1, hi = Number(d.max) || 20;
     var n = Number(d.size);
     var have = d.available && Number.isFinite(n);
-    var pct = have ? Math.round(((n - lo) / (hi - lo)) * 100) : 0;
+    var at = function (v) { return hi > lo ? ((v - lo) / (hi - lo)) * 100 : 0; };
+    var pct = have ? Math.max(0, Math.min(100, at(n))) : 0;
 
-    var head = '<div class="ps-card-h"><span class="ps-card-t">Schlongs of Skyrim</span>' +
-      '<span class="ps-sos-val">' + (have ? ('Size <b>' + n + '</b> / ' + hi) : '—') + '</span></div>';
+    /* 2026-10-10, Rober: "this needs more flair / icons etc". So the card
+       wears the deck's own gold-line art (the measure medallion, the SOS
+       size-up / size-down glyphs on the steppers), the track is a real
+       instrument (a tick per size, a knob where you are), and the presets sit
+       ON the scale at their own sizes instead of bunched in the corner. The
+       glyph fallbacks are plain text, so a missing PNG never shows a hole. */
+    var medal = '<span class="ps-sos-medal" aria-hidden="true">' +
+      '<img src="icons/custom/bx-height.png" alt="" onerror="this.parentNode.classList.add(\'ps-sos-noart\');this.remove()"></span>';
+    var head = '<div class="ps-card-h">' + medal +
+      '<span class="ps-sos-headtx"><span class="ps-card-t">Schlongs of Skyrim</span>' +
+        '<span class="ps-sos-kicker">' + (have
+          ? 'Through SOS’s own SetSize — it sticks after the deck closes'
+          : 'Your size, as SOS keeps it') + '</span></span>' +
+      '<span class="ps-sos-val">' + (have
+        ? '<span class="ps-sos-tier">' + esc(sos.busy ? 'Applying…' : sosTier(n, lo, hi)) + '</span>' +
+          '<span class="ps-sos-num"><b>' + n + '</b><i>/ ' + hi + '</i></span>'
+        : '<span class="ps-sos-num"><b>—</b></span>') + '</span></div>';
 
     if (!have) {
       card.innerHTML = head + '<div class="ps-sos-off">' + esc(d.msg || 'SOS cannot size you right now') + '</div>';
       return;
     }
 
-    var steps = '';
-    for (var i = 0; i < 5; i++) {
-      var v = [1, 5, 10, 15, 20][i];
-      steps += '<button class="ps-sos-preset' + (v === n ? ' on' : '') + '" data-sos="' + v + '">' + v + '</button>';
+    var ticks = '';
+    for (var v = lo; v <= hi; v++) {
+      ticks += '<i class="ps-sos-tick' + (v % 5 === 0 || v === lo ? ' ps-sos-tick-major' : '') +
+        (v <= n ? ' ps-sos-tick-lit' : '') + '" style="left:' + at(v).toFixed(3) + '%"></i>';
     }
+    var steps = '';
+    var PRESETS = [1, 5, 10, 15, 20];
+    for (var i = 0; i < PRESETS.length; i++) {
+      var pv = PRESETS[i];
+      if (pv < lo || pv > hi) continue;
+      var edge = pv === lo ? ' ps-sos-preset-lo' : (pv === hi ? ' ps-sos-preset-hi' : '');
+      steps += '<button class="ps-sos-preset' + edge + (pv === n ? ' on' : '') + '" data-sos="' + pv +
+        '" style="left:' + at(pv).toFixed(3) + '%" title="Size ' + pv + ' — ' + esc(sosTier(pv, lo, hi)) + '">' + pv + '</button>';
+    }
+    var stepBtn = function (dir, disabled, title, art, txt) {
+      return '<button class="ps-sos-step" data-sos-step="' + dir + '" ' + (disabled ? 'disabled' : '') +
+        ' title="' + title + '" aria-label="' + title + '">' +
+        '<img src="icons/custom/' + art + '.png" alt="" onerror="this.parentNode.textContent=\'' + txt + '\'"></button>';
+    };
+    var hadFocus = document.activeElement && document.activeElement.classList &&
+      document.activeElement.classList.contains('ps-sos-track') && card.contains(document.activeElement);
     card.innerHTML = head +
-      '<div class="ps-sos-row">' +
-        '<button class="ps-sos-step" data-sos-step="-1" ' + (n <= lo ? 'disabled' : '') +
-          ' title="One size smaller">−</button>' +
-        '<div class="ps-sos-track" role="slider" tabindex="0" aria-label="SOS size"' +
-          ' aria-valuemin="' + lo + '" aria-valuemax="' + hi + '" aria-valuenow="' + n + '">' +
-          '<div class="ps-sos-fill" style="width:' + pct + '%"></div>' +
+      '<div class="ps-sos-row' + (sos.busy ? ' ps-sos-busy' : '') + '">' +
+        stepBtn(-1, n <= lo, 'One size smaller', 'hk-sos-size-down', '−') +
+        '<div class="ps-sos-rail">' +
+          '<div class="ps-sos-track" role="slider" tabindex="0" aria-label="SOS size"' +
+            ' aria-valuemin="' + lo + '" aria-valuemax="' + hi + '" aria-valuenow="' + n + '">' +
+            '<div class="ps-sos-fill" style="width:' + pct.toFixed(3) + '%"></div>' + ticks +
+          '</div>' +
+          '<span class="ps-sos-knob" style="left:' + pct.toFixed(3) + '%" aria-hidden="true"></span>' +
+          '<div class="ps-sos-presets">' + steps + '</div>' +
         '</div>' +
-        '<button class="ps-sos-step" data-sos-step="1" ' + (n >= hi ? 'disabled' : '') +
-          ' title="One size larger">+</button>' +
-      '</div>' +
-      '<div class="ps-sos-presets">' + steps + '</div>' +
-      '<div class="ps-sos-note">' + (sos.busy ? 'Applying…' :
-        'Through SOS\u2019s own SetSize, so the change sticks after you close the deck.') + '</div>';
+        stepBtn(1, n >= hi, 'One size larger', 'hk-sos-size-up', '+') +
+      '</div>';
+    /* the rebuild must not drop a keyboard user's place on the slider */
+    if (hadFocus) { var tr = card.querySelector('.ps-sos-track'); if (tr) tr.focus(); }
   }
+
+  /* A word for the size, so the number reads at a glance. Five even bands of
+     SOS's own range (1-20 by default), never a fixed table: a mod that widens
+     the range gets bands that widen with it. */
+  function sosTier(v, lo, hi) {
+    var names = ['Modest', 'Average', 'Generous', 'Large', 'Massive'];
+    var span = Math.max(1, hi - lo + 1);
+    var k = Math.floor(((v - lo) / span) * names.length);
+    return names[Math.max(0, Math.min(names.length - 1, k))];
+  }
+
+  /* Arrow keys on the focused track, one size a press (Home / End jump to the
+     ends). The track is the slider; it was focusable before and did nothing. */
+  document.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (!t || !t.classList || !t.classList.contains('ps-sos-track') || !sos.data) return;
+    var cur = Number(sos.data.size) || 0, lo = Number(sos.data.min) || 1, hi = Number(sos.data.max) || 20;
+    var to = e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? cur - 1
+      : e.key === 'ArrowRight' || e.key === 'ArrowUp' ? cur + 1
+      : e.key === 'Home' ? lo : e.key === 'End' ? hi : null;
+    if (to === null) return;
+    e.preventDefault(); e.stopPropagation();
+    sosSet(to);
+  }, true);
 
   /* Delegated, because the card is rebuilt on every reply. */
   document.addEventListener('click', function (e) {
@@ -1359,7 +1418,8 @@ window.CharSheetPane = (function () {
       sosSet((Number(sos.data && sos.data.size) || 0) + Number(step.getAttribute('data-sos-step')));
       return;
     }
-    var track = t.closest('.ps-sos-track');
+    var rail = t.closest('.ps-sos-rail');
+    var track = rail && rail.querySelector('.ps-sos-track');
     if (track && sos.data && sos.data.available) {
       e.stopPropagation();
       var r = track.getBoundingClientRect();
@@ -1404,9 +1464,96 @@ window.CharSheetPane = (function () {
         '</div>' +
         '<div class="ps-gear-grid">' + list.map(gearTile).join('') + '</div>';
     }
+    fitGearGrid();
     hydrateGearPlates();
     armGearIcons();
   }
+
+  /* ---- the grid never ends on empty cells (Rober, 2026-10-10, with a
+     screenshot of eight tiles and the ammo tile alone on a second row:
+     "line breaks like this with a bunch of blank space annoy me").
+     auto-fill packs as many 148px tracks as fit, so nine slots came out 8 + 1
+     at most deck widths. Now the column count is CHOSEN: all nine in one row
+     when they fit at the tile's minimum, else the widest count that divides
+     the slot count evenly (9 -> 3 x 3), else the one leaving the fewest holes.
+     Re-run on every render and on resize; it writes the style only when the
+     answer changes, so the 2 s poll costs a measurement and nothing else. */
+  const GEAR_TILE_MIN = 132, GEAR_GAP = 12;
+  function gearColsFor(n, width) {
+    if (n <= 1 || !(width > 0)) return n || 1;
+    const fit = Math.max(1, Math.floor((width + GEAR_GAP) / (GEAR_TILE_MIN + GEAR_GAP)));
+    if (fit >= n) return n;
+    let best = 1, bestHoles = Infinity;
+    for (let c = fit; c >= 2; c--) {
+      const holes = Math.ceil(n / c) * c - n;
+      if (holes < bestHoles) { best = c; bestHoles = holes; }
+      if (holes === 0) break;          // widest even split wins
+    }
+    return best;
+  }
+  function fitGearGrid() {
+    const grid = document.querySelector('#ps-gear .ps-gear-grid');
+    if (!grid) return;
+    const n = grid.children.length, w = grid.clientWidth;
+    if (!w) return;                    // hidden pane: measure on the next render
+    const cols = gearColsFor(n, w);
+    if (grid._cols === cols) return;
+    grid._cols = cols;
+    grid.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
+  }
+  try { window.addEventListener('resize', function () { if (ui.visible) fitGearGrid(); }); }
+  catch (e) { /* no window in some harnesses */ }
+
+  /* ---- click a worn piece -> the shared lightbox, big, with its numbers
+     (Rober, 2026-10-10: "a lightbox popout on click of equipment would be
+     nice"). The render when there is one (turntable + Turn in 3D ride along
+     for free through opts.spin), the slot glyph when the piece has no world
+     model. Every number the tile carries in miniature is spelled out here. */
+  function gearFacts(s) {
+    const f = [];
+    if (s.damage !== null && s.damage > 0)
+      f.push({ label: s.damageEstimated ? 'Damage (est.)' : 'Damage', value: fmtInt(s.damage), tone: 'dmg' });
+    if (s.armor !== null && s.armor > 0)
+      f.push({ label: 'Armour', value: fmtInt(s.armor), tone: 'arm' });
+    if (s.speed) f.push({ label: 'Speed', value: (Math.round(s.speed * 100) / 100).toFixed(2) });
+    if (s.reach) f.push({ label: 'Reach', value: (Math.round(s.reach * 100) / 100).toFixed(1) });
+    if (s.count != null && isFinite(s.count)) f.push({ label: 'Carried', value: '×' + fmtInt(s.count) });
+    s.badges.forEach(function (b) {
+      f.push({ label: b.av || 'Enchantment', value: b.text, tone: 'gold' });
+    });
+    return f;
+  }
+  function openGearLightbox(s) {
+    if (!s || !s.name || !window.HDLightbox) return;
+    const url = gearLiveArt(s);
+    HDLightbox.open({
+      host: $('ps-pane'),
+      src: url,
+      glyph: GEAR_GLYPH[s.slot] || '◆',
+      title: s.name,
+      sub: s.label,
+      facts: gearFacts(s),
+      frames: url ? ['-a090', '-a180', '-a270'].map(function (sfx) { return url.replace(/\.png$/, sfx + '.png'); }) : [],
+      spin: url && s.formId && s.plugin ? { kind: 'item', formId: s.formId, plugin: s.plugin } : null,
+    });
+  }
+  document.addEventListener('click', function (e) {
+    const t = e.target;
+    const tile = t && t.closest && t.closest('#ps-gear .ps-gear-tile');
+    if (!tile || tile.classList.contains('ps-gear-none')) return;
+    const list = (state.data && state.data.equip) || [];
+    const slot = tile.getAttribute('data-slot');
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].slot === slot) { e.stopPropagation(); openGearLightbox(list[i]); return; }
+    }
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const tile = e.target && e.target.closest && e.target.closest('#ps-gear .ps-gear-open');
+    if (!tile) return;
+    e.preventDefault();
+    tile.click();
+  }, true);
 
   /* ==================================== 2026-08-17 · stats + resistances == *
    * The reference pairs a stat block with a resistance panel; so do we, but in
@@ -2578,6 +2725,7 @@ window.CharSheetPane = (function () {
         '" title="' + esc(g.hint) + '">' + esc(g.label) +
         '<span class="ps-eff-gchip-n">' + counts[g.id] + '</span></button>';
     }).join('');
+    if (window.hdBalance) { row.classList.add('hd-balance'); window.hdBalance.watch(row); }   // an even block, not a ragged wrap
   }
 
   /* ONE delegated listener for the whole body, bound once per rebuild target.
@@ -2681,8 +2829,62 @@ window.CharSheetPane = (function () {
     if (ui.tickT) { clearInterval(ui.tickT); ui.tickT = null; }
   }
 
+  /* ---- Renown (hd-renown.js) — his deeds and who in CHIM knows them ----
+     The page is the shared module the Deck Portal also mounts; this is the
+     deck's adapter for it: CHIM through deck_ask.php's renown_* modes over
+     HDOmni.chimCall, faces from the Followers roster, the gold gl-* icons. */
+  function renownAdapter() {
+    function call(qs, cb) {
+      if (!window.HDOmni || typeof HDOmni.chimCall !== 'function') { cb('CHIM is not available in this view.'); return; }
+      HDOmni.chimCall(qs, function (env) {
+        if (typeof env === 'string') { try { env = JSON.parse(env); } catch (_) { env = null; } }
+        let j = env && env.json;
+        if (typeof j === 'string') { try { j = JSON.parse(j); } catch (_) { j = null; } }
+        if (!env || (env.ok === false && !j)) { cb('CHIM did not answer — it only runs while the game and the CHIM launcher are up.'); return; }
+        if (j && j.absent) { cb(null, j); return; }
+        if (!j || j.ok === false) { cb((j && (j.error || j.why)) || 'CHIM refused that.'); return; }
+        cb(null, j);
+      }, false);
+    }
+    function b64(s) { return btoa(unescape(encodeURIComponent(s))); }
+    return {
+      surface: 'deck',
+      load: function (cb) { call('mode=renown', cb); },
+      op: function (name, p, cb) {
+        const e = encodeURIComponent;
+        if (name === 'set') call('mode=renown_set&key=' + e(p.key) + '&fields_b64=' + e(b64(JSON.stringify(p.fields || {}))), cb);
+        else if (name === 'knows') call('mode=renown_knows&key=' + e(p.key) + '&npc=' + e(p.npc) + '&v=' + e(p.v), cb);
+        else if (name === 'drop') call('mode=renown_drop&key=' + e(p.key), cb);
+        else if (name === 'preview') call('mode=renown_preview&npc=' + e(p.npc), cb);
+        else cb('unknown renown op');
+      },
+      icon: function (stem) { return 'icons/custom/' + stem + '.png'; },
+      face: function (name) {
+        const fp = window.FolPane || window.FollowersPane;
+        if (!fp) return null;
+        let p = null;
+        try { p = (fp.portraitInfoFor || fp._portraitFor).call(fp, { name: name }) || null; } catch (_) { p = null; }
+        if (!p || !p.file) return null;
+        return p.url || (p.abs ? p.file : 'portraits/' + p.file + '?v=' + (p.mtime || 0));
+      },
+      /* The F7 popout contract (app.js popout-modal-escape): hdPopoutCapture holds
+         the MODAL capture while HDRenown.isOpen() and releases only its own claim,
+         so in game C++ hands Esc to hdModalEscape instead of closing the deck. */
+      capture: function () { if (typeof window.hdPopoutCapture === 'function') window.hdPopoutCapture(); },
+      escaped: function () { if (typeof window.hdPopoutNativeEsc === 'function') window.hdPopoutNativeEsc(); }
+    };
+  }
+  function mountRenown() {
+    const el = $('ps-renown');
+    if (!el || !window.HDRenown) return;
+    if (el.getAttribute('data-mounted')) { HDRenown.refresh(); return; }
+    el.setAttribute('data-mounted', '1');
+    HDRenown.mount(el, renownAdapter());
+  }
+
   function onShow() {
     ui.visible = true;
+    mountRenown();
     if (!state.loaded) renderSkeleton();
     else render();
     toGame('psGet', '');
@@ -2694,6 +2896,7 @@ window.CharSheetPane = (function () {
   function onHide() {
     ui.visible = false;
     closePackModal();   // a tab switch must not leave the potion modal hanging
+    if (window.HDRenown && HDRenown.isOpen()) HDRenown.close();   // nor a Renown folio
     stopPoll();
     /* The gear render poll must die with the tab — it nudges C++ every 2.5 s
        and would otherwise keep asking about equipment nobody is looking at. */
@@ -3264,6 +3467,8 @@ window.CharSheetPane = (function () {
     /* 2026-08-17 test hooks: the gear/battle/effect-group work. */
     _gear: gear,
     _hydrateGearPlates: hydrateGearPlates,
+    _gearColsFor: gearColsFor,
+    _gearFacts: gearFacts,
     _groupedEffects: groupedEffects,
     _effPct: effPct,
     _tick: tick,

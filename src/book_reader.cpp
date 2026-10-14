@@ -241,4 +241,45 @@ namespace BookReader
 		}
 		RE::DebugNotification(msg);
 	}
+
+	std::string ReadOne(RE::TESObjectBOOK* book, RE::InventoryEntryData* entry)
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player || !book)
+			return {};
+		const std::string name = Name(book);
+
+		if (book->TeachesSpell()) {
+			auto* spell = book->GetSpell();
+			if (!spell)
+				return "Already useless - " + name + " teaches no spell";
+			if (player->HasSpell(spell))
+				return std::string("Already known - ") + Name(spell);
+			// Same order as the inventory menu: Read() teaches, then the tome is eaten.
+			if (!book->Read(player))
+				return "Couldn't learn from " + name;
+			player->RemoveItem(book, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+			logger::info("book-reader: read one tome '{}' -> learned {}", name, Name(spell));
+			return std::string("Learned ") + Name(spell);
+		}
+
+		auto*       avo = player->AsActorValueOwner();
+		const bool  teaches = book->TeachesSkill() && !book->IsRead();
+		const float before = (teaches && avo) ? avo->GetActorValue(book->GetSkill()) : 0.0f;
+		const bool  wasRead = book->IsRead();
+
+		ReadLikeTheMenu(book, player);
+		const int sent = SendReadEvents(entry);
+		logger::info("book-reader: read one '{}' (was read={}, events={})", name, wasRead, sent);
+
+		if (teaches && avo) {
+			const float after = avo->GetActorValue(book->GetSkill());
+			if (after > before)
+				return std::string("Read ") + name + " - " + SkillName(book->GetSkill()) + " " +
+				       std::to_string(static_cast<int>(after));
+		}
+		if (sent > 0)
+			return "Read " + name;
+		return wasRead ? "Already read - " + name + " (read again)" : "Read " + name;
+	}
 }

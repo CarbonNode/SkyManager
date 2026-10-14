@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 
 // nlohmann::json is provided by the force-included pch (<json.hpp>) — the sibling
@@ -73,10 +74,50 @@ namespace FollowersHud
 		bool showSt    = false;  // stamina bar
 		bool showMk    = false;  // magicka bar
 
+		// AWAY faces (Rober, 2026-10-11: "sure a dimmed away would be good QOL").
+		// A Follower Organizer member the game still flags as a teammate but who
+		// is not loaded anywhere near you — parked in another hold, or carrying a
+		// stale flag from a dismiss that never cleared it. The strip used to drop
+		// her silently while the deck's Current party listed her at full
+		// strength, so the two surfaces disagreed (3 vs 1). Drawn dimmed, after
+		// everyone actually present, with no bars or bearing (none can be read
+		// from an actor that is not loaded). On by default; one toggle hides them.
+		bool showAway  = true;
+
 		// Portrait shape (Party Sheet's cuts): circle | rounded | square |
 		// diamond. A strip-level CSS class in the view; clamped on every read
 		// so a hand-edited config can never put the strip in an unknown state.
 		std::string faceShape = "circle";
+
+		// Frames (Rober, 2026-10-13: "are these widget frames customizable? ...
+		// maybe ability to change opacity?"). The rim used to be the SLOT's
+		// colour (slot 1 red, 2 gold, 3 green), so a follower leaving recoloured
+		// everyone below her, and nothing about it could be set.
+		//   frameMode    "person" (each follower her own colour; the default),
+		//                "gold" (one colour for every rim — the key predates
+		//                the colour choice), "group" (ONE frame around the whole
+		//                strip, gliding bigger/smaller as people come and go;
+		//                no rim per face) or "none". The red hurt ring shows in
+		//                every mode.
+		//   frameColor   the palette key "gold" and "group" draw in.
+		//   opacityPct   the whole strip's opacity, 20..100.
+		//   squeezePct   how far the strip is squeezed SIDEWAYS, 0..100 (Rober,
+		//                2026-10-13: "in one frame mode ... a bit wide
+		//                horizontally ... i want to squish it horizontally").
+		//                0 = the stock column width, 100 = the face's own width.
+		//                Narrows the face columns, the gap between them in a row
+		//                and the One frame plate's side padding; the faces
+		//                themselves never stretch. Set by Shift + corner drag.
+		//   frameColors  follower key -> palette key (kFramePalette). The key is
+		//                the durable "<plugin>|0x<local id>" of her reference
+		//                (FrameKeyOf), so it survives a load-order re-index. A
+		//                follower with no entry gets an automatic colour the
+		//                view derives from that same key, so it never moves.
+		std::string frameMode = "person";
+		std::string frameColor = "gold";
+		int         opacityPct = 100;
+		int         squeezePct = 0;
+		std::map<std::string, std::string> frameColors;
 
 		// Show / hide toggle key — same shape as the deck's open keys. code 0 =
 		// unbound (the HUD then has no key and is toggled from the deck control).
@@ -102,4 +143,18 @@ namespace FollowersHud
 	void           FromJson(const nlohmann::json& j, Config& out);
 	// "circle" unless the value is exactly one of the four known shapes.
 	std::string    ClampShape(const std::string& s);
+	// "person" unless the value is exactly "gold", "group" or "none".
+	std::string    ClampFrameMode(const std::string& s);
+	// 20..100.
+	int            ClampOpacity(int pct);
+	// 0..100.
+	int            ClampSqueeze(int pct);
+	// True for a key of the frame palette (the view's FRAME_PALETTE carries the
+	// same twelve keys, in the same order, with their colours).
+	bool           IsFrameColor(const std::string& s);
+	// A follower key as FrameKeyOf spells it: "<plugin>|0x<hex>" or "name:<text>",
+	// at most 160 bytes. Used to refuse junk off the wire and out of the file.
+	bool           IsFrameKey(const std::string& s);
+	// The most per-follower picks the config keeps; past it, new picks are refused.
+	inline constexpr std::size_t kMaxFrameColors = 400;
 }

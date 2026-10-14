@@ -260,13 +260,23 @@
   cursor: pointer;
   transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
-.wth-chip img { width: 20px; height: 20px; }
+.wth-chip img { width: 22px; height: 22px; flex: none; }
 .wth-chip:hover, .wth-src:hover { border-color: #8e7638; color: #f1e2b4; }
 .wth-chip.on, .wth-src.on { background: rgba(201,162,75,.20); border-color: #c9a24b; color: #f1e2b4; }
 .wth-chip-n { font-size: 14px; color: #8f8670; }
 .wth-chip.on .wth-chip-n, .wth-src.on .wth-chip-n { color: #d8c48f; }
 .wth-srcs-label { font-size: 15px; color: #a89e83; margin-right: 4px; }
-.wth-src-more { color: #d8c48f; }
+/* Kinds are laid out by hd-balance.js as an even block (see renderChips);
+   a label never breaks inside a chip. */
+.wth-chips > .wth-chip { white-space: nowrap; }
+/* Sources: one picker control (see renderSources), never a chip cloud. */
+.wth-srcs { flex-wrap: nowrap; min-width: 0; }
+.wth-src { white-space: nowrap; }
+.wth-src-pick { min-width: 0; max-width: 60%; gap: 10px; padding-right: 14px; }
+.wth-src-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wth-src-caret { color: #d8c48f; font-size: 14px; }
+.wth-src-clear { padding: 7px 12px; color: #a89e83; }
+.wth-srcs-note { font-size: 14px; color: #8f8670; margin-left: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wth-count { font-size: 14px; color: #8f8670; flex: 0 0 auto; padding: 0 2px; }
 
 .wth-list {
@@ -811,3 +821,80 @@
   background: #15141a;
 }
 .wth-keys b:first-child { margin-left: 0; }
+
+/* ------------------------------------------- the sky previews + region -- */
+
+/* a row's sky: four segments, dawn · day · dusk · night, each the record's
+   upper sky fading into its horizon */
+.wth-sky {
+  flex: none;
+  display: flex;
+  width: 88px;
+  height: 40px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.08);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.35);
+}
+.wth-sky-none { background: #15141a; }
+.wth-sky-seg { flex: 1 1 0; position: relative; }
+.wth-sky-seg + .wth-sky-seg { border-left: 1px solid rgba(0,0,0,.30); }
+
+/* the hero's sky: the same four, big, the one the clock is in marked */
+.wth-sky-big {
+  display: flex;
+  height: 64px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.10);
+}
+.wth-sky-big .wth-sky-seg { display: flex; align-items: flex-end; justify-content: center; padding-bottom: 6px; }
+.wth-sky-big .wth-sky-seg.now { box-shadow: inset 0 0 0 2px #c9a24b; }
+.wth-sky-lbl {
+  font-size: 14px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #fff8e6;
+  text-shadow: 0 1px 3px rgba(0,0,0,.85);
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: rgba(8,8,12,.40);
+}
+.wth-sky-big .wth-sky-seg.now .wth-sky-lbl { background: #c9a24b; color: #121117; text-shadow: none; }
+
+.wth-here {
+  font-size: 14px;
+  color: #a6e3c8;
+  padding: 1px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(166,227,200,.35);
+  white-space: nowrap;
+}
+.wth-region {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 15px;
+  color: #cfc6b0;
+}
+.wth-region span { flex: 1 1 260px; }
+.wth-region b { color: #f1e2b4; font-weight: 600; }
+
+/* Searching dedicates the panel to the query and its results. */
+#wth-pane.wth-searching .wth-now,
+#wth-pane.wth-searching .wth-col-mods { display: none; }
+#wth-pane.wth-searching .wth-col-sky { flex: 1 1 auto; }
+#wth-pane.wth-searching .wth-listcard { flex: 1 1 auto; min-height: 0; }
+@media (max-width: 600px) {
+  #wth-pane.wth-searching .wth-row .wth-sky { display: none; }
+  #wth-pane.wth-searching .wth-row { display: grid; grid-template-columns: 32px minmax(0,1fr) 44px 44px; padding: 12px 8px; gap: 8px; }
+  #wth-pane.wth-searching .wth-row-ic { grid-column: 1; grid-row: 1; width: 32px; }
+  #wth-pane.wth-searching .wth-row-main { grid-column: 2 / 5; grid-row: 1; }
+  #wth-pane.wth-searching .wth-row-name,
+  #wth-pane.wth-searching .wth-row-src { white-space: normal; overflow-wrap: anywhere; }
+  #wth-pane.wth-searching .wth-row-go { grid-column: 2; grid-row: 2; }
+  #wth-pane.wth-searching .wth-row-lock { grid-column: 3; grid-row: 2; min-height: 44px; }
+  #wth-pane.wth-searching .wth-star { grid-column: 4; grid-row: 2; min-height: 44px; }
+  #wth-pane.wth-searching .wth-head { gap: 12px; }
+}

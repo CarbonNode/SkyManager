@@ -72,8 +72,18 @@ var FixBtn = (function () {
     if (fly) { try { fly.remove(); } catch (e) {} fly = null; }
     if (onEsc) { document.removeEventListener('keydown', onEsc, true); onEsc = null; }
   }
-  function close() { teardown(); currentCtx = null; armed = ''; }
+  /* the in-game Escape contract lives in app.js (popout-modal-escape) */
+  function claim() { if (typeof window.hdPopoutCapture === 'function') window.hdPopoutCapture(); }
+  function close() { var was = !!fly; teardown(); currentCtx = null; armed = ''; if (was) claim(); }
   function isOpen() { return !!fly; }
+  /* app.js onKeyDown asks this before its own palette-close Escape (its
+     listener runs ahead of ours): Esc closes the popout, not the deck, and
+     no key quick-fires behind it. */
+  function onKey(e) {
+    if (!fly) return false;
+    if (e && (e.code === 'Escape' || e.key === 'Escape')) close();
+    return true;
+  }
 
   function hexOf(fid) {
     var n = Number(fid) || 0;
@@ -387,13 +397,14 @@ var FixBtn = (function () {
     setTimeout(function () {
       if (fly && onEsc === h) document.addEventListener('keydown', h, true);
     }, 0);
+    claim();
   }
 
   window.hdFixProbeResult = onProbe;
   window.hdFixResult = onResult;
 
   return {
-    open: open, close: close, isOpen: isOpen, run: runDetached,
+    open: open, close: close, isOpen: isOpen, onKey: onKey, run: runDetached,
     /* exposed for the standalone harness */
     _probe: onProbe, _result: onResult, _fixes: FIXES, _probes: probes,
   };

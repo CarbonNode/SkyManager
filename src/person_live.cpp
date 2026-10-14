@@ -3,6 +3,8 @@
 #include <array>
 #include <cmath>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "photo_camera.h"
 #include "photo_lighting.h"
@@ -45,6 +47,13 @@ namespace PersonLive
 		int                 g_yawIndex    = -1;
 		float               g_yaw         = 0.0f;   // degrees from her front
 		float               g_zoom        = 1.0f;
+		// Auto portraits: face framing instead of full body, and the head gear
+		// culled for the shot (node, its culled state before we touched it).
+		bool                g_face        = false;
+		std::vector<std::pair<RE::NiPointer<RE::NiAVObject>, bool>> g_hiddenGear;
+		// How much of the frame's HEIGHT the head (crown to chin) fills: ~45%
+		// leaves the neck and a hint of shoulders, the deck's medallion crop.
+		constexpr float kFaceFill = 0.45f;
 
 		bool* FrozenFlag()
 		{
@@ -125,6 +134,85 @@ namespace PersonLive
 			return out;
 		}
 
+		// The same head-node lookup portrait capture uses: names differ between
+		// vanilla, custom races and body replacers.
+		RE::NiAVObject* HeadNode(RE::Actor* a)
+		{
+			static const char* kNames[] = { "NPC Head [Head]", "NPCHead [Head]", "NPC Head", "Head",
+				"BSFaceGenNiNodeSkinned", "NPC Neck [Neck]" };
+			for (const auto* n : kNames)
+				if (auto* node = a->GetNodeByName(n))
+					return node;
+			return nullptr;
+		}
+
+		// Helmets and hoods hide the face the portrait is FOR. Culled, never
+		// unequipped: nothing about her inventory or outfit changes, and the
+		// exact previous culled state comes back.
+		void HideHeadGear(RE::Actor* a)
+		{
+			auto& biped = a->GetBiped(false);
+			if (!biped)
+				return;
+			for (auto& obj : biped->objects) {
+				auto* armo = obj.item ? obj.item->As<RE::TESObjectARMO>() : nullptr;
+				if (!armo || !obj.partClone)
+					continue;
+				if (!armo->HasKeywordID(0x0006C0EE) /* ArmorHelmet */ && !armo->HasKeywordID(0x0010CD11) /* ClothingHead */)
+					continue;
+				bool seen = false;
+				for (const auto& h : g_hiddenGear)
+					if (h.first.get() == obj.partClone.get())
+						seen = true;
+				if (seen)
+					continue;
+				g_hiddenGear.emplace_back(obj.partClone, obj.partClone->GetAppCulled());
+				obj.partClone->SetAppCulled(true);
+			}
+			if (!g_hiddenGear.empty())
+				logger::info("person-live: {} head-gear piece(s) hidden for the portrait of '{}'",
+					g_hiddenGear.size(), a->GetName() ? a->GetName() : "");   // marker: auto-portrait-helmet-hide
+		}
+
+		void RestoreHeadGear()
+		{
+			for (auto& h : g_hiddenGear)
+				if (h.first)
+					h.first->SetAppCulled(h.second);
+			g_hiddenGear.clear();
+		}
+
+		// Head and shoulders, centred, looking at her face from the front.
+		bool ApplyFace(RE::Actor* a, RE::FreeCameraState* fs)
+		{
+			RE::NiPoint3 head;
+			float        radius = 12.0f;   // a human head is ~12-14 units
+			if (auto* node = HeadNode(a)) {
+				head = node->world.translate;
+				if (node->worldBound.radius > 4.0f && node->worldBound.radius < 40.0f)
+					radius = node->worldBound.radius;
+			} else {
+				head = a->GetPosition();
+				float h = a->GetHeight();
+				head.z += (std::isfinite(h) && h > 40.0f ? h : 128.0f) * 0.92f;
+			}
+			const float hfov = HFovRad();
+			const float vfov = 2.0f * std::atan(std::tan(hfov * 0.5f) / Aspect());
+			// The frame height that makes the head (2r) fill kFaceFill of it, and
+			// the distance that frame height needs at this vertical FOV.
+			const float frameH = (2.0f * radius) / kFaceFill;
+			const float dist   = (frameH * 0.5f) / std::tan(vfov * 0.5f);
+			// Aim a little below the head's centre so the chin and neck are in.
+			const RE::NiPoint3 target{ head.x, head.y, head.z - radius * 0.20f };
+			const float camYaw = a->GetAngleZ() + kPi;
+			const RE::NiPoint3 fwd{ std::sin(camYaw), std::cos(camYaw), 0.0f };
+			fs->translation = { target.x - fwd.x * dist, target.y - fwd.y * dist, target.z };
+			SetRotation(fs, 0.0f, camYaw);
+			if (g_lights)
+				SKSE::GetTaskInterface()->AddTask([]() { if (g_active) PhotoLighting::Update(); });
+			return true;
+		}
+
 		// Frame her full height, right of centre, facing the camera at g_yaw.
 		bool Apply()
 		{
@@ -134,6 +222,8 @@ namespace PersonLive
 			if (!a || !fs)
 				return false;
 			Calibrate(fs);
+			if (g_face)
+				return ApplyFace(a, fs);
 			const auto  p       = a->GetPosition();
 			float       height  = a->GetHeight();
 			if (!std::isfinite(height) || height < 40.0f || height > 600.0f)
@@ -189,7 +279,29 @@ namespace PersonLive
 
 	bool Active() { return g_active; }
 
+	std::string StartImpl(RE::Actor* actor, bool face);
+
 	std::string Start(RE::Actor* actor)
+	{
+		return StartImpl(actor, false);
+	}
+
+	std::string StartFace(RE::Actor* actor)
+	{
+		return StartImpl(actor, true);
+	}
+
+	bool FaceRetarget(RE::Actor* actor)
+	{
+		if (!g_active || !g_face || !actor || !actor->Is3DLoaded() || !actor->Get3D(false))
+			return false;
+		RestoreHeadGear();
+		g_actor = actor->GetHandle();
+		HideHeadGear(actor);
+		return Apply();
+	}
+
+	std::string StartImpl(RE::Actor* actor, bool face)
 	{
 		if (g_active)
 			Stop("restart");
@@ -211,6 +323,7 @@ namespace PersonLive
 		g_actor = actor->GetHandle();
 		g_yaw   = 0.0f;
 		g_zoom  = 1.0f;
+		g_face  = face;
 		// Non-pausing focus first: a menu pause stops the camera update loop.
 		if (g_enterFocus) {
 			g_enterFocus();
@@ -220,10 +333,13 @@ namespace PersonLive
 			if (g_focusSwapped && g_restoreFocus) g_restoreFocus();
 			g_focusSwapped = false;
 			g_actor = {};
+			g_face  = false;
 			return Refuse("the free camera could not be taken (another mod refused it)");
 		}
 		g_active = true;
 		HidePlayer(true);
+		if (face)
+			HideHeadGear(actor);
 		g_lights = PhotoLighting::BeginPortrait({ PhotoLighting::Mode::Soft, 1.0f });
 		if (!Apply()) {
 			Stop("pose failed");
@@ -231,6 +347,8 @@ namespace PersonLive
 		}
 		logger::info("person-live: started on {:08X} '{}' (lights {})", actor->GetFormID(),
 			actor->GetName() ? actor->GetName() : "", g_lights ? "on" : "off");   // marker: person-live-start
+		if (face)
+			logger::info("person-live: face framing for an auto portrait");   // marker: person-live-face
 		return Pose().dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
@@ -263,6 +381,8 @@ namespace PersonLive
 			g_lights = false;
 		}
 		HidePlayer(false);
+		RestoreHeadGear();
+		g_face = false;
 		if (!g_lease.Exit(RE::PlayerCamera::GetSingleton(), FrozenFlag()))
 			logger::warn("person-live: free camera did not release on the first try");
 		g_active = false;

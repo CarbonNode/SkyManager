@@ -145,7 +145,7 @@
   flex: none; width: 22px; height: 22px; border-radius: 6px;
   display: inline-flex; align-items: center; justify-content: center;
   border: 1px solid transparent; background: transparent;
-  color: #6f6a5e; font-size: 10px; line-height: 1; cursor: pointer;
+  color: #6f6a5e; font-size: 12px; line-height: 1; cursor: pointer;
   transition: color .12s ease, background .12s ease, border-color .12s ease;
 }
 .rc-clear:hover { color: #e8e4da; background: rgba(255,255,255,.05); border-color: #3a3a44; }
@@ -154,4 +154,4 @@
    so it never dominates the thing it is a shortcut to. */
 #fol-pane[data-av="small"] .rc-face {
   position: relative; overflow: hidden; width: 22px; height: 22px; }
-#fol-pane[data-av="small"] .rc-name { font-size: 11px; }
+#fol-pane[data-av="small"] .rc-name { font-size: 12px; }

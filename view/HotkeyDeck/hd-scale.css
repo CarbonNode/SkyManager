@@ -60,7 +60,7 @@
 
 .hds-rst {
   width: auto; padding: 0 8px;
-  font-size: 11px; color: #6f6a5e; letter-spacing: .2px;
+  font-size: 12px; color: #6f6a5e; letter-spacing: .2px;
 }
 .hds-val {
   min-width: 74px; text-align: center;
@@ -84,9 +84,9 @@
   margin-bottom: 2px;
 }
 #tab-scale-card .tsc-title {
-  font-size: 11px; letter-spacing: .8px; text-transform: uppercase; color: #6f6a5e;
+  font-size: 12px; letter-spacing: .8px; text-transform: uppercase; color: #6f6a5e;
 }
-#tab-scale-card .tsc-hint { font-size: 11px; color: #565261; }
+#tab-scale-card .tsc-hint { font-size: 12px; color: #565261; }
 /* Rows sit side by side and are CONTENT-sized. The deck's own .set-row uses
    space-between, which is right in a narrow settings card and wrong here: this
    card is as wide as the panel, so a stretched row strands its −/＋ a thousand

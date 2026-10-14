@@ -310,63 +310,95 @@
 .rm-deny-add:hover { background: rgba(200,80,70,.18); border-color: #c85046; }
 .rm-deny-add:focus-visible { outline: 2px solid #c9a24b66; outline-offset: -2px; }
 
-/* The popover both pickers share (NPC list from the Rooms tab, room list from
-   the F7 card). Fixed + on <body>, so it rides above whichever pane opened
-   it; z sits under #hd-tip (10050) so hover bubbles still win.
+/* The POPOUT both pickers share (NPC list from the Rooms tab, room list from
+   the F7 card's Room ban). Since 2026-10-12 a centred, body-anchored popout
+   like the CHIM and Fixes ones beside it, not a dropdown hung off the button
+   (Rober: "pop outs need to be better … centered, horizontal and vertical").
+   .rm-pick-back fills the viewport (bare vh/vw are right; NO --ui-scale — the
+   2026-08-14 popup audit) and centres the card; z sits under #hd-tip (10050)
+   so hover bubbles still win.
 
-   Sized for a couch at 2560x1440, twice over (Rober, 2026-08-11: "dropdown
-   text too hard to read (too small) … searching is nice, but still too
-   small"). First, the type here is deck-body size (15px), not the 12.5px
-   footnote it used to be — this menu is where you READ names, so nothing in
-   it is allowed to be small. Second, transform-origin + the scale set by
-   placePicker(): living on <body> put it outside #panel's --ui-scale AND the
-   Followers tab's --fd-ui-scale, so at his zoom the deck grew and this menu
-   did not. It now wears the same zoom as the button that opened it. */
+   Sized for a couch at 2560x1440 (Rober, 2026-08-11: "dropdown text too hard
+   to read (too small) … searching is nice, but still too small"): this is
+   where you READ names, so the type is the popout scale, not the deck body's,
+   and --rp steps the whole card up on a big screen. */
+.rm-pick-back { --rp: 1; }
+@media (min-width: 1900px) and (min-height: 1000px) { .rm-pick-back { --rp: 1.3; } }
+.rm-pick-back {
+  position: fixed; inset: 0; z-index: 9700;
+  display: flex; align-items: center; justify-content: center;
+  padding: calc(24px * var(--rp, 1)); box-sizing: border-box;
+  background: rgba(0,0,0,.72);
+  animation: rmPickBackIn 140ms ease-out;
+}
+@keyframes rmPickBackIn { from { opacity: 0; } to { opacity: 1; } }
 .rm-pick {
-  position: fixed; z-index: 9700;
-  transform-origin: top left;
-  width: 420px; max-width: calc(100vw - 16px);
-  background: #16161d;
-  border: 1px solid #c9a24b66; border-radius: 11px;
-  box-shadow: 0 14px 38px rgba(0,0,0,.58);
-  padding: 13px; display: flex; flex-direction: column; gap: 10px;
+  position: relative;
+  width: calc(720px * var(--rp, 1)); max-width: 100%; max-height: 88vh;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, #1c1c23, #16161b);
+  border: 1px solid #b69b56; border-radius: calc(18px * var(--rp, 1));
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .3);   /* light: the view is a transparent overlay (shadow-slab leash) */
+  padding: calc(24px * var(--rp, 1)) calc(28px * var(--rp, 1));
+  display: flex; flex-direction: column; gap: calc(14px * var(--rp, 1));
+  color: #eee8dd;
+  animation: rmPickIn 160ms ease-out;
+}
+@keyframes rmPickIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.rm-pick-top {
+  display: flex; align-items: center; gap: calc(16px * var(--rp, 1));
+  padding-bottom: calc(14px * var(--rp, 1));
+  border-bottom: 1px solid #4d4540;
 }
 .rm-pick-head {
   /* Wraps rather than clips: the title carries the room you are banning
      FROM ("Ban someone from Proudspire Manor — the upstairs bedroom"), which is the
      one line you cannot afford to lose the end of. */
-  font-size: 15.5px; color: #ecd9a0; font-weight: 600; letter-spacing: .2px;
-  line-height: 1.3; overflow-wrap: anywhere;
+  flex: 1; min-width: 0;
+  font-size: calc(26px * var(--rp, 1)); color: #e6c979; font-weight: 700;
+  line-height: 1.25; overflow-wrap: anywhere;
 }
+.rm-pick-close {
+  flex-shrink: 0; min-height: calc(46px * var(--rp, 1)); padding: 0 calc(20px * var(--rp, 1));
+  font: inherit; font-size: calc(18px * var(--rp, 1)); color: #eee8dd;
+  background: #2a2931; border: 1px solid #615b62; border-radius: 9px; cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.rm-pick-close:hover { background: #36313a; border-color: #8b7443; }
+.rm-pick-close:focus-visible { outline: 2px solid #d5b65c; outline-offset: 2px; }
 .rm-pick-in {
+  flex-shrink: 0;
   background: rgba(0,0,0,.30); color: #e8e4da;
-  border: 1px solid #2e2e36; border-radius: 7px;
-  padding: 10px 12px; font-size: 15px; font-family: inherit;
+  border: 1px solid #3d3a44; border-radius: 10px;
+  padding: calc(14px * var(--rp, 1)) calc(16px * var(--rp, 1));
+  font-size: calc(19px * var(--rp, 1)); font-family: inherit;
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 .rm-pick-in:focus {
-  outline: none; border-color: #c9a24b77; box-shadow: 0 0 0 2px rgba(201,162,75,.10);
+  outline: none; border-color: #c9a24b99; box-shadow: 0 0 0 3px rgba(201,162,75,.12);
 }
-.rm-pick-in::placeholder { color: #5d594f; }
+.rm-pick-in::placeholder { color: #7a7468; }
 .rm-pick-list {
-  max-height: 380px; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 5px;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: calc(8px * var(--rp, 1));
 }
 .rm-pick-item {
   /* Name on its own full-width line, chips beneath it: a right-hand chip
      stole enough room to clip BOTH ("Bannered Mare — rented ro…" beside
      "The Bannered M…"), and neither half was worth reading. */
-  display: flex; align-items: center; flex-wrap: wrap; gap: 5px 9px;
-  text-align: left; width: 100%;
-  padding: 11px 12px; font-size: 15px; font-family: inherit;
-  background: rgba(255,255,255,.03); color: #ded9cd;
-  border: 1px solid #2e2e36; border-radius: 7px; cursor: pointer;
+  display: flex; align-items: center; flex-wrap: wrap; gap: calc(6px * var(--rp, 1)) calc(10px * var(--rp, 1));
+  flex-shrink: 0;
+  text-align: left; width: 100%; box-sizing: border-box;
+  padding: calc(14px * var(--rp, 1)) calc(18px * var(--rp, 1));
+  font-size: calc(19px * var(--rp, 1)); font-family: inherit;
+  background: #22222a; color: #ded9cd;
+  border: 1px solid #3d3a44; border-radius: 12px; cursor: pointer;
   transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
 }
-.rm-pick-item:hover { background: rgba(201,162,75,.10); color: #ecd9a0; border-color: #c9a24b55; }
-.rm-pick-item:focus-visible { outline: 2px solid #c9a24b66; outline-offset: -2px; }
-.rm-pick-item.on { border-color: #c8504666; background: rgba(200,80,70,.10); color: #e7a49d; }
-.rm-pick-item.guard.on { border-color: #8fbf8f66; background: rgba(143,191,143,.10); color: #a9d4a9; }
+.rm-pick-item:hover { background: #2e2b33; color: #ecd9a0; border-color: #8b7443; }
+.rm-pick-item:focus-visible { outline: 2px solid #d5b65c; outline-offset: 2px; }
+.rm-pick-item.on { border-color: #c8504699; background: rgba(200,80,70,.12); color: #e7a49d; }
+.rm-pick-item.guard.on { border-color: #8fbf8f99; background: rgba(143,191,143,.12); color: #a9d4a9; }
 /* The name is the thing you are here to read, so it WRAPS rather than
    ellipsizing — "Bannered Mare — rented ro…" is exactly the kind of clipped
    half-sentence the badge used to force. The cell/plugin chip beside it is
@@ -376,13 +408,17 @@
   white-space: normal; overflow-wrap: anywhere; line-height: 1.3;
 }
 .rm-pick-badge {
-  flex: 0 1 auto; font-size: 12.5px; color: #8b8578;
-  background: rgba(255,255,255,.05); border-radius: 8px; padding: 3px 9px;
+  flex: 0 1 auto; font-size: calc(15px * var(--rp, 1)); color: #a49d8f;
+  background: rgba(255,255,255,.06); border-radius: 8px; padding: calc(4px * var(--rp, 1)) calc(10px * var(--rp, 1));
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .rm-pick-badge.fol { color: #8cc0e0; background: rgba(110,168,214,.16); }
-.rm-pick-empty { padding: 16px 10px; text-align: center; color: #8b8578; font-size: 14px; }
-.rm-pick-hint { font-size: 13px; color: #8b8578; line-height: 1.4; }
+.rm-pick-empty { padding: calc(20px * var(--rp, 1)) 12px; text-align: center; color: #9a9285; font-size: calc(17px * var(--rp, 1)); }
+.rm-pick-hint { flex-shrink: 0; font-size: calc(16px * var(--rp, 1)); color: #9a9285; line-height: 1.45; }
+@media (max-width: 720px) {
+  .rm-pick-back { padding: 12px; }
+  .rm-pick { padding: 18px; max-height: 96vh; }
+}
 
 
 /* ---------- privacy lockdown (⛔ "nobody in this room right now") ----------

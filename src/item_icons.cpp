@@ -518,6 +518,13 @@ namespace ItemIcons
 			bool                                  composed{ false };
 			Tier                                  tier{ Tier::User };   // the lane it started from
 			std::chrono::steady_clock::time_point armed{};
+			// THE MIRROR's turntable shares ONE composed mesh (marker mirror-reuse).
+			// `whole` + `comp` say which figure this is; `baseRot` is the
+			// framework's frame-0 orientation, so each re-arm spins from the same
+			// start instead of stacking spins.
+			bool                                  whole{ false };
+			std::string                           comp;
+			float                                 baseRot[9]{};
 			// No node is kept alive here any more: the framework clones the model
 			// synchronously inside the create call (see ApplySwaps), so nothing of
 			// ours has to outlive it.
@@ -623,6 +630,11 @@ namespace ItemIcons
 		 * cannot rebuild a key from a directory walk; the persisted key→file map
 		 * is how the exact plugin identity survives a restart. */
 		std::unordered_set<std::string> g_faceDiskIndex;
+		// Face renders get the same fresh-name contract, keyed "HEX|plugin" (no
+		// '@'): RerenderFace bumps it so a regenerated head lands under a NEW
+		// filename beside the old one, which Ultralight may still have mapped.
+		// Persisted in npc-icons.json ("faceRevisions"). g_mutex held for writes.
+		std::unordered_map<std::string, std::uint64_t> g_faceRevisions;
 
 		std::atomic<bool>               g_watching{ false };
 		std::size_t                     g_done = 0, g_failed = 0;
@@ -1013,6 +1025,7 @@ namespace ItemIcons
 			// The PNGs are gone; the persisted face/body index must forget them too,
 			// or the first FaceIndexJson() would name renders that no longer exist.
 			g_faceDiskIndex.clear();
+			g_faceRevisions.clear();   // every face re-renders under its plain name
 			std::error_code npcec;
 			std::filesystem::remove(NpcIndexFile(), npcec);
 
@@ -1089,6 +1102,12 @@ namespace ItemIcons
 			auto j = nlohmann::json::parse(in, nullptr, false);
 			if (j.is_discarded() || !j.is_object() || !j.contains("icons") || !j["icons"].is_object())
 				return;
+			if (j.contains("faceRevisions") && j["faceRevisions"].is_object()) {
+				for (auto it = j["faceRevisions"].begin(); it != j["faceRevisions"].end(); ++it)
+					if (it.value().is_number_unsigned() && it.key().find('|') != std::string::npos &&
+						it.key().find('@') == std::string::npos)
+						g_faceRevisions[it.key()] = it.value().get<std::uint64_t>();
+			}
 			std::size_t n = 0;
 			for (auto it = j["icons"].begin(); it != j["icons"].end(); ++it) {
 				const std::string& key = it.key();
@@ -1210,6 +1229,44 @@ namespace ItemIcons
 		 *
 		 * Everything purged re-bakes lazily on the next ask. g_diskIndex is cleared
 		 * to match so a purged key is not falsely reported until it re-renders. */
+		/* The item inspector's own generation (icons/inspect/.render-gen). Its
+		 * frames are never indexed and re-bake on the next drag, so a change that
+		 * only spoils turntables purges just this folder — never the thousands of
+		 * list icons kItemRenderEpoch would. 2 = flat things tipped toward the
+		 * camera (LiesFlat): the edge-on frames of a note must not mix with the new. */
+		constexpr int kInspectRenderEpoch = 2;
+
+		void ReconcileInspectGeneration()
+		{
+			const auto want  = std::string("inspect-epoch=") + std::to_string(kInspectRenderEpoch);
+			const auto stamp = InspectDir() / ".render-gen";
+			std::string have;
+			{
+				std::ifstream in(stamp, std::ios::binary);
+				if (in.is_open())
+					std::getline(in, have);
+			}
+			if (have == want)
+				return;
+			std::error_code ec;
+			std::size_t     purged = 0;
+			if (std::filesystem::exists(InspectDir(), ec)) {
+				for (std::filesystem::directory_iterator it(InspectDir(), ec), end; !ec && it != end; it.increment(ec)) {
+					std::error_code del;
+					if (!it->is_regular_file(del) || PathU8(it->path().filename()) == ".render-gen")
+						continue;
+					if (std::filesystem::remove(it->path(), del) && !del)
+						++purged;
+				}
+			}
+			std::filesystem::create_directories(InspectDir(), ec);
+			std::ofstream out(stamp, std::ios::binary | std::ios::trunc);
+			if (out.is_open())
+				out << want << "\n";
+			logger::info("item icons: inspector generation '{}'->'{}' - purged {} turntable frame(s); they re-bake on the next drag",
+				have.empty() ? std::string("<none>") : have, want, purged);   // marker: item-inspect-generation
+		}
+
 		void ReconcileItemGeneration()
 		{
 			const auto wantItem = std::string("item-epoch=") + std::to_string(kItemRenderEpoch);
@@ -1364,6 +1421,15 @@ namespace ItemIcons
 			const auto it = g_itemRevisions.find(KeyOf(fid, plugin));
 			return ItemIconPaths::Versioned(FileFor(fid, plugin, swapped),
 				it == g_itemRevisions.end() ? 0 : it->second);
+		}
+
+		// g_mutex held. The face twin of ItemFileFor: the plain name until the
+		// player asks for a regenerated head, then "<slug>-<hex>-r<rev>.png".
+		std::string FaceFileFor(const std::string& fid, const std::string& plugin)
+		{
+			const auto it = g_faceRevisions.find(KeyOf(fid, plugin));
+			return ItemIconPaths::Versioned(FileFor(fid, plugin, false),
+				it == g_faceRevisions.end() ? 0 : it->second);
 		}
 
 		bool SupersededItemRender(const std::string& key, const std::string& path)
@@ -1583,6 +1649,56 @@ namespace ItemIcons
 										 r[row * 3 + 2] * m[2 * 3 + col];
 			for (int i = 0; i < 9; ++i)
 				m[i] = out[i];
+		}
+
+		/* ── flat things are looked DOWN at, not edge-on (2026-10-11) ─────────
+		 *
+		 * A note, a letter, a map, a coin, a closed book: the world model lies on
+		 * its table, and the camera is level with it (looking down -Y, Z up), so
+		 * every turntable frame of it was the paper's EDGE — a line under 1% ink
+		 * that the renderer refuses as blank. Rober's "Slave Trader Lost Report"
+		 * (Immersive Wenches 0x20D4D4) kept 5 of 24 angles, all of them lines, and
+		 * would not turn; the list icon of a note was a line too.
+		 *
+		 * Such a piece is tipped toward the camera AFTER its spin — it turns on its
+		 * desk, and the desk is seen from kFlatTilt degrees above. IMesh::rotation is
+		 * an NiMatrix3 applied as a LEFT multiply (portraits.cpp, and ApplySpin's
+		 * pedestal turn proves it), so Rx(-tilt) * Rz(angle) * base is exactly "spin
+		 * on the table, then tip the table": the far edge rises on screen.
+		 *
+		 * "Flat" is judged on the extents AFTER the framework's own orientation —
+		 * thin along the screen-vertical axis, with a footprint that is not a stick
+		 * (a sword is long and thin and keeps its look). The spin about Z never
+		 * changes that verdict, so frame 0 and every angle of a set agree by
+		 * construction, as the box fit does.
+		 *
+		 * Clip-free under ComputeClutterFit unchanged: it fits the swept radius r of
+		 * the X/Y footprint, and a tipped sheet is at most r wide, r*sin(tilt) tall
+		 * and r*cos(tilt) deep — inside what the fit already reserved on the square
+		 * item canvases. */
+		constexpr std::uint32_t kFlatTilt = 55;   // degrees above level
+
+		bool LiesFlat(const IMeshAbi* abi)
+		{
+			if (!abi)
+				return false;
+			float half[3];
+			for (int i = 0; i < 3; ++i)
+				half[i] = std::fabs(abi->boundMax[i] - abi->boundMin[i]) * 0.5f;
+			bool anyNonZero = false;
+			for (int i = 0; i < 9 && !anyNonZero; ++i)
+				anyNonZero = (abi->rotation[i] != 0.0f);
+			// Extents in the camera's frame: |R| * half (an all-zero matrix is the
+			// identity ApplySpin would substitute).
+			float w[3];
+			for (int r = 0; r < 3; ++r) {
+				w[r] = 0.0f;
+				for (int c = 0; c < 3; ++c)
+					w[r] += std::fabs(anyNonZero ? abi->rotation[r * 3 + c] : (r == c ? 1.0f : 0.0f)) * half[c];
+			}
+			const float lo = (std::min)(w[0], w[1]);
+			const float hi = (std::max)(w[0], w[1]);
+			return lo > 0.0001f && w[2] < 0.25f * lo && lo > 0.35f * hi;
 		}
 
 		/* ── clutter framing: fill the frame like the old gear renders did ──
@@ -2345,7 +2461,15 @@ namespace ItemIcons
 			// Turntable: spin the framework's chosen frame-0 orientation to this
 			// frame's angle before the save is armed. A no-op for angle 0 (the
 			// ordinary icon), so the common path is unchanged.
+			// A flat ITEM (a note on its desk) is judged on the base orientation
+			// first, then tipped toward the camera after the spin — see LiesFlat.
+			const bool flat = job.refit && !job.whole && LiesFlat(abi);
 			ApplySpin(abi->rotation, job.angle, 'z');
+			if (flat) {
+				ApplySpin(abi->rotation, 360u - kFlatTilt, 'x');
+				logger::info("item icons: '{}' lies flat - tipped {} deg toward the camera",
+					job.label, kFlatTilt);   // marker: item-icons-flat-tilt
+			}
 			// Clutter framing: replace the framework's bounding-SPHERE fit with the
 			// swept-cylinder fit so a potion fills its frame without a long weapon
 			// being driven through the camera (see ComputeClutterFit). Applies to
@@ -2386,6 +2510,85 @@ namespace ItemIcons
 		}
 
 		void MarkFailed(const std::string& key, std::string why);
+
+		/* ── THE MIRROR: one composed figure, 24 photographs (2026-10-10) ──────
+		 * Rober, opening a person page: "it froze me … very laggy". The log said
+		 * why. Every turntable frame was its own Request, and Start() built its
+		 * own mesh: IMesh_CreateByNifPathSet loading and skinning ~10 NIFs (body,
+		 * worn gear, facegen head, hair) from disk, ON THE MAIN THREAD (Pump runs
+		 * in an SKSE task), then dressing it. 2 s for the first frame, ~0.4 s for
+		 * each of the other 23, one every ~0.8 s for twenty seconds: the game and
+		 * the page under it stalled again and again. Only the ANGLE differs
+		 * between frames, and the framework re-renders a mesh whenever mustUpdate
+		 * is set and clears savePath/saveNextFrame once a save is written
+		 * (RenderManager::RenderPending), so the figure is built once and the
+		 * landed frame's mesh is re-armed for the next angle of the SAME
+		 * composition: one load per figure instead of twenty-four. */
+		std::string WholeCompKey(const Request& r)
+		{
+			std::string k = r.nifPath;
+			for (const auto& e : r.extraNifs)
+				k += '|' + e;
+			for (const auto& t : r.tex) {
+				k += '#' + t.nifPath;
+				for (const auto& p : t.paths)
+					k += ',' + p;
+				k += t.modelSpaceNormals ? "+m" : "-m";
+				k += t.includeBodyShape ? "+b" : "-b";
+			}
+			if (r.useTint)
+				k += '@' + std::to_string(r.tint[0]) + ',' + std::to_string(r.tint[1]) + ',' + std::to_string(r.tint[2]);
+			return k + '@' + std::to_string(r.px);
+		}
+
+		// g_mutex held. `prev` has just landed and still owns its mesh. Pull the
+		// next queued frame of the same figure, re-arm the mesh for it and append
+		// the job to `out` (the caller is iterating g_inFlight, so it must not be
+		// pushed to directly). False = nothing reused; the caller frees the mesh.
+		bool ReuseWholeMesh(const InFlight& prev, std::vector<InFlight>& out)
+		{
+			if (!prev.whole || !prev.mesh || prev.comp.empty() || !g_abiOk)
+				return false;
+			auto* abi = static_cast<IMeshAbi*>(prev.mesh);
+			// The framework clears both once the file is written. Either still set
+			// means it has not finished with this save: build afresh instead.
+			if (abi->savePath != nullptr || abi->saveNextFrame)
+				return false;
+			for (auto* q : { &g_queue, &g_bulkQueue, &g_idleQueue }) {
+				for (auto it = q->begin(); it != q->end(); ++it) {
+					if (!it->whole || it->px != prev.px || WholeCompKey(*it) != prev.comp)
+						continue;
+					Request r = std::move(*it);
+					q->erase(it);
+					InFlight job;
+					job.mesh    = prev.mesh;
+					job.outPath = r.outPath;
+					job.key     = r.key;
+					job.label   = r.label;
+					job.nifPath = r.nifPath;
+					job.angle   = r.angle;
+					job.px      = r.px;
+					job.tier    = r.tier;
+					job.armed   = std::chrono::steady_clock::now();
+					job.whole   = true;
+					job.comp    = prev.comp;
+					std::copy(std::begin(prev.baseRot), std::end(prev.baseRot), std::begin(job.baseRot));
+					std::copy(std::begin(job.baseRot), std::end(job.baseRot), std::begin(abi->rotation));
+					if (!ArmSave(prev.mesh, job)) {
+						// Nothing was armed; the caller frees the mesh. This frame
+						// goes back to the front and builds its own on the next pump.
+						QueueFor(r.tier).push_front(std::move(r));
+						return false;
+					}
+					logger::info("mirror: '{}' re-armed on the figure already built - no reload",
+						r.label);   // marker: mirror-reuse
+					logger::info("item icons: rendering '{}' [{}] -> {}", r.label, TierName(r.tier), r.outPath);
+					out.push_back(std::move(job));
+					return true;
+				}
+			}
+			return false;
+		}
 
 		// g_mutex held.
 		bool Start(const Request& r)
@@ -2482,6 +2685,12 @@ namespace ItemIcons
 			job.composed = composed;
 			job.tier    = r.tier;   // a swap-retry re-arms in the lane it came from
 			job.armed   = std::chrono::steady_clock::now();
+			if (r.whole) {
+				job.whole = true;
+				job.comp  = WholeCompKey(r);
+				std::copy(std::begin(static_cast<IMeshAbi*>(mesh)->rotation),
+					std::end(static_cast<IMeshAbi*>(mesh)->rotation), std::begin(job.baseRot));
+			}
 			if (!ArmSave(mesh, job)) {
 				SafeDelete(mesh);
 				++g_failed;
@@ -2644,6 +2853,10 @@ namespace ItemIcons
 				g_liveElapsed += (now - g_lastPump);
 			g_lastPump = now;
 
+			// Mirror frames re-armed on a landed frame's mesh (ReuseWholeMesh).
+			// Collected here and appended after the loop: it walks g_inFlight by
+			// index and erases as it goes.
+			std::vector<InFlight> rearmed;
 			for (std::size_t i = 0; i < g_inFlight.size();) {
 				const bool done = FileExists(g_inFlight[i].outPath);
 				// The framework looked at what it drew and refused to keep it. This
@@ -2655,7 +2868,8 @@ namespace ItemIcons
 					++i;
 					continue;
 				}
-				SafeDelete(g_inFlight[i].mesh);
+				if (!(done && ReuseWholeMesh(g_inFlight[i], rearmed)))
+					SafeDelete(g_inFlight[i].mesh);
 				// An already-armed old generation is allowed to finish safely, but
 				// cannot clear the new generation's failure or requeue stale angles.
 				if (SupersededItemRender(g_inFlight[i].key, g_inFlight[i].outPath)) {
@@ -2823,6 +3037,8 @@ namespace ItemIcons
 				}
 				g_inFlight.erase(g_inFlight.begin() + static_cast<std::ptrdiff_t>(i));
 			}
+			for (auto& job : rearmed)
+				g_inFlight.push_back(std::move(job));
 			// The pacing gate. `gap` is the minimum wall-clock between render
 			// STARTS for this tier while the game is live; returns whether a start
 			// is allowed RIGHT NOW. When it holds one back it logs the pacing line
@@ -3314,6 +3530,7 @@ namespace ItemIcons
 		// "-s2" renders when the swap route itself changes. Each generation only
 		// ever purges its own renders.
 		ReconcileItemGeneration();
+		ReconcileInspectGeneration();
 		logger::info("item icons: Mesh Rendering Framework bound — armour renders at {}px", kSize);
 		// Renders still queued when the last session ended resume now, at idle
 		// priority — the "remembered on reload" half of render-once-keep-forever.
@@ -3737,8 +3954,8 @@ namespace ItemIcons
 				BacklogDrop(key);   // no facegen file — a permanent miss never resumes
 				return false;
 			}
-			const auto out = PathU8((FaceDir() / FileFor(fid, plugin, false)));
-			if (FileExists(out)) {   // render once, keep forever
+			const auto out = PathU8((FaceDir() / FaceFileFor(fid, plugin)));
+			if (FileExists(out)) {   // render once, keep forever (until RerenderFace)
 				g_asked.insert(key);
 				BacklogDrop(key);
 				return false;
@@ -3929,6 +4146,58 @@ namespace ItemIcons
 			BacklogAdd(key, fid, plugin, name, "body", nif);
 			return true;
 		}
+
+		/* THE BESTIARY'S OWN BODIES (2026-10-11, marker bestiary-hires). The book
+		 * fits a creature's alpha box to ~88% of a ~950px stage, so a 512 Mounts
+		 * render was drawn at 2x and read as mush (Rober: "zoomed in he is low
+		 * res"). Same skin mesh, same 45-degree turntable contract, at the
+		 * Mirror's 1024 canvas, in icons/bestiary/ - the Mounts tab keeps its own
+		 * 512s untouched (render-once-keep-forever: a bigger render needs its own
+		 * file, never an overwrite). Keys "@beast" / "@xNNN". */
+		std::filesystem::path BeastDir()
+		{
+			return std::filesystem::path("Data") / "PrismaUI" / "views" / "HotkeyDeck" / "icons" / "bestiary";
+		}
+
+		bool EnqueueBeastLocked(const std::string& fid, const std::string& plugin,
+			const std::string& name, const std::string& nif, Tier tier = Tier::User)
+		{
+			if (fid.empty() || plugin.empty() || nif.empty() ||
+				QueueFor(tier).size() >= CapFor(tier))
+				return false;
+			const auto key = KeyOf(fid, plugin) + "@beast";
+			if (g_asked.count(key)) {
+				if (tier == Tier::User && PromoteToUser(key))
+					++g_promotedThisAsk;
+				return false;
+			}
+			RE::BSResourceNiBinaryStream probe(ProbePathOf(nif).c_str());
+			if (!probe.good()) {
+				g_asked.insert(key);
+				BacklogDrop(key);
+				logger::warn("item icons: bestiary body '{}' - model '{}' is not in the load order", name, nif);
+				return false;
+			}
+			const auto out = PathU8((BeastDir() / FileFor(fid, plugin, false)));
+			if (FileExists(out)) {
+				g_asked.insert(key);
+				BacklogDrop(key);
+				return false;
+			}
+			std::error_code ec;
+			std::filesystem::create_directories(BeastDir(), ec);
+			Request r;
+			r.outPath = out;
+			r.key     = key;
+			r.nifPath = nif;
+			r.label   = (name.empty() ? key : name) + " (bestiary)";
+			r.tier    = tier;
+			r.px      = kMirrorSize;
+			QueueFor(tier).push_back(std::move(r));
+			g_asked.insert(key);
+			BacklogAdd(key, fid, plugin, name, "beast", nif);
+			return true;
+		}
 	}
 
 	std::size_t EnsureBodyIcons(const std::string& itemsJson)
@@ -4006,6 +4275,8 @@ namespace ItemIcons
 					queued = EnqueueFaceLocked(fid, plugin, name, Tier::Idle);
 				else if (kind == "body")
 					queued = EnqueueBodyLocked(fid, plugin, name, e.value("nif", std::string()), Tier::Idle);
+				else if (kind == "beast")
+					queued = EnqueueBeastLocked(fid, plugin, name, e.value("nif", std::string()), Tier::Idle);
 				else
 					queued = EnqueueLocked(fid, plugin, name, Tier::Idle);
 				if (queued)
@@ -4135,6 +4406,104 @@ namespace ItemIcons
 		}
 	}
 
+	std::vector<std::uint32_t> BodyAnglesOnDisk(const std::string& fid, const std::string& plugin)
+	{
+		std::vector<std::uint32_t> out;
+		if (fid.empty() || plugin.empty())
+			return out;
+		const auto baseFile = FileFor(fid, plugin, false);
+		for (std::uint32_t angle = 0; angle < 360u; angle += kBodySpinStep)
+			if (FileExists(BodyDir() / AngleFile(baseFile, angle)))
+				out.push_back(angle);
+		return out;
+	}
+
+	bool EnsureBeastBody(const std::string& fid, const std::string& plugin,
+		const std::string& name, const std::string& nif)
+	{
+		if (!Ready())
+			return false;
+		bool queued = false;
+		{
+			std::lock_guard l(g_mutex);
+			g_promotedThisAsk = 0;
+			queued = EnqueueBeastLocked(fid, plugin, name, nif);
+			if (queued || g_promotedThisAsk)
+				Pump();
+		}
+		BacklogSaveIfDirty();
+		if (queued) {
+			// Build marker (hd-markers.json: "bestiary-hires").
+			logger::info("item icons: bestiary body {}|{} queued at {}px", fid, plugin, kMirrorSize);
+			StartWatcher();
+		}
+		return queued;
+	}
+
+	std::string BeastPathFor(const std::string& fid, const std::string& plugin)
+	{
+		if (fid.empty() || plugin.empty())
+			return {};
+		const auto file = FileFor(fid, plugin, false);
+		if (!FileExists(BeastDir() / file))
+			return {};
+		return "icons/bestiary/" + file;
+	}
+
+	void CaptureBeastAngles(const std::string& fid, const std::string& plugin,
+		const std::string& nif)
+	{
+		if (!Ready() || fid.empty() || plugin.empty() || nif.empty())
+			return;
+		const auto  baseFile = FileFor(fid, plugin, false);
+		std::size_t queued   = 0;
+		{
+			std::lock_guard l(g_mutex);
+			for (std::uint32_t angle = kBodySpinStep; angle < 360u; angle += kBodySpinStep) {
+				char akeybuf[8]{};
+				std::snprintf(akeybuf, sizeof(akeybuf), "@x%03u", static_cast<unsigned>(angle));
+				const std::string akey = KeyOf(fid, plugin) + akeybuf;
+				if (g_asked.count(akey))
+					continue;
+				const auto out = PathU8((BeastDir() / AngleFile(baseFile, angle)));
+				if (FileExists(out)) {
+					g_asked.insert(akey);
+					continue;
+				}
+				if (g_queue.size() >= kMaxQueued)
+					break;
+				Request r;
+				r.outPath = out;
+				r.key     = akey;
+				r.nifPath = nif;
+				r.label   = fid + "|" + plugin + " bestiary @" + std::to_string(angle) + "deg";
+				r.angle   = angle;
+				r.px      = kMirrorSize;
+				g_queue.push_back(std::move(r));
+				g_asked.insert(akey);
+				++queued;
+			}
+			if (queued)
+				Pump();
+		}
+		if (queued) {
+			logger::info("item icons: {} bestiary turntable frame(s) queued for {}|{}", queued, fid, plugin);
+			StartWatcher();
+		}
+	}
+
+	std::vector<std::uint32_t> BeastAnglesOnDisk(const std::string& fid, const std::string& plugin)
+	{
+		std::vector<std::uint32_t> out;
+		if (fid.empty() || plugin.empty())
+			return out;
+		const auto baseFile = FileFor(fid, plugin, false);
+		for (std::uint32_t angle = 0; angle < 360u; angle += kBodySpinStep)
+			if (FileExists(BeastDir() / AngleFile(baseFile, angle)))
+				out.push_back(angle);
+		return out;
+	}
+
 	std::string FaceIndexJson()
 	{
 		nlohmann::json icons = nlohmann::json::object();
@@ -4154,7 +4523,7 @@ namespace ItemIcons
 			const auto bar = base.find('|');
 			if (bar == std::string::npos)
 				return;
-			const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
+			const auto file = FaceFileFor(base.substr(0, bar), base.substr(bar + 1));
 			if (Listed(g_listFaces, FaceDir(), file))
 				icons[base] = "icons/npcs/" + file;
 		};
@@ -4173,10 +4542,49 @@ namespace ItemIcons
 		// Same FileFor naming as the render queue, so the two can never drift.
 		if (fid.empty() || plugin.empty())
 			return {};
-		const auto file = FileFor(fid, plugin, false);
+		std::string file;
+		{
+			std::lock_guard l(g_mutex);   // g_faceRevisions
+			file = FaceFileFor(fid, plugin);
+		}
 		if (!FileExists(FaceDir() / file))
 			return {};
 		return "icons/npcs/" + file;
+	}
+
+	bool RerenderFace(const std::string& fid, const std::string& plugin)
+	{
+		if (!Ready() || fid.empty() || plugin.empty())
+			return false;
+		if (FaceGenResolver::Resolve(fid, plugin).empty())
+			return false;   // no facegen head file: nothing to re-render from
+		{
+			std::lock_guard l(g_mutex);
+			const auto key = KeyOf(fid, plugin);
+			auto& revision = g_faceRevisions[key];
+			const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::system_clock::now().time_since_epoch()).count());
+			revision = std::max(revision + 1, now);
+			// Frame 0 ("@face") and its turntable frames ("@f090"...): the angles
+			// must re-bake off the new head, so they are forgotten with it.
+			const auto belongs = [&](const std::string& k) {
+				return k.rfind(key + "@f", 0) == 0;
+			};
+			for (auto* queue : { &g_queue, &g_bulkQueue, &g_idleQueue })
+				queue->erase(std::remove_if(queue->begin(), queue->end(),
+					[&](const Request& r) { return belongs(r.key); }), queue->end());
+			for (auto asked = g_asked.begin(); asked != g_asked.end(); )
+				if (belongs(*asked)) asked = g_asked.erase(asked); else ++asked;
+			for (auto failed = g_failedWhy.begin(); failed != g_failedWhy.end(); )
+				if (belongs(failed->first)) failed = g_failedWhy.erase(failed); else ++failed;
+			// The old PNG stays on disk: a surface may still have it mapped, and
+			// FacePathFor answers "" until the new name lands, so the view keeps
+			// drawing the old head instead of blanking. The generation purge
+			// collects the leftovers.
+			logger::info("item icons: face re-render forced for {} (fresh revision {})", key, revision);  // marker: face-rerender
+		}
+		WriteNpcIndexFile();   // persist the revision before the render can land
+		return true;
 	}
 
 	void CaptureFaceAngles(const std::string& fid, const std::string& plugin)
@@ -4189,7 +4597,11 @@ namespace ItemIcons
 		const auto rel = FaceGenResolver::Resolve(fid, plugin);
 		if (rel.empty())
 			return;   // templated NPC — no facegen file, no turntable
-		const auto  baseFile = FileFor(fid, plugin, false);
+		std::string baseFile;
+		{
+			std::lock_guard l(g_mutex);   // g_faceRevisions
+			baseFile = FaceFileFor(fid, plugin);
+		}
 		const auto  wigs     = g_createBySet ? HairNifsForFace(fid, plugin) : std::vector<std::string>{};
 		std::size_t queued   = 0;
 		{
@@ -4244,7 +4656,7 @@ namespace ItemIcons
 		if (kind == "face") {
 			dir = FaceDir();
 			dirRel = "icons/npcs/";
-			baseFile = FileFor(fid, plugin, false);
+			baseFile = FaceFileFor(fid, plugin);
 		} else if (kind == "body") {
 			dir = BodyDir();
 			dirRel = "icons/mounts/";
@@ -4501,8 +4913,11 @@ namespace ItemIcons
 		void WriteNpcIndexFile()
 		{
 			nlohmann::json icons = nlohmann::json::object();
+			nlohmann::json revisions = nlohmann::json::object();
 			{
 				std::lock_guard l(g_mutex);
+				for (const auto& [k, rev] : g_faceRevisions)
+					revisions[k] = rev;
 				const auto add = [&](const std::string& key) {
 					const bool face = key.size() >= 5 && key.compare(key.size() - 5, 5, "@face") == 0;
 					const bool body = key.size() >= 5 && key.compare(key.size() - 5, 5, "@body") == 0;
@@ -4514,7 +4929,8 @@ namespace ItemIcons
 					const auto bar = base.find('|');
 					if (bar == std::string::npos)
 						return;
-					const auto file = FileFor(base.substr(0, bar), base.substr(bar + 1), false);
+					const auto file = face ? FaceFileFor(base.substr(0, bar), base.substr(bar + 1))
+					                       : FileFor(base.substr(0, bar), base.substr(bar + 1), false);
 					if (face ? Listed(g_listFaces, FaceDir(), file) : Listed(g_listBodies, BodyDir(), file))
 						icons[key] = (face ? "icons/npcs/" : "icons/mounts/") + file;
 				};
@@ -4528,7 +4944,8 @@ namespace ItemIcons
 			std::filesystem::create_directories(path.parent_path(), ec);
 			std::ofstream out(path, std::ios::binary | std::ios::trunc);
 			if (out.is_open())
-				out << nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) } }
+				out << nlohmann::json{ { "version", 1 }, { "icons", std::move(icons) },
+							{ "faceRevisions", std::move(revisions) } }
 						.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
 	}
@@ -4666,7 +5083,7 @@ namespace ItemIcons
 		}
 
 		// MAIN THREAD ONLY (worn-armour reads, form lookups, BSResource probes).
-		bool BuildWhole(RE::Actor* actor, WholeSet& w, std::string& why)
+		bool BuildWhole(RE::Actor* actor, WholeSet& w, std::string& why, RE::TESObjectARMO* tryOn = nullptr)
 		{
 			auto* npc  = actor ? actor->GetActorBase() : nullptr;
 			auto* race = actor ? actor->GetRace() : nullptr;
@@ -4691,13 +5108,22 @@ namespace ItemIcons
 			// 1. Everything she is WEARING, one entry per distinct ARMO.
 			std::vector<RE::TESObjectARMO*> worn;
 			std::uint32_t                    outfitSlots = 0;
+			// Try-on: the piece being tried displaces every worn piece that
+			// shares a biped slot with it (what equipping it would do).
+			const std::uint32_t tryMask = tryOn ? static_cast<std::uint32_t>(tryOn->GetSlotMask()) : 0u;
 			for (std::uint32_t i = 0; i < 32; ++i) {
 				const auto slot = static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(std::uint32_t{ 1 } << i);
 				auto*      armo = actor->GetWornArmor(slot);
 				if (!armo || std::find(worn.begin(), worn.end(), armo) != worn.end())
 					continue;
+				if (tryOn && (static_cast<std::uint32_t>(armo->GetSlotMask()) & tryMask))
+					continue;
 				worn.push_back(armo);
 				outfitSlots |= AddArmor(w, armo, race, sex, 0, false, false, npc);
+			}
+			if (tryOn && std::find(worn.begin(), worn.end(), tryOn) == worn.end()) {
+				worn.push_back(tryOn);
+				outfitSlots |= AddArmor(w, tryOn, race, sex, 0, false, false, npc);   // marker: mirror-try-on
 			}
 			w.pieces = worn.size();
 
@@ -4722,9 +5148,18 @@ namespace ItemIcons
 				if (const auto rel = FaceGenResolver::Resolve(hex, oplugin); !rel.empty()) {
 					AddUniqueNif(w.nifs, rel.c_str());
 					w.head = "facegen";
-					if ((outfitSlots & hairMask) == 0)
+					/* `covered`, not `outfitSlots` (2026-10-10, Daedric Pei): her
+					 * real hair is a hair ARMA on her SKIN armour, which step 2
+					 * already composed. Testing only the worn gear also pulled in
+					 * the NPC record's vanilla Hair01 head part, which drew brown
+					 * hair over her white hair. Any hair the figure already has,
+					 * worn or skin, is her hair. marker: mirror-hair-covered */
+					if ((covered & hairMask) == 0)
 						for (const auto& h : HairNifsForFace(hex, oplugin))
 							AddUniqueNif(w.nifs, h.c_str());
+					else
+						logger::info("mirror: '{}' already wears hair (worn or skin) - no head-part hair added",
+							actor->GetName() ? actor->GetName() : "");   // marker: mirror-hair-covered
 				}
 			}
 			if (w.head.empty() && npc->headParts) {
@@ -4794,7 +5229,7 @@ namespace ItemIcons
 		}
 	}
 
-	std::string MirrorJson(RE::Actor* actor, bool queue)
+	std::string MirrorJson(RE::Actor* actor, bool queue, RE::TESObjectARMO* tryOn)
 	{
 		nlohmann::json out = { { "ok", false }, { "step", kMirrorStep }, { "size", kMirrorSize } };
 		if (!actor) {
@@ -4808,13 +5243,13 @@ namespace ItemIcons
 		}
 		WholeSet    w;
 		std::string why;
-		if (!BuildWhole(actor, w, why)) {
+		if (!BuildWhole(actor, w, why, tryOn)) {
 			out["why"] = why;
 			return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		}
 		const std::string sig  = SigOf(w);
 		std::string       stem = FileFor(w.fid, w.plugin, false);
-		stem                   = stem.substr(0, stem.size() - 4) + "-" + sig;
+		stem                   = stem.substr(0, stem.size() - 4) + (tryOn ? "-try-" : "-") + sig;
 		const std::string file = stem + ".png";
 		const auto        dir  = MirrorDir();
 

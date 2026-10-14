@@ -212,24 +212,49 @@ function listPortraitFiles() {
  * superseded files for that slug so the caller can report or prune them.
  *
  * THE WINNER RULE, and it must match FolPortraitsJson() in src/main.cpp exactly
- * or the phone shows one face and the deck draws another: newest mtime wins;
- * on a tie the greater FILENAME wins. The tie-break is not decoration — file
+ * or the phone shows one face and the deck draws another: a file the player
+ * supplied beats an AUTO photo whatever the dates (Rober, 2026-10-12: "user
+ * supplied images over auto generation"); otherwise newest mtime wins; on a tie
+ * the greater FILENAME wins. The tie-break is not decoration — file
  * timestamps here are whole seconds, so a re-capture landing in the same second
  * as the file it supersedes is entirely possible. It resolves that the useful
  * way for free: '~' (0x7E) sorts above '.' (0x2E), so `x~1753900000.png` beats
  * `x.png`, and between two versions the later stamp beats the earlier. */
 function betterPortrait(a, b) {   // true if a beats b
+  if (!!a.auto !== !!b.auto) return !a.auto;   // user-photo-beats-auto
   if (a.mtime !== b.mtime) return a.mtime > b.mtime;
   return a.file.toLowerCase() > b.file.toLowerCase();
 }
 
+/* Every file auto photos ever wrote (lower-cased), from auto-portraits.json —
+ * mirrors AutoPortrait::AutoFiles() in src/auto_portrait.cpp. The first dir
+ * holding the sidecar wins, as the game's VFS would (Overwrite shadows the mod). */
+function autoPortraitFiles() {
+  const out = new Set();
+  for (const dir of PORTRAIT_READ_DIRS) {
+    let side;
+    try { side = JSON.parse(fs.readFileSync(path.join(dir, 'auto-portraits.json'), 'utf8')); }
+    catch (_) { continue; }
+    const people = side && typeof side.people === 'object' && side.people ? side.people : {};
+    for (const k of Object.keys(people)) {
+      const p = people[k] || {};
+      if (typeof p.file === 'string') out.add(p.file.toLowerCase());
+      if (Array.isArray(p.files)) p.files.forEach((f) => { if (typeof f === 'string') out.add(f.toLowerCase()); });
+    }
+    break;
+  }
+  return out;
+}
+
 function listPortraits() {
   const best = Object.create(null);
-  for (const r of listPortraitFiles()) {
+  const autos = autoPortraitFiles();
+  for (const f of listPortraitFiles()) {
+    const r = Object.assign({}, f, { auto: autos.has(f.file.toLowerCase()) });
     const cur = best[r.slug];
     if (!cur) { best[r.slug] = Object.assign({}, r, { extras: [] }); continue; }
     if (betterPortrait(r, cur)) {
-      const demoted = { file: cur.file, dir: cur.dir, ext: cur.ext, mtime: cur.mtime, size: cur.size };
+      const demoted = { file: cur.file, dir: cur.dir, ext: cur.ext, mtime: cur.mtime, size: cur.size, auto: cur.auto };
       best[r.slug] = Object.assign({}, r, { extras: cur.extras.concat([demoted]) });
     } else {
       cur.extras.push({ file: r.file, dir: r.dir, ext: r.ext, mtime: r.mtime, size: r.size });
@@ -1611,6 +1636,7 @@ const COURT_TOOL = process.env.DECK_PORTAL_COURT_TOOL ||
   '/var/www/html/HerikaServer/ext/court/court.php';
 const COURT_STATUS_BASENAME = 'court-status.json';
 const COURT_CACHE_FILE = path.join(os.tmpdir(), 'deck-portal', 'court-ledger.json');
+const RENOWN_CACHE_FILE = path.join(os.tmpdir(), 'deck-portal', 'renown.json');
 
 /* The rung ladder, mirrored from court_lib.php's court_rungs(). Duplicated
  * deliberately: the page must be able to draw the picker when the DB is down,
@@ -4982,9 +5008,58 @@ function readSpellDescriptions() {
   });
   return byId;
 }
-function spellsPayload(cfg) {
+// Complete learned spellbook is a read-only native export. This added read is
+// asynchronous, bounded and fails closed; it never writes the game's config.
+async function readSpellbook() {
+  let newest = null;
+  await Promise.all(hdCfgCandidates('spellbook.json').map(async file => {
+    try {
+      const stat = await fs.promises.stat(file); if (stat.size > 8 * 1024 * 1024) return;
+      const data = JSON.parse((await fs.promises.readFile(file, 'utf8')).replace(/^\uFEFF/, ''));
+      if (data.version === 1 && Number.isFinite(data.at) && Array.isArray(data.spells) && (!newest || data.at > newest.at)) newest = data;
+    } catch (_) { /* No F18 snapshot yet. Saved deck remains available. */ }
+  }));
+  return newest;
+}
+// Reuse the installed Spell Hotbar index for automatic spellbook artwork.
+// Cache the index by file + mtime; both the discovery and read are asynchronous.
+let spellbookIconCache = null;
+async function readSpellbookIcons() {
+  for (const root of viewDirsFor('magic')) {
+    const file = path.join(root, 'icons', 'sh_index.json');
+    try {
+      const stat = await fs.promises.stat(file);
+      if (stat.size > 8 * 1024 * 1024) continue;
+      if (spellbookIconCache && spellbookIconCache.file === file && spellbookIconCache.mtime === stat.mtimeMs) return spellbookIconCache;
+      const index = JSON.parse((await fs.promises.readFile(file, 'utf8')).replace(/^\uFEFF/, ''));
+      spellbookIconCache = { file, mtime:stat.mtimeMs, index };
+      return spellbookIconCache;
+    } catch (_) { /* The optional icon pack may not be installed. */ }
+  }
+  return null;
+}
+function spellbookAutoIcon(s, cache) {
+  if (!cache || !cache.index) return null;
+  const index = cache.index, byForm = index.byForm || {}, generic = index.generic || {};
+  const identity = String(s.plugin || '').toLowerCase() + '|' + (s.localId >>> 0).toString(16);
+  const tier = ['NOVICE','APPRENTICE','ADEPT','EXPERT','MASTER'].includes(String(s.tier).toUpperCase()) ? String(s.tier).toUpperCase() : 'ADEPT';
+  let key = '';
+  if (s.type === 'voice' || s.type === 'shout') key = 'SHOUT_GENERIC';
+  else if (s.type === 'power') key = 'GREATER_POWER';
+  else if (s.type === 'lesser') key = 'LESSER_POWER';
+  else if (s.school === 'destruction') key = 'DESTRUCTION_' + (['fire','frost','shock'].includes(s.element) ? s.element.toUpperCase() : 'GENERIC') + '_' + tier;
+  else if (s.school === 'alteration') key = 'ALTERATION_' + tier;
+  else if (s.school === 'restoration') key = 'RESTORATION_' + (['turnundead','banish'].includes(s.archetype) ? 'HOSTILE_' : 'FRIENDLY_') + tier;
+  else if (s.school === 'illusion') key = 'ILLUSION_' + (['fear','frenzy','calm'].includes(s.archetype) ? 'HOSTILE_' : 'FRIENDLY_') + tier;
+  else if (s.school === 'conjuration') key = 'CONJURATION_' + (s.archetype === 'bound' ? 'BOUND_WEAPON_' : 'SUMMON_') + tier;
+  const icon = byForm[identity] || generic[key];
+  if (typeof icon !== 'string' || !icon.startsWith('icons/sh/') || icon.includes('..') || /[\\?#]/.test(icon)) return null;
+  return {url:'/api/view-icon?p=' + encodeURIComponent(icon) + '&v=' + Math.floor(cache.mtime/1000),kind:'library'};
+}
+async function spellsPayload(cfg) {
   const src = readMagic(cfg);
   const descriptions = readSpellDescriptions();
+  const [spellbook, spellIcons] = await Promise.all([readSpellbook(), readSpellbookIcons()]);
   const pend = readAssignments();
   const pendBy = Object.create(null);
   pend.list.forEach((e) => { pendBy[e.spellId] = e.icon; });
@@ -5004,7 +5079,15 @@ function spellsPayload(cfg) {
   const magic = src.magic;
   const order = (magic && Array.isArray(magic.categories))
     ? magic.categories.filter((c) => typeof c === 'string' && c) : [];
-  const rows = (magic && Array.isArray(magic.spells)) ? magic.spells : [];
+  const rows = (magic && Array.isArray(magic.spells)) ? magic.spells.slice() : [];
+  const identities = new Set(rows.map(spellDescriptionKey));
+  if (spellbook) spellbook.spells.slice(0,16384).forEach(s => {
+    if (!s || typeof s !== 'object' || typeof s.name !== 'string') return;
+    const k = spellDescriptionKey(s); if (!k || identities.has(k)) return;
+    identities.add(k);
+    rows.push(Object.assign({}, s, {id:'learned:' + (s.plugin ? String(s.plugin).toLowerCase() + '|' + (s.localId >>> 0).toString(16) : '#' + (s.formId >>> 0)),
+      category: s.school ? s.school.charAt(0).toUpperCase() + s.school.slice(1) : s.type === 'shout' ? 'Shouts' : 'Powers', mode:'equip', hand:'right', learned:true}));
+  });
 
   // Seed the rail order first so groups come back in the order the deck shows
   // them; a spell filed under a category that no longer exists lands in its own
@@ -5025,7 +5108,7 @@ function spellsPayload(cfg) {
     if (!buckets.has(cat)) buckets.set(cat, []);
 
     const icon = typeof s.icon === 'string' ? s.icon : '';
-    const cur = iconUrlFor(icon);
+    const cur = icon ? iconUrlFor(icon) : spellbookAutoIcon(s, spellIcons);
     const row = {
       id,
       name: str(s.name) || 'spell',
@@ -5037,7 +5120,7 @@ function spellsPayload(cfg) {
       element: str(s.element),
       tier: str(s.tier),
       slot: str(s.slot),
-      plugin: str(s.plugin),
+      plugin: str(s.plugin), localId: Number(s.localId) >>> 0, formId: Number(s.formId) >>> 0, learned: s.learned === true,
       description: descriptions.get(spellDescriptionKey(s)) || null,
       icon,
       iconUrl: cur ? cur.url : null,
@@ -5068,6 +5151,7 @@ function spellsPayload(cfg) {
   return Object.assign({
     ok: true,
     hasMagic: !!magic,
+    spellbookAt: spellbook ? spellbook.at : null,
     library: magic && magic.library && typeof magic.library === 'object' ? magic.library : {},
     combos: (magic && Array.isArray(magic.combos) ? magic.combos : []).filter(c => c && typeof c === 'object').map(c => ({
       id: str(c.id), name: str(c.name), spells: (Array.isArray(c.spells) ? c.spells : []).filter(s => s && typeof s === 'object').map(s => {
@@ -5163,6 +5247,13 @@ function hotkeyRow(e, pendBy, editBy) {
     // "key" is the verb name the deck shows in that slot.
     keyLabel: device === 'action' ? (label || 'Action') : (label ? chordLabelOf(mods, label) : ''),
     action: str(e.action),
+    // mod-key rows (2026-10-11): WHERE another mod keeps the key this row
+    // presses. The deck reads the key itself live at fire time; the phone only
+    // says where it comes from. Text fields only, never trusted for paths here.
+    modKey: (str(e.action) === 'mod-key' && e.modKey && typeof e.modKey === 'object')
+      ? { mod: str(e.modKey.mod), file: str(e.modKey.file), section: str(e.modKey.section),
+          key: str(e.modKey.key), where: str(e.modKey.where) }
+      : null,
     icon,
     iconUrl: cur ? cur.url : null,
     iconKind: cur ? cur.kind : 'none',
@@ -6029,6 +6120,7 @@ function scenePrivacySnapshot() {
 /* Shared dossier metadata stays game-owned. Phone requests are immutable,
  * one file per operation, atomically published for the native queue. */
 const DOSSIER_OPS = new Set(['list','read','ensure','updatePerson','bindActor','addRelation','removeRelation','setPins','setEquipment','setPortrait','addNote','deleteNote']);
+const RENOWN_ASSETS = new Set(['hd-renown.js','hd-renown.css']);
 const DOSSIER_ASSETS = new Set(['hd-dossier-tools.js','hd-dossier-tools.css','hd-dossier-social.js','hd-dossier-social.css','hd-family-tree.js','hd-family-tree.css']);
 function dossierSnapshot() {
   const file = HD_CFG_DIR_CANDIDATES.map(d => path.join(d,'dossier.json')).find(f => fs.existsSync(f));
@@ -6125,6 +6217,39 @@ async function route(req, res, url) {
     sendJson(res,202,{ok:true,queued:true,commandId});return;
   }
 
+  // procession-portal-live: the in-game Procession modal on the phone, over the
+  // live pipe (same epoch + receipt contract as formation). ?demo=1 runs it on
+  // hd-procession.fixture.js's mock instead, so it can be tried with no game.
+  if (m==='GET' && p==='/procession') {
+    try {const bytes=fs.readFileSync(path.join(__dirname,'procession.html'));res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-cache'});res.end(bytes);}
+    catch(_){sendErr(res,404,'Procession page is not installed yet.');}return;
+  }
+  if (m==='GET' && p.startsWith('/api/procession-assets/')) {
+    const name=p.slice('/api/procession-assets/'.length);
+    const types={'hd-procession.js':'application/javascript; charset=utf-8','hd-procession.css':'text/css; charset=utf-8',
+      'hd-procession.fixture.js':'application/javascript; charset=utf-8','rpx-nordic.png':'image/png','rpx-necro.png':'image/png'};
+    if(!Object.prototype.hasOwnProperty.call(types,name)){sendErr(res,404,'Unknown procession asset');return;}
+    try {const bytes=fs.readFileSync(path.join(DECK_VIEW_DIR,name));res.writeHead(200,{'Content-Type':types[name],'Cache-Control':'no-cache','Content-Length':bytes.length});res.end(bytes);}
+    catch(_){sendErr(res,404,'Install the matched SkyManager procession files first.');}return;
+  }
+  if (m==='GET' && p==='/api/procession') {
+    const r=await liveSend({kind:'procession',op:'state'});
+    if(!r){sendErr(res,503,'Load Skyrim with the current SkyManager build to manage your procession.');return;}
+    sendJson(res,r.ok?200:409,r);return;
+  }
+  if (m==='POST' && p==='/api/procession') {
+    const body=await readJsonBody(req);
+    if(!body || body.op!=='act' || typeof body.epoch!=='string' || body.epoch.length>96 ||
+      !body.request || typeof body.request!=='object' || Array.isArray(body.request) ||
+      typeof body.request.op!=='string' || body.request.op.length>32 || JSON.stringify(body).length>12000) {
+      sendErr(res,400,'Invalid procession request. Refresh the panel.');return;
+    }
+    const commandId=crypto.randomBytes(16).toString('hex');
+    const r=await liveSend({kind:'procession',op:'act',epoch:body.epoch,request:body.request,commandId});
+    if(!r || !r.ok){sendErr(res,409,r&&r.msg||'Skyrim is unavailable. Nothing was queued.');return;}
+    sendJson(res,202,{ok:true,queued:true,commandId});return;
+  }
+
   if(m==='GET' && p.startsWith('/api/appearance-assets/')) {
     const name=p.slice('/api/appearance-assets/'.length);
     if(!['appearance-presets.js','appearance-presets.css'].includes(name)){sendErr(res,404,'Unknown appearance asset');return;}
@@ -6176,6 +6301,15 @@ async function route(req, res, url) {
     if(!['wardrobe-flair-model.js','wardrobe-flair-ui.js','wardrobe-flair.css','wardrobe-nav.js','wardrobe-studio.css'].includes(name)){sendErr(res,404,'Unknown wardrobe asset');return;}
     try {const bytes=fs.readFileSync(path.join(DECK_VIEW_DIR,name));res.writeHead(200,{'Content-Type':name.endsWith('.css')?'text/css; charset=utf-8':'application/javascript; charset=utf-8','Cache-Control':'no-cache','Content-Length':bytes.length});res.end(bytes);}
     catch(_){sendErr(res,404,'The matched wardrobe view files are not installed yet.');}return;
+  }
+  if(m==='GET' && p.startsWith('/api/renown-assets/')) {
+    // The deck's own Renown module + the fonts its sheet names (url('fonts/…')
+    // resolves under this same prefix). An allow list, never a path.
+    const name=p.slice('/api/renown-assets/'.length);
+    const fontOk=/^fonts\/(IMFellEnglish-(Regular|Italic)|Cardo-(Regular|Italic|Bold)|BarlowCondensed-(Medium|SemiBold))\.ttf$/.test(name);
+    if(!RENOWN_ASSETS.has(name) && !fontOk){sendErr(res,404,'Unknown renown asset');return;}
+    const type=name.endsWith('.css')?'text/css; charset=utf-8':name.endsWith('.ttf')?'font/ttf':'application/javascript; charset=utf-8';
+    try{const bytes=fs.readFileSync(path.join(DECK_VIEW_DIR,name));res.writeHead(200,{'Content-Type':type,'Cache-Control':'no-cache','Content-Length':bytes.length});res.end(bytes);}catch(_){sendErr(res,404,'The Renown module is not deployed yet.');}return;
   }
   if(m==='GET' && p.startsWith('/api/dossier-assets/')) {
     const name=p.slice('/api/dossier-assets/'.length);
@@ -8318,6 +8452,65 @@ async function route(req, res, url) {
     return;
   }
 
+  /* ---- Renown: his deeds, how far each has spread, who knows it ----------
+   *  The court ext's Renown ledger (roleplay/chim-prompts/ext/court/renown_lib.php)
+   *  through court.php, exactly like the Standing routes above. The page itself is
+   *  the deck's own hd-renown.js, served from the deck view folder below, so the
+   *  phone and the Character tab are ONE build.
+   *  GET  /api/renown        the whole document (live, or the cached copy, flagged)
+   *  POST /api/renown-op     {op:set|knows|drop|preview, key, fields|npc|v}
+   *  Every write answers with the fresh document. */
+  if (m === 'GET' && p === '/api/renown') {
+    const r = await courtToolAsync(['renown']);
+    let j = null;
+    if (r.ok) { try { j = JSON.parse(r.out || ''); } catch (_) { j = null; } }
+    if (j && Array.isArray(j.deeds)) {
+      try { fs.mkdirSync(path.dirname(RENOWN_CACHE_FILE), { recursive: true }); fs.writeFileSync(RENOWN_CACHE_FILE, JSON.stringify(j)); } catch (_) { /* cache is a convenience */ }
+      sendJson(res, 200, j);
+      return;
+    }
+    let cached = null;
+    try { cached = JSON.parse(fs.readFileSync(RENOWN_CACHE_FILE, 'utf8')); } catch (_) { cached = null; }
+    if (cached && Array.isArray(cached.deeds)) {
+      cached.cached = true; cached.error = r.error || 'court.php has no `renown` verb yet';
+      sendJson(res, 200, cached);
+      return;
+    }
+    sendErr(res, 503, r.error || 'The Renown ledger is not installed in CHIM yet.');
+    return;
+  }
+
+  if (m === 'POST' && p === '/api/renown-op') {
+    const body = await readJsonBody(req);
+    const op = String(body.op || '');
+    const key = String(body.key || '');
+    const npc = String(body.npc || '').trim();
+    const keyOk = /^[a-z0-9][a-z0-9-]{0,47}$/.test(key);
+    const npcOk = npc !== '' && npc.length <= 80 && npc.slice(0, 2) !== '--';
+    let args = null;
+    if (op === 'set' && keyOk && body.fields && typeof body.fields === 'object') {
+      const json = JSON.stringify(body.fields);
+      if (json.length > 8000) { sendErr(res, 400, 'That deed is too long.'); return; }
+      args = ['deed', 'set', key, '--fields-b64', Buffer.from(json, 'utf8').toString('base64')];
+    } else if (op === 'knows' && keyOk && npcOk && ['yes', 'no', 'clear'].indexOf(body.v) >= 0) {
+      args = ['deed', 'knows', key, npc, body.v];
+    } else if (op === 'drop' && keyOk) {
+      args = ['deed', 'drop', key];
+    } else if (op === 'preview' && npcOk) {
+      const r = await courtToolAsync(['renown', 'preview', npc]);
+      if (!r.ok) { sendErr(res, 503, r.error); return; }
+      try { sendJson(res, 200, JSON.parse(r.out)); } catch (_) { sendErr(res, 502, 'CHIM answered with something unreadable.'); }
+      return;
+    }
+    if (!args) { sendErr(res, 400, 'Unknown or incomplete Renown operation.'); return; }
+    const w = await courtToolAsync(args);
+    if (!w.ok) { sendErr(res, 503, w.error); return; }
+    log('renown: ' + op + ' ' + key + (npc ? ' ' + npc : ''));
+    const r = await courtToolAsync(['renown']);
+    try { sendJson(res, 200, JSON.parse(r.out || '')); } catch (_) { sendJson(res, 200, { ok: true, out: w.out }); }
+    return;
+  }
+
   /* ---- capture framing defaults ---- */
   if (m === 'GET' && p === '/api/portrait-defaults') {
     sendJson(res, 200, { ok: true, ...readCaptureIni() });
@@ -8817,7 +9010,7 @@ async function route(req, res, url) {
   if (m === 'GET' && p === '/api/spells') {
     // 200 even when ok:false — same contract as /api/roster: the SPA renders
     // the diagnostic inline instead of collapsing into "fetch failed".
-    sendJson(res, 200, spellsPayload());
+    sendJson(res, 200, await spellsPayload());
     return;
   }
 
@@ -11407,7 +11600,7 @@ ensureDir(DECK_ICON_DIR);   // the deck view's half of the pool + its sidecar
 ensureDir(DOMAIN_IMG_DIR);  // one image per marked domain, drawn by the Domains tab
 seedCombatArtIconQueue();   // seeded once so it exists before MO2 snapshots the file list
 
-server.listen(PORT, BIND, () => {
+server.listen(PORT, BIND, async () => {
   log('Deck Portal listening on http://' + BIND + ':' + PORT + '/');
   log(EXPOSED
     ? '  REACHABLE FROM THE NETWORK — password required (loopback exempt)'
@@ -11432,7 +11625,7 @@ server.listen(PORT, BIND, () => {
     log('  warning: ' + r.pendingNpcUnknown.length + ' pending field edit(s) name someone not in the roster: ' +
       r.pendingNpcUnknown.slice(0, 5).join(', '));
   const cfg = readHkRoot();          // one snapshot for both slices below
-  const sp = spellsPayload(cfg);
+  const sp = await spellsPayload(cfg);
   log('  deck cfg  → ' + (sp.hkJson || 'NOT FOUND (' + HK_JSON_CANDIDATES.join(' | ') + ')'));
   if (HD_CFG_DIR_SWEPT)
     log('  deck cfg found by sweeping the mod folders: ' + HD_CFG_DIR_SWEPT +

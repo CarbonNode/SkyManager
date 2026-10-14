@@ -15,10 +15,13 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -54,6 +57,20 @@ namespace KeysSources
 		constexpr std::uintmax_t kMaxFileBytes = 1u << 20;  // 1 MiB
 
 		constexpr std::uint32_t kMouseBase = 256;  // SkyUI/ControlMap convention
+
+		// ------------------------------------------------------- smf names --
+		// lowercased DLL stem -> SKSE Menu Framework section (keys_sources.h,
+		// NAMING). Written on the main thread by SetSmfOwners, read by the
+		// scan thread and the writer's worker -- hence the lock.
+		std::mutex                                   g_smfLock;
+		std::unordered_map<std::string, std::string> g_smfByDll;
+
+		std::string SmfSection(const std::string& stemLower)
+		{
+			std::lock_guard l(g_smfLock);
+			const auto it = g_smfByDll.find(stemLower);
+			return it == g_smfByDll.end() ? std::string() : it->second;
+		}
 
 		// -------------------------------------------------------- text bits --
 
@@ -442,6 +459,15 @@ namespace KeysSources
 				out = Space::Vk;
 				return true;
 			}
+			// Walk With Me (Wayfarer.ini [Hotkeys]) speaks DirectInput: its shipped
+			// docs/hotkeys.md says "For Ctrl+G, use iCommandKey=34" -- 34 is the
+			// DIK for G (the VK would be 71). Read 2026-10-11 from the 0.2.2
+			// archive. Its own Controls page rewrites the ini WITHOUT comments, so
+			// the prose check below never sees a hint on a configured install.
+			if (fileNameLower == "wayfarer.ini") {
+				out = Space::Dik;
+				return true;
+			}
 			return false;
 		}
 
@@ -542,7 +568,9 @@ namespace KeysSources
 
 			void Add(Row r)
 			{
-				if (!r.code) {
+				// Code 0 is "no key". Only a verified spec may list one (so it
+				// can be bound from the Keys tab); anything else is dropped.
+				if (!r.code && !r.unbound) {
 					return;
 				}
 				if (out.size() >= kMaxRows) {
@@ -822,21 +850,28 @@ namespace KeysSources
 		// Which mod does this config belong to? The folder wins over the file
 		// name when there is one, because "Data/SKSE/Plugins/<Mod>/settings.ini"
 		// names the mod in the folder and says nothing in the file.
-		std::string OwnerFor(const fs::path& file, const fs::path& root)
+		//
+		// When that folder or file stem is ALSO the stem of a DLL that registers
+		// SKSE Menu Framework pages, the mod's SMF section wins (keys_sources.h,
+		// NAMING): "Wayfarer.ini" is "Walk With Me" to everyone who plays it.
+		// `alias` then keeps the old name so a search for it still lands.
+		bool IsGenericName(const std::string& lower)
 		{
 			static constexpr std::string_view kGeneric[] = {
 				"config", "configs", "settings", "setting", "data", "ini", "json",
 				"user", "userconfig", "usersettings",
 			};
-			const auto isGeneric = [](const std::string& s) {
-				for (const auto g : kGeneric) {
-					if (s == g) {
-						return true;
-					}
+			for (const auto g : kGeneric) {
+				if (lower == g) {
+					return true;
 				}
-				return false;
-			};
+			}
+			return false;
+		}
 
+		std::string OwnerFor(const fs::path& file, const fs::path& root, std::string& alias)
+		{
+			alias.clear();
 			const auto stem = PathU8(file.stem());
 			std::error_code ec;
 			const auto rel = fs::relative(file, root, ec);
@@ -847,13 +882,27 @@ namespace KeysSources
 					folder = PathU8(*parent.begin());  // first component under the root
 				}
 			}
-			if (!folder.empty() && !isGeneric(Lower(folder))) {
-				return folder;
+			std::string name;
+			if (!folder.empty() && !IsGenericName(Lower(folder))) {
+				name = folder;
+			} else if (!IsGenericName(Lower(stem))) {
+				name = stem;
+			} else {
+				name = folder.empty() ? stem : folder;
 			}
-			if (!isGeneric(Lower(stem))) {
-				return stem;
+			for (const auto& candidate : { folder, stem }) {
+				const auto lower = Lower(candidate);
+				if (lower.empty() || IsGenericName(lower)) {
+					continue;
+				}
+				if (auto section = SmfSection(lower); !section.empty()) {
+					if (Lower(section) != Lower(name)) {
+						alias = name;
+					}
+					return section;
+				}
 			}
-			return folder.empty() ? stem : folder;
+			return name;
 		}
 
 		// A file's own documentation, read once: "DXScanCode", "DIK key code",
@@ -868,26 +917,318 @@ namespace KeysSources
 			return call;
 		}
 
+		// ---------------------------------------------------------- writing --
+		// What the writer (keys_write.cpp) needs to find one setting again, and
+		// the verdict on whether it may. See keys_sources.h, WRITING.
+
+		std::string IniField(const std::string& sectionLower, const std::string& name)
+		{
+			return sectionLower + '\x1f' + name;
+		}
+
+		std::string ModsFromMask(long mask)
+		{
+			std::vector<std::string> mods;
+			if (mask & 1) mods.push_back("Shift");
+			if (mask & 2) mods.push_back("Ctrl");
+			if (mask & 4) mods.push_back("Alt");
+			return JoinMods(mods);
+		}
+
+		// How many assignments in `all` name this setting (section + name,
+		// case-insensitively -- the way ini readers match). The writer refuses
+		// anything but exactly one, and says so up front through `why`.
+		int CountSetting(const std::vector<Assignment>& all, const std::string& sectionLower,
+			const std::string& name)
+		{
+			const auto want = Lower(name);
+			int        n = 0;
+			for (const auto& a : all) {
+				if (a.section == sectionLower && Lower(a.name) == want) {
+					++n;
+				}
+			}
+			return n;
+		}
+
+		// The verdict for a GENERIC setting -- one no verified spec covers.
+		void GenericWrite(Write& w, const std::string& ext, const SpaceCall& call,
+			std::string_view rawName, int copies)
+		{
+			const bool lineFormat = ext == ".ini" || ext == ".toml";
+			const bool jsonFormat = ext == ".json" || ext == ".jsonc";
+			if (!lineFormat && !jsonFormat) {
+				w.why = "SkyManager rewrites .ini, .toml and .json files only; this one is " + ext + ".";
+				return;
+			}
+			if (!call.certain) {
+				w.why = "The file never says whether this number is a DirectInput scancode or a "
+				        "Windows virtual-key, so SkyManager will not write a guess into it.";
+				return;
+			}
+			if (call.space != Space::Dik) {
+				w.why = "This file stores Windows virtual-key codes. SkyManager writes "
+				        "DirectInput scancodes only.";
+				return;
+			}
+			if (Has(Squash(rawName), "mouse")) {
+				w.why = "A mouse-button setting. The Keys tab rebinds keyboard keys only.";
+				return;
+			}
+			if (copies != 1) {
+				w.why = "This setting appears more than once in the file, so SkyManager will not "
+				        "guess which copy the mod reads.";
+				return;
+			}
+			w.format = jsonFormat ? "json" : "ini";
+			w.apply = "next-launch";
+			w.ok = true;
+		}
+
+		// RFC 6901: '~' -> "~0", '/' -> "~1".
+		std::string PointerToken(const std::string& s)
+		{
+			std::string out;
+			for (const char c : s) {
+				if (c == '~') {
+					out += "~0";
+				} else if (c == '/') {
+					out += "~1";
+				} else {
+					out += c;
+				}
+			}
+			return out;
+		}
+
+		// Row::file / Row::space (see keys_sources.h). "" when the path is not
+		// under the plugins root, which turns the row's "Add to Hotkeys" off.
+		std::string RelToPlugins(const fs::path& path)
+		{
+			// Lexical, not fs::relative: the walk builds every path from this same
+			// root, and a canonicalising call per row is VFS round trips for nothing.
+			const auto rel = path.lexically_relative(fs::path("Data/SKSE/Plugins"));
+			if (rel.empty()) {
+				return {};
+			}
+			auto s = PathU8(rel);
+			std::replace(s.begin(), s.end(), '\\', '/');
+			return StartsWith(s, "..") ? std::string() : s;
+		}
+
+		std::string SpaceName(const SpaceCall& call)
+		{
+			return call.space == Space::Vk ? "vk" : "dik";
+		}
+
+		// ------------------------------------------------- verified specs --
+		// Per-mod contracts read out of the mod's OWN documentation, never
+		// inferred. Each is matched on the exact file name and produces the
+		// rows for that file in place of the generic reading.
+
+		// Walk With Me (Nexus 191283) -- Wayfarer.ini [Hotkeys]. Its shipped
+		// docs/hotkeys.md (0.2.2): every i<Name>Key has an i<Name>Modifiers mask
+		// "0 none, 1 Shift, 2 Ctrl, 4 Alt. Add values for combinations. For
+		// Ctrl+G, use iCommandKey=34 and iCommandModifiers=2" -- DirectInput
+		// scancodes, -1 = unbound ("An unbound key (-1) clears its mask").
+		// Read on the rig 2026-10-11. Unbound actions are LISTED, so they can be
+		// bound from here.
+		void ScanWayfarer(const fs::path& path, const std::string& text, Sink& sink)
+		{
+			struct Key
+			{
+				const char* key;
+				const char* mods;
+				const char* label;
+			};
+			static constexpr Key kKeys[] = {
+				{ "iCommandKey", "iCommandModifiers", "Order wheel" },
+				{ "iCompanionKey", "iCompanionModifiers", "Companion control" },
+				{ "iToggleKey", "iToggleModifiers", "Turn Walk With Me on/off" },
+				{ "iCycleModeKey", "iCycleModeModifiers", "Cycle formation" },
+				{ "iScoutKey", "iScoutModifiers", "Scout" },
+				{ "iRearKey", "iRearModifiers", "Rear guard" },
+				{ "iRoamKey", "iRoamModifiers", "Roam" },
+				{ "iReloadKey", "iReloadModifiers", "Reload settings" },
+			};
+			const auto all = ParseAssignments(text);
+			const auto file = PathU8(path);
+			const auto stamp = Stamp(text);
+			auto       owner = SmfSection("wayfarer");
+			if (owner.empty()) {
+				owner = "Walk With Me";  // the identity is the file, verified; SMF only names it
+			}
+			for (const auto& k : kKeys) {
+				const int copies = CountSetting(all, "hotkeys", k.key);
+				if (copies == 0) {
+					continue;  // an older Walk With Me without this action
+				}
+				const auto raw = FindValue(all, "Hotkeys", k.key);
+				long       v = 0;
+				if (!ParseInt(raw, v) || v > 0xFF) {
+					logger::warn("keys-scan: Wayfarer.ini [Hotkeys] {} = '{}' is not a key code -- skipped", k.key, raw);
+					continue;
+				}
+				const bool unbound = v <= 0;
+				const auto rawMods = FindValue(all, "Hotkeys", k.mods);
+				long       mask = 0;
+				if (!ParseInt(rawMods, mask) || mask < 0 || mask > 7) {
+					mask = 0;  // its docs: "Missing or invalid masks become 0"
+				}
+				Row r{ "plugin", owner, k.label, unbound ? 0u : static_cast<std::uint32_t>(v),
+					unbound ? std::string() : ModsFromMask(mask), false,
+					file + " [Hotkeys] " + k.key + " = " + raw + ", " + k.mods + " = " +
+						(rawMods.empty() ? std::string("(missing)") : rawMods) +
+						" (verified: DirectInput scancode + modifier mask)" };
+				r.unbound = unbound;
+				r.alias = "Wayfarer";
+				r.file = RelToPlugins(path);  // mod-key address ("Add to Hotkeys")
+				r.section = "hotkeys";
+				r.field = k.key;
+				r.space = "dik";
+				const int modCopies = CountSetting(all, "hotkeys", k.mods);
+				r.write.file = file;
+				r.write.stamp = stamp;
+				if (copies != 1 || modCopies > 1) {
+					r.write.why = "This key appears more than once in Wayfarer.ini, so SkyManager will "
+					              "not guess which copy Walk With Me reads.";
+				} else {
+					r.write.ok = true;
+					r.write.format = "ini";
+					r.write.field = IniField("hotkeys", k.key);
+					if (modCopies == 1) {
+						r.write.modField = IniField("hotkeys", k.mods);
+						r.write.modKind = "mask";
+					}
+					r.write.clearValue = "-1";
+					r.write.apply = "wwm-reload";
+				}
+				sink.Add(std::move(r));
+			}
+		}
+
+		// PPA (Procedural Penis Animations) -- accurate-penetration.toml
+		// [Hotkeys]. Its own comment: "Key codes (default: F2=60, F5=63, 0=11)"
+		// -- DirectInput scancodes (F2 is DIK 60). Its names (Pause, Reload,
+		// SelectActor) say nothing key-like, so the generic sweep never saw
+		// them. HotkeyWhileHoldingShiftOnly is ONE switch for all three, so it
+		// is shown as their modifier but never written per key. Read on the rig
+		// 2026-10-11. No unbound spelling is documented, so none is offered.
+		void ScanPpa(const fs::path& path, const std::string& text, Sink& sink)
+		{
+			struct Key
+			{
+				const char* key;
+				const char* label;
+				bool        consoleGated;
+			};
+			static constexpr Key kKeys[] = {
+				{ "Pause", "Pause PPA", true },
+				{ "Reload", "Reload PPA's settings", true },
+				{ "SelectActor", "Select an actor to edit", false },
+			};
+			const auto all = ParseAssignments(text);
+			const auto file = PathU8(path);
+			const auto stamp = Stamp(text);
+			const bool shiftOnly = Lower(FindValue(all, "Hotkeys", "HotkeyWhileHoldingShiftOnly")) == "true";
+			const bool consoleOnly = Lower(FindValue(all, "Hotkeys", "ConsoleOnly")) == "true";
+			for (const auto& k : kKeys) {
+				const int copies = CountSetting(all, "hotkeys", k.key);
+				if (copies == 0) {
+					continue;
+				}
+				const auto raw = FindValue(all, "Hotkeys", k.key);
+				long       v = 0;
+				if (!ParseInt(raw, v) || v <= 0 || v > 0xFF) {
+					continue;
+				}
+				std::string label = k.label;
+				if (consoleOnly && k.consoleGated) {
+					label += " (console open)";
+				}
+				Row r{ "plugin", "PPA (Procedural Penis Animations)", std::move(label),
+					static_cast<std::uint32_t>(v), shiftOnly ? std::string("Shift") : std::string(), false,
+					file + " [Hotkeys] " + k.key + " = " + raw +
+						" (verified: DirectInput scancode, per its own comment F2 = 60)" };
+				r.alias = "accurate-penetration";
+				r.file = RelToPlugins(path);  // mod-key address ("Add to Hotkeys")
+				r.section = "hotkeys";
+				r.field = k.key;
+				r.space = "dik";
+				r.write.file = file;
+				r.write.stamp = stamp;
+				if (copies != 1) {
+					r.write.why = "This key appears more than once in the file, so SkyManager will not "
+					              "guess which copy PPA reads.";
+				} else {
+					r.write.ok = true;
+					r.write.format = "ini";
+					r.write.field = IniField("hotkeys", k.key);
+					// Tapping PPA's reload after rebinding the reload key itself
+					// would press the NEW key, which PPA is not listening for yet
+					// ("ppa-self": the writer says so instead of claiming PPA
+					// has no reload).
+					r.write.apply = std::string_view(k.key) == "Reload" ? "ppa-self" : "ppa-reload";
+				}
+				sink.Add(std::move(r));
+			}
+		}
+
 		void ScanIniLike(const fs::path& path, const std::string& owner, Sink& sink)
 		{
 			const auto fileName = Lower(PathU8(path.filename()));
+			const auto ext = Lower(PathU8(path.extension()));
 			const auto text = ReadTextCapped(path, kMaxFileBytes);
 			if (fileName == "custommarkers.ini" || fileName == "custommapmarkers.ini") {
 				std::error_code ec;
 				if (fileName == "custommapmarkers.ini" && fs::exists(path.parent_path() / "CustomMarkers.ini", ec)) return;
+				const auto file = PathU8(path);
+				const auto stamp = Stamp(text);
 				const auto add = [&](const CustomMarkersBindings::Spec& spec) {
 					const auto binding = CustomMarkersBindings::Read(text, spec);
-					if (binding.status != CustomMarkersBindings::Status::ready) return;
-					sink.Add(Row{"plugin", "Custom Markers", spec.label, binding.key,
-						CustomMarkersBindings::Modifiers[binding.modifier].label, false,
-						PathU8(path) + " [" + spec.section + "] " + spec.key + " (verified DIK; modifier enum)"});
+					const bool unbound = binding.status == CustomMarkersBindings::Status::unbound;
+					if (binding.status != CustomMarkersBindings::Status::ready && !unbound) return;
+					Row r{"plugin", "Custom Markers", spec.label, unbound ? 0u : binding.key,
+						unbound ? std::string() : std::string(CustomMarkersBindings::Modifiers[binding.modifier].label), false,
+						file + " [" + spec.section + "] " + spec.key + (unbound ? " = unbound" : "") +
+							" (verified DIK; modifier enum)"};
+					r.unbound = unbound;
+					r.write.file = file;
+					r.write.stamp = stamp;
+					if (!CustomMarkersBindings::Value(text, spec.section, spec.modifier)) {
+						r.write.why = std::string("The file has no ") + spec.modifier +
+						              " line, and Custom Markers reads a key without one as invalid.";
+					} else {
+						r.write.ok = true;
+						r.write.format = "ini";
+						r.write.field = IniField(Lower(spec.section), spec.key);
+						r.write.modField = IniField(Lower(spec.section), spec.modifier);
+						r.write.modKind = "cm-enum";
+						r.write.clearValue = "0";  // CustomMarkersBindings::Read: 0 or -1 = unbound
+						// Next launch, AND SkyManager's own Custom Markers buttons
+						// (custom_markers.cpp Fire) read this file live: until
+						// Custom Markers picks the new key up they press it in vain.
+						r.write.apply = "cm-next-launch";
+					}
+					sink.Add(std::move(r));
 				};
 				for (const auto& spec : CustomMarkersBindings::Actions) add(spec);
 				for (const auto& spec : CustomMarkersBindings::OtherBindings) add(spec);
 				return;
 			}
+			if (fileName == "wayfarer.ini") {
+				ScanWayfarer(path, text, sink);
+				return;
+			}
+			if (fileName == "accurate-penetration.toml") {
+				ScanPpa(path, text, sink);
+				return;
+			}
 			const auto fileLevel = FileLevelSpace(text);
-			for (const auto& a : ParseAssignments(text)) {
+			const auto all = ParseAssignments(text);
+			const auto file = PathU8(path);
+			const auto stamp = Stamp(text);
+			for (const auto& a : all) {
 				if (!IsKeyField(a.name)) {
 					continue;
 				}
@@ -903,8 +1244,18 @@ namespace KeysSources
 				const auto label = a.section.empty()
 					? Prettify(a.name)
 					: Prettify(a.name) + " (" + Prettify(a.section) + ")";
-				sink.Add(Row{ "plugin", owner, label, code, "", !call.certain,
-					PathU8(path) + " · " + a.name + " = " + a.value });
+				Row r{ "plugin", owner, label, code, "", !call.certain,
+					file + " · " + a.name + " = " + a.value };
+				r.write.file = file;
+				r.write.stamp = stamp;
+				r.write.field = IniField(a.section, a.name);
+				GenericWrite(r.write, ext, call, a.name, CountSetting(all, a.section, a.name));
+				// mod-key address ("Add to Hotkeys"): see keys_sources.h.
+				r.file = RelToPlugins(path);
+				r.section = a.section;
+				r.field = a.name;
+				r.space = SpaceName(call);
+				sink.Add(std::move(r));
 			}
 		}
 
@@ -919,16 +1270,30 @@ namespace KeysSources
 				return;  // not our file to fix
 			}
 			const auto fileName = Lower(PathU8(path.filename()));
+			const auto ext = Lower(PathU8(path.extension()));
 			const auto fileLevel = FileLevelSpace(text);
+			const auto file = PathU8(path);
+			const auto stamp = Stamp(text);
+			// Arrays are transparent to the trail, so two binds in sibling array
+			// elements ("hotkeys": [{"key": 35}, {"key": 36}]) share one
+			// file/section/field address. Such a row gets NO address (Row::file
+			// empty): a mod-key row made from it would press whichever element
+			// a reader met first, not the one the player picked.
+			int inArray = 0;
 
-			const auto walk = [&](const json& node, const std::string& trail, const auto& self) -> void {
+			// `ptr` is the JSON pointer of `node` -- the writer's address for a
+			// value, so it has to track array indices as well as keys.
+			const auto walk = [&](const json& node, const std::string& trail, const std::string& ptr,
+								  const auto& self) -> void {
 				if (node.is_object()) {
 					for (const auto& [name, value] : node.items()) {
 						const json& val = value;  // see the note in ScanCommunityShaders
 						const auto  label = trail.empty() ? name : trail + " · " + name;
+						const auto  childPtr = ptr + "/" + PointerToken(name);
 						if (IsKeyField(name)) {
 							long v = 0;
 							bool have = false;
+							bool list = false;
 							if (val.is_number_integer()) {
 								v = val.get<long>();
 								have = true;
@@ -941,6 +1306,7 @@ namespace KeysSources
 								// invented rows in a conflict list.
 								v = val[0].get<long>();
 								have = true;
+								list = true;
 							}
 							if (have) {
 								const auto call = SpaceFor(name, fileName, fileLevel);
@@ -948,21 +1314,64 @@ namespace KeysSources
 									// The leaf names the action; the full trail is
 									// provenance, so it belongs in the detail line
 									// rather than in a row label nobody can read.
-									sink.Add(Row{ "plugin", owner, Prettify(name), code, "",
+									Row r{ "plugin", owner, Prettify(name), code, "",
 										!call.certain,
-										PathU8(path) + " · " + label + " = " + std::to_string(v) });
+										file + " · " + label + " = " + std::to_string(v) };
+									r.write.file = file;
+									r.write.stamp = stamp;
+									r.write.field = childPtr;
+									if (list) {
+										r.write.why = "The setting holds a list of keys, so SkyManager "
+										              "will not guess which entry is the key.";
+									} else {
+										GenericWrite(r.write, ext, call, name, 1);
+									}
+									if (!inArray) {
+										r.file = RelToPlugins(path);
+									}
+									r.section = trail;
+									r.field = name;
+									r.space = SpaceName(call);
+									sink.Add(std::move(r));
 								}
 							}
 						}
-						self(value, label, self);
+						self(value, label, childPtr, self);
 					}
 				} else if (node.is_array()) {
+					std::size_t i = 0;
+					++inArray;
 					for (const auto& v : node) {
-						self(v, trail, self);
+						self(v, trail, ptr + "/" + std::to_string(i), self);
+						++i;
 					}
+					--inArray;
 				}
 			};
-			walk(doc, "", walk);
+			walk(doc, "", "", walk);
+		}
+
+		// One config file under the root: the sweep's per-file rules, shared by
+		// the walk and ScanFile so a re-read after a write cannot disagree with
+		// the census.
+		void ScanConfigFile(const fs::path& file, const fs::path& root, Sink& sink)
+		{
+			const auto  ext = Lower(PathU8(file.extension()));
+			std::string alias;
+			const auto  owner = OwnerFor(file, root, alias);
+			const auto  before = sink.out.size();
+			if (ext == ".json" || ext == ".jsonc") {
+				ScanJsonLike(file, owner, sink);
+			} else {
+				ScanIniLike(file, owner, sink);
+			}
+			if (!alias.empty()) {
+				for (auto i = before; i < sink.out.size(); ++i) {
+					if (sink.out[i].alias.empty() && sink.out[i].mod == owner) {
+						sink.out[i].alias = alias;
+					}
+				}
+			}
 		}
 
 		void WalkPluginDir(const fs::path& dir, const fs::path& root, int depth, int& files, Sink& sink)
@@ -999,17 +1408,47 @@ namespace KeysSources
 					continue;  // a megabyte of config is data, not bindings
 				}
 				++files;
-				const auto owner = OwnerFor(entry.path(), root);
-				if (ext == ".json" || ext == ".jsonc") {
-					ScanJsonLike(entry.path(), owner, sink);
-				} else {
-					ScanIniLike(entry.path(), owner, sink);
-				}
+				ScanConfigFile(entry.path(), root, sink);
+			}
+		}
+
+		// Overlay rows are never writable; each says why in its own words.
+		void OverlayWhy(Row& r)
+		{
+			if (r.src == "enb") {
+				r.write.why = "ENB keeps Windows virtual-key codes in its own ini beside the game. "
+				              "SkyManager does not write ENB's files.";
+			} else if (r.src == "reshade") {
+				r.write.why = "ReShade keeps virtual-key tuples in ReShade.ini. "
+				              "SkyManager does not write ReShade's files.";
+			} else {
+				r.write.why = "Community Shaders saves its keys from its own menu. Change them there.";
 			}
 		}
 	}
 
 	// ------------------------------------------------------------- public ----
+
+	fs::path PluginRoot()
+	{
+		return fs::path("Data/SKSE/Plugins");
+	}
+
+	std::string Stamp(const std::string& bytes)
+	{
+		std::uint64_t h = 1469598103934665603ull;  // FNV-1a 64
+		for (const char c : bytes) {
+			h ^= static_cast<unsigned char>(c);
+			h *= 1099511628211ull;
+		}
+		return std::format("{}-{:016x}", bytes.size(), h);
+	}
+
+	void SetSmfOwners(std::unordered_map<std::string, std::string> byDllStem)
+	{
+		std::lock_guard l(g_smfLock);
+		g_smfByDll = std::move(byDllStem);
+	}
 
 	std::vector<Row> ScanOverlays()
 	{
@@ -1021,6 +1460,9 @@ namespace KeysSources
 		} catch (const std::exception& e) {
 			logger::warn("keys-scan: overlay sweep aborted: {}", e.what());
 		}
+		for (auto& r : sink.out) {
+			OverlayWhy(r);
+		}
 		return std::move(sink.out);
 	}
 
@@ -1029,7 +1471,7 @@ namespace KeysSources
 		Sink sink;
 		int  files = 0;
 		try {
-			const fs::path root("Data/SKSE/Plugins");
+			const auto root = PluginRoot();
 			std::error_code ec;
 			if (fs::exists(root, ec)) {
 				WalkPluginDir(root, root, 0, files, sink);
@@ -1048,5 +1490,184 @@ namespace KeysSources
 		logger::info("keys-scan: file sources -- {} plugin config row(s) from {} file(s)",
 			sink.out.size(), files);
 		return std::move(sink.out);
+	}
+
+	std::vector<Row> ScanFile(const fs::path& file)
+	{
+		Sink sink;
+		try {
+			const auto      root = PluginRoot();
+			std::error_code ec;
+			if (!fs::is_regular_file(file, ec) || ec) {
+				return {};
+			}
+			const auto ext = Lower(PathU8(file.extension()));
+			if (!IsConfigExtension(ext) ||
+				SkipFile(Lower(PathU8(file.stem())), Lower(PathU8(file.filename())))) {
+				return {};
+			}
+			// Under the root, by the same spelling the sweep used, no deeper
+			// than the walk goes, and through no directory the walk skips.
+			const auto rel = file.lexically_relative(root);
+			if (rel.empty()) {
+				return {};
+			}
+			const auto parent = rel.parent_path();
+			int        depth = 0;
+			for (const auto& part : parent) {
+				const auto lower = Lower(PathU8(part));
+				if (lower == ".." || lower == "." || SkipDirectory(lower)) {
+					return {};
+				}
+				++depth;
+			}
+			if (PathU8(*rel.begin()) == ".." || depth > kMaxDepth) {
+				return {};
+			}
+			const auto size = fs::file_size(file, ec);
+			if (ec || size > kMaxFileBytes) {
+				return {};
+			}
+			ScanConfigFile(file, root, sink);
+		} catch (const std::exception& e) {
+			logger::warn("keys-scan: re-reading {} failed: {}", PathU8(file), e.what());
+		}
+		return std::move(sink.out);
+	}
+
+	// mod-key entries (mod_keys.cpp) read their binding back through here at
+	// FIRE time -- the same parse that produced the census row, never a second
+	// reader that could disagree with it. Path rules are strict on purpose: the
+	// spec arrives from hotkeys.json, which is hand-editable.
+	bool ReadSetting(const std::string& relFile, const std::string& section,
+		const std::string& field, long& out, bool* ambiguous)
+	{
+		if (ambiguous) {
+			*ambiguous = false;
+		}
+		try {
+			if (relFile.empty() || relFile.size() > 260 || field.empty()) {
+				return false;
+			}
+			std::string rel = relFile;
+			std::replace(rel.begin(), rel.end(), '\\', '/');
+			if (rel.front() == '/' || rel.find(':') != std::string::npos) {
+				return false;  // absolute, or a drive / stream name
+			}
+			for (std::size_t at = 0; at <= rel.size();) {
+				const auto slash = rel.find('/', at);
+				const auto part = rel.substr(at, slash == std::string::npos ? std::string::npos : slash - at);
+				if (part.empty() || part == "." || part == "..") {
+					return false;
+				}
+				if (slash == std::string::npos) {
+					break;
+				}
+				at = slash + 1;
+			}
+			const auto path = fs::path("Data/SKSE/Plugins") /
+				fs::path(std::u8string(reinterpret_cast<const char8_t*>(rel.data()), rel.size()));
+			const auto ext = Lower(PathU8(path.extension()));
+			if (!IsConfigExtension(ext)) {
+				return false;
+			}
+			const auto text = ReadTextCapped(path, kMaxFileBytes);
+			if (text.empty()) {
+				return false;
+			}
+			if (ext == ".json" || ext == ".jsonc") {
+				const auto doc = json::parse(text, nullptr, false, true);
+				if (doc.is_discarded()) {
+					return false;
+				}
+				// The census walk, verbatim in shape: a child's trail is its
+				// parent's trail + " · " + its name, arrays are transparent. A
+				// match inside an array is never taken (the census gives such a
+				// row no address, see ScanJsonLike), and more than one match is
+				// refused rather than resolved by walk order.
+				int  matches = 0;
+				int  inArray = 0;
+				long first = 0;
+				const auto walk = [&](const json& node, const std::string& trail, const auto& self) -> void {
+					if (node.is_object()) {
+						for (const auto& [name, value] : node.items()) {
+							const json& val = value;
+							if (trail == section && name == field) {
+								long v = 0;
+								bool have = false;
+								if (val.is_number_integer()) {
+									v = val.get<long>();
+									have = true;
+								} else if (val.is_string()) {
+									have = ParseInt(val.get<std::string>(), v);
+								} else if (val.is_array() && !val.empty() && val[0].is_number_integer()) {
+									v = val[0].get<long>();
+									have = true;
+								}
+								if (have) {
+									if (inArray) {
+										matches += 2;  // in an array: never one addressable value
+									} else if (++matches == 1) {
+										first = v;
+									}
+								}
+							}
+							self(val, trail.empty() ? name : trail + " · " + name, self);
+						}
+					} else if (node.is_array()) {
+						++inArray;
+						for (const auto& v : node) {
+							self(v, trail, self);
+						}
+						--inArray;
+					}
+				};
+				walk(doc, "", walk);
+				if (matches > 1 && ambiguous) {
+					*ambiguous = true;
+				}
+				if (matches == 1) {
+					out = first;
+					return true;
+				}
+				return false;
+			}
+			// ini / toml / cfg: the same setting twice in one section is refused
+			// too -- readers disagree on whether the first or the last one wins.
+			const auto sect = Lower(section);
+			const auto want = Lower(field);
+			int        matches = 0;
+			long       first = 0;
+			bool       firstOk = false;
+			for (const auto& a : ParseAssignments(text)) {
+				if (a.section == sect && Lower(a.name) == want) {
+					if (++matches == 1) {
+						firstOk = ParseInt(a.value, first);
+					}
+				}
+			}
+			if (matches > 1) {
+				if (ambiguous) {
+					*ambiguous = true;
+				}
+				return false;
+			}
+			if (matches == 1 && firstOk) {
+				out = first;
+				return true;
+			}
+			return false;
+		} catch (const std::exception& e) {
+			logger::warn("mod-key: reading {} [{}] {} failed: {}", relFile, section, field, e.what());
+			return false;
+		}
+	}
+
+	std::uint32_t CensusCode(long value, const std::string& space, const std::string& field)
+	{
+		SpaceCall call;
+		call.space = space == "vk" ? Space::Vk : Space::Dik;
+		call.certain = true;
+		return CodeFrom(value, call, field);
 	}
 }

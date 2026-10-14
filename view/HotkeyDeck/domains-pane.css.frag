@@ -41,7 +41,7 @@
 .dm-rail-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dm-rail-count {
   flex: none;
-  font-family: Consolas, "Courier New", monospace; font-size: 10.5px;
+  font-family: Consolas, "Courier New", monospace; font-size: 12px;
   color: #6f6a5e; background: rgba(255,255,255,.04);
   border-radius: 9px; padding: 2px 6px;
 }
@@ -69,7 +69,7 @@
 .dm-icon-btn {
   flex: none; width: 22px; height: 22px;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 11px; line-height: 1;
+  font-size: 12px; line-height: 1;
   color: #6f6a5e; background: transparent;
   border: 1px solid transparent; border-radius: 5px;
   cursor: pointer;
@@ -79,7 +79,7 @@
 .dm-icon-btn.confirm { color: #e0b0b0; background: #1a1216; border-color: #a55565; }
 
 .dm-railadd {
-  font-family: inherit; font-size: 11.5px; color: #6f6a5e;
+  font-family: inherit; font-size: 12.5px; color: #6f6a5e;
   background: transparent; border: 1px dashed #33333d; border-radius: 6px;
   padding: 7px 6px; cursor: pointer;
   transition: border-color 140ms ease, color 140ms ease;
@@ -122,7 +122,7 @@
   animation: fadeIn 140ms ease;
 }
 .dm-ok-label { font-size: 12px; color: #b9b4a8; letter-spacing: .3px; }
-.dm-ok-hint { flex: 1; min-width: 140px; font-size: 11px; color: #6f6a5e; line-height: 1.45; }
+.dm-ok-hint { flex: 1; min-width: 140px; font-size: 12px; color: #6f6a5e; line-height: 1.45; }
 #dm-openkey-btn.capturing { animation: capturePulse 1s ease-in-out infinite; }
 
 /* ---------- list: big-image card grid (teleport-menu style) ----------
@@ -276,16 +276,16 @@
 .dm-name mark { background: transparent; color: #c9a24b; font-weight: 600; }
 .dm-sub {
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; min-width: 0;
-  font-size: 11px; color: #6f6a5e;
+  font-size: 12px; color: #6f6a5e;
 }
 .dm-child .dm-sub { flex-wrap: nowrap; align-items: baseline; }
 .dm-note {
   flex: 1 1 100%; min-width: 0;              /* the note is the card's own description line */
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: #d9c48a; opacity: .8; font-style: italic;
-  font-size: 11.5px;
+  font-size: 12.5px;
 }
-.dm-child .dm-note { flex: 0 1 auto; font-size: 11px; }
+.dm-child .dm-note { flex: 0 1 auto; font-size: 12px; }
 .dm-note mark { background: transparent; color: #ecd9a0; font-weight: 600; }
 .dm-note.empty { color: #6f6a5e; opacity: .85; font-style: normal; }
 .dm-child .dm-note.empty { flex: none; }
@@ -294,7 +294,7 @@
   flex: none;
   color: #8b8678; background: rgba(255,255,255,.03);
   border: 1px solid #26262d; border-radius: 9px;
-  padding: 1px 7px; font-size: 10px; font-style: normal;
+  padding: 1px 7px; font-size: 12px; font-style: normal;
   white-space: nowrap; max-width: 190px; overflow: hidden; text-overflow: ellipsis;
 }
 .dm-chip mark { background: transparent; color: #c9a24b; font-weight: 600; }
@@ -387,7 +387,7 @@
 #dm-mark-btn:active:not(:disabled) { transform: translateY(1px); }
 #dm-mark-btn:focus-visible { outline: 2px solid #c9a24b66; outline-offset: 1px; }
 #dm-mark-btn:disabled { color: #6f6a5e; border-color: #33333d; background: transparent; cursor: not-allowed; }
-#dm-here { margin-top: 6px; font-size: 11px; color: #6f6a5e; line-height: 1.45; text-align: center; }
+#dm-here { margin-top: 6px; font-size: 12px; color: #6f6a5e; line-height: 1.45; text-align: center; }
 
 /* ---------- context menu (appended to #overlay, so it sits outside the
      panel's transform: scale and lands on the real cursor position) ---- */
@@ -406,7 +406,7 @@
   border-bottom: 1px solid #2e2e36;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.dm-ctx-where { display: block; font-size: 10.5px; color: #6f6a5e; margin-top: 3px; }
+.dm-ctx-where { display: block; font-size: 12px; color: #6f6a5e; margin-top: 3px; }
 .dm-ctx-item {
   display: flex; align-items: center; gap: 8px; width: 100%;
   font-family: inherit; font-size: 12.5px; text-align: left;
@@ -424,7 +424,7 @@
 .dm-ctx-check { flex: none; width: 15px; text-align: center; font-size: 12px; color: #c9a24b; }
 .dm-ctx-lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dm-ctx-count {
-  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 10px;
+  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 12px;
   color: #6f6a5e; background: rgba(255,255,255,.04); border-radius: 9px; padding: 2px 6px;
 }
 .dm-ctx-sep { height: 1px; background: #2e2e36; margin: 4px 6px; }
@@ -432,7 +432,7 @@
 .dm-ctx-field { display: flex; align-items: center; gap: 8px; padding: 4px 6px; }
 .dm-ctx-field label {
   flex: none; width: 54px;
-  font-size: 10.5px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
+  font-size: 12px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
 }
 .dm-ctx-input, .dm-ctx-select {
   flex: 1; min-width: 0;
@@ -456,13 +456,13 @@
    viewport and push the menu off the edge. */
 #dm-ctx.wide { width: 520px; min-width: 0; max-width: calc(100vw - 24px); padding: 8px; }
 #dm-ctx .dm-ctx-head { font-size: 13.5px; }
-#dm-ctx .dm-ctx-where { font-size: 11.5px; }
+#dm-ctx .dm-ctx-where { font-size: 12.5px; }
 #dm-ctx .dm-ctx-item { font-size: 13.5px; padding: 9px 10px; }
 #dm-ctx .dm-ctx-field { padding: 5px 6px; }
-#dm-ctx .dm-ctx-field label { font-size: 11.5px; }
+#dm-ctx .dm-ctx-field label { font-size: 12.5px; }
 #dm-ctx.wide .dm-ctx-field label { width: 84px; }
 #dm-ctx .dm-ctx-input, #dm-ctx .dm-ctx-select { font-size: 13.5px; padding: 8px 9px; }
-#dm-ctx .dm-ctx-hint { font-size: 11.5px; }
+#dm-ctx .dm-ctx-hint { font-size: 12.5px; }
 
 /* The combobox that replaced the dead <select>s. The list is absolute so
    opening it lays OVER the rows below rather than resizing a centred menu. */
@@ -506,7 +506,7 @@
 .dm-pick-lbl mark { background: transparent; color: #c9a24b; font-weight: 600; }
 .dm-pick-hint {
   flex: none; max-width: 140px;
-  font-size: 10.5px; color: #6f6a5e;
+  font-size: 12px; color: #6f6a5e;
   background: rgba(255,255,255,.04); border: 1px solid #26262d; border-radius: 9px;
   padding: 1px 7px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -528,7 +528,7 @@
 }
 .dm-scene-title { font-size: 12px; letter-spacing: .3px; color: #c9a24b; }
 .dm-scene-now {
-  font-size: 11.5px; color: #6f6a5e; min-width: 0;
+  font-size: 12.5px; color: #6f6a5e; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .dm-scene-row {
@@ -537,7 +537,7 @@
 }
 .dm-scene-lbl {
   flex: none; width: 46px;
-  font-size: 11px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
+  font-size: 12px; letter-spacing: .3px; text-transform: uppercase; color: #6f6a5e;
 }
 .dm-scene-chip {
   display: inline-flex; align-items: center; gap: 5px; flex: none;
@@ -610,16 +610,16 @@
 .dm-npc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dm-npc-name mark { background: transparent; color: #c9a24b; font-weight: 600; }
 .dm-npc-tag {
-  flex: none; font-size: 9.5px; letter-spacing: .3px; text-transform: uppercase;
+  flex: none; font-size: 12px; letter-spacing: .3px; text-transform: uppercase;
   color: #8b8678; background: rgba(255,255,255,.04);
   border: 1px solid #26262d; border-radius: 9px; padding: 1px 6px;
 }
 .dm-npc-tag.follower { color: #d9c48a; background: rgba(201,162,75,.08); border-color: #c9a24b55; }
 .dm-npc-dist {
-  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 10px;
+  flex: none; font-family: Consolas, "Courier New", monospace; font-size: 12px;
   color: #6f6a5e; min-width: 30px; text-align: right;
 }
-.dm-npc-empty { padding: 16px 10px; text-align: center; font-size: 11.5px; color: #6f6a5e; }
+.dm-npc-empty { padding: 16px 10px; text-align: center; font-size: 12.5px; color: #6f6a5e; }
 
 /* ---------- open-key capture (own modal: the deck's #capture-modal
      belongs to app.js's own rebind flow and must not be borrowed) ------ */
@@ -670,7 +670,7 @@
 .dm-npc-searchwrap .dm-search-ic { left: 10px; font-size: 18px; }
 .dm-npc-list { max-height: 344px; }
 .dm-npc-item { font-size: 15.5px; gap: 10px; padding: 10px 11px; }
-.dm-npc-tag { font-size: 11.5px; padding: 2px 8px; }
+.dm-npc-tag { font-size: 12.5px; padding: 2px 8px; }
 .dm-npc-dist { font-size: 12.5px; min-width: 40px; }
 .dm-npc-empty { font-size: 14px; padding: 20px 12px; }
 
@@ -714,7 +714,7 @@
 }
 .dm-scale-reset {
   flex: none;
-  font-family: inherit; font-size: 11px; color: #6f6a5e; letter-spacing: .3px;
+  font-family: inherit; font-size: 12px; color: #6f6a5e; letter-spacing: .3px;
   background: transparent; border: 1px solid transparent; border-radius: 5px;
   padding: 4px 7px; cursor: pointer;
   transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
@@ -768,8 +768,8 @@
   #dm-ctx { min-width: 260px; }
   #dm-npc { width: min(330px, 90vw); }
   .dm-scale-row { gap: 7px; }
-  .dm-scale-lbl { width: 58px; font-size: 11.5px; }
-  .dm-scale-val { min-width: 34px; font-size: 11px; }
+  .dm-scale-lbl { width: 58px; font-size: 12.5px; }
+  .dm-scale-val { min-width: 34px; font-size: 12px; }
   .dm-scale-reset { padding: 4px 5px; }
 }
 
@@ -794,8 +794,8 @@ body.panel-narrow .dm-row.dm-child::before { left: -11px; width: 9px; }
 body.panel-narrow #dm-ctx { min-width: 260px; }
 body.panel-narrow #dm-npc { width: min(330px, 90vw); }
 body.panel-narrow .dm-scale-row { gap: 7px; }
-body.panel-narrow .dm-scale-lbl { width: 58px; font-size: 11.5px; }
-body.panel-narrow .dm-scale-val { min-width: 34px; font-size: 11px; }
+body.panel-narrow .dm-scale-lbl { width: 58px; font-size: 12.5px; }
+body.panel-narrow .dm-scale-val { min-width: 34px; font-size: 12px; }
 body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
 
 
@@ -888,7 +888,7 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
   flex: none; display: inline-flex; align-items: center; gap: 3px;
   color: #b9a06a; background: rgba(201,162,75,.09);
   border: 1px solid rgba(201,162,75,.28); border-radius: 9px;
-  padding: 1px 7px; font-size: 10px; font-style: normal; line-height: 1.5;
+  padding: 1px 7px; font-size: 12px; font-style: normal; line-height: 1.5;
   white-space: nowrap; max-width: 128px; overflow: hidden; text-overflow: ellipsis;
   cursor: pointer; transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
@@ -901,19 +901,19 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
 .dm-tag.edit { cursor: default; max-width: 160px; }
 .dm-tag-x {
   border: 0; background: transparent; color: inherit; opacity: .65;
-  font-size: 10px; line-height: 1; padding: 0 0 0 1px; cursor: pointer;
+  font-size: 12px; line-height: 1; padding: 0 0 0 1px; cursor: pointer;
 }
 .dm-tag-x:hover { opacity: 1; color: #e0b0b0; }
 
 /* the "showing only tagged X" bar above the list */
 #dm-tagbar { display: flex; align-items: center; gap: 8px; padding: 4px 10px 0; }
 #dm-tagbar.hidden { display: none; }
-.dm-tagbar-lbl { font-size: 10.5px; color: #6f6a5e; letter-spacing: .06em; text-transform: uppercase; }
+.dm-tagbar-lbl { font-size: 12px; color: #6f6a5e; letter-spacing: .06em; text-transform: uppercase; }
 
 /* the tag editor inside the right-click menu */
 .dm-ctx-field.tags { flex-direction: column; align-items: stretch; gap: 5px; }
 .dm-ctx-tags { display: flex; flex-wrap: wrap; gap: 4px; max-height: 66px; overflow-y: auto; }
-.dm-ctx-hint { font-size: 10.5px; color: #6f6a5e; font-style: italic; }
+.dm-ctx-hint { font-size: 12px; color: #6f6a5e; font-style: italic; }
 
 /* ---- the big view + crop editor ---- */
 .dm-art-lb {
@@ -945,7 +945,7 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
 }
 .dm-art-btn {
   border: 1px solid #3a3a44; border-radius: 7px; background: rgba(255,255,255,.04);
-  color: #cdc7b8; font-size: 11.5px; padding: 4px 9px; cursor: pointer;
+  color: #cdc7b8; font-size: 12.5px; padding: 4px 9px; cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 .dm-art-crop-btn { min-height: 44px; min-width: 150px; padding: 10px 18px; font-size: 17px; color: #ecd9a0; border-color: #c9a24b; background: #1a1915; }
@@ -956,8 +956,8 @@ body.panel-narrow .dm-scale-reset { padding: 4px 5px; }
 .dm-art-btn.ok { border-color: #c9a24b; color: #f2e2b4; }
 .dm-art-pad { display: flex; gap: 4px; }
 .dm-art-pad .dm-art-btn { min-width: 28px; padding: 4px 6px; }
-.dm-art-val { font-size: 11px; color: #8b8678; min-width: 92px; }
-.dm-art-hint { flex-basis: 100%; text-align: center; font-size: 10.5px; color: #6f6a5e; }
+.dm-art-val { font-size: 12px; color: #8b8678; min-width: 92px; }
+.dm-art-hint { flex-basis: 100%; text-align: center; font-size: 12px; color: #6f6a5e; }
 
 @media (max-width: 620px) {
   .dm-tag { max-width: 84px; }

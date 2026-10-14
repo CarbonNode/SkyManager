@@ -18,8 +18,19 @@
  *  The row's label follows the TRUE state: "Disable NPC" when she is a CHIM
  *  agent, "Activate NPC" when she is not.
  *
+ *  2026-10-12: a centred, body-anchored POPOUT, no longer a dropdown hung
+ *  under the button. Rober, with a screenshot of it squeezed against the top
+ *  of the screen: "pop outs need to be better … more visually better looking,
+ *  centered, horizontal and vertical". Same shape as the Fixes popout beside
+ *  it (fixes-flyout.js): a backdrop that fills the viewport (bare vh/vw, NO
+ *  --ui-scale — the 2026-08-14 popup audit), a card that centres itself, the
+ *  rows as an even two-column grid of equal tiles grouped under three
+ *  headings, and the popout OWNS Escape (app.js asks isOpen()/onKey() before
+ *  its own palette-close Escape). The dossier's CHIM tab still mounts the
+ *  same rows inline (mount()), with no backdrop.
+ *
  *  The BUTTON itself is built by followers-pane's own quickBtn(); this module
- *  owns only the flyout and the three actions:
+ *  owns only the popout and the three actions:
  *    • CHIM Background   → HDOmni.askAbout(original)   (the dossier)
  *    • Sharmat Background → SmPane.open(original, who) (the live editor)
  *    • Activate / Disable → the CHIM-native toggle above.
@@ -196,7 +207,8 @@ var ChimBtn = (function () {
              : '\u26D4 CHIM AI switched off for ' + npc.name);
   }
 
-  var fly = null;          // the mounted popover element
+  var fly = null;          // the mounted root: the .chim-back backdrop, or the inline card
+  var card = null;         // the .chim-fly card every row goes into (=== fly inline)
   var onEsc = null;        // bound Esc handler
   var currentCtx = null;
 
@@ -343,12 +355,23 @@ var ChimBtn = (function () {
   function teardown() {
     inlineHost = null;
     if (ticker) { clearInterval(ticker); ticker = null; }
-    if (fly) { try { fly.remove(); } catch (e) {} fly = null; }
-    document.removeEventListener('mousedown', outside, true);
+    if (fly) { try { fly.remove(); } catch (e) {} fly = null; card = null; }
     if (onEsc) { document.removeEventListener('keydown', onEsc, true); onEsc = null; }
   }
-  function close() { teardown(); }
-  function outside(e) { if (fly && !fly.contains(e.target)) close(); }
+  /* the in-game Escape contract lives in app.js (popout-modal-escape) */
+  function claim() { if (typeof window.hdPopoutCapture === 'function') window.hdPopoutCapture(); }
+  function close() { var was = isOpen(); teardown(); currentCtx = null; if (was) claim(); }
+  /* Open as the centred popout (not the dossier's inline copy). */
+  function isOpen() { return !!fly && !inlineHost; }
+  /* app.js onKeyDown asks this BEFORE its own palette-close Escape — its
+     listener was registered at startup, so it runs ahead of ours, and without
+     this one Esc closed the whole deck instead of just the popout. Every other
+     key is swallowed too: nothing may quick-fire behind a modal. */
+  function onKey(e) {
+    if (!isOpen()) return false;
+    if (e && (e.code === 'Escape' || e.key === 'Escape')) close();
+    return true;
+  }
 
   /* ---- the three actions ------------------------------------------------ */
   function doBackground(ctx) {
@@ -483,22 +506,47 @@ var ChimBtn = (function () {
 
   function render(ctx) {
     currentCtx = ctx;
-    if (fly) { try { fly.remove(); } catch (e) {} fly = null; }
+    /* A repaint keeps the reader's place: the ticker redraws every second
+       while a diary is being written, and a long card must not jump back
+       to the top under the cursor. */
+    var keepScroll = card ? card.scrollTop : 0;
+    var repaint = !!fly;   // the entrance animation plays once, not every tick
+    if (fly) { try { fly.remove(); } catch (e) {} fly = null; card = null; }
 
-    fly = mk('div', 'chim-fly');
-    fly.setAttribute('role', 'menu');
+    if (inlineHost) {
+      fly = card = mk('div', 'chim-fly');
+    } else {
+      fly = mk('div', 'chim-back' + (repaint ? ' is-repaint' : ''));
+      fly.addEventListener('mousedown', function (e) { if (e.target === fly) close(); });
+      card = mk('div', 'chim-fly chim-pop');
+      card.setAttribute('role', 'dialog');
+      card.setAttribute('aria-label', 'CHIM — ' + ctx.who);
+      fly.appendChild(card);
+    }
 
-    var head = mk('div', 'chim-fly-head');
-    head.appendChild(mk('span', 'chim-fly-head-ic', '💬'));
-    head.appendChild(mk('span', 'chim-fly-head-t', 'CHIM — ' + ctx.who));
-    fly.appendChild(head);
-    /* the model she is answered by — Rober: "show the current LLM model its using" */
     var st = chimOf(ctx);
     var ml = modelLine(st);
+    var head = mk('div', 'chim-fly-head');
+    head.appendChild(mk('span', 'chim-fly-head-ic', '💬'));
+    var titles = mk('div', 'chim-fly-head-col');
+    titles.appendChild(mk('span', 'chim-fly-head-t', 'CHIM — ' + ctx.who));
+    /* the model she is answered by — Rober: "show the current LLM model its using".
+       Under her name, in the popout and the dossier's inline copy alike. */
     var model = mk('div', 'chim-fly-model' + (ml ? '' : ' is-wait'),
       ml ? ml : (canChim() ? (note[ctx.original] || 'Reading CHIM…') : 'CHIM state needs the Omni'));
     model.title = ml ? 'The LLM answering ' + ctx.who + ' right now — her CHIM profile’s primary connector' : '';
-    fly.appendChild(model);
+    titles.appendChild(model);
+    head.appendChild(titles);
+    if (inlineHost) {
+      card.appendChild(head);
+    } else {
+      var x = mk('button', 'chim-pop-close', 'Close');
+      x.type = 'button';
+      x.title = 'Close (Esc)';
+      x.addEventListener('click', function (e) { e.stopPropagation(); close(); });
+      head.appendChild(x);
+      card.appendChild(head);
+    }
     /* the last outcome, right where the eye lands — survives closing and reopening
        the flyout, so a diary that finished while the deck was shut is still shown */
     var res = result[ctx.original];
@@ -509,11 +557,26 @@ var ChimBtn = (function () {
       ban.appendChild(mk('span', 'chim-fly-result-when', ago(res.at / 1000)));
       ban.title = 'Click to dismiss';
       ban.addEventListener('click', function (e) { e.stopPropagation(); delete result[ctx.original]; render(ctx); });
-      fly.appendChild(ban);
+      card.appendChild(ban);
     }
 
+    /* Three groups, each an even two-column grid of equal tiles (the Fixes
+       popout's shape). `.chim-wide` spans both columns, so an odd group never
+       leaves one tile dangling. */
+    function group(title) {
+      var sec = mk('div', 'chim-pop-sec');
+      sec.appendChild(mk('div', 'chim-pop-sec-t', title));
+      var grid = mk('div', 'chim-pop-grid');
+      sec.appendChild(grid);
+      card.appendChild(sec);
+      return grid;
+    }
+    var gAi = group('CHIM AI');
+    var gProfile = group('Profile');
+    var gMemory = group('Memory');
+
     /* 1) CHIM Background */
-    fly.appendChild(itemBtn('📖', 'CHIM Background',
+    gProfile.appendChild(itemBtn('📖', 'CHIM Background',
       'Bio, personality, relationships & goals',
       { title: 'Ask CHIM everything it holds on ' + ctx.who
              + ' — background, personality, relationships, goals, recent diary.' },
@@ -521,7 +584,7 @@ var ChimBtn = (function () {
 
     /* 2) Sharmat Background */
     var hasSm = !!(window.SmPane && typeof SmPane.open === 'function');
-    fly.appendChild(itemBtn('⚭', 'Sharmat Background',
+    gProfile.appendChild(itemBtn('⚭', 'Sharmat Background',
       hasSm ? 'Kinks, speak style, status — live edit' : 'Sharmat isn’t loaded',
       { title: 'Open ' + ctx.who + '’s Sharmat profile — CHIM’s per-NPC '
              + 'kinks / speak style / status. Edits are live.', disabled: !hasSm },
@@ -535,24 +598,26 @@ var ChimBtn = (function () {
             : !stateKnown ? 'Reading CHIM state…'
             : isOn ? 'CHIM AI is on — click to deactivate'
                    : 'CHIM AI is off — click to activate';
-    fly.appendChild(itemBtn(isOn ? '⛔' : '⚡',
+    var toggle = itemBtn(isOn ? '⛔' : '⚡',
       isOn ? 'Disable NPC' : 'Activate NPC', sub,
       { on: isOn, disabled: !canFire,
         title: 'Manual CHIM AI activation for ' + ctx.who
              + '. Hooks CHIM directly (no key) and tracks her real agent state.' },
-      function () { toggleActive(ctx); }));
+      function () { toggleActive(ctx); });
+    toggle.classList.add('chim-wide');
+    gAi.appendChild(toggle);
 
     var talk = conversationAction(ctx);
     var talkButton = itemBtn('', talk.label,
       talk.why || 'Hold here, then review and Send. Five minutes; ends when you leave or combat starts. CHIM activation is still needed for speech.',
       { iconPath: talk.iconPath, disabled: talk.disabled, title: talk.why || talk.sub }, talk.run);
     talkButton.classList.add('chim-fly-talk');
-    fly.appendChild(talkButton);
+    gAi.appendChild(talkButton);
     var releaseTalk = conversationReleaseAction(ctx);
     var releaseTalkButton = itemBtn('', releaseTalk.label, releaseTalk.sub,
       { iconPath: releaseTalk.iconPath, disabled: releaseTalk.disabled, title: releaseTalk.why || releaseTalk.sub }, releaseTalk.run);
     releaseTalkButton.classList.add('chim-fly-talk');
-    fly.appendChild(releaseTalkButton);
+    gAi.appendChild(releaseTalkButton);
 
     /* 4–6) the CHIM-database rows (2026-09-21). Disabled until the state
        read lands (no pipe = never), busy while their call is out. */
@@ -565,10 +630,12 @@ var ChimBtn = (function () {
              : st && st.diary ? 'Last entry ' + ago(st.diary.at) + ' — write another now'
              : st ? 'No diary yet — write her first entry now'
              : 'Reading CHIM…';
-    fly.appendChild(itemBtn('📓', 'Write diary', dsub,
+    var diary = itemBtn('📓', 'Write diary', dsub,
       { disabled: !can || !st || !!b || (st && st.diary_cooldown_left > 0),
         title: 'Ask CHIM to write ' + ctx.who + '’s diary entry right now — the same request the game sends when her diary is due. Takes a few seconds.' },
-      function () { doDiary(ctx); }));
+      function () { doDiary(ctx); });
+    diary.classList.add('chim-wide');
+    gMemory.appendChild(diary);
 
     var dyn = !!(st && st.dynamic), locked = !!(st && st.locked);
     var tsub = b === 'dynprof' ? spin(ctx.original) + ' Saving…'
@@ -576,7 +643,7 @@ var ChimBtn = (function () {
              : locked ? (dyn ? 'On, but her profile is LOCKED in CHIM — nothing will change' : 'Off — and her profile is locked in CHIM')
              : dyn ? 'On — CHIM rewrites her personality, speech style and goals from what she lives through · click to switch off'
                    : 'Off — her profile stays as written · click to switch on';
-    fly.appendChild(itemBtn(dyn ? '🧬' : '🧬', dyn ? 'Dynamic profile: on' : 'Dynamic profile: off', tsub,
+    gMemory.appendChild(itemBtn('🧬', dyn ? 'Dynamic profile: on' : 'Dynamic profile: off', tsub,
       { on: dyn, disabled: !can || !st || !!b,
         title: 'core_npc_master.dynamic_profile — the switch CHIM’s own NPC editor flips. On: her profile evolves; off: fixed.' },
       function () { doDynToggle(ctx); }));
@@ -588,60 +655,32 @@ var ChimBtn = (function () {
              : !dyn ? 'Switch the dynamic profile on first'
              : locked ? 'Her profile is locked in CHIM'
              : (pend != null ? pend + ' new event' + (pend === 1 ? '' : 's') + ' since her last rewrite — ' : '') + 'rewrite now';
-    fly.appendChild(itemBtn('♻', 'Refresh dynamic profile', rsub,
+    gMemory.appendChild(itemBtn('♻', 'Refresh dynamic profile', rsub,
       { disabled: !can || !st || !!b || !dyn || locked,
         title: 'Run CHIM’s dynamic-profile pass for ' + ctx.who + ' now, skipping the day-interval and event-count gates (its own attempt cooldown still applies).' },
       function () { doDynRefresh(ctx); }));
 
-    mountAt(ctx.anchorRect);
+    mount();
+    if (keepScroll) card.scrollTop = keepScroll;
   }
 
-  /* The deck's viewport size. Ultralight does not populate window.innerWidth
-     reliably — read #overlay's rect first, fall back to window. */
-  function viewport() {
-    var host = document.getElementById('overlay');
-    if (host) {
-      var r = host.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) return { w: r.width, h: r.height };
-    }
-    return { w: window.innerWidth || 1280, h: window.innerHeight || 720 };
-  }
-
-  function mountAt(r) {
+  /* Inline: into the dossier's CHIM tab. Otherwise body-anchored, like
+     .fx-back: the backdrop fills the viewport and the card centres itself,
+     so there is no anchor maths left to get wrong. */
+  function mount() {
     if (inlineHost) {
       fly.classList.add('chim-inline'); fly.setAttribute('role', 'group');
       inlineHost.appendChild(fly); return;
     }
-    var host = document.getElementById('overlay') || document.body;
-    host.appendChild(fly);
-    fly.style.position = 'fixed';
-    fly.style.visibility = 'hidden';
-    fly.style.left = '0px'; fly.style.top = '0px';
-    var vp = viewport(), vw = vp.w, vh = vp.h;
-    /* .chim-fly wears transform: scale(--ui-scale) (top-left origin) because it
-       lives outside #panel's transform; offsetWidth/Height are PRE-transform
-       layout px, so the PAINTED box is × the scale — clamp that or a Fill'd
-       deck's flyout runs off the edge. */
-    var sc = 1;
-    try { var v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-scale')); if (isFinite(v) && v > 0) sc = v; } catch (e) {}
-    var fw = (fly.offsetWidth || 260) * sc, fh = (fly.offsetHeight || 180) * sc;
-    var ax = r ? r.left : 40, ay = r ? r.bottom : 120, atop = r ? r.top : 100;
-    var left = Math.max(8, Math.min(ax, vw - fw - 8));
-    var top = ay + 6;
-    if (top + fh > vh - 8) top = Math.max(8, atop - fh - 6);   // flip above if no room
-    fly.style.left = Math.round(left) + 'px';
-    fly.style.top = Math.round(top) + 'px';
-    fly.style.visibility = 'visible';
+    document.body.appendChild(fly);
   }
 
-  /* ---- public: open the flyout anchored at the CHIM button -------------- *
-   *  ctx = { original, who, dead, formId }.                                  */
+  /* ---- public: open the popout from the CHIM button --------------------- *
+   *  ctx = { original, who, dead, formId }. anchorEl is kept in the signature
+   *  for the callers; the popout centres itself and never reads it.          */
   function open(anchorEl, ctx) {
     teardown();
     if (!ctx) return;
-    var rect = (anchorEl && anchorEl.getBoundingClientRect)
-      ? anchorEl.getBoundingClientRect() : null;
-    ctx.anchorRect = rect;
     render(ctx);
     /* Ask C++ for her true CHIM-agent state so the toggle label is truthful. */
     if (!ctx.dead) {
@@ -651,11 +690,21 @@ var ChimBtn = (function () {
        fresh read every open: the flag or the model may have changed in CHIM. */
     askState(ctx);
     if (busy[ctx.original]) startTicker();   // reopened mid-call: keep the counter moving
-    onEsc = function (e) { if (e.code === 'Escape') { e.stopPropagation(); close(); } };
+    /* Belt and braces for a host without app.js's onKey routing (the
+       harness, the portal): Escape closes this and goes no further. */
+    onEsc = function (e) {
+      if (e.code === 'Escape' || e.key === 'Escape') {
+        e.stopPropagation();
+        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+        if (e.preventDefault) e.preventDefault();
+        close();
+      }
+    };
+    var h = onEsc;
     setTimeout(function () {
-      document.addEventListener('mousedown', outside, true);
-      document.addEventListener('keydown', onEsc, true);
+      if (fly && onEsc === h) document.addEventListener('keydown', h, true);
     }, 0);
+    claim();
   }
 
   /* C++ pushes state through these globals (registered like the deck's other
@@ -727,6 +776,8 @@ var ChimBtn = (function () {
     unmount: function (host) { if (inlineHost === host) teardown(); },
     open: open,
     close: close,
+    isOpen: isOpen,
+    onKey: onKey,
     onStateResult: onStateResult,
     onAgentsResult: onAgentsResult,
     /* the agent set — F7 card (lit 💬) and omni rows (the mark) read these */
@@ -738,7 +789,7 @@ var ChimBtn = (function () {
     conversationReleaseAction: conversationReleaseAction,
     agents: function () { return { known: agents.known, list: agents.list.slice() }; },
     /* exposed for the harness */
-    _state: function () { return { active: active, known: known, fly: fly, agents: agents, chim: chim, busy: busy, note: note }; },
+    _state: function () { return { active: active, known: known, fly: fly, card: card, agents: agents, chim: chim, busy: busy, note: note }; },
     _modelLine: modelLine,
   };
 })();

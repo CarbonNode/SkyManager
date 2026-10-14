@@ -34,8 +34,6 @@ window.WeatherPane = (function () {
      weather load order would cost a visible beat per keystroke. The count
      line says how many more matched and asks for a narrower search. */
   const ROW_CAP = 160;
-  /* Plugins shown as chips before "More sources…" opens the popout. */
-  const SRC_CHIPS = 6;
 
   const KIND_ICON = {
     clear: 'icons/custom/wx-clear.png', cloudy: 'icons/custom/wx-cloudy.png',
@@ -45,6 +43,9 @@ window.WeatherPane = (function () {
   const KIND_NAME = { clear: 'Clear', cloudy: 'Cloudy', rain: 'Rain', snow: 'Snow', other: 'Other' };
   const CHIPS = [
     { id: 'all', label: 'All' },
+    /* what the region you stand in can roll (its own weather list, read by
+       C++ from the TESRegion the sky is using), with each one's odds */
+    { id: 'here', label: 'Possible here', icon: 'icons/custom/wx-clear-night.png' },
     { id: 'fav', label: '★ Starred' },
     { id: 'clear', label: 'Clear', icon: KIND_ICON.clear },
     { id: 'cloudy', label: 'Cloudy', icon: KIND_ICON.cloudy },
@@ -113,10 +114,14 @@ window.WeatherPane = (function () {
      are refreshed from it so a reply never needs to resend 600 rows. */
   function syncRows() {
     const cur = st && st.now ? st.now.id : '';
+    const here = {};
+    const reg = st && st.now && st.now.region;
+    if (reg && Array.isArray(reg.list)) reg.list.forEach(function (x) { here[x.id] = x.pct; });
     for (let i = 0; i < weathers.length; i++) {
       const w = weathers[i];
       w.cur = !!cur && w.id === cur;
       w.fav = isFav(w.id);
+      w.here = here[w.id] || 0;
     }
   }
 
@@ -151,11 +156,14 @@ window.WeatherPane = (function () {
     { w: ['calm', 'still'], t: function (x) { return (x.ws || 0) < 40; } },
     { w: ['star', 'starred', 'fav', 'favourite', 'favorite', 'favourites', 'favorites'], t: function (x) { return !!x.fav; } },
     { w: ['now', 'current', 'active'], t: function (x) { return !!x.cur; } },
+    { w: ['here', 'local', 'region', 'native', 'possible'], t: function (x) { return x.here > 0; } },
   ];
   function synFor(tok) {
     for (let i = 0; i < SYN.length; i++) {
       const list = SYN[i].w;
-      for (let j = 0; j < list.length; j++) if (list[j].indexOf(tok) === 0 && tok.length >= Math.min(3, list[j].length)) return SYN[i].t;
+      for (let j = 0; j < list.length; j++) /* a prefix needs four letters ("nat" is NAT-ENB, not "native");
+         a short word must be typed whole ("sun") */
+      if (list[j].indexOf(tok) === 0 && (tok === list[j] || tok.length >= 4)) return SYN[i].t;
     }
     return null;
   }
@@ -189,6 +197,7 @@ window.WeatherPane = (function () {
   }
 
   function passesChips(w) {
+    if (chip === 'here' && !(w.here > 0)) return false;
     if (chip === 'fav' && !w.fav) return false;
     if (chip === 'storm' && !w.th) return false;
     if (chip === 'aurora' && !w.au) return false;
@@ -224,6 +233,7 @@ window.WeatherPane = (function () {
       } else out.push({ w: w, s: 0 });
     }
     if (toks.length) out.sort(function (a, b) { return b.s - a.s || byName(a.w, b.w); });
+    else if (chip === 'here') out.sort(function (a, b) { return b.w.here - a.w.here || byName(a.w, b.w); });
     else out.sort(function (a, b) {
       const A = a.w, B = b.w;
       if (!!A.cur !== !!B.cur) return A.cur ? -1 : 1;
@@ -347,6 +357,8 @@ window.WeatherPane = (function () {
           '</div>' +
         '</div>' +
       '</div>' +
+      (now.sky ? skyStrip(now.sky, 'wth-sky-big', typeof now.tod === 'number' ? now.tod : -1) : '') +
+      regionLine(now) +
       blend + inside + lockLine +
       '<div class="wth-now-acts">' +
         '<button type="button" class="wth-btn wth-btn-hero" data-act="storm" title="Bring in a thunderstorm — your starred storms first, otherwise any storm in the load order">' +
@@ -358,6 +370,16 @@ window.WeatherPane = (function () {
       '</div>';
   }
 
+  function regionLine(now) {
+    const reg = now.region;
+    if (!reg || !Array.isArray(reg.list) || !reg.list.length) return '';
+    const mine = reg.list.filter(function (x) { return x.id === now.id; })[0];
+    return '<div class="wth-region">' +
+      '<span><b>' + reg.list.length + '</b> weathers can roll ' + (reg.n ? 'in <b>' + esc(reg.n) + '</b>' : 'here') +
+      (mine ? ' · this one ' + fmtPct(mine.pct) : ' · this one is not on its list') + '</span>' +
+      '<button type="button" class="wth-btn" data-act="chip" data-chip="here">Show what can roll here</button></div>';
+  }
+
   function lockSvg() {
     return '<svg class="wth-lock-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3" fill="none" stroke="currentColor" stroke-width="2"/>' +
       '<rect x="5" y="10" width="14" height="11" rx="2" fill="currentColor"/></svg>';
@@ -366,6 +388,7 @@ window.WeatherPane = (function () {
   function renderChips() {
     const el = $('wth-chips');
     if (!el) return;
+    el.style.display = q ? 'none' : '';
     const count = {};
     for (let i = 0; i < weathers.length; i++) {
       const w = weathers[i];
@@ -374,37 +397,60 @@ window.WeatherPane = (function () {
       if (w.th) count.storm = (count.storm || 0) + 1;
       if (w.au) count.aurora = (count.aurora || 0) + 1;
       if (w.fav) count.fav = (count.fav || 0) + 1;
+      if (w.here > 0) count.here = (count.here || 0) + 1;
     }
     el.innerHTML = CHIPS.map(function (c) {
       const n = count[c.id] || 0;
       if (c.id !== 'all' && c.id !== 'fav' && !n) return '';
       return '<button type="button" class="wth-chip' + (chip === c.id ? ' on' : '') + '" data-act="chip" data-chip="' + c.id + '">' +
         (c.icon ? '<img src="' + c.icon + '" alt="">' : '') + esc(c.label) + '<span class="wth-chip-n">' + n + '</span></button>';
-    }).join('');
+    }).join('');    /* An even block, not a ragged wrap (hd-balance.js). */
+    el.classList.add('hd-balance');
+    if (window.hdBalance) window.hdBalance.watch(el);
   }
 
+  /* The source filter is ONE picker, not a cloud of plugin chips (Rober,
+     2026-10-10, a screenshot of this row wrapping to three ragged lines:
+     "things that line break a ton"). Plugin names are long and the list grows
+     with the load order, so the chips could only ever wrap; the picker is the
+     searchable popout that "More sources" already opened. The closed control
+     names the current choice and its count, and a set source gets a one-press
+     way back to every plugin. */
   function renderSources() {
     const el = $('wth-srcs');
     if (!el) return;
+    el.style.display = q ? 'none' : '';
     const all = sources();
     if (all.length < 2) { el.innerHTML = ''; return; }
-    let top = all.slice(0, SRC_CHIPS);
-    if (src && !top.some(function (s) { return s.p === src; })) {
-      const pick = all.filter(function (s) { return s.p === src; })[0];
-      if (pick) top = top.slice(0, SRC_CHIPS - 1).concat([pick]);
-    }
+    const cur = src ? all.filter(function (s) { return s.p === src; })[0] : null;
+    const name = cur ? cur.p.replace(/\.(esp|esm|esl)$/i, '') : 'Every plugin';
+    const n = cur ? cur.n : weathers.length;
     el.innerHTML = '<span class="wth-srcs-label">From</span>' +
-      '<button type="button" class="wth-src' + (!src ? ' on' : '') + '" data-act="src" data-src="">Every plugin</button>' +
-      top.map(function (s) {
-        return '<button type="button" class="wth-src' + (src === s.p ? ' on' : '') + '" data-act="src" data-src="' + esc(s.p) + '" title="' +
-          esc(s.p) + ' — ' + s.n + ' weather' + (s.n === 1 ? '' : 's') + ' made or edited">' + esc(s.p.replace(/\.(esp|esm|esl)$/i, '')) +
-          '<span class="wth-chip-n">' + s.n + '</span></button>';
-      }).join('') +
-      (all.length > top.length ? '<button type="button" class="wth-src wth-src-more" data-act="srcMore">More sources (' + all.length + ') ›</button>' : '');
+      '<button type="button" class="wth-src wth-src-pick' + (cur ? ' on' : '') + '" data-act="srcMore"' +
+        (cur ? ' title="' + esc(cur.p) + ' — ' + cur.n + ' weather' + (cur.n === 1 ? '' : 's') + ' made or edited"' : '') + '>' +
+        '<span class="wth-src-name">' + esc(name) + '</span><span class="wth-chip-n">' + n + '</span>' +
+        '<span class="wth-src-caret" aria-hidden="true">▾</span></button>' +
+      (cur ? '<button type="button" class="wth-src wth-src-clear" data-act="src" data-src="" title="Back to every plugin">✕</button>' : '') +
+      '<span class="wth-srcs-note">' + all.length + ' plugins · search them by name</span>';
   }
 
   let sel = 0;              // keyboard selection, an index into the drawn rows
   let drawn = [];           // the rows the list currently shows, in order
+
+  /* The record's OWN sky: upper sky over the horizon colour, at dawn, day,
+     dusk and night (TESWeather colour data, sent by C++ as hex pairs). A row
+     shows what a weather looks like before you bring it in. */
+  const SKY_TIMES = ['Dawn', 'Day', 'Dusk', 'Night'];
+  function skyStrip(sky, cls, live) {
+    if (!Array.isArray(sky) || sky.length !== 4) return '<span class="' + cls + ' wth-sky-none" aria-hidden="true"></span>';
+    return '<span class="' + cls + '" title="Its sky at dawn · day · dusk · night">' + sky.map(function (pair, i) {
+      const up = /^#[0-9A-Fa-f]{6}$/.test(pair[0]) ? pair[0] : '#000000';
+      const lo = /^#[0-9A-Fa-f]{6}$/.test(pair[1]) ? pair[1] : up;
+      return '<span class="wth-sky-seg' + (live === i ? ' now' : '') + '" style="background:linear-gradient(180deg,' + up + ',' + lo + ')">' +
+        (cls === 'wth-sky-big' ? '<span class="wth-sky-lbl">' + SKY_TIMES[i] + '</span>' : '') + '</span>';
+    }).join('') + '</span>';
+  }
+  function fmtPct(p) { return (p >= 10 ? Math.round(p) : Math.round(p * 10) / 10) + '%'; }
 
   function rowHtml(w, i) {
     const ic = w.th ? 'icons/custom/wx-storm.png' : (KIND_ICON[w.kind] || KIND_ICON.other);
@@ -412,13 +458,15 @@ window.WeatherPane = (function () {
       '" data-act="force" data-id="' + esc(w.id) + '" data-i="' + i + '" role="option" aria-selected="' + (i === sel) + '">' +
       '<span class="wth-row-stripe" aria-hidden="true"></span>' +
       '<img class="wth-row-ic" src="' + ic + '" alt="">' +
+      skyStrip(w.sky, 'wth-sky') +
       '<div class="wth-row-main">' +
         '<div class="wth-row-name">' + hl(nice(w.n)) + (w.cur ? '<span class="wth-now-tag">Now</span>' : '') + '</div>' +
         '<div class="wth-row-sub"><span class="wth-kind k-' + esc(w.kind) + '">' + esc(KIND_NAME[w.kind] || w.kind) + '</span>' +
           badges(w) +
+          (w.here > 0 ? '<span class="wth-here" title="Its chance in this region\'s weather list right now">' + fmtPct(w.here) + ' here</span>' : '') +
           '<span class="wth-row-src">' + hl(w.p) + (w.by ? ' · edited by ' + hl(w.by) : '') + '</span></div>' +
       '</div>' +
-      '<span class="wth-row-go" aria-hidden="true">Bring in</span>' +
+      '<span class="wth-row-go" aria-hidden="true">' + (st && st.how === 'now' ? 'Apply now' : 'Roll in') + '</span>' +
       '<button type="button" class="wth-row-lock" data-act="lockId" data-id="' + esc(w.id) + '" title="Bring it in and lock it there (Shift+Enter)" aria-label="Bring in and lock">' + lockSvg() + '</button>' +
       '<button type="button" class="wth-star' + (w.fav ? ' on' : '') + '" data-act="fav" data-id="' + esc(w.id) + '" title="' + (w.fav ? 'Unstar' : 'Star — Storm now picks starred storms first') + '" aria-label="' + (w.fav ? 'Unstar' : 'Star') + '">★</button>' +
     '</div>';
@@ -459,7 +507,11 @@ window.WeatherPane = (function () {
     let h = '';
     /* No query: headed sections (pinned, then one per kind), so the list
        reads like a menu. With a query: one ranked run, best first. */
-    if (!toks.length) {
+    if (!toks.length && chip === 'here') {
+      const reg = st && st.now && st.now.region;
+      h += groupHead('Can roll ' + (reg && reg.n ? 'in ' + reg.n : 'here') + ' — odds right now', 'icons/custom/wx-clear-night.png', rows.length);
+      drawn.forEach(function (w, i) { h += rowHtml(w, i); });
+    } else if (!toks.length) {
       let lastKey = '';
       const counts = {};
       rows.forEach(function (w) {
@@ -711,7 +763,13 @@ window.WeatherPane = (function () {
     el.innerHTML = h;
   }
 
+  function syncSearchLayout() {
+    const pane = $('wth-pane');
+    if (pane) pane.classList.toggle('wth-searching', !!q);
+  }
+
   function renderAll() {
+    syncSearchLayout();
     renderHead();
     renderNow();
     renderChips();
@@ -984,6 +1042,9 @@ window.WeatherPane = (function () {
     q = String(v || '').trim();
     sel = 0;
     syncClear();
+    syncSearchLayout();
+    renderChips();
+    renderSources();
     renderList();
     const el = $('wth-list');
     if (el) el.scrollTop = 0;
@@ -1082,7 +1143,7 @@ window.WeatherPane = (function () {
     return {
       label: nice(w.n),
       detail: 'Weather · ' + (KIND_NAME[w.kind] || w.kind) + (w.th ? ' · lightning' : '') + (w.au ? ' · aurora' : '') +
-        (w.cur ? ' · the sky right now' : '') + ' · ' + w.p,
+        (w.cur ? ' · the sky right now' : '') + (w.here > 0 ? ' · ' + fmtPct(w.here) + ' here' : '') + ' · ' + w.p,
       kind: w.fav ? '★ weather' : 'weather',
       icon: w.th ? 'icons/custom/wx-storm.png' : (KIND_ICON[w.kind] || KIND_ICON.other),
       keywords: kindWords(w) + ' ' + w.p + ' ' + (w.by || ''),

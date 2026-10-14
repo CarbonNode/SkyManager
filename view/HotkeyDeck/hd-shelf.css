@@ -139,7 +139,7 @@ body.open.shf-open:not(.shf-left) #resize-grip { right: 348px; }
   border-radius: 8px; overflow: hidden;
 }
 .shf-rail-lbl {
-  font-size: 11px; font-weight: 600; line-height: 1.15; letter-spacing: .04em;
+  font-size: 12px; font-weight: 600; line-height: 1.15; letter-spacing: .04em;
   color: #99937f; max-width: 48px; overflow: hidden; white-space: nowrap;
   text-transform: uppercase;
 }
@@ -314,7 +314,7 @@ body.open.shf-open:not(.shf-left) #resize-grip { right: 348px; }
   letter-spacing: 2px; text-transform: uppercase; font-weight: 600;
 }
 .shf-abbr-hint { flex: 1; min-width: 0; font-size: 12px; color: #8f8a7f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#shf-menu .shf-menu-sub { font-size: 11.5px; color: #8f8a7f; margin-left: 6px; }
+#shf-menu .shf-menu-sub { font-size: 12.5px; color: #8f8a7f; margin-left: 6px; }
 
 .shf-foot { flex: none; padding: 12px 16px 16px; border-top: 1px solid #26262e; }
 .shf-add {

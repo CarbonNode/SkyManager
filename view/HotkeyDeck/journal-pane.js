@@ -578,6 +578,8 @@ window.JournalPane = (function () {
     el.innerHTML = shellHtml(headHtml() + bodyHtml());
     wireAll();
     layoutAll();
+    /* The format toolbar wraps in the narrow tools column: an even block, not 6 + 6 + 2. */
+    if (window.hdBalance) el.querySelectorAll('.jr-tb').forEach(function (tb) { tb.classList.add('hd-balance'); window.hdBalance.watch(tb); });
   }
 
   function shellHtml(inner) { return inner; }

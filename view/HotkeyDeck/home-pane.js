@@ -56,6 +56,8 @@ window.HomePane = (function () {
   var SYSTEMS = [
     { id: 'all',       name: 'Hotkeys',    icon: '⌨',  img: 'icons/custom/hm-hotkeys.png',   hue: '#c9a24b', sub: 'Your keybind palette',        act: 'tab', hk: true },
     { id: 'spells',    name: 'Spell Deck', icon: '✦',  img: 'icons/custom/hm-spells.png',    hue: '#8fb8ff', sub: 'Cast, equip & combos',        act: 'spells' },
+    /* Inventory (2026-10-10) — beside the Spell Deck, as on the nav bar. */
+    { id: 'inventory', name: 'Inventory',  icon: '◆',  img: 'icons/custom/inv-bag.png',      hue: '#d8b45a', sub: 'Everything you carry — sort, preview, equip', act: 'tab', prov: 'inventory' },
     { id: 'spellcraft',name: 'Spell Crafting', icon: '✨', img: 'icons/custom/hm-spellcraft.png', hue: '#b79bff', sub: 'Craft your own spells',   act: 'tab', prov: 'spellcraft' },
     { id: 'highking',  name: 'High King',   icon: '👑', img: 'icons/custom/hm-highking.png',  hue: '#e5c877', sub: 'Rule Skyrim — taxes, approval, powers', act: 'tab', prov: 'highking', requires: 'highking' },
     { id: 'followers', name: 'Followers',  icon: '👥', img: 'icons/custom/hm-followers.png', hue: '#e0a86a', sub: 'Summon, order, dress',        act: 'tab', prov: 'followers', requires: 'followerorganizer' },
@@ -86,6 +88,10 @@ window.HomePane = (function () {
     { id: 'finances',  name: 'Finances',   icon: '⚖',  img: 'icons/custom/hm-finances.png',  hue: '#d0c07a', sub: 'Ledger, market & settle',     act: 'tab', prov: 'finances' },
     { id: 'wardrobe',  name: 'Wardrobe',   icon: '👗', img: 'icons/custom/hm-wardrobe.png',  hue: '#e58fb0', sub: 'Outfits & who dresses whom',  act: 'tab', prov: 'wardrobe', requires: 'soes' },
     { id: 'faces',     name: 'Faces',      icon: '🙂', img: 'icons/custom/hm-faces.png',     hue: '#8fd8ff', sub: 'Browse & apply RaceMenu presets', act: 'tab', requires: 'presetdirector' },
+    /* No emoji fallback on purpose (no colour emoji in the deck): the book's
+       own gold emblem, and its sub goes live from HDBestiary.stats() — see
+       subOf(). */
+    { id: 'bestiary',  name: 'Bestiary',   img: 'icons/custom/bx-all.png',       hue: '#c96a5a', sub: 'Every creature you have met', act: 'tab' },
     { id: 'journal',   name: 'Journal',    icon: '📖', img: 'icons/custom/hm-journal.png',   hue: '#d9b45c', sub: 'Write your own pages, with pictures', act: 'tab', prov: 'journal' },
     /* gated on LIVE STATE, not on a mod: the card exists only while a curse
        is actually held (nightside-gate) */
@@ -137,7 +143,14 @@ window.HomePane = (function () {
                     /* 2026-08-31: the season widget joined the free layer, so it
                        reads its state through the same widgets.<id>.enabled walk
                        below — nothing else here needed changing. */
-                    season: null },
+                    season: null,
+                    /* 2026-10-12: the Quick Light lantern, same walk. */
+                    qlight: null,
+                    /* 2026-10-12: the loot feed, same walk. */
+                    lootFeed: null },
+              /* Auto face photos (2026-10-12): fdAutoPhotoState.enabled.
+                 null = not heard yet (the feature defaults ON). */
+              ap: null,
               /* the merged Equipped widget's own facts, read straight off the
                  HUD view's `hud.grp` blob inside hdUiStateData (2026-08-19).
                  `known:false` = never heard from the game, so the expander
@@ -147,7 +160,23 @@ window.HomePane = (function () {
                  (2026-10-08). `known:false` = not heard from the game yet: the
                  expander then shows the shipped defaults and says so. */
               sw: { known: false, ok: null, msg: '', key: '', slow: 0.2, size: 64,
-                    defSlow: 0.2, defSize: 64 } };
+                    defSlow: 0.2, defSize: 64,
+                    /* Combat Wheel wedge switches (2026-10-11): {id: bool},
+                       what each menu needs (tools[].ok/why), whether Stances NG
+                       answers, and the mirrored stance glyphs */
+                    wedges: {}, tools: [], stancesOk: null, stancesWhy: '', tarnished: false, icons: {} },
+              /* the Wardrobe Wheel (2026-10-12), from hdUiStateData.wardrobeWheel:
+                 how many looks, world speed, size, the deck key, look names */
+              ww: { known: false, looks: 0, slow: 0.25, size: 64, key: '', names: [] },
+              /* Detailed MiniMap, as mmCfgState last reported it (2026-10-09).
+                 `known:false` = not heard yet; present/api say whether the
+                 SkyManager build of it is there to talk to. */
+              mm: { known: false, present: false, api: 0, visible: null, key: '' },
+              /* the Hotkey Pad, as hpCfgState last reported it (2026-10-11):
+                 its trigger key and how many buttons it holds */
+              hp: { known: false, key: '', count: 0 },
+              /* the Command Ring (2026-10-12), as crCfgState last reported it */
+              cr: { known: false, key: '', slow: 0.25, size: 100, defSlow: 0.25, defSize: 100 } };
   var ui = { inited: false, recentOpen: false, notesOpen: false, timeOpen: false,
              uieOpen: false, uieQuery: '', tmChained: false, uieChained: false,
              notesT: null, editing: false, dragId: null };
@@ -257,6 +286,25 @@ window.HomePane = (function () {
   }
 
   /* ------------------------------------------------------------- cards -- */
+  /* A card's second line. The Bestiary's says what the book holds once the
+     book has seen its state ("12 kinds · 87 slain", HDBestiary.stats(), an
+     optional export: absent, or nothing counted yet, keeps the static line).
+     Read at render time, so it is as fresh as the last bxState the book saw. */
+  function subOf(sys) {
+    if (sys.id === 'bestiary') {
+      try {
+        var B = window.HDBestiary;
+        var st = (B && typeof B.stats === 'function') ? B.stats() : null;
+        if (st && typeof st === 'object') {
+          var kinds = +(st.kinds != null ? st.kinds : (st.known != null ? st.known : st.entries)) || 0;
+          var slain = +(st.slain != null ? st.slain : st.kills) || 0;
+          if (kinds > 0) return kinds + (kinds === 1 ? ' kind' : ' kinds') + ' · ' + slain + ' slain';
+        }
+      } catch (e) { /* a book bug must never cost Home its grid */ }
+    }
+    return sys.sub;
+  }
+
   function navigate(sys) {
     if (sys.act === 'spells') { host.toGame && host.toGame('hdOpenSpells', ''); return; }
     if (sys.act === 'arts') { host.toGame && host.toGame('hdOpenSpells', 'arts'); return; }
@@ -277,7 +325,8 @@ window.HomePane = (function () {
       card.setAttribute('role', 'listitem');
       card.setAttribute('data-id', sys.id);
       card.tabIndex = editing ? -1 : 0;
-      card.title = editing ? 'Drag to reorder — ' + sys.name : sys.name + ' — ' + sys.sub;
+      var sub = subOf(sys);
+      card.title = editing ? 'Drag to reorder — ' + sys.name : sys.name + ' — ' + sub;
       card.style.setProperty('--hmc', sys.hue + '22');
       card.style.setProperty('--hmb', sys.hue + '55');
 
@@ -298,13 +347,13 @@ window.HomePane = (function () {
         im.setAttribute('draggable', 'false');
         /* a stale/missing PNG must never leave a broken-image box — drop to the
            emoji glyph, the same remove-on-error the Favorites Shelf uses */
-        im.onerror = function () { im.remove(); plate.textContent = sys.icon; };
+        im.onerror = function () { im.remove(); plate.textContent = sys.icon || ''; };
         plate.appendChild(im);
       } else {
-        plate.textContent = sys.icon;
+        plate.textContent = sys.icon || '';
       }
       var h = document.createElement('h3'); h.textContent = sys.name;
-      var p = document.createElement('p'); p.textContent = sys.sub;
+      var p = document.createElement('p'); p.textContent = sub;
       card.appendChild(plate); card.appendChild(h); card.appendChild(p);
 
       if (editing) {
@@ -612,15 +661,17 @@ window.HomePane = (function () {
        line under the name says how it opens, or why it will not: without
        Stances NG the wheel refuses, and the row says so instead of offering a
        dead button. `hd-stance-wheel` is the seeded ENTRY id. */
-    { id: 'stance', ic: '†', img: 'icons/custom/hk-stance-2.png', name: 'Stance Wheel',
-      sub: 'Slow-time ring of your stances — aim, click, it switches',
-      kw: 'stance wheel stances ng bear wolf hawk tarnished neutral combat stance bar radial slow time slow motion wheel size bigger smaller',
+    /* Renamed Combat Wheel 2026-10-11: the party menus and Sic 'em joined the
+       stances, and every wedge got its own on/off switch in this expander. */
+    { id: 'stance', ic: '†', img: 'icons/custom/hk-stance-2.png', name: 'Combat Wheel',
+      sub: "Slow-time ring: stances, Battle Plan, Walk With Me, NFF, Sic 'em",
+      kw: 'combat wheel stance wheel stances ng bear wolf hawk tarnished neutral default combat stance bar radial slow time slow motion wheel size bigger smaller battle plan fight with me walk with me nff nether follower sic em attack wedges toggle on off',
       state: function () { return null; },
       note: function () {
         if (!uie.sw.known) return '';
         if (uie.sw.ok === false) return uie.sw.msg || 'Needs Stances NG.';
         return uie.sw.key ? ('Opens during play on ' + uie.sw.key)
-                          : 'No key yet — give “Stance Wheel” a trigger key in Hotkeys.';
+                          : 'No key yet — give “Combat Wheel” a trigger key in Hotkeys.';
       },
       /* An openable window like the Quiver and the Time Dial, so it wears
          their shape: how it opens, an Open button, and (its own addition) a
@@ -630,6 +681,75 @@ window.HomePane = (function () {
       openLabel: 'Open',
       openDisabled: function () { return uie.sw.ok === false; },
       inline: buildStanceInline },
+    /* Command Ring (2026-10-12, Rober: Warband's commands and camp "but with
+       skymanager type UI"). An openable window like the Combat Wheel, so the
+       same shape: how it opens, Open, and an in-place Config — world speed
+       while it is up and its size, in its own sidecar command-ring.json
+       behind crCfg -> crCfgState. `hd-command-ring` is the seeded ENTRY id. */
+    { id: 'cmdring', ic: '◇', img: 'icons/custom/hk-follower-command.png', name: 'Command Ring',
+      sub: 'Order your band from a ring: Orders, Camp, Homes, Battle',
+      kw: 'command ring warband orders camp homes battle follow wait regroup relax make camp wait at camp break camp home is here all go home come back fight with me attack to me hold back as you were nff my home is your home mhiyh campfire radial slow time size',
+      state: function () { return null; },
+      note: function () {
+        if (!uie.cr.known) return '';
+        return uie.cr.key ? ('Opens during play on ' + uie.cr.key)
+                          : 'No key yet — give “Command Ring” a trigger key in Hotkeys.';
+      },
+      chord: 'Bindable — NPC tab',
+      open: function () { host.toGame && host.toGame('hdFire', 'hd-command-ring'); },
+      openLabel: 'Open',
+      inline: buildCmdRingInline },
+    /* Hotkey Pad (2026-10-11, Rober: "new ui element, must be shown in ui
+       elements - and configurable there. basically its a configurable
+       resizable calculator like popup - that lets you define buttons that fire
+       that hotkey on press"). An openable window like the Time Dial, so it
+       wears that shape — how it opens + Open — plus "Arrange on screen" (opens
+       it in its move/resize mode) and Config →, the settings popout
+       (hd-padcfg.js: which hotkeys, labels, button shapes, columns, size,
+       behaviour). `hd-hotkey-pad` is the seeded ENTRY id. */
+    { id: 'hotkeypad', ic: '▦', img: 'icons/custom/hk-hotkey-pad.png', name: 'Hotkey Pad',
+      sub: 'A resizable on-screen pad of buttons — click one and its hotkey fires',
+      kw: 'hotkey pad keypad key pad calculator buttons on screen click to fire macro mouse short keyboard tenkeyless 60% touch numpad grid resize resizable bigger smaller columns',
+      state: function () { return null; },
+      note: function () {
+        if (!uie.hp.known) return '';
+        var n = uie.hp.count === 1 ? '1 button' : (uie.hp.count + ' buttons');
+        if (!uie.hp.count) return 'No buttons yet — Config → to choose them.';
+        return n + (uie.hp.key ? ' · opens during play on ' + uie.hp.key
+                               : ' · no key yet — give “Hotkey Pad” a trigger key in Hotkeys');
+      },
+      chord: 'Bindable — Misc tab',
+      open: function () { host.toGame && host.toGame('hdFire', 'hd-hotkey-pad'); },
+      openLabel: 'Open',
+      extra: [
+        { label: 'Arrange on screen', title: 'Open the pad ready to move it, size it, and resize or reorder its buttons',
+          run: function () { host.toGame && host.toGame('hpCfg', JSON.stringify({ op: 'open', edit: true })); } }
+      ],
+      avail: function () { return !!window.HDPadCfg; },
+      jumpLabel: 'Config →',
+      jump: function () { if (window.HDPadCfg) HDPadCfg.open(); } },
+    /* Detailed MiniMap (2026-10-09, Rober: "hook this and its settings into
+       skymanager … drag it around screen … cool generated frames"). DMM draws
+       the map itself through SKSE Menu Framework; every setting, the drag and
+       the frames live in the HUD shelf's Minimap section (hud-minimap.js),
+       so Config → is that shelf, opened on it — the Followers HUD's idiom.
+       The pill is DMM's own show/hide flag (Map.Visible), sent over mmCfg. */
+    { id: 'minimap', ic: '◈', img: 'icons/custom/hm-domains.png', name: 'Minimap',
+      sub: 'Detailed MiniMap — 3D map of the cells around you',
+      kw: 'minimap mini map radar compass local map detailed minimap frame border drag move place square rectangle round zoom',
+      state: function () { return uie.mm.present && uie.mm.api >= 1 ? uie.mm.visible : null; },
+      toggle: function () {
+        if (!host.toGame || !(uie.mm.present && uie.mm.api >= 1) || uie.mm.visible === null) return;
+        host.toGame('mmCfg', JSON.stringify({ op: 'set', values: { 'Map.Visible': !uie.mm.visible }, save: true }));
+      },
+      note: function () {
+        if (!uie.mm.known) return '';
+        if (!uie.mm.present) return 'Detailed MiniMap is not installed.';
+        if (uie.mm.api < 1) return 'Stock Detailed MiniMap — install the SkyManager build to configure it here.';
+        return uie.mm.key ? ('Toggle key: ' + uie.mm.key) : 'No toggle key — bind one on its own page (Omni → Detailed MiniMap).';
+      },
+      jumpLabel: 'Config →',
+      jump: function () { host.toGame && host.toGame('mmCfg', JSON.stringify({ op: 'shelf' })); } },
     { id: 'widgets', ic: '⌗', img: 'icons/custom/hk-widgets.png', name: 'HUD Widgets',
       sub: 'Readout stack — vitals, gold, carry weight, clock and pins',
       kw: 'widgets hud overlay readouts meters bars vitals health magicka stamina money gold inventory carry weight clock time weather location pins',
@@ -656,6 +776,28 @@ window.HomePane = (function () {
         host.setTab && host.setTab('wardrobe');
         if (window.WardrobePane && WardrobePane.openSection) WardrobePane.openSection('dock');
       } },
+    /* Wardrobe Wheel (2026-10-12, Rober: "make sure its on home - ui elements
+       as well configurable there"). An openable window like the Combat Wheel,
+       so it wears that shape: how it opens, Open, and Config → expanding in
+       place (world speed, size, the looks on it, its key) with a door to the
+       full looks-and-flyouts editor in Wardrobe. State rides hdUiStateData;
+       edits ride the wardrobe's own wfEdit. `hd-wardrobe-wheel` is the seed. */
+    { id: 'wardrobe-wheel', ic: '◎', img: 'icons/custom/hm-wardrobe.png', name: 'Wardrobe Wheel',
+      sub: 'Slow-time ring of your looks — aim past one to layer Flair or a piece over it',
+      kw: 'wardrobe wheel outfit wheel radial clothes outfits looks flair accessories flyout layer piece slow time quick change dress size bigger smaller',
+      state: function () { return null; },
+      note: function () {
+        if (!uie.ww.known) return '';
+        if (!uie.ww.looks) return 'No looks yet — Config → Edit looks to add some.';
+        var n = uie.ww.looks === 1 ? '1 look' : (uie.ww.looks + ' looks');
+        return n + (uie.ww.key ? ' · opens during play on ' + uie.ww.key
+                               : ' · no key yet — give “Wardrobe Wheel” a trigger key in Hotkeys');
+      },
+      chord: 'Bindable — Wardrobe tab',
+      open: function () { host.toGame && host.toGame('wwOpen'); },
+      openLabel: 'Open',
+      openDisabled: function () { return uie.ww.known && !uie.ww.looks; },
+      inline: buildWwInline },
     /* ---- ONE row for the merged Equipped widget (2026-08-19) --------------
        The HUD view merged right hand / left hand / shout into a SINGLE widget
        with a derived master and its own orientation, size and membership
@@ -710,6 +852,57 @@ window.HomePane = (function () {
       note: function () { return 'Panel visibility. Glow and Auto-loot have separate switches.'; },
       jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'lootStatus' })); },
       jumpLabel: 'Config →' },
+    /* Quick Light status (2026-10-12). Rober: "new skymanager UI element
+       toggle, quick light status, when its on shows a draggable icon on screen
+       that shows lit up or dim". A FREE widget like the loot lamp, so it rides
+       the same hdWidgetToggle / hudCfg-shelf pair; the shelf is where it is
+       dragged and sized. The note reads the deck's own mod detection
+       (`quicklight`, DetectedModsJson) so a missing mod is SAID here, not
+       discovered as a lantern that never appears. */
+    { id: 'fw-qlight', fw: 'qlight', ic: '✦', img: 'icons/custom/ql-lit.png',
+      name: 'Quick Light Status', sub: 'A lantern on screen — lit while your Quick Light is on, dim while it is off',
+      kw: 'quick light status lantern lamp torch glow carried light lit dim on off indicator icon',
+      state: function () { return uie.fw.qlight; },
+      toggle: function () { host.toGame && host.toGame('hdWidgetToggle', JSON.stringify({ id: 'qlight' })); },
+      note: function () {
+        var det = null;
+        if (typeof host.detected === 'function') { try { det = host.detected(); } catch (e) {} }
+        if (det && det.quicklight === false) return 'Needs Quick Light SE — the lantern appears once it is installed.';
+        return uie.fw.qlight === true ? 'Drag and size it from Config →.' : 'Turn it on, then drag it where you want it.';
+      },
+      jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'qlight' })); },
+      jumpLabel: 'Config →' },
+    /* Loot feed (2026-10-12). Rober: "loot notifications maybe top left, where
+       they sort of animation slide in as iharvest picks stuff up? and others
+       fade away (limit configurable)". A FREE widget, same toggle pair; its
+       rows/time/game-lines options are edited on the widget in Config →. */
+    { id: 'fw-lootFeed', fw: 'lootFeed', ic: '✧', img: 'icons/custom/hm-loot.png',
+      name: 'Loot Feed', sub: 'What you just picked up slides in top-left — repeats stack, the oldest fades',
+      kw: 'loot feed pickup picked up notifications notification items added harvest iharvest gold list toast',
+      state: function () { return uie.fw.lootFeed; },
+      toggle: function () { host.toGame && host.toGame('hdWidgetToggle', JSON.stringify({ id: 'lootFeed' })); },
+      note: function () {
+        return uie.fw.lootFeed === true
+          ? 'Rows, how long each stays and the game’s own “added” lines: Config →.'
+          : 'Turn it on, then place it and set the rows from Config →.';
+      },
+      jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'lootFeed' })); },
+      jumpLabel: 'Config →' },
+    /* Auto face photos (2026-10-12). Rober: "can it just be smarter and more
+       dynamic??" — the deck photographs loaded roster people itself (at most
+       two per open, nearest first, helmet hidden) and never replaces a photo
+       you took. fdAutoPhoto {op:'state'|'set'} -> fdAutoPhotoState {enabled}
+       (src/auto_portrait.cpp; the shooting itself is auto-photo.js). */
+    { id: 'autophoto', ic: '◉', img: 'icons/custom/hk-portrait.png',
+      name: 'Auto Face Photos', sub: 'Real in-game photos of your people, taken by the deck itself',
+      kw: 'auto face photos portrait portraits photo picture camera headshot facegen head render automatic snapshot followers faces',
+      state: function () { return uie.ap; },
+      toggle: function () { host.toGame && host.toGame('fdAutoPhoto', JSON.stringify({ op: 'set', enabled: uie.ap === false })); },
+      note: function () {
+        return uie.ap === false
+          ? 'Off. Faces stay the rendered heads until you take a photo yourself.'
+          : 'Up to two people per deck open, nearest first. Never replaces a photo you took.';
+      } },
     { id: 'potions', ic: '◍', img: 'icons/custom/hk-potion-browser.png', name: 'Potion Browser', sub: 'Paused popout — search, sort, quick-drink; bindable in Utilities',
       kw: 'potion browser potions drink healing elixir alchemy flask',
       state: function () { return null; },
@@ -792,7 +985,7 @@ window.HomePane = (function () {
     for (var i = 0; i < GRP_LINES.length; i++) if (GRP_LINES[i].key === k) return GRP_LINES[i];
     return { key: k, name: FW_NAMES[k] || k, ic: '·', img: '' };
   }
-  var FW_NAMES = { quick: 'Quick items', quick2: 'My items', lootStatus: 'Loot lamp' };
+  var FW_NAMES = { quick: 'Quick items', quick2: 'My items', lootStatus: 'Loot lamp', qlight: 'Quick Light', lootFeed: 'Loot feed' };
   /* The master is DERIVED exactly as hud.js's grpAnyOn is — any line on means
      the widget is on — so the two surfaces can never disagree. null while no
      state has arrived, so the row wears no chip rather than a guess. */
@@ -840,10 +1033,11 @@ window.HomePane = (function () {
     return g;
   }
   /* ---- Stance Wheel settings (2026-10-08) --------------------------------
-     Preset buttons, not sliders: two values with four or five sensible stops
-     each, every stop readable at couch distance, and no held-mouse drag for
-     Ultralight to drop (the MouseEvent.buttons === 0 law). The labels say what
-     the number MEANS; the number rides in the tooltip and the caption. */
+     Preset buttons for the world speed: five sensible stops, each readable at
+     couch distance. The SIZE got a slider on 2026-10-12 (Rober: "combat wheel
+     needs scaling slider"), tracked document-level so Ultralight's
+     MouseEvent.buttons === 0 cannot drop the drag (swSizeSlider); its four
+     named sizes stay as quick picks under it. */
   var SW_SLOW = [
     { v: 0.1, name: 'Crawl', hint: 'One second of the world takes ten' },
     { v: 0.2, name: 'Slow', hint: 'One second of the world takes five' },
@@ -851,6 +1045,26 @@ window.HomePane = (function () {
     { v: 0.5, name: 'Half', hint: 'One second of the world takes two' },
     { v: 1, name: 'Normal', hint: 'Time is not slowed at all while you choose' },
   ];
+  /* The Combat Wheel's wedges, wheel order (stance_wheel.cpp WedgeIds). The
+     stance glyphs are Combat Expansion's own when mirrored (swCfgState icons),
+     else the deck's sword art; the menus wear their deck-row icons. */
+  var SW_WEDGES = [
+    { id: 'bear', slug: 'bear', name: 'Bear', stance: true, img: 'icons/custom/hk-stance-1.png' },
+    { id: 'wolf', slug: 'wolf', name: 'Wolf', stance: true, img: 'icons/custom/hk-stance-1.png' },
+    { id: 'hawk', slug: 'hawk', name: 'Hawk', stance: true, img: 'icons/custom/hk-stance-1.png' },
+    { id: 'tarnished', slug: 'tarnished', name: 'Tarnished', stance: true, img: 'icons/custom/hk-stance-3.png' },
+    { id: 'neutral', slug: 'neutral', name: 'Default', stance: true, img: 'icons/custom/hk-stance-2.png' },
+    { id: 'battle-plan', name: 'Battle Plan', img: 'icons/custom/hk-battle-plan.png' },
+    { id: 'wwm-menu', name: 'Walk With Me', img: 'icons/custom/hk-wwm-menu.png' },
+    { id: 'nff-menu', name: 'NFF', img: 'icons/custom/hk-nff-control.png' },
+    { id: 'sic-em', name: "Sic 'em", img: 'icons/custom/hk-attack-target.png' },
+    { id: 'command-ring', name: 'Command Ring', img: 'icons/custom/hk-follower-command.png' }
+  ];
+  var SW_OFF_BY_DEFAULT = { 'nff-menu': 1, 'sic-em': 1 };
+  function swWedgeOn(id) {
+    var w = uie.sw.wedges || {};
+    return typeof w[id] === 'boolean' ? w[id] : !SW_OFF_BY_DEFAULT[id];
+  }
   var SW_SIZE = [
     { v: 48, name: 'Small' }, { v: 56, name: 'Medium' }, { v: 64, name: 'Large' }, { v: 74, name: 'Huge' },
   ];
@@ -866,6 +1080,104 @@ window.HomePane = (function () {
     return best;
   }
   function swPct(v) { return Math.round(v * 100) + '%'; }
+  /* ---- the wheel-size slider (2026-10-12) --------------------------------
+     A drawn track tracked the deck's proven way (rooms-pane.js smoothRange):
+     mousedown on the track, mousemove / mouseup on the DOCUMENT, never
+     reading e.buttons (Ultralight can report 0 mid-drag), a blur ends it.
+     While it drags only this row's readout changes; the drawer is NOT
+     re-rendered (that would tear the track out from under the cursor), and
+     the value is sent once, on release. Same range as stance_wheel.cpp and
+     hud-stance.js. marker: combat-wheel-size-slider-home */
+  var SWZ_MIN = 30, SWZ_MAX = 90;
+  var swzDrag = null;
+  function swzClamp(v) { return Math.max(SWZ_MIN, Math.min(SWZ_MAX, Math.round(v))); }
+  function swSizeCaption(v) {
+    var name = '';
+    SW_SIZE.forEach(function (o) { if (o.v === v) name = o.name + ' · '; });
+    return name + v + '% of the screen height';
+  }
+  function swzShow(row, v) {
+    var f = ((v - SWZ_MIN) / (SWZ_MAX - SWZ_MIN) * 100).toFixed(2) + '%';
+    var fill = row.querySelector('.hm-swz-fill'), thumb = row.querySelector('.hm-swz-thumb');
+    var val = row.querySelector('.hm-swz-val'), track = row.querySelector('.hm-swz-track');
+    if (fill) fill.style.width = f;
+    if (thumb) thumb.style.left = f;
+    if (val) val.textContent = v + '%';
+    if (track) track.setAttribute('aria-valuenow', String(v));
+    var grp = row.parentNode;
+    var capEl = grp && grp.querySelector('.hm-swz-cap');
+    if (capEl) capEl.textContent = swSizeCaption(v);
+  }
+  function swzCommit(v) {
+    v = swzClamp(v);
+    uie.sw.size = v;
+    swSend({ size: v });
+    renderUie();
+  }
+  function swSizeSlider(size) {
+    var row = document.createElement('div');
+    row.className = 'hm-swz';
+    var minus = eqBtn('\u2212', 'Smaller (2% of the screen height)', false, function () { swzCommit(uie.sw.size - 2); });
+    var plus = eqBtn('+', 'Bigger (2% of the screen height)', false, function () { swzCommit(uie.sw.size + 2); });
+    minus.className += ' hm-swz-nudge';
+    plus.className += ' hm-swz-nudge';
+    var track = document.createElement('div');
+    track.className = 'hm-swz-track';
+    track.setAttribute('role', 'slider');
+    track.setAttribute('tabindex', '0');
+    track.setAttribute('aria-label', 'Wheel size');
+    track.setAttribute('aria-valuemin', String(SWZ_MIN));
+    track.setAttribute('aria-valuemax', String(SWZ_MAX));
+    track.setAttribute('aria-valuenow', String(size));
+    track.title = 'Drag, or click anywhere on it. Arrow keys fine-tune.';
+    track.innerHTML = '<div class="hm-swz-rail"><div class="hm-swz-fill"></div></div><div class="hm-swz-thumb"></div>';
+    var val = document.createElement('div');
+    val.className = 'hm-swz-val';
+    row.appendChild(minus); row.appendChild(track); row.appendChild(plus); row.appendChild(val);
+    var fromX = function (x) {
+      var r = track.getBoundingClientRect();
+      if (!r.width) return uie.sw.size;
+      var t = Math.max(0, Math.min(1, (x - r.left) / r.width));
+      return swzClamp(SWZ_MIN + t * (SWZ_MAX - SWZ_MIN));
+    };
+    var preview = function (v) { uie.sw.size = v; swzShow(row, v); };
+    var end = function () {
+      if (!swzDrag) return;
+      document.removeEventListener('mousemove', swzDrag.move, true);
+      document.removeEventListener('mouseup', swzDrag.up, true);
+      window.removeEventListener('blur', swzDrag.up);
+      swzDrag = null;
+      swzCommit(uie.sw.size);
+    };
+    track.addEventListener('mousedown', function (e) {
+      if (e.button !== 0 || swzDrag) return;
+      e.preventDefault();
+      try { track.focus(); } catch (x) {}
+      var move = function (ev) { try { preview(fromX(ev.clientX)); } catch (x) {} };
+      var up = function () { try { end(); } catch (x) {} };
+      swzDrag = { move: move, up: up };
+      document.addEventListener('mousemove', move, true);
+      document.addEventListener('mouseup', up, true);
+      window.addEventListener('blur', up);
+      preview(fromX(e.clientX));
+    });
+    track.addEventListener('keydown', function (e) {
+      var k = e.key, v = uie.sw.size, to = null;
+      if (k === 'ArrowRight' || k === 'ArrowUp') to = v + 1;
+      else if (k === 'ArrowLeft' || k === 'ArrowDown') to = v - 1;
+      else if (k === 'PageUp') to = v + 5;
+      else if (k === 'PageDown') to = v - 5;
+      else if (k === 'Home') to = SWZ_MIN;
+      else if (k === 'End') to = SWZ_MAX;
+      if (to === null) return;
+      e.preventDefault(); e.stopPropagation();
+      swzCommit(to);
+      var again = document.querySelector('.hm-swz-track');
+      if (again) again.focus();
+    });
+    swzShow(row, size);
+    return row;
+  }
   function buildStanceInline(mount) {
     mount.innerHTML = '';
     var wrap = document.createElement('div');
@@ -892,29 +1204,100 @@ window.HomePane = (function () {
       }));
     });
     tg.appendChild(cap(SW_SLOW[ti].hint + ' · ' + swPct(sw.slow) + ' speed'));
+    /* the hint lines under the wheel (2026-10-12, Rober: "ability to hide
+       text below bar"); Cancel stays either way */
+    var hg = document.createElement('div');
+    hg.className = 'hm-eq-lab hm-swh-lab';
+    hg.textContent = 'Hints under the wheel';
+    tg.appendChild(hg);
+    var hrow = document.createElement('div');
+    hrow.className = 'hm-eq-row';
+    [[true, 'Show', 'The two lines of keys and tips under the wheel'], [false, 'Hide', 'Only the Cancel button stays under the wheel']]
+      .forEach(function (o) {
+        hrow.appendChild(eqBtn(o[1], o[2], (sw.hints !== false) === o[0], function () {
+          uie.sw.hints = o[0];
+          swSend({ hints: o[0] });
+          renderUie();
+        }));
+      });
+    tg.appendChild(hrow);
     wrap.appendChild(tg);
 
-    /* --- size --- */
-    var si = swNearest(SW_SIZE, sw.size);
+    /* --- size: a slider, then the named sizes as quick picks (2026-10-12,
+       Rober: "combat wheel needs scaling slider") --- */
     var sg = eqGroup('Wheel size');
-    SW_SIZE.forEach(function (o, i) {
-      sg.row.appendChild(eqBtn(o.name, o.name + ' — ' + o.v + '% of the screen height', i === si, function () {
+    sg.insertBefore(swSizeSlider(sw.size), sg.row);
+    SW_SIZE.forEach(function (o) {
+      sg.row.appendChild(eqBtn(o.name, o.name + ' — ' + o.v + '% of the screen height', o.v === sw.size, function () {
         uie.sw.size = o.v;
         swSend({ size: o.v });
         renderUie();
       }));
     });
+    var szCap = cap(swSizeCaption(sw.size));
+    szCap.className += ' hm-swz-cap';
+    sg.appendChild(szCap);
     wrap.appendChild(sg);
+
+    /* --- wedges: each one on or off (2026-10-11, Rober: "you can toggle any
+       on or off?") --- One switch per wedge, the wedge's own glyph on it, in
+       wheel order. A switch is honoured only while its mod is loaded; a wedge
+       whose mod is missing is drawn dimmed with the reason, and still
+       switchable so the choice is ready when the mod arrives. */
+    var wg = eqGroup('Wedges — switch each one on or off');
+    wg.className += ' hm-sw-wide hm-sw-wedges';
+    var stOk = sw.stancesOk !== false;
+    var toolOf = function (id) {
+      for (var i = 0; i < (sw.tools || []).length; i++) if (sw.tools[i] && sw.tools[i].id === id) return sw.tools[i];
+      return null;
+    };
+    var naWhy = function (wd) {
+      if (wd.stance) {
+        if (!stOk) return sw.stancesWhy || 'Needs Stances NG';
+        return wd.id === 'tarnished' && !sw.tarnished ? 'Needs TarnishedStance.esp' : '';
+      }
+      var t = toolOf(wd.id);
+      return !t ? 'Needs a newer SkyManager DLL' : (t.ok ? '' : (t.why || 'Its mod is not loaded'));
+    };
+    SW_WEDGES.forEach(function (wd) {
+      var on = swWedgeOn(wd.id);
+      var why = naWhy(wd);
+      var b = eqBtn(wd.name, (on ? 'Hide ' : 'Show ') + wd.name + ' on the wheel' + (why ? ' — ' + why : ''), on, function () {
+        uie.sw.wedges = Object.assign({}, uie.sw.wedges);
+        uie.sw.wedges[wd.id] = !on;          /* optimistic; swCfgState confirms */
+        var patch = {}; patch[wd.id] = !on;
+        swSend({ wedges: patch });
+        renderUie();
+      }, 'hm-eq-line hm-sw-wedge' + (why ? ' is-na' : ''));
+      var ic = document.createElement('span');
+      ic.className = 'hm-eq-ic hm-sw-wic';
+      var im = document.createElement('img');
+      im.src = (wd.stance && sw.icons && sw.icons[wd.slug]) || wd.img;
+      im.alt = ''; im.setAttribute('draggable', 'false');
+      im.onerror = function () { im.remove(); ic.textContent = wd.name.charAt(0); };
+      ic.appendChild(im);
+      b.insertBefore(ic, b.firstChild);
+      var chip = document.createElement('span');
+      chip.className = 'hm-eq-state ' + (on ? 'on' : 'off');
+      chip.textContent = on ? 'ON' : 'OFF';
+      b.appendChild(chip);
+      wg.row.appendChild(b);
+    });
+    var na = SW_WEDGES.filter(function (wd) { return !!naWhy(wd); }).map(function (wd) { return wd.name; });
+    wg.appendChild(cap(na.length
+      ? 'Dimmed: ' + na.join(', ') + ' — their mod is not loaded, so they stay off the wheel whatever the switch says.'
+      : 'Every wedge has its mod loaded. Off means it never appears on the wheel.'));
+    wrap.appendChild(wg);
 
     /* --- the key, and the way back --- */
     var kg = eqGroup('Opens with');
     var kc = document.createElement('span');
     kc.className = 'hm-uie-chord';
     kc.textContent = sw.key || 'no key yet';
-    kc.title = sw.key ? 'The trigger key on the “Stance Wheel” action' : 'The “Stance Wheel” action has no trigger key';
+    kc.title = sw.key ? 'The trigger key on the “Combat Wheel” action' : 'The “Combat Wheel” action has no trigger key';
     kg.row.appendChild(kc);
     kg.row.appendChild(eqBtn(sw.key ? 'Hotkeys →' : 'Bind in Hotkeys →',
-      (sw.key ? 'Change the key: ' : 'Give it a key: ') + 'go to the Hotkeys tab — the action is called “Stance Wheel”', false, function () {
+      (sw.key ? 'Change the key: ' : 'Give it a key: ') + 'go to the Hotkeys tab — the action is called “Combat Wheel”', false, function () {
         host.setTab && host.setTab('all');
       }));
     var isDef = Math.abs(sw.slow - sw.defSlow) < 0.001 && sw.size === sw.defSize;
@@ -933,6 +1316,159 @@ window.HomePane = (function () {
     mount.appendChild(wrap);
     return true;
   }
+  /* ---- Command Ring settings (2026-10-12) -------------------------------
+     The Combat Wheel's preset idiom (SW_SLOW stops, no drag), its own sizes:
+     the ring's scale in percent, clamped by the ring itself to fit the screen. */
+  var CR_SIZE = [
+    { v: 80, name: 'Small' }, { v: 100, name: 'Medium' }, { v: 120, name: 'Large' }, { v: 140, name: 'Huge' },
+  ];
+  function crSend(patch) {
+    host.toGame && host.toGame('crCfg', JSON.stringify(Object.assign({ op: 'set' }, patch)));
+  }
+  function buildCmdRingInline(mount) {
+    mount.innerHTML = '';
+    var wrap = document.createElement('div');
+    wrap.className = 'hm-eq hm-sw';
+    var cr = uie.cr;
+    var cap = function (text) {
+      var c = document.createElement('div');
+      c.className = 'hm-eq-lab hm-sw-cap hm-sw-wide';
+      c.textContent = text;
+      return c;
+    };
+
+    var ti = swNearest(SW_SLOW, cr.slow);
+    var tg = eqGroup('World speed while the ring is up');
+    SW_SLOW.forEach(function (o, i) {
+      tg.row.appendChild(eqBtn(o.name, o.hint + ' (' + swPct(o.v) + ')', i === ti, function () {
+        uie.cr.slow = o.v;                 /* optimistic; crCfgState confirms */
+        crSend({ slow: o.v });
+        renderUie();
+      }));
+    });
+    wrap.appendChild(tg);
+
+    var si = swNearest(CR_SIZE, cr.size);
+    var sg = eqGroup('Ring size');
+    CR_SIZE.forEach(function (o, i) {
+      sg.row.appendChild(eqBtn(o.name, o.v + '% — the ring always shrinks to fit the screen', i === si, function () {
+        uie.cr.size = o.v;
+        crSend({ size: o.v });
+        renderUie();
+      }));
+    });
+    wrap.appendChild(sg);
+
+    var kg = eqGroup('Opens with');
+    var kc = document.createElement('span');
+    kc.className = 'hm-uie-chord';
+    kc.textContent = cr.key || 'no key yet';
+    kc.title = cr.key ? 'The trigger key on the “Command Ring” action' : 'The “Command Ring” action has no trigger key';
+    kg.row.appendChild(kc);
+    kg.row.appendChild(eqBtn(cr.key ? 'Hotkeys →' : 'Bind in Hotkeys →',
+      (cr.key ? 'Change the key: ' : 'Give it a key: ') + 'go to the Hotkeys tab — the action is called “Command Ring”', false, function () {
+        host.setTab && host.setTab('all');
+      }));
+    var isDef = Math.abs(cr.slow - cr.defSlow) < 0.001 && cr.size === cr.defSize;
+    var rb = eqBtn('Reset both', 'Back to ' + swPct(cr.defSlow) + ' speed and the Medium ring', false, function () {
+      uie.cr.slow = uie.cr.defSlow; uie.cr.size = uie.cr.defSize;
+      crSend({ reset: true });
+      renderUie();
+    }, 'hm-eq-wide');
+    rb.disabled = isDef;
+    kg.row.appendChild(rb);
+    wrap.appendChild(kg);
+
+    wrap.appendChild(cap('Every command is also its own action — search “camp”, “home” or “fight with me” in Omni to pin one or give it a key.'));
+    if (!cr.known) wrap.appendChild(cap('Showing the defaults — the game has not answered yet.'));
+    mount.appendChild(wrap);
+    return true;
+  }
+  /* crCfgState: {slow,size,defSlow,defSize,key}, re-checked here — the sidecar
+     is hand-editable and this is what the buttons mark. */
+  function receiveCmdRing(env) {
+    env = coerce(env);
+    if (!env || typeof env !== 'object') return;
+    var num = function (v, d) { return (typeof v === 'number' && isFinite(v)) ? v : d; };
+    uie.cr.known = true;
+    uie.cr.key = typeof env.key === 'string' ? env.key : '';
+    uie.cr.defSlow = num(env.defSlow, 0.25);
+    uie.cr.defSize = Math.round(num(env.defSize, 100));
+    uie.cr.slow = Math.max(0.05, Math.min(1, num(env.slow, uie.cr.defSlow)));
+    uie.cr.size = Math.max(70, Math.min(140, Math.round(num(env.size, uie.cr.defSize))));
+    if (ui.uieOpen) renderUie();
+  }
+
+  /* ---- Wardrobe Wheel settings (2026-10-12) -------------------------------
+     The Combat Wheel's preset stops, its own default speed (0.25). Every press
+     is one wfEdit {type:'wheel-options'} — the same edit the Wardrobe editor
+     and the phone send — and C++ answers with hdUiStateData. */
+  var WW_SLOW = [
+    { v: 0.1, name: 'Crawl', hint: 'One second of the world takes ten' },
+    { v: 0.25, name: 'Slow', hint: 'One second of the world takes four' },
+    { v: 0.35, name: 'Eased', hint: 'One second of the world takes about three' },
+    { v: 0.5, name: 'Half', hint: 'One second of the world takes two' },
+    { v: 1, name: 'Normal', hint: 'Time is not slowed at all while you choose' }
+  ];
+  function wwSend(slow, size) {
+    uie.ww.slow = slow; uie.ww.size = size;   /* optimistic; hdUiStateData confirms */
+    host.toGame && host.toGame('wfEdit', JSON.stringify({ type: 'wheel-options', slow: slow, size: size }));
+    renderUie();
+  }
+  function wwEditor() {
+    host.setTab && host.setTab('wardrobe');
+    if (window.WardrobePane && WardrobePane.openSection) WardrobePane.openSection('wheel');
+  }
+  function buildWwInline(mount) {
+    mount.innerHTML = '';
+    var ww = uie.ww, wrap = document.createElement('div');
+    wrap.className = 'hm-eq hm-sw hm-ww';   /* marker: wardrobe-wheel-uie-row */
+    var cap = function (text, wide) {
+      var c = document.createElement('div');
+      c.className = 'hm-eq-lab hm-sw-cap' + (wide ? ' hm-sw-wide' : '');
+      c.textContent = text; return c;
+    };
+    var ti = swNearest(WW_SLOW, ww.slow);
+    var tg = eqGroup('World speed while the wheel is up');
+    WW_SLOW.forEach(function (o, i) {
+      tg.row.appendChild(eqBtn(o.name, o.hint + ' (' + swPct(o.v) + ')', i === ti, function () { wwSend(o.v, uie.ww.size); }));
+    });
+    tg.appendChild(cap(WW_SLOW[ti].hint + ' · ' + swPct(ww.slow) + ' speed'));
+    wrap.appendChild(tg);
+    var si = swNearest(SW_SIZE, ww.size);
+    var sg = eqGroup('Wheel size');
+    SW_SIZE.forEach(function (o, i) {
+      sg.row.appendChild(eqBtn(o.name, o.name + ' wheel', i === si, function () { wwSend(uie.ww.slow, o.v); }));
+    });
+    wrap.appendChild(sg);
+    /* the looks on it, clock order, and the door to edit them */
+    var lg = eqGroup(ww.looks ? 'On the wheel — ' + ww.looks + ' of 8 looks, clockwise from the top' : 'On the wheel');
+    lg.className += ' hm-sw-wide';
+    if (ww.names.length) ww.names.forEach(function (n) {
+      var c = document.createElement('span');
+      c.className = 'hm-uie-chord hm-ww-look'; c.textContent = n; c.title = n;
+      lg.row.appendChild(c);
+    });
+    else lg.appendChild(cap('No looks yet. Add saved outfits or wardrobe pools, then give each a flyout of Flair sets or single pieces to wear over it.'));
+    lg.row.appendChild(eqBtn(ww.looks ? 'Edit looks & flyouts →' : 'Add looks →', 'Wardrobe → Wardrobe wheel: choose the looks and what fans out from each', false, wwEditor, 'hm-eq-wide'));
+    wrap.appendChild(lg);
+    var kg = eqGroup('Opens with');
+    var kc = document.createElement('span');
+    kc.className = 'hm-uie-chord'; kc.textContent = ww.key || 'no key yet';
+    kc.title = ww.key ? 'The trigger key on the “Wardrobe Wheel” action' : 'The “Wardrobe Wheel” action has no trigger key';
+    kg.row.appendChild(kc);
+    kg.row.appendChild(eqBtn(ww.key ? 'Hotkeys →' : 'Bind in Hotkeys →',
+      (ww.key ? 'Change the key: ' : 'Give it a key: ') + 'go to the Hotkeys tab — the action is called “Wardrobe Wheel”', false, function () {
+        host.setTab && host.setTab('all');
+      }));
+    var rb = eqBtn('Reset both', 'Back to 25% speed and the Large wheel', false, function () { wwSend(0.25, 64); }, 'hm-eq-wide');
+    rb.disabled = Math.abs(ww.slow - 0.25) < 0.001 && ww.size === 64;
+    kg.row.appendChild(rb);
+    wrap.appendChild(kg);
+    if (!ww.known) wrap.appendChild(cap('Showing the defaults — the game has not answered yet.', true));
+    mount.appendChild(wrap);
+    return true;
+  }
   /* swCfgState: {slow,size,defSlow,defSize,ok,msg,key}. Numbers are re-checked
      here — the sidecar is hand-editable and this is what the buttons mark. */
   function receiveStance(env) {
@@ -946,7 +1482,41 @@ window.HomePane = (function () {
     uie.sw.defSlow = num(env.defSlow, 0.2);
     uie.sw.defSize = Math.round(num(env.defSize, 64));
     uie.sw.slow = Math.max(0.05, Math.min(1, num(env.slow, uie.sw.defSlow)));
-    uie.sw.size = Math.max(40, Math.min(80, Math.round(num(env.size, uie.sw.defSize))));
+    uie.sw.size = Math.max(SWZ_MIN, Math.min(SWZ_MAX, Math.round(num(env.size, uie.sw.defSize))));
+    uie.sw.hints = env.hints !== false;
+    var w = {};
+    if (env.wedges && typeof env.wedges === 'object')
+      for (var k in env.wedges) if (typeof env.wedges[k] === 'boolean') w[k] = env.wedges[k];
+    uie.sw.wedges = w;
+    uie.sw.tools = Array.isArray(env.tools) ? env.tools.filter(function (t) { return t && typeof t.id === 'string'; }) : [];
+    uie.sw.stancesOk = env.stancesOk === false ? false : (env.stancesOk === true ? true : null);
+    uie.sw.stancesWhy = typeof env.stancesWhy === 'string' ? env.stancesWhy : '';
+    uie.sw.tarnished = env.tarnished === true;
+    uie.sw.icons = (env.icons && typeof env.icons === 'object') ? env.icons : {};
+    if (ui.uieOpen) renderUie();
+  }
+
+  /* hpCfgState (via HDPadCfg, which owns the window's receiver and hands
+     this row the two facts it shows): {key, count}. */
+  function padState(p) {
+    if (!p || typeof p !== 'object') return;
+    uie.hp.known = true;
+    uie.hp.key = typeof p.key === 'string' ? p.key : '';
+    uie.hp.count = (typeof p.count === 'number' && isFinite(p.count)) ? p.count : 0;
+    if (ui.uieOpen) renderUie();
+  }
+
+  /* mmCfgState: {present, api, settings:{'Map.Visible':…}, keys:{toggle}}.
+     Only what the row shows is kept; the HUD shelf owns everything else. */
+  function receiveMinimap(env) {
+    env = coerce(env);
+    if (!env || typeof env !== 'object') return;
+    uie.mm.known = true;
+    uie.mm.present = env.present === true;
+    uie.mm.api = (typeof env.api === 'number' && isFinite(env.api)) ? env.api : 0;
+    var vis = env.settings && typeof env.settings === 'object' ? env.settings['Map.Visible'] : undefined;
+    uie.mm.visible = typeof vis === 'boolean' ? vis : (vis === 1 ? true : vis === 0 ? false : null);
+    uie.mm.key = env.keys && typeof env.keys.toggle === 'string' ? env.keys.toggle : '';
     if (ui.uieOpen) renderUie();
   }
 
@@ -1102,7 +1672,9 @@ window.HomePane = (function () {
     var parts = [el.name, el.sub, el.kw, el.chord, el.openLabel, el.jumpLabel,
       el.expandLabel, tryCall(el.note, ''), uieStatus(el)];
     if (el.jump) parts.push('settings setting configure config options setup');
-    if (el.inline) parts.push('lines orientation horizontal vertical size scale lock ' +
+    /* the Equipped widget's own words: its lines, orientation and hands. Any
+       other expander (Combat Wheel, Wardrobe Wheel) must not answer to them. */
+    if (el.inline && el.id === 'fw-eq') parts.push('lines orientation horizontal vertical size scale lock ' +
       grpLineKeys().map(function (k) { return grpLineName(k).name; }).join(' '));
     (el.extra || []).forEach(function (x) { parts.push(x.label, x.title); });
     return parts.join(' ');
@@ -1285,6 +1857,7 @@ window.HomePane = (function () {
             else if (uie.hotbar !== null) uie.hotbar = !uie.hotbar;
           }
           if (el.id === 'widgets' && uie.widgets !== null) uie.widgets = !uie.widgets;
+          if (el.id === 'minimap' && uie.mm.visible !== null) uie.mm.visible = !uie.mm.visible;
           if (el.id === 'outfit-dock' && uie.outfitDock !== null) uie.outfitDock = !uie.outfitDock;
           if (el.fw && uie.fw[el.fw] !== null) uie.fw[el.fw] = !uie.fw[el.fw];
           renderUie();
@@ -1395,6 +1968,11 @@ window.HomePane = (function () {
     if (typeof env.visible === 'boolean') uie.hudVisible = env.visible;
     if (ui.uieOpen) renderUie();
   }
+  function receiveAutoPhoto(env) {
+    env = coerce(env);
+    if (!env || typeof env !== 'object') return;
+    if (typeof env.enabled === 'boolean') { uie.ap = env.enabled; if (ui.uieOpen) renderUie(); }
+  }
   function receiveLoot(env) {
     env = coerce(env);
     if (!env || typeof env !== 'object') return;
@@ -1413,6 +1991,15 @@ window.HomePane = (function () {
     if (typeof env.hud === 'boolean') uie.hud = env.hud;
     if (typeof env.hudVisible === 'boolean') uie.hudVisible = env.hudVisible;
     if (typeof env.outfitDock === 'boolean') uie.outfitDock = env.outfitDock;
+    var wwS = env.wardrobeWheel;
+    if (wwS && typeof wwS === 'object') {
+      uie.ww.known = true;
+      uie.ww.looks = Math.max(0, Math.min(8, Number(wwS.looks) || 0));
+      if (typeof wwS.slow === 'number' && isFinite(wwS.slow)) uie.ww.slow = Math.max(0.05, Math.min(1, wwS.slow));
+      if (typeof wwS.size === 'number' && isFinite(wwS.size)) uie.ww.size = Math.max(40, Math.min(80, Math.round(wwS.size)));
+      uie.ww.key = typeof wwS.key === 'string' ? wwS.key : '';
+      uie.ww.names = Array.isArray(wwS.names) ? wwS.names.filter(function (n) { return typeof n === 'string'; }).slice(0, 8) : [];
+    }
     var w = env.widgets;
     if (w && typeof w === 'object') {
       if (typeof w.enabled === 'boolean') uie.widgets = w.enabled;
@@ -1456,12 +2043,19 @@ window.HomePane = (function () {
       chainReceiver('ltResult', receiveLoot);  // toggle reply, also `enabled`
       chainReceiver('hdUiStateData', receiveUiState);  // round 3: real chips
       chainReceiver('swCfgState', receiveStance);      // Stance Wheel settings
+      chainReceiver('mmCfgState', receiveMinimap);     // Detailed MiniMap
+      chainReceiver('crCfgState', receiveCmdRing);     // Command Ring settings
+      chainReceiver('fdAutoPhotoState', receiveAutoPhoto);  // Auto Face Photos
     }
     if (host.toGame) {
       host.toGame('hudCfg', JSON.stringify({ op: 'state' }));  // HUD -> hudCfgState
       host.toGame('ltGet', '');                                // Loot -> ltOpen
       host.toGame('hdUiState', '');                            // -> hdUiStateData
       host.toGame('swCfg', JSON.stringify({ op: 'get' }));     // Stance Wheel -> swCfgState
+      host.toGame('mmCfg', JSON.stringify({ op: 'get' }));     // Detailed MiniMap -> mmCfgState
+      host.toGame('hpCfg', JSON.stringify({ op: 'get' }));     // Hotkey Pad -> hpCfgState (HDPadCfg -> padState)
+      host.toGame('crCfg', JSON.stringify({ op: 'get' }));     // Command Ring -> crCfgState
+      host.toGame('fdAutoPhoto', JSON.stringify({ op: 'state' }));  // Auto Face Photos -> fdAutoPhotoState
     }
   }
 
@@ -1578,6 +2172,17 @@ window.HomePane = (function () {
     if (ui.timeOpen && host.toGame) host.toGame('tmGet', ''); // reopen after a completed wait
     if (host.toGame) host.toGame('hdHistory', '');  // warm the drawer count
   }
+  /* The book is opened OVER Home (the Bestiary card is a launcher) and comes
+     back with more in it, so its card's line is refreshed when the book
+     closes — that one text node, never the grid. */
+  try {
+    window.addEventListener('hd-bestiary-close', function () {
+      var pane = $('hm-pane'), sys = byId.bestiary;
+      if (!pane || !sys || pane.classList.contains('hidden')) return;
+      var p = pane.querySelector('.hm-card[data-id="bestiary"] p');
+      if (p) p.textContent = subOf(sys);
+    });
+  } catch (e) { /* the line simply refreshes on the next show */ }
   function onHide() {
     /* leaving the tab while editing must not strand the grid in edit chrome */
     if (ui.editing) { ui.editing = false; ui.dragId = null; }
@@ -1793,6 +2398,23 @@ window.HomePane = (function () {
     window.swCfgState({ slow: 0.2, size: 64, defSlow: 0.2, defSize: 64, ok: true, msg: '', key: 'F21' });
     swRow().querySelector('.hm-uie-jump').click();
     ok('Stance Config folds again', !swPanel());
+    /* Minimap (2026-10-09): asks DMM on drawer open, shows no pill until the
+       SkyManager build answers, toggles Map.Visible, Config → the HUD shelf. */
+    var mmRow = function () { return $('hm-uie-body').querySelector('.hm-uie-row[data-id="minimap"]'); };
+    ok('Minimap row present', !!mmRow());
+    ok('drawer open asked mmCfg get', nav.indexOf('game:mmCfg:{"op":"get"}') !== -1);
+    ok('Minimap shows NO state chip before the game answers', !mmRow().querySelector('.hm-uie-state'));
+    window.mmCfgState({ present: true, api: 0, settings: {}, keys: {} });
+    ok('stock DMM: says to install the SkyManager build, no chip',
+      /SkyManager build/.test(mmRow().textContent) && !mmRow().querySelector('.hm-uie-state'));
+    window.mmCfgState({ present: true, api: 1, settings: { 'Map.Visible': true }, keys: { toggle: 'N' } });
+    ok('Minimap reads ON and names its key', /ON/.test(mmRow().textContent) && /Toggle key: N/.test(mmRow().textContent));
+    mmRow().querySelector('.hm-uie-btn').click();
+    ok('Minimap toggle sends mmCfg set Map.Visible false',
+      nav.indexOf('game:mmCfg:{"op":"set","values":{"Map.Visible":false},"save":true}') !== -1);
+    ok('…and flips at once (optimistic)', /OFF/.test(mmRow().textContent));
+    mmRow().querySelector('.hm-uie-jump').click();
+    ok('Minimap Config → mmCfg shelf', nav.indexOf('game:mmCfg:{"op":"shelf"}') !== -1);
     toggleUie();
 
     ok('recent drawer starts closed', !$('hm-recent').classList.contains('open'));
@@ -1981,6 +2603,7 @@ window.HomePane = (function () {
     init: init, onShow: onShow, onHide: onHide, hookInto: hookInto,
     receiveRecent: receiveRecent, toggleEdit: toggleEdit, isEditing: isEditing,
     wantsPause: wantsPause,
+    padState: padState,
     _systems: SYSTEMS, _sanitizeOrder: sanitizeOrder, _orderedSystems: orderedSystems,
     _ui: ui, _uie: uie, _UIE: UIE,
     _toggleUie: toggleUie, _renderUie: renderUie,

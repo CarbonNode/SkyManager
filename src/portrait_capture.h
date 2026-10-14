@@ -71,6 +71,20 @@ namespace PortraitCapture
 	// caller needing a filename for an outfit does not grow a second copy.
 	std::string SlugOfName(std::string_view name);
 
+	// ---- auto portraits (2026-10-12, auto_portrait.cpp) ---------------------
+	// A small square probe of the frame's centre, downscaled to px x px RGB.
+	// WORKER THREAD ONLY: it waits for the present-thread grab, like every
+	// capture here. Used to tell when the picture has stopped changing after a
+	// camera cut (frame generation / temporal upscaling smear the first frames).
+	bool ProbeCenter(int px, std::vector<std::uint8_t>& rgb);
+	// The centre square at full frame height, written as a VERSIONED portrait
+	// (<slug>~<n>.png) through the normal portrait writer. WORKER THREAD ONLY.
+	// 0 = success, else a win32 error like CaptureToFile.
+	std::uint32_t CaptureAutoPortrait(const std::filesystem::path& dir, const std::string& slug,
+		const std::string& label, std::filesystem::path& written);
+	// The HUD toggle portrait capture uses (`tm`, idempotent). MAIN THREAD.
+	void HideHud(bool hide);
+
 	// ---- framing, for the deck's in-game adjust panel -----------------------
 	// The knobs have always been in capture.ini and always applied on the NEXT
 	// capture; these just make them reachable without alt-tabbing to a text

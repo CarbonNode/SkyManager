@@ -74,26 +74,50 @@ namespace WardrobeFlair
 			auto f=WardrobeFlairModel::Flair(Wardrobe::ToJson(cfg));
 			std::string base, flairId, label;
 			std::vector<RE::TESObjectARMO*> armors;
+			json pieces=json::array();
+			// wardrobe-wheel: {kind,id,wheel:true,choice:"set:<id>"|"item:<0xid>|<plugin>"|""}.
+			// The choice is looked up in the SAVED wheel, so only what the player put
+			// on that look's flyout can be worn through it.
+			const bool wheel=req.value("wheel",false);
 			if(kind=="flair") flairId=id;
-			else if(kind!="clear") {
+			else if(kind!="clear" && wheel) {
+				const auto& slots=f["wheel"].contains("slots")&&f["wheel"]["slots"].is_array()?f["wheel"]["slots"]:json::array();
+				const auto slot=std::find_if(slots.begin(),slots.end(),[&](const json& x){return x.is_object()&&x.value("kind",std::string())==kind&&x.value("id",std::string())==id;});
+				Need(slot!=slots.end(),"That look is no longer on the Wardrobe Wheel. Reopen it and choose again");
+				const auto choice=req.value("choice",std::string());
+				if(!choice.empty()) {
+					const json none=json::array();
+					const auto& fly=slot->contains("flyout")&&(*slot)["flyout"].is_array()?(*slot)["flyout"]:none;
+					const auto hit=std::find_if(fly.begin(),fly.end(),[&](const json& x){
+						if(!x.is_object()) return false;
+						if(x.contains("set")) return x["set"].is_string() && "set:"+x["set"].get<std::string>()==choice;
+						return x.contains("item") && "item:"+WardrobeFlairModel::PieceToken(x["item"])==choice;});
+					Need(hit!=fly.end(),"That choice is no longer in this look's flyout. Reopen the wheel and choose again");
+					if(hit->contains("set")) flairId=(*hit)["set"].get<std::string>();
+					else { pieces.push_back((*hit)["item"]); label=(*hit)["item"].value("name",std::string("Flair")); if(label.empty()) label="Flair"; }
+				}
+			} else if(kind!="clear") {
 				const auto linked=f["links"].value(kind+":"+id,std::string());
 				// A portal edit between popup and E must require a fresh decision.
 				Need(req.value("expectedFlairId",std::string())==linked,"Attached Flair changed. Reopen the dock and choose again");
 				if(req.value("includeFlair",false)) flairId=linked;
-				if(kind=="outfit") {
-					Need(std::any_of(cfg.outfitMeta.begin(),cfg.outfitMeta.end(),[&](const auto& m){return m.name==id;}),"That outfit no longer exists in the wardrobe"); base=id;
-				} else {
-					Need(std::any_of(cfg.wardrobes.begin(),cfg.wardrobes.end(),[&](const auto& p){return p.id==id;}),"That wardrobe no longer exists");
-					// Roll a copy until validation succeeds; do not burn the bag on a refused set.
-					auto preview=cfg; base=Wardrobe::RollForDock(preview,id);
-					Need(!base.empty(),"That wardrobe has no available outfits");
-				}
+			}
+			if(kind=="outfit") {
+				Need(std::any_of(cfg.outfitMeta.begin(),cfg.outfitMeta.end(),[&](const auto& m){return m.name==id;}),"That outfit no longer exists in the wardrobe"); base=id;
+			} else if(kind=="wardrobe") {
+				Need(std::any_of(cfg.wardrobes.begin(),cfg.wardrobes.end(),[&](const auto& p){return p.id==id;}),"That wardrobe no longer exists");
+				// Roll a copy until validation succeeds; do not burn the bag on a refused set.
+				auto preview=cfg; base=Wardrobe::RollForDock(preview,id);
+				Need(!base.empty(),"That wardrobe has no available outfits");
 			}
 			if(!flairId.empty()) {
 				const auto it=std::find_if(f["sets"].begin(),f["sets"].end(),[&](const auto& s){return s.value("id",std::string())==flairId;});
 				Need(it!=f["sets"].end(),"That Flair set no longer exists"); label=it->value("name",std::string("Flair"));
+				pieces=it->at("items");
+			}
+			if(!pieces.empty()) {
 				std::uint32_t occupied=0;
-				for(const auto& p : it->at("items")) {
+				for(const auto& p : pieces) {
 					auto* form=ActorIdentity::Resolve(p.value("formId",std::string()),p.value("plugin",std::string()));
 					auto* armor=form?form->As<RE::TESObjectARMO>():nullptr;
 					Need(armor!=nullptr,"A Flair accessory is missing from the load order; nothing was changed");
@@ -102,6 +126,7 @@ namespace WardrobeFlair
 					occupied|=mask; armors.push_back(armor);
 				}
 				Need(!armors.empty() && armors.size()<=32,"Choose 1 to 32 accessories");
+				if(wheel) logger::info("wardrobe-wheel: {} {} + {} ({} piece(s))",kind,id,label,armors.size());   // marker: wardrobe-wheel-equip
 			}
 			if(kind=="wardrobe") base=Wardrobe::RollForDock(cfg,id);
 			busy=true;

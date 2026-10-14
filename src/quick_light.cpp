@@ -64,6 +64,29 @@ namespace QuickLight
 			return false;
 		}
 
+		// The widget's cached resolve (ReadState). Filled on the first call
+		// after data load; `tried` keeps a failed resolve from being retried
+		// every tick, since a by-plugin LookupForm walks the file list.
+		struct Cache
+		{
+			bool                 tried = false;
+			RE::TESQuest*        quest = nullptr;
+			RE::EffectSetting*   effects[std::size(kEffects)] = {};
+		};
+		Cache& Cached()
+		{
+			static Cache c;
+			if (!c.tried) {
+				c.tried = true;
+				c.quest = Quest();
+				for (std::size_t i = 0; i < std::size(kEffects); ++i)
+					c.effects[i] = Resolve<RE::EffectSetting>(kEffects[i].edid, kEffects[i].id);
+				// Build marker (hd-markers.json: "quick-light: hud read resolved").
+				logger::info("quick-light: hud read resolved (quest {})", c.quest ? "found" : "missing");
+			}
+			return c;
+		}
+
 		RE::BGSBaseAlias* PlayerAlias(RE::TESQuest* quest)
 		{
 			if (!quest)
@@ -126,6 +149,25 @@ namespace QuickLight
 		j["running"] = running;
 		j["on"] = on;
 		return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	void ReadState(bool& installed, bool& running, bool& on)
+	{
+		const Cache& c = Cached();
+		installed = c.quest != nullptr;
+		running = installed && c.quest->IsRunning();
+		on = false;
+		if (!running)
+			return;
+		auto* pc = RE::PlayerCharacter::GetSingleton();
+		auto* mt = pc ? pc->AsMagicTarget() : nullptr;
+		if (!mt)
+			return;
+		for (auto* eff : c.effects)
+			if (eff && mt->HasMagicEffect(eff)) {
+				on = true;
+				return;
+			}
 	}
 
 	std::string TurnOn()
