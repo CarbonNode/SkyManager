@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 
 namespace OpenDiag
 {
@@ -29,6 +30,11 @@ namespace OpenDiag
 	// bEagerDeckView) read the same INI without duplicating the parser. Not cached
 	// here — the caller caches (once, in a function-local static).
 	bool IniBool(const char* key, bool dflt);
+
+	// The raw value of `key` in SkyManager.ini (trimmed), or `dflt` when the file
+	// or the key is missing. Read from disk on every call; the caller decides
+	// whether to cache.
+	std::string IniString(const char* key, const std::string& dflt);
 
 	// Monotonic milliseconds, for phase math.
 	[[nodiscard]] std::int64_t NowMs();

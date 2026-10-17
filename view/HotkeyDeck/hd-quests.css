@@ -756,6 +756,7 @@
 .hdq-act:hover { background: #c9a24b22; border-color: #c9a24b77; color: #f2e7ca; }
 .hdq-act:active { transform: translateY(1px); }
 .hdq-act:focus-visible { outline: 2px solid #c9a24b88; outline-offset: 1px; }
+.hdq-act.is-armed { background: #d96a5a33; border-color: #d96a5abb; color: #ffe2db; }   /* Skip to N? — second click fires */
 
 /* Disabled says WHY in its title rather than vanishing: a quest with no next
    stage, or no live target, is a fact worth seeing on the row. */

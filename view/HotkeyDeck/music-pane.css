@@ -1,0 +1,784 @@
+/* ===================================================================== *
+ *  Music tab (mus-) — the whole tab is one Dwemer radio cabinet.
+ *
+ *  Rober, 2026-10-14: "Dwemer radio style" → "Redesign the whole UI so it
+ *  feels like it's a Dwemer radio". A cathedral radio, top to bottom:
+ *    .mus-crown   brass nameplate · the crest (music-art/crown-720.png) ·
+ *                 the ON AIR plate
+ *    .mus-dial    the amber glass: porthole, what you hear, the tuning scale
+ *    .mus-speaker the grille (music-art/grille.jpg) under the queue
+ *    .mus-drum    the station browser behind dark glass, band keys on top
+ *    .mus-plinth  transport keys, volume knob, repeat selector, the quiet
+ *                 toggle, the maker's badge
+ *  Art is pre-sized for Ultralight (it samples an <img> with no mipmaps, so
+ *  each source is within ~3x of the size it is drawn at).
+ *
+ *  Ultralight rules honoured here: literal rgba() only (no color-mix), no
+ *  gradient on a large element (the cabinet, glass and panels are flat;
+ *  gradients only on keys, knobs, plates and rivets — all small), no
+ *  conic-gradient (the knob's scale is eleven rotated ticks), flex rather
+ *  than grid wherever a box scrolls, transport marks drawn with borders (no
+ *  media glyphs), no box-shadow big enough to read as a black slab, and no
+ *  text under 14px. The only endless animation is the ON AIR plate's glow,
+ *  a small box.
+ *
+ *  Own file — loaded by hd-css.js when the tab is first shown (index.html
+ *  placeholder; the gate covers the body-level popouts too).
+ * ===================================================================== */
+
+#mus-pane, .mus-pop-back {
+  --mus-brass: #b8925a;
+  --mus-brass-hi: #e3c58a;
+  --mus-brass-lo: #6e5231;
+  --mus-bronze: #3b2a19;
+  --mus-cab: #1a120a;
+  --mus-cab-2: #22180e;
+  --mus-rim: #7a5a33;
+  --mus-iron: #17110b;
+  --mus-iron-2: #1d160e;
+  --mus-glass: #0b0906;
+  --mus-amber: #ffb54a;
+  --mus-amber-hi: #ffd28a;
+  --mus-amber-dim: #c98a3a;
+  --mus-ink: #efe3c8;
+  --mus-muted: #ab9b7e;
+  --mus-engrave: #2a1d10;
+  --mus-line: rgba(184,146,90,.28);
+}
+
+#mus-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 14px 30px 30px;
+  position: relative;
+  overflow: hidden;
+  color: var(--mus-ink);
+}
+#mus-pane.hidden { display: none; }
+#mus-pane .hidden { display: none; }
+
+/* ------------------------------------------------------- the cabinet -- */
+
+/* One bronze body with a cathedral arch for a top: the shoulders are a
+   wide ellipse, the base square-ish. Flat colour (a large element), the
+   rim and its inner engraved line are borders and inset shadows. */
+.mus-cab {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0 34px;
+  background: var(--mus-cab);
+  border: 3px solid var(--mus-rim);
+  border-radius: 46% 46% 26px 26px / 150px 150px 26px 26px;
+  box-shadow: inset 0 0 0 7px #120c06, inset 0 0 0 9px rgba(227,197,138,.26), 0 3px 0 #0a0704;
+}
+/* the feet */
+.mus-cab::before, .mus-cab::after {
+  content: ''; position: absolute; bottom: -16px; width: 120px; height: 14px; border-radius: 0 0 10px 10px;
+  background: linear-gradient(180deg, #8a6a3c 0%, #5a4329 100%); border: 2px solid #3b2a19; border-top: 0;
+}
+.mus-cab::before { left: 90px; }
+.mus-cab::after { right: 90px; }
+
+/* ----------------------------------------------------------- crown ---- */
+
+.mus-crown {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 30px;
+  padding-top: 12px;
+  min-width: 0;
+}
+.mus-crown-art { width: 320px; height: 180px; flex: none; margin-bottom: -10px; }
+.mus-plate { flex: 0 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding-bottom: 14px; }
+/* the shoulders: louvres cut into the bronze, as on a cabinet radio */
+.mus-louver { flex: 1 1 0; min-width: 0; max-width: 520px; display: flex; flex-direction: column; gap: 11px; align-self: center; margin-top: 34px; }
+.mus-louver:first-child { margin-left: 110px; }
+.mus-louver:last-child { margin-right: 110px; }
+.mus-louver i {
+  display: block; height: 6px; border-radius: 3px; background: #0b0703;
+  box-shadow: inset 0 1px 1px rgba(0,0,0,.8), 0 1px 0 rgba(227,197,138,.2);
+}
+.mus-plate-l { align-items: flex-end; text-align: right; }
+.mus-plate-r { align-items: flex-start; }
+/* an engraved brass nameplate — small, so the gradient is allowed */
+.mus-plate-face {
+  display: inline-flex; align-items: center; padding: 8px 28px 7px; border-radius: 10px;
+  background: linear-gradient(180deg, #e8cd93 0%, #c39d5f 52%, #94713f 100%);
+  border: 2px solid #5a4329; box-shadow: 0 3px 0 #2a1d10, inset 0 1px 0 rgba(255,244,214,.7);
+}
+.mus-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 10px;
+  margin-right: -10px;
+  color: var(--mus-engrave);
+  line-height: 1.1;
+  text-shadow: 0 1px 0 rgba(255,240,205,.55);
+}
+.mus-sub { font-size: 15px; color: var(--mus-muted); letter-spacing: .6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* ON AIR: an engraved glass plate that lights while something plays */
+.mus-onair {
+  font-family: Georgia, "Times New Roman", serif; font-size: 20px; font-weight: 700; letter-spacing: 5px; text-transform: uppercase;
+  padding: 8px 22px 7px; border-radius: 10px; color: #5c4528; background: #120c06;
+  border: 2px solid #5a4329; box-shadow: inset 0 0 0 1px rgba(184,146,90,.2);
+  transition: color 300ms ease, background 300ms ease, border-color 300ms ease, text-shadow 300ms ease;
+}
+.mus-onair.live {
+  color: var(--mus-amber-hi); background: #3a1f08; border-color: var(--mus-amber-dim);
+  text-shadow: 0 0 10px rgba(255,170,60,.85);
+  animation: mus-air 2.6s ease-in-out infinite;
+}
+@keyframes mus-air {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(255,181,74,.35), 0 0 8px rgba(255,150,40,.25); }
+  50% { box-shadow: inset 0 0 0 1px rgba(255,181,74,.6), 0 0 18px rgba(255,150,40,.5); }
+}
+
+/* ------------------------------------------------------------ dial ---- */
+
+/* the amber glass in its brass bezel */
+.mus-dial {
+  position: relative; flex: none; display: flex; flex-direction: column; gap: 12px;
+  padding: 18px 26px 14px;
+  background: #140c05;
+  border: 6px solid var(--mus-brass);
+  border-radius: 30px;
+  box-shadow: 0 0 0 2px #3b2a19, inset 0 0 0 2px #3b2a19, inset 0 0 0 3px rgba(255,181,74,.16), inset 0 0 46px rgba(255,140,30,.10), 0 4px 0 #0c0805;
+}
+.mus-dial-top { display: flex; align-items: center; gap: 26px; min-width: 0; }
+
+/* the porthole: a round brass-rimmed window */
+.mus-port {
+  width: 156px; height: 156px; flex: none; border-radius: 50%; overflow: hidden; position: relative;
+  background: var(--mus-glass); border: 5px solid var(--mus-brass);
+  box-shadow: 0 0 0 2px #3b2a19, inset 0 0 0 3px #0e0a06, inset 0 0 0 4px rgba(227,197,138,.25);
+  display: flex; align-items: center; justify-content: center;
+}
+/* a 16:9 picture cropped round by layout (never by transform) */
+.mus-port-thumb { width: 260px; height: 146px; flex: none; display: block; }
+.mus-port-art { width: 132px; height: 132px; flex: none; }
+.mus-port-medal { background: #1a1209; }
+.mus-port-medal-img { width: 140px; height: 140px; flex: none; }
+
+.mus-glass { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+.mus-glass-state {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 15px; letter-spacing: 2.6px; text-transform: uppercase; color: var(--mus-amber-dim);
+}
+.mus-glass-state.live { color: var(--mus-amber); text-shadow: 0 0 8px rgba(255,170,60,.5); }
+.mus-band-tag {
+  font-size: 14px; letter-spacing: 1.4px; padding: 2px 10px; border-radius: 6px;
+  border: 1px solid rgba(111,163,149,.6); color: #bfe0d6; background: rgba(111,163,149,.12); text-shadow: none;
+}
+.mus-glass-title {
+  font-family: Georgia, "Times New Roman", serif; font-size: 34px; line-height: 1.18; color: var(--mus-amber-hi);
+  text-shadow: 0 0 16px rgba(255,170,60,.45);
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; text-wrap: balance;
+}
+.mus-glass-sub { font-size: 17px; color: #d2b98d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.mus-dial-side { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 14px; }
+.mus-readout {
+  font-family: Georgia, "Times New Roman", serif; font-size: 28px; color: var(--mus-amber-hi); white-space: nowrap;
+  text-shadow: 0 0 12px rgba(255,170,60,.5); letter-spacing: 1px;
+}
+.mus-readout-of { color: var(--mus-amber-dim); margin: 0 8px; }
+.mus-dial-btns { display: flex; align-items: center; gap: 10px; }
+
+/* the tuning scale: printed numbers or station kinds over a ticked band,
+   one needle */
+.mus-scale {
+  position: relative; height: 66px; border-radius: 12px; overflow: hidden;
+  background: #0d0703; border: 2px solid #4a3620;
+  box-shadow: inset 0 0 0 1px rgba(255,181,74,.08);
+}
+.mus-scale.live { cursor: pointer; }
+.mus-scale.live:hover { border-color: var(--mus-brass); }
+.mus-scale-labels { position: absolute; left: 12px; right: 12px; top: 4px; height: 30px; }
+.mus-scale-num {
+  position: absolute; top: 4px; transform: translateX(-50%); white-space: nowrap;
+  font-size: 15px; letter-spacing: 1px; color: rgba(255,210,138,.8);
+}
+.mus-scale-num:first-child { transform: none; }
+.mus-scale-num:last-child { transform: translateX(-100%); }
+.mus-scale-kind {
+  position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap;
+  font: inherit; font-size: 15px; letter-spacing: 2px; text-transform: uppercase;
+  padding: 4px 12px; border: 1px solid transparent; border-radius: 7px; background: transparent;
+  color: rgba(255,210,138,.62); cursor: pointer; transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.mus-scale-kind:hover { color: var(--mus-amber-hi); background: rgba(255,181,74,.10); border-color: rgba(255,181,74,.35); }
+.mus-scale-kind.on { color: var(--mus-amber-hi); text-shadow: 0 0 10px rgba(255,170,60,.7); }
+.mus-scale-ticks { position: absolute; left: 12px; right: 12px; bottom: 0; height: 26px; }
+.mus-tick { position: absolute; bottom: 6px; width: 2px; height: 7px; margin-left: -1px; background: rgba(227,197,138,.3); }
+.mus-tick.mid { height: 11px; background: rgba(227,197,138,.45); }
+.mus-tick.major { height: 17px; background: rgba(227,197,138,.7); }
+.mus-band-fill { position: absolute; left: 12px; bottom: 0; height: 4px; width: 0; max-width: calc(100% - 24px); background: rgba(255,181,74,.55); }
+.mus-scale.idle .mus-band-fill { display: none; }
+.mus-needle {
+  position: absolute; top: 34px; bottom: 3px; left: 0; width: 4px; margin-left: -2px; border-radius: 2px;
+  background: #ff7a2c; box-shadow: 0 0 10px rgba(255,120,40,.9);
+  transition: left 600ms cubic-bezier(.3,.8,.3,1);
+}
+.mus-scale.live .mus-needle { transition: none; }
+
+/* ------------------------------------------------------- the body ---- */
+
+.mus-cab-body { flex: 1 1 auto; min-height: 0; display: flex; gap: 22px; align-items: stretch; }
+
+/* the speaker: the grille, with the queue on it */
+.mus-speaker {
+  flex: 0 0 38%; min-width: 0; min-height: 0; position: relative; overflow: hidden; display: flex; flex-direction: column;
+  border-radius: 22px; border: 4px solid var(--mus-brass-lo);
+  background: #0d0905 url(music-art/grille.jpg) center / cover no-repeat;
+  box-shadow: 0 0 0 2px #120c06, inset 0 0 0 2px #050302;
+}
+.mus-speaker-veil {
+  position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none;
+  background: rgba(10,7,4,.84); transition: background 500ms ease;
+}
+.mus-speaker.empty .mus-speaker-veil { background: rgba(10,7,4,.18); }
+.mus-speaker-in {
+  position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 14px; padding: 20px 22px;
+}
+
+/* the station drum: the browser behind dark glass */
+.mus-drum {
+  flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 14px;
+  padding: 18px 22px 16px; background: #0f0a05;
+  border: 4px solid var(--mus-brass-lo); border-radius: 22px;
+  box-shadow: 0 0 0 2px #120c06, inset 0 0 0 2px #050302, inset 0 0 0 3px rgba(255,181,74,.10);
+}
+
+/* ------------------------------------------------------- the plinth -- */
+
+.mus-plinth {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 30px;
+  margin: 0 -34px; padding: 16px 44px 18px;
+  background: var(--mus-cab-2);
+  border-top: 3px solid var(--mus-rim);
+  border-radius: 0 0 23px 23px;
+  box-shadow: inset 0 1px 0 rgba(227,197,138,.18);
+}
+.mus-plinth-keys { display: flex; align-items: center; gap: 12px; flex: none; }
+.mus-plinth-dials { display: flex; align-items: flex-end; gap: 44px; flex: none; }
+.mus-ctl { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.mus-engrave {
+  font-size: 14px; letter-spacing: 2.4px; text-transform: uppercase; color: var(--mus-muted); white-space: nowrap;
+}
+.mus-engrave b { font-family: Georgia, "Times New Roman", serif; font-size: 18px; letter-spacing: 1px; color: var(--mus-amber-hi); margin-left: 6px; font-weight: 600; }
+
+/* brass keys — small, so the gradient is allowed */
+.mus-key {
+  width: 64px; height: 64px; border-radius: 14px; padding: 0; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 2px solid #5a4329;
+  background: linear-gradient(180deg, #e1c287 0%, #b8925a 55%, #8a6a3c 100%);
+  box-shadow: 0 4px 0 #3b2a19, inset 0 1px 0 rgba(255,240,210,.6);
+  transition: transform 80ms ease, box-shadow 80ms ease, filter 120ms ease;
+}
+.mus-key:hover { filter: brightness(1.1); }
+.mus-key:active { transform: translateY(4px); box-shadow: 0 0 0 #3b2a19, inset 0 1px 0 rgba(255,240,210,.4); }
+.mus-key-main { width: 84px; height: 84px; border-radius: 18px; }
+.mus-key-main.busy { filter: saturate(.6) brightness(.9); }
+
+/* the transport marks: borders and boxes, never glyphs */
+.mus-ic { position: relative; display: inline-block; width: 22px; height: 22px; }
+.mus-ic i { position: absolute; display: block; }
+.mus-ic-play i:first-child {
+  left: 6px; top: 2px; width: 0; height: 0;
+  border-top: 9px solid transparent; border-bottom: 9px solid transparent; border-left: 15px solid var(--mus-engrave);
+}
+.mus-ic-pause i { top: 3px; width: 6px; height: 16px; background: var(--mus-engrave); border-radius: 1px; }
+.mus-ic-pause i:first-child { left: 4px; }
+.mus-ic-pause i:last-child { left: 13px; }
+.mus-ic-stop i:first-child { left: 4px; top: 4px; width: 14px; height: 14px; background: var(--mus-engrave); border-radius: 2px; }
+.mus-ic-next i:first-child, .mus-ic-prev i:first-child {
+  top: 4px; width: 0; height: 0; border-top: 7px solid transparent; border-bottom: 7px solid transparent;
+}
+.mus-ic-next i:first-child { left: 3px; border-left: 12px solid var(--mus-engrave); }
+.mus-ic-next i:last-child { left: 15px; top: 4px; width: 4px; height: 14px; background: var(--mus-engrave); }
+.mus-ic-prev i:first-child { left: 7px; border-right: 12px solid var(--mus-engrave); }
+.mus-ic-prev i:last-child { left: 3px; top: 4px; width: 4px; height: 14px; background: var(--mus-engrave); }
+.mus-key-main .mus-ic { transform: scale(1.35); }
+
+/* the volume knob inside its printed scale: eleven ticks, each a thin box
+   rotated about the ring's centre (no conic-gradient in Ultralight) */
+.mus-ring { position: relative; width: 120px; height: 120px; flex: none; }
+.mus-ring-tick { position: absolute; left: 59px; top: 0; width: 2px; height: 60px; transform-origin: 1px 60px; }
+.mus-ring-tick::before { content: ''; position: absolute; left: 0; top: 0; width: 2px; height: 8px; background: rgba(227,197,138,.5); }
+.mus-ring-tick.major::before { height: 12px; background: rgba(255,210,138,.85); }
+.mus-knob {
+  position: absolute; left: 15px; top: 15px; width: 90px; height: 90px; border-radius: 50%; cursor: grab;
+  background: #20180f; border: 2px solid #5a4329; box-shadow: 0 3px 0 #2a1d10; outline: none;
+}
+.mus-knob:focus { border-color: var(--mus-amber); }
+.mus-knob-cap {
+  position: absolute; left: 7px; top: 7px; width: 72px; height: 72px; border-radius: 50%;
+  background: radial-gradient(circle at 38% 32%, #f3dcab 0, #c9a467 38%, #8a6a3c 78%, #5a4329 100%);
+  box-shadow: inset 0 0 0 2px rgba(59,42,25,.55);
+}
+.mus-knob-mark { position: absolute; left: 34px; top: 6px; width: 4px; height: 20px; border-radius: 2px; background: var(--mus-engrave); }
+
+/* the repeat selector: a rotary switch with three printed positions */
+.mus-rot { position: relative; width: 170px; height: 120px; flex: none; }
+.mus-rot-pos {
+  position: absolute; font: inherit; font-size: 15px; letter-spacing: 1.6px; text-transform: uppercase;
+  padding: 4px 8px; border: 1px solid transparent; border-radius: 7px; background: transparent;
+  color: var(--mus-muted); cursor: pointer; white-space: nowrap; transition: color 140ms ease, background 140ms ease;
+}
+.mus-rot-pos:hover { color: var(--mus-brass-hi); background: rgba(184,146,90,.12); }
+.mus-rot-pos.on { color: var(--mus-amber-hi); text-shadow: 0 0 8px rgba(255,170,60,.6); border-color: rgba(255,181,74,.35); }
+.mus-rot-off { left: 0; top: 30px; }
+.mus-rot-one { left: 62px; top: 0; }
+.mus-rot-all { right: 0; top: 30px; }
+.mus-rot-knob {
+  position: absolute; left: 50px; top: 46px; width: 70px; height: 70px; padding: 0; border-radius: 50%; cursor: pointer;
+  background: #20180f; border: 2px solid #5a4329; box-shadow: 0 3px 0 #2a1d10;
+}
+.mus-rot-knob:hover { border-color: var(--mus-brass-hi); }
+.mus-rot-cap {
+  position: absolute; left: 6px; top: 6px; width: 54px; height: 54px; border-radius: 50%; display: block;
+  background: radial-gradient(circle at 38% 32%, #f3dcab 0, #c9a467 38%, #8a6a3c 78%, #5a4329 100%);
+  transition: transform 220ms cubic-bezier(.3,.8,.3,1);
+}
+.mus-rot-cap i { position: absolute; left: 24px; top: 4px; width: 6px; height: 20px; border-radius: 3px; background: var(--mus-engrave); }
+
+/* the quiet-Skyrim toggle: a bat-handle switch in a brass slot */
+.mus-toggle {
+  font: inherit; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent;
+  cursor: pointer; color: var(--mus-muted);
+}
+.mus-toggle-word { font-size: 15px; letter-spacing: 2px; text-transform: uppercase; }
+.mus-toggle.on .mus-toggle-word { color: var(--mus-amber-hi); text-shadow: 0 0 8px rgba(255,170,60,.6); }
+.mus-toggle-slot {
+  position: relative; display: block; width: 46px; height: 76px; border-radius: 12px;
+  background: #0d0905; border: 2px solid #5a4329; box-shadow: inset 0 0 0 2px #050302;
+}
+.mus-toggle:hover .mus-toggle-slot { border-color: var(--mus-brass-hi); }
+.mus-toggle-bat {
+  position: absolute; left: 9px; top: 38px; width: 24px; height: 30px; border-radius: 12px;
+  background: linear-gradient(180deg, #f1d9a6 0%, #b8925a 55%, #6e5231 100%);
+  box-shadow: 0 2px 0 #2a1d10;
+  transition: top 160ms cubic-bezier(.3,.8,.3,1);
+}
+.mus-toggle.on .mus-toggle-bat { top: 6px; }
+
+/* the maker's badge */
+.mus-badge { display: flex; align-items: center; gap: 14px; flex: none; opacity: .9; }
+.mus-badge img { width: 72px; height: 72px; flex: none; }
+.mus-badge-text { display: flex; flex-direction: column; gap: 3px; }
+.mus-badge-name {
+  font-family: Georgia, "Times New Roman", serif; font-size: 20px; letter-spacing: 6px; text-transform: uppercase; color: var(--mus-brass-hi);
+}
+.mus-badge-mk { font-size: 14px; letter-spacing: 1.6px; color: var(--mus-muted); white-space: nowrap; }
+
+/* ---------------------------------------------------- shared parts --- */
+
+.mus-dim { color: var(--mus-muted); }
+.mus-note { color: var(--mus-amber-dim); }
+.mus-err {
+  font-size: 15px; color: #f6c9b5; background: rgba(150,60,40,.18); border: 1px solid #6a3a2c;
+  border-radius: 10px; padding: 10px 14px; line-height: 1.45;
+}
+.mus-hint { font-size: 15px; color: var(--mus-muted); padding: 2px 4px 8px; line-height: 1.45; flex: none; }
+.mus-hint-c { text-align: center; padding: 18px 8px; }
+
+/* rivets at the four corners — small, so a gradient is allowed */
+.mus-rv {
+  position: absolute; width: 12px; height: 12px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #f1d9a6 0, #b8925a 45%, #5a4329 100%);
+  box-shadow: 0 1px 1px rgba(0,0,0,.7);
+  pointer-events: none;
+}
+.mus-rv-tl { left: 12px; top: 12px; } .mus-rv-tr { right: 12px; top: 12px; }
+.mus-rv-bl { left: 12px; bottom: 12px; } .mus-rv-br { right: 12px; bottom: 12px; }
+
+/* buttons: brass-rimmed iron */
+.mus-btn {
+  font: inherit; font-size: 15px; display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 16px; border-radius: 9px; border: 1px solid var(--mus-brass-lo);
+  background: var(--mus-iron-2); color: var(--mus-ink); cursor: pointer; white-space: nowrap;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.mus-btn:hover { border-color: var(--mus-brass-hi); color: var(--mus-brass-hi); background: #241b11; }
+.mus-btn:active { background: #2c2114; }
+.mus-btn-hero { background: rgba(184,146,90,.22); border-color: rgba(227,197,138,.6); color: var(--mus-amber-hi); }
+.mus-btn-hero:hover { background: rgba(184,146,90,.34); }
+.mus-btn-danger:hover, .mus-btn-danger.armed { color: #f6c9b5; border-color: #8a4a38; background: rgba(150,60,40,.22); }
+.mus-link {
+  font: inherit; font-size: 15px; border: 0; background: transparent;
+  color: var(--mus-brass); cursor: pointer; padding: 6px 10px; border-radius: 6px; white-space: nowrap;
+}
+.mus-link:hover { color: var(--mus-brass-hi); background: rgba(184,146,90,.12); }
+.mus-x {
+  font: inherit; font-size: 22px; line-height: 1; width: 36px; height: 36px; flex: none;
+  border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--mus-muted); cursor: pointer;
+}
+.mus-x:hover { color: #f6c9b5; border-color: #6a3a2c; background: rgba(150,60,40,.18); }
+.mus-x.mus-mv:hover { color: var(--mus-brass-hi); border-color: var(--mus-brass-lo); background: rgba(184,146,90,.12); }
+.mus-x[disabled] { opacity: .25; cursor: default; }
+.mus-x[disabled]:hover { color: var(--mus-muted); border-color: transparent; background: transparent; }
+.mus-star {
+  font: inherit; font-size: 22px; line-height: 1; width: 42px; height: 42px; flex: none;
+  border: 1px solid var(--mus-brass-lo); border-radius: 9px; background: var(--mus-iron-2); color: #6b5a40; cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.mus-star:hover { color: var(--mus-amber-hi); border-color: var(--mus-brass-hi); }
+.mus-star.on { color: var(--mus-amber); border-color: rgba(227,197,138,.7); background: rgba(184,146,90,.18); }
+.mus-pill {
+  display: inline-block; font-size: 14px; padding: 2px 10px; margin-left: 10px; border-radius: 999px;
+  border: 1px solid var(--mus-brass-lo); color: var(--mus-ink); background: #20180f; vertical-align: 2px;
+}
+.mus-pill-held { border-color: rgba(255,181,74,.8); color: var(--mus-amber-hi); background: rgba(255,181,74,.14); }
+
+/* ------------------------------------------ Skyrim's engine plate -- */
+
+.mus-sky {
+  display: flex; flex-direction: column; justify-content: center; gap: 10px; flex: 0 1 620px; min-width: 0;
+  align-self: stretch; padding: 4px 0 4px 26px; border-left: 1px solid rgba(255,181,74,.2);
+}
+.mus-plate-row { display: flex; align-items: center; gap: 12px; font-size: 16px; line-height: 1.45; min-width: 0; }
+.mus-plate-text { min-width: 0; }
+.mus-plate-text b { color: var(--mus-brass-hi); font-weight: 600; }
+.mus-plate-medal { width: 40px; height: 40px; flex: none; }
+.mus-plate-q { flex-wrap: nowrap; overflow: hidden; }
+.mus-qchip {
+  display: inline-block; padding: 2px 12px; border-radius: 999px; white-space: nowrap; font-size: 15px;
+  border: 1px solid var(--mus-brass-lo); color: var(--mus-ink); background: #20180f;
+}
+.mus-held {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px;
+  background: rgba(255,181,74,.08); border: 1px solid rgba(255,181,74,.4);
+}
+.mus-held-text { font-size: 16px; color: var(--mus-amber-hi); flex: 1 1 auto; min-width: 0; }
+
+/* ------------------------------------------------ the queue (speaker) -- */
+
+.mus-queue { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.mus-section-title {
+  font-family: Georgia, "Times New Roman", serif; font-size: 22px; letter-spacing: 1.6px; color: var(--mus-brass-hi);
+  display: flex; align-items: center; gap: 12px; flex: none;
+}
+.mus-section-title .mus-dim { font-family: inherit; font-size: 15px; letter-spacing: 0; }
+.mus-section-acts { margin-left: auto; display: flex; gap: 4px; font-family: "Segoe UI", system-ui, sans-serif; letter-spacing: 0; }
+.mus-qlist { display: flex; flex-direction: column; gap: 6px; flex: 0 1 auto; min-height: 0; }
+.mus-qrow {
+  display: flex; align-items: center; gap: 12px; padding: 7px 10px; border-radius: 10px; cursor: pointer;
+  border: 1px solid rgba(110,82,49,.55); background: rgba(16,11,6,.94); flex: none;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.mus-qrow:hover { background: #20180f; border-color: var(--mus-brass); }
+.mus-qrow.cur { background: #2a1a09; border-color: rgba(255,181,74,.55); }
+.mus-qnum { width: 30px; flex: none; text-align: center; font-size: 15px; color: var(--mus-muted); }
+.mus-qrow.cur .mus-qnum, .mus-prow.cur .mus-qnum { color: var(--mus-amber); }
+.mus-qthumb { width: 64px; height: 36px; flex: none; border-radius: 6px; overflow: hidden; background: var(--mus-glass); display: flex; align-items: center; justify-content: center; }
+.mus-qthumb img { width: 64px; height: 36px; display: block; }
+.mus-qthumb .mus-qthumb-art { width: 34px; height: 34px; }
+.mus-qtitle { flex: 1 1 auto; min-width: 0; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mus-qdur { flex: none; font-size: 15px; color: var(--mus-muted); }
+
+/* an empty queue: the lit grille, and one brass plaque */
+.mus-plaque {
+  position: relative; margin: auto; max-width: 420px; padding: 24px 30px; border-radius: 16px; text-align: center;
+  background: rgba(16,11,6,.9); border: 2px solid var(--mus-brass-lo);
+  box-shadow: inset 0 0 0 4px #120c06, inset 0 0 0 5px rgba(227,197,138,.22);
+}
+.mus-plaque-title { font-family: Georgia, "Times New Roman", serif; font-size: 24px; color: var(--mus-brass-hi); letter-spacing: 1px; }
+.mus-plaque-sub { font-size: 16px; color: var(--mus-muted); margin-top: 10px; line-height: 1.55; text-wrap: pretty; }
+.mus-plaque-sub b { color: var(--mus-ink); }
+.mus-nw { white-space: nowrap; }
+
+/* setup (no mpv / yt-dlp) — sits on the darkened speaker */
+.mus-setup { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.mus-setup-title { font-family: Georgia, "Times New Roman", serif; font-size: 23px; color: var(--mus-brass-hi); }
+.mus-setup-body, .mus-setup-foot { font-size: 16px; color: var(--mus-ink); line-height: 1.5; }
+.mus-setup-foot { color: var(--mus-muted); }
+.mus-setup-steps { margin: 0; padding-left: 24px; font-size: 16px; line-height: 1.55; }
+.mus-setup-steps li { margin-bottom: 8px; }
+.mus-setup .mus-btn { align-self: flex-start; }
+.mus-path {
+  font-family: Consolas, "Courier New", monospace; font-size: 15px; color: var(--mus-amber-hi); background: var(--mus-glass);
+  border: 1px solid #4a3620; border-radius: 8px; padding: 8px 12px; margin: 6px 0; overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------- the drum (stations) -- */
+
+/* five band keys: ivory-brass push keys, the pressed one sunk and lit */
+.mus-modes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; flex: none; padding-bottom: 4px; }
+.mus-bandkey {
+  font: inherit; font-size: 16px; font-weight: 600; letter-spacing: 1.4px; text-transform: uppercase;
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 6px 11px;
+  border-radius: 10px; border: 2px solid #5a4329; cursor: pointer; white-space: nowrap; color: var(--mus-engrave);
+  background: linear-gradient(180deg, #e8d3a4 0%, #c9a86e 60%, #a8844f 100%);
+  box-shadow: 0 5px 0 #3b2a19, inset 0 1px 0 rgba(255,246,222,.75);
+  transition: transform 90ms ease, box-shadow 90ms ease, filter 120ms ease;
+}
+.mus-bandkey:hover { filter: brightness(1.08); }
+.mus-bandkey-lamp { display: block; width: 34px; height: 5px; border-radius: 3px; background: #4a3620; }
+.mus-bandkey.on {
+  transform: translateY(4px); color: #3a1f08;
+  background: linear-gradient(180deg, #ffd791 0%, #f0b45c 60%, #d08a35 100%);
+  box-shadow: 0 1px 0 #3b2a19, inset 0 1px 0 rgba(255,246,222,.6), 0 0 14px rgba(255,160,50,.3);
+}
+.mus-bandkey.on .mus-bandkey-lamp { background: #fff2cf; box-shadow: 0 0 8px rgba(255,220,150,.9); }
+
+.mus-bar, .mus-pop-bar {
+  display: flex; align-items: center; gap: 10px; flex: none; background: var(--mus-glass);
+  border: 2px solid #4a3620; border-radius: 12px; padding: 0 8px 0 14px;
+}
+.mus-bar:focus-within, .mus-pop-bar:focus-within { border-color: var(--mus-amber-dim); }
+.mus-bar-glyph { font-size: 20px; color: var(--mus-brass); flex: none; }
+.mus-bar input, .mus-pop-bar input {
+  font: inherit; font-size: 17px; flex: 1 1 auto; min-width: 0; height: 50px; border: 0; outline: 0;
+  background: transparent; color: var(--mus-amber-hi);
+}
+.mus-clear {
+  font: inherit; font-size: 22px; width: 36px; height: 36px; border: 0; border-radius: 8px;
+  background: transparent; color: var(--mus-muted); cursor: pointer; flex: none;
+}
+.mus-clear:hover { color: var(--mus-brass-hi); background: rgba(184,146,90,.12); }
+.mus-go { flex: none; }
+
+/* six station kinds: one segmented bank, equal cells, never wrapping */
+.mus-kinds {
+  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); flex: none;
+  border: 1px solid var(--mus-brass-lo); border-radius: 12px; overflow: hidden; background: var(--mus-glass);
+}
+.mus-kinds button {
+  font: inherit; font-size: 15px; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 10px 6px; border: 0; background: transparent; color: var(--mus-muted); cursor: pointer; white-space: nowrap;
+  transition: background 140ms ease, color 140ms ease;
+}
+.mus-kinds button + button { border-left: 1px solid var(--mus-brass-lo); }
+.mus-kinds button img { width: 52px; height: 52px; opacity: .85; }
+.mus-kinds button:hover { color: var(--mus-brass-hi); background: rgba(184,146,90,.10); }
+.mus-kinds button:hover img { opacity: 1; }
+.mus-kinds button.on { background: rgba(255,181,74,.16); color: var(--mus-amber-hi); }
+.mus-kinds button.on img { opacity: 1; }
+.mus-count { font-size: 15px; color: var(--mus-muted); flex: none; padding: 0 2px; }
+
+.mus-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px; }
+.mus-listhead { display: flex; align-items: center; gap: 10px; font-size: 16px; color: var(--mus-brass-hi); padding: 2px 2px 6px; flex: none; }
+.mus-listhead-text { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mus-searching { display: flex; align-items: center; gap: 12px; font-size: 16px; color: var(--mus-ink); padding: 14px 6px; flex: none; }
+.mus-spin {
+  width: 18px; height: 18px; border-radius: 50%; border: 3px solid #4a3620; border-top-color: var(--mus-amber);
+  animation: mus-spin 900ms linear infinite; flex: none;
+}
+@keyframes mus-spin { to { transform: rotate(360deg); } }
+.mus-more { font-size: 15px; color: var(--mus-muted); padding: 10px 6px; text-align: center; flex: none; }
+
+.mus-row {
+  display: flex; align-items: center; gap: 14px; padding: 8px 12px; border-radius: 12px; cursor: pointer;
+  border: 1px solid transparent; background: var(--mus-iron-2); flex: none; min-height: min-content;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+/* a new list rises in, row by row (only when the list is new — the view
+   toggles .mus-reveal; a poll or an arrow key redraws without it) */
+.mus-reveal .mus-row { animation: mus-row-in 260ms ease both; }
+@keyframes mus-row-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.mus-reveal .mus-row:nth-child(2) { animation-delay: 30ms; } .mus-reveal .mus-row:nth-child(3) { animation-delay: 60ms; }
+.mus-reveal .mus-row:nth-child(4) { animation-delay: 90ms; } .mus-reveal .mus-row:nth-child(5) { animation-delay: 120ms; }
+.mus-reveal .mus-row:nth-child(n+6) { animation-delay: 150ms; }
+.mus-row:hover { background: #241b11; border-color: var(--mus-brass-lo); }
+.mus-row.sel { border-color: rgba(227,197,138,.7); background: #261d12; }
+.mus-row.cur { background: rgba(255,181,74,.10); }
+.mus-thumb {
+  width: 128px; height: 72px; flex: none; border-radius: 9px; overflow: hidden; background: var(--mus-glass);
+  border: 1px solid #4a3620; display: flex; align-items: center; justify-content: center;
+}
+.mus-thumb img { width: 128px; height: 72px; display: block; }
+.mus-thumb .mus-thumb-art { width: 64px; height: 64px; }
+/* a station's medallion stands on its own — no picture frame around it */
+.mus-thumb-medal { background: transparent; border-color: transparent; }
+.mus-thumb-medal img { width: 72px; height: 72px; }
+.mus-thumb-new { border-style: dashed; border-color: var(--mus-brass-lo); background: transparent; }
+.mus-plus { font-size: 36px; line-height: 1; color: var(--mus-brass); }
+.mus-newrow { background: transparent; border-color: rgba(110,82,49,.5); border-style: dashed; }
+.mus-newrow.named { background: rgba(255,181,74,.06); border-style: solid; }
+.mus-newrow.named .mus-plus { color: var(--mus-amber); }
+.mus-row-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.mus-row-title {
+  font-size: 17px; color: var(--mus-ink); line-height: 1.3;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.mus-row-sub { font-size: 15px; color: var(--mus-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mus-row-acts { display: flex; align-items: center; gap: 8px; flex: none; }
+.mus-row-acts .mus-btn { padding: 9px 12px; }
+.mus-live { color: var(--mus-amber); margin-right: 8px; font-size: 15px; }
+
+/* a playlist's cover: 4 thumbnails as a 2 x 2, or one, or the resonator.
+   Each tile is drawn at its source's 64 x 36 / 128 x 72, never scaled. */
+.mus-thumb-cover { background: var(--mus-glass); }
+.mus-cover { width: 128px; height: 72px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; overflow: hidden; }
+.mus-cover-4 img { width: 64px; height: 36px; display: block; }
+.mus-cover-1 img { width: 128px; height: 72px; display: block; }
+.mus-cover-0 img { width: 64px; height: 64px; }
+.mus-cover-big { width: 256px; height: 144px; border-radius: 12px; border: 2px solid var(--mus-brass-lo); background: var(--mus-glass); }
+.mus-cover-big.mus-cover-4 img { width: 128px; height: 72px; }
+.mus-cover-big.mus-cover-1 img { width: 256px; height: 144px; }
+.mus-cover-big.mus-cover-0 img { width: 128px; height: 128px; }
+
+/* an empty browser: one line on what to do, and the six station dials */
+.mus-empty { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center; min-height: min-content; }
+.mus-empty-title { font-family: Georgia, "Times New Roman", serif; font-size: 25px; color: var(--mus-brass-hi); }
+.mus-empty-sub { font-size: 16px; color: var(--mus-muted); line-height: 1.55; max-width: 560px; text-wrap: pretty; }
+.mus-empty-sub b { color: var(--mus-ink); }
+.mus-tune-label { margin-top: 22px; font-size: 14px; letter-spacing: 1.8px; text-transform: uppercase; color: var(--mus-muted); }
+/* six station dials: one 3 x 2 grid, every cell the same */
+.mus-tune { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; width: min(720px, 100%); }
+.mus-tune-cell {
+  font: inherit; font-size: 16px; display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 16px 10px 14px; border-radius: 14px; border: 1px solid var(--mus-brass-lo); background: var(--mus-iron-2);
+  color: var(--mus-ink); cursor: pointer; white-space: nowrap; transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.mus-tune-cell img { width: 88px; height: 88px; }
+.mus-tune-cell:hover { border-color: var(--mus-brass-hi); color: var(--mus-amber-hi); background: #241b11; }
+
+/* ------------------------------------------------------------- toast -- */
+
+.mus-toast {
+  position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%); max-width: 70%;
+  padding: 12px 20px; border-radius: 11px; font-size: 16px; line-height: 1.4;
+  background: #1d150c; border: 1px solid var(--mus-brass); color: var(--mus-amber-hi); box-shadow: 0 6px 18px rgba(0,0,0,.45); z-index: 5;
+}
+.mus-toast.err { border-color: #6a3a2c; color: #f6c9b5; background: #1d1210; }
+
+/* --------------------------------------------------------- popouts --- */
+/* Body-level and full-viewport: its bare vh/vw is correct, and it must not
+   wear the panel's --ui-scale (the 2026-08-14 popup audit). */
+
+.mus-pop-back {
+  position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 9000;
+  background: rgba(6,4,2,.74); display: flex; align-items: center; justify-content: center;
+}
+.mus-pop {
+  position: relative; width: min(980px, 82vw); max-height: 84vh; display: flex; flex-direction: column; gap: 14px;
+  background: var(--mus-cab); border: 3px solid var(--mus-rim); border-radius: 22px; padding: 28px 32px;
+  box-shadow: inset 0 0 0 6px #120c06, inset 0 0 0 8px rgba(227,197,138,.24), 0 10px 28px rgba(0,0,0,.45); color: var(--mus-ink);
+  animation: mus-pop-in 180ms ease both;
+}
+@keyframes mus-pop-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.mus-pop-pick { width: min(760px, 80vw); }
+.mus-pop-head { display: flex; align-items: center; gap: 20px; }
+.mus-pop-head > div { flex: 1 1 auto; min-width: 0; }
+.mus-pop-head > #mus-pl-cover { flex: none; }
+.mus-pop-medal { width: 72px; height: 72px; flex: none; }
+.mus-pop-title { font-family: Georgia, "Times New Roman", serif; font-size: 28px; color: var(--mus-brass-hi); letter-spacing: 1px; }
+.mus-pop-sub { font-size: 16px; color: var(--mus-muted); margin-top: 6px; }
+.mus-pl-name {
+  font-family: Georgia, "Times New Roman", serif; font-size: 30px; color: var(--mus-brass-hi); letter-spacing: 1px;
+  width: 100%; box-sizing: border-box; padding: 6px 10px; margin-left: -10px; border-radius: 9px;
+  border: 1px solid transparent; background: transparent; outline: 0;
+}
+.mus-pl-name:hover { border-color: var(--mus-brass-lo); }
+.mus-pl-name:focus { border-color: var(--mus-amber-dim); background: var(--mus-glass); }
+.mus-pop-acts { display: flex; align-items: center; gap: 10px; }
+.mus-pop-acts .mus-btn-danger { margin-left: auto; }
+.mus-pop-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
+.mus-prow { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 9px; font-size: 17px; border: 1px solid transparent; }
+.mus-prow:nth-child(odd) { background: var(--mus-iron-2); }
+.mus-prow.cur { background: rgba(255,181,74,.12); border-color: rgba(255,181,74,.45); }
+.mus-prow-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mus-prow .mus-dim { font-size: 15px; flex: none; }
+.mus-prow .mus-pill { margin-left: 0; }
+.mus-plitem, .mus-pick { cursor: pointer; }
+.mus-plitem:hover, .mus-pick:hover { border-color: var(--mus-brass-lo); background: #241b11; }
+.mus-plitem-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mus-plitem-main .mus-dim { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mus-pick { min-height: 56px; }
+.mus-pick.sel { border-color: rgba(227,197,138,.7); background: #261d12; }
+.mus-pick.has .mus-prow-title, .mus-pick.has .mus-dim { color: #7d6f58; }
+.mus-pick-new {
+  width: 64px; height: 36px; flex: none; display: flex; align-items: center; justify-content: center; font-size: 26px;
+  color: var(--mus-amber); border: 1px dashed var(--mus-brass-lo); border-radius: 6px;
+}
+.mus-pick-cover { width: 64px; height: 36px; flex: none; overflow: hidden; border-radius: 6px; background: var(--mus-glass); }
+.mus-pick-cover .mus-cover { width: 64px; height: 36px; }
+.mus-pick-cover .mus-cover-4 img { width: 32px; height: 18px; }
+.mus-pick-cover .mus-cover-1 img { width: 64px; height: 36px; }
+.mus-pick-cover .mus-cover-0 img { width: 34px; height: 34px; }
+.mus-pop-foot { display: flex; align-items: center; gap: 16px; font-size: 15px; color: var(--mus-muted); line-height: 1.45; }
+.mus-pop-foot b { color: var(--mus-ink); }
+.mus-pop-foot .mus-btn { margin-left: auto; flex: none; }
+
+/* --------------------------------------------- a shorter screen ----- */
+/* Under ~1000px of height the crown, the dial and the plinth tighten so
+   the speaker and the drum keep their room — type never shrinks below
+   the 14px floor, the brass just gets slimmer. The volume knob carries no
+   text and no <img>, so scaling it by transform is crisp; a negative
+   margin hands the saved space back to the layout. */
+@media (max-height: 1000px) {
+  #mus-pane { padding: 6px 22px 22px; }
+  .mus-cab { gap: 10px; border-radius: 46% 46% 22px 22px / 96px 96px 22px 22px; }
+  .mus-crown { padding-top: 4px; gap: 22px; }
+  .mus-crown-art { width: 170px; height: 96px; margin-bottom: -4px; }
+  .mus-plate { gap: 4px; padding-bottom: 6px; }
+  .mus-plate-face { padding: 5px 20px 4px; }
+  .mus-title { font-size: 24px; letter-spacing: 8px; margin-right: -8px; }
+  .mus-onair { font-size: 16px; padding: 5px 16px 4px; }
+  .mus-louver { margin-top: 12px; gap: 8px; }
+  .mus-louver i { height: 5px; }
+  .mus-dial { padding: 10px 20px 8px; gap: 8px; border-width: 5px; }
+  .mus-dial-top { gap: 20px; }
+  .mus-port { width: 100px; height: 100px; border-width: 4px; }
+  .mus-port-thumb { width: 178px; height: 100px; }
+  .mus-port-art { width: 84px; height: 84px; }
+  .mus-port-medal-img { width: 92px; height: 92px; }
+  .mus-glass { gap: 4px; }
+  .mus-glass-title { font-size: 26px; -webkit-line-clamp: 1; }
+  .mus-glass-sub { font-size: 16px; }
+  .mus-readout { font-size: 24px; }
+  .mus-dial-side { gap: 8px; }
+  .mus-sky { gap: 6px; padding: 0 0 0 20px; }
+  .mus-plate-row, .mus-held-text { font-size: 15px; line-height: 1.35; }
+  .mus-plate-medal { width: 32px; height: 32px; }
+  .mus-held { padding: 6px 10px; }
+  .mus-held .mus-btn { padding: 6px 12px; }
+  .mus-scale { height: 52px; }
+  .mus-scale-labels { top: 2px; }
+  .mus-scale-kind { padding: 2px 10px; }
+  .mus-needle { top: 27px; }
+  .mus-scale-ticks { height: 22px; }
+  .mus-tick { bottom: 4px; }
+  .mus-tick.major { height: 14px; }
+  .mus-speaker-in { padding: 14px 16px; gap: 10px; }
+  .mus-drum { padding: 12px 16px; gap: 10px; }
+  .mus-bandkey { padding: 7px 6px 8px; gap: 4px; }
+  .mus-bar input, .mus-pop-bar input { height: 44px; }
+  .mus-plinth { padding: 6px 36px 8px; }
+  .mus-plinth-dials { gap: 30px; }
+  .mus-ctl { gap: 2px; }
+  .mus-key { width: 52px; height: 52px; border-radius: 12px; }
+  .mus-key-main { width: 68px; height: 68px; border-radius: 15px; }
+  .mus-key-main .mus-ic { transform: scale(1.15); }
+  .mus-ring { transform: scale(.74); margin: -16px; }
+  /* the repeat switch is resized, not scaled: its labels keep 15px */
+  .mus-rot { width: 150px; height: 96px; }
+  .mus-rot-off, .mus-rot-all { top: 22px; }
+  .mus-rot-one { left: 52px; }
+  .mus-rot-knob { left: 47px; top: 38px; width: 56px; height: 56px; }
+  .mus-rot-cap { left: 4px; top: 4px; width: 44px; height: 44px; }
+  .mus-rot-cap i { left: 19px; top: 3px; height: 16px; }
+  .mus-toggle-slot { width: 40px; height: 58px; }
+  .mus-toggle-bat { left: 7px; top: 26px; width: 22px; height: 24px; }
+  .mus-toggle.on .mus-toggle-bat { top: 4px; }
+  .mus-toggle { gap: 2px; }
+  .mus-badge img { width: 56px; height: 56px; }
+  .mus-toast { bottom: 110px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mus-spin, .mus-onair.live, .mus-reveal .mus-row, .mus-pop { animation: none; }
+  .mus-needle, .mus-rot-cap, .mus-toggle-bat, .mus-speaker-veil { transition: none; }
+}

@@ -146,6 +146,8 @@
 <link data-hdcss="get-away.css" data-hdcss-key="get-away" data-hdcss-gate="#get-away-modal">
 <!-- Hotkey Pad settings window (hd-padcfg.js). Own sheet, same reason. -->
 <link data-hdcss="hd-padcfg.css" data-hdcss-key="padcfg" data-hdcss-gate="#hp-cfg">
+<!-- Spellbook (hd-spellbook.js): the full-screen personal spell catalog. Own sheet, same reason. -->
+<link data-hdcss="hd-spellbook.css" data-hdcss-key="spellbook" data-hdcss-gate="#hd-spellbook">
 <link data-hdcss="hd-formation.css" data-hdcss-key="formation" data-hdcss-gate="#fm-modal">
 <!-- Procession modal (Royal Procession + Royal Retinue). Own sheet, same reason. -->
 <link data-hdcss="hd-procession.css" data-hdcss-key="procession" data-hdcss-gate="#rpx-modal">
@@ -205,6 +207,10 @@
      Key == tab id (hd-css.js contract). The gate also covers the
      "Every setting" popout, which mounts on <body>. -->
 <link data-hdcss="weather-pane.css" data-hdcss-key="weather" data-hdcss-gate="#wth-pane, .wth-pop-back">
+<!-- Music tab: what is playing + Skyrim's music types + a YouTube stream.
+     Own sheet, same reason. Key == tab id (hd-css.js contract). The gate
+     also covers the Tracks popout, which mounts on <body>. -->
+<link data-hdcss="music-pane.css" data-hdcss-key="music" data-hdcss-gate="#mus-pane, .mus-pop-back">
 <!-- Inventory tab: the full inventory replacement. Own sheet, same reason. The
      gate covers its drop / book popouts, which mount on <body>. -->
 <link data-hdcss="inventory-pane.css" data-hdcss-key="inventory" data-hdcss-gate="#iv-pane, .iv-pop-back">
@@ -226,6 +232,12 @@
 <link data-hdcss="hd-outfit.css" data-hdcss-key="outfit" data-hdcss-gate="#hdo-layer">
 <!-- NPC Quests modal: the F7 card's 📜 button (hd-quests.js). Same reason. -->
 <link data-hdcss="hd-quests.css" data-hdcss-key="npcquests" data-hdcss-gate="#hdq-layer">
+<!-- Interact popout: the F7 card's ⇢ button (hd-interact.js). Same reason. -->
+<link data-hdcss="hd-interact.css" data-hdcss-key="interact" data-hdcss-gate="#hdi-layer">
+<!-- OBody body preset: the F7 card Equipped box's right column + its picker
+     popout (hd-obody.js). Keyed to `followers` like hd-spidgear: .fq-obody
+     renders inline in the quick card, the popout mounts on <body>. -->
+<link data-hdcss="hd-obody.css" data-hdcss-key="followers" data-hdcss-gate=".fq-obody, #obd-back">
 <!-- CHIM flyout (quick card's CHIM button). Own sheet, same reason. -->
 <link data-hdcss="chim-flyout.css" data-hdcss-key="chim" data-hdcss-gate=".chim-back, .chim-fly, .fx-back">
 <!-- Bases mode of the Domains tab (bases-pane.js). Own sheet, same reason. The
@@ -459,6 +471,39 @@
             </div>
             <div class="sic-note" id="sic-note" aria-live="polite"></div>
           </div>
+          <!-- Gear displays (2026-10-14, Rober: "immersive gear showing, weapons on back and stuff
+               its a mod, a toggle in UI as well as auto hide on npcs in scenes"). Immersive
+               Equipment Displays' own actor block, driven from C++ (ied_control.cpp) - NOT
+               state.settings: the module owns ied-control.json. Hidden until the DLL is loaded. -->
+          <div class="ied-group hidden" id="ied-group">
+            <div class="ied-head">Gear displays</div>
+            <div class="set-row">
+              <label class="set-label cb-label ied-label"><input type="checkbox" id="ied-shown-cb"> Show the gear Immersive Equipment Displays draws on me - weapons on my back, quiver, lantern</label>
+            </div>
+            <div class="set-row">
+              <label class="set-label cb-label ied-label"><input type="checkbox" id="ied-npc-cb"> Hide displayed gear on NPCs while they are in an OStim scene</label>
+            </div>
+            <div class="set-row">
+              <label class="set-label cb-label ied-label"><input type="checkbox" id="ied-pl-cb"> Hide mine too while I am in a scene</label>
+            </div>
+            <div class="ied-note" id="ied-note" aria-live="polite"></div>
+          </div>
+          <!-- OStim scenes (2026-10-14): the furniture picker that replaces OStim's "use the
+               nearby bed?" prompt (furniture_pick.cpp) and the scene-camera unlock
+               (scene_camera.cpp). Both are C++-owned sidecars, NOT state.settings. -->
+          <div class="ied-group hidden" id="os-group">
+            <div class="ied-head">OStim scenes</div>
+            <div class="set-row">
+              <label class="set-label cb-label ied-label"><input type="checkbox" id="os-pick-cb"> Use SkyManager's pickers for OStim's questions - every bed and piece of furniture with a render and distance, and who to add with faces</label>
+            </div>
+            <div class="set-row">
+              <label class="set-label cb-label ied-label"><input type="checkbox" id="os-cam-cb"> Keep F and the mouse wheel working in an OStim scene (OStim locks them while its camera support is on)</label>
+            </div>
+            <div class="set-row">
+              <label class="set-label cb-label ied-label"><input type="checkbox" id="os-chim-cb"> Ask "public or private?" before a scene and tell CHIM who joins, so she can talk</label>
+            </div>
+            <div class="ied-note" id="os-note" aria-live="polite"></div>
+          </div>
           <!-- Row-icon size. Separate from Menu scale on purpose: the menu can
                stay at 100% while the pictures get big, which is what "bigger
                images" actually means on a list of named keys. Filled by
@@ -546,6 +591,14 @@
       <span class="hm-search-kbd"><kbd>Ctrl</kbd><kbd>F</kbd></span>
     </div>
 
+    <div class="hm-sec-head">
+      <h2>Systems</h2>
+      <span class="hm-sec-hint">Pick a card — or search above</span>
+    </div>
+    <div id="hm-grid" role="list" aria-label="Deck systems"></div>
+
+    <!-- Moved BELOW the card grid (Rober, 2026-10-15): the cards are what you
+         came for; the key sits under them, above the drawers. -->
     <!-- Open key — the ONE control a new user hunts for and can't find (Nexus
          feedback, IAMTOKKO: wanted to change F7, searched, gave up). Big
          current-bind label + a Change… button running the SAME press-to-rebind
@@ -563,12 +616,6 @@
       <button id="hm-ok-change" type="button" class="hm-ok-btn"
               title="Press or pick the new key that opens SkyManager">Change…</button>
     </div>
-
-    <div class="hm-sec-head">
-      <h2>Systems</h2>
-      <span class="hm-sec-hint">Pick a card — or search above</span>
-    </div>
-    <div id="hm-grid" role="list" aria-label="Deck systems"></div>
 
     <!-- Notes / Time / Recent: folded away by default, each opens on click.
          Time and Notes moved here off the tab strip (Rober, 2026-08-05) — the
@@ -1882,6 +1929,58 @@
   </div>
 
   <div id="wth-toast" class="wth-toast hidden" role="status"></div>
+</section>
+
+<!-- ===== Music (mus-) — what is playing, and a player for anything else
+     (2026-10-14, Rober: "see what song is playing in skymanager, change to
+     any other song searchable, favoritable, hook to youtube and stream music
+     in game"). Static skeleton only; every card and row is built by
+     music-pane.js from the muStateData payload (src/music_player.cpp).
+     Keep this markup in step with music-pane.test.html. ===== -->
+<section id="mus-pane" class="hidden" aria-label="Music">
+  <div class="mus-cab" id="mus-cab">
+    <div class="mus-crown">
+      <div class="mus-louver" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div class="mus-plate mus-plate-l">
+        <div class="mus-plate-face"><span class="mus-title">MUSIC</span></div>
+        <div class="mus-sub">Dwemer resonator &middot; Skyrim&rsquo;s stations &amp; YouTube</div>
+      </div>
+      <img class="mus-crown-art" src="music-art/crown-720.png" width="320" height="180" alt="" aria-hidden="true">
+      <div class="mus-plate mus-plate-r">
+        <div class="mus-onair" id="mus-onair">On air</div>
+        <div class="mus-sub" id="mus-src">Skyrim</div>
+      </div>
+      <div class="mus-louver" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+    </div>
+
+    <div id="mus-face" class="mus-dial" aria-label="What you hear"></div>
+
+    <div class="mus-cab-body">
+      <div class="mus-speaker" id="mus-speaker" aria-label="Up next">
+        <div class="mus-speaker-veil"></div>
+        <div class="mus-speaker-in">
+          <div id="mus-queue" class="mus-queue"></div>
+        </div>
+      </div>
+      <div class="mus-drum" aria-label="Stations">
+        <div id="mus-modes" class="mus-modes" role="group" aria-label="Band"></div>
+        <div class="mus-bar">
+          <span class="mus-bar-glyph" aria-hidden="true">&#8981;</span>
+          <input id="mus-search" type="text"
+                 placeholder="Search YouTube — a song, an artist, or paste a link (Enter searches)"
+                 autocomplete="off" spellcheck="false" aria-label="Search music">
+          <button type="button" class="mus-btn mus-go" data-act="search">Search</button>
+        </div>
+        <div id="mus-kinds" class="mus-kinds hidden" role="group" aria-label="Station kind"></div>
+        <div id="mus-count" class="mus-count hidden"></div>
+        <div id="mus-list" class="mus-list"></div>
+      </div>
+    </div>
+
+    <div id="mus-deck" class="mus-plinth" aria-label="Controls"></div>
+  </div>
+
+  <div id="mus-toast" class="mus-toast hidden" role="status"></div>
 </section>
 
 <!-- ===== Inventory (iv-) — the full inventory replacement (2026-10-10, Rober:

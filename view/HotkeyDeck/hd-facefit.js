@@ -617,8 +617,15 @@
     BRIGHT_MIN: BRIGHT_MIN, BRIGHT_MAX: BRIGHT_MAX,
     /* preview-page + in-game default-framing hooks */
     tune: function (k, s) {
-      if (isFinite(k)) K = k;
-      if (isFinite(s)) S = s;
+      /* open-fit-keep (2026-10-15): app.js re-applies the saved K/S on EVERY
+         deck open (applyFacefitPrefs), and this used to wipe every measured
+         fit each time, so the open's portrait push re-measured every face in
+         the DOM through a canvas readback of its 1024px render (the
+         push-burst "followers ~100 ms" flush on tab=home). A fit is a pure
+         function of (image, K, S): the same law keeps them. */
+      const k2 = isFinite(k) ? k : K, s2 = isFinite(s) ? s : S;
+      if (k2 === K && s2 === S) return;
+      K = k2; S = s2;
       Object.keys(fits).forEach(function (u) { delete fits[u]; });   // re-measure under new law
     },
     params: function () { return { k: K, s: S }; },

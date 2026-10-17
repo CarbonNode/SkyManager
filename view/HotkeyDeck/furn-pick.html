@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<!--
+  Furniture picker - SkyManager's replacement for OStim's "use the nearby bed?"
+  / "which furniture do you want" prompts (src/furniture_pick.cpp).
+
+  A standalone PrismaUI view in the crt-alert mould (the deck's sixth): hidden
+  until C++ Shows + Focuses it (modal, game paused) and calls window.fpShow
+  with {kind, title, caption, noneLabel, sceneRunning, items:[...]}. A choice
+  goes back through toGame('fpPick', '{"key":...}'); renders that land after
+  the open arrive through window.fpRenders (asked for with toGame('fpPoll')).
+
+  A new view entry html must be listed in tools/make-release.py
+  VIEW_HTML_ENTRYPOINTS or archives silently ship without it.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SkyManager Furniture</title>
+  <link rel="stylesheet" href="furn-pick.css" />
+</head>
+<body>
+  <div id="fp-backdrop" class="fp-hidden" aria-hidden="true">
+    <div id="fp-panel" role="dialog" aria-labelledby="fp-title">
+      <header id="fp-head">
+        <div id="fp-headtext">
+          <div id="fp-badge">SkyManager &middot; OStim</div>
+          <h1 id="fp-title">Where do you want to be?</h1>
+          <p id="fp-caption">Do you want to use the nearby bed?</p>
+        </div>
+        <div id="fp-actions">
+          <button id="fp-go" type="button" hidden><span id="fp-go-text">Add to the scene</span><span id="fp-go-count">0</span></button>
+          <button id="fp-esc" type="button"><span id="fp-esc-key">Esc</span><span id="fp-esc-text">Use the nearest</span></button>
+        </div>
+      </header>
+
+      <div id="fp-privacy" hidden>
+        <div class="fp-group">
+          <span class="fp-group-label">This scene is</span>
+          <div class="fp-opts">
+            <button id="fp-pub" type="button" class="fp-priv" data-group="privacy" data-mode="public"><span class="fp-priv-name">Public</span><span class="fp-priv-sub">People can see it and react</span></button>
+            <button id="fp-prv" type="button" class="fp-priv" data-group="privacy" data-mode="private"><span class="fp-priv-name">Private</span><span class="fp-priv-sub">Closed doors, nobody watching</span></button>
+          </div>
+        </div>
+        <div class="fp-group" id="fp-g-consent">
+          <span class="fp-group-label">Consent</span>
+          <div class="fp-opts">
+            <button type="button" class="fp-priv" data-group="consent" data-mode="consensual"><span class="fp-priv-name">Consensual</span><span class="fp-priv-sub">Both want this</span></button>
+            <button type="button" class="fp-priv" data-group="consent" data-mode="forced"><span class="fp-priv-name">Forced</span><span class="fp-priv-sub">Against her will</span></button>
+          </div>
+        </div>
+        <div class="fp-group fp-group-wide" id="fp-g-arrangement">
+          <span class="fp-group-label">What she is to him here</span>
+          <div class="fp-opts">
+            <button type="button" class="fp-priv" data-group="arrangement" data-mode="marital"><span class="fp-priv-name">Marital</span><span class="fp-priv-sub">His wife</span></button>
+            <button type="button" class="fp-priv" data-group="arrangement" data-mode="lover"><span class="fp-priv-name">Lover</span><span class="fp-priv-sub">Not married</span></button>
+            <button type="button" class="fp-priv" data-group="arrangement" data-mode="owned"><span class="fp-priv-name">Owned</span><span class="fp-priv-sub">In his service</span></button>
+            <button type="button" class="fp-priv" data-group="arrangement" data-mode="slave"><span class="fp-priv-name">Slave</span><span class="fp-priv-sub">His slave</span></button>
+            <button type="button" class="fp-priv" data-group="arrangement" data-mode="paid"><span class="fp-priv-name">Paid</span><span class="fp-priv-sub">A transaction</span></button>
+            <button type="button" class="fp-priv" data-group="arrangement" data-mode="casual"><span class="fp-priv-name">Casual</span><span class="fp-priv-sub">Just this once</span></button>
+          </div>
+        </div>
+        <span id="fp-priv-note"></span>
+      </div>
+
+      <div id="fp-bar">
+        <div id="fp-searchbox">
+          <img id="fp-searchico" src="icons/custom/sn-search.png" alt="" width="26" height="26" />
+          <input id="fp-search" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Type to filter - bed, chair, owned, upstairs..." />
+          <button id="fp-clear" type="button" aria-label="Clear the search" hidden>Clear</button>
+        </div>
+        <div id="fp-chips" role="tablist"></div>
+      </div>
+
+      <div id="fp-scroll">
+        <div id="fp-grid"></div>
+        <div id="fp-empty" hidden>
+          <div id="fp-empty-title">Nothing matches</div>
+          <div id="fp-empty-sub">Clear the search to see everything in range.</div>
+        </div>
+      </div>
+
+      <footer id="fp-foot">
+        <span class="fp-hints-furn">
+          <span class="fp-hint"><b>Type</b> to filter</span>
+          <span class="fp-hint"><b>Arrows</b> move</span>
+          <span class="fp-hint"><b>Enter</b> picks the highlighted one</span>
+          <span class="fp-hint"><b>Esc</b> uses the nearest</span>
+        </span>
+        <span class="fp-hints-people">
+          <span class="fp-hint"><b>Type</b> a name</span>
+          <span class="fp-hint"><b>Click</b> to tick</span>
+          <span class="fp-hint"><b>Enter</b> adds the ticked (or the highlighted)</span>
+          <span class="fp-hint"><b>Esc</b> nobody else</span>
+        </span>
+        <span id="fp-note"></span>
+      </footer>
+    </div>
+  </div>
+  <script src="furn-pick.js"></script>
+</body>
+</html>

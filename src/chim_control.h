@@ -29,6 +29,13 @@
 // callback arrives later, already hopped back to the main thread.
 namespace ChimControl
 {
+	// Is CHIM in this game at all? AIAgent.dll loaded AND AIAgentFunctions.pex
+	// reachable. Every call below answers ok=false / returns false without
+	// touching the Papyrus VM when this is false (2026-10-17: a 1.6.1170 user
+	// without CHIM crashed inside DispatchStaticCall the moment the wheel
+	// warmed the Omni's CHIM provider; see papyrus_presence.h). Main thread.
+	bool Available();
+
 	// (active, ok) — ok=false means nothing could be dispatched (no VM), in
 	// which case `active` is meaningless.
 	using StateCb = std::function<void(bool active, bool ok)>;

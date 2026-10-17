@@ -10,6 +10,69 @@
   function art(file, size) { size = size || 28; return h('img', { src: 'icons/custom/' + file + '.png', width: size, height: size, alt: '', draggable: 'false' }); }
   function cap(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }
   var SMART = [['All spells', 'all', 'cat-scholars'], ['Spells', 'spell', 'cat-mages'], ['Powers', 'power', 'hk-faith-boon'], ['Shouts', 'shout', 'sc-shouts']];
+
+  /* ---- quick filters (2026-10-15) --------------------------------------------
+     Rober: "quick filters for like powers, and schools of magic". The two
+     questions a spellbook is asked most often, as chips you can hit without
+     opening anything. Neither is new state to persist: the type chips drive the
+     #ml-kind select that already existed (so its listener, library-ui's sync and
+     the checks are untouched), and the school chips drive ui.school, which
+     MagicWorkbench.filter reads beside its own scopes.
+     Equal-width cells per rule: a chip group must never wrap into a ragged
+     second row, however long "Restoration" is. Each chip carries the system's
+     own art for that thing — the category strip's PNGs for the types, app.js's
+     school glyphs for the schools — never a glyph invented here. */
+  var KIND_CHIPS = [['all', 'All', 'cat-scholars', 'Every spell, power and shout'],
+    ['spell', 'Spells', 'cat-mages', 'Only spells'],
+    ['power', 'Powers', 'hk-faith-boon', 'Only powers'],
+    ['shout', 'Shouts', 'sc-shouts', 'Only shouts'],
+    // "Untyped", not "Unclassified": the chips are equal-width cells, so the longest
+    // label sets every cell's width. The full meaning rides in the title.
+    ['unknown', 'Untyped', 'bx-unknown', 'Spells the engine reports no type for']];
+
+  function glyph(key) { return typeof glyphEl === 'function' ? glyphEl(key) : null; }
+
+  function quickChip(host, on, label, mark, title, fn) {
+    var b = btn('', fn, 'mw-chip' + (on ? ' on' : ''));
+    b.setAttribute('aria-pressed', String(on));
+    b.title = title;
+    if (mark) b.append(h('span', { class: 'mw-chip-art', 'aria-hidden': 'true' }, mark));
+    b.append(h('span', { class: 'mw-chip-label' }, label));
+    host.append(b);
+    return b;
+  }
+
+  function setKind(v) {
+    var sel = $('ml-kind');
+    if (!sel) return;
+    sel.value = v;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));   // the existing listener owns ui.kind
+  }
+
+  function quickFilters() {
+    var kindHost = $('mw-quick-kind'), schoolHost = $('mw-quick-school');
+    if (!kindHost || !schoolHost) return;
+    var kind = ui.kind || 'all', school = ui.school || '';
+    var schools = (window.MagicWorkbench && MagicWorkbench.schools) || [];
+    var sig = kind + '|' + school + '|' + schools.join(',');
+    if (kindHost.dataset.signature === sig) return;
+    kindHost.dataset.signature = sig;
+    kindHost.textContent = ''; schoolHost.textContent = '';
+    KIND_CHIPS.forEach(function (c) {
+      quickChip(kindHost, kind === c[0], c[1], art(c[2], 24), c[3], function () { setKind(c[0]); });
+    });
+    quickChip(schoolHost, !school, 'All schools', glyph('spell'), 'Spells of every school',
+      function () { if (window.MagicWorkbench) MagicWorkbench.setSchool(''); });
+    schools.forEach(function (name) {
+      quickChip(schoolHost, school === name, name, glyph(name.toLowerCase()), 'Only ' + name + ' spells',
+        function () { if (window.MagicWorkbench) MagicWorkbench.setSchool(name); });
+    });
+    // The count rides as a custom property rather than a full grid-template, so a
+    // narrow panel can override it to 2 columns (an inline grid-template could not
+    // be overridden, and 6 schools across 390px truncate to single letters).
+    kindHost.style.setProperty('--mw-cols', KIND_CHIPS.length);
+    schoolHost.style.setProperty('--mw-cols', schools.length + 1);
+  }
   function title(text) { return h('div', { class: 'ml-rail-heading' }, text); }
   function choose(cat, kind, mode) {
     ui.workbenchFilter = null;
@@ -207,12 +270,16 @@
     controlToggle.setAttribute('aria-expanded', String(!folded));
     controlToggle.disabled = !!ui.editing;
     controlToggle.title = ui.editing ? 'Leave Edit to collapse filters' : folded ? 'Show heading, filters and size' : 'Collapse heading and filters';
-    var active = (ui.kind && ui.kind !== 'all' ? 1 : 0) + (ui.mode && ui.mode !== 'all' ? 1 : 0) + (ui.cat !== ALL ? 1 : 0);
+    var active = (ui.kind && ui.kind !== 'all' ? 1 : 0) + (ui.mode && ui.mode !== 'all' ? 1 : 0) + (ui.cat !== ALL ? 1 : 0) +
+      (ui.school ? 1 : 0) + (ui.workbenchFilter ? 1 : 0);
     $('ml-controls-label').textContent = 'Filters' + (active ? ' · ' + active : '');
     $('ml-compact-packages').textContent = 'Packages · ' + state.combos.length;
     // Move the SAME input, keeping its listeners and value. Search stays
     // typeable when the large header is folded; no duplicate hidden field.
-    var searchHost = $('mw-top') || (folded ? $('ml-compact-search') : $('toolbar'));
+    // Search lives in the control bar, which is the one row that never folds —
+    // so folding the heading away cannot take search with it, and there is no
+    // second hidden field to drift. Still the same input, listeners and value.
+    var searchHost = $('ml-compact-search') || $('toolbar');
     if ($('search-wrap').parentNode !== searchHost) {
       var focused = document.activeElement === $('search');
       if (searchHost.id === 'mw-top') searchHost.append($('search-wrap'));
@@ -232,7 +299,12 @@
     $('ml-breadcrumb').textContent = ui.cat === ALL ? 'YOUR ARCANE LIBRARY' : M.path(ui.cat, lib.parents);
     var count = visibleSpells().length;
     $('ml-result-count').textContent = count + (count === 1 ? ' spell' : ' spells');
-    $('ml-clear').classList.toggle('hidden', !ui.filter && (!ui.kind || ui.kind === 'all') && (!ui.mode || ui.mode === 'all'));
+    // Clear now also answers for the school chips and the rail's scopes — it
+    // always could clear them, it just never said so.
+    $('ml-clear').classList.toggle('hidden', !ui.filter && (!ui.kind || ui.kind === 'all') &&
+      (!ui.mode || ui.mode === 'all') && !ui.school && !ui.workbenchFilter);
+    quickFilters();
+    if (window.MdCombo) MdCombo.sync();
     $('add-cat-btn').classList.remove('hidden');
     // Measure pre-transform width; window media queries alone miss a manually resized panel.
     $('panel').classList.toggle('ml-narrow', $('panel').clientWidth < 920);
@@ -293,7 +365,7 @@
     M.tableFields.slice(1).forEach(function (f) { panel.classList.toggle('ml-tc-off-' + f, t.hidden.indexOf(f) >= 0); });
     var width = on ? ($('list').clientWidth || $('main').clientWidth) : 0;
     panel.setAttribute('data-table-fit', !on || width >= 1240 ? 'full' : width >= 900 ? 'tight' : 'narrow');
-    var sort = $('ml-sort'); if (sort) sort.parentNode.classList.toggle('hidden', on);   // the header is the sort here
+    panel.classList.toggle('ml-sort-off', on);   // the column header is the sort here
   }
   function closeModal() {
     if (!modal) return;
@@ -494,7 +566,19 @@
       $(pair[0]).addEventListener('change', function (e) { ui[pair[1]] = e.target.value; ui.sel = -1; render(); });
     });
     $('ml-sort').addEventListener('change', function (e) { state.library.sort = e.target.value; ui.sel = -1; saveSoon(); renderList(); });
-    $('ml-clear').addEventListener('click', function () { ui.filter = ''; $('search').value = ''; choose(ui.cat); });
+    // choose() already clears ui.workbenchFilter, so one listener resets everything.
+    $('ml-clear').addEventListener('click', function () { ui.filter = ''; $('search').value = ''; ui.school = ''; choose(ui.cat); });
+    /* Draw the real controls over the three remaining <select>s. They keep the
+       selects as their state of record, so everything above this line is
+       unchanged. `active` is what turns a control gold: it is reporting that it
+       is holding the list back, not merely that it exists. */
+    if (window.MdCombo) {
+      MdCombo.attach($('ml-sort'), { label: 'Sort', hint: 'The order spells are listed in',
+        active: function (v) { return v !== 'custom'; } });
+      MdCombo.attach($('ml-mode'), { label: 'Action', hint: 'Show only spells set to equip, or to cast',
+        active: function (v) { return v !== 'all'; } });
+      MdCombo.attach($('ml-density'), { label: 'Card size', hint: 'How many spells fit on screen at once' });
+    }
     var onResize = function () { sync(); fit(); };
     window.addEventListener('resize', onResize);
     if (window.ResizeObserver) new ResizeObserver(onResize).observe($('panel'));

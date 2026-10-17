@@ -1,6 +1,7 @@
 #include "wheel.h"
 
 #include "actor_identity.h"
+#include "sanguines_trade.h"
 
 #include <algorithm>
 #include <string>
@@ -189,6 +190,11 @@ namespace WheelMenu
 
 		const std::string formId = j.value("formId", std::string(""));
 		const std::string plugin = j.value("plugin", std::string(""));
+		// A book is not equippable, so "use" used to refuse Sanguine's Ledger
+		// ("isn't something you can use from here"). It opens the Ledger through
+		// the mod's own script instead - the wheel, the shelf, the hotbar and the
+		// search all land here. Only while the book is actually carried (below).
+		const bool ledgerBook = SanguinesTrade::IsLedgerItem(formId, plugin);
 		auto*             obj    = Resolve(formId, plugin);
 		if (!obj)
 			return json{ { "ok", false }, { "msg", "That item didn't resolve - its mod may be off" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
@@ -211,6 +217,14 @@ namespace WheelMenu
 		const std::string who = nm.empty() ? std::string("that") : nm;
 		if (count <= 0)
 			return json{ { "ok", false }, { "msg", "You aren't carrying " + who + " any more" } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+
+		if (ledgerBook) {
+			const auto res = json::parse(SanguinesTrade::ToggleLedgerJson(), nullptr, false);
+			const bool ok  = res.is_object() && res.value("ok", false);
+			return json{ { "ok", ok },
+				{ "msg", ok ? std::string("") : (res.is_object() ? res.value("msg", std::string("The Ledger didn't answer")) : std::string("The Ledger didn't answer")) } }
+				.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
 
 		const char* kind = KindOf(obj);
 		if (!Equippable(kind)) {

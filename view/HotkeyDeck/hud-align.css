@@ -123,3 +123,9 @@
   .ag-value { font-size: 22px; width: 84px; }
   .ag-step { width: 42px; height: 42px; }
 }
+
+/* Whole scene (2026-10-14): the per-person rows (rotation, scale, SOS bend)
+   stay in place so the card does not jump between tabs, but read as off. */
+.ag-row[data-off="true"] { opacity: 0.4; cursor: default; }
+.ag-row[data-off="true"] .ag-step { cursor: default; pointer-events: none; }
+.ag-tab-whole { font-weight: 600; }

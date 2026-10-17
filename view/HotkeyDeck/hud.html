@@ -15,6 +15,7 @@
   <link rel="stylesheet" href="hud-photo.css" />
   <link rel="stylesheet" href="hud-minimap.css" />
   <link rel="stylesheet" href="hud-lootfeed.css" />
+  <link rel="stylesheet" href="hud-fps.css" />
 </head>
 <body class="hud-hidden">
   <!-- The whole movable assembly. C++ pushes placement via window.hudConfig, the
@@ -138,6 +139,8 @@
     <div class="hud-fw is-off" id="hud-fw-qlight" data-fw="qlight"></div>
     <!-- Loot feed (2026-10-12): what you just picked up (hud-lootfeed.js). -->
     <div class="hud-fw is-off" id="hud-fw-lootFeed" data-fw="lootFeed"></div>
+    <!-- FPS meter (2026-10-14): engine + frame-gen fps (hud-fps.js). -->
+    <div class="hud-fw is-off" id="hud-fw-fps" data-fw="fps"></div>
   </div>
 
   <!-- Round 4 popouts. They live OUTSIDE #hud for the same reason the ⚙ card
@@ -199,6 +202,10 @@
   <script src="hud-photo.js"></script>
   <script src="hd-facefit.js"></script>
   <script src="hud-lootfeed.js"></script>
+  <!-- FPS meter card (window.HDFps). hud.js draws nothing without it: it was never
+       loaded from 2026-10-14 until 2026-10-15 and the widget stayed invisible.
+       tools/check_view_scripts.py now refuses a linked .css whose .js is not loaded. -->
+  <script src="hud-fps.js"></script>
   <script src="hud.js"></script>
   <script src="hud-td.js"></script>
   <script src="hud-align.js"></script>

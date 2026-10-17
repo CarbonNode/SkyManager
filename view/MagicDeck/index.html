@@ -25,6 +25,7 @@
         </button>
         <div class="header-actions">
           <button id="deck-btn" class="ghost-btn back" title="Back to the main deck (F7)">&#8592;&nbsp;Deck</button>
+          <button id="spellbook-btn" class="ghost-btn back" title="Your Spellbook — every spell you know on one full-screen sheet, in your own categories">Spellbook</button>
           <button id="edit-btn" class="ghost-btn" title="Edit categories &amp; spells (F2)">Edit</button>
           <button id="md-more-btn" class="ghost-btn" type="button" aria-haspopup="dialog" aria-expanded="false">More <span aria-hidden="true">⌄</span></button>
           <button id="close-btn" class="ghost-btn close" aria-label="Close Spell Deck" title="Close (F18 / Esc)">✕</button>
@@ -67,21 +68,51 @@
         <!-- RIGHT: searchable, scrollable spell list -->
         <section id="main">
           <button id="ml-browse">Browse library &amp; categories</button>
-          <div class="ml-content-heading" id="ml-library-bar">
-            <button id="ml-toggle-rail" class="ml-chrome-toggle ml-rail-toggle" aria-controls="rail" aria-expanded="true" aria-label="Collapse categories" title="Collapse categories">‹</button>
-            <div id="ml-heading-block"><p id="ml-breadcrumb">YOUR ARCANE LIBRARY</p><h2 id="ml-heading">All spells</h2></div>
-            <div id="ml-compact-search"></div>
-            <button id="ml-compact-packages" class="ml-chrome-toggle">Packages</button>
-            <button id="add-spell-btn" class="hidden" title="Add a spell from your spellbook to this deck">＋ Add spell</button>
-            <div id="ml-view-options" role="group" aria-label="Spell layout">
-              <button data-library-view="cards" aria-pressed="true">Cards</button>
-              <button data-library-view="columns" aria-pressed="false">Columns</button>
-              <button data-library-view="list" aria-pressed="false">List</button>
-              <button data-library-view="table" aria-pressed="false" title="One row per spell under sortable columns: school, level, magnitude, duration, cost">Table</button>
-              <button data-library-view="icons" aria-pressed="false" title="Artwork and names; hover for info, click for Details">Icons</button>
+          <!-- ONE framed control bar (Rober, 2026-10-15: "try to combine this into
+               once nice bar, with framing, dropdowns, typable dropdowns, quick
+               filters for like powers, and schools of magic"). Two tiers inside a
+               single frame: what you are looking at on top, how it is filtered
+               underneath. The chevron at the right end folds the heading, the quick
+               groups and the whole lower tier away for more spell room.
+
+               select-ok: these <select>s are never drawn. md-combo.js hides each one
+               (.mdc-native) and paints a typeable, icon-carrying, keyboard-driven
+               combobox over it; the select is kept only as the state of record, so
+               library-ui's sync, every existing change listener and library.checks.js
+               keep reading and writing the same element, and a failure to load
+               md-combo.js degrades to a working control instead of none. Spell type
+               (#ml-kind) is driven by the quick-filter chips in the same way. -->
+          <div class="ml-content-heading mw-bar" id="ml-library-bar">
+            <div class="mw-bar-row mw-bar-main" id="mw-bar-main">
+              <button id="ml-toggle-rail" class="ml-chrome-toggle ml-rail-toggle" aria-controls="rail" aria-expanded="true" aria-label="Collapse categories" title="Collapse categories">‹</button>
+              <div id="ml-heading-block"><p id="ml-breadcrumb">YOUR ARCANE LIBRARY</p><h2 id="ml-heading">All spells</h2></div>
+              <div id="ml-compact-search"></div>
+              <button id="ml-compact-packages" class="ml-chrome-toggle">Packages</button>
+              <button id="add-spell-btn" class="hidden" title="Add a spell from your spellbook to this deck">＋ Add spell</button>
+              <div id="ml-view-options" role="group" aria-label="Spell layout">
+                <button data-library-view="cards" aria-pressed="true">Cards</button>
+                <button data-library-view="columns" aria-pressed="false">Columns</button>
+                <button data-library-view="list" aria-pressed="false">List</button>
+                <button data-library-view="table" aria-pressed="false" title="One row per spell under sortable columns: school, level, magnitude, duration, cost">Table</button>
+                <button data-library-view="icons" aria-pressed="false" title="Artwork and names; hover for info, click for Details">Icons</button>
+              </div>
+              <span id="ml-result-count" role="status">0 spells</span>
+              <button id="ml-toggle-controls" class="ml-chrome-toggle" aria-controls="mw-top mw-pins ml-filters combo-strip" aria-expanded="true" title="Collapse heading and filters"><span class="ml-chevron" aria-hidden="true">‹</span><span id="ml-controls-label">Filters</span></button>
             </div>
-            <select id="ml-density" aria-label="Card size" title="Card size — Auto tightens the cards until everything fits on screen without scrolling"><option value="auto">Auto fit</option><option value="spacious">Spacious</option><option value="balanced">Balanced</option><option value="compact">Compact</option><option value="dense">Dense</option></select>
-            <button id="ml-toggle-controls" class="ml-chrome-toggle" aria-controls="toolbar ml-filters ml-heading-block combo-strip" aria-expanded="true" title="Collapse heading and filters"><span class="ml-chevron" aria-hidden="true">‹</span><span id="ml-controls-label">Filters</span></button>
+            <div class="mw-bar-row mw-bar-filters" id="ml-filters">
+              <!-- Quick filters: the two questions asked of a spellbook most often.
+                   Equal-width cells, so a group never wraps into a ragged second
+                   row however long a school's name is. -->
+              <div class="mw-quick" id="mw-quick-kind" role="group" aria-label="Spell type"></div>
+              <div class="mw-quick mw-quick-school" id="mw-quick-school" role="group" aria-label="School of magic"></div>
+              <div class="mw-bar-combos" id="mw-combos">
+                <select id="ml-sort" aria-label="Sort"><option value="custom">My order</option><option value="name">Name A–Z</option><option value="kind">Spell type</option><option value="mode">Action</option><option value="school">School</option></select>
+                <select id="ml-mode" aria-label="Action" title="Cast now activates a spell once"><option value="all">Any action</option><option value="equip">Equip</option><option value="cast">Cast now</option></select>
+                <select id="ml-density" aria-label="Card size" title="Card size — Auto tightens the cards until everything fits on screen without scrolling"><option value="auto">Auto fit</option><option value="spacious">Spacious</option><option value="balanced">Balanced</option><option value="compact">Compact</option><option value="dense">Dense</option></select>
+              </div>
+              <button id="ml-clear" class="hidden">Clear filters</button>
+            </div>
+            <select id="ml-kind" class="mdc-native" aria-label="Spell type" aria-hidden="true" tabindex="-1"><option value="all">All types</option><option value="spell">Spells</option><option value="power">Powers</option><option value="shout">Shouts</option><option value="unknown">Unclassified</option></select>
           </div>
           <div id="toolbar">
             <div id="search-wrap">
@@ -117,14 +148,6 @@
                         title="Back to the default size (fits the screen automatically)">Reset size</button>
               </div>
             </div>
-          </div>
-
-          <div class="ml-filterbar" id="ml-filters">
-            <span id="ml-result-count" role="status">0 spells</span>
-            <label>Type <select id="ml-kind"><option value="all">All types</option><option value="spell">Spells</option><option value="power">Powers</option><option value="shout">Shouts</option><option value="unknown">Unclassified</option></select></label>
-            <label>Action <select id="ml-mode" title="Cast now activates a spell once"><option value="all">Any action</option><option value="equip">Equip</option><option value="cast">Cast now</option></select></label>
-            <label>Sort <select id="ml-sort"><option value="custom">My order</option><option value="name">Name A–Z</option><option value="kind">Spell type</option><option value="mode">Action</option><option value="school">School</option></select></label>
-            <button id="ml-clear" class="hidden">Clear filters</button>
           </div>
 
           <!-- settings card (edit mode only): open key, capture key, delete-on-add -->
@@ -281,6 +304,7 @@
   <script src="library-model.js"></script>
   <script src="workbench-model.js"></script>
   <script src="app.js"></script>
+  <script src="md-combo.js"></script>
   <script src="library-ui.js"></script>
   <script src="package-ui.js"></script>
   <script src="workbench.js"></script>

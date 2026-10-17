@@ -26,6 +26,22 @@
      window.tdInfo(json)     — {hour,day,month,year,daysPassed} (TimeActions)
      window.tdResult(json)   — {ok,msg,hours} after a tdWait
 
+   REST MODE (2026-10-14, Rober at his laid table: "a menu like drink your
+   fill, or eat your fill ... hooks to our time menu ... say its sleep and
+   get sunhelm food, drink, sleep of your choosing"). The seeded `rest`
+   action opens this same dial with three tiles under it: Eat your fill,
+   Drink your fill, Sleep. The ring is the sleep length. Confirm sends ONE
+   request and C++ (src/rest_actions.cpp) closes the dial and runs SunHelm's
+   OWN functions around the same one-step jump — this view does no need
+   maths. Tiles read SunHelm's own condition names (Ravenous, Slightly
+   Tired …) from the HUD's survival reader.
+     view -> C++   tdRestGet()           — "push me the rest state"
+                   tdRest(json)          — {eat,drink,sleep,hours}
+                   tdSetMode("wait"|"rest") — the view switched itself
+     C++ -> view   window.tdMode("wait"|"rest") — sent BEFORE tdShow
+                   window.tdRestState(json) — {sunhelm,on,bound,sleep,home,busy}
+                   a refusal comes back as tdResult({ok:false,msg})
+
    Placement persists through the widgets sidecar: on drag/scale end this
    module sends a PARTIAL wgSave — {"widgets":{"timeDial":{…}}} — which
    ConfigFromLocked merges without touching any other key (the documented
@@ -70,6 +86,11 @@
   let sel = 1;             // selected span: hours (1-24) or days (1-7)
   let mode = 'hours';      // 'hours' | 'days'
   let busy = false;        // one jump in flight
+  let kind = 'wait';       // 'wait' | 'rest' — which face of the dial
+  let restInfo = null;     // last tdRestState
+  let restTouched = false; // the player changed a tile or the hours this open
+  const pick = { eat: false, drink: false, sleep: true };
+  let restPollT = 0;
   let pollT = 0;
   let noteT = 0;
 
@@ -213,11 +234,19 @@
     tools.appendChild(el.grip); tools.appendChild(el.smaller); tools.appendChild(el.bigger);
     frame.appendChild(tools);
 
+    /* Wait | Rest — the two faces of the dial */
+    el.segWait = h('button', { class: 'td-seg-b', type: 'button', 'data-kind': 'wait', title: 'Pass the time — instant, no ticking' }, 'Wait');
+    el.segRest = h('button', { class: 'td-seg-b', type: 'button', 'data-kind': 'rest', title: 'Eat your fill, drink your fill, sleep — through SunHelm' }, 'Rest');
+    frame.appendChild(h('div', { class: 'td-seg', role: 'group', 'aria-label': 'Dial mode' }, el.segWait, el.segRest));
+
     /* WAIT n HOURS */
     el.headN = h('b', {}, '1');
     el.headUnit = h('span', {}, ' HOUR');
-    el.head = h('div', { class: 'td-head' }, 'WAIT ', el.headN, el.headUnit);
+    el.headVerb = h('i', { class: 'td-verb' }, 'WAIT ');   /* an <i>: `.td-head span` stays the unit */
+    el.head = h('div', { class: 'td-head' }, el.headVerb, el.headN, el.headUnit);
     frame.appendChild(el.head);
+    el.place = h('div', { class: 'td-place' }, '');
+    frame.appendChild(el.place);
 
     /* dial */
     const wrap = h('div', { class: 'td-dialwrap' });
@@ -258,6 +287,7 @@
       b.addEventListener('click', () => {
         mode = 'hours';
         sel = hoursUntil(c.hour % 24);
+        if (kind === 'rest') { pick.sleep = true; restTouched = true; }
         render();
       });
       wrap.appendChild(b);
@@ -274,13 +304,34 @@
     wrap.appendChild(el.center);
     frame.appendChild(wrap);
 
+    /* Rest tiles — one shape, one size, three of them */
+    el.needs = {};
+    const NEEDS = [
+      { id: 'eat', meter: 'hunger', img: 'icons/custom/ps-food.png', title: 'Eat your fill' },
+      { id: 'drink', meter: 'thirst', img: 'icons/custom/sv-drink.png', title: 'Drink your fill' },
+      { id: 'sleep', meter: 'fatigue', img: 'icons/custom/hk-bed.png', title: 'Sleep' },
+    ];
+    el.rest = h('div', { class: 'td-rest' });
+    NEEDS.forEach((n) => {
+      const state = h('span', { class: 'td-need-state' }, '…');
+      const b = h('button', { class: 'td-need', type: 'button', 'data-need': n.id, 'aria-pressed': 'false' },
+        h('img', { class: 'td-need-img', src: n.img, width: '56', height: '56', alt: '' }),
+        h('span', { class: 'td-need-t' }, n.title),
+        state,
+        h('span', { class: 'td-need-check', 'aria-hidden': 'true' }, '✓'));
+      el.needs[n.id] = { btn: b, state, meter: n.meter };
+      el.rest.appendChild(b);
+    });
+    frame.appendChild(el.rest);
+
     /* footer */
     el.confirm = h('button', { class: 'td-btn td-confirm', type: 'button', title: 'Pass the time — instant, no ticking' }, '⏳ Pass the time');
     el.modeBtn = h('button', { class: 'td-btn td-mode', type: 'button', title: 'Switch the ring between hours (1–24) and days (1–7)' }, '☾ Days');
+    el.untilBtn = h('button', { class: 'td-btn td-until', type: 'button', title: 'Sleep exactly as long as SunHelm needs to clear your fatigue' }, 'Until rested');
     el.closeBtn = h('button', { class: 'td-btn td-x', type: 'button', title: 'Close (Esc, or the dial’s hotkey again)' }, '✕');
-    frame.appendChild(h('div', { class: 'td-foot' }, el.confirm, el.modeBtn, el.closeBtn));
-    frame.appendChild(h('div', { class: 'td-hint' },
-      'Drag the ring to choose · click a medallion to wait until then · Enter confirms'));
+    frame.appendChild(h('div', { class: 'td-foot' }, el.confirm, el.modeBtn, el.untilBtn, el.closeBtn));
+    el.hint = h('div', { class: 'td-hint' }, '');
+    frame.appendChild(el.hint);
 
     root.appendChild(frame);
     wire();
@@ -320,15 +371,132 @@
   }
 
   /* ---- render ------------------------------------------------------------ */
+  /* ---- Rest mode ----------------------------------------------------------
+     A tile's facts come from SunHelm's own meters (Widgets::SunHelmNeedsJson):
+     `state` is the condition name its ability spell carries, `level` 0-4 its
+     urgency. Nothing here invents a number. */
+  function meterOf(id) {
+    const m = restInfo && restInfo.sunhelm && restInfo.sunhelm.meters;
+    if (!Array.isArray(m)) return null;
+    for (let i = 0; i < m.length; i++) if (m[i] && m[i].id === id) return m[i];
+    return null;
+  }
+  /* why a tile cannot be picked, or '' when it can */
+  function needBlock(id) {
+    if (id === 'sleep') return '';
+    if (!restInfo) return 'Reading SunHelm…';
+    if (!restInfo.sunhelm) return 'Needs SunHelm Survival';
+    if (!restInfo.on) return 'SunHelm is switched off';
+    const meter = meterOf(id === 'eat' ? 'hunger' : 'thirst');
+    if (meter && meter.off) return 'Off in SunHelm’s MCM';
+    const bound = restInfo.bound || {};
+    if (!bound[id === 'eat' ? 'hunger' : 'thirst']) return 'Not running in this save';
+    return '';
+  }
+  function hoursToRested() {
+    const s = restInfo && restInfo.sleep;
+    return s && typeof s.hoursToRested === 'number' ? s.hoursToRested : -1;
+  }
+  /* first state this open: tick what SunHelm says you need */
+  function restDefaults() {
+    if (restTouched || !restInfo) return;
+    const hungry = meterOf('hunger'), thirsty = meterOf('thirst');
+    pick.eat = !needBlock('eat') && !!hungry && (hungry.level | 0) >= 1;
+    pick.drink = !needBlock('drink') && !!thirsty && (thirsty.level | 0) >= 1;
+    pick.sleep = true;
+    const ht = hoursToRested();
+    sel = ht > 0 ? ht : 8;
+  }
+  function restVerbs() {
+    const v = [];
+    if (pick.eat) v.push('eat');
+    if (pick.drink) v.push('drink');
+    if (pick.sleep) v.push('sleep');
+    return v;
+  }
+  function joinVerbs(v) {
+    if (v.length === 0) return '';
+    if (v.length === 1) return v[0];
+    return v.slice(0, -1).join(', ') + ' & ' + v[v.length - 1];
+  }
+  function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+  function sevClass(level) {
+    const l = level | 0;
+    return l >= 3 ? 'is-bad' : l >= 1 ? 'is-warn' : 'is-ok';
+  }
+
+  function renderRest() {
+    const resting = kind === 'rest';
+    el.frame.classList.toggle('td-resting', resting);
+    el.segWait.setAttribute('aria-pressed', String(!resting));
+    el.segRest.setAttribute('aria-pressed', String(resting));
+    el.modeBtn.hidden = resting;
+    el.untilBtn.hidden = !resting;
+    if (!resting) {
+      el.place.textContent = '';
+      el.hint.textContent = 'Drag the ring to choose · click a medallion to wait until then · Enter confirms';
+      el.confirm.textContent = '⏳ Pass the time';
+      el.dialwrap.classList.remove('td-dial-off');
+      return;
+    }
+    const home = restInfo && restInfo.home;
+    el.place.textContent = home && home.place
+      ? (home.inHome ? 'At home · ' : 'At ') + home.place
+      : (home && home.inHome ? 'At home' : '');
+
+    ['eat', 'drink', 'sleep'].forEach((id) => {
+      const t = el.needs[id];
+      const block = needBlock(id);
+      if (block) pick[id] = false;
+      t.btn.setAttribute('aria-pressed', String(!!pick[id]));
+      t.btn.disabled = !!block || busy;
+      t.btn.classList.toggle('is-blocked', !!block);
+      const m = meterOf(t.meter);
+      t.state.className = 'td-need-state';
+      if (block) {
+        t.state.textContent = block;
+      } else if (m && m.state) {
+        t.state.textContent = m.state;
+        t.state.classList.add(sevClass(m.level));
+      } else if (id === 'sleep') {
+        t.state.textContent = restInfo && !restInfo.sunhelm ? 'Passes the night' : 'Rest a while';
+      } else {
+        t.state.textContent = '—';
+      }
+    });
+
+    const ht = hoursToRested();
+    el.untilBtn.disabled = busy || ht <= 0;
+    el.untilBtn.textContent = ht > 0 ? 'Until rested · ' + ht + (ht === 1 ? ' hour' : ' hours')
+      : ht === 0 ? 'Already rested' : 'Until rested';
+    el.dialwrap.classList.toggle('td-dial-off', !pick.sleep);
+
+    const verbs = restVerbs();
+    el.confirm.textContent = verbs.length ? cap(joinVerbs(verbs)) : 'Choose something';
+    el.hint.textContent = pick.sleep
+      ? 'Pick what you want · drag the ring for how long you sleep · Enter confirms'
+      : 'Pick what you want · drag the ring to sleep as well · Enter confirms';
+  }
+
   function render() {
     if (!el.frame) return;
+    const resting = kind === 'rest';
+    if (resting) mode = 'hours';
     const isDays = mode === 'days';
     sel = clamp(Math.round(sel) || 1, 1, isDays ? 7 : 24);
 
     el.headN.textContent = String(sel);
     el.headUnit.textContent = isDays ? (sel === 1 ? ' DAY' : ' DAYS') : (sel === 1 ? ' HOUR' : ' HOURS');
+    el.headVerb.textContent = 'WAIT ';
+    if (resting && pick.sleep) el.headVerb.textContent = 'SLEEP ';
+    if (resting && !pick.sleep) {
+      const v = restVerbs();
+      el.headVerb.textContent = v.length ? joinVerbs(v).toUpperCase() : 'REST';
+      el.headN.textContent = ''; el.headUnit.textContent = '';
+    }
     el.modeBtn.textContent = isDays ? '☀ Hours' : '☾ Days';
     el.modeBtn.classList.toggle('is-days', isDays);
+    renderRest();
 
     const frac = isDays ? sel / 7 : sel / 24;
     if (cur) {
@@ -354,7 +522,7 @@
       el.from.textContent = '—:—'; el.to.textContent = '—:—';
       el.date.textContent = 'Reading the sky…';
     }
-    el.confirm.disabled = busy || !cur;
+    el.confirm.disabled = busy || !cur || (resting && restVerbs().length === 0);
   }
 
   function note(msg, ok) {
@@ -399,6 +567,7 @@
       if (!onRing(p)) return;
       ringDrag = true;
       el.dialwrap.classList.add('td-dragging');
+      if (kind === 'rest') { pick.sleep = true; restTouched = true; }
       sel = spanFromHour(hourFromPoint(p.x, p.y));
       render();
       e.preventDefault(); e.stopPropagation();
@@ -454,19 +623,43 @@
       render();
     });
     el.closeBtn.addEventListener('click', () => close(true));
+    [el.segWait, el.segRest].forEach((b) => b.addEventListener('click', () => {
+      setKind(b.getAttribute('data-kind'), true);
+    }));
+    Object.keys(el.needs).forEach((id) => {
+      el.needs[id].btn.addEventListener('click', () => {
+        if (busy || needBlock(id)) return;
+        pick[id] = !pick[id];
+        restTouched = true;
+        /* Enter means "rest now", never "toggle the tile I clicked last" */
+        el.needs[id].btn.blur();
+        render();
+      });
+    });
+    el.untilBtn.addEventListener('click', () => {
+      const ht = hoursToRested();
+      if (ht <= 0 || busy) return;
+      sel = ht; pick.sleep = true; restTouched = true;
+      render();
+    });
 
     window.addEventListener('keydown', (e) => {
       if (!open) return;
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
-      if (e.key === 'Escape' || e.code === 'Escape' || e.keyCode === 27) {
+      /* Ultralight can deliver a native key as key "Unidentified" with only
+         keyCode (measured, ultralight-probe README) — read both. */
+      const KC = { 13: 'Enter', 27: 'Escape', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown' };
+      const key = (e.key && e.key !== 'Unidentified') ? e.key : (KC[e.keyCode] || e.code || '');
+      if (key === 'Escape' || e.code === 'Escape') {
         close(true); e.preventDefault(); return;
       }
-      if (e.key === 'Enter') { confirm(); e.preventDefault(); return; }
+      if (key === 'Enter') { confirm(); e.preventDefault(); return; }
       const step = e.shiftKey ? 6 : 1;
-      if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+      if (kind === 'rest' && /^Arrow/.test(key)) { pick.sleep = true; restTouched = true; }
+      if (key === 'ArrowRight' || key === 'ArrowUp') {
         sel = sel + step; render(); e.preventDefault();
-      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+      } else if (key === 'ArrowLeft' || key === 'ArrowDown') {
         sel = sel - step; render(); e.preventDefault();
       }
     });
@@ -474,6 +667,7 @@
 
   function confirm() {
     if (busy || !cur) return;
+    if (kind === 'rest') { confirmRest(); return; }
     busy = true;
     render();
     const sent = toGame('tdWait', String(selHours()));
@@ -487,6 +681,41 @@
     setTimeout(() => { if (busy) { busy = false; render(); } }, 2500);
   }
 
+  /* One request; C++ checks it, closes the dial and runs SunHelm's own
+     functions. A refusal comes back through tdResult and the dial stays. */
+  function confirmRest() {
+    if (restVerbs().length === 0) { note('Choose at least one: eat, drink or sleep.', false); return; }
+    busy = true;
+    render();
+    const req = { eat: !!pick.eat, drink: !!pick.drink, sleep: !!pick.sleep, hours: pick.sleep ? sel : 0 };
+    const sent = toGame('tdRest', JSON.stringify(req));
+    if (DEV && !sent) {
+      window.__hudTdLastRest = req;
+      close(false);
+    }
+    setTimeout(() => { if (busy) { busy = false; render(); } }, 2500);
+  }
+
+  /* force = (re)entering on open: same kind, but the defaults and the poll
+     still have to start */
+  function setKind(k, tellGame, force) {
+    const next = k === 'rest' ? 'rest' : 'wait';
+    if (next === kind && !force) return;   /* a second click on the lit segment keeps your picks */
+    kind = next;
+    if (kind === 'rest') {
+      restTouched = false;
+      restDefaults();
+      toGame('tdRestGet', '');
+    } else {
+      sel = 1;
+    }
+    clearInterval(restPollT); restPollT = 0;
+    if (open && kind === 'rest')
+      restPollT = setInterval(() => { if (open && kind === 'rest') toGame('tdRestGet', ''); }, 2000);
+    if (tellGame) toGame('tdSetMode', kind);
+    render();
+  }
+
   /* ---- open / close ------------------------------------------------------ */
   function show() {
     build();
@@ -498,15 +727,18 @@
     void el.frame.offsetWidth;
     el.frame.classList.add('td-in');
     sel = 1; mode = 'hours'; busy = false;
+    restTouched = false;
     placeFrame();
-    render();
     toGame('tdGet', '');
     clearInterval(pollT);
     pollT = setInterval(() => { if (open) toGame('tdGet', ''); }, 1000);
+    setKind(kind, false, true);   /* (re)starts the rest poll and its defaults */
+    render();
   }
   function close(tellGame) {
     open = false;
     clearInterval(pollT); pollT = 0;
+    clearInterval(restPollT); restPollT = 0;
     document.body.classList.remove('td-open');
     if (tellGame) toGame('tdClose', '');
   }
@@ -525,6 +757,19 @@
     if (j.anchorV === 'top' || j.anchorV === 'bottom') cfg.anchorV = j.anchorV;
     cfg.scale = clamp(num(cfg.scale, 1), 0.5, 2.5);
     placeFrame();
+  };
+  window.tdMode = function (v) {
+    try {
+      const k = String(v) === 'rest' ? 'rest' : 'wait';
+      if (open) setKind(k, false); else kind = k;
+    } catch (e) { toGame('hudLog', 'tdMode threw: ' + (e && e.message)); }
+  };
+  window.tdRestState = function (s) {
+    const j = parse(s);
+    if (!j || typeof j !== 'object') return;
+    restInfo = j;
+    restDefaults();
+    render();
   };
   window.tdInfo = function (s) {
     const j = parse(s);
@@ -555,7 +800,8 @@
   window.__hudTd = {
     cfg, degOfHour, hourFromPoint, spanFromHour, hoursUntil, fmt24, fmtDate,
     landAfter, glyphForHour, build, show, close, render,
-    state: function () { return { open, sel, mode, busy, cur }; },
+    state: function () { return { open, sel, mode, busy, cur, kind, pick: Object.assign({}, pick), restTouched }; },
+    setKind, needBlock, hoursToRested, restVerbs,
     setCur: function (c) { cur = c; },
     setMode: function (m) { mode = m; },
     setSel: function (v) { sel = v; },

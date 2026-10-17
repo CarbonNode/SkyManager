@@ -2,6 +2,8 @@
 
 #include "pch.h"
 
+#include "open_diag.h"
+
 #include <Windows.h>
 // <Windows.h> brings object-like macros that rename CommonLib members
 // (GetObject -> GetObjectA) and break std::min/max. Nothing here wants them.
@@ -50,15 +52,52 @@ namespace FreezeBackdrop
 		// The menu without a movie: nothing to advance, nothing to draw. The engine
 		// only reads its flags. kCustomRendering is what lets a movie-less menu
 		// sit on the stack (the DetailedMiniMap LocalMenu precedent); no input
-		// context, no cursor, no pause — PrismaUI's focus menu owns all three.
+		// context and no cursor — PrismaUI's focus menu owns both.
+		// backdrop-inventory-recipe (2026-10-14). The vanilla InventoryMenu's flags on
+		// this rig are 0x0000A4C5 (logged below): kCustomRendering + kPausesGame +
+		// cursor/item bits, and NO kFreezeFrameBackground. With it open the engine
+		// ran at 66 fps real on 7 ms of game thread (Upscaler FPS_PROFILE, 13:53),
+		// against 15-40 with the world drawn behind the deck. The first try
+		// (kFreezeFrameBackground + kCustomRendering) hung the main thread on its
+		// first open, so the default is now the inventory's own pair, and
+		// SkyManager.ini can try others without a rebuild:
+		//     BackdropFlags = 0x8001   ; any UI_MENU_FLAGS value, read at every show
+		//     BackdropMovie = 1        ; carry an invisible cursormenu movie
+		constexpr std::uint32_t kInventoryRecipe =
+			static_cast<std::uint32_t>(Flag::kCustomRendering) | static_cast<std::uint32_t>(Flag::kPausesGame);
+
+		std::uint32_t IniFlags()
+		{
+			const auto raw = OpenDiag::IniString("BackdropFlags", "");
+			if (raw.empty())
+				return kInventoryRecipe;
+			try {
+				return static_cast<std::uint32_t>(std::stoul(raw, nullptr, 0));
+			} catch (...) {
+				logger::warn("freeze-backdrop: BackdropFlags \"{}\" is not a number - using the inventory recipe", raw);
+				return kInventoryRecipe;
+			}
+		}
+
+		std::atomic<std::uint32_t> g_lastFlags{ 0 };
+
 		class BackdropMenu final : public RE::IMenu
 		{
 		public:
 			BackdropMenu()
 			{
-				menuFlags.set(Flag::kFreezeFrameBackground, Flag::kCustomRendering);
+				const std::uint32_t flags = IniFlags();
+				menuFlags.set(static_cast<Flag>(flags));
+				g_lastFlags = flags;
 				depthPriority = 0;   // under everything, the focus menu's cursor included
 				inputContext  = Context::kNone;
+				if (OpenDiag::IniBool("BackdropMovie", false)) {
+					const auto sf = RE::BSScaleformManager::GetSingleton();
+					if (sf && sf->LoadMovieEx(this, "cursormenu", [](RE::GFxMovieDef*) {}) && uiMovie)
+						uiMovie->SetVisible(false);
+					else
+						logger::warn("freeze-backdrop: BackdropMovie=1 but cursormenu did not load - movie-less");
+				}
 			}
 			static RE::IMenu* Create() { return new BackdropMenu(); }
 			void AdvanceMovie(float, std::uint32_t) override {}
@@ -111,6 +150,19 @@ namespace FreezeBackdrop
 				m->menuFlags.reset(Flag::kSkipRenderDuringFreezeFrameScreenshot);
 		}
 
+		// The setting, with SkyManager.ini's FreezeBackdrop re-read live so a test
+		// can switch it while the game runs (an edited ini is visible through
+		// MO2's VFS at once).
+		bool EffectiveEnabled()
+		{
+			return OpenDiag::IniBool("FreezeBackdrop", g_enabled.load());
+		}
+
+		bool WantsFreezeFrame()
+		{
+			return (g_lastFlags.load() & static_cast<std::uint32_t>(Flag::kFreezeFrameBackground)) != 0;
+		}
+
 		void Queue(RE::UI_MESSAGE_TYPE a_type)
 		{
 			if (const auto q = RE::UIMessageQueue::GetSingleton())
@@ -121,12 +173,13 @@ namespace FreezeBackdrop
 		{
 			if (!g_installed.load())
 				return;
-			const bool should = g_enabled.load() && g_want.load() != 0;
+			const bool should = g_want.load() != 0 && EffectiveEnabled();
 			if (should) {
-				ApplyFocusSkip();
 				if (!g_shown.exchange(true)) {
 					Queue(RE::UI_MESSAGE_TYPE::kShow);
 					logger::info("freeze-backdrop: world frozen behind the deck ({})", why);  // marker: freeze-backdrop
+					logger::info("freeze-backdrop: backdrop flags 0x{:08X} (inventory recipe 0x{:08X}), movie {}",  // marker: backdrop-inventory-recipe
+						IniFlags(), kInventoryRecipe, OpenDiag::IniBool("BackdropMovie", false));
 				}
 			} else if (g_shown.exchange(false)) {
 				ClearFocusSkip();
@@ -155,6 +208,8 @@ namespace FreezeBackdrop
 				if (name == kMenuName) {
 					if (!a_event->opening)
 						g_shown = false;   // closed by anyone (a load, a force-hide): ours to re-show
+					else if (WantsFreezeFrame())
+						ApplyFocusSkip();
 					return RE::BSEventNotifyControl::kContinue;
 				}
 				const auto ui = RE::UI::GetSingleton();
@@ -183,7 +238,7 @@ namespace FreezeBackdrop
 								g_focusName, Hex(m->menuFlags.underlying()), static_cast<int>(m->depthPriority));
 						}
 						g_addedSkip = false;   // a fresh instance carries only its own flags
-						if (g_enabled.load() && g_want.load() != 0)
+						if (g_shown.load() && WantsFreezeFrame())
 							ApplyFocusSkip();
 					}
 				} else if (name == g_focusName) {
@@ -215,7 +270,7 @@ namespace FreezeBackdrop
 			Sync(on ? "setting on" : "setting off");
 	}
 
-	bool Enabled() { return g_enabled.load(); }
+	bool Enabled() { return EffectiveEnabled(); }
 
 	void Want(Owner who, bool want)
 	{
@@ -232,6 +287,8 @@ namespace FreezeBackdrop
 		Sync(why);
 	}
 
+	std::string PrismaFocusMenu() { return g_focusName; }
+
 	void Tick(bool anyPaletteOpen)
 	{
 		if (!g_installed.load())
@@ -242,7 +299,7 @@ namespace FreezeBackdrop
 		}
 		const auto ui = RE::UI::GetSingleton();
 		const bool open = ui && ui->IsMenuOpen(kMenuName);
-		const bool should = g_enabled.load() && g_want.load() != 0;
+		const bool should = g_want.load() != 0 && EffectiveEnabled();
 		if (!should && open) {
 			g_shown = false;
 			ClearFocusSkip();

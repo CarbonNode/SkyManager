@@ -115,6 +115,12 @@ namespace Widgets
 	// back through the ordinary wgSave partial-write road.
 	std::string TimeDialJson();
 
+	// SunHelm's needs exactly as the HUD survival tile reads them (meters with
+	// the mod's own condition names), or "null" when SunHelm is not loaded.
+	// The Time Dial's Rest mode (rest_actions.cpp) shows the same truth the
+	// HUD does instead of keeping a second copy of the table. MAIN THREAD.
+	std::string SunHelmNeedsJson();
+
 	// The view sent the whole config back (wgSave payload). Clamps + persists.
 	void ApplyViewConfig(const std::string& payload);
 
@@ -407,6 +413,11 @@ namespace Widgets
 	// asks before queueing a pickup and inside its HUD message filter.
 	bool LootFeedOn();
 	bool LootFeedHidesVanilla();
+
+	// FPS meter (2026-10-14): "turn the Community Shaders overlay on when the
+	// game loads", set from Home > UI Elements without a view round trip. The
+	// rest of the widget's options ride wgSave like the loot feed's. Saves.
+	void SetFpsCsAuto(bool on);
 
 	// Weather tab (weather_hub.cpp): the season latch the HUD widget already
 	// keeps, as JSON ("null" when nothing can say), and Seasons of Skyrim's

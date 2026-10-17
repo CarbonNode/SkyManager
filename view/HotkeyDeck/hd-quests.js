@@ -64,7 +64,8 @@
     { id: 'broken',  label: 'Broken',      ic: '⚠', title: 'At least one REQUIRED alias is empty — far more often the reason a quest is stuck than the stage number' },
   ];
 
-  var OBJ_STATE = { 0: 'dormant', 1: 'displayed', 2: 'completed', 3: 'failed' };
+  /* CommonLib QUEST_OBJECTIVE_STATE: 3 = completed and still shown, 4/5 = failed. */
+  var OBJ_STATE = { 0: 'not yet', 1: 'current', 2: 'done', 3: 'done', 4: 'failed', 5: 'failed' };
 
   /* Beyond this many stages the grid gets its own typeable jump box. MQ101
      has 125 — hunting for 210 by eye in a wall of numbers is the kind of list
@@ -88,7 +89,7 @@
     detailFor: '',       // its formId, so a late reply for another quest is dropped
     note: '',            // the last verdict (hdQuestResult), shown in place
     noteOk: true,
-    armStage: null,      // replaying an EARLIER stage asks twice
+    armStage: null,      // any stage jump asks twice
     armVerb: '',         // so does Reset
     stageQ: '',          // the stage jump box
     want: { list: false, detail: false, result: false },   // what we asked for
@@ -526,13 +527,20 @@
   /* Advance ONE row straight from the list — the Active scope's reason to exist.
      Fires the next DEFINED stage (C++ hands it over as nextStage, because stage
      lists are sparse and currentStage+1 is usually a stage that does not exist).
-     Forward is the safe direction, so it goes on one click, exactly as the detail
-     grid treats a forward stage; it is only a BACKWARD jump that asks twice.
+     It asks twice like every stage jump (Rober's rule: no gameplay change without
+     his yes — forward skips whatever the quest does in between).
      Afterwards the list is re-asked so the row's stage number is the engine's
      answer and not our optimistic guess. */
   function advanceRow(qu) {
     var next = Number(qu && qu.nextStage) || 0;
     if (!next) return;
+    if (S.armRow !== qu.formId) {
+      S.armRow = qu.formId;
+      render();
+      setTimeout(function () { if (S.armRow === qu.formId) { S.armRow = ''; render(); } }, 2800);
+      return;
+    }
+    S.armRow = '';
     S.want.result = true;
     S.want.list = true;
     S.note = 'Firing stage ' + next + ' on ' + (qu.name || qu.editorId || 'quest') + '…';
@@ -550,15 +558,16 @@
     var acts = h('div', { class: 'hdq-row-acts' });
 
     var next = Number(qu.nextStage) || 0;
+    var armed = next && S.armRow === qu.formId;
     acts.append(h('button', {
-      class: 'hdq-act' + (next ? '' : ' is-off'), type: 'button',
+      class: 'hdq-act' + (next ? '' : ' is-off') + (armed ? ' is-armed' : ''), type: 'button',
       disabled: next ? null : 'disabled',
       title: next
         ? ('Advance to stage ' + next + ' — the next stage this quest actually defines.\n'
            + 'Fires through Papyrus so the stage fragment runs.')
         : 'No stage defined after ' + qu.currentStage + ' — this quest has nothing further to fire',
       onClick: function (e) { e.stopPropagation(); advanceRow(qu); },
-    }, next ? ('▸ ' + next) : '▸ —'));
+    }, armed ? ('Skip to ' + next + '?') : (next ? ('▸ ' + next) : '▸ —')));
 
     var live = qu.hasTarget === true;
     acts.append(h('button', {
@@ -883,11 +892,12 @@
           class: 'hdq-st' + (s.current ? ' is-cur' : '') + (back ? ' is-back' : '')
                  + (armed ? ' is-armed' : ''),
           type: 'button',
-          title: armed ? 'Click again to fire stage ' + s.index + ' — it is BEHIND the current one'
+          title: armed ? 'Click again to fire stage ' + s.index + (back ? ' — it is BEHIND the current one'
+                                                                        : ' — it skips the steps in between')
                : s.current ? 'The current stage — firing it again re-runs its fragment'
                : back ? 'Stage ' + s.index + ' is earlier than the current one. Replaying a stage '
                         + 'can make things worse, so this asks twice.'
-               : 'Fire stage ' + s.index,
+               : 'Skip ahead to stage ' + s.index + ' — asks twice',
           onClick: function (e) { e.stopPropagation(); fireStage(s.index, d, paintStages); },
         }, armed ? '?' : String(s.index)));
       });
@@ -921,8 +931,8 @@
     paintStages();
     sec.append(h('div', { class: 'hdq-hint hdq-pad' },
       'Fired through Papyrus (Quest.SetStage), so the stage’s script fragments run — writing the '
-      + 'number directly would change the number and repair nothing. Stages BEFORE the current one '
-      + 'ask for a second click.'));
+      + 'number directly would change the number and repair nothing. Every stage asks for a second '
+      + 'click: forward skips what the quest does in between, backward replays it.'));
     return sec;
   }
 
@@ -944,8 +954,8 @@
 
   function fireStage(stage, d, repaint) {
     if (!d || !d.formId) return;
-    if (stage < d.currentStage && S.armStage !== stage) {
-      S.armStage = stage;                       // backwards is the dangerous direction
+    if (stage !== d.currentStage && S.armStage !== stage) {
+      S.armStage = stage;                       // both directions ask twice
       if (repaint) repaint();
       setTimeout(function () {
         if (S.armStage === stage) { S.armStage = null; if (S.view === 'detail') render(); }
@@ -1098,7 +1108,7 @@
   function sig() {
     var parts = [S.view, String(ctx().hex || ''), S.scope, S.status, S.q,
       String(S.sel), S.loading ? 'L' : '', S.note, S.noteOk ? '1' : '0',
-      String(S.armStage), S.armVerb, S.stageQ];
+      String(S.armStage), S.armVerb, S.stageQ, S.armRow];
     if (S.view === 'list') {
       parts.push(String(quests().length));
       parts.push(quests().map(function (qu) {

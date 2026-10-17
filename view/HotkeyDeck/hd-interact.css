@@ -1,0 +1,242 @@
+/* Interact (hd-interact.js) — the F7 card's large centred popout. Body-anchored
+   and viewport-filling like .gaw-back, so its bare vh/vw are correct and it
+   does NOT wear scale(var(--ui-scale)) (the 2026-08-14 popup audit). Flat rgba
+   backdrop: Ultralight bands a screen-sized gradient. Tokens are the Get-away
+   modal's (obsidian card, gold plate), so the two read as one deck.
+
+   The card has a FIXED size (it does not grow and shrink with the category),
+   so switching categories never moves the rail or the close button under the
+   cursor: header · [rail | panel] · footer, and only the panel scrolls. */
+.hdi-back {
+  position: fixed; inset: 0; z-index: 9900;
+  background: rgba(0, 0, 0, .74);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; box-sizing: border-box; color: #eee8dd;
+}
+.hdi-card {
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  width: 1400px; max-width: 100%; height: 860px; max-height: 94vh;
+  box-sizing: border-box; padding: 30px 34px 22px; gap: 22px;
+  background: #19191f; border: 1px solid #b69b56; border-radius: 20px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .35);
+  font-size: 20px;
+  animation: hdi-rise 90ms ease-out;
+}
+@keyframes hdi-rise { from { transform: translateY(10px); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .hdi-card { animation: none; } }
+
+/* ---- header: face, title, search, close ------------------------------- */
+.hdi-head { display: flex; align-items: center; gap: 22px; min-width: 0; }
+.hdi-face {
+  position: relative; overflow: hidden; flex: 0 0 76px; width: 76px; height: 76px;
+  border-radius: 50%; border: 2px solid #b69b56; background: #302c32;
+  display: flex; align-items: center; justify-content: center;
+  color: #d7c38c; font-size: 26px; font-weight: bold; box-sizing: border-box;
+}
+.hdi-face img { display: block; width: 100%; height: 100%; object-fit: cover; max-width: none; }
+.hdi-titles { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 0 1 300px; }
+.hdi-title { display: flex; align-items: center; gap: 12px; margin: 0; font-size: 30px; color: #f3e6c4; }
+.hdi-title-ic { width: 38px; height: 38px; object-fit: contain; flex-shrink: 0; }
+.hdi-who { font-size: 20px; color: #c8c1b5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hdi-search {
+  flex: 1 1 auto; min-width: 0; box-sizing: border-box; padding: 16px 20px; font-size: 21px;
+  background: #101014; border: 1px solid #6e6350; border-radius: 11px; color: #eee8dd;
+}
+.hdi-search:focus { outline: 2px solid #d5b65c; outline-offset: 2px; border-color: #b69b56; }
+
+.hdi-btn {
+  font-size: 19px; line-height: 1.3; min-height: 52px; padding: 12px 22px;
+  border: 1px solid #615b62; border-radius: 10px; background: #2a2931; color: #eee8dd;
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+}
+.hdi-btn:hover { background: #36313a; border-color: #8c7a4c; }
+.hdi-btn:active { background: #241f27; }
+.hdi-btn:focus { outline: 2px solid #d5b65c; outline-offset: 2px; }
+
+/* ---- body: rail + panel --------------------------------------------------- */
+.hdi-body { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 26px; min-height: 0; }
+
+.hdi-rail { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto; padding-right: 2px; }
+.hdi-cat {
+  display: flex; align-items: center; gap: 14px; width: 100%; min-height: 64px;
+  box-sizing: border-box; padding: 8px 14px 8px 10px;
+  background: transparent; border: 1px solid transparent; border-radius: 12px;
+  color: #d8d0c2; font: inherit; font-size: 21px; text-align: left; cursor: pointer;
+}
+.hdi-cat:hover { background: #24222a; border-color: #4a4248; }
+.hdi-cat:focus { outline: 2px solid #d5b65c; outline-offset: 1px; }
+.hdi-cat.is-on { background: #2c271f; border-color: #8c7a4c; color: #f3e6c4; box-shadow: inset 4px 0 0 #d5b65c; }
+.hdi-cat-plate {
+  display: flex; align-items: center; justify-content: center; flex: 0 0 48px; width: 48px; height: 48px;
+  border-radius: 50%; background: #221f1a; border: 1px solid #5c4f33;
+}
+.hdi-cat.is-on .hdi-cat-plate { border-color: #d5b65c; }
+.hdi-cat-ic { width: 34px; height: 34px; object-fit: contain; }
+.hdi-cat-lbl { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hdi-cat-n {
+  flex: 0 0 auto; min-width: 34px; padding: 2px 8px; box-sizing: border-box; text-align: center;
+  border-radius: 999px; background: #2c2a31; color: #bcb5a8; font-size: 17px;
+}
+.hdi-cat.is-on .hdi-cat-n { background: #4a3f27; color: #f3e6c4; }
+
+.hdi-panel {
+  display: flex; flex-direction: column; gap: 18px; min-height: 0; overflow: auto;
+  padding: 2px 6px 6px 2px;
+}
+.hdi-panel-head { display: flex; align-items: baseline; gap: 16px; }
+.hdi-panel-title { margin: 0; font-size: 27px; color: #e6cf8f; letter-spacing: .02em; }
+
+/* ---- mod lines: name · how it behaves · its power switch ------------------- */
+.hdi-mods { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.hdi-mods-title { margin: 0 0 2px 4px; font-size: 18px; font-weight: normal; color: #8f8879; letter-spacing: .04em; text-transform: uppercase; }
+.hdi-src { font-size: 16px; color: #b49a5c; letter-spacing: .03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hdi-mod {
+  display: flex; align-items: center; gap: 8px 16px; min-height: 52px;
+  padding: 8px 10px 8px 16px; box-sizing: border-box;
+  border: 1px solid #34303a; border-radius: 12px; background: #1d1c23;
+}
+.hdi-mod-name { flex: 0 0 auto; font-size: 18px; font-weight: bold; color: #e6cf8f; white-space: nowrap; }
+.hdi-mod-note { flex: 1 1 auto; min-width: 0; font-size: 17px; line-height: 1.4; color: #a9a294; }
+.hdi-power { min-height: 44px; padding: 8px 16px; font-size: 17px; }
+
+/* ---- tiles --------------------------------------------------------------- */
+.hdi-tiles { display: grid; gap: 16px; grid-auto-rows: minmax(196px, auto); }
+.hdi-cols-1 { grid-template-columns: minmax(0, 1fr); }
+.hdi-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.hdi-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.hdi-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+.hdi-tile {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  height: 100%; box-sizing: border-box; padding: 20px 18px 18px;
+  background: #22212a; border: 1px solid #47414a; border-radius: 16px; color: #eee8dd;
+  cursor: pointer; text-align: center; font: inherit;
+}
+.hdi-tile:hover { background: #2d2a33; border-color: #b69b56; }
+.hdi-tile:active { background: #1d1b22; transform: translateY(1px); }
+.hdi-tile:focus { outline: 2px solid #d5b65c; outline-offset: 3px; }
+.hdi-plate {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  width: 96px; height: 96px; border-radius: 50%; flex-shrink: 0;
+  background: radial-gradient(circle at 50% 40%, #3a3326 0%, #221f1a 72%);
+  border: 1px solid #7d6a3c;
+}
+.hdi-tile:hover .hdi-plate { border-color: #d5b65c; }
+.hdi-ic { width: 70px; height: 70px; object-fit: contain; }
+.hdi-seat {
+  position: absolute; right: -4px; bottom: -4px; width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: #b69642; color: #15120c; font-size: 19px; font-weight: bold; border: 2px solid #19191f;
+}
+.hdi-text { display: flex; flex-direction: column; gap: 6px; min-width: 0; max-width: 34ch; }
+.hdi-label { font-size: 21px; font-weight: bold; color: #f3e6c4; white-space: nowrap; }
+.hdi-detail { font-size: 17px; line-height: 1.4; color: #bcb5a8; }
+
+/* Can't fire for this person right now: dimmed, WITH the reason in place of
+   the description. Still focusable and clickable — a click says why. */
+.hdi-tile.is-off { cursor: default; }
+.hdi-tile.is-off .hdi-plate, .hdi-tile.is-off .hdi-label { opacity: .5; }
+.hdi-tile.is-off .hdi-detail { color: #d9a77a; }
+.hdi-tile.is-off:hover { background: #22212a; border-color: #5a5056; }
+.hdi-tile.is-off:active { transform: none; }
+.hdi-tile.is-busy { border-color: #d5b65c; background: #332c22; }
+
+/* ---- footer + empty state ---------------------------------------------------- */
+.hdi-foot { display: flex; align-items: center; min-height: 32px; padding-top: 14px; border-top: 1px solid #3a353d; }
+.hdi-note { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 19px; line-height: 1.45; color: #8f8879; }
+.hdi-note:empty::before { content: 'Pick an interaction, or type to find one. Esc closes.'; }
+.hdi-note.is-ok { color: #d7c38c; }
+.hdi-note.is-bad { color: #f0a988; }
+.hdi-empty { margin: 0; padding: 40px 8px; font-size: 21px; color: #bcb5a8; text-align: center; }
+
+/* ---- Rename popout: the same card, sized for one field --------------------- */
+.hdi-card-sm { width: 900px; height: auto; grid-template-rows: auto auto auto; }
+.hdi-rn-body { display: flex; flex-direction: column; gap: 14px; }
+.hdi-rn-label { display: flex; flex-direction: column; gap: 10px; font-size: 19px; color: #c8c1b5; }
+.hdi-rn-input { width: 100%; }
+.hdi-rn-help { margin: 0; font-size: 18px; line-height: 1.5; color: #a9a294; max-width: 65ch; }
+.hdi-rn-foot { display: flex; justify-content: flex-end; gap: 14px; flex-wrap: wrap; padding-top: 14px; border-top: 1px solid #3a353d; }
+.hdi-card-sm .hdi-titles { flex: 1 1 auto; }
+.hdi-card-sm .hdi-note:empty { display: none; }
+.hdi-card-sm .hdi-note:empty::before { content: none; }
+.hdi-primary { background: #b69642; color: #15120c; font-weight: bold; border-color: #b69642; }
+.hdi-primary:hover { background: #d3b25e; border-color: #d3b25e; }
+.hdi-primary[aria-disabled="true"] { background: #2a2931; color: #8f8879; border-color: #4a4248; cursor: default; }
+
+/* ---- 2560 x 1440 from a couch (the rig): more room, bigger everything ------ */
+@media (min-width: 1900px) and (min-height: 1100px) {
+  .hdi-card { width: 1880px; height: 1180px; padding: 40px 46px 28px; gap: 28px; }
+  .hdi-face { flex-basis: 96px; width: 96px; height: 96px; font-size: 32px; }
+  .hdi-titles { flex-basis: 360px; }
+  .hdi-title { font-size: 38px; }
+  .hdi-title-ic { width: 48px; height: 48px; }
+  .hdi-who { font-size: 24px; }
+  .hdi-search { font-size: 25px; padding: 20px 24px; }
+  .hdi-btn { font-size: 22px; min-height: 60px; padding: 14px 26px; }
+  .hdi-body { grid-template-columns: 330px minmax(0, 1fr); gap: 34px; }
+  .hdi-cat { min-height: 78px; font-size: 25px; gap: 16px; }
+  .hdi-cat-plate { flex-basis: 58px; width: 58px; height: 58px; }
+  .hdi-cat-ic { width: 42px; height: 42px; }
+  .hdi-cat-n { font-size: 19px; min-width: 40px; }
+  .hdi-panel-title { font-size: 33px; }
+  .hdi-mod { min-height: 60px; }
+  .hdi-mod-name { font-size: 21px; }
+  .hdi-mod-note { font-size: 20px; }
+  .hdi-mods-title { font-size: 20px; }
+  .hdi-src { font-size: 19px; }
+  .hdi-power { font-size: 19px; min-height: 48px; }
+  .hdi-tiles { gap: 20px; grid-auto-rows: minmax(250px, auto); }
+  .hdi-plate { width: 124px; height: 124px; }
+  .hdi-ic { width: 92px; height: 92px; }
+  .hdi-seat { width: 42px; height: 42px; font-size: 23px; }
+  .hdi-label { font-size: 26px; }
+  .hdi-detail { font-size: 20px; }
+  .hdi-note { font-size: 22px; }
+  .hdi-card-sm { width: 1160px; height: auto; }
+  .hdi-rn-label { font-size: 23px; }
+  .hdi-rn-help { font-size: 21px; }
+}
+
+/* ---- narrower desktops: fewer columns ------------------------------------ */
+@media (max-width: 1200px) {
+  .hdi-cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hdi-cols-4 > .hdi-tile { grid-column: auto !important; }
+  .hdi-titles { flex-basis: 220px; }
+}
+
+/* ---- phone: rail becomes an even grid on top, tiles become rows ---------- */
+@media (max-width: 720px) {
+  .hdi-back { padding: 10px; }
+  .hdi-card { height: 96vh; max-height: none; padding: 18px 16px 14px; gap: 14px; }
+  .hdi-head { flex-wrap: wrap; gap: 12px; }
+  .hdi-face { flex-basis: 52px; width: 52px; height: 52px; font-size: 20px; }
+  .hdi-titles { flex: 1 1 0; }
+  .hdi-title { font-size: 24px; gap: 10px; }
+  .hdi-title-ic { width: 30px; height: 30px; }
+  .hdi-who { font-size: 18px; }
+  .hdi-close { padding: 12px 16px; }
+  .hdi-search { order: 5; flex-basis: 100%; }
+  .hdi-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 14px; }
+  .hdi-rail { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 6px; overflow: visible; }
+  .hdi-rail > .hdi-cat { grid-column: span var(--hdi-span, 3); }
+  .hdi-cat { flex-direction: column; justify-content: center; gap: 4px; min-height: 76px; padding: 8px 4px; font-size: 16px; text-align: center; }
+  .hdi-cat.is-on { box-shadow: inset 0 -3px 0 #d5b65c; }
+  .hdi-cat-plate { flex-basis: 36px; width: 36px; height: 36px; }
+  .hdi-cat-ic { width: 26px; height: 26px; }
+  .hdi-cat-n { display: none; }
+  .hdi-panel-title { font-size: 22px; }
+  .hdi-mod { flex-wrap: wrap; }
+  .hdi-mod-note { flex-basis: 100%; }
+  .hdi-tiles[class*="hdi-cols-"] { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; }
+  .hdi-tiles > .hdi-tile { grid-column: auto !important; }
+  .hdi-tile { flex-direction: row; justify-content: flex-start; text-align: left; padding: 14px 16px; }
+  .hdi-plate { width: 72px; height: 72px; }
+  .hdi-ic { width: 52px; height: 52px; }
+  .hdi-seat { width: 28px; height: 28px; font-size: 16px; }
+  .hdi-label { font-size: 19px; }
+  .hdi-detail { font-size: 16px; }
+  .hdi-note { font-size: 17px; }
+  .hdi-card.hdi-card-sm { height: auto; max-height: 96vh; }
+  .hdi-rn-foot { align-items: stretch; }
+  .hdi-rn-foot > .hdi-btn { flex: 1 1 auto; }
+}

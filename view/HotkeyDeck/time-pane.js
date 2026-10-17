@@ -325,6 +325,12 @@ window.TimePane = (function () {
         run: () => toGame('hdFire', 'hd-time-dial'),
       });
       rows.push({
+        label: 'Eat, drink & sleep',
+        detail: 'the Time Dial\'s Rest face — eat your fill, drink your fill, sleep; SunHelm fills the needs, the night passes in one step',
+        kind: 'wait', keywords: 'rest eat drink sleep meal supper feast table home food water hunger thirst fatigue sunhelm bed',
+        run: () => toGame('hdFire', 'hd-rest'),
+      });
+      rows.push({
         label: 'Change the weather',
         detail: 'every weather the load order ships, the lock and your weather mods — the Weather tab',
         kind: 'wait', keywords: 'weather sky rain snow storm clear fog sun force fw',

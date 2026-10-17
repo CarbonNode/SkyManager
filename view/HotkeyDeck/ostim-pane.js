@@ -86,6 +86,193 @@ window.OStimPane = (function () {
     if (fn === 'osSwap') { window.osResult(JSON.stringify({ ok: true, msg: 'Swapping roles…' })); return; }
   }
 
+  /* ========================================================== ranking == */
+  /* Rober, 2026-10-14, with a screenshot: "i tried search anub and anub's
+     doggy and sorting wasnt super great in ostim menu". OStim's SearchScenes
+     is a plain substring over the scene NAME, sorted A-Z, so "doggy" came back
+     alphabetical (Anubs…, Babo…, Big Guy…) with no idea of relevance, and
+     "anub's doggy" (an apostrophe, two words) matched nothing at all.
+
+     ONE ranking for every OStim scene list: the Animations browser, the Scene
+     tab's "Change scene…" bar (OStimPane.search) and the favourites filter all
+     read rows in this order. The Scene bar groups the phases of an animation
+     by FIRST appearance, so ranking the rows ranks the groups.
+
+     Normalising: lower case, apostrophes dropped ("anub's" = "anubs"), every
+     other mark a space, camelCase and digits split ("AnubsAdultDoggy2-1" =
+     "anubs adult doggy 2 1"). Matching: EVERY query word must be found in the
+     name, the scene id or the pack; a word may be a word-start ("dog" finds
+     "doggystyle"), may run across words ("doggystyle" finds "Doggy Style") or,
+     last of all, sit inside a word. A trailing s is optional ("anubs" ~ "anub").
+     Order, best first: name IS the query > name STARTS with it > every word
+     starts a word of the NAME > every word starts a word somewhere (id, pack)
+     > runs across words > inside a word. Inside one tier: exact words over
+     prefixes, query words close together and in order, early in the name,
+     few extra words; then the shorter name, A-Z, and phase order.
+     Ultralight-safe on purpose: no lookbehind, no Intl, no ?. / ??. */
+  const RANK_APOS = /['‘’`´]/g;
+  const rankWordCache = new Map();
+  function sceneWords(text) {
+    const key = String(text === undefined || text === null ? '' : text);
+    const hit = rankWordCache.get(key);
+    if (hit) return hit;
+    const words = key.replace(RANK_APOS, '')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')            // AnubsAdult -> Anubs Adult
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')      // OStim -> O Stim, BDGSit -> BDG Sit
+      .replace(/([A-Za-z])([0-9])/g, '$1 $2')         // Doggy2 -> Doggy 2
+      .replace(/([0-9])([A-Za-z])/g, '$1 $2')
+      .toLowerCase().replace(/[^a-z0-9à-ɏ]+/g, ' ')
+      .trim().split(' ').filter(Boolean);
+    if (rankWordCache.size > 6000) rankWordCache.clear();
+    rankWordCache.set(key, words);
+    return words;
+  }
+  function rankField(text) {
+    const w = sceneWords(text), at = [];
+    let c = '';
+    for (let i = 0; i < w.length; i++) { at.push(c.length); c += w[i]; }
+    return { w: w, c: c, at: at, n: w.join(' ') };
+  }
+  function queryTokens(q) {
+    const seen = {}, out = [];
+    sceneWords(q).forEach((t) => { if (!seen[t]) { seen[t] = true; out.push(t); } });
+    return out;
+  }
+  function tokenStem(t) { return t.length > 3 && t.charAt(t.length - 1) === 's' ? t.slice(0, -1) : t; }
+  // lv 4 exact word · 3 word starts with it · 2 runs across words from a word
+  // start · 1 inside a word · 0 absent. `at` = index of the word it hit.
+  function matchIn(f, tok) {
+    let best = 0, at = -1;
+    for (let i = 0; i < f.w.length; i++) {
+      if (f.w[i] === tok) return { lv: 4, at: i };
+      if (!best && f.w[i].indexOf(tok) === 0) { best = 3; at = i; }
+    }
+    if (best) return { lv: best, at: at };
+    let p = f.c.indexOf(tok), inside = -1;
+    while (p !== -1) {
+      const i = f.at.indexOf(p);
+      if (i !== -1) return { lv: 2, at: i };
+      if (inside === -1) { inside = 0; for (let k = 0; k < f.at.length && f.at[k] <= p; k++) inside = k; }
+      p = f.c.indexOf(tok, p + 1);
+    }
+    return inside === -1 ? { lv: 0, at: -1 } : { lv: 1, at: inside };
+  }
+  function tokenMatch(f, tok) {
+    const m = matchIn(f, tok);
+    const stem = tokenStem(tok);
+    if (m.lv >= 3 || stem === tok) return m;
+    const s = matchIn(f, stem);
+    return s.lv - 1 > m.lv ? { lv: s.lv - 1, at: s.at } : m;
+  }
+  function prepQuery(q) {
+    const t = queryTokens(q);
+    return { t: t, n: t.join(' '), c: t.join('') };
+  }
+  const NAME_PTS = [0, 14, 30, 55, 60], ELSE_PTS = [0, 4, 8, 14, 16];
+  // -1 = not a match. Otherwise tier * 1000 + a 0..999 relevance inside it.
+  function sceneScore(s, pq) {
+    if (!s) return -1;
+    if (!pq.t.length) return 0;
+    const name = rankField(s.name || s.sceneId), id = rankField(s.sceneId), pack = rankField(s.pack);
+    let tier = 0;
+    if (name.n === pq.n || name.c === pq.c) tier = 6;
+    else if (name.n.indexOf(pq.n) === 0 || name.c.indexOf(pq.c) === 0) tier = 5;
+    let nameAll = true, wordAll = true, spanAll = true, minor = 0, matched = 0;
+    const idx = [];
+    for (let k = 0; k < pq.t.length; k++) {
+      const tok = pq.t[k];
+      const mn = tokenMatch(name, tok);
+      const mo = Math.max(tokenMatch(id, tok).lv, tokenMatch(pack, tok).lv);
+      const lv = Math.max(mn.lv, mo);
+      if (!lv) return -1;                       // every word must be found somewhere
+      if (mn.lv < 3) nameAll = false;
+      if (lv < 3) wordAll = false;
+      if (lv < 2) spanAll = false;
+      if (mn.lv) { minor += NAME_PTS[mn.lv]; idx.push(mn.at); matched++; }
+      else minor += ELSE_PTS[mo];
+    }
+    if (!tier) tier = nameAll ? 4 : (wordAll ? 3 : (spanAll ? 2 : 1));
+    let ordered = true;
+    for (let i = 1; i < idx.length; i++) {
+      const gap = idx[i] - idx[i - 1];
+      if (gap <= 0) ordered = false;
+      else minor += Math.max(0, 30 - 10 * (gap - 1));   // side by side 30, a word between 20 …
+    }
+    if (idx.length > 1 && ordered) minor += 20;
+    if (idx.length) minor += Math.max(0, 20 - 5 * Math.min.apply(null, idx));   // early in the name
+    minor -= 5 * Math.max(0, name.w.length - matched);                          // extra words
+    if (name.c === id.c) minor -= 20;   // no name of its own: a pack's menu hub ("AnubsFmPack") or a raw key
+    return tier * 1000 + Math.max(0, Math.min(999, 500 + minor));
+  }
+  // Natural order for ids, so phase -2 sorts before -10 (no Intl collator).
+  function naturalCompare(a, b) {
+    const x = String(a || '').toLowerCase().match(/\d+|\D+/g) || [];
+    const y = String(b || '').toLowerCase().match(/\d+|\D+/g) || [];
+    for (let i = 0; i < Math.min(x.length, y.length); i++) {
+      if (x[i] === y[i]) continue;
+      const nx = /^\d/.test(x[i]), ny = /^\d/.test(y[i]);
+      if (nx && ny && Number(x[i]) !== Number(y[i])) return Number(x[i]) - Number(y[i]);
+      return x[i] < y[i] ? -1 : 1;
+    }
+    return x.length - y.length;
+  }
+  // Filter + order scene rows for a typed query. A query with no words keeps
+  // the rows as they came.
+  function rankScenes(list, query) {
+    const pq = prepQuery(query);
+    const rowsIn = Array.isArray(list) ? list : [];
+    if (!pq.t.length) return rowsIn.slice();
+    const scored = [];
+    rowsIn.forEach((s, i) => {
+      const sc = sceneScore(s, pq);
+      if (sc < 0) return;
+      const nf = rankField(s.name || s.sceneId);
+      scored.push({ s: s, sc: sc, words: nf.w.length, len: nf.n.length, key: nf.n, i: i });
+    });
+    scored.sort((a, b) => (b.sc - a.sc) || (a.words - b.words) || (a.len - b.len)
+      || (a.key < b.key ? -1 : (a.key > b.key ? 1 : 0))
+      || naturalCompare(a.s.sceneId, b.s.sceneId) || (a.i - b.i));
+    return scored.map((r) => r.s);
+  }
+
+  /* The fetch plan. The DLL is asked for the raw query first; a DLL that
+     matches words itself (ostim_deck.cpp SearchJson since 2026-10-14) says so
+     with `matcher:"tokens"` and that one answer is final. An older DLL only has
+     OStim's name substring, so a query it cannot match as one piece ("anub's
+     doggy") falls back to each word on its own, longest first (trailing s
+     dropped so "anubs" also finds "Anub's"), then the colloquial synonym, then
+     everything that fits (OStim's first 300) — every answer filtered and
+     ranked here against the WHOLE query. Pure, so the checks drive it. */
+  function searchPlan(q, syn) {
+    const raw = String(q || '').trim();
+    const toks = queryTokens(raw);
+    const steps = [];
+    const add = (term, rankAs, kind) => { if (!steps.some((s) => s.term === term)) steps.push({ term: term, rankAs: rankAs, kind: kind }); };
+    add(raw, raw, 'raw');
+    toks.map(tokenStem).filter((t) => t.length >= 2).sort((a, b) => b.length - a.length).forEach((t) => add(t, raw, 'word'));
+    const alias = syn && (syn[toks.join(' ')] || syn[raw.toLowerCase()]);
+    if (alias) add(alias, alias, 'syn');
+    add('', raw, 'all');
+    return { query: raw, plain: toks.length === 1 && toks[0] === raw.toLowerCase(), steps: steps, i: 0, acc: [], seen: {} };
+  }
+  // Fold one osList answer into the plan: {done, rows, syn} or {next: term}.
+  function planReply(plan, reply) {
+    const step = plan.steps[plan.i];
+    const results = (reply && Array.isArray(reply.results)) ? reply.results : [];
+    const tokensDll = !!(reply && reply.matcher === 'tokens');
+    if (tokensDll) plan.steps = plan.steps.filter((s, k) => k <= plan.i || s.kind === 'syn');
+    if (step.kind === 'syn') return { done: true, rows: rankScenes(results, step.rankAs), syn: step.term };
+    results.forEach((s) => { if (s && s.sceneId && !plan.seen[s.sceneId]) { plan.seen[s.sceneId] = true; plan.acc.push(s); } });
+    const ranked = rankScenes(plan.acc, plan.query);
+    // A raw query sent to an old DLL is complete only when it is ONE plain
+    // word; "doggy style" as one substring misses every "Doggystyle".
+    const complete = step.kind !== 'raw' || tokensDll || plan.plain;
+    const next = plan.steps[plan.i + 1];
+    if ((ranked.length && complete) || !next || (next.kind === 'syn' && ranked.length)) return { done: true, rows: ranked, syn: '' };
+    plan.i++;
+    return { done: false, next: next.term };
+  }
+
   /* ============================================================= state == */
 
   const state = {
@@ -107,7 +294,7 @@ window.OStimPane = (function () {
   function favorites() { return window.AnimPane ? AnimPane.sceneFavorites() : {}; }
   function rows() {
     let list = ui.favoriteMode ? Object.values(favorites()) : ((ui.results !== null) ? ui.results : state.scenes);
-    if (ui.favoriteMode && ui.query) list = list.filter((s) => (s.name || s.sceneId).toLowerCase().indexOf(ui.query.toLowerCase()) !== -1);
+    if (ui.favoriteMode && ui.query) list = rankScenes(list, ui.query);   // same words, same order as a search
     const seen = new Set();
     return list.filter((s) => { if (!s.sceneId || seen.has(s.sceneId)) return false; seen.add(s.sceneId); return true; });
   }
@@ -116,7 +303,7 @@ window.OStimPane = (function () {
   }
   function favoriteMode(on) {
     ui.favoriteMode = !!on;
-    if (!on && ui.query) { ui.results = []; sendSearch(ui.query); }
+    if (!on && ui.query) { ui.results = []; startSearch(ui.query); }
     if (window.AnimPane) AnimPane.ensureSceneFavorites();
     renderList();
   }
@@ -143,7 +330,7 @@ window.OStimPane = (function () {
       const canSearch = inS && state.ostim;
       els.search.disabled = !canSearch;
       els.search.placeholder = canSearch
-        ? 'Search scene names… (Enter changes to the top hit)'
+        ? 'Search scenes by name, id or pack… (Enter changes to the top hit)'
         : (state.ostim ? 'Start an OStim scene to search & change it' : 'OStim not detected');
     }
 
@@ -202,7 +389,7 @@ window.OStimPane = (function () {
             ? 'Start an OStim scene first — then search here to change it.'
             : (ui.query
                 ? 'No scene name matches “' + ui.query + '” for the current furniture & actors. '
-                  + 'OStim searches scene NAMES — try a word like “behind”, “cowgirl” or “kiss”.'
+                  + 'Every word has to appear in a scene’s name, id or pack — try fewer words, or one like “behind”, “cowgirl” or “kiss”.'
                 : 'No scenes for this furniture & actor count.'));
       els.list.append(empty);
       return;
@@ -371,8 +558,8 @@ window.OStimPane = (function () {
 
   /* Colloquial → OStim scene-NAME synonyms. OStim's search matches the scene
      NAME only (doggy-style scenes are named "…From Behind…", not "doggy"), so a
-     literal "doggy" finds nothing. When a term returns zero, we auto-retry its
-     synonym and label the results. */
+     literal "doggy" finds nothing. When the words find nothing anywhere, the
+     plan (searchPlan above) tries the synonym and the list says so. */
   const SYN = {
     'doggy': 'behind', 'doggystyle': 'behind', 'doggy style': 'behind',
     'from behind': 'behind', 'bj': 'blow', 'blowjob': 'oral', 'blow job': 'oral',
@@ -381,13 +568,19 @@ window.OStimPane = (function () {
   };
 
   function sendSearch(term) { ui.lastSent = term; toGame('osSearch', term); }
+  // Every search goes through the plan, so every list gets the same ranking.
+  function startSearch(q) {
+    ui.plan = searchPlan(q, SYN);
+    ui.synShown = ''; ui.synFor = '';
+    sendSearch(ui.plan.steps[0].term);
+  }
 
   function doSearch() {
     const q = ui.query.trim();
     if (ui.favoriteMode) { renderList(); return; }
     ui.synShown = ''; ui.synFor = '';
-    if (!q) { ui.results = null; ui.lastSent = ''; renderList(); return; }
-    sendSearch(q);
+    if (!q) { ui.results = null; ui.lastSent = ''; ui.plan = null; renderList(); return; }
+    startSearch(q);
   }
 
   function schedulePoll(delay) {
@@ -441,20 +634,21 @@ window.OStimPane = (function () {
         // raw box text — otherwise the synonym reply looks stale and is dropped.
         const replied = (j.query === undefined) ? (ui.lastSent || '') : String(j.query).trim();
         if (replied !== (ui.lastSent || '').trim()) return true;   // stale
-        // A literal term that found nothing → auto-retry its OStim-name synonym.
-        const raw = (ui.query || '').trim().toLowerCase();
-        const syn = SYN[raw];
-        if (!j.results.length && syn && (ui.lastSent || '').toLowerCase() !== syn && !ui.synShown) {
-          ui.synShown = syn; ui.synFor = ui.query.trim();
-          sendSearch(syn);
-          return true;
-        }
-        ui.results = j.results; renderList();
+        // The plan decides: a final ranked answer, or the next term to ask.
+        let found = null;
+        if (ui.plan) {
+          const step = planReply(ui.plan, j);
+          if (!step.done) { sendSearch(step.next); return true; }
+          found = step.rows;
+          if (step.syn) { ui.synShown = step.syn; ui.synFor = ui.plan.query; }
+          ui.plan = null;
+        } else found = rankScenes(j.results, ui.query);
+        ui.results = found; renderList();
         /* An external search (the Scene page's quick bar) gets the same
            results the list just got, once. It plays through play() below,
            so the compatibility gate in change() sees them as known. */
-        if(ui.externalCb){const cb=ui.externalCb;ui.externalCb=null;try{cb(j.results.slice());}catch(e){}}
-        if(ui.pendingScene){const found=j.results.find(s=>s.sceneId===ui.pendingScene.sceneId);ui.pendingScene=null;if(found)change(found);else toast('That scene does not fit the current actors and furniture.',false);}
+        if(ui.externalCb){const cb=ui.externalCb;ui.externalCb=null;try{cb(found.slice());}catch(e){}}
+        if(ui.pendingScene){const hit=found.find(s=>s.sceneId===ui.pendingScene.sceneId);ui.pendingScene=null;if(hit)change(hit);else toast('That scene does not fit the current actors and furniture.',false);}
       }
       return true;
     }
@@ -827,8 +1021,8 @@ window.OStimPane = (function () {
        page's quick bar paints the results itself. cb(results) fires once. */
     search(query, cb) {
       const q=String(query||'').trim();if(!q){if(cb)cb([]);return;}
-      init();ui.pendingScene=null;ui.favoriteMode=false;ui.query=q;ui.externalCb=cb||null;ui.synShown='';ui.synFor='';
-      sendSearch(q);
+      init();ui.pendingScene=null;ui.favoriteMode=false;ui.query=q;ui.externalCb=cb||null;
+      startSearch(q);
     },
     /* Play from OUTSIDE this pane (the Scene page's quick bar). change() is
        gated on this pane's own state.inScene, which is stale whenever the
@@ -848,16 +1042,19 @@ window.OStimPane = (function () {
       init();ui.favoriteMode=false;ui.query=q;ui.pendingScene=null;ui.results=[];
       if(els.search)els.search.value=q;
       if(window.__omniSetTab)window.__omniSetTab('anim');
-      setMode('ostim');sendSearch(q);renderList();
+      setMode('ostim');startSearch(q);renderList();
     },
     findScene(s) {
       if(!s||!s.sceneId)return;init();ui.favoriteMode=false;ui.query=s.name||s.sceneId;ui.pendingScene=s;ui.results=[];
-      if(els.search)els.search.value=ui.query;if(window.__omniSetTab)window.__omniSetTab('anim');setMode('ostim');sendSearch(ui.query);renderList();
+      if(els.search)els.search.value=ui.query;if(window.__omniSetTab)window.__omniSetTab('anim');setMode('ostim');startSearch(ui.query);renderList();
     },
     previousScene(currentId) {
       const recent=window.AnimPane?AnimPane.sceneLibrary().recent:[];const previous=recent.find(s=>s.sceneId!==(currentId||state.scene));
       if(previous)this.findScene(previous);else toast('No previous scene recorded yet.',false);
     },
+    /* The one ranking, for anything else that lists OStim scenes. */
+    rankScenes: rankScenes,
+    _rank: { sceneWords: sceneWords, queryTokens: queryTokens, sceneScore: function (s, q) { return sceneScore(s, prepQuery(q)); }, searchPlan: searchPlan, planReply: planReply, SYN: SYN },
     _state: state, _ui: ui   // test hooks only
   };
 })();

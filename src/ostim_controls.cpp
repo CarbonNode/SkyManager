@@ -9,10 +9,14 @@
 #include "sos_actions.h"
 #include "npc_clearance.h"
 #include "ppa_config.h"
+#include "ostim_addons.h"
 #include "skyui_mcm.h"
 #include "relight_config.h"
 #include "osis_runtime.h"
 #include "scene_tags.h"
+#include "scene_gear.h"
+#include "item_icons.h"      // furniture renders for the Move scene popout
+#include "actor_identity.h"
 #include <thread>
 #include <chrono>
 #include <atomic>
@@ -60,6 +64,8 @@ std::string optionToken;
 std::string Dump(const json& j) { return j.dump(-1,' ',false,json::error_handler_t::replace); }
 OT::IThreadInterface* Api() { static OT::IThreadInterface* api=nullptr; if(!api){api=OT::GetAPI("SkyManager",REL::Version(1,0,0,0));if(api)api->RegisterEventCallback([](OT::ThreadEvent event,uint32_t id,void*){if(id==0&&(event==OT::ThreadEvent::ThreadStarted||event==OT::ThreadEvent::ThreadEnded)){
  const auto old=sceneGeneration.fetch_add(1);
+ // Pieces the Gear panel took off during this scene go back on when it ends (scene_gear.cpp).
+ if(event==OT::ThreadEvent::ThreadEnded)SKSE::GetTaskInterface()->AddTask([](){SceneGear::RestoreAll();});
  SKSE::GetTaskInterface()->AddTask([old](){if(!lightUndo.empty()&&lightGeneration<=old){const auto failed=RestoreLights();if(failed)logger::warn("ostim lighting: could not restore {} actor(s)",failed);}});
 }},nullptr);} return api; }
 std::string Signature() {
@@ -97,6 +103,21 @@ bool Nearby(RE::TESObjectREFR* r){
  auto* pc=RE::PlayerCharacter::GetSingleton();
  return pc&&r&&!r->IsDisabled()&&!r->IsDeleted()&&r->Get3D()&&r->GetParentCell()==pc->GetParentCell()&&pc->GetPosition().GetSquaredDistance(r->GetPosition())<2560.f*2560.f;
 }
+/* The picture of a furniture piece: the deck's render of its BASE model (Mesh
+   Rendering Framework, render once keep forever), the same route the item and
+   face renders take. Puts {bid:"0xID|plugin", icon:"icons/items/x.png"|""} on the
+   row and, when the render does not exist yet, adds it to `items` so the caller
+   can queue it. Rober, 2026-10-14: "we have this but doesnt show actual
+   renderings, and could be much nicer / larger horizontally". */
+void FurnRender(json& row,RE::TESObjectREFR* ref,json* items=nullptr){
+ auto* base=ref?ref->GetBaseObject():nullptr;std::string fid,plug;
+ if(!base||!ActorIdentity::DurableOf(base,fid,plug))return;
+ std::string lp=plug;for(auto& c:lp)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+ row["bid"]=fid+"|"+lp;
+ const auto path=ItemIcons::IconPathIfRendered(fid,plug);
+ row["icon"]=path;
+ if(path.empty()&&items)items->push_back({{"formId",fid},{"plugin",plug},{"name",row.value("name",std::string("Furniture"))}});
+}
 void Scan(const json& req, Reply reply, int setupCount=0, std::string setupKey=""){
  auto* a=Api();auto* pc=RE::PlayerCharacter::GetSingleton();
  const auto sig=setupCount?"setup:"+setupKey+":"+std::to_string(setupCount):Signature();if(!a||!pc||sig.empty()){reply(Dump({{"ok",false},{"msg","Start a player scene first"},{"request",req.value("request","")}}));return;}
@@ -113,7 +134,12 @@ void Scan(const json& req, Reply reply, int setupCount=0, std::string setupKey="
   if(ticket!=epoch||(!setupCount && sig!=Signature())){reply(Dump({{"ok",false},{"msg","Scene changed; rescan furniture"},{"request",req.value("request","")}}));return;}
   std::sort(rows.begin(),rows.end(),[](const json& x,const json& y){return x.value("feet",0.f)<y.value("feet",0.f);});
   scanScene=sig;scanToken=std::to_string(ticket);scanned=std::chrono::steady_clock::now();
-  for(auto& row:rows)furniture[row["formId"].get<uint32_t>()]=row;
+  json renderQueue=json::array();
+  for(auto& row:rows){
+   FurnRender(row,RE::TESForm::LookupByID<RE::TESObjectREFR>(row["formId"].get<uint32_t>()),&renderQueue);
+   furniture[row["formId"].get<uint32_t>()]=row;
+  }
+  if(!renderQueue.empty())ItemIcons::EnsureIconsForList(Dump({{"items",renderQueue}}));
   reply(Dump({{"ok",true},{"request",req.value("request","")},{"token",scanToken},{"signature",sig},{"rows",rows},{"msg","Closest available choice per furniture type"}}));
  };
  bool sent=Call("OFurniture","FindFurniture",[finish,req,reply](RE::BSScript::Variable v){
@@ -297,6 +323,8 @@ void CurrentFurniture(const json& req, std::function<void(json)> done){
    json here={{"type",type},{"formId",r?r->GetFormID():0u},
               {"name",r&&r->GetName()&&*r->GetName()?r->GetName():"Current furniture"},
               {"current",true}};
+   json renderQueue=json::array();FurnRender(here,r,&renderQueue);
+   if(!renderQueue.empty())ItemIcons::EnsureIconsForList(Dump({{"items",renderQueue}}));
    done({{"ok",true},{"here",here},{"msg",""}});
   },0))done({{"ok",true},{"here",{{"type",type},{"formId",0u},{"name","Current furniture"},{"current",true}}},{"msg",""}});
  },0);
@@ -339,6 +367,17 @@ json WornState(RE::Actor* a){
  }
  out["pieces"]=pieces;
  return out;
+}
+// The Gear panel (2026-10-14): the worn set sorted into key slots, with off and on
+// (scene_gear.cpp). Engine equip calls, not OStim's undress - the two coexist.
+void GearControl(const json& req,std::function<void(json)> done){
+ const auto fid=req.value("formId",0u);auto* actor=Participant(fid);
+ if(!actor){done({{"ok",false},{"msg","Actor is no longer a loaded scene participant"}});return;}
+ const auto gen=sceneGeneration.load();
+ json j=json::parse(req.value("act","")=="gear"?SceneGear::ActJson(actor,req.dump(),gen):SceneGear::StateJson(actor,gen),nullptr,false);
+ if(!j.is_object())j={{"ok",false},{"msg","Could not read their gear"}};
+ j["formId"]=fid;
+ done(j);
 }
 void UndressControl(const json& req,const std::string& sig,std::function<void(json)> done){
  const auto fid=req.value("formId",0u);auto* actor=Participant(fid);
@@ -951,6 +990,44 @@ void StartNewScene(const json& req,std::function<void(json)> done){
   d->builder=v.GetSInt();ConfigureStart(d,0);
  },d->actors))FailStart(d,"OStim scene builder is unavailable");
 }
+/* WHOLE-SCENE NUDGE (Rober, 2026-10-14: "i need to be able to move an
+   entire scene up easily (both actors) or left or right quickly").
+   OStim has no scene offset, only per-actor alignment, and every actor's
+   offset is in the SCENE's frame (from the scene centre, turned with it).
+   So the same delta on every participant moves the scene rigidly. The
+   delta is shrunk to what EVERY actor can take inside the +-200 clamp: one
+   actor stopping at the wall while the other kept going would pull the pair
+   apart. axis "reset" zeroes x/y/z for everyone; rotation, scale and SOS
+   bend are per-person things and are left alone. */
+json AlignShiftAll(OT::IThreadInterface* a,const std::string& axis,float delta){
+ if(!a||!a->IsThreadValid(0))return {{"ok",false},{"msg","No player scene"}};
+ if(axis!="x"&&axis!="y"&&axis!="z"&&axis!="reset")return {{"ok",false},{"msg","The whole scene moves on x, y or z only"}};
+ if(!std::isfinite(delta)||std::abs(delta)>25.f)return {{"ok",false},{"msg","Invalid adjustment"}};
+ const auto n=a->GetActorCount(0);
+ if(!n)return {{"ok",false},{"msg","No participants"}};
+ std::vector<OT::ActorAlignmentData> all(n);
+ for(uint32_t i=0;i<n;++i)if(!a->GetActorAlignment(0,i,&all[i]))return {{"ok",false},{"msg","Could not read a participant's alignment"}};
+ auto field=[&axis](OT::ActorAlignmentData& d)->float&{return axis=="x"?d.offsetX:axis=="y"?d.offsetY:d.offsetZ;};
+ auto now=[&field](OT::ActorAlignmentData& d){const float v=field(d);return std::isfinite(v)?v:0.f;};
+ if(axis!="reset"){
+  float lo=-25.f,hi=25.f;
+  for(auto& d:all){lo=(std::max)(lo,-200.f-now(d));hi=(std::min)(hi,200.f-now(d));}
+  delta=std::clamp(delta,(std::min)(lo,0.f),(std::max)(hi,0.f));
+  if(delta==0.f)return {{"ok",false},{"applied",0.f},{"msg","The scene is at OStim's 200-unit alignment limit that way"}};
+ }
+ uint32_t moved=0;
+ for(uint32_t i=0;i<n;++i){
+  auto d=all[i];
+  if(!std::isfinite(d.scale)||d.scale<=0.f)d.scale=1.f;   // neutral is 1, never 0
+  if(!std::isfinite(d.sosBend))d.sosBend=0.f;
+  if(axis=="reset"){d.offsetX=d.offsetY=d.offsetZ=0.f;}
+  else field(d)=now(d)+delta;
+  if(a->SetActorAlignment(0,i,&d)==OT::APIResult::OK)++moved;
+ }
+ logger::info("ostim-align-all: {} {} moved {}/{}",axis,delta,moved,n);  // marker: ostim-align-all
+ const bool ok=moved==n;
+ return {{"ok",ok},{"applied",delta},{"msg",!ok?"OStim refused part of the move":axis=="reset"?"Scene position reset":"Scene moved"}};
+}
 /* { formId, axis:"x"|"y"|"z"|"rotation"|"scale"|"bend"|"reset", delta }
    Steps are the overlay's to choose; the clamps are ours, and they are the
    SAME clamps the Scene page uses. */
@@ -958,6 +1035,7 @@ std::string AlignAdjust(const std::string& payload){
  json req=json::parse(payload,nullptr,false);
  if(!req.is_object())return Dump({{"ok",false},{"msg","Invalid alignment request"}});
  auto* a=Api();
+ if(req.value("all",false)){AlignShiftAll(a,req.value("axis",""),req.value("delta",0.f));return AlignStateJson();}
  const auto fid=req.value("formId",0u);
  const auto index=a?a->GetActorPosition(0,fid):-1;
  OT::ActorAlignmentData d{};
@@ -1090,6 +1168,12 @@ void Controls(const std::string& payload, Reply reply){
    }).detach();
    return;
   }
+  if(act=="addons"){
+   const auto op=req.value("op","state");
+   if(op=="state"){done(json::parse(OstimAddons::StateJson()));return;}
+   if(op=="set"){done(json::parse(OstimAddons::Set(Dump(req))));return;}
+   done({{"ok",false},{"msg","Unknown add-on request"}});return;
+  }
   if(act=="ppa"){
    const auto op=req.value("op","state");
    if(op=="state"){done(json::parse(PpaConfig::StateJson()));return;}
@@ -1118,7 +1202,21 @@ void Controls(const std::string& payload, Reply reply){
   if(act=="sizeState"||act=="size"||act=="sizeRestore"||act=="actorState"||act=="expression"||act=="expressionClear"||act=="mute"||act=="redress"){ActorControl(req,sig,done);return;}
   // ---- the unified Scene page's own verbs (2026-09-21) ----
   if(act=="here"){CurrentFurniture(req,done);return;}
+  // Have the renders of these furniture pieces landed yet? {formIds:[...]} ->
+  // {icons:{"0xID|plugin":path}, missing:n}. The popout asks every second or so.
+  if(act=="furnIcons"){
+   json icons=json::object();int missing=0;
+   if(req.contains("formIds")&&req["formIds"].is_array())for(const auto& v:req["formIds"]){
+    if(!v.is_number_unsigned())continue;
+    json row=json::object();FurnRender(row,RE::TESForm::LookupByID<RE::TESObjectREFR>(v.get<uint32_t>()));
+    if(!row.contains("bid"))continue;
+    const auto path=row.value("icon",std::string());
+    if(path.empty())++missing;else icons[row["bid"].get<std::string>()]=path;
+   }
+   done({{"ok",true},{"icons",icons},{"missing",missing}});return;
+  }
   if(act=="undressState"||act=="undress"){UndressControl(req,sig,done);return;}
+  if(act=="gearState"||act=="gear"){GearControl(req,done);return;}
   if(act=="voices"){VoiceCatalog(req,done);return;}
   if(act=="voiceState"){VoiceState(req,sig,done);return;}
   if(act=="setVoice"){SetVoice(req,sig,done);return;}
@@ -1134,6 +1232,7 @@ void Controls(const std::string& payload, Reply reply){
   if(act=="auto"){done(json::parse(SetAutoMode()));return;}
   if(act=="speed"){done(json::parse(Speed(req.value("delta","+"))));return;}
   if(act=="stop"){auto* s=OS::GetAPI();bool ok=s&&s->StopScene("SkyManager",0)==OS::APIResult::OK;done({{"ok",ok},{"msg",ok?"Scene stopped":"OStim refused stop"}});return;}
+  if(act=="alignAll"){done(AlignShiftAll(a,req.value("axis",""),req.value("delta",0.f)));return;}
   if(act=="align"){
    const auto fid=req.value("formId",0u);const auto index=a->GetActorPosition(0,fid);OT::ActorAlignmentData d{};
    if(index<0||!a->GetActorAlignment(0,index,&d)){done({{"ok",false},{"msg","Actor is no longer in this scene"}});return;}

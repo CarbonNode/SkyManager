@@ -17,7 +17,12 @@
     out.density = DENSITIES.indexOf(raw.density) >= 0 ? raw.density : 'balanced';
     out.sizeAuto = raw.sizeAuto !== false;
     out.sidebarCollapsed = raw.sidebarCollapsed === true;
-    out.controlsCollapsed = raw.controlsCollapsed !== false;
+    // Expanded by default (2026-10-15). It defaulted to COLLAPSED while the fold
+    // only took a filter row away; now the same chevron also takes the title
+    // block and the quick groups, so that default opened a first run on bare
+    // cards and hid the quick filters entirely. Folding stays one click away and
+    // anyone who has folded it keeps their choice.
+    out.controlsCollapsed = raw.controlsCollapsed === true;
     var p = raw.parents || {};
     categories.forEach(function (c) {
       if (own(p, c) && categories.indexOf(p[c]) >= 0 && p[c] !== c) out.parents[c] = p[c];

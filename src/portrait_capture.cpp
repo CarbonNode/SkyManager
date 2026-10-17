@@ -7,6 +7,7 @@
 #include "photo_camera.h"
 #include "photo_studio.h"
 #include "photo_preview.h"
+#include "fps_meter.h"
 
 #include <algorithm>
 #include <array>
@@ -161,12 +162,25 @@ namespace PortraitCapture
 		// so your subject holds still while you fly around her. The plain `tfc`
 		// (CHIM's) is right for the fire-and-forget capture, where a frozen world
 		// would be a pointless side effect the player never sees.
+		// 2026-10-15: the console `tfc` is back as the way IN, with the native
+		// toggle as the fallback. `fov` + console `tfc` is CHIM's verbatim
+		// sequence and the one every photo used until 2026-09-24; the chosen
+		// FOV visibly applied then. Since the native-only toggle it has never
+		// been seen to (2026-09-25 "zoom out ineffective", 2026-10-15 again,
+		// both with the worldFOV FIELD holding the requested number). The
+		// 2026-09-24/25 verification stays: the lease reads the real camera
+		// and frozen-time state whichever way it went in.
 		bool EnterFreeCam(bool freezeTime = false)
 		{
 			auto* camera = RE::PlayerCamera::GetSingleton();
 			auto* frozen = FreezeTimeFlag();
-			const bool entered = g_freeCamera.Enter(camera, frozen, freezeTime);
+			const bool entered = g_freeCamera.Enter(camera, frozen, freezeTime, [](bool freeze) {
+				RunConsole(freeze ? "tfc 1" : "tfc");
+				return true;
+			});
 			logger::info("photo-camera: native enter verified={} freeze={}", entered, frozen && *frozen);
+			logger::info("photo-camera: entered via {} (console tfc first, native toggle as fallback)",
+				g_freeCamera.EnteredByRoute() ? "console tfc" : "native toggle");
 			logger::info("photo-camera: runtime freeze flag vr={} state={} requested={} actual={}",
 				REL::Module::IsVR(), camera && camera->currentState ? static_cast<int>(camera->currentState->id) : -1,
 				freezeTime, frozen && *frozen);
@@ -175,7 +189,8 @@ namespace PortraitCapture
 
 		void ExitFreeCam()
 		{
-			if (!g_freeCamera.Exit(RE::PlayerCamera::GetSingleton(), FreezeTimeFlag())) {
+			const auto exitRoute = [](bool) { RunConsole("tfc"); return true; };
+			if (!g_freeCamera.Exit(RE::PlayerCamera::GetSingleton(), FreezeTimeFlag(), exitRoute)) {
 				logger::warn("photo-camera: free camera did not restore");
 				Notify("Camera did not restore - exit free camera before reopening SkyManager");
 			}
@@ -1245,6 +1260,9 @@ namespace PortraitCapture
 				// finished frame, and PrismaUI (downstream in this chain) has not
 				// drawn this frame's overlay into it yet — so a photo can never
 				// contain the deck's own HUD views.
+				// The FPS widget counts engine frames here: this call runs once per
+				// engine frame, and OnFrame is two atomics (nothing while it's off).
+				FpsMeter::OnFrame();
 				StepOnPresentThread();
 				PhotoPreview::Render();
 				g_origPresent(a_p1);
@@ -1522,6 +1540,47 @@ namespace PortraitCapture
 		// at the player's preferred FOV. -1 = nothing saved / nothing to undo.
 		float g_savedWorldFov = -1.0f;
 		float g_savedFirstFov = -1.0f;
+
+		// The ini setting the engine falls back to (and that Improved Camera SE
+		// copies into worldFOV on its first free-camera frame). Logged beside
+		// the field so the log says which number the renderer could be using.
+		float DefaultWorldFovSetting()
+		{
+			auto* ini = RE::INISettingCollection::GetSingleton();
+			auto* setting = ini ? ini->GetSetting("fDefaultWorldFOV:Display") : nullptr;
+			return setting ? setting->GetFloat() : -1.0f;
+		}
+
+		// What is actually DRAWN: the NiCamera frustum under the camera root,
+		// converted to a horizontal and a vertical angle at unit distance.
+		// `worldFOV` is only what we asked for; this is evidence.
+		struct RenderedFovReading
+		{
+			bool  ok = false;
+			float h = 0.0f, v = 0.0f;
+			float left = 0.0f, right = 0.0f, top = 0.0f, bottom = 0.0f, nearPlane = 0.0f;
+		};
+		RenderedFovReading RenderedFov(RE::PlayerCamera* camera)
+		{
+			RenderedFovReading out;
+			if (!camera || !camera->cameraRoot) return out;
+			RE::NiCamera* nic = nullptr;
+			for (auto& child : camera->cameraRoot->GetChildren()) {
+				if (!child) continue;
+				if (auto* c = netimmerse_cast<RE::NiCamera*>(child.get())) { nic = c; break; }
+			}
+			if (!nic) return out;
+			const auto& f = nic->GetRuntimeData2().viewFrustum;  // CommonLib-NG keeps it in RUNTIME_DATA2 (0x150 flat / 0x1CC VR)
+			if (f.bOrtho) return out;
+			const float w = f.fRight - f.fLeft, hgt = f.fTop - f.fBottom;
+			if (!std::isfinite(w) || !std::isfinite(hgt) || w <= 0.0f || hgt <= 0.0f) return out;
+			constexpr float kDeg = 180.0f / 3.14159265f;
+			out.ok = true;
+			out.h = 2.0f * std::atan(w * 0.5f) * kDeg;
+			out.v = 2.0f * std::atan(hgt * 0.5f) * kDeg;
+			out.left = f.fLeft; out.right = f.fRight; out.top = f.fTop; out.bottom = f.fBottom; out.nearPlane = f.fNear;
+			return out;
+		}
 
 		void RunConsole(const char* cmd);
 
@@ -2530,9 +2589,12 @@ namespace PortraitCapture
 				else if (fov == PhotoFov::ZoomIn) target = (std::max)(1.0f, target - 15.0f);
 				else if (fov == PhotoFov::Exact) target = exactFov;
 				requestedFov = target;
+				const float iniBefore = DefaultWorldFovSetting();
 				if (fov != PhotoFov::Keep)
 					RunConsole(("fov " + std::to_string(target)).c_str());
 				logger::info("photo: chosen FOV {} from {}", target, g_savedWorldFov);
+				logger::info("photo: fDefaultWorldFOV before={} after={} (does the console fov write the setting?)",
+					iniBefore, DefaultWorldFovSetting());
 				if (fov == PhotoFov::Exact) logger::info("photo: exact slider FOV {}", target);
 			}
 		}
@@ -2540,6 +2602,14 @@ namespace PortraitCapture
 			EndPhotoMode();
 			Notify("Free camera did not start - returning to SkyManager");
 			return;
+		}
+		// Say it again now that the camera state has changed: a `fov` is
+		// applied on a state transition, and a camera mod (Improved Camera SE
+		// rewrites worldFOV on its first free-camera frame) may have touched
+		// the field during the toggle. Keep issues nothing, as before.
+		if (fov != PhotoFov::Keep && g_savedWorldFov > 0.0f) {
+			RunConsole(("fov " + std::to_string(requestedFov)).c_str());
+			logger::info("photo: FOV {} re-asserted after the free-camera toggle", requestedFov);
 		}
 		if (!PhotoLighting::Begin(lighting)) {
 			EndPhotoMode();
@@ -2576,6 +2646,16 @@ namespace PortraitCapture
 				const auto actual = camera->GetRuntimeData2().worldFOV;
 				logger::info("photo: settled FOV requested={} actual={} freeCamera={} waiting-for-shutter={}",
 					requestedFov, actual, camera->IsInFreeCameraMode(), !g_photoShooting.load());
+				// The line above reads back the field we wrote. This one reads
+				// what is DRAWN: the NiCamera's frustum. If they disagree, the
+				// field is not what the renderer is using (2026-10-15).
+				const auto drawn = RenderedFov(camera);
+				if (drawn.ok)
+					logger::info("photo: rendered frustum hfov={:.1f} vfov={:.1f} (left={:.4f} right={:.4f} top={:.4f} bottom={:.4f} near={:.3f}) worldFOV={} fDefaultWorldFOV={}",
+						drawn.h, drawn.v, drawn.left, drawn.right, drawn.top, drawn.bottom, drawn.nearPlane, actual, DefaultWorldFovSetting());
+				else
+					logger::info("photo: rendered frustum unavailable (no NiCamera under cameraRoot) worldFOV={} fDefaultWorldFOV={}",
+						actual, DefaultWorldFovSetting());
 				PhotoLighting::LogState();
 				if (!std::isfinite(actual) || std::abs(actual - requestedFov) > 0.5f)
 					Notify("Photo mode is open, but the camera did not keep the chosen FOV");

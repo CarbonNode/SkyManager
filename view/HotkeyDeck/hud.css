@@ -932,8 +932,28 @@ body.a-bottom .hud-strip.vert { flex-direction: column-reverse; }
    these widget frames customizable?"). The rim stays solid and keeps her own
    colour (the grey goes on the picture inside, not the frame), so who is
    away is still readable at a glance. */
-.hud-chip.hud-away { opacity: .7; }
+/* The fade sits on the picture and the name, not the chip (2026-10-15), so the
+   Away tag below stays crisp: an unlabelled dim read as the strip's opacity
+   slider not working. Separate from that slider on purpose — it says "not
+   near you", and 100% opacity does not undo it (the Away faces toggle hides
+   these chips instead). */
+.hud-chip.hud-away .hud-face, .hud-chip.hud-away .hud-medal, .hud-chip.hud-away .hud-name { opacity: .7; }
 .hud-away .hud-face-in { filter: grayscale(.8); }
+/* Quiet on purpose (Rober, 2026-10-15, on the first cut: "the away is a bit
+   jarring, large"): lowercase, no rim, muted ink, parked in the level badge's
+   corner — an away face never carries a level, so the slot is free and the
+   tag reads as the same family. 12px is the floor, not a target. */
+.hud-away-tag {
+  position: absolute; right: -6px; bottom: -4px; z-index: 2;
+  height: 17px; padding: 0 5px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  font: 600 12px/1 "Segoe UI", sans-serif; font-style: normal;
+  white-space: nowrap;
+  color: rgba(227, 221, 204, .78);
+  background: rgba(10, 11, 15, .62);
+  border-radius: 8px;
+  pointer-events: none;
+}
 
 /* Frame modes (hud.js applyFrames): one gold rim for all, or none at all. In
    "none" the rim stays laid out (the face framing measured that box) but
@@ -964,7 +984,7 @@ body.a-bottom .hud-strip.vert { flex-direction: column-reverse; }
 /* Arrivals and departures, every mode: a face fades and grows in once when a
    follower joins, and fades out before the strip closes the gap. One-shot
    (the no-looping-animation law). */
-/* from-only: it eases to the chip's own value, so an away face lands on its .7 */
+/* from-only: it eases to the chip's own value (an away face's .7 sits on its picture) */
 @keyframes hudChipIn {
   from { opacity: 0; transform: scale(.82); }
 }

@@ -1312,6 +1312,22 @@ namespace NffControl
 				return Refuse(name + " needs her own follower dialogue; no verified recovery adapter is installed.").dump();
 			if (!custom && want && !IsPotentialFollower(actor))
 				return Refuse(name + " is not recruitable. Use Make recruitable first, then Restore following.").dump();
+			// An NFF IMPORT that is not following is not stranded: ImportAction
+			// parks her in a follower slot WITHOUT CurrentFollowerFaction or the
+			// teammate flag (see the import/export note in Apply). Treating that
+			// as StrandedInNff put her at CurrentFollowerFaction 0, and NFF's
+			// RemoveAction then returned at its ImportFac check - leaving her
+			// half-recruited (Kella Vestia, 2026-10-15). RecruitAction answers
+			// "already in your group" for her. Export is the way out of the slot.
+			if (!custom && IsImported(actor) && !actor->IsPlayerTeammate()) {
+				logger::info("nff-import-not-follower: {} ({:08X}) is an NFF import, not following - {} refused",
+					name, actor->GetFormID(), want ? "recruit" : "dismiss");   // marker: nff-import-not-follower
+				return Refuse(want
+					? name + " is in NFF as an import (her slot is held, she is not following). NFF will not recruit "
+					  "someone it already holds. Remove her from the framework first, or use her own dialogue."
+					: name + " is not following you. She is in NFF as an import, which holds a slot for her gear and "
+					  "tweaks. Use Remove from framework to free the slot; there is nothing to dismiss.").dump();
+			}
 			// A quest alias running a follow package on her, and no NFF slot to
 			// release: the deck cannot ask that quest to let go. A recruit is
 			// refused outright; a DISMISS names the quest and offers the force -
@@ -2165,6 +2181,10 @@ namespace NffControl
 			return Refuse(name + " is dead").dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		if (follows)
 			return Refuse(name + " is already following you", false, true).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		if (IsImported(actor) && !actor->IsPlayerTeammate())
+			return Refuse(name + " is in NFF as an import (her slot is held, she is not following). NFF will not "
+				"recruit someone it already holds. Remove her from the framework first, or use her own dialogue.")
+				.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		if (!j.value("force", false) && IsGuardedActor(actor, name))
 			return Refuse(name + " has her own follower system — recruiting her into NFF gives her two. Click again to do it anyway.",
 				true).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);

@@ -1,0 +1,133 @@
+/* ============================================================================
+   FPS METER (2026-10-14) — the free widget `fps` (hud-fps.js builds it).
+   Rober: "show fps engine and fps (frame gen) in ui elements without
+   performance cost and toggable".
+
+   One plate, two numbers side by side: ENGINE (what the game draws) and
+   FRAME GEN (what reaches the screen, PureDark's own count), each a big
+   couch-readable numeral with a small unit; an optional strip of history bars
+   under them. The engine number carries the colour — low engine fps is the
+   thing frame generation hides — the frame-gen number stays gold.
+   Ultralight rules kept: flat colours, small gradients only, transforms for
+   anything that changes every push, nothing under 12px. Tokens: hud.css :root.
+   ============================================================================ */
+/* Three classes deep on purpose: `body.hud-m3 .hud-fw-card` (hud.css, the
+   readout-metrics v2 pass) caps every free card at 190px for slot cards, and a
+   two-number plate is wider than that. */
+.hud-fw .hud-fw-card.hud-fps-card,
+body.hud-m3 .hud-fw .hud-fw-card.hud-fps-card {
+  align-items: stretch;
+  gap: 8px;
+  min-width: 132px;
+  max-width: none;
+  padding: 10px 16px 11px;
+}
+.hud-fps-row { display: flex; align-items: stretch; gap: 16px; }
+/* the COLUMN holds the width "240 fps" needs, so the plate does not breathe as
+   the number moves and the unit stays snug against its digits */
+.hud-fps-col { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 104px; }
+.hud-fps-sep { width: 1px; align-self: stretch; margin: 4px 0; background: var(--hud-line-lit); }
+
+.hud-fps-lab {
+  font-size: 12.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--hud-gold); text-shadow: var(--hud-tshadow);
+  white-space: nowrap;
+}
+.hud-fps-card.no-label .hud-fps-lab,
+.hud-fw.is-nolabel .hud-fps-lab { display: none; }
+
+.hud-fps-val { display: flex; align-items: baseline; gap: 5px; line-height: 1; white-space: nowrap; }
+.hud-fps-n {
+  font-size: 34px; font-weight: 800; letter-spacing: .01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--hud-ink); text-shadow: var(--hud-tshadow);
+}
+.hud-fps-u { font-size: 14px; font-weight: 700; color: var(--hud-dim); text-shadow: var(--hud-tshadow); }
+.hud-fps-sub {
+  min-height: 17px;
+  font-size: 14px; font-weight: 600; color: var(--hud-dim); text-shadow: var(--hud-tshadow);
+  white-space: nowrap;
+}
+
+/* engine bands — the colour lands on the numeral only */
+.hud-fps-eng.is-high .hud-fps-n { color: var(--hud-good); }
+.hud-fps-eng.is-mid .hud-fps-n { color: var(--hud-gold-pale); }
+.hud-fps-eng.is-low .hud-fps-n { color: var(--hud-warn); }
+
+.hud-fps-gen .hud-fps-n { color: var(--hud-gold-lit); }
+.hud-fps-gen .hud-fps-sub { color: var(--hud-gold); }
+.hud-fps-gen.is-idle .hud-fps-n,
+.hud-fps-gen.is-idle .hud-fps-sub { color: var(--hud-dim); }
+
+/* history: 30 bars, scaled from the bottom (transform, never height) */
+.hud-fps-graph {
+  display: flex; align-items: flex-end; gap: 2px;
+  height: 26px;
+  padding: 3px 4px 2px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, .28);
+}
+.hud-fw.is-bare .hud-fps-graph { background: rgba(0, 0, 0, .18); }
+.hud-fps-graph i {
+  flex: 1 1 0; min-width: 3px; height: 100%;
+  border-radius: 1px;
+  transform-origin: 50% 100%;
+  transform: scaleY(0);
+  background: var(--hud-gold);
+  opacity: .85;
+}
+.hud-fps-graph i.is-high { background: var(--hud-good); }
+.hud-fps-graph i.is-mid { background: var(--hud-gold); }
+.hud-fps-graph i.is-low { background: var(--hud-warn); }
+.hud-fps-graph i.is-empty { opacity: 0; }
+
+/* ---- slim: one line, "32 fps | 128 FG" -------------------------------------
+   Rober: "make sure to build a slim version". Same numbers, same colours, no
+   labels, sub-lines or history; a pill instead of a plate. Numerals stay 24px:
+   slim is about footprint, never small text. */
+.hud-fw .hud-fw-card.hud-fps-card.is-slim,
+body.hud-m3 .hud-fw .hud-fw-card.hud-fps-card.is-slim {
+  min-width: 0;
+  padding: 6px 14px 7px;
+  border-radius: 999px;
+  gap: 0;
+}
+.hud-fps-card.is-slim .hud-fps-row { gap: 10px; align-items: center; }
+.hud-fps-card.is-slim .hud-fps-col { min-width: 0; }
+.hud-fps-card.is-slim .hud-fps-sep { margin: 3px 0; }
+/* a fixed three-digit box, right-aligned: the units and the divider stay put
+   as the numbers change, so the pill never jitters */
+.hud-fps-card.is-slim .hud-fps-n { font-size: 24px; min-width: 1.75em; text-align: right; }
+.hud-fps-card.is-slim .hud-fps-u { font-size: 13px; }
+.hud-fps-card.is-slim .hud-fps-gen .hud-fps-u { color: var(--hud-gold); }
+
+/* ---- edit mode: the plate, then its options underneath -------------------- */
+.hud-fpsx-edit {
+  position: absolute;
+  display: flex; flex-direction: column; gap: 10px;
+  width: 470px;
+  padding: 14px 16px 16px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(16, 17, 22, .92), rgba(10, 11, 15, .94));
+  border: 1px solid var(--hud-line-lit);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .5);
+}
+.hud-fpsx-edit.at-below { top: calc(100% + 10px); }
+.hud-fpsx-edit.at-above { bottom: calc(100% + 10px); }
+.hud-fpsx-edit.at-left { left: 0; }
+.hud-fpsx-edit.at-right { right: 0; }
+.hud-fpsx-edit.at-center { left: 50%; transform: translateX(-50%); }
+.hud-fpsx-title { font-size: 18px; font-weight: 700; color: var(--hud-gold-lit); letter-spacing: .4px; }
+.hud-fpsx-title.is-sub { font-size: 16px; margin-top: 6px; color: var(--hud-gold-pale); }
+.hud-fpsx-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.hud-fpsx-step { display: flex; align-items: center; gap: 8px; }
+.hud-fpsx-lab { font-size: 16px; color: var(--hud-dim); }
+.hud-fpsx-n { min-width: 52px; text-align: center; font-size: 18px; color: var(--hud-ink); }
+.hud-fpsx-btn {
+  font-size: 16px; padding: 7px 13px; border-radius: 8px; white-space: nowrap;
+  color: var(--hud-ink); background: #1b1b22; border: 1px solid #3a3a44;
+}
+.hud-fpsx-btn:hover { border-color: var(--hud-gold); color: var(--hud-ink); background: rgba(201, 162, 75, .12); }
+.hud-fpsx-btn:active { background: rgba(201, 162, 75, .22); }
+.hud-fpsx-btn.is-on { border-color: rgba(201, 162, 75, .7); color: var(--hud-gold-lit); background: rgba(201, 162, 75, .1); }
+.hud-fpsx-note { font-size: 15px; line-height: 1.4; color: var(--hud-dim); }

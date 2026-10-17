@@ -1059,6 +1059,12 @@ button.trigchip.unset:hover { color: #9fb4c4; border-color: #46606f; }
   background: transparent; border: none; cursor: pointer; letter-spacing: .3px;
 }
 #sicreach-reset:hover, #sicreach-reset:focus-visible { color: #c9a24b; }
+.ied-group { margin: 12px 0; padding: 12px 0; border-top: 1px solid #2e2e36; border-bottom: 1px solid #2e2e36; }
+.ied-group.hidden { display: none; }
+.ied-head { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #c9a24b; padding-bottom: 4px; }
+.ied-label { font-size: 15px; color: #ece7db; min-width: 0; }
+.ied-note { font-size: 14px; line-height: 1.45; color: #a9a497; padding-top: 4px; max-width: 65ch; text-wrap: pretty; }
+.ied-note:empty { display: none; }
 .sic-note { font-size: 14px; line-height: 1.45; color: #a9a497; padding-top: 4px; max-width: 65ch; text-wrap: pretty; }
 
 /* UI renderer (ui-host-setting): a two-way pick, drawn like the deck's other
@@ -2535,6 +2541,30 @@ body.hd-railcol:not(.hd-npcfocus) .fd-rail-count { margin-left: 0; }
 /* rows got taller, so the same 300px showed three fewer categories — hold the
    list at roughly the same NUMBER of visible entries, not the same pixels */
 .fd-ctx-scroll { max-height: 380px; overflow-y: auto; }
+
+/* The "Add X to…" category picker (openCatPicker). Each group wears its rail
+   glyph in the same gold plate the rail uses, sized with the menu text so it
+   tracks the avatar slider; the plate is kept EMPTY (not removed) for an
+   iconless group so the names stay on one vertical line. The tick sits after
+   the name, not in front of it, because the glyph now owns the left edge. */
+.fd-ctx-picker .fd-ctx-scroll { max-height: min(62vh, 640px); }
+.fd-ctx-picker .fd-ctx-filter { font-size: 15.5px; padding: 10px 12px; }
+.fd-ctx-ic {
+  flex-shrink: 0;
+  width: calc(var(--fd-ctx-fs, 15px) * 2.1); height: calc(var(--fd-ctx-fs, 15px) * 2.1);
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 7px;
+  background: rgba(201, 162, 75, .06);
+  border: 1px solid rgba(201, 162, 75, .16);
+  transition: background .12s ease, border-color .12s ease;
+}
+.fd-ctx-ic.empty { background: none; border-color: transparent; }
+.fd-ctx-ic-img {
+  width: 82%; height: 82%; object-fit: contain; display: block; pointer-events: none;
+  filter: sepia(1) saturate(2.4) hue-rotate(-12deg) brightness(1.18) drop-shadow(0 1px 1px rgba(0, 0, 0, .7));
+}
+.fd-ctx-item:hover:not(:disabled) .fd-ctx-ic { background: rgba(201, 162, 75, .14); border-color: rgba(201, 162, 75, .4); }
+.fd-ctx-item:hover:not(:disabled) .fd-ctx-ic-img { filter: sepia(1) saturate(2.8) hue-rotate(-12deg) brightness(1.35) drop-shadow(0 1px 1px rgba(0, 0, 0, .7)); }
 
 /* "Send her to…" — the destination filter. It reuses .fd-ctx-input for every
    visual (focus ring, placeholder, radii) and only overrides the geometry:
@@ -6323,6 +6353,11 @@ body.pdragging .fd-member, body.pdragging .fd-rail-item { cursor: grabbing; }
   display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px;
 }
 .fq-equip-grid { --fq-eqs: 1; }
+/* Worn pieces on the left, the OBody body column (hd-obody.css) on the right
+   (Rober, 2026-10-15). The tiles keep a usable minimum before the column
+   wraps under them on a narrow card. */
+.fq-equip-body { flex: 1 1 100%; width: 100%; display: flex; flex-wrap: wrap; align-items: stretch; gap: 14px; }
+.fq-equip-main { flex: 1 1 240px; min-width: 240px; }
 .fq-equip-tile {
   position: relative; flex: none;
   width: calc(72px * var(--fq-eqs, 1)); height: calc(72px * var(--fq-eqs, 1));
@@ -6671,8 +6706,16 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .fq-homeinfo.empty .fq-homeinfo-ic { color: #6f6a5e; }
 .fq-homeinfo.empty .fq-homeinfo-src,
 .fq-homeinfo.empty .fq-homeinfo-name { color: #6f6a5e; }
+/* …but a SET-able one is a button: pointer, and it lights up like its sibling
+   .fq-set controls so it reads as "click to fill this in". */
+.fq-homeinfo.empty.can-set { cursor: pointer; font-family: inherit; text-align: left; }
+.fq-homeinfo.empty.can-set:hover { border-color: #c9a24b; background: rgba(201,162,75,.10); }
+.fq-homeinfo.empty.can-set:hover .fq-homeinfo-ic,
+.fq-homeinfo.empty.can-set:hover .fq-homeinfo-src { color: #c9a24b; }
+.fq-homeinfo.empty.can-set:hover .fq-homeinfo-name { color: #ecd9a0; }
+.fq-homeinfo.empty.can-set:focus-visible { outline: 2px solid #c9a24b; outline-offset: 1px; }
 .fq-homeinfo-txt { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
-.fq-homeinfo-src { font: 700 9px/1 Consolas, monospace; letter-spacing: .6px; color: #a98f5a; text-transform: uppercase; }
+.fq-homeinfo-src { font: 700 12px/1 Consolas, monospace; letter-spacing: .6px; color: #a98f5a; text-transform: uppercase; }
 .fq-homeinfo-name { font-size: 12.5px; font-weight: 600; color: #ecd9a0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* An inline HIGHLIGHT box around a related set of icon pills (Rober,
@@ -6688,7 +6731,17 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   padding: 0; gap: 0; align-self: auto; overflow: hidden;
   justify-content: flex-start;
 }
-.fq-acts-icons .fq-btn-ic { flex: none; width: 46px; text-align: center; font-size: 20px; opacity: 1; }
+/* The icon slot CENTRES its content as a flex box, not with text-align: an
+   <img style="display:block"> (Interact, Rename, Study) ignores text-align and
+   sat flush left in the 46px square, while the inline glyph icons beside it
+   (hd-gi: scroll, horse, people, wrench) centred (Rober, 2026-10-15, screenshot:
+   "some icons not centered"). As flex items both kinds centre on both axes, and
+   the glyph's vertical-align baseline nudge no longer applies. */
+.fq-acts-icons .fq-btn-ic {
+  flex: none; width: 46px; align-self: stretch;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; line-height: 1; opacity: 1;
+}
 .fq-acts-icons .fq-btn-lbl {
   display: block; max-width: 0; opacity: 0; padding-right: 0;
   white-space: nowrap; overflow: hidden;
@@ -6903,6 +6956,30 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
   padding: 6px 12px; cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
+/* The Move group's where-are-they pill (wherePill). Not a button: no hover, no
+   pointer. Wears the same height/radius/13px as .fq-set so it sits in the row
+   as a peer, and takes the full row width when the name is long rather than
+   clipping it (the name ellipsizes only past the group's own width). */
+.fq-wp {
+  display: inline-flex; align-items: center; gap: 8px;
+  flex: 0 1 auto; min-width: 0; max-width: 100%;
+  margin-left: auto;              /* far end of the Move row */
+  font: 600 13px/1 "Segoe UI", sans-serif; letter-spacing: .2px;
+  color: #b7c8b2; background: rgba(134,201,138,.08);
+  border: 1px solid rgba(134,201,138,.38); border-radius: 20px;
+  padding: 6px 13px; cursor: default;
+}
+.fq-wp-ic { position: relative; flex: none; width: 15px; height: 15px; line-height: 15px; text-align: center; color: #86c98a; }
+.fq-wp-lead {
+  flex: none; font: 700 12px/1 Consolas, "Courier New", monospace;
+  letter-spacing: .05em; text-transform: uppercase; color: #86c98a;
+}
+.fq-wp-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fq-wp.stale { color: #a39d8e; background: rgba(255,255,255,.035); border-color: #46463f; }
+.fq-wp.stale .fq-wp-ic, .fq-wp.stale .fq-wp-lead { color: #8c8579; }
+.fq-wp.stale .fd-loc-img { opacity: .6; filter: grayscale(.45); }
+.fq-wp.unknown { color: #7d7a72; background: rgba(255,255,255,.025); border: 1px dashed #46463f; }
+.fq-wp.unknown .fq-wp-ic, .fq-wp.unknown .fq-wp-lead { color: #7d7a72; }
 .fq-set:hover { color: #ecd9a0; border-color: #c9a24b; background: #1e1c16; }
 .fq-set:active { background: #24242e; }
 .fq-set:focus-visible { outline: 2px solid #c9a24b; outline-offset: 1px; }
@@ -7482,6 +7559,93 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
 .fq-profile.is-unfiled .fq-profile-lbl { color: #cdc7b8; }
 .fq-profile.is-unfiled .fq-profile-ic { opacity: .55; }
 .fq-profile.is-unfiled:hover { border-color: #c9a24b; background: rgba(201,162,75,.08); }
+
+/* ▦ HEAD TILES (Rober, 2026-10-14: "increase the widget and space usage to
+   match the stuff to its left", then "just fill the space they were occupying,
+   don't have to be so big"). The identity actions (back, portrait, CHIM, note,
+   fullscreen, labels, fold) were 28px squares in the top corner of a 92px row,
+   leaving the rest of their corner empty. They keep that corner (the same
+   width) and now FILL it: a two-row grid as tall as the row, each button a glyph
+   tile of the door's family (gold rim, warm fill). An odd count would leave a
+   hole, so the first tile then spans both rows. Names stay in the aria-label
+   and tooltip. fq-head-tiles */
+/* EXACTLY the old footprint: the row was N x 28px buttons with 2px gaps, so
+   the grid is N x 30px - 2 wide whatever N is (fqFitHead sets --fq-hn, the
+   button count, and --fq-hc, its columns: ceil(N / 2)). */
+.fq-head .fq-headacts {
+  flex: 0 0 auto; align-self: stretch;
+  width: calc(var(--fq-hn, 6) * 30px - 2px);
+  display: grid; grid-auto-flow: column;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--fq-hc, 3), minmax(0, 1fr));
+  gap: 6px;
+}
+.fq-head .fq-headacts > .fq-htile:first-child:nth-last-child(odd) { grid-row: span 2; }
+.fq-head .fq-headacts .fq-htile {
+  width: auto; height: auto; min-width: 0; min-height: 0; padding: 0;
+  align-self: stretch; justify-self: stretch;   /* .fq-fold carries align-self:center */
+  display: flex; align-items: center; justify-content: center;
+  color: #d8c48a;
+  background: linear-gradient(180deg, rgba(201,162,75,.10), rgba(201,162,75,.03));
+  border: 1px solid rgba(201,162,75,.38); border-radius: 9px;
+  box-shadow: inset 0 1px 0 rgba(255,236,190,.06);
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.fq-head .fq-headacts .fq-htile:hover:not([disabled]) {
+  color: #ecd9a0; border-color: #c9a24b;
+  background: linear-gradient(180deg, rgba(201,162,75,.24), rgba(201,162,75,.08));
+  box-shadow: inset 0 1px 0 rgba(255,236,190,.12), 0 0 0 1px rgba(201,162,75,.25);
+}
+.fq-head .fq-headacts .fq-htile:active:not([disabled]) { transform: translateY(1px); }
+.fq-head .fq-headacts .fq-htile:focus-visible { outline: 2px solid #c9a24b; outline-offset: 2px; }
+.fq-head .fq-headacts .fq-htile[disabled] { opacity: .4; cursor: not-allowed; }
+/* lit: the note editor open, labels pinned on */
+.fq-head .fq-headacts .fq-htile.on,
+.fq-head .fq-headacts .fq-htile.fq-labels-on {
+  color: #f3e3b0; border-color: #c9a24b;
+  background: linear-gradient(180deg, rgba(201,162,75,.30), rgba(201,162,75,.12));
+}
+/* the icon well: inline-flex around the img (Ultralight centres an image this
+   way, as the door's .fq-profile-fig does); the text glyph is for the search */
+.fq-ht-ic { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; }
+.fq-ht-img { width: 24px; height: 24px; display: block; opacity: .9; transition: opacity 140ms ease; }
+.fq-ht-ch { display: none; }
+.fq-htile:hover:not([disabled]) .fq-ht-img,
+.fq-htile.on .fq-ht-img, .fq-htile.fq-labels-on .fq-ht-img { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .fq-head .fq-headacts .fq-htile, .fq-ht-img { transition: none; }
+  .fq-head .fq-headacts .fq-htile:active:not([disabled]) { transform: none; }
+}
+
+/* ONE LINE, ALWAYS (Rober, 2026-10-14: "do NOT linebreak"). The head never
+   wraps. Only the ⌕ bar shrinks; everything else keeps its natural width, so a
+   squeeze shows up as overflow, and fqFitHead() in followers-pane.js (after
+   each render and on resize) steps down instead of letting anything be crushed:
+     .fq-tight    the door drops its sub-line;
+     .fq-tighter  the door shows its figure only;
+     .fq-tightest (the 640px floor) a 64px portrait, narrower tiles, and the
+                  name frame may truncate.
+   fq-head-one-line */
+.fq-head { flex-wrap: nowrap; }
+.fq-head .fq-ident { flex: 0 0 auto; }
+.fq-head .fq-profile { flex: none; }
+.fq-head .fq-find { min-width: 180px; }
+.fq-head.fq-tight .fq-profile-sub { display: none; }
+.fq-head.fq-tight .fq-find { min-width: 150px; }
+.fq-head.fq-tighter .fq-profile-txt, .fq-head.fq-tighter .fq-profile-go { display: none; }
+.fq-head.fq-tighter .fq-profile { gap: 0; padding: 0 8px; }
+.fq-head.fq-tighter .fq-find { min-width: 120px; }
+.fq-head.fq-tightest { gap: 6px; }
+.fq-head.fq-tightest .fq-ident { flex: 0 1 auto; gap: 10px; }
+.fq-head.fq-tightest .fq-ident > .fq-medal,
+.fq-head.fq-tightest .fq-ident > .fq-medal.img { width: 64px; height: 64px; }
+.fq-head.fq-tightest .fq-ident-frame { padding: 8px 14px 8px 12px; min-width: 0; }
+.fq-head.fq-tightest .fq-ident-frame .fq-who { min-width: 120px; }
+.fq-head.fq-tightest .fq-sub { flex-wrap: nowrap; min-width: 0; overflow: hidden; }
+.fq-head.fq-tightest .fq-sub > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fq-head.fq-tightest .fq-find { min-width: 90px; }
+.fq-head.fq-tightest .fq-headacts { width: calc(var(--fq-hn, 6) * 24px - 2px); gap: 4px; }
+.fq-head.fq-tightest .fq-ht-ic, .fq-head.fq-tightest .fq-ht-img { width: 19px; height: 19px; }
 
 /* ⟶ THE BESTIARY DOOR — a creature's F7 card head (2026-10-10,
    fq-bestiary-door). The person door's slot and stance (flex:none, stretched to
@@ -9925,7 +10089,7 @@ button.fq-eyebrow.fq-fold:focus-visible { outline: none; color: #c9a24b; }
    rebind F7) stayed unanswered. */
 #hm-openkey {
   display: flex; align-items: center; gap: 15px;
-  padding: 15px 17px; margin: 0 0 20px;
+  padding: 15px 17px; margin: 20px 0 0;   /* sits under the card grid */
   background: linear-gradient(180deg, #1d1c22, #171620);
   border: 1px solid #c9a24b40; border-radius: 14px;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
@@ -12961,6 +13125,34 @@ button.ct-rail-rename { min-width: 32px; min-height: 30px; padding: 5px 4px; }
 .ost-slot-name{font-size:21px;}
 .ost-slot-state{font-size:18px;color:#bdb5a6;overflow-wrap:anywhere;}
 
+/* Gear (2026-10-14): the worn set in key slots + render tiles, under Clothing.
+   Equal cells, grids with max-content rows (an Ultralight law), nothing under 17px. */
+.ost-gear{margin-top:26px;padding:24px;border:1px solid #66583b;border-radius:14px;background:#222129;}
+.ost-gear h3{margin:0 0 10px;font-size:26px;}
+.ost-gear-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));grid-auto-rows:max-content;gap:14px;margin:14px 0 6px;}
+.ost-gear-slots{display:grid;grid-template-columns:repeat(4,1fr);grid-auto-rows:max-content;gap:14px;margin:16px 0 6px;}
+@media (min-width:1700px){.ost-gear-slots{grid-template-columns:repeat(6,1fr);}}
+@media (max-width:1100px){.ost-gear-slots{grid-template-columns:repeat(3,1fr);}}
+@media (max-width:760px){.ost-gear-slots{grid-template-columns:repeat(2,1fr);}}
+.ost-gear-slot{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0;min-height:min-content;padding:16px 18px;cursor:pointer;color:#eee7db;border:1px solid #6d6047;border-radius:11px;background:#292830;text-align:left;}
+.ost-gear-slot:hover{background:#3b342d;}
+.ost-gear-slot:focus{outline:2px solid #d0ad53;outline-offset:2px;}
+.ost-gear-slot:disabled{opacity:.4;cursor:default;}
+.ost-gear-slot[aria-pressed=true]{background:#514326;border-color:#d0ad53;}
+.ost-gear-slot-name{font-size:21px;}
+.ost-gear-slot-state{font-size:18px;color:#bdb5a6;overflow-wrap:anywhere;}
+.ost-gear-pieces{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));grid-auto-rows:max-content;gap:14px;margin:18px 0 8px;}
+.ost-gear-piece{display:flex;flex-direction:column;align-items:center;gap:8px;min-width:0;padding:14px;cursor:pointer;color:#eee7db;border:1px solid #6d6047;border-radius:11px;background:#292830;text-align:center;}
+.ost-gear-piece:hover{background:#3b342d;}
+.ost-gear-piece:focus{outline:2px solid #d0ad53;outline-offset:2px;}
+.ost-gear-piece:disabled{opacity:.4;cursor:default;}
+.ost-gear-piece[data-state="gone"]{opacity:.62;border-style:dashed;}
+.ost-gear-art{display:flex;align-items:center;justify-content:center;width:104px;height:104px;border-radius:10px;background:#17161c;overflow:hidden;}
+.ost-gear-art img{width:100%;height:100%;object-fit:contain;max-width:none;}
+.ost-gear-glyph{font-size:38px;color:#c9a24b;}
+.ost-gear-piece-name{font-size:19px;line-height:1.25;overflow-wrap:anywhere;text-wrap:balance;}
+.ost-gear-piece-tag{font-size:17px;color:#bdb5a6;}
+
 /* The whole cast's voices at a glance — the one thing OStim's own ACTORS
    page makes you click through one participant at a time. */
 .ost-voice-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
@@ -13305,6 +13497,23 @@ button.ct-rail-rename { min-width: 32px; min-height: 30px; padding: 5px 4px; }
 .ost-dock-search{margin-top:auto;padding-top:4px;}
 .ost-dock-search .ost-find-input{font-size:18px;padding:13px 14px;}
 
+/* Look carries four rows since Fluids (2026-10-14); the other docks carry
+   three. Their rows grow instead, so all four docks still end on one line
+   rather than three leaving a strip of empty panel under them. */
+.ost-tabs.ost-docks{align-items:stretch;}
+.ost-tabs.ost-docks .ost-dock>.ost-seg,.ost-tabs.ost-docks .ost-dock>.ost-seg-extra{flex:1 1 auto;}
+
+/* ---- Fluids popout: OStrands' own settings ------------------------------ */
+.ost-fluid-row{display:flex;align-items:center;gap:20px;}
+.ost-fluid-row[data-off="1"] .ost-row-text{opacity:.55;}
+.ost-fluid-row .ost-segmented{flex:0 0 auto;margin:0;}
+.ost-fluid-row .ost-segmented .ost-button{min-width:84px;white-space:nowrap;}
+.ost-fluid-value{min-width:110px;}
+.ost-fluid-key{display:flex;align-items:center;gap:14px;flex:0 0 auto;}
+.ost-fluid-keyname{font-size:20px;color:#f0dda6;min-width:120px;text-align:center;white-space:nowrap;}
+.ost-fluid-cycle{min-width:240px;white-space:nowrap;}
+.ost-fluid-list h3{margin-top:28px;}
+
 /* ---- the Quick strip: five direct actions, equal cells --------------- */
 .ost-quick{
   margin:16px 0 0;padding:16px 16px 18px;border:1px solid rgba(81,71,53,.95);border-radius:14px;
@@ -13564,6 +13773,27 @@ button.ct-rail-rename { min-width: 32px; min-height: 30px; padding: 5px 4px; }
 /* ---- the last pass (2026-09-22): nothing left to complain about ------- */
 /* popouts breathe: the old 960 made every list and stepper row elbow each other */
 .ost-pop-card{width:1240px;max-width:min(100%,1240px);}
+
+/* ---- Move scene: a wide popout of render tiles (2026-10-14) --------------
+   Rober, with a screenshot of the old narrow list: "doesnt show actual
+   renderings, and could be much nicer / larger horizontally". Each piece is a
+   tile with the deck's render of its base model; ostim-tools.js balances the
+   columns so only the LAST row stretches. */
+.ost-pop.ost-pop-wide .ost-pop-card{width:min(96vw,2100px);max-width:min(96vw,2100px);}
+.ost-furn-grid{display:flex;flex-wrap:wrap;gap:24px;align-items:stretch;margin-top:18px;}
+.ost-furn-tile{display:flex;flex-direction:column;min-width:0;overflow:hidden;border:1px solid rgba(208,173,83,.35);border-radius:16px;background:rgba(255,255,255,.035);}
+.ost-furn-tile:hover{border-color:rgba(214,173,96,.85);background:rgba(255,255,255,.06);}
+.ost-furn-art{position:relative;height:clamp(190px,21vh,340px);display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.38);border-bottom:1px solid rgba(208,173,83,.2);}
+.ost-furn-art img.ost-furn-render{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;}
+.ost-furn-art img.ost-furn-fallback{width:112px;height:112px;opacity:.55;}
+.ost-furn-art.is-waiting::after{content:"Rendering...";position:absolute;left:0;right:0;bottom:10px;text-align:center;font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:#8d8676;}
+.ost-furn-dist{position:absolute;left:12px;top:12px;padding:6px 15px;font-size:19px;font-weight:700;color:#fff3d0;background:rgba(10,9,12,.88);border:1px solid rgba(214,173,96,.7);border-radius:999px;white-space:nowrap;}
+.ost-furn-info{display:flex;flex-direction:column;gap:4px;padding:16px 22px 8px;min-width:0;}
+.ost-furn-info strong{font-size:23px;color:#f4ecd6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ost-furn-info small{font-size:17px;color:#b9b2a1;}
+.ost-furn-acts{display:flex;gap:12px;margin-top:auto;padding:10px 22px 20px;}
+.ost-furn-acts>*{flex:1 1 0;min-width:0;}
+.ost-here .ost-furn-art{width:260px;height:150px;flex:0 0 260px;border:1px solid rgba(208,173,83,.3);border-radius:12px;}
 /* feedback you can see: the popout's own message line */
 .ost-pop-note{margin:0;font-size:17px;color:#eee7db;}
 .ost-pop-note:empty{display:none;}
@@ -13647,6 +13877,24 @@ button.ct-rail-rename { min-width: 32px; min-height: 30px; padding: 5px 4px; }
 
 /* the message line lives at the bottom, and is quiet */
 .ost-card>.ost-note:not(:empty){margin:14px 0 0;padding:8px 12px;border:0;border-left:3px solid #d0ad53;border-radius:0;background:transparent;color:#cfc6b4;font-size:17px;}
+
+/* excitement bars (2026-10-14): OStim's own meters under the launcher grid -
+   pink for her, blue for him. One equal cell per participant; a crowd wraps
+   and the short last row stretches, so the strip never ends on a hole. */
+.ost-card>.ost-exc{display:flex;flex-wrap:wrap;gap:16px;margin:18px 0 0;}
+.ost-card>.ost-exc[hidden]{display:none;}
+/* a quick row hidden by its attribute (the Gear displays row, until IED is loaded) must really go: its own display:flex would otherwise win */
+.ost-quick-strip .ost-button[hidden]{display:none;}
+.ost-exc-actor{flex:1 1 280px;min-width:0;display:flex;flex-direction:column;gap:10px;padding:16px 18px;box-sizing:border-box;border:1px solid #45404b;border-radius:12px;background:rgba(16,16,20,.55);}
+.ost-exc-head{display:flex;justify-content:space-between;align-items:baseline;gap:14px;}
+.ost-exc-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:20px;font-weight:600;color:#eee7db;}
+.ost-exc-pct{flex:0 0 auto;white-space:nowrap;font-size:20px;font-weight:600;color:#f08ab8;}
+.ost-exc-actor[data-sex="m"] .ost-exc-pct{color:#8ab8f0;}
+.ost-exc-track{height:18px;border-radius:9px;background:#17161c;border:1px solid #3a3642;overflow:hidden;}
+.ost-exc-fill{display:block;height:100%;width:0;border-radius:8px;background:#d65f98;transition:width 1.6s linear;}
+.ost-exc-actor[data-sex="m"] .ost-exc-fill{background:#4f90dc;}
+.ost-exc-actor[data-full="true"] .ost-exc-track{border-color:#f0d89a;}
+.ost-exc-climax{min-height:22px;font-size:17px;line-height:22px;color:#bdb5a6;}
 
 @media (max-width:1500px){
   .ost-page .ost-tabs.ost-docks{grid-template-columns:repeat(2,minmax(0,1fr));}
@@ -14059,3 +14307,59 @@ button.ct-rail-rename { min-width: 32px; min-height: 30px; padding: 5px 4px; }
 .hd-mk-add:active { background: #2b210d; }
 .hd-mk-add.hd-mk-have { color: #9fc48d; border-color: rgba(143,190,124,.55); background: rgba(143,190,124,.08); }
 .hd-mk-add.hd-mk-have:hover { color: #b9dba9; border-color: #8fbe7c; }
+
+/* ---- Move the whole scene (2026-10-14) ----------------------------------
+   Rober: "i need to be able to move an entire scene up easily (both actors)
+   or left or right quickly". A third hero band under the live dock: three
+   axis cells (Height / Side to side / Depth) and a Step cell, equal and
+   flush like the dock above. The buttons are big on purpose — this is a
+   press-press-press control, read from the couch. */
+.ost-nudge{display:flex;flex-direction:column;gap:12px;}
+.ost-nudge-head{display:flex;align-items:baseline;gap:16px;}
+.ost-nudge-head .ost-dock-cap{text-align:left;color:#d8c48e;}
+.ost-nudge-sub{font-size:15px;color:#a39880;}
+.ost-nudge-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;}
+.ost-nudge-cell.ost-dock-cell{flex-direction:column;align-items:stretch;justify-content:flex-start;gap:12px;min-height:0;padding:14px 16px;}
+.ost-nudge-cap{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.ost-nudge-cap .ost-dock-cap{text-align:left;white-space:nowrap;}
+.ost-nudge-read{font-size:18px;font-weight:600;color:#f0dda6;min-width:3ch;text-align:right;font-variant-numeric:tabular-nums;}
+.ost-nudge-read[data-zero="true"]{color:#8f8670;font-weight:400;}
+/* the pair fills its cell, so the four cells end together (the Step cell is
+   the tallest) and the buttons get bigger instead of leaving a gap */
+.ost-nudge-pair{flex:1 1 auto;display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.ost-button.ost-nudge-btn{display:flex;align-items:center;justify-content:center;gap:10px;min-height:60px;padding:10px 12px;font-size:19px;white-space:nowrap;}
+.ost-nudge-glyph{font-size:24px;line-height:1;color:#d0ad53;}
+.ost-nudge-btn:hover:not(:disabled){background:rgba(208,173,83,.16);border-color:#d0ad53;}
+.ost-nudge-btn:hover:not(:disabled) .ost-nudge-glyph{color:#f0dda6;}
+.ost-nudge-btn:active:not(:disabled){background:rgba(208,173,83,.28);}
+.ost-nudge-opts .ost-dock-cap{text-align:left;}
+.ost-segmented.ost-nudge-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));}
+.ost-nudge-steps .ost-button{min-height:48px;padding:8px 6px;font-size:16px;justify-content:center;white-space:nowrap;}
+.ost-nudge-tail{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.ost-nudge-tail .ost-button{min-height:48px;justify-content:center;font-size:17px;}
+.ost-nudge[data-live="false"] .ost-nudge-cell{opacity:.55;}
+.ost-page-live .ost-nudge-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+@media (max-width:1500px){.ost-page-live .ost-nudge-grid{grid-template-columns:repeat(4,minmax(0,1fr));}}
+@media (max-width:1100px){.ost-nudge-grid,.ost-page-live .ost-nudge-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+
+/* ---- the scene bar's results: a wide panel, one line a row (2026-10-14) ----
+   The dropdown was the field's width (~230px at 1440p): names wrapped a word
+   a line, split mid-word ("Doggystyl e 2"), the id broke at its hyphen and
+   2.5 rows showed. Now it is pinned to the field's RIGHT edge and opens
+   leftward, 2x the field and at least 560px; ostim-tools.js fitSceneDrop()
+   sets the exact width/height so it stays inside the card and the screen.
+   Name and id are one line each, cut with an ellipsis; the row's title=
+   (drawn by #hd-tip) carries the whole thing. */
+.ost-find-scene-drop{left:auto;right:0;width:200%;min-width:560px;max-width:none;box-sizing:border-box;
+  max-height:640px;padding:10px;border-color:#8f7846;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.055),0 16px 36px rgba(0,0,0,.6);}
+.ost-find-scene-drop .ost-find-row{padding:11px 16px;gap:18px;min-height:72px;box-sizing:border-box;}
+.ost-find-scene-drop .ost-find-phase{min-height:58px;}
+.ost-find-scene-drop .ost-find-text{flex:1 1 auto;min-width:0;gap:3px;}
+.ost-find-scene-drop .ost-find-text strong,
+.ost-find-scene-drop .ost-find-text small{display:block;min-width:0;max-width:100%;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;overflow-wrap:normal;word-break:normal;}
+.ost-find-scene-drop .ost-find-text strong{font-size:21px;line-height:1.25;}
+.ost-find-scene-drop .ost-find-text small{font-size:17px;line-height:1.3;}
+.ost-find-scene-drop .ost-find-group+.ost-find-group{margin-top:2px;}
+.ost-find-scene-drop .ost-help{margin:6px 8px;font-size:19px;line-height:1.45;}

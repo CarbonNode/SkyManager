@@ -3,6 +3,8 @@
 #include "ostim_thread_api.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <vector>
 #include <atomic>
 
@@ -75,6 +77,65 @@ namespace OstimDeck
 
 		std::string CStr(const char* s) { return s ? s : ""; }
 
+		// ---- scene search by WORDS (2026-10-14) ---------------------------
+		// OStim's SearchScenes is one case-insensitive substring over the scene
+		// NAME, so "anub's doggy" (an apostrophe, two words) found nothing and an
+		// id or a pack name was never searched. Rober: "i tried search anub and
+		// anub's doggy and sorting wasnt super great in ostim menu".
+		// So: ask OStim for EVERY scene that fits the thread (empty query) and
+		// keep the ones where every query word is in name|id|pack, compared on
+		// lower-case letters and digits only with apostrophes dropped; a word's
+		// trailing s is optional ("anubs" ~ "Anub"). The view (ostim-pane.js
+		// rankScenes) does the RANKING; this only has to keep every candidate,
+		// which OStim's own first-300-A-Z cut did not ("doggy" alone has 460
+		// fitting phases on the rig). Mirror: ostim-pane.checks.js ostimFakeNew.
+		bool IsApostrophe(const std::string& s, std::size_t i, std::size_t& skip)
+		{
+			const auto c = static_cast<unsigned char>(s[i]);
+			if (c == '\'' || c == '`') { skip = 1; return true; }
+			// U+2018 / U+2019 (E2 80 98/99) and U+00B4 (C2 B4) in UTF-8
+			if (c == 0xE2 && i + 2 < s.size() && static_cast<unsigned char>(s[i + 1]) == 0x80 &&
+				(static_cast<unsigned char>(s[i + 2]) == 0x98 || static_cast<unsigned char>(s[i + 2]) == 0x99)) { skip = 3; return true; }
+			if (c == 0xC2 && i + 1 < s.size() && static_cast<unsigned char>(s[i + 1]) == 0xB4) { skip = 2; return true; }
+			return false;
+		}
+		// Lower-case ASCII letters and digits (and any non-ASCII byte, kept as is);
+		// apostrophes vanish, every other mark becomes `sep` (0 = dropped).
+		std::string FoldForSearch(const std::string& s, char sep)
+		{
+			std::string out;
+			out.reserve(s.size());
+			for (std::size_t i = 0; i < s.size();) {
+				std::size_t skip = 0;
+				if (IsApostrophe(s, i, skip)) { i += skip; continue; }
+				const auto c = static_cast<unsigned char>(s[i++]);
+				if (c >= 0x80 || std::isalnum(c)) out.push_back(static_cast<char>(c >= 0x80 ? c : std::tolower(c)));
+				else if (sep && (out.empty() || out.back() != sep)) out.push_back(sep);
+			}
+			return out;
+		}
+		std::vector<std::string> QueryWords(const std::string& query)
+		{
+			std::vector<std::string> words;
+			std::string cur;
+			for (char c : FoldForSearch(query, ' ') + ' ') {
+				if (c != ' ') { cur.push_back(c); continue; }
+				if (!cur.empty() && std::find(words.begin(), words.end(), cur) == words.end()) words.push_back(cur);
+				cur.clear();
+			}
+			return words;
+		}
+		bool SceneMatchesAll(const std::vector<std::string>& words, const std::string& name, const std::string& id, const std::string& pack)
+		{
+			const std::string hay = FoldForSearch(name, 0) + '|' + FoldForSearch(id, 0) + '|' + FoldForSearch(pack, 0);
+			for (const auto& w : words) {
+				if (hay.find(w) != std::string::npos) continue;
+				if (w.size() > 3 && w.back() == 's' && hay.find(w.substr(0, w.size() - 1)) != std::string::npos) continue;
+				return false;
+			}
+			return true;
+		}
+
 		// Fill the live-state members shared by OpenJson and StateJson.
 		void FillState(json& out, OT::IThreadInterface* api)
 		{
@@ -116,6 +177,11 @@ namespace OstimDeck
 						{ "name", NameOfId(buf[i].formID) },
 						{ "female", buf[i].isFemale },
 						{ "formId", buf[i].formID },
+						// OStim's own excitement meter (0-100) and climax count, the
+						// numbers its native bars draw - the Scene page's bar strip
+						// reads them from the same poll as the cast (marker below).
+						{ "excitement", std::round(std::clamp(buf[i].excitement, 0.0f, 100.0f) * 10.0f) / 10.0f },
+						{ "climaxed", buf[i].timesClimaxed },
 					});
 				}
 			}
@@ -190,6 +256,7 @@ namespace OstimDeck
 		// Api() lazily grabs it the first time the panel opens.
 		logger::info("ostim: npc-scene-status ready");
 		logger::info("ostim: deck segment ready (marker ostim-scene-deck)");
+		logger::info("ostim: scene search matches words in name, id and pack (marker ostim-scene-search-words)");
 	}
 
 	std::string OpenJson()
@@ -274,23 +341,36 @@ namespace OstimDeck
 		// when no scene is running. Only search while in a scene.
 		const std::uint32_t tid = api ? PlayerThread(api) : 0u;
 		const bool inScene = InScene(api);
+		const auto words = QueryWords(query);
 		if (inScene) {
 			inCount = api->GetActorCount(tid);
-			constexpr std::uint32_t kCap = 300;
-			std::vector<OT::SceneSearchResult> buf(kCap);
-			const std::uint32_t got = api->SearchScenes(query.c_str(), buf.data(), kCap);
+			// No words: the old browse list (OStim's first 300 A-Z). Words: every
+			// fitting scene is a candidate, and up to kKeep matches go to the view,
+			// which ranks them (see "scene search by WORDS" above).
+			constexpr std::uint32_t kCap = 300, kPool = 16384, kKeep = 1500;
+			const std::uint32_t pool = words.empty() ? kCap : kPool;
+			std::vector<OT::SceneSearchResult> buf(pool);
+			const std::uint32_t got = api->SearchScenes(words.empty() ? query.c_str() : "", buf.data(), pool);
 			for (std::uint32_t i = 0; i < got; ++i) {
 				const std::uint32_t ac = buf[i].actorCount;
-				results.push_back(json{
+				json row{
 					{ "sceneId", CStr(buf[i].sceneId) },
 					{ "name", CStr(buf[i].name) },
 					{ "actorCount", ac },
 					{ "compatible", (ac == inCount) },
-				});
+				};
+				DecorateScene(row);
+				if (!words.empty()) {
+					const std::string pack = row.contains("pack") && row["pack"].is_string() ? row["pack"].get<std::string>() : std::string();
+					if (!SceneMatchesAll(words, row["name"].get<std::string>(), row["sceneId"].get<std::string>(), pack)) continue;
+				}
+				results.push_back(std::move(row));
+				if (results.size() >= kKeep) break;
 			}
 		}
-		for(auto& scene:results)DecorateScene(scene);
-		return json{ { "query", query }, { "results", results } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		json out{ { "query", query }, { "results", results } };
+		if (!words.empty()) out["matcher"] = "tokens";   // the view's plan stops at this answer
+		return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 
 	std::string ChangeScene(const std::string& sceneId)

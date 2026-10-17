@@ -19,7 +19,22 @@
     if (spec.kind === 'school') return rows.filter(function (s) { return String(metaFor(s).school).toLowerCase() === spec.name.toLowerCase(); });
     var g = currentGroup(spec.id); return g ? W.groupRows(rows,g) : [];
   }
+  /* The school quick-filter is its own dimension, so it COMPOSES with everything
+     else: "my deck, Destruction only" is two chips, not a choice between them.
+     It sits here rather than in SpellLibrary.visible because only this module
+     knows a spell's live school (metaFor merges the engine's answer over the
+     saved snapshot). */
+  function setSchool(name) {
+    ui.school = ui.school === name ? '' : (name || '');
+    ui.sel = -1;
+    render();
+    var list = $('list'); if (list) list.scrollTop = 0;
+  }
   function filter(rows) {
+    if (ui.school) {
+      var want = String(ui.school).toLowerCase();
+      rows = rows.filter(function (s) { return String(metaFor(s).school || '').toLowerCase() === want; });
+    }
     var f = ui.workbenchFilter; if (!f) return rows;
     if (f.kind === 'deck') return rows.filter(function (s) { return !s._learned; });
     if (f.kind === 'equipped') return rows.filter(function (s) { var id = liveHex(s); return ui.equip.left === id || ui.equip.right === id || ui.equip.voice.has(id); });
@@ -39,8 +54,12 @@
     extra.append(h('div',{class:'ml-rail-heading'},'SCHOOLS'));
     schools.forEach(function (name) {
       if (query && name.toLowerCase().indexOf(query) < 0) return;
+      // The rail and the bar's school chips are ONE filter, so a school picked
+      // in either place reads as picked in both.
       var spec = {kind:'school',name:name}, row = h('div',{class:'mw-group-nav'});
-      row.append(button(name,function () { choose(spec); },'rail-item mw-group-filter'),arrow(spec)); extra.append(row);
+      var b = button(name,function () { setSchool(name); },'rail-item mw-group-filter' + (ui.school === name ? ' sel' : ''));
+      b.setAttribute('aria-pressed',String(ui.school === name));
+      row.append(b,arrow(spec)); extra.append(row);
     });
     extra.append(h('div',{class:'ml-category-head'},h('span',{class:'ml-rail-heading'},'SPELL GROUPS'),
       button('+',function () { editGroup(); },'ml-add-category')));
@@ -210,8 +229,18 @@
     var p = prefs(); p.inspector = !p.inspector; inspectionKey = '';
     saveSoon(); dropRowCache(); render(); MagicLibraryUI.fit();
   }
+  /* The equipped-hands dock folds to a slim strip (Rober, 2026-10-15, pointing at
+     it: "this bar as well"). It is not hidden outright — the chevron has to stay
+     somewhere you can hit it, and a control that vanishes with the thing it
+     controls cannot bring it back. Folded, --mw-dock-slot shrinks, which the
+     Hotkeys tab beside it already sizes itself from. */
+  function toggleDock() {
+    var p = prefs();
+    p.dock = p.dock === false;
+    saveSoon(); sync(); MagicLibraryUI.fit();
+  }
   function dock() {
-    var host = $('mw-equipped'); if (!host) return;
+    var host = $('mw-dock-slots'); if (!host) return;
     var sig = [ui.equip.left,ui.equip.right,Array.from(ui.equip.voice).join(','),ui.known.length].join('|');
     if (host.dataset.signature === sig) return; host.dataset.signature = sig; host.textContent = '';
     ['left','right','voice'].forEach(function (slot) {
@@ -229,7 +258,9 @@
     panel.setAttribute('data-mw-theme',p.theme); panel.setAttribute('data-mw-text',p.textSize);
     document.documentElement.setAttribute('data-mw-theme',p.theme);   // popouts live outside #panel
     panel.classList.toggle('mw-no-motion',!p.motion);
-    var search = $('search-wrap'); if (search.parentNode !== $('mw-top')) $('mw-top').append(search);
+    // Search is the control bar's, not the title block's — library-ui.sync places
+    // it. Pulling it back into #mw-top here would undo that every sync, and the
+    // fold would take search down with the heading.
     $('md-page-title').textContent = isArtsPage() ? 'Combat Arts' : 'Magic';
     $('ml-heading').textContent = ui.workbenchFilter ? ui.workbenchFilter.name : ui.cat === ALL ? 'Your spellbook' : ui.cat;
     $('ml-breadcrumb').textContent = ui.workbenchFilter && ui.workbenchFilter.kind === 'deck' ? 'YOUR SAVED DECK' : 'EVERY LEARNED SPELL. READY WHEN YOU ARE.';
@@ -243,6 +274,13 @@
       q.append(button('+ New group',function () { editGroup(); },'mw-pin'));
     }
     $('mw-status').textContent = ui.knownLoading ? 'Reading your spellbook…' : ui.known.length+' learned · '+state.spells.length+' saved deck entries';
+    var dockOpen = p.dock !== false, dockFold = $('mw-toggle-dock');
+    panel.classList.toggle('mw-dock-folded',!dockOpen);
+    if (dockFold) {
+      dockFold.setAttribute('aria-expanded',String(dockOpen));
+      dockFold.title = dockOpen ? 'Hide what you have equipped' : 'Show what you have equipped';
+      dockFold.setAttribute('aria-label',dockFold.title);
+    }
     dock(); drawInspector(); applyPanes();
   }
   function openGroup(spec, restore) {
@@ -326,6 +364,10 @@
     box.querySelector('input').focus();
   }
   function onKey(e) {
+    // The combo menu owns the keyboard while it is up. app.js's onKeyDown is a
+    // document CAPTURE listener registered at startup, so a listener the menu
+    // added itself would run after it and Escape would shut the whole deck.
+    if (window.MdCombo && MdCombo.onKey(e)) return true;
     if (splitKey(e)) return true;
     if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='k'){
       e.preventDefault();var box=document.querySelector('.ml-backdrop .ml-dialog');var input=box&&box.querySelector('input[type=search]');(input || (box && box.querySelector('input,button,select')) || $('search')).focus();return true;
@@ -347,15 +389,20 @@
     });
     $('body').append(h('aside',{id:'mw-inspector','aria-label':'Selected spell'}));
     var fold = button('›',toggleInspector,'ml-chrome-toggle ml-rail-toggle'); fold.id = 'mw-toggle-inspector';
-    fold.setAttribute('aria-controls','mw-inspector'); $('ml-library-bar').append(fold);
-    $('panel').insertBefore(h('div',{id:'mw-equipped','aria-label':'Equipped magic'}),$('hints'));
+    fold.setAttribute('aria-controls','mw-inspector'); $('mw-bar-main').append(fold);
+    var dockBox = h('div',{id:'mw-equipped','aria-label':'Equipped magic'});
+    var dockFold = button('‹',toggleDock,'ml-chrome-toggle mw-dock-toggle'); dockFold.id = 'mw-toggle-dock';
+    dockFold.setAttribute('aria-controls','mw-dock-slots');
+    dockBox.append(h('div',{id:'mw-dock-slots',class:'mw-dock-slots'}),dockFold);
+    $('panel').insertBefore(dockBox,$('hints'));
     var customizeButton=button('Customize',customize,'ghost-btn');customizeButton.id='mw-customize';$('md-more-btn').parentNode.insertBefore(customizeButton,$('md-more-btn'));
     document.querySelector('[data-library-view=cards]').textContent='Gallery';
     $('search').placeholder='Search spells, schools, mods…';
     $('search-wrap').append(h('kbd',{class:'mw-search-key'},'Ctrl K'));
-    $('ml-clear').addEventListener('click',function(){ui.workbenchFilter=null;render();});
+    // No ml-clear listener here: library-ui's choose() already nulls
+    // ui.workbenchFilter, so a second one only cost a duplicate render.
   }
   window.MagicWorkbench={init:init,sync:sync,filter:filter,rail:rail,categoryArrow:categoryArrow,openGroup:openGroup,editGroup:editGroup,
     groupRows:groupRows,inspect:inspect,artwork:artwork,onKey:onKey,descriptionData:descriptionData,action:action,customize:customize,
-    setPane:setPane,toggleInspector:toggleInspector};
+    setPane:setPane,toggleInspector:toggleInspector,setSchool:setSchool,toggleDock:toggleDock,schools:schools};
 })();

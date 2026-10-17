@@ -935,6 +935,9 @@ namespace KeysWrite
 				       "Custom Markers is not listening for yet. If you change keys in its own menu first, it "
 				       "may write its old key back.";
 			} else if (r.apply == "ppa-self") {
+				// PPA's SMF copy of [Hotkeys] must hold the new key too, or its
+				// save-on-Escape writes the old one back (ppa_menu_sync.h).
+				PpaConfig::KeepMenuInStep("a Keys-tab rebind of PPA's reload key");
 				// PPA's own Reload key was the one rebound: pressing it now would
 				// press the NEW key, which PPA does not listen for until it reloads.
 				msg += "PPA learns a new reload key only when it reloads, so SkyManager did not press it. "

@@ -373,10 +373,17 @@ namespace ItemIcons
 		// if it does not resolve, faces render bare-facegen exactly as before.
 		using CreateBySetFn     = decltype(&MRF::Internal::IMesh_CreateByNifPathSet);
 
+		// Our from-source MRF's hair-tint override (zz-…-attached-hair-tint.patch,
+		// 2026-10-15): attached hair shapes (a wig, head-part hair) take the
+		// NPC's hair colour, as the game tints them. Absent on any other build:
+		// wigs then render in their NIF's own tint, as before.
+		using SetHairTintFn     = bool (*)(void*, float, float, float);
+
 		CreateByNifFn     g_createByNif     = nullptr;
 		DeleteFn          g_delete          = nullptr;
 		SetShapeTexFn     g_setShapeTex     = nullptr;
 		CreateBySetFn     g_createBySet     = nullptr;
+		SetHairTintFn     g_setHairTint     = nullptr;
 		// The mirror's skin-texture overrides (upstream export, CreateWholeNpc's
 		// own call). Optional: without it a body renders in its NIF's textures.
 		using SetTexSetFn       = decltype(&MRF::Internal::IMesh_SetTextureSet);
@@ -497,6 +504,10 @@ namespace ItemIcons
 			std::vector<WholeTex> tex;
 			float                 tint[3]{ 1.0f, 1.0f, 1.0f };
 			bool                  useTint{ false };
+			// The NPC's hair colour for the attached hair (faces + the mirror), in
+			// the hair shader's units - see HairTintOf. Off = the NIF's own tint.
+			float                 hairTint[3]{ 1.0f, 1.0f, 1.0f };
+			bool                  useHairTint{ false };
 		};
 
 		struct InFlight
@@ -900,7 +911,7 @@ namespace ItemIcons
 		 * it purges icons/npcs and icons/mounts ONCE, so the next in-game ask
 		 * re-bakes every face/body through the current framework. Bump kFaceGenEpoch
 		 * to force a one-time re-bake without an MRF change. */
-		constexpr int kFaceGenEpoch = 4;   // 2026-08-19: hair-only head-part filter (`.any(kHair)` leaked eyes/brows as attachments -> default eyeball drew over the real eyes)
+		constexpr int kFaceGenEpoch = 6;   // 2026-10-15: attached hair takes the NPC's hair colour (Vesyra's wig drew untinted). 5 = head-slot SKIN hair composed; 4 = 2026-08-19 hair-only head-part filter
 
 		/* ── the ITEM render GENERATION ─────────────────────────────────────
 		 * Item renders (icons/items) are model art the facegen posing never
@@ -2110,6 +2121,26 @@ namespace ItemIcons
 		}
 
 		// POD-only (__try, C2712).
+		bool CallSetHairTint(void* a_mesh, float a_r, float a_g, float a_b) noexcept
+		{
+			__try {
+				return g_setHairTint(a_mesh, a_r, a_g, a_b);
+			} __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+																		 : EXCEPTION_CONTINUE_SEARCH) {
+				return false;
+			}
+		}
+
+		void ApplyHairTint(void* mesh, const Request& r)
+		{
+			if (!mesh || !r.useHairTint || !g_setHairTint)
+				return;
+			if (CallSetHairTint(mesh, r.hairTint[0], r.hairTint[1], r.hairTint[2]))
+				logger::info("item icons: '{}' - attached hair tinted ({:.3f},{:.3f},{:.3f})",
+					r.label, r.hairTint[0], r.hairTint[1], r.hairTint[2]);   // marker: face-hair-tint
+		}
+
+		// POD-only (__try, C2712).
 		bool CallSetShapeTex(void* a_mesh, const char* a_name, std::uint32_t a_index,
 			const char* const* a_paths, std::uint32_t a_count) noexcept
 		{
@@ -2652,6 +2683,7 @@ namespace ItemIcons
 			if (!mesh && !r.extraNifs.empty()) {
 				mesh     = SafeCreateByNifSet(r.nifPath, r.extraNifs, r.px);
 				composed = mesh != nullptr && !r.whole;
+				ApplyHairTint(mesh, r);
 				if (mesh && r.whole)
 					ApplyWholeLook(mesh, r);
 				else if (mesh)
@@ -3487,6 +3519,9 @@ namespace ItemIcons
 		// exactly as they did before 2026-08-16 — never an error.
 		g_createBySet     = reinterpret_cast<CreateBySetFn>(GetProcAddress(mod, "IMesh_CreateByNifPathSet"));
 		g_setTexSet       = reinterpret_cast<SetTexSetFn>(GetProcAddress(mod, "IMesh_SetTextureSet"));
+		g_setHairTint     = reinterpret_cast<SetHairTintFn>(GetProcAddress(mod, "IMesh_SetHairTint"));
+		logger::info("item icons: attached-hair tint {}", g_setHairTint ? "available (wigs take the NPC's hair colour)"
+		                                                              : "not in this framework build (wigs keep their own tint)");
 		if (!g_createByNif || !g_delete) {
 			logger::warn("item icons: MeshRenderingFramework.dll loaded but exports did not resolve — "
 						 "a newer or different API; item icons stay off");
@@ -3725,6 +3760,38 @@ namespace ItemIcons
 		 * no outfit, no hair armour, file absent) returns empty and the face
 		 * renders exactly as it did before.
 		 */
+		/* The NPC's hair colour as the HAIR shader's tint (HCLF -> BGSColorForm).
+		 * The game tints every worn hair-shader shape with it - a wig NIF only
+		 * carries its author's default, usually 1,1,1. Units read off a real
+		 * facegen bake: Brenna's colour form is (122,113,114) and the Creation
+		 * Kit wrote (0.957,0.886,0.894) into her baked hair = 2 x c / 255.
+		 * Vesyra's (13,12,12) is near-black hair; untinted, her wig drew in the
+		 * texture's own colour (Rober, 2026-10-15: "hair color is off"). */
+		bool HairTintOf(const RE::TESNPC* npc, float out[3])
+		{
+			const auto* hc = (npc && npc->headRelatedData) ? npc->headRelatedData->hairColor : nullptr;
+			if (!hc)
+				return false;
+			out[0] = 2.0f * hc->color.red / 255.0f;
+			out[1] = 2.0f * hc->color.green / 255.0f;
+			out[2] = 2.0f * hc->color.blue / 255.0f;
+			return true;
+		}
+
+		bool HairTintForFace(const std::string& fid, const std::string& plugin, float out[3])
+		{
+			std::uint32_t local = 0;
+			try {
+				local = static_cast<std::uint32_t>(std::stoul(
+					fid.rfind("0x", 0) == 0 || fid.rfind("0X", 0) == 0 ? fid.substr(2) : fid, nullptr, 16));
+			} catch (...) {
+				return false;
+			}
+			auto* dh   = RE::TESDataHandler::GetSingleton();
+			auto* form = (dh && local) ? dh->LookupForm(local, plugin) : nullptr;
+			return HairTintOf(form ? form->As<RE::TESNPC>() : nullptr, out);
+		}
+
 		std::vector<std::string> HairNifsForFace(const std::string& fid, const std::string& plugin)
 		{
 			std::vector<std::string> out;
@@ -3765,7 +3832,9 @@ namespace ItemIcons
 			const std::uint32_t hairMask = static_cast<std::uint32_t>(Slot::kHair) |
 										   static_cast<std::uint32_t>(Slot::kLongHair);
 			const std::uint32_t headMask = static_cast<std::uint32_t>(Slot::kHead);
-			auto addWig = [&](RE::TESObjectARMO* armo) {
+			// isSkin: the ARMO is the NPC's worn SKIN (WNAM), not something she puts
+			// on. See the head-gear rule below for why that changes the test.
+			auto addWig = [&](RE::TESObjectARMO* armo, bool isSkin = false) {
 				if (!armo || (static_cast<std::uint32_t>(armo->GetSlotMask()) & hairMask) == 0)
 					return;
 				/* A HELMET IS NOT A WIG (Adney Swordhand, 2026-09-23). Helmets,
@@ -3776,8 +3845,17 @@ namespace ItemIcons
 				 * gear is never composed. A real wig claims hair only; anything
 				 * that also claims the HEAD slot, or is keyworded as head gear,
 				 * is dropped here. */
-				if ((static_cast<std::uint32_t>(armo->GetSlotMask()) & headMask) != 0 ||
-					armo->HasKeywordID(0x0006C0EE) /* ArmorHelmet */ || armo->HasKeywordID(0x0010CD11) /* ClothingHead */) {
+				/* …EXCEPT THE SKIN (Brenna, Sanguine's Trade, 2026-10-15). A follower
+				 * skin is the whole body, and some claim the HEAD slot as well as
+				 * hair: ST_SkinNakedBrenna is slots 30|31|32|33|37|41 and carries her
+				 * real hairdo as one hair-slot addon (213_KSMix06-3\FFFF.nif) beside
+				 * body, hands and feet. The ARMO-level test threw the whole skin out
+				 * as a helmet, so only her scalp head part was composed and the tile
+				 * showed a bald skull cap. A skin is never head gear: judge it per
+				 * ADDON instead (below), where an addon claiming the head is still
+				 * refused. */
+				if (!isSkin && ((static_cast<std::uint32_t>(armo->GetSlotMask()) & headMask) != 0 ||
+					armo->HasKeywordID(0x0006C0EE) /* ArmorHelmet */ || armo->HasKeywordID(0x0010CD11) /* ClothingHead */)) {
 					logger::debug("item icons: '{}' is head gear, not a wig - not composed onto face {}|{}",
 						armo->GetName() ? armo->GetName() : "", fid, plugin);  // marker: face-wig-not-helmet
 					return;
@@ -3797,6 +3875,8 @@ namespace ItemIcons
 				auto hairModel = [&](RE::TESObjectARMA* arma) -> const char* {
 					if (!arma || (static_cast<std::uint32_t>(arma->GetSlotMask()) & hairMask) == 0)
 						return nullptr;
+					if (isSkin && (static_cast<std::uint32_t>(arma->GetSlotMask()) & headMask) != 0)
+						return nullptr;   // a skin addon that covers the head is not her hair
 					const char* m = arma->bipedModels[sex].GetModel();
 					if (!m || !*m)
 						m = arma->bipedModels[sex ? 0 : 1].GetModel();   // some wigs fill only one sex slot
@@ -3820,8 +3900,10 @@ namespace ItemIcons
 					added = true;
 				}
 				// A wig authored with slots only at the ARMO level still gets
-				// its race addon, exactly like before.
-				if (!added) {
+				// its race addon, exactly like before. Never for a SKIN: its race
+				// addon is the BODY, and composing that onto a face is the
+				// bare-feet portrait all over again.
+				if (!added && !isSkin) {
 					std::string model;
 					if (auto* arma = armo->GetArmorAddon(race)) {
 						if (const char* m = arma->bipedModels[sex].GetModel(); m && *m)
@@ -3881,7 +3963,7 @@ namespace ItemIcons
 			// parts out.
 			{
 				const std::size_t before = out.size();
-				addWig(npc->skin);
+				addWig(npc->skin, /*isSkin=*/true);
 				if (out.size() > before)
 					logger::info("item icons: hair from worn-armor skin for face {}|{}", fid, plugin);  // marker: face-hair-wornskin
 			}
@@ -3970,8 +4052,11 @@ namespace ItemIcons
 			r.px      = kFaceSize;   // face-fit zooms a WINDOW of this canvas; density is the fix for pixelated tiles
 			// Hair the facegen file cannot hold (a worn wig). Resolved here, at
 			// queue time, so Start() stays a pure consumer of the Request.
-			if (g_createBySet)
+			if (g_createBySet) {
 				r.extraNifs = HairNifsForFace(fid, plugin);
+				if (!r.extraNifs.empty())
+					r.useHairTint = HairTintForFace(fid, plugin, r.hairTint);
+			}
 			r.tier = tier;
 
 			QueueFor(tier).push_back(std::move(r));
@@ -4983,6 +5068,8 @@ namespace ItemIcons
 			std::vector<WholeTex>    tex;
 			float                    tint[3]{ 1.0f, 1.0f, 1.0f };
 			bool                     useTint{ false };
+			float                    hairTint[3]{ 1.0f, 1.0f, 1.0f };
+			bool                     useHairTint{ false };
 			std::string              fid;    // durable identity: the BASE npc, "0x<local>"
 			std::string              plugin;
 			std::size_t              pieces{ 0 };   // distinct worn armour forms
@@ -5182,6 +5269,8 @@ namespace ItemIcons
 				w.tint[2] = bt.blue / 255.0f;
 				w.useTint = true;
 			}
+			// 5. Hair colour for the attached hair (the head is an attachment here too).
+			w.useHairTint = HairTintOf(npc, w.hairTint) || HairTintOf(npc->GetRootFaceNPC(), w.hairTint);
 
 			if (w.nifs.size() < 2) {
 				why = w.nifs.empty() ? "no body, gear or head mesh found for her race"
@@ -5287,6 +5376,8 @@ namespace ItemIcons
 				r.tex       = w.tex;
 				r.useTint   = w.useTint;
 				std::copy(std::begin(w.tint), std::end(w.tint), std::begin(r.tint));
+				r.useHairTint = w.useHairTint;
+				std::copy(std::begin(w.hairTint), std::end(w.hairTint), std::begin(r.hairTint));
 				r.tier      = Tier::User;
 				g_queue.push_back(std::move(r));
 				g_asked.insert(key);

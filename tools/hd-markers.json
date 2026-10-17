@@ -26,6 +26,8 @@
     "the config_manager.php path in sharmat.cpp would be a useless marker."
   ],
   "dll": {
+    "mhiyh-done-day": "mhiyh: done reply carries the live day for",
+    "css-warm-closed": "css-warm-closed: PrismaUI {} -- the deck {} warm its stylesheets while closed",
     "procession-bridge": "procession-bridge: bound RoyalProcession.dll (api {})",
     "procession-sic-em-group": "procession-bridge: sic-em group order - {} ({} soldiers) released and sent",
     "procession-squad-hold": "procession-bridge: squads {}",
@@ -34,6 +36,31 @@
     "magic-cast-now": "cast-now '{}' (closes the deck)",
     "magic-spellbook-export": "magic-workbench: learned spellbook exported",
     "watchdog-split": "watchdog-view-state",
+    "scene-gear-act": "scene-gear: {} on {:08X} -> {} piece(s)",
+    "ied-control-scene": "ied-control: scene {} thread {} ({} actors tracked)",
+    "furniture-pick-install": "furniture-pick: Papyrus dispatch hooked (enabled {})",
+    "furniture-pick-show": "furniture-pick: showing {} piece(s) for the {} prompt{}",
+    "furniture-pick-choice": "furniture-pick: chose '{}' -> answer {}{}",
+    "furniture-pick-move": "furniture-pick: move thread {} to {:08X}",
+    "furniture-pick-actors": "furniture-pick: showing {} people for the add-actor prompt",
+    "furniture-pick-actors-choice": "furniture-pick: add-actor choice - {} by option, {} to join after the start, answer {}",
+    "furniture-pick-join": "furniture-pick: joining {} more into thread {} ({} actors)",
+    "furniture-pick-chim-privacy": "furniture-pick: told CHIM the scene is {} -> {}",
+    "furniture-pick-chim-join": "furniture-pick: told CHIM {} joined -> {}",
+    "furniture-pick-chim-terms": "furniture-pick: told CHIM the terms are {} / {} -> {}",
+    "furniture-pick-caught": "furniture-pick: caught OSKSE.UIExtMessageBox '{}' [{}] as the {} prompt - the UIExtensions popup will not open",
+    "furniture-pick-not-ours": "furniture-pick: UIExtMessageBox '{}' [{}] is not a furniture or add-actor prompt - left to UIExtensions",
+    "furniture-pick-passback": "furniture-pick: handing the prompt back to UIExtensions ({})",
+    "scene-camera-begin": "scene-camera: a player scene began (unlock {})",
+    "scene-camera-unlock": "scene-camera: gave F / wheel back (was POVswitch={} wheelZoom={} povScriptMode={})",
+    "scene-camera-toggle": "scene-camera: toggle view requested - {}",
+    "sanguines-trade-toggle": "sanguines-trade: Ledger toggle dispatched ({}.{})",
+    "focus-cache": "focus-cache: {} polls in 60 s, PrismaUI HasFocus round trips worst {} ms, avg {:.1f} ms (waited here, not on the game thread)",
+    "cursor-keeper": "cursor-keeper: watching PrismaUI's focus menu under the open deck",
+    "cursor-menu-keeper": "cursor-menu-keeper: the engine's Cursor Menu (what moves the cursor) was closed while the deck still holds the keyboard - reopened it ({}, showCursorCount {}). Menus in the last 3 s: {}",
+    "mouse-watch": "mouse-watch: cursor frozen? {} - raw mouse moves {}/s, cursor ({:.0f},{:.0f}) of {:.0f}x{:.0f} sens {:.2f} showCursorCount {}",
+    "mouse-watch-armed": "mouse-watch: comparing raw mouse motion with the cursor and the view under the open deck",
+    "cursor-assist": "driving MenuCursor from the raw mouse deltas (x{:.2f}) until the engine does (cursor-assist)",
     "ui-host-setting": "hdUiHost(",
     "ui-host-router": "ui-host: router armed - the main deck will be created on Magelight {} (freeze-world {})",
     "grip-switch-dg": "Change Grip: Dynamic Grip did not switch (a perk it requires? see dynamicGrip.ini)",
@@ -41,6 +68,7 @@
     "identity-stale-form": "actor-identity: skipped a stale form pointer (id {:08X} no longer names it)",
     "freeze-backdrop": "freeze-backdrop: world frozen behind the deck ({})",
     "freeze-backdrop-reconcile": "freeze-backdrop: open with nobody wanting it - hidden by the reconcile",
+    "backdrop-inventory-recipe": "freeze-backdrop: backdrop flags 0x{:08X} (inventory recipe 0x{:08X}), movie {}",
     "photo-frame": "photo-frame: matched crop guide and rectangular capture ready",
     "photo-cancelled-worker": "photo: stale capture stopped generation={}",
     "portrait-cancelled-worker": "portrait: stale capture stopped generation={}",
@@ -58,6 +86,9 @@
     "party-recall-nff-key": "party-recall: took over NFF summon key {} (active followers only)",
     "facegen-autocorrect": "facegen-autocorrect: {}|{} uses verified head {}",
     "photo-camera-verified": "photo-camera: native enter verified={} freeze={}",
+    "photo-camera-route": "photo-camera: entered via {} (console tfc first, native toggle as fallback)",
+    "photo-fov-reassert": "photo: FOV {} re-asserted after the free-camera toggle",
+    "photo-fov-frustum": "photo: rendered frustum hfov=",
     "photo-scene-light": "photo-light: camera fill started mode={} strength={} radius={} runtimeBytes={}",
     "photo-scene-light-cleanup": "photo-light: temporary scene lights removed",
     "photo-capture-input-proof": "photo: shutter accepted generation={}",
@@ -225,7 +256,8 @@
     "instant-wait": "time: jumped {} game hour",
     "portrait-display-crop": "portrait crop saved: ",
     "portrait-crop-prune": "portrait crops pruned: ",
-    "mhiyh-borrow-recruit": "recruit sent so MarkHome gate opens",
+    "mhiyh-home-remote": "home via HD_MhiyhRemote.SetHomeAt",
+    "nff-import-not-follower": "is an NFF import, not following",
     "nff-sandbox-toggle": "nff: sandboxing set to",
     "live-api-import-icon": "live api: import-icon '",
     "nff-sandbox-per-actor": "nff: per-actor sandbox",
@@ -296,6 +328,7 @@
     "finances-live-apply": "live api: finances applied",
     "faces-catalogue": "faces-catalogue.json",
     "gear-toggle-bridge": "gear-toggle: {} {}",
+    "gear-toggle-item": "gear-toggle: {} {} item {} ({})",
     "menu-open-prisma": "menu-open: prisma-mcm scan",
     "menu-open-smf": "menu-open: smf scan",
     "menu-open-cs": "menu-open: community-shaders scan",
@@ -320,6 +353,11 @@
     "loot-feed-install": "loot-feed: pickup sink + HUD message filter installed",
     "loot-feed-live": "loot-feed: first pickup pushed to the HUD",
     "loot-feed-added-word": "loot-feed: vanilla pickup word is",
+    "fps-pd-counters": "fps: PureDark frame-gen counters found",
+    "fps-cs-key": "fps: Community Shaders overlay key is ",
+    "fps-cs-tracked": "fps: Community Shaders overlay is now ",
+    "fps-push": "window.fpsPush&&fpsPush(",
+    "fps-cs-bridge": "window.fpsCs&&fpsCs(",
     "loot-feed-hide-vanilla": "loot-feed: hiding the game's own pickup line",
     "loot-feed-renders": "loot-feed: {} item picture(s) handed to the renderer while paused",
     "charsheet-export": "charsheet export: wrote charsheet-status.json for the portal",
@@ -358,6 +396,7 @@
     "nff-follower-flag": "nffFollower",
     "finance-properties": "[finances] property buy/sell",
     "ostim-scene-deck": "ostim: deck segment ready",
+    "ostim-scene-search-words": "ostim: scene search matches words",
     "ostim-change-scene": "ostim: changed scene ->",
     "ostim-furniture-switch": "OThread.ChangeFurniture",
     "ostim-role-swap": "ostim: DOM/SUB swap scheduled",
@@ -372,7 +411,6 @@
     "nff-force-import": "via NFF ImportFollower",
     "follower-unwedge": "NffControl: unwedge",
     "npc-debug-dossier": "npc-debug: dossier for",
-    "mhiyh-no-borrow": "is framework-owned",
     "nff-bases": "nff-bases: home quest {:08X} bound",
     "nff-base-cap-detect": "nff: detected base cap = {} (nwsPlayLocSet_NN family; stock 20)",
     "spelldeck-back-button": "mdOpenDeck-back",
@@ -422,6 +460,10 @@
     "weather-lock": "weather-lock: re-applied '{}' (#{}, the sky had moved to '{}')",
     "weather-interior-precip-guard": "weather-guard: hid precipitation in no-sky interior '{}'",
     "weather-hub-storm-lightning": "weather-hub: storm lightning {} = {}",
+    "music-player-init": "music-player: init (mpv {}, yt-dlp {}, js {}, po3 {})",
+    "music-player-hold": "music-player: hold {} (was priority {}) dispatch {}",
+    "music-player-stream": "music-player: loading \"{}\" ({})",
+    "music-player-playlist": "music-player: playlist {} -> {}",
     "npc-tune-apply": "npc-tune: applied {} field(s) to '{}'",
     "npc-tune-reapply": "npc-tune: reapplied {} field(s) on {} npc(s)",
     "anim-lo-scan": "anim: load-order scan",
@@ -538,6 +580,9 @@
     "hb-catalog-detect-gate": "detection-gated entr",
     "widgets-config": "widgets: config loaded",
     "trade-actions": "trade-action: opening the",
+    "interact-carry": "interact: cast {} ({} {:06X}) at",
+    "interact-ride": "interact: ride - pressing Ride Along's key for",
+    "interact-key": "interact: key {} for '{}' ({:08X}) -",
     "charsheet-gear-resist": "charsheet gear+resist: equipment, resistances and regen ready",
     "widgets-survival-globals": "widgets: survival globals resolved",
     "widgets-player-state": "widgets: player state live",
@@ -638,6 +683,7 @@
     "hud-away-faces": "followers HUD away faces:",
     "hud-render-fallback": " with-render=",
     "hud-away-session-seen": "hud-away-session-seen: {} ({:08X}) is not loaded but still follows",
+    "hud-facefit-push": "hud-facefit-push: {} bytes",
     "hud-edit-rescue": "force-close: hud edit force-ended",
     "hud-nav-browse": "hud nav: ",
     "hud-icons-reply": "hudIconsData(",
@@ -645,6 +691,8 @@
     "hud-repos-defer": "hud repos: focus deferred",
     "time-dial-open": "time-dial: open",
     "time-dial-wait": "time-dial: waited",
+    "rest-at-home-start": "rest-at-home: start (eat {}, drink {}, sleep {} h)",
+    "rest-at-home-done": "rest-at-home: done (eat {}, drink {}, slept {} h, SunHelm sleep {})",
     "editor-cursor": "editor-cursor: focus menu kept",
     "widgets-edit-hud-view": "widgets-edit: opening the hud view editor",
     "widgets-hud-blob": "widgets: hud view prefs stored",
@@ -769,9 +817,12 @@
     "scene-sos-dials": "Bend applied for this scene",
     "ppa-config": "Data/SKSE/Plugins/accurate-penetration.toml",
     "ppa-set": "ppa: {} = {} (reload dik {})",
+    "ostim-addons-bridge": "ostim-addons: set via bridge -> {}",
+    "ppa-menu-sync": "ppa: PPA's SMF settings list at AccuratePenetration.dll+{:#x} ({} settings)",
     "align-overlay": "align-overlay: open",
     "align-overlay-close": "align-overlay: closed",
     "align-overlay-apply": "ostim-align: {} {:08X} {} {}",
+    "ostim-align-all": "ostim-align-all: {} {} moved {}/{}",
     "align-overlay-action": "Open the live alignment overlay over a running OStim scene",
     "scene-mcm-quick": "OStim's MCM did not answer",
     "relight-native": "ReLight (Relight.dll) is not in this load order",
@@ -869,19 +920,57 @@
     "wardrobe-wheel-equip": "wardrobe-wheel: {} {} + {} ({} piece(s))",
     "wardrobe-wheel-seed": "Set it up in Wardrobe > Wardrobe wheel",
     "wardrobe-wheel-uie-state": "wardrobeWheel",
-    "hud-frame-pick": "hud-frame-pick: {} -> {}"
+    "hud-frame-pick": "hud-frame-pick: {} -> {}",
+    "spellbook-state": "spellbook: state pushed ({} known spells)",
+    "spellbook-cast": "spellbook: cast (closes the deck)",
+    "spellbook-seed": "Open your Spellbook - your own categories",
+    "spellbook-from-spell-deck": " (onto the Spellbook)",
+    "js-listener-slow": "js-listener-slow: '{}' held the UI thread {} ms",
+    "ext-key-engine-press": "pressed as engine event (deck-fired)",
+    "obody-bridge": "obody-bridge: assign {:08X} '{}' -> {}",
+    "chim-presence-guard": "chim-guard: CHIM is not installed",
+    "papyrus-presence": "papyrus-presence: {}.pex is not in this load order"
   },
   "view": {
+    "hd-obody.js": {
+      "obody-panel": "function panel(subject)",
+      "obody-picker": "obd-search"
+    },
+    "hd-obody.css": {
+      "obody-sheet": ".fq-obody-change {"
+    },
+    "hud-fps.js": {
+      "fps-card": "window.HDFps = { note: note"
+    },
+    "hud-fps.css": {
+      "fps-plate": ".hud-fps-graph i.is-low"
+    },
     "hud-lootfeed.js": {
       "loot-feed-module": "window.HDLootFeed = {"
     },
     "hud-lootfeed.css": {
       "loot-feed-css": ".hud-lf-row {"
     },
-    "hud-command.js": {"command-ring-view": "window.HudCommand", "command-ring-balance": "function balance(text)", "command-ring-arm": "function armLine(d)"},
-    "hud-command.css": {"command-ring-dim-flat": "marker: command-ring-dim-flat"},
-    "hd-procession.js": {"procession-modal": "window.HDProcession", "procession-bridge-act": "rpxAct", "procession-portal-poll": "RPX_LIVE_POLL", "procession-wagons-tab": "renderSeatPicker", "procession-squad-hold-ui": "squadHold"},
-    "hd-procession.css": {"procession-css": "#rpx-modal", "procession-wagons-css": ".rpx-cart-horse", "procession-hold-css": ".rpx-hold-head"},
+    "hud-command.js": {
+      "command-ring-view": "window.HudCommand",
+      "command-ring-balance": "function balance(text)",
+      "command-ring-arm": "function armLine(d)"
+    },
+    "hud-command.css": {
+      "command-ring-dim-flat": "marker: command-ring-dim-flat"
+    },
+    "hd-procession.js": {
+      "procession-modal": "window.HDProcession",
+      "procession-bridge-act": "rpxAct",
+      "procession-portal-poll": "RPX_LIVE_POLL",
+      "procession-wagons-tab": "renderSeatPicker",
+      "procession-squad-hold-ui": "squadHold"
+    },
+    "hd-procession.css": {
+      "procession-css": "#rpx-modal",
+      "procession-wagons-css": ".rpx-cart-horse",
+      "procession-hold-css": ".rpx-hold-head"
+    },
     "hud-outfit.js": {
       "wardrobe-flair-dock": "window.OutfitDock",
       "outfit-dock-edge-fit": "placement=M.fitDock",
@@ -1015,6 +1104,13 @@
       "weather-storm-lightning-card": "function stormCard(s)",
       "weather-sources": "function renderSources()"
     },
+    "music-pane.js": {
+      "music-tab": "window.MusicPane",
+      "music-tracks-popout": "function openTracks(t)",
+      "music-transport": "function plinthHtml()",
+      "music-playlist-popout": "function openPlaylist(id)",
+      "music-playlist-picker": "function openPicker(items, label, suggest)"
+    },
     "time-pane.js": {
       "time-pane-core": "window.TimePane = (function () {",
       "time-pane-omni": "Wait until Morning",
@@ -1022,11 +1118,17 @@
       "time-sky-picker": "function renderSkyList"
     },
     "followers-pane.js": {
+      "fd-type-lean": "const FD_FILTER_ONLY",
+      "fq-live-mhiyh": "function withLiveMhiyh(m)",
       "fol-show-skip": "fsNeedShowRender",
       "fol-show-diag": "fol-show(view): ",
       "fq-profile-door": "function fqProfileDoor",
+      "fq-head-tiles": "function fqTileFace",
+      "fol-show-keep-rows": "FS_KEEP_REPAIR_MS",
+      "fq-head-one-line": "function fqFitHead",
       "fq-ident-frame": "class: 'fq-ident-frame'",
       "push-burst-followers": "function burstDefer(a, b, c, d)",
+      "open-portraits-same": "function sameEntryMap(a, b)",
       "facefit-auto-control": "function facefitAutoToggle(",
       "face-why": "function faceWhyFor(m)",
       "dossier-category-search": "fd-ds-eyebrow-btn",
@@ -1149,6 +1251,9 @@
       "autophoto-live-party": "(state.liveParty || []).forEach(function (r) { if (r && !r.away) add(r); });"
     },
     "hud.js": {
+      "hud-rect-links": "function reflowLinked()",
+      "hud-rect-mods-keyboard": "e.altKey || altHeld",
+      "fps-widget": "window.fpsPush = function (d)",
       "hud-strip-onscreen": "hud-strip-onscreen: drawn at ",
       "hud-strip-stable-order": "marker hud-strip-stable-order",
       "hud-face-refit": "marker hud-face-refit",
@@ -1175,6 +1280,7 @@
       "hud-face-shape-view": "class: 'hud-face-in'",
       "hud-hurt-ring": "hud-hurt",
       "hud-away-chip": "hud-away",
+      "hud-away-tag": "class: 'hud-away-tag'",
       "hud-render-face": "const raw = m.abs ? String(file) : srcFor(file);",
       "hud-esc-exit": "e.code === 'Escape'",
       "hud-chip-bars": "class: 'hud-cb '",
@@ -1224,7 +1330,8 @@
       "hud-frame-row": "marker hud-frame-row",
       "hud-frame-glide": "marker hud-frame-glide",
       "hud-strip-squeeze": "function applySqueeze()",
-      "hud-handle-side": "function placeStripHandles()"
+      "hud-handle-side": "function placeStripHandles()",
+      "hud-facefit-push": "window.hudFaceFit = function"
     },
     "sharmat-pane.js": {
       "sharmat-read-modify-write": "could not re-read before saving",
@@ -1233,6 +1340,7 @@
     "domains-pane.js": {
       "domains-hidden-no-render": "if (ui.shown) render(); else dropRowCache();",
       "domain-photo-lighting": "domain-photo-lighting",
+      "tab-switch-reuse": "function renderKeepingRows()",
       "domain-photo-scene-fill": "domain-photo-scene-fill",
       "domain-subareas-below-photo": "dm-card-controls",
       "domain-crop-refresh": "hd-portrait-crops-changed",
@@ -1258,6 +1366,8 @@
     "app.css": {
       "sic-orders-settings-css": "#sicreach-range",
       "fq-head-no-gap": "fq-head-no-gap",
+      "fq-head-tiles-css": "fq-head-tiles",
+      "fq-head-one-line-css": "fq-head-one-line",
       "fq-medal-square": "fq-medal-square",
       "fq-profile-door-css": ".fq-profile-fig.has-poster",
       "fq-find-css": "#fq-find-pop {",
@@ -1383,7 +1493,9 @@
       "ostim-pane-posart": "OstimTools.positionArt(s.name, s.sceneId, 'os-pos')",
       "ostim-search-for": "searchFor(query) {",
       "ostim-external-search": "search(query, cb) {",
-      "ostim-play-direct": "play(s, cb) {"
+      "ostim-play-direct": "play(s, cb) {",
+      "ostim-scene-rank": "function rankScenes(list, query)",
+      "ostim-search-plan": "function searchPlan(q, syn)"
     },
     "light-pane.js": {
       "light-card-core": "function statusText",
@@ -1400,7 +1512,10 @@
       "door-tier-css": ".dr-tier {"
     },
     "hd-omni.js": {
+      "omni-score-lean": "var SCORE_SEP",
+      "omni-warm-paced": "marker: omni-warm-paced",
       "omni-owns-keys": "omni-owns-keys",
+      "omni-key-caps": "function pressKeyCap(code, btn)",
       "recent-label-match": "function labelKey(s)",
       "omni-type-coalesce": "omni-search(view): render ",
       "omni-registry": "takeQuestReply",
@@ -1441,6 +1556,9 @@
       "bind-conflicts": "window.HDBindConflicts = "
     },
     "app.js": {
+      "mouse-watch-beat": "window.hdMouseBeat('1')",
+      "css-warm-closed": "const ClosedCssWarm = (function ()",
+      "keypad-ext-fkeys": "{ id: 'ext', title:",
       "sic-orders-settings-js": "function syncSicOrders()",
       "ui-host-setting": "function pickUiHost(h)",
       "census-skip-taps": "census-skip-taps",
@@ -1472,6 +1590,9 @@
       "item-source-banner": "window.hdItemSource = function",
       "tab-scale-card": "function renderTabScaleCard",
       "tab-scale-bind": "HDScale.bind({",
+      "tab-switch-scale-gate": "function scheduleIconRefit(pane)",
+      "tab-switch-inplace": "function patchTabClasses(bar, html)",
+      "act-diag-own-event": "cur.ev === e",
       "native-gold-rows": "hk-native",
       "loot-tab": "$('lt-pane').classList.toggle('hidden', pane !== 'loot')",
       "anim-tab": "$('an-pane').classList.toggle('hidden', pane !== 'anim')",
@@ -1562,6 +1683,8 @@
       "faces-omni": "id: 'faces'"
     },
     "home-pane.js": {
+      "uie-keep": "function uieKeep(key, fresh, extra)",
+      "fps-uie-rows": "id: 'cs-overlay'",
       "combat-wheel-wedge-switches": "var SW_WEDGES = [",
       "stance-wheel-options-row": "function buildStanceInline(mount)",
       "wardrobe-wheel-uie-row": "function buildWwInline(mount)",
@@ -1770,6 +1893,7 @@
       "staged-css-arm": "HDCss.armTabs()"
     },
     "hd-css.js": {
+      "css-warm-gate": "function whenUiQuiet(go)",
       "staged-css": "HDCss gates",
       "css-warm": "HDCss: warm",
       "css-load-ui-gap": "ui-thread busiest",
@@ -1877,11 +2001,14 @@
       "time-dial-view": "window.tdShow",
       "time-dial-geometry": "function hourFromPoint",
       "time-dial-place": "function savePlacement",
-      "time-dial-mouse-fallback": "addEventListener('mousedown', dialDown)"
+      "time-dial-mouse-fallback": "addEventListener('mousedown', dialDown)",
+      "time-dial-rest-view": "window.tdRestState",
+      "time-dial-rest-confirm": "function confirmRest()"
     },
     "hud-td.css": {
       "time-dial-sheet": "#hud-td {",
-      "time-dial-cards": ".td-card {"
+      "time-dial-cards": ".td-card {",
+      "time-dial-rest-tiles": ".td-need {"
     },
     "hud-wardrobe-wheel.js": {
       "wardrobe-wheel-view": "window.wwShow",
@@ -1934,7 +2061,11 @@
       "facefit-portrait-lane": "paintPortraitsIn",
       "facefit-whole-chin": "facefit-whole-chin",
       "facefit-auto-toggle": "facefit-auto-toggle",
-      "facefit-surface-crop": "img._hdHeadCrop()"
+      "facefit-surface-crop": "img._hdHeadCrop()",
+      "open-fit-keep": "if (k2 === K && s2 === S) return;"
+    },
+    "hd-icon-mip.js": {
+      "open-mip-hidden-keep": "function hasBox(el)"
     },
     "keys-pane.js": {
       "keys-atlas-entry": "hotkey-atlas-map",
@@ -2009,7 +2140,10 @@
       "keystrip-module": "window.KeyStrip =",
       "keystrip-aliases": "pageup",
       "keystrip-groups": "numberpad",
-      "keystrip-fire": "hdFireRawKey"
+      "keystrip-fire": "hdFireRawKey",
+      "keystrip-ext-fkeys": "extendedfkeys",
+      "keystrip-esc-tab": "EXTRA_KEYS = [",
+      "keystrip-finder-press": "function press(code)"
     },
     "keycaps-strip.css": {
       "keystrip-css": ".ks-cap {"
@@ -2066,6 +2200,7 @@
       "ostim-tools-cast": "function renderCast()",
       "ostim-tools-room": "function renderRoom()",
       "ostim-tools-ppa": "function renderPpa()",
+      "ostim-tools-fluids": "function renderFluids()",
       "ostim-tools-undress": "function undressControl()",
       "ostim-tools-voice": "function voiceControl()",
       "ostim-tools-sos": "function sosControl()",
@@ -2082,6 +2217,7 @@
       "ostim-tools-escguard": "e.__ostHandled=true;",
       "ostim-tools-faceredraw": "function repaintPortraits()",
       "align-overlay-btn": "Adjust live, over the scene",
+      "ostim-nudge-band": "function nudgeBand()",
       "scene-segments-popout": "function openSegment(t)",
       "scene-popout-back": "if(back&&modal){openSegment(back);return;}",
       "scene-launcher-body": "ost-body ost-body-idle",
@@ -2129,7 +2265,16 @@
       "npc-scene-setup": "function startFor(subject)"
     },
     "hd-quest-journal.js": {
-      "quest-journal-home-ui": "quest-journal-home"
+      "quest-journal-home-ui": "quest-journal-home",
+      "quest-guide-popout": "function openGuide(q)",
+      "quest-guide-hints": "objective:'find the house its first guest'"
+    },
+    "hd-interact.js": {
+      "interact-modal": "window.HDInteract",
+      "interact-power-row": "'hdi-btn hdi-power'"
+    },
+    "hd-interact.css": {
+      "interact-css": ".hdi-tile.is-off"
     },
     "hd-quests.js": {
       "quests-active-scope": "toGameSafe('hdQuestActive'",
@@ -2143,6 +2288,7 @@
     },
     "hud-align.js": {
       "align-overlay-module": "window.HudAlign =",
+      "align-overlay-whole": "'ag-tab ag-tab-whole', 'Whole scene'",
       "align-overlay-axes": "{ key: 'rotation', label: 'Rotation'",
       "align-overlay-keys": "if (lower === 'q' || lower === 'e')",
       "align-overlay-release": "if (tellCpp) send('agClose')",
@@ -2152,6 +2298,7 @@
       "align-wasd": "function nudge(dir)"
     },
     "hud.html": {
+      "fps-script-loaded": "<script src=\"hud-fps.js\"></script>",
       "align-overlay-host": "<div id=\"hud-align\"></div>",
       "wardrobe-wheel-host": "<div id=\"hud-wwheel\"></div>",
       "hud-facefit-script": "<script src=\"hd-facefit.js\"></script>"
@@ -2163,6 +2310,7 @@
       "ui-surface-counts": "function counts(spells, parents, meta)",
       "spell-deck-density-ladder": "function fitDensity(fits, start)",
       "spell-deck-size-auto": "out.sizeAuto = raw.sizeAuto !== false;",
+      "magic-bar-expanded-default": "out.controlsCollapsed = raw.controlsCollapsed === true;",
       "spell-description-stats": "function spellStatTiles(data)"
     },
     "library-ui.js": {
@@ -2174,7 +2322,9 @@
       "spell-deck-category-popout": "function openCategories()",
       "spell-deck-more-popout": "function openMore()",
       "spell-deck-card-stepper": "function setCardSize(v)",
-      "spell-details-modal": "function spellDetails(spell)"
+      "spell-details-modal": "function spellDetails(spell)",
+      "magic-quick-filter-chips": "function quickFilters()",
+      "magic-combo-attach": "MdCombo.attach($('ml-sort')"
     },
     "workbench-model.js": {
       "spell-deck-pane-widths": "function paneWidth(pane, value)"
@@ -2182,12 +2332,23 @@
     "workbench.js": {
       "spell-deck-pane-splitters": "function splitDown(pane, e)",
       "spell-deck-inspector-fold": "function toggleInspector()",
-      "spell-deck-cast-now": "castNow(spell); },'ml-button ml-primary mw-cast-now'"
+      "spell-deck-cast-now": "castNow(spell); },'ml-button ml-primary mw-cast-now'",
+      "magic-school-filter": "function setSchool(name)",
+      "magic-dock-fold": "function toggleDock()"
+    },
+    "md-combo.js": {
+      "md-combo-module": "window.MdCombo = {",
+      "md-combo-typeable": "class: 'mdc-find'",
+      "md-combo-body-anchored": "document.body.append(menu)",
+      "md-combo-owns-escape": "if (k === 'Escape') { e.preventDefault(); close(true); return true; }"
     },
     "workbench.css": {
       "spell-deck-pane-splitters-css": ".mw-splitter{",
       "spell-deck-details-ring": "#panel .spell .row-right button:focus{outline-offset:-2px}",
-      "spell-table-css": ".ml-table-head{position:sticky"
+      "spell-table-css": ".ml-table-head{position:sticky",
+      "magic-one-bar": "#ml-library-bar.mw-bar{display:flex;flex-direction:column",
+      "magic-quick-filters-css": ".mw-quick{display:grid;grid-template-columns:repeat(var(--mw-cols",
+      "magic-dock-fold-css": "#panel.mw-dock-folded .mw-dock-slots{display:none}"
     },
     "library.css": {
       "spell-icons-view-css": ".ml-icon-inspect {",
@@ -2291,6 +2452,13 @@
     "hd-padcfg.js": {
       "hotkey-pad-settings": "window.hpCfgOpen",
       "hotkey-pad-keys": "function keyMatches(q)"
+    },
+    "hd-spellbook.js": {
+      "spellbook-view": "window.sbState = receiveState",
+      "spellbook-drag": "function findTarget(x, y)"
+    },
+    "hd-spellbook.css": {
+      "spellbook-sheet": ".spbk-ghost {"
     }
   }
 }

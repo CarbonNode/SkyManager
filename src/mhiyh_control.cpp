@@ -1,13 +1,10 @@
 #include "mhiyh_control.h"
 
-#include "follower_frameworks.h"  // never borrow a framework-owned companion
 #include "nff_bridge.h"
-#include "nff_control.h"   // borrow-recruit, so MarkHome's follower gate is not a dead end
+#include "residents.h"   // HD_MhiyhRemote.SetHomeAt: a home for someone not following you
 
-#include <atomic>
 #include <memory>
 
-#include <thread>
 
 #include <cctype>
 #include <chrono>
@@ -165,58 +162,6 @@ namespace MhiyhControl
 		}
 	}
 
-	namespace
-	{
-		/* ---- MarkHome's follower gate, handled instead of reported ---------
-		 *
-		 *  MHiYH will only take a home from someone CURRENTLY following you —
-		 *  its rule, not ours. The deck used to state that and stop, which
-		 *  meant a three-step dance for every settled NPC: recruit her, set
-		 *  the home, dismiss her again. Rober asked for it to just happen.
-		 *
-		 *  So we BORROW her: recruit through NFF's own controller, mark the
-		 *  home, then put her back exactly as she was. The restore is the part
-		 *  that makes this honest — silently leaving someone in your party
-		 *  (and eating one of NFF's follower slots) because you set her home
-		 *  would be a worse surprise than the refusal ever was.
-		 *
-		 *  Every step is asynchronous and none of them can be assumed:
-		 *    - NFF's RecruitFollower only sets doAction=2 and schedules its own
-		 *      update, so "recruited" is not true when Apply() returns. We wait
-		 *      and then CHECK IsPlayerTeammate rather than trusting a timer.
-		 *    - If the recruit did not take (follower cap, her own mod owns her,
-		 *      she is a guarded NPC), we say so and change nothing — we must
-		 *      not leave a half-done borrow behind.
-		 *    - The dismiss is only sent if WE did the recruiting. Someone who
-		 *      was already following stays following.
-		 */
-		constexpr int kRecruitSettleMs = 900;   // NFF's own update is 0.2s; leave room
-		constexpr int kRecruitRetryMs  = 1000;  // between the extra looks below
-		constexpr int kRecruitChecks   = 4;     // total looks (~0.9s, 1.9s, 2.9s, 3.9s)
-		constexpr int kDismissDelayMs  = 700;   // let MHiYH finish registering her first
-
-		// One borrow at a time. Five Home-button presses on 2026-08-10 sent
-		// five recruits at the same NPC before the first settle check ever ran;
-		// the guard makes the extra presses a message instead of a pile-up.
-		std::atomic<bool> g_borrowPending{ false };
-
-		// Run `fn` on the main thread after `ms`. A detached thread is the same
-		// shape RoomGuardTickLoop uses; the task hop is mandatory because
-		// everything it touches is main-thread-only game state.
-		void MainThreadAfter(int ms, std::function<void()> fn)
-		{
-			std::thread([ms, fn = std::move(fn)]() {
-				std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-				SKSE::GetTaskInterface()->AddTask([fn]() { fn(); });
-			}).detach();
-		}
-
-		std::string NffCmd(const char* op, const std::string& idStr)
-		{
-			return json{ { "op", op }, { "formId", idStr } }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-		}
-	}
-
 	std::string Apply(const std::string& cmdJson, Done done)
 	{
 		const auto j = json::parse(cmdJson, nullptr, false);
@@ -269,143 +214,56 @@ namespace MhiyhControl
 				ok = "⌂ " + who + " lives here now";
 				bad = "MHiYH would not move " + who + "'s home — see HotkeyDeck.log";
 			} else {
-				// MarkHome's own first gate. We no longer refuse it — we
-				// satisfy it and put her back afterwards (see the borrow note
-				// above). The whole sequence lives here rather than in the
-				// generic dispatch below because only this branch has a gate
-				// worth opening.
+				// MarkHome's own first gate: MHiYH's DIALOGUE only offers the
+				// home topic to someone following you, and MHiYHController.MarkHome
+				// checks IsPlayerTeammate() to match. Nothing in the native side
+				// needs it, so someone who is not following goes through the
+				// Residents door instead - HD_MhiyhRemote.SetHomeAt, the same
+				// transaction minus that gate, with the marker placed at the
+				// player's feet exactly as MarkHome would place it.
+				//
+				// This replaced a "borrow": recruit her through NFF, MarkHome,
+				// dismiss her again. It could not work for anyone NFF already
+				// holds in a slot without her following - an NFF IMPORT ("Add to
+				// framework") is exactly that, and NFF's RecruitAction answers
+				// "already in your group" and does nothing - and its cancel
+				// dismiss then marked the imported NPC a current follower that
+				// NFF's RemoveAction skips (Kella Vestia, 2026-10-15). Changing
+				// someone's follower state to give her a home was the wrong shape
+				// even when it worked.
 				if (!actor->IsPlayerTeammate()) {
+					logger::info("mhiyh: {} is not following - home via HD_MhiyhRemote.SetHomeAt, "
+						"no recruit", who);   // marker: mhiyh-home-remote
 					const std::string idCopy = idStr;
-					const std::string whoCopy = who;
-
-					// A companion who SHIPS with her own follower mod (Amaniri,
-					// Vayne) is never borrowed: recruiting her into NFF gives
-					// her a second, competing controller — on 2026-08-10 that
-					// collision wedged NFF's import mid-flight and left Amaniri
-					// dialogue-blocked in "Disallow Player Interaction". Try
-					// MHiYH directly instead (her own framework may already
-					// satisfy the gate), and let a False be an honest answer.
-					const int ownSpec = FollowerFrameworks::OwningCompanionSpec(actor);
-					if (ownSpec >= 0) {
-						const std::string owner = FollowerFrameworks::Label(ownSpec);
-						logger::info("mhiyh: {} is framework-owned ({}) - trying MarkHome directly, no borrow",
-							whoCopy, owner);
-						if (!Dispatch("MarkHome", actor, -1, [done, idCopy, whoCopy, owner](bool result) {
-								logger::info("mhiyh: MarkHome({}) -> {} (framework-owned, direct)",
-									whoCopy, result ? "true" : "false");
-								if (done)
-									done(Dump(json{
-										{ "ok", result }, { "phase", "done" }, { "op", "setHome" },
-										{ "kind", -1 }, { "formId", idCopy },
-										{ "msg", result
-											? ("⌂ " + whoCopy + " now lives here")
-											: (whoCopy + " is run by " + owner + " and MHiYH does not see "
-											   "her as a follower — have her follow you through her OWN "
-											   "dialogue, then set the home again") },
-									}));
-							}))
-							return Dump(Refuse("The Papyrus VM would not take MarkHome — see HotkeyDeck.log"));
-						return Dump(json{
-							{ "ok", true }, { "phase", "sent" }, { "op", "setHome" },
-							{ "kind", -1 }, { "formId", idStr },
-							{ "msg", "Giving " + who + " a home here…" },
-						});
-					}
-
-					if (!NffControl::Available())
-						return Dump(Refuse(
-							whoCopy + " has to be following you, and Nether's Follower Framework "
-							"isn't here to ask her for us."));
-
-					if (g_borrowPending.exchange(true))
-						return Dump(Refuse("Still asking " + who + " to follow — give it a moment."));
-
-					// The recruit can be REFUSED synchronously (dead, guarded,
-					// already following per NFF's own gates). The old code
-					// ignored the reply and logged "recruit sent" regardless —
-					// pass the refusal through instead of narrating a lie.
-					const auto sentReply = json::parse(
-						NffControl::Apply(NffCmd("recruit", idCopy), nullptr), nullptr, false);
-					if (sentReply.is_discarded() || !sentReply.value("ok", false)) {
-						g_borrowPending = false;
-						return Dump(Refuse(sentReply.is_object()
-							? sentReply.value("msg", std::string("NFF would not recruit ") + whoCopy)
-							: std::string("NFF would not recruit ") + whoCopy));
-					}
-					logger::info("mhiyh: borrowing {} - recruit sent so MarkHome gate opens", whoCopy);
-
-					// NFF's RecruitFollower only queues its own deferred action,
-					// so "not a teammate yet" is ambiguous between REFUSED and
-					// STILL PROCESSING. Look a few times before concluding — and
-					// when the conclusion is "no", send a dismiss anyway: a
-					// recruit that latches after our last look would otherwise
-					// leave her silently conscripted (exactly what stranded
-					// Amaniri in NFF on 2026-08-10).
-					auto step = std::make_shared<std::function<void(int)>>();
-					std::weak_ptr<std::function<void(int)>> wk = step;
-					*step = [done, idCopy, whoCopy, wk](int attempt) {
-						auto* a = ResolveActor(ParseFormId(idCopy));
-						if (!a) {
-							g_borrowPending = false;
-							if (done)
-								done(Dump(Refuse(whoCopy + " left before we could give her a home.")));
-							return;
-						}
-						if (!a->IsPlayerTeammate()) {
-							if (attempt < kRecruitChecks) {
-								if (auto s = wk.lock())
-									MainThreadAfter(kRecruitRetryMs,
-										[s, attempt]() { (*s)(attempt + 1); });
+					const auto reply = json::parse(Residents::Apply(
+						Dump(json{ { "op", "setAt" }, { "formId", idStr }, { "kind", kHome }, { "here", true } }),
+						[done, idCopy](const std::string& result) {
+							if (!done)
+								return;
+							// Residents answers as op "setAt"; every caller of
+							// this verb (the Followers tab, the command ring, the
+							// portal replay) waits for "setHome".
+							auto r = json::parse(result, nullptr, false);
+							if (!r.is_object()) {
+								done(result);
 								return;
 							}
-							g_borrowPending = false;
-							NffControl::Apply(NffCmd("dismiss", idCopy), nullptr);
-							logger::info("mhiyh: borrow of {} did not take after {} looks - "
-										 "cancel dismiss sent", whoCopy, kRecruitChecks);
-							if (done)
-								done(Dump(Refuse(
-									"Could not get " + whoCopy + " to follow you, so MHiYH will not take "
-									"a home for her — recruit her yourself and try again.")));
-							return;
-						}
-
-						g_borrowPending = false;
-						const bool borrowed = true;   // she was not following when we started
-						if (!Dispatch("MarkHome", a, -1, [done, idCopy, whoCopy, borrowed](bool result) {
-								logger::info("mhiyh: MarkHome({}) -> {} (borrowed)", whoCopy,
-									result ? "true" : "false");
-								if (done)
-									done(Dump(json{
-										{ "ok", result }, { "phase", "done" }, { "op", "setHome" },
-										{ "kind", -1 }, { "formId", idCopy },
-										{ "msg", result
-											? ("⌂ " + whoCopy + " now lives here — she followed you just "
-											   "long enough for MHiYH to take it")
-											: (whoCopy + " could not be given a home — see HotkeyDeck.log") },
-									}));
-								// Put her back either way. A failed MarkHome is no
-								// reason to leave someone conscripted.
-								if (borrowed) {
-									MainThreadAfter(kDismissDelayMs, [idCopy, whoCopy]() {
-										NffControl::Apply(NffCmd("dismiss", idCopy), nullptr);
-										logger::info("mhiyh: returning {} - borrow complete", whoCopy);
-									});
-								}
-							})) {
-							if (done)
-								done(Dump(Refuse("The Papyrus VM would not take MarkHome — see HotkeyDeck.log")));
-							MainThreadAfter(kDismissDelayMs, [idCopy]() {
-								NffControl::Apply(NffCmd("dismiss", idCopy), nullptr);
-							});
-						}
-					};
-					MainThreadAfter(kRecruitSettleMs, [step]() { (*step)(1); });
-
-					return Dump(json{
-						{ "ok", true }, { "phase", "sent" }, { "op", "setHome" },
-						{ "kind", -1 }, { "formId", idStr },
-						{ "msg", "Asking " + who + " to follow you for a moment…" },
-					});
+							r["op"] = "setHome";
+							r["kind"] = -1;
+							r["formId"] = idCopy;
+							done(Dump(r));
+						}),
+						nullptr, false);
+					if (!reply.is_object())
+						return Dump(Refuse("The Residents door gave no answer for " + who + " - see HotkeyDeck.log"));
+					auto out = reply;
+					if (out.value("phase", std::string()) != "refused") {
+						out["op"] = "setHome";
+						out["kind"] = -1;
+						out["formId"] = idStr;
+						out["msg"] = "Giving " + who + " a home here…";
+					}
+					return Dump(out);
 				}
 				fn = "MarkHome";
 				sent = "Giving " + who + " a home here…";

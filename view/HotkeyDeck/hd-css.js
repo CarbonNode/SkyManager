@@ -119,6 +119,7 @@
     ['HDOutfit',    ['open', 'show'],            'outfit'],
     ['HDQuests',    ['open'],                    'npcquests'],
     ['HDSpidGear',  ['open'],                    'followers'],
+    ['HDObody',     ['open'],                    'followers'],  // F7 Equipped box: OBody preset picker (2026-10-15)
     ['ChimBtn',     ['open'],                    'chim'],
     ['FixBtn',      ['open'],                    'chim'],       // the Fixes popout lives in chim-flyout.css
     ['SmPane',      ['open'],                    'followers'],
@@ -127,6 +128,7 @@
     ['HDMcm',       ['open'],                    'mcm'],
     ['AppearanceGallery', ['open'],              'appearances'],
     ['WigsPane',    ['openFor'],                 'wigs'],       // the NPC card's Wigs… popout hosts the gated #wv-pane (2026-09-23)
+    ['HDSpellbook', ['open'],                    'spellbook'],  // the Spellbook popout (2026-10-14)
     ['HDBestiary',  ['open', 'study'],           'bestiary']    // the Bestiary book (2026-10-08); study = the F7 card / Study Creature
   ];
 
@@ -136,10 +138,12 @@
     'hd-wheel': 'wheel', 'hd-potions': 'potions', 'hd-quiver': 'quiver',
     'hd-survival': 'survival', 'hd-super': 'super', 'fm-modal': 'formation', 'rpx-modal': 'procession', 'dr-modal': 'door',
     'hdo-layer': 'outfit', 'hdq-layer': 'npcquests', 'sg-modal': 'followers',
-    'mc-modal': 'mcm', 'appearance-gallery': 'appearances', 'bx-root': 'bestiary'
+    'mc-modal': 'mcm', 'appearance-gallery': 'appearances', 'bx-root': 'bestiary',
+    'obd-back': 'followers'
   };
   var ROOT_CLASS = [
     ['chim-back', 'chim'], ['chim-fly', 'chim'], ['fx-back', 'chim'], ['sm-pop', 'followers'], ['sdp-back', 'followers'],
+    ['fq-obody', 'followers'],
     ['hdlb', 'lightbox'], ['ip-wrap', 'itempick']
   ];
 
@@ -299,6 +303,18 @@
    *      why this never runs from the closed deck and app.js pauses it on hdClosed.
    *   2. only while the player is IDLE: no mouse move, press, key or wheel in the
    *      last IDLE_MS. A hover transition or a drag mid-stall would stutter.
+   *   3. (warm-gate, 2026-10-15) only while the DECK is idle too, and with a longer
+   *      quiet after the inputs that come in bursts. PrismaUI now ticks Ultralight
+   *      on its own thread, so a sheet no longer costs a game frame — but one key
+   *      still holds the deck's UI thread 70-133 ms ("keys" 133, "spells" 111,
+   *      "household" 98, 2026-10-15 log), and the old 350 ms pointer gate let that
+   *      land between two typed letters or two wheel notches. Now: pointer quiet
+   *      IDLE_MS, wheel/scroll quiet 2x, keys and typing quiet 3x (a pause between
+   *      words is not the end of typing); and just before loading, two animation
+   *      frames are timed, and a gap over BUSY_MS (a tab still painting, an image
+   *      burst decoding, a reply re-rendering) postpones the step. The sheets, the
+   *      order and the steady pace are unchanged; the step only waits for a
+   *      better moment. The finish line says how often it waited, and why.
    *
    * Order: the tabs people switch to first (PRIORITY), then everything else in
    * placeholder order. Keys already loading (a hover prefetch, a tab visit) are
@@ -306,7 +322,7 @@
    * live. start() is idempotent and doubles as resume; pause() parks the timer and
    * keeps the queue, so a close mid-warm costs nothing and the next open continues. */
   var warm = (function () {
-    var STEP_MS = 250, IDLE_MS = 350;
+    var STEP_MS = 250, IDLE_MS = 500, BUSY_MS = 40, FRAME_WAIT_MS = 300;
     /* 'bestiary' sits right after 'journal' (2026-10-10): the book is a body-level
        popout reached from the F7 card, the Study key and the systems list, not a
        tab people warm by hovering, so the idle drain is what pays for it. */
@@ -316,12 +332,62 @@
       'highking', 'distr', 'nightside', 'mcm', 'appearances'];
     var queue = null, active = false, paused = true, timer = 0, lastInput = 0;
     var t0 = 0, loaded = 0, longest = 0, longestKey = '', inputArmed = false, startedWith = 0;
+    var waitInput = 0, waitBusy = 0, probing = 0;
+    /* warm-gate: the moment the player may still be mid-gesture until. Each
+       input pushes it out by the quiet its KIND needs, never pulls it in. */
     function armInput() {
       if (inputArmed) return;
       inputArmed = true;
-      var mark = function () { lastInput = now(); };
-      var evs = ['mousemove', 'mousedown', 'keydown', 'wheel'];
-      for (var i = 0; i < evs.length; i++) { try { document.addEventListener(evs[i], mark, true); } catch (e) {} }
+      var quiet = function (mult) {
+        return function () { var until = now() + IDLE_MS * mult; if (until > lastInput) lastInput = until; };
+      };
+      var kinds = [
+        [['mousemove', 'mousedown', 'mouseup'], 1],
+        [['wheel', 'scroll'], 2],
+        [['keydown', 'keyup', 'input'], 3],
+      ];
+      for (var k = 0; k < kinds.length; k++) {
+        var mark = quiet(kinds[k][1]);
+        for (var i = 0; i < kinds[k][0].length; i++) {
+          try { document.addEventListener(kinds[k][0][i], mark, { capture: true, passive: true }); } catch (e) {}
+        }
+      }
+    }
+    function inputQuiet() { return now() >= lastInput; }
+    /* look again the moment the current quiet runs out (not a fixed IDLE_MS
+       later, which could land just after the next input and wait a second
+       period for nothing) */
+    function waitForQuiet() { waitInput++; schedule(Math.max(50, lastInput - now() + 5)); }
+    /* Two frames, timed: the deck is idle when the second follows the first
+       about as promptly as it does when nothing is happening. "Promptly" is
+       LEARNED, not assumed: the quickest of the last few gaps sets the floor
+       (the paused game has presented at 17 fps before, 2026-10-09), and only a
+       gap well past it — real painting or decoding — counts as busy. No rAF (a
+       harness), or no frame inside FRAME_WAIT_MS (nothing is being painted at
+       all), counts as idle — never as a reason to stall the warm forever. */
+    var gaps = [];
+    function frameBusy(gap) {
+      gaps.push(gap);
+      if (gaps.length > 8) gaps.shift();
+      var floor = Math.min.apply(null, gaps);
+      var limit = gaps.length < 3 ? BUSY_MS : Math.max(BUSY_MS, floor * 2 + 8);
+      return gap > limit;
+    }
+    function whenUiQuiet(go) {
+      var raf = window.requestAnimationFrame;
+      if (typeof raf !== 'function') { go(true); return; }
+      var token = ++probing, settled = false;
+      var finish = function (quiet) {
+        if (settled || token !== probing) return;
+        settled = true;
+        clearTimeout(fallback);
+        go(quiet);
+      };
+      var fallback = setTimeout(function () { finish(true); }, FRAME_WAIT_MS);
+      raf(function () {
+        var a = now();
+        raf(function () { if (!settled && token === probing) finish(!frameBusy(now() - a)); });
+      });
     }
     function build() {
       var q = [], i;
@@ -338,13 +404,20 @@
       while (queue.length && reg[queue[0]].state !== 'idle') queue.shift();
       if (!queue.length) { finish(); return; }
       /* the player is doing something — stay out of the way and look again later */
-      if (now() - lastInput < IDLE_MS) { schedule(IDLE_MS); return; }
-      var key = queue.shift(), s0 = now();
-      need(key, function () {
-        var ms = now() - s0;
-        loaded++;
-        if (ms > longest) { longest = ms; longestKey = key; }
-        if (!paused) schedule(STEP_MS);
+      if (!inputQuiet()) { waitForQuiet(); return; }
+      whenUiQuiet(function (quiet) {
+        if (paused || timer) return;          // paused, or another step got scheduled meanwhile
+        if (!inputQuiet()) { waitForQuiet(); return; }
+        if (!quiet) { waitBusy++; schedule(STEP_MS); return; }
+        while (queue && queue.length && reg[queue[0]].state !== 'idle') queue.shift();
+        if (!queue || !queue.length) { finish(); return; }
+        var key = queue.shift(), s0 = now();
+        need(key, function () {
+          var ms = now() - s0;
+          loaded++;
+          if (ms > longest) { longest = ms; longestKey = key; }
+          if (!paused) schedule(STEP_MS);
+        });
       });
     }
     function finish() {
@@ -352,7 +425,8 @@
       var left = cold();
       log('HDCss: warm — ' + loaded + ' of ' + startedWith + ' cold sheet-set(s) loaded in the background, '
         + fmt(now() - t0) + ' ms since start, longest ' + fmt(longest) + ' ms "' + longestKey + '"'
-        + (left ? ' | ' + left + ' still cold' : ' | every staged sheet is live'));
+        + (left ? ' | ' + left + ' still cold' : ' | every staged sheet is live')
+        + ' | waited for input ' + waitInput + 'x, for a busy deck ' + waitBusy + 'x');
     }
     function start(why) {
       armInput();
@@ -361,12 +435,13 @@
         var n = cold();
         if (!n) return false;
         active = true; t0 = now(); loaded = 0; longest = 0; longestKey = ''; queue = null; startedWith = n;
+        waitInput = 0; waitBusy = 0;
         log('HDCss: warm — ' + n + ' staged sheet-set(s) still cold; loading them in the background (' + String(why || '') + ')');
       }
       schedule(STEP_MS);
       return true;
     }
-    function pause() { paused = true; if (timer) { clearTimeout(timer); timer = 0; } }
+    function pause() { paused = true; probing++; if (timer) { clearTimeout(timer); timer = 0; } }
     function status() { return { active: active, paused: paused, cold: cold(), loaded: loaded }; }
     /* harness only: a quicker pace so a test does not wait seconds per step */
     function setPace(stepMs, idleMs) { STEP_MS = stepMs; IDLE_MS = idleMs; }

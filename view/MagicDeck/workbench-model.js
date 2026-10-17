@@ -32,7 +32,7 @@
     raw = raw && typeof raw === 'object' ? raw : {};
     var seen = Object.create(null);
     return Object.assign({}, raw, {
-      inspector: raw.inspector !== false, artwork: raw.artwork !== false,
+      inspector: raw.inspector !== false, artwork: raw.artwork !== false, dock: raw.dock !== false,
       railW: paneWidth('rail', raw.railW), inspectorW: paneWidth('inspector', raw.inspectorW),
       textSize: [100,115,130].indexOf(raw.textSize) >= 0 ? raw.textSize : 100,
       theme: ['gold','frost','contrast'].indexOf(raw.theme) >= 0 ? raw.theme : 'gold',

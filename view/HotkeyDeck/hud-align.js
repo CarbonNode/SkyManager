@@ -28,6 +28,12 @@
  *     WASD set is inert during a scene because OStim disables player
  *     movement, so the fall-through lands on nothing.
  *
+ *  WHOLE SCENE (2026-10-14, Rober: "move an entire scene up easily (both
+ *  actors) or left or right quickly"). The first tab moves EVERY
+ *  participant by the same step — agAdjust {all:true}, C++ AlignShiftAll —
+ *  so the pair travels together. Only x / y / height apply to it; the
+ *  per-person rows stay drawn but read "—" and do nothing there.
+ *
  *  Bridge — JS -> C++:  agGet() · agAdjust(json) · agClose()
  *           C++ -> JS:  agState(json) · agShow("1"/"0")
  *
@@ -44,9 +50,9 @@ window.HudAlign = (function () {
      Left/Right press moves; C++ owns the clamps (the same ones the Scene
      page's Alignment segment uses). */
   var AXES = [
-    { key: 'x',        label: 'Left / right',   step: 1,  unit: '',  fine: 0.5 },
-    { key: 'y',        label: 'Forward / back', step: 1,  unit: '',  fine: 0.5 },
-    { key: 'z',        label: 'Height',         step: 1,  unit: '',  fine: 0.5 },
+    { key: 'x',        label: 'Left / right',   step: 1,  unit: '',  fine: 0.5, scene: true },
+    { key: 'y',        label: 'Forward / back', step: 1,  unit: '',  fine: 0.5, scene: true },
+    { key: 'z',        label: 'Height',         step: 1,  unit: '',  fine: 0.5, scene: true },
     { key: 'rotation', label: 'Rotation',       step: 5,  unit: '°', fine: 1 },
     { key: 'scale',    label: 'Scale',          step: 1,  unit: '×', fine: 1 },
     { key: 'bend',     label: 'SOS bend',       step: 1,  unit: '',  fine: 1 }
@@ -54,7 +60,9 @@ window.HudAlign = (function () {
 
   var root = null, host = null, timer = 0;
   var state = { ok: false, actors: [] };
-  var who = 0;         // index into state.actors
+  var WHOLE = -1;      // `who` for the Whole scene tab
+  var SCENE_STEP = 5, SCENE_FINE = 1;   // whole-scene moves are for distance
+  var who = 0;         // index into state.actors, or WHOLE
   var axis = 0;        // index into AXES
   var fineMode = false;  // a toggle, not a held Shift: Shift falls through too
 
@@ -68,7 +76,27 @@ window.HudAlign = (function () {
     if (text !== undefined) n.textContent = text;
     return n;
   }
+  function whole() { return who === WHOLE && state.actors.length > 1; }
   function actor() { return state.actors[who] || null; }
+  /* The Whole scene readout is the cast's AVERAGE offset: a whole-scene step
+     moves it by exactly that step. */
+  function sceneOffsets() {
+    var out = {};
+    ['x', 'y', 'z'].forEach(function (k) {
+      var vals = state.actors.map(function (p) { return p[k]; })
+        .filter(function (v) { return typeof v === 'number' && isFinite(v); });
+      out[k] = vals.length ? vals.reduce(function (t, v) { return t + v; }, 0) / vals.length : null;
+    });
+    return out;
+  }
+  /* The axes the current tab can move, by index into AXES. */
+  function usable(i) { return !whole() || !!AXES[i].scene; }
+  function stepAxis(dir) {
+    for (var n = 0; n < AXES.length; n++) {
+      axis = (axis + dir + AXES.length) % AXES.length;
+      if (usable(axis)) return;
+    }
+  }
 
   /* ------------------------------------------------------------ paint -- */
 
@@ -93,9 +121,9 @@ window.HudAlign = (function () {
     AXES.forEach(function (a, i) {
       var row = el('div', 'ag-row');
       row.dataset.axis = a.key;
-      row.addEventListener('click', function () { axis = i; paint(); });
-      var minus = btn('ag-step', '\u2212', function () { axis = i; paint(); nudge(-1); });
-      var plus  = btn('ag-step', '+',       function () { axis = i; paint(); nudge(1); });
+      row.addEventListener('click', function () { if (usable(i)) { axis = i; paint(); } });
+      var minus = btn('ag-step', '\u2212', function () { if (!usable(i)) return; axis = i; paint(); nudge(-1); });
+      var plus  = btn('ag-step', '+',       function () { if (!usable(i)) return; axis = i; paint(); nudge(1); });
       row.append(el('span', 'ag-name', a.label), minus,
                  el('span', 'ag-value', '\u2014'), plus);
       rows.append(row);
@@ -103,10 +131,10 @@ window.HudAlign = (function () {
 
     var foot = el('div', 'ag-foot');
     foot.append(btn('ag-btn ag-fine', 'Fine steps', function () { fineMode = !fineMode; paint(); }),
-                btn('ag-btn', 'Reset person', function () { reset(); }));
+                btn('ag-btn ag-reset', 'Reset person', function () { reset(); }));
 
     var help = el('p', 'ag-help',
-      'Click anything \u00b7 W / S pick \u00b7 A / D nudge \u00b7 Q / E person \u00b7 R reset \u00b7 Esc close');
+      'Click anything \u00b7 W / S pick \u00b7 A / D nudge \u00b7 Q / E whole scene or person \u00b7 R reset \u00b7 Esc close');
     card.append(head, tabs, rows, foot, help);
     host.append(card);
     return card;
@@ -126,16 +154,19 @@ window.HudAlign = (function () {
   /* One step on the current axis, honouring the Fine toggle. */
   function nudge(dir) {
     var def = AXES[axis];
-    if (!def) return;
-    adjust(dir * (fineMode ? def.fine : def.step));
+    if (!def || !usable(axis)) return;
+    if (whole()) adjust(dir * (fineMode ? SCENE_FINE : SCENE_STEP));
+    else adjust(dir * (fineMode ? def.fine : def.step));
   }
 
   function paint() {
     if (!host) return;
-    var a = actor();
+    var all = whole();
+    var a = all ? sceneOffsets() : actor();
     var whoEl = host.querySelector('.ag-who');
     if (whoEl) {
       whoEl.textContent = !state.ok ? 'No scene'
+        : all ? 'Whole scene \u2014 all ' + state.actors.length + ' move together'
         : a ? a.name + (state.actors.length > 1 ? '  (' + (who + 1) + ' of ' + state.actors.length + ')' : '')
         : 'No participants';
     }
@@ -147,6 +178,9 @@ window.HudAlign = (function () {
     if (tabs) {
       tabs.textContent = '';
       if (state.actors.length > 1) {
+        var w = btn('ag-tab ag-tab-whole', 'Whole scene', function () { who = WHOLE; if (!usable(axis)) axis = 0; paint(); });
+        w.dataset.on = String(who === WHOLE);
+        tabs.append(w);
         state.actors.forEach(function (p, i) {
           var t = btn('ag-tab', p.name || ('Person ' + (i + 1)), function () { who = i; paint(); });
           t.dataset.on = String(i === who);
@@ -156,10 +190,13 @@ window.HudAlign = (function () {
     }
     var fine = host.querySelector('.ag-fine');
     if (fine) fine.dataset.on = String(fineMode);
+    var rs = host.querySelector('.ag-reset');
+    if (rs) rs.textContent = all ? 'Reset scene position' : 'Reset person';
     host.querySelectorAll('.ag-row').forEach(function (row, i) {
       var def = AXES[i];
-      var v = a ? a[def.key] : null;
+      var v = a && usable(i) ? a[def.key] : null;
       row.dataset.on = String(i === axis);
+      row.dataset.off = String(!usable(i));
       var value = row.querySelector('.ag-value');
       /* Scale is the one that is not an offset: it reads 1.00× at rest, and
          printing it as "1" would look like the others' neutral zero. */
@@ -173,11 +210,20 @@ window.HudAlign = (function () {
   /* ------------------------------------------------------------ bridge -- */
 
   function adjust(delta) {
+    if (whole()) {
+      if (!state.ok) return;
+      send('agAdjust', JSON.stringify({ all: true, axis: AXES[axis].key, delta: delta }));
+      return;
+    }
     var a = actor();
     if (!a || !state.ok) return;
     send('agAdjust', JSON.stringify({ formId: a.formId, axis: AXES[axis].key, delta: delta }));
   }
   function reset() {
+    if (whole()) {
+      if (state.ok) send('agAdjust', JSON.stringify({ all: true, axis: 'reset', delta: 0 }));
+      return;
+    }
     var a = actor();
     if (!a || !state.ok) return;
     send('agAdjust', JSON.stringify({ formId: a.formId, axis: 'reset', delta: 0 }));
@@ -200,14 +246,18 @@ window.HudAlign = (function () {
     if (k === 'Escape')                    { close(true); return true; }
     /* ⚠ NOT the arrow keys. They reach the view AND the game, and in the
        game they are OStim's scene navigation — the 2026-09-22 softlock. */
-    if (lower === 'w')                     { axis = (axis + AXES.length - 1) % AXES.length; paint(); return true; }
-    if (lower === 's')                     { axis = (axis + 1) % AXES.length; paint(); return true; }
+    if (lower === 'w')                     { stepAxis(-1); paint(); return true; }
+    if (lower === 's')                     { stepAxis(1); paint(); return true; }
     if (lower === 'a')                     { nudge(-1); return true; }
     if (lower === 'd')                     { nudge(1); return true; }
     if (lower === 'q' || lower === 'e') {
       if (state.actors.length > 1) {
-        who = lower === 'e' ? (who + 1) % state.actors.length
-                            : (who + state.actors.length - 1) % state.actors.length;
+        /* The ring is Whole scene, then each person: positions -1..n-1. */
+        var ring = state.actors.length + 1;
+        var at = (who === WHOLE ? 0 : who + 1);
+        at = lower === 'e' ? (at + 1) % ring : (at + ring - 1) % ring;
+        who = at === 0 ? WHOLE : at - 1;
+        if (!usable(axis)) axis = 0;
         paint();
       }
       return true;
@@ -224,7 +274,9 @@ window.HudAlign = (function () {
     root = build();
     if (!root) return;
     document.body.classList.add('ag-open');
-    who = 0; axis = 0;
+    /* Whole scene first: moving the pair is the common job, and a one-person
+       scene has no such tab (whole() is false, so `who` falls back to 0). */
+    who = WHOLE; axis = 2;   // Height — the usual fix for a sunk or floating scene
     paint();
     poll();
   }
@@ -249,6 +301,7 @@ window.HudAlign = (function () {
     state = j;
     state.actors = Array.isArray(j.actors) ? j.actors : [];
     if (who >= state.actors.length) who = 0;
+    if (who === WHOLE && state.actors.length < 2) who = 0;
     /* The scene ended under us: there is nothing left to align, so close
        rather than sit there holding the keyboard over a finished scene. */
     if (root && (!j.ok || !j.inScene || !state.actors.length)) { close(true); return; }
