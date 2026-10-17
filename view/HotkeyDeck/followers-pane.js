@@ -81,6 +81,12 @@
        Each value: { ok, who, following, dead, outfit, items:[…], at:ms }. */
     equipped: {},
     dayStatus: {},
+    /* My Home is Your Home NG's day for a LIVE actor, keyed by canonical form
+       id, from the crosshair push (fdTarget.mhiyh) and each "done" reply
+       (fdMhiyhResult.mhiyh). The roster slice (state.nff) only covers people
+       Follower Organizer files; this is how the quick card knows the home of
+       anyone else. null = NG holds nothing for her. Marker: fq-live-mhiyh. */
+    mhLive: {},
     /* Row avatar diameter. 0 = "use the stylesheet's default" — kept as 0
        rather than 40 so the default is defined in exactly one place. */
     avatarPx: 0,
@@ -2270,6 +2276,27 @@
      for the tooltip, plus BOTH names in the search text. Called from
      normMember AND again from fdNff, so the two pushes may arrive in either
      order and the result is the same. */
+  /* One MHiYH slice's stops, as the plain sorted { k, spec, place, now } array
+     every reader expects. Shared by the roster fold (mergeHome) and the live
+     overlay (withLiveMhiyh), so both read NG's answer the same way. */
+  function actsOf(mh) {
+    const rawActs = (mh && Array.isArray(mh.acts)) ? mh.acts : [];
+    const acts = [];
+    rawActs.forEach(function (a) {
+      if (!a || typeof a !== 'object') return;
+      const k = (typeof a.k === 'number') ? a.k : parseInt(a.k, 10);
+      if (!isFinite(k) || k < 0) return;
+      acts.push({
+        k: k,
+        spec: actSpec(k),
+        place: typeof a.place === 'string' ? a.place : '',
+        now: !!a.now,
+      });
+    });
+    acts.sort(function (x, y) { return x.spec.order - y.spec.order; });
+    return acts;
+  }
+
   function mergeHome(m) {
     const e = nffEntry(m.formId);
     const nffHome = (e && e.nff && e.nff.home && e.nff.home.name) ? String(e.nff.home.name) : '';
@@ -2348,20 +2375,7 @@
        place, a kind this build has never heard of. Anything unusable is
        dropped rather than propagated, so every reader below can assume a
        plain sorted array of { k, spec, place, now }. */
-    const rawActs = (e && e.mhiyh && Array.isArray(e.mhiyh.acts)) ? e.mhiyh.acts : [];
-    const acts = [];
-    rawActs.forEach(function (a) {
-      if (!a || typeof a !== 'object') return;
-      const k = (typeof a.k === 'number') ? a.k : parseInt(a.k, 10);
-      if (!isFinite(k) || k < 0) return;
-      acts.push({
-        k: k,
-        spec: actSpec(k),
-        place: typeof a.place === 'string' ? a.place : '',
-        now: !!a.now,
-      });
-    });
-    acts.sort(function (x, y) { return x.spec.order - y.spec.order; });
+    const acts = actsOf(e && e.mhiyh);
     m.acts = acts;
 
     /* The headline: the most SPECIFIC activity in force. Home is in force
@@ -2448,6 +2462,29 @@
       chip.append(h('span', { class: 'fd-where-last' }, 'last'));
     chip.append(h('span', { class: 'fd-where-name' }, nameNodes(m.where, q)));
     return chip;
+  }
+
+  /* The MOVE group's "where are they" pill (Rober, 2026-10-14: "add in the
+     move a new pill that shows where they last were, or where they are right
+     now"). Same facts as whereChip — m.where / whereLoaded / whereKind — but
+     card-sized (13px, the .fq-set height) and ALWAYS drawn, even when she is
+     at home: whereChip hides itself there because the roster row already shows
+     the home chip, but beside Summon / Go to the answer "where is she" must not
+     vanish just because the answer is "home". Live says "Here now", stale says
+     "Last seen", in words, because a guess must never read as a sighting. */
+  function wherePill(m) {
+    const live = !!m.whereLoaded;
+    const pill = h('span', {
+      class: 'fq-wp' + (live ? '' : ' stale') + (m.where ? '' : ' unknown'),
+      title: !m.where
+        ? 'The game has not reported where ' + (m.name || 'they') + ' is.'
+        : live ? 'Here now: ' + m.where
+               : 'Last seen: ' + m.where + '\nNot loaded right now, so this is where the game still has them — not a live sighting.',
+    });
+    pill.append(placeIcon(m.whereKind, live ? '◈' : '◇', 'fq-wp-ic'));
+    pill.append(h('span', { class: 'fq-wp-lead' }, !m.where ? 'Location' : live ? 'Here now' : 'Last seen'));
+    pill.append(h('span', { class: 'fq-wp-name' }, m.where || 'not reported'));
+    return pill;
   }
 
   function homeChip(m, q) {
@@ -6386,7 +6423,7 @@
     grid.querySelectorAll('.fq-equip-tile[data-wkey]').forEach(function (tile) {
       if (tile._wornItem) syncEquippedTile(tile, tile._wornItem);
     });
-    paintEquippedRenderStatus(grid.parentNode);
+    paintEquippedRenderStatus(grid.closest('.fq-equip') || grid.parentNode);
     return true;
   }
 
@@ -6460,7 +6497,7 @@
     wornAsked[wornKey(it)] = true; // only the explicit retry owns this request
     delete wornSpinCache[wornKey(it)];
     syncEquippedTile(tile, it);
-    paintEquippedRenderStatus(tile.parentNode.parentNode);
+    paintEquippedRenderStatus(tile.closest('.fq-equip') || tile.parentNode.parentNode);
   }
 
   /* ── worn-item lightbox: a drag-to-orbit TURNTABLE ──────────────────────
@@ -6701,26 +6738,47 @@
         Math.round(scaleNow * 100) + '%'),
       stepBtn('＋', 0.25, 'Larger equipment tiles')));
     box.append(head);
+    /* The OBody body preset sits on the RIGHT of the worn pieces (Rober,
+       2026-10-15, circling the empty space beside the tiles: "show the name of
+       the obody body they are using if they are 3ba or UBE, and a button to
+       change it"). hd-obody.js draws it and owns its request; without that
+       module (or for someone OBody does not shape) the tiles keep the whole
+       width. Everything below goes into `main`, the left column. */
+    const main = h('div', { class: 'fq-equip-main' });
+    const obd = window.HDObody ? window.HDObody.panel({
+      formId: m ? (m.liveFormId || m.formId || '') : (state.target ? state.target.formId : ''),
+      name: who,
+    }) : null;
+    const row = h('div', { class: 'fq-equip-body' + (obd ? ' has-obody' : '') });
+    row.append(main);
+    if (obd) row.append(obd);
+    box.append(row);
     /* Ensure we have the hidden-slot state to light the tile Hide toggles. */
     if (data && data.ok) {
       const fid = gearSubjectId();
       const haveSt = gearState && gearState.formId && parseInt(gearState.formId, 16) === fid;
-      if (fid && !haveSt && !gearBusy) toGame('fdGear', JSON.stringify({ op: 'state', formId: fid }));
+      /* One ask per subject while it is in flight — this block runs on EVERY
+         card paint, and before the fix a single open sent /state eight times
+         in the same millisecond (GearToggle.log, 2026-10-15). */
+      if (fid && !haveSt && !gearBusy && gearStateAsked !== fid) {
+        gearStateAsked = fid;
+        toGame('fdGear', JSON.stringify({ op: 'state', formId: fid }));
+      }
     }
 
     if (!data) {
       const grid = h('div', { class: 'fq-equip-grid' });
       for (let i = 0; i < 4; i++) grid.append(h('div', { class: 'fq-equip-tile skel' }));
-      box.append(grid);
+      main.append(grid);
       return box;
     }
     if (!data.ok) {
-      box.append(h('div', { class: 'fq-equip-msg' }, data.msg || 'Could not read what they are wearing.'));
+      main.append(h('div', { class: 'fq-equip-msg' }, data.msg || 'Could not read what they are wearing.'));
       return box;
     }
     const items = data.items || [];
     if (!items.length) {
-      box.append(h('div', { class: 'fq-equip-msg' },
+      main.append(h('div', { class: 'fq-equip-msg' },
         data.dead ? 'Nothing equipped — they are dead.' : 'Nothing equipped.'));
       return box;
     }
@@ -6789,18 +6847,27 @@
       }, '⟳'));
       const grp = gearGroupFor(it);
       if (grp) {
-        const hidNow = !!(gearState && gearState.hidden && gearState.hidden[grp]
-          && gearState.formId && parseInt(gearState.formId, 16) === gearSubjectId());
+        /* Hidden = Gear Toggle says THIS piece is left out of her equipment
+           (hiddenItems, keyed the way the grid keys it: local id + plugin);
+           an older DLL only reports groups, so that stays as the fallback.
+           0.3.0 rebuilds her 3D without the piece, so her skin shows where it
+           was — bare, not invisible (0.2.0 culled the mesh and left a floating
+           head, Rober 2026-10-15). */
+        const hidNow = gearItemHidden(it, grp);
         fly.append(h('button', {
           class: 'fq-equip-act hide' + (hidNow ? ' on' : ''), type: 'button',
-          title: (hidNow ? 'Show ' : 'Hide ') + it.name + ' — culls the 3D, keeps it '
-               + 'equipped (Gear Toggle). Acts on its ' + grp + ' slot.',
+          title: (hidNow ? 'Show ' : 'Hide ') + it.name + ' — stays equipped (armour, '
+               + 'enchantment), but she is drawn without it: her skin shows underneath '
+               + '(Gear Toggle). Every slot the piece occupies.',
           onClick: (e) => {
             e.stopPropagation();
             const fid = gearSubjectId(); if (!fid || gearBusy) return;
             gearBusy = true;
             fqStatus = { msg: (hidNow ? 'Showing ' : 'Hiding ') + it.name + '…', ok: true, pending: true };
-            toGame('fdGear', JSON.stringify({ op: 'toggle', formId: fid, group: grp }));
+            toGame('fdGear', JSON.stringify({
+              op: 'toggle', formId: fid, group: grp,
+              item: String(it.formId || ''), itemPlugin: String(it.plugin || ''),
+            }));
             renderQuickCard();
           },
         }, hidNow ? '🚫' : '⛑'));
@@ -6836,7 +6903,7 @@
       syncEquippedTile(tile, it);
       grid.append(tile);
     });
-    box.append(grid, h('div', { class: 'fq-equip-render-status', role: 'status', 'aria-live': 'polite' }));
+    main.append(grid, h('div', { class: 'fq-equip-render-status', role: 'status', 'aria-live': 'polite' }));
     paintEquippedRenderStatus(box);
     return box;
   }
@@ -7234,6 +7301,36 @@
      is shared state the pushes own, and `formId` is the key mergeHome and the
      portrait store look her up by. `storedFormId` is kept so a caller can still
      tell what FO holds (the Move ops address THAT, not this). */
+  /* Remember NG's answer for one live actor (see state.mhLive). Absent `mh`
+     means the DLL did not say (older build, NG not installed): keep what we had. */
+  function noteLiveMhiyh(formId, mh) {
+    const k = canonFormId(fidHexOf(formId));
+    if (!k || mh === undefined) return;
+    state.mhLive[k] = (mh && typeof mh === 'object') ? mh : null;
+  }
+  function liveMhiyhKnown(m) {
+    const k = m ? canonFormId(fidHexOf(m.formId)) : '';
+    return !!k && Object.prototype.hasOwnProperty.call(state.mhLive, k);
+  }
+
+  /* The card's subject with NG's LIVE answer folded in, for when the roster
+     has none to give: an NPC Follower Organizer does not file has no fdNff
+     entry, so her home was set (MarkHome -> true) and the card went on saying
+     she had none (Sol, 2026-10-14: "home is here button on sol doesnt seem to
+     work"). A roster answer is never overridden — fdNff owns those rows. A
+     CLONE, never a mutation: the roster row is shared state. */
+  function withLiveMhiyh(m) {
+    if (!m || m.mhHome || !liveMhiyhKnown(m)) return m;
+    const mh = state.mhLive[canonFormId(fidHexOf(m.formId))];
+    const name = (mh && mh.home && mh.home.name) ? String(mh.home.name) : '';
+    if (!name) return m;
+    const c = Object.assign({}, m);
+    c.mhHome = name;
+    if (!c.acts || !c.acts.length) c.acts = actsOf(mh);
+    if (!c.nffHome) { c.homeName = name; c.homeSrc = HOME_SRC.mhiyh; c.homeAlt = ''; }
+    return c;
+  }
+
   function actorSubjectOf(known, t, who) {
     const live = liveTargetFid(t);
     if (known) {
@@ -7456,9 +7553,35 @@
      the same face built the same way, put the old, already-painted node back.
      The signature is the fresh node's markup BEFORE layout touches it, so a
      new file, crop, state class or ring all count as different. */
+  /* …but a RE-FRAMED face is a different face (Rober, 2026-10-14: "i adjusted
+     framing, zoomed in on generated face pic didnt update in f7"). HDFaceFit
+     paints the framing after layout, so it is NOT in the markup above and the
+     old, old-framed node kept being put back until the card was reopened. The
+     framing inputs a person can change join the signature: the hand framing
+     (override / photo crop), brightness, auto-frame on/off and the K/S
+     defaults. The measured fit is left out: it is the same for the same file,
+     and it lands after the first build, so counting it would blink once. */
+  function medalFramingSig(node) {
+    const FF = window.HDFaceFit;
+    if (!FF || !node || !node.querySelectorAll) return '';
+    const imgs = node.querySelectorAll('img');
+    let out = '';
+    for (let i = 0; i < imgs.length; i++) {
+      const url = String(imgs[i].getAttribute('src') || '').replace(/[?#].*$/, '');
+      if (!url) continue;
+      const p = typeof FF.params === 'function' ? FF.params() : {};
+      out += '\n' + url + ' ' + JSON.stringify([
+        typeof FF.overrideFor === 'function' ? FF.overrideFor(url) : null,
+        typeof FF.portraitCropFor === 'function' ? FF.portraitCropFor(url) : null,
+        typeof FF.brightnessFor === 'function' ? FF.brightnessFor(url) : 1,
+        typeof FF.isAutoEnabled === 'function' ? FF.isAutoEnabled() : true,
+        p.k, p.s]);
+    }
+    return out;
+  }
   function keepSameMedal(old, fresh, key) {
     if (!fresh) return;
-    const sig = String(key || '') + '\n' + fresh.outerHTML;
+    const sig = String(key || '') + '\n' + fresh.outerHTML + medalFramingSig(fresh);
     fresh._hdSig = sig;
     if (!old || old === fresh || old._hdSig !== sig || !fresh.parentNode) return;
     fresh.parentNode.replaceChild(old, fresh);
@@ -7695,7 +7818,10 @@
     fsLastLog = now;
     const parts = Object.keys(times).sort(function (a, b) { return times[b] - times[a]; })
       .map(function (k) { return k + ' ' + times[k].toFixed(1); }).join(', ');
-    try { if (typeof toGame === 'function') toGame('hdLog', 'fol-show(view): ' + label + ' ' + total.toFixed(0) + ' ms [' + parts + '] | rows ' + (state.rows ? state.rows.length : 0)); } catch (e) {}
+    /* rows = roster rows on screen (there is no state.rows: the old count read 0 every time) */
+    let rows = 0;
+    try { const l = $('fd-list'); rows = l ? l.querySelectorAll('.fd-member').length : 0; } catch (e) { rows = 0; }
+    try { if (typeof toGame === 'function') toGame('hdLog', 'fol-show(view): ' + label + ' ' + total.toFixed(0) + ' ms [' + parts + '] | rows ' + rows); } catch (e) {}
   }
 
   /* show-render-skip (2026-10-10, marker fol-show-skip): onShow used to draw the
@@ -7707,11 +7833,23 @@
   let fsShowTimer = 0;
   let fsEverRendered = false;
   let fsNeedShowRender = true;
+  /* show-keep-rows (2026-10-15): when a show DOES have to draw at once (a reset
+     search / selection / opened category / focus left the DOM showing the old
+     state), it draws over the row cache instead of dropping it — the keystroke
+     path's rules (fdRowSig + every push that the signature cannot see drops the
+     cache at its source). That show render cost 79-207 ms in the 2026-10-15
+     log, nearly all of it `list` rebuilding every roster row; the fdRefresh it
+     sends is answered by fdState, which drops the cache and redraws everything
+     anyway, a beat later. Should that answer never come, fsShowTimer draws in
+     full after FS_KEEP_REPAIR_MS. */
+  let fsKeepRows = false;
+  const FS_KEEP_REPAIR_MS = 1500;
 
   function render() {
     if (fsShowTimer) { clearTimeout(fsShowTimer); fsShowTimer = 0; }
     fsEverRendered = true;
-    fsStep('cache', dropRowCache); fsStep('hud', renderHudCard); fsStep('rail', renderRail);
+    if (!fsKeepRows) fsStep('cache', dropRowCache);
+    fsStep('hud', renderHudCard); fsStep('rail', renderRail);
     fsStep('list', renderList); fsStep('add', renderAdd); fsStep('quick', syncQuickHere);
     fsStep('chrome', syncChrome); fsStep('focus', applyFocusChrome); fsStep('everyone', renderEveryoneBar);
     fsStep('party', renderParty); fsStep('here', renderHere);
@@ -8330,6 +8468,15 @@
      drops the cache at the source. */
   const fdRowCache = new Map();
   const fdSecCache = new Map();
+  /* fd-type-lean (2026-10-15): renderList(FD_FILTER_ONLY) is a render whose
+     ONLY cause is the search text. The Recents strip does not read the filter,
+     yet renderList rebuilt it on every keystroke — innerHTML wiped, every chip
+     a NEW <img>, so each letter re-decoded and re-fitted the faces (and
+     hd-icon-mip re-shrank them a frame later): "type input#fd-search"
+     handlers 2 ms, paint 189 ms, worst frame 92 ms at +281 ms (2026-10-15
+     log). Every other caller still redraws the strip, so a pushed face or a
+     rename reaches it exactly as before. */
+  const FD_FILTER_ONLY = { filterOnly: true };
   function dropRowCache() {
     fdRowCache.clear(); fdSecCache.clear();
     /* The party sheet's cards live under exactly the same law and are fed by
@@ -8356,12 +8503,23 @@
     rowEl.__fdHl = out;
   }
 
+  /* Does nameNodes() put a <mark> in `text` for `q`? Same test, same case fold. */
+  function fdHlHit(text, q) {
+    return !!q && String(text || '').toLowerCase().indexOf(q.toLowerCase()) !== -1;
+  }
+
   function fdReHighlight(rowEl, q) {
     if (rowEl.__fdQ === q) return;
     const hl = rowEl.__fdHl;
+    const was = rowEl.__fdQ;
     if (hl) {
       for (let i = 0; i < hl.length; i++) {
         const el = hl[i][0];
+        /* fd-type-lean: the span is plain text under the old query AND the
+           new one — rewriting it would only dirty its line for the next
+           layout. Most of a row's spans (notes, homes, the field chip) miss
+           most keystrokes, so this is most of the per-key DOM churn. */
+        if (typeof was === 'string' && !fdHlHit(hl[i][1], was) && !fdHlHit(hl[i][1], q)) continue;
         el.textContent = '';
         nameNodes(hl[i][1], q).forEach((n) => el.append(n));
         /* app.css styles <mark> per container and the gold field chip is a NEW
@@ -8582,8 +8740,8 @@
     );
   }
 
-  function renderList() {
-    renderRecents();          // faces/names in the strip track the roster
+  function renderList(why) {
+    if (why !== FD_FILTER_ONLY) renderRecents();   // faces/names in the strip track the roster
     const list = $('fd-list');
     const vis = visibleRows();
     if (ui.sel >= vis.length) ui.sel = vis.length - 1;
@@ -9736,6 +9894,8 @@
      Summon / Go to / Send back… under the literal ⤵ Teleport (Everyone). */
   const FQ_ALIASES = {
     'summon':            'teleport bring call fetch come here to me',
+    'bring here':        'teleport summon bring call fetch come here to me place move',
+    'send home':         'teleport home house return send her home mhiyh nff base domain send to go home',
     'go to':             'teleport travel warp visit jump find',
     'send back':         'teleport return undo send to where they were home domain',
     'where they were':   'teleport back return undo summon previous location',
@@ -9927,7 +10087,7 @@
      "⚔ Recruit", the party faces, and the head's glyph-only icon buttons —
      which have no words at all and borrow the first clause of their tooltip. */
   function fqFaceOf(btn) {
-    const icEl = btn.querySelector ? btn.querySelector('.fq-btn-ic, .fq-cg-ic') : null;
+    const icEl = btn.querySelector ? btn.querySelector('.fq-btn-ic, .fq-cg-ic, .fq-ht-ic') : null;
     const lblEl = btn.querySelector
       ? btn.querySelector('.fq-btn-lbl, .fd-ctx-lbl, .fq-crew-name') : null;
     let icon = icEl ? fqTidy(icEl.textContent) : '';
@@ -9948,7 +10108,10 @@
        "Aa" labels toggle) has no words to search — so it borrows the first
        clause of the tooltip app.js already draws on hover, and the glyph
        becomes its icon. That is what makes those buttons findable at all. */
-    if (!fqHasWord(label) || label.length <= 2) {
+    /* A head tile is a glyph; its aria-label is its name ("Capture their
+       portrait"), so the tile indexes under that. */
+    const tile = !!(btn.classList && btn.classList.contains('fq-htile'));
+    if (tile || !fqHasWord(label) || label.length <= 2) {
       const aria = fqTidy(btn.getAttribute && btn.getAttribute('aria-label'));
       /* aria-label BEFORE the tooltip: a tooltip is written for the state the
          button is in ("Lydia is dead"), so a disabled glyph button would be
@@ -10125,9 +10288,20 @@
     const t = state.target;
     if (!t || !t.name || t.dead) return [];
     const known = rosterEntryFor(t.name);
-    if (!known || !known.m) return [];
-    const m = known.m, cat = known.cat.index, idx = known.idx, who = m.name || t.name;
-    const off = !m.inWorld;
+    /* Three ways to address her, same order the card draws its Move row:
+       FO's (cat, idx) when FO has her in the world; the REFERENCE standing
+       here when it does not (unfiled, or filed under a base record); FO's
+       stale entry otherwise — rows that stay, disabled, and say why. */
+    let m = null, cat = -1, idx = -1, viaFo = false, off = false;
+    if (known && known.m && known.m.inWorld) {
+      m = known.m; cat = known.cat.index; idx = known.idx; viaFo = true;
+    } else if (liveTargetFid(t)) {
+      m = actorSubjectOf(known, t, t.name);
+    } else if (known && known.m) {
+      m = known.m; cat = known.cat.index; idx = known.idx; viaFo = true; off = true;
+    }
+    if (!m) return [];
+    const who = m.name || t.name;
     const why = off ? who + ' is not in the world right now \u2014 nothing to move.' : '';
     const mk = function (icon, label, sub, run) {
       return { key: 'Send to\u0001' + label + '\u0001' + icon, icon: icon, label: label,
@@ -10135,14 +10309,19 @@
                reveal: '', el: null, run: off ? null : run };
     };
     const rows = [];
-    rows.push(mk('\u2B8C', 'Where they were',
-      'Back where ' + who + ' stood before you summoned them \u2014 undo the summon',
-      function () { sendWorld('sendback', cat, idx, '\u2B8C ' + who + ' returns'); }));
-    if (m.mhHome)
-      rows.push(mk('\u2302', 'Her home', 'Send ' + who + ' to ' + String(m.mhHome) + ' (My Home Is Your Home)',
+    if (viaFo)
+      rows.push(mk('\u2B8C', 'Where they were',
+        'Back where ' + who + ' stood before you summoned them \u2014 undo the summon',
+        function () { sendWorld('sendback', cat, idx, '\u2B8C ' + who + ' returns'); }));
+    if (m.mhHome || !viaFo)
+      rows.push(mk('\u2302', 'Her home', m.mhHome
+          ? 'Send ' + who + ' to ' + String(m.mhHome) + ' (My Home Is Your Home)'
+          : 'Send ' + who + ' to her My Home is Your Home home, if one is set',
         function () { sendNpc('sendHome', m, { dest: 'mhiyh' }); }));
-    if (m.nffHome)
-      rows.push(mk('\u2302', 'Her NFF base', 'Send ' + who + ' to ' + String(m.nffHome) + ' (Nether\u2019s Follower Framework)',
+    if (m.nffHome || !viaFo)
+      rows.push(mk('\u2302', 'Her NFF base', m.nffHome
+          ? 'Send ' + who + ' to ' + String(m.nffHome) + ' (Nether\u2019s Follower Framework)'
+          : 'Send ' + who + ' to her Nether\u2019s Follower Framework base, if she has one',
         function () { sendNpc('sendHome', m, { dest: 'nff' }); }));
     domainMarks().slice(0, 60).forEach(function (mark) {
       if (!mark || !mark.name) return;
@@ -10172,6 +10351,7 @@
     fqSendToRows().forEach(push);
     fqFixRows().forEach(push);
     fqChimRows().forEach(push);
+    fqOstimRows().forEach(push);
     fqWigRows().forEach(push);
     fqCategoryRows().forEach(push);
     return out;
@@ -10255,6 +10435,55 @@
     if (ChimBtn.conversationReleaseAction) actions.push(ChimBtn.conversationReleaseAction(ctx));
     return actions.map(a => Object.assign({}, a, { sect: 'CHIM', opens: true, reveal: '', el: null,
       icon: h('img', { src: a.iconPath, width: 28, height: 28, alt: '' }) }));
+  }
+
+  /* ---- OStim, from the card's search (fq-find-ostim) --------------------
+     Rober, 2026-10-14, with a screenshot of the F7 card on an NPC and the
+     search open on "ostim": "no way to search or start scene or search to go
+     to ostim page etc". "ostim", "scene", "sex", "start" returned nothing
+     because the Start OStim scene button lives on the person profile and the
+     Scene tab is a tab, not a card button. Two rows, run straight from the
+     search: start a scene with HER (the same OstimTools.startFor the profile's
+     button calls) and go to the OStim Scene page. */
+  function fqOstimRows() {
+    const t = quickSubject() || state.target;
+    if (!t || !t.name || !window.OstimTools) return [];
+    const known = rosterEntryFor(t.name);
+    const fid = Number(t.formId || (known && known.m && (known.m.liveFormId || known.m.formId))) || 0;
+    const who = t.name;
+    const icon = function () { return h('img', { src: 'icons/custom/seg-ostim.png', width: 28, height: 28, alt: '' }); };
+    const canStart = !!fid && !t.dead && typeof OstimTools.startFor === 'function';
+    const rows = [{
+      key: 'OStim\u0001Start scene\u0001o',
+      icon: icon(),
+      label: 'Start OStim scene\u2026',
+      sub: 'Choose participants, furniture, clothing and scene control with ' + who,
+      sect: 'OStim',
+      alias: 'ostim scene sex start begin intimate make love animation animations have sex together bed intimacy romance',
+      disabled: !canStart,
+      why: canStart ? '' : (t.dead ? who + ' is dead.' : who + ' has to be in the world and nearby to start a scene.'),
+      opens: true,
+      reveal: '',
+      el: null,
+      run: function () { OstimTools.startFor({ formId: fid, name: who }); },
+    }];
+    if (typeof window.setTab === 'function') {
+      rows.push({
+        key: 'OStim\u0001Scene page\u0001o',
+        icon: icon(),
+        label: 'Open the OStim Scene page',
+        sub: 'Participants, furniture, alignment, voices, lighting and the room',
+        sect: 'OStim',
+        alias: 'ostim scene page tab animation controls alignment furniture voices move scene go to ostim open ostim sex',
+        disabled: false,
+        why: '',
+        opens: true,
+        reveal: '',
+        el: null,
+        run: function () { setTab('scene'); },
+      });
+    }
+    return rows;
   }
 
   /* ---- the Fixes verbs, flattened (fq-find-fixes) -----------------------
@@ -10456,6 +10685,19 @@
      Not drawn inside the dossier itself: the card is mounted there as "All
      character controls", and a door to the page you are on is noise.
      fq-profile-door */
+  /* The face of a head tile: one of the deck's gold glyph icons (Rober,
+     2026-10-14: "custom nice icons that have readability and match theme").
+     sn-* are the Scene page's set; fqh-* were drawn for the head the same way
+     (imagen white-on-black, tools/gen-scene-icons/to_gold.py). The old text
+     glyph rides along hidden, so the ⌕ action search still shows it as the
+     row's icon (fqFaceOf reads .fq-ht-ic's text). The name is the button's
+     aria-label and tooltip. */
+  function fqTileFace(icon, glyph) {
+    return h('span', { class: 'fq-ht-ic', 'aria-hidden': 'true' },
+      h('img', { class: 'fq-ht-img', alt: '', draggable: 'false', src: 'icons/custom/' + icon + '.png' }),
+      h('span', { class: 'fq-ht-ch' }, glyph));
+  }
+
   function fqProfileDoor(who, known, pseudo, dead) {
     if (ctxEl && ctxEl._dossier && quickHost === ctxEl._dossier.controlsHost) return null;
     const first = fqTidy(String(who || '').split(' ')[0]) || who;
@@ -11316,13 +11558,18 @@
       /* Identity actions live in the HEAD, beside who they are, rather than as
          more rows: they are all "about this person" rather than things you do
          to them, and the card has enough rows. */
+      /* HEAD TILES (Rober, 2026-10-14: "increase the widget and space usage to
+         match the stuff to its left", then "just fill the space they were
+         occupying"). These were 28px squares in the top corner of a 92px row;
+         they keep that corner and fill it, a two-row grid of glyph tiles of
+         the door's family (app.css fq-head-tiles). */
       h('div', { class: 'fq-headacts' },
         /* The way OUT of a pick. Only when the card is about someone you
            CLICKED rather than someone you are looking at — on the crosshair
            card there is nothing to go back to, and a permanent dead button
            would be worse than none. */
         subj ? h('button', {
-          class: 'fq-iconbtn', type: 'button',
+          class: 'fq-iconbtn fq-htile', type: 'button',
           /* aria-label on every head icon: it is the button's NAME, which is
              what the ⌕ action search indexes for a control whose whole face is
              a glyph (its tooltip is state, and would read "Lydia is dead"). */
@@ -11334,65 +11581,65 @@
                an empty dedicated shell. */
             if (ui.npcFocus && !(state.target && state.target.name)) { exitFocus(); return; }
             ui.fqPick = ''; ui.fqPickPinned = false; renderQuickCard(); syncQuickHere(); },
-        }, '\u2190') : null,
+        }, fqTileFace('sn-previous', '\u2190')) : null,
         /* Photograph them. Same bridge the roster's menu uses, and it names its
            subject explicitly, so it captures whoever you are looking at rather
            than whatever the crosshair drifts onto. "Replace" once one exists —
            a portrait the deck has drawn is memory-mapped and cannot be
            overwritten, so the capture lands versioned and the newest wins. */
         h('button', {
-          class: 'fq-iconbtn', type: 'button',
+          class: 'fq-iconbtn fq-htile', type: 'button',
           disabled: dead ? true : null,
           'aria-label': (portraitFor(pseudo) ? 'Replace' : 'Capture') + ' their portrait',
           title: dead ? who + ' is dead'
                : (portraitFor(pseudo) ? 'Replace ' : 'Capture ') + who + '’s portrait'
                  + ' — hides the HUD, frames their face, saves it. They must be on screen.',
           onClick: (e) => { e.stopPropagation(); capturePortrait(known, t); },
-        }, '◉'),
+        }, fqTileFace('sn-camera', '📷')),
         /* CHIM's per-NPC intimacy profile. Keyed by the ORIGINAL name, because
            CHIM stores rows under the real one — a follower renamed in the deck
            must not quietly grow a second profile under her nickname. */
         (typeof SmPane !== 'undefined') ? h('button', {
-          class: 'fq-iconbtn', type: 'button',
+          class: 'fq-iconbtn fq-htile', type: 'button',
           'aria-label': 'Sharmat profile (CHIM)',
           title: 'Sharmat profile — CHIM’s kinks / speak style / status for ' + who + '.\nEdits are LIVE.',
           onClick: (e) => { e.stopPropagation();
             SmPane.open((known && known.m.original) || who, who); },
-        }, '⚭') : null,
+        }, fqTileFace('fqh-chim', '⚭')) : null,
         /* Annotate someone you just met without going to the Followers tab.
            Filed followers only — the fields live on an FO entry. */
         known ? h('button', {
-          class: 'fq-iconbtn' + (ui.fqEdit ? ' on' : ''), type: 'button',
+          class: 'fq-iconbtn fq-htile' + (ui.fqEdit ? ' on' : ''), type: 'button',
           'aria-pressed': String(!!ui.fqEdit),
           'aria-label': 'Write a note / set their relationship',
           title: 'Write a note / set their relationship',
           onClick: (e) => { e.stopPropagation(); ui.fqEdit = !ui.fqEdit; renderQuickCard(); },
-        }, '✎') : null,
+        }, fqTileFace('fqh-note', '✎')) : null,
         /* FULLSCREEN — the way BACK INTO the dedicated NPC page without closing
            and reopening the deck (Rober, 2026-08-05: "how do i get back to the
            fullscreen view?"). Shown only OUT of focus; in focus the ▴ beside it
            is the way out. A plain toggle either way is friendlier than "press
            F7 again", which needs a close first. */
         !ui.npcFocus ? h('button', {
-          class: 'fq-iconbtn', type: 'button',
+          class: 'fq-iconbtn fq-htile', type: 'button',
           'aria-label': 'Fullscreen — dedicate the deck to them',
           title: 'Fullscreen — dedicate the deck to ' + who
                + ' (hide the tabs, rail and roster)',
           onClick: (e) => { e.stopPropagation(); enterFocus(); },
-        }, '⤢') : null,
+        }, fqTileFace('fqh-fullscreen', '⤢')) : null,
         /* LABELS toggle (Rober, 2026-08-05): the action buttons are icons that
            grow into labelled pills on hover; this pins every label open for
            people who would rather always read the words. Persisted so the
            choice sticks across opens. */
         h('button', {
-          class: 'fq-iconbtn' + (state.fqLabels ? ' fq-labels-on' : ''), type: 'button',
+          class: 'fq-iconbtn fq-htile' + (state.fqLabels ? ' fq-labels-on' : ''), type: 'button',
           'aria-pressed': String(!!state.fqLabels),
           'aria-label': state.fqLabels ? 'Hide the action labels' : 'Always show the action labels',
           title: state.fqLabels ? 'Hide the action labels — icons only, names on hover'
                                 : 'Always show the action labels (instead of on hover)',
           onClick: (e) => { e.stopPropagation();
             state.fqLabels = !state.fqLabels; saveCfg(); renderQuickCard(); },
-        }, 'Aa'),
+        }, fqTileFace('fqh-labels', 'Aa')),
         /* Fold it away. The card has grown into a dossier and sometimes you
            just want the hotkey list — this keeps the identity line (who you
            are looking at, and whether they follow you) and drops the rest.
@@ -11401,14 +11648,15 @@
            brings the normal deck (tabs, rail, roster) back. A fresh F7 open
            re-enters focus. */
         h('button', {
-          class: 'fq-fold' + (ui.npcFocus ? ' is-exit' : ''), type: 'button',
+          class: 'fq-fold fq-htile' + (ui.npcFocus ? ' is-exit' : ''), type: 'button',
           'aria-expanded': String(ui.npcFocus ? true : !ui.fqFold),
           title: ui.npcFocus ? 'Back to the full deck (tabs, rail, roster)'
                : (ui.fqFold ? 'Show the controls' : 'Collapse to just the name'),
           onClick: (e) => { e.stopPropagation();
             if (ui.npcFocus) { exitFocus(); return; }
             ui.fqFold = !ui.fqFold; renderQuickCard(); },
-        }, ui.npcFocus ? '▴' : (ui.fqFold ? '▾' : '▴')))));
+        }, ui.npcFocus ? fqTileFace('fqh-collapse', '▴')
+                       : (ui.fqFold ? fqTileFace('fqh-expand', '▾') : fqTileFace('fqh-collapse', '▴'))))));
 
     if (ui.fqFold) {
       /* A folded card is a name, a follow chip and nothing else — which is
@@ -11797,6 +12045,64 @@
           renderQuickCard();
         },
         { active: HDQuests.isOpen(), pressed: HDQuests.isOpen() }) : null,
+      /* INTERACT (Rober, 2026-10-14: "new interactions popout ... add to f7 on
+         npc, hook to mod piggy back rides (hide power), hiding on same horse
+         mod"). hd-interact.js's centred popout: Carry Me's four carry styles
+         and Ride Along's seat-behind-you, each through that mod's own door
+         (interact_actions.h). Identity is the CARD's subject, like 📜. Absent
+         when the module did not load. Gold while the popout is up. */
+      (window.HDInteract) ? quickBtn(
+        h('img', { src: 'icons/custom/int-interact.png', alt: '', width: '22', height: '22', style: 'width:22px;height:22px;display:block' }),
+        'Interact',
+        dead ? who + ' is dead'
+          : 'Interact with ' + who + ': a piggyback, bridal, front or shoulder carry '
+            + '(Carry Me), or seat them behind you on your horse (Ride Along).',
+        (e) => {
+          if (HDInteract.isOpen()) { HDInteract.close(); return; }
+          const fid = subj ? (Number(subj.liveFormId || subj.formId) || 0)
+                           : (t ? (Number(t.formId) || 0) : 0);
+          HDInteract.open(e.currentTarget, {
+            who: who,
+            portrait: (function () {
+              const shot = portraitFor(pseudo);
+              return shot ? portraitSrc(shot) : '';
+            })(),
+            formId: fid,
+            hex: fid ? hexOf(fid) : '',
+            onClose: () => { if (isActive()) renderQuickCard(); },
+          });
+          renderQuickCard();
+        },
+        { disabled: dead, active: HDInteract.isOpen(), pressed: HDInteract.isOpen(),
+          aria: 'Interact: carry rides and riding together' }) : null,
+      /* RENAME (Rober, 2026-10-14: "rename would be a good searchable as well
+         as button on f7"). hd-interact.js's rename popout: a name field saved
+         through Follower Organizer's renameMember when she is on the roster
+         (FO applies it in the game too — the same verb as the member menu's
+         Name field), else Jaxonz Renamer's own box. A button, so the card's ⌕
+         search finds it; Omni has a "Rename" row that presses it. */
+      (window.HDInteract && HDInteract.rename) ? quickBtn(
+        h('img', { src: 'icons/custom/int-rename.png', alt: '', width: '22', height: '22', style: 'width:22px;height:22px;display:block' }),
+        'Rename',
+        known ? 'Rename ' + who + ' — saved through Follower Organizer, in the game too'
+              : 'Rename ' + who + ' with Jaxonz Renamer (not on your Follower Organizer roster)',
+        () => {
+          const fid = subj ? (Number(subj.liveFormId || subj.formId) || 0)
+                           : (t ? (Number(t.formId) || 0) : 0);
+          const row = known ? { cat: known.cat.index, idx: known.idx } : null;
+          HDInteract.rename({
+            who: who,
+            portrait: (function () {
+              const shot = portraitFor(pseudo);
+              return shot ? portraitSrc(shot) : '';
+            })(),
+            hex: fid ? hexOf(fid) : '',
+            member: known ? { name: known.m.name, override: known.m.override, original: known.m.original } : null,
+            onSave: row ? (name) => sendApply('renameMember', { cat: row.cat, idx: row.idx, name: clampText(name) }) : null,
+            onClose: () => { if (isActive()) renderQuickCard(); },
+          });
+        },
+        { aria: 'Rename' }) : null,
       /* BESTIARY (Rober, 2026-10-10: "f7 on an npc … add a button for monsters
          … opens bestiary and does like a add to list … and then does a cool
          writing animation and sound"). Measures the CARD's subject into the
@@ -12277,30 +12583,64 @@
                                  : 'Put a map marker on ' + who,
           onClick: (e) => { e.stopPropagation();
             sendApply('setTracked', { cat: known.cat.index, idx: known.idx, on: !known.m.tracked }); } },
-          known.m.tracked ? '✓ Tracked' : '⚑ Track')));
+          known.m.tracked ? '✓ Tracked' : '⚑ Track'),
+        /* Far end of the row (Rober: "move the here to the far end") — the
+           buttons stay where the thumb expects them, the answer sits apart. */
+        wherePill(known.m)));
     }
-    else if (known && liveTargetFid(t)) {
-      /* She IS on the roster and she IS standing here — but Follower Organizer
-         cannot address her, so its four ops are genuinely unavailable rather
-         than merely hidden. This happens to a follower who was SPAWNED: her
+    else if (liveTargetFid(t) && !t.dead) {
+      /* MOVE, addressed by REFERENCE — for the person standing here whom
+         Follower Organizer either has never filed, or cannot address.
+
+         Rober, 2026-10-15, F7 on an unfiled NPC, typing "teleport": "no
+         teleport or send home options" / "no option to send her to home etc".
+         The row above is FO's, so an unfiled subject got NO Move row at all —
+         and the search had nothing to say either, which reads as "the deck
+         cannot do that" when the engine verbs have been here all along:
+         `placeHere` (nff_control.cpp: actor->MoveTo(player), no framework
+         needed — the dossier's "Place them at me") and the Send-to picker's
+         homes + domains, every one of them keyed on a reference formId.
+         So: Bring here + Send home…, through those two verbs. No "Go to"
+         (she is in your crosshair) and no "Where they were" (that undo is
+         FO's snapshot, and FO has none for her).
+
+         The filed-but-unaddressable case is the SPAWNED follower: her
          reference is a runtime 0xFF form with no source file, FO's
-         FormToString() returns "" for it, and Member's serializer falls back to
-         her BASE record (Kali, filed as "00_DemonKali"). FO then resolves that
-         base, which is a form but never an actor.
-         Say it, with the fix — re-filing her from this card stores whatever FO
-         can see of her now. Everything that speaks to the GAME rather than to
-         FO (Order, Home, her day) keeps working, because those address the
-         crosshair reference. */
-      card.append(h('div', { class: 'fq-orders is-move fq-cgroup is-noaddr' },
+         FormToString() returns "" for it, and Member's serializer falls back
+         to her BASE record (Kali, filed as "00_DemonKali"). FO then resolves
+         that base, which is a form but never an actor — so its Summon / Go to
+         / Send back / Track have nobody to act on. The note still says so
+         (re-filing her from this card stores whatever FO can see of her now),
+         and the two by-reference buttons sit beside it, because they address
+         the crosshair reference and work regardless. */
+      const refM = actorSubjectOf(known, t, who);
+      const row = h('div', { class: 'fq-orders is-move fq-cgroup' + (known ? ' is-noaddr' : '') },
         h('span', { class: 'fq-sets-lbl' },
-          h('span', { class: 'fq-cg-ic' }, groupIcon('move')), 'Move'),
-        h('span', { class: 'fq-noaddr-note', title:
+          h('span', { class: 'fq-cg-ic' }, groupIcon('move')), 'Move'));
+      if (known) {
+        row.append(h('span', { class: 'fq-noaddr-note', title:
           'Follower Organizer stored ' + who + '’s BASE record rather than the '
           + 'reference standing here — which is what it falls back to for someone '
           + 'spawned at runtime. Summon, Go to, Send back and Track all go through '
-          + 'FO and address that stored form, so they have nobody to act on.' },
+          + 'FO and address that stored form, so they have nobody to act on. '
+          + 'Bring here and Send home… address the person standing here instead.' },
           'Follower Organizer is holding ' + who + '’s base record, not the person '
-          + 'standing here — its Summon / Go to / Send back have nothing to aim at.')));
+          + 'standing here — its Summon / Go to / Send back have nothing to aim at.'));
+      }
+      row.append(
+        h('button', { class: 'fq-set', type: 'button',
+          title: 'Teleport ' + who + ' to where you are standing — the engine moves '
+               + 'the reference itself, no follower framework needed',
+          onClick: (e) => { e.stopPropagation(); sendNpc('placeHere', refM); } },
+          '✥ Bring here'),
+        h('button', { class: 'fq-set', type: 'button',
+          title: 'Send ' + who + ' somewhere — their My Home is Your Home home, their '
+               + 'NFF base, or any domain you have marked',
+          onClick: (e) => { e.stopPropagation();
+            openSendTo(e.currentTarget, { m: refM, cat: null, idx: null, byRef: true }); } },
+          '⮌ Send home…'));
+      if (known) row.append(wherePill(known.m));
+      card.append(row);
     }
 
     /* FILE — the other half of the "unfiled" chip. Saying someone is not on the
@@ -12591,7 +12931,7 @@
        her, the roster's stored id when it is showing a picked face. Someone FO
        has never heard of gets the group too: MHiYH's own gates (and the borrow
        that satisfies the follower one) are what decide, in words. */
-    const homeM = actorSubjectOf(known, t, who);
+    const homeM = withLiveMhiyh(actorSubjectOf(known, t, who));
     /* `!dead` guards only the WIDENING. The FO-addressable case is left exactly
        as it was, corpse included: forgetting a dead follower's home is still a
        thing you may want to do, and taking that away would be a regression
@@ -12599,16 +12939,20 @@
     if (homeM && ((liveTargetFid(t) && !dead) || (known && known.m.inWorld))) {
       const homeRow = h('div', { class: 'fq-sets fq-cgroup' },
         h('span', { class: 'fq-sets-lbl' }, h('span', { class: 'fq-cg-ic' }, groupIcon('home')), 'Home'));
+      /* ONE handler for both doors: the "⌂ Home is here" button and the empty
+         "No home" pill beside it (Rober, 2026-10-14, on the pill: "can we make
+         it so we can set from this button as well?"). */
+      const setHomeHere = (e) => {
+        e.stopPropagation();
+        fqStatus = { msg: 'Setting ' + who + '’s home here…', ok: true, pending: true };
+        sendMhiyh('setHome', homeM, KIND_HOME);
+        renderQuickCard();
+      };
       homeRow.append(h('button', {
         class: 'fq-set', type: 'button',
         title: 'Make where you are standing ' + who + '’s MHIYH home'
              + (homeM.mhHome ? '\nReplaces: ' + homeM.mhHome : ''),
-        onClick: (e) => {
-          e.stopPropagation();
-          fqStatus = { msg: 'Setting ' + who + '’s home here…', ok: true, pending: true };
-          sendMhiyh('setHome', homeM, KIND_HOME);
-          renderQuickCard();
-        },
+        onClick: setHomeHere,
       }, '⌂ Home is here'));
       if (homeM.mhHome) {
         homeRow.append(h('button', {
@@ -12697,18 +13041,26 @@
           h('span', { class: 'fq-homeinfo-name' }, homeM.homeName)));
         info.append(h('span', { class: 'fq-homeinfo-go' }, '↗'));
         homeRow.append(info);
-      } else if (known) {
+      } else if (known || liveMhiyhKnown(homeM)) {
         /* No MHIYH/NFF home assigned yet — a muted placeholder so the domain
            slot is VISIBLE (Rober, 2026-08-05: "i see nothing in home that shows
            a domain"). It becomes the live domain pill once a home is set.
-           Only for someone ON THE ROSTER: her home is read off the entry C++
-           builds per roster member, so for an unfiled NPC "No home" would not
-           be a fact, it would be us not having looked. Say nothing instead. */
-        homeRow.append(h('span', { class: 'fq-homeinfo empty' },
+           Only for someone ON THE ROSTER, or whose day NG answered for live
+           (state.mhLive): anywhere else "No home" would not be a fact, it
+           would be us not having looked. Say nothing instead. */
+        /* A BUTTON, not a label: it used to say "Set one above" and point at
+           the button next to it. Now it IS that button — one click makes where
+           you are standing her MHIYH home. Same op, same status line. */
+        homeRow.append(h('button', {
+          class: 'fq-homeinfo empty can-set', type: 'button',
+          title: 'No home yet. Click to make where you are standing ' + who + '’s MHIYH home',
+          onClick: setHomeHere,
+        },
           h('span', { class: 'fq-homeinfo-ic' }, groupIcon('home')),
           h('span', { class: 'fq-homeinfo-txt' },
             h('span', { class: 'fq-homeinfo-src' }, 'No home'),
-            h('span', { class: 'fq-homeinfo-name' }, 'Set one above'))));
+            h('span', { class: 'fq-homeinfo-name' }, 'Set it here')),
+          h('span', { class: 'fq-homeinfo-go' }, '＋')));
       }
       card.append(homeRow);
     }
@@ -12860,6 +13212,42 @@
     }
   }
 
+  /* ONE LINE, ALWAYS (Rober, 2026-10-14: "do NOT linebreak"). The head never
+     wraps; when its parts do not fit, it steps down a size instead: .fq-tight
+     drops the door's sub-line, .fq-tighter the door's words, .fq-tightest
+     shrinks the portrait and the tiles (app.css, fq-head-one-line). Measured after each render and when
+     the card's width changes; a hidden card (width 0) is left alone, and the
+     observer re-fits it the moment it gets a width. */
+  let fqHeadRO = null, fqHeadObs = null, fqHeadW = -1;
+  function fqFitHead() {
+    try {
+      const head = quickHost && quickHost.querySelector && quickHost.querySelector('.fq-head');
+      if (!head || !head.classList) return;
+      /* the tile grid keeps the old row's width: it needs its button count */
+      const acts = head.querySelector('.fq-headacts');
+      if (acts && acts.style && acts.style.setProperty) {
+        const n = acts.children.length;
+        acts.style.setProperty('--fq-hn', String(n));
+        acts.style.setProperty('--fq-hc', String(Math.max(1, Math.ceil(n / 2))));
+      }
+      if (!fqHeadRO && window.ResizeObserver) {
+        fqHeadRO = new window.ResizeObserver(() => {
+          const w = quickHost ? quickHost.clientWidth : 0;
+          if (w && w !== fqHeadW) fqFitHead();
+        });
+      }
+      if (fqHeadRO && quickHost && fqHeadObs !== quickHost) {
+        fqHeadRO.disconnect(); fqHeadRO.observe(quickHost); fqHeadObs = quickHost;
+      }
+      const w = head.clientWidth;
+      if (!w) return;
+      fqHeadW = quickHost.clientWidth;
+      head.classList.remove('fq-tight', 'fq-tighter', 'fq-tightest');
+      const steps = ['fq-tight', 'fq-tighter', 'fq-tightest'];
+      for (let i = 0; i < steps.length && head.scrollWidth > w + 1; i++) head.classList.add(steps[i]);
+    } catch (e) { /* layout probe only: never take the card down */ }
+  }
+
   /* Render (or re-render) the card into `host`. Idempotent: called on mount,
      and again whenever fdTarget / fdNpc / fdEquipped land. */
   function renderQuickCard() {
@@ -12873,6 +13261,7 @@
     const oldMedal = quickHost.querySelector('.fq-medal');
     quickHost.textContent = '';
     quickHost.append(buildQuickCard());
+    fqFitHead();
     keepSameMedal(oldMedal, quickHost.querySelector('.fq-medal'),
       fidHexOf((subj && subj.formId) || (state.target && state.target.formId)) + '|' + (ui.fqPick || ''));
     renderEveryoneBar();   // the framed party bar ABOVE the card (Followers tab)
@@ -14140,9 +14529,22 @@
    *  is already in ticked and disabled. Same chrome as the roster's own + Add
    *  (fd-ctx-menu), because it is the same question asked from another place.
    */
-  function openFrameworkMenu(whoTo) {
-    const tgt = whoTo || state.target;
-    if (!tgt || !tgt.name) return;
+  /* ONE picker behind both "Add “X” to…" doors (the roster's ＋ Add and the F7
+   * card's Add-to-framework). Rober, 2026-10-14, on a screenshot of the old
+   * list pinned to the top-left corner: "popout is bad, show icons,
+   * searchable, center it." So, in the deck's own order of requirements:
+   *   · CENTRED — always, never under the button it came from (the roster
+   *     button sits far enough left that anchoring put the whole list against
+   *     the screen edge);
+   *   · ICONS — each group wears its rail glyph (catIconOf), in the same gold
+   *     plate the rail uses, with an empty plate where a group has none so the
+   *     names stay on one line;
+   *   · TYPEABLE — filter-as-you-type, Enter files her under the top match
+   *     that is not already ticked. Focus lands in the box on open.
+   * `framework` adds the NFF import row (labelled as the different thing it
+   * is) below the groups; it stays visible while the filter is empty or names
+   * it ("nff" / "nether" / "import"). */
+  function openCatPicker(tgt, framework) {
     closeCtx();
 
     /* Which categories she is already filed under — resolved through the
@@ -14159,52 +14561,99 @@
       });
     });
     const imported = !!(hit && hit.m && hit.m.imported);
+    const cats = state.cats.filter((c) => c.index !== ALL);   // "All" is a view, not a group
 
-    const items = [h('div', { class: 'fd-ctx-head' }, 'Add “' + tgt.name + '” to…')];
+    const items = [h('div', { class: 'fd-ctx-head', title: tgt.name }, 'Add “' + tgt.name + '” to…')];
     const listBox = h('div', { class: 'fd-ctx-scroll' });
-
-    listBox.append(h('div', { class: 'fd-ctx-sub' }, 'Follower Organizer — pick a group'));
-    state.cats.forEach((c) => {
-      if (c.index === ALL) return;     // "All" is a view, not a group you can file into
-      const inIt = !!already[c.index];
-      listBox.append(h('button', {
-        class: 'fd-ctx-item' + (inIt ? ' active' : ''),
-        disabled: inIt ? true : null,
-        title: inIt ? tgt.name + ' is already filed under ' + catLabel(c)
-                    : 'File ' + tgt.name + ' under ' + catLabel(c),
-        onClick: (e) => {
-          e.stopPropagation(); closeCtx();
-          if (inIt) return;
-          sendApply('addMember', { cat: c.index, formId: Number(tgt.formId) >>> 0 });
-        },
+    const filter = h('input', {
+      class: 'fd-ctx-input fd-ctx-filter', type: 'text', autocomplete: 'off', spellcheck: 'false',
+      placeholder: 'Type a category — Enter files them under the top match',
+      'aria-label': 'Find a category',
+      onInput: (e) => paint(e.target.value),
+      onKeyDown: (e) => {
+        if (e.key === 'Escape') { e.stopPropagation(); closeCtx(); return; }
+        if (e.key === 'Enter') {
+          e.preventDefault(); e.stopPropagation();
+          const first = Array.prototype.find.call(listBox.querySelectorAll('.fd-ctx-item'),
+            (b) => !(b.disabled || b.hasAttribute('disabled')));
+          if (first) first.click();
+        }
       },
-        h('span', { class: 'fd-ctx-check' }, inIt ? '✓' : ''),
-        h('span', { class: 'fd-ctx-lbl' }, catLabel(c)),
-        h('span', { class: 'fd-ctx-count' }, String((c.members || []).length))));
     });
-
-    /* NFF's import. Deliberately BELOW the groups and labelled as the
-       different thing it is — it is not filing, and it has no group to pick. */
-    listBox.append(h('div', { class: 'fd-ctx-sub' }, 'Nether\u2019s Follower Framework — no groups'));
-    listBox.append(h('button', {
-      class: 'fd-ctx-item' + (imported ? ' active' : ''),
-      title: imported
-        ? tgt.name + ' is already in NFF \u2014 this takes her back out again'
-        : 'Lend ' + tgt.name + ' NFF\u2019s features (gear, tweaks, storage, sandbox). '
-          + 'Not recruitment: her own follow package keeps running.',
-      onClick: (e) => {
-        e.stopPropagation(); closeCtx();
-        const m = (hit && hit.m) ? hit.m : { formId: Number(tgt.formId) >>> 0, name: tgt.name,
-                                             original: tgt.original || tgt.name };
-        frameworkClick(m, imported);
-      },
-    },
-      h('span', { class: 'fd-ctx-check' }, imported ? '\u2713' : ''),
-      h('span', { class: 'fd-ctx-lbl' }, imported ? 'Remove from NFF' : 'Import into NFF'),
-      h('span', { class: 'fd-ctx-count' }, '')));
-
+    items.push(h('div', { class: 'fd-ctx-field' }, filter));
     items.push(listBox);
-    ctxEl = h('div', { id: 'fd-ctx-menu', role: 'menu' }, items);
+
+    /* The group's glyph in the rail's gold plate. An empty plate (not nothing)
+       where it has none, so one iconless group does not shove its name left. */
+    function glyph(c) {
+      const src = c ? catIconOf(c.index) : '';
+      const box = h('span', { class: 'fd-ctx-ic' + (src ? '' : ' empty'), 'aria-hidden': 'true' });
+      if (src) {
+        const img = h('img', { class: 'fd-ctx-ic-img', src: src, alt: '', draggable: 'false' });
+        img.addEventListener('error', () => { box.classList.add('empty'); if (img.parentNode) img.parentNode.removeChild(img); });
+        box.append(img);
+      }
+      return box;
+    }
+
+    function paint(q) {
+      const f = String(q || '').trim().toLowerCase();
+      listBox.textContent = '';
+      let n = 0;
+      if (framework) listBox.append(h('div', { class: 'fd-ctx-sub' }, 'Follower Organizer — pick a group'));
+      cats.forEach((c) => {
+        const name = catLabel(c);
+        if (f && (name + ' ' + (c.original || '')).toLowerCase().indexOf(f) === -1) return;
+        const inIt = !!already[c.index];
+        listBox.append(h('button', {
+          class: 'fd-ctx-item fd-ctx-cat' + (inIt ? ' active' : ''),
+          disabled: inIt ? true : null,
+          title: inIt ? tgt.name + ' is already filed under ' + name : 'File ' + tgt.name + ' under ' + name,
+          onClick: (e) => {
+            e.stopPropagation(); closeCtx();
+            if (inIt) return;
+            sendApply('addMember', { cat: c.index, formId: Number(tgt.formId) >>> 0 });
+          },
+        },
+          glyph(c),
+          h('span', { class: 'fd-ctx-lbl' }, name),
+          h('span', { class: 'fd-ctx-check' }, inIt ? '✓' : ''),
+          h('span', { class: 'fd-ctx-count' }, String((c.members || []).length))));
+        n++;
+      });
+
+      /* NFF's import. Deliberately BELOW the groups and labelled as the
+         different thing it is — it is not filing, and it has no group to pick. */
+      if (framework && (!f || 'nether follower framework nff import remove'.indexOf(f) !== -1)) {
+        listBox.append(h('div', { class: 'fd-ctx-sub' }, 'Nether’s Follower Framework — no groups'));
+        listBox.append(h('button', {
+          class: 'fd-ctx-item fd-ctx-cat' + (imported ? ' active' : ''),
+          title: imported
+            ? tgt.name + ' is already in NFF — this takes them back out again'
+            : 'Lend ' + tgt.name + ' NFF’s features (gear, tweaks, storage, sandbox). '
+              + 'Not recruitment: their own follow package keeps running.',
+          onClick: (e) => {
+            e.stopPropagation(); closeCtx();
+            const m = (hit && hit.m) ? hit.m : { formId: Number(tgt.formId) >>> 0, name: tgt.name,
+                                                 original: tgt.original || tgt.name };
+            frameworkClick(m, imported);
+          },
+        },
+          glyph(null),
+          h('span', { class: 'fd-ctx-lbl' }, imported ? 'Remove from NFF' : 'Import into NFF'),
+          h('span', { class: 'fd-ctx-check' }, imported ? '✓' : ''),
+          h('span', { class: 'fd-ctx-count' }, '')));
+        n++;
+      }
+      if (!n) {
+        listBox.append(h('div', { class: 'fd-ctx-empty' },
+          cats.length ? 'No category matches “' + q + '”.'
+                      : 'Follower Organizer has no categories yet.'));
+      }
+    }
+    paint('');
+
+    ctxEl = h('div', { id: 'fd-ctx-menu', role: 'menu', class: 'fd-ctx-picker' }, items);
     $('overlay').append(ctxEl);
     const addW = ctxWidthPx(curAv(), false);
     ctxEl.style.width = addW + 'px';
@@ -14215,70 +14664,22 @@
     centerCtx();
     reclampCtx();
     makeCtxDraggable(ctxEl.querySelector('.fd-ctx-head'));
-    setTimeout(() => document.addEventListener('mousedown', ctxOutside, true), 0);
+    setTimeout(() => {
+      document.addEventListener('mousedown', ctxOutside, true);
+      try { filter.focus(); } catch (err) { /* no focus in a harness */ }
+    }, 0);
+  }
+
+  function openFrameworkMenu(whoTo) {
+    const tgt = whoTo || state.target;
+    if (!tgt || !tgt.name) return;
+    openCatPicker(tgt, true);
   }
 
   function openAddMenu(whoTo) {
     const tgt = whoTo || state.target;
     if (!tgt || !tgt.name) return;
-    closeCtx();
-    const already = Object.create(null);
-    const hit = rosterEntryFor(tgt.original || tgt.name);
-    state.cats.forEach((c) => {
-      if (c.index === ALL) return;
-      (c.members || []).forEach((m) => {
-        const a1 = String(m.original || m.name || '').toLowerCase();
-        const a2 = String((hit && hit.m.original) || tgt.original || tgt.name || '').toLowerCase();
-        if (a1 && a1 === a2) already[c.index] = true;
-      });
-    });
-    const items = [h('div', { class: 'fd-ctx-head' }, 'Add “' + tgt.name + '” to…')];
-    const listBox = h('div', { class: 'fd-ctx-scroll' });
-    state.cats.forEach((c) => {
-      const inIt = !!already[c.index];
-      listBox.append(h('button', {
-        class: 'fd-ctx-item' + (inIt ? ' active' : ''),
-        disabled: inIt ? true : null,
-        title: inIt ? tgt.name + ' is already filed under ' + catLabel(c) : null,
-        onClick: (e) => {
-          e.stopPropagation(); closeCtx();
-          if (inIt) return;
-          sendApply('addMember', { cat: c.index, formId: Number(tgt.formId) >>> 0 });
-        },
-      },
-        h('span', { class: 'fd-ctx-check' }, inIt ? '✓' : ''),
-        h('span', { class: 'fd-ctx-lbl' }, catLabel(c)),
-        h('span', { class: 'fd-ctx-count' }, String(c.members.length))));
-    });
-    items.push(listBox);
-    ctxEl = h('div', { id: 'fd-ctx-menu', role: 'menu' }, items);
-    $('overlay').append(ctxEl);
-    // same box as the member menu, minus the day allowance — a category list
-    // that is narrower than the menu it sits under reads as a different widget
-    const addW = ctxWidthPx(curAv(), false);
-    ctxEl.style.width = addW + 'px';
-    ctxEl.style.maxWidth = addW + 'px';
-    ctxEl.style.maxHeight = ctxMaxHpx(220) + 'px';
-    ctxEl.style.overflowY = 'auto';
-    ctxEl.style.overflowX = 'hidden';
-    /* Sit the list ABOVE the button it came from. Measured rather than
-       estimated from a per-row constant: the rows grow with the avatar
-       slider now, so any constant here would be wrong at eleven of the
-       twelve sizes and would silently start covering the button. */
-    /* Anchored under the tab's own + Add button when it is there; centred when
-       it is not, because the F7 card can open this from the Hotkeys tab where
-       that button does not exist — and reading getBoundingClientRect off null
-       would take the whole menu down. */
-    const anchor = $('fd-add-btn');
-    if (!anchor) { centerCtx(); reclampCtx(); makeCtxDraggable(ctxEl.querySelector('.fd-ctx-head'));
-                   setTimeout(() => document.addEventListener('mousedown', ctxOutside, true), 0);
-                   return; }
-    const r = anchor.getBoundingClientRect();
-    // flip above the button by the PAINTED height (offset × --ui-scale)
-    clampCtx(r.left, r.top - 10 - ctxEl.offsetHeight * deckScale());
-    reclampCtx();
-    makeCtxDraggable(ctxEl.querySelector('.fd-ctx-head'));
-    setTimeout(() => document.addEventListener('mousedown', ctxOutside, true), 0);
+    openCatPicker(tgt, false);
   }
 
   /* ============================================== send her somewhere ==== *
@@ -14567,6 +14968,15 @@
 
   function openSendTo(anchorEl, row) {
     const m = row.m;
+    /* byRef: the subject is addressed by REFERENCE (the F7 card on someone
+       Follower Organizer has not filed, or cannot address) — there is no
+       (cat, idx), so FO's "Where they were" undo does not exist for her, and
+       her homes are not known in advance (they are read off the roster entry
+       C++ builds per FO member). The two home tiles are offered anyway and
+       the engine answers in words — "has no My Home is Your Home home yet" —
+       which beats hiding the verb (Rober, 2026-10-15: "no option to send her
+       to home etc"). */
+    const byRef = !!row.byRef;
     closeCtx();
 
     const mhHome = m.mhHome ? String(m.mhHome) : '';
@@ -14627,13 +15037,15 @@
       let n = 0;
 
       const quick = [];
-      if (hit('where they were she was back undo summon return'))
+      if (!byRef && hit('where they were she was back undo summon return'))
         quick.push(quickTile('⮌', 'Where they were', 'Undo the summon',
           () => sendWorld('sendback', row.cat, row.idx, '⮌ ' + m.name + ' returns')));
-      if (mhHome && hit('her home mhiyh my home is your home ' + mhHome))
-        quick.push(quickTile('⌂', 'Her home', mhHome, () => sendNpc('sendHome', m, { dest: 'mhiyh' })));
-      if (nffHome && hit('her nff base nether follower framework home ' + nffHome))
-        quick.push(quickTile('⌂', 'Her NFF base', nffHome, () => sendNpc('sendHome', m, { dest: 'nff' })));
+      if ((mhHome || byRef) && hit('her home mhiyh my home is your home ' + mhHome))
+        quick.push(quickTile('⌂', 'Her home', mhHome || 'Her My Home is Your Home home, if one is set',
+          () => sendNpc('sendHome', m, { dest: 'mhiyh' })));
+      if ((nffHome || byRef) && hit('her nff base nether follower framework home ' + nffHome))
+        quick.push(quickTile('⌂', 'Her NFF base', nffHome || 'Her Nether’s Follower Framework base, if she has one',
+          () => sendNpc('sendHome', m, { dest: 'nff' })));
       if (quick.length) {
         const qrow = h('div', { class: 'sdp-quick' }, quick);
         /* one row, equal tiles, whatever the count — never a dangling tile */
@@ -14668,7 +15080,7 @@
       count.textContent = f ? n + (n === 1 ? ' match' : ' matches') : marks.length + (marks.length === 1 ? ' domain' : ' domains');
       if (!n) {
         body.append(h('div', { class: 'sdp-empty' },
-          marks.length || mhHome || nffHome ? 'Nothing matches “' + q + '”.'
+          marks.length || mhHome || nffHome || byRef ? 'Nothing matches “' + q + '”.'
             : 'No homes set, and no domains marked yet — mark one on the Domains tab.'));
       }
     }
@@ -14738,6 +15150,7 @@
     if (w.quick || w.portraits) renderQuickCard();
     if (w.here && !(w.full && isActive())) syncQuickHere();
     if (w.portraits) {
+      overlayFacesChanged();
       if (window.GetAway) GetAway.portraitsChanged();
       if (window.OstimTools) OstimTools.portraitsChanged();
     }
@@ -14762,10 +15175,33 @@
     dropRowCache();
     if (isActive()) renderList();
     renderQuickCard();
+    overlayFacesChanged();
     if (window.GetAway) GetAway.portraitsChanged();
     if (window.OstimTools) OstimTools.portraitsChanged();
     try { if (window.HouseholdPane) HouseholdPane.dataChanged(); } catch (e) {}
     window.dispatchEvent(new CustomEvent('hd-portraits-changed'));
+  }
+
+  /* The Recall roster and Who's here draw faces too, but they are pages laid
+     over the roster, so renderList() above never touches them: a head that
+     landed while one was open stayed on initials until the page was closed
+     and reopened (Rober, 2026-10-15, the recall page: "faces missing?" — the
+     DLL had rendered and delivered all five 15 s earlier). Redraw only their
+     list BODY, so a search being typed keeps its caret, and keep the scroll. */
+  function overlayFacesChanged() {
+    if (!isActive()) return;
+    function redo(open, id, fn, bodySel) {
+      if (!open) return;
+      const pane = $(id);
+      if (!pane) return;
+      const body = pane.querySelector(bodySel);
+      const top = body ? body.scrollTop : 0, paneTop = pane.scrollTop;
+      fn(pane);
+      if (body) body.scrollTop = top;
+      pane.scrollTop = paneTop;
+    }
+    redo(ui.rrOpen, 'rr-pane', rrRenderBody, '.rr-body');
+    redo(ui.nhOpen, 'nh-pane', nhRenderBody, '.nh-body');
   }
 
   function faceConsumerActive() {
@@ -16932,7 +17368,7 @@
            shows the results — otherwise the search would filter a hidden list. */
         if (ui.filter.trim()) ui.rosterOpen = true;
         applyFocusChrome();
-        renderList();
+        renderList(FD_FILTER_ONLY);
       });
       /* Wrapped, NOT passed by reference: openAddMenu now takes an optional
          subject, and addEventListener would hand it the click EVENT as that
@@ -17068,8 +17504,11 @@
         fsShowTimer = setTimeout(function () { fsShowTimer = 0; if (isActive()) render(); }, 450);
       } else {
         fsTimes = {};
-        render();
-        fsReport('show render', fsNow() - fsT0);
+        const keep = fsEverRendered && state.loaded;   // a first-ever draw has no rows to keep
+        fsKeepRows = keep;
+        try { render(); } finally { fsKeepRows = false; }
+        fsReport(keep ? 'show render (rows kept)' : 'show render', fsNow() - fsT0);
+        if (keep) fsShowTimer = setTimeout(function () { fsShowTimer = 0; if (isActive()) render(); }, FS_KEEP_REPAIR_MS);
       }
       fsNeedShowRender = false;
       setTimeout(() => {
@@ -17201,7 +17640,7 @@
         return true;
       }
       if (e.key === 'Escape') {
-        if (ui.filter) { e.preventDefault(); ui.filter = ''; $('fd-search').value = ''; ui.sel = -1; renderList(); return true; }
+        if (ui.filter) { e.preventDefault(); ui.filter = ''; $('fd-search').value = ''; ui.sel = -1; renderList(FD_FILTER_ONLY); return true; }
         return false;  // let the deck shell close the palette
       }
       const vis = visibleRows();
@@ -17992,6 +18431,7 @@
       bestiary: (t.bestiary && typeof t.bestiary === 'object' && t.bestiary.id) ? t.bestiary : null,
     } : null;
     state.targetKnown = true;
+    if (state.target && t) noteLiveMhiyh(state.target.formId, t.mhiyh);
     if (state.target && state.target.creature) bxWarmSheet();
     if (targetWait) { clearTimeout(targetWait); targetWait = 0; }
     /* A verdict about the last person is noise once you look at someone else. */
@@ -18062,8 +18502,32 @@
      per FOLLOWER, not per file: C++ has already picked the newest file for each
      slug. An object carrying a .portraits array is accepted too, so C++ can grow
      the envelope later without breaking this. */
+  /* open-portraits-same (2026-10-15, marker open-portraits-same): C++ pushes
+     fdPortraits and fdCrops at EVERY deck open and with every fdRefresh, and
+     almost always with exactly what the view already holds. Each one used to
+     drop the row cache and run portraitsChanged(), whose hd-portraits-changed
+     event re-frames every portrait <img> in the document — hidden panes
+     included — so a tab=home open paid ~100-130 ms in its push-burst flush
+     ([followers ...]) for pictures that had not changed, and the next roster
+     draw rebuilt every row. Same map in = nothing on screen can differ, so
+     nothing is redrawn; any real change still goes through unchanged. */
+  function sameEntryMap(a, b) {
+    if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+    const ka = Object.keys(a);
+    if (ka.length !== Object.keys(b).length) return false;
+    for (let i = 0; i < ka.length; i++) {
+      const k = ka[i];
+      if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+      const x = a[k], y = b[k];
+      if (!x || !y || typeof x !== 'object' || typeof y !== 'object') { if (x !== y) return false; continue; }
+      const kx = Object.keys(x);
+      if (kx.length !== Object.keys(y).length) return false;
+      for (let j = 0; j < kx.length; j++) if (x[kx[j]] !== y[kx[j]]) return false;
+    }
+    return true;
+  }
+
   window.fdPortraits = function (list) {
-    dropRowCache();   // a push the row signature cannot see for itself
     list = coerce(list);
     const arr = Array.isArray(list) ? list
       : (list && Array.isArray(list.portraits) ? list.portraits : []);
@@ -18092,6 +18556,8 @@
         mtime: (isFinite(mt) && mt > 0) ? mt : 0,
       };
     });
+    if (sameEntryMap(state.portraits, map)) return;   // open-portraits-same: nothing to redraw
+    dropRowCache();   // a push the row signature cannot see for itself
     state.portraits = map;
     portraitsChanged();
   };
@@ -18108,7 +18574,6 @@
      how a prune reaches the screen. Re-validated here anyway: hotkeys.json is
      hand-editable and this is the one input the editor's own clamp never saw. */
   window.fdCrops = function (obj) {
-    dropRowCache();   // a push the row signature cannot see for itself
     obj = coerce(obj);
     const src = (obj && typeof obj === 'object' && !Array.isArray(obj))
       ? (obj.crops && typeof obj.crops === 'object' ? obj.crops : obj) : {};
@@ -18125,6 +18590,10 @@
       map[file] = c;
       n++;
     });
+    /* open-portraits-same: the shared lane is still handed the map (cheap,
+       and it keeps that store authoritative); only the redraw is skipped. */
+    const same = sameEntryMap(state.crops, map);
+    if (!same) dropRowCache();   // a push the row signature cannot see for itself
     state.crops = map;
     /* Hand the whole map to the SHARED portrait lane. followers-pane still owns
        this data (it loads, edits and persists it) — but every other surface that
@@ -18132,6 +18601,7 @@
        store was private to this file, which is why fourteen panes centre-cropped
        instead (2026-08-19 sweep). One push here, and they all agree. */
     if (window.HDFaceFit && HDFaceFit.setPortraitCrops) HDFaceFit.setPortraitCrops(map);
+    if (same) return;   // open-portraits-same: nothing to redraw
     window.dispatchEvent(new CustomEvent('hd-portrait-crops-changed'));
     portraitsChanged();
   };
@@ -18263,6 +18733,17 @@
     env = coerce(env);
     if (!env || typeof env !== 'object') return;
     updateDayStatus(env);
+    /* The day AFTER the change, for the live actor (C++ MhiyhDoneWithDay). */
+    if (env.phase === 'done') noteLiveMhiyh(env.formId, env.mhiyh);
+    /* The quick card's own line. Its Home buttons set a pending "Setting her
+       home here…" that only a toast ever answered, so it sat on ⋯ forever and
+       a home that landed read as a hang. Answer it here, once MHiYH has. */
+    if (env.phase !== 'sent' && fqStatus && fqStatus.pending && typeof env.msg === 'string' && env.msg) {
+      fqStatus = { msg: env.msg, ok: env.ok !== false, pending: false };
+      renderQuickCard();
+    } else if (env.phase === 'done') {
+      renderQuickCard();
+    }
     const msg = typeof env.msg === 'string' ? env.msg : '';
     if (!msg) return;
     if (env.phase === 'sent') { toast(msg); return; }
@@ -18444,6 +18925,21 @@
      dropped whenever the card's subject changes. */
   let gearState = null;
   let gearBusy = false;
+  let gearStateAsked = 0;   // subject id whose /state is in flight (one ask per paint storm)
+
+  /* Is this worn piece hidden for the CURRENT subject? Gear Toggle 0.2.0 lists
+     the hidden pieces (local id + plugin); older DLLs only name groups. */
+  function gearItemHidden(it, grp) {
+    if (!gearState || !gearState.formId || parseInt(gearState.formId, 16) !== gearSubjectId()) return false;
+    const items = gearState.hiddenItems;
+    if (Array.isArray(items)) {
+      const id = parseInt(String(it.formId || ''), 16);
+      const plug = String(it.plugin || '').toLowerCase();
+      return items.some((x) => x && parseInt(String(x.local || ''), 16) === id
+        && (!plug || !x.plugin || String(x.plugin).toLowerCase() === plug));
+    }
+    return !!(grp && gearState.hidden && gearState.hidden[grp]);
+  }
 
   const GEAR_GROUPS = [
     ['head', '⛑', 'Head', 'Helmet / hat / circlet (hidden, stays equipped)'],
@@ -18595,12 +19091,15 @@
 
   window.fdGearResult = function (env) {
     gearBusy = false;
+    gearStateAsked = 0;
     env = env && typeof env === 'object' ? env : {};
     if (env.error && /isn.t loaded/i.test(env.error)) {
       gearState = { unavailable: true };
       fqStatus = { msg: env.error, ok: false, pending: false };
     } else if (env.ok) {
-      gearState = { formId: env.formId, hidden: env.hidden || {} };
+      gearState = { formId: env.formId, hidden: env.hidden || {},
+        hiddenItems: Array.isArray(env.hiddenItems) ? env.hiddenItems : null,
+        hiddenSlots: Array.isArray(env.hiddenSlots) ? env.hiddenSlots : null };
       fqStatus = { msg: 'Gear updated for ' + (env.name || 'her'), ok: true, pending: false };
     } else {
       fqStatus = { msg: env.error || 'Gear toggle refused', ok: false, pending: false };

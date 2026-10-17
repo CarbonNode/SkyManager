@@ -695,6 +695,8 @@
     qlight: false,
     /* 2026-10-12 — the loot feed (hud-lootfeed.js). OFF, same law. */
     lootFeed: false,
+    /* 2026-10-14 — the FPS meter (hud-fps.js). OFF, same law. */
+    fps: false,
     pinLabels: true, badges: true, barNumbers: true,
   };
   const LINE_KEYS = ['gold', 'carry', 'time', 'context', 'pots', 'lockpicks', 'weatherOnly'];
@@ -753,7 +755,10 @@
      see qlSize. */
   /* `lootFeed` joins 2026-10-12: what you just picked up, one row per item
      (HDLootFeed). Its rows outlive every rebuild — see lfEnsure. */
-  const FREE_KEYS = ['handR', 'handL', 'voice', 'quick', 'quick2', 'lootStatus', 'season', 'ward', 'qlight', 'lootFeed'];
+  /* `fps` joins 2026-10-14: engine fps + PureDark's frame-gen fps (HDFps). It
+     has its own push, fpsPush — never wgLive — so a moving number never makes
+     the rest of this layer rebuild. */
+  const FREE_KEYS = ['handR', 'handL', 'voice', 'quick', 'quick2', 'lootStatus', 'season', 'ward', 'qlight', 'lootFeed', 'fps'];
   /* The slot widgets that carry a per-key ⚙ switch. Since 2026-08-18 the card
      no longer draws them as one flat row — handR/handL/voice are nested inside
      the merged "Equipped slots" widget and quick/quick2 have their own group —
@@ -792,10 +797,19 @@
        is on). A list, not a card — the rows carry their own plates. Mirrors
        C++ Config(). */
     lootFeed: { x: 40, y: 120, anchorH: 'left', anchorV: 'top', scale: 1, opacity: 1, bare: true, showLabel: false, hideInMenus: true },
+    /* Top of the screen, right of the compass, where nothing vanilla draws.
+       Mirrors C++ Config(). */
+    fps: { x: 560, y: 28, anchorH: 'center', anchorV: 'top', scale: 1, opacity: 1, bare: false, showLabel: true, hideInMenus: true },
   };
   /* ---- the loot feed's own options (2026-10-12) — see LOOT FEED below.
      `dirty` = this view changed them, so the next save sends them. */
   const lf = { max: 5, lifeMs: 4500, value: true, hideVanilla: true, dirty: false };
+  /* ---- the FPS meter's own options (2026-10-14) — see FPS METER below.
+     `csAuto` is NOT here: C++ owns it (hdCsOverlay op:auto) and reports it in
+     the overlay state, so a placement save can never undo it. */
+  const fpsOpt = { gen: true, ms: false, graph: true, slim: false, rateMs: 1000, dirty: false };
+  let fpsLive = null;       // the last fpsPush
+  let fpsCsState = null;    // Community Shaders' overlay, as C++ tracks it
   /* ---- the custom quick items' own config (round 4) ----------------------
      `max` (1..16) is how many rows are DRAWN; `items` is what is STORED, up to
      16 — shrinking max hides rows, it never eats them (the hotbar's
@@ -988,6 +1002,7 @@
     }
     /* a block just moved into or out of the panel — re-take its verdict */
     refreshPanelBlank();
+    reflowLinked();
   }
   function floatBlock(k, on) {
     const node = el[k];
@@ -1045,6 +1060,113 @@
      trap the cursor at a join. No layout reads in the pointermove path. */
   const RECT_SNAP_KEYS = ['roGold', 'roCarry', 'roTime', 'roContext', 'roPots',
     'roLockpicks', 'roWeather', 'calendar', 'survival', 'needFood', 'needDrink', 'needSleep', 'needCold'];
+  const RECT_GAP = 8;
+
+  /* ---- joined tiles (2026-10-15, marker hud-rect-links) -------------------
+     Rober: "how do i make these snap again, and when snapped if they expand
+     horizontally then the other widgets are smart and move as well?"
+     Snapping used to be a magnet only: nothing remembered that two tiles were
+     joined, so gold growing from 9,999 to 22,218 slid under the carry tile.
+     A tile dropped against another now stores a LINK on its own placement:
+     { to: <tile it sits against>, side: 'r'|'l'|'b'|'t' (it sits to the
+     right of / left of / below / above that tile), off: the cross-axis offset
+     in screen px }. After every redraw reflowLinked() puts each linked tile
+     back at RECT_GAP from its target's CURRENT edge, so a row keeps its even
+     gaps as a number grows or shrinks. A row built leftward ('l' links) grows
+     leftward, which is right for a row against the right screen edge.
+     Links ride the det placement in the `hud` blob (C++ stores it verbatim).
+     A normal drag pulls one tile out and the tiles that followed it close the
+     gap; Shift-drag moves the joined row; Alt-drag places without joining. */
+  let linkDragging = false;
+  const LINK_SIDES = ['r', 'l', 'b', 't'];
+  function linkOf(k) {
+    const d = wdet[k], l = d && d.link;
+    return (l && l.to !== k && wdet[l.to] && LINK_SIDES.indexOf(l.side) !== -1) ? l : null;
+  }
+  function tileRect(k) {
+    const n = detWrap(k, false);
+    if (!n || !detOn(k) || n.classList.contains('is-off')) return null;
+    const r = n.getBoundingClientRect();
+    return (r && r.width > 0 && r.height > 0) ? { left: r.left, top: r.top, width: r.width, height: r.height } : null;
+  }
+  /* does `a`'s chain of links reach `b`? (a link that would make a loop is refused) */
+  function followsChain(a, b) {
+    const seen = {};
+    for (let c = a, n = 0; c && !seen[c] && n < 40; n++) {
+      if (c === b) return true;
+      seen[c] = 1;
+      const l = linkOf(c);
+      c = l ? l.to : null;
+    }
+    return false;
+  }
+  function linkDepth(k) {
+    let n = 0;
+    const seen = {};
+    for (let l = linkOf(k), c = k; l && !seen[c] && n < 40; n++) { seen[c] = 1; c = l.to; l = linkOf(c); }
+    return n;
+  }
+  function reflowLinked() {
+    try {
+      if (linkDragging) return;
+      const keys = RECT_SNAP_KEYS.filter(function (k) { return detOn(k) && linkOf(k); });
+      if (!keys.length) return;
+      keys.sort(function (a, b) { return linkDepth(a) - linkDepth(b); });   // targets before followers
+      for (const k of keys) {
+        const me = tileRect(k);
+        if (!me) continue;
+        /* a hidden target hands its slot to ITS target on the same side, so a
+           row closes up when a tile in the middle has nothing to show */
+        let l = linkOf(k), t = l ? tileRect(l.to) : null;
+        for (let n = 0; l && !t && n < 40; n++) {
+          const up = linkOf(l.to);
+          if (!up || up.side !== l.side) { l = null; break; }
+          l = { to: up.to, side: l.side, off: l.off };
+          t = tileRect(l.to);
+        }
+        if (!l || !t) continue;
+        let x = me.left, y = me.top;
+        if (l.side === 'r') { x = t.left + t.width + RECT_GAP; y = t.top + l.off; }
+        else if (l.side === 'l') { x = t.left - RECT_GAP - me.width; y = t.top + l.off; }
+        else if (l.side === 'b') { y = t.top + t.height + RECT_GAP; x = t.left + l.off; }
+        else { y = t.top - RECT_GAP - me.height; x = t.left + l.off; }
+        const dx = x - me.left, dy = y - me.top;
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5)
+          moveWidgetBy(detWrap(k, false), wdet[k], dx, dy, { snap: false, opacity: 1 });
+      }
+    } catch (e) { /* a reflow must never take the HUD down */ }
+  }
+  /* After a single-tile drop: pull the tile out of its old chain (its
+     followers take its place), then, if it landed against a tile, join it
+     there, taking over the slot from whoever held that side. */
+  function relinkAfterDrop(k, hitKey) {
+    const d = wdet[k];
+    if (!d) return;
+    const old = linkOf(k);
+    for (const f of RECT_SNAP_KEYS) {
+      const fl = f !== k ? linkOf(f) : null;
+      if (!fl || fl.to !== k) continue;
+      if (old && old.side === fl.side) wdet[f].link = { to: old.to, side: fl.side, off: fl.off };
+      else delete wdet[f].link;
+    }
+    delete d.link;
+    if (!hitKey || !wdet[hitKey]) return;
+    const me = tileRect(k), t = tileRect(hitKey);
+    if (!me || !t) return;
+    const near = function (v) { return Math.abs(v) <= 3; };
+    let side = '';
+    if (near(me.left - (t.left + t.width) - RECT_GAP)) side = 'r';
+    else if (near(t.left - (me.left + me.width) - RECT_GAP)) side = 'l';
+    else if (near(me.top - (t.top + t.height) - RECT_GAP)) side = 'b';
+    else if (near(t.top - (me.top + me.height) - RECT_GAP)) side = 't';
+    if (!side || followsChain(hitKey, k)) return;
+    const off = Math.round(side === 'r' || side === 'l' ? me.top - t.top : me.left - t.left);
+    for (const f of RECT_SNAP_KEYS) {
+      const fl = f !== k ? linkOf(f) : null;
+      if (fl && fl.to === hitKey && fl.side === side) wdet[f].link = { to: k, side: side, off: fl.off };
+    }
+    d.link = { to: hitKey, side: side, off: off };
+  }
   function snapRectangle(r, others, vw, vh) {
     const gap = 8, reach = 12;
     let best = { dx: 0, dy: 0, key: '' }, score = Infinity;
@@ -1132,6 +1254,7 @@
       : {dx:0, dy:0, key:''};
     w.x = d.x; w.y = d.y;
     moveWidgetBy(d.node, w, dx + hit.dx, dy + hit.dy, {snap:!hit.key, opacity:1});
+    d.hit = hit.key || '';
     clearRectangleSnap();
     if (hit.key) {
       d.node.classList.add('hud-rect-snapped');
@@ -1168,7 +1291,10 @@
       ddrag.rect = wrap.getBoundingClientRect();
       ddrag.x = wdet[k].x; ddrag.y = wdet[k].y;
       ddrag.targets = rectangleTargets(k);
-      if (e.shiftKey && wcfg.snapRects) {
+      linkDragging = true;
+      /* Shift from the KEYBOARD too: Ultralight's mouse events carry no
+         modifier keys, so e.shiftKey alone never fired in game. */
+      if ((e.shiftKey || shiftHeld) && wcfg.snapRects) {
         const r = ddrag.rect;
         const chain = connectedRectangles({key:k, left:r.left, top:r.top, width:r.width, height:r.height}, ddrag.targets);
         if (chain.length > 1) ddrag.cluster = chain.map(function (rect) {
@@ -1189,7 +1315,7 @@
       return;
     }
     if (ddrag.rect) {
-      moveRectangleDrag(ddrag, wdet[ddrag.k], e.clientX, e.clientY, e.altKey);
+      moveRectangleDrag(ddrag, wdet[ddrag.k], e.clientX, e.clientY, e.altKey || altHeld);
       e.preventDefault();
       return;
     }
@@ -1204,7 +1330,13 @@
   function onDetUp() {
     if (!ddrag) return;
     if (ddrag.node) ddrag.node.classList.remove('is-drag');
+    const dropped = ddrag;
     ddrag = null;
+    linkDragging = false;
+    /* a single tile moved (not the Shift-dragged row): rejoin it where it
+       landed, or pull it out of its row; then let the rows settle */
+    if (dropped.rect && !dropped.cluster) relinkAfterDrop(dropped.k, wcfg.snapRects ? dropped.hit : '');
+    reflowLinked();
     clearRectangleSnap();
     fwGuide().classList.remove('show');
     saveWidgetCfg();
@@ -1783,7 +1915,8 @@
     get keys() { return grpKeys(); }, link: grpLink, master: grpSetMaster,
     anyOn: grpAnyOn, allOn: grpAllOn,
     tool: grpToolAct, moveBy: moveWidgetBy, snapRectangle, rectangleTargets, moveRectangleDrag, connectedRectangles, moveRectangleCluster,
-    beginDrag:onDetDown, dragMove:onDetMove, endDrag:onDetUp, dragging: function () { return !!ddrag; } };
+    beginDrag:onDetDown, dragMove:onDetMove, endDrag:onDetUp, dragging: function () { return !!ddrag; },
+    reflow: reflowLinked, relink: relinkAfterDrop, linkOf: linkOf, det: wdet };
 
   /* Presets, so the whole thing can go minimal in ONE click and never becomes a
      settings maze (Rober's brief). "custom" is not a preset — it is what the
@@ -3612,6 +3745,14 @@
       widgets.lootFeed.hideVanilla = lf.hideVanilla;
       lf.dirty = false;
     }
+    if (fpsOpt.dirty) {
+      widgets.fps.gen = fpsOpt.gen;
+      widgets.fps.ms = fpsOpt.ms;
+      widgets.fps.graph = fpsOpt.graph;
+      widgets.fps.slim = fpsOpt.slim;
+      widgets.fps.rateMs = fpsOpt.rateMs;
+      fpsOpt.dirty = false;
+    }
     toGameAny(['hudWidgetSave', 'wgSave'],
       JSON.stringify({ enabled: !!wcfg.on, on: !!wcfg.on, widgets: widgets, hud: hudOnlyPrefs() }));
   }
@@ -3926,6 +4067,8 @@
         anchorH: d.anchorH === 'right' ? 'right' : d.anchorH === 'center' ? 'center' : 'left',
         anchorV: d.anchorV === 'bottom' ? 'bottom' : 'top',
         scale: +Number(d.scale || 1).toFixed(2) };
+      const l = linkOf(k);
+      if (l) det[k].link = { to: l.to, side: l.side, off: Math.round(num(l.off, 0)) };
     }
     o.det = det;
     o.detSeeded = !!detSeeded;
@@ -4150,6 +4293,12 @@
     const box = h('span', { class: 'hud-facebox' });
     box.appendChild(faceEl(m, hue));
     if (m.lvl != null) box.appendChild(h('b', { class: 'hud-lvl', title: 'Level ' + m.lvl }, String(m.lvl)));
+    /* SAY it (Rober, 2026-10-15: "follower hud opacity is 100% but image still
+       feels dim"). The grey + fade alone read as the opacity slider not working;
+       the title above never shows on the HUD (nothing hovers it in play). Away
+       is part of faceSig, so a flip rebuilds the chip and this tag with it.
+       Marker hud-away-tag. */
+    if (m.away) box.appendChild(h('b', { class: 'hud-away-tag' }, 'away'));
     chip.appendChild(box);
     const bars = barsEl(m);
     if (bars) chip.appendChild(bars);
@@ -4755,6 +4904,7 @@
     ward: 'Ward — up or down',
     qlight: 'Quick Light — lit or dim',
     lootFeed: 'Loot feed — what you just picked up',
+    fps: 'FPS — engine · frame gen',
     pinLabels: 'Item names', badges: 'Badges', barNumbers: 'Bar numbers', clock24: '24-hour clock',
   };
   const OPT_ABSENT = {
@@ -4777,6 +4927,8 @@
     ward: () => !live.ward,
     /* Absent without Quick Light SE, or with it switched off in its MCM. */
     qlight: () => !qlData(),
+    /* Greyed until the first reading arrives (a second after it is switched on). */
+    fps: () => !fpsLive,
   };
 
   function optButton(key) {
@@ -4924,6 +5076,7 @@
     quick2: 'icons/custom/hm-items.png', lootStatus: 'icons/custom/hm-loot.png',
     season: 'icons/custom/sn-autumn.png',
     ward: 'icons/custom/sc-restoration.png', qlight: 'icons/custom/ql-lit.png', lootFeed: 'icons/custom/hm-loot.png',
+    fps: 'icons/custom/gl-bolt.png',
     strip: 'icons/custom/hm-followers.png', fwgrp: 'icons/custom/hk-widgets.png',
     /* the Followers-HUD section's own rows (round 3) — no art of their own,
        so they wear their typographic marks below */
@@ -4933,7 +5086,7 @@
     vitals: '❤', resist: '◈', effects: '✦', equip: '†', survival: '△',
     mount: '⌁', pins: '⚑', sets: '❈', allies: '⁂',
     handR: '†', handL: '◈', voice: '≋', quick: '★', quick2: '★', lootStatus: '✧',
-    season: '❉', ward: '◈', qlight: '✦', lootFeed: '✧',
+    season: '❉', ward: '◈', qlight: '✦', lootFeed: '✧', fps: '≋',
     pinLabels: 'Aa', badges: '●', barNumbers: '№', clock24: '◷',
     strip: '⁂', fwgrp: '⌗',
     'strip-shape': '◇', 'strip-frame': '▢', 'strip-face': '☉', 'strip-compact': '▣', 'strip-keys': '⌨',
@@ -4958,6 +5111,7 @@
     ward: 'ward shield barrier spell up down',
     qlight: 'quick light lantern lamp torch glow carried light lit dim on off status',
     lootFeed: 'loot feed pickup picked up notifications items added harvest iharvest gold list',
+    fps: 'fps frame rate framerate frames per second frame generation framegen frame gen dlss puredark upscaler performance meter counter community shaders cs overlay f10',
     pinLabels: 'names labels',
     badges: 'badges', barNumbers: 'numbers bars', clock24: '24 hour clock',
     strip: 'followers hud strip party faces portraits roster place position size width squeeze narrow wide enable shown hidden row column corner names',
@@ -5647,7 +5801,7 @@
        so nothing has to be hunted for across three lists. */
     el.opts.innerHTML = '';
     el.opts.appendChild(buildElSection('placement', 'Placement', ['snapRects'],
-      'Drag rectangles close together to align their edges with an even gap. Shift-drag moves the connected row or cluster. Normal drag moves one tile; Alt bypasses snapping.'));
+      'Drag a tile against another and it joins it with an even gap. Joined tiles stay joined: when a number grows, the tiles beside it move over. Shift-drag moves the joined row; a normal drag pulls one tile out and the row closes up; Alt-drag places a tile without joining.'));
     el.opts.appendChild(buildElSection('readouts', 'Readouts', LINE_KEYS));
     el.opts.appendChild(buildElSection('player', 'Player & world', BLOCK_KEYS));
     /* the linked group — one card, its members nested under it */
@@ -5667,6 +5821,8 @@
        widget's own card in edit mode (lfCard), like My items' Rows stepper. */
     el.opts.appendChild(buildElSection('lootFeed', 'Loot feed', ['lootFeed'],
       'Turn it on, then set rows, how long each stays and whether the game’s own “added” lines still show — on the feed itself.'));
+    el.opts.appendChild(buildElSection('fps', 'FPS meter', ['fps'],
+      'Engine fps, and frames on screen from PureDark’s Upscaler. Refresh, lines and the Community Shaders overlay switch are on the meter itself.'));
     el.opts.appendChild(buildElSection('calendar', 'Date & season', ALMANAC_KEYS, 'One rectangle. Choose the day, month name and season independently.'));
     el.opts.appendChild(buildElSection('sunhelm', 'SunHelm needs', NEED_KEYS, 'Turn on Survival needs, then choose what to show. Icons only fits the trio in one clock-sized rectangle; separate mode gives each need its own position and size.'));
     el.opts.appendChild(buildElSection('clockstyle', 'Clock appearance', CLOCK_KEYS,
@@ -6054,6 +6210,7 @@
          now, so its grabbed look has to be taken off with it */
       if (ddrag && ddrag.node) ddrag.node.classList.remove('is-drag');
       ddrag = null;
+      linkDragging = false;   // hud-rect-links: never leave the reflow switched off
       fwSelected = null;
       const guide = document.getElementById('hud-fw-guide');
       if (guide) guide.classList.remove('show');   // never strand the snap guide in play
@@ -6080,7 +6237,12 @@
   function isShiftKey(e) { return e.key === 'Shift' || e.keyCode === 16 || e.code === 'ShiftLeft' || e.code === 'ShiftRight'; }
   window.addEventListener('keydown', function (e) { if (isShiftKey(e)) shiftHeld = true; }, true);
   window.addEventListener('keyup', function (e) { if (isShiftKey(e)) shiftHeld = false; }, true);
-  window.addEventListener('blur', function () { shiftHeld = false; });
+  window.addEventListener('blur', function () { shiftHeld = false; altHeld = false; });
+  /* Alt the same way (hud-rect-links): Alt-drag places a tile without joining it. */
+  let altHeld = false;
+  function isAltKey(e) { return e.key === 'Alt' || e.keyCode === 18 || e.code === 'AltLeft' || e.code === 'AltRight'; }
+  window.addEventListener('keydown', function (e) { if (isAltKey(e)) altHeld = true; }, true);
+  window.addEventListener('keyup', function (e) { if (isAltKey(e)) altHeld = false; }, true);
   function onPointerDown(e) {
     if (!editing) return;
     // Clicks inside the settings card belong to the card, never to the drag.
@@ -6200,6 +6362,41 @@
 
   /* ---- interop receivers (C++ -> view) --------------------------------- */
   function parse(s) { try { return JSON.parse(s); } catch (e) { toGame('hudLog', 'HUD parse: ' + e); return null; } }
+
+  /* FACE FRAMING from the deck (Rober, 2026-10-14: "i adjusted framing, zoomed
+     in on generated face pic didnt update in f7 or hud"; marker
+     hud-facefit-push). The deck keeps auto-frame on/off, the K/S defaults,
+     per-render hand framings and per-face brightness in shelf.facefit and fed
+     them only to its own hd-facefit.js; this view has its own copy of that
+     module and never heard of them, so a face framed in the deck stayed
+     unframed on the strip. C++ pushes the slice at boot and after every deck
+     save that changed it; the deck's own applyFacefitPrefs is the model. Then
+     every head render on screen is framed again at once, without waiting for
+     a roster change to rebuild the chips. */
+  let ffOverrideKeys = [];
+  window.hudFaceFit = function (s) {
+    const ff = (typeof s === 'string') ? parse(s) : s;
+    const FF = window.HDFaceFit;
+    if (!ff || typeof ff !== 'object' || !FF) return;
+    if (typeof FF.setAutoEnabled === 'function') FF.setAutoEnabled(ff.auto !== false);
+    if (isFinite(ff.k) || isFinite(ff.s)) FF.tune(Number(ff.k), Number(ff.s));
+    const files = (ff.files && typeof ff.files === 'object' && !Array.isArray(ff.files)) ? ff.files : {};
+    /* a framing reset in the deck is a key that is gone: drop it here too */
+    for (let i = 0; i < ffOverrideKeys.length; i++)
+      if (!files[ffOverrideKeys[i]]) FF.setOverride(ffOverrideKeys[i], null);
+    ffOverrideKeys = [];
+    Object.keys(files).forEach(function (f) {
+      const c = files[f];
+      if (c && isFinite(c.z)) { FF.setOverride(f, c); ffOverrideKeys.push(f); }
+    });
+    if (typeof FF.setBrightnessMap === 'function')
+      FF.setBrightnessMap(ff.bright && typeof ff.bright === 'object' ? ff.bright : {});
+    const imgs = document.querySelectorAll ? document.querySelectorAll('img.hud-face-img') : [];
+    for (let i = 0; i < imgs.length; i++) {
+      const url = imgs[i]._hdRenderUrl;
+      if (url) { imgs[i]._hdRefits = 0; FF.paintPortrait(imgs[i], url); }
+    }
+  };
 
   window.hudConfig = function (s) {
     const j = (typeof s === 'string') ? parse(s) : s;
@@ -6513,6 +6710,14 @@
         if (typeof lfcfg.hideVanilla === 'boolean') lf.hideVanilla = lfcfg.hideVanilla;
         lfApplyCfg();
       }
+      const fpcfg = W.fps;
+      if (fpcfg && typeof fpcfg === 'object' && !fpsOpt.dirty) {
+        if (typeof fpcfg.gen === 'boolean') fpsOpt.gen = fpcfg.gen;
+        if (typeof fpcfg.ms === 'boolean') fpsOpt.ms = fpcfg.ms;
+        if (typeof fpcfg.graph === 'boolean') fpsOpt.graph = fpcfg.graph;
+        if (typeof fpcfg.slim === 'boolean') fpsOpt.slim = fpcfg.slim;
+        if (isNum(fpcfg.rateMs)) fpsOpt.rateMs = clamp(Math.round(fpcfg.rateMs), 500, 2000);
+      }
       const q2cfg = W.quick2;
       if (q2cfg && typeof q2cfg === 'object') {
         if (isNum(q2cfg.max)) q2.max = clamp(Math.round(q2cfg.max), 1, Q2_MAX_ITEMS);
@@ -6598,6 +6803,10 @@
           anchorH: d.anchorH === 'right' ? 'right' : d.anchorH === 'center' ? 'center' : 'left',
           anchorV: d.anchorV === 'bottom' ? 'bottom' : 'top',
           scale: clamp(num(d.scale, 1), 0.5, 2.5) };
+        const l = d.link;
+        if (l && typeof l === 'object' && RECT_SNAP_KEYS.indexOf(l.to) !== -1 && l.to !== k &&
+            LINK_SIDES.indexOf(l.side) !== -1)
+          wdet[k].link = { to: l.to, side: l.side, off: clamp(Math.round(num(l.off, 0)), -600, 600) };
       }
     }
     /* widget backgrounds (sanitised on read — a hand-edited blob can never
@@ -6837,6 +7046,7 @@
     ward: need('hud-fw-ward'),
     qlight: need('hud-fw-qlight'),
     lootFeed: need('hud-fw-lootFeed'),
+    fps: need('hud-fw-fps'),
   };
 
   function eqBySlot(slot) {
@@ -7023,6 +7233,7 @@
     season: 'Season — needs Seasons of Skyrim',
     ward: 'Ward — learn a ward spell to light this up',
     qlight: 'Quick Light — needs Quick Light SE',
+    fps: 'FPS meter — first reading in a second',
   };
 
   /* The ward widget's row: the live.ward document reshaped into the slot-card
@@ -7063,7 +7274,7 @@
   }
 
   /* ---- render ------------------------------------------------------------ */
-  const fwSigs = { handR: '', handL: '', voice: '', quick: '', quick2: '', lootStatus: '', season: '', ward: '', qlight: '', lootFeed: '' };
+  const fwSigs = { handR: '', handL: '', voice: '', quick: '', quick2: '', lootStatus: '', season: '', ward: '', qlight: '', lootFeed: '', fps: '' };
   let fwSelected = '';
 
   function fwArtFor(row) {
@@ -7737,11 +7948,97 @@
     try { HDLootFeed.push(rows); } catch (e) {}
   };
 
+  /* ======================================================================
+     FPS METER (`fps`, 2026-10-14).
+     Rober: "i always have to toggle on Community shaders fps, lets add this to
+     hud elements that hooks to it so we can control the fps meter. if we could
+     also maybe hook to puredarks so we can show fps engine and fps (frame gen)
+     in ui elements without performance cost and toggable".
+
+     The card is HDFps's (hud-fps.js); the numbers are C++ FpsMeter's
+     (src/fps_meter.h): engine frames counted in the present hook, frame-gen
+     frames read from PureDark's own counters. C++ pushes `fpsPush(d)` at the
+     refresh the player picked and the volatile pass writes it in place — the
+     signature carries only the options and which columns exist.
+     In edit mode the card grows its options underneath (like the loot feed's):
+     refresh, the three lines, and the Community Shaders overlay switch, which
+     presses CS's own overlay key (C++ tracks on/off; see fps_meter.h).
+     ====================================================================== */
+  const FPS_RATES = [500, 1000, 2000];
+  function fpsBuildOpts() {
+    return { gen: fpsOpt.gen, ms: fpsOpt.ms, graph: fpsOpt.graph, slim: fpsOpt.slim, label: wfree.fps.showLabel !== false };
+  }
+  function fpsSig() {
+    if (!window.HDFps) return 'nofps';
+    const cs = fpsCsState || {};
+    return HDFps.sig(fpsBuildOpts(), fpsLive) + (editing
+      ? '|e|' + wfree.fps.anchorH + wfree.fps.anchorV + '|' + fpsOpt.rateMs + '|' + (cs.present ? 'p' : '') + (cs.on ? 'o' : '') + (cs.auto ? 'a' : '') + (cs.bound === false ? 'u' : '') + '|' + (cs.key || '')
+      : '');
+  }
+  function buildFps() {
+    const root = elFree.fps;
+    root.innerHTML = '';
+    if (!window.HDFps) return;
+    if (fpsLive || editing) HDFps.build(root, fpsBuildOpts(), fpsLive || { e: null, fg: { ok: false, why: 'idle' } });
+    if (editing) {
+      /* The options FLOAT off the plate (position:absolute), so the widget's
+         box stays the plate's: a centre-anchored meter is placed by its own
+         width, and the edit card must not move it from where it sits in play.
+         They hang on the side away from the screen edge it is anchored to. */
+      const ed = HDFps.editCard(fpsBuildOpts(), fpsCsState, fpsOpt.rateMs);
+      const w = wfree.fps;
+      ed.classList.add('at-' + (w.anchorH === 'right' ? 'right' : w.anchorH === 'center' ? 'center' : 'left'));
+      ed.classList.add(w.anchorV === 'bottom' ? 'at-above' : 'at-below');
+      root.appendChild(ed);
+    }
+  }
+  function fpsAct(act) {
+    if (act === 'rate-' || act === 'rate+') {
+      let i = FPS_RATES.indexOf(fpsOpt.rateMs);
+      if (i < 0) i = 1;
+      fpsOpt.rateMs = FPS_RATES[clamp(i + (act === 'rate+' ? 1 : -1), 0, FPS_RATES.length - 1)];
+    }
+    else if (act === 'gen') fpsOpt.gen = !fpsOpt.gen;
+    else if (act === 'ms') fpsOpt.ms = !fpsOpt.ms;
+    else if (act === 'graph') fpsOpt.graph = !fpsOpt.graph;
+    else if (act === 'slim' || act === 'plate') fpsOpt.slim = act === 'slim';
+    else if (act === 'cs') { toGame('hdCsOverlay', JSON.stringify({ op: 'toggle' })); return; }
+    else if (act === 'csauto') {
+      const now = !(fpsCsState && fpsCsState.auto);
+      toGame('hdCsOverlay', JSON.stringify({ op: 'auto', value: now }));
+      return;
+    }
+    else return;
+    fpsOpt.dirty = true;
+    renderFree();
+    saveWidgetCfg();
+  }
+  /* C++ FpsMeter's push: { e, ms, worst, fg:{ok,o,x,fw|why}, cs:{...} }.
+     Every push feeds the history; the card is touched only while it is shown
+     (a push handler's work is game-frame time). */
+  window.fpsPush = function (d) {
+    if (!d || typeof d !== 'object') return;
+    const first = !fpsLive;
+    fpsLive = d;
+    if (d.cs && typeof d.cs === 'object') fpsCsState = d.cs;
+    if (window.HDFps) HDFps.note(d);
+    if (!editing && !fwGate('fps')) return;   // off, or hidden in a menu: history only
+    if (first || fpsSig() + (editing && !wcfg.fps ? '|editoff' : '') !== fwSigs.fps) { renderFree(); return; }
+    const root = elFree.fps;
+    if (root && !root.classList.contains('is-off') && window.HDFps) HDFps.apply(root, d, fpsBuildOpts());
+  };
+  /* The overlay switch's answer (after a press, or an auto change). */
+  window.fpsCs = function (cs) {
+    if (!cs || typeof cs !== 'object') return;
+    fpsCsState = cs;
+    if (editing) renderFree();
+  };
+
   function renderFree() {
     for (const k of FREE_KEYS) {
       const root = elFree[k];
       const on = fwGate(k);
-      const row = (k === 'quick' || k === 'quick2' || k === 'lootStatus' || k === 'season' || k === 'qlight' || k === 'lootFeed')
+      const row = (k === 'quick' || k === 'quick2' || k === 'lootStatus' || k === 'season' || k === 'qlight' || k === 'lootFeed' || k === 'fps')
         ? null : k === 'ward' ? wardRow() : freeRow(k);
       const has = k === 'quick' ? quickList().length > 0
         : k === 'quick2' ? q2Rows().length > 0
@@ -7751,6 +8048,7 @@
         /* the feed is on screen whenever it is on: an empty feed draws nothing,
            and its rows must survive the moments between pickups */
         : k === 'lootFeed' ? true
+        : k === 'fps' ? !!fpsLive
         : !!(row && row.kind !== 'empty');
       /* ROUND 3: edit mode draws it whether its switch is on or off. An off
          widget used to be display:none, which left nothing to place — see the
@@ -7776,6 +8074,7 @@
         : k === 'season' ? seasonSig()
         : k === 'qlight' ? qlSig()
         : k === 'lootFeed' ? lfSig()
+        : k === 'fps' ? fpsSig()
         : slotCardSig(k, row)) + (ghosted ? '|editoff' : '');
       if (sig !== fwSigs[k]) {
         fwSigs[k] = sig;
@@ -7785,6 +8084,7 @@
         else if (k === 'season') buildSeasonCard();
         else if (k === 'qlight') buildQl();
         else if (k === 'lootFeed') buildLootFeed();
+        else if (k === 'fps') buildFps();
         else buildSlotCard(k, row);
         scheduleIcons();
       }
@@ -7812,6 +8112,8 @@
         });
       } else if (k === 'qlight') {
         qlApply(root);
+      } else if (k === 'fps') {
+        if (fpsLive && window.HDFps) HDFps.apply(root, fpsLive, fpsBuildOpts());
       } else if (k === 'season') {
         /* Volatile: the day of the month and the countdown. Both move once a
            game day, so they are written in place instead of rebuilding the card
@@ -7896,6 +8198,8 @@
     if (lb) { lootAct(lb.getAttribute('data-lootact')); e.preventDefault(); e.stopPropagation(); return; }
     const fb = e.target.closest ? e.target.closest('[data-lfact]') : null;
     if (fb) { lfAct(fb.getAttribute('data-lfact')); e.preventDefault(); e.stopPropagation(); return; }
+    const pb = e.target.closest ? e.target.closest('[data-fpsact]') : null;
+    if (pb) { fpsAct(pb.getAttribute('data-fpsact')); e.preventDefault(); e.stopPropagation(); return; }
     if (fwSelected !== k) fwSelected = k;
     renderFree();
     revealInShelf(shelfKeyForFree(k));
@@ -8335,6 +8639,8 @@
   window.__hud.qlData = qlData;
   window.__hud.lf = lf;
   window.__hud.lfAct = lfAct;
+  window.__hud.fpsOpt = fpsOpt;
+  window.__hud.fpsAct = fpsAct;
   window.__hud.seasonNextText = seasonNextText;
   window.__hud.SEASON_ART = SEASON_ART;
   window.__hud.SICON = SICON;

@@ -32,11 +32,12 @@
 .mw-scope{padding-left:12px;color:var(--ml-muted)}
 .mw-scope[aria-pressed=true]{color:var(--ml-gold);border-color:var(--ml-gold)}
 #main{padding:16px 22px 10px;gap:10px;min-width:0}
-#mw-top{display:flex;align-items:center;gap:28px;flex:none;min-height:64px}
-#mw-top #ml-heading-block{display:block!important;flex:0 1 360px;min-width:180px}
+/* #mw-top is now the title block alone: search moved into the bar below, where it
+   is permanent and survives the fold (the bar is the one thing that never goes). */
+#mw-top{display:flex;align-items:flex-end;gap:28px;flex:none;min-height:56px}
+#mw-top #ml-heading-block{display:block!important;flex:1 1 auto;min-width:0}
 #ml-heading{font:600 32px/1.08 MWGaramond,Georgia,serif;margin:0;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
 #ml-breadcrumb{font-size:13px;line-height:1.3;letter-spacing:1px;margin:0 0 6px}
-#mw-top #search-wrap{flex:1;min-width:160px;min-height:48px;border-radius:3px;margin:0}
 #search{font-size:var(--mw-font);padding-right:8px}
 .mw-search-key{font:15px/1.3 'Segoe UI',sans-serif;color:var(--ml-muted);border:1px solid var(--ml-line);margin:0 10px;white-space:nowrap;padding:2px 5px}
 #mw-pins{display:flex;align-items:center;gap:8px;overflow:auto;flex:none;min-height:42px;padding-bottom:3px}
@@ -44,18 +45,11 @@
 .mw-pin{display:flex;align-items:center;gap:8px;white-space:nowrap;min-height:40px;padding:5px 12px;background:var(--ml-rail);border:1px solid var(--ml-line);border-radius:3px;font-size:18px;color:var(--ml-ink)}
 .mw-pin img{width:26px;height:26px;object-fit:contain}
 .mw-pin:hover{border-color:var(--ml-gold);color:var(--ml-gold)}
-#ml-library-bar{gap:8px;min-height:44px}
-#ml-view-options{margin:0;order:1;padding:2px;border-radius:3px}
 #ml-view-options button{font-size:18px;min-height:40px;padding:6px 12px;border-radius:2px}
-#ml-density{font-size:18px;min-height:44px;order:2;margin-left:auto}
-#ml-toggle-controls{order:3;font-size:18px;min-height:44px}
-#ml-toggle-rail{order:0;font-size:26px}
+#ml-toggle-rail{font-size:26px}
 #ml-compact-packages{display:none}
 #toolbar{margin:0;min-height:0}
 #toolbar:empty{display:none}
-#ml-filters{padding-bottom:7px;gap:10px;font-size:18px}
-#ml-result-count,.ml-filterbar label,#ml-clear{font-size:18px}
-.ml-filterbar select{font-size:18px;min-height:40px}
 #mw-status{flex:none;font-size:16px;color:var(--ml-muted);padding-top:3px}
 #list{border-top:1px solid var(--ml-line);padding-top:10px}
 #panel #list{gap:10px}
@@ -386,3 +380,178 @@ body.mw-splitting .spell,body.mw-splitting .rail-item,body.mw-splitting #mw-insp
 .mw-customize input[type=checkbox]{accent-color:var(--ml-gold)}
 #panel.ml-phone .ml-tc-cost,#panel.ml-phone .ml-th-tools,#panel.ml-phone[data-layout=table] .spell:not(.edit) .qkey{display:none}
 #panel.ml-phone[data-layout=table] .spell:not(.edit) .row-right{flex:0 0 auto;width:auto}
+
+/* ======================================================================================
+   ONE CONTROL BAR — framing, quick filters, typeable dropdowns   (Rober, 2026-10-15)
+   "try to combine this into once nice bar, with framing, dropdowns, typable dropdowns,
+   quick filters for like powers, and schools of magic" + "drop downs suck right now".
+
+   Two tiers inside ONE frame. Row 1 is what you are looking at (search, layout, count);
+   row 2 is how it is filtered. The chevron at the right of row 1 takes the title block,
+   the quick groups and the whole of row 2 away for more spell room.
+
+   Flat rgba only: a gradient across an element this wide bands into strips in Ultralight
+   (the Combat Wheel vignette, 2026-10-11). No color-mix(), it fails silently here.
+   ===================================================================================== */
+#ml-library-bar.mw-bar{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;
+  gap:0;flex:none;min-width:0;min-height:0;overflow:visible;
+  background:var(--ml-rail);border:1px solid var(--ml-line);border-radius:4px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+.mw-bar-row{display:flex;align-items:center;gap:12px;min-width:0;padding:9px 14px;min-height:64px}
+.mw-bar-main{border-bottom:1px solid var(--ml-line)}
+.mw-bar-filters{gap:16px;flex-wrap:wrap;padding-top:12px;padding-bottom:12px}
+
+/* Row 1. Source order IS the layout; the count pushes itself and the chevrons right. */
+.mw-bar-main #ml-compact-search{display:block;flex:1 1 320px;min-width:150px}
+.mw-bar-main #ml-compact-search #search-wrap{margin:0;min-height:48px;border-radius:3px}
+.mw-bar-main #ml-compact-search #search{font-size:var(--mw-font);padding:8px 12px 8px 46px}
+.mw-bar-main #ml-view-options{margin:0 0 0 auto;flex:none}
+#ml-result-count{flex:none;font-size:18px;color:var(--ml-muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+#ml-toggle-controls{flex:none;font-size:18px;min-height:44px}
+#mw-toggle-inspector{flex:none}
+
+/* ---- quick filters: equal-width cells, so a group can never wrap into a ragged
+   second row. A long name truncates and keeps the whole of itself in its title. ---- */
+/* Row 2 is laid out, not left to luck: spell type + the dropdowns + Clear share the
+   first line, and the schools take a full line of their own. Each line is filled and
+   every label has room to be read, which a single squeezed line could not do beside a
+   pinned inspector (it truncated "Destruction" to "De...", 2026-10-15). */
+.mw-quick{display:grid;grid-template-columns:repeat(var(--mw-cols,4),minmax(0,1fr));
+  grid-auto-rows:max-content;gap:4px;min-width:0;padding:3px;
+  background:var(--ml-canvas);border:1px solid var(--ml-line);border-radius:4px}
+#mw-quick-kind{order:0;flex:0 1 auto;min-width:0}
+.mw-bar-combos{order:1}
+#ml-clear{order:2}
+#mw-quick-school{order:3;flex:1 1 100%}
+.mw-chip{display:flex;align-items:center;justify-content:center;gap:8px;min-width:0;min-height:46px;
+  padding:6px 10px;border:1px solid transparent;border-radius:3px;background:transparent;
+  color:var(--ml-muted);font-size:17px;line-height:1.2}
+.mw-chip:hover{background:var(--ml-hover);color:var(--ml-ink)}
+.mw-chip.on{background:var(--ml-wash);border-color:var(--ml-gold);color:var(--ml-gold)}
+.mw-chip-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mw-chip-art{display:flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px}
+.mw-chip-art img{width:24px;height:24px;object-fit:contain}
+.mw-chip-art .glyph{width:24px;height:24px;display:flex;align-items:center;justify-content:center}
+.mw-chip-art .glyph svg{width:22px;height:22px}
+#ml-clear{flex:none;align-self:stretch;font-size:18px;min-height:46px;padding:8px 16px;border:1px solid var(--ml-line);
+  border-radius:3px;background:transparent;color:var(--ml-gold)}
+#ml-clear:hover{border-color:var(--ml-gold);background:var(--ml-wash)}
+
+/* ---- the drawn dropdown (md-combo.js) ------------------------------------------------
+   Ultralight paints a native <select> as the host OS widget and its popup as a grey
+   system list — the thing in Rober's fourth screenshot. The <select> is kept as state
+   and hidden; this is what is actually drawn over it. */
+.mdc-native{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;
+  margin:-1px!important;border:0!important;opacity:0!important;overflow:hidden!important;
+  clip:rect(0 0 0 0)!important;pointer-events:none!important;appearance:none!important}
+.mw-bar-combos{display:flex;align-items:stretch;gap:10px;flex:1 1 auto;min-width:0}
+.mw-bar-combos .mdc{flex:1 1 0;max-width:300px}
+.mdc{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:1px;
+  min-width:170px;min-height:62px;padding:7px 38px 7px 13px;position:relative;text-align:left;
+  background:var(--ml-canvas);border:1px solid var(--ml-line);border-radius:3px;color:var(--ml-ink)}
+.mdc:hover{border-color:var(--ml-line-2);background:var(--ml-hover)}
+.mdc[aria-expanded=true]{border-color:var(--ml-gold);background:var(--ml-wash)}
+.mdc.mdc-set{border-color:var(--ml-brass-line)}
+.mdc.mdc-set .mdc-value{color:var(--ml-gold)}
+.mdc-label{font-size:13px;letter-spacing:1.4px;color:var(--ml-muted);white-space:nowrap;text-transform:uppercase}
+.mdc-value{font-size:19px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.mdc-art{display:flex;align-items:center;flex:none}
+.mdc-art img{width:24px;height:24px;object-fit:contain}
+.mdc-caret{position:absolute;right:13px;top:50%;margin-top:-10px;font-size:17px;color:var(--ml-gold);line-height:1}
+
+/* The menu is body-anchored (position:fixed) so no overflow:hidden ancestor can clip it.
+   md-combo.js places it from the button's screen rect and gives it the panel's own
+   scale, so it stays glued to the button and reads at the player's zoom. */
+.mdc-menu{position:fixed;z-index:400;transform-origin:top left;display:flex;flex-direction:column;
+  min-width:290px;overflow:hidden;background:var(--ml-canvas);border:1px solid var(--ml-gold);
+  /* Clamped per check_shadow_slabs: the view is a transparent overlay on the game, so a
+     wide dark shadow does not read as depth, it reads as a black box beside the panel.
+     The gold border is what lifts this menu off the page; the shadow only softens it. */
+  border-radius:4px;box-shadow:0 8px 22px rgba(0,0,0,.42);color:var(--ml-ink)}
+.mdc-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex:none;
+  padding:13px 16px 9px;border-bottom:1px solid var(--ml-line)}
+.mdc-title{font-size:15px;letter-spacing:1.6px;color:var(--ml-gold);text-transform:uppercase}
+.mdc-count{font-size:15px;color:var(--ml-muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.mdc-find-wrap{display:flex;align-items:center;gap:8px;flex:none;padding:10px 14px;
+  border-bottom:1px solid var(--ml-line);background:var(--ml-rail)}
+.mdc-find-ic{flex:none;font-size:20px;color:var(--ml-muted)}
+.mdc-find{flex:1;min-width:0;min-height:44px;padding:8px 10px;font-size:18px;color:var(--ml-ink);
+  background:var(--ml-canvas);border:1px solid var(--ml-line);border-radius:3px}
+.mdc-find:focus{border-color:var(--ml-gold);outline:none}
+.mdc-list{flex:1;min-height:0;overflow-y:auto;padding:7px}
+.mdc-opt{display:flex;align-items:center;gap:12px;width:100%;min-height:52px;padding:8px 12px;
+  border:1px solid transparent;border-radius:3px;background:transparent;color:var(--ml-muted);text-align:left}
+.mdc-opt.on{background:var(--ml-hover);color:var(--ml-ink)}
+.mdc-opt.is-current{color:var(--ml-gold)}
+.mdc-opt.on.is-current{background:var(--ml-wash);border-color:var(--ml-gold)}
+.mdc-opt-art{display:flex;align-items:center;justify-content:center;flex:none;width:30px;height:30px}
+.mdc-opt-art img{width:30px;height:30px;object-fit:contain}
+.mdc-opt-text{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.mdc-opt-label{font-size:19px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdc-opt-text small{font-size:14px;color:var(--ml-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdc-opt-mark{flex:none;width:20px;font-size:18px;color:var(--ml-gold);text-align:right}
+.mdc-none{padding:18px 14px;font-size:17px;color:var(--ml-muted);margin:0}
+/* Table view sorts from its own column header, so that one control stands down. */
+#panel.ml-sort-off .mdc[data-mdc-sel=ml-sort]{display:none}
+
+/* ---- the fold: the chevron really does clear the area now ---------------------------
+   It used to leave the title block and the quick groups behind, because
+   #mw-top #ml-heading-block carried display:block!important for the workbench layout.
+   Search is unaffected: it lives in the bar, which never folds. */
+#panel.ml-controls-collapsed #mw-top,
+#panel.ml-controls-collapsed #mw-pins,
+#panel.ml-controls-collapsed .mw-bar-filters,
+#panel.ml-controls-collapsed #mw-status{display:none!important}
+#panel.ml-controls-collapsed .mw-bar-main{border-bottom:0}
+
+/* ---- the equipped-hands dock folds the same way ------------------------------------
+   Folded it keeps a slim strip carrying its own chevron: a control that disappears
+   with the thing it controls cannot bring it back. --mw-dock-slot is what the Hotkeys
+   tab beside it sizes itself from, so shrinking that one token moves both. */
+#mw-equipped{align-items:center}
+.mw-dock-slots{display:flex;align-items:stretch;gap:12px;flex:1;min-width:0}
+.mw-dock-toggle{flex:none;align-self:center;margin-left:10px;width:46px;min-width:46px;min-height:40px;
+  font-size:24px;line-height:1}
+.mw-dock-toggle{transform:rotate(-90deg)}
+#panel.mw-dock-folded .mw-dock-toggle{transform:rotate(90deg)}
+#panel.mw-dock-folded{--mw-dock-slot:32px}
+#panel.mw-dock-folded .mw-dock-slots{display:none}
+#panel.mw-dock-folded #mw-equipped{padding-top:3px;padding-bottom:3px;justify-content:flex-end}
+#panel.mw-dock-folded:not(.ml-narrow) .hints-tab{height:34px;font-size:15px}
+
+/* ---- narrow and phone --------------------------------------------------------------
+   Each quick-filter group stays an intact block and only ever wraps as a whole; it
+   never breaks into a ragged half-row of its own chips. */
+#panel.ml-narrow .mw-bar-row{gap:10px;padding:8px 10px;min-height:56px}
+#panel.ml-narrow .mw-bar-main #ml-compact-search{flex-basis:100%;order:5}
+#panel.ml-narrow #mw-quick-kind{flex:1 1 100%}
+#panel.ml-narrow .mw-bar-combos{flex:1 1 100%}
+#panel.ml-narrow .mdc{flex:1;min-width:0}
+#panel.ml-narrow .mw-chip{font-size:16px;min-height:44px;gap:6px}
+#panel.ml-phone #ml-library-bar.mw-bar{flex-direction:column}
+#panel.ml-phone .mw-bar-row{flex-wrap:wrap;min-height:0;padding:8px}
+#panel.ml-phone #ml-result-count{font-size:16px}
+@media(max-height:850px){
+  .mw-bar-row{min-height:56px;padding:7px 12px}
+  .mdc{min-height:56px}
+  .mw-chip{min-height:42px}
+  #mw-top{min-height:48px}
+}
+
+/* A narrow panel keeps the quick filters. The old sheet hid the whole filter row at
+   phone width, which was fair when it held three native selects; now it carries the
+   type and school chips, and hiding it would leave a narrow panel with no way to
+   filter at all. Groups stack full width, the dropdowns one per line — three across
+   390px would truncate their values, and a 2+1 row is the ragged break rule 15 bans. */
+#panel.ml-phone #ml-filters{display:flex!important}
+#panel.ml-phone.ml-controls-collapsed #ml-filters{display:none!important}
+#panel.ml-phone #mw-quick-kind{flex:1 1 100%}
+#panel.ml-phone .mw-bar-combos{flex:1 1 100%;flex-wrap:wrap}
+#panel.ml-phone .mw-bar-combos .mdc{flex:1 1 100%;max-width:none;min-width:0}
+#panel.ml-phone #ml-clear{flex:1 1 100%;margin-left:0}
+#panel.ml-phone .mw-chip{font-size:16px;padding:6px 8px}
+/* Two columns, whatever JS set inline: six schools across 390px truncate to single
+   letters. The odd chip out stretches across both cells so the grid never ends on a
+   gap. !important is what lets an author rule beat the inline count. */
+#panel.ml-phone .mw-quick{--mw-cols:2!important}
+#panel.ml-phone .mw-quick .mw-chip:last-child:nth-child(odd){grid-column:span 2}

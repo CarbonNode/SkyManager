@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -35,6 +36,8 @@
 #include "person_live.h"
 #include "auto_portrait.h"
 #include "freeze_backdrop.h"   // freeze-backdrop: stop drawing the world behind a paused deck
+#include "cursor_keeper.h"   // cursor-keeper: PrismaUI's focus menu (the cursor) never lost under an open deck
+#include "mouse_watch.h"     // mouse-watch: raw mouse motion vs the cursor vs the view, and why they disagree
 #include "facegen_resolver.h"
 #include "wheel.h"
 #include "quiver.h"
@@ -46,6 +49,7 @@
 #include "faith.h"   // Wintersun's tracker quest — cached bind, dropped on load
 #include "mhiyh_control.h"
 #include "chim_control.h"
+#include "obody_bridge.h"
 #include "nff_bridge.h"
 #include "nff_bases.h"
 #include "residents.h"
@@ -68,6 +72,7 @@
 #include "procession_bridge.h"
 #include "controls_fix.h"
 #include "time_actions.h"
+#include "rest_actions.h"   // the Time Dial's Rest mode: eat / drink / sleep through SunHelm
 #include "stance_wheel.h"
 #include "command_ring.h"     // Command Ring: Warband-style orders / camp / homes / battle radial (NFF, MHiYH, FWM)
 #include "grip_switch.h"      // Change Grip: runs Dynamic Grip's own switch, no key
@@ -83,6 +88,7 @@
 #include "book_reader.h"   // Read Every Book: vanilla read of every book in the bag, no Book Menu (2026-09-14)
 #include "broom_cleanup.h" // Sweeping Organizes Stuff: the original broom-use event, bindable.
 #include "trade_actions.h"   // Trade: barter menu / pack on the crosshair NPC (Rober, 2026-08-17)
+#include "interact_actions.h"   // F7 card Interact popout: Carry Me + Ride Along (Rober, 2026-10-14)
 #include "console_actions.h"
 #include "place_actions.h"
 #include "container_actions.h"
@@ -97,6 +103,10 @@
 #include "photo_return.h"
 #include "quest_tools.h"
 #include "high_king.h"  // Become High King of Skyrim TNG — kingdom dashboard + royal verbs (kg* bridge)
+#include "sanguines_trade.h"  // Sanguine's Trade — the Ledger toggle, through the mod's own script
+#include "ied_control.h"  // Immersive Equipment Displays — show/hide gear displays, auto-hide in OStim scenes
+#include "furniture_pick.h"  // our own picker for OStim's "use the nearby bed?" / "which furniture" prompts
+#include "scene_camera.h"    // why F / wheel are dead in an OStim scene: log, unlock, direct view toggle
 #include "relationship.h"
 #include "maras.h"
 #include "ask.h"
@@ -110,6 +120,7 @@
 #include "player_tune.h"    // Character sheet Tune modal: player AV editor (psTune*)
 #include "weather_actions.h" // Time tab Sky card: weather picker (tmWeather*)
 #include "weather_hub.h"     // Weather tab: every weather + the weather mods' controls (wx*)
+#include "music_player.h"    // Music tab: what is playing, Skyrim's music types + a YouTube stream (mu*)
 #include "inventory_pane.h"  // Inventory tab: the full inventory replacement (iv*)
 #include "npc_tune.h"        // F7 quick-card Tune modal: NPC editor (nt* bridge)
 #include "npc_finder.h"     // NPCs tab: the fast NPC finder (nx* bridge)
@@ -148,6 +159,7 @@
 #include "shout_cooldowns.h"
 #include "widgets.h"   // HUD widgets (wg* on the hotbar view) + potion browser (pb* on the deck view)
 #include "loot_feed.h"  // the HUD loot feed's pickup source (lfPush on the HUD view)
+#include "fps_meter.h"  // the HUD FPS widget (engine + PureDark frame-gen fps) and the CS overlay switch
 #include "ward_actions.h"   // ward-toggle: maintain your best ward, WardAnytime-style
 #include "anim_actions.h"
 #include "ostim_deck.h"
@@ -160,6 +172,7 @@
 #include "spellcraft_actions.h"
 #include "journal.h"   // Journal tab: the book you write yourself (jr* bridge, journal.json)
 #include "places.h"    // Places: the searchable teleport (hdPlaces* bridge, Omni `places` provider)
+#include "spellbook.h"  // Spellbook: the full-screen personal spell catalog (sb* bridge, spellbook-sheet.json)
 
 using json = nlohmann::json;
 
@@ -188,9 +201,39 @@ namespace
 		constexpr ListenerName(const char (&v)[N]) { std::copy_n(v, N, s); }
 	};
 
+	/* js-listener-slow (2026-10-14). PrismaUI calls every listener INLINE on
+	 * the Ultralight thread (upstream Communication.cpp InvokeCppCallback ->
+	 * targetCallback), and the game's present hook waits for that thread — so
+	 * a listener that does real work freezes the deck, the frame and the cursor
+	 * for exactly that long. Rober: "mouse randomly stops reacting to movement".
+	 * Any listener over 25 ms is named in the log (at most 30 lines a minute). */
+	inline void NoteSlowListener(const char* name, long long ms) noexcept
+	{
+		static std::atomic<long long> s_windowStart{ 0 };
+		static std::atomic<int>       s_inWindow{ 0 };
+		try {
+			const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count();
+			if (nowMs - s_windowStart.load() > 60000) { s_windowStart = nowMs; s_inWindow = 0; }
+			if (s_inWindow.fetch_add(1) < 30)
+				logger::warn("js-listener-slow: '{}' held the UI thread {} ms", name, ms);   // marker: js-listener-slow
+		} catch (...) {}
+	}
+
 	template <ListenerName Name, PRISMA_UI_API::JSListenerCallback Fn>
 	void GuardedJsListener(const char* argument) noexcept
 	{
+		const auto t0 = std::chrono::steady_clock::now();
+		struct SlowNote
+		{
+			std::chrono::steady_clock::time_point t0;
+			~SlowNote()
+			{
+				const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+				if (ms >= 25)
+					NoteSlowListener(Name.s, static_cast<long long>(ms));
+			}
+		} note{ t0 };
 		try {
 			Fn(argument);
 		} catch (const std::exception& e) {
@@ -326,6 +369,10 @@ namespace
 	// hidden; Shown + Focused (game paused) only when an alert fires.
 	PrismaView                  g_alertView = 0;
 	std::atomic<bool>           g_alertViewReady{ false };
+	// The furniture picker — the SIXTH view (HotkeyDeck/furn-pick.html), a
+	// standalone modal in the CRT-alert mould (src/furniture_pick.cpp).
+	PrismaView                  g_fpView = 0;
+	std::atomic<bool>           g_fpViewReady{ false };
 
 	// Hotbar — the FOURTH PrismaUI view (MagicDeck/hotbar.html), and the HUD's
 	// twin in every structural way: created eagerly, Shown but never Focused
@@ -1562,6 +1609,13 @@ namespace
 			// Become High King of Skyrim TNG — backs the High King tab (whole-tab
 			// gate, like soes/zap) and the kingdom seeds below.
 			{ "highking", plugin("BecomeKingofSkyrimTNG.esp") },
+			// Sanguine's Trade — backs the seeded Ledger row and the carried
+			// Ledger book's Enter (sanguines_trade.cpp). Same probe as
+			// SanguinesTrade::Present().
+			{ "sanguine", plugin(SanguinesTrade::kPlugin) },
+			// Immersive Equipment Displays - backs the gear-display toggle row and the
+			// Settings group (ied_control.cpp). DLL-only, so the DLL is the probe.
+			{ "ied", IedControl::Present() },
 			// Schlongs of Skyrim — gates the bend rows. The CORE plugin is the
 			// honest probe: the SOS addons (Smurf Average, Futanari, the body
 			// patches) can be present on a load order whose core is long gone,
@@ -1578,7 +1632,7 @@ namespace
 		// Build marker (hd-markers.json: "deck-mod-detection"): unconditional so it
 		// is reached the first time the deck opens. KEEP the leading literal
 		// "deck: mod-detection omo=" intact (build marker) — new flags append.
-		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={} prisma={} chim={} soes={} presetdirector={} ostim={} zap={} tailor={} mhiyh={} quicklight={} highking={} sos={}",
+		logger::info("deck: mod-detection omo={} aim={} fo={} nff={} smf={} cs={} vk={} bfl={} prisma={} chim={} soes={} presetdirector={} ostim={} zap={} tailor={} mhiyh={} quicklight={} highking={} sos={} sanguine={} ied={}",
 			cached["omo"].get<bool>(), cached["additemmenu"].get<bool>(),
 			cached["followerorganizer"].get<bool>(), cached["nff"].get<bool>(),
 			cached["smf"].get<bool>(), cached["cs"].get<bool>(), cached["virtualkey"].get<bool>(),
@@ -1586,7 +1640,8 @@ namespace
 			cached["soes"].get<bool>(), cached["presetdirector"].get<bool>(),
 			cached["ostim"].get<bool>(), cached["zap"].get<bool>(), cached["tailor"].get<bool>(),
 			cached["mhiyh"].get<bool>(), cached["quicklight"].get<bool>(),
-			cached["highking"].get<bool>(), cached["sos"].get<bool>());
+			cached["highking"].get<bool>(), cached["sos"].get<bool>(),
+			cached["sanguine"].get<bool>(), cached["ied"].get<bool>());
 		return cached;
 	}
 
@@ -1634,6 +1689,8 @@ namespace
 			{ "hd-custom-markers-combat", "custommarkers_combat" },
 			{ "hd-highking", "highking" }, { "hd-hk-collect-taxes", "highking" },
 			{ "hd-hk-highreach-tp", "highking" },
+			{ "hd-sanguine-ledger", "sanguine" },
+			{ "hd-ied-toggle-player", "ied" },
 			{ "hd-open-npa", "npa" },
 			{ "hd-open-manipulator", "manipulator" },
 			{ "hd-grip-dg", "dynamicgrip" },
@@ -3425,6 +3482,10 @@ namespace
 			  "Slow time and pick an outfit from a wheel - aim past a look to its flyout and add a Flair set or a single piece over it. Click, it closes and dresses you. Set it up in Wardrobe > Wardrobe wheel (wardrobe outfit wheel clothes flair accessories radial quick change dress)", "Wardrobe", "icons/custom/hm-wardrobe.png" },
 			{ "time-dial", "hd-time-dial", "Time Dial",
 			  "Open the circular wait dial - drag the ring to choose hours or days, confirm, and the time passes in one step. Scalable, draggable, remembers its spot on screen (time dial wait clock sundial widget)", "Misc", "icons/custom/hk-time-dial.png", nullptr, "icons/custom/hm-time.png" },
+			// Rest (2026-10-14): the same dial in Rest mode - eat your fill,
+			// drink your fill, sleep N hours, through SunHelm's own functions.
+			{ "rest", "hd-rest", "Eat, Drink & Sleep",
+			  "Sit down at home and pick any of: eat your fill, drink your fill, sleep - the Time Dial's ring sets how long. SunHelm hunger, thirst and fatigue are filled by SunHelm itself and the night passes in one step (rest meal supper feast table home sleep bed food water hunger thirst fatigue sunhelm roleplay)", "Misc", "icons/custom/hk-bed.png", nullptr, "icons/custom/hm-time.png" },
 			// Scene Alignment (2026-09-21): the live, NON-PAUSING alignment
 			// overlay on the HUD view. OStim ships its own alignment menu;
 			// this is the one that layers over the scene and leaves it
@@ -3781,6 +3842,22 @@ namespace
 			{ "hk-highreach-tp", "hd-hk-highreach-tp", "Kingdom: Teleport to Highreach",
 			  "Cast the crown's own recall - first press saves where you stand and takes you to Highreach, the next brings you back (high king teleport travel castle keep home)", "Utilities", "icons/custom/hk-highreach-tp.png",
 			  "BecomeKingofSkyrimTNG.esp" },
+			// Sanguine's Trade (2026-10-14): the Ledger, opened through the mod's
+			// own ST_PrismaLedger script (sanguines_trade.cpp) - bind it to any
+			// key or mouse button instead of the mod's F6. requiresMod-gated, and
+			// the keywords cover how the mod is searched for.
+			{ "sanguine-ledger", "hd-sanguine-ledger", "Sanguine's Ledger",
+			  "Open or close the Sanguine's Trade Ledger - workers, venues, clients and earnings - without carrying the book or the power (sanguine's trade ledger economy workers venue innkeeper brothel earnings)", "Utilities", "icons/custom/hk-sanguine-ledger.png",
+			  "Sanguine's Trade - An Economy Mod.esp" },
+			// Immersive Equipment Displays (2026-10-14): one key to put the weapons on
+			// your back away and bring them back, through IED's own actor block
+			// (ied_control.cpp). The Settings group beside it holds the scene auto-hide.
+			// OStim scene camera (2026-10-14): F and the wheel are locked while OStim
+			// runs a scene with Improved Camera support; this flips the view directly.
+			{ "scene-camera-toggle", "hd-scene-camera-toggle", "Camera: Toggle First / Third Person",
+			  "Flip between first and third person right now, even in an OStim scene where F and the mouse wheel do nothing - and log the camera state so the cause can be named (camera view first third person pov f scroll wheel ostim scene stuck)", "Utilities", "icons/custom/sn-camera.png" },
+			{ "ied-toggle-player", "hd-ied-toggle-player", "Gear Displays: Show / Hide on Me",
+			  "Hide or show the weapons, quiver and gear Immersive Equipment Displays draws on you - without opening its menu (ied immersive equipment displays gear back hip sheath weapons on back hide show toggle)", "Utilities", "icons/custom/hk-ied-menu.png" },
 			// Combat Arts (2026-08-15): deep-open the SPELL DECK on its Combat
 			// Arts page — the Ashes of War collection lives in that window now,
 			// not on this deck's tab bar. "ashes of war weapon art elden ring
@@ -3813,6 +3890,11 @@ namespace
 			  "Open the Survival tab - needs, temperature, camp skills and everything else your survival mods track, arranged how you like (survival stats needs thirst hunger cold campfire hunterborn sunhelm wintersun)", "Utilities", "icons/custom/hk-survival.png" },
 			{ "survival", "hd-survival", "Survival (quick actions)",
 			  "Open the survival menu - the tents, bedrolls, fire, cooking gear, waterskins, food and drink you are carrying, searchable, one click to pitch or use (camp tent bedroll campfire tentapalooza waterskin water food drink survival sunhelm)", "Utilities", "icons/custom/hk-survival-quick.png", nullptr, "icons/custom/hk-survival.png" },
+			// Spellbook (2026-10-14): the full-screen personal spell catalog, a
+			// paused popout in the deck view (hd-spellbook.js) — the Potion
+			// Browser's road: g_pendingTab -> hdShowTab("spellbook").
+			{ "spellbook", "hd-spellbook", "Spellbook",
+			  "Open your Spellbook - your own categories of the spells you know, drag them into order, click to cast or equip left, right or both (spellbook spells magic catalog categories cast equip)", "Utilities", "icons/custom/hm-spells.png" },
 			{ "potion-browser", "hd-potion-browser", "Potion Browser",
 			  "Open the potion browser - every potion you carry, searchable, sortable by strength or value, quick-drink from the list; the game pauses while it is open (potions drink health magicka stamina cure browser)", "Utilities", "icons/custom/hk-potion-browser.png" },
 			{ "potions-health", "hd-potions-health", "Potions: Health",
@@ -4517,6 +4599,9 @@ namespace
 		SendInput(1, &in, sizeof(INPUT));
 	}
 
+	bool IsExtCode(std::uint32_t dik);                             // F13-F24 bridge, below
+	void SendEngineKey(std::uint32_t dik, float value, float held);
+
 	// Runs on a detached worker thread.
 	void FireChord(const std::string& device, std::uint32_t code, const std::vector<std::uint32_t>& mods)
 	{
@@ -4525,7 +4610,19 @@ namespace
 			SendScan(m, true);
 			std::this_thread::sleep_for(milliseconds(15));
 		}
-		if (device == "mouse") {
+		if (device == "keyboard" && IsExtCode(code)) {
+			// F13-F24 (2026-10-14, key strip): pressed the way the F13-F24 bridge
+			// presses them, as a tagged engine ButtonEvent — the path the Scimitar's
+			// G-buttons have been play-proven on since v0.3. NOT SendScan: a scancode
+			// 0x64+ that DirectInput delivered would be "hardware delivers F17
+			// natively" to the sink, which then switches the bridge off for that key
+			// and leaves the real mouse button dead for the rest of the session.
+			// Build marker (hd-markers.json "ext-key-engine-press").
+			logger::info("ext key {} pressed as engine event (deck-fired)", code);
+			SKSE::GetTaskInterface()->AddTask([code]() { SendEngineKey(code, 1.0f, 0.0f); });
+			std::this_thread::sleep_for(milliseconds(45));
+			SKSE::GetTaskInterface()->AddTask([code]() { SendEngineKey(code, 0.0f, 0.045f); });
+		} else if (device == "mouse") {
 			SendMouseButton(code, true);
 			std::this_thread::sleep_for(milliseconds(45));
 			SendMouseButton(code, false);
@@ -5266,6 +5363,7 @@ namespace
 	void OnJsSave(const char* data);
 	void OnJsClose(const char* data);
 	void OnJsTextInput(const char* data);
+	void OnJsMouseBeat(const char* data);
 	void OnJsLog(const char* data);
 	void OnJsPainted(const char* data);
 	std::string DeckIconIndexJson();
@@ -5310,6 +5408,7 @@ namespace
 	void OnJsFolWorld(const char* data);
 	void OnJsFolMhiyh(const char* data);
 	void OnJsFolNpc(const char* data);
+	void OnJsInteract(const char* data);
 	void OnJsGaNearby(const char* data);
 	void OnJsGaMove(const char* data);
 	void OnJsGaClear(const char* data);    // gaClear -> NpcClearance::ClearRoom (out of the cell + AI off)
@@ -5324,6 +5423,8 @@ namespace
 	void OnJsChSet(const char* data);
 	void OnJsChAgents(const char* data);   // chAgents -> chAgentsResult: every CHIM agent (formId + names)
 	void OnJsChConversation(const char* data);
+	// OBody preset (obody_bridge): obReq {op get|list|set} -> obState.
+	void OnJsObReq(const char* data);
 	void OnJsFmAll(const char* data);      // fmAll -> fmAllResult: everyone Fertility Mode tracks
 	// Formation with Followers modal (formation_actions.cpp does the work).
 	void OnJsFmGet(const char* data);
@@ -5401,6 +5502,11 @@ namespace
 	void        OnJsMmCfg(const char* data);   // Detailed MiniMap (minimap_bridge): mmCfg in, mmCfgState out
 	std::string UiStateJson();
 	void        OnJsWidgetToggle(const char* data);
+	// FPS meter's Community Shaders overlay switch (fps_meter.h): hdCsOverlay
+	// in from the deck's Home > UI Elements row AND the HUD shelf; the answer
+	// goes out as hdUiStateData (deck) + fpsCs (HUD).
+	void        OnJsCsOverlay(const char* data);
+	void        FpsPushCsState();
 	// 2026-08-19: the merged "Equipped widget" row in that drawer — master,
 	// orientation, size, lock and linking, relayed into the HUD view's own
 	// group functions (request hdWidgetGrp; there is no reply of its own, the
@@ -5421,6 +5527,7 @@ namespace
 	void        StartHotbarTicker();
 	// CRT Guard alert view — created at kDataLoaded; ShowCrtAlert() drives it.
 	void        CreateAlertView();
+	void        CreateFurnitureView();
 	void        ShowCrtAlert(std::string culprit, std::string message);
 	void        HbToggleVisible();
 	void        HbOpenEdit();
@@ -5432,6 +5539,7 @@ namespace
 	// Time Dial — defined in the HUD block far below; FireAction dispatches
 	// the seeded `time-dial` action, so it needs the decl here too.
 	void        TdToggleDial();
+	void        TdToggleRest();   // the dial opened in Rest mode (seeded `rest`)
 	// Stance Wheel (2026-10-03) — the 5th claimant on the HUD view's Focus,
 	// defined beside the Time Dial; FireAction, OpenPalette and the rescue
 	// verb all reach it from up here.
@@ -5568,6 +5676,8 @@ namespace
 	void OnJsWeatherSet(const char* data);
 	void OnJsWxState(const char* data);
 	void OnJsWxSet(const char* data);
+	void OnJsMuState(const char* data);
+	void OnJsMuSet(const char* data);
 	void OnJsIvList(const char* data);
 	void OnJsIvDetail(const char* data);
 	void OnJsIvAct(const char* data);
@@ -5594,6 +5704,11 @@ namespace
 	void OnJsSpellFinderQuery(const char* data);
 	void OnJsSpellFinderAct(const char* data);
 	void OnJsSpellFinderSave(const char* data);
+	// Spellbook popout (Home > UI Elements): sbOpen/sbSave/sbAct/sbDesc -> sbState/sbSaved/sbActResult/sbDescData
+	void OnJsSpellbookOpen(const char* data);
+	void OnJsSpellbookSave(const char* data);
+	void OnJsSpellbookAct(const char* data);
+	void OnJsSpellbookDesc(const char* data);
 	void OnJsPartyScan(const char* data);
 	void OnJsNpcInspect(const char* data);
 	// Distributions tab (dx* bridge on the deck view — spid_inspect.cpp).
@@ -5703,6 +5818,12 @@ namespace
 	void OnJsLootLog(const char* data);
 	// High King tab (kg* bridge on the deck view) forward decls.
 	void OnJsHighKingState(const char* data);
+	void OnJsIedState(const char* data);
+	void OnJsIedSet(const char* data);
+	void OnJsFurnState(const char* data);
+	void OnJsFurnSet(const char* data);
+	void OnJsCamState(const char* data);
+	void OnJsCamSet(const char* data);
 	void OnJsHighKingAct(const char* data);
 	void OnJsHighKingTax(const char* data);
 	void OnJsNgGet(const char* data);
@@ -6254,6 +6375,7 @@ namespace
 		HD_LISTEN(g_view, "hdSave", OnJsSave);
 		HD_LISTEN(g_view, "hdClose", OnJsClose);
 		HD_LISTEN(g_view, "hdTextInput", OnJsTextInput);
+		HD_LISTEN(g_view, "hdMouseBeat", OnJsMouseBeat);   // mouse-watch
 		HD_LISTEN(g_view, "hdLog", OnJsLog);
 		// hdPerfReport: the view posts its post-Show timing here (feature-detected
 		// on the view side). Logged verbatim under "open-diag(view): ...".
@@ -6290,6 +6412,7 @@ namespace
 		HD_LISTEN(g_view, "fdWorld", OnJsFolWorld);
 		HD_LISTEN(g_view, "fdMhiyh", OnJsFolMhiyh);
 		HD_LISTEN(g_view, "fdNpc", OnJsFolNpc);
+		HD_LISTEN(g_view, "hdInteract", OnJsInteract);
 		HD_LISTEN(g_view, "gaNearby", OnJsGaNearby);
 		HD_LISTEN(g_view, "gaMove", OnJsGaMove);
 		HD_LISTEN(g_view, "gaClear", OnJsGaClear);
@@ -6338,6 +6461,9 @@ namespace
 		// lit 💬 cost one Papyrus dispatch, not one per NPC.
 		HD_LISTEN(g_view, "chAgents", OnJsChAgents);
 		HD_LISTEN(g_view, "chConversation", OnJsChConversation);
+		// The F7 card's Equipped box: the OBody body preset (read, list, assign)
+		// through OBody NG's own natives. Request obReq, reply obState.
+		HD_LISTEN(g_view, "obReq", OnJsObReq);
 		// fmAll -> fmAllResult: everyone Fertility Mode tracks, keyed by ref and
 		// by base record, so the NPC Finder's rows and a non-roster crosshair
 		// card can say "pregnant" without a Follower Organizer row.
@@ -6406,6 +6532,7 @@ namespace
 		HD_LISTEN(g_view, "mmCfg", OnJsMmCfg);   // Detailed MiniMap (Home drawer row)
 		HD_LISTEN(g_view, "hdWidgetToggle", OnJsWidgetToggle);
 		HD_LISTEN(g_view, "hdWidgetGrp", OnJsWidgetGrp);
+		HD_LISTEN(g_view, "hdCsOverlay", OnJsCsOverlay);
 		// Wheel Menu (v0.16): the player's carryables, and using one.
 		HD_LISTEN(g_view, "whInv", OnJsWheelInv);
 		HD_LISTEN(g_view, "whAct", OnJsWheelAct);
@@ -6523,6 +6650,10 @@ namespace
 		// wxStateData/wxResult.
 		HD_LISTEN(g_view, "wxState", OnJsWxState);
 		HD_LISTEN(g_view, "wxSet", OnJsWxSet);
+		// Music tab (music_player.cpp). Requests muState/muSet; replies
+		// muStateData/muResult.
+		HD_LISTEN(g_view, "muState", OnJsMuState);
+		HD_LISTEN(g_view, "muSet", OnJsMuSet);
 		// Inventory tab (inventory_pane.cpp). Requests ivList/ivDetail/ivAct/
 		// ivSave; replies ivListData/ivDetailData/ivResult.
 		HD_LISTEN(g_view, "ivList", OnJsIvList);
@@ -6593,6 +6724,11 @@ namespace
 		HD_LISTEN(g_view, "sfQuery", OnJsSpellFinderQuery);
 		HD_LISTEN(g_view, "sfAct", OnJsSpellFinderAct);
 		HD_LISTEN(g_view, "sfSave", OnJsSpellFinderSave);
+		// Spellbook popout. Disjoint request/reply names, like every bridge here.
+		HD_LISTEN(g_view, "sbOpen", OnJsSpellbookOpen);
+		HD_LISTEN(g_view, "sbSave", OnJsSpellbookSave);
+		HD_LISTEN(g_view, "sbAct", OnJsSpellbookAct);
+		HD_LISTEN(g_view, "sbDesc", OnJsSpellbookDesc);
 		// Party sheet (read-only live stats for the teammates around you).
 		// Request ptyScan; reply ptyData — disjoint per the deck law.
 		HD_LISTEN(g_view, "ptyScan", OnJsPartyScan);
@@ -6720,6 +6856,12 @@ namespace
 		HD_LISTEN(g_view, "kgState", OnJsHighKingState);
 		HD_LISTEN(g_view, "kgAct", OnJsHighKingAct);
 		HD_LISTEN(g_view, "kgTax", OnJsHighKingTax);
+		HD_LISTEN(g_view, "iedGet", OnJsIedState);
+		HD_LISTEN(g_view, "iedSet", OnJsIedSet);
+		HD_LISTEN(g_view, "furnGet", OnJsFurnState);
+		HD_LISTEN(g_view, "furnSet", OnJsFurnSet);
+		HD_LISTEN(g_view, "camGet", OnJsCamState);
+		HD_LISTEN(g_view, "camSet", OnJsCamSet);
 
 		HD_LISTEN(g_view, "ltGet", OnJsLootGet);
 		HD_LISTEN(g_view, "ltSave", OnJsLootSave);
@@ -7180,6 +7322,54 @@ namespace
 		return g_config.settings.freezeBackdrop;
 	}
 
+	// css-warm-closed (2026-10-15): is the deck's Ultralight ticked OFF the game frame?
+	// Stock PrismaUI runs every Ultralight frame inside the D3D present hook and blocks the
+	// render thread on it, so view work IS game-frame time and the view may only warm its
+	// stylesheets while the deck is open and idle. The rig's private fork (post-FG presenter
+	// v2+, modding/prismaui-postfg-v2) ticks it on a pump thread instead, so a closed deck
+	// can warm them where nobody waits. Recognised by the pump's own log literal in the
+	// loaded PrismaUI.dll's .rdata, and by its ini not switching the pump off. Anything else
+	// (stock, Magelight) answers false and the view keeps the old law.
+	bool PrismaUiPumpLive()
+	{
+		static const bool live = [] {
+			if (UiHostRouter::DeckOnMagelight())
+				return false;
+			const HMODULE mod = GetModuleHandleW(L"PrismaUI.dll");
+			if (!mod)
+				return false;
+			const auto* base = reinterpret_cast<const std::uint8_t*>(mod);
+			const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+			if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+				return false;
+			const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+			if (nt->Signature != IMAGE_NT_SIGNATURE)
+				return false;
+			bool found = false;
+			const auto* sec = IMAGE_FIRST_SECTION(nt);
+			for (unsigned i = 0; i < nt->FileHeader.NumberOfSections && !found; ++i, ++sec) {
+				if (std::memcmp(sec->Name, ".rdata", 6) != 0)
+					continue;
+				const std::string_view rdata(reinterpret_cast<const char*>(base + sec->VirtualAddress), sec->Misc.VirtualSize);
+				found = rdata.find("PostFG pump: thread started") != std::string_view::npos;
+			}
+			if (!found)
+				return false;
+			bool off = false;
+			std::ifstream ini("Data/SKSE/Plugins/PrismaUI-PostFG.ini");
+			for (std::string line; ini && std::getline(ini, line);) {
+				line.erase(std::remove_if(line.begin(), line.end(), [](unsigned char c) { return std::isspace(c); }), line.end());
+				if (line.rfind("bPumpEnabled=", 0) == 0)
+					off = line.size() > 13 && line[13] == '0';
+			}
+			logger::info("css-warm-closed: PrismaUI {} -- the deck {} warm its stylesheets while closed",
+				off ? "is the pump fork with the pump switched OFF" : "ticks Ultralight off the game frame (post-FG pump)",
+				off ? "will NOT" : "may");
+			return !off;
+		}();
+		return live;
+	}
+
 	// hdUiHost: what the Settings "UI renderer" row needs to be honest about —
 	// the saved pick, an ini line that outranks it, what is drawing the deck NOW,
 	// and whether Magelight UI is installed and new enough. Pushed at DOM ready;
@@ -7203,6 +7393,7 @@ namespace
 				{ "ok", st.magelightUsable },
 				{ "min", "0.31.1" } } },
 			{ "note", st.note },
+			{ "uiPump", PrismaUiPumpLive() },   // css-warm-closed
 		};
 		return j.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
@@ -7211,8 +7402,10 @@ namespace
 	{
 		const bool smooth = SmoothPauseOn();
 		// freeze-backdrop: let go BEFORE the focus menu closes, take it again
-		// once a classic (menu) pause is back up. Smooth pause and a live deck
-		// need the world drawn, so they never ask for it.
+		// once a pause is back up. A live (unpaused) deck needs the world drawn,
+		// so it never asks for it. Smooth pause asks too since 2026-10-14: the
+		// backdrop is the inventory's recipe (kCustomRendering + kPausesGame), so
+		// while it is up the game is paused and the world is not drawn either way.
 		FreezeBackdrop::Want(FreezeBackdrop::kDeck, false);
 		g_prisma->Unfocus(g_view);
 		if (!g_prisma->Focus(g_view, wantPaused && !smooth))
@@ -7220,7 +7413,7 @@ namespace
 		g_focusPaused = wantPaused;
 		FreezeWorld(wantPaused && smooth);
 		FreezeBackdrop::SetEnabled(FreezeBackdropSetting());
-		FreezeBackdrop::Want(FreezeBackdrop::kDeck, wantPaused && !smooth);
+		FreezeBackdrop::Want(FreezeBackdrop::kDeck, wantPaused);
 	}
 
 	// Re-focus the view with/without the game pause. Main thread only.
@@ -7725,6 +7918,7 @@ namespace
 	// sync with reality afterwards.
 	void HudApplyVisibility();   // defined with the HUD block below
 	void HudPushConfig();
+	void HudPushFaceFit(bool force);
 	// The other two claimants on the HUD view's Focus, also below: the Time
 	// Dial and compact-browse. The rescue verb has to be able to stand both
 	// down, or "let go of EVERYTHING" would leave a Focused overlay behind.
@@ -7814,6 +8008,84 @@ namespace
 		SetTextInputGuard(false);  // never strand the engine's text-entry refcount
 	}
 
+	// ------------------------------------------------------------ focus-cache --
+	// focus-cache (2026-10-14). PrismaUI's HasFocus() is not a read: it posts a job
+	// to the Ultralight thread and waits for the answer (ViewManager::HasFocus,
+	// ultralightThread.submit(...).get()). While that thread paints the deck
+	// (100-400 ms on an open, 100-200 ms after a keystroke in a search box) the
+	// caller waits the whole paint. Three callers ran on the GAME thread at a steady
+	// beat: the input sink on every frame that had input (OurViewHasKeyboard, so
+	// every mouse-move frame with the deck open waited for the deck's own paint),
+	// the HUD visibility beat every 150 ms, and the 1 s desync watchdog
+	// (watchdog-view-state worst 151 ms in Rober's 2026-10-14 log). They read this
+	// cache instead; a side thread refreshes it every 50 ms and is the only thing
+	// that waits. A stale answer is at most one poll old, which is less than
+	// PrismaUI's own Focus() takes to land (it is queued as well).
+	// Callers that act on a fresh focus change (HpRefocus, the HUD claimants'
+	// "ours" gates) still ask PrismaUI directly.
+	std::atomic<bool> g_kbDeck{ false };
+	std::atomic<bool> g_kbMagic{ false };
+	std::atomic<bool> g_kbHud{ false };
+	std::atomic<bool> g_focusCacheLive{ false };
+
+	bool CachedHasFocus(PrismaView v)
+	{
+		if (!v || !g_prisma)
+			return false;
+		if (g_focusCacheLive.load()) {
+			if (v == g_view)
+				return g_kbDeck.load();
+			if (v == g_magicView)
+				return g_kbMagic.load();
+			if (v == g_hudView)
+				return g_kbHud.load();
+		}
+		return g_prisma->HasFocus(v);
+	}
+
+	void StartFocusCache()
+	{
+		static std::atomic<bool> s_started{ false };
+		if (s_started.exchange(true))
+			return;
+		std::thread([]() {
+			const auto poll = [](PrismaView v) {
+				return v && g_prisma->IsValid(v) && g_prisma->HasFocus(v);
+			};
+			std::int64_t windowStart = OpenDiag::NowMs();
+			std::int64_t worst = 0;
+			std::int64_t total = 0;
+			int          polls = 0;
+			bool         reported = false;
+			for (;;) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
+				if (!g_prisma)
+					continue;
+				const std::int64_t t0 = OpenDiag::NowMs();
+				g_kbDeck  = poll(g_view);
+				g_kbMagic = poll(g_magicView);
+				g_kbHud   = poll(g_hudView);
+				g_focusCacheLive = true;
+				const std::int64_t ms = OpenDiag::NowMs() - t0;
+				worst = (std::max)(worst, ms);
+				total += ms;
+				++polls;
+				// One line a minute, and only when a round trip was slow enough
+				// to have cost a frame (plus the first minute, as proof it runs).
+				// Each slow round trip is a wait the game thread no longer pays.
+				if (t0 - windowStart >= 60000) {
+					if (!reported || worst >= 10)
+						logger::info("focus-cache: {} polls in 60 s, PrismaUI HasFocus round trips worst {} ms, avg {:.1f} ms (waited here, not on the game thread)",  // marker: focus-cache
+							polls, worst, polls ? static_cast<double>(total) / polls : 0.0);
+					reported    = true;
+					windowStart = t0;
+					worst = total = 0;
+					polls = 0;
+				}
+			}
+		}).detach();
+	}
+
 	// Runs on the main thread once a second. Recovers the stranded state WITHOUT
 	// the player having to know a rescue key exists -- which is the whole point:
 	// a lockout the player never sees is better than one they can escape from.
@@ -7843,9 +8115,17 @@ namespace
 		// and a DebugNotification evaporates unseen.
 		if (g_smoothWedgeNotify.load() && g_gameReady.load() && g_smoothWedgeNotify.exchange(false))
 			RE::DebugNotification("SkyManager: smooth pause froze the last session - switched to the classic menu pause (re-enable it in Settings to retry).");
+		{
+			OpenDiag::TickTimer t("watchdog-cursor");
+			CursorKeeper::Tick();
+		}
+		{
+			OpenDiag::TickTimer t("watchdog-mouse");   // mouse-watch: plain reads + the focus cache
+			MouseWatch::Tick();
+		}
 		bool desynced = false;
 		{
-			OpenDiag::TickTimer t("watchdog-view-state");   // PrismaUI IsValid/IsHidden/HasFocus
+			OpenDiag::TickTimer t("watchdog-view-state");   // PrismaUI IsValid/IsHidden + the focus cache
 			desynced = PalettesDesynced();
 		}
 		if (!desynced) {
@@ -7879,7 +8159,7 @@ namespace
 	// misfired through every CHIM conversation.
 	bool ViewStranded(PrismaView v, bool openFlag)
 	{
-		return v && g_prisma && g_prisma->IsValid(v) && !g_prisma->IsHidden(v) && !openFlag;
+		return !openFlag && v && g_prisma && g_prisma->IsValid(v) && !g_prisma->IsHidden(v);
 	}
 
 	// The OTHER stranded state, and the one that actually kept happening:
@@ -7898,7 +8178,7 @@ namespace
 	// open deck owns the keyboard.
 	bool ViewOpenButUnfocused(PrismaView v, bool openFlag)
 	{
-		return v && g_prisma && openFlag && g_prisma->IsValid(v) && !g_prisma->HasFocus(v);
+		return v && g_prisma && openFlag && g_prisma->IsValid(v) && !CachedHasFocus(v);
 	}
 
 	bool PalettesDesynced()
@@ -7917,8 +8197,10 @@ namespace
 	{
 		if (!g_prisma)
 			return false;
-		return (g_view && g_prisma->IsValid(g_view) && g_prisma->HasFocus(g_view)) ||
-		       (g_magicView && g_prisma->IsValid(g_magicView) && g_prisma->HasFocus(g_magicView));
+		// The open flags first: the cache can say "focused" for one poll after a
+		// close, and a stale true here would swallow other mods' input (kStop).
+		return (g_open.load() && g_view && CachedHasFocus(g_view)) ||
+		       (g_magicOpen.load() && g_magicView && CachedHasFocus(g_magicView));
 	}
 
 	// -------------------------------------------------------- text-input guard --
@@ -8679,6 +8961,48 @@ namespace
 			return;
 		}
 
+		// Sanguine's Ledger — the mod's own ST_PrismaLedger toggle. The palette
+		// closes first (Papyrus runs unpaused only, and the mod will not stack
+		// the Ledger on a menu); no reopen, the Ledger is its own view.
+		if (action == "sanguine-ledger") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				ClosePalette();
+				const auto res = json::parse(SanguinesTrade::ToggleLedgerJson(), nullptr, false);
+				if (res.is_object() && !res.value("ok", false)) {
+					const auto msg = res.value("msg", std::string(""));
+					if (!msg.empty())
+						RE::DebugNotification(msg.c_str());
+				}
+			});
+			return;
+		}
+
+		// Gear displays - flip the player's IED displays (ied_control.cpp). The
+		// block is a Papyrus call, so the palette closes first; no reopen.
+		// Camera: flip first / third person right now (scene_camera.cpp). Direct
+		// PlayerCamera calls - they do not need the F key an OStim scene locks.
+		if (action == "scene-camera-toggle") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				ClosePalette();
+				const auto res = json::parse(SceneCamera::ToggleViewJson(), nullptr, false);
+				const auto msg = res.is_object() ? res.value("msg", std::string("")) : std::string("");
+				if (!msg.empty())
+					RE::DebugNotification(msg.c_str());
+			});
+			return;
+		}
+
+		if (action == "ied-toggle-player") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				ClosePalette();
+				const auto res = json::parse(IedControl::TogglePlayerJson(), nullptr, false);
+				const auto msg = res.is_object() ? res.value("msg", std::string("")) : std::string("");
+				if (!msg.empty())
+					RE::DebugNotification(msg.c_str());
+			});
+			return;
+		}
+
 		// Kingdom: Collect Taxes — dispatch into KingdomTaxManager (the mod's
 		// own weekly collection). The result is a notification either way; no
 		// palette reopen (the flow runs in the Papyrus VM — a paused palette
@@ -8862,6 +9186,15 @@ namespace
 			});
 			return;
 		}
+		// Rest — the same dial in its eat / drink / sleep mode.
+		if (action == "rest") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (AnyOpen())
+					ClosePalette();
+				SKSE::GetTaskInterface()->AddTask([]() { TdToggleRest(); });
+			});
+			return;
+		}
 
 		// Scene Alignment — the live overlay. Same discipline as the Time
 		// Dial: close the palette FIRST, take Focus one task later, or the
@@ -9025,6 +9358,24 @@ namespace
 		// in the deck view, so this takes the g_pendingTab -> hdShowTab road.
 		// The four category variants ride an @suffix that HDPotions parses as
 		// the initial pill.
+		// Spellbook: same road as the Potion Browser just below — a popout in
+		// the deck view, deep-opened through hdShowTab.
+		if (action == "spellbook") {
+			SKSE::GetTaskInterface()->AddTask([]() {
+				if (g_open.load()) {
+					if (g_prisma && g_viewReady.load())
+						g_prisma->Invoke(g_view, "hdShowTab(\"spellbook\")");
+					return;
+				}
+				if (!CanOpenNow())
+					return;
+				g_pendingTab = "spellbook";
+				logger::info("spellbook: opening the deck on the Spellbook");   // marker: spellbook-open
+				EnsureViewAndOpen();
+			});
+			return;
+		}
+
 		if (action == "potion-browser" || action == "potions-health" ||
 			action == "potions-magicka" || action == "potions-stamina" ||
 			action == "potions-cure" || action == "potions-poison" ||
@@ -9968,6 +10319,10 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([ok]() {
 			if (g_prisma && g_viewReady.load())
 				g_prisma->Invoke(g_view, ok ? "hdSaved(true)" : "hdSaved(false)");
+			// A framing edited in the deck reaches the HUD strip now, not at
+			// the next launch (marker hud-facefit-push). Change-gated inside.
+			if (ok)
+				HudPushFaceFit(false);
 		});
 	}
 
@@ -9988,6 +10343,14 @@ namespace
 	{
 		const bool on = data && data[0] == '1';
 		SKSE::GetTaskInterface()->AddTask([on]() { TextRaiseOne(on); });
+	}
+
+	// hdMouseBeat: the view saw a mousemove (one call per 1.5 s while the pointer
+	// moves). mouse-watch compares it with the raw motion the sink sees. An
+	// atomic store, nothing else — this runs inline on the Ultralight thread.
+	void OnJsMouseBeat(const char*)
+	{
+		MouseWatch::NoteViewMouse();
 	}
 
 	void OnJsLog(const char* data)
@@ -10987,10 +11350,19 @@ namespace
 	// the same detached-sleep-then-AddTask retry idiom OnJsOpenSpells uses, so a
 	// deliberate click never dead-ends the player on a closed Spell Deck.
 	// Marker: mdOpenDeck-back.
-	void OnJsOpenDeck(const char*)
+	// Payload "spellbook" (the Spell Deck's Spellbook button, 2026-10-14) lands
+	// the main deck on the Spellbook popout — the hd-spellbook action's road
+	// (g_pendingTab -> hdShowTab). Anything else, including the empty string
+	// the "<- Deck" button sends, is the plain hand-back.
+	void OnJsOpenDeck(const char* data)
 	{
-		logger::info("mdOpenDeck-back: Spell Deck -> main deck handoff requested");
-		SKSE::GetTaskInterface()->AddTask([]() { CloseMagicPalette(); });
+		const bool toBook = data && std::string(data) == "spellbook";
+		logger::info("mdOpenDeck-back: Spell Deck -> main deck handoff requested{}", toBook ? " (onto the Spellbook)" : "");   // marker: spellbook-from-spell-deck
+		SKSE::GetTaskInterface()->AddTask([toBook]() {
+			CloseMagicPalette();
+			if (toBook)
+				g_pendingTab = "spellbook";
+		});
 		std::thread([]() {
 			using namespace std::chrono;
 			for (int i = 0; i < 15; ++i) {  // ~1.2 s, then give up loudly
@@ -11006,6 +11378,8 @@ namespace
 				if (g_open.load())
 					return;
 				logger::warn("mdOpenDeck: focus/pause never cleared after ~1.2 s");
+				if (g_pendingTab == "spellbook")
+					g_pendingTab.clear();   // never ambush the next F7 with a stale deep-open
 				// ASCII only -- the notification bar renders the game's own encoding.
 				RE::DebugNotification("Deck unavailable right now - use the F7 key");
 			});
@@ -11506,6 +11880,18 @@ namespace
 			auto bj = json::parse(bx, nullptr, false);
 			if (!bj.is_discarded() && bj.is_object())
 				t["bestiary"] = std::move(bj);
+		}
+		// `mhiyh`: My Home is Your Home NG's day for THIS actor, read off her
+		// own linked refs — null when NG holds nothing for her, absent when NG
+		// is not installed. The roster slice (fdNff) only covers people Follower
+		// Organizer files, so for anyone else (Sol, 2026-10-14: a custom
+		// follower FO never listed) the card set her home and then had nowhere
+		// to read it back from: MarkHome -> true in the log, "no home" on screen.
+		// Marker: fol-target-mhiyh.
+		if (NffBridge::MhiyhAvailable()) {
+			auto mj = json::parse(NffBridge::MhiyhActorJson(actor), nullptr, false);
+			if (!mj.is_discarded())
+				t["mhiyh"] = std::move(mj);
 		}
 		return t.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
@@ -13330,6 +13716,35 @@ namespace
 		PushToView("fdNff", FollowerNffJson(fo));
 	}
 
+	// A "done" reply carries the actor's day AFTER the change (`mhiyh`, the same
+	// slice FolTargetJson sends), so the quick card can show the new home for
+	// someone the fdNff roster push never covers. Anything else passes through.
+	std::string MhiyhDoneWithDay(const std::string& res)
+	{
+		auto j = json::parse(res, nullptr, false);
+		if (!j.is_object() || j.value("phase", std::string()) != "done" || !NffBridge::MhiyhAvailable())
+			return res;
+		std::uint32_t id = 0;
+		if (j.contains("formId")) {
+			const auto& f = j["formId"];
+			if (f.is_number_unsigned())
+				id = f.get<std::uint32_t>();
+			else if (f.is_string()) {
+				try { id = static_cast<std::uint32_t>(std::stoul(f.get<std::string>(), nullptr, 0)); } catch (...) { id = 0; }
+			}
+		}
+		auto* actor = id ? RE::TESForm::LookupByID<RE::Actor>(id) : nullptr;
+		if (!actor)
+			return res;
+		auto mj = json::parse(NffBridge::MhiyhActorJson(actor), nullptr, false);
+		if (mj.is_discarded())
+			return res;
+		logger::info("mhiyh: done reply carries the live day for {:08X} (home {})", id,
+			mj.is_object() && mj.contains("home") && !mj["home"].is_null() ? "set" : "none");
+		j["mhiyh"] = std::move(mj);
+		return j.dump(-1, ' ', false, json::error_handler_t::replace);
+	}
+
 	// What a PHONE-queued day change does when MHiYH finally answers. Byte for
 	// byte what an in-deck click does (see OnJsFolMhiyh below): the open pane
 	// gets the same `fdMhiyhResult` toast and the same repaint, so a change made
@@ -13337,7 +13752,7 @@ namespace
 	// MhiyhControl hops for us before calling this.
 	void PortalMhiyhDone(const std::string& res)
 	{
-		PushToView("fdMhiyhResult", res);
+		PushToView("fdMhiyhResult", MhiyhDoneWithDay(res));
 		PushFollowerNff(FollowerDeck::StateJson());
 	}
 
@@ -13369,7 +13784,7 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([cmd]() {
 			const auto pre = MhiyhControl::Apply(cmd, [](const std::string& res) {
 				// Already back on the main thread — MhiyhControl hops for us.
-				PushToView("fdMhiyhResult", res);
+				PushToView("fdMhiyhResult", MhiyhDoneWithDay(res));
 				const auto fo = FollowerDeck::StateJson();
 				PushFollowerNff(fo);
 			});
@@ -13422,6 +13837,16 @@ namespace
 				return;
 			}
 			PushToView("chConversationResult", NpcActions::ConversationControl(request));
+		});
+	}
+
+	// obReq: the OBody preset for one person. Main thread for the actor and the
+	// Papyrus dispatch; the reply comes back on the main thread as obState.
+	void OnJsObReq(const char* data)
+	{
+		const std::string in = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([in]() {
+			ObodyBridge::Handle(in, [](const std::string& r) { PushToView("obState", r); });
 		});
 	}
 
@@ -13501,8 +13926,11 @@ namespace
 				for (const auto& a : agents) {
 					list.push_back(json{ { "formId", a.formId }, { "name", a.name }, { "base", a.base } });
 				}
+				// `chim:false` = CHIM is not in this game at all: the view stops
+				// asking (no re-warm per wheel/omni open) and its omni rows go
+				// away. Distinct from ok:false, which is a one-off dispatch miss.
 				PushToView("chAgentsResult",
-					json{ { "ok", ok }, { "agents", std::move(list) } }
+					json{ { "ok", ok }, { "chim", ChimControl::Available() }, { "agents", std::move(list) } }
 						.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 			});
 		});
@@ -13560,8 +13988,19 @@ namespace
 		std::string path;
 		if (op == "toggle") {
 			body["group"] = j.value("group", "");
+			// A specific worn piece (the Equipped grid's local id + plugin): Gear
+			// Toggle >= 0.2.0 hides every slot THAT piece occupies instead of a
+			// name-guessed group; an older DLL ignores the two keys and falls
+			// back to the group, so the payload carries both.
+			if (j.contains("item") && j["item"].is_string() && !j["item"].get<std::string>().empty()) {
+				body["item"] = j["item"].get<std::string>();
+				body["itemPlugin"] = j.value("itemPlugin", "");
+				logger::info("gear-toggle: {} {} item {} ({})", hex, body["group"].get<std::string>(),
+					body["item"].get<std::string>(), body["itemPlugin"].get<std::string>());
+			} else {
+				logger::info("gear-toggle: {} {}", hex, body["group"].get<std::string>());
+			}
 			path = "/toggle";
-			logger::info("gear-toggle: {} {}", hex, body["group"].get<std::string>());
 		} else {
 			path = "/state";
 		}
@@ -14937,6 +15376,89 @@ namespace
 				if (!msg.empty())
 					RE::DebugNotification(msg.c_str());
 			}
+		});
+	}
+
+	// F7 card ⇢ Interact popout (interact_actions.h). "state" and "power" answer
+	// with the deck open; "cast" and "ride" hand the game to another mod's
+	// Papyrus / input handler, which run unpaused only, so the palette closes
+	// first and stays closed. Replies: hdInteractState / hdInteractResult; a
+	// refusal after the close is said on the HUD, where the player can read it.
+	void OnJsInteract(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		const auto j = json::parse(req, nullptr, false);
+		const std::string op = (j.is_object()) ? j.value("op", std::string()) : std::string();
+		SKSE::GetTaskInterface()->AddTask([req, op]() {
+			if (op == "state") {
+				// Key doors read their MCM Helper ini first, on a worker (file IO).
+				std::thread([req]() {
+					auto keyWhy = InteractActions::KeyProblems();
+					SKSE::GetTaskInterface()->AddTask([req, keyWhy = std::move(keyWhy)]() {
+						PushToView("hdInteractState", InteractActions::State(req, keyWhy));
+					});
+				}).detach();
+				return;
+			}
+			if (op == "power") {
+				PushToView("hdInteractResult", InteractActions::Power(req));
+				std::thread([req]() {
+					auto keyWhy = InteractActions::KeyProblems();   // file IO: worker
+					SKSE::GetTaskInterface()->AddTask([req, keyWhy = std::move(keyWhy)]() {
+						PushToView("hdInteractState", InteractActions::State(req, keyWhy));
+					});
+				}).detach();
+				return;
+			}
+			if (op != "cast" && op != "ride") {
+				logger::warn("hdInteract: unknown op '{}'", op);
+				return;
+			}
+			const std::string res = op == "cast" ? InteractActions::Cast(req) : InteractActions::RideCheck(req);
+			const auto jr = json::parse(res, nullptr, false);
+			const bool ok = jr.is_object() && jr.value("ok", false);
+			PushToView("hdInteractResult", res);
+			if (!ok) {
+				// The view keeps the popout up on a refusal; say it there.
+				return;
+			}
+			ClosePalette();
+			if (op == "cast" && jr.contains("press") && jr["press"].is_object()) {
+				// A key door: the mod's own hotkey, read on a worker (MCM Helper
+				// ini) or from its GLOB (already read on the main thread), pressed
+				// once the game runs — the mod-key path every key entry uses.
+				const std::string door = jr.value("door", std::string());
+				const long glob = jr["press"].value("glob", 0L);
+				const std::string name = jr.value("name", std::string());
+				std::thread([door, glob, name]() {
+					ModKeys::Spec spec;
+					auto press = InteractActions::KeyPress(door, glob, spec);   // file IO: worker
+					SKSE::GetTaskInterface()->AddTask([press = std::move(press), spec = std::move(spec), name]() mutable {
+						const std::string label = spec.mod + " for " + name;
+						if (!press.ok) {
+							logger::info("mod-key: refused '{}' - {}", label, press.msg);
+							RE::DebugNotification(press.msg.c_str());
+							return;
+						}
+						PressModKeyWhenUnpaused(std::move(press), label, std::move(spec), 0);
+					});
+				}).detach();
+				return;
+			}
+			if (op == "cast")
+				return;   // the cast steps say their own outcome on the HUD
+			std::thread([]() {
+				auto spec = InteractActions::RideAlongSpec();
+				auto press = ModKeys::Resolve(spec, "Ride Along");   // file IO: worker
+				SKSE::GetTaskInterface()->AddTask([press = std::move(press), spec = std::move(spec)]() mutable {
+					if (!press.ok) {
+						logger::info("mod-key: refused 'Ride Along' - {}", press.msg);
+						RE::DebugNotification(press.msg.c_str());
+						return;
+					}
+					PressModKeyWhenUnpaused(std::move(press), "Ride Along", std::move(spec), 0);
+				});
+			}).detach();
 		});
 	}
 
@@ -16393,6 +16915,7 @@ namespace
 	// persists separately, as Widgets::timeDial. g_tdOpenedAt feeds the menus
 	// beat's grace window (see WgApplyHudVisibility).
 	std::atomic<bool>                     g_tdOpen{ false };
+	std::atomic<bool>                     g_tdRest{ false };   // the dial is in Rest mode (eat / drink / sleep)
 	// The live alignment overlay (2026-09-21) — the FOURTH claimant on this
 	// view's Focus, after the reposition editor, the Time Dial and browse mode.
 	std::atomic<bool>                     g_agOpen{ false };
@@ -16506,6 +17029,34 @@ namespace
 	{
 		if (g_prisma && g_hudView && g_hudViewReady.load())
 			g_prisma->Invoke(g_hudView, ("hudConfig(" + HudConfigJson() + ")").c_str());
+	}
+
+	// Face framing for the HUD strip (Rober, 2026-10-14: "i adjusted framing,
+	// zoomed in on generated face pic didnt update in f7 or hud"). The deck
+	// keeps its framing - auto on/off, the K/S defaults, per-render hand
+	// framings, per-face brightness - in the raw shelf.facefit slice and hands
+	// it only to ITS OWN hd-facefit.js. The HUD is a separate view with its
+	// own copy of that module, and nothing ever told it, so a framed face
+	// stayed unframed on the strip forever. Pushed whole at HUD boot and after
+	// every deck save that changed it (marker hud-facefit-push). Main thread.
+	void HudPushFaceFit(bool force)
+	{
+		static std::string s_last;
+		if (!g_prisma || !g_hudView || !g_hudViewReady.load())
+			return;
+		std::string js;
+		{
+			std::lock_guard l(g_configMutex);
+			const json& sh = g_config.shelf;
+			js = (sh.is_object() && sh.contains("facefit") && sh["facefit"].is_object())
+				? sh["facefit"].dump(-1, ' ', false, json::error_handler_t::replace)
+				: std::string("{}");
+		}
+		if (!force && js == s_last)
+			return;
+		s_last = js;
+		logger::info("hud-facefit-push: {} bytes", js.size());
+		g_prisma->Invoke(g_hudView, ("hudFaceFit(" + js + ")").c_str());
 	}
 
 	// Push the follower list, but only when it actually changed — Ultralight
@@ -16646,9 +17197,16 @@ namespace
 			g_prisma->Invoke(g_hudView, ("tdInfo(" + TimeActions::InfoJson() + ")").c_str());
 	}
 
+	void TdPushRest()
+	{
+		if (g_prisma && g_hudView && g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView, ("tdRestState(" + RestActions::StateJson() + ")").c_str());
+	}
+
 	// MAIN THREAD. Show + Focus the HUD view with the dial up. Focus here is
 	// the hud-reposition kind — unpaused, cursor owned by the view.
-	void TdOpenDial()
+	// rest = open in Rest mode (eat / drink / sleep, rest_actions.h).
+	void TdOpenDial(bool rest = false)
 	{
 		if(PhotoStudio::Editing())PortraitCapture::PhotoCancel();
 		OdCloseDock(false);
@@ -16668,10 +17226,15 @@ namespace
 		if (g_hudEditing.exchange(false))
 			g_prisma->Invoke(g_hudView, "hudEdit(\"0\")");
 		g_tdOpen = true;
+		g_tdRest = rest;
 		g_tdOpenedAt = std::chrono::steady_clock::now();
-		logger::info("time-dial: open");   // marker: time-dial-open
+		logger::info("time-dial: open{}", rest ? " (rest)" : "");   // marker: time-dial-open
 		g_prisma->Show(g_hudView);
 		g_prisma->Invoke(g_hudView, ("tdState(" + Widgets::TimeDialJson() + ")").c_str());
+		// Mode before tdShow: show() lays the dial out for the mode it is in.
+		g_prisma->Invoke(g_hudView, rest ? "tdMode(\"rest\")" : "tdMode(\"wait\")");
+		if (rest)
+			TdPushRest();
 		TdPushInfo();
 		g_prisma->Invoke(g_hudView, "tdShow(\"1\")");
 		// focus menu ON — it is the CURSOR menu; disabling it is the frozen-
@@ -16685,6 +17248,7 @@ namespace
 	{
 		if (!g_tdOpen.exchange(false))
 			return;
+		g_tdRest = false;
 		logger::info("time-dial: closed");
 		if (g_prisma && g_hudView && g_hudViewReady.load()) {
 			if (!fromView)
@@ -16701,6 +17265,21 @@ namespace
 			TdCloseDial(false);
 		else
 			TdOpenDial();
+	}
+
+	// The Rest key on an open dial: close it if it is already resting, else
+	// switch the open dial over to Rest rather than flashing it shut.
+	void TdToggleRest()
+	{
+		if (!g_tdOpen.load()) {
+			TdOpenDial(true);
+		} else if (g_tdRest.load()) {
+			TdCloseDial(false);
+		} else if (g_prisma && g_hudView && g_hudViewReady.load()) {
+			g_tdRest = true;
+			g_prisma->Invoke(g_hudView, "tdMode(\"rest\")");
+			TdPushRest();
+		}
 	}
 
 	// ==================================== OStim: the live alignment overlay ===
@@ -18614,6 +19193,39 @@ namespace
 		SKSE::GetTaskInterface()->AddTask([]() { TdCloseDial(true); });
 	}
 
+	// Rest mode. tdRestGet -> tdRestState (SunHelm's needs, the hours to
+	// rested, where you are); tdRest({eat,drink,sleep,hours}) -> a refusal
+	// in tdResult while the dial stays up, or the dial closes and
+	// RestActions runs SunHelm's own functions around the clock jump.
+	// tdMode(name) is the view saying which mode it switched itself to.
+	void OnJsTdRestGet(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { TdPushRest(); });
+	}
+
+	void OnJsTdMode(const char* data)
+	{
+		const bool rest = data && std::string_view(data) == "rest";
+		SKSE::GetTaskInterface()->AddTask([rest]() { g_tdRest = rest; });
+	}
+
+	void OnJsTdRest(const char* data)
+	{
+		const std::string req = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			RestActions::Plan plan;
+			std::string err;
+			if (!RestActions::Check(req, plan, err)) {
+				if (g_prisma && g_hudView && g_hudViewReady.load())
+					g_prisma->Invoke(g_hudView, ("tdResult(" + json{ { "ok", false }, { "msg", err } }.dump() + ")").c_str());
+				return;
+			}
+			// Papyrus runs unpaused only: the dial's pausing Focus goes first.
+			TdCloseDial(false);
+			SKSE::GetTaskInterface()->AddTask([plan]() { RestActions::Run(plan); });
+		});
+	}
+
 	// ---- the alignment overlay (2026-09-21) ----
 	// Every one of these hops to the MAIN thread first: they all touch the
 	// OStim thread API and live forms.
@@ -18786,6 +19398,7 @@ namespace
 	void HudPushBoot(const char* whence)
 	{
 		HudPushConfig();
+		HudPushFaceFit(true);
 		HudPushData(true);
 		PortraitCapture::RefreshPhotoLights();
 		HudApplyVisibility();
@@ -18943,6 +19556,9 @@ namespace
 			{ "outfitDock", outfitDock },
 			{ "wardrobeWheel", std::move(ww) },   // marker: wardrobe-wheel-uie-state
 			{ "widgets", std::move(w) },
+			// Community Shaders' overlay as far as the FPS meter can tell
+			// (tracked, see fps_meter.h) — the Home > UI Elements row's pill.
+			{ "csOverlay", json::parse(FpsMeter::CsJson(), nullptr, false) },
 		}.dump(-1, ' ', false, json::error_handler_t::replace);
 	}
 
@@ -19008,6 +19624,46 @@ namespace
 			HudApplyVisibility();
 			PushToView("hdUiStateData", UiStateJson());
 		});
+	}
+
+	// Main thread. Both surfaces that draw the overlay switch get the tracked
+	// state: the deck's UI Elements row and the HUD (shelf + edit card).
+	void FpsPushCsState()
+	{
+		if (g_prisma && g_hudView && g_hudViewReady.load())
+			g_prisma->Invoke(g_hudView, ("window.fpsCs&&fpsCs(" + FpsMeter::CsJson() + ")").c_str());
+		PushToView("hdUiStateData", UiStateJson());
+	}
+
+	// {op:"toggle"|"on"|"off"} presses CS's own overlay key (FpsMeter);
+	// {op:"auto", value:bool} is "turn it on when the game loads".
+	void OnJsCsOverlay(const char* data)
+	{
+		const auto j = json::parse(data ? data : "", nullptr, false);
+		if (!j.is_object())
+			return;
+		const std::string op = j.value("op", std::string());
+		if (op == "auto") {
+			const bool on = j.value("value", false);
+			SKSE::GetTaskInterface()->AddTask([on]() {
+				Widgets::SetFpsCsAuto(on);
+				WgPushConfig();
+				FpsPushCsState();
+			});
+			return;
+		}
+		if (op == "toggle")
+			FpsMeter::CsToggle();
+		else if (op == "on" || op == "off")
+			FpsMeter::CsSet(op == "on");
+		else
+			return;
+		// The state flips when the input sink sees the key come back up
+		// (~100 ms after the press): answer once it has.
+		std::thread([]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(450));
+			SKSE::GetTaskInterface()->AddTask([]() { FpsPushCsState(); });
+		}).detach();
 	}
 
 	void OnJsHudCfg(const char* data)
@@ -19384,6 +20040,7 @@ namespace
 		});
 		HD_LISTEN(g_hudView, "hudReady", OnJsHudReady);
 		HD_LISTEN(g_hudView, "photoStudioRequest", OnJsPhotoStudio);
+		HD_LISTEN(g_hudView, "hdCsOverlay", OnJsCsOverlay);   // the FPS widget's shelf / edit card
 		/* The HUD's equipment and pinned-item tiles want the SAME rendered art
 		 * the deck's own grids use, so the widget view has to be able to ASK.
 		 * Registering the existing handler here rather than writing a second
@@ -19425,6 +20082,9 @@ namespace
 		HD_LISTEN(g_hudView, "tdGet", OnJsTdGet);
 		HD_LISTEN(g_hudView, "tdWait", OnJsTdWait);
 		HD_LISTEN(g_hudView, "tdClose", OnJsTdClose);
+		HD_LISTEN(g_hudView, "tdRestGet", OnJsTdRestGet);
+		HD_LISTEN(g_hudView, "tdRest", OnJsTdRest);
+		HD_LISTEN(g_hudView, "tdSetMode", OnJsTdMode);
 		HD_LISTEN(g_hudView, "agGet", OnJsAgGet);
 		HD_LISTEN(g_hudView, "agAdjust", OnJsAgAdjust);
 		HD_LISTEN(g_hudView, "agClose", OnJsAgClose);
@@ -20755,7 +21415,7 @@ namespace
 		const bool paused = ui && ui->GameIsPaused();
 		auto*      pc = RE::PlayerCharacter::GetSingleton();
 		const bool noWorld = !pc || !pc->GetParentCell();
-		const bool hudHasFocus = g_prisma && g_hudView && g_prisma->HasFocus(g_hudView);
+		const bool hudHasFocus = g_hudView && CachedHasFocus(g_hudView);   // focus-cache: this beat runs every 150 ms
 		const bool otherMenu = ui && (ui->IsItemMenuOpen() || ui->IsApplicationMenuOpen() ||
 			ui->IsMenuOpen(RE::JournalMenu::MENU_NAME) || ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) ||
 			(ui->IsModalMenuOpen() && !hudHasFocus));
@@ -21100,6 +21760,121 @@ namespace
 		logger::info("crt-alert: view created + listener registered");
 	}
 
+	// ---------------------------------------------------- Furniture picker view
+	// fpPick({key}) — the player's choice; fpPoll — "have my renders landed?".
+	// Both only mean something while FurniturePick has a prompt open.
+	void OnJsFpPick(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() { FurniturePick::OnPick(payload); });
+	}
+
+	void OnJsFpPoll(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			if (!FurniturePick::Active() || !g_prisma || !g_fpView || !g_fpViewReady.load())
+				return;
+			g_prisma->Invoke(g_fpView, ("fpRenders(" + FurniturePick::IconsJson() + ")").c_str());
+		});
+	}
+
+	void CreateFurnitureView()
+	{
+		if (!g_prisma || g_fpView)
+			return;
+		if (!ViewFileOnDisk("HotkeyDeck/furn-pick.html")) return;
+		g_fpView = g_prisma->CreateView("HotkeyDeck/furn-pick.html", [](PrismaView v) {
+			g_fpViewReady = true;
+			g_prisma->Hide(v);   // hidden until a prompt arrives, like the alert
+			logger::info("furniture-pick view DOM ready (handle {})", v);
+		});
+		HD_LISTEN(g_fpView, "fpPick", OnJsFpPick);
+		HD_LISTEN(g_fpView, "fpPoll", OnJsFpPoll);
+
+		FurniturePick::Host host;
+		host.ready = []() { return g_prisma && g_fpView && g_fpViewReady.load() && g_gameReady.load(); };
+		host.show = [](const std::string& payload) {
+			if (!g_prisma || !g_fpView || !g_fpViewReady.load())
+				return false;
+			// The deck owns the screen if it is up: stand it down first.
+			if (AnyOpen())
+				ClosePalette();
+			g_prisma->Show(g_fpView);
+			const bool ok = g_prisma->Focus(g_fpView, /*pauseGame=*/true);   // modal: pause + own the mouse
+			if (!ok) {
+				g_prisma->Hide(g_fpView);
+				return false;
+			}
+			g_prisma->Invoke(g_fpView, ("fpShow(" + payload + ")").c_str());
+			return true;
+		};
+		host.hide = []() {
+			if (g_prisma && g_fpView) {
+				g_prisma->Invoke(g_fpView, "fpHide()");
+				g_prisma->Unfocus(g_fpView);
+				g_prisma->Hide(g_fpView);
+			}
+		};
+		// Faces for the add-actor picker: the uploaded portrait the rest of the deck
+		// would show (matched by name slug, exactly as the roster does), else the
+		// facegen head render through the SAME resolver the Followers tab uses
+		// (queued when missing; ItemIcons dedupes per session).
+		host.faces = [](const std::vector<std::uint32_t>& ids) {
+			json out = json::object();
+			std::map<std::string, std::string> bySlug;
+			{
+				const json parr = json::parse(FolPortraitsJson(), nullptr, false);
+				if (parr.is_array())
+					for (const auto& p : parr)
+						if (p.is_object() && p.contains("slug") && p["slug"].is_string())
+							bySlug[p["slug"].get<std::string>()] = p.value("file", std::string());
+			}
+			const bool mrf = ItemIcons::Available();
+			for (const auto id : ids) {
+				auto* a = RE::TESForm::LookupByID<RE::Actor>(id);
+				if (!a)
+					continue;
+				json        row{ { "portrait", "" }, { "face", "" }, { "pending", false } };
+				std::string baseName, dispName;
+				if (auto* b = a->GetActorBase(); b && b->GetName())
+					baseName = b->GetName();
+				if (const char* d = a->GetDisplayFullName(); d && *d)
+					dispName = d;
+				for (const std::string& nm : { dispName, baseName }) {
+					if (nm.empty())
+						continue;
+					const std::string slug = PortraitCapture::SlugOfName(nm);
+					if (auto it = bySlug.find(slug); !slug.empty() && it != bySlug.end() && !it->second.empty()) {
+						row["portrait"] = "portraits/" + it->second;
+						break;
+					}
+				}
+				const std::string hex = ActorIdentity::HexOf(id);
+				json              icons = json::object(), fq = json::array(), bq = json::array();
+				ResolveFaceQueuesForIds({ hex }, icons, fq, bq);
+				if (icons.contains(hex) && icons[hex].is_string()) {
+					row["face"] = icons[hex].get<std::string>();
+				} else if (mrf && (!fq.empty() || !bq.empty())) {
+					row["pending"] = true;
+					if (!fq.empty())
+						ItemIcons::EnsureFaceIcons(json{ { "items", std::move(fq) } }.dump(-1, ' ', false, json::error_handler_t::replace));
+					else
+						ItemIcons::EnsureBodyIcons(json{ { "items", std::move(bq) } }.dump(-1, ' ', false, json::error_handler_t::replace));
+				}
+				// An uploaded portrait is the answer: no render to wait for.
+				if (!row["portrait"].get<std::string>().empty())
+					row["pending"] = false;
+				char key[16];
+				std::snprintf(key, sizeof(key), "%08X", id);
+				out[key] = std::move(row);
+			}
+			return out.dump(-1, ' ', false, json::error_handler_t::replace);
+		};
+		FurniturePick::SetHost(std::move(host));
+		FurniturePick::Install();
+		logger::info("furniture-pick: view created + listeners registered");
+	}
+
 	// Minimal JSON string escape for the two fields handed to the view.
 	std::string CaJsonEsc(const std::string& s)
 	{
@@ -21229,6 +22004,8 @@ namespace
 			std::uint32_t sinceWgVis = 0;
 			std::uint32_t sinceAi   = 0;
 			std::uint32_t sinceWard = 0;
+			std::uint32_t sinceFps  = 0;
+			std::uint32_t sinceCsAuto = 0;
 
 			// PERF (2026-08-16): the 50 ms beat exists for ONE consumer — the
 			// modifier page swap, which has to feel instant. That branch is below
@@ -21354,6 +22131,37 @@ namespace
 					}
 				} else {
 					sinceWg = 0;
+				}
+				// The FPS widget (fps_meter.h) has its OWN beat at the rate the
+				// player picked (500/1000/2000 ms, all multiples of both periods)
+				// and its own push, `fpsPush`, which writes three text nodes. It
+				// never rides wgLive: a number that moves every second would make
+				// every wgLive string differ and rebuild the whole widget layer.
+				if (viewUp && FpsMeter::Wanted()) {
+					sinceFps += periodMs;
+					if (sinceFps >= static_cast<std::uint32_t>(FpsMeter::RateMs())) {
+						sinceFps = 0;
+						SKSE::GetTaskInterface()->AddTask([]() {
+							if (!g_prisma || !g_hudView || !g_hudViewReady.load())
+								return;
+							const std::string js = FpsMeter::SampleJson(false);
+							if (!js.empty())
+								g_prisma->Invoke(g_hudView, ("window.fpsPush&&fpsPush(" + js + ")").c_str());
+						});
+					}
+				} else {
+					sinceFps = 0;
+				}
+				// "Turn the Community Shaders overlay on when the game loads":
+				// a 300 ms look until it has pressed once this launch.
+				if (FpsMeter::CsAutoPending() && g_gameReady.load()) {
+					sinceCsAuto += periodMs;
+					if (sinceCsAuto >= 300) {
+						sinceCsAuto = 0;
+						SKSE::GetTaskInterface()->AddTask([]() { FpsMeter::CsAutoTick(); });
+					}
+				} else {
+					sinceCsAuto = 0;
 				}
 				// ⚠ WgApplyHudVisibility() is NOT a widgets-only job and must not
 				// ride a widgets flag (widgets-vis-split, 2026-08-19). It pushes
@@ -24079,6 +24887,25 @@ namespace
 		});
 	}
 
+	// Music tab (mu*). AddTask'd — the music manager, the Papyrus dispatch
+	// and the Music sound category are main-thread engine state; the stream
+	// itself runs on music_player.cpp's own worker.
+	void OnJsMuState(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("muStateData", MusicPlayer::StateJson(req));
+		});
+	}
+
+	void OnJsMuSet(const char* data)
+	{
+		const std::string req = data ? data : "{}";
+		SKSE::GetTaskInterface()->AddTask([req]() {
+			PushToView("muResult", MusicPlayer::SetJson(req));
+		});
+	}
+
 	// Inventory tab (iv*). AddTask'd — every one walks the player's inventory
 	// or touches the equip manager, which is main-thread engine state. A verb
 	// answers ivResult and then a fresh ivListData, so the page never shows a
@@ -24959,6 +25786,116 @@ namespace
 		});
 	}
 
+	// Spellbook (hd-spellbook.js) — the personal catalog. It implements no
+	// mechanics: Cast and EquipToggle are the Spell Deck's play-proven verbs,
+	// and every identity off the wire is checked against the live spellbook
+	// first (IsKnown, the mdCastNow rule). A cast closes the deck so the spell
+	// lands in the live world; the view reopens itself on the next deck open.
+	// AddTask lambdas run outside HD_LISTEN's guard, so each carries its own.
+	void OnJsSpellbookOpen(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			try {
+				PushToView("sbState", Spellbook::StateJson());
+			} catch (const std::exception& e) {
+				logger::error("spellbook: state threw: {}", e.what());
+				PushToView("sbState", R"({"known":[],"equip":{},"doc":null,"msg":"The spellbook could not be read. Reopen it to try again."})");
+			}
+		});
+	}
+
+	void OnJsSpellbookSave(const char* data)
+	{
+		// Validation + the in-memory copy happen here; the disk write is the
+		// module's own worker. The reply rides a task like every other push.
+		std::string res = Spellbook::Save(data ? data : "");
+		SKSE::GetTaskInterface()->AddTask([res = std::move(res)]() { PushToView("sbSaved", res); });
+	}
+
+	void OnJsSpellbookDesc(const char* data)
+	{
+		const auto j = json::parse(data ? data : "", nullptr, false);
+		if (!j.is_object() || !j.contains("plugin") || !j["plugin"].is_string() ||
+			!j.contains("localId") || !j["localId"].is_number_unsigned() ||
+			!j.contains("formId") || !j["formId"].is_number_unsigned())
+			return;
+		const std::string   plugin = j["plugin"].get<std::string>();
+		const std::uint32_t localId = j["localId"].get<std::uint32_t>();
+		const std::uint32_t formId = j["formId"].get<std::uint32_t>();
+		// `key` is the view's correlation token (its spell key), echoed back so
+		// a fast hover across rows can never paint one spell's numbers on another.
+		const std::string   key = j.contains("key") && j["key"].is_string() ? j["key"].get<std::string>() : "";
+		SKSE::GetTaskInterface()->AddTask([plugin, localId, formId, key]() {
+			try {
+				auto r = json::parse(SpellActions::DescriptionJson(plugin, localId, plugin.empty() ? formId : 0), nullptr, false);
+				if (!r.is_object())
+					r = json{ { "ok", false } };
+				r["key"] = key;
+				PushToView("sbDescData", r.dump(-1, ' ', false, json::error_handler_t::replace));
+			} catch (const std::exception& e) {
+				logger::error("spellbook: description threw: {}", e.what());
+			}
+		});
+	}
+
+	void OnJsSpellbookAct(const char* data)
+	{
+		const auto j = json::parse(data ? data : "", nullptr, false);
+		if (!j.is_object() || !j.contains("op") || !j["op"].is_string() ||
+			!j.contains("plugin") || !j["plugin"].is_string() ||
+			!j.contains("localId") || !j["localId"].is_number_unsigned() ||
+			!j.contains("formId") || !j["formId"].is_number_unsigned()) {
+			logger::warn("sbAct: bad payload");
+			return;
+		}
+		const std::string   op = j["op"].get<std::string>();
+		const std::string   plugin = j["plugin"].get<std::string>();
+		const std::uint32_t localId = j["localId"].get<std::uint32_t>();
+		const std::uint32_t formId = plugin.empty() ? j["formId"].get<std::uint32_t>() : 0;
+		const std::string   hand = j.contains("hand") && j["hand"].is_string() ? j["hand"].get<std::string>() : "right";
+		const std::string   key = j.contains("key") && j["key"].is_string() ? j["key"].get<std::string>() : "";
+		// "After casting: come back here" — reopen the deck once the cast has
+		// really happened (Cast's onDone: after the delayed shout key for a
+		// voice item), and the view reopens the book on that open.
+		const bool          reopen = j.contains("reopen") && j["reopen"].is_boolean() && j["reopen"].get<bool>();
+		if ((op != "cast" && op != "equip") || (hand != "left" && hand != "right" && hand != "both")) {
+			logger::warn("sbAct: refused op '{}' hand '{}'", op, hand);
+			return;
+		}
+		SKSE::GetTaskInterface()->AddTask([op, plugin, localId, formId, hand, key, reopen]() {
+			try {
+				if (!SpellActions::IsKnown(plugin, localId, formId)) {
+					PushToView("sbActResult", json{ { "ok", false }, { "key", key }, { "op", op },
+						{ "msg", "That spell is no longer learned." } }.dump(-1, ' ', false, json::error_handler_t::replace));
+					return;
+				}
+				if (op == "equip") {
+					auto r = json::parse(SpellActions::EquipToggle(plugin, localId, formId, hand), nullptr, false);
+					if (!r.is_object())
+						r = json{ { "ok", false }, { "msg", "Equip failed." } };
+					r["key"] = key;
+					r["op"] = op;
+					logger::info("spellbook: equip {} hand -> {}", hand, r.value("ok", false));   // marker: spellbook-equip
+					PushToView("sbActResult", r.dump(-1, ' ', false, json::error_handler_t::replace));
+					return;
+				}
+				logger::info("spellbook: cast (closes the deck)");   // marker: spellbook-cast
+				ClosePalette();   // unpause first, so the spell fires into the live world
+				std::function<void()> onDone;
+				if (reopen)
+					onDone = []() {
+						SKSE::GetTaskInterface()->AddTask([]() {
+							if (CanOpenNow())
+								OpenPalette();
+						});
+					};
+				SpellActions::Cast(plugin, localId, formId, std::move(onDone));
+			} catch (const std::exception& e) {
+				logger::error("spellbook: act threw: {}", e.what());
+			}
+		});
+	}
+
 	void OnJsNpcInspect(const char* data)
 	{
 		const std::string req = data ? data : "{}";
@@ -25680,6 +26617,14 @@ namespace
 	{
 		const std::string payload = data ? data : "";
 		SKSE::GetTaskInterface()->AddTask([payload]() {
+			// The carried Sanguine's Ledger opens the Ledger (WheelMenu::Use owns
+			// that verb); the Ledger is Papyrus, so the deck steps aside first.
+			{
+				const auto req = json::parse(payload, nullptr, false);
+				if (req.is_object() && req.value("op", std::string("")) == "use" &&
+					SanguinesTrade::IsLedgerItem(req.value("formId", std::string("")), req.value("plugin", std::string(""))))
+					ClosePalette();
+			}
 			const std::string res = WheelMenu::Use(payload);
 			// The wheel closes the deck the moment a wedge fires, so the answer
 			// can NOT be a view toast — the view is already gone. It goes on
@@ -25854,6 +26799,48 @@ namespace
 			PushToView("kgActResult", res);
 			PushToView("kgStateResult", HighKing::StateJson());
 		});
+	}
+
+	// iedGet: the gear-display picture (ied_control.cpp) for the Settings group
+	// and the Scene page's quick row. Reply name iedState (one name per direction).
+	void OnJsIedState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() {
+			PushToView("iedState", IedControl::StateJson());
+		});
+	}
+
+	// iedSet({key:"playerShown"|"hideNpcs"|"hidePlayer", value:bool}): one switch.
+	// The reply is the fresh state with {ok,msg} folded in.
+	void OnJsIedSet(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() {
+			PushToView("iedState", IedControl::SetJson(payload));
+		});
+	}
+
+	// furnGet / furnSet: the furniture picker's Settings switch (furniture_pick.cpp).
+	// Reply name furnState (one name per direction).
+	void OnJsFurnState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { PushToView("furnState", FurniturePick::StateJson()); });
+	}
+	void OnJsFurnSet(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() { PushToView("furnState", FurniturePick::SetJson(payload)); });
+	}
+
+	// camGet / camSet: the scene-camera Settings switch (scene_camera.cpp). Reply camState.
+	void OnJsCamState(const char*)
+	{
+		SKSE::GetTaskInterface()->AddTask([]() { PushToView("camState", SceneCamera::StateJson()); });
+	}
+	void OnJsCamSet(const char* data)
+	{
+		const std::string payload = data ? data : "";
+		SKSE::GetTaskInterface()->AddTask([payload]() { PushToView("camState", SceneCamera::SetJson(payload)); });
 	}
 
 	// ltState: live glow counts for the pane's readout. Read-only; reply name
@@ -29174,6 +30161,10 @@ namespace
 			// all — pre-scan for one and leave before touching the lock. Pure
 			// early-out: a batch that DOES carry a button event behaves exactly as
 			// before. This is the "floaty mouse" candidate, so keep it first.
+			// mouse-watch: count raw mouse moves and note the last keyboard press
+			// BEFORE the early-out below — the moves are exactly the batches it
+			// skips. Two atomics per batch, no lock.
+			MouseWatch::NoteInputBatch(a_events);
 			bool anyButton = false;
 			for (auto e = *a_events; e; e = e->next) {
 				if (e->AsButtonEvent()) {
@@ -29227,6 +30218,10 @@ namespace
 						else if (btn->IsPressed())
 							NoteHeld(dev == RE::INPUT_DEVICE::kKeyboard, btn->GetIDCode(), true);
 					}
+					// Community Shaders' overlay key, seen the way CS sees it, so
+					// the FPS widget's tracked overlay state survives a press by hand.
+					if (dev == RE::INPUT_DEVICE::kKeyboard)
+						FpsMeter::NoteKey(btn->GetIDCode(), btn->IsDown(), btn->IsUp());
 				}
 				// --- photo mode suppresses other SkyManager shortcuts -----------
 				// FIRST, deliberately: everything below assumes a palette is open
@@ -29910,9 +30905,16 @@ namespace
 		if (message->type == SKSE::MessagingInterface::kSaveGame) {
 			FormationActions::OnGameSaved();
 			Bestiary::Flush();   // a debounced bestiary.json write lands with the save
+			MusicPlayer::OnGameLoading();   // a held music type does not survive the load
 		}
 		if (message->type == SKSE::MessagingInterface::kPostLoadGame) {
 			if (message->data) SKSE::GetTaskInterface()->AddTask([] { FormationActions::OnGameLoaded(); });
+			SKSE::GetTaskInterface()->AddTask([] { MusicPlayer::OnGameLoaded(); });
+			if (message->data)   // after Carry Me's own OnInit has had its turn
+				std::thread([]() {
+					std::this_thread::sleep_for(std::chrono::seconds(6));
+					SKSE::GetTaskInterface()->AddTask([] { InteractActions::OnGameLoaded(); });
+				}).detach();
 			BroomCleanup::Reset();
 			if (message->data)  // data = "the load succeeded"
 				g_gameReady = true;
@@ -29930,6 +30932,9 @@ namespace
 			WardrobeFlair::OnLoad();
 			NpcActions::RestoreConversationsAfterLoad();
 			NpcClearance::OnPostLoadGame();   // releases anyone still held from the sidecar
+			IedControl::OnPostLoadGame();     // releases IED blocks a crash left, re-asserts the player toggle
+			FurniturePick::OnPostLoadGame();  // an open furniture picker is released with its default
+			SceneCamera::OnPostLoadGame();
 			// Second drop of Wintersun's cached tracker: kPreLoadGame already
 			// cleared it, but anything that re-bound DURING the load would hold a
 			// handle from the outgoing session.
@@ -30057,6 +31062,12 @@ namespace
 		}
 		if (message->type == SKSE::MessagingInterface::kNewGame) {
 			SKSE::GetTaskInterface()->AddTask([] { FormationActions::OnGameLoaded(); });
+			MusicPlayer::OnGameLoading();
+			SKSE::GetTaskInterface()->AddTask([] { MusicPlayer::OnGameLoaded(); });
+			std::thread([]() {
+				std::this_thread::sleep_for(std::chrono::seconds(10));
+				SKSE::GetTaskInterface()->AddTask([] { InteractActions::OnGameLoaded(); });
+			}).detach();
 			AppearancePresets::ResetForLoad();
 			PartyRecall::Reset();
 			OdCloseDock(false);
@@ -30085,6 +31096,30 @@ namespace
 		ConsumeSmoothWedgeFlag();
 		FreezeBackdrop::Install();   // the inventory's frozen background, for a paused deck
 		FreezeBackdrop::SetEnabled(FreezeBackdropSetting());
+		StartFocusCache();   // focus-cache: PrismaUI focus answers off the game thread
+		CursorKeeper::Install(
+			[]() { return (g_open.load() || g_magicOpen.load()) && !g_openInFlight.load(); },
+			[]() {
+				return g_prisma && ((g_view && g_prisma->HasFocus(g_view)) ||
+				                    (g_magicView && g_prisma->HasFocus(g_magicView)));
+			});
+		MouseWatch::Install({
+			/* paletteOpen */ []() { return (g_open.load() || g_magicOpen.load()) && !g_openInFlight.load(); },
+			/* mainDeckFocused */ []() { return g_open.load() && g_view && CachedHasFocus(g_view); },
+			/* anyDeckFocused */ []() {
+				return (g_open.load() && g_view && CachedHasFocus(g_view)) ||
+				       (g_magicOpen.load() && g_magicView && CachedHasFocus(g_magicView));
+			},
+			/* recentMenus */ []() { return CursorKeeper::RecentMenus(10000); },
+			/* deckState */ []() {
+				return std::string("capture=") + (g_capturing.load() ? (g_captureModal.load() ? "modal" : "key") : "none") +
+				       " textRaises=" + std::to_string(g_textRaises.load()) +
+				       " paused=" + (g_focusPaused.load() ? "yes" : "no");
+			},
+			/* refocus */ []() {
+				if (g_open.load() && g_view && !g_openInFlight.load())
+					FocusDeck(g_focusPaused.load());
+			} });
 		PortraitCapture::InstallPresentGrab();  // frame grabs run on the present thread (upscaler-safe)
 		PhotoInputGate::Install([]() -> PhotoInputGate::DeckKey {
 			std::lock_guard lock(g_configMutex);
@@ -30100,6 +31135,7 @@ namespace
 		ContainerSort::Init();     // drop-box sort-on-close + crafting-loan sinks
 		RoomGuard::Init();     // Rooms tab backend (claim volumes + eviction marker)
 		WeatherHub::Init();    // Weather tab: favourites + a saved weather lock
+		MusicPlayer::Init();   // Music tab: favourites, recents, the stream tools
 		SmfIndex::Init();      // SKSE Menu Framework host window (Omni "Mod menus")
 		SmfWidget::Init();     // draggable "Mod Menus" button on the Esc menu
 		IniMods::SnapshotAtLaunch();  // what IHarvest NG & co. read at startup (Mod settings popout)
@@ -30122,6 +31158,8 @@ namespace
 		NpcTune::ReapplyAll();
 		AutoLoot::Init();      // Auto-Loot backend (loose-ref vacuum; providers wired in StartExtBridge)
 		NoAutoGear::Init();    // No Auto-Gear: strip distributor cloaks/hoods/underwear from tagged NPCs
+		IedControl::Init();    // gear displays: sidecar + OStim scene events (auto-hide)
+		SceneCamera::Init();   // OStim scene camera: state log + F/wheel unlock
 		// SPID Gear: inbox chest → per-NPC SPID ini (F7 card). The callback runs
 		// on the main thread when the inbox's transfer menu closes: read the
 		// chest, persist, rewrite the ini, tell the card.
@@ -30180,7 +31218,7 @@ namespace
 		// is up. The engine's own paused flag misses that under smooth pause (the
 		// default: unpaused + sgtm 0), which had the Settlement tab dribbling in
 		// renders at one per 400 ms while the player stared at the list.
-		ItemIcons::SetPaletteOpenProbe([]() { return g_open.load() || g_magicOpen.load(); });
+		ItemIcons::SetPaletteOpenProbe([]() { return g_open.load() || g_magicOpen.load() || FurniturePick::Active(); });
 		ItemIcons::SetOnBatchDone([]() {
 			PushToView("wdItemIcons", ItemIcons::IndexJson());
 			// Face renders ride the same queue; the NPCs pane listens for this.
@@ -30290,6 +31328,7 @@ namespace
 		// CRT Guard alert view — created here too so it is ready the moment the
 		// (separate) CRT Guard plugin catches a crash and calls SkyManager_CrtAlert.
 		CreateAlertView();
+		CreateFurnitureView();   // our own picker for OStim's furniture prompts
 
 		if (auto idm = RE::BSInputDeviceManager::GetSingleton()) {
 			idm->AddEventSink(OpenKeySink::GetSingleton());

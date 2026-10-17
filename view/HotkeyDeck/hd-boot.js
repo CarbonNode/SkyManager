@@ -91,6 +91,8 @@
     'hd-spidgear.js',
     'hd-outfit.js',
     'hd-quests.js',
+    'hd-interact.js',     // F7 card ⇢ Interact popout (Carry Me, Ride Along); replies are response-style
+    'hd-obody.js',        // F7 card Equipped box: OBody body preset + picker; obState is response-style
     // ---- the heavy priority panes, first among the big files (DR1) ----
     'get-away.js',
     'hd-osis.js',         // shared OSIS owner-settings panel
@@ -178,6 +180,10 @@
     'hd-procession.js',   // Procession modal (Royal Procession + Royal Retinue). rpxOpen /
                           // rpxResult are response-style (the modal always asks first), so
                           // no STUB_FNS entry; an Omni-provider module like hd-places.
+    'hd-spellbook.js',     // Spellbook popout (Home > UI Elements, hd-spellbook action).
+                           // sb* replies are response-style (the book asks sbOpen
+                           // first), so no STUB_FNS entry; a racing deep-open parks
+                           // on __hdPendingSpellbook (app.js router).
     'hd-bestiary.js',      // the Bestiary popout (bx* bridge; hdBestiaryOpen is pushed unprompted)
     'loadouts-pane.js',    // Follower Loadouts; owns tab 'loadouts'. Depends on
                            // hd-face.js + hd-itempick.js above; lo* replies are
@@ -215,6 +221,8 @@
     'faces-pane.js',
     'time-pane.js',
     'weather-pane.js',     // wx* replies are response-style (the pane always asks
+                           // first), so no STUB_FNS entry
+    'music-pane.js',       // mu* replies are response-style (the pane always asks
                            // first), so no STUB_FNS entry
     'inventory-pane.js',   // Inventory tab (2026-10-10). iv* replies are response-
                            // style (ivList on Show), so no STUB_FNS entry. Uses
@@ -270,6 +278,7 @@
     'faces-pane.js': ['faces'],
     'time-pane.js': ['time'],
     'weather-pane.js': ['weather'],
+    'music-pane.js': ['music'],
     'inventory-pane.js': ['inventory'],
     'finances-pane.js': ['finances'],
     'bases-pane.js': ['domains'],    // Bases is a mode of the Domains tab
@@ -287,7 +296,7 @@
     highking: 'HighKingPane',
     household: 'HouseholdPane',
     scene: 'ScenePane',
-    sheet: 'CharSheetPane', anim: 'AnimPane', faces: 'FacesPane', time: 'TimePane', weather: 'WeatherPane', inventory: 'InventoryPane',
+    sheet: 'CharSheetPane', anim: 'AnimPane', faces: 'FacesPane', time: 'TimePane', weather: 'WeatherPane', music: 'MusicPane', inventory: 'InventoryPane',
     finances: 'FinancesPane'
   };
 

@@ -14,6 +14,14 @@
       <span class="hm-search-kbd"><kbd>Ctrl</kbd><kbd>F</kbd></span>
     </div>
 
+    <div class="hm-sec-head">
+      <h2>Systems</h2>
+      <span class="hm-sec-hint">Pick a card — or search above</span>
+    </div>
+    <div id="hm-grid" role="list" aria-label="Deck systems"></div>
+
+    <!-- Moved BELOW the card grid (Rober, 2026-10-15): the cards are what you
+         came for; the key sits under them, above the drawers. -->
     <!-- Open key — the ONE control a new user hunts for and can't find
          (Nexus feedback, IAMTOKKO: wanted to change F7, searched, gave up).
          Big current-bind label + a Change… button that runs the SAME
@@ -28,12 +36,6 @@
       <button id="hm-ok-change" type="button" class="hm-ok-btn"
               title="Press or pick the new key that opens SkyManager">Change…</button>
     </div>
-
-    <div class="hm-sec-head">
-      <h2>Systems</h2>
-      <span class="hm-sec-hint">Pick a card — or search above</span>
-    </div>
-    <div id="hm-grid" role="list" aria-label="Deck systems"></div>
 
     <!-- Notes / Time / Recent: folded away by default, each opens on click.
          Time and Notes moved here off the tab strip (Rober, 2026-08-05) — the

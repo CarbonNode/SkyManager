@@ -32,11 +32,15 @@
 //     read wrong." So a float is always written back WITH a decimal point, and
 //     an integer always without.
 //
-// ⚠ AND ONE THING THAT IS NOT PROVEN. Whether PPA's input handler sees a
-// synthesized key while the PrismaUI overlay is up has NOT been play-tested.
-// The deck's input sink cannot consume events (a deck key also does its vanilla
-// job), which is the reason to expect it works — but expectation is not
-// evidence, and the page says so rather than claiming the reload landed.
+// The synthesized reload DOES land with the deck open (2026-10-14: each
+// "ppa: X = Y (reload dik 63)" line is followed ~70 ms later by PPA's own
+// "Loading config file" line in AccuratePenetration.log).
+//
+// ⚠ AND A RELOAD IS NOT ENOUGH. PPA keeps a second, SKSE Menu Framework copy of
+// its General/Hotkeys/Debug/SoundEffects settings and writes it back over this
+// file on every Escape press (SMF calls that "menu closed"); a reload never
+// refreshes it. So every write here also sets that copy (ppa_menu_sync.h),
+// or the deck's own close key undoes the change.
 // ---------------------------------------------------------------------------
 
 namespace PpaConfig
@@ -56,4 +60,11 @@ namespace PpaConfig
 	// keys_write.cpp). Returns the key as words ("Shift + F5"), or "" when PPA
 	// is not loaded, the file is unreadable, or its reload key is unbound.
 	std::string ReloadNow();
+
+	// Sets PPA's SKSE Menu Framework copy of its settings to what the toml
+	// says (ppa_menu_sync.h: PPA writes that copy back over the file on every
+	// Escape, and a reload never refreshes it). Set/StateJson/ReloadNow call
+	// it themselves; call it after any OTHER write to the file. false when PPA
+	// is absent or its settings list could not be found. Any thread.
+	bool KeepMenuInStep(const char* why);
 }

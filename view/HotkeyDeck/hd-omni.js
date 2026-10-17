@@ -138,6 +138,7 @@ var HDOmni = (function () {
     q: '',
     sel: 0,
     flat: [],            // flattened result rows, in render order
+    keyCaps: [],         // key caps the query earned (omni-key-caps), best first
     lazy: {},            // providerId -> items merged from async lookups
     lazyPending: {},     // providerId -> true while a lookup is in flight
     ask: {
@@ -336,14 +337,27 @@ var HDOmni = (function () {
           label-matching group, by rank then score. So "stance" leads with the
           thing NAMED Stance, and "elana" still leads with Elana. */
 
+  /* omni-score-lean (2026-10-15): the tiers below are unchanged, but the
+     word-start test no longer splits every candidate into a fresh array. It
+     runs on EVERY item of EVERY provider for EVERY query word — thousands of
+     strings per keystroke ("omni-search(view): render 54 ms | rows 9") — and
+     the split was most of it. "q starts a word" is the same thing as "q
+     occurs right after a separator", so look for exactly that; a q that
+     itself holds a separator could never start a split word, so it gets no
+     word-start tier here either. Fuzzed against the split form: identical. */
+  var SCORE_SEP = /[\s\/\-_·.,:]/;
   function scoreText(text, q, subseq) {
     if (!text) return 0;
     var t = String(text).toLowerCase();
     if (t === q) return 100;
-    if (t.indexOf(q) === 0) return 60;
-    var words = t.split(/[\s\/\-_·.,:]+/);
-    for (var i = 0; i < words.length; i++) if (words[i].indexOf(q) === 0) return 40;
-    if (t.indexOf(q) !== -1) return 25;
+    var at = t.indexOf(q);
+    if (at === 0) return 60;
+    if (at !== -1) {
+      if (!SCORE_SEP.test(q)) {
+        for (var p = at; p !== -1; p = t.indexOf(q, p + 1)) if (SCORE_SEP.test(t.charAt(p - 1))) return 40;
+      }
+      return 25;
+    }
     /* subsequence — "frb" finds "Firebolt", but only for queries 3+ chars,
        and only on a LABEL (omni-label-first) */
     if (subseq !== false && q.length >= 3) {
@@ -360,6 +374,7 @@ var HDOmni = (function () {
 
   function scoreItem(item, q) {
     var s = scoreText(item.label, q, true);
+    if (s >= 60) return s;   // the small print scores at most 100 * 0.6 — it cannot win
     var s2 = Math.max(scoreText(item.detail, q, false), scoreText(item.keywords, q, false),
                       scoreText(item.kind, q, false)) * 0.6;
     return Math.max(s, s2);
@@ -863,6 +878,7 @@ var HDOmni = (function () {
          In the Super Searcher (body.ss-open) the frame stays SLIM: a handful
          of recents and one quiet line, no chip wall — it opens as a bar and
          grows with the results (Rober, 2026-09-13: "Starts sleek / small?"). */
+      st.keyCaps = [];
       var slim = document.body.classList.contains('ss-open');
       var rrows = recentRows();
       if (slim && rrows.length > RECENT_SLIM) rrows = rrows.slice(0, RECENT_SLIM);
@@ -893,6 +909,21 @@ var HDOmni = (function () {
       return;
     }
     host.className = 'omni-results';
+
+    /* omni-key-caps (Rober, 2026-10-14): typed the name of a KEY — "escape",
+       "f12", "f13", "end", "page up" — and the key itself is offered first, as
+       caps you click. The Hotkeys strip did this until the two-bar header sent
+       all typing here; keycaps-strip.js owns the matcher, the caps and the
+       press, so both surfaces offer the same keys the same way. */
+    var kcaps = keyCaps(q);
+    st.keyCaps = kcaps;
+    var kcHtml = kcaps.length
+      ? '<div class="omni-keys">' +
+          '<div class="omni-sect omni-keys-h">Press a key<span class="omni-sect-n">' + kcaps.length + '</span>' +
+          '<span class="omni-keys-sub">the deck closes and the game gets the real key</span></div>' +
+          '<div class="ks-caps omni-keys-caps">' + KeyStrip.capsHtml(kcaps) + '</div>' +
+        '</div>'
+      : '';
 
     var groups = collect();
     var cv = consoleVerb(q);
@@ -932,6 +963,12 @@ var HDOmni = (function () {
           grp.hits.length + '</button>';
       }
     }
+    if (!st.flat.length && kcHtml) {
+      /* a key and nothing else: the caps ARE the answer, not "nothing matches" */
+      host.innerHTML = kcHtml + (anyPending
+        ? '<div class="omni-blank omni-blank-slim"><div class="omni-blank-keys">Searching…</div></div>' : '');
+      return;
+    }
     if (!st.flat.length) {
       host.innerHTML = anyPending
         ? '<div class="omni-blank"><div class="omni-blank-t">Searching…</div></div>'
@@ -940,9 +977,29 @@ var HDOmni = (function () {
           '<div class="omni-blank-s">Try a name, a place, a spell, or switch to ✦ Ask for a question.</div></div>';
       return;
     }
-    host.innerHTML = html;
+    host.innerHTML = kcHtml + html;
     var sel = host.querySelector('.omni-row.selected');
     if (sel) sel.scrollIntoView({ block: 'nearest' });
+  }
+
+  /* The caps a query earns — empty unless the key strip is loaded AND this
+     view can actually press a key (hdFireRawKey is app.js's; a harness or a
+     view without it gets no caps rather than caps that do nothing). */
+  function keyCaps(q) {
+    var KS = window.KeyStrip;
+    if (!KS || typeof KS.match !== 'function' || typeof KS.capsHtml !== 'function' ||
+        typeof window.hdFireRawKey !== 'function') return [];
+    try { return KS.match(q, { extra: true }) || []; } catch (e) { return []; }
+  }
+
+  /* Close first, then press: the key belongs to the game, and the C++ closes
+     the deck itself before it fires (FireAndClose), so nothing of ours is left
+     on screen to catch it. */
+  function pressKeyCap(code, btn) {
+    if (btn) btn.classList.add('ks-flash');
+    rememberQuery(st.q);
+    close('run');
+    try { window.KeyStrip.press(code); } catch (e) {}
   }
 
   /* "just now" / "4 min" / "2 h" / "3 d" — the recent list's age chip */
@@ -1038,6 +1095,8 @@ var HDOmni = (function () {
   }
 
   function onResultsClick(e) {
+    var kcap = e.target.closest('.ks-cap');
+    if (kcap) { e.stopPropagation(); pressKeyCap(Number(kcap.getAttribute('data-c')), kcap); return; }
     var forget = e.target.closest('.omni-forget');
     if (forget) { e.stopPropagation(); forgetRecents(); renderResults(); return; }
     var more = e.target.closest('.omni-more');
@@ -1663,6 +1722,57 @@ var HDOmni = (function () {
 
   /* ------------------------------------------------------------ open/close */
 
+  /* omni-warm-paced (2026-10-14). Rober: "clicking search boxes causes some bad
+     stuttering" and "mouse randomly stops reacting to movement". Every search
+     field in the deck opens THIS overlay, and open() used to call every
+     provider's warm() in one go: ~25 bridge requests (inventory, the whole
+     wardrobe, 557 weathers, the magic index, SMF, MCM inis, places, finances,
+     CHIM …) whose replies all landed as pushes on the UI thread inside the
+     same second — the HotkeyDeck.log of his 15:51 session shows the burst after
+     every open, and the 924 ms frame on clicking the search box sat in one.
+     PrismaUI's present hook waits for the UI thread, so that burst is game
+     frames and the cursor standing still.
+     Now: a source warmed in THIS deck session less than WARM_TTL_MS ago is not
+     asked again (the deck closing resets the clock, so every open still starts
+     fresh), and the rest are paced one per WARM_STEP_MS after the overlay has
+     painted, stopping if it closes. index() reads whatever each provider
+     already holds, so a re-open searches at once. */
+  var WARM_TTL_MS = 30000, WARM_FIRST_MS = 90, WARM_STEP_MS = 45;
+  var warmAt = {}, warmTimer = 0, warmQueue = [];
+  function warmKey(p) { return String(p.id || p.label || providers.indexOf(p)); }
+  function warmProviders() {
+    var t = Date.now(), skipped = 0;
+    warmQueue = [];
+    for (var i = 0; i < providers.length; i++) {
+      var p = providers[i];
+      if (typeof p.warm !== 'function' || providerGated(p)) continue;   // a toggled-off source is not warmed either
+      var k = warmKey(p);
+      if (warmAt[k] && t - warmAt[k] < WARM_TTL_MS) { skipped++; continue; }
+      warmQueue.push(p);
+    }
+    var n = warmQueue.length;
+    if (warmTimer) clearTimeout(warmTimer);
+    var stepWarm = function () {
+      warmTimer = 0;
+      if (!st.open) { warmQueue = []; return; }
+      var p = warmQueue.shift();
+      if (!p) return;
+      warmAt[warmKey(p)] = Date.now();
+      try { p.warm(); } catch (e) {}
+      if (warmQueue.length) warmTimer = setTimeout(stepWarm, WARM_STEP_MS);
+    };
+    if (n) warmTimer = setTimeout(stepWarm, WARM_FIRST_MS);
+    try { if (window.HDPerf && HDPerf.log) HDPerf.log('omni-warm(view): ' + n + ' source(s) refreshing, paced ' + WARM_STEP_MS + ' ms apart; ' + skipped + ' still fresh'); } catch (e) {}   // marker: omni-warm-paced
+  }
+  /* a closed deck may come back with a different bag, outfit or weather: the
+     next session warms everything once */
+  try {
+    if (window.MutationObserver && document.body) {
+      new MutationObserver(function () { if (!document.body.classList.contains('open')) warmAt = {}; })
+        .observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    }
+  } catch (e) {}
+
   function open(mode, seed) {
     ensureDom();
     if (st.open && st.mode === (mode || st.mode)) { close(); return; }   // toggle
@@ -1686,10 +1796,7 @@ var HDOmni = (function () {
       var tgt = window.FolPane && FolPane._state && FolPane._state.target;
       if (tgt && tgt.name && !tgt.dead) st.ask.lastNpc = String(tgt.name);
     } catch (e) {}
-    for (var i = 0; i < providers.length; i++) {
-      if (providerGated(providers[i])) continue;   // a toggled-off source is not warmed either
-      if (typeof providers[i].warm === 'function') { try { providers[i].warm(); } catch (e) {} }
-    }
+    warmProviders();
     var inp = $('omni-input');
     if (typeof seed === 'string') { inp.value = seed; st.q = seed; }
     else if ((mode || 'search') === 'search') {
@@ -1710,6 +1817,9 @@ var HDOmni = (function () {
     if (!st.open) return;
     if (st.prof.open) closeProfilePicker();   // never leave the sheet orphaned
     st.open = false;
+    if (warmTimer) { clearTimeout(warmTimer); warmTimer = 0; }
+    /* the sources not reached yet were never asked: forget nothing, they go first next time */
+    warmQueue = [];
     var m = $('omni-modal');
     if (m) m.classList.add('hidden');
     toGame('hdCapture', '0');
@@ -1752,7 +1862,16 @@ var HDOmni = (function () {
     if (st.mode === 'search') {
       if (code === 'ArrowDown') { st.sel = Math.min(st.sel + 1, Math.max(0, st.flat.length - 1)); renderResults(); return true; }
       if (code === 'ArrowUp') { st.sel = Math.max(0, st.sel - 1); renderResults(); return true; }
-      if (code === 'Enter') { activate(st.flat[st.sel], e.shiftKey); return true; }
+      if (code === 'Enter') {
+        /* a row always outranks a raw key press; with no rows, Enter takes the
+           top key cap (the Hotkeys strip's rule, the fd-ctx-menu idiom) */
+        if (!st.flat.length && st.q.trim() && st.keyCaps && st.keyCaps.length) {
+          pressKeyCap(st.keyCaps[0].c, $('omni-results') && $('omni-results').querySelector('.ks-cap'));
+          return true;
+        }
+        activate(st.flat[st.sel], e.shiftKey);
+        return true;
+      }
       if (code === 'Tab') { setMode('ask'); return true; }
     } else {
       if (code === 'Enter') { submitAsk(false); return true; }
@@ -2406,6 +2525,8 @@ var HDOmni = (function () {
     consoleVerb: consoleVerb,
     recents: recents,
     forgetRecents: forgetRecents,
+    /* the deck closing does this (a new session warms every source once); harnesses call it too */
+    forgetWarm: function () { warmAt = {}; },
     recentSliceForTest: function () { return recents(); },
     /* exposed for the test harness */
     _state: st,

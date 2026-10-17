@@ -1,5 +1,7 @@
 #include "chim_control.h"
 
+#include "papyrus_presence.h"
+
 #include <utility>
 
 // pch (force-included) provides RE::/SKSE::/json and the logger.
@@ -27,6 +29,23 @@ namespace ChimControl
 		RE::BSScript::Internal::VirtualMachine* Vm()
 		{
 			return RE::BSScript::Internal::VirtualMachine::GetSingleton();
+		}
+
+		// The VM only when CHIM can answer. Nullptr means "do not dispatch":
+		// on 1.6.1170 a DispatchStaticCall on a class the game cannot load is
+		// a null dereference inside the VM, not a false return (the 2026-10-17
+		// Nexus crash). Logged once per session, not once per card open.
+		RE::BSScript::Internal::VirtualMachine* VmIfChim()
+		{
+			if (!Available()) {
+				static bool said = false;
+				if (!said) {
+					said = true;
+					logger::warn("chim-guard: CHIM is not installed (no AIAgent.dll or AIAgentFunctions.pex) - CHIM calls are skipped");   // marker: chim-presence-guard
+				}
+				return nullptr;
+			}
+			return Vm();
 		}
 
 		RE::Actor* ResolveActor(std::uint32_t id)
@@ -126,11 +145,17 @@ namespace ChimControl
 		};
 	}
 
+	bool Available()
+	{
+		static const bool dll = GetModuleHandleA("AIAgent.dll") != nullptr;
+		return dll && PapyrusPresence::ScriptAvailable(kScript);
+	}
+
 	bool SetActive(std::uint32_t formId, const std::string& name, bool on)
 	{
-		auto* vm = Vm();
+		auto* vm = VmIfChim();
 		if (!vm) {
-			logger::warn("chim-activate: no VM");
+			logger::warn("chim-activate: no VM or no CHIM");
 			return false;
 		}
 		RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> cb;   // fire-and-forget
@@ -156,7 +181,7 @@ namespace ChimControl
 
 	void QueryActive(std::uint32_t /*formId*/, const std::string& name, StateCb cb)
 	{
-		auto* vm = Vm();
+		auto* vm = VmIfChim();
 		if (!vm) {
 			if (cb)
 				cb(false, false);
@@ -174,7 +199,7 @@ namespace ChimControl
 
 	void QueryAgents(AgentsCb cb)
 	{
-		auto* vm = Vm();
+		auto* vm = VmIfChim();
 		if (!vm) {
 			if (cb)
 				cb({}, false);

@@ -54,6 +54,11 @@ var ChimBtn = (function () {
   var agents = { ids: Object.create(null), names: Object.create(null),
                  list: [], known: false, at: 0 };
   var AGENTS_TTL = 8000;   // ms — a re-ask sooner than this is the same answer
+  /* C++ said `chim:false`: CHIM is not in this game at all. Nothing below asks
+     again (every wheel / omni / shelf open warms this provider), the omni
+     grows no CHIM rows, and everyone reads as "not an agent". 2026-10-17:
+     the ask itself crashed a 1.6.1170 user without CHIM (chim_control.cpp). */
+  var chimMissing = false;
 
   function fidOf(v) {
     if (v == null || v === '') return 0;
@@ -66,6 +71,7 @@ var ChimBtn = (function () {
      flyout all want it at about the same moment. `force` = the omni just
      opened / a toggle just fired: the answer may have changed, ask anyway. */
   function ensureAgents(force) {
+    if (chimMissing) return;
     var now = Date.now();
     if (!force && agents.at && (now - agents.at) < AGENTS_TTL) return;
     agents.at = now;
@@ -140,6 +146,13 @@ var ChimBtn = (function () {
   function onAgentsResult(payload) {
     var env = payload;
     if (typeof env === 'string') { try { env = JSON.parse(env); } catch (e) { return; } }
+    if (env && env.chim === false) {
+      chimMissing = true;
+      agents.ids = Object.create(null); agents.names = Object.create(null); agents.list = [];
+      agents.known = true; agents.at = Date.now();
+      agentsChanged();
+      return;
+    }
     if (!env || !env.ok || !Array.isArray(env.agents)) return;
     var ids = Object.create(null), names = Object.create(null), list = [];
     for (var i = 0; i < env.agents.length; i++) {
@@ -728,6 +741,7 @@ var ChimBtn = (function () {
       pinRun: function () { omniToggle(); },
       index: function () {
         var items = [];
+        if (chimMissing) return items;
         var npc = crosshairNpc();
         var st = npc ? isAgent(npc) : undefined;
         var verb = (st === true) ? 'Deactivate' : 'Activate';
@@ -789,7 +803,7 @@ var ChimBtn = (function () {
     conversationReleaseAction: conversationReleaseAction,
     agents: function () { return { known: agents.known, list: agents.list.slice() }; },
     /* exposed for the harness */
-    _state: function () { return { active: active, known: known, fly: fly, card: card, agents: agents, chim: chim, busy: busy, note: note }; },
+    _state: function () { return { active: active, known: known, fly: fly, card: card, agents: agents, chim: chim, busy: busy, note: note, chimMissing: chimMissing }; },
     _modelLine: modelLine,
   };
 })();

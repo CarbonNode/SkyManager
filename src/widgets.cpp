@@ -6,6 +6,7 @@
 #include "item_icons.h"
 #include "ward_actions.h"
 #include "quick_light.h"
+#include "fps_meter.h"
 
 #include <algorithm>
 #include <atomic>
@@ -270,6 +271,20 @@ namespace Widgets
 			int     lootFeedLifeMs = 4500;    // how long a row stays, 1500..15000
 			bool    lootFeedValue = true;     // the coin + value on each row
 			bool    lootFeedHideVanilla = true;  // swallow the game's own "X added" lines
+			// ---- FPS meter (2026-10-14) -------------------------------------
+			// Rober: "show fps engine and fps (frame gen) in ui elements without
+			// performance cost and toggable". A FREE widget fed by FpsMeter
+			// (fps_meter.cpp) through its own `fpsPush` beat, never wgLive: a
+			// number that moves every second must not rebuild the other widgets.
+			// The Community Shaders overlay switch rides here too (csAuto).
+			// Silent arrival like every widget added after the first four.
+			Widget  fps;
+			int     fpsRateMs = 1000;     // how often it refreshes, 500..2000
+			bool    fpsGen = true;        // the frame-generation line
+			bool    fpsMs = false;        // frame time beside the engine number
+			bool    fpsGraph = true;      // the short engine-fps history bars
+			bool    fpsSlim = false;      // one-line pill instead of the plate
+			bool    fpsCsAuto = false;    // press CS's overlay key once per launch
 			// ---- Time Dial (2026-08-18) ------------------------------------
 			// The hotkey-openable circular wait dial (hud-td.js). Only its
 			// PLACEMENT lives here — x/y/anchor/scale, so "remembers where it
@@ -383,6 +398,10 @@ namespace Widgets
 				lootFeed.anchorH = "left"; lootFeed.anchorV = "top"; lootFeed.x = 40; lootFeed.y = 120;
 				lootFeed.bare = true; lootFeed.showLabel = false;
 				lootFeed.enabled = false;
+				// FPS meter: top of the screen, right of the compass, where nothing
+				// vanilla draws. hud.js's wfree.fps mirrors this.
+				fps.anchorH = "center"; fps.anchorV = "top"; fps.x = 560; fps.y = 28;
+				fps.enabled = false;
 				// Season (2026-08-31): a FREE widget like the four above, so it
 				// gets its own spot rather than a line in someone else's stack
 				// (Rober: "not apart of other widgets"). Parked top-right and
@@ -489,6 +508,7 @@ namespace Widgets
 			        g_cfg.ward.enabled ||
 			        g_cfg.qlight.enabled ||
 			        g_cfg.lootFeed.enabled ||
+			        g_cfg.fps.enabled ||
 			        g_cfg.season.enabled ||
 			        g_cfg.lootStatus.enabled ||
 			        // Same rule as the trackers: an enabled custom strip with
@@ -504,6 +524,9 @@ namespace Widgets
 			// must never take g_mtx themselves.
 			g_lootFeedOn   = g_cfg.lootFeed.enabled;
 			g_lootFeedHide = g_cfg.lootFeed.enabled && g_cfg.lootFeedHideVanilla;
+			// FpsMeter keeps lock-free copies: its counter runs on the present
+			// thread and its beat on the ticker, neither of which may take g_mtx.
+			FpsMeter::SetConfig(g_cfg.fps.enabled, g_cfg.fpsRateMs, g_cfg.fpsCsAuto);
 		}
 
 		json WidgetJson(const Widget& w)
@@ -929,6 +952,14 @@ namespace Widgets
 			lf["lifeMs"] = g_cfg.lootFeedLifeMs;
 			lf["value"] = g_cfg.lootFeedValue;
 			lf["hideVanilla"] = g_cfg.lootFeedHideVanilla;
+			// Same for the FPS meter's.
+			json fp = WidgetJson(g_cfg.fps);
+			fp["rateMs"] = g_cfg.fpsRateMs;
+			fp["gen"] = g_cfg.fpsGen;
+			fp["ms"] = g_cfg.fpsMs;
+			fp["graph"] = g_cfg.fpsGraph;
+			fp["slim"] = g_cfg.fpsSlim;
+			fp["csAuto"] = g_cfg.fpsCsAuto;
 			return json{
 				{ "enabled", g_cfg.enabled },
 				{ "widgets", json{
@@ -956,6 +987,7 @@ namespace Widgets
 					{ "ward", WidgetJson(g_cfg.ward) },
 					{ "qlight", WidgetJson(g_cfg.qlight) },
 					{ "lootFeed", std::move(lf) },
+					{ "fps", std::move(fp) },
 					{ "season", WidgetJson(g_cfg.season) },
 					{ "quick2", std::move(q2) },
 					{ "lootStatus", WidgetJson(g_cfg.lootStatus) },
@@ -1084,6 +1116,22 @@ namespace Widgets
 						g_cfg.lootFeedValue = lf["value"].get<bool>();
 					if (lf.contains("hideVanilla") && lf["hideVanilla"].is_boolean())
 						g_cfg.lootFeedHideVanilla = lf["hideVanilla"].get<bool>();
+				}
+				if (w.contains("fps") && w["fps"].is_object()) {
+					const auto& fp = w["fps"];
+					WidgetFrom(fp, g_cfg.fps);
+					if (fp.contains("rateMs") && fp["rateMs"].is_number())
+						g_cfg.fpsRateMs = std::clamp(fp["rateMs"].get<int>(), 500, 2000);
+					if (fp.contains("gen") && fp["gen"].is_boolean())
+						g_cfg.fpsGen = fp["gen"].get<bool>();
+					if (fp.contains("ms") && fp["ms"].is_boolean())
+						g_cfg.fpsMs = fp["ms"].get<bool>();
+					if (fp.contains("graph") && fp["graph"].is_boolean())
+						g_cfg.fpsGraph = fp["graph"].get<bool>();
+					if (fp.contains("slim") && fp["slim"].is_boolean())
+						g_cfg.fpsSlim = fp["slim"].get<bool>();
+					if (fp.contains("csAuto") && fp["csAuto"].is_boolean())
+						g_cfg.fpsCsAuto = fp["csAuto"].get<bool>();
 				}
 				if (w.contains("season"))
 					WidgetFrom(w["season"], g_cfg.season);
@@ -3558,6 +3606,7 @@ namespace Widgets
 			            id == "ward" ? &g_cfg.ward :
 			            id == "qlight" ? &g_cfg.qlight :
 			            id == "lootFeed" ? &g_cfg.lootFeed :
+			            id == "fps" ? &g_cfg.fps :
 			            id == "season" ? &g_cfg.season :
 			            id == "quick2" ? &g_cfg.quick2 :
 			            id == "lootStatus" ? &g_cfg.lootStatus :
@@ -3647,6 +3696,14 @@ namespace Widgets
 		return g_lootFeedHide.load();
 	}
 
+	void SetFpsCsAuto(bool on)
+	{
+		std::lock_guard l(g_mtx);
+		g_cfg.fpsCsAuto = on;
+		RecountAnyLocked();
+		SaveLocked();
+	}
+
 	std::string ConfigJson()
 	{
 		std::lock_guard l(g_mtx);
@@ -3657,6 +3714,12 @@ namespace Widgets
 	{
 		std::lock_guard l(g_mtx);
 		return Dump(WidgetJson(g_cfg.timeDial));
+	}
+
+	std::string SunHelmNeedsJson()
+	{
+		const json s = SurvivalJson();
+		return s.is_null() ? "null" : Dump(s);
 	}
 
 	void ApplyViewConfig(const std::string& payload)

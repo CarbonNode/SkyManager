@@ -21,10 +21,60 @@
 .qj-objective { font-size:20px; line-height:1.45; margin:8px 0; color:#d7dac8; }
 .qj-meta { font-size:16px; color:#aeb3a2; margin-top:10px; overflow-wrap:break-word; }
 .qj-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:10px; width:420px; max-width:100%; }
-.qj-journal .qj-travel { color:#211e14; background:#d3b65e; border-color:#d3b65e; font-weight:600; }
-.qj-target-reason { display:block; flex-basis:100%; text-align:right; font-size:16px; color:#b7b6a6; }
-.qj-review { flex-basis:100%; border-left:3px solid #c9ac59; padding:15px 20px; background:#303128; font-size:18px; }
-.qj-review p { margin:8px 0 14px; color:#c9cabb; line-height:1.5; }
-.qj-review button { margin-right:10px; }
+.qj-journal .qj-travel,.qj-guide .qj-travel,.qj-journal .qj-primary { color:#211e14; background:#d3b65e; border-color:#d3b65e; font-weight:600; }
+.qj-journal .qj-travel:hover,.qj-guide .qj-travel:hover,.qj-journal .qj-primary:hover { background:#e2c770; border-color:#e2c770; }
+.qj-actions button { white-space:nowrap; }
 .qj-empty { font-size:22px; margin:22px 8px 8px; color:#c8cbb9; }
-@media(max-width:760px){.qj-journal{padding:12px 4px 0}.qj-head h1{font-size:28px}.qj-row{gap:14px}.qj-actions{width:100%;justify-content:flex-start}.qj-target-reason{text-align:left}.qj-journal .qj-title{font-size:24px}.qj-objective{font-size:18px}.qj-review{padding:12px}}
+
+/* What kind of step, and why there is no marker: one line under the objective. */
+.qj-step { display:flex; align-items:baseline; gap:12px; margin:10px 0 2px; min-width:0; }
+.qj-chip { flex:none; font-size:16px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:#211e14; background:#b9a25a; border-radius:4px; padding:3px 10px; white-space:nowrap; }
+.qj-why { font-size:18px; line-height:1.45; color:#c6c8b6; min-width:0; }
+/* A known hint: the exact line to look for, set apart in the journal's gold. */
+.qj-how { display:flex; gap:14px; margin:14px 0 4px; padding:14px 18px; border-left:3px solid #c9ac59; background:#2a2c25; border-radius:0 6px 6px 0; max-width:72ch; }
+.qj-how-h { flex:none; font-size:16px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:#d8ba64; padding-top:3px; }
+.qj-how-b { min-width:0; }
+.qj-how-t { margin:0; font-size:19px; line-height:1.5; color:#dcdecd; }
+.qj-say { margin:10px 0 0; font:21px/1.45 Georgia,serif; font-style:italic; color:#f0e3b5; }
+.qj-how-note { margin:10px 0 0; font-size:17px; line-height:1.5; color:#bdbfae; }
+.qj-how-src { margin:8px 0 0; font-size:16px; color:#9fa393; }
+
+/* The guide popout. Body-anchored and full-viewport, so bare vh/vw are right and it
+   wears no --ui-scale (see the 2026-08-14 popup audit). Flat rgba backdrop: Ultralight
+   bands a gradient this size. */
+body:not(.open) .qj-guide-back { display:none; }
+.qj-guide-back { position:fixed; top:0; left:0; right:0; bottom:0; z-index:78; display:flex; align-items:center; justify-content:center; background:rgba(9,10,8,.78); }
+.qj-guide { box-sizing:border-box; width:min(980px,92vw); max-height:88vh; display:flex; flex-direction:column; background:#1d201d; border:1px solid #8a7948; border-radius:10px; color:#e2e3d5; box-shadow:0 6px 18px rgba(0,0,0,.4); }
+.qj-guide button { font:inherit; font-size:19px; min-height:48px; border:1px solid #5e5c48; border-radius:6px; padding:10px 20px; color:#d8c781; background:#292d29; cursor:pointer; white-space:nowrap; }
+.qj-guide button:hover { background:#37392d; border-color:#cbb05b; }
+.qj-guide button:disabled { opacity:.48; cursor:default; }
+.qj-guide :focus-visible { outline:2px solid #dec572; outline-offset:3px; }
+.qj-g-head { flex:none; display:flex; align-items:flex-start; justify-content:space-between; gap:24px; padding:26px 32px 18px; border-bottom:1px solid #3f4238; }
+.qj-g-titles { min-width:0; }
+.qj-g-title { margin:4px 0 0; font:34px/1.2 Georgia,serif; color:#ede6ce; text-wrap:balance; }
+.qj-g-body { flex:1; min-height:0; overflow:auto; padding:8px 32px 20px; }
+.qj-g-sec { padding:20px 0 8px; }
+.qj-g-sec + .qj-g-sec { border-top:1px solid #34372f; margin-top:10px; }
+.qj-g-h { margin:0 0 10px; font-size:17px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:#d8ba64; }
+.qj-g-dim { font-size:18px; line-height:1.5; color:#aeb3a2; margin:12px 0 0; max-width:72ch; }
+.qj-guide .qj-objective { font-size:22px; }
+.qj-g-steps { list-style:none; margin:4px 0 0; padding:0; }
+.qj-g-step { display:grid; grid-template-columns:112px minmax(0,1fr); gap:16px; align-items:baseline; padding:11px 0; border-bottom:1px solid #2e312a; }
+.qj-g-state { font-size:16px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:#8f9384; white-space:nowrap; }
+.qj-g-text { font-size:20px; line-height:1.45; color:#b9bcab; }
+.qj-g-step.is-done .qj-g-text { color:#8f9384; text-decoration:line-through; text-decoration-color:rgba(143,147,132,.6); }
+.qj-g-step.is-now { background:#2a2c25; border-left:3px solid #d3b65e; padding-left:12px; margin-left:-15px; }
+.qj-g-step.is-now .qj-g-state { color:#e6cc78; }
+.qj-g-step.is-now .qj-g-text { color:#f1ead2; }
+.qj-g-step.is-failed .qj-g-state { color:#d98a6a; }
+.qj-g-warn { border-left:3px solid #d0805e; background:#2e2622; padding:18px 22px !important; margin-top:16px; border-radius:0 6px 6px 0; }
+.qj-g-warn .qj-g-h { color:#e7a07f; }
+.qj-g-warn p { margin:0 0 16px; font-size:19px; line-height:1.5; color:#d7cfc3; max-width:72ch; }
+.qj-g-actions { display:flex; flex-wrap:wrap; gap:12px; }
+.qj-guide .qj-confirm { color:#1f1712; background:#d98a6a; border-color:#d98a6a; font-weight:600; }
+.qj-guide .qj-confirm:hover { background:#e79c7d; border-color:#e79c7d; }
+.qj-g-foot { flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:18px 32px 24px; border-top:1px solid #3f4238; }
+.qj-guide .qj-skip { margin-left:auto; color:#c3a493; border-color:#5b4a40; background:transparent; }
+.qj-guide .qj-skip:hover { border-color:#d0805e; background:#2e2622; }
+@media(max-width:760px){.qj-journal{padding:12px 4px 0}.qj-head h1{font-size:28px}.qj-row{gap:14px}.qj-actions{width:100%;justify-content:flex-start}.qj-journal .qj-title{font-size:24px}.qj-objective{font-size:18px}.qj-step{flex-direction:column;gap:6px}.qj-how{flex-direction:column;gap:6px;padding:12px 14px}
+  .qj-guide{width:100vw;max-height:100vh;height:100vh;border-radius:0;border:0}.qj-g-head{padding:18px 16px 14px}.qj-g-title{font-size:26px}.qj-g-body{padding:4px 16px 16px}.qj-g-foot{padding:14px 16px 18px}.qj-g-foot button{flex:1 1 100%}.qj-guide .qj-skip{margin-left:0}.qj-g-step{grid-template-columns:1fr;gap:4px}.qj-g-step.is-now{margin-left:0}}

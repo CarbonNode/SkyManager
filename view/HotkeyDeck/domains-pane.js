@@ -771,6 +771,10 @@ window.DomainsPane = (function () {
   const IMG_DIR = 'domain-images/';
   const IMG_EXTS = ['png', 'jpg', 'jpeg', 'webp'];
   const noImage = new Set();
+  /* tab-switch-reuse state (onShow): declared up here because onCfg/onClosed,
+     defined above onShow, write it. */
+  let showFresh = true;
+  let showFacesSig = '';
   const TEST_IMG = Object.create(null);   // selftest seam: id -> loadable data URI
 
   /* A photographed domain carries its file on the MARK (`m.image`, written by
@@ -1313,6 +1317,10 @@ window.DomainsPane = (function () {
      push to a closed view is dropped. */
   let photoFovDialog = null;
   let photoFovFocus = null;
+  // The last camera-view choice that actually started a photo. The dialog
+  // used to reset to Keep every time, so a second "Wider" shot silently went
+  // out as Keep (2026-10-15). Session memory; nothing is written to config.
+  let lastPhotoFov = 'keep';
   function closePhotoFov() {
     if (!photoFovDialog) return;
     photoFovDialog.remove(); photoFovDialog = null;
@@ -1330,7 +1338,7 @@ window.DomainsPane = (function () {
   function photographPlace(m) {
     closeCtx(); closeArt(); closePhotoFov();
     photoFovFocus = document.activeElement;
-    const draft = { fov: 'keep', hour: scene.hour, weather: scene.weather,
+    const draft = { fov: lastPhotoFov, hour: scene.hour, weather: scene.weather,
       sceneLight: 'natural', lightStrength: 1, photoLabel:'', photoTags:[m.interior?'Interior':'Exterior'], makeCover:!m.image, exposure: sceneExposure(), editedExposure: false };
     const box = h('div', { class: 'dm-photo-fov-box', role: 'dialog',
       'aria-modal': 'true', 'aria-labelledby': 'dm-photo-fov-title' });
@@ -1400,6 +1408,7 @@ window.DomainsPane = (function () {
     actions.appendChild(h('button', {type:'button',class:'dm-photo-start',onClick:function(){
       const settings = Object.assign({}, draft);
       if (!scene.info && !draft.editedExposure) delete settings.exposure;
+      lastPhotoFov = settings.fov;
       closePhotoFov(); startPlacePhoto(m,settings.fov,settings);
     }}, 'Start photo mode'));
     actions.appendChild(h('button', {type:'button',class:'dm-photo-fov-cancel',onClick:closePhotoFov}, 'Cancel'));
@@ -1433,7 +1442,7 @@ window.DomainsPane = (function () {
     photoFovDialog=h('div',{class:'dm-photo-fov',onClick:function(e){if(e.target===photoFovDialog)closePhotoFov();}});
     photoFovDialog._sync=sync;
     photoFovDialog.appendChild(box);document.body.appendChild(photoFovDialog);sync();askScene();
-    box.querySelector('[data-fov="keep"]').focus();
+    (box.querySelector('[data-fov="' + draft.fov + '"]') || box.querySelector('[data-fov="keep"]')).focus();
   }
   function photoFovKey(e) {
     if (!photoFovDialog) return false;
@@ -1652,7 +1661,11 @@ window.DomainsPane = (function () {
   /* A full render is the tab's "something structural changed" path (category
      rail, edit mode, a save, a mutation) — the row cache is dropped there so
      only the keystroke path, which calls renderList directly, reuses nodes. */
-  function render() { dropRowCache(); renderRail(); renderTagBar(); renderList(); renderFoot(); syncChrome(); }
+  function render() { dropRowCache(); renderKeepingRows(); }
+  /* Everything render() draws, but over the row cache instead of a dropped one:
+     the show path's redraw when nothing the cache cannot see has changed
+     (onShow, tab-switch-reuse). */
+  function renderKeepingRows() { renderRail(); renderTagBar(); renderList(); renderFoot(); syncChrome(); }
 
   /* The active tag filter, as one dismissible pill above the list. Created
      lazily in JS rather than in domains-pane.html.frag, because the frag has to
@@ -3240,6 +3253,7 @@ window.DomainsPane = (function () {
        2026-10-08 log, 47-147 ms with the deck on Home. The state above is all
        the rest of the deck reads; onShow() renders when the tab is actually
        shown, so a hidden pane only drops its row cache. */
+    showFresh = true;       // tab-switch-reuse: the next show draws from scratch
     if (ui.shown) render(); else dropRowCache();
   }
 
@@ -3288,6 +3302,7 @@ window.DomainsPane = (function () {
   }
 
   function onClosed() {
+    showFresh = true;   // tab-switch-reuse: a new deck session starts from scratch
     if (window.DomainGallery) DomainGallery.close();
     closePhotoFov();
     flushSave();
@@ -3379,13 +3394,35 @@ window.DomainsPane = (function () {
     return true;
   }
 
+  /* tab-switch-reuse (2026-10-15): a Domains tab switch rebuilt EVERY row from
+     scratch — a fresh hero, image probe, crop and face cluster per domain —
+     "switch 72-103 ms" then "frame2 +137-159" in the 2026-10-15 log, every
+     visit, with nothing changed. The row cache is already kept honest for the
+     keystroke path (rowSig + an explicit drop at every push it cannot see), so a
+     return visit inside one deck session reuses it. Rebuilt from scratch as
+     before: the first show after a config (every open pushes one), after the
+     deck closed, after a portrait crop changed, or when the borrowed Followers
+     face roster (homes + picture paths) differs from the last show's. Imageless
+     domains are still re-probed on every show (noImage.clear() changes their
+     row signature, so exactly those rows rebuild). */
+  function facesShowSig() {
+    const fp = window.FolPane;
+    if (!fp || typeof fp.rosterForDomains !== 'function') return '';
+    try { return JSON.stringify(fp.rosterForDomains()); } catch (e) { return '!' + Date.now(); }
+  }
+  window.addEventListener('hd-portrait-crops-changed', function () { showFresh = true; });
+
   function onShow() {
     ui.shown = true;
     const pane = $('dm-pane');
     if (pane) pane.classList.remove('hidden');
     noImage.clear();   // re-probe images each open — a file may have been added
     resetFilter();     // render() below draws the list; setFilter('') drew it twice
-    render();
+    const facesSig = facesShowSig();
+    if (showFresh || facesSig !== showFacesSig) render();
+    else renderKeepingRows();
+    showFresh = false;
+    showFacesSig = facesSig;
     if (window.FolPane && FolPane.requestPortraitFaces) FolPane.requestPortraitFaces();
     toGame('pdRefresh');   // the position snapshot is cheap and always fresh
     setTimeout(() => { if (els.search) els.search.focus(); }, 30);
@@ -4798,12 +4835,21 @@ window.DomainsPane = (function () {
           return window.__dmSent.photo.fov === mode && !photoFovDialog;
         });
       });
-      T('photo: cancel leaves camera alone, and reopening defaults to Keep', function () {
+      T('photo: cancel leaves camera alone, and reopening remembers the last started choice', function () {
+        // The loop above last STARTED a photo with "in"; cancelling must not
+        // forget it, and the remembered choice is the one focused.
         window.__dmSent.photo = null; photographPlace(markById('m4'));
+        if (document.activeElement.dataset.fov !== 'in') { closePhotoFov(); return false; }
         photoFovKey({key:'Escape'});
         if (window.__dmSent.photo || photoFovDialog) return false;
         photographPlace(markById('m4'));
-        const ok = document.activeElement.dataset.fov === 'keep'; closePhotoFov(); return ok;
+        const remembered = document.activeElement.dataset.fov === 'in';
+        // A cancelled dialog never changes the memory; a started one does.
+        photoFovDialog.querySelector('[data-fov="keep"]').click();
+        photoFovDialog.querySelector('.dm-photo-start').click();
+        const sentKeep = !!window.__dmSent.photo && window.__dmSent.photo.fov === 'keep';
+        photographPlace(markById('m4'));
+        const ok = remembered && sentKeep && document.activeElement.dataset.fov === 'keep'; closePhotoFov(); return ok;
       });
       T('photo: keyboard focus stays inside the FOV chooser', function () {
         photographPlace(markById('m4'));

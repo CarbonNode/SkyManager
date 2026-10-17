@@ -423,6 +423,23 @@
 .ost-dock-search{margin-top:auto;padding-top:4px;}
 .ost-dock-search .ost-find-input{font-size:18px;padding:13px 14px;}
 
+/* Look carries four rows since Fluids (2026-10-14); the other docks carry
+   three. Their rows grow instead, so all four docks still end on one line
+   rather than three leaving a strip of empty panel under them. */
+.ost-tabs.ost-docks{align-items:stretch;}
+.ost-tabs.ost-docks .ost-dock>.ost-seg,.ost-tabs.ost-docks .ost-dock>.ost-seg-extra{flex:1 1 auto;}
+
+/* ---- Fluids popout: OStrands' own settings ------------------------------ */
+.ost-fluid-row{display:flex;align-items:center;gap:20px;}
+.ost-fluid-row[data-off="1"] .ost-row-text{opacity:.55;}
+.ost-fluid-row .ost-segmented{flex:0 0 auto;margin:0;}
+.ost-fluid-row .ost-segmented .ost-button{min-width:84px;white-space:nowrap;}
+.ost-fluid-value{min-width:110px;}
+.ost-fluid-key{display:flex;align-items:center;gap:14px;flex:0 0 auto;}
+.ost-fluid-keyname{font-size:20px;color:#f0dda6;min-width:120px;text-align:center;white-space:nowrap;}
+.ost-fluid-cycle{min-width:240px;white-space:nowrap;}
+.ost-fluid-list h3{margin-top:28px;}
+
 /* ---- the Quick strip: five direct actions, equal cells --------------- */
 .ost-quick{
   margin:16px 0 0;padding:16px 16px 18px;border:1px solid rgba(81,71,53,.95);border-radius:14px;
@@ -682,6 +699,27 @@
 /* ---- the last pass (2026-09-22): nothing left to complain about ------- */
 /* popouts breathe: the old 960 made every list and stepper row elbow each other */
 .ost-pop-card{width:1240px;max-width:min(100%,1240px);}
+
+/* ---- Move scene: a wide popout of render tiles (2026-10-14) --------------
+   Rober, with a screenshot of the old narrow list: "doesnt show actual
+   renderings, and could be much nicer / larger horizontally". Each piece is a
+   tile with the deck's render of its base model; ostim-tools.js balances the
+   columns so only the LAST row stretches. */
+.ost-pop.ost-pop-wide .ost-pop-card{width:min(96vw,2100px);max-width:min(96vw,2100px);}
+.ost-furn-grid{display:flex;flex-wrap:wrap;gap:24px;align-items:stretch;margin-top:18px;}
+.ost-furn-tile{display:flex;flex-direction:column;min-width:0;overflow:hidden;border:1px solid rgba(208,173,83,.35);border-radius:16px;background:rgba(255,255,255,.035);}
+.ost-furn-tile:hover{border-color:rgba(214,173,96,.85);background:rgba(255,255,255,.06);}
+.ost-furn-art{position:relative;height:clamp(190px,21vh,340px);display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.38);border-bottom:1px solid rgba(208,173,83,.2);}
+.ost-furn-art img.ost-furn-render{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;}
+.ost-furn-art img.ost-furn-fallback{width:112px;height:112px;opacity:.55;}
+.ost-furn-art.is-waiting::after{content:"Rendering...";position:absolute;left:0;right:0;bottom:10px;text-align:center;font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:#8d8676;}
+.ost-furn-dist{position:absolute;left:12px;top:12px;padding:6px 15px;font-size:19px;font-weight:700;color:#fff3d0;background:rgba(10,9,12,.88);border:1px solid rgba(214,173,96,.7);border-radius:999px;white-space:nowrap;}
+.ost-furn-info{display:flex;flex-direction:column;gap:4px;padding:16px 22px 8px;min-width:0;}
+.ost-furn-info strong{font-size:23px;color:#f4ecd6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ost-furn-info small{font-size:17px;color:#b9b2a1;}
+.ost-furn-acts{display:flex;gap:12px;margin-top:auto;padding:10px 22px 20px;}
+.ost-furn-acts>*{flex:1 1 0;min-width:0;}
+.ost-here .ost-furn-art{width:260px;height:150px;flex:0 0 260px;border:1px solid rgba(208,173,83,.3);border-radius:12px;}
 /* feedback you can see: the popout's own message line */
 .ost-pop-note{margin:0;font-size:17px;color:#eee7db;}
 .ost-pop-note:empty{display:none;}
@@ -1002,3 +1040,59 @@
  .ost-position-actions{flex-direction:column;}
  .ost-position-actions .ost-button{width:100%;white-space:normal;text-align:left;}
 }
+
+/* ---- Move the whole scene (2026-10-14) ----------------------------------
+   Rober: "i need to be able to move an entire scene up easily (both actors)
+   or left or right quickly". A third hero band under the live dock: three
+   axis cells (Height / Side to side / Depth) and a Step cell, equal and
+   flush like the dock above. The buttons are big on purpose — this is a
+   press-press-press control, read from the couch. */
+.ost-nudge{display:flex;flex-direction:column;gap:12px;}
+.ost-nudge-head{display:flex;align-items:baseline;gap:16px;}
+.ost-nudge-head .ost-dock-cap{text-align:left;color:#d8c48e;}
+.ost-nudge-sub{font-size:15px;color:#a39880;}
+.ost-nudge-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;}
+.ost-nudge-cell.ost-dock-cell{flex-direction:column;align-items:stretch;justify-content:flex-start;gap:12px;min-height:0;padding:14px 16px;}
+.ost-nudge-cap{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.ost-nudge-cap .ost-dock-cap{text-align:left;white-space:nowrap;}
+.ost-nudge-read{font-size:18px;font-weight:600;color:#f0dda6;min-width:3ch;text-align:right;font-variant-numeric:tabular-nums;}
+.ost-nudge-read[data-zero="true"]{color:#8f8670;font-weight:400;}
+/* the pair fills its cell, so the four cells end together (the Step cell is
+   the tallest) and the buttons get bigger instead of leaving a gap */
+.ost-nudge-pair{flex:1 1 auto;display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.ost-button.ost-nudge-btn{display:flex;align-items:center;justify-content:center;gap:10px;min-height:60px;padding:10px 12px;font-size:19px;white-space:nowrap;}
+.ost-nudge-glyph{font-size:24px;line-height:1;color:#d0ad53;}
+.ost-nudge-btn:hover:not(:disabled){background:rgba(208,173,83,.16);border-color:#d0ad53;}
+.ost-nudge-btn:hover:not(:disabled) .ost-nudge-glyph{color:#f0dda6;}
+.ost-nudge-btn:active:not(:disabled){background:rgba(208,173,83,.28);}
+.ost-nudge-opts .ost-dock-cap{text-align:left;}
+.ost-segmented.ost-nudge-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));}
+.ost-nudge-steps .ost-button{min-height:48px;padding:8px 6px;font-size:16px;justify-content:center;white-space:nowrap;}
+.ost-nudge-tail{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.ost-nudge-tail .ost-button{min-height:48px;justify-content:center;font-size:17px;}
+.ost-nudge[data-live="false"] .ost-nudge-cell{opacity:.55;}
+.ost-page-live .ost-nudge-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+@media (max-width:1500px){.ost-page-live .ost-nudge-grid{grid-template-columns:repeat(4,minmax(0,1fr));}}
+@media (max-width:1100px){.ost-nudge-grid,.ost-page-live .ost-nudge-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+
+/* ---- the scene bar's results: a wide panel, one line a row (2026-10-14) ----
+   The dropdown was the field's width (~230px at 1440p): names wrapped a word
+   a line, split mid-word ("Doggystyl e 2"), the id broke at its hyphen and
+   2.5 rows showed. Now it is pinned to the field's RIGHT edge and opens
+   leftward, 2x the field and at least 560px; ostim-tools.js fitSceneDrop()
+   sets the exact width/height so it stays inside the card and the screen.
+   Name and id are one line each, cut with an ellipsis; the row's title=
+   (drawn by #hd-tip) carries the whole thing. */
+.ost-find-scene-drop{left:auto;right:0;width:200%;min-width:560px;max-width:none;box-sizing:border-box;
+  max-height:640px;padding:10px;border-color:#8f7846;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.055),0 16px 36px rgba(0,0,0,.6);}
+.ost-find-scene-drop .ost-find-row{padding:11px 16px;gap:18px;min-height:72px;box-sizing:border-box;}
+.ost-find-scene-drop .ost-find-phase{min-height:58px;}
+.ost-find-scene-drop .ost-find-text{flex:1 1 auto;min-width:0;gap:3px;}
+.ost-find-scene-drop .ost-find-text strong,
+.ost-find-scene-drop .ost-find-text small{display:block;min-width:0;max-width:100%;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;overflow-wrap:normal;word-break:normal;}
+.ost-find-scene-drop .ost-find-text strong{font-size:21px;line-height:1.25;}
+.ost-find-scene-drop .ost-find-text small{font-size:17px;line-height:1.3;}
+.ost-find-scene-drop .ost-find-group+.ost-find-group{margin-top:2px;}
+.ost-find-scene-drop .ost-help{margin:6px 8px;font-size:19px;line-height:1.45;}

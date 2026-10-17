@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -19,13 +20,18 @@ namespace OpenDiag
 		// probe was), honor 0/false, treat everything else — including a missing
 		// file or a missing key — as `dflt`. Shared by every boolean SkyManager.ini
 		// flag so INI parsing lives in exactly one place.
-		bool ReadIniBool(const char* wantKey, bool dflt)
+		// The raw value of the first `wantKey = value` line, trimmed; nullopt when
+		// the file or the key is missing. A ';' or '#' line is a comment.
+		std::optional<std::string> ReadIniValue(const char* wantKey)
 		{
 			std::ifstream in("Data/SKSE/Plugins/SkyManager.ini");
 			if (!in)
-				return dflt;
+				return std::nullopt;
 			std::string line;
 			while (std::getline(in, line)) {
+				const auto first = line.find_first_not_of(" \t");
+				if (first == std::string::npos || line[first] == ';' || line[first] == '#')
+					continue;
 				const auto eq = line.find('=');
 				if (eq == std::string::npos)
 					continue;
@@ -35,11 +41,26 @@ namespace OpenDiag
 				if (_stricmp(key.c_str(), wantKey) != 0)
 					continue;
 				std::string val = line.substr(eq + 1);
+				// An inline comment after whitespace ("0x8001   ; why") is not the value.
+				for (std::size_t i = 1; i < val.size(); ++i) {
+					if ((val[i] == ';' || val[i] == '#') && (val[i - 1] == ' ' || val[i - 1] == '\t')) {
+						val.resize(i);
+						break;
+					}
+				}
 				val.erase(0, val.find_first_not_of(" \t"));
 				val.erase(val.find_last_not_of(" \t\r") + 1);
-				return !(val == "0" || _stricmp(val.c_str(), "false") == 0);
+				return val;
 			}
-			return dflt;
+			return std::nullopt;
+		}
+
+		bool ReadIniBool(const char* wantKey, bool dflt)
+		{
+			const auto val = ReadIniValue(wantKey);
+			if (!val)
+				return dflt;
+			return !(*val == "0" || _stricmp(val->c_str(), "false") == 0);
 		}
 	}
 
@@ -57,6 +78,11 @@ namespace OpenDiag
 	bool IniBool(const char* key, bool dflt)
 	{
 		return ReadIniBool(key, dflt);
+	}
+
+	std::string IniString(const char* key, const std::string& dflt)
+	{
+		return ReadIniValue(key).value_or(dflt);
 	}
 
 	std::int64_t NowMs()

@@ -1,0 +1,140 @@
+/* ============================ hd-obody.css — the body on the F7 card ============================ *
+ * The OBody column on the RIGHT of the Equipped tiles (Rober, 2026-10-15) and its
+ * preset picker popout. Namespaced fq-obody-* (inline) and obd-* (popout): no
+ * class here is shared with the deck skeleton.
+ *
+ * Ultralight: explicit rgba() only, no color-mix, no hover/pointer media
+ * queries (it matches hover:none in game). The popout fills the viewport, so
+ * its bare vh/vw are right and it wears NO --ui-scale (the 2026-08-14 popup
+ * audit); --obp steps the whole card up on a big screen, like .rm-pick-back.
+ * =============================================================================================== */
+
+/* ---------------------------------------------------------------- the column -- */
+.fq-obody {
+  flex: 0 0 280px; box-sizing: border-box; align-self: stretch;
+  display: flex; flex-direction: column; gap: 10px;
+  margin-top: 4px; padding: 14px 16px 16px;
+  border: 1px solid #3a382f; border-radius: 10px;
+  background: linear-gradient(180deg, #18171d, #121217);
+}
+.fq-obody.off { border-style: dashed; }
+.fq-obody-top { display: flex; align-items: center; gap: 10px; min-height: 26px; }
+.fq-obody-cap {
+  font: 800 12px/1 "Segoe UI", sans-serif; letter-spacing: 1.4px;
+  text-transform: uppercase; color: #a98f5a;
+}
+.fq-obody-kind {
+  margin-left: auto; flex: none;
+  font: 800 14px/1 "Segoe UI", sans-serif; letter-spacing: .8px;
+  padding: 6px 12px; border-radius: 999px; border: 1px solid #6a5a34;
+  color: #ecd9a0; background: rgba(201,162,75,.14);
+}
+.fq-obody-kind.k-ube  { color: #ecd2f4; border-color: rgba(196,140,216,.65); background: rgba(150,92,172,.22); }
+.fq-obody-kind.k-3ba  { color: #f0dca6; border-color: rgba(214,176,88,.70); background: rgba(201,162,75,.18); }
+.fq-obody-kind.k-male { color: #cfe0f2; border-color: rgba(120,156,196,.65); background: rgba(84,118,160,.22); }
+.fq-obody-name {
+  flex: 1 1 auto;
+  font: 700 19px/1.3 "Segoe UI", sans-serif; color: #ecd9a0;
+  overflow-wrap: anywhere; max-height: 5.3em; overflow: hidden;
+}
+.fq-obody-name.none, .fq-obody-name.wait { color: #8f897a; font-weight: 600; }
+.fq-obody-note { flex: 1 1 auto; font-size: 15px; line-height: 1.45; color: #aaa38f; overflow-wrap: anywhere; }
+.fq-obody-change {
+  flex: none; min-height: 42px; padding: 0 14px;
+  border: 1px solid #8b7138; border-radius: 9px;
+  background: #28251d; color: #eddbac;
+  font: 700 16px/1 "Segoe UI", sans-serif; cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 100ms ease;
+}
+.fq-obody-change:hover { background: #3a3220; border-color: #d0ac54; }
+.fq-obody-change:active { transform: translateY(1px); }
+.fq-obody-change:focus-visible { outline: 2px solid #eddbac; outline-offset: 2px; }
+
+/* ---------------------------------------------------------------- the popout -- */
+.obd-back { --obp: 1; }
+@media (min-width: 1900px) and (min-height: 1000px) { .obd-back { --obp: 1.3; } }
+.obd-back {
+  position: fixed; inset: 0; z-index: 9700;
+  display: flex; align-items: center; justify-content: center;
+  padding: calc(24px * var(--obp, 1)); box-sizing: border-box;
+  background: rgba(0,0,0,.72);
+  animation: obdBackIn 140ms ease-out;
+}
+@keyframes obdBackIn { from { opacity: 0; } to { opacity: 1; } }
+.obd-card {
+  width: calc(760px * var(--obp, 1)); max-width: 100%; height: 86vh; max-height: 86vh;
+  box-sizing: border-box;
+  display: flex; flex-direction: column; gap: calc(14px * var(--obp, 1));
+  padding: calc(24px * var(--obp, 1)) calc(28px * var(--obp, 1));
+  background: linear-gradient(180deg, #1c1c23, #16161b);
+  border: 1px solid #b69b56; border-radius: calc(18px * var(--obp, 1));
+  box-shadow: 0 8px 22px rgba(0,0,0,.3);
+  color: #eee8dd;
+  animation: obdIn 160ms ease-out;
+}
+@keyframes obdIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.obd-head {
+  display: flex; align-items: center; gap: calc(16px * var(--obp, 1));
+  padding-bottom: calc(14px * var(--obp, 1)); border-bottom: 1px solid #4d4540;
+}
+.obd-title {
+  flex: 1; min-width: 0; overflow-wrap: anywhere;
+  font-size: calc(26px * var(--obp, 1)); font-weight: 700; line-height: 1.25; color: #e6c979;
+}
+.obd-x {
+  flex-shrink: 0; min-height: calc(46px * var(--obp, 1)); padding: 0 calc(20px * var(--obp, 1));
+  font: inherit; font-size: calc(18px * var(--obp, 1)); color: #eee8dd;
+  background: #2a2931; border: 1px solid #615b62; border-radius: 9px; cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.obd-x:hover { background: #36313a; border-color: #8b7443; }
+.obd-x:focus-visible { outline: 2px solid #d5b65c; outline-offset: 2px; }
+.obd-current {
+  display: flex; align-items: center; flex-wrap: wrap; gap: calc(12px * var(--obp, 1));
+  font-size: calc(18px * var(--obp, 1));
+}
+.obd-current .fq-obody-kind { margin-left: 0; font-size: calc(15px * var(--obp, 1)); }
+.obd-current-lbl { color: #9c9584; text-transform: uppercase; letter-spacing: 1.2px; font-size: calc(14px * var(--obp, 1)); font-weight: 800; }
+.obd-current-name { color: #ecd9a0; overflow-wrap: anywhere; }
+.obd-current-name.none { color: #8f897a; font-weight: 600; }
+.obd-search {
+  flex-shrink: 0;
+  background: rgba(0,0,0,.30); color: #e8e4da;
+  border: 1px solid #3d3a44; border-radius: 10px;
+  padding: calc(14px * var(--obp, 1)) calc(16px * var(--obp, 1));
+  font-size: calc(19px * var(--obp, 1)); font-family: inherit;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.obd-search:focus { outline: none; border-color: rgba(201,162,75,.6); box-shadow: 0 0 0 3px rgba(201,162,75,.12); }
+.obd-search::placeholder { color: #7a7468; }
+.obd-status { font-size: calc(17px * var(--obp, 1)); line-height: 1.4; color: #d7c79e; min-height: 1.4em; }
+.obd-status:empty { display: none; }
+.obd-status.bad { color: #f0b3a4; }
+.obd-list {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: calc(6px * var(--obp, 1));
+  padding-right: 4px;
+}
+.obd-row {
+  flex-shrink: 0; width: 100%; box-sizing: border-box; text-align: left;
+  display: flex; align-items: center; gap: calc(12px * var(--obp, 1));
+  padding: calc(12px * var(--obp, 1)) calc(16px * var(--obp, 1));
+  font: inherit; font-size: calc(19px * var(--obp, 1)); color: #e8e2d4;
+  background: rgba(255,255,255,.03); border: 1px solid #2f2d36; border-radius: 10px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.obd-row:hover { background: rgba(201,162,75,.10); border-color: #8b7443; }
+.obd-row:focus-visible { outline: 2px solid #d5b65c; outline-offset: 1px; }
+.obd-row:first-child { border-color: #5c5038; }
+.obd-row.on { background: rgba(201,162,75,.16); border-color: #c9a24b; color: #f3e2b0; }
+.obd-row.busy { border-color: #d0ac54; }
+.obd-row[disabled] { cursor: wait; }
+.obd-row[disabled]:not(.busy) { opacity: .55; }
+.obd-row-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.obd-row-tag {
+  flex: none; font-size: calc(13px * var(--obp, 1)); font-weight: 800; letter-spacing: .8px;
+  text-transform: uppercase; color: #c9a24b;
+  padding: 4px 9px; border: 1px solid #6a5a34; border-radius: 999px;
+}
+.obd-empty, .obd-more { padding: calc(14px * var(--obp, 1)) 4px; font-size: calc(17px * var(--obp, 1)); color: #9c9584; }

@@ -147,7 +147,12 @@ window.HomePane = (function () {
                     /* 2026-10-12: the Quick Light lantern, same walk. */
                     qlight: null,
                     /* 2026-10-12: the loot feed, same walk. */
-                    lootFeed: null },
+                    lootFeed: null,
+                    /* 2026-10-14: the FPS meter, same walk. */
+                    fps: null },
+              /* 2026-10-14: Community Shaders' overlay as the FPS meter tracks
+                 it — {present, on, key, bound, auto}; null = not heard yet. */
+              cs: null,
               /* Auto face photos (2026-10-12): fdAutoPhotoState.enabled.
                  null = not heard yet (the feature defaults ON). */
               ap: null,
@@ -728,6 +733,22 @@ window.HomePane = (function () {
       avail: function () { return !!window.HDPadCfg; },
       jumpLabel: 'Config →',
       jump: function () { if (window.HDPadCfg) HDPadCfg.open(); } },
+    /* Spellbook (2026-10-14, Rober: "new full screen UI popout in UI elements
+       on home for skymanager, a personal catalog of spells, you create nice
+       categories … chevrons, draggable order, add or remove, auto cast,
+       equip"). An openable window like the Potion Browser: how it opens and
+       Open. hd-spellbook.js rides the DEFERRED boot set, so `avail` keeps the
+       Omni from offering it in the first beat of a session (the Super
+       Searcher's rule). `hd-spellbook` is the seeded ENTRY id. */
+    { id: 'spellbook', ic: '✦', img: 'icons/custom/hm-spells.png', name: 'Spellbook',
+      sub: 'Full-screen catalog of your spells — your own categories, drag to order, cast or equip',
+      kw: 'spellbook spell book spells catalog catalogue categories magic organise organize sort my spells favourite favorite spells cast equip left right both hands powers shouts grid',
+      state: function () { return null; },
+      avail: function () { return !!window.HDSpellbook; },
+      note: function () { return window.HDSpellbook ? HDSpellbook.summary() : ''; },
+      chord: 'Bindable — Utilities tab',
+      open: function () { if (window.HDSpellbook) HDSpellbook.open(false); },
+      openLabel: 'Open' },
     /* Detailed MiniMap (2026-10-09, Rober: "hook this and its settings into
        skymanager … drag it around screen … cool generated frames"). DMM draws
        the map itself through SKSE Menu Framework; every setting, the drag and
@@ -888,6 +909,56 @@ window.HomePane = (function () {
       },
       jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'lootFeed' })); },
       jumpLabel: 'Config →' },
+    /* FPS meter (2026-10-14). Rober: "show fps engine and fps (frame gen) in ui
+       elements without performance cost and toggable". A FREE widget, same
+       toggle pair; refresh, lines and the CS overlay switch are on the meter
+       in Config →. Engine = frames the game draws (counted in the deck's
+       present hook); frame gen = PureDark's own count (src/fps_meter.h). */
+    { id: 'fw-fps', fw: 'fps', ic: '≋', img: 'icons/custom/gl-bolt.png',
+      name: 'FPS Meter', sub: 'Engine fps beside the frames on screen from PureDark’s frame generation',
+      kw: 'fps frame rate framerate frames per second meter counter performance frame generation framegen frame gen dlss puredark upscaler engine',
+      state: function () { return uie.fw.fps; },
+      toggle: function () { host.toGame && host.toGame('hdWidgetToggle', JSON.stringify({ id: 'fps' })); },
+      note: function () {
+        if (uie.fw.fps !== true) return 'Turn it on, then drag it where you want it.';
+        return 'Refresh rate, frame time and the history bars: Config →.';
+      },
+      jump: function () { host.toGame && host.toGame('hudCfg', JSON.stringify({ op: 'shelf', key: 'fps' })); },
+      jumpLabel: 'Config →' },
+    /* Community Shaders' performance overlay (2026-10-14). Rober: "i always
+       have to toggle on Community shaders fps". CS has no API, so this presses
+       CS's own overlay key (read from its SettingsUser.json, default F10) and
+       C++ tracks on/off — off at launch, flipped by every press it sees,
+       including one by hand. "Turn on at load" presses it once per launch. */
+    { id: 'cs-overlay', ic: '≋', img: 'icons/custom/gl-bolt.png',
+      /* gone on a load order without Community Shaders (shown while unknown) */
+      avail: function () { return !uie.cs || uie.cs.present !== false; },
+      name: 'Community Shaders Overlay', sub: 'CS’s own FPS / frame time / VRAM overlay — on and off from here',
+      kw: 'community shaders cs overlay fps performance overlay frame time vram draw calls f10 meter counter',
+      state: function () { return uie.cs && uie.cs.present ? uie.cs.on === true : null; },
+      toggle: function () { host.toGame && host.toGame('hdCsOverlay', JSON.stringify({ op: 'toggle' })); },
+      note: function () {
+        var cs = uie.cs;
+        if (!cs) return 'Asking the game…';
+        if (!cs.present) return 'Needs Community Shaders.';
+        if (cs.bound === false) return 'Its overlay key is unbound in Community Shaders — bind one in its menu (End) first.';
+        return 'Presses its own key, ' + (cs.key || 'F10') + '. ' +
+          (cs.auto ? 'Turns itself on a few seconds after each game load.' : 'Off every launch until you turn it on — or tick Turn on at load.');
+      },
+      get extra() {
+        var cs = uie.cs;
+        if (!cs || !cs.present) return [];
+        return [{
+          label: (cs.auto ? '✓ ' : '') + 'Turn on at load',
+          title: 'Turn the Community Shaders overlay on by itself, once per launch, a few seconds into play',
+          run: function () {
+            var now = !(uie.cs && uie.cs.auto);
+            if (uie.cs) uie.cs.auto = now;
+            host.toGame && host.toGame('hdCsOverlay', JSON.stringify({ op: 'auto', value: now }));
+            renderUie();
+          }
+        }];
+      } },
     /* Auto face photos (2026-10-12). Rober: "can it just be smarter and more
        dynamic??" — the deck photographs loaded roster people itself (at most
        two per open, nearest first, helmet hidden) and never replaces a photo
@@ -929,6 +1000,15 @@ window.HomePane = (function () {
       state: function () { return null; },
       chord: 'Bindable — Misc tab',
       open: function () { host.toGame && host.toGame('hdFire', 'hd-time-dial'); },
+      openLabel: 'Open' },
+    /* Rest (2026-10-14): the same dial opened on its Rest face — eat your
+       fill, drink your fill, sleep, through SunHelm's own functions.
+       `hd-rest` is the seeded ENTRY id. */
+    { id: 'rest', ic: '◷', img: 'icons/custom/hk-bed.png', name: 'Eat, Drink & Sleep', sub: 'Sit down at home: eat your fill, drink your fill, sleep — SunHelm needs filled, the night passes in one step',
+      kw: 'rest eat drink sleep meal supper feast table home food water hunger thirst fatigue sunhelm roleplay bed',
+      state: function () { return null; },
+      chord: 'Bindable — Misc tab',
+      open: function () { host.toGame && host.toGame('hdFire', 'hd-rest'); },
       openLabel: 'Open' },
     /* Super Searcher (2026-08-19): the standalone quick-search widget —
        hd-super.js dresses the omni search as an anchored, scaled, animated
@@ -985,7 +1065,7 @@ window.HomePane = (function () {
     for (var i = 0; i < GRP_LINES.length; i++) if (GRP_LINES[i].key === k) return GRP_LINES[i];
     return { key: k, name: FW_NAMES[k] || k, ic: '·', img: '' };
   }
-  var FW_NAMES = { quick: 'Quick items', quick2: 'My items', lootStatus: 'Loot lamp', qlight: 'Quick Light', lootFeed: 'Loot feed' };
+  var FW_NAMES = { quick: 'Quick items', quick2: 'My items', lootStatus: 'Loot lamp', qlight: 'Quick Light', lootFeed: 'Loot feed', fps: 'FPS meter' };
   /* The master is DERIVED exactly as hud.js's grpAnyOn is — any line on means
      the widget is on — so the two surfaces can never disagree. null while no
      state has arrived, so the row wears no chip rather than a guess. */
@@ -1104,6 +1184,10 @@ window.HomePane = (function () {
     if (thumb) thumb.style.left = f;
     if (val) val.textContent = v + '%';
     if (track) track.setAttribute('aria-valuenow', String(v));
+    /* uie-keep: the live expander now differs from the markup it was built
+       as, so the next render must not keep it */
+    var inl = row.closest ? row.closest('.hm-uie-inline') : null;
+    if (inl) inl.__uieSig = null;
     var grp = row.parentNode;
     var capEl = grp && grp.querySelector('.hm-swz-cap');
     if (capEl) capEl.textContent = swSizeCaption(v);
@@ -1752,6 +1836,43 @@ window.HomePane = (function () {
     if (tallest) Array.prototype.forEach.call(rows, function (row) { row.style.minHeight = tallest + 'px'; });
   }
 
+  /* uie-keep (2026-10-15). Opening the drawer asks eight bridges for state,
+     and EVERY reply re-ran renderUie, which wiped the drawer and rebuilt every
+     card — new <img>s (re-decoded, then re-shrunk by hd-icon-mip a frame
+     later), a grid relayout and two forced layouts in equalizeUieCards, eight
+     times inside a second: "click button#hm-uie-toggle | handlers 5 ms | paint
+     672 ms | worst frame 135 ms at +807 ms" (2026-10-15 log), and the same on
+     a pill's reply ("hm-uie-state OFF … worst frame 170 ms at +793 ms").
+     The drawer is still BUILT from state on every render, exactly as before,
+     but each card is only SWAPPED IN when its markup differs from the card on
+     screen; a reply that changes one pill replaces one card, and a reply that
+     changes nothing touches nothing. An expander also keys on the whole `uie`
+     state, since its buttons' closures read values (the Equipped size) that
+     its markup only shows rounded. Re-opening the drawer starts clean. */
+  var uieLive = {};
+  function uieKeep(key, fresh, extra) {
+    var sig = null;
+    try { sig = fresh.outerHTML + (extra ? '\u0000' + extra() : ''); } catch (e) { sig = null; }
+    var live = uieLive[key];
+    if (sig !== null && live && live.__uieSig === sig) return live;
+    fresh.__uieSig = sig;
+    uieLive[key] = fresh;
+    return fresh;
+  }
+  function uieStateSig() { return JSON.stringify(uie); }
+  /* Put `nodes` into `host` in order, moving only what is out of place.
+     Returns true when anything was added, moved or removed. */
+  function uieReconcile(host, nodes) {
+    var cur = host.firstChild, changed = false;
+    for (var i = 0; i < nodes.length; i++) {
+      if (cur === nodes[i]) { cur = cur.nextSibling; continue; }
+      host.insertBefore(nodes[i], cur);
+      changed = true;
+    }
+    while (cur) { var nx = cur.nextSibling; host.removeChild(cur); cur = nx; changed = true; }
+    return changed;
+  }
+
   function renderUie() {
     var body = $('hm-uie-body');
     if (!body) return;
@@ -1768,11 +1889,11 @@ window.HomePane = (function () {
       ? (tryCall(first.avail, true) === false ? 'Controls are loading…' :
         'Enter: ' + (first.jump || first.inline ? 'configure ' : 'open ') + first.name)
       : 'Try a widget name, a control, or “on” / “off”.';
-    body.innerHTML = '';
+    var next = [];
     if (!matches.length) {
       var empty = document.createElement('div'); empty.className = 'hm-uie-empty';
       empty.textContent = 'No UI elements match “' + ui.uieQuery + '”.';
-      body.appendChild(empty);
+      next.push(uieKeep('empty', empty));
     }
     matches.forEach(function (el) {
       var row = document.createElement('div');
@@ -1860,6 +1981,7 @@ window.HomePane = (function () {
           if (el.id === 'minimap' && uie.mm.visible !== null) uie.mm.visible = !uie.mm.visible;
           if (el.id === 'outfit-dock' && uie.outfitDock !== null) uie.outfitDock = !uie.outfitDock;
           if (el.fw && uie.fw[el.fw] !== null) uie.fw[el.fw] = !uie.fw[el.fw];
+          if (el.id === 'cs-overlay' && uie.cs && uie.cs.present) uie.cs.on = !uie.cs.on;
           renderUie();
         });
         acts.appendChild(chip);
@@ -1946,17 +2068,19 @@ window.HomePane = (function () {
         acts.appendChild(jb);
       }
       if (acts.childNodes.length) row.appendChild(acts);
-      body.appendChild(row);
+      next.push(uieKeep('row:' + el.id, row));
       /* the open expander is rebuilt fresh on every render, so it always
-         paints from the state that just arrived */
+         paints from the state that just arrived (and is swapped in whenever
+         that state differs from the one it was drawn from) */
       if (el.inline && uie.inlineOpen === el.id) {
         var mount = document.createElement('div');
         mount.className = 'hm-uie-inline';
-        if (el.inline(mount)) body.appendChild(mount);
+        if (el.inline(mount)) next.push(uieKeep('inline:' + el.id, mount, uieStateSig));
         else uie.inlineOpen = null;
       }
     });
-    requestAnimationFrame(equalizeUieCards);
+    /* equal card heights only need re-measuring when a card changed */
+    if (uieReconcile(body, next)) requestAnimationFrame(equalizeUieCards);
   }
 
   function receiveHud(env) {
@@ -1991,6 +2115,7 @@ window.HomePane = (function () {
     if (typeof env.hud === 'boolean') uie.hud = env.hud;
     if (typeof env.hudVisible === 'boolean') uie.hudVisible = env.hudVisible;
     if (typeof env.outfitDock === 'boolean') uie.outfitDock = env.outfitDock;
+    if (env.csOverlay && typeof env.csOverlay === 'object') uie.cs = env.csOverlay;
     var wwS = env.wardrobeWheel;
     if (wwS && typeof wwS === 'object') {
       uie.ww.known = true;
@@ -2062,6 +2187,10 @@ window.HomePane = (function () {
   function toggleUie() {
     ui.uieOpen = !ui.uieOpen;
     setDrawer('uie', ui.uieOpen, function () {
+      /* uie-keep: a fresh open rebuilds every card once (text size or the
+         window may have changed while it was folded); the replies the asks
+         below bring back then only swap the cards they actually change */
+      uieLive = {};
       askUieState();
       renderUie();
     });

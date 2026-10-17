@@ -1,0 +1,2 @@
+Runtime folder: YouTube thumbnails the Music tab fetches (src/music_player.cpp).
+It must exist at install time - MO2 hides a folder created mid-session.

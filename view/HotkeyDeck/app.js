@@ -16,6 +16,21 @@ function toGame(fn, arg) {
   }
 }
 
+/* mouse-watch (2026-10-15): C++ compares the raw mouse motion the game sees
+   with what THIS view receives, to say why the cursor stopped. One beat per
+   1.5 s while the pointer moves — the listener is an atomic store. */
+(function () {
+  var last = 0;
+  try {
+    document.addEventListener('mousemove', function () {
+      var t = Date.now();
+      if (t - last < 1500) return;
+      last = t;
+      if (typeof window.hdMouseBeat === 'function') { try { window.hdMouseBeat('1'); } catch (e) {} }
+    }, true);
+  } catch (e) {}
+})();
+
 /* ========================================================== key maps ==== */
 
 const MOD_DIK = { SHIFT: 42, CTRL: 29, ALT: 56 };
@@ -152,7 +167,9 @@ function normCode(e) {
    ⛔ Deliberately absent: Esc and Tab. While the palette is open the DECK owns
    both — Esc closes it, Tab switches to this very tab — so those buttons would
    close the deck instead of firing. A button that does the wrong thing is
-   worse than a button that isn't there; the hint under the pad says so. */
+   worse than a button that isn't there; the hint under the pad says so.
+   (The key strip and the Omni finder DO offer both: they fire through
+   close:true, after the deck has shut — keycaps-strip.js EXTRA_KEYS.) */
 const KEYPAD_GROUPS = [
   { id: 'num', title: 'Numpad', cols: 4, keys: [
     { l: 'NumLock', c: 0x45, name: 'NumLock', small: true }, { l: '/', c: 0xB5, name: 'Num /' },
@@ -190,6 +207,18 @@ const KEYPAD_GROUPS = [
     { l: 'F7', c: 0x41, name: 'F7', small: true }, { l: 'F8', c: 0x42, name: 'F8', small: true },
     { l: 'F9', c: 0x43, name: 'F9', small: true }, { l: 'F10', c: 0x44, name: 'F10', small: true },
     { l: 'F11', c: 0x57, name: 'F11', small: true }, { l: 'F12', c: 0x58, name: 'F12', small: true },
+  ] },
+  /* F13-F24 (Rober, 2026-10-14: "expand this feature past f12"). No keyboard
+     here has them; the Scimitar's G-buttons send them and mods get bound to
+     them (NFF summon on F17). Codes are EXT_RAW's faithful ones, and the C++
+     FireChord presses 100-118 as the bridge's engine event, not a scancode. */
+  { id: 'ext', title: 'F13 – F24', cols: 6, keys: [
+    { l: 'F13', c: 0x64, name: 'F13', small: true }, { l: 'F14', c: 0x65, name: 'F14', small: true },
+    { l: 'F15', c: 0x66, name: 'F15', small: true }, { l: 'F16', c: 0x67, name: 'F16', small: true },
+    { l: 'F17', c: 0x68, name: 'F17', small: true }, { l: 'F18', c: 0x69, name: 'F18', small: true },
+    { l: 'F19', c: 0x6A, name: 'F19', small: true }, { l: 'F20', c: 0x6B, name: 'F20', small: true },
+    { l: 'F21', c: 0x6C, name: 'F21', small: true }, { l: 'F22', c: 0x6D, name: 'F22', small: true },
+    { l: 'F23', c: 0x6E, name: 'F23', small: true }, { l: 'F24', c: 0x76, name: 'F24', small: true },
   ] },
 ];
 
@@ -396,17 +425,79 @@ function deckPaintScale() {
   return 1;
 }
 
+/* tab-switch-scale-gate (2026-10-15): renderSettings() runs applyScale() on
+   EVERY render() — every tab switch, every keystroke that re-renders — and
+   this used to re-write --ui-scale and run a WHOLE-DOCUMENT hdIconMip.rescan()
+   each time: ~930 getBoundingClientRect + ~1,750 getComputedStyle reads per
+   switch (counted in Chromium against an 800-image deck; the in-game deck holds
+   ~806), most of them on images inside display:none panes, where WebKit resolves
+   the style on demand, uncached. It also forced a full layout in the MIDDLE of
+   the switch (the pane's own onShow then dirtied it again) and re-queued every
+   runtime-shrunk render for another pass. The rescan exists for a ZOOM change
+   (hd-icon-mip.js says so), so it now runs only when the scale actually moved;
+   the pane a switch reveals is re-fitted on the next frame instead
+   (scheduleIconRefit below). The variable is compared against the LIVE inline
+   value, so the temporary --ui-scale swaps elsewhere (measure helpers, the
+   Domains/Finances capture) can never leave this believing a stale value. */
 function applyScale() {
   const s = clampScale(state.settings.uiScale);
   state.settings.uiScale = s;
-  document.documentElement.style.setProperty('--ui-scale', s);
+  const rootStyle = document.documentElement.style;
+  const scaleMoved = String(rootStyle.getPropertyValue('--ui-scale')).trim() !== String(s);
+  if (scaleMoved) rootStyle.setProperty('--ui-scale', s);
   const val = $('scale-val');
   if (val) val.textContent = Math.round(s * 100) + '%';
   const dn = $('scale-down'), up = $('scale-up');
   if (dn) dn.disabled = s <= SCALE_MIN + 1e-6;
   if (up) up.disabled = s >= SCALE_MAX - 1e-6;
   if (typeof window.hdSyncScalePop === 'function') window.hdSyncScalePop();   // header ⤤ popover readout
-  if (window.hdIconMip) window.hdIconMip.rescan();   // icons re-pick their mip tier for the new size
+  if (scaleMoved && window.hdIconMip) window.hdIconMip.rescan();   // icons re-pick their mip tier for the new size
+}
+
+/* The other half of tab-switch-scale-gate. A picture inserted while its pane
+   was display:none was tiered from its CSS size (hd-icon-mip.js), and the
+   per-render rescan used to re-measure it once the pane showed. That still
+   happens, but only for what is now ON SCREEN, and on the next frame, where the
+   layout the frame needs anyway is the one being read:
+     - the deck opening: one full rescan (rescanSoon), as the open always had;
+     - a tab switch: only the pane that just appeared.
+   Any pane is found the way render() hides them — an id ending "-pane" without
+   .hidden — so a new tab needs no ninth registration here. */
+const iconRefit = { pane: '', openedAt: -1, queued: false };
+function scheduleIconRefit(pane) {
+  const mip = window.hdIconMip;
+  if (!ui.visible) return;
+  /* ui.openedAt is stamped once per real open (hdOpen, !wasVisible), so it
+     tells a fresh open from a re-render without hooking the close path */
+  const opened = (ui.openedAt || 0) !== iconRefit.openedAt;
+  const moved = pane !== iconRefit.pane;
+  iconRefit.openedAt = ui.openedAt || 0;
+  iconRefit.pane = pane;
+  if (!mip || (!opened && !moved)) return;
+  if (opened) { if (typeof mip.rescanSoon === 'function') mip.rescanSoon(); else mip.rescan(); return; }
+  if (iconRefit.queued || typeof mip.fit !== 'function') return;
+  iconRefit.queued = true;
+  (window.requestAnimationFrame || setTimeout)(function () {
+    iconRefit.queued = false;
+    try { refitShownPaneIcons(mip); } catch (e) {}
+  });
+}
+function refitShownPaneIcons(mip) {
+  if (!ui.visible) return;
+  const panes = document.querySelectorAll('[id$="-pane"]:not(.hidden)');
+  const roots = [];
+  for (let i = 0; i < panes.length; i++) {
+    const p = panes[i];
+    if (!p.getClientRects().length) continue;                       // not drawn (a hidden ancestor)
+    if (roots.some(function (r) { return r.contains(p); })) continue;   // already covered by its ancestor
+    roots.push(p);
+  }
+  roots.forEach(function (root) {
+    const imgs = root.getElementsByTagName('img');
+    for (let i = 0; i < imgs.length; i++) mip.fit(imgs[i]);
+    const bgs = root.querySelectorAll('[style*="background-image"]');
+    for (let i = 0; i < bgs.length; i++) mip.fit(bgs[i]);
+  });
 }
 
 function setScale(v, persist) {
@@ -442,6 +533,68 @@ function syncSicOrders() {
   if (cb) cb.checked = state.settings.sicTeleport !== false;
   if (note) note.textContent = sicNoteText();
 }
+
+/* ---- Gear displays (Immersive Equipment Displays) -----------------------
+   C++ (ied_control.cpp) owns the state and replies iedState; this is only the
+   Settings group and a fan-out to the Scene page's quick row. The group stays
+   hidden until the DLL is loaded, so a player without IED never sees it. */
+const iedUi = { present: false, canBlock: false, playerShown: true, hideNpcs: true, hidePlayer: false,
+  scenes: 0, hidden: 0, msg: '' };
+function iedNoteText() {
+  if (!iedUi.present) return '';
+  if (iedUi.msg) return iedUi.msg;
+  if (iedUi.scenes && iedUi.hidden)
+    return iedUi.hidden + ' displayed-gear set' + (iedUi.hidden === 1 ? ' is' : 's are') + ' hidden right now - restored when the scene ends.';
+  return iedUi.hideNpcs
+    ? 'NPCs in an OStim scene have their displayed gear hidden, and it comes back when the scene ends.'
+    : 'Displayed gear stays on everyone during scenes.';
+}
+function syncIed() {
+  const g = $('ied-group');
+  if (g) g.classList.toggle('hidden', !iedUi.present);
+  const set = (id, on) => { const c = $(id); if (c) { c.checked = !!on; c.disabled = !iedUi.canBlock; } };
+  set('ied-shown-cb', iedUi.playerShown);
+  set('ied-npc-cb', iedUi.hideNpcs);
+  set('ied-pl-cb', iedUi.hidePlayer);
+  const note = $('ied-note');
+  if (note) note.textContent = iedNoteText();
+}
+window.iedState = function (d) {
+  if (!d || typeof d !== 'object') return;
+  Object.assign(iedUi, d);
+  if (!d.msg) iedUi.msg = '';
+  syncIed();
+  try { window.dispatchEvent(new CustomEvent('hd-ied-state', { detail: iedUi })); } catch (e) { /* no DOM */ }
+};
+function iedSet(key, value) { toGame('iedSet', JSON.stringify({ key: key, value: !!value })); }
+
+/* ---- OStim scenes: furniture picker + camera unlock -----------------------
+   C++ (furniture_pick.cpp, scene_camera.cpp) owns both switches and answers
+   furnState / camState. The group shows whenever OStim is loaded. */
+const osUi = { ostim: false, uiext: true, pick: true, chim: true, unlock: true, msg: '' };
+function syncOs() {
+  const g = $('os-group');
+  if (g) g.classList.toggle('hidden', !osUi.ostim);
+  const set = (id, on) => { const c = $(id); if (c) c.checked = !!on; };
+  set('os-pick-cb', osUi.pick);
+  set('os-cam-cb', osUi.unlock);
+  set('os-chim-cb', osUi.chim);
+  const note = $('os-note');
+  if (note) note.textContent = osUi.msg || '';
+}
+window.furnState = function (d) {
+  if (!d || typeof d !== 'object') return;
+  osUi.ostim = !!d.ostim; osUi.uiext = d.uiext !== false; osUi.pick = d.enabled !== false; osUi.chim = d.chim !== false;
+  osUi.msg = osUi.uiext ? '' : (d.msg || '');
+  syncOs();
+};
+window.camState = function (d) {
+  if (!d || typeof d !== 'object') return;
+  osUi.unlock = d.unlock !== false;
+  syncOs();
+};
+function furnSet(key, value) { toGame('furnSet', JSON.stringify({ key: key, value: !!value })); }
+function camSet(key, value) { toGame('camSet', JSON.stringify({ key: key, value: !!value })); }
 
 function syncScrollSpeedEdit() {
   const sp = clampScroll(state.settings.scrollSpeed);
@@ -992,7 +1145,7 @@ function render() {
   if (ui.visible && window.HDBookHold && HDBookHold.job('app-render', render)) return;
   const pane = (ui.tab === 'home' || ui.tab === 'numpad' || ui.tab === 'notes' || ui.tab === 'quests' ||
                 ui.tab === 'followers' || ui.tab === 'domains' || ui.tab === 'containers' || ui.tab === 'finances' ||
-                ui.tab === 'rooms' || ui.tab === 'time' || ui.tab === 'weather' || ui.tab === 'loot' ||
+                ui.tab === 'rooms' || ui.tab === 'time' || ui.tab === 'weather' || ui.tab === 'music' || ui.tab === 'loot' ||
                 ui.tab === 'inventory' ||
                 ui.tab === 'anim' || ui.tab === 'keys' || ui.tab === 'items' || ui.tab === 'npcs' ||
                 ui.tab === 'cells' || ui.tab === 'spells' ||
@@ -1046,7 +1199,9 @@ function render() {
   $('faces-pane').classList.toggle('hidden', pane !== 'faces');
   $('tm-pane').classList.toggle('hidden', pane !== 'time');
   $('wth-pane').classList.toggle('hidden', pane !== 'weather');
+  $('mus-pane').classList.toggle('hidden', pane !== 'music');
   $('iv-pane').classList.toggle('hidden', pane !== 'inventory');
+  scheduleIconRefit(pane);   // tab-switch-scale-gate: re-tier what this render revealed, next frame
   renderTabs();
 
   $('count-chip').textContent = state.entries.length + ' hotkeys';
@@ -1798,6 +1953,12 @@ function renderHints(pane) {
       '<span>Lightning changes apply as you close the deck</span><span>F7 / Esc close</span>';
     return;
   }
+  if (pane === 'music') {
+    h.innerHTML = '<span>Click a song to play it · ★ stars it · + Queue adds it</span>' +
+      '<span>Type to filter · Enter searches YouTube</span>' +
+      '<span>Skyrim music changes land as you close the deck</span><span>F7 / Esc close</span>';
+    return;
+  }
   if (pane === 'nightside') {
     h.innerHTML = '<span>Blood · Moon · Bone — the curses you carry</span>' +
       '<span>Type to search every power</span><span>Enter casts the top hit</span>' +
@@ -1922,6 +2083,9 @@ const SYS_TABS = [
      weathers, and each weather mod's card draws itself only when that mod
      is installed (src/weather_hub.cpp). */
   { tab: 'weather',    label: 'Weather',    img: 'icons/custom/wx-storm.png',      title: 'Every weather in your load order — bring one in, lock it, and tune your weather mods (lightning, seasons)' },
+  /* Music (2026-10-14). Ungated: every load order has music types; the
+     YouTube half asks for mpv + yt-dlp and says where they go when absent. */
+  { tab: 'music',      label: 'Music',      img: 'music-art/resonator-64.png',     title: 'A Dwemer resonator — see what is playing, hold any of Skyrim’s music, or search YouTube and stream it in game' },
   { tab: 'nightside',  label: 'Nightside',  img: 'icons/custom/hm-nightside.png',  title: 'Blood, Moon and Bone — the curses you carry', requiresState: 'nightside' },
 ];
 
@@ -2264,6 +2428,7 @@ function renderMoreList() {
   const list = menu.querySelector('.more-list');
   if (!list) return;
   list.innerHTML = moreListHtml();
+  menu._hdMoreMarkup = null;   // the menu no longer matches its last full markup (and the input holds typed text)
 }
 /* The list body, sectioned while unfiltered ("Didn't fit" / "Hidden from the
    bar"); filtered, one ranked list whose first row is the Enter target. */
@@ -2324,19 +2489,28 @@ function renderMoreMenu(keepFocus) {
   /* Tab style moved into Customize tabs (2026-10-11); its door is the foot. */
   h += '<div class="more-foot"><button class="more-cfg" data-act="tabcfg" title="Pin, hide and order tabs; icons or names">' +
     '<img src="icons/custom/gl-gear.png" alt="" draggable="false">Customize tabs…</button></div>';
-  menu.innerHTML = h;
+  /* tab-switch-inplace: an unchanged menu (nothing typed since it was built —
+     renderMoreList clears the mark) keeps its rows and icons. */
+  if (menu._hdMoreMarkup !== h) {
+    menu.innerHTML = h;
+    menu._hdMoreMarkup = h;
+  }
   menu.classList.remove('hidden');
-  /* Anchor under the More button; clamp so a wide menu never leaves the panel. */
+  /* Anchor under the More button; clamp so a wide menu never leaves the panel.
+     All three reads come before the writes: the menu's height does not depend
+     on its top/left (position:fixed), so one layout serves them, where reading
+     offsetHeight after writing top/left forced a second one. */
   const btn = $('tabs').querySelector('[data-act="more"]');
   if (btn) {
     const r = btn.getBoundingClientRect();
     const sc = deckPaintScale();   // the menu self-scales; clamp the PAINTED size
     const w = 320 * sc;
-    menu.style.top = Math.round(r.bottom + 5) + 'px';
-    menu.style.left = Math.round(Math.max(6, Math.min(r.left, window.innerWidth - w - 6))) + 'px';
     const hPainted = menu.offsetHeight * sc;
+    let top = Math.round(r.bottom + 5);
     if (r.bottom + 5 + hPainted > window.innerHeight - 6)
-      menu.style.top = Math.round(Math.max(6, window.innerHeight - 6 - hPainted)) + 'px';
+      top = Math.round(Math.max(6, window.innerHeight - 6 - hPainted));
+    menu.style.top = top + 'px';
+    menu.style.left = Math.round(Math.max(6, Math.min(r.left, window.innerWidth - w - 6))) + 'px';
   }
   const s = menu.querySelector('.more-search');
   if (s && !keepFocus) setTimeout(() => { s.focus(); }, 10);
@@ -2616,9 +2790,13 @@ function paintTabsRow(n, compactMore) {
         : (activeMore ? '<img class="tab-icon" src="' + activeMore.img + '" alt="" draggable="false">' +
                         '<span class="tab-more-lbl">' + esc(activeMore.label) + '</span>'
             : (inMore.length ? 'More' + moreN : '⋯')));
-  html += '<button class="tab tab-more' + (icons ? ' tab-ic' : '') + (activeMore ? ' active' : '') + (ui.moreOpen ? ' open' : '') +
-    '" data-act="more" aria-haspopup="true" aria-expanded="' + (!!ui.moreOpen) +
-    '" title="' + (activeMore ? esc(activeMore.label) + ' — ' + moreTitle : moreTitle) + '">' +
+  /* The More button's open state (.open + aria-expanded) is applied to the
+     live button below, NOT baked into the markup: opening or closing More
+     used to change the string and rebuild the whole bar — every tab button
+     and icon — for a colour change (tab-switch-inplace). */
+  html += '<button class="tab tab-more' + (icons ? ' tab-ic' : '') + (activeMore ? ' active' : '') +
+    '" data-act="more" aria-haspopup="true" aria-expanded="false"' +
+    ' title="' + (activeMore ? esc(activeMore.label) + ' — ' + moreTitle : moreTitle) + '">' +
     moreFace +
     ' <span class="tab-launch tab-more-chev" aria-hidden="true">▾</span></button>';
   /* the gear that opens Customize tabs — always last on the rail */
@@ -2627,9 +2805,38 @@ function paintTabsRow(n, compactMore) {
   const bar = $('tabs');
   // ui-response-tabs: keep the existing buttons/images on an unchanged refresh.
   if (bar._hdTabMarkup !== html) {
-    bar.innerHTML = html;
+    /* tab-switch-inplace (2026-10-15): a tab switch changes only which button
+       wears .active, and rebuilding ~25 buttons for that re-created every
+       <img> (each then re-fitted to its mip tier by hd-icon-mip) and dropped
+       :hover under the cursor. When the markup differs ONLY in the class
+       attributes, those are written onto the live buttons instead. */
+    if (!patchTabClasses(bar, html)) bar.innerHTML = html;
     bar._hdTabMarkup = html;
   }
+  const more = bar.querySelector('[data-act="more"]');
+  if (more) {
+    more.classList.toggle('open', !!ui.moreOpen);
+    more.setAttribute('aria-expanded', String(!!ui.moreOpen));
+  }
+}
+/* Write the class attributes of `html`'s buttons onto `bar`'s live buttons when
+   nothing else differs from the markup last written there; false = rebuild. */
+const TAB_BTN_CLASS = /<button class="([^"]*)"/g;
+function tabShape(html) { return html.replace(TAB_BTN_CLASS, '<button class=""'); }
+function patchTabClasses(bar, html) {
+  const prev = bar._hdTabMarkup;
+  if (typeof prev !== 'string' || tabShape(prev) !== tabShape(html)) return false;
+  const want = [];
+  html.replace(TAB_BTN_CLASS, function (m, c) { want.push(c); return m; });
+  const btns = bar.getElementsByTagName('button');
+  if (btns.length !== want.length) return false;
+  for (let i = 0; i < btns.length; i++) {
+    /* the live .open on More is set after this by paintTabsRow; keep it */
+    const c = btns[i].dataset && btns[i].dataset.act === 'more' && btns[i].classList.contains('open')
+      ? want[i] + ' open' : want[i];
+    if (btns[i].className !== c) btns[i].className = c;
+  }
+  return true;
 }
 
 /* Memoized tab-fit. The shed-until-it-fits loop below writes #tabs.innerHTML and
@@ -2944,10 +3151,20 @@ var HDActDiag = (function () {
       return d + (tx ? ' "' + tx + '"' : '');
     } catch (e) { return '?'; }
   }
+  /* act-diag-own-event (2026-10-15): `handlers` belongs to the event that
+     began the measurement. A click whose handler calls stopPropagation never
+     reaches the window listener, and the FIRST later event inside the 1.5 s
+     window (typing into the More menu's filter) used to stamp ITS time on the
+     click: the "click button.tab More | handlers 1209 ms" line of 2026-10-15
+     was the gap until the first keystroke, not 1.2 s of work. Such a click is
+     timed to the first task after its dispatch instead (all of its listeners
+     have run by then; a frame that lands first is counted too, so it is an
+     upper bound) and says so: "handlers <=N ms (propagation stopped)". */
   function begin(kind, e) {
     if (!window.HDPerf || !ui.visible || cur) return;
-    var a = { kind: kind, what: describe(e.target), tab: ui.tab, t0: now(), hDone: 0, paint: 0, worst: 0, worstAt: 0 };
+    var a = { kind: kind, what: describe(e.target), tab: ui.tab, t0: now(), hDone: 0, hLate: 0, paint: 0, worst: 0, worstAt: 0, ev: e };
     cur = a;
+    setTimeout(function () { if (!a.hDone) a.hLate = now() - a.t0; a.ev = null; }, 0);
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
         a.paint = now() - a.t0;
@@ -2962,7 +3179,9 @@ var HDActDiag = (function () {
           lastLog = a.t0;
           try {
             HDPerf.log('act-diag(view): ' + a.kind + ' ' + a.what + ' | tab=' + a.tab
-              + ' | handlers ' + (a.hDone ? HDPerf.fmt(a.hDone) + ' ms' : 'n/a (propagation stopped)') + ' | paint ' + HDPerf.fmt(a.paint)
+              + ' | handlers ' + (a.hDone ? HDPerf.fmt(a.hDone) + ' ms'
+                : (a.hLate ? '<=' + HDPerf.fmt(a.hLate) + ' ms (propagation stopped)' : 'n/a (propagation stopped)'))
+              + ' | paint ' + HDPerf.fmt(a.paint)
               + ' ms | worst frame ' + HDPerf.fmt(a.worst) + ' ms at +' + HDPerf.fmt(a.worstAt) + ' ms');
           } catch (e2) {}
         };
@@ -2970,7 +3189,7 @@ var HDActDiag = (function () {
       });
     });
   }
-  function done() { if (cur && !cur.hDone) cur.hDone = now() - cur.t0; }
+  function done(e) { if (cur && !cur.hDone && cur.ev === e) cur.hDone = now() - cur.t0; }
   try {
     document.addEventListener('click', function (e) { begin('click', e); }, true);
     document.addEventListener('input', function (e) { begin('type', e); }, true);
@@ -3082,6 +3301,10 @@ const HK_REQUIRES = {
   'hd-highking':               { flag: 'highking', label: 'Become High King of Skyrim TNG' },
   'hd-hk-collect-taxes':       { flag: 'highking', label: 'Become High King of Skyrim TNG' },
   'hd-hk-highreach-tp':        { flag: 'highking', label: 'Become High King of Skyrim TNG' },
+  /* Sanguine's Ledger (2026-10-14): dispatches the mod's own ST_PrismaLedger toggle. C++ flag: sanguine. */
+  'hd-sanguine-ledger':        { flag: 'sanguine', label: "Sanguine's Trade" },
+  /* Gear displays (2026-10-14): flips Immersive Equipment Displays' block on the player. C++ flag: ied. */
+  'hd-ied-toggle-player':      { flag: 'ied', label: 'Immersive Equipment Displays' },
   /* NPA - NPC Preset Applier opener (2026-10-04): presses NPA's own key, so
      without NPA.dll it would fire a stray Shift+N. C++ flag: npa. */
   'hd-open-npa':               { flag: 'npa',      label: 'NPA - NPC Preset Applier' },
@@ -3439,7 +3662,44 @@ window.hdUiHost = function (j) {
   try { uiHostInfo = typeof j === 'string' ? JSON.parse(j) : (j || null); }
   catch (e) { uiHostInfo = null; }
   syncUiHostRow();
+  if (uiHostInfo && uiHostInfo.uiPump) ClosedCssWarm.arm();   // css-warm-closed
 };
+
+/* ---- css-warm-closed (2026-10-15, marker css-warm-closed) --------------------
+   HDCss.warm used to run ONLY while the deck was open and idle, because on stock
+   PrismaUI every Ultralight frame runs inside the game's present hook: a sheet's
+   ~30-80 ms restyle was a game frame. So the FIRST open of every session paid for
+   all of it: 41 sheet-sets back to back, 81 deck frames of up to 55-80 ms in 18 s
+   (2026-10-15 15:32, Rober: "very laggy on first open").
+   When C++ reports uiPump (the rig's PrismaUI fork ticks Ultralight on its own
+   thread, so view work no longer touches the game frame), the warm runs while the
+   deck is CLOSED instead: 30 s after DOM ready, and again shortly after each
+   close if anything is still cold. The closed deck is visibility:hidden, so the
+   sheets really apply. Opening pauses it; the open path's own +3.4 s start then
+   finishes any remainder under the open+idle gates, exactly as before. Without
+   uiPump nothing here ever runs. */
+const ClosedCssWarm = (function () {
+  let armed = false, timer = 0;
+  function kick(ms) {
+    if (!armed || ui.visible) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(function () {
+      timer = 0;
+      try {
+        if (!ui.visible && window.HDCss && HDCss.warm) HDCss.warm.start('deck closed, UI ticks off the game frame');
+      } catch (e) {}
+    }, ms);
+  }
+  return {
+    arm: function () { if (armed) return; armed = true; kick(30000); },
+    closed: function () { kick(4000); },
+    opened: function () {
+      if (timer) { clearTimeout(timer); timer = 0; }
+      if (armed) { try { if (window.HDCss && HDCss.warm) HDCss.warm.pause(); } catch (e) {} }
+    },
+    isArmed: function () { return armed; },
+  };
+})();
 function uiHostName(h) { return h === 'magelight' ? 'Magelight' : 'PrismaUI'; }
 /* The pick the row should show: an ini line wins, then the saved setting. */
 function uiHostChosen() {
@@ -3589,7 +3849,9 @@ function renderExt() {
           '" title="Disable this key">off</button>' +
       '</div>';
   });
-  g.innerHTML = html;
+  /* render() runs this on every tab switch while the card is usually hidden:
+     rebuild the 12 rows only when they changed (tab-switch-inplace). */
+  if (g._hdMarkup !== html) { g.innerHTML = html; g._hdMarkup = html; }
 }
 
 /* ============================================ deck settings, searchable ==== *
@@ -3671,6 +3933,26 @@ const DECK_SETTING_CBS = [
     detail: () => (state.settings.fgSmoothScroll !== false
       ? 'On — lists glide in small steps frame generation can follow, so rows do not ghost'
       : 'Off — the original glide; a fast flick can ghost rows under frame generation') },
+  { id: 'ied-shown-cb', name: 'Gear displays: show my weapons on my back',
+    keywords: 'ied immersive equipment displays gear weapons back hip sheath quiver lantern show hide toggle displayed',
+    when: () => iedUi.present, why: 'Gear displays need Immersive Equipment Displays and the SkyManager wardrobe plugin loaded',
+    detail: () => (iedUi.present ? (iedUi.playerShown ? 'On - your displayed gear is drawn' : 'Off - your displayed gear is hidden') : 'Immersive Equipment Displays is not loaded') },
+  { id: 'ied-npc-cb', name: 'Gear displays: hide on NPCs in an OStim scene',
+    keywords: 'ied immersive equipment displays gear weapons back hide scene ostim npc automatic auto displayed sex',
+    when: () => iedUi.present, why: 'Gear displays need Immersive Equipment Displays and the SkyManager wardrobe plugin loaded',
+    detail: () => (iedUi.present ? (iedUi.hideNpcs ? 'On - hidden while they are in a scene, restored after' : 'Off - displayed gear stays on during scenes') : 'Immersive Equipment Displays is not loaded') },
+  { id: 'os-pick-cb', name: 'OStim: use SkyManager\'s furniture and people pickers',
+    keywords: 'ostim furniture bed picker choose render distance nearby use bed prompt chair bench scene start',
+    when: () => osUi.ostim, why: 'This needs OStim loaded',
+    detail: () => (osUi.pick ? 'On - pickers with renders, distances and faces replace OStim\'s bed, furniture and add-actor questions' : 'Off - OStim asks its own question') },
+  { id: 'os-chim-cb', name: 'OStim: ask public or private and tell CHIM who joins',
+    keywords: 'ostim chim public private scene privacy onlookers closed doors join npc participant talk sharmat',
+    when: () => osUi.ostim, why: 'This needs OStim loaded',
+    detail: () => (osUi.chim ? 'On - the picker asks, and CHIM is told before the scene starts and when someone joins' : 'Off - CHIM is not told anything by the picker') },
+  { id: 'os-cam-cb', name: 'OStim: keep F and the mouse wheel working in a scene',
+    keywords: 'ostim camera first person third person pov f key scroll wheel zoom locked improved camera scene stuck view',
+    when: () => osUi.ostim, why: 'This needs OStim loaded',
+    detail: () => (osUi.unlock ? 'On - F and the wheel are given back shortly after a scene starts' : 'Off - OStim keeps them locked while its camera support is on') },
   { id: 'tgtfol-cb', name: 'Looking at someone? Open on the Followers tab',
     keywords: 'crosshair target npc person followers tab open on quick card dismiss inventory outfit wait',
     detail: () => (state.settings.targetOpensFollowers !== false
@@ -3717,6 +3999,7 @@ function registerDeckSettingsOmni() {
     index: function () {
       const items = [];
       DECK_SETTING_CBS.forEach((row) => {
+        if (row.when && !row.when()) return;   // a row whose mod is absent is not offered
         items.push({
           label: row.name, detail: row.detail(), kind: 'setting',
           keywords: row.keywords,
@@ -4402,7 +4685,9 @@ function popoutOpen() {
   try { if (window.ChimBtn && ChimBtn.isOpen && ChimBtn.isOpen()) return 'chim'; } catch (e) {}
   try { if (window.FixBtn && FixBtn.isOpen && FixBtn.isOpen()) return 'fixes'; } catch (e) {}
   try { if (window.RoomsPane && RoomsPane.pickerOpen && RoomsPane.pickerOpen()) return 'rooms'; } catch (e) {}
+  try { if (window.HDObody && HDObody.isOpen()) return 'obody'; } catch (e) {}
   try { if (window.HDRenown && HDRenown.isOpen()) return 'renown'; } catch (e) {}
+  try { if (window.HDSpellbook && HDSpellbook.isOpen()) return 'spellbook'; } catch (e) {}
   return '';
 }
 function popoutEscape() {
@@ -4410,7 +4695,9 @@ function popoutEscape() {
   if (w === 'chim') ChimBtn.close();
   else if (w === 'fixes') FixBtn.close();
   else if (w === 'rooms') RoomsPane.closePicker();
+  else if (w === 'obody') HDObody.close();
   else if (w === 'renown') HDRenown.close();
+  else if (w === 'spellbook') HDSpellbook.escape();   // its top layer first, the book last
 }
 /* Renown's popouts take a native Esc in their own window-capture listener
    (before this file's document listener), so they stamp it through here. */
@@ -4451,6 +4738,7 @@ function onKeyDown(e) {
   if (window.DomainGallery && DomainGallery.isOpen()) return; // album capture handler owns typing and Escape
   if (window.HDBestiary && HDBestiary.isOpen()) return;       // the Bestiary book owns its keys while it is up
   if (window.HDRenown && HDRenown.isOpen()) return;           // a Renown folio/lens owns typing and Escape
+  if (window.HDSpellbook && HDSpellbook.isOpen()) return;     // the Spellbook owns typing, drags and Escape
   if (!ui.visible) return;
   const code = normCode(e);
 
@@ -4575,6 +4863,13 @@ function onKeyDown(e) {
      other key belongs to its search box (typing, Enter = top hit). */
   if (window.RoomsPane && RoomsPane.pickerOpen && RoomsPane.pickerOpen()) {
     if (RoomsPane.pickerKey(e)) { e.preventDefault(); e.stopPropagation(); }
+    return;
+  }
+  /* The OBody body-preset picker (hd-obody.js, the F7 card's Equipped box):
+     same contract — Escape clears its search, then closes it; every other key
+     belongs to its search box and never quick-fires a hotkey behind it. */
+  if (window.HDObody && HDObody.isOpen()) {
+    if (HDObody.onKey(e)) { e.preventDefault(); e.stopPropagation(); }
     return;
   }
   /* Full-screen NPC workspace owns Tab and search before deck navigation. */
@@ -4714,6 +5009,10 @@ function onKeyDown(e) {
      they are up (the popout law); the palette-close Escape falls through. */
   if (ui.tab === 'weather' && code !== 'Tab' &&
       window.WeatherPane && WeatherPane.onKey(e)) { e.preventDefault(); return; }
+  /* Music: its Tracks popout and its search box own Escape while they are up
+     (the popout law); the palette-close Escape falls through. */
+  if (ui.tab === 'music' && code !== 'Tab' &&
+      window.MusicPane && MusicPane.onKey(e)) { e.preventDefault(); return; }
   /* Inventory: arrows / Enter / its letter verbs / popouts; the palette-close
      Escape falls through once the search and filters are clear. */
   if (ui.tab === 'inventory' && code !== 'Tab' &&
@@ -4772,6 +5071,8 @@ function onKeyDown(e) {
       ui.tab === 'loot' || ui.tab === 'time' ||
       /* weather owns #wth-search (2026-10-08) */
       ui.tab === 'weather' ||
+      /* music owns #mus-search (2026-10-14) */
+      ui.tab === 'music' ||
       /* inventory owns #iv-search (2026-10-10) */
       ui.tab === 'inventory' ||
       ui.tab === 'wardrobe' || ui.tab === 'faces') return;  // hotkey-list keys below apply to deck tabs only
@@ -4923,6 +5224,7 @@ function hidePane(t, closing) {
   if (t === 'wardrobe' && window.WardrobePane) WardrobePane.onHide();
   if (t === 'time' && window.TimePane) TimePane.onHide();
   if (t === 'weather' && window.WeatherPane) WeatherPane.onHide();
+  if (t === 'music' && window.MusicPane) MusicPane.onHide();
   if (t === 'inventory' && window.InventoryPane) InventoryPane.onHide();
   if (t === 'faces' && window.FacesPane) FacesPane.onHide();
 }
@@ -5040,6 +5342,7 @@ function setTabImpl(t) {
      timestamp — deliberately, so it cannot drift while the palette sits open —
      which means the moment to refresh it is when you look at it. */
   if (t === 'recent') toGame('hdHistory', '');
+  if (window.HDQuestJournal) HDQuestJournal.close();   // the guide popout is body-anchored; it must not outlive its tab
   if (t === 'quests') {
     ui.qDetail = null;
     ui.qNote = '';
@@ -5192,6 +5495,10 @@ function setTabImpl(t) {
     if (window.WeatherPane) WeatherPane.onShow();   // re-walks the load order's weathers + reads every weather mod
     return;
   }
+  if (t === 'music') {
+    if (window.MusicPane) MusicPane.onShow();   // re-walks the music types; polls the player while shown
+    return;
+  }
   if (t === 'inventory') {
     if (window.InventoryPane) InventoryPane.onShow();   // re-reads the bag every look: it changes between presses of F7
     return;
@@ -5269,6 +5576,19 @@ window.hdShowTab = function (t) {
       return;
     }
     HDSurvival.open(true);
+    return;
+  }
+  /* 'spellbook' — the full-screen personal spell catalog (hd-spellbook.js),
+     the Potion Browser's twin: a paused popout, not a tab. Same open
+     sequence, same press-again-to-close guard, same deferred-load parking. */
+  if (t === 'spellbook') {
+    if (!window.HDSpellbook) { window.__hdPendingSpellbook = 1; return; }
+    if (!HDSpellbook.hooked()) HDSpellbook.hookInto({ closeDeck: requestClose });
+    if (HDSpellbook.isOpen()) {
+      if (Date.now() - (ui.openedAt || 0) > 700) requestClose();
+      return;
+    }
+    HDSpellbook.open(true);
     return;
   }
   if (t === 'potions' || t.indexOf('potions@') === 0) {
@@ -5982,7 +6302,9 @@ window.hdFireRawKey = function (p) {
      * an unfilled required alias is flagged loudly; it is more often the real
        fault than the stage number is. */
 
-const OBJ_STATE = { 0: 'dormant', 1: 'displayed', 2: 'completed', 3: 'failed' };
+/* CommonLib QUEST_OBJECTIVE_STATE: 0 dormant, 1 displayed, 2 completed, 3 completed
+   (still shown), 4 failed, 5 failed (still shown). 3 used to read "failed". */
+const OBJ_STATE = { 0: 'not yet', 1: 'current', 2: 'done', 3: 'done', 4: 'failed', 5: 'failed' };
 
 let qSearchTimer = null;
 
@@ -6185,11 +6507,11 @@ function renderQuestDetail() {
       const pending = ui.qConfirmStage === s.index;
       html += '<button class="q-st' + (s.current ? ' cur' : '') + (back ? ' back' : '') +
         (pending ? ' confirm' : '') + '" data-stage="' + s.index + '" title="' +
-        (s.current ? 'Current stage' : (back ? 'Earlier than current — replaying a stage can make things worse' : 'Fire this stage')) +
+        (s.current ? 'Current stage' : (back ? 'Earlier than current — replaying a stage can make things worse' : 'Skip ahead to this stage — click twice')) +
         '">' + (pending ? '?' : s.index) + '</button>';
     });
     html += '</div><div class="q-hint">Click a stage to fire it through Papyrus, so its script fragments actually run. ' +
-      'Stages <b>before</b> the current one ask for a second click.</div>';
+      'Every stage asks for a second click: going forward skips whatever the quest does in between, going back can make things worse.</div>';
   }
   html += '</div>';
 
@@ -6220,8 +6542,10 @@ function renderQuestDetail() {
 function onStageClick(stage) {
   const d = ui.qDetail;
   if (!d || !d.formId) return;
-  if (stage < d.currentStage && ui.qConfirmStage !== stage) {
-    ui.qConfirmStage = stage;   // going backwards is the dangerous direction
+  /* Both directions arm first (Rober's rule: no gameplay change without his yes).
+     Forward skips the quest's own fragments in between; backward replays them. */
+  if (stage !== d.currentStage && ui.qConfirmStage !== stage) {
+    ui.qConfirmStage = stage;
     renderQuests();
     setTimeout(() => {
       if (ui.qConfirmStage === stage) { ui.qConfirmStage = null; renderQuests(); }
@@ -6847,6 +7171,8 @@ window.hdOpen = function (cfg) {
      Mark the phase boundaries; the full timeline is flushed once, after first
      paint, and only for a real open (not a live data-refresh). */
   if (window.HDPerf) HDPerf.mark('open:enter');
+  if (!wasVisible) toGame('iedGet', '');   // gear-display state for the Settings group + Scene page
+  if (!wasVisible) { toGame('furnGet', ''); toGame('camGet', ''); }   // OStim scenes Settings group
   /* bx-book-hold: BEFORE the census, which wraps the same globals and would
      otherwise be what the hold finds (and skips) this open */
   try { HDBookHold.arm(); } catch (e) {}
@@ -6893,6 +7219,7 @@ window.hdOpen = function (cfg) {
   if (window.HDScale) HDScale.load(state.settings.tabScales);
   ui.visible = true;
   if (!wasVisible) {
+    ClosedCssWarm.opened();   // css-warm-closed: a closed-deck warm never runs under an open deck
     ui.openedAt = Date.now();   // hdShowTab's toggle-close must not eat the opening keystroke
     /* Shared with the panes: followers-pane reads it so its F7 NPC-focus can
        tell a fresh open (fdTarget landing right after hdOpen) from a later
@@ -6914,6 +7241,7 @@ window.hdOpen = function (cfg) {
     ui.tabRename = null;
     ui.confirmTabDelete = null;
     ui.qMode = 'active';    // the main Quests tab always opens on your current journal
+    if (window.HDQuestJournal) HDQuestJournal.close();
     ui.qSearch = '';
     ui.qList = null;
     ui.qNpc = null;
@@ -7052,7 +7380,10 @@ window.hdClosed = function () {
      its held pushes; replay them now (the data must land), never later than
      the next open's fresh ones. A book still open keeps its queue. */
   try { if (HDBookHold.pending()) HDBookHold.flush('deck closed'); } catch (e) {}
-  try { if (window.HDCss && HDCss.warm) HDCss.warm.pause(); } catch (e) {}   // css-warm: never a sheet parse during play
+  /* css-warm: the open+idle warm stops with the deck. On stock PrismaUI that is the
+     whole story (a sheet parse during play is a game frame); with the pump fork,
+     ClosedCssWarm.closed() below picks the remainder up while the deck is hidden. */
+  try { if (window.HDCss && HDCss.warm) HDCss.warm.pause(); } catch (e) {}
   /* the ⤢ menu-size popover is body-level and fixed — without this it would
      outlive the panel and float over the game */
   var usp = $('uiscale-pop');
@@ -7076,6 +7407,7 @@ window.hdClosed = function () {
   ui.lastClosedTab = ui.tab;
   if (ui.visible) hidePane(ui.tab, true);
   ui.visible = false;
+  ClosedCssWarm.closed();   // css-warm-closed: no-op unless C++ reported uiPump
   window.__hdActiveTab = 'closed'; // late replies may update data, never repaint a hidden pane
   syncQuickLightCard(false);
   ui.capture = null;
@@ -7209,6 +7541,7 @@ window.hdQuests = function (payload) {
    so a shared name would clobber the handler. */
 window.hdQuestInfo = function (payload) {
   if (window.HDQuests && HDQuests.takeDetail(payload)) return;   // the F7 📜 modal asked
+  if (window.HDQuestJournal && HDQuestJournal.takeDetail(payload)) return;   // the journal's What now? guide asked
   const p = parsePayload(payload);
   ui.qDetail = p || { ok: false, message: 'Bad payload — see HotkeyDeck.log' };
   if (ui.tab === 'quests') renderQuests();
@@ -7486,6 +7819,12 @@ function init() {
   $('tgtfol-cb').addEventListener('change', (e) => { state.settings.targetOpensFollowers = e.target.checked; save(); });
   $('scnopen-cb').addEventListener('change', (e) => { state.settings.sceneOpensScene = e.target.checked; save(); });
   if ($('fgscroll-cb')) $('fgscroll-cb').addEventListener('change', (e) => { state.settings.fgSmoothScroll = e.target.checked; save(); });
+  if ($('ied-shown-cb')) $('ied-shown-cb').addEventListener('change', (e) => iedSet('playerShown', e.target.checked));
+  if ($('ied-npc-cb')) $('ied-npc-cb').addEventListener('change', (e) => iedSet('hideNpcs', e.target.checked));
+  if ($('ied-pl-cb')) $('ied-pl-cb').addEventListener('change', (e) => iedSet('hidePlayer', e.target.checked));
+  if ($('os-pick-cb')) $('os-pick-cb').addEventListener('change', (e) => furnSet('enabled', e.target.checked));
+  if ($('os-cam-cb')) $('os-cam-cb').addEventListener('change', (e) => camSet('unlock', e.target.checked));
+  if ($('os-chim-cb')) $('os-chim-cb').addEventListener('change', (e) => furnSet('chim', e.target.checked));
   $('tgtscn-cb').addEventListener('change', (e) => { state.settings.targetOpensScene = e.target.checked; save(); });
   $('scale-down').addEventListener('click', () => setScale(state.settings.uiScale - SCALE_STEP, true));
   $('scale-up').addEventListener('click', () => setScale(state.settings.uiScale + SCALE_STEP, true));
@@ -8262,11 +8601,13 @@ function runSelfTest() {
     onStageClick(20);                       // second click fires and disarms
     return armed && ui.qConfirmStage === null;
   });
-  T('quests: a forward stage fires immediately (no confirm)', () => {
+  T('quests: a forward stage also arms a confirm before firing', () => {
     ui.qConfirmStage = null;
     window.hdQuestInfo(Object.assign({}, DETAIL, { currentStage: 10 }));
     onStageClick(200);
-    return ui.qConfirmStage === null;
+    const armed = ui.qConfirmStage === 200;
+    onStageClick(200);
+    return armed && ui.qConfirmStage === null;
   });
   T('quests: Esc backs out of detail instead of closing the palette', () => {
     ui.visible = true; ui.tab = 'quests';

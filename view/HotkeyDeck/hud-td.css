@@ -45,6 +45,7 @@ body.td-open #hud-td .td-frame { pointer-events: auto; }
   margin-bottom: 10px;
   text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
 }
+.td-head .td-verb { font-style: normal; }
 .td-head b {
   font-size: 34px;
   letter-spacing: 1px;
@@ -195,3 +196,134 @@ body.td-open #hud-td .td-frame { pointer-events: auto; }
   letter-spacing: .5px;
   text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
 }
+
+/* ==========================================================================
+   Wait | Rest — the dial's two faces (2026-10-14). Rest adds three need
+   tiles under the dial (eat / drink / sleep, SunHelm's own condition names)
+   and an "Until rested" chip in place of the Days switch. Same gold-linework
+   language as the dial; no gradients, no looping motion (Ultralight).
+   ========================================================================== */
+
+/* ---- the segmented switch above the header ------------------------------ */
+.td-seg {
+  display: flex;
+  justify-content: center;
+  gap: 0;
+  margin: 0 auto 14px;
+  width: max-content;
+  border: 1px solid rgba(214, 195, 148, .55);
+  border-radius: 999px;
+  background: rgba(14, 15, 18, .9);
+  overflow: hidden;
+}
+.td-seg-b {
+  font: inherit;
+  font-size: 17px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #b9b19c;
+  background: transparent;
+  border: 0;
+  padding: 9px 26px;
+  min-width: 116px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 140ms ease, color 140ms ease;
+}
+.td-seg-b + .td-seg-b { border-left: 1px solid rgba(214, 195, 148, .35); }
+.td-seg-b:hover { color: #fff; background: rgba(46, 41, 27, .7); }
+.td-seg-b[aria-pressed="true"] { color: #fff; background: rgba(78, 66, 36, .95); }
+
+/* "At home · Breezehome" — under the header, only in Rest */
+.td-place {
+  display: none;
+  text-align: center;
+  font-size: 16px;
+  letter-spacing: 1px;
+  color: #e6dcc2;
+  margin: -4px 0 10px;
+  min-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* it sits over the game, often a bright window: a real shadow, not a hint */
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .95), 0 0 10px rgba(0, 0, 0, .85);
+}
+.td-frame.td-resting .td-place { display: block; }
+
+/* the ring sleeps when Sleep is off — still grabbable (a drag turns it on) */
+.td-dialwrap.td-dial-off .td-svg,
+.td-dialwrap.td-dial-off .td-card { opacity: .38; }
+.td-dialwrap.td-dial-off .td-center { opacity: .55; }
+.td-dialwrap .td-svg,
+.td-dialwrap .td-card,
+.td-dialwrap .td-center { transition: opacity 180ms ease; }
+
+/* ---- need tiles: one shape, one size, three across --------------------- */
+.td-rest {
+  display: none;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 16px;
+}
+.td-frame.td-resting .td-rest { display: grid; }
+.td-need {
+  position: relative;
+  font: inherit;
+  color: #e9e2cf;
+  background: rgba(14, 15, 18, .92);
+  border: 1px solid rgba(214, 195, 148, .4);
+  border-radius: 14px;
+  padding: 16px 12px 14px;
+  min-height: 148px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  text-align: center;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+.td-need:hover { background: rgba(42, 38, 26, .95); border-color: #f0d68c; }
+.td-need:active { background: rgba(58, 50, 30, .95); }
+.td-need[aria-pressed="true"] {
+  background: rgba(52, 45, 26, .96);
+  border-color: #e3cf96;
+  box-shadow: 0 0 0 1px rgba(227, 207, 150, .55), 0 0 16px rgba(240, 214, 140, .22);
+}
+.td-need[disabled] { cursor: default; }
+.td-need.is-blocked { opacity: .5; }
+.td-need-img { width: 56px; height: 56px; display: block; margin-bottom: 2px; }
+.td-need-t {
+  font-size: 18px;
+  letter-spacing: .5px;
+  color: #f3ecd9;
+  white-space: nowrap;
+}
+.td-need-state {
+  font-size: 16px;
+  line-height: 1.25;
+  color: #948d7b;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.td-need-state.is-ok   { color: #9edc96; }
+.td-need-state.is-warn { color: #e7c27a; }
+.td-need-state.is-bad  { color: #e79a9a; }
+/* the tick: a plain mark (✓ is a proven text glyph), lit when picked */
+.td-need-check {
+  position: absolute;
+  top: 8px; right: 10px;
+  width: 24px; height: 24px;
+  line-height: 22px;
+  border-radius: 50%;
+  border: 1px solid rgba(214, 195, 148, .45);
+  font-size: 15px;
+  color: transparent;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.td-need[aria-pressed="true"] .td-need-check { color: #1a160c; background: #e3cf96; border-color: #e3cf96; }
+
+.td-btn.td-until { white-space: nowrap; }
+.td-btn[hidden] { display: none; }

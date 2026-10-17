@@ -165,6 +165,7 @@ const ui = {
   known: [],                      // last mdSpells payload
   learnedEntries: [],
   workbenchFilter: null,
+  school: '',                     // school quick-filter ('' = every school); session-only, like kind/mode
   knownById: new Map(),           // hex -> {slot,type,delivery,casting,formId} — FALLBACK
   knownByPid: new Map(),          // "plugin|localidhex" -> same — the DURABLE key
   knownLoading: false,
@@ -866,6 +867,9 @@ function syncChrome() {
   $('edit-btn').classList.toggle('on', ed);
   $('edit-btn').textContent = ed ? 'Done' : 'Edit';
   $('edit-tools').classList.toggle('hidden', !ed);
+  // Search moved into the control bar, so outside Edit this row holds nothing —
+  // and an empty flex row still spends #main's gap.
+  $('toolbar').classList.toggle('hidden', !ed);
   $('openkey-card').classList.toggle('hidden', !ed);
   $('add-cat-btn').classList.remove('hidden');
   $('add-spell-btn').classList.remove('hidden');       // adding is the core action — always available
@@ -2677,6 +2681,10 @@ function wire() {
   // "← Deck" back button: close this view and open the main deck (C++ mdOpenDeck).
   var deckBtn = $('deck-btn');
   if (deckBtn) deckBtn.addEventListener('click', () => toGame('mdOpenDeck'));
+  // Spellbook: the same hand-back, landing on the deck's Spellbook popout
+  // (C++ mdOpenDeck("spellbook") -> g_pendingTab -> hdShowTab('spellbook')).
+  var bookBtn = $('spellbook-btn');
+  if (bookBtn) bookBtn.addEventListener('click', () => toGame('mdOpenDeck', 'spellbook'));
   var fillBtn = $('fill-btn');
   if (fillBtn) fillBtn.addEventListener('click', () => { if (window.MagicLibraryUI) MagicLibraryUI.close(); toggleFill(); });
   HDSmoothScroll.install();

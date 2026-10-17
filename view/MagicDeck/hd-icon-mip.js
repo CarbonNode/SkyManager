@@ -282,16 +282,40 @@
     run(out);
   }
 
+  /* open-mip-hidden-keep (2026-10-15): app.js's applyScale() runs on every deck open
+     and at the end of every render(), so this ran two or three times per open over
+     every <img> in the document (~800 by mid-session). For an image in a hidden pane
+     the rect is 0 and screenSize() falls back to getComputedStyle, a full style
+     resolution per element inside a display:none subtree: the bulk of the open's
+     "render" time on tab=home. While --ui-scale is the one we last rescanned at, an
+     image we already decided and that is hidden now keeps its decision: nothing can
+     be seen of it, and the render() that shows its pane rescans it with a real rect.
+     A changed --ui-scale still re-decides everything, exactly as before. */
+  var lastRescanScale = 0;
+  function hasBox(el) {
+    var r = el.getBoundingClientRect();
+    return r.width > 0 || r.height > 0;
+  }
+
   function rescan() {
     try {
+      var sc = uiScale(), same = sc === lastRescanScale;
+      lastRescanScale = sc;
       var all = [].slice.call(document.getElementsByTagName('img')).concat([].slice.call(document.querySelectorAll(BG_SEL))), out = [];
+      var kept = same ? new Set() : null;
       for (var i = 0; i < all.length; i++) {
         var img = all[i];
         var o = img.getAttribute('data-icmip-src');
-        if (o) { img.__icmip = getSrc(img); out.push(img); }       // ours: re-decide from o
+        if (o) {
+          if (kept && getSrc(img) === img.__icmip && !hasBox(img)) { kept.add(img); continue; }   // hidden, decided: keep
+          img.__icmip = getSrc(img); out.push(img);                 // ours: re-decide from o
+        }
         else if (LOCAL.test(getSrc(img) || '')) { img.__icmip = null; out.push(img); }
       }
+      /* a kept image that was waiting for a size stays waiting (input re-checks it) */
+      var was = pending;
       pending = [];
+      if (kept && kept.size) for (var p = 0; p < was.length; p++) if (kept.has(was[p])) pending.push(was[p]);
       run(out);
     } catch (e) {}
   }

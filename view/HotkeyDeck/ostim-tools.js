@@ -31,13 +31,16 @@ window.OstimTools=(function(){
  let castRows=[],castCast=[],castToken='',castBusy=false,castRadius=60;
  let allFloors=false;                    // search other storeys too, not just this one
  let wornInfo={},wornPending=false,wornQuery=0;
+ let gearInfo={},gearPending=false,gearQuery=0,gearAsked={};   // the Gear panel (below, with undress)
  let voiceRows=[],voiceToken='',voiceActors=[],voicePending=false;
  let sosInfo={},sosPending=false;
  let ppa={},ppaPending=false;
+ let addons={},addonsPending=false,fluidsSub='';
  let held=[],heldPending=false;
  let privacy={},privacyBusy=false,privacySearch="",privacySerial=0;
  let charSheetAsked=false;
  let holdState=null,holdPending=false;    // the SexLab-style relocate
+ let nudgeStep=10,nudgeBusy=false;        // the hero's whole-scene nudge band
  /* ⚠ NOT getHeld/held/heldPending — those are The room's roster. */
  let mcmPages=[],mcmPending=false,mcmWhy='',mcmQuery='';
  let rl={},rlPending=false,rlQuery='';
@@ -58,13 +61,16 @@ window.OstimTools=(function(){
   // timeout disables its whole panel for good — the controls simply stop
   // responding, with nothing on screen to say why.
   if(act==='sceneIcons'){sceneIconsPending=false;}
+  if(act==='alignAll'){nudgeBusy=false;paintNudge();message('OStim did not answer the move. Try again.');}
   if(act==='here'){herePending=false;if(tab==='move')render();}
   if(act==='held'){holdPending=false;if(tab==='move')render();}
   if(act==='roster'||act==='join'||act==='part'){castBusy=false;if(tab==='cast')render();}
   if(act==='undressState'||act==='undress'){wornPending=false;wornQuery++;if(tab==='people')render();}
+  if(act==='gearState'||act==='gear'){gearPending=false;gearQuery++;if(tab==='people')render();}
   if(act==='voiceState'||act==='voices'||act==='setVoice'){voicePending=false;if(tab==='people')render();}
   if(act==='sosState'||act==='sos'){sosPending=false;if(tab==='people')render();}
   if(act==='ppa'){ppaPending=false;if(tab==='ppa')render();}
+  if(act==='addons'){addonsPending=false;if(tab==='fluids')render();}
   if(act==='mcm'){mcmPending=false;mcmWhy='OStim’s MCM did not answer in time.';if(tab==='options')render();}
   if(act==='room'){heldPending=false;if(tab==='room')render();}
   if(act==='privacy'){privacyBusy=false;privacySerial++;if(tab==='room')render();}
@@ -648,6 +654,7 @@ window.OstimTools=(function(){
   ['expr',    'Expressions',        'sn-expr',         'Expression events and previews'],
   ['camera',  'Camera & photos',    'sn-camera',      'Photo mode, FOV, captures'],
   ['ppa',     'PPA physics',        'sn-ppa',      'Procedural animation settings'],
+  ['fluids',  'Fluids',             'sn-fluids',   'OStrands strands, drips, semen'],
   ['library', 'Favorites & recent', 'sn-library',         'Starred scenes, history, collections'],
   ['options', 'OStim settings',     'sn-options',  'Quick toggles and the live menu']
  ];
@@ -660,7 +667,7 @@ window.OstimTools=(function(){
  const DOCKS=[
   ['People',  'Who is in it, and how they stand', ['people','cast','align']],
   ['Place',   'Where it happens',                 ['move','room','lighting']],
-  ['Look',    'Faces, camera, physics',           ['expr','camera','ppa']],
+  ['Look',    'Faces, camera, physics, fluids',   ['expr','camera','ppa','fluids']],
   ['Library', 'Scenes to pick from',              ['library','options']]
  ]; function reset(which,formId){
   privacy={};privacyBusy=false;privacySearch='';privacySerial++;
@@ -668,8 +675,9 @@ window.OstimTools=(function(){
   actorInfo={};actorPending=false;actorQuery++;selected=Number(formId)||0;resetSize();
   lighting={};lightPending=false;lightQuery++;photoView='';cameraCurrent=null;
   here=null;herePending=false;castRows=[];castCast=[];castToken='';castBusy=false;
-  wornInfo={};wornPending=false;wornQuery++;voiceActors=[];voicePending=false;
-  sosInfo={};sosPending=false;ppa={};ppaPending=false;held=[];heldPending=false;holdState=null;holdPending=false;
+  wornInfo={};wornPending=false;wornQuery++;gearInfo={};gearPending=false;gearQuery++;gearAsked={};voiceActors=[];voicePending=false;
+  sosInfo={};sosPending=false;ppa={};ppaPending=false;addons={};addonsPending=false;fluidsSub='';held=[];heldPending=false;holdState=null;holdPending=false;
+  nudgeBusy=false;   // a reply lost to a remount must not lock the band
   // ⚠ mcmPending too: a stale `true` here survives a remount and makes
   // getMcm() return early forever, so the switches never load again.
   mcmPending=false;mcmWhy='';mcmQuery='';
@@ -751,8 +759,10 @@ window.OstimTools=(function(){
    }),
    quickRow('previous','sn-previous','Back to previous scene','The one before this',previous),
    quickRow('favorite','sn-favorite','Favorite current scene','Star it for the library',favoriteCurrent),
-   quickRow('floor','sn-floor','Move to floor','Off the furniture, where you stand',()=>act('floor'))
+   quickRow('floor','sn-floor','Move to floor','Off the furniture, where you stand',()=>act('floor')),
+   (iedBtn=quickRow('ied','hk-ied-menu','Gear displays','',toggleIed))
   );
+  paintIedRow();
   quick.append(strip);
   /* ---- the hero -------------------------------------------------------
      This page is about a scene that is RUNNING, and until now it said so
@@ -798,10 +808,14 @@ window.OstimTools=(function(){
   holdCell.append(cap('Scene'),btn('Hold this scene',()=>holdAct('hold')));
   const dock=el('div','ost-hero-dock');
   dock.append(speed,mode,cam,holdCell);
-  hero.append(top,dock);
+  hero.append(top,dock,nudgeBand());
   const status=el('p','ost-status');status.id='ost-scene-status';
-  note=el('p','ost-note',backdrop?'The scene continues while these controls are open.':'The scene keeps running while you use this page.');
+  /* The static "scene keeps running" sentence is gone (Rober, 2026-10-14); the
+     line stays as the message banner, empty until something has to be said.
+     OStim's own excitement bars take its place (paintExcitement). */
+  note=el('p','ost-note');
   note.setAttribute('role','status');
+  const exc=el('section','ost-exc');exc.setAttribute('aria-label','Excitement');exc.hidden=true;
   /* The page keeps the hero and the launcher grid, and nothing else: every
      segment opens as a popout instead of rendering here (Rober, 2026-09-21:
      "every button should be a popout modal, not below"). pageBody stays in
@@ -816,7 +830,7 @@ window.OstimTools=(function(){
      letter per line) and the card did not scroll. The page scrolls now. */
   const page=el('div','ost-page');
   page.append(hero,tabs,quick);
-  card.append(status,page,note,pageBody);root.append(card);
+  card.append(status,page,exc,note,pageBody);root.append(card);
   return head;
  }
  function start(){
@@ -942,12 +956,13 @@ window.OstimTools=(function(){
   if(t==='move'){getHere();scan();getHoldState(true);}
   if(t==='options'){getOptions();if(!mcmPages.length)getMcm();}
   if(t==='expr'){getExpressions();getActor();}
-  if(t==='people'){getActor();getWorn();getVoices();getSos();}
+  if(t==='people'){getActor();getWorn();getGear();getVoices();getSos();}
   if(t==='lighting')getLighting();
   if(t==='camera'){getCamera();getPhotos();}
   if(t==='cast')getRoster();
   if(t==='room'){getHeld();getPrivacy();}
   if(t==='ppa')getPpa();
+  if(t==='fluids')getAddons();
  }
  /* Which chip reads as current. The nav is in the PAGE and a popout floats
     over it, so this has to keep working while `body` points elsewhere. */
@@ -962,6 +977,66 @@ window.OstimTools=(function(){
   // is what the harness reads. The hero below is the same facts, seen.
   modal.querySelector('#ost-scene-status').textContent=snapshot.inScene?(snapshot.sceneName||snapshot.scene)+' · Speed '+snapshot.speed+' / '+snapshot.maxSpeed+' · '+(snapshot.auto?'Auto':'Manual'):'No player scene running';
   paintHero();
+  paintExcitement();
+ }
+ /* ---- gear displays quick row (Rober, 2026-10-14) ---------------------
+    "immersive gear showing, weapons on back and stuff ... auto hide on npcs
+    in scenes (enable and disable)". The deck's Settings group owns the full
+    set; this row is the one you want mid-scene: Immersive Equipment Displays'
+    auto-hide on the people in the scene. State comes from C++ (ied_control.cpp)
+    through app.js's iedState, fanned out as hd-ied-state; nothing here talks to
+    IED. Hidden until the DLL is loaded. */
+ let iedBtn=null,iedInfo=null;
+ function paintIedRow(){
+  if(!iedBtn)return;
+  const s=iedInfo;
+  iedBtn.hidden=!(s&&s.present);
+  if(!s||!s.present)return;
+  iedBtn.disabled=!s.canBlock;
+  iedBtn.setAttribute('aria-pressed',String(!!s.hideNpcs));
+  const small=iedBtn.querySelector('small');
+  if(small)small.textContent=!s.canBlock?(s.msg||'Needs the SkyManager wardrobe plugin loaded'):s.hideNpcs?'Hidden on NPCs in scenes. Tap to show':'Shown during scenes. Tap to hide';
+ }
+ function toggleIed(){
+  const s=iedInfo;
+  if(!s||!s.canBlock||typeof window.toGame!=='function')return;
+  window.toGame('iedSet',JSON.stringify({key:'hideNpcs',value:!s.hideNpcs}));
+ }
+ function setIedInfo(d){iedInfo=d||null;paintIedRow();}
+ window.addEventListener('hd-ied-state',e=>setIedInfo(e.detail));
+ /* ---- excitement (Rober, 2026-10-14): OStim's own bars, on the page ----
+    "hook to ostims bars, the pink one that fills and the male". One bar per
+    participant, pink for a woman and blue for a man, filling with OStim's own
+    excitement meter (0-100, ActorData.excitement) and counting climaxes. It
+    rides the cast's 1.8s state poll, so nothing new polls; the fill glides
+    between readings. A participant the DLL sent no number for (an older build)
+    gets no bar rather than an invented 0%. */
+ let excKey='';
+ function paintExcitement(){
+  const host=modal&&modal.querySelector('.ost-exc');if(!host)return;
+  const rows=snapshot.inScene?(snapshot.actors||[]).filter(a=>typeof a.excitement==='number'):[];
+  host.hidden=!rows.length;
+  const key=rows.map(a=>a.formId+(a.female?'f':'m')).join(',');
+  if(key!==excKey){
+   excKey=key;host.textContent='';
+   rows.forEach(a=>{
+    const cell=el('div','ost-exc-actor');cell.dataset.ref=String(a.formId);cell.dataset.sex=a.female?'f':'m';
+    const head=el('div','ost-exc-head');
+    head.append(el('strong','ost-exc-name',a.name||'Participant'),el('span','ost-exc-pct'));
+    const track=el('div','ost-exc-track');track.append(el('span','ost-exc-fill'));
+    cell.append(head,track,el('small','ost-exc-climax'));
+    host.append(cell);
+   });
+  }
+  rows.forEach(a=>{
+   const cell=Array.from(host.children).find(c=>c.dataset.ref===String(a.formId));if(!cell)return;
+   const pct=Math.max(0,Math.min(100,a.excitement));
+   cell.querySelector('.ost-exc-fill').style.width=pct+'%';
+   cell.querySelector('.ost-exc-pct').textContent=Math.round(pct)+'%';
+   cell.dataset.full=String(pct>=100);
+   const n=Number(a.climaxed)||0;
+   cell.querySelector('.ost-exc-climax').textContent=n?'Climaxed ×'+n:'Not climaxed yet';
+  });
  }
  let castKey='';
  /* A face render that lands AFTER the cast strip was built must replace the
@@ -1014,6 +1089,7 @@ window.OstimTools=(function(){
   const holdHost=hero.querySelector('.ost-hero-hold');
   if(holdHost)holdHost.querySelectorAll('button').forEach(b=>{b.disabled=!live||holdPending;});
   const endB=modal.querySelector('[data-end="1"]');if(endB)endB.disabled=!live;
+  paintNudge();
   // Auto / Manual as a two-state control, not a word in a sentence.
   const mode=hero.querySelector('.ost-hero-mode');mode.textContent='';mode.append(el('span','ost-dock-cap','Pacing'));
   if(live){
@@ -1028,6 +1104,78 @@ window.OstimTools=(function(){
   const key=(snapshot.actors||[]).map(a=>a.formId).join(',');
   if(key!==castKey){castKey=key;castHost.textContent='';castHost.append(participants());paintFaces();}
   castHost.querySelectorAll('.ost-person').forEach(b=>b.setAttribute('aria-pressed',String(Number(b.dataset.ref)===selected)));
+ }
+ /* ---- MOVE THE WHOLE SCENE (Rober, 2026-10-14: "i need to be able to move
+    an entire scene up easily (both actors) or left or right quickly") ------
+    A hero band, not a popout: it is a one-press thing you repeat. Every
+    press shifts EVERY participant by the same step through OStim's own
+    alignment (C++ AlignShiftAll), so the pair moves together and never
+    drifts apart. Left/right and forward/back are the scene's own axes —
+    the ones OStim's alignment uses — not the camera's. */
+ const NUDGE_AXES=[
+  // [axis, caption, [minus label, glyph], [plus label, glyph]]
+  ['z','Height',     ['Down','↓'],['Up','↑']],
+  ['x','Side to side',['Left','←'],['Right','→']],
+  ['y','Depth',      ['Back','↙'],['Forward','↗']]
+ ];
+ function nudgeBand(){
+  const band=el('div','ost-nudge');band.setAttribute('role','group');band.setAttribute('aria-label','Move the whole scene');
+  const head=el('div','ost-nudge-head');
+  head.append(el('span','ost-dock-cap','Move the whole scene'),el('small','ost-nudge-sub','Everyone in it moves together'));
+  const grid=el('div','ost-nudge-grid');
+  NUDGE_AXES.forEach(ax=>{
+   const cell=el('div','ost-nudge-cell ost-dock-cell');cell.dataset.axis=ax[0];
+   const top=el('div','ost-nudge-cap');top.append(el('span','ost-dock-cap',ax[1]),el('span','ost-nudge-read'));
+   const pair=el('div','ost-nudge-pair');
+   [[ax[2],-1],[ax[3],1]].forEach(side=>{
+    const b=el('button','ost-button ost-nudge-btn');b.type='button';b.dataset.dir=String(side[1]);
+    b.setAttribute('aria-label','Move the whole scene '+side[0][0].toLowerCase());
+    b.append(el('span','ost-nudge-glyph',side[0][1]),el('span','',side[0][0]));
+    b.addEventListener('click',()=>nudgeScene(ax[0],side[1]*nudgeStep));
+    pair.append(b);
+   });
+   cell.append(top,pair);grid.append(cell);
+  });
+  const opts=el('div','ost-nudge-cell ost-nudge-opts ost-dock-cell');
+  const steps=el('div','ost-segmented ost-nudge-steps');steps.setAttribute('role','group');steps.setAttribute('aria-label','Step size');
+  [[2,'Fine'],[10,'Normal'],[25,'Big']].forEach(v=>{
+   const b=btn(v[1]+' · '+v[0],()=>{nudgeStep=v[0];paintNudge();});b.dataset.step=String(v[0]);steps.append(b);
+  });
+  const tail=el('div','ost-nudge-tail');
+  const live=btn('Live',()=>request('alignOverlay',{},j=>{message(j.msg);}));live.dataset.nudgeLive='1';
+  live.title='Close the deck and nudge it over the running scene';
+  const zero=btn('Reset',()=>nudgeScene('reset',0));zero.dataset.nudgeReset='1';
+  zero.title='Put everyone back at OStim’s own position (x, y and height; rotation and scale stay)';
+  tail.append(live,zero);
+  opts.append(el('span','ost-dock-cap','Step'),steps,tail);
+  grid.append(opts);
+  band.append(head,grid);
+  return band;
+ }
+ function nudgeScene(axis,delta){
+  if(!canAct()||nudgeBusy)return;
+  nudgeBusy=true;paintNudge();
+  // request()'s own timeout clears busy too, so a lost reply cannot lock the band.
+  request('alignAll',{axis:axis,delta:delta},j=>{nudgeBusy=false;paintNudge();if(!j.ok||axis==='reset')message(j.msg);refresh();});
+ }
+ /* The readout is the scene's AVERAGE offset on that axis: whole-scene moves
+    shift it by exactly their step, and one person's own tweak by a share. */
+ function nudgeOffset(axis){
+  const list=(snapshot.actors||[]).map(a=>a.alignment&&a.alignment[axis]).filter(v=>typeof v==='number'&&isFinite(v));
+  if(!list.length)return null;
+  return list.reduce((t,v)=>t+v,0)/list.length;
+ }
+ function paintNudge(){
+  if(!modal)return;const band=modal.querySelector('.ost-nudge');if(!band)return;
+  const live=canAct();
+  band.dataset.live=String(live);
+  band.querySelectorAll('.ost-nudge-cell[data-axis]').forEach(cell=>{
+   const v=live?nudgeOffset(cell.dataset.axis):null;
+   const r=cell.querySelector('.ost-nudge-read');
+   if(r){const n=v===null?null:Math.round(v);r.textContent=n===null?'—':(n>0?'+'+n:String(n));r.dataset.zero=String(!n);}
+  });
+  band.querySelectorAll('.ost-nudge-btn,[data-nudge-reset],[data-nudge-live]').forEach(b=>{b.disabled=!live||(nudgeBusy&&!b.dataset.nudgeLive);});
+  band.querySelectorAll('[data-step]').forEach(b=>b.setAttribute('aria-pressed',String(Number(b.dataset.step)===nudgeStep)));
  }
  function primary(label,fn){const b=btn(label,fn);b.dataset.primary='1';return b;}
  /* ---- the component vocabulary (2026-09-22) -----------------------------
@@ -1063,7 +1211,7 @@ window.OstimTools=(function(){
  function personTabs(){
   const p=el('div','ost-persons');
   (snapshot.actors||[]).forEach(a=>{
-   const b=btn('',()=>{selected=a.formId;resetSize();actorInfo={};actorPending=false;actorQuery++;wornInfo={};wornQuery++;sosInfo={};render();getActor();getWorn();getSos();},'ost-person ost-person-tab');
+   const b=btn('',()=>{selected=a.formId;resetSize();actorInfo={};actorPending=false;actorQuery++;wornInfo={};wornQuery++;gearInfo={};gearQuery++;sosInfo={};render();getActor();getWorn();getGear();getSos();},'ost-person ost-person-tab');
    b.dataset.ref=String(a.formId);b.append(picture(a),el('span','ost-person-name',a.name));b.setAttribute('aria-pressed',String(a.formId===selected));p.append(b);
   });
   return p;
@@ -1162,11 +1310,11 @@ window.OstimTools=(function(){
   list.forEach((a,i)=>{
    const b=btn('',()=>{
     selected=a.formId;resetSize();actorInfo={};actorPending=false;actorQuery++;
-    wornInfo={};wornQuery++;sosInfo={};
+    wornInfo={};wornQuery++;gearInfo={};gearQuery++;sosInfo={};
     // Only move if the segment you are on has nothing to do with a person.
     if(!tab||['move','room','ppa','library','options','lighting','camera'].indexOf(tab)>=0)tab='people';
     render();
-    if(tab==='expr'||tab==='people'){getActor();getWorn();getSos();}
+    if(tab==='expr'||tab==='people'){getActor();getWorn();getGear();getSos();}
    },'ost-person');
    b.dataset.ref=String(a.formId);b.dataset.pos=String(i+1);
    const pic=el('span','ost-person-pic');pic.append(picture(a),el('span','ost-person-idx',String(i+1)));
@@ -1331,9 +1479,9 @@ window.OstimTools=(function(){
  function paintSceneFind(input,drop,rows,keep){
   if(rows!==null&&!keep)sceneFindGroups=groupScenes(rows);
   drop.textContent='';sceneFindFlat=[];if(!keep)sceneFindSel=-1;
-  if(rows===null&&!keep){sceneFindGroups=[];drop.append(el('p','ost-help','Scene search needs the OStim panel.'));drop.hidden=false;return;}
+  if(rows===null&&!keep){sceneFindGroups=[];drop.append(el('p','ost-help','Scene search needs the OStim panel.'));drop.hidden=false;fitSceneDrop(input,drop);return;}
   const groups=sceneFindGroups.slice(0,8);
-  if(!groups.length){drop.append(el('p','ost-help','No scene called “'+(sceneFindQuery||input.value.trim())+'” fits the current actors and furniture.'));drop.hidden=false;return;}
+  if(!groups.length){drop.append(el('p','ost-help','No scene called “'+(sceneFindQuery||input.value.trim())+'” fits the current actors and furniture.'));drop.hidden=false;fitSceneDrop(input,drop);return;}
   groups.forEach(g=>{
    const multi=g.phases.length>1;
    const open=multi&&!!sceneFindOpen[g.key];
@@ -1343,6 +1491,7 @@ window.OstimTools=(function(){
    const art=positionArt(g.name,g.first.sceneId,'ost-pos ost-pos-find');
    const t=el('span','ost-find-text');
    t.append(el('strong','',g.name),el('small','',multi?(g.phases.length+' phases · '+g.first.sceneId):g.first.sceneId));
+   b.title=g.name+'  ·  '+g.first.sceneId;
    b.append(art||el('span','ost-pos ost-pos-find ost-pos-none'),t);
    b.addEventListener('click',()=>playScene(g.first,input,drop));
    row.append(b);
@@ -1361,6 +1510,7 @@ window.OstimTools=(function(){
      sceneFindFlat.push({kind:'phase',group:g,scene:ph});
      const pa=positionArt(ph.name,ph.sceneId,'ost-pos ost-pos-find');
      const pt=el('span','ost-find-text');pt.append(el('strong','','Phase '+(scenePhase(ph.sceneId)||(i+1))),el('small','',ph.sceneId));
+     pb.title=g.name+'  ·  '+ph.sceneId;
      pb.append(pa||el('span','ost-pos ost-pos-find ost-pos-none'),pt);
      pb.addEventListener('click',()=>playScene(ph,input,drop));
      list.append(pb);
@@ -1371,6 +1521,34 @@ window.OstimTools=(function(){
   drop.append(el('p','ost-find-foot','Click a scene to play it  ·  Enter opens the full picker  ·  › shows the phases'));
   paintSceneSel(drop);
   drop.hidden=false;
+  fitSceneDrop(input,drop);
+ }
+ /* The results are a wide panel, not a strip the width of the field
+    (2026-10-14, Ultralight at 1440p: the ~230px bar wrapped "Doggystyl e 2"
+    one word a line and showed 2.5 rows). Pinned to the field's RIGHT edge
+    and opening leftward: 2x the field, at least 560px, never past the card
+    (it clips: overflow hidden/auto) or the screen. Measured in screen px and
+    divided back by the field's own scale, so the hosted mount inside
+    #panel's --ui-scale and the body-anchored modal both come out right. */
+ const SCENE_DROP_MIN=560,SCENE_DROP_TALL=640;
+ function fitSceneDrop(input,drop){
+  if(!input||!drop||drop.hidden||!input.getBoundingClientRect)return;
+  const ir=input.getBoundingClientRect();const lw=input.offsetWidth||ir.width;
+  if(!(lw>0)||!(ir.width>0))return;
+  const k=ir.width/lw;
+  const vw=window.innerWidth||document.documentElement.clientWidth||ir.right;
+  const vh=window.innerHeight||document.documentElement.clientHeight||ir.bottom+SCENE_DROP_TALL;
+  const card=input.closest?input.closest('.ost-card'):null;
+  const cr=card?card.getBoundingClientRect():null;
+  const gap=16*k;
+  const leftEdge=Math.max(0,cr&&cr.width?cr.left:0)+gap;
+  const bottomEdge=Math.min(vh,cr&&cr.height?cr.bottom:vh)-gap;
+  const want=Math.max(SCENE_DROP_MIN,lw*2);
+  const room=Math.min(ir.right,vw-gap)-leftEdge;
+  const w=Math.max(Math.min(lw,want),Math.min(want,room/k));
+  drop.style.minWidth='0px';drop.style.width=Math.round(w)+'px';
+  const tall=(bottomEdge-(ir.bottom+8*k))/k;
+  drop.style.maxHeight=Math.round(Math.max(220,Math.min(SCENE_DROP_TALL,tall)))+'px';
  }
 
 
@@ -1392,7 +1570,7 @@ window.OstimTools=(function(){
    const b=el('button','ost-find-row');b.type='button';
    const ic=el('img','ost-icon');ic.src='icons/custom/'+(seg?seg[2]:'seg-ostim')+'.png';ic.alt='';
    const t=el('span','ost-find-text');
-   t.append(el('strong','',a[0]),el('small','',seg?seg[1]:a[1]));
+   t.append(el('strong','',a[0]),el('small','',seg?seg[1]:(a[1]||'On this page')));
    b.append(ic,t);b.dataset.on=String(i===findSel);
    b.addEventListener('click',()=>{switchTab(a[1]);input.value='';paintFind(input,drop);});
    drop.append(b);
@@ -1429,7 +1607,9 @@ window.OstimTools=(function(){
   if(!pop){paintStatus();paintNav();return;}   // launcher at rest: hero + chips
   if(!body)return;
   sizeDrag=null;photoDrag=null;photoRepaint=false;const y=body.scrollTop;body.textContent='';paintStatus();paintNav();
+  if(pop)pop.classList.toggle('ost-pop-wide',tab==='move');
   if(tab==='move'){
+   furnTries=0;
    const tools=el('div','ost-toolbar');const scanButton=btn('Rescan furniture',scan);scanButton.disabled=busy;tools.append(scanButton);
    const reach=el('div','ost-segmented');reach.setAttribute('role','group');reach.setAttribute('aria-label','Search radius');
    [30,60,120,200].forEach(n=>{const b=btn(n+' ft',()=>{radius=n;scan();});b.setAttribute('aria-pressed',String(radius===n));reach.append(b);});
@@ -1466,20 +1646,75 @@ window.OstimTools=(function(){
    const list=el('div','ost-list');
    body.append(searchBox('Search OStim settings…',()=>paintOptions(list)),list);
    paintOptions(list);
-  }else if(tab==='expr')renderExpressions();else if(tab==='people')renderPeople();else if(tab==='camera')renderCamera();else if(tab==='lighting')renderLighting();else if(tab==='cast')renderCast();else if(tab==='room')renderRoom();else if(tab==='ppa')renderPpa();else if(tab==='library')renderLibrary();
+  }else if(tab==='expr')renderExpressions();else if(tab==='people')renderPeople();else if(tab==='camera')renderCamera();else if(tab==='lighting')renderLighting();else if(tab==='cast')renderCast();else if(tab==='room')renderRoom();else if(tab==='ppa')renderPpa();else if(tab==='fluids')renderFluids();else if(tab==='library')renderLibrary();
   body.scrollTop=y;paintFaces();paintAlignment();
   if(hosted&&!pop)scheduleFit();
  }
  function scan(){if(!canAct()){message('Start a player scene to find compatible furniture.');return;}busy=true;rows=[];token='';render();message('Scanning OStim-compatible furniture…');request('scan',{radius:radius,floors:allFloors},j=>{busy=false;rows=j.rows||[];token=j.token||'';message(j.msg);if(tab==='move')render();});}
- function paintFurniture(list){list.textContent='';const q=search.toLowerCase();const shown=rows.filter(r=>(r.name+' '+r.type).toLowerCase().includes(q));shown.forEach(r=>{
-  const row=el('div','ost-row');row.dataset.state='ok';
-  const text=el('div','ost-row-text');
-  text.append(el('strong','',r.name),el('small','',r.type));
-  const well=el('span','ost-seg-well ost-row-well');const ic=el('img','ost-icon');ic.src='icons/custom/'+FURN_ICON(r.type)+'.png';ic.alt='';well.append(ic);
-  row.append(well,text,el('span','ost-far',r.feet+' ft'),
-             btn('Highlight',()=>act('highlight',{formId:r.formId,token:token})),
-             primary('Move here',()=>act('move',{formId:r.formId,token:token})));
-  list.append(row);});if(!shown.length)list.append(busy?emptyState('sn-move','Scanning for furniture…','OStim is checking what nearby pieces this scene can use.',true):emptyState('sn-move','Nothing usable in range','Try Rescan, a larger radius, or Whole building for the floor above.'));}
+ /* ---- the Move scene popout: real renders in a wide tile grid -----------
+    Rober, 2026-10-14, with a screenshot of the old narrow list: "we have this
+    but doesnt show actual renderings, and could be much nicer / larger
+    horizontally". Each piece is a tile: the deck's render of its base model
+    (C++ attaches {bid, icon} to every row and queues the renders), distance in
+    feet, a spoken type, Highlight and Move here. Renders land after the scan,
+    so the popout asks `furnIcons` once a second and swaps pictures in place -
+    never a rebuild under the cursor. */
+ const FURN_NICE={bed:'Bed',singlebed:'Single bed',doublebed:'Double bed',bedroll:'Bedroll',chair:'Chair',bench:'Bench',table:'Table',wall:'Wall',shelf:'Shelf',wardrobe:'Wardrobe',wardrobethick:'Wardrobe',wardrobethin:'Wardrobe',cookingpot:'Cooking pot',alchemytable:'Alchemy table',enchantingtable:'Enchanting table',tableleanmarker:'Table edge',tableleanmarkerbbls:'Table edge'};
+ function furnType(t){t=String(t||'');const k=t.toLowerCase();return FURN_NICE[k]||(t?t.charAt(0).toUpperCase()+t.slice(1):'Furniture');}
+ function furnName(r){const n=String(r.name||'');return n&&n!=='Furniture'&&n.toLowerCase()!==String(r.type||'').toLowerCase()?n:furnType(r.type);}
+ function furnArt(r){
+  const art=el('div','ost-furn-art'+(r.icon?'':' is-waiting'));
+  const img=el('img',r.icon?'ost-furn-render':'ost-furn-fallback');img.alt='';
+  img.src=r.icon||('icons/custom/'+FURN_ICON(r.type)+'.png');img.dataset.bid=r.bid||'';
+  art.append(img);return art;
+ }
+ function furnLayout(list){
+  const tiles=[].slice.call(list.querySelectorAll('.ost-furn-tile'));const n=tiles.length;if(!n)return;
+  const gap=24,minW=380,w=list.clientWidth||1100;
+  const maxC=Math.max(1,Math.floor((w+gap)/(minW+gap)));
+  let best=Math.min(maxC,n),fill0=-1;
+  for(let c=Math.min(maxC,n);c>=Math.max(1,Math.ceil(maxC*0.6));c--){const rem=n%c,f=rem===0?1:rem/c;if(f>fill0+0.001){fill0=f;best=c;}}
+  const basis='calc((100% - '+((best-1)*gap)+'px) / '+best+')';const rem2=n%best,last=rem2?n-rem2:n;
+  tiles.forEach((t,i)=>{const l=i>=last;t.style.flex=(l?'1 1 ':'0 0 ')+basis;});
+ }
+ function paintFurniture(list){
+  list.textContent='';list.className='ost-list ost-furn-grid';const q=search.toLowerCase();
+  const shown=rows.filter(r=>(furnName(r)+' '+r.name+' '+r.type+' '+furnType(r.type)).toLowerCase().includes(q));
+  shown.forEach(r=>{
+   const tile=el('div','ost-furn-tile');tile.dataset.formId=String(r.formId);
+   const art=furnArt(r);art.append(el('span','ost-furn-dist',r.feet+' ft'));tile.append(art);
+   const info=el('div','ost-furn-info');info.append(el('strong','',furnName(r)),el('small','',furnType(r.type)));tile.append(info);
+   const acts=el('div','ost-furn-acts');
+   acts.append(btn('Highlight',()=>act('highlight',{formId:r.formId,token:token})),
+               primary('Move here',()=>act('move',{formId:r.formId,token:token})));
+   tile.append(acts);list.append(tile);});
+  if(!shown.length)list.append(busy?emptyState('sn-move','Scanning for furniture…','OStim is checking what nearby pieces this scene can use.',true):emptyState('sn-move','Nothing usable in range','Try Rescan, a larger radius, or Whole building for the floor above.'));
+  else furnLayout(list);
+  furnWatch();
+ }
+ let furnTimer=0,furnTries=0;
+ function furnWatch(){
+  clearTimeout(furnTimer);
+  const ids=rows.map(r=>r.formId).concat(here&&here.formId?[here.formId]:[]);
+  const need=rows.some(r=>!r.icon)||(here&&here.formId&&!here.icon);
+  if(!need||tab!=='move'||!pop||furnTries>40)return;
+  furnTimer=setTimeout(()=>{
+   furnTries++;
+   request('furnIcons',{formIds:ids},j=>{
+    if(!j||!j.ok||tab!=='move'||!pop)return;
+    const icons=j.icons||{};let changed=false;
+    rows.forEach(r=>{if(!r.icon&&r.bid&&icons[r.bid]){r.icon=icons[r.bid];changed=true;}});
+    if(here&&!here.icon&&here.bid&&icons[here.bid]){here.icon=icons[here.bid];changed=true;}
+    if(changed){
+     document.querySelectorAll('.ost-furn-tile img[data-bid]').forEach(img=>{
+      const p=icons[img.dataset.bid];if(p&&img.className!=='ost-furn-render'){img.className='ost-furn-render';img.src=p;img.parentNode.classList.remove('is-waiting');}});
+     const hi=document.querySelector('.ost-here .ost-furn-art img');
+     if(hi&&here&&here.icon&&hi.className!=='ost-furn-render'){hi.className='ost-furn-render';hi.src=here.icon;hi.parentNode.classList.remove('is-waiting');}
+    }
+    furnWatch();
+   });
+  },900);
+ }
  /* ---- OStim's own MCM switches, as toggles -----------------------------
     Rober, 2026-09-21: "need toggles for quick (end seen after climax, yes,
     no, etc, male, female, etc)". Those live in OSexIntegrationMCM —
@@ -1841,11 +2076,12 @@ window.OstimTools=(function(){
   body.append(subTabs([['clothing','Clothing','hm-wardrobe'],['voice','Voice','sn-people'],['body','Body','sn-ppa'],['look','Look','sn-expr']],peopleTab,t=>{peopleTab=t;render();}));
   const panels=el('div','ost-subject');
   const show=(node,key)=>{node.dataset.on=String(peopleTab===key);node.dataset.panel=key;return node;};
-  panels.append(show(undressControl(),'clothing'),show(voiceControl(),'voice'));
+  const clothing=el('div','ost-panel-body');clothing.append(undressControl(),gearBlock());
+  panels.append(show(clothing,'clothing'),show(voiceControl(),'voice'));
   const bodyPanel=el('div','ost-panel-body');bodyPanel.append(sosControl(),sizeControl());panels.append(show(bodyPanel,'body'));
   panels.append(show(appearanceControl(),'look'));
   body.append(panels);
-  paintActorStatus();paintSize();paintWorn();paintSos();
+  paintActorStatus();paintSize();paintWorn();paintGear();paintSos();
  }
 
  function resetSize(){sizeInfo={};sizeDraft=null;sizeDrag=null;sizePending=false;sizeQuery++;}
@@ -2010,10 +2246,9 @@ window.OstimTools=(function(){
  function hereRow(){
   const box=el('section','ost-here');
   const text=el('div','ost-row-text');
-  const well=el('span','ost-seg-well ost-row-well');const ic=el('img','ost-icon');ic.src='icons/custom/'+FURN_ICON(here&&here.type)+'.png';ic.alt='';well.append(ic);
-  box.append(well);
+  box.append(here?furnArt(here):(()=>{const well=el('span','ost-seg-well ost-row-well');const ic=el('img','ost-icon');ic.src='icons/custom/'+FURN_ICON('')+'.png';ic.alt='';well.append(ic);return well;})());
   if(here){
-   text.append(el('span','ost-here-cap','You are on'),el('strong','',here.name),el('small','',here.type));
+   text.append(el('span','ost-here-cap','You are on'),el('strong','',furnName(here)),el('small','',furnType(here.type)));
    box.append(text);
    if(here.formId)box.append(btn('Highlight',()=>act('highlight',{formId:here.formId,token:token})));
   }else{
@@ -2259,6 +2494,116 @@ window.OstimTools=(function(){
   body.append(searchBox('Search PPA settings…',paint),list);paint();
  }
 
+ /* ---- Fluids: OStrands (Rober, 2026-10-14: "new ostim mod just added
+    having to do with liquids, hook to it and add controls") ------------
+    OStrands has no esp, no Papyrus and no API of its own. Its controls are
+    OStim::Setting objects on OStim's MCM Add-ons page, and each one applies
+    itself live and saves OStrands.ini. C++ (ostim_addons.cpp) stands in
+    front of OStim's settings interface at load to see them go past, so this
+    popout drives the SAME objects that menu drives — nothing is re-implemented
+    here, and a setting OStrands adds later shows up on its own. */
+ const FLUID_GROUPS={'ostrands':'Strands & drips','ostrands semen':'Semen'};
+ function fluidGroups(){
+  const all=addons.groups||[];
+  const ours=all.filter(g=>String(g.name||'').toLowerCase().indexOf('ostrands')===0);
+  return ours.length?ours:all;
+ }
+ function getAddons(){
+  if(addonsPending)return;addonsPending=true;if(tab==='fluids')render();
+  request('addons',{op:'state'},j=>{addonsPending=false;addons=j||{};if(!j.ok&&j.msg)message(j.msg);if(tab==='fluids')render();});
+ }
+ function addonSet(g,r,op,value){
+  if(addonsPending)return;addonsPending=true;
+  request('addons',{op:'set',group:g.group,name:g.name,index:r.index,action:op,value:value},j=>{
+   addonsPending=false;if(j&&j.groups)addons=j;message(j.msg||'');if(tab==='fluids')render();
+  });
+ }
+ // Digits a slider shows: as many as its step has, at most three.
+ function fluidDigits(step){
+  const t=String(Number((Number(step)||1).toPrecision(4)));const dot=t.indexOf('.');
+  return dot<0?0:Math.min(3,t.length-dot-1);
+ }
+ function fluidControl(g,r){
+  const off=!r.enabled||addonsPending;
+  if(r.type==='toggle'){
+   const seg=segmented([['On',r.on,()=>{if(!r.on)addonSet(g,r,'toggle');}],['Off',!r.on,()=>{if(r.on)addonSet(g,r,'toggle');}]],r.name);
+   seg.querySelectorAll('button').forEach(b=>{b.disabled=off;});
+   seg.querySelector('button').dataset.primary='1';return seg;
+  }
+  if(r.type==='slider'){
+   const d=fluidDigits(r.step),step=Number(r.step)||Math.pow(10,-d);
+   const fmt=v=>Number(v).toFixed(d);
+   const nudge=k=>{const v=Math.min(r.max,Math.max(r.min,Number(r.value)+k*step));if(v!==Number(r.value))addonSet(g,r,'value',v);};
+   const value=el('span','ost-stepper-value ost-fluid-value',fmt(r.value));
+   const atDefault=fmt(r.value)===fmt(r.def);
+   const st=stepper(value,()=>nudge(-1),()=>nudge(1),atDefault?null:()=>addonSet(g,r,'value',Number(r.def)));
+   const bs=st.querySelectorAll('button');
+   bs.forEach(b=>{b.disabled=off;});
+   if(Number(r.value)<=r.min)bs[0].disabled=true;
+   if(Number(r.value)>=r.max)bs[1].disabled=true;
+   return st;
+  }
+  if(r.type==='choice'){
+   const seg=segmented((r.options||[]).map((o,i)=>[o,i===r.choice,()=>{if(i!==r.choice)addonSet(g,r,'choice',i);}]),r.name);
+   seg.querySelectorAll('button').forEach(b=>{b.disabled=off;});return seg;
+  }
+  if(r.type==='key'){
+   const w=el('div','ost-fluid-key');
+   const name=r.key?(typeof dikLabel==='function'?dikLabel(r.key):'Key '+r.key):'Unbound';
+   w.append(el('span','ost-fluid-keyname',name));
+   if(r.key){const u=btn('Unbind',()=>addonSet(g,r,'key',0));u.disabled=off;w.append(u);}
+   return w;
+  }
+  if(r.type==='button'){
+   // OStrands' Semen switch is a button whose NAME carries the state
+   // ("Semen: Auto (on, OCum found)"); each press moves Auto → On → Off.
+   const cut=String(r.name).indexOf(': ');
+   const b=btn(cut>0?r.name.slice(cut+2):/^reload/i.test(r.name)?'Reload':'Run',()=>addonSet(g,r,'click'));
+   b.disabled=off;if(cut>0)b.classList.add('ost-fluid-cycle');return b;
+  }
+  return el('span','ost-help',r.text||'');
+ }
+ function fluidRow(g,r){
+  const row=el('div','ost-row ost-fluid-row'),text=el('div','ost-row-text');
+  const cut=r.type==='button'?String(r.name).indexOf(': '):-1;
+  const label=cut>0?r.name.slice(0,cut):r.name;
+  let detail=r.tooltip||'';
+  if(r.type==='slider')detail+=(detail?' · ':'')+'Range '+Number(r.min).toFixed(fluidDigits(r.step))+'–'+Number(r.max).toFixed(fluidDigits(r.step));
+  if(!r.enabled)detail='Off while the switch it depends on is off. '+detail;
+  text.append(el('strong','',label),el('small','',detail));
+  if(!r.enabled)row.dataset.off='1';
+  row.append(text,fluidControl(g,r));return row;
+ }
+ function renderFluids(){
+  body.append(el('h3','','OStrands — procedural fluids'));
+  const groups=fluidGroups();
+  if(!addons.ok||!groups.length){
+   body.append(emptyState('sn-fluids',addonsPending?'Reading OStrands’ settings…':'OStrands controls are not available',
+    addonsPending?'':(addons.why||addons.msg||'OStrands is not loaded, or SkyManager could not reach OStim’s settings.'),addonsPending));
+   if(!addonsPending)body.append(btn('Retry',getAddons));
+   return;
+  }
+  body.append(el('p','ost-help','OStrands’ own controls — the same ones on OStim’s MCM Add-ons page. Changes apply straight away and are saved to OStrands.ini; the strand-type switches take effect from the next scene.'));
+  if(!groups.some(g=>g.group===fluidsSub))fluidsSub=groups[0].group;
+  if(groups.length>1)body.append(subTabs(groups.map(g=>[g.group,FLUID_GROUPS[String(g.name).toLowerCase()]||g.name,'sn-fluids']),fluidsSub,id=>{fluidsSub=id;search='';render();}));
+  const list=el('div','ost-list ost-fluid-list');
+  const paint=()=>{
+   list.textContent='';
+   const q=search.trim().toLowerCase();
+   // A search looks through every group, so nothing hides behind a tab.
+   const shown=q?groups:groups.filter(g=>g.group===fluidsSub);
+   let n=0;
+   shown.forEach(g=>{
+    const rows=(g.settings||[]).filter(r=>!q||(r.name+' '+(r.tooltip||'')+' '+g.name).toLowerCase().includes(q));
+    if(!rows.length)return;
+    if(q&&groups.length>1)list.append(el('h3','',FLUID_GROUPS[String(g.name).toLowerCase()]||g.name));
+    rows.forEach(r=>{list.append(fluidRow(g,r));n++;});
+   });
+   if(!n)list.append(emptyState('sn-search','No fluid setting matches','Try a shorter search.'));
+  };
+  body.append(searchBox('Search fluid settings…',paint),list);paint();
+ }
+
  /* ---- per-participant undress (ask 6) + voice (ask 8) ---------------- */
  function getWorn(){
   if(!canAct()||!selected||wornPending)return;
@@ -2317,6 +2662,91 @@ window.OstimTools=(function(){
   box.append(slots,el('p','ost-help','OStim’s own undress, so Put it back restores exactly what it removed. OStim reports no undress state of its own — the labels above are what this participant is wearing right now.'));
   return box;
  }
+ /* ---- Gear: the worn set in key slots, with renders (Rober, 2026-10-14) ----
+    "automatic equipment checker and ability to remove while in scene ... show
+    the render, and ability to remove any remaining gear on or off, as well as
+    key slots like stockings, wigs, earrings, rings, shoes, tops, bras".
+    C++ (scene_gear.cpp) reads what the participant wears, sorts each piece
+    into one of those slots, and does the off / on with the game's own equip
+    calls; it remembers what was taken off here and puts it back when the scene
+    ends. This is only the view of that: nothing here guesses a slot. The
+    piece pictures are the deck's own item renders (WardrobePane's one index,
+    asked through whIcons like the character sheet does). */
+ function getGear(){
+  if(!canAct()||!selected||gearPending)return;
+  const fid=selected,sig=snapshot.signature,q=++gearQuery;
+  request('gearState',{formId:fid},j=>{if(q!==gearQuery||fid!==selected||sig!==snapshot.signature)return;gearInfo=j.ok?j:{};paintGear();});
+ }
+ function gearAct(op,extra){
+  if(!canAct()||!selected||gearPending)return;
+  const fid=selected,sig=snapshot.signature;gearPending=true;gearQuery++;paintGear();
+  request('gear',Object.assign({formId:fid,op:op},extra||{}),j=>{
+   if(fid!==selected||sig!==snapshot.signature)return;
+   gearPending=false;if(Array.isArray(j.buckets))gearInfo=j;message(j.msg);paintGear();
+   // the engine applies an equip change a beat later: read once more.
+   setTimeout(getGear,600);
+  });
+ }
+ function gearIconFor(p){
+  if(!window.WardrobePane||typeof WardrobePane.itemIconFor!=='function')return '';
+  try{const u=WardrobePane.itemIconFor({formId:p.formId,plugin:p.plugin})||'';return /^icons\//.test(u)?u:'';}catch(e){return '';}
+ }
+ function gearBlock(){
+  const box=el('section','ost-gear');
+  const actor=(snapshot.actors||[]).find(a=>a.formId===selected);
+  box.append(el('h3','','Gear'+(actor?' · '+actor.name:'')),el('p','ost-help ost-gear-status'));
+  const bar=el('div','ost-gear-bar');
+  const off=btn('Take every piece off',()=>gearAct('allOff'));off.dataset.gearAll='off';
+  const on=btn('Put back what I took off',()=>gearAct('allOn'));on.dataset.gearAll='on';
+  bar.append(off,on);
+  box.append(bar,el('div','ost-gear-slots'),el('div','ost-gear-pieces'),
+   el('p','ost-help','Off and on use the game’s own equip, so they sit on top of OStim’s undress. Whatever you take off here goes back on by itself when the scene ends.'));
+  return box;
+ }
+ function paintGear(){
+  if(!modal||tab!=='people')return;
+  const box=q1('.ost-gear');if(!box)return;
+  const have=Array.isArray(gearInfo.buckets);
+  const buckets=have?gearInfo.buckets:[],pieces=have?(gearInfo.pieces||[]):[],gone=have?(gearInfo.gone||[]):[];
+  box.querySelector('.ost-gear-status').textContent=gearPending?'Working…'
+   :!canAct()?'Start a player scene first.'
+   :!have?'Reading what they are wearing…'
+   :pieces.length?'Wearing '+pieces.length+' piece'+(pieces.length===1?'':'s')+(gone.length?' · '+gone.length+' taken off here':''):(gone.length?'Bare · '+gone.length+' taken off here':'Bare');
+  const off=box.querySelector('[data-gear-all="off"]'),on=box.querySelector('[data-gear-all="on"]');
+  if(off)off.disabled=!canAct()||gearPending||!pieces.length;
+  if(on)on.disabled=!canAct()||gearPending||!gone.length;
+  // key slots: one button each, worn -> take off, taken off here -> put back.
+  const slots=box.querySelector('.ost-gear-slots');slots.textContent='';
+  buckets.forEach(b=>{
+   const s=el('button','ost-gear-slot');s.type='button';s.dataset.bucket=b.key;
+   const state=b.worn?(b.items||[]).join(', '):b.gone?'Off · tap to put back':'Bare';
+   s.append(el('span','ost-gear-slot-name',b.label),el('span','ost-gear-slot-state',state));
+   s.setAttribute('aria-pressed',String(b.worn>0));
+   s.disabled=!canAct()||gearPending||(!b.worn&&!b.gone);
+   s.addEventListener('click',()=>gearAct(b.worn?'bucketOff':'bucketOn',{bucket:b.key}));
+   slots.append(s);
+  });
+  // every worn piece (and every piece taken off here) as a render tile.
+  const grid=box.querySelector('.ost-gear-pieces');grid.textContent='';
+  const want=[];
+  const tile=(p,isGone)=>{
+   const t=el('button','ost-gear-piece');t.type='button';t.dataset.state=isGone?'gone':'worn';t.dataset.item=p.formId;
+   const art=el('span','ost-gear-art'),url=gearIconFor(p);
+   if(url){const i=el('img','');i.src=url;i.alt='';art.append(i);}
+   else{art.append(el('span','ost-gear-glyph',(p.name||'?').charAt(0).toUpperCase()));
+    const k=p.formId+'|'+(p.plugin||'').toLowerCase();if(!gearAsked[k]){gearAsked[k]=1;want.push({formId:p.formId,plugin:p.plugin,name:p.name});}}
+   const tag=(buckets.find(b=>b.key===p.bucket)||{}).label||'Other';
+   t.append(art,el('span','ost-gear-piece-name',p.name),el('small','ost-gear-piece-tag',isGone?'Off · tap to put back':tag+' · tap to take off'));
+   t.disabled=!canAct()||gearPending;
+   t.addEventListener('click',()=>gearAct(isGone?'on':'off',{item:p.formId,itemPlugin:p.plugin}));
+   return t;
+  };
+  pieces.forEach(p=>grid.append(tile(p,false)));
+  gone.forEach(p=>grid.append(tile(p,true)));
+  if(have&&!pieces.length&&!gone.length)grid.append(el('p','ost-help','Nothing worn.'));
+  if(want.length&&typeof window.toGame==='function')window.toGame('whIcons',JSON.stringify({items:want}));
+ }
+ try{document.addEventListener('hd-item-icons',()=>{if(modal&&tab==='people')paintGear();});}catch(e){}
  /* ---- Appearance ------------------------------------------------------
     The six controls the NPC card's "Scene controls" popout owned, folded
     into the page (Rober, 2026-09-21: "integrate this popout into the main
@@ -2397,7 +2827,7 @@ window.OstimTools=(function(){
     const b=el('button','ost-voice-card');b.type='button';
     b.setAttribute('aria-pressed',String(a.formId===selected));
     b.append(el('span','ost-voice-who',a.name),el('span','ost-voice-set',a.voiceName||'default'));
-    b.addEventListener('click',()=>{selected=a.formId;resetSize();actorInfo={};actorQuery++;wornInfo={};wornQuery++;render();getActor();getWorn();getSos();});
+    b.addEventListener('click',()=>{selected=a.formId;resetSize();actorInfo={};actorQuery++;wornInfo={};wornQuery++;gearInfo={};gearQuery++;render();getActor();getWorn();getGear();getSos();});
     grid.append(b);
    });
    box.append(grid);
@@ -2504,6 +2934,8 @@ window.OstimTools=(function(){
   ['Scene speed','','faster slower speed pace tempo step — in the hero dock'],
   ['Auto or manual pacing','','auto manual ai pacing automatic — in the hero dock'],
   ['Free camera','','tfc camera fly photo look around — in the hero dock'],
+  ['Move the whole scene up or down','','raise lower height float sink clipping bed both actors everyone whole scene nudge — in the hero band'],
+  ['Move the whole scene left, right, forward or back','','shift slide sideways forward back both actors everyone whole scene nudge position — in the hero band'],
   ['Favorite current scene','library','star save bookmark current'],
   ['Back to previous scene','library','undo previous last revert scene'],
   ['Browse scenes','library','search find animation library all scenes'],
@@ -2553,6 +2985,7 @@ window.OstimTools=(function(){
   ['Adjust alignment live over the scene','align','overlay live non pausing arrows nudge align unpaused'],
 
   ['PPA physics settings','ppa','procedural penis animations accurate penetration collision toml physics'],
+  ['Fluids (OStrands)','fluids','ostrands fluid fluids liquid strands drips wet semen cum ocum glints shine collision'],
 
   ['Scene favorites and recent','library','collection history saved starred recent'],
   ['Swap roles','people','dom sub swap switch roles reverse participants'],
@@ -2581,7 +3014,7 @@ window.OstimTools=(function(){
    if(window.ScenePane&&typeof window.hdShowTab==='function'&&
       !(window.__hdFlagAbsent&&window.__hdFlagAbsent('ostim'))){ScenePane.show(a[1]);hdShowTab('scene');}
    else open(a[1]);if(a[0]==='Favorite current scene')request('state',{},j=>{snapshot=j;favoriteCurrent();});}}))});
- return {startFor,open,close,mount,showOnTab,onKey:paneKey,positionIcon,positionArt,positionReference,isOpen:()=>!!modal,isHosted:()=>hosted,segments:()=>SEGMENTS.slice(),showSegment:switchTab,portraitIds:()=>{
+ return {setIedInfo,startFor,open,close,mount,showOnTab,onKey:paneKey,positionIcon,positionArt,positionReference,isOpen:()=>!!modal,isHosted:()=>hosted,segments:()=>SEGMENTS.slice(),showSegment:switchTab,portraitIds:()=>{
   if(!modal)return[];
   const ids=[],seen={};
   const add=f=>{if(typeof f!=='number')return;const h='0x'+f.toString(16);if(!seen[h]){seen[h]=1;ids.push(h);}};

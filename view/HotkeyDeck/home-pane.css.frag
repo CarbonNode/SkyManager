@@ -42,7 +42,7 @@
    Gold-accented so it reads as the deck's own primary control. */
 #hm-openkey {
   display: flex; align-items: center; gap: 15px;
-  padding: 15px 17px; margin: 0 0 20px;
+  padding: 15px 17px; margin: 20px 0 0;   /* sits under the card grid */
   background: linear-gradient(180deg, #1d1c22, #171620);
   border: 1px solid #c9a24b40; border-radius: 14px;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.03);

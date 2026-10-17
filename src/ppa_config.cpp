@@ -1,11 +1,16 @@
 #include "ppa_config.h"
 
+#include "ppa_menu_sync.h"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -126,7 +131,9 @@ namespace PpaConfig
 		// Parse every `Key = value` under a `[Section]` header. `[[Array]]`
 		// headers are skipped whole: their keys repeat per element, so
 		// "Section.Key" would not address one of them uniquely.
-		std::vector<Row> Parse(const std::vector<std::string>& lines)
+		// allSections: every plain table (the menu-copy sync needs [Hotkeys] and
+		// [SoundEffects.ClapImpulse] too), not only the ones the page exposes.
+		std::vector<Row> Parse(const std::vector<std::string>& lines, bool allSections = false)
 		{
 			std::vector<Row> rows;
 			std::string section;
@@ -142,7 +149,7 @@ namespace PpaConfig
 					section = inArrayTable ? "" : Trim(t.substr(1, close == std::string::npos ? std::string::npos : close - 1));
 					continue;
 				}
-				if (inArrayTable || section.empty() || !Exposed(section))
+				if (inArrayTable || section.empty() || (!allSections && !Exposed(section)))
 					continue;
 				const auto eq = raw.find('=');
 				if (eq == std::string::npos)
@@ -357,6 +364,134 @@ namespace PpaConfig
 		{
 			return j.dump(-1, ' ', false, json::error_handler_t::replace);
 		}
+
+		// ------------------------------------------- PPA's SMF menu copy --
+		// Why this exists: ppa_menu_sync.h. In short, SKSE Menu Framework
+		// broadcasts "menu closed" on EVERY keyboard Escape (the deck's close
+		// key), and PPA answers it by writing its menu-side copy of its
+		// General/Hotkeys/Debug/SoundEffects settings over this file whenever
+		// that copy differs from what it is running. A reload never refreshes
+		// the copy, so every value we wrote there was put back on the next
+		// Escape. After each write we therefore set PPA's copy to the file.
+
+		__declspec(noinline) bool SehRead(void* dst, std::uintptr_t src, std::size_t n)
+		{
+			__try {
+				std::memcpy(dst, reinterpret_cast<const void*>(src), n);
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
+		__declspec(noinline) bool SehWrite(std::uintptr_t dst, const void* src, std::size_t n)
+		{
+			__try {
+				std::memcpy(reinterpret_cast<void*>(dst), src, n);
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
+		// AccuratePenetration.dll's writable sections (.data, with its .bss
+		// tail: VirtualSize, not the file size).
+		std::vector<PpaMenuSync::Region> PpaRegions(std::uintptr_t& base)
+		{
+			std::vector<PpaMenuSync::Region> out;
+			const auto mod = GetModuleHandleW(L"AccuratePenetration.dll");
+			base = reinterpret_cast<std::uintptr_t>(mod);
+			if (!mod)
+				return out;
+			IMAGE_DOS_HEADER   dos{};
+			IMAGE_NT_HEADERS64 nt{};
+			if (!SehRead(&dos, base, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+				!SehRead(&nt, base + dos.e_lfanew, sizeof(nt)) || nt.Signature != IMAGE_NT_SIGNATURE)
+				return out;
+			const auto secAt = base + dos.e_lfanew + offsetof(IMAGE_NT_HEADERS64, OptionalHeader) +
+			                   nt.FileHeader.SizeOfOptionalHeader;
+			for (unsigned i = 0; i < nt.FileHeader.NumberOfSections; ++i) {
+				IMAGE_SECTION_HEADER sh{};
+				if (!SehRead(&sh, secAt + i * sizeof(sh), sizeof(sh)))
+					break;
+				if (sh.Characteristics & IMAGE_SCN_MEM_WRITE)
+					out.push_back({ base + sh.VirtualAddress, static_cast<std::size_t>(sh.Misc.VirtualSize) });
+			}
+			return out;
+		}
+
+		// True while any SKSE Menu Framework window that pauses the game is up:
+		// PPA's own page may then hold edits the player has not closed on yet,
+		// and those are PPA's to save, not ours to overwrite.
+		bool SmfWindowUp()
+		{
+			const auto smf = GetModuleHandleW(L"SKSEMenuFramework.dll");
+			if (!smf)
+				return false;
+			using Fn = bool (*)();
+			const auto fn = reinterpret_cast<Fn>(GetProcAddress(smf, "IsAnyBlockingWindowOpened"));
+			return fn && fn();
+		}
+
+		std::mutex     g_syncLock;  // Set/StateJson (main) and the Keys tab (worker)
+		std::uintptr_t g_menuSlot = 0;
+		bool           g_loggedMiss = false;
+
+		struct MenuSync
+		{
+			bool                     ok = false;  // PPA's list found and read
+			std::size_t              tracked = 0;
+			std::vector<std::string> synced, failed;
+			std::string              why;
+		};
+
+		// Make PPA's menu copy of every tracked setting equal the file.
+		MenuSync KeepMenuCopy(const std::vector<std::string>& lines, const char* why)
+		{
+			MenuSync res;
+			if (!GetModuleHandleW(L"AccuratePenetration.dll")) {
+				res.why = "PPA is not loaded";
+				return res;
+			}
+			if (SmfWindowUp()) {
+				res.why = "an SKSE Menu Framework window is open";
+				return res;
+			}
+			std::lock_guard lk(g_syncLock);
+			std::vector<PpaMenuSync::Entry> entries;
+			std::string                     w;
+			if (!g_menuSlot || !PpaMenuSync::ReadEntries(g_menuSlot, &SehRead, entries, w)) {
+				std::uintptr_t base = 0;
+				const auto     regions = PpaRegions(base);
+				g_menuSlot = PpaMenuSync::Locate(regions, &SehRead, w);
+				if (!g_menuSlot || !PpaMenuSync::ReadEntries(g_menuSlot, &SehRead, entries, w)) {
+					g_menuSlot = 0;
+					res.why = w;
+					if (!g_loggedMiss) {
+						g_loggedMiss = true;
+						logger::warn("ppa: cannot keep PPA's own menu copy in step: {}", w);
+					}
+					return res;
+				}
+				logger::info("ppa: PPA's SMF settings list at AccuratePenetration.dll+{:#x} ({} settings)",
+					g_menuSlot - base, entries.size());  // marker: ppa-menu-sync
+			}
+			std::map<std::string, std::string> file;
+			for (const auto& r : Parse(lines, true))
+				file[r.section + "." + r.key] = r.value;
+			res.ok = true;
+			res.tracked = entries.size();
+			res.synced = PpaMenuSync::SyncFromFile(entries, file, &SehWrite, &res.failed);
+			if (!res.synced.empty() || !res.failed.empty()) {
+				std::string list;
+				for (const auto& p : res.synced)
+					list += (list.empty() ? "" : ", ") + p;
+				for (const auto& p : res.failed)
+					list += (list.empty() ? "" : ", ") + p + " (write faulted)";
+				logger::info("ppa: kept PPA's menu copy in step with the file after {}: {}", why, list);
+			}
+			return res;
+		}
 	}
 
 	std::string StateJson()
@@ -371,13 +506,31 @@ namespace PpaConfig
 		}
 		const auto rows = Parse(lines);
 		const auto reload = ReadReload(rows);
+		// Opening the panel also catches values written by hand (or by another
+		// tool) and reloaded with PPA's key since the last write here.
+		const auto sync = installed ? KeepMenuCopy(lines, "the PPA panel opened") : MenuSync{};
+		std::string msg;
+		if (!installed)
+			msg = "Reading PPA's config, but AccuratePenetration.dll is not loaded — nothing will act on these";
+		else if (!sync.ok && sync.why != "an SKSE Menu Framework window is open")
+			msg = "PPA may undo changes made here: it writes its own menu's copy back over the file whenever "
+			      "Escape is pressed, and SkyManager could not update that copy (" + sync.why + ").";
 		return Dump({ { "ok", true }, { "installed", installed }, { "path", kPath },
+			{ "menuCopy", { { "ok", sync.ok }, { "tracked", sync.tracked }, { "synced", sync.synced }, { "why", sync.why } } },
 			{ "reloadDik", reload.dik },
 			{ "reloadKey", reload.dik ? (std::string(reload.shiftOnly ? "Shift + " : "") + DikName(reload.dik)) : std::string("unbound") },
 			{ "reloadLive", reload.live },
 			{ "shiftOnly", reload.shiftOnly },
 			{ "rows", RowsJson(lines, rows) },
-			{ "msg", installed ? "" : "Reading PPA's config, but AccuratePenetration.dll is not loaded — nothing will act on these" } });
+			{ "msg", msg } });
+	}
+
+	bool KeepMenuInStep(const char* why)
+	{
+		std::vector<std::string> lines;
+		if (!GetModuleHandleW(L"AccuratePenetration.dll") || !ReadLines(lines))
+			return false;
+		return KeepMenuCopy(lines, why).ok;
 	}
 
 	std::string ReloadNow()
@@ -387,6 +540,7 @@ namespace PpaConfig
 		std::vector<std::string> lines;
 		if (!ReadLines(lines))
 			return "";
+		KeepMenuCopy(lines, "a Keys-tab rebind");
 		const auto reload = ReadReload(Parse(lines));
 		if (!reload.dik)
 			return "";
@@ -458,15 +612,24 @@ namespace PpaConfig
 
 		const auto reload = ReadReload(Parse(lines));
 		logger::info("ppa: {} = {} (reload dik {})", target, written, reload.dik);  // marker: ppa-set
+		// BEFORE the reload tap: PPA's menu copy now says what the file says, so
+		// its save-on-Escape has nothing to put back. If the tap does not land,
+		// PPA's next save-on-Escape writes this same value and reloads it, so it
+		// still applies.
+		const auto sync = KeepMenuCopy(lines, "a PPA panel write");
 		TapReload(reload);
 
 		json out = json::parse(StateJson(), nullptr, false);
 		if (!out.is_object())
 			out = json::object();
 		out["ok"] = true;
-		out["msg"] = reload.dik
+		std::string msg = reload.dik
 			? ("Saved. Tapped PPA's reload key (" + std::string(reload.shiftOnly ? "Shift + " : "") + DikName(reload.dik) + ") to apply it.")
 			: "Saved to accurate-penetration.toml. PPA's reload key is unbound, so it applies on the next game start.";
+		if (!sync.ok && sync.why != "PPA is not loaded")
+			msg += " Warning: PPA's own menu still holds its old copy (" + sync.why +
+			       "), so PPA may write the old value back the next time Escape is pressed.";
+		out["msg"] = msg;
 		return Dump(out);
 	}
 }

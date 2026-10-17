@@ -29,6 +29,21 @@
  *  fired into a paused game is a key that did nothing. close:true routes the
  *  C++ through FireAndClose, the same close → unpause → press path every
  *  hotkey row already uses. Pressing a cap here IS pressing the key.
+ *
+ *  ---- and the finder too (2026-10-14) ----------------------------------
+ *  Rober: "when you search escape it used to show a clickable button that
+ *  fires that button, searching f12 etc used to do that now it doesnt".
+ *  Since the two-bar header (2026-10-11) the header search hands typing to
+ *  the Omni, so the Hotkeys filter this strip listens to is no longer where
+ *  a player types. hd-omni.js now asks match() and paints the same caps
+ *  (capsHtml) above its results, and press() fires them. One matcher, one
+ *  key table, two surfaces.
+ *
+ *  Esc and Tab are the two keys the Numpad tab can NOT offer (the deck owns
+ *  them while it is open). A cap here always fires through close:true —
+ *  the deck is shut and the game unpaused 200 ms before the key goes out —
+ *  so they are safe on the strip and in the finder, and only there:
+ *  match(q, { extra: true }). The Hotkey Pad picker keeps the plain table.
  * ====================================================================== */
 
 window.KeyStrip = (function () {
@@ -38,9 +53,19 @@ window.KeyStrip = (function () {
     { dik: 56, label: 'Alt' },
   ];
 
+  /* Keys the strip and the finder may press that the Numpad tab may not (see
+     the header). `strict`: matched by their own words only, whole or from the
+     start, so "escort" or "table" do not grow an Esc or a Tab cap. */
+  const EXTRA_KEYS = [
+    { l: 'Esc', c: 0x01, name: 'Escape', strict: true },
+    { l: 'Tab', c: 0x0F, name: 'Tab', strict: true },
+  ];
+
   /* Caps shown at once. Past this the strip would be a keyboard, and there is
-     already a keyboard — the ⌗ button goes to it. */
-  const MAX_CAPS = 14;
+     already a keyboard — the ⌗ button goes to it. 24 is the largest cluster,
+     the F1-F24 function row (2026-10-14, F13-F24 added): "fkeys" hands you all
+     of it, and "numpad" no longer loses its last three keys to a cap of 14. */
+  const MAX_CAPS = 24;
 
   /* scancode -> the words somebody types looking for that key. The key's own
      name and cap label are added automatically, so this holds only what they
@@ -67,6 +92,7 @@ window.KeyStrip = (function () {
     0x2B: ['backslash', 'pipe'],
     0x29: ['tilde', 'grave', 'backtick', 'console'],
     0x45: ['numlock'],
+    0x01: ['esc', 'escape'],
   };
 
   /* A word for a whole cluster. Typing "numpad" should hand you a numpad, not
@@ -79,12 +105,16 @@ window.KeyStrip = (function () {
     { terms: ['navigation', 'navcluster', 'editing'],
       test: (n) => ['Insert', 'Delete', 'Home', 'End', 'PgUp', 'PgDn'].indexOf(n) !== -1 },
     { terms: ['functionkeys', 'fkeys', 'functionrow'], test: (n) => /^F\d+$/.test(n) },
+    /* F13-F24: the keys the Scimitar's G-buttons send and no keyboard has. */
+    { terms: ['extended', 'extendedfkeys', 'extendedkeys', 'highfkeys', 'gkeys', 'scimitar'],
+      test: (n) => /^F(1[3-9]|2[0-4])$/.test(n) },
   ];
 
   let host = null;
   let mods = [];        // active modifier DIKs — one-shot, cleared on fire
   let caps = [];        // what is on screen right now, in order
   let sig = '';         // last painted signature, so typing does not re-paint
+  let openKey = 0;      // the deck's open key, as renderList last told us
 
   function norm(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, ''); }
   function esc(s) {
@@ -92,9 +122,10 @@ window.KeyStrip = (function () {
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
-  function keys() {
+  function keys(opts) {
     const k = window.hdKeypadKeys;
-    return Array.isArray(k) ? k : [];
+    const base = Array.isArray(k) ? k : [];
+    return opts && opts.extra ? base.concat(EXTRA_KEYS) : base;
   }
 
   /* Every word this key answers to. */
@@ -113,6 +144,7 @@ window.KeyStrip = (function () {
       let s = Infinity;
       if (t === q) s = 0;
       else if (t.indexOf(q) === 0) s = 1;
+      else if (k.strict) s = Infinity;
       else if (q.indexOf(t) === 0 && t.length >= 3) s = 1.5;   // "home key", "page up key"
       else if (q.length >= 3 && t.indexOf(q) !== -1) s = 2;
       if (s < best) best = s;
@@ -120,21 +152,22 @@ window.KeyStrip = (function () {
     return best;
   }
 
-  function groupHits(q) {
+  function groupHits(q, opts) {
     const hit = [];
     GROUPS.forEach((g) => {
       const on = g.terms.some((t) => t === q || (q.length >= 3 && t.indexOf(q) === 0));
-      if (on) keys().forEach((k) => { if (g.test(k.name || k.l) && hit.indexOf(k) === -1) hit.push(k); });
+      if (on) keys(opts).forEach((k) => { if (g.test(k.name || k.l) && hit.indexOf(k) === -1) hit.push(k); });
     });
     return hit;
   }
 
-  /* The caps a query earns, best first. Exported for the harness. */
-  function match(query) {
+  /* The caps a query earns, best first. Exported for the harness, the Hotkey
+     Pad picker and the Omni. `opts.extra` adds Esc and Tab (see the header). */
+  function match(query, opts) {
     const q = norm(query);
     if (q.length < 2) return [];
     const scored = [];
-    keys().forEach((k, i) => {
+    keys(opts).forEach((k, i) => {
       const s = score(k, q);
       if (s !== Infinity) scored.push({ k: k, s: s, i: i });
     });
@@ -142,7 +175,7 @@ window.KeyStrip = (function () {
     const out = scored.map((x) => x.k);
     /* Group hits come after the direct ones: "num" is first of all the Num
        keys' own name, and only then the word for the whole cluster. */
-    groupHits(q).forEach((k) => { if (out.indexOf(k) === -1) out.push(k); });
+    groupHits(q, opts).forEach((k) => { if (out.indexOf(k) === -1) out.push(k); });
     return out.slice(0, MAX_CAPS);
   }
 
@@ -215,10 +248,11 @@ window.KeyStrip = (function () {
   /* Called from renderList() on every keystroke. `openCode` is the deck's own
      open key (marked, never hidden — firing it really does close the deck). */
   function sync(query, openCode) {
+    openKey = openCode || 0;
     host = host || document.getElementById('ks-strip');
     if (!host) return;
     if (!host.__ksWired) { host.__ksWired = true; host.addEventListener('click', onClick); }
-    caps = match(query);
+    caps = match(query, { extra: true });
     host.classList.toggle('hidden', caps.length === 0);
     /* Empty means EMPTY: a hidden strip still holding the last query's caps is
        a strip that can be clicked by a stray Enter and fire a key nobody asked
@@ -230,8 +264,21 @@ window.KeyStrip = (function () {
     paint(openCode || 0);
   }
 
+  /* The finder's door (hd-omni.js): the same caps, and a press by scancode.
+     No modifiers here — the finder is for "press End", and a chord has the
+     strip and the Numpad tab. */
+  function capsHtml(list) { return (list || []).map((k) => capHtml(k, openKey)).join(''); }
+  function press(code) {
+    const k = keys({ extra: true }).filter((x) => x && x.c === Number(code))[0];
+    if (!k || typeof window.hdFireRawKey !== 'function') return false;
+    window.hdFireRawKey({ code: k.c, mods: [], label: k.name || k.l, close: true });
+    return true;
+  }
+
   return {
     sync: sync,
+    capsHtml: capsHtml,
+    press: press,
     match: match,             // harness
     top: function () { return caps[0] || null; },
     fireTop: function () {

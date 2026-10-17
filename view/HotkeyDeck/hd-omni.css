@@ -530,3 +530,17 @@
 }
 .omni-run:hover, .omni-tp:hover { border-color: #e2be6e; background: linear-gradient(160deg, #4a4130, #2c2618); }
 .omni-tp { margin-right: 6px; font-family: Consolas, "Cascadia Mono", monospace; letter-spacing: .01em; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- omni-key-caps: "escape", "f12", "end" → the key itself ----------
+   The caps are keycaps-strip.css's .ks-cap (core sheet, loaded before this
+   one), so a cap here and a cap on the Hotkeys strip are the same object.
+   This only frames them as the first band of results. (2026-10-14) */
+.omni-keys { padding: 0 0 12px; margin-bottom: 4px; border-bottom: 1px solid rgba(201,162,75,.14); }
+.omni-keys-sub {
+  margin-left: 12px; order: 1;
+  color: #6b675e; font-size: 13px; font-weight: 400;
+  text-transform: none; letter-spacing: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.omni-keys-caps { padding: 8px 10px 0; gap: 10px; }
+.omni-keys-caps .ks-cap { min-width: 76px; min-height: 56px; }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 // FreezeBackdrop (2026-10-09, marker freeze-backdrop) — stop the game redrawing the
 // world behind a PAUSED deck, the way the vanilla inventory does.
@@ -27,6 +28,13 @@
 // MAIN THREAD — no first paint, no 1 s tick, a queued live-api close-view task
 // never ran, SkyrimSE had to be killed. Off by default and out of Settings; only
 // SkyManager.ini FreezeBackdrop=1 turns it on, and only with a dump ready.
+//
+// 2026-10-14, backdrop-inventory-recipe: that menu carried kFreezeFrameBackground
+// + kCustomRendering. The vanilla inventory on this rig carries kCustomRendering +
+// kPausesGame and NO freeze-frame (flags 0x0000A4C5), and ran at 66 fps real on
+// 7 ms of game thread. The backdrop now copies that pair, and SkyManager.ini's
+// FreezeBackdrop / BackdropFlags / BackdropMovie are read live, so it can be
+// tried and varied while the game runs. Still off by default.
 namespace FreezeBackdrop
 {
 	enum Owner : std::uint32_t
@@ -50,4 +58,8 @@ namespace FreezeBackdrop
 	// The 1 s reconcile: hides a backdrop nobody wants, shows one that is wanted
 	// but missing (a menu that refused to open the first time). Main thread.
 	void Tick(bool anyPaletteOpen);
+
+	// PrismaUI's focus menu name as learned from the menu stack ("" until a
+	// PrismaUI menu has opened this session). Main thread.
+	std::string PrismaFocusMenu();
 }

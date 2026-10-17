@@ -186,15 +186,25 @@
     all.setAttribute('aria-label', 'Browse all ' + items.length + ' sub-areas of ' + options.parent.name); all.title = '';
     all.append(el('span', '', 'Areas ' + items.length), el('span', 'dsa-arrow', '›'));
     host.append(previews, all);
-    host.fit = () => {
-      const width = previews.clientWidth;
-      const count = Math.max(0, Math.floor((width + 8) / 56));
-      Array.from(previews.children).forEach((b, i) => { b.hidden = i >= count; });
+    /* measure / apply are split so fit() can read every strip before it writes
+       any (tab-switch-batch-fit); host.fit() stays the one-strip call. */
+    host.measure = () => Math.max(0, Math.floor((previews.clientWidth + 8) / 56));
+    host.apply = (count) => {
+      Array.from(previews.children).forEach((b, i) => { const hide = i >= count; if (b.hidden !== hide) b.hidden = hide; });
     };
+    host.fit = () => host.apply(host.measure());
     strips.add(host); if (sizes) sizes.observe(host); setTimeout(fit, 0); return host;
   }
+  /* tab-switch-batch-fit (2026-10-15): every strip's width is READ first, then
+     every tile is shown/hidden. Reading clientWidth after the previous strip's
+     writes forced a fresh layout of the whole pane once PER strip, and this runs
+     on every Domains renderList: each tab show and each keystroke. A tile is
+     only written when its state actually changes. */
   function fit() {
-    strips.forEach(s => { if (!document.body.contains(s)) { if (sizes) sizes.unobserve(s); strips.delete(s); } else s.fit(); });
+    const live = [];
+    strips.forEach(s => { if (!document.body.contains(s)) { if (sizes) sizes.unobserve(s); strips.delete(s); } else live.push(s); });
+    const counts = live.map(s => s.measure());
+    live.forEach((s, i) => s.apply(counts[i]));
   }
   function key(e) {
     if (lb) {
