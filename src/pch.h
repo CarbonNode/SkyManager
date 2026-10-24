@@ -15,6 +15,8 @@
 #endif
 #pragma warning(pop)
 
+#include "clib_helpers.h"
+
 #include <json.hpp>
 
 using namespace std::literals;

@@ -188,7 +188,7 @@ namespace SceneGear
 					continue;   // no durable identity: it could not be put back later
 				p.obj = obj;
 				p.name = name;
-				p.mask = static_cast<std::uint32_t>(armo->GetSlotMask());
+				p.mask = HdCompat::SlotBits(armo->GetSlotMask());
 				if (const char* b = Classify(name, p.mask))
 					p.bucket = b;
 				out.push_back(std::move(p));

@@ -54,7 +54,7 @@ namespace ZazDeck
 			std::vector<std::string> out;
 			if (!armo)
 				return out;
-			const auto mask = static_cast<std::uint32_t>(armo->GetSlotMask());
+			const auto mask = HdCompat::SlotBits(armo->GetSlotMask());
 			for (int bit = 0; bit < 32; ++bit) {
 				if (!(mask & (1u << bit)))
 					continue;

@@ -106,7 +106,7 @@ bool Ray(Point from,Point to,float& fraction,float& normalZ){
     pick.rayInput.from=RE::hkVector4(from.x*s,from.y*s,from.z*s,0);
     pick.rayInput.to=RE::hkVector4(to.x*s,to.y*s,to.z*s,0);
     // The engine's pathing-pick layer tests scenery without selecting bodies.
-    pick.rayInput.filterInfo=static_cast<std::uint32_t>(RE::COL_LAYER::kPathingPick);
+    pick.rayInput.filterInfo.filter = static_cast<std::uint32_t>(RE::COL_LAYER::kPathPick);
     pick.rayInput.enableShapeCollectionFilter=true;
     pick.ray=pick.rayInput.to-pick.rayInput.from;
     pick.rayOutput.Reset();tes->Pick(pick);

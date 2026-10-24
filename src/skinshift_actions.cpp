@@ -572,8 +572,7 @@ namespace SkinShiftActions
 					return RE::BSVisit::BSVisitControl::kStop;  // cap paranoia
 				if (!geom)
 					return RE::BSVisit::BSVisitControl::kContinue;
-				auto* prop = geom->GetGeometryRuntimeData()
-				                 .properties[RE::BSGeometry::States::kEffect].get();
+				auto* prop = geom->GetGeometryRuntimeData().shaderProperty.get();
 				auto* lsp = netimmerse_cast<RE::BSLightingShaderProperty*>(prop);
 				auto* mat = lsp ? static_cast<RE::BSLightingShaderMaterialBase*>(lsp->material) :
 				                  nullptr;

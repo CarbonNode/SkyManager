@@ -101,9 +101,8 @@ namespace SicEmFeedback
 			const float s = RE::bhkWorld::GetWorldScale();
 			pick.rayInput.from = RE::hkVector4(from.x * s, from.y * s, from.z * s, 0.0f);
 			pick.rayInput.to   = RE::hkVector4(farPoint.x * s, farPoint.y * s, farPoint.z * s, 0.0f);
-			std::uint32_t info = 0;
-			player->GetCollisionFilterInfo(info);  // hotbar_cast.cpp's idiom: same group = not hit
-			pick.rayInput.filterInfo = (info & 0xFFFF0000u) | static_cast<std::uint32_t>(RE::COL_LAYER::kPathingPick);
+			const std::uint32_t info = HdCompat::CollisionFilterInfo(player);  // hotbar_cast.cpp's idiom: same group = not hit
+			pick.rayInput.filterInfo.filter = (info & 0xFFFF0000u) | static_cast<std::uint32_t>(RE::COL_LAYER::kPathPick);
 			pick.rayInput.enableShapeCollectionFilter = true;
 			pick.ray = pick.rayInput.to - pick.rayInput.from;
 			pick.rayOutput.Reset();

@@ -209,7 +209,7 @@ namespace WardActions
 			return;
 		}
 		if (cost > 0.0)
-			avo->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
+			avo->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
 				RE::ActorValue::kMagicka, static_cast<float>(-cost));
 
 		g_sinceCast += dt;

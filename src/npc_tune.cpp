@@ -423,8 +423,8 @@ namespace NpcTune
 		}
 		if (speedTouched && avo) {
 			// player_tune's lesson: movement speed re-derives on the next AV mod.
-			avo->ModActorValue(AV::kCarryWeight, 0.01f);
-			avo->ModActorValue(AV::kCarryWeight, -0.01f);
+			avo->ModBaseActorValue(AV::kCarryWeight, 0.01f);
+			avo->ModBaseActorValue(AV::kCarryWeight, -0.01f);
 		}
 
 		if (!applied)

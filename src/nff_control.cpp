@@ -849,7 +849,7 @@ namespace NffControl
 			auto* armo = obj ? obj->As<RE::TESObjectARMO>() : nullptr;
 			if (!armo)
 				return "";
-			const auto mask = static_cast<std::uint32_t>(armo->GetSlotMask());
+			const auto mask = HdCompat::SlotBits(armo->GetSlotMask());
 			if (!mask)
 				return "";
 			using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;

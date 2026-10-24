@@ -292,7 +292,7 @@ namespace LootFeed
 			{
 				if (msg.type == RE::UI_MESSAGE_TYPE::kUpdate && msg.data && Widgets::LootFeedHidesVanilla()) {
 					auto* data = skyrim_cast<RE::HUDData*>(msg.data);
-					if (data && data->type == RE::HUDData::Type::kNotification) {
+					if (data && data->type == RE::HUD_MESSAGE_TYPE::kNotification) {
 						const char* raw = data->text.c_str();
 						const auto& word = AddedWord();
 						if (raw && *raw && !word.empty()) {

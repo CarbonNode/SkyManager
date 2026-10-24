@@ -20,8 +20,8 @@ namespace ContainerActions
 		constexpr RE::FormID kXMarker = 0x0000003B;
 
 		// ContainerMenu::ContainerMode::kLoot — the ordinary "Take / Store / Take
-		// All" transfer view a chest opens with. Cast to the int OpenContainer wants.
-		constexpr std::int32_t kOpenLoot = 0;
+		// All" transfer view a chest opens with.
+		constexpr auto kOpenLoot = RE::ContainerMenu::ContainerMode::kLoot;
 
 		// --- crosshair capture ------------------------------------------------
 		// The reference under the crosshair, refreshed on every event. Read at
@@ -367,7 +367,7 @@ namespace ContainerActions
 		// OpenContainer raises the transfer menu. When the ref's cell is loaded (the
 		// player is home, standing by the chest) this is the whole story — no move.
 		ref->InitInventoryIfRequired();
-		ref->OpenContainer(kOpenLoot);
+		RE::ContainerMenu::OpenMenu(ref, kOpenLoot);
 
 		// Attempt B — one frame later, if no menu came up (the ref's cell wasn't
 		// loaded, so the in-place open had nothing to attach to), SUMMON it: move it
@@ -391,7 +391,7 @@ namespace ContainerActions
 				if (!r2)
 					return;
 				r2->InitInventoryIfRequired();
-				r2->OpenContainer(kOpenLoot);
+				RE::ContainerMenu::OpenMenu(r2, kOpenLoot);
 			});
 			logger::info("containers: summoned {:08X} to the player for remote open", rid);
 		});

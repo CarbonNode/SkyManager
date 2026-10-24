@@ -2615,6 +2615,139 @@ function liveFlush(kind, file) {
   }).catch(() => {});
 }
 
+/* ========================== Stream Deck relay ============================ *
+ *  A physical Stream Deck key that fires a deck entry. The key talks to THIS
+ *  server over plain HTTP and we relay the press down the live pipe, so the
+ *  Stream Deck plugin needs to know nothing about Skyrim and the game needs to
+ *  know nothing about the Stream Deck.
+ *
+ *  Two things make these routes unlike every other route in this file.
+ *
+ *  1. CORS. A Stream Deck plugin is an HTML page Chromium loads off the
+ *     filesystem, so every fetch it makes is cross-origin with `Origin: null`
+ *     and the browser throws an uncredited reply away. These routes — and only
+ *     these — answer preflights and send Access-Control-Allow-Origin.
+ *
+ *  2. A PAIRING CODE, precisely because of 1. An open origin policy would
+ *     otherwise let any web page the player happens to have open POST to
+ *     127.0.0.1 and press their hotkeys — a console command, a shout — while
+ *     they play. The code is 16 characters written beside this file; the
+ *     plugin sends it in X-SkyManager-Token and nothing else gets in. These
+ *     replies never allow credentials, so the portal's session cookie cannot
+ *     be used here either, by the plugin or by anyone else.
+ *
+ *  The code is NOT the portal's password. It opens three routes and nothing
+ *  more, and the password (on a wide bind) still guards everything else.
+ */
+/* Beside server.js on purpose: the player is already in that folder (it is
+ * where `node server.js` is run from), so the install note can name one exact
+ * path. The override exists for a read-only mod folder and for the suite. */
+const SD_TOKEN_FILE = process.env.DECK_PORTAL_SD_TOKEN_FILE ||
+  path.join(__dirname, 'streamdeck-token.txt');
+const SD_TOKEN_RE = /^[A-Z0-9]{4}(-[A-Z0-9]{4}){3}$/;
+let sdTokenMemo = null;
+
+/** Crockford-ish alphabet: no I, O, 0 or 1, so a code read off a screen and
+ *  typed into the plugin by hand cannot be ambiguous. */
+function sdNewToken() {
+  const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const b = crypto.randomBytes(16);
+  let out = '';
+  for (let i = 0; i < 16; i++) {
+    if (i && i % 4 === 0) out += '-';
+    out += abc[b[i] % abc.length];
+  }
+  return out;
+}
+
+/** The pairing code, minted on first use. An env var wins (a dev box can pin
+ *  one); otherwise it is persisted beside this file so it survives a restart,
+ *  and falls back to memory-only — logged, so `node server.js` still shows it
+ *  — if the folder cannot be written. */
+function sdToken() {
+  const env = String(process.env.DECK_PORTAL_SD_TOKEN || '').trim().toUpperCase();
+  if (SD_TOKEN_RE.test(env)) return env;
+  if (sdTokenMemo) return sdTokenMemo;
+  try {
+    const got = fs.readFileSync(SD_TOKEN_FILE, 'utf8').trim().toUpperCase();
+    if (SD_TOKEN_RE.test(got)) { sdTokenMemo = got; return got; }
+  } catch (_) { /* first run */ }
+  const made = sdNewToken();
+  sdTokenMemo = made;
+  try {
+    fs.writeFileSync(SD_TOKEN_FILE, made + '\n');
+    log('streamdeck: pairing code written to ' + SD_TOKEN_FILE);
+  } catch (e) {
+    log('streamdeck: cannot write ' + SD_TOKEN_FILE + ' (' + (e && e.code) +
+        ') - this run only, the code is ' + made);
+  }
+  return made;
+}
+
+/** Constant-time, so the code cannot be walked out of us one character at a
+ *  time. Length is compared first because timingSafeEqual throws on a mismatch. */
+function sdTokenOk(given) {
+  const want = Buffer.from(sdToken());
+  const got = Buffer.from(String(given || '').trim().toUpperCase());
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
+
+function sdGivenToken(req, url) {
+  return req.headers['x-skymanager-token'] || url.searchParams.get('token') || '';
+}
+
+/** Set on every Stream Deck reply, refusals included: a plugin that cannot
+ *  read the 401 cannot tell the player to pair. */
+function sdCors(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Vary', 'Origin');
+}
+
+/** The file behind an entry's icon, resolved exactly the way a hotkey row
+ *  resolves it (pending assignment first, then the custom pool across both
+ *  view trees, then the asking view's own tree). The relay serves the bytes
+ *  itself rather than pointing the plugin at /api/icon-file/: that route sends
+ *  no CORS headers, and widening it for one consumer would open every icon in
+ *  the install to every web page the player has in another window. */
+function sdIconFile(entryId) {
+  const hit = findHotkeyEntry(entryId);
+  if (!hit.ok) return null;
+  const pend = readHotkeyIcons().list.filter((e) => e.entryId === entryId)[0];
+  const icon = pend ? pend.icon : (typeof hit.entry.icon === 'string' ? hit.entry.icon : '');
+  if (typeof icon !== 'string' || !icon) return null;
+  const rel = icon.replace(/\\/g, '/');
+  const abs = rel.startsWith(ICON_PREFIX)
+    ? (findPoolFile(rel.slice(ICON_PREFIX.length), 'magic') || findPoolFile(rel.slice(ICON_PREFIX.length), 'hotkey'))
+    : confineView(rel, 'hotkey');
+  if (!abs || !fs.existsSync(abs)) return null;
+  return { abs, ext: path.extname(abs).slice(1).toLowerCase() };
+}
+
+/** The press list: every addressable entry, flattened out of the same reader
+ *  the Hotkeys page uses, in the smallest shape a key needs. A pending icon
+ *  wins over the live one so the picker shows what the deck will show next. */
+function sdEntries() {
+  const hk = hotkeysPayload();
+  const entries = [];
+  (hk.categories || []).forEach((c) => {
+    (c.entries || []).forEach((e) => {
+      entries.push({
+        id: e.id,
+        name: e.name,
+        category: c.allOnly ? '' : c.name,
+        key: e.keyLabel || '',
+        device: e.device,
+        action: e.action || '',
+        // A relay URL, not the row's own: only the relay answers cross-origin.
+        // Non-null means the art is really on disk — the row resolved it.
+        icon: (e.pendingIconUrl || e.iconUrl)
+          ? '/api/streamdeck/icon?id=' + encodeURIComponent(e.id) : null,
+      });
+    });
+  });
+  return { ok: hk.ok !== false, error: hk.error || '', hkJson: hk.hkJson, count: entries.length, entries };
+}
+
 function writeAssignments(list) {
   if (!ensureDir(ICON_DIR)) throw Object.assign(new Error('Cannot create ' + ICON_DIR), { code: 500 });
   const body = JSON.stringify({ version: 1, assign: list }, null, 2);
@@ -6161,6 +6294,98 @@ function appearanceSnapshot() {
 async function route(req, res, url) {
   const p = url.pathname;
   const m = req.method;
+
+  /* ---- Stream Deck relay: handshake, list, press, open/close -------------
+     Everything under /api/streamdeck is handled here, including the preflight
+     and the refusals, so no Stream Deck request can fall through to a route
+     that was written for a browser with a session cookie. Reasoning for the
+     CORS headers and the pairing code is on sdToken() above. */
+  if (p === '/api/streamdeck' || p.startsWith('/api/streamdeck/')) {
+    sdCors(res);
+    if (m === 'OPTIONS') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, X-SkyManager-Token',
+        'Access-Control-Max-Age': '86400',
+        'Content-Length': '0',
+      });
+      res.end();
+      return;
+    }
+
+    /* The handshake is the one route that answers unpaired: it is how the
+       plugin tells "no portal there" (connection refused) apart from "portal
+       there, wrong code", which are completely different things to show. */
+    if (m === 'GET' && p === '/api/streamdeck') {
+      const r = await liveSend({ kind: 'ping' });
+      sendJson(res, 200, {
+        ok: true, portal: 'SkyManager Deck Portal', api: 1,
+        live: !!(r && r.ok === true), paired: sdTokenOk(sdGivenToken(req, url)),
+      });
+      return;
+    }
+
+    if (!sdTokenOk(sdGivenToken(req, url))) {
+      sendJson(res, 401, { ok: false, paired: false,
+        error: 'Not paired. Open ' + SD_TOKEN_FILE + ' and paste the code into the plugin.' });
+      return;
+    }
+
+    if (m === 'GET' && p === '/api/streamdeck/entries') {
+      const r = await liveSend({ kind: 'ping' });
+      sendJson(res, 200, Object.assign({ live: !!(r && r.ok === true) }, sdEntries()));
+      return;
+    }
+
+    /* The art for one entry, so a key can wear the icon the deck wears. */
+    if (m === 'GET' && p === '/api/streamdeck/icon') {
+      const id = String(url.searchParams.get('id') || '').trim();
+      if (!id || id.length > 64) { sendJson(res, 400, { ok: false, error: 'id is required' }); return; }
+      const f = sdIconFile(id);
+      if (!f) { sendJson(res, 404, { ok: false, error: 'That entry has no icon on disk' }); return; }
+      sendFile(res, f.abs, f.ext);
+      return;
+    }
+
+    /* Press one entry. Live only, and the game decides: the pipe either
+       reports the entry fired or says why not, and the key shows that. */
+    if (m === 'POST' && p === '/api/streamdeck/run') {
+      const body = await readJsonBody(req);
+      const id = typeof body.id === 'string' ? body.id.trim() : '';
+      if (!id || id.length > 64) { sendJson(res, 400, { ok: false, error: 'id is required' }); return; }
+      const r = await liveSend({ kind: 'run-entry', id });
+      if (r && r.ok) {
+        liveLastOk = Date.now();
+        log('streamdeck: fired "' + str(r.name || id) + '"');
+        sendJson(res, 200, { ok: true, live: true, id, name: str(r.name || '') });
+      } else {
+        sendJson(res, 200, { ok: false, live: !!r,
+          error: (r && r.msg) ? String(r.msg) : 'Skyrim is not running - start the game and press it again.' });
+      }
+      return;
+    }
+
+    /* Open, close or toggle the deck itself, so one key can be the open key. */
+    if (m === 'POST' && p === '/api/streamdeck/view') {
+      const body = await readJsonBody(req);
+      const op = ['open', 'close', 'toggle'].includes(body.op) ? body.op : 'toggle';
+      const r = op === 'close'
+        ? await liveSend({ kind: 'close-view' })
+        : await liveSend({ kind: 'open-view', toggle: op === 'toggle' });
+      if (r && r.ok) {
+        liveLastOk = Date.now();
+        log('streamdeck: view ' + op + (r.was_open ? ' (was open)' : ''));
+        sendJson(res, 200, { ok: true, live: true, op, wasOpen: !!r.was_open });
+      } else {
+        sendJson(res, 200, { ok: false, live: !!r,
+          error: (r && r.msg) ? String(r.msg) : 'Skyrim is not running - start the game and press it again.' });
+      }
+      return;
+    }
+
+    sendJson(res, 404, { ok: false, error: 'No such Stream Deck route' });
+    return;
+  }
 
   // osis-portal-live: same component and owner adapter as the Scene popout.
   if (m==='GET' && p==='/api/osis/presence') {
@@ -11518,6 +11743,16 @@ async function gateRequest(req, res, url) {
 
   const path = url.pathname;
 
+  /* The Stream Deck plugin carries its own pairing code, not the portal's
+     password: it is a program sitting on a USB device, not a browser that can
+     be shown a login page. Its routes check the code themselves (and answer
+     401 with CORS headers when it is wrong) — this only stops the login gate
+     swallowing the request first on a wide bind. */
+  if (path === '/api/streamdeck' || path.startsWith('/api/streamdeck/')) {
+    if (req.method === 'OPTIONS') return true;   // a preflight carries no credentials, by design
+    if (sdTokenOk(sdGivenToken(req, url))) return true;
+  }
+
   if (path === '/api/login') {
     if (req.method !== 'POST') { sendLogin(res, 405, null); return false; }
     const body = await readSmallBody(req, 4096);
@@ -11610,6 +11845,11 @@ server.listen(PORT, BIND, async () => {
   if (VIEW_ROOTS_SWEPT.length)
     log('  view roots found by sweeping the mod folders: ' + VIEW_ROOTS_SWEPT.join(' | '));
   log('  hk icons  → ' + DECK_ICON_DIR + (fs.existsSync(DECK_ICON_DIR) ? '' : '  (MISSING)'));
+  // Mint the Stream Deck pairing code now, not on the first request: the
+  // install note tells the player to open that file, and a file that only
+  // appears once something has already called the API cannot be found.
+  sdToken();
+  log('  stream deck → pairing code in ' + SD_TOKEN_FILE);
   log('  roster    → ' + FO_JSON);
   const r = readRoster();
   log(r.ok

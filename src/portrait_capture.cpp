@@ -3091,7 +3091,20 @@ namespace PortraitCapture
 		constexpr auto                  id = REL::RelocationID(75461, 77246);
 		constexpr auto                  offset = REL::VariantOffset(0x9, 0x9, 0x15);
 		REL::Relocation<std::uintptr_t> hook{ id, offset };
-		auto&                           tramp = SKSE::GetTrampoline();
+		// The offset is verified on 1.5.97 and 1.6.x only. On a runtime where
+		// the function was rebuilt (1.7.99+), a blind write_call would patch the
+		// middle of another instruction, so refuse anything that is not a
+		// rel32 CALL (PrismaUI's own hook there is one too) and go without
+		// present-thread grabs.
+		const auto* site = reinterpret_cast<const std::uint8_t*>(hook.address());
+		if (!site || site[0] != 0xE8) {
+			const auto ver = REL::Module::get().version();
+			logger::warn("portrait: present-grab hook refused, call site byte {:02X} is not a CALL (runtime {}.{}.{})",
+				site ? site[0] : 0, ver.major(), ver.minor(), ver.patch());  // marker: portrait-present-guard
+			g_hookInstalled.store(false);  // RunJob then refuses instead of waiting on a hook that never runs
+			return;
+		}
+		auto& tramp = SKSE::GetTrampoline();
 		g_origPresent = tramp.write_call<5>(hook.address(), &HookedPresent);
 
 		// One line that would have saved a day of guessing: what the game

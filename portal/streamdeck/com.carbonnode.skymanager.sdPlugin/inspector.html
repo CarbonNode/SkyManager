@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SkyManager</title>
+    <style>
+      /* SkyManager's own look, carried onto the Stream Deck panel: obsidian
+         plate, gold rule, no second visual language. Type is deliberately
+         larger than a Stream Deck inspector usually runs — this panel is read
+         mid-session, and nothing here is small enough to squint at. */
+      :root {
+        --ink: #e9e3d4;
+        --ink-dim: #a39c8b;
+        --plate: #16181a;
+        --plate-2: #1d2023;
+        --line: #32373c;
+        --gold: #c8a763;
+        --gold-soft: rgba(200, 167, 99, 0.16);
+        --bad: #e0695c;
+        --good: #7fba6a;
+        --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        background: var(--plate);
+        color: var(--ink);
+        font: 15px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+        padding: var(--s4);
+      }
+      h2 {
+        font-size: 13px;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--ink-dim);
+        margin: 0 0 var(--s2);
+        font-weight: 600;
+      }
+      section + section { margin-top: var(--s5); }
+      .rule { height: 1px; background: var(--line); margin: var(--s5) 0; }
+
+      label { display: block; font-size: 14px; color: var(--ink-dim); margin-bottom: var(--s1); }
+      input[type="text"], input[type="number"] {
+        width: 100%;
+        min-height: 38px;
+        padding: var(--s2) var(--s3);
+        background: var(--plate-2);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--ink);
+        font: inherit;
+      }
+      input::placeholder { color: #6d6a62; }
+      input:focus-visible, button:focus-visible, .row:focus-visible {
+        outline: 2px solid var(--gold);
+        outline-offset: 2px;
+      }
+      .pair { display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: var(--s2); }
+
+      button {
+        min-height: 38px;
+        padding: 0 var(--s4);
+        background: var(--plate-2);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--ink);
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover { border-color: var(--gold); }
+      button.primary { background: var(--gold-soft); border-color: var(--gold); color: var(--ink); }
+
+      /* 2–6 fixed options: one equal-width segmented control, never a pill row. */
+      .seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+      .seg button { border: 0; border-radius: 0; min-height: 40px; padding: 0 var(--s2); }
+      .seg button + button { border-left: 1px solid var(--line); }
+      .seg button[aria-pressed="true"] { background: var(--gold-soft); color: var(--ink); box-shadow: inset 0 -3px 0 var(--gold); }
+
+      .status { display: flex; gap: var(--s2); align-items: flex-start; margin-top: var(--s3); font-size: 14px; color: var(--ink-dim); }
+      .status .bar { width: 3px; align-self: stretch; min-height: 20px; border-radius: 2px; background: var(--line); flex: 0 0 auto; }
+      .status.ok .bar { background: var(--good); }
+      .status.bad .bar { background: var(--bad); }
+      .status.ok { color: var(--ink); }
+      .status.bad { color: #f0b3ac; }
+      .status p { margin: 0; overflow-wrap: anywhere; }
+
+      .search { position: relative; }
+      .search input { padding-right: 40px; }
+      .search .clear {
+        position: absolute; right: 4px; top: 4px; min-height: 30px; width: 32px;
+        padding: 0; border: 0; background: transparent; color: var(--ink-dim); font-size: 18px; line-height: 1;
+      }
+      .search .clear:hover { color: var(--ink); }
+
+      .list {
+        margin-top: var(--s2);
+        max-height: 300px;
+        overflow-y: auto;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--plate-2);
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr);
+        gap: var(--s3);
+        align-items: center;
+        width: 100%;
+        min-height: 48px;
+        padding: var(--s2) var(--s3);
+        background: transparent;
+        border: 0;
+        border-left: 3px solid transparent;
+        border-radius: 0;
+        text-align: left;
+        cursor: pointer;
+      }
+      .row + .row { border-top: 1px solid rgba(255, 255, 255, 0.05); }
+      .row:hover, .row.cursor { background: rgba(255, 255, 255, 0.05); }
+      .row[aria-selected="true"] { border-left-color: var(--gold); background: var(--gold-soft); }
+      .row .art { width: 34px; height: 34px; display: grid; place-items: center; }
+      .row .art img { max-width: 34px; max-height: 34px; display: block; }
+      /* No art on the entry: its initial in the deck's gold ring — the same
+         fallback the key itself draws, never a generic glyph. */
+      .row .art .ring {
+        width: 30px; height: 30px; border: 2px solid var(--gold); border-radius: 50%;
+        display: grid; place-items: center; font-size: 14px; color: var(--gold);
+      }
+      /* Name over meta, each on its own line and each truncating on its own:
+         a hotkey name can be any length the player typed, and the pair must
+         never run together or push the panel wide. */
+      .row .name { display: block; font-size: 15px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .row .meta { display: block; margin-top: 1px; font-size: 13px; color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .row .cell { display: block; min-width: 0; }
+
+      .empty { padding: var(--s4); color: var(--ink-dim); font-size: 14px; }
+      .chosen { margin-top: var(--s3); font-size: 14px; color: var(--ink-dim); }
+      .chosen b { color: var(--ink); font-weight: 600; }
+      .hint { margin: var(--s2) 0 0; font-size: 13px; color: var(--ink-dim); }
+      /* A Windows path is long and must not break into ragged inline chips:
+         give it a line of its own and let it wrap inside one block. */
+      .hint code { display: block; margin: var(--s1) 0; padding: 6px 8px; background: var(--plate-2); border: 1px solid var(--line); border-radius: 4px; font-size: 12px; overflow-wrap: anywhere; }
+      @media (prefers-reduced-motion: no-preference) {
+        .row, button, input { transition: background-color 120ms ease, border-color 120ms ease; }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="app"></main>
+    <script src="inspector.js"></script>
+  </body>
+</html>

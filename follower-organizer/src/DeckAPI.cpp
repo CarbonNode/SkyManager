@@ -1,4 +1,5 @@
 #include "FollowerOrganizer/FollowerOrganizer.hpp"
+#include "Keep.hpp"
 
 #include "Utility/LogInfo.hpp"
 #include "Utility/Script.hpp"
@@ -228,9 +229,15 @@ namespace
 		// Only when the stored form is a BASE. A row that already resolves to a
 		// reference is untouched, and pays nothing.
 		RE::Actor* live = nullptr;
+		RE::TESObjectREFR* held = nullptr;   // Keep: the reference a keep slot holds for this base
 		if (!actor) {
-			if (auto* npc = form ? form->As<RE::TESNPC>() : nullptr)
+			if (auto* npc = form ? form->As<RE::TESNPC>() : nullptr) {
 				live = loaded.For(npc);
+				if (!live) {
+					held = keep::HeldRefForBase(npc);
+					live = held ? held->As<RE::Actor>() : nullptr;
+				}
+			}
 		}
 		json j{
 			{ "name", m.GetName() },          // live display name (override applied)
@@ -248,7 +255,10 @@ namespace
 			// still have nobody to move. Widening this flag would have made those
 			// four buttons look available and then do nothing — a worse lie than
 			// the missing ones we set out to fix.
-			{ "inWorld", refr != nullptr },
+			// Keep (2026-10-14) is the one widening that IS honest: WorldRefr
+			// resolves a base-form member to the reference her keep slot holds,
+			// so Summon / Go to really have someone to move.
+			{ "inWorld", refr != nullptr || held != nullptr },
 			{ "following", actor ? actor->IsPlayerTeammate() : (live ? live->IsPlayerTeammate() : false) },
 			{ "dead", actor ? actor->IsDead() : (live ? live->IsDead() : false) },
 			{ "form", form ? utility::tesform::FormToString(form) : m.base_form_string },
@@ -288,6 +298,10 @@ namespace
 		}
 		return json{ { "categories", std::move(cats) }, { "total", total } };
 	}
+
+	// A success that still has something to say (summon had to re-enable her).
+	// Apply() returns only errors, so this rides beside it; the export clears it.
+	thread_local std::string g_okNote;
 
 	// Location snapshot before any deck-initiated teleport, into the SAME map
 	// FO's own SendBack uses — either UI can undo the other's move.
@@ -381,6 +395,12 @@ namespace
 			return nullptr;
 		}
 		auto* refr = t.member->form->As<RE::TESObjectREFR>();
+		if (!refr) {
+			// A base-form member (FO's on-disk form for a runtime-spawned NPC
+			// after a reload) is still reachable when Keep holds her reference.
+			if (auto* npc = t.member->form->As<RE::TESNPC>())
+				refr = keep::HeldRefForBase(npc);
+		}
 		if (!refr) {
 			err = "Only their base record resolved this session — they aren't placed in the world yet.";
 			return nullptr;
@@ -553,8 +573,28 @@ namespace
 			return "No player reference.";
 
 		if (op == "summon") {  // NPC -> player (FO action CallToMe)
+			// A quest mod that is done with its NPC often Disable()s her (A
+			// Dragonknight's Tale's Flare, 2026-10-14: both quests at stage 100,
+			// her ref disabled). MoveTo still "works" on a disabled actor — her
+			// ref lands in your cell with no 3D and no AI, the deck said "on
+			// their way" and nobody came. So turn her back on first, the same
+			// way SkyManager's "Place them at me" does. Never a copy: this is
+			// the one stored reference, re-enabled and moved.
+			auto* actor = refr->As<RE::Actor>();
+			if (actor && actor->IsDead())
+				return t.member->GetName() + " is dead — Summon brings back the missing, not the fallen.";
+			const bool wasDisabled = refr->IsDisabled();
+			if (wasDisabled)
+				refr->Enable(false);
 			SnapshotLocation(o, refr);
 			refr->MoveTo(player);
+			if (actor)
+				actor->EvaluatePackage();
+			if (wasDisabled) {
+				logger::info("deck: summon re-enabled {} ({:08X}) - their mod had disabled them",
+					t.member->GetName(), refr->GetFormID());
+				g_okNote = t.member->GetName() + " was switched off by their mod — turned back on and brought here";
+			}
 			return "";
 		}
 		if (op == "goto") {  // player -> NPC (FO action MoveTo)
@@ -607,10 +647,11 @@ extern "C" DLLEXPORT const char* FollowerDeck_Apply(const char* a_cmd)
 	if (cmd.is_discarded() || !cmd.is_object())
 		return Envelope(false, "Bad deck command payload.");
 	try {
+		g_okNote.clear();
 		const auto err = Apply(cmd);
 		if (!err.empty())
 			logger::warn("FollowerDeck_Apply '{}' -> {}", cmd.value("op", std::string("?")), err);
-		return Envelope(err.empty(), err);
+		return Envelope(err.empty(), err.empty() ? g_okNote : err);
 	} catch (const std::exception& ex) {
 		logger::error("FollowerDeck_Apply threw: {}", ex.what());
 		return Envelope(false, "Deck op failed — see FollowerOrganizer log.");

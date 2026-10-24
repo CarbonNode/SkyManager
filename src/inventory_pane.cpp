@@ -142,7 +142,7 @@ namespace InventoryPane
 					auto* a = obj->As<RE::TESObjectARMO>();
 					if (!a)
 						return { "armor", "Armor" };
-					const auto mask = static_cast<std::uint32_t>(a->GetSlotMask());
+					const auto mask = HdCompat::SlotBits(a->GetSlotMask());
 					const std::string slot = SlotLabel(mask);
 					if (a->IsShield() || (mask & kShield))
 						return { "shield", std::string(a->IsHeavyArmor() ? "Heavy" : a->IsLightArmor() ? "Light" : "") + (a->IsHeavyArmor() || a->IsLightArmor() ? " shield" : "Shield") };
@@ -450,7 +450,7 @@ namespace InventoryPane
 			if (g.dmg >= 0.0f) r["dmg"] = static_cast<int>(std::lround(g.dmg));
 			if (g.ar >= 0.0f) r["ar"] = static_cast<int>(std::lround(g.ar));
 			if (auto* a = st.obj->As<RE::TESObjectARMO>())
-				r["sl"] = static_cast<std::uint32_t>(a->GetSlotMask());
+				r["sl"] = HdCompat::SlotBits(a->GetSlotMask());
 			if (auto* w = st.obj->As<RE::TESObjectWEAP>())
 				r["wt"] = static_cast<int>(w->GetWeaponType());
 			if (auto* am = st.obj->As<RE::TESAmmo>())
@@ -560,8 +560,7 @@ namespace InventoryPane
 
 		const char* SkillName(RE::ActorValue av)
 		{
-			auto* list = RE::ActorValueList::GetSingleton();
-			auto* info = list ? list->GetActorValue(av) : nullptr;
+			auto* info = RE::ActorValueList::GetActorValueInfo(av);
 			const char* n = info ? info->GetFullName() : nullptr;
 			return (n && *n) ? n : "a skill";
 		}
@@ -694,7 +693,7 @@ namespace InventoryPane
 			} else if (auto* a = obj->As<RE::TESObjectARMO>()) {
 				add("Class", a->IsHeavyArmor() ? "Heavy armor" : a->IsLightArmor() ? "Light armor" : "Clothing");
 				add("Material", mat);
-				add("Covers", SlotsOf(static_cast<std::uint32_t>(a->GetSlotMask())));
+				add("Covers", SlotsOf(HdCompat::SlotBits(a->GetSlotMask())));
 				add("Base armor", Num1(a->GetArmorRating()));
 			} else if (auto* am = obj->As<RE::TESAmmo>()) {
 				add("Kind", am->IsBolt() ? "Bolt" : "Arrow");

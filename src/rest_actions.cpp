@@ -185,7 +185,7 @@ namespace RestActions
 			if (!avo)
 				return;
 			for (auto av : { RE::ActorValue::kHealth, RE::ActorValue::kMagicka, RE::ActorValue::kStamina })
-				avo->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, av, kFill);
+				avo->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, av, kFill);
 		}
 
 		std::string Summary(const Plan& p, bool slept)

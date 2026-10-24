@@ -688,7 +688,7 @@ namespace Transmog
 					continue;                       // never offer our own pool as donors
 				Donor d;
 				d.localId = a->GetFormID() & (file->IsLight() ? 0xFFFu : 0xFFFFFFu);
-				d.slotMask = static_cast<std::uint32_t>(a->GetSlotMask());
+				d.slotMask = HdCompat::SlotBits(a->GetSlotMask());
 				d.value = a->value;
 				d.weight = a->weight;
 				d.plugin = std::string(file->GetFilename());
@@ -1085,7 +1085,7 @@ namespace Transmog
 			}
 
 			const std::uint32_t slotMask =
-				armo ? static_cast<std::uint32_t>(armo->GetSlotMask()) : 0u;
+				armo ? HdCompat::SlotBits(armo->GetSlotMask()) : 0u;
 			const std::int32_t wtype =
 				weap ? static_cast<std::int32_t>(weap->GetWeaponType()) : -1;
 			const bool baseEnch =

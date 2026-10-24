@@ -64,7 +64,7 @@ namespace ControlsFix
 		// the recurring shape of the wedge is what names the culprit mod.
 		auto&      rd = cm->GetRuntimeData();
 		const auto before = rd.enabledControls.underlying();
-		const auto layered = rd.unk11C.underlying();
+		const auto layered = static_cast<std::uint32_t>(cm->GetRuntimeData().storedControls.underlying());
 		const auto textEntry = rd.textEntryCount;
 		const bool ignoreKbm = rd.ignoreKeyboardMouse;
 		auto&      gsd = player->GetGameStatsData();
@@ -88,7 +88,7 @@ namespace ControlsFix
 
 		// ------------------------------------------------ engine layer -----
 		if ((before & allMask) != allMask)
-			cm->ToggleControls(static_cast<UEFlag>(allMask), true);
+			cm->ToggleControls(static_cast<UEFlag>(allMask), true, true);
 
 		// AllowTextInput is a counter; a text field that never released leaves
 		// it pinned above zero, silently eating keys. Drain, capped: a count

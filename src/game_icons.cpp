@@ -143,7 +143,7 @@ namespace GameIcons
 		int ActorValueByName(const std::string& name)
 		{
 			if (auto* list = RE::ActorValueList::GetSingleton()) {
-				const auto av = list->LookupActorValueByName(name);
+				const auto av = list->LookupActorValueByName(name.c_str());
 				return static_cast<int>(av);
 			}
 			return -1;
@@ -762,7 +762,7 @@ namespace GameIcons
 				default: break;
 				}
 			} else if (auto* a = obj->As<RE::TESObjectARMO>()) {
-				const auto mask = static_cast<std::uint32_t>(a->GetSlotMask());
+				const auto mask = HdCompat::SlotBits(a->GetSlotMask());
 				e.num["partMask"] = mask;
 				const auto main = MainPart(mask);
 				if (main)

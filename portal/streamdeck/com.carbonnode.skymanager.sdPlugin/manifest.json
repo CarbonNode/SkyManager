@@ -1,0 +1,39 @@
+{
+  "SDKVersion": 2,
+  "Name": "SkyManager",
+  "Author": "Squeetsquib",
+  "Version": "1.0.0",
+  "Description": "Put your SkyManager hotkeys on Stream Deck keys. Needs SkyManager with the Deck Portal running.",
+  "URL": "https://www.nexusmods.com/skyrimspecialedition/mods/188059",
+  "Icon": "icons/skymanager",
+  "Category": "SkyManager",
+  "CategoryIcon": "icons/skymanager",
+  "CodePath": "plugin.html",
+  "PropertyInspectorPath": "inspector.html",
+  "Software": { "MinimumVersion": "5.0" },
+  "OS": [{ "Platform": "windows", "MinimumVersion": "10" }],
+  "Actions": [
+    {
+      "UUID": "com.carbonnode.skymanager.entry",
+      "Name": "Deck entry",
+      "Tooltip": "Fire one of your SkyManager hotkeys, without opening the deck.",
+      "Icon": "icons/skymanager",
+      "PropertyInspectorPath": "inspector.html",
+      "SupportedInMultiActions": true,
+      "States": [
+        { "Image": "icons/skymanager", "TitleAlignment": "bottom", "ShowTitle": false }
+      ]
+    },
+    {
+      "UUID": "com.carbonnode.skymanager.view",
+      "Name": "Open SkyManager",
+      "Tooltip": "Open, close or toggle the SkyManager deck.",
+      "Icon": "icons/skymanager",
+      "PropertyInspectorPath": "inspector.html",
+      "SupportedInMultiActions": true,
+      "States": [
+        { "Image": "icons/skymanager", "TitleAlignment": "bottom", "ShowTitle": false }
+      ]
+    }
+  ]
+}

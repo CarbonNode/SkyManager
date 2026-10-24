@@ -102,6 +102,27 @@ means the portal is looking at only some of the mods that hold the view trees.
 upload would land. The deck itself never notices a split like this, because MO2
 merges every enabled mod into one virtual `Data`.
 
+## Stream Deck
+
+`streamdeck/` holds an Elgato Stream Deck plugin: physical keys that fire your
+deck entries while the game runs, without opening the deck. Copy
+`streamdeck/com.carbonnode.skymanager.sdPlugin` into
+`%APPDATA%\Elgato\StreamDeck\Plugins\`, restart the Stream Deck app, and paste
+the pairing code from `streamdeck-token.txt` (written beside `server.js` on the
+portal's first run) into the plugin's panel. Full instructions, including what
+each failure message means: `streamdeck/README.md`.
+
+The plugin reaches three routes, all under `/api/streamdeck/`, and they are the
+only routes in this server that answer cross-origin — which is why they need
+that code and nothing else does. They are live-only: a press with the game
+closed is refused rather than queued, because a replayed console command or
+shout hours later is not something a queue should do to a player.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `DECK_PORTAL_SD_TOKEN` | *(minted)* | Pin the pairing code instead of generating one. |
+| `DECK_PORTAL_SD_TOKEN_FILE` | `<portal>\streamdeck-token.txt` | Where the code is kept, for a read-only mod folder. |
+
 ## Formation controls
 
 The Formation link next to Followers opens `/formation`, sharing the deployed

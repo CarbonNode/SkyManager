@@ -93,8 +93,7 @@ namespace BookReader
 
 		const char* SkillName(RE::ActorValue av)
 		{
-			auto* list = RE::ActorValueList::GetSingleton();
-			auto* info = list ? list->GetActorValue(av) : nullptr;
+			auto* info = RE::ActorValueList::GetActorValueInfo(av);
 			const char* n = info ? info->GetFullName() : nullptr;
 			return (n && *n) ? n : "skill";
 		}
