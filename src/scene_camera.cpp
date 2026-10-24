@@ -149,7 +149,8 @@ namespace SceneCamera
 				return false;
 			if (auto* cm = RE::ControlMap::GetSingleton())
 				cm->ToggleControls(static_cast<UEFlag>(static_cast<std::uint32_t>(UEFlag::kPOVSwitch) |
-				                                       static_cast<std::uint32_t>(UEFlag::kWheelZoom)), true);
+				                                       static_cast<std::uint32_t>(UEFlag::kWheelZoom)),
+					true, true);
 			if (auto* pcs = RE::PlayerControls::GetSingleton())
 				pcs->data.povScriptMode = false;
 			return true;

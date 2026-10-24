@@ -121,7 +121,7 @@ namespace WardrobeFlair
 					auto* form=ActorIdentity::Resolve(p.value("formId",std::string()),p.value("plugin",std::string()));
 					auto* armor=form?form->As<RE::TESObjectARMO>():nullptr;
 					Need(armor!=nullptr,"A Flair accessory is missing from the load order; nothing was changed");
-					const auto mask=static_cast<std::uint32_t>(armor->GetSlotMask());
+					const auto mask=HdCompat::SlotBits(armor->GetSlotMask());
 					Need(mask!=0 && (occupied & mask)==0,"Two Flair accessories use the same equipment slot. Edit the set first");
 					occupied|=mask; armors.push_back(armor);
 				}

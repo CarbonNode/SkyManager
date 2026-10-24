@@ -185,11 +185,8 @@ namespace Wardrobe
 		std::string SlotNameOf(RE::TESObjectARMO* armo)
 		{
 			using Slot = RE::BIPED_MODEL::BipedObjectSlot;
-			// GetSlotMask() returns the raw bit-flag enum, NOT an EnumSet — there
-			// is no .any() on it. Test the bits directly. (TailorHelper gets away
-			// with .any() only because it takes a REX::EnumSet PARAMETER and the
-			// enum converts on the way in.)
-			const auto mask = static_cast<std::uint32_t>(armo->GetSlotMask());
+			// Test the bits HdCompat::SlotBits returns from GetSlotMask()'s EnumSet.
+			const auto mask = HdCompat::SlotBits(armo->GetSlotMask());
 			const auto has  = [mask](Slot sl) {
 				return (mask & static_cast<std::uint32_t>(sl)) != 0;
 			};
@@ -732,7 +729,7 @@ namespace Wardrobe
 			if (a->GetSlotMask() == RE::BIPED_MODEL::BipedObjectSlot::kNone)
 				return false;
 			using Slot = RE::BIPED_MODEL::BipedObjectSlot;
-			const auto mask = static_cast<std::uint32_t>(a->GetSlotMask());
+			const auto mask = HdCompat::SlotBits(a->GetSlotMask());
 			// decapitation props wear a real name but are never clothing
 			if (mask & (static_cast<std::uint32_t>(Slot::kDecapitateHead) |
 						static_cast<std::uint32_t>(Slot::kDecapitate)))

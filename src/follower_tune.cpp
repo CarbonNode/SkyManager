@@ -126,7 +126,7 @@ namespace FollowerTune
 			   her old hit points inside a bigger bar, which reads as the setting
 			   not having worked. Restore is clamped by the engine to the new
 			   maximum, so over-restoring is the correct way to say "full". */
-			avo->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, av, want);
+			avo->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, av, want);
 			return true;
 		}
 
@@ -541,9 +541,9 @@ namespace FollowerTune
 		if (op == "heal") {
 			/* Deliberately NOT remembered: it is an action, not a setting. */
 			if (auto* avo = actor->AsActorValueOwner()) {
-				avo->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, 100000.0f);
-				avo->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kMagicka, 100000.0f);
-				avo->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kStamina, 100000.0f);
+				avo->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, 100000.0f);
+				avo->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kMagicka, 100000.0f);
+				avo->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kStamina, 100000.0f);
 			}
 			return ReplyFor(c, actor, true, who + " is patched up");
 		}

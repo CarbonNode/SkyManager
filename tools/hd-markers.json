@@ -26,6 +26,7 @@
     "the config_manager.php path in sharmat.cpp would be a useless marker."
   ],
   "dll": {
+    "portrait-present-guard": "portrait: present-grab hook refused, call site byte",
     "mhiyh-done-day": "mhiyh: done reply carries the live day for",
     "css-warm-closed": "css-warm-closed: PrismaUI {} -- the deck {} warm its stylesheets while closed",
     "procession-bridge": "procession-bridge: bound RoyalProcession.dll (api {})",
@@ -929,7 +930,9 @@
     "ext-key-engine-press": "pressed as engine event (deck-fired)",
     "obody-bridge": "obody-bridge: assign {:08X} '{}' -> {}",
     "chim-presence-guard": "chim-guard: CHIM is not installed",
-    "papyrus-presence": "papyrus-presence: {}.pex is not in this load order"
+    "papyrus-presence": "papyrus-presence: {}.pex is not in this load order",
+    "streamdeck-run-entry": "live api: run-entry '{}' [{}]",
+    "streamdeck-open-view": "live api: open-view requested"
   },
   "view": {
     "hd-obody.js": {

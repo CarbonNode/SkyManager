@@ -2276,8 +2276,7 @@ namespace ItemIcons
 					target = geo[swap.index3D];
 				if (!target)
 					continue;
-				auto* prop = target->GetGeometryRuntimeData()
-								 .properties[RE::BSGeometry::States::kEffect].get();
+				auto* prop = target->GetGeometryRuntimeData().shaderProperty.get();
 				auto* shader = netimmerse_cast<RE::BSLightingShaderProperty*>(prop);
 				if (!shader)
 					continue;
@@ -3826,8 +3825,7 @@ namespace ItemIcons
 				if (std::find(out.begin(), out.end(), model) == out.end())
 					out.push_back(model);
 			};
-			// GetSlotMask() hands back the raw bit-flag enum, not an EnumSet —
-			// test the bits (wigs.cpp's hard-won note).
+			// GetSlotMask() is a REX::EnumSet; HdCompat::SlotBits gives its bits.
 			using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
 			const std::uint32_t hairMask = static_cast<std::uint32_t>(Slot::kHair) |
 										   static_cast<std::uint32_t>(Slot::kLongHair);
@@ -3835,7 +3833,7 @@ namespace ItemIcons
 			// isSkin: the ARMO is the NPC's worn SKIN (WNAM), not something she puts
 			// on. See the head-gear rule below for why that changes the test.
 			auto addWig = [&](RE::TESObjectARMO* armo, bool isSkin = false) {
-				if (!armo || (static_cast<std::uint32_t>(armo->GetSlotMask()) & hairMask) == 0)
+				if (!armo || (HdCompat::SlotBits(armo->GetSlotMask()) & hairMask) == 0)
 					return;
 				/* A HELMET IS NOT A WIG (Adney Swordhand, 2026-09-23). Helmets,
 				 * hoods and hats claim the hair slot too — to hide the hair under
@@ -3854,7 +3852,7 @@ namespace ItemIcons
 				 * showed a bald skull cap. A skin is never head gear: judge it per
 				 * ADDON instead (below), where an addon claiming the head is still
 				 * refused. */
-				if (!isSkin && ((static_cast<std::uint32_t>(armo->GetSlotMask()) & headMask) != 0 ||
+				if (!isSkin && ((HdCompat::SlotBits(armo->GetSlotMask()) & headMask) != 0 ||
 					armo->HasKeywordID(0x0006C0EE) /* ArmorHelmet */ || armo->HasKeywordID(0x0010CD11) /* ClothingHead */)) {
 					logger::debug("item icons: '{}' is head gear, not a wig - not composed onto face {}|{}",
 						armo->GetName() ? armo->GetName() : "", fid, plugin);  // marker: face-wig-not-helmet
@@ -3873,9 +3871,9 @@ namespace ItemIcons
 				// custom race the author never listed), the FIRST hair addon alone
 				// stands in — never the whole set.
 				auto hairModel = [&](RE::TESObjectARMA* arma) -> const char* {
-					if (!arma || (static_cast<std::uint32_t>(arma->GetSlotMask()) & hairMask) == 0)
+					if (!arma || (HdCompat::SlotBits(arma->GetSlotMask()) & hairMask) == 0)
 						return nullptr;
-					if (isSkin && (static_cast<std::uint32_t>(arma->GetSlotMask()) & headMask) != 0)
+					if (isSkin && (HdCompat::SlotBits(arma->GetSlotMask()) & headMask) != 0)
 						return nullptr;   // a skin addon that covers the head is not her hair
 					const char* m = arma->bipedModels[sex].GetModel();
 					if (!m || !*m)
@@ -5197,13 +5195,13 @@ namespace ItemIcons
 			std::uint32_t                    outfitSlots = 0;
 			// Try-on: the piece being tried displaces every worn piece that
 			// shares a biped slot with it (what equipping it would do).
-			const std::uint32_t tryMask = tryOn ? static_cast<std::uint32_t>(tryOn->GetSlotMask()) : 0u;
+			const std::uint32_t tryMask = tryOn ? HdCompat::SlotBits(tryOn->GetSlotMask()) : 0u;
 			for (std::uint32_t i = 0; i < 32; ++i) {
 				const auto slot = static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(std::uint32_t{ 1 } << i);
 				auto*      armo = actor->GetWornArmor(slot);
 				if (!armo || std::find(worn.begin(), worn.end(), armo) != worn.end())
 					continue;
-				if (tryOn && (static_cast<std::uint32_t>(armo->GetSlotMask()) & tryMask))
+				if (tryOn && (HdCompat::SlotBits(armo->GetSlotMask()) & tryMask))
 					continue;
 				worn.push_back(armo);
 				outfitSlots |= AddArmor(w, armo, race, sex, 0, false, false, npc);

@@ -29767,6 +29767,93 @@ namespace
                 SKSE::GetTaskInterface()->AddTask([request]() { ScenePrivacy::Control(request); });
                 return R"({"ok":true,"queued":true})";
             }
+			/* Stream Deck (and anything else outside the game that wants to press
+			 * a deck entry) — the Deck Portal relays the press here.
+			 *
+			 * This adds NO mechanics: it fires the entry through FireEntryById,
+			 * the same verb a global trigger key uses, so an action entry gets the
+			 * live crosshair re-aim and a keystroke entry gets the real SendInput,
+			 * identically to pressing its key. `via` is "streamdeck" purely so the
+			 * log says where the press came from.
+			 *
+			 * LIVE ONLY, deliberately: every other kind here writes CONFIG, which is
+			 * safe to queue for the next launch. A press is not — a queued console
+			 * command or shout would go off hours later, into whatever is happening
+			 * then. Game closed = an honest no, which the key shows as an error.
+			 * marker: streamdeck-run-entry */
+			if (kind == "run-entry") {
+				if (!g_gameReady.load()) {
+					res["msg"] = "Load a game first";
+					return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+				}
+				const auto id = j.value("id", std::string(""));
+				if (id.empty() || id.size() > 64) {
+					res["msg"] = "No entry id";
+					return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+				}
+				std::string name;
+				bool        known = false;
+				{
+					std::lock_guard l(g_configMutex);
+					for (const auto& e : g_config.entries)
+						if (e.id == id) { name = e.name; known = true; break; }
+				}
+				// Resolve the id HERE rather than letting FireEntryById return
+				// silently: a key still bound to an entry the player has deleted must
+				// light up red on the Stream Deck, not look like it worked.
+				if (!known) {
+					res["msg"] = "That hotkey is not in the deck any more";
+					return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+				}
+				logger::info("live api: run-entry '{}' [{}]", name, id);
+				SKSE::GetTaskInterface()->AddTask([id]() { FireEntryById(id, "streamdeck"); });
+				res["ok"] = true;
+				res["fired"] = true;
+				res["name"] = name;
+				return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			}
+
+			/* The open half of close-view, so a Stream Deck key can be the deck's
+			 * open key. Same guards and the same queued task as the C API's
+			 * SkyManager_Open — another menu or the console owning the screen is
+			 * refused honestly rather than opening a deck nobody can see.
+			 * "toggle":true closes whatever is open instead, which is what makes one
+			 * physical key an open/close key. marker: streamdeck-open-view */
+			if (kind == "open-view") {
+				const bool wasOpen = AnyOpen();
+				const bool toggle  = j.value("toggle", false);
+				if (wasOpen && toggle) {
+					// ClosePalette, not the rescue hatch's ForceClosePalettes: this is
+					// an ordinary close and must leave the flags it checks alone.
+					SKSE::GetTaskInterface()->AddTask([]() {
+						ClosePalette();
+						CloseMagicPalette();
+					});
+					res["ok"] = true;
+					res["was_open"] = true;
+					res["closed"] = true;
+					return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+				}
+				if (wasOpen) {
+					res["ok"] = true;
+					res["was_open"] = true;
+					return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+				}
+				if (!CanOpenNow()) {
+					res["msg"] = "Another menu or the console has the screen";
+					return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+				}
+				logger::info("live api: open-view requested");
+				SKSE::GetTaskInterface()->AddTask([]() {
+					if (!g_open.load() && CanOpenNow())
+						EnsureViewAndOpen();
+				});
+				res["ok"] = true;
+				res["was_open"] = false;
+				res["opened"] = true;
+				return res.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			}
+
 			if (kind == "ping") {  // liveness probe: the portal uses it to pick a transport
 				res["ok"] = true;
 				// Module presence only: no settings lock, engine read or file writes.
@@ -31450,7 +31537,7 @@ extern "C" DLLEXPORT void SkyManager_SetDeepOpenHotkeysEnabled(bool a_enabled)
 	logger::info("SkyManager C API: deep-open keys {}", a_enabled ? "re-enabled" : "disabled by an external plugin");
 }
 
-extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_skse)
+extern "C" DLLEXPORT bool SKSEPlugin_Load(const SKSE::LoadInterface* a_skse)
 {
 	REL::Module::reset();
 

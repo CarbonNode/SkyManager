@@ -190,8 +190,8 @@ namespace PlayerTune
 		if (speedTouched) {
 			// The engine re-derives movement speed on the next AV mod — the
 			// proven CarryWeight nudge makes a SpeedMult change land NOW.
-			avo->ModActorValue(AV::kCarryWeight, 0.01f);
-			avo->ModActorValue(AV::kCarryWeight, -0.01f);
+			avo->ModBaseActorValue(AV::kCarryWeight, 0.01f);
+			avo->ModBaseActorValue(AV::kCarryWeight, -0.01f);
 		}
 		if (!applied)
 			return Dump(json{ { "ok", false }, { "msg", "No recognized field in that request" } });

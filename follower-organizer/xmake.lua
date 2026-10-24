@@ -3,7 +3,7 @@ set_xmakever("2.8.2")
 includes("../HotkeyDeck/lib/commonlibsse-ng")
 
 set_project("FollowerOrganizer")
-set_version("0.3.1")
+set_version("0.5.0")
 set_license("GPL-3.0")
 
 set_languages("c++23")

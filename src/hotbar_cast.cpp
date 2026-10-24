@@ -269,7 +269,7 @@ namespace HotbarCast
 				return;
 			RE::BSSoundHandle local{};
 			auto&             h = keep ? *keep : local;
-			if (audio->BuildSoundDataFromDescriptor(h, desc)) {
+			if (audio->GetSoundHandle(h, desc)) {
 				if (auto* root = player->Get3D())
 					h.SetObjectToFollow(root);
 				h.Play();
@@ -356,9 +356,8 @@ namespace HotbarCast
 			pick.rayInput.from = RE::hkVector4(from.x * s, from.y * s, from.z * s, 0.0f);
 			pick.rayInput.to = RE::hkVector4(point.x * s, point.y * s, point.z * s, 0.0f);
 			pick.ray = pick.rayInput.to - pick.rayInput.from;
-			std::uint32_t info = 0;
-			player->GetCollisionFilterInfo(info);
-			pick.rayInput.filterInfo = (info & 0xFFFF0000u) | static_cast<std::uint32_t>(RE::COL_LAYER::kLOS);
+			const std::uint32_t info = HdCompat::CollisionFilterInfo(player);
+			pick.rayInput.filterInfo.filter = (info & 0xFFFF0000u) | static_cast<std::uint32_t>(RE::COL_LAYER::kLOS);
 			pick.rayOutput.Reset();
 			if (world->PickObject(pick) && pick.rayOutput.HasHit()) {
 				const float f = pick.rayOutput.hitFraction;
@@ -515,7 +514,7 @@ namespace HotbarCast
 				for (auto* c : casters)
 					c->currentSpellCost = g_cast->cost / static_cast<float>(casters.size());   // per second, drained by the caster
 			} else if (!g_cast->req.scroll && g_cast->cost > 0.0f) {
-				player->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
+				player->AsActorValueOwner()->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
 					RE::ActorValue::kMagicka, -g_cast->cost);
 			}
 
@@ -541,7 +540,7 @@ namespace HotbarCast
 			if (delivery == Delivery::kTargetLocation && !conc && player->IsCasting(item)) {
 				player->InterruptCast(false);
 				if (!g_cast->req.scroll && g_cast->cost > 0.0f)
-					player->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
+					player->AsActorValueOwner()->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
 						RE::ActorValue::kMagicka, g_cast->cost);
 				FailSound();
 				logger::info("hotbar-cast: '{}' found no valid spot; refunded", NameOf(item));

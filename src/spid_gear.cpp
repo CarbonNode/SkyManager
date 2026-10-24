@@ -29,7 +29,7 @@ namespace SpidGear
 
 		// ContainerMenu::ContainerMode::kLoot — same transfer view the
 		// Containers tab opens (see container_actions.cpp kOpenLoot).
-		constexpr std::int32_t kOpenLoot = 0;
+		constexpr auto kOpenLoot = RE::ContainerMenu::ContainerMode::kLoot;
 
 		// How far below the player the chest is parked. Same trick as the room
 		// visualizer's hide park: the ref stays in a LOADED cell (so the menu
@@ -459,7 +459,7 @@ namespace SpidGear
 		// came up, bring it to the player and open on the frame after (same
 		// two-step as ContainerActions::OpenContainer; it re-parks on harvest).
 		chest->InitInventoryIfRequired();
-		chest->OpenContainer(kOpenLoot);
+		RE::ContainerMenu::OpenMenu(chest, kOpenLoot);
 		const RE::FormID cid = g_chest;
 		SKSE::GetTaskInterface()->AddTask([cid]() {
 			auto* ui = RE::UI::GetSingleton();
@@ -475,7 +475,7 @@ namespace SpidGear
 				if (!c2)
 					return;
 				c2->InitInventoryIfRequired();
-				c2->OpenContainer(kOpenLoot);
+				RE::ContainerMenu::OpenMenu(c2, kOpenLoot);
 			});
 			logger::info("spid-gear: parked open failed - summoned inbox to the player");
 		});

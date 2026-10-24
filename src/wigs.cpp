@@ -141,8 +141,8 @@ namespace Wigs
 
 		// ------------------------------------------------------------ armo ---
 		// Hair slots: slot 31 = kHair (bit 1), slot 41 = kLongHair (bit 11).
-		// GetSlotMask() returns the raw bit-flag enum, NOT an EnumSet — test
-		// the bits directly (wardrobe.cpp's lesson).
+		// Test the bits directly (wardrobe.cpp's lesson); HdCompat::SlotBits
+		// turns GetSlotMask()'s EnumSet into them.
 		bool IsHairSlot(std::uint32_t mask)
 		{
 			using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
@@ -229,7 +229,7 @@ namespace Wigs
 					}
 				if (modIdx == 0xFFFF)
 					continue;
-				const auto mask = static_cast<std::uint32_t>(a->GetSlotMask());
+				const auto mask = HdCompat::SlotBits(a->GetSlotMask());
 				if (!g_mods[modIdx].all && !IsHairSlot(mask))
 					continue;
 				Wig w;
@@ -278,7 +278,7 @@ namespace Wigs
 				auto* file = a->GetFile(0);
 				if (!file)
 					continue;
-				if (!IsHairSlot(static_cast<std::uint32_t>(a->GetSlotMask())))
+				if (!IsHairSlot(HdCompat::SlotBits(a->GetSlotMask())))
 					continue;
 				std::size_t idx = seen.size();
 				for (std::size_t i = 0; i < seen.size(); ++i)

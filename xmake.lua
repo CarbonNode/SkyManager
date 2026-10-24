@@ -4,7 +4,7 @@ set_xmakever("2.8.2")
 includes("lib/commonlibsse-ng")
 
 set_project("HotkeyDeck")
-set_version("2.2.1")
+set_version("2.3.0")
 set_license("GPL-3.0")
 
 set_languages("c++23")
